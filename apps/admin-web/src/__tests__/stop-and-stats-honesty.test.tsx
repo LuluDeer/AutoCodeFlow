@@ -12,10 +12,13 @@
  *    （没有停止按钮），用户失去了唯一的真相来源。修法：后端把送达失败写进
  *    statusMessage（前缀 [Stop not delivered] ），前端据此改用 warning。
  *
- * ② **应用列表的部署统计被静默截断到 20 条**。`deploymentsApi.list(app.id)`
- *    用默认 pageSize=20，统计只数当前页：部署行 >20 的应用分母恒为 20，且
- *    **一个正在运行但排在 20 行之外的实例会让整列显示"均未运行"**。
- *    修法：显式取后端上限 100，分母改用响应里的 total。
+ * ② **应用列表的部署统计**。原实现逐应用拉列表（默认 pageSize=20）再在前端
+ *    filter，统计只数当前页：部署行 >20 的应用分母恒为 20，且**一个正在运行但
+ *    排在 20 行之外的实例会让整列显示"均未运行"**。先修为"显式取上限 100 + 分母
+ *    用响应 total"；2026-10-13 生产报障（26 个应用 = 26 个请求共享同一个 60/min
+ *    限流桶 → 整页 ThrottlerException 429）后，进一步改为**服务端聚合**
+ *    （GET /app-deployments/stats，1 个请求）。本文件覆盖"分母不得被静默截断"
+ *    这一不变意图，并反证不得退回逐应用扇出。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
@@ -32,6 +35,8 @@ import {
 vi.mock('../api/applications', () => ({
   deploymentsApi: {
     list: vi.fn(),
+    // 列表页统计走聚合端点（1 个请求），见本文件头注 ②。
+    stats: vi.fn().mockResolvedValue([]),
     deploy: vi.fn(),
     stop: vi.fn(),
     upgrade: vi.fn(),
@@ -230,7 +235,7 @@ describe('停止：未送达执行器时必须用 warning 如实告知', () => {
   });
 });
 
-describe('应用列表统计：不得被默认分页静默截断', () => {
+describe('应用列表统计：1 个聚合请求、分母不得被静默截断', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearAntdMessages();
@@ -241,6 +246,8 @@ describe('应用列表统计：不得被默认分页静默截断', () => {
     (applicationsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: 'app-1', name: '订单同步', version: '1.0.0', runtime: 'node' },
     ]);
+    // 默认无部署行（各用例按需覆盖）——clearAllMocks 不清实现，这里显式兜底。
+    (deploymentsApi.stats as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -248,33 +255,49 @@ describe('应用列表统计：不得被默认分页静默截断', () => {
     clearAntdMessages();
   });
 
-  it('按后端上限 100 取数（不是默认 20），且分母用响应 total', async () => {
-    // 构造"运行中的实例排在窗口外"的场景：本页 100 行全是 stopped，
-    // 但 total=137（说明还有更多行没取到）。
-    const page = Array.from({ length: 100 }, (_, i) =>
-      dep({ id: `d-${i}`, status: 'stopped' }),
-    );
-    (deploymentsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: page,
-      total: 137,
-    });
+  it('统计走 1 个聚合请求（不按应用数扇出），且分母用服务端真实 total', async () => {
+    // 构造"运行中的实例排在取数窗口外"的场景：服务端聚合给出的 total=137，
+    // 而 running=0、failed=0（说明更多行里没有在跑的）。
+    //
+    // 历史脉络：本条原先是「显式传 pageSize=100，别用默认 20」——因为当时是
+    // 逐应用拉列表再在前端 filter。2026-10-13 生产报障后改为服务端聚合
+    // （GET /app-deployments/stats）：26 个应用各发一个 list 会共享同一个
+    // 60/min 限流桶，进页面+返回+部署后刷新就打满 → 整页 429。现在无论多少
+    // 应用都只发 1 个请求，**"分母不得被静默截断"这一意图不变**，只是保证方
+    // 从"取到上限 100"上移到了服务端聚合。
+    (deploymentsApi.stats as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { applicationId: 'app-1', total: 137, running: 0, failed: 0, lastDeployedAt: null },
+    ]);
 
     render(<ApplicationListPage />);
 
-    await waitFor(() => expect(deploymentsApi.list).toHaveBeenCalled());
-    // ① 必须显式传 pageSize=100（默认 20 会让分母偏小、且运行中实例可能漏计）
-    const call = (deploymentsApi.list as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[1]).toBe(1);
-    expect(call[2]).toBe(100);
-    // ② 分母必须是真实总数 137，不是本页长度 100。
+    // ① 只发 1 个聚合请求——这是 429 报障的修复本体：请求数不再随应用数增长。
+    await waitFor(() => expect(deploymentsApi.stats).toHaveBeenCalledTimes(1));
+    // 反证：绝不能再走逐应用 list 扇出（旧实现即 26 个请求打满限流桶）。
+    expect(deploymentsApi.list).not.toHaveBeenCalled();
+    // ② 分母必须是服务端给的 137，不是任何"本页长度"。
     //    渲染走的是「{{total}} 个部署均未运行」这条文案——直接断言整句，
-    //    比只查 /137/ 更能钉住"分母来自 total"这一意图（本页长度恰好是 100，
-    //    只查 137 会在分母被改回 deps.length 时……仍然命中 137 之外的数字而
-    //    漏判；断言完整文案才真正锁住）。
+    //    比只查 /137/ 更能钉住"分母来自 total"这一意图。
     await waitFor(() =>
       expect(screen.getByText('137 个部署均未运行')).toBeTruthy(),
     );
-    // 反证：本页长度 100 绝不能出现在分母位置（修复前的形态）
-    expect(screen.queryByText('100 个部署均未运行')).toBeNull();
+  });
+
+  it('聚合结果按 applicationId 落到对应行；未出现在 stats 的应用按 0 处理', async () => {
+    (applicationsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'app-1', name: '有部署的应用', version: '1.0.0', runtime: 'node' },
+      { id: 'app-2', name: '没有部署的应用', version: '1.0.0', runtime: 'node' },
+    ]);
+    (deploymentsApi.stats as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { applicationId: 'app-1', total: 3, running: 2, failed: 1, lastDeployedAt: new Date().toISOString() },
+      // app-2 无部署行 → 服务端不返回该行
+    ]);
+
+    render(<ApplicationListPage />);
+
+    // app-1：如实显示 2/3 运行中
+    await waitFor(() => expect(screen.getByText('2 / 3 台运行中')).toBeTruthy());
+    // app-2：回落「暂无部署」，而不是因为查不到就崩掉或显示空白
+    expect(screen.getByText('暂无部署')).toBeTruthy();
   });
 });

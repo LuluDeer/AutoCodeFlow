@@ -47,7 +47,23 @@ modules/application/
 
 `webhook` 验签（APP-001）：头 `X-Hub-Signature-256` = `sha256=HMAC_SHA256(webhookSecret, "${timestamp}.${rawBody}")`，头 `X-AutoCodeFlow-Timestamp` ±5min 时间窗，恒定时间比较；应用不存在/无 secret/签名错等**所有失败统一同一 401 文案**防应用名枚举，精确原因只进服务端日志。`triggerDeploy=true` 时对全部 RUNNING 部署并行触发 `upgrade`。
 
-**AppDeploymentController（`app-deployments`）**：GET 列表（可按 `approvalStatus` 过滤）/详情；POST `applications/:appId/deploy`（ADMIN）；GET `approvals/pending`、POST `:id/approval/approve|reject|cancel`（DEP-04 双人审批：审批人 ≠ 申请人，service 强制；cancel 仅限申请人）；POST `:id/upgrade`、`:id/stop`（ADMIN + OPS_THROTTLE）；POST `heartbeat`（`@Public()`，执行器带 `X-Executor-Token`，经 `ExecutorService.validateExecutorToken` 按 deployment 关联的 executor 校验后回报应用进程状态）。
+**AppDeploymentController（`app-deployments`）**：GET 列表（可按 `approvalStatus` 过滤）/详情；**GET `stats`**（每应用一行聚合统计，供应用列表页——见下「部署统计聚合」）；POST `applications/:appId/deploy`（ADMIN）；GET `approvals/pending`、POST `:id/approval/approve|reject|cancel`（DEP-04 双人审批：审批人 ≠ 申请人，service 强制；cancel 仅限申请人）；POST `:id/upgrade`、`:id/stop`（ADMIN + OPS_THROTTLE）；POST `heartbeat`（`@Public()`，执行器带 `X-Executor-Token`，经 `ExecutorService.validateExecutorToken` 按 deployment 关联的 executor 校验后回报应用进程状态）。
+
+> ⚠️ **路由顺序**：`@Get("stats")` 必须声明在 `@Get(":id")` **之前**，否则 `stats` 会被参数路由捕获 → `ParseUUIDPipe` 直接 400。与 `executor.controller` 的 `@Get("picker")` 同一坑，两处都有回归哨单测（`app-deployment.stats.spec.ts`）。
+
+### 部署统计聚合（GET /app-deployments/stats）
+
+`service.findStats()` 一次 `GROUP BY applicationId` 返回每应用的 `total/running/failed/lastDeployedAt`，**只含至少有一条部署行的应用**（无部署的应用由调用方按 0 处理）。
+
+**为什么存在（2026-10-13 生产报障）**：应用列表页原先对**每个应用各发一个** `GET /app-deployments?applicationId=…` 来现算「运行 X/Y 台」。全局限流按「路由 handler + IP」计桶（`ThrottlerGuard` 默认 `generateKey = 类名-方法名-tracker`），这 N 个请求**共享同一个 60/min 预算**：26 个应用时，进页面(26) + 返回页面(26) + 部署后自动刷新(26) = 78 > 60 → 整页部署列 429，且限流器进入 block（时长 = ttl = 60s），block 期内**连第 1 个请求也 429**——这正是用户看到的「刷新页面也弹 `ThrottlerException`」。生产 nginx 日志中 149 个 429 全部是同一个 `GET /api/app-deployments`，且 26 与应用数精确相等。改用聚合端点后**无论多少应用都只发 1 个请求**。
+
+口径（`findStats` 与前端旧「拉全量再 filter」逐项对齐，漂了就是又一次「中台显示不可信」）：
+
+- `total` = 该应用全部部署行数（含 stopped/failed，即原分母）；
+- `running`/`failed` = 按 `status` 计数（状态值走枚举参数化，避免枚举改名后 SUM 恒 0 的假绿）；
+- `lastDeployedAt` = `MAX(COALESCE(deployedAt, createdAt))`——用 `COALESCE` 而非裸 `MAX(deployedAt)`，否则 `pending/deploying` 行（`deployedAt` 仍为 NULL）会让「刚创建还没跑起来」的应用显示成"从未部署"。注：原前端取「`createdAt` 最新那一行的 `deployedAt ?? createdAt`」，仅在「更早创建的行反而更晚完成部署」时与 MAX 分叉，此时 MAX 才是真正的"最后部署时间"；
+- COUNT/SUM 在 pg 驱动下回来是 bigint **字符串**，service 内 `Number()` 收口（`metrics.service` 同款 `parseInt` 收口），不透传 `"33"` 给前端做算术。
+
 
 ## 关键机制：部署状态机（简化）
 
@@ -79,6 +95,7 @@ version 快照在发版/部署链路写入 application_versions，rollback 由�
 - **改 webhook 验签**：签名算法/时间窗在 `application.controller.webhook`；注意保持"所有失败路径同一 401 文案"的防枚举约束。
 - **排查"上传成功但执行器拉不到包"**：查 `applications.packageUrl` 的 host 是否是执行器可达的 `API_BASE_URL`（上传时 fail-fast 要求已配置）；`/uploads` 静态面需要 JWT 或执行器 token，匿名 401 是预期行为。
 - **排查"部署卡在 pending"**：`approvalRequired=true` 的应用部署行 `approvalStatus=pending_approval`，需要第二人走 `POST /app-deployments/:id/approval/approve`；批次类失败（canary 中断）重启 admin-api 后行级 `rolloutState=failed`，不会自动续跑。
+- **排查"页面弹一堆 ThrottlerException: Too Many Requests"**：先看 nginx access log 里 429 的**路径是否集中**（`awk '$9==429 {print $7}' | sort | uniq -c`）。若集中在某个列表端点，几乎都是**前端对同一路由的 N+1 扇出**——限流桶键是「路由 handler + IP」，同路由的 N 个请求共享一个预算，与"是不是同一次用户操作"无关。修法是**把扇出合并成一个聚合端点**（本模块 `stats` 即此模式的样板），而不是调高 `THROTTLE_LIMIT`（那只是把撞墙时间推后）。另注意 block 语义：一旦超限，`blockDuration` 未配置时回落 ttl，block 期内**连第 1 个请求也 429**，所以"刷新页面"只会持续看到报错。
 
 ## 相关文档
 

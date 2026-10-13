@@ -19,7 +19,7 @@ import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/applications', () => ({
   applicationsApi: { list: vi.fn(), delete: vi.fn(), create: vi.fn(), update: vi.fn(), upload: vi.fn() },
-  deploymentsApi: { list: vi.fn(), deploy: vi.fn() },
+  deploymentsApi: { list: vi.fn(), stats: vi.fn().mockResolvedValue([]), deploy: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), picker: vi.fn() },

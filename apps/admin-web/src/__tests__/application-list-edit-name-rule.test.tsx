@@ -24,7 +24,7 @@ vi.mock('../api/applications', () => ({
     update: vi.fn().mockResolvedValue({}),
     upload: vi.fn(),
   },
-  deploymentsApi: { list: vi.fn(), deploy: vi.fn() },
+  deploymentsApi: { list: vi.fn(), stats: vi.fn().mockResolvedValue([]), deploy: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), picker: vi.fn() },

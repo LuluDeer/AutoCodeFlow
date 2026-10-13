@@ -5,6 +5,15 @@ import { client } from './client';
 // additionalProperties 曾致生成 Record<string, never>，已修）。
 export type CreateDeploymentDto = components['schemas']['CreateDeploymentDto'];
 
+/**
+ * GET /app-deployments/stats 的行（应用列表页部署统计）。
+ *
+ * 走生成类型（与 CreateDeploymentDto 同源），后端 DTO 改动时
+ * `npm run gen:api-types` 会把它同步过来——统计口径漂移是「中台显示不可信」
+ * 的高发区，不在这里再手抄一份。
+ */
+export type AppDeploymentStats = components['schemas']['AppDeploymentStatsDto'];
+
 export interface Application {
   id: string;
   name: string;
@@ -242,6 +251,18 @@ export const deploymentsApi = {
         pageSize,
       },
     }),
+  /**
+   * 各应用的部署统计（每应用一行，服务端 GROUP BY 聚合）。
+   *
+   * 应用列表页的「运行 X/Y 台」此前对**每个应用各发一个** list() 现算——
+   * 26 个应用 = 26 个请求，而全局限流按「路由 handler + IP」计桶，这 26 个
+   * 请求共享同一个 60/min 预算：进页面 + 返回页面 + 部署后刷新就打满，
+   * 整页部署列 429（生产实证 2026-10-13）。改用本端点后**无论多少应用都只
+   * 发 1 个请求**。
+   *
+   * 只返回至少有一条部署行的应用；无部署的应用不在结果里（按 0 处理）。
+   */
+  stats: () => client.get<AppDeploymentStats[]>('/app-deployments/stats'),
   get: (id: string) => client.get<AppDeployment>(`/app-deployments/${id}`),
   deploy: (appId: string, dto: CreateDeploymentDto) =>
     client.post<AppDeployment>(`/app-deployments/applications/${appId}/deploy`, dto),

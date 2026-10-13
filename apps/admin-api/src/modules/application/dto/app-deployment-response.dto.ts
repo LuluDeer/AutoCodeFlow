@@ -155,6 +155,36 @@ export class PaginatedAppDeploymentsDto {
   total: number;
 }
 
+/**
+ * GET /app-deployments/stats —— 应用列表页的部署统计（每应用一行）。
+ *
+ * 存在理由：该页此前对每个应用各发一个列表请求来现算「运行 X/Y 台」，
+ * 26 个应用 = 26 个请求共享同一个 60/min 限流桶 → 整页 429（生产实证
+ * 2026-10-13）。聚合到一次查询后，页面无论多少应用都只发 1 个请求。
+ *
+ * 字段口径与原前端「拉全量再 filter」逐项对齐，见 service.findStats 注释。
+ */
+export class AppDeploymentStatsDto {
+  @ApiProperty({ format: "uuid" })
+  applicationId: string;
+
+  @ApiProperty({ description: "该应用全部部署行数（含 stopped/failed）" })
+  total: number;
+
+  @ApiProperty({ description: "status='running' 的部署行数" })
+  running: number;
+
+  @ApiProperty({ description: "status='failed' 的部署行数" })
+  failed: number;
+
+  @ApiProperty({
+    description:
+      "最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null",
+    nullable: true,
+  })
+  lastDeployedAt: string | null;
+}
+
 /** DELETE /app-deployments/:id —— 只接受终态行（failed/stopped），其余 409。 */
 export class DeploymentRemoveResponseDto {
   @ApiProperty({ enum: [true] })

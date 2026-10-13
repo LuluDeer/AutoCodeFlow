@@ -20,7 +20,7 @@ import { useAuthStore } from '../store/auth';
 // 隔离 api 层：底层 client 会拉起 axios 拦截器，测试只关心调用契约
 vi.mock('../api/applications', () => ({
   applicationsApi: { list: vi.fn(), delete: vi.fn(), create: vi.fn(), update: vi.fn(), upload: vi.fn() },
-  deploymentsApi: { list: vi.fn(), deploy: vi.fn() },
+  deploymentsApi: { list: vi.fn(), stats: vi.fn().mockResolvedValue([]), deploy: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), picker: vi.fn() },
@@ -60,7 +60,8 @@ const appFixture = {
 
 beforeEach(() => {
   vi.mocked(applicationsApi.list).mockReset().mockResolvedValue([appFixture] as never);
-  vi.mocked(deploymentsApi.list).mockReset().mockResolvedValue({ data: [], total: 0 } as never);
+  // 列表页统计走聚合端点（1 个请求），不再逐应用 list 扇出。
+  vi.mocked(deploymentsApi.stats).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
@@ -141,7 +142,10 @@ describe('应用列表页写按钮 isAdmin 门控（W3）', () => {
     await screen.findByText('order-service');
 
     await waitFor(() => expect(applicationsApi.list).toHaveBeenCalledTimes(1));
-    expect(deploymentsApi.list).toHaveBeenCalled();
+    // 统计读面走聚合端点；且**只发 1 个**（这正是 429 报障的修复点：
+    // 此前按应用数发 N 个 list，26 个应用就吃满 60/min 限流桶）。
+    await waitFor(() => expect(deploymentsApi.stats).toHaveBeenCalledTimes(1));
+    expect(deploymentsApi.list).not.toHaveBeenCalled();
     // 不应有任何写请求
     expect(applicationsApi.delete).not.toHaveBeenCalled();
     expect(applicationsApi.create).not.toHaveBeenCalled();
