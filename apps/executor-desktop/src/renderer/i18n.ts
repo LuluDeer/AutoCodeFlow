@@ -122,6 +122,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.conn.guideStep1': '粘贴 Admin API 地址（管理后台「执行器管理」页可查）',
     'cfg.conn.guideStep2': '点「测试连接」确认网络可达',
     'cfg.conn.guideStep3': '填密钥与名称，然后到页面底部「保存配置」',
+    // 重新运行初始化向导（配置页引导卡入口；2026-10-13 用户需求）
+    'cfg.conn.rerunWizard': '重新运行初始化向导',
     // ── 网络地址 ──
     'cfg.net.title': '网络 & 地址',
     'cfg.net.groupListen': '监听',
@@ -757,6 +759,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.conn.guideStep1': 'Paste the Admin API URL (see the "Executors" page of the admin console)',
     'cfg.conn.guideStep2': 'Click "Test connection" to confirm reachability',
     'cfg.conn.guideStep3': 'Fill in the secret and name, then "Save configuration" at the bottom',
+    // Re-run the first-run wizard (config page guide-card entry).
+    'cfg.conn.rerunWizard': 'Re-run the setup wizard',
     // ── Network ──
     'cfg.net.title': 'Network & Address',
     'cfg.net.groupListen': 'Listening',

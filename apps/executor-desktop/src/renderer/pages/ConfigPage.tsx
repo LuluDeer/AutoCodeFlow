@@ -23,6 +23,8 @@ declare const window: Window & {
     getStatus?: () => Promise<{ running: boolean }>;
     saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; reloadError?: string }>;
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
+    // 重新运行初始化向导（唤出/聚焦向导窗口；保存走 save-and-close-wizard）
+    openWizard?: () => Promise<{ ok: boolean }>;
     getLocalIPs: () => Promise<string[]>;
     getAutoLaunch: () => Promise<boolean>;
     setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
@@ -614,6 +616,19 @@ export default function ConfigPage() {
                     <li>{t('cfg.conn.guideStep2')}</li>
                     <li>{t('cfg.conn.guideStep3')}</li>
                   </ol>
+                  {/* 重新运行初始化向导（2026-10-13 用户需求）：已配置过的机器
+                      也能再走一遍引导。向导表单预填当前配置、未保存前关闭不
+                      改动任何配置；保存走既有 save-and-close-wizard 链路。
+                      旧版 preload 缺通道时隐藏（EXP-09 容错口径）。 */}
+                  {typeof window.electronAPI.openWizard === 'function' && (
+                    <button
+                      type="button"
+                      className="btn btn-sm cfg-guide-rerun"
+                      onClick={() => { void window.electronAPI.openWizard?.(); }}
+                    >
+                      <Icon name="refresh" className="icon-xs" /> {t('cfg.conn.rerunWizard')}
+                    </button>
+                  )}
                 </div>
               </aside>
             </div>

@@ -525,6 +525,16 @@ export function registerIpcHandlers(): void {
     return { ok: true };
   });
 
+  // ── 重新运行初始化向导（配置页入口，2026-10-13 用户需求）──────────────
+  // 向导只在首次启动（!configured）出现，配置过一次的机器没有再走引导的
+  // 入口。这里暴露 openWizard：配置页「重新运行初始化向导」直接唤出向导
+  // 窗口；向导 finish 走既有 save-and-close-wizard 链路（configured 语义
+  // 不变，B-9 启动判定照常把关），未保存前关闭窗口不改动任何配置。
+  ipcMain.handle('config:open-wizard', () => {
+    windowManager.openWizard();
+    return { ok: true };
+  });
+
   // ── 配置导出 / 导入（审计确认的低成本高价值项）────────────────────────
   // 导出**只**取 getAllMasked()：token 以掩码哨兵 `******` 落盘、绝不落明文
   // （SEC-NEW-1 同一姿态），buildConfigExportPayload 在运行时把"喂进明文"

@@ -1064,6 +1064,41 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── 重跑向导（2026-10-13 用户需求）──────────────────────────────────────
+// 配置页引导卡入口唤出向导窗口；向导表单预填当前配置（token 为掩码哨兵，
+// 原样回传 = 保留已存 token，见 config-store TOKEN_MASK）；finish 不重置
+// 未暴露档位（logLevel/并发数沿用已存值）；未保存前关闭不改动任何配置。
+{
+  const configSrc = pages[1]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const wizardNoComments = pages[4]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const preloadRerun = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+  const ipcRerun = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
+  if (!ipcRerun.includes("'config:open-wizard'")) {
+    throw new Error('重跑向导: 主进程未注册 config:open-wizard');
+  }
+  if (!preloadRerun.includes('openWizard')) {
+    throw new Error('重跑向导: preload 未暴露 openWizard');
+  }
+  if (!configSrc.includes('openWizard')) {
+    throw new Error('重跑向导: 配置页入口缺失');
+  }
+  if (!wizardNoComments.includes('window.electronAPI.getConfig()')) {
+    throw new Error('重跑向导: Wizard 未预填当前配置');
+  }
+  // finish 不得把未暴露档位冲回固定默认（重跑一次 = logLevel/并发数静默被改）。
+  if (!wizardNoComments.includes('wizardCfg?.logLevel') || !wizardNoComments.includes('wizardCfg?.maxConcurrentTasks')) {
+    throw new Error('重跑向导: finish 重置 logLevel/并发数（重跑 = 静默改配置）');
+  }
+  const zhI18n = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+  if (!zhI18n.includes("'cfg.conn.rerunWizard': '重新运行初始化向导'")) {
+    throw new Error('重跑向导: 入口文案 zh 键缺失');
+  }
+}
+
 // ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
 // 本轮桌面端渲染层首次按 admin-web 同标准扫描，以下钉死本轮修复不回退。
 {

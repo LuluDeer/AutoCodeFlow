@@ -2059,6 +2059,9 @@
 .source-probe .icon { width: 12px; height: 12px; }
 .source-probe.ok { color: var(--accent); }
 .source-probe.fail { color: var(--red); }
+/* 配置页引导卡内的「重新运行初始化向导」入口：与三步路标同卡，留出与
+   步骤列表的间距即可（按钮形态复用 .btn .btn-sm）。 */
+.cfg-guide-rerun { margin-top: 10px; }
 
 /* ==========================================================================
  * App.tsx R4 追加（引导闭环第一路）：C-04 主窗 X 首次关闭——托盘驻留气泡

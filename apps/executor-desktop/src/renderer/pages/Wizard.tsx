@@ -9,6 +9,9 @@ const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 declare const window: Window & {
   electronAPI: {
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
+    // 重跑向导预填：已配置机器从设置页唤出时，表单先载入当前配置（token 为
+    // 掩码哨兵 '******'，原样回传 = 保留已存 token，见 config-store TOKEN_MASK）。
+    getConfig: () => Promise<Record<string, unknown>>;
     // 首启向导「下载源」步：并行探测官方源与国内镜像（任一 HTTP 应答即算可达）。
     testInterpreterSource: () => Promise<{
       official: { ok: boolean; ms: number; detail: string };
@@ -82,6 +85,9 @@ export default function Wizard() {
   const [saving, setSaving] = useState(false);
   // 向导保存失败必须可见（原实现无 try，reject 后永久卡在"保存中"）
   const [finishError, setFinishError] = useState<string | null>(null);
+  // 预填源（重跑向导）：挂载时读一次当前配置。null = 读取失败或首次安装
+  // （配置为默认值），finish() 回落原固定默认，行为不变。
+  const [wizardCfg, setWizardCfg] = useState<Record<string, unknown> | null>(null);
 
   function set(key: keyof WizardForm, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -102,6 +108,28 @@ export default function Wizard() {
     }
   }
 
+  // 预填（重跑向导支持，2026-10-13 用户需求）：从设置页唤出时表单先载入
+  // 当前已存配置——否则重跑像重新录入。首次安装时配置为默认值（空串/默认
+  // 端口），预填无操作、行为不变。token 读回的是掩码哨兵 '******'：原样留
+  // 在表单，未改动时回传由 config-store.save 映射为「保留已存 token」，
+  // 不会损坏密钥。
+  useEffect(() => {
+    window.electronAPI.getConfig()
+      .then((cfg) => {
+        setWizardCfg(cfg);
+        setForm((f) => ({
+          ...f,
+          adminApiUrl: typeof cfg.adminApiUrl === 'string' ? cfg.adminApiUrl : f.adminApiUrl,
+          executorName: typeof cfg.executorName === 'string' ? cfg.executorName : f.executorName,
+          executorPort: typeof cfg.executorPort === 'number' ? cfg.executorPort : f.executorPort,
+          executorAddressPublic: typeof cfg.executorAddressPublic === 'string' ? cfg.executorAddressPublic : f.executorAddressPublic,
+          executorToken: typeof cfg.executorToken === 'string' ? cfg.executorToken : f.executorToken,
+          uvPythonInstallMirror: typeof cfg.uvPythonInstallMirror === 'string' ? cfg.uvPythonInstallMirror : f.uvPythonInstallMirror,
+        }));
+      })
+      .catch(() => { /* 读取失败保持空表单（首次安装语义），不炸向导 */ });
+  }, []);
+
   async function finish() {
     setSaving(true);
     setFinishError(null);
@@ -109,9 +137,12 @@ export default function Wizard() {
       const r = await window.electronAPI.saveAndCloseWizard({
         ...form,
         executorHost: '0.0.0.0',
-        maxConcurrentTasks: 10,
+        // 重跑向导不重置未暴露的档位：沿用挂载时读到的已存配置（首次安装
+        // 读不到时回落原默认 10/info，行为不变）——否则重跑一次会把
+        // logLevel=debug / 自定义并发数悄悄冲回默认。
+        maxConcurrentTasks: typeof wizardCfg?.maxConcurrentTasks === 'number' ? wizardCfg.maxConcurrentTasks : 10,
         workDir: '',
-        logLevel: 'info',
+        logLevel: typeof wizardCfg?.logLevel === 'string' ? wizardCfg.logLevel : 'info',
       });
       // B-9：主进程只在启动判定**通过**后才关窗——失败（含注册预检未通过）
       // 时向导保持打开，错误在这里落到页内错误条，用户可返回上一步修改后
