@@ -118,6 +118,13 @@
 }
 
 .btn-sm { padding: 5px 11px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
+/* 开关型按钮的按下态（aria-pressed=true）：浅绿底 + accent 字，与 ip-chip
+   选中态同族——状态页「过滤心跳」开关用，按下的可再点恢复。 */
+.btn.is-active {
+  background: var(--green-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .btn-lg { padding: 10px 22px; font-size: var(--fs-md); border-radius: var(--radius-md); }
 
 /* 行内图标按钮（打开目录 / 删除）：固定尺寸幽灵钮，避免与文字钮抢空间抖动 */
@@ -694,16 +701,10 @@ select.input {
 .page-header-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; flex: none; }
 
 /* ── 日志工作台 v3（共享查看器新能力，A-03 / E-02）─────────────────── */
-/* A-03 trace 合并：块首微型标签（10px 等宽 text3），块内行不再重复渲染该段 */
-.ll-trace-chip {
-  flex: none;
-  margin-right: -5px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text3);
-  letter-spacing: 0.02em;
-}
-/* trace 块：左侧 2px 竖线缩进；border 占用原 padding 的左 2px，正文起点与普通行对齐 */
+/* A-03 trace 合并：块内行不再重复渲染 trace 段；分组只靠下方左舷竖线承载。
+   块首 trace 标签已删除——2026-10-13 真机报障：负外边距使标签与时间戳正文
+   粘连，且 30s 心跳 2 行小块上该标签纯噪音。完整 trace 仍在落盘文件，
+   搜索/复制不受影响。 */
 .log-line.log-trace-block {
   border-left: 2px solid var(--border-strong);
   padding-left: 0;

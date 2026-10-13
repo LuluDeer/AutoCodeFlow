@@ -15,9 +15,33 @@ jest.mock('../config', () => ({
     workDir: '/tmp/test-workdir',
     npmRegistryUrl: '',
     pythonRegistryUrl: '',
+    // 解释器池根（`python-venv.ts` 的 uv 子进程环境与 `interpreters.ts` 的池
+    // 白名单都读它）。缺字段会让 `path.resolve(undefined)` 抛 TypeError —— 对
+    // "部署该明确失败"的路径来说，那种异常与根因毫无关系，是最难归因的一类假红。
+    uvPythonInstallDir: '/tmp/test-interpreters',
+    uvBin: '',
+    pypiRegistryUrl: '',
+    pypiExtraIndexUrl: '',
     token: 'test-shared-token',
     allowPrivateNetwork: true,
   },
+}));
+/**
+ * 解释器池模块整体替身化。
+ *
+ * 本文件的职责是**部署编排**（走池内还是宿主、失败是否明确、venv 由谁来建），
+ * 而 `interpreters.ts` 自身的探测/下载/回收语义由 `interpreters.spec.ts` 逐条
+ * 覆盖；在"fs 与 child_process 全 mock"的 harness 里跑真实探测会得到一堆
+ * 与用例无关的 spawn 噪音，且池内条目的可执行性判定依赖 fs.statSync（被
+ * mock 成默认值）——那会让断言随机化。边界替身化后行为是确定性的。
+ */
+jest.mock('../interpreters', () => ({
+  discoverInstalled: jest.fn(async () => []),
+  ensureVersion: jest.fn(async () => {
+    throw new Error('no interpreter in pool');
+  }),
+  resolveUvBin: jest.fn(async () => ({ path: null, source: 'missing' })),
+  interpreterSnapshot: jest.fn(() => []),
 }));
 jest.mock('../logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
@@ -51,6 +75,127 @@ import * as downloadLib from '../lib/download';
 import * as runCommandLib from '../run-command';
 import { isExecutorShuttingDown } from '../shutdown-state';
 import { buildChildEnv as _buildChildEnv } from '../env-whitelist';
+import {
+  buildToolchainForTest,
+  seedToolchainForTest,
+  invalidateToolchain,
+} from '../toolchain';
+import * as interpreters from '../interpreters';
+import type { InterpreterInfo } from '../interpreters';
+import { venvBinaries } from '../python-venv';
+
+const mockInterpreters = interpreters as jest.Mocked<typeof interpreters>;
+
+/** 登记一个"池内可用解释器"，让 `discoverInstalled` / `interpreterSnapshot`
+ *  两条读取路径（异步探测 + 同步缓存）给出同一答案。 */
+function setPoolInterpreter(version: string, poolPath: string): void {
+  const entry: InterpreterInfo = {
+    version,
+    path: poolPath,
+    available: true,
+    discoveredAt: new Date().toISOString(),
+  };
+  mockInterpreters.discoverInstalled.mockResolvedValue([entry]);
+  mockInterpreters.interpreterSnapshot.mockReturnValue([entry]);
+}
+
+/** Windows Store App Execution Alias 占位 stub 的工具链结论形态：文件存在，
+ *  但实跑验真不通过（`toolchain.ts` 的实跑探测把它判成 source:'none'）。 */
+function seedNoHostPython(): void {
+  seedToolchainForTest(
+    buildToolchainForTest({
+      python: {
+        path: null,
+        source: 'none',
+        verified: false,
+        detail: 'no usable python on PATH — Microsoft Store App Execution Alias stub',
+      },
+    }),
+  );
+}
+
+function seedVerifiedHostPython(cmd: string, version = 'Python 3.12.1'): void {
+  seedToolchainForTest(
+    buildToolchainForTest({ python: { path: cmd, source: 'host', verified: true, version } }),
+  );
+}
+
+/**
+ * node 部署的工具链结论（缺陷 1 之后 startApp 的 node 分支经工具链解析）。
+ *
+ * 默认给"宿主 node 实跑验真通过"——与既有用例期望的 `cmd === 'node'` 同形，
+ * 因此存量 node 部署用例的行为零变化。要测 Electron 自复用 / 无 node 失败，
+ * 用下面的 `seedSelfNode` / `seedNoNode`。
+ */
+function seedVerifiedHostNode(cmd = 'node', version = 'v24.0.0'): void {
+  seedToolchainForTest(
+    buildToolchainForTest({ node: { path: cmd, source: 'host', verified: true, version } }),
+  );
+}
+
+/** 桌面客户端形态：宿主 node 不可用，复用 Electron（必须注入 ELECTRON_RUN_AS_NODE）。 */
+function seedSelfNode(execPath: string, version = 'v24.0.0'): void {
+  seedToolchainForTest(
+    buildToolchainForTest({
+      node: {
+        path: execPath,
+        source: 'self',
+        verified: true,
+        version,
+        requiresElectronRunAsNode: true,
+        detail: 'host node is unavailable; reusing the Electron binary as node',
+      },
+    }),
+  );
+}
+
+/** 干净机器且不在 Electron 宿主内：没有可用 node（本缺陷的失败面）。 */
+function seedNoNode(): void {
+  seedToolchainForTest(
+    buildToolchainForTest({
+      node: {
+        path: null,
+        source: 'none',
+        verified: false,
+        detail:
+          'no usable node on PATH and this process is not an Electron host ' +
+          '(no self-reuse available)',
+      },
+    }),
+  );
+}
+
+/**
+ * 造一个**静态健康**的 venv 形态：shim 存在 + `pyvenv.cfg` 可读 + `home` 存在。
+ *
+ * 缺陷 3 起 `resolveStartPython` 不再"文件存在即采信"，会同步读一次
+ * `pyvenv.cfg`。`fs` 被 automock 时 `readFileSync` 默认返回 undefined（→ 判定
+ * 为不可读），会让所有"venv 优先"的既有用例误落到池/宿主链——这里显式提供
+ * 一份真实形态的配置，让用例测的是**行为**而不是 mock 的默认值。
+ */
+function seedHealthyVenv(home = '/pool/cpython-3.12.13-x'): void {
+  (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+  (mockFs.readFileSync as jest.Mock).mockReturnValue(
+    `home = ${home}\nversion_info = 3.12.13\n`,
+  );
+}
+
+/** 所有 runCommand/spawn 调用里出现过 python 解释器形态的调用。 */
+function pythonishCalls(): Array<[string, string[]]> {
+  return (mockCp.spawn as jest.Mock).mock.calls
+    .map((c) => [c[0] as string, c[1] as string[]] as [string, string[]])
+    .filter(([cmd, args]) => {
+      const base = path.basename(cmd).toLowerCase();
+      return (
+        base.startsWith('python') ||
+        base === 'py' ||
+        base === 'py.exe' ||
+        args.includes('-m') ||
+        args[0] === 'venv' ||
+        (args[0] === 'pip' && args.includes('install'))
+      );
+    });
+}
 
 const app = express();
 app.use(express.json());
@@ -85,6 +230,16 @@ beforeEach(() => {
   jest.clearAllMocks();
   (mockFs.existsSync as jest.Mock).mockReturnValue(false);
   (mockFs.mkdirSync as jest.Mock).mockReturnValue(undefined);
+  // 缺陷 1 起 node 部署也要经工具链解析：默认种下"宿主 node 实跑验真通过"，
+  // 使**存量** node 用例的期望（`cmd === 'node'`）逐字节保持，只让专门测
+  // Electron 自复用 / 无 node 失败的新用例覆盖自己的缓存形态。
+  seedVerifiedHostNode();
+});
+
+afterEach(() => {
+  // 工具链缓存是模块级全局状态：不在用例间清空会让"Store stub"用例拿到上一个
+  // 用例种下的宿主解释器（这类"测试之间经由全局缓存串扰"是最难查的假绿）。
+  invalidateToolchain();
 });
 
 describe('POST /api/deploy validation', () => {
@@ -484,6 +639,8 @@ describe('POST /api/deploy — async pipeline', () => {
         (c: unknown[]) => (c[1] as string[]).includes('index.js'),
       );
       const [cmd, args, opts] = startCall as [string, string[], Record<string, unknown>];
+      // 缺陷 1 之后 node 分支经工具链解析：宿主 node 验真通过 → 仍是 `node`
+      // （存量行为零变化，见 beforeEach 的 seedVerifiedHostNode）。
       expect(cmd).toBe('node');
       expect(args).toEqual(['index.js']);
       const env = opts.env as Record<string, string | undefined>;
@@ -492,6 +649,8 @@ describe('POST /api/deploy — async pipeline', () => {
       expect(env.NOT_WHITELISTED).toBeUndefined();
       expect(env.APP_MODE).toBe('prod');
       expect(env.PATH).toBeDefined();
+      // 宿主 node 不该带 Electron 开关（绝不能把 self 的标志泄漏到 host 路径）。
+      expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
       // detached so app-stop can kill the whole process group
       expect(opts.detached).toBe(process.platform !== 'win32');
     } finally {
@@ -570,6 +729,542 @@ describe('POST /api/deploy — async pipeline', () => {
       child.emit('exit', 0);
     } finally {
       killSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 生产事故回归：全新 Windows 机器部署 python 应用必然失败。
+//
+// 症状（用户报）：客户端只自带 uv、不含 Python 本体，中台部署 1 个 python 应用
+// （runtime 缺省即 python）即报
+//   Python was not found; run without arguments to install from the Microsoft Store,
+//   or disable this shortcut from Settings > Apps > Advanced app settings >
+//   App execution aliases.
+//
+// 根因：deploy.ts 里 `uv` 出现 0 次——应用部署链从未接上解释器池，且把宿主
+// `python`/`python3` 硬编码成解释器；而 Windows 上那个名字很可能是 Microsoft
+// Store 的 App Execution Alias 占位 stub（文件存在 → spawn 命中 → 实跑 exit 9009）。
+//
+// 本组用例钉死三件事：绝不 spawn stub、池内解释器优先、uv 建 venv 时禁止隐式下载。
+// ---------------------------------------------------------------------------
+describe('python 应用部署：解释器解析（生产事故回归）', () => {
+  const pyPayload = {
+    deploymentId: 'deploy-py',
+    applicationId: 'app-py',
+    appName: 'Py App',
+    gitRepo: 'https://example.com/repo.git',
+    gitBranch: 'main',
+    runtime: 'python',
+    runMode: 'scheduled' as const,
+  };
+
+  /** 能触发 close/exit 的假子进程（与上方 harness 同构）。 */
+  function okChild() {
+    const events = new EventEmitter();
+    return {
+      stdout: { on: jest.fn(), pipe: jest.fn(), once: jest.fn() },
+      stderr: { on: jest.fn(), pipe: jest.fn(), once: jest.fn() },
+      on: jest.fn((event: string, cb: Function) => {
+        if (event === 'close') setImmediate(() => cb(0));
+        if (event === 'exit') events.once(event, (code: number) => cb(code));
+        if (event === 'error') events.once(event, (err: Error) => cb(err));
+      }),
+      once: jest.fn((event: string, cb: Function) => {
+        events.once(event, (...args: unknown[]) => (cb as (a: unknown) => void)(args[0]));
+      }),
+      kill: jest.fn(),
+      pid: 4242,
+      emit: (event: string, ...args: unknown[]) => events.emit(event, ...args),
+    };
+  }
+
+  async function waitFor(predicate: () => boolean, tries = 200): Promise<void> {
+    for (let i = 0; i < tries && !predicate(); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(predicate()).toBe(true);
+  }
+
+  it('宿主 python 是 Store stub（未验真）→ 部署明确失败，绝不 spawn 裸 python/python3', async () => {
+    seedNoHostPython();
+    // requirements.txt 存在 → 走建 venv 分支（事故的原始触发点）。
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const { post } = require('../admin-client') as { post: jest.Mock };
+
+    const res = await request(app).post('/api/deploy').send(pyPayload);
+    expect(res.status).toBe(200);
+
+    await waitForDeploymentStatus(post, 'failed');
+    const failed = post.mock.calls.find(
+      (c: unknown[]) =>
+        c[0] === '/api/app-deployments/heartbeat' && (c[1] as any).status === 'failed',
+    );
+    const message = String((failed?.[1] as any)?.message ?? '');
+    // 失败必须**可归因**：点名"本机没有可用 Python"与 Windows 上的 Store 占位
+    // stub。事故里用户看到的是一句与平台毫无关系的英文，排障者只能猜。
+    expect(message).toMatch(/No usable Python interpreter/i);
+    expect(message).toMatch(/Microsoft Store/);
+
+    // 最关键的一条：绝不能出现裸 python / python3 的 spawn（那正是事故形态）。
+    const bare = (mockCp.spawn as jest.Mock).mock.calls.filter(
+      (c) => c[0] === 'python' || c[0] === 'python3' || c[0] === 'python.exe',
+    );
+    expect(bare).toEqual([]);
+    // 整条 python 链一次 spawn 都不该有（失败发生在解析阶段，早于任何子进程）。
+    expect(pythonishCalls()).toEqual([]);
+  });
+
+  it('宿主 python 实跑验真通过 → 用该解释器建 venv（不是 stub，不漏给 PATH 二次解析）', async () => {
+    seedVerifiedHostPython('python3');
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+
+    await request(app).post('/api/deploy').send(pyPayload);
+    // 本用例只需 venv 阶段的 spawn 发生；依赖安装成功与否不在断言范围。
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some(
+        (c) => (c[1] as string[])[0] === '-m' && (c[1] as string[])[1] === 'venv',
+      ),
+    );
+
+    const venvCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c) => (c[1] as string[])[0] === '-m' && (c[1] as string[])[1] === 'venv',
+    );
+    expect(venvCall![0]).toBe('python3');
+    // 落点必须是 release 目录下的 .venv（与 startApp 找的是同一个）。
+    expect((venvCall![1] as string[])[2]).toContain('.venv');
+  });
+
+  it('池内有解释器 → `uv venv --python <池内绝对路径>`，绝不传裸版本号（D8）', async () => {
+    const poolPython = path.join(
+      '/tmp/test-interpreters',
+      'cpython-3.12.13-x',
+      'bin',
+      'python3',
+    );
+    setPoolInterpreter('3.12.13', poolPython);
+    mockInterpreters.resolveUvBin.mockResolvedValue({ path: '/usr/local/bin/uv', source: 'env' });
+    seedNoHostPython(); // 宿主完全不可用 —— 池是唯一出路
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+
+    await request(app).post('/api/deploy').send(pyPayload);
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some((c) => (c[1] as string[])[0] === 'venv'),
+    );
+
+    const venvCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c) => (c[1] as string[])[0] === 'venv',
+    );
+    expect(venvCall![0]).toBe('/usr/local/bin/uv');
+    const args = venvCall![1] as string[];
+    const pyIdx = args.indexOf('--python');
+    expect(pyIdx).toBeGreaterThanOrEqual(0);
+    expect(args[pyIdx + 1]).toBe(poolPython);
+    expect(path.isAbsolute(args[pyIdx + 1])).toBe(true);
+    // D8：裸版本号会触发 uv 的隐式下载语义、绕过全局单下载队列。
+    expect(args[pyIdx + 1]).not.toBe('3.12');
+    expect(args[pyIdx + 1]).not.toMatch(/^\d+\.\d+$/);
+    expect(args).toContain('--no-project');
+  });
+
+  it('uv venv 调用携带 UV_PYTHON_DOWNLOADS=manual（venv 阶段绝不隐式下载）', async () => {
+    const poolPython = path.join('/tmp/test-interpreters', 'cpython-3.12.13-x', 'bin', 'python3');
+    setPoolInterpreter('3.12.13', poolPython);
+    mockInterpreters.resolveUvBin.mockResolvedValue({ path: '/usr/local/bin/uv', source: 'env' });
+    seedNoHostPython();
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+
+    await request(app).post('/api/deploy').send(pyPayload);
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some((c) => (c[1] as string[])[0] === 'venv'),
+    );
+
+    const venvCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c) => (c[1] as string[])[0] === 'venv',
+    );
+    const env = (venvCall as [string, string[], { env: Record<string, string | undefined> }])[2].env;
+    expect(env.UV_PYTHON_DOWNLOADS).toBe('manual');
+    expect(env.UV_PYTHON_INSTALL_DIR).toBeDefined();
+    // 执行器密钥绝不能流进 uv。
+    expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
+  });
+
+  it('startApp：python 且无 venv、无池内解释器、宿主是 stub → **抛错**而不是 spawn 裸 python', async () => {
+    seedNoHostPython();
+    mockInterpreters.interpreterSnapshot.mockReturnValue([]);
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false); // venv python 不存在
+    const { startApp } = require('./deploy') as typeof import('./deploy');
+
+    expect(() =>
+      startApp(
+        'dep-store-stub',
+        '/tmp/root',
+        '/tmp/root/releases/r1',
+        'python',
+        'main.py',
+        'once',
+        {},
+      ),
+    ).toThrow(/No usable Python interpreter|Microsoft Store/);
+    // 抛出发生在 spawn 之前 → 没有子进程、没有僵尸、也不会崩执行器。
+    expect(mockCp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('startApp：python 且 venv 存在 → 仍然优先用 venv 解释器（既有正确行为不变）', async () => {
+    seedNoHostPython();
+    mockInterpreters.interpreterSnapshot.mockReturnValue([]);
+    // 缺陷 3 起"文件存在"不再足够：还需要 pyvenv.cfg 里的 home 真实存在。
+    seedHealthyVenv('/pool/cpython-3.12.13-x');
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const { startApp } = require('./deploy') as typeof import('./deploy');
+
+    startApp('dep-venv', '/tmp/root', '/tmp/root/releases/r1', 'python', 'main.py', 'once', {});
+
+    const [cmd, args] = (mockCp.spawn as jest.Mock).mock.calls[0] as [string, string[]];
+    expect(cmd).toBe(venvBinaries(path.join('/tmp/root/releases/r1', '.venv')).python);
+    expect(args).toEqual(['main.py']);
+  });
+
+  it('startApp：node 分支经工具链解析，宿主 node 验真通过 → 用解析出的宿主路径（行为不变、来源可信）', () => {
+    seedNoHostPython();
+    // 刻意用**一个非 `node` 的绝对路径**：`node` 恰好等于旧硬编码字面量，若只用
+    // 它做断言，本用例在"bug 未修"时也会绿（假绿）。绝对路径只能来自工具链解析。
+    const hostNode = process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/usr/local/bin/node';
+    seedVerifiedHostNode(hostNode);
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const { startApp } = require('./deploy') as typeof import('./deploy');
+
+    startApp('dep-node', '/tmp/root', '/tmp/root/releases/r1', 'node', 'index.js', 'once', {});
+    startApp('dep-sh', '/tmp/root', '/tmp/root/releases/r1', 'shell', 'app.sh', 'once', {});
+
+    const calls = (mockCp.spawn as jest.Mock).mock.calls as Array<
+      [string, string[], { env?: Record<string, string> }]
+    >;
+    // cmd 必须是工具链给出的宿主 node 路径；args 仍是入口；且**不带** Electron
+    // 开关——把 self 的标志泄漏到 host 路径会让 spawn 直接失败。
+    expect(calls[0][0]).toBe(hostNode);
+    expect(calls[0][1]).toEqual(['index.js']);
+    expect(calls[0][2].env?.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(calls[1][0]).toBe(process.platform === 'win32' ? 'cmd.exe' : 'sh');
+    expect(calls[1][1]).toEqual(process.platform === 'win32' ? ['/c', 'app.sh'] : ['-c', 'app.sh']);
+  });
+
+  // -------------------------------------------------------------------------
+  // 缺陷 1 核心回归：应用部署的 **node** 运行时必须经工具链解析。
+  //
+  // 与 execute.ts 已修复的 node 分支是同一个坑（Electron 宿主里没有 node.exe），
+  // 而部署链此前硬编码 `cmd = 'node'`（`grep -c toolchain routes/deploy.ts` = 0）。
+  // -------------------------------------------------------------------------
+
+  it('缺陷 1：Electron 自复用（source:self）→ cmd 是 execPath，且注入 ELECTRON_RUN_AS_NODE=1', () => {
+    const execPath = path.join('/Applications/AutoCodeFlow.app/Contents/MacOS/AutoCodeFlow');
+    seedNoHostPython();
+    seedSelfNode(execPath);
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const { startApp } = require('./deploy') as typeof import('./deploy');
+
+    startApp(
+      'dep-self-node',
+      '/tmp/root',
+      '/tmp/root/releases/r1',
+      'node',
+      'index.js',
+      'once',
+      { APP_MODE: 'prod' },
+    );
+
+    const [cmd, args, opts] = (mockCp.spawn as jest.Mock).mock.calls[0] as [
+      string,
+      string[],
+      { env: Record<string, string | undefined> },
+    ];
+    // 核心断言：绝不是裸 'node'（干净机器上那必 ENOENT），而是 Electron 自身的 exe。
+    expect(cmd).toBe(execPath);
+    expect(args).toEqual(['index.js']);
+    // 不置这个变量，Electron 会以 GUI 模式启动、尝试开窗口，应用无声挂死。
+    expect(opts.env.ELECTRON_RUN_AS_NODE).toBe('1');
+    // 该注入发生在 buildChildEnv 之后（显式 mutate），白名单仍是白名单：
+    // 执行器密钥没有被顺带放出去。
+    expect(opts.env.APP_MODE).toBe('prod');
+    expect(opts.env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
+  });
+
+  it('缺陷 1：没有可用 node（缓存有结论）→ startApp 明确抛错，绝不 spawn 裸 node', () => {
+    seedNoNode();
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    const { startApp } = require('./deploy') as typeof import('./deploy');
+
+    let thrown: Error | null = null;
+    try {
+      startApp('dep-no-node', '/tmp/root', '/tmp/root/releases/r1', 'node', 'index.js', 'once', {});
+    } catch (err) {
+      thrown = err as Error;
+    }
+
+    expect(thrown).not.toBeNull();
+    // 错误必须**可诊断**：点名 node、点出来源（Electron 自复用）与修法。
+    expect(thrown!.message).toMatch(/No usable Node\.js runtime/i);
+    expect(thrown!.message).toMatch(/ELECTRON_RUN_AS_NODE/);
+    expect(thrown!.message).toMatch(/install Node\.js/i);
+    // 抛出发生在 spawn 之前 → 没有子进程、没有僵尸，也不会崩执行器。
+    expect(mockCp.spawn).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // 缺陷 1 的**路由级**回归：证明"部署异步段预热了工具链缓存，startApp 因此
+  // 在同步路径上拿到真值"。前两条用例直接调 startApp（缓存由 beforeAll 种下），
+  // 这一条走完整 /api/deploy 管线——反证：把 async 段的 prewarm 去掉，本用例
+  // 在"宿主 node 不可用、只能复用 Electron"的机器形态下会落到裸 `node`。
+  // -------------------------------------------------------------------------
+
+  it('缺陷 1（路由级）：node 应用的部署段预热工具链 → startApp 用 execPath + ELECTRON_RUN_AS_NODE', async () => {
+    const execPath = '/Applications/AutoCodeFlow.app/Contents/MacOS/AutoCodeFlow';
+    // 关键：先把缓存清空，模拟"进程刚起来、还没有任何注册/心跳探测过"。
+    invalidateToolchain();
+    // 让**部署异步段的预热点**（prewarmRuntimeResolution → probeToolchain）
+    // 产出 "Electron 自复用" 的结论并落进同步缓存。这样本条用例证明的是
+    // "预热真的发生了、且 startApp 消费的就是预热结果"——去掉 async 段的
+    // prewarm，startApp 会看到冷缓存并（在非 Electron 宿主上）回落裸 node，
+    // execPath 断言立即转红。
+    const toolchainModule = require('../toolchain') as typeof import('../toolchain');
+    const probeSpy = jest
+      .spyOn(toolchainModule, 'probeToolchain')
+      .mockImplementation(async () => {
+        const tc = buildToolchainForTest({
+          node: {
+            path: execPath,
+            source: 'self',
+            verified: true,
+            version: 'v24.0.0',
+            requiresElectronRunAsNode: true,
+          },
+        });
+        seedToolchainForTest(tc);
+        return tc;
+      });
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    (mockCp.spawn as jest.Mock).mockImplementation(() => {
+      const events = new EventEmitter();
+      return {
+        stdout: { on: jest.fn(), pipe: jest.fn(), once: jest.fn() },
+        stderr: { on: jest.fn(), pipe: jest.fn(), once: jest.fn() },
+        on: jest.fn((event: string, cb: Function) => {
+          if (event === 'close') setImmediate(() => cb(0));
+        }),
+        once: jest.fn(),
+        kill: jest.fn(),
+        pid: 777,
+        emit: (event: string, ...args: unknown[]) => events.emit(event, ...args),
+      };
+    });
+
+    try {
+      const res = await request(app)
+        .post('/api/deploy')
+        .send({
+          deploymentId: 'deploy-node-self',
+          applicationId: 'app-node-self',
+          appName: 'Node Self App',
+          gitRepo: 'https://example.com/repo.git',
+          gitBranch: 'main',
+          runtime: 'node',
+          runMode: 'once',
+        });
+      expect(res.status).toBe(200);
+
+      await waitFor(() => (mockCp.spawn as jest.Mock).mock.calls.some((c) => c[0] === execPath));
+      // 预热点确实被执行过（这是"同步路径看得到真值"的前提）。
+      expect(probeSpy).toHaveBeenCalled();
+      const startCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+        (c) => c[0] === execPath,
+      ) as [string, string[], { env: Record<string, string> }];
+      expect(startCall[1]).toEqual(['index.js']);
+      expect(startCall[2].env.ELECTRON_RUN_AS_NODE).toBe('1');
+      // 整条链上绝不能出现裸 `node` 的 spawn（缺陷 1 的原始形态）。
+      expect(
+        (mockCp.spawn as jest.Mock).mock.calls.some((c) => c[0] === 'node'),
+      ).toBe(false);
+    } finally {
+      probeSpy.mockRestore();
+    }
+  });
+
+  // =========================================================================
+  // 原始生产事故的**路由级**回归：python 应用 + 无 requirements.txt + 干净机器
+  // =========================================================================
+  //
+  // 这是用户实际报障的形态：全新 Windows 机器装客户端（包内只有 uv、没有
+  // Python）→ 在「应用管理」部署 1 个 python 应用 → 报 Microsoft Store 的
+  // "Python was not found"。
+  //
+  // 关键点：**没有 requirements.txt** 的 python 应用不会走 `ensurePythonVenv`，
+  // 于是"获取解释器"这件事此前**任何一步都不会发生**——池是空的，`startApp`
+  // 的同步解析只能失败。本条用例钉死"部署异步段的预热真的会去解析并获取默认
+  // 版本 3.12"，去掉 `prewarmRuntimeResolution` 里的 resolve 调用立即转红。
+  it('原始事故回归：无 requirements 的 python 应用在干净机器上经 uv 取默认 3.12 后能启动', async () => {
+    const poolPy = '/pool/cpython-3.12.13-x/bin/python3';
+    seedNoHostPython();
+    const interpreters = require('../interpreters') as {
+      ensureVersion: jest.Mock;
+      discoverInstalled: jest.Mock;
+      interpreterSnapshot: jest.Mock;
+    };
+    // 池为空（干净机器）、宿主不可用（Store stub）——与事故现场一致。
+    interpreters.discoverInstalled.mockResolvedValue([]);
+    interpreters.interpreterSnapshot.mockReturnValue([]);
+    // 默认版本获取成功即"落池"：真实实现里 `ensureVersion` 成功后会
+    // invalidateCache + 重新探测，故随后的同步快照能看到它。
+    interpreters.ensureVersion.mockImplementation(async () => {
+      interpreters.interpreterSnapshot.mockReturnValue([
+        {
+          version: '3.12.13',
+          path: poolPy,
+          available: true,
+          discoveredAt: new Date().toISOString(),
+        },
+      ]);
+      return poolPy;
+    });
+    // 无 requirements.txt → `installDeps` 不建 venv（这正是此前漏掉获取的原因）。
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+    (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+      on: jest.fn(),
+      end: jest.fn(),
+      write: jest.fn(),
+    });
+    mockCp.spawn.mockReset();
+    (mockCp.spawn as jest.Mock).mockImplementation(() => {
+      const child = new EventEmitter() as unknown as { [k: string]: unknown };
+      child.stdout = { on: jest.fn(), pipe: jest.fn(), once: jest.fn() };
+      child.stderr = { on: jest.fn(), pipe: jest.fn(), once: jest.fn() };
+      child.pid = 4242;
+      child.killed = false;
+      child.kill = jest.fn();
+      child.on = jest.fn((event: string, cb: Function) => {
+        if (event === 'close') setImmediate(() => cb(0));
+        return child;
+      });
+      child.once = jest.fn();
+      return child;
+    });
+
+    const res = await request(app)
+      .post('/api/deploy')
+      .send({
+        deploymentId: 'deploy-py-nodefault',
+        applicationId: 'app-py-clean',
+        appName: 'Clean Machine Python App',
+        gitRepo: 'https://example.com/repo.git',
+        gitBranch: 'main',
+        runtime: 'python',
+        runMode: 'once',
+      });
+    expect(res.status).toBe(200);
+
+    await waitFor(() => interpreters.ensureVersion.mock.calls.length > 0);
+
+    // 核心断言①：默认版本被真的去获取了，且版本号取共享常量 3.12。
+    expect(interpreters.ensureVersion).toHaveBeenCalledWith('3.12', {
+      signal: expect.anything(),
+    });
+    // 核心断言②：应用**用池内绝对路径**启动（而不是抛错、也不是裸 `python`）。
+    await waitFor(() =>
+      (mockCp.spawn as jest.Mock).mock.calls.some((c) => c[0] === poolPy),
+    );
+    const startCall = (mockCp.spawn as jest.Mock).mock.calls.find(
+      (c) => c[0] === poolPy,
+    ) as [string, string[]];
+    expect(startCall[1]).toEqual(['main.py']);
+    // 绝不能出现裸 `python`/`python3`（Store stub 的唯一入口）。
+    expect(
+      (mockCp.spawn as jest.Mock).mock.calls.some(
+        (c) => c[0] === 'python' || c[0] === 'python3',
+      ),
+    ).toBe(false);
+  });
+
+
+  it('daemon 重启路径：startApp 抛错被既有 try/catch 兜住并上报 failed（不崩执行器、不留子进程）', async () => {
+    // startApp 会**抛错**（而不是 spawn stub / 裸 node）。重启定时器是最容易被
+    // 这条新增抛出路径打挂的调用方（它在 setTimeout 回调里，异常会变成
+    // uncaughtException 直接杀掉执行器进程）。这里证明既有 try/catch 兜得住。
+    jest.useFakeTimers();
+    try {
+      const { startApp, resetDaemonRestartState, runningApps } =
+        require('./deploy') as typeof import('./deploy');
+      const { post } = require('../admin-client') as { post: jest.Mock };
+      resetDaemonRestartState();
+      runningApps.clear();
+      mockCp.spawn.mockReset();
+
+      // 首次启动：venv 存在（只需把它登记成 daemon，不走解释器解析）。
+      seedNoHostPython();
+      seedHealthyVenv('/pool/cpython-3.12.13-x');
+      (mockFs.createWriteStream as jest.Mock).mockReturnValue({
+        on: jest.fn(),
+        end: jest.fn(),
+        write: jest.fn(),
+      });
+      const child = okChild();
+      (mockCp.spawn as jest.Mock).mockImplementation(() => child);
+      startApp('dep-restart-stub', '/tmp/root', '/tmp/root/releases/r1', 'python', 'main.py', 'daemon', {});
+
+      // 崩溃后：venv 没了、池空、宿主是 Store stub → 重启必然抛错。
+      (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+      mockInterpreters.interpreterSnapshot.mockReturnValue([]);
+      mockCp.spawn.mockClear(); // 只统计**重启**这次尝试的 spawn
+      child.emit('exit', 1);
+
+      // 重启定时器（1s）触发 startApp → 抛错；异常绝不能逃出定时器回调。
+      expect(() => jest.advanceTimersByTime(1_000)).not.toThrow();
+      await Promise.resolve();
+
+      const failed = post.mock.calls.find(
+        (c: unknown[]) =>
+          c[0] === '/api/app-deployments/heartbeat' &&
+          (c[1] as any).deploymentId === 'dep-restart-stub' &&
+          (c[1] as any).status === 'failed',
+      );
+      expect(failed).toBeTruthy();
+      expect(String((failed?.[1] as any).message)).toMatch(/No usable Python interpreter/);
+      // 抛出发生在 spawn 之前 → 没有任何子进程被留下（无僵尸）。
+      expect(mockCp.spawn).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+      const { resetDaemonRestartState, runningApps } = require('./deploy') as typeof import('./deploy');
+      resetDaemonRestartState();
+      runningApps.clear();
     }
   });
 });

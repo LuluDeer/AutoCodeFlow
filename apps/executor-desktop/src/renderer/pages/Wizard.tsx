@@ -9,6 +9,14 @@ const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 declare const window: Window & {
   electronAPI: {
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
+    // 重跑向导预填：已配置机器从设置页唤出时，表单先载入当前配置（token 为
+    // 掩码哨兵 '******'，原样回传 = 保留已存 token，见 config-store TOKEN_MASK）。
+    getConfig: () => Promise<Record<string, unknown>>;
+    // 首启向导「下载源」步：并行探测官方源与国内镜像（任一 HTTP 应答即算可达）。
+    testInterpreterSource: () => Promise<{
+      official: { ok: boolean; ms: number; detail: string };
+      mirror: { ok: boolean; ms: number; detail: string };
+    }>;
     // B-9：主进程保留启动判定结果——error 非空表示"配置已保存但执行器未起来/
     // 注册预检未通过"，向导窗口保持打开、页内展示。
     saveAndCloseWizard: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
@@ -26,6 +34,12 @@ interface WizardForm {
   executorPort: number;
   executorAddressPublic: string;
   executorToken: string;
+  // 解释器下载源：'' = 官方源（uv 默认）；非空 = 镜像 base URL，直接落到
+  // config.uvPythonInstallMirror（与设置页同一字段、同一消毒与校验链）。
+  uvPythonInstallMirror: string;
+  // 回连模式（pull mode）：执行器主动连接平台领取任务，平台无需反向连入。
+  // 默认开——跨网络/NAT/云主机/内网办公机的主流部署形态。
+  pullMode: boolean;
   autoStartExecutor: boolean;
   autoStart: boolean;
 }
@@ -36,17 +50,24 @@ const DEFAULT_FORM: WizardForm = {
   executorPort: 8002,
   executorAddressPublic: '',
   executorToken: '',
+  uvPythonInstallMirror: '',
+  pullMode: true,
   autoStartExecutor: true,
   autoStart: false,
 };
 
-const TOTAL_STEPS = 4;
+// 与 ipc-handlers.ts 的 INTERPRETER_SOURCE_MIRROR_URL 保持一致（两侧各持一份
+// 字面量，改动必须同步）：选中「国内镜像」时写入 uvPythonInstallMirror 的值。
+const MIRROR_PYTHON_SOURCE = 'https://registry.npmmirror.com/-/binary/python-build-standalone';
+
+const TOTAL_STEPS = 5;
 /** 进度段下的步骤名（v2 指引升级；文案入 shell.* 双语键） */
 const STEP_LABELS = [
   t('shell.step1'),
   t('shell.step2'),
   t('shell.step3'),
   t('shell.step4'),
+  t('shell.step5'),
 ];
 
 function Toggle({
@@ -68,6 +89,9 @@ export default function Wizard() {
   const [saving, setSaving] = useState(false);
   // 向导保存失败必须可见（原实现无 try，reject 后永久卡在"保存中"）
   const [finishError, setFinishError] = useState<string | null>(null);
+  // 预填源（重跑向导）：挂载时读一次当前配置。null = 读取失败或首次安装
+  // （配置为默认值），finish() 回落原固定默认，行为不变。
+  const [wizardCfg, setWizardCfg] = useState<Record<string, unknown> | null>(null);
 
   function set(key: keyof WizardForm, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -88,6 +112,29 @@ export default function Wizard() {
     }
   }
 
+  // 预填（重跑向导支持，2026-10-13 用户需求）：从设置页唤出时表单先载入
+  // 当前已存配置——否则重跑像重新录入。首次安装时配置为默认值（空串/默认
+  // 端口），预填无操作、行为不变。token 读回的是掩码哨兵 '******'：原样留
+  // 在表单，未改动时回传由 config-store.save 映射为「保留已存 token」，
+  // 不会损坏密钥。
+  useEffect(() => {
+    window.electronAPI.getConfig()
+      .then((cfg) => {
+        setWizardCfg(cfg);
+        setForm((f) => ({
+          ...f,
+          adminApiUrl: typeof cfg.adminApiUrl === 'string' ? cfg.adminApiUrl : f.adminApiUrl,
+          executorName: typeof cfg.executorName === 'string' ? cfg.executorName : f.executorName,
+          executorPort: typeof cfg.executorPort === 'number' ? cfg.executorPort : f.executorPort,
+          executorAddressPublic: typeof cfg.executorAddressPublic === 'string' ? cfg.executorAddressPublic : f.executorAddressPublic,
+          executorToken: typeof cfg.executorToken === 'string' ? cfg.executorToken : f.executorToken,
+          uvPythonInstallMirror: typeof cfg.uvPythonInstallMirror === 'string' ? cfg.uvPythonInstallMirror : f.uvPythonInstallMirror,
+          pullMode: typeof cfg.pullMode === 'boolean' ? cfg.pullMode : f.pullMode,
+        }));
+      })
+      .catch(() => { /* 读取失败保持空表单（首次安装语义），不炸向导 */ });
+  }, []);
+
   async function finish() {
     setSaving(true);
     setFinishError(null);
@@ -95,9 +142,12 @@ export default function Wizard() {
       const r = await window.electronAPI.saveAndCloseWizard({
         ...form,
         executorHost: '0.0.0.0',
-        maxConcurrentTasks: 10,
+        // 重跑向导不重置未暴露的档位：沿用挂载时读到的已存配置（首次安装
+        // 读不到时回落原默认 10/info，行为不变）——否则重跑一次会把
+        // logLevel=debug / 自定义并发数悄悄冲回默认。
+        maxConcurrentTasks: typeof wizardCfg?.maxConcurrentTasks === 'number' ? wizardCfg.maxConcurrentTasks : 10,
         workDir: '',
-        logLevel: 'info',
+        logLevel: typeof wizardCfg?.logLevel === 'string' ? wizardCfg.logLevel : 'info',
       });
       // B-9：主进程只在启动判定**通过**后才关窗——失败（含注册预检未通过）
       // 时向导保持打开，错误在这里落到页内错误条，用户可返回上一步修改后
@@ -175,10 +225,18 @@ export default function Wizard() {
           />
         )}
         {step === 4 && (
+          <StepSource
+            value={form.uvPythonInstallMirror}
+            onChange={(v) => set('uvPythonInstallMirror', v)}
+            onBack={() => setStep(3)}
+            onNext={() => setStep(5)}
+          />
+        )}
+        {step === 5 && (
           <StepFinish
             form={form}
             onChange={set}
-            onBack={() => setStep(3)}
+            onBack={() => setStep(4)}
             onFinish={finish}
             saving={saving}
             error={finishError}
@@ -477,7 +535,17 @@ function StepExecutor({
             value={form.executorAddressPublic}
             onChange={(e) => onChange('executorAddressPublic', e.target.value)}
           />
-          <span className="hint">{t('wizard.machine.publicHint')}</span>
+          <span className="hint">{form.pullMode ? t('wizard.machine.publicHintPull') : t('wizard.machine.publicHint')}</span>
+        </div>
+
+        {/* 回连模式（pull mode）：执行器主动连出领取任务，平台无需反向连入。
+            开启时对外地址变为可选——跨网络/NAT/云主机的主流部署形态。 */}
+        <div className="toggle-row">
+          <div className="toggle-info">
+            <strong>{t('wizard.machine.pullTitle')}</strong>
+            <span>{t('wizard.machine.pullDesc')}</span>
+          </div>
+          <Toggle id="pullMode" label={t('wizard.machine.pullToggleLabel')} checked={form.pullMode} onChange={(v) => onChange('pullMode', v)} />
         </div>
 
         <div className="field">
@@ -507,6 +575,126 @@ function StepExecutor({
       <div className="wizard-actions">
         <button className="btn" onClick={onBack}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> {t('wizard.back')}</button>
         <button className="btn btn-primary" onClick={onNext} disabled={!canNext}>{t('wizard.next')} <Icon name="chevron-right" className="icon-xs" /></button>
+      </div>
+    </>
+  );
+}
+
+interface SourceProbeResult {
+  ok: boolean;
+  ms: number;
+  detail: string;
+}
+
+/**
+ * 解释器下载源（第 4 步）：把「官方源 vs 国内镜像」的选择交给用户。
+ *
+ * 背景（desktop v1.8.1 真机实证）：国内网络 GitHub 直连经常超时/重置，官方源
+ * 首次下载 CPython 直接 download_failed；默认值仍保持官方源（通用产品的中性
+ * 解），但进本步自动探测一轮——官方不可达而镜像可达时**自动改选镜像**（只改
+ * 未保存的表单状态，用户可见可改，完成页也会如实展示所选）。探测失败不阻塞
+ * 下一步：选择可以盲选，运行期真失败仍有 executor-node 的结构化报错兜底。
+ */
+function StepSource({
+  value, onChange, onBack, onNext,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const [probing, setProbing] = useState(false);
+  const [results, setResults] = useState<{ official: SourceProbeResult; mirror: SourceProbeResult } | null>(null);
+  const [autoSelected, setAutoSelected] = useState(false);
+
+  async function runProbe() {
+    setProbing(true);
+    try {
+      const r = await window.electronAPI.testInterpreterSource();
+      setResults(r);
+      // 推荐逻辑（进页自动跑一轮，测试按钮可重跑）：官方源不可达且镜像可达、
+      // 且用户尚未手动改过选择（仍是默认官方）时，自动改选镜像。
+      if (r.official && !r.official.ok && r.mirror && r.mirror.ok && value === '') {
+        onChange(MIRROR_PYTHON_SOURCE);
+        setAutoSelected(true);
+      }
+    } catch {
+      // IPC 失败静默回落：徽标不显示，按钮可重试，选择仍可手改。
+      setResults(null);
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  // 仅挂载时自动探测一次（value/onChange 有意不入依赖，重跑走测试按钮）
+  useEffect(() => {
+    runProbe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function probeBadge(key: 'official' | 'mirror') {
+    if (!results) {
+      return probing
+        ? <span className="hint">{t('wizard.source.testing')}</span>
+        : null;
+    }
+    const r = results[key];
+    return (
+      <span className={`source-probe ${r.ok ? 'ok' : 'fail'}`}>
+        <Icon name={r.ok ? 'check' : 'close'} className="icon-xs" />
+        {r.ok ? `${t('wizard.source.reachable')} · ${r.ms}ms` : `${t('wizard.source.unreachable')} · ${r.detail}`}
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <div className="wizard-title">{t('wizard.source.title')}</div>
+      <div className="wizard-subtitle">{t('wizard.source.subtitle')}</div>
+      <div className="wizard-body">
+        <div className="field">
+          <div className="wizard-source-options">
+            <label className={`wizard-source-option${value === '' ? ' selected' : ''}`}>
+              <input
+                type="radio"
+                name="interpreter-source"
+                checked={value === ''}
+                onChange={() => { onChange(''); setAutoSelected(false); }}
+              />
+              <span className="wizard-source-option-main">
+                <strong>{t('wizard.source.optionOfficial')}</strong>
+                <span>{t('wizard.source.optionOfficialDesc')}</span>
+              </span>
+              {probeBadge('official')}
+            </label>
+            <label className={`wizard-source-option${value !== '' ? ' selected' : ''}`}>
+              <input
+                type="radio"
+                name="interpreter-source"
+                checked={value !== ''}
+                onChange={() => { onChange(MIRROR_PYTHON_SOURCE); setAutoSelected(false); }}
+              />
+              <span className="wizard-source-option-main">
+                <strong>{t('wizard.source.optionMirror')}</strong>
+                <span>{t('wizard.source.optionMirrorDesc')}</span>
+              </span>
+              {probeBadge('mirror')}
+            </label>
+          </div>
+          <button className="btn wizard-inline-button" onClick={runProbe} disabled={probing}>
+            {probing ? t('wizard.source.testing') : t('wizard.source.test')}
+          </button>
+          {autoSelected && (
+            <div className="test-result ok" role="status">
+              <Icon name="check" className="icon-xs" /> {t('wizard.source.autoSelected')}
+            </div>
+          )}
+          <span className="hint">{t('wizard.source.hint')}</span>
+        </div>
+      </div>
+      <div className="wizard-actions">
+        <button className="btn" onClick={onBack}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> {t('wizard.back')}</button>
+        <button className="btn btn-primary" onClick={onNext}>{t('wizard.next')} <Icon name="chevron-right" className="icon-xs" /></button>
       </div>
     </>
   );
@@ -543,6 +731,16 @@ function StepFinish({
           <div className="confirm-row">
             <span className="confirm-key">{t('wizard.finish.keyPublic')}</span>
             <span className="confirm-val">{form.executorAddressPublic || t('ui.publicAuto', form.executorPort)}</span>
+          </div>
+          <div className="confirm-row">
+            <span className="confirm-key">{t('wizard.finish.keySource')}</span>
+            <span className="confirm-val">
+              {form.uvPythonInstallMirror ? t('wizard.finish.sourceMirror') : t('wizard.finish.sourceOfficial')}
+            </span>
+          </div>
+          <div className="confirm-row">
+            <span className="confirm-key">{t('wizard.finish.keyPull')}</span>
+            <span className="confirm-val">{form.pullMode ? t('wizard.finish.pullOn') : t('wizard.finish.pullOff')}</span>
           </div>
         </div>
 

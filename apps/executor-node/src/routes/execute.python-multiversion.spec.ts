@@ -156,9 +156,11 @@ import {
   listActiveVenvDirNames,
   mergeRequirements,
   parsePackageRequirements,
+  prepareFailureReason,
   pypiIndexHint,
   venvDirName,
   venvPythonBin,
+  DEFAULT_PYTHON_VERSION,
 } from './execute';
 import { pushCallback } from '../callback';
 import { taskWorkerManager } from '../task-worker';
@@ -166,6 +168,19 @@ import { config as testConfig } from '../config';
 import { downloadFile } from '../lib/download';
 import { safeExtractZip } from '../zip-safety';
 import { __resetForTests as resetInterpreters, ensureVersion } from '../interpreters';
+// 默认版本兜底最终调用的是 `interpreters.ensureVersion`（复用既有下载/池逻辑，
+// 绝不新写）。这里用命名空间导入以便 `jest.spyOn(interpretersModule, 'ensureVersion')`
+// 拦截它——想钉的是"用哪个版本、拿到的路径是否被当 cmd"，而不是 uv 的下载实现。
+import * as interpretersModule from '../interpreters';
+// 桌面自包含改造：cmd 现在来自工具链的**实跑结论**（toolchain.ts，单一真值源）。
+// 本 spec 整体 mock 了 child_process，真实探测拿不到结果——故必须显式 seed 一份
+// 确定的工具链（见 beforeEach），否则"这台机器上有什么"会变成不可控的隐式依赖，
+// 让原本针对渠道/venv 的断言随机化（toolchain.seedToolchainForTest 的注释同义）。
+import {
+  buildToolchainForTest,
+  seedToolchainForTest,
+  invalidateToolchain,
+} from '../toolchain';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
@@ -193,6 +208,28 @@ function poolPython(fullVersion: string, platformTag = 'x-none'): string {
 /** 池内某版本的目录（pyvenv.cfg 的 home 指向它）。 */
 function poolHome(fullVersion: string, platformTag = 'x-none'): string {
   return path.join(POOL_DIR, `cpython-${fullVersion}-${platformTag}`);
+}
+
+/**
+ * 本机常规形态的宿主工具链（兼容红线的**基线**）：POSIX 是 `python3`/`node`，
+ * Windows 是 `python.exe`/`node.exe`。与改动前硬编码的名字逐字相同——这正是
+ * "存量机器行为零变化"这一红线在测试里的表达方式。
+ *
+ * 之所以每个用例都要 seed：真实探测走 `child_process.spawn`，而本 spec 整体
+ * mock 了它（默认应答器给出空 stdout → 解析不出版本串 → 判定为不可用）。不 seed
+ * 的话，"无版本 python 任务用哪个解释器"会取决于 mock 的默认返回，属于不可控的
+ * 隐式依赖；seed 后每条断言都在测**被测代码的决策**。
+ */
+function seedConventionalHostToolchain(): void {
+  const win = process.platform === 'win32';
+  seedToolchainForTest(
+    buildToolchainForTest({
+      python: { source: 'host', path: win ? 'python.exe' : 'python3', version: 'Python 3.12.4' },
+      node: { source: 'host', path: win ? 'node.exe' : 'node', version: 'v24.19.0' },
+      npm: { source: 'host', path: win ? 'npm.cmd' : 'npm', version: '11.17.0' },
+      git: { source: 'host', path: 'git', version: 'git version 2.43.0' },
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +456,11 @@ beforeEach(() => {
   // 解释器模块持有探测缓存与 uv 解析缓存，跨用例必须重置（否则第二个用例会
   // 复用第一个用例的池快照，让"池为空"这类断言失真）。
   resetInterpreters();
+  // 工具链缓存同理：它是模块级 TTL 缓存，跨用例残留会让"这台机器有没有 node /
+  // python"取决于前一个用例——**测试之间经全局缓存串扰**是最难查的一类假绿。
+  // 先 invalidate 再由 seedConventionalHostToolchain 放进本用例的确定值。
+  invalidateToolchain();
+  seedConventionalHostToolchain();
   resetFakeFs();
   installFakeFs();
   // 默认 uv 应答：探测到空池（各用例按需覆盖为"池内有 X"）。
@@ -573,17 +615,28 @@ describe('venvPythonBin', () => {
 describe('COMPAT RED LINE §4.6 — no version, no requirements', () => {
   it('spawns `python3 <entrypoint>` with no uv/venv involvement at all', async () => {
     const calls = installSpawnRecorder(uvResponder([]));
-    const { res, prepared } = await capturePrepared(
-      { runtime: 'python', entrypoint: 'main.py' },
-      'exec-compat-1',
-    );
+    // CONTRACT.md §4 红线 1/6：有常规宿主解释器的机器上，无版本无依赖任务必须
+    // **逐字节**保持 `python3 <entrypoint>`。本次新增的默认版本兜底只能落在
+    // "宿主解释器不可用"那一支——这里同时钉住"一次都没问过解释器池"，防止
+    // 兜底被错误地提前（那会把存量机器从"零 uv 开销"变成"每次任务都可能下载"）。
+    const spy = jest.spyOn(interpretersModule, 'ensureVersion');
+    try {
+      const { res, prepared } = await capturePrepared(
+        { runtime: 'python', entrypoint: 'main.py' },
+        'exec-compat-1',
+      );
 
-    expect(res.status).toBe(200);
-    expect(prepared.error).toBeUndefined();
-    expect(prepared.task.cmd).toBe(process.platform === 'win32' ? 'python.exe' : 'python3');
-    expect(prepared.task.args).toEqual(['main.py']);
-    // 关键：整条 prepare 链路里**没有**任何 uv 调用。
-    expect(calls.filter(isUvCall)).toEqual([]);
+      expect(res.status).toBe(200);
+      expect(prepared.error).toBeUndefined();
+      expect(prepared.task.cmd).toBe(process.platform === 'win32' ? 'python.exe' : 'python3');
+      expect(prepared.task.args).toEqual(['main.py']);
+      // 关键：整条 prepare 链路里**没有**任何 uv 调用。
+      expect(calls.filter(isUvCall)).toEqual([]);
+      // 关键（本次新增兜底的回归闸）：默认版本兜底一次都没被触发。
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('does not create a venv directory', async () => {
@@ -1214,5 +1267,282 @@ describe('pypiIndexHint (B·2.2 failure diagnostics)', () => {
     expect(hint).toContain('index-url=https://pypi.internal/simple');
     expect(hint).toContain('extra-index-url=https://pypi.org/simple');
     expect(hint).not.toContain('无上游');
+  });
+});
+
+// ===========================================================================
+// 桌面自包含改造（生产故障）：cmd 来自工具链的实跑结论
+//
+// 这一组钉住的是**架构级**缺陷本身：能力上报（runtime-detection.ts）与任务执行
+// （本文件被测的 execute.ts）原先是两套代码、两个真值源——上报说"这台机器有
+// node"（因为本进程跑在 Node 里，属"自证"），执行却硬编码裸 `node.exe`。桌面
+// 客户端用 Electron 二进制 + `ELECTRON_RUN_AS_NODE=1` 启动 executor-node，
+// `process.execPath` 是 Electron 而非系统 node，打包里也没有 node.exe，于是
+// **没装 Node.js 的机器**上报有 node、任务却在 spawn 时 ENOENT，且中台只信
+// capabilities 会持续派单。每一条断言都对应一个已被生产/源码实证的失败形态。
+// ===========================================================================
+
+describe('桌面自包含改造 — cmd 来自 toolchain（单一真值源）', () => {
+  /** 覆盖 beforeEach 的"常规宿主机"种子，精确控制本机有什么。 */
+  function seedTools(partial: Parameters<typeof buildToolchainForTest>[0]): void {
+    seedToolchainForTest(buildToolchainForTest(partial));
+  }
+
+  it('Electron 复用时用 execPath 作 cmd，并注入 ELECTRON_RUN_AS_NODE=1（核心回归）', async () => {
+    // 桌面 + 宿主无 node 的形态：path 是 Electron 可执行文件。
+    seedTools({
+      node: {
+        source: 'self',
+        path: '/opt/electron',
+        verified: true,
+        requiresElectronRunAsNode: true,
+        version: 'v24.19.0',
+      },
+    });
+    installSpawnRecorder(uvResponder([]));
+
+    const { prepared } = await capturePrepared(
+      { runtime: 'node', entrypoint: 'index.js' },
+      'exec-tc-self',
+    );
+
+    expect(prepared.error).toBeUndefined();
+    expect(prepared.task.cmd).toBe('/opt/electron');
+    // 去掉这个 env，Electron 会以 GUI 模式启动并尝试开窗口——任务无声挂死、
+    // 没有任何错误输出，比 ENOENT 更难归因。
+    expect(prepared.task.env['ELECTRON_RUN_AS_NODE']).toBe('1');
+  });
+
+  it('宿主 node 绝不携带 ELECTRON_RUN_AS_NODE（无泄漏）', async () => {
+    seedTools({ node: { source: 'host', path: 'node', verified: true, version: 'v24.19.0' } });
+    installSpawnRecorder(uvResponder([]));
+
+    const { prepared } = await capturePrepared(
+      { runtime: 'node', entrypoint: 'index.js' },
+      'exec-tc-host-flag',
+    );
+
+    // 把该开关泄漏给宿主 node 是"看起来能跑、实则语义被污染"的一类隐患：
+    // 任何子进程（含任务再派生）都可能继承它。
+    expect(prepared.task.env['ELECTRON_RUN_AS_NODE']).toBeUndefined();
+  });
+
+  it('宿主 node 可用时 cmd 逐字节不变（存量部署零行为变化）', async () => {
+    seedTools({ node: { source: 'host', path: 'node', verified: true, version: 'v24.19.0' } });
+    installSpawnRecorder(uvResponder([]));
+
+    const { prepared } = await capturePrepared(
+      { runtime: 'node', entrypoint: 'index.js' },
+      'exec-tc-host-node',
+    );
+
+    expect(prepared.task.cmd).toBe('node');
+    expect(prepared.task.args).toEqual(['index.js']);
+  });
+
+  it('无可用 node → 明确失败且归类为 runtime_missing（绝不静默回落裸命令名）', async () => {
+    seedTools({
+      node: {
+        source: 'none',
+        path: null,
+        verified: false,
+        detail: 'no usable node on PATH and this process is not an Electron host',
+      },
+    });
+    installSpawnRecorder(uvResponder([]));
+
+    const { prepared } = await capturePrepared(
+      { runtime: 'node', entrypoint: 'index.js' },
+      'exec-tc-no-node',
+    );
+
+    // 静默回落正是本缺陷的形态：失败被推迟到 spawn，归因信息只剩 ENOENT。
+    expect(prepared.error).toBeDefined();
+    const message = prepared.error.message as string;
+    expect(message).toContain('node');
+    // 断言**分类**而非只断言抛错：错误文案必须能被 prepareFailureReason 正确
+    // 归类，否则运维按 runtime_missing 筛"该装运行时的机器"时会漏掉这台。
+    expect(prepareFailureReason(message)).toBe('runtime_missing');
+    const fail = failedCallback();
+    expect(fail?.errorMessage).toBe(message);
+    expect(fail?.failureReason).toBe('runtime_missing');
+  });
+
+  it('宿主 python 不可用（Store 占位 stub 形态）→ 先尝试默认版本兜底，失败后归类 interpreter_unavailable 且保留 Store 诊断', async () => {
+    // Windows 上裸 `python.exe` 常是 Microsoft Store App Execution Alias stub：
+    // 文件真实存在、spawn 能命中，实跑必失败（exit 9009）并打印一句与平台无关
+    // 的英文。原实现把它当兜底解释器，用户只能看到"任务失败 + 一句莫名其妙的
+    // 英文"。toolchain 的实跑验真会把它判为 none。
+    //
+    // 本次修复后此处**不再立刻抛错**，而是先经 uv 取默认版本 3.12（owner 口径：
+    // 带了 uv 且未声明版本就按 3.12 装）。本用例模拟的是"uv 装不出来"（uv 应答
+    // 成功但池内始终没有 3.12 → 后置校验判定 corrupt），于是最终失败必须归类为
+    // interpreter_unavailable（调度侧据此改派/预填），且**上一轮事故修复留下的
+    // Store stub 指引不能丢**——两类归因都在同一条消息里。
+    seedTools({
+      python: {
+        source: 'none',
+        path: null,
+        verified: false,
+        detail: 'no usable python on PATH — Microsoft Store stub may shadow the real interpreter',
+      },
+    });
+    installSpawnRecorder(uvResponder([]));
+
+    const { prepared } = await capturePrepared(
+      { runtime: 'python', entrypoint: 'main.py' },
+      'exec-tc-no-python',
+    );
+
+    expect(prepared.error).toBeDefined();
+    const message = prepared.error.message as string;
+    // 必须把根因直接写在用户可见的失败信息里，而不是留一句 ENOENT/9009。
+    expect(message).toMatch(/Microsoft Store/i);
+    expect(message).toMatch(/stub/i);
+    expect(message).toMatch(/install Python 3\.8\+/i);
+    // 兜底确实针对的是默认版本 3.12，而非某个瞎猜的版本。
+    expect(message).toMatch(/解释器 3\.12 无法获取/);
+    expect(prepareFailureReason(message)).toBe('interpreter_unavailable');
+    expect(failedCallback()?.failureReason).toBe('interpreter_unavailable');
+    // 结构化池快照（FR-12/AC-12a）：admin 据此判断"该下载还是该离线预填"。
+    expect((failedCallback()?.result as any)?.interpreter?.requested).toBe('3.12');
+  });
+
+  // =========================================================================
+  // 桌面端 no-version 默认版本兜底（本次修复的**核心回归**）
+  //
+  // 事故：全新 Windows 机器 + 自带 uv 的桌面客户端（包内**没有** Python），
+  // 管理员部署一个默认（无 runtimeVersion）python 应用 → 上报面说"我有 python
+  // 能力"，执行面却要求宿主解释器 → 每一个默认 python 任务必然失败，用户看到
+  // Microsoft Store 的 "Python was not found"。
+  //
+  // 修复口径（owner）：带了 uv、任务/应用未声明版本 → 默认按 3.12 经解释器池
+  // 获取并直接执行。下面第一例就是"干净机器现在能跑默认 python 任务"的证明。
+  // =========================================================================
+
+  it('无宿主 python + 有 uv → 经 uv 取默认版本 3.12，cmd 为池内绝对路径（核心回归）', async () => {
+    seedTools({
+      python: {
+        source: 'none',
+        path: null,
+        verified: false,
+        detail: 'no usable python on PATH',
+      },
+    });
+    // 让 uv 侧"看起来可用"，但真正的解释器获取由 mock 的 ensureVersion 决定：
+    // 本用例要钉的是**决策**（用哪个版本、用哪个路径当 cmd），而不是 uv 的
+    // 下载实现（那已由 interpreters.spec.ts 全量覆盖）。
+    installSpawnRecorder(uvResponder([]));
+    const poolBin = path.join(POOL_DIR, 'cpython-3.12.13-x-none', 'bin', 'python3');
+    const spy = jest
+      .spyOn(interpretersModule, 'ensureVersion')
+      .mockResolvedValue(poolBin);
+
+    try {
+      const { res, prepared } = await capturePrepared(
+        { runtime: 'python', entrypoint: 'main.py' },
+        'exec-default-version',
+      );
+
+      expect(res.status).toBe(200);
+      expect(prepared.error).toBeUndefined();
+      // 1) 默认版本必须是 **3.12**（与 admin 的 LEGACY_DEFAULT_INTERPRETERS 耦合）。
+      //    去掉 execute.ts 的默认版本兜底，本用例立即转红（prepared.error 会是
+      //    "runtime python not available"）。
+      expect(spy).toHaveBeenCalledWith('3.12', expect.objectContaining({ signal: expect.anything() }));
+      // 2) console 必须拿到池内**绝对路径**（绝不回落到裸 python3/python.exe）。
+      expect(prepared.task.cmd).toBe(poolBin);
+      expect(prepared.task.cmd).not.toBe('python3');
+      expect(prepared.task.args).toEqual(['main.py']);
+      // 3) PYTHONUTF8/PYTHONIOENCODING 处理不受本次改动影响（I18N-01 不可回归）。
+      expect(prepared.task.env['PYTHONUTF8']).toBe('1');
+      expect(prepared.task.env['PYTHONIOENCODING']).toBe('utf-8');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('宿主 python 可用时默认版本兜底**绝不介入**（红线：宿主优先、零行为变化）', async () => {
+    // 这是"是否破坏存量部署"的判定用例：宿主解释器存在时，不但 cmd 必须是
+    // 逐字节不变的 `python3`/`python.exe`，而且**一次都不该**去问解释器池。
+    const spy = jest.spyOn(interpretersModule, 'ensureVersion');
+    try {
+      const calls = installSpawnRecorder(uvResponder([]));
+      const { prepared } = await capturePrepared(
+        { runtime: 'python', entrypoint: 'main.py' },
+        'exec-host-priority',
+      );
+
+      expect(prepared.error).toBeUndefined();
+      expect(prepared.task.cmd).toBe(process.platform === 'win32' ? 'python.exe' : 'python3');
+      // 红线意图：无版本无依赖不建 venv、不碰 uv、不查池。
+      expect(spy).not.toHaveBeenCalled();
+      expect(calls.filter(isUvCall)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('声明版本 3.11 的任务走声明版本，绝不落到默认 3.12', async () => {
+    // 兜底只服务"未声明版本"的任务；一旦声明了就按声明的版本解析——否则
+    // "声明了版本"会变成一句空话（AC-15b），而且会静默改变任务运行的解释器。
+    const poolBin = addPoolInterpreter('3.11.15');
+    installSpawnRecorder(uvResponder([{ version: '3.11.15', path: poolBin }]));
+    const spy = jest.spyOn(interpretersModule, 'ensureVersion');
+
+    try {
+      await capturePrepared(
+        { id: 'taskDeclared', runtime: 'python', entrypoint: 'main.py', runtimeVersion: '3.11' },
+        'exec-declared-not-default',
+      );
+
+      expect(spy).toHaveBeenCalledWith('3.11', expect.objectContaining({ signal: expect.anything() }));
+      // 默认版本绝不能被顺手解析一次（那会既浪费一次可能的下载，也让"用了哪个
+      // 版本"变得不可判定）。
+      for (const call of spy.mock.calls) {
+        expect(call[0]).not.toBe(DEFAULT_PYTHON_VERSION);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('无宿主 python + uv 不可用 → 明确失败并归类 interpreter_unavailable（分类而非只断言抛错）', async () => {
+    seedTools({
+      python: { source: 'none', path: null, verified: false, detail: 'no usable python on PATH' },
+    });
+    // uv 彻底不可用（UV_BIN 空 + PATH 探测失败）→ 兜底也无法兑现。
+    setConfig({ uvBin: '' });
+    installSpawnRecorder(() => ({ code: null, stderr: 'spawn uv ENOENT' }));
+
+    const { prepared } = await capturePrepared(
+      { runtime: 'python', entrypoint: 'main.py' },
+      'exec-default-uv-missing',
+    );
+
+    expect(prepared.error).toBeDefined();
+    const message = prepared.error.message as string;
+    // 必须指向**默认版本**取不到，而不是含糊的 unknown/ENOENT。
+    expect(message).toMatch(/解释器 3\.12 无法获取/);
+    expect(prepareFailureReason(message)).toBe('interpreter_unavailable');
+    const fail = failedCallback();
+    expect(fail?.failureReason).toBe('interpreter_unavailable');
+    expect((fail?.result as any)?.interpreter?.requested).toBe('3.12');
+    expect((fail?.result as any)?.interpreter?.resolved).toBeNull();
+  });
+
+  it('实跑验真过的宿主 python 被用作无版本任务的 cmd', async () => {
+    seedTools({ python: { source: 'host', path: 'python3', verified: true, version: 'Python 3.12.4' } });
+    installSpawnRecorder(uvResponder([]));
+
+    const { prepared } = await capturePrepared(
+      { runtime: 'python', entrypoint: 'main.py' },
+      'exec-tc-host-python',
+    );
+
+    expect(prepared.error).toBeUndefined();
+    expect(prepared.task.cmd).toBe('python3');
+    // 红线意图不变：无版本无依赖不建 venv、不碰 uv。
+    expect(prepared.task.args).toEqual(['main.py']);
   });
 });

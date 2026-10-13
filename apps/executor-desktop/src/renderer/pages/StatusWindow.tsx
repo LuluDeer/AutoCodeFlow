@@ -152,6 +152,17 @@ const INNER_LOG_RE =
 // winston traceId 前缀：[23fb6898-e228-4ca2-8ed4-956758b5d2f0] <rest>
 const TRACE_ID_RE = /^\[([0-9a-f]{8})(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\] (.*)$/i;
 
+// ── 常规心跳行判定（状态页预览过滤，2026-10-13 用户需求）──────────────
+// 只匹配 scheduler.ts 两条 info 心跳文案的**行尾**（normalized 文本形如
+// `[09:42:26.916] [INFO] [1577fd9e] Sending heartbeat`）。行尾精确锚定是
+// 误伤防线：`Heartbeat failed: …` 是 warn 且文案不同，永不匹配——失败必须
+// 始终可见。过滤只作用于预览切片，缓冲与全屏查看器保持完整。
+const ROUTINE_HEARTBEAT_RE = / (Sending heartbeat|Heartbeat succeeded)$/;
+function isRoutineHeartbeatLine(text: string): boolean {
+  return ROUTINE_HEARTBEAT_RE.test(text);
+}
+const HEARTBEAT_FILTER_PREF_KEY = 'status.hideHeartbeat';
+
 function utcToLocalClock(datePart: string, timePart: string): string {
   const d = new Date(`${datePart}T${timePart}Z`);
   if (Number.isNaN(d.getTime())) return timePart;
@@ -401,6 +412,15 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const [unreadLogs, setUnreadLogs] = useState(0);
   // C-06：预览向上滚动到顶且上方还有未显示行时，浮出「查看更早日志」胶囊入口
   const [previewAtTop, setPreviewAtTop] = useState(false);
+  // 常规心跳过滤开关（只作用预览切片）。偏好落 localStorage（同 TRAY_TIP
+  // 先例的 try/catch 降级：不可持久化则仅本次会话生效），重启后记住。
+  const [hideHeartbeat, setHideHeartbeat] = useState(() => {
+    try {
+      return window.localStorage.getItem(HEARTBEAT_FILTER_PREF_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const clearedRef = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
@@ -615,17 +635,29 @@ export default function StatusWindow({ active }: { active: boolean }) {
 
   const handleClose = useCallback(() => setFullscreen(false), []);
   // V4-2：预览窗口切片带全局下标（trace 合并/到达动效由共享 LogLineList 承接，
-  // 与全屏查看器同一条渲染管线——V-05/M-01 终结）
+  // 与全屏查看器同一条渲染管线——V-05/M-01 终结）。常规心跳过滤只作用在
+  // 预览切片上：缓冲 logs 保持完整，全屏查看器不受影响（它本就有级别过滤）。
   const previewEntries = useMemo(
     () => {
       if (!active) return [];
-      const start = Math.max(0, logs.length - PREVIEW_LOG_LINES);
-      return logs.slice(start).map((line, k) => ({ line, i: start + k }));
+      const visible = hideHeartbeat
+        ? logs.filter((line) => !isRoutineHeartbeatLine(line.text))
+        : logs;
+      const start = Math.max(0, visible.length - PREVIEW_LOG_LINES);
+      return visible.slice(start).map((line, k) => ({ line, i: start + k }));
     },
-    [active, logs],
+    [active, logs, hideHeartbeat],
+  );
+  // 过滤后的可见行数：渐隐遮罩/「查看更早」胶囊按**可见**口径判定，
+  // 否则开了过滤满屏心跳被隐藏时，遮罩和入口会误常驻。
+  const visiblePreviewCount = useMemo(
+    () => (hideHeartbeat
+      ? logs.filter((line) => !isRoutineHeartbeatLine(line.text)).length
+      : logs.length),
+    [logs, hideHeartbeat],
   );
   // C-06：缓冲里还有预览之外的行 → 顶部渐隐遮罩常显（实现从简），到顶时给胶囊入口
-  const hasHiddenPreview = logs.length > PREVIEW_LOG_LINES;
+  const hasHiddenPreview = visiblePreviewCount > PREVIEW_LOG_LINES;
   const severityCounts = useMemo(() => ({
     error: logs.filter((line) => line.level === 'error').length,
     warn: logs.filter((line) => line.level === 'warn').length,
@@ -644,6 +676,15 @@ export default function StatusWindow({ active }: { active: boolean }) {
     clearedRef.current = true;
     setLogs([]);
     setUnreadLogs(0);
+  }
+  function toggleHeartbeatFilter() {
+    setHideHeartbeat((v) => {
+      const next = !v;
+      try {
+        window.localStorage.setItem(HEARTBEAT_FILTER_PREF_KEY, next ? '1' : '0');
+      } catch { /* localStorage 不可用：仅本次会话生效 */ }
+      return next;
+    });
   }
   // V4-2（X-03 一半）：行内「打开日志文件」的打开逻辑——状态页打开今日本地
   // 日志（listLogFiles 首个条目即当日分片；列表为空时无动作，右栏/查看器
@@ -828,6 +869,14 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 {severityCounts.error > 0 && <button className="log-severity error" onClick={() => openLogViewer('error')}>{t('logviewer.levelError')} {severityCounts.error}</button>}
               </div>
               <div className="log-actions">
+                <button
+                  className={`btn btn-sm${hideHeartbeat ? ' is-active' : ''}`}
+                  onClick={toggleHeartbeatFilter}
+                  aria-pressed={hideHeartbeat}
+                  title={hideHeartbeat ? t('status.heartbeatFilterShowTitle') : t('status.heartbeatFilterHideTitle')}
+                >
+                  <Icon name="eye-off" /> {t('status.heartbeatFilter')}
+                </button>
                 <button className="btn btn-sm" onClick={() => openLogViewer()}><Icon name="expand" /> {t('status.viewLogs')}</button>
                 <button className="btn btn-sm" onClick={jumpPreviewToBottom}><Icon name="arrow-down" /> {unreadLogs > 0 ? t('status.newLogs', unreadLogs) : t('status.bottom')}</button>
               </div>

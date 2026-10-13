@@ -53,8 +53,23 @@ import {
   poolSummary,
   resolveUvBin,
 } from '../interpreters';
+import { DEFAULT_PYTHON_VERSION } from '../python-defaults';
 import { ZipSafetyError, safeExtractZip } from '../zip-safety';
 import { downloadFile } from '../lib/download';
+// 桌面自包含改造（生产故障）：运行时工具链的**单一真值源**（见 toolchain.ts
+// 模块头注释）。任务执行侧此前各自硬编码裸命令名（`node.exe` / `python3`），
+// 与能力上报（runtime-detection.ts）是两套代码、两个真值源——于是"上报的"与
+// "实际能兑现的"可以互不一致且双方都不报错：一台没装 Node.js 的桌面机照样
+// 上报 node 能力（本进程跑在 Node 里是"自证"），任务却在 `spawn node.exe` 时
+// ENOENT，而中台只信 capabilities，会持续往这台机器派 node 任务。
+// 现在执行侧也读同一份实跑结论，口径漂移在结构上不可能再发生。
+import {
+  cachedToolchain,
+  describeToolchain,
+  probeToolchain,
+  usableHostPython,
+  type Toolchain,
+} from '../toolchain';
 
 /** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl: string): string {
@@ -803,6 +818,42 @@ function withClassifiedFailureReason(
 /** 包内 requirements.txt 的解析上限（D4/AC-04c）。超限即**忽略**而不是截断：
  *  一个 1MB 的 requirements.txt 只可能是恶意/损坏输入，截断会静默改变依赖集。 */
 const PACKAGE_REQUIREMENTS_MAX_BYTES = 1024 * 1024;
+
+/**
+ * 桌面端 no-version 任务的**默认 Python 版本**。
+ *
+ * 定义已上移到 `interpreters.ts`（单一事实源）——因为它被**两条链路**消费：
+ * 任务执行（本文件）与**应用部署**（`python-venv.ts`）。若各自硬编码，会出现
+ * "任务用 3.11、应用用 3.12"这类跨链路漂移（与本次事故同一类病）。
+ *
+ * 这里保留 re-export：既有调用方与单测从本模块导入该常量，语义不变。
+ * 详细理由（含与 admin 侧 `LEGACY_DEFAULT_INTERPRETERS` 的耦合）见
+ * `interpreters.ts` 中该常量的定义处。
+ */
+export { DEFAULT_PYTHON_VERSION };
+
+/**
+ * 宿主解释器缺失时的**诊断尾注**（用户可见失败信息的一部分）。
+ *
+ * 抽成常量是为了让两条路径共用同一份文案，杜绝"两处各写一遍、日后只改一处"
+ * 的漂移：
+ *   1. 无版本任务、宿主解释器不可用、且**没有**任何可用兜底时；
+ *   2. 上一条的兜底（经 uv 取默认版本）**也**失败时——此时把它追加在
+ *      `解释器 X.Y 无法获取` 之后。
+ *
+ * 文案里刻意同时保留 `runtime "python" not available` 骨架（使
+ * `prepareFailureReason` 在没有任何其它分类线索时仍能命中 runtime_missing）与
+ * Store stub 关键词——Windows 上裸 `python.exe` 常是 Microsoft Store 的 App
+ * Execution Alias 占位 stub：文件真实存在、spawn 能命中、实跑必失败（exit
+ * 9009）并只打印一句与平台无关的英文。不把这条线索写给运维，等于让上一轮
+ * 事故（用户只看到 "Python was not found"）原地复发。
+ */
+const HOST_PYTHON_MISSING_DIAGNOSTIC =
+  'runtime "python" not available on this executor: no usable Python 3.8+ ' +
+  'interpreter was found locally — on Windows a Microsoft Store App Execution ' +
+  'Alias stub may be shadowing the real interpreter (the stub exists as a file ' +
+  'but fails on execution); install Python 3.8+ from python.org, or declare a ' +
+  'runtimeVersion so the executor can obtain an interpreter with uv';
 
 /** zip 整包下载预算（与 python 侧 ZIP_DOWNLOAD_TIMEOUT_SECONDS 对齐）。 */
 const ZIP_DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -1763,10 +1814,12 @@ async function prepareExecution(
   // WS5（python_task_upload_and_multiversion, CONTRACT.md §3.3-3/4）：
   // python 的 venv + 依赖安装 + 解释器解析。
   //
-  // 兼容红线 §4.6（硬要求）：**无版本且无依赖**的 python 任务必须逐字节保持
-  // 现状 `python3 <entrypoint>`——不建 venv、不探测解释器池、不 spawn uv。
-  // 下面的分支顺序就是这条红线的实现：先判"要不要建 venv"，不要就直接落到
-  // 既有的 cmd 构造；"要不要用池内解释器"只在声明了版本时才成立。
+  // 兼容红线 §4.6（硬要求）：**无版本且无依赖**的 python 任务仍走宿主解释器、
+  // 不建 venv、不探测解释器池、不 spawn uv。下面的分支顺序就是这条红线的实现：
+  // 先判"要不要建 venv"，不要就直接落到既有的 cmd 构造；"要不要用池内解释器"
+  // 只在声明了版本时才成立。
+  // （桌面自包含改造后，兜底的宿主解释器名来自工具链的**实跑结论**而非硬编码；
+  //  机器上就是常规 `python3`/`python.exe` 时结果逐字节相同，见 cmd 构造处。）
   //
   // 有依赖或声明版本 → 建 venv：
   //   - 目录键带版本签名（D6/FR-16）：`<taskId>` / `<taskId>-<X.Y>`，声明版本
@@ -1985,18 +2038,67 @@ async function prepareExecution(
     env['PYTHONUTF8'] = '1';
   }
 
+  // ---------------------------------------------------------------------
+  // 桌面自包含改造（生产故障）：cmd 一律来自工具链的**实跑结论**。
+  //
+  // 为什么不能继续硬编码裸命令名：桌面客户端用 `process.execPath` +
+  // `ELECTRON_RUN_AS_NODE=1` 启动 executor-node（executor-process.ts），那个
+  // exe 是 **Electron、不是系统 node**；打包里没有 node.exe，也没人把 Electron
+  // 目录塞进子进程 PATH。于是"没装 Node.js 的机器"上 `spawn node.exe` 必 ENOENT，
+  // 而能力上报却把它当"自证可用"（本进程跑在 Node 里）——中台只信 capabilities，
+  // 会持续把 node 任务派给一台永远跑不了它们的机器。同类形态还有 python 侧
+  // Windows 的 Microsoft Store App Execution Alias stub：文件名真实存在、spawn
+  // 能命中，实跑必失败（exit 9009）并打印一句与平台无关的英文，排障者只能猜。
+  //
+  // 本次 prepare 内只解析一次（TTL 缓存 + 并发去重：注册/心跳路径已经填过缓存，
+  // 热路径零进程开销）；未命中才异步实跑探测一次，并把结果留在本次 prepare 里
+  // 复用，避免下面 node/python 两个分支各触发一次。
+  // ---------------------------------------------------------------------
+  let toolchainForPrepare: Toolchain | null = null;
+  let toolchainSummary: string | null = null;
+  const resolveToolchain = async (): Promise<Toolchain> => {
+    if (toolchainForPrepare) return toolchainForPrepare;
+    // 同步读缓存优先：绝大多数机器上注册时已探测过，此处不产生任何子进程。
+    const tc = cachedToolchain() ?? (await probeToolchain());
+    toolchainForPrepare = tc;
+    toolchainSummary = describeToolchain(tc);
+    return tc;
+  };
+
   let cmd: string;
   let args: string[];
 
   if (actualRuntime === 'node') {
-    cmd = process.platform === 'win32' ? 'node.exe' : 'node';
+    const nodeTool = (await resolveToolchain()).node;
+    // 明确失败，绝不静默回落到裸 `node.exe`：静默回落正是本缺陷的形态——
+    // 任务在 spawn 时以 ENOENT 收场，而归因信息只剩一句 ENOENT，没人知道是
+    // "这台机器根本没有 node"。消息骨架写作 `runtime "node" not available`，
+    // 使 prepareFailureReason 命中 runtime_missing（见 :745 的分类规则）。
+    if (!nodeTool.verified || !nodeTool.path) {
+      throw new Error(
+        'runtime "node" not available on this executor: ' +
+          `${nodeTool.detail ?? 'no usable node interpreter was resolved'} ` +
+          '(install Node.js, or run the desktop client which can reuse its bundled Electron runtime)',
+      );
+    }
+    // **关键**：source==='self' 时必须置 ELECTRON_RUN_AS_NODE=1，否则 Electron
+    // 以 GUI 模式启动并尝试开窗口，任务无声挂死且没有任何错误输出。
+    // 该变量不在 ENV_WHITELIST 里（buildChildEnv 只转发白名单），而这里的 env
+    // 是 **buildChildEnv 已建好的对象之后的显式注入**——与上面 NODE_PATH /
+    // 下面的 PYTHONIOENCODING 同一形态，白名单闸门不会（也不该）剥掉它。
+    // 绝不能改 env-whitelist.ts：把它加进白名单等于让**每个**子进程都拿到
+    // "把 Electron 当 node 用"的开关，那是另一类隐患。
+    if (nodeTool.requiresElectronRunAsNode === true) {
+      env['ELECTRON_RUN_AS_NODE'] = '1';
+    }
+    cmd = nodeTool.path;
     args = [actualEntrypoint];
   } else if (actualRuntime === 'python') {
     // WS5（CONTRACT.md §3.3-4）：
     //   有 venv        → venv 内解释器绝对路径；
     //   仅声明版本     → 池内解释器绝对路径（ensureVersion 的返回值）；
-    //   无版本无依赖   → **现状 `python3 <entrypoint>` 逐字节不变**
-    //                    （兼容红线 §4.6 / AC-10a）。
+    //   无版本无依赖   → 宿主解释器（**实跑验真过的**，见下方兜底块；机器上就是
+    //                    常规 `python3`/`python.exe` 时与兼容红线 §4.6 逐字节相同）。
     // 用绝对路径而非裸版本号：裸版本号会重新进入 uv 的解析/下载语义，而此刻
     // 我们已经在受控入口里解析过了。
     //
@@ -2011,7 +2113,95 @@ async function prepareExecution(
           `for a version-declaring task — refusing to fall back to the host interpreter`,
       );
     }
-    cmd = pythonBinFromVenv || resolvedInterpreter || (process.platform === 'win32' ? 'python.exe' : 'python3');
+    // 无版本无依赖的兜底从"裸宿主命令名"改为**实跑验真过的**宿主解释器。
+    //
+    // 生产故障（本缺陷的触发点）：原兜底是 Windows 上的裸 `python.exe`。该名字
+    // 很可能是 Microsoft Store 的 **App Execution Alias 占位 stub**——文件真实
+    // 存在、`spawn` 能命中，实跑却必然失败（exit 9009）并打印一句与平台无关的
+    // 英文商店提示；用户看到的是"任务失败 + 一句莫名其妙的英文"，而我们连
+    // "是谁在调 python"都无从得知。判定解释器可用的唯一可靠办法是实跑 `--version`
+    // （toolchain.ts 的核心纪律），存在性判定会把假解释器当真解释器。
+    //
+    // 兼容红线 §4.6：无版本无依赖的 python 任务仍走宿主解释器、不建 venv、不碰
+    // uv，且当机器上就是常规的 `python3`（POSIX）/ `python.exe`（Windows）时，
+    // 解析结果与该名字逐字节相同——存量部署行为零变化。只有"宿主 python 不可用"
+    // 这一原本必然失败的情形，从"spawn 时 ENOENT / Store stub 9009"提前为一条
+    // 可诊断的明确失败。
+    if (pythonBinFromVenv || resolvedInterpreter) {
+      cmd = pythonBinFromVenv || resolvedInterpreter!;
+    } else {
+      // 解析顺序（顺序即语义，勿调换）：
+      //   1. task venv 解释器 / 2. 声明版本的池内解释器 —— 已在上方分支处理；
+      //   3. **实跑验真过的宿主解释器** —— 必须保持最高优先级之外的第一位：
+      //      存量机器上它就是 `python3`/`python.exe`，兼容红线 §4.6 要求的
+      //      "逐字节不变"完全落在这一支；4 只在它**不可用**时才生效。
+      //   4. **桌面端默认版本兜底**（本次修复）：无声明版本且宿主解释器不可用
+      //      → 经 uv 解释器池获取 DEFAULT_PYTHON_VERSION 3.12 并用其绝对路径。
+      const hostPython = usableHostPython(await resolveToolchain());
+      if (hostPython && hostPython.path) {
+        cmd = hostPython.path;
+      } else {
+        // -------------------------------------------------------------------
+        // 桌面端 no-version 兜底（本次修复的生产事故根因）
+        //
+        // 事故形态：全新 Windows 机器装了桌面客户端（**包内只有 uv、没有
+        // Python**），管理员部署一个默认（无 runtimeVersion）python 应用：
+        //   · 上报面：runtime-detection 因"uv 可用"上报 `python` 能力；
+        //   · 执行面：这里却要求宿主解释器，拿不到就抛错。
+        // 于是"上报的"与"能兑现的"不是同一件事——中台只信 capabilities，会把
+        // 默认 python 任务持续派到一台必然失败的机器上，用户看到的是 Microsoft
+        // Store 那句 "Python was not found"。这正是本次自包含改造要根除的那类
+        // 缺陷，只是镜像到了 python 这一半。
+        //
+        // owner 明确口径：*带了 uv，任务/应用没有指定版本，就默认按 3.12 装好
+        // 并用这一套执行。* 因此默认版本经 `ensureVersion` 走既有解释器池
+        // （下载/离线预填/失败分因/全局并发闸全部复用，绝不新写下载逻辑），
+        // 拿到池内**绝对路径**直接当 cmd——与声明版本路径同一纪律：绝不把裸
+        // 版本号交给下游（那会重新触发 uv 的隐式下载语义，绕过 D13）。
+        //
+        // 为什么放在"宿主解释器不可用"之后：兼容红线 §4.6 要求**有**常规宿主
+        // 解释器的机器行为零变化（仍 `python3 <entrypoint>`，不建 venv、不碰
+        // uv）。把兜底放在这个 else 里，就使"联网下载 3.12"只发生在**原本必然
+        // 失败**的机器上——存量部署完全感知不到。
+        //
+        // 失败语义（刻意如此）：`ensureInterpreter` 会把
+        // InterpreterUnavailableError（uv 缺失 / 版本不可下载 / 下载超时 / 网络
+        // 失败 / 池内损坏）包装成带 `解释器 X.Y 无法获取` 骨架的消息，于是
+        // `prepareFailureReason` 归类为 `interpreter_unavailable` 并随回调带上
+        // 结构化池快照（FR-12/AC-12a），admin 据此把任务改派到已缓存 3.12 的
+        // 执行器——而不是退化成 `unknown` 或"一句 ENOENT"。
+        //
+        // 慢是预期的：这里可能真的在下载（实测约 13~17s）。abort signal 必须
+        // 透传（与声明版本路径同源），否则停机/杀端点时下载子进程会拖过 main.ts
+        // 的 5s 硬杀窗口，终态回调随之丢失（NETOPT-E P3-1）。
+        // -------------------------------------------------------------------
+        logPrepare(
+          `No usable host Python (${toolchainSummary ?? 'toolchain unknown'}); ` +
+            `obtaining the default Python ${DEFAULT_PYTHON_VERSION} via uv ` +
+            'for this no-version task',
+        );
+        try {
+          cmd = await ensureInterpreter(DEFAULT_PYTHON_VERSION, logPrepare, signal);
+        } catch (err) {
+          // 停机/杀端点的取消必须原样上抛（由 kill 端点收尾），绝不能被下面的
+          // 诊断包装吞成一次普通 prepare 失败（否则终态回调会重复/错位）。
+          if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
+          if (err instanceof InterpreterUnavailablePrepareError) {
+            // 最后一环：宿主解释器与 uv 兜底**双双**不可用。消息骨架仍以
+            // `解释器 <X.Y> 无法获取` 开头（→ `prepareFailureReason` 命中
+            // interpreter_unavailable），并把原本只在"宿主解释器缺失"时才出现的
+            // Store stub 诊断**追加**在后面——两类归因都在，运维既能按分类筛出
+            // "该预填池/该改派"的机器，又能看到 Windows 上最常见的那个坑。
+            // 直接 throw 原始错误也满足分类要求，但会把 Store stub 指引丢掉
+            // （那条指引是上一轮事故修复的产物，不能因为加了兜底就回归丢失）。
+            const message = `${err.message}；${HOST_PYTHON_MISSING_DIAGNOSTIC}`;
+            logPrepare(message);
+            throw new InterpreterUnavailablePrepareError(message, err.snapshot);
+          }
+          throw err;
+        }
+      }
+    }
     args = [actualEntrypoint];
   } else if (actualRuntime === 'shell') {
     // A-2（P1）R4-C P0 parity with executor-python _validate_shell_entrypoint
@@ -2049,7 +2239,15 @@ async function prepareExecution(
     throw new Error('entrypoint escapes the task work directory');
   }
 
-  logger.info(`Running task ${taskName} [${executionId}]: ${cmd} ${args.join(' ')}`);
+  // 桌面自包含改造（可观测性）：把本次 prepare 实际解析到的工具链摘要附在既有的
+  // 每任务日志行上——**不新增日志行**，也不为 shell 任务（从不解析工具链）改变
+  // 既有格式。运维据此一眼看出这台机器上各项运行时到底"来自哪里、什么版本"，
+  // 而不是只能从失败任务的 ENOENT/Store stub 英文提示反推。
+  // describeToolchain 只输出"来源 + 版本"，绝不含路径/环境指纹（见其单元测试）。
+  logger.info(
+    `Running task ${taskName} [${executionId}]: ${cmd} ${args.join(' ')}` +
+      (toolchainSummary ? ` (toolchain: ${toolchainSummary})` : ''),
+  );
 
   const timeoutForTask = timeout === 0 ? Infinity : timeout;
   return {

@@ -16,6 +16,10 @@ import { executeRouter } from './execute';
 import { pushCallback } from '../callback';
 import { taskWorkerManager } from '../task-worker';
 import { config as _testConfig } from '../config';
+// 桌面自包含改造：node 任务的 cmd 现在来自工具链的实跑结论。本 spec mock 了
+// child_process/run-command，真实探测拿不到结果，故显式 seed 一份宿主 node——
+// 本文件测的是 traceparent 贯穿，不该因"没探测到 node"而整体失败。
+import { buildToolchainForTest, seedToolchainForTest, invalidateToolchain } from '../toolchain';
 
 jest.mock('fs');
 jest.mock('child_process');
@@ -93,6 +97,18 @@ describe('OBS-01: traceparent 贯穿（executor-node）', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     Atomics.store(_runningCountArr, 0, 0);
+    // 桌面自包含改造：工具链缓存是模块级的，跨用例必须重置并 seed 确定值，
+    // 否则 node 任务会因"没有可用运行时"在 prepare 阶段失败（缓存串扰型失真）。
+    invalidateToolchain();
+    seedToolchainForTest(
+      buildToolchainForTest({
+        node: {
+          source: 'host',
+          path: process.platform === 'win32' ? 'node.exe' : 'node',
+          version: 'v24.19.0',
+        },
+      }),
+    );
     // fs automock 默认返回 undefined → workDir 校验/目录预建需要显式桩
     // （与 execute.spec beforeEach 同一形态）。
     (mockFs.existsSync as jest.Mock).mockReturnValue(false);

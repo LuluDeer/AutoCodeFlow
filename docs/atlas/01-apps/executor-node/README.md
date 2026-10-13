@@ -41,9 +41,21 @@ main.ts
         （停心跳 → 关 HTTP → 停 worker → 等 30s → 树杀残留任务 → drain 回调 → POST /api/executors/offline）
 ```
 
-注册时上报的运行时能力由 `runtime-detection.ts` 的 `detectRuntimesOnHost()` 探测：
-恒有 `shell`、`node`；python 走**双通道**——系统 `python3`/`python` 实跑
-`--version` 成功，**或**自带 uv 可用（uv 能按 `runtimeVersion` 获取解释器）。
+注册时上报的运行时能力由 `runtime-detection.ts` 的 `detectRuntimesOnHost()` 探测，
+其真值来自 `toolchain.ts`（**运行时工具链单一真值源**）：`shell` 恒有（系统
+cmd/bash 提供）；`node` 与 `python` 由**实跑结论**决定——`node` 为"宿主 node
+实跑通过 **或** Electron 自身可复用"，python 走**双通道**（宿主 `python3`/`python`/
+`py` 实跑 `--version` 成功，**或**自带 uv 可用）。
+
+> **为什么必须收敛到 `toolchain.ts`**（2026-10 生产事故修复）：此前能力上报与
+> 任务执行是**两套代码、两个真值源**，"上报的"与"能兑现的"可以互不一致且双方都
+> 不报错。两个实证形态：①`node` 被当"自证"（本进程跑在 Node 里），而桌面端执行器
+> 实际由 Electron 以 `ELECTRON_RUN_AS_NODE=1` 启动、任务侧硬编码裸 `node.exe`
+> → 没装 Node 的机器仍上报 `node`、任务必 ENOENT；②python 无版本任务的宿主兜底在
+> Windows 上常命中 **Microsoft Store 的 App Execution Alias 占位 stub**（文件存在、
+> spawn 命中、实跑 exit 9009）。现判定一律**实跑验真**，且能力上报与任务执行
+> **共用同一解析器**。**残余**：`git`/`npm` 仍是宿主依赖（已探测但调用点未消费），
+> 详见 `docs/design/desktop-self-contained-runtime/DESIGN.md` 的「遗留动作」。
 
 > 历史坑（已修）：原实现用 `which python3|python` 判定。**Windows 上没有
 > `which`**（`spawnSync` 返回 ENOENT、`status === null`），而代码只判

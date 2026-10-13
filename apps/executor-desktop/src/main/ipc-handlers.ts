@@ -520,8 +520,22 @@ export function registerIpcHandlers(): void {
       // 或直接关窗稍后在设置页/托盘处理。
       return { ok: true, error: startError };
     }
+    // 重跑向导流：主窗可能只是被 hide 让位（未销毁）——必须走
+    // focusOrOpenStatus（已有窗口 show+focus），不能调 openStatus：
+    // 它无条件 new BrowserWindow，会在旧窗之外再开一个重复状态窗
+    // （2026-10-13 真机报障）。首次启动无主窗时它才走新建分支。
     windowManager.closeWizard();
-    windowManager.openStatus();
+    windowManager.focusOrOpenStatus();
+    return { ok: true };
+  });
+
+  // ── 重新运行初始化向导（配置页入口，2026-10-13 用户需求）──────────────
+  // 向导只在首次启动（!configured）出现，配置过一次的机器没有再走引导的
+  // 入口。这里暴露 openWizard：配置页「重新运行初始化向导」直接唤出向导
+  // 窗口；向导 finish 走既有 save-and-close-wizard 链路（configured 语义
+  // 不变，B-9 启动判定照常把关），未保存前关闭窗口不改动任何配置。
+  ipcMain.handle('config:open-wizard', () => {
+    windowManager.openWizard();
     return { ok: true };
   });
 
@@ -587,6 +601,21 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('config:test-connection', async (_event, url: string) => {
     return testAdminApiConnection(url);
+  });
+
+  // ── 解释器下载源连通性探测（首启向导「下载源」步）────────────────────
+  // 把「官方源 vs 国内镜像」的选择交给用户前，先给实测数据：GitHub 直连在
+  // 部分国内网络会超时/重置（desktop v1.8.1 真机实证，uv 下载 CPython 直接
+  // download_failed），而 npmmirror 镜像稳定。探测语义刻意宽松：**收到任何
+  // HTTP 应答（含 3xx/4xx）即算可达**——要区分的是「能不能连上」（超时/重置），
+  // 不是「路径对不对」：具体 tarball URL 由 uv 版本决定且会随版本漂移，这里
+  // 不追，运行期真失败仍由 executor-node 的结构化报错兜底。
+  ipcMain.handle('config:test-interpreter-source', async () => {
+    const [official, mirror] = await Promise.all([
+      probeInterpreterSource(INTERPRETER_SOURCE_OFFICIAL_URL),
+      probeInterpreterSource(INTERPRETER_SOURCE_MIRROR_URL),
+    ]);
+    return { official, mirror };
   });
 
   /**
@@ -1325,6 +1354,60 @@ function resolveExecutionLogFile(executionId: string): string | null {
     log.warn(`log flat domain check failed: ${flat} (${check.error})`);
   }
   return null;
+}
+
+// ── 解释器下载源探测（ipc 'config:test-interpreter-source'）──────────────
+// 与 Wizard.tsx 的 MIRROR_PYTHON_SOURCE 字面量保持一致（两侧各持一份，改动
+// 必须同步）：渲染层选中「国内镜像」时把它写进 config.uvPythonInstallMirror，
+// 这里用它做连通性探测。官方侧探测 releases 页（稳定、不随 uv 版本漂移）。
+const INTERPRETER_SOURCE_OFFICIAL_URL =
+  'https://github.com/astral-sh/python-build-standalone/releases/latest';
+const INTERPRETER_SOURCE_MIRROR_URL =
+  'https://registry.npmmirror.com/-/binary/python-build-standalone/';
+const INTERPRETER_SOURCE_PROBE_TIMEOUT_MS = 6_000;
+
+interface InterpreterSourceProbe {
+  ok: boolean;
+  ms: number;
+  detail: string;
+}
+
+function probeInterpreterSource(url: string): Promise<InterpreterSourceProbe> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const done = (ok: boolean, detail: string) =>
+      resolve({ ok, ms: Date.now() - startedAt, detail });
+    try {
+      const parsed = new URL(url);
+      const isHttps = parsed.protocol === 'https:';
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        done(false, `不支持的协议: ${parsed.protocol}`);
+        return;
+      }
+      const transport = (isHttps ? https : http) as typeof http;
+      const req = transport.get(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port || (isHttps ? 443 : 80),
+          path: `${parsed.pathname}${parsed.search}`,
+          timeout: INTERPRETER_SOURCE_PROBE_TIMEOUT_MS,
+        },
+        (res) => {
+          // 任何 HTTP 应答（含 3xx/4xx）都证明「能连上」——本探测只回答
+          // 连通性，不校验路径正确性（见 ipc 注册处的语义注释）。
+          res.resume();
+          done(true, `HTTP ${res.statusCode}`);
+        },
+      );
+      req.on('error', (err) => done(false, err.message));
+      req.on('timeout', () => {
+        req.destroy();
+        done(false, '连接超时');
+      });
+    } catch (err: any) {
+      done(false, err?.message ?? String(err));
+    }
+  });
 }
 
 function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: string }> {

@@ -896,7 +896,10 @@ node dist\main.js
 
 - 成功标志：日志 `Registered to admin-api (runtimes: shell, node, python, ...)`，admin 侧 `GET /api/executors` 显示 `online`。
 - `WORK_DIR` 支持中文与空格（如 `C:/测试 目录/af`，R14-2.7 实测通过）；POSIX 风格路径（`/var/lib/...`）会被解析到当前盘根，建议显式用盘符路径。
-- 运行机需 `git`（任务 git 检出）、`node.exe` 与 `python.exe`（runtime=node/python 按 PATH 解析；executor-python 侧已统一用 `sys.executable` 免 `python3` 依赖，W-02）。
+- 运行机需 `git`（任务 git 检出）；`node.exe` 与 `python.exe`（runtime=node/python）**在桌面客户端形态下不再强制**：node 可由客户端自带的 Electron 运行时复用（`ELECTRON_RUN_AS_NODE=1`），python 若宿主没有则由 uv 解释器池按声明版本提供。executor-python 侧已统一用 `sys.executable` 免 `python3` 依赖（W-02）。
+  - **裸机（非桌面）部署仍需自行安装** `node` / `python` / `git`：容器镜像把运行时焊进了镜像（`FROM node:24-alpine` / `FROM python:3.12-slim`），而裸机没有这层保证。
+  - **已知未收敛项**：`git` 与 `npm` 仍是宿主依赖（执行器只探测、调用点尚未消费结果）。`gitRepo` 渠道的任务与需要装 node 依赖的任务，在全无工具链的机器上仍会失败——见 `docs/design/desktop-self-contained-runtime/DESIGN.md` 的 D-4。
+  - **Windows 特有陷阱**：`python.exe` / `python3.exe` 可能是 **Microsoft Store 的 App Execution Alias 占位程序**——文件存在、能被 `spawn` 命中，但实跑必失败（exit 9009）并打印一句 "Python was not found… from the Microsoft Store"。执行器的判定一律用**实跑 `--version`**，故 stub 会被正确识别为"不可用"并给出可读的失败原因，而不是抛一句莫名英文。若看到该失败，从 python.org 安装 Python 3.8+，或给任务声明 `runtimeVersion` 让执行器用 uv 取解释器。
 
 ### 4. shell 任务在 Windows 的语义（R-09 / W-11）
 

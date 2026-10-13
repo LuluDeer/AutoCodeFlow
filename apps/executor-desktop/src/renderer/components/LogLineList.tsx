@@ -12,7 +12,7 @@ const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
  * 共享日志行渲染层（V4-2 日志管线归一，「同一对象一种渲染」）。
  *
  * LogViewer（全屏）与 StatusWindow（页内预览）的行渲染统一收口到本组件：
- * trace 块合并（块首 chip + 块内 hideTrace）、E-02 到达动效（首屏行不闪）、
+ * trace 块合并（块内 hideTrace + 左舷竖线分组）、E-02 到达动效（首屏行不闪）、
  * 行号、搜索态命中高亮，以及行内工具（hover 浮现「复制此行」，warn/error 行
  * 另有「打开文件」入口）。
  *
@@ -20,11 +20,14 @@ const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
  * 仍由调用方承接（LogViewer 内置，StatusWindow 预览自持）。
  *
  * 性能（V4 后续优化 4）：行渲染 memo 化——hover/复制反馈按行下标传递，受影响
- * 的行才重渲染（350 行窗口内 hover 不再整列表 diff）。trace 合并/块首判定
- * 与到达动效的判定语义自原 LogViewer 原样保留：
+ * 的行才重渲染（350 行窗口内 hover 不再整列表 diff）。trace 合并/到达动效
+ * 的判定语义自原 LogViewer 原样保留：
  *  - trace 块只在「展示窗口内」连续同 trace 行构成（无 trace 行打断）；
  *  - 搜索态走 HighlightText 原样渲染（匹配计数/高亮必须基于完整行文本）；
  *  - 首次拿到非空 lines 时记录已有 id 集合，之后新增的行才应用动画类。
+ *  - 块首**不**渲染 trace 标签（2026-10-13 真机报障：标签与时间戳正文粘连，
+ *    且 30s 心跳 2 行小块上纯噪音）——分组只靠左舷竖线 + hideTrace，
+ *    完整 trace 仍在落盘文件，搜索/复制不受影响。
  */
 
 export interface LogLineListProps {
@@ -55,9 +58,6 @@ interface LogRowProps {
   i: number;
   /** 块内行（trace 合并：剥离正文 trace 段 + 左舷竖线） */
   inBlock: boolean;
-  /** 块首（渲染 trace chip 的那一行） */
-  isBlockHead: boolean;
-  trace: string | null;
   isCurrent: boolean;
   isNew: boolean;
   lineNo: number;
@@ -76,8 +76,6 @@ const LogRow = memo(function LogRow({
   line,
   i,
   inBlock,
-  isBlockHead,
-  trace,
   isCurrent,
   isNew,
   lineNo,
@@ -99,7 +97,6 @@ const LogRow = memo(function LogRow({
       onMouseLeave={() => onHover(null)}
     >
       {showLineNo && <span className="log-line-no">{lineNo}</span>}
-      {isBlockHead && trace !== null && <span className="ll-trace-chip">trace {trace}</span>}
       {searching ? <HighlightText text={line.text} query={q} /> : <FormattedLogText text={line.text} hideTrace={inBlock} />}
       {hovered && (
         <span className="log-line-tools">
@@ -190,7 +187,6 @@ export default function LogLineList({
       {displayed.map(({ line, i }, di) => {
         const trace = displayedTraces[di];
         const inBlock = !searching && trace !== null;
-        const isBlockHead = inBlock && (di === 0 || displayedTraces[di - 1] !== trace);
         const isNew = Boolean(
           arriveAnimation
           && arrivalIds !== null
@@ -203,8 +199,6 @@ export default function LogLineList({
             line={line}
             i={i}
             inBlock={inBlock}
-            isBlockHead={isBlockHead}
-            trace={trace}
             isCurrent={currentIdx !== null && currentIdx === i}
             isNew={isNew}
             lineNo={lineNo}

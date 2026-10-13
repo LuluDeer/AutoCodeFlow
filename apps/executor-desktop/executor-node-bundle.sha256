@@ -418,5 +418,39 @@
 #     本机(Linux) ncc 0.45 重打，与 CI Ubuntu 重打逐字节一致（43feb49c…）。
 #     ⚠️ 首轮回填 d2af6f6b… 漏算②（重打在 lockfile bump 之前），CI 二轮抓出
 #     ——回填必须在**全部**依赖/源码变更落盘之后执行。
-source-digest: c6f06940ed4397702ee2426a7010c68120bae8159261d3c0d4b11faa8314a6f3
-43feb49caad4c1c930baba7c2fdad37ea46444f0e70423436b19ea92abbc8881  index.js
+#   - 2026-10 桌面执行器「运行时自包含」改造（生产事故：全新 Windows 机器装客户端
+#     后中台部署 1 个 python 应用即报 Microsoft Store 的 "Python was not found"）：
+#     新增 `src/toolchain.ts`（运行时工具链**单一真值源**，实跑验真取代存在性判定）
+#     + `src/python-venv.ts`（共享 venv/解释器解析层，deploy 与 execute 同源）；
+#     `routes/execute.ts` 的 node 分支改用工具链并在 `source==='self'` 时注入
+#     `ELECTRON_RUN_AS_NODE=1`、python 兜底改用**验真过的**宿主解释器；
+#     `routes/deploy.ts` 首次接入 uv 解释器池（此前 `grep -c uv` = 0）；
+#     `runtime-detection.ts` 的 node 能力由"自证"改为实跑真值（消除"没装 Node
+#     仍上报 node"的虚报）。source-digest 44 个输入文件。
+#     回填环境：本机 Linux（node 24.19 / ncc 0.45.0）。实测**同源码在两个不同绝对
+#     路径下重打字节一致**（.pdprobe/A 与更深的同级目录同得 eba8ce8a…），且同一
+#     目录重复构建两次亦一致——即 BUNDLE-DRIFT-FINDING 记载的 ncc 0.44「产物随
+#     构建绝对路径变化」在本工具链下**已不成立**（与 §385 附注的结论一致），
+#     故本行可按既有先例本地回填，CI 仍权威复验。
+#   - 2026-10 同上改造的**审查修复轮**（独立对抗式审查发现 4 项缺陷后修复）：
+#     ①`routes/execute.ts` 新增 `DEFAULT_PYTHON_VERSION = '3.12'` 默认版本兜底——
+#     无声明版本且宿主 Python 不可用时经 uv 取 3.12 执行（消灭"上报 python 却
+#     兑现不了"的另一半，即本次事故的原始形态）；②`routes/deploy.ts` 的 **node**
+#     分支改走工具链 + `ELECTRON_RUN_AS_NODE` 注入（此前仍硬编码 `cmd='node'`，
+#     干净机器上 node 应用必 ENOENT）；③`interpreters.ts` 的池回收依赖扫描
+#     纳入 `<workDir>/apps/**/releases/*/.venv`（此前只扫 `.venvs`，会把在跑
+#     部署应用赖以生存的池版本回收掉 → 应用崩溃）；④`python-venv.ts` 的
+#     `resolveStartPython` 增加 venv 健康判定（不再"文件存在即采信"死 shim）
+#     + abort signal 透传。`main.ts` 的探测兜底改为 shell-only（不再虚报 node）。
+#   - 2026-10 同一改造的**第二修复轮**（补齐"应用部署"侧的默认版本兜底 + 常量归位）：
+#     ①`resolveDeployInterpreter` 新增**默认版本兜底**——池空 + 宿主不可用时经 uv 取
+#     `DEFAULT_PYTHON_VERSION`（此前应用链路**漏了**该兜底，故"中台部署 1 个 python
+#     应用"这个**原始事故场景**仍会失败；任务链路上一轮已修）；②`prewarmRuntimeResolution`
+#     对 python 显式解析一次（best-effort）——没有 requirements.txt 的应用此前**任何一步
+#     都不会去获取解释器**，同步的 `startApp` 只能看到空池；③`DEFAULT_PYTHON_VERSION`
+#     从 `interpreters.ts` 挪到零依赖的 `python-defaults.ts`：它被任务/部署两条链路共用，
+#     而 `interpreters.ts` 常被测试整体 mock，放那里会因 mock 漏 re-export 而**静默变成
+#     undefined**（落地时真实发生过，路由级用例断言到 `ensureVersion(undefined, …)`）。
+#     source-digest 45 个输入文件（新增 python-defaults.ts）。
+source-digest: 60ba8c3e1d371f236949a75cd317c85828017b91fb63238b6a110edd5f873adb
+6fc3d1b4e5d4e295686ad444bd4f6bd190f931ebbd510470cbe9b9bde13a2dc8  index.js

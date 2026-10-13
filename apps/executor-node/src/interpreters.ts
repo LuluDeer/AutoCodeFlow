@@ -60,6 +60,8 @@ function effectiveRuntimeVersionRange(): { min: string; max: string } {
  */
 export const ONLINE_DOWNLOAD_MIN = '3.8';
 
+export { DEFAULT_PYTHON_VERSION } from './python-defaults';
+
 /** 探测结果缓存 TTL。心跳 30s，绝不能每个心跳都 spawn 一次 uv（NFR-10）。 */
 const DISCOVERY_CACHE_TTL_MS = 60_000;
 
@@ -657,9 +659,12 @@ export function invalidateCache(): void {
 // 池只增不删会让长跑执行器被 ~250MB/版本 填满磁盘。两条可配置红线（默认值与
 // python 侧一致：单版本 250MB / 总池 4GB），触发后按目录 mtime 升序回收最久
 // 未使用的版本，直到落回红线。三条硬约束：
-//   1. 引用感知：仍被任务 venv 依赖的版本一律跳过（venv 的 python.exe 只是
-//      shim，真身就是池里那个目录——删了 venv 当场报废，依赖记在
-//      `pyvenv.cfg` 的 `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`）；
+//   1. 引用感知：仍被 **任务 venv 或部署 venv** 依赖的版本一律跳过（venv 的
+//      python.exe 只是 shim，真身就是池里那个目录——删了 venv 当场报废，依赖
+//      记在 `pyvenv.cfg` 的 `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`）；
+//      任务 venv 在 `<workDir>/.venvs`，部署 venv 在
+//      `<workDir>/apps/<appId>/releases/<key>/.venv`，**两处都必须扫**
+//      （见 `venvDependencyHomes`：曾经只扫前者，回收器会删掉活应用依赖的版本）；
 //   2. 全部候选被 pin 住时不删任何东西，只留响亮告警；
 //   3. 只碰解释器池（`cpython-*` 目录），绝不碰 venv/workdir（那是
 //      file-logger.cleanupWorkDir 的 TTL 清扫职责）。
@@ -756,31 +761,99 @@ function readPyvenvCfgHome(venvDir: string): string | null {
 }
 
 /**
- * `<WORK_DIR>/.venvs/*` 的依赖解释器 home → 依赖它的 venv 目录名列表。
+ * 收集一个 venv 目录的依赖 home（`pyvenv.cfg` 的 `home =`），写进 `homes`。
+ * 读不到/无 home 一律跳过（与 `readPyvenvCfgHome` 的防御姿态一致）。
+ */
+function collectVenvDependency(homes: Map<string, string[]>, venvDir: string, label: string): void {
+  const home = readPyvenvCfgHome(venvDir);
+  if (!home) return;
+  const key = normalizePathKey(home);
+  const list = homes.get(key);
+  if (list) list.push(label);
+  else homes.set(key, [label]);
+}
+
+/**
+ * 部署 venv 的固定布局深度：`<workDir>/apps/<appId>/releases/<releaseKey>/.venv`。
  *
- * 为什么必须有这一步（python 侧实测确认的生产事故类缺陷）：`uv venv` 建出的
- * venv 里 `Scripts/python.exe` 只是约 600KB 的 shim，真正的解释器仍在缓存池里，
- * 依赖记在 `pyvenv.cfg` 的 `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`。池里那个
- * 目录一旦被删，该 venv 当场报废（`No Python at '...'`），且是静默报废。
+ * 为什么**固定深度**而不是递归 `apps/**` 全树：本函数跑在 6h 清扫定时器上，
+ * 而 `apps/` 会随应用数与历史 release 数增长（每个 release 内含 node_modules /
+ * venv，成千上万个文件）。无界遍历 `workDir` 既慢又会把事件循环拖住。部署侧
+ * 的路径由 `deploy.ts` 的 `buildDeploymentPaths()` 唯一决定，就是这四层，
+ * 因此逐层枚举 + 固定深度既能覆盖全部真实 venv，又把开销钉死在
+ * `O(应用数 × releases 数)` 次 `readdir`（且每次 readdir 都被 try/catch 兜住，
+ * 任何一个不可读目录只跳过自己）。
+ */
+function collectDeployVenvDependencies(homes: Map<string, string[]>): void {
+  const appsRoot = path.join(config.workDir, 'apps');
+  let appDirs: fs.Dirent[];
+  try {
+    appDirs = fs.readdirSync(appsRoot, { withFileTypes: true });
+  } catch {
+    return; // 从未部署过应用（或不可读）→ 无依赖
+  }
+  for (const appDir of appDirs) {
+    if (!appDir.isDirectory()) continue;
+    const releasesRoot = path.join(appsRoot, appDir.name, 'releases');
+    let releases: fs.Dirent[];
+    try {
+      releases = fs.readdirSync(releasesRoot, { withFileTypes: true });
+    } catch {
+      continue; // 该应用从未发布过 release（或不可读）→ 跳过
+    }
+    for (const release of releases) {
+      // 只认目录：release 目录内才是真正被启动的应用，symlink/junction
+      // （`current` 不在此层，但防御未来布局变化）不追。
+      if (!release.isDirectory()) continue;
+      const venvDir = path.join(releasesRoot, release.name, '.venv');
+      collectVenvDependency(
+        homes,
+        venvDir,
+        `apps/${appDir.name}/releases/${release.name}`,
+      );
+    }
+  }
+}
+
+/**
+ * venv（任务 + 部署）依赖的解释器 home → 依赖它的 venv 标签列表。
+ *
+ * ## 为什么同时扫两处（本轮评审缺陷 2 的修复点）
+ *
+ * `uv venv` 建出的 venv 里 `Scripts/python.exe` 只是约 600KB 的 shim，真正的
+ * 解释器仍在缓存池里，依赖记在 `pyvenv.cfg` 的
+ * `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`。池里那个目录一旦被删，该 venv
+ * 当场报废（`No Python at '...'`），且是静默报废。
+ *
+ * 原实现**只**扫 `<workDir>/.venvs`（任务 venv），看不见部署 venv
+ * （`<workDir>/apps/<appId>/releases/<releaseKey>/.venv`）。本轮把应用部署链接到
+ * 解释器池之后，这个盲区变成了一条**新引入**的暴露：回收器会在 6h 清扫里删掉
+ * 一个正在运行的已部署应用所依赖的池版本，把生产应用打成
+ * "No Python at ..."（旧的自包含 `python -m venv` 实现对此免疫，故属回归）。
+ *
+ * 两处合起来才是完整的"谁还在用这个池版本"：漏掉任何一处，回收就越过一条
+ * 活依赖去删池目录。这是**纯加宽**——既有 `.venvs` 的语义、返回结构、
+ * 调用点签名一律不变。
  */
 function venvDependencyHomes(): Map<string, string[]> {
   const homes = new Map<string, string[]>();
+
+  // 1) 任务 venv：`<WORK_DIR>/.venvs/*`（既有行为，逐字节保留）。
   const venvRoot = path.join(config.workDir, '.venvs');
   let children: fs.Dirent[];
   try {
     children = fs.readdirSync(venvRoot, { withFileTypes: true });
   } catch {
-    return homes; // 从未建过 venv（或不可读）→ 无依赖
+    children = []; // 从未建过 venv（或不可读）→ 继续看部署 venv
   }
   for (const child of children) {
     if (!child.isDirectory()) continue;
-    const home = readPyvenvCfgHome(path.join(venvRoot, child.name));
-    if (!home) continue;
-    const key = normalizePathKey(home);
-    const list = homes.get(key);
-    if (list) list.push(child.name);
-    else homes.set(key, [child.name]);
+    collectVenvDependency(homes, path.join(venvRoot, child.name), child.name);
   }
+
+  // 2) 部署 venv：`<WORK_DIR>/apps/<appId>/releases/<key>/.venv`（本轮加宽）。
+  collectDeployVenvDependencies(homes);
+
   return homes;
 }
 
@@ -841,7 +914,7 @@ async function attemptReclaim(
   if (dependents.length > 0) {
     logger.warn(
       `Skipping reclamation of interpreter ${entry.name} (${reason}): ` +
-        `${dependents.length} task venv(s) still depend on it ` +
+        `${dependents.length} venv(s) still depend on it ` +
         `(${dependents.slice(0, 5).join(', ')}). Deleting it would brick those venvs ` +
         '(they are shims over this directory).',
     );
@@ -849,7 +922,7 @@ async function attemptReclaim(
   }
   logger.warn(
     `Reclaiming interpreter ${entry.name} (${entry.size} bytes, last used ` +
-      `${new Date(entry.mtime).toISOString()}, ${reason}) — no task venv depends on it`,
+      `${new Date(entry.mtime).toISOString()}, ${reason}) — no venv depends on it`,
   );
   await reclaimInterpreterVersion(poolRoot(), entry.path);
   return [true, entry.size];
@@ -1072,8 +1145,9 @@ export async function enforceInterpreterPoolLimits(): Promise<InterpreterPoolRec
       // 全部候选都被依赖 pin 住：不删任何东西，但必须让人看见。
       logger.warn(
         `Interpreter pool is still over the total limit (${totalBytes} bytes > ${totalLimit} bytes) — ` +
-          'every candidate version is still referenced by a task venv, so nothing was reclaimed. ' +
+          'every candidate version is still referenced by a venv, so nothing was reclaimed. ' +
           `Remove the dependent task venvs under ${path.join(config.workDir, '.venvs')} ` +
+          `or undeploy the applications holding venvs under ${path.join(config.workDir, 'apps')} ` +
           '(or raise INTERPRETER_TOTAL_GB) to allow reclamation.',
       );
     }

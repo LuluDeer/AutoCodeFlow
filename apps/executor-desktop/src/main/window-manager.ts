@@ -139,6 +139,11 @@ function hardenWindow(win: BrowserWindow): void {
 export class WindowManager {
   private statusWindow: BrowserWindow | null = null;
   private wizardWindow: BrowserWindow | null = null;
+  // 重跑向导流（2026-10-13）：主窗已开着时唤出向导，主窗 hide 让位（不
+  // close——未保存的配置改动与页面状态保留）。向导以任何方式关闭（完成或
+  // 取消）都在 wizardWindow 的 closed 钩子里唤回主窗；finish 路径的
+  // focusOrOpenStatus 与此幂等（已 show 的窗口只聚焦，不新建）。
+  private statusHiddenByWizard = false;
 
   openWizard(): void {
     if (this.wizardWindow && !this.wizardWindow.isDestroyed()) {
@@ -146,9 +151,16 @@ export class WindowManager {
       return;
     }
 
+    // 重跑向导：主窗可见时为向导让位（首次启动无主窗，此分支不触发）——
+    // 与首次启动行为一致：向导是唯一窗口，而不是叠在旧窗上的对话框。
+    if (this.statusWindow && !this.statusWindow.isDestroyed() && this.statusWindow.isVisible()) {
+      this.statusHiddenByWizard = true;
+      this.statusWindow.hide();
+    }
+
     this.wizardWindow = new BrowserWindow({
-      width: 520,
-      height: 640,
+      width: 660,
+      height: 780,
       resizable: false,
       center: true,
       show: false,
@@ -165,7 +177,16 @@ export class WindowManager {
     // SEC-DSK-01：导航/弹窗/webview 守卫（每个窗口都必须挂）
     hardenWindow(this.wizardWindow);
     loadPage(this.wizardWindow, 'wizard');
-    this.wizardWindow.on('closed', () => { this.wizardWindow = null; });
+    this.wizardWindow.on('closed', () => {
+      this.wizardWindow = null;
+      // 重跑向导流收尾：无论向导是完成（save-and-close-wizard）还是用户
+      // 直接点关闭取消，都把为主窗让位时隐藏的窗口唤回——否则取消路径下
+      // 桌面上什么都不剩（配置未动，只是界面消失了）。
+      if (this.statusHiddenByWizard) {
+        this.statusHiddenByWizard = false;
+        this.focusOrOpenStatus();
+      }
+    });
     log.info('Wizard window opened');
   }
 

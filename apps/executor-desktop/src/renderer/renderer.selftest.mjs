@@ -962,6 +962,199 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!readFileSync(resolve(root, 'i18n.ts'), 'utf8').includes("'wizard.connect.skipWarning': '尚未通过连接测试，继续可能无法注册。'")) {
     throw new Error('B-11: wizard.connect.skipWarning zh 文案必须保持原值');
   }
+
+  // ── 解释器下载源（首启向导第 4 步）：把源选择交给用户，探测先行 ─────
+  // 背景（v1.8.1 真机实证）：国内网络 GitHub 直连超时/重置，官方源首次下载
+  // CPython 直接 download_failed。守卫钉死整条链路：5 步结构 → 表单字段 →
+  // 探测 IPC 三件套 → 镜像字面量双端一致 → i18n 双语键。
+  if (!wizardNoCommentsForAudit.includes('TOTAL_STEPS = 5')) {
+    throw new Error('下载源: 向导应为 5 步（TOTAL_STEPS = 5）');
+  }
+  if (!wizardNoCommentsForAudit.includes("t('shell.step5')")) {
+    throw new Error('下载源: STEP_LABELS 缺少第 5 步标签（shell.step5）');
+  }
+  if (!wizardNoCommentsForAudit.includes('uvPythonInstallMirror')) {
+    throw new Error('下载源: WizardForm 缺少 uvPythonInstallMirror 字段（与设置页同字段，无独立通道）');
+  }
+  if (!preloadSrc.includes('testInterpreterSource')) {
+    throw new Error('下载源: preload 未暴露 testInterpreterSource');
+  }
+  if (!ipcHandlers.includes("'config:test-interpreter-source'")) {
+    throw new Error('下载源: 主进程未注册 config:test-interpreter-source');
+  }
+  if (!wizardNoCommentsForAudit.includes('testInterpreterSource()')) {
+    throw new Error('下载源: Wizard 未消费探测结果');
+  }
+  if (!ipcHandlers.includes('function probeInterpreterSource(')) {
+    throw new Error('下载源: 主进程探测函数缺失');
+  }
+  // 镜像 base URL 在 Wizard（写库值）与 ipc-handlers（探测目标）两侧各持一份
+  // 字面量——这里防单侧悄悄改导致"探测的"与"写入的"分裂。
+  const interpreterMirrorUrl = 'https://registry.npmmirror.com/-/binary/python-build-standalone';
+  if (!wizardNoCommentsForAudit.includes(interpreterMirrorUrl) || !ipcHandlers.includes(interpreterMirrorUrl)) {
+    throw new Error('下载源: 镜像 base URL 必须在 Wizard 与 ipc-handlers 两侧一致');
+  }
+  if (!i18nTexts.includes("'wizard.source.optionMirror': '国内镜像（npmmirror）'")) {
+    throw new Error('下载源: wizard.source.optionMirror zh 文案缺失');
+  }
+  if (!i18nTexts.includes("'wizard.source.autoSelected': '官方源不可达，已自动选择国内镜像（可改回）'")) {
+    throw new Error('下载源: 自动推荐提示 zh 文案必须如实（改的是未保存表单，可改回）');
+  }
+}
+
+// ── A-03 trace 合并回归守卫：块首 chip 已删除（2026-10-13 真机报障）──────
+// 真机截图：块首标签 `trace <id8>` 因 CSS 负外边距与时间戳正文粘连
+// （渲染成 `trace 1577fd9e09:42:26.916 INFO …`），且 30s 心跳 2 行小块上
+// 该标签纯噪音。处置：删除块首 chip 渲染与死样式；分组语义由左舷竖线
+// （log-trace-block）+ 块内 hideTrace 承载，完整 trace 仍在落盘文件。
+// 守卫两头钉死：chip 不得回来（粘性问题），合并能力不得被连带删掉。
+{
+  const logLineList = readFileSync(resolve(root, 'components', 'LogLineList.tsx'), 'utf8');
+  if (logLineList.includes('ll-trace-chip') || /trace \{trace\}/.test(logLineList)) {
+    throw new Error('A-03 回归: LogLineList 仍渲染块首 trace chip（真机报障：与正文粘连且纯噪音）');
+  }
+  if (!logLineList.includes('hideTrace={inBlock}')) {
+    throw new Error('A-03 回归: 块内行 hideTrace 丢失（trace 段会重新漏进正文）');
+  }
+  if (!logLineList.includes('log-trace-block')) {
+    throw new Error('A-03 回归: trace 分组左舷竖线类名丢失（同组行不再可辨）');
+  }
+  if (css.includes('ll-trace-chip')) {
+    throw new Error('A-03 回归: .ll-trace-chip 死样式残留（类名扫描基线被污染）');
+  }
+  if (!css.includes('.log-line.log-trace-block')) {
+    throw new Error('A-03 回归: trace 分组左舷竖线样式缺失');
+  }
+}
+
+// ── 状态页常规心跳过滤（2026-10-13 用户需求）────────────────────────────
+// 预览层开关：隐藏 scheduler.ts 两条 info 心跳文案（**行尾精确匹配**），
+// `Heartbeat failed: …`（warn、文案不同）永不误伤；偏好落 localStorage；
+// 全屏查看器与缓冲不受影响（它本就有级别过滤）。
+{
+  const statusPage = pages[3];
+  const statusSrc = statusPage
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  if (!statusSrc.includes('function isRoutineHeartbeatLine(')) {
+    throw new Error('心跳过滤: 判定函数缺失');
+  }
+  if (!statusSrc.includes('/ (Sending heartbeat|Heartbeat succeeded)$/')) {
+    throw new Error('心跳过滤: 判定必须行尾精确锚定（防误伤 Heartbeat failed 等非常规行）');
+  }
+  if (!statusSrc.includes('aria-pressed={hideHeartbeat}')) {
+    throw new Error('心跳过滤: 开关缺 aria-pressed 语义');
+  }
+  if (!statusSrc.includes('window.localStorage.getItem(HEARTBEAT_FILTER_PREF_KEY)')
+    || !statusSrc.includes('window.localStorage.setItem(HEARTBEAT_FILTER_PREF_KEY')) {
+    throw new Error('心跳过滤: 偏好未落 localStorage（重启后不记忆）');
+  }
+  if (!statusSrc.includes('logs.filter((line) => !isRoutineHeartbeatLine(line.text))')) {
+    throw new Error('心跳过滤: 预览切片未消费过滤判定');
+  }
+  const zhI18n = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+  if (!zhI18n.includes("'status.heartbeatFilter': '过滤心跳'")) {
+    throw new Error('心跳过滤: 开关文案 zh 键缺失');
+  }
+  if (!zhI18n.includes("'status.heartbeatFilterShowTitle': '已隐藏常规心跳日志，点击恢复完整日志'")) {
+    throw new Error('心跳过滤: 恢复提示 zh 文案缺失');
+  }
+  if (!css.includes('.btn.is-active')) {
+    throw new Error('心跳过滤: 开关激活态样式缺失');
+  }
+}
+
+// ── 重跑向导（2026-10-13 用户需求）──────────────────────────────────────
+// 配置页引导卡入口唤出向导窗口；向导表单预填当前配置（token 为掩码哨兵，
+// 原样回传 = 保留已存 token，见 config-store TOKEN_MASK）；finish 不重置
+// 未暴露档位（logLevel/并发数沿用已存值）；未保存前关闭不改动任何配置。
+{
+  const configSrc = pages[1]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const wizardNoComments = pages[4]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const preloadRerun = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+  const ipcRerun = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
+  if (!ipcRerun.includes("'config:open-wizard'")) {
+    throw new Error('重跑向导: 主进程未注册 config:open-wizard');
+  }
+  if (!preloadRerun.includes('openWizard')) {
+    throw new Error('重跑向导: preload 未暴露 openWizard');
+  }
+  if (!configSrc.includes('openWizard')) {
+    throw new Error('重跑向导: 配置页入口缺失');
+  }
+  if (!wizardNoComments.includes('window.electronAPI.getConfig()')) {
+    throw new Error('重跑向导: Wizard 未预填当前配置');
+  }
+  // finish 不得把未暴露档位冲回固定默认（重跑一次 = logLevel/并发数静默被改）。
+  if (!wizardNoComments.includes('wizardCfg?.logLevel') || !wizardNoComments.includes('wizardCfg?.maxConcurrentTasks')) {
+    throw new Error('重跑向导: finish 重置 logLevel/并发数（重跑 = 静默改配置）');
+  }
+  const zhI18n = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+  if (!zhI18n.includes("'cfg.conn.rerunWizard': '重新运行初始化向导'")) {
+    throw new Error('重跑向导: 入口文案 zh 键缺失');
+  }
+  // 窗口管理语义（2026-10-13 真机报障）：重跑完成后多出一个状态窗 + 旧窗不让位。
+  // 1) 向导保存链不得调 openStatus——它无条件 new BrowserWindow，旧窗还在时
+  //    会再开一个重复状态窗；必须走 focusOrOpenStatus（已有则聚焦）。
+  if (ipcRerun.includes('windowManager.openStatus()')) {
+    throw new Error('重跑向导: 向导保存链仍调 openStatus（无条件新建 → 完成后多出一个状态窗）');
+  }
+  if (!ipcRerun.includes('windowManager.focusOrOpenStatus()')) {
+    throw new Error('重跑向导: 向导保存链未走 focusOrOpenStatus（已有窗口必须聚焦而非新建）');
+  }
+  // 2) 唤出向导时主窗 hide 让位（与首启"向导是唯一窗口"一致，未保存改动
+  //    保留）；向导以任何方式关闭（完成或取消）都必须唤回，否则取消路径下
+  //    桌面上什么都不剩。
+  const wm = readFileSync(resolve(root, '..', 'main', 'window-manager.ts'), 'utf8');
+  if (!wm.includes('statusHiddenByWizard') || !wm.includes('this.statusWindow.hide()')) {
+    throw new Error('重跑向导: openWizard 未为主窗让位（向导叠在旧窗上）');
+  }
+  if (!/wizardWindow\.on\('closed', \(\) => \{[\s\S]*?statusHiddenByWizard[\s\S]*?\}\);/.test(wm)) {
+    throw new Error('重跑向导: 向导关闭未唤回让位的主窗（取消路径下桌面什么都不剩）');
+  }
+}
+
+// ── 向导回连模式开关 + 视觉优化（2026-10-13 用户需求）──────────────────
+{
+  const wizardNoComments = pages[4]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const css = readFileSync(resolve(root, 'styles', 'pages.css'), 'utf8');
+  const wm = readFileSync(resolve(root, '..', 'main', 'window-manager.ts'), 'utf8');
+  const zhI18n = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+
+  // 回连模式：表单字段默认开 + 预填 + StepExecutor 开关 + StepFinish 确认行
+  if (!wizardNoComments.includes('pullMode: true')) {
+    throw new Error('回连模式: WizardForm 默认值缺失或非 true');
+  }
+  if (!wizardNoComments.includes("t('wizard.machine.pullTitle')")) {
+    throw new Error('回连模式: StepExecutor 开关缺失');
+  }
+  if (!wizardNoComments.includes("t('wizard.finish.keyPull')")) {
+    throw new Error('回连模式: StepFinish 确认行缺失');
+  }
+  if (!wizardNoComments.includes("cfg.pullMode === 'boolean'")) {
+    throw new Error('回连模式: 预填未载入 pullMode');
+  }
+  if (!zhI18n.includes("'wizard.machine.pullTitle': '回连模式（推荐）'")) {
+    throw new Error('回连模式: zh i18n 键缺失');
+  }
+
+  // 视觉优化：窗口放大 + 去掉四周底边（卡片边框/阴影/圆角 + wrap padding）
+  if (!wm.includes('width: 660,') || !wm.includes('height: 780,')) {
+    throw new Error('向导视觉: 窗口尺寸未放大（仍偏小）');
+  }
+  if (!/\.wizard-wrap \{[\s\S]*?padding: 0;/.test(css)) {
+    throw new Error('向导视觉: .wizard-wrap 仍有 padding（四周底边来源）');
+  }
+  const wizardBlock = css.match(/\.wizard \{[\s\S]*?\}/)?.[0] ?? '';
+  if (wizardBlock.includes('border:') || wizardBlock.includes('border-radius:') || wizardBlock.includes('box-shadow:')) {
+    throw new Error('向导视觉: .wizard 仍有卡片边框/圆角/阴影（frameless 窗口内不需要）');
+  }
 }
 
 // ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
