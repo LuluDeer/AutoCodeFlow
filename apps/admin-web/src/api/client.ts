@@ -67,6 +67,110 @@ function markToastedByClient(value: unknown): void {
   }
 }
 
+/**
+ * TOAST-I18N（2026-10-13 生产报障）：识别「框架样板文案」，避免它盖掉 i18n 文案。
+ *
+ * F-1 的设计是「业务 message 优先，HTTP 状态文案走 i18n（http.error.<code>）」。
+ * 但 NestJS 的框架级异常**总是**自带 message，于是 `err.response.data.message`
+ * 恒为真，i18n 分支永远轮不到——`http.error.429` 等键实际是**死配置**。
+ * 用户报障现场看到的正是这句裸英文：
+ *
+ *     ThrottlerException: Too Many Requests
+ *
+ * 而同一状态码在 zh 里本该显示「操作过于频繁，请稍后再试」。
+ *
+ * 判定口径：只认**框架自己生成**的样板串（状态名 / 异常类名前缀），其余一律当
+ * 业务文案原样透出（后端大量业务错误是中文描述，必须保留）。列表故意保守——
+ * 宁可漏判（回落旧行为、显示后端原文）也不误判（吃掉业务文案）。不在表内的
+ * 文案行为与改动前逐位一致，不会更坏。
+ */
+const FRAMEWORK_BOILERPLATE_MESSAGES = new Set([
+  // @nestjs/common 内置 HttpException 的状态名（initMessage 生成）
+  'Bad Request',
+  'Unauthorized',
+  'Forbidden',
+  'Not Found',
+  'Conflict',
+  'Internal Server Error',
+  'Service Unavailable',
+  'Too Many Requests',
+  // 本仓守卫/过滤器的固定英文文案（roles.guard / http-exception.filter）
+  'Forbidden resource',
+  'Internal server error',
+  'Resource already exists',
+  'Related resource not found',
+]);
+
+function isFrameworkBoilerplateMessage(msg: string): boolean {
+  if (FRAMEWORK_BOILERPLATE_MESSAGES.has(msg)) return true;
+  // 形如 `ThrottlerException: Too Many Requests`——任何 NestJS 异常类的
+  // `${name}: ${message}` 形态（UnauthorizedException…）都是框架产物，
+  // 不是业务语义。
+  return /^[A-Za-z]+Exception: /.test(msg);
+}
+
+/**
+ * 从后端错误体里取「值得直接展示给用户」的业务文案；取不到（缺失/空/纯框架
+ * 样板）时返回空串，由调用方回落 i18n 的 http.error.<code>。
+ *
+ * `message` 可能是字符串（http-exception.filter 的产物）或字符串数组（NestJS
+ * ValidationPipe 原始形态）——数组按 '; ' 拼接，与 filter 自己的
+ * `Validation failed: a; b` 格式一致，也避免把数组当 ReactNode 直接渲染。
+ */
+function pickBusinessMessage(
+  message: unknown,
+  error: unknown,
+): string {
+  const normalize = (v: unknown): string => {
+    if (typeof v === 'string') return v.trim();
+    if (Array.isArray(v)) {
+      return v.filter((x): x is string => typeof x === 'string' && !!x.trim())
+        .join('; ')
+        .trim();
+    }
+    return '';
+  };
+  for (const candidate of [normalize(message), normalize(error)]) {
+    if (candidate && !isFrameworkBoilerplateMessage(candidate)) return candidate;
+  }
+  return '';
+}
+
+/**
+ * TOAST-DEDUPE（2026-10-13 生产报障）：短窗内**同文案**只弹一条。
+ *
+ * 现场症状是「弹出非常多的 ThrottlerException」：应用列表页 26 个并发请求同时
+ * 429，每个失败各弹一条**完全相同**的 toast，瞬间叠成一面墙（antd 默认
+ * maxCount 很大，且不按内容去重）。同一次故障的 26 条重复提示对用户零信息增量，
+ * 只是把真正要看的那句话淹没。
+ *
+ * 口径：窗口内同文案抑制（1500ms 足以覆盖一次并发扇出的同时到达，又短到不会
+ * 吃掉用户「再点一次」的反馈）。不同文案不受影响。
+ *
+ * 注意：被抑制的请求**仍要**打 `__toastedByClient` 标（见调用点），否则页面
+ * catch 的 showApiError 兜底会把它补弹回来，去重形同虚设。
+ */
+const TOAST_DEDUPE_WINDOW_MS = 1500;
+const recentToasts = new Map<string, number>();
+
+/** 测试用：清空去重窗口（模块级状态会跨用例残留）。 */
+export function __resetToastDedupe(): void {
+  recentToasts.clear();
+}
+
+function shouldShowToast(msg: string, now: number = Date.now()): boolean {
+  const last = recentToasts.get(msg);
+  if (last !== undefined && now - last < TOAST_DEDUPE_WINDOW_MS) return false;
+  recentToasts.set(msg, now);
+  // 防无界增长：顺手清掉已出窗的键（一次扇出的键数不会多）。
+  if (recentToasts.size > 50) {
+    for (const [key, at] of recentToasts) {
+      if (now - at >= TOAST_DEDUPE_WINDOW_MS) recentToasts.delete(key);
+    }
+  }
+  return true;
+}
+
 // Q-02: read token from the Zustand auth store — single source of truth.
 client.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token;
@@ -272,14 +376,16 @@ client.interceptors.response.use(
         status === 503 ? 'http.error.503' :
         'http.error.unknown';
       const msg =
-        err.response?.data?.message ||
-        err.response?.data?.error ||
+        pickBusinessMessage(err.response?.data?.message, err.response?.data?.error) ||
         i18n.t(httpKey, { status });
-      antMessage.error(msg, 4);
+      // TOAST-DEDUPE：同一次并发扇出会同时到达多条相同失败，只弹第一条。
+      // 无论弹没弹都要打标（否则页面 catch 兜底补弹，去重失效）。
+      if (shouldShowToast(msg)) antMessage.error(msg, 4);
       markToastedByClient(rejectValue);
     } else if (!err.response) {
       // Network error
-      antMessage.error(i18n.t('http.error.network'), 4);
+      const netMsg = i18n.t('http.error.network');
+      if (shouldShowToast(netMsg)) antMessage.error(netMsg, 4);
       markToastedByClient(rejectValue);
     }
     // 401 静默跳登录分支未弹 toast，不打标——页面兜底行为与之前逐位一致。

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import axios, { AxiosError, AxiosHeaders, CanceledError, type AxiosAdapter } from 'axios';
 import { message } from 'antd';
-import { client, getApiBaseUrl } from '../api/client';
+import { client, getApiBaseUrl, __resetToastDedupe } from '../api/client';
 import { logoutRemote } from '../api/logout';
 import { useAuthStore } from '../store/auth';
 
@@ -25,6 +25,9 @@ beforeEach(() => {
   useAuthStore.getState().setAuth('old-access', 'old-refresh', { id: 1, username: 'alice' });
   adapter.mockReset().mockImplementation(success);
   vi.mocked(message.error).mockClear();
+  // TOAST-DEDUPE 的窗口是模块级状态，且本文件用 fake timers（Date.now 冻结）
+  // ——不清空的话，上一用例弹过的同文案会抑制下一用例（跨用例假阴性）。
+  __resetToastDedupe();
 });
 
 afterEach(() => {
@@ -101,6 +104,97 @@ describe('DR-06 safe-method retries', () => {
     expect(adapter).toHaveBeenCalledTimes(2);
     expect(message.error).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('TOAST-I18N: 框架样板文案不得盖掉 i18n 文案（2026-10-13 生产报障）', () => {
+  /** 构造带指定响应体的失败（模拟 NestJS 的 message 形态）。 */
+  const failWithBody = (status: number, data: unknown): AxiosAdapter => async (config) => {
+    throw new AxiosError('Request failed', undefined, config, undefined, {
+      config, status, statusText: 'Error', headers: new AxiosHeaders(), data,
+    });
+  };
+
+  it('ThrottlerException: Too Many Requests → 走 i18n，而不是裸英文原文', async () => {
+    // 用户报障现场的原句（NestJS ThrottlerException 的 message）。
+    adapter.mockImplementation(failWithBody(429, { message: 'ThrottlerException: Too Many Requests' }));
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    // 反证：若不过滤框架文案，这里会是 'ThrottlerException: Too Many Requests'
+    // （i18n 的 http.error.429 恒被跳过，是死配置）。
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('操作过于频繁，请稍后再试', 4);
+  });
+
+  it('纯状态名（Too Many Requests / Forbidden）同样回落 i18n', async () => {
+    adapter.mockImplementation(failWithBody(429, { message: 'Too Many Requests' }));
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('操作过于频繁，请稍后再试', 4);
+
+    __resetToastDedupe();
+    vi.mocked(message.error).mockClear();
+    adapter.mockImplementation(failWithBody(403, { message: 'Forbidden resource' }));
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('没有操作权限', 4);
+  });
+
+  it('业务文案仍然优先（不得因为过滤框架文案而吃掉中文描述）', async () => {
+    adapter.mockImplementation(failWithBody(409, { message: '该应用正在部署中，请先停止' }));
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('该应用正在部署中，请先停止', 4);
+  });
+
+  it('message 为字符串数组（ValidationPipe 原始形态）时拼接展示，不整段丢弃', async () => {
+    adapter.mockImplementation(failWithBody(400, { message: ['name 不能为空', 'runtime 非法'] }));
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('name 不能为空; runtime 非法', 4);
+  });
+
+  it('框架样板 message 但 error 字段是业务文案时，用 error 字段', async () => {
+    // 用 409 而非 500：5xx 对安全方法是**可重试**的（拦截器 sleep 1s 后再发），
+    // 在 fake timers 下不推进定时器会挂到用例超时——与本用例要验的语义无关。
+    adapter.mockImplementation(failWithBody(409, { message: 'Conflict', error: '执行器连接失败' }));
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('执行器连接失败', 4);
+  });
+});
+
+describe('TOAST-DEDUPE: 并发扇出的同文案只弹一条（2026-10-13 生产报障）', () => {
+  it('26 个并发 429（同一文案）→ 只弹 1 条，且每条都打了 __toastedByClient 标', async () => {
+    // 复现现场：应用列表页 26 个并发请求同时被限流。
+    adapter.mockImplementation(failure(429));
+    const reqs = Array.from({ length: 26 }, (_, i) =>
+      client.get(`/app-deployments?applicationId=app-${i}`, { adapter }).catch((e) => e),
+    );
+    const rejected = await Promise.all(reqs);
+
+    // 反证：修复前是 26 条一模一样的 toast（用户看到的"非常多"）。
+    expect(message.error).toHaveBeenCalledTimes(1);
+    // 全部 26 个 reject 值仍须打标——否则页面 catch 的 showApiError 兜底会把
+    // 被抑制的 25 条补弹回来，去重形同虚设。
+    expect(rejected).toHaveLength(26);
+    for (const r of rejected) {
+      expect((r as Record<string, unknown>)['__toastedByClient']).toBe(true);
+    }
+  });
+
+  it('不同文案不受去重影响（各自照常弹）', async () => {
+    adapter.mockImplementation(failure(403));
+    await expect(client.get('/a', { adapter })).rejects.toBeDefined();
+    adapter.mockImplementation(failure(404));
+    await expect(client.get('/b', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledTimes(2);
+  });
+
+  it('超出窗口后同文案可再次弹出（不永久静音）', async () => {
+    adapter.mockImplementation(failure(429));
+    await expect(client.get('/a', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledTimes(1);
+
+    // 推进超过去重窗口（1500ms）
+    await vi.advanceTimersByTimeAsync(1600);
+
+    adapter.mockImplementation(failure(429));
+    await expect(client.get('/b', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledTimes(2);
   });
 });
 

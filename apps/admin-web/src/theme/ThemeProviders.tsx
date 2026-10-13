@@ -123,9 +123,15 @@ export function ThemedProviders({ children }: { children: React.ReactNode }) {
   // 函数引用 + 全部 token），ConfigProvider 收到新引用即触发 antd 全量 token 重算。
   // 仅在 resolved 变化时重建主题对象，其余渲染周期复用同一引用，避免无谓重算。
   const antdTheme = useMemo(() => buildAntdTheme(resolved), [resolved]);
+  // TOAST-DEDUPE（2026-10-13 生产报障）：并发扇出失败时 toast 会叠成一面墙
+  // （现场 26 条同文案）。内容去重在 api/client.ts 的拦截器里做（同文案 1.5s
+  // 只弹一条）；这里再兜一道**总量**上限——拦截器管不到的调用点（页面本地
+  // 异常、非 client 请求）也不会把屏幕堆满。maxCount=3 是 antd 的语义上限：
+  // 超出时挤掉最旧的一条，而不是继续往下堆。
+  const messageConfig = useMemo(() => ({ maxCount: 3 }), []);
   return (
     <ConfigProvider locale={antdLocale} theme={antdTheme}>
-      <App>
+      <App message={messageConfig}>
         <MessageApiBridge />
         <ModalApiBridge />
         {children}
