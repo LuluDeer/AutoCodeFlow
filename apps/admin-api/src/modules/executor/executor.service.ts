@@ -104,6 +104,9 @@ import {
   normalizeInterpreters,
 } from "./interpreter-match.util";
 import type { ExecutorInterpreter } from "./interpreter-match.util";
+// python_task_multiversion：在线可下载区间判定（3.8+）。调度侧据此区分
+// "缓存缺失但执行器可自行 uv python install"（放行）与"离线层必须预填"（硬拦）。
+import { isOnlineDownloadable } from "../task/runtime-version.util";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 import { SystemConfigService } from "../config/config.service";
@@ -1841,6 +1844,14 @@ export class ExecutorService implements OnModuleInit {
       interpreterSatisfies(e.interpreters, requestedVersion),
     );
     if (kept.length > 0) return { kept, message: null };
+    // 在线可下载版本（3.8+，CONTRACT §1.1 ONLINE_DOWNLOAD_MIN）：缓存缺失不拦——
+    // 派到任意在线执行器，执行器侧 ensureVersion() 会用 `uv python install` 按需
+    // 下载并缓存（执行器已内嵌 uv，见 bundle-executor.sh ACF_UV_REQUIRED=1）。
+    // 前端 interpreterFleetAdvisory 对在线层同样只提示不阻断，此处对齐。
+    // 仅离线层（3.7，uv 无法在线下载）才硬拦——必须由部署方预填缓存卷。
+    if (isOnlineDownloadable(requestedVersion)) {
+      return { kept: executors, message: null };
+    }
     return {
       kept,
       message: buildInterpreterMismatchMessage(
@@ -3139,7 +3150,10 @@ export class ExecutorService implements OnModuleInit {
       // "至少一处明确报错"，此处即运行前报错）。
       if (
         hasRequestedVersion(task.runtimeVersion) &&
-        !interpreterSatisfies(pinned.interpreters, task.runtimeVersion)
+        !interpreterSatisfies(pinned.interpreters, task.runtimeVersion) &&
+        // 在线可下载版本（3.8+）：pinned 执行器可自行 uv python install，不硬拦。
+        // 仅离线层（3.7）才预检拦截——uv 无法在线下载，必须预填缓存卷。
+        !isOnlineDownloadable((task.runtimeVersion as string).trim())
       ) {
         this.failInterpreterUnavailable(
           `[pinned] ${buildInterpreterMismatchMessage(

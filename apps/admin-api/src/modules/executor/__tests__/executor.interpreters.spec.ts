@@ -282,7 +282,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       expect(picked.id).toBe("e-b");
     });
 
-    it("selectLeastLoaded：全不满足 → ServiceUnavailableException，消息含每个候选快照（AC-09b）", async () => {
+    it("selectLeastLoaded：全不满足且离线层(3.7) → ServiceUnavailableException，消息含每个候选快照（AC-09b）", async () => {
       executorRepo.find.mockResolvedValue([
         mkExecutor({
           id: "e-a",
@@ -293,14 +293,30 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         mkExecutor({ id: "e-c", appName: "exec-c", interpreters: null }),
       ]);
       await expect(
-        service.selectLeastLoaded({ runtimeVersion: "3.13" }),
+        service.selectLeastLoaded({ runtimeVersion: "3.7" }),
       ).rejects.toThrow(/exec-a\[已缓存: 3\.12\.3\]/);
       await expect(
-        service.selectLeastLoaded({ runtimeVersion: "3.13" }),
+        service.selectLeastLoaded({ runtimeVersion: "3.7" }),
       ).rejects.toThrow(/exec-b\[已缓存: 无\]/);
       await expect(
-        service.selectLeastLoaded({ runtimeVersion: "3.13" }),
+        service.selectLeastLoaded({ runtimeVersion: "3.7" }),
       ).rejects.toThrow(/exec-c\[未上报，按 3\.12 兜底\]/);
+    });
+
+    it("selectLeastLoaded：全不满足但在线可下载(3.14) → 放行（执行器侧 ensureVersion 按需 uv python install）", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkExecutor({
+          id: "e-a",
+          appName: "exec-a",
+          address: "a:1",
+          interpreters: [{ version: "3.12.3" }],
+        }),
+        mkExecutor({ id: "e-b", appName: "exec-b", address: "b:1", interpreters: [] }),
+      ]);
+      const picked = await service.selectLeastLoaded({ runtimeVersion: "3.14" });
+      expect(picked).toBeDefined();
+      // 任意一台都可能被选中（都不缓存 3.14，但都能在线下载）。
+      expect(["e-a", "e-b"]).toContain(picked.id);
     });
 
     it("selectLeastLoaded：未传 runtimeVersion → 零过滤（存量调用方行为不变）", async () => {
@@ -326,7 +342,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       expect(postedPayloads[0].executionId).toBe("exec-1");
     });
 
-    it("dispatch：无候选满足 → 抛错含分因 token 与候选快照", async () => {
+    it("dispatch：无候选满足且离线层(3.7) → 抛错含分因 token 与候选快照", async () => {
       executorRepo.find.mockResolvedValue([
         mkExecutor({ id: "e-a", appName: "exec-a", interpreters: [] }),
       ]);
@@ -335,7 +351,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         name: "py",
         runtime: "python",
         timeout: 10,
-        runtimeVersion: "3.9",
+        runtimeVersion: "3.7",
       } as unknown as Task;
       await expect(service.dispatch(task, execution())).rejects.toThrow(
         INTERPRETER_UNAVAILABLE_TOKEN,
@@ -344,7 +360,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       expect(updateExecute).not.toHaveBeenCalled();
     });
 
-    it("dispatch：appName 精确点名 + 版本不满足 → 明确失败（不静默换机器）", async () => {
+    it("dispatch：appName 精确点名 + 离线层(3.7)不满足 → 明确失败（不静默换机器）", async () => {
       executorRepo.find.mockResolvedValue([
         mkExecutor({
           id: "e-a",
@@ -358,7 +374,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         runtime: "python",
         timeout: 10,
         executorAppName: "exec-a",
-        runtimeVersion: "3.9",
+        runtimeVersion: "3.7",
       } as unknown as Task;
       await expect(service.dispatch(task, execution())).rejects.toThrow(
         INTERPRETER_UNAVAILABLE_TOKEN,
@@ -392,7 +408,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       expect(postedPayloads).toHaveLength(1);
     });
 
-    it("dispatchBroadcast：全不满足 → 抛错（分因 token + 快照）", async () => {
+    it("dispatchBroadcast：全不满足且离线层(3.7) → 抛错（分因 token + 快照）", async () => {
       executorRepo.find.mockResolvedValue([
         mkExecutor({ id: "e-a", appName: "exec-a", interpreters: [] }),
       ]);
@@ -401,7 +417,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         name: "py",
         runtime: "python",
         timeout: 10,
-        runtimeVersion: "3.9",
+        runtimeVersion: "3.7",
       } as unknown as Task;
       await expect(
         service.dispatchBroadcast(task, execution()),
@@ -421,7 +437,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         runtimeVersion,
       }) as unknown as Task;
 
-    it("pinned 执行器不满足声明版本 → **占坑前**失败（runningTaskCount 未 +1）", async () => {
+    it("pinned 执行器不满足且离线层(3.7) → **占坑前**失败（runningTaskCount 未 +1）", async () => {
       executorRepo.findOne.mockResolvedValue(
         mkExecutor({
           id: "e-pinned",
@@ -430,14 +446,14 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         }),
       );
       await expect(
-        service.dispatch(pinnedTask("3.9"), execution()),
+        service.dispatch(pinnedTask("3.7"), execution()),
       ).rejects.toThrow(INTERPRETER_UNAVAILABLE_TOKEN);
       // 关键：占坑 UPDATE 一次都没发生（失败在槽位预订之前）。
       expect(updateExecute).not.toHaveBeenCalled();
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
-    it("pinned 失败消息含声明版本与 pinned 执行器已缓存清单", async () => {
+    it("pinned 离线层(3.7)失败消息含声明版本与 pinned 执行器已缓存清单", async () => {
       executorRepo.findOne.mockResolvedValue(
         mkExecutor({
           id: "e-pinned",
@@ -449,8 +465,21 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         }),
       );
       await expect(
-        service.dispatch(pinnedTask("3.9"), execution()),
+        service.dispatch(pinnedTask("3.7"), execution()),
       ).rejects.toThrow(/3\.12\.3；3\.8\.3\(不可用\)/);
+    });
+
+    it("pinned 不满足但在线可下载(3.14) → 放行（pinned 执行器侧 ensureVersion 按需下载）", async () => {
+      executorRepo.findOne.mockResolvedValue(
+        mkExecutor({
+          id: "e-pinned",
+          appName: "exec-pinned",
+          address: "p:1",
+          interpreters: [{ version: "3.12.3" }],
+        }),
+      );
+      await service.dispatch(pinnedTask("3.14"), execution());
+      expect(postedPayloads[0].executionId).toBe("exec-1");
     });
 
     it("pinned 执行器满足声明版本 → 正常派发", async () => {
