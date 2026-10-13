@@ -373,6 +373,10 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.olderLogs': (n) => `查看更早日志（共 ${n} 行）`,
     'status.clearDisplayTitle': '仅清空当前窗口显示，不删除日志文件',
     'status.clearDisplay': '清空显示',
+    // 常规心跳过滤开关（只作用状态页预览切片；2026-10-13 用户需求）
+    'status.heartbeatFilter': '过滤心跳',
+    'status.heartbeatFilterHideTitle': '隐藏常规心跳日志（Sending heartbeat / Heartbeat succeeded）；心跳失败（warn）不受影响',
+    'status.heartbeatFilterShowTitle': '已隐藏常规心跳日志，点击恢复完整日志',
     'status.checkConnection': '检查连接设置',
     'status.stoppingShort': '正在停止...',
     'status.startingShort': '正在启动...',
@@ -1002,6 +1006,10 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.olderLogs': (n) => `View earlier logs (${n} lines in total)`,
     'status.clearDisplayTitle': 'Clears the current display only; log files are kept',
     'status.clearDisplay': 'Clear display',
+    // Routine-heartbeat preview filter toggle (status page only).
+    'status.heartbeatFilter': 'Filter heartbeats',
+    'status.heartbeatFilterHideTitle': 'Hide routine heartbeat logs (Sending heartbeat / Heartbeat succeeded); heartbeat failures (warn) stay visible',
+    'status.heartbeatFilterShowTitle': 'Routine heartbeats hidden — click to restore the full log',
     'status.checkConnection': 'Check connection settings',
     'status.stoppingShort': 'Stopping...',
     'status.startingShort': 'Starting...',

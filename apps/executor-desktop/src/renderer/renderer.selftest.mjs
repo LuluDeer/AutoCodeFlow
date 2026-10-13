@@ -1027,6 +1027,43 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── 状态页常规心跳过滤（2026-10-13 用户需求）────────────────────────────
+// 预览层开关：隐藏 scheduler.ts 两条 info 心跳文案（**行尾精确匹配**），
+// `Heartbeat failed: …`（warn、文案不同）永不误伤；偏好落 localStorage；
+// 全屏查看器与缓冲不受影响（它本就有级别过滤）。
+{
+  const statusPage = pages[3];
+  const statusSrc = statusPage
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  if (!statusSrc.includes('function isRoutineHeartbeatLine(')) {
+    throw new Error('心跳过滤: 判定函数缺失');
+  }
+  if (!statusSrc.includes('/ (Sending heartbeat|Heartbeat succeeded)$/')) {
+    throw new Error('心跳过滤: 判定必须行尾精确锚定（防误伤 Heartbeat failed 等非常规行）');
+  }
+  if (!statusSrc.includes('aria-pressed={hideHeartbeat}')) {
+    throw new Error('心跳过滤: 开关缺 aria-pressed 语义');
+  }
+  if (!statusSrc.includes('window.localStorage.getItem(HEARTBEAT_FILTER_PREF_KEY)')
+    || !statusSrc.includes('window.localStorage.setItem(HEARTBEAT_FILTER_PREF_KEY')) {
+    throw new Error('心跳过滤: 偏好未落 localStorage（重启后不记忆）');
+  }
+  if (!statusSrc.includes('logs.filter((line) => !isRoutineHeartbeatLine(line.text))')) {
+    throw new Error('心跳过滤: 预览切片未消费过滤判定');
+  }
+  const zhI18n = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+  if (!zhI18n.includes("'status.heartbeatFilter': '过滤心跳'")) {
+    throw new Error('心跳过滤: 开关文案 zh 键缺失');
+  }
+  if (!zhI18n.includes("'status.heartbeatFilterShowTitle': '已隐藏常规心跳日志，点击恢复完整日志'")) {
+    throw new Error('心跳过滤: 恢复提示 zh 文案缺失');
+  }
+  if (!css.includes('.btn.is-active')) {
+    throw new Error('心跳过滤: 开关激活态样式缺失');
+  }
+}
+
 // ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
 // 本轮桌面端渲染层首次按 admin-web 同标准扫描，以下钉死本轮修复不回退。
 {

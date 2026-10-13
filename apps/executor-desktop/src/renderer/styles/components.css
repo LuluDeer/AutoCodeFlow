@@ -118,6 +118,13 @@
 }
 
 .btn-sm { padding: 5px 11px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
+/* 开关型按钮的按下态（aria-pressed=true）：浅绿底 + accent 字，与 ip-chip
+   选中态同族——状态页「过滤心跳」开关用，按下的可再点恢复。 */
+.btn.is-active {
+  background: var(--green-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .btn-lg { padding: 10px 22px; font-size: var(--fs-md); border-radius: var(--radius-md); }
 
 /* 行内图标按钮（打开目录 / 删除）：固定尺寸幽灵钮，避免与文字钮抢空间抖动 */
