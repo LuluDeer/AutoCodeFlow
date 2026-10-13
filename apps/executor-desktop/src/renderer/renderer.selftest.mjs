@@ -1118,6 +1118,45 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── 向导回连模式开关 + 视觉优化（2026-10-13 用户需求）──────────────────
+{
+  const wizardNoComments = pages[4]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const css = readFileSync(resolve(root, 'styles', 'pages.css'), 'utf8');
+  const wm = readFileSync(resolve(root, '..', 'main', 'window-manager.ts'), 'utf8');
+  const zhI18n = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+
+  // 回连模式：表单字段默认开 + 预填 + StepExecutor 开关 + StepFinish 确认行
+  if (!wizardNoComments.includes('pullMode: true')) {
+    throw new Error('回连模式: WizardForm 默认值缺失或非 true');
+  }
+  if (!wizardNoComments.includes("t('wizard.machine.pullTitle')")) {
+    throw new Error('回连模式: StepExecutor 开关缺失');
+  }
+  if (!wizardNoComments.includes("t('wizard.finish.keyPull')")) {
+    throw new Error('回连模式: StepFinish 确认行缺失');
+  }
+  if (!wizardNoComments.includes("cfg.pullMode === 'boolean'")) {
+    throw new Error('回连模式: 预填未载入 pullMode');
+  }
+  if (!zhI18n.includes("'wizard.machine.pullTitle': '回连模式（推荐）'")) {
+    throw new Error('回连模式: zh i18n 键缺失');
+  }
+
+  // 视觉优化：窗口放大 + 去掉四周底边（卡片边框/阴影/圆角 + wrap padding）
+  if (!wm.includes('width: 660,') || !wm.includes('height: 780,')) {
+    throw new Error('向导视觉: 窗口尺寸未放大（仍偏小）');
+  }
+  if (!/\.wizard-wrap \{[\s\S]*?padding: 0;/.test(css)) {
+    throw new Error('向导视觉: .wizard-wrap 仍有 padding（四周底边来源）');
+  }
+  const wizardBlock = css.match(/\.wizard \{[\s\S]*?\}/)?.[0] ?? '';
+  if (wizardBlock.includes('border:') || wizardBlock.includes('border-radius:') || wizardBlock.includes('box-shadow:')) {
+    throw new Error('向导视觉: .wizard 仍有卡片边框/圆角/阴影（frameless 窗口内不需要）');
+  }
+}
+
 // ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
 // 本轮桌面端渲染层首次按 admin-web 同标准扫描，以下钉死本轮修复不回退。
 {

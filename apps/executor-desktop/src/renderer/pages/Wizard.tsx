@@ -37,6 +37,9 @@ interface WizardForm {
   // 解释器下载源：'' = 官方源（uv 默认）；非空 = 镜像 base URL，直接落到
   // config.uvPythonInstallMirror（与设置页同一字段、同一消毒与校验链）。
   uvPythonInstallMirror: string;
+  // 回连模式（pull mode）：执行器主动连接平台领取任务，平台无需反向连入。
+  // 默认开——跨网络/NAT/云主机/内网办公机的主流部署形态。
+  pullMode: boolean;
   autoStartExecutor: boolean;
   autoStart: boolean;
 }
@@ -48,6 +51,7 @@ const DEFAULT_FORM: WizardForm = {
   executorAddressPublic: '',
   executorToken: '',
   uvPythonInstallMirror: '',
+  pullMode: true,
   autoStartExecutor: true,
   autoStart: false,
 };
@@ -125,6 +129,7 @@ export default function Wizard() {
           executorAddressPublic: typeof cfg.executorAddressPublic === 'string' ? cfg.executorAddressPublic : f.executorAddressPublic,
           executorToken: typeof cfg.executorToken === 'string' ? cfg.executorToken : f.executorToken,
           uvPythonInstallMirror: typeof cfg.uvPythonInstallMirror === 'string' ? cfg.uvPythonInstallMirror : f.uvPythonInstallMirror,
+          pullMode: typeof cfg.pullMode === 'boolean' ? cfg.pullMode : f.pullMode,
         }));
       })
       .catch(() => { /* 读取失败保持空表单（首次安装语义），不炸向导 */ });
@@ -530,7 +535,17 @@ function StepExecutor({
             value={form.executorAddressPublic}
             onChange={(e) => onChange('executorAddressPublic', e.target.value)}
           />
-          <span className="hint">{t('wizard.machine.publicHint')}</span>
+          <span className="hint">{form.pullMode ? t('wizard.machine.publicHintPull') : t('wizard.machine.publicHint')}</span>
+        </div>
+
+        {/* 回连模式（pull mode）：执行器主动连出领取任务，平台无需反向连入。
+            开启时对外地址变为可选——跨网络/NAT/云主机的主流部署形态。 */}
+        <div className="toggle-row">
+          <div className="toggle-info">
+            <strong>{t('wizard.machine.pullTitle')}</strong>
+            <span>{t('wizard.machine.pullDesc')}</span>
+          </div>
+          <Toggle id="pullMode" label={t('wizard.machine.pullToggleLabel')} checked={form.pullMode} onChange={(v) => onChange('pullMode', v)} />
         </div>
 
         <div className="field">
@@ -722,6 +737,10 @@ function StepFinish({
             <span className="confirm-val">
               {form.uvPythonInstallMirror ? t('wizard.finish.sourceMirror') : t('wizard.finish.sourceOfficial')}
             </span>
+          </div>
+          <div className="confirm-row">
+            <span className="confirm-key">{t('wizard.finish.keyPull')}</span>
+            <span className="confirm-val">{form.pullMode ? t('wizard.finish.pullOn') : t('wizard.finish.pullOff')}</span>
           </div>
         </div>
 

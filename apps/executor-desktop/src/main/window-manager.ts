@@ -159,8 +159,8 @@ export class WindowManager {
     }
 
     this.wizardWindow = new BrowserWindow({
-      width: 520,
-      height: 640,
+      width: 660,
+      height: 780,
       resizable: false,
       center: true,
       show: false,
