@@ -1002,6 +1002,31 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── A-03 trace 合并回归守卫：块首 chip 已删除（2026-10-13 真机报障）──────
+// 真机截图：块首标签 `trace <id8>` 因 CSS 负外边距与时间戳正文粘连
+// （渲染成 `trace 1577fd9e09:42:26.916 INFO …`），且 30s 心跳 2 行小块上
+// 该标签纯噪音。处置：删除块首 chip 渲染与死样式；分组语义由左舷竖线
+// （log-trace-block）+ 块内 hideTrace 承载，完整 trace 仍在落盘文件。
+// 守卫两头钉死：chip 不得回来（粘性问题），合并能力不得被连带删掉。
+{
+  const logLineList = readFileSync(resolve(root, 'components', 'LogLineList.tsx'), 'utf8');
+  if (logLineList.includes('ll-trace-chip') || /trace \{trace\}/.test(logLineList)) {
+    throw new Error('A-03 回归: LogLineList 仍渲染块首 trace chip（真机报障：与正文粘连且纯噪音）');
+  }
+  if (!logLineList.includes('hideTrace={inBlock}')) {
+    throw new Error('A-03 回归: 块内行 hideTrace 丢失（trace 段会重新漏进正文）');
+  }
+  if (!logLineList.includes('log-trace-block')) {
+    throw new Error('A-03 回归: trace 分组左舷竖线类名丢失（同组行不再可辨）');
+  }
+  if (css.includes('ll-trace-chip')) {
+    throw new Error('A-03 回归: .ll-trace-chip 死样式残留（类名扫描基线被污染）');
+  }
+  if (!css.includes('.log-line.log-trace-block')) {
+    throw new Error('A-03 回归: trace 分组左舷竖线样式缺失');
+  }
+}
+
 // ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
 // 本轮桌面端渲染层首次按 admin-web 同标准扫描，以下钉死本轮修复不回退。
 {
