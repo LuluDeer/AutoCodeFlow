@@ -91,7 +91,10 @@ if [ "${ACF_BUNDLE_UV:-0}" = "1" ]; then
   elif [ -n "${UV_OS}" ] && [ -n "${UV_ARCH}" ] && command -v curl &>/dev/null; then
     TRIPLE="${UV_ARCH}-${UV_OS}"
     TMP_UV="$(mktemp -d)"
-    if curl -fsSL --max-time 300 \
+    # --retry 3 --retry-delay 5：GitHub release 下载偶发连接重置/超时
+    # （desktop-v1.8.1 Windows CI 实爆：单次 curl 挂了→uv 缺失→REQUIRED 闸红）。
+    # curl 默认对连接超时/5xx 重试，-f 保留的 404 不重试（URL 错了重试无意义）。
+    if curl -fsSL --max-time 300 --retry 3 --retry-delay 5 \
         "https://github.com/astral-sh/uv/releases/download/${UV_VER}/uv-${TRIPLE}.${UV_EXT}" \
         -o "${TMP_UV}/uv.${UV_EXT}" 2>/dev/null; then
       EXTRACTED=0
