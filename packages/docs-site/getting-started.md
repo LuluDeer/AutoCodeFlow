@@ -106,15 +106,23 @@ npx tsx tasks/send_report.ts
 | `TASK_ID` | 当前任务的唯一标识 | `task_abc123` |
 | `TASK_NAME` | 当前任务名称 | `fetch_data` |
 | `EXECUTION_ID` | 本次执行记录的唯一标识 | `exec_xyz789` |
-| `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+| `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入。**字符串是裸值**（不加引号），数字/布尔/容器为 JSON 字面量 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+| `AUTOFLOW_PARAMS_JSON` | 整个参数的 JSON 对象（A-11R 起，协议 v5）。需要精确类型时读它 | `{"limit":100}` |
 | `AUTOFLOW_ADMIN_API_URL` | Admin API 基地址（非机密路由信息，N23 起注入） | `http://admin-api:3105` |
 | `AUTOFLOW_CALLBACK_TOKEN` | 本次执行的一次性回调 token（`v1.` HMAC，绑定 executionId、随任务超时+15 分钟宽限过期，N23 起注入） | `v1.<uuid>.<exp>.<hmac>` |
 | `AUTOFLOW_EXECUTOR_ADDRESS` | 当前执行器注册地址（非机密路由信息，N27 起注入；SDK 自动填入回调请求） | `executor-node:8002` |
 
 > 触发参数 `{ "source_url": "https://api.example.com", "limit": 100 }` 会注入为
-> `AUTOFLOW_SOURCE_URL` 与 `AUTOFLOW_LIMIT`。py SDK 把除凭证三件套外的
-> `AUTOFLOW_*` 归一化进 `ctx.params`；node SDK 无此归一化（幂等映射在薄客户端
-> 中意义小），直接 `process.env.AUTOFLOW_X` 读取或用示例的 `getParam` 容错模式。
+> `AUTOFLOW_SOURCE_URL` 与 `AUTOFLOW_LIMIT`；字符串按裸值注入（`欧盟` 就是 `欧盟`，
+> 不带引号），数字/布尔按 JSON 字面量（`100`、`true`）。两个 SDK 现在都优先读
+> `AUTOFLOW_PARAMS_JSON` 做类型还原：py 归一到 `ctx.params`（小写键），node 经
+> `ctx.getParam()` 读取（直读 `process.env.AUTOFLOW_X` 仍然可用，此时类型还原是
+> 尽力而为）。
+>
+> ⚠️ **2026-10-02 ~ 10-14 期间发布的执行器（A-11）**把字符串也做了 JSON 序列化，
+> 于是每个参数值都带上一对首尾双引号（`AUTOFLOW_REGION='"欧盟"'`），空串变成
+> `'""'`（**真值**）。该行为已在协议 v5 修复；旧执行器需升级，或让脚本容错剥离
+> 首尾引号。生产实证：`tk-ship-notify` 因此静默停摆 12 天。
 
 ## 下一步
 

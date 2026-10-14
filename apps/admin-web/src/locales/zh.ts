@@ -2781,11 +2781,24 @@ export default {
 
   'paramsEditor.empty': '暂无参数，点击下方添加',
   'paramsEditor.keyPlaceholder': '参数名',
-  'paramsEditor.valuePlaceholder': '默认值',
+  'paramsEditor.valuePlaceholder': '参数值',
   'paramsEditor.add': '添加参数',
   // A11Y-ICON-01：纯图标删除按钮的可访问名（每行一个，无 Tooltip 包裹）
   'paramsEditor.remove': '删除该参数',
-  'paramsEditor.tooltip': '任务运行时可通过环境变量 AUTOFLOW_<KEY> 读取这些参数，触发时也可以覆盖',
+  // A-11R：类型选择器。中台此前**只能**产出字符串（契约 Record<string,string>），
+  // 需要传真实布尔/数字/数组的用户没有任何入口——只能填一个"看起来像 JSON"的
+  // 字符串，而字符串与 JSON 字面量在 env 里长得一样、语义完全不同。
+  'paramsEditor.typeLabel': '参数类型',
+  'paramsEditor.type.text': '文本',
+  'paramsEditor.type.number': '数字',
+  'paramsEditor.type.boolean': '布尔',
+  'paramsEditor.type.json': 'JSON',
+  'paramsEditor.invalidValue': '当前内容无法按所选类型解析，将按原始文本（字符串）提交',
+  // A-11R：提示词**必须**写实。旧文案只说了"可通过 AUTOFLOW_<KEY> 读取"，
+  // 对 A-11 引入的引号语义只字未提——而中台正是唯一只能产出字符串的入口，
+  // 于是用户配的每个参数都带上了引号、按文档裸读的脚本全部报错（生产实证：
+  // tk-ship-notify 静默停摆 12 天）。现在把两种通道与字符串裸值的语义写明。
+  'paramsEditor.tooltip': '任务运行时按所选类型注入环境变量 AUTOFLOW_<KEY>：文本=原样裸值（不加引号，可裸读），数字/布尔/JSON=对应 JSON 字面量。需要精确类型时也可读 AUTOFLOW_PARAMS_JSON（整个参数的 JSON 对象）。触发时同样可以覆盖这些参数。',
 
   // SEC-02 续（生产故障）：凭据编辑器。此前这些键**整体缺失**，界面直接渲染
   // 出裸 key（`secretsEditor.alertTitle` 这种标识符）——已加源码守卫

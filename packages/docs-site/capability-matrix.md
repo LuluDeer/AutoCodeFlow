@@ -18,7 +18,7 @@
 | **callback: 批量/自定义字段** | ✅ `ctx.http.post('/api/executions/callback', [items])`（executorAddress 仅对 callback URL 自动补齐） — `http-client.ts:122-138` | ✅ `ctx.callback.report([items])`（executionId/executorAddress 全量自动补齐） — `callback.py:195-208` | ✅ 对等 |
 | **callback: 截断上限** | ✅ `ERROR_MESSAGE_MAX_LENGTH=4096` / `LOGS_MAX_LENGTH=512_000`（ECO-01 起导出，与 py 同值） — `context.ts` | 同值常量 — `callback.py:44-45` | ✅ 对等 |
 | **callback: 不可用异常** | 请求方法 rejects `Error("HttpClient is disabled: …")`（原因含缺失变量名） — `http-client.ts:52-59,141-146` | `CallbackDisabledError`（原因含缺失变量名） — `callback.py:66,155-156` | ⚠️ 类型不同（语言惯用形态），语义等价 fail-closed |
-| **env 注入: AUTOFLOW_\* 参数** | ⚠️ `fromEnv()` **不读** `AUTOFLOW_<KEY>` 触发参数（node 任务用 `process.env.AUTOFLOW_X` 直读；既有示例 `getParam` 模式） — `context.ts:71-97` | ✅ `from_env()` 把 `AUTOFLOW_<KEY>` 归一化为 `ctx.params`（小写键） — `context.py:111-137` | ⚠️ 设计分歧：py 收敛进 params，node 保持薄（幂等映射在 node 侧意义小——参数名即环境变量名） |
+| **env 注入: AUTOFLOW_\* 参数** | ✅ `ctx.getParam(key, fallback?)` 优先读 `AUTOFLOW_PARAMS_JSON`（**真实类型**），旧执行器回落逐键 `AUTOFLOW_<KEY>` 并做尽力而为的类型还原；`process.env.AUTOFLOW_X` 直读仍可用（字符串裸值） — `context.ts` | ✅ `from_env()` 优先读 `AUTOFLOW_PARAMS_JSON` 归一化为 `ctx.params`（小写键）；旧执行器回落逐键通道（含 A-11 引号容错） — `context.py` | ✅ 语义对等（A-11R 起两端都优先类型化通道；差异：py 收敛进 `ctx.params`，node 走 `ctx.getParam()` 且允许直读 env） |
 | **env 注入: 凭证三件套** | ✅ `AUTOFLOW_ADMIN_API_URL`+`AUTOFLOW_CALLBACK_TOKEN`→enabled；`AUTOFLOW_EXECUTOR_ADDRESS`→`ctx.executorAddress`；legacy `ADMIN_API_URL`/`EXECUTOR_TOKEN` 优先 — `context.ts:82-94` | ✅ 同名三键→`ctx.admin_api_url`/`callback_token`/`executor_address` 专用字段，**绝不混入 params**（泄漏面）；repr/to_dict 均脱敏（N40/N27） — `context.py:14-18,40-42` | ✅ 语义对等（差异：node 有 legacy 变量回退，py 无——py 执行器从 N23 起注入，无需 legacy 兼容） |
 | **env 注入: 缺变量行为** | `fromEnv()` 缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` **抛错** — `context.ts:72-80` | `from_env()` 缺失回落 `"unknown"` — `context.py:139-142` | ⚠️ node 严格抛错 vs py 宽松兜底（node 语境下 fromEnv 抛错在 worker 侧早失败更利于排障；py 脚本形态常见手工直跑，兜底更友好） |
 | **重试语义: http** | ❌ 无自动重试（axios 直传） — `http-client.ts` | ❌ 无自动重试（BUG-15 复审坐实"从未有过"，docstring 已改） — `http.py:6-13` | ✅ 对等：两侧都把重试决策留给任务代码（SAFE_METHODS 重试逻辑在 `autocodeflow-http` 包，非任务 SDK） |
@@ -59,11 +59,11 @@
 
 ## 缺口与计划（大能力，未排期）
 
-- **py 侧任务参数类型还原**：`AUTOFLOW_*` 注入恒为字符串，py `ctx.params`
-  不做 JSON 还原（官方示例 `get_typed_param` 已提供容错模式）；node 侧
-  同样由任务代码自理。若后续收敛，应做进 `from_env()` 并加
-  `AUTOFLOW_PARAMS_JSON` 整体注入通道（涉及 admin/executor 参数序列化
-  链路，超出 SDK 单侧范围）。
+- ~~**py 侧任务参数类型还原**~~：**A-11R（2026-10-14）已落地**。两个执行器自协议
+  v5 起额外注入 `AUTOFLOW_PARAMS_JSON`（整个 params 一份 JSON），两个 SDK 的
+  `from_env()` / `getParam()` 优先读它并做类型还原；逐键 `AUTOFLOW_<KEY>` 通道
+  保留兼容（字符串裸值）。旧执行器（< v5）上 SDK 回落逐键通道并尽力而为地还原
+  类型，对 A-11 的引号形态也做了剥离容错。
 - **node 侧 TaskResult → 平台结构化输出的契约固化**：node 任务返回值经
   worker 序列化上报，`TaskResult.output` 的 schema 未在 SDK 层校验；
   与 ARCH-25（插件化 runtime）一并考虑。

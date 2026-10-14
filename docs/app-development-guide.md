@@ -160,14 +160,19 @@ tasks:
 | `TASK_ID` | 任务唯一标识 | `task_abc123` |
 | `TASK_NAME` | 任务名称 | `daily_report` |
 | `EXECUTION_ID` | 本次执行记录 ID | `exec_xyz789` |
-| `AUTOFLOW_<KEY>` | 触发时传入的运行时参数 | `AUTOFLOW_DATE=2024-01-01` |
+| `AUTOFLOW_<KEY>` | 触发时传入的运行时参数（**字符串是裸值**，数字/布尔/数组为 JSON 字面量） | `AUTOFLOW_DATE=2024-01-01` |
+| `AUTOFLOW_PARAMS_JSON` | 整个参数的 JSON 对象（协议 v5 起）。需要精确类型时读它 | `AUTOFLOW_PARAMS_JSON={"limit":100,"dry_run":true}` |
 | `<凭据名>`（**无前缀**） | 任务级凭据（secrets），按**原名**注入 | `FEISHU_APP_ID=cli_xxx` |
 
 > 任务参数会以 `AUTOFLOW_` 前缀注入环境变量；例如触发参数 `{ "date": "2024-01-01" }` 会变成 `AUTOFLOW_DATE=2024-01-01`。执行结果回调由执行器进程统一处理，任务脚本不需要也不应持有平台回调 token。
 >
+> **参数值的注入形态（协议 v5 起）**：字符串按**原样裸值**注入——`os.environ["AUTOFLOW_DATE"]` 直接得到 `2024-01-01`，空串就是空串（**假值**，`if` 判断正确）。数字/布尔/数组/对象是对应 JSON 字面量：`100`、`true`（**不是** Python 的 `True`）、`["a",1]`。要拿到精确类型（例如区分字符串 `"true"` 与布尔 `true`），读 `AUTOFLOW_PARAMS_JSON` 并用 `json.loads` 解析；SDK 的 `TaskContext.from_env()` 已自动优先使用它。
+>
+> ⚠️ **2026-10-02 ~ 10-14 期间部署的执行器（A-11）有个已知坑**：它把字符串也做了 JSON 序列化，于是每个经控制台配置的参数都带上一对首尾双引号（`AUTOFLOW_REGION='"欧盟"'`），按上表裸读会拿到带引号的值、`int(...)` 直接报错，空串更是变成 `'""'`（**真值**）。生产实证：`tk-ship-notify` 因此静默停摆 12 天。该行为已在协议 v5 修复；请确认执行器已升级，或让脚本对首尾引号做一次容错剥离。
+>
 > **凭据（secrets）与参数不是一回事**：在控制台「凭据（secrets）」区配置的键值对按**原名**注入——配置 `FEISHU_APP_ID`，脚本就写 `os.environ["FEISHU_APP_ID"]`（或 `process.env.FEISHU_APP_ID`），**不要**加 `AUTOFLOW_` 前缀。第三方 SDK 认的规范名（boto3 的 `AWS_ACCESS_KEY_ID`、openai 的 `OPENAI_API_KEY`）因此可以直接用。凭据名需是合法环境变量名且不得占用平台保留名（`PATH`、`PYTHON*`、`AUTOFLOW_*` 等），否则保存时接口直接返回 400。凭据值加密存储、保存后不可回读（接口只回 `******`）。
 >
-> 若脚本按带前缀的名字读凭据（历史写法 `AUTOFLOW_FEISHU_APP_ID`），两种读法并存仍然可用；但**推荐改用原名**。
+> 若脚本按带前缀的名字读凭据（历史写法 `AUTOFLOW_FEISHU_APP_ID`），两种读法并存仍然可用；但**推荐改用原名**。注意：带前缀的旧通道同样受上面 A-11 引号问题影响，按原名注入的通道不受影响。
 
 ---
 

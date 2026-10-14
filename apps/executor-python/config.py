@@ -481,5 +481,14 @@ EXECUTOR_VERSION = '2.0.0'
 # 实际运行数）」与「旧执行器未上报（按已占槽位显示）」——没有这道区分，中台
 # 只能猜，而猜错的方向（把预留当空闲）恰好会重开 E-01 要关闭的超卖竞态。
 # 方向为**执行器→中台**，PROTOCOL_CONTROL_PLANE_MIN 仍为 2。
-PROTOCOL_VERSION = 4
+#
+# A-11R（2026-10-14，生产回归修复）：4 → 5。params→子进程 env 的注入口径变更
+# （逐键通道字符串回归**裸值** + 新增类型化通道 `AUTOFLOW_PARAMS_JSON`）。
+# 必须 bump 的理由：A-11 当年把逐键通道一律 JSON 化（字符串也被加引号，生产
+# 实证 tk-ship-notify 静默停摆 12 天）时**没有** bump 版本，于是 **v4 被两种
+# 语义共用**——中台仅凭 protocolVersion === 4 无法判断注入的字符串带不带引号。
+# v5 让「字符串裸值 + 有 PARAMS_JSON」可判定，中台才能对已部署机队做观测与
+# 兼容兜底（与 v2/v3/v4 同款理由）。方向同为**执行器→中台**，
+# PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有分支。
+PROTOCOL_VERSION = 5
 

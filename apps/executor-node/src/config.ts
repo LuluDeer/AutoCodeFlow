@@ -476,8 +476,20 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 占槽位显示）」——没有这道区分，中台只能猜，而猜错的方向（把预留当空闲）
  * 恰好会重开 E-01 要关闭的超卖竞态。方向同为**执行器→中台**，
  * PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有分支。
+ *
+ * A-11R（2026-10-14，生产回归修复）：4 → 5。params→子进程 env 的注入口径变更
+ * （字符串回归裸值 + 新增类型化通道 `AUTOFLOW_PARAMS_JSON`）。
+ *
+ * 为什么必须 bump（关键）：A-11 当年把逐键通道一律 JSON 化（字符串也被加引号，
+ * 生产实证 tk-ship-notify 静默停摆 12 天）时**没有** bump 版本，于是 **v4 被
+ * 两种语义共用**——中台仅凭 `protocolVersion === 4` 无法判断该执行器注入的
+ * 字符串带不带引号。v5 让「字符串裸值 + 有 PARAMS_JSON」成为可判定的形态，
+ * 中台才能对已部署机队做观测与兼容兜底（与 v2 的 commands、v3 的
+ * deviceFingerprint、v4 的 reservedSlots 同款理由：evolutionRules 第 1 条）。
+ * 方向同为**执行器→中台**（中台从不构造子进程 env），
+ * PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有分支。
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /**
  * A-6（P2）：express.json() 请求体上限。express 默认 100KB，而 admin 派发载荷

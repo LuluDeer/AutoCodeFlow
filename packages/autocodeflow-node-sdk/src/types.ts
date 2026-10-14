@@ -52,6 +52,18 @@ export interface TaskEnv {
   executorAddress?: string;
   /** Optional distributed trace identifier */
   traceId?: string;
+  /**
+   * Task parameters with their **real types** (A-11R, executor protocol v5).
+   *
+   * Populated from the typed `AUTOFLOW_PARAMS_JSON` channel both executors
+   * inject alongside the per-key `AUTOFLOW_<KEY>` variables. It is the only
+   * lossless source: every per-key value is a string by construction, so that
+   * channel cannot distinguish the string `"true"` from the boolean `true`.
+   *
+   * `undefined` on executors older than protocol v5 — `ctx.getParam()` then
+   * falls back to reading the per-key variables, which is best-effort.
+   */
+  params?: Record<string, unknown>;
 }
 
 /**

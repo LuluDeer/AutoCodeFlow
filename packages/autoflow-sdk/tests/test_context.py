@@ -108,6 +108,142 @@ class TestFromEnv:
         assert "empty" not in ctx.params
 
 
+class TestFromEnvTypedParamsChannel:
+    """A-11R: the typed `AUTOFLOW_PARAMS_JSON` channel (protocol v5).
+
+    The per-key AUTOFLOW_<KEY> values are ALWAYS strings, so they cannot
+    express the difference between the string "true" and the boolean True.
+    Both executors therefore also inject the whole params object as one JSON
+    document, and from_env() must prefer it.
+    """
+
+    def test_typed_channel_restores_real_types(self, monkeypatch):
+        monkeypatch.setenv(
+            "AUTOFLOW_PARAMS_JSON",
+            '{"flag":true,"count":3,"ratio":1.5,"nothing":null,'
+            '"tags":["a",2],"nested":{"b":true,"a":1},"text":"中文","empty":""}',
+        )
+        # The per-key copies are present too (that is how the real executor
+        # behaves) and must NOT overwrite the properly typed values.
+        monkeypatch.setenv("AUTOFLOW_FLAG", "true")
+        monkeypatch.setenv("AUTOFLOW_COUNT", "3")
+        monkeypatch.setenv("AUTOFLOW_TEXT", "中文")
+        monkeypatch.setenv("AUTOFLOW_NESTED", '{"b":true,"a":1}')
+
+        ctx = TaskContext.from_env()
+        assert ctx.params["flag"] is True
+        assert ctx.params["count"] == 3
+        assert ctx.params["ratio"] == 1.5
+        assert ctx.params["nothing"] is None
+        assert ctx.params["tags"] == ["a", 2]
+        assert ctx.params["nested"] == {"b": True, "a": 1}
+        assert ctx.params["text"] == "中文"
+        # An empty string is a real value, not an absent parameter.
+        assert ctx.params["empty"] == ""
+
+    def test_string_true_stays_a_string(self, monkeypatch):
+        """The whole point of the channel: "true" != True."""
+        monkeypatch.setenv("AUTOFLOW_PARAMS_JSON", '{"flag":"true"}')
+        monkeypatch.setenv("AUTOFLOW_FLAG", "true")
+        ctx = TaskContext.from_env()
+        assert ctx.params["flag"] == "true"
+        assert ctx.params["flag"] is not True
+
+    def test_typed_channel_is_not_surfaced_as_a_param(self, monkeypatch):
+        monkeypatch.setenv("AUTOFLOW_PARAMS_JSON", '{"a":1}')
+        ctx = TaskContext.from_env()
+        assert "params_json" not in ctx.params
+        assert ctx.params == {"a": 1}
+
+    def test_typed_channel_keys_are_lowercased(self, monkeypatch):
+        monkeypatch.setenv("AUTOFLOW_PARAMS_JSON", '{"OrderId":"A-1"}')
+        ctx = TaskContext.from_env()
+        assert ctx.params["orderid"] == "A-1"
+
+    def test_malformed_typed_channel_falls_back_without_raising(self, monkeypatch):
+        # A broken payload must not make from_env() unusable — degrading to the
+        # per-key channel only loses type fidelity.
+        monkeypatch.setenv("AUTOFLOW_PARAMS_JSON", "{not json")
+        monkeypatch.setenv("AUTOFLOW_DATE", "2024-06-01")
+        ctx = TaskContext.from_env()
+        assert ctx.params["date"] == "2024-06-01"
+
+    def test_non_object_typed_channel_falls_back(self, monkeypatch):
+        monkeypatch.setenv("AUTOFLOW_PARAMS_JSON", "[1,2]")
+        monkeypatch.setenv("AUTOFLOW_DATE", "2024-06-01")
+        ctx = TaskContext.from_env()
+        assert ctx.params["date"] == "2024-06-01"
+
+
+class TestFromEnvPerKeyFallback:
+    """A-11R: behaviour on executors that predate the typed channel."""
+
+    def test_bare_strings_stay_strings(self, monkeypatch):
+        # v5 executors inject strings bare; a bare string is not JSON and must
+        # not be mangled. "3" and dates are what the user *typed*, so they must
+        # stay text — coercing them would change task behaviour (and would turn
+        # "2024-06-01" into a failed parse / "3" into an int).
+        monkeypatch.delenv("AUTOFLOW_PARAMS_JSON", raising=False)
+        monkeypatch.setenv("AUTOFLOW_REGION", "欧盟")
+        monkeypatch.setenv("AUTOFLOW_LIMIT", "3")
+        monkeypatch.setenv("AUTOFLOW_DATE", "2024-06-01")
+        ctx = TaskContext.from_env()
+        assert ctx.params["region"] == "欧盟"
+        assert ctx.params["limit"] == "3"
+        assert ctx.params["date"] == "2024-06-01"
+
+    def test_json_literals_are_coerced_on_the_fallback(self, monkeypatch):
+        """`true`/`false`/`null` are the documented ambiguous case.
+
+        On the fallback channel a bare `true` could be either the boolean True
+        (executor rendered a real bool) or the four-character string a user
+        typed. They are indistinguishable, so a choice is forced, and we
+        coerce. Reason: leaving `false`/`null` as strings makes them TRUTHY —
+        the same silent-failure class as A-11's `'""'` — whereas a user who
+        genuinely needs the literal string has the typed channel on every v5
+        executor. This is best-effort by construction; it is exactly why the
+        typed channel exists.
+        """
+        monkeypatch.delenv("AUTOFLOW_PARAMS_JSON", raising=False)
+        monkeypatch.setenv("AUTOFLOW_DRY", "true")
+        monkeypatch.setenv("AUTOFLOW_OFF", "false")
+        ctx = TaskContext.from_env()
+        assert ctx.params["dry"] is True
+        assert ctx.params["off"] is False
+
+    def test_json_rendered_non_strings_are_recovered(self, monkeypatch):
+        monkeypatch.delenv("AUTOFLOW_PARAMS_JSON", raising=False)
+        monkeypatch.setenv("AUTOFLOW_DRY_RUN", "true")
+        monkeypatch.setenv("AUTOFLOW_NOTHING", "null")
+        monkeypatch.setenv("AUTOFLOW_TAGS", '["a",2]')
+        monkeypatch.setenv("AUTOFLOW_NESTED", '{"b":true,"a":1}')
+        monkeypatch.setenv("AUTOFLOW_RATIO", "1.5")
+        monkeypatch.setenv("AUTOFLOW_TINY", "1e-7")
+        ctx = TaskContext.from_env()
+        assert ctx.params["dry_run"] is True
+        assert ctx.params["nothing"] is None
+        assert ctx.params["tags"] == ["a", 2]
+        assert ctx.params["nested"] == {"b": True, "a": 1}
+        assert ctx.params["ratio"] == 1.5
+        assert ctx.params["tiny"] == 1e-7
+
+    def test_recovers_a11_quoted_strings_from_old_executors(self, monkeypatch):
+        """A-11 (< v5) injected strings JSON-quoted; recover them.
+
+        This is the regression that silently stopped tasks for 12 days: the
+        value carried a stray pair of quotes into business logic.
+        """
+        monkeypatch.delenv("AUTOFLOW_PARAMS_JSON", raising=False)
+        monkeypatch.setenv("AUTOFLOW_REGION", '"欧盟"')
+        monkeypatch.setenv("AUTOFLOW_LIMIT", '"3"')
+        # A-11 rendered the empty string as '""', which is a TRUTHY value.
+        monkeypatch.setenv("AUTOFLOW_MODE", '""')
+        ctx = TaskContext.from_env()
+        assert ctx.params["region"] == "欧盟"
+        assert ctx.params["limit"] == "3"
+        assert ctx.params["mode"] == ""
+
+
 class TestToDict:
     def test_to_dict_contains_expected_keys(self):
         ctx = TaskContext(task_id="t", execution_id="e", task_name="T", params={"k": "v"})

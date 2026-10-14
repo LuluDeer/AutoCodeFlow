@@ -20,9 +20,13 @@ def get_typed_param(ctx, key, default=None):
     """
     JSON 容错解析任务参数。
 
-    执行器把所有触发参数字符串化注入（AUTOFLOW_* 环境变量），python SDK
-    from_env 不做类型还原——列表/数字/布尔参数拿到的都是字符串。尝试
-    json.loads 还原，失败则原样返回字符串（对齐 Node 示例 getParam 的兜底）。
+    A-11R / 协议 v5 起：SDK 的 `from_env()` 已优先读 `AUTOFLOW_PARAMS_JSON` 并做
+    类型还原，故 `ctx.get_param()` 通常**已经**返回真实类型（列表/数字/布尔）。
+    此时下面这个 helper 是**幂等兜底**——`json.loads` 对已是 list/dict 的值抛
+    `TypeError`，原样返回（见 except 分支），不会二次解析。
+
+    在**旧执行器**（协议 < v5，或 A-11 期间的加引号形态）上它才真正起作用：
+    `json.loads('"欧盟"')` 解出 `欧盟`，把引号剥掉。两代机队上行为都正确。
 
     另有一处键名陷阱：执行器注入时把键名**大写**（`AUTOFLOW_{k.upper()}`，
     见 apps/executor-python/routers/execute.py），而 SDK 读回时把键名**小写**

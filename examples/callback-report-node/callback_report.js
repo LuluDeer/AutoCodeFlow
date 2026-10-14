@@ -23,7 +23,7 @@
  *    node callback_report.js
  *    （不注入 AUTOFLOW_* 凭证时走"不可回调"降级分支，正好演示能力探测）
  *
- * 任务参数（AUTOFLOW_<KEY> 注入，getParam 读取，均为字符串）：
+ * 任务参数（AUTOFLOW_<KEY> 注入，getParam 读取；A-11R / 协议 v5 起字符串为裸值）：
  * - mode: "success"（默认）或 "fail" —— 演示成功/失败两条上报路径
  * - summary: 自定义成功摘要，缺省用内置文案
  *
@@ -35,14 +35,24 @@
 // executor-node 会装到任务隔离目录并注入 NODE_PATH（见 README）。
 const { TaskContext } = require('@autocodeflow/sdk');
 
-/** JSON 容错解析任务参数（执行器把参数字符串化注入；对齐既有示例 getParam）。 */
+/**
+ * JSON 容错解析任务参数（对齐既有示例 getParam）。
+ *
+ * A-11R / 协议 v5 起：字符串是**裸值**（`欧盟` 就是 `欧盟`），数字/布尔/容器是
+ * JSON 字面量。故 `JSON.parse('欧盟')` 抛错 → 原样返回字符串（正确）；数字/布尔
+ * /容器解析成功 → 拿到真实类型（正确）。
+ *
+ * 这个容错形态对**旧执行器**同样有效：A-11（2026-10-02~10-14）曾给字符串加
+ * 首尾引号（`'"欧盟"'`），此时 `JSON.parse` 会解出 `欧盟`——恰好把引号剥掉。
+ * 需要**精确类型**（区分字符串 "true" 与布尔 true）时读 `AUTOFLOW_PARAMS_JSON`。
+ */
 function getParam(key, defaultValue) {
   const envValue = process.env[`AUTOFLOW_${key.toUpperCase()}`];
   if (envValue !== undefined) {
     try {
       return JSON.parse(envValue);
     } catch (e) {
-      return envValue; // 纯字符串不是合法 JSON，原样返回
+      return envValue; // 裸字符串不是合法 JSON，原样返回
     }
   }
   return defaultValue;

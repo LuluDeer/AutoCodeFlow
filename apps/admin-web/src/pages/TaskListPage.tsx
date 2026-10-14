@@ -117,7 +117,7 @@ export default function TaskListPage() {
   const [lastStatusFilter, setLastStatusFilter] = useState<string | undefined>(() => searchParams.get('lastStatus') || undefined);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
-  const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
+  const [triggerParams, setTriggerParams] = useState<Record<string, unknown>>({});
   const [triggering, setTriggering] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
@@ -252,9 +252,13 @@ export default function TaskListPage() {
   };
 
   const handleTrigger = (id: string, name: string, defaultParams?: Record<string, unknown>) => {
-    setTriggerParams(
-      Object.fromEntries(Object.entries(defaultParams ?? {}).map(([k, v]) => [k, String(v)]))
-    );
+    // A-11R：默认参数**原样**回填，不再 String(v) 强制转换。
+    //
+    // 此前这里把每个值转成字符串，于是服务端存的是布尔 true、一进触发弹窗就
+    // 变成字符串 "true"，提交后落库/注入都成了字符串——类型在 UI 这一跳被
+    // 静默丢掉。ParamsEditor 现在按值推断类型（见 inferType），配合这里的
+    // 原样传递，布尔/数字/JSON 能完整往返。
+    setTriggerParams({ ...(defaultParams ?? {}) });
     setTriggerTarget({ id, name, defaultParams });
   };
 

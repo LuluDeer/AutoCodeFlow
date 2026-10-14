@@ -2769,11 +2769,28 @@ export default {
 
   'paramsEditor.empty': 'No parameters yet, click below to add',
   'paramsEditor.keyPlaceholder': 'Param name',
-  'paramsEditor.valuePlaceholder': 'Default value',
+  'paramsEditor.valuePlaceholder': 'Param value',
   'paramsEditor.add': 'Add parameter',
   // A11Y-ICON-01: accessible name for the icon-only per-row delete button (no Tooltip wrapper)
   'paramsEditor.remove': 'Remove this parameter',
-  'paramsEditor.tooltip': 'At run time, tasks can read these parameters via the env var AUTOFLOW_<KEY>; they can also be overridden on trigger',
+  // A-11R: type selector. The console could previously ONLY produce strings
+  // (contract was Record<string,string>), so users needing a real boolean /
+  // number / array had no way to express it — they could only type a string
+  // that *looks* like JSON, while a string and a JSON literal are
+  // indistinguishable in the env yet mean different things.
+  'paramsEditor.typeLabel': 'Param type',
+  'paramsEditor.type.text': 'Text',
+  'paramsEditor.type.number': 'Number',
+  'paramsEditor.type.boolean': 'Boolean',
+  'paramsEditor.type.json': 'JSON',
+  'paramsEditor.invalidValue': 'Cannot be parsed as the selected type — will be submitted as the raw text (string)',
+  // A-11R: the tooltip must state the real semantics. The old copy only said
+  // "readable via AUTOFLOW_<KEY>" and never mentioned the quoting A-11
+  // introduced — while the console is the one entry point that can only
+  // produce strings, so every UI-configured param gained quotes and scripts
+  // reading per the docs broke (production: tk-ship-notify silently dead for
+  // 12 days). Both channels and the bare-string rule are spelled out now.
+  'paramsEditor.tooltip': 'At run time each parameter is injected as the env var AUTOFLOW_<KEY> using its selected type: text = the bare value (no quotes, safe to read directly); number/boolean/JSON = the corresponding JSON literal. Read AUTOFLOW_PARAMS_JSON (the whole params object as JSON) when you need exact types. These parameters can also be overridden on trigger.',
 
   // SEC-02 follow-up (production incident): credentials editor copy.
   'secretsEditor.alertTitle': 'Credentials are injected under their original env var names, stored encrypted, and never readable back',

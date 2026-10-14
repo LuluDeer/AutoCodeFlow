@@ -19,11 +19,13 @@
 
 | 键 | 内容 |
 |---|---|
-| `$schemaVersion` | `1`（破坏性契约变更时 bump） |
+| `$schemaVersion` | `2`（破坏性契约变更时 bump；`1 → 2` 于 2026-10-14 A-11R，params→env 序列化语义变更，信封契约本身未变） |
 | `envelope` | full / arrayData / nullData / non200SuccessCode（201 必须与 200 同样拆包） |
 | `passthrough` | plainObject / plainString / emptyObject / arrayBody / stringCodeEnvelope（PK-06 统一后追加：字符串 `code` 不是信封，四端一致透传） |
 | `statusRange` | success: [200,201,202,204]、failure: [400,401,403,404,409,429,500,502] |
 | `errorBody` | 5 条错误体向量（信封式 message、message 数组、error 字段等） |
+| `executorEnvSerialization` | **A-11 旧语义的冻结档案**（2026-10-02）：字符串也被 JSON 序列化（带首尾引号）。那正是生产回归的形态（中台只能产出字符串 → 所有 UI 配置的参数多一对引号 → 按文档裸读的脚本报错，`tk-ship-notify` 静默停摆 12 天）。按 append-only 纪律保留，**不再对实现断言** |
+| `executorEnvSerializationV2` | **在用语义**（A-11R，2026-10-14）：① 逐键 `AUTOFLOW_<KEY>` 字符串**裸值**、非字符串 JSON；② 类型化通道 `AUTOFLOW_PARAMS_JSON`（整个 params 一份 JSON，空/缺省不注入）。向量含浮点指数（`1e-7`）、大整数与 JS 整数键序——原 10 条向量漏掉的形态 |
 | `knownHeuristicEdge` | 已知边界：载荷带**完整** `code+message+data` 三元组会被所有端当信封拆掉——实体载荷绝不能同时携带这三个键（PK-06 统一后判据为「`data` 键 + `code` 数值」，`message` 不再参与判定） |
 | `knownDivergence` | **已收敛，条目降级为历史档案**（PK-06 统一批次，2026-09-14）：cli/mcp 2026-09-13（WIKI-OPT-4）收紧为「`data` 键 + `code` 数值」，node/py SDK 2026-09-14 同批跟进——四端判据现完全一致，`data+message` 无 `code` 的载荷四端一致原样保留。向量里 `cli_mcp_unwrapped` 键记录的是收紧前 cli/mcp 宽松启发式的旧行为，已无在发客户端如此表现；测试现统一断言 `node_py_unwrapped_preserved`（四端同值） |
 

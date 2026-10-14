@@ -36,6 +36,7 @@
 | [ADR-020](./adr-020-agent-boundary-model.md) | 工具分级与边界闸门——五道检查 + 硬禁用不可配置 + scope 安全默认 | Accepted |
 | [ADR-021](./adr-021-sop-as-executable-contract.md) | SOP 即可执行契约——文档与契约分离、版本不可变 + contentHash | Accepted |
 | [ADR-022](./adr-022-executor-agent-arbitrary-code.md) | 执行器 Agent 与「受控的任意代码执行」信任模型变更——权限档位 + 硬闸门 + 默认最保守 | Accepted |
+| [ADR-023](./adr-023-params-env-injection-contract.md) | params → 子进程 env 的注入口径——字符串回归裸值 + 类型化 `AUTOFLOW_PARAMS_JSON` 通道（协议 4→5，A-11R） | Accepted |
 
 ## DOC-04 覆盖状态
 

@@ -114,7 +114,9 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
 
 ## 任务参数注入（params → AUTOFLOW_\*）
 
-`task create`/`update` 的 `body.params` 在每次执行时注入为 `AUTOFLOW_<KEY>` 环境变量（键名转大写），值 JSON 序列化：布尔/数字是裸值（`true`/`3`），**字符串带双引号**（`"yes"`），对象/数组为 JSON —— 脚本侧请按 JSON 解析，不要当普通字符串（两执行器契约向量见 contract-fixtures 的 `executorEnvSerialization`）。
+`task create`/`update` 的 `body.params` 在每次执行时注入为 `AUTOFLOW_<KEY>` 环境变量（键名转大写）。**字符串按裸值注入**（`"nightly"` → `AUTOFLOW_TARGET=nightly`，直接读即可，不加引号）；数字/布尔/对象/数组为 JSON 字面量（`3`、`true`、`["a",1]`）。需要精确类型时另读 `AUTOFLOW_PARAMS_JSON`（整个参数的 JSON 对象，协议 v5 起注入）——逐键通道的值恒为字符串，无法区分字符串 `"true"` 与布尔 `true`（两执行器契约向量见 contract-fixtures 的 `executorEnvSerializationV2`）。
+
+> ⚠️ 2026-10-02 ~ 10-14 期间发布的执行器（A-11）会把**字符串也加一对首尾双引号**（`AUTOFLOW_TARGET='"nightly"'`），空串变成 `'""'`（真值）。该行为已在协议 v5 修复——若目标执行器仍是旧版，脚本需容错剥离首尾引号。
 
 - **按 run 覆盖参数**：`acf task trigger <id> --params '{"KEY":"value"}'` 覆盖任务默认 params（TriggerTaskDto 同 webhook 面；缺省不发 body，用任务默认值）。block-strategy 闸（N-14）按生效参数判重。
 - **按名/描述搜任务**：`acf task list --search <kw>` 走 `q` 参数（name OR description，控制台搜索框同款）；`-k/--keyword` 仍只搜 name（向后兼容通道）。
