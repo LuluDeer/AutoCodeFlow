@@ -1,4 +1,9 @@
-import { TaskContext } from '../context';
+import {
+  TaskContext,
+  loadTypedParams,
+  coerceParamValue,
+  PARAMS_JSON_ENV_KEY,
+} from '../context';
 import { ERROR_MESSAGE_MAX_LENGTH, LOGS_MAX_LENGTH } from '../context';
 import { TaskLogger } from '../logger';
 import { TaskEnv } from '../types';
@@ -377,5 +382,155 @@ describe('TaskContext', () => {
         /HttpClient is disabled/,
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A-11R: typed params channel (protocol v5) + per-key fallback type recovery.
+//
+// The per-key AUTOFLOW_<KEY> values are ALWAYS strings, so they cannot express
+// the difference between the string "true" and the boolean true. Both executors
+// therefore also inject the whole params object as one JSON document, and
+// getParam() must prefer it.
+// ---------------------------------------------------------------------------
+
+describe('A-11R typed params channel', () => {
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of [
+      PARAMS_JSON_ENV_KEY,
+      'EXECUTION_ID',
+      'TASK_ID',
+      'TASK_NAME',
+      'AUTOFLOW_REGION',
+      'AUTOFLOW_LIMIT',
+      'AUTOFLOW_DRY_RUN',
+      'AUTOFLOW_MODE',
+      'AUTOFLOW_TAGS',
+      'AUTOFLOW_RATIO',
+    ]) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env['EXECUTION_ID'] = 'exec-a11r';
+    process.env['TASK_ID'] = 'task-a11r';
+    process.env['TASK_NAME'] = 'A-11R';
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('loadTypedParams returns undefined for absent / malformed / non-object', () => {
+    expect(loadTypedParams(undefined)).toBeUndefined();
+    expect(loadTypedParams('')).toBeUndefined();
+    expect(loadTypedParams('{not json')).toBeUndefined();
+    expect(loadTypedParams('[1,2]')).toBeUndefined();
+    expect(loadTypedParams('"str"')).toBeUndefined();
+    expect(loadTypedParams('null')).toBeUndefined();
+    expect(loadTypedParams('{"a":1}')).toEqual({ a: 1 });
+  });
+
+  it('fromEnv prefers the typed channel and preserves real types', () => {
+    process.env[PARAMS_JSON_ENV_KEY] = JSON.stringify({
+      flag: true,
+      count: 3,
+      ratio: 1.5,
+      nothing: null,
+      tags: ['a', 2],
+      nested: { b: true, a: 1 },
+      text: '中文',
+      empty: '',
+    });
+    // Real executors also inject the per-key copies; they must not downgrade.
+    process.env['AUTOFLOW_LIMIT'] = '3';
+    process.env['AUTOFLOW_TAGS'] = '["a",2]';
+
+    const ctx = TaskContext.fromEnv();
+    expect(ctx.getParam('flag')).toBe(true);
+    expect(ctx.getParam('count')).toBe(3);
+    expect(ctx.getParam('ratio')).toBe(1.5);
+    expect(ctx.getParam('nothing')).toBeNull();
+    expect(ctx.getParam('tags')).toEqual(['a', 2]);
+    expect(ctx.getParam('nested')).toEqual({ b: true, a: 1 });
+    expect(ctx.getParam('text')).toBe('中文');
+    // An empty string is a real value, not an absent parameter.
+    expect(ctx.getParam('empty')).toBe('');
+  });
+
+  it('distinguishes the string "true" from the boolean true', () => {
+    process.env[PARAMS_JSON_ENV_KEY] = JSON.stringify({ flag: 'true' });
+    process.env['AUTOFLOW_FLAG'] = 'true';
+    const ctx = TaskContext.fromEnv();
+    expect(ctx.getParam('flag')).toBe('true');
+    expect(ctx.getParam('flag')).not.toBe(true);
+  });
+
+  it('matches keys case-insensitively (per-key names are upper-cased)', () => {
+    process.env[PARAMS_JSON_ENV_KEY] = JSON.stringify({ LIMIT: 5, host: 'h' });
+    const ctx = TaskContext.fromEnv();
+    expect(ctx.getParam('limit')).toBe(5);
+    expect(ctx.getParam('LIMIT')).toBe(5);
+    expect(ctx.getParam('HOST')).toBe('h');
+  });
+
+  it('returns the fallback for a key absent from the typed channel', () => {
+    process.env[PARAMS_JSON_ENV_KEY] = JSON.stringify({ a: 1 });
+    const ctx = TaskContext.fromEnv();
+    expect(ctx.getParam('missing')).toBeUndefined();
+    expect(ctx.getParam('missing', 'dflt')).toBe('dflt');
+  });
+
+  it('falls back to per-key vars on pre-v5 executors without raising', () => {
+    process.env['AUTOFLOW_REGION'] = '欧盟';
+    process.env['AUTOFLOW_LIMIT'] = '3';
+    process.env['AUTOFLOW_DRY_RUN'] = 'true';
+    process.env['AUTOFLOW_TAGS'] = '["a",2]';
+    process.env['AUTOFLOW_RATIO'] = '1.5';
+    const ctx = TaskContext.fromEnv();
+    expect(ctx.params).toBeUndefined();
+    // Bare user strings stay strings — coercing "3" or a date would change
+    // task behaviour and is not what the user typed.
+    expect(ctx.getParam('region')).toBe('欧盟');
+    expect(ctx.getParam('limit')).toBe('3');
+    // JSON-rendered non-strings are recovered.
+    expect(ctx.getParam('dry_run')).toBe(true);
+    expect(ctx.getParam('tags')).toEqual(['a', 2]);
+    expect(ctx.getParam('ratio')).toBe(1.5);
+  });
+
+  it('recovers A-11 quoted strings from old executors', () => {
+    // A-11 (< v5) injected strings JSON-quoted — the regression that silently
+    // stopped tasks for 12 days. `'""'` was additionally TRUTHY while
+    // meaning the empty string.
+    process.env['AUTOFLOW_REGION'] = '"欧盟"';
+    process.env['AUTOFLOW_LIMIT'] = '"3"';
+    process.env['AUTOFLOW_MODE'] = '""';
+    const ctx = TaskContext.fromEnv();
+    expect(ctx.getParam('region')).toBe('欧盟');
+    expect(ctx.getParam('limit')).toBe('3');
+    expect(ctx.getParam('mode')).toBe('');
+  });
+
+  it('coerceParamValue only decodes shapes JSON produces for non-strings', () => {
+    expect(coerceParamValue('欧盟')).toBe('欧盟');
+    expect(coerceParamValue('3')).toBe('3');
+    expect(coerceParamValue('2024-06-01')).toBe('2024-06-01');
+    expect(coerceParamValue('')).toBe('');
+    expect(coerceParamValue('true')).toBe(true);
+    expect(coerceParamValue('null')).toBeNull();
+    expect(coerceParamValue('1.5')).toBe(1.5);
+    expect(coerceParamValue('[1,"a"]')).toEqual([1, 'a']);
+    expect(coerceParamValue('{not json')).toBe('{not json');
+  });
+
+  it('the typed channel key is exactly AUTOFLOW_PARAMS_JSON', () => {
+    // Same literal as the executors (param-env.ts / routers/execute.py), the
+    // console tooltip and the docs table — renaming it breaks the contract.
+    expect(PARAMS_JSON_ENV_KEY).toBe('AUTOFLOW_PARAMS_JSON');
   });
 });

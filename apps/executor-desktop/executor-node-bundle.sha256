@@ -452,5 +452,25 @@
 #     而 `interpreters.ts` 常被测试整体 mock，放那里会因 mock 漏 re-export 而**静默变成
 #     undefined**（落地时真实发生过，路由级用例断言到 `ensureVersion(undefined, …)`）。
 #     source-digest 45 个输入文件（新增 python-defaults.ts）。
-source-digest: 60ba8c3e1d371f236949a75cd317c85828017b91fb63238b6a110edd5f873adb
-6fc3d1b4e5d4e295686ad444bd4f6bd190f931ebbd510470cbe9b9bde13a2dc8  index.js
+#
+# 2026-10-14（A-11R：params → env 注入口径修复，生产回归）：
+#   · 新增 `src/param-env.ts`（**单一出处**）：`serializeParamEnvValue` 让
+#     **字符串回归裸值**、非字符串保持 JSON；`serializeParamsJson` 产出类型化
+#     通道 `AUTOFLOW_PARAMS_JSON`（`PARAMS_JSON_ENV_KEY`）。
+#   · `routes/execute.ts` 的 params 循环改用上面两个函数，并在循环**之后**注入
+#     类型化通道（与 AUTOFLOW_CALLBACK_TOKEN 同一纪律：用户参数不得覆盖平台
+#     变量）。
+#   · `config.ts` 的 `PROTOCOL_VERSION` 4 → 5。
+#
+#   为什么这是**生产级**修复而不是洁癖：A-11（2026-10-02）把字符串也 JSON 化，
+#   而中台 ParamsEditor 的契约是 Record<string,string>——控制台上配的每个参数
+#   都多了一对首尾双引号（`{"region":"欧盟"}` → `AUTOFLOW_REGION='"欧盟"'`），
+#   按官方文档裸读的脚本直接 ValueError，空串更是变成 `'""'`（**真值**）。
+#   生产实证：`tk-ship-notify` 因此静默停摆 12 天（10-02~10-14 运营收不到任何
+#   飞书通知）。桌面端内嵌执行器若漏打，**桌面端跑的应用仍会带着引号**——
+#   即用户装了新客户端、故障照旧。故按 ADR-005 同 commit 重打。
+#
+#   回填环境：本机(Windows) node 24 / ncc 0.45.0。bundle 4180kB。
+#   source-digest 46 个输入文件（新增 param-env.ts）。
+source-digest: 8071b1dc6360a540d074b2cab75213567a58e4ec5a3de580da27d5dbf687c4f7
+222b2e445b106d6410ef88c2d1a6c6ff0aed22e4518341a6c4fbec1e58c42243  index.js

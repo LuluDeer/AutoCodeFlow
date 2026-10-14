@@ -63,7 +63,11 @@ describe('I18N-01: python 子进程的日志编码（Windows 中文乱码）', (
   });
 
   it('注入点在 params 循环之后（用户参数不得覆盖编码开关）', () => {
-    const paramsIdx = code.indexOf('env[`AUTOFLOW_${k.toUpperCase()}`]');
+    // A-11R：params 循环改为经 param-env.ts 的 paramEnvKey/serializeParamEnvValue
+    // 写键（字符串裸值 + 类型化通道）。这里找的是**循环本身**，不再钉具体表达式
+    // ——钉表达式会让任何一次无害重构都把守卫弄红（本次即如此），而本用例真正
+    // 要守的是"编码开关必须落在用户参数之后"这个**次序**。
+    const paramsIdx = code.indexOf('for (const [k, v] of Object.entries(params))');
     const encIdx = code.indexOf("env['PYTHONIOENCODING']");
     expect(paramsIdx).toBeGreaterThan(-1);
     expect(encIdx).toBeGreaterThan(paramsIdx);

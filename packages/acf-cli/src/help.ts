@@ -61,7 +61,7 @@ export const EXAMPLES: Record<string, string[]> = {
   'task create': [
     'acf task create --file task.json   # required: name, triggerType (runtime is optional server-side)',
     "acf task create --body '{\"name\":\"nightly\",\"runtime\":\"node\",\"triggerType\":\"cron\",\"cronExpression\":\"0 2 * * *\"}'   # note: there is NO `version` field on the task body — use `currentVersion` if you need one",
-    "acf task create --body '{\"name\":\"sync\",\"runtime\":\"python\",\"triggerType\":\"cron\",\"cronExpression\":\"0 8 * * *\",\"params\":{\"REPLACE_EXISTING\":true,\"retries\":3,\"target\":\"nightly\"}}'   # params inject as AUTOFLOW_<KEY> env vars, JSON-stringified: booleans/numbers bare ('true','3'), strings quoted ('\"nightly\"')",
+    "acf task create --body '{\"name\":\"sync\",\"runtime\":\"python\",\"triggerType\":\"cron\",\"cronExpression\":\"0 8 * * *\",\"params\":{\"REPLACE_EXISTING\":true,\"retries\":3,\"target\":\"nightly\"}}'   # params inject as AUTOFLOW_<KEY> env vars: strings bare ('nightly', no quotes), numbers/booleans/containers as JSON ('3','true','[\"a\",1]'); read AUTOFLOW_PARAMS_JSON for exact types",
   ],
   'task update': ['acf task update <taskId> --file patch.json'],
   'task delete': ['acf task delete <taskId> -y'],

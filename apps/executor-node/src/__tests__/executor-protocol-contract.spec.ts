@@ -5,6 +5,11 @@ import { CALLBACK_FAILURE_REASONS } from '../callback';
 // 本轮协议 SSOT 补全：回调载荷 schema 与 secrets 键名闸的运行时对账
 import { CallbackPayloadSchema } from '../generated/protocol.schemas';
 import { isInjectableSecretName } from '../secret-env';
+import {
+  PARAMS_JSON_ENV_KEY,
+  serializeParamEnvValue,
+  serializeParamsJson,
+} from '../param-env';
 import { pageLogLines } from '../routes/logs';
 
 /**
@@ -201,41 +206,79 @@ describe('A3 执行器协议契约（executor-node 侧）', () => {
 });
 
 // ---------------------------------------------------------------------------
-// A-11（P3）：params→env 的 JSON 序列化契约向量。
+// A-11R（P1 生产回归修复）：params→env 的**在用**契约向量。
 //
-// 向量钉在 packages/contract-fixtures/contract.json 的
-// executorEnvSerialization 段（append-only）：node JSON.stringify(v) 与 python
-// json.dumps(v, ensure_ascii=False, separators=(',', ':')) 必须对同一载荷产出
-// 逐字节相同的 AUTOFLOW_* env 值。python 侧的运行时注入断言见
-// apps/executor-python/tests/test_audit_fixes.py。
+// A-11 的 executorEnvSerialization 段是冻结的历史档案（字符串带引号的旧语义）
+// ——它正是本次修掉的回归，故**刻意不再断言**。在用语义钉在
+// executorEnvSerializationV2 段（append-only）：逐键通道字符串裸值、非字符串
+// 走与 JSON.stringify 逐字节一致的序列化，另加类型化通道 paramsJsonVectors。
+//
+// python 侧的运行时注入断言见 apps/executor-python/tests/test_audit_fixes.py。
 // ---------------------------------------------------------------------------
 
-describe('A-11 — executorEnvSerialization contract vectors (contract-fixtures)', () => {
-  const CONTRACT_RELATIVE = path.join(
-    'packages',
-    'contract-fixtures',
-    'contract.json',
-  );
-
-  it('JSON.stringify matches every pinned env byte vector', () => {
+describe('A-11R — executorEnvSerializationV2 contract vectors (contract-fixtures)', () => {
+  function findContract(): Record<string, any> {
+    const contractRelative = path.join('packages', 'contract-fixtures', 'contract.json');
     let dir = __dirname;
-    let contractPath: string | null = null;
     for (let i = 0; i < 12; i++) {
-      const candidate = path.join(dir, CONTRACT_RELATIVE);
+      const candidate = path.join(dir, contractRelative);
       if (existsSync(candidate)) {
-        contractPath = candidate;
-        break;
+        return JSON.parse(readFileSync(candidate, 'utf-8'));
       }
       dir = path.dirname(dir);
     }
-    expect(contractPath).not.toBeNull();
-    const contract = JSON.parse(readFileSync(contractPath!, 'utf-8'));
-    const vectors = contract.executorEnvSerialization?.vectors;
+    throw new Error(`contract-fixtures/contract.json not found above ${__dirname}`);
+  }
+
+  it('per-key vectors: strings stay bare, everything else matches JSON.stringify', () => {
+    const section = findContract().executorEnvSerializationV2;
+    const vectors = section?.vectors;
+    expect(Array.isArray(vectors)).toBe(true);
+    expect(vectors.length).toBeGreaterThan(0);
+
+    for (const vector of vectors) {
+      const expected = typeof vector.input === 'string'
+        ? vector.input
+        : JSON.stringify(vector.input);
+      expect(serializeParamEnvValue(vector.input)).toBe(vector.env);
+      expect(expected).toBe(vector.env);
+    }
+  });
+
+  it('every pinned string vector is genuinely unquoted (guard against A-11 regression)', () => {
+    const vectors = findContract().executorEnvSerializationV2.vectors as {
+      input: unknown;
+      env: string;
+    }[];
+    const strings = vectors.filter((v) => typeof v.input === 'string');
+    // 若有人把字符串重新 JSON 化，这里立即转红——正是生产停摆 12 天的那个形态。
+    expect(strings.length).toBeGreaterThan(0);
+    for (const vector of strings) {
+      expect(vector.env).toBe(vector.input);
+      expect(vector.env.startsWith('"')).toBe(false);
+    }
+  });
+
+  it('typed channel vectors match JSON.stringify of the whole params object', () => {
+    const section = findContract().executorEnvSerializationV2;
+    const vectors = section?.paramsJsonVectors;
     expect(Array.isArray(vectors)).toBe(true);
     expect(vectors.length).toBeGreaterThan(0);
     for (const vector of vectors) {
-      expect(JSON.stringify(vector.input)).toBe(vector.env);
+      expect(serializeParamsJson(vector.params)).toBe(vector.env);
+      expect(JSON.stringify(vector.params)).toBe(vector.env);
     }
+  });
+
+  it('typed channel is withheld for empty / absent params', () => {
+    expect(serializeParamsJson({})).toBeNull();
+    expect(serializeParamsJson(null)).toBeNull();
+    expect(serializeParamsJson(undefined)).toBeNull();
+  });
+
+  it('the typed channel key is exactly AUTOFLOW_PARAMS_JSON', () => {
+    // 与 python 侧字面量、admin-web 提示词、docs 表格三处同源；改名即破坏契约。
+    expect(PARAMS_JSON_ENV_KEY).toBe('AUTOFLOW_PARAMS_JSON');
   });
 });
 

@@ -3,7 +3,7 @@
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
   "versioning": {
     "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
-    "currentProtocolVersion": 4,
+    "currentProtocolVersion": 5,
     "supportedMinProtocolVersion": 1,
     "compatibilityMatrix": [
       {
@@ -29,6 +29,12 @@
         "adminSupported": true,
         "executorImplementedBy": ["executor-node", "executor-python"],
         "$comment": "E-01-RPT（生产实证：RPA5 执行器在中台恒显「当前运行任务 1/10」「活性上报 0 条，与运行计数 1 不一致」，而该设备上并无任务在跑）：heartbeat 载荷新增**可选** `reservedSlots`（非负整数，= pull 长轮询「已预留但尚未认领」的槽位数）。**这不是计数泄漏，也不是卡住的任务**，而是 E-01 防超卖机制的固有上报口径缺口：E-01 要求 pull 循环在发起 25s 长轮询**之前**先原子预留一个容量槽位（executor-node pull.ts 的 Atomics.add / executor-python scheduler.py 的 try_reserve_running_slot），预留计入同一个并发账本，故 `runningTaskCount` 在长轮询窗口内**诚实包含**该预留——这正是「长轮询窗口内 admin 不会再往最后一个空槽 push 派发」的实现方式本身。而 `runningExecutionIds` 来自**另一个账本**（node 的 liveExecutions Map / python 的 _live_executions 字典），只有真正领取到的执行才有 id。空闲执行器几乎始终处在长轮询窗口内，于是稳态上报恒为「runningTaskCount=1 + runningExecutionIds=[]」——两个数字都对，却度量了不同的东西：前者是**已占槽位**，后者是**在跑执行**。中台详情页交叉核对两者，遂恒亮不一致告警。中台据此字段把「已占槽位」换算为「实际运行 = runningTaskCount − reservedSlots」用于**展示与告警判据**；派发闸门（selectLeastLoaded / 容量守卫）**仍读 runningTaskCount**，E-01 的防超卖语义逐字节不变。兼容性红线：字段**始终发送**（含 0），缺席 = 旧版执行器未上报 → 中台回落「按已占槽位显示」的旧口径，行为与引入前一致。**严禁**用 `runningExecutionIds.length` 直接覆盖 `runningTaskCount` 来「修」这个告警：那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 accept 返回 429 → 任务被误判永久失败，恰是 E-01 要关闭的竞态。另有一条**独立**理由（与预留无关、即使预留窗口不存在也成立）：两个账本的口径与**封顶**都不同——`runningExecutionIds` 只是「真正领取到的执行」的子集，且两端都会按 MAX_RUNNING_EXECUTION_IDS=10000 截顶（executor-node scheduler.ts / executor-python config.py，三端同值；python 侧此前误为 200，已在 NETOPT-C P2-1 对齐中修正），并发逼近封顶时 ids 数组必然少于真实在跑数，用它覆盖计数会系统性低报容量、把派发闸门放开到超卖。"
+      },
+      {
+        "protocolVersion": 5,
+        "adminSupported": true,
+        "executorImplementedBy": ["executor-node", "executor-python"],
+        "$comment": "A-11R（2026-10-14，生产回归修复）：params→子进程 env 的注入口径变更。A-11（v4 生命周期内上线，**未 bump 协议版本**）把逐键通道 `AUTOFLOW_<KEY>` 一律 JSON 序列化，于是字符串也被加上一对首尾双引号；而中台 ParamsEditor 的契约是 Record<string,string>（控制台上配的每个参数都是字符串），结果**所有经中台 UI 配置的参数**都变成 `'\"欧盟\"'` 形态，按官方文档裸读（`int(os.environ['AUTOFLOW_LIMIT'])`）的存量脚本直接 ValueError。生产实证：tk-ship-notify 静默停摆 12 天（2026-10-02~10-14）。v5 的语义：① 逐键通道**字符串裸值**（回到 A-11 之前对字符串的行为，救回中台主入口、shell 任务、文档示例与第三方 SDK），布尔/数字/null/容器仍为 JSON（保留 A-11 对字节漂移的真修复）；② 新增**类型化通道** `AUTOFLOW_PARAMS_JSON`（整个 params 一份紧凑 JSON，在逐键循环之后注入，空/缺省不注入）——逐键通道的值恒为字符串，原理上无法区分字符串 \"true\" 与布尔 true，需要精确类型的消费方走这条；③ 两端字节一致的兑现：python 不再用 json.dumps（浮点排版与 JSON.stringify 不同：1e-7 → '1e-07'、0.00001 → '1e-05'，且对象键序为纯插入序），改为 apps/executor-python/js_json.py 实现 JSON.stringify 自身规则；A-11 自称的「逐字节一致」此前并未做到（原 10 条向量恰好不含该类形态）。bump 到 5 的理由与 v2/v3/v4 同款（evolutionRules 第 1 条）：中台必须能区分「按 v5 语义注入（字符串裸值 + 有 PARAMS_JSON）」与「v4 及更早的 A-11 后语义（字符串带引号）」，否则无法为已部署机队做观测与兼容兜底。**注意 v4 已被两种语义共用**（A-11 在其生命周期内静默上线、未 bump），故不能用 v4 判断字符串是否带引号——这正是本次必须新增版本号而不是回填 v4 的原因。方向为执行器→中台（中台从不构造子进程 env），PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有控制面分支。"
       }
     ],
     "evolutionRules": [

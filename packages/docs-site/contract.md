@@ -59,6 +59,27 @@ ResponseInterceptor 的 `code = statusCode ?? 200` 恒数值语义），
   旧行为，已无任何在发客户端如此表现；`data+message` 无 `code` 的载荷
   现在四端一致保留。
 
+## 参数注入契约（params → env）
+
+`executorEnvSerialization` 段是 **A-11（2026-10-02）旧语义的冻结档案**：字符串也会
+被 JSON 序列化（带首尾双引号）。那正是生产回归的形态——中台 `ParamsEditor` 的
+契约是 `Record<string,string>`，于是经控制台配置的每个参数都多了一对引号，按本文
+「注入的环境变量」表裸读的脚本直接报错（生产实证：`tk-ship-notify` 静默停摆
+12 天）。该段按 append-only 纪律保留，不再对实现断言。
+
+在用语义在 **`executorEnvSerializationV2`** 段（A-11R，2026-10-14；协议 v5）：
+
+| | 逐键通道 `AUTOFLOW_<KEY>` | 类型化通道 `AUTOFLOW_PARAMS_JSON` |
+|---|---|---|
+| 字符串 | **裸值**（`欧盟`，不加引号） | 一份 JSON 里按真实类型 |
+| 布尔/数字/null/容器 | JSON 字面量（`true`/`3`/`null`/`[1,"a"]`） | 同上 |
+| 空 / 缺省 params | 无 | **不注入** |
+
+`AUTOFLOW_PARAMS_JSON` 存在的唯一理由：逐键通道的值恒为**字符串**，原理上无法
+区分字符串 `"true"` 与布尔 `true`。它在逐键循环之后注入（用户参数不得覆盖平台
+变量）。字节一致现在是事实：python 改由 `js_json.py` 实现 `JSON.stringify` 自身
+规则（浮点指数排版与 JS 整数键序），不再用 `json.dumps`（`1e-7` 曾渲染成 `1e-07`）。
+
 ## 修改纪律
 
 - **只能追加向量，不能修改既有向量**——已发布的客户端包按旧向量断言。

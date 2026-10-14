@@ -32,7 +32,14 @@
 
 const { TaskContext } = require('@autocodeflow/sdk');
 
-/** JSON 容错解析任务参数（执行器把参数字符串化注入；对齐既有示例 getParam）。 */
+/**
+ * JSON 容错解析任务参数（对齐既有示例 getParam）。
+ *
+ * A-11R / 协议 v5 起字符串是**裸值**、数字/布尔/容器是 JSON 字面量：
+ * `JSON.parse('欧盟')` 抛错 → 原样返回字符串；`'3'` 若本是数字则解析成数字。
+ * 需要**精确类型**（区分字符串 "true" 与布尔 true）时读 `AUTOFLOW_PARAMS_JSON`。
+ * 对旧执行器的加引号形态（`'"欧盟"'`）同样有效——恰好把引号剥掉。
+ */
 function getParam(key, defaultValue) {
   const envValue = process.env[`AUTOFLOW_${key.toUpperCase()}`];
   if (envValue !== undefined) {

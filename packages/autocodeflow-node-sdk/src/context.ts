@@ -75,6 +75,84 @@ export const VALID_FAILURE_REASONS: ReadonlySet<string> = new Set([
   'unknown',
 ]);
 
+/** The typed params channel injected by both executors since protocol v5. */
+export const PARAMS_JSON_ENV_KEY = 'AUTOFLOW_PARAMS_JSON';
+
+/**
+ * A-11R: read the typed `AUTOFLOW_PARAMS_JSON` channel.
+ *
+ * Returns `undefined` when the channel is absent (executor < protocol v5) or
+ * unusable, so callers fall back to the per-key variables. A malformed or
+ * non-object payload must never throw here: a task that cannot build its
+ * context reports nothing useful, whereas degrading loses only type fidelity.
+ */
+export function loadTypedParams(
+  raw: string | undefined = process.env[PARAMS_JSON_ENV_KEY],
+): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * A-11R: best-effort type recovery for the per-key `AUTOFLOW_<KEY>` fallback.
+ *
+ * The executor renders strings **bare** (`AUTOFLOW_REGION=欧盟`) and
+ * non-strings as JSON (`AUTOFLOW_DRY_RUN=true`, `AUTOFLOW_TAGS=["a",2]`).
+ * Parsing every value as JSON would be wrong for the common case — a user who
+ * typed `3` or a date meant the *string* — so only the shapes JSON produces
+ * for a non-string are decoded: containers, the three literals, and numbers
+ * carrying a JSON-only marker (exponent or decimal point).
+ *
+ * Inherently lossy; `getParam` prefers the typed channel whenever present.
+ */
+export function coerceParamValue(value: string): unknown {
+  if (!value) return value;
+  const first = value[0];
+  if (first === '[' || first === '{') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+  if (value === 'true' || value === 'false' || value === 'null') {
+    return JSON.parse(value);
+  }
+  if (first === '"') {
+    // A-11 legacy form (executors < protocol v5) injected strings JSON-quoted,
+    // so `"欧盟"` is the user's string 欧盟 carrying a pair of stray quotes.
+    // Recovering it repairs the fallback path for the whole pre-v5 fleet.
+    // (On v5 this branch is unreachable for user params — they come from the
+    // typed channel; only non-param platform variables are read per-key, and
+    // their values do not begin with a quote.)
+    try {
+      const decoded = JSON.parse(value);
+      return typeof decoded === 'string' ? decoded : value;
+    } catch {
+      return value;
+    }
+  }
+  if (first === '-' || (first >= '0' && first <= '9')) {
+    if (value.includes('.') || value.includes('e') || value.includes('E')) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+  return value;
+}
+
 /**
  * Runtime context handed to every task handler.
  *
@@ -164,6 +242,8 @@ export class TaskContext {
       // N27: non-secret routing info injected by executor-node.
       executorAddress: process.env['AUTOFLOW_EXECUTOR_ADDRESS'],
       traceId: process.env['TRACE_ID'],
+      // A-11R: typed params channel (protocol v5+). Absent on older executors.
+      params: loadTypedParams(),
     };
 
     return new TaskContext(env);
@@ -248,6 +328,45 @@ export class TaskContext {
    */
   get executorAddress(): string | undefined {
     return this.env.executorAddress;
+  }
+
+  /**
+   * The task's parameters with their real types, or `undefined` on executors
+   * older than protocol v5 (see `TaskEnv.params`).
+   */
+  get params(): Record<string, unknown> | undefined {
+    return this.env.params;
+  }
+
+  /**
+   * Read a task parameter (A-11R).
+   *
+   * Prefers the typed `AUTOFLOW_PARAMS_JSON` channel, so `true`/`3`/nested
+   * structures come back with their real types. Falls back to the per-key
+   * `AUTOFLOW_<KEY>` variable on older executors, where type recovery is
+   * best-effort (see `coerceParamValue`) — a bare user string such as `欧盟`,
+   * `3` or a date stays a string there.
+   *
+   * The key is matched case-insensitively against the typed channel (the
+   * executor upper-cases per-key names, so tasks have always written
+   * `getParam('limit')` for a param configured as `LIMIT`).
+   */
+  getParam(key: string, fallback?: unknown): unknown {
+    const typed = this.env.params;
+    if (typed) {
+      if (Object.prototype.hasOwnProperty.call(typed, key)) return typed[key];
+      const upper = key.toUpperCase();
+      for (const [k, v] of Object.entries(typed)) {
+        if (k.toUpperCase() === upper) return v;
+      }
+      // A key genuinely absent from the typed channel is genuinely absent —
+      // do not second-guess it via the per-key fallback, which could only
+      // return platform variables that are not params.
+      return fallback;
+    }
+    const raw = process.env[`AUTOFLOW_${key.toUpperCase()}`];
+    if (raw === undefined) return fallback;
+    return coerceParamValue(raw);
   }
 
   // ------------------------------------------------------------------ callback shorthands

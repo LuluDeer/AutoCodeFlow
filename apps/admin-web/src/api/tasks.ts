@@ -117,7 +117,15 @@ export interface Task {
   fixedRate?: number;
   cronExpression?: string;
   timezone?: string | null;
-  params?: Record<string, string | number | boolean>;
+  /**
+   * A-11R：参数值可以是任意 JSON 类型。此前这里声明为
+   * `Record<string, string | number | boolean>`，而 ParamsEditor 的旧契约是
+   * `Record<string, string>`——控制台**只能**产出字符串，这正是 A-11 引号事故
+   * 的中台半边根因（需要在注入时区分字符串与 JSON 字面量，而中台表达不了）。
+   * 现在编辑器支持显式类型（文本/数字/布尔/JSON），故类型放宽到 `unknown`，
+   * 与 admin-api 的 `Task.params`（jsonb，`Record<string, any>`）如实对齐。
+   */
+  params?: Record<string, unknown>;
   /**
    * SEC-02 续（生产故障）：任务级凭据。读路径永久脱敏——每个叶子都是字面量
    * `******`，真实值（密文或明文）不经过 API 回传；未知键集合 = 该任务没配凭据。

@@ -24,6 +24,14 @@ import { isExecutorShuttingDown } from '../shutdown-state';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
+// A-11R：params→env 注入口径（字符串裸值 + 类型化 AUTOFLOW_PARAMS_JSON），
+// 见 param-env.ts 的模块头注释（含 A-11 生产回归的完整背景）。
+import {
+  paramEnvKey,
+  serializeParamEnvValue,
+  serializeParamsJson,
+  PARAMS_JSON_ENV_KEY,
+} from '../param-env';
 // SEC-02 续：secrets 按原名注入（含保留名闸门），见 secret-env.ts 的模块头注释。
 import { injectSecretEnv } from '../secret-env';
 // L-3：任务子进程 POSIX ulimit（NOFILE/CPU）——node 无 preexec_fn，生产路径
@@ -1898,16 +1906,37 @@ async function prepareExecution(
 
   if (params) {
     for (const [k, v] of Object.entries(params)) {
-      // A-11（P3）python parity（_serialize_param_value）：params→env 统一 JSON
-      // 序列化——String(v) 与 python str(v) 对布尔/空值/容器产出不同字节，同
-      // 任务脚本在两个执行器读 AUTOFLOW_* 得到不同值。python 侧用
-      // json.dumps(v, ensure_ascii=False, separators=(',', ':'))，与本处
-      // JSON.stringify 逐字节可比（契约向量：contract-fixtures 的
-      // executorEnvSerialization 段）。undefined 只在进程内直调可能出现（JSON
-      // 载荷不可携带），兜底回 String(v)。
-      const serialized = JSON.stringify(v);
-      env[`AUTOFLOW_${k.toUpperCase()}`] = serialized === undefined ? String(v) : serialized;
+      // A-11R（生产回归修复）：字符串回归**裸值**，非字符串保持 JSON。
+      //
+      // A-11（2026-10-02）把这里统一改成 JSON.stringify(v)，修掉了 String(v)
+      // 与 python str(v) 对布尔/空值/容器的字节漂移（真缺口，保留），却把
+      // **字符串也一起加了引号**。而中台 ParamsEditor 的契约是
+      // Record<string, string>——控制台上配的每个参数都是字符串，于是 A-11
+      // 之后所有经中台 UI 配置的参数都多了一对首尾双引号，按官方文档裸读
+      // (`int(os.environ["AUTOFLOW_LIMIT"])`) 的存量脚本直接 ValueError。
+      // 生产实证：tk-ship-notify 静默停摆 12 天（详见 param-env.ts 头注）。
+      //
+      // 现在：字符串裸值（回到 A-11 之前对字符串的行为、与文档一致）；
+      // 布尔/数字/null/容器仍走 JSON，两端逐字节一致由
+      // apps/executor-node/src/param-env.ts + apps/executor-python/js_json.py
+      // 保证（后者实现了 JSON.stringify 的浮点排版与 JS 键序——A-11 自称的
+      // "两端字节一致" 此前并未做到：1e-7 node 给 "1e-7"、python 给 "1e-07"）。
+      env[paramEnvKey(k)] = serializeParamEnvValue(v);
     }
+  }
+
+  // A-11R ②：类型化通道——整个 params 一份 JSON。
+  //
+  // 逐键通道的值恒为字符串，原理上**无法区分**「用户填了字符串 "true"」与
+  // 「用户传了布尔 true」。需要精确类型的消费方（两个 SDK 的
+  // fromEnv() / from_env()）读这条通道做类型还原，不再对逐键通道做猜测性解析。
+  //
+  // 位置在 params 循环**之后**（与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）：用户
+  // 参数不得覆盖平台变量。旧执行器不注入它 → SDK 回落逐键通道，天然门禁，
+  // 无需协议版本分支。
+  const paramsJson = serializeParamsJson(params);
+  if (paramsJson !== null) {
+    env[PARAMS_JSON_ENV_KEY] = paramsJson;
   }
 
   // ---------------------------------------------------------------------

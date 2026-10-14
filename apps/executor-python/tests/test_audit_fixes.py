@@ -2,9 +2,13 @@
 
 每条用例对应报告里的一个 A-x 编号；node 侧对齐断言见
 apps/executor-node/src/audit-fixes.spec.ts 与契约向量
-packages/contract-fixtures/contract.json 的 executorEnvSerialization 段。
+packages/contract-fixtures/contract.json 的 executorEnvSerializationV2 段
+（A-11R 起为在用语义；V1 段是 A-11 旧语义的冻结档案）。
 """
 import asyncio
+import json
+import os
+import pathlib
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -524,13 +528,22 @@ def test_download_package_plain_404_still_reports_status(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# A-11：params→env 统一 JSON 序列化（node JSON.stringify 对齐）
+# A-11R：params→env 逐键通道字符串**裸值** + 类型化通道（A-11 的生产回归修复）
 # ---------------------------------------------------------------------------
 
-def test_run_task_params_env_use_json_serialization(tmp_path, monkeypatch):
-    """A-11（P3）：AUTOFLOW_* env 统一 JSON 序列化——布尔/空值/容器与 node
-    JSON.stringify 产出逐字节一致（此前 str(v) 产出 'True'/'None'/"['a']"）。
-    契约向量：contract-fixtures/contract.json 的 executorEnvSerialization 段。"""
+def test_run_task_params_env_serialization(tmp_path, monkeypatch):
+    """A-11R（P1 生产回归修复）：逐键通道里**字符串裸值**、非字符串走 JSON。
+
+    A-11 曾把字符串也 JSON 化（`'"hello"'`），而中台 ParamsEditor 的契约是
+    字符串键值对——于是所有经中台 UI 配置的参数都多了一对首尾双引号，按官方
+    文档裸读的存量脚本（`int(os.environ["AUTOFLOW_LIMIT"])`）直接 ValueError。
+    生产实证：tk-ship-notify 静默停摆 12 天。
+
+    真缺口（布尔/空值/容器的两端字节漂移）仍然修着：那些走 js_json_dumps，
+    与 node JSON.stringify 逐字节一致。
+
+    契约向量：contract-fixtures/contract.json 的 executorEnvSerializationV2 段。
+    """
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
     captured = {}
 
@@ -541,8 +554,8 @@ def test_run_task_params_env_use_json_serialization(tmp_path, monkeypatch):
     monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
 
     req = ExecuteRequest(
-        executionId='exec-a11',
-        task={'name': 'a11', 'runtime': 'python', 'entrypoint': 'main.py',
+        executionId='exec-a11r',
+        task={'name': 'a11r', 'runtime': 'python', 'entrypoint': 'main.py',
               'timeoutSeconds': 30},
         params={
             'flag': True,
@@ -553,35 +566,162 @@ def test_run_task_params_env_use_json_serialization(tmp_path, monkeypatch):
             'nested': {'b': True, 'a': 1},
             'text': '中文',
             'old_str': 'hello',
+            'empty': '',
+            'ratio_tiny': 1e-7,
         },
     )
     result = asyncio.run(execute_module.run_task(req))
 
     assert result['success'] is True
     env = captured['env']
+
+    # ① 字符串裸值（A-11 的回归点：此前是 '"hello"' / '"中文"' / '""'）
+    assert env['AUTOFLOW_TEXT'] == '中文'
+    assert env['AUTOFLOW_OLD_STR'] == 'hello'
+    # 空串必须还是空串——A-11 的 '""' 是**真值**，会让 `if os.environ.get(...)`
+    # 这类判断全部走错分支（静默，不报错）。
+    assert env['AUTOFLOW_EMPTY'] == ''
+
+    # ② 非字符串仍为 JSON（A-11 的真修复，保留）
     assert env['AUTOFLOW_FLAG'] == 'true'
     assert env['AUTOFLOW_COUNT'] == '1'
     assert env['AUTOFLOW_RATIO'] == '1.5'
     assert env['AUTOFLOW_NOTHING'] == 'null'
     assert env['AUTOFLOW_TAGS'] == '["a",2]'
     assert env['AUTOFLOW_NESTED'] == '{"b":true,"a":1}'
-    assert env['AUTOFLOW_TEXT'] == '"中文"'
-    assert env['AUTOFLOW_OLD_STR'] == '"hello"'
+    # A-11 自称"两端逐字节一致"并未做到：json.dumps 给 '1e-07'，node 给 '1e-7'。
+    assert env['AUTOFLOW_RATIO_TINY'] == '1e-7'
+
+    # ③ 类型化通道：整个 params 一份 JSON（逐键通道恒为字符串，原理上无法
+    #    区分字符串 "true" 与布尔 true，故需要这条来做类型还原）。
+    params_json = json.loads(env['AUTOFLOW_PARAMS_JSON'])
+    assert params_json['flag'] is True
+    assert params_json['empty'] == ''
+    assert params_json['ratio'] == 1.5
+    assert params_json['nested'] == {'b': True, 'a': 1}
+    assert params_json['text'] == '中文'
 
 
-def test_serialize_param_value_matches_json_stringify():
-    """A-11 单元锚点：_serialize_param_value 与 JSON.stringify 的可比形态
-    （ensure_ascii=False + 紧凑分隔符），契约向量逐条断言。"""
-    import json
-    import pathlib
+def test_serialize_param_value_matches_contract_vectors():
+    """A-11R 单元锚点：逐键序列化逐条命中冻结的契约向量。
 
+    向量在 contract-fixtures 的 executorEnvSerializationV2 段（append-only）。
+    V1 段是 A-11 旧语义的历史档案（字符串带引号），**刻意不再断言**——它正是
+    本次要修掉的行为。
+    """
     repo_root = pathlib.Path(__file__).resolve().parents[3]
     contract = json.loads(
         (repo_root / 'packages' / 'contract-fixtures' / 'contract.json')
         .read_text(encoding='utf-8')
     )
-    section = contract['executorEnvSerialization']
+    section = contract['executorEnvSerializationV2']
     for vector in section['vectors']:
         assert execute_module._serialize_param_value(vector['input']) == vector['env'], (
             f"vector {vector['input']!r} drifted from the pinned env bytes"
         )
+    for vector in section['paramsJsonVectors']:
+        assert execute_module._serialize_params_json(vector['params']) == vector['env'], (
+            f"paramsJson vector {vector['params']!r} drifted from the pinned bytes"
+        )
+    # 空/缺省 params 不注入类型化通道（缺席比空值更清楚，node 侧同判据）。
+    assert execute_module._serialize_params_json({}) is None
+    assert execute_module._serialize_params_json(None) is None
+
+
+def test_params_json_cannot_be_overridden_by_user_param(tmp_path, monkeypatch):
+    """A-11R：名为 `params_json` 的用户参数不得顶掉平台注入的 PARAMS_JSON。
+
+    平台变量在参数循环**之后**写入（与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）；
+    该名字属平台命名空间。若顺序反过来，用户一个手滑的参数名就能让整条类型化
+    通道失效——且失效是静默的（SDK 解析失败后回落逐键通道，类型还原丢失）。
+    """
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    captured = {}
+
+    async def fake_spawn(*args, **kwargs):
+        captured['env'] = dict(kwargs.get('env') or {})
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    req = ExecuteRequest(
+        executionId='exec-a11r-shadow',
+        task={'name': 'shadow', 'runtime': 'python', 'entrypoint': 'main.py',
+              'timeoutSeconds': 30},
+        params={'params_json': '{"hijacked":true}', 'real': 1},
+    )
+    result = asyncio.run(execute_module.run_task(req))
+    assert result['success'] is True
+
+    parsed = json.loads(captured['env']['AUTOFLOW_PARAMS_JSON'])
+    assert parsed == {'params_json': '{"hijacked":true}', 'real': 1}
+    assert 'hijacked' not in parsed
+
+
+def test_executor_env_round_trips_through_the_python_sdk():
+    """A-11R 端到端：执行器产出的 env → SDK `from_env()` → 类型正确还原。
+
+    为什么必须有这条**跨模块**断言：执行器序列化与 SDK 解析是两处独立实现，
+    各自的单测可以同时全绿而**线缆契约是错的**（这正是 A-11 的形态——两端
+    测试都只断言那 10 条向量）。这里用真实的执行器序列化函数产出 env，喂给
+    真实的 `autoflow_sdk.TaskContext.from_env()`，验证：
+      · 字符串参数**原样**还原（不被引号污染、不被猜测性转成数字/布尔）；
+      · 字符串 `"true"` 与布尔 `true` 可区分（类型化通道的意义所在）；
+      · 空串仍是空串且为假值。
+
+    若 SDK 未安装（执行器可以独立部署），本用例跳过——它验证的是两者**同在**
+    时的契约，缺一方时跳过是诚实的，不能假装通过。
+    """
+    sdk_context = pytest.importorskip(
+        'autoflow_sdk.context',
+        reason='autoflow-sdk 未安装：跨模块契约无从验证（非失败）',
+    )
+
+    params = {
+        'region': '欧盟',      # 字符串（含非 ASCII）
+        'limit': '3',          # 用户在界面上填的字符串 "3"
+        'flag': 'true',        # 用户在界面上填的字符串 "true"
+        'dry_run': True,       # 真实布尔
+        'count': 3,            # 真实整数
+        'ratio': 1e-7,         # 需要 JS 浮点排版的数
+        'tags': ['a', 2],
+        'nested': {'b': True, 'a': 1},
+        'mode': '',            # 空串——A-11 曾把它变成 '""'（真值）
+        'date': '2024-06-01',
+    }
+
+    env = {f'AUTOFLOW_{k.upper()}': execute_module._serialize_param_value(v)
+           for k, v in params.items()}
+    params_json = execute_module._serialize_params_json(params)
+    assert params_json is not None
+    env['AUTOFLOW_PARAMS_JSON'] = params_json
+    env['EXECUTION_ID'] = 'exec-e2e'
+    env['TASK_ID'] = 'task-e2e'
+    env['TASK_NAME'] = 'e2e'
+
+    saved = dict(os.environ)
+    try:
+        os.environ.update(env)
+        ctx = sdk_context.TaskContext.from_env()
+    finally:
+        for key in env:
+            os.environ.pop(key, None)
+        os.environ.update(saved)
+
+    p = ctx.params
+    # 字符串原样（这是 A-11 的回归点：此前会带引号）
+    assert p['region'] == '欧盟'
+    assert p['date'] == '2024-06-01'
+    # 用户填的字符串 "3" / "true" 必须**仍是字符串**——不能猜测性转换
+    assert p['limit'] == '3' and isinstance(p['limit'], str)
+    assert p['flag'] == 'true' and isinstance(p['flag'], str)
+    # 真实类型还原
+    assert p['dry_run'] is True
+    assert p['count'] == 3 and not isinstance(p['count'], bool)
+    assert p['ratio'] == 1e-7
+    assert p['tags'] == ['a', 2]
+    assert p['nested'] == {'b': True, 'a': 1}
+    # 空串是空串且为假值（A-11 的 '""' 是真值，会让 if 判断走错分支）
+    assert p['mode'] == '' and not p['mode']
+    # 平台管道不得被当成用户参数暴露
+    assert 'params_json' not in p

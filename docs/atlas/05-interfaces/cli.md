@@ -42,7 +42,7 @@
 |---|---|---|
 | `task list` | 任务列表 | `-s/--status` `-k/--keyword`（仅 name）`--search <kw>`（name OR description，走 `q` 参数）`-p/-n` 分页 `--json` |
 | `task get <id>` | 任务详情 | `--json` |
-| `task create` | 创建任务（JSON 体） | `--body <json>`/`--file`；`--executor <id>` 钉扎（与 broadcast 互斥）。**后端 `CreateTaskDto` 无 `version` 字段**（要版本用 `currentVersion`），示例 payload 已按此修正——`forbidNonWhitelisted` 下多一个 `version` 必 400。`body.params` 注入为 `AUTOFLOW_<KEY>` 环境变量（JSON 序列化：布尔/数字裸值，字符串带引号） |
+| `task create` | 创建任务（JSON 体） | `--body <json>`/`--file`；`--executor <id>` 钉扎（与 broadcast 互斥）。**后端 `CreateTaskDto` 无 `version` 字段**（要版本用 `currentVersion`），示例 payload 已按此修正——`forbidNonWhitelisted` 下多一个 `version` 必 400。`body.params` 注入为 `AUTOFLOW_<KEY>` 环境变量（字符串**裸值**，数字/布尔/容器为 JSON 字面量；需要精确类型读 `AUTOFLOW_PARAMS_JSON`，协议 v5 起） |
 | `task update <id>` | 更新任务 | `--body`/`--file`；`--executor <id>`；`--body {"executorId":null}` 清除钉扎 |
 | `task delete <id>` | 删除（强杀运行中执行） | `-y/--yes` 跳过确认（**非交互必传**，否则码 2） |
 | `task trigger <id>` | 触发执行（立即返回 execution id；`--wait` 轮询到终态，失败终态/超时退出码 1） | `--wait` `--wait-timeout <s>` `--params <json>`（按 run 覆盖任务默认参数）`--json`。**`--json --wait` 下 stdout 只出最终 execution 对象**（失败详情走 stderr），保证可解析 |
@@ -134,7 +134,7 @@
 2. `task logs` 单次 ≤2000 行，超大输出用 `--from-line` 分页；实时场景用 `exec tail`（走 `/logs/stream` SSE）。
 3. `executor rotate` 结果只显示一次，丢失只能再 rotate。
 4. `app deploy` 缺省 `scheduled`（仅部署、中台触发）；显式 `once`/`daemon` 会**立刻启动入口脚本**（CLI 发请求前打预警）——批处理脚本请用 scheduled，避免部署即跑与后续 trigger 双跑。
-5. `task create` 的 `body.params` 注入为 `AUTOFLOW_<KEY>` 环境变量且 JSON 序列化：布尔/数字是裸值（`true`/`3`），**字符串带双引号**（`"yes"`）——脚本侧按 JSON 解析而非当普通字符串。
+5. `task create` 的 `body.params` 注入为 `AUTOFLOW_<KEY>` 环境变量：**字符串是裸值**（`"nightly"` → `AUTOFLOW_TARGET=nightly`，不加引号），数字/布尔/容器为 JSON 字面量（`3`/`true`/`["a",1]`）。需要精确类型时读 `AUTOFLOW_PARAMS_JSON`（协议 v5 起注入）。⚠️ 2026-10-02~10-14 的 A-11 执行器会给字符串加首尾引号，该行为已在 v5 修复。
 6. CI 中用 `ACF_TOKEN` 短期 access token 注入而非 `set-token` 落盘；机器账号建议改用 API Key 直调 REST（`acf_…`）。
 
 ## 相关文档

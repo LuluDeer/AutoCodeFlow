@@ -2382,10 +2382,15 @@ describe('A-2 — shell entrypoint charset whitelist (python parity)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// A-11（P3）params→env 统一 JSON 序列化（python _serialize_param_value 对齐）
+// A-11R（P1 生产回归修复）：params→env 逐键通道字符串**裸值** + 类型化通道
+//
+// A-11 曾把字符串也 JSON.stringify（→ '"hello"'），而中台 ParamsEditor 的契约
+// 是 Record<string,string>——所有经中台 UI 配置的参数都多了一对首尾双引号，按
+// 官方文档裸读的脚本直接报错（生产实证：tk-ship-notify 静默停摆 12 天）。
+// 非字符串仍 JSON（A-11 对布尔/空值/容器字节漂移的真修复保留）。
 // ---------------------------------------------------------------------------
 
-describe('A-11 — params are serialized to AUTOFLOW_* env as JSON (python parity)', () => {
+describe('A-11R — params env serialization (bare strings + typed channel)', () => {
   async function prepareWithParams(executionId: string, params: Record<string, unknown>) {
     let env: Record<string, string | undefined> = {};
     (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
@@ -2398,7 +2403,7 @@ describe('A-11 — params are serialized to AUTOFLOW_* env as JSON (python parit
     );
     const res = await request(appNoAuth).post('/api/execute').send({
       executionId,
-      task: { id: 'a11task', runtime: 'node', entrypoint: 'index.js' },
+      task: { id: 'a11rtask', runtime: 'node', entrypoint: 'index.js' },
       params,
     });
     expect(res.status).toBe(200);
@@ -2406,8 +2411,8 @@ describe('A-11 — params are serialized to AUTOFLOW_* env as JSON (python parit
     return env;
   }
 
-  it('produces JSON.stringify bytes for scalars, containers and unicode', async () => {
-    const env = await prepareWithParams('exec-a11-node', {
+  it('injects strings bare and non-strings as JSON', async () => {
+    const env = await prepareWithParams('exec-a11r-node', {
       flag: true,
       off: false,
       count: 1,
@@ -2417,7 +2422,20 @@ describe('A-11 — params are serialized to AUTOFLOW_* env as JSON (python parit
       nested: { b: true, a: 1 },
       text: '中文',
       old_str: 'hello',
+      empty: '',
+      tiny: 1e-7,
+      date: '2024-01-01',
     });
+
+    // ① 字符串裸值——A-11 的回归点（此前是 '"hello"' / '"中文"' / '""'）。
+    expect(env.AUTOFLOW_TEXT).toBe('中文');
+    expect(env.AUTOFLOW_OLD_STR).toBe('hello');
+    expect(env.AUTOFLOW_DATE).toBe('2024-01-01');
+    // 空串必须还是空串：A-11 的 '""' 是**真值**，会让 `if (process.env.X)`
+    // 这类判断全部走错分支（静默，不报错）。
+    expect(env.AUTOFLOW_EMPTY).toBe('');
+
+    // ② 非字符串仍为 JSON（A-11 的真修复，保留）。
     expect(env.AUTOFLOW_FLAG).toBe('true');
     expect(env.AUTOFLOW_OFF).toBe('false');
     expect(env.AUTOFLOW_COUNT).toBe('1');
@@ -2425,10 +2443,52 @@ describe('A-11 — params are serialized to AUTOFLOW_* env as JSON (python parit
     expect(env.AUTOFLOW_NOTHING).toBe('null');
     expect(env.AUTOFLOW_TAGS).toBe('["a",2]');
     expect(env.AUTOFLOW_NESTED).toBe('{"b":true,"a":1}');
-    expect(env.AUTOFLOW_TEXT).toBe('"中文"');
-    expect(env.AUTOFLOW_OLD_STR).toBe('"hello"');
+    // 浮点指数形态（A-11 自称"两端字节一致"并未做到：python 曾给 '1e-07'）。
+    expect(env.AUTOFLOW_TINY).toBe('1e-7');
   });
-  // 契约向量（contract-fixtures/contract.json 的 executorEnvSerialization 段）
+
+  it('injects the typed AUTOFLOW_PARAMS_JSON channel', async () => {
+    const env = await prepareWithParams('exec-a11r-typed', {
+      flag: true,
+      empty: '',
+      ratio: 1.5,
+      text: '中文',
+      nested: { b: true, a: 1 },
+    });
+
+    expect(env.AUTOFLOW_PARAMS_JSON).toBeDefined();
+    // 逐键通道的值恒为字符串，原理上无法区分字符串 "true" 与布尔 true——
+    // 类型化通道就是为这个歧义存在的，故必须还原出真正的类型。
+    expect(JSON.parse(env.AUTOFLOW_PARAMS_JSON!)).toEqual({
+      flag: true,
+      empty: '',
+      ratio: 1.5,
+      text: '中文',
+      nested: { b: true, a: 1 },
+    });
+  });
+
+  it('omits the typed channel when params is empty', async () => {
+    const env = await prepareWithParams('exec-a11r-empty', {});
+    // 空对象注入 "{}" 只会让消费方多一个要特判的形态；缺席比空值更清楚
+    // （python 侧 _serialize_params_json 同判据）。
+    expect(env.AUTOFLOW_PARAMS_JSON).toBeUndefined();
+  });
+
+  it('a user param named params_json cannot shadow the typed channel', async () => {
+    const env = await prepareWithParams('exec-a11r-shadow', {
+      params_json: '{"hijacked":true}',
+      real: 1,
+    });
+    // 平台变量在参数循环**之后**写入（与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）：
+    // 该名字属平台命名空间，被顶掉会让类型化通道静默失效。
+    expect(JSON.parse(env.AUTOFLOW_PARAMS_JSON!)).toEqual({
+      params_json: '{"hijacked":true}',
+      real: 1,
+    });
+  });
+
+  // 契约向量（contract-fixtures/contract.json 的 executorEnvSerializationV2 段）
   // 由 __tests__/executor-protocol-contract.spec.ts 用真实 fs 逐条断言（本 spec
   // 的 fs 被整体 mock，读不了契约文件）；python 侧对应 test_audit_fixes.py。
 });

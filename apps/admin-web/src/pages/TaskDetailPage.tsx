@@ -230,7 +230,7 @@ export default function TaskDetailPage() {
       setWebhookBusy(null);
     }
   };
-  const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
+  const [triggerParams, setTriggerParams] = useState<Record<string, unknown>>({});
   const [triggering, setTriggering] = useState(false);
   const [killingId, setKillingId] = useState<string | null>(null);
   const [toggleLoading, setToggleLoading] = useState(false);
@@ -392,12 +392,11 @@ export default function TaskDetailPage() {
   const execTotal: number = execData?.total ?? 0;
 
   const handleTrigger = () => {
-    // 预填默认参数，让用户可以按需覆盖
-    setTriggerParams(
-      Object.fromEntries(
-        Object.entries(task?.params ?? {}).map(([k, v]) => [k, String(v)])
-      )
-    );
+    // 预填默认参数，让用户可以按需覆盖。
+    // A-11R：原样回填，不再 String(v)——强制字符串化会在 UI 这一跳丢掉类型
+    // （服务端存布尔 true、弹窗里变成 "true"、提交后又落库成字符串）。
+    // ParamsEditor 按值推断类型，配合原样传递即可完整往返。
+    setTriggerParams({ ...(task?.params ?? {}) });
     setTriggerModalOpen(true);
   };
 

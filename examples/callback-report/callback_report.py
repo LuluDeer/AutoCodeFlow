@@ -21,7 +21,8 @@
    python callback_report.py
    （不注入 AUTOFLOW_* 凭证三件套时走"不可回调"降级分支，正好演示能力探测）
 
-任务参数（AUTOFLOW_<KEY> 注入，ctx.get_param 读取，均为字符串）：
+任务参数（AUTOFLOW_<KEY> 注入，ctx.get_param 读取；A-11R / 协议 v5 起字符串为裸值，
+数字/布尔/容器为 JSON 字面量——需要精确类型时读 AUTOFLOW_PARAMS_JSON）：
 - mode: "success"（默认）或 "fail" —— 演示成功/失败两条上报路径
 - summary: 自定义成功摘要，缺省用内置文案
 

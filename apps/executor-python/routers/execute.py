@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 import scheduler as sched
 from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
 from auth import verify_token, get_current_token, request_with_self_heal
@@ -30,6 +30,9 @@ from config import settings
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 from artifacts import gather_artifacts_for_callback, artifacts_dir_for
+# A-11R：与 node `JSON.stringify` 逐字节一致的序列化器（浮点指数排版 + JS
+# 整数键排序），供 params→env 的非字符串值与类型化通道使用。
+from js_json import js_json_dumps
 # SEC-02 续：secrets 按原名注入（含保留名闸门），与 node secret-env.ts 对等。
 from secret_env import inject_secret_env
 from sandbox import (
@@ -1351,16 +1354,40 @@ def _host_is_restricted(host: str) -> bool:
 
 
 def _serialize_param_value(v: Any) -> str:
-    """A-11（P3）：params→env 序列化两端统一为 JSON。
+    """A-11R：params→env 逐键序列化——字符串**裸值**，非字符串 JSON。
 
-    此前 python str(v) / node String(v) 对同一载荷产出不同字节（True vs
-    'true'、None vs 'null'、列表 "['a']" vs 'a'…），同任务脚本在两个执行器
-    读 AUTOFLOW_* 得到不同值。现统一 JSON：node JSON.stringify(v)、python
-    json.dumps(v, ensure_ascii=False, separators=(',', ':'))——
-    ensure_ascii=False 与 JSON.stringify 的原样 UTF-8 输出可比，紧凑分隔符
-    令对象/数组形态与 JSON.stringify 逐字节一致（契约向量见
-    packages/contract-fixtures/contract.json 的 executorEnvSerialization）。"""
-    return json.dumps(v, ensure_ascii=False, separators=(',', ':'))
+    A-11（2026-10-02）统一改成 json.dumps(v)，修掉了 str(v) 与 node String(v)
+    对布尔/空值/容器的字节漂移（真缺口，保留），但把**字符串也加了引号**。
+    中台 ParamsEditor 的契约是字符串键值对（Record<string, string>），于是所有
+    经中台配的参数都多一对首尾双引号，按官方文档裸读的存量脚本
+    （`int(os.environ["AUTOFLOW_LIMIT"])`）直接 ValueError。生产实证：
+    tk-ship-notify 静默停摆 12 天。
+
+    现在：字符串原样返回；其余类型走 js_json_dumps——它与 node 的
+    JSON.stringify **逐字节一致**（含浮点指数排版与 JS 整数键排序，A-11 自称的
+    "两端字节一致" 此前并未做到：1e-7 这端给 "1e-07"、node 给 "1e-7"）。
+
+    契约向量：packages/contract-fixtures/contract.json 的
+    executorEnvSerializationV2 段；node 侧对等实现 apps/executor-node/src/param-env.ts。"""
+    if isinstance(v, str):
+        return v
+    return js_json_dumps(v)
+
+
+def _serialize_params_json(params: Optional[Dict[str, Any]]) -> Optional[str]:
+    """A-11R ②：类型化通道——整个 params 一份紧凑 JSON（与 node 同形）。
+
+    逐键通道的值恒为字符串，原理上**无法区分**「用户填了字符串 "true"」与
+    「用户传了布尔 true」。需要精确类型的消费方（SDK 的 from_env/fromEnv）
+    读这条通道做类型还原。
+
+    空 dict / 空值返回 None（不注入）：注入 `{}` 只会让消费方多一个要特判的
+    形态，缺席比空值更清楚——与 node 侧 serializeParamsJson 同判据。
+    """
+    if not params:
+        return None
+    return js_json_dumps(params)
+
 
 
 # A-5（P2）：prepare 阶段（git clone / zip 下载 / 解压 / uv venv / pip）此前对
@@ -3620,11 +3647,22 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     env['TASK_NAME'] = str(task.get('name') or '')
     if req.params:
         for k, v in req.params.items():
-            # A-11（P3）：与 node JSON.stringify 统一为 JSON 序列化——str(v) 对
-            # 布尔/空值/容器与 node 产出不同字节，同任务脚本在两个执行器读到
-            # 的 AUTOFLOW_* 不一致。向量钉在 contract-fixtures 的
-            # executorEnvSerialization 段。
+            # A-11R：字符串回归裸值、非字符串走与 JSON.stringify 逐字节一致的
+            # JS 序列化。A-11 曾把字符串也 JSON 化（多一对引号），导致所有经
+            # 中台 UI 配置的参数与官方文档教的裸读方式冲突（生产实证：
+            # tk-ship-notify 静默停摆 12 天）——详见 _serialize_param_value。
             env[f'AUTOFLOW_{k.upper()}'] = _serialize_param_value(v)
+
+        # A-11R ②：类型化通道——整个 params 一份 JSON，供需要精确类型的消费方
+        # （SDK 的 from_env/fromEnv）做类型还原。逐键通道的字符串形态原理上
+        # 无法区分 `"true"`（字符串）与 `true`（布尔）。
+        #
+        # 位置在 params 循环**内/之后**（与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）：
+        # 用户参数不得覆盖平台变量；名为 params_json 的参数会被这一条覆盖，
+        # 这是刻意的（该名字属平台命名空间）。node 侧同序。
+        _params_json = _serialize_params_json(req.params)
+        if _params_json is not None:
+            env['AUTOFLOW_PARAMS_JSON'] = _params_json
 
     # SEC-02 续（生产故障）：secrets 按**原名**额外注入一份（与 node 侧对等）。
     # 生产实证：配置 FEISHU_APP_ID 后脚本读裸名拿到空串，因为 secrets 此前与

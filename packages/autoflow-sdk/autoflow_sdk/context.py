@@ -1,6 +1,7 @@
 """Task execution context — passed to every task handler."""
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+import json
 import os
 
 from .callback import CallbackClient
@@ -16,6 +17,105 @@ _CALLBACK_ENV_KEYS = {
     "AUTOFLOW_ADMIN_API_URL": "admin_api_url",
     "AUTOFLOW_EXECUTOR_ADDRESS": "executor_address",
 }
+
+# A-11R: typed params channel injected by both executors since protocol v5 —
+# the whole params object as one compact JSON document. It is the ONLY way to
+# tell the string "true" apart from the boolean True, because every per-key
+# AUTOFLOW_<KEY> value is a string by construction. Never surfaced as a param
+# itself (it is platform plumbing, not user data).
+_PARAMS_JSON_ENV_KEY = "AUTOFLOW_PARAMS_JSON"
+
+# A-11R: platform plumbing that must never be mistaken for a user parameter.
+# AUTOFLOW_ARTIFACTS_DIR / AUTOFLOW_TRACE_ID are injected by the executors for
+# every task and are not params either, but they are deliberately LEFT in
+# `params` for backward compatibility (tasks written against the old
+# normalisation already read them from there) — only the typed channel, which
+# the old normalisation can never have produced, is filtered out.
+_NON_PARAM_ENV_KEYS = frozenset({_PARAMS_JSON_ENV_KEY})
+
+
+def _load_typed_params(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse the typed ``AUTOFLOW_PARAMS_JSON`` channel.
+
+    Returns ``None`` when the channel is absent (executor < protocol v5) or
+    unusable, in which case the caller falls back to the per-key variables.
+    A malformed payload must never raise inside ``from_env()``: a task that
+    cannot even build its context reports nothing useful, whereas degrading
+    to the per-key channel loses only type fidelity.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    # Keys are lower-cased to match the documented normalisation of the
+    # per-key channel ("AUTOFLOW_<KEY> → ctx.params 小写键"). Keeping the typed
+    # channel's original casing instead would silently change the lookup key
+    # for every task that configured an upper/mixed-case param and reads it
+    # from `ctx.params` — a migration hazard with no upside, since the two
+    # channels must agree on what the key is.
+    return {
+        (k.lower() if isinstance(k, str) else k): v for k, v in parsed.items()
+    }
+
+
+def _coerce_param(value: str) -> Any:
+    """Best-effort type recovery for the per-key fallback channel.
+
+    The executor renders strings **bare** (``AUTOFLOW_REGION=欧盟``) and
+    non-strings as JSON (``AUTOFLOW_DRY_RUN=true``, ``AUTOFLOW_TAGS=["a",2]``).
+    JSON-parsing every value would therefore be wrong for the common case: a
+    user who typed ``3`` or ``true`` in the UI meant the *string* ``"3"``, and
+    turning it into an int/bool changes behaviour (and breaks
+    ``f"{v:>10}"``-style formatting). Bare ``欧盟`` is not valid JSON at all,
+    so the discriminating rule is: **decode only the shapes JSON produces for
+    a non-string** — containers, the three literals, and numbers that carry a
+    JSON-only marker (exponent or decimal point). Everything else stays a
+    string. Note this is inherently lossy; the typed channel exists precisely
+    so tasks that care can avoid guessing.
+    """
+    if not value:
+        return value
+    if value[0] in "[{":
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return value
+    if value[0] == '"':
+        # A-11 legacy form (executors < protocol v5): strings were injected
+        # JSON-quoted, so `"欧盟"` is the user's string 欧盟 carrying a pair of
+        # stray quotes. Recovering it here repairs the fallback path for the
+        # whole pre-v5 fleet — the exact regression that silently broke tasks
+        # for 12 days in production.
+        #
+        # Why this cannot corrupt a v5 task: on v5 every user param arrives via
+        # the typed channel above and is skipped by the `key in params` guard,
+        # so this branch only ever sees non-param platform variables (paths,
+        # trace ids) whose values do not begin with a quote. A user string that
+        # genuinely starts with `"` is indistinguishable on a *pre-v5*
+        # executor, but that shape is vanishingly rare and stripping is the
+        # strictly better guess there.
+        try:
+            decoded = json.loads(value)
+        except (ValueError, TypeError):
+            return value
+        return decoded if isinstance(decoded, str) else value
+    if value in ("true", "false", "null"):
+        return json.loads(value)
+    # A number only when it could not have been typed as plain text: JSON
+    # renders 1e-7 / 1.5 with an explicit marker, whereas "3" or "2024-06-01"
+    # are indistinguishable from user text and must stay strings.
+    first = value[0]
+    if first == "-" or first.isdigit():
+        if "." in value or "e" in value or "E" in value:
+            try:
+                return json.loads(value)
+            except (ValueError, TypeError):
+                return value
+    return value
 
 
 @dataclass
@@ -118,6 +218,23 @@ class TaskContext:
         ``AUTOFLOW_EXECUTOR_ADDRESS``), which are exposed as dedicated
         fields and never leak into ``params``.
 
+        **Param types (A-11R).** Since executor protocol v5 both executors
+        inject ``AUTOFLOW_PARAMS_JSON`` — the whole params object as one JSON
+        document — and this method prefers it, so ``ctx.params`` carries the
+        task's *real* types (``True`` stays a bool, ``3`` stays an int, nested
+        dicts/lists stay structured) instead of everything being a string.
+
+        On older executors that variable is absent and the method falls back
+        to the per-key ``AUTOFLOW_<KEY>`` variables. Those are always strings:
+        the executor injects strings bare (``AUTOFLOW_REGION=欧盟``) and
+        non-strings as JSON (``AUTOFLOW_DRY_RUN=true``). The fallback
+        therefore parses each value as JSON **when it cleanly parses** and
+        otherwise keeps the raw string — a bare ``欧盟``, ``3`` or ``true``
+        typed by a user as a *string* must not silently become a number or a
+        boolean. Note this is best-effort by nature; code that needs
+        guaranteed types on an old executor should read the env var directly
+        or pin the executor version.
+
         Usage::
 
             from autoflow_sdk import TaskContext
@@ -128,13 +245,31 @@ class TaskContext:
         """
         params: dict[str, Any] = {}
         callback_fields: dict[str, str] = {}
+
+        # Prefer the typed channel: it is the only lossless source.
+        typed = _load_typed_params(os.environ.get(_PARAMS_JSON_ENV_KEY))
+        if typed is not None:
+            params.update(typed)
+
         for k, v in os.environ.items():
             if not k.startswith("AUTOFLOW_") or not v:
                 continue
             if k in _CALLBACK_ENV_KEYS:
                 callback_fields[_CALLBACK_ENV_KEYS[k]] = v
                 continue
-            params[k[len("AUTOFLOW_"):].lower()] = v
+            if k in _NON_PARAM_ENV_KEYS:
+                continue
+            key = k[len("AUTOFLOW_"):].lower()
+            if typed is not None:
+                # Typed channel already supplied this param with a real type;
+                # the per-key copy is the same value rendered as a string and
+                # must not overwrite it. (Vacuous today because executors
+                # uppercase keys, but it keeps the invariant true if that ever
+                # changes — silently downgrading a bool to "true" is exactly
+                # the class of bug this channel exists to remove.)
+                if key in params:
+                    continue
+            params[key] = _coerce_param(v)
 
         return cls(
             task_id=os.environ.get("TASK_ID", "unknown"),

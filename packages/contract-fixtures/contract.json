@@ -1,6 +1,6 @@
 {
-  "$schemaVersion": 1,
-  "$comment": "QA-07 shared contract vectors — single source of truth for the four client packages (acf-cli, mcp-server, autocodeflow-node-sdk, autoflow-sdk). Envelope source: apps/admin-api/src/common/interceptors/response.interceptor.ts. Vectors are append-only (published clients assert on old vectors); changing behavior is a breaking contract change -> bump $schemaVersion and ship all four ends together. See README.md for the full contract description and consumption instructions.",
+  "$schemaVersion": 2,
+  "$comment": "QA-07 shared contract vectors — single source of truth for the four client packages (acf-cli, mcp-server, autocodeflow-node-sdk, autoflow-sdk). Envelope source: apps/admin-api/src/common/interceptors/response.interceptor.ts. Vectors are append-only (published clients assert on old vectors); changing behavior is a breaking contract change -> bump $schemaVersion and ship all four ends together. See README.md for the full contract description and consumption instructions. $schemaVersion 1 -> 2 (2026-10-14, A-11R): the params->env serialization semantics changed (strings are injected bare again instead of JSON-quoted; a typed AUTOFLOW_PARAMS_JSON channel was added) — see executorEnvSerializationV2, which supersedes the now-frozen executorEnvSerialization archive. The envelope contract itself is unchanged.",
   "envelope": {
     "full": {
       "raw": {
@@ -215,7 +215,7 @@
     ]
   },
   "executorEnvSerialization": {
-    "$comment": "A-11 (2026-10-02, executor-node + executor-python): task `params` values injected into the child env as AUTOFLOW_<KEY> must be serialized as JSON on BOTH executors — node JSON.stringify(v), python json.dumps(v, ensure_ascii=False, separators=(',', ':')) (ensure_ascii=False matches JSON.stringify's raw UTF-8 output; compact separators make objects/arrays byte-identical). Previously node String(v) / python str(v) produced different bytes for the same dispatch payload (True vs 'true', None vs 'null', \"['a']\" vs '[\"a\"]'), so the same task read different AUTOFLOW_* values per executor. Append-only vectors; each `env` value is the exact string both executors must produce.",
+    "$comment": "A-11 (2026-10-02, executor-node + executor-python): task `params` values injected into the child env as AUTOFLOW_<KEY> must be serialized as JSON on BOTH executors — node JSON.stringify(v), python json.dumps(v, ensure_ascii=False, separators=(',', ':')) (ensure_ascii=False matches JSON.stringify's raw UTF-8 output; compact separators make objects/arrays byte-identical). Previously node String(v) / python str(v) produced different bytes for the same dispatch payload (True vs 'true', None vs 'null', \"['a']\" vs '[\"a\"]'), so the same task read different AUTOFLOW_* values per executor. Append-only vectors; each `env` value is the exact string both executors must produce. ⚠️ HISTORICAL ARCHIVE as of A-11R (2026-10-14): this section pins the OLD semantics in which STRINGS WERE ALSO QUOTED (`\"hello\"`). That quoting is exactly the production regression A-11R repairs — the admin console's ParamsEditor contract is Record<string,string>, so every UI-configured param gained a pair of quotes and scripts reading per the official docs (int(os.environ['AUTOFLOW_LIMIT'])) broke with ValueError (production: tk-ship-notify silently dead for 12 days). The live semantics are pinned in `executorEnvSerializationV2` below; these vectors stay frozen per the append-only rule (published clients asserted on them) and are no longer asserted against the implementation.",
     "vectors": [
       {
         "input": "hello",
@@ -262,6 +262,235 @@
       {
         "input": "",
         "env": "\"\""
+      }
+    ]
+  },
+  "executorEnvSerializationV2": {
+    "$comment": "A-11R (2026-10-14, executor-node + executor-python): the LIVE params→env semantics, superseding executorEnvSerialization (kept above as a frozen historical archive). Two channels coexist. ① Per-key channel `AUTOFLOW_<KEY>`: STRINGS ARE INJECTED BARE (no quotes) — restoring the pre-A-11 behaviour for strings, because the admin console (ParamsEditor) can only produce strings, so A-11's uniform JSON.stringify broke every UI-configured parameter and every script following the official docs. Non-strings (bool / number / null / array / object) stay JSON, preserving A-11's genuine fix for the node String(v) vs python str(v) drift. ② Typed channel `AUTOFLOW_PARAMS_JSON` (paramsJsonVectors below): the whole params object as one compact JSON document, injected after the per-key loop so user params cannot override it; absent when params is empty/null. It exists because the per-key channel's values are always strings and therefore CANNOT express the difference between the string \"true\" and the boolean true. Byte parity is now a fact rather than a claim: python no longer uses json.dumps (whose float layout differs from JSON.stringify — 1e-7 rendered as '1e-07', 0.00001 as '1e-05', and whose object key order is plain insertion order) but implements JSON.stringify's own rules in apps/executor-python/js_json.py; the float-exponent, large-integer and integer-key-order vectors below are the cases the original 10-vector set missed. Append-only: each `env` is the exact string BOTH executors must produce. Consumers: apps/executor-node/src/param-env.ts, apps/executor-python/js_json.py + routers/execute.py (_serialize_param_value / _serialize_params_json), asserted from both executors' test suites.",
+    "vectors": [
+      {
+        "input": "hello",
+        "env": "hello"
+      },
+      {
+        "input": "",
+        "env": ""
+      },
+      {
+        "input": "中文",
+        "env": "中文"
+      },
+      {
+        "input": "欧盟",
+        "env": "欧盟"
+      },
+      {
+        "input": "2024-01-01",
+        "env": "2024-01-01"
+      },
+      {
+        "input": "3",
+        "env": "3"
+      },
+      {
+        "input": "true",
+        "env": "true"
+      },
+      {
+        "input": "null",
+        "env": "null"
+      },
+      {
+        "input": "multi\nline",
+        "env": "multi\nline"
+      },
+      {
+        "input": "q\"uote",
+        "env": "q\"uote"
+      },
+      {
+        "input": "back\\slash",
+        "env": "back\\slash"
+      },
+      {
+        "input": "tab\there",
+        "env": "tab\there"
+      },
+      {
+        "input": 0,
+        "env": "0"
+      },
+      {
+        "input": 1,
+        "env": "1"
+      },
+      {
+        "input": 3,
+        "env": "3"
+      },
+      {
+        "input": -1,
+        "env": "-1"
+      },
+      {
+        "input": 1.5,
+        "env": "1.5"
+      },
+      {
+        "input": 0.1,
+        "env": "0.1"
+      },
+      {
+        "input": 0.000001,
+        "env": "0.000001"
+      },
+      {
+        "input": 1e-7,
+        "env": "1e-7"
+      },
+      {
+        "input": 1e-8,
+        "env": "1e-8"
+      },
+      {
+        "input": 1.5e-8,
+        "env": "1.5e-8"
+      },
+      {
+        "input": 100000000000000000000,
+        "env": "100000000000000000000"
+      },
+      {
+        "input": 1e+21,
+        "env": "1e+21"
+      },
+      {
+        "input": 9007199254740992,
+        "env": "9007199254740992"
+      },
+      {
+        "input": 0,
+        "env": "0"
+      },
+      {
+        "input": true,
+        "env": "true"
+      },
+      {
+        "input": false,
+        "env": "false"
+      },
+      {
+        "input": null,
+        "env": "null"
+      },
+      {
+        "input": [1, "a"],
+        "env": "[1,\"a\"]"
+      },
+      {
+        "input": [],
+        "env": "[]"
+      },
+      {
+        "input": {
+          "b": true,
+          "a": 1
+        },
+        "env": "{\"b\":true,\"a\":1}"
+      },
+      {
+        "input": {},
+        "env": "{}"
+      },
+      {
+        "input": {
+          "0": "z",
+          "1": "a",
+          "b": "c"
+        },
+        "env": "{\"0\":\"z\",\"1\":\"a\",\"b\":\"c\"}"
+      },
+      {
+        "input": {
+          "0": 2,
+          "b": 1
+        },
+        "env": "{\"0\":2,\"b\":1}"
+      },
+      {
+        "input": {
+          "nested": {
+            "deep": 1e-7
+          }
+        },
+        "env": "{\"nested\":{\"deep\":1e-7}}"
+      }
+    ],
+    "paramsJsonVectors": [
+      {
+        "params": {
+          "region": "欧盟"
+        },
+        "env": "{\"region\":\"欧盟\"}"
+      },
+      {
+        "params": {
+          "dry_run": true
+        },
+        "env": "{\"dry_run\":true}"
+      },
+      {
+        "params": {
+          "limit": 3
+        },
+        "env": "{\"limit\":3}"
+      },
+      {
+        "params": {
+          "mode": ""
+        },
+        "env": "{\"mode\":\"\"}"
+      },
+      {
+        "params": {
+          "region": "欧盟",
+          "dry_run": true,
+          "limit": 3,
+          "mode": ""
+        },
+        "env": "{\"region\":\"欧盟\",\"dry_run\":true,\"limit\":3,\"mode\":\"\"}"
+      },
+      {
+        "params": {
+          "limit": "3",
+          "date": "2024-01-01"
+        },
+        "env": "{\"limit\":\"3\",\"date\":\"2024-01-01\"}"
+      },
+      {
+        "params": {
+          "flags": [1, "a"],
+          "nested": {
+            "b": true,
+            "a": 1
+          }
+        },
+        "env": "{\"flags\":[1,\"a\"],\"nested\":{\"b\":true,\"a\":1}}"
+      },
+      {
+        "params": {
+          "ratio": 1e-7
+        },
+        "env": "{\"ratio\":1e-7}"
+      },
+      {
+        "params": {
+          "0": "z",
+          "1": "a",
+          "b": "c"
+        },
+        "env": "{\"0\":\"z\",\"1\":\"a\",\"b\":\"c\"}"
       }
     ]
   },

@@ -71,6 +71,30 @@
 
 - 执行器响应：`{ status: 'accepted', executionId }`（python 额外 `executorAddress`）；同步校验失败 400；容量满 `429 {error:'Executor is at capacity'}`；重复领取 400。
 
+### 5.1 `params` → 子进程 env 的注入口径（协议 v5 起 = A-11R）
+
+`params` 以两种形态注入子进程，两端**逐字节一致**：
+
+| 通道 | 规则 |
+|---|---|
+| `AUTOFLOW_<KEY>`（逐键，键名转大写） | **字符串裸值**（`欧盟` → `欧盟`，不加引号）；布尔/数字/null/容器为 JSON 字面量（`true`/`3`/`null`/`[1,"a"]`） |
+| `AUTOFLOW_PARAMS_JSON` | 整个 params 一份紧凑 JSON；**在逐键循环之后注入**（用户参数不得覆盖平台变量）；空/缺省 params **不注入** |
+
+- 类型化通道存在的唯一理由：逐键通道的值**恒为字符串**，原理上无法区分字符串
+  `"true"` 与布尔 `true`。需要精确类型的消费方（SDK 的 `fromEnv()` / `from_env()`）
+  读它做类型还原。
+- 字节一致由 `apps/executor-node/src/param-env.ts`（node 原生 `JSON.stringify`）与
+  `apps/executor-python/js_json.py`（python 实现 `JSON.stringify` 自身规则：浮点指数
+  排版、JS 整数键序）保证。**A-11 自称的"两端逐字节一致"此前并未做到**——
+  `json.dumps` 给 `1e-07`、node 给 `1e-7`。
+- ⚠️ **A-11（2026-10-02 ~ 10-14）的历史形态**：字符串也曾被 JSON 化（带首尾双引号，
+  空串成 `'""'`，**真值**），导致所有经中台 UI 配置的参数与按官方文档裸读的脚本
+  失效（生产实证：`tk-ship-notify` 静默停摆 12 天）。**v4 被两种语义共用**（A-11
+  上线时未 bump 版本），故不能用 v4 判断字符串是否带引号——这正是 v5 必须新增
+  版本号的原因。详见 [ADR-023](../../adr/adr-023-params-env-injection-contract.md)。
+- 契约向量：`packages/contract-fixtures/contract.json` 的 `executorEnvSerializationV2`
+  （在用语义）与 `executorEnvSerialization`（A-11 冻结档案，不再对实现断言）。
+
 ## 6. 终止（admin → 执行器）：POST http://<addr>/api/executions/:executionId/kill
 
 admin 侧 `notifyExecutorKill`：共享 token、空请求体、3s 超时、best-effort（失败仅 warn）。执行器：200 `{ok:true}`（已终止/已结束/已取消）或 404 `{ok:false}`（不在运行表）。响应形状由 executor-protocol 的 **`KillResponse`**（`{ok:boolean}`，`additionalProperties:false` → zod `.strict()` / pydantic `extra="forbid"`）钉死：node 五个返回点经 `killBody()`、python 三处经 `_kill_body()` 过**生成的** schema 后才发送，多/缺字段或非布尔即服务端 500（不发 admin 无法解析的载荷）。

@@ -102,6 +102,11 @@ import json
 
 def main() -> dict:
     # 运行时参数以 AUTOFLOW_ 前缀注入（键名会被大写化，见下方「参数键名陷阱」）
+    #
+    # A-11R（协议 v5，2026-10-14 起）：字符串参数按**裸值**注入——上面写法直接可用。
+    # 需要精确类型（布尔/数字/数组）时，优先读整份 JSON：
+    #   import json, os
+    #   params = json.loads(os.environ["AUTOFLOW_PARAMS_JSON"])   # 缺失时回落逐键读法
     target = os.environ.get("AUTOFLOW_TARGET", "prod")
 
     print(f"running: target={target}")
@@ -150,7 +155,8 @@ value = ctx.get_param("sourceDir") or ctx.get_param("sourcedir") or "默认值"
 | 变量 | 说明 |
 |------|------|
 | `TASK_ID` / `TASK_NAME` / `EXECUTION_ID` | 任务与本次执行标识 |
-| `AUTOFLOW_<KEY>` | 触发时传入的运行时参数（KEY 大写）；读参优先级 `AUTOFLOW_*` > 代码默认值 |
+| `AUTOFLOW_<KEY>` | 触发时传入的运行时参数（KEY 大写）；读参优先级 `AUTOFLOW_*` > 代码默认值。**字符串是裸值**（`欧盟` 就是 `欧盟`，不加引号），布尔/数字/容器为 JSON 字面量 |
+| `AUTOFLOW_PARAMS_JSON` | 整个参数的 JSON 对象（协议 v5 起）。**需要精确类型时读它**：逐键通道的值恒为字符串，无法区分字符串 `"true"` 与布尔 `true`；空/缺省 params 时该变量**不存在** |
 | `AUTOFLOW_ADMIN_API_URL` | Admin API 基址（回调可用时注入） |
 | `AUTOFLOW_CALLBACK_TOKEN` | 一次性 `v1.` HMAC token，**绑定本次 executionId** |
 | `AUTOFLOW_EXECUTOR_ADDRESS` | 执行器注册地址（SDK 自动补进回调项） |
@@ -159,6 +165,35 @@ value = ctx.get_param("sourceDir") or ctx.get_param("sourcedir") or "默认值"
 
 旧版自建执行器不注入回调凭证 → `ctx.callback.enabled == False`，任何上报抛 `CallbackDisabledError`（fail-closed）。
 **必须先能力探测再回调**，不可用时降级为「只打日志、继续执行」。
+
+> ### ⚠️ A-11 引号坑（2026-10-02 ~ 10-14 发布的执行器）——已在协议 v5 修复
+>
+> 那段时间的执行器把**所有**参数值都做了 JSON 序列化，**字符串也带上一对首尾
+> 双引号**：`{"region":"欧盟"}` 注入成 `AUTOFLOW_REGION='"欧盟"'`，空串更是变成
+> `'""'`（一个**真值**，会让 `if os.environ.get(...)` 走错分支且不报错）。
+>
+> **生产实证**：`tk-ship-notify` 是本仓库唯一漏抄 `_unwrap` 的应用，
+> `region_filter_formula('"欧盟"')` 抛「未知区域参数」→ 任务 failed →
+> 运营 10-02~10-14 收不到任何飞书通知（静默停摆 12 天）。
+>
+> **协议 v5 起字符串回归裸值**，上面的写法直接可用。若执行器仍是旧版
+> （`protocolVersion < 5`），或你想让应用在新旧执行器上都能跑，加一层容错：
+>
+> ```python
+> def _unwrap_env(raw: str) -> str:
+>     """A-11 兼容层：旧执行器给字符串加了首尾 JSON 引号（空串是 '""'）。"""
+>     if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+>         try:
+>             import json
+>             decoded = json.loads(raw)
+>             return decoded if isinstance(decoded, str) else raw
+>         except ValueError:
+>             return raw
+>     return raw
+> ```
+>
+> **新应用不必再写这层**——`AUTOFLOW_PARAMS_JSON` + 上面表里的裸值语义已经足够；
+> 只有需要同时兼容未升级执行器的应用才保留它。
 
 ### 依赖（requirements.txt）红线
 
