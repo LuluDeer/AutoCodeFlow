@@ -3447,8 +3447,16 @@ export class ExecutorService implements OnModuleInit {
         });
       }
       if (pinned.status !== ExecutorStatus.ONLINE) {
-        // Message shape matches the worker's EXECUTOR_OFFLINE classifier
-        // (task.processor.ts: /executor.*(offline|unavailable)/).
+        // ⚠️ 本文案与中台失败分类链是**跨文件耦合**（LANG-ERR-01 复查教训）：
+        // 旧注释写「Message shape matches the worker's EXECUTOR_OFFLINE classifier
+        // (task.processor.ts: /executor.*(offline|unavailable)/)」——那是**英文**
+        // 形态的判据。文案经 LANG-ZH-01 中文化后，该断言不再成立，而分类链的
+        // 中文支容差（原 20 字符）又短于本文案（执行器→离线 实测 63 字符），
+        // 于是 pinned 离线被执行详情页错报成「脚本错误」（script_error）。
+        // 现分类链中文支容差已放宽到单行 120（见 task.service.ts 该规则注释），
+        // 并由 python-multiversion-write-path.spec.ts 的
+        // 「executor_offline 中文化回归」用例**用码表渲染真实文案**钉住——
+        // 改这里的码或改那边的正则，任一侧漂移都会立刻红。
         throw new AppError("PINNED_EXECUTOR_OFFLINE", {
           appName: pinned.appName,
           executorId: pinned.id,

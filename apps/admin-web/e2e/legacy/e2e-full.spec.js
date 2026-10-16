@@ -1192,20 +1192,25 @@ test('27. pinned 离线语义 — 目标执行器离线 trigger FAILED，错误�
     console.log(`  ⚠ 心跳竞态：第一次尝试拿到 ${exec.status}，换新任务重试（W-29）`);
     ({ seeded, exec } = await runOfflineScenario());
   }
-  expect(exec.status).toBe('failed');
-  // LANG-ZH-01：报错文案已按「面向用户文字全部中文」中文化，故断言中文而非原英文
-  // （原 `/Pinned executor .* is offline/`）。真值源 = admin-api 错误码表
-  // PINNED_EXECUTOR_OFFLINE 的 zh 模板（`指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`），
-  // 由后端渲染进 errorMessage（服务端兜底中文）；前端按 errorCode 查自身词条渲染同一句。
-  expect(exec.errorMessage, 'pinned 离线应报「指定的固定执行器 … 已离线」').toMatch(/已离线/);
-  expect(exec.failureReason).toBe('executor_offline');
-  expect(exec.executorAddress, '离线失败不应发生派发，executorAddress 应为空').toBeFalsy();
-  console.log(`  ✓ 执行 FAILED：${exec.errorMessage}`);
 
-  // UI：详情页执行历史行展示错误；执行详情页展示失败分类「执行器离线」+ 错误信息
-  // 注：UI 断言包在 try/finally 中——无论成败都等心跳恢复 online，
-  //     避免离线窗口级联打挂后续用例（28/29 依赖在线执行器）。
+  // ⚠️ **本用例从 set-offline 起就必须整体处于 try/finally 内**（run 38879509009 教训）。
+  // 原先只有下方的 UI 断言段被 try 包住，而 API 断言段在其**之前**——一旦 API 断言
+  // 失败（当时正是 failureReason 断言红），finally 根本不会执行 → 执行器被永久留在
+  // offline → 后续用例 28/29/30/33/37 集体以「无在线执行器 / deploy 503
+  // NO_AVAILABLE_EXECUTOR_FOR_SELECTION」级联失败（一次真缺陷被放大成 5 个红）。
+  // 故把 API 断言一并纳入 try，确保**任何**失败路径都恢复 online。
   try {
+    expect(exec.status).toBe('failed');
+    // LANG-ZH-01：报错文案已按「面向用户文字全部中文」中文化，故断言中文而非原英文
+    // （原 `/Pinned executor .* is offline/`）。真值源 = admin-api 错误码表
+    // PINNED_EXECUTOR_OFFLINE 的 zh 模板（`指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`），
+    // 由后端渲染进 errorMessage（服务端兜底中文）；前端按 errorCode 查自身词条渲染同一句。
+    expect(exec.errorMessage, 'pinned 离线应报「指定的固定执行器 … 已离线」').toMatch(/已离线/);
+    expect(exec.failureReason).toBe('executor_offline');
+    expect(exec.executorAddress, '离线失败不应发生派发，executorAddress 应为空').toBeFalsy();
+    console.log(`  ✓ 执行 FAILED：${exec.errorMessage}`);
+
+    // UI：详情页执行历史行展示错误；执行详情页展示失败分类「执行器离线」+ 错误信息
     await login(page);
     await page.goto(`${BASE}/tasks/${seeded.id}`);
     await page.getByRole('tab', { name: /执行记录/ }).click();
@@ -1220,6 +1225,7 @@ test('27. pinned 离线语义 — 目标执行器离线 trigger FAILED，错误�
     await page.screenshot({ path: '/tmp/e2e-27-pinned-offline.png' });
   } finally {
     // 恢复：等待心跳把执行器带回 online，避免离线窗口影响后续用例
+    // （28/29/30/33/37 都依赖在线执行器）。
     await apiWaitExecutorOnline(request, executor.id);
   }
 });
