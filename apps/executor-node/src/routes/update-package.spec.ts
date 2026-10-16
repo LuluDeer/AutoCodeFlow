@@ -151,7 +151,7 @@ describe('POST /api/update-package — payload validation', () => {
       .post('/api/update-package')
       .send({ packageId: 'pkg-001', downloadUrl: '/api/executor-packages/pkg-001/download', version: '1.0.0', checksum: 'a'.repeat(64) });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('downloadUrl is not a valid URL');
+    expect(res.body.error).toBe('downloadUrl 不是合法的 URL');
     expect((await request(app).get('/api/update-package/status')).body.inProgress).toBe(false);
   });
 
@@ -237,7 +237,7 @@ describe('POST /api/update-package — payload validation', () => {
       expect(res.body.accepted).toBe(true);
       expect(res.body.mode).toBe('download-only');
       // 文案不得再暗示已就地应用/重启；必须点明「只下载」
-      expect(res.body.message).toMatch(/download/i);
+      expect(res.body.message).toMatch(/下载/i);
       expect(res.body.message).not.toMatch(/self-?update|restart|replaced|applied/i);
       await waitForUpdateToSettle(app);
     } finally {

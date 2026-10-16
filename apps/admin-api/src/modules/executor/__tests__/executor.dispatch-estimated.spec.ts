@@ -154,7 +154,13 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
     await service.selectLeastLoaded();
     expect(execRepo.find).toHaveBeenCalledTimes(1);
     const execArg = execRepo.find.mock.calls[0][0];
-    expect(execArg.select).toEqual({ executorAddress: true, taskId: true });
+    // ADR-017 阶段 3（决策 §7）：样本按**行身份**归组，故必须一并取出
+    // executorId（同址多行并存时按地址归组会把两台的样本混成一池）。
+    expect(execArg.select).toEqual({
+      executorAddress: true,
+      executorId: true,
+      taskId: true,
+    });
     expect(execArg.where.status).toBe(ExecutionStatus.RUNNING);
     expect(execArg.where.executorAddress.value).toEqual(
       expect.arrayContaining(["a:1", "a:2"]),
@@ -165,6 +171,61 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
     expect(taskArg.where.id.value).toEqual(
       expect.arrayContaining(["t1", "t2"]),
     );
+  });
+
+  // ADR-017 阶段 3（决策 §7）反证：估时样本必须按**行身份**归组。
+  // 阶段 3 起 pull 同址多行并存（ADR-017 §5）——纯按地址归组会把两台的 RUNNING
+  // 执行混成一池，于是两台的 longTaskPenalty 同向偏移（评分对长任务失去区分度）。
+  //
+  // 反证：把 estimatedDurationsByExecutor 的归组改回纯 executorAddress（并把
+  // forExecutor 只读地址支）→ 本用例转红（乙台会看到甲台的长任务样本）。
+  it("estimatedDurationsByExecutor：同址两行的样本池互不污染（按行身份归组）", async () => {
+    executorRepo.find.mockResolvedValue([
+      mk({ id: "row-a", address: "same:3105", runningTaskCount: 1 }),
+      mk({ id: "row-b", address: "same:3105", runningTaskCount: 1 }),
+    ]);
+    // 同址两行：row-a 跑长任务(t-long)，row-b 跑短任务(t-short)。
+    execRepo.find.mockResolvedValue([
+      { executorAddress: "same:3105", executorId: "row-a", taskId: "t-long" },
+      { executorAddress: "same:3105", executorId: "row-b", taskId: "t-short" },
+    ]);
+    taskRepo.find.mockResolvedValue([
+      { id: "t-long", estimatedDurationSec: 3600 },
+      { id: "t-short", estimatedDurationSec: 1 },
+    ]);
+
+    // 直接断言取值器：两行必须各自只拿到自己的样本。
+    const index = await (service as any).estimatedDurationsByExecutor([
+      { id: "row-a", address: "same:3105", runningTaskCount: 1 },
+      { id: "row-b", address: "same:3105", runningTaskCount: 1 },
+    ]);
+    expect(index.forExecutor({ id: "row-a", address: "same:3105" })).toEqual([
+      3600,
+    ]);
+    expect(index.forExecutor({ id: "row-b", address: "same:3105" })).toEqual([
+      1,
+    ]);
+  });
+
+  it("estimatedDurationsByExecutor：存量行（无 executorId）按地址回落，仍能被取到", async () => {
+    executorRepo.find.mockResolvedValue([
+      mk({ id: "legacy-row", address: "old:3105", runningTaskCount: 1 }),
+    ]);
+    // 存量执行行没有行身份（迁移 0055 刻意不回填）。
+    execRepo.find.mockResolvedValue([
+      { executorAddress: "old:3105", executorId: null, taskId: "t-old" },
+    ]);
+    taskRepo.find.mockResolvedValue([
+      { id: "t-old", estimatedDurationSec: 300 },
+    ]);
+
+    const index = await (service as any).estimatedDurationsByExecutor([
+      { id: "legacy-row", address: "old:3105", runningTaskCount: 1 },
+    ]);
+    // 地址支必须仍被合并——否则存量执行器的估时恒空、评分静默变钝。
+    expect(
+      index.forExecutor({ id: "legacy-row", address: "old:3105" }),
+    ).toEqual([300]);
   });
 
   it("估时查询抛错时降级：选主照常返回（评分为旧公式，不中断调度）", async () => {

@@ -130,9 +130,7 @@ export const SUBSCRIPTION_DEAD_LETTER_RETENTION_DAYS = 90;
 export const OUTBOX_RETENTION_BATCH_SIZE = 5000;
 
 if (OUTBOX_LEASE_MS <= OUTBOX_MAX_ROW_PROCESSING_MS) {
-  throw new Error(
-    "OUTBOX_LEASE_MS must exceed the normal worst-case single-row processing window",
-  );
+  throw new Error("OUTBOX_LEASE_MS 必须大于单行处理的正常最坏耗时窗口");
 }
 
 /**

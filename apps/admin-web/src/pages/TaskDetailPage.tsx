@@ -61,6 +61,10 @@ import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/tim
 import { describeCron } from '../utils/cron-desc';
 // P3 审计：执行状态 → Badge status 映射收敛到单一事实源（原本地 STATUS_COLOR 迁出）
 import { EXECUTION_BADGE_STATUS } from '../utils/status-color';
+// ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
+// 执行历史表的「执行器」列此前只渲染 IP:端口；阶段 3 起 pull 允许同址多行并存
+// （ADR-017 §5），地址甚至不再唯一——只显示地址无法回答「哪台机器」。
+import { useExecutorNames } from '../hooks/useExecutorNames';
 // F-27（DEEP_REVIEW 0ef3bbe）：失败次数派生（纯函数，保证整数）
 import { failedRunCount } from './task-stats';
 // CORE-03 收尾：保存为自定义模板的 config 白名单抽取
@@ -454,6 +458,16 @@ export default function TaskDetailPage() {
     finally { setKillingId(null); }
   };
 
+  // ADR-017 阶段 3（决策 §7 读面富化）：执行历史表的执行器可读名解析。
+  // 本页此前不加载执行器清单，故由 hook 自拉一次；失败静默降级为只显示地址。
+  //
+  // ⚠️ 必须在**下方所有 early return 之前**调用（Rules of Hooks）：本组件有
+  // 「骨架屏 / 加载失败 / 任务不存在」三个提前 return 分支，若把本 hook 放在
+  // 它们之后，首帧走早退分支（hook 未执行）、次帧走正常分支（hook 执行）→
+  // React 报 "Rendered more hooks than during the previous render" 并整页崩溃。
+  // 这正是 task-detail-maintenance.test.tsx 抓到的形态。
+  const { nameOf } = useExecutorNames();
+
   // UI-08：首屏骨架屏替代裸 Spin
   if (taskLoading && !task) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   // U7: 请求失败 ≠ 任务不存在——错误态给重试入口，数据确空才显示 Empty
@@ -502,11 +516,21 @@ export default function TaskDetailPage() {
     {
       title: t('taskDetail.col.executor'), dataIndex: 'executorAddress', width: 140, ellipsis: true,
       responsive: ['md'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
-      render: (v: string) => v ? (
-        <Tooltip title={v}>
-          <Text style={{ fontSize: 11, fontFamily: 'monospace' }}>{v}</Text>
-        </Tooltip>
-      ) : <Text type="secondary">-</Text>,
+      // ADR-017 阶段 3（决策 §7）：主显可读名（员工给机器起的名字），地址降为
+      // tooltip 副信息——地址仍是**诊断身份**（「到底哪台」），故不删除。
+      // 解析不到名字时如实只显示地址（绝不编造），都没有则 '-'。
+      render: (v: string, r: TaskExecution) => {
+        const name = nameOf(r);
+        const fallback = v || null;
+        if (!name && !fallback) return <Text type="secondary">-</Text>;
+        return (
+          <Tooltip title={fallback ?? name ?? ''}>
+            <Text style={{ fontSize: 11, fontFamily: name ? undefined : 'monospace' }}>
+              {name ?? fallback}
+            </Text>
+          </Tooltip>
+        );
+      },
     },
     {
       title: t('taskDetail.col.startTime'), dataIndex: 'startTime', width: 140,

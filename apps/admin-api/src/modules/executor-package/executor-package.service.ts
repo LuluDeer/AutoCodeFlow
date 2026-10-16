@@ -1,13 +1,8 @@
-import {
-  Injectable,
-  NotFoundException,
-  ConflictException,
-  BadRequestException,
-  ServiceUnavailableException,
-  Logger,
-  OnModuleInit,
-  Optional,
-} from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit, Optional } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, Like, FindOptionsWhere } from "typeorm";
 import * as fs from "fs";
@@ -204,13 +199,11 @@ export class ExecutorPackageService implements OnModuleInit {
     uploadedBy?: string,
   ): Promise<ExecutorPackage> {
     if (!file) {
-      throw new BadRequestException("Package file is required");
+      throw new AppError("EXECUTOR_PACKAGE_FILE_REQUIRED");
     }
     const tmpPath = file.path;
     if (!tmpPath) {
-      throw new BadRequestException(
-        "Uploaded file payload is missing (expected multer diskStorage upload)",
-      );
+      throw new AppError("EXECUTOR_PACKAGE_UPLOAD_CONTENT_MISSING");
     }
 
     try {
@@ -223,9 +216,11 @@ export class ExecutorPackageService implements OnModuleInit {
         },
       });
       if (existing) {
-        throw new ConflictException(
-          `Package ${createDto.name}@${createDto.version} (${createDto.type}) already exists`,
-        );
+        throw new AppError("EXECUTOR_PACKAGE_EXISTS", {
+          name: createDto.name,
+          version: createDto.version,
+          type: createDto.type,
+        });
       }
 
       // P1: upload validation — extension whitelist plus magic-number check
@@ -237,18 +232,16 @@ export class ExecutorPackageService implements OnModuleInit {
         : path.extname(lowerName) || "";
       const ALLOWED_EXTS = new Set([".zip", ".whl", ".tar.gz", ".tgz"]);
       if (!ALLOWED_EXTS.has(effectiveExt)) {
-        throw new BadRequestException(
-          `Unsupported package extension "${effectiveExt || "(none)"}". Allowed: .zip, .whl, .tar.gz, .tgz`,
-        );
+        throw new AppError("EXECUTOR_PACKAGE_EXT_UNSUPPORTED", {
+          ext: effectiveExt || "(none)",
+        });
       }
       const head = await this.readHeadBytes(tmpPath, 2);
       const isArchive =
         (head[0] === 0x50 && head[1] === 0x4b) ||
         (head[0] === 0x1f && head[1] === 0x8b);
       if (!isArchive) {
-        throw new BadRequestException(
-          "Package content is not a zip/wheel/gzip archive",
-        );
+        throw new AppError("EXECUTOR_PACKAGE_NOT_ARCHIVE");
       }
 
       // SEC-05: zip bomb guard for the .zip / .whl slice of the whitelist.
@@ -268,9 +261,11 @@ export class ExecutorPackageService implements OnModuleInit {
             this.logger.warn(
               `Executor package upload rejected by zip-guard [${err.violation}]: ${err.message}`,
             );
-            throw new BadRequestException(
-              `Package rejected by zip-bomb guard (${err.violation})`,
-            );
+            // `err.violation` 是机器标识符枚举（ZipGuardViolation）——原样作为
+            // **参数**下发，绝不翻译（直连守卫判据，见 zip-guard.util 头注）。
+            throw new AppError("EXECUTOR_PACKAGE_ZIP_GUARD_REJECTED", {
+              violation: err.violation,
+            });
           }
           throw err;
         }
@@ -298,16 +293,12 @@ export class ExecutorPackageService implements OnModuleInit {
             this.logger.warn(
               `Executor package upload rejected: clamd infection ${verdict.detail}`,
             );
-            throw new BadRequestException(
-              "Package rejected: antivirus scan detected a threat",
-            );
+            throw new AppError("EXECUTOR_PACKAGE_VIRUS_DETECTED");
           }
           this.logger.warn(
             `Executor package upload rejected: clamd unavailable (${verdict.reason}): ${verdict.detail}`,
           );
-          throw new ServiceUnavailableException(
-            "Package rejected: antivirus scan is unavailable (fail-closed)",
-          );
+          throw new AppError("EXECUTOR_PACKAGE_SCANNER_UNAVAILABLE");
         }
       }
 
@@ -394,7 +385,7 @@ export class ExecutorPackageService implements OnModuleInit {
   async findOne(id: string): Promise<ExecutorPackage> {
     const pkg = await this.repo.findOne({ where: { id } });
     if (!pkg) {
-      throw new NotFoundException(`Executor package ${id} not found`);
+      throw new AppError("EXECUTOR_PACKAGE_NOT_FOUND");
     }
     return pkg;
   }
@@ -417,9 +408,11 @@ export class ExecutorPackageService implements OnModuleInit {
         },
       });
       if (conflict && conflict.id !== id) {
-        throw new ConflictException(
-          `Package ${updateDto.name ?? pkg.name}@${updateDto.version ?? pkg.version} already exists`,
-        );
+        throw new AppError("EXECUTOR_PACKAGE_EXISTS", {
+          name: updateDto.name ?? pkg.name,
+          version: updateDto.version ?? pkg.version,
+          type: updateDto.type ?? pkg.type,
+        });
       }
     }
     Object.assign(pkg, updateDto);
@@ -458,7 +451,7 @@ export class ExecutorPackageService implements OnModuleInit {
         lock: { mode: "pessimistic_write" },
       });
       if (!pkg) {
-        throw new NotFoundException(`Executor package ${packageId} not found`);
+        throw new AppError("EXECUTOR_PACKAGE_NOT_FOUND");
       }
       pkg.pushHistory = appendPushHistoryEntry(pkg.pushHistory, {
         executorId: report.executorId ?? "unknown",
@@ -515,9 +508,9 @@ export class ExecutorPackageService implements OnModuleInit {
   }> {
     const pkg = await this.findOne(id);
     if (!pkg.filePath || !fs.existsSync(pkg.filePath)) {
-      throw new NotFoundException(
-        `File for ExecutorPackage ${id} not found on disk`,
-      );
+      throw new AppError("EXECUTOR_PACKAGE_FILE_MISSING", {
+        packageId: id,
+      });
     }
     let fileSize = pkg.fileSize ?? 0;
     try {
@@ -568,7 +561,7 @@ export class ExecutorPackageService implements OnModuleInit {
         : all.filter((e) => e.status === ExecutorStatus.ONLINE);
 
     if (targets.length === 0) {
-      throw new Error("No target executors found for push");
+      throw new AppError("EXECUTOR_PACKAGE_PUSH_NO_TARGETS");
     }
 
     // R-12（DEEP_REVIEW 0ef3bbe）: 改读映射节 app.adminApiUrl（此前裸读
@@ -577,9 +570,7 @@ export class ExecutorPackageService implements OnModuleInit {
       .get<string>("app.adminApiUrl")
       ?.trim();
     if (!adminApiBaseUrl) {
-      throw new ServiceUnavailableException(
-        "ADMIN_API_URL is not configured; cannot push executor package",
-      );
+      throw new AppError("EXECUTOR_PACKAGE_PUSH_URL_NOT_CONFIGURED");
     }
     let parsedUrl: URL;
     try {
@@ -589,12 +580,10 @@ export class ExecutorPackageService implements OnModuleInit {
         parsedUrl.search ||
         parsedUrl.hash
       ) {
-        throw new Error("Invalid base URL");
+        throw new Error("基础 URL 无效");
       }
     } catch {
-      throw new ServiceUnavailableException(
-        "ADMIN_API_URL must be an absolute HTTP(S) base URL without query or fragment",
-      );
+      throw new AppError("EXECUTOR_PACKAGE_PUSH_URL_INVALID");
     }
     // ADMIN_API_URL follows install-cmd semantics; tolerate an existing /api suffix.
     const basePath = parsedUrl.pathname

@@ -14,12 +14,12 @@ import { PaginationDto } from "../../../common/dto/pagination.dto";
  * declared here so the whitelist accepts them and the service can apply them.
  */
 export class AuditQueryDto extends PaginationDto {
-  @ApiPropertyOptional({ description: "Filter by action (fuzzy match)" })
+  @ApiPropertyOptional({ description: "按操作动作过滤（模糊匹配）" })
   @IsOptional()
   @IsString()
   action?: string;
 
-  @ApiPropertyOptional({ description: "Filter by exact resource type" })
+  @ApiPropertyOptional({ description: "按资源类型精确过滤" })
   @IsOptional()
   @IsString()
   resource?: string;
@@ -34,37 +34,37 @@ export class AuditQueryDto extends PaginationDto {
    * hostile query string cannot carry arbitrary-length needles.
    */
   @ApiPropertyOptional({
-    description: "Filter by exact resource identifier (combine with resource)",
+    description: "按资源标识精确过滤（与 resource 组合使用）",
   })
   @IsOptional()
   @IsString()
   resourceId?: string;
 
   @ApiPropertyOptional({
-    description: "Filter by operation result",
     enum: ["success", "failure"],
+    description: "按操作结果过滤",
   })
   @IsOptional()
   @IsIn(["success", "failure"])
   result?: "success" | "failure";
 
   @ApiPropertyOptional({
-    description: "Filter by operator user id",
     type: Number,
+    description: "按操作人用户 id 过滤",
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   userId?: number;
 
-  @ApiPropertyOptional({ description: "Filter by operator username" })
+  @ApiPropertyOptional({ description: "按操作人用户名过滤" })
   @IsOptional()
   @IsString()
   username?: string;
 
   /** ISO 8601 timestamp; admin-web sends dayjs .toISOString() values. */
   @ApiPropertyOptional({
-    description: "Only logs created at/after this time (ISO 8601)",
+    description: "仅返回在该时刻及之后创建的日志（ISO 8601）",
   })
   @IsOptional()
   @IsISO8601()
@@ -72,7 +72,7 @@ export class AuditQueryDto extends PaginationDto {
 
   /** ISO 8601 timestamp; admin-web sends dayjs .toISOString() values. */
   @ApiPropertyOptional({
-    description: "Only logs created at/before this time (ISO 8601)",
+    description: "仅返回在该时刻及之前创建的日志（ISO 8601）",
   })
   @IsOptional()
   @IsISO8601()

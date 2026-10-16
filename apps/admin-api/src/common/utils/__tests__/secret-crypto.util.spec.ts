@@ -91,7 +91,7 @@ describe("secret-crypto.util (SEC-02)", () => {
       expect(() => decryptSecretValue("enc:v1:only-two-fields", KEY)).toThrow();
       expect(() => decryptSecretValue("enc:v1:!!!:!!!:!!!", KEY)).toThrow();
       expect(() => decryptSecretValue("plaintext", KEY)).toThrow(
-        "not an enc:v1 secret envelope",
+        "该值不是 enc:v1 密钥信封",
       );
     });
   });
@@ -136,7 +136,7 @@ describe("secret-crypto.util (SEC-02)", () => {
     it("throws on envelope leaves when key is null (cannot dispatch degraded)", () => {
       const stored = encryptSecretsObject({ apiKey: "v" }, KEY);
       expect(() => decryptSecretsObject(stored, null)).toThrow(
-        /SEC_SECRETS_KEY is not configured/,
+        /未配置 SEC_SECRETS_KEY/,
       );
     });
 
@@ -343,8 +343,6 @@ describe("SecretsCryptoService (SEC-02)", () => {
 
   it("rejects encryptValue in degraded mode", () => {
     const svc = makeService({});
-    expect(() => svc.encryptValue("x")).toThrow(
-      /SEC_SECRETS_KEY is not configured/,
-    );
+    expect(() => svc.encryptValue("x")).toThrow(/未配置 SEC_SECRETS_KEY/);
   });
 });

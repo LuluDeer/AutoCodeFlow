@@ -4,10 +4,6 @@ import {
   Post,
   Body,
   UseGuards,
-  UnauthorizedException,
-  ServiceUnavailableException,
-  BadGatewayException,
-  BadRequestException,
   Headers,
   Param,
   Patch,
@@ -16,12 +12,14 @@ import {
   HttpCode,
   HttpStatus,
   Res,
-  NotFoundException,
-  ForbiddenException,
   Logger,
   Optional,
   Inject,
 } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import { Response } from "express";
 import { existsSync, readFileSync } from "fs";
 import { createHash } from "crypto";
@@ -190,9 +188,7 @@ export class ExecutorController {
       !!this.projectAccess &&
       (await this.projectAccess.hasProjectRole(user.id, projectId, "editor"));
     if (!allowed) {
-      throw new ForbiddenException(
-        "Executor management requires ADMIN, or editor (and above) role on the project this executor belongs to",
-      );
+      throw new AppError("EXECUTOR_METADATA_FORBIDDEN");
     }
     recordOwnershipAssertion("executor", "write");
   }
@@ -204,13 +200,12 @@ export class ExecutorController {
   })
   @Post("register")
   @ApiOperation({
-    summary: "Register executor",
-    description:
-      "Called when executor starts to register with admin. Requires shared token for auth.",
+    description: "执行器启动时调用，用于向中台注册。鉴权需要共享令牌。",
+    summary: "注册执行器",
   })
   // PK-03（DEEP_REVIEW 0ef3bbe）: 从 example-only 改为具名 DTO $ref。
   @ApiBody({
-    description: "Registration info",
+    description: "注册信息",
     type: ExecutorRegisterDto,
   })
   // R7: register 实际 201（POST 无 @HttpCode），example-only 200 是伪覆盖。
@@ -244,8 +239,9 @@ export class ExecutorController {
       // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单
       // （可选；结构校验与采纳规则在 service 侧——非法即整字段拒绝采纳）。
       interpreters?: ExecutorInterpreter[];
-      // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；规范化与采纳规则在
-      // service 侧——缺省/非法一律不动 DB 值）。只采集与观测，不参与定位。
+      // ARCH-36（ADR-017 阶段 2/3）：稳定设备指纹（可选；规范化与采纳规则在
+      // service 侧——缺省/非法一律不动 DB 值）。阶段 3 起它是 register 的**行
+      // 定位键**（指纹优先、address 兜底），见 executor.service.register 注释。
       deviceFingerprint?: string | null;
     },
     @Headers("authorization") auth: string,
@@ -300,9 +296,8 @@ export class ExecutorController {
     // This grants nothing new to the caller: it authenticated with the raw
     // per-executor/shared token, from which the hash is derived, and the
     // bcrypt hash is not a preimage leak.
-    const tokenHash = await this.svc.getCallbackSecretByAddress(
-      executor.address,
-    );
+    // ADR-017 阶段 3：按 id 取（pull 同地址多行时按 address 取会有歧义）。
+    const tokenHash = await this.svc.getCallbackSecretById(executor.id);
     // PROTOCOL-VER（B-3/U-2）：回显协议合规态（与 heartbeat 的
     // versionCompliant 同款加法字段，旧消费方无感）。compat 判定在 service 侧
     // 完成（PROTOCOL_SUPPORTED_MIN），此处只回显结论供执行器/运维观测。
@@ -328,21 +323,21 @@ export class ExecutorController {
   })
   @Post("heartbeat")
   @ApiOperation({
-    summary: "Heartbeat report",
     description:
-      "Executor calls this periodically to report status including CPU, memory, and running task count.",
+      "执行器周期性调用本接口上报状态，包括 CPU、内存与运行中任务数。",
+    summary: "心跳上报",
   })
   // PK-03（DEEP_REVIEW 0ef3bbe）: 从 example-only 改为具名 DTO $ref。
   @ApiBody({
-    description: "Heartbeat data",
+    description: "心跳数据",
     type: ExecutorHeartbeatDto,
   })
   @ApiCreatedResponse({
     type: ExecutorHeartbeatResponseDto,
     description:
-      "Saved executor + callback-auth secret + version-gate readings (POST default 201)",
+      "已保存的执行器 + 回调鉴权密钥 + 版本闸门读数（POST 默认 201）",
   })
-  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiResponse({ status: 401, description: "执行器令牌无效" })
   async heartbeat(
     @Body()
     body: {
@@ -380,9 +375,15 @@ export class ExecutorController {
     @Headers("authorization") auth: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(body.address, token);
+    // ADR-017 阶段 3：指纹优先认证——pull 同地址多行并存时按指纹命中自己的行，
+    // 换 IP 后注册未到（竞态）时心跳仍能通过（legacy 执行器不传指纹，行为不变）。
+    const isValid = await this.svc.validateTokenByAddress(
+      body.address,
+      token,
+      body.deviceFingerprint,
+    );
     if (!isValid) {
-      throw new UnauthorizedException("Invalid executor token");
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     // F-2: forward only the whitelisted metric fields. A raw `body` would let
     // an authenticated executor overwrite server-owned columns such as
@@ -449,15 +450,15 @@ export class ExecutorController {
   // 自相矛盾。显式 200（e2e 用例 45 按 200 判定取件成功）。
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: "Pull dispatch payloads (long-poll)",
     description:
-      "ARCH-32: pull-mode executors (NAT-bound, no inbound reachability) long-poll this endpoint to receive dispatch payloads. Blocks up to waitMs (server-clamped) and returns { task } — null when nothing queued.",
+      "ARCH-32：pull 模式执行器（位于 NAT 后、无入站可达性）通过长轮询本端点接收派发载荷。最多阻塞 waitMs（服务端会做上限钳制），返回 { task }——队列为空时为 null。",
+    summary: "拉取派发载荷（长轮询）",
   })
   @ApiOkResponse({
     type: ExecutorPullResponseDto,
-    description: "task=null when nothing queued within waitMs",
+    description: "waitMs 内无任务入队时 task=null",
   })
-  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiResponse({ status: 401, description: "执行器令牌无效" })
   // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 pull 端点用内联类型无 @ApiBody，openapi
   // 缺 requestBody。补 @ApiBody({ type: ExecutorPullDto })（运行时 @Body() 类型
   // 不变，纯文档）。
@@ -477,22 +478,31 @@ export class ExecutorController {
       // 热更新全部静默失效。带上 freeSlots 后执行器始终长轮询，服务端据此
       // 决定是否出队任务（`freeSlots <= 0` 时**不出队**，见 pullWork）。
       freeSlots?: number;
+      // ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）。传入即用于
+      // **唯一定位本行**——pull 模式允许同地址多行并存（ADR-017 §5），不传
+      // 就只能按地址取，会同到别人的行、去拉别人的 Redis 队列。
+      deviceFingerprint?: string | null;
     },
     @Headers("authorization") auth: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(body.address, token);
+    const isValid = await this.svc.validateTokenByAddress(
+      body.address,
+      token,
+      body.deviceFingerprint,
+    );
     if (!isValid) {
-      throw new UnauthorizedException("Invalid executor token");
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     if (!this.pullService) {
-      throw new ServiceUnavailableException(
-        "Pull dispatch unavailable: ExecutorPullService not wired",
-      );
+      throw new AppError("EXECUTOR_PULL_UNAVAILABLE");
     }
-    const executor = await this.svc.findByAddress(body.address);
+    const executor = await this.svc.findByAddress(
+      body.address,
+      body.deviceFingerprint,
+    );
     if (!executor) {
-      throw new NotFoundException("Executor not found");
+      throw new AppError("EXECUTOR_NOT_FOUND");
     }
     const maxWait =
       this.configService.get<number>("executor.pullWaitMs") ?? 25000;
@@ -552,15 +562,12 @@ export class ExecutorController {
   @Post("command-result")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: "Report pull control-command execution result",
     description:
-      "ARCH-33: pull-mode executors report the outcome of a control command " +
-      "(deploy / app-stop / app-uninstall / config-reload / kill-execution / " +
-      "update-package) they consumed from the pull response. Best-effort — " +
-      "business terminal states still converge through their own callbacks.",
+      "ARCH-33：pull 模式执行器上报其从 pull 响应中领取的控制命令（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）的执行结果。属尽力而为——业务的终态仍通过各自的回调收敛。",
+    summary: "上报 pull 控制命令的执行结果",
   })
   @ApiOkResponse({ type: ExecutorCommandResultResponseDto })
-  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiResponse({ status: 401, description: "执行器令牌无效" })
   async reportCommandResult(
     @Body()
     body: {
@@ -571,16 +578,23 @@ export class ExecutorController {
       status?: number;
       error?: string | null;
       durationMs?: number;
+      // ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同地址
+      // 多行并存时用于唯一定位本行（ADR-017 §5）。
+      deviceFingerprint?: string | null;
     },
     @Headers("authorization") auth: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(body.address, token);
+    const isValid = await this.svc.validateTokenByAddress(
+      body.address,
+      token,
+      body.deviceFingerprint,
+    );
     if (!isValid) {
-      throw new UnauthorizedException("Invalid executor token");
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     if (!body.commandId || !body.type) {
-      throw new BadRequestException("commandId and type are required");
+      throw new AppError("EXECUTOR_COMMAND_RESULT_INVALID");
     }
     if (body.ok) {
       this.logger.log(
@@ -614,27 +628,31 @@ export class ExecutorController {
   })
   @Get("config")
   @ApiOperation({
-    summary: "Get the executor-facing config (pull-mode hot-reload)",
     description:
-      "E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，" +
-      "拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走" +
-      "与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，" +
-      "address 走查询参数（与 register/heartbeat 同源）。",
+      "E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，address 走查询参数（与 register/heartbeat 同源）。",
+    summary: "获取面向执行器的配置（pull 模式热更新）",
   })
-  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiResponse({ status: 401, description: "执行器令牌无效" })
   @ApiOkResponse({ type: ExecutorConfigPayloadResponseDto })
   async pullExecutorConfig(
     @Query("address") address: string,
     @Headers("authorization") auth: string,
+    // ADR-017 阶段 3：稳定设备指纹（可选查询参数；旧执行器不传）——pull
+    // 同地址多行并存时用于唯一定位本行（ADR-017 §5）。
+    @Query("deviceFingerprint") deviceFingerprint?: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(address, token);
+    const isValid = await this.svc.validateTokenByAddress(
+      address,
+      token,
+      deviceFingerprint,
+    );
     if (!isValid) {
-      throw new UnauthorizedException("Invalid executor token");
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
-    const executor = await this.svc.findByAddress(address);
+    const executor = await this.svc.findByAddress(address, deviceFingerprint);
     if (!executor) {
-      throw new NotFoundException("Executor not found");
+      throw new AppError("EXECUTOR_NOT_FOUND");
     }
     return buildExecutorConfigPayload(this.configService, executor);
   }
@@ -649,59 +667,64 @@ export class ExecutorController {
   })
   @Get(":address/terminal-states")
   @ApiOperation({
-    summary: "Reconcile terminal execution states (read-only)",
     description:
-      "A6 (DEEP_REVIEW): read-only reconciliation view for the executor's local " +
-      "callback dead-letter directory. Returns executions on this executor that have " +
-      "already reached a TERMINAL state (success/failed/timeout/killed/cancelled), " +
-      "ordered ascending by terminal time so the caller can consume it as a watermark " +
-      "stream. The executor uses it to tier dead-letter handling: a dead-lettered " +
-      "callback whose execution is terminal is moot (delete it); one whose execution " +
-      "is still open and whose dead-letter reason was retry-budget exhaustion is worth " +
-      "re-queuing; poison payloads (oversized/corrupt) stay for manual inspection. " +
-      "Strictly read-only — it mutates nothing, releases no slots and writes no audit; " +
-      "all state changes still flow through the existing callback/terminal paths.",
+      "A6（DEEP_REVIEW）：针对执行器本地回调死信目录的只读对账视图。返回该执行器上已进入终态（success/failed/timeout/killed/cancelled）的执行记录，按终态时间升序排列，便于调用方当作水位线流消费。执行器用它给死信分级处理：执行已终态的死信回调已无意义（直接删除）；执行仍未结束且死信原因是重试预算耗尽的，值得重新入队；毒载荷（超大/损坏）保留待人工排查。严格只读——不改任何状态、不释放名额、不写审计；所有状态变更仍走既有的回调/终态路径。",
+    summary: "对账终态执行记录（只读）",
   })
   @ApiParam({
     name: "address",
-    description: "Executor registration address (same value as heartbeat)",
+    description: "执行器注册地址（与心跳使用同一个值）",
   })
   @ApiQuery({
     name: "since",
     required: false,
     description:
-      "ISO-8601 watermark; only executions whose terminal time (COALESCE(endTime, createdAt)) " +
-      "is >= since are returned. Defaults to the last 24h; clamped to 30 days.",
+      "ISO-8601 水位线；仅返回终态时间（COALESCE(endTime, createdAt)）>= since 的执行记录。默认最近 24 小时；最多钳制到 30 天。",
     example: "2026-09-14T08:00:00.000Z",
   })
   @ApiQuery({
     name: "limit",
     required: false,
     description:
-      "Page size (1..2000, default 500). hasMore=true means more rows remain.",
+      "每页条数（1..2000，默认 500）。hasMore=true 表示还有更多数据。",
     example: 500,
   })
   @ApiResponse({
     status: 200,
-    description: "Terminal-state page",
+    description: "终态记录分页",
     type: TerminalStatesResponseDto,
   })
-  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiResponse({ status: 401, description: "执行器令牌无效" })
   async getTerminalStates(
     @Param("address") address: string,
     @Query("since") since?: string,
     @Query("limit") limit?: string,
     @Headers("authorization") auth?: string,
+    // ADR-017 阶段 3：稳定设备指纹（可选查询参数；旧执行器不传）——pull
+    // 同地址多行并存时用于唯一定位本行（ADR-017 §5）。
+    @Query("deviceFingerprint") deviceFingerprint?: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(address, token);
+    const isValid = await this.svc.validateTokenByAddress(
+      address,
+      token,
+      deviceFingerprint,
+    );
     if (!isValid) {
-      throw new UnauthorizedException("Invalid executor token");
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
+    // ADR-017 阶段 3（决策 §7 读面富化）：把**刚认证出的行身份**传给 service。
+    // 阶段 3 起同址多行并存（ADR-017 §5），service 内无法从地址推出是哪一行；
+    // 而这里恰好有更硬的判据——`validateTokenByAddress` 刚刚用指纹/凭据认证过
+    // 调用方。解析沿用同一个入口（`findByAddress(address, deviceFingerprint)`：
+    // 指纹优先、地址多行且无指纹时 fail-closed 返回 null），故解析不到唯一行时
+    // 传 null，service 回落地址判据，行为与引入前逐字节一致（不会误拒合法对账）。
+    const resolved = await this.svc.findByAddress(address, deviceFingerprint);
     const parsedLimit = Number(limit);
     return this.svc.getTerminalStates(address, {
       since: this.parseTerminalSince(since),
       limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+      executorId: resolved?.id ?? null,
     });
   }
 
@@ -727,9 +750,8 @@ export class ExecutorController {
   // 列表既挡不住信息（可经 executions 侧信道获得）又会打断 TaskFormPage 的
   // 执行器下拉。凭证类面（notification/ai config）仍为 ADMIN。
   @ApiOperation({
-    summary: "List executors",
-    description:
-      "Get list of all executors including online status, group, and tags.",
+    description: "获取全部执行器列表，包含在线状态、分组与标签。",
+    summary: "列出执行器",
   })
   @ApiOkResponse({ type: [ExecutorResponseDto] })
   findAll() {
@@ -741,8 +763,8 @@ export class ExecutorController {
   @Get("groups")
   @ApiOkResponse({ type: ExecutorGroupsDto })
   @ApiOperation({
-    summary: "Get all executor groups",
-    description: "Get all executor groups and their executor count statistics.",
+    description: "获取全部执行器分组及其执行器数量统计。",
+    summary: "获取全部执行器分组",
   })
   getGroups() {
     return this.svc.getGroups();
@@ -753,8 +775,8 @@ export class ExecutorController {
   @Get("tags")
   @ApiOkResponse({ type: ExecutorTagsDto })
   @ApiOperation({
-    summary: "Get all executor tags",
-    description: "Get all tags used by executors and their statistics.",
+    description: "获取执行器使用的全部标签及其统计。",
+    summary: "获取全部执行器标签",
   })
   getTags() {
     return this.svc.getTags();
@@ -766,14 +788,9 @@ export class ExecutorController {
   // 路由吞掉（与 groups/tags/install-cmd 同理）。
   @Get("runtime-config")
   @ApiOperation({
-    summary: "Get effective executor runtime config",
     description:
-      "Effective liveness thresholds used by the backend " +
-      "(heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier; the " +
-      "stale sweep marks executors OFFLINE after that much silence) plus the " +
-      "findAll() list cap and the total executor count, so the admin UI can " +
-      "align its stale coloring with the backend and warn when the list is " +
-      "truncated (listLimit < executorTotal).",
+      "后端实际生效的存活阈值（heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier；静默超过该时长后，过期扫描会把执行器标记为 OFFLINE），以及 findAll() 的列表上限与执行器总数，便于管理台让「过期」着色与后端对齐，并在列表被截断时告警（listLimit < executorTotal）。",
+    summary: "获取生效的执行器运行配置",
   })
   @ApiOkResponse({ type: ExecutorRuntimeConfigDto })
   getRuntimeConfig() {
@@ -792,18 +809,13 @@ export class ExecutorController {
     description: "truncated=true 时 items 是前缀、total 是真实总数",
   })
   @ApiOperation({
-    summary: "List executor picker options (lightweight)",
     description:
-      "Minimal read surface for executor picker dropdowns (deploy modals): " +
-      "id/appName/address/status/runningTaskCount/maxConcurrentTasks only, " +
-      "not the full entity projection of GET /executors. Capped at " +
-      "EXECUTOR_PICKER_LIMIT rows (createdAt DESC); when total > items.length " +
-      "the response carries truncated=true so the UI can warn explicitly — " +
-      "never silently truncated like the 500-capped full list.",
+      "供执行器选择器下拉（部署弹窗）使用的最小读取面：仅 id/appName/address/status/runningTaskCount/maxConcurrentTasks，而不是 GET /executors 的完整实体投影。最多返回 EXECUTOR_PICKER_LIMIT 行（createdAt DESC）；当 total > items.length 时响应带 truncated=true，便于界面明确告警——不像上限 500 的完整列表那样静默截断。",
+    summary: "列出执行器选择器选项（轻量）",
   })
   @ApiResponse({
     status: 200,
-    description: "Executor picker options with explicit truncation flag",
+    description: "带显式截断标记的执行器选择器选项",
   })
   findPickerOptions() {
     return this.svc.findPickerOptions();
@@ -815,14 +827,12 @@ export class ExecutorController {
   // DR-01: the command contains the shared machine credential, not just a URL.
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Get executor install command",
-    description:
-      "Returns the shell command to install and start the executor on the target machine.",
+    description: "返回在目标机器上安装并启动执行器的 shell 命令。",
+    summary: "获取执行器安装命令",
   })
   @ApiResponse({
     status: 503,
-    description:
-      "ADMIN_API_URL is not configured on the server — no usable install command can be generated",
+    description: "服务端未配置 ADMIN_API_URL——无法生成可用的安装命令",
   })
   @ApiOkResponse({ type: ExecutorInstallCmdDto })
   async getInstallCmd() {
@@ -844,13 +854,13 @@ export class ExecutorController {
   @Roles()
   @Get("install.sh")
   @ApiOkResponse({
-    description: "shell script text (Res passthrough)",
+    description: "shell 脚本文本（Res 直传）",
     content: { "text/x-shellscript": { schema: { type: "string" } } },
   })
   @ApiOperation({
-    summary: "Download executor install script",
     description:
-      "Returns the one-click installer as plain text (curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...). Not sensitive: the shared secret is supplied by the caller as a bash argument.",
+      "以纯文本返回一键安装脚本（curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...）。不含敏感信息：共享密钥由调用方以 bash 参数传入。",
+    summary: "下载执行器安装脚本",
   })
   getInstallScript(@Res() res: Response): void {
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -872,30 +882,29 @@ export class ExecutorController {
   @Roles()
   @Get("artifact/executor-node.tar.gz")
   @ApiOkResponse({
-    description: "tar.gz binary (Res passthrough)",
+    description: "tar.gz 二进制内容（Res 直传）",
     content: {
       "application/gzip": { schema: { type: "string", format: "binary" } },
     },
   })
   @ApiOperation({
-    summary: "Download executor-node install artifact (tar.gz)",
     description:
-      "Serves the executor-node install bundle (dist + production node_modules) used by install.sh's remote channel. Requires the executor shared token (Authorization: Bearer <token> or ?token=<token>). Returns 404 until an operator generates the artifact via scripts/bundle-executor-artifact.sh into EXECUTOR_ARTIFACT_DIR.",
+      "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。需要执行器共享令牌（Authorization: Bearer <token> 或 ?token=<token>）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
+    summary: "下载 executor-node 安装产物（tar.gz）",
   })
   @ApiQuery({
     name: "token",
     required: false,
-    description:
-      "Executor shared token (alternative to the Authorization Bearer header)",
+    description: "执行器共享令牌（Authorization Bearer 请求头的替代方式）",
   })
   @ApiResponse({
     status: 200,
-    description: "tar.gz artifact (application/gzip)",
+    description: "tar.gz 产物（application/gzip）",
   })
-  @ApiResponse({ status: 401, description: "Missing / invalid shared token" })
+  @ApiResponse({ status: 401, description: "共享令牌缺失或无效" })
   @ApiResponse({
     status: 404,
-    description: "Artifact not generated / not found",
+    description: "产物未生成 / 不存在",
   })
   async getExecutorArtifact(
     @Headers("authorization") auth: string | undefined,
@@ -913,9 +922,7 @@ export class ExecutorController {
     // 文件名固定，无用户可控成分——不存在路径穿越面。
     const file = join(artifactDir, "executor-node.tar.gz");
     if (!existsSync(file)) {
-      throw new NotFoundException(
-        "executor-node.tar.gz not found; run scripts/bundle-executor-artifact.sh and place the artifact under EXECUTOR_ARTIFACT_DIR (default <cwd>/artifacts)",
-      );
+      throw new AppError("EXECUTOR_ARTIFACT_MISSING");
     }
     const buffer = readFileSync(file);
     // E-P2-P6 收尾：与 c308b988 execution-artifacts 下载路由同一套约定——
@@ -936,13 +943,12 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Get(":id")
   @ApiOperation({
-    summary: "Get single executor details",
-    description:
-      "Get detailed info for a specific executor including config, status, and performance metrics.",
+    description: "获取指定执行器的详细信息，包括配置、状态与性能指标。",
+    summary: "获取单个执行器详情",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiOkResponse({ type: ExecutorResponseDto })
-  @ApiResponse({ status: 404, description: "Executor not found" })
+  @ApiResponse({ status: 404, description: "执行器不存在" })
   findOne(@Param("id") id: string) {
     return this.svc.findOne(id);
   }
@@ -957,26 +963,26 @@ export class ExecutorController {
   // 显式声明为 ownership（write 证据由 assertCanManageMetadata 落证）。
   @WriteGuard("executor", { scope: "ownership" })
   @ApiOperation({
-    summary: "Update executor metadata",
     description:
-      "Update executor group, tags, description, and max concurrent tasks. Requires ADMIN, or editor+ role on the executor's project.",
+      "更新执行器的分组、标签、描述与最大并发任务数。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。",
+    summary: "更新执行器元数据",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
-    description: "Update parameters",
+    description: "更新参数",
     schema: {
       example: {
         groupName: "production",
         tags: ["nodejs", "prod"],
-        description: "Production executor",
+        description: "生产环境执行器",
         maxConcurrentTasks: 10,
       },
     },
   })
-  @ApiResponse({ status: 404, description: "Executor not found" })
+  @ApiResponse({ status: 404, description: "执行器不存在" })
   @ApiResponse({
     status: 403,
-    description: "Not ADMIN and no editor+ role on the executor's project",
+    description: "既不是 ADMIN，也没有该执行器所属项目的 editor 及以上角色",
   })
   async update(
     @Param("id") id: string,
@@ -1011,18 +1017,18 @@ export class ExecutorController {
   // assertCanManageMetadata（rotate-token / set-offline / DELETE 仍 @Roles(ADMIN)）。
   @WriteGuard("executor", { scope: "ownership" })
   @ApiOperation({
-    summary: "Push config hot-update to executor",
     description:
-      "Dynamically update executor config without restart. Executor must be online. Requires ADMIN, or editor+ role on the executor's project.",
+      "无需重启即动态更新执行器配置。执行器必须在线。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。",
+    summary: "向执行器推送配置热更新",
   })
   @ApiCreatedResponse({
     type: ExecutorReloadConfigResponseDto,
     description:
       "pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties）",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
-    description: "Config parameters",
+    description: "配置参数",
     schema: {
       example: {
         maxConcurrentTasks: 10,
@@ -1037,15 +1043,13 @@ export class ExecutorController {
   // reloadConfig 内的注释）。
   @ApiResponse({
     status: 503,
-    description:
-      "Executor offline or unreachable (config push could not be delivered)",
+    description: "执行器离线或不可达（配置推送未能送达）",
   })
   @ApiResponse({
     status: 502,
-    description:
-      "Executor rejected the config push (its held token is out of sync with the issued one)",
+    description: "执行器拒收了配置推送（其持有的令牌与签发的令牌不一致）",
   })
-  @ApiResponse({ status: 404, description: "Executor not found" })
+  @ApiResponse({ status: 404, description: "执行器不存在" })
   /**
    * R11 (round-11 P1): idempotent token REUSE, not rotation.
    *
@@ -1114,14 +1118,15 @@ export class ExecutorController {
       // api/client.ts:124-138）。于是一次普通的配置推送失败会把管理员的整个
       // 会话清空并踢到登录页，提示「登录状态已过期」——与真实原因完全无关。
       // 503 语义正确（依赖不可用）且前端只会 toast 一条可读提示。
-      throw new ServiceUnavailableException(
-        "Executor is offline: it must be online to receive a config push. Wait for the next heartbeat to bring it back, or check why the executor stopped reporting.",
-      );
+      throw new AppError("EXECUTOR_OFFLINE_CONFIG_PUSH");
     }
     const issued = await this.svc.issueToken({
       address: executor.address,
       appName: executor.appName,
       startupId: executor.executorStartupId ?? null,
+      // ADR-017 阶段 3：行已被 id 解析（findOne(id)），指纹让它走同一条
+      // 无歧义定位路径（同址多行时不会被地址回落取错行）。
+      deviceFingerprint: executor.deviceFingerprint,
     });
     // ARCH-33（ADR-016）：pull 执行器走命令队列。
     //
@@ -1169,9 +1174,7 @@ export class ExecutorController {
         // 503 而非 401：这是**投递失败**（执行器不可达/超时），不是鉴权裁定。
         // 用 401 会被 admin-web 的拦截器当成会话失效 → logout + 跳登录页，
         // 管理员在 NAT/防火墙/执行器刚重启时点一次推送就被踢出系统。
-        throw new ServiceUnavailableException(
-          "Failed to reach executor: the config push could not be delivered (executor unreachable, timed out, or rejected the request). Verify the executor is running and reachable from admin-api, then retry.",
-        );
+        throw new AppError("EXECUTOR_CONFIG_PUSH_UNREACHABLE");
       }
       // 401 fallback (legacy rows / cold issuance cache): re-issue once and
       // retry the push once. The second issueToken() may return the same
@@ -1187,6 +1190,8 @@ export class ExecutorController {
         address: executor.address,
         appName: executor.appName,
         startupId: executor.executorStartupId ?? null,
+        // ADR-017 阶段 3：同上——重试与首次同口径，行身份由指纹钉住。
+        deviceFingerprint: executor.deviceFingerprint,
       });
       try {
         const resp = await axios.post(url, body, {
@@ -1226,9 +1231,10 @@ export class ExecutorController {
           // token 与 admin 签发的不一致），不是管理员会话失效。回 401 会被
           // admin-web 拦截器当成会话过期 → 清空登录态并跳登录页，把一个
           // 「等一个心跳自愈」的可自愈问题升级成「管理员被踢出系统」。
-          throw new BadGatewayException(
-            `Executor ${executor.address} rejected the config push with 401 even after a token re-issue retry: its held token is persistently out of sync with the issued one. Wait one heartbeat for executor-side outbound self-heal to converge, or use POST /executors/${id}/rotate-token and reconfigure the executor.`,
-          );
+          throw new AppError("EXECUTOR_CONFIG_PUSH_REJECTED", {
+            address: executor.address,
+            executorId: id,
+          });
         }
         // BUG-01 (a) 首发 401：执行器拒收首发推送（其持有 token 与 admin 签发
         // 不一致，如 admin 重启后签发缓存冷），随后的一次重签重试未产生鉴权
@@ -1236,9 +1242,10 @@ export class ExecutorController {
         // 分支不写入 push_auth_retry 计数（无认证结果，标签集保持任务定义的
         // 两值闭合）；F-8：不回显 axios 错误文本。
         // 502 而非 401：同上一分支——这是执行器侧的拒收，不是管理员会话失效。
-        throw new BadGatewayException(
-          `Executor ${executor.address} rejected the config push with 401 on the first attempt (executor-held token is out of sync with the issued one, e.g. a cold issuance cache after an admin-api restart); the re-issue retry failed with a non-auth error. Wait one heartbeat for the executor's outbound self-heal to re-align, then retry the push; if it persists, use POST /executors/${id}/rotate-token.`,
-        );
+        throw new AppError("EXECUTOR_CONFIG_PUSH_REJECTED_FIRST", {
+          address: executor.address,
+          executorId: id,
+        });
       }
     }
   }
@@ -1249,15 +1256,13 @@ export class ExecutorController {
   // W2: ADMIN-only — the response contains the plaintext executor token.
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Rotate executor token",
-    description:
-      "Generate a new executor auth token. The new token is shown only once in this response.",
+    description: "生成新的执行器鉴权令牌。新令牌仅在本响应中展示一次。",
+    summary: "轮换执行器令牌",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
     description:
-      "AUTH-05: optional rotation reason, recorded in the audit log detail " +
-      "(the endpoint itself stays non-breaking — an empty body is fine).",
+      "AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
     schema: { example: { reason: "token suspected leaked" } },
     required: false,
   })
@@ -1276,29 +1281,42 @@ export class ExecutorController {
   })
   @Post("token")
   @ApiOperation({
-    summary: "Get dynamic token",
     description:
-      "Executor calls this to get a dynamic token. Uses shared token for initial auth. R9 (round-8 P1): idempotent per (address, startupId) — a same-process re-fetch returns the CURRENT token instead of rotating; rotation happens on first issuance, a new startupId (restart), a legacy startupId-less fetch outside the short reuse window, or when the previously issued token no longer matches the stored hash.",
+      "执行器调用本接口获取动态令牌。首次鉴权使用共享令牌。R9（第八轮 P1）：按 (address, startupId) 幂等——同进程重复获取会返回当前令牌而不是轮换；以下情况才会轮换：首次签发、startupId 变化（重启）、无 startupId 的历史方式获取且超出短暂复用窗口，或此前签发的令牌与已存储哈希不再匹配。",
+    summary: "获取动态令牌",
   })
   @ApiBody({
-    description: "Get token parameters",
+    description: "获取令牌参数",
     schema: {
       example: {
         address: "192.168.1.100:3002",
         appName: "executor-node",
         startupId: "uuid-of-this-executor-process-life",
+        deviceFingerprint: "64-lowercase-hex-from-the-executor",
       },
     },
   })
   @ApiCreatedResponse({
     type: ExecutorTokenResponseDto,
-    description:
-      "Token obtained (or reused) successfully — R9 idempotent issuance",
+    description: "令牌获取（或复用）成功——R9 幂等签发",
   })
-  @ApiResponse({ status: 401, description: "Invalid shared token" })
+  @ApiResponse({ status: 401, description: "共享令牌无效" })
   async getToken(
     @Body()
-    body: { address: string; appName?: string; startupId?: string | null },
+    body: {
+      address: string;
+      appName?: string;
+      startupId?: string | null;
+      // ADR-017 阶段 3（复查补口）：稳定设备指纹——**行定位键**。两端
+      // `/executors/token` 均已随载荷上报（node middleware/auth.ts::fetchToken、
+      // python auth.py::_fetch_token）。
+      //
+      // 漏转发的后果：issueToken → register 的指纹入口拿到 null → 回落
+      // `findOne({where:{address}})` → pull 同址多行时**任取一行** → 轮换
+      // **别人的** token。这正是本补口要修的缺陷（F-7 显式白名单是唯一入站
+      // 通道——内联 @Body() 类型是编译期的，运行时不裁剪）。
+      deviceFingerprint?: string | null;
+    },
     @Headers("authorization") auth: string,
   ) {
     await verifyExecutorToken(
@@ -1315,6 +1333,10 @@ export class ExecutorController {
       address: body.address,
       appName: body.appName || "executor",
       startupId: body.startupId,
+      // ADR-017 阶段 3（复查补口）：指纹必须转发——issueToken 依赖它把
+      // register 的行解析收敛到**调用方自己那一行**（缺省即同址多行时任取
+      // 一行 → 轮换他人 token）。
+      deviceFingerprint: body.deviceFingerprint,
     });
   }
 
@@ -1325,31 +1347,42 @@ export class ExecutorController {
   })
   @Post("offline")
   @ApiOperation({
-    summary: "Executor offline notification",
-    description:
-      "Called during graceful executor shutdown to notify admin and mark executor as offline.",
+    description: "执行器优雅停机时调用，用于通知中台并将该执行器标记为离线。",
+    summary: "执行器下线通知",
   })
   @ApiBody({
-    description: "Offline parameters",
+    description: "下线参数",
     schema: {
       example: {
         address: "192.168.1.100:3002",
       },
     },
   })
-  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiResponse({ status: 401, description: "执行器令牌无效" })
   @ApiOkResponse({ type: ExecutorOfflineDto })
   async offline(
-    @Body() body: { address: string },
+    @Body()
+    body: {
+      address: string;
+      // ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同地址
+      // 多行并存时用于唯一定位本行，避免把**别人的**行一起置离线（§5）。
+      deviceFingerprint?: string | null;
+    },
     @Headers("authorization") auth: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(body.address, token);
+    const isValid = await this.svc.validateTokenByAddress(
+      body.address,
+      token,
+      body.deviceFingerprint,
+    );
     if (!isValid) {
-      throw new UnauthorizedException("Invalid executor token");
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
 
-    await this.svc.markOffline(body.address);
+    // ADR-017 阶段 3：精确下线**自己那一行**（见 markOffline 头注——按地址
+    // 无界 UPDATE 会把同地址的另一台也置离线）。
+    await this.svc.markOffline(body.address, body.deviceFingerprint);
     return { success: true };
   }
 
@@ -1359,16 +1392,16 @@ export class ExecutorController {
   // W2: ADMIN-only executor lifecycle mutation.
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Mark executor offline",
     description:
-      "Admin: mark a specific executor as offline by ID (does not interrupt running tasks; use for stale records after crash).",
+      "管理员操作：按 ID 将指定执行器标记为离线（不会中断正在运行的任务；用于崩溃后残留的过期记录）。",
+    summary: "将执行器标记为离线",
   })
   @ApiCreatedResponse({
     type: ExecutorResponseDto,
     description: "offlineReason=manual 的执行器行（POST 默认 201）",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
-  @ApiResponse({ status: 404, description: "Executor not found" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
+  @ApiResponse({ status: 404, description: "执行器不存在" })
   setOffline(@Param("id") id: string) {
     return this.svc.setOfflineById(id);
   }
@@ -1382,14 +1415,12 @@ export class ExecutorController {
   @Get(":id/removal-impact")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Preview what deleting this executor will break",
     description:
-      "Counts tasks pinning this executor via task.executorId / " +
-      "task.executorAppName (dispatch would fail after deletion) and the " +
-      "pending pull-queue depth.",
+      "统计通过 task.executorId / task.executorAppName 绑定到该执行器的任务数（删除后派发会失败），以及待处理的 pull 队列深度。",
+    summary: "预览删除该执行器会破坏什么",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
-  @ApiResponse({ status: 404, description: "Executor not found" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
+  @ApiResponse({ status: 404, description: "执行器不存在" })
   @ApiOkResponse({ type: ExecutorRemovalImpactResponseDto })
   removalImpact(@Param("id") id: string) {
     return this.svc.describeRemovalImpact(id);
@@ -1398,25 +1429,24 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Delete(":id")
-  @ApiResponse({ status: 204, description: "Removed (no content)" })
+  @ApiResponse({ status: 204, description: "已移除（无内容）" })
   @HttpCode(HttpStatus.NO_CONTENT)
   // W2: ADMIN-only destructive removal.
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Delete executor record",
     description:
-      "Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.",
+      "管理员操作：按 ID 永久删除执行器记录。适用于执行器已离线且不再需要的场景。",
+    summary: "删除执行器记录",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
     description:
-      "AUTH-05: optional deletion reason, recorded in the audit log detail " +
-      "(the endpoint stays non-breaking — an empty body is fine).",
+      "AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
     schema: { example: { reason: "decommissioned host" } },
     required: false,
   })
-  @ApiResponse({ status: 204, description: "Executor deleted" })
-  @ApiResponse({ status: 404, description: "Executor not found" })
+  @ApiResponse({ status: 204, description: "执行器已删除" })
+  @ApiResponse({ status: 404, description: "执行器不存在" })
   async removeExecutor(
     @Param("id") id: string,
     @Body() body?: { reason?: string },
@@ -1432,14 +1462,13 @@ export class ExecutorController {
     description: "裸 {total,items} 分页",
   })
   @ApiOperation({
-    summary: "Get executor task execution history",
-    description:
-      "Get all task execution records for a specific executor with pagination.",
+    description: "分页获取指定执行器的全部任务执行记录。",
+    summary: "获取执行器的任务执行历史",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
-  @ApiQuery({ name: "page", required: false, description: "Page number" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
+  @ApiQuery({ name: "page", required: false, description: "页码" })
   // U13: 与实现对齐——本端点收 PaginationDto（page/pageSize），而非 `limit`。
-  @ApiQuery({ name: "pageSize", required: false, description: "Page size" })
+  @ApiQuery({ name: "pageSize", required: false, description: "每页条数" })
   getExecutorExecutions(@Param("id") id: string, @Query() p: PaginationDto) {
     return this.svc.getExecutorExecutions(id, p);
   }
@@ -1448,16 +1477,12 @@ export class ExecutorController {
   @UseGuards(JwtAuthGuard)
   @Get(":id/metrics")
   @ApiOperation({
-    summary: "Get executor performance metrics",
-    // FEAT-04 (append-only): response now also carries `history`.
+    // FEAT-04 (append-only): response now also carries `history`.,
     description:
-      "Get executor performance metrics for the last 7 days including total executions, success rate, and avg time. " +
-      "FEAT-04: the response also carries `history` — the last 24h of executor_metrics_history samples aggregated " +
-      "into fixed 15-minute AVG buckets (≤96 points, ascending; each point is {timestamp, cpuUsage, memUsage, " +
-      "runningTaskCount}; cpuUsage/memUsage are null when a bucket has no reported value). Returns an empty array " +
-      "when the executor has no history samples — the admin UI renders an empty state for that case.",
+      "获取执行器最近 7 天的性能指标，包括总执行次数、成功率与平均耗时。FEAT-04：响应还带 `history`——最近 24 小时的 executor_metrics_history 采样按固定 15 分钟 AVG 桶聚合（≤96 个点，升序；每个点为 {timestamp, cpuUsage, memUsage, runningTaskCount}；某个桶没有上报值时 cpuUsage/memUsage 为 null）。该执行器没有任何历史采样时返回空数组——管理台据此渲染空状态。",
+    summary: "获取执行器性能指标",
   })
-  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiParam({ name: "id", description: "执行器 ID" })
   // FEAT-04 (append-only): example updated to the real response shape —
   // executor + sevenDayStats + current + history (24h bucketed samples).
   @ApiOkResponse({ type: ExecutorMetricsDto })

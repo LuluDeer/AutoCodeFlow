@@ -62,10 +62,26 @@ jest.mock("axios");
 // 语义用例逐字节不变）；闸门自身语义由 block-strategy-gate.spec 全量覆盖。
 jest.mock("../block-strategy-gate", () => ({
   applyBlockStrategyGate: jest.fn().mockResolvedValue("proceed"),
-  releaseExecutorSlotByAddress: jest.fn().mockResolvedValue(undefined),
+  // ADR-017 阶段 3：槽位冲销也经本模块（单一事实源）。此处打桩即代表
+  // 「冲销已发生」——槽位语义用例改断言**本桩被调用**（及其参数），而不是
+  // 断言 dataSource 上的 SQL 链：util 的地址唯一性判定与两阶段形态属其自身
+  // 契约，由 block-strategy-gate.spec 全量覆盖（与本文件的分工一致）。
+  //
+  // 空地址必须**模仿真实 util 的早退 no-op**（`if (!address) return;`）——
+  // 否则广播执行的 `winnerAddress=null` 会被记成一次「已释放」，污染
+  // 「每执行器恰好一坑」类断言。
+  releaseExecutorSlotByAddress: jest
+    .fn()
+    .mockImplementation(async (_ds: unknown, address?: string | null) => {
+      if (!address) return;
+    }),
 }));
-import { applyBlockStrategyGate } from "../block-strategy-gate";
+import {
+  applyBlockStrategyGate,
+  releaseExecutorSlotByAddress,
+} from "../block-strategy-gate";
 const mockedGate = applyBlockStrategyGate as unknown as jest.Mock;
+const mockedReleaseSlot = releaseExecutorSlotByAddress as unknown as jest.Mock;
 // SEC-SSRF-01: backfillFullLogsFromExecutor 现在会先过 assertSafeExecutorUrl。
 // 用例使用 fixture 地址（http://executor:3001）——真实守卫会对该主机做 DNS
 // 解析并失败，故按 executor.service.spec 的同款做法 stub 掉守卫，避免用例
@@ -259,6 +275,9 @@ describe("TaskService (__tests__)", () => {
     versionRepo = makeRepo();
     taskQueue = { add: jest.fn().mockResolvedValue({}) };
     releaseSlotExecute = jest.fn().mockResolvedValue({ affected: 1 });
+    // ADR-017 阶段 3：冲销经共享 util（已模块打桩），跨用例显式清空调用记录
+    // ——否则「本次未释放」类断言会被上一个用例的调用污染。
+    mockedReleaseSlot.mockClear();
     dataSource = {
       // R4-P2: storeLogLines now runs delete+insert inside ONE DB transaction.
       // Default the mock executes the callback with a manager delegating to
@@ -425,7 +444,7 @@ describe("TaskService (__tests__)", () => {
         name: "cycle",
         dependencies: { dep1: "task-a" },
       } as any;
-      await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+      await expect(service.create(dto)).rejects.toThrow("检测到循环依赖");
     });
 
     // FIX-1.1（依赖链契约）：value 必须是存在的任务 id——value 是环检测/
@@ -437,7 +456,7 @@ describe("TaskService (__tests__)", () => {
         dependencies: { upstream: "missing-task-uuid" },
       } as any;
       await expect(service.create(dto)).rejects.toThrow(
-        "dependencies values must be existing task ids",
+        "dependencies 的值必须是已存在的任务 id",
       );
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
@@ -472,7 +491,7 @@ describe("TaskService (__tests__)", () => {
       taskRepo.find.mockResolvedValue([]); // PATCH 带的 value 不存在
       await expect(
         service.update("t1", { dependencies: { up: "ghost-uuid" } } as any),
-      ).rejects.toThrow("dependencies values must be existing task ids");
+      ).rejects.toThrow("dependencies 的值必须是已存在的任务 id");
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -517,13 +536,13 @@ describe("TaskService (__tests__)", () => {
             name: "t",
             requirements: ["--index-url", "http://evil"],
           } as any),
-        ).rejects.toThrow(/options are not allowed/);
+        ).rejects.toThrow(/不允许带选项/);
       });
 
       it("rejects a blank requirement entry", async () => {
         await expect(
           service.create({ name: "t", requirements: ["  "] } as any),
-        ).rejects.toThrow(/non-empty/);
+        ).rejects.toThrow(/任务依赖项不能为空/);
       });
     });
 
@@ -582,7 +601,7 @@ describe("TaskService (__tests__)", () => {
         );
         await expect(
           service.create({ name: "dup-name", triggerType: "api" } as any),
-        ).rejects.toThrow('Task with name "dup-name" already exists');
+        ).rejects.toThrow("任务名「dup-name」已存在");
       });
 
       it("re-throws non-23505 driver errors unchanged", async () => {
@@ -659,7 +678,7 @@ describe("TaskService (__tests__)", () => {
       // 消息与 create 路径一致，避免前端/调用方按文案分支时出现两套。
       await expect(
         service.update("1", { executorId: PIN_UUID } as any),
-      ).rejects.toThrow(/mutually exclusive/);
+      ).rejects.toThrow(/互斥/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -676,7 +695,7 @@ describe("TaskService (__tests__)", () => {
       ).rejects.toThrow(BadRequestException);
       await expect(
         service.update("1", { executeMode: "broadcast" } as any),
-      ).rejects.toThrow(/mutually exclusive/);
+      ).rejects.toThrow(/互斥/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -1481,7 +1500,7 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
 
-      await expect(service.updateGlue("1", "")).rejects.toThrow(/empty/i);
+      await expect(service.updateGlue("1", "")).rejects.toThrow(/不能为空/);
       // 反证核心：拒绝必须发生在任何赋值之前——脚本与来源都保持原样
       expect(task.glueSource).toBe("print('real')");
       expect(task.gitRepo).toBe("git@github.com:acme/repo.git");
@@ -1498,7 +1517,7 @@ describe("TaskService (__tests__)", () => {
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
 
       await expect(service.updateGlue("1", "   \n\t  ")).rejects.toThrow(
-        /empty/i,
+        /不能为空/,
       );
       expect(task.glueSource).toBe("print('real')");
       expect(taskRepo.save).not.toHaveBeenCalled();
@@ -2347,9 +2366,7 @@ describe("TaskService (__tests__)", () => {
         name: "too-deep",
         dependencies: { dep: "task-1" },
       } as any;
-      await expect(service.create(dto)).rejects.toThrow(
-        "dependency chain too deep",
-      );
+      await expect(service.create(dto)).rejects.toThrow("依赖链层级过深");
       // 截断生效：数据库查询次数远小于链长（深度上限 64 + 自检若干）
       expect(taskRepo.findOne.mock.calls.length).toBeLessThan(120);
     });
@@ -2364,9 +2381,7 @@ describe("TaskService (__tests__)", () => {
         Object.values(dependencies).map((id) => ({ id })),
       );
       const dto = { id: "task-0", name: "too-wide", dependencies } as any;
-      await expect(service.create(dto)).rejects.toThrow(
-        "dependency chain too deep",
-      );
+      await expect(service.create(dto)).rejects.toThrow("依赖链层级过深");
     });
 
     it("still detects a genuine cycle quickly", async () => {
@@ -2386,7 +2401,7 @@ describe("TaskService (__tests__)", () => {
         name: "cycle",
         dependencies: { dep: "task-b" },
       } as any;
-      await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+      await expect(service.create(dto)).rejects.toThrow("检测到循环依赖");
     });
   });
 
@@ -2897,6 +2912,7 @@ describe("TaskService (__tests__)", () => {
         executeMode: "broadcast",
       });
       releaseSlotExecute.mockClear();
+      mockedReleaseSlot.mockClear();
 
       // 回调 1：hostA 命中终态 UPDATE（winner），释放 hostA 的坑
       await service.handleCallback([
@@ -2917,14 +2933,12 @@ describe("TaskService (__tests__)", () => {
         },
       ]);
 
-      // releaseExecutorSlot 经 dataSource 建链；收集所有按地址释放的 addr
-      const releasedAddrs = dataSource.createQueryBuilder.mock.results
-        .map((r: any) => r.value)
-        .flatMap((qb: any) =>
-          qb.where.mock.calls
-            .filter((c: any[]) => c[0] === "address = :addr")
-            .map((c: any[]) => c[1].addr),
-        );
+      // ADR-017 阶段 3：冲销经共享 util（block-strategy-gate，本文件已模块打桩）。
+      // 收集传给 util 的**非空**地址——空地址是真实 util 的早退 no-op（广播
+      // winner 恒为 null），不计入「释放了几坑」。断言「每执行器恰好一坑」。
+      const releasedAddrs = mockedReleaseSlot.mock.calls
+        .map((c) => c[1] as string | null | undefined)
+        .filter((a): a is string => Boolean(a));
       expect(releasedAddrs).toContain("hostA:1");
       expect(releasedAddrs).toContain("hostB:2");
       expect(releasedAddrs.length).toBe(2); // 每执行器恰好一坑，不多不少
@@ -2945,6 +2959,7 @@ describe("TaskService (__tests__)", () => {
         executeMode: "single",
       });
       releaseSlotExecute.mockClear();
+      mockedReleaseSlot.mockClear();
 
       await service.handleCallback([
         {
@@ -2955,15 +2970,10 @@ describe("TaskService (__tests__)", () => {
         },
       ]);
 
-      const releasedAddrs = dataSource.createQueryBuilder.mock.results
-        .map((r: any) => r.value)
-        .flatMap((qb: any) =>
-          qb.where.mock.calls
-            .filter((c: any[]) => c[0] === "address = :addr")
-            .map((c: any[]) => c[1].addr),
-        );
       // 单播仅 winner 释放一次；executorAddress 非空 → 不进广播分支
-      expect(releasedAddrs).toEqual(["hostS:9"]);
+      expect(mockedReleaseSlot.mock.calls.map((c) => c[1])).toEqual([
+        "hostS:9",
+      ]);
     });
 
     it("marks execution as FAILED and stores errorMessage", async () => {
@@ -4112,7 +4122,7 @@ describe("TaskService (__tests__)", () => {
         // makeRepo QB returns affected=0 for already-terminal rows, which is
         // the production duplicate-callback path: no slot release, no fan-out.
         expect(result[0].success).toBe(true);
-        expect(releaseSlotExecute).not.toHaveBeenCalled();
+        expect(mockedReleaseSlot).not.toHaveBeenCalled();
         expect(taskQueue.add).not.toHaveBeenCalled();
       });
 
@@ -4337,7 +4347,275 @@ describe("TaskService (__tests__)", () => {
       });
       expect(exec.status).toBe(ExecutionStatus.RUNNING);
       expect(execRepo.save).not.toHaveBeenCalled();
-      expect(releaseSlotExecute).not.toHaveBeenCalled();
+      expect(mockedReleaseSlot).not.toHaveBeenCalled();
+    });
+
+    // ADR-017 阶段 3（复查补口）反证：回调闸必须以**凭据所属行**为准，而非
+    // 地址字符串。阶段 3 允许 pull 同址多行并存（ADR-017 §5）——两台自报同一
+    // 地址时「地址相等」恒成立，纯地址判据拦不住串台（迁移 1790000000055 的
+    // 类注释已把这条列为待修面）。
+    //
+    // 反证：删掉 handleCallback 里的 credentialExecutorId 判定 → 本用例转红
+    // （会因地址相等而放行）。
+    it("ADR-017: rejects callback whose credential belongs to a DIFFERENT row at the SAME address", async () => {
+      // 执行派发到了 row-A（同址 10.0.0.9:3002，但行身份不同）。
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:3002",
+        executorId: "row-a",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.handleCallback(
+        [
+          {
+            executionId: "e1",
+            status: "success",
+            executorAddress: "10.0.0.9:3002",
+          },
+        ],
+        // 服务端推导：presented 凭据属于 row-b（同址另一台）。
+        new Map([["10.0.0.9:3002", "row-b"]]),
+      );
+
+      expect(result[0]).toEqual({
+        executionId: "e1",
+        success: false,
+        error: "Executor identity mismatch",
+      });
+      // 未终态化、未释放槽位（拒绝发生在终态跃迁之前）。
+      expect(exec.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.save).not.toHaveBeenCalled();
+      expect(mockedReleaseSlot).not.toHaveBeenCalled();
+    });
+
+    it("ADR-017: accepts callback when the credential row MATCHES the dispatched row", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:3002",
+        executorId: "row-a",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.handleCallback(
+        [
+          {
+            executionId: "e1",
+            status: "success",
+            executorAddress: "10.0.0.9:3002",
+          },
+        ],
+        new Map([["10.0.0.9:3002", "row-a"]]),
+      );
+
+      expect(result[0]).toEqual({ executionId: "e1", success: true });
+    });
+
+    // ── ADR-017 阶段 3 / 协议 v6（方案 C）：行身份三级阶梯的第一级 ──────────
+    // 指纹**独立于令牌类型**，故「共享令牌 + 同址多行」这一组合也能拿到行
+    // 身份——这正是本方案补的缺口（shared token 不绑定任何行，第二级拿不到）。
+    describe("ADR-017 v6: callback fingerprint row identity (tier 1)", () => {
+      const FP_A = "a".repeat(64);
+
+      it("rejects when the FINGERPRINT row differs from the dispatched row (shared-token case: no credential tier)", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "10.0.0.9:3002",
+          executorId: "row-a",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        const result = await service.handleCallback(
+          [
+            {
+              executionId: "e1",
+              status: "success",
+              executorAddress: "10.0.0.9:3002",
+              deviceFingerprint: FP_A,
+            },
+          ],
+          // 共享令牌路径：凭据不绑定任何行 → 第二级为 null（复现缺口场景）。
+          new Map([["10.0.0.9:3002", null]]),
+          // 第一级：该指纹解析到 row-b（同址另一台）。
+          new Map([["e1", "row-b"]]),
+        );
+
+        expect(result[0]).toEqual({
+          executionId: "e1",
+          success: false,
+          error: "Executor identity mismatch",
+        });
+        expect(exec.status).toBe(ExecutionStatus.RUNNING);
+        expect(mockedReleaseSlot).not.toHaveBeenCalled();
+      });
+
+      it("accepts when the FINGERPRINT row matches the dispatched row", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "10.0.0.9:3002",
+          executorId: "row-a",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        const result = await service.handleCallback(
+          [
+            {
+              executionId: "e1",
+              status: "success",
+              executorAddress: "10.0.0.9:3002",
+              deviceFingerprint: FP_A,
+            },
+          ],
+          new Map([["10.0.0.9:3002", null]]),
+          new Map([["e1", "row-a"]]),
+        );
+
+        expect(result[0]).toEqual({ executionId: "e1", success: true });
+      });
+
+      it("fingerprint tier OUTRANKS the credential tier (v6 executor reporting its own row)", async () => {
+        // 构造一个只有指纹能判对的场景：凭据归属行解析失败（null），而指纹
+        // 命中正确行 → 必须放行（若误用地址判据，同址相等也会放行，故本用例
+        // 断言的是「指纹先于凭据被采纳」且无异常）。
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "10.0.0.9:3002",
+          executorId: "row-a",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        const result = await service.handleCallback(
+          [
+            {
+              executionId: "e1",
+              status: "success",
+              executorAddress: "10.0.0.9:3002",
+              deviceFingerprint: FP_A,
+            },
+          ],
+          new Map([["10.0.0.9:3002", "row-b"]]), // 凭据说 row-b（会误判）
+          new Map([["e1", "row-a"]]), // 指纹说 row-a（正确）
+        );
+
+        // 指纹优先 → 采纳正确行 → 放行。
+        expect(result[0]).toEqual({ executionId: "e1", success: true });
+      });
+
+      it("absent fingerprint (legacy v5 executor) falls back to the credential tier unchanged", async () => {
+        const exec = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: "10.0.0.9:3002",
+          executorId: "row-a",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+
+        const result = await service.handleCallback(
+          [
+            {
+              executionId: "e1",
+              status: "success",
+              executorAddress: "10.0.0.9:3002",
+            },
+          ],
+          new Map([["10.0.0.9:3002", null]]),
+          new Map(), // 无指纹条目
+        );
+
+        expect(result[0]).toEqual({ executionId: "e1", success: true });
+      });
+
+      // 反证（本轮实测发现并修掉的自身缺陷）：指纹必须**按 executionId 分键**。
+      // 同批次里可以有两个同址但不同行的执行（ADR-017 §5，pull 同址多行并存），
+      // 各自上报自己的指纹。若按 address 分键（且落在批次去重守卫之后），只有
+      // 第一条会被解析，第二条被拿第一条的行去判定 → **误拒合法回调**。
+      //
+      // 反证：把 task.service 的取值改回 `?.get(cb.executorAddress)`（或把控制器
+      // 的 set 改回按 addr 分键）→ 第二条（e2）转红为 identity mismatch。
+      it("keys the fingerprint tier by executionId, not address (two same-address rows in ONE batch)", async () => {
+        const ADDR = "10.0.0.9:3002";
+        const FP_A = "a".repeat(64);
+        const FP_B = "b".repeat(64);
+        const execA = {
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: ADDR,
+          executorId: "row-a",
+          logs: "",
+        };
+        const execB = {
+          id: "e2",
+          status: ExecutionStatus.RUNNING,
+          executorAddress: ADDR,
+          executorId: "row-b",
+          logs: "",
+        };
+        execRepo.find.mockResolvedValue([execA, execB]);
+
+        const result = await service.handleCallback(
+          [
+            {
+              executionId: "e1",
+              status: "success",
+              executorAddress: ADDR,
+              deviceFingerprint: FP_A,
+            },
+            {
+              executionId: "e2",
+              status: "success",
+              executorAddress: ADDR,
+              deviceFingerprint: FP_B,
+            },
+          ],
+          new Map([[ADDR, null]]),
+          new Map([
+            ["e1", "row-a"],
+            ["e2", "row-b"],
+          ]),
+        );
+
+        expect(result).toEqual([
+          { executionId: "e1", success: true },
+          { executionId: "e2", success: true },
+        ]);
+      });
+    });
+
+    it("ADR-017: shared-token path (no credential row) falls back to the address gate unchanged", async () => {
+      // 共享令牌不绑定任何行 → 映射值为 null → 行身份判据不参与，
+      // 保留原有地址相等判据（行为与引入前逐字节一致）。
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:3002",
+        executorId: "row-a",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      const result = await service.handleCallback(
+        [
+          {
+            executionId: "e1",
+            status: "success",
+            executorAddress: "10.0.0.9:3002",
+          },
+        ],
+        new Map([["10.0.0.9:3002", null]]),
+      );
+
+      expect(result[0]).toEqual({ executionId: "e1", success: true });
     });
 
     // ARCH-21: 执行器回调真实终态发布领域事件（原「改动1」告警直调解耦；
@@ -4849,20 +5127,10 @@ describe("TaskService (__tests__)", () => {
         }),
       } as any);
 
-      const whereArgs: Array<Record<string, unknown>> = [];
-      dataSource.createQueryBuilder.mockImplementation(
-        () =>
-          ({
-            update: jest.fn().mockReturnThis(),
-            set: jest.fn().mockReturnThis(),
-            where: jest.fn((_sql: string, params: Record<string, unknown>) => {
-              whereArgs.push(params);
-              return {
-                execute: jest.fn().mockResolvedValue({ affected: 1 }),
-              };
-            }),
-          }) as any,
-      );
+      // ADR-017 阶段 3：冲销经共享 util（本文件已模块打桩）。本用例关心的是
+      // RETURNING 拿到的**库中实际地址**被用作定位参数（快照为 null 时不能
+      // no-op）。util 自身的两阶段形态由 block-strategy-gate.spec 覆盖。
+      mockedReleaseSlot.mockClear();
 
       const result = await service.handleCallback([
         { executionId: "e1", status: "success", durationMs: 100 },
@@ -4870,7 +5138,9 @@ describe("TaskService (__tests__)", () => {
 
       expect(result[0].success).toBe(true);
       // 快照为 null，本会 no-op；RETURNING 让释放落到库中实际地址。
-      expect(whereArgs).toEqual([{ addr: "10.0.0.9:8002" }]);
+      expect(mockedReleaseSlot.mock.calls.map((c) => c[1])).toEqual([
+        "10.0.0.9:8002",
+      ]);
     });
   });
 
@@ -5429,8 +5699,12 @@ describe("TaskService (__tests__)", () => {
       const result = await service.killExecution("e1", ADMIN_USER);
 
       expect(result.success).toBe(true);
-      // 地址已释放（DB 侧），通知失败不回滚。
-      expect(releaseSlotExecute).toHaveBeenCalled();
+      // 地址已释放（DB 侧），通知失败不回滚。ADR-017 阶段 3：冲销经共享 util
+      // （本文件已模块打桩），断言其被调用即代表槽位已释放。
+      expect(mockedReleaseSlot).toHaveBeenCalledWith(
+        expect.anything(),
+        "10.0.0.9:8002",
+      );
       jest.restoreAllMocks();
     });
 
@@ -5470,7 +5744,7 @@ describe("TaskService (__tests__)", () => {
           taskName: "nightly-etl",
           status: "killed",
           failureReason: ExecutionFailureReason.KILLED,
-          errorMessage: "Manually terminated by administrator",
+          errorMessage: "管理员手动终止",
           finishedAt: expect.any(String),
         }),
       );
@@ -7099,7 +7373,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
 
       await expect(
         service.rollback("t1", { gitCommit: "abc123" }),
-      ).rejects.toThrow("Failed to enqueue execution: queue down");
+      ).rejects.toThrow("任务入队失败：queue down");
 
       // 补偿：PENDING 行被写为 FAILED。A1: 补偿走 transitionOneToTerminal
       // （createQueryBuilder 链），不再经 execRepo.update。断言条件 UPDATE 的

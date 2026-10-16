@@ -1,8 +1,6 @@
 import {
   Injectable,
   Logger,
-  NotFoundException,
-  ConflictException,
   ForbiddenException,
   OnModuleInit,
   Optional,
@@ -28,6 +26,8 @@ import {
 import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 import { spawn } from "child_process";
 import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
+// LANG-ERR-01（D 项）：任务「已存在」判据——按稳定码优先、文本兜底
+import { isTaskAlreadyExistsError } from "./task-already-exists.util";
 // NETOPT-8③: 执行器通知走 assertAndPinExecutorUrl 同一安全通道（先例
 // app-deployment.service.stop()——SSRF 复核 + 连接 pin 到已校验 IP）。
 import {
@@ -54,6 +54,9 @@ import { ApplicationVersion } from "./entities/application-version.entity";
 // DEEP-AUDIT B·4.3: 删除扇出失败附通知。@Optional 同 audit——存量 spec 未
 // 提供时降级为仅日志/审计，主链不因通知故障中断。
 import { NotificationService } from "../notification/notification.service";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * R4: Promise wrapper around async child_process.spawn. Aggregates
@@ -228,7 +231,7 @@ export class ApplicationService implements OnModuleInit {
 
   async findById(id: string): Promise<Application> {
     const app = await this.repo.findOne({ where: { id } });
-    if (!app) throw new NotFoundException(`Application ${id} not found`);
+    if (!app) throw new AppError(ErrorCode.APPLICATION_NOT_FOUND, { id });
     return this.maskReadSurface(app);
   }
 
@@ -240,7 +243,7 @@ export class ApplicationService implements OnModuleInit {
    */
   async findByIdRaw(id: string): Promise<Application> {
     const app = await this.repo.findOne({ where: { id } });
-    if (!app) throw new NotFoundException(`Application ${id} not found`);
+    if (!app) throw new AppError(ErrorCode.APPLICATION_NOT_FOUND, { id });
     return app;
   }
 
@@ -336,12 +339,10 @@ export class ApplicationService implements OnModuleInit {
     recordOwnershipAssertion("application", "write");
     if (user?.role === UserRole.ADMIN) return;
     if (row.ownerUserId === null) {
-      throw new ForbiddenException(
-        "This application has no owner (legacy row); only admins can modify it",
-      );
+      throw new AppError(ErrorCode.APPLICATION_HAS_NO_OWNER);
     }
     if (row.ownerUserId !== user?.id) {
-      throw new ForbiddenException("You do not own this application");
+      throw new AppError(ErrorCode.APPLICATION_NOT_OWNER);
     }
   }
 
@@ -539,7 +540,7 @@ export class ApplicationService implements OnModuleInit {
   ): Promise<Application> {
     const existing = await this.findByName(dto.name);
     if (existing) {
-      throw new ConflictException(`Application "${dto.name}" already exists`);
+      throw new AppError(ErrorCode.APPLICATION_NAME_EXISTS, { name: dto.name });
     }
     // MUTEX-01：挂组前置校验（FK 只兜底 23503 → 500；前置给 400/404 更可读）。
     if (dto.mutexGroupId) await this.assertMutexGroupExists(dto.mutexGroupId);
@@ -589,7 +590,7 @@ export class ApplicationService implements OnModuleInit {
       [groupId],
     );
     if (!rows[0]) {
-      throw new NotFoundException(`互斥组 ${groupId} 不存在`);
+      throw new AppError(ErrorCode.MUTEX_GROUP_NOT_FOUND, { groupId });
     }
   }
 
@@ -796,14 +797,15 @@ export class ApplicationService implements OnModuleInit {
       ],
     });
     if (inFlight) {
-      throw new ConflictException(
-        `Application ${appName} still has an in-progress deployment ` +
-          `(id=${inFlight.id}, status=${inFlight.status}` +
+      throw new AppError(ErrorCode.APPLICATION_HAS_IN_FLIGHT_DEPLOYMENT, {
+        name: appName,
+        detail:
+          ` (id=${inFlight.id}, status=${inFlight.status}` +
           (inFlight.approvalStatus
             ? `, approval=${inFlight.approvalStatus}`
             : "") +
-          `). Cancel it or wait for a terminal state before deleting the application.`,
-      );
+          `)`,
+      });
     }
   }
 
@@ -1202,10 +1204,14 @@ export class ApplicationService implements OnModuleInit {
     try {
       // SEC: validate branch name and repo URL to prevent command injection
       if (!/^[a-zA-Z0-9._/\-]+$/.test(gitBranch)) {
-        throw new Error(`Invalid git branch name: ${gitBranch}`);
+        throw new AppError(ErrorCode.GIT_BRANCH_NAME_INVALID, {
+          branch: gitBranch,
+        });
       }
       if (!/^(https?:\/\/|git@|ssh:\/\/)[\w.\-/:@]+(\.git)?$/.test(gitRepo)) {
-        throw new Error(`Invalid git repository URL: ${gitRepo}`);
+        throw new AppError(ErrorCode.GIT_REPO_URL_FORMAT_INVALID, {
+          repo: gitRepo,
+        });
       }
       // R4: the regex above only checks the FORMAT — a well-formed
       // http://169.254.169.254/... or http://127.0.0.1:8080/... repo would
@@ -1239,7 +1245,8 @@ export class ApplicationService implements OnModuleInit {
           timeout: 10_000,
         },
       );
-      if (revResult.status !== 0) throw new Error("git rev-parse HEAD failed");
+      if (revResult.status !== 0)
+        throw new AppError(ErrorCode.GIT_REV_PARSE_FAILED);
       app.gitCommit = (revResult.stdout || "").trim();
 
       // Parse manifest.json and auto-register tasks
@@ -1276,7 +1283,13 @@ export class ApplicationService implements OnModuleInit {
               } as any);
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err);
-              if (msg.includes("already exists")) {
+              // LANG-ERR-01（D 项）：判据已改为**按码优先、文本兜底**
+              // （见 task-already-exists.util.ts 的长注释）。
+              // 首版是 `msg.includes("already exists") || msg.includes("已存在")`
+              // ——按文案分类有两个真缺陷：① 中文化改造会让英文支失效，把
+              // 「正常跳过」静默误报成 error 级故障（本仓真实踩过）；② 任何正文
+              // 恰好含「已存在」的**真故障**会被误判为跳过而吞掉。
+              if (isTaskAlreadyExistsError(err)) {
                 this.logger.warn(
                   `Task "${taskDef.id || taskDef.name}" already exists, skipping`,
                 );
@@ -1359,7 +1372,8 @@ export class ApplicationService implements OnModuleInit {
         count++;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("already exists")) {
+        // LANG-ERR-01（D 项）：同上处的判据（按码优先、文本兜底）。
+        if (isTaskAlreadyExistsError(err)) {
           this.logger.warn(
             `Task "${taskDef.id || taskDef.name}" already exists, skipping`,
           );

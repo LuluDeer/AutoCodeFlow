@@ -1,6 +1,10 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../../common/errors/app-error";
 import {
   AgentSession,
   AgentSessionKind,
@@ -128,7 +132,10 @@ export class AgentSessionService {
 
   async requireById(id: string): Promise<AgentSession> {
     const s = await this.findById(id);
-    if (!s) throw new NotFoundException(`Agent session ${id} not found`);
+    if (!s)
+      throw new AppError("AGENT_SESSION_NOT_FOUND", {
+        sessionId: id,
+      });
     return s;
   }
 

@@ -1,6 +1,12 @@
 // UI-10 中文文案（默认 + fallback）。扁平 key，逐页迁移时把该页文案搬进来；
 // 未迁移页仍为页面内硬编码中文，本文件只承载已迁移面 + 公共项。
+import errorCodesZh from './generated/error-codes.zh';
+
 export default {
+  // LANG-ERR-01：err.<CODE> 词条由 scripts/gen-error-i18n.mjs 从后端
+  // 错误码表生成（真值源 apps/admin-api/src/common/errors/catalog/*.ts）。
+  // 手改无效——CI 的 error-i18n-drift 会比对生成物。
+  ...errorCodesZh,
   // ── 公共 ──
   'common.copyFailed': '复制失败，请检查浏览器剪贴板权限',
   'common.operateFailed': '操作失败',

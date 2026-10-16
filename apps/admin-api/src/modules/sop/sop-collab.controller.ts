@@ -1,15 +1,11 @@
 import {
-  BadRequestException,
   Body,
   Controller,
-  ForbiddenException,
   Headers,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   Post,
-  UnauthorizedException,
   UploadedFile,
   UseInterceptors,
 } from "@nestjs/common";
@@ -32,6 +28,9 @@ import { AiService, type MultimodalMessage } from "../ai/ai.service";
 import { SopService } from "./sop.service";
 import { SopMediaService, MAX_AGENT_MEDIA_BYTES } from "./sop-media.service";
 import type { SopClarificationMediaRef } from "./entities/sop-clarification.entity";
+// ADR-017 阶段 3（复查补口）：判定「指纹是否已上报」以决定能否走凭据反查
+// 兜底（与 executor.service 的定位键规范化同一事实源）。
+import { normalizeDeviceFingerprint } from "../executor/executor-fingerprint.util";
 // ARCH-23 / N-12: Agent 协作面响应契约（与 sop 管理面共用 dto 文件）。
 import {
   CollabAssignmentItemDto,
@@ -43,6 +42,9 @@ import {
   CollabMediaUploadResponseDto,
   CollabPollResponseDto,
 } from "./dto/sop-response.dto";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * P6（agent-and-deployment）：Agent 协作 API（设计文档 11）——执行器 Agent
@@ -81,6 +83,8 @@ function bearer(auth: string | undefined): string {
 class AgentCollabPollDto {
   @ApiProperty({ example: "office-pc-07:8002" })
   address!: string;
+  /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  deviceFingerprint?: string | null;
   @ApiPropertyOptional({ description: "长轮询等待（服务端钳位 ≤25s）" })
   waitMs?: number;
   /**
@@ -99,6 +103,8 @@ class AgentCollabPollDto {
 class AgentCollabCapabilityDto {
   @ApiProperty()
   address!: string;
+  /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  deviceFingerprint?: string | null;
   /** 能力域清单（覆盖式）。接 SOP 的机器必须显式含 `agent:sop`。 */
   @ApiProperty({ isArray: true, type: "string" })
   capabilities!: string[];
@@ -110,6 +116,8 @@ class AgentCollabCapabilityDto {
 class AgentCollabClarificationDto {
   @ApiProperty()
   address!: string;
+  /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  deviceFingerprint?: string | null;
   @ApiProperty({ format: "uuid" })
   assignmentId!: string;
   /** 客户端生成的幂等键（UUID）——重试重发不产生两条澄清。 */
@@ -132,6 +140,8 @@ class AgentCollabClarificationDto {
 class AgentCollabProgressDto {
   @ApiProperty()
   address!: string;
+  /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  deviceFingerprint?: string | null;
   @ApiPropertyOptional({ type: "object", additionalProperties: true })
   progressJson?: Record<string, unknown>;
   @ApiPropertyOptional()
@@ -141,6 +151,8 @@ class AgentCollabProgressDto {
 class AgentCollabCompleteDto {
   @ApiProperty()
   address!: string;
+  /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  deviceFingerprint?: string | null;
   @ApiProperty({ enum: ["completed", "failed"] })
   status!: "completed" | "failed";
   @ApiPropertyOptional({ type: "object", additionalProperties: true })
@@ -153,6 +165,8 @@ class AgentCollabCompleteDto {
 class AgentCollabAckReplyDto {
   @ApiProperty()
   address!: string;
+  /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  deviceFingerprint?: string | null;
   @ApiProperty({ format: "uuid" })
   clarificationId!: string;
 }
@@ -185,7 +199,11 @@ export class SopCollabController {
     @Body() body: AgentCollabPollDto,
     @Headers("authorization") auth: string,
   ) {
-    const executor = await this.authenticate(body?.address, auth);
+    const executor = await this.authenticate(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     const requested = Number(body.waitMs ?? 0);
     const deadline =
       Number.isFinite(requested) && requested > 0
@@ -228,15 +246,17 @@ export class SopCollabController {
     @Body() body: AgentCollabCapabilityDto,
     @Headers("authorization") auth: string,
   ) {
-    const executor = await this.authenticate(body?.address, auth);
+    const executor = await this.authenticate(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     const caps = Array.isArray(body.capabilities) ? body.capabilities : [];
     if (
       caps.length > 32 ||
       caps.some((c) => typeof c !== "string" || c.length > 64)
     ) {
-      throw new BadRequestException(
-        "capabilities 必须是 ≤32 个、每个 ≤64 字符的字符串",
-      );
+      throw new AppError(ErrorCode.SOP_COLLAB_CAPABILITIES_INVALID);
     }
     await this.executors.updateCapabilities(executor.id, caps);
     return { ok: true };
@@ -252,9 +272,15 @@ export class SopCollabController {
   ) {
     // 鉴权 + 能力闸（结果本体不入账——澄清归属由 assignmentId 决定，
     // 但归属断言需要 executor.id，B-1）
-    const executor = await this.authenticateAgent(body?.address, auth);
+    const executor = await this.authenticateAgent(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     if (!body.assignmentId || typeof body.question !== "string") {
-      throw new BadRequestException("assignmentId 与 question 必填");
+      throw new AppError(
+        ErrorCode.SOP_COLLAB_ASSIGNMENT_ID_AND_QUESTION_REQUIRED,
+      );
     }
     const { clarification, escalated } = await this.sops.ingestClarification({
       assignmentId: body.assignmentId,
@@ -291,7 +317,11 @@ export class SopCollabController {
     @Body() body: AgentCollabProgressDto,
     @Headers("authorization") auth: string,
   ) {
-    const executor = await this.authenticateAgent(body?.address, auth);
+    const executor = await this.authenticateAgent(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     await this.sops.recordProgress({
       assignmentId,
       executorId: executor.id,
@@ -310,9 +340,13 @@ export class SopCollabController {
     @Body() body: AgentCollabCompleteDto,
     @Headers("authorization") auth: string,
   ) {
-    const executor = await this.authenticateAgent(body?.address, auth);
+    const executor = await this.authenticateAgent(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     if (body.status !== "completed" && body.status !== "failed") {
-      throw new BadRequestException("status 必须是 completed | failed");
+      throw new AppError(ErrorCode.SOP_COLLAB_STATUS_INVALID);
     }
     const { accepted } = await this.sops.completeAssignment({
       assignmentId,
@@ -343,9 +377,13 @@ export class SopCollabController {
     @Body() body: AgentCollabAckReplyDto,
     @Headers("authorization") auth: string,
   ) {
-    const executor = await this.authenticateAgent(body?.address, auth);
+    const executor = await this.authenticateAgent(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     if (!body?.clarificationId) {
-      throw new BadRequestException("clarificationId 必填");
+      throw new AppError(ErrorCode.SOP_COLLAB_CLARIFICATION_ID_REQUIRED);
     }
     await this.sops.ackClarificationReply({
       assignmentId,
@@ -377,37 +415,40 @@ export class SopCollabController {
     @Body()
     body: {
       address: string;
+      deviceFingerprint?: string | null;
       messages?: Array<{ role?: string; content?: unknown }>;
       tools?: unknown;
     },
     @Headers("authorization") auth: string,
   ) {
-    await this.authenticateAgent(body?.address, auth);
+    await this.authenticateAgent(body?.address, auth, body?.deviceFingerprint);
 
     const raw = Array.isArray(body?.messages) ? body.messages : [];
     if (raw.length === 0 || raw.length > 64) {
-      throw new BadRequestException("messages 必须是 1..64 条");
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGES_COUNT_INVALID);
     }
     const messages: MultimodalMessage[] = raw.map((m, i) => {
       const role = m?.role;
       if (role !== "system" && role !== "user" && role !== "assistant") {
-        throw new BadRequestException(
-          `messages[${i}].role 必须是 system | user | assistant`,
-        );
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, {
+          index: i,
+        });
       }
       if (typeof m?.content !== "string" || m.content.length === 0) {
-        throw new BadRequestException(
-          `messages[${i}].content 必须是非空字符串`,
-        );
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+          index: i,
+        });
       }
       if (m.content.length > 100_000) {
-        throw new BadRequestException(`messages[${i}].content 超过 100KB 上限`);
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+          index: i,
+        });
       }
       return { role, content: m.content } as MultimodalMessage;
     });
     const tools = Array.isArray(body?.tools) ? body.tools : undefined;
     if (tools && tools.length > 32) {
-      throw new BadRequestException("tools 最多 32 个");
+      throw new AppError(ErrorCode.SOP_COLLAB_TOOLS_TOO_MANY);
     }
 
     const res = await this.ai.chatMultimodal({
@@ -441,17 +482,21 @@ export class SopCollabController {
   @UseInterceptors(FileInterceptor("file", { limits: MEDIA_UPLOAD_LIMITS }))
   async uploadMedia(
     @Param("id") assignmentId: string,
-    @Body() body: { address: string },
+    @Body() body: { address: string; deviceFingerprint?: string | null },
     @UploadedFile() file?: Express.Multer.File,
     @Headers("authorization") auth?: string,
   ) {
-    const executor = await this.authenticateAgent(body?.address, auth);
+    const executor = await this.authenticateAgent(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     const { assignment } = await this.sops.getAssignment(assignmentId);
     if (assignment.targetExecutorId !== executor.id) {
-      throw new ForbiddenException("指派不属于该执行器");
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_OWNED_BY_EXECUTOR);
     }
     if (!file?.buffer?.length) {
-      throw new BadRequestException("缺少 file 字段（multipart）");
+      throw new AppError(ErrorCode.SOP_COLLAB_FILE_FIELD_MISSING);
     }
     const stored = await this.media.save({
       assignmentId,
@@ -491,6 +536,7 @@ export class SopCollabController {
     @Body()
     body: {
       address: string;
+      deviceFingerprint?: string | null;
       sopSlug?: string;
       sopVersion?: string;
       contentHash?: string;
@@ -499,13 +545,17 @@ export class SopCollabController {
     @UploadedFile() file?: Express.Multer.File,
     @Headers("authorization") auth?: string,
   ) {
-    const executor = await this.authenticateAgent(body?.address, auth);
+    const executor = await this.authenticateAgent(
+      body?.address,
+      auth,
+      body?.deviceFingerprint,
+    );
     const { assignment } = await this.sops.getAssignment(assignmentId);
     if (assignment.targetExecutorId !== executor.id) {
-      throw new ForbiddenException("指派不属于该执行器");
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_OWNED_BY_EXECUTOR);
     }
     if (!file?.path) {
-      throw new BadRequestException("缺少 file 字段（multipart）");
+      throw new AppError(ErrorCode.SOP_COLLAB_FILE_FIELD_MISSING);
     }
     const runtime = body.runtime === "node" ? "node" : "python";
     const sopSlug = (body.sopSlug ?? "candidate").slice(0, 64);
@@ -529,27 +579,71 @@ export class SopCollabController {
 
   // ── 内部 ────────────────────────────────────────────────────────
 
-  /** 基础机器鉴权（能力上报入口用——此时 agent:sop 可能尚未声明）。 */
-  private async authenticate(address: string | undefined, auth?: string) {
-    if (!address) throw new BadRequestException("address 必填");
-    const executor = await this.executors.findByAddress(address);
-    if (!executor) throw new NotFoundException("Executor not found");
+  /**
+   * 基础机器鉴权（能力上报入口用——此时 agent:sop 可能尚未声明）。
+   *
+   * ADR-017 阶段 3：新增可选 `deviceFingerprint`，并把**取行挪到鉴权之后**、
+   * 走指纹优先解析。此前是 `findByAddress`（裸按地址）在先——pull 同址多行
+   * 并存时（ADR-017 §5）会返回**任一行**，调用方据此拿到别人的 executor.id
+   * （后续能力闸/协作写面全挂在错行上）。阶段 3 下行必须先被无歧义识别。
+   */
+  private async authenticate(
+    address: string | undefined,
+    auth?: string,
+    deviceFingerprint?: string | null,
+  ) {
+    if (!address) throw new AppError(ErrorCode.SOP_COLLAB_ADDRESS_REQUIRED);
+    const presented = bearer(auth);
     const ok = await this.executors.validateTokenByAddress(
       address,
-      bearer(auth),
+      presented,
+      deviceFingerprint,
     );
-    if (!ok) throw new UnauthorizedException("Invalid executor token");
+    if (!ok) throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_TOKEN_INVALID);
+    // ADR-017 阶段 3（复查补口）：指纹缺省时**用所持凭据反查行身份**，而不是
+    // 直接 fail-closed 拒绝。
+    //
+    // 为什么必须补这一层：desktop 的 Agent（agent-worker 子进程）走的就是这个
+    // 协作面，而它**无法**产出指纹——盐按 `<workDir>/.device-identity/<kind>.salt`
+    // 分域，那个盐属于内嵌的 executor-node bundle（kind=desktop），Agent worker
+    // 是另一个进程、不共享该盐，也无从读执行器的私有派生值。若只认指纹，
+    // 「pull 同址多行 + 桌面 Agent」就会整片 401/404——比不改更糟。
+    //
+    // 凭据反查为什么安全且等价：per-executor 令牌是**行绑定**的（bcrypt 比对
+    // 该行 tokenHash），匿名调用方不可能伪造出别人的令牌来让本方法解析到一行。
+    // 故「令牌匹配到哪一行」与「指纹命中哪一行」是同一强度的定位判据——前者
+    // 甚至更强（指纹是自报值，可伪造；令牌是共享密钥派生）。
+    //
+    // 解析不出唯一行（共享令牌路径：共享令牌不绑定任何行）→ 回落地址定位的
+    // 原有语义（`findByAddress` 在同址多行且无指纹时 fail-closed 返回 null）。
+    let executor = await this.executors.findByAddress(
+      address,
+      deviceFingerprint,
+    );
+    if (!executor && !normalizeDeviceFingerprint(deviceFingerprint)) {
+      // 指纹未上报时用凭据反查（同址多行也能唯一定位）。
+      const credentialRowId = await this.executors.resolveCredentialExecutorId(
+        address,
+        presented,
+      );
+      if (credentialRowId) {
+        executor = await this.executors.findOne(credentialRowId);
+      }
+    }
+    if (!executor) throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_NOT_FOUND);
     return executor;
   }
 
   /** 协作面鉴权 = 机器鉴权 + 显式 `agent:sop` 能力闸（11 §5.1）。 */
-  private async authenticateAgent(address: string | undefined, auth?: string) {
-    const executor = await this.authenticate(address, auth);
+  private async authenticateAgent(
+    address: string | undefined,
+    auth?: string,
+    deviceFingerprint?: string | null,
+  ) {
+    const executor = await this.authenticate(address, auth, deviceFingerprint);
     const caps = await this.executors.getAgentCapabilities(executor.id);
     if (!caps.includes("agent:sop")) {
-      throw new ForbiddenException(
-        "该执行器未声明 agent:sop 能力——SOP 协作面只对显式声明的机器开放（空能力 ≠ 通用）",
-      );
+      throw new AppError(ErrorCode.SOP_COLLAB_AGENT_SOP_CAPABILITY_MISSING);
     }
     return executor;
   }

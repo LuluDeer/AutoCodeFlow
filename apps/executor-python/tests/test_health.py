@@ -75,7 +75,7 @@ async def test_readiness_failure_reports_normalized_admin_url(monkeypatch):
     assert resp.status_code == 503
     assert json.loads(resp.body) == {
         'status': 'not_ready',
-        'reason': 'admin-api unreachable',
+        'reason': 'admin-api 不可达',
         'adminApiUrl': 'http://admin.local/api',
     }
 
@@ -113,7 +113,7 @@ def test_readiness_canonical_path_not_ready_when_admin_unreachable(client, monke
     assert resp.status_code == 503
     body = resp.json()
     assert body['status'] == 'not_ready'
-    assert body['reason'] == 'admin-api unreachable'
+    assert body['reason'] == 'admin-api 不可达'
 
 
 # ---------------------------------------------------------------------------

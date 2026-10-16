@@ -1,6 +1,5 @@
 import {
   Body,
-  ConflictException,
   Controller,
   Get,
   Param,
@@ -8,6 +7,10 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import {
   ApiTags,
   ApiOperation,
@@ -94,7 +97,7 @@ export class AgentController {
   ) {}
 
   @Get("sessions")
-  @ApiOperation({ summary: "List agent sessions (newest first)" })
+  @ApiOperation({ summary: "列出 Agent 会话（最新在前）" })
   // N-12: 裸分页 {items,total}（与 /sop 同形态，无页元数据）。
   @ApiOkResponse({ type: AgentSessionListResponseDto })
   async list(
@@ -113,7 +116,7 @@ export class AgentController {
   }
 
   @Get("sessions/:id")
-  @ApiOperation({ summary: "Get an agent session with its steps" })
+  @ApiOperation({ summary: "获取某个 Agent 会话及其步骤" })
   @ApiOkResponse({ type: AgentSessionDetailResponseDto })
   async detail(@Param("id") id: string) {
     const session = await this.sessions.requireById(id);
@@ -126,9 +129,7 @@ export class AgentController {
   }
 
   @Post("sessions")
-  @ApiOperation({
-    summary: "Create an agent session and enqueue it for execution",
-  })
+  @ApiOperation({ summary: "创建一个 Agent 会话并入队执行" })
   // POST 无 @HttpCode → 实际 201。
   @ApiCreatedResponse({ type: AgentSessionCreateResponseDto })
   async create(@Body() dto: CreateAgentSessionDto) {
@@ -165,7 +166,7 @@ export class AgentController {
    * `runtime.run()`（可重入），因此恢复语义与中断前完全一致。
    */
   @Post("sessions/:id/resume")
-  @ApiOperation({ summary: "Resume a paused/failed agent session" })
+  @ApiOperation({ summary: "恢复挂起/失败的 Agent 会话" })
   // 终态会话 soft-fail {ok:false,reason}（200）；running 才 409（B-8）。
   @ApiCreatedResponse({ type: AgentSessionResumeResponseDto })
   async resume(@Param("id") id: string) {
@@ -184,9 +185,7 @@ export class AgentController {
     // BullMQ 去重，双 worker 同时跑同一会话 = 双 LLM 循环、副作用双份。
     // 409 让前端如实提示（resumable 列表同步排除 running）。
     if (session.status === "running") {
-      throw new ConflictException(
-        "会话仍在运行中——重复入队会产生双份推理循环副作用，无需恢复",
-      );
+      throw new AppError("AGENT_SESSION_ALREADY_RUNNING");
     }
 
     await this.queue.add(
@@ -199,7 +198,7 @@ export class AgentController {
 
   /** 当前生效的预算（供设置页展示与运维核对）。 */
   @Get("budget")
-  @ApiOperation({ summary: "Get effective agent budget settings" })
+  @ApiOperation({ summary: "获取生效的 Agent 预算设置" })
   @ApiOkResponse({ type: AgentBudgetResponseDto })
   budgetInfo() {
     return this.budget.resolveBudget();

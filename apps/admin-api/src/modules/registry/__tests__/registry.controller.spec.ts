@@ -165,7 +165,11 @@ describe("RegistryController upload proxy (S4 timeouts)", () => {
       ),
     ).rejects.toMatchObject({
       status: HttpStatus.GATEWAY_TIMEOUT,
-      message: "Upstream registry upload timed out",
+      // LANG-ERR-01：该文案已迁到错误码表（`REGISTRY_UPLOAD_TIMEOUT`）——服务端
+      // 渲染的是 **zh**（`上游 registry 上传超时`），英文原文成为 `en` 字段供前端
+      // 按用户语言渲染。故断言**稳定码**而非某一种语言的文案：按文案断言会在每次
+      // 改措辞或加语言时假红，而码是不变量（同 `error-code-contract.spec.ts` 的纪律）。
+      errorCode: "REGISTRY_UPLOAD_TIMEOUT",
     });
 
     const elapsed = Date.now() - startedAt;

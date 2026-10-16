@@ -196,7 +196,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
           password: "wrong",
           code: goodCode(),
         }),
-      ).rejects.toThrow("Invalid credentials");
+      ).rejects.toThrow("用户名或密码错误");
       expect(jwtService.sign).not.toHaveBeenCalled();
     });
 
@@ -208,7 +208,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
           password: "p",
           code: goodCode(),
         }),
-      ).rejects.toThrow("TOTP is not enabled");
+      ).rejects.toThrow("该账号未启用 TOTP");
     });
 
     // R-05（DEEP_REVIEW 0ef3bbe）: the TOTP second-factor path must mirror
@@ -250,7 +250,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
           password: "p",
           code: goodCode(),
         }),
-      ).rejects.toThrow(/Account locked/);
+      ).rejects.toThrow(/账号已锁定/);
       expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
       expect(usersService.recordLoginFailure).not.toHaveBeenCalled();
     });
@@ -302,7 +302,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
           password: "p",
           code: goodCode(),
         }),
-      ).rejects.toThrow("Invalid TOTP code");
+      ).rejects.toThrow("TOTP 验证码错误");
       // 第二次按无效码同形态记账：不能靠重放绕过锁定
       expect(usersService.recordLoginFailure).toHaveBeenCalledTimes(1);
       expect(usersService.resetLoginFailure).toHaveBeenCalledTimes(1);
@@ -353,7 +353,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
           password: "p",
           code: goodCode(),
         }),
-      ).rejects.toThrow("Invalid TOTP code");
+      ).rejects.toThrow("TOTP 验证码错误");
       expect(jwtService.sign).not.toHaveBeenCalled();
     });
   });
@@ -413,7 +413,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
         async (id: number) => makeUser({ id, totpSecret: FIXED_SECRET }) as any,
       );
       await expect(service.totpEnable(1, badCode())).rejects.toThrow(
-        "Invalid TOTP code",
+        "TOTP 验证码错误",
       );
       expect(usersService.saveUser).not.toHaveBeenCalled();
     });
@@ -421,7 +421,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
     it("enable without a staged secret is rejected", async () => {
       usersService.findById.mockResolvedValue(makeUser() as any);
       await expect(service.totpEnable(1, goodCode())).rejects.toThrow(
-        /No TOTP secret staged/,
+        /尚未暂存 TOTP 密钥/,
       );
     });
 

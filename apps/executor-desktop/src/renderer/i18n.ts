@@ -7,9 +7,18 @@
  * 一致——renderer.selftest.mjs 据此做键位对齐断言（两语言必须提供同一组键，
  * 防止后续只改一种语言造成静默缺键）。
  *
- * 语言判定：navigator.language 前缀 `en*` → 英文，其余回落中文（与托盘
- * resolveTrayLocale 同口径；渲染层无运行时热切语言入口，重建组件时按当前
- * language 取表）。
+ * 语言判定：**先看用户在设置页选的「界面语言」**（config 键 uiLanguage，
+ * 'zh' / 'en' 直接用、'auto' 或未设置才回落 navigator.language 的 `zh*` 判定、
+ * 非法值按默认英文 UI_LANGUAGE_DEFAULT）；判定本体在 ../main/ui-language.ts，
+ * 与主进程托盘 tray-texts.ts 共用同一份规则。
+ *
+ * 生效时机（**不是热切换**）：12 个渲染层模块在**模块作用域**求值各自的文案表
+ * （`const t = createCfgTexts(resolveRendererLocale(...))`），模块只求值一次，
+ * 所以语言在窗口加载后不会自己变。设置怎么进来：main.tsx 启动时先 await
+ * config:get 把已落盘值灌进 setRendererLanguageSetting()，**然后**才动态 import
+ * App / ErrorBoundary（见 main.tsx 头注）。改语言后由设置页在保存成功时
+ * `location.reload()` 重载窗口，重载即用新语言重新求值——不重载则界面语言保持
+ * 不变（绝不出现半页中文半页英文）。
  *
  * 取值走 createCfgTexts()：字符串直出，函数条目做插值（对齐 tray-texts 的
  * agentLine/agentProcessedLine 形态）；缺键回退键名本身（与 i18next 缺键
@@ -22,11 +31,44 @@
  * 源码不再残留硬编码中文渲染串（注释与 console/log 不在迁移口径），
  * renderer.selftest.mjs 的 N-04 守卫据此做全表键位对齐 + 非空 + 各页接线断言。
  */
+import { resolveUiLanguage } from '../main/ui-language';
+
 export type RendererLocale = 'en' | 'zh';
 
-/** `en*` 一律英文，其余 locale（zh-CN / fr / 空 / 未知）回落中文。 */
-export function resolveRendererLocale(getLanguage: () => string): RendererLocale {
-  return getLanguage().toLowerCase().startsWith('en') ? 'en' : 'zh';
+/**
+ * i18n-DESK-01：本窗口加载时读到的界面语言设置（config 键 uiLanguage）。
+ * 只由 main.tsx 的启动流程写入一次（求值渲染层模块之前）；undefined = 没读到
+ * （旧调用点 / 配置读取失败），此时 resolveRendererLocale 保持既有自动判定。
+ */
+let persistedLanguageSetting: string | undefined;
+
+/** 启动期灌入已落盘的 uiLanguage（非字符串/空串按"没设置"处理）。 */
+export function setRendererLanguageSetting(value: unknown): void {
+  persistedLanguageSetting =
+    typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+/** 当前生效的设置值（'zh' / 'en' / 'auto' / undefined）——设置页与测试用。 */
+export function getRendererLanguageSetting(): string | undefined {
+  return persistedLanguageSetting;
+}
+
+/**
+ * 解析渲染层 locale。
+ *
+ * @param getLanguage navigator.language 读取器（只在 'auto'/未设置时被调用）。
+ * @param setting     已落盘的 uiLanguage；不传时用启动期灌入的设置
+ *                    （setRendererLanguageSetting），两者都没有则回落既有
+ *                    自动判定——12 个既有调用点因此**不需要改动**。
+ */
+export function resolveRendererLocale(
+  getLanguage: () => string,
+  setting?: unknown,
+): RendererLocale {
+  return resolveUiLanguage(
+    getLanguage,
+    setting !== undefined ? setting : persistedLanguageSetting,
+  );
 }
 
 /** 文案条目：字符串直出；函数做插值（参数按声明顺序传入）。 */
@@ -256,6 +298,13 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     // 拓展包：配置备份（导出/导入），与「检查更新」同栏收拢的低频运维项
     'cfg.about.groupBackup': '配置备份',
     'cfg.about.backupHint': '导出完整配置（执行器密钥以掩码导出，不落明文），可在其他机器「导入配置」恢复。',
+    // ── i18n-DESK-01：界面语言（可切换，默认跟随系统）──
+    'cfg.gen.groupInterface': '界面',
+    'cfg.gen.uiLanguageLabel': '界面语言',
+    'cfg.gen.uiLanguageZh': '中文',
+    'cfg.gen.uiLanguageEn': 'English',
+    'cfg.gen.uiLanguageAuto': '跟随系统',
+    'cfg.gen.uiLanguageHint': '保存后界面自动重载以应用新语言；托盘菜单立即同步。',
     'cfg.gen.groupLog': '日志',
     'cfg.gen.nameLabel': '执行器名称',
     'cfg.gen.nameHint': '在管理平台中显示的唯一名称，建议使用机器名或角色命名',
@@ -901,6 +950,13 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     // grouped with "Check for updates"
     'cfg.about.groupBackup': 'Config backup',
     'cfg.about.backupHint': "Export the full configuration (the executor secret is masked, never written in plaintext); import it on another machine to restore.",
+    // ── i18n-DESK-01: interface language (switchable, follows system by default) ──
+    'cfg.gen.groupInterface': 'Interface',
+    'cfg.gen.uiLanguageLabel': 'Interface language',
+    'cfg.gen.uiLanguageZh': 'Chinese',
+    'cfg.gen.uiLanguageEn': 'English',
+    'cfg.gen.uiLanguageAuto': 'Follow system language',
+    'cfg.gen.uiLanguageHint': 'The interface reloads automatically after saving to apply the new language; the tray menu switches right away.',
     'cfg.gen.groupLog': 'Logging',
     'cfg.gen.nameLabel': 'Executor name',
     'cfg.gen.nameHint': 'Unique name shown in the admin platform; use the machine name or a role-based name',

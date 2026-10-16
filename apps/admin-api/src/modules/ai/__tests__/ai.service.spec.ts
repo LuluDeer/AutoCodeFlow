@@ -772,7 +772,7 @@ describe("P1: qwen provider (multimodal)", () => {
           },
         ],
       }),
-    ).rejects.toThrow(/non-http\(s\) media URL/);
+    ).rejects.toThrow(/非 http\(s\) 的媒体 URL/);
 
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });

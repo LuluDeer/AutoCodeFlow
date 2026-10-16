@@ -10,6 +10,7 @@ import {
   ExecuteRequest,
 } from './routes/execute';
 import { pushCallback } from './callback';
+import { getDeviceFingerprint } from './device-identity';
 import {
   executeControlCommand,
   parseControlCommand,
@@ -167,6 +168,10 @@ async function runControlCommands(rawCommands: unknown): Promise<void> {
       await post('/api/executors/command-result', {
         ...result,
         address: config.executorAddressPublic || config.executorAddress,
+        // ADR-017 阶段 3：随机器面上报指纹，服务端据此唯一定位本行（pull
+        // 模式允许同地址多行并存）。采集失败时为 undefined —— 字段缺省即
+        // 服务端 legacy 兜底路径，行为与引入前一致。
+        deviceFingerprint: getDeviceFingerprint() ?? undefined,
       });
     } catch (err: unknown) {
       logger.warn(
@@ -187,11 +192,16 @@ async function maybePullConfig(adminConfigVersion: unknown): Promise<void> {  if
   lastConfigAttemptAt = now;
   try {
     const address = config.executorAddressPublic || config.executorAddress;
+    // ADR-017 阶段 3：带上指纹（缺省即服务端 legacy 兜底路径）。
+    const fingerprint = getDeviceFingerprint();
     // GET /api/executors/config 走 request()（自动鉴权 + failover + 401 自愈），
     // 与心跳同一认证通道。
     const resp = await request(
       'get',
-      `/api/executors/config?address=${encodeURIComponent(address)}`,
+      `/api/executors/config?address=${encodeURIComponent(address)}` +
+        (fingerprint
+          ? `&deviceFingerprint=${encodeURIComponent(fingerprint)}`
+          : ''),
     );
     const body = unwrapAdminResponseData(resp?.data);
     if (!body || typeof body !== 'object') {
@@ -271,6 +281,9 @@ export async function pullOnce(): Promise<void> {
       '/api/executors/pull',
       {
         address: config.executorAddressPublic || config.executorAddress,
+        // ADR-017 阶段 3：指纹随长轮询上报 —— 服务端据此唯一定位本行
+        // （pull 模式允许同地址多行并存，否则会拉到别人的队列）。
+        deviceFingerprint: getDeviceFingerprint() ?? undefined,
         waitMs: 25_000,
         // ARCH-33: 服务端据此决定是否出队任务。预留已经计入账本
         // （getRunningCount() 含本次预留），故直接按当前账本算即可：
@@ -355,7 +368,7 @@ export async function pullOnce(): Promise<void> {
         // 上方提前 return，不回调（见 E-01）。
         failureReason: 'unknown',
         errorMessage: truncateCallbackErrorMessage(
-          `Executor rejected pulled dispatch: ${error}`,
+          `执行器拒绝了拉取到的派发任务：${error}`,
         ),
       });
     }

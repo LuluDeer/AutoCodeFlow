@@ -115,17 +115,17 @@ export class AuthController {
   })
   @Post("login")
   @ApiOperation({
-    summary: "User login",
     description:
       // R-22（DEEP_REVIEW 0ef3bbe）: Swagger 文案与实际限流值对齐——文案直接
       // 内插 LOGIN_THROTTLE_LIMIT（本文件顶部，默认 20/min，env 可覆盖），
       // 杜绝再次漂移。旧文案硬编码 "Max5 attempts per minute" 与实际 20 不符。
-      `Login with username and password, returns Access Token and Refresh Token. Max ${LOGIN_THROTTLE_LIMIT} attempts per minute.`,
+      `使用用户名和密码登录，返回 Access Token 与 Refresh Token。每分钟最多 ${LOGIN_THROTTLE_LIMIT} 次尝试。`,
+    summary: "用户登录",
   })
-  @ApiResponse({ status: 401, description: "Invalid username or password" })
+  @ApiResponse({ status: 401, description: "用户名或密码错误" })
   @ApiResponse({
     status: 429,
-    description: "Too many requests, rate limit exceeded",
+    description: "请求过于频繁，已触发限流",
   })
   @ApiResponse({
     status: 200,
@@ -173,13 +173,13 @@ export class AuthController {
     description: "token rotation：旧 refresh 立即失效",
   })
   @ApiOperation({
-    summary: "Refresh token",
     description:
-      "Use Refresh Token to obtain new Access Token and Refresh Token (token rotation). Old Refresh Token is immediately invalidated.",
+      "使用 Refresh Token 换取新的 Access Token 与 Refresh Token（token rotation）。旧 Refresh Token 立即失效。",
+    summary: "刷新令牌",
   })
   @ApiResponse({
     status: 401,
-    description: "Refresh Token is invalid or expired",
+    description: "Refresh Token 无效或已过期",
   })
   refreshToken(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshToken(dto.refreshToken);
@@ -192,11 +192,11 @@ export class AuthController {
   @ApiBearerAuth("JWT")
   @ApiOkResponse({ type: AuthLogoutDto })
   @ApiOperation({
-    summary: "Logout (revoke all Refresh Tokens)",
     description:
-      "Logout current user and revoke all valid Refresh Tokens to prevent token reuse.",
+      "登出当前用户并撤销其所有有效的 Refresh Token，防止令牌被重复使用。",
+    summary: "登出（撤销全部 Refresh Token）",
   })
-  @ApiResponse({ status: 401, description: "Unauthenticated" })
+  @ApiResponse({ status: 401, description: "未认证" })
   async logout(@CurrentUser() user: AuthUser, @Req() req: Request) {
     await this.authService.revokeAllForUser(user.id);
     await this.auditService
@@ -222,16 +222,15 @@ export class AuthController {
   @Post("sse-ticket")
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "Issue a short-lived SSE ticket",
     description:
-      "Exchange the current session for a 30-second, path-restricted ticket used " +
-      "as ?ticket= on the SSE stream routes (EventSource cannot set headers).",
+      "用当前会话换取一枚 30 秒有效、限定路径的票据，作为 SSE 流式路由上的 ?ticket= 使用（EventSource 无法设置请求头）。",
+    summary: "签发短效 SSE 票据",
   })
   @ApiCreatedResponse({
-    description: "Ticket issued",
+    description: "票据已签发",
     type: SseTicketResponseDto,
   })
-  @ApiResponse({ status: 401, description: "Unauthenticated" })
+  @ApiResponse({ status: 401, description: "未认证" })
   issueSseTicket(@CurrentUser() user: AuthUser) {
     return this.authService.issueSseTicket(user);
   }
@@ -240,15 +239,14 @@ export class AuthController {
   @Get("profile")
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "Get current user info",
-    description:
-      "Return basic info of the current logged-in user including ID, username, and roles.",
+    description: "返回当前登录用户的基本信息，包括 ID、用户名与角色。",
+    summary: "获取当前用户信息",
   })
   @ApiOkResponse({
     type: AuthProfileDto,
     description: "AuthUser 原样（roles 不在 AuthUser——role 单值）",
   })
-  @ApiResponse({ status: 401, description: "Unauthenticated" })
+  @ApiResponse({ status: 401, description: "未认证" })
   getProfile(@CurrentUser() user: AuthUser) {
     return user;
   }
@@ -262,17 +260,16 @@ export class AuthController {
   @ApiBearerAuth("JWT")
   @Throttle({ default: AUTH_THROTTLE })
   @ApiOperation({
-    summary: "Stage a TOTP secret (2FA opt-in, step 1)",
     description:
-      "Generates a Base32 secret and otpauth:// URL, stores it in staged (disabled) state. " +
-      "Call POST /auth/totp/enable with a valid code from the authenticator to activate.",
+      "生成 Base32 密钥与 otpauth:// URL，并以预登记（未启用）状态保存。用认证器中的有效验证码调用 POST /auth/totp/enable 即可启用。",
+    summary: "预登记 TOTP 密钥（可选启用 2FA，第 1 步）",
   })
   @ApiResponse({
     status: 200,
-    description: "Staged secret + otpauth URL",
+    description: "已预登记的密钥 + otpauth URL",
     type: TotpSetupResponseDto,
   })
-  @ApiResponse({ status: 400, description: "TOTP already enabled" })
+  @ApiResponse({ status: 400, description: "TOTP 已启用" })
   totpSetup(@CurrentUser() user: AuthUser) {
     return this.authService.totpSetup(user.id);
   }
@@ -284,16 +281,15 @@ export class AuthController {
   @ApiBearerAuth("JWT")
   @Throttle({ default: AUTH_THROTTLE })
   @ApiOperation({
-    summary: "Enable TOTP (2FA opt-in, step 2)",
-    description:
-      "Verifies one valid code against the staged secret, then sets totpEnabled=true.",
+    description: "用预登记的密钥校验一个有效验证码，然后置 totpEnabled=true。",
+    summary: "启用 TOTP（可选启用 2FA，第 2 步）",
   })
   @ApiResponse({
     status: 200,
-    description: "TOTP enabled",
+    description: "TOTP 已启用",
     type: TotpEnableResponseDto,
   })
-  @ApiResponse({ status: 400, description: "Invalid code or nothing staged" })
+  @ApiResponse({ status: 400, description: "验证码错误，或没有预登记的密钥" })
   totpEnable(@CurrentUser() user: AuthUser, @Body() dto: TotpCodeDto) {
     return this.authService.totpEnable(user.id, dto.code);
   }
@@ -308,16 +304,15 @@ export class AuthController {
   @ApiBearerAuth("JWT")
   @Throttle({ default: AUTH_THROTTLE })
   @ApiOperation({
-    summary: "Disable TOTP",
-    description:
-      "Requires the account password or a valid TOTP code as confirmation.",
+    description: "需要账户密码或有效的 TOTP 验证码作为确认。",
+    summary: "停用 TOTP",
   })
   @ApiResponse({
     status: 200,
-    description: "TOTP disabled (or was not on)",
+    description: "TOTP 已停用（或本来未启用）",
     type: TotpDisableResponseDto,
   })
-  @ApiResponse({ status: 401, description: "Confirmation failed" })
+  @ApiResponse({ status: 401, description: "确认失败" })
   totpDisable(
     @CurrentUser() user: AuthUser,
     @Body() dto: { password?: string; code?: string },
@@ -341,12 +336,11 @@ export class AuthController {
   })
   @Post("totp/verify")
   @ApiOperation({
-    summary: "Complete TOTP login (second factor)",
     description:
-      "Re-validates username+password, verifies the 6-digit TOTP code, and issues " +
-      "accessToken/refreshToken. Called after /auth/login returned { totpRequired: true }.",
+      "重新校验用户名+密码，验证 6 位 TOTP 验证码，并签发 accessToken/refreshToken。在 /auth/login 返回 { totpRequired: true } 之后调用。",
+    summary: "完成 TOTP 登录（第二因子）",
   })
-  @ApiResponse({ status: 401, description: "Invalid credentials or TOTP code" })
+  @ApiResponse({ status: 401, description: "凭据或 TOTP 验证码错误" })
   @ApiOkResponse({
     type: AuthTokensDto,
     description: "双 token（二段登录成功）",
@@ -367,14 +361,13 @@ export class AuthController {
   @Get("sessions")
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "List my active login sessions",
     description:
-      "One row per active (non-revoked, non-expired) refresh token. The row matching " +
-      "the sid claim of the caller's access token is flagged current=true.",
+      "每个活跃（未撤销、未过期）的 refresh token 一行。与调用者 access token 的 sid 声明匹配的那一行会标记 current=true。",
+    summary: "列出我的活跃登录会话",
   })
   @ApiResponse({
     status: 200,
-    description: "Session list",
+    description: "会话列表",
     type: [AuthSessionRowDto],
   })
   listSessions(@CurrentUser() user: AuthUser, @Req() req: Request) {
@@ -388,13 +381,12 @@ export class AuthController {
   @ApiOkResponse({ type: SessionRevokeResponseDto })
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "Revoke one of my sessions",
     description:
-      "Marks the given refresh token row revoked (DR-04 semantics — the refresh " +
-      "JWT becomes unusable immediately). Ownership is enforced; foreign ids get 401.",
+      "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。",
+    summary: "撤销我的一个会话",
   })
-  @ApiResponse({ status: 200, description: "Session revoked" })
-  @ApiResponse({ status: 401, description: "Session not found or not yours" })
+  @ApiResponse({ status: 200, description: "会话已撤销" })
+  @ApiResponse({ status: 401, description: "会话不存在或不属于你" })
   async revokeSession(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -426,14 +418,13 @@ export class AuthController {
   @Post("sessions/revoke-others")
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "Revoke all my sessions except the current one",
     description:
-      "Bulk remote-logout of other devices. Without a sid claim this degenerates to " +
-      "revoking ALL sessions (fail-safe, never keeps unknown sessions).",
+      "对其他设备做批量远程登出。若 access token 没有 sid 声明，则退化为撤销全部会话（故障安全策略：绝不保留未知会话）。",
+    summary: "撤销除当前会话外我的全部会话",
   })
   @ApiResponse({
     status: 200,
-    description: "Revocation count",
+    description: "撤销数量",
     type: RevokeOthersResponseDto,
   })
   async revokeOtherSessions(

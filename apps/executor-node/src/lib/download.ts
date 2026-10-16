@@ -111,7 +111,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     // Overall deadline: req.setTimeout is a socket-idle timeout and a
     // slow-drip server resets it forever, so run an absolute timer too.
     const deadline = setTimeout(() => {
-      fail(new Error('Download timed out'));
+      fail(new Error('下载超时'));
     }, timeoutMs);
 
     let settled = false;
@@ -124,7 +124,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     let req: import('http').ClientRequest;
     const onAbort = () => {
       req?.destroy();
-      fail(new Error('Download aborted'));
+      fail(new Error('下载已中止'));
     };
     const cleanup = () => {
       clearTimeout(deadline);
@@ -159,7 +159,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     try {
       if (options.signal) {
         if (options.signal.aborted) {
-          fail(new Error('Download aborted'));
+          fail(new Error('下载已中止'));
           return;
         }
         options.signal.addEventListener('abort', onAbort, { once: true });
@@ -173,7 +173,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
           if (maxRedirects <= 0) {
             file.destroy();
             removePartialFile(file, dest);
-            reject(new Error('Download failed: too many redirects'));
+            reject(new Error('下载失败：重定向次数过多'));
             return;
           }
           let nextUrl: URL;
@@ -182,7 +182,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
           } catch {
             file.destroy();
             removePartialFile(file, dest);
-            reject(new Error('Download failed: invalid redirect location'));
+            reject(new Error('下载失败：重定向地址不合法'));
             return;
           }
           const nextSendAuth = sendAuth && nextUrl.hostname === new URL(url).hostname;
@@ -200,7 +200,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
           return;
         }
         if (!res.statusCode || res.statusCode >= 400) {
-          fail(new Error(`Download failed with status ${res.statusCode}`));
+          fail(new Error(`下载失败，HTTP 状态码 ${res.statusCode}`));
           return;
         }
         let bytes = 0;
@@ -208,7 +208,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
           bytes += chunk.length;
           if (bytes > maxBytes) {
             req.destroy();
-            fail(new Error(`Download exceeded size limit (${maxBytes} bytes)`));
+            fail(new Error(`下载体积超过上限（${maxBytes} 字节）`));
           }
         });
         res.pipe(file);
@@ -230,7 +230,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     // the whole deadline before failing.
     req.setTimeout(timeoutMs, () => {
       req.destroy();
-      fail(new Error('Download timed out'));
+      fail(new Error('下载超时'));
     });
     } // end startDownload()
   });

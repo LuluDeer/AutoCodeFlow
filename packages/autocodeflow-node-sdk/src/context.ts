@@ -241,6 +241,9 @@ export class TaskContext {
         process.env['EXECUTOR_TOKEN'] || process.env['AUTOFLOW_CALLBACK_TOKEN'],
       // N27: non-secret routing info injected by executor-node.
       executorAddress: process.env['AUTOFLOW_EXECUTOR_ADDRESS'],
+      // ADR-017 阶段 3 (protocol v6): stable install identity of the executor
+      // row — same optional, omit-when-absent semantics as the address above.
+      deviceFingerprint: process.env['AUTOFLOW_DEVICE_FINGERPRINT'],
       traceId: process.env['TRACE_ID'],
       // A-11R: typed params channel (protocol v5+). Absent on older executors.
       params: loadTypedParams(),
@@ -331,6 +334,23 @@ export class TaskContext {
   }
 
   /**
+   * Shorthand for `this.env.deviceFingerprint` — the stable install identity
+   * of the executor running this task (ADR-017 阶段 3, executor protocol v6,
+   * injected as `AUTOFLOW_DEVICE_FINGERPRINT`). Same value the executor
+   * reports on register/heartbeat: `sha256(deviceId + ':' + installSalt)`.
+   *
+   * It is the callback face's **row identity**: a shared/legacy callback
+   * token is bound to no executor row, and pull mode allows several rows to
+   * share one `executorAddress`, so this is what lets the admin attribute a
+   * callback to the row that dispatched it. `undefined` on older executors
+   * or when the executor's probe failed; `ctx.http` only auto-fills callback
+   * items when it is present.
+   */
+  get deviceFingerprint(): string | undefined {
+    return this.env.deviceFingerprint;
+  }
+
+  /**
    * The task's parameters with their real types, or `undefined` on executors
    * older than protocol v5 (see `TaskEnv.params`).
    */
@@ -372,15 +392,26 @@ export class TaskContext {
   // ------------------------------------------------------------------ callback shorthands
 
   /**
-   * Build the `executorAddress` field for a callback item: present only
-   * when this executor's address is known — an omitted field is never sent
-   * as an empty string (the python SDK's `report_success`/`report_failure`
-   * do exactly this, and the admin DTO treats empty the same as absent).
+   * Build the `executorAddress` / `deviceFingerprint` fields for a callback
+   * item: each is present only when this executor's value is known — an
+   * omitted field is never sent as an empty string (the python SDK's
+   * `report_success`/`report_failure` do exactly this, and the admin DTO
+   * treats empty the same as absent).
+   *
+   * ADR-017 阶段 3: `deviceFingerprint` rides along here because it is the
+   * callback face's row identity — the shared/legacy token binds to no row,
+   * and `executorAddress` cannot disambiguate pull-mode rows sharing one
+   * address (ADR-017 §5).
    */
   private callbackAddressField(): Record<string, unknown> {
-    return this.env.executorAddress
-      ? { executorAddress: this.env.executorAddress }
-      : {};
+    return {
+      ...(this.env.executorAddress
+        ? { executorAddress: this.env.executorAddress }
+        : {}),
+      ...(this.env.deviceFingerprint
+        ? { deviceFingerprint: this.env.deviceFingerprint }
+        : {}),
+    };
   }
 
   /**

@@ -134,9 +134,7 @@ export default () => ({
       const s = process.env.JWT_SECRET;
       if (!s || s === "default-secret-change-in-production" || s.length < 32) {
         if (process.env.NODE_ENV === "production") {
-          throw new Error(
-            "JWT_SECRET must be set to a strong value (>=32 chars) in production",
-          );
+          throw new Error("生产环境必须将 JWT_SECRET 设置为强值（>=32 字符）");
         }
         return s || "default-secret-change-in-production";
       }
@@ -147,7 +145,7 @@ export default () => ({
       if (!s || s.length < 32) {
         if (process.env.NODE_ENV === "production") {
           throw new Error(
-            "JWT_REFRESH_SECRET must be set to a strong value (>=32 chars) in production",
+            "生产环境必须将 JWT_REFRESH_SECRET 设置为强值（>=32 字符）",
           );
         }
         return s || "default-refresh-secret-change-in-production";
@@ -393,9 +391,7 @@ export default () => ({
         process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SHARED_TOKEN || "";
       if (!t) {
         if (process.env.NODE_ENV === "production") {
-          throw new Error(
-            "[AutoFlow] EXECUTOR_SECRET must be set in production",
-          );
+          throw new Error("[AutoFlow] 生产环境必须设置 EXECUTOR_SECRET");
         }
 
         console.warn(
@@ -763,19 +759,19 @@ if (process.env.NODE_ENV === "production") {
     try {
       u = new URL(raw);
     } catch {
-      throw new Error(`[AutoFlow] ${name} is not a valid URL: ${raw}`);
+      throw new Error(`[AutoFlow] ${name} 不是合法的 URL：${raw}`);
     }
     const host = u.hostname.replace(/^\[|\]$/g, "");
     const isLoopback =
       host === "localhost" || host === "127.0.0.1" || host === "::1";
     if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopback)) {
       throw new Error(
-        `[AutoFlow] ${name} must use https:// in production (http allowed only for localhost/127.0.0.1); got '${u.protocol}//${host}'`,
+        `[AutoFlow] 生产环境 ${name} 必须使用 https://（仅 localhost/127.0.0.1 允许 http）；实际为 '${u.protocol}//${host}'`,
       );
     }
     if (u.username || u.password) {
       throw new Error(
-        `[AutoFlow] ${name} must not embed credentials in the URL — use NPM_REGISTRY_USER/NPM_REGISTRY_PASS or REGISTRY_PASS instead`,
+        `[AutoFlow] ${name} 的 URL 不得内嵌凭据 — 请改用 NPM_REGISTRY_USER/NPM_REGISTRY_PASS 或 REGISTRY_PASS`,
       );
     }
   }
@@ -805,7 +801,7 @@ if (process.env.NODE_ENV === "production") {
   const dbPassword = process.env.DB_PASSWORD ?? "";
   if (weakValues.has(dbPassword) || dbPassword.length < 16) {
     throw new Error(
-      "[AutoFlow] DB_PASSWORD must be set to a strong value (>=16 chars, not a weak default) in production",
+      "[AutoFlow] 生产环境必须将 DB_PASSWORD 设置为强值（>=16 字符，且不能是弱默认值）",
     );
   }
 
@@ -813,14 +809,14 @@ if (process.env.NODE_ENV === "production") {
   const jwtSecret = process.env.JWT_SECRET ?? "";
   if (weakValues.has(jwtSecret) || jwtSecret.length < 32) {
     throw new Error(
-      "[AutoFlow] JWT_SECRET must be set to a strong value (>=32 chars, not a weak default) in production",
+      "[AutoFlow] 生产环境必须将 JWT_SECRET 设置为强值（>=32 字符，且不能是弱默认值）",
     );
   }
 
   const jwtRefreshSecret = process.env.JWT_REFRESH_SECRET ?? "";
   if (weakValues.has(jwtRefreshSecret) || jwtRefreshSecret.length < 32) {
     throw new Error(
-      "[AutoFlow] JWT_REFRESH_SECRET must be set to a strong value (>=32 chars, not a weak default) in production",
+      "[AutoFlow] 生产环境必须将 JWT_REFRESH_SECRET 设置为强值（>=32 字符，且不能是弱默认值）",
     );
   }
 
@@ -829,7 +825,7 @@ if (process.env.NODE_ENV === "production") {
     process.env.EXECUTOR_SECRET || process.env.EXECUTOR_SHARED_TOKEN || "";
   if (weakValues.has(executorSecret) || executorSecret.length < 16) {
     throw new Error(
-      "[AutoFlow] EXECUTOR_SECRET must be set to a strong value (>=16 chars, not a weak default) in production",
+      "[AutoFlow] 生产环境必须将 EXECUTOR_SECRET 设置为强值（>=16 字符，且不能是弱默认值）",
     );
   }
 
@@ -840,14 +836,14 @@ if (process.env.NODE_ENV === "production") {
   );
   if (corsAllowed.length === 0) {
     throw new Error(
-      "[AutoFlow] CORS_ALLOWED_ORIGINS must be set to explicit production origins in production",
+      "[AutoFlow] 生产环境必须显式设置 CORS_ALLOWED_ORIGINS 为生产来源",
     );
   }
   if (
     corsAllowed.some((o) => o.includes("localhost") || o.includes("127.0.0.1"))
   ) {
     throw new Error(
-      "[AutoFlow] CORS_ALLOWED_ORIGINS must not contain localhost/127.0.0.1 in production",
+      "[AutoFlow] 生产环境的 CORS_ALLOWED_ORIGINS 不得包含 localhost/127.0.0.1",
     );
   }
 
@@ -858,15 +854,13 @@ if (process.env.NODE_ENV === "production") {
   for (const origin of corsAllowed) {
     if (!origin.startsWith("https://") && !origin.startsWith("http://")) {
       throw new Error(
-        `CORS_ALLOWED_ORIGINS origin "${origin}" must start with http:// or https://`,
+        `CORS_ALLOWED_ORIGINS 来源 "${origin}" 必须以 http:// 或 https:// 开头`,
       );
     }
     try {
       new URL(origin);
     } catch {
-      throw new Error(
-        `CORS_ALLOWED_ORIGINS origin "${origin}" is not a valid URL`,
-      );
+      throw new Error(`CORS_ALLOWED_ORIGINS 来源 "${origin}" 不是合法的 URL`);
     }
   }
 
@@ -874,7 +868,7 @@ if (process.env.NODE_ENV === "production") {
   // 防止不受控的 schema 修改；synchronize 一律走 migrations。
   if (process.env.DB_SYNCHRONIZE === "true") {
     throw new Error(
-      "[AutoFlow] DB_SYNCHRONIZE=true is forbidden in production — use migrations instead",
+      "[AutoFlow] 生产环境禁止 DB_SYNCHRONIZE=true — 请改用数据库迁移",
     );
   }
 
@@ -895,7 +889,7 @@ if (process.env.NODE_ENV === "production") {
       initialAdminPassword.length < 8
     ) {
       throw new Error(
-        "[AutoFlow] INITIAL_ADMIN_PASSWORD must be a strong value (>=8 chars, not a weak/known default) in production — leave it unset to skip initial admin seeding",
+        "[AutoFlow] 生产环境必须将 INITIAL_ADMIN_PASSWORD 设置为强值（>=8 字符，且不能是弱值/已知默认值）— 不设置可跳过初始管理员种子创建",
       );
     }
   }

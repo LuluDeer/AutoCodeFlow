@@ -1095,6 +1095,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    *
    * 探测失败（执行器表查询异常）时降级为"不跳过"（空集），宁可对疑似仍健康的行
    * 恢复一次，也不放大容量误判。
+   *
+   * ## ADR-017 阶段 3（复查补口）：活性探测必须按**行身份**定位执行器
+   *
+   * 阶段 3 把 `uq_executors_address` 收窄为 partial（仅 push 行），pull 模式
+   * **允许同地址多行并存**（ADR-017 §5）。此前实现用 `new Map(rows.map(ex =>
+   * [ex.address, ex]))` 建地址索引——**同址多行时 Map 静默折叠为最后一行**：
+   * A 的候选执行去读 B 的 `runningExecutionIds`，命中与否全凭「B 恰好也在跑
+   * 同名 id」这个巧合。两个方向都错：
+   * - B 的数组不含 A 的 executionId → A 的健康长任务**失去存活宽限**，被提前
+   *   恢复成 FAILED（正是 E1/CONSISTENCY-02 引入该字段要消灭的误判）；
+   * - B 的数组含该 id（同名/串台）→ 错误地延后一条其实已死的执行。
+   *
+   * 修法：候选行**有 `executorId`**（阶段 3 起新派发一律有）时按 id 精确定位；
+   * 无该值（存量行）才回落地址匹配，且**只在该地址唯一对应一行时**采用——
+   * 同址多行且候选无行身份时无法判定归属，按"不跳过"处置（= 本方法既有的
+   * 保守失败方向：宁可恢复一次，也不放大容量误判）。
+   *
+   * 单行部署（引入本改动前的全部现实形态）行为与原来逐字节一致。
    */
   private async collectRunningLiveness(
     candidates: Array<{
@@ -1107,24 +1125,49 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const deferredIds = new Set<string>();
     if (candidates.length === 0) return { deferredIds };
 
-    const addresses = [
+    // 分层收集：有行身份走 id，其余走地址（两条谓词各自可下推索引）。
+    const executorIds = [
       ...new Set(
         candidates
+          .map((c) => c.exec.executorId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    // 只有**缺行身份**的候选才需要地址维度（有 id 的已被精确覆盖）。
+    const addressesNeeded = [
+      ...new Set(
+        candidates
+          .filter((c) => !c.exec.executorId)
           .map((c) => c.exec.executorAddress)
           .filter((a): a is string => Boolean(a)),
       ),
     ];
-    if (addresses.length === 0) return { deferredIds };
+    if (executorIds.length === 0 && addressesNeeded.length === 0) {
+      return { deferredIds };
+    }
 
     let executors: Array<{
+      id: string;
       address: string;
       status: ExecutorStatus;
       runningExecutionIds: string[] | null;
     }> = [];
     try {
+      // 一次查询覆盖两个维度（任一命中即取回）；两条谓词都不成立的行不参与
+      // 判定，语义与原来的 address-only 查询一致。
       executors = await this.dataSource.getRepository(Executor).find({
-        where: { address: In(addresses) },
-        select: { address: true, status: true, runningExecutionIds: true },
+        where: [
+          ...(executorIds.length > 0 ? [{ id: In(executorIds) }] : []),
+          ...(addressesNeeded.length > 0
+            ? [{ address: In(addressesNeeded) }]
+            : []),
+        ],
+        select: {
+          id: true,
+          address: true,
+          status: true,
+          runningExecutionIds: true,
+        },
       });
     } catch (err: unknown) {
       this.logger.warn(
@@ -1135,23 +1178,48 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       return { deferredIds };
     }
 
-    const byAddress = new Map(executors.map((ex) => [ex.address, ex] as const));
+    // 行身份索引：id 是主键，恒无歧义。
+    const byId = new Map(executors.map((ex) => [ex.id, ex] as const));
+    // 地址索引：**仅供无行身份的存量候选**使用，且必须唯一——同址多行时
+    // 该地址无法指代一行，从索引里剔除（查不到 → 不跳过，见方法头注）。
+    const byAddress = new Map<string, (typeof executors)[number]>();
+    const ambiguousAddresses = new Set<string>();
+    for (const ex of executors) {
+      if (byAddress.has(ex.address)) {
+        // 第二行同址 → 地址维度作废（连先前那一条一起撤下，否则"先到的
+        // 一行"会被当成唯一行，正是本次要修的错行判定）。
+        byAddress.delete(ex.address);
+        ambiguousAddresses.add(ex.address);
+      } else if (!ambiguousAddresses.has(ex.address)) {
+        byAddress.set(ex.address, ex);
+      }
+    }
     // NETOPT-D P3: 候选循环内对 ≤10000 数组逐条 includes() 是 O(N×10000) 热路径
-    // ——批次 C 把截顶从 200 提到 10000 后成本放大 50×。per-address Set 一次构建、
+    // ——批次 C 把截顶从 200 提到 10000 后成本放大 50×。按**行身份**预建 Set、
     // 循环内 O(1) 命中；Set 缺失（= 未上报该字段）语义与原 `!isArray` 分支一致。
     const runningIdSets = new Map<string, Set<string>>();
     for (const ex of executors) {
       if (Array.isArray(ex.runningExecutionIds)) {
-        runningIdSets.set(ex.address, new Set(ex.runningExecutionIds));
+        runningIdSets.set(ex.id, new Set(ex.runningExecutionIds));
       }
     }
     for (const c of candidates) {
-      const addr = c.exec.executorAddress;
-      if (!addr) continue;
-      const ex = byAddress.get(addr);
-      // 执行器离线 / 无记录 / 未上报该字段 / 未命中该 executionId → 不跳过。
+      // ADR-017 阶段 3：优先按行身份定位；无则该候选只能靠地址（唯一时）。
+      let ex: (typeof executors)[number] | undefined;
+      let resolvedBy: string;
+      const rowId = c.exec.executorId;
+      if (rowId) {
+        ex = byId.get(rowId);
+        resolvedBy = `executorId=${rowId}`;
+      } else {
+        const addr = c.exec.executorAddress;
+        if (!addr) continue;
+        ex = byAddress.get(addr);
+        resolvedBy = `address=${addr}`;
+      }
+      // 执行器离线 / 无记录（含地址歧义）→ 不跳过。
       if (!ex || ex.status !== ExecutorStatus.ONLINE) continue;
-      const runningIds = runningIdSets.get(addr);
+      const runningIds = runningIdSets.get(ex.id);
       if (!runningIds) continue;
       if (!runningIds.has(c.exec.id)) continue;
 
@@ -1166,7 +1234,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       );
       if (c.ageMs > absoluteFloorMs) {
         this.logger.warn(
-          `REC-01: execution ${c.exec.id} reported still-running by ${addr} but exceeded the absolute fallback — recovering anyway`,
+          `REC-01: execution ${c.exec.id} reported still-running by ${resolvedBy} but exceeded the absolute fallback — recovering anyway`,
         );
         continue;
       }

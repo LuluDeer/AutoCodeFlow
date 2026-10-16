@@ -96,6 +96,7 @@ ResponseInterceptor 的 `code = statusCode ?? 200` 恒数值语义），
 | `executionId` | 必填（SDK 自动补齐本执行） |
 | `status` | `success` \| `failed` |
 | `executorAddress` | 执行器注册地址（SDK 自动补齐，缺省不发送空串） |
+| `deviceFingerprint` | 稳定安装身份（协议 v6 起，可选）：SDK 从环境变量 `AUTOFLOW_DEVICE_FINGERPRINT` 读取并**自动补齐**，与执行器 register/heartbeat 上报的是同一个值。**它是回调的行身份**——当两台执行器共用同一 `executorAddress`（pull 模式允许，见 ADR-017 §5）时，仅靠地址无法判断回调来自哪一行。服务端按「指纹 → 凭据归属行 → 地址」三级阶梯判定归属；**缺省时逐级回落，绝不会因缺少该字段拒绝合法回调**。采集失败时不发送该键（不是发空串/`null`） |
 | `logs` | 阶段性摘要（截断 512 KB） |
 | `errorMessage` | 失败信息（截断 4 KB） |
 | `failureReason` | 失败分类枚举（py 客户端白名单校验；默认 `script_error`）。**执行器可上报子集**为 admin 全集减去 admin 内部专用的 `stale_recovered`——上报它会被 DTO 的 `@IsIn` 拒绝，且一个非法取值会拒掉**整批**回调。取值清单单一事实源：`packages/executor-protocol/protocol.json` |

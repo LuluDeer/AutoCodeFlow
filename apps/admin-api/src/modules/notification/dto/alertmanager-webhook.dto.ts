@@ -5,38 +5,38 @@ import { ApiPropertyOptional } from "@nestjs/swagger";
  */
 export class AlertmanagerAlertDto {
   @ApiPropertyOptional({
-    description: "告警状态 firing/resolved",
     example: "firing",
+    description: "告警状态 firing/resolved",
   })
   status?: string;
 
   @ApiPropertyOptional({
-    description: "告警标签（含 alertname/labels.taskId 等）",
     example: { alertname: "HighCPU", taskId: "uuid" },
+    description: "告警标签（含 alertname/labels.taskId 等）",
   })
   labels?: Record<string, string>;
 
   @ApiPropertyOptional({
-    description: "告警注解（含 runbook_url 惯例）",
     example: { summary: "CPU > 90%" },
+    description: "告警注解（含 runbook_url 惯例）",
   })
   annotations?: Record<string, string>;
 
   @ApiPropertyOptional({
-    description: "开始时间（ISO 字符串原样透出）",
     example: "2026-09-14T06:00:00Z",
+    description: "开始时间（ISO 字符串原样透出）",
   })
   startsAt?: string;
 
   @ApiPropertyOptional({
-    description: "结束时间（resolved 时）",
     example: "2026-09-14T06:05:00Z",
+    description: "结束时间（resolved 时）",
   })
   endsAt?: string;
 
   @ApiPropertyOptional({
-    description: "告警生成器 URL",
     example: "http://grafana/alert/1",
+    description: "告警生成器 URL",
   })
   generatorURL?: string;
 
@@ -54,8 +54,8 @@ export class AlertmanagerAlertDto {
  */
 export class AlertmanagerWebhookDto {
   @ApiPropertyOptional({
-    description: "Alertmanager webhook 协议版本",
     example: "4",
+    description: "Alertmanager webhook 协议版本",
   })
   version?: string;
 

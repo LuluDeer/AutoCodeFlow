@@ -8,7 +8,6 @@ import {
   Query,
   Res,
   UseGuards,
-  ForbiddenException,
 } from "@nestjs/common";
 
 import {
@@ -38,6 +37,9 @@ import { UserRole } from "../users/entities/user.entity";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
 import { ExecutorService } from "../executor/executor.service";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 // ARCH-23 / N-12: SOP 域响应契约（sop + SopCollab 两 tag 共用本文件）。
 import {
   AgentMediaDto,
@@ -292,7 +294,9 @@ export class SopController {
     // 确认澄清确实属于该指派（防跨工单答复）
     const { clarifications } = await this.sops.getAssignment(assignmentId);
     if (!clarifications.some((c) => c.id === clarificationId)) {
-      throw new ForbiddenException("澄清不属于该指派");
+      throw new AppError(
+        ErrorCode.SOP_CLARIFICATION_NOT_IN_ASSIGNMENT_FORBIDDEN,
+      );
     }
     return this.sops.replyClarification({
       clarificationId,
@@ -378,13 +382,13 @@ export class SopController {
     if (!executorId && dto.executorAddress) {
       const exec = await this.executors.findByAddress(dto.executorAddress);
       if (!exec)
-        throw new ForbiddenException(`执行器 ${dto.executorAddress} 不存在`);
+        throw new AppError(ErrorCode.SOP_EXECUTOR_NOT_FOUND_BY_ADDRESS, {
+          address: dto.executorAddress,
+        });
       executorId = exec.id;
     }
     if (!executorId) {
-      throw new ForbiddenException(
-        "executorId 与 executorAddress 必须提供其一",
-      );
+      throw new AppError(ErrorCode.SOP_ASSIGN_EXECUTOR_REQUIRED);
     }
     return this.sops.assign({
       sopId: id,

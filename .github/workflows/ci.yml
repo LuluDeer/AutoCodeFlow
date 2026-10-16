@@ -764,6 +764,50 @@ jobs:
       - name: Failure-reason enum alignment guard (FR-08/D15)
         run: |
           node scripts/check-failure-reasons.mjs
+      # LANG-ZH-01（用户指令：所有面向用户的文字必须中文）：**面向用户英文文字**
+      # 棘轮守卫。判据三面——openapi.json 的字段 description / 端点 summary
+      # （API 文档面，前端类型注释也消费）、admin-api 的 `throw new *Exception|Error`
+      # 字面量（直接展示给用户的错误文案）、其余面向用户文案。
+      #
+      # 为什么是**棘轮**而不是"立刻要求零英文"：实测存量 1298 处（672 schema +
+      # 289 path + 422 throw），跨多轮中文化。一上来就零容忍会让它在改造中途
+      # **持续红**从而失去信号（红灯疲劳）——与 PK-15 空 schema 白名单同款裁决：
+      # 允许一份**显式登记**的欠账，新增即红、修一处即可上探收紧。
+      # 零依赖 node 脚本，秒级。
+      - name: User-facing language guard (LANG-ZH-01)
+        run: |
+          node scripts/check-user-facing-language.mjs --selftest
+          node scripts/check-user-facing-language.mjs
+      # LANG-ERR-01（用户决策「全量错误码化」）：**错误码 ↔ 前端词条**对齐守卫。
+      # 后端只抛稳定码 + 参数（AppError），文案由前端按当前语言渲染；同一句话
+      # 因此被拆到两个位置，必然有三种**静默**漂移：① 后端加了码前端没加词条 →
+      # 英文用户悄悄看到中文兜底（zh 用户完全正常，极难发现）；② zh 词条与后端
+      # 模板措辞不一致 → 同一失败在 API 文档与界面上两种说法；③ 孤儿词条 →
+      # 永远不可能渲染却一直要被翻译评审。三类都不报错、不影响构建，只能靠守卫。
+      - name: Error-code i18n alignment guard (LANG-ERR-01)
+        run: |
+          node scripts/check-error-i18n.mjs --selftest
+          node scripts/gen-error-i18n.mjs --check
+          node scripts/check-error-i18n.mjs
+      # API-I18N（用户决策「openapi/文档站 API 文档双语」）：**API 文档中英齐备**守卫。
+      # openapi.json 是入库生成物，其 description/summary 只写中文（产品默认），
+      # 英文走 `x-i18n-en` 扩展键，由 `scripts/api-i18n/inject-openapi-en.mjs`
+      # 在导出后注入（英文真值源=scripts/api-i18n/data/openapi-en-map.json，以中文
+      # 原文为键 ⇒ 重复文案自动共用一条英文）。
+      #
+      # 为什么**不**把英文内联写在装饰器里（试过，退回）：@nestjs/swagger 的 options
+      # 类型没有该键，触发 TS 多余属性检查，实测全仓 1318 处 TS2353；而这些类型
+      # 大多是 **type 别名**，`declare module` 无法增强（对别名写同名 interface 只会
+      # 报 TS2300 重复标识符）。导出期注入是唯一不碰 963 个装饰器、不丢类型安全的做法。
+      #
+      # 守卫判据：`--check` 扫出所有**含中文**的 description/summary，逐条要求映射表
+      # 里有英文；缺一条即红，故新增中文文案不会静默变成单语文档。
+      - name: API docs bilingual guard (API-I18N)
+        run: |
+          node scripts/api-i18n/inject-openapi-en.mjs --selftest
+          node scripts/api-i18n/inject-openapi-en.mjs --check
+          # 语言开关对**真实生成物**的覆盖（合成样本证明不了真实文档的形态杂度）
+          cd apps/admin-api && npx --node-options=--experimental-vm-modules jest src/common/i18n --silent
       # 发布配置一致性守卫（改名发布 @autocodeflow/cli 时新增）。
       # 本仓发版链路跨四份互不校验的配置：release-please-config.json 的
       # packages / linked-versions，与 release.yml 的 version-guard /

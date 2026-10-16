@@ -8,7 +8,6 @@ import {
   UseGuards,
   Query,
   Headers,
-  UnauthorizedException,
   ParseUUIDPipe,
 } from "@nestjs/common";
 import {
@@ -49,17 +48,20 @@ import { ApiPropertyOptional } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { OPS_THROTTLE } from "../../config/throttle-profiles";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 class ListDeploymentsQueryDto {
-  @ApiPropertyOptional({ description: "Filter by application ID" })
+  @ApiPropertyOptional({ description: "按应用 ID 过滤" })
   @IsOptional()
   @IsUUID()
   applicationId?: string;
 
   @ApiPropertyOptional({
-    description:
-      "DEP-04: filter by approval status (e.g. pending_approval for the approval inbox)",
     enum: DeploymentApprovalStatus,
+    description:
+      "DEP-04：按审批状态过滤（例如用 pending_approval 拉取审批收件箱）",
   })
   @IsOptional()
   @IsEnum(DeploymentApprovalStatus)
@@ -92,7 +94,7 @@ export class AppDeploymentController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: "List deployments" })
+  @ApiOperation({ summary: "列出部署" })
   // N-12: 裸 {data,total} 分页（无页元数据），行 env/嵌套 application.env 掩码。
   @ApiOkResponse({ type: PaginatedAppDeploymentsDto })
   findAll(@Query() query: ListDeploymentsQueryDto) {
@@ -116,11 +118,9 @@ export class AppDeploymentController {
    */
   @Get("stats")
   @ApiOperation({
-    summary: "Deployment stats per application (aggregated)",
     description:
-      "One row per application that has at least one deployment. Replaces the " +
-      "per-application list fan-out the application list page used to issue " +
-      "(N requests sharing one rate-limit bucket).",
+      "每个至少有一次部署的应用返回一行。用于替代应用列表页原先逐个应用发起的扇出请求（N 个请求共用同一个限流桶）。",
+    summary: "各应用的部署统计（聚合）",
   })
   @ApiOkResponse({ type: [AppDeploymentStatsDto] })
   findStats() {
@@ -128,7 +128,7 @@ export class AppDeploymentController {
   }
 
   @Get(":id")
-  @ApiOperation({ summary: "Get deployment details" })
+  @ApiOperation({ summary: "获取部署详情" })
   @ApiOkResponse({ type: AppDeploymentResponseDto })
   findById(@Param("id") id: string) {
     return this.svc.findById(id);
@@ -143,12 +143,11 @@ export class AppDeploymentController {
   @Throttle({ default: OPS_THROTTLE })
   @Post("applications/:appId/deploy")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Assign application to executor" })
+  @ApiOperation({ summary: "将应用分配到执行器" })
   // POST 无 @HttpCode → 实际 201（下同：approve/reject/cancel/upgrade/stop）。
   @ApiCreatedResponse({
     type: AppDeploymentResponseDto,
-    description:
-      "Masked deployment row (approval-required apps return the pending_approval request row)",
+    description: "脱敏后的部署行（需要审批的应用返回 pending_approval 请求行）",
   })
   deploy(
     @Param("appId") appId: string,
@@ -178,7 +177,7 @@ export class AppDeploymentController {
 
   @Get("approvals/pending")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "List deployments awaiting approval" })
+  @ApiOperation({ summary: "列出待审批的部署" })
   @ApiOkResponse({ type: PaginatedAppDeploymentsDto })
   listPendingApprovals(@Query() query: ListDeploymentsQueryDto) {
     return this.svc.findAll(
@@ -193,10 +192,10 @@ export class AppDeploymentController {
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/approval/approve")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Approve a pending deployment (second person)" })
+  @ApiOperation({ summary: "审批通过待处理的部署（第二人审批）" })
   @ApiCreatedResponse({
     type: AppDeploymentResponseDto,
-    description: "Approved and dispatched row",
+    description: "已审批通过并已派发的行",
   })
   approve(
     @Param("id", ParseUUIDPipe) id: string,
@@ -221,10 +220,10 @@ export class AppDeploymentController {
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/approval/reject")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Reject a pending deployment (second person)" })
+  @ApiOperation({ summary: "驳回待处理的部署（第二人审批）" })
   @ApiCreatedResponse({
     type: AppDeploymentResponseDto,
-    description: "Rejected row",
+    description: "已驳回的行",
   })
   reject(
     @Param("id", ParseUUIDPipe) id: string,
@@ -242,12 +241,10 @@ export class AppDeploymentController {
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/approval/cancel")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({
-    summary: "Cancel own pending deployment request (requester only)",
-  })
+  @ApiOperation({ summary: "撤销自己发起的待审批部署请求（仅发起人）" })
   @ApiCreatedResponse({
     type: AppDeploymentResponseDto,
-    description: "Cancelled row",
+    description: "已撤销的行",
   })
   cancel(
     @Param("id", ParseUUIDPipe) id: string,
@@ -263,10 +260,10 @@ export class AppDeploymentController {
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/upgrade")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Trigger overlay upgrade" })
+  @ApiOperation({ summary: "触发叠加升级" })
   @ApiCreatedResponse({
     type: AppDeploymentResponseDto,
-    description: "Row in upgrading state",
+    description: "处于 upgrading 状态的行",
   })
   upgrade(
     @Param("id") id: string,
@@ -288,10 +285,10 @@ export class AppDeploymentController {
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/stop")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Stop running deployment" })
+  @ApiOperation({ summary: "停止运行中的部署" })
   @ApiCreatedResponse({
     type: AppDeploymentResponseDto,
-    description: "Stopped row",
+    description: "已停止的行",
   })
   stop(@Param("id") id: string) {
     return this.svc.stop(id);
@@ -309,11 +306,9 @@ export class AppDeploymentController {
   @Delete(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Delete a finished deployment record (failed/stopped)",
     description:
-      "Removes a terminal deployment row from the history. In-flight, running and " +
-      "pending-approval deployments are refused with 409 — stop a running one first, " +
-      "and use reject/cancel for an approval-pending one.",
+      "从历史中移除已进入终态的部署行。进行中、运行中和待审批的部署会被拒绝并返回 409——请先停止运行中的部署；待审批的请用驳回/撤销。",
+    summary: "删除已结束的部署记录（failed/stopped）",
   })
   @ApiOkResponse({ type: DeploymentRemoveResponseDto })
   remove(
@@ -337,17 +332,15 @@ export class AppDeploymentController {
     reason: "执行器持 X-Executor-Token 上报应用运行态（机器面，非用户会话）",
   })
   @Post("heartbeat")
-  @ApiOperation({
-    summary: "Executor reports app runtime status (requires X-Executor-Token)",
-  })
+  @ApiOperation({ summary: "执行器上报应用运行状态（需要 X-Executor-Token）" })
   @ApiHeader({
     name: "x-executor-token",
     required: true,
-    description: "Executor token (per-executor or shared)",
+    description: "执行器令牌（按执行器的或共享的）",
   })
   // POST 无 @HttpCode → 实际 201；handleHeartbeat 返回 void → envelope data null。
   @ApiCreatedResponse({
-    description: "Status recorded; envelope data is null",
+    description: "状态已记录；信封 data 为 null",
     schema: { nullable: true },
   })
   async heartbeat(
@@ -355,22 +348,20 @@ export class AppDeploymentController {
     @Headers("x-executor-token") token: string | undefined,
   ) {
     if (!token) {
-      throw new UnauthorizedException("Missing X-Executor-Token header");
+      throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_TOKEN_MISSING);
     }
     // Look up deployment to find the associated executor
     const deployment = await this.svc.findById(dto.deploymentId);
     const executorId = deployment?.executorId;
     if (!executorId) {
-      throw new UnauthorizedException(
-        "Cannot verify token: deployment has no associated executor",
-      );
+      throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_NO_EXECUTOR);
     }
     const valid = await this.executorService.validateExecutorToken(
       executorId,
       token,
     );
     if (!valid) {
-      throw new UnauthorizedException("Invalid executor token");
+      throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_TOKEN_INVALID);
     }
     return this.svc.handleHeartbeat(dto);
   }

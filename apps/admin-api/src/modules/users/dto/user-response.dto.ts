@@ -11,32 +11,31 @@ export class UserResponseDto {
   @ApiProperty()
   id: number;
 
-  @ApiProperty({ description: "1..128, unique" })
+  @ApiProperty({ description: "1..128 字符，唯一" })
   username: string;
 
-  @ApiProperty({ description: "unique" })
+  @ApiProperty({ description: "唯一" })
   email: string;
 
   @ApiProperty({ enum: ["admin", "user"] })
   role: "admin" | "user";
 
-  @ApiProperty({
-    description: "Soft-disable switch (login refused when false)",
-  })
+  @ApiProperty({ description: "软禁用开关（为 false 时拒绝登录）" })
   isActive: boolean;
 
-  @ApiProperty({ description: "Consecutive failed logins (lockout input)" })
+  @ApiProperty({ description: "连续登录失败次数（锁定判定的输入）" })
   loginFailCount: number;
 
-  @ApiProperty({ description: "Lockout deadline", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "锁定截止时间",
+  })
   lockedUntil: Date | null;
 
   @ApiProperty()
   totpEnabled: boolean;
 
-  @ApiProperty({
-    description: "Bumped on password change — revokes old refresh tokens",
-  })
+  @ApiProperty({ description: "修改密码时递增——使旧的 refresh token 失效" })
   sessionVersion: number;
 
   @ApiProperty({ nullable: true })

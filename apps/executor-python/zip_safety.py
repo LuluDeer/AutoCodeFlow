@@ -180,7 +180,7 @@ def _reject_nul_in_name(info: zipfile.ZipInfo) -> None:
     if '\x00' in info.orig_filename:
         raise ZipSafetyError(
             'bad_archive',
-            f'archive entry name contains a NUL byte: {info.orig_filename!r}',
+            f'归档条目名含有 NUL 字节：{info.orig_filename!r}',
         )
 
 
@@ -206,9 +206,8 @@ def _reject_unsupported_method(info: zipfile.ZipInfo) -> None:
         return
     raise ZipSafetyError(
         'unsupported_method',
-        f'entry {info.filename!r} uses compression method {method}, which this executor cannot '
-        'decompress (only stored(0) and deflate(8) are supported; '
-        're-pack the archive with deflate)',
+        f'条目 {info.filename!r} 使用了压缩方法 {method}，本执行器无法解压它'
+        '（仅支持 stored(0) 与 deflate(8)；请用 deflate 重新打包该归档）',
     )
 
 
@@ -221,18 +220,18 @@ def _reject_absolute_or_escaping(name: str) -> None:
     raw = name
     normalized = _normalize_entry_name(name)
     if raw.startswith('/') or raw.startswith('\\'):
-        raise ZipSafetyError('absolute_path', f'archive entry uses an absolute path: {raw!r}')
+        raise ZipSafetyError('absolute_path', f'归档条目使用了绝对路径：{raw!r}')
     if _WINDOWS_DRIVE_RE.match(raw):
         # 盘符路径（含 `C:\`、`C:/` 与驱动器相对 `C:evil`）必须用**独立标签**
         # `drive_letter_path`，与 node `resolveEntryTarget`（zip-safety.ts:188）
         # 逐字对齐——此前这里归到 absolute_path，同一个包两侧给出不同 violation，
         # 任何按 violation 分流/统计的消费方都会被劈成两份。
-        raise ZipSafetyError('drive_letter_path', f'archive entry uses a drive-letter path: {raw!r}')
+        raise ZipSafetyError('drive_letter_path', f'归档条目使用了盘符路径：{raw!r}')
     if normalized.startswith('//'):
-        raise ZipSafetyError('absolute_path', f'archive entry uses a UNC path: {raw!r}')
+        raise ZipSafetyError('absolute_path', f'归档条目使用了 UNC 路径：{raw!r}')
     parts = [part for part in normalized.split('/') if part not in ('', '.')]
     if any(part == '..' for part in parts):
-        raise ZipSafetyError('zip_slip', f'archive entry escapes the target directory: {raw!r}')
+        raise ZipSafetyError('zip_slip', f'归档条目逃出了目标目录：{raw!r}')
 
 
 def _entry_is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -256,9 +255,9 @@ def vet_zip(path: Path, *, limits: ZipLimits | None = None) -> None:
         with zipfile.ZipFile(Path(path)) as archive:
             _vet_open_archive(archive, limits)
     except zipfile.BadZipFile as exc:
-        raise ZipSafetyError('bad_archive', f'not a readable zip archive: {exc}') from exc
+        raise ZipSafetyError('bad_archive', f'不是可读的 zip 归档：{exc}') from exc
     except OSError as exc:
-        raise ZipSafetyError('bad_archive', f'cannot read archive {path}: {exc}') from exc
+        raise ZipSafetyError('bad_archive', f'无法读取归档 {path}：{exc}') from exc
 
 
 def _vet_open_archive(archive: zipfile.ZipFile, limits: ZipLimits, depth: int = 0) -> None:
@@ -266,14 +265,14 @@ def _vet_open_archive(archive: zipfile.ZipFile, limits: ZipLimits, depth: int = 
     if len(infos) > limits.max_entries:
         raise ZipSafetyError(
             'too_many_entries',
-            f'zip declares {len(infos)} entries (limit {limits.max_entries})',
+            f'zip 声明了 {len(infos)} 个条目（上限 {limits.max_entries}）',
         )
     total_uncompressed = 0
     total_compressed = 0
     for info in infos:
         if _entry_is_symlink(info):
             raise ZipSafetyError(
-                'symlink_entry', f'archive entry is a symbolic link: {info.filename!r}',
+                'symlink_entry', f'归档条目是符号链接：{info.filename!r}',
             )
         _reject_nul_in_name(info)
         _reject_absolute_or_escaping(info.filename)
@@ -282,21 +281,21 @@ def _vet_open_archive(archive: zipfile.ZipFile, limits: ZipLimits, depth: int = 
     if total_uncompressed > limits.max_total_uncompressed_bytes:
         raise ZipSafetyError(
             'total_too_large',
-            f'zip declares {total_uncompressed} uncompressed bytes '
-            f'(limit {limits.max_total_uncompressed_bytes})',
+            f'zip 声明的未压缩总字节数为 {total_uncompressed} '
+            f'（上限 {limits.max_total_uncompressed_bytes}）',
         )
     if total_compressed > 0 and total_uncompressed / total_compressed > limits.max_ratio:
         raise ZipSafetyError(
             'ratio_too_high',
-            f'compression ratio {total_uncompressed / total_compressed:.1f} '
-            f'exceeds limit {limits.max_ratio}',
+            f'压缩比 {total_uncompressed / total_compressed:.1f} '
+            f'超过上限 {limits.max_ratio}',
         )
     for info in infos:
         if info.file_size > limits.max_file_bytes:
             raise ZipSafetyError(
                 'entry_too_large',
-                f'zip declares an entry of {info.file_size} uncompressed bytes '
-                f'(limit {limits.max_file_bytes})',
+                f'zip 声明某个条目的未压缩大小为 {info.file_size} 字节 '
+                f'（上限 {limits.max_file_bytes}）',
             )
     _vet_nested_archives(archive, infos, limits, depth)
 
@@ -319,8 +318,8 @@ def _vet_nested_archives(
     if depth >= MAX_NESTING_DEPTH_CEILING:
         raise ZipSafetyError(
             'nested_zip_too_deep',
-            f'zip nesting reached the eager-vetting ceiling of '
-            f'{MAX_NESTING_DEPTH_CEILING} levels and still contains nested archives',
+            f'zip 嵌套层级已达主动审查上限 {MAX_NESTING_DEPTH_CEILING} 层，'
+            f'且仍包含嵌套归档',
         )
     if depth >= limits.max_nesting_depth:
         return
@@ -338,7 +337,7 @@ def _vet_nested_archives(
         except Exception as exc:  # noqa: BLE001 - 读不出内容即无法审查 → fail closed
             raise ZipSafetyError(
                 'bad_archive',
-                f'nested zip {info.filename!r} could not be read for vetting: {exc}',
+                f'无法读取嵌套 zip {info.filename!r} 以进行安全审查：{exc}',
             ) from exc
         try:
             with zipfile.ZipFile(io.BytesIO(payload)) as inner:
@@ -346,7 +345,7 @@ def _vet_nested_archives(
         except zipfile.BadZipFile as exc:
             raise ZipSafetyError(
                 'bad_archive',
-                f'nested zip {info.filename!r} is corrupt or unreadable: {exc}',
+                f'嵌套 zip {info.filename!r} 已损坏或不可读：{exc}',
             ) from exc
 
 
@@ -359,11 +358,11 @@ def _resolve_within_dest(dest_root: Path, target: Path) -> Path:
     try:
         resolved = target.resolve()
     except OSError as exc:  # pragma: no cover - 断链/竞态
-        raise ZipSafetyError('zip_slip', f'cannot resolve extraction target {target}: {exc}') from exc
+        raise ZipSafetyError('zip_slip', f'无法解析解压目标 {target}：{exc}') from exc
     if resolved != dest_root and not resolved.is_relative_to(dest_root):
         raise ZipSafetyError(
             'zip_slip',
-            f'archive entry resolves outside the extraction root: {target} -> {resolved}',
+            f'归档条目解析后落在解压根目录之外：{target} -> {resolved}',
         )
     return resolved
 
@@ -407,13 +406,13 @@ def safe_extract(path: Path, dest: Path, *, limits: ZipLimits | None = None) -> 
             if len(infos) > limits.max_entries:
                 raise ZipSafetyError(
                     'too_many_entries',
-                    f'zip declares {len(infos)} entries (limit {limits.max_entries})',
+                    f'zip 声明了 {len(infos)} 个条目（上限 {limits.max_entries}）',
                 )
             for info in infos:
                 if _entry_is_symlink(info):
                     raise ZipSafetyError(
                         'symlink_entry',
-                        f'archive entry is a symbolic link: {info.filename!r}',
+                        f'归档条目是符号链接：{info.filename!r}',
                     )
                 _reject_nul_in_name(info)
                 _reject_absolute_or_escaping(info.filename)
@@ -421,8 +420,8 @@ def safe_extract(path: Path, dest: Path, *, limits: ZipLimits | None = None) -> 
                 if info.file_size > limits.max_file_bytes:
                     raise ZipSafetyError(
                         'entry_too_large',
-                        f'entry {info.filename!r} declares {info.file_size} bytes '
-                        f'(limit {limits.max_file_bytes})',
+                        f'条目 {info.filename!r} 声明了 {info.file_size} 字节 '
+                        f'（上限 {limits.max_file_bytes}）',
                     )
                 if info.is_dir():
                     directory = _resolve_within_dest(resolved_root, resolved_root / info.filename)
@@ -443,14 +442,14 @@ def safe_extract(path: Path, dest: Path, *, limits: ZipLimits | None = None) -> 
                         if written > limits.max_file_bytes:
                             raise ZipSafetyError(
                                 'entry_too_large',
-                                f'entry {info.filename!r} exceeds {limits.max_file_bytes} '
-                                f'bytes while extracting',
+                                f'条目 {info.filename!r} 在解压过程中超过 '
+                                f'{limits.max_file_bytes} 字节',
                             )
                         if total_written > limits.max_total_uncompressed_bytes:
                             raise ZipSafetyError(
                                 'total_too_large',
-                                f'extraction exceeds {limits.max_total_uncompressed_bytes} '
-                                f'total bytes while extracting',
+                                f'解压过程中超过 {limits.max_total_uncompressed_bytes} '
+                                f'字节的总量上限',
                             )
                         sink.write(chunk)
                 # 解压出的文件不可执行：包内代码由解释器显式调用，不给可执行位。
@@ -460,7 +459,7 @@ def safe_extract(path: Path, dest: Path, *, limits: ZipLimits | None = None) -> 
                     logger.warning('zip_safety: chmod failed for %s: %s', target, exc)
     except zipfile.BadZipFile as exc:
         _cleanup_partial(written_files, created_dirs, resolved_root)
-        raise ZipSafetyError('bad_archive', f'not a readable zip archive: {exc}') from exc
+        raise ZipSafetyError('bad_archive', f'不是可读的 zip 归档：{exc}') from exc
     except ZipSafetyError:
         _cleanup_partial(written_files, created_dirs, resolved_root)
         raise

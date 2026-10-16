@@ -67,7 +67,7 @@ export class NotificationConfigController {
   @Get("channels")
   @ApiOkResponse({ type: [NotificationChannelDto] })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Get all notification channel configs" })
+  @ApiOperation({ summary: "获取所有通知渠道配置" })
   getChannels() {
     return this.configService.getAllChannels();
   }
@@ -75,7 +75,7 @@ export class NotificationConfigController {
   @Patch("channels/:key")
   @ApiOkResponse({ type: NotificationChannelDto })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Update notification channel config" })
+  @ApiOperation({ summary: "更新通知渠道配置" })
   async updateChannel(
     @Param("key") key: string,
     @Body() body: { enabled?: boolean; config?: Record<string, string> },
@@ -120,7 +120,7 @@ export class NotificationConfigController {
   @Post("channels/:key/test")
   @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Test notification channel" })
+  @ApiOperation({ summary: "测试通知渠道" })
   testChannel(@Param("key") key: string, @Body() body: Record<string, string>) {
     return this.configService.testChannel(key, body);
   }
@@ -134,7 +134,7 @@ export class NotificationConfigController {
   @Post("test")
   @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Send test notification to channel" })
+  @ApiOperation({ summary: "向渠道发送测试通知" })
   sendTest(
     @Body() body: { channels: string[]; title: string; content: string },
   ) {
@@ -162,15 +162,12 @@ export class NotificationConfigController {
    */
   @Post("send")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({
-    summary: "Send notification from task code (SDK, admin only)",
-  })
+  @ApiOperation({ summary: "从任务代码发送通知（SDK，仅管理员）" })
   @ApiResponse({
     status: 201,
     type: SendNotificationResultDto,
     description:
-      "2xx regardless of individual channel outcomes; inspect `results` " +
-      "for per-channel delivery (sent | blocked | failed | skipped).",
+      "无论各渠道结果如何均返回 2xx；各渠道投递情况见 `results`（sent | blocked | failed | skipped）。",
   })
   async send(@Body() dto: SendNotificationDto) {
     const level = dto.level ?? AlertLevel.INFO;
@@ -203,8 +200,8 @@ export class NotificationConfigController {
   @Get("silences")
   @ApiOkResponse({ type: [NotificationSilenceDto] })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "List notification silences (persisted)" })
-  @ApiResponse({ status: 200, description: "All silences" })
+  @ApiOperation({ summary: "列出通知静默（已持久化）" })
+  @ApiResponse({ status: 200, description: "全部静默规则" })
   listSilences() {
     return this.silenceService.listAll();
   }
@@ -212,8 +209,8 @@ export class NotificationConfigController {
   @Post("silences")
   @ApiCreatedResponse({ type: NotificationSilenceDto })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Create a notification silence" })
-  @ApiResponse({ status: 201, description: "Created silence" })
+  @ApiOperation({ summary: "创建通知静默" })
+  @ApiResponse({ status: 201, description: "已创建的静默规则" })
   // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 createSilence 用内联对象类型无 @ApiBody，
   // openapi 缺 requestBody。补 @ApiBody({ type: CreateSilenceDto })（运行时
   // @Body() 类型不变，校验仍由 silenceService.create 内部完成）。
@@ -259,7 +256,7 @@ export class NotificationConfigController {
     schema: { type: "boolean" },
   })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Remove a notification silence" })
+  @ApiOperation({ summary: "移除通知静默" })
   async removeSilence(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     // ARCH-31: 内存 + DB 双删（内存态由 NotificationService 持有，DB 行由
     // silenceService 负责——forgetSilence 只清内存，避免重复删库）。

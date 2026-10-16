@@ -162,7 +162,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
       if (header) req.set("Authorization", header);
       const response = await req.expect(401);
       expect(response.body.message).toBe(
-        "Unauthorized: package downloads require a valid access JWT or executor token",
+        "未授权：下载执行器包需要有效的 access JWT 或执行器令牌",
       );
       expect(openPackageFile).not.toHaveBeenCalled();
     },
@@ -243,7 +243,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
         .set("Authorization", "Bearer wrong-token")
         .send(payload)
         .expect(401);
-      expect(response.body.message).toBe("Invalid executor token");
+      expect(response.body.message).toBe("执行器令牌无效");
       expect(service.appendPushHistory).not.toHaveBeenCalled();
     });
 
@@ -252,7 +252,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
         .post(pushPath)
         .send(payload)
         .expect(401);
-      expect(response.body.message).toBe("Invalid executor token");
+      expect(response.body.message).toBe("执行器令牌无效");
       expect(service.appendPushHistory).not.toHaveBeenCalled();
     });
   });

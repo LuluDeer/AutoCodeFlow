@@ -10,10 +10,11 @@ import {
   Query,
   UseGuards,
   Req,
-  ForbiddenException,
-  BadRequestException,
-  ConflictException,
 } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import {
   ApiTags,
   ApiOperation,
@@ -56,7 +57,7 @@ export class UsersController {
   @Post()
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Create user" })
+  @ApiOperation({ summary: "创建用户" })
   // POST 默认 201。
   @ApiCreatedResponse({ type: UserResponseDto })
   async create(
@@ -83,7 +84,7 @@ export class UsersController {
   // the directory and lockout schedule.
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Get user list" })
+  @ApiOperation({ summary: "获取用户列表" })
   // API-07（历史）：曾从携带任务专用过滤字段的 PaginationDto 收窄为 PageQueryDto
   // （name/status/runtime 被 OpenAPI 公示却从未被消费，传了静默无效）。
   // 本轮在收窄后的基础上补一个**真实被消费**的 search 过滤（ListUsersDto）：
@@ -99,17 +100,17 @@ export class UsersController {
   // Same protection for single-user lookup: non-admins can only fetch their
   // own profile; admins can fetch anyone. The service helper returns null
   // for missing users so callers never leak existence via 404 (H-3).
-  @ApiOperation({ summary: "Get user details" })
+  @ApiOperation({ summary: "获取用户详情" })
   async findOne(
     @Param("id", ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,
   ) {
     const isAdmin = user?.role === UserRole.ADMIN;
     if (!isAdmin && user?.id !== id) {
-      throw new ForbiddenException("You can only view your own account");
+      throw new AppError("USER_VIEW_SELF_ONLY");
     }
     const found = await this.usersService.findByIdOrNull(id);
-    if (!found) throw new ForbiddenException("User not found");
+    if (!found) throw new AppError("USER_NOT_VISIBLE");
     return found;
   }
 
@@ -118,7 +119,7 @@ export class UsersController {
   @WriteGuard("user", { scope: "authenticated" })
   @Patch(":id")
   @ApiOkResponse({ type: UserResponseDto })
-  @ApiOperation({ summary: "Update user" })
+  @ApiOperation({ summary: "更新用户" })
   async update(
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: UpdateUserDto,
@@ -127,12 +128,12 @@ export class UsersController {
   ) {
     const isAdmin = user?.role === UserRole.ADMIN;
     if (!isAdmin && user?.id !== id) {
-      throw new ForbiddenException("You can only update your own account");
+      throw new AppError("USER_UPDATE_SELF_ONLY");
     }
 
     // SEC: prevent privilege escalation — non-admins cannot change their own role
     if (!isAdmin && dto.role !== undefined) {
-      throw new ForbiddenException("Only admins can change user roles");
+      throw new AppError("USER_ROLE_ADMIN_ONLY");
     }
 
     // 审计 E-P2-S4：普通用户自改 username 时做唯一性占用校验。
@@ -142,7 +143,7 @@ export class UsersController {
     if (!isAdmin && dto.username) {
       const existing = await this.usersService.findByUsername(dto.username);
       if (existing && existing.id !== id) {
-        throw new ConflictException("Username is already taken");
+        throw new AppError("USERNAME_TAKEN");
       }
     }
 
@@ -153,7 +154,7 @@ export class UsersController {
     if (!isAdmin && dto.email) {
       const existingEmail = await this.usersService.findByEmail(dto.email);
       if (existingEmail && existingEmail.id !== id) {
-        throw new ConflictException("Email is already taken");
+        throw new AppError("EMAIL_TAKEN");
       }
     }
 
@@ -161,18 +162,17 @@ export class UsersController {
     if (dto.password && !isAdmin) {
       const currentPassword: string | undefined = dto.currentPassword;
       if (!currentPassword) {
-        throw new BadRequestException(
-          "currentPassword is required when changing password",
-        );
+        throw new AppError("CURRENT_PASSWORD_REQUIRED");
       }
       const existingUser = await this.usersService.findByIdRaw(id);
-      if (!existingUser) throw new BadRequestException("User not found");
+      if (!existingUser)
+        throw new AppError("USER_NOT_FOUND_FOR_PASSWORD_CHANGE");
       const valid = await bcrypt.compare(
         currentPassword,
         existingUser.password,
       );
       if (!valid) {
-        throw new BadRequestException("currentPassword is incorrect");
+        throw new AppError("CURRENT_PASSWORD_INCORRECT");
       }
     }
 
@@ -193,7 +193,7 @@ export class UsersController {
   @ApiOkResponse({ type: UserDeleteResponseDto })
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Delete user" })
+  @ApiOperation({ summary: "删除用户" })
   async remove(
     @Param("id", ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,

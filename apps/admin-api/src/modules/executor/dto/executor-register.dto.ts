@@ -13,109 +13,117 @@ import { ExecutorInterpreterDto } from "./executor-heartbeat.dto";
  */
 export class ExecutorRegisterDto {
   @ApiProperty({
-    description: "Executor application name",
     example: "executor-node",
+    description: "执行器应用名称",
   })
   appName: string;
 
   @ApiProperty({
-    description: "Executor registration address",
     example: "192.168.1.100:3002",
+    description: "执行器注册地址",
   })
   address: string;
 
-  @ApiPropertyOptional({ description: "Executor type", example: "node" })
+  @ApiPropertyOptional({
+    example: "node",
+    description: "执行器类型",
+  })
   type?: string;
 
-  @ApiPropertyOptional({ description: "Executor version", example: "1.0.0" })
+  @ApiPropertyOptional({
+    example: "1.0.0",
+    description: "执行器版本",
+  })
   version?: string;
 
   @ApiPropertyOptional({
+    example: 1,
     description:
       "PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。",
-    example: 1,
   })
   protocolVersion?: number;
 
   @ApiPropertyOptional({
-    description: "Declared capabilities",
     type: [String],
     example: ["docker", "shell"],
+    description: "声明的能力",
   })
   capabilities?: string[];
 
   @ApiPropertyOptional({
-    description: "Declared runtime environments",
     type: [String],
     example: ["nodejs", "python3"],
+    description: "声明的运行时环境",
   })
   runtime?: string[];
 
-  @ApiPropertyOptional({ description: "Max concurrent tasks", example: 10 })
+  @ApiPropertyOptional({
+    example: 10,
+    description: "最大并发任务数",
+  })
   maxConcurrentTasks?: number;
 
   @ApiPropertyOptional({
-    description: "Max concurrent (legacy alias)",
     example: 10,
+    description: "最大并发数（legacy 别名）",
   })
   maxConcurrent?: number;
 
   @ApiPropertyOptional({
-    description: "Executor group name",
     example: "production",
     nullable: true,
+    description: "执行器分组名称",
   })
   groupName?: string | null;
 
   @ApiPropertyOptional({
-    description: "Executor tags",
     type: [String],
     example: ["nodejs", "prod"],
     nullable: true,
+    description: "执行器标签",
   })
   tags?: string[] | null;
 
   @ApiPropertyOptional({
-    description: "Executor description",
     example: "Production Node.js executor",
     nullable: true,
+    description: "执行器描述",
   })
   description?: string | null;
 
   @ApiPropertyOptional({
-    description: "Restart timestamp (ISO 8601)",
     example: "2026-09-14T08:00:00.000Z",
     nullable: true,
+    description: "重启时间戳（ISO 8601）",
   })
   restartedAt?: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "Startup ID (process life identifier for idempotent re-registration)",
     example: "uuid-of-this-executor-process-life",
     nullable: true,
+    description: "启动 ID（进程生命周期标识，用于幂等重复注册）",
   })
   startupId?: string | null;
 
   @ApiPropertyOptional({
-    description: "Dispatch mode ('push' | 'pull'; defaults to push)",
     example: "pull",
     enum: ["push", "pull"],
+    description: "派发模式（'push' | 'pull'；默认为 push）",
   })
   dispatchMode?: string;
 
   @ApiPropertyOptional({
-    description:
-      "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected.",
     type: () => [ExecutorInterpreterDto],
+    description:
+      "python_task_multiversion：解释器缓存池清单。缺省 → 保留已存值；[] → 已上报且池为空；结构非法 → 整字段被拒绝。",
   })
   interpreters?: ExecutorInterpreterDto[];
 
   @ApiPropertyOptional({
-    description:
-      "ARCH-36 (ADR-017 phase 2): stable install identity — sha256(deviceId + ':' + installSalt) as 64 lowercase hex chars. Omitted/invalid → keep the stored value. Collected and observed only; it does NOT participate in row lookup (registration still keys on address).",
     example: "3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9",
     nullable: true,
+    description:
+      "ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：注册时先按指纹解析行（地址退化为可达性元数据）。缺省/非法 → 保留已存值并回退到按地址查找；从未上报过指纹的行会带上服务端生成的 `legacy:{address}` 兜底键。",
   })
   deviceFingerprint?: string | null;
 }

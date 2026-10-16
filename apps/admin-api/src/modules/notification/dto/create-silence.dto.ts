@@ -10,8 +10,8 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 export class CreateSilenceDto {
   @ApiProperty({
     enum: ["global", "task", "application"],
-    description: "静默范围：global=全渠道；task=单任务；application=单应用",
     example: "task",
+    description: "静默范围：global=全渠道；task=单任务；application=单应用",
   })
   scope: "global" | "task" | "application";
 
@@ -37,8 +37,8 @@ export class CreateSilenceDto {
   reason?: string;
 
   @ApiPropertyOptional({
-    description: "静默时长（分钟）；缺省走系统默认 TTL",
     example: 60,
+    description: "静默时长（分钟）；缺省走系统默认 TTL",
   })
   durationMinutes?: number;
 }

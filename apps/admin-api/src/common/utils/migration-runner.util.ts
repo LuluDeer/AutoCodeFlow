@@ -79,7 +79,7 @@ export async function runMigrationsWithAdvisoryLock(
   // 抢锁。
   if (mode === "down" && !dataSource.undoLastMigration) {
     throw new Error(
-      "mode=down requires a data source exposing undoLastMigration (TypeORM revert API)",
+      "mode=down 需要暴露 undoLastMigration 的数据源（TypeORM revert API）",
     );
   }
   const log = options.log ?? ((m: string) => Logger.log(m, "Migration"));

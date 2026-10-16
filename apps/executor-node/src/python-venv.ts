@@ -145,14 +145,14 @@ export function venvBinaries(
 export function noPythonInterpreterMessage(toolchainSummary?: string): string {
   const summary = toolchainSummary ? ` (toolchain: ${toolchainSummary})` : '';
   return (
-    'No usable Python interpreter for this deployment: no interpreter is available ' +
-    `in the uv interpreter pool and no local Python on PATH actually executes${summary}. ` +
-    'On Windows, `python.exe` / `python3.exe` on PATH is very often a Microsoft Store ' +
-    'App Execution Alias stub — the file exists (so spawn resolves it) but every ' +
-    'execution fails with exit code 9009 and the message "Python was not found; run ' +
-    'without arguments to install from the Microsoft Store...". ' +
-    'Fix: install CPython 3.8+ (python.org) or seed the uv interpreter pool ' +
-    '(UV_PYTHON_INSTALL_DIR), then redeploy.'
+    '本次部署没有可用的 Python 解释器：uv 解释器池中没有可用解释器，'
+    + `且 PATH 上的本地 Python 均无法实际执行${summary}。`
+    + '在 Windows 上，PATH 里的 `python.exe` / `python3.exe` 很可能是 Microsoft Store '
+    + '应用执行别名（App Execution Alias）占位 stub——文件真实存在（spawn 能解析到它），'
+    + '但每次执行都以退出码 9009 失败，并提示 "Python was not found; run '
+    + 'without arguments to install from the Microsoft Store..."。'
+    + '修复方式：安装 CPython 3.8+（python.org），或预置 uv 解释器池 '
+    + '（UV_PYTHON_INSTALL_DIR），然后重新部署。'
   );
 }
 
@@ -401,12 +401,11 @@ export async function resolveDeployInterpreter(
       if (typeof poolPython === 'string' && poolPython) {
         return { source: 'pool', path: poolPython, version: declared };
       }
-      throw new Error('ensureVersion() returned an empty interpreter path');
+      throw new Error('ensureVersion() 返回了空的解释器路径');
     } catch (err) {
       throw new Error(
-        `Cannot obtain Python ${declared} for this deployment: ${errText(err)}. ` +
-          'The declared version must be honoured, so the deployment is refused ' +
-          'instead of silently falling back to another interpreter.',
+        `本次部署无法获取解释器 Python ${declared}：${errText(err)}。`
+          + '声明版本必须被兑现，因此拒绝本次部署，而不是静默回落到其它解释器。',
       );
     }
   }
@@ -470,16 +469,16 @@ export async function resolveDeployInterpreter(
     if (typeof poolPython === 'string' && poolPython) {
       return { source: 'pool', path: poolPython, version: DEFAULT_PYTHON_VERSION };
     }
-    throw new Error('ensureVersion() returned an empty interpreter path');
+    throw new Error('ensureVersion() 返回了空的解释器路径');
   } catch (err) {
     // 把默认版本这条路的失败**追加**到原有诊断之后：两者都是真实归因，
     // 且 `noPythonInterpreterMessage` 里的 Store stub 指引是上一轮事故修复的
     // 产物，不能因为加了兜底就丢掉。
     throw new Error(
-      `${noPythonInterpreterMessage(cachedToolchainSummary(deps))} ` +
-        `Additionally, obtaining the default Python ${DEFAULT_PYTHON_VERSION} via uv failed: ` +
-        `${errText(err)}. On an offline machine, configure an interpreter mirror or ` +
-        'pre-fill the interpreter pool (see OFFLINE-PROVISIONING.md).',
+      `${noPythonInterpreterMessage(cachedToolchainSummary(deps))} `
+        + `另外，经 uv 获取默认版本 Python ${DEFAULT_PYTHON_VERSION} 也失败了：`
+        + `${errText(err)}。离线机器请配置解释器镜像源，或预置解释器池`
+        + '（见 OFFLINE-PROVISIONING.md）。',
     );
   }
 }
@@ -657,7 +656,7 @@ export async function ensurePythonVenv(
         signal: opts.signal,
       });
       if (r.status !== 0) {
-        throw new Error(`uv venv failed: ${resultDetail(r) || 'unknown error'}`);
+        throw new Error(`uv venv 执行失败：${resultDetail(r) || '未知错误'}`);
       }
       createdByUv = true;
     } else {
@@ -669,7 +668,7 @@ export async function ensurePythonVenv(
       });
       if (r.status !== 0) {
         throw new Error(
-          `${interpreter.path} -m venv failed: ${resultDetail(r) || 'unknown error'}`,
+          `${interpreter.path} -m venv 执行失败：${resultDetail(r) || '未知错误'}`,
         );
       }
     }
@@ -686,7 +685,7 @@ export async function ensurePythonVenv(
           signal: opts.signal,
         });
         if (r.status !== 0) {
-          throw new Error(`uv pip install failed: ${resultDetail(r) || 'unknown error'}`);
+          throw new Error(`uv pip install 执行失败：${resultDetail(r) || '未知错误'}`);
         }
       } else {
         const args = ['install', '-r', reqFile];
@@ -698,7 +697,7 @@ export async function ensurePythonVenv(
           signal: opts.signal,
         });
         if (r.status !== 0) {
-          throw new Error(`pip install failed: ${resultDetail(r) || 'unknown error'}`);
+          throw new Error(`pip install 执行失败：${resultDetail(r) || '未知错误'}`);
         }
       }
     }

@@ -145,7 +145,7 @@ describe("TaskService — A-1 broadcast × mutex group 写面互斥闸", () => {
           applicationId: "app-1",
           executeMode: ExecuteMode.BROADCAST,
         } as any),
-      ).rejects.toThrow(/incompatible with a mutex group/);
+      ).rejects.toThrow(/与互斥组不兼容/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 

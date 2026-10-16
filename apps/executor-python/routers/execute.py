@@ -27,6 +27,12 @@ from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
 from auth import verify_token, get_current_token, request_with_self_heal
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
+# ADR-017 阶段 3（协议 v6）：回调面的**行身份**。模块级 import 在这里是安全的
+# ——device_identity 的模块级依赖只有标准库（winreg/psutil/config 全是延迟
+# import），且本文件第 25 行已模块级 import scheduler，而 scheduler 第 36 行同样
+# 模块级 import 了它：本模块顶层执行到这里时 device_identity 必然已在
+# sys.modules 里，不构成环（main.py / scheduler.py / commands.py 同款模块级风格）。
+from device_identity import get_device_fingerprint
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 from artifacts import gather_artifacts_for_callback, artifacts_dir_for
@@ -387,6 +393,11 @@ def _refine_failure_reason(message: str) -> Optional[str]:
     """
     if not message:
         return None
+    # LANG-ZH-01（面向用户文字中文化）配套：本函数是**执行器侧自己的**分类器，
+    # 与 admin 的 inferFailureReason 各有一份判据（两侧独立发版）。执行器产出的
+    # 用户可见文案已中文化，故每条规则都**英中并列**——只留英文会让新文案全部
+    # 落到 None（TIMEOUT/INTERPRETER_UNAVAILABLE 这类语义会退化），只留中文则会让
+    # 存量日志/旧文案失配。与 node prepareFailureReason 同款纪律。
     lowered = message.lower()
     if re.search(
         r"no interpreter found"
@@ -394,22 +405,69 @@ def _refine_failure_reason(message: str) -> Optional[str]:
         r"|interpreter .{0,80}(unavailable|not found)"
         r"|interpreterunavailable"
         # WS3 `InterpreterUnavailable.__str__` 的原文形状：
-        #   "Python 3.7 unavailable (not_downloadable): …"
+        #   "Python 3.7 unavailable (not_downloadable): …"（改版前）
+        #   "Python 3.7 不可用（not_downloadable）：…"（LANG-ZH-01 中文化后）
         # 以及 reason 取值表（CONTRACT.md §3.2 + uv_missing 扩展）。这两条让
         # 原始异常文本即使没经过执行器的中文包装也能被正确归类。
-        r"|python \d+(\.\d+)*( unavailable| not found)"
-        r"|\((not_downloadable|download_failed|download_timeout|mirror_unreachable|corrupt|uv_missing)\)"
+        #
+        # ⚠️ LANG-ZH-01 真实缺陷（本轮由执行器测试抓出，勿退回）：
+        # `interpreters.py` 的 `__str__` 中文化后用了**全角括号**「（…）」，
+        # 而本条原先把括号写死为 ASCII `\(…\)` 且只认英文 `unavailable` ——
+        # 于是 `_refine_failure_reason(str(exc))` 对**本仓自己抛出的**异常
+        # 返回 None（落 unknown），直接违背本函数 docstring 的承诺。
+        # 故 reason 支改为**括号无关** + 兼容中英两种骨架；`python \d+…不可用`
+        # 支覆盖裸版本号形态。类型判定 `_is_interpreter_unavailable()` 不受影响
+        # （它按异常类型判），坏的只是这条**字符串兜底**——而兜底正是给
+        # 「异常被包装成字符串后再分类」的路径（execute.py 的两处调用点）用的。
+        r"|python \d+(\.\d+)*( unavailable| not found| 不可用| 未找到)"
+        r"|[（(](not_downloadable|download_failed|download_timeout|mirror_unreachable|corrupt|uv_missing)[）)]"
         r"|解释器.{0,40}(无法获取|不可用|未找到)",
         lowered,
     ):
         return "interpreter_unavailable"
+    # LANG-ZH-01 缺口（本轮审计）：任务执行超时的**结构化归类**。
+    #
+    # 背景：`run_task` 的超时分支（下方 `except asyncio.TimeoutError`）产出的是
+    # `任务执行超时（600s）`（全角括号、中文），而本函数此前**没有任何 timeout
+    # 规则**——于是执行器自己判定的"超时"落回 None，回调不带 failureReason，
+    # 最终由 admin 的 `inferFailureReason` 按 `/timeout|超时/` 兜底成 TIMEOUT。
+    #
+    # 为什么仍要在这里补：① admin 的兜底是**文本匹配**，而 `timeout` 是唯一
+    # 可以被"用户文案改动"静默摧毁的语义——一旦文案里不再出现"超时"二字
+    # （如改成"执行超过了 {{n}} 秒"），admin 会落到 UNKNOWN，用户看到
+    # 「未知原因」，且 timeout 的可重试语义（RETRYABLE_ERROR_OPTIONS）随之后移。
+    # ② 执行器是**唯一**知道自己有无挂超时定时器的一方（timeout=0 不限时），
+    # 结构化上报比让 admin 猜更诚实——与 node 侧同款纪律（见 node
+    # prepareFailureReason 的 timeout 规则）。
+    #
+    # 位置：**必须在 git / dependency 规则之前**。理由是这两条规则很宽——
+    # 一个 git clone 超时的任务，uv/git 的原文里常同时出现 "timed out" 与
+    # "clone" 字样，后置会让"任务超时"被误吞成 `git_fetch_failed`（用户被
+    # 指引去查仓库地址，而真实成因是超时预算太小）。interpreter_unavailable
+    # 仍排在最前（其原文含 "No interpreter found"，不可能被本条抢走）。
+    #
+    # ⚠️ 判据必须**锚定在"任务本身超时"**，绝不能收任何泛化的 "timed out"：
+    # `uv venv timed out after 600s` / `git fetch timed out` 是**阶段预算**超时，
+    # 语义是"依赖装不上"/"代码拉不下来"，各自有更精确的分类（既有测试
+    # test_refine_failure_reason_dependency_variants 就以
+    # `uv venv timed out after 600s` → dependency_install_failed 钉住了这条）。
+    # 本条只认 `run_task` 自己产出的消息骨架 `任务执行超时（<n>s）`
+    # （execute.py 的 except asyncio.TimeoutError 分支）及其英文对等骨架。
+    if re.search(
+        r"任务执行超时"
+        r"|execution timed out"
+        r"|task execution timed out",
+        lowered,
+    ):
+        return "timeout"
     # FR-08（zip 渠道）：包下载/体积/安全审查失败。`package_fetch_failed` 本就
     # 在协议枚举里（executorReportable），此前执行器没有任何路径会产出它。
     if re.search(
         r"package download failed"
         r"|package exceeds the"
         r"|zip package rejected"
-        r"|packageurl",
+        r"|packageurl"
+        r"|包下载失败|包体积超过|zip 包未通过安全检查|zip 包渠道不可用",
         lowered,
     ):
         return "package_fetch_failed"
@@ -420,16 +478,43 @@ def _refine_failure_reason(message: str) -> Optional[str]:
         return "git_fetch_failed"
     if re.search(
         r"uv (pip install|venv) (install )?failed|uv venv timed out|pip install failed"
-        r"|dependency installation failed",
+        r"|dependency installation failed"
+        r"|uv venv 执行失败|uv pip install 执行失败|uv venv 超时|依赖安装失败",
         lowered,
     ):
         return "dependency_install_failed"
     if re.search(
         r"no such file or directory.{0,60}(uv|git|python3?)"
-        r"|spawn .*enoent|runtime.{0,20}not (supported|available)",
+        r"|spawn .*enoent|runtime.{0,20}not (supported|available)"
+        r"|runtime[^\n]{0,20}(不可用|缺失|未安装|未找到)"
+        # 双端一致性补口（本轮审计）：`不支持的 runtime：<x>`（run_task 的 runtime
+        # 分派兜底，见下方 else 分支）此前落 None → admin 兜底 UNKNOWN。它与
+        # node 侧 `不支持的 runtime：${actualRuntime}` 是**逐字同形**的消息，
+        # node `prepareFailureReason` 同批补入 runtime_missing（两侧必须同判，
+        # 否则同一份载荷在两个执行器上分因不同）。
+        #
+        # 归 runtime_missing 而非 unknown 的依据：枚举里它是"运行时类"环境/配置
+        # 失败，与"声明的 runtime 在这台机器上不可用"同族——处置动作也一致
+        # （改任务 runtime 声明或换执行器），且它在 RETRYABLE_ERROR_OPTIONS 里
+        # 是可选可重试项，用户能按分类筛出来。
+        r"|不支持的 run ?time|unsupported runtime",
         lowered,
     ):
         return "runtime_missing"
+    # 本轮审计补口：**执行器停机**导致"已领取但尚未 spawn"的执行被终态化。
+    #
+    # 主路径是 fail_prepare_stage_executions_on_shutdown 的**显式赋值**（见该
+    # 函数）；本条只覆盖"同一文案经其它路径上报"的情形，与 node
+    # prepareFailureReason 的同名规则逐条同形（两侧同判）。
+    #
+    # 取值 `executor_restart`：它在 protocol.json 里是 executorReportable
+    # （adminInternalOnly 仅 stale_recovered / application_missing /
+    # never_dispatched），admin 标签「执行器重启」+ runbook「瞬时中断——调度
+    # sweep 已自动重新入队」精确匹配本场景。此前不带 reason → admin 的
+    # inferFailureReason 无规则命中（它的 executor_offline 只认"离线/不可用/
+    # 可达"）→ UNKNOWN，用户只能看到「未知原因」。**复用既有枚举值，不新增**。
+    if re.search(r"正在停机|shutting down before", lowered):
+        return "executor_restart"
     # SEC-NEW (F-1): 沙箱配置启用但不可用（bwrap 缺失 / 用户命名空间被禁）。
     # 独立归类便于 admin 端区分「任务代码问题」与「执行器沙箱配置问题」。
     if re.search(r"task_sandbox|sandbox|bwrap", lowered):
@@ -439,6 +524,44 @@ def _refine_failure_reason(message: str) -> Optional[str]:
 
 def _executor_callback_address() -> str:
     return settings.executor_address_public or settings.executor_address or f'127.0.0.1:{settings.port}'
+
+
+def _executor_callback_identity() -> dict:
+    """终态回调载荷的**行身份**字段集：可选 ``deviceFingerprint``（ADR-017
+    阶段 3 / 协议 v6）。
+
+    为什么抽这一个 helper，而不是在五处构造点各写一遍表达式：
+
+      * 五处手拼 dict（_run_and_callback 主路径/异常路径、_push_killed_callback、
+        fail_prepare_stage_executions_on_shutdown、reject_pulled_execution）分属
+        主线/被杀/停机/拒绝四条路径，**逐处 copy 必然漏改一处**——漏掉的那条在
+        「共享令牌 + 同址碰撞」下会被 admin 归错执行器行（见 protocol.json
+        CallbackPayload.deviceFingerprint 的大段注释）。收敛成一个口子后，未来
+        再改行身份字段（或改采集口径）只动这里。
+      * 语义（失败即**整个键缺席**，绝不发 null）只写一次。`fingerprint ? {...}
+        : {}` 与 node 侧 withExecutorAddress 逐字节同形：采集失败时
+        get_device_fingerprint() 返回 None，显式 null 会被 admin 读成「v6 执行器
+        上报了一个空指纹」，而键缺席才是「未上报」——两者在 admin 的 DTO 校验与
+        逐级回落（凭据归属行 → 地址相等）上语义不同。
+      * 与既有 `_executor_callback_address()` 同址同风格：两者都是「回调面盖章」，
+        一个给 outbound **头**（x-executor-address / 限流维度），一个进请求**体**。
+        地址侧仍是标量返回（6 处调用点里 4 处只做头/注册地址/出参，改签名会连带
+        改动它们），故本 helper 只承载新增的**体**字段，用 `**` 展开就地合并。
+
+    为什么不在 enqueue_callback 里盖（node pushCallback 的等价位置）：Python 这
+    五处是逐点显式合并（已在此显式化），enqueue 再盖一次是**第二遍**写入——
+    同一表达式盖两遍不增加覆盖，反而让「载荷里到底谁写的这个键」变模糊（node
+    能收敛在 pushCallback 是因为 13 个构造点**都不**自己写这两字段）。相对的，
+    逐点显式合并让每一处构造点的形状在源码里可读（与 traceparent/artifacts/
+    failureReason 的就地条件合并同款纪律）。代价：新增构造点必须自己调用本
+    helper —— 该纪律由 tests/test_execute.py 的固定点测试守住。
+
+    反证有牙：tests/test_execute.py「callback payload carries the device
+    fingerprint」在删掉本 helper 的注入后即红；采集失败分支由同文件「omits the
+    key entirely when collection fails」断言键缺席（不是 null）。
+    """
+    fingerprint = get_device_fingerprint()
+    return {'deviceFingerprint': fingerprint} if fingerprint else {}
 
 
 def _get_admin_api_url() -> str:
@@ -467,20 +590,20 @@ def _validate_registry_url(value: str) -> str:
     ``PYPI_REGISTRY_URL``.
     """
     if not isinstance(value, str):
-        raise RuntimeError('Invalid PYPI_REGISTRY_URL')
+        raise RuntimeError('PYPI_REGISTRY_URL 不合法')
     url = value.strip()
     if not url:
         return ''
     try:
         parsed = urlsplit(url)
     except ValueError as exc:
-        raise RuntimeError('Invalid PYPI_REGISTRY_URL') from exc
+        raise RuntimeError('PYPI_REGISTRY_URL 不合法') from exc
     if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
-        raise RuntimeError('PYPI_REGISTRY_URL must be an http(s) URL')
+        raise RuntimeError('PYPI_REGISTRY_URL 必须是合法的 http(s) URL')
     if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
         raise RuntimeError(
-            'PYPI_REGISTRY_URL must not contain userinfo, query, or fragment; '
-            'provide registry credentials through a controlled credentials mechanism'
+            'PYPI_REGISTRY_URL 不得包含 userinfo、query 或 fragment；'
+            '注册表凭据请通过受控的凭据机制提供'
         )
     return url
 
@@ -683,7 +806,7 @@ def _validate_shell_entrypoint(entrypoint: str) -> str:
     if not isinstance(entrypoint, str) or not _SHELL_ENTRYPOINT_SAFE_RE.fullmatch(entrypoint):
         raise HTTPException(
             status_code=400,
-            detail='Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]',
+            detail='拒绝执行含不安全字符的 shell entrypoint；允许的字符集为 [A-Za-z0-9._/ :\\-]',
         )
     return entrypoint
 
@@ -751,7 +874,7 @@ def _validate_git_ref(ref: str) -> str:
     reject leading '-' and restrict to a ref-safe charset.
     """
     if not ref or ref.startswith('-') or not re.fullmatch(r'[A-Za-z0-9._/\-]+', ref):
-        raise HTTPException(status_code=400, detail=f'Invalid git ref: {ref}')
+        raise HTTPException(status_code=400, detail=f'无效的 git ref：{ref}')
     return ref
 
 
@@ -765,7 +888,7 @@ def _validate_requirements(requirements: list[str]) -> None:
         if not isinstance(spec, str) or not spec.strip() or spec.strip().startswith('-'):
             raise HTTPException(
                 status_code=400,
-                detail=f'Invalid requirement (options are not allowed): {spec!r}',
+                detail=f'无效的 requirement（不允许选项形式）：{spec!r}',
             )
 
 
@@ -840,7 +963,7 @@ def _ensure_entrypoint_in_workdir(entrypoint: str, work_dir: Path) -> None:
     if '..' in normalized.split('/'):
         raise HTTPException(
             status_code=400,
-            detail=f'entrypoint escapes the execution work directory: {entrypoint}',
+            detail=f'entrypoint 逃出了执行工作目录：{entrypoint}',
         )
 
     # 2) 带盘符（C:...）或根相对（/... 或 \\...）→ 一律按绝对路径判定
@@ -854,14 +977,14 @@ def _ensure_entrypoint_in_workdir(entrypoint: str, work_dir: Path) -> None:
         if drive_relative:
             raise HTTPException(
                 status_code=400,
-                detail=f'entrypoint escapes the execution work directory: {entrypoint}',
+                detail=f'entrypoint 逃出了执行工作目录：{entrypoint}',
             )
         try:
             Path(normalized).relative_to(work_dir)
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f'entrypoint escapes the execution work directory: {entrypoint}',
+                detail=f'entrypoint 逃出了执行工作目录：{entrypoint}',
             )
 
 
@@ -1411,7 +1534,7 @@ def _killed_prepare_result(started_at: float) -> dict:
         'success': False,
         'logs': '',
         'exitCode': None,
-        'errorMessage': 'Execution killed by admin request',
+        'errorMessage': '已按中台请求终止该执行',
         'durationMs': int((time.monotonic() - started_at) * 1000),
     }
 
@@ -1427,7 +1550,7 @@ def _assert_safe_package_url(url: str) -> str:
         合法拓扑，只保留绕过成本）。
     """
     if not isinstance(url, str) or not url.strip():
-        raise HTTPException(status_code=400, detail='packageUrl is required for application_zip tasks')
+        raise HTTPException(status_code=400, detail='application_zip 任务必须提供 packageUrl')
     candidate = url.strip()
     try:
         parsed = urlsplit(candidate)
@@ -1435,17 +1558,17 @@ def _assert_safe_package_url(url: str) -> str:
         # 访问 .port 顺带拒绝畸形端口（与 config.validate_pypi_registry_url 同法）。
         parsed.port
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f'Invalid packageUrl: {url}') from exc
+        raise HTTPException(status_code=400, detail=f'无效的 packageUrl：{url}') from exc
     if parsed.scheme not in ('http', 'https') or not parsed.netloc or not hostname:
         raise HTTPException(
             status_code=400,
-            detail=f'packageUrl scheme not allowed (http/https only): {url}',
+            detail=f'不允许的 packageUrl 协议（仅允许 http/https）：{url}',
         )
     if parsed.username is not None or parsed.password is not None:
         # 凭据不进 argv/日志/URL 记录，且 admin 侧生成的 packageUrl 从不带凭据。
         raise HTTPException(
             status_code=400,
-            detail='packageUrl must not contain userinfo credentials',
+            detail='packageUrl 不得内嵌用户凭据（userinfo）',
         )
 
     allow_private = bool(getattr(settings, 'allow_private_network', False))
@@ -1454,7 +1577,7 @@ def _assert_safe_package_url(url: str) -> str:
         if not (allow_private and not loopback_only):
             raise HTTPException(
                 status_code=400,
-                detail=f'packageUrl targets a restricted network address: {hostname}',
+                detail=f'packageUrl 指向受限网络地址：{hostname}',
             )
     return candidate
 
@@ -1557,7 +1680,7 @@ async def _download_package(url: str, dest: Path, *,
                                 _prev_hostname = urlsplit(current_url).hostname
                             except ValueError:
                                 raise RuntimeError(
-                                    'package download failed: invalid redirect location'
+                                    '包下载失败：重定向地址不合法'
                                 )
                             # node lib/download.ts 同语义：跨 host 剥离 Authorization
                             # （共享令牌绝不泄漏给非 admin 目标），同 host 保留续传。
@@ -1572,7 +1695,7 @@ async def _download_package(url: str, dest: Path, *,
                             continue
                         if response.status_code != 200:
                             raise RuntimeError(
-                                f'package download failed with HTTP {response.status_code}'
+                                f'包下载失败，HTTP 状态码 {response.status_code}'
                             )
                         with open(dest, 'wb') as handle:
                             async for chunk in response.aiter_bytes():
@@ -1581,15 +1704,15 @@ async def _download_package(url: str, dest: Path, *,
                                 received += len(chunk)
                                 if received > ZIP_DOWNLOAD_MAX_BYTES:
                                     raise RuntimeError(
-                                        f'package exceeds the {ZIP_DOWNLOAD_MAX_BYTES} byte limit'
+                                        f'包体积超过 {ZIP_DOWNLOAD_MAX_BYTES} 字节上限'
                                     )
                                 handle.write(chunk)
                         break
                 else:
-                    raise RuntimeError('package download failed: too many redirects')
+                    raise RuntimeError('包下载失败：重定向次数过多')
     except (httpx.HTTPError, OSError, asyncio.TimeoutError) as exc:
         _remove_quietly(dest)
-        raise RuntimeError(f'package download failed: {type(exc).__name__}') from exc
+        raise RuntimeError(f'包下载失败：{type(exc).__name__}') from exc
     except Exception:
         _remove_quietly(dest)
         raise
@@ -1610,7 +1733,7 @@ def _extract_package(zip_path: Path, work_dir: Path) -> None:
     """
     if _zip_safety is None:  # pragma: no cover - 仅并行开发期可达
         raise RuntimeError(
-            'zip package channel unavailable: zip_safety module is not installed on this executor'
+            'zip 包渠道不可用：本执行器未安装 zip_safety 模块'
         )
     try:
         _zip_safety.vet_zip(zip_path)
@@ -1619,7 +1742,7 @@ def _extract_package(zip_path: Path, work_dir: Path) -> None:
         violation = getattr(exc, 'violation', None)
         if violation:
             raise RuntimeError(
-                f'zip package rejected by safety check ({violation}): {exc}'
+                f'zip 包未通过安全检查（{violation}）：{exc}'
             ) from exc
         raise
 
@@ -1748,8 +1871,8 @@ async def fail_prepare_stage_executions_on_shutdown() -> int:
     killed/分类语义，且让 admin 侧多挂一段 RUNNING 行）。
 
     与 Node 侧逐字段对齐：status=failed、errorMessage='Executor is shutting
-    down before this execution started'、**不设** failureReason（admin 按
-    errorMessage 推断，与 node 行为一致）。语义要点：
+    down before this execution started'、failureReason='executor_restart'
+    （**本轮审计补口**——见下）。语义要点：
 
       * 只处理 proc is None 且未 push 过 killed 回调的条目——已 spawn 的由
         kill_running_task_processes + worker 正常收尾负责；
@@ -1759,6 +1882,22 @@ async def fail_prepare_stage_executions_on_shutdown() -> int:
         不会在停机期间继续 spawn；
       * 不触碰 running 计数：槽位归还仍归 _run_and_callback 的 finally
         （decrement_running 幂等语义不变）。
+
+    **failureReason='executor_restart'（本轮审计）**：此前本路径**刻意不设**
+    failureReason，理由是"admin 按 errorMessage 推断，与 node 行为一致"。
+    实测结论是这条推理不成立——admin 的 inferFailureReason 对
+    `执行器正在停机，该执行尚未开始` 没有任何规则命中（它的 executor_offline
+    规则只认"离线/不可用/可达"，没有停机文案），最终落 UNKNOWN，用户看到
+    「未知原因：去查看执行日志定位根因」。而这是一个 100% 已知、处置动作明确
+    （runbook: 瞬时中断，调度 sweep 已自动重新入队）的场景。
+
+    取值依据：`executor_restart` 在 protocol.json 里是 **executorReportable**
+    （adminInternalOnly 仅 stale_recovered / application_missing /
+    never_dispatched），admin 标签「执行器重启」+ 其 hint「执行器重启导致运行中
+    任务中断」精确匹配。故**复用既有正确取值，绝不新增枚举**。
+
+    与 node task-worker.ts `TaskWorker.stop()` 逐字段同形（该侧同批补上），
+    两端的停机回调从此携带同一分类。
 
     返回成功推送的回调数。best-effort：网络失败只记日志（停机窗口有界）。"""
     with _live_lock:
@@ -1781,8 +1920,16 @@ async def fail_prepare_stage_executions_on_shutdown() -> int:
         payload = {
             'executionId': entry.execution_id,
             'status': 'failed',
-            'errorMessage': 'Executor is shutting down before this execution started',
+            'errorMessage': '执行器正在停机，该执行尚未开始',
+            # 本轮审计补口：显式分类（理由见本函数 docstring）。复用既有
+            # executorReportable 取值，不新增枚举——与 node TaskWorker.stop()
+            # 同批同形，两端停机回调携带同一 failureReason。
+            'failureReason': 'executor_restart',
             'executorAddress': _executor_callback_address(),
+            # ADR-017 阶段 3 / 协议 v6：行身份随回调上报（停机路径同样盖章——
+            # failed 终态不因路径不同而丢掉行身份，否则 admin 对这批执行只能
+            # 落到「地址相等」判据）。
+            **_executor_callback_identity(),
         }
         if entry.traceparent:
             payload['traceparent'] = entry.traceparent
@@ -1880,20 +2027,20 @@ def accept_execution(
     from main import is_shutting_down
 
     if is_shutting_down():
-        raise ExecutionRejected(503, 'Executor is shutting down')
+        raise ExecutionRejected(503, '执行器正在停机')
     if slot_pre_reserved:
         # E-01 预留模式的防御性复查（不再是 add-then-check 的常规预检）。
         if sched.get_running_count() > settings.max_concurrent_tasks:
-            raise ExecutionRejected(429, 'Executor is at capacity')
+            raise ExecutionRejected(429, '执行器已达并发上限')
     elif sched.get_running_count() >= settings.max_concurrent_tasks:
-        raise ExecutionRejected(429, 'Executor is at capacity')
+        raise ExecutionRejected(429, '执行器已达并发上限')
 
     # P2：磁盘临界水位（对齐 node acceptExecution 的 diskUsagePercent 检查）。
     # 磁盘满时任何任务都会在写 workdir/log 阶段失败，提前拒绝新任务比让任务
     # 在准备阶段失败更诚实。计量失败返回 0（无压力），不误拒任务。
     if disk_usage_percent() >= DISK_CRITICAL_PERCENT:
         raise ExecutionRejected(
-            503, 'Executor disk is critically full; new tasks are refused'
+            503, '执行器磁盘已达临界水位，拒绝接收新任务'
         )
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
@@ -1917,7 +2064,7 @@ def accept_execution(
         first = exc.errors()[0]
         where = '.'.join(str(p) for p in first['loc']) or '(root)'
         raise ExecutionRejected(
-            400, f'Invalid execute request: {where}: {first["msg"]}'
+            400, f'无效的 execute 请求（违反 executor-protocol 协议）：{where}：{first["msg"]}'
         )
 
     # E-19 (parity with executor-node execute.ts): requirements 类型守卫。上游
@@ -1928,7 +2075,7 @@ def accept_execution(
     # 的错误——真正重要的是它现在位于登记之前（见上方注释）。
     req_requirements = req.task.get('requirements', [])
     if req_requirements is not None and not isinstance(req_requirements, list):
-        raise ExecutionRejected(400, 'requirements must be an array of package names')
+        raise ExecutionRejected(400, 'requirements 必须是包名数组')
 
     # E7: duplicate-accept guard (node execute.ts:339-342 parity) — a still
     # live (queued/prepare/running) executionId must never be accepted twice:
@@ -1939,7 +2086,7 @@ def accept_execution(
     if entry is None:
         raise ExecutionRejected(
             400,
-            f'Execution {req.executionId} is already active on this executor',
+            f'执行 {req.executionId} 已在本执行器上活跃',
         )
 
     # OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径取
@@ -1989,7 +2136,12 @@ async def reject_pulled_execution(execution_id: str, reason: str,
                 # 'unknown'（ExecutionFailureReason.UNKNOWN）；显式上报让 admin 端
                 # 无需再猜，观测口径与 node 侧对齐。
                 'failureReason': 'unknown',
-                'errorMessage': f'Executor rejected pulled dispatch: {reason}',
+                'errorMessage': f'执行器拒绝了拉取到的派发任务：{reason}',
+                # ADR-017 阶段 3 / 协议 v6：行身份。本路径此前连 executorAddress
+                # 都不带（per-execution 令牌路径，admin 从令牌即知行）；指纹是
+                # **载荷侧**的行身份通道，与令牌路径无关，故在此补上——被拒派发
+                # 的收敛回调也要能被归到正确执行器行。
+                **_executor_callback_identity(),
                 **({'traceparent': traceparent} if traceparent else {}),
             },
             token,
@@ -2485,7 +2637,7 @@ async def _replay_persisted_callback_file(filepath: Path, requests: list[dict], 
     # 载荷永久丢失（重定向目标并非 admin）。
     if 200 <= response.status_code < 300:
         return True
-    raise RuntimeError(f'callback replay failed with HTTP {response.status_code}')
+    raise RuntimeError(f'回调重放失败，HTTP 状态码 {response.status_code}')
 
 
 async def retry_persisted_callbacks() -> int:
@@ -2534,7 +2686,7 @@ async def retry_persisted_callbacks() -> int:
             url = data.get('url') or build_admin_api_url('/executions/callback')
             requests = data.get('payloads')
             if not isinstance(requests, list) or not requests:
-                raise ValueError('empty payload batch')
+                raise ValueError('空的载荷批次')
             if not _replay_backoff_elapsed(filepath, raw_meta, retries):
                 continue  # per-file exponential backoff not yet expired
 
@@ -2575,10 +2727,19 @@ async def _fetch_terminal_states(address: str, since_ms: float) -> Optional[set]
     None**——调用方据此整体放弃本轮，绝不退化成「空集合」（那等于说"都没
     终态"，会把毒丸文件一股脑推回重发队列）。"""
     from urllib.parse import quote, urlencode
-
+    # ADR-017 阶段 3：指纹随机器面上报（服务端据此唯一定位本行）。
+    # 采集器 `get_device_fingerprint` 已在本模块顶部模块级 import——此处原有的
+    # 函数内重复 import 已随之删除（同款模块级风格见 main.py / scheduler.py /
+    # commands.py）。
     since_iso = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(since_ms / 1000))
+    # ADR-017 阶段 3：带上指纹，服务端据此唯一定位本行（pull 允许同地址多行
+    # 并存）；采集失败不带该参数，服务端 legacy 路径，行为与引入前一致。
+    _fp = get_device_fingerprint()
+    _params = {'since': since_iso, 'limit': DEAD_LETTER_RECONCILE_LIMIT}
+    if _fp:
+        _params['deviceFingerprint'] = _fp
     path = (f'/executors/{quote(address, safe="")}/terminal-states?'
-            + urlencode({'since': since_iso, 'limit': DEAD_LETTER_RECONCILE_LIMIT}))
+            + urlencode(_params))
     token = await get_current_token() or _get_callback_token()
     # O-24: shared per-loop pool.
     response = await request_with_self_heal(
@@ -2839,9 +3000,11 @@ async def _push_killed_callback(executionId: str) -> None:
     payload = {
         'executionId': executionId,
         'status': 'failed',
-        'errorMessage': 'Execution killed by admin request',
+        'errorMessage': '已按中台请求终止该执行',
         'failureReason': 'killed',
         'executorAddress': _executor_callback_address(),
+        # ADR-017 阶段 3 / 协议 v6：被杀的终态回调同样盖章行身份。
+        **_executor_callback_identity(),
     }
     # O-20: enqueue into the batch queue and flush inline — the kill endpoint
     # (and its tests) expect the terminal result delivered-or-persisted here.
@@ -2921,6 +3084,7 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     'errorMessage': _truncate_error_message(result.get('errorMessage')),
                     'durationMs': result.get('durationMs'),
                     'executorAddress': _executor_callback_address(),
+                    **_executor_callback_identity(),
                 }
                 if entry is not None and entry.traceparent:
                     payload['traceparent'] = entry.traceparent
@@ -2941,6 +3105,7 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     'status': 'failed',
                     'errorMessage': _truncate_error_message(str(exc)),
                     'executorAddress': _executor_callback_address(),
+                    **_executor_callback_identity(),
                 }
                 if entry is not None and entry.traceparent:
                     payload['traceparent'] = entry.traceparent
@@ -2964,7 +3129,7 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
             # request — classify the failure callback accordingly instead of
             # surfacing the raw exit-code/-signal text.
             payload['status'] = 'failed'
-            payload['errorMessage'] = 'Task process tree killed by admin request'
+            payload['errorMessage'] = '任务进程树已按中台请求终止'
             payload['failureReason'] = 'killed'
 
         admin_api_url = _get_admin_api_url()
@@ -3181,7 +3346,7 @@ async def ensure_venv(
     # 正常链路里 admin DTO 已校验（FR-06b），这里是执行器侧的最后一道——
     # 一个畸形值（"3.7.9"、"../x"、"--index-url"）在这里就终止，绝不进 argv。
     if python_version is not None and not RUNTIME_VERSION_PATTERN.fullmatch(str(python_version)):
-        raise RuntimeError(f'Invalid runtimeVersion (expected X.Y): {python_version!r}')
+        raise RuntimeError(f'无效的 runtimeVersion（期望 X.Y 格式）：{python_version!r}')
 
     # A-5 检查点：spawn uv 之前。
     _check_cancelled()
@@ -3219,13 +3384,13 @@ async def ensure_venv(
                 # the `if not venv_dir.exists()` check would then silently reuse the
                 # broken venv forever. Remove it before surfacing the failure.
                 shutil.rmtree(venv_dir, ignore_errors=True)
-                raise RuntimeError(f'uv venv timed out after {UV_VENV_TIMEOUT_SECONDS}s (uv process killed)')
+                raise RuntimeError(f'uv venv 超时（{UV_VENV_TIMEOUT_SECONDS}s 后已杀掉 uv 进程）')
             except Exception:
                 shutil.rmtree(venv_dir, ignore_errors=True)
                 raise
             if code != 0:
                 shutil.rmtree(venv_dir, ignore_errors=True)
-                raise RuntimeError(f'uv venv failed: {_truncate_error_message(out)}')
+                raise RuntimeError(f'uv venv 执行失败：{_truncate_error_message(out)}')
         finally:
             # NETOPT-6②：成功 → pyvenv.cfg home 已指向池目录（依赖扫描接管）；
             # 失败 → venv 已删/未建成，无依赖者。两条路径都可解除登记。
@@ -3265,7 +3430,7 @@ async def ensure_venv(
             index_hint = _pypi_index_hint(registry_url, extra_registry_url)
             raise RuntimeError(
                 _truncate_error_message(
-                    f'uv pip install failed{index_hint}: {out}'
+                    f'uv pip install 执行失败{index_hint}：{out}'
                 )
             )
 
@@ -3283,7 +3448,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             'success': False,
             'logs': '',
             'exitCode': None,
-            'errorMessage': 'Execution killed by admin request',
+            'errorMessage': '已按中台请求终止该执行',
             'durationMs': int((time.monotonic() - started_at) * 1000),
         }
     # Working directory
@@ -3292,7 +3457,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     base = Path(settings.work_dir).resolve()
     resolved = work_dir.resolve()
     if not str(resolved).startswith(str(base) + os.sep) and resolved != base:
-        raise HTTPException(status_code=400, detail='Invalid executionId: path traversal detected')
+        raise HTTPException(status_code=400, detail='无效的 executionId：检测到路径穿越')
     work_dir.mkdir(parents=True, exist_ok=True)
     # S6/Q11: 0o700 权限收紧。NETOPT-6⑩ 注释如实化：同 UID 下 chmod **挡不住
     # 兄弟任务读本目录**（执行器进程与所有任务进程同一属主，DAC 对同 UID
@@ -3321,7 +3486,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         # S7: SSRF guard — only allow http(s) and ssh git URLs
         import re as _re
         if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
-            raise HTTPException(status_code=400, detail=f'gitRepo URL scheme not allowed: {git_repo}')
+            raise HTTPException(status_code=400, detail=f'不允许的 gitRepo URL 协议：{git_repo}')
 
         # B-2（SEC-NEW）：gitRepo 拒绝 URL 内嵌凭据（与 admin 侧
         # assertSafeGitRepoUrl 同款规则，双侧对齐）。泄漏面：git clone 失败时
@@ -3335,20 +3500,20 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             _git_url = urlsplit(git_repo)
             _git_url.port  # 畸形端口一并拒绝（与 packageUrl 守卫同法）
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f'Invalid gitRepo URL: {git_repo}') from exc
+            raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}') from exc
         if _git_url.scheme in ('http', 'https') and (
             _git_url.username is not None or _git_url.password is not None
         ):
             raise HTTPException(
                 status_code=400,
-                detail='gitRepo must not contain embedded credentials (userinfo); '
-                       'use GIT_ASKPASS / a credential helper instead',
+                detail='gitRepo 不得内嵌凭据（userinfo）；'
+                       '请改用 GIT_ASKPASS / 凭据助手',
             )
         if _git_url.scheme == 'ssh' and _git_url.password is not None:
             raise HTTPException(
                 status_code=400,
-                detail='gitRepo must not contain an embedded password; '
-                       'use an SSH key / GIT_ASKPASS instead',
+                detail='gitRepo 不得内嵌密码；'
+                       '请改用 SSH 密钥 / GIT_ASKPASS',
             )
 
         # S7 (SEC-NEW-2): SSRF guard — block private IP addresses and localhost.
@@ -3376,12 +3541,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         private_ip_pattern = r'(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
         if not settings.allow_private_network:
             if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
-                raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
+                raise HTTPException(status_code=400, detail=f'gitRepo URL 指向受限网络地址：{git_repo}')
         else:
             # 开关开启：放行 RFC1918，loopback 仍拒绝（见上方 ADR）。
             loopback_pattern = r'(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
             if _re.search(loopback_pattern, git_repo, _re.IGNORECASE):
-                raise HTTPException(status_code=400, detail=f'gitRepo URL contains restricted address: {git_repo}')
+                raise HTTPException(status_code=400, detail=f'gitRepo URL 指向受限网络地址：{git_repo}')
 
         ref = git_commit if git_commit else git_branch
         _validate_git_ref(ref)
@@ -3445,8 +3610,8 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 'logs': '',
                 'exitCode': None,
                 'errorMessage': (
-                    f'Invalid runtimeVersion (expected a string like "3.11", '
-                    f'got {type(_raw_runtime_version).__name__}): '
+                    f'无效的 runtimeVersion（期望形如 "3.11" 的字符串，'
+                    f'实际为 {type(_raw_runtime_version).__name__}）：'
                     f'{_raw_runtime_version!r}'
                 ),
                 'durationMs': int((time.monotonic() - started_at) * 1000),
@@ -3464,7 +3629,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 'logs': '',
                 'exitCode': None,
                 'errorMessage': (
-                    f'Invalid runtimeVersion (expected X.Y, e.g. 3.7): {declared_version!r}'
+                    f'无效的 runtimeVersion（期望 X.Y，例如 3.7）：{declared_version!r}'
                 ),
                 'durationMs': int((time.monotonic() - started_at) * 1000),
             }
@@ -3541,8 +3706,8 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 'logs': '',
                 'exitCode': None,
                 'errorMessage': (
-                    'application_zip task has no packageUrl in the dispatch payload '
-                    '(admin must attach the resolved applications.packageUrl); '
+                    'application_zip 任务的派发载荷中没有 packageUrl '
+                    '（中台必须附带已解析的 applications.packageUrl）；'
                     f'applicationId={application_id!r}'
                 ),
                 'durationMs': int((time.monotonic() - started_at) * 1000),
@@ -3621,7 +3786,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             glue_file = work_dir / f'glue_script.{ext}'
             glue_runtime = 'shell'
         else:
-            raise HTTPException(status_code=400, detail=f'Unsupported glue language: {glue_language}')
+            raise HTTPException(status_code=400, detail=f'不支持的 glue 语言：{glue_language}')
 
         glue_file.write_text(glue_source, encoding='utf-8')
         glue_file.chmod(0o755)
@@ -3705,6 +3870,19 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     registered_address = _executor_callback_address()
     if registered_address:
         env['AUTOFLOW_EXECUTOR_ADDRESS'] = registered_address
+    # ADR-017 阶段 3（协议 v6）：把本执行器的**行身份**随 env 交给任务代码，
+    # SDK 的 TaskContext/CallbackClient 据此在**任务自己发起**的回调上盖章
+    # deviceFingerprint（与上面 AUTOFLOW_EXECUTOR_ADDRESS 同款管道）。为什么
+    # 必须有这条：本执行器自己的五处终态回调由 _executor_callback_identity()
+    # 盖章，但经 SDK 直接回调的任务代码走的是**另一条**出站路径（SDK 从 env 读
+    # 凭据、自己拼载荷）——没有本注入时，那条路径的合法回调在「共享令牌 + 同址
+    # 碰撞」下仍无法被 admin 归到正确的执行器行。指纹同属平台管道而非用户参数
+    # （SDK 侧在 _CALLBACK_ENV_KEYS 里显式排除出 params，不泄漏进 ctx.params）。
+    # 采集失败 → 不注入该键（SDK 侧 device_fingerprint 为 None → 省键），与
+    # register/heartbeat/回调体同款「失败即省键、绝不发空串/None」纪律。
+    fingerprint = get_device_fingerprint()
+    if fingerprint:
+        env['AUTOFLOW_DEVICE_FINGERPRINT'] = fingerprint
     # FEAT-05: 告诉任务产物目录约定位置，任务把交付物写入此目录即被收集上传。
     env['AUTOFLOW_ARTIFACTS_DIR'] = str(artifacts_dir_for(work_dir))
     # OBS-01: 把 dispatch 请求的 W3C traceparent 头透传为任务 env（任务代码
@@ -3852,7 +4030,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             'success': False,
             'logs': '',
             'exitCode': None,
-            'errorMessage': f'Unsupported runtime: {runtime}',
+            'errorMessage': f'不支持的 runtime：{runtime}',
             'durationMs': int((time.monotonic() - started_at) * 1000),
         }
 
@@ -3869,7 +4047,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             'success': False,
             'logs': '',
             'exitCode': None,
-            'errorMessage': 'Execution killed by admin request',
+            'errorMessage': '已按中台请求终止该执行',
             'durationMs': int((time.monotonic() - started_at) * 1000),
         }
 
@@ -4023,7 +4201,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 'success': False,
                 'logs': logs,
                 'exitCode': proc.returncode,
-                'errorMessage': f'Process exited with code {proc.returncode}',
+                'errorMessage': f'进程以退出码 {proc.returncode} 结束',
                 'durationMs': duration_ms,
             }
 
@@ -4050,7 +4228,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # admin DTO logs limit and get the callback rejected wholesale).
             'logs': _build_callback_logs(log_chunks, captured_truncated, log_file) if 'log_chunks' in locals() else '',
             'exitCode': None,
-            'errorMessage': f'Task timeout after {timeout}s',
+            'errorMessage': f'任务执行超时（{timeout}s）',
             'durationMs': duration_ms,
         }
     except HTTPException as e:

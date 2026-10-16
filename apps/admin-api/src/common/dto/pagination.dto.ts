@@ -52,17 +52,17 @@ export class PageQueryDto {
  * `PageQueryDto`。
  */
 export class PaginationDto extends PageQueryDto {
-  @ApiPropertyOptional({ description: "Fuzzy search by task name" })
+  @ApiPropertyOptional({ description: "按任务名模糊搜索" })
   @IsOptional()
   @IsString()
   name?: string;
 
-  @ApiPropertyOptional({ description: "Filter by task status" })
+  @ApiPropertyOptional({ description: "按任务状态过滤" })
   @IsOptional()
   @IsString()
   status?: string;
 
-  @ApiPropertyOptional({ description: "Filter by runtime (python/node/shell)" })
+  @ApiPropertyOptional({ description: "按 runtime 过滤（python/node/shell）" })
   @IsOptional()
   @IsString()
   runtime?: string;

@@ -1,9 +1,11 @@
 # ADR-017: 执行器唯一标识——设备指纹 + 安装实例盐（`address` 降级为可达性元数据）
 
-状态：Accepted（阶段 1 + 阶段 2 已落地并验收；阶段 3 待实施）
+状态：Accepted（阶段 1 + 阶段 2 + 阶段 3 已落地；真机双执行器冒烟待用户侧环境，见文末验收项）
 
-> 落地进度见文末「实施记录」。本 ADR 的决策已定，分阶段执行中——
-> `deviceFingerprint` 目前在库中**只被采集与观测，不参与任何定位**。
+> 落地进度见文末「实施记录」。阶段 1/2/3 均已落地：`deviceFingerprint` 自阶段 3 起
+> **是 register/heartbeat 的行定位键**（`address` 降级为可达性元数据）。
+> 阶段 3 的复查补口（2026-10-14）另修了若干「身份键换了、消费方没换」的缺口，
+> 见文末「阶段 3 复查补口」。
 
 ## 背景
 
@@ -145,16 +147,19 @@
       三端指纹算法一致性由 **`packages/executor-protocol/device-identity.vectors.json` 金向量**保证
       —— node spec 与 python test **共读同一份向量文件**，任一端算法漂移即双端测试同时失败
       （阶段 3 后该一致性是硬前提，故提前以共享金向量锁死）。
-- [ ] **阶段 3** 单测：**同一 address 不同 fingerprint → 后到者 409**；同一 fingerprint 不同 address → **更新地址而非新建行**。
-- [ ] **阶段 3** 单测：存量执行器（无 fingerprint）走 `legacy:${address}` 路径，行为与引入前逐字节一致。
-- [ ] **阶段 3** 迁移测试：`deviceFingerprint` 加列 → 回填 → 加非空约束的三步可回滚（对齐 `check-migrations.mjs`）。
-      （阶段 2 只做了第一步加列 + 非唯一索引：`1790000000038-AddExecutorDeviceFingerprint`。）
-- [ ] **阶段 3** 真机冒烟（ADR-008）：两台同网段机器（模拟地址碰撞）→ 第二台注册被拒且日志/告警可见。
-      （阶段 2 的观测面已能让该场景**可见**并发出 ERROR 告警 + 列出并存指纹，但尚不拒绝。）
-- [ ] **阶段 3** 真机冒烟：pull 执行器换 IP 后不产生新行，历史执行记录连续。
-- [ ] 文档：`docs/atlas/04-flows/executor-registration.md` 的「注册幂等键」一行改述；
-      安装向导提示唯一地址要求。（阶段 2 已在 atlas 增补 `deviceFingerprint` 采集说明；
-      幂等键改述属阶段 3——现在改会与实现不符。）
+- [x] ✅ **阶段 3** 单测：**同一 address 不同 fingerprint → push 409**（保留先注册者）；同一 fingerprint 不同 address → **更新地址而非新建行**。
+      `apps/admin-api/src/modules/executor/__tests__/executor.service.spec.ts` 的「ADR-017 阶段 3 指纹定位与冲突分叉」块
+      （含 pull 同址各自成行、漂移抢占 409、registerExecutor 跨漂移 token 幂等）。
+- [x] ✅ **阶段 3** 单测：存量执行器（无 fingerprint）走 `legacy:${address}` 路径，行为与引入前逐字节一致
+      （首注册落 legacy 兜底键 / 重注册按 address 命中 / 升级后指纹接管 legacy 行）。
+- [x] ✅ **阶段 3** 迁移测试：`deviceFingerprint` 加宽 → 回填 legacy 键 → 非空约束 + address 唯一收窄为 push 行
+      （`1790000000054-AddExecutorDeviceFingerprintIdentity`，spec 逐段断言 SQL 与 down 逆序回收）。
+- [x] ✅ **阶段 3** 迁移注册：`docs/PLAN-CLAIMS.md` 迁移时间戳分配表登记 `1790000000054`（`check-migrations.mjs` 拦截口径）。
+- [ ] **阶段 3** 真机冒烟（ADR-008）：两台同网段机器（模拟地址碰撞）→ push 第二台注册被拒（409）且日志/告警可见。
+      （阶段 2 的观测面已能让该场景**可见**并发出 ERROR 告警 + 列出并存指纹；409 拒绝在真机双执行器环境未跑，需用户侧两台机器。）
+- [ ] **阶段 3** 真机冒烟：执行器换 IP 后不产生新行，历史执行记录连续（单测已覆盖行复用与地址更新，真机链路未跑）。
+- [x] ✅ **阶段 3** 文档：`docs/atlas/04-flows/executor-registration.md` 的「注册幂等键」「心跳字段语义」已改述为指纹定位；
+      安装向导提示唯一地址要求仍待（向导 UI 在 admin-web，属后续切片）。
 
 ## 实施记录
 
@@ -235,17 +240,107 @@ workDir **顶层的一切（含文件）**都会被 TTL 清扫按 mtime 删除�
 不按指纹定位行、不改 `address` 语义、不加唯一约束、不拒绝任何注册。存量为 NULL 的行与未上报
 该字段的执行器，行为与引入本特性前**逐字节一致**。
 
-### 阶段 3（待实施）
+### 阶段 3（已落地）
 
 注册以 `deviceFingerprint` 定位行、`address` 降级为可达性元数据、列加非空约束 +
 存量行回填 `legacy:${address}` 并标记待升级、冲突时后到者 `409` 拒绝。**前置条件**：存量机队
 基本升到协议 v3（否则旧端不上报指纹，定位会退化）。需灰度验证存量执行器不被拒。
 
+落地内容（对照决策条款）：
+
+- **决策 §2 定位切换**：`register()`/`heartbeat()` 首行按 `deviceFingerprint` 定位，命中即
+  复用原行并更新 `address`（换 IP = 同一台机器换地址，不产生幽灵行、部署/执行历史不断裂）。
+  legacy（未上报指纹）按 `address` 兜底，行为与引入前逐字节一致。
+- **决策 §4 冲突姿态**：push 模式同地址不同真实指纹 → 保留先注册者、后到者 `409`
+  （含并发首注册竞态的 A-10 分支同口径；漂移抢占他人地址同样 409）。
+- **决策 §5 派发模式分叉（用户明确要求）**：**pull 模式同地址不同指纹允许各自成行**
+  （两家不同内网同网段同 IP 是 pull 的常态，地址只是自报标签），冲突仅降级为既有观测告警；
+  `uq_executors_address` 由全局唯一收窄为 **partial 唯一（仅 push 行）**。
+- **决策 §6 迁移**：`1790000000054-AddExecutorDeviceFingerprintIdentity`——加宽 `VARCHAR(80)`
+  + 回填 `legacy:{address}`（`legacyExecutorIdentity`，超长地址退化为 `legacy-h:` + sha256）
+  + `SET NOT NULL` + 地址唯一收窄为 push 行。down 逆序回收。
+- **认证面**：`validateTokenByAddress` 支持指纹优先定位（pull 同址多行命中自己的行、
+  换 IP 注册竞态时心跳仍可认证）；注册回显的 `tokenHash` 改按 `executor.id` 取。
+- **机器面身份解析收敛（2026-10-14 复查补口）**：首次落地只给 heartbeat 传了指纹，
+  其余 9 个机器面调用点（pull / command-result / config / terminal-states / offline /
+  回调 / 产物上传 / SOP 协作）仍在裸按地址查——pull 同址多行时会**拉到别人的队列**、
+  回调会**取到别人的 HMAC 密钥**（合法执行器 401 → 执行卡在 RUNNING）。补口：
+  - `resolveExecutorRow`——**唯一**的机器面身份解析入口（指纹优先；地址命中多行且
+    无指纹可判时 **fail-closed 返回 null**，绝不任取一行）；
+  - `validateTokenByAddressAnyRow` / `getCallbackSecretCandidatesByAddress`——给「只做
+    凭据校验、不定位行」的面（回调/产物上传）：**逐个试**该地址全部行的密钥，匹配
+    即证明归属，不降低判定强度；
+  - `markOffline` / `releaseExecutorSlotByAddress` 等**有副作用**的面改为按行身份操作
+    （id 或定位子查询），杜绝「按地址无界 UPDATE 误伤别人的行」。
+- **执行行身份（迁移 1790000000055 补口）**：`task_executions` 增可空 `executorId`。
+  阶段 3 前 `executorAddress` 是「派发到哪台」的唯一记录，同址多行并存后它**不再唯一
+  指代一行**——重启恢复会**误杀另一台正在跑的健康执行**（phase 1 头注列为「三类静默
+  故障」之一的形态恰被 partial 索引合法化）。存量行可空且**刻意不回填**（地址→行映射
+  在同址多行下有歧义，猜错比留 NULL 更糟），NULL 时回落地址匹配、行为与引入前一致。
+- **实现偏差（如实记录）**：`deviceFingerprint` 列宽由 `varchar(64)` 放宽到 `varchar(80)`
+  （legacy 兜底键两种形态 7+64=71 字符装不下 64）；legacy 回填键形态为
+  `legacy:{address}`（address ≤ 73 时，恰好装到 80）/`legacy-h:` + sha256(address)
+  （address ≥ 74 时，73 字符）。
+- **迁移回滚姿态（如实记录）**：`1790000000054` 的 `down()` 在「迁移后已产生并存 pull
+  行」时，全局唯一索引重建**必然失败**，且失败后表上**没有任何 address 唯一性**、
+  重跑亦不可自愈。回滚前必须先收敛并存行（给每台配唯一 `EXECUTOR_ADDRESS_PUBLIC`
+  或合并行）。该姿态已写进迁移源码注释与 spec。
+
+**回调面行身份（协议 v6，方案 C —— 2026-10-15 补口）**：
+
+第一轮复查（ARCH-36-R）发现 callback 闸在「共享令牌 + 同址多行」下**无法判定行身份**
+（shared token 不绑定任何行，`executorAddress` 在同址多行时不再指代一行），当时选择
+「如实保留并写明 weakness」。本轮按用户决策**做方案 C**：把行身份直接送上回调面。
+
+- **协议**：`packages/executor-protocol/protocol.json` v5 → v6，`CallbackPayload` 新增
+  **可选** `deviceFingerprint`（与 register/heartbeat 同值的稳定安装身份）；兼容矩阵新增
+  v6 条目；`gen:protocol` 重生成两端 schema。
+- **三端上报**：node `callback.ts` 的 `withExecutorAddress`（**唯一入参口**，覆盖 13 个
+  调用点）；python `routers/execute.py` 的全部回调构造点；两侧 SDK（任务代码直接回调的
+  生产者）经新增 env `AUTOFLOW_DEVICE_FINGERPRINT` 取值。
+- **中台判定（三级阶梯）**：① `deviceFingerprint` 解析出的行 → ② 凭据归属行
+  （`resolveCredentialExecutorId`，仅 per-executor 令牌）→ ③ 地址相等；拿到行身份后要求
+  `row === task_executions.executorId`，不一致即拒。三级皆缺 → 只走 ③，行为与引入前一致。
+- **易错点（实测发现并修掉）**：指纹映射必须按 **executionId** 分键、且解析要早于批次地址
+  去重守卫——按 address 分键会把同批次第二条同址回调判到第一条的行上，**误拒合法回调**
+  （已补控制器级反证，去掉该修复即转红）。
+- **安全边界（如实）**：指纹是自报值且对任何登录用户可见，与 `executorAddress` 同等可探知，
+  故本方案**不提升对抗"已持共享令牌"攻击者的强度**（该上限由「共享令牌是全机队单一密钥」
+  决定，属独立议题）。它解决的是**诚实执行器的归属**：同址第二台如实上报自己的指纹，
+  中台据此与派发目标正确区分，而不是靠「地址碰巧相等」误判成功。
+
+**读面富化（决策 §7 —— 2026-10-15 落地）**：
+
+阶段 3 起 `executorAddress` 读面在同址多行并存时**已不能唯一指代一行**。本轮把该轨道
+从「体验优化」推进到语义正确：
+
+- **后端读面改按行身份**（`apps/admin-api`）：
+  - `TaskExecutionResponseDto` 暴露 `executorId`（实体与列表投影本就含该列，只差 DTO 声明）；
+  - `getExecutorExecutions` 原**接收 id 却按 address 过滤** → 改为行身份优先，存量行
+    （`executorId IS NULL`，迁移 0055 刻意不回填）才按地址回落：并集
+    `executorId = :id OR (executorId IS NULL AND executorAddress = :addr)`。地址支带
+    `IS NULL` 守卫是必需的——否则同址另一台的新派发行会被卷进来，退回修复前的错配；
+  - `getExecutorMetrics` 的 7 日统计同款并集口径（成功率/均值此前会被同址另一台污染）。
+- **前端可读名解析**（`apps/admin-web`）：统一走既有 `useExecutorNames` hook
+  （**id 优先、address 回落、匹配不到返回 null 并如实显示地址**，绝不编造名字）。
+  该 hook 与接线守卫（`executor-name-display.test.tsx` 的源码级断言）此前已为
+  app_deployments 面建立，本轮把 `task_executions` 面的读面接上同一机制——
+  **刻意不在服务端做 `executorAppName` join**：两个最热的列表端点
+  （`getExecutions`/`getAllExecutions`）受 PERF-03 读投影纪律约束，且服务端再算一遍
+  会形成第二套名字解析机制而必然漂移。
+- **未做且如实登记**：`executor_metrics_history` 表**只有** `executorAddress`、无行身份列，
+  故其 24h 趋势图在同址多行时物理上无法拆分到行——这不是少写一个谓词，而是数据面缺一列，
+  修复需一次迁移（且回填同样面对地址→行的歧义，与迁移 0055 不回填同源）。影响面仅限
+  **趋势图混画**；派发闸门/恢复/槽位/7 日统计均不读该表或已改按行身份。
+
 **相关轨道**（与本 ADR 独立，可先行）：
-- **读面富化**（决策第 7 条）：`app_deployments` / `task_executions` 读面返回 `executorId` +
-  `executorAppName`，前端展示执行器名而非地址（用户明确指出 NAT 内地址可重复）。
+- **`executor_metrics_history` 行身份列**（承接上条）：加 `executorId` + 回填策略（同址
+  多行下地址→行有歧义，需与阶段 3 的存量行处置保持一致口径），随后趋势图才能按行拆分。
 - **pull 队列键解耦**：`acf:pull:` / `acf:cmd:` 由 `address` 派生改为由 `id` 派生，
   使队列键获得不可猜测性（决策第 3 条的收益，不必等阶段 3）。
+- **`deviceFingerprint` 唯一索引**：机队全部上报指纹且重复行收敛后，把
+  `idx_executors_device_fingerprint` 升级为唯一索引（register 的按指纹定位在稳态保证
+  一行一指纹，唯一索引是数据完整性兜底；现阶段并发首注册竞态仍可能短暂同指纹两行）。
 
 ## 替代方案（被否）
 

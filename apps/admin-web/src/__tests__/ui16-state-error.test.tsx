@@ -141,6 +141,11 @@ describe('UI-16 TaskListPage 页内错误态', () => {
 describe('UI-16 第二批：Executions / ExecutorList / UserManagement 页内错误态', () => {
   it('ExecutionsPage：执行记录请求失败 → 页内错误块，标题指明数据块', async () => {
     mockedTasks.allExecutions.mockRejectedValue(new Error('执行记录服务不可用'));
+    // ADR-017 阶段 3：ExecutionsPage 经 useExecutorNames 拉执行器清单解析可读名
+    // （地址列富化）。本用例只关心错误态，但该请求必须有一个已 resolve 的桩——
+    // 否则 hook 里 `executorsApi.list().then(...)` 会在 undefined 上取 .then 而抛
+    // TypeError。空数组即「清单为空」，名字解析回落为只显示地址。
+    mockedExecutors.list.mockResolvedValue([]);
     renderWithQuery(<ExecutionsPage />);
     const alert = await screen.findByTestId('state-error');
     expect(alert.getAttribute('role')).toBe('alert');

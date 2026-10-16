@@ -1,13 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  Inject,
-  forwardRef,
-} from "@nestjs/common";
+import { Injectable, Logger, Inject, forwardRef } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -50,6 +41,9 @@ import {
   AGENT_QUEUE_NAME,
   type AgentJobData,
 } from "../agent/runtime/agent.processor";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * P5/P6（agent-and-deployment）：SOP 协议业务（设计文档 04 + 11）。
@@ -135,9 +129,7 @@ export class SopService {
   async draft(input: DraftSopInput): Promise<Sop> {
     const slug = input.slug ?? "";
     if (!/^[a-z0-9][a-z0-9-]{0,127}$/.test(slug)) {
-      throw new BadRequestException(
-        "slug 必须是小写字母/数字/连字符，1..128 位",
-      );
+      throw new AppError(ErrorCode.SOP_SLUG_INVALID);
     }
 
     let frontMatter: SopFrontMatter | null = null;
@@ -189,7 +181,7 @@ export class SopService {
   ): Promise<{ sop: Sop; version: SopVersion }> {
     const sop = await this.requireSop(input.sopId);
     if (!sop.frontMatterJson || !sop.bodyMarkdown) {
-      throw new BadRequestException("SOP 缺 front-matter 或正文，无法发布");
+      throw new AppError(ErrorCode.SOP_CONTENT_MISSING);
     }
     // 发布级严格校验——非法 SOP 无法发布（04 §4.1，CI 级门槛）
     const fm = validateFrontMatter(sop.frontMatterJson, { strict: true });
@@ -202,9 +194,7 @@ export class SopService {
         where: { sopId: sop.id, version: sop.currentVersion },
       });
       if (current && current.contentHash === nextHash) {
-        throw new BadRequestException(
-          "内容与当前版本完全一致，无需发布新版本（修订必须真的改了什么）",
-        );
+        throw new AppError(ErrorCode.SOP_CONTENT_UNCHANGED);
       }
     }
 
@@ -244,9 +234,9 @@ export class SopService {
     if (!current) return "1.0.0";
     const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(current);
     if (!m)
-      throw new BadRequestException(
-        `既有版本 ${current} 不是 semver，无法递增`,
-      );
+      throw new AppError(ErrorCode.SOP_VERSION_NOT_SEMVER, {
+        version: current,
+      });
     const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
     if (bump === "major") return `${maj + 1}.0.0`;
     if (bump === "minor") return `${maj}.${min + 1}.0`;
@@ -268,12 +258,15 @@ export class SopService {
   }): Promise<SopAssignment> {
     const sop = await this.requireSop(input.sopId);
     const version = input.version ?? sop.currentVersion;
-    if (!version)
-      throw new BadRequestException("SOP 尚未发布，无法指派（先 publish）");
+    if (!version) throw new AppError(ErrorCode.SOP_NOT_PUBLISHED);
     const v = await this.versions.findOne({
       where: { sopId: sop.id, version },
     });
-    if (!v) throw new NotFoundException(`SOP ${sop.slug} 无版本 ${version}`);
+    if (!v)
+      throw new AppError(ErrorCode.SOP_VERSION_NOT_FOUND, {
+        slug: sop.slug,
+        version,
+      });
 
     const fm = v.frontMatterJson as unknown as SopFrontMatter;
     const capabilities = await this.executors.getAgentCapabilities(
@@ -458,18 +451,21 @@ export class SopService {
     const a = await this.assignments.findOne({
       where: { id: input.assignmentId },
     });
-    if (!a) throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
+    if (!a)
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND, {
+        assignmentId: input.assignmentId,
+      });
     if (a.targetExecutorId !== input.executorId) {
-      throw new ForbiddenException("指派不属于该执行器");
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_OWNED_BY_EXECUTOR);
     }
     const row = await this.clarifications.findOne({
       where: { id: input.clarificationId },
     });
     if (!row || row.assignmentId !== a.id) {
-      throw new NotFoundException("澄清不存在或不属于该指派");
+      throw new AppError(ErrorCode.SOP_CLARIFICATION_NOT_IN_ASSIGNMENT);
     }
     if (row.resolution === null) {
-      throw new BadRequestException("该澄清尚未回复，无可确认");
+      throw new AppError(ErrorCode.SOP_CLARIFICATION_NOT_REPLIED);
     }
     const stamp = new Date(row.updatedAt);
     if (!a.lastReplyDeliveredAt || a.lastReplyDeliveredAt < stamp) {
@@ -548,7 +544,7 @@ export class SopService {
     fm: SopFrontMatter,
   ): void {
     if (!this.hasSopCapabilities(capabilities, fm)) {
-      throw new ForbiddenException("执行器未声明 SOP 所需的有效 Agent 能力");
+      throw new AppError(ErrorCode.SOP_EXECUTOR_CAPABILITY_MISSING);
     }
   }
 
@@ -568,11 +564,14 @@ export class SopService {
     const a = await this.assignments.findOne({
       where: { id: input.assignmentId },
     });
-    if (!a) throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
+    if (!a)
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND, {
+        assignmentId: input.assignmentId,
+      });
     // B-1：归属断言（与 completeAssignment 同一先例）。澄清通道是跨执行器
     // 面——没有这道闸，任何 agent:sop 机器都能往别人工单塞澄清。
     if (a.targetExecutorId !== input.executorId) {
-      throw new ForbiddenException("指派不属于该执行器");
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_OWNED_BY_EXECUTOR);
     }
 
     // 幂等：同 clientClarificationId 且**同指派**直接返回已有行。查询限定
@@ -592,11 +591,14 @@ export class SopService {
         };
     }
     if (["completed", "failed", "cancelled"].includes(a.status)) {
-      throw new BadRequestException(`指派已是终态（${a.status}），不接受澄清`);
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_TERMINAL_CLARIFICATION, {
+        status: a.status,
+      });
     }
 
     const question = this.sanitizeUntrusted(input.question ?? "");
-    if (!question) throw new BadRequestException("question 不能为空");
+    if (!question)
+      throw new AppError(ErrorCode.SOP_CLARIFICATION_QUESTION_REQUIRED);
     if (input.context)
       this.checkJsonSize(input.context, QUESTION_CONTEXT_MAX_BYTES, "context");
     const mediaRefs = this.validateMediaRefs(input.mediaRefs ?? []);
@@ -645,15 +647,15 @@ export class SopService {
       );
       if (claim.affected === 1) break;
       if (retry >= 2) {
-        throw new ConflictException(
-          "澄清轮次并发冲突（多次重试后仍失败），请稍后重试",
-        );
+        throw new AppError(ErrorCode.SOP_CLARIFICATION_ROUND_CONFLICT);
       }
       const fresh = await this.assignments.findOne({
         where: { id: a.id },
       });
       if (!fresh)
-        throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
+        throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND, {
+          assignmentId: input.assignmentId,
+        });
       snapshot = fresh;
     }
     const row = this.clarifications.create({
@@ -734,7 +736,9 @@ export class SopService {
       where: { id: input.clarificationId },
     });
     if (!row)
-      throw new NotFoundException(`澄清 ${input.clarificationId} 不存在`);
+      throw new AppError(ErrorCode.SOP_CLARIFICATION_NOT_FOUND, {
+        clarificationId: input.clarificationId,
+      });
     if (row.resolution && row.resolution !== "escalated_to_human") {
       // 已答复/已修订：幂等返回，不重复修订（同一轮两次回复 = 模型重试，无害）
       return { ok: true, newSopVersion: row.newSopVersion ?? undefined };
@@ -750,23 +754,22 @@ export class SopService {
         input.resolution,
       )
     ) {
-      throw new BadRequestException(
-        `resolution 必须是 ${SOP_CLARIFICATION_RESOLUTIONS.join(" | ")}`,
-      );
+      throw new AppError(ErrorCode.SOP_CLARIFICATION_RESOLUTION_INVALID, {
+        validResolutions: SOP_CLARIFICATION_RESOLUTIONS.join(" | "),
+      });
     }
 
     const a = await this.assignments.findOne({
       where: { id: row.assignmentId },
     });
-    if (!a) throw new NotFoundException(`澄清所属指派不存在`);
+    if (!a)
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND_FOR_CLARIFICATION);
 
     let newSopVersion: string | undefined;
     if (input.resolution === "sop_amended") {
       const sop = await this.requireSop(a.sopId);
       if (!input.amendedFrontMatterYaml && !input.amendedBodyMarkdown) {
-        throw new BadRequestException(
-          "sop_amended 必须提供修订内容（front-matter 或正文）",
-        );
+        throw new AppError(ErrorCode.SOP_CLARIFICATION_AMENDMENT_MISSING);
       }
       // 修订内容先落到主表（draft 语义），再走与 publish 相同的严格校验 +
       // 快照路径——澄清自主修订与人工发布共享同一道版本闸门
@@ -881,9 +884,12 @@ export class SopService {
     const a = await this.assignments.findOne({
       where: { id: input.assignmentId },
     });
-    if (!a) throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
+    if (!a)
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND, {
+        assignmentId: input.assignmentId,
+      });
     if (a.targetExecutorId !== input.executorId) {
-      throw new ForbiddenException("指派不属于该执行器");
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_OWNED_BY_EXECUTOR);
     }
     const attempt = input.attempt ?? a.attempt + 1;
     if (attempt <= a.attempt) {
@@ -1218,7 +1224,7 @@ export class SopService {
   /** slug 是唯一索引——直查（sop_get 工具的 slug 路径用）。 */
   async getBySlug(slug: string): Promise<Sop> {
     const sop = await this.sops.findOne({ where: { slug } });
-    if (!sop) throw new NotFoundException(`SOP ${slug} 不存在`);
+    if (!sop) throw new AppError(ErrorCode.SOP_NOT_FOUND, { sopId: slug });
     return sop;
   }
 
@@ -1244,7 +1250,8 @@ export class SopService {
     clarifications: SopClarification[];
   }> {
     const a = await this.assignments.findOne({ where: { id: assignmentId } });
-    if (!a) throw new NotFoundException(`指派 ${assignmentId} 不存在`);
+    if (!a)
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND, { assignmentId });
     const clars = await this.clarifications.find({
       where: { assignmentId },
       order: { round: "ASC" },
@@ -1285,7 +1292,7 @@ export class SopService {
 
   private async requireSop(id: string): Promise<Sop> {
     const sop = await this.sops.findOne({ where: { id } });
-    if (!sop) throw new NotFoundException(`SOP ${id} 不存在`);
+    if (!sop) throw new AppError(ErrorCode.SOP_NOT_FOUND, { sopId: id });
     return sop;
   }
 
@@ -1294,12 +1301,15 @@ export class SopService {
     executorId: string,
   ): Promise<SopAssignment> {
     const a = await this.assignments.findOne({ where: { id: assignmentId } });
-    if (!a) throw new NotFoundException(`指派 ${assignmentId} 不存在`);
+    if (!a)
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND, { assignmentId });
     if (a.targetExecutorId !== executorId) {
-      throw new ForbiddenException("指派不属于该执行器");
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_OWNED_BY_EXECUTOR);
     }
     if (["completed", "failed", "cancelled"].includes(a.status)) {
-      throw new BadRequestException(`指派已是终态（${a.status}）`);
+      throw new AppError(ErrorCode.SOP_ASSIGNMENT_TERMINAL, {
+        status: a.status,
+      });
     }
     return a;
   }
@@ -1322,14 +1332,12 @@ export class SopService {
   private validateMediaRefs(
     refs: SopClarificationMediaRef[],
   ): SopClarificationMediaRef[] {
-    if (refs.length > 4) throw new BadRequestException("mediaRefs 最多 4 条");
+    if (refs.length > 4) throw new AppError(ErrorCode.SOP_MEDIA_REFS_TOO_MANY);
     return refs.map((r, i) => {
       if (!r || typeof r !== "object")
-        throw new BadRequestException(`mediaRefs[${i}] 非法`);
+        throw new AppError(ErrorCode.SOP_MEDIA_REF_INVALID, { index: i });
       if (!["video", "screenshot", "other"].includes(r.kind)) {
-        throw new BadRequestException(
-          `mediaRefs[${i}].kind 必须是 video | screenshot | other`,
-        );
+        throw new AppError(ErrorCode.SOP_MEDIA_REF_KIND_INVALID, { index: i });
       }
       const url = String(r.url ?? "");
       // 拒协议相对/绝对外链：只认站内 /api/... 路径（artifacts 上传产物）
@@ -1338,12 +1346,12 @@ export class SopService {
         url.startsWith("http://") ||
         url.startsWith("https://")
       ) {
-        throw new BadRequestException(
-          `mediaRefs[${i}].url 必须是平台 artifacts 路径（/api/...）——不接受外网 URL（SSRF 转嫁面，11 §5.2）`,
-        );
+        throw new AppError(ErrorCode.SOP_MEDIA_REF_URL_NOT_PLATFORM, {
+          index: i,
+        });
       }
       if (url.length > 512)
-        throw new BadRequestException(`mediaRefs[${i}].url 超长`);
+        throw new AppError(ErrorCode.SOP_MEDIA_REF_URL_TOO_LONG, { index: i });
       return {
         kind: r.kind,
         url,
@@ -1355,7 +1363,7 @@ export class SopService {
   private checkJsonSize(v: unknown, max: number, label: string): void {
     const size = JSON.stringify(v ?? null)?.length ?? 0;
     if (size > max) {
-      throw new BadRequestException(`${label} 超过 ${max} 字节上限`);
+      throw new AppError(ErrorCode.SOP_JSON_FIELD_TOO_LARGE, { label, max });
     }
   }
 

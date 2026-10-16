@@ -25,14 +25,14 @@ export class SessionRevokeResponseDto {
 export class TaskWebhookTriggerResponseDto {
   @ApiProperty({
     format: "uuid",
-    description: "Execution row id created by the trigger",
+    description: "本次触发创建的执行行 id",
   })
   executionId?: string;
 
   @ApiProperty({
+    additionalProperties: true,
     description:
       "执行行/终态载荷（wait=true 时为终态执行行，否则为已受理执行行）",
-    additionalProperties: true,
   })
   execution?: Record<string, unknown>;
 
@@ -50,11 +50,11 @@ export class AlertsWebhookResponseDto {
   delivered: number;
 
   @ApiProperty({
-    description: "Per-channel delivery status",
     additionalProperties: {
       type: "string",
       enum: ["sent", "blocked", "failed", "skipped"],
     },
+    description: "逐通道投递状态",
   })
   results: Record<string, string>;
 }

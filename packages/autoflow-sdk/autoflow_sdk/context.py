@@ -16,6 +16,11 @@ _CALLBACK_ENV_KEYS = {
     "AUTOFLOW_CALLBACK_TOKEN": "callback_token",
     "AUTOFLOW_ADMIN_API_URL": "admin_api_url",
     "AUTOFLOW_EXECUTOR_ADDRESS": "executor_address",
+    # ADR-017 阶段 3 (protocol v6): the executor's stable install identity,
+    # the callback face's row identity when a shared/legacy token is used.
+    # Listed here for the same reason as the address — it is platform
+    # plumbing, not user data, so it must not leak into `params`.
+    "AUTOFLOW_DEVICE_FINGERPRINT": "device_fingerprint",
 }
 
 # A-11R: typed params channel injected by both executors since protocol v5 —
@@ -140,6 +145,10 @@ class TaskContext:
     callback_token: Optional[str] = field(default=None, repr=False)
     admin_api_url: Optional[str] = field(default=None, repr=False)
     executor_address: Optional[str] = field(default=None, repr=False)
+    # ADR-017 阶段 3 (protocol v6): stable install identity of the executor
+    # row. repr=False for parity with the fields above — non-secret, but
+    # still routing plumbing that has no place in a debug repr.
+    device_fingerprint: Optional[str] = field(default=None, repr=False)
 
     # Runtime helpers — populated lazily
     _logger: Optional[Any] = field(default=None, repr=False)
@@ -177,6 +186,7 @@ class TaskContext:
                     token=self.callback_token,
                     executor_address=self.executor_address,
                     execution_id=self.execution_id,
+                    device_fingerprint=self.device_fingerprint,
                 ),
             )
         return self._callback_client
@@ -213,10 +223,10 @@ class TaskContext:
         Create TaskContext from environment variables injected by the executor.
 
         Reads EXECUTION_ID, TASK_ID, TASK_NAME, and all AUTOFLOW_* vars as
-        params — except the callback credential keys
+        params — except the callback credential / routing keys
         (``AUTOFLOW_CALLBACK_TOKEN``, ``AUTOFLOW_ADMIN_API_URL``,
-        ``AUTOFLOW_EXECUTOR_ADDRESS``), which are exposed as dedicated
-        fields and never leak into ``params``.
+        ``AUTOFLOW_EXECUTOR_ADDRESS``, ``AUTOFLOW_DEVICE_FINGERPRINT``),
+        which are exposed as dedicated fields and never leak into ``params``.
 
         **Param types (A-11R).** Since executor protocol v5 both executors
         inject ``AUTOFLOW_PARAMS_JSON`` — the whole params object as one JSON

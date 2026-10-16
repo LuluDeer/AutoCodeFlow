@@ -51,8 +51,7 @@ export class DeploymentEnvSizeConstraint implements ValidatorConstraintInterface
 
 export class CreateDeploymentDto {
   @ApiPropertyOptional({
-    description:
-      "Executor ID (leave empty to auto-select the online executor with lowest load)",
+    description: "执行器 ID（留空则自动选择负载最低的在线执行器）",
   })
   @IsUUID()
   @IsOptional()
@@ -64,7 +63,7 @@ export class CreateDeploymentDto {
   runMode?: RunMode;
 
   @ApiPropertyOptional({
-    description: `Environment variable overrides (≤${DEPLOYMENT_ENV_MAX_KEYS} keys, each value ≤${DEPLOYMENT_ENV_VALUE_MAX_BYTES} bytes)`,
+    description: `环境变量覆盖（≤${DEPLOYMENT_ENV_MAX_KEYS} 个键，每个值 ≤${DEPLOYMENT_ENV_VALUE_MAX_BYTES} 字节）`,
     // N-12（2026-10-07）：无 additionalProperties 时 swagger 发空 object schema，
     // openapi-typescript 渲染 Record<string, never>——前端拿到一个写不进任何键
     // 的 env 类型（契约比没有类型更坏）。显式声明值类型。
@@ -78,8 +77,7 @@ export class CreateDeploymentDto {
   env?: Record<string, string>;
 
   @ApiPropertyOptional({
-    description:
-      "Startup command override (leave empty to use manifest entrypoint)",
+    description: "启动命令覆盖（留空则使用 manifest 的 entrypoint）",
   })
   @IsString()
   // A-11: startCommand 随部署行落库并进列表读面——上限对齐 message 闸。
@@ -92,8 +90,8 @@ export class CreateDeploymentDto {
  *  建议携带——随 approvalMeta/statusMessage 留痕，语义对齐 AUTH-05）。 */
 export class ApprovalActionDto {
   @ApiPropertyOptional({
-    description: "Optional decision reason (≤200 chars), recorded in audit",
     maxLength: 200,
+    description: "可选的决策理由（≤200 字符），计入审计",
   })
   @IsString()
   @MaxLength(200)
@@ -102,13 +100,13 @@ export class ApprovalActionDto {
 }
 
 export class DeploymentHeartbeatDto {
-  @ApiProperty({ description: "Deployment ID" })
+  @ApiProperty({ description: "部署 ID" })
   @IsUUID()
   deploymentId: string;
 
   @ApiProperty({
-    description: "Runtime status",
     enum: ["running", "stopped", "failed"],
+    description: "运行状态",
   })
   @IsString()
   @IsEnum(["running", "stopped", "failed"], {
@@ -118,15 +116,17 @@ export class DeploymentHeartbeatDto {
 
   // R17: pid is persisted/compared as a number — without @IsInt a string
   // like "123" (or an object) would pass validation and land in the row.
-  @ApiPropertyOptional({ description: "Process PID", type: Number })
+  @ApiPropertyOptional({
+    type: Number,
+    description: "进程 PID",
+  })
   @IsOptional()
   @IsInt()
   pid?: number;
 
   @ApiPropertyOptional({
     description:
-      "Free-form progress message (max 2000 chars; lands in the " +
-      "statusMessage text column and the list read surface)",
+      "自由格式的进度信息（最长 2000 字符；写入 statusMessage 文本列并进入列表读面）",
   })
   @IsString()
   // A-11: 异常执行器可以借 message 无限写 statusMessage（text 列）并随

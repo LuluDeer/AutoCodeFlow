@@ -30,6 +30,12 @@ describe("ArtifactsService（FEAT-05）", () => {
   let tmpRoot: string;
   let findOne: jest.Mock;
   let validateTokenByAddress: jest.Mock;
+  /**
+   * ADR-017 阶段 3：产物上传鉴权改用「同址任一行匹配即通过」
+   * （`validateTokenByAddressAnyRow`）。委派给 validateTokenByAddress，
+   * 既有打桩与断言语义逐字节保留（改的是走哪个方法，不是判定强度）。
+   */
+  let validateTokenByAddressAnyRow: jest.Mock;
   const originalLogArtifactDir = process.env.LOG_ARTIFACT_DIR;
 
   beforeAll(async () => {
@@ -38,13 +44,19 @@ describe("ArtifactsService（FEAT-05）", () => {
 
     findOne = jest.fn();
     validateTokenByAddress = jest.fn();
+    validateTokenByAddressAnyRow = jest.fn((addr: string, token: string) =>
+      validateTokenByAddress(addr, token),
+    );
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArtifactsService,
         { provide: getRepositoryToken(TaskExecution), useValue: { findOne } },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: SystemConfigService, useValue: { findOne: jest.fn() } },
-        { provide: ExecutorService, useValue: { validateTokenByAddress } },
+        {
+          provide: ExecutorService,
+          useValue: { validateTokenByAddress, validateTokenByAddressAnyRow },
+        },
       ],
     }).compile();
     svc = moduleRef.get(ArtifactsService);

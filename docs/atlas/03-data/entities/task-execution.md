@@ -21,7 +21,8 @@
 | `taskId` | uuid NOT NULL | FK → `tasks.id`（见"索引与约束"），任务删除时级联 |
 | `taskName` | varchar NOT NULL | 冗余快照（任务改名/删除后执行记录仍可读） |
 | `status` | PG enum `ExecutionStatus`，default `pending` | **值域 7 个**：`pending` / `running` / `success` / `failed` / `timeout` / `killed` / `cancelled`；`cancelled` 的 PG enum 值已由迁移 `1790000000020` 补齐（PK-01——InitialSchema 缺值，此前迁移构建库上写 `cancelled` 即 22P02，如 `cover_early` 重叠取消路径） |
-| `executorAddress` | varchar nullable | 承接执行的执行器地址（按 address 关联，非 FK） |
+| `executorAddress` | varchar nullable | 承接执行的执行器地址（按 address 关联，非 FK）。**ADR-017 阶段 3 起不再唯一指代一行**：pull 模式允许同址多行并存（[ADR-017](../../../adr/adr-017-executor-unique-identity.md) §5），故它已不能单独作为「派发到哪台」的判据——副作用面（重启恢复等）改看下面的 `executorId` |
+| `executorId` | uuid nullable | **ADR-017 阶段 3（迁移 `1790000000055`）**：派发到的那台执行器的 `executors.id`（**行身份**，快照语义、**不加 FK**——执行器行可被清理而执行历史必须留痕）。存量行（迁移前派发）为 NULL 且**刻意不回填**（地址→行映射在同址多行下有歧义，猜错比留 NULL 更糟）；NULL 时副作用面回落 `executorAddress` 匹配，行为与引入前一致。重启恢复优先按本列匹配（避免「A 机器重启误杀 B 机器健康执行」）。部分索引 `idx_task_executions_executor_id_running`。**读面（决策 §7，2026-10-15 落地）**：已随 `TaskExecutionResponseDto` / `ExecutionListItemDto` 暴露给前端；列表端点的读投影是**排除表**（`execution-list-projection.ts`，只排 `logs`/`aiAnalysis`），故新列自动入选、无需改投影 |
 | `logs` | text nullable | 旧版整段日志（日志分表后仅小体量/回填场景使用） |
 | `logStorage` | varchar nullable，default `'db'` | 日志明细存放位置：`'db'`（[execution_log_lines](execution-log-line.md)）或 `'s3'` |
 | `logObjectKey` | varchar nullable | `logStorage='s3'` 时的 gzip 对象 key；过期终态执行由 `S3LogObjectRetentionService` 每日 03:35 回收对象后守卫清空本指针（`WHERE id AND logObjectKey`） |
@@ -53,6 +54,7 @@
 | `createdAt` | 实体 `@Index(["createdAt"])` | 排序/日报聚合 |
 | `idx_task_executions_executor_address_status` | `(executorAddress, status)` | 执行器维度统计 |
 | `idx_task_executions_running` | `(executorAddress, startTime)` **部分索引** `WHERE "status" = 'running'` | 在途执行快速定位 |
+| `idx_task_executions_executor_id_running` | `(executorId, startTime)` **部分索引** `WHERE "status" = 'running'`（迁移 `1790000000055`，`CREATE INDEX CONCURRENTLY` + `transaction = false`） | **ADR-017 阶段 3**：重启恢复的查询形态改为 `executorId = $1 AND status='running' ORDER BY startTime`——地址在同址多行并存时不再唯一，恢复必须按行身份走 |
 | FK `FK_task_executions_taskId` | 迁移 `1717473142679-TaskExecutionForeignKey.ts`：`taskId` → `tasks.id` **ON DELETE CASCADE**（附带 taskId 列 varchar→uuid 转换与 `IDX_task_executions_taskId` 索引） | 防孤儿执行记录 |
 
 > ⚠️ 实体装饰器 `@ManyToOne("Task", …, { onDelete: "SET NULL" })` 与迁移的 CASCADE 不一致——TypeORM `synchronize` 恒为 false（见 [migrations.md](../migrations.md)），DB 实际行为以迁移为准：任务物理删除时执行记录**级联删除**。

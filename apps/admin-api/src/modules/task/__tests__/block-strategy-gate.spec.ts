@@ -4,6 +4,7 @@ import {
   canonicalizeParams,
   applyBlockStrategyGate,
   releaseExecutorSlotByAddress,
+  releaseExecutorSlotById,
 } from "../block-strategy-gate";
 import {
   ExecutionStatus,
@@ -309,8 +310,35 @@ describe("applyBlockStrategyGate", () => {
   });
 });
 
-describe("releaseExecutorSlotByAddress", () => {
-  it("空地址直接返回，不产生查询", async () => {
+describe("releaseExecutorSlotByAddress（ADR-017 阶段 3：地址多行并存时不冲销）", () => {
+  /**
+   * ADR-017 阶段 3 的实现是**一条原子语句**：
+   *   UPDATE executors SET runningTaskCount = GREATEST(...-1,0)
+   *    WHERE id = (SELECT id FROM executors WHERE address = :addr)
+   *
+   * 地址唯一性判定（子查询多行 → PG 报错）与冲销在同一语句内求值：既无
+   * TOCTOU 窗口，也不给回调主链新增一次可抛错的往返。故 mock 只需
+   * `.update().set().where().execute()` 一形态。
+   */
+  const makeDataSource = (executeImpl?: () => Promise<unknown>) => {
+    const execute = jest
+      .fn<() => Promise<unknown>>()
+      .mockImplementation(executeImpl ?? (async () => ({ affected: 1 })));
+    const where = jest.fn<() => any>(() => ({ execute }));
+    const set = jest.fn<() => any>(() => ({ where }));
+    const update = jest.fn<() => any>(() => ({ set }));
+    const createQueryBuilder = jest.fn<() => any>(() => ({ update }));
+    return {
+      dataSource: { createQueryBuilder } as unknown as any,
+      createQueryBuilder,
+      update,
+      set,
+      where,
+      execute,
+    };
+  };
+
+  it("空地址直接返回，不产生任何查询", async () => {
     const dataSource = {
       createQueryBuilder: jest.fn(),
     } as unknown as any;
@@ -320,24 +348,67 @@ describe("releaseExecutorSlotByAddress", () => {
     expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
   });
 
-  it("有地址 → GREATEST 下限的计数冲销 UPDATE", async () => {
-    const execute = jest
-      .fn<() => Promise<any>>()
-      .mockResolvedValue({ affected: 1 });
-    const set = jest.fn<() => any>().mockReturnThis();
-    const where = jest.fn<() => any>().mockReturnThis();
-    const update = jest.fn<() => any>().mockReturnThis();
-    const dataSource = {
-      createQueryBuilder: jest.fn(() => ({ update, set, where, execute })),
-    } as unknown as any;
-    await releaseExecutorSlotByAddress(dataSource, "http://executor:3001");
-    expect(update).toHaveBeenCalledWith("executors");
-    expect(set).toHaveBeenCalledWith({
+  it("有地址 → 单条原子 UPDATE：按地址子查询定位行 + GREATEST 下限保护", async () => {
+    const m = makeDataSource();
+    await releaseExecutorSlotByAddress(m.dataSource, "http://executor:3001");
+
+    expect(m.update).toHaveBeenCalledWith("executors");
+    expect(m.set).toHaveBeenCalledWith({
       runningTaskCount: expect.any(Function),
     });
-    expect(where).toHaveBeenCalledWith("address = :addr", {
-      addr: "http://executor:3001",
+    // 关键：定位走**子查询**（地址在 UPDATE 内解析），冲销落在 id 上。
+    // 子查询多行时 PG 直接报错 —— 这正是「多行并存绝不盲减」的执行机制。
+    expect(m.where).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `"id" = (SELECT "id" FROM "executors" WHERE "address" = :addr)`,
+      ),
+      { addr: "http://executor:3001" },
+    );
+    expect(m.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("★ ADR-017：同地址多行并存（pull）→ 子查询报错，绝不盲减别人的计数", async () => {
+    // PG 语义：子查询返回多行 → `more than one row returned by a subquery`。
+    const m = makeDataSource(async () => {
+      throw new Error(
+        "more than one row returned by a subquery used as an expression",
+      );
     });
+    // 单条语句的任务是「要么精确减一行，要么整条失败」——失败向上抛给调用方
+    // （其 try/catch 吞掉 + warn），绝不静默减错行。
+    await expect(
+      releaseExecutorSlotByAddress(m.dataSource, "192.168.1.100:8002"),
+    ).rejects.toThrow(/more than one row/);
+    expect(m.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("地址查无行（执行器已被删除）→ 子查询 NULL，命中 0 行（affected=0，静默 no-op）", async () => {
+    const m = makeDataSource(async () => ({ affected: 0 }));
+    await expect(
+      releaseExecutorSlotByAddress(m.dataSource, "ghost:1"),
+    ).resolves.toBeUndefined();
+    expect(m.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("releaseExecutorSlotById（ADR-017 阶段 3 无歧义路径）", () => {
+  it("空 id 直接返回；有 id → 按 id 冲销", async () => {
+    const execute = jest
+      .fn<() => Promise<{ affected: number }>>()
+      .mockResolvedValue({ affected: 1 });
+    const where = jest.fn<() => any>(() => ({ execute }));
+    const set = jest.fn<() => any>(() => ({ where }));
+    const update = jest.fn<() => any>(() => ({ set }));
+    const dataSource = {
+      createQueryBuilder: jest.fn<() => any>(() => ({ update })),
+    } as unknown as any;
+
+    await releaseExecutorSlotById(dataSource, null);
+    expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+
+    await releaseExecutorSlotById(dataSource, "exec-9");
+    expect(update).toHaveBeenCalledWith("executors");
+    expect(where).toHaveBeenCalledWith("id = :id", { id: "exec-9" });
     expect(execute).toHaveBeenCalled();
   });
 });

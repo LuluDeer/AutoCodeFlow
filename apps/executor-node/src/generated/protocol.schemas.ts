@@ -114,6 +114,7 @@ export const CallbackPayloadSchema = z.strictObject({
   "executionId": z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")),
   "status": z.enum(["success", "failed"]),
   "executorAddress": z.string().optional(),
+  "deviceFingerprint": z.string().optional(),
   "exitCode": z.number().int().nullable().optional(),
   "logs": z.string().nullable().optional(),
   "errorMessage": z.string().nullable().optional(),

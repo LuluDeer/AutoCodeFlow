@@ -33,15 +33,15 @@ export class SopResponseDto {
   @ApiProperty({ format: "uuid" })
   id: string;
 
-  @ApiProperty({ description: "1..128 [a-z0-9-], globally unique" })
+  @ApiProperty({ description: "1..128 个 [a-z0-9-] 字符，全局唯一" })
   slug: string;
 
   @ApiProperty()
   title: string;
 
   @ApiProperty({
-    description: "Latest published version label, null = never published",
     nullable: true,
+    description: "最近发布的版本标签，null = 从未发布",
   })
   currentVersion: string | null;
 
@@ -49,24 +49,23 @@ export class SopResponseDto {
   status: "draft" | "published" | "deprecated";
 
   @ApiProperty({
-    description: "App zip the SOP runs against",
     nullable: true,
     format: "uuid",
+    description: "该 SOP 运行时对应的应用 zip 包",
   })
   applicationId: string | null;
 
   @ApiProperty({
-    description:
-      "Parsed front-matter (capabilities/permission profile source of truth)",
     nullable: true,
     additionalProperties: true,
+    description: "解析后的 front-matter（capabilities/权限档案的权威来源）",
   })
   frontMatterJson: Record<string, unknown> | null;
 
   @ApiProperty({ nullable: true })
   bodyMarkdown: string | null;
 
-  @ApiProperty({ description: "'user:<id>' or 'agent:<sessionId>'" })
+  @ApiProperty({ description: "'user:<id>' 或 'agent:<sessionId>'" })
   createdBy: string;
 
   @ApiProperty()
@@ -84,7 +83,7 @@ export class SopVersionDto {
   @ApiProperty({ format: "uuid" })
   sopId: string;
 
-  @ApiProperty({ description: "e.g. '1.2.3'" })
+  @ApiProperty({ description: "例如 '1.2.3'" })
   version: string;
 
   @ApiProperty({ additionalProperties: true })
@@ -97,8 +96,7 @@ export class SopVersionDto {
   changelog: string | null;
 
   @ApiProperty({
-    description:
-      "sha over front-matter + body; the delivery reconciliation anchor",
+    description: "对 front-matter + body 计算的 sha；交付对账锚点",
   })
   contentHash: string;
 
@@ -120,75 +118,75 @@ export class SopAssignmentDto {
   @ApiProperty({ format: "uuid" })
   sopId: string;
 
-  @ApiProperty({ description: "Pinned SOP version for this assignment" })
+  @ApiProperty({ description: "本次指派锁定的 SOP 版本" })
   sopVersion: string;
 
   @ApiProperty({ nullable: true, format: "uuid" })
   targetExecutorId: string | null;
 
   @ApiProperty({
-    description: "Chat/agent session driving the assignment",
     nullable: true,
+    description: "驱动该指派的对话/Agent 会话",
   })
   targetAgentSessionId: string | null;
 
   @ApiProperty({ enum: SOP_ASSIGNMENT_STATUSES })
   status: SopAssignmentStatus;
 
-  @ApiProperty({ description: "Current clarification round (0-based counter)" })
+  @ApiProperty({ description: "当前澄清轮次（从 0 开始的计数器）" })
   clarificationRound: number;
 
   @ApiProperty()
   maxRounds: number;
 
   @ApiProperty({
-    description: "Executor-reported delivery result",
     nullable: true,
     additionalProperties: true,
+    description: "执行器上报的交付结果",
   })
   resultJson: Record<string, unknown> | null;
 
   @ApiProperty({
-    description: "sop_review chat session handling clarifications",
     nullable: true,
     format: "uuid",
+    description: "负责处理澄清的 sop_review 对话会话",
   })
   parentSessionId: string | null;
 
-  @ApiProperty({ description: "First successful poll claim", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "首次成功轮询领取的时间",
+  })
   pulledAt: Date | null;
 
   @ApiProperty({
-    description: "Last progress heartbeat (stall detection input)",
     nullable: true,
+    description: "最近一次进度心跳（停滞检测输入）",
   })
   lastProgressAt: Date | null;
 
   @ApiProperty({ additionalProperties: true, nullable: true })
   progressJson: Record<string, unknown> | null;
 
-  @ApiProperty({
-    description:
-      "Delivery attempts of the final report (complete idempotency key)",
-  })
+  @ApiProperty({ description: "最终报告的投递尝试次数（complete 幂等键）" })
   attempt: number;
 
   @ApiProperty({
-    description: "Last clarification-reply push (at-least-once cursor)",
     nullable: true,
+    description: "最近一次澄清回复推送（至少一次投递游标）",
   })
   lastReplyDeliveredAt: Date | null;
 
   @ApiProperty({
-    description: "agentCapabilities snapshot at pull time",
     nullable: true,
     additionalProperties: true,
+    description: "领取时刻的 agentCapabilities 快照",
   })
   capabilitySnapshotJson: Record<string, unknown> | null;
 
   @ApiProperty({
-    description: "Permission profile in force at pull",
     nullable: true,
+    description: "领取时生效的权限档案",
   })
   permissionProfileAtPull: string | null;
 
@@ -205,8 +203,8 @@ export class SopAssignmentDto {
 /** sop_clarifications 行。 */
 export class SopClarificationDto {
   @ApiProperty({
-    description: "Executor-generated idempotency key (dedupe on retry)",
     nullable: true,
+    description: "执行器生成的幂等键（重试时去重）",
   })
   clientClarificationId: string | null;
 
@@ -216,9 +214,7 @@ export class SopClarificationDto {
   @ApiProperty()
   round: number;
 
-  @ApiProperty({
-    description: "Untrusted executor statement — sanitized at ingest",
-  })
+  @ApiProperty({ description: "来自执行器的不可信陈述 —— 入库时已净化" })
   question: string;
 
   @ApiProperty({ nullable: true, additionalProperties: true })
@@ -230,20 +226,23 @@ export class SopClarificationDto {
   @ApiProperty({ enum: SOP_CLARIFICATION_RESOLUTIONS, nullable: true })
   resolution: SopClarificationResolution | null;
 
-  @ApiProperty({ description: "Set on sop_amended replies", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "仅在 sop_amended 回复时设置",
+  })
   newSopVersion: string | null;
 
   @ApiProperty({
-    description: "Screenshot/recording references (platform paths only)",
     nullable: true,
     type: "array",
+    description: "截图/录屏引用（仅平台路径）",
   })
   mediaRefsJson: SopClarificationMediaRef[] | null;
 
   @ApiProperty({
-    description: "sop_review session that answered it",
     nullable: true,
     format: "uuid",
+    description: "作答该澄清的 sop_review 会话",
   })
   reviewSessionId: string | null;
 
@@ -271,7 +270,7 @@ export class AgentMediaDto {
   @ApiProperty()
   sizeBytes: number;
 
-  @ApiProperty({ description: "'executor:<id>' or 'user:<id>'" })
+  @ApiProperty({ description: "'executor:<id>' 或 'user:<id>'" })
   uploadedBy: string;
 
   @ApiProperty()
@@ -295,10 +294,7 @@ export class SopCapableExecutorDto {
   @ApiProperty({ nullable: true })
   lastHeartbeat: Date | null;
 
-  @ApiProperty({
-    description:
-      "Lease-declared capability domains (short-lived lease, not a snapshot)",
-  })
+  @ApiProperty({ description: "租约声明的能力域（短租约，不是快照）" })
   agentCapabilities: string[];
 }
 
@@ -322,12 +318,11 @@ export class SopAssignmentDetailResponseDto {
 
 /** POST /sop/assignments/:id/clarifications/:cid/reply —— 人工与中台 Agent 同闸答复。 */
 export class ClarificationReplyResponseDto {
-  @ApiProperty({ description: "Always true on success (failures are 4xx)" })
+  @ApiProperty({ description: "成功时恒为 true（失败均为 4xx）" })
   ok: true;
 
   @ApiPropertyOptional({
-    description:
-      "Set when resolution=sop_amended (publish produced a new immutable version)",
+    description: "当 resolution=sop_amended 时设置（发布产出了新的不可变版本）",
   })
   newSopVersion?: string;
 }
@@ -352,7 +347,6 @@ export class CollabAssignmentItemDto {
   assignmentId: string;
 
   @ApiProperty({
-    description: "Full SOP snapshot (reconciliation anchor = contentHash)",
     type: "object",
     properties: {
       slug: { type: "string" },
@@ -370,6 +364,7 @@ export class CollabAssignmentItemDto {
       "frontMatter",
       "bodyMarkdown",
     ],
+    description: "SOP 全量快照（对账锚点 = contentHash）",
   })
   sop: {
     slug: string;
@@ -414,9 +409,8 @@ export class CollabClarificationReplyItemDto {
   newSopVersion: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "Only on sop_amended — the amended SOP payload for continued execution",
     type: CollabAssignmentItemDto,
+    description: "仅在 sop_amended 时出现 —— 供继续执行的修订后 SOP 载荷",
   })
   newSop?: CollabAssignmentItemDto;
 }
@@ -424,8 +418,6 @@ export class CollabClarificationReplyItemDto {
 /** POST /agent-collab/poll —— 长轮询（≤25s）返回的混合载荷。 */
 export class CollabPollResponseDto {
   @ApiProperty({
-    description:
-      "Mixed items: assignments (first pull / resend) and clarification replies",
     type: "array",
     items: {
       oneOf: [
@@ -433,18 +425,18 @@ export class CollabPollResponseDto {
         { $ref: getSchemaPath(CollabClarificationReplyItemDto) },
       ],
     },
+    description: "混合条目：指派（首次领取/重发）与澄清回复",
   })
   items: Array<CollabAssignmentItemDto | CollabClarificationReplyItemDto>;
 
   @ApiProperty({
-    description:
-      "Enterprise policy pushed EVERY poll (executor local config cannot override)",
     type: "object",
     properties: {
       permissionPolicy: { type: "string", example: "standard" },
       allowedProfiles: { type: "array", items: { type: "string" } },
     },
     required: ["permissionPolicy", "allowedProfiles"],
+    description: "每次轮询都会下发的企业策略（执行器本地配置无法覆盖）",
   })
   sopPolicy: { permissionPolicy: string; allowedProfiles: string[] };
 }
@@ -452,7 +444,7 @@ export class CollabPollResponseDto {
 /** POST /agent-collab/clarifications —— 执行器 Agent 回问的受理回执。 */
 export class CollabClarifyResponseDto {
   @ApiProperty({
-    description: "clientClarificationId when provided, else the row id",
+    description: "提供了 clientClarificationId 时用它，否则用行 id",
   })
   clarificationId: string;
 
@@ -461,7 +453,7 @@ export class CollabClarifyResponseDto {
 
   @ApiProperty({
     description:
-      "true = maxRounds exhausted, escalated to human notifications (no sop_review session will start)",
+      "true = maxRounds 已耗尽，升级为人工通知（不会启动 sop_review 会话）",
   })
   escalated: boolean;
 }
@@ -469,14 +461,13 @@ export class CollabClarifyResponseDto {
 /** POST /agent-collab/llm —— 中台代跑推理（key 不出服务端）。 */
 export class CollabLlmRelayResponseDto {
   @ApiProperty({
-    description:
-      "Empty string when the provider is disabled/unavailable (fail-open, executor degrades)",
+    description: "提供方被禁用/不可用时为空字符串（fail-open，执行器降级）",
   })
   content: string;
 
   @ApiProperty({
-    description: "Tool round-trips are NOT exposed to executors (null)",
     nullable: true,
+    description: "工具往返不向执行器暴露（恒为 null）",
   })
   toolCalls: unknown[] | null;
 
@@ -507,7 +498,7 @@ export class CollabMediaUploadResponseDto {
 
   @ApiProperty({
     description:
-      "Platform path /api/agent-collab/media/<id> — the ONLY valid mediaRefs form",
+      "平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式",
   })
   mediaPath: string;
 }
@@ -517,19 +508,15 @@ export class CollabCandidatePackageResponseDto {
   @ApiProperty({ format: "uuid" })
   packageId: string;
 
-  @ApiProperty({ description: "'sop-<slug>'" })
+  @ApiProperty({ description: "形如 'sop-<slug>' 的包名" })
   name: string;
 
-  @ApiProperty({
-    description: "SOP version + agent build metadata (idempotent re-delivery)",
-  })
+  @ApiProperty({ description: "SOP 版本 + Agent 构建元数据（幂等重复投递）" })
   version: string;
 }
 
 /** POST /agent-collab/assignments/:id/complete —— 交付落账回执（验收在中台 Agent）。 */
 export class CollabCompleteResponseDto {
-  @ApiProperty({
-    description: "false = duplicate attempt / idempotent replay ignored",
-  })
+  @ApiProperty({ description: "false = 重复尝试/幂等重放被忽略" })
   accepted: boolean;
 }

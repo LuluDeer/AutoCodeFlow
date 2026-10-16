@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Inject,
   Injectable,
   Logger,
@@ -35,6 +34,9 @@ import {
 import { AuditService } from "../audit/audit.service";
 // A-5: 出站正文脱敏（与 ai.service sanitizeLogs 同源正则，见 util 头注）
 import { sanitizeNotificationText } from "./sanitize-notification-text.util";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /** NOTIF-003: 静默规则数量上限，防止通过 API 无限添加导致内存缓慢泄漏。 */
 export const MAX_ALERT_SILENCES = 1000;
@@ -618,9 +620,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `addSilence rejected: silence count reached limit ${MAX_ALERT_SILENCES}`,
       );
-      throw new BadRequestException(
-        `Too many alert silences (max ${MAX_ALERT_SILENCES}). Remove expired ones first.`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_SILENCE_TOO_MANY, {
+        max: MAX_ALERT_SILENCES,
+      });
     }
     const id = `silence-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newSilence: AlertSilence = {
@@ -989,9 +991,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   ): Promise<ChannelDeliveryStatus> {
     const status = await this.webhook.send(payload, url);
     if (status === "blocked") {
-      throw new BadRequestException(
-        `Webhook URL rejected by SSRF policy (private/loopback/link-local/benchmark/CGNAT targets are not allowed): ${url}`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_WEBHOOK_BLOCKED, { url });
     }
     return status;
   }

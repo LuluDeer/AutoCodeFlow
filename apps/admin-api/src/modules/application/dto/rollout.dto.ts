@@ -100,9 +100,9 @@ export class UpgradeAllDto {
    * 相同时跳过恢复（「缺省=latest 逐字节不变」的同版本显式请求也保持纯升级）。
    */
   @ApiPropertyOptional({
-    description:
-      "Target a historical released version (version STRING, not uuid) for this rollout — enables gradual rollback. Default: the application's current version",
     maxLength: 64,
+    description:
+      "本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本",
   })
   @IsOptional()
   @IsString()

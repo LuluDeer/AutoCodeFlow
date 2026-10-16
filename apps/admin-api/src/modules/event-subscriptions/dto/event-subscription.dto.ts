@@ -25,19 +25,18 @@ import { SUBSCRIBABLE_EVENTS } from "../event-subscription.util";
  */
 export class CreateEventSubscriptionDto {
   @ApiProperty({
-    description:
-      "Callback URL (public http(s) endpoint; private networks rejected)",
     example: "https://ci.example.com/hooks/autoflow",
+    description: "回调 URL（公网 http(s) 端点；内网地址会被拒绝）",
   })
   @IsUrl({ require_tld: false, protocols: ["http", "https"] })
   @MaxLength(2048)
   url: string;
 
   @ApiProperty({
-    description: "Event names to subscribe",
     enum: SUBSCRIBABLE_EVENTS,
     isArray: true,
     example: ["execution.failed"],
+    description: "要订阅的事件名",
   })
   @IsArray()
   @ArrayMinSize(1)
@@ -47,8 +46,7 @@ export class CreateEventSubscriptionDto {
 
   @ApiPropertyOptional({
     description:
-      "HMAC signing secret. Omit to let the server generate a 32-byte hex secret " +
-      "(returned once in the create response, never shown again).",
+      "HMAC 签名密钥。省略则由服务端生成 32 字节十六进制密钥（仅在创建响应中返回一次，之后不再展示）。",
   })
   @IsString()
   @MinLength(16)
@@ -58,18 +56,18 @@ export class CreateEventSubscriptionDto {
 }
 
 export class UpdateEventSubscriptionDto {
-  @ApiPropertyOptional({ description: "Enable/disable delivery" })
+  @ApiPropertyOptional({ description: "启用/停用投递" })
   @IsBoolean()
   @IsOptional()
   enabled?: boolean;
 
-  @ApiPropertyOptional({ description: "New callback URL" })
+  @ApiPropertyOptional({ description: "新的回调 URL" })
   @IsUrl({ require_tld: false, protocols: ["http", "https"] })
   @MaxLength(2048)
   @IsOptional()
   url?: string;
 
-  @ApiPropertyOptional({ description: "Replace the subscribed event set" })
+  @ApiPropertyOptional({ description: "替换订阅的事件集合" })
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(10)
@@ -77,7 +75,7 @@ export class UpdateEventSubscriptionDto {
   @IsOptional()
   eventTypes?: string[];
 
-  @ApiPropertyOptional({ description: "Rotate the signing secret" })
+  @ApiPropertyOptional({ description: "轮换签名密钥" })
   @IsString()
   @MinLength(16)
   @MaxLength(256)

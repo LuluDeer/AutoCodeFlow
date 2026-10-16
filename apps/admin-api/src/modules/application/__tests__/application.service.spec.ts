@@ -131,9 +131,7 @@ describe("ApplicationService", () => {
 
     it("should throw NotFoundException when not found", async () => {
       appRepo.findOne.mockResolvedValue(null);
-      await expect(service.findById("nonexistent")).rejects.toThrow(
-        "not found",
-      );
+      await expect(service.findById("nonexistent")).rejects.toThrow("不存在");
     });
   });
 
@@ -216,7 +214,7 @@ describe("ApplicationService", () => {
       appRepo.findOne.mockResolvedValue({ id: "1", name: "test-app" });
       await expect(
         service.create({ name: "test-app", version: "1.0.0", runtime: "node" }),
-      ).rejects.toThrow("already exists");
+      ).rejects.toThrow("已存在");
     });
   });
 
@@ -309,7 +307,7 @@ describe("ApplicationService", () => {
 
       await expect(
         service.deployFromGit("1", "http://evil.example.com/r.git", "main"),
-      ).rejects.toThrow(/clone refused/);
+      ).rejects.toThrow(/已拒绝克隆/);
       expect(mockedSpawn).not.toHaveBeenCalled();
     });
 
@@ -751,7 +749,7 @@ describe("ApplicationService", () => {
           "https://github.com/o/r.git",
           "bad branch; rm -rf",
         ),
-      ).rejects.toThrow(/Invalid git branch name/);
+      ).rejects.toThrow(/git 分支名非法/);
       expect(mockedSpawn).not.toHaveBeenCalled();
     });
 
@@ -759,7 +757,7 @@ describe("ApplicationService", () => {
       appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
       await expect(
         service.deployFromGit("1", "not-a-url", "main"),
-      ).rejects.toThrow(/Invalid git repository URL/);
+      ).rejects.toThrow(/git 仓库 URL 非法/);
       expect(mockedSpawn).not.toHaveBeenCalled();
     });
 
@@ -843,7 +841,7 @@ describe("ApplicationService", () => {
       try {
         await expect(
           service.deployFromGit("1", "https://github.com/o/r.git", "main"),
-        ).rejects.toThrow("git rev-parse HEAD failed");
+        ).rejects.toThrow("git rev-parse HEAD 执行失败");
       } finally {
         rmSpy.mockRestore();
       }

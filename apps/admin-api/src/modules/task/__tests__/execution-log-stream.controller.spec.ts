@@ -56,7 +56,9 @@ describe("ExecutionCallbackController — POST /executions/:id/logs (RT-LOG)", (
   let systemConfigService: { findOne: jest.Mock };
   let executorService: {
     validateTokenByAddress: jest.Mock;
+    validateTokenByAddressAnyRow: jest.Mock;
     getCallbackSecretByAddress: jest.Mock;
+    getCallbackSecretCandidatesByAddress: jest.Mock;
   };
   let callbackMetrics: ExecutionCallbackMetricsService;
 
@@ -81,6 +83,16 @@ describe("ExecutionCallbackController — POST /executions/:id/logs (RT-LOG)", (
     executorService = {
       validateTokenByAddress: jest.fn().mockResolvedValue(true),
       getCallbackSecretByAddress: jest.fn().mockResolvedValue(null),
+      // ADR-017 阶段 3：回调/日志面改用「同址任一行匹配即通过」与
+      // 「候选密钥全集」。委派给旧方法驱动，既有打桩与开关语义逐字节保留。
+      validateTokenByAddressAnyRow: jest.fn((addr: string, token: string) =>
+        executorService.validateTokenByAddress(addr, token),
+      ),
+      getCallbackSecretCandidatesByAddress: jest.fn(async (addr: string) => {
+        const single: string | null =
+          await executorService.getCallbackSecretByAddress(addr);
+        return single ? [single] : [];
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -155,9 +167,9 @@ describe("ExecutionCallbackController — POST /executions/:id/logs (RT-LOG)", (
     ).resolves.toEqual({ count: 2 });
 
     expect(taskService.findExecutionAddress).toHaveBeenCalledWith(EXEC_UUID);
-    expect(executorService.getCallbackSecretByAddress).toHaveBeenCalledWith(
-      ADDRESS,
-    );
+    expect(
+      executorService.getCallbackSecretCandidatesByAddress,
+    ).toHaveBeenCalledWith(ADDRESS);
   });
 
   it("① 非 v1 令牌走 per-address 校验（地址取自该执行行）", async () => {
@@ -165,7 +177,7 @@ describe("ExecutionCallbackController — POST /executions/:id/logs (RT-LOG)", (
       controller.appendLogChunk(EXEC_UUID, "Bearer dynamic-token", makeDto()),
     ).resolves.toEqual({ count: 2 });
 
-    expect(executorService.validateTokenByAddress).toHaveBeenCalledWith(
+    expect(executorService.validateTokenByAddressAnyRow).toHaveBeenCalledWith(
       ADDRESS,
       "dynamic-token",
     );

@@ -19,83 +19,79 @@ export class ExecutorResponseDto {
   @ApiProperty({ format: "uuid" })
   id: string;
 
-  @ApiProperty({
-    description: "Executor app name (per-process registration key)",
-  })
+  @ApiProperty({ description: "执行器应用名（按进程的注册键）" })
   appName: string;
 
-  @ApiProperty({ description: "http://host:port, globally unique" })
+  @ApiProperty({ description: "http://host:port，全局唯一" })
   address: string;
 
   @ApiProperty({ enum: ["online", "offline"] })
   status: "online" | "offline";
 
   @ApiProperty({
-    description: "Why it went offline (null while online)",
     nullable: true,
     enum: ["manual", "stale_timeout"],
+    description: "离线原因（在线时为 null）",
   })
   offlineReason: "manual" | "stale_timeout" | null;
 
-  @ApiProperty({
-    description: "Consecutive missed/failed heartbeats (stale sweep input)",
-  })
+  @ApiProperty({ description: "连续丢失/失败的心跳次数（失联清扫输入）" })
   consecutiveHeartbeatMisses: number;
 
   @ApiProperty({ enum: ["python", "node", "universal"] })
   type: "python" | "node" | "universal";
 
   @ApiProperty({
-    description: "Self-reported executor package version",
     nullable: true,
+    description: "执行器自报的包版本",
   })
   executorVersion: string | null;
 
   @ApiProperty({
-    description:
-      "Protocol version negotiated at register (pull control-plane gate)",
     nullable: true,
+    description: "注册时协商的协议版本（pull 控制面门禁）",
   })
   protocolVersion: number | null;
 
   @ApiProperty({
-    description:
-      "push = platform dials the executor; pull = executor long-polls (NAT-bound)",
     enum: ["push", "pull"],
+    description: "push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）",
   })
   dispatchMode: "push" | "pull";
 
   @ApiProperty({
-    description: "Declared runtime capability domains",
     nullable: true,
     type: [String],
+    description: "声明的运行时能力域",
   })
   capabilities: string[] | null;
 
-  @ApiProperty({ description: "Last accepted heartbeat", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "最近一次被接受的心跳",
+  })
   lastHeartbeat: Date | null;
 
   @ApiProperty({
-    description: "Executor process start time (restart detection)",
     nullable: true,
+    description: "执行器进程启动时间（重启检测）",
   })
   executorStartedAt: Date | null;
 
   @ApiProperty({
-    description: "Per-process instance id (idempotent token issuance)",
     nullable: true,
+    description: "按进程的实例 ID（幂等令牌签发）",
   })
   executorStartupId: string | null;
 
   @ApiProperty({
-    description: "Stable device identity across address changes",
-    nullable: true,
+    description:
+      "跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。",
   })
-  deviceFingerprint: string | null;
+  deviceFingerprint: string;
 
   @ApiProperty({
-    description:
-      "Currently running tasks (includes reserved-but-unclaimed pull slots)",
+    description: "当前运行中的任务数（含已预留但未领取的 pull 槽位）",
   })
   runningTaskCount: number;
 
@@ -108,7 +104,10 @@ export class ExecutorResponseDto {
   @ApiProperty({ nullable: true })
   diskUsage: number | null;
 
-  @ApiProperty({ description: "ms", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "毫秒",
+  })
   networkLatency: number | null;
 
   @ApiProperty()
@@ -118,35 +117,32 @@ export class ExecutorResponseDto {
   failedTaskCount: number;
 
   @ApiProperty({
-    description: "Dispatch gate capacity; null = unlimited",
     nullable: true,
+    description: "派发门禁容量；null = 不限",
   })
   maxConcurrentTasks: number | null;
 
   @ApiProperty({
-    description:
-      "Execution ids currently claimed by this executor (E-01-RPT liveness report)",
     nullable: true,
     type: [String],
+    description: "该执行器当前已领取的执行 ID（E-01-RPT 存活上报）",
   })
   runningExecutionIds: string[] | null;
 
   @ApiProperty({
-    description:
-      "Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate)",
     nullable: true,
+    description:
+      "已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁）",
   })
   reservedSlots: number | null;
 
   @ApiProperty({
-    description: "Control-plane commands parked in the dead-letter queue",
     nullable: true,
+    description: "滞留在死信队列中的控制面命令数",
   })
   deadLetterCount: number | null;
 
   @ApiProperty({
-    description:
-      "Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty)",
     nullable: true,
     type: "array",
     items: {
@@ -159,6 +155,7 @@ export class ExecutorResponseDto {
       },
       required: ["version"],
     },
+    description: "执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空）",
   })
   interpreters: Array<{
     version: string;
@@ -185,9 +182,7 @@ export class ExecutorResponseDto {
   @ApiProperty()
   updatedAt: Date;
 
-  @ApiProperty({
-    description: "Optimistic-lock @VersionColumn (TypeORM version column)",
-  })
+  @ApiProperty({ description: "乐观锁 @VersionColumn（TypeORM 版本列）" })
   version: number;
 
   @ApiPropertyOptional({
@@ -201,33 +196,30 @@ export class ExecutorResponseDto {
 export class ExecutorHeartbeatResponseDto extends ExecutorResponseDto {
   @ApiProperty({
     description:
-      "Callback-auth secret for this executor (machine face: the token-authed holder fetches it to sign execution callbacks)",
+      "该执行器的回调鉴权 secret（机器面：持有令牌的一方可取回它来为执行回调签名）",
   })
   tokenHash: string;
 
   @ApiProperty({
-    description: "EXECUTOR_MIN_VERSION gate value; '' = gate disabled",
     nullable: true,
+    description: "EXECUTOR_MIN_VERSION 门禁值；'' = 门禁关闭",
   })
   minVersion: string | null;
 
-  @ApiProperty({
-    description:
-      "Whether the self-reported version satisfies the min-version gate",
-  })
+  @ApiProperty({ description: "自报版本是否满足最低版本门禁" })
   versionCompliant: boolean;
 
   @ApiPropertyOptional({
-    description:
-      "save() 回程把 select:false 列 hydrated 带出（R7 实测）；findOne/列表读取不含",
     nullable: true,
     type: [String],
+    description:
+      "save() 回程把 select:false 列 hydrated 带出（R7 实测）；findOne/列表读取不含",
   })
   agentCapabilities?: string[] | null;
 
   @ApiPropertyOptional({
-    description: "同上——save() 回程出现性",
     nullable: true,
+    description: "同上——save() 回程出现性",
   })
   agentCapabilitiesUpdatedAt?: Date | null;
 }
@@ -258,15 +250,14 @@ export class ExecutorPickerResponseDto {
   items: ExecutorPickerItemDto[];
 
   @ApiProperty({
-    description:
-      "True when the cap hit — items are a prefix, total is the real count",
+    description: "达到上限时为 true —— items 只是前缀，total 才是真实总数",
   })
   truncated: boolean;
 
   @ApiProperty()
   total: number;
 
-  @ApiProperty({ description: "The applied cap" })
+  @ApiProperty({ description: "实际生效的上限" })
   limit: number;
 }
 
@@ -282,20 +273,19 @@ export class ExecutorRemovalImpactResponseDto {
   status: string;
 
   @ApiProperty({
-    description:
-      "Tasks pinned to this executor via task.executorId (dispatch has no fallback)",
+    description: "通过 task.executorId 绑定到该执行器的任务数（派发无回退）",
   })
   pinnedTasks: number;
 
   @ApiProperty({
     description:
-      "Tasks bound via task.executorAppName (exact match, no silent failover)",
+      "通过 task.executorAppName 绑定的任务数（精确匹配，不会静默故障转移）",
   })
   appNameBoundTasks: number;
 
   @ApiProperty({
     description:
-      "Pull queue depth (acf:pull:{id} LLEN); non-zero only for pull-mode executors",
+      "pull 队列深度（acf:pull:{id} 的 LLEN）；仅 pull 模式执行器可能非零",
   })
   pendingPullItems: number;
 }
@@ -307,8 +297,7 @@ export class ExecutorExecutionsResponseDto {
 
   @ApiProperty({
     type: "array",
-    description:
-      "TaskExecution rows, newest first (heavy text columns NOT excluded on this face)",
+    description: "TaskExecution 行，按最新在前（本读面未排除大文本列）",
   })
   items: Array<Record<string, unknown>>;
 }
@@ -316,7 +305,7 @@ export class ExecutorExecutionsResponseDto {
 /** POST /executors/:id/reload-config —— 双形态：pull 排队回执 / push 透传执行器响应。 */
 export class ExecutorReloadConfigResponseDto {
   @ApiPropertyOptional({
-    description: "true = pull-mode: queued, applied on next poll (~1s)",
+    description: "true = pull 模式：已入队，在下次轮询（约 1 秒）时生效",
   })
   queued?: boolean;
 
@@ -327,21 +316,18 @@ export class ExecutorReloadConfigResponseDto {
   message?: string;
 
   @ApiPropertyOptional({
-    description:
-      "push-mode: the executor's own api/config/reload response body, passed through verbatim",
     additionalProperties: true,
+    description: "push 模式：执行器自身 api/config/reload 的响应体，原样透传",
   })
   executorResponse?: unknown;
 }
 
 /** POST /executors/token —— 动态令牌签发（R9 幂等语义）。 */
 export class ExecutorTokenResponseDto {
-  @ApiProperty({
-    description: "Plaintext token (shown per fetch; rotation rules per R9)",
-  })
+  @ApiProperty({ description: "明文令牌（每次取回时展示；轮换规则见 R9）" })
   token: string;
 
-  @ApiProperty({ description: "Stored bcrypt/sha hash for verification" })
+  @ApiProperty({ description: "存储的 bcrypt/sha 哈希，用于校验" })
   tokenHash: string | null;
 }
 
@@ -353,30 +339,25 @@ export class ExecutorCommandResultResponseDto {
 
 /** GET /executors/config —— pull 热更新的执行器侧配置载荷。 */
 export class ExecutorConfigPayloadResponseDto {
-  @ApiProperty({
-    description: "Per-executor capacity from the entity; null = unlimited",
-  })
+  @ApiProperty({ description: "取自实体的按执行器容量；null = 不限" })
   maxConcurrentTasks: number | null;
 
   @ApiProperty({
-    description:
-      "Heartbeat interval in seconds (executor.heartbeatInterval/1000, min 1)",
+    description: "心跳间隔（秒，取自 executor.heartbeatInterval/1000，最小 1）",
   })
   heartbeatIntervalSeconds: number;
 
-  @ApiPropertyOptional({
-    description: "Present only when app.adminApiUrl is configured",
-  })
+  @ApiPropertyOptional({ description: "仅在配置了 app.adminApiUrl 时出现" })
   adminApiUrl?: string;
 }
 
 /** POST /executors/pull —— 长轮询取件载荷（task 为动态派发载荷，自由对象）。 */
 export class ExecutorPullResponseDto {
   @ApiProperty({
-    description:
-      "Dispatch payload (ExecuteRequest shape built by the pull service) or null when nothing queued",
     nullable: true,
     additionalProperties: true,
+    description:
+      "派发载荷（由 pull 服务构建的 ExecuteRequest 形状），无排队内容时为 null",
   })
   task: Record<string, unknown> | null;
 
@@ -384,10 +365,9 @@ export class ExecutorPullResponseDto {
   dispatchMode: "push" | "pull";
 
   @ApiPropertyOptional({
-    description:
-      "Only on pull-mode executors with control-plane protocol support (ARCH-33)",
     type: "array",
     items: { type: "object", additionalProperties: true },
+    description: "仅在支持控制面协议的 pull 模式执行器上出现（ARCH-33）",
   })
   commands?: Array<Record<string, unknown>>;
 }
@@ -395,9 +375,9 @@ export class ExecutorPullResponseDto {
 /** POST /executors/register —— 注册回执：executor 行 + 注册期一次性 token 语义。 */
 export class ExecutorRegisterResponseDto extends ExecutorResponseDto {
   @ApiPropertyOptional({
+    nullable: true,
     description:
       "R9 幂等语义：同 (address, startupId) 重注册返回 null（不轮换）；首次注册/真实重启才发新 token",
-    nullable: true,
   })
   perExecutorToken?: string | null;
 
@@ -410,15 +390,15 @@ export class ExecutorRegisterResponseDto extends ExecutorResponseDto {
   protocolCompliant: boolean;
 
   @ApiPropertyOptional({
-    description: "save() 回程 hydrated（R7 实测）",
     nullable: true,
     type: [String],
+    description: "save() 回程 hydrated（R7 实测）",
   })
   agentCapabilities?: string[] | null;
 
   @ApiPropertyOptional({
-    description: "save() 回程 hydrated（R7 实测）",
     nullable: true,
+    description: "save() 回程 hydrated（R7 实测）",
   })
   agentCapabilitiesUpdatedAt?: Date | null;
 }

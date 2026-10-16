@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Controller,
   Get,
   Headers,
@@ -39,6 +38,9 @@ import { MAX_ARTIFACT_SIZE_BYTES } from "./artifacts.constants";
 // ArtifactsModule 生产装配 imports AuditModule，存量测试未提供时旁路）。
 import { AuditService } from "../audit/audit.service";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 import {
   ArtifactUploadResponseDto,
   ExecutionArtifactDto,
@@ -76,27 +78,23 @@ export class ArtifactsController {
   })
   @Put("executions/:execId/artifacts/:name")
   @ApiOperation({
-    summary: "Upload one execution artifact (executor-to-admin, best-effort)",
     description:
-      "Authenticates with the executor shared token or the per-executor dynamic " +
-      "token (same credential the executor uses for its terminal callback). " +
-      "Accepts multipart/form-data with a 'file' field (same shape as the " +
-      "executor-package upload channel). Optional ?sha256= is cross-checked " +
-      "against the uploaded bytes.",
+      "使用执行器共享令牌或该执行器的动态令牌鉴权（与执行器上报终态回调所用凭据一致）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。",
+    summary: "上传单个执行产物（执行器 → 中台，尽力而为）",
   })
-  @ApiParam({ name: "execId", description: "Execution ID (UUID)" })
-  @ApiParam({ name: "name", description: "Bare artifact file name" })
+  @ApiParam({ name: "execId", description: "执行 ID（UUID）" })
+  @ApiParam({ name: "name", description: "裸产物文件名" })
   @ApiQuery({
     name: "sha256",
     required: false,
-    description: "Expected sha256 hex",
+    description: "期望的 sha256 十六进制值",
   })
   @ApiResponse({
     status: 400,
-    description: "Invalid name / over cap / sha mismatch",
+    description: "文件名非法 / 超出上限 / sha256 不匹配",
   })
-  @ApiResponse({ status: 401, description: "Invalid executor credential" })
-  @ApiResponse({ status: 404, description: "Execution not found" })
+  @ApiResponse({ status: 401, description: "执行器凭据无效" })
+  @ApiResponse({ status: 404, description: "执行记录不存在" })
   @UseInterceptors(
     FileInterceptor("file", {
       storage: memoryStorage(),
@@ -115,7 +113,7 @@ export class ArtifactsController {
     // 字节——两种形态统一要求携带名为 "file" 的字段。
     const buf = file?.buffer;
     if (!buf) {
-      throw new BadRequestException("No artifact file uploaded");
+      throw new AppError(ErrorCode.ARTIFACT_FILE_MISSING);
     }
     // 凭据校验（内部会确认执行行存在）。
     await this.svc.verifyUploadAuth(execId, auth);
@@ -138,16 +136,14 @@ export class ArtifactsController {
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "List execution artifacts (manifest, admin only)",
     description:
-      "Returns the persisted artifact manifest reported by the executor's " +
-      "terminal callback. Requires an administrator JWT (global JwtAuthGuard " +
-      "+ RolesGuard).",
+      "返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。",
+    summary: "列出执行产物（manifest，仅管理员）",
   })
-  @ApiParam({ name: "execId", description: "Execution ID (UUID)" })
+  @ApiParam({ name: "execId", description: "执行 ID（UUID）" })
   @ApiOkResponse({ type: [ExecutionArtifactDto] })
-  @ApiResponse({ status: 403, description: "Non-admin caller" })
-  @ApiResponse({ status: 404, description: "Execution not found" })
+  @ApiResponse({ status: 403, description: "调用者不是管理员" })
+  @ApiResponse({ status: 404, description: "执行记录不存在" })
   list(@Param("execId") execId: string) {
     return this.svc.getManifest(execId);
   }
@@ -156,25 +152,24 @@ export class ArtifactsController {
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth("JWT")
   @ApiOperation({
-    summary: "Download one execution artifact (streamed, admin only)",
     description:
-      "Streams a stored artifact to an authenticated administrator. Enforces a " +
-      "bare-safe file-name (path-traversal guarded) and 404 when absent.",
+      "将已存储的产物以流式返回给已认证的管理员。强制校验裸文件名（防路径穿越），产物不存在时返回 404。",
+    summary: "下载单个执行产物（流式，仅管理员）",
   })
-  @ApiParam({ name: "execId", description: "Execution ID (UUID)" })
-  @ApiParam({ name: "name", description: "Bare artifact file name" })
+  @ApiParam({ name: "execId", description: "执行 ID（UUID）" })
+  @ApiParam({ name: "name", description: "裸产物文件名" })
   @ApiOkResponse({
-    description: "artifact binary (Res passthrough)",
+    description: "产物二进制内容（Res 直传）",
     content: {
       "application/octet-stream": {
         schema: { type: "string", format: "binary" },
       },
     },
   })
-  @ApiResponse({ status: 403, description: "Non-admin caller" })
-  @ApiResponse({ status: 404, description: "Artifact not found" })
+  @ApiResponse({ status: 403, description: "调用者不是管理员" })
+  @ApiResponse({ status: 404, description: "产物不存在" })
   @ApiOkResponse({
-    description: "artifact binary (Res passthrough)",
+    description: "产物二进制内容（Res 直传）",
     content: {
       "application/octet-stream": {
         schema: { type: "string", format: "binary" },

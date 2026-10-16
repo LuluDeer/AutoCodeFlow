@@ -40,6 +40,68 @@ describe('prepareFailureReason (BUG-10 refinement)', () => {
 });
 
 /**
+ * LANG-ZH-01 缺口（本轮审计）：**任务超时**的结构化分类。
+ *
+ * 此前 node 侧没有任何 timeout 规则——`runProcess` 的超时拒绝抛
+ * `任务执行超时（${n}s）`，经 `withClassifiedFailureReason` 落到 unknown →
+ * **不设** failureReason → admin 按 /timeout|超时/ 文本兜底。执行器是唯一知道
+ * 自己有无挂超时定时器的一方（timeout=0 = 不限时），结构化上报更诚实，且不
+ * 依赖用户文案里恰好还留着"超时"二字（文案一改，分类静默失效，timeout 的
+ * 可重试语义随之后移）。
+ */
+describe('prepareFailureReason — timeout（本轮审计新增）', () => {
+  it('classifies the executor\'s own task-timeout message (zh + en)', () => {
+    expect(prepareFailureReason('任务执行超时（600s）')).toBe('timeout');
+    expect(prepareFailureReason('execution timed out after 600s')).toBe('timeout');
+  });
+
+  it('does NOT steal stage-budget timeouts (they have more precise reasons)', () => {
+    // `uv venv timed out` = 依赖装不上（环境/私有源/网络），不是"任务跑太久"。
+    // 用户若按 timeout 处置（调大任务超时）会完全跑偏。
+    expect(prepareFailureReason('uv venv timed out after 600s (uv process killed)')).toBe(
+      'dependency_install_failed',
+    );
+    expect(prepareFailureReason('Dependency installation failed (timeout)')).toBe(
+      'dependency_install_failed',
+    );
+    expect(prepareFailureReason('git fetch timed out after 60s')).toBe('git_fetch_failed');
+  });
+});
+
+/**
+ * 双端一致性补口（本轮审计）：`uv venv timed out` 与 `不支持的 runtime`。
+ *
+ * 两者此前在 node 侧落 unknown，而 python `_refine_failure_reason` 对同一份
+ * 文本给出 dependency_install_failed / runtime_missing——同一失败在两个执行器
+ * 上分因不同，admin 的统计与重试白名单随之漂移。
+ */
+describe('prepareFailureReason — 与 python 分类器的双端对齐（本轮审计）', () => {
+  it('classifies uv venv stage timeouts as dependency_install_failed (python parity)', () => {
+    expect(prepareFailureReason('uv venv timed out after 600s (uv process killed)')).toBe(
+      'dependency_install_failed',
+    );
+    expect(prepareFailureReason('uv venv 超时（120s）')).toBe('dependency_install_failed');
+  });
+
+  it('classifies an unsupported runtime as runtime_missing (python parity)', () => {
+    // run_task/prepareExecution 的 runtime 分派兜底，两侧文案逐字同形。
+    expect(prepareFailureReason('不支持的 runtime：ruby')).toBe('runtime_missing');
+    expect(prepareFailureReason('unsupported runtime: ruby')).toBe('runtime_missing');
+  });
+
+  it('classifies the executor-shutdown message as executor_restart', () => {
+    // 复用既有 executorReportable 取值（protocol.json：adminInternalOnly 仅
+    // stale_recovered / application_missing / never_dispatched），**不新增枚举**。
+    // admin 标签「执行器重启」+ runbook「瞬时中断，调度 sweep 已自动重新入队」
+    // 精确匹配本场景；此前落 unknown，用户只能看到「未知原因」。
+    expect(prepareFailureReason('执行器正在停机，该执行尚未开始')).toBe('executor_restart');
+    expect(
+      prepareFailureReason('Executor is shutting down before this execution started'),
+    ).toBe('executor_restart');
+  });
+});
+
+/**
  * WS5（python_task_upload_and_multiversion, CONTRACT.md §2.5 / §3.3-5）：
  * 解释器无法获取的独立分因。
  *

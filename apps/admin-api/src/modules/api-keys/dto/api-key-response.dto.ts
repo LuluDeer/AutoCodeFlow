@@ -15,27 +15,28 @@ export class ApiKeyViewDto {
   name: string;
 
   @ApiProperty({
-    description: "'acf_' + first chars — full key never returned after create",
+    description: "'acf_' + 前缀若干字符——创建之后不再返回完整 key",
   })
   keyPrefix: string;
 
-  @ApiProperty({ description: "Coarse scope bucket" })
+  @ApiProperty({ description: "粗粒度范围桶" })
   scope: string;
 
-  @ApiProperty({
-    description: "Extra narrow-domain scopes (word list, e.g. 'task:trigger')",
-  })
+  @ApiProperty({ description: "额外的细粒度范围（词表，例如 'task:trigger'）" })
   scopes: string[];
 
   @ApiProperty({ nullable: true })
   expiresAt: Date | null;
 
-  @ApiProperty({ description: "Set = revoked (soft-delete)", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "有值 = 已吊销（软删除）",
+  })
   revokedAt: Date | null;
 
   @ApiProperty({
-    description: "Refresh throttled to 60s (LAST_USED_THROTTLE_MS)",
     nullable: true,
+    description: "刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）",
   })
   lastUsedAt: Date | null;
 
@@ -48,7 +49,7 @@ export class ApiKeyViewDto {
  *  嵌套（首版照 service 签名臆测，实响应是平铺的视图字段+plaintext）。 */
 export class ApiKeyCreateResponseDto extends ApiKeyViewDto {
   @ApiProperty({
-    description: "Plaintext key ('acf_<64 hex>') shown ONCE — store it now",
+    description: "明文 key（'acf_<64 hex>'）仅展示一次——请立即保存",
   })
   plaintext: string;
 }

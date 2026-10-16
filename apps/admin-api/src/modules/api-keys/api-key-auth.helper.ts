@@ -1,9 +1,7 @@
-import {
-  ExecutionContext,
-  ForbiddenException,
-  Injectable,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { ExecutionContext, Injectable } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
+import { AppError } from "../../common/errors/app-error";
 import {
   ApiKeyAuthFacade,
   extractBearerCredential,
@@ -47,9 +45,7 @@ export class ApiKeyAuth implements ApiKeyAuthFacade {
 
     // 1. JWT-only surfaces — API Keys are refused before any lookup.
     if (isJwtOnlyPath(path)) {
-      throw new UnauthorizedException(
-        "API Keys are not accepted on credential management endpoints; use a user JWT",
-      );
+      throw new AppError("API_KEY_JWT_ONLY_SURFACE");
     }
 
     const { apiKey, failure } =
@@ -65,7 +61,7 @@ export class ApiKeyAuth implements ApiKeyAuthFacade {
         // audit is fail-open inside the service; double guard here anyway
       }
       // Uniform 401 — no oracle for unknown vs expired vs revoked.
-      throw new UnauthorizedException("Invalid or expired API key");
+      throw new AppError("API_KEY_INVALID");
     }
 
     // 5. Scope enforcement (method × path matrix, pure decision layer).
@@ -84,7 +80,11 @@ export class ApiKeyAuth implements ApiKeyAuthFacade {
       verdict = { allowed: true };
     }
     if (!verdict.allowed) {
-      throw new ForbiddenException(verdict.reason);
+      // `verdict.reason` 由 api-key-scope.util 生成的**已成型中文说明**
+      // （含 method/path 与所需 scope，是该 util 的既有对外文案）。此处作为
+      // 参数原样透传：码负责可翻译的「权限不足」外壳，具体所需 scope 属
+      // 结构化诊断信息，且 util 归另一 workstream 所有，不在此改写其文案。
+      throw new AppError("API_KEY_SCOPE_DENIED", { reason: verdict.reason });
     }
 
     req.user = {

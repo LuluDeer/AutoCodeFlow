@@ -28,6 +28,9 @@ import { useExecutionsStream } from '../hooks/useExecutionsStream';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+// ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
+// 阶段 3 起 pull 允许同址多行并存，仅显示 IP:端口 无法回答「哪台机器」。
+import { useExecutorNames } from '../hooks/useExecutorNames';
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
 import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
@@ -76,7 +79,18 @@ function csvCell(value: string | number | null | undefined): string {
  * 完整时刻（formatDateTime）而非表格里的相对时间。首行 BOM 保证 Excel
  * 以 UTF-8 解码中文不乱码。
  */
-function buildExecutionsCsv(rows: TaskExecution[], t: (k: string) => string): string {
+function buildExecutionsCsv(
+  rows: TaskExecution[],
+  t: (k: string) => string,
+  /**
+   * ADR-017 阶段 3（决策 §7）：执行器可读名解析（与表格列同源）。
+   * 导出列与 Table 列**口径一致**是本文件既有纪律（见上方注释）；表格列已改成
+   * 「名字 + 地址」，导出若只留地址就会与屏幕内容不符。
+   *
+   * 缺省（未传）时导出退回纯地址——保持该函数对旧调用方/测试的兼容。
+   */
+  nameOf?: (row: { executorId?: string | null; executorAddress?: string | null }) => string | null,
+): string {
   const statusMap = STATUS_MAP(t);
   const header = [
     t('execs.col.task'),
@@ -93,7 +107,9 @@ function buildExecutionsCsv(rows: TaskExecution[], t: (k: string) => string): st
       r.taskName || r.taskId,
       statusMap[r.status]?.label ?? r.status,
       triggerLabel(r.triggerType, t),
-      r.executorAddress ?? '',
+      // 名字与地址**都**导出（名字供人读、地址供精确定位）——与表格的
+      // 「主名 + 副地址」一致；解析不到则只写地址（绝不编造名字）。
+      [nameOf?.(r) ?? null, r.executorAddress ?? null].filter(Boolean).join(' ') || '',
       r.startTime ? formatDateTime(r.startTime) : '',
       r.duration != null ? formatDuration(r.duration, t) : '',
       r.errorMessage ?? '',
@@ -199,6 +215,18 @@ export default function ExecutionsPage() {
   const executions: TaskExecution[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
 
+  // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析。
+  //
+  // 本页此前只渲染 `executorAddress`（如 192.168.4.54:8003）——用户给执行器起的
+  // 名字在这些行里完全缺席，「这条执行跑在哪台机器」要靠背 IP 才能答上来；而
+  // 阶段 3 起 pull 允许同址多行并存（ADR-017 §5），地址甚至**不再唯一**。
+  // 解析口径复用 `useExecutorNames`（id 优先、地址回落、匹配不到返回 null 并
+  // 如实显示地址，绝不编造名字）——与 AppDeploymentPage/ApplicationDetailPage
+  // 同一实现，不新增第二套机制。
+  //
+  // 自拉一次清单（本页此前不加载执行器列表）；失败静默降级为只显示地址。
+  const { nameOf } = useExecutorNames();
+
   const hasFilters = !!(search || statusFilter || executorFilter || timeRange);
 
   const clearFilters = () => {
@@ -212,7 +240,7 @@ export default function ExecutionsPage() {
   // 审计 P2：导出当前页 CSV——Blob + 临时 <a download> 触发下载。审计页 A-12
   // 走后端导出端点，本页数据已在客户端，无需再过网络；文件名带页码与日期便于归档。
   const handleExportCsv = () => {
-    const blob = new Blob([buildExecutionsCsv(executions, t)], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob([buildExecutionsCsv(executions, t, nameOf)], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -273,9 +301,21 @@ export default function ExecutionsPage() {
       width: 160,
       ellipsis: true,
       ...hideOnMobile,
-      render: (v: string) => v
-        ? <Tooltip title={v}><Text style={{ fontSize: 12 }}>{v}</Text></Tooltip>
-        : <Text type="secondary" style={{ fontSize: 12 }}>-</Text>,
+      // ADR-017 阶段 3（决策 §7）：主显可读名（员工给机器起的名字），地址降为
+      // tooltip 副信息——地址仍是**诊断身份**（「到底哪台」），故不删除。
+      // 解析不到名字时如实只显示地址（绝不编造），都没有则 '-'。
+      render: (v: string, r: TaskExecution) => {
+        const name = nameOf(r);
+        const fallback = v || null;
+        if (!name && !fallback) {
+          return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        }
+        return (
+          <Tooltip title={fallback ?? name ?? ''}>
+            <Text style={{ fontSize: 12 }}>{name ?? fallback}</Text>
+          </Tooltip>
+        );
+      },
     },
     {
       title: t('execs.col.startTime'),
@@ -463,7 +503,9 @@ export default function ExecutionsPage() {
                     <Badge status={cfg.badge} text={cfg.label} />
                   </div>
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                    {[triggerLabel(r.triggerType, t), r.executorAddress].filter(Boolean).join(' · ')}
+                    {/* ADR-017 阶段 3（决策 §7）：与表格列同口径——名字优先、
+                        地址回落（移动端窄，故只显示一个；地址在桌面端可见）。 */}
+                    {[triggerLabel(r.triggerType, t), nameOf(r) ?? r.executorAddress].filter(Boolean).join(' · ')}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
                     {r.startTime ? `${formatRelativeTime(r.startTime, t)} · ${r.duration != null ? formatDuration(r.duration, t) : '-'}` : '-'}

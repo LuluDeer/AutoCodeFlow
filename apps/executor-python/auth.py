@@ -192,6 +192,10 @@ async def _fetch_token() -> Optional[str]:
         if static_token:
             headers['Authorization'] = f'Bearer {static_token}'
 
+        # ADR-017 阶段 3（复查补口）：指纹是 /executors/token 的**行定位键**。
+        # 采集失败 → 不发该键，服务端 legacy 路径，行为与引入前一致。
+        from device_identity import get_device_fingerprint
+        _fp = get_device_fingerprint()
         response = await client.post(
             build_admin_api_url('/executors/token'),
             json={
@@ -204,6 +208,10 @@ async def _fetch_token() -> Optional[str]:
                 # semantics). Without it the admin falls back to the
                 # legacy 60s rotation window.
                 'startupId': executor_startup_id,
+                # ADR-017 阶段 3（复查补口）：指纹是**行定位键**。缺省即服务端
+                # 按 address 回落——pull 同址多行（ADR-017 §5）时任取一行，
+                # 会去轮换**别的执行器**的 token（那台随即 401，执行卡 RUNNING）。
+                **({'deviceFingerprint': _fp} if _fp else {}),
             },
             headers=headers,
         )
@@ -310,8 +318,8 @@ async def verify_token(authorization: str = Header(default='')) -> None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
-                    'No executor token is configured; refusing unauthenticated '
-                    'execution (set EXECUTOR_ALLOW_NO_TOKEN=true only for local dev)'
+                    '未配置任何执行器令牌；拒绝未认证的执行'
+                    '（仅本地开发可设置 EXECUTOR_ALLOW_NO_TOKEN=true）'
                 ),
             )
         import logging as _logging
@@ -333,7 +341,7 @@ async def verify_token(authorization: str = Header(default='')) -> None:
     if not token_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Invalid or missing executor token',
+            detail='执行器令牌无效或缺失',
             headers={'WWW-Authenticate': 'Bearer'},
         )
 

@@ -7,6 +7,7 @@ import * as os from 'os';
 import { app } from 'electron';
 import * as path from 'path';
 import { decryptToken, encryptToken, isValueEncrypted } from './token-crypto';
+import type { UiLanguage } from './ui-language';
 import log from './logger';
 
 export interface AppConfig {
@@ -24,6 +25,29 @@ export interface AppConfig {
   /** DSK-04：系统通知开关（任务终态/执行器离线时弹系统通知）。 */
   notifyEnabled: boolean;
   logLevel: 'info' | 'debug' | 'error';
+
+  /**
+   * i18n-DESK-01：**界面语言设置**（可切换，默认跟随系统语言）。
+   *
+   * 产品要求「默认英文，但优先跟随系统语言，后面也可以更换」；此前桌面端只有
+   * 系统语言自动判定，用户**没有选择权**。三个取值：
+   *   · 'zh'   —— 界面一律中文；
+   *   · 'en'   —— 界面一律英文；
+   *   · 'auto' —— 跟随系统：`zh*` → 中文，其余（含 en* 与 fr 等未支持语言）
+   *     → 英文（**默认值**，见下方 defaults 与 ui-language.ts 的判定纪律）。
+   * 显式 'zh' / 'en' **优先于**系统语言；非法值（手改 config.json）归一化为
+   * 'en'（UI_LANGUAGE_DEFAULT，见 config-sanitize.ts 的 ENUM_FIELDS fallback）。
+   *
+   * 消费面：渲染层（src/renderer/i18n.ts 的模块级设置，经 renderer/main.tsx
+   * 启动时从 config:get 灌入）、托盘（src/main/tray.ts 的 locale()）、崩溃兜底
+   * 对话框（src/main/index.ts 注入 crash-guard 的 locale）。判定语义与消毒规则
+   * 见 ui-language.ts / config-sanitize.ts 的同名字段。
+   *
+   * 可选字段 + defaults 补 'auto'：旧配置文件没有这个键时由 electron-store 的
+   * defaults 补齐（兼容红线，与 uv* / pullMode 同处置）——升级后老用户按系统
+   * 语言显示，不需要迁移。
+   */
+  uiLanguage?: UiLanguage;
 
   /**
    * python_task_multiversion：uv 多版本解释器支持（全部可选）。
@@ -117,6 +141,13 @@ const defaults = {
   // DSK-04：系统通知默认开启（用户可在设置页关闭）
   notifyEnabled: true,
   logLevel: 'info',
+  // i18n-DESK-01：界面语言默认 **'auto'（跟随系统语言）**，系统语言无法判定或
+  // 不属于中英时落到 UI_LANGUAGE_DEFAULT（英文）。产品要求原文：「默认是英文，
+  // 但是也优先跟随浏览器/系统语言，后面想换也可以进行更换」——故默认值取 'auto'
+  // 而非写死 'en'：写死会让中文系统的新装机默认显示英文，与「优先跟随系统语言」
+  // 冲突；'auto' + 英文兜底同时满足两个诉求。
+  // 旧配置文件中**已经显式存过** uiLanguage 的用户不受影响（显式值优先）。
+  uiLanguage: 'auto',
   // python_task_multiversion：可选，缺省即"用内置默认值"。
   // 显式给 default '' 而不是 required——旧配置文件缺这些键时 electron-store
   // 会补默认值，保证升级后读配置不炸。

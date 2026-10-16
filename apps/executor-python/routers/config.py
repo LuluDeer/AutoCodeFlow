@@ -123,7 +123,7 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
     # schema 兜手检没覆盖的**类型/形状**错误（如 maxConcurrentTasks 传字符串、
     # adminApiUrls 传非数组），且必须发生在任何 settings 写入**之前**。
     if req.max_concurrent_tasks is not None and req.max_concurrent_tasks < 1:
-        raise HTTPException(status_code=400, detail='max_concurrent_tasks must be >= 1')
+        raise HTTPException(status_code=400, detail='max_concurrent_tasks 必须 >= 1')
     # NETOPT-D P3-5 对齐（node routes/config.ts 同一句 'between 1 and 10000'）：
     # 上界必须与心跳体 runningExecutionIds 的封顶（MAX_RUNNING_EXECUTION_IDS）
     # 一致——否则放行 >10000 并发时，超出部分的在跑执行报不进心跳，会失去
@@ -132,12 +132,12 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
     if req.max_concurrent_tasks is not None and req.max_concurrent_tasks > MAX_RUNNING_EXECUTION_IDS:
         raise HTTPException(
             status_code=400,
-            detail=f'max_concurrent_tasks must be between 1 and {MAX_RUNNING_EXECUTION_IDS}',
+            detail=f'max_concurrent_tasks 必须在 1 到 {MAX_RUNNING_EXECUTION_IDS} 之间',
         )
     if req.task_timeout_seconds is not None and req.task_timeout_seconds < 1:
-        raise HTTPException(status_code=400, detail='task_timeout_seconds must be >= 1')
+        raise HTTPException(status_code=400, detail='task_timeout_seconds 必须 >= 1')
     if req.heartbeat_interval_seconds is not None and req.heartbeat_interval_seconds < 5:
-        raise HTTPException(status_code=400, detail='heartbeat_interval_seconds must be >= 5')
+        raise HTTPException(status_code=400, detail='heartbeat_interval_seconds 必须 >= 5')
     if isinstance(raw_body, dict):
         try:
             # strict=True：pydantic 默认 lax 会把字符串 "4" 强转成 int，而 zod 与
@@ -149,20 +149,20 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
             where = '.'.join(str(p) for p in first['loc']) or '(root)'
             raise HTTPException(
                 status_code=400,
-                detail=f'Invalid config reload request: {where}: {first["msg"]}',
+                detail=f'无效的 config reload 请求：{where}：{first["msg"]}',
             ) from exc
 
     try:
         if req.max_concurrent_tasks is not None:
             if req.max_concurrent_tasks < 1:
-                raise HTTPException(status_code=400, detail='max_concurrent_tasks must be >= 1')
+                raise HTTPException(status_code=400, detail='max_concurrent_tasks 必须 >= 1')
             # 上界复查（与上方预检同域）。此处不能依赖 Settings 的
             # field_validator：pydantic 未开 validate_assignment，`settings.x = v`
             # 这种赋值**不**触发校验器——故端点必须自己守住上界。
             if req.max_concurrent_tasks > MAX_RUNNING_EXECUTION_IDS:
                 raise HTTPException(
                     status_code=400,
-                    detail=f'max_concurrent_tasks must be between 1 and {MAX_RUNNING_EXECUTION_IDS}',
+                    detail=f'max_concurrent_tasks 必须在 1 到 {MAX_RUNNING_EXECUTION_IDS} 之间',
                 )
             settings.max_concurrent_tasks = req.max_concurrent_tasks
             updated_fields.append('max_concurrent_tasks')
@@ -170,14 +170,14 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
         
         if req.task_timeout_seconds is not None:
             if req.task_timeout_seconds < 1:
-                raise HTTPException(status_code=400, detail='task_timeout_seconds must be >= 1')
+                raise HTTPException(status_code=400, detail='task_timeout_seconds 必须 >= 1')
             settings.task_timeout_seconds = req.task_timeout_seconds
             updated_fields.append('task_timeout_seconds')
             logger.info(f'Hot-reloaded task_timeout_seconds={req.task_timeout_seconds}')
         
         if req.heartbeat_interval_seconds is not None:
             if req.heartbeat_interval_seconds < 5:
-                raise HTTPException(status_code=400, detail='heartbeat_interval_seconds must be >= 5')
+                raise HTTPException(status_code=400, detail='heartbeat_interval_seconds 必须 >= 5')
             settings.heartbeat_interval_seconds = req.heartbeat_interval_seconds
             updated_fields.append('heartbeat_interval_seconds')
             logger.info(f'Hot-reloaded heartbeat_interval_seconds={req.heartbeat_interval_seconds}')
@@ -209,26 +209,26 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
             raw = req.work_dir.strip()
             is_absolute = os.path.isabs(raw) or (len(raw) >= 2 and raw[1] == ':')
             if not raw or not is_absolute:
-                raise HTTPException(status_code=400, detail='workDir must be an absolute path')
+                raise HTTPException(status_code=400, detail='workDir 必须是绝对路径')
             # 对原始路径段（resolve 之前）查 ".." 分量，对齐 node 的
             # /(^|[\\/])\.\.([\\/]|$)/ 正则——resolve() 会把 ".." 折叠掉，事后查不到。
             raw_parts = [p for p in re.split(r'[\\/]', raw) if p not in ('', '.')]
             if any(p == '..' for p in raw_parts):
-                raise HTTPException(status_code=400, detail='workDir must not contain ".." segments')
+                raise HTTPException(status_code=400, detail='workDir 不得包含 ".." 片段')
             # E-22：symlink 判定必须在 resolve() **之前**——Path.resolve() 本身
             # 就会把符号链接规范化掉，对结果再 is_symlink() 恒为 False（旧写法
             # 等于没有这道闸，与 node 的 path.resolve(词法) + lstatSync 语义漂移）。
             candidate = Path(raw)
             if candidate.is_symlink():
-                raise HTTPException(status_code=400, detail='workDir cannot be a symbolic link')
+                raise HTTPException(status_code=400, detail='workDir 不能是符号链接')
             resolved_new = candidate.resolve()
             if not resolved_new.exists():
-                raise HTTPException(status_code=400, detail=f'workDir does not exist: {resolved_new}')
+                raise HTTPException(status_code=400, detail=f'workDir 不存在：{resolved_new}')
             active = list_active_execution_ids()
             if active:
                 raise HTTPException(
                     status_code=400,
-                    detail=f'workDir cannot change while {len(active)} execution(s) are running on the old directory',
+                    detail=f'旧目录上仍有 {len(active)} 个执行在运行，此时不能切换 workDir',
                 )
             settings.work_dir = str(resolved_new)
             # 同步真环境变量，与 node 写 process.env.WORK_DIR 对齐（裸机/子进程读取）。
@@ -244,9 +244,9 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
             return _conform_response(ConfigReloadResponse(
                 success=True,
                 message=(
-                    'No fields to update (ignored unsupported field(s): '
-                    f'{", ".join(ignored_fields)})'
-                    if ignored_fields else 'No fields to update'
+                    '没有需要更新的字段（已忽略不支持的字段：'
+                    f'{", ".join(ignored_fields)}）'
+                    if ignored_fields else '没有需要更新的字段'
                 ),
                 updated_fields=[],
                 ignored_fields=ignored_fields,
@@ -254,7 +254,7 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
 
         return _conform_response(ConfigReloadResponse(
             success=True,
-            message=f'Updated {len(updated_fields)} field(s)',
+            message=f'已更新 {len(updated_fields)} 个字段',
             updated_fields=updated_fields,
             ignored_fields=ignored_fields,
         ))
@@ -262,4 +262,4 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
         raise
     except Exception as e:
         logger.error(f'Config reload failed: {e}')
-        raise HTTPException(status_code=500, detail=f'Config reload failed: {str(e)}')
+        raise HTTPException(status_code=500, detail=f'config reload 失败：{str(e)}')

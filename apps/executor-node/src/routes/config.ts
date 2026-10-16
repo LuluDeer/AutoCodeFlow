@@ -78,7 +78,7 @@ function buildReloadResponse(input: {
   if (!checked.success) {
     const where = checked.error.issues[0]?.path.join('.') || '(root)';
     throw new Error(
-      `config reload response violates executor-protocol at ${where}: ` +
+      `config reload 响应违反 executor-protocol 协议，位置 ${where}：` +
         checked.error.issues[0]?.message,
     );
   }
@@ -124,11 +124,11 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
       // NETOPT-D P3-5: 上界与 E9 采纳域一致（admin 心跳体截断到 10000、容量
       // 账本 MAX_RUNNING_EXECUTION_IDS 同源）；热更放开无上界会让 accept 放行
       // 的并发数超出心跳/账本可表达范围，自相矛盾。
-      res.status(400).json({ error: 'maxConcurrentTasks must be between 1 and 10000' });
+      res.status(400).json({ error: 'maxConcurrentTasks 必须在 1 到 10000 之间' });
       return;
     }
     if (body.taskTimeoutSeconds !== undefined && body.taskTimeoutSeconds < 1) {
-      res.status(400).json({ error: 'taskTimeoutSeconds must be >= 1' });
+      res.status(400).json({ error: 'taskTimeoutSeconds 必须 >= 1' });
       return;
     }
     // NETOPT-9-5: upper cap as well as the lower bound. admin-api's stale
@@ -141,20 +141,20 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
       body.heartbeatIntervalSeconds !== undefined &&
       (body.heartbeatIntervalSeconds < 5 || body.heartbeatIntervalSeconds > 60)
     ) {
-      res.status(400).json({ error: 'heartbeatIntervalSeconds must be between 5 and 60' });
+      res.status(400).json({ error: 'heartbeatIntervalSeconds 必须在 5 到 60 之间' });
       return;
     }
     const parsedReq = ConfigReloadRequestSchema.safeParse(req.body);
     if (!parsedReq.success) {
       const first = parsedReq.error.issues[0];
       const where = first.path.length ? first.path.join('.') : '(root)';
-      res.status(400).json({ error: `Invalid config reload request: ${where}: ${first.message}` });
+      res.status(400).json({ error: `无效的 config reload 请求：${where}：${first.message}` });
       return;
     }
 
     if (body.maxConcurrentTasks !== undefined) {
       if (body.maxConcurrentTasks < 1) {
-        res.status(400).json({ error: 'maxConcurrentTasks must be >= 1' });
+        res.status(400).json({ error: 'maxConcurrentTasks 必须 >= 1' });
         return;
       }
       config.maxConcurrentTasks = body.maxConcurrentTasks;
@@ -164,7 +164,7 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
 
     if (body.taskTimeoutSeconds !== undefined) {
       if (body.taskTimeoutSeconds < 1) {
-        res.status(400).json({ error: 'taskTimeoutSeconds must be >= 1' });
+        res.status(400).json({ error: 'taskTimeoutSeconds 必须 >= 1' });
         return;
       }
       config.taskTimeoutSeconds = body.taskTimeoutSeconds;
@@ -174,7 +174,7 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
 
     if (body.heartbeatIntervalSeconds !== undefined) {
       if (body.heartbeatIntervalSeconds < 5 || body.heartbeatIntervalSeconds > 60) {
-        res.status(400).json({ error: 'heartbeatIntervalSeconds must be between 5 and 60' });
+        res.status(400).json({ error: 'heartbeatIntervalSeconds 必须在 5 到 60 之间' });
         return;
       }
       config.heartbeatIntervalSeconds = body.heartbeatIntervalSeconds;
@@ -190,33 +190,33 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
       const raw = String(body.workDir ?? body.WORK_DIR).trim();
       const isAbsolute = path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw);
       if (!raw || !isAbsolute || /(^|[\\/])\.\.([\\/]|$)/.test(raw)) {
-        res.status(400).json({ error: 'workDir must be an absolute path without ".." segments' });
+        res.status(400).json({ error: 'workDir 必须是绝对路径且不含 ".." 片段' });
         return;
       }
       const resolvedNew = path.resolve(raw);
       if (!fs.existsSync(resolvedNew)) {
-        res.status(400).json({ error: `workDir does not exist: ${resolvedNew}` });
+        res.status(400).json({ error: `workDir 不存在：${resolvedNew}` });
         return;
       }
       try {
         if (fs.lstatSync(resolvedNew).isSymbolicLink()) {
-          res.status(400).json({ error: 'workDir cannot be a symbolic link' });
+          res.status(400).json({ error: 'workDir 不能是符号链接' });
           return;
         }
       } catch (err: unknown) {
-        res.status(400).json({ error: `workDir validation failed: ${err instanceof Error ? err.message : String(err)}` });
+        res.status(400).json({ error: `workDir 校验失败：${err instanceof Error ? err.message : String(err)}` });
         return;
       }
       const active = listActiveExecutionIds();
       for (const executionId of active) {
         const guard = validateExecutionWorkDir(path.join(resolvedNew, executionId), resolvedNew);
         if (guard !== null) {
-          res.status(400).json({ error: `workDir validation failed for active execution ${executionId}: ${guard}` });
+          res.status(400).json({ error: `活跃执行 ${executionId} 的 workDir 校验失败：${guard}` });
           return;
         }
       }
       if (active.length > 0) {
-        res.status(400).json({ error: `workDir cannot change while ${active.length} execution(s) are running on the old directory` });
+        res.status(400).json({ error: `旧目录上仍有 ${active.length} 个执行在运行，此时不能切换 workDir` });
         return;
       }
       // config.workDir 是读 process.env 的 getter——热更新写 env 即全链路生效
@@ -287,8 +287,8 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
         buildReloadResponse({
           success: true,
           message: ignoredFields.length > 0
-            ? `No fields to update (ignored unsupported field(s): ${ignoredFields.join(', ')})`
-            : 'No fields to update',
+            ? `没有需要更新的字段（已忽略不支持的字段：${ignoredFields.join(', ')}）`
+            : '没有需要更新的字段',
           updatedFields: [],
           ignoredFields,
         }),
@@ -299,7 +299,7 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
     res.json(
       buildReloadResponse({
         success: true,
-        message: `Updated ${updatedFields.length} field(s)`,
+        message: `已更新 ${updatedFields.length} 个字段`,
         updatedFields,
         ignoredFields,
       }),
@@ -307,6 +307,6 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Config reload failed: ${msg}`);
-    res.status(500).json({ error: `Config reload failed: ${msg}` });
+    res.status(500).json({ error: `config reload 失败：${msg}` });
   }
 });

@@ -69,7 +69,7 @@ def test_readiness_rejects_unready_when_resources_exhausted(monkeypatch):
     ok, reason = health_module._resources_ok()
 
     assert ok is False
-    assert 'Resource usage too high' in reason
+    assert '资源占用过高' in reason
 
 
 def test_readiness_accepts_when_resources_ample(monkeypatch):

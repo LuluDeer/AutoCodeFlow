@@ -16,7 +16,10 @@ import {
  * 只保证它是个对象；值域、枚举、cron 正则等复用既有 DTO 语义，避免二次定义。
  */
 export class CreateTaskTemplateDto {
-  @ApiProperty({ description: "模板展示名", example: "每日订单同步" })
+  @ApiProperty({
+    example: "每日订单同步",
+    description: "模板展示名",
+  })
   @IsString()
   @IsNotEmpty()
   @MaxLength(128)
@@ -37,9 +40,9 @@ export class CreateTaskTemplateDto {
   category?: string;
 
   @ApiPropertyOptional({
+    example: "daily_order_sync",
     description:
       "稳定标识；缺省由 name 规整生成。官方模板保留 [a-z][a-z0-9_-]* 命名风格。",
-    example: "daily_order_sync",
   })
   @IsString()
   @IsOptional()
@@ -49,7 +52,6 @@ export class CreateTaskTemplateDto {
   key?: string;
 
   @ApiProperty({
-    description: "合法 CreateTaskDto 子集（省略 name）；作为实例化任务的默认值",
     type: "object",
     additionalProperties: true,
     example: {
@@ -62,6 +64,7 @@ export class CreateTaskTemplateDto {
       retryDelay: 60,
       blockStrategy: "discard",
     },
+    description: "合法 CreateTaskDto 子集（省略 name）；作为实例化任务的默认值",
   })
   @IsObject()
   config: Record<string, unknown>;

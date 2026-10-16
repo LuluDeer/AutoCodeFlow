@@ -9,7 +9,7 @@ export const BATCH_TASK_IDS_MAX_SIZE = 500;
 
 export class BatchTaskIdsDto {
   @ApiProperty({
-    description: `Task ID list (1..${BATCH_TASK_IDS_MAX_SIZE} uuids)`,
+    description: `任务 ID 列表（1..${BATCH_TASK_IDS_MAX_SIZE} 个 uuid）`,
     type: [String],
     // R-18: 显式 maxItems 同步契约文档——swagger 插件对显式 @ApiProperty 的
     // 字段不会从 @ArrayMaxSize 推导约束，运行时校验与文档必须一致。

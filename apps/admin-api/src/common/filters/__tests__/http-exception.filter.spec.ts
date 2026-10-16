@@ -45,6 +45,10 @@ describe("HttpExceptionFilter — 校验错误可达性（体验审查）", () =
       status: status.mock.calls[0][0] as number,
       body: json.mock.calls[0][0] as {
         code: number;
+        // LANG-ERR-01：业务码与插值参数是**新增**字段（`code` 仍是数字 HTTP
+        // 状态码，消费方契约不变）。
+        errorCode: string | null;
+        params: Record<string, unknown> | null;
         message: string;
         data: unknown;
       },
@@ -71,8 +75,8 @@ describe("HttpExceptionFilter — 校验错误可达性（体验审查）", () =
     expect(body.message).toContain(
       "maxConcurrentTasks must not be less than 1",
     );
-    // 且不能退化成只有那句固定英文。
-    expect(body.message).not.toBe("Validation failed");
+    // 且不能退化成只有那句固定兜底文案（LANG-ERR-01 起该兜底为中文）。
+    expect(body.message).not.toBe("参数校验失败");
     // data 仍保留原始数组（兼容既有按数组消费的调用方）。
     expect(body.data).toEqual([
       "property foo should not exist",
@@ -87,17 +91,21 @@ describe("HttpExceptionFilter — 校验错误可达性（体验审查）", () =
       }),
     );
 
+    // LANG-ERR-01：前缀改为中文兜底（英文界面下由前端按 errorCode 渲染
+    // "Validation failed: …"，服务端这一份只服务不翻译的消费者）。
     expect(body.message).toBe(
-      "Validation failed: a must be a string; b must be a number",
+      "参数校验失败：a must be a string; b must be a number",
     );
     // 不能把数组直接 JSON 化塞进 message（会渲染成 ["a",...] 的噪声）。
     expect(body.message).not.toContain('["');
   });
 
-  it("空数组退化为原来的固定文案（不产生悬空的冒号）", () => {
+  it("空数组退化为无明细文案（不产生悬空的冒号）", () => {
     const { body } = runFilter(new BadRequestException({ message: [] }));
 
-    expect(body.message).toBe("Validation failed");
+    expect(body.message).toBe("参数校验失败");
+    // LANG-ERR-01：空明细走单列的错误码，前端据此取「无冒号」的本地化文案。
+    expect(body.errorCode).toBe("VALIDATION_FAILED_NO_DETAIL");
   });
 
   it("字符串 message 不受影响（非校验类 400 走原路径）", () => {
@@ -107,16 +115,18 @@ describe("HttpExceptionFilter — 校验错误可达性（体验审查）", () =
     expect(body.data).toBeNull();
   });
 
-  it("回归：改回 'Validation failed' 常量会让字段原因重新丢失（反证）", () => {
+  it("回归：改回固定常量会让字段原因重新丢失（反证）", () => {
     // 这条用例的作用是让「修法被回退」这件事显式可见：它断言 message 里
     // **确实包含**具体字段名——若有人把实现改回常量，上面第一条会红，而
-    // 这里额外钉住「包含字段名」这一语义，避免用 toContain("Validation")
+    // 这里额外钉住「包含字段名」这一语义，避免用 toContain("校验")
     // 之类的弱断言凑绿。
     const { body } = runFilter(
       new BadRequestException({ message: ["email must be an email"] }),
     );
 
     expect(body.message).toContain("email must be an email");
-    expect(body.message.startsWith("Validation failed")).toBe(true);
+    // LANG-ERR-01：前缀是中文兜底「参数校验失败：」——同样钉住"前缀存在"，
+    // 否则实现回退成无前缀常量时这条会假绿。
+    expect(body.message.startsWith("参数校验失败：")).toBe(true);
   });
 });

@@ -95,9 +95,16 @@ async def notify_offline():
         # 网络性能审计（2026-09-18）：复用 O-24 共享连接池（停机通知不再
         # 为单次请求新建连接池）。
         client = get_http_client()
+        # ADR-017 阶段 3：带上指纹，服务端据此**只下线自己那一行**（pull 同
+        # 地址多行并存时按地址无界下线会把别人也置离线）。采集失败 → 不发该键，
+        # 服务端 legacy 路径，行为与引入前一致。
+        _fp = get_device_fingerprint()
         await client.post(
             build_admin_api_url('/executors/offline'),
-            json={'address': settings.executor_address_public or settings.executor_address},
+            json={
+                'address': settings.executor_address_public or settings.executor_address,
+                **({'deviceFingerprint': _fp} if _fp else {}),
+            },
             headers=headers,
             timeout=5,
         )

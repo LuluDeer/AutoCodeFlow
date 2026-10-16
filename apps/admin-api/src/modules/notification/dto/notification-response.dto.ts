@@ -17,9 +17,8 @@ export class NotificationChannelDto {
   enabled: boolean;
 
   @ApiProperty({
-    description:
-      "Channel-specific settings; credential values are masked on read",
     additionalProperties: { type: "string" },
+    description: "通道专属配置；读取时凭据值会被掩码",
   })
   config: Record<string, string>;
 
@@ -32,20 +31,18 @@ export type ChannelDeliveryStatus = "sent" | "blocked" | "failed" | "skipped";
 
 /** POST /notification/channels/{key}/test 与 POST /notification/test 的回执。 */
 export class ChannelTestResponseDto {
-  @ApiProperty({
-    description: "false when all addressed channels failed/skipped",
-  })
+  @ApiProperty({ description: "当所有目标通道都失败/跳过时为 false" })
   success: boolean;
 
   @ApiProperty()
   message: string;
 
   @ApiPropertyOptional({
-    description: "Per-channel delivery status",
     additionalProperties: {
       type: "string",
       enum: ["sent", "blocked", "failed", "skipped"],
     },
+    description: "逐通道投递状态",
   })
   results?: Record<string, ChannelDeliveryStatus>;
 }
@@ -62,22 +59,22 @@ export class NotificationSilenceDto {
   channelType: string | null;
 
   @ApiProperty({
-    description: "scope=task 时生效",
     nullable: true,
     format: "uuid",
+    description: "scope=task 时生效",
   })
   taskId: string | null;
 
   @ApiProperty({
-    description: "scope=application 时生效",
     nullable: true,
     format: "uuid",
+    description: "scope=application 时生效",
   })
   applicationId: string | null;
 
   @ApiProperty({
-    description: "空 = 所有级别；否则 info/warning/critical 等 AlertLevel",
     nullable: true,
+    description: "空 = 所有级别；否则 info/warning/critical 等 AlertLevel",
   })
   level: string | null;
 
@@ -88,8 +85,8 @@ export class NotificationSilenceDto {
   startTime: Date | null;
 
   @ApiProperty({
-    description: "空 = 不过期；durationMinutes 写入时折算",
     nullable: true,
+    description: "空 = 不过期；durationMinutes 写入时折算",
   })
   endTime: Date | null;
 

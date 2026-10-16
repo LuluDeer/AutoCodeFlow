@@ -29,7 +29,19 @@ describe("ExecutionCallbackController — F-5 rate limiting", () => {
         { provide: SystemConfigService, useValue: { findOne: jest.fn() } },
         {
           provide: ExecutorService,
-          useValue: { validateTokenByAddress: jest.fn() },
+          useValue: {
+            // ADR-017 阶段 3：回调面改用「同址任一行匹配即通过」。
+            validateTokenByAddress: jest.fn(),
+            validateTokenByAddressAnyRow: jest.fn(),
+            getCallbackSecretByAddress: jest.fn().mockResolvedValue(null),
+            getCallbackSecretCandidatesByAddress: jest
+              .fn()
+              .mockResolvedValue([]),
+            // ADR-017 阶段 3（复查补口）：凭据归属行（服务端推导）。
+            resolveCredentialExecutorId: jest.fn().mockResolvedValue(null),
+            // ADR-017 阶段 3（协议 v6）：回调自报指纹 → 行 id。
+            resolveExecutorIdByFingerprint: jest.fn().mockResolvedValue(null),
+          },
         },
         // N32: real in-memory counter instance (behaviour under test is the
         // throttler metadata, not the counting).
@@ -70,7 +82,7 @@ describe("ExecutionCallbackController — F-5 rate limiting", () => {
     // fail closed with UnauthorizedException (behaviour unchanged by F-5).
     await expect(
       controller.callback("Bearer tok", undefined, [item]),
-    ).rejects.toThrow(/shared token/);
+    ).rejects.toThrow(/共享令牌/);
   });
 
   // RT-LOG: 实时日志流端点自带档位。它与 callback 同属**机器面**（速率由

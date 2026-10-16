@@ -5,15 +5,23 @@
  * 文案表与语言判定抽成无 electron 依赖的纯模块（同 updater-runcheck 的可测
  * 性理由），行为由 tray-texts.selftest.ts 直接驱动。
  *
- * 语言判定：app.getLocale() 前缀 `en*` → 英文，其余回落中文（与桌面端既有
- * 中文缺省一致；Electron 托盘菜单不支持运行时热切语言，重建菜单时按当前
- * locale 取表）。
+ * 语言判定：**先看用户设置，再看系统语言**（i18n-DESK-01）。判定本体在
+ * ui-language.ts（可切换设置 zh/en/auto 的唯一事实源，渲染层共用同一份）：
+ *   · uiLanguage = 'zh' / 'en' → 直接用（显式设置**优先于** app.getLocale()）；
+ *   · 'auto' 或未提供        → app.getLocale() 前缀 `en*` → 英文，其余回落中文；
+ *   · 非法值（手改 config.json）→ 默认中文。
+ * 托盘菜单每次 rebuildMenu 都重新判定并重建菜单——保存语言设置后
+ * （ipc-handlers 的 finalizeConfigSave 会 rebuildMenu）**无需重启应用**即切换。
  *
  * 覆盖口径：tray.ts 原第 63-124 行的硬编码中文（tooltip + 菜单全部标签），
  * 以及 agent-status-view.ts 的 Agent 活动/结果标签（NETOPT-DEBT 双语收尾：
  * 原为遗留项，现已迁入本表——agent-status-view.ts 只保留「状态 → 键」映射，
  * 文案本体全部在本表，杜绝第三处硬编码文案）。
  */
+// i18n-DESK-01：语言判定收口到 ui-language.ts——渲染层 i18n.ts 与本模块共用
+// 同一份规则（本模块只把它的结果收窄成 TrayLocale 这个名字）。
+import { resolveUiLanguage } from './ui-language';
+
 export type TrayLocale = 'en' | 'zh';
 
 /** 托盘状态的四个取值（与 ExecutorStatus 对齐；独立声明避免拉入 electron 侧模块）。 */
@@ -168,9 +176,15 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
   },
 };
 
-/** `en*` 一律英文，其余 locale（zh-CN / fr / 空 / 未知）回落中文。 */
-export function resolveTrayLocale(getLocale: () => string): TrayLocale {
-  return getLocale().toLowerCase().startsWith('en') ? 'en' : 'zh';
+/**
+ * 托盘 locale 判定。
+ *
+ * i18n-DESK-01：新增可选第二参数 `setting`（已落盘的 uiLanguage）。不传时
+ * 行为与改动前**逐字一致**（`en*` → 英文，其余 → 中文）——既有调用点与既有
+ * 断言不受影响；传了 'zh' / 'en' 则显式设置**优先于** app.getLocale()。
+ */
+export function resolveTrayLocale(getLocale: () => string, setting?: unknown): TrayLocale {
+  return resolveUiLanguage(getLocale, setting);
 }
 
 /**

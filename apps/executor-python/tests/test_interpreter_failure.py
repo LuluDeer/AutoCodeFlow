@@ -68,6 +68,101 @@ def test_is_interpreter_unavailable_is_false_for_unrelated_errors():
 
 
 # ---------------------------------------------------------------------------
+# LANG-ZH-01 缺口（本轮审计）：解释器 unavailable 异常的**全角括号**文案
+# ---------------------------------------------------------------------------
+#
+# 这是本轮被显式要求回归的真实缺陷：`interpreters.InterpreterUnavailable.__str__`
+# 中文化后用**全角**括号「（not_downloadable）」，而分类器原先把括号写死成 ASCII
+# `\(…\)` ——于是 `_refine_failure_reason(str(exc))` 对**本仓自己抛出的**异常返回
+# None（落 unknown），直接违背分类器的承诺。修复是让 reason 支括号无关 + 中英并列。
+#
+# 为什么这个用例值得长期存在：str() 的文案是**随时可能被再次改动**的用户可见
+# 文本（LANG-ZH-01 就是一次全量中文化），而括号/语言的任何变化都会静默摧毁
+# 兜底分类——不钉住的话，下次改文案会重演同一个 bug 且没有任何测试会红。
+def test_interpreter_unavailable_str_shape_is_classified_both_paren_styles():
+    """**全角与半角括号都必须命中**（本轮 LANG-ZH-01 真实缺陷的回归）。"""
+    from routers.execute import _refine_failure_reason as r
+    # 现状（全角 + 中文）——本仓自己实际抛出的形态
+    assert r('Python 3.7 不可用（not_downloadable）：需要离线预填') == 'interpreter_unavailable'
+    # 改版前（半角 + 英文）——存量日志/旧文案
+    assert r('Python 3.7 unavailable (not_downloadable): needs offline prefill') == 'interpreter_unavailable'
+    # 交叉形态（全角括号 + 英文 / 半角括号 + 中文）：括号与语言是两个正交维度，
+    # 任一组合都不得漏网。
+    assert r('Python 3.7 unavailable（not_downloadable）: x') == 'interpreter_unavailable'
+    assert r('Python 3.7 不可用 (not_downloadable)：x') == 'interpreter_unavailable'
+
+
+@pytest.mark.parametrize(
+    'reason',
+    ['not_downloadable', 'download_failed', 'download_timeout',
+     'mirror_unreachable', 'corrupt', 'uv_missing'],
+)
+def test_every_interpreter_failure_reason_value_is_classified(reason):
+    """reason 取值表（CONTRACT.md §3.2 + uv_missing 扩展）逐值覆盖。
+
+    任一新增/改名的 reason 都会让这条参数化用例给出**明确的缺口位置**，而不是
+    让该分因静默退化到"按异常类型判"的那一支（那条只对同进程抛出的异常有效，
+    对"异常被包装成字符串后再分类"的两处调用点无效）。
+    """
+    exc = interpreters_module.InterpreterUnavailable('3.9', reason, 'detail text')
+    assert execute_module._refine_failure_reason(str(exc)) == 'interpreter_unavailable', (
+        f'reason={reason!r} 的异常文案未被归类——分类器的 reason 支漏了该取值'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 本轮审计新增分因：timeout / runtime_missing（不支持的 runtime）
+# ---------------------------------------------------------------------------
+
+def test_task_timeout_message_is_classified_as_timeout():
+    """任务超时（run_task 的 except asyncio.TimeoutError 原文）必须归类 timeout。
+
+    此前**没有任何 timeout 规则**：执行器自己判定的超时落 None → 回调不带
+    failureReason → admin 按 /超时/ 文本兜底。执行器是唯一知道自己有无挂超时
+    定时器的一方（timeout=0 = 不限时），结构化上报才是诚实的，且不依赖用户
+    文案里恰好还留着"超时"二字。
+    """
+    from routers.execute import _refine_failure_reason as r
+    assert r('任务执行超时（600s）') == 'timeout'
+    assert r('execution timed out after 600s') == 'timeout'
+
+
+def test_stage_budget_timeouts_are_not_stolen_by_the_timeout_rule():
+    """**顺序/宽度回归**：阶段预算超时各有更精确的分类，绝不能被 timeout 抢走。
+
+    `uv venv timed out after 600s` 语义是"依赖装不上"（环境/私有源/网络），
+    用户若按"任务超时"处置（调大任务超时预算）会完全跑偏。这条钉住 timeout
+    规则必须**只认执行器的任务超时骨架**，不收泛化的 "timed out"。
+    """
+    from routers.execute import _refine_failure_reason as r
+    assert r('uv venv timed out after 600s (uv process killed)') == 'dependency_install_failed'
+    assert r('git fetch timed out after 60s') == 'git_fetch_failed'
+
+
+def test_unsupported_runtime_is_classified_as_runtime_missing():
+    """`不支持的 runtime：<x>`（run_task 的 runtime 分派兜底）此前落 None → UNKNOWN。
+
+    与 node `prepareFailureReason` 的 `不支持的 runtime` 规则**逐字同形**，
+    两侧必须同判（否则同一份载荷在两个执行器上分因不同）。
+    """
+    from routers.execute import _refine_failure_reason as r
+    assert r('不支持的 runtime：ruby') == 'runtime_missing'
+    assert r('unsupported runtime: ruby') == 'runtime_missing'
+
+
+def test_shutdown_message_is_classified_as_executor_restart():
+    """停机文案归类 executor_restart（复用既有 executorReportable 取值）。
+
+    注意：**主路径**是 fail_prepare_stage_executions_on_shutdown 显式赋值
+    （见同文件下方用例），本条只钉分类器的**字符串兜底**——覆盖同一文案经
+    其它路径上报的情形。
+    """
+    from routers.execute import _refine_failure_reason as r
+    assert r('执行器正在停机，该执行尚未开始') == 'executor_restart'
+    assert r('Executor is shutting down before this execution started') == 'executor_restart'
+
+
+# ---------------------------------------------------------------------------
 # run_task：无依赖 python + 声明版本
 # ---------------------------------------------------------------------------
 

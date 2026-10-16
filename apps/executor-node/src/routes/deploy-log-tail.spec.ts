@@ -72,7 +72,7 @@ describe('truncateStatusMessage（P1-8）', () => {
     expect(out.startsWith('Exited with code 1')).toBe(true);
     // 末尾根因保留（这正是不能简单"截尾"的原因）
     expect(out).toContain('FATAL: TypeError');
-    expect(out).toContain('[truncated]');
+    expect(out).toContain('[已截断]');
   });
 });
 
@@ -82,12 +82,12 @@ describe('buildFailedExitMessage（P1-8）', () => {
     const f = path.join(dir, 'app.log');
     fs.writeFileSync(f, 'boot ok\n\nError: ENOENT no such file "main.py"\n');
     const msg = buildFailedExitMessage(1, f);
-    expect(msg).toContain('Exited with code 1');
+    expect(msg).toContain('进程以退出码 1 结束');
     expect(msg).toContain('ENOENT no such file "main.py"');
   });
 
   it('无 app.log 时退化为退出码（旧行为），不抛错', () => {
     const msg = buildFailedExitMessage(2, path.join(os.tmpdir(), 'nope.log'));
-    expect(msg).toBe('Exited with code 2');
+    expect(msg).toBe('进程以退出码 2 结束');
   });
 });

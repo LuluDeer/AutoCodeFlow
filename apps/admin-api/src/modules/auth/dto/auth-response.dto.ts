@@ -19,21 +19,19 @@ import { ApiProperty } from "@nestjs/swagger";
 
 /** POST /auth/totp/setup 响应：暂存的 Base32 密钥 + otpauth:// 供扫码。 */
 export class TotpSetupResponseDto {
-  @ApiProperty({
-    description: "Base32-encoded TOTP secret (staged, not yet active)",
-  })
+  @ApiProperty({ description: "Base32 编码的 TOTP 密钥（暂存，尚未生效）" })
   secret: string;
 
   @ApiProperty({
-    description: "otpauth:// URL for authenticator apps",
-    example: "otpauth://totp/AutoCodeFlow:admin?secret=...&issuer=AutoCodeFlow",
+    example: "otpauth://totp/AutoCodeFlow:admin?secret=&issuer=AutoCodeFlow",
+    description: "供认证器应用使用的 otpauth:// URL",
   })
   otpauthUrl: string;
 }
 
 /** POST /auth/totp/enable 响应：验证通过后 TOTP 已生效。 */
 export class TotpEnableResponseDto {
-  @ApiProperty({ description: "Always true on success (400 otherwise)" })
+  @ApiProperty({ description: "成功时恒为 true（否则返回 400）" })
   enabled: boolean;
 }
 
@@ -47,37 +45,46 @@ export class TotpEnableResponseDto {
 export class TotpDisableResponseDto {
   @ApiProperty({
     description:
-      "True when this call actually turned TOTP off; false when it was already off (idempotent no-op)",
+      "本次调用确实关闭了 TOTP 时为 true；本来就未开启时为 false（幂等空操作）",
   })
   disabled: boolean;
 }
 
 /** GET /auth/sessions 的单行：调用方自己那条 `current=true`。 */
 export class AuthSessionRowDto {
-  @ApiProperty({ description: "refresh_tokens row id (opaque session handle)" })
+  @ApiProperty({ description: "refresh_tokens 行 ID（不透明的会话句柄）" })
   id: string;
 
-  @ApiProperty({ description: "JWT id of the session; also the revoke key" })
+  @ApiProperty({ description: "会话的 JWT id；同时也是撤销键" })
   jti: string;
 
-  @ApiProperty({ description: "Session creation time (ISO-8601)" })
+  @ApiProperty({ description: "会话创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Session expiry (ISO-8601)", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "会话过期时间（ISO-8601）",
+  })
   expiresAt: Date | null;
 
-  @ApiProperty({ description: "User-Agent captured at login", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "登录时采集的 User-Agent",
+  })
   userAgent: string | null;
 
-  @ApiProperty({ description: "Client IP captured at login", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "登录时采集的客户端 IP",
+  })
   ip: string | null;
 
-  @ApiProperty({ description: "True for the session making this request" })
+  @ApiProperty({ description: "发起本次请求的会话为 true" })
   current: boolean;
 }
 
 /** POST /auth/sessions/revoke-others 响应：被撤销的会话数。 */
 export class RevokeOthersResponseDto {
-  @ApiProperty({ description: "Number of sessions revoked" })
+  @ApiProperty({ description: "已撤销的会话数" })
   revoked: number;
 }

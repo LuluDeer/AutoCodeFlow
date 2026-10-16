@@ -149,7 +149,7 @@ export async function transitionToTerminal(
     // 防御：非终态混进来说明调用方语义错了（终态门只对终态有意义）。
     // 早抛而不是悄悄放行，避免「条件 UPDATE 用错门槛」变成静默丢更新。
     throw new Error(
-      `transitionToTerminal: patch.status must be terminal, got "${patch.status}"`,
+      `transitionToTerminal：patch.status 必须是终态，实际为 "${patch.status}"`,
     );
   }
 

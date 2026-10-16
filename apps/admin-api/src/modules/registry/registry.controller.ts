@@ -7,14 +7,13 @@ import {
   UseGuards,
   Body,
   Logger,
-  HttpException,
   HttpStatus,
   Req,
-  BadGatewayException,
-  GatewayTimeoutException,
-  ConflictException,
-  PayloadTooLargeException,
 } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -327,11 +326,12 @@ export class RegistryController {
     text: string,
   ): never {
     if (status === HttpStatus.GATEWAY_TIMEOUT) {
-      throw new GatewayTimeoutException(`${upstream} request timed out`);
+      throw new AppError("REGISTRY_UPSTREAM_TIMEOUT", { upstream });
     }
-    throw new BadGatewayException(
-      `${upstream} returned HTTP ${status}: ${text.slice(0, 200)}`,
-    );
+    throw new AppError("REGISTRY_UPSTREAM_FAILED", {
+      upstream,
+      detail: `HTTP ${status}：${text.slice(0, 200)}`,
+    });
   }
 
   @Get("pypi/packages")
@@ -380,9 +380,10 @@ export class RegistryController {
       data = JSON.parse(resp.text);
     } catch {
       // B-3：上游回了 2xx 但不是 JSON（如代理层回 HTML）也是上游故障。
-      throw new BadGatewayException(
-        `npm registry returned a non-JSON body: ${resp.text.slice(0, 200)}`,
-      );
+      throw new AppError("REGISTRY_UPSTREAM_FAILED", {
+        upstream: "npm registry",
+        detail: `返回了非 JSON 响应体：${resp.text.slice(0, 200)}`,
+      });
     }
     return { packages: Array.isArray(data) ? data : [] };
   }
@@ -430,35 +431,25 @@ export class RegistryController {
     @Req() req: Request,
   ): Promise<{ success: boolean }> {
     if (!file || !name || !version) {
-      throw new HttpException(
-        "name, version and file are required",
-        HttpStatus.BAD_REQUEST,
-      );
+      throw new AppError("REGISTRY_UPLOAD_FIELDS_REQUIRED");
     }
     // A7: 字符级白名单（见 PYPI_NAME_RE / PYPI_VERSION_RE 注释）
     if (name.length > 128 || !RegistryController.PYPI_NAME_RE.test(name)) {
-      throw new HttpException(
-        "Invalid package name: must match PEP 508 (letters, digits, . _ -)",
-        HttpStatus.BAD_REQUEST,
-      );
+      throw new AppError("REGISTRY_PACKAGE_NAME_INVALID");
     }
     if (
       version.length > 64 ||
       !RegistryController.PYPI_VERSION_RE.test(version)
     ) {
-      throw new HttpException(
-        "Invalid version: must match PEP 440 (letters, digits, . _ + -)",
-        HttpStatus.BAD_REQUEST,
-      );
+      throw new AppError("REGISTRY_PACKAGE_VERSION_INVALID");
     }
     // Validate file extension to reject arbitrary uploads
     const filename = file.originalname ?? "";
     const allowed = RegistryController.ALLOWED_PYPI_EXTS;
     if (!allowed.some((ext) => filename.toLowerCase().endsWith(ext))) {
-      throw new HttpException(
-        `Unsupported file type. Allowed extensions: ${allowed.join(", ")}`,
-        HttpStatus.BAD_REQUEST,
-      );
+      throw new AppError("REGISTRY_FILE_TYPE_UNSUPPORTED", {
+        extensions: allowed.join(", "),
+      });
     }
     // A7-修复（DEEP-AUDIT B·2.1）：上传改打 **twine 兼容规范路 `POST /`**——
     // 自建 registry-pypi 的路由是 `@app.post("/")`（`POST /upload` 只是别名，
@@ -499,14 +490,7 @@ export class RegistryController {
         // trickle response that keeps resetting it.
         const deadline = setTimeout(() => {
           req.destroy();
-          done(() =>
-            reject(
-              new HttpException(
-                "Upstream registry upload timed out",
-                HttpStatus.GATEWAY_TIMEOUT,
-              ),
-            ),
-          );
+          done(() => reject(new AppError("REGISTRY_UPLOAD_TIMEOUT")));
         }, timeoutMs);
         const parsedUrl = new URL(uploadUrl);
         const lib = parsedUrl.protocol === "https:" ? https : http;
@@ -532,35 +516,31 @@ export class RegistryController {
                   resolve({ success: true });
                 } else if (status >= 300 && status < 400) {
                   reject(
-                    new HttpException(
-                      `Upload failed: upstream redirected (HTTP ${status}) — ` +
-                        `the request never reached the upload endpoint`,
-                      HttpStatus.BAD_GATEWAY,
-                    ),
+                    new AppError("REGISTRY_UPLOAD_REDIRECTED", {
+                      status,
+                    }),
                   );
                 } else if (status === HttpStatus.CONFLICT) {
                   // B-10：上游 409 = registry-pypi 的防覆盖闸（同 filename
                   // 不同 sha256，N21/N30）——此前压成 502，运维无法区分
                   // 「上游故障」与「发布冲突」。按语义透传为 409。
                   reject(
-                    new ConflictException(
-                      "版本已存在或内容冲突（同 filename 不同 sha256，禁止覆盖已发布制品）: " +
-                        body.slice(0, 200),
-                    ),
+                    new AppError("REGISTRY_UPLOAD_CONFLICT", {
+                      detail: body.slice(0, 200),
+                    }),
                   );
                 } else if (status === HttpStatus.PAYLOAD_TOO_LARGE) {
                   // B-10：上游 413（registry-pypi S10 体积上限）同理透传。
                   reject(
-                    new PayloadTooLargeException(
-                      `Package too large: ${body.slice(0, 200)}`,
-                    ),
+                    new AppError("REGISTRY_UPLOAD_TOO_LARGE", {
+                      detail: body.slice(0, 200),
+                    }),
                   );
                 } else {
                   reject(
-                    new HttpException(
-                      `Upload failed: ${body}`,
-                      HttpStatus.BAD_GATEWAY,
-                    ),
+                    new AppError("REGISTRY_UPLOAD_FAILED", {
+                      detail: body,
+                    }),
                   );
                 }
               });
@@ -571,31 +551,21 @@ export class RegistryController {
         // and surfaces through the overall deadline handling above.
         req.setTimeout(timeoutMs, () => {
           req.destroy();
-          done(() =>
-            reject(
-              new HttpException(
-                "Upstream registry upload timed out",
-                HttpStatus.GATEWAY_TIMEOUT,
-              ),
-            ),
-          );
+          done(() => reject(new AppError("REGISTRY_UPLOAD_TIMEOUT")));
         });
         req.on("error", (e) =>
           done(() =>
-            reject(new HttpException(e.message, HttpStatus.BAD_GATEWAY)),
+            reject(
+              new AppError("REGISTRY_UPLOAD_FAILED", {
+                detail: e.message,
+              }),
+            ),
           ),
         );
         // Safety net: a connection that closes without a response (and without
         // an 'error' event) must not leave the caller's promise pending forever.
         req.on("close", () =>
-          done(() =>
-            reject(
-              new HttpException(
-                "Upstream registry closed the connection before responding",
-                HttpStatus.BAD_GATEWAY,
-              ),
-            ),
-          ),
+          done(() => reject(new AppError("REGISTRY_CONNECTION_CLOSED"))),
         );
         form.pipe(req);
       },

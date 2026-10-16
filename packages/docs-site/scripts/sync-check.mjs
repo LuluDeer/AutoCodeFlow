@@ -229,12 +229,106 @@ export function checkFailureReasonEnum() {
 export function checkCallbackDtoFields() {
   const errors = [];
   const dto = readRepo("apps/admin-api/src/modules/task/dto/execution-callback.dto.ts");
-  const classBody = /export class CallbackItemDto \{([\s\S]*?)\n\}/.exec(dto)?.[1];
+
+  /**
+   * ⚠️ 取类体必须**按花括号配对**，不能用 `/export class X \{([\s\S]*?)\n\}/`。
+   *
+   * 非贪婪正则会停在**第一个** `\n}`，而类体里有嵌套的对象类型字面量，
+   * 例如 `result?: Record<string, unknown>` 上方的
+   * `@ApiProperty({ … properties: { … } })` 就会先遇到 `\n  }`。
+   * 实测后果：捕获体越过类结尾继续延伸（拿到 2779 字符），于是
+   * `^\s{2}(\w+)\??\s*:` 把**装饰器选项里的键**也当成了 DTO 字段——
+   * 报出 `CallbackItemDto.example` / `.enum` / `.maxLength` / `.description`
+   * 这些**根本不存在的"字段"**（14 项假红），真字段反而淹没其中。
+   *
+   * 这是"判据自身解析错了 ⇒ 门禁假红"的形态：假红会让人去改正确的文档，
+   * 比假绿更需要优先修。故改为**计数配对**取整个类体。
+   */
+  const startM = /export class CallbackItemDto\s*\{/.exec(dto);
+  let classBody = null;
+  if (startM) {
+    let depth = 0;
+    let i = startM.index + startM[0].length - 1;
+    const from = i;
+    for (; i < dto.length; i++) {
+      const c = dto[i];
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if (depth === 0) classBody = dto.slice(from + 1, i);
+  }
   if (!classBody) {
     errors.push("CallbackItemDto 解析失败（execution-callback.dto.ts 结构变化？）");
     return { errors, dtoFields: null };
   }
-  const dtoFields = [...classBody.matchAll(/^\s{2}(\w+)\??\s*:/gm)].map((m) => m[1]);
+
+  /**
+   * ⚠️ 必须先**剥掉装饰器块**再抽字段。
+   *
+   * 类体里每个字段上方都有 `@ApiProperty({ … })`，其**选项键**
+   * （`example` / `enum` / `maxLength` / `description` / `type` …）与字段声明
+   * 在文本形态上无法区分：`^\s{2}(\w+)\??\s*:` 对
+   * `  example: "f47a…",`（装饰器选项）与 `  executionId: string;`（真字段）
+   * **都能匹配**——尤其当选项被格式化成 2 空格缩进时。
+   *
+   * 实测后果：门禁报出 `CallbackItemDto.example`、`.enum`、`.maxLength`、
+   * `.description`、`.type`、`.additionalProperties` 这 6 个**根本不存在的
+   * "字段"**（14 项假红），并淹没真字段差异。假红会驱使人去改**正确的**文档，
+   * 比假绿更该优先修。
+   *
+   * 剥法：把 `@Name(...)` 连同其**配对括号**整体替换为空白（保留换行以维持
+   * 行号）。括号计数而非正则，因为选项里含嵌套对象与字符串。
+   */
+  function stripDecorators(src) {
+    let out = "";
+    let i = 0;
+    while (i < src.length) {
+      if (src[i] === "@" && /[A-Za-z_$]/.test(src[i + 1] ?? "")) {
+        let j = i + 1;
+        while (j < src.length && /[\w$.]/.test(src[j])) j++;
+        // 跳过装饰器名与括号之间的空白
+        while (j < src.length && /\s/.test(src[j]) && src[j] !== "\n") j++;
+        if (src[j] === "(") {
+          let depth = 0;
+          let inS = null;
+          for (; j < src.length; j++) {
+            const c = src[j];
+            if (inS) {
+              if (c === "\\") j++;
+              else if (c === inS) inS = null;
+              continue;
+            }
+            if (c === '"' || c === "'" || c === "`") {
+              inS = c;
+              continue;
+            }
+            if (c === "(") depth++;
+            else if (c === ")") {
+              depth--;
+              if (depth === 0) {
+                j++;
+                break;
+              }
+            }
+          }
+          // 用等量空白（保留 \n）替换，维持行号
+          for (let k = i; k < j; k++) out += src[k] === "\n" ? "\n" : " ";
+          i = j;
+          continue;
+        }
+      }
+      out += src[i];
+      i++;
+    }
+    return out;
+  }
+
+  // 字段判据：只认**类体顶层**声明（先剥装饰器，再按 ≤4 空格缩进匹配）。
+  const bare = stripDecorators(classBody);
+  const dtoFields = [...bare.matchAll(/^ {2,4}(\w+)\??\s*:/gm)].map((m) => m[1]);
   // 站点 contract.md「回调契约（CallbackItemDto）」字段表
   const contract = readSite("contract.md");
   const section = contract.slice(contract.indexOf("## 回调契约（CallbackItemDto）"));

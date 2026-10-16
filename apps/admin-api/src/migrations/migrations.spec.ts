@@ -224,5 +224,38 @@ if (
         `ALTER TYPE "execution_status_enum" ADD VALUE IF NOT EXISTS 'cancelled'`,
       );
     });
+
+    // ADR-017 阶段 3：deviceFingerprint 提升为定位键的迁移存在、可解析，
+    // 且含「回填 legacy 键 + SET NOT NULL + address 唯一收窄为 push 行」。
+    it("ADR-017 阶段 3: 指纹定位迁移存在、可解析且四步齐全", () => {
+      const m = migrationFiles().find((f) =>
+        /-AddExecutorDeviceFingerprintIdentity\.ts$/.test(f.file),
+      );
+      expect(m).toBeDefined();
+      expect(Number(m!.stamp)).toBeGreaterThan(1790000000053);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(path.join(MIGRATIONS_DIR, m!.file));
+      const proto = Object.values(mod)[0] as any;
+      const instance = new proto();
+      expect(instance.name).toBe(proto.name);
+      expect(proto.name).toBe(
+        `AddExecutorDeviceFingerprintIdentity${m!.stamp}`,
+      );
+      expect(typeof instance.up).toBe("function");
+      expect(typeof instance.down).toBe("function");
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, m!.file), "utf8");
+      const upPart = sql.split("public async down")[0];
+      // 1) 加宽列；2) 回填走 legacyExecutorIdentity；3) NOT NULL；4) partial 唯一
+      expect(upPart).toContain(
+        'ALTER TABLE "executors" ALTER COLUMN "deviceFingerprint" TYPE VARCHAR(80)',
+      );
+      expect(upPart).toContain("legacyExecutorIdentity(row.address)");
+      expect(upPart).toContain(
+        'ALTER TABLE "executors" ALTER COLUMN "deviceFingerprint" SET NOT NULL',
+      );
+      expect(upPart).toContain(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "uq_executors_address" ON "executors" ("address") WHERE "dispatchMode" = 'push'`,
+      );
+    });
   });
 }

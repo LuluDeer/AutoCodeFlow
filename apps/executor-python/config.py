@@ -54,7 +54,7 @@ def _validate_credential_free_http_url(value: str, setting_name: str) -> str:
     解释器下载内容完整性由 F-2 的 SHA-256 pin 兜底，不依赖镜像协议。
     """
     if not isinstance(value, str):
-        raise ValueError(f'{setting_name} must be a valid http(s) URL')
+        raise ValueError(f'{setting_name} 必须是合法的 http(s) URL')
     url = value.strip()
     if not url:
         return ''
@@ -64,9 +64,9 @@ def _validate_credential_free_http_url(value: str, setting_name: str) -> str:
         # Accessing .port also rejects malformed ports before uv sees the URL.
         parsed.port
     except ValueError as exc:
-        raise ValueError(f'{setting_name} must be a valid http(s) URL') from exc
+        raise ValueError(f'{setting_name} 必须是合法的 http(s) URL') from exc
     if parsed.scheme not in {'http', 'https'} or not parsed.netloc or not hostname:
-        raise ValueError(f'{setting_name} must be a valid http(s) URL')
+        raise ValueError(f'{setting_name} 必须是合法的 http(s) URL')
     if (
         parsed.username is not None
         or parsed.password is not None
@@ -74,8 +74,8 @@ def _validate_credential_free_http_url(value: str, setting_name: str) -> str:
         or parsed.fragment
     ):
         raise ValueError(
-            f'{setting_name} must not contain userinfo, query, or fragment; '
-            'provide registry credentials through a controlled credentials mechanism'
+            f'{setting_name} 不得包含 userinfo、query 或 fragment；'
+            '注册表凭据请通过受控的凭据机制提供'
         )
     return url
 
@@ -111,7 +111,7 @@ def validate_runtime_version(value: str) -> str:
     """
     if not isinstance(value, str) or not RUNTIME_VERSION_PATTERN.fullmatch(value.strip()):
         raise ValueError(
-            'Python runtime version must be "X.Y" (major.minor, e.g. "3.7", "3.13")'
+            'Python 运行时版本必须是 "X.Y"（主版本.次版本，例如 "3.7"、"3.13"）'
         )
     return value.strip()
 
@@ -231,7 +231,7 @@ class Settings(BaseSettings):
         # 钳到 [1, 100]：0/负值会让水位门永远不触发（形同拆除防线），
         # >100 无意义。
         if value < 1 or value > 100:
-            raise ValueError('disk watermark percent must be in [1, 100]')
+            raise ValueError('磁盘水位百分比必须在 [1, 100] 之间')
         return value
 
     @model_validator(mode='after')
@@ -240,7 +240,7 @@ class Settings(BaseSettings):
         # 而拒新任务提前生效）。
         if self.disk_warn_percent >= self.disk_critical_percent:
             raise ValueError(
-                'DISK_WARN_PERCENT must be < DISK_CRITICAL_PERCENT'
+                'DISK_WARN_PERCENT 必须小于 DISK_CRITICAL_PERCENT'
             )
         return self
 
@@ -299,7 +299,7 @@ class Settings(BaseSettings):
         # 下界 1s（0/负值会让每次下载立即超时）；上界对齐既有 timeout 语义上限，
         # 避免一次悬挂下载把执行槽钉死一整天以上。
         if value < 1 or value > 86400:
-            raise ValueError('INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS must be in [1, 86400]')
+            raise ValueError('INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS 必须在 [1, 86400] 之间')
         return value
 
     @field_validator('interpreter_single_version_mb')
@@ -308,14 +308,14 @@ class Settings(BaseSettings):
         # pbs 单版本解压后 ≈57MB（CONTRACT.md §0）；小于 64MB 的红线会让任何
         # 真实解释器一入池即超限，视为配置错误而非合法收紧。
         if value < 64:
-            raise ValueError('INTERPRETER_SINGLE_VERSION_MB must be >= 64')
+            raise ValueError('INTERPRETER_SINGLE_VERSION_MB 必须 >= 64')
         return value
 
     @field_validator('interpreter_total_gb')
     @classmethod
     def _validate_interpreter_total_gb(cls, value: int) -> int:
         if value < 1:
-            raise ValueError('INTERPRETER_TOTAL_GB must be >= 1')
+            raise ValueError('INTERPRETER_TOTAL_GB 必须 >= 1')
         return value
 
     @field_validator('git_clone_timeout_seconds', 'callback_logs_max_chars')
@@ -325,7 +325,7 @@ class Settings(BaseSettings):
         # truncate every log payload to nothing. Mirrors the download-timeout
         # guard; execute.py additionally clamps defensively at read time.
         if value < 1:
-            raise ValueError('this setting must be >= 1')
+            raise ValueError('该设置必须 >= 1')
         return value
 
     # ---- 任务沙箱与资源限制（SEC-NEW: F-1/B-1）----
@@ -357,7 +357,7 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_task_sandbox(cls, value: str) -> str:
         if value not in ('', 'bwrap'):
-            raise ValueError("TASK_SANDBOX must be '' or 'bwrap'")
+            raise ValueError("TASK_SANDBOX 必须是 '' 或 'bwrap'")
         return value
 
     @field_validator('task_memory_limit_mb', 'task_cpu_limit_seconds',
@@ -365,7 +365,7 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_task_limit_non_negative(cls, value: int) -> int:
         if value < 0:
-            raise ValueError('task resource limits must be >= 0 (0 disables the limit)')
+            raise ValueError('任务资源上限必须 >= 0（0 表示不限制）')
         return value
 
     # ---- 解释器下载完整性（F-2）----
@@ -386,11 +386,11 @@ class Settings(BaseSettings):
         for version, digest in value.items():
             if not RUNTIME_VERSION_PATTERN.fullmatch(version):
                 raise ValueError(
-                    f'UV_PYTHON_SHA256_PINS key {version!r} must be "X.Y"'
+                    f'UV_PYTHON_SHA256_PINS 的键 {version!r} 必须是 "X.Y"'
                 )
             if not isinstance(digest, str) or not hex_re.fullmatch(digest.strip()):
                 raise ValueError(
-                    f'UV_PYTHON_SHA256_PINS[{version!r}] must be a 64-char SHA-256 hex digest'
+                    f'UV_PYTHON_SHA256_PINS[{version!r}] 必须是 64 个字符的 SHA-256 十六进制摘要'
                 )
         return {v: d.strip() for v, d in value.items()}
 
@@ -412,7 +412,7 @@ class Settings(BaseSettings):
             digest = value.strip()
             if not re.fullmatch(r'[0-9a-fA-F]{64}', digest):
                 raise ValueError(
-                    f'{key} must be a 64-char SHA-256 hex digest'
+                    f'{key} 必须是 64 个字符的 SHA-256 十六进制摘要'
                 )
             merged[version] = digest.lower()
         self.uv_python_sha256_pins = merged
@@ -425,11 +425,11 @@ class Settings(BaseSettings):
             self.python_runtime_version_max
         ):
             raise ValueError(
-                'PYTHON_RUNTIME_VERSION_MIN must not be greater than PYTHON_RUNTIME_VERSION_MAX'
+                'PYTHON_RUNTIME_VERSION_MIN 不得大于 PYTHON_RUNTIME_VERSION_MAX'
             )
         if self.interpreter_single_version_mb > self.interpreter_total_gb * 1024:
             raise ValueError(
-                'INTERPRETER_SINGLE_VERSION_MB must not exceed INTERPRETER_TOTAL_GB * 1024'
+                'INTERPRETER_SINGLE_VERSION_MB 不得超过 INTERPRETER_TOTAL_GB * 1024'
             )
         return self
 
@@ -490,5 +490,23 @@ EXECUTOR_VERSION = '2.0.0'
 # v5 让「字符串裸值 + 有 PARAMS_JSON」可判定，中台才能对已部署机队做观测与
 # 兼容兜底（与 v2/v3/v4 同款理由）。方向同为**执行器→中台**，
 # PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有分支。
-PROTOCOL_VERSION = 5
+#
+# ADR-017 阶段 3（2026-10-15，回调面行身份补口）：5 → 6。**终态回调载荷**新增
+# **可选** `deviceFingerprint`（= register/heartbeat 上报的同一稳定安装身份
+# sha256(deviceId + ':' + installSalt)，64 位小写十六进制；两侧五处手拼回调
+# dict 经 `_executor_callback_identity()` 统一盖章）。必须 bump 的理由：回调
+# 鉴权有三条路径，per-executor 令牌能精确解析到「哪一行」，而 **shared/legacy
+# 令牌是全机队单一密钥、不绑定任何行**；同时 pull 模式允许同址多行并存
+# （ADR-017 §5），使 `executorAddress` 不再能指代一行。于是「共享令牌 + 同址
+# 碰撞」下 admin 无法把回调归到 dispatcher 实际派发的那一行（判据 =
+# task_executions.executorId）——本字段把行身份直接送上回调面，使该判定重新
+# 可做。bump 到 6 的目的与 v2~v5 同款（protocol.json evolutionRules 第 1 条）：
+# 让中台能区分「v6 执行器的回调**应**带行身份」与「旧执行器的回调无行身份可
+# 判」，从而对前者做真实行身份判定、对后者保持既有地址判据，并为机队覆盖率
+# 做观测（否则一个静默丢失指纹的 v5 执行器会被误判成「旧执行器，预期为空」）。
+# 方向同为**执行器→中台**；仅新增回调**可选**字段——PROTOCOL_CONTROL_PLANE_MIN
+# 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。与 node 侧
+# config.ts PROTOCOL_VERSION 必须同值（强一致性闸 = admin-api
+# protocol-version-consistency.spec.ts）。
+PROTOCOL_VERSION = 6
 

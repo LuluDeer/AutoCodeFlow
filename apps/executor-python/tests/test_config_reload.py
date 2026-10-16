@@ -25,7 +25,7 @@ def test_reload_config_accepts_admin_api_camel_case_payload(auth_client, monkeyp
     assert resp.status_code == 200
     assert resp.json() == {
         'success': True,
-        'message': 'Updated 6 field(s)',
+        'message': '已更新 6 个字段',
         'updated_fields': [
             'max_concurrent_tasks',
             'task_timeout_seconds',
@@ -59,7 +59,7 @@ def test_reload_config_validates_camel_case_payload(auth_client):
     resp = auth_client.post('/api/config/reload', json={'maxConcurrentTasks': 0})
 
     assert resp.status_code == 400
-    assert resp.json()['detail'] == 'max_concurrent_tasks must be >= 1'
+    assert resp.json()['detail'] == 'max_concurrent_tasks 必须 >= 1'
 
 
 class TestMaxConcurrentTasksUpperBound:
@@ -81,7 +81,7 @@ class TestMaxConcurrentTasksUpperBound:
         )
         assert resp.status_code == 400
         assert resp.json()['detail'] == (
-            f'max_concurrent_tasks must be between 1 and {MAX_RUNNING_EXECUTION_IDS}'
+            f'max_concurrent_tasks 必须在 1 到 {MAX_RUNNING_EXECUTION_IDS} 之间'
         )
         # 关键：拒绝必须发生在**任何写入之前**（否则 settings 已被污染）
         assert settings.max_concurrent_tasks == 10
@@ -159,7 +159,7 @@ def test_reload_config_rejects_relative_work_dir(auth_client):
     resp = auth_client.post('/api/config/reload', json={'workDir': 'relative/path'})
 
     assert resp.status_code == 400
-    assert resp.json()['detail'] == 'workDir must be an absolute path'
+    assert resp.json()['detail'] == 'workDir 必须是绝对路径'
 
 
 def test_reload_config_rejects_parent_segments(auth_client, tmp_path):
@@ -168,7 +168,7 @@ def test_reload_config_rejects_parent_segments(auth_client, tmp_path):
     resp = auth_client.post('/api/config/reload', json={'workDir': target})
 
     assert resp.status_code == 400
-    assert resp.json()['detail'] == 'workDir must not contain ".." segments'
+    assert resp.json()['detail'] == 'workDir 不得包含 ".." 片段'
 
 
 def test_reload_config_rejects_missing_work_dir(auth_client, tmp_path):
@@ -177,7 +177,7 @@ def test_reload_config_rejects_missing_work_dir(auth_client, tmp_path):
     resp = auth_client.post('/api/config/reload', json={'workDir': str(missing)})
 
     assert resp.status_code == 400
-    assert 'workDir does not exist' in resp.json()['detail']
+    assert 'workDir 不存在' in resp.json()['detail']
 
 
 def test_reload_config_rejects_symlink_work_dir(auth_client, tmp_path):
@@ -192,7 +192,7 @@ def test_reload_config_rejects_symlink_work_dir(auth_client, tmp_path):
     resp = auth_client.post('/api/config/reload', json={'workDir': str(link)})
 
     assert resp.status_code == 400
-    assert resp.json()['detail'] == 'workDir cannot be a symbolic link'
+    assert resp.json()['detail'] == 'workDir 不能是符号链接'
 
 
 def test_reload_config_rejects_work_dir_change_with_running_executions(
@@ -205,7 +205,7 @@ def test_reload_config_rejects_work_dir_change_with_running_executions(
     resp = auth_client.post('/api/config/reload', json={'workDir': str(new_dir)})
 
     assert resp.status_code == 400
-    assert '2 execution(s) are running' in resp.json()['detail']
+    assert '旧目录上仍有 2 个执行在运行' in resp.json()['detail']
 
 
 def test_reload_config_reports_unknown_fields_instead_of_silent_success(auth_client):
@@ -220,7 +220,7 @@ def test_reload_config_reports_unknown_fields_instead_of_silent_success(auth_cli
     assert body['success'] is True
     assert body['updated_fields'] == []
     assert body['ignored_fields'] == ['logRetentionDays', 'maxConcurrentTask']
-    assert 'ignored unsupported field(s)' in body['message']
+    assert '已忽略不支持的字段' in body['message']
 
 
 def test_reload_config_reports_ignored_fields_alongside_applied_ones(auth_client, monkeypatch):
@@ -261,7 +261,7 @@ def test_reload_config_rejects_non_numeric_max_concurrent_via_protocol_gate(auth
     resp = auth_client.post('/api/config/reload', json={'maxConcurrentTasks': '4'})
 
     assert resp.status_code == 400
-    assert 'Invalid config reload request: maxConcurrentTasks' in resp.json()['detail']
+    assert '无效的 config reload 请求：maxConcurrentTasks' in resp.json()['detail']
     # 畸形载荷在任何写入之前被拒
     assert settings.max_concurrent_tasks == 10
 

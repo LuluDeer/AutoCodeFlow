@@ -20,9 +20,9 @@ export class UpdateTaskDto extends PartialType(CreateTaskDto) {
    * 同 normalizeTaskDto 的 timeoutSeconds 消费即弃模式）。
    */
   @ApiPropertyOptional({
+    example: "2026-10-01T08:00:00.000Z",
     description:
       "乐观锁预期值：编辑前读取的任务 updatedAt（ISO 时间串）。传入即启用并发检查，不匹配返回 409；缺省跳过检查。",
-    example: "2026-10-01T08:00:00.000Z",
   })
   @IsOptional()
   @IsString()

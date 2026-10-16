@@ -27,6 +27,16 @@ import { TaskEnv } from './types';
  * auto-fills `executorAddress` on items that omit it, so task code never
  * has to hardcode an address that changes with redeployment.
  *
+ * ADR-017 阶段 3 / protocol v6: executor-node also injects
+ * `AUTOFLOW_DEVICE_FINGERPRINT` (its stable install identity, the same value
+ * it reports on register/heartbeat). When known it is stamped onto the same
+ * callback items — the shared/legacy callback token is a fleet-wide secret
+ * bound to no executor row, and pull mode lets several rows share one
+ * address, so `executorAddress` alone cannot say which row a callback came
+ * from; the fingerprint can. Both fields follow the same optional rule: when
+ * the executor does not inject them the keys are **omitted entirely** (never
+ * sent as an empty string).
+ *
  * U14: admin-api wraps every response body in a `{ code, message, data }`
  * envelope (global ResponseInterceptor). The request helpers unwrap it and
  * resolve with the inner `data`, so `results`-style lookups on a callback
@@ -342,6 +352,20 @@ export class HttpClient {
      * 覆盖；`retry: null` 显式关闭重试/熔断（保持旧薄包装行为）。
      */
     options?: { retry?: Partial<HttpRetryConfig> | null },
+    /**
+     * ADR-017 阶段 3 (protocol v6): the executor's stable install identity to
+     * stamp on callback items, injected by executor-node as
+     * `AUTOFLOW_DEVICE_FINGERPRINT`. Same optional semantics as
+     * `executorAddress`: absent on older executors or a failed probe, in
+     * which case the key is omitted from callback items entirely.
+     *
+     * APPENDED AFTER `options` deliberately: `options` was the established
+     * 5th parameter, and every existing call site passes it positionally
+     * (`new HttpClient(url, token, traceId, address, { retry })`). Inserting
+     * this field before it would silently turn those configs into a
+     * fingerprint.
+     */
+    private readonly deviceFingerprint?: string,
   ) {
     this.enabled = Boolean(baseURL && token);
     if (!this.enabled) {
@@ -416,6 +440,8 @@ export class HttpClient {
       env.executorToken,
       env.traceId,
       env.executorAddress,
+      undefined, // options (retry/breaker keep their B-4 defaults)
+      env.deviceFingerprint,
     );
   }
 
@@ -427,22 +453,35 @@ export class HttpClient {
    * address (injected `AUTOFLOW_EXECUTOR_ADDRESS`), items that omit it are
    * stamped with it automatically; explicitly provided values are never
    * overwritten. Requests to other endpoints pass through untouched.
+   *
+   * ADR-017 阶段 3 (protocol v6): the same choke point stamps
+   * `deviceFingerprint` (`AUTOFLOW_DEVICE_FINGERPRINT`) — it is the callback
+   * face's row identity when the shared/legacy token is used. Either field
+   * is skipped entirely when unknown (never written as an empty string), and
+   * either one is left untouched when the item already carries it.
    */
   private withExecutorAddress(url: string, data?: unknown): unknown {
-    if (!this.executorAddress || !/\/executions\/callback\/?$/.test(url)) {
+    if (!/\/executions\/callback\/?$/.test(url)) {
+      return data;
+    }
+    if (!this.executorAddress && !this.deviceFingerprint) {
       return data;
     }
     if (!Array.isArray(data)) return data;
     return data.map((item) => {
-      if (
-        item &&
-        typeof item === 'object' &&
-        !Array.isArray(item) &&
-        !(item as { executorAddress?: unknown }).executorAddress
-      ) {
-        return { ...(item as object), executorAddress: this.executorAddress };
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+      const record = item as Record<string, unknown>;
+      const stamped: Record<string, unknown> = { ...record };
+      let changed = false;
+      if (this.executorAddress && !record.executorAddress) {
+        stamped.executorAddress = this.executorAddress;
+        changed = true;
       }
-      return item;
+      if (this.deviceFingerprint && !record.deviceFingerprint) {
+        stamped.deviceFingerprint = this.deviceFingerprint;
+        changed = true;
+      }
+      return changed ? stamped : item;
     });
   }
 

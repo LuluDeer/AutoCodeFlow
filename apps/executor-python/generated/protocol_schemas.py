@@ -119,6 +119,7 @@ class CallbackPayload(BaseModel):
     executionId: str = Field(pattern="^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     status: Literal["success", "failed"]
     executorAddress: str | None = Field(default=None)
+    deviceFingerprint: str | None = Field(default=None)
     exitCode: int | None = Field(default=None)
     logs: str | None = Field(default=None)
     errorMessage: str | None = Field(default=None)

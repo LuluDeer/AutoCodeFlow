@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { LessThan, Repository } from "typeorm";
 import {
@@ -6,6 +6,9 @@ import {
   SILENCE_SCOPES,
   type SilenceScope,
 } from "./entities/notification-silence.entity";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * FEAT-01: 通知静默规则的 DB 读写层。
@@ -40,15 +43,18 @@ export class NotificationSilenceService {
 
   async create(input: CreateSilenceInput): Promise<NotificationSilence> {
     if (!SILENCE_SCOPES.includes(input.scope)) {
-      throw new BadRequestException(
-        `invalid scope ${String(input.scope)}; expected one of ${SILENCE_SCOPES.join(", ")}`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_SILENCE_SCOPE_INVALID, {
+        scope: String(input.scope),
+        validScopes: SILENCE_SCOPES.join(", "),
+      });
     }
     if (input.scope === "task" && !input.taskId) {
-      throw new BadRequestException("scope=task requires taskId");
+      throw new AppError(ErrorCode.NOTIFICATION_SILENCE_TASK_ID_REQUIRED);
     }
     if (input.scope === "application" && !input.applicationId) {
-      throw new BadRequestException("scope=application requires applicationId");
+      throw new AppError(
+        ErrorCode.NOTIFICATION_SILENCE_APPLICATION_ID_REQUIRED,
+      );
     }
     // NETOPT-5①: level 枚举校验（此前任意字符串都落库，静默可能因手误
     // 永不命中）。口径与 AlertLevel 一致（info/warning/error/critical）。
@@ -57,9 +63,10 @@ export class NotificationSilenceService {
       input.level != null &&
       !VALID_SILENCE_LEVELS.includes(String(input.level))
     ) {
-      throw new BadRequestException(
-        `invalid level ${String(input.level)}; expected one of ${VALID_SILENCE_LEVELS.join(", ")}`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_SILENCE_LEVEL_INVALID, {
+        level: String(input.level),
+        validLevels: VALID_SILENCE_LEVELS.join(", "),
+      });
     }
     // NETOPT-5①: durationMinutes 数字校验。运行时 @Body() 无 ValidationPipe
     // 白名单（见 CreateSilenceDto 注释），字符串 "abc" 直达此处——旧逻辑
@@ -70,9 +77,9 @@ export class NotificationSilenceService {
         !Number.isFinite(input.durationMinutes) ||
         input.durationMinutes <= 0)
     ) {
-      throw new BadRequestException(
-        `invalid durationMinutes ${String(input.durationMinutes)}; expected a positive number`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_SILENCE_DURATION_INVALID, {
+        durationMinutes: String(input.durationMinutes),
+      });
     }
     if (
       input.channelType != null &&
@@ -80,14 +87,16 @@ export class NotificationSilenceService {
         input.channelType,
       )
     ) {
-      throw new BadRequestException(`invalid channelType ${input.channelType}`);
+      throw new AppError(ErrorCode.NOTIFICATION_SILENCE_CHANNEL_TYPE_INVALID, {
+        channelType: input.channelType,
+      });
     }
 
     const activeCount = await this.repo.count();
     if (activeCount >= NotificationSilenceService.MAX_SILENCES) {
-      throw new BadRequestException(
-        `Too many alert silences (max ${NotificationSilenceService.MAX_SILENCES}). Remove expired ones first.`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_SILENCE_TOO_MANY, {
+        max: NotificationSilenceService.MAX_SILENCES,
+      });
     }
 
     const entity = this.repo.create({

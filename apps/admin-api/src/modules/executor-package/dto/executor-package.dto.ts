@@ -19,23 +19,35 @@ import { PaginationDto } from "../../../common/dto/pagination.dto";
 import { ApiProperty, ApiPropertyOptional, PartialType } from "@nestjs/swagger";
 
 export class CreateExecutorPackageDto {
-  @ApiProperty({ description: "Package name", maxLength: 255 })
+  @ApiProperty({
+    maxLength: 255,
+    description: "包名称",
+  })
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
   name: string;
 
-  @ApiProperty({ description: "Package version", maxLength: 64 })
+  @ApiProperty({
+    maxLength: 64,
+    description: "包版本",
+  })
   @IsString()
   @IsNotEmpty()
   @MaxLength(64)
   version: string;
 
-  @ApiProperty({ description: "Package type", enum: ExecutorPackageType })
+  @ApiProperty({
+    enum: ExecutorPackageType,
+    description: "包类型",
+  })
   @IsEnum(ExecutorPackageType)
   type: ExecutorPackageType;
 
-  @ApiPropertyOptional({ description: "Target platform", maxLength: 128 })
+  @ApiPropertyOptional({
+    maxLength: 128,
+    description: "目标平台",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(128)
@@ -44,13 +56,16 @@ export class CreateExecutorPackageDto {
   // filePath / fileSize 由服务端从上传文件推导（executor-package.service.create），
   // 不属于 multipart 表单字段；此前必填声明会让真实上传请求被全局
   // ValidationPipe（forbidNonWhitelisted）以 400 拒绝。
-  @ApiPropertyOptional({ description: "Checksum", maxLength: 64 })
+  @ApiPropertyOptional({
+    maxLength: 64,
+    description: "校验和",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(64)
   checksum?: string;
 
-  @ApiPropertyOptional({ description: "Package description" })
+  @ApiPropertyOptional({ description: "包描述" })
   @IsOptional()
   @IsString()
   description?: string;
@@ -60,13 +75,19 @@ export class CreateExecutorPackageDto {
 export class UpdateExecutorPackageDto extends PartialType(
   CreateExecutorPackageDto,
 ) {
-  @ApiPropertyOptional({ description: "File path", maxLength: 1024 })
+  @ApiPropertyOptional({
+    maxLength: 1024,
+    description: "文件路径",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(1024)
   filePath?: string;
 
-  @ApiPropertyOptional({ description: "File size in bytes", minimum: 0 })
+  @ApiPropertyOptional({
+    minimum: 0,
+    description: "文件字节数",
+  })
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -74,8 +95,8 @@ export class UpdateExecutorPackageDto extends PartialType(
   fileSize?: number;
 
   @ApiPropertyOptional({
-    description: "Package status",
     enum: ExecutorPackageStatus,
+    description: "包状态",
   })
   @IsOptional()
   @IsEnum(ExecutorPackageStatus)
@@ -106,9 +127,9 @@ export class QueryExecutorPackageDto extends PaginationDto {
 // 也没有数组长度上限（可传数万条）。现抽 DTO：元素必须是 v4 UUID，且 ≤100 个。
 export class PushExecutorPackageDto {
   @ApiPropertyOptional({
-    description:
-      "Target executor ID list (v4 UUIDs, <=100). Empty/omitted = push to all online executors",
     type: [String],
+    description:
+      "目标执行器 ID 列表（v4 UUID，<=100）。为空或缺省 = 推送到所有在线执行器",
   })
   @IsOptional()
   @IsArray()

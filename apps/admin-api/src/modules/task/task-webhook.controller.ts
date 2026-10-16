@@ -60,19 +60,18 @@ export class TaskWebhookController {
   @HttpCode(200)
   @Post(":taskId")
   @ApiOperation({
-    summary: "Trigger a task via inbound webhook",
+    summary: "通过入站 Webhook 触发任务",
     description:
-      "Public machine endpoint. Requires X-AutoCodeFlow-Timestamp and " +
-      "X-Hub-Signature-256 headers; the signature is HMAC-SHA256 over " +
-      "`${timestamp}.${rawBody}` with the task's webhook secret (enable via " +
-      "POST /api/tasks/:id/webhook/enable). Body `{ params }` overrides the " +
-      "task's default params for this execution. Add `?wait=1&timeout=N` to " +
-      "park the request until the execution reaches a terminal state (N ≤ " +
+      "公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 " +
+      "X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 " +
+      "`${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 " +
+      "POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务" +
+      "本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ " +
       WEBHOOK_WAIT_MAX_SECONDS +
-      "s; on timeout `completed:false` plus the latest snapshot). Unknown " +
-      "task / disabled webhook / bad signature all answer the same 401.",
+      " 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook " +
+      "未启用 / 签名错误一律返回相同的 401。",
   })
-  @ApiParam({ name: "taskId", description: "Task UUID" })
+  @ApiParam({ name: "taskId", description: "任务 UUID" })
   @ApiQuery({
     name: "wait",
     required: false,

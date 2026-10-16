@@ -1,10 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
+import { plainToInstance } from "class-transformer";
 import {
   ExecutionFailureReason,
   EXECUTOR_REPORTABLE_FAILURE_REASONS,
   ADMIN_INTERNAL_FAILURE_REASONS,
 } from "../entities/task-execution.entity";
+import { CallbackItemDto } from "../dto/execution-callback.dto";
 
 /**
  * A3（DEEP_REVIEW 0ef3bbe §七）+ EXP-01（本轮体验审查）：
@@ -89,5 +91,41 @@ describe("A3 执行器协议契约（admin-api 侧）", () => {
     );
     // 守卫：若 adminInternalOnly 变空，上面的派生断言会退化成恒真。
     expect(ADMIN_INTERNAL_FAILURE_REASONS.length).toBeGreaterThan(0);
+  });
+
+  // ADR-017 阶段 3 方案 C（协议 v6）：回调载荷的 `deviceFingerprint` 是
+  // **行身份**输入，admin 的 CallbackItemDto 必须声明它——否则
+  // ParseArrayPipe 的 whitelist 会把该键静默剥除，控制器拿不到指纹，
+  // 「行身份三级阶梯」的第一级**永久失效**（且没有任何报错）。
+  //
+  // 反证：从 CallbackItemDto 删掉 deviceFingerprint 装饰器声明 → 本用例转红。
+  it("ADR-017 v6：回调载荷 deviceFingerprint 已进协议且 admin DTO 声明了它", () => {
+    const callbackProps = protocol.schemas.CallbackPayload.properties;
+    expect(callbackProps).toHaveProperty("deviceFingerprint");
+    // 字段必须**可选**（兼容性红线：旧执行器/采集失败/SDK 调用方都不带它，
+    // 不得因缺该字段拒绝合法回调）。
+    expect(protocol.schemas.CallbackPayload.required).not.toContain(
+      "deviceFingerprint",
+    );
+
+    const dto = plainToInstance(CallbackItemDto, {
+      executionId: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      status: "success",
+      deviceFingerprint: "a".repeat(64),
+    });
+    // 声明了该字段 → 值被接纳（未被 whitelist 剥除）。
+    expect(dto.deviceFingerprint).toBe("a".repeat(64));
+  });
+
+  it("ADR-017 v6：协议版本矩阵含 6，且 currentProtocolVersion === 6", () => {
+    // 版本矩阵必须为 v6 登记条目——缺条目会让本方案的「中台可区分 v6/v5」
+    // 前提落空（evolutionRules 第 1 条要求新增可选字段也 bump）。
+    expect(protocol.versioning.currentProtocolVersion).toBe(6);
+    const versions = protocol.versioning.compatibilityMatrix.map(
+      (m: { protocolVersion: number }) => m.protocolVersion,
+    );
+    expect(versions).toContain(6);
+    // 既有版本条目不得被删（已发布端按旧条目断言）。
+    for (const v of [1, 2, 3, 4, 5]) expect(versions).toContain(v);
   });
 });

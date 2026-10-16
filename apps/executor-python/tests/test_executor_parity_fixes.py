@@ -141,7 +141,7 @@ def test_accept_execution_rejects_503_while_shutting_down(monkeypatch):
         execute_module.accept_execution(req)
 
     assert excinfo.value.status_code == 503
-    assert excinfo.value.detail == 'Executor is shutting down'
+    assert excinfo.value.detail == '执行器正在停机'
     assert ledger_touches == [], 'capacity ledger must be untouched by the guard'
     assert not execute_module.execution_exists('exec-shutdown-1')
 
@@ -157,7 +157,7 @@ def test_execute_route_maps_shutdown_rejection_to_503(auth_client, monkeypatch):
         'task': {'name': 'noop', 'runtime': 'python'},
     })
     assert response.status_code == 503
-    assert response.json()['detail'] == 'Executor is shutting down'
+    assert response.json()['detail'] == '执行器正在停机'
 
 
 # ---------------------------------------------------------------------------

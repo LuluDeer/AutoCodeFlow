@@ -10,7 +10,7 @@ export class UpdateUserDto extends PartialType(CreateUserDto) {
   // interface 补。显式声明进契约。
   @ApiPropertyOptional({
     description:
-      "Required when a non-admin user changes their own password (SEC-12); stripped by the service before persisting (R19)",
+      "非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19）",
   })
   @IsOptional()
   @IsString()

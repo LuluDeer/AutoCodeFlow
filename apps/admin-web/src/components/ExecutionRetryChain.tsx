@@ -2,13 +2,15 @@
  * REFACTOR-EXEC-02：重试链面板（原 ExecutionDetailPage「重试链」Tab 内容原样迁出）。
  * CORE-02 的构建逻辑仍在 pages/retry-chain.ts 纯函数中——本组件只负责展示。
  */
-import { Card, Tag, Typography, Alert, theme } from 'antd';
+import { Card, Tag, Typography, Alert, theme, Tooltip } from 'antd';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import type { RetryChainLink } from '../pages/retry-chain';
 // P3 审计：执行状态 → Tag color 映射收敛到单一事实源（原本地 RETRY_STATUS_COLOR 迁出）
 import { EXECUTION_TAG_COLOR } from '../utils/status-color';
+// ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
+import { useExecutorNames } from '../hooks/useExecutorNames';
 
 const { Text } = Typography;
 
@@ -48,6 +50,8 @@ export default function ExecutionRetryChain({ taskId, data, taskMaxRetry, retryC
   const { token: antdToken } = theme.useToken();
   const triggerLabels = TRIGGER_LABEL(t);
   const failureReasonMap = FAILURE_REASON_MAP(t);
+  // ADR-017 阶段 3（决策 §7）：重试链每行都要解析执行器名（自拉一次清单共用）。
+  const { nameOf } = useExecutorNames();
 
   return (
     <>
@@ -90,7 +94,15 @@ export default function ExecutionRetryChain({ taskId, data, taskMaxRetry, retryC
               )}
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {link.triggerType ? triggerLabels[link.triggerType] ?? link.triggerType : '-'}
-                {link.executorAddress ? ` · ${link.executorAddress}` : ''}
+                {/* ADR-017 阶段 3（决策 §7）：执行器显示可读名（id 优先、地址回落），
+                    与执行详情卡/列表页同口径。地址是诊断身份，作为 tooltip 保留。 */}
+                {nameOf(link) ?? link.executorAddress
+                  ? (
+                    <Tooltip title={link.executorAddress || undefined}>
+                      <span>{` · ${nameOf(link) ?? link.executorAddress}`}</span>
+                    </Tooltip>
+                  )
+                  : ''}
               </Text>
               {link.failureReason && (
                 <Tag>{failureReasonMap[link.failureReason]?.label ?? link.failureReason}</Tag>

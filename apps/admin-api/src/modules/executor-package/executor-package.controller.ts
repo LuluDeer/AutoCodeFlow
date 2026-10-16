@@ -22,7 +22,8 @@ import { diskStorage } from "multer";
 import { Response } from "express";
 import { pipeline } from "stream/promises";
 import * as jwt from "jsonwebtoken";
-import { UnauthorizedException } from "@nestjs/common";
+// LANG-ERR-01：用户面 401 走稳定码（前端按用户语言渲染）
+import { AppError } from "../../common/errors/app-error";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { Public } from "../../common/decorators/public.decorator";
 import { SystemConfigService } from "../config/config.service";
@@ -150,10 +151,10 @@ export class ExecutorPackageController {
       limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
     }),
   )
-  @ApiOperation({ summary: "Upload executor package" })
+  @ApiOperation({ summary: "上传执行器包" })
   @ApiConsumes("multipart/form-data")
   @ApiBody({
-    description: "Executor package file and metadata",
+    description: "执行器包文件与元数据",
     schema: {
       type: "object",
       required: ["name", "version", "file"],
@@ -177,10 +178,10 @@ export class ExecutorPackageController {
   }
 
   @Get()
-  @ApiOperation({ summary: "Get executor package list" })
+  @ApiOperation({ summary: "获取执行器包列表" })
   @ApiResponse({
     status: 200,
-    description: "Package list",
+    description: "包列表",
     type: ExecutorPackageListDto,
   })
   findAll(
@@ -190,20 +191,20 @@ export class ExecutorPackageController {
   }
 
   @Get("latest")
-  @ApiOperation({ summary: "Get latest ACTIVE executor package by type" })
+  @ApiOperation({ summary: "按类型获取最新的 ACTIVE 执行器包" })
   @ApiQuery({
     name: "type",
     required: true,
-    description: "Executor package type",
+    description: "执行器包类型",
   })
   @ApiQuery({
     name: "platform",
     required: false,
-    description: "Platform (optional)",
+    description: "平台（可选）",
   })
   @ApiResponse({
     status: 200,
-    description: "Latest package info (null when none matches)",
+    description: "最新包信息（无匹配时为 null）",
     type: ExecutorPackageResponseDto,
   })
   findLatest(
@@ -219,27 +220,27 @@ export class ExecutorPackageController {
   // a real install.sh flow, if ever implemented.
 
   @Get(":id")
-  @ApiOperation({ summary: "Get executor package details" })
-  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiOperation({ summary: "获取执行器包详情" })
+  @ApiParam({ name: "id", description: "包 ID" })
   @ApiResponse({
     status: 200,
-    description: "Package details",
+    description: "包详情",
     type: ExecutorPackageResponseDto,
   })
-  @ApiResponse({ status: 404, description: "Package not found" })
+  @ApiResponse({ status: 404, description: "包不存在" })
   findOne(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.findOne(id);
   }
 
   @Patch(":id")
-  @ApiOperation({ summary: "Update executor package info" })
-  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiOperation({ summary: "更新执行器包信息" })
+  @ApiParam({ name: "id", description: "包 ID" })
   @ApiResponse({
     status: 200,
-    description: "Updated successfully",
+    description: "更新成功",
     type: ExecutorPackageResponseDto,
   })
-  @ApiResponse({ status: 404, description: "Package not found" })
+  @ApiResponse({ status: 404, description: "包不存在" })
   update(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() updateDto: UpdateExecutorPackageDto,
@@ -249,10 +250,10 @@ export class ExecutorPackageController {
 
   @Delete(":id")
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: "Delete executor package" })
-  @ApiParam({ name: "id", description: "Package ID" })
-  @ApiResponse({ status: 204, description: "Deleted successfully" })
-  @ApiResponse({ status: 404, description: "Package not found" })
+  @ApiOperation({ summary: "删除执行器包" })
+  @ApiParam({ name: "id", description: "包 ID" })
+  @ApiResponse({ status: 204, description: "删除成功" })
+  @ApiResponse({ status: 404, description: "包不存在" })
   remove(@Param("id", ParseUUIDPipe) id: string): Promise<void> {
     return this.svc.remove(id);
   }
@@ -263,13 +264,13 @@ export class ExecutorPackageController {
   @Roles()
   @Get(":id/download")
   @ApiOperation({
-    summary: "Download executor package file",
     description:
-      "Accepts either a valid administrator access JWT or the executor shared token. JWT validation is stateless and does not query the user database, matching upload-auth middleware; access-token expiry provides revocation latency.",
+      "接受有效的管理员 access JWT 或执行器共享令牌。JWT 校验是无状态的、不查用户库，与上传鉴权中间件一致；access token 的过期时间即撤销延迟。",
+    summary: "下载执行器包文件",
   })
-  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiParam({ name: "id", description: "包 ID" })
   @ApiOkResponse({
-    description: "package binary (Res passthrough)",
+    description: "包二进制内容（Res 直传）",
     content: {
       "application/octet-stream": {
         schema: { type: "string", format: "binary" },
@@ -278,11 +279,11 @@ export class ExecutorPackageController {
   })
   @ApiResponse({
     status: 401,
-    description: "Invalid access JWT or executor token",
+    description: "access JWT 或执行器令牌无效",
   })
-  @ApiResponse({ status: 404, description: "Package or file not found" })
+  @ApiResponse({ status: 404, description: "包或文件不存在" })
   @ApiOkResponse({
-    description: "package binary (Res passthrough)",
+    description: "包二进制内容（Res 直传）",
     content: {
       "application/octet-stream": {
         schema: { type: "string", format: "binary" },
@@ -322,9 +323,7 @@ export class ExecutorPackageController {
       }
     }
     if (!authorized) {
-      throw new UnauthorizedException(
-        "Unauthorized: package downloads require a valid access JWT or executor token",
-      );
+      throw new AppError("EXECUTOR_PACKAGE_DOWNLOAD_UNAUTHORIZED");
     }
 
     // R9: stream the file to the client instead of readFileSync-ing it into
@@ -367,16 +366,16 @@ export class ExecutorPackageController {
   }
 
   @Patch(":id/deprecate")
-  @ApiOperation({ summary: "Deprecate executor package" })
-  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiOperation({ summary: "弃用执行器包" })
+  @ApiParam({ name: "id", description: "包 ID" })
   @ApiOkResponse({ type: ExecutorPackageResponseDto })
   deprecate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.deprecate(id);
   }
 
   @Patch(":id/activate")
-  @ApiOperation({ summary: "Activate executor package" })
-  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiOperation({ summary: "激活执行器包" })
+  @ApiParam({ name: "id", description: "包 ID" })
   @ApiOkResponse({ type: ExecutorPackageResponseDto })
   activate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.activate(id);
@@ -408,9 +407,7 @@ export class ExecutorPackageController {
   })
   @Post("push-result")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: "Executor package push result callback (called by executor-node)",
-  })
+  @ApiOperation({ summary: "执行器包推送结果回调（由 executor-node 调用）" })
   @ApiBody({
     schema: {
       type: "object",
@@ -474,17 +471,17 @@ export class ExecutorPackageController {
 
   @Post(":id/push")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Push executor package to scheduler nodes" })
-  @ApiParam({ name: "id", description: "Package ID" })
+  @ApiOperation({ summary: "将执行器包推送到调度节点" })
+  @ApiParam({ name: "id", description: "包 ID" })
   @ApiBody({
-    description: "Push targets (empty = push to all online executors)",
+    description: "推送目标（为空 = 推送到全部在线执行器）",
     schema: {
       type: "object",
       properties: {
         executorIds: {
           type: "array",
           items: { type: "string" },
-          description: "Target executor ID list, empty = all",
+          description: "目标执行器 ID 列表，为空 = 全部",
         },
       },
     },

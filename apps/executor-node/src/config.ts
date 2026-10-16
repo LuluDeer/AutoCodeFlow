@@ -21,18 +21,18 @@ export function validateCredentialFreeHttpUrl(value: string, settingName: string
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`${settingName} must be a valid http(s) URL`);
+    throw new Error(`${settingName} 必须是合法的 http(s) URL`);
   }
   if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname) {
-    throw new Error(`${settingName} must be a valid http(s) URL`);
+    throw new Error(`${settingName} 必须是合法的 http(s) URL`);
   }
   if (parsed.username || parsed.password) {
     throw new Error(
-      `${settingName} must not contain userinfo; provide registry credentials through a controlled credentials mechanism`,
+      `${settingName} 不得内嵌用户凭据（userinfo）；注册表凭据请通过受控的凭据机制提供`,
     );
   }
   if (parsed.search || parsed.hash) {
-    throw new Error(`${settingName} must not contain a query or fragment`);
+    throw new Error(`${settingName} 不得包含查询串或片段（query / fragment）`);
   }
   return url;
 }
@@ -488,8 +488,20 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * deviceFingerprint、v4 的 reservedSlots 同款理由：evolutionRules 第 1 条）。
  * 方向同为**执行器→中台**（中台从不构造子进程 env），
  * PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有分支。
+ *
+ * ADR-017 阶段 3 方案 C（2026-10-15）：5 → 6。**回调载荷**新增可选
+ * `deviceFingerprint`（本文件与 python 对等）。
+ *
+ * 为什么必须 bump：回调鉴权里 shared/legacy 令牌是**全机队单一密钥、不绑定
+ * 任何行**，而 pull 模式允许同址多行并存（ADR-017 §5）——两者叠加时中台无法
+ * 把回调归到 dispatcher 实际派发的那一行（判据 = task_executions.executorId）。
+ * v6 把行身份送上回调面。bump 的目的与 v2~v5 同款（evolutionRules 第 1 条）：
+ * 让中台能区分「v6 执行器的回调**应**带行身份」与「旧执行器无此行身份可判」，
+ * 从而对前者做真实行身份判定、对后者保持既有地址判据，并观测机队覆盖率。
+ * 仅新增**可选**字段：PROTOCOL_CONTROL_PLANE_MIN 仍为 2、
+ * supportedMinProtocolVersion 仍为 1，不改变任何既有分支。
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /**
  * A-6（P2）：express.json() 请求体上限。express 默认 100KB，而 admin 派发载荷

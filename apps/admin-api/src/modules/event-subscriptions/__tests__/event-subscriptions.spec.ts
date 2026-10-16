@@ -562,7 +562,7 @@ describe("FEAT-07 EventSubscriptionService", () => {
         },
         adminUser,
       ),
-    ).rejects.toThrow(/Unknown event type/);
+    ).rejects.toThrow(/未知的事件类型/);
   });
 
   it("listDeadLetters：非属主非 ADMIN 抛 403", async () => {
@@ -577,7 +577,7 @@ describe("FEAT-07 EventSubscriptionService", () => {
     dlRepoMock.findOne.mockResolvedValue(null);
     await expect(
       svc.getDeadLetterForReplay(makeSub().id, "nope", plainUser),
-    ).rejects.toThrow(/not found/i);
+    ).rejects.toThrow(/不存在/);
   });
 
   it("update：url 变更时再次 SSRF 校验", async () => {

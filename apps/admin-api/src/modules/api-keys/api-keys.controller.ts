@@ -7,9 +7,11 @@ import {
   ParseIntPipe,
   Post,
   Req,
-  NotFoundException,
   UseGuards,
 } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
+import { AppError } from "../../common/errors/app-error";
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -93,7 +95,7 @@ export class ApiKeysController {
 
   @Get()
   @ApiOkResponse({ type: [ApiKeyViewDto] })
-  @ApiOperation({ summary: "List my API Keys (masked)" })
+  @ApiOperation({ summary: "列出我的 API Key（脱敏）" })
   list(@CurrentUser() user: AuthUser) {
     return this.apiKeysService.listForUser(user.id);
   }
@@ -105,9 +107,9 @@ export class ApiKeysController {
     description: "明文 key 一次性回显",
   })
   @ApiOperation({
-    summary: "Create an API Key",
     description:
-      "Returns the plaintext key ONCE (`acf_<64 hex>`); it is stored only as a sha256 hash and can never be retrieved again.",
+      "明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。",
+    summary: "创建 API Key",
   })
   async create(
     @Body() dto: CreateApiKeyDto,
@@ -134,7 +136,7 @@ export class ApiKeysController {
   @WriteGuard("api-key", { scope: "authenticated" })
   @Delete(":id")
   @ApiOkResponse({ type: ApiKeyRevokeResponseDto })
-  @ApiOperation({ summary: "Revoke (soft-delete) my API Key" })
+  @ApiOperation({ summary: "撤销（软删除）我的 API Key" })
   async revoke(
     @Param("id", ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,
@@ -146,7 +148,7 @@ export class ApiKeysController {
       user.username,
       req?.ip,
     );
-    if (!row) throw new NotFoundException(`API Key #${id} not found`);
+    if (!row) throw new AppError("API_KEY_NOT_FOUND", { apiKeyId: id });
     return { success: true, apiKey: row };
   }
 
@@ -154,7 +156,7 @@ export class ApiKeysController {
   @WriteGuard("api-key", { scope: "authenticated" })
   @Post(":id/revoke")
   @ApiCreatedResponse({ type: ApiKeyRevokeResponseDto })
-  @ApiOperation({ summary: "Revoke my API Key (explicit alias, idempotent)" })
+  @ApiOperation({ summary: "撤销我的 API Key（显式别名，幂等）" })
   async revokeAlias(
     @Param("id", ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,
@@ -166,7 +168,7 @@ export class ApiKeysController {
       user.username,
       req?.ip,
     );
-    if (!row) throw new NotFoundException(`API Key #${id} not found`);
+    if (!row) throw new AppError("API_KEY_NOT_FOUND", { apiKeyId: id });
     return { success: true, apiKey: row };
   }
 }

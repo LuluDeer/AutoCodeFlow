@@ -86,7 +86,7 @@ describe('admin-client', () => {
   });
 
   it('throws when no usable admin URLs are configured', () => {
-    expect(() => initAdminClients(['', '   '])).toThrow('No admin URLs configured');
+    expect(() => initAdminClients(['', '   '])).toThrow('未配置任何中台（admin）地址');
   });
 
   it('normalizes configured /api admin URLs to service roots', () => {
@@ -155,7 +155,7 @@ describe('admin-client', () => {
     initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
 
     await expect(request('get', '/api/health')).rejects.toThrow(
-      'All 2 admin servers are unavailable',
+      /全部 2 个中台（admin）服务器均不可用/,
     );
   });
 
@@ -351,7 +351,7 @@ describe('admin-client', () => {
       initAdminClients(['http://admin-a:3105']);
 
       await expect(post('/api/executors/heartbeat', {})).rejects.toThrow(
-        'All 1 admin servers are unavailable',
+        /全部 1 个中台（admin）服务器均不可用/,
       );
       // 下限 3：既不无限重试，也不"一次即弃"
       expect(clientUnderTest.request).toHaveBeenCalledTimes(3);
@@ -401,7 +401,7 @@ describe('admin-client', () => {
       initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
 
       await expect(request('get', '/api/health')).rejects.toThrow(
-        'All 2 admin servers are unavailable',
+        /全部 2 个中台（admin）服务器均不可用/,
       );
       // HA 语义不变：每台恰好试一次（2 台就是 2 次，不得因重试下限变成 3 次）
       expect(clientUnderTest.request).toHaveBeenCalledTimes(2);

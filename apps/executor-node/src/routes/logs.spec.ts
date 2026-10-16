@@ -87,14 +87,14 @@ describe('GET /api/logs/:executionId', () => {
   it('returns 400 for path-traversal executionId (../etc)', async () => {
     const res = await request(appNoAuth).get('/api/logs/..%2Fetc');
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid executionId/);
+    expect(res.body.error).toMatch(/无效的 executionId/);
   });
 
   it('returns 400 for executionId containing path separators', async () => {
     // Use a double-encoded slash that resolves to a sub-path after basename
     const res = await request(appNoAuth).get('/api/logs/sub%2Ftraversal');
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid executionId/);
+    expect(res.body.error).toMatch(/无效的 executionId/);
   });
 
   it('returns 400 for empty executionId (dot segment)', async () => {
@@ -110,7 +110,7 @@ describe('GET /api/logs/:executionId', () => {
 
     const res = await request(appNoAuth).get('/api/logs/exec-missing');
     expect(res.status).toBe(404);
-    expect(res.body.error).toMatch(/Log file not found/);
+    expect(res.body.error).toMatch(/日志文件不存在/);
   });
 
   it('returns 200 with lines, totalLines and hasMore on success', async () => {
@@ -206,7 +206,7 @@ describe('GET /api/logs/:executionId', () => {
 
     const res = await request(appNoAuth).get('/api/logs/exec-error');
     expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/Failed to read log file/);
+    expect(res.body.error).toMatch(/读取日志文件失败/);
   });
 
   // A3 反证有牙：真实出参必须被**生成的** LogsResponse 接受（字段改名/缺字段

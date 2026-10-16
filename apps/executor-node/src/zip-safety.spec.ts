@@ -550,7 +550,7 @@ describe('zip-safety: unsupported compression methods fail closed with an explic
       const safety = err as ZipSafetyError;
       expect(safety.violation).toBe('unsupported_method');
       // 错误信息必须可操作：点名方法号与"只支持 0/8"，否则上传者不知道该怎么重打包。
-      expect(safety.message).toContain(`method ${method}`);
+      expect(safety.message).toContain(`压缩方法 ${method}`);
       expect(safety.message).toContain('stored(0)');
       expect(safety.message).toContain('deflate(8)');
     }

@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { config } from './config';
 import { logger } from './logger';
+// ADR-017 阶段 3：指纹随机器面上报（服务端据此唯一定位本行）。
+import { getDeviceFingerprint } from './device-identity';
 // A6: 对账端点走 admin-client 的 get（自动带 per-executor 令牌 + failover），
 // 响应是 admin ResponseInterceptor 的 {code,message,data} 信封，需 unwrap。
 import { post, get } from './admin-client';
@@ -77,6 +79,22 @@ export interface CallbackRequest {
   executionId: string;
   status: 'success' | 'failed';
   executorAddress?: string;
+  /**
+   * ADR-017 阶段 3（协议 v6）：稳定安装指纹 `sha256(deviceId:installSalt)`，
+   * 与 register / heartbeat / offline / pull 上报的是**同一个**值（同源
+   * getDeviceFingerprint()），随**每一条**回调上报。
+   *
+   * 为什么回调面也必须要它：回调鉴权三条路径里，per-executor 令牌能解析到
+   * 「哪一行」，而 shared/legacy 令牌是全机队单一密钥、不绑定任何行；加之 pull
+   * 模式允许同址多行并存（ADR-017 §5），`executorAddress` 已不再能指代一行。
+   * 「共享令牌 + 同址碰撞」下 admin 无法把回调归到 dispatcher 实际派发的那一行
+   * （判据 = task_executions.executorId），该字段把行身份直接送上回调面。
+   *
+   * 可选且**采集失败时整个键不出现**（不是 null）：admin 逐级回落（凭据归属行
+   * →地址相等），旧执行器 / 采集失败 / 经 SDK 直接回调的任务代码都不带它，行为
+   * 与引入前逐字节一致——绝不因缺该字段拒收合法回调。
+   */
+  deviceFingerprint?: string;
   exitCode?: number;
   logs?: string;
   errorMessage?: string;
@@ -188,9 +206,29 @@ function getDeadLetterDir(): string {
   return dir;
 }
 
+/**
+ * 全部回调载荷的**唯一**盖章点：executorAddress + deviceFingerprint。
+ *
+ * 为什么收敛在这里而不是 13 个构造点各自拼：13 个调用点（routes/execute.ts、
+ * pull.ts、task-worker.ts）分属三条回调路径，逐个改必然漏改——漏改的那条在
+ * 「共享令牌 + 同址碰撞」下会被 admin 归错行（见 CallbackRequest.deviceFingerprint
+ * 注释）。pushCallback 是唯一入队口，盖章在此等价于覆盖全部出站回调。
+ *
+ * 指纹**缺省即省键**（`fingerprint ? {...} : {}`），不是 `deviceFingerprint: null`：
+ * 采集失败（探测不到 machine-id 且无可用网卡 MAC / 盐文件不可写）时
+ * getDeviceFingerprint() 返回 null，此时键必须整个不出现——admin 侧字段可空、
+ * 逐级回落，JSON 里显式 null 与「字段不存在」在 admin 的 DTO 校验与回落语义上
+ * 不同，前者会变成「v6 执行器上报了一个空指纹」而非「未上报」，行为也不再与
+ * 引入前逐字节一致（register/heartbeat 同款规则：`?? undefined`）。
+ *
+ * 反证有牙：callback.spec.ts「stamps deviceFingerprint onto every outbound
+ * callback body」用例删掉下面的展开即红。
+ */
 function withExecutorAddress(request: CallbackRequest): CallbackRequest {
+  const fingerprint = getDeviceFingerprint();
   return {
     executorAddress: config.executorAddressPublic || config.executorAddress,
+    ...(fingerprint ? { deviceFingerprint: fingerprint } : {}),
     ...request,
   };
 }
@@ -591,10 +629,15 @@ async function fetchTerminalStates(
   address: string,
   since: number,
 ): Promise<TerminalStatesPayload | null> {
+  const fingerprint = getDeviceFingerprint();
   const url =
     `/api/executors/${encodeURIComponent(address)}/terminal-states` +
     `?since=${encodeURIComponent(new Date(since).toISOString())}` +
-    `&limit=${DEAD_LETTER_RECONCILE_LIMIT}`;
+    `&limit=${DEAD_LETTER_RECONCILE_LIMIT}` +
+    // ADR-017 阶段 3：带上指纹，服务端据此唯一定位本行（pull 同地址多行并存）。
+    (fingerprint
+      ? `&deviceFingerprint=${encodeURIComponent(fingerprint)}`
+      : '');
   const response = await untilDeadline(
     // 包一层：get() 若同步抛错（mock / 早期失败）也要走 reject 而不是炸栈。
     Promise.resolve().then(() => get<Record<string, unknown>>(url)),

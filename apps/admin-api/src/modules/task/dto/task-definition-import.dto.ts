@@ -22,15 +22,13 @@ import { TASK_EXPORT_SCHEMA_VERSION } from "../task-definition.util";
 export class ImportTaskDto {
   @ApiProperty({
     enum: [TASK_EXPORT_SCHEMA_VERSION],
-    description: "Export schema version this API accepts",
     example: "1",
+    description: "本 API 接受的导出 schema 版本",
   })
   @IsIn([TASK_EXPORT_SCHEMA_VERSION])
   schemaVersion!: string;
 
-  @ApiPropertyOptional({
-    description: "exportedAt of the source export (informational)",
-  })
+  @ApiPropertyOptional({ description: "源导出物的 exportedAt（仅供参考）" })
   @IsISO8601()
   @IsOptional()
   exportedAt?: string;
@@ -38,9 +36,7 @@ export class ImportTaskDto {
   @ApiProperty({
     type: CreateTaskDto,
     description:
-      "Task definition. Secrets are never part of a definition transfer: " +
-      "a carried secrets key is ignored (with a warning) and the imported " +
-      "task starts without secrets.",
+      "任务定义。secrets 绝不参与定义传输：携带的 secrets 键会被忽略（并给出告警），导入后的任务不带 secrets 启动。",
   })
   @IsObject()
   @ValidateNested()
@@ -50,18 +46,17 @@ export class ImportTaskDto {
 
 /** POST /tasks/import 的响应体（envelope data）。 */
 export class TaskImportResultDto {
-  @ApiProperty({ description: "Newly created task id" })
+  @ApiProperty({ description: "新建任务的 id" })
   taskId!: string;
   @ApiProperty({
     description:
-      'Final task name (suffix " (imported)" / " (imported) N" appended on conflicts)',
+      '最终任务名（冲突时追加后缀 \\" (imported)\\" / \\" (imported) N\\"）',
   })
   name!: string;
   @ApiProperty({
     type: [String],
     description:
-      "Always contains the reconfigure-secrets hint (SEC-02 red line); " +
-      "may contain additional notes (e.g. an ignored secrets key).",
+      "总是包含「请重新配置 secrets」的提示（SEC-02 红线）；可能包含其它说明（例如被忽略的 secrets 键）。",
   })
   warnings!: string[];
 }

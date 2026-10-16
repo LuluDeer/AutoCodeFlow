@@ -161,7 +161,7 @@ describe("AuthController", () => {
       const limit = Reflect.getMetadata(LIMIT_KEY, handler) as number;
       expect(op).toBeDefined();
       expect(typeof limit).toBe("number");
-      expect(op.description).toContain(`Max ${limit} attempts per minute`);
+      expect(op.description).toContain(`每分钟最多 ${limit} 次尝试`);
       // 回归守卫：旧的硬编码 5/min 文案不得复现
       expect(op.description).not.toContain("Max5");
     });

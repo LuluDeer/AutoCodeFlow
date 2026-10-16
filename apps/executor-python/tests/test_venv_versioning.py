@@ -280,7 +280,7 @@ def test_ensure_venv_rejects_malformed_version_before_any_subprocess(
 
     monkeypatch.setattr(execute_module, '_ensure_interpreter', fake_ensure_interpreter)
 
-    with pytest.raises(RuntimeError, match='Invalid runtimeVersion'):
+    with pytest.raises(RuntimeError, match='无效的 runtimeVersion'):
         asyncio.run(execute_module.ensure_venv(
             tmp_path / '.venvs' / 'bad', [], python_version=malformed))
 
@@ -426,7 +426,7 @@ def test_ensure_venv_timeout_still_removes_half_built_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
     monkeypatch.setattr(execute_module, 'UV_VENV_TIMEOUT_SECONDS', 0.05)
 
-    with pytest.raises(RuntimeError, match='timed out'):
+    with pytest.raises(RuntimeError, match='uv venv 超时'):
         asyncio.run(execute_module.ensure_venv(venv_dir, []))
     assert proc.killed
     assert not venv_dir.exists()
@@ -451,7 +451,7 @@ def test_ensure_venv_timeout_rollback_also_applies_to_the_versioned_path(monkeyp
     monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
     monkeypatch.setattr(execute_module, 'UV_VENV_TIMEOUT_SECONDS', 0.05)
 
-    with pytest.raises(RuntimeError, match='timed out'):
+    with pytest.raises(RuntimeError, match='uv venv 超时'):
         asyncio.run(execute_module.ensure_venv(venv_dir, [], python_version='3.7'))
     assert proc.killed
     assert not venv_dir.exists()

@@ -9,6 +9,11 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
+// API-I18N：Swagger UI 的中/英语言开关（英文来自 openapi.json 的 x-i18n-en）
+import {
+  buildSwaggerI18nScript,
+  collectEntries,
+} from "./common/i18n/swagger-i18n-toggle";
 import { ConfigService } from "@nestjs/config";
 import helmet from "helmet";
 import compression from "compression";
@@ -458,6 +463,12 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
     });
 
     // SEC-06: only expose Swagger UI in non-production environments
+    //
+    // API-I18N：把「中/英」语言开关注入文档页。
+    // 英文由 scripts/api-i18n/inject-openapi-en.mjs 以 `x-i18n-en` 扩展键写入
+    // openapi.json（说明见该脚本头注）。这里只做**展示层**切换：不动
+    // description 本身，故"复制 curl / 下载 JSON"拿到的仍是原始文档。
+    const i18nEntries = collectEntries(document);
     SwaggerModule.setup("api/docs", app, document, {
       swaggerOptions: {
         persistAuthorization: true,
@@ -466,6 +477,10 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
         defaultModelsExpandDepth: -1,
       },
       customSiteTitle: "AutoFlow Admin API",
+      customJsStr:
+        i18nEntries.length > 0
+          ? buildSwaggerI18nScript(i18nEntries)
+          : undefined,
     });
   }
 

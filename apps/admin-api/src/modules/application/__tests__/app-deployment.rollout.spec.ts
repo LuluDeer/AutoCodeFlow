@@ -735,7 +735,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       versionRepo.findOne.mockResolvedValue(null);
       await expect(
         service.upgradeAllWithRollout("app-1", null, undefined, "9.9.9"),
-      ).rejects.toThrow('Version "9.9.9" not found for this application');
+      ).rejects.toThrow('该应用下未找到版本 "9.9.9"');
       expect(appService.update).not.toHaveBeenCalled();
     });
 
@@ -746,7 +746,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       });
       await expect(
         service.upgradeAllWithRollout("app-1", null, undefined, "1.9.0"),
-      ).rejects.toThrow("Only released application versions");
+      ).rejects.toThrow("只有已发布的应用版本");
       expect(appService.update).not.toHaveBeenCalled();
     });
 

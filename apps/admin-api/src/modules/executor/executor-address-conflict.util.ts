@@ -1,7 +1,8 @@
 /**
  * ARCH-34 P0（生产事故 2026-09-23）：`address` 冲突检测的单一事实源。
  *
- * 背景：`executors` 表的唯一约束建在 `address` 上（`uq_executors_address`），
+ * 背景：`executors` 表的唯一约束建在 `address` 上（`uq_executors_address`，
+ * ADR-017 阶段 3 起收窄为 partial——仅 push 模式行唯一；pull 允许同地址各自成行），
  * 而 `address` 是执行器**自报**的（`EXECUTOR_ADDRESS_PUBLIC || EXECUTOR_ADDRESS`），
  * 桌面端默认取局域网 IP + 8002（`pickPublicAddress` 的网卡兜底）。两台不同内网
  * 的机器只要网段相同（`192.168.1.100:8002` 极常见）就会命中**同一行**，后果：

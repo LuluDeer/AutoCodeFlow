@@ -436,9 +436,7 @@ describe("AppDeploymentService", () => {
       ).rejects.toMatchObject({
         constructor: ConflictException,
         status: 409,
-        message: expect.stringContaining(
-          "already has an in-progress deployment",
-        ),
+        message: expect.stringContaining("已有进行中的部署"),
       });
     });
 
@@ -1116,7 +1114,7 @@ describe("AppDeploymentService", () => {
       await (service as any).pushDeployToExecutor(deployment, mockApp);
 
       expect(deployment.status).toBe(DeploymentStatus.FAILED);
-      expect(deployment.statusMessage).toMatch(/refused|resolves/i);
+      expect(deployment.statusMessage).toMatch(/已拒绝对外请求/);
       expect(mockAxiosPost).not.toHaveBeenCalled();
       expect(versionRepo.save).not.toHaveBeenCalled();
     });
@@ -1175,7 +1173,9 @@ describe("AppDeploymentService", () => {
       const result = await service.stop("deploy-1");
 
       expect(mockAxiosPost).not.toHaveBeenCalled();
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("refused"));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("已拒绝对外请求"),
+      );
       // stop semantics preserved: the row still transitions to STOPPED.
       expect(result.status).toBe(DeploymentStatus.STOPPED);
       warnSpy.mockRestore();

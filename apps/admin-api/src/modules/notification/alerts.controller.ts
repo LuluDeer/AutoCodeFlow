@@ -1,15 +1,4 @@
-import {
-  BadGatewayException,
-  BadRequestException,
-  Body,
-  Controller,
-  Headers,
-  Logger,
-  Post,
-  Req,
-  ServiceUnavailableException,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { Body, Controller, Headers, Logger, Post, Req } from "@nestjs/common";
 import {
   ApiBody,
   ApiOperation,
@@ -33,6 +22,11 @@ import {
 import { AlertmanagerWebhookDto } from "./dto/alertmanager-webhook.dto";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { AlertsWebhookResponseDto } from "../auth/dto/misc-response.dto";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * OBS-02: Alertmanager webhook 入站路由——把 Grafana/Alertmanager 的告警
@@ -76,9 +70,7 @@ export class AlertsController {
       this.logger.error(
         "ALERT_WEBHOOK_SECRET is not configured — rejecting alert webhook (secure default)",
       );
-      throw new ServiceUnavailableException(
-        "Alert webhook is disabled: ALERT_WEBHOOK_SECRET is not configured",
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_ALERT_WEBHOOK_NOT_CONFIGURED);
     }
     return secret;
   }
@@ -94,9 +86,6 @@ export class AlertsController {
     timestamp: string | undefined,
     secret: string,
   ): void {
-    const authFail = () =>
-      new UnauthorizedException("Alert webhook authentication failed");
-
     const failure = verifyWebhookSignature(
       { rawBody, signature, timestamp },
       secret,
@@ -105,7 +94,7 @@ export class AlertsController {
       this.logger.warn(
         `Alert webhook: signature verification failed (${failure})`,
       );
-      throw authFail();
+      throw new AppError(ErrorCode.NOTIFICATION_ALERT_AUTH_FAILED);
     }
   }
 
@@ -128,7 +117,7 @@ export class AlertsController {
   })
   @Post("webhook")
   @ApiOperation({
-    summary: "Alertmanager v2 webhook receiver",
+    summary: "Alertmanager v2 Webhook 接收端",
     description:
       "入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 " +
       "X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。" +
@@ -136,7 +125,7 @@ export class AlertsController {
   })
   @ApiBody({
     type: AlertmanagerWebhookDto,
-    description: "Alertmanager v2 webhook body",
+    description: "Alertmanager v2 Webhook 请求体",
   })
   @ApiCreatedResponse({ type: AlertsWebhookResponseDto })
   async webhook(
@@ -154,9 +143,7 @@ export class AlertsController {
     // 成本可忽略），再带上 runbook 做最终映射。
     const probe = mapAlertmanagerPayload(payload);
     if (!probe) {
-      throw new BadRequestException(
-        "Alertmanager payload has no alerts array (or it is empty)",
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_ALERT_PAYLOAD_EMPTY);
     }
     let taskRunbook: string | null = null;
     if (probe.taskId) {
@@ -177,7 +164,7 @@ export class AlertsController {
     const mapped = mapAlertmanagerPayload(payload, { taskRunbook });
     if (!mapped) {
       // 理论不可达（probe 已挡空数组），防御性兜底保持类型收窄。
-      throw new BadRequestException("Alertmanager payload mapped to nothing");
+      throw new AppError(ErrorCode.NOTIFICATION_ALERT_PAYLOAD_UNMAPPED);
     }
 
     const notificationPayload: NotificationPayload = {
@@ -198,8 +185,10 @@ export class AlertsController {
       this.logger.error(
         `Alert webhook: notification delivered to 0 channels: ${JSON.stringify(results)}`,
       );
-      throw new BadGatewayException({
-        message: "Alert received but not delivered to any notification channel",
+      // LANG-ERR-01：逐渠道明细经 `params` 透出。旧实现把它塞在异常响应对象
+      // 的 `results` 键里，而全局 filter 只取 `message`、其余键被丢弃——这份
+      // 排障信息**从未真正到达调用方**；走 params 是它第一次真的可见。
+      throw new AppError(ErrorCode.NOTIFICATION_ALERT_NOT_DELIVERED, {
         results,
       });
     }

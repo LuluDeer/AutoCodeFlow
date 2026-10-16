@@ -90,6 +90,13 @@ export interface EnumFieldRule {
   key: string;
   /** 合法值（小写比较，输入先 trim + 小写化）。 */
   values: readonly string[];
+  /**
+   * 非法值归一化为哪个值。缺省 `''`（= "不覆盖，跟随预设"，Agent 档位轴的
+   * 既有语义）；**封闭且有默认值的枚举必须显式给出**（如 uiLanguage → 'en'），
+   * 否则非法值会被归一化成 `''`，而 `''` 不在该枚举的合法集里——等于把一个
+   * 坏值换成另一个坏值，下游只能靠各自的兜底逻辑猜。
+   */
+  fallback?: string;
 }
 
 export const ENUM_FIELDS: readonly EnumFieldRule[] = [
@@ -101,6 +108,10 @@ export const ENUM_FIELDS: readonly EnumFieldRule[] = [
   { key: 'agentSandboxBackend', values: ['none', 'process', 'container', 'vm'] },
   { key: 'agentHostAccess', values: ['none', 'app-scoped', 'session'] },
   { key: 'agentTaskExecution', values: ['deploy-only', 'isolated-runner'] },
+  // i18n-DESK-01：界面语言（zh/en/auto）。与 Agent 档位不同的是它**有明确
+  // 默认值**：非法值（手改 config.json 写成 'fr' / '' / 数字）必须归一化成
+  // 'en'，而不是 ''——'' 不是合法语言，判定层还得再猜一次；且产品要求默认英文。
+  { key: 'uiLanguage', values: ['zh', 'en', 'auto'], fallback: 'en' },
 ];
 
 /** P7a：字符串数组成员（白名单清单）——非数组清空、非字符串条目剔除、条数封顶。 */
@@ -162,19 +173,21 @@ export function sanitizeConfigInput(
     }
   }
 
-  // P7a（ADR-022）：Agent 权限档位——封闭枚举，非法值归一化为空串（"不覆盖"）。
+  // P7a（ADR-022）：Agent 权限档位——封闭枚举，非法值归一化为该规则的
+  // fallback（Agent 各轴 = 空串"不覆盖"；uiLanguage = 'en' 默认英文）。
   // **不删除该键**：删键意味着"保留已存值"，而一个拼错的值若因此留在盘上，
-  // 用户看到的仍是旧值、界面无法反映"我刚选的那个没生效"。写成空串则让
-  // 该轴明确跟随预设——语义确定、可解释、且不会再有坏值残留。
+  // 用户看到的仍是旧值、界面无法反映"我刚选的那个没生效"。写成 fallback 则让
+  // 该轴明确落到一个确定的合法值——语义确定、可解释、且不会再有坏值残留。
   for (const rule of ENUM_FIELDS) {
+    const fallback = rule.fallback ?? '';
     if (!(rule.key in out)) continue;
     const v = out[rule.key];
     if (typeof v !== 'string') {
-      out[rule.key] = '';
+      out[rule.key] = fallback;
       continue;
     }
     const normalized = v.trim().toLowerCase();
-    out[rule.key] = rule.values.includes(normalized) ? normalized : '';
+    out[rule.key] = rule.values.includes(normalized) ? normalized : fallback;
   }
 
   // P7a：白名清单——非数组一律清空（不得把对象/标量带进 store）；

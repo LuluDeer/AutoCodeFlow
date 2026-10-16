@@ -1247,7 +1247,7 @@ def test_pin_mismatch_marks_corrupt_and_removes(fake_uv, pool, monkeypatch):
     with pytest.raises(interpreters.InterpreterUnavailable) as ei:
         interpreters.ensure_version('3.12', timeout=30)
     assert ei.value.reason == 'corrupt'
-    assert 'does not match' in (ei.value.detail or '')
+    assert '不匹配' in (ei.value.detail or '')
     assert not any(p.name.startswith('cpython-3.12') for p in pool.iterdir()), \
         'pin 不匹配的产物必须被清出池子，不能留待下一次 resolve 命中'
 

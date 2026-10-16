@@ -33,6 +33,13 @@ export class TrayManager {
   onOpenLogFolder: (() => Promise<void> | void) | null = null;
   onToggleAutoLaunch: ((enable: boolean) => Promise<void>) | null = null;
   getAutoLaunch: (() => boolean) | null = null;
+  /**
+   * i18n-DESK-01：已落盘的界面语言设置（uiLanguage）读取回调，由 index.ts 注入
+   * （同 getAutoLaunch 的注入方式——tray.ts 不能 import index.ts 的 configStore
+   * 单例，那是循环引用；也不该自己 new 一个 ConfigStore，那会读第二份存储句柄）。
+   * 返回 undefined 时回落系统语言自动判定（同改动前行为）。
+   */
+  getUiLanguage: (() => string | undefined) | null = null;
 
   // V4 审计 P3：启停项在飞互斥——托盘菜单可快速连点，而 start/stop 是秒级
   // 异步动作（spawn/kill 子进程 + 40s 停机超时链），重复触发会叠加竞态
@@ -63,9 +70,14 @@ export class TrayManager {
     }
   }
 
-  /** 当前 locale（B-7②：en* 英文，其余中文；重建菜单时实时取）。 */
+  /**
+   * 当前 locale。i18n-DESK-01：**先看用户在设置页选的语言**（uiLanguage，
+   * index.ts 注入的读取回调），'auto'/未设置时才回落 app.getLocale() 的
+   * `en*` 判定。每次 rebuildMenu / updateTooltip 都重新判定——保存语言设置后
+   * 菜单当场切换，托盘不需要重启应用。
+   */
   private locale(): TrayLocale {
-    return resolveTrayLocale(() => app.getLocale());
+    return resolveTrayLocale(() => app.getLocale(), this.getUiLanguage?.());
   }
 
   /** 当前 locale 对应的文案表（同一轮渲染共用一个 locale，杜绝混语）。 */
@@ -202,6 +214,10 @@ export class TrayManager {
     ];
 
     this.tray?.setContextMenu(Menu.buildFromTemplate(template));
+    // i18n-DESK-01：语言设置变更后 finalizeConfigSave 只调 rebuildMenu——tooltip
+    // 必须跟着一起换语言，否则会出现「菜单已是英文、悬停提示仍是中文」的混语
+    // 界面（locale 是按当前设置实时判定的，两者必须同进同出）。
+    this.updateTooltip();
   }
 
   private getIcon(status: ExecutorStatus): Electron.NativeImage {

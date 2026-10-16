@@ -472,5 +472,31 @@
 #
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0。bundle 4180kB。
 #   source-digest 46 个输入文件（新增 param-env.ts）。
-source-digest: 8071b1dc6360a540d074b2cab75213567a58e4ec5a3de580da27d5dbf687c4f7
-222b2e445b106d6410ef88c2d1a6c6ff0aed22e4518341a6c4fbec1e58c42243  index.js
+#
+# 2026-10-15（LANG-ZH-01：**面向用户文字全量中文化**，用户直接指令
+#   「平台、api 所有面全部中文化，因为面向用户的」）：
+#   · `apps/executor-node/src` 下 **18 个文件**的用户可见文案中文化——`throw`
+#     消息、路由错误响应（这些经回调 errorMessage 直接显示在中台执行详情/
+#     失败原因里）。执行器面英文从 **72 处降到 0**。
+#   · **刻意保持英文的机器标识符**（译了会破坏语义，勿"顺手"补译）：
+#     `ZipGuardViolation` / `ZipSafetyViolation` 全部码值（`unparseable` /
+#     `too_many_entries` / `zip_slip` / `bad_archive` …，代码以
+#     `err.violation === "unparseable"` 比较）、`failureReason` 枚举值、
+#     `InterpreterUnavailableReason` 值（`uv_missing` / `corrupt` …）。
+#   · ⚠️ **日志截断标记同样保持英文**——`task.service.ts` 的
+#     `LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i` 靠它判定
+#     「日志是否被截断」，改标记会让中台**静默失去全量日志回捞**：
+#     `[logs truncated, original length N chars]`、`[logs truncated in memory, …]`、
+#     `[error message truncated]`、`[file log truncated at N bytes]`。
+#     唯一例外：`routes/deploy.ts` 纯展示用的 `…[已截断]…`（无代码解析）。
+#   · **配套语义改动（必需）**：`routes/execute.ts::prepareFailureReason()` 的
+#     5 条规则各加**中文分支**，英文分支全部保留——中文化后若不同步该函数，
+#     失败归因会静默降级成 `unknown`（与中台侧 `task.processor` 失败分类链
+#     的双语改造互为对照，两侧都必须双语）。同时保留 `packageUrl` /
+#     `TASK_SANDBOX` / `bwrap` / `pip install` / `npm install` / `runtime "python"`
+#     等分类骨架词，故中台用英文 fixture 做分类断言的既有用例仍通过。
+#   · 桌面端内嵌执行器若漏打，客户端侧报给中台的失败文案仍是英文
+#     （与「平台全中文」的产品要求不符），故按 ADR-005 同 commit 重打。
+#   回填环境：本机(Windows) node 24 / ncc 0.45.0。source-digest 46 个输入文件。
+source-digest: 40760a533b30d13d7186a6916c82eeb331365116e0337991759f4a959bf2326e
+e335aabc5d7e90a521a303aac9b268be0aafa89a82686abb41c35533ee122eee  index.js

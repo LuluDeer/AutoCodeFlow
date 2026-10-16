@@ -16,8 +16,8 @@ import { PageQueryDto } from "../../../common/dto/pagination.dto";
  */
 export class ListUsersDto extends PageQueryDto {
   @ApiPropertyOptional({
-    description: "Fuzzy search by username or email (case-insensitive)",
     maxLength: 100,
+    description: "按用户名或邮箱模糊搜索（不区分大小写）",
   })
   @IsOptional()
   // 去空白：query 串里首尾空格几乎总是误触，trim 后空串在 service 层按

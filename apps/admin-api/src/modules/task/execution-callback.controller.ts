@@ -1,12 +1,10 @@
 import {
-  BadRequestException,
   Controller,
   Post,
   Body,
   Headers,
   Param,
   ParseArrayPipe,
-  UnauthorizedException,
   Optional,
   Inject,
   forwardRef,
@@ -21,6 +19,8 @@ import {
 } from "@nestjs/swagger";
 import { ConfigService } from "@nestjs/config";
 import { Public } from "../../common/decorators/public.decorator";
+// LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
+import { AppError } from "../../common/errors/app-error";
 import { TaskService } from "./task.service";
 import { SystemConfigService } from "../config/config.service";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
@@ -102,21 +102,20 @@ export class ExecutionCallbackController {
   // F-5: relaxed-but-finite rate limit (see CALLBACK_THROTTLE above).
   @Throttle(CALLBACK_THROTTLE)
   @ApiOperation({
-    summary: "Execution result callback",
     description:
-      "Called by executor (or task code holding a per-execution AUTOFLOW_CALLBACK_TOKEN) after task completion to report results. " +
-      "Accepts either the executor shared/per-address token or a per-execution `v1.` HMAC token bound to the batch's executionId (N23).",
+      "任务完成后由执行器（或持有本次执行 AUTOFLOW_CALLBACK_TOKEN 的任务代码）调用，用于上报执行结果。可使用执行器共享令牌/按地址令牌，或绑定到该批次 executionId 的本次执行 `v1.` HMAC 令牌（N23）。",
+    summary: "执行结果回调",
   })
   @ApiOkResponse({
     type: [CallbackItemResultDto],
     description:
       "逐项受理结果（{executionId, success, error?}）；HTTP 200 由 @HttpCode 决定",
   })
-  @ApiResponse({ status: 400, description: "Invalid request body" })
-  @ApiResponse({ status: 401, description: "Invalid shared token" })
+  @ApiResponse({ status: 400, description: "请求体非法" })
+  @ApiResponse({ status: 401, description: "共享令牌无效" })
   @ApiBody({
     type: [CallbackItemDto],
-    description: "Array of execution callback items (max 100)",
+    description: "执行回调条目数组（最多 100 条）",
   })
   async callback(
     @Headers("authorization") auth: string | undefined,
@@ -125,16 +124,16 @@ export class ExecutionCallbackController {
     callbacks: CallbackItemDto[],
   ) {
     if (callbacks.length > 100) {
-      throw new BadRequestException("Callback batch size cannot exceed 100");
+      throw new AppError("EXECUTION_CALLBACK_BATCH_TOO_LARGE");
     }
     if (callbacks.length === 0) {
-      throw new BadRequestException("Callback batch is empty");
+      throw new AppError("EXECUTION_CALLBACK_BATCH_EMPTY");
     }
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
     if (!token) {
       // N32: 完全没带 token —— 与"带了但校验失败"区分开。
       this.callbackMetrics.recordAuthResult("missing_token");
-      throw new UnauthorizedException("Missing executor token");
+      throw new AppError("EXECUTION_CALLBACK_TOKEN_MISSING");
     }
 
     // N23: per-execution callback token — minted by executor-node (HMAC
@@ -170,19 +169,63 @@ export class ExecutionCallbackController {
     // token against the executor's stored hash and additionally ensure
     // every claimed executorAddress actually matches an execution row
     // (the service layer enforces the latter with executionAddress guards).
+    //
+    // ADR-017 阶段 3（复查补口）：鉴权时顺带解析**所持凭据属于哪一行**
+    // （`credentialExecutorIdByAddress`），供 service 层做行身份判定。为什么
+    // 在这里算：令牌是本请求的输入，凭据归属是**服务端推导**的事实——绝不
+    // 能经 DTO 字段让调用方自报（那等于把不可伪造的判据交给伪造方）。
+    //
+    // ADR-017 阶段 3（协议 v6，方案 C 补口）：**行身份三级阶梯**——回调载荷
+    // 现可携带 `deviceFingerprint`（与 register/heartbeat 同一稳定安装身份），
+    // 它正好补上「共享令牌不绑定任何行」这个缺口：
+    //   ① 指纹（v6 执行器上报的**真实**安装身份，服务端查库校验存在性）；
+    //   ② 凭据归属行（presented token 的 bcrypt 命中行；per-executor 令牌专有）；
+    //   ③ 地址（唯一时；legacy 兜底）。
+    // 三级都拿不到 → 回落既有的地址相等判据（行为与引入前一致）。
+    //
+    // 为什么指纹不能单独作数（如实声明安全边界）：指纹是**自报值**，且随
+    // ExecutorResponseDto 对任何登录用户可见（与 executorAddress 同等可探知）
+    // ——故它不提升对抗**已持共享令牌**攻击者的强度（那类攻击者的强度上限本就
+    // 由「共享令牌是全机队单一密钥」决定，是独立议题）。它解决的是**诚实执行器
+    // 的归属**：同址多行时第二台如实上报自己的指纹，admin 据此把它与派发目标
+    // 正确区分开，而不是靠「地址碰巧相等」误判成功。
     const seenAddresses = new Set<string>();
+    const credentialExecutorIdByAddress = new Map<string, string | null>();
+    // 指纹 → 行 id，**按 executionId 分键**（见下方为何不能按 address）。
+    const fingerprintExecutorIdByExecution = new Map<string, string | null>();
     for (const item of callbacks) {
       const addr = item.executorAddress?.trim();
       if (!addr) {
         // N32: legacy 路径缺 executorAddress —— 归为 bad_address。
         this.callbackMetrics.recordAuthResult("bad_address");
-        throw new UnauthorizedException(
-          "executorAddress is required on every callback item",
-        );
+        throw new AppError("EXECUTION_CALLBACK_ADDRESS_REQUIRED");
       }
+      // ADR-017 阶段 3（协议 v6）：**行身份第一级**——回调自报的指纹经服务端
+      // 规范化后查库解析到行。未上报/形态非法/查不到行 → null（视为未上报），
+      // 由下一级（凭据归属行）与地址判据承接。
+      //
+      // **按 executionId 分键，而不是按 address**（这一点是刻意的）：同一批次
+      // 里可以有两个同址但**不同行**的执行（pull 模式同址多行并存，ADR-017
+      // §5）——它们各自上报自己的指纹。若按 address 分键（且落在下面的
+      // `seenAddresses` 去重守卫之后），只会有第一条被解析，第二条会被拿
+      // 第一条的行去做判定 → **误拒合法回调**。凭据归属行按 address 分键是
+      // 对的（凭据本就是「该地址上的哪一行」），指纹不是。
+      //
+      // 注意这里只做「规范化 + 查库」两件事，**不做校验**：指纹不是凭据，
+      // 它的价值是给诚实执行器一条可精确归属的通道，而不是提高对抗强度
+      //（该字段是自报值，见上方大段注释的安全边界声明）。
+      fingerprintExecutorIdByExecution.set(
+        item.executionId,
+        await this.executorService.resolveExecutorIdByFingerprint(
+          item.deviceFingerprint,
+        ),
+      );
       if (seenAddresses.has(addr)) continue;
       seenAddresses.add(addr);
-      const isValid = await this.executorService.validateTokenByAddress(
+      // ADR-017 阶段 3：回调 DTO 不带指纹（执行行只记地址），故用「同址任一行
+      // 匹配即通过」——同址多行并存时按第一行取会误拒合法执行器（401 → 执行
+      // 卡在 RUNNING 直到 stale sweep）。判定强度不变：每个候选都走完整比对。
+      const isValid = await this.executorService.validateTokenByAddressAnyRow(
         addr,
         token,
       );
@@ -204,11 +247,17 @@ export class ExecutionCallbackController {
           }
         } else {
           this.callbackMetrics.recordAuthResult("legacy_shared_invalid");
-          throw new UnauthorizedException(
-            `Invalid executor token for address ${addr}`,
-          );
+          throw new AppError("EXECUTION_CALLBACK_ADDRESS_TOKEN_INVALID", {
+            address: addr,
+          });
         }
       }
+      // ADR-017 阶段 3：凭据归属行 = 该地址上 tokenHash 匹配的那一行。
+      // 共享令牌路径返回 null（共享令牌不绑定任何行）→ service 回落地址判据。
+      credentialExecutorIdByAddress.set(
+        addr,
+        await this.executorService.resolveCredentialExecutorId(addr, token),
+      );
     }
     // N32: legacy 路径认证通过。
     this.callbackMetrics.recordAuthResult("ok");
@@ -218,7 +267,11 @@ export class ExecutionCallbackController {
       items: callbacks.length,
     });
     try {
-      const results = await this.taskService.handleCallback(callbacks);
+      const results = await this.taskService.handleCallback(
+        callbacks,
+        credentialExecutorIdByAddress,
+        fingerprintExecutorIdByExecution,
+      );
       endSpan?.();
       return { results };
     } catch (err: unknown) {
@@ -266,16 +319,12 @@ export class ExecutionCallbackController {
       this.callbackMetrics.recordAuthResult(
         this.isV1TokenExpired(token) ? "v1_expired" : "v1_bad_signature",
       );
-      throw new UnauthorizedException(
-        "Invalid or expired execution callback token",
-      );
+      throw new AppError("EXECUTION_CALLBACK_TOKEN_INVALID");
     }
     for (const item of callbacks) {
       if (item.executionId !== claims.executionId) {
         this.callbackMetrics.recordAuthResult("v1_binding_mismatch");
-        throw new UnauthorizedException(
-          "Execution callback token is not valid for this execution",
-        );
+        throw new AppError("EXECUTION_CALLBACK_TOKEN_WRONG_EXECUTION");
       }
     }
     return claims;
@@ -314,10 +363,15 @@ export class ExecutionCallbackController {
       const addr = item.executorAddress?.trim();
       if (!addr || seen.has(addr)) continue;
       seen.add(addr);
-      const secret =
-        await this.executorService.getCallbackSecretByAddress(addr);
-      if (!secret) continue;
-      const claims = verifyExecutionCallbackToken(token, [secret]);
+      // ADR-017 阶段 3：取该地址上**全部**行的 tokenHash 作候选——pull 模式
+      // 允许同地址多行并存（ADR-017 §5），而执行行只记地址不记行身份。按地址
+      // 取「第一行」会拿到别人的哈希 → 合法执行器验签失败 → 401 → 执行卡在
+      // RUNNING 直到 stale sweep。逐个试不降低安全性（每个候选仍须通过完整
+      // 签名校验），匹配即证明归属。
+      const secrets =
+        await this.executorService.getCallbackSecretCandidatesByAddress(addr);
+      if (secrets.length === 0) continue;
+      const claims = verifyExecutionCallbackToken(token, secrets);
       if (claims) return claims;
     }
     return null;
@@ -343,21 +397,17 @@ export class ExecutionCallbackController {
   @Public()
   @Throttle(LOG_STREAM_THROTTLE)
   @ApiOperation({
-    summary: "Real-time execution log streaming",
     description:
-      "Called by the executor while a task is still running to stream log lines " +
-      "incrementally. Accepts a chunk of lines with its 0-based start line number; " +
-      "re-sending the same range is idempotent. Uses the same authentication as the " +
-      "callback endpoint (per-execution `v1.` HMAC token, per-address token, or the " +
-      "shared executor token).",
+      "任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权方式与回调接口相同（本次执行 `v1.` HMAC 令牌、按地址令牌或执行器共享令牌）。",
+    summary: "实时执行日志流式上报",
   })
   @ApiOkResponse({ type: LogChunkAckDto, description: "{count} 落账行数" })
-  @ApiResponse({ status: 400, description: "Invalid request body" })
-  @ApiResponse({ status: 401, description: "Invalid executor token" })
-  @ApiResponse({ status: 404, description: "Execution not found" })
+  @ApiResponse({ status: 400, description: "请求体非法" })
+  @ApiResponse({ status: 401, description: "执行器令牌无效" })
+  @ApiResponse({ status: 404, description: "执行记录不存在" })
   @ApiBody({
     type: AppendLogChunkDto,
-    description: "Log chunk with 0-based line offset and the lines themselves",
+    description: "带 0 起始行偏移的日志块及其内容行",
   })
   async appendLogChunk(
     @Param("id") executionId: string,
@@ -394,7 +444,7 @@ export class ExecutionCallbackController {
     if (!token) {
       // N32: 完全没带 token —— 与"带了但校验失败"区分开。
       this.callbackMetrics.recordAuthResult("missing_token");
-      throw new UnauthorizedException("Missing executor token");
+      throw new AppError("EXECUTION_CALLBACK_TOKEN_MISSING");
     }
 
     if (token.startsWith(EXECUTION_CALLBACK_TOKEN_PREFIX)) {
@@ -405,10 +455,14 @@ export class ExecutionCallbackController {
         const address =
           await this.taskService.findExecutionAddress(executionId);
         if (address) {
-          const secret =
-            await this.executorService.getCallbackSecretByAddress(address);
-          if (secret) {
-            claims = verifyExecutionCallbackToken(token, [secret]);
+          // ADR-017 阶段 3：该地址上全部行的哈希都作候选（同址多行并存时按
+          // 第一行取会验错密钥 → 合法日志流 401）。
+          const secrets =
+            await this.executorService.getCallbackSecretCandidatesByAddress(
+              address,
+            );
+          if (secrets.length > 0) {
+            claims = verifyExecutionCallbackToken(token, secrets);
           }
         }
       }
@@ -416,9 +470,7 @@ export class ExecutionCallbackController {
         this.callbackMetrics.recordAuthResult(
           this.isV1TokenExpired(token) ? "v1_expired" : "v1_bad_signature",
         );
-        throw new UnauthorizedException(
-          "Invalid or expired execution callback token",
-        );
+        throw new AppError("EXECUTION_CALLBACK_TOKEN_INVALID");
       }
       this.callbackMetrics.recordAuthResult("ok");
       return;
@@ -428,11 +480,10 @@ export class ExecutionCallbackController {
     const address = await this.taskService.findExecutionAddress(executionId);
     if (!address) {
       this.callbackMetrics.recordAuthResult("bad_address");
-      throw new UnauthorizedException(
-        "Executor address not found for execution",
-      );
+      throw new AppError("EXECUTION_CALLBACK_ADDRESS_NOT_FOUND");
     }
-    const isValid = await this.executorService.validateTokenByAddress(
+    // ADR-017 阶段 3：同址任一行匹配即通过（理由见上文与 service 头注）。
+    const isValid = await this.executorService.validateTokenByAddressAnyRow(
       address,
       token,
     );

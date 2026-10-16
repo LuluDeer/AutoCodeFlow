@@ -1,9 +1,8 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  BadRequestException,
-  Optional,
-} from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -69,9 +68,7 @@ export class AuthService {
       const minutesLeft = Math.ceil(
         (user.lockedUntil.getTime() - Date.now()) / 60_000,
       );
-      throw new UnauthorizedException(
-        `Account locked. Try again in ${minutesLeft} minute(s).`,
-      );
+      throw new AppError("LOGIN_LOCKED", { minutes: minutesLeft });
     }
 
     // R10: the lock window has expired — atomically reset the fail counter
@@ -101,12 +98,12 @@ export class AuthService {
           lockMinutes: AuthService.LOCK_MINUTES,
         });
       }
-      throw new UnauthorizedException("Invalid credentials");
+      throw new AppError("INVALID_USERNAME_OR_PASSWORD");
     }
 
     // SEC-05: reject if account is disabled
     if (!user.isActive) {
-      throw new UnauthorizedException("Account is disabled");
+      throw new AppError("ACCOUNT_INACTIVE");
     }
 
     // SEC-05: successful login — reset failure counter
@@ -142,9 +139,7 @@ export class AuthService {
       const minutesLeft = Math.ceil(
         (user.lockedUntil.getTime() - Date.now()) / 60_000,
       );
-      throw new UnauthorizedException(
-        `Account locked. Try again in ${minutesLeft} minute(s).`,
-      );
+      throw new AppError("LOGIN_LOCKED", { minutes: minutesLeft });
     }
 
     // R-05（DEEP_REVIEW 0ef3bbe）: align with login() — an expired lock must be
@@ -169,16 +164,16 @@ export class AuthService {
           lockMinutes: AuthService.LOCK_MINUTES,
         });
       }
-      throw new UnauthorizedException("Invalid credentials");
+      throw new AppError("INVALID_USERNAME_OR_PASSWORD");
     }
 
     if (!user.isActive) {
-      throw new UnauthorizedException("Account is disabled");
+      throw new AppError("ACCOUNT_INACTIVE");
     }
 
     // Only meaningful for users who actually completed TOTP opt-in
     if (!user.totpEnabled || !user.totpSecret) {
-      throw new UnauthorizedException("TOTP is not enabled for this account");
+      throw new AppError("TOTP_NOT_ENABLED");
     }
 
     const check = totpVerify(user.totpSecret, dto.code, this.clock());
@@ -187,7 +182,7 @@ export class AuthService {
         maxFail: AuthService.MAX_FAIL,
         lockMinutes: AuthService.LOCK_MINUTES,
       });
-      throw new UnauthorizedException("Invalid TOTP code");
+      throw new AppError("INVALID_TOTP_CODE");
     }
 
     // NETOPT-5⑤: TOTP 重放防护。totpVerify 命中的 counter 此前零消费——
@@ -204,7 +199,7 @@ export class AuthService {
         maxFail: AuthService.MAX_FAIL,
         lockMinutes: AuthService.LOCK_MINUTES,
       });
-      throw new UnauthorizedException("Invalid TOTP code");
+      throw new AppError("INVALID_TOTP_CODE");
     }
 
     await this.usersService.resetLoginFailure(user.id);
@@ -220,7 +215,7 @@ export class AuthService {
   async totpSetup(userId: number) {
     const user = await this.usersService.findById(userId);
     if (user.totpEnabled) {
-      throw new BadRequestException("TOTP is already enabled");
+      throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
     }
     const secret = generateTotpSecret();
     user.totpSecret = secret;
@@ -241,16 +236,14 @@ export class AuthService {
     // 且此处消费会给「刚启用就登录」制造无谓的占位争用。
     const user = await this.usersService.findById(userId);
     if (user.totpEnabled) {
-      throw new BadRequestException("TOTP is already enabled");
+      throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
     }
     if (!user.totpSecret) {
-      throw new BadRequestException(
-        "No TOTP secret staged — call /auth/totp/setup first",
-      );
+      throw new AppError("TOTP_SECRET_MISSING");
     }
     const check = totpVerify(user.totpSecret, code, this.clock());
     if (!check.valid) {
-      throw new BadRequestException("Invalid TOTP code");
+      throw new AppError("TOTP_ENABLE_CODE_INVALID");
     }
     user.totpEnabled = true;
     await this.usersService.saveUser(user);
@@ -271,7 +264,7 @@ export class AuthService {
     // 的码 counter 也是 C）」会被单调递增防线误伤，把用户锁在 2FA 关闭
     // 流程之外。风险面（需已持有有效 JWT）与重放收益不成比例。
     const user = await this.usersService.findByIdRaw(userId);
-    if (!user) throw new UnauthorizedException("User not found");
+    if (!user) throw new AppError("USER_NOT_FOUND");
     if (!user.totpEnabled) {
       // Idempotent semantics: disabling a disabled account is a no-op success
       return { disabled: false };
@@ -284,9 +277,7 @@ export class AuthService {
       confirmed = await bcrypt.compare(opts.password, user.password);
     }
     if (!confirmed) {
-      throw new UnauthorizedException(
-        "TOTP disable requires a valid password or TOTP code",
-      );
+      throw new AppError("TOTP_DISABLE_CONFIRMATION_REQUIRED");
     }
 
     user.totpEnabled = false;
@@ -303,24 +294,24 @@ export class AuthService {
         secret: this.configService.get<string>("jwt.refreshSecret"),
       });
     } catch {
-      throw new UnauthorizedException("Invalid refresh token");
+      throw new AppError("REFRESH_TOKEN_INVALID");
     }
     if (payload.type !== "refresh") {
-      throw new UnauthorizedException("Invalid token type");
+      throw new AppError("REFRESH_TOKEN_TYPE_INVALID");
     }
 
     // SEC-002: a refresh token without jti is either an old-format token or a
     // hand-crafted token; both must be rejected — never silently skip the
     // revocation check (that would bypass token-rotation protection).
     if (!payload.jti) {
-      throw new UnauthorizedException("Refresh token missing jti claim");
+      throw new AppError("REFRESH_TOKEN_MISSING_JTI");
     }
     const result = await this.refreshTokenRepo.update(
       { jti: payload.jti, revoked: false },
       { revoked: true },
     );
     if (!result.affected) {
-      throw new UnauthorizedException("Refresh token has been revoked");
+      throw new AppError("REFRESH_TOKEN_REVOKED");
     }
     // DR-07: consume once before issuing; deliberately fail closed if user
     // validation or issuance fails, so the old token cannot be replayed.
@@ -328,7 +319,7 @@ export class AuthService {
     // R-04: findByIdOrNull — a deleted user's still-valid refresh token must
     // 401 here, never leak a 404 "User #N not found" via findById.
     const user = await this.usersService.findByIdOrNull(payload.sub);
-    if (!user || !user.isActive) throw new UnauthorizedException();
+    if (!user || !user.isActive) throw new AppError("REFRESH_TOKEN_INVALID");
     // A-1（R3-A 审计）: refresh 链同样比对会话版本——改密 / 全量吊销语义
     // （bumpSessionVersion）后，改密前签发的 refresh token 的 ver 快照与库中
     // 当前值失配 → 401。轮换消费（上方原子 UPDATE）已先行吊销该 jti 且不再
@@ -337,7 +328,7 @@ export class AuthService {
     // 维持「到期自然失效」兼容语义（与 jwt.strategy 的 access 侧比对同形态），
     // 正常未改密流程 ver 恒等，零影响。
     if (payload.ver !== undefined && payload.ver !== user.sessionVersion) {
-      throw new UnauthorizedException("Session has been revoked");
+      throw new AppError("SESSION_REVOKED");
     }
     return this.generateTokens(user);
   }
@@ -396,7 +387,7 @@ export class AuthService {
       { revoked: true },
     );
     if (!result.affected) {
-      throw new UnauthorizedException("Session not found or already revoked");
+      throw new AppError("SESSION_NOT_FOUND");
     }
   }
 

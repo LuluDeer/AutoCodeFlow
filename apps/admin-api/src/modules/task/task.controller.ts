@@ -137,13 +137,13 @@ export class TaskController {
   @WriteGuard("task", { scope: "authenticated" })
   @Post()
   @ApiOperation({
-    summary: "Create task",
     description:
-      "Create a new automation task. Supports cron, webhook, and event trigger modes. Tasks start in paused state.",
+      "创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后处于暂停状态。",
+    summary: "创建任务",
   })
   @ApiCreatedResponse({
     type: TaskResponseDto,
-    description: "Task created successfully (starts paused)",
+    description: "任务创建成功（初始为暂停状态）",
   })
   async create(
     @Body() dto: CreateTaskDto,
@@ -169,36 +169,29 @@ export class TaskController {
   @WriteGuard("task", { scope: "authenticated" })
   @Post("import")
   @ApiOperation({
-    summary: "Import a task definition (JSON export payload)",
     description:
-      "E-1: create a task from a GET /tasks/:id/export payload. Validation " +
-      "is the full POST /tasks create chain. Name conflicts are NEVER " +
-      "overwritten: ' (imported)' is appended, then ' (imported) 2', " +
-      "' (imported) 3', ... until an available name is found. Secrets are " +
-      "never part of the transfer (SEC-02 red line): a carried secrets key " +
-      "is ignored and the imported task starts WITHOUT secrets — warnings " +
-      "always includes the reconfigure hint. The new task starts paused.",
+      "E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务初始为暂停状态。",
+    summary: "导入任务定义（JSON 导出载荷）",
   })
   @ApiBody({ type: ImportTaskDto })
   @ApiCreatedResponse({
     type: TaskImportResultDto,
     description:
-      "Task imported (paused). warnings always includes the reconfigure-secrets hint.",
+      "任务已导入（暂停状态）。warnings 中始终包含重新配置密钥的提示。",
   })
   @ApiResponse({
     status: 400,
     description:
-      "Invalid payload (missing required keys, oversized params, unknown fields — global whitelist, invalid cron/timezone/enum, ...)",
+      "载荷非法（缺少必填键、params 超大、未知字段（全局白名单）、cron/时区/枚举非法等）",
   })
   @ApiResponse({
     status: 403,
     description:
-      "The payload assigns a project the caller may not write (ADMIN or project editor/admin required)",
+      "载荷指定的项目调用者无权写入（需要 ADMIN，或该项目的 editor/admin 角色）",
   })
   @ApiResponse({
     status: 409,
-    description:
-      "All name candidates conflict with existing tasks (or another unique conflict)",
+    description: "所有候选名称都与已有任务冲突（或其他唯一性冲突）",
   })
   async importDefinition(
     @Body() dto: ImportTaskDto,
@@ -220,24 +213,23 @@ export class TaskController {
 
   @Get()
   @ApiOperation({
-    summary: "List tasks",
-    description:
-      "Get task list with pagination and search support. Filter by status.",
+    description: "获取任务列表，支持分页与搜索。可按状态过滤。",
+    summary: "列出任务",
   })
   @ApiQuery({
     name: "page",
     required: false,
-    description: "Page number, default 1",
+    description: "页码，默认 1",
   })
   @ApiQuery({
     name: "pageSize",
     required: false,
-    description: "Page size, default 20",
+    description: "每页条数，默认 20",
   })
   @ApiQuery({
     name: "status",
     required: false,
-    description: "Filter by status (active/paused/inactive)",
+    description: "按状态过滤（active/paused/inactive）",
   })
   // P2-18: 最近一次执行状态过滤——对齐上方 status 块风格；值域与
   // TaskExecution.status 列一致（ExecutionStatus）。
@@ -246,20 +238,13 @@ export class TaskController {
     required: false,
     enum: ExecutionStatus,
     description:
-      "P2-18: filter tasks whose MOST RECENT execution has this status " +
-      "(latest task_executions row per task: createdAt DESC, id DESC). " +
-      "Values: pending/running/waiting/success/failed/timeout/killed/" +
-      "cancelled. An in-flight latest execution (pending/running) matches " +
-      "as-is. Implemented as an EXISTS subquery — composable with the " +
-      "other list filters.",
+      "P2-18：过滤「最近一次执行」处于该状态的任务（每个任务取最新一行 task_executions：createdAt DESC、id DESC）。取值：pending/running/waiting/success/failed/timeout/killed/cancelled。最近一次执行仍在进行中（pending/running）时按原样匹配。以 EXISTS 子查询实现——可与其他列表过滤条件组合。",
   })
   @ApiQuery({
     name: "name",
     required: false,
     description:
-      "Fuzzy search by task name ONLY (backward-compatible channel; CLI/MCP " +
-      "use it). The console search box uses `q` instead, because its " +
-      "placeholder promises name OR description.",
+      "仅按任务名称模糊搜索（向后兼容通道；CLI/MCP 使用它）。控制台搜索框改用 `q`，因为其占位符承诺搜索名称或描述。",
   })
   // FEAT-TASK-SEARCH: 控制台搜索框的关键字通道（name OR description）。
   // 与上面 `name` 的分工见 ListTasksQueryDto 的字段注释。
@@ -267,28 +252,23 @@ export class TaskController {
     name: "q",
     required: false,
     description:
-      "Keyword search across BOTH task name and description. LIKE " +
-      "metacharacters (% and _) are matched literally, so a search for " +
-      "`daily_report` does not also match `dailyXreport`. Composable with " +
-      "every other list filter.",
+      "同时按任务名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配，因此搜索 `daily_report` 不会同时命中 `dailyXreport`。可与其他所有列表过滤条件组合。",
   })
   @ApiQuery({
     name: "runtime",
     required: false,
-    description: "Filter by runtime (python/node/shell)",
+    description: "按运行时过滤（python/node/shell）",
   })
   @ApiQuery({
     name: "fields",
     required: false,
     description:
-      "F-10: comma-separated projection whitelist (e.g. 'id,name'). " +
-      "Only whitelisted lightweight columns are selected — params/secrets/" +
-      "glueSource and other heavy columns are skipped. Illegal fields → 400.",
+      "F-10：逗号分隔的投影白名单（例如 'id,name'）。只查询白名单内的轻量列——跳过 params/secrets/glueSource 等重型列。非法字段 → 400。",
   })
   @ApiOkResponse({
     type: PaginatedTaskListDto,
     description:
-      "Paginated list (list/items double key, R-21). Default projection = full entity with secrets masked; ?fields= shrinks items (F-10).",
+      "分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。",
   })
   findAll(@Query() p: ListTasksQueryDto) {
     return this.taskService.findAll(p);
@@ -307,17 +287,16 @@ export class TaskController {
   })
   @Post("batch/trigger")
   @ApiOperation({
-    summary: "Batch trigger tasks",
-    description:
-      "Trigger multiple tasks. Partial failures do not affect other tasks.",
+    description: "触发多个任务。部分失败不影响其他任务。",
+    summary: "批量触发任务",
   })
   @ApiCreatedResponse({
     description:
-      "Per-task trigger results (success item = full execution; failure item = {id, error})",
+      "各任务的触发结果（成功项 = 完整执行记录；失败项 = {id, error}）",
     schema: batchArrayOf(TaskExecutionResponseDto),
   })
   @ApiBody({
-    description: "Batch trigger parameters",
+    description: "批量触发参数",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -358,17 +337,15 @@ export class TaskController {
   })
   @Post("batch/pause")
   @ApiOperation({
-    summary: "Batch pause tasks",
-    description:
-      "Pause multiple tasks. Partial failures do not affect other tasks.",
+    description: "暂停多个任务。部分失败不影响其他任务。",
+    summary: "批量暂停任务",
   })
   @ApiCreatedResponse({
-    description:
-      "Per-task pause results (success item = full task; failure item = {id, error})",
+    description: "各任务的暂停结果（成功项 = 完整任务；失败项 = {id, error}）",
     schema: batchArrayOf(TaskResponseDto),
   })
   @ApiBody({
-    description: "Batch pause parameters",
+    description: "批量暂停参数",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -407,17 +384,15 @@ export class TaskController {
   })
   @Post("batch/resume")
   @ApiOperation({
-    summary: "Batch resume tasks",
-    description:
-      "Resume multiple tasks. Partial failures do not affect other tasks.",
+    description: "恢复多个任务。部分失败不影响其他任务。",
+    summary: "批量恢复任务",
   })
   @ApiCreatedResponse({
-    description:
-      "Per-task resume results (success item = full task; failure item = {id, error})",
+    description: "各任务的恢复结果（成功项 = 完整任务；失败项 = {id, error}）",
     schema: batchArrayOf(TaskResponseDto),
   })
   @ApiBody({
-    description: "Batch resume parameters",
+    description: "批量恢复参数",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -452,17 +427,16 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Post("batch/delete")
   @ApiOperation({
-    summary: "Batch delete tasks",
-    description:
-      "Delete multiple tasks. Partial failures do not affect other tasks.",
+    description: "删除多个任务。部分失败不影响其他任务。",
+    summary: "批量删除任务",
   })
   @ApiCreatedResponse({
     description:
-      "Per-task delete results (success item = {deleted: true}; failure item = {id, error})",
+      "各任务的删除结果（成功项 = {deleted: true}；失败项 = {id, error}）",
     schema: batchArrayOf(DeleteTaskResponseDto),
   })
   @ApiBody({
-    description: "Batch delete parameters",
+    description: "批量删除参数",
     schema: {
       example: {
         taskIds: ["task1", "task2", "task3"],
@@ -495,7 +469,7 @@ export class TaskController {
   }
 
   @Get("executions/all")
-  @ApiOperation({ summary: "Global execution records" })
+  @ApiOperation({ summary: "全局执行记录" })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "pageSize", required: false })
   @ApiQuery({ name: "status", required: false })
@@ -506,7 +480,7 @@ export class TaskController {
   @ApiQuery({ name: "endTime", required: false })
   @ApiOkResponse({
     type: PaginatedExecutionListDto,
-    description: "Global execution records (heavy text columns excluded)",
+    description: "全局执行记录（已排除大文本列）",
   })
   allExecutions(@Query() p: AllExecutionsQueryDto) {
     return this.taskService.getAllExecutions(p);
@@ -515,27 +489,27 @@ export class TaskController {
   // ---- Compat aliases (by execution ID only) — used by acf-cli & mcp-server ----
   @Get("executions/:execId/logs")
   @ApiOperation({
-    summary: "Execution logs (by execution ID)",
     description:
-      "Compat alias of GET /tasks/:id/executions/:execId/logs — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+      "GET /tasks/:id/executions/:execId/logs 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。",
+    summary: "执行日志（按执行 ID）",
   })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiQuery({
     name: "fromLine",
     required: false,
-    description: "Start line number, default 0",
+    description: "起始行号，默认 0",
   })
   @ApiQuery({
     name: "limit",
     required: false,
-    description: "Lines per page, default 500, max 2000",
+    description: "每页行数，默认 500，最多 2000",
   })
   @ApiQuery({
     name: "level",
     required: false,
     enum: LOG_LEVEL_VALUES,
     description:
-      "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+      "按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。",
   })
   @ApiOkResponse({ type: ExecutionLogsPageResponseDto })
   executionLogsByExecId(
@@ -552,18 +526,18 @@ export class TaskController {
 
   @Get("executions/:execId")
   @ApiOperation({
-    summary: "Execution details (by execution ID)",
     description:
-      "Compat alias of GET /tasks/:id/executions/:execId — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
+      "GET /tasks/:id/executions/:execId 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。",
+    summary: "执行详情（按执行 ID）",
   })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiOkResponse({ type: TaskExecutionResponseDto })
   executionByExecId(@Param("execId") execId: string) {
     return this.taskService.getExecution(execId);
   }
 
   @Get("scheduler/stats")
-  @ApiOperation({ summary: "Scheduler status" })
+  @ApiOperation({ summary: "调度器状态" })
   @ApiOkResponse({ type: SchedulerStatsResponseDto })
   async schedulerStats() {
     return this.taskService.getSchedulerStats();
@@ -571,15 +545,14 @@ export class TaskController {
 
   @Get(":id/stats")
   @ApiOperation({
-    summary: "Task execution stats",
-    description:
-      "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
+    description: "获取任务的执行统计：成功率、平均耗时与最近 20 次执行。",
+    summary: "任务执行统计",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiOkResponse({
     type: ExecutionStatsResponseDto,
     description:
-      "successRate/succeeded/failed are ALL-RUN figures since FIX-5.1; recentSuccessRate keeps the last-20 window",
+      "FIX-5.1 起 successRate/succeeded/failed 均为全量执行口径；recentSuccessRate 仍保留最近 20 次窗口",
   })
   getStats(@Param("id") id: string) {
     return this.taskService.getExecutionStats(id);
@@ -588,15 +561,14 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Post(":id/suggest-schedule")
   @ApiOperation({
-    summary: "AI schedule suggestion",
-    description:
-      "Analyze execution history and return an AI-recommended cron expression with reasoning",
+    description: "分析执行历史并返回 AI 推荐的 cron 表达式及推理说明",
+    summary: "AI 调度建议",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   // A2-B: 透传 user——本端点声明 scope='ownership'，属主校验现由 service 执行。
   @ApiCreatedResponse({
     type: SuggestScheduleResponseDto,
-    description: "AI recommendation; fallback=true marks the heuristic path",
+    description: "AI 推荐结果；fallback=true 表示走了启发式降级路径",
   })
   async suggestSchedule(
     @Param("id") id: string,
@@ -607,16 +579,15 @@ export class TaskController {
 
   @Get(":id")
   @ApiOperation({
-    summary: "Task details",
-    description:
-      "Get detailed info for a single task including config, status, and execution stats.",
+    description: "获取单个任务的详细信息，包括配置、状态与执行统计。",
+    summary: "任务详情",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiOkResponse({
     type: TaskResponseDto,
-    description: "Full task entity with secrets masked",
+    description: "完整任务实体，密钥已掩码",
   })
-  @ApiResponse({ status: 404, description: "Task not found" })
+  @ApiResponse({ status: 404, description: "任务不存在" })
   findOne(@Param("id") id: string) {
     return this.taskService.findOne(id);
   }
@@ -625,24 +596,16 @@ export class TaskController {
   // 走 @Res() library mode 直写附件（同 audit export 先例，绕过响应 envelope）。
   @Get(":id/export")
   @ApiOperation({
-    summary: "Export task definition as a downloadable JSON file",
     description:
-      "E-1: returns the task definition snapshot (name/description/runtime " +
-      "+ interpreter version/glue script/params/timeout & retry/dependencies/" +
-      "deployment constraints/maintenance windows/trigger config/git source/" +
-      'application & project keys) as an attachment with schemaVersion "1" ' +
-      "and exportedAt. SEC-02 red line: secrets are NEVER part of the export " +
-      "(the whole key is stripped — values and key names alike). The payload " +
-      "is accepted verbatim by POST /tasks/import. Read permission matches " +
-      "GET /tasks/:id.",
+      'E-1：以附件形式返回任务定义快照（name/description/runtime + 解释器版本/GLUE 脚本/params/超时与重试/依赖/部署约束/维护窗口/触发配置/git 源/应用与项目键），并带 schemaVersion \\"1\\" 与 exportedAt。SEC-02 红线：密钥绝不进入导出内容（整个键都被剔除——值与键名一并不保留）。该载荷可被 POST /tasks/import 原样接受。读取权限与 GET /tasks/:id 一致。',
+    summary: "将任务定义导出为可下载的 JSON 文件",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiOkResponse({
     type: TaskExportPayloadDto,
-    description:
-      "Task definition export payload (same shape as the POST /tasks/import body)",
+    description: "任务定义导出载荷（与 POST /tasks/import 的请求体同形态）",
   })
-  @ApiResponse({ status: 404, description: "Task not found" })
+  @ApiResponse({ status: 404, description: "任务不存在" })
   async exportDefinition(
     @Param("id") id: string,
     @Res() res: Response,
@@ -656,16 +619,15 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Patch(":id")
   @ApiOperation({
-    summary: "Update task",
-    description:
-      "Update task configuration. Note: running tasks are not immediately affected.",
+    description: "更新任务配置。注意：正在运行的任务不会立即受影响。",
+    summary: "更新任务",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiOkResponse({
     type: TaskResponseDto,
-    description: "Updated successfully (secrets masked)",
+    description: "更新成功（密钥已掩码）",
   })
-  @ApiResponse({ status: 404, description: "Task not found" })
+  @ApiResponse({ status: 404, description: "任务不存在" })
   async update(
     @Param("id") id: string,
     @Body() dto: UpdateTaskDto,
@@ -687,13 +649,12 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Put(":id/glue")
   @ApiOperation({
-    summary: "Update GLUE script",
-    description:
-      "Update the GLUE script source code for online editing of execution logic.",
+    description: "更新 GLUE 脚本源码，用于在线编辑执行逻辑。",
+    summary: "更新 GLUE 脚本",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiOkResponse({ type: TaskResponseDto, description: "Script updated" })
-  @ApiResponse({ status: 404, description: "Task not found" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiOkResponse({ type: TaskResponseDto, description: "脚本已更新" })
+  @ApiResponse({ status: 404, description: "任务不存在" })
   @ApiBody({
     schema: {
       type: "object",
@@ -727,16 +688,15 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Delete(":id")
   @ApiOperation({
-    summary: "Delete task",
-    description:
-      "Delete task. Running executions will be forcefully terminated.",
+    description: "删除任务。正在运行的执行会被强制终止。",
+    summary: "删除任务",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiOkResponse({
     type: DeleteTaskResponseDto,
-    description: "Soft-deleted (status=deleted + deletedAt)",
+    description: "已软删除（status=deleted + deletedAt）",
   })
-  @ApiResponse({ status: 404, description: "Task not found" })
+  @ApiResponse({ status: 404, description: "任务不存在" })
   async remove(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -763,26 +723,23 @@ export class TaskController {
   })
   @Post(":id/trigger")
   @ApiOperation({
-    summary: "Manual trigger",
     description:
-      "Manually trigger task execution. Custom params can override task defaults. " +
-      "NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key " +
-      "（Authorization: Bearer acf_...，guard 分流见 jwt-auth.guard/api-key-auth.helper）；" +
-      "响应契约与 JWT 面完全一致。",
+      "手动触发任务执行。自定义 params 可覆盖任务默认值。NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key （Authorization: Bearer acf_，guard 分流见 jwt-auth.guard/api-key-auth.helper）；响应契约与 JWT 面完全一致。",
+    summary: "手动触发",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   // N-12: 实际返回完整 execution 行（201，POST 无 @HttpCode）——历史 inline
   // 示例 {taskId, executionId, status} 是旧契约漂移，按现行为落 schema。
   @ApiCreatedResponse({
     type: TaskExecutionResponseDto,
-    description: "Execution row created and enqueued",
+    description: "已创建执行记录并已入队",
   })
   @ApiResponse({
     // N-14：blockStrategy=discard 且存在同参数在跑/排队执行时拒绝触发
     //（闸门比较维度=任务+参数，异参不受影响）。
     status: 409,
     description:
-      "Trigger rejected: an active execution with the same params already exists (blockStrategy=discard)",
+      "触发被拒绝：已存在参数相同的活跃执行（blockStrategy=discard）",
   })
   async trigger(
     @Param("id") id: string,
@@ -823,12 +780,12 @@ export class TaskController {
 
   @Get(":id/webhook")
   @ApiOperation({
-    summary: "Get task webhook status",
-    description: "Returns `{ enabled, url }`. The secret is never returned.",
+    description: "返回 `{ enabled, url }`。密钥从不返回。",
+    summary: "获取任务 Webhook 状态",
   })
   @ApiOkResponse({
     type: WebhookStatusResponseDto,
-    description: "Webhook status (secret never returned)",
+    description: "Webhook 状态（密钥从不返回）",
   })
   webhookStatus(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.taskWebhookService.getStatus(id, user);
@@ -842,14 +799,13 @@ export class TaskController {
   @Post(":id/webhook/enable")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: "Enable the task webhook",
     description:
-      "Issues a new webhook secret, returned ONCE in `secret`. Enabling an " +
-      "already-enabled task rotates the secret.",
+      "签发新的 Webhook 密钥，仅在 `secret` 中返回一次。对已启用的任务再次启用会轮换密钥。",
+    summary: "启用任务 Webhook",
   })
   @ApiOkResponse({
     type: WebhookSecretResponseDto,
-    description: "Webhook URL + one-time secret",
+    description: "Webhook URL + 一次性密钥",
   })
   webhookEnable(
     @Param("id") id: string,
@@ -867,12 +823,12 @@ export class TaskController {
   @Post(":id/webhook/rotate")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: "Rotate the task webhook secret",
-    description: "Old secret stops working immediately; new secret shown once.",
+    description: "旧密钥立即失效；新密钥只展示一次。",
+    summary: "轮换任务 Webhook 密钥",
   })
   @ApiOkResponse({
     type: WebhookSecretResponseDto,
-    description: "Webhook URL + one-time secret",
+    description: "Webhook URL + 一次性密钥",
   })
   webhookRotate(
     @Param("id") id: string,
@@ -890,12 +846,12 @@ export class TaskController {
   @Post(":id/webhook/disable")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: "Disable the task webhook",
-    description: "Clears the secret; signed calls start answering 401.",
+    description: "清除密钥；此后带签名的调用会返回 401。",
+    summary: "停用任务 Webhook",
   })
   @ApiOkResponse({
     type: WebhookDisableResponseDto,
-    description: "`{ enabled: false }`",
+    description: "停用后的响应：`{ enabled: false }`",
   })
   webhookDisable(
     @Param("id") id: string,
@@ -907,20 +863,20 @@ export class TaskController {
 
   @Get(":id/executions")
   @ApiOperation({
-    summary: "Execution records",
-    description: "Get the execution history list for a task.",
+    description: "获取任务的执行历史列表。",
+    summary: "执行记录",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiQuery({ name: "page", required: false, description: "Page number" })
-  @ApiQuery({ name: "limit", required: false, description: "Page size" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiQuery({ name: "page", required: false, description: "页码" })
+  @ApiQuery({ name: "limit", required: false, description: "每页条数" })
   @ApiQuery({
     name: "status",
     required: false,
-    description: "Filter by execution status",
+    description: "按执行状态过滤",
   })
   @ApiOkResponse({
     type: PaginatedExecutionListDto,
-    description: "Execution history (heavy text columns excluded)",
+    description: "执行历史（已排除大文本列）",
   })
   executions(@Param("id") id: string, @Query() p: TaskExecutionsQueryDto) {
     return this.taskService.getExecutions(id, p);
@@ -928,59 +884,57 @@ export class TaskController {
 
   @Get(":id/executions/:execId")
   @ApiOperation({
-    summary: "Execution details",
-    description:
-      "Get detailed info for a single execution including time, status, and output.",
+    description: "获取单次执行的详细信息，包括时间、状态与输出。",
+    summary: "执行详情",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiOkResponse({
     type: TaskExecutionResponseDto,
-    description: "Full execution row (includes logs/aiAnalysis)",
+    description: "完整执行行（包含 logs/aiAnalysis）",
   })
-  @ApiResponse({ status: 404, description: "Execution record not found" })
+  @ApiResponse({ status: 404, description: "执行记录不存在" })
   execution(@Param("id") id: string, @Param("execId") execId: string) {
     return this.taskService.getExecution(execId, id);
   }
 
   @Get(":id/executions/:execId/report")
   @ApiOperation({
-    summary: "Execution report + timeline",
     description:
-      "OBS-04: one-shot payload for the execution detail 'analysis report / timeline' tab. Returns the execution row (timestamps drive the timeline), a created→started→finished timeline mapped from those DB timestamps, and the execution_reports daily aggregate row for the execution's day (report=null when absent — the frontend degrades gracefully).",
+      "OBS-04：供执行详情页「分析报告 / 时间线」页签一次性取数的载荷。返回执行行（其时间戳驱动时间线）、由这些数据库时间戳映射出的 created→started→finished 时间线，以及该执行所在日期的 execution_reports 日聚合行（不存在时 report=null——前端做优雅降级）。",
+    summary: "执行报告 + 时间线",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiOkResponse({ type: ExecutionReportResponseDto })
-  @ApiResponse({ status: 404, description: "Execution record not found" })
+  @ApiResponse({ status: 404, description: "执行记录不存在" })
   executionReport(@Param("id") id: string, @Param("execId") execId: string) {
     return this.taskService.getExecutionReport(execId, id);
   }
 
   @Get(":id/executions/:execId/logs")
   @ApiOperation({
-    summary: "Execution logs",
-    description:
-      "Get execution logs with line-based pagination to avoid memory overload.",
+    description: "获取执行日志，按行分页以避免内存过载。",
+    summary: "执行日志",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiQuery({
     name: "fromLine",
     required: false,
-    description: "Start line number, default 0",
+    description: "起始行号，默认 0",
   })
   @ApiQuery({
     name: "limit",
     required: false,
-    description: "Lines per page, default 500, max 2000",
+    description: "每页行数，默认 500，最多 2000",
   })
   @ApiQuery({
     name: "level",
     required: false,
     enum: LOG_LEVEL_VALUES,
     description:
-      "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
+      "按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。",
   })
   @ApiOkResponse({ type: ExecutionLogsPageResponseDto })
   async executionLogs(
@@ -1001,12 +955,12 @@ export class TaskController {
   @SkipThrottle()
   @Get(":id/executions/:execId/logs/stream")
   @ApiOperation({
-    summary: "Execution log SSE stream",
     description:
-      "Stream execution logs via Server-Sent Events. Sends [DONE] event on completion.",
+      "通过 Server-Sent Events 流式推送执行日志。完成时发送 [DONE] 事件。",
+    summary: "执行日志 SSE 流",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   // N8: SSE 流的挂起时长等于任务剩余运行时长，必须豁免全局 30s 请求超时，
   // 否则 timeout() 会以 TimeoutError 掐断长任务日志流，且 HttpExceptionFilter
   // 会对已写出 SSE 头的响应再 status(408).json() 产出非法混合响应。
@@ -1015,7 +969,7 @@ export class TaskController {
   // 路由若改为 @Sse()/return Observable 则会破坏流，必须保持 @Res() 直写。
   @ApiResponse({
     status: 200,
-    description: "SSE stream (Res passthrough)",
+    description: "SSE 流（Res 直传）",
     content: { "text/event-stream": { schema: { type: "string" } } },
   })
   @SkipTimeout()
@@ -1089,15 +1043,13 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Post(":id/rollback")
   @ApiOperation({
-    summary: "Git rollback (by commit SHA)",
     description:
-      "把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。" +
-      "与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：" +
-      "本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。",
+      "把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。",
+    summary: "Git 回滚（按 commit SHA）",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiBody({
-    description: "Rollback parameters",
+    description: "回滚参数",
     schema: {
       example: {
         gitCommit: "abc123",
@@ -1107,12 +1059,11 @@ export class TaskController {
   })
   @ApiCreatedResponse({
     type: GitRollbackResponseDto,
-    description:
-      "New execution dispatched at the target commit (POST default 201)",
+    description: "已在目标 commit 上派发新的执行（POST 默认 201）",
   })
   @ApiResponse({
     status: 400,
-    description: "Rollback not supported for non-Git tasks",
+    description: "非 Git 任务不支持回滚",
   })
   async rollback(
     @Param("id") id: string,
@@ -1142,19 +1093,17 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Post(":id/versions/:versionId/rollback")
   @ApiOperation({
-    summary: "Version rollback (by task config snapshot)",
     description:
-      "把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。" +
-      "与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，" +
-      "不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。",
+      "把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。",
+    summary: "版本回滚（按任务配置快照）",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "versionId", description: "Version ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "versionId", description: "版本 ID" })
   @ApiCreatedResponse({
     type: TaskResponseDto,
-    description: "Task config rolled back to the snapshot (POST default 201)",
+    description: "任务配置已回滚到该快照（POST 默认 201）",
   })
-  @ApiResponse({ status: 404, description: "Task or version not found" })
+  @ApiResponse({ status: 404, description: "任务或版本不存在" })
   // PK-19（DEEP_REVIEW 0ef3bbe）: 本端点无请求体（回滚目标即 :versionId 路径参
   // 数）——显式 @ApiBody({ required: false }) 在 openapi 中钉住"无 body"语义，
   // 避免被误判为遗漏 requestBody。与 /tasks/:id/rollback（gitCommit）的区别见
@@ -1189,13 +1138,13 @@ export class TaskController {
 
   @Get(":id/versions")
   @ApiOperation({
-    summary: "Version list",
-    description: "Get task historical version list.",
+    description: "获取任务的历史版本列表。",
+    summary: "版本列表",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiOkResponse({
     type: [TaskVersionDto],
-    description: "Most recent 100 snapshots",
+    description: "最近 100 个快照",
   })
   getVersions(@Param("id") id: string) {
     return this.taskService.getVersions(id);
@@ -1203,17 +1152,17 @@ export class TaskController {
 
   @Get(":id/versions/:versionId1/compare/:versionId2")
   @ApiOperation({
-    summary: "Version diff",
-    description: "Compare differences between two versions.",
+    description: "比较两个版本之间的差异。",
+    summary: "版本差异",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "versionId1", description: "Version ID 1" })
-  @ApiParam({ name: "versionId2", description: "Version ID 2" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "versionId1", description: "版本 ID 1" })
+  @ApiParam({ name: "versionId2", description: "版本 ID 2" })
   @ApiOkResponse({
-    description: "Keyed diff — only changed fields, each {old, new}",
+    description: "按字段键组织的差异——仅包含发生变化的字段，每项为 {old, new}",
     schema: VersionDiffResponseSchema,
   })
-  @ApiResponse({ status: 404, description: "Task or version not found" })
+  @ApiResponse({ status: 404, description: "任务或版本不存在" })
   async compareVersions(
     @Param("id") id: string,
     @Param("versionId1") versionId1: string,
@@ -1231,17 +1180,16 @@ export class TaskController {
   })
   @Post(":id/pause")
   @ApiOperation({
-    summary: "Pause task",
-    description:
-      "Pause task scheduled execution. In-progress executions are not affected.",
+    description: "暂停任务的调度执行。正在进行的执行不受影响。",
+    summary: "暂停任务",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiCreatedResponse({
     type: TaskResponseDto,
-    description: "Paused (POST default 201)",
+    description: "已暂停（POST 默认 201）",
   })
-  @ApiResponse({ status: 400, description: "Task is already paused" })
-  @ApiResponse({ status: 404, description: "Task not found" })
+  @ApiResponse({ status: 400, description: "任务已处于暂停状态" })
+  @ApiResponse({ status: 404, description: "任务不存在" })
   async pause(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -1267,17 +1215,14 @@ export class TaskController {
       "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
   })
   @Post(":id/resume")
-  @ApiOperation({
-    summary: "Resume task",
-    description: "Resume task scheduled execution.",
-  })
-  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiOperation({ description: "恢复任务的调度执行。", summary: "恢复任务" })
+  @ApiParam({ name: "id", description: "任务 ID" })
   @ApiCreatedResponse({
     type: TaskResponseDto,
-    description: "Resumed (POST default 201)",
+    description: "已恢复（POST 默认 201）",
   })
-  @ApiResponse({ status: 400, description: "Task is already running" })
-  @ApiResponse({ status: 404, description: "Task not found" })
+  @ApiResponse({ status: 400, description: "任务已在运行中" })
+  @ApiResponse({ status: 404, description: "任务不存在" })
   async resume(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -1298,16 +1243,14 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Post(":id/executions/:execId/analyze")
   @ApiOperation({
-    summary: "AI analyze execution",
-    description:
-      "Trigger on-demand AI analysis for an execution. Stores result in DB and returns it.",
+    description: "对某次执行触发按需 AI 分析。结果会落库并返回。",
+    summary: "AI 分析执行",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiCreatedResponse({
     type: TaskExecutionResponseDto,
-    description:
-      "Updated execution with aiAnalysis persisted (POST default 201)",
+    description: "已更新执行记录并持久化 aiAnalysis（POST 默认 201）",
   })
   async analyzeExecution(
     @Param("id") id: string,
@@ -1334,20 +1277,20 @@ export class TaskController {
   @WriteGuard("task", { scope: "ownership" })
   @Post(":id/executions/:execId/kill")
   @ApiOperation({
-    summary: "Cancel execution",
-    description: "Force-cancel a running or pending execution record.",
+    description: "强制取消正在运行或等待中的执行记录。",
+    summary: "取消执行",
   })
-  @ApiParam({ name: "id", description: "Task ID" })
-  @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiParam({ name: "id", description: "任务 ID" })
+  @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiCreatedResponse({
     type: KillExecutionResponseDto,
-    description: "Cancelled (POST default 201)",
+    description: "已取消（POST 默认 201）",
   })
   @ApiResponse({
     status: 400,
-    description: "Execution is not in a cancellable state",
+    description: "执行当前状态不可取消",
   })
-  @ApiResponse({ status: 404, description: "Execution record not found" })
+  @ApiResponse({ status: 404, description: "执行记录不存在" })
   async killExecution(
     @Param("id") id: string,
     @Param("execId") execId: string,

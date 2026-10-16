@@ -171,7 +171,7 @@ def test_execute_endpoint_fails_closed_when_require_token(monkeypatch, client):
         'task': {'name': 't'},
     })
     assert response.status_code == 503
-    assert 'refusing unauthenticated execution' in response.json()['detail']
+    assert '未配置任何执行器令牌' in response.json()['detail']
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +265,48 @@ class TestFetchToken:
         body = mock_client.post.call_args.kwargs['json']
         assert body['startupId'] == executor_startup_id
         assert 'address' in body and 'appName' in body
+
+    def test_request_body_carries_device_fingerprint(self, monkeypatch):
+        """ADR-017 阶段 3（复查补口）：指纹是 /executors/token 的**行定位键**。
+
+        缺了它中台的 issueToken → register 会回落 ``findOne({address})``，
+        而 pull 同址多行（ADR-017 §5）时那会任取一行 → 轮换**别的执行器**的
+        token（那台随即 401，其执行卡在 RUNNING 直到 stale sweep）。
+
+        采集结果 monkeypatch 钉死（与 test_registration.py 同款做法）——
+        真实采集在本机/CI 环境不稳定，钉死让断言只度量本文件负责的事：
+        **载荷字段是否转发**。采集算法本身由 test_device_identity.py 度量。
+        反证：删掉 auth.py 载荷里的 deviceFingerprint → 本用例转红。
+        """
+        mock_client = _patch_async_client(monkeypatch, _make_response(201, {
+            'code': 0, 'data': {'token': 't'},
+        }))
+        import device_identity
+        monkeypatch.setattr(
+            device_identity, 'get_device_fingerprint', lambda: 'a' * 64
+        )
+        asyncio.run(auth_module._fetch_token())
+        body = mock_client.post.call_args.kwargs['json']
+        assert body['deviceFingerprint'] == 'a' * 64
+
+    def test_omits_device_fingerprint_when_collection_fails(self, monkeypatch):
+        """采集失败 → **不发该键**（不是发 null）。
+
+        复用既有兼容性红线（同 register 载荷）：旧执行器/采集失败必须走
+        服务端 legacy 路径，行为与引入前逐字节一致。发 null 会让中台把
+        「未上报」与「采集失败」混为一谈，且 normalize 后同样为 null——
+        但载荷形态的差异是可观测的契约面，须钉死。
+        """
+        mock_client = _patch_async_client(monkeypatch, _make_response(201, {
+            'code': 0, 'data': {'token': 't'},
+        }))
+        import device_identity
+        monkeypatch.setattr(
+            device_identity, 'get_device_fingerprint', lambda: None
+        )
+        asyncio.run(auth_module._fetch_token())
+        body = mock_client.post.call_args.kwargs['json']
+        assert 'deviceFingerprint' not in body
 
     def test_transport_error_returns_none(self, monkeypatch):
         mock_client = AsyncMock()

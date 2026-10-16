@@ -886,6 +886,133 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── i18n-DESK-01：界面语言**设置**（config 键 uiLanguage）渲染侧守卫 ───────
+// 与主进程 tray-texts.selftest.ts 同一组用例（两端共用 main/ui-language.ts 的
+// 同一份规则；"两端各写一份判定"正是本守卫要防的漂移）。
+//
+// 为什么这里要**真执行**而不是再加几条正则自检：正则只能证明"源码里写着
+// setting"，证明不了"设置真的赢过 navigator.language"（把 `setting !== undefined`
+// 写成 `false` 之后，正则照样全绿）。所以用本包已有的 typescript 编译器把
+// i18n.ts / ui-language.ts 转成 CJS 后求值、直接调函数断言行为。
+// 代价：多加载一次 tsc（约 0.2s），不引入任何新依赖。
+{
+  const ts = (await import('typescript')).default;
+
+  /** 把 TS 源文件转成 CJS 并求值（deps 注入相对依赖——node 解析不了 .ts 扩展名）。 */
+  const loadTsModule = (file, deps = {}) => {
+    const source = readFileSync(file, 'utf8');
+    const js = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+      fileName: file,
+    }).outputText;
+    const mod = { exports: {} };
+    const requireShim = (spec) => {
+      if (Object.prototype.hasOwnProperty.call(deps, spec)) return deps[spec];
+      throw new Error(`i18n-DESK-01：${file} 出现未注入的依赖 ${spec}`);
+    };
+    new Function('exports', 'module', 'require', js)(mod.exports, mod, requireShim);
+    return mod.exports;
+  };
+
+  const uiLanguage = loadTsModule(resolve(root, '..', 'main', 'ui-language.ts'));
+  const i18n = loadTsModule(resolve(root, 'i18n.ts'), { '../main/ui-language': uiLanguage });
+  const { resolveRendererLocale, setRendererLanguageSetting, getRendererLanguageSetting, CFG_TEXTS } = i18n;
+  const check = (cond, msg) => { if (!cond) throw new Error(`i18n-DESK-01：${msg}`); };
+  const EN = () => 'en-US';
+  const ZH = () => 'zh-CN';
+
+  // ① 显式设置赢过 navigator.language（两个方向都测，防"只测了 en 赢"）
+  check(resolveRendererLocale(EN, 'zh') === 'zh', "显式 'zh' 必须赢过 navigator.language='en-US'");
+  check(resolveRendererLocale(ZH, 'en') === 'en', "显式 'en' 必须赢过 navigator.language='zh-CN'");
+  check(resolveRendererLocale(ZH, '  EN  ') === 'en', '设置值大小写/空白不敏感');
+  // ② 'auto' = 跟随系统语言（产品要求：默认英文，但优先跟随系统语言）
+  check(resolveRendererLocale(EN, 'auto') === 'en', "'auto' + en-US → en（既有判定）");
+  check(resolveRendererLocale(ZH, 'auto') === 'zh', "'auto' + zh-CN → zh（既有判定）");
+  check(resolveRendererLocale(() => 'fr-FR', 'auto') === 'en', "'auto' + 未支持语言 → en（默认英文）");
+  // ③ 非法值（手改 config.json）→ 默认英文，而不是回落自动判定
+  check(resolveRendererLocale(EN, 'fr') === 'en', "非法值 'fr' 必须按默认英文，不得回落 en-US 判定");
+  check(resolveRendererLocale(EN, '') === 'en', '空串设置 → 默认英文');
+  check(resolveRendererLocale(EN, 42) === 'en', '非字符串设置 → 默认英文');
+  // ④ 不传设置 = 旧行为（12 个既有调用点因此不受影响）
+  check(resolveRendererLocale(EN) === 'en', '未提供设置时保持既有自动判定（en-US → en）');
+  check(resolveRendererLocale(ZH) === 'zh', '未提供设置时保持既有自动判定（zh-CN → zh）');
+  // ⑤ 启动期灌入的模块级设置——**消费者读到的就是它**（12 个调用点都只传一个参数）
+  setRendererLanguageSetting('en');
+  check(getRendererLanguageSetting() === 'en', '模块级设置必须可读回（启动期灌入值）');
+  check(resolveRendererLocale(ZH) === 'en', "模块级设置 'en' 必须让只传一个参数的调用点得到 en");
+  setRendererLanguageSetting('zh');
+  check(resolveRendererLocale(EN) === 'zh', "模块级设置 'zh' 必须让只传一个参数的调用点得到 zh");
+  setRendererLanguageSetting('auto');
+  check(resolveRendererLocale(EN) === 'en', "模块级设置 'auto' → 回落自动判定");
+  setRendererLanguageSetting('fr');
+  check(resolveRendererLocale(EN) === 'en', '模块级设置是非法值时 → 默认英文');
+  setRendererLanguageSetting('');
+  check(getRendererLanguageSetting() === undefined, '空串按"没有设置"处理（避免用空值覆盖默认）');
+  check(resolveRendererLocale(EN) === 'en', '空串设置不参与判定 → 自动判定');
+  // 显式参数优先于模块级设置（测试/工具调用点靠这条）
+  setRendererLanguageSetting('en');
+  check(resolveRendererLocale(ZH, 'zh') === 'zh', '显式参数必须优先于模块级设置');
+  setRendererLanguageSetting(undefined);
+  check(resolveRendererLocale(EN) === 'en', '复位后回到自动判定（不污染后续断言）');
+  // 显式设置下**不该**再读 navigator.language（读 = 判定层还在偷看系统语言）
+  let languageReads = 0;
+  resolveRendererLocale(() => { languageReads++; return 'en-US'; }, 'zh');
+  check(languageReads === 0, "显式设置生效时不得调用 getLanguage()（否则是'设置没赢'的另一种写法）");
+
+  // ⑥ 新增的界面语言键：两张表都必须有且非空（执行层面的复核；静态守卫查排版）
+  for (const key of [
+    'cfg.gen.groupInterface',
+    'cfg.gen.uiLanguageLabel',
+    'cfg.gen.uiLanguageZh',
+    'cfg.gen.uiLanguageEn',
+    'cfg.gen.uiLanguageAuto',
+    'cfg.gen.uiLanguageHint',
+  ]) {
+    for (const lang of ['zh', 'en']) {
+      const v = CFG_TEXTS[lang][key];
+      check(typeof v === 'string' && v.length > 0, `${lang} 表缺键或值为空：${key}`);
+    }
+  }
+  check(
+    Object.keys(CFG_TEXTS.zh).length === Object.keys(CFG_TEXTS.en).length,
+    'zh/en 文案表键数必须一致（执行层面复核键位对齐）',
+  );
+
+  // ⑦ 接线守卫（静态）：设置必须真的接到三处——设置页下拉、启动期灌入、判定层
+  const mainSrc = readFileSync(resolve(root, 'main.tsx'), 'utf8');
+  check(
+    mainSrc.includes('setRendererLanguageSetting(') && mainSrc.includes('getConfig'),
+    'main.tsx 必须在渲染 App 前经既有 config:get 通道灌入界面语言设置',
+  );
+  check(
+    // 文案表在模块作用域求值 ⇒ App/ErrorBoundary 必须在设置就位后**动态** import
+    /import\('\.\/App'\)/.test(mainSrc) && !/from '\.\/App'/.test(mainSrc),
+    'main.tsx 必须动态 import App（静态 import 会在灌入设置之前求值文案表）',
+  );
+  check(
+    /import\('\.\/components\/ErrorBoundary'\)/.test(mainSrc) &&
+      !/from '\.\/components\/ErrorBoundary'/.test(mainSrc),
+    'main.tsx 必须动态 import ErrorBoundary（同上：它也在模块作用域取文案）',
+  );
+  check(
+    readFileSync(resolve(root, 'i18n.ts'), 'utf8').includes("from '../main/ui-language'"),
+    'i18n.ts 的判定必须复用 main/ui-language.ts（不得再写第二份规则）',
+  );
+  check(
+    config.includes("set('uiLanguage'") && config.includes('uiLanguageValue(form.uiLanguage)'),
+    'ConfigPage 必须有界面语言下拉（受控值走 uiLanguageValue，非法值显示默认中文）',
+  );
+  check(
+    config.includes('languageChangeReloadsUi(') && config.includes('window.location.reload()'),
+    'ConfigPage 必须在语言真的变化时重载窗口（否则"保存了却不生效"）',
+  );
+  check(
+    /about: \[[^\]]*'uiLanguage'[^\]]*\]/.test(config) &&
+      config.includes("['uiLanguage', 'cfg.gen.uiLanguageLabel']"),
+    'ConfigPage 必须把 uiLanguage 登记进 about 分区键（未保存圆点）与改动清单字段名表',
+  );
+}
+
 // ── 审计三轮：B-3 / B-6 / B-8 / B-9 / B-11 渲染侧守卫 ─────────────────
 {
   const execRaw = readFileSync(resolve(root, '..', 'main', 'executor-process.ts'), 'utf8');

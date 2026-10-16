@@ -31,7 +31,11 @@ describe("ExecutionCallbackController", () => {
   let systemConfigService: { findOne: jest.Mock };
   let executorService: {
     validateTokenByAddress: jest.Mock;
+    validateTokenByAddressAnyRow: jest.Mock;
     getCallbackSecretByAddress: jest.Mock;
+    getCallbackSecretCandidatesByAddress: jest.Mock;
+    resolveCredentialExecutorId: jest.Mock;
+    resolveExecutorIdByFingerprint: jest.Mock;
   };
   // N32: real in-memory counter service — the auth-metric tests below read
   // its snapshot to assert the classification of each failure branch.
@@ -55,9 +59,35 @@ describe("ExecutionCallbackController", () => {
     };
     executorService = {
       validateTokenByAddress: jest.fn().mockResolvedValue(true),
+      // ADR-017 阶段 3：回调面改用「同址任一行匹配即通过」。既有用例全部通过
+      // 改写 validateTokenByAddress 来开关鉴权，故此处委派给它 —— 断言与开关
+      // 语义逐字节保留（改的是实现走哪个方法，不是判定强度）。
+      validateTokenByAddressAnyRow: jest.fn((addr: string, token: string) =>
+        executorService.validateTokenByAddress(addr, token),
+      ),
       // N26: per-executor tokenHash candidate — default "unknown address".
       getCallbackSecretByAddress: jest.fn().mockResolvedValue(null),
+      // ADR-017 阶段 3：该地址上全部行的 tokenHash 候选。默认由
+      // getCallbackSecretByAddress 的返回值派生，保证既有用例的
+      // 「设置单值 → 期望被用作候选」语义不变。
+      getCallbackSecretCandidatesByAddress: jest.fn().mockResolvedValue([]),
+      // ADR-017 阶段 3（复查补口）：控制器在鉴权时**服务端推导**所持凭据属于
+      // 哪一行（供 service 层做行身份判定）。默认 null = 共享令牌路径
+      // （不绑定任何行）→ 既有用例的地址判据语义逐字节保留。
+      resolveCredentialExecutorId: jest.fn().mockResolvedValue(null),
+      // ADR-017 阶段 3（协议 v6）：回调自报指纹 → 行 id（服务端查库）。
+      // 默认 null = 未上报/查不到，回落凭据与地址判据。
+      resolveExecutorIdByFingerprint: jest.fn().mockResolvedValue(null),
     };
+    // 旧用例通过改写 getCallbackSecretByAddress 来设置候选；让新方法从它派生，
+    // 这样既有断言（含 on/off 切换与 fail-closed 例）无需逐个重写。
+    executorService.getCallbackSecretCandidatesByAddress.mockImplementation(
+      async (addr: string) => {
+        const single: string | null =
+          await executorService.getCallbackSecretByAddress(addr);
+        return single ? [single] : [];
+      },
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ExecutionCallbackController],
@@ -86,11 +116,63 @@ describe("ExecutionCallbackController", () => {
         controller.callback("Bearer dynamic-token", undefined, [item]),
       ).resolves.toBeDefined();
 
-      expect(executorService.validateTokenByAddress).toHaveBeenCalledWith(
+      expect(executorService.validateTokenByAddressAnyRow).toHaveBeenCalledWith(
         "executor-python:8001",
         "dynamic-token",
       );
-      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+      expect(taskService.handleCallback).toHaveBeenCalledWith(
+        [item],
+        // ADR-017 阶段 3（复查补口）：控制器附带**服务端推导**的
+        // 凭据归属行映射（resolveCredentialExecutorId 默认 null =
+        // 共享令牌路径，不绑定任何行）。
+        expect.any(Map),
+        // ADR-017 阶段 3（协议 v6）：指纹解析出的行映射（按 executionId 分键）。
+        expect.any(Map),
+      );
+    });
+
+    // 反证（本轮实测发现并修掉的**控制器侧**缺陷）：指纹映射必须**按
+    // executionId 分键**，且解析必须发生在批次地址去重守卫**之前**。
+    //
+    // 场景：同批次两条执行同址不同行（ADR-017 §5，pull 同址多行并存），各自
+    // 上报自己的指纹。若按 address 分键 + 放在去重守卫之后，只有第一条被解析，
+    // 第二条会拿第一条的行去做判定 → 误拒合法回调。
+    //
+    // 反证：把控制器里的 `fingerprintExecutorIdByExecution.set(item.executionId,…)`
+    // 改成 `…ByAddress.set(addr,…)` 并移到 `if (seenAddresses.has(addr)) continue;`
+    // 之后 → 本用例转红（第二条的映射缺失，解析为 null）。
+    it("ADR-017 v6: resolves the fingerprint PER executionId (two same-address rows in one batch both resolve)", async () => {
+      executorService.resolveExecutorIdByFingerprint.mockImplementation(
+        async (fp?: string | null) => {
+          if (!fp) return null;
+          const map: Record<string, string> = {
+            ["a".repeat(64)]: "row-a",
+            ["b".repeat(64)]: "row-b",
+          };
+          return map[fp] ?? null;
+        },
+      );
+
+      const itemA = makeCallbackItem({
+        executorAddress: "same-host:8001",
+        deviceFingerprint: "a".repeat(64),
+      });
+      const itemB = makeCallbackItem({
+        executionId: "6b4adba5-a2f8-4fe7-bf4f-5277d0d7f2b7",
+        executorAddress: "same-host:8001",
+        deviceFingerprint: "b".repeat(64),
+      });
+
+      await controller.callback(`Bearer dynamic-token`, undefined, [
+        itemA,
+        itemB,
+      ]);
+
+      // handleCallback 拿到的指纹映射必须**两条都有**，且各自命中自己的行。
+      const call = taskService.handleCallback.mock.calls[0];
+      const fpMap = call[2] as Map<string, string | null>;
+      expect(fpMap.get(itemA.executionId)).toBe("row-a");
+      expect(fpMap.get(itemB.executionId)).toBe("row-b");
     });
 
     it("accepts shared token for single-executor callback as fallback", async () => {
@@ -108,7 +190,15 @@ describe("ExecutionCallbackController", () => {
         [item],
       );
       expect(result.results).toBeDefined();
-      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+      expect(taskService.handleCallback).toHaveBeenCalledWith(
+        [item],
+        // ADR-017 阶段 3（复查补口）：控制器附带**服务端推导**的
+        // 凭据归属行映射（resolveCredentialExecutorId 默认 null =
+        // 共享令牌路径，不绑定任何行）。
+        expect.any(Map),
+        // ADR-017 阶段 3（协议 v6）：指纹解析出的行映射（按 executionId 分键）。
+        expect.any(Map),
+      );
     });
 
     it("rejects shared token when callback batch spans multiple executor addresses", async () => {
@@ -213,7 +303,15 @@ describe("ExecutionCallbackController", () => {
         failureReason: ExecutionFailureReason.SCRIPT_ERROR,
       });
       await controller.callback(`Bearer ${VALID_TOKEN}`, undefined, [item]);
-      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+      expect(taskService.handleCallback).toHaveBeenCalledWith(
+        [item],
+        // ADR-017 阶段 3（复查补口）：控制器附带**服务端推导**的
+        // 凭据归属行映射（resolveCredentialExecutorId 默认 null =
+        // 共享令牌路径，不绑定任何行）。
+        expect.any(Map),
+        // ADR-017 阶段 3（协议 v6）：指纹解析出的行映射（按 executionId 分键）。
+        expect.any(Map),
+      );
     });
 
     it("passes durationMs, logs, and executorAddress through", async () => {
@@ -223,7 +321,15 @@ describe("ExecutionCallbackController", () => {
         executorAddress: "executor-python:8001",
       });
       await controller.callback("Bearer dynamic-token", undefined, [item]);
-      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+      expect(taskService.handleCallback).toHaveBeenCalledWith(
+        [item],
+        // ADR-017 阶段 3（复查补口）：控制器附带**服务端推导**的
+        // 凭据归属行映射（resolveCredentialExecutorId 默认 null =
+        // 共享令牌路径，不绑定任何行）。
+        expect.any(Map),
+        // ADR-017 阶段 3（协议 v6）：指纹解析出的行映射（按 executionId 分键）。
+        expect.any(Map),
+      );
     });
   });
 
@@ -243,7 +349,9 @@ describe("ExecutionCallbackController", () => {
       expect(result.results).toBeDefined();
       expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
       // Per-execution tokens bypass the per-address shared-token dance.
-      expect(executorService.validateTokenByAddress).not.toHaveBeenCalled();
+      expect(
+        executorService.validateTokenByAddressAnyRow,
+      ).not.toHaveBeenCalled();
     });
 
     it("accepts a token derived from the dedicated EXECUTION_CALLBACK_SECRET", async () => {
@@ -327,8 +435,16 @@ describe("ExecutionCallbackController", () => {
       // per-address check + shared-token fallback exactly as before.
       const item = makeCallbackItem();
       await controller.callback(`Bearer ${VALID_TOKEN}`, undefined, [item]);
-      expect(executorService.validateTokenByAddress).toHaveBeenCalled();
-      expect(taskService.handleCallback).toHaveBeenCalledWith([item]);
+      expect(executorService.validateTokenByAddressAnyRow).toHaveBeenCalled();
+      expect(taskService.handleCallback).toHaveBeenCalledWith(
+        [item],
+        // ADR-017 阶段 3（复查补口）：控制器附带**服务端推导**的
+        // 凭据归属行映射（resolveCredentialExecutorId 默认 null =
+        // 共享令牌路径，不绑定任何行）。
+        expect.any(Map),
+        // ADR-017 阶段 3（协议 v6）：指纹解析出的行映射（按 executionId 分键）。
+        expect.any(Map),
+      );
     });
 
     // N26 (round-8, 方案A): when every fleet-global candidate fails, the

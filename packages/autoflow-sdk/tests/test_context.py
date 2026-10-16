@@ -4,6 +4,10 @@ import pytest
 from autoflow_sdk.callback import CallbackClient, CallbackDisabledError
 from autoflow_sdk.context import TaskContext
 
+# ADR-017 阶段 3 (protocol v6): the same 64-lowercase-hex shape the executor
+# reports on register/heartbeat — sha256(deviceId + ":" + installSalt).
+DEVICE_FP = "3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9"
+
 
 class TestTaskContextConstructor:
     def test_required_fields(self):
@@ -302,38 +306,54 @@ class TestFromEnvCallbackCredentials:
         monkeypatch.setenv("AUTOFLOW_CALLBACK_TOKEN", "v1.exec.expsig")
         monkeypatch.setenv("AUTOFLOW_ADMIN_API_URL", "http://admin:3105")
         monkeypatch.setenv("AUTOFLOW_EXECUTOR_ADDRESS", "executor-py:8001")
+        monkeypatch.setenv("AUTOFLOW_DEVICE_FINGERPRINT", DEVICE_FP)
         ctx = TaskContext.from_env()
         assert ctx.callback_token == "v1.exec.expsig"
         assert ctx.admin_api_url == "http://admin:3105"
         assert ctx.executor_address == "executor-py:8001"
+        assert ctx.device_fingerprint == DEVICE_FP
 
     def test_credentials_excluded_from_params(self, monkeypatch):
         monkeypatch.setenv("AUTOFLOW_CALLBACK_TOKEN", "v1.exec.expsig")
         monkeypatch.setenv("AUTOFLOW_ADMIN_API_URL", "http://admin:3105")
         monkeypatch.setenv("AUTOFLOW_EXECUTOR_ADDRESS", "executor-py:8001")
+        monkeypatch.setenv("AUTOFLOW_DEVICE_FINGERPRINT", DEVICE_FP)
         monkeypatch.setenv("AUTOFLOW_DATE", "2026-09-03")
         ctx = TaskContext.from_env()
         assert ctx.params == {"date": "2026-09-03"}
-        for key in ("callback_token", "admin_api_url", "executor_address"):
+        for key in (
+            "callback_token",
+            "admin_api_url",
+            "executor_address",
+            "device_fingerprint",
+        ):
             assert key not in ctx.params
 
     def test_partial_credentials_still_excluded(self, monkeypatch):
         monkeypatch.setenv("AUTOFLOW_CALLBACK_TOKEN", "v1.only")
         monkeypatch.delenv("AUTOFLOW_ADMIN_API_URL", raising=False)
         monkeypatch.delenv("AUTOFLOW_EXECUTOR_ADDRESS", raising=False)
+        monkeypatch.delenv("AUTOFLOW_DEVICE_FINGERPRINT", raising=False)
         ctx = TaskContext.from_env()
         assert ctx.callback_token == "v1.only"
         assert ctx.admin_api_url is None
         assert ctx.executor_address is None
+        assert ctx.device_fingerprint is None
         assert "callback_token" not in ctx.params
 
     def test_absent_credentials_leave_fields_none(self, monkeypatch):
-        for key in ("AUTOFLOW_CALLBACK_TOKEN", "AUTOFLOW_ADMIN_API_URL", "AUTOFLOW_EXECUTOR_ADDRESS"):
+        for key in (
+            "AUTOFLOW_CALLBACK_TOKEN",
+            "AUTOFLOW_ADMIN_API_URL",
+            "AUTOFLOW_EXECUTOR_ADDRESS",
+            "AUTOFLOW_DEVICE_FINGERPRINT",
+        ):
             monkeypatch.delenv(key, raising=False)
         ctx = TaskContext.from_env()
         assert ctx.callback_token is None
         assert ctx.admin_api_url is None
         assert ctx.executor_address is None
+        assert ctx.device_fingerprint is None
         assert ctx.callback.enabled is False
 
 
@@ -343,6 +363,7 @@ class TestCallbackProperty:
             task_id="t", execution_id="exec-1", task_name="T",
             callback_token="v1.tok", admin_api_url="http://admin:3105",
             executor_address="exec:8001",
+            device_fingerprint=DEVICE_FP,
         )
 
     def test_callback_is_lazy_singleton(self):
@@ -356,6 +377,16 @@ class TestCallbackProperty:
         ctx = self._ctx()
         assert ctx.callback.execution_id == "exec-1"
         assert ctx.callback.executor_address == "exec:8001"
+        # ADR-017 阶段 3: the fingerprint must reach the client — that is the
+        # only path by which it can be stamped onto callback items.
+        assert ctx.callback.device_fingerprint == DEVICE_FP
+
+    def test_callback_client_gets_no_fingerprint_when_ctx_has_none(self):
+        ctx = TaskContext(
+            task_id="t", execution_id="exec-1", task_name="T",
+            callback_token="v1.tok", admin_api_url="http://admin:3105",
+        )
+        assert ctx.callback.device_fingerprint == ""
 
     def test_report_success_delegates_to_client(self):
         ctx = TaskContext(task_id="t", execution_id="e", task_name="T")

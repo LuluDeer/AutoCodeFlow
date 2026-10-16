@@ -19,8 +19,26 @@ import { Notifier } from './notifier';
 import { HistoryWatcher, metaDirFor } from './history-watcher';
 import { createCrashGuard } from './crash-guard';
 import { resolveTrayLocale } from './tray-texts';
+import { UI_LANGUAGE_DEFAULT } from './ui-language';
 import * as path from 'path';
 import log, { applyLogLevel, initLogCleanup } from './logger';
+
+/**
+ * i18n-DESK-01：主进程侧读取「界面语言」设置的唯一入口。
+ *
+ * `configStore` 在本文件下方才构造（第 69 行附近的 `export const configStore`），
+ * 而崩溃兜底必须在它之前注册——这里的 `try` 兜的就是"配置存储还没构造好就崩了"
+ * 的窗口期：此时读不到设置，返回 undefined = 回落系统语言自动判定（绝不能在
+ * 崩溃处理器里再抛一个 ReferenceError，那会把兜底本身变成第二次崩溃）。
+ * 另外 ConfigStore.get 读的是已落盘配置，defaults 保证旧配置文件也能读到 'zh'。
+ */
+function savedUiLanguage(): string | undefined {
+  try {
+    return configStore.get('uiLanguage') ?? UI_LANGUAGE_DEFAULT;
+  } catch {
+    return undefined;
+  }
+}
 
 // WIN-DISPLAY-HWACCEL (1.4.5 hotfix / N48)：部分 Windows 机器/显卡驱动上，
 // Chromium 硬件加速合成失败会表现为「窗口有背景色但内容黑屏」——与 v1.4.4
@@ -58,7 +76,7 @@ let isQuitting = false;
 const crashGuard = createCrashGuard({
   logError: (message) => log.error(message),
   showErrorBox: (title, body) => dialog.showErrorBox(title, body),
-  locale: () => resolveTrayLocale(() => app.getLocale()),
+  locale: () => resolveTrayLocale(() => app.getLocale(), savedUiLanguage()),
   isQuitting: () => isQuitting,
   quitApp: () => app.quit(),
   forceExit: (code) => process.exit(code),
@@ -180,6 +198,10 @@ app.whenReady().then(async () => {
     trayManager.rebuildMenu();
   };
   trayManager.getAutoLaunch = () => configStore.get('autoStart');
+  // i18n-DESK-01：托盘语言跟随设置页的 uiLanguage 设置（每次重建菜单实时读，
+  // 保存后 ipc-handlers 的 finalizeConfigSave 会 rebuildMenu → 当场切换）。
+  // `?? UI_LANGUAGE_DEFAULT` 兜的是"键缺失/被清空"——默认中文（产品要求）。
+  trayManager.getUiLanguage = () => savedUiLanguage();
 
   // 执行器状态变化 → 同步托盘图标 + 系统通知（DSK-04：仅 offline 转移报）
   executorProcess.setStatusCallback((status) => {

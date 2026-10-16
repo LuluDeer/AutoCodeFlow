@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import {
@@ -13,6 +8,11 @@ import {
   isProjectRole,
 } from "./entities/project-member.entity";
 import { DEFAULT_PROJECT_ID } from "./project.entity";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * AUTH-02（项目级角色细化）：项目成员管理与角色判定。
@@ -124,9 +124,7 @@ export class ProjectAccessService {
     this.assertRole(role);
     const row = await this.repo.findOne({ where: { projectId, userId } });
     if (!row) {
-      throw new NotFoundException(
-        `User ${userId} is not a member of project ${projectId}`,
-      );
+      throw new AppError(ErrorCode.PROJECT_NOT_MEMBER, { userId, projectId });
     }
     row.role = role;
     return this.toView(await this.repo.save(row));
@@ -142,9 +140,9 @@ export class ProjectAccessService {
 
   private assertRole(role: unknown): asserts role is ProjectRole {
     if (!isProjectRole(role)) {
-      throw new BadRequestException(
-        `invalid project role ${String(role)}; expected one of viewer, editor, admin`,
-      );
+      throw new AppError(ErrorCode.PROJECT_INVALID_ROLE, {
+        role: String(role),
+      });
     }
   }
 

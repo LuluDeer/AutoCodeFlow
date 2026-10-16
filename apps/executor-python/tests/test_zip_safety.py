@@ -457,7 +457,7 @@ def test_safe_extract_rejects_methods_node_cannot_decompress(tmp_path, method):
         safe_extract(archive, dest)
 
     assert exc.value.violation == 'unsupported_method'
-    assert f'method {method}' in exc.value.detail
+    assert f'压缩方法 {method}' in exc.value.detail
     assert not (dest / 'a.txt').exists(), '拒绝必须发生在写出任何字节之前'
 
 

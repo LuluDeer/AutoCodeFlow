@@ -29,15 +29,15 @@ def get_execution_logs(
 ) -> LogsResponse:
     # Path traversal guard: reject IDs that contain '..' or path separators
     if '..' in execution_id or '/' in execution_id or '\\' in execution_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid executionId')
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='无效的 executionId')
     base = Path(settings.work_dir).resolve()
     # B-05: log is written inside the execution's work subdirectory by execute.py
     log_file = (base / execution_id / f'{execution_id}.log').resolve()
     if not str(log_file).startswith(str(base)):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid executionId')
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='无效的 executionId')
 
     if not log_file.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Log file not found')
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='日志文件不存在')
 
     # E-21（DEEP_REVIEW 0ef3bbe）：旧实现 read_text().splitlines() 把整份日志（上限
     # 64MB，MAX_LOG_FILE_BYTES）每请求全量读入内存并 splitlines（~3x 峰值内存），

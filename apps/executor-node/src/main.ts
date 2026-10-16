@@ -94,13 +94,13 @@ app.post('/api/shutdown', (req, res) => {
   const bearer =
     parts.length === 2 && parts[0].toLowerCase() === 'bearer' ? parts[1] : null;
   if (!matchesExecutorCredential(bearer)) {
-    res.status(401).json({ error: 'Invalid or missing executor token' });
+    res.status(401).json({ error: '执行器令牌无效或缺失' });
     return;
   }
   logger.info(
     'Authorized HTTP shutdown request received — initiating graceful shutdown',
   );
-  res.status(202).json({ ok: true, message: 'graceful shutdown initiated' });
+  res.status(202).json({ ok: true, message: '已开始优雅停机' });
   setTimeout(() => {
     void gracefulShutdown('HTTP_SHUTDOWN');
   }, 50).unref();
@@ -261,6 +261,10 @@ async function notifyOffline(): Promise<void> {
   try {
     await post('/api/executors/offline', {
       address: config.executorAddressPublic || config.executorAddress,
+      // ADR-017 阶段 3：带上指纹，服务端据此**只下线自己那一行**（pull 同地址
+      // 多行并存时按地址无界下线会把别人也置离线）。采集失败 → undefined，
+      // 服务端 legacy 路径，行为与引入前一致。
+      deviceFingerprint: getDeviceFingerprint() ?? undefined,
     });
     logger.info('Sent offline notification to admin-api');
   } catch (err: any) {

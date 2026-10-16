@@ -56,6 +56,12 @@ import {
   SUBSCRIBABLE_EVENTS,
   subscriptionMatches,
 } from "./event-subscription.util";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。⚠️ 本文件的两处抛点原为**裸 Error**（对外 500，落
+// event_outbox_dead_letters.lastError 供运维面消费），迁码时 status 取 500
+// 保持对外状态码不变。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * FEAT-19 依赖方向说明：OutboxDispatcher（补投方）复用本类派发面；本类对
@@ -308,9 +314,9 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       });
     } catch (err: unknown) {
       // 订阅 url 被 SSRF 拒：确定性失败，重试无意义，直接终败。
-      throw new Error(
-        `URL rejected by SSRF policy: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw new AppError(ErrorCode.EVENT_OUTBOUND_SSRF_BLOCKED, {
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
     const body = JSON.stringify(payload);
     const timestamp = Date.now().toString();
@@ -390,11 +396,10 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
         },
       });
     } catch (err: unknown) {
-      throw new Error(
-        `Outbound redeliver "${eventName}": failed to load subscriptions: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      throw new AppError(ErrorCode.EVENT_OUTBOUND_SUBSCRIPTIONS_LOAD_FAILED, {
+        eventName,
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
     const targets = subs.filter((s) =>
       subscriptionMatches(s.eventTypes, eventName),

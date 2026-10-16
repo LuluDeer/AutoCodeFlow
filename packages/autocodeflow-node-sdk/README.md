@@ -103,6 +103,7 @@ const tasks = await http.get('/api/tasks');
 | `AUTOFLOW_ADMIN_API_URL` | Admin API 基地址（非机密路由信息，N23 起注入） | `AUTOFLOW_ADMIN_API_URL=http://admin-api:3105` |
 | `AUTOFLOW_CALLBACK_TOKEN` | 本次执行的一次性回调 token（`v1.` HMAC，绑定 executionId、随 TTL 过期，N23 起注入） | `AUTOFLOW_CALLBACK_TOKEN=v1.<uuid>.<exp>.<hmac>` |
 | `AUTOFLOW_EXECUTOR_ADDRESS` | 当前执行器注册地址（非机密路由信息，N27 起注入；SDK 经 `ctx.executorAddress`（Node）/ `ctx.executor_address`（Python）暴露并自动填入回调请求） | `AUTOFLOW_EXECUTOR_ADDRESS=executor-node:8002` |
+| `AUTOFLOW_DEVICE_FINGERPRINT` | 当前执行器的稳定安装身份（非机密，协议 v6 起注入；SDK 经 `ctx.deviceFingerprint`（Node）/ `ctx.device_fingerprint`（Python）暴露并自动填入回调请求）。**回调的行身份**——两台执行器共用同一地址时（pull 模式允许），仅靠地址无法判断回调来自哪一行 | `AUTOFLOW_DEVICE_FINGERPRINT=<64 位小写十六进制>` |
 
 兼容的旧式/手动覆盖变量（显式设置时优先）：`ADMIN_API_URL`、
 `EXECUTOR_TOKEN`、`TRACE_ID`。

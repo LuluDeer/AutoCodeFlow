@@ -1,5 +1,8 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
+import { AppError } from "../../../common/errors/app-error";
 import { PassportStrategy } from "@nestjs/passport";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import type { Request } from "express";
@@ -112,21 +115,27 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // SSE stream paths (see extractJwtFromRequest), so a ticket can never be
     // replayed against a normal REST route.
     if (payload.type !== "access" && payload.type !== "sse_ticket") {
-      throw new UnauthorizedException("Invalid token type");
+      throw new AppError("ACCESS_TOKEN_TYPE_INVALID");
     }
     // R-04: findByIdOrNull — a token belonging to a deleted user must 401
     // ("User not found"), never 404 via findById (presence/id disclosure).
     // With the null-returning lookup the guard below is finally live code.
     const user = await this.usersService.findByIdOrNull(payload.sub);
-    if (!user) throw new UnauthorizedException("User not found");
+    // 401 而**不是** 404：向"持有看似有效令牌"的调用方区分「用户不存在」与
+    // 「令牌无效」会构成存在性预言机（见 catalog 里 TOKEN_USER_NOT_FOUND 的说明）。
+    if (!user) throw new AppError("TOKEN_USER_NOT_FOUND");
     // S1: reject disabled accounts even when their JWT is still valid
-    if (!user.isActive) throw new UnauthorizedException("Account is disabled");
+    // （用 ACCOUNT_INACTIVE 而非 ACCOUNT_DISABLED：本条路径旧实现是
+    //   `UnauthorizedException("Account is disabled")` = **401**，与登录链一致；
+    //   而 ACCOUNT_DISABLED 是 403（另一条语义，见 catalog 注释）。状态码属对外
+    //   契约，spec 明文断言 401，故不能为了「文案一样」换码。）
+    if (!user.isActive) throw new AppError("ACCOUNT_INACTIVE");
     // WIKI-AUTH-REVOC: 会话版本比对——payload.ver 是签发时刻快照，库中
     // sessionVersion 在 logout / 改密时原子 +1，不一致即「令牌签发后该用户
     // 的会话已被撤销」。存量旧令牌无 ver claim（undefined）→ 跳过比对，
     // 维持「到期自然失效」的兼容语义（部署前签发的令牌零破坏）。
     if (payload.ver !== undefined && payload.ver !== user.sessionVersion) {
-      throw new UnauthorizedException("Session has been revoked");
+      throw new AppError("SESSION_REVOKED");
     }
     // A-2（R3-A 审计）: sid 随 validate 返回值进入 req.user——此前只 return
     // user（User 实体，无 sid 属性），auth.controller 的 sidOf(req) 恒 null：

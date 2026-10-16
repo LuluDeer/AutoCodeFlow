@@ -1,9 +1,7 @@
-import {
-  Injectable,
-  Logger,
-  ServiceUnavailableException,
-} from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+// LANG-ERR-01：用户面抛出走稳定码（前端按用户语言渲染）
+import { AppError } from "../../common/errors/app-error";
 import { setRuntimeGauge } from "./runtime-metrics-entry";
 
 /**
@@ -49,9 +47,7 @@ export class MetricsStreamSlotService {
   acquireSlot(): () => void {
     const max = this.maxGlobal;
     if (this.activeStreams >= max) {
-      throw new ServiceUnavailableException(
-        `Too many concurrent metrics streams (max ${max})`,
-      );
+      throw new AppError("METRICS_STREAM_LIMIT_REACHED", { max });
     }
     this.activeStreams++;
     setRuntimeGauge("autoflow_metrics_streams_active", this.activeStreams);

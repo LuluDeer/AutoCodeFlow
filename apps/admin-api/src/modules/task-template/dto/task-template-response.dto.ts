@@ -21,41 +21,42 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * `createdBy?: string | null`，既有消费方（不读该字段）零影响。
  */
 export class TaskTemplateResponseDto {
-  @ApiProperty({ description: "Template UUID", format: "uuid" })
+  @ApiProperty({
+    format: "uuid",
+    description: "模板 UUID",
+  })
   id: string;
 
   @ApiProperty({
-    description:
-      "Stable unique key. Official templates use fixed keys " +
-      "(scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping) " +
-      "aligned with the MCP TASK_TEMPLATES; custom keys are user-suggested.",
     example: "scheduled_backup",
+    description:
+      "稳定唯一键。官方模板使用固定键（scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping），与 MCP 的 TASK_TEMPLATES 对齐；自定义键由用户建议。",
   })
   key: string;
 
-  @ApiProperty({ description: "Display name", maxLength: 128 })
+  @ApiProperty({
+    maxLength: 128,
+    description: "显示名称",
+  })
   name: string;
 
   @ApiPropertyOptional({
-    description: "Human description shown on template cards",
     nullable: true,
     type: "string",
+    description: "模板卡片上展示的人类可读描述",
   })
   description: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag",
     nullable: true,
     type: "string",
     maxLength: 32,
+    description:
+      "Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag",
   })
   category: string | null;
 
   @ApiProperty({
-    description:
-      "Valid CreateTaskDto subset (no `name`; provided at instantiate time). " +
-      "Used as defaults when instantiating a task from this template.",
     type: "object",
     additionalProperties: true,
     example: {
@@ -68,29 +69,27 @@ export class TaskTemplateResponseDto {
       retryDelay: 60,
       blockStrategy: "discard",
     },
+    description:
+      "合法的 CreateTaskDto 子集（不含 `name`；在实例化时提供）。从此模板实例化任务时用作默认值。",
   })
   config: Record<string, unknown>;
 
-  @ApiProperty({
-    description:
-      "True for migration-seeded official presets (read-only, cannot be deleted)",
-  })
+  @ApiProperty({ description: "迁移预置的官方预设为 true（只读，不可删除）" })
   isOfficial: boolean;
 
   @ApiPropertyOptional({
-    description:
-      "Username of the creator (JWT username). null = legacy row / official seed; " +
-      "deletion of null-owner rows is ADMIN-only.",
     nullable: true,
     type: "string",
     maxLength: 100,
+    description:
+      "创建者的用户名（JWT 用户名）。null = legacy 行/官方 seed；属主为 null 的行仅 ADMIN 可删除。",
   })
   createdBy: string | null;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Last update time (ISO-8601)" })
+  @ApiProperty({ description: "最后更新时间（ISO-8601）" })
   updatedAt: Date;
 }
 
@@ -103,32 +102,35 @@ export class TaskTemplateResponseDto {
  * （GET /tasks/{id}），不在本 DTO 复制第二份。
  */
 export class InstantiateTaskResponseDto {
-  @ApiProperty({ description: "Created task UUID", format: "uuid" })
+  @ApiProperty({
+    format: "uuid",
+    description: "已创建任务的 UUID",
+  })
   id: string;
 
   @ApiProperty({
-    description: "Task name (from the overlay body; unique across tasks)",
+    description: "任务名称（取自 overlay 请求体；在全部任务中唯一）",
   })
   name: string;
 
   @ApiProperty({
-    description: "Lifecycle status of the created task",
     enum: ["active", "paused", "deleted"],
+    description: "所创建任务的生命周期状态",
   })
   status: string;
 
   @ApiProperty({
-    description: "Trigger type expanded from the template config / overlay",
     enum: ["cron", "fixed_rate", "api", "manual"],
+    description: "由模板 config / overlay 展开得到的触发类型",
   })
   triggerType: string;
 
   @ApiProperty({
-    description: "Runtime the executor will use",
     enum: ["python", "node", "shell"],
+    description: "执行器将使用的运行时",
   })
   runtime: string;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 }

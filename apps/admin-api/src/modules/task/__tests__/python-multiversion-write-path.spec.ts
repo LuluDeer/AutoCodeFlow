@@ -270,7 +270,7 @@ describe("python_task_multiversion 写面契约", () => {
           runtime: TaskRuntime.NODE,
           runtimeVersion: "3.12",
         } as any),
-      ).rejects.toThrow(/only supported for runtime=python/);
+      ).rejects.toThrow(/仅支持 runtime=python/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -346,7 +346,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { runtimeVersion: "3.12" } as any),
-      ).rejects.toThrow(/only supported for runtime=python/);
+      ).rejects.toThrow(/仅支持 runtime=python/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -374,7 +374,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { runtime: TaskRuntime.NODE } as any),
-      ).rejects.toThrow(/only supported for runtime=python/);
+      ).rejects.toThrow(/仅支持 runtime=python/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -442,7 +442,7 @@ describe("python_task_multiversion 写面契约", () => {
           gitRepo: "https://example.com/r.git",
           glueSource: "print(1)",
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -454,7 +454,7 @@ describe("python_task_multiversion 写面契约", () => {
           applicationId: APP_ID,
           codeSource: TaskCodeSource.APPLICATION_ZIP,
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -466,7 +466,7 @@ describe("python_task_multiversion 写面契约", () => {
           applicationId: APP_ID,
           codeSource: TaskCodeSource.APPLICATION_ZIP,
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -476,7 +476,7 @@ describe("python_task_multiversion 写面契约", () => {
           name: "t",
           codeSource: TaskCodeSource.APPLICATION_ZIP,
         } as any),
-      ).rejects.toThrow(/requires applicationId/);
+      ).rejects.toThrow(/需要提供 applicationId/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -486,7 +486,7 @@ describe("python_task_multiversion 写面契约", () => {
           name: "t",
           codeSource: TaskCodeSource.GIT,
         } as any),
-      ).rejects.toThrow(/inconsistent with the task's code source fields/);
+      ).rejects.toThrow(/与任务的代码来源字段不一致/);
     });
 
     it("create 拒绝 codeSource=glue 但无 glueSource（声明漂移）", async () => {
@@ -495,7 +495,7 @@ describe("python_task_multiversion 写面契约", () => {
           name: "t",
           codeSource: TaskCodeSource.GLUE,
         } as any),
-      ).rejects.toThrow(/inconsistent with the task's code source fields/);
+      ).rejects.toThrow(/与任务的代码来源字段不一致/);
     });
 
     // AC-18b：requirements/PyPI 是**依赖型**渠道，可与任一代码来源并存——
@@ -574,7 +574,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { glueSource: "print(1)" } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -588,7 +588,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { gitRepo: "https://example.com/r.git" } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -605,7 +605,7 @@ describe("python_task_multiversion 写面契约", () => {
           codeSource: TaskCodeSource.APPLICATION_ZIP,
           applicationId: APP_ID,
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -619,7 +619,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { gitRepo: null } as any),
-      ).rejects.toThrow(/inconsistent with the task's code source fields/);
+      ).rejects.toThrow(/与任务的代码来源字段不一致/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -696,7 +696,7 @@ describe("python_task_multiversion 写面契约", () => {
         runtime: "node",
       });
       await expect(service.create(zipDto() as any)).rejects.toThrow(
-        /inconsistent with task runtime/,
+        /与任务 runtime=/,
       );
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
@@ -724,9 +724,7 @@ describe("python_task_multiversion 写面契约", () => {
 
     it("引用的 Application 不存在 → 400（弱引用早失败）", async () => {
       appRepo.findOne.mockResolvedValue(null);
-      await expect(service.create(zipDto() as any)).rejects.toThrow(
-        /not found/,
-      );
+      await expect(service.create(zipDto() as any)).rejects.toThrow(/不存在/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -746,7 +744,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { runtime: TaskRuntime.NODE } as any),
-      ).rejects.toThrow(/inconsistent with task runtime/);
+      ).rejects.toThrow(/与任务 runtime=/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 

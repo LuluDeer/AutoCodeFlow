@@ -230,6 +230,14 @@ export interface TaskExecution {
   status: TaskExecutionStatus;
   triggerType: string;
   executorAddress?: string | null;
+  /**
+   * ADR-017 阶段 3（决策 §7 读面富化）：派发到的执行器**行身份**
+   * （`executors.id`）。阶段 3 起 pull 允许同址多行并存（ADR-017 §5），
+   * `executorAddress` 已不能唯一指代一行——解析执行器**可读名**必须优先用它
+   * （`useExecutorNames` 的口径），地址仅在缺失时回落。存量行（迁移 0055 前
+   * 派发）为 null。
+   */
+  executorId?: string | null;
   startTime?: string;
   endTime?: string;
   duration?: number;

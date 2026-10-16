@@ -507,10 +507,15 @@ async def _maybe_pull_config(admin_config_version: Any) -> None:
         token = await get_current_token()
         client = get_http_client()  # O-24: shared per-loop pool
         address = settings.executor_address_public or settings.executor_address
+        # ADR-017 阶段 3：带上指纹（服务端据此唯一定位本行；缺省即 legacy 路径）。
+        _fp = get_device_fingerprint()
         response = await request_with_self_heal(
             client,
             'get',
-            build_admin_api_url(f'/executors/config?address={quote(address)}'),
+            build_admin_api_url(
+                f'/executors/config?address={quote(address)}'
+                + (f'&deviceFingerprint={quote(_fp)}' if _fp else '')
+            ),
             token=token,
             timeout=10,
         )
@@ -600,6 +605,9 @@ async def pull_task() -> None:
                 token=token,
                 json={
                     'address': settings.executor_address_public or settings.executor_address,
+                    # ADR-017 阶段 3：指纹随长轮询上报——服务端据此唯一定位本行
+                    # （pull 允许同地址多行并存，否则会拉到别人的队列）。
+                    'deviceFingerprint': get_device_fingerprint() or None,
                     'waitMs': 25000,
                     # ARCH-33: 服务端据此决定是否出队任务。预留已计入账本
                     # （running_count 含本次预留），故直接按当前账本算：
@@ -654,7 +662,7 @@ async def pull_task() -> None:
                     execution_id, e,
                 )
                 await reject_pulled_execution(
-                    execution_id, f'payload validation failed: {e}',
+                    execution_id, f'载荷校验失败：{e}',
                     traceparent if isinstance(traceparent, str) else None,
                 )
                 continue

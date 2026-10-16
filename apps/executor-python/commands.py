@@ -51,6 +51,8 @@ from typing import Any
 from auth import get_current_token, request_with_self_heal
 from config import settings
 from admin_api import build_admin_api_url
+# ADR-017 阶段 3：指纹随机器面上报（服务端据此唯一定位本行）。
+from device_identity import get_device_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -165,8 +167,8 @@ async def execute_control_command(command: dict[str, Any]) -> dict[str, Any]:
         return _result(
             False,
             error=(
-                f'{command_type} is not implemented by the python executor '
-                '(node-only capability; see protocol.json executorNodeOnly)'
+                f'{command_type} 未在 python 执行器上实现'
+                '（仅 node 具备该能力；见 protocol.json executorNodeOnly）'
             ),
         )
 
@@ -222,12 +224,19 @@ async def report_command_result(result: dict[str, Any]) -> None:
         token = await get_current_token()
         client = _get_http_client()
         address = settings.executor_address_public or settings.executor_address
+        # ADR-017 阶段 3：带上指纹，服务端据此唯一定位本行（pull 允许同地址
+        # 多行并存）；缺省即服务端 legacy 兜底路径，行为与引入前一致。
+        fingerprint = get_device_fingerprint()
         await request_with_self_heal(
             client,
             'post',
             build_admin_api_url('/executors/command-result'),
             token=token,
-            json={**result, 'address': address},
+            json={
+                **result,
+                'address': address,
+                **({'deviceFingerprint': fingerprint} if fingerprint else {}),
+            },
             timeout=10,
         )
     except Exception as exc:

@@ -22,6 +22,13 @@ export interface RetryChainLink {
   status: string;
   triggerType?: string | null;
   executorAddress?: string | null;
+  /**
+   * ADR-017 阶段 3（决策 §7 读面富化）：派发到的执行器**行身份**。
+   * 必须透传到这里——阶段 3 起 pull 允许同址多行并存（ADR-017 §5），
+   * 只带 `executorAddress` 时重试链上的执行器名无法按 id 精确解析
+   * （会靠地址猜，同址时命中别人的名字）。缺失（存量行）→ 回落地址。
+   */
+  executorId?: string | null;
   startTime?: string | null;
   endTime?: string | null;
   /** 执行行自报耗时（毫秒，后端 duration 列） */
@@ -64,6 +71,8 @@ export function buildRetryChain(
     status: e.status,
     triggerType: e.triggerType ?? null,
     executorAddress: e.executorAddress ?? null,
+    // ADR-017 阶段 3（决策 §7）：行身份透传（同址多行时名字解析的唯一正确依据）。
+    executorId: e.executorId ?? null,
     startTime: e.startTime ?? null,
     endTime: e.endTime ?? null,
     duration: e.duration ?? null,

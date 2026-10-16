@@ -433,6 +433,9 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
     const hashReady = async () => {
       const hash = await bcrypt.hash(rawToken, 1);
       const qb = executorRepo.createQueryBuilder();
+      // ADR-017 阶段 3：无指纹时按地址走 getMany（需判定是否多行并存）——
+      // 单行数组 = 唯一命中，等价于引入前的「按地址取一行」。
+      qb.getMany.mockResolvedValue([{ address: "host:3002", tokenHash: hash }]);
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: hash });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
     };
@@ -494,11 +497,10 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         tokenHash: "$2b$12$old",
       });
       executorRepo.save.mockImplementation((e: any) => {
-        // 轮换把新哈希写回库：此后 getOne 必须返回它，旧 token 才该被拒
-        qb.getOne.mockResolvedValue({
-          address: "host:3002",
-          tokenHash: e.tokenHash,
-        });
+        // 轮换把新哈希写回库：此后查询必须返回它，旧 token 才该被拒
+        const rotated = { address: "host:3002", tokenHash: e.tokenHash };
+        qb.getOne.mockResolvedValue(rotated);
+        qb.getMany.mockResolvedValue([rotated]);
         return Promise.resolve(e);
       });
       await service.rotateToken("e1");

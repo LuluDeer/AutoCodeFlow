@@ -197,7 +197,7 @@ describe("ExecutorService.dispatch — secrets 注入合并 (SEC-02)", () => {
       get: () => "",
     } as any);
     await expect(service.dispatch(task, makeExecution())).rejects.toThrow(
-      /secrets could not be decrypted/,
+      /任务密钥解密失败/,
     );
     expect(postedPayload).toBeUndefined();
   });

@@ -32,7 +32,7 @@ export class AuditController {
   @Get()
   @ApiOkResponse({ type: PaginatedAuditLogsDto })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Query audit logs with pagination (admin only)" })
+  @ApiOperation({ summary: "分页查询审计日志（仅管理员）" })
   findAll(@Query() query: AuditQueryDto) {
     return this.svc.findAll({
       page: query.page,
@@ -53,14 +53,13 @@ export class AuditController {
 
   @Get("export")
   @ApiOkResponse({
-    description: "CSV text export (Res passthrough, max 10 000 rows)",
+    description: "CSV 文本导出（Res 直传，最多 10 000 行）",
     content: { "text/csv": { schema: { type: "string" } } },
   })
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Export audit logs as CSV (max 10 000 rows, admin only)",
-    description:
-      "Returns a CSV file attachment. Supports the same filters as the list endpoint.",
+    description: "返回 CSV 文件附件。支持与列表接口相同的过滤条件。",
+    summary: "导出审计日志为 CSV（最多 10 000 行，仅管理员）",
   })
   async exportCsv(@Query() query: AuditQueryDto, @Res() res?: Response) {
     const csv = await this.svc.exportCsv({

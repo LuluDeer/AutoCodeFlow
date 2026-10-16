@@ -45,8 +45,8 @@ describe("totp.util (SEC-03)", () => {
     });
 
     it("rejects invalid characters (fail closed)", () => {
-      expect(() => base32Decode("MZXW6!")).toThrow(/invalid base32/);
-      expect(() => base32Decode("")).toThrow(/empty/);
+      expect(() => base32Decode("MZXW6!")).toThrow(/base32 字符非法/);
+      expect(() => base32Decode("")).toThrow(/base32 输入为空/);
     });
   });
 

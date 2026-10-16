@@ -16,13 +16,12 @@ import { ExecutionStatus } from "../../task/entities/task-execution.entity";
  */
 export class TerminalStateItemDto {
   @ApiProperty({
-    description: "执行 id（与 dispatch 下发、回调上报的 executionId 同源）",
     example: "b3f1c0de-1f2a-4c77-9a10-2f6d2c1e9a01",
+    description: "执行 id（与 dispatch 下发、回调上报的 executionId 同源）",
   })
   executionId: string;
 
   @ApiProperty({
-    description: "该执行当前的状态；本端点只回终态取值",
     enum: [
       ExecutionStatus.SUCCESS,
       ExecutionStatus.FAILED,
@@ -31,36 +30,37 @@ export class TerminalStateItemDto {
       ExecutionStatus.CANCELLED,
     ],
     example: ExecutionStatus.SUCCESS,
+    description: "该执行当前的状态；本端点只回终态取值",
   })
   status: ExecutionStatus;
 
   @ApiProperty({
+    example: "2026-09-14T08:12:33.120Z",
     description:
       "终态时间（ISO 8601）。endTime 缺失时（如未启动即被取消）回 createdAt 兜底值",
-    example: "2026-09-14T08:12:33.120Z",
   })
   endedAt: string;
 }
 
 export class TerminalStatesResponseDto {
   @ApiProperty({
+    type: [TerminalStateItemDto],
     description:
       "已终态的执行清单，按终态时间**升序**（便于调用方按水印增量消费：处理到哪条就把下一条的时间当下次 since）",
-    type: [TerminalStateItemDto],
   })
   items: TerminalStateItemDto[];
 
   @ApiPropertyOptional({
+    example: false,
     description:
       "true 表示还有更多未返回（已达 limit）。调用方应在下一轮对账继续取，不要误判为「其余都还没终态」",
-    example: false,
   })
   hasMore: boolean;
 
   @ApiProperty({
+    example: "2026-09-14T08:20:00.000Z",
     description:
       "服务端当前时间（ISO 8601）。执行器用它校正自己的时钟偏差后再算 since ——执行器与 admin 时钟不一致会让 since 窗口错位，直接漏掉刚终态的行",
-    example: "2026-09-14T08:20:00.000Z",
   })
   serverTime: string;
 }

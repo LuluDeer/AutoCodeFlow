@@ -1,15 +1,10 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  Optional,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { randomBytes } from "crypto";
 import { Repository } from "typeorm";
+// LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
+import { AppError } from "../../common/errors/app-error";
 import { Task, TaskStatus } from "./entities/task.entity";
 import {
   ExecutionStatus,
@@ -184,7 +179,7 @@ export class TaskWebhookService {
     user: { id: number; role: UserRole },
   ): Promise<TaskWebhookStatus> {
     const task = await this.loadTaskWithSecret(id);
-    if (!task) throw new NotFoundException("Task not found");
+    if (!task) throw new AppError("TASK_NOT_FOUND", { taskId: id });
     await this.taskService.assertCanOperate(task, user);
     return { enabled: !!task.webhookSecret, url: this.webhookUrl(task.id) };
   }
@@ -213,7 +208,7 @@ export class TaskWebhookService {
     action: string,
   ): Promise<TaskWebhookSecretIssued> {
     const task = await this.loadTaskWithSecret(id);
-    if (!task) throw new NotFoundException("Task not found");
+    if (!task) throw new AppError("TASK_NOT_FOUND", { taskId: id });
     await this.taskService.assertCanOperate(task, user);
     const secret =
       WEBHOOK_SECRET_PREFIX +
@@ -237,7 +232,7 @@ export class TaskWebhookService {
     ip?: string | null,
   ): Promise<{ enabled: false }> {
     const task = await this.loadTaskWithSecret(id);
-    if (!task) throw new NotFoundException("Task not found");
+    if (!task) throw new AppError("TASK_NOT_FOUND", { taskId: id });
     await this.taskService.assertCanOperate(task, user);
     await this.taskRepo.update(task.id, { webhookSecret: null });
     await this.safeAudit({
@@ -270,8 +265,9 @@ export class TaskWebhookService {
     | TaskExecution
     | { completed: boolean; execution: TaskWebhookExecutionView | null }
   > {
-    const authFail = () =>
-      new UnauthorizedException("Task webhook authentication failed");
+    // 反枚举：任务不存在 / 未启用 / 签名无效 / 时间戳过期**共用同一个码**——
+    // 只要按原因分码，攻击者就能用响应差异探测 taskId 是否存在。
+    const authFail = () => new AppError("TASK_WEBHOOK_AUTH_FAILED");
     const task = await this.loadTaskWithSecret(taskId);
     if (!task || !task.webhookSecret) {
       // 与签名失败同消息：taskId 枚举探测与未启用任务不可区分。
@@ -303,12 +299,12 @@ export class TaskWebhookService {
       try {
         size = Buffer.byteLength(JSON.stringify(dto.params) ?? "", "utf8");
       } catch {
-        throw new BadRequestException("params must be a JSON object");
+        throw new AppError("TASK_WEBHOOK_PARAMS_NOT_OBJECT");
       }
       if (size > TASK_PARAMS_MAX_BYTES) {
-        throw new BadRequestException(
-          `params exceeds ${TASK_PARAMS_MAX_BYTES} bytes`,
-        );
+        throw new AppError("TASK_WEBHOOK_PARAMS_TOO_LARGE", {
+          max: TASK_PARAMS_MAX_BYTES,
+        });
       }
     }
 

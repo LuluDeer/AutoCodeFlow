@@ -382,7 +382,7 @@ describe("AuthService (__tests__)", () => {
       expect(results[0].status).toBe("fulfilled");
       expect(results[1]).toMatchObject({
         status: "rejected",
-        reason: new UnauthorizedException("Refresh token has been revoked"),
+        reason: new UnauthorizedException("刷新令牌已被吊销"),
       });
       expect(usersService.findByIdOrNull).toHaveBeenCalledTimes(1);
       expect(generate).toHaveBeenCalledTimes(1);
@@ -396,7 +396,7 @@ describe("AuthService (__tests__)", () => {
     it("rejects an undefined affected count without looking up the user", async () => {
       refreshTokenRepo.update.mockResolvedValue({ affected: undefined });
       await expect(service.refreshToken("token")).rejects.toThrow(
-        "Refresh token has been revoked",
+        "刷新令牌已被吊销",
       );
       expect(usersService.findByIdOrNull).not.toHaveBeenCalled();
       expect(jwtService.sign).not.toHaveBeenCalled();
@@ -426,7 +426,7 @@ describe("AuthService (__tests__)", () => {
         "signing failed",
       );
       await expect(service.refreshToken("token")).rejects.toThrow(
-        "Refresh token has been revoked",
+        "刷新令牌已被吊销",
       );
       expect(usersService.findByIdOrNull).toHaveBeenCalledTimes(1);
       expect(jwtService.sign).toHaveBeenCalledTimes(1);
@@ -542,7 +542,7 @@ describe("AuthService (__tests__)", () => {
       } as any);
 
       await expect(service.refreshToken("stale-refresh")).rejects.toThrow(
-        new UnauthorizedException("Session has been revoked"),
+        new UnauthorizedException("会话已被吊销"),
       );
       // 轮换消费先行（DR-07 fail-closed）：该 jti 已被吊销，不再签发新对
       expect(refreshTokenRepo.update).toHaveBeenCalledWith(

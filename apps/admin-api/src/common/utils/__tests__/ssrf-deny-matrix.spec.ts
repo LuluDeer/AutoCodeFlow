@@ -243,17 +243,17 @@ describe("SEC-04 — same danger list against all three guards (default executor
     // resolver path — refused only incidentally (Linux getaddrinfo rejects
     // "[::1]", Windows accepts it).
     await expect(assertSafeHttpUrl("http://[::1]:9000/")).rejects.toThrow(
-      /deny list/,
+      /拒绝名单/,
     );
     await expect(assertSafeHttpUrl("http://[fd00::1]/")).rejects.toThrow(
-      /deny list/,
+      /拒绝名单/,
     );
     await expect(assertSafeHttpUrl("http://[fe80::1]/")).rejects.toThrow(
-      /deny list/,
+      /拒绝名单/,
     );
     await expect(
       assertSafeHttpUrl("http://[::ffff:127.0.0.1]/"),
-    ).rejects.toThrow(/deny list/);
+    ).rejects.toThrow(/拒绝名单/);
     await expect(
       assertSafeHttpUrl("http://[2606:4700::6810:84e5]/"),
     ).resolves.toBeInstanceOf(URL);
@@ -324,13 +324,13 @@ describe("SEC-04 — DNS-answer path agreement (metadata hostnames, hostile answ
     mockedLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
     await expect(
       assertSafeHttpUrl("http://metadata.google.internal/webhook"),
-    ).rejects.toThrow(/blocked address/);
+    ).rejects.toThrow(/解析到被阻断的地址/);
     await expect(
       assertSafeExecutorUrl("http://metadata.google.internal:3002/"),
     ).rejects.toThrow(/link-local/);
     await expect(
       assertSafeGitRepoUrl("http://metadata.google.internal/repo.git"),
-    ).rejects.toThrow(/clone refused/);
+    ).rejects.toThrow(/已拒绝克隆/);
   });
 
   it("full-form IPv6 loopback/unspecified DNS answers are refused by all three (classifier gap fix)", async () => {
@@ -338,13 +338,13 @@ describe("SEC-04 — DNS-answer path agreement (metadata hostnames, hostile answ
       mockedLookup.mockResolvedValue([{ address: addr, family: 6 }]);
       await expect(
         assertSafeHttpUrl("http://evil.example.com/webhook"),
-      ).rejects.toThrow(/blocked address/);
+      ).rejects.toThrow(/解析到被阻断的地址/);
       await expect(
         assertSafeExecutorUrl("http://evil.example.com:3002/"),
       ).rejects.toThrow();
       await expect(
         assertSafeGitRepoUrl("http://evil.example.com/repo.git"),
-      ).rejects.toThrow(/clone refused/);
+      ).rejects.toThrow(/已拒绝克隆/);
     }
   });
 
@@ -363,7 +363,7 @@ describe("SEC-04 — DNS-answer path agreement (metadata hostnames, hostile answ
     mockedLookup.mockResolvedValue([{ address: "10.0.0.42", family: 4 }]);
     await expect(
       assertSafeHttpUrl("http://gitlab.internal/webhook"),
-    ).rejects.toThrow(/blocked address/);
+    ).rejects.toThrow(/解析到被阻断的地址/);
     await expect(
       assertSafeExecutorUrl("http://gitlab.internal:3002/"),
     ).resolves.toBeInstanceOf(URL);
@@ -381,7 +381,7 @@ describe("SEC-04 — DNS-answer path agreement (metadata hostnames, hostile answ
     mockedLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
     await expect(
       assertSafeGitRepoUrl("git@metadata.internal:org/repo.git"),
-    ).rejects.toThrow(/clone refused/);
+    ).rejects.toThrow(/已拒绝克隆/);
     await expect(
       assertSafeGitRepoUrl("git@127.0.0.1:org/repo.git"),
     ).rejects.toThrow(/loopback/);

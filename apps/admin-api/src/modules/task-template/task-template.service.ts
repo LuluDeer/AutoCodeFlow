@@ -1,11 +1,8 @@
-import {
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+// LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
+import { AppError } from "../../common/errors/app-error";
 import { TaskService } from "../task/task.service";
 import { Task } from "../task/entities/task.entity";
 import { TaskTemplate } from "./entities/task-template.entity";
@@ -53,7 +50,7 @@ export class TaskTemplateService {
 
   async findOne(id: string): Promise<TaskTemplate> {
     const tpl = await this.repo.findOne({ where: { id } });
-    if (!tpl) throw new NotFoundException("任务模板不存在");
+    if (!tpl) throw new AppError("TASK_TEMPLATE_NOT_FOUND");
     return tpl;
   }
 
@@ -73,7 +70,7 @@ export class TaskTemplateService {
     const key = (dto.key && dto.key.trim()) || suggestTemplateKey(dto.name);
     const existing = await this.repo.findOne({ where: { key } });
     if (existing) {
-      throw new ConflictException(`模板 key「${key}」已存在`);
+      throw new AppError("TASK_TEMPLATE_KEY_EXISTS", { key });
     }
 
     const entity = this.repo.create({
@@ -123,9 +120,10 @@ export class TaskTemplateService {
       where: { name: dto.name },
     });
     if (duplicated) {
-      throw new ConflictException(
-        `已存在同名任务「${dto.name}」（id=${duplicated.id}）；如需再次实例化，请在覆盖体中提供新的 name`,
-      );
+      throw new AppError("TASK_TEMPLATE_INSTANTIATE_NAME_TAKEN", {
+        name: dto.name,
+        taskId: duplicated.id,
+      });
     }
     return this.taskService.create(dto, user);
   }
@@ -133,16 +131,16 @@ export class TaskTemplateService {
   async remove(id: string, requester: TemplateRequester): Promise<void> {
     const tpl = await this.findOne(id);
     if (tpl.isOfficial || OFFICIAL_TEMPLATE_KEYS.includes(tpl.key)) {
-      throw new ForbiddenException("官方模板不可删除");
+      throw new AppError("TASK_TEMPLATE_OFFICIAL_READONLY");
     }
     // E-P2-S1：属主或 ADMIN 才可删。历史行 createdBy=NULL 安全回退——仅 ADMIN。
     const isAdmin = requester.role === UserRole.ADMIN;
     if (tpl.createdBy == null) {
       if (!isAdmin) {
-        throw new ForbiddenException("历史模板仅管理员可删除");
+        throw new AppError("TASK_TEMPLATE_LEGACY_ADMIN_ONLY");
       }
     } else if (tpl.createdBy !== requester.username && !isAdmin) {
-      throw new ForbiddenException("仅属主或管理员可删除该模板");
+      throw new AppError("TASK_TEMPLATE_NOT_OWNER");
     }
     await this.repo.delete({ id });
   }

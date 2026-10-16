@@ -77,7 +77,7 @@ def _resources_ok() -> tuple[bool, str | None]:
     cpu = psutil.cpu_percent()
     mem = psutil.virtual_memory().percent
     if cpu >= READY_RESOURCE_LIMIT_PERCENT or mem >= READY_RESOURCE_LIMIT_PERCENT:
-        return False, f'Resource usage too high (cpu={cpu:.1f}% mem={mem:.1f}%)'
+        return False, f'资源占用过高（cpu={cpu:.1f}% mem={mem:.1f}%）'
     return True, None
 
 
@@ -93,7 +93,7 @@ def _ready_json(status_code: int, content: dict) -> JSONResponse:
         first = exc.errors()[0]
         where = '.'.join(str(p) for p in first['loc']) or '(root)'
         raise RuntimeError(
-            f'readiness response violates executor-protocol at {where}: {first["msg"]}'
+            f'readiness 响应违反 executor-protocol 协议，位置 {where}：{first["msg"]}'
         ) from exc
     return JSONResponse(status_code=status_code, content=content)
 
@@ -106,7 +106,7 @@ async def _readiness() -> JSONResponse:
             503,
             {
                 'status': 'not_ready',
-                'reason': 'admin-api unreachable',
+                'reason': 'admin-api 不可达',
                 'adminApiUrl': get_admin_api_base_url(),
             },
         )

@@ -184,7 +184,22 @@ class TaskWorker {
       pushCallback({
         executionId: item.executionId,
         status: 'failed',
-        errorMessage: 'Executor is shutting down before this execution started',
+        // 本轮审计补口：此前这条载荷**不带** failureReason，admin 的
+        // inferFailureReason 按文本兜底落到 UNKNOWN——用户看到「未知原因」，
+        // 而"执行器停机导致排队项未开始"是 100% 已知、处置动作明确的场景。
+        //
+        // 取值 `executor_restart`：它在 protocol.json 里是 executorReportable
+        // （adminInternalOnly 只有 stale_recovered / application_missing /
+        // never_dispatched），admin 标签「执行器重启」+ runbook「瞬时中断——
+        // 调度 sweep 已自动重新入队」精确匹配本场景。**复用既有枚举值，不新增**。
+        //
+        // 注意这里是**显式赋值而非走 prepareFailureReason 分类器**：本文件不
+        // import execute.ts（那会引入 routes↔worker 的环），而该分类器也不含
+        // 停机规则（停机的判据是"进程正在关机"这一事实，不是消息文本——
+        // 文本匹配只是给"异常被包装成字符串"的路径兜底）。两处都在，互为冗余：
+        // 显式赋值是主路径，分类器规则覆盖同文案经其它路径上报的情形。
+        failureReason: 'executor_restart',
+        errorMessage: '执行器正在停机，该执行尚未开始',
       });
       item.onComplete?.();
     }

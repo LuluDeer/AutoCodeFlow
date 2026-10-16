@@ -1,13 +1,11 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  OnModuleInit,
-} from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NotificationService, AlertChannel } from "./notification.service";
 import { ChannelConfigStore } from "./channel-config.store";
 import { ChannelDeliveryStatus } from "./channels/base.channel";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 export interface NotificationChannel {
   key: string;
@@ -299,9 +297,10 @@ export class NotificationConfigService implements OnModuleInit {
       // webhook — webhook joined in N32, round-9), so this is a client input
       // error: 400 with the valid keys listed.
       const validKeys = Array.from(this.channelConfigs.keys()).join(", ");
-      throw new BadRequestException(
-        `Unknown notification channel: ${key}. Valid channels: ${validKeys}`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_CHANNEL_UNKNOWN, {
+        key,
+        validKeys,
+      });
     }
 
     if (data.enabled !== undefined) {
@@ -369,9 +368,10 @@ export class NotificationConfigService implements OnModuleInit {
     const channel = this.channelConfigs.get(key);
     if (!channel) {
       const validKeys = Array.from(this.channelConfigs.keys()).join(", ");
-      throw new BadRequestException(
-        `Unknown notification channel: ${key}. Valid channels: ${validKeys}`,
-      );
+      throw new AppError(ErrorCode.NOTIFICATION_CHANNEL_UNKNOWN, {
+        key,
+        validKeys,
+      });
     }
 
     // Build the per-call override. The N11 '***' masked echo must not

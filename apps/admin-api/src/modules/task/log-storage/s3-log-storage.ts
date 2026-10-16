@@ -141,7 +141,7 @@ export class S3LogStorage {
       bytes += buf.length;
       if (bytes > MAX_LOG_BYTES) {
         throw new Error(
-          `Log object ${key} exceeds MAX_LOG_BYTES (${MAX_LOG_BYTES})`,
+          `日志对象 ${key} 超过 MAX_LOG_BYTES（${MAX_LOG_BYTES}）`,
         );
       }
       chunks.push(buf);

@@ -1,4 +1,4 @@
-import { DataSource, In, Repository } from "typeorm";
+import { DataSource, EntityManager, In, Repository } from "typeorm";
 import { BlockStrategy, Task } from "./entities/task.entity";
 import {
   ExecutionStatus,
@@ -183,16 +183,74 @@ export async function applyBlockStrategyGate(
 /**
  * 执行器槽位回退（被覆盖 RUNNING 执行在 executors.runningTaskCount 上的
  * 计数冲销）。调度器与手动触发路径共用——GREATEST 下限保护防负数。
+ *
+ * ## ADR-017 阶段 3：`address` 不再是唯一键（本函数的正确性前提变了）
+ *
+ * 阶段 3 把 `uq_executors_address` 收窄为 **partial（仅 push 行）**，pull 模式
+ * 允许**同地址多行并存**（不同内网同网段同 IP，ADR-017 §5）。此前
+ * `WHERE address = :addr` 恒命中至多一行；现在它可能命中多行，一次冲销会把
+ * **别人的** `runningTaskCount` 也减 1 —— 盲减无 occurrence 标记，被误减的行
+ * 靠心跳上报才能自愈，期间计数虚低会让 `selectLeastLoaded` 超发。
+ *
+ * 修复姿态：**地址命中多行时不冲销任何一行**。实现是**一条原子语句**——
+ * `UPDATE executors SET runningTaskCount = GREATEST(runningTaskCount - 1, 0)
+ *  WHERE id = (SELECT id FROM executors WHERE address = :addr)`。
+ *
+ * 为什么用子查询而不是「先 SELECT 再 UPDATE」两步：地址唯一性判定与冲销必须
+ * 在同一条语句里求值，才既无 TOCTOU 窗口（两步之间执行器可能刚好注册/换址，
+ * 判定结果就过期了），也不给热路径新增一次往返与一个可抛错的调用点——
+ * 本函数在回调主链上（每次回调都走），多一个能抛错的 DB 往返就等于多一个
+ * 「冲销失败会不会把回调带崩」的风险面。
+ *
+ * 子查询返回多行时 PG 会报 `more than one row returned by a subquery`——
+ * 这正是我们**希望**的失败：多行并存 = 地址无法指代身份，宁可让这一条 UPDATE
+ * 失败（被调用方的 try/catch 吞掉、计数留待心跳自愈），也不能盲减别人的计数。
+ * 子查询返回 0 行 → `id = NULL` 不命中任何行，受影响 0 行，静默 no-op
+ * （与「执行器已被删除」的既有语义一致）。
+ *
+ * 理由——
+ * - 冲销是「释放自己占的那个坑」，只有当地址能唯一指代该执行器时语义才成立；
+ * - 多行并存恰恰说明地址无法指代身份（可用行身份见 ADR-017 §2/§3 的
+ *   `executors.id` / `deviceFingerprint`）；
+ * - 少减一次的后果（计数虚高、该执行器被保守少派）远轻于多减一次
+ *   （**别人的**计数虚低、被超发打爆）。失败方向选保守侧。
+ *
+ * 单行命中（含全部 push 部署与单机 pull 部署——即引入本改动前的全部现实形态）
+ * 行为与引入前**逐字节一致**（同一行、同样减 1、同样 GREATEST 下限）。
+ *
+ * 调用方若已持有 `executorId`，应改用 {@link releaseExecutorSlotById}——
+ * 那是阶段 3 下的**无歧义**路径，不经子查询。
  */
 export async function releaseExecutorSlotByAddress(
-  dataSource: DataSource,
+  dataSource: DataSource | EntityManager,
   address?: string | null,
 ): Promise<void> {
   if (!address) return;
+  // 单条原子语句：地址唯一性判定（子查询）与冲销（UPDATE）在同一语句内求值。
+  // 子查询多行 → PG 报错（刻意：不盲减别人的计数）；0 行 → no-op。
   await dataSource
     .createQueryBuilder()
     .update("executors")
     .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-    .where("address = :addr", { addr: address })
+    .where(`"id" = (SELECT "id" FROM "executors" WHERE "address" = :addr)`, {
+      addr: address,
+    })
+    .execute();
+}
+
+/**
+ * 同上，但按 `executors.id` 冲销——ADR-017 阶段 3 下的**无歧义**路径。
+ * 调用方持有执行器 id 时应优先用它。
+ */
+export async function releaseExecutorSlotById(
+  dataSource: DataSource | EntityManager,
+  executorId?: string | null,
+): Promise<void> {
+  if (!executorId) return;
+  await dataSource
+    .createQueryBuilder()
+    .update("executors")
+    .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
+    .where("id = :id", { id: executorId })
     .execute();
 }

@@ -3,8 +3,7 @@ import { IsString, IsOptional, Matches } from "class-validator";
 
 export class RollbackTaskDto {
   @ApiProperty({
-    description:
-      "git commit SHA to roll back to (4-40 lowercase hex characters)",
+    description: "回滚到的 git commit SHA（4-40 位小写十六进制字符）",
   })
   @IsString()
   @Matches(/^[0-9a-f]{4,40}$/, {

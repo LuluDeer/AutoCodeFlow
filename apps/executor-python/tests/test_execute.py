@@ -121,7 +121,7 @@ def test_run_task_unsupported_runtime_reports_failure():
 
     assert result['success'] is False
     assert result['exitCode'] is None
-    assert 'Unsupported runtime' in result['errorMessage']
+    assert '不支持的 runtime' in result['errorMessage']
     assert isinstance(result['durationMs'], int)
 
 
@@ -137,7 +137,7 @@ def test_execute_path_traversal_in_id_rejected_by_runner():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
     assert exc.value.status_code == 400
-    assert 'path traversal' in str(exc.value.detail).lower()
+    assert '路径穿越' in str(exc.value.detail)
 
 
 def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
@@ -180,6 +180,14 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'dynamic-token')
     monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
     monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'public-executor:9000')
+    # ADR-017 阶段 3 / 协议 v6：指纹与**本机**机器身份 + work_dir 下的盐文件绑定，
+    # 直接断言会随机器而异。与 test_registration.py 同款处理：钉死采集结果，
+    # 把断言与「本机身份」解耦（本地真实采集在本机是**成功**的，不钉死就成了
+    # 「碰巧通过」的测试）。
+    pinned_fingerprint = 'a' * 64
+    monkeypatch.setattr(
+        execute_module, 'get_device_fingerprint', lambda: pinned_fingerprint
+    )
     # E3: callback prefers auth.get_current_token(); None here pins the
     # settings-token fallback (no real admin-api round trip in tests).
     from unittest.mock import AsyncMock
@@ -205,7 +213,188 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
         'errorMessage': None,
         'durationMs': 12,
         'executorAddress': 'public-executor:9000',
+        # ADR-017 阶段 3 / 协议 v6：行身份随**每一条**终态回调上报。
+        'deviceFingerprint': pinned_fingerprint,
     }]
+
+
+# ---------------------------------------------------------------------------
+# ADR-017 阶段 3（协议 v6）：终态回调载荷的 deviceFingerprint 行身份
+#
+# 为什么用「五条路径 × 有/无采集结果」的固定点矩阵，而不是只测主路径：
+# 本文件此前有**五处**手拼回调 payload 字面量（_run_and_callback 主路径/异常
+# 路径、_push_killed_callback、fail_prepare_stage_executions_on_shutdown、
+# reject_pulled_execution），形态只靠注释互指。只覆盖主路径的测试对另外四处
+# 零约束——漏盖章的那条在「共享令牌 + 同址碰撞」下会被 admin 归错执行器行。
+# 矩阵同时反证两侧：采集成功时**每一条**都必带；采集失败时**每一条**都必缺键。
+# ---------------------------------------------------------------------------
+
+_FINGERPRINT = 'a' * 64
+
+
+def _record_callback_payloads(monkeypatch, execute_module):
+    """把五条路径的共同入队口 enqueue_callback 换成记录器。
+
+    五处构造点全部经 `_send_callback_with_retry` → `enqueue_callback` 入队
+    （_push_killed_callback 直接调 enqueue_callback），故单一记录器即可观察到
+    **每一条**真实构造出的终态载荷，且不需要任何网络替身。
+    """
+    recorded: list[dict] = []
+
+    def fake_enqueue(payload):
+        recorded.append(payload)
+
+    monkeypatch.setattr(execute_module, 'enqueue_callback', fake_enqueue)
+    return recorded
+
+
+def _patch_callback_env_for_fingerprint(monkeypatch, execute_module):
+    """本段的回调环境替身。
+
+    与文件后半段的 `_patch_callback_env(monkeypatch)` 同款（那里直接 import
+    execute_module 模块）；此处额外保留显式传入的模块对象，纯粹是为了让本段的
+    驱动 helper 自带依赖、不依赖调用点的局部 import。
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'pub:9000')
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
+
+
+async def _drive_all_five_callback_paths(execute_module, monkeypatch):
+    """依次驱动五处构造点，返回每次入队的载荷（顺序与构造点一一对应）。"""
+    from routers.execute import ExecuteRequest
+
+    recorded = _record_callback_payloads(monkeypatch, execute_module)
+    _patch_callback_env_for_fingerprint(monkeypatch, execute_module)
+
+    async def ok_run_task(req, entry=None):
+        return {'success': True, 'logs': 'done', 'exitCode': 0, 'durationMs': 1}
+
+    # ① _run_and_callback 主路径
+    monkeypatch.setattr(execute_module, 'run_task', ok_run_task)
+    await execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-fp-main', task={'name': 'n'}))
+
+    # ② _run_and_callback 异常路径（prepare 阶段 raise）
+    async def boom_run_task(req, entry=None):
+        raise RuntimeError('uv pip install failed: no matching distribution')
+
+    monkeypatch.setattr(execute_module, 'run_task', boom_run_task)
+    await execute_module._run_and_callback(
+        ExecuteRequest(executionId='exec-fp-exc', task={'name': 'n'}))
+
+    # ③ _push_killed_callback（排队阶段被杀）
+    await execute_module._push_killed_callback('exec-fp-killed')
+
+    # ④ fail_prepare_stage_executions_on_shutdown（停机时的 prepare 阶段条目）
+    entry = execute_module.register_live_execution('exec-fp-shutdown')
+    entry.proc = None
+    await execute_module.fail_prepare_stage_executions_on_shutdown()
+
+    # ⑤ reject_pulled_execution（pull 领取被拒）
+    await execute_module.reject_pulled_execution('exec-fp-reject', 'no capacity')
+
+    return recorded
+
+
+def test_every_terminal_callback_path_carries_device_fingerprint(monkeypatch):
+    """采集成功时**五条**构造点全部带 deviceFingerprint（形状恒一致）。
+
+    反证有牙：删掉任一处 `**_executor_callback_identity()` 注入，本用例即红
+    （矩阵会指出是第几条路径丢了行身份）。
+    """
+    from routers import execute as execute_module
+
+    original = sched.running_count
+    sched.running_count = 1
+    monkeypatch.setattr(
+        execute_module, 'get_device_fingerprint', lambda: _FINGERPRINT)
+    try:
+        recorded = asyncio.run(
+            _drive_all_five_callback_paths(execute_module, monkeypatch))
+    finally:
+        sched.running_count = original
+
+    assert len(recorded) == 5, (
+        '五处构造点未全部被驱动（测试接线本身失效）：'
+        f'{[(p.get("executionId"), p.get("status")) for p in recorded]}'
+    )
+    assert [p['executionId'] for p in recorded] == [
+        'exec-fp-main', 'exec-fp-exc', 'exec-fp-killed',
+        'exec-fp-shutdown', 'exec-fp-reject',
+    ]
+    missing = [p['executionId'] for p in recorded
+               if p.get('deviceFingerprint') != _FINGERPRINT]
+    assert not missing, f'这些回调路径丢了行身份：{missing}'
+    # 终态二值仍是回调通道的语义（指纹不得挤掉状态字段）
+    assert all(p['status'] in ('success', 'failed') for p in recorded)
+
+
+def test_every_terminal_callback_path_omits_the_key_when_collection_fails(monkeypatch):
+    """采集失败（get_device_fingerprint → None）时**整个键缺席**，绝不是 null。
+
+    为什么这一条与上一条同等重要：JSON 里显式 null 会被 admin 读成「v6 执行器
+    上报了一个空指纹」，而键缺席才是「未上报」（→ 凭据归属行 → 地址相等逐级
+    回落）。两者在 DTO 校验与回落语义上不同，且 register/heartbeat 两侧此前已
+    钉死同款规则（main.py `_register_payload` 的 `**({'deviceFingerprint': ...}
+    if _fp else {})` / scheduler.py `_heartbeat_payload`）。
+
+    反证有牙：任一处把它写成 `'deviceFingerprint': get_device_fingerprint()`
+    （无条件、值可能为 None），本用例即红。
+    """
+    from routers import execute as execute_module
+
+    original = sched.running_count
+    sched.running_count = 1
+    monkeypatch.setattr(execute_module, 'get_device_fingerprint', lambda: None)
+    try:
+        recorded = asyncio.run(
+            _drive_all_five_callback_paths(execute_module, monkeypatch))
+    finally:
+        sched.running_count = original
+
+    assert len(recorded) == 5
+    offenders = [p['executionId'] for p in recorded
+                 if 'deviceFingerprint' in p]
+    assert not offenders, (
+        '采集失败时行身份键必须**整个缺席**（不是 null）：'
+        f'{offenders} → {[p.get("deviceFingerprint") for p in recorded]}'
+    )
+    # 反永真：指纹确实没有被别的键名带出来（形状与引入前逐字节一致）
+    assert all(
+        set(p) <= {
+            'executionId', 'status', 'exitCode', 'logs', 'errorMessage',
+            'durationMs', 'executorAddress', 'failureReason', 'traceparent',
+        }
+        for p in recorded
+    )
+
+
+def test_executor_callback_identity_helper_returns_key_only_when_truthy(monkeypatch):
+    """helper 本身的契约：truthy → {'deviceFingerprint': fp}；falsy → {}。
+
+    直接钉住 helper（而不是只经 payload 间接观察），使「键缺席而非 null」这条
+    语义有单点断言——空串/None 都必须走「省键」分支（空串是采集侧不会产出、
+    但一旦产出就会被 admin 当空指纹的形态）。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(
+        execute_module, 'get_device_fingerprint', lambda: _FINGERPRINT)
+    assert execute_module._executor_callback_identity() == {
+        'deviceFingerprint': _FINGERPRINT}
+
+    for falsy in (None, ''):
+        monkeypatch.setattr(
+            execute_module, 'get_device_fingerprint', lambda v=falsy: v)
+        assert execute_module._executor_callback_identity() == {}
+
 
 
 def test_run_and_callback_uses_configured_admin_api_url_priority(monkeypatch):
@@ -253,7 +442,7 @@ def test_execute_at_capacity_returns_429(auth_client):
     sched.running_count = original_count
 
     assert response.status_code == 429
-    assert 'capacity' in response.json()['detail'].lower()
+    assert '执行器已达并发上限' in response.json()['detail']
 
 
 def test_execute_disk_critical_returns_503(auth_client, monkeypatch):
@@ -268,7 +457,7 @@ def test_execute_disk_critical_returns_503(auth_client, monkeypatch):
         'task': {'name': 'test', 'runtime': 'python', 'script': 'pass'},
     })
     assert response.status_code == 503
-    assert 'disk' in response.json()['detail'].lower()
+    assert '磁盘已达临界水位' in response.json()['detail']
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +600,7 @@ def test_shell_entrypoint_injection_rejected(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
     assert exc.value.status_code == 400
-    assert 'unsafe characters' in str(exc.value.detail)
+    assert '含不安全字符' in str(exc.value.detail)
     assert spawned == []
     assert not (tmp_path / 'exec-shellinject' / 'PWNED').exists()
 
@@ -612,7 +801,7 @@ def test_unsupported_glue_language_is_still_rejected(language, tmp_path, monkeyp
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
     assert exc.value.status_code == 400
-    assert 'Unsupported glue language' in str(exc.value.detail)
+    assert '不支持的 glue 语言' in str(exc.value.detail)
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +819,7 @@ def test_entrypoint_parent_escape_rejected(tmp_path, monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
-    assert 'escapes the execution work directory' in str(exc.value.detail)
+    assert '逃出了执行工作目录' in str(exc.value.detail)
 
 
 def test_entrypoint_absolute_outside_workdir_rejected(tmp_path, monkeypatch):
@@ -644,7 +833,7 @@ def test_entrypoint_absolute_outside_workdir_rejected(tmp_path, monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
-    assert 'escapes the execution work directory' in str(exc.value.detail)
+    assert '逃出了执行工作目录' in str(exc.value.detail)
 
 
 # R4-C P4（本轮审计）：W-04 声称已封堵 Windows 类逃逸（/etc/passwd、\Windows\...），
@@ -689,7 +878,7 @@ def test_entrypoint_escape_forms_rejected_cross_platform(
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
-    assert 'escapes the execution work directory' in str(exc.value.detail)
+    assert '逃出了执行工作目录' in str(exc.value.detail)
 
 
 @pytest.mark.parametrize(
@@ -770,7 +959,7 @@ def test_timeout_logs_are_bounded_and_truncated(tmp_path, monkeypatch):
     )
     result = asyncio.run(run_task(req))
     assert result['success'] is False
-    assert 'Task timeout after 1s' in result['errorMessage']
+    assert '任务执行超时（1s）' in result['errorMessage']
     assert len(result['logs']) <= 10200
 
 
@@ -930,7 +1119,7 @@ def test_requirements_option_injection_rejected(tmp_path, monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
-    assert 'Invalid requirement' in str(exc.value.detail)
+    assert '无效的 requirement' in str(exc.value.detail)
     assert spawned == []
 
 
@@ -963,7 +1152,7 @@ def test_task_git_branch_option_injection_rejected(tmp_path, monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(run_task(req))
-    assert 'Invalid git ref' in str(exc.value.detail)
+    assert '无效的 git ref' in str(exc.value.detail)
 
 
 def test_timeout_clamped():
@@ -1413,7 +1602,7 @@ def test_build_install_env_is_minimal_and_preserves_runtime_paths(monkeypatch, t
 def test_registry_url_rejects_credentials_query_and_fragment(registry_url):
     from routers.execute import _validate_registry_url
 
-    with pytest.raises(RuntimeError, match='userinfo, query, or fragment'):
+    with pytest.raises(RuntimeError, match='不得包含 userinfo、query 或 fragment'):
         _validate_registry_url(registry_url)
 
 
@@ -1613,7 +1802,7 @@ def test_ensure_venv_failure_message_carries_index_hint(monkeypatch, tmp_path):
     monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
     with pytest.raises(RuntimeError) as exc:
         asyncio.run(execute_module.ensure_venv(tmp_path / '.venvs' / 'task-hint', ['no-such-pkg']))
-    assert 'uv pip install failed' in str(exc.value)
+    assert 'uv pip install 执行失败' in str(exc.value)
     assert 'index-url=https://registry.example/simple/' in str(exc.value)
     assert '无上游' in str(exc.value)
 
@@ -1664,7 +1853,7 @@ def test_ensure_venv_timeout_kills_uv_and_removes_half_built_venv(tmp_path, monk
     monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
     monkeypatch.setattr(execute_module, 'UV_VENV_TIMEOUT_SECONDS', 0.05)
 
-    with pytest.raises(RuntimeError, match='timed out'):
+    with pytest.raises(RuntimeError, match='uv venv 超时'):
         asyncio.run(execute_module.ensure_venv(venv_dir, []))
     assert proc.killed
     assert not venv_dir.exists()
@@ -1682,7 +1871,7 @@ def test_ensure_venv_creation_failure_removes_venv_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
     monkeypatch.setattr(execute_module, 'UV_VENV_TIMEOUT_SECONDS', 5)
 
-    with pytest.raises(RuntimeError, match='uv venv failed'):
+    with pytest.raises(RuntimeError, match='uv venv 执行失败'):
         asyncio.run(execute_module.ensure_venv(venv_dir, []))
     assert not venv_dir.exists()
 
@@ -1761,7 +1950,7 @@ def test_ensure_venv_failure_releases_pool_interpreter_registration(tmp_path, mo
 
     execute_module._live_pool_interpreters.clear()
     try:
-        with pytest.raises(RuntimeError, match='uv venv failed'):
+        with pytest.raises(RuntimeError, match='uv venv 执行失败'):
             asyncio.run(execute_module.ensure_venv(
                 tmp_path / '.venvs' / 'task-dead', [], python_version='3.9'))
     finally:
@@ -1820,7 +2009,7 @@ def test_ensure_venv_install_failure_message_truncated(tmp_path, monkeypatch):
     message = str(exc.value)
     # DEEP-AUDIT B·2.2 后消息可能带 `（index-url=...; ...）` 索引提示段，
     # 只断言前缀与截断契约本身，不锁提示段有无。
-    assert message.startswith('uv pip install failed')
+    assert message.startswith('uv pip install 执行失败')
     assert len(message) <= 4100
     assert 'truncated' in message
 
@@ -1933,6 +2122,42 @@ def test_run_task_injects_callback_env_triple(tmp_path, monkeypatch):
     assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
 
 
+def test_run_task_injects_device_fingerprint_env_for_sdk_callbacks(tmp_path, monkeypatch):
+    """ADR-017 阶段 3（协议 v6）：任务子进程拿到 AUTOFLOW_DEVICE_FINGERPRINT。
+
+    为什么这条是**必需**的（而不只是「本执行器自己回调的镜像」）：本执行器
+    五处终态回调由 `_executor_callback_identity()` 盖章，但任务代码经
+    autoflow-sdk `ctx.callback` / `report_success` 发起的回调走的是**另一条**
+    出站路径——SDK 从 env 读凭据（`_CALLBACK_ENV_KEYS`）自己拼载荷。没有本注入，
+    那条路径在「共享令牌 + 同址碰撞」下无法被 admin 归到正确的执行器行。
+
+    反证有牙：删掉 `env['AUTOFLOW_DEVICE_FINGERPRINT'] = fingerprint` 注入，
+    本用例即红。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(
+        execute_module, 'get_device_fingerprint', lambda: _FINGERPRINT)
+    env = _run_task_capture_env(tmp_path, monkeypatch)
+
+    assert env['AUTOFLOW_DEVICE_FINGERPRINT'] == _FINGERPRINT
+
+
+def test_run_task_omits_device_fingerprint_env_when_collection_fails(tmp_path, monkeypatch):
+    """采集失败 → 该 env 键**整个缺席**（不是空串）。
+
+    与回调体的纪律逐字一致（value 侧同款：SDK 拿到空串会把它当「已知」并盖上
+    一个空指纹，而 admin 会读成「v6 执行器上报了空指纹」）。register/heartbeat/
+    回调体/env 四处必须是同一条规则，缺一处就是一条静默丢行身份的通道。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module, 'get_device_fingerprint', lambda: None)
+    env = _run_task_capture_env(tmp_path, monkeypatch)
+
+    assert 'AUTOFLOW_DEVICE_FINGERPRINT' not in env
+
+
 def test_run_task_callback_env_not_overridable_by_params(tmp_path, monkeypatch):
     """Injection happens after the params loop — user params can never
     shadow the callback credentials (node N23 parity)."""
@@ -1944,6 +2169,43 @@ def test_run_task_callback_env_not_overridable_by_params(tmp_path, monkeypatch):
     assert env['AUTOFLOW_CALLBACK_TOKEN'].startswith('v1.exec-cbenv.')
     assert env['AUTOFLOW_ADMIN_API_URL'] == 'http://admin.local'
     assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
+
+
+def test_injected_env_round_trips_into_the_sdk_callback_row_identity(tmp_path, monkeypatch):
+    """端到端：执行器产出的 env → 真实 SDK TaskContext → 回调载荷带行身份。
+
+    与 test_audit_fixes.py 的 A-11R 跨模块用例同款理由（以及同款「SDK 未安装则
+    跳过」的诚实处理）：执行器注入 env 与 SDK 读取 env 是**两处独立实现**，各自
+    的单测可以同时全绿而线缆契约是错的——本用例把两侧钉在一起，证明「任务代码
+    经 ctx.callback 发起的回调」确实带上了 deviceFingerprint（这是执行器自己五处
+    手拼 dict 之外的**第二条**出站路径，本任务要求的正是每条出站回调都带行身份）。
+
+    反证有牙：删掉 `_build_child_env` 之前的 AUTOFLOW_DEVICE_FINGERPRINT 注入，
+    SDK 侧 device_fingerprint 即为 None → client.device_fingerprint 为空 → 本用例红。
+    """
+    sdk_context = pytest.importorskip(
+        'autoflow_sdk.context',
+        reason='autoflow-sdk 未安装：跨模块契约无从验证（非失败）',
+    )
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(
+        execute_module, 'get_device_fingerprint', lambda: _FINGERPRINT)
+    env = _run_task_capture_env(tmp_path, monkeypatch)
+
+    saved = dict(os.environ)
+    try:
+        os.environ.update({k: v for k, v in env.items() if isinstance(v, str)})
+        ctx = sdk_context.TaskContext.from_env()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+    assert ctx.device_fingerprint == _FINGERPRINT
+    # SDK 把行身份透传进真正的出站客户端（同址多行并存时 admin 据此归行）
+    assert ctx.callback.device_fingerprint == _FINGERPRINT
+    # 平台管道不得泄漏进用户参数视图（与 executor_address 同款纪律）
+    assert 'device_fingerprint' not in ctx.params
 
 
 def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypatch, tmp_path):
@@ -2190,7 +2452,7 @@ def test_execute_duplicate_execution_id_returns_400(auth_client, monkeypatch):
     assert first.status_code == 200
     assert first.json()['status'] == 'accepted'
     assert second.status_code == 400
-    assert 'already active' in second.json()['detail']
+    assert '已在本执行器上活跃' in second.json()['detail']
     # the rejected duplicate must not leak a second registry entry
     assert list(execute_module._live_executions) == ['exec-double-dispatch']
 
@@ -2474,7 +2736,7 @@ def test_s7_gitrepo_private_network_default_denied(tmp_path, monkeypatch):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(run_task(_git_repo_request(f'exec-s7-def-{i}', repo)))
         assert exc.value.status_code == 400
-        assert 'restricted address' in str(exc.value.detail), repo
+        assert '指向受限网络地址' in str(exc.value.detail), repo
 
 
 def test_s7_gitrepo_private_network_allowed_rfc1918(tmp_path, monkeypatch):
@@ -2527,7 +2789,7 @@ def test_s7_gitrepo_loopback_still_denied_with_switch_on(tmp_path, monkeypatch):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(run_task(_git_repo_request(f'exec-s7-lo-{i}', repo)))
         assert exc.value.status_code == 400
-        assert 'restricted address' in str(exc.value.detail), repo
+        assert '指向受限网络地址' in str(exc.value.detail), repo
 
 
 def test_s7_gitrepo_public_unaffected_by_switch(tmp_path, monkeypatch):
@@ -2575,7 +2837,7 @@ def test_s7_gitrepo_scheme_whitelist_kept_under_switch(tmp_path, monkeypatch):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(run_task(_git_repo_request(f'exec-s7-scheme-{i}', repo)))
         assert exc.value.status_code == 400
-        assert 'scheme not allowed' in str(exc.value.detail), repo
+        assert '不允许的 gitRepo URL 协议' in str(exc.value.detail), repo
 
 
 # ---------------------------------------------------------------------------
@@ -2604,7 +2866,7 @@ def test_reject_pulled_execution_callback_carries_failure_reason(monkeypatch):
     assert captured['payload']['status'] == 'failed'
     assert captured['payload']['failureReason'] == 'unknown'
     assert captured['payload']['traceparent'] == 'trc-1'
-    assert 'Executor rejected' in captured['payload']['errorMessage']
+    assert '执行器拒绝了拉取到的派发任务' in captured['payload']['errorMessage']
 
 
 # ---------------------------------------------------------------------------

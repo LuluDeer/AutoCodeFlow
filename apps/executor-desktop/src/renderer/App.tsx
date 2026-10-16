@@ -9,8 +9,11 @@ import { TAB_SWITCH_EVENT } from './tab-switch';
 // 双语表（zh 值与原硬编码逐字一致，zh 系统渲染零变化）。
 import { createCfgTexts, resolveRendererLocale } from './i18n';
 
-/** 壳层文案：模块级解析一次 locale（与 ConfigPage 同口径——渲染层无热切语言，
- *   重挂载时按 navigator.language 重取）。 */
+/** 壳层文案：模块级解析一次 locale（与各页面同口径）。i18n-DESK-01：设置页可选
+ *   「界面语言」（zh/en/auto，默认中文），main.tsx 启动时先把它灌进 i18n 的
+ *   模块级设置，**然后**才动态 import 本模块——故这里求值时设置已就位；
+ *   'auto'/未设置回落 navigator.language。语言不热切换：改语言后由设置页在保存
+ *   成功时 reload 窗口，本模块随之重新求值。 */
 const shellT = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
 type Tab = 'status' | 'config' | 'history' | 'apps';

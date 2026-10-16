@@ -22,8 +22,8 @@ export const MUTEX_GROUP_MAX_CONCURRENT_CEILING = 100;
 
 export class CreateMutexGroupDto {
   @ApiProperty({
-    description: "互斥组名（唯一），如 ziniao-browser",
     maxLength: 64,
+    description: "互斥组名（唯一），如 ziniao-browser",
   })
   @IsString()
   @IsNotEmpty()
@@ -31,10 +31,10 @@ export class CreateMutexGroupDto {
   name: string;
 
   @ApiPropertyOptional({
-    description: "同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）",
     minimum: 1,
     maximum: MUTEX_GROUP_MAX_CONCURRENT_CEILING,
     default: 1,
+    description: "同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）",
   })
   @IsOptional()
   @IsInt()
@@ -43,16 +43,19 @@ export class CreateMutexGroupDto {
   maxConcurrentPerDevice?: number;
 
   @ApiPropertyOptional({
-    description:
-      "组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device",
     enum: MUTEX_GROUP_SCOPES,
     default: "device",
+    description:
+      "组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device",
   })
   @IsOptional()
   @IsIn(MUTEX_GROUP_SCOPES)
   scope?: MutexGroupScope;
 
-  @ApiPropertyOptional({ description: "组用途说明", maxLength: 500 })
+  @ApiPropertyOptional({
+    maxLength: 500,
+    description: "组用途说明",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(500)

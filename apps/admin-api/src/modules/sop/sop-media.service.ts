@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createReadStream, existsSync, mkdirSync, statSync } from "fs";
 import * as crypto from "crypto";
@@ -14,6 +9,9 @@ import { Repository } from "typeorm";
 import { AgentMedia } from "./entities/agent-media.entity";
 import { getEnvVar } from "../../config/env";
 import { createResponseReadStream } from "../../common/utils/response-stream.util";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * P7b（agent-and-deployment）：Agent 媒体存储（截图/录屏回传的落盘与读取）。
@@ -70,23 +68,21 @@ export class SopMediaService {
   }): Promise<StoredMedia> {
     const name = input.name ?? "";
     if (!SAFE_MEDIA_NAME_RE.test(name)) {
-      throw new BadRequestException(
-        "媒体名必须是 1..255 的 [A-Za-z0-9._-]（不含路径语义）",
-      );
+      throw new AppError(ErrorCode.SOP_MEDIA_NAME_INVALID);
     }
     if (!input.buf || input.buf.length === 0) {
-      throw new BadRequestException("空媒体文件");
+      throw new AppError(ErrorCode.SOP_MEDIA_EMPTY);
     }
     if (input.buf.length > MAX_AGENT_MEDIA_BYTES) {
-      throw new BadRequestException(
-        `媒体超过 ${MAX_AGENT_MEDIA_BYTES} 字节上限`,
-      );
+      throw new AppError(ErrorCode.SOP_MEDIA_TOO_LARGE, {
+        max: MAX_AGENT_MEDIA_BYTES,
+      });
     }
 
     // assignmentId 由 controller 从 UUID 路由参数取得，但这里仍不信任拼接：
     // 二次校验 uuid 形态，防目录穿越变体。
     if (!/^[0-9a-fA-F-]{36}$/.test(input.assignmentId)) {
-      throw new BadRequestException("assignmentId 必须是 UUID");
+      throw new AppError(ErrorCode.SOP_MEDIA_ASSIGNMENT_ID_INVALID);
     }
     const diskName = `${crypto.randomUUID()}-${name}`;
     const storedPath = path.join(input.assignmentId, diskName);
@@ -97,7 +93,7 @@ export class SopMediaService {
         .resolve(abs)
         .startsWith(path.resolve(getAgentMediaRootDir()) + path.sep)
     ) {
-      throw new BadRequestException("存储路径越界");
+      throw new AppError(ErrorCode.SOP_MEDIA_STORAGE_PATH_ESCAPED);
     }
     mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, input.buf);
@@ -127,7 +123,7 @@ export class SopMediaService {
   /** 读元数据（下载端点先取它定位盘上文件）。 */
   async requireById(id: string): Promise<AgentMedia> {
     const row = await this.mediaRepo.findOne({ where: { id } });
-    if (!row) throw new NotFoundException(`媒体 ${id} 不存在`);
+    if (!row) throw new AppError(ErrorCode.SOP_MEDIA_NOT_FOUND, { id });
     return row;
   }
 
@@ -141,10 +137,10 @@ export class SopMediaService {
     const root = path.resolve(getAgentMediaRootDir());
     const abs = path.resolve(root, row.storedPath);
     if (!abs.startsWith(root + path.sep)) {
-      throw new BadRequestException("存储路径越界");
+      throw new AppError(ErrorCode.SOP_MEDIA_STORAGE_PATH_ESCAPED);
     }
     if (!existsSync(abs) || !statSync(abs).isFile()) {
-      throw new NotFoundException("媒体文件缺失（可能已被保留期清理）");
+      throw new AppError(ErrorCode.SOP_MEDIA_FILE_MISSING);
     }
     return {
       // P1-2（ARCH-008）：existsSync/statSync 之后、流 open 之前文件被删的

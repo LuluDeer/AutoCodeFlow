@@ -1,10 +1,13 @@
 import {
   DEVICE_FINGERPRINT_HEX_LENGTH,
+  DEVICE_FINGERPRINT_COLUMN_LENGTH,
   FINGERPRINT_ALERT_THROTTLE_MS,
   FINGERPRINT_ENTRY_TTL_MS,
   MAX_FINGERPRINTS_PER_ADDRESS,
   MAX_TRACKED_ADDRESSES,
   createDeviceFingerprintTracker,
+  isLegacyExecutorIdentity,
+  legacyExecutorIdentity,
   normalizeDeviceFingerprint,
 } from "../executor-fingerprint.util";
 
@@ -282,5 +285,47 @@ describe("ARCH-36 DeviceFingerprintTracker", () => {
     );
     expect(a.stats().trackedAddresses).toBe(1);
     expect(b.stats().trackedAddresses).toBe(1);
+  });
+});
+
+describe("ADR-017 阶段 3 legacy 身份键（legacyExecutorIdentity / isLegacyExecutorIdentity）", () => {
+  it("常规形态：`legacy:{address}`，且 ≤ 列宽（ip:port 恒走此形态）", () => {
+    const key = legacyExecutorIdentity("192.168.1.100:8002");
+    expect(key).toBe("legacy:192.168.1.100:8002");
+    expect(key.length).toBeLessThanOrEqual(DEVICE_FINGERPRINT_COLUMN_LENGTH);
+  });
+
+  it("超长地址退化为 `legacy-h:` + sha256（73 字符，确定性、无碰撞、≤ 列宽）", () => {
+    const longHostname = `${"a".repeat(200)}:8002`;
+    const key = legacyExecutorIdentity(longHostname);
+    expect(key.startsWith("legacy-h:")).toBe(true);
+    expect(key.length).toBe("legacy-h:".length + 64);
+    expect(key.length).toBeLessThanOrEqual(DEVICE_FINGERPRINT_COLUMN_LENGTH);
+    // 确定性：同地址同键
+    expect(legacyExecutorIdentity(longHostname)).toBe(key);
+  });
+
+  it("与真实指纹互斥：64 位十六进制指纹恒不被判为 legacy", () => {
+    expect(isLegacyExecutorIdentity(FP_A)).toBe(false);
+    expect(isLegacyExecutorIdentity(null)).toBe(false);
+    expect(isLegacyExecutorIdentity(undefined)).toBe(false);
+    expect(isLegacyExecutorIdentity("")).toBe(false);
+  });
+
+  it("legacy 键（raw 与 hash 两种形态）恒被识别", () => {
+    expect(isLegacyExecutorIdentity("legacy:192.168.1.100:8002")).toBe(true);
+    expect(
+      isLegacyExecutorIdentity(
+        "legacy-h:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ),
+    ).toBe(true);
+  });
+
+  it("`legacy:` 前缀与 64 位十六进制不可能同时成立（前缀即判定，零误报）", () => {
+    // 任意真实指纹不以字母开头；以字母开头的字符串不可能是 64 位小写十六进制
+    expect(normalizeDeviceFingerprint("legacy:192.168.1.100:8002")).toBeNull();
+    expect(
+      normalizeDeviceFingerprint(legacyExecutorIdentity(ADDR_1)),
+    ).toBeNull();
   });
 });

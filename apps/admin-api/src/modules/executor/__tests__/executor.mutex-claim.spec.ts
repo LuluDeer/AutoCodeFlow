@@ -374,9 +374,7 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
           status: ExecutionStatus.RUNNING,
         } as never,
       ),
-    ).rejects.toThrow(
-      "No online executors match the requested group/tags/runtime",
-    );
+    ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("mutexGroupId=group-1"),
     );
@@ -398,9 +396,7 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
           status: ExecutionStatus.RUNNING,
         } as never,
       ),
-    ).rejects.toThrow(
-      "No online executors match the requested group/tags/runtime",
-    );
+    ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
     expect(
       warnSpy.mock.calls.some((c) =>
         String(c[0]).includes("does not claim mutex slots"),

@@ -30,6 +30,31 @@ vi.waitFor = ((callback: () => unknown, options?: WaitForOptionsArg) => {
 
 configure({ asyncUtilTimeout: 10_000 });
 
+// ── 界面语言统一钉为 zh（LANG-DEFAULT，本轮）──────────────────────────
+// 背景：`detectLanguage()`（src/i18n/index.ts）的默认语言已按产品要求改为
+// **优先跟随浏览器语言、其次默认英文**。而 jsdom 的 `navigator.language` 是
+// `en-US`、且 localStorage 为空，于是测试进程会判定成 **英文**——但本仓绝大多数
+// 用例断言的是**中文**文案（它们写于「默认中文」的年代，如
+// task-detail-maintenance / app-deployment-* 等 119 个文件）。
+//
+// 为什么在 setup 里统一钉、而不是逐个测试文件加 `setLanguage('zh')`：
+//   · 这是**环境**属性（"测试进程跑在中文界面下"），不是某个用例的语义；
+//     逐个加会有 119 处重复，且新增用例极易忘记而再次大面积变红；
+//   · 与上方 matchMedia 桩同款理由——在 jsdom 就绪后**单点**建立确定的基线。
+//
+// 需要在英文界面下断言文案的用例（i18n-infra / shortcut-help-modal /
+// error-code-i18n 等）自行调用 `await setLanguage('en')` 覆盖本基线，行为不变。
+//
+// ⚠️ 必须做存在性判断：本 setup 是**全局**的，而个别测试文件带
+// `// @vitest-environment node`（如 monaco-first-paint.perf01.test.ts），
+// 那种环境下没有 localStorage——直接调用会以
+// `ReferenceError: localStorage is not defined` 让该套件**整个无法加载**
+// （no tests，而非 skip）。node 环境下没有 localStorage 也就不存在
+// detectLanguage 的持久化分支，故跳过本基线是正确的。
+if (typeof localStorage !== 'undefined') {
+  localStorage.setItem('autoflow-lang', 'zh');
+}
+
 // ── matchMedia 统一桩（R12：149 处测试文件顶层 `if (!window.matchMedia)`
 //    在 forks 池 + coverage 仪器化下存在「模块加载先于 jsdom 就绪」的窗口期，
 //    第十轮 admin-web-build 的 Unhandled ReferenceError: window is not defined

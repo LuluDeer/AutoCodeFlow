@@ -170,7 +170,7 @@ describe("TaskBatchController", () => {
         ) as { deprecated?: boolean; summary?: string };
         expect(meta).toBeDefined();
         expect(meta!.deprecated).toBe(true);
-        expect(meta!.summary).toContain("deprecated");
+        expect(meta!.summary).toContain("已废弃");
       }
     });
 

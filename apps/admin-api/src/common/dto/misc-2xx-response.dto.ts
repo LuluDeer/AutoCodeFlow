@@ -11,11 +11,11 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 /** login / refresh / totp/verify 三端点共享的双 token 形态（generateTokens 单点）。 */
 export class AuthTokensDto {
   @ApiProperty({
-    description: "JWT access token (15m default, sid claim present)",
+    description: "JWT access token（缺省有效期 15 分钟，含 sid claim）",
   })
   accessToken: string;
 
-  @ApiProperty({ description: "30d refresh token with unique jti" })
+  @ApiProperty({ description: "30 天有效期的 refresh token，jti 唯一" })
   refreshToken: string;
 }
 
@@ -43,8 +43,7 @@ export class AuthProfileDto {
   isActive: boolean;
 
   @ApiPropertyOptional({
-    description:
-      "Refresh-token jti of this access token's session（旧令牌缺省）",
+    description: "本 access token 所属会话的 refresh-token jti（旧令牌缺省）",
   })
   sid?: string;
 }
@@ -65,7 +64,7 @@ export class ExecutorTagsDto {
 
 /** GET /executors/runtime-config —— 心跳/离线判定的运行时配置快照。 */
 export class ExecutorRuntimeConfigDto {
-  @ApiProperty({ description: "Heartbeat interval ms" })
+  @ApiProperty({ description: "心跳间隔（毫秒）" })
   heartbeatIntervalMs: number;
 
   @ApiProperty()
@@ -293,7 +292,6 @@ export class DetailedHealthDto {
   };
 
   @ApiProperty({
-    description: "组件扁平清单",
     type: "array",
     items: {
       type: "object",
@@ -304,6 +302,7 @@ export class DetailedHealthDto {
       },
       required: ["name", "status"],
     },
+    description: "组件扁平清单",
   })
   components: Array<{
     name: string;
@@ -320,7 +319,7 @@ export class HealthServicesDto {
   @ApiProperty({ type: HealthComponentDto })
   redis: { status: "healthy" | "unhealthy"; details?: string };
 
-  @ApiProperty({ description: "healthy/degraded/unhealthy + size" })
+  @ApiProperty({ description: "healthy/degraded/unhealthy + size（队列长度）" })
   queue: {
     status: "healthy" | "degraded" | "unhealthy";
     details?: string;
@@ -328,7 +327,8 @@ export class HealthServicesDto {
   };
 
   @ApiProperty({
-    description: "healthy/degraded/unhealthy + onlineCount/totalCount",
+    description:
+      "healthy/degraded/unhealthy + onlineCount/totalCount（在线数/总数）",
   })
   executors: {
     status: "healthy" | "degraded" | "unhealthy";

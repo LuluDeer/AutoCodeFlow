@@ -32,34 +32,33 @@ export class AgentSessionDto {
   @ApiProperty({ nullable: true })
   title: string | null;
 
-  @ApiProperty({ description: "'user:<id>' / 'cron:<name>' / 'event:<type>'" })
+  @ApiProperty({
+    description: "'user:<id>' / 'cron:<name>' / 'event:<type>'（触发来源）",
+  })
   triggerSource: string;
 
   @ApiProperty({
-    description: "Sub-session lineage (sop_review sessions chain here)",
     nullable: true,
     format: "uuid",
+    description: "子会话血缘（sop_review 会话在此串联）",
   })
   parentSessionId: string | null;
 
   @ApiProperty({
-    description: "Session goal/context object",
     nullable: true,
     additionalProperties: true,
+    description: "会话目标/上下文对象",
   })
   contextJson: Record<string, unknown> | null;
 
   @ApiProperty({
-    description:
-      "Resource scope constraint (03 §5.3); empty = no resource access",
     nullable: true,
     additionalProperties: true,
+    description: "资源范围约束（03 §5.3）；为空 = 无资源访问权限",
   })
   scopeJson: Record<string, unknown> | null;
 
   @ApiProperty({
-    description:
-      "Budget snapshot taken at enqueue (audit sees what was allowed THEN)",
     nullable: true,
     type: "object",
     properties: {
@@ -68,17 +67,21 @@ export class AgentSessionDto {
       wallClockMs: { type: "number" },
       maxToolCalls: { type: "number" },
     },
+    description: "入队时取的预算快照（审计看到的是当时被允许的额度）",
   })
   budgetJson: AgentBudget | null;
 
   @ApiProperty({
-    description: "Final structured result on success",
     nullable: true,
     additionalProperties: true,
+    description: "成功时的最终结构化结果",
   })
   resultJson: Record<string, unknown> | null;
 
-  @ApiProperty({ description: "LLM-written closing summary", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "由 LLM 撰写的收尾摘要",
+  })
   summary: string | null;
 
   @ApiProperty({ nullable: true })
@@ -97,9 +100,8 @@ export class AgentSessionDto {
   totalToolCalls: number;
 
   @ApiProperty({
-    description:
-      "What the session is waiting on (approval / clarification / ...)",
     nullable: true,
+    description: "会话当前等待的事项（审批/澄清/...）",
   })
   waitingFor: string | null;
 
@@ -124,7 +126,7 @@ export class AgentStepDto {
   @ApiProperty({ format: "uuid" })
   sessionId: string;
 
-  @ApiProperty({ description: "1-based sequence within the session" })
+  @ApiProperty({ description: "会话内从 1 开始的序号" })
   seq: number;
 
   @ApiProperty({ enum: AGENT_STEP_ROLES as unknown as string[] })
@@ -134,16 +136,16 @@ export class AgentStepDto {
   content: string | null;
 
   @ApiProperty({
-    description: "Provider reasoning channel when surfaced",
     nullable: true,
+    description: "提供方暴露的推理通道内容",
   })
   reasoning: string | null;
 
   @ApiProperty({
-    description: "Assistant tool-call requests verbatim",
     nullable: true,
     type: "array",
     items: { type: "object", additionalProperties: true },
+    description: "助手工具调用请求原文",
   })
   toolCallsJson: unknown[] | null;
 
@@ -166,8 +168,8 @@ export class AgentStepDto {
   model: string | null;
 
   @ApiProperty({
-    description: "Compacted step summary (retention tiering)",
     nullable: true,
+    description: "压缩后的步骤摘要（保留分级）",
   })
   summary: string | null;
 
@@ -196,9 +198,9 @@ export class AgentToolCallDto {
   argsJson: Record<string, unknown> | null;
 
   @ApiProperty({
-    description: "Truncated by the per-call size cap when resultTruncated",
     nullable: true,
     additionalProperties: true,
+    description: "resultTruncated 为真时被单次调用大小上限截断",
   })
   resultJson: Record<string, unknown> | null;
 
@@ -212,9 +214,9 @@ export class AgentToolCallDto {
   errorMessage: string | null;
 
   @ApiProperty({
-    description: "Approval record for awaiting_approval / granted flows",
     nullable: true,
     format: "uuid",
+    description: "awaiting_approval / granted 流程的审批记录",
   })
   approvalId: string | null;
 
@@ -239,7 +241,10 @@ export class AgentSessionDetailResponseDto {
   @ApiProperty({ type: AgentSessionDto })
   session: AgentSessionDto;
 
-  @ApiProperty({ type: [AgentStepDto], description: "Reasoning trace by seq" })
+  @ApiProperty({
+    type: [AgentStepDto],
+    description: "按 seq 排序的推理轨迹",
+  })
   steps: AgentStepDto[];
 
   @ApiProperty({ type: [AgentToolCallDto] })
@@ -247,7 +252,7 @@ export class AgentSessionDetailResponseDto {
 
   @ApiProperty({
     type: [AgentSessionDto],
-    description: "Sub-sessions (parentSessionId = this)",
+    description: "子会话（parentSessionId = 本会话）",
   })
   children: AgentSessionDto[];
 }
@@ -257,7 +262,7 @@ export class AgentSessionCreateResponseDto {
   @ApiProperty({ format: "uuid" })
   id: string;
 
-  @ApiProperty({ description: "Always 'pending' at creation" })
+  @ApiProperty({ description: "创建时恒为 'pending'" })
   status: AgentSessionStatus;
 }
 
@@ -266,12 +271,10 @@ export class AgentSessionCreateResponseDto {
  * 不抛错，返回 {ok:false, reason}（200）；running 会话才 409（B-8 双跑拒绝）。
  */
 export class AgentSessionResumeResponseDto {
-  @ApiProperty({
-    description: "false = terminal session, create a new one instead",
-  })
+  @ApiProperty({ description: "false = 会话已终态，应新建一个会话" })
   ok: boolean;
 
-  @ApiPropertyOptional({ description: "Present when ok=false" })
+  @ApiPropertyOptional({ description: "ok=false 时出现" })
   reason?: string;
 }
 

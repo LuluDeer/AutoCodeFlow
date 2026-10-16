@@ -50,6 +50,27 @@ export interface TaskEnv {
    * that builds payloads by hand.
    */
   executorAddress?: string;
+  /**
+   * Stable install identity of the executor running this task — the same
+   * `sha256(deviceId + ':' + installSalt)` value it reports on
+   * register/heartbeat (ADR-017 phase 3, executor protocol v6).
+   *
+   * Why the callback face needs it: the shared/legacy callback token is a
+   * fleet-wide secret bound to no executor row, and pull mode allows several
+   * rows to share one address (ADR-017 §5), so `executorAddress` alone can no
+   * longer identify which row a callback came from. This field carries the
+   * row identity directly. Only the hash is ever sent — never the raw
+   * machine id.
+   *
+   * Injected as `AUTOFLOW_DEVICE_FINGERPRINT` by executor-node since
+   * protocol v6, alongside `AUTOFLOW_EXECUTOR_ADDRESS`. Optional for the
+   * same reasons the address is: older executors, a failed probe and
+   * task-code callbacks that predate the field are all legitimate. When
+   * known, `HttpClient` stamps it onto callback items automatically and
+   * `TaskContext.deviceFingerprint` exposes it for hand-built payloads.
+   * When unknown the key is **omitted entirely** — never an empty string.
+   */
+  deviceFingerprint?: string;
   /** Optional distributed trace identifier */
   traceId?: string;
   /**

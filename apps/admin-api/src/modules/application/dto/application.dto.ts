@@ -12,24 +12,33 @@ import {
 import { ApplicationStatus } from "../entities/application.entity";
 
 export class CreateApplicationDto {
-  @ApiProperty({ description: "Unique application name", maxLength: 100 })
+  @ApiProperty({
+    maxLength: 100,
+    description: "唯一应用名称",
+  })
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
   name: string;
 
-  @ApiPropertyOptional({ description: "Application description" })
+  @ApiPropertyOptional({ description: "应用描述" })
   @IsOptional()
   @IsString()
   @MaxLength(500)
   description?: string;
 
-  @ApiProperty({ description: "Application version number", example: "1.0.0" })
+  @ApiProperty({
+    example: "1.0.0",
+    description: "应用版本号",
+  })
   @IsString()
   @IsNotEmpty()
   version: string;
 
-  @ApiProperty({ description: "Runtime type", example: "node" })
+  @ApiProperty({
+    example: "node",
+    description: "运行时类型",
+  })
   @IsString()
   @IsNotEmpty()
   runtime: string;
@@ -51,9 +60,8 @@ export class CreateApplicationDto {
 
   /** DEP-04: 部署审批流开关（开启后 deploy 冻结为待审批行，需第二人放行）。 */
   @ApiPropertyOptional({
-    description:
-      "DEP-04: require second-person approval before new deployments dispatch",
     default: false,
+    description: "DEP-04：新部署派发前是否需要第二人审批",
   })
   @IsOptional()
   @IsBoolean()
@@ -65,9 +73,8 @@ export class CreateApplicationDto {
    * 500）；同一组内的应用在同一台设备上互斥（组内并发数默认 1）。
    */
   @ApiPropertyOptional({
-    description:
-      "MUTEX-01: mutex group id this app joins (null = no mutual exclusion)",
     nullable: true,
+    description: "MUTEX-01：该应用加入的互斥组 ID（null = 不参与互斥）",
   })
   @IsOptional()
   @IsUUID()
@@ -77,8 +84,8 @@ export class CreateApplicationDto {
 // PK-02（DEEP_REVIEW 0ef3bbe）: 手写 Optional 字段改为 PartialType(CreateApplicationDto)。
 export class UpdateApplicationDto extends PartialType(CreateApplicationDto) {
   @ApiPropertyOptional({
-    description: "Application status",
     enum: ApplicationStatus,
+    description: "应用状态",
   })
   @IsOptional()
   @IsEnum(ApplicationStatus)
@@ -86,9 +93,9 @@ export class UpdateApplicationDto extends PartialType(CreateApplicationDto) {
 
   /** HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
   @ApiPropertyOptional({
-    description:
-      "HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable.",
     maxLength: 256,
+    description:
+      "用于 Webhook 签名校验的 HMAC-SHA256 secret。置为空字符串即关闭。",
   })
   @IsOptional()
   @IsString()
@@ -102,16 +109,19 @@ export class UpdateApplicationDto extends PartialType(CreateApplicationDto) {
  * so overlong/malformed fields are rejected with 400 before touching disk.
  */
 export class UploadApplicationDto {
-  @ApiProperty({ description: "Application name", maxLength: 100 })
+  @ApiProperty({
+    maxLength: 100,
+    description: "应用名称",
+  })
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
   name: string;
 
   @ApiPropertyOptional({
-    description: "Runtime type",
     example: "node",
     maxLength: 50,
+    description: "运行时类型",
   })
   @IsOptional()
   @IsString()
@@ -124,10 +134,10 @@ export class UploadApplicationDto {
    * application_versions 快照，使详情页版本列表立刻可见。
    */
   @ApiPropertyOptional({
-    description:
-      "Version number to record for this upload (e.g. 1.0.1). Omit to keep the current version.",
     example: "1.0.1",
     maxLength: 50,
+    description:
+      "本次上传要记录的版本号（例如 1.0.1）。省略则保持当前版本不变。",
   })
   @IsOptional()
   @IsString()

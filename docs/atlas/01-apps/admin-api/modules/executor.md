@@ -69,11 +69,11 @@ task.executorId 非空 ──► pinning：只投该执行器（离线/满载即
 
 `dispatchBroadcast`（`executeMode=broadcast`）：同样过滤后 `Promise.allSettled` 并行投全体候选（亲和标签把广播收窄为命中子集），不占坑。
 
-### 注册与身份（SEC-03 / N4）
+### 注册与身份（SEC-03 / N4 / ADR-017 阶段 3）
 
-- `register()`：按 address 查找——新行走字段白名单 `repo.create`（F-7：绝不透传 caller 数据，防 `id`/`tokenHash`/`status` 注入）；重启检测（`restartedAt`/`startupId` 基线变化）→ `failRunningExecutionsAfterRestart` + `runningTaskCount=0`。
-- `registerExecutor()`：注册 + 首次/重启时 `rotateToken()`（`randomBytes(32).hex`，bcrypt cost 12 存 `tokenHash`）；同进程重注册返回 `perExecutorToken=null`（防轮换风暴）。
-- 校验：`validateTokenByAddress(address, token)`——先 bcrypt 比对 `tokenHash`，失败回退共享 token `EXECUTOR_SECRET`（timingSafeEqual）；正结果缓存 60s（负结果不缓存）。共享 token 来源顺序：DB 轮转值 → env。
+- `register()`：**先按 `deviceFingerprint` 定位行**（ADR-017 阶段 3 起），`address` 兜底——命中即复用原行并**更新 `address`**（执行器换 IP = 同机换地址，不产生「新设备幽灵行」，部署/执行历史不断裂）。新行走字段白名单 `repo.create`（F-7：绝不透传 caller 数据，防 `id`/`tokenHash`/`status` 注入；未上报指纹落 `legacy:{address}` 兜底键）；重启检测（`restartedAt`/`startupId` 基线变化）→ `failRunningExecutionsAfterRestart` + `runningTaskCount=0`。**冲突分叉**：push 模式同地址不同真实指纹 → 保留先注册者、后到者 **409**；pull 模式同地址允许各自成行（地址只是标签，ADR-017 §4/§5）。
+- `registerExecutor()`：注册 + 首次/重启时 `rotateToken()`（`randomBytes(32).hex`，bcrypt cost 12 存 `tokenHash`）；同进程重注册返回 `perExecutorToken=null`（防轮换风暴）；prior 解析与 register 同源（指纹优先）。
+- 校验：`validateTokenByAddress(address, token, deviceFingerprint?)`——可选指纹参数使定位**指纹优先**（pull 同址多行命中自己的行、换 IP 注册竞态时心跳仍可认证）；先 bcrypt 比对 `tokenHash`，失败回退共享 token `EXECUTOR_SECRET`（timingSafeEqual）；正结果缓存 60s（负结果不缓存）。共享 token 来源顺序：DB 轮转值 → env。注册响应回显的 `tokenHash` 按 `executor.id` 取（`getCallbackSecretById`）。
 
 #### 身份冲突观测（ARCH-34 / ARCH-36）
 
@@ -83,8 +83,8 @@ task.executorId 非空 ──► pinning：只投该执行器（离线/满载即
 | 跟踪器 | 判据 | 判定结果 | 处置 |
 |---|---|---|---|
 | `observeAddressConflict`（ARCH-34 P0） | 「**被顶替的**进程生命重新上报」——**不是**「同 address 出现不同 startupId」（后者是正常重启的形状，会致每次重启误报） | 两台机器的进程生命在并存 | ERROR 日志 + 通知，10min 按 `(address,startupId)` 节流 |
-| `observeDeviceFingerprint`（ARCH-36 / ADR-017 阶段 2） | 同 `address` 出现**第二个不同**指纹 | 两台机器/两份安装共用一行（**直接证据**，不依赖上报节奏） | ERROR 日志 + 通知（载荷列出**全部**并存指纹），10min 按 `(address,fingerprint)` 节流 |
-| 同上 | 同一指纹上报了一个**新** `address` | 机器换网/换 IP，**正常** | 仅 info 日志，**不告警**（否则每次换网都告警＝狼来了） |
+| `observeDeviceFingerprint`（ARCH-36 / ADR-017 阶段 2/3） | 同 `address` 出现**第二个不同**指纹 | 两台机器/两份安装共用一行（**直接证据**，不依赖上报节奏） | ERROR 日志 + 通知（载荷列出**全部**并存指纹），10min 按 `(address,fingerprint)` 节流；**阶段 3 起 push 模式在注册面升级为 409 拒绝**（ADR-017 §4） |
+| 同上 | 同一指纹上报了一个**新** `address` | 机器换网/换 IP，**正常**（阶段 3 起注册/心跳直接采纳新地址、复用同一行） | 仅 info 日志，**不告警**（否则每次换网都告警＝狼来了） |
 
 - **分工**：ARCH-34 管**进程生命**、不依赖新字段（对未上报 `startupId` 的存量执行器仍有效）；
   ARCH-36 管**安装身份**、判据更硬但要求协议 v3。迁移期两者并存；阶段 3 落地后 ARCH-34 仍保留作
@@ -93,6 +93,25 @@ task.executorId 非空 ──► pinning：只投该执行器（离线/满载即
   **同一条**处置动作收敛两者——给每台机器唯一的 `EXECUTOR_ADDRESS_PUBLIC`。
 - 两者都 **fail-open**：观测/通知的任何失败（含 `notificationService` 缺席、`sendAll` 同步抛错）
   都绝不影响注册/心跳主链。观测设施本身不能成为新的故障源。
+- **pull 同址并存的读面注意**：阶段 3 起 `executorAddress` 读面可能对应多行（pull 允许重复），
+  按地址取单行（`findByAddress`/`getCallbackSecretByAddress`）会命中任一行——回调密钥回显已改按 id。
+
+#### 读面富化（ADR-017 决策 §7，2026-10-15 落地）
+
+阶段 3 起同址多行并存使「按地址聚合/过滤」的读面不再指代一行。已收敛的面与新口径：
+
+| 面 | 修法 |
+|---|---|
+| `getExecutorExecutions(id, …)` | 原**接收 id 却按 address 过滤** → 行身份优先，存量行才按地址回落：`executorId = :id OR (executorId IS NULL AND executorAddress = :addr)` |
+| `getExecutorMetrics(id)` 7 日统计 | 同款并集（否则成功率/均值被同址另一台污染） |
+| `getTerminalStates(address, {executorId})` | 新增可选 `executorId`：控制器把**刚认证出的行身份**传入（解析入口 `findByAddress(address, fingerprint)` 与鉴权同源）；缺省 → 纯地址，行为与引入前一致 |
+| `estimatedDurationsByExecutor` | 样本池改为**按行身份归组**（存量行按地址），并通过 `forExecutor(executor)` 取值器交付——两个来源的合并收进方法内，调用方无从只读一支 |
+
+**地址支的 `executorId IS NULL` 守卫是必需的**：否则同址另一台的**新派发**行会被卷进来，退回修复前的错配（该守卫已在多处以注释与测试钉住）。
+
+**刻意不在服务端做 `executorAppName` join**：两个最热的列表端点（`getExecutions`/`getAllExecutions`）受 PERF-03 读投影纪律约束；名字解析统一由前端 `useExecutorNames` hook 完成（id 优先、地址回落、匹配不到返回 null 并如实显示地址），服务端再算一遍会形成第二套机制而必然漂移。
+
+**未做且如实登记**：`executor_metrics_history` 表**只有** `executorAddress`、无行身份列，其 24h 趋势图在同址多行时物理上无法拆分到行——修复需一次迁移（回填同样面对地址→行歧义）。影响面仅限趋势图混画；派发闸门/恢复/槽位均不读该表。
 
 ### 心跳与活性
 

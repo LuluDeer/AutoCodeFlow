@@ -77,13 +77,13 @@ describe("TaskService.assertCanWrite（NF-03 属主矩阵）", () => {
 
   it("非属主非 admin → 403", () => {
     expect(() => service.assertCanWrite({ ownerUserId: 7 }, other)).toThrow(
-      "You do not own this task",
+      "你不是该任务的属主",
     );
   });
 
   it("无主行（NULL/存量）非 admin → 403（保守默认）", () => {
     expect(() => service.assertCanWrite({ ownerUserId: null }, owner)).toThrow(
-      "no owner",
+      "该任务没有属主",
     );
   });
 
@@ -96,7 +96,7 @@ describe("TaskService.assertCanWrite（NF-03 属主矩阵）", () => {
 
   it("悬垂 ownerUserId（用户已删除，id 不存在）≠ 当前用户 → 403（方向安全）", () => {
     expect(() => service.assertCanWrite({ ownerUserId: 9999 }, owner)).toThrow(
-      "You do not own this task",
+      "你不是该任务的属主",
     );
   });
 });
@@ -161,7 +161,7 @@ describe("TaskService 项目角色面（AUTH-02）", () => {
         { ownerUserId: 7, projectId: "p1" },
         plainUser,
       ),
-    ).rejects.toThrow("You do not own this task");
+    ).rejects.toThrow("你不是该任务的属主");
   });
 
   it("assertCanWriteProjectAware：无主存量行 + 项目 editor → 放行（团队可接管存量）", async () => {
