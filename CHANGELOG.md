@@ -5,13 +5,32 @@
 
 ### Features
 
-* **i18n,executor,admin:** 全量错误码化 + API 文档双语 + ADR-017 阶段 3 执行器行身份 ([596ac76](https://github.com/LuluDeer/AutoCodeFlow/commit/596ac7651463d93de5127c783a42bb1c6d933abf))
 * **i18n,executor,admin:** 全量错误码化 + API 文档双语 + ADR-017 阶段 3 执行器行身份 ([4bfe376](https://github.com/LuluDeer/AutoCodeFlow/commit/4bfe376689ca9d938a41ba799434960dc44f512f))
 
 
 ### Bug Fixes
 
 * **ci,i18n,e2e:** 修首轮 CI 的 6 个红——注入串联/守卫基线/产物摘要/playwright locale ([60659de](https://github.com/LuluDeer/AutoCodeFlow/commit/60659dedfbede1bbc6190e390a7daba250f731ed))
+* **e2e,desktop:** 修二轮 CI 余下 2 红——e2e 断言随中文化与读面富化更新 + bundle 字节哈希回填 ([03c8cf4](https://github.com/LuluDeer/AutoCodeFlow/commit/03c8cf4ecc40aa66e3ceb836475c58a7699d65e1))
+* **task,e2e:** 修三轮 CI 余下 2 红——pinned 离线被错报「脚本错误」+ e2e 状态级联 ([a3f719b](https://github.com/LuluDeer/AutoCodeFlow/commit/a3f719beec19dd13efbbc25468c25e900bec49b9))
+* **task:** EXECUTOR_OFFLINE 判据收成单一事实源——pinned 离线被错报「脚本错误」的根因在第二份副本 ([9e55c12](https://github.com/LuluDeer/AutoCodeFlow/commit/9e55c1261a61f88cea09a7df57c866e740804ab5))
+
+<!--
+本节经人工校正（release-please 于 2026-10-16 生成时有两处偏差）：
+1. **Features 重复**：同一条 feat 列了两次——596ac76（`Merge pull request #48`，
+   取用了 PR 标题）与 4bfe376（该 PR 内的真实 commit）。已删去 merge 那条，
+   保留真实 commit。
+2. **Bug Fixes 漏三条**：原只列 60659de，漏了 03c8cf4 / a3f719b / 9e55c12——
+   三条均属 `git log v1.10.1..v1.11.0` 范围内的真实修复。
+
+⚠️ 该偏差**并非本轮特有**：v1.10.1 小节同样重复（8cbb22f 与 2b4a52f 为同一条
+A-11R 消息）。根因是「非规范 merge 标题 + develop 直推 commit」与 release-please
+的 PR 关联/遍历交互——`.github/workflows/release-please.yml` 的 v1.3.0 注记
+「非规范 merge 标题触发 conventional 解析错误吞掉 feat 遍历」已记录同类现象。
+规避建议（任选其一）：
+  · develop → main 改 **squash merge**，且 squash 标题写规范 conventional 文案；或
+  · 合并 Release PR 前**人工核对**其 CHANGELOG 差异，必要时按本节方式校正。
+-->
 
 ## [1.10.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.10.0...v1.10.1) (2026-10-14)
 
