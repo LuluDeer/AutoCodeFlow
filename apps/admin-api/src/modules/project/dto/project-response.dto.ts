@@ -14,27 +14,29 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * 含可空性——契约写错比没有契约更坏（前端会照错误类型写代码）。
  */
 export class ProjectViewDto {
-  @ApiProperty({ description: "Project id (uuid)" })
+  @ApiProperty({ description: "项目 ID（uuid）" })
   id: string;
 
-  @ApiProperty({ description: "Project name" })
+  @ApiProperty({ description: "项目名称" })
   name: string;
 
-  @ApiPropertyOptional({ description: "Description", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "描述",
+  })
   description: string | null;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Last update time (ISO-8601)" })
+  @ApiProperty({ description: "最后更新时间（ISO-8601）" })
   updatedAt: Date;
 
   @ApiPropertyOptional({
-    description:
-      "Calling subject's role in this project; null for non-members. " +
-      "ADMIN also gets its real member row here (honest, not synthesized).",
     nullable: true,
     enum: ["viewer", "editor", "admin"],
+    description:
+      "调用主体在该项目中的角色；非成员为 null。ADMIN 也会在这里拿到其真实的成员行（如实返回，不做合成）。",
   })
   myRole: string | null;
 }
@@ -49,19 +51,22 @@ export class ProjectViewDto {
  * 这类"文档按想象写"比没有 schema 更坏，故按实际返回拆成两个 DTO。
  */
 export class ProjectEntityDto {
-  @ApiProperty({ description: "Project id (uuid)" })
+  @ApiProperty({ description: "项目 ID（uuid）" })
   id: string;
 
-  @ApiProperty({ description: "Unique project name" })
+  @ApiProperty({ description: "唯一项目名称" })
   name: string;
 
-  @ApiPropertyOptional({ description: "Description", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "描述",
+  })
   description: string | null;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Last update time (ISO-8601)" })
+  @ApiProperty({ description: "最后更新时间（ISO-8601）" })
   updatedAt: Date;
 }
 
@@ -75,45 +80,48 @@ export class ProjectEntityDto {
  */
 export class ProjectListPageDto {
   @ApiProperty({
-    description: "Page rows (legacy alias of items)",
     type: [ProjectViewDto],
+    description: "分页行（items 的 legacy 别名）",
   })
   list: ProjectViewDto[];
 
-  @ApiProperty({ description: "Page rows", type: [ProjectViewDto] })
+  @ApiProperty({
+    type: [ProjectViewDto],
+    description: "分页行",
+  })
   items: ProjectViewDto[];
 
-  @ApiProperty({ description: "Total visible projects" })
+  @ApiProperty({ description: "可见项目总数" })
   total: number;
 
-  @ApiProperty({ description: "Current page (1-based)" })
+  @ApiProperty({ description: "当前页（从 1 开始）" })
   page: number;
 
-  @ApiProperty({ description: "Page size (clamped to 1..100)" })
+  @ApiProperty({ description: "每页条数（限制在 1..100）" })
   pageSize: number;
 
-  @ApiProperty({ description: "Total pages" })
+  @ApiProperty({ description: "总页数" })
   totalPages: number;
 }
 
 /** GET /projects/:id/members 的单行（ProjectMemberView 的可生成版本）。 */
 export class ProjectMemberViewDto {
-  @ApiProperty({ description: "Membership row id (uuid)" })
+  @ApiProperty({ description: "成员关系行 ID（uuid）" })
   id: string;
 
-  @ApiProperty({ description: "Project id (uuid)" })
+  @ApiProperty({ description: "项目 ID（uuid）" })
   projectId: string;
 
-  @ApiProperty({ description: "User id" })
+  @ApiProperty({ description: "用户 ID" })
   userId: number;
 
   @ApiProperty({
-    description: "Role granted to this member",
     enum: ["viewer", "editor", "admin"],
+    description: "授予该成员的角色",
   })
   role: string;
 
-  @ApiProperty({ description: "Membership creation time (ISO-8601)" })
+  @ApiProperty({ description: "成员关系创建时间（ISO-8601）" })
   createdAt: Date;
 }
 
@@ -127,20 +135,19 @@ export class ProjectMemberViewDto {
  */
 export class MyProjectRolesDto {
   @ApiPropertyOptional({
-    description: "Calling user id; null when the request carries no user",
     nullable: true,
+    description: "调用方用户 ID；请求未携带用户时为 null",
   })
   userId: number | null;
 
   @ApiProperty({
-    description:
-      "True when the caller is ADMIN (admin-web uses this to render all projects)",
+    description: "调用方为 ADMIN 时为 true（admin-web 据此渲染全部项目）",
   })
   isAdmin: boolean;
 
   @ApiProperty({
-    description: "Membership rows for the calling user across all projects",
     type: [ProjectMemberViewDto],
+    description: "调用方在所有项目中的成员关系行",
   })
   memberships: ProjectMemberViewDto[];
 }

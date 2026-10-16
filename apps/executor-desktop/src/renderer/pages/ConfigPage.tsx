@@ -10,8 +10,13 @@ import {
   parseBoundedInt,
 } from '../number-input';
 // N-04：渲染层双语——文案本体在 ../i18n.ts 的 CFG_TEXTS（zh/en 扁平键表，
-// 与托盘 tray-texts 同范式）；语言判定 navigator.language en* → en，其余 zh。
+// 与托盘 tray-texts 同范式）；语言判定见 i18n.ts 的 resolveRendererLocale
+//（i18n-DESK-01：用户设置优先，'auto' 才按 navigator.language 判定）。
 import { createCfgTexts, resolveRendererLocale, type RendererLocale } from '../i18n';
+// i18n-DESK-01：「界面语言」下拉的合法取值与默认值——与主进程
+// config-sanitize.ts 的 ENUM_FIELDS / config-store defaults 同源同一份常量，
+// 避免三处各写一遍 zh/en/auto 清单而漂移。
+import { UI_LANGUAGE_DEFAULT, UI_LANGUAGE_VALUES } from '../../main/ui-language';
 // Agent 最近结果（lastOutcome）是英文枚举（delivered / deliver_failed / …），
 // 与状态页共用 main/agent-status-view 的查表映射——已知值出双语标签、表外
 // 未知值原样透出。不在设置页再写一份裸枚举直出。
@@ -116,11 +121,22 @@ const SECTION_KEYS: Record<SectionId, string[]> = {
   network: ['executorHost', 'executorPort', 'executorAddressPublic', 'pullMode'],
   python: ['uvPath', 'uvPythonInstallMirror', 'uvPythonInstallDir', 'pypiRegistryUrl', 'interpreterDownloadTimeoutMs'],
   agent: ['agentEnabled', 'agentPermissionProfile', 'agentCodeExecution', 'agentHostAccess', 'agentTaskExecution', 'agentAllowedApps', 'agentAllowedDomains'],
-  about: ['logLevel', 'autoStartExecutor', 'notifyEnabled'],
+  about: ['logLevel', 'autoStartExecutor', 'notifyEnabled', 'uiLanguage'],
 };
 
 function sameConfigValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * i18n-DESK-01：界面语言下拉的受控值——非法/缺失（手改配置文件、旧版残值）
+ * 一律显示默认值「中文」，与主进程消毒层（ENUM_FIELDS fallback: 'zh'）同口径：
+ * select 的 value 必须是它自己某个 option 的 value，否则浏览器会静默显示第一项，
+ * 于是"盘上的值和界面显示的值不是一回事"。
+ */
+function uiLanguageValue(raw: unknown): string {
+  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return (UI_LANGUAGE_VALUES as readonly string[]).includes(v) ? v : UI_LANGUAGE_DEFAULT;
 }
 
 // ── V4-4（X-02）：配置改动清单 ──────────────────────────────────────
@@ -149,6 +165,7 @@ const FIELD_LABEL_KEYS: Array<[string, string]> = [
   ['agentAllowedApps', 'cfg.agent.appsLabel'],
   ['agentAllowedDomains', 'cfg.agent.domainsLabel'],
   ['logLevel', 'cfg.gen.logLevelLabel'],
+  ['uiLanguage', 'cfg.gen.uiLanguageLabel'],
   ['autoStartExecutor', 'cfg.gen.autoRunTitle'],
   ['notifyEnabled', 'cfg.gen.notifyTitle'],
 ];
@@ -164,6 +181,19 @@ function formatDiffValue(t: (key: string, ...args: (string | number | boolean)[]
   return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
 
+/**
+ * i18n-DESK-01：这次语言设置的变化是否**真的会改变界面语言**——只有会变才
+ * 重载窗口。zh → auto 在中文系统上视觉零变化，白重载一次只会丢掉「已保存」
+ * 提示、让用户以为界面抽了一下。
+ */
+function languageChangeReloadsUi(before: unknown, after: unknown): boolean {
+  const getLanguage = () => navigator.language;
+  return (
+    resolveRendererLocale(getLanguage, uiLanguageValue(before)) !==
+    resolveRendererLocale(getLanguage, uiLanguageValue(after))
+  );
+}
+
 function listText(value: unknown): string {
   return Array.isArray(value) ? value.join('\n') : '';
 }
@@ -174,7 +204,10 @@ function parseListText(value: string): string[] {
 
 export default function ConfigPage() {
   // N-04：整页共用一个 locale 的文案函数（同 tray「同一轮渲染锁同语言」，
-  // 杜绝混语；渲染层无热切语言入口，重挂载时按 navigator.language 重取）。
+  // 杜绝混语）。i18n-DESK-01：locale 来自用户在设置页选的「界面语言」
+  // （main.tsx 启动时经 config:get 灌入 i18n 的模块级设置），'auto'/未设置才按
+  // navigator.language 判定。语言**不热切换**——本页只读设置、不改本次渲染的
+  // 语言；保存生效后走 location.reload() 重载（见 save()）用新语言重新求值。
   const locale: RendererLocale = resolveRendererLocale(() => navigator.language);
   const t = createCfgTexts(locale);
   const [form, setForm] = useState<Record<string, unknown>>({});
@@ -349,6 +382,13 @@ export default function ConfigPage() {
         // 解释器池 / 下载预算这些值，诊断块必须如实反映"改完之后的实际生效值"。
         // 只在成功分支调用：失败时保留上一次的诊断（比清空更有参考价值）。
         refreshPyEnv();
+        // i18n-DESK-01：界面语言**不是热切换**的（渲染层文案在模块作用域求值，
+        // 只求值一次）——语言真的变了就重载本窗口，重载即用新语言重新跑一遍启动
+        // 流程。重载后「已保存」提示自然消失：界面本身已是新语言，无需再提示。
+        if (languageChangeReloadsUi(savedForm.uiLanguage, form.uiLanguage)) {
+          window.location.reload();
+          return;
+        }
       }
     } catch (err) {
       // D 修正：原实现未包 try——saveConfig reject 会让 saving 永久为 true，
@@ -470,6 +510,12 @@ export default function ConfigPage() {
         setAllowedAppsText(listText(cfg.agentAllowedApps));
         setAllowedDomainsText(listText(cfg.agentAllowedDomains));
         setTestResult(null);
+        // i18n-DESK-01：备份文件里可能带着另一种界面语言——导入后同样需要重载
+        // 才能生效（同 save() 的口径），否则用户看到"导入成功"但界面没变。
+        if (languageChangeReloadsUi(savedForm.uiLanguage, cfg.uiLanguage)) {
+          window.location.reload();
+          return;
+        }
       } catch {
         /* 掩码配置重读失败：保持既有显示，导入结果照常呈现 */
       }
@@ -1078,6 +1124,24 @@ export default function ConfigPage() {
               />
 
               <div className="cfg-main">
+              {/* i18n-DESK-01：界面语言（可切换，默认跟随系统）。放在「关于与更新」
+                  分区的首组：它是全应用级偏好，与下方日志级别同属低频设置项。
+                  三个选项 = config 键 uiLanguage 的三个合法取值。 */}
+              <div className="cfg-group">
+                <div className="cfg-group-title">{t('cfg.gen.groupInterface')}</div>
+                <div className="cfg-field cfg-field-narrow">
+                  <label className="cfg-label">{t('cfg.gen.uiLanguageLabel')}</label>
+                  <select aria-label={t('cfg.gen.uiLanguageLabel')} className="input"
+                    value={uiLanguageValue(form.uiLanguage)}
+                    onChange={(e) => set('uiLanguage', e.target.value)}>
+                    <option value="zh">{t('cfg.gen.uiLanguageZh')}</option>
+                    <option value="en">{t('cfg.gen.uiLanguageEn')}</option>
+                    <option value="auto">{t('cfg.gen.uiLanguageAuto')}</option>
+                  </select>
+                  <span className="cfg-hint">{t('cfg.gen.uiLanguageHint')}</span>
+                </div>
+              </div>
+
               <div className="cfg-group">
                 <div className="cfg-group-title">{t('cfg.gen.groupLog')}</div>
                 <div className="cfg-field cfg-field-narrow">

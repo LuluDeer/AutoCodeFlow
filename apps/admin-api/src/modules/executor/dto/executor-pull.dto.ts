@@ -10,15 +10,15 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  */
 export class ExecutorPullDto {
   @ApiProperty({
-    description: "执行器注册地址（与心跳一致）",
     example: "http://10.0.0.5:9100",
+    description: "执行器注册地址（与心跳一致）",
   })
   address: string;
 
   @ApiPropertyOptional({
+    example: 25000,
     description:
       "客户端期望的长轮询等待窗口（毫秒）；服务端按 EXECUTOR_PULL_WAIT_MS 钳位（上限 55s）",
-    example: 25000,
   })
   waitMs?: number;
 
@@ -30,9 +30,24 @@ export class ExecutorPullDto {
    * 控制面命令——否则执行器满载时部署/停止/热更新全部静默失效。
    */
   @ApiPropertyOptional({
+    example: 2,
     description:
       "执行器当前空闲槽位数；0 = 满载（服务端只下发控制命令，不派任务）。缺省按有空槽处理",
-    example: 2,
   })
   freeSlots?: number;
+
+  /**
+   * ADR-017 阶段 3：稳定设备身份（协议 v3 起执行器上报）。
+   *
+   * pull 模式允许同地址多行并存（ADR-017 §5，不同内网同网段同 IP），此时
+   * 服务端**必须**靠指纹才能唯一定位调用方的行——否则会拉到别人的
+   * `acf:pull:` 队列。缺省 = 旧执行器/采集失败 → 服务端 legacy 兜底路径
+   * （地址命中多行时 fail-closed 拒绝，不会猜错行）。
+   */
+  @ApiPropertyOptional({
+    example: "f".repeat(64),
+    description:
+      "稳定设备指纹 sha256(deviceId + ':' + installSalt)，64 位小写十六进制（协议 v3+）。pull 同址多行时用于唯一定位本行",
+  })
+  deviceFingerprint?: string | null;
 }

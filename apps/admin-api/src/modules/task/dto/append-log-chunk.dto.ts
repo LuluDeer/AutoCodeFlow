@@ -29,16 +29,16 @@ export const LOG_LINE_MAX_LENGTH = 512_000;
 
 export class AppendLogChunkDto {
   @ApiProperty({
-    description: "0-based line number offset of the first line in this chunk",
     example: 0,
+    description: "本分片中首行的 0-based 行号偏移",
   })
   @IsInt()
   @Min(0)
   fromLine: number;
 
   @ApiProperty({
-    description: "Array of log line strings (max 2000 lines, 512 KB per line)",
-    example: ["Starting task...", "Step 1 complete"],
+    example: ["Starting task", "Step 1 complete"],
+    description: "日志行字符串数组（最多 2000 行，每行最长 512 KB）",
   })
   @IsArray()
   @IsString({ each: true })

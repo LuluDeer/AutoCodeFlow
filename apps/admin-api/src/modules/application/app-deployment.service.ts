@@ -1,10 +1,6 @@
 import {
   Injectable,
   Logger,
-  NotFoundException,
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
   Optional,
   OnModuleDestroy,
   OnModuleInit,
@@ -67,6 +63,9 @@ import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 // DEP-04: 审批留痕（AuditService @Optional 注入，先例 executor.service——
 // 存量单测未提供 AuditModule 时降级为仅日志，主链不因审计故障中断）。
 import { AuditService } from "../audit/audit.service";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /** DEP-02：upgrade-all canary 缺省百分比（首批台数 = ceil(N×pct%)，至少 1 台）。 */
 const ROLLOUT_DEFAULT_PERCENTAGE = 50;
@@ -349,7 +348,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       where: { id },
       relations: { application: true },
     });
-    if (!d) throw new NotFoundException(`Deployment ${id} not found`);
+    if (!d)
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_NOT_FOUND, {
+        deploymentId: id,
+      });
     return d;
   }
 
@@ -368,9 +370,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         (err instanceof Error &&
           err.name === "OptimisticLockVersionMismatchError")
       ) {
-        throw new ConflictException(
-          `Deployment ${deployment.id} was modified concurrently; reload and retry`,
-        );
+        throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+          deploymentId: deployment.id,
+        });
       }
       throw err;
     }
@@ -381,7 +383,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       where: { id },
       relations: { application: true },
     });
-    if (!d) throw new NotFoundException(`Deployment ${id} not found`);
+    if (!d)
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_NOT_FOUND, {
+        deploymentId: id,
+      });
     return this.maskDeploymentForRead(d);
   }
 
@@ -758,19 +763,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const version = await this.versionRepo.findOne({ where: { id: targetId } });
     if (version) {
       if (version.applicationId !== appId) {
-        throw new BadRequestException(
-          "The specified version does not belong to this application",
-        );
+        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_OTHER_APP);
       }
       if (!version.version) {
-        throw new BadRequestException(
-          "The specified version has no version number",
-        );
+        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NO_NUMBER);
       }
       if (version.status !== "released") {
-        throw new BadRequestException(
-          "Only released application versions can be rolled back",
-        );
+        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NOT_RELEASED);
       }
 
       const updatedApp = await this.appService.update(
@@ -795,14 +794,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const deployments = await this.findAllByApp(appId);
     const target = deployments.find((d) => d.id === targetId);
     if (!target) {
-      throw new BadRequestException(
-        "The specified deployment does not belong to this application",
-      );
+      throw new AppError(ErrorCode.APP_ROLLBACK_DEPLOYMENT_OTHER_APP);
     }
     if (!target.deployedVersion) {
-      throw new BadRequestException(
-        "The specified deployment has no deployed version",
-      );
+      throw new AppError(ErrorCode.APP_ROLLBACK_DEPLOYMENT_NO_VERSION);
     }
 
     const updateDto: Record<string, any> = { version: target.deployedVersion };
@@ -870,11 +865,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // QA4: 409 (not 400) — same conflict semantics and same message as the
       // unique-violation branch below, so both interception surfaces answer
       // identically.
-      throw new ConflictException(
-        `Application ${app.name} already has an in-progress deployment ` +
-          `(id=${inFlight.id}, status=${inFlight.status}). ` +
-          `Wait for it to finish or cancel it first.`,
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {
+        name: app.name,
+        detail: ` (id=${inFlight.id}, status=${inFlight.status})`,
+      });
     }
 
     // Auto-select the least-loaded executor when none is specified
@@ -920,10 +914,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         savedRequest = await this.repo.save(request);
       } catch (err: unknown) {
         if (this.isInFlightUniqueViolation(err)) {
-          throw new ConflictException(
-            `Application ${app.name} already has an in-progress deployment. ` +
-              `Wait for it to finish or cancel it first.`,
-          );
+          throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {
+            name: app.name,
+            detail: "",
+          });
         }
         throw err;
       }
@@ -991,10 +985,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         reused = await this.saveWithOptimisticLock(reusable);
       } catch (err: unknown) {
         if (this.isInFlightUniqueViolation(err)) {
-          throw new ConflictException(
-            `Application ${app.name} already has an in-progress deployment. ` +
-              `Wait for it to finish or cancel it first.`,
-          );
+          throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {
+            name: app.name,
+            detail: "",
+          });
         }
         throw err;
       }
@@ -1035,10 +1029,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       saved = await this.repo.save(deployment);
     } catch (err: unknown) {
       if (this.isInFlightUniqueViolation(err)) {
-        throw new ConflictException(
-          `Application ${app.name} already has an in-progress deployment. ` +
-            `Wait for it to finish or cancel it first.`,
-        );
+        throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {
+          name: app.name,
+          detail: "",
+        });
       }
       throw err;
     }
@@ -1088,9 +1082,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       },
     );
     if (!claimed.affected) {
-      throw new ConflictException(
-        `Deployment ${deploymentId} was already decided by a concurrent action`,
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
+        deploymentId,
+      });
     }
 
     deployment.approvalStatus = DeploymentApprovalStatus.APPROVED;
@@ -1145,9 +1139,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       },
     );
     if (!claimed.affected) {
-      throw new ConflictException(
-        `Deployment ${deploymentId} was already decided by a concurrent action`,
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
+        deploymentId,
+      });
     }
 
     deployment.approvalStatus = DeploymentApprovalStatus.REJECTED;
@@ -1179,10 +1173,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       actor.id != null &&
       meta.requestedBy !== actor.id
     ) {
-      throw new ForbiddenException(
-        "Only the requester can cancel a pending deployment approval; " +
-          "use reject instead",
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CANCEL_NOT_REQUESTER);
     }
 
     const actedAt = new Date().toISOString();
@@ -1205,9 +1196,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       },
     );
     if (!claimed.affected) {
-      throw new ConflictException(
-        `Deployment ${deploymentId} was already decided by a concurrent action`,
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
+        deploymentId,
+      });
     }
 
     deployment.approvalStatus = DeploymentApprovalStatus.CANCELLED;
@@ -1226,10 +1217,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     if (
       deployment.approvalStatus !== DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
-      throw new ConflictException(
-        `Deployment ${deploymentId} is not awaiting approval ` +
-          `(approvalStatus=${deployment.approvalStatus ?? "none"})`,
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_NOT_PENDING_APPROVAL, {
+        deploymentId,
+        approvalStatus: deployment.approvalStatus ?? "none",
+      });
     }
     return deployment;
   }
@@ -1250,10 +1241,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       return;
     }
     if (requestedBy === actor.id) {
-      throw new ForbiddenException(
-        "Second-person rule: the requester cannot decide their own " +
-          "deployment approval",
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_SECOND_PERSON_REQUIRED);
     }
   }
 
@@ -1330,9 +1318,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     if (
       deployment.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
-      throw new ConflictException(
-        "Deployment is awaiting approval; approve or reject it first",
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_AWAITING_APPROVAL);
     }
     // R1: upgrade pushes the merged app+deployment env to the executor —
     // must be the raw value, not the masked read surface.
@@ -1377,9 +1363,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     if (
       deployment.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
-      throw new ConflictException(
-        "Deployment is awaiting approval; approve or reject it first",
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_AWAITING_APPROVAL);
     }
 
     try {
@@ -1478,9 +1462,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     if (
       deployment.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
-      throw new ConflictException(
-        "Deployment is awaiting approval; reject or cancel it instead of deleting it",
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_AWAITING_APPROVAL_DELETE);
     }
 
     const inFlight: DeploymentStatus[] = [
@@ -1489,15 +1471,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       DeploymentStatus.UPGRADING,
     ];
     if (inFlight.includes(deployment.status)) {
-      throw new ConflictException(
-        `Deployment ${deploymentId} is in progress (status=${deployment.status}); ` +
-          `wait for it to finish before deleting the record`,
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_STILL_IN_FLIGHT, {
+        deploymentId,
+        status: deployment.status,
+      });
     }
     if (deployment.status === DeploymentStatus.RUNNING) {
-      throw new ConflictException(
-        `Deployment ${deploymentId} is still running; stop it first, then delete the record`,
-      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_STILL_RUNNING, {
+        deploymentId,
+      });
     }
 
     // 审计先行：删掉行之后就没有 resourceId 可追溯了，落证必须在 delete 之前。
@@ -1677,15 +1659,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const re = /^(\[?[a-zA-Z0-9._:-]+\]?):([0-9]{1,5})$/;
     const m = address.match(re);
     if (!m) {
-      throw new BadRequestException(
-        `Invalid executor address format: "${address}"`,
-      );
+      throw new AppError(ErrorCode.EXECUTOR_ADDRESS_FORMAT_INVALID, {
+        address,
+      });
     }
     const port = parseInt(m[2], 10);
     if (port < 1 || port > 65535) {
-      throw new BadRequestException(
-        `Executor address port out of range: ${port}`,
-      );
+      throw new AppError(ErrorCode.EXECUTOR_ADDRESS_PORT_OUT_OF_RANGE, {
+        port,
+      });
     }
   }
 
@@ -2249,14 +2231,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         where: { applicationId: appId, version: String(version).trim() },
       });
       if (!row) {
-        throw new BadRequestException(
-          `Version "${version}" not found for this application`,
-        );
+        throw new AppError(ErrorCode.APP_ROLLOUT_VERSION_NOT_FOUND, {
+          version,
+        });
       }
       if (row.status !== "released") {
-        throw new BadRequestException(
-          "Only released application versions can be targeted by a rollout",
-        );
+        throw new AppError(ErrorCode.APP_ROLLOUT_VERSION_NOT_RELEASED);
       }
       const app = await this.appService.findByIdRaw(appId);
       if (app.version !== row.version) {

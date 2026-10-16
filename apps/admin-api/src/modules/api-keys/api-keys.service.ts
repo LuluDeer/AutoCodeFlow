@@ -1,12 +1,9 @@
-import {
-  Injectable,
-  Logger,
-  Optional,
-  ConflictException,
-} from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { IsNull, Repository } from "typeorm";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError。
+import { AppError } from "../../common/errors/app-error";
 import {
   ApiKey,
   ApiKeyScope,
@@ -97,9 +94,7 @@ export class ApiKeysService {
     });
     const maxKeys = this.maxActiveKeysPerUser();
     if (activeCount >= maxKeys) {
-      throw new ConflictException(
-        `API Key quota reached (${maxKeys} active keys per user); revoke unused keys first`,
-      );
+      throw new AppError("API_KEY_QUOTA_CONFLICT", { max: maxKeys });
     }
     const { plaintext, keyPrefix, keyHash } = generateApiKey();
     let expiresAt: Date | null = null;

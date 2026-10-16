@@ -311,9 +311,16 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
           address: "a:1",
           interpreters: [{ version: "3.12.3" }],
         }),
-        mkExecutor({ id: "e-b", appName: "exec-b", address: "b:1", interpreters: [] }),
+        mkExecutor({
+          id: "e-b",
+          appName: "exec-b",
+          address: "b:1",
+          interpreters: [],
+        }),
       ]);
-      const picked = await service.selectLeastLoaded({ runtimeVersion: "3.14" });
+      const picked = await service.selectLeastLoaded({
+        runtimeVersion: "3.14",
+      });
       expect(picked).toBeDefined();
       // 任意一台都可能被选中（都不缓存 3.14，但都能在线下载）。
       expect(["e-a", "e-b"]).toContain(picked.id);
@@ -621,7 +628,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       ]);
       appRepo.findOne.mockResolvedValue(null);
       await expect(service.dispatch(zipTask(), execution())).rejects.toThrow(
-        /application app-1 not found/,
+        /应用 app-1 不存在/,
       );
       expect(postedPayloads).toHaveLength(0);
     });
@@ -636,7 +643,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         packageUrl: null,
       });
       await expect(service.dispatch(zipTask(), execution())).rejects.toThrow(
-        /has no packageUrl configured/,
+        /未配置 packageUrl/,
       );
     });
 
@@ -649,7 +656,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
           zipTask({ applicationId: null as never }),
           execution(),
         ),
-      ).rejects.toThrow(/has no applicationId/);
+      ).rejects.toThrow(/缺少 applicationId/);
     });
 
     it("解析失败时占坑被回滚（catch 路径 -1）", async () => {
@@ -669,7 +676,7 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         mkExecutor({ id: "e-a", address: "a:1", interpreters: null }),
       ]);
       await expect(service.dispatch(zipTask(), execution())).rejects.toThrow(
-        /Application repository is not wired/,
+        /应用仓库未接入/,
       );
     });
 

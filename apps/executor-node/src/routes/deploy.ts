@@ -171,8 +171,8 @@ export function scheduleDaemonRestart(
       ? readAppLogTail(path.join(spec.deployDir, 'app.log'))
       : '';
     const reason = truncateStatusMessage(
-      `Exited with code ${exitCode}; exceeded ${RESTART_MAX_ATTEMPTS} ` +
-        `auto-restart attempts${logTail ? `; recent app.log:\n${logTail}` : ''}`,
+      `进程以退出码 ${exitCode} 结束；自动重启已连续 ${RESTART_MAX_ATTEMPTS} 次失败` +
+        `${logTail ? `；最近的 app.log：\n${logTail}` : ''}`,
     );
     unregisterDaemon(deploymentId);
     void reportStatus(deploymentId, 'failed', undefined, reason);
@@ -305,7 +305,7 @@ async function installDeps(
       const npmArgs = ['install', '--production'];
       if (config.npmRegistryUrl) npmArgs.push(`--registry=${config.npmRegistryUrl}`);
       const r = await runCommand(npmCmd, npmArgs, { cwd: deployDir, env, timeout: 300_000, shell: isWin, signal: deployAbort.signal });
-      if (r.status !== 0) throw new Error(r.stderr?.toString() || 'npm install failed');
+      if (r.status !== 0) throw new Error(r.stderr?.toString() || 'npm install 执行失败');
     }
   } else if (runtime === 'python') {
     const reqFile = path.join(deployDir, 'requirements.txt');
@@ -367,10 +367,10 @@ export function validateShellEntrypoint(
   entrypoint: unknown,
 ): { ok: true } | { ok: false; reason: string } {
   if (typeof entrypoint !== 'string' || entrypoint.trim() === '') {
-    return { ok: false, reason: 'entrypoint must be a non-empty string' };
+    return { ok: false, reason: 'entrypoint 必须是非空字符串' };
   }
   if (/[\u0000-\u001f\u007f]/.test(entrypoint)) {
-    return { ok: false, reason: 'must not contain control characters' };
+    return { ok: false, reason: '不得包含控制字符' };
   }
   const tokens = entrypoint.trim().split(/\s+/);
   const TOKEN_RE = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
@@ -379,14 +379,14 @@ export function validateShellEntrypoint(
       return {
         ok: false,
         reason:
-          `token ${JSON.stringify(token)} must match ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ` +
-          '(no shell metacharacters, no quoting, no leading dash, no expansion)',
+          `token ${JSON.stringify(token)} 必须匹配 ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ `
+          + '（不得含 shell 元字符、不得加引号、不得以短横线开头、不得含变量展开）',
       };
     }
     if (token.split(/[\\/]/).includes('..')) {
       return {
         ok: false,
-        reason: `token ${JSON.stringify(token)} must not contain a ".." path segment`,
+        reason: `token ${JSON.stringify(token)} 不得包含 ".." 路径片段`,
       };
     }
   }
@@ -423,13 +423,13 @@ function resolveStartNode(): ResolvedTool {
     // 裸 `node` 正是本缺陷的形态：干净机器上 spawn 时 ENOENT，归因信息只剩一句
     // ENOENT，没人知道"这台机器根本没有 node，也不会复用 Electron"。
     throw new Error(
-      'No usable Node.js runtime for this deployment: ' +
-        `${nodeTool.detail ?? 'toolchain reported no usable node'} ` +
-        `(toolchain: ${describeToolchain(tc)}). ` +
-        'On the desktop client the executor runs on Electron and can reuse its own ' +
-        'binary as node (spawned with ELECTRON_RUN_AS_NODE=1); if that is unavailable, ' +
-        'install Node.js 18+ on this machine and redeploy. The deployment is refused ' +
-        'instead of spawning a bare "node" that is known not to work here.',
+      '本次部署没有可用的 Node.js 运行时：'
+        + `${nodeTool.detail ?? '工具链报告没有可用的 node'} `
+        + `（工具链：${describeToolchain(tc)}）。`
+        + '在桌面客户端上执行器跑在 Electron 里，可复用自身二进制作为 node'
+        + '（以 ELECTRON_RUN_AS_NODE=1 启动）；若该路径不可用，'
+        + '请在本机安装 Node.js 18+ 后重新部署。本次部署被拒绝，'
+        + '而不是 spawn 一个已知在本机无法工作的裸 "node"。',
     );
   }
 
@@ -460,7 +460,7 @@ function resolveStartNode(): ResolvedTool {
       verified: true,
       version: process.versions.node ?? null,
       requiresElectronRunAsNode: true,
-      detail: 'toolchain cache was cold; reusing the Electron binary as node',
+      detail: '工具链缓存为空；复用 Electron 二进制作为 node',
     };
   }
   logger.warn(
@@ -604,7 +604,7 @@ function startApp(
     const verdict = validateShellEntrypoint(entrypoint);
     if (!verdict.ok) {
       throw new Error(
-        `Refusing shell entrypoint (${verdict.reason}). Received: ${JSON.stringify(entrypoint)}`,
+        `拒绝执行 shell entrypoint（${verdict.reason}）。收到的值：${JSON.stringify(entrypoint)}`,
       );
     }
     if (isWin) {
@@ -616,7 +616,7 @@ function startApp(
     }
   } else {
     throw new Error(
-      `Unsupported runtime "${runtime}"; expected python | node | shell`,
+      `不支持的 runtime "${runtime}"；期望 python | node | shell`,
     );
   }
 
@@ -707,7 +707,7 @@ function startApp(
     }
     if (code === 0) {
       logger.info(`[deploy] App ${deploymentId} exited cleanly`);
-      reportStatus(deploymentId, 'stopped', undefined, `Exited with code ${code}`);
+      reportStatus(deploymentId, 'stopped', undefined, `进程以退出码 ${code} 结束`);
     } else {
       logger.warn(`[deploy] App ${deploymentId} exited with code ${code}`);
       // P1-8：旧实现只上报字面量 "Exited with code N"，entrypoint 错误/缺依赖
@@ -758,14 +758,14 @@ function validatePackageUrl(packageUrl: string): string | null {
   try {
     const parsed = new URL(packageUrl);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return `packageUrl scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`;
+      return `不允许的 packageUrl 协议：${parsed.protocol}。仅允许 http 与 https。`;
     }
     // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 闸——fail-closed 拒绝 loopback/私网/
     // link-local（含 169.254.169.254 云元数据）。与 execute.ts 的 gitRepo 闸对齐。
     assertSafeHttpUrl(packageUrl);
     return null;
   } catch (e) {
-    return e instanceof Error ? e.message : 'packageUrl is not a valid URL';
+    return e instanceof Error ? e.message : 'packageUrl 不是合法的 URL';
   }
 }
 
@@ -794,10 +794,10 @@ export function buildDeploymentPaths(
   version?: string | null,
 ): DeploymentPaths {
   if (!isSafePathSegment(appId)) {
-    throw new Error('applicationId contains unsupported characters');
+    throw new Error('applicationId 含不受支持的字符');
   }
   if (!isSafePathSegment(deploymentId)) {
-    throw new Error('deploymentId contains unsupported characters');
+    throw new Error('deploymentId 含不受支持的字符');
   }
 
   const versionPart = normalizeReleasePart(version, 'version');
@@ -956,7 +956,7 @@ export function truncateStatusMessage(
   if (message.length <= maxChars) return message;
   const nl = message.indexOf('\n');
   const head = nl > 0 ? message.slice(0, nl) : message.slice(0, 80);
-  const omitted = '\n…[truncated]…\n';
+  const omitted = '\n…[已截断]…\n';
   const tailLen = Math.max(0, maxChars - head.length - omitted.length);
   return head + omitted + message.slice(-tailLen);
 }
@@ -968,8 +968,8 @@ export function buildFailedExitMessage(
 ): string {
   const tail = readAppLogTail(logFile);
   const reason = tail
-    ? `Exited with code ${code}; recent app.log:\n${tail}`
-    : `Exited with code ${code}`;
+    ? `进程以退出码 ${code} 结束；最近的 app.log：\n${tail}`
+    : `进程以退出码 ${code} 结束`;
   return truncateStatusMessage(reason);
 }
 
@@ -1178,25 +1178,25 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   // NETOPT-E P2-2: drain 守卫——停机宽限窗口内不再接受新部署（provisioning 是
   // detached 长耗时命令，停机中接受会在宽限到期后留孤儿子进程）。
   if (isExecutorShuttingDown()) {
-    return res.status(503).json({ error: 'Executor is shutting down' });
+    return res.status(503).json({ error: '执行器正在停机' });
   }
   const payload = req.body as DeployPayload;
   const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false, runtimeVersion = null } = payload;
 
   if (!deploymentId) {
-    return res.status(400).json({ error: 'deploymentId is required' });
+    return res.status(400).json({ error: 'deploymentId 为必填项' });
   }
   if (!isSafePathSegment(deploymentId)) {
-    return res.status(400).json({ error: 'deploymentId contains unsupported characters' });
+    return res.status(400).json({ error: 'deploymentId 含不受支持的字符' });
   }
   if (!gitRepo && !packageUrl) {
-    return res.status(400).json({ error: 'Either gitRepo or packageUrl is required' });
+    return res.status(400).json({ error: 'gitRepo 与 packageUrl 必须至少提供一个' });
   }
   // P0: git argument injection guard — option-like or malformed values would
   // be parsed as flags by git (e.g. --upload-pack=…) instead of ref/URL.
   if (gitRepo) {
     if (/^-/.test(gitRepo) || !/^(https?:\/\/|git@|ssh:\/\/)/i.test(gitRepo)) {
-      return res.status(400).json({ error: `Invalid gitRepo URL: ${gitRepo}` });
+      return res.status(400).json({ error: `无效的 gitRepo URL：${gitRepo}` });
     }
     const branch = gitBranch || 'main';
     if (
@@ -1205,10 +1205,10 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       branch.includes('..') ||
       branch.startsWith('/')
     ) {
-      return res.status(400).json({ error: `Invalid gitBranch: ${branch}` });
+      return res.status(400).json({ error: `无效的 gitBranch：${branch}` });
     }
     if (gitCommit && !/^[0-9a-fA-F]{7,40}$/.test(gitCommit)) {
-      return res.status(400).json({ error: `Invalid gitCommit: ${gitCommit}` });
+      return res.status(400).json({ error: `无效的 gitCommit：${gitCommit}` });
     }
   }
   if (packageUrl) {
@@ -1221,10 +1221,10 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   // Work directory for this deployment (accept appId as alias for applicationId)
   const appId = payload.applicationId || payload.appId;
   if (!appId) {
-    return res.status(400).json({ error: 'applicationId is required' });
+    return res.status(400).json({ error: 'applicationId 为必填项' });
   }
   if (!isSafePathSegment(appId)) {
-    return res.status(400).json({ error: 'applicationId contains unsupported characters' });
+    return res.status(400).json({ error: 'applicationId 含不受支持的字符' });
   }
   // let（非 const）：下方 resolveReleasePaths 可能因目标目录已存在而换用带唯一
   // 后缀的新 release 目录，catch 块与后续步骤都要用换过之后的路径。
@@ -1311,7 +1311,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
           safeExtractZip(zipPath, paths.extractDir, { removeArchive: true });
         } catch (err) {
           if (err instanceof ZipSafetyError) {
-            throw new Error(`Unsafe or invalid package archive: ${err.message}`);
+            throw new Error(`压缩包不安全或不合法：${err.message}`);
           }
           throw err;
         }
@@ -1333,11 +1333,11 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
           'git', cloneArgs,
           { cwd: paths.extractDir, timeout: 120_000, signal: deployAbort.signal },
         );
-        if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
+        if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone 执行失败');
 
         if (gitCommit) {
           const coR = await runCommand('git', ['checkout', gitCommit], { cwd: paths.extractDir, timeout: 30_000, signal: deployAbort.signal });
-          if (coR.status !== 0) throw new Error(coR.stderr?.toString() || 'git checkout failed');
+          if (coR.status !== 0) throw new Error(coR.stderr?.toString() || 'git checkout 执行失败');
         }
       }
 
@@ -1423,7 +1423,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         startApp(deploymentId, paths.appRoot, paths.finalReleaseDir, runtime, entry, runMode, envVars, runtimeVersion);
       } else {
         // scheduled mode: just deploy, tasks are triggered via normal task dispatch
-        await reportStatus(deploymentId, 'running', undefined, 'Deployed in scheduled mode');
+        await reportStatus(deploymentId, 'running', undefined, '已按定时（scheduled）模式完成部署');
       }
     } catch (err: any) {
       if (switchedCurrent) {
@@ -1482,15 +1482,15 @@ deployRouter.post('/app-stop', (req: Request, res: Response) => {
 deployRouter.post('/app-uninstall', (req: Request, res: Response) => {
   const appId = req.body?.appId ?? req.body?.applicationId;
   if (!appId) {
-    return res.status(400).json({ error: 'appId is required' });
+    return res.status(400).json({ error: 'appId 为必填项' });
   }
   if (typeof appId !== 'string' || !isSafePathSegment(appId)) {
-    return res.status(400).json({ error: 'appId contains unsupported characters' });
+    return res.status(400).json({ error: 'appId 含不受支持的字符' });
   }
   const appsRoot = path.resolve(config.workDir, 'apps');
   const appRoot = path.resolve(appsRoot, appId);
   if (appRoot !== appsRoot && !appRoot.startsWith(appsRoot + path.sep)) {
-    return res.status(400).json({ error: 'appId resolves outside the apps root' });
+    return res.status(400).json({ error: 'appId 解析后落在 apps 根目录之外' });
   }
 
   // 先停 daemon：本应用名下（appRoot 在目标 apps/<appId> 内）的全部进程，

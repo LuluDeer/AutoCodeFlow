@@ -21,6 +21,8 @@ import {
   coerceNumber,
   sanitizeConfigInput,
 } from './config-sanitize';
+// i18n-DESK-01：uiLanguage 的判定层（纯模块，无 electron 依赖）
+import { UI_LANGUAGE_DEFAULT, UI_LANGUAGE_VALUES, resolveUiLanguage } from './ui-language';
 
 /** 最小化复刻 config-store.ts 的 defaults（只留被测字段，语义逐条一致）。 */
 const DEFAULTS = {
@@ -251,6 +253,48 @@ function main(): void {
       );
     }
 
+    // ── 4b-2. i18n-DESK-01：「界面语言」的封闭枚举消毒 ─────────────────
+    //    与 Agent 档位轴的关键差别：uiLanguage **有明确默认值**，非法值必须
+    //    归一化成默认界面语言（LANG-DEFAULT 起为 'en'）而不是 ''——'' 不是合法
+    //    语言，判定层只能再猜一次，等于「配置看起来生效了、行为却是另一套」
+    //    （本模块头注点名的故障形态）。
+    {
+      const rule = ENUM_FIELDS.find((r) => r.key === 'uiLanguage');
+      assert.ok(rule, 'SYNC: uiLanguage 必须登记进 ENUM_FIELDS（否则坏值静默落盘）');
+      // 枚举清单 / fallback 与判定层（ui-language.ts）同源：两处漂移 = 消毒层
+      // 放行的值判定层不认识（或反过来）
+      assert.deepStrictEqual(
+        rule!.values,
+        [...UI_LANGUAGE_VALUES],
+        'SYNC: uiLanguage 消毒枚举与 ui-language.ts 的 UI_LANGUAGE_VALUES 漂移',
+      );
+      assert.strictEqual(
+        rule!.fallback,
+        UI_LANGUAGE_DEFAULT,
+        'SYNC: uiLanguage 消毒 fallback 必须等于默认界面语言',
+      );
+      // 合法值保留（大小写/空白归一化）由上方 4b 的通用循环覆盖；这里钉非法值。
+      // 刻意用 UI_LANGUAGE_DEFAULT 而非字面量 'en'：本断言要钉的是「非法值落到
+      // **默认语言**」，默认语言本身可再调整（中↔英），字面量会让调整默认语言时
+      // 这里假红。
+      for (const bad of ['fr', 'zh-CN', 'zh-Hans', '', '   ', 42, null, undefined, {}, [], true]) {
+        assert.strictEqual(
+          sanitizeConfigInput({ uiLanguage: bad }).uiLanguage,
+          UI_LANGUAGE_DEFAULT,
+          `uiLanguage 的非法值 ${JSON.stringify(bad)} 必须归一化为默认语言 '${UI_LANGUAGE_DEFAULT}'，不得原样落盘`,
+        );
+      }
+      // 写入消毒 + 读取判定两端口径一致：坏值经消毒落默认语言，判定层读它必须
+      // 得同一个值（两端不一致 = 用户看到的与生效的不是一套）。系统语言取
+      // **非中文**（en-US）且**与默认语言相同**，故本断言同时证明"消毒后的值
+      // 走的是显式分支、不会被系统语言改写"。
+      assert.strictEqual(
+        resolveUiLanguage(() => 'en-US', sanitizeConfigInput({ uiLanguage: 'fr' }).uiLanguage),
+        UI_LANGUAGE_DEFAULT,
+        "SYNC: 消毒后的 uiLanguage 经判定层必须仍得默认语言（即便系统语言是 en-US）",
+      );
+    }
+
     // ── 4c. P7a：白名清单（数组）消毒 ────────────────────────────────────
     {
       for (const rule of STRING_LIST_FIELDS) {
@@ -320,6 +364,15 @@ function main(): void {
           `SYNC: ${rule.key} 未进 config-store defaults（旧配置升级后读到 undefined）`,
         );
       }
+      // LANG-DEFAULT：不仅要有键，**值**必须是 'auto'——产品要求「默认是英文，
+      // 但是也优先跟随浏览器/系统语言」。defaults 写死 'en' 会让中文系统的新装机
+      // 默认显示英文（与"优先跟随系统语言"冲突），写死 'zh' 则是旧行为（默认中文）。
+      // 'auto' + 判定层英文兜底是唯一同时满足两个诉求的取值。
+      // 只查"键存在"会漏掉 defaults 值被静默改动这类行为变更。
+      assert.ok(
+        /uiLanguage:\s*'auto'/.test(defaultsBlock![1]),
+        "SYNC: config-store defaults 必须把 uiLanguage 默认成 'auto'（跟随系统语言，未支持语言回落英文）",
+      );
       // 渲染层的 number input 必须真的经过消毒通道。
       // 注意：不能只在整份文件里找 `sanitizeConfigInput(` —— 两个 handler 里
       // 只要还剩一处就会让断言假绿（反证时踩过）。这里**逐个 handler 取块**，

@@ -17,6 +17,14 @@ const baseEnv: TaskEnv = {
   traceId: 'trace-abc',
 };
 
+/**
+ * ADR-017 阶段 3 (protocol v6) device fingerprint — the same 64-lowercase-hex
+ * shape executor-node reports on register/heartbeat
+ * (`sha256(deviceId + ':' + installSalt)`).
+ */
+const DEVICE_FP =
+  '3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9';
+
 describe('TaskContext', () => {
   describe('create()', () => {
     it('should expose env properties via shorthand getters', () => {
@@ -32,6 +40,19 @@ describe('TaskContext', () => {
         executorAddress: 'executor-node:8002',
       });
       expect(ctx.executorAddress).toBe('executor-node:8002');
+    });
+
+    it('exposes deviceFingerprint from an explicit TaskEnv (ADR-017 phase 3)', () => {
+      const ctx = TaskContext.create({
+        ...baseEnv,
+        deviceFingerprint: DEVICE_FP,
+      });
+      expect(ctx.deviceFingerprint).toBe(DEVICE_FP);
+      expect(ctx.env.deviceFingerprint).toBe(DEVICE_FP);
+    });
+
+    it('ctx.deviceFingerprint is undefined when the env lacks it', () => {
+      expect(TaskContext.create(baseEnv).deviceFingerprint).toBeUndefined();
     });
 
     it('should attach collected logs to the result', () => {
@@ -132,6 +153,7 @@ describe('TaskContext', () => {
           'AUTOFLOW_ADMIN_API_URL',
           'AUTOFLOW_CALLBACK_TOKEN',
           'AUTOFLOW_EXECUTOR_ADDRESS',
+          'AUTOFLOW_DEVICE_FINGERPRINT',
         ]) {
           saved[key] = process.env[key];
         }
@@ -142,6 +164,7 @@ describe('TaskContext', () => {
         delete process.env['AUTOFLOW_ADMIN_API_URL'];
         delete process.env['AUTOFLOW_CALLBACK_TOKEN'];
         delete process.env['AUTOFLOW_EXECUTOR_ADDRESS'];
+        delete process.env['AUTOFLOW_DEVICE_FINGERPRINT'];
       });
 
       afterEach(() => {
@@ -246,6 +269,30 @@ describe('TaskContext', () => {
           const ctx = TaskContext.fromEnv();
           expect(ctx.executorAddress).toBeUndefined();
         });
+
+        // ADR-017 阶段 3 (protocol v6): executor-node also injects the
+        // stable install identity so callbacks can be attributed to a row
+        // even on the shared/legacy token path.
+        it('exposes AUTOFLOW_DEVICE_FINGERPRINT via ctx.deviceFingerprint', () => {
+          Object.assign(process.env, trio, {
+            AUTOFLOW_ADMIN_API_URL: 'http://admin-api:3105',
+            AUTOFLOW_CALLBACK_TOKEN: EXEC_TOKEN,
+            AUTOFLOW_EXECUTOR_ADDRESS: 'executor-node:8002',
+            AUTOFLOW_DEVICE_FINGERPRINT: DEVICE_FP,
+          });
+          const ctx = TaskContext.fromEnv();
+          expect(ctx.deviceFingerprint).toBe(DEVICE_FP);
+          expect(ctx.env.deviceFingerprint).toBe(DEVICE_FP);
+        });
+
+        it('ctx.deviceFingerprint is undefined when the executor does not inject it (older executor)', () => {
+          Object.assign(process.env, trio, {
+            AUTOFLOW_ADMIN_API_URL: 'http://admin-api:3105',
+            AUTOFLOW_CALLBACK_TOKEN: EXEC_TOKEN,
+          });
+          const ctx = TaskContext.fromEnv();
+          expect(ctx.deviceFingerprint).toBeUndefined();
+        });
       });
 
       it('still throws when TASK_ID or TASK_NAME is missing', () => {
@@ -266,6 +313,7 @@ describe('TaskContext', () => {
     const CRED_ENV: TaskEnv = {
       ...baseEnv,
       executorAddress: 'executor-node:8002',
+      deviceFingerprint: DEVICE_FP,
     };
     let post: jest.Mock;
 
@@ -294,6 +342,7 @@ describe('TaskContext', () => {
           executionId: 'exec-001',
           status: 'success',
           executorAddress: 'executor-node:8002',
+          deviceFingerprint: DEVICE_FP,
           logs: '3 rows written',
           durationMs: 1234,
         },
@@ -305,7 +354,12 @@ describe('TaskContext', () => {
       await ctx.reportSuccess();
       const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
       expect(items).toEqual([
-        { executionId: 'exec-001', status: 'success', executorAddress: 'executor-node:8002' },
+        {
+          executionId: 'exec-001',
+          status: 'success',
+          executorAddress: 'executor-node:8002',
+          deviceFingerprint: DEVICE_FP,
+        },
       ]);
       expect(items[0]).not.toHaveProperty('logs');
       expect(items[0]).not.toHaveProperty('durationMs');
@@ -319,6 +373,49 @@ describe('TaskContext', () => {
       expect(items[0]).not.toHaveProperty('executorAddress');
     });
 
+    // ADR-017 阶段 3: deviceFingerprint is the callback face's row identity,
+    // so it must reach reportSuccess/reportFailure items the same way
+    // executorAddress does — and be omitted, not emptied, when unknown.
+    it('reportSuccess stamps deviceFingerprint when known', async () => {
+      const ctx = TaskContext.create({ ...baseEnv, deviceFingerprint: DEVICE_FP });
+      (ctx as { http: unknown }).http = { post } as unknown;
+      await ctx.reportSuccess();
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).toMatchObject({ deviceFingerprint: DEVICE_FP });
+    });
+
+    it('reportSuccess omits deviceFingerprint entirely when unknown (never empty string)', async () => {
+      const ctx = TaskContext.create(baseEnv); // no deviceFingerprint
+      (ctx as { http: unknown }).http = { post } as unknown;
+      await ctx.reportSuccess();
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).not.toHaveProperty('deviceFingerprint');
+    });
+
+    it('reportFailure stamps deviceFingerprint when known', async () => {
+      const ctx = TaskContext.create({ ...baseEnv, deviceFingerprint: DEVICE_FP });
+      (ctx as { http: unknown }).http = { post } as unknown;
+      await ctx.reportFailure(new Error('boom'));
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).toMatchObject({ deviceFingerprint: DEVICE_FP });
+    });
+
+    it('reportFailure omits deviceFingerprint entirely when unknown (never empty string)', async () => {
+      const ctx = TaskContext.create(baseEnv); // no deviceFingerprint
+      (ctx as { http: unknown }).http = { post } as unknown;
+      await ctx.reportFailure(new Error('boom'));
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).not.toHaveProperty('deviceFingerprint');
+    });
+
+    it('omits deviceFingerprint when it is an empty string (never sent empty)', async () => {
+      const ctx = TaskContext.create({ ...baseEnv, deviceFingerprint: '' });
+      (ctx as { http: unknown }).http = { post } as unknown;
+      await ctx.reportSuccess();
+      const [, items] = post.mock.calls[0] as [string, Array<Record<string, unknown>>];
+      expect(items[0]).not.toHaveProperty('deviceFingerprint');
+    });
+
     it('reportFailure defaults to failureReason=script_error and maps error message', async () => {
       const ctx = ctxWithPost();
       await ctx.reportFailure(new Error('upstream 503'));
@@ -329,6 +426,7 @@ describe('TaskContext', () => {
         errorMessage: 'upstream 503',
         failureReason: 'script_error',
         executorAddress: 'executor-node:8002',
+        deviceFingerprint: DEVICE_FP,
       });
     });
 

@@ -1,0 +1,84 @@
+import type { ErrorCodeDef } from "../error-code-def";
+
+/**
+ * LANG-ERR-01 · 通用域错误码分片。
+ *
+ * 这一片承载**跨域共用**的码（框架级兜底、校验、DB 约束映射）。各业务域
+ * （task / executor / auth / project）各有自己的分片文件，见同目录。
+ *
+ * ⚠️ 新增码时**只改自己域的分片**，不要动合并点 `error-codes.ts`——那是并发
+ * 迁移的冲突点（详见 `error-code-def.ts` 的分片理由）。
+ */
+export const COMMON_CODES = {
+  INTERNAL_ERROR: {
+    status: 500,
+    zh: "服务器内部错误",
+    en: "Internal server error",
+  },
+  VALIDATION_FAILED: {
+    status: 400,
+    zh: "参数校验失败：{{detail}}",
+    en: "Validation failed: {{detail}}",
+  },
+  /**
+   * 校验失败但**没有字段级原因**（class-validator 给了空数组）。
+   *
+   * 为什么单列一个码而不是复用 `VALIDATION_FAILED` + 空 detail：后者会渲染出
+   * 「参数校验失败：」这个**悬空冒号**。本仓既有用例明确守着"空数组不得产生
+   * 悬空冒号"这条体验约束（HttpExceptionFilter 的校验可达性 spec），故用两个码
+   * 把两种形态分开——翻译侧也因此能各自给出自然措辞。
+   */
+  VALIDATION_FAILED_NO_DETAIL: {
+    status: 400,
+    zh: "参数校验失败",
+    en: "Validation failed",
+  },
+  // PG 23505 / 23503 的全局兜底（原先散落在 filter 里的硬编码英文）
+  RESOURCE_EXISTS: {
+    status: 409,
+    zh: "资源已存在",
+    en: "Resource already exists",
+  },
+  RELATED_RESOURCE_NOT_FOUND: {
+    status: 422,
+    zh: "关联资源不存在",
+    en: "Related resource not found",
+  },
+  /**
+   * METRICS：Prometheus 指标端点被运维关闭（`METRICS_PROMETHEUS_ENABLED=false`）。
+   *
+   * 404 而**不是** 503：端点被有意关闭时，对抓取方而言它"不存在"是最准确的语义
+   * （Prometheus 对 404 会停止抓取，对 503 会持续重试并记为 target down →
+   * 在关闭期间持续刷告警）。旧实现就是 `NotFoundException`，状态码不得变。
+   */
+  METRICS_ENDPOINT_DISABLED: {
+    status: 404,
+    zh: "Prometheus 指标端点已禁用（METRICS_PROMETHEUS_ENABLED=false）",
+    en: "The Prometheus metrics endpoint is disabled (METRICS_PROMETHEUS_ENABLED=false)",
+  },
+  /**
+   * METRICS：并发指标流（SSE）超过上限。
+   *
+   * 503 而非 429：这是**服务端容量**约束（每个流占一个长连接与一份快照），
+   * 不是调用方频率超限——429 会让客户端按 Retry-After 重试得更凶，而正确处置是
+   * 关掉多余的面板/降低并发。旧实现是 `ServiceUnavailableException`。
+   */
+  METRICS_STREAM_LIMIT_REACHED: {
+    status: 503,
+    zh: "并发指标流过多（上限 {{max}}）",
+    en: "Too many concurrent metrics streams (limit {{max}})",
+  },
+  /**
+   * EXECUTOR-PACKAGE：下载执行器包需要 access JWT 或执行器令牌（401）。
+   *
+   * 与执行器域的 `INVALID_EXECUTOR_TOKEN`（令牌**无效**）不同：本码是
+   * 「**没有提供**任何可用凭据」。旧实现文案是
+   * `UnauthorizedException("未授权：下载执行器包需要有效的 access JWT 或执行器令牌")`，
+   * 逐字保留。
+   */
+  EXECUTOR_PACKAGE_DOWNLOAD_UNAUTHORIZED: {
+    status: 401,
+    zh: "未授权：下载执行器包需要有效的 access JWT 或执行器令牌",
+    en: "Unauthorized: downloading executor packages requires a valid access JWT or executor token",
+  },
+} as const satisfies Record<string, ErrorCodeDef>;

@@ -8,20 +8,59 @@ import i18n from '../i18n';
  * Extract a human-readable message from an unknown catch value.
  * Handles Axios-style errors (err.response.data.message), plain Error,
  * and falls back to the provided defaultMsg.
+ *
+ * LANG-ERR-01（后端错误码化）：**优先按 `errorCode` 取本地化文案**。
+ *
+ * 为什么必须存在这条路径：后端的 `message` 是**单语言**的（源码在抛出时刻就
+ * 写死了），无论用户把界面切成什么语言，透传它都只会得到那一种语言——这正是
+ * 「界面英文、报错中文」的成因。
+ *
+ * 三级降级（顺序不可颠倒）：
+ *   ① `errorCode` + 前端字典里有 `err.<CODE>` → 按**当前界面语言**渲染，并用
+ *      `params` 插值。这是唯一能跟随用户语言的路径。
+ *   ② 码存在但字典没有（后端先上线了新码，前端还没跟上）→ 回落服务端 `message`
+ *      （中文兜底）。**绝不把裸码渲染给用户**（那是"界面看起来坏了"的形态，
+ *      同 i18n-source-guard 挡的裸 key 问题）。
+ *   ③ 无码（老后端 / 非本机制抛出的异常）→ 维持原行为，透传 `message`。
  */
 export function getErrMsg(err: unknown, defaultMsg = i18n.t('common.operateFailed')): string {
   if (err instanceof Error) {
     // Axios wraps the response on the Error object
-    const axiosMsg = (err as unknown as { response?: { data?: { message?: string } } })
-      ?.response?.data?.message;
-    if (axiosMsg) return axiosMsg;
+    const axiosData = (err as unknown as {
+      response?: { data?: { message?: string; errorCode?: string; params?: Record<string, unknown> } };
+    })?.response?.data;
+    const localized = translateByErrorCode(axiosData);
+    if (localized) return localized;
+    if (axiosData?.message) return axiosData.message;
     return err.message || defaultMsg;
   }
   if (err && typeof err === 'object') {
     const obj = err as Record<string, unknown>;
+    const localized = translateByErrorCode(obj);
+    if (localized) return localized;
     if (typeof obj['message'] === 'string') return obj['message'];
   }
   return defaultMsg;
+}
+
+/**
+ * 按 `errorCode` 取当前语言的文案；取不到返回 `null`（由调用方回落服务端
+ * `message`）。抽成独立函数是为了让「码 → 本地化」这条链路可被单测直接钉住，
+ * 不必构造整个 axios 错误对象。
+ */
+export function translateByErrorCode(data: {
+  errorCode?: unknown;
+  params?: unknown;
+} | null | undefined): string | null {
+  const code = data?.errorCode;
+  if (typeof code !== 'string' || !code) return null;
+  const key = `err.${code}`;
+  // 用 `i18n.exists` 而非 try/catch：i18next 在缺失 key 时**不抛错**，它会把 key
+  // 原样返回——直接 `t(key)` 会把 `err.EXECUTOR_NOT_FOUND` 这种标识符渲染给
+  // 用户，既不报错也不影响构建（正是 i18n-source-guard 记录过的那类生产故障）。
+  if (!i18n.exists(key)) return null;
+  const params = (data?.params ?? {}) as Record<string, unknown>;
+  return i18n.t(key, params);
 }
 
 /**

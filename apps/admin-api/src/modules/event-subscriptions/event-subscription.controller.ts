@@ -78,7 +78,7 @@ import { SimpleOkResponseDto } from "../auth/dto/misc-response.dto";
  * 属主），不因本次收紧而失效。
  */
 class UpdateSubscriptionBody extends UpdateEventSubscriptionDto {
-  @ApiPropertyOptional({ description: "Enable/disable delivery" })
+  @ApiPropertyOptional({ description: "是否启用投递（true=启用，false=停用）" })
   enabled?: boolean;
 }
 
@@ -93,12 +93,11 @@ export class EventSubscriptionController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: "List outbound event subscriptions" })
+  @ApiOperation({ summary: "列出出站事件订阅" })
   @ApiResponse({
     status: 200,
     description:
-      "Subscription list (secret always masked as '******'; ADMIN sees all, " +
-      "users see their own plus system-level)",
+      "订阅列表（secret 始终掩码为 '******'；ADMIN 可见全部，普通用户可见自己的加系统级）",
     type: [EventSubscriptionResponseDto],
   })
   list(@Req() req: Request & { user: AuthUser }): Promise<EventSubscription[]> {
@@ -111,22 +110,19 @@ export class EventSubscriptionController {
   @Roles(UserRole.ADMIN)
   @Post()
   @ApiOperation({
-    summary: "Create an outbound event subscription (ADMIN only)",
     description:
-      "URL is deep-validated against SSRF (private/loopback/link-local/metadata " +
-      "targets rejected). Omit `secret` to have one generated (returned once as " +
-      "`generatedSecret`).",
+      "URL 会针对 SSRF 做深度校验（拒绝内网/回环/链路本地/元数据目标）。省略 `secret` 则由服务端生成（以 `generatedSecret` 仅返回一次）。",
+    summary: "创建出站事件订阅（仅 ADMIN）",
   })
   @ApiResponse({
     status: 201,
     description:
-      "Created subscription (secret masked). generatedSecret present only when " +
-      "the server generated one — shown exactly once.",
+      "已创建的订阅（secret 已掩码）。仅当服务端生成时才有 generatedSecret，且只展示一次。",
     type: EventSubscriptionCreateResponseDto,
   })
   @ApiResponse({
     status: 400,
-    description: "Invalid URL / event types / quota exceeded",
+    description: "URL / 事件类型非法，或超出配额",
   })
   create(
     @Body() dto: CreateEventSubscriptionDto,
@@ -138,17 +134,16 @@ export class EventSubscriptionController {
   @WriteGuard("event-subscription", { scope: "ownership" })
   @Patch(":id")
   @ApiOperation({
-    summary:
-      "Update a subscription (enable/disable, url, eventTypes, secret rotation)",
+    summary: "更新订阅（启用/停用、url、eventTypes、secret 轮换）",
   })
-  @ApiParam({ name: "id", description: "Subscription UUID" })
+  @ApiParam({ name: "id", description: "订阅 UUID" })
   @ApiResponse({
     status: 200,
-    description: "Updated subscription (secret masked)",
+    description: "已更新的订阅（secret 已掩码）",
     type: EventSubscriptionResponseDto,
   })
-  @ApiResponse({ status: 403, description: "Not the owner" })
-  @ApiResponse({ status: 404, description: "Subscription not found" })
+  @ApiResponse({ status: 403, description: "不是订阅所有者" })
+  @ApiResponse({ status: 404, description: "订阅不存在" })
   update(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: UpdateSubscriptionBody,
@@ -160,9 +155,9 @@ export class EventSubscriptionController {
   @WriteGuard("event-subscription", { scope: "ownership" })
   @Delete(":id")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Delete a subscription (dead letters cascade)" })
-  @ApiParam({ name: "id", description: "Subscription UUID" })
-  @ApiResponse({ status: 403, description: "Not the owner" })
+  @ApiOperation({ summary: "删除订阅（死信级联删除）" })
+  @ApiParam({ name: "id", description: "订阅 UUID" })
+  @ApiResponse({ status: 403, description: "不是订阅所有者" })
   @ApiOkResponse({ type: SimpleOkResponseDto })
   async remove(
     @Param("id", ParseUUIDPipe) id: string,
@@ -173,16 +168,14 @@ export class EventSubscriptionController {
   }
 
   @Get(":id/dead-letters")
-  @ApiOperation({
-    summary: "List dead letters (deliveries that failed all retry attempts)",
-  })
-  @ApiParam({ name: "id", description: "Subscription UUID" })
+  @ApiOperation({ summary: "列出死信（所有重试均失败的投递）" })
+  @ApiParam({ name: "id", description: "订阅 UUID" })
   @ApiResponse({
     status: 200,
-    description: "Paged dead letters (newest first)",
+    description: "分页死信（最新在前）",
     type: EventSubscriptionDeadLetterPageDto,
   })
-  @ApiResponse({ status: 403, description: "Not the owner" })
+  @ApiResponse({ status: 403, description: "不是订阅所有者" })
   deadLetters(
     @Param("id", ParseUUIDPipe) id: string,
     @Query() q: ListDeadLettersQueryDto,
@@ -194,24 +187,21 @@ export class EventSubscriptionController {
   @WriteGuard("event-subscription", { scope: "ownership" })
   @Post(":id/dead-letters/:dlId/replay")
   @ApiOperation({
-    summary:
-      "Replay a dead letter once with the subscription's current url/secret",
     description:
-      "Single delivery attempt (no auto-retry). On success the dead letter row is " +
-      "removed; on failure the error is returned and the row is kept.",
+      "单次投递尝试（不自动重试）。成功则删除该死信行；失败则返回错误并保留该行。",
+    summary: "用订阅当前的 url/secret 重放一次死信",
   })
-  @ApiParam({ name: "id", description: "Subscription UUID" })
-  @ApiParam({ name: "dlId", description: "Dead letter UUID" })
+  @ApiParam({ name: "id", description: "订阅 UUID" })
+  @ApiParam({ name: "dlId", description: "死信 UUID" })
   @ApiResponse({
     status: 200,
-    description:
-      "Replayed (ok true removes the dead letter; ok false keeps it with error)",
+    description: "已重放（ok 为 true 时删除死信；ok 为 false 时保留并附错误）",
     type: ReplayDeadLetterResponseDto,
   })
-  @ApiResponse({ status: 403, description: "Not the owner" })
+  @ApiResponse({ status: 403, description: "不是订阅所有者" })
   @ApiResponse({
     status: 404,
-    description: "Subscription or dead letter not found",
+    description: "订阅或死信不存在",
   })
   async replay(
     @Param("id", ParseUUIDPipe) id: string,

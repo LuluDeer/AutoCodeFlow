@@ -231,6 +231,10 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
     const makeSvc = (overrides: Record<string, jest.Mock> = {}) =>
       ({
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        // ADR-017 阶段 3（决策 §7）：控制器把**刚认证出的行身份**传给 service，
+        // 故它需要 findByAddress。默认 null = 解析不到唯一行 → service 回落地址
+        // 判据（既有用例的 2 参语义逐字节保留）。
+        findByAddress: jest.fn().mockResolvedValue(null),
         getTerminalStates: jest.fn().mockResolvedValue({
           items: [],
           hasMore: false,
@@ -265,9 +269,56 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
         undefined,
         undefined,
       );
+      // ADR-017 阶段 3：第 3 参是设备指纹（本用例未传 → undefined）。
       expect(svc.validateTokenByAddress).toHaveBeenCalledWith(
         "10.0.0.9:3002",
         undefined,
+        undefined,
+      );
+    });
+
+    // ADR-017 阶段 3（决策 §7 读面富化）反证：控制器必须把**刚认证出的行身份**
+    // 传给 service。阶段 3 起同址多行并存（ADR-017 §5），service 内无法从地址
+    // 推出是哪一行——死信对账会把同址另一台的终态混进本机的对账视图
+    // （执行器据此误判「我的死信已终态」而删掉仍有效的重发候选）。
+    //
+    // 反证：删掉控制器里的 `findByAddress` + `executorId` 透传 → 本用例转红。
+    it("ADR-017 v6：把解析出的行身份（executorId）透传给 service", async () => {
+      const svc = makeSvc({
+        findByAddress: jest.fn().mockResolvedValue({ id: "row-a" }),
+      });
+      await build(svc).getTerminalStates(
+        "10.0.0.9:3002",
+        undefined,
+        undefined,
+        "Bearer tok",
+        "f".repeat(64),
+      );
+      // 解析入口与鉴权同源（指纹优先）。
+      expect(svc.findByAddress).toHaveBeenCalledWith(
+        "10.0.0.9:3002",
+        "f".repeat(64),
+      );
+      // 关键：service 收到行身份。
+      expect(svc.getTerminalStates).toHaveBeenCalledWith(
+        "10.0.0.9:3002",
+        expect.objectContaining({ executorId: "row-a" }),
+      );
+    });
+
+    it("ADR-017 v6：解析不到唯一行时传 null（回落地址判据，不误拒合法对账）", async () => {
+      const svc = makeSvc({
+        findByAddress: jest.fn().mockResolvedValue(null),
+      });
+      await build(svc).getTerminalStates(
+        "10.0.0.9:3002",
+        undefined,
+        undefined,
+        "Bearer tok",
+      );
+      expect(svc.getTerminalStates).toHaveBeenCalledWith(
+        "10.0.0.9:3002",
+        expect.objectContaining({ executorId: null }),
       );
     });
 
@@ -282,19 +333,20 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
       expect(svc.validateTokenByAddress).toHaveBeenCalledWith(
         "10.0.0.9:3002",
         "tok-123",
+        undefined,
       );
     });
 
     it("since 合法 → 原样透传为 Date", async () => {
       const svc = makeSvc();
-      await build(svc).getTerminalStates(
-        "addr",
-        "2026-09-14T08:00:00.000Z",
-        undefined,
-        "Bearer t",
-      );
+      // 用相对 now 的时间而非硬编码绝对日期：parseTerminalSince 会把「过老的
+      // since」钳到 now-30d（TERMINAL_STATES_MAX_LOOKBACK_MS）——硬编码日期
+      // 会随环境时钟前进变成"过老"而触发钳位（时钟炸弹，2026-10-14 实测红）。
+      // 1h 前远在 30 天钳位窗内，断言"合法 since 原样透传"的意图不变。
+      const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await build(svc).getTerminalStates("addr", since, undefined, "Bearer t");
       const arg = (svc.getTerminalStates as jest.Mock).mock.calls[0][1];
-      expect(arg.since.toISOString()).toBe("2026-09-14T08:00:00.000Z");
+      expect(arg.since.toISOString()).toBe(since);
     });
 
     it("since 非法 → 回退 24h 窗口（不是抛错——对账是尽力而为的后台动作）", async () => {

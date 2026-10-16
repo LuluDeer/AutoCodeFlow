@@ -54,6 +54,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
     // N26 (round-8): register response now carries the stored tokenHash so
     // the executor can adopt it as its per-execution callback signing secret.
     getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+    // ADR-017 阶段 3：注册回显按 executor.id 取哈希（pull 同地址多行时按
+    // address 取有歧义）。
+    getCallbackSecretById: jest.fn().mockResolvedValue("$2b$12$hash"),
     // ARCH-33（ADR-016）：默认 push——本 spec 验证的 SSRF/错误脱敏语义都在
     // push 路径上（pull 通道的路径由执行器按封闭枚举构造，不经 admin 的 URL）。
     ...controlPlaneMocks(),
@@ -188,10 +191,12 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           "description",
           // ARCH-32: 派发模式自报随白名单透传（service 侧枚举外值落回 push）
           "dispatchMode",
-          // ARCH-36（ADR-017 阶段 2）：设备指纹随白名单透传。它是**执行器自报**
+          // ARCH-36（ADR-017 阶段 2/3）：设备指纹随白名单透传。它是**执行器自报**
           // 的采集值（与 interpreters 同类），service 侧做 64 位十六进制规范化，
           // 非法即视同未上报。放行它不构成批量赋值风险——它既不是服务端所有列，
-          // 也不参与任何定位（本阶段只采集与观测）。
+          // 也**不是**可越权的定位输入：阶段 3 起 register 按它定位行，但命中即
+          // 复用该行 + 更新 address，绝不改写 server-owned 列（tokenHash/status/
+          // runningTaskCount/version 仍由 F-7 逐字段白名单拦住）。
           "deviceFingerprint",
           "groupName",
           // python_task_multiversion（WS2）：解释器清单随白名单透传（service
@@ -241,9 +246,8 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       // tokenHash — the executor adopts it as its per-execution callback
       // HMAC signing secret (main.ts registerExecutor).
       expect(first).toMatchObject({ tokenHash: "$2b$12$hash" });
-      expect(svc.getCallbackSecretByAddress).toHaveBeenCalledWith(
-        "10.0.0.9:3002",
-      );
+      // ADR-017 阶段 3：按 id 取（pull 同地址多行时地址键有歧义）。
+      expect(svc.getCallbackSecretById).toHaveBeenCalledWith("e1");
 
       const second = await controller.register(body, "Bearer shared-token");
       expect(second).toMatchObject({ perExecutorToken: null });
@@ -354,7 +358,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       );
       await expect(
         controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
-      ).rejects.toThrow("Failed to reach executor");
+      ).rejects.toThrow("无法触达执行器");
       await expect(
         controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.not.toThrow(/ECONNREFUSED/);

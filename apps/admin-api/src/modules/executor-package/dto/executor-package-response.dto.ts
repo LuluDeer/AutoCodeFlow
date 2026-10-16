@@ -18,84 +18,102 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * 同时排除 `pushHistory` 的**内嵌**形态复杂性：它是有类型的数组，如实声明。
  */
 export class ExecutorPackagePushRecordDto {
-  @ApiProperty({ description: "Target executor id" })
+  @ApiProperty({ description: "目标执行器 ID" })
   executorId: string;
 
-  @ApiProperty({ description: "Push outcome", enum: ["downloaded", "failed"] })
+  @ApiProperty({
+    enum: ["downloaded", "failed"],
+    description: "推送结果",
+  })
   status: string;
 
-  @ApiProperty({ description: "Package version pushed" })
+  @ApiProperty({ description: "所推送的包版本" })
   version: string;
 
-  @ApiPropertyOptional({ description: "Failure reason when status=failed" })
+  @ApiPropertyOptional({ description: "status=failed 时的失败原因" })
   error?: string;
 
-  @ApiProperty({ description: "When this push attempt happened (ISO-8601)" })
+  @ApiProperty({ description: "本次推送尝试的时间（ISO-8601）" })
   timestamp: string;
 }
 
 export class ExecutorPackageResponseDto {
-  @ApiProperty({ description: "Package id (uuid)" })
+  @ApiProperty({ description: "包 ID（uuid）" })
   id: string;
 
-  @ApiProperty({ description: "Package name" })
+  @ApiProperty({ description: "包名称" })
   name: string;
 
-  @ApiProperty({ description: "Package version" })
+  @ApiProperty({ description: "包版本" })
   version: string;
 
-  @ApiProperty({ description: "Package type (runtime/tooling taxonomy)" })
+  @ApiProperty({ description: "包类型（runtime/tooling 分类）" })
   type: string;
 
   @ApiPropertyOptional({
-    description: "Target platform (null when the package is platform-agnostic)",
     nullable: true,
+    description: "目标平台（包与平台无关时为 null）",
   })
   platform: string | null;
 
-  @ApiPropertyOptional({ description: "Stored filename", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "存储文件名",
+  })
   filename: string | null;
 
   @ApiPropertyOptional({
-    description: "Original upload filename",
     nullable: true,
+    description: "上传时的原始文件名",
   })
   originalFilename: string | null;
 
-  @ApiPropertyOptional({ description: "MIME type", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "MIME 类型",
+  })
   mimeType: string | null;
 
-  @ApiProperty({ description: "Size in bytes" })
+  @ApiProperty({ description: "字节数" })
   fileSize: number;
 
-  @ApiPropertyOptional({ description: "SHA-256 checksum", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "SHA-256 校验和",
+  })
   checksum: string | null;
 
-  @ApiPropertyOptional({ description: "Description", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "描述",
+  })
   description: string | null;
 
-  @ApiProperty({ description: "Lifecycle status (active / deprecated / …)" })
+  @ApiProperty({ description: "生命周期状态（active / deprecated / …）" })
   status: string;
 
-  @ApiPropertyOptional({ description: "Uploader identity", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "上传者身份",
+  })
   uploadedBy: string | null;
 
   @ApiPropertyOptional({
-    description: "Push attempts against executors",
     type: [ExecutorPackagePushRecordDto],
+    description: "对各执行器的推送尝试记录",
   })
   pushHistory: ExecutorPackagePushRecordDto[];
 
   @ApiPropertyOptional({
-    description: "Owning project id (null = default project view)",
     nullable: true,
+    description: "所属项目 ID（null = 默认项目视图）",
   })
   projectId: string | null;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Last update time (ISO-8601)" })
+  @ApiProperty({ description: "最后更新时间（ISO-8601）" })
   updatedAt: Date;
 
   // 注意：**不声明 filePath**——见类头注（服务器绝对路径不进对外契约）。
@@ -105,12 +123,12 @@ export class ExecutorPackageResponseDto {
 /** GET /executor-packages 的列表包装。 */
 export class ExecutorPackageListDto {
   @ApiProperty({
-    description: "Page of packages",
     type: [ExecutorPackageResponseDto],
+    description: "包分页",
   })
   items: ExecutorPackageResponseDto[];
 
-  @ApiProperty({ description: "Total matching packages (before paging)" })
+  @ApiProperty({ description: "匹配的包总数（分页前）" })
   total: number;
 }
 
@@ -125,15 +143,15 @@ export class ExecutorPushResultDto {
   address: string;
 
   @ApiProperty({
+    enum: ["queued", "success", "error"],
     description:
       "queued=已入 pull 命令队列；success=push 同步 accepted；error=失败",
-    enum: ["queued", "success", "error"],
   })
   status: "queued" | "success" | "error";
 
   @ApiPropertyOptional({
-    description: "queued 时回填中台命令 ID（终态由 push-result 回调收敛）",
     format: "uuid",
+    description: "queued 时回填中台命令 ID（终态由 push-result 回调收敛）",
   })
   commandId?: string;
 
@@ -162,10 +180,10 @@ export class ExecutionArtifactDto {
   @ApiProperty()
   name: string;
 
-  @ApiProperty({ description: "bytes" })
+  @ApiProperty({ description: "字节" })
   size: number;
 
-  @ApiProperty({ description: "sha256 over the stored bytes" })
+  @ApiProperty({ description: "对存储字节计算的 sha256" })
   sha256: string;
 }
 
@@ -177,7 +195,7 @@ export class ArtifactUploadResponseDto {
   @ApiProperty()
   name: string;
 
-  @ApiProperty({ description: "bytes" })
+  @ApiProperty({ description: "字节" })
   size: number;
 
   @ApiProperty()

@@ -238,7 +238,7 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
     const { controller, svc, exec } = make();
     await expect(
       controller.heartbeat({ ...base } as any, undefined),
-    ).rejects.toThrow("Missing X-Executor-Token header");
+    ).rejects.toThrow("缺少 X-Executor-Token 请求头");
     expect(svc.findById).not.toHaveBeenCalled();
     expect(exec.validateExecutorToken).not.toHaveBeenCalled();
   });
@@ -248,7 +248,7 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
     svc.findById.mockResolvedValueOnce({ id: "deploy-1", executorId: null });
     await expect(
       controller.heartbeat({ ...base } as any, "tok"),
-    ).rejects.toThrow("deployment has no associated executor");
+    ).rejects.toThrow("没有关联的执行器");
     expect(exec.validateExecutorToken).not.toHaveBeenCalled();
     expect(svc.handleHeartbeat).not.toHaveBeenCalled();
   });
@@ -258,7 +258,7 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
     exec.validateExecutorToken.mockResolvedValueOnce(false);
     await expect(
       controller.heartbeat({ ...base } as any, "wrong-token"),
-    ).rejects.toThrow("Invalid executor token");
+    ).rejects.toThrow("执行器令牌无效");
     expect(svc.handleHeartbeat).not.toHaveBeenCalled();
   });
 

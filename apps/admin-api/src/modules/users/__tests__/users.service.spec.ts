@@ -103,7 +103,7 @@ describe("UsersService", () => {
           email: "test@example.com",
           password: "StrongPass1!",
         }),
-      ).rejects.toThrow("already exists");
+      ).rejects.toThrow("用户名或邮箱已存在");
     });
   });
 
@@ -245,7 +245,7 @@ describe("UsersService", () => {
 
       await expect(
         service.update(1, { role: UserRole.USER } as any),
-      ).rejects.toThrow("Cannot demote the last administrator");
+      ).rejects.toThrow("不能降级最后一个管理员");
       expect(qb.setLock).toHaveBeenCalledWith("pessimistic_write");
       expect(repo.save).not.toHaveBeenCalled();
     });
@@ -442,9 +442,7 @@ describe("UsersService", () => {
     });
 
     it("refuses self-deletion before opening a transaction", async () => {
-      await expect(service.remove(1, 1)).rejects.toThrow(
-        "Cannot delete your own account",
-      );
+      await expect(service.remove(1, 1)).rejects.toThrow("不能删除自己的账号");
       expect(repo.manager.transaction).not.toHaveBeenCalled();
       expect(repo.remove).not.toHaveBeenCalled();
     });
@@ -503,7 +501,7 @@ describe("UsersService", () => {
       repo.createQueryBuilder.mockReturnValue(qb);
 
       await expect(service.remove(1, 9)).rejects.toThrow(
-        "Cannot delete the last administrator",
+        "不能删除最后一个管理员",
       );
       expect(qb.setLock).toHaveBeenCalledWith("pessimistic_write");
       expect(refreshRepo.delete).not.toHaveBeenCalled();
@@ -526,7 +524,7 @@ describe("UsersService", () => {
 
     it("throws NotFound when the target row vanished", async () => {
       repo.findOne.mockResolvedValue(null);
-      await expect(service.remove(42, 1)).rejects.toThrow("User #42 not found");
+      await expect(service.remove(42, 1)).rejects.toThrow("用户 #42 不存在");
       expect(repo.remove).not.toHaveBeenCalled();
     });
 
@@ -565,9 +563,7 @@ describe("UsersService", () => {
         role: UserRole.ADMIN,
       });
       repo.createQueryBuilder.mockReturnValue(adminQb([{ id: 1 }]));
-      await expect(service.remove(1)).rejects.toThrow(
-        "Cannot delete the last administrator",
-      );
+      await expect(service.remove(1)).rejects.toThrow("不能删除最后一个管理员");
     });
   });
 });

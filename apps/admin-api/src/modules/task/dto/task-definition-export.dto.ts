@@ -21,33 +21,37 @@ import { MaintenanceWindowDto } from "./maintenance-window.dto";
  * 整键剔除）。
  */
 export class TaskDefinitionDto {
-  @ApiProperty({ description: "Task name", example: "Nightly DB sync" })
+  @ApiProperty({
+    example: "Nightly DB sync",
+    description: "任务名称",
+  })
   name!: string;
   @ApiPropertyOptional() description?: string;
   @ApiProperty({ enum: TaskTriggerType })
   triggerType!: TaskTriggerType;
-  @ApiPropertyOptional({ description: "5-field cron (triggerType=cron)" })
+  @ApiPropertyOptional({
+    description: "5 字段 cron 表达式（triggerType=cron 时生效）",
+  })
   cronExpression?: string;
-  @ApiPropertyOptional({ description: "IANA timezone, e.g. Asia/Shanghai" })
+  @ApiPropertyOptional({ description: "IANA 时区，例如 Asia/Shanghai" })
   timezone?: string;
-  @ApiPropertyOptional({ description: "Fixed-rate interval seconds" })
+  @ApiPropertyOptional({ description: "固定频率间隔秒数" })
   fixedRate?: number;
   @ApiPropertyOptional({ enum: TaskRuntime })
   runtime?: TaskRuntime;
   @ApiPropertyOptional({
-    description: 'Interpreter version "major.minor" (python runtime)',
+    description: '解释器版本 \\"major.minor\\"（python runtime）',
   })
   runtimeVersion?: string;
   @ApiPropertyOptional({
-    description: "Executor-side dependency specs (pip/npm)",
     type: [String],
+    description: "执行器端依赖声明（pip/npm）",
   })
   requirements?: string[];
   @ApiPropertyOptional({
-    description:
-      "Upstream task dependency map: { displayName: upstreamTaskId }",
     type: "object",
     additionalProperties: { type: "string" },
+    description: "上游任务依赖映射：{ 显示名: 上游任务id }",
   })
   dependencies?: Record<string, string>;
   @ApiPropertyOptional() entrypoint?: string;
@@ -55,24 +59,24 @@ export class TaskDefinitionDto {
   @ApiPropertyOptional() gitBranch?: string;
   @ApiPropertyOptional() gitCommit?: string;
   @ApiPropertyOptional() currentVersion?: string;
-  @ApiPropertyOptional({ description: "Timeout seconds (0 = no limit)" })
+  @ApiPropertyOptional({ description: "超时秒数（0 = 不限制）" })
   timeout?: number;
   @ApiPropertyOptional({
-    description: "Timeout action: kill / kill_retry / notify_only",
+    description: "超时动作：kill / kill_retry / notify_only",
   })
   timeoutAction?: string;
-  @ApiPropertyOptional({ description: "Timeout warning ratio 0-90" })
+  @ApiPropertyOptional({ description: "超时预警比例 0-90" })
   timeoutWarnRatio?: number;
-  @ApiPropertyOptional({ description: "Estimated duration seconds" })
+  @ApiPropertyOptional({ description: "预估执行时长（秒）" })
   estimatedDurationSec?: number;
   @ApiPropertyOptional() maxRetry?: number;
   @ApiPropertyOptional() retryDelay?: number;
   @ApiPropertyOptional({
-    description: "Retryable error whitelist",
     type: [String],
+    description: "可重试错误白名单",
   })
   retryableErrors?: string[];
-  @ApiPropertyOptional({ description: "low/normal/high/critical" })
+  @ApiPropertyOptional({ description: "优先级：low/normal/high/critical" })
   priority?: number | string;
   @ApiPropertyOptional({ enum: ExecuteMode })
   executeMode?: ExecuteMode;
@@ -83,40 +87,40 @@ export class TaskDefinitionDto {
   @ApiPropertyOptional() alarmEmail?: string;
   @ApiPropertyOptional({ type: [String] }) alarmChannels?: string[];
   @ApiPropertyOptional({
-    description: "Default task params",
     type: "object",
     additionalProperties: true,
+    description: "任务默认参数",
   })
   params?: Record<string, unknown>;
   @ApiPropertyOptional({
-    description: "Deployment dispatch policy override",
     enum: ["strict", "prefer"],
     nullable: true,
+    description: "部署派发策略覆盖",
   })
   deploymentPolicy?: "strict" | "prefer" | null;
-  @ApiPropertyOptional({ description: "Pinned executor id" })
+  @ApiPropertyOptional({ description: "钉定的执行器 id" })
   executorId?: string;
   @ApiPropertyOptional() executorAppName?: string;
   @ApiPropertyOptional() executorGroup?: string;
   @ApiPropertyOptional({ type: [String] }) executorTags?: string[];
   @ApiPropertyOptional({ type: [String] }) executorAffinityTags?: string[];
   @ApiPropertyOptional({ type: [String] }) executorAntiAffinityTags?: string[];
-  @ApiPropertyOptional({ description: "GLUE script source" })
+  @ApiPropertyOptional({ description: "GLUE 脚本源码" })
   glueSource?: string;
   @ApiPropertyOptional() glueLanguage?: string;
-  @ApiPropertyOptional({ description: "Bound application id" })
+  @ApiPropertyOptional({ description: "绑定的应用 id" })
   applicationId?: string;
   @ApiPropertyOptional({ enum: TaskCodeSource })
   codeSource?: TaskCodeSource;
   @ApiPropertyOptional({
-    description: "Task-level maintenance windows",
     type: [MaintenanceWindowDto],
     nullable: true,
+    description: "任务级维护窗口",
   })
   maintenanceWindows?: MaintenanceWindowDto[];
-  @ApiPropertyOptional({ description: "Markdown runbook" })
+  @ApiPropertyOptional({ description: "Markdown 运维手册" })
   runbook?: string;
-  @ApiPropertyOptional({ description: "Owning project id" })
+  @ApiPropertyOptional({ description: "所属项目 id" })
   projectId?: string;
 }
 
@@ -128,20 +132,20 @@ export class TaskDefinitionDto {
 export class TaskExportPayloadDto {
   @ApiProperty({
     enum: ["1"],
-    description: "Export schema version (currently 1)",
     example: "1",
+    description: "导出 schema 版本（当前为 1）",
   })
   schemaVersion!: string;
   @ApiProperty({
     type: String,
     format: "date-time",
-    description: "ISO-8601 timestamp when the export was produced",
+    description: "导出生成时刻的 ISO-8601 时间戳",
   })
   exportedAt!: string;
   @ApiProperty({
     type: TaskDefinitionDto,
     description:
-      "Task definition snapshot keys. Secrets are NEVER included (SEC-02 red line: the whole key is stripped, values and key alike).",
+      "任务定义快照键。**绝不包含** secrets（SEC-02 红线：整键剔除，值与键名一律剔除）。",
   })
   task!: TaskDefinitionDto;
 }

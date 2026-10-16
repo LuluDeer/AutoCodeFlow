@@ -103,13 +103,13 @@ interface ParsedEntry {
 function findEocd(buf: Buffer): number {
   const minStart = buf.length - EOCD_FIXED_SIZE;
   if (minStart < 0) {
-    throw new ZipSafetyError('bad_archive', 'file smaller than an EOCD record');
+    throw new ZipSafetyError('bad_archive', '文件小于一条 EOCD 记录');
   }
   const scanStart = Math.max(0, buf.length - (65_536 + EOCD_FIXED_SIZE));
   for (let off = minStart; off >= scanStart; off--) {
     if (U32(buf, off) === SIG_EOCD) return off;
   }
-  throw new ZipSafetyError('bad_archive', 'EOCD signature not found');
+  throw new ZipSafetyError('bad_archive', '未找到 EOCD 签名');
 }
 
 /** 解析中央目录，逐条目取出解压所需字段。 */
@@ -120,7 +120,7 @@ function parseEntries(buf: Buffer): ParsedEntry[] {
   const cdOffset = U32(buf, eocdOff + 16);
 
   if (cdOffset === 0xffffffff || cdEntries === 0xffff || cdSize === 0xffffffff) {
-    throw new ZipSafetyError('bad_archive', 'zip64 archives are not supported');
+    throw new ZipSafetyError('bad_archive', '不支持 zip64 归档');
   }
 
   const entries: ParsedEntry[] = [];
@@ -129,7 +129,7 @@ function parseEntries(buf: Buffer): ParsedEntry[] {
     if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD) {
       throw new ZipSafetyError(
         'bad_archive',
-        `central directory record ${seen} is missing or corrupt`,
+        `中央目录记录 ${seen} 缺失或已损坏`,
       );
     }
     const method = U16(buf, off + 10);
@@ -142,7 +142,7 @@ function parseEntries(buf: Buffer): ParsedEntry[] {
     const localOffset = U32(buf, off + 42);
     const nameStart = off + CD_HEADER_SIZE;
     if (nameStart + nameLen > buf.length) {
-      throw new ZipSafetyError('bad_archive', 'central directory name overruns buffer');
+      throw new ZipSafetyError('bad_archive', '中央目录中的条目名越出缓冲区');
     }
     const name = buf.toString('utf8', nameStart, nameStart + nameLen);
     const unixMode = (externalAttrs >>> 16) & 0xffff;
@@ -175,24 +175,24 @@ function parseEntries(buf: Buffer): ParsedEntry[] {
  */
 function resolveEntryTarget(destDir: string, entryName: string): string {
   if (!entryName) {
-    throw new ZipSafetyError('bad_archive', 'zip contains an entry with an empty name');
+    throw new ZipSafetyError('bad_archive', 'zip 中包含一个条目名为空的条目');
   }
   if (entryName.includes('\0')) {
     // NUL 截断：`safe.txt\0../../evil` 在不同 API 下可能被截成不同名字。
-    throw new ZipSafetyError('bad_archive', `zip entry name contains a NUL byte: ${entryName}`);
+    throw new ZipSafetyError('bad_archive', `zip 条目名含有 NUL 字节：${entryName}`);
   }
   if (entryName.startsWith('/') || entryName.startsWith('\\')) {
-    throw new ZipSafetyError('absolute_path', `zip entry uses an absolute path: ${entryName}`);
+    throw new ZipSafetyError('absolute_path', `zip 条目使用了绝对路径：${entryName}`);
   }
   if (/^[A-Za-z]:[\\/]/.test(entryName)) {
-    throw new ZipSafetyError('drive_letter_path', `zip entry uses a drive-letter path: ${entryName}`);
+    throw new ZipSafetyError('drive_letter_path', `zip 条目使用了盘符路径：${entryName}`);
   }
 
   // 统一按 `/` 与 `\` 双分隔符切分：zip 规范要求 `/`，但 Windows 产出的包
   // 常混用 `\`，只按 `/` 切会让 `..\..\evil` 整个变成一个无害的"文件名"。
   const segments = entryName.split(/[\\/]+/);
   if (segments.some((s) => s === '..')) {
-    throw new ZipSafetyError('zip_slip', `zip entry escapes the destination via "..": ${entryName}`);
+    throw new ZipSafetyError('zip_slip', `zip 条目通过 ".." 逃出目标目录：${entryName}`);
   }
 
   const target = path.resolve(destDir, ...segments.filter((s) => s !== '' && s !== '.'));
@@ -200,7 +200,7 @@ function resolveEntryTarget(destDir: string, entryName: string): string {
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new ZipSafetyError(
       'zip_slip',
-      `zip entry resolves outside the destination directory: ${entryName}`,
+      `zip 条目解析后落在目标目录之外：${entryName}`,
     );
   }
   return target;
@@ -210,7 +210,7 @@ function resolveEntryTarget(destDir: string, entryName: string): string {
 function entryPayload(buf: Buffer, entry: ParsedEntry): Buffer {
   const lo = entry.localOffset;
   if (lo + LOCAL_HEADER_SIZE > buf.length || U32(buf, lo) !== SIG_LOCAL) {
-    throw new ZipSafetyError('bad_archive', `local header missing for entry ${entry.name}`);
+    throw new ZipSafetyError('bad_archive', `条目 ${entry.name} 缺少本地文件头`);
   }
   // 本地头里的 name/extra 长度可能与中央目录不同（zip 允许），必须读本地头。
   const nameLen = U16(buf, lo + 26);
@@ -218,7 +218,7 @@ function entryPayload(buf: Buffer, entry: ParsedEntry): Buffer {
   const dataStart = lo + LOCAL_HEADER_SIZE + nameLen + extraLen;
   const dataEnd = dataStart + entry.compressedSize;
   if (dataEnd > buf.length) {
-    throw new ZipSafetyError('bad_archive', `entry data overruns the archive: ${entry.name}`);
+    throw new ZipSafetyError('bad_archive', `条目数据越出归档范围：${entry.name}`);
   }
   return buf.subarray(dataStart, dataEnd);
 }
@@ -235,7 +235,7 @@ function inflateEntry(payload: Buffer, entry: ParsedEntry): Buffer {
     if (payload.length !== entry.uncompressedSize) {
       throw new ZipSafetyError(
         'bad_archive',
-        `stored entry size mismatch for ${entry.name} (declared ${entry.uncompressedSize}, actual ${payload.length})`,
+        `stored 条目大小不匹配：${entry.name}（声明 ${entry.uncompressedSize}，实际 ${payload.length}）`,
       );
     }
     return Buffer.from(payload);
@@ -249,7 +249,7 @@ function inflateEntry(payload: Buffer, entry: ParsedEntry): Buffer {
       // 声明与实际不符 / 数据损坏 —— 都归为不可信归档，fail closed。
       throw new ZipSafetyError(
         'bad_archive',
-        `entry ${entry.name} does not match its declared size or is corrupt: ${
+        `条目 ${entry.name} 与其声明的尺寸不符或已损坏：${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -271,8 +271,8 @@ function inflateEntry(payload: Buffer, entry: ParsedEntry): Buffer {
   // 上传者无从知道该把包改成 deflate/stored 重传。
   throw new ZipSafetyError(
     'unsupported_method',
-    `entry ${entry.name} uses compression method ${entry.method}, which this executor cannot ` +
-      'decompress (only stored(0) and deflate(8) are supported; re-pack the archive with deflate)',
+    `条目 ${entry.name} 使用了压缩方法 ${entry.method}，本执行器无法解压它` +
+      '（仅支持 stored(0) 与 deflate(8)；请用 deflate 重新打包该归档）',
   );
 }
 
@@ -304,7 +304,7 @@ export function safeExtractZip(
     // 类型分类，不该在这里漏出一个裸 Error（例如 ENOENT）。
     throw new ZipSafetyError(
       'bad_archive',
-      `cannot read archive ${zipPath}: ${err instanceof Error ? err.message : String(err)}`,
+      `无法读取归档 ${zipPath}：${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -314,7 +314,7 @@ export function safeExtractZip(
   } catch (err) {
     throw new ZipSafetyError(
       'bad_archive',
-      `cannot read archive ${zipPath}: ${err instanceof Error ? err.message : String(err)}`,
+      `无法读取归档 ${zipPath}：${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -322,7 +322,7 @@ export function safeExtractZip(
   if (entries.length > limits.maxEntries) {
     throw new ZipSafetyError(
       'too_many_entries',
-      `zip declares ${entries.length} entries (limit ${limits.maxEntries})`,
+      `zip 声明了 ${entries.length} 个条目（上限 ${limits.maxEntries}）`,
     );
   }
 
@@ -348,7 +348,7 @@ export function safeExtractZip(
   if (declaredUncompressed > limits.maxTotalUncompressedBytes) {
     throw new ZipSafetyError(
       'total_too_large',
-      `archive declares ${declaredUncompressed} uncompressed bytes (limit ${limits.maxTotalUncompressedBytes})`,
+      `归档声明的未压缩总字节数为 ${declaredUncompressed}（上限 ${limits.maxTotalUncompressedBytes}）`,
     );
   }
   if (
@@ -357,7 +357,7 @@ export function safeExtractZip(
   ) {
     throw new ZipSafetyError(
       'ratio_too_high',
-      `compression ratio ${(declaredUncompressed / declaredCompressed).toFixed(1)} exceeds limit ${limits.maxRatio}`,
+      `压缩比 ${(declaredUncompressed / declaredCompressed).toFixed(1)} 超过上限 ${limits.maxRatio}`,
     );
   }
 
@@ -381,7 +381,7 @@ export function safeExtractZip(
         // 路径"的通道（后续读写跟随链接即逃逸）。直接拒绝。
         throw new ZipSafetyError(
           'symlink_entry',
-          `zip contains a symbolic-link entry: ${entry.name}`,
+          `zip 中包含符号链接条目：${entry.name}`,
         );
       }
 
@@ -394,7 +394,7 @@ export function safeExtractZip(
       if (entry.uncompressedSize > limits.maxFileBytes) {
         throw new ZipSafetyError(
           'entry_too_large',
-          `entry ${entry.name} declares ${entry.uncompressedSize} bytes (limit ${limits.maxFileBytes})`,
+          `条目 ${entry.name} 声明了 ${entry.uncompressedSize} 字节（上限 ${limits.maxFileBytes}）`,
         );
       }
       // 总量/压缩比已在循环前按**声明值**整包判定（见上，与 zip-guard 的
@@ -408,7 +408,7 @@ export function safeExtractZip(
         // 实际解出的字节再查一次：声明可以撒谎，实际写入的字节不会。
         throw new ZipSafetyError(
           'entry_too_large',
-          `entry ${entry.name} inflated to ${content.length} bytes (limit ${limits.maxFileBytes})`,
+          `条目 ${entry.name} 解压后为 ${content.length} 字节（上限 ${limits.maxFileBytes}）`,
         );
       }
 
@@ -422,7 +422,7 @@ export function safeExtractZip(
       } catch (err) {
         throw new ZipSafetyError(
           'zip_slip',
-          `entry ${entry.name}: cannot resolve parent directory ${path.dirname(target)}: ${err}`,
+          `条目 ${entry.name}：无法解析父目录 ${path.dirname(target)}：${err}`,
         );
       }
       const rel = path.relative(
@@ -432,7 +432,7 @@ export function safeExtractZip(
       if (rel.startsWith('..') || path.isAbsolute(rel)) {
         throw new ZipSafetyError(
           'zip_slip',
-          `entry ${entry.name} would be written outside the destination`,
+          `条目 ${entry.name} 会被写到目标目录之外`,
         );
       }
 
@@ -471,7 +471,7 @@ export function vetZip(zipPath: string, limits?: ZipGuardLimits): void {
     }
     throw new ZipSafetyError(
       'bad_archive',
-      `cannot read archive ${zipPath}: ${err instanceof Error ? err.message : String(err)}`,
+      `无法读取归档 ${zipPath}：${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }

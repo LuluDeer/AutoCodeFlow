@@ -1,6 +1,12 @@
 // UI-10 English copy. Keys mirror zh.ts exactly (see zh.ts for structure).
 // Missing keys fall back to zh via i18next fallbackLng.
+import errorCodesEn from './generated/error-codes.en';
+
 export default {
+  // LANG-ERR-01：err.<CODE> 词条由 scripts/gen-error-i18n.mjs 从后端
+  // 错误码表生成（真值源 apps/admin-api/src/common/errors/catalog/*.ts）。
+  // 手改无效——CI 的 error-i18n-drift 会比对生成物。
+  ...errorCodesEn,
   'common.copyFailed': 'Copy failed — check clipboard permissions',
   'common.operateFailed': 'Operation failed',
   // HTTP error toasts (axios response interceptor; resolved via i18n.t outside React)

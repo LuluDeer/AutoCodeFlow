@@ -50,7 +50,7 @@ export function isEncryptedSecret(value: unknown): value is string {
 export function parseSecretsKey(raw: string): Buffer {
   const trimmed = raw.trim();
   if (trimmed.length === 0) {
-    throw new Error("SEC_SECRETS_KEY is empty");
+    throw new Error("SEC_SECRETS_KEY 为空");
   }
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
     return Buffer.from(trimmed, "hex");
@@ -69,7 +69,7 @@ export function parseSecretsKey(raw: string): Buffer {
 export function encryptSecretValue(plaintext: string, key: Buffer): string {
   if (key.length !== 32) {
     throw new Error(
-      `SEC-02 secret key must be 32 bytes (AES-256), got ${key.length}`,
+      `SEC-02 密钥必须为 32 字节（AES-256），实际为 ${key.length}`,
     );
   }
   const iv = randomBytes(12); // GCM standard nonce size
@@ -94,13 +94,11 @@ export function encryptSecretValue(plaintext: string, key: Buffer): string {
  */
 export function decryptSecretValue(envelope: string, key: Buffer): string {
   if (!isEncryptedSecret(envelope)) {
-    throw new Error("Value is not an enc:v1 secret envelope");
+    throw new Error("该值不是 enc:v1 密钥信封");
   }
   const parts = envelope.slice(SECRET_ENC_PREFIX.length).split(":");
   if (parts.length !== 3) {
-    throw new Error(
-      "Malformed secret envelope (expected enc:v1:<iv>:<tag>:<ciphertext>)",
-    );
+    throw new Error("密钥信封格式错误（期望 enc:v1:<iv>:<tag>:<ciphertext>）");
   }
   let iv: Buffer;
   let tag: Buffer;
@@ -110,10 +108,10 @@ export function decryptSecretValue(envelope: string, key: Buffer): string {
     tag = Buffer.from(parts[1], "base64");
     ciphertext = Buffer.from(parts[2], "base64");
   } catch {
-    throw new Error("Malformed secret envelope (invalid base64 field)");
+    throw new Error("密钥信封格式错误（base64 字段非法）");
   }
   if (iv.length === 0 || tag.length === 0) {
-    throw new Error("Malformed secret envelope (empty iv/tag)");
+    throw new Error("密钥信封格式错误（iv/tag 为空）");
   }
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
@@ -167,7 +165,7 @@ export function decryptSecretsObject(
     if (typeof v === "string" && isEncryptedSecret(v)) {
       if (!key) {
         throw new Error(
-          `SEC-02: task secret "${k}" is encrypted but SEC_SECRETS_KEY is not configured`,
+          `SEC-02：任务密钥 "${k}" 已加密，但未配置 SEC_SECRETS_KEY`,
         );
       }
       out[k] = decryptSecretValue(v, key);

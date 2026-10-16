@@ -65,15 +65,14 @@ export class TaskBatchController {
     },
   })
   @ApiOperation({
-    summary: "Batch trigger tasks (deprecated)",
     deprecated: true,
     description:
-      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。" +
-      "Trigger multiple tasks. Partial failures do not affect other tasks.",
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。触发多个任务。部分失败不影响其他任务。",
+    summary: "批量触发任务（已废弃）",
   })
-  @ApiResponse({ status: 200, description: "Batch trigger results" })
+  @ApiResponse({ status: 200, description: "批量触发结果" })
   @ApiBody({
-    description: "Batch trigger parameters",
+    description: "批量触发参数",
     schema: { example: { taskIds: ["uuid-1", "uuid-2"] } },
   })
   async batchTrigger(
@@ -115,13 +114,12 @@ export class TaskBatchController {
     },
   })
   @ApiOperation({
-    summary: "Batch pause tasks (deprecated)",
     deprecated: true,
     description:
-      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。" +
-      "Pause multiple tasks. Partial failures do not affect other tasks.",
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。暂停多个任务。部分失败不影响其他任务。",
+    summary: "批量暂停任务（已废弃）",
   })
-  @ApiResponse({ status: 200, description: "Batch pause results" })
+  @ApiResponse({ status: 200, description: "批量暂停结果" })
   async batchPause(
     @Body() body: BatchTaskIdsDto,
     @CurrentUser() user: AuthUser,
@@ -160,13 +158,12 @@ export class TaskBatchController {
     },
   })
   @ApiOperation({
-    summary: "Batch resume tasks (deprecated)",
     deprecated: true,
     description:
-      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。" +
-      "Resume multiple tasks. Partial failures do not affect other tasks.",
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。恢复多个任务。部分失败不影响其他任务。",
+    summary: "批量恢复任务（已废弃）",
   })
-  @ApiResponse({ status: 200, description: "Batch resume results" })
+  @ApiResponse({ status: 200, description: "批量恢复结果" })
   async batchResume(
     @Body() body: BatchTaskIdsDto,
     @CurrentUser() user: AuthUser,
@@ -201,13 +198,12 @@ export class TaskBatchController {
     },
   })
   @ApiOperation({
-    summary: "Batch delete tasks (deprecated)",
     deprecated: true,
     description:
-      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。" +
-      "Delete multiple tasks. Partial failures do not affect other tasks.",
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。删除多个任务。部分失败不影响其他任务。",
+    summary: "批量删除任务（已废弃）",
   })
-  @ApiResponse({ status: 200, description: "Batch delete results" })
+  @ApiResponse({ status: 200, description: "批量删除结果" })
   async batchDelete(
     @Body() body: BatchTaskIdsDto,
     @CurrentUser() user: AuthUser,

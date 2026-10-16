@@ -5,6 +5,9 @@ import {
   Inject,
   forwardRef,
 } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
+import { AppError } from "../../../common/errors/app-error";
 import { AgentApiClient } from "./agent-api.client";
 import { TaskService } from "../../task/task.service";
 import { TaskTemplateService } from "../../task-template/task-template.service";
@@ -204,11 +207,14 @@ export class ToolBinderService implements OnModuleInit {
         const exec = await this.executors.findByAddress(
           this.str(args.executorAddress),
         );
-        if (!exec) throw new Error(`执行器 ${args.executorAddress} 不存在`);
+        if (!exec)
+          throw new AppError("AGENT_TOOL_EXECUTOR_NOT_FOUND", {
+            address: this.str(args.executorAddress),
+          });
         executorId = exec.id;
       }
       if (!executorId)
-        throw new Error("executorId 与 executorAddress 必须提供其一");
+        throw new AppError("AGENT_TOOL_EXECUTOR_TARGET_REQUIRED");
       return this.sops.assign({
         sopId: this.str(args.sopId),
         version: args.version as string | undefined,
@@ -359,9 +365,7 @@ export class ToolBinderService implements OnModuleInit {
         patch.description = this.str(args.description);
       }
       if (Object.keys(patch).length === 0) {
-        throw new Error(
-          "update_mutex_group: 至少需要一个可改字段（name / maxConcurrentPerDevice / scope / description）",
-        );
+        throw new AppError("AGENT_TOOL_MUTEX_GROUP_PATCH_EMPTY");
       }
       return this.mutexGroups.update(this.str(args.groupId), patch as never);
     });

@@ -1,11 +1,10 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染；oidc.controller 的 mapCallbackError 直接按 errorCode 分派，
+// 不再做文案子串匹配）。AppError 按状态码挂到对应内置异常原型上，故既有按
+// 异常类断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import {
   createHmac,
   createPublicKey,
@@ -137,9 +136,13 @@ export class OidcService {
       ["issuer", "clientId", "clientSecret", "redirectUri"] as const
     ).filter((k) => !cfg[k]);
     if (missing.length > 0) {
-      throw new BadRequestException(
-        `OIDC is enabled but misconfigured; missing env: ${missing.map((k) => `OIDC_${k.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()}`).join(", ")}`,
-      );
+      throw new AppError("OIDC_CONFIG_INCOMPLETE", {
+        keys: missing
+          .map(
+            (k) => `OIDC_${k.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()}`,
+          )
+          .join(", "),
+      });
     }
     return cfg;
   }
@@ -174,18 +177,17 @@ export class OidcService {
         "jwks_uri",
       ] as const) {
         if (!data?.[key]) {
-          throw new BadRequestException(
-            `OIDC discovery document missing ${key}`,
-          );
+          throw new AppError("OIDC_DISCOVERY_INCOMPLETE", { key });
         }
       }
       this.discoveryCache = { value: data, at: Date.now() };
       return data;
     } catch (err: unknown) {
-      if (err instanceof BadRequestException) throw err;
-      throw new BadRequestException(
-        `Failed to fetch OIDC discovery from ${url}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      if (err instanceof AppError) throw err;
+      throw new AppError("OIDC_DISCOVERY_FAILED", {
+        url,
+        detail: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -212,7 +214,7 @@ export class OidcService {
 
   verifyStateCookieValue(raw: string | undefined): OidcStatePayload {
     if (!raw || !raw.includes(".")) {
-      throw new UnauthorizedException("OIDC state cookie missing");
+      throw new AppError("OIDC_STATE_INVALID", { reason: "cookie_missing" });
     }
     const [body, sig] = raw.split(".");
     const expected = createHmac("sha256", this.stateSecret())
@@ -221,16 +223,20 @@ export class OidcService {
     const a = Buffer.from(sig);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !timingSafeEqual(a, b)) {
-      throw new UnauthorizedException("OIDC state signature mismatch");
+      throw new AppError("OIDC_STATE_INVALID", {
+        reason: "signature_mismatch",
+      });
     }
     let payload: OidcStatePayload;
     try {
       payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
     } catch {
-      throw new UnauthorizedException("OIDC state payload malformed");
+      throw new AppError("OIDC_STATE_INVALID", { reason: "payload_malformed" });
     }
     if (!payload?.state || !payload?.nonce || payload.exp * 1000 < Date.now()) {
-      throw new UnauthorizedException("OIDC state expired or malformed");
+      throw new AppError("OIDC_STATE_INVALID", {
+        reason: "expired_or_malformed",
+      });
     }
     return payload;
   }
@@ -293,17 +299,15 @@ export class OidcService {
         },
       );
       if (!data?.id_token) {
-        throw new UnauthorizedException(
-          "OIDC token endpoint returned no id_token",
-        );
+        throw new AppError("OIDC_TOKEN_NO_ID_TOKEN");
       }
       return { idToken: data.id_token as string };
     } catch (err: unknown) {
-      if (err instanceof UnauthorizedException) throw err;
+      if (err instanceof AppError) throw err;
       // IdP 侧错误（code 无效/过期/凭据错）统一 401，不泄露内部细节
-      throw new UnauthorizedException(
-        `OIDC code exchange failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw new AppError("OIDC_CODE_EXCHANGE_FAILED", {
+        detail: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -319,7 +323,7 @@ export class OidcService {
       ...pinCfg,
     });
     if (!Array.isArray(data?.keys) || data.keys.length === 0) {
-      throw new UnauthorizedException("OIDC JWKS endpoint returned no keys");
+      throw new AppError("OIDC_JWKS_EMPTY");
     }
     this.jwksCache = { keys: data.keys, at: Date.now() };
     return data.keys;
@@ -336,7 +340,7 @@ export class OidcService {
     const cfg = this.assertConfigured();
     const parts = idToken.split(".");
     if (parts.length !== 3) {
-      throw new UnauthorizedException("OIDC id_token malformed");
+      throw new AppError("OIDC_ID_TOKEN_MALFORMED");
     }
     let header: { alg?: string; kid?: string };
     let claims: Record<string, unknown>;
@@ -344,12 +348,10 @@ export class OidcService {
       header = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
       claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
     } catch {
-      throw new UnauthorizedException("OIDC id_token malformed");
+      throw new AppError("OIDC_ID_TOKEN_MALFORMED");
     }
     if (header.alg !== "RS256") {
-      throw new UnauthorizedException(
-        `OIDC id_token alg ${header.alg} not supported (RS256 only)`,
-      );
+      throw new AppError("OIDC_ALG_UNSUPPORTED", { alg: String(header.alg) });
     }
 
     const discovery = await this.getDiscovery();
@@ -359,7 +361,7 @@ export class OidcService {
         k.kty === "RSA" && (!header.kid || k.kid === header.kid) && k.n && k.e,
     );
     if (candidates.length === 0) {
-      throw new UnauthorizedException("OIDC id_token kid not found in JWKS");
+      throw new AppError("OIDC_KID_NOT_FOUND");
     }
     const signedInput = `${parts[0]}.${parts[1]}`;
     const signature = Buffer.from(parts[2], "base64url");
@@ -374,38 +376,36 @@ export class OidcService {
       }
     });
     if (!verified) {
-      throw new UnauthorizedException(
-        "OIDC id_token signature verification failed",
-      );
+      throw new AppError("OIDC_SIGNATURE_INVALID");
     }
 
     const issuerNormalized = cfg.issuer.replace(/\/+$/, "");
     const tokenIssuer = String(claims.iss ?? "").replace(/\/+$/, "");
     if (tokenIssuer !== issuerNormalized) {
-      throw new UnauthorizedException("OIDC id_token issuer mismatch");
+      throw new AppError("OIDC_ISSUER_MISMATCH");
     }
     const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!aud.includes(cfg.clientId)) {
-      throw new UnauthorizedException("OIDC id_token audience mismatch");
+      throw new AppError("OIDC_AUDIENCE_MISMATCH");
     }
     const now = Math.floor(Date.now() / 1000);
     if (
       typeof claims.exp !== "number" ||
       claims.exp < now - CLOCK_SKEW_SECONDS
     ) {
-      throw new UnauthorizedException("OIDC id_token expired");
+      throw new AppError("OIDC_ID_TOKEN_EXPIRED");
     }
     if (
       typeof claims.iat === "number" &&
       claims.iat > now + CLOCK_SKEW_SECONDS
     ) {
-      throw new UnauthorizedException("OIDC id_token issued in the future");
+      throw new AppError("OIDC_ID_TOKEN_IAT_FUTURE");
     }
     const nonce = typeof claims.nonce === "string" ? claims.nonce : "";
     const a = Buffer.from(nonce);
     const b = Buffer.from(expectedNonce);
     if (a.length !== b.length || !timingSafeEqual(a, b)) {
-      throw new UnauthorizedException("OIDC id_token nonce mismatch");
+      throw new AppError("OIDC_NONCE_INVALID");
     }
     const sub = typeof claims.sub === "string" ? claims.sub : "";
     const username =
@@ -413,9 +413,9 @@ export class OidcService {
         ? (claims[cfg.usernameClaim] as string)
         : "";
     if (!sub || !username) {
-      throw new UnauthorizedException(
-        `OIDC id_token missing sub or username claim '${cfg.usernameClaim}'`,
-      );
+      throw new AppError("OIDC_CLAIMS_INCOMPLETE", {
+        claim: cfg.usernameClaim,
+      });
     }
     const rawGroups = claims[cfg.groupsClaim];
     const groups = Array.isArray(rawGroups)
@@ -472,8 +472,7 @@ export class OidcService {
       where: { oidcSub: profile.sub },
     });
     if (bySub) {
-      if (!bySub.isActive)
-        throw new UnauthorizedException("Account is disabled");
+      if (!bySub.isActive) throw new AppError("OIDC_ACCOUNT_DISABLED");
       return bySub;
     }
     // ② username 声明匹配 + 首登绑定 sub
@@ -481,8 +480,7 @@ export class OidcService {
       where: { username: profile.username },
     });
     if (byUsername) {
-      if (!byUsername.isActive)
-        throw new UnauthorizedException("Account is disabled");
+      if (!byUsername.isActive) throw new AppError("OIDC_ACCOUNT_DISABLED");
       if (!byUsername.oidcSub) {
         const emailTrusted =
           !!profile.email &&
@@ -497,17 +495,13 @@ export class OidcService {
                 : "email-claim-missing-unverified-or-mismatched"
             })`,
           );
-          throw new ForbiddenException(
-            "OIDC identity cannot be automatically linked to this platform account",
-          );
+          throw new AppError("OIDC_AUTOBIND_DENIED");
         }
         byUsername.oidcSub = profile.sub;
         await this.usersRepo.save(byUsername);
       } else {
         // 同 username 已绑定其他 sub：声明冲突，拒绝而非静默换绑
-        throw new UnauthorizedException(
-          "OIDC identity is bound to a different account",
-        );
+        throw new AppError("OIDC_SUB_ALREADY_BOUND");
       }
       return byUsername;
     }
@@ -532,9 +526,7 @@ export class OidcService {
       );
       return saved;
     }
-    throw new UnauthorizedException(
-      "OIDC identity not linked to any platform account (ask an administrator to create a matching username, or enable OIDC_AUTO_PROVISION)",
-    );
+    throw new AppError("OIDC_ACCOUNT_NOT_LINKED");
   }
 
   /** 完整回调链：state 双向比对 → 换码 → 验签 → 定位/绑定 → 平台令牌对。 */
@@ -551,9 +543,7 @@ export class OidcService {
     // cookie 内 state 与授权请求携带的 state 双向比对：任一侧被替换（跨流程
     // 注入 / 另一浏览器的回调 URL）即拒绝。
     if (meta?.expectedState && meta.expectedState !== state.state) {
-      throw new UnauthorizedException(
-        "OIDC state mismatch between query and cookie",
-      );
+      throw new AppError("OIDC_STATE_MISMATCH");
     }
     const { idToken } = await this.exchangeCode(code);
     const profile = await this.validateIdToken(idToken, state.nonce);

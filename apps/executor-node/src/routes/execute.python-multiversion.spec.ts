@@ -823,7 +823,7 @@ describe('declared runtimeVersion', () => {
     );
     const fail = failedCallback();
     expect(fail).toBeTruthy();
-    expect(fail.errorMessage).toMatch(/Invalid runtimeVersion/);
+    expect(fail.errorMessage).toMatch(/无效的 runtimeVersion/);
   });
 
   it('rejects a command-injection-shaped version before any argv use', async () => {
@@ -834,7 +834,7 @@ describe('declared runtimeVersion', () => {
     );
     const fail = failedCallback();
     expect(fail).toBeTruthy();
-    expect(fail.errorMessage).toMatch(/Invalid runtimeVersion/);
+    expect(fail.errorMessage).toMatch(/无效的 runtimeVersion/);
     // 恶意值绝不能出现在任何 uv argv 里。
     for (const c of calls) {
       expect(c.args.join(' ')).not.toContain('--index-url');
@@ -880,7 +880,7 @@ describe('declared runtimeVersion', () => {
     // 不得写死补丁号 `.9`（3.6/3.5 走同一分支）。
     expect(detail).not.toMatch(/cpython-3\.7\.9-/);
     // 必须显式警告不要补 -none，并给出 uv 的真实词汇。
-    expect(detail).toMatch(/do NOT append an extra "-none"/);
+    expect(detail).toMatch(/请勿在三元组之后再追加 "-none"/);
     expect(detail).toMatch(/linux-x86_64-gnu/);
   });
 
@@ -1399,7 +1399,7 @@ describe('桌面自包含改造 — cmd 来自 toolchain（单一真值源）', 
     // 必须把根因直接写在用户可见的失败信息里，而不是留一句 ENOENT/9009。
     expect(message).toMatch(/Microsoft Store/i);
     expect(message).toMatch(/stub/i);
-    expect(message).toMatch(/install Python 3\.8\+/i);
+    expect(message).toMatch(/请从 python\.org 安装 Python 3\.8\+/i);
     // 兜底确实针对的是默认版本 3.12，而非某个瞎猜的版本。
     expect(message).toMatch(/解释器 3\.12 无法获取/);
     expect(prepareFailureReason(message)).toBe('interpreter_unavailable');

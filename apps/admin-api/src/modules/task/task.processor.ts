@@ -29,7 +29,13 @@ import { AiAnalysisService } from "../ai/ai-analysis.service";
 // 的引用归零（grep notificationService\. / auditService\. 0 命中），属死依赖与
 // 遗留模块耦合。终态事件改由 taskService.publishTerminalEventForDispatch 经
 // 事件总线统一发布。
-import { TaskService, INTERPRETER_UNAVAILABLE_PATTERN } from "./task.service";
+import {
+  TaskService,
+  INTERPRETER_UNAVAILABLE_PATTERN,
+  EXECUTOR_OFFLINE_PATTERN,
+} from "./task.service";
+// LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
+import { AppError } from "../../common/errors/app-error";
 // MUTEX-01：互斥阻塞错误前缀（dispatch 抛出，processor 分类链最前面识别）。
 import { MUTEX_WAIT_TOKEN } from "./execution-mutex";
 // FEAT-22 方案 A v1：strict 部署约束的排队 token——与 MUTEX_WAIT_TOKEN 同位
@@ -202,9 +208,14 @@ export class TaskProcessor extends WorkerHost {
           .getVersion(task.id, pinnedVersionId)
           .catch(() => null);
         if (!pinned) {
-          throw new Error(
-            `Pinned version ${pinnedVersionId} not found for task ${task.id}; refusing to dispatch with current config`,
-          );
+          // LANG-ERR-01：抛稳定码而非写死文案。注意下方 catch 的失败分类链读的是
+          // `err.message`（渲染后的 zh 兜底），本码的 zh 不含任何分类关键词
+          // （timeout / 执行器离线 / 依赖拉取 / 脚本错误），故仍落 UNKNOWN——
+          // 与迁移前的英文原文案分类结果一致（已由 processor 分类用例覆盖）。
+          throw new AppError("TASK_PINNED_VERSION_GONE", {
+            versionId: pinnedVersionId,
+            taskId: task.id,
+          });
         }
         dispatchTask = applyPinnedVersionSnapshot(
           task,
@@ -297,21 +308,26 @@ export class TaskProcessor extends WorkerHost {
           // packageUrl ... application <uuid> not found`，不含 package fetch/
           // download package 等关键词），用户看到「未知原因，去翻执行日志」——
           // 而原因是 100% 已知且可行动的（引用了一个已被删除的应用）。
-          /cannot resolve packageurl|application\s+\S+\s+not found/i.test(
+          /cannot resolve packageurl|application\s+\S+\s+not found|无法解析\s*packageurl|应用\s*\S*\s*不存在|找不到应用/i.test(
               failureText,
             )
           ? ExecutionFailureReason.APPLICATION_MISSING
-          : /timeout|timed out|etimedout|execution timed/i.test(failureText)
+          : /timeout|timed out|etimedout|execution timed|超时|执行已超时/i.test(
+                failureText,
+              )
             ? ExecutionFailureReason.TIMEOUT
-            : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up/i.test(
-                  failureText,
-                )
+            : // F-01 同款纪律（LANG-ERR-01 复查补口）：EXECUTOR_OFFLINE 的判据
+              // 与 task.service.ts 的 inferFailureReason **共用同一份常量**。
+              // 此前这里是自行抄写的一份，且容差（20）短于中台自己产出的 pinned
+              // 离线文案（间隔 63）→ pinned 离线被归成 SCRIPT_ERROR（e2e 用例 27
+              // 抓到）。详见 EXECUTOR_OFFLINE_PATTERN 的注释。
+              EXECUTOR_OFFLINE_PATTERN.test(failureText)
               ? ExecutionFailureReason.EXECUTOR_OFFLINE
-              : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency/i.test(
+              : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/i.test(
                     failureText,
                   )
                 ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
-                : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/i.test(
+                : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/i.test(
                       failureText,
                     )
                   ? ExecutionFailureReason.SCRIPT_ERROR
@@ -419,7 +435,10 @@ export class TaskProcessor extends WorkerHost {
         )
       ) {
         throw new UnrecoverableError(
-          `${errMsg} (failure is structurally unrecoverable — retrying cannot succeed)`,
+          // LANG-ZH-01：后缀中文化。`errMsg` 原样保留在**前面**——失败分类链
+          // （task.processor 下方 / task.service.inferFailureReason）读的是整段
+          // failureText，前缀 errMsg 不变则分类不受影响；只改后缀是安全的。
+          `${errMsg}（结构性不可恢复——重试不会成功）`,
         );
       }
       if (retryableErrors.length > 0) {
@@ -430,7 +449,7 @@ export class TaskProcessor extends WorkerHost {
         );
         if (!matched) {
           throw new UnrecoverableError(
-            `${errMsg} (failure not in retryableErrors allow-list)`,
+            `${errMsg}（失败不在 retryableErrors 白名单内）`,
           );
         }
       }
@@ -474,6 +493,30 @@ export class TaskProcessor extends WorkerHost {
           status: exec.status,
           ...(exec.executorAddress !== undefined
             ? { executorAddress: exec.executorAddress }
+            : {}),
+          // ADR-017 阶段 3（**复查补口**）：执行行的**行身份**必须与
+          // `executorAddress` 同批落库。
+          //
+          // 为什么这是必需的而不是锦上添花：阶段 3 把 `uq_executors_address`
+          // 收窄为 partial（仅 push 行），pull 模式允许**同地址多行并存**
+          // （ADR-017 §5）——此时 `executorAddress` 已不能唯一指代一行。
+          // `failRunningExecutionsAfterRestart` 的匹配维度因此改为
+          // `executorId = $1 AND status='running'`，而 register/heartbeat
+          // **恒**传 `e.id`（非 null）→ 该查询恒走行身份分支。
+          //
+          // 缺了本行的后果是**静默失效**（不是报错）：该列在全表恒为 NULL，
+          // 查询恒命中 0 行 → 执行器重启恢复变成"什么都不做"，遗留 RUNNING
+          // 只能等 stale sweep 兜底（failureReason 从 EXECUTOR_RESTART 降级为
+          // STALE_RECOVERED，槽位释放与重试兑现各延后一个 sweep 周期）。
+          // 即本 ADR 声称修好的那条通路被自己的漏写打回原形。
+          //
+          // 条件写法与 `executorAddress` 同款：dispatch 通过入参引用把两者写
+          // 到执行行（executor.service.dispatch 的
+          // `execution.executorId = matched.id`）；广播执行不设该字段
+          // （dispatchBroadcast 不挑单一目标），undefined → 不进 patch →
+          // 存量/广播行保持 NULL，回落地址匹配（与引入前逐字节一致）。
+          ...(exec.executorId !== undefined
+            ? { executorId: exec.executorId }
             : {}),
           // FEAT-22 配套观测：dispatch 阶段解析的应用包/版本留痕（仅 zip 渠道
           // 会赋值；未赋值 = 字段 undefined = 不进 patch，存量列保持 NULL）。

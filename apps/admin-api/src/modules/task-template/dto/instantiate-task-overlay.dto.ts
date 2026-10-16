@@ -12,9 +12,9 @@ import { ApiPropertyOptional } from "@nestjs/swagger";
  */
 export class InstantiateTaskOverlayDto {
   @ApiPropertyOptional({
+    example: { name: "prod-deploy", schedule: "0 2 * * *" },
     description:
       "覆盖字段（与 CreateTaskDto 同形状；显式字段胜出模板默认）。至少需 name。",
-    example: { name: "prod-deploy", schedule: "0 2 * * *" },
   })
   overlay?: Record<string, unknown>;
 }

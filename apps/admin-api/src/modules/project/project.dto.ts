@@ -14,13 +14,20 @@ import { PROJECT_ROLES, ProjectRole } from "./entities/project-member.entity";
  * （Postgres unique-violation → 409 Conflict，见 ProjectsService.create）。
  */
 export class CreateProjectDto {
-  @ApiProperty({ description: "Project name", minLength: 1, maxLength: 100 })
+  @ApiProperty({
+    minLength: 1,
+    maxLength: 100,
+    description: "项目名称",
+  })
   @IsString()
   @MinLength(1)
   @MaxLength(100)
   name: string;
 
-  @ApiPropertyOptional({ description: "Project description", maxLength: 500 })
+  @ApiPropertyOptional({
+    maxLength: 500,
+    description: "项目描述",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(500)
@@ -32,11 +39,17 @@ export class UpdateProjectDto extends PartialType(CreateProjectDto) {}
 
 /** AUTH-02：新增/修改项目成员（role 三档，@IsIn 与实体常量同源防漂移）。 */
 export class UpsertProjectMemberDto {
-  @ApiProperty({ description: "User ID", type: "integer" })
+  @ApiProperty({
+    type: "integer",
+    description: "用户 ID",
+  })
   @IsInt()
   userId: number;
 
-  @ApiProperty({ description: "Project role", enum: PROJECT_ROLES })
+  @ApiProperty({
+    enum: PROJECT_ROLES,
+    description: "项目角色",
+  })
   @IsIn(PROJECT_ROLES as unknown as string[])
   role: (typeof PROJECT_ROLES)[number];
 }

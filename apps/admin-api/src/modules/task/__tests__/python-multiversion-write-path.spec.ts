@@ -27,6 +27,10 @@ import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.s
 import { ExecutionReport } from "../../metrics/entities/execution-report.entity";
 import { resetRuntimeMetrics } from "../../metrics/runtime-metrics-entry";
 import { Application } from "../../application/entities/application.entity";
+// LANG-ERR-01 复查：分类链的回归用例必须**用错误码表渲染真实文案**，而不是手抄
+// 一份近似串——本缺陷（pinned 离线被错报 script_error）正是"文案与分类器各自
+// 漂移"的形态：改文案的人不会想到另一个文件里有条正则依赖它。
+import { renderZh } from "../../../common/errors/error-codes";
 
 // SEC-SSRF-01: create/update 的 git 源写面守卫会真的做 DNS 解析并拒绝
 // example.com（CI/沙箱内解析到受限网段）——与 task.service.spec 同款做法
@@ -270,7 +274,7 @@ describe("python_task_multiversion 写面契约", () => {
           runtime: TaskRuntime.NODE,
           runtimeVersion: "3.12",
         } as any),
-      ).rejects.toThrow(/only supported for runtime=python/);
+      ).rejects.toThrow(/仅支持 runtime=python/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -346,7 +350,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { runtimeVersion: "3.12" } as any),
-      ).rejects.toThrow(/only supported for runtime=python/);
+      ).rejects.toThrow(/仅支持 runtime=python/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -374,7 +378,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { runtime: TaskRuntime.NODE } as any),
-      ).rejects.toThrow(/only supported for runtime=python/);
+      ).rejects.toThrow(/仅支持 runtime=python/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -442,7 +446,7 @@ describe("python_task_multiversion 写面契约", () => {
           gitRepo: "https://example.com/r.git",
           glueSource: "print(1)",
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -454,7 +458,7 @@ describe("python_task_multiversion 写面契约", () => {
           applicationId: APP_ID,
           codeSource: TaskCodeSource.APPLICATION_ZIP,
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -466,7 +470,7 @@ describe("python_task_multiversion 写面契约", () => {
           applicationId: APP_ID,
           codeSource: TaskCodeSource.APPLICATION_ZIP,
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -476,7 +480,7 @@ describe("python_task_multiversion 写面契约", () => {
           name: "t",
           codeSource: TaskCodeSource.APPLICATION_ZIP,
         } as any),
-      ).rejects.toThrow(/requires applicationId/);
+      ).rejects.toThrow(/需要提供 applicationId/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -486,7 +490,7 @@ describe("python_task_multiversion 写面契约", () => {
           name: "t",
           codeSource: TaskCodeSource.GIT,
         } as any),
-      ).rejects.toThrow(/inconsistent with the task's code source fields/);
+      ).rejects.toThrow(/与任务的代码来源字段不一致/);
     });
 
     it("create 拒绝 codeSource=glue 但无 glueSource（声明漂移）", async () => {
@@ -495,7 +499,7 @@ describe("python_task_multiversion 写面契约", () => {
           name: "t",
           codeSource: TaskCodeSource.GLUE,
         } as any),
-      ).rejects.toThrow(/inconsistent with the task's code source fields/);
+      ).rejects.toThrow(/与任务的代码来源字段不一致/);
     });
 
     // AC-18b：requirements/PyPI 是**依赖型**渠道，可与任一代码来源并存——
@@ -574,7 +578,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { glueSource: "print(1)" } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -588,7 +592,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { gitRepo: "https://example.com/r.git" } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -605,7 +609,7 @@ describe("python_task_multiversion 写面契约", () => {
           codeSource: TaskCodeSource.APPLICATION_ZIP,
           applicationId: APP_ID,
         } as any),
-      ).rejects.toThrow(/exactly one of/);
+      ).rejects.toThrow(/必须且只能是/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -619,7 +623,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { gitRepo: null } as any),
-      ).rejects.toThrow(/inconsistent with the task's code source fields/);
+      ).rejects.toThrow(/与任务的代码来源字段不一致/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -696,7 +700,7 @@ describe("python_task_multiversion 写面契约", () => {
         runtime: "node",
       });
       await expect(service.create(zipDto() as any)).rejects.toThrow(
-        /inconsistent with task runtime/,
+        /与任务 runtime=/,
       );
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
@@ -724,9 +728,7 @@ describe("python_task_multiversion 写面契约", () => {
 
     it("引用的 Application 不存在 → 400（弱引用早失败）", async () => {
       appRepo.findOne.mockResolvedValue(null);
-      await expect(service.create(zipDto() as any)).rejects.toThrow(
-        /not found/,
-      );
+      await expect(service.create(zipDto() as any)).rejects.toThrow(/不存在/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -746,7 +748,7 @@ describe("python_task_multiversion 写面契约", () => {
       });
       await expect(
         service.update("1", { runtime: TaskRuntime.NODE } as any),
-      ).rejects.toThrow(/inconsistent with task runtime/);
+      ).rejects.toThrow(/与任务 runtime=/);
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
@@ -931,6 +933,82 @@ describe("python_task_multiversion 写面契约", () => {
         logs: "starting interpreter\n... 200 lines ...\nconnection failed",
       });
       expect(r.reason).not.toBe(ExecutionFailureReason.INTERPRETER_UNAVAILABLE);
+    });
+  });
+
+  // ==========================================================================
+  // LANG-ERR-01 复查：executor_offline 的**中文化回归**（e2e 用例 27 抓到的真实缺陷）
+  // ==========================================================================
+  /**
+   * 缺陷现场：`executor.service.ts` 对 pinned 且离线的执行器抛
+   * `PINNED_EXECUTOR_OFFLINE`，其 zh 模板是
+   * `指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`——
+   * 「执行器」到「离线」的间隔实测 **63 字符**（44 + appName 19），
+   * 而分类链中文支原容差仅 **20 字符** → 规则不命中 → 落到 SCRIPT_ERROR。
+   *
+   * 后果是**用户可见的归因错误**：执行详情页把"执行器离线"显示成「脚本错误」，
+   * 且 SCRIPT_ERROR 在默认重试集里，会白白消耗重试预算。
+   *
+   * 本组用例的**判据刻意取自码表**（renderZh 渲染，而非手写字符串）：这样
+   * 日后任何人改 `catalog/executor.ts` 的文案或改分类正则，两侧任一处漂移都会
+   * 立刻红——不再依赖"改文案的人记得另一个文件里有条正则"。
+   */
+  describe("inferFailureReason：executor_offline（LANG-ERR-01 中文化回归）", () => {
+    const inferVia = async (cb: Record<string, unknown>) => {
+      const exec: any = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.handleCallback([{ executionId: "e1", ...cb } as any]);
+      return { status: exec.status, reason: exec.failureReason };
+    };
+
+    it("pinned 离线：真实码表文案（含 appName + 36 位 uuid）必须归 EXECUTOR_OFFLINE", async () => {
+      // 与 executor.service.ts 抛错时传入的参数同形（executorId 是完整 uuid）。
+      const rendered = renderZh("PINNED_EXECUTOR_OFFLINE", {
+        appName: "executor-python-e2e",
+        executorId: "8a7e160b-80e5-4dff-b88a-b414908fc9c8",
+      });
+      // 前置自证：这条文案的「执行器→离线」间隔确实超过旧容差（20）——
+      // 若某天模板缩短到 20 以内，本断言会提示"此回归用例已失去意义"。
+      const gap = /执行器([^\n]*?)已离线/.exec(rendered)?.[1].length ?? -1;
+      expect(gap).toBeGreaterThan(20);
+
+      const r = await inferVia({
+        status: "failed",
+        errorMessage: rendered,
+      });
+      expect(r.reason).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+    });
+
+    it("pinned 离线：超长 appName（逼近上界）仍必须归 EXECUTOR_OFFLINE", async () => {
+      // 容差上界的边界用例：appName 56 字符 → 间隔 100，仍在 120 内。
+      const rendered = renderZh("PINNED_EXECUTOR_OFFLINE", {
+        appName: "a".repeat(56),
+        executorId: "8a7e160b-80e5-4dff-b88a-b414908fc9c8",
+      });
+      const r = await inferVia({ status: "failed", errorMessage: rendered });
+      expect(r.reason).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+    });
+
+    it("对照：同族的 PINNED_EXECUTOR_NOT_FOUND 不归 executor_offline（目标缺失≠离线）", async () => {
+      const rendered = renderZh("PINNED_EXECUTOR_NOT_FOUND", {
+        executorId: "8a7e160b-80e5-4dff-b88a-b414908fc9c8",
+      });
+      const r = await inferVia({ status: "failed", errorMessage: rendered });
+      expect(r.reason).not.toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+    });
+
+    it("跨行护栏仍在：执行器与离线分处不同日志行 → 不误判（[^\\n] 不跨行）", async () => {
+      const r = await inferVia({
+        status: "failed",
+        logs: "执行器 executor-a 已注册\n... 若干行 ...\n任务产物校验离线签名",
+      });
+      // 注：同行内「离线」+「执行器」才作数；跨行不得连起来。
+      expect(r.reason).not.toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
     });
   });
 });

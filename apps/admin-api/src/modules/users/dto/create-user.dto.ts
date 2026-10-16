@@ -21,10 +21,9 @@ export class CreateUserDto {
   email: string;
 
   @ApiProperty({
-    description:
-      "At least 8 chars, must include uppercase, lowercase, number, and special character",
     minLength: 8,
     maxLength: 128,
+    description: "至少 8 个字符，且必须包含大写字母、小写字母、数字和特殊字符",
   })
   @IsStrongPassword(
     {

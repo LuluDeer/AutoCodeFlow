@@ -14,6 +14,9 @@ import '../i18n';
 import { message } from '../utils/toast';
 import { copyText } from '../utils/clipboard';
 import { formatDateTime, formatDuration } from '../utils/timeFormat';
+// ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
+// 阶段 3 起 pull 允许同址多行并存，只显示 IP:端口 无法回答「哪台机器」。
+import { useExecutorNames } from '../hooks/useExecutorNames';
 // python_task_multiversion（FR-12 / AC-12a）：执行记录里 `result.interpreter` 的
 // 防御式读取层。**必须**走它而不是直接 `data.result.interpreter`——result 是 jsonb
 // 自由列且该留痕只有新执行器才写，历史记录可能是 null/{}/脏值，直接取属性会把
@@ -85,6 +88,8 @@ export default function ExecutionInfoCard({ taskId, data }: {
   const { t } = useTranslation();
   const triggerLabels = TRIGGER_LABEL(t);
   const failureReasonMap = FAILURE_REASON_MAP(t);
+  // ADR-017 阶段 3（决策 §7）：执行器可读名（自拉一次清单，失败静默降级为地址）。
+  const { nameOf } = useExecutorNames();
 
   const failureReason = data?.failureReason
     ? failureReasonMap[data.failureReason] || {
@@ -103,6 +108,10 @@ export default function ExecutionInfoCard({ taskId, data }: {
   // 「3.7 需离线预填」指引的可见性（判据见 interpreterNeedsOfflinePrefill）
   const interpreterOfflinePrefill = interpreterNeedsOfflinePrefill(interpreterCtx);
 
+  // ADR-017 阶段 3（决策 §7）：执行器可读名解析结果——算一次，避免重复调用
+  // （nameOf 内部是 Map 查表，但重复调用会让 JSX 可读性变差、也易漏改一处）。
+  const executorName = nameOf(data ?? {});
+
   return (
     <Card title={t('execDetail.card.info')} style={{ marginBottom: 16 }}>
       <Descriptions column={UI09_DESCRIPTIONS_COLUMN} size="small">
@@ -114,8 +123,14 @@ export default function ExecutionInfoCard({ taskId, data }: {
           {triggerLabels[data?.triggerType || ''] ?? data?.triggerType ?? '-'}
         </Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.executor')}>
-          {data?.executorAddress ? (
-            <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{data.executorAddress}</span>
+          {/* ADR-017 阶段 3（决策 §7）：主显可读名，地址为 tooltip 副信息——
+              地址仍是诊断身份（「到底哪台」），故保留；解析不到时如实只显示地址。 */}
+          {executorName ?? data?.executorAddress ? (
+            <Tooltip title={data?.executorAddress || undefined}>
+              <span style={{ fontFamily: executorName ? undefined : 'monospace', fontSize: 12 }}>
+                {executorName ?? data?.executorAddress}
+              </span>
+            </Tooltip>
           ) : '-'}
         </Descriptions.Item>
         {/* FEAT-22 配套观测：派发时刻解析的应用包版本（仅 zip 渠道；null=

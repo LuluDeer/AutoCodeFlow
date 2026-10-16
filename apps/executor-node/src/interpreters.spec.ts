@@ -214,11 +214,11 @@ describe('interpreters: version gate (NFR-03)', () => {
     ' ',
     'v3.13',
   ])('rejects %j before it can reach uv argv', (v) => {
-    expect(() => normalizeRuntimeVersion(v)).toThrow(/Invalid runtimeVersion/);
+    expect(() => normalizeRuntimeVersion(v)).toThrow(/无效的 runtimeVersion/);
   });
 
   it.each([null, undefined, 3.13, {}, []])('rejects non-string %p', (v) => {
-    expect(() => normalizeRuntimeVersion(v)).toThrow(/Invalid runtimeVersion/);
+    expect(() => normalizeRuntimeVersion(v)).toThrow(/无效的 runtimeVersion/);
   });
 });
 
@@ -653,8 +653,8 @@ describe('interpreters: ensureVersion', () => {
 
   it('rejects a malformed version BEFORE any uv invocation (NFR-03)', async () => {
     mockUv([]);
-    await expect(ensureVersion('3.7.9')).rejects.toThrow(/Invalid runtimeVersion/);
-    await expect(ensureVersion('--index-url')).rejects.toThrow(/Invalid runtimeVersion/);
+    await expect(ensureVersion('3.7.9')).rejects.toThrow(/无效的 runtimeVersion/);
+    await expect(ensureVersion('--index-url')).rejects.toThrow(/无效的 runtimeVersion/);
     expect(runCommand).not.toHaveBeenCalled();
   });
 
@@ -669,15 +669,15 @@ describe('interpreters: ensureVersion', () => {
     // 注意：模板**不得写死补丁号**（3.6/3.5 走同一分支），且**不得在三元组之后
     // 再补 `-none`**——实测那样会被 uv 静默忽略 / 判为非法请求（CONTRACT.md §0.2）。
     expect(err.detail).toMatch(/cpython-3\.7\.x-/);
-    expect(err.detail).toMatch(/cpython-<full-version>-<uv platform triple>/);
-    expect(err.detail).toMatch(/do NOT append an extra "-none"/i);
+    expect(err.detail).toMatch(/cpython-<完整版本>-<uv 平台三元组>/);
+    expect(err.detail).toMatch(/请勿在三元组之后再追加 "-none"/);
     // 给出 uv 的真实平台词汇（而非 pbs 发布名）。
     expect(err.detail).toMatch(/linux-x86_64-gnu/);
     expect(err.detail).toMatch(/windows-x86_64-none/);
     expect(err.detail).not.toMatch(/linux-[a-z0-9_]+-(gnu|musl)-none/);
     expect(err.detail).not.toMatch(/x86_64-unknown-linux-gnu/);
     expect(err.detail).not.toMatch(/x86_64-pc-windows-msvc/);
-    expect(err.detail).toMatch(/pre-provision/i);
+    expect(err.detail).toMatch(/离线预置/);
     expect(err.message).toMatch(/^interpreter 3\.7 unavailable/);
   });
 
@@ -685,7 +685,7 @@ describe('interpreters: ensureVersion', () => {
     mockUv([]);
     const err: InterpreterUnavailableError = await ensureVersion('3.15').catch((e) => e);
     expect(err.reason).toBe('not_downloadable');
-    expect(err.detail).toMatch(/outside the supported range/);
+    expect(err.detail).toMatch(/版本超出支持区间/);
   });
 
   it('downloads a missing version and returns the verified pool path', async () => {
@@ -988,7 +988,7 @@ describe('interpreters: ensureVersion', () => {
         timeoutMs: 5_000,
       }).catch((e) => e);
       expect(err.reason).toBe('download_timeout');
-      expect(err.detail).toMatch(/within 5000ms/);
+      expect(err.detail).toMatch(/下载未能在 5000ms 内完成/);
     } finally {
       Date.now = realNow;
     }

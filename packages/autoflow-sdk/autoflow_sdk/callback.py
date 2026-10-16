@@ -6,7 +6,14 @@ Since round 7/8 the executors inject three variables into task subprocesses:
   token bound to THIS execution (never the executor shared token, SEC-01);
 - ``AUTOFLOW_ADMIN_API_URL`` — Admin API base URL (non-secret routing info);
 - ``AUTOFLOW_EXECUTOR_ADDRESS`` — the address this executor registered with
-  (N27), stamped onto callback items automatically.
+  (N27), stamped onto callback items automatically;
+- ``AUTOFLOW_DEVICE_FINGERPRINT`` — the executor's stable install identity
+  ``sha256(deviceId + ':' + installSalt)`` (ADR-017 阶段 3, protocol v6),
+  stamped onto callback items automatically. This is the callback face's
+  **row identity**: a shared/legacy callback token is bound to no executor
+  row, and pull mode allows several rows to share one address, so the
+  fingerprint is what lets the admin attribute a callback to the row that
+  dispatched it.
 
 Task code uses them via ``TaskContext``::
 
@@ -135,12 +142,19 @@ class CallbackClient:
         executor_address: Optional[str] = None,
         execution_id: Optional[str] = None,
         timeout: float = 10.0,
+        device_fingerprint: Optional[str] = None,
     ) -> None:
         self.admin_api_url = (admin_api_url or "").rstrip("/")
         self.token = token or ""
         self.executor_address = executor_address or ""
         self.execution_id = execution_id or ""
         self.timeout = timeout
+        # ADR-017 阶段 3 (protocol v6): optional, exactly like
+        # executor_address — the client stays enabled without it and simply
+        # leaves the key off callback items. Note it is *appended* after the
+        # existing keyword parameters so every positional/keyword call site
+        # written against N23/N27 keeps working unchanged.
+        self.device_fingerprint = device_fingerprint or ""
 
         # U14: enabled semantics aligned with the node SDK — only url+token
         # are required. AUTOFLOW_EXECUTOR_ADDRESS is optional since N27: the
@@ -148,6 +162,10 @@ class CallbackClient:
         # executorAddress on items (the token is already execution-bound),
         # so a N23-era executor that never injects it must not disable
         # callbacks. When present, it is still auto-stamped on items (N27).
+        # AUTOFLOW_DEVICE_FINGERPRINT is optional for the same reason
+        # (ADR-017 阶段 3): the shared/legacy token path is exactly the case
+        # that *benefits* from it, so requiring it would break the callers
+        # that need it most. Absent → the key is omitted from items.
         missing = []
         if not self.admin_api_url:
             missing.append("AUTOFLOW_ADMIN_API_URL")
@@ -292,18 +310,24 @@ class CallbackClient:
         )
 
     def _with_defaults(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Fill executionId / executorAddress on items that omit them (N27).
+        """Fill executionId / executorAddress / deviceFingerprint on items
+        that omit them (N27, ADR-017 阶段 3).
 
         executorAddress is only stamped when this client knows the address —
         the admin-api `v1.` callback path treats it as optional, so an
         executor that never injected AUTOFLOW_EXECUTOR_ADDRESS must not send
-        an empty one.
+        an empty one. ``deviceFingerprint`` follows the identical rule
+        (injected as ``AUTOFLOW_DEVICE_FINGERPRINT``, protocol v6): present
+        only when known, never empty-string, and an explicit value supplied
+        by the caller always wins.
         """
         filled = dict(item)
         if not filled.get("executionId"):
             filled["executionId"] = self.execution_id
         if not filled.get("executorAddress") and self.executor_address:
             filled["executorAddress"] = self.executor_address
+        if not filled.get("deviceFingerprint") and self.device_fingerprint:
+            filled["deviceFingerprint"] = self.device_fingerprint
         return filled
 
     # ------------------------------------------------------- convenience
@@ -320,6 +344,8 @@ class CallbackClient:
         }
         if self.executor_address:
             item["executorAddress"] = self.executor_address
+        if self.device_fingerprint:
+            item["deviceFingerprint"] = self.device_fingerprint
         if summary:
             item["logs"] = summary[:LOGS_MAX_LENGTH]
         if duration_ms is not None:
@@ -352,6 +378,8 @@ class CallbackClient:
         }
         if self.executor_address:
             item["executorAddress"] = self.executor_address
+        if self.device_fingerprint:
+            item["deviceFingerprint"] = self.device_fingerprint
         if summary:
             item["logs"] = summary[:LOGS_MAX_LENGTH]
         if duration_ms is not None:

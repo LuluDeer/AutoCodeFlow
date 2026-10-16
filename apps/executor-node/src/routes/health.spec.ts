@@ -140,7 +140,7 @@ describe('health route admin API probing', () => {
       const res = await request(app).get('/health/ready');
       expect(res.status).toBe(503);
       expect(res.body.status).toBe('not_ready');
-      expect(res.body.reason).toMatch(/shutting down/);
+      expect(res.body.reason).toMatch(/执行器正在停机/);
     } finally {
       shutdownState.resetShutdownStateForTest();
     }
@@ -219,7 +219,7 @@ describe('health probes (E-20)', () => {
     expect(res.status).toBe(503);
     expect(res.body.status).toBe('not_ready');
     expect(typeof res.body.reason).toBe('string');
-    expect(res.body.reason).toContain('admin-api unreachable');
+    expect(res.body.reason).toContain('admin-api 不可达');
     // 运维要能直接从探针响应看出探的是哪个地址
     expect(res.body.reason).toContain('/api/health');
   });

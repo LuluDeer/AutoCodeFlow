@@ -244,7 +244,7 @@ class TestCapabilityGap:
         })
 
         assert result['ok'] is False
-        assert 'not implemented by the python executor' in result['error']
+        assert '未在 python 执行器上实现' in result['error']
         assert 'executorNodeOnly' in result['error']
         # 关键：**没有**发起任何本地 HTTP 请求
         assert local_client.calls == []

@@ -45,6 +45,21 @@ jest.mock('../config', () => ({
   },
 }));
 
+/**
+ * ADR-017 阶段 3（复查补口）：把指纹**钉死**（与 executor-python
+ * test_registration.py 的 monkeypatch 同款做法）。
+ *
+ * 为什么必须 mock 而不是用真实采集：真实 `getDeviceFingerprint()` 依赖
+ * workDir 下的盐文件与机器身份探测，单测环境两者都取不到 → 恒返回 null →
+ * 「指纹随载荷上报」这条断言会因**环境**而非**代码**变红/空转。钉死采集结果
+ * 后，断言只度量本文件真正负责的事：**载荷字段是否转发**。
+ * 另有独立用例（device-identity.spec.ts）度量采集算法本身。
+ */
+jest.mock('../device-identity', () => ({
+  getDeviceFingerprint: () => 'a'.repeat(64),
+  DEVICE_IDENTITY_DIR_NAME: '.device-identity',
+}));
+
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 function makeRes() {
@@ -137,6 +152,31 @@ describe('auth token fetch', () => {
         address: 'localhost:3002',
         appName: 'test-executor',
         startupId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      }),
+      expect.anything(),
+    );
+  });
+
+  // ADR-017 阶段 3（复查补口）：指纹必须随 /executors/token 上报——它是中台的
+  // **行定位键**。缺了它，issueToken → register 会回落 `findOne({address})`，
+  // 而 pull 同址多行（ADR-017 §5）时那会任取一行 → 轮换**别人的** token
+  // （那台随即 401，其执行卡在 RUNNING 直到 stale sweep）。
+  // 反证：删掉 fetchToken 载荷里的 deviceFingerprint → 本用例转红。
+  it('ADR-017: reports deviceFingerprint on the token fetch so admin can pin the row', async () => {
+    const { post, getCurrentToken } = await freshAuth();
+    post.mockResolvedValue({
+      status: 201,
+      data: { code: 201, message: 'success', data: { token: 't' } },
+    });
+
+    await getCurrentToken();
+
+    expect(post).toHaveBeenCalledWith(
+      'http://admin-public:3105/api/executors/token',
+      expect.objectContaining({
+        // 指纹由上面的 jest.mock('../device-identity') 钉死为 64×'a'；
+        // 真实环境由 getDeviceFingerprint() 产出同形态值。
+        deviceFingerprint: 'a'.repeat(64),
       }),
       expect.anything(),
     );
@@ -439,7 +479,7 @@ describe('verifyToken — Bearer authentication (migrated)', () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ error: expect.stringMatching(/Invalid or missing executor token/) }),
+      expect.objectContaining({ error: expect.stringMatching(/执行器令牌无效或缺失/) }),
     );
   });
 

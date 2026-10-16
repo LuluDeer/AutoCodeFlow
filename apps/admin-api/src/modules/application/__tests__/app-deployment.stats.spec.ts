@@ -26,7 +26,11 @@
  *      （否则 "stats" 进 ParseUUIDPipe → 400），且读面 RBAC 与 findAll 同姿态。
  */
 import "reflect-metadata";
-import { INestApplication, UnauthorizedException, ExecutionContext } from "@nestjs/common";
+import {
+  INestApplication,
+  UnauthorizedException,
+  ExecutionContext,
+} from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { ConfigService } from "@nestjs/config";
 import { Test } from "@nestjs/testing";
@@ -126,7 +130,13 @@ describe("AppDeploymentService.findStats — 聚合口径", () => {
         lastDeployedAt: new Date("2026-10-13T06:26:51.000Z"),
       },
       // 该应用有部署行但 deployedAt/createdAt 皆缺（防御性：契约里是 nullable）
-      { applicationId: "app-2", total: "2", running: "0", failed: "0", lastDeployedAt: null },
+      {
+        applicationId: "app-2",
+        total: "2",
+        running: "0",
+        failed: "0",
+        lastDeployedAt: null,
+      },
     ]);
 
     const rows = await svc.findStats();
@@ -212,7 +222,10 @@ describe("AppDeploymentController GET /app-deployments/stats — routing & RBAC"
       controllers: [AppDeploymentController],
       providers: [
         { provide: AppDeploymentService, useValue: makeSvc() },
-        { provide: ExecutorService, useValue: { validateExecutorToken: jest.fn() } },
+        {
+          provide: ExecutorService,
+          useValue: { validateExecutorToken: jest.fn() },
+        },
         { provide: APP_GUARD, useValue: jwtGuard },
         { provide: APP_GUARD, useClass: RolesGuard },
       ],
@@ -268,7 +281,10 @@ describe("AppDeploymentController GET /app-deployments/stats — routing & RBAC"
 
   it("无 @Roles 元数据（读面，与 findAll 一致）", () => {
     expect(
-      Reflect.getMetadata(ROLES_KEY, AppDeploymentController.prototype.findStats),
+      Reflect.getMetadata(
+        ROLES_KEY,
+        AppDeploymentController.prototype.findStats,
+      ),
     ).toBeUndefined();
   });
 });

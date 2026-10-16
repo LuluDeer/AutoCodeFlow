@@ -481,7 +481,7 @@ def test_real_zip_slip_package_is_rejected_end_to_end(monkeypatch, tmp_path):
         asyncio.run(execute_module.run_task(req))
 
     assert 'zip_slip' in str(exc.value), f'违规名必须点名 zip_slip，实际 {exc.value}'
-    assert 'zip package rejected by safety check' in str(exc.value)
+    assert 'zip 包未通过安全检查' in str(exc.value)
     # vet_zip 在任何字节写出之前拒绝：不得解压出任何脚本，临时包文件必须被清理。
     # （run_task 预备阶段会创建空的 artifacts/ 目录——那是任务台面，不是解压产物，
     # 不参与"零残留"判定。）
@@ -609,7 +609,7 @@ def test_package_url_ssrf_guard_rejects_restricted_addresses(url, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         execute_module._assert_safe_package_url(url)
     assert exc.value.status_code == 400
-    assert 'restricted' in exc.value.detail
+    assert '受限网络地址' in exc.value.detail
 
 
 @pytest.mark.parametrize('url', [
@@ -656,7 +656,7 @@ def test_dns_name_resolving_to_a_private_address_is_rejected(monkeypatch):
     )
     with pytest.raises(HTTPException) as exc:
         execute_module._assert_safe_package_url('http://internal.corp/app.zip')
-    assert 'restricted' in exc.value.detail
+    assert '受限网络地址' in exc.value.detail
 
 
 def test_unresolvable_host_fails_closed(monkeypatch):
@@ -696,7 +696,7 @@ def test_oversize_download_is_aborted_and_leaves_no_partial_file(monkeypatch, tm
     )
     dest = tmp_path / 'pkg.zip'
 
-    with pytest.raises(RuntimeError, match='exceeds'):
+    with pytest.raises(RuntimeError, match='包体积超过'):
         asyncio.run(execute_module._download_package('https://cdn.example.com/app.zip', dest))
 
     assert not dest.exists(), 'a partial download must not survive'
@@ -709,7 +709,7 @@ def test_non_200_download_fails_without_echoing_the_url(monkeypatch, tmp_path):
         lambda *a, **k: _FakeAsyncClient(chunks=[], status_code=404),
     )
     dest = tmp_path / 'pkg.zip'
-    with pytest.raises(RuntimeError, match='HTTP 404'):
+    with pytest.raises(RuntimeError, match='HTTP 状态码 404'):
         asyncio.run(execute_module._download_package('https://cdn.example.com/app.zip', dest))
     assert not dest.exists()
 

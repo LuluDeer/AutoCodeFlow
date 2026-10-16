@@ -1,4 +1,3 @@
-import { BadRequestException } from "@nestjs/common";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 // tsconfig 未开 esModuleInterop（仅 allowSyntheticDefaultImports）——默认导入在
@@ -8,6 +7,11 @@ import * as https from "node:https";
 // ARCH-27: 本文件是无 DI 的纯工具函数，无法注入 ConfigService —— env 读取
 // 统一经 src/config/env.ts 收口（全仓唯一直读通道）。
 import { getEnvVar } from "../../config/env";
+// LANG-ERR-01: SSRF 拒绝文案改为稳定错误码（文案由前端按用户语言渲染）。
+// ⚠️ 本文件是出站请求的唯一咽喉，zh 文案与迁移前逐字一致——两处 spec 按文本
+// 断言（/拒绝名单/、/已拒绝克隆/ 等），改措辞即改契约。
+import { AppError } from "../errors/app-error";
+import { ErrorCode } from "../errors/error-codes";
 
 /**
  * F-3 (SEC-NEW): the result of validating + DNS-pinning an outbound URL.
@@ -57,20 +61,20 @@ export async function assertAndPinHttpUrl(
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new BadRequestException(`Invalid URL: ${rawUrl}`);
+    throw new AppError(ErrorCode.SSRF_URL_INVALID, { url: rawUrl });
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new BadRequestException(
-      `URL must use http(s); got '${url.protocol}'`,
-    );
+    throw new AppError(ErrorCode.SSRF_PROTOCOL_NOT_HTTP, {
+      protocol: url.protocol,
+    });
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (!host) throw new BadRequestException("URL missing hostname");
+  if (!host) throw new AppError(ErrorCode.SSRF_HOST_MISSING);
   if (url.username || url.password) {
     // B-2: credentials in the URL would leak through logs/error reports.
-    throw new BadRequestException(
-      `URL must not embed credentials: ${stripUserinfo(rawUrl)}`,
-    );
+    throw new AppError(ErrorCode.SSRF_CREDENTIALS_IN_URL, {
+      url: stripUserinfo(rawUrl),
+    });
   }
 
   const isExecutor = opts.policy === "executor";
@@ -104,16 +108,14 @@ export async function assertAndPinHttpUrl(
     const v4 = addrs.find((a) => isIP(a) === 4);
     const addr = v4 ?? addrs[0];
     if (!addr) {
-      throw new BadRequestException(`URL host ${host} did not resolve`);
+      throw new AppError(ErrorCode.SSRF_HOST_UNRESOLVABLE, { host });
     }
     return addr;
   };
 
   if (isIP(host)) {
     if (!allowedRisk(classifyAddressRisk(host))) {
-      throw new BadRequestException(
-        `URL host ${host} is on the deny list (private/loopback/link-local/benchmark/CGNAT) — outbound request refused`,
-      );
+      throw new AppError(ErrorCode.SSRF_HOST_DENIED_PINNED, { host });
     }
     return { url, pinnedIp: host, pinned: false };
   }
@@ -122,20 +124,22 @@ export async function assertAndPinHttpUrl(
   try {
     addrs = await lookup(host, { all: true });
   } catch (err) {
-    throw new BadRequestException(
-      `Failed to resolve URL host ${host}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new AppError(ErrorCode.SSRF_HOST_DNS_LOOKUP_FAILED, {
+      host,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
   if (addrs.length === 0) {
-    throw new BadRequestException(`URL host ${host} did not resolve`);
+    throw new AppError(ErrorCode.SSRF_HOST_UNRESOLVABLE, { host });
   }
   const allowed: string[] = [];
   for (const a of addrs) {
     const risk = classifyAddressRisk(a.address);
     if (!allowedRisk(risk)) {
-      throw new BadRequestException(
-        `URL host ${host} resolves to a blocked address (${a.address}) — outbound request refused`,
-      );
+      throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS_PINNED, {
+        host,
+        address: a.address,
+      });
     }
     allowed.push(a.address);
   }
@@ -356,12 +360,12 @@ export async function assertSafeHttpUrl(
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new BadRequestException(`Invalid URL: ${rawUrl}`);
+    throw new AppError(ErrorCode.SSRF_URL_INVALID, { url: rawUrl });
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new BadRequestException(
-      `URL must use http(s); got '${url.protocol}'`,
-    );
+    throw new AppError(ErrorCode.SSRF_PROTOCOL_NOT_HTTP, {
+      protocol: url.protocol,
+    });
   }
   // SEC-04: strip the WHATWG IPv6 brackets (url.hostname keeps "[::1]") so
   // IPv6 literals reach the unified classifier exactly like the executor/git
@@ -369,7 +373,7 @@ export async function assertSafeHttpUrl(
   // and were only refused incidentally — and platform-dependently
   // (Linux getaddrinfo rejects "[::1]", Windows accepts it).
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (!host) throw new BadRequestException("URL missing hostname");
+  if (!host) throw new AppError(ErrorCode.SSRF_HOST_MISSING);
 
   const allowPrivateNetwork = opts?.allowPrivateNetwork === true;
 
@@ -384,9 +388,7 @@ export async function assertSafeHttpUrl(
   // If the host is an IP literal we can decide synchronously.
   if (isIP(host)) {
     if (!allowedRisk(classifyAddressRisk(host))) {
-      throw new BadRequestException(
-        `URL host ${host} is on the deny list (private/loopback/link-local/benchmark/CGNAT)`,
-      );
+      throw new AppError(ErrorCode.SSRF_HOST_DENIED, { host });
     }
     return url;
   }
@@ -395,18 +397,20 @@ export async function assertSafeHttpUrl(
   try {
     addrs = await lookup(host, { all: true });
   } catch (err) {
-    throw new BadRequestException(
-      `Failed to resolve URL host ${host}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new AppError(ErrorCode.SSRF_HOST_DNS_LOOKUP_FAILED, {
+      host,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
   if (addrs.length === 0) {
-    throw new BadRequestException(`URL host ${host} did not resolve`);
+    throw new AppError(ErrorCode.SSRF_HOST_UNRESOLVABLE, { host });
   }
   for (const a of addrs) {
     if (!allowedRisk(classifyAddressRisk(a.address))) {
-      throw new BadRequestException(
-        `URL host ${host} resolves to a blocked address (${a.address})`,
-      );
+      throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS, {
+        host,
+        address: a.address,
+      });
     }
   }
   return url;
@@ -686,7 +690,7 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
     try {
       url = new URL(rawRepo);
     } catch {
-      throw new BadRequestException(`Invalid git repository URL: ${rawRepo}`);
+      throw new AppError(ErrorCode.GIT_REPO_URL_INVALID, { url: rawRepo });
     }
     // B-2 (SEC-NEW): http(s) repo URLs must never embed credentials. On a
     // failed clone git echoes the full remote URL to stderr, which lands in
@@ -694,10 +698,9 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
     // credential helper / ~/.netrc, never in the URL (mirror of the
     // executor-side gitRepo guard in executor-python execute.py).
     if (url.username || url.password) {
-      throw new BadRequestException(
-        `Git repository URL must not contain embedded credentials — ` +
-          `use GIT_ASKPASS / a credential helper instead: ${stripUserinfo(rawRepo)}`,
-      );
+      throw new AppError(ErrorCode.GIT_REPO_URL_CREDENTIALS, {
+        url: stripUserinfo(rawRepo),
+      });
     }
     host = url.hostname;
   } else if (/^ssh:\/\//i.test(rawRepo)) {
@@ -705,30 +708,27 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
     try {
       url = new URL(rawRepo);
     } catch {
-      throw new BadRequestException(`Invalid git repository URL: ${rawRepo}`);
+      throw new AppError(ErrorCode.GIT_REPO_URL_INVALID, { url: rawRepo });
     }
     // B-2: a bare user (`ssh://git@host/...`) is the documented SSH shape;
     // a password (`ssh://user:pass@host/...`) is always a leaked credential.
     // The scp-like `git@host:path` form cannot carry a password by construction.
     if (url.password) {
-      throw new BadRequestException(
-        `Git repository URL must not contain an embedded password — ` +
-          `use an SSH key / GIT_ASKPASS instead: ${stripUserinfo(rawRepo)}`,
-      );
+      throw new AppError(ErrorCode.GIT_REPO_URL_PASSWORD, {
+        url: stripUserinfo(rawRepo),
+      });
     }
     host = url.hostname;
   } else if (scpMatch) {
     host = scpMatch[1];
   } else {
-    throw new BadRequestException(
-      `Unsupported git repository URL shape: ${rawRepo}`,
-    );
+    throw new AppError(ErrorCode.GIT_REPO_URL_FORM_UNSUPPORTED, {
+      url: rawRepo,
+    });
   }
   host = host.replace(/^\[|\]$/g, "");
   if (!host) {
-    throw new BadRequestException(
-      `Git repository URL missing host: ${rawRepo}`,
-    );
+    throw new AppError(ErrorCode.GIT_REPO_HOST_MISSING, { url: rawRepo });
   }
 
   const check = (addr: string) => {
@@ -741,9 +741,11 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
     const segment = addressRiskSegmentId(addr);
     const isUla = segment === "ipv6-unique-local";
     if ((risk === "public" || risk === "private-lan") && !isUla) return;
-    throw new BadRequestException(
-      `Git repository host ${host} resolves to ${addr} (${risk}) — clone refused (SSRF guard)`,
-    );
+    throw new AppError(ErrorCode.GIT_REPO_HOST_BLOCKED, {
+      host,
+      address: addr,
+      risk,
+    });
   };
 
   if (isIP(host)) {
@@ -754,14 +756,13 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
   try {
     addrs = await lookup(host, { all: true });
   } catch (err) {
-    throw new BadRequestException(
-      `Failed to resolve git repository host ${host}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new AppError(ErrorCode.GIT_REPO_HOST_DNS_LOOKUP_FAILED, {
+      host,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
   if (addrs.length === 0) {
-    throw new BadRequestException(
-      `Git repository host ${host} did not resolve — clone refused`,
-    );
+    throw new AppError(ErrorCode.GIT_REPO_HOST_UNRESOLVABLE, { host });
   }
   for (const a of addrs) {
     check(a.address);
@@ -798,18 +799,18 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new BadRequestException(`Invalid executor URL: ${rawUrl}`);
+    throw new AppError(ErrorCode.EXECUTOR_URL_INVALID, { url: rawUrl });
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new BadRequestException(
-      `Executor URL must use http(s); got '${url.protocol}'`,
-    );
+    throw new AppError(ErrorCode.EXECUTOR_URL_PROTOCOL_NOT_HTTP, {
+      protocol: url.protocol,
+    });
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (!host) throw new BadRequestException("Executor URL missing hostname");
+  if (!host) throw new AppError(ErrorCode.EXECUTOR_URL_HOST_MISSING);
   // Credentials in the URL would end up in logs/error reports — reject them.
   if (url.username || url.password) {
-    throw new BadRequestException("Executor URL must not embed credentials");
+    throw new AppError(ErrorCode.EXECUTOR_URL_CREDENTIALS);
   }
 
   // ARCH-27/W-22 豁免说明: EXECUTOR_ALLOW_PRIVATE_NETWORK 已在
@@ -829,9 +830,11 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
     // refused by default, reachable only under EXECUTOR_ALLOW_PRIVATE_NETWORK.
     if ((risk === "loopback" || risk === "restricted") && allowPrivateNetwork)
       return;
-    throw new BadRequestException(
-      `Executor address ${host} resolves to ${addr} (${risk}) — outbound request refused`,
-    );
+    throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, {
+      host,
+      address: addr,
+      risk,
+    });
   };
 
   if (isIP(host)) {
@@ -842,12 +845,13 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
   try {
     addrs = await lookup(host, { all: true });
   } catch (err) {
-    throw new BadRequestException(
-      `Failed to resolve executor host ${host}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new AppError(ErrorCode.EXECUTOR_HOST_DNS_LOOKUP_FAILED, {
+      host,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
   if (addrs.length === 0) {
-    throw new BadRequestException(`Executor host ${host} did not resolve`);
+    throw new AppError(ErrorCode.EXECUTOR_HOST_UNRESOLVABLE, { host });
   }
   for (const a of addrs) {
     check(a.address);

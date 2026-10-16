@@ -8,6 +8,9 @@ import type { AxiosResponse } from 'axios';
 import { config } from '../config';
 import { buildAdminApiUrl } from '../admin-api-url';
 import { executorStartupId } from '../startup-identity';
+// ADR-017 阶段 3（复查补口）：指纹是 /executors/token 的**行定位键**，
+// 必须随载荷上报（缺省 = 服务端按 address 回落，同址多行时会取错行）。
+import { getDeviceFingerprint } from '../device-identity';
 import { unwrapAdminResponseData, adoptExecutorTokenHash } from '../admin-envelope';
 import {
   sharedAxios,
@@ -57,7 +60,7 @@ async function fetchTokenWithRetry(
     }
   }
   // 循环要么 return、要么 throw；此行为类型完备性兜底。
-  throw lastError ?? new Error('token fetch failed');
+  throw lastError ?? new Error('令牌获取失败');
 }
 
 // 5-2（audit-r4）：static token 改为**每次调用读取**——与 python 侧
@@ -188,6 +191,14 @@ async function fetchToken(): Promise<string | null> {
         // this endpoint idempotent — a same-startupId re-fetch returns the
         // CURRENT token instead of rotating (N4 register semantics).
         startupId: executorStartupId,
+        // ADR-017 phase 3 (review back-fill): the stable device fingerprint is
+        // the ROW LOOKUP KEY. Without it admin-api's issueToken() falls back to
+        // `findOne({where:{address}})`, which returns an arbitrary row when two
+        // pull-mode executors share an address (ADR-017 §5) — the token would
+        // then be rotated on SOMEONE ELSE'S row (that peer 401s, its execution
+        // sticks in RUNNING until the stale sweep). Omitted when collection
+        // failed (null) → admin's legacy address path, unchanged behavior.
+        deviceFingerprint: getDeviceFingerprint() ?? undefined,
       },
       headers,
     );
@@ -320,7 +331,7 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
   const authHeader = req.headers.authorization || '';
   const parts = authHeader.split(' ');
   if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
-    res.status(401).json({ error: 'Invalid or missing executor token' });
+    res.status(401).json({ error: '执行器令牌无效或缺失' });
     return;
   }
 
@@ -332,7 +343,7 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
     return tokenBuf.length === validBuf.length && timingSafeEqual(tokenBuf, validBuf);
   });
   if (!matched) {
-    res.status(401).json({ error: 'Invalid or missing executor token' });
+    res.status(401).json({ error: '执行器令牌无效或缺失' });
     return;
   }
 

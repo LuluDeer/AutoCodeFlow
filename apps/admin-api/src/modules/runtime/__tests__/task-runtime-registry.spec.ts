@@ -84,7 +84,7 @@ describe("ARCH-25 TaskRuntimeRegistry", () => {
         ...BUILTIN_RUNTIME_DEFINITIONS[0],
         label: "被篡改的 Python",
       }),
-    ).toThrow(/already registered/);
+    ).toThrow(/已注册/);
     expect(registry.get(TaskRuntime.PYTHON)?.label).toBe("Python");
   });
 

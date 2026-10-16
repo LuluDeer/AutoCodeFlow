@@ -173,7 +173,7 @@ class InterpreterUnavailable(RuntimeError):
         self.version = version
         self.reason = reason
         self.detail = detail
-        super().__init__(f'Python {version} unavailable ({reason}): {detail}')
+        super().__init__(f'Python {version} 不可用（{reason}）：{detail}')
 
 
 @dataclass(frozen=True)
@@ -300,7 +300,7 @@ def validate_version(version: str) -> str:
     """
     if not isinstance(version, str) or not RUNTIME_VERSION_PATTERN.fullmatch(version):
         raise ValueError(
-            f'invalid Python version {version!r}: expected "X.Y" (major.minor)'
+            f'无效的 Python 版本 {version!r}：应为 "X.Y"（主版本.次版本）'
         )
     return version
 
@@ -363,11 +363,11 @@ def _raise_if_not_downloadable(version: str) -> None:
         raise InterpreterUnavailable(
             version,
             'not_downloadable',
-            f'version {version} is outside the supported range '
+            f'版本 {version} 超出支持区间 '
             f'{settings.python_runtime_version_min}~'
             f'{settings.python_runtime_version_max} '
-            '(uv has no such Python release to download); check the task\'s '
-            'runtimeVersion, or ask the operator to adjust '
+            '(uv 没有对应的 Python 发行版可下载)；请检查任务的 '
+            'runtimeVersion，或让运维调整 '
             'PYTHON_RUNTIME_VERSION_MIN/MAX',
         )
     if not is_online_downloadable(version):
@@ -1108,8 +1108,8 @@ def _verify_installed(version: str) -> Path:
     if resolved is None:
         raise InterpreterUnavailable(
             version, 'corrupt',
-            f'`uv python install {version}` reported success but no executable '
-            f'interpreter was found inside the pool {pool_root()}',
+            f'`uv python install {version}` 报告成功，但池 {pool_root()} 内未找到'
+            f'可执行的解释器',
         )
     try:
         code, out = _run_uv_sync(
@@ -1118,25 +1118,24 @@ def _verify_installed(version: str) -> Path:
     except subprocess.TimeoutExpired as exc:
         raise InterpreterUnavailable(
             version, 'corrupt',
-            f'interpreter {resolved} did not answer `--version` within '
-            f'{_VERIFY_TIMEOUT_SECONDS}s',
+            f'解释器 {resolved} 未能在 {_VERIFY_TIMEOUT_SECONDS}s 内响应 `--version`',
         ) from exc
     except Exception as exc:  # noqa: BLE001 - 产物不可执行一律视为损坏
         raise InterpreterUnavailable(
-            version, 'corrupt', f'interpreter {resolved} is not runnable: {exc}',
+            version, 'corrupt', f'解释器 {resolved} 无法运行：{exc}',
         ) from exc
     if code != 0:
         raise InterpreterUnavailable(
             version, 'corrupt',
-            f'interpreter {resolved} exited {code} for `--version`: {_tail(out)}',
+            f'解释器 {resolved} 执行 `--version` 时以退出码 {code} 结束：{_tail(out)}',
         )
     match = _VERSION_TOKEN_RE.search(out or '')
     reported = match.group(1) if match else ''
     if not _matches_prefix(reported, version):
         raise InterpreterUnavailable(
             version, 'corrupt',
-            f'interpreter {resolved} reports Python {reported or "?"} '
-            f'(expected {version}.x): {_tail(out)}',
+            f'解释器 {resolved} 报告的 Python 版本为 {reported or "?"} '
+            f'（期望 {version}.x）：{_tail(out)}',
         )
     # F-2: SHA-256 pin 校验（constant-time 比对，不匹配 → corrupt，绝不运行）。
     pin = (settings.uv_python_sha256_pins or {}).get(version)
@@ -1146,9 +1145,9 @@ def _verify_installed(version: str) -> Path:
         if not _constant_time_eq(actual, expected):
             raise InterpreterUnavailable(
                 version, 'corrupt',
-                f'interpreter {resolved} SHA-256 {actual} does not match the '
-                f'configured pin for Python {version} — refusing to run a '
-                f'possibly tampered interpreter (uv_python_sha256_pins)',
+                f'解释器 {resolved} 的 SHA-256 {actual} 与为 Python {version} '
+                f'配置的 pin 不匹配——拒绝运行可能已被篡改的解释器 '
+                f'(uv_python_sha256_pins)',
             )
     else:
         _mark_integrity_unverified(version)
@@ -1177,7 +1176,7 @@ def record_sha256_pin(version: str) -> str:
     if resolved is None:
         raise InterpreterUnavailable(
             version, 'corrupt',
-            f'cannot pin Python {version}: no executable interpreter in pool {pool_root()}',
+            f'无法为 Python {version} 生成 pin：池 {pool_root()} 内没有可执行的解释器',
         )
     digest = _sha256_of(resolved)
     logger.info(
@@ -1207,8 +1206,8 @@ def _classify_install_failure(version: str, code: int, output: str) -> Interpret
     ):
         return InterpreterUnavailable(
             version, 'mirror_unreachable',
-            f'`uv python install {version}` could not reach the configured mirror '
-            f'{mirror} (exit {code}): {tail}',
+            f'`uv python install {version}` 无法连上配置的镜像 '
+            f'{mirror}（退出码 {code}）：{tail}',
         )
     if code == _UV_NOT_FOUND_EXIT_CODE and (
         'no download found' in lowered or 'no interpreter found' in lowered
@@ -1217,12 +1216,12 @@ def _classify_install_failure(version: str, code: int, output: str) -> Interpret
         # download_failed，detail 里点明排查方向）。
         return InterpreterUnavailable(
             version, 'download_failed',
-            f'`uv python install {version}` found no downloadable build (exit {code}); '
-            f'check the configured mirror / download index: {tail}',
+            f'`uv python install {version}` 找不到可下载的构建（退出码 {code}）；'
+            f'请检查配置的镜像 / 下载索引：{tail}',
         )
     return InterpreterUnavailable(
         version, 'download_failed',
-        f'`uv python install {version}` exited {code}: {tail}',
+        f'`uv python install {version}` 以退出码 {code} 结束：{tail}',
     )
 
 

@@ -14,8 +14,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * User login
-         * @description Login with username and password, returns Access Token and Refresh Token. Max 20 attempts per minute.
+         * 用户登录
+         * @description 使用用户名和密码登录，返回 Access Token 与 Refresh Token。每分钟最多 20 次尝试。
          */
         post: operations["AuthController_login"];
         delete?: never;
@@ -34,8 +34,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Refresh token
-         * @description Use Refresh Token to obtain new Access Token and Refresh Token (token rotation). Old Refresh Token is immediately invalidated.
+         * 刷新令牌
+         * @description 使用 Refresh Token 换取新的 Access Token 与 Refresh Token（token rotation）。旧 Refresh Token 立即失效。
          */
         post: operations["AuthController_refreshToken"];
         delete?: never;
@@ -54,8 +54,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Logout (revoke all Refresh Tokens)
-         * @description Logout current user and revoke all valid Refresh Tokens to prevent token reuse.
+         * 登出（撤销全部 Refresh Token）
+         * @description 登出当前用户并撤销其所有有效的 Refresh Token，防止令牌被重复使用。
          */
         post: operations["AuthController_logout"];
         delete?: never;
@@ -74,8 +74,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Issue a short-lived SSE ticket
-         * @description Exchange the current session for a 30-second, path-restricted ticket used as ?ticket= on the SSE stream routes (EventSource cannot set headers).
+         * 签发短效 SSE 票据
+         * @description 用当前会话换取一枚 30 秒有效、限定路径的票据，作为 SSE 流式路由上的 ?ticket= 使用（EventSource 无法设置请求头）。
          */
         post: operations["AuthController_issueSseTicket"];
         delete?: never;
@@ -92,8 +92,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get current user info
-         * @description Return basic info of the current logged-in user including ID, username, and roles.
+         * 获取当前用户信息
+         * @description 返回当前登录用户的基本信息，包括 ID、用户名与角色。
          */
         get: operations["AuthController_getProfile"];
         put?: never;
@@ -114,8 +114,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Stage a TOTP secret (2FA opt-in, step 1)
-         * @description Generates a Base32 secret and otpauth:// URL, stores it in staged (disabled) state. Call POST /auth/totp/enable with a valid code from the authenticator to activate.
+         * 预登记 TOTP 密钥（可选启用 2FA，第 1 步）
+         * @description 生成 Base32 密钥与 otpauth:// URL，并以预登记（未启用）状态保存。用认证器中的有效验证码调用 POST /auth/totp/enable 即可启用。
          */
         post: operations["AuthController_totpSetup"];
         delete?: never;
@@ -134,8 +134,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Enable TOTP (2FA opt-in, step 2)
-         * @description Verifies one valid code against the staged secret, then sets totpEnabled=true.
+         * 启用 TOTP（可选启用 2FA，第 2 步）
+         * @description 用预登记的密钥校验一个有效验证码，然后置 totpEnabled=true。
          */
         post: operations["AuthController_totpEnable"];
         delete?: never;
@@ -154,8 +154,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Disable TOTP
-         * @description Requires the account password or a valid TOTP code as confirmation.
+         * 停用 TOTP
+         * @description 需要账户密码或有效的 TOTP 验证码作为确认。
          */
         post: operations["AuthController_totpDisable"];
         delete?: never;
@@ -174,8 +174,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Complete TOTP login (second factor)
-         * @description Re-validates username+password, verifies the 6-digit TOTP code, and issues accessToken/refreshToken. Called after /auth/login returned { totpRequired: true }.
+         * 完成 TOTP 登录（第二因子）
+         * @description 重新校验用户名+密码，验证 6 位 TOTP 验证码，并签发 accessToken/refreshToken。在 /auth/login 返回 { totpRequired: true } 之后调用。
          */
         post: operations["AuthController_totpVerifyLogin"];
         delete?: never;
@@ -192,8 +192,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List my active login sessions
-         * @description One row per active (non-revoked, non-expired) refresh token. The row matching the sid claim of the caller's access token is flagged current=true.
+         * 列出我的活跃登录会话
+         * @description 每个活跃（未撤销、未过期）的 refresh token 一行。与调用者 access token 的 sid 声明匹配的那一行会标记 current=true。
          */
         get: operations["AuthController_listSessions"];
         put?: never;
@@ -215,8 +215,8 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Revoke one of my sessions
-         * @description Marks the given refresh token row revoked (DR-04 semantics — the refresh JWT becomes unusable immediately). Ownership is enforced; foreign ids get 401.
+         * 撤销我的一个会话
+         * @description 将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。
          */
         delete: operations["AuthController_revokeSession"];
         options?: never;
@@ -234,8 +234,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Revoke all my sessions except the current one
-         * @description Bulk remote-logout of other devices. Without a sid claim this degenerates to revoking ALL sessions (fail-safe, never keeps unknown sessions).
+         * 撤销除当前会话外我的全部会话
+         * @description 对其他设备做批量远程登出。若 access token 没有 sid 声明，则退化为撤销全部会话（故障安全策略：绝不保留未知会话）。
          */
         post: operations["AuthController_revokeOtherSessions"];
         delete?: never;
@@ -299,10 +299,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get user list */
+        /** 获取用户列表 */
         get: operations["UsersController_findAll"];
         put?: never;
-        /** Create user */
+        /** 创建用户 */
         post: operations["UsersController_create"];
         delete?: never;
         options?: never;
@@ -317,15 +317,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get user details */
+        /** 获取用户详情 */
         get: operations["UsersController_findOne"];
         put?: never;
         post?: never;
-        /** Delete user */
+        /** 删除用户 */
         delete: operations["UsersController_remove"];
         options?: never;
         head?: never;
-        /** Update user */
+        /** 更新用户 */
         patch: operations["UsersController_update"];
         trace?: never;
     };
@@ -337,14 +337,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List tasks
-         * @description Get task list with pagination and search support. Filter by status.
+         * 列出任务
+         * @description 获取任务列表，支持分页与搜索。可按状态过滤。
          */
         get: operations["TaskController_findAll"];
         put?: never;
         /**
-         * Create task
-         * @description Create a new automation task. Supports cron, webhook, and event trigger modes. Tasks start in paused state.
+         * 创建任务
+         * @description 创建新的自动化任务。支持 cron、webhook 与事件三种触发方式。任务创建后处于暂停状态。
          */
         post: operations["TaskController_create"];
         delete?: never;
@@ -363,8 +363,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Import a task definition (JSON export payload)
-         * @description E-1: create a task from a GET /tasks/:id/export payload. Validation is the full POST /tasks create chain. Name conflicts are NEVER overwritten: ' (imported)' is appended, then ' (imported) 2', ' (imported) 3', ... until an available name is found. Secrets are never part of the transfer (SEC-02 red line): a carried secrets key is ignored and the imported task starts WITHOUT secrets — warnings always includes the reconfigure hint. The new task starts paused.
+         * 导入任务定义（JSON 导出载荷）
+         * @description E-1：用 GET /tasks/:id/export 的载荷创建任务。校验走完整的 POST /tasks 创建链路。名称冲突绝不覆盖：追加 ' (imported)'，再依次尝试 ' (imported) 2'、' (imported) 3'……直到找到可用名称。密钥绝不参与传输（SEC-02 红线）：载荷中携带的 secrets 键会被忽略，导入的任务在无密钥状态下启动——warnings 中始终包含重新配置的提示。新任务初始为暂停状态。
          */
         post: operations["TaskController_importDefinition"];
         delete?: never;
@@ -383,8 +383,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch trigger tasks
-         * @description Trigger multiple tasks. Partial failures do not affect other tasks.
+         * 批量触发任务
+         * @description 触发多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskController_batchTrigger"];
         delete?: never;
@@ -403,8 +403,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch pause tasks
-         * @description Pause multiple tasks. Partial failures do not affect other tasks.
+         * 批量暂停任务
+         * @description 暂停多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskController_batchPause"];
         delete?: never;
@@ -423,8 +423,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch resume tasks
-         * @description Resume multiple tasks. Partial failures do not affect other tasks.
+         * 批量恢复任务
+         * @description 恢复多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskController_batchResume"];
         delete?: never;
@@ -443,8 +443,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch delete tasks
-         * @description Delete multiple tasks. Partial failures do not affect other tasks.
+         * 批量删除任务
+         * @description 删除多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskController_batchDelete"];
         delete?: never;
@@ -460,7 +460,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Global execution records */
+        /** 全局执行记录 */
         get: operations["TaskController_allExecutions"];
         put?: never;
         post?: never;
@@ -478,8 +478,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution logs (by execution ID)
-         * @description Compat alias of GET /tasks/:id/executions/:execId/logs — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.
+         * 执行日志（按执行 ID）
+         * @description GET /tasks/:id/executions/:execId/logs 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。
          */
         get: operations["TaskController_executionLogsByExecId"];
         put?: never;
@@ -498,8 +498,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution details (by execution ID)
-         * @description Compat alias of GET /tasks/:id/executions/:execId — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.
+         * 执行详情（按执行 ID）
+         * @description GET /tasks/:id/executions/:execId 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。
          */
         get: operations["TaskController_executionByExecId"];
         put?: never;
@@ -517,7 +517,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Scheduler status */
+        /** 调度器状态 */
         get: operations["TaskController_schedulerStats"];
         put?: never;
         post?: never;
@@ -535,8 +535,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Task execution stats
-         * @description Get execution statistics for a task: success rate, average duration, and last 20 executions.
+         * 任务执行统计
+         * @description 获取任务的执行统计：成功率、平均耗时与最近 20 次执行。
          */
         get: operations["TaskController_getStats"];
         put?: never;
@@ -557,8 +557,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * AI schedule suggestion
-         * @description Analyze execution history and return an AI-recommended cron expression with reasoning
+         * AI 调度建议
+         * @description 分析执行历史并返回 AI 推荐的 cron 表达式及推理说明
          */
         post: operations["TaskController_suggestSchedule"];
         delete?: never;
@@ -575,22 +575,22 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Task details
-         * @description Get detailed info for a single task including config, status, and execution stats.
+         * 任务详情
+         * @description 获取单个任务的详细信息，包括配置、状态与执行统计。
          */
         get: operations["TaskController_findOne"];
         put?: never;
         post?: never;
         /**
-         * Delete task
-         * @description Delete task. Running executions will be forcefully terminated.
+         * 删除任务
+         * @description 删除任务。正在运行的执行会被强制终止。
          */
         delete: operations["TaskController_remove"];
         options?: never;
         head?: never;
         /**
-         * Update task
-         * @description Update task configuration. Note: running tasks are not immediately affected.
+         * 更新任务
+         * @description 更新任务配置。注意：正在运行的任务不会立即受影响。
          */
         patch: operations["TaskController_update"];
         trace?: never;
@@ -603,8 +603,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Export task definition as a downloadable JSON file
-         * @description E-1: returns the task definition snapshot (name/description/runtime + interpreter version/glue script/params/timeout & retry/dependencies/deployment constraints/maintenance windows/trigger config/git source/application & project keys) as an attachment with schemaVersion "1" and exportedAt. SEC-02 red line: secrets are NEVER part of the export (the whole key is stripped — values and key names alike). The payload is accepted verbatim by POST /tasks/import. Read permission matches GET /tasks/:id.
+         * 将任务定义导出为可下载的 JSON 文件
+         * @description E-1：以附件形式返回任务定义快照（name/description/runtime + 解释器版本/GLUE 脚本/params/超时与重试/依赖/部署约束/维护窗口/触发配置/git 源/应用与项目键），并带 schemaVersion \"1\" 与 exportedAt。SEC-02 红线：密钥绝不进入导出内容（整个键都被剔除——值与键名一并不保留）。该载荷可被 POST /tasks/import 原样接受。读取权限与 GET /tasks/:id 一致。
          */
         get: operations["TaskController_exportDefinition"];
         put?: never;
@@ -624,8 +624,8 @@ export interface paths {
         };
         get?: never;
         /**
-         * Update GLUE script
-         * @description Update the GLUE script source code for online editing of execution logic.
+         * 更新 GLUE 脚本
+         * @description 更新 GLUE 脚本源码，用于在线编辑执行逻辑。
          */
         put: operations["TaskController_updateGlue"];
         post?: never;
@@ -645,8 +645,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Manual trigger
-         * @description Manually trigger task execution. Custom params can override task defaults. NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key （Authorization: Bearer acf_...，guard 分流见 jwt-auth.guard/api-key-auth.helper）；响应契约与 JWT 面完全一致。
+         * 手动触发
+         * @description 手动触发任务执行。自定义 params 可覆盖任务默认值。NF-01: 双凭据面——用户 JWT 或携带 task:trigger 扩展域的 API Key （Authorization: Bearer acf_，guard 分流见 jwt-auth.guard/api-key-auth.helper）；响应契约与 JWT 面完全一致。
          */
         post: operations["TaskController_trigger"];
         delete?: never;
@@ -663,8 +663,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get task webhook status
-         * @description Returns `{ enabled, url }`. The secret is never returned.
+         * 获取任务 Webhook 状态
+         * @description 返回 `{ enabled, url }`。密钥从不返回。
          */
         get: operations["TaskController_webhookStatus"];
         put?: never;
@@ -685,8 +685,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Enable the task webhook
-         * @description Issues a new webhook secret, returned ONCE in `secret`. Enabling an already-enabled task rotates the secret.
+         * 启用任务 Webhook
+         * @description 签发新的 Webhook 密钥，仅在 `secret` 中返回一次。对已启用的任务再次启用会轮换密钥。
          */
         post: operations["TaskController_webhookEnable"];
         delete?: never;
@@ -705,8 +705,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Rotate the task webhook secret
-         * @description Old secret stops working immediately; new secret shown once.
+         * 轮换任务 Webhook 密钥
+         * @description 旧密钥立即失效；新密钥只展示一次。
          */
         post: operations["TaskController_webhookRotate"];
         delete?: never;
@@ -725,8 +725,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Disable the task webhook
-         * @description Clears the secret; signed calls start answering 401.
+         * 停用任务 Webhook
+         * @description 清除密钥；此后带签名的调用会返回 401。
          */
         post: operations["TaskController_webhookDisable"];
         delete?: never;
@@ -743,8 +743,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution records
-         * @description Get the execution history list for a task.
+         * 执行记录
+         * @description 获取任务的执行历史列表。
          */
         get: operations["TaskController_executions"];
         put?: never;
@@ -763,8 +763,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution details
-         * @description Get detailed info for a single execution including time, status, and output.
+         * 执行详情
+         * @description 获取单次执行的详细信息，包括时间、状态与输出。
          */
         get: operations["TaskController_execution"];
         put?: never;
@@ -783,8 +783,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution report + timeline
-         * @description OBS-04: one-shot payload for the execution detail 'analysis report / timeline' tab. Returns the execution row (timestamps drive the timeline), a created→started→finished timeline mapped from those DB timestamps, and the execution_reports daily aggregate row for the execution's day (report=null when absent — the frontend degrades gracefully).
+         * 执行报告 + 时间线
+         * @description OBS-04：供执行详情页「分析报告 / 时间线」页签一次性取数的载荷。返回执行行（其时间戳驱动时间线）、由这些数据库时间戳映射出的 created→started→finished 时间线，以及该执行所在日期的 execution_reports 日聚合行（不存在时 report=null——前端做优雅降级）。
          */
         get: operations["TaskController_executionReport"];
         put?: never;
@@ -803,8 +803,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution logs
-         * @description Get execution logs with line-based pagination to avoid memory overload.
+         * 执行日志
+         * @description 获取执行日志，按行分页以避免内存过载。
          */
         get: operations["TaskController_executionLogs"];
         put?: never;
@@ -823,8 +823,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution log SSE stream
-         * @description Stream execution logs via Server-Sent Events. Sends [DONE] event on completion.
+         * 执行日志 SSE 流
+         * @description 通过 Server-Sent Events 流式推送执行日志。完成时发送 [DONE] 事件。
          */
         get: operations["TaskController_streamLogs"];
         put?: never;
@@ -845,7 +845,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Git rollback (by commit SHA)
+         * Git 回滚（按 commit SHA）
          * @description 把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。
          */
         post: operations["TaskController_rollback"];
@@ -865,7 +865,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Version rollback (by task config snapshot)
+         * 版本回滚（按任务配置快照）
          * @description 把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。
          */
         post: operations["TaskController_rollbackToVersion"];
@@ -883,8 +883,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Version list
-         * @description Get task historical version list.
+         * 版本列表
+         * @description 获取任务的历史版本列表。
          */
         get: operations["TaskController_getVersions"];
         put?: never;
@@ -903,8 +903,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Version diff
-         * @description Compare differences between two versions.
+         * 版本差异
+         * @description 比较两个版本之间的差异。
          */
         get: operations["TaskController_compareVersions"];
         put?: never;
@@ -925,8 +925,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Pause task
-         * @description Pause task scheduled execution. In-progress executions are not affected.
+         * 暂停任务
+         * @description 暂停任务的调度执行。正在进行的执行不受影响。
          */
         post: operations["TaskController_pause"];
         delete?: never;
@@ -945,8 +945,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Resume task
-         * @description Resume task scheduled execution.
+         * 恢复任务
+         * @description 恢复任务的调度执行。
          */
         post: operations["TaskController_resume"];
         delete?: never;
@@ -965,8 +965,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * AI analyze execution
-         * @description Trigger on-demand AI analysis for an execution. Stores result in DB and returns it.
+         * AI 分析执行
+         * @description 对某次执行触发按需 AI 分析。结果会落库并返回。
          */
         post: operations["TaskController_analyzeExecution"];
         delete?: never;
@@ -985,8 +985,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Cancel execution
-         * @description Force-cancel a running or pending execution record.
+         * 取消执行
+         * @description 强制取消正在运行或等待中的执行记录。
          */
         post: operations["TaskController_killExecution"];
         delete?: never;
@@ -1005,9 +1005,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch trigger tasks (deprecated)
+         * 批量触发任务（已废弃）
          * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。Trigger multiple tasks. Partial failures do not affect other tasks.
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。触发多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskBatchController_batchTrigger"];
         delete?: never;
@@ -1026,9 +1026,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch pause tasks (deprecated)
+         * 批量暂停任务（已废弃）
          * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。Pause multiple tasks. Partial failures do not affect other tasks.
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。暂停多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskBatchController_batchPause"];
         delete?: never;
@@ -1047,9 +1047,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch resume tasks (deprecated)
+         * 批量恢复任务（已废弃）
          * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。Resume multiple tasks. Partial failures do not affect other tasks.
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。恢复多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskBatchController_batchResume"];
         delete?: never;
@@ -1068,9 +1068,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch delete tasks (deprecated)
+         * 批量删除任务（已废弃）
          * @deprecated
-         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。Delete multiple tasks. Partial failures do not affect other tasks.
+         * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。删除多个任务。部分失败不影响其他任务。
          */
         post: operations["TaskBatchController_batchDelete"];
         delete?: never;
@@ -1089,8 +1089,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Trigger a task via inbound webhook
-         * @description Public machine endpoint. Requires X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is HMAC-SHA256 over `${timestamp}.${rawBody}` with the task's webhook secret (enable via POST /api/tasks/:id/webhook/enable). Body `{ params }` overrides the task's default params for this execution. Add `?wait=1&timeout=N` to park the request until the execution reaches a terminal state (N ≤ 300s; on timeout `completed:false` plus the latest snapshot). Unknown task / disabled webhook / bad signature all answer the same 401.
+         * 通过入站 Webhook 触发任务
+         * @description 公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。
          */
         post: operations["TaskWebhookController_trigger"];
         delete?: never;
@@ -1109,8 +1109,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Execution result callback
-         * @description Called by executor (or task code holding a per-execution AUTOFLOW_CALLBACK_TOKEN) after task completion to report results. Accepts either the executor shared/per-address token or a per-execution `v1.` HMAC token bound to the batch's executionId (N23).
+         * 执行结果回调
+         * @description 任务完成后由执行器（或持有本次执行 AUTOFLOW_CALLBACK_TOKEN 的任务代码）调用，用于上报执行结果。可使用执行器共享令牌/按地址令牌，或绑定到该批次 executionId 的本次执行 `v1.` HMAC 令牌（N23）。
          */
         post: operations["ExecutionCallbackController_callback"];
         delete?: never;
@@ -1129,8 +1129,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Real-time execution log streaming
-         * @description Called by the executor while a task is still running to stream log lines incrementally. Accepts a chunk of lines with its 0-based start line number; re-sending the same range is idempotent. Uses the same authentication as the callback endpoint (per-execution `v1.` HMAC token, per-address token, or the shared executor token).
+         * 实时执行日志流式上报
+         * @description 任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权方式与回调接口相同（本次执行 `v1.` HMAC 令牌、按地址令牌或执行器共享令牌）。
          */
         post: operations["ExecutionCallbackController_appendLogChunk"];
         delete?: never;
@@ -1149,8 +1149,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Register executor
-         * @description Called when executor starts to register with admin. Requires shared token for auth.
+         * 注册执行器
+         * @description 执行器启动时调用，用于向中台注册。鉴权需要共享令牌。
          */
         post: operations["ExecutorController_register"];
         delete?: never;
@@ -1169,8 +1169,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Heartbeat report
-         * @description Executor calls this periodically to report status including CPU, memory, and running task count.
+         * 心跳上报
+         * @description 执行器周期性调用本接口上报状态，包括 CPU、内存与运行中任务数。
          */
         post: operations["ExecutorController_heartbeat"];
         delete?: never;
@@ -1189,8 +1189,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Pull dispatch payloads (long-poll)
-         * @description ARCH-32: pull-mode executors (NAT-bound, no inbound reachability) long-poll this endpoint to receive dispatch payloads. Blocks up to waitMs (server-clamped) and returns { task } — null when nothing queued.
+         * 拉取派发载荷（长轮询）
+         * @description ARCH-32：pull 模式执行器（位于 NAT 后、无入站可达性）通过长轮询本端点接收派发载荷。最多阻塞 waitMs（服务端会做上限钳制），返回 { task }——队列为空时为 null。
          */
         post: operations["ExecutorController_pullDispatch"];
         delete?: never;
@@ -1209,8 +1209,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Report pull control-command execution result
-         * @description ARCH-33: pull-mode executors report the outcome of a control command (deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package) they consumed from the pull response. Best-effort — business terminal states still converge through their own callbacks.
+         * 上报 pull 控制命令的执行结果
+         * @description ARCH-33：pull 模式执行器上报其从 pull 响应中领取的控制命令（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）的执行结果。属尽力而为——业务的终态仍通过各自的回调收敛。
          */
         post: operations["ExecutorController_reportCommandResult"];
         delete?: never;
@@ -1227,7 +1227,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get the executor-facing config (pull-mode hot-reload)
+         * 获取面向执行器的配置（pull 模式热更新）
          * @description E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，address 走查询参数（与 register/heartbeat 同源）。
          */
         get: operations["ExecutorController_pullExecutorConfig"];
@@ -1247,8 +1247,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Reconcile terminal execution states (read-only)
-         * @description A6 (DEEP_REVIEW): read-only reconciliation view for the executor's local callback dead-letter directory. Returns executions on this executor that have already reached a TERMINAL state (success/failed/timeout/killed/cancelled), ordered ascending by terminal time so the caller can consume it as a watermark stream. The executor uses it to tier dead-letter handling: a dead-lettered callback whose execution is terminal is moot (delete it); one whose execution is still open and whose dead-letter reason was retry-budget exhaustion is worth re-queuing; poison payloads (oversized/corrupt) stay for manual inspection. Strictly read-only — it mutates nothing, releases no slots and writes no audit; all state changes still flow through the existing callback/terminal paths.
+         * 对账终态执行记录（只读）
+         * @description A6（DEEP_REVIEW）：针对执行器本地回调死信目录的只读对账视图。返回该执行器上已进入终态（success/failed/timeout/killed/cancelled）的执行记录，按终态时间升序排列，便于调用方当作水位线流消费。执行器用它给死信分级处理：执行已终态的死信回调已无意义（直接删除）；执行仍未结束且死信原因是重试预算耗尽的，值得重新入队；毒载荷（超大/损坏）保留待人工排查。严格只读——不改任何状态、不释放名额、不写审计；所有状态变更仍走既有的回调/终态路径。
          */
         get: operations["ExecutorController_getTerminalStates"];
         put?: never;
@@ -1267,8 +1267,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List executors
-         * @description Get list of all executors including online status, group, and tags.
+         * 列出执行器
+         * @description 获取全部执行器列表，包含在线状态、分组与标签。
          */
         get: operations["ExecutorController_findAll"];
         put?: never;
@@ -1287,8 +1287,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get all executor groups
-         * @description Get all executor groups and their executor count statistics.
+         * 获取全部执行器分组
+         * @description 获取全部执行器分组及其执行器数量统计。
          */
         get: operations["ExecutorController_getGroups"];
         put?: never;
@@ -1307,8 +1307,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get all executor tags
-         * @description Get all tags used by executors and their statistics.
+         * 获取全部执行器标签
+         * @description 获取执行器使用的全部标签及其统计。
          */
         get: operations["ExecutorController_getTags"];
         put?: never;
@@ -1327,8 +1327,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get effective executor runtime config
-         * @description Effective liveness thresholds used by the backend (heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier; the stale sweep marks executors OFFLINE after that much silence) plus the findAll() list cap and the total executor count, so the admin UI can align its stale coloring with the backend and warn when the list is truncated (listLimit < executorTotal).
+         * 获取生效的执行器运行配置
+         * @description 后端实际生效的存活阈值（heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier；静默超过该时长后，过期扫描会把执行器标记为 OFFLINE），以及 findAll() 的列表上限与执行器总数，便于管理台让「过期」着色与后端对齐，并在列表被截断时告警（listLimit < executorTotal）。
          */
         get: operations["ExecutorController_getRuntimeConfig"];
         put?: never;
@@ -1347,8 +1347,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List executor picker options (lightweight)
-         * @description Minimal read surface for executor picker dropdowns (deploy modals): id/appName/address/status/runningTaskCount/maxConcurrentTasks only, not the full entity projection of GET /executors. Capped at EXECUTOR_PICKER_LIMIT rows (createdAt DESC); when total > items.length the response carries truncated=true so the UI can warn explicitly — never silently truncated like the 500-capped full list.
+         * 列出执行器选择器选项（轻量）
+         * @description 供执行器选择器下拉（部署弹窗）使用的最小读取面：仅 id/appName/address/status/runningTaskCount/maxConcurrentTasks，而不是 GET /executors 的完整实体投影。最多返回 EXECUTOR_PICKER_LIMIT 行（createdAt DESC）；当 total > items.length 时响应带 truncated=true，便于界面明确告警——不像上限 500 的完整列表那样静默截断。
          */
         get: operations["ExecutorController_findPickerOptions"];
         put?: never;
@@ -1367,8 +1367,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get executor install command
-         * @description Returns the shell command to install and start the executor on the target machine.
+         * 获取执行器安装命令
+         * @description 返回在目标机器上安装并启动执行器的 shell 命令。
          */
         get: operations["ExecutorController_getInstallCmd"];
         put?: never;
@@ -1387,8 +1387,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download executor install script
-         * @description Returns the one-click installer as plain text (curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...). Not sensitive: the shared secret is supplied by the caller as a bash argument.
+         * 下载执行器安装脚本
+         * @description 以纯文本返回一键安装脚本（curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...）。不含敏感信息：共享密钥由调用方以 bash 参数传入。
          */
         get: operations["ExecutorController_getInstallScript"];
         put?: never;
@@ -1407,8 +1407,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download executor-node install artifact (tar.gz)
-         * @description Serves the executor-node install bundle (dist + production node_modules) used by install.sh's remote channel. Requires the executor shared token (Authorization: Bearer <token> or ?token=<token>). Returns 404 until an operator generates the artifact via scripts/bundle-executor-artifact.sh into EXECUTOR_ARTIFACT_DIR.
+         * 下载 executor-node 安装产物（tar.gz）
+         * @description 提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。需要执行器共享令牌（Authorization: Bearer <token> 或 ?token=<token>）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。
          */
         get: operations["ExecutorController_getExecutorArtifact"];
         put?: never;
@@ -1427,22 +1427,22 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get single executor details
-         * @description Get detailed info for a specific executor including config, status, and performance metrics.
+         * 获取单个执行器详情
+         * @description 获取指定执行器的详细信息，包括配置、状态与性能指标。
          */
         get: operations["ExecutorController_findOne"];
         put?: never;
         post?: never;
         /**
-         * Delete executor record
-         * @description Admin: permanently delete an executor record by ID. Use when executor is offline and no longer needed.
+         * 删除执行器记录
+         * @description 管理员操作：按 ID 永久删除执行器记录。适用于执行器已离线且不再需要的场景。
          */
         delete: operations["ExecutorController_removeExecutor"];
         options?: never;
         head?: never;
         /**
-         * Update executor metadata
-         * @description Update executor group, tags, description, and max concurrent tasks. Requires ADMIN, or editor+ role on the executor's project.
+         * 更新执行器元数据
+         * @description 更新执行器的分组、标签、描述与最大并发任务数。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。
          */
         patch: operations["ExecutorController_update"];
         trace?: never;
@@ -1457,8 +1457,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Push config hot-update to executor
-         * @description Dynamically update executor config without restart. Executor must be online. Requires ADMIN, or editor+ role on the executor's project.
+         * 向执行器推送配置热更新
+         * @description 无需重启即动态更新执行器配置。执行器必须在线。需要 ADMIN 角色，或该执行器所属项目的 editor 及以上角色。
          */
         post: operations["ExecutorController_reloadConfig"];
         delete?: never;
@@ -1477,8 +1477,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Rotate executor token
-         * @description Generate a new executor auth token. The new token is shown only once in this response.
+         * 轮换执行器令牌
+         * @description 生成新的执行器鉴权令牌。新令牌仅在本响应中展示一次。
          */
         post: operations["ExecutorController_rotateToken"];
         delete?: never;
@@ -1497,8 +1497,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Get dynamic token
-         * @description Executor calls this to get a dynamic token. Uses shared token for initial auth. R9 (round-8 P1): idempotent per (address, startupId) — a same-process re-fetch returns the CURRENT token instead of rotating; rotation happens on first issuance, a new startupId (restart), a legacy startupId-less fetch outside the short reuse window, or when the previously issued token no longer matches the stored hash.
+         * 获取动态令牌
+         * @description 执行器调用本接口获取动态令牌。首次鉴权使用共享令牌。R9（第八轮 P1）：按 (address, startupId) 幂等——同进程重复获取会返回当前令牌而不是轮换；以下情况才会轮换：首次签发、startupId 变化（重启）、无 startupId 的历史方式获取且超出短暂复用窗口，或此前签发的令牌与已存储哈希不再匹配。
          */
         post: operations["ExecutorController_getToken"];
         delete?: never;
@@ -1517,8 +1517,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Executor offline notification
-         * @description Called during graceful executor shutdown to notify admin and mark executor as offline.
+         * 执行器下线通知
+         * @description 执行器优雅停机时调用，用于通知中台并将该执行器标记为离线。
          */
         post: operations["ExecutorController_offline"];
         delete?: never;
@@ -1537,8 +1537,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Mark executor offline
-         * @description Admin: mark a specific executor as offline by ID (does not interrupt running tasks; use for stale records after crash).
+         * 将执行器标记为离线
+         * @description 管理员操作：按 ID 将指定执行器标记为离线（不会中断正在运行的任务；用于崩溃后残留的过期记录）。
          */
         post: operations["ExecutorController_setOffline"];
         delete?: never;
@@ -1555,8 +1555,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Preview what deleting this executor will break
-         * @description Counts tasks pinning this executor via task.executorId / task.executorAppName (dispatch would fail after deletion) and the pending pull-queue depth.
+         * 预览删除该执行器会破坏什么
+         * @description 统计通过 task.executorId / task.executorAppName 绑定到该执行器的任务数（删除后派发会失败），以及待处理的 pull 队列深度。
          */
         get: operations["ExecutorController_removalImpact"];
         put?: never;
@@ -1575,8 +1575,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get executor task execution history
-         * @description Get all task execution records for a specific executor with pagination.
+         * 获取执行器的任务执行历史
+         * @description 分页获取指定执行器的全部任务执行记录。
          */
         get: operations["ExecutorController_getExecutorExecutions"];
         put?: never;
@@ -1595,8 +1595,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get executor performance metrics
-         * @description Get executor performance metrics for the last 7 days including total executions, success rate, and avg time. FEAT-04: the response also carries `history` — the last 24h of executor_metrics_history samples aggregated into fixed 15-minute AVG buckets (≤96 points, ascending; each point is {timestamp, cpuUsage, memUsage, runningTaskCount}; cpuUsage/memUsage are null when a bucket has no reported value). Returns an empty array when the executor has no history samples — the admin UI renders an empty state for that case.
+         * 获取执行器性能指标
+         * @description 获取执行器最近 7 天的性能指标，包括总执行次数、成功率与平均耗时。FEAT-04：响应还带 `history`——最近 24 小时的 executor_metrics_history 采样按固定 15 分钟 AVG 桶聚合（≤96 个点，升序；每个点为 {timestamp, cpuUsage, memUsage, runningTaskCount}；某个桶没有上报值时 cpuUsage/memUsage 为 null）。该执行器没有任何历史采样时返回空数组——管理台据此渲染空状态。
          */
         get: operations["ExecutorController_getExecutorMetrics"];
         put?: never;
@@ -1614,7 +1614,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get all notification channel configs */
+        /** 获取所有通知渠道配置 */
         get: operations["NotificationConfigController_getChannels"];
         put?: never;
         post?: never;
@@ -1637,7 +1637,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update notification channel config */
+        /** 更新通知渠道配置 */
         patch: operations["NotificationConfigController_updateChannel"];
         trace?: never;
     };
@@ -1650,7 +1650,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Test notification channel */
+        /** 测试通知渠道 */
         post: operations["NotificationConfigController_testChannel"];
         delete?: never;
         options?: never;
@@ -1667,7 +1667,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send test notification to channel */
+        /** 向渠道发送测试通知 */
         post: operations["NotificationConfigController_sendTest"];
         delete?: never;
         options?: never;
@@ -1684,7 +1684,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send notification from task code (SDK, admin only) */
+        /** 从任务代码发送通知（SDK，仅管理员） */
         post: operations["NotificationConfigController_send"];
         delete?: never;
         options?: never;
@@ -1699,10 +1699,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List notification silences (persisted) */
+        /** 列出通知静默（已持久化） */
         get: operations["NotificationConfigController_listSilences"];
         put?: never;
-        /** Create a notification silence */
+        /** 创建通知静默 */
         post: operations["NotificationConfigController_createSilence"];
         delete?: never;
         options?: never;
@@ -1720,7 +1720,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Remove a notification silence */
+        /** 移除通知静默 */
         delete: operations["NotificationConfigController_removeSilence"];
         options?: never;
         head?: never;
@@ -1737,7 +1737,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Alertmanager v2 webhook receiver
+         * Alertmanager v2 Webhook 接收端
          * @description 入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。
          */
         post: operations["AlertsController_webhook"];
@@ -1754,10 +1754,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get current AI configuration */
+        /** 获取当前 AI 配置 */
         get: operations["AiController_getConfig"];
         put?: never;
-        /** Save AI configuration to system config store */
+        /** 将 AI 配置保存到系统配置存储 */
         post: operations["AiController_saveConfig"];
         delete?: never;
         options?: never;
@@ -1774,7 +1774,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Test current AI configuration with a sample prompt */
+        /** 用示例提示词测试当前 AI 配置 */
         post: operations["AiController_testConfig"];
         delete?: never;
         options?: never;
@@ -1789,10 +1789,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List agent sessions (newest first) */
+        /** 列出 Agent 会话（最新在前） */
         get: operations["AgentController_list"];
         put?: never;
-        /** Create an agent session and enqueue it for execution */
+        /** 创建一个 Agent 会话并入队执行 */
         post: operations["AgentController_create"];
         delete?: never;
         options?: never;
@@ -1807,7 +1807,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get an agent session with its steps */
+        /** 获取某个 Agent 会话及其步骤 */
         get: operations["AgentController_detail"];
         put?: never;
         post?: never;
@@ -1826,7 +1826,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume a paused/failed agent session */
+        /** 恢复挂起/失败的 Agent 会话 */
         post: operations["AgentController_resume"];
         delete?: never;
         options?: never;
@@ -1841,7 +1841,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get effective agent budget settings */
+        /** 获取生效的 Agent 预算设置 */
         get: operations["AgentController_budgetInfo"];
         put?: never;
         post?: never;
@@ -2192,8 +2192,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Prometheus metrics endpoint
-         * @description Prometheus text exposition format: scheduler counters (autoflow_scheduler_*), BullMQ queue depth gauges (autoflow_queue_*) and process default metrics (CPU/memory/GC). Requires JWT; disable entirely with METRICS_PROMETHEUS_ENABLED=false.
+         * Prometheus 指标端点
+         * @description Prometheus 文本 exposition 格式：调度器计数器（autoflow_scheduler_*）、BullMQ 队列深度 gauge（autoflow_queue_*）以及进程默认指标（CPU/内存/GC）。需要 JWT；可用 METRICS_PROMETHEUS_ENABLED=false 完全关闭该端点。
          */
         get: operations["MetricsController_getPrometheusMetrics"];
         put?: never;
@@ -2292,8 +2292,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Dashboard summary SSE stream (UI-14 phase 1)
-         * @description Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } (+ error frames on degraded queries). Auth: JWT bearer header, or ?ticket= short-lived SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers. Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).
+         * 仪表盘汇总 SSE 流（UI-14 第一阶段）
+         * @description Server-Sent Events 流，每约 3 秒推送一次快照：{ summary, executors, scheduler }（查询降级时追加错误帧）。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。并发：每实例 METRICS_STREAM_MAX_GLOBAL 个名额（占满返回 503）。
          */
         get: operations["MetricsStreamController_stream"];
         put?: never;
@@ -2312,8 +2312,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Execution terminal-state SSE stream (FEAT-16)
-         * @description Server-Sent Events stream forwarding execution terminal events (execution.completed / execution.failed / execution.killed) from the in-process domain event bus. Payload: ExecutionTerminalEventPayload. Auth: JWT bearer header, or ?ticket= short-lived SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers.
+         * 执行终态 SSE 流（FEAT-16）
+         * @description Server-Sent Events 流，从进程内领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。
          */
         get: operations["ExecutionsStreamController_stream"];
         put?: never;
@@ -2331,9 +2331,9 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List all config entries */
+        /** 列出所有配置项 */
         get: operations["ConfigController_findAll"];
-        /** Create or update a config entry */
+        /** 创建或更新配置项 */
         put: operations["ConfigController_upsert"];
         post?: never;
         delete?: never;
@@ -2349,7 +2349,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get config change history */
+        /** 获取配置变更历史 */
         get: operations["ConfigController_getHistory"];
         put?: never;
         post?: never;
@@ -2366,7 +2366,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get history for a specific config key */
+        /** 获取指定配置 key 的历史 */
         get: operations["ConfigController_getHistoryByKey"];
         put?: never;
         post?: never;
@@ -2385,7 +2385,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Rollback config to a historical version */
+        /** 将配置回滚到历史版本 */
         post: operations["ConfigController_rollback"];
         delete?: never;
         options?: never;
@@ -2402,7 +2402,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate or rotate executor shared token */
+        /** 生成或轮换执行器共享令牌 */
         post: operations["ConfigController_generateExecutorSharedToken"];
         delete?: never;
         options?: never;
@@ -2417,7 +2417,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get current executor shared token (plaintext, admin only) */
+        /** 获取当前执行器共享令牌（明文，仅管理员） */
         get: operations["ConfigController_getExecutorSharedToken"];
         put?: never;
         post?: never;
@@ -2435,8 +2435,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get the authoritative Python runtime version contract
-         * @description Returns the currently effective declareable range (min/max, overridable via PYTHON_RUNTIME_VERSION_MIN/MAX), the online-download floor (onlineMin) and the legacy fallback interpreter for executors that do not report interpreters. The frontend injects these into its version helpers instead of hardcoding them. Returns contract constants only — no config-store values, no secrets.
+         * 获取权威的 Python 运行时版本契约
+         * @description 返回当前生效的可声明范围（min/max，可用 PYTHON_RUNTIME_VERSION_MIN/MAX 覆盖）、在线下载下限（onlineMin），以及未上报解释器的执行器所使用的历史回退解释器。前端把这些值注入版本辅助函数，而不是硬编码。仅返回契约常量——不含配置存储的值，也不含任何密钥。
          */
         get: operations["ConfigController_getRuntimeVersion"];
         put?: never;
@@ -2454,11 +2454,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get a single config entry */
+        /** 获取单个配置项 */
         get: operations["ConfigController_findOne"];
         put?: never;
         post?: never;
-        /** Delete a config entry */
+        /** 删除配置项 */
         delete: operations["ConfigController_remove"];
         options?: never;
         head?: never;
@@ -2474,7 +2474,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Batch create or update config entries */
+        /** 批量创建或更新配置项 */
         post: operations["ConfigController_batchUpsert"];
         delete?: never;
         options?: never;
@@ -2489,7 +2489,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Query audit logs with pagination (admin only) */
+        /** 分页查询审计日志（仅管理员） */
         get: operations["AuditController_findAll"];
         put?: never;
         post?: never;
@@ -2507,8 +2507,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Export audit logs as CSV (max 10 000 rows, admin only)
-         * @description Returns a CSV file attachment. Supports the same filters as the list endpoint.
+         * 导出审计日志为 CSV（最多 10 000 行，仅管理员）
+         * @description 返回 CSV 文件附件。支持与列表接口相同的过滤条件。
          */
         get: operations["AuditController_exportCsv"];
         put?: never;
@@ -2527,8 +2527,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Basic health check
-         * @description Public health check. Returns only the overall status (healthy/degraded/unhealthy) and timestamp. Detailed metrics (executor count, queue depth, task counts) are available at GET /health/detailed (requires JWT).
+         * 基础健康检查
+         * @description 公开健康检查。仅返回整体状态（healthy/degraded/unhealthy）与时间戳。详细指标（执行器数量、队列深度、任务计数）见 GET /health/detailed（需要 JWT）。
          */
         get: operations["HealthController_health"];
         put?: never;
@@ -2547,8 +2547,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Detailed health check (authenticated)
-         * @description Full detailed health status and metrics including database, Redis, message queue, executors, and scheduler. Requires JWT authentication. Use GET /health for the public status-only endpoint.
+         * 详细健康检查（需认证）
+         * @description 完整的详细健康状态与指标，包括数据库、Redis、消息队列、执行器与调度器。需要 JWT 认证。仅需公开状态时请用 GET /health。
          */
         get: operations["HealthController_detailed"];
         put?: never;
@@ -2567,8 +2567,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Liveness check
-         * @description Simple liveness check, returns whether the service is running. Used for Kubernetes liveness probe.
+         * 存活检查
+         * @description 简单的存活检查，返回服务是否在运行。用于 Kubernetes 存活探针。
          */
         get: operations["HealthController_live"];
         put?: never;
@@ -2587,8 +2587,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Readiness check
-         * @description Check whether the service is ready to accept requests. Verifies DB and Redis connections. Used for Kubernetes readiness probe.
+         * 就绪检查
+         * @description 检查服务是否已就绪、可接受请求。校验数据库与 Redis 连接。用于 Kubernetes 就绪探针。
          */
         get: operations["HealthController_ready"];
         put?: never;
@@ -2607,8 +2607,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Service status (authenticated)
-         * @description Get health status details for each core service. Requires JWT authentication.
+         * 服务状态（需认证）
+         * @description 获取各核心服务的健康状态详情。需要 JWT 认证。
          */
         get: operations["HealthController_services"];
         put?: never;
@@ -2627,8 +2627,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * System metrics (authenticated)
-         * @description Get key system metrics including task count, executor count, queue size, etc. Requires JWT authentication.
+         * 系统指标（需认证）
+         * @description 获取关键系统指标，包括任务数、执行器数、队列长度等。需要 JWT 认证。
          */
         get: operations["HealthController_metrics"];
         put?: never;
@@ -2646,10 +2646,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get application list */
+        /** 获取应用列表 */
         get: operations["ApplicationController_findAll"];
         put?: never;
-        /** Create application */
+        /** 创建应用 */
         post: operations["ApplicationController_create"];
         delete?: never;
         options?: never;
@@ -2664,12 +2664,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get application details */
+        /** 获取应用详情 */
         get: operations["ApplicationController_findById"];
-        /** Update application */
+        /** 更新应用 */
         put: operations["ApplicationController_update"];
         post?: never;
-        /** Delete application */
+        /** 删除应用 */
         delete: operations["ApplicationController_remove"];
         options?: never;
         head?: never;
@@ -2683,7 +2683,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Preview what deleting this application will destroy */
+        /** 预览删除该应用会破坏什么 */
         get: operations["ApplicationController_removalImpact"];
         put?: never;
         post?: never;
@@ -2702,7 +2702,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Upload application package (zip) */
+        /** 上传应用包（zip） */
         post: operations["ApplicationController_upload"];
         delete?: never;
         options?: never;
@@ -2720,8 +2720,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Version release webhook
-         * @description Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. This route is public for CI/CD callers, and matching applications must have webhookSecret configured. Callers must include X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers. The signature is HMAC-SHA256 over `${timestamp}.${rawBody}`.
+         * 版本发布 Webhook
+         * @description 接收版本发布通知并更新应用版本。若 triggerDeploy=true，则对所有 RUNNING 状态的部署触发滚动升级。该路由对 CI/CD 调用方公开，且匹配到的应用必须已配置 webhookSecret。调用方必须携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头。签名是对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256。
          */
         post: operations["ApplicationController_webhook"];
         delete?: never;
@@ -2738,8 +2738,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get application version history
-         * @description Return persisted application version snapshots, falling back to deployment records for legacy data.
+         * 获取应用版本历史
+         * @description 返回已持久化的应用版本快照；对历史数据回退到部署记录。
          */
         get: operations["ApplicationController_getVersionHistory"];
         put?: never;
@@ -2758,7 +2758,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List unified releases (version × latest deployment) for an application
+         * 列出应用的统一发布记录（版本 × 最新部署）
          * @description 统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。
          */
         get: operations["ApplicationController_listReleases"];
@@ -2780,7 +2780,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Trigger all running instances to upgrade to latest version
+         * 触发所有运行中实例升级到最新版本
          * @description DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。
          */
         post: operations["ApplicationController_upgradeAll"];
@@ -2800,8 +2800,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Sync task registration from manifest.json
-         * @description Parse app manifest.json and auto-register task definitions
+         * 从 manifest.json 同步任务注册
+         * @description 解析应用的 manifest.json 并自动注册任务定义
          */
         post: operations["ApplicationController_syncTasks"];
         delete?: never;
@@ -2820,8 +2820,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * AI application health analysis
-         * @description Aggregate execution stats across all tasks in this app and run AI health assessment
+         * 应用健康度 AI 分析
+         * @description 聚合该应用下所有任务的执行统计，并运行 AI 健康评估
          */
         post: operations["ApplicationController_analyzeHealth"];
         delete?: never;
@@ -2840,8 +2840,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Rollback application to historical version
-         * @description Restore app fields from a version snapshot or legacy deployment record, then trigger running instances to upgrade
+         * 将应用回滚到历史版本
+         * @description 从版本快照或历史部署记录恢复应用字段，然后触发运行中实例升级
          */
         post: operations["ApplicationController_rollback"];
         delete?: never;
@@ -2857,7 +2857,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List deployments */
+        /** 列出部署 */
         get: operations["AppDeploymentController_findAll"];
         put?: never;
         post?: never;
@@ -2875,8 +2875,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Deployment stats per application (aggregated)
-         * @description One row per application that has at least one deployment. Replaces the per-application list fan-out the application list page used to issue (N requests sharing one rate-limit bucket).
+         * 各应用的部署统计（聚合）
+         * @description 每个至少有一次部署的应用返回一行。用于替代应用列表页原先逐个应用发起的扇出请求（N 个请求共用同一个限流桶）。
          */
         get: operations["AppDeploymentController_findStats"];
         put?: never;
@@ -2894,13 +2894,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get deployment details */
+        /** 获取部署详情 */
         get: operations["AppDeploymentController_findById"];
         put?: never;
         post?: never;
         /**
-         * Delete a finished deployment record (failed/stopped)
-         * @description Removes a terminal deployment row from the history. In-flight, running and pending-approval deployments are refused with 409 — stop a running one first, and use reject/cancel for an approval-pending one.
+         * 删除已结束的部署记录（failed/stopped）
+         * @description 从历史中移除已进入终态的部署行。进行中、运行中和待审批的部署会被拒绝并返回 409——请先停止运行中的部署；待审批的请用驳回/撤销。
          */
         delete: operations["AppDeploymentController_remove"];
         options?: never;
@@ -2917,7 +2917,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Assign application to executor */
+        /** 将应用分配到执行器 */
         post: operations["AppDeploymentController_deploy"];
         delete?: never;
         options?: never;
@@ -2932,7 +2932,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List deployments awaiting approval */
+        /** 列出待审批的部署 */
         get: operations["AppDeploymentController_listPendingApprovals"];
         put?: never;
         post?: never;
@@ -2951,7 +2951,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Approve a pending deployment (second person) */
+        /** 审批通过待处理的部署（第二人审批） */
         post: operations["AppDeploymentController_approve"];
         delete?: never;
         options?: never;
@@ -2968,7 +2968,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reject a pending deployment (second person) */
+        /** 驳回待处理的部署（第二人审批） */
         post: operations["AppDeploymentController_reject"];
         delete?: never;
         options?: never;
@@ -2985,7 +2985,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancel own pending deployment request (requester only) */
+        /** 撤销自己发起的待审批部署请求（仅发起人） */
         post: operations["AppDeploymentController_cancel"];
         delete?: never;
         options?: never;
@@ -3002,7 +3002,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Trigger overlay upgrade */
+        /** 触发叠加升级 */
         post: operations["AppDeploymentController_upgrade"];
         delete?: never;
         options?: never;
@@ -3019,7 +3019,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Stop running deployment */
+        /** 停止运行中的部署 */
         post: operations["AppDeploymentController_stop"];
         delete?: never;
         options?: never;
@@ -3036,7 +3036,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Executor reports app runtime status (requires X-Executor-Token) */
+        /** 执行器上报应用运行状态（需要 X-Executor-Token） */
         post: operations["AppDeploymentController_heartbeat"];
         delete?: never;
         options?: never;
@@ -3051,10 +3051,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List mutex groups (for app form dropdown & admin) */
+        /** 列出互斥组（供应用表单下拉与后台管理使用） */
         get: operations["MutexGroupController_findAll"];
         put?: never;
-        /** Create a mutex group */
+        /** 创建互斥组 */
         post: operations["MutexGroupController_create"];
         delete?: never;
         options?: never;
@@ -3070,10 +3070,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update a mutex group (name / maxConcurrentPerDevice) */
+        /** 更新互斥组（名称 / maxConcurrentPerDevice） */
         put: operations["MutexGroupController_update"];
         post?: never;
-        /** Delete a mutex group (attached apps become ungrouped) */
+        /** 删除互斥组（已关联的应用会变为未分组） */
         delete: operations["MutexGroupController_remove"];
         options?: never;
         head?: never;
@@ -3087,10 +3087,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get executor package list */
+        /** 获取执行器包列表 */
         get: operations["ExecutorPackageController_findAll"];
         put?: never;
-        /** Upload executor package */
+        /** 上传执行器包 */
         post: operations["ExecutorPackageController_create"];
         delete?: never;
         options?: never;
@@ -3105,7 +3105,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get latest ACTIVE executor package by type */
+        /** 按类型获取最新的 ACTIVE 执行器包 */
         get: operations["ExecutorPackageController_findLatest"];
         put?: never;
         post?: never;
@@ -3122,15 +3122,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get executor package details */
+        /** 获取执行器包详情 */
         get: operations["ExecutorPackageController_findOne"];
         put?: never;
         post?: never;
-        /** Delete executor package */
+        /** 删除执行器包 */
         delete: operations["ExecutorPackageController_remove"];
         options?: never;
         head?: never;
-        /** Update executor package info */
+        /** 更新执行器包信息 */
         patch: operations["ExecutorPackageController_update"];
         trace?: never;
     };
@@ -3142,8 +3142,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download executor package file
-         * @description Accepts either a valid administrator access JWT or the executor shared token. JWT validation is stateless and does not query the user database, matching upload-auth middleware; access-token expiry provides revocation latency.
+         * 下载执行器包文件
+         * @description 接受有效的管理员 access JWT 或执行器共享令牌。JWT 校验是无状态的、不查用户库，与上传鉴权中间件一致；access token 的过期时间即撤销延迟。
          */
         get: operations["ExecutorPackageController_download"];
         put?: never;
@@ -3167,7 +3167,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Deprecate executor package */
+        /** 弃用执行器包 */
         patch: operations["ExecutorPackageController_deprecate"];
         trace?: never;
     };
@@ -3184,7 +3184,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Activate executor package */
+        /** 激活执行器包 */
         patch: operations["ExecutorPackageController_activate"];
         trace?: never;
     };
@@ -3197,7 +3197,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Executor package push result callback (called by executor-node) */
+        /** 执行器包推送结果回调（由 executor-node 调用） */
         post: operations["ExecutorPackageController_pushResult"];
         delete?: never;
         options?: never;
@@ -3214,7 +3214,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Push executor package to scheduler nodes */
+        /** 将执行器包推送到调度节点 */
         post: operations["ExecutorPackageController_push"];
         delete?: never;
         options?: never;
@@ -3279,8 +3279,8 @@ export interface paths {
         };
         get?: never;
         /**
-         * Upload one execution artifact (executor-to-admin, best-effort)
-         * @description Authenticates with the executor shared token or the per-executor dynamic token (same credential the executor uses for its terminal callback). Accepts multipart/form-data with a 'file' field (same shape as the executor-package upload channel). Optional ?sha256= is cross-checked against the uploaded bytes.
+         * 上传单个执行产物（执行器 → 中台，尽力而为）
+         * @description 使用执行器共享令牌或该执行器的动态令牌鉴权（与执行器上报终态回调所用凭据一致）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。
          */
         put: operations["ArtifactsController_upload"];
         post?: never;
@@ -3298,8 +3298,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List execution artifacts (manifest, admin only)
-         * @description Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard + RolesGuard).
+         * 列出执行产物（manifest，仅管理员）
+         * @description 返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。
          */
         get: operations["ArtifactsController_list"];
         put?: never;
@@ -3318,8 +3318,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download one execution artifact (streamed, admin only)
-         * @description Streams a stored artifact to an authenticated administrator. Enforces a bare-safe file-name (path-traversal guarded) and 404 when absent.
+         * 下载单个执行产物（流式，仅管理员）
+         * @description 将已存储的产物以流式返回给已认证的管理员。强制校验裸文件名（防路径穿越），产物不存在时返回 404。
          */
         get: operations["ArtifactsController_download"];
         put?: never;
@@ -3338,14 +3338,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List task templates (official + custom)
-         * @description Returns all task templates. Official presets (seeded by migration, aligned with the MCP `TASK_TEMPLATES`) come first; user-created custom templates follow.
+         * 列出任务模板（官方 + 自定义）
+         * @description 返回全部任务模板。官方预置模板（由迁移脚本写入，与 MCP 的 `TASK_TEMPLATES` 对齐）在前，用户创建的自定义模板在后。
          */
         get: operations["TaskTemplateController_list"];
         put?: never;
         /**
-         * Create a custom task template
-         * @description The `config` object is validated against CreateTaskDto semantics before persisting; a stray/invalid field is rejected with 400.
+         * 创建自定义任务模板
+         * @description 持久化前会按 CreateTaskDto 语义校验 `config` 对象；出现多余或非法字段将以 400 拒绝。
          */
         post: operations["TaskTemplateController_create"];
         delete?: never;
@@ -3362,15 +3362,15 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get one task template
-         * @description Used by the create-task form to prefetch a template's `config` for prefilling.
+         * 获取单个任务模板
+         * @description 供创建任务表单预取模板的 `config` 用于预填。
          */
         get: operations["TaskTemplateController_one"];
         put?: never;
         post?: never;
         /**
-         * Delete a custom task template
-         * @description Official templates cannot be deleted (403).
+         * 删除自定义任务模板
+         * @description 官方模板不可删除（403）。
          */
         delete: operations["TaskTemplateController_remove"];
         options?: never;
@@ -3388,8 +3388,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Create a runnable task from a template (one-click clone)
-         * @description Expands the template's config as defaults and overlays the request body (explicit fields win; at least `name` is required). The merged payload is validated against CreateTaskDto and created via the standard task path.
+         * 从模板创建可运行任务（一键克隆）
+         * @description 把模板的 config 展开为默认值，再叠加请求体（显式字段优先；至少需要 `name`）。合并后的载荷按 CreateTaskDto 校验，并走标准任务创建路径落库。
          */
         post: operations["TaskTemplateController_instantiate"];
         delete?: never;
@@ -3405,12 +3405,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List outbound event subscriptions */
+        /** 列出出站事件订阅 */
         get: operations["EventSubscriptionController_list"];
         put?: never;
         /**
-         * Create an outbound event subscription (ADMIN only)
-         * @description URL is deep-validated against SSRF (private/loopback/link-local/metadata targets rejected). Omit `secret` to have one generated (returned once as `generatedSecret`).
+         * 创建出站事件订阅（仅 ADMIN）
+         * @description URL 会针对 SSRF 做深度校验（拒绝内网/回环/链路本地/元数据目标）。省略 `secret` 则由服务端生成（以 `generatedSecret` 仅返回一次）。
          */
         post: operations["EventSubscriptionController_create"];
         delete?: never;
@@ -3429,11 +3429,11 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Delete a subscription (dead letters cascade) */
+        /** 删除订阅（死信级联删除） */
         delete: operations["EventSubscriptionController_remove"];
         options?: never;
         head?: never;
-        /** Update a subscription (enable/disable, url, eventTypes, secret rotation) */
+        /** 更新订阅（启用/停用、url、eventTypes、secret 轮换） */
         patch: operations["EventSubscriptionController_update"];
         trace?: never;
     };
@@ -3444,7 +3444,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List dead letters (deliveries that failed all retry attempts) */
+        /** 列出死信（所有重试均失败的投递） */
         get: operations["EventSubscriptionController_deadLetters"];
         put?: never;
         post?: never;
@@ -3464,8 +3464,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Replay a dead letter once with the subscription's current url/secret
-         * @description Single delivery attempt (no auto-retry). On success the dead letter row is removed; on failure the error is returned and the row is kept.
+         * 用订阅当前的 url/secret 重放一次死信
+         * @description 单次投递尝试（不自动重试）。成功则删除该死信行；失败则返回错误并保留该行。
          */
         post: operations["EventSubscriptionController_replay"];
         delete?: never;
@@ -3481,12 +3481,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List my API Keys (masked) */
+        /** 列出我的 API Key（脱敏） */
         get: operations["ApiKeysController_list"];
         put?: never;
         /**
-         * Create an API Key
-         * @description Returns the plaintext key ONCE (`acf_<64 hex>`); it is stored only as a sha256 hash and can never be retrieved again.
+         * 创建 API Key
+         * @description 明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。
          */
         post: operations["ApiKeysController_create"];
         delete?: never;
@@ -3505,7 +3505,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Revoke (soft-delete) my API Key */
+        /** 撤销（软删除）我的 API Key */
         delete: operations["ApiKeysController_revoke"];
         options?: never;
         head?: never;
@@ -3521,7 +3521,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Revoke my API Key (explicit alias, idempotent) */
+        /** 撤销我的 API Key（显式别名，幂等） */
         post: operations["ApiKeysController_revokeAlias"];
         delete?: never;
         options?: never;
@@ -3536,10 +3536,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List projects visible to the caller */
+        /** 列出调用者可访问的项目 */
         get: operations["ProjectsController_findAll"];
         put?: never;
-        /** Create project (ADMIN) */
+        /** 创建项目（ADMIN） */
         post: operations["ProjectsController_create"];
         delete?: never;
         options?: never;
@@ -3554,14 +3554,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get project by id */
+        /** 按 id 获取项目 */
         get: operations["ProjectsController_findOne"];
         put?: never;
         post?: never;
         delete: operations["ProjectsController_remove"];
         options?: never;
         head?: never;
-        /** Update project (ADMIN) */
+        /** 更新项目（ADMIN） */
         patch: operations["ProjectsController_update"];
         trace?: never;
     };
@@ -3572,10 +3572,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List project members */
+        /** 列出项目成员 */
         get: operations["ProjectsController_listMembers"];
         put?: never;
-        /** Add or upsert a project member (ADMIN) */
+        /** 新增或更新项目成员（ADMIN） */
         post: operations["ProjectsController_addMember"];
         delete?: never;
         options?: never;
@@ -3596,7 +3596,7 @@ export interface paths {
         delete: operations["ProjectsController_removeMember"];
         options?: never;
         head?: never;
-        /** Change a member's role (ADMIN) */
+        /** 变更成员角色（ADMIN） */
         patch: operations["ProjectsController_updateMember"];
         trace?: never;
     };
@@ -3607,7 +3607,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Caller's roles across projects */
+        /** 调用者在各项目中的角色 */
         get: operations["ProjectsController_myRoles"];
         put?: never;
         post?: never;
@@ -3631,9 +3631,9 @@ export interface components {
             refreshToken: string;
         };
         AuthTokensDto: {
-            /** @description JWT access token (15m default, sid claim present) */
+            /** @description JWT access token（缺省有效期 15 分钟，含 sid claim） */
             accessToken: string;
-            /** @description 30d refresh token with unique jti */
+            /** @description 30 天有效期的 refresh token，jti 唯一 */
             refreshToken: string;
         };
         AuthLogoutDto: {
@@ -3653,15 +3653,15 @@ export interface components {
             /** @enum {string} */
             role: "admin" | "user";
             isActive: boolean;
-            /** @description Refresh-token jti of this access token's session（旧令牌缺省） */
+            /** @description 本 access token 所属会话的 refresh-token jti（旧令牌缺省） */
             sid?: string;
         };
         TotpSetupResponseDto: {
-            /** @description Base32-encoded TOTP secret (staged, not yet active) */
+            /** @description Base32 编码的 TOTP 密钥（暂存，尚未生效） */
             secret: string;
             /**
-             * @description otpauth:// URL for authenticator apps
-             * @example otpauth://totp/AutoCodeFlow:admin?secret=...&issuer=AutoCodeFlow
+             * @description 供认证器应用使用的 otpauth:// URL
+             * @example otpauth://totp/AutoCodeFlow:admin?secret=&issuer=AutoCodeFlow
              */
             otpauthUrl: string;
         };
@@ -3673,11 +3673,11 @@ export interface components {
             code: string;
         };
         TotpEnableResponseDto: {
-            /** @description Always true on success (400 otherwise) */
+            /** @description 成功时恒为 true（否则返回 400） */
             enabled: boolean;
         };
         TotpDisableResponseDto: {
-            /** @description True when this call actually turned TOTP off; false when it was already off (idempotent no-op) */
+            /** @description 本次调用确实关闭了 TOTP 时为 true；本来就未开启时为 false（幂等空操作） */
             disabled: boolean;
         };
         TotpVerifyDto: {
@@ -3692,25 +3692,25 @@ export interface components {
             code: string;
         };
         AuthSessionRowDto: {
-            /** @description refresh_tokens row id (opaque session handle) */
+            /** @description refresh_tokens 行 ID（不透明的会话句柄） */
             id: string;
-            /** @description JWT id of the session; also the revoke key */
+            /** @description 会话的 JWT id；同时也是撤销键 */
             jti: string;
             /**
              * Format: date-time
-             * @description Session creation time (ISO-8601)
+             * @description 会话创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Session expiry (ISO-8601)
+             * @description 会话过期时间（ISO-8601）
              */
             expiresAt: string | null;
-            /** @description User-Agent captured at login */
+            /** @description 登录时采集的 User-Agent */
             userAgent: string | null;
-            /** @description Client IP captured at login */
+            /** @description 登录时采集的客户端 IP */
             ip: string | null;
-            /** @description True for the session making this request */
+            /** @description 发起本次请求的会话为 true */
             current: boolean;
         };
         SessionRevokeResponseDto: {
@@ -3718,7 +3718,7 @@ export interface components {
             success: boolean;
         };
         RevokeOthersResponseDto: {
-            /** @description Number of sessions revoked */
+            /** @description 已撤销的会话数 */
             revoked: number;
         };
         OidcStatusResponseDto: {
@@ -3730,7 +3730,7 @@ export interface components {
             username: string;
             /** @example admin@example.com */
             email: string;
-            /** @description At least 8 chars, must include uppercase, lowercase, number, and special character */
+            /** @description 至少 8 个字符，且必须包含大写字母、小写字母、数字和特殊字符 */
             password: string;
             /**
              * @default user
@@ -3740,23 +3740,23 @@ export interface components {
         };
         UserResponseDto: {
             id: number;
-            /** @description 1..128, unique */
+            /** @description 1..128 字符，唯一 */
             username: string;
-            /** @description unique */
+            /** @description 唯一 */
             email: string;
             /** @enum {string} */
             role: "admin" | "user";
-            /** @description Soft-disable switch (login refused when false) */
+            /** @description 软禁用开关（为 false 时拒绝登录） */
             isActive: boolean;
-            /** @description Consecutive failed logins (lockout input) */
+            /** @description 连续登录失败次数（锁定判定的输入） */
             loginFailCount: number;
             /**
              * Format: date-time
-             * @description Lockout deadline
+             * @description 锁定截止时间
              */
             lockedUntil: string | null;
             totpEnabled: boolean;
-            /** @description Bumped on password change — revokes old refresh tokens */
+            /** @description 修改密码时递增——使旧的 refresh token 失效 */
             sessionVersion: number;
             lastTotpCounter: number | null;
             /** Format: date-time */
@@ -3778,14 +3778,14 @@ export interface components {
             username?: string;
             /** @example admin@example.com */
             email?: string;
-            /** @description At least 8 chars, must include uppercase, lowercase, number, and special character */
+            /** @description 至少 8 个字符，且必须包含大写字母、小写字母、数字和特殊字符 */
             password?: string;
             /**
              * @default user
              * @enum {string}
              */
             role?: "admin" | "user";
-            /** @description Required when a non-admin user changes their own password (SEC-12); stripped by the service before persisting (R19) */
+            /** @description 非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19） */
             currentPassword?: string;
         };
         UserDeleteResponseDto: {
@@ -3795,56 +3795,56 @@ export interface components {
         TaskResponseDto: {
             /** Format: uuid */
             id: string;
-            /** @description Task name (globally unique) */
+            /** @description 任务名（全局唯一） */
             name: string;
-            /** @description Task description */
+            /** @description 任务描述 */
             description: string | null;
             /**
-             * @description deleted rows are never returned (soft-delete)
+             * @description 已删除的行永不返回（软删除）
              * @enum {string}
              */
             status: "active" | "paused" | "deleted";
             /** @enum {string} */
             triggerType: "cron" | "fixed_rate" | "api" | "manual";
-            /** @description 5-field cron expression (cron tasks) */
+            /** @description 5 字段 cron 表达式（cron 任务） */
             cronExpression: string | null;
-            /** @description IANA timezone for cron evaluation */
+            /** @description 用于 cron 计算的 IANA 时区 */
             timezone: string | null;
-            /** @description Fixed-rate interval in ms (fixed_rate tasks) */
+            /** @description 固定频率间隔，单位毫秒（fixed_rate 任务） */
             fixedRate: number | null;
             /** @enum {string} */
             runtime: "python" | "node" | "shell";
-            /** @description Declared interpreter version (multiversion WS1) */
+            /** @description 声明的解释器版本（多版本 WS1） */
             runtimeVersion: string | null;
-            /** @description Dependency specs installed by the executor before running (packaged tasks) */
+            /** @description 执行器在运行前安装的依赖规格（打包类任务） */
             dependencies: {
                 [key: string]: string;
             } | null;
-            /** @description Entry file inside the package */
+            /** @description 包内的入口文件 */
             entrypoint: string | null;
-            /** @description Python/node dependency list (uv pip install / npm install) */
+            /** @description Python/node 依赖列表（uv pip install / npm install） */
             requirements: string[] | null;
-            /** @description Git repo URL (git-source tasks) */
+            /** @description Git 仓库 URL（git 源任务） */
             gitRepo: string | null;
             gitBranch: string | null;
-            /** @description Currently checked-out commit */
+            /** @description 当前检出的提交 */
             gitCommit: string | null;
-            /** @description Latest config-snapshot version label */
+            /** @description 最新的配置快照版本标签 */
             currentVersion: string | null;
-            /** @description Execution timeout in seconds (0 = unlimited) */
+            /** @description 执行超时秒数（0 = 不限） */
             timeout: number;
-            /** @description Retry budget for failed dispatch/execution */
+            /** @description 派发/执行失败后的重试次数上限 */
             maxRetry: number;
-            /** @description Delay between retries in seconds */
+            /** @description 重试间隔秒数 */
             retryDelay: number;
-            /** @description Case-insensitive substrings of failure eligible for retry; null/empty = retry every failure */
+            /** @description 可重试的失败关键词子串，不区分大小写；null/空 = 所有失败都重试 */
             retryableErrors: string[] | null;
             /** @enum {string} */
             blockStrategy: "serial" | "discard" | "cover_early";
             /** @enum {string} */
             misfireStrategy: "ignore" | "fire_once";
             /**
-             * @description Stored (and returned) as the PG enum label; numeric input is normalized on write
+             * @description 以 PG 枚举标签的形态存储（并返回）；写入时会把数字输入归一化
              * @enum {string}
              */
             priority: "low" | "normal" | "high" | "critical";
@@ -3852,80 +3852,84 @@ export interface components {
             executeMode: "single" | "broadcast";
             /**
              * Format: date-time
-             * @description Last time the scheduler enqueued this task
+             * @description 调度器最近一次将该任务入队的时间
              */
             lastTriggerTime: string | null;
             alarmEmail: string | null;
-            /** @description Alarm channel names for failure/timeout alerts */
+            /** @description 失败/超时告警使用的告警渠道名 */
             alarmChannels: string[] | null;
-            /** @description Default run parameters (plain runtime params, no credentials) */
+            /** @description 默认运行参数（纯运行时参数，不含凭据） */
             params: {
                 [key: string]: unknown;
             } | null;
-            /** @description Pin to an executor app by name */
+            /** @description 按名称固定到某个执行器应用 */
             executorAppName: string | null;
             /**
              * Format: uuid
-             * @description Application (zip package) this task runs from
+             * @description 该任务运行所依赖的应用（zip 包）
              */
             applicationId: string | null;
             /**
-             * @description Explicit code-source channel (null = legacy row, union semantics apply on read)
-             * @enum {string}
+             * @description 显式的代码来源通道（null = 历史遗留行，读取时按联合语义处理）
+             * @enum {number}
              */
-            codeSource: "git" | "glue" | "application_zip" | null;
+            codeSource: [
+                "git",
+                "glue",
+                "application_zip"
+            ] | null;
             /**
              * Format: uuid
-             * @description Owning project (null = unassigned/default-project view)
+             * @description 所属项目（null = 未分配/默认项目视图）
              */
             projectId: string | null;
-            /** @description Project relation — NOT loaded by current read paths (plain repo reads never join it) */
+            /** @description 项目关联——当前读取路径不会加载它（普通仓储查询从不 join 该关联） */
             project?: {
                 /** Format: uuid */
                 id?: string;
                 name?: string;
             } | null;
-            /** @description Creator user id (null = unowned legacy row; guards treat as admin-only) */
+            /** @description 创建者用户 ID（null = 无归属的历史遗留行；鉴权按仅管理员可见处理） */
             ownerUserId: number | null;
-            /** @description Task secrets, ALWAYS masked: leaf values are '******' (SEC-02); plaintext never leaves the server */
+            /** @description 任务密钥，始终打码：叶子值恒为 '******'（SEC-02）；明文永不出服务端 */
             secrets: {
                 [key: string]: string;
             } | null;
-            /** @description Executor group filter (AND with tags) */
+            /** @description 执行器分组过滤条件（与标签按 AND 组合） */
             executorGroup: string | null;
-            /** @description Required executor tags (AND subset semantics) */
+            /** @description 必需的执行器标签（AND 子集语义） */
             executorTags: string[] | null;
-            /** @description Affinity tags — ANY match keeps the executor in candidates (OR) */
+            /** @description 亲和标签——命中任意一个即保留该执行器为候选（OR） */
             executorAffinityTags: string[] | null;
-            /** @description Anti-affinity tags — ANY match excludes the executor */
+            /** @description 反亲和标签——命中任意一个即排除该执行器 */
             executorAntiAffinityTags: string[] | null;
             /**
-             * @description Task-level deployment constraint; null = follow global executor.deploymentPolicy
+             * @description 任务级部署约束；null = 跟随全局 executor.deploymentPolicy
              * @enum {string}
              */
             deploymentPolicy: "strict" | "prefer" | null;
             /**
              * Format: uuid
-             * @description Pinned executor id (exclusive with broadcast; no fallback to fleet)
+             * @description 固定的执行器 ID（与广播互斥；不回退到执行器集群）
              */
             executorId: string | null;
-            /** @description Inline GLUE script source (admin-editable) */
+            /** @description 内联 GLUE 脚本源码（管理员可编辑） */
             glueSource: string | null;
-            /** @description GLUE language: python/javascript/shell */
+            /** @description GLUE 语言：python/javascript/shell */
             glueLanguage: string | null;
-            /** @description Maintenance windows: 5-field cron start/end pairs, half-open [start, end) */
+            /** @description 维护窗口：5 字段 cron 的起止时间对，半开区间 [start, end) */
             maintenanceWindows: {
                 start: string;
                 end: string;
                 description?: string;
             }[] | null;
-            /** @description Markdown runbook shown on failure + consumed by alert routing */
+            /** @description 失败时展示的 Markdown 运维手册，同时供告警路由消费 */
             runbook: string | null;
-            /** @description Post-timeout action (kill default; kill_retry re-enqueues once; notify_only skips admin-side kill) */
+            /** @description 超时后的动作（默认 kill；kill_retry 重新入队一次；notify_only 跳过管理端 kill） */
             timeoutAction: string | null;
-            /** @description Timeout WARNING notification threshold as % of timeout (0-90, null = off) */
+            /** @description 超时告警（WARNING）通知阈值，按超时时间的百分比计（0-90，null = 关闭） */
             timeoutWarnRatio: number | null;
-            /** @description Expected duration in seconds (load-score input; 0/null = unknown) */
+            /** @description 预期持续时间，单位秒（负载评分输入；0/null = 未知） */
             estimatedDurationSec: number | null;
             /** Format: date-time */
             createdAt: string;
@@ -3933,7 +3937,7 @@ export interface components {
             updatedAt: string;
             /**
              * Format: date-time
-             * @description Soft-delete column (filtered out of all reads)
+             * @description 软删除列（所有读取均过滤掉）
              */
             deletedAt: string | null;
             /** @description R7 实测出现性差异：save() 回程（create/update/pause/resume/rollbackToVersion）会把 select:false 列 hydrated 成 null 带出；findOne/列表等 select 读取不含该键。值恒 null 或掩码形态——明文只在 webhook enable/rotate 的一次性回显 */
@@ -3944,80 +3948,98 @@ export interface components {
             id: string;
             /** Format: uuid */
             taskId: string;
-            /** @description Task name snapshot at dispatch time */
+            /** @description 派发时刻的任务名快照 */
             taskName: string;
             /** @enum {string} */
             status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
-            /** @description Task relation — NOT loaded by current read paths */
+            /** @description 任务关联——当前读取路径不会加载它 */
             task?: {
                 [key: string]: unknown;
             } | null;
-            /** @description Executor address the execution was dispatched to */
+            /** @description 该次执行被派发到的执行器地址 */
             executorAddress: string | null;
-            /** @description Accumulated log text (single-execution reads only — list reads exclude it) */
+            /** Format: uuid */
+            executorId: string | null;
+            /** @description 累积的日志文本（仅单次执行读取返回——列表读取排除该列） */
             logs: string | null;
-            /** @description 'db' or object-store marker for the log backend */
+            /** @description 日志后端的标记：'db' 或对象存储 */
             logStorage: string | null;
-            /** @description Object key when logs live in S3/MinIO */
+            /** @description 日志存放于 S3/MinIO 时的对象键 */
             logObjectKey: string | null;
-            /** @description Structured result payload returned by the task */
+            /** @description 任务返回的结构化结果载荷 */
             result: {
                 [key: string]: unknown;
             } | null;
-            /** @description Merged run parameters actually dispatched */
+            /** @description 实际派发出去的合并后运行参数 */
             params: {
                 [key: string]: unknown;
             } | null;
             /**
              * Format: date-time
-             * @description First dispatch/arrival on the executor
+             * @description 首次派发/到达执行器的时间
              */
             startTime: string | null;
             /** Format: date-time */
             endTime: string | null;
-            /** @description wall-clock ms (endTime - startTime) */
+            /** @description 挂钟耗时毫秒数（endTime - startTime） */
             duration: number | null;
-            /** @description Retry budget consumed so far */
+            /** @description 截至目前已消耗的重试次数 */
             retryCount: number;
             errorMessage: string | null;
             /**
-             * @description Classified failure token (executor-reportable subset + admin-internal tokens)
-             * @enum {string}
+             * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
+             * @enum {number}
              */
-            failureReason: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "stale_recovered" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "sandbox_unavailable" | "killed" | "unknown" | "application_missing" | "never_dispatched" | null;
-            /** @description Process exit code when the executor surfaced one */
+            failureReason: [
+                "package_fetch_failed",
+                "script_error",
+                "timeout",
+                "executor_offline",
+                "executor_restart",
+                "stale_recovered",
+                "dependency_install_failed",
+                "git_fetch_failed",
+                "runtime_missing",
+                "interpreter_unavailable",
+                "sandbox_unavailable",
+                "killed",
+                "unknown",
+                "application_missing",
+                "never_dispatched"
+            ] | null;
+            /** @description 进程退出码（执行器能给出时才有） */
             exitCode: number | null;
-            /** @description AI failure analysis text (empty string = no analysis) */
+            /** @description AI 失败分析文本（空字符串 = 无分析） */
             aiAnalysis: string | null;
-            /** @description Artifacts uploaded by the execution */
+            /** @description 该次执行上传的产物 */
             artifacts: {
                 name: string;
                 size: number;
                 sha256: string;
             }[] | null;
-            /** @description manual/cron/webhook/api/dependency — how this run was triggered */
+            /** @description manual/cron/webhook/api/dependency——本次运行的触发方式 */
             triggerType: string | null;
-            /** @description Pinned config-snapshot version this run replayed */
+            /** @description 本次运行重放所固定的配置快照版本 */
             taskVersion: string | null;
-            /** @description W3C trace-id propagated through dispatch */
+            /** @description 随派发链路传递的 W3C trace-id */
             traceId: string | null;
-            /** @description Resolved package URL for packaged runs */
+            /** @description 打包类运行解析出的包 URL */
             resolvedPackageUrl: string | null;
-            /** @description Resolved package version for packaged runs */
+            /** @description 打包类运行解析出的包版本 */
             resolvedPackageVersion: string | null;
             /** Format: date-time */
             createdAt: string;
             /**
              * Format: date-time
-             * @description When the dependency gate fired this execution
+             * @description 依赖门禁触发本次执行的时间
              */
             depsFiredAt: string | null;
             /**
              * Format: uuid
-             * @description Mutex group the execution is queued/running under
+             * @description 该执行排队/运行所属的互斥组
              */
             mutexGroupId: string | null;
-            /** @description Optimistic-lock version column */
+            /** @description 乐观锁版本列 */
             version: number;
         };
         ExecutionListItemDto: {
@@ -4025,107 +4047,125 @@ export interface components {
             id: string;
             /** Format: uuid */
             taskId: string;
-            /** @description Task name snapshot at dispatch time */
+            /** @description 派发时刻的任务名快照 */
             taskName: string;
             /** @enum {string} */
             status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
-            /** @description Task relation — NOT loaded by current read paths */
+            /** @description 任务关联——当前读取路径不会加载它 */
             task?: {
                 [key: string]: unknown;
             } | null;
-            /** @description Executor address the execution was dispatched to */
+            /** @description 该次执行被派发到的执行器地址 */
             executorAddress: string | null;
-            /** @description Excluded from list/stats reads (PERF-03) — fetch via the logs endpoints */
+            /** Format: uuid */
+            executorId: string | null;
+            /** @description 列表/统计读取会排除该列（PERF-03）——请改用日志端点获取 */
             logs?: string | null;
-            /** @description 'db' or object-store marker for the log backend */
+            /** @description 日志后端的标记：'db' 或对象存储 */
             logStorage: string | null;
-            /** @description Object key when logs live in S3/MinIO */
+            /** @description 日志存放于 S3/MinIO 时的对象键 */
             logObjectKey: string | null;
-            /** @description List reads return it; stats recentExecutions exclude this column entirely */
+            /** @description 列表读取会返回该列；统计端点的 recentExecutions 完全不含该列 */
             result?: {
                 [key: string]: unknown;
             } | null;
-            /** @description Merged run parameters actually dispatched */
+            /** @description 实际派发出去的合并后运行参数 */
             params: {
                 [key: string]: unknown;
             } | null;
             /**
              * Format: date-time
-             * @description First dispatch/arrival on the executor
+             * @description 首次派发/到达执行器的时间
              */
             startTime: string | null;
             /** Format: date-time */
             endTime: string | null;
-            /** @description wall-clock ms (endTime - startTime) */
+            /** @description 挂钟耗时毫秒数（endTime - startTime） */
             duration: number | null;
-            /** @description Retry budget consumed so far */
+            /** @description 截至目前已消耗的重试次数 */
             retryCount: number;
             errorMessage: string | null;
             /**
-             * @description Classified failure token (executor-reportable subset + admin-internal tokens)
-             * @enum {string}
+             * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
+             * @enum {number}
              */
-            failureReason: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "stale_recovered" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "sandbox_unavailable" | "killed" | "unknown" | "application_missing" | "never_dispatched" | null;
-            /** @description Process exit code when the executor surfaced one */
+            failureReason: [
+                "package_fetch_failed",
+                "script_error",
+                "timeout",
+                "executor_offline",
+                "executor_restart",
+                "stale_recovered",
+                "dependency_install_failed",
+                "git_fetch_failed",
+                "runtime_missing",
+                "interpreter_unavailable",
+                "sandbox_unavailable",
+                "killed",
+                "unknown",
+                "application_missing",
+                "never_dispatched"
+            ] | null;
+            /** @description 进程退出码（执行器能给出时才有） */
             exitCode: number | null;
-            /** @description Excluded from list/stats reads (PERF-03) */
+            /** @description 列表/统计读取会排除该列（PERF-03） */
             aiAnalysis?: string | null;
-            /** @description Artifacts uploaded by the execution */
+            /** @description 该次执行上传的产物 */
             artifacts: {
                 name: string;
                 size: number;
                 sha256: string;
             }[] | null;
-            /** @description manual/cron/webhook/api/dependency — how this run was triggered */
+            /** @description manual/cron/webhook/api/dependency——本次运行的触发方式 */
             triggerType: string | null;
-            /** @description Pinned config-snapshot version this run replayed */
+            /** @description 本次运行重放所固定的配置快照版本 */
             taskVersion: string | null;
-            /** @description W3C trace-id propagated through dispatch */
+            /** @description 随派发链路传递的 W3C trace-id */
             traceId: string | null;
-            /** @description Resolved package URL for packaged runs */
+            /** @description 打包类运行解析出的包 URL */
             resolvedPackageUrl: string | null;
-            /** @description Resolved package version for packaged runs */
+            /** @description 打包类运行解析出的包版本 */
             resolvedPackageVersion: string | null;
             /** Format: date-time */
             createdAt: string;
             /**
              * Format: date-time
-             * @description When the dependency gate fired this execution
+             * @description 依赖门禁触发本次执行的时间
              */
             depsFiredAt: string | null;
             /**
              * Format: uuid
-             * @description Mutex group the execution is queued/running under
+             * @description 该执行排队/运行所属的互斥组
              */
             mutexGroupId: string | null;
-            /** @description Optimistic-lock version column */
+            /** @description 乐观锁版本列 */
             version: number;
         };
         BatchErrorItemDto: {
-            /** @description The requested task id */
+            /** @description 请求中指定的任务 ID */
             id: string;
-            /** @description err.message — partial-failure marker */
+            /** @description err.message——部分失败的标记 */
             error: string;
         };
         VersionDiffEntryDto: {
-            /** @description Value in version1 (any JSON) */
+            /** @description version1 中的值（任意 JSON） */
             old: Record<string, never>;
-            /** @description Value in version2 (any JSON) */
+            /** @description version2 中的值（任意 JSON） */
             new: Record<string, never>;
         };
         ExecutionTimelineEntryDto: {
             /** @enum {string} */
             phase: "created" | "started" | "finished";
-            /** @description ISO timestamp, null when the phase never happened */
+            /** @description ISO 时间戳，该阶段从未发生时为 null */
             at: string | null;
-            /** @description e.g. 'trigger=manual' */
+            /** @description 例如 'trigger=manual' */
             detail?: string;
         };
         ExecutionReportSummaryDto: {
             id: number;
             /**
              * Format: date-time
-             * @description DATE column — the aggregate's day
+             * @description DATE 列——该聚合行所属的日期
              */
             triggerDay: string;
             runningCount: number;
@@ -4158,7 +4198,7 @@ export interface components {
         CreateTaskDto: {
             id?: string;
             /**
-             * @description Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.
+             * @description 任务名称——允许任意语言（含中文/日文/emoji）。拒绝控制字符与首尾空白；长度上限 255 字符。全部任务（含软删除行）内全局唯一。
              * @example 每日备份
              */
             name: string;
@@ -4166,18 +4206,18 @@ export interface components {
             status?: string;
             triggerType: string;
             cronExpression?: string;
-            /** @description IANA timezone for cron schedules, e.g. Asia/Shanghai */
+            /** @description cron 调度使用的 IANA 时区，例如 Asia/Shanghai */
             timezone?: string;
             fixedRate?: number;
-            /** @description Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries. */
+            /** @description 任务级维护窗口：落在窗口内的定时触发会被跳过（手动/API 触发不受影响）。每项为 {start, end, description?}，start/end 均为 5 字段 cron；窗口在最近一次 start-cron 触达时开启、在最近一次 end-cron 触达时关闭。最多 10 条。 */
             maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
             runtime?: string;
-            /** @description Python interpreter version the task requires, as "major.minor" (e.g. "3.7", "3.12"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python. */
+            /** @description 任务所需的 Python 解释器版本，格式为 \"major.minor\"（例如 \"3.7\"、\"3.12\"）。支持区间默认 3.7–3.14；3.7 仅支持离线预置（uv 无法在线下载）。仅在 runtime=python 时有意义。 */
             runtimeVersion?: string;
-            /** @description Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"] */
+            /** @description 任务运行前由执行器安装的依赖声明——pip 依赖（python runtime，每任务独立 uv venv）或 npm 包（node runtime）。GLUE 脚本任务忽略该字段。示例：[\"requests>=2.31\", \"rich==13.7.1\"] */
             requirements?: string[];
             /**
-             * @description Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.
+             * @description 上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。
              * @example {
              *       "task-a-name": "uuid-of-task-a"
              *     }
@@ -4190,35 +4230,35 @@ export interface components {
             gitBranch?: string;
             gitCommit?: string;
             currentVersion?: string;
-            /** @description Task execution timeout in seconds (legacy field; prefer timeoutSeconds). 0 = no limit; bounded to the executor's 1..86400 window (executor-node rejects larger values with 400 on every attempt). */
+            /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
             timeout?: number;
-            /** @description Task execution timeout in seconds. 0 = no limit; bounded to the executor's 1..86400 window (normalized to `timeout`, which executor-node rejects above 86400 with 400). */
+            /** @description 任务执行超时秒数。0 = 不限制；上限为执行器的 1..86400 窗口（会归一化到 `timeout`，executor-node 对超过 86400 的值以 400 拒绝）。 */
             timeoutSeconds?: number;
             /**
-             * @description CORE-04: what happens when the task times out. kill (default) = executor tree-kills the process (existing behavior); kill_retry = also kill, but admin re-enqueues a fresh execution using the task's retry budget; notify_only = admin sends the timeout alert and issues no extra kill command (the executor's own hard timeout still applies). Omit on PATCH to keep the current value; explicit null resets to kill.
+             * @description CORE-04：任务超时后的动作。kill（缺省）= 执行器按既有语义树杀进程；kill_retry = 同样树杀，但 admin 按任务的重试预算重新入队一次执行；notify_only = admin 只下发超时告警、不额外下发终止指令（执行器自身的硬超时仍然生效）。PATCH 时缺省 = 保留当前值；显式 null = 重置回 kill。
              * @enum {string}
              */
             timeoutAction?: "kill" | "kill_retry" | "notify_only";
-            /** @description CORE-04: timeout warning threshold as a percentage of the timeout (integer 0-90). A single WARNING notification is sent once the running time reaches timeout × ratio/100 (at most once per execution). Omit/null = disabled. */
+            /** @description CORE-04：超时预警阈值，取 timeout 的百分数（整数 0-90）。运行时长达到 timeout × ratio/100 时发送一次 WARNING 预警通知（每个执行至多一次）。缺省/null = 未启用。 */
             timeoutWarnRatio?: number;
             maxRetry?: number;
             retryDelay?: number;
-            /** @description CORE-05: estimated execution duration in seconds (0 or omitted = unknown). Used only by scheduler-side executor load scoring (longer estimates penalize busy executors more); never consumed by the execution chain (heartbeat/timeout/stats). Explicit null on PATCH resets to unknown. */
+            /** @description CORE-05：预估执行时长（秒；0 或缺省 = 未知）。仅用于调度侧的 executor 负载评分（预估越长，对繁忙执行器的惩罚越大）；执行链路（心跳/超时/统计）从不消费该字段。PATCH 时显式 null = 重置为未知。 */
             estimatedDurationSec?: number;
             retryableErrors?: string[];
             priority?: number;
-            /** @description Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps). */
+            /** @description 派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。 */
             executeMode?: string;
             blockStrategy?: string;
             misfireStrategy?: string;
             alarmEmail?: string;
             alarmChannels?: string[];
-            /** @description Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face). */
+            /** @description 任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。 */
             params?: Record<string, never>;
             /**
-             * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
+             * @description 任务级 secrets（凭据键值对，独立于 params 的普通运行参数；配置了 SEC_SECRETS_KEY 时以 AES-256-GCM 加密落库，未配置则降级明文并告警）。读路径一律以字面量 ****** 掩码。派发时走两条通道：合并进 params（AUTOFLOW_<KEY>，旧执行器通道）并作为独立载荷字段下发，使执行器按**原名**注入（第三方 SDK 要求规范名）。PATCH 时按**逐键合并**：键缺省或叶子值为 ****** 时保留已存值，叶子值为 null 时删除该键，其它值覆盖；整个字段显式 null 时清空全部 secret。
              * @example {
-             *       "API_TOKEN": "sk-live-...",
+             *       "API_TOKEN": "sk-live-",
              *       "DB_PASSWORD": "hunter2"
              *     }
              */
@@ -4226,50 +4266,50 @@ export interface components {
                 [key: string]: string;
             };
             /**
-             * @description FEAT-22: task-level deployment dispatch policy override. 'strict' narrows candidates to the set of devices with explicit deployments of the bound application (running/stopped/upgrading); when none of them can take the execution it is queued as WAITING instead of silently dispatched elsewhere. 'prefer' keeps the ARCH-35 soft preference (deployed-and-running devices are tried first, falls back to the fleet). Omitted/null follows the global executor.deploymentPolicy (EXECUTOR_DEPLOYMENT_POLICY). Precedence: executorId pin > executorAppName > deployment constraint > fleet; the master switch executor.preferDeployedExecutor=false disables deployment awareness entirely. PATCH: omit = keep; explicit null = follow global.
+             * @description FEAT-22：任务级部署派发策略覆盖。'strict' 把候选收窄为显式部署了绑定应用的设备集合（running/stopped/upgrading）；当其中没有任何设备可承接该执行时，执行会以 WAITING 排队，而不是静默派发到别处。'prefer' 保留 ARCH-35 的软偏好（优先尝试已部署且运行中的设备，否则回落到全集群）。缺省/null = 跟随全局 executor.deploymentPolicy（EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId 钉定 > executorAppName > 部署约束 > 全集群；总开关 executor.preferDeployedExecutor=false 会彻底关闭部署感知。PATCH：缺省 = 保留；显式 null = 跟随全局。
              * @enum {string|null}
              */
             deploymentPolicy?: "strict" | "prefer" | null;
             executorAppName?: string;
             executorGroup?: string;
             executorTags?: string[];
-            /** @description NF-04: executor affinity tags (OR semantics — an executor holding ANY of these tags is an eligible candidate; loadScore then picks within the matched set). In broadcast mode the fan-out narrows to executors matching the affinity tags. Orthogonal to executorTags (hard AND-subset capability requirement). PATCH: omit = keep; explicit null/[] = clear. */
+            /** @description NF-04：执行器标签亲和（OR 语义——持有其中**任一**标签的执行器即为候选；随后在命中集合内按 loadScore 择优）。broadcast 模式下扇出收窄为命中亲和标签的执行器子集。与 executorTags（硬性 AND 子集能力要求）正交。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
             executorAffinityTags?: string[];
-            /** @description NF-04: executor anti-affinity tags (exclusion semantics — an executor holding ANY of these tags is excluded). Applies to both single and broadcast dispatch; combined with affinity tags the matched set is filtered further. PATCH: omit = keep; explicit null/[] = clear. */
+            /** @description NF-04：执行器标签反亲和（排除语义——持有其中**任一**标签的执行器即被排除）。单发与 broadcast 均生效；与亲和标签组合时，先取亲和命中集再在其上剔除。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
             executorAntiAffinityTags?: string[];
-            /** @description Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast. */
+            /** @description 把任务钉定到指定执行器：派发**只**发往该执行器（绕过分组/标签过滤）；它离线时快速失败。与 executeMode=broadcast 互斥。 */
             executorId?: string;
             glueSource?: string;
             glueLanguage?: string;
             applicationId?: string;
             /**
-             * @description Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.
+             * @description 代码来源渠道。gitRepo / glueSource / codeSource=application_zip（需配 applicationId）三者中只能设置一个。PATCH 时缺省 = 保留当前值；显式 null = 清除声明。requirements/PyPI 属于依赖型渠道，可与任一代码来源并存。
              * @enum {string|null}
              */
             codeSource?: "git" | "glue" | "application_zip" | null;
-            /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
+            /** @description FEAT-11：markdown 运维手册——展示在任务详情页，并随失败通知/告警一并附上。 */
             runbook?: string;
-            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
+            /** @description 所属项目。缺省/null = 未分配（计入默认项目视图；与既有行为一致）。设置它需要 ADMIN 或该项目的 editor/admin。 */
             projectId?: string;
         };
         ImportTaskDto: {
             /**
-             * @description Export schema version this API accepts
+             * @description 本 API 接受的导出 schema 版本
              * @example 1
              * @enum {string}
              */
             schemaVersion: "1";
-            /** @description exportedAt of the source export (informational) */
+            /** @description 源导出物的 exportedAt（仅供参考） */
             exportedAt?: string;
-            /** @description Task definition. Secrets are never part of a definition transfer: a carried secrets key is ignored (with a warning) and the imported task starts without secrets. */
+            /** @description 任务定义。secrets 绝不参与定义传输：携带的 secrets 键会被忽略（并给出告警），导入后的任务不带 secrets 启动。 */
             task: components["schemas"]["CreateTaskDto"];
         };
         TaskImportResultDto: {
-            /** @description Newly created task id */
+            /** @description 新建任务的 id */
             taskId: string;
-            /** @description Final task name (suffix " (imported)" / " (imported) N" appended on conflicts) */
+            /** @description 最终任务名（冲突时追加后缀 \" (imported)\" / \" (imported) N\"） */
             name: string;
-            /** @description Always contains the reconfigure-secrets hint (SEC-02 red line); may contain additional notes (e.g. an ignored secrets key). */
+            /** @description 总是包含「请重新配置 secrets」的提示（SEC-02 红线）；可能包含其它说明（例如被忽略的 secrets 键）。 */
             warnings: string[];
         };
         PaginatedTaskListDto: {
@@ -4289,36 +4329,36 @@ export interface components {
             totalPages: number;
         };
         ExecutionLogsPageResponseDto: {
-            /** @description Raw log lines from fromLine (level filter applies when given) */
+            /** @description 从 fromLine 起的原始日志行（给定级别过滤时生效） */
             lines: string[];
-            /** @description True total count of the (filtered) line set */
+            /** @description （过滤后）行集合的真实总数 */
             totalLines: number;
-            /** @description fromLine + lines.length < totalLines */
+            /** @description fromLine + lines.length < totalLines 时为 true */
             hasMore: boolean;
         };
         SchedulerStatsResponseDto: {
             healthy: boolean;
-            /** @description LeaderGate: only the leader schedules */
+            /** @description LeaderGate：仅 leader 负责调度 */
             isLeader: boolean;
             activeTimers: number;
             activeCronTasks: number;
             runningTaskCount: number;
             totalScheduledTasks: number;
-            /** @description process.uptime() seconds */
+            /** @description process.uptime() 秒数 */
             uptime: number;
         };
         ExecutionStatsResponseDto: {
-            /** @description Last 20 executions (list projection minus result) */
+            /** @description 最近 20 次执行（列表投影去掉 result） */
             recentExecutions: components["schemas"]["ExecutionListItemDto"][];
-            /** @description Success % over the last-20 window (reference only) */
+            /** @description 最近 20 次窗口内的成功百分比（仅供参考） */
             recentSuccessRate: number;
-            /** @description Success % over ALL runs (authoritative since FIX-5.1) */
+            /** @description 全部运行的成功百分比（自 FIX-5.1 起为权威口径） */
             successRate: number;
-            /** @description All-time SUCCESS count */
+            /** @description 历史累计 SUCCESS 次数 */
             succeeded: number;
-            /** @description All-time FAILED + TIMEOUT count (killed/cancelled not counted) */
+            /** @description 历史累计 FAILED + TIMEOUT 次数（被 kill/取消的不计入） */
             failed: number;
-            /** @description Mean duration ms over the recent window (0 when none) */
+            /** @description 最近窗口内的平均耗时毫秒数（无数据时为 0） */
             avgDuration: number;
             totalRuns: number;
         };
@@ -4326,34 +4366,34 @@ export interface components {
             /** Format: uuid */
             taskId: string;
             currentCron: string | null;
-            /** @description Recommended 5-field cron expression */
+            /** @description 推荐的 5 字段 cron 表达式 */
             suggestedCron: string;
             reasoning: string;
-            /** @description True when the LLM path failed and a heuristic suggestion was returned */
+            /** @description LLM 路径失败、已返回启发式建议时为 true */
             fallback?: boolean;
         };
         TaskDefinitionDto: {
             /**
-             * @description Task name
+             * @description 任务名称
              * @example Nightly DB sync
              */
             name: string;
             description?: string;
             /** @enum {string} */
             triggerType: "cron" | "fixed_rate" | "api" | "manual";
-            /** @description 5-field cron (triggerType=cron) */
+            /** @description 5 字段 cron 表达式（triggerType=cron 时生效） */
             cronExpression?: string;
-            /** @description IANA timezone, e.g. Asia/Shanghai */
+            /** @description IANA 时区，例如 Asia/Shanghai */
             timezone?: string;
-            /** @description Fixed-rate interval seconds */
+            /** @description 固定频率间隔秒数 */
             fixedRate?: number;
             /** @enum {string} */
             runtime?: "python" | "node" | "shell";
-            /** @description Interpreter version "major.minor" (python runtime) */
+            /** @description 解释器版本 \"major.minor\"（python runtime） */
             runtimeVersion?: string;
-            /** @description Executor-side dependency specs (pip/npm) */
+            /** @description 执行器端依赖声明（pip/npm） */
             requirements?: string[];
-            /** @description Upstream task dependency map: { displayName: upstreamTaskId } */
+            /** @description 上游任务依赖映射：{ 显示名: 上游任务id } */
             dependencies?: {
                 [key: string]: string;
             };
@@ -4362,19 +4402,19 @@ export interface components {
             gitBranch?: string;
             gitCommit?: string;
             currentVersion?: string;
-            /** @description Timeout seconds (0 = no limit) */
+            /** @description 超时秒数（0 = 不限制） */
             timeout?: number;
-            /** @description Timeout action: kill / kill_retry / notify_only */
+            /** @description 超时动作：kill / kill_retry / notify_only */
             timeoutAction?: string;
-            /** @description Timeout warning ratio 0-90 */
+            /** @description 超时预警比例 0-90 */
             timeoutWarnRatio?: number;
-            /** @description Estimated duration seconds */
+            /** @description 预估执行时长（秒） */
             estimatedDurationSec?: number;
             maxRetry?: number;
             retryDelay?: number;
-            /** @description Retryable error whitelist */
+            /** @description 可重试错误白名单 */
             retryableErrors?: string[];
-            /** @description low/normal/high/critical */
+            /** @description 优先级：low/normal/high/critical */
             priority?: Record<string, never>;
             /** @enum {string} */
             executeMode?: "single" | "broadcast";
@@ -4384,55 +4424,55 @@ export interface components {
             misfireStrategy?: "ignore" | "fire_once";
             alarmEmail?: string;
             alarmChannels?: string[];
-            /** @description Default task params */
+            /** @description 任务默认参数 */
             params?: {
                 [key: string]: unknown;
             };
             /**
-             * @description Deployment dispatch policy override
+             * @description 部署派发策略覆盖
              * @enum {string|null}
              */
             deploymentPolicy?: "strict" | "prefer" | null;
-            /** @description Pinned executor id */
+            /** @description 钉定的执行器 id */
             executorId?: string;
             executorAppName?: string;
             executorGroup?: string;
             executorTags?: string[];
             executorAffinityTags?: string[];
             executorAntiAffinityTags?: string[];
-            /** @description GLUE script source */
+            /** @description GLUE 脚本源码 */
             glueSource?: string;
             glueLanguage?: string;
-            /** @description Bound application id */
+            /** @description 绑定的应用 id */
             applicationId?: string;
             /** @enum {string} */
             codeSource?: "git" | "glue" | "application_zip";
-            /** @description Task-level maintenance windows */
+            /** @description 任务级维护窗口 */
             maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][] | null;
-            /** @description Markdown runbook */
+            /** @description Markdown 运维手册 */
             runbook?: string;
-            /** @description Owning project id */
+            /** @description 所属项目 id */
             projectId?: string;
         };
         TaskExportPayloadDto: {
             /**
-             * @description Export schema version (currently 1)
+             * @description 导出 schema 版本（当前为 1）
              * @example 1
              * @enum {string}
              */
             schemaVersion: "1";
             /**
              * Format: date-time
-             * @description ISO-8601 timestamp when the export was produced
+             * @description 导出生成时刻的 ISO-8601 时间戳
              */
             exportedAt: string;
-            /** @description Task definition snapshot keys. Secrets are NEVER included (SEC-02 red line: the whole key is stripped, values and key alike). */
+            /** @description 任务定义快照键。**绝不包含** secrets（SEC-02 红线：整键剔除，值与键名一律剔除）。 */
             task: components["schemas"]["TaskDefinitionDto"];
         };
         UpdateTaskDto: {
             id?: string;
             /**
-             * @description Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.
+             * @description 任务名称——允许任意语言（含中文/日文/emoji）。拒绝控制字符与首尾空白；长度上限 255 字符。全部任务（含软删除行）内全局唯一。
              * @example 每日备份
              */
             name?: string;
@@ -4440,18 +4480,18 @@ export interface components {
             status?: string;
             triggerType?: string;
             cronExpression?: string;
-            /** @description IANA timezone for cron schedules, e.g. Asia/Shanghai */
+            /** @description cron 调度使用的 IANA 时区，例如 Asia/Shanghai */
             timezone?: string;
             fixedRate?: number;
-            /** @description Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries. */
+            /** @description 任务级维护窗口：落在窗口内的定时触发会被跳过（手动/API 触发不受影响）。每项为 {start, end, description?}，start/end 均为 5 字段 cron；窗口在最近一次 start-cron 触达时开启、在最近一次 end-cron 触达时关闭。最多 10 条。 */
             maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
             runtime?: string;
-            /** @description Python interpreter version the task requires, as "major.minor" (e.g. "3.7", "3.12"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python. */
+            /** @description 任务所需的 Python 解释器版本，格式为 \"major.minor\"（例如 \"3.7\"、\"3.12\"）。支持区间默认 3.7–3.14；3.7 仅支持离线预置（uv 无法在线下载）。仅在 runtime=python 时有意义。 */
             runtimeVersion?: string;
-            /** @description Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"] */
+            /** @description 任务运行前由执行器安装的依赖声明——pip 依赖（python runtime，每任务独立 uv venv）或 npm 包（node runtime）。GLUE 脚本任务忽略该字段。示例：[\"requests>=2.31\", \"rich==13.7.1\"] */
             requirements?: string[];
             /**
-             * @description Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.
+             * @description 上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。
              * @example {
              *       "task-a-name": "uuid-of-task-a"
              *     }
@@ -4464,35 +4504,35 @@ export interface components {
             gitBranch?: string;
             gitCommit?: string;
             currentVersion?: string;
-            /** @description Task execution timeout in seconds (legacy field; prefer timeoutSeconds). 0 = no limit; bounded to the executor's 1..86400 window (executor-node rejects larger values with 400 on every attempt). */
+            /** @description 任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。 */
             timeout?: number;
-            /** @description Task execution timeout in seconds. 0 = no limit; bounded to the executor's 1..86400 window (normalized to `timeout`, which executor-node rejects above 86400 with 400). */
+            /** @description 任务执行超时秒数。0 = 不限制；上限为执行器的 1..86400 窗口（会归一化到 `timeout`，executor-node 对超过 86400 的值以 400 拒绝）。 */
             timeoutSeconds?: number;
             /**
-             * @description CORE-04: what happens when the task times out. kill (default) = executor tree-kills the process (existing behavior); kill_retry = also kill, but admin re-enqueues a fresh execution using the task's retry budget; notify_only = admin sends the timeout alert and issues no extra kill command (the executor's own hard timeout still applies). Omit on PATCH to keep the current value; explicit null resets to kill.
+             * @description CORE-04：任务超时后的动作。kill（缺省）= 执行器按既有语义树杀进程；kill_retry = 同样树杀，但 admin 按任务的重试预算重新入队一次执行；notify_only = admin 只下发超时告警、不额外下发终止指令（执行器自身的硬超时仍然生效）。PATCH 时缺省 = 保留当前值；显式 null = 重置回 kill。
              * @enum {string}
              */
             timeoutAction?: "kill" | "kill_retry" | "notify_only";
-            /** @description CORE-04: timeout warning threshold as a percentage of the timeout (integer 0-90). A single WARNING notification is sent once the running time reaches timeout × ratio/100 (at most once per execution). Omit/null = disabled. */
+            /** @description CORE-04：超时预警阈值，取 timeout 的百分数（整数 0-90）。运行时长达到 timeout × ratio/100 时发送一次 WARNING 预警通知（每个执行至多一次）。缺省/null = 未启用。 */
             timeoutWarnRatio?: number;
             maxRetry?: number;
             retryDelay?: number;
-            /** @description CORE-05: estimated execution duration in seconds (0 or omitted = unknown). Used only by scheduler-side executor load scoring (longer estimates penalize busy executors more); never consumed by the execution chain (heartbeat/timeout/stats). Explicit null on PATCH resets to unknown. */
+            /** @description CORE-05：预估执行时长（秒；0 或缺省 = 未知）。仅用于调度侧的 executor 负载评分（预估越长，对繁忙执行器的惩罚越大）；执行链路（心跳/超时/统计）从不消费该字段。PATCH 时显式 null = 重置为未知。 */
             estimatedDurationSec?: number;
             retryableErrors?: string[];
             priority?: number;
-            /** @description Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps). */
+            /** @description 派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。 */
             executeMode?: string;
             blockStrategy?: string;
             misfireStrategy?: string;
             alarmEmail?: string;
             alarmChannels?: string[];
-            /** @description Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face). */
+            /** @description 任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。 */
             params?: Record<string, never>;
             /**
-             * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
+             * @description 任务级 secrets（凭据键值对，独立于 params 的普通运行参数；配置了 SEC_SECRETS_KEY 时以 AES-256-GCM 加密落库，未配置则降级明文并告警）。读路径一律以字面量 ****** 掩码。派发时走两条通道：合并进 params（AUTOFLOW_<KEY>，旧执行器通道）并作为独立载荷字段下发，使执行器按**原名**注入（第三方 SDK 要求规范名）。PATCH 时按**逐键合并**：键缺省或叶子值为 ****** 时保留已存值，叶子值为 null 时删除该键，其它值覆盖；整个字段显式 null 时清空全部 secret。
              * @example {
-             *       "API_TOKEN": "sk-live-...",
+             *       "API_TOKEN": "sk-live-",
              *       "DB_PASSWORD": "hunter2"
              *     }
              */
@@ -4500,30 +4540,30 @@ export interface components {
                 [key: string]: string;
             };
             /**
-             * @description FEAT-22: task-level deployment dispatch policy override. 'strict' narrows candidates to the set of devices with explicit deployments of the bound application (running/stopped/upgrading); when none of them can take the execution it is queued as WAITING instead of silently dispatched elsewhere. 'prefer' keeps the ARCH-35 soft preference (deployed-and-running devices are tried first, falls back to the fleet). Omitted/null follows the global executor.deploymentPolicy (EXECUTOR_DEPLOYMENT_POLICY). Precedence: executorId pin > executorAppName > deployment constraint > fleet; the master switch executor.preferDeployedExecutor=false disables deployment awareness entirely. PATCH: omit = keep; explicit null = follow global.
+             * @description FEAT-22：任务级部署派发策略覆盖。'strict' 把候选收窄为显式部署了绑定应用的设备集合（running/stopped/upgrading）；当其中没有任何设备可承接该执行时，执行会以 WAITING 排队，而不是静默派发到别处。'prefer' 保留 ARCH-35 的软偏好（优先尝试已部署且运行中的设备，否则回落到全集群）。缺省/null = 跟随全局 executor.deploymentPolicy（EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId 钉定 > executorAppName > 部署约束 > 全集群；总开关 executor.preferDeployedExecutor=false 会彻底关闭部署感知。PATCH：缺省 = 保留；显式 null = 跟随全局。
              * @enum {string|null}
              */
             deploymentPolicy?: "strict" | "prefer" | null;
             executorAppName?: string;
             executorGroup?: string;
             executorTags?: string[];
-            /** @description NF-04: executor affinity tags (OR semantics — an executor holding ANY of these tags is an eligible candidate; loadScore then picks within the matched set). In broadcast mode the fan-out narrows to executors matching the affinity tags. Orthogonal to executorTags (hard AND-subset capability requirement). PATCH: omit = keep; explicit null/[] = clear. */
+            /** @description NF-04：执行器标签亲和（OR 语义——持有其中**任一**标签的执行器即为候选；随后在命中集合内按 loadScore 择优）。broadcast 模式下扇出收窄为命中亲和标签的执行器子集。与 executorTags（硬性 AND 子集能力要求）正交。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
             executorAffinityTags?: string[];
-            /** @description NF-04: executor anti-affinity tags (exclusion semantics — an executor holding ANY of these tags is excluded). Applies to both single and broadcast dispatch; combined with affinity tags the matched set is filtered further. PATCH: omit = keep; explicit null/[] = clear. */
+            /** @description NF-04：执行器标签反亲和（排除语义——持有其中**任一**标签的执行器即被排除）。单发与 broadcast 均生效；与亲和标签组合时，先取亲和命中集再在其上剔除。PATCH：缺省 = 保留；显式 null/[] = 清除。 */
             executorAntiAffinityTags?: string[];
-            /** @description Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast. */
+            /** @description 把任务钉定到指定执行器：派发**只**发往该执行器（绕过分组/标签过滤）；它离线时快速失败。与 executeMode=broadcast 互斥。 */
             executorId?: string;
             glueSource?: string;
             glueLanguage?: string;
             applicationId?: string;
             /**
-             * @description Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.
+             * @description 代码来源渠道。gitRepo / glueSource / codeSource=application_zip（需配 applicationId）三者中只能设置一个。PATCH 时缺省 = 保留当前值；显式 null = 清除声明。requirements/PyPI 属于依赖型渠道，可与任一代码来源并存。
              * @enum {string|null}
              */
             codeSource?: "git" | "glue" | "application_zip" | null;
-            /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
+            /** @description FEAT-11：markdown 运维手册——展示在任务详情页，并随失败通知/告警一并附上。 */
             runbook?: string;
-            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
+            /** @description 所属项目。缺省/null = 未分配（计入默认项目视图；与既有行为一致）。设置它需要 ADMIN 或该项目的 editor/admin。 */
             projectId?: string;
             /**
              * @description 乐观锁预期值：编辑前读取的任务 updatedAt（ISO 时间串）。传入即启用并发检查，不匹配返回 409；缺省跳过检查。
@@ -4535,19 +4575,19 @@ export interface components {
             deleted: boolean;
         };
         TriggerTaskDto: {
-            /** @description Trigger params override; serialized size must not exceed 65536 bytes (same limit as the webhook face) */
+            /** @description 触发参数覆盖；序列化后体积不得超过 65536 字节（与 webhook 面同一上限） */
             params?: Record<string, never>;
             /** @example 3 */
             version?: number;
         };
         WebhookStatusResponseDto: {
             enabled: boolean;
-            /** @description Signed inbound trigger URL */
+            /** @description 带签名的入站触发 URL */
             url: string;
         };
         WebhookSecretResponseDto: {
             url: string;
-            /** @description Plaintext secret shown ONCE; rotate to re-issue */
+            /** @description 明文密钥仅回显一次；需要重发时用 rotate */
             secret: string;
         };
         WebhookDisableResponseDto: {
@@ -4556,14 +4596,14 @@ export interface components {
         ExecutionReportResponseDto: {
             execution: components["schemas"]["TaskExecutionResponseDto"];
             timeline: components["schemas"]["ExecutionTimelineEntryDto"][];
-            /** @description Same-day aggregate row; null when none exists (normal state, frontend degrades) */
+            /** @description 当日聚合行；不存在时为 null（正常状态，前端自行降级） */
             report: components["schemas"]["ExecutionReportSummaryDto"] | null;
         };
         GitRollbackResponseDto: {
             execution: components["schemas"]["TaskExecutionResponseDto"];
-            /** @description Commit the repo was on before rollback */
+            /** @description 回滚前仓库所在的提交 */
             rolledBackFrom: string | null;
-            /** @description Commit rolled back to */
+            /** @description 回滚到的提交 */
             rolledBackTo: string;
         };
         TaskVersionDto: {
@@ -4571,10 +4611,10 @@ export interface components {
             id: string;
             /** Format: uuid */
             taskId: string;
-            /** @description Human label like 'v3' */
+            /** @description 可读标签，形如 'v3' */
             version: string;
             gitCommit: string | null;
-            /** @description Full task config snapshot (feeds rollbackToVersion) */
+            /** @description 完整任务配置快照（供 rollbackToVersion 消费） */
             snapshot: {
                 [key: string]: unknown;
             };
@@ -4595,7 +4635,7 @@ export interface components {
         };
         BatchTaskIdsDto: {
             /**
-             * @description Task ID list (1..500 uuids)
+             * @description 任务 ID 列表（1..500 个 uuid）
              * @example [
              *       "uuid-1",
              *       "uuid-2"
@@ -4606,7 +4646,7 @@ export interface components {
         TaskWebhookTriggerResponseDto: {
             /**
              * Format: uuid
-             * @description Execution row id created by the trigger
+             * @description 本次触发创建的执行行 id
              */
             executionId: string;
             /** @description 执行行/终态载荷（wait=true 时为终态执行行，否则为已受理执行行） */
@@ -4615,42 +4655,60 @@ export interface components {
             };
         };
         ArtifactManifestItemDto: {
-            /** @description Artifact file name (bare, no path separators) */
+            /** @description 产物文件名（裸文件名，不含任何路径分隔符） */
             name: string;
-            /** @description Artifact size in bytes */
+            /** @description 产物字节数 */
             size: number;
-            /** @description sha256 hex digest of the artifact bytes */
+            /** @description 产物内容的 sha256 十六进制摘要 */
             sha256: string;
         };
         CallbackItemDto: {
             /**
-             * @description Execution ID (UUID)
+             * @description 执行 ID（UUID）
              * @example f47ac10b-58cc-4372-a567-0e02b2c3d479
              */
             executionId: string;
             /**
-             * @description Execution outcome
+             * @description 执行结果
              * @enum {string}
              */
             status: "success" | "failed";
-            /** @description Executor address for per-executor token validation */
+            /** @description 执行器地址，用于按执行器校验 token */
             executorAddress?: string;
-            /** @description Process exit code */
+            /**
+             * @description ADR-017 阶段 3（protocol v6）：发起回调的执行器的稳定安装标识——sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符，与 register/heartbeat 同值。它是本次回调的**行身份**：共享/旧版 token 不绑定任何行，且当 pull 模式的执行器共用同一地址后，`executorAddress` 已无法唯一标识一行（ADR-017 §5）。admin 用它把回调归属到该执行实际派发到的那一行。可选——旧版执行器、采集失败以及 SDK 调用方会省略；此时 admin 依次回落到凭据持有行、再回落到地址相等（绝不因缺失而拒绝）。
+             * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
+             */
+            deviceFingerprint?: string;
+            /** @description 进程退出码 */
             exitCode?: number;
-            /** @description Raw log output (max 500 KB) */
+            /** @description 原始日志输出（最大 500 KB） */
             logs?: string;
-            /** @description Error message on failure (max 4 KB) */
+            /** @description 失败时的错误信息（最大 4 KB） */
             errorMessage?: string;
             /**
-             * @description Structured failure reason
-             * @enum {string}
+             * @description 结构化的失败原因
+             * @enum {number}
              */
-            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "sandbox_unavailable" | "killed" | "unknown";
-            /** @description Wall-clock execution duration in milliseconds */
+            failureReason?: [
+                "package_fetch_failed",
+                "script_error",
+                "timeout",
+                "executor_offline",
+                "executor_restart",
+                "dependency_install_failed",
+                "git_fetch_failed",
+                "runtime_missing",
+                "interpreter_unavailable",
+                "sandbox_unavailable",
+                "killed",
+                "unknown"
+            ];
+            /** @description 执行墙钟时长（毫秒） */
             durationMs?: number;
-            /** @description FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback. */
+            /** @description FEAT-05：执行产物清单（best-effort，最多 20 条）。文件字节通过产物上传端点单独上传；清单在终态回调时持久化到 task_executions.artifacts。 */
             artifacts?: components["schemas"]["ArtifactManifestItemDto"][];
-            /** @description python_task_multiversion (FR-12/AC-12a): structured execution detail. Currently carries the interpreter snapshot { requested, resolved, reason, detail, pool } so an interpreter_unavailable failure can be triaged without re-running the task. Persisted verbatim to task_executions.result. Constrained to an object with a bounded serialized size (4 KB). */
+            /** @description python_task_multiversion（FR-12/AC-12a）：结构化的执行明细。当前承载解释器快照 { requested, resolved, reason, detail, pool }，使得 interpreter_unavailable 失败无需重跑任务即可定位。原样持久化到 task_executions.result。约束为对象，且序列化体积有上限（4 KB）。 */
             result?: {
                 [key: string]: unknown;
             };
@@ -4665,14 +4723,14 @@ export interface components {
         };
         AppendLogChunkDto: {
             /**
-             * @description 0-based line number offset of the first line in this chunk
+             * @description 本分片中首行的 0-based 行号偏移
              * @example 0
              */
             fromLine: number;
             /**
-             * @description Array of log line strings (max 2000 lines, 512 KB per line)
+             * @description 日志行字符串数组（最多 2000 行，每行最长 512 KB）
              * @example [
-             *       "Starting task...",
+             *       "Starting task",
              *       "Step 1 complete"
              *     ]
              */
@@ -4684,44 +4742,44 @@ export interface components {
         };
         ExecutorInterpreterDto: {
             /**
-             * @description Full patch version discovered in the interpreter pool
+             * @description 在解释器池中发现的完整补丁版本
              * @example 3.7.9
              */
             version: string;
             /**
-             * @description Absolute interpreter path inside the pool
+             * @description 池内的解释器绝对路径
              * @example /data/interpreters/cpython-3.7.9-linux-x86_64-gnu-none/bin/python3
              */
             path?: string;
             /**
-             * @description Probe result (executable and --version succeeded)
+             * @description 探测结果（可执行且 --version 成功）
              * @example true
              */
             available?: boolean;
             /**
-             * @description Probe timestamp (ISO 8601)
+             * @description 探测时间戳（ISO 8601）
              * @example 2026-09-16T10:00:00.000Z
              */
             discoveredAt?: string;
         };
         ExecutorRegisterDto: {
             /**
-             * @description Executor application name
+             * @description 执行器应用名称
              * @example executor-node
              */
             appName: string;
             /**
-             * @description Executor registration address
+             * @description 执行器注册地址
              * @example 192.168.1.100:3002
              */
             address: string;
             /**
-             * @description Executor type
+             * @description 执行器类型
              * @example node
              */
             type?: string;
             /**
-             * @description Executor version
+             * @description 执行器版本
              * @example 1.0.0
              */
             version?: string;
@@ -4731,7 +4789,7 @@ export interface components {
              */
             protocolVersion?: number;
             /**
-             * @description Declared capabilities
+             * @description 声明的能力
              * @example [
              *       "docker",
              *       "shell"
@@ -4739,7 +4797,7 @@ export interface components {
              */
             capabilities?: string[];
             /**
-             * @description Declared runtime environments
+             * @description 声明的运行时环境
              * @example [
              *       "nodejs",
              *       "python3"
@@ -4747,22 +4805,22 @@ export interface components {
              */
             runtime?: string[];
             /**
-             * @description Max concurrent tasks
+             * @description 最大并发任务数
              * @example 10
              */
             maxConcurrentTasks?: number;
             /**
-             * @description Max concurrent (legacy alias)
+             * @description 最大并发数（legacy 别名）
              * @example 10
              */
             maxConcurrent?: number;
             /**
-             * @description Executor group name
+             * @description 执行器分组名称
              * @example production
              */
             groupName?: string | null;
             /**
-             * @description Executor tags
+             * @description 执行器标签
              * @example [
              *       "nodejs",
              *       "prod"
@@ -4770,30 +4828,30 @@ export interface components {
              */
             tags?: string[] | null;
             /**
-             * @description Executor description
+             * @description 执行器描述
              * @example Production Node.js executor
              */
             description?: string | null;
             /**
-             * @description Restart timestamp (ISO 8601)
+             * @description 重启时间戳（ISO 8601）
              * @example 2026-09-14T08:00:00.000Z
              */
             restartedAt?: string | null;
             /**
-             * @description Startup ID (process life identifier for idempotent re-registration)
+             * @description 启动 ID（进程生命周期标识，用于幂等重复注册）
              * @example uuid-of-this-executor-process-life
              */
             startupId?: string | null;
             /**
-             * @description Dispatch mode ('push' | 'pull'; defaults to push)
+             * @description 派发模式（'push' | 'pull'；默认为 push）
              * @example pull
              * @enum {string}
              */
             dispatchMode?: "push" | "pull";
-            /** @description python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected. */
+            /** @description python_task_multiversion：解释器缓存池清单。缺省 → 保留已存值；[] → 已上报且池为空；结构非法 → 整字段被拒绝。 */
             interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
             /**
-             * @description ARCH-36 (ADR-017 phase 2): stable install identity — sha256(deviceId + ':' + installSalt) as 64 lowercase hex chars. Omitted/invalid → keep the stored value. Collected and observed only; it does NOT participate in row lookup (registration still keys on address).
+             * @description ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：注册时先按指纹解析行（地址退化为可达性元数据）。缺省/非法 → 保留已存值并回退到按地址查找；从未上报过指纹的行会带上服务端生成的 `legacy:{address}` 兜底键。
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string | null;
@@ -4801,64 +4859,64 @@ export interface components {
         ExecutorRegisterResponseDto: {
             /** Format: uuid */
             id: string;
-            /** @description Executor app name (per-process registration key) */
+            /** @description 执行器应用名（按进程的注册键） */
             appName: string;
-            /** @description http://host:port, globally unique */
+            /** @description http://host:port，全局唯一 */
             address: string;
             /** @enum {string} */
             status: "online" | "offline";
             /**
-             * @description Why it went offline (null while online)
+             * @description 离线原因（在线时为 null）
              * @enum {string|null}
              */
             offlineReason: "manual" | "stale_timeout" | null;
-            /** @description Consecutive missed/failed heartbeats (stale sweep input) */
+            /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
             consecutiveHeartbeatMisses: number;
             /** @enum {string} */
             type: "python" | "node" | "universal";
-            /** @description Self-reported executor package version */
+            /** @description 执行器自报的包版本 */
             executorVersion: string | null;
-            /** @description Protocol version negotiated at register (pull control-plane gate) */
+            /** @description 注册时协商的协议版本（pull 控制面门禁） */
             protocolVersion: number | null;
             /**
-             * @description push = platform dials the executor; pull = executor long-polls (NAT-bound)
+             * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
              * @enum {string}
              */
             dispatchMode: "push" | "pull";
-            /** @description Declared runtime capability domains */
+            /** @description 声明的运行时能力域 */
             capabilities: string[] | null;
             /**
              * Format: date-time
-             * @description Last accepted heartbeat
+             * @description 最近一次被接受的心跳
              */
             lastHeartbeat: string | null;
             /**
              * Format: date-time
-             * @description Executor process start time (restart detection)
+             * @description 执行器进程启动时间（重启检测）
              */
             executorStartedAt: string | null;
-            /** @description Per-process instance id (idempotent token issuance) */
+            /** @description 按进程的实例 ID（幂等令牌签发） */
             executorStartupId: string | null;
-            /** @description Stable device identity across address changes */
-            deviceFingerprint: string | null;
-            /** @description Currently running tasks (includes reserved-but-unclaimed pull slots) */
+            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
+            deviceFingerprint: string;
+            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
             runningTaskCount: number;
             cpuUsage: number | null;
             memUsage: number | null;
             diskUsage: number | null;
-            /** @description ms */
+            /** @description 毫秒 */
             networkLatency: number | null;
             totalTaskCount: number;
             failedTaskCount: number;
-            /** @description Dispatch gate capacity; null = unlimited */
+            /** @description 派发门禁容量；null = 不限 */
             maxConcurrentTasks: number | null;
-            /** @description Execution ids currently claimed by this executor (E-01-RPT liveness report) */
+            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
             runningExecutionIds: string[] | null;
-            /** @description Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate) */
+            /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
             reservedSlots: number | null;
-            /** @description Control-plane commands parked in the dead-letter queue */
+            /** @description 滞留在死信队列中的控制面命令数 */
             deadLetterCount: number | null;
-            /** @description Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty) */
+            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
             interpreters: {
                 version: string;
                 path?: string;
@@ -4874,7 +4932,7 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
-            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
             version: number;
             /** @description 仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁 */
             versionCompliant?: boolean;
@@ -4894,57 +4952,57 @@ export interface components {
         };
         ExecutorHeartbeatDto: {
             /**
-             * @description Executor registration address
+             * @description 执行器注册地址
              * @example 192.168.1.100:3002
              */
             address: string;
             /**
-             * @description CPU usage percentage
+             * @description CPU 使用率百分比
              * @example 45.5
              */
             cpuUsage?: number;
             /**
-             * @description Memory usage percentage
+             * @description 内存使用率百分比
              * @example 62.3
              */
             memUsage?: number;
             /**
-             * @description Disk usage percentage
+             * @description 磁盘使用率百分比
              * @example 70
              */
             diskUsage?: number;
             /**
-             * @description Network latency in ms
+             * @description 网络延迟（毫秒）
              * @example 2
              */
             networkLatency?: number;
             /**
-             * @description Number of currently running tasks
+             * @description 当前运行中的任务数
              * @example 3
              */
             runningTaskCount?: number;
             /**
-             * @description Total tasks executed
+             * @description 累计执行的任务数
              * @example 150
              */
             totalTaskCount?: number;
             /**
-             * @description Number of failed tasks
+             * @description 失败任务数
              * @example 5
              */
             failedTaskCount?: number;
             /**
-             * @description Restart timestamp (ISO 8601)
+             * @description 重启时间戳（ISO 8601）
              * @example 2026-09-14T08:00:00.000Z
              */
             restartedAt?: string | null;
             /**
-             * @description Startup ID (process life identifier)
+             * @description 启动 ID（进程生命周期标识）
              * @example uuid-of-this-executor-process-life
              */
             startupId?: string | null;
             /**
-             * @description CONSISTENCY-02: Currently running execution IDs
+             * @description CONSISTENCY-02：当前运行中的执行 ID
              * @example [
              *       "exec-uuid-1",
              *       "exec-uuid-2"
@@ -4952,29 +5010,29 @@ export interface components {
              */
             runningExecutionIds?: string[];
             /**
-             * @description E-01-RPT (protocol v4): pull long-poll slots reserved but not yet claimed. runningTaskCount counts occupied slots (including this reservation, which is the E-01 anti-oversell mechanism); runningExecutionIds only lists claimed executions. The detail page therefore shows runningTaskCount - reservedSlots as the actual running count. Display only — the dispatch gate never reads this field. Always sent (0 = reported & no reservation); absent = legacy executor.
+             * @description E-01-RPT（协议 v4）：pull 长轮询已预留但尚未领取的槽位。runningTaskCount 统计的是已占用槽位（含本次预留，这正是 E-01 防超卖机制）；runningExecutionIds 只列出已领取的执行。因此详情页用 runningTaskCount - reservedSlots 展示实际运行数。仅供展示 —— 派发门禁从不读取该字段。总是发送（0 = 已上报且无预留）；缺失 = legacy 执行器。
              * @example 1
              */
             reservedSlots?: number;
             /**
-             * @description Dead letter count
+             * @description 死信数量
              * @example 0
              */
             deadLetterCount?: number;
             /**
-             * @description E9: Updated max concurrent tasks (hot-updated capacity)
+             * @description E9：更新后的最大并发任务数（热更新容量）
              * @example 10
              */
             maxConcurrentTasks?: number;
             /**
-             * @description EXE-VER-1: Executor version (for min-version gate echo, not persisted)
+             * @description EXE-VER-1：执行器版本（用于最低版本门禁回显，不落库）
              * @example 1.0.0
              */
             version?: string;
-            /** @description python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected. */
+            /** @description python_task_multiversion：解释器缓存池清单。缺省 → 保留已存值；[] → 已上报且池为空；结构非法 → 整字段被拒绝。 */
             interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
             /**
-             * @description ARCH-36 (ADR-017 phase 2): stable install identity — sha256(deviceId + ':' + installSalt) as 64 lowercase hex chars. Omitted/invalid → keep the stored value (a legacy or collection-failed executor must never blank a stored fingerprint). Collected and observed only; it does NOT participate in row lookup.
+             * @description ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：register/heartbeat 先按指纹解析行，因此换了 IP 的机器会复用既有行，而不是新建幽灵行。缺省/非法 → 保留已存值（legacy 或采集失败的执行器绝不能把已存指纹清空），并回退到按地址查找。
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string | null;
@@ -4982,64 +5040,64 @@ export interface components {
         ExecutorHeartbeatResponseDto: {
             /** Format: uuid */
             id: string;
-            /** @description Executor app name (per-process registration key) */
+            /** @description 执行器应用名（按进程的注册键） */
             appName: string;
-            /** @description http://host:port, globally unique */
+            /** @description http://host:port，全局唯一 */
             address: string;
             /** @enum {string} */
             status: "online" | "offline";
             /**
-             * @description Why it went offline (null while online)
+             * @description 离线原因（在线时为 null）
              * @enum {string|null}
              */
             offlineReason: "manual" | "stale_timeout" | null;
-            /** @description Consecutive missed/failed heartbeats (stale sweep input) */
+            /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
             consecutiveHeartbeatMisses: number;
             /** @enum {string} */
             type: "python" | "node" | "universal";
-            /** @description Self-reported executor package version */
+            /** @description 执行器自报的包版本 */
             executorVersion: string | null;
-            /** @description Protocol version negotiated at register (pull control-plane gate) */
+            /** @description 注册时协商的协议版本（pull 控制面门禁） */
             protocolVersion: number | null;
             /**
-             * @description push = platform dials the executor; pull = executor long-polls (NAT-bound)
+             * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
              * @enum {string}
              */
             dispatchMode: "push" | "pull";
-            /** @description Declared runtime capability domains */
+            /** @description 声明的运行时能力域 */
             capabilities: string[] | null;
             /**
              * Format: date-time
-             * @description Last accepted heartbeat
+             * @description 最近一次被接受的心跳
              */
             lastHeartbeat: string | null;
             /**
              * Format: date-time
-             * @description Executor process start time (restart detection)
+             * @description 执行器进程启动时间（重启检测）
              */
             executorStartedAt: string | null;
-            /** @description Per-process instance id (idempotent token issuance) */
+            /** @description 按进程的实例 ID（幂等令牌签发） */
             executorStartupId: string | null;
-            /** @description Stable device identity across address changes */
-            deviceFingerprint: string | null;
-            /** @description Currently running tasks (includes reserved-but-unclaimed pull slots) */
+            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
+            deviceFingerprint: string;
+            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
             runningTaskCount: number;
             cpuUsage: number | null;
             memUsage: number | null;
             diskUsage: number | null;
-            /** @description ms */
+            /** @description 毫秒 */
             networkLatency: number | null;
             totalTaskCount: number;
             failedTaskCount: number;
-            /** @description Dispatch gate capacity; null = unlimited */
+            /** @description 派发门禁容量；null = 不限 */
             maxConcurrentTasks: number | null;
-            /** @description Execution ids currently claimed by this executor (E-01-RPT liveness report) */
+            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
             runningExecutionIds: string[] | null;
-            /** @description Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate) */
+            /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
             reservedSlots: number | null;
-            /** @description Control-plane commands parked in the dead-letter queue */
+            /** @description 滞留在死信队列中的控制面命令数 */
             deadLetterCount: number | null;
-            /** @description Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty) */
+            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
             interpreters: {
                 version: string;
                 path?: string;
@@ -5055,13 +5113,13 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
-            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
             version: number;
-            /** @description Whether the self-reported version satisfies the min-version gate */
+            /** @description 自报版本是否满足最低版本门禁 */
             versionCompliant?: boolean;
-            /** @description Callback-auth secret for this executor (machine face: the token-authed holder fetches it to sign execution callbacks) */
+            /** @description 该执行器的回调鉴权 secret（机器面：持有令牌的一方可取回它来为执行回调签名） */
             tokenHash: string;
-            /** @description EXECUTOR_MIN_VERSION gate value; '' = gate disabled */
+            /** @description EXECUTOR_MIN_VERSION 门禁值；'' = 门禁关闭 */
             minVersion: string | null;
             /** @description save() 回程把 select:false 列 hydrated 带出（R7 实测）；findOne/列表读取不含 */
             agentCapabilities?: string[] | null;
@@ -5087,15 +5145,20 @@ export interface components {
              * @example 2
              */
             freeSlots?: number;
+            /**
+             * @description 稳定设备指纹 sha256(deviceId + ':' + installSalt)，64 位小写十六进制（协议 v3+）。pull 同址多行时用于唯一定位本行
+             * @example ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+             */
+            deviceFingerprint?: string;
         };
         ExecutorPullResponseDto: {
-            /** @description Dispatch payload (ExecuteRequest shape built by the pull service) or null when nothing queued */
+            /** @description 派发载荷（由 pull 服务构建的 ExecuteRequest 形状），无排队内容时为 null */
             task: {
                 [key: string]: unknown;
             } | null;
             /** @enum {string} */
             dispatchMode: "push" | "pull";
-            /** @description Only on pull-mode executors with control-plane protocol support (ARCH-33) */
+            /** @description 仅在支持控制面协议的 pull 模式执行器上出现（ARCH-33） */
             commands?: {
                 [key: string]: unknown;
             }[];
@@ -5105,11 +5168,11 @@ export interface components {
             ok: true;
         };
         ExecutorConfigPayloadResponseDto: {
-            /** @description Per-executor capacity from the entity; null = unlimited */
+            /** @description 取自实体的按执行器容量；null = 不限 */
             maxConcurrentTasks: number;
-            /** @description Heartbeat interval in seconds (executor.heartbeatInterval/1000, min 1) */
+            /** @description 心跳间隔（秒，取自 executor.heartbeatInterval/1000，最小 1） */
             heartbeatIntervalSeconds: number;
-            /** @description Present only when app.adminApiUrl is configured */
+            /** @description 仅在配置了 app.adminApiUrl 时出现 */
             adminApiUrl?: string;
         };
         TerminalStateItemDto: {
@@ -5147,64 +5210,64 @@ export interface components {
         ExecutorResponseDto: {
             /** Format: uuid */
             id: string;
-            /** @description Executor app name (per-process registration key) */
+            /** @description 执行器应用名（按进程的注册键） */
             appName: string;
-            /** @description http://host:port, globally unique */
+            /** @description http://host:port，全局唯一 */
             address: string;
             /** @enum {string} */
             status: "online" | "offline";
             /**
-             * @description Why it went offline (null while online)
+             * @description 离线原因（在线时为 null）
              * @enum {string|null}
              */
             offlineReason: "manual" | "stale_timeout" | null;
-            /** @description Consecutive missed/failed heartbeats (stale sweep input) */
+            /** @description 连续丢失/失败的心跳次数（失联清扫输入） */
             consecutiveHeartbeatMisses: number;
             /** @enum {string} */
             type: "python" | "node" | "universal";
-            /** @description Self-reported executor package version */
+            /** @description 执行器自报的包版本 */
             executorVersion: string | null;
-            /** @description Protocol version negotiated at register (pull control-plane gate) */
+            /** @description 注册时协商的协议版本（pull 控制面门禁） */
             protocolVersion: number | null;
             /**
-             * @description push = platform dials the executor; pull = executor long-polls (NAT-bound)
+             * @description push = 平台拨向执行器；pull = 执行器长轮询（受 NAT 约束）
              * @enum {string}
              */
             dispatchMode: "push" | "pull";
-            /** @description Declared runtime capability domains */
+            /** @description 声明的运行时能力域 */
             capabilities: string[] | null;
             /**
              * Format: date-time
-             * @description Last accepted heartbeat
+             * @description 最近一次被接受的心跳
              */
             lastHeartbeat: string | null;
             /**
              * Format: date-time
-             * @description Executor process start time (restart detection)
+             * @description 执行器进程启动时间（重启检测）
              */
             executorStartedAt: string | null;
-            /** @description Per-process instance id (idempotent token issuance) */
+            /** @description 按进程的实例 ID（幂等令牌签发） */
             executorStartupId: string | null;
-            /** @description Stable device identity across address changes */
-            deviceFingerprint: string | null;
-            /** @description Currently running tasks (includes reserved-but-unclaimed pull slots) */
+            /** @description 跨地址变更保持稳定的设备身份（= sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符）。ADR-017 第三阶段：迁移 1790000000054 之后为 NOT NULL —— 从未上报过指纹的执行器会以服务端生成的 `legacy:{address}` 兜底键存储。 */
+            deviceFingerprint: string;
+            /** @description 当前运行中的任务数（含已预留但未领取的 pull 槽位） */
             runningTaskCount: number;
             cpuUsage: number | null;
             memUsage: number | null;
             diskUsage: number | null;
-            /** @description ms */
+            /** @description 毫秒 */
             networkLatency: number | null;
             totalTaskCount: number;
             failedTaskCount: number;
-            /** @description Dispatch gate capacity; null = unlimited */
+            /** @description 派发门禁容量；null = 不限 */
             maxConcurrentTasks: number | null;
-            /** @description Execution ids currently claimed by this executor (E-01-RPT liveness report) */
+            /** @description 该执行器当前已领取的执行 ID（E-01-RPT 存活上报） */
             runningExecutionIds: string[] | null;
-            /** @description Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate) */
+            /** @description 已预留但尚未领取的 pull 槽位（仅供展示/告警 —— 不是派发门禁） */
             reservedSlots: number | null;
-            /** @description Control-plane commands parked in the dead-letter queue */
+            /** @description 滞留在死信队列中的控制面命令数 */
             deadLetterCount: number | null;
-            /** @description Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty) */
+            /** @description 执行器上报的解释器池（D5：null = 从未上报，[] = 上报为空） */
             interpreters: {
                 version: string;
                 path?: string;
@@ -5220,7 +5283,7 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
-            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
             version: number;
             /** @description 仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁 */
             versionCompliant?: boolean;
@@ -5232,7 +5295,7 @@ export interface components {
             tags: string[];
         };
         ExecutorRuntimeConfigDto: {
-            /** @description Heartbeat interval ms */
+            /** @description 心跳间隔（毫秒） */
             heartbeatIntervalMs: number;
             heartbeatTimeoutMultiplier: number;
             heartbeatTimeoutMs: number;
@@ -5254,10 +5317,10 @@ export interface components {
         };
         ExecutorPickerResponseDto: {
             items: components["schemas"]["ExecutorPickerItemDto"][];
-            /** @description True when the cap hit — items are a prefix, total is the real count */
+            /** @description 达到上限时为 true —— items 只是前缀，total 才是真实总数 */
             truncated: boolean;
             total: number;
-            /** @description The applied cap */
+            /** @description 实际生效的上限 */
             limit: number;
         };
         ExecutorInstallCmdDto: {
@@ -5268,12 +5331,12 @@ export interface components {
             adminApiUrl: string;
         };
         ExecutorReloadConfigResponseDto: {
-            /** @description true = pull-mode: queued, applied on next poll (~1s) */
+            /** @description true = pull 模式：已入队，在下次轮询（约 1 秒）时生效 */
             queued?: boolean;
             /** Format: uuid */
             commandId?: string;
             message?: string;
-            /** @description push-mode: the executor's own api/config/reload response body, passed through verbatim */
+            /** @description push 模式：执行器自身 api/config/reload 的响应体，原样透传 */
             executorResponse?: {
                 [key: string]: unknown;
             };
@@ -5283,9 +5346,9 @@ export interface components {
             token: string;
         };
         ExecutorTokenResponseDto: {
-            /** @description Plaintext token (shown per fetch; rotation rules per R9) */
+            /** @description 明文令牌（每次取回时展示；轮换规则见 R9） */
             token: string;
-            /** @description Stored bcrypt/sha hash for verification */
+            /** @description 存储的 bcrypt/sha 哈希，用于校验 */
             tokenHash: string;
         };
         ExecutorOfflineDto: {
@@ -5296,16 +5359,16 @@ export interface components {
             appName: string;
             address: string;
             status: string;
-            /** @description Tasks pinned to this executor via task.executorId (dispatch has no fallback) */
+            /** @description 通过 task.executorId 绑定到该执行器的任务数（派发无回退） */
             pinnedTasks: number;
-            /** @description Tasks bound via task.executorAppName (exact match, no silent failover) */
+            /** @description 通过 task.executorAppName 绑定的任务数（精确匹配，不会静默故障转移） */
             appNameBoundTasks: number;
-            /** @description Pull queue depth (acf:pull:{id} LLEN); non-zero only for pull-mode executors */
+            /** @description pull 队列深度（acf:pull:{id} 的 LLEN）；仅 pull 模式执行器可能非零 */
             pendingPullItems: number;
         };
         ExecutorExecutionsResponseDto: {
             total: number;
-            /** @description TaskExecution rows, newest first (heavy text columns NOT excluded on this face) */
+            /** @description TaskExecution 行，按最新在前（本读面未排除大文本列） */
             items: unknown[];
         };
         ExecutorMetricsDto: {
@@ -5342,17 +5405,17 @@ export interface components {
             key: "email" | "slack" | "dingtalk" | "wecom" | "webhook";
             name: string;
             enabled: boolean;
-            /** @description Channel-specific settings; credential values are masked on read */
+            /** @description 通道专属配置；读取时凭据值会被掩码 */
             config: {
                 [key: string]: string;
             };
             description: string;
         };
         ChannelTestResponseDto: {
-            /** @description false when all addressed channels failed/skipped */
+            /** @description 当所有目标通道都失败/跳过时为 false */
             success: boolean;
             message: string;
-            /** @description Per-channel delivery status */
+            /** @description 逐通道投递状态 */
             results?: {
                 [key: string]: "sent" | "blocked" | "failed" | "skipped";
             };
@@ -5372,12 +5435,12 @@ export interface components {
         };
         SendNotificationResultDto: {
             /**
-             * @description Request accepted; NOT equivalent to every channel delivering
+             * @description 请求已受理；**不**等同于各通道均已投递成功
              * @example true
              */
             success: boolean;
             /**
-             * @description Per-channel delivery result: 'sent' delivered; 'blocked' rejected by the SSRF guard (private/loopback/link-local/benchmark/CGNAT target); 'failed' transport error after retries; 'skipped' channel not configured (no saved config and no env default).
+             * @description 逐通道投递结果：'sent' 已投递；'blocked' 被 SSRF 防护拒绝（目标为内网/环回/链路本地/benchmark/CGNAT）；'failed' 重试后仍传输失败；'skipped' 通道未配置（既无保存的配置也无环境变量缺省值）。
              * @example {
              *       "email": "sent",
              *       "slack": "blocked",
@@ -5512,13 +5575,13 @@ export interface components {
             ok: true;
             /** @description 送达的通道数 */
             delivered: number;
-            /** @description Per-channel delivery status */
+            /** @description 逐通道投递状态 */
             results: {
                 [key: string]: "sent" | "blocked" | "failed" | "skipped";
             };
         };
         AiConfigResponseDto: {
-            /** @description 'qwen' | 'openai' | 'ollama' | 'disabled' */
+            /** @description AI 提供方，取值：'qwen' | 'openai' | 'ollama' | 'disabled' */
             provider: string;
             openaiModel: string;
             openaiBaseUrl: string;
@@ -5526,11 +5589,11 @@ export interface components {
             ollamaModel: string;
             qwenModel: string;
             qwenBaseUrl: string;
-            /** @description string-encoded number (config store values are strings) */
+            /** @description 字符串编码的数字（配置存储中的值均为字符串） */
             qwenMaxTokens: string;
-            /** @description string-encoded number (ms) */
+            /** @description 字符串编码的数字（毫秒） */
             qwenTimeoutMs: string;
-            /** @description Whether the current provider has an API key configured (key VALUE is never returned) */
+            /** @description 当前 provider 是否已配置 API key（key 的**值**永不返回） */
             hasApiKey: boolean;
         };
         SaveAiConfigDto: Record<string, never>;
@@ -5539,9 +5602,9 @@ export interface components {
             ok: true;
         };
         AiTestResponseDto: {
-            /** @description false when the provider is disabled or returned an empty response */
+            /** @description provider 被禁用或返回空响应时为 false */
             ok: boolean;
-            /** @description Sample-prompt reply text, or the degraded-state message */
+            /** @description 样例提示词的回复文本，或降级状态下的提示信息 */
             message: string;
         };
         AgentSessionDto: {
@@ -5552,40 +5615,40 @@ export interface components {
             /** @enum {string} */
             status: "pending" | "running" | "waiting_input" | "succeeded" | "failed" | "aborted" | "budget_exceeded";
             title: string | null;
-            /** @description 'user:<id>' / 'cron:<name>' / 'event:<type>' */
+            /** @description 'user:<id>' / 'cron:<name>' / 'event:<type>'（触发来源） */
             triggerSource: string;
             /**
              * Format: uuid
-             * @description Sub-session lineage (sop_review sessions chain here)
+             * @description 子会话血缘（sop_review 会话在此串联）
              */
             parentSessionId: string | null;
-            /** @description Session goal/context object */
+            /** @description 会话目标/上下文对象 */
             contextJson: {
                 [key: string]: unknown;
             } | null;
-            /** @description Resource scope constraint (03 §5.3); empty = no resource access */
+            /** @description 资源范围约束（03 §5.3）；为空 = 无资源访问权限 */
             scopeJson: {
                 [key: string]: unknown;
             } | null;
-            /** @description Budget snapshot taken at enqueue (audit sees what was allowed THEN) */
+            /** @description 入队时取的预算快照（审计看到的是当时被允许的额度） */
             budgetJson: {
                 maxSteps?: number;
                 maxTokens?: number;
                 wallClockMs?: number;
                 maxToolCalls?: number;
             } | null;
-            /** @description Final structured result on success */
+            /** @description 成功时的最终结构化结果 */
             resultJson: {
                 [key: string]: unknown;
             } | null;
-            /** @description LLM-written closing summary */
+            /** @description 由 LLM 撰写的收尾摘要 */
             summary: string | null;
             errorMessage: string | null;
             totalSteps: number;
             totalTokensIn: number;
             totalTokensOut: number;
             totalToolCalls: number;
-            /** @description What the session is waiting on (approval / clarification / ...) */
+            /** @description 会话当前等待的事项（审批/澄清/...） */
             waitingFor: string | null;
             /** Format: date-time */
             startedAt: string | null;
@@ -5605,14 +5668,14 @@ export interface components {
             id: string;
             /** Format: uuid */
             sessionId: string;
-            /** @description 1-based sequence within the session */
+            /** @description 会话内从 1 开始的序号 */
             seq: number;
             /** @enum {string} */
             role: "system" | "user" | "assistant" | "tool";
             content: string | null;
-            /** @description Provider reasoning channel when surfaced */
+            /** @description 提供方暴露的推理通道内容 */
             reasoning: string | null;
-            /** @description Assistant tool-call requests verbatim */
+            /** @description 助手工具调用请求原文 */
             toolCallsJson: {
                 [key: string]: unknown;
             }[] | null;
@@ -5622,7 +5685,7 @@ export interface components {
             latencyMs: number;
             provider: string | null;
             model: string | null;
-            /** @description Compacted step summary (retention tiering) */
+            /** @description 压缩后的步骤摘要（保留分级） */
             summary: string | null;
             /** Format: date-time */
             createdAt: string;
@@ -5640,7 +5703,7 @@ export interface components {
             argsJson: {
                 [key: string]: unknown;
             } | null;
-            /** @description Truncated by the per-call size cap when resultTruncated */
+            /** @description resultTruncated 为真时被单次调用大小上限截断 */
             resultJson: {
                 [key: string]: unknown;
             } | null;
@@ -5650,7 +5713,7 @@ export interface components {
             errorMessage: string | null;
             /**
              * Format: uuid
-             * @description Approval record for awaiting_approval / granted flows
+             * @description awaiting_approval / granted 流程的审批记录
              */
             approvalId: string | null;
             durationMs: number;
@@ -5659,10 +5722,10 @@ export interface components {
         };
         AgentSessionDetailResponseDto: {
             session: components["schemas"]["AgentSessionDto"];
-            /** @description Reasoning trace by seq */
+            /** @description 按 seq 排序的推理轨迹 */
             steps: components["schemas"]["AgentStepDto"][];
             toolCalls: components["schemas"]["AgentToolCallDto"][];
-            /** @description Sub-sessions (parentSessionId = this) */
+            /** @description 子会话（parentSessionId = 本会话） */
             children: components["schemas"]["AgentSessionDto"][];
         };
         CreateAgentSessionDto: {
@@ -5676,13 +5739,13 @@ export interface components {
         AgentSessionCreateResponseDto: {
             /** Format: uuid */
             id: string;
-            /** @description Always 'pending' at creation */
+            /** @description 创建时恒为 'pending' */
             status: string;
         };
         AgentSessionResumeResponseDto: {
-            /** @description false = terminal session, create a new one instead */
+            /** @description false = 会话已终态，应新建一个会话 */
             ok: boolean;
-            /** @description Present when ok=false */
+            /** @description ok=false 时出现 */
             reason?: string;
         };
         AgentBudgetResponseDto: {
@@ -5694,24 +5757,24 @@ export interface components {
         SopResponseDto: {
             /** Format: uuid */
             id: string;
-            /** @description 1..128 [a-z0-9-], globally unique */
+            /** @description 1..128 个 [a-z0-9-] 字符，全局唯一 */
             slug: string;
             title: string;
-            /** @description Latest published version label, null = never published */
+            /** @description 最近发布的版本标签，null = 从未发布 */
             currentVersion: string | null;
             /** @enum {string} */
             status: "draft" | "published" | "deprecated";
             /**
              * Format: uuid
-             * @description App zip the SOP runs against
+             * @description 该 SOP 运行时对应的应用 zip 包
              */
             applicationId: string | null;
-            /** @description Parsed front-matter (capabilities/permission profile source of truth) */
+            /** @description 解析后的 front-matter（capabilities/权限档案的权威来源） */
             frontMatterJson: {
                 [key: string]: unknown;
             } | null;
             bodyMarkdown: string | null;
-            /** @description 'user:<id>' or 'agent:<sessionId>' */
+            /** @description 'user:<id>' 或 'agent:<sessionId>' */
             createdBy: string;
             /** Format: date-time */
             createdAt: string;
@@ -5723,14 +5786,14 @@ export interface components {
             id: string;
             /** Format: uuid */
             sopId: string;
-            /** @description e.g. '1.2.3' */
+            /** @description 例如 '1.2.3' */
             version: string;
             frontMatterJson: {
                 [key: string]: unknown;
             };
             bodyMarkdown: string;
             changelog: string | null;
-            /** @description sha over front-matter + body; the delivery reconciliation anchor */
+            /** @description 对 front-matter + body 计算的 sha；交付对账锚点 */
             contentHash: string;
             publishedBy: string;
             /** Format: date-time */
@@ -5743,51 +5806,51 @@ export interface components {
             id: string;
             /** Format: uuid */
             sopId: string;
-            /** @description Pinned SOP version for this assignment */
+            /** @description 本次指派锁定的 SOP 版本 */
             sopVersion: string;
             /** Format: uuid */
             targetExecutorId: string | null;
-            /** @description Chat/agent session driving the assignment */
+            /** @description 驱动该指派的对话/Agent 会话 */
             targetAgentSessionId: string | null;
             /** @enum {string} */
             status: "assigned" | "in_progress" | "blocked" | "completed" | "failed" | "cancelled" | "stalled";
-            /** @description Current clarification round (0-based counter) */
+            /** @description 当前澄清轮次（从 0 开始的计数器） */
             clarificationRound: number;
             maxRounds: number;
-            /** @description Executor-reported delivery result */
+            /** @description 执行器上报的交付结果 */
             resultJson: {
                 [key: string]: unknown;
             } | null;
             /**
              * Format: uuid
-             * @description sop_review chat session handling clarifications
+             * @description 负责处理澄清的 sop_review 对话会话
              */
             parentSessionId: string | null;
             /**
              * Format: date-time
-             * @description First successful poll claim
+             * @description 首次成功轮询领取的时间
              */
             pulledAt: string | null;
             /**
              * Format: date-time
-             * @description Last progress heartbeat (stall detection input)
+             * @description 最近一次进度心跳（停滞检测输入）
              */
             lastProgressAt: string | null;
             progressJson: {
                 [key: string]: unknown;
             } | null;
-            /** @description Delivery attempts of the final report (complete idempotency key) */
+            /** @description 最终报告的投递尝试次数（complete 幂等键） */
             attempt: number;
             /**
              * Format: date-time
-             * @description Last clarification-reply push (at-least-once cursor)
+             * @description 最近一次澄清回复推送（至少一次投递游标）
              */
             lastReplyDeliveredAt: string | null;
-            /** @description agentCapabilities snapshot at pull time */
+            /** @description 领取时刻的 agentCapabilities 快照 */
             capabilitySnapshotJson: {
                 [key: string]: unknown;
             } | null;
-            /** @description Permission profile in force at pull */
+            /** @description 领取时生效的权限档案 */
             permissionProfileAtPull: string | null;
             assignedBy: string;
             /** Format: date-time */
@@ -5800,12 +5863,12 @@ export interface components {
             total: number;
         };
         SopClarificationDto: {
-            /** @description Executor-generated idempotency key (dedupe on retry) */
+            /** @description 执行器生成的幂等键（重试时去重） */
             clientClarificationId: string | null;
             /** Format: uuid */
             assignmentId: string;
             round: number;
-            /** @description Untrusted executor statement — sanitized at ingest */
+            /** @description 来自执行器的不可信陈述 —— 入库时已净化 */
             question: string;
             questionContextJson: {
                 [key: string]: unknown;
@@ -5813,13 +5876,13 @@ export interface components {
             answer: string | null;
             /** @enum {string|null} */
             resolution: "answered" | "sop_amended" | "escalated_to_human" | null;
-            /** @description Set on sop_amended replies */
+            /** @description 仅在 sop_amended 回复时设置 */
             newSopVersion: string | null;
-            /** @description Screenshot/recording references (platform paths only) */
+            /** @description 截图/录屏引用（仅平台路径） */
             mediaRefsJson: unknown[] | null;
             /**
              * Format: uuid
-             * @description sop_review session that answered it
+             * @description 作答该澄清的 sop_review 会话
              */
             reviewSessionId: string | null;
             /** Format: date-time */
@@ -5839,7 +5902,7 @@ export interface components {
             name: string;
             mime: string | null;
             sizeBytes: number;
-            /** @description 'executor:<id>' or 'user:<id>' */
+            /** @description 'executor:<id>' 或 'user:<id>' */
             uploadedBy: string;
             /** Format: date-time */
             createdAt: string;
@@ -5852,7 +5915,7 @@ export interface components {
             status: string;
             /** Format: date-time */
             lastHeartbeat: string | null;
-            /** @description Lease-declared capability domains (short-lived lease, not a snapshot) */
+            /** @description 租约声明的能力域（短租约，不是快照） */
             agentCapabilities: string[];
         };
         HumanReplyDto: {
@@ -5864,9 +5927,9 @@ export interface components {
             changelog?: string;
         };
         ClarificationReplyResponseDto: {
-            /** @description Always true on success (failures are 4xx) */
+            /** @description 成功时恒为 true（失败均为 4xx） */
             ok: boolean;
-            /** @description Set when resolution=sop_amended (publish produced a new immutable version) */
+            /** @description 当 resolution=sop_amended 时设置（发布产出了新的不可变版本） */
             newSopVersion?: string;
         };
         DraftSopDto: {
@@ -5903,7 +5966,7 @@ export interface components {
             kind: "assignment";
             /** Format: uuid */
             assignmentId: string;
-            /** @description Full SOP snapshot (reconciliation anchor = contentHash) */
+            /** @description SOP 全量快照（对账锚点 = contentHash） */
             sop?: {
                 slug: string;
                 title: string;
@@ -5930,7 +5993,7 @@ export interface components {
             resolution: "answered" | "sop_amended" | "escalated_to_human";
             answer: string | null;
             newSopVersion: string | null;
-            /** @description Only on sop_amended — the amended SOP payload for continued execution */
+            /** @description 仅在 sop_amended 时出现 —— 供继续执行的修订后 SOP 载荷 */
             newSop?: components["schemas"]["CollabAssignmentItemDto"];
         };
         AgentCollabPollDto: {
@@ -5942,9 +6005,9 @@ export interface components {
             inflight?: string[];
         };
         CollabPollResponseDto: {
-            /** @description Mixed items: assignments (first pull / resend) and clarification replies */
+            /** @description 混合条目：指派（首次领取/重发）与澄清回复 */
             items: (components["schemas"]["CollabAssignmentItemDto"] | components["schemas"]["CollabClarificationReplyItemDto"])[];
-            /** @description Enterprise policy pushed EVERY poll (executor local config cannot override) */
+            /** @description 每次轮询都会下发的企业策略（执行器本地配置无法覆盖） */
             sopPolicy?: {
                 /** @example standard */
                 permissionPolicy: string;
@@ -5971,10 +6034,10 @@ export interface components {
             targetAgentSessionId?: string;
         };
         CollabClarifyResponseDto: {
-            /** @description clientClarificationId when provided, else the row id */
+            /** @description 提供了 clientClarificationId 时用它，否则用行 id */
             clarificationId: string;
             round: number;
-            /** @description true = maxRounds exhausted, escalated to human notifications (no sop_review session will start) */
+            /** @description true = maxRounds 已耗尽，升级为人工通知（不会启动 sop_review 会话） */
             escalated: boolean;
         };
         AgentCollabProgressDto: {
@@ -5994,7 +6057,7 @@ export interface components {
             attempt?: number;
         };
         CollabCompleteResponseDto: {
-            /** @description false = duplicate attempt / idempotent replay ignored */
+            /** @description false = 重复尝试/幂等重放被忽略 */
             accepted: boolean;
         };
         AgentCollabAckReplyDto: {
@@ -6003,9 +6066,9 @@ export interface components {
             clarificationId: string;
         };
         CollabLlmRelayResponseDto: {
-            /** @description Empty string when the provider is disabled/unavailable (fail-open, executor degrades) */
+            /** @description 提供方被禁用/不可用时为空字符串（fail-open，执行器降级） */
             content: string;
-            /** @description Tool round-trips are NOT exposed to executors (null) */
+            /** @description 工具往返不向执行器暴露（恒为 null） */
             toolCalls: string[] | null;
             usage?: {
                 tokensIn: number;
@@ -6019,38 +6082,38 @@ export interface components {
             name: string;
             mime: string | null;
             sizeBytes: number;
-            /** @description Platform path /api/agent-collab/media/<id> — the ONLY valid mediaRefs form */
+            /** @description 平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式 */
             mediaPath: string;
         };
         CollabCandidatePackageResponseDto: {
             /** Format: uuid */
             packageId: string;
-            /** @description 'sop-<slug>' */
+            /** @description 形如 'sop-<slug>' 的包名 */
             name: string;
-            /** @description SOP version + agent build metadata (idempotent re-delivery) */
+            /** @description SOP 版本 + Agent 构建元数据（幂等重复投递） */
             version: string;
         };
         MetricsSummaryResponseDto: {
             totalTasks: number;
             totalExecutors: number;
-            /** @description Executors with status=online */
+            /** @description status=online 的执行器数量 */
             onlineExecutors: number;
-            /** @description Executions created since local midnight */
+            /** @description 本地零点以来创建的执行数 */
             todayRuns: number;
-            /** @description Status counts over the aggregation window */
+            /** @description 聚合窗口内的状态计数 */
             executions?: {
                 total: number;
                 success: number;
                 failed: number;
                 running: number;
             };
-            /** @description Percent (two decimals), 0 when no runs */
+            /** @description 百分比（保留两位小数），无执行时为 0 */
             successRate: number;
-            /** @description Mean duration ms of successful runs in the window */
+            /** @description 窗口内成功执行的平均耗时（毫秒） */
             avgDurationMs: number;
         };
         MetricsTrendRowDto: {
-            /** @description Local day bucket (ISO yyyy-mm-dd of createdAt) */
+            /** @description 本地日期分桶（createdAt 的 ISO yyyy-mm-dd） */
             date: string;
             success: number;
             failed: number;
@@ -6076,24 +6139,24 @@ export interface components {
             taskId: string;
             taskName: string;
             errorMessage: string | null;
-            /** @description Classified failure token */
+            /** @description 归类后的失败原因标识 */
             failureReason: string | null;
-            /** @description Raw exit code reported by the executor (observable backfill) */
+            /** @description 执行器上报的原始退出码（可观测性回填） */
             exitCode: number | null;
             /** Format: date-time */
             createdAt: string;
             duration: number | null;
         };
         MetricsSchedulerResponseDto: {
-            /** @description Raw scheduler metric counters snapshot (SchedulerMetricsSnapshot) */
+            /** @description 原始调度器指标计数器快照（SchedulerMetricsSnapshot） */
             counters: {
                 [key: string]: number;
             };
-            /** @description Derived ratios/rates computed from counters */
+            /** @description 由计数器推导出的比率/速率 */
             derived: {
                 [key: string]: number;
             };
-            /** @description BullMQ queue depth (null value = Redis unavailable, NOT an empty queue) */
+            /** @description BullMQ 队列深度（值为 null 表示 Redis 不可用，**不是**空队列） */
             queue?: {
                 waiting: number | null;
                 active: number | null;
@@ -6101,121 +6164,121 @@ export interface components {
                 failed: number | null;
                 completed: number | null;
             };
-            /** @description Scheduler liveness snapshot (getStats) */
+            /** @description 调度器存活快照（getStats） */
             scheduler: {
                 [key: string]: unknown;
             };
-            /** @description Emitting process identity */
+            /** @description 上报进程的身份标识 */
             instance?: {
                 pid: number;
                 hostname: string;
             };
         };
         SystemConfigResponseDto: {
-            /** @description Config row id (serial) */
+            /** @description 配置行 ID（自增序列） */
             id: number;
             /**
-             * @description Unique config key (e.g. executor.sharedToken)
+             * @description 唯一配置键（例如 executor.sharedToken）
              * @example executor.sharedToken
              */
             key: string;
             /**
-             * @description Stored value. Read surfaces (GET /config, GET /config/{key}) replace it with the mask sentinel '***' when isSecret=true; write/rollback surfaces (PUT /config, POST /config/batch, POST /config/history/{id}/rollback) return the real persisted value. May be null when the row was written without a value.
+             * @description 存储值。读面（GET /config、GET /config/{key}）在 isSecret=true 时把它替换为掩码哨兵 '***'；写面/回滚面（PUT /config、POST /config/batch、POST /config/history/{id}/rollback）返回真实持久化的值。若该行写入时未带值，则可能为 null。
              * @example ***
              */
             value?: string | null;
-            /** @description Human description. Also the field matched by the `tag` query filter on GET /config (regex on description) — there is no separate tag column. */
+            /** @description 人类可读描述。同时也是 GET /config 的 `tag` 查询过滤所匹配的字段（对 description 做正则）—— 并不存在单独的 tag 列。 */
             description?: string | null;
             /**
-             * @description Value type. All write paths validate against this closed set (SystemConfigService.validateConfig), so any value in the store came from it.
+             * @description 值类型。所有写入路径都按这个封闭集合校验（SystemConfigService.validateConfig），因此库中任何值都来自该集合。
              * @enum {string}
              */
             valueType: "string" | "number" | "boolean" | "json";
-            /** @description True when the value is secret: read surfaces mask it as '***' and a submitted '***' means 'keep the stored value' rather than 'write the mask' */
+            /** @description 值为 secret 时为 true：读面将其掩码为 '***'，而提交 '***' 表示“保持已存值”而非“写入该掩码” */
             isSecret: boolean;
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Last update time (ISO-8601)
+             * @description 最后更新时间（ISO-8601）
              */
             updatedAt: string;
         };
         ConfigHistoryResponseDto: {
-            /** @description History row id (serial) */
+            /** @description 历史行 ID（自增序列） */
             id: number;
-            /** @description Config key this history row belongs to */
+            /** @description 该历史行所属的配置键 */
             configKey: string;
-            /** @description Previous value. '***' when masked (row isSecret=true, or the key is currently secret); null when the entry did not exist before. null is distinct from the mask and must not be rendered as 'hidden'. */
+            /** @description 变更前的值。被掩码时为 '***'（该行 isSecret=true，或该键当前为 secret）；此前不存在该条目时为 null。null 与掩码是两种不同语义，不得渲染为“已隐藏”。 */
             oldValue?: string | null;
-            /** @description New value. '***' when masked; null when the entry was deleted by this change (remove records newValue=null). */
+            /** @description 变更后的值。被掩码时为 '***'；该条目被本次变更删除（remove 记录 newValue=null）时为 null。 */
             newValue?: string | null;
-            /** @description Description snapshot taken when this change was recorded */
+            /** @description 记录本次变更时留下的描述快照 */
             description?: string | null;
             /**
-             * @description valueType snapshot persisted with this row (migration 1790000000018). null = pre-migration row, metadata unknown — do not read null as 'string'.
+             * @description 随该行持久化的 valueType 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 'string'。
              * @enum {string|null}
              */
             valueType?: "string" | "number" | "boolean" | "json" | null;
-            /** @description isSecret snapshot persisted with this row (migration 1790000000018). null = pre-migration row, metadata unknown — do not read null as false. true always masks oldValue/newValue on the read surfaces. */
+            /** @description 随该行持久化的 isSecret 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 false。为 true 时读面总会掩码 oldValue/newValue。 */
             isSecret?: boolean | null;
             /**
-             * @description What produced this row (rollback marks rows written by the rollback endpoint)
+             * @description 产生该行的动作（rollback 标记由回滚端点写入的行）
              * @enum {string}
              */
             action: "create" | "update" | "delete" | "rollback";
-            /** @description Acting user id (integer since migration 1790000000023); null when the actor is unknown (e.g. rows written before operator context was recorded) */
+            /** @description 操作者用户 ID（自迁移 1790000000023 起为整数）；操作者未知时为 null（例如在记录操作者上下文之前写入的行） */
             userId?: number | null;
-            /** @description Acting username */
+            /** @description 操作者用户名 */
             username?: string | null;
-            /** @description Acting client IP */
+            /** @description 操作客户端 IP */
             ipAddress?: string | null;
             /**
              * Format: date-time
-             * @description When this change was recorded (ISO-8601)
+             * @description 本次变更的记录时间（ISO-8601）
              */
             createdAt: string;
         };
         ConfigHistoryPageDto: {
-            /** @description Page of history rows, newest first (old/new masked per row) */
+            /** @description 历史行分页，按最新在前（每行的 old/new 各自掩码） */
             data: components["schemas"]["ConfigHistoryResponseDto"][];
-            /** @description Total matching rows before paging */
+            /** @description 分页前的匹配总行数 */
             total: number;
         };
         ExecutorSharedTokenDto: {
             /**
-             * @description Freshly generated executor shared token (64 hex chars). Returned once at rotation time; the config store keeps it with isSecret=true so later reads of GET /config return '***'.
+             * @description 新生成的执行器共享令牌（64 位十六进制字符）。仅在轮换时返回一次；配置存储以 isSecret=true 保存它，因此后续 GET /config 读回 '***'。
              * @example 9f2c4a1d7b3e5f8091a2b3c4d5e6f70819a2b3c4d5e6f70819a2b3c4d5e6f708
              */
             token: string;
         };
         ExecutorSharedTokenStatusDto: {
-            /** @description Current shared token in plaintext (ADMIN only). null when no token is stored — this endpoint never 404s for a missing key. */
+            /** @description 当前共享令牌的明文（仅 ADMIN）。未存储令牌时为 null —— 本端点对缺失的键绝不返回 404。 */
             token?: string | null;
-            /** @description True when a non-empty token is stored (token !== null) */
+            /** @description 存储了非空令牌时为 true（token !== null） */
             hasToken: boolean;
         };
         RuntimeVersionContractDto: {
             /**
-             * @description Currently effective declareable lower bound (PYTHON_RUNTIME_VERSION_MIN, default 3.7)
+             * @description 当前生效的可声明下界（PYTHON_RUNTIME_VERSION_MIN，默认 3.7）
              * @example 3.7
              */
             min: string;
             /**
-             * @description Currently effective declareable upper bound (PYTHON_RUNTIME_VERSION_MAX, default 3.14)
+             * @description 当前生效的可声明上界（PYTHON_RUNTIME_VERSION_MAX，默认 3.14）
              * @example 3.14
              */
             max: string;
             /**
-             * @description Online-download floor (contract constant, not configurable): uv cannot download interpreters below it, so those versions need an offline pre-populated cache volume
+             * @description 在线下载下限（契约常量，不可配置）：uv 无法下载低于该版本的解释器，因此这些版本需要预置好的离线缓存卷
              * @example 3.8
              */
             onlineMin: string;
             /**
-             * @description Fallback interpreter for legacy executors that report no interpreters list
+             * @description legacy 执行器未上报解释器列表时的兜底解释器
              * @example 3.12
              */
             legacyDefaultInterpreter: string;
@@ -6230,24 +6293,24 @@ export interface components {
             isSecret?: boolean;
         };
         ConfigDeleteResultDto: {
-            /** @description Always true on success — a missing key is a 404, never {deleted:false} */
+            /** @description 成功时恒为 true —— 键不存在是 404，绝不会是 {deleted:false} */
             deleted: boolean;
         };
         AuditLogDto: {
             id: number;
             userId: number | null;
-            /** @description Snapshot of the acting username (survives user deletion) */
+            /** @description 操作人用户名的快照（用户被删除后仍保留） */
             username: string | null;
-            /** @description Dotted action token, e.g. 'task.trigger' / 'user.create' */
+            /** @description 点分格式的操作标识，例如 'task.trigger' / 'user.create' */
             action: string;
             resource: string | null;
             resourceId: string | null;
-            /** @description Free-form context (ip, detail payloads) */
+            /** @description 自由格式的上下文（ip、明细载荷） */
             detail: {
                 [key: string]: unknown;
             } | null;
             ip: string | null;
-            /** @description Write outcome recorded by the audit sink (default 'success') */
+            /** @description 审计落库时记录的写入结果（缺省 'success'） */
             result: string;
             /** Format: date-time */
             createdAt: string;
@@ -6291,9 +6354,9 @@ export interface components {
         HealthServicesDto: {
             database: components["schemas"]["HealthComponentDto"];
             redis: components["schemas"]["HealthComponentDto"];
-            /** @description healthy/degraded/unhealthy + size */
+            /** @description healthy/degraded/unhealthy + size（队列长度） */
             queue: Record<string, never>;
-            /** @description healthy/degraded/unhealthy + onlineCount/totalCount */
+            /** @description healthy/degraded/unhealthy + onlineCount/totalCount（在线数/总数） */
             executors: Record<string, never>;
             scheduler: components["schemas"]["HealthComponentDto"];
         };
@@ -6303,71 +6366,71 @@ export interface components {
             queueSize: number;
         };
         ApplicationResponseDto: {
-            /** @description Application id (uuid) */
+            /** @description 应用 ID（uuid） */
             id: string;
-            /** @description Unique application name */
+            /** @description 唯一应用名称 */
             name: string;
-            /** @description Human description */
+            /** @description 人类可读描述 */
             description?: string | null;
-            /** @description Application version */
+            /** @description 应用版本 */
             version: string;
-            /** @description Runtime identifier (node / python / shell …) */
+            /** @description 运行时标识（node / python / shell …） */
             runtime: string;
-            /** @description Lifecycle status */
+            /** @description 生命周期状态 */
             status: string;
-            /** @description Git repository URL */
+            /** @description Git 仓库 URL */
             gitRepo?: string | null;
-            /** @description Git branch */
+            /** @description Git 分支 */
             gitBranch?: string | null;
-            /** @description Pinned git commit */
+            /** @description 锁定的 git commit */
             gitCommit?: string | null;
-            /** @description Deployment manifest (jsonb) */
+            /** @description 部署清单（jsonb） */
             manifest?: Record<string, never> | null;
             /**
-             * @description Environment map; secret-class keys are masked as *** on every read surface
+             * @description 环境变量映射；secret 类键在所有读面均被掩码为 ***
              * @example {
              *       "LOG_LEVEL": "info",
              *       "DB_PASSWORD": "***"
              *     }
              */
             env?: Record<string, never> | null;
-            /** @description Entrypoint path */
+            /** @description 入口点路径 */
             entrypoint?: string | null;
-            /** @description Package download URL */
+            /** @description 包下载 URL */
             packageUrl?: string | null;
-            /** @description Whether deployment requires approval */
+            /** @description 部署是否需要审批 */
             approvalRequired: boolean;
-            /** @description Owning project id (null = default project view) */
+            /** @description 所属项目 ID（null = 默认项目视图） */
             projectId?: string | null;
-            /** @description MUTEX-01: mutex group id (null = app does not participate in per-device mutual exclusion) */
+            /** @description MUTEX-01：互斥组 ID（null = 该应用不参与按设备互斥） */
             mutexGroupId?: string | null;
-            /** @description Owner user id */
+            /** @description 属主用户 ID */
             ownerUserId?: number | null;
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Last update time (ISO-8601)
+             * @description 最后更新时间（ISO-8601）
              */
             updatedAt: string;
             /** @description R7 实测出现性：create/update 等 save() 回程把 select:false 列 hydrated 成 null 带出；findAll/findById select 读取不含该键。值恒 null（secret 不回传）。首版头注的『不声明』裁定据此修订 */
             webhookSecret?: string | null;
         };
         CreateApplicationDto: {
-            /** @description Unique application name */
+            /** @description 唯一应用名称 */
             name: string;
-            /** @description Application description */
+            /** @description 应用描述 */
             description?: string;
             /**
-             * @description Application version number
+             * @description 应用版本号
              * @example 1.0.0
              */
             version: string;
             /**
-             * @description Runtime type
+             * @description 运行时类型
              * @example node
              */
             runtime: string;
@@ -6379,25 +6442,25 @@ export interface components {
             entrypoint?: string;
             packageUrl?: string;
             /**
-             * @description DEP-04: require second-person approval before new deployments dispatch
+             * @description DEP-04：新部署派发前是否需要第二人审批
              * @default false
              */
             approvalRequired?: boolean;
-            /** @description MUTEX-01: mutex group id this app joins (null = no mutual exclusion) */
+            /** @description MUTEX-01：该应用加入的互斥组 ID（null = 不参与互斥） */
             mutexGroupId?: string | null;
         };
         UpdateApplicationDto: {
-            /** @description Unique application name */
+            /** @description 唯一应用名称 */
             name?: string;
-            /** @description Application description */
+            /** @description 应用描述 */
             description?: string;
             /**
-             * @description Application version number
+             * @description 应用版本号
              * @example 1.0.0
              */
             version?: string;
             /**
-             * @description Runtime type
+             * @description 运行时类型
              * @example node
              */
             runtime?: string;
@@ -6409,40 +6472,40 @@ export interface components {
             entrypoint?: string;
             packageUrl?: string;
             /**
-             * @description DEP-04: require second-person approval before new deployments dispatch
+             * @description DEP-04：新部署派发前是否需要第二人审批
              * @default false
              */
             approvalRequired?: boolean;
-            /** @description MUTEX-01: mutex group id this app joins (null = no mutual exclusion) */
+            /** @description MUTEX-01：该应用加入的互斥组 ID（null = 不参与互斥） */
             mutexGroupId?: string | null;
             /**
-             * @description Application status
+             * @description 应用状态
              * @enum {string}
              */
             status?: "active" | "deploying" | "failed";
-            /** @description HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
+            /** @description 用于 Webhook 签名校验的 HMAC-SHA256 secret。置为空字符串即关闭。 */
             webhookSecret?: string;
         };
         RemovalImpactResponseDto: {
             applicationName: string;
-            /** @description Tasks losing their code source (ALL-RUN total, not page-truncated — DEEP-AUDIT B·4.1) */
+            /** @description 失去代码来源的任务数（全量统计，不按页截断 —— DEEP-AUDIT B·4.1） */
             tasksLosingSource: number;
-            /** @description Deployments removed by cascade */
+            /** @description 随级联删除的部署行数 */
             deploymentCount: number;
-            /** @description Whether the uploaded package file on disk is deleted */
+            /** @description 磁盘上已上传的包文件是否会被删除 */
             packageFileWillBeDeleted: boolean;
         };
         AppReleaseWebhookDto: {
-            /** @description Application name */
+            /** @description 应用名称 */
             appName: string;
-            /** @description New version number, e.g. 1.2.3 */
+            /** @description 新版本号，例如 1.2.3 */
             version: string;
-            /** @description Git commit SHA */
+            /** @description Git 提交 SHA */
             gitCommit?: string;
-            /** @description Git branch */
+            /** @description Git 分支 */
             gitBranch?: string;
             /**
-             * @description Whether to trigger rolling upgrade on all RUNNING deployments
+             * @description 是否对所有 RUNNING 状态的部署触发滚动升级
              * @default false
              */
             triggerDeploy?: boolean;
@@ -6451,39 +6514,39 @@ export interface components {
             /** @enum {boolean} */
             ok: true;
             updatedApp: components["schemas"]["ApplicationResponseDto"];
-            /** @description Count of RUNNING deployments upgraded when triggerDeploy=true; 0 otherwise */
+            /** @description triggerDeploy=true 时被升级的 RUNNING 部署数；否则为 0 */
             triggeredDeployments: number;
         };
         ApplicationVersionHistoryRowDto: {
             /**
              * Format: uuid
-             * @description application_versions.id; null = legacy deployment-derived row
+             * @description application_versions.id；null = 由 legacy 部署派生的行
              */
             id: string | null;
             /**
              * Format: uuid
-             * @description Legacy rows carry the deployment id
+             * @description legacy 行携带部署 ID
              */
             deploymentId: string | null;
             /** Format: uuid */
             sourceDeploymentId: string | null;
-            /** @description Legacy rows fall back to '__unknown__' bucket key */
+            /** @description legacy 行回退到 '__unknown__' 桶键 */
             version: string | null;
             commit: string | null;
-            /** @description Snapshot status or legacy deployment status */
+            /** @description 快照状态或 legacy 部署状态 */
             status: string;
             /**
              * Format: date-time
-             * @description Snapshot rows use the version creation time
+             * @description 快照行使用版本创建时间
              */
             deployedAt: string | null;
             /** Format: date-time */
             createdAt: string | null;
-            /** @description Legacy rows carry the deployment's executor; snapshot rows leave null */
+            /** @description legacy 行携带该部署的执行器；快照行留为 null */
             executorAddress: string | null;
-            /** @description Deploy count for this version (same-version multi-instance rolls count individually) */
+            /** @description 该版本的部署次数（同版本多实例滚动分别单独计数） */
             deployCount: number;
-            /** @description Masked version snapshot (read surface); null on legacy rows */
+            /** @description 已掩码的版本快照（读面）；legacy 行为 null */
             snapshot: {
                 [key: string]: unknown;
             } | null;
@@ -6491,80 +6554,80 @@ export interface components {
         AppReleaseRowDto: {
             /**
              * Format: uuid
-             * @description application_versions.id; null = pure deployment history (no snapshot row)
+             * @description application_versions.id；null = 纯部署历史（无快照行）
              */
             id: string | null;
             version: string | null;
-            /** @description Snapshot packageUrl (deploy-time value — does NOT fall back to the app's current URL) */
+            /** @description 快照中的 packageUrl（部署时刻的值 —— 不回退到应用当前 URL） */
             packageUrl: string | null;
             gitCommit: string | null;
-            /** @description Most recent deployment completion (ISO string — this view stringifies) */
+            /** @description 最近一次部署完成时间（ISO 字符串 —— 本视图做了字符串化） */
             deployedAt: string | null;
             /** Format: uuid */
             latestDeploymentId: string | null;
             /** @enum {string|null} */
             deploymentStatus: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading" | null;
-            /** @description Deploy count for this version */
+            /** @description 该版本的部署次数 */
             deploymentCount: number;
             executorAddress: string | null;
             /** @enum {string|null} */
             runMode: "once" | "daemon" | "scheduled" | null;
             /**
-             * @description Persisted column first, legacy rows derive (unknown when undecidable)
+             * @description 优先取持久化列，legacy 行推导得出（无法判定时为 unknown）
              * @enum {string|null}
              */
             triggerType: "manual" | "upgrade" | "rollback" | "approval" | "unknown" | null;
-            /** @description Deployments.operator, falling back to versions.createdBy */
+            /** @description 取 deployments.operator，回退到 versions.createdBy */
             operator: string | null;
             /** @enum {string} */
             operatorSource: "deployments.operator" | "application_versions.createdBy";
-            /** @description Why operator is null when it is (RELEASE_OPERATOR_MISSING_REASON) */
+            /** @description operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON） */
             operatorMissingReason: string;
         };
         AppReleasesResponseDto: {
             data: components["schemas"]["AppReleaseRowDto"][];
             total: number;
             page: number;
-            /** @description Default 50, capped 200 */
+            /** @description 默认 50，上限 200 */
             pageSize: number;
         };
         RolloutStrategyDto: Record<string, never>;
         UpgradeAllDto: {
             rollout?: components["schemas"]["RolloutStrategyDto"];
-            /** @description Target a historical released version (version STRING, not uuid) for this rollout — enables gradual rollback. Default: the application's current version */
+            /** @description 本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本 */
             version?: string;
         };
         UpgradeAllResponseDto: {
-            /** @description false = canary batch rejected (ARCH-31 in-flight mutual exclusion) or all failed */
+            /** @description false = 金丝雀批次被拒绝（ARCH-31 在途互斥）或全部失败 */
             ok: boolean;
             /** @description 版本定向灰度时回显实际目标版本（快照恢复后的 app.version）；缺省（latest）不带 */
             version?: string;
-            /** @description Running deployments at trigger time */
+            /** @description 触发时刻运行中的部署数 */
             total: number;
             succeeded: number;
             failed: number;
-            /** @description Present when a canary batch was actually started (or blocked) */
+            /** @description 在实际启动了金丝雀批次（或被阻塞）时出现 */
             rollout?: {
                 batchId?: string;
                 /** @enum {string} */
                 strategy?: "canary" | "all";
                 canaryIds?: string[];
                 promotedIds?: string[];
-                /** @description ARCH-31: in-flight batch on the same app (cross-instance mutual exclusion, not an exception) */
+                /** @description ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常） */
                 blockedReason?: string;
             };
         };
         SyncTasksResponseDto: {
             /** @enum {boolean} */
             ok: true;
-            /** @description Task definitions registered by this sync */
+            /** @description 本次同步注册的任务定义数量 */
             registeredCount: number;
         };
         AppHealthAnalysisResponseDto: {
             /** Format: uuid */
             appId: string;
             appName: string;
-            /** @description AI assessment text (empty string = AI unavailable, fail-open) */
+            /** @description AI 评估文本（空字符串 = AI 不可用，fail-open 放行） */
             analysis: string;
             stats?: {
                 totalTasks: number;
@@ -6578,18 +6641,18 @@ export interface components {
             total: number;
             succeeded: number;
             failed: number;
-            /** @description Spread of the triggered upgrade-all batch receipt */
+            /** @description 透传所触发的 upgrade-all 批次回执 */
             rollout?: components["schemas"]["UpgradeAllResponseDto"];
-            /** @description Version the app was rolled back to (deployedVersion for legacy path) */
+            /** @description 应用回滚到的版本（legacy 路径下取 deployedVersion） */
             rolledBackTo: string;
             /**
              * Format: uuid
-             * @description application_versions.id when the snapshot path was taken; null = legacy deployment-row path
+             * @description 走快照路径时为 application_versions.id；null = 走了 legacy 部署行路径
              */
             versionId: string | null;
-            /** @description Only on the legacy path (always false there — R16) */
+            /** @description 仅在 legacy 路径下出现（该路径下恒为 false —— R16） */
             packageUrlRestored?: boolean;
-            /** @description The restored application row (masked) */
+            /** @description 恢复后的应用行（已掩码） */
             updatedApp: components["schemas"]["ApplicationResponseDto"];
         };
         AppDeploymentResponseDto: {
@@ -6597,9 +6660,9 @@ export interface components {
             id: string;
             /** Format: uuid */
             applicationId: string;
-            /** @description Parent application (masked read surface — env secrets are '***') */
+            /** @description 父应用（已掩码读面 —— env 中的 secret 为 '***'） */
             application?: components["schemas"]["ApplicationResponseDto"];
-            /** @description Executor address the app runs on */
+            /** @description 该应用运行所在执行器的地址 */
             executorAddress: string;
             /** Format: uuid */
             executorId: string | null;
@@ -6607,60 +6670,60 @@ export interface components {
             status: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading";
             /** @enum {string} */
             runMode: "once" | "daemon" | "scheduled";
-            /** @description Git commit when deployed from git source */
+            /** @description 从 git 源部署时的 git commit */
             deployedCommit: string | null;
-            /** @description Version actually deployed (upgrade/rollback rewrites it) */
+            /** @description 实际部署的版本（升级/回滚会改写它） */
             deployedVersion: string | null;
-            /** @description Launch command snapshot (rollback/upgrade may rewrite it) */
+            /** @description 启动命令快照（回滚/升级可能改写它） */
             startCommand: string | null;
-            /** @description Deploy-time env snapshot, MASKED on every read surface (QA1) */
+            /** @description 部署时刻的 env 快照，在所有读面均被掩码（QA1） */
             env: {
                 [key: string]: string;
             } | null;
-            /** @description App process pid on the executor (heartbeat-maintained) */
+            /** @description 应用进程在执行器上的 pid（由心跳维护） */
             pid: number | null;
             /**
              * Format: date-time
-             * @description Last executor heartbeat for this deployment
+             * @description 该部署对应的最近一次执行器心跳
              */
             lastHeartbeat: string | null;
-            /** @description Last state transition message (stall/dup-deploy guards write here) */
+            /** @description 最近一次状态跃迁消息（停滞/重复部署防护在此写入） */
             statusMessage: string | null;
             /**
              * Format: date-time
-             * @description Most recent deployment completion time
+             * @description 最近一次部署完成时间
              */
             deployedAt: string | null;
             /**
-             * @description Canary rollout phase (DEP-02); null = not part of a batch
+             * @description 金丝雀发布阶段（DEP-02）；null = 不属于任何批次
              * @enum {string|null}
              */
             rolloutState: "pending" | "probing" | "promoted" | "failed" | "rolled_back" | null;
-            /** @description Canary batch metadata (batchId/canaryIds/leasedBy...) */
+            /** @description 金丝雀批次元数据（batchId/canaryIds/leasedBy...） */
             rolloutMeta: {
                 [key: string]: unknown;
             } | null;
             /**
-             * @description DEP-04 second-person approval state; null = approval not required
+             * @description DEP-04 第二人审批状态；null = 无需审批
              * @enum {string|null}
              */
             approvalStatus: "pending_approval" | "approved" | "rejected" | null;
-            /** @description Approval trail (actor/reason/timestamps) */
+            /** @description 审批轨迹（操作者/原因/时间戳） */
             approvalMeta: {
                 [key: string]: unknown;
             } | null;
             /**
-             * @description Trigger semantics (FEAT-20 persisted column); null = legacy row
+             * @description 触发语义（FEAT-20 持久化列）；null = legacy 行
              * @enum {string|null}
              */
             triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
-            /** @description JWT username of the operator (FEAT-20) */
+            /** @description 操作者的 JWT 用户名（FEAT-20） */
             operator: string | null;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
-            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            /** @description 乐观锁 @VersionColumn（TypeORM 版本列） */
             version: number;
         };
         PaginatedAppDeploymentsDto: {
@@ -6680,41 +6743,41 @@ export interface components {
             lastDeployedAt: string | null;
         };
         CreateDeploymentDto: {
-            /** @description Executor ID (leave empty to auto-select the online executor with lowest load) */
+            /** @description 执行器 ID（留空则自动选择负载最低的在线执行器） */
             executorId?: string;
             /**
              * @default daemon
              * @enum {string}
              */
             runMode?: "once" | "daemon" | "scheduled";
-            /** @description Environment variable overrides (≤50 keys, each value ≤4096 bytes) */
+            /** @description 环境变量覆盖（≤50 个键，每个值 ≤4096 字节） */
             env?: {
                 [key: string]: string;
             };
-            /** @description Startup command override (leave empty to use manifest entrypoint) */
+            /** @description 启动命令覆盖（留空则使用 manifest 的 entrypoint） */
             startCommand?: string;
         };
         ApprovalActionDto: {
-            /** @description Optional decision reason (≤200 chars), recorded in audit */
+            /** @description 可选的决策理由（≤200 字符），计入审计 */
             reason?: string;
         };
         DeploymentRemoveResponseDto: {
             /** @enum {boolean} */
             ok: true;
-            /** @description The removed deployment id */
+            /** @description 被删除的部署 ID */
             deletedId: string;
         };
         DeploymentHeartbeatDto: {
-            /** @description Deployment ID */
+            /** @description 部署 ID */
             deploymentId: string;
             /**
-             * @description Runtime status
+             * @description 运行状态
              * @enum {string}
              */
             status: "running" | "stopped" | "failed";
-            /** @description Process PID */
+            /** @description 进程 PID */
             pid?: number;
-            /** @description Free-form progress message (max 2000 chars; lands in the statusMessage text column and the list read surface) */
+            /** @description 自由格式的进度信息（最长 2000 字符；写入 statusMessage 文本列并进入列表读面） */
             message?: string;
         };
         MutexGroupResponseDto: {
@@ -6779,90 +6842,90 @@ export interface components {
             description?: string;
         };
         ExecutorPackagePushRecordDto: {
-            /** @description Target executor id */
+            /** @description 目标执行器 ID */
             executorId: string;
             /**
-             * @description Push outcome
+             * @description 推送结果
              * @enum {string}
              */
             status: "downloaded" | "failed";
-            /** @description Package version pushed */
+            /** @description 所推送的包版本 */
             version: string;
-            /** @description Failure reason when status=failed */
+            /** @description status=failed 时的失败原因 */
             error?: string;
-            /** @description When this push attempt happened (ISO-8601) */
+            /** @description 本次推送尝试的时间（ISO-8601） */
             timestamp: string;
         };
         ExecutorPackageResponseDto: {
-            /** @description Package id (uuid) */
+            /** @description 包 ID（uuid） */
             id: string;
-            /** @description Package name */
+            /** @description 包名称 */
             name: string;
-            /** @description Package version */
+            /** @description 包版本 */
             version: string;
-            /** @description Package type (runtime/tooling taxonomy) */
+            /** @description 包类型（runtime/tooling 分类） */
             type: string;
-            /** @description Target platform (null when the package is platform-agnostic) */
+            /** @description 目标平台（包与平台无关时为 null） */
             platform?: string | null;
-            /** @description Stored filename */
+            /** @description 存储文件名 */
             filename?: string | null;
-            /** @description Original upload filename */
+            /** @description 上传时的原始文件名 */
             originalFilename?: string | null;
-            /** @description MIME type */
+            /** @description MIME 类型 */
             mimeType?: string | null;
-            /** @description Size in bytes */
+            /** @description 字节数 */
             fileSize: number;
-            /** @description SHA-256 checksum */
+            /** @description SHA-256 校验和 */
             checksum?: string | null;
-            /** @description Description */
+            /** @description 描述 */
             description?: string | null;
-            /** @description Lifecycle status (active / deprecated / …) */
+            /** @description 生命周期状态（active / deprecated / …） */
             status: string;
-            /** @description Uploader identity */
+            /** @description 上传者身份 */
             uploadedBy?: string | null;
-            /** @description Push attempts against executors */
+            /** @description 对各执行器的推送尝试记录 */
             pushHistory?: components["schemas"]["ExecutorPackagePushRecordDto"][];
-            /** @description Owning project id (null = default project view) */
+            /** @description 所属项目 ID（null = 默认项目视图） */
             projectId?: string | null;
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Last update time (ISO-8601)
+             * @description 最后更新时间（ISO-8601）
              */
             updatedAt: string;
         };
         ExecutorPackageListDto: {
-            /** @description Page of packages */
+            /** @description 包分页 */
             items: components["schemas"]["ExecutorPackageResponseDto"][];
-            /** @description Total matching packages (before paging) */
+            /** @description 匹配的包总数（分页前） */
             total: number;
         };
         UpdateExecutorPackageDto: {
-            /** @description Package name */
+            /** @description 包名称 */
             name?: string;
-            /** @description Package version */
+            /** @description 包版本 */
             version?: string;
             /**
-             * @description Package type
+             * @description 包类型
              * @enum {string}
              */
             type?: "node" | "python" | "universal";
-            /** @description Target platform */
+            /** @description 目标平台 */
             platform?: string;
-            /** @description Checksum */
+            /** @description 校验和 */
             checksum?: string;
-            /** @description Package description */
+            /** @description 包描述 */
             description?: string;
-            /** @description File path */
+            /** @description 文件路径 */
             filePath?: string;
-            /** @description File size in bytes */
+            /** @description 文件字节数 */
             fileSize?: number;
             /**
-             * @description Package status
+             * @description 包状态
              * @enum {string}
              */
             status?: "active" | "deprecated" | "uploading";
@@ -6895,36 +6958,36 @@ export interface components {
             /** @enum {boolean} */
             ok: true;
             name: string;
-            /** @description bytes */
+            /** @description 字节 */
             size: number;
             sha256: string;
         };
         ExecutionArtifactDto: {
             name: string;
-            /** @description bytes */
+            /** @description 字节 */
             size: number;
-            /** @description sha256 over the stored bytes */
+            /** @description 对存储字节计算的 sha256 */
             sha256: string;
         };
         TaskTemplateResponseDto: {
             /**
              * Format: uuid
-             * @description Template UUID
+             * @description 模板 UUID
              */
             id: string;
             /**
-             * @description Stable unique key. Official templates use fixed keys (scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping) aligned with the MCP TASK_TEMPLATES; custom keys are user-suggested.
+             * @description 稳定唯一键。官方模板使用固定键（scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping），与 MCP 的 TASK_TEMPLATES 对齐；自定义键由用户建议。
              * @example scheduled_backup
              */
             key: string;
-            /** @description Display name */
+            /** @description 显示名称 */
             name: string;
-            /** @description Human description shown on template cards */
+            /** @description 模板卡片上展示的人类可读描述 */
             description?: string | null;
             /** @description Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag */
             category?: string | null;
             /**
-             * @description Valid CreateTaskDto subset (no `name`; provided at instantiate time). Used as defaults when instantiating a task from this template.
+             * @description 合法的 CreateTaskDto 子集（不含 `name`；在实例化时提供）。从此模板实例化任务时用作默认值。
              * @example {
              *       "triggerType": "cron",
              *       "cronExpression": "0 2 * * *",
@@ -6939,18 +7002,18 @@ export interface components {
             config: {
                 [key: string]: unknown;
             };
-            /** @description True for migration-seeded official presets (read-only, cannot be deleted) */
+            /** @description 迁移预置的官方预设为 true（只读，不可删除） */
             isOfficial: boolean;
-            /** @description Username of the creator (JWT username). null = legacy row / official seed; deletion of null-owner rows is ADMIN-only. */
+            /** @description 创建者的用户名（JWT 用户名）。null = legacy 行/官方 seed；属主为 null 的行仅 ADMIN 可删除。 */
             createdBy?: string | null;
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Last update time (ISO-8601)
+             * @description 最后更新时间（ISO-8601）
              */
             updatedAt: string;
         };
@@ -6999,29 +7062,29 @@ export interface components {
         InstantiateTaskResponseDto: {
             /**
              * Format: uuid
-             * @description Created task UUID
+             * @description 已创建任务的 UUID
              */
             id: string;
-            /** @description Task name (from the overlay body; unique across tasks) */
+            /** @description 任务名称（取自 overlay 请求体；在全部任务中唯一） */
             name: string;
             /**
-             * @description Lifecycle status of the created task
+             * @description 所创建任务的生命周期状态
              * @enum {string}
              */
             status: "active" | "paused" | "deleted";
             /**
-             * @description Trigger type expanded from the template config / overlay
+             * @description 由模板 config / overlay 展开得到的触发类型
              * @enum {string}
              */
             triggerType: "cron" | "fixed_rate" | "api" | "manual";
             /**
-             * @description Runtime the executor will use
+             * @description 执行器将使用的运行时
              * @enum {string}
              */
             runtime: "python" | "node" | "shell";
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
         };
@@ -7032,137 +7095,137 @@ export interface components {
         EventSubscriptionResponseDto: {
             /**
              * Format: uuid
-             * @description Subscription UUID
+             * @description 订阅 UUID
              */
             id: string;
-            /** @description Owner user id (integer). null = system-level subscription (ADMIN-managed, visible to every admin and to all users for troubleshooting reads). */
+            /** @description 属主用户 ID（整数）。null = 系统级订阅（由 ADMIN 管理，对所有管理员可见，并为排查问题向所有用户开放读权限）。 */
             userId?: number | null;
             /**
-             * @description Subscribed event names (stable catalog, append-only): execution.completed / execution.failed / executor.offline / deployment.completed
+             * @description 订阅的事件名（稳定目录，只增不改）：execution.completed / execution.failed / executor.offline / deployment.completed
              * @example [
              *       "execution.failed"
              *     ]
              */
             eventTypes: string[];
-            /** @description Callback URL (public http(s); SSRF deep-validated on write and re-checked before every outbound delivery) */
+            /** @description 回调 URL（公网 http(s)；写入时做 SSRF 深度校验，并在每次外发投递前重新检查） */
             url: string;
             /**
-             * @description HMAC signing secret — always the mask placeholder '******' on every read surface (plaintext returned once as generatedSecret on create only)
+             * @description HMAC 签名 secret —— 在所有读面恒为掩码占位符 '******'（明文仅在创建时以 generatedSecret 返回一次）
              * @example ******
              */
             secret: string;
-            /** @description Whether delivery is enabled */
+            /** @description 是否启用投递 */
             enabled: boolean;
-            /** @description Consecutive delivery failures (reset to 0 on any success) */
+            /** @description 连续投递失败次数（任一次成功即重置为 0） */
             consecutiveFailures: number;
             /**
              * Format: date-time
-             * @description Timestamp of the most recent delivery failure; null = never failed
+             * @description 最近一次投递失败的时间戳；null = 从未失败
              */
             lastFailureAt?: string | null;
-            /** @description Most recent failure summary (truncated to 512; never contains secret/payload) */
+            /** @description 最近一次失败摘要（截断至 512 字符；绝不含 secret/payload） */
             lastFailureError?: string | null;
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Last update time (ISO-8601)
+             * @description 最后更新时间（ISO-8601）
              */
             updatedAt: string;
         };
         CreateEventSubscriptionDto: {
             /**
-             * @description Callback URL (public http(s) endpoint; private networks rejected)
+             * @description 回调 URL（公网 http(s) 端点；内网地址会被拒绝）
              * @example https://ci.example.com/hooks/autoflow
              */
             url: string;
             /**
-             * @description Event names to subscribe
+             * @description 要订阅的事件名
              * @example [
              *       "execution.failed"
              *     ]
              */
             eventTypes: ("execution.completed" | "execution.failed" | "executor.offline" | "deployment.completed")[];
-            /** @description HMAC signing secret. Omit to let the server generate a 32-byte hex secret (returned once in the create response, never shown again). */
+            /** @description HMAC 签名密钥。省略则由服务端生成 32 字节十六进制密钥（仅在创建响应中返回一次，之后不再展示）。 */
             secret?: string;
         };
         EventSubscriptionCreateResponseDto: {
-            /** @description Created subscription (secret masked) */
+            /** @description 新建的订阅（secret 已掩码） */
             subscription: components["schemas"]["EventSubscriptionResponseDto"];
-            /** @description Server-generated 32-byte hex secret — returned exactly once, on this response only. Absent when the caller supplied their own secret. */
+            /** @description 服务端生成的 32 字节十六进制 secret —— 仅在本响应中返回一次。调用方自带 secret 时不出现。 */
             generatedSecret?: string;
         };
         UpdateSubscriptionBody: {
-            /** @description Enable/disable delivery */
+            /** @description 是否启用投递（true=启用，false=停用） */
             enabled?: boolean;
-            /** @description New callback URL */
+            /** @description 新的回调 URL */
             url?: string;
-            /** @description Replace the subscribed event set */
+            /** @description 替换订阅的事件集合 */
             eventTypes?: string[];
-            /** @description Rotate the signing secret */
+            /** @description 轮换签名密钥 */
             secret?: string;
         };
         EventSubscriptionDeadLetterResponseDto: {
             /**
              * Format: uuid
-             * @description Dead letter UUID
+             * @description 死信 UUID
              */
             id: string;
             /**
              * Format: uuid
-             * @description Owning subscription UUID
+             * @description 所属订阅 UUID
              */
             subscriptionId: string;
-            /** @description Event name that failed delivery (e.g. execution.failed) */
+            /** @description 投递失败的事件名（例如 execution.failed） */
             eventType: string;
-            /** @description Complete outbound envelope at send time (event/occurredAt/data) */
+            /** @description 发送时刻的完整外发信封（event/occurredAt/data） */
             payload: {
                 [key: string]: unknown;
             };
-            /** @description Last failure summary (truncated to 1024) */
+            /** @description 最近一次失败摘要（截断至 1024 字符） */
             error: string;
-            /** @description Actual delivery attempts (first attempt + outbox scanner retries, bounded by MAX_OUTBOX_ATTEMPTS) */
+            /** @description 实际投递尝试次数（首次尝试 + outbox 扫描器重试，受 MAX_OUTBOX_ATTEMPTS 限制） */
             attempts: number;
             /**
              * Format: date-time
-             * @description When this dead letter was recorded (ISO-8601)
+             * @description 该死信的记录时间（ISO-8601）
              */
             createdAt: string;
         };
         EventSubscriptionDeadLetterPageDto: {
-            /** @description Page of dead letters, newest first */
+            /** @description 死信分页，按最新在前 */
             data: components["schemas"]["EventSubscriptionDeadLetterResponseDto"][];
-            /** @description Total matching rows before paging */
+            /** @description 分页前的匹配总行数 */
             total: number;
         };
         ReplayDeadLetterResponseDto: {
-            /** @description Whether the single replay delivery succeeded */
+            /** @description 本次单次重放投递是否成功 */
             ok: boolean;
-            /** @description Failure summary when ok=false (row is kept for another try) */
+            /** @description ok=false 时的失败摘要（该行会保留以便再次尝试） */
             error?: string;
         };
         ApiKeyViewDto: {
             id: number;
             name: string;
-            /** @description 'acf_' + first chars — full key never returned after create */
+            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
             keyPrefix: string;
-            /** @description Coarse scope bucket */
+            /** @description 粗粒度范围桶 */
             scope: string;
-            /** @description Extra narrow-domain scopes (word list, e.g. 'task:trigger') */
+            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
             scopes: string[];
             /** Format: date-time */
             expiresAt: string | null;
             /**
              * Format: date-time
-             * @description Set = revoked (soft-delete)
+             * @description 有值 = 已吊销（软删除）
              */
             revokedAt: string | null;
             /**
              * Format: date-time
-             * @description Refresh throttled to 60s (LAST_USED_THROTTLE_MS)
+             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
              */
             lastUsedAt: string | null;
             /** Format: date-time */
@@ -7172,27 +7235,27 @@ export interface components {
         ApiKeyCreateResponseDto: {
             id: number;
             name: string;
-            /** @description 'acf_' + first chars — full key never returned after create */
+            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
             keyPrefix: string;
-            /** @description Coarse scope bucket */
+            /** @description 粗粒度范围桶 */
             scope: string;
-            /** @description Extra narrow-domain scopes (word list, e.g. 'task:trigger') */
+            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
             scopes: string[];
             /** Format: date-time */
             expiresAt: string | null;
             /**
              * Format: date-time
-             * @description Set = revoked (soft-delete)
+             * @description 有值 = 已吊销（软删除）
              */
             revokedAt: string | null;
             /**
              * Format: date-time
-             * @description Refresh throttled to 60s (LAST_USED_THROTTLE_MS)
+             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
              */
             lastUsedAt: string | null;
             /** Format: date-time */
             createdAt: string;
-            /** @description Plaintext key ('acf_<64 hex>') shown ONCE — store it now */
+            /** @description 明文 key（'acf_<64 hex>'）仅展示一次——请立即保存 */
             plaintext: string;
         };
         ApiKeyRevokeResponseDto: {
@@ -7201,70 +7264,70 @@ export interface components {
             apiKey: components["schemas"]["ApiKeyViewDto"];
         };
         ProjectViewDto: {
-            /** @description Project id (uuid) */
+            /** @description 项目 ID（uuid） */
             id: string;
-            /** @description Project name */
+            /** @description 项目名称 */
             name: string;
-            /** @description Description */
+            /** @description 描述 */
             description?: string | null;
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Last update time (ISO-8601)
+             * @description 最后更新时间（ISO-8601）
              */
             updatedAt: string;
             /**
-             * @description Calling subject's role in this project; null for non-members. ADMIN also gets its real member row here (honest, not synthesized).
+             * @description 调用主体在该项目中的角色；非成员为 null。ADMIN 也会在这里拿到其真实的成员行（如实返回，不做合成）。
              * @enum {string|null}
              */
             myRole?: "viewer" | "editor" | "admin" | null;
         };
         ProjectListPageDto: {
-            /** @description Page rows (legacy alias of items) */
+            /** @description 分页行（items 的 legacy 别名） */
             list: components["schemas"]["ProjectViewDto"][];
-            /** @description Page rows */
+            /** @description 分页行 */
             items: components["schemas"]["ProjectViewDto"][];
-            /** @description Total visible projects */
+            /** @description 可见项目总数 */
             total: number;
-            /** @description Current page (1-based) */
+            /** @description 当前页（从 1 开始） */
             page: number;
-            /** @description Page size (clamped to 1..100) */
+            /** @description 每页条数（限制在 1..100） */
             pageSize: number;
-            /** @description Total pages */
+            /** @description 总页数 */
             totalPages: number;
         };
         ProjectEntityDto: {
-            /** @description Project id (uuid) */
+            /** @description 项目 ID（uuid） */
             id: string;
-            /** @description Unique project name */
+            /** @description 唯一项目名称 */
             name: string;
-            /** @description Description */
+            /** @description 描述 */
             description?: string | null;
             /**
              * Format: date-time
-             * @description Creation time (ISO-8601)
+             * @description 创建时间（ISO-8601）
              */
             createdAt: string;
             /**
              * Format: date-time
-             * @description Last update time (ISO-8601)
+             * @description 最后更新时间（ISO-8601）
              */
             updatedAt: string;
         };
         CreateProjectDto: {
-            /** @description Project name */
+            /** @description 项目名称 */
             name: string;
-            /** @description Project description */
+            /** @description 项目描述 */
             description?: string;
         };
         UpdateProjectDto: {
-            /** @description Project name */
+            /** @description 项目名称 */
             name?: string;
-            /** @description Project description */
+            /** @description 项目描述 */
             description?: string;
         };
         ProjectDeleteResponseDto: {
@@ -7272,47 +7335,47 @@ export interface components {
             deleted: boolean;
         };
         ProjectMemberViewDto: {
-            /** @description Membership row id (uuid) */
+            /** @description 成员关系行 ID（uuid） */
             id: string;
-            /** @description Project id (uuid) */
+            /** @description 项目 ID（uuid） */
             projectId: string;
-            /** @description User id */
+            /** @description 用户 ID */
             userId: number;
             /**
-             * @description Role granted to this member
+             * @description 授予该成员的角色
              * @enum {string}
              */
             role: "viewer" | "editor" | "admin";
             /**
              * Format: date-time
-             * @description Membership creation time (ISO-8601)
+             * @description 成员关系创建时间（ISO-8601）
              */
             createdAt: string;
         };
         UpsertProjectMemberDto: {
-            /** @description User ID */
+            /** @description 用户 ID */
             userId: number;
             /**
-             * @description Project role
+             * @description 项目角色
              * @enum {string}
              */
             role: "viewer" | "editor" | "admin";
         };
         UpdateProjectMemberDto: {
-            /** @description User ID */
+            /** @description 用户 ID */
             userId?: number;
             /**
-             * @description Project role
+             * @description 项目角色
              * @enum {string}
              */
             role?: "viewer" | "editor" | "admin";
         };
         MyProjectRolesDto: {
-            /** @description Calling user id; null when the request carries no user */
+            /** @description 调用方用户 ID；请求未携带用户时为 null */
             userId?: number | null;
-            /** @description True when the caller is ADMIN (admin-web uses this to render all projects) */
+            /** @description 调用方为 ADMIN 时为 true（admin-web 据此渲染全部项目） */
             isAdmin: boolean;
-            /** @description Membership rows for the calling user across all projects */
+            /** @description 调用方在所有项目中的成员关系行 */
             memberships: components["schemas"]["ProjectMemberViewDto"][];
         };
     };
@@ -7349,14 +7412,14 @@ export interface operations {
                     };
                 };
             };
-            /** @description Invalid username or password */
+            /** @description 用户名或密码错误 */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Too many requests, rate limit exceeded */
+            /** @description 请求过于频繁，已触发限流 */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -7387,7 +7450,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuthTokensDto"];
                 };
             };
-            /** @description Refresh Token is invalid or expired */
+            /** @description Refresh Token 无效或已过期 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7413,7 +7476,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuthLogoutDto"];
                 };
             };
-            /** @description Unauthenticated */
+            /** @description 未认证 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7431,7 +7494,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Ticket issued */
+            /** @description 票据已签发 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -7440,7 +7503,7 @@ export interface operations {
                     "application/json": components["schemas"]["SseTicketResponseDto"];
                 };
             };
-            /** @description Unauthenticated */
+            /** @description 未认证 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7467,7 +7530,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuthProfileDto"];
                 };
             };
-            /** @description Unauthenticated */
+            /** @description 未认证 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7485,7 +7548,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Staged secret + otpauth URL */
+            /** @description 已预登记的密钥 + otpauth URL */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7494,7 +7557,7 @@ export interface operations {
                     "application/json": components["schemas"]["TotpSetupResponseDto"];
                 };
             };
-            /** @description TOTP already enabled */
+            /** @description TOTP 已启用 */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7516,7 +7579,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description TOTP enabled */
+            /** @description TOTP 已启用 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7525,7 +7588,7 @@ export interface operations {
                     "application/json": components["schemas"]["TotpEnableResponseDto"];
                 };
             };
-            /** @description Invalid code or nothing staged */
+            /** @description 验证码错误，或没有预登记的密钥 */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7543,7 +7606,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description TOTP disabled (or was not on) */
+            /** @description TOTP 已停用（或本来未启用） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7552,7 +7615,7 @@ export interface operations {
                     "application/json": components["schemas"]["TotpDisableResponseDto"];
                 };
             };
-            /** @description Confirmation failed */
+            /** @description 确认失败 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7583,7 +7646,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuthTokensDto"];
                 };
             };
-            /** @description Invalid credentials or TOTP code */
+            /** @description 凭据或 TOTP 验证码错误 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7601,7 +7664,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Session list */
+            /** @description 会话列表 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7623,7 +7686,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Session revoked */
+            /** @description 会话已撤销 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7632,7 +7695,7 @@ export interface operations {
                     "application/json": components["schemas"]["SessionRevokeResponseDto"];
                 };
             };
-            /** @description Session not found or not yours */
+            /** @description 会话不存在或不属于你 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7650,7 +7713,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Revocation count */
+            /** @description 撤销数量 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7689,7 +7752,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 302 redirect to the IdP authorize URL (Res passthrough) */
+            /** @description 302 重定向到 IdP 授权 URL（Res 直传） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7713,7 +7776,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 302 redirect with session cookie set, or 502 JSON on failure (Res passthrough) */
+            /** @description 302 重定向并写入会话 Cookie；失败时返回 502 JSON（Res 直传） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7729,7 +7792,7 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by username or email (case-insensitive) */
+                /** @description 按用户名或邮箱模糊搜索（不区分大小写） */
                 search?: string;
             };
             header?: never;
@@ -7841,21 +7904,21 @@ export interface operations {
     TaskController_findAll: {
         parameters: {
             query?: {
-                /** @description Page number, default 1 */
+                /** @description 页码，默认 1 */
                 page?: components["schemas"]["Object"];
-                /** @description Page size, default 20 */
+                /** @description 每页条数，默认 20 */
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name ONLY (backward-compatible channel; CLI/MCP use it). The console search box uses `q` instead, because its placeholder promises name OR description. */
+                /** @description 仅按任务名称模糊搜索（向后兼容通道；CLI/MCP 使用它）。控制台搜索框改用 `q`，因为其占位符承诺搜索名称或描述。 */
                 name?: string;
-                /** @description Filter by status (active/paused/inactive) */
+                /** @description 按状态过滤（active/paused/inactive） */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按运行时过滤（python/node/shell） */
                 runtime?: string;
-                /** @description Keyword search across BOTH task name and description. LIKE metacharacters (% and _) are matched literally, so a search for `daily_report` does not also match `dailyXreport`. Composable with every other list filter. */
+                /** @description 同时按任务名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配，因此搜索 `daily_report` 不会同时命中 `dailyXreport`。可与其他所有列表过滤条件组合。 */
                 q?: string;
-                /** @description F-10: comma-separated projection whitelist (e.g. 'id,name'). Only whitelisted lightweight columns are selected — params/secrets/glueSource and other heavy columns are skipped. Illegal fields → 400. */
+                /** @description F-10：逗号分隔的投影白名单（例如 'id,name'）。只查询白名单内的轻量列——跳过 params/secrets/glueSource 等重型列。非法字段 → 400。 */
                 fields?: unknown;
-                /** @description P2-18: filter tasks whose MOST RECENT execution has this status (latest task_executions row per task: createdAt DESC, id DESC). Values: pending/running/waiting/success/failed/timeout/killed/cancelled. An in-flight latest execution (pending/running) matches as-is. Implemented as an EXISTS subquery — composable with the other list filters. */
+                /** @description P2-18：过滤「最近一次执行」处于该状态的任务（每个任务取最新一行 task_executions：createdAt DESC、id DESC）。取值：pending/running/waiting/success/failed/timeout/killed/cancelled。最近一次执行仍在进行中（pending/running）时按原样匹配。以 EXISTS 子查询实现——可与其他列表过滤条件组合。 */
                 lastStatus?: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
             };
             header?: never;
@@ -7864,7 +7927,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paginated list (list/items double key, R-21). Default projection = full entity with secrets masked; ?fields= shrinks items (F-10). */
+            /** @description 分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7888,7 +7951,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Task created successfully (starts paused) */
+            /** @description 任务创建成功（初始为暂停状态） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -7912,7 +7975,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Task imported (paused). warnings always includes the reconfigure-secrets hint. */
+            /** @description 任务已导入（暂停状态）。warnings 中始终包含重新配置密钥的提示。 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -7921,21 +7984,21 @@ export interface operations {
                     "application/json": components["schemas"]["TaskImportResultDto"];
                 };
             };
-            /** @description Invalid payload (missing required keys, oversized params, unknown fields — global whitelist, invalid cron/timezone/enum, ...) */
+            /** @description 载荷非法（缺少必填键、params 超大、未知字段（全局白名单）、cron/时区/枚举非法等） */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description The payload assigns a project the caller may not write (ADMIN or project editor/admin required) */
+            /** @description 载荷指定的项目调用者无权写入（需要 ADMIN，或该项目的 editor/admin 角色） */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description All name candidates conflict with existing tasks (or another unique conflict) */
+            /** @description 所有候选名称都与已有任务冲突（或其他唯一性冲突） */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -7951,14 +8014,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Batch trigger parameters */
+        /** @description 批量触发参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
             };
         };
         responses: {
-            /** @description Per-task trigger results (success item = full execution; failure item = {id, error}) */
+            /** @description 各任务的触发结果（成功项 = 完整执行记录；失败项 = {id, error}） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -7976,14 +8039,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Batch pause parameters */
+        /** @description 批量暂停参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
             };
         };
         responses: {
-            /** @description Per-task pause results (success item = full task; failure item = {id, error}) */
+            /** @description 各任务的暂停结果（成功项 = 完整任务；失败项 = {id, error}） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8001,14 +8064,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Batch resume parameters */
+        /** @description 批量恢复参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
             };
         };
         responses: {
-            /** @description Per-task resume results (success item = full task; failure item = {id, error}) */
+            /** @description 各任务的恢复结果（成功项 = 完整任务；失败项 = {id, error}） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8026,14 +8089,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Batch delete parameters */
+        /** @description 批量删除参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
             };
         };
         responses: {
-            /** @description Per-task delete results (success item = {deleted: true}; failure item = {id, error}) */
+            /** @description 各任务的删除结果（成功项 = {deleted: true}；失败项 = {id, error}） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8049,21 +8112,21 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 name?: string;
-                /** @description Filter by execution status */
+                /** @description 按执行状态过滤 */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
-                /** @description Filter by task id */
+                /** @description 按任务 id 过滤 */
                 taskId?: string;
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 taskName?: string;
-                /** @description Fuzzy filter by executor address */
+                /** @description 按执行器地址模糊过滤 */
                 executorAddress?: string;
-                /** @description Only executions created at/after this time (ISO 8601) */
+                /** @description 仅返回在该时刻及之后创建的执行（ISO 8601） */
                 startTime?: string;
-                /** @description Only executions created at/before this time (ISO 8601) */
+                /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
                 endTime?: string;
             };
             header?: never;
@@ -8072,7 +8135,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Global execution records (heavy text columns excluded) */
+            /** @description 全局执行记录（已排除大文本列） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8086,16 +8149,16 @@ export interface operations {
     TaskController_executionLogsByExecId: {
         parameters: {
             query?: {
-                /** @description Start line number, default 0 */
+                /** @description 起始行号，默认 0 */
                 fromLine?: string;
-                /** @description Lines per page, default 500, max 2000 */
+                /** @description 每页行数，默认 500，最多 2000 */
                 limit?: string;
-                /** @description Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count. */
+                /** @description 按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。 */
                 level?: "ERROR" | "WARN" | "INFO" | "DEBUG";
             };
             header?: never;
             path: {
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
@@ -8117,7 +8180,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
@@ -8158,14 +8221,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description successRate/succeeded/failed are ALL-RUN figures since FIX-5.1; recentSuccessRate keeps the last-20 window */
+            /** @description FIX-5.1 起 successRate/succeeded/failed 均为全量执行口径；recentSuccessRate 仍保留最近 20 次窗口 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8181,14 +8244,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description AI recommendation; fallback=true marks the heuristic path */
+            /** @description AI 推荐结果；fallback=true 表示走了启发式降级路径 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8204,14 +8267,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Full task entity with secrets masked */
+            /** @description 完整任务实体，密钥已掩码 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8220,7 +8283,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskResponseDto"];
                 };
             };
-            /** @description Task not found */
+            /** @description 任务不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8234,14 +8297,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Soft-deleted (status=deleted + deletedAt) */
+            /** @description 已软删除（status=deleted + deletedAt） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8250,7 +8313,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeleteTaskResponseDto"];
                 };
             };
-            /** @description Task not found */
+            /** @description 任务不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8264,7 +8327,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
@@ -8275,7 +8338,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated successfully (secrets masked) */
+            /** @description 更新成功（密钥已掩码） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8284,7 +8347,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskResponseDto"];
                 };
             };
-            /** @description Task not found */
+            /** @description 任务不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8298,14 +8361,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Task definition export payload (same shape as the POST /tasks/import body) */
+            /** @description 任务定义导出载荷（与 POST /tasks/import 的请求体同形态） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8314,7 +8377,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskExportPayloadDto"];
                 };
             };
-            /** @description Task not found */
+            /** @description 任务不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8328,7 +8391,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
@@ -8342,7 +8405,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Script updated */
+            /** @description 脚本已更新 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8351,7 +8414,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskResponseDto"];
                 };
             };
-            /** @description Task not found */
+            /** @description 任务不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8365,7 +8428,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
@@ -8376,7 +8439,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Execution row created and enqueued */
+            /** @description 已创建执行记录并已入队 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8385,7 +8448,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskExecutionResponseDto"];
                 };
             };
-            /** @description Trigger rejected: an active execution with the same params already exists (blockStrategy=discard) */
+            /** @description 触发被拒绝：已存在参数相同的活跃执行（blockStrategy=discard） */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -8405,7 +8468,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Webhook status (secret never returned) */
+            /** @description Webhook 状态（密钥从不返回） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8427,7 +8490,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Webhook URL + one-time secret */
+            /** @description Webhook URL + 一次性密钥 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8449,7 +8512,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Webhook URL + one-time secret */
+            /** @description Webhook URL + 一次性密钥 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8471,7 +8534,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description `{ enabled: false }` */
+            /** @description 停用后的响应：`{ enabled: false }` */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8485,28 +8548,28 @@ export interface operations {
     TaskController_executions: {
         parameters: {
             query?: {
-                /** @description Page number */
+                /** @description 页码 */
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 name?: string;
-                /** @description Filter by execution status */
+                /** @description 按执行状态过滤 */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
-                /** @description Page size */
+                /** @description 每页条数 */
                 limit?: unknown;
             };
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Execution history (heavy text columns excluded) */
+            /** @description 执行历史（已排除大文本列） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8522,16 +8585,16 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Full execution row (includes logs/aiAnalysis) */
+            /** @description 完整执行行（包含 logs/aiAnalysis） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8540,7 +8603,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskExecutionResponseDto"];
                 };
             };
-            /** @description Execution record not found */
+            /** @description 执行记录不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8554,9 +8617,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
@@ -8571,7 +8634,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionReportResponseDto"];
                 };
             };
-            /** @description Execution record not found */
+            /** @description 执行记录不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8583,18 +8646,18 @@ export interface operations {
     TaskController_executionLogs: {
         parameters: {
             query?: {
-                /** @description Start line number, default 0 */
+                /** @description 起始行号，默认 0 */
                 fromLine?: string;
-                /** @description Lines per page, default 500, max 2000 */
+                /** @description 每页行数，默认 500，最多 2000 */
                 limit?: string;
-                /** @description Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count. */
+                /** @description 按推断出的日志级别过滤（在 SQL 层完成）；级别未知（NULL）的行会被排除。指定 level 时，fromLine 是过滤后序列内的偏移，totalLines 是过滤后的条数。 */
                 level?: "ERROR" | "WARN" | "INFO" | "DEBUG";
             };
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
@@ -8616,16 +8679,16 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description SSE stream (Res passthrough) */
+            /** @description SSE 流（Res 直传） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8641,19 +8704,19 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
-        /** @description Rollback parameters */
+        /** @description 回滚参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
             };
         };
         responses: {
-            /** @description New execution dispatched at the target commit (POST default 201) */
+            /** @description 已在目标 commit 上派发新的执行（POST 默认 201） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8662,7 +8725,7 @@ export interface operations {
                     "application/json": components["schemas"]["GitRollbackResponseDto"];
                 };
             };
-            /** @description Rollback not supported for non-Git tasks */
+            /** @description 非 Git 任务不支持回滚 */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8676,9 +8739,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Version ID */
+                /** @description 版本 ID */
                 versionId: string;
             };
             cookie?: never;
@@ -8690,7 +8753,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Task config rolled back to the snapshot (POST default 201) */
+            /** @description 任务配置已回滚到该快照（POST 默认 201） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8699,7 +8762,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskResponseDto"];
                 };
             };
-            /** @description Task or version not found */
+            /** @description 任务或版本不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8713,14 +8776,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Most recent 100 snapshots */
+            /** @description 最近 100 个快照 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8736,18 +8799,18 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Version ID 1 */
+                /** @description 版本 ID 1 */
                 versionId1: string;
-                /** @description Version ID 2 */
+                /** @description 版本 ID 2 */
                 versionId2: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Keyed diff — only changed fields, each {old, new} */
+            /** @description 按字段键组织的差异——仅包含发生变化的字段，每项为 {old, new} */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8758,7 +8821,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Task or version not found */
+            /** @description 任务或版本不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8772,14 +8835,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Paused (POST default 201) */
+            /** @description 已暂停（POST 默认 201） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8788,14 +8851,14 @@ export interface operations {
                     "application/json": components["schemas"]["TaskResponseDto"];
                 };
             };
-            /** @description Task is already paused */
+            /** @description 任务已处于暂停状态 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Task not found */
+            /** @description 任务不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8809,14 +8872,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Resumed (POST default 201) */
+            /** @description 已恢复（POST 默认 201） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8825,14 +8888,14 @@ export interface operations {
                     "application/json": components["schemas"]["TaskResponseDto"];
                 };
             };
-            /** @description Task is already running */
+            /** @description 任务已在运行中 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Task not found */
+            /** @description 任务不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8846,16 +8909,16 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Updated execution with aiAnalysis persisted (POST default 201) */
+            /** @description 已更新执行记录并持久化 aiAnalysis（POST 默认 201） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8871,16 +8934,16 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Task ID */
+                /** @description 任务 ID */
                 id: string;
-                /** @description Execution record ID */
+                /** @description 执行记录 ID */
                 execId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Cancelled (POST default 201) */
+            /** @description 已取消（POST 默认 201） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -8889,14 +8952,14 @@ export interface operations {
                     "application/json": components["schemas"]["KillExecutionResponseDto"];
                 };
             };
-            /** @description Execution is not in a cancellable state */
+            /** @description 执行当前状态不可取消 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Execution record not found */
+            /** @description 执行记录不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8912,7 +8975,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Batch trigger parameters */
+        /** @description 批量触发参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
@@ -8920,7 +8983,7 @@ export interface operations {
         };
         responses: {
             /**
-             * @description Batch trigger results
+             * @description 批量触发结果
              *
              *     与 /tasks/batch/* 同形态：逐任务结果数组（成功=execution 行 | 失败={id,error}）
              */
@@ -8948,7 +9011,7 @@ export interface operations {
         };
         responses: {
             /**
-             * @description Batch pause results
+             * @description 批量暂停结果
              *
              *     同 /tasks/batch/pause
              */
@@ -8976,7 +9039,7 @@ export interface operations {
         };
         responses: {
             /**
-             * @description Batch resume results
+             * @description 批量恢复结果
              *
              *     同 /tasks/batch/resume
              */
@@ -9004,7 +9067,7 @@ export interface operations {
         };
         responses: {
             /**
-             * @description Batch delete results
+             * @description 批量删除结果
              *
              *     同 /tasks/batch/delete
              */
@@ -9031,7 +9094,7 @@ export interface operations {
                 "x-autocodeflow-timestamp": string;
             };
             path: {
-                /** @description Task UUID */
+                /** @description 任务 UUID */
                 taskId: string;
             };
             cookie?: never;
@@ -9062,7 +9125,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Array of execution callback items (max 100) */
+        /** @description 执行回调条目数组（最多 100 条） */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CallbackItemDto"][];
@@ -9078,14 +9141,14 @@ export interface operations {
                     "application/json": components["schemas"]["CallbackItemResultDto"][];
                 };
             };
-            /** @description Invalid request body */
+            /** @description 请求体非法 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Invalid shared token */
+            /** @description 共享令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9105,7 +9168,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description Log chunk with 0-based line offset and the lines themselves */
+        /** @description 带 0 起始行偏移的日志块及其内容行 */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AppendLogChunkDto"];
@@ -9121,21 +9184,21 @@ export interface operations {
                     "application/json": components["schemas"]["LogChunkAckDto"];
                 };
             };
-            /** @description Invalid request body */
+            /** @description 请求体非法 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Invalid executor token */
+            /** @description 执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Execution not found */
+            /** @description 执行记录不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9153,7 +9216,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Registration info */
+        /** @description 注册信息 */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ExecutorRegisterDto"];
@@ -9180,14 +9243,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Heartbeat data */
+        /** @description 心跳数据 */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ExecutorHeartbeatDto"];
             };
         };
         responses: {
-            /** @description Saved executor + callback-auth secret + version-gate readings (POST default 201) */
+            /** @description 已保存的执行器 + 回调鉴权密钥 + 版本闸门读数（POST 默认 201） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -9196,7 +9259,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorHeartbeatResponseDto"];
                 };
             };
-            /** @description Invalid executor token */
+            /** @description 执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9221,7 +9284,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description task=null when nothing queued within waitMs */
+            /** @description waitMs 内无任务入队时 task=null */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9230,7 +9293,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorPullResponseDto"];
                 };
             };
-            /** @description Invalid executor token */
+            /** @description 执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9258,7 +9321,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorCommandResultResponseDto"];
                 };
             };
-            /** @description Invalid executor token */
+            /** @description 执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9271,6 +9334,7 @@ export interface operations {
         parameters: {
             query: {
                 address: string;
+                deviceFingerprint: string;
             };
             header: {
                 authorization: string;
@@ -9288,7 +9352,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorConfigPayloadResponseDto"];
                 };
             };
-            /** @description Invalid executor token */
+            /** @description 执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9299,24 +9363,25 @@ export interface operations {
     };
     ExecutorController_getTerminalStates: {
         parameters: {
-            query?: {
-                /** @description ISO-8601 watermark; only executions whose terminal time (COALESCE(endTime, createdAt)) is >= since are returned. Defaults to the last 24h; clamped to 30 days. */
+            query: {
+                /** @description ISO-8601 水位线；仅返回终态时间（COALESCE(endTime, createdAt)）>= since 的执行记录。默认最近 24 小时；最多钳制到 30 天。 */
                 since?: string;
-                /** @description Page size (1..2000, default 500). hasMore=true means more rows remain. */
+                /** @description 每页条数（1..2000，默认 500）。hasMore=true 表示还有更多数据。 */
                 limit?: string;
+                deviceFingerprint: string;
             };
             header: {
                 authorization: string;
             };
             path: {
-                /** @description Executor registration address (same value as heartbeat) */
+                /** @description 执行器注册地址（与心跳使用同一个值） */
                 address: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Terminal-state page */
+            /** @description 终态记录分页 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9325,7 +9390,7 @@ export interface operations {
                     "application/json": components["schemas"]["TerminalStatesResponseDto"];
                 };
             };
-            /** @description Invalid executor token */
+            /** @description 执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9420,7 +9485,7 @@ export interface operations {
         requestBody?: never;
         responses: {
             /**
-             * @description Executor picker options with explicit truncation flag
+             * @description 带显式截断标记的执行器选择器选项
              *
              *     truncated=true 时 items 是前缀、total 是真实总数
              */
@@ -9451,7 +9516,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorInstallCmdDto"];
                 };
             };
-            /** @description ADMIN_API_URL is not configured on the server — no usable install command can be generated */
+            /** @description 服务端未配置 ADMIN_API_URL——无法生成可用的安装命令 */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9469,7 +9534,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description shell script text (Res passthrough) */
+            /** @description shell 脚本文本（Res 直传） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9483,7 +9548,7 @@ export interface operations {
     ExecutorController_getExecutorArtifact: {
         parameters: {
             query?: {
-                /** @description Executor shared token (alternative to the Authorization Bearer header) */
+                /** @description 执行器共享令牌（Authorization Bearer 请求头的替代方式） */
                 token?: string;
             };
             header: {
@@ -9495,9 +9560,9 @@ export interface operations {
         requestBody?: never;
         responses: {
             /**
-             * @description tar.gz artifact (application/gzip)
+             * @description tar.gz 产物（application/gzip）
              *
-             *     tar.gz binary (Res passthrough)
+             *     tar.gz 二进制内容（Res 直传）
              */
             200: {
                 headers: {
@@ -9507,14 +9572,14 @@ export interface operations {
                     "application/gzip": string;
                 };
             };
-            /** @description Missing / invalid shared token */
+            /** @description 共享令牌缺失或无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Artifact not generated / not found */
+            /** @description 产物未生成 / 不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9528,7 +9593,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
@@ -9543,7 +9608,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorResponseDto"];
                 };
             };
-            /** @description Executor not found */
+            /** @description 执行器不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9557,12 +9622,12 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
         };
-        /** @description AUTH-05: optional deletion reason, recorded in the audit log detail (the endpoint stays non-breaking — an empty body is fine). */
+        /** @description AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
         requestBody?: {
             content: {
                 "application/json": unknown;
@@ -9570,9 +9635,9 @@ export interface operations {
         };
         responses: {
             /**
-             * @description Executor deleted
+             * @description 执行器已删除
              *
-             *     Removed (no content)
+             *     已移除（无内容）
              */
             204: {
                 headers: {
@@ -9580,7 +9645,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Executor not found */
+            /** @description 执行器不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9594,12 +9659,12 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
         };
-        /** @description Update parameters */
+        /** @description 更新参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
@@ -9614,14 +9679,14 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorResponseDto"];
                 };
             };
-            /** @description Not ADMIN and no editor+ role on the executor's project */
+            /** @description 既不是 ADMIN，也没有该执行器所属项目的 editor 及以上角色 */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Executor not found */
+            /** @description 执行器不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9635,12 +9700,12 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
         };
-        /** @description Config parameters */
+        /** @description 配置参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
@@ -9656,21 +9721,21 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorReloadConfigResponseDto"];
                 };
             };
-            /** @description Executor not found */
+            /** @description 执行器不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Executor rejected the config push (its held token is out of sync with the issued one) */
+            /** @description 执行器拒收了配置推送（其持有的令牌与签发的令牌不一致） */
             502: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Executor offline or unreachable (config push could not be delivered) */
+            /** @description 执行器离线或不可达（配置推送未能送达） */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9684,12 +9749,12 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
         };
-        /** @description AUTH-05: optional rotation reason, recorded in the audit log detail (the endpoint itself stays non-breaking — an empty body is fine). */
+        /** @description AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
         requestBody?: {
             content: {
                 "application/json": unknown;
@@ -9716,14 +9781,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Get token parameters */
+        /** @description 获取令牌参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
             };
         };
         responses: {
-            /** @description Token obtained (or reused) successfully — R9 idempotent issuance */
+            /** @description 令牌获取（或复用）成功——R9 幂等签发 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -9732,7 +9797,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorTokenResponseDto"];
                 };
             };
-            /** @description Invalid shared token */
+            /** @description 共享令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9750,7 +9815,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Offline parameters */
+        /** @description 下线参数 */
         requestBody: {
             content: {
                 "application/json": unknown;
@@ -9765,7 +9830,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorOfflineDto"];
                 };
             };
-            /** @description Invalid executor token */
+            /** @description 执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -9779,7 +9844,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
@@ -9795,7 +9860,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorResponseDto"];
                 };
             };
-            /** @description Executor not found */
+            /** @description 执行器不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9809,7 +9874,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
@@ -9824,7 +9889,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorRemovalImpactResponseDto"];
                 };
             };
-            /** @description Executor not found */
+            /** @description 执行器不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9836,20 +9901,20 @@ export interface operations {
     ExecutorController_getExecutorExecutions: {
         parameters: {
             query?: {
-                /** @description Page number */
+                /** @description 页码 */
                 page?: components["schemas"]["Object"];
-                /** @description Page size */
+                /** @description 每页条数 */
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 name?: string;
-                /** @description Filter by task status */
+                /** @description 按任务状态过滤 */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
             };
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
@@ -9872,7 +9937,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Executor ID */
+                /** @description 执行器 ID */
                 id: string;
             };
             cookie?: never;
@@ -9982,7 +10047,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 2xx regardless of individual channel outcomes; inspect `results` for per-channel delivery (sent | blocked | failed | skipped). */
+            /** @description 无论各渠道结果如何均返回 2xx；各渠道投递情况见 `results`（sent | blocked | failed | skipped）。 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -10002,7 +10067,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description All silences */
+            /** @description 全部静默规则 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10027,7 +10092,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created silence */
+            /** @description 已创建的静默规则 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -10070,7 +10135,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Alertmanager v2 webhook body */
+        /** @description Alertmanager v2 Webhook 请求体 */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AlertmanagerWebhookDto"];
@@ -10793,7 +10858,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Prometheus text exposition format */
+            /** @description Prometheus 文本 exposition 格式 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10802,7 +10867,7 @@ export interface operations {
                     "text/plain": string;
                 };
             };
-            /** @description Endpoint disabled via METRICS_PROMETHEUS_ENABLED=false */
+            /** @description 端点已通过 METRICS_PROMETHEUS_ENABLED=false 关闭 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -10917,7 +10982,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Server-Sent Events stream (Res passthrough; envelope interceptor bypassed) */
+            /** @description Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10937,7 +11002,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Server-Sent Events stream (Res passthrough; envelope interceptor bypassed) */
+            /** @description Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10960,7 +11025,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Config rows sorted by key (optionally filtered by prefix/tag). Secret rows have value replaced by the mask '***'. */
+            /** @description 按 key 排序的配置行（可选按前缀/标签过滤）。敏感行的值替换为掩码 '***'。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -10984,7 +11049,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The persisted config row after upsert (real value, not masked — a submitted '***' on an existing secret key means 'keep stored value') */
+            /** @description upsert 后已持久化的配置行（真实值，未掩码——对已存在的敏感 key 提交 '***' 表示「保留已存储的值」） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11000,7 +11065,7 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Filter history by config key */
+                /** @description 按配置 key 过滤历史记录 */
                 key?: string;
             };
             header?: never;
@@ -11009,7 +11074,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paged history, newest first. Rows whose persisted isSecret=true (or whose key is currently secret) have oldValue/newValue masked as '***'; null stays null. */
+            /** @description 分页历史，最新在前。持久化 isSecret=true 的行（或该 key 当前为敏感配置）其 oldValue/newValue 会掩码为 '***'；null 仍为 null。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11025,11 +11090,11 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 name?: string;
-                /** @description Filter by task status */
+                /** @description 按任务状态过滤 */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
             };
             header?: never;
@@ -11040,7 +11105,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paged history for one key. Rows whose persisted isSecret=true (or this key is currently secret) have oldValue/newValue masked as '***'; null stays null. */
+            /** @description 单个 key 的分页历史。持久化 isSecret=true 的行（或该 key 当前为敏感配置）其 oldValue/newValue 会掩码为 '***'；null 仍为 null。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11062,7 +11127,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Rolled-back config row, or {deleted:true} when the target history row was the creation of that key (rollback = undo the creation) */
+            /** @description 回滚后的配置行；若目标历史行是该 key 的创建记录，则返回 {deleted:true}（回滚 = 撤销创建） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11082,7 +11147,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Newly generated 64-hex token, returned once. The store keeps it with isSecret=true, so later GET /config returns '***' for it. */
+            /** @description 新生成的 64 位十六进制令牌，仅返回一次。存储时 isSecret=true，因此之后 GET /config 对它返回 '***'。 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11102,7 +11167,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current token in plaintext. A missing key is NOT a 404: it degrades to {token:null, hasToken:false} (admin-web relies on that to render the 'not configured yet' state). */
+            /** @description 以明文返回当前令牌。key 不存在并不是 404：会降级为 {token:null, hasToken:false}（admin-web 依赖该形态渲染「尚未配置」状态）。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11122,7 +11187,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Effective contract constants only (no config-store values, no secrets). Deliberately NOT ADMIN-gated — every user who can create a task needs the correct range in the form. */
+            /** @description 仅返回生效的契约常量（不含配置存储的值，也不含密钥）。刻意不做 ADMIN 限制——每个能创建任务的用户都需要表单里有正确的范围。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11144,7 +11209,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The config row for this key. A secret key has value replaced by '***'. A missing key is a 404. */
+            /** @description 该 key 的配置行。敏感配置的 value 替换为 '***'。key 不存在时返回 404。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11166,7 +11231,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Always {deleted:true} on success; a missing key is a 404 (there is no {deleted:false} branch). */
+            /** @description 成功时始终返回 {deleted:true}；key 不存在时返回 404（没有 {deleted:false} 分支）。 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11190,7 +11255,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Persisted rows in the same order as the submitted items (transactional: any failure rolls the whole batch back). Real values, not masked. */
+            /** @description 按提交顺序持久化的行（事务性：任一条失败整批回滚）。真实值，未掩码。 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11206,27 +11271,27 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 name?: string;
-                /** @description Filter by task status */
+                /** @description 按任务状态过滤 */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
-                /** @description Filter by action (fuzzy match) */
+                /** @description 按操作动作过滤（模糊匹配） */
                 action?: string;
-                /** @description Filter by exact resource type */
+                /** @description 按资源类型精确过滤 */
                 resource?: string;
-                /** @description Filter by exact resource identifier (combine with resource) */
+                /** @description 按资源标识精确过滤（与 resource 组合使用） */
                 resourceId?: string;
-                /** @description Filter by operation result */
+                /** @description 按操作结果过滤 */
                 result?: "success" | "failure";
-                /** @description Filter by operator user id */
+                /** @description 按操作人用户 id 过滤 */
                 userId?: number;
-                /** @description Filter by operator username */
+                /** @description 按操作人用户名过滤 */
                 username?: string;
-                /** @description Only logs created at/after this time (ISO 8601) */
+                /** @description 仅返回在该时刻及之后创建的日志（ISO 8601） */
                 startTime?: string;
-                /** @description Only logs created at/before this time (ISO 8601) */
+                /** @description 仅返回在该时刻及之前创建的日志（ISO 8601） */
                 endTime?: string;
             };
             header?: never;
@@ -11250,27 +11315,27 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 name?: string;
-                /** @description Filter by task status */
+                /** @description 按任务状态过滤 */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
-                /** @description Filter by action (fuzzy match) */
+                /** @description 按操作动作过滤（模糊匹配） */
                 action?: string;
-                /** @description Filter by exact resource type */
+                /** @description 按资源类型精确过滤 */
                 resource?: string;
-                /** @description Filter by exact resource identifier (combine with resource) */
+                /** @description 按资源标识精确过滤（与 resource 组合使用） */
                 resourceId?: string;
-                /** @description Filter by operation result */
+                /** @description 按操作结果过滤 */
                 result?: "success" | "failure";
-                /** @description Filter by operator user id */
+                /** @description 按操作人用户 id 过滤 */
                 userId?: number;
-                /** @description Filter by operator username */
+                /** @description 按操作人用户名过滤 */
                 username?: string;
-                /** @description Only logs created at/after this time (ISO 8601) */
+                /** @description 仅返回在该时刻及之后创建的日志（ISO 8601） */
                 startTime?: string;
-                /** @description Only logs created at/before this time (ISO 8601) */
+                /** @description 仅返回在该时刻及之前创建的日志（ISO 8601） */
                 endTime?: string;
             };
             header?: never;
@@ -11279,7 +11344,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CSV text export (Res passthrough, max 10 000 rows) */
+            /** @description CSV 文本导出（Res 直传，最多 10 000 行） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11417,7 +11482,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Application list (env masked, webhookSecret never selected) */
+            /** @description 应用列表（env 已掩码，webhookSecret 从不查询） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11441,7 +11506,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created application */
+            /** @description 已创建的应用 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11463,7 +11528,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Application details */
+            /** @description 应用详情 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11489,7 +11554,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated application */
+            /** @description 已更新的应用 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11511,7 +11576,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Removed; envelope data is null */
+            /** @description 已移除；信封 data 为 null */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11735,9 +11800,9 @@ export interface operations {
     AppDeploymentController_findAll: {
         parameters: {
             query?: {
-                /** @description Filter by application ID */
+                /** @description 按应用 ID 过滤 */
                 applicationId?: string;
-                /** @description DEP-04: filter by approval status (e.g. pending_approval for the approval inbox) */
+                /** @description DEP-04：按审批状态过滤（例如用 pending_approval 拉取审批收件箱） */
                 approvalStatus?: "pending_approval" | "approved" | "rejected" | "cancelled";
                 page?: number;
                 pageSize?: number;
@@ -11834,7 +11899,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Masked deployment row (approval-required apps return the pending_approval request row) */
+            /** @description 脱敏后的部署行（需要审批的应用返回 pending_approval 请求行） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11848,9 +11913,9 @@ export interface operations {
     AppDeploymentController_listPendingApprovals: {
         parameters: {
             query?: {
-                /** @description Filter by application ID */
+                /** @description 按应用 ID 过滤 */
                 applicationId?: string;
-                /** @description DEP-04: filter by approval status (e.g. pending_approval for the approval inbox) */
+                /** @description DEP-04：按审批状态过滤（例如用 pending_approval 拉取审批收件箱） */
                 approvalStatus?: "pending_approval" | "approved" | "rejected" | "cancelled";
                 page?: number;
                 pageSize?: number;
@@ -11886,7 +11951,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Approved and dispatched row */
+            /** @description 已审批通过并已派发的行 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11912,7 +11977,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Rejected row */
+            /** @description 已驳回的行 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11934,7 +11999,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Cancelled row */
+            /** @description 已撤销的行 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11956,7 +12021,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Row in upgrading state */
+            /** @description 处于 upgrading 状态的行 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11978,7 +12043,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Stopped row */
+            /** @description 已停止的行 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -11993,7 +12058,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description Executor token (per-executor or shared) */
+                /** @description 执行器令牌（按执行器的或共享的） */
                 "x-executor-token": string;
             };
             path?: never;
@@ -12005,7 +12070,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Status recorded; envelope data is null */
+            /** @description 状态已记录；信封 data 为 null */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -12115,11 +12180,11 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description 按任务名模糊搜索 */
                 name?: string;
-                /** @description Filter by task status */
+                /** @description 按任务状态过滤 */
                 status?: string;
-                /** @description Filter by runtime (python/node/shell) */
+                /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
             };
             header?: never;
@@ -12128,7 +12193,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Package list */
+            /** @description 包列表 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12146,7 +12211,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Executor package file and metadata */
+        /** @description 执行器包文件与元数据 */
         requestBody: {
             content: {
                 "multipart/form-data": {
@@ -12178,9 +12243,9 @@ export interface operations {
     ExecutorPackageController_findLatest: {
         parameters: {
             query: {
-                /** @description Executor package type */
+                /** @description 执行器包类型 */
                 type: string;
-                /** @description Platform (optional) */
+                /** @description 平台（可选） */
                 platform?: string;
             };
             header?: never;
@@ -12189,7 +12254,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Latest package info (null when none matches) */
+            /** @description 最新包信息（无匹配时为 null） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12205,14 +12270,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Package ID */
+                /** @description 包 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Package details */
+            /** @description 包详情 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12221,7 +12286,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorPackageResponseDto"];
                 };
             };
-            /** @description Package not found */
+            /** @description 包不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12235,21 +12300,21 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Package ID */
+                /** @description 包 ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Deleted successfully */
+            /** @description 删除成功 */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Package not found */
+            /** @description 包不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12263,7 +12328,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Package ID */
+                /** @description 包 ID */
                 id: string;
             };
             cookie?: never;
@@ -12274,7 +12339,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated successfully */
+            /** @description 更新成功 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12283,7 +12348,7 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorPackageResponseDto"];
                 };
             };
-            /** @description Package not found */
+            /** @description 包不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12300,7 +12365,7 @@ export interface operations {
                 "if-none-match": string;
             };
             path: {
-                /** @description Package ID */
+                /** @description 包 ID */
                 id: string;
             };
             cookie?: never;
@@ -12308,9 +12373,9 @@ export interface operations {
         requestBody?: never;
         responses: {
             /**
-             * @description package binary (Res passthrough)
+             * @description 包二进制内容（Res 直传）
              *
-             *     package binary (Res passthrough)
+             *     包二进制内容（Res 直传）
              */
             200: {
                 headers: {
@@ -12320,14 +12385,14 @@ export interface operations {
                     "application/octet-stream": string;
                 };
             };
-            /** @description Invalid access JWT or executor token */
+            /** @description access JWT 或执行器令牌无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Package or file not found */
+            /** @description 包或文件不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12341,7 +12406,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Package ID */
+                /** @description 包 ID */
                 id: string;
             };
             cookie?: never;
@@ -12363,7 +12428,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Package ID */
+                /** @description 包 ID */
                 id: string;
             };
             cookie?: never;
@@ -12423,16 +12488,16 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Package ID */
+                /** @description 包 ID */
                 id: string;
             };
             cookie?: never;
         };
-        /** @description Push targets (empty = push to all online executors) */
+        /** @description 推送目标（为空 = 推送到全部在线执行器） */
         requestBody: {
             content: {
                 "application/json": {
-                    /** @description Target executor ID list, empty = all */
+                    /** @description 目标执行器 ID 列表，为空 = 全部 */
                     executorIds?: string[];
                 };
             };
@@ -12513,16 +12578,16 @@ export interface operations {
     ArtifactsController_upload: {
         parameters: {
             query?: {
-                /** @description Expected sha256 hex */
+                /** @description 期望的 sha256 十六进制值 */
                 sha256?: string;
             };
             header: {
                 authorization: string;
             };
             path: {
-                /** @description Execution ID (UUID) */
+                /** @description 执行 ID（UUID） */
                 execId: string;
-                /** @description Bare artifact file name */
+                /** @description 裸产物文件名 */
                 name: string;
             };
             cookie?: never;
@@ -12537,21 +12602,21 @@ export interface operations {
                     "application/json": components["schemas"]["ArtifactUploadResponseDto"];
                 };
             };
-            /** @description Invalid name / over cap / sha mismatch */
+            /** @description 文件名非法 / 超出上限 / sha256 不匹配 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Invalid executor credential */
+            /** @description 执行器凭据无效 */
             401: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Execution not found */
+            /** @description 执行记录不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12565,7 +12630,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Execution ID (UUID) */
+                /** @description 执行 ID（UUID） */
                 execId: string;
             };
             cookie?: never;
@@ -12580,14 +12645,14 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutionArtifactDto"][];
                 };
             };
-            /** @description Non-admin caller */
+            /** @description 调用者不是管理员 */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Execution not found */
+            /** @description 执行记录不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12601,9 +12666,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Execution ID (UUID) */
+                /** @description 执行 ID（UUID） */
                 execId: string;
-                /** @description Bare artifact file name */
+                /** @description 裸产物文件名 */
                 name: string;
             };
             cookie?: never;
@@ -12611,9 +12676,9 @@ export interface operations {
         requestBody?: never;
         responses: {
             /**
-             * @description artifact binary (Res passthrough)
+             * @description 产物二进制内容（Res 直传）
              *
-             *     artifact binary (Res passthrough)
+             *     产物二进制内容（Res 直传）
              */
             200: {
                 headers: {
@@ -12623,14 +12688,14 @@ export interface operations {
                     "application/octet-stream": string;
                 };
             };
-            /** @description Non-admin caller */
+            /** @description 调用者不是管理员 */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Artifact not found */
+            /** @description 产物不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12648,7 +12713,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Template list */
+            /** @description 模板列表 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12672,7 +12737,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created custom template */
+            /** @description 已创建的自定义模板 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -12681,14 +12746,14 @@ export interface operations {
                     "application/json": components["schemas"]["TaskTemplateResponseDto"];
                 };
             };
-            /** @description Invalid config / key */
+            /** @description config / key 非法 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Template key already exists */
+            /** @description 模板 key 已存在 */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -12702,14 +12767,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Template UUID */
+                /** @description 模板 UUID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Template */
+            /** @description 模板 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12718,7 +12783,7 @@ export interface operations {
                     "application/json": components["schemas"]["TaskTemplateResponseDto"];
                 };
             };
-            /** @description Template not found */
+            /** @description 模板不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12732,7 +12797,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Template UUID */
+                /** @description 模板 UUID */
                 id: string;
             };
             cookie?: never;
@@ -12747,14 +12812,14 @@ export interface operations {
                     "application/json": components["schemas"]["SimpleOkResponseDto"];
                 };
             };
-            /** @description Official template cannot be deleted */
+            /** @description 官方模板不可删除 */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Template not found */
+            /** @description 模板不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12768,7 +12833,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Template UUID */
+                /** @description 模板 UUID */
                 id: string;
             };
             cookie?: never;
@@ -12780,7 +12845,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created task (minimal face: identity/status/trigger fields) */
+            /** @description 已创建的任务（最小字段面：标识/状态/触发字段） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -12789,14 +12854,14 @@ export interface operations {
                     "application/json": components["schemas"]["InstantiateTaskResponseDto"];
                 };
             };
-            /** @description Missing name / invalid merged payload */
+            /** @description 缺少 name / 合并后的载荷非法 */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Template not found */
+            /** @description 模板不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12814,7 +12879,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Subscription list (secret always masked as '******'; ADMIN sees all, users see their own plus system-level) */
+            /** @description 订阅列表（secret 始终掩码为 '******'；ADMIN 可见全部，普通用户可见自己的加系统级） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12838,7 +12903,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created subscription (secret masked). generatedSecret present only when the server generated one — shown exactly once. */
+            /** @description 已创建的订阅（secret 已掩码）。仅当服务端生成时才有 generatedSecret，且只展示一次。 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -12847,7 +12912,7 @@ export interface operations {
                     "application/json": components["schemas"]["EventSubscriptionCreateResponseDto"];
                 };
             };
-            /** @description Invalid URL / event types / quota exceeded */
+            /** @description URL / 事件类型非法，或超出配额 */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -12861,7 +12926,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Subscription UUID */
+                /** @description 订阅 UUID */
                 id: string;
             };
             cookie?: never;
@@ -12876,7 +12941,7 @@ export interface operations {
                     "application/json": components["schemas"]["SimpleOkResponseDto"];
                 };
             };
-            /** @description Not the owner */
+            /** @description 不是订阅所有者 */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12890,7 +12955,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Subscription UUID */
+                /** @description 订阅 UUID */
                 id: string;
             };
             cookie?: never;
@@ -12901,7 +12966,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated subscription (secret masked) */
+            /** @description 已更新的订阅（secret 已掩码） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12910,14 +12975,14 @@ export interface operations {
                     "application/json": components["schemas"]["EventSubscriptionResponseDto"];
                 };
             };
-            /** @description Not the owner */
+            /** @description 不是订阅所有者 */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Subscription not found */
+            /** @description 订阅不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -12934,14 +12999,14 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description Subscription UUID */
+                /** @description 订阅 UUID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Paged dead letters (newest first) */
+            /** @description 分页死信（最新在前） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12950,7 +13015,7 @@ export interface operations {
                     "application/json": components["schemas"]["EventSubscriptionDeadLetterPageDto"];
                 };
             };
-            /** @description Not the owner */
+            /** @description 不是订阅所有者 */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12964,16 +13029,16 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Subscription UUID */
+                /** @description 订阅 UUID */
                 id: string;
-                /** @description Dead letter UUID */
+                /** @description 死信 UUID */
                 dlId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Replayed (ok true removes the dead letter; ok false keeps it with error) */
+            /** @description 已重放（ok 为 true 时删除死信；ok 为 false 时保留并附错误） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12982,14 +13047,14 @@ export interface operations {
                     "application/json": components["schemas"]["ReplayDeadLetterResponseDto"];
                 };
             };
-            /** @description Not the owner */
+            /** @description 不是订阅所有者 */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Subscription or dead letter not found */
+            /** @description 订阅或死信不存在 */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13095,7 +13160,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description No page/pageSize query → full ProjectViewRow array (legacy shape). Either param present → paginated envelope (list/items/total/page/pageSize/totalPages) over the caller's visible projects */
+            /** @description 不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13119,7 +13184,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created project (entity shape) */
+            /** @description 已创建的项目（实体形态） */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -13141,7 +13206,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Project (entity shape, no myRole) */
+            /** @description 项目（实体形态，不含 myRole） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13188,7 +13253,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated project (entity shape) */
+            /** @description 已更新的项目（实体形态） */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13210,7 +13275,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Member rows */
+            /** @description 成员行 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13236,7 +13301,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Member row */
+            /** @description 成员行 */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -13285,7 +13350,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated member row */
+            /** @description 已更新的成员行 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13305,7 +13370,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Caller roles */
+            /** @description 调用者角色 */
             200: {
                 headers: {
                     [name: string]: unknown;

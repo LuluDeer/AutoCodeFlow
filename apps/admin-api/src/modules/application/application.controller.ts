@@ -11,10 +11,6 @@ import {
   UseInterceptors,
   UploadedFile,
   Logger,
-  BadRequestException,
-  UnauthorizedException,
-  InternalServerErrorException,
-  ServiceUnavailableException,
   Headers,
   Req,
 } from "@nestjs/common";
@@ -90,6 +86,9 @@ import {
   scanStreamWithClamd,
 } from "../../common/utils/clamd-scan.util";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * Same-volume staging dir for the /applications/upload multer diskStorage.
@@ -114,8 +113,9 @@ export class ApplicationController {
   // （应用不存在 / webhookSecret 未配置 / 签名缺失或无效 / 时间戳过期 /
   // raw body 缺失）必须返回完全相同的 401 响应——任何响应差异（状态码或
   // 错误消息）都会成为枚举应用名的判定依据。具体失败原因只写入服务端日志。
-  private static readonly WEBHOOK_AUTH_FAILURE_MESSAGE =
-    "Webhook authentication failed";
+  // LANG-ERR-01：该不变式现由单一错误码 APP_WEBHOOK_AUTH_FAILED 承载（所有
+  // 分支共用一码，前端渲染出的文案天然一致，比"人工维护同一个字符串常量"
+  // 更难被改坏）。
 
   constructor(
     private readonly svc: ApplicationService,
@@ -149,10 +149,10 @@ export class ApplicationController {
   }
 
   @Get()
-  @ApiOperation({ summary: "Get application list" })
+  @ApiOperation({ summary: "获取应用列表" })
   @ApiResponse({
     status: 200,
-    description: "Application list (env masked, webhookSecret never selected)",
+    description: "应用列表（env 已掩码，webhookSecret 从不查询）",
     type: [ApplicationResponseDto],
   })
   // AUTH-01: 可选 projectId 过滤（"default" = 默认项目视图，含未分配行）。
@@ -161,10 +161,10 @@ export class ApplicationController {
   }
 
   @Get(":id")
-  @ApiOperation({ summary: "Get application details" })
+  @ApiOperation({ summary: "获取应用详情" })
   @ApiResponse({
     status: 200,
-    description: "Application details",
+    description: "应用详情",
     type: ApplicationResponseDto,
   })
   findById(@Param("id") id: string) {
@@ -182,10 +182,10 @@ export class ApplicationController {
   // and lets the request through after JwtAuthGuard's @Public opt-out.
   @Post()
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Create application" })
+  @ApiOperation({ summary: "创建应用" })
   @ApiResponse({
     status: 201,
-    description: "Created application",
+    description: "已创建的应用",
     type: ApplicationResponseDto,
   })
   create(@Body() dto: CreateApplicationDto, @CurrentUser() user: AuthUser) {
@@ -195,10 +195,10 @@ export class ApplicationController {
 
   @Put(":id")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Update application" })
+  @ApiOperation({ summary: "更新应用" })
   @ApiResponse({
     status: 200,
-    description: "Updated application",
+    description: "已更新的应用",
     type: ApplicationResponseDto,
   })
   update(
@@ -215,9 +215,7 @@ export class ApplicationController {
    */
   @Get(":id/removal-impact")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({
-    summary: "Preview what deleting this application will destroy",
-  })
+  @ApiOperation({ summary: "预览删除该应用会破坏什么" })
   @ApiOkResponse({ type: RemovalImpactResponseDto })
   removalImpact(@Param("id") id: string) {
     return this.svc.describeRemovalImpact(id);
@@ -225,10 +223,10 @@ export class ApplicationController {
 
   @Delete(":id")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Delete application" })
+  @ApiOperation({ summary: "删除应用" })
   // N-12: service 返回 void → envelope data 为 null，契约如实声明可空。
   @ApiOkResponse({
-    description: "Removed; envelope data is null",
+    description: "已移除；信封 data 为 null",
     schema: { nullable: true },
   })
   remove(@Param("id") id: string, @CurrentUser() user: AuthUser) {
@@ -237,7 +235,7 @@ export class ApplicationController {
 
   @Post("upload")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Upload application package (zip)" })
+  @ApiOperation({ summary: "上传应用包（zip）" })
   @ApiConsumes("multipart/form-data")
   // N-12: upsert 后的应用行（create/update 同一读面）。
   @ApiCreatedResponse({ type: ApplicationResponseDto })
@@ -267,18 +265,16 @@ export class ApplicationController {
     @Body() body: UploadApplicationDto,
     @CurrentUser() user: AuthUser,
   ) {
-    if (!file) throw new BadRequestException("No file uploaded");
+    if (!file) throw new AppError(ErrorCode.APP_UPLOAD_FILE_MISSING);
     // ARCH-003: name/runtime 经全局 ValidationPipe（whitelist + MaxLength）校验，
     // 不再用裸 @Body("name") 字符串绕过验证管道
     const { name, runtime, version } = body;
-    if (!name) throw new BadRequestException("Application name is required");
+    if (!name) throw new AppError(ErrorCode.APP_UPLOAD_NAME_REQUIRED);
 
     // diskStorage: the package is staged on disk, not in file.buffer.
     const tmpPath = file.path;
     if (!tmpPath) {
-      throw new BadRequestException(
-        "Uploaded file payload is missing (expected multer diskStorage upload)",
-      );
+      throw new AppError(ErrorCode.APP_UPLOAD_PAYLOAD_MISSING);
     }
 
     try {
@@ -286,15 +282,13 @@ export class ApplicationController {
       // arbitrary content cannot be stored and served as a trusted .zip.
       const ext = path.extname(file.originalname || "").toLowerCase();
       if (ext !== ".zip") {
-        throw new BadRequestException(
-          "Application package must be a .zip file",
-        );
+        throw new AppError(ErrorCode.APP_UPLOAD_NOT_ZIP);
       }
       const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
       // Read only the first 4 bytes from the staged temp file.
       const head = await this.readHeadBytes(tmpPath, 4);
       if (head.length < 4 || !head.equals(ZIP_MAGIC)) {
-        throw new BadRequestException("File is not a valid ZIP archive");
+        throw new AppError(ErrorCode.APP_UPLOAD_NOT_ZIP_ARCHIVE);
       }
 
       // SEC-05: zip bomb guard — structural central-directory vetting BEFORE
@@ -314,9 +308,9 @@ export class ApplicationController {
           this.logger.warn(
             `Application package upload rejected by zip-guard [${err.violation}]: ${err.message}`,
           );
-          throw new BadRequestException(
-            `Package rejected by zip-bomb guard (${err.violation})`,
-          );
+          throw new AppError(ErrorCode.APP_UPLOAD_ZIP_GUARD_REJECTED, {
+            violation: err.violation,
+          });
         }
         throw err;
       }
@@ -369,13 +363,9 @@ export class ApplicationController {
             err instanceof ClamdUnavailableError
           ) {
             if (err instanceof ClamdInfectionError) {
-              throw new BadRequestException(
-                "Package rejected: antivirus scan detected a threat",
-              );
+              throw new AppError(ErrorCode.APP_UPLOAD_MALWARE_DETECTED);
             }
-            throw new ServiceUnavailableException(
-              "Package rejected: antivirus scan is unavailable (fail-closed)",
-            );
+            throw new AppError(ErrorCode.APP_UPLOAD_SCANNER_UNAVAILABLE);
           }
           throw err;
         }
@@ -396,9 +386,7 @@ export class ApplicationController {
         this.logger.error(
           "API_BASE_URL is not configured — cannot build a package download URL reachable by executors. Set API_BASE_URL to the externally reachable base URL of this API and retry.",
         );
-        throw new InternalServerErrorException(
-          "API_BASE_URL is not configured; cannot build a package download URL",
-        );
+        throw new AppError(ErrorCode.APP_UPLOAD_BASE_URL_NOT_CONFIGURED);
       }
 
       // Land the staged package in the persistent uploads directory (served as
@@ -526,9 +514,9 @@ export class ApplicationController {
   })
   @Post("webhook")
   @ApiOperation({
-    summary: "Version release webhook",
     description:
-      "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. This route is public for CI/CD callers, and matching applications must have webhookSecret configured. Callers must include X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers. The signature is HMAC-SHA256 over `${timestamp}.${rawBody}`.",
+      "接收版本发布通知并更新应用版本。若 triggerDeploy=true，则对所有 RUNNING 状态的部署触发滚动升级。该路由对 CI/CD 调用方公开，且匹配到的应用必须已配置 webhookSecret。调用方必须携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头。签名是对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256。",
+    summary: "版本发布 Webhook",
   })
   @ApiCreatedResponse({ type: ReleaseWebhookResponseDto })
   async webhook(
@@ -545,9 +533,7 @@ export class ApplicationController {
     const targetApp = await this.svc.findByNameWithSecret(dto.appName);
     if (!targetApp) {
       logger.warn(`Webhook: no application found with name "${dto.appName}"`);
-      throw new UnauthorizedException(
-        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
-      );
+      throw new AppError(ErrorCode.APP_WEBHOOK_AUTH_FAILED);
     }
 
     // HMAC-SHA256 signature verification (same convention as GitHub webhooks)
@@ -557,9 +543,7 @@ export class ApplicationController {
       logger.warn(
         `Webhook: app "${dto.appName}" has no webhookSecret configured`,
       );
-      throw new UnauthorizedException(
-        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
-      );
+      throw new AppError(ErrorCode.APP_WEBHOOK_AUTH_FAILED);
     }
     // HMAC-SHA256 signature verification (same convention as GitHub webhooks)
     // This route is public for CI/CD systems, so every matching application must
@@ -573,9 +557,7 @@ export class ApplicationController {
       logger.warn(
         `Webhook: signature verification failed (${failure}) for app "${dto.appName}"`,
       );
-      throw new UnauthorizedException(
-        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
-      );
+      throw new AppError(ErrorCode.APP_WEBHOOK_AUTH_FAILED);
     }
 
     // Update version / git metadata
@@ -620,9 +602,8 @@ export class ApplicationController {
 
   @Get(":id/versions")
   @ApiOperation({
-    summary: "Get application version history",
-    description:
-      "Return persisted application version snapshots, falling back to deployment records for legacy data.",
+    description: "返回已持久化的应用版本快照；对历史数据回退到部署记录。",
+    summary: "获取应用版本历史",
   })
   @ApiOkResponse({ type: [ApplicationVersionHistoryRowDto] })
   async getVersionHistory(@Param("id") id: string) {
@@ -639,10 +620,9 @@ export class ApplicationController {
    */
   @Get(":id/releases")
   @ApiOperation({
-    summary:
-      "List unified releases (version × latest deployment) for an application",
     description:
       "统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。",
+    summary: "列出应用的统一发布记录（版本 × 最新部署）",
   })
   @ApiOkResponse({
     type: AppReleasesResponseDto,
@@ -662,13 +642,9 @@ export class ApplicationController {
   @Post(":id/upgrade-all")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Trigger all running instances to upgrade to latest version",
     description:
-      "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；" +
-      "rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ " +
-      "健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；" +
-      "任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，" +
-      "admin-api 重启即暂停（行级 rolloutState=failed）。",
+      "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。",
+    summary: "触发所有运行中实例升级到最新版本",
   })
   // POST 无 @HttpCode → 实际 201（历史直觉 200 是漂移，按实际落契约）。
   @ApiCreatedResponse({ type: UpgradeAllResponseDto })
@@ -694,8 +670,8 @@ export class ApplicationController {
   @Post(":id/sync-tasks")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Sync task registration from manifest.json",
-    description: "Parse app manifest.json and auto-register task definitions",
+    description: "解析应用的 manifest.json 并自动注册任务定义",
+    summary: "从 manifest.json 同步任务注册",
   })
   @ApiCreatedResponse({ type: SyncTasksResponseDto })
   async syncTasks(@Param("id") id: string) {
@@ -706,9 +682,8 @@ export class ApplicationController {
   @Post(":id/analyze")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "AI application health analysis",
-    description:
-      "Aggregate execution stats across all tasks in this app and run AI health assessment",
+    description: "聚合该应用下所有任务的执行统计，并运行 AI 健康评估",
+    summary: "应用健康度 AI 分析",
   })
   @ApiCreatedResponse({ type: AppHealthAnalysisResponseDto })
   async analyzeHealth(@Param("id") id: string) {
@@ -720,9 +695,8 @@ export class ApplicationController {
   @Post(":id/rollback/:deploymentId")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    summary: "Rollback application to historical version",
-    description:
-      "Restore app fields from a version snapshot or legacy deployment record, then trigger running instances to upgrade",
+    description: "从版本快照或历史部署记录恢复应用字段，然后触发运行中实例升级",
+    summary: "将应用回滚到历史版本",
   })
   @ApiCreatedResponse({ type: ApplicationRollbackResponseDto })
   async rollback(

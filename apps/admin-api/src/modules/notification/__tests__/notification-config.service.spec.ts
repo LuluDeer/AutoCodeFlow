@@ -93,7 +93,7 @@ describe("NotificationConfigService", () => {
       ).toThrow(BadRequestException);
       expect(() =>
         service.updateChannel("telegram", { enabled: true }),
-      ).toThrow(/Unknown notification channel: telegram/);
+      ).toThrow(/未知的通知渠道：telegram/);
       // 消息列出合法 key；N32 起 webhook 也是可配置渠道
       try {
         service.updateChannel("telegram", { enabled: true });
@@ -167,7 +167,7 @@ describe("NotificationConfigService", () => {
         BadRequestException,
       );
       await expect(service.testChannel("telegram", {})).rejects.toThrow(
-        /Unknown notification channel: telegram/,
+        /未知的通知渠道：telegram/,
       );
     });
 

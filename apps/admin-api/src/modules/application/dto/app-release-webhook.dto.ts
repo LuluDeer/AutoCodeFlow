@@ -2,28 +2,27 @@ import { IsString, IsOptional, IsBoolean } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 export class AppReleaseWebhookDto {
-  @ApiProperty({ description: "Application name" })
+  @ApiProperty({ description: "应用名称" })
   @IsString()
   appName: string;
 
-  @ApiProperty({ description: "New version number, e.g. 1.2.3" })
+  @ApiProperty({ description: "新版本号，例如 1.2.3" })
   @IsString()
   version: string;
 
-  @ApiPropertyOptional({ description: "Git commit SHA" })
+  @ApiPropertyOptional({ description: "Git 提交 SHA" })
   @IsString()
   @IsOptional()
   gitCommit?: string;
 
-  @ApiPropertyOptional({ description: "Git branch" })
+  @ApiPropertyOptional({ description: "Git 分支" })
   @IsString()
   @IsOptional()
   gitBranch?: string;
 
   @ApiPropertyOptional({
-    description:
-      "Whether to trigger rolling upgrade on all RUNNING deployments",
     default: false,
+    description: "是否对所有 RUNNING 状态的部署触发滚动升级",
   })
   @IsBoolean()
   @IsOptional()

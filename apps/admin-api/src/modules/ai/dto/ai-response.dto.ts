@@ -12,7 +12,9 @@ import { ApiProperty } from "@nestjs/swagger";
  *  {config:{...}} 形态；数值键（qwenMaxTokens/qwenTimeoutMs）在 config store
  *  里是字符串编码。 */
 export class AiConfigResponseDto {
-  @ApiProperty({ description: "'qwen' | 'openai' | 'ollama' | 'disabled'" })
+  @ApiProperty({
+    description: "AI 提供方，取值：'qwen' | 'openai' | 'ollama' | 'disabled'",
+  })
   provider: string;
 
   @ApiProperty()
@@ -33,17 +35,14 @@ export class AiConfigResponseDto {
   @ApiProperty()
   qwenBaseUrl: string;
 
-  @ApiProperty({
-    description: "string-encoded number (config store values are strings)",
-  })
+  @ApiProperty({ description: "字符串编码的数字（配置存储中的值均为字符串）" })
   qwenMaxTokens: string;
 
-  @ApiProperty({ description: "string-encoded number (ms)" })
+  @ApiProperty({ description: "字符串编码的数字（毫秒）" })
   qwenTimeoutMs: string;
 
   @ApiProperty({
-    description:
-      "Whether the current provider has an API key configured (key VALUE is never returned)",
+    description: "当前 provider 是否已配置 API key（key 的**值**永不返回）",
   })
   hasApiKey: boolean;
 }
@@ -56,14 +55,9 @@ export class AiConfigSaveResponseDto {
 
 /** POST /ai/test —— 样例推理回执（fail-open：provider 未启用也是 200）。 */
 export class AiTestResponseDto {
-  @ApiProperty({
-    description:
-      "false when the provider is disabled or returned an empty response",
-  })
+  @ApiProperty({ description: "provider 被禁用或返回空响应时为 false" })
   ok: boolean;
 
-  @ApiProperty({
-    description: "Sample-prompt reply text, or the degraded-state message",
-  })
+  @ApiProperty({ description: "样例提示词的回复文本，或降级状态下的提示信息" })
   message: string;
 }

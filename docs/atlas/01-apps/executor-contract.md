@@ -19,7 +19,7 @@
 | `maxConcurrentTasks` / `maxConcurrent` | number | — | node 发 `maxConcurrent`；python 发 `maxConcurrentTasks` |
 | `groupName` / `tags` / `description` | string / string[] | — | node 发 groupName；tags/description 仅 admin Swagger 示例可见，两个执行器均未发送 |
 | `restartedAt` / `startupId` | string | — | 进程生命身份（startup-identity.ts / startup_identity.py） |
-| `deviceFingerprint` | string（64 位小写十六进制） | — | **协议 v3 起**：稳定设备身份 `sha256(deviceId + ":" + installSalt)`（node `device-identity.ts` / python `device_identity.py`）。**只采集与观测，不参与定位**；采集失败**不发该键**（不是发 null）——admin 侧字段缺省即不动 DB。组成与三平台取值见 [ADR-017](../../adr/adr-017-executor-unique-identity.md) |
+| `deviceFingerprint` | string（64 位小写十六进制） | — | **协议 v3 起**：稳定设备身份 `sha256(deviceId + ":" + installSalt)`（node `device-identity.ts` / python `device_identity.py`）。**ADR-017 阶段 3 起是注册/心跳的定位键**——同机换 IP 再注册时中台按指纹命中原行、复用并更新地址（不产生新设备）；采集失败**不发该键**（不是发 null）——admin 侧字段缺省即按 legacy 兜底（`legacy:{address}`），行为与引入前一致。组成与三平台取值见 [ADR-017](../../adr/adr-017-executor-unique-identity.md) |
 
 - 响应 `data`：执行器行（id/appName/address/status/…）+ `perExecutorToken`（新注册/重启时轮换，否则 null）+ `tokenHash`（N26，执行器采纳为回调令牌 HMAC 源）。
 
@@ -31,7 +31,7 @@
 
 ## 3. 心跳（执行器 → admin）：POST /api/executors/heartbeat
 
-- 鉴权：`@Public()` + per-executor 动态 token 或共享 token（`validateTokenByAddress`）；无效 401。
+- 鉴权：`@Public()` + per-executor 动态 token 或共享 token（`validateTokenByAddress(address, token, deviceFingerprint?)`——**指纹优先定位**，pull 同址多行/换 IP 竞态下命中自己的行）；无效 401。
 - 间隔：默认 30s（admin 侧注释 `EXECUTOR_HEARTBEAT_INTERVAL` 默认 30s = 2 次/分/执行器；连续 3 次未收到判 OFFLINE）。
 
 | 字段 | 类型 | 发送方 |
@@ -45,7 +45,7 @@
 | `maxConcurrentTasks` | number | 仅 node（E9：热更容量随心跳上报，1..10000 校验在 admin service） |
 | `diskUsage` / `networkLatency` / `totalTaskCount` / `failedTaskCount` | number | admin DTO 支持但执行器未发送（diskUsage 仅 node `/health` 本地返回） |
 | `restartedAt` / `startupId` | string | 两者 |
-| `deviceFingerprint` | string（64 位小写十六进制） | **协议 v3 起**两者（ARCH-36 / ADR-017 阶段 2）。admin 侧三态采纳：**缺省 / 形态非法一律保留 DB 旧值**（不是置 NULL——否则旧执行器每 30s 的心跳会把已存指纹历史擦光）。同时驱动中台侧的冲突/漂移观测 |
+| `deviceFingerprint` | string（64 位小写十六进制） | **协议 v3 起**两者（ARCH-36 / ADR-017 阶段 2/3）。admin 侧三态采纳：**缺省 / 形态非法一律保留 DB 旧值**（不是置 NULL——否则旧执行器每 30s 的心跳会把已存指纹历史擦光）。**阶段 3 起驱动注册/心跳的定位**（命中即复用原行 + 更新 address），并驱动中台侧的冲突/漂移观测（push 同址异指纹 → 注册 409；pull → 各自成行） |
 
 - 响应 `data`：心跳后的执行器行 + `tokenHash` 回显（R9/W3：执行器每次心跳采纳，保持回调令牌密钥与 admin 侧轮换同步）。
 
@@ -117,6 +117,12 @@ CallbackItemDto 字段（apps/admin-api/src/modules/task/dto/execution-callback.
 | `executionId` | UUID v4，必填 | 执行 ID |
 | `status` | `success` \| `failed`，必填 | 终态 |
 | `executorAddress` | 可选 string | per-address token 校验/审计（node/python 恒补齐） |
+| `deviceFingerprint` | 可选 string，≤80 | **协议 v6 起（ADR-017 阶段 3 方案 C）**：稳定安装身份 `sha256(deviceId + ":" + installSalt)`，与 register/heartbeat 上报值同源。**回调面的行身份**——admin 按它把回调精确归到 dispatcher 派发的那一行（`task_executions.executorId`）。缺省（旧执行器/采集失败/SDK 任务代码）→ 逐级回落（凭据归属行 → 地址相等），**绝不因此拒绝合法回调**。采集失败**不发该键**（不是发 null） |
+
+**行身份判定（三级阶梯）**：① `deviceFingerprint` → 行（服务端查库，按 **executionId** 分键）→ ② 凭据归属行（`resolveCredentialExecutorId`，仅 per-executor 令牌）→ ③ `executorAddress` 相等。拿到行身份后要求 `row === task_executions.executorId`，不一致即拒（`executor_identity_mismatch`）。
+- 为什么需要 ①：shared/legacy token 是**全机队单一密钥、不绑定任何行**（② 对它恒 null），而 pull 同址多行并存（ADR-017 §5）让 ③ 的地址相等恒真、无法区分行。
+- 生产该字段的三类生产者：执行器本体（node `withExecutorAddress` 单一入参口 / python 各回调构造点）、任务代码经 SDK 直接回调（取 env `AUTOFLOW_DEVICE_FINGERPRINT`）。
+- 安全边界（如实）：指纹自报且对登录用户可见，与地址同等可探知——本方案解决**诚实执行器的归属**，不提升对抗"已持共享令牌"攻击者的强度。
 | `exitCode` | 可选 int | 进程退出码 |
 | `logs` | 可选，≤512000 字符 | 原始日志（执行器侧先截到 ~10k，超限触发 admin LOG-01 全量回捞） |
 | `errorMessage` | 可选，≤4096 字符 | 失败信息（执行器截到 4000） |

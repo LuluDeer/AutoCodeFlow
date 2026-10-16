@@ -38,10 +38,88 @@
  *   告警——存量未上报该字段的执行器行为与引入本特性前逐字节一致。
  * - **实例而非模块级单例**：理由同 P0 跟踪器（模块级可变状态跨测试文件泄漏，
  *   仓库有 `__resetTruncationWarnStateForTest` 的前科）。
+ *
+ * ── ADR-017 阶段 3 追加 ───────────────────────────────────────────────────
+ * `legacyExecutorIdentity` / `isLegacyExecutorIdentity`：未上报指纹的存量
+ * 执行器在库中的**身份兜底键**（详见下方 helper 注释）。这两个纯函数只被
+ * 服务层 register 与迁移回填使用，不在心跳热路径上。
  */
+
+import { createHash } from "crypto";
 
 /** 指纹的合法形态：sha256 的 64 位小写十六进制，与执行器侧同源。 */
 export const DEVICE_FINGERPRINT_HEX_LENGTH = 64;
+
+/**
+ * ADR-017 阶段 3：`deviceFingerprint` 列宽（迁移 1790000000054 后为
+ * VARCHAR(80)）。raw legacy 形态 `legacy:` + address 必须 ≤ 80；超长时
+ * 退化为 hash 形态（73 字符），两种形态都必须装得下。
+ */
+export const DEVICE_FINGERPRINT_COLUMN_LENGTH = 80;
+
+/**
+ * legacy 身份键前缀（两种形态都以 `legacy` 开头，与 64 位十六进制指纹互斥
+ * ——真实指纹不可能以字母开头）。
+ *
+ * 语义（ADR-017 §6 阶段 3）：未上报指纹的存量执行器（协议 < 3）不因缺
+ * 指纹被拒，其行身份用 `legacy:${address}` 兜底（换地址 = 换键 = 新行，
+ * 行为与引入指纹前**逐字节一致**）；升级到协议 v3 后首注册即被采纳为真实
+ * 指纹、行身份接管（见 register 的 adoption 分支）。
+ */
+export const LEGACY_FINGERPRINT_PREFIX = "legacy";
+
+/**
+ * 计算未上报指纹执行器的**服务端生成**身份键（不与执行器上报值混淆）。
+ *
+ * - 常规形态：`legacy:${address}`（人类可读、可反查地址）；
+ * - 超长地址：`legacy-h:` + sha256(address)（73 字符，确定性、无碰撞）。
+ *
+ * 边界精确值：前缀 `legacy:` 是 7 字符，hash 形态 `legacy-h:`(9) + 64 = 73 字符。
+ * 故 address 长度 **≤ 73** 走常规形态（最长恰好 80 字符，装满列宽），
+ * **≥ 74** 走 hash 形态。IPv4 `ip:port` ≈ 21 字符、常规主机名远在界内，
+ * 只有超长主机名才可能触发 hash 形态。
+ *
+ * 该键**只由中台生成并落库**（register 创建行/迁移回填），执行器永不
+ * 上报、也永不作为查询键使用——legacy 行始终按 `address` 定位。它存在的
+ * 意义是让 `deviceFingerprint` 列保持 NOT NULL、且不与任何真实指纹混淆。
+ * 迁移回填 SQL 与本函数必须同形（迁移 spec 双向断言）。
+ */
+export function legacyExecutorIdentity(address: string): string {
+  const raw = `${LEGACY_FINGERPRINT_PREFIX}:${address}`;
+  if (raw.length <= DEVICE_FINGERPRINT_COLUMN_LENGTH) return raw;
+  return `${LEGACY_FINGERPRINT_PREFIX}-h:${createHash("sha256")
+    .update(address)
+    .digest("hex")}`;
+}
+
+/**
+ * 判定存储值是否为 legacy 身份键（而非执行器上报的真实指纹）。
+ *
+ * 语义：`legacy` 前缀（`legacy:` / `legacy-h:`）与真实指纹的 64 位十六进制
+ * 字符集互斥（`'l'` 不是十六进制字符），故前缀判断**零误报**。
+ *
+ * ## 用途（如实说明，勿夸大——审查曾指出旧注释声称它驱动 register）
+ *
+ * 它是「这个存储值是不是 legacy 键」的**规范判据**，被 util 自身的测试与
+ * 需要区分两种身份形态的调用方/工具使用。**生产链路上的 register/heartbeat
+ * 并不调用它**：那两条路径要的是「能否作为**真实指纹**参与定位比较」，故直接
+ * 用 `normalizeDeviceFingerprint(value)` —— 该函数对 legacy 键与 NULL 一律返回
+ * `null`（即"不是真实指纹"），一次调用同时覆盖两种「非真实指纹」形态，比
+ * 「先判 legacy 再判 NULL」更少分支。
+ *
+ * 两者的等价性由 util spec 的 legacy 用例钉住：若将来有人改宽 `FINGERPRINT_RE`
+ * （例如允许大写或加长），`normalize` 的判定会变，而本函数不会——那时
+ * `normalize(...) === null` 与 `isLegacyExecutorIdentity(...)` 就将分叉。
+ * 保留本函数是为了让「legacy 形态」有一个**显式**表达（读代码的人不必从
+ * "null 意味着什么"反推），并给需要它的调用方一个稳定入口。
+ */
+export function isLegacyExecutorIdentity(
+  value: string | null | undefined,
+): boolean {
+  return (
+    typeof value === "string" && value.startsWith(LEGACY_FINGERPRINT_PREFIX)
+  );
+}
 
 const FINGERPRINT_RE = /^[0-9a-f]{64}$/;
 

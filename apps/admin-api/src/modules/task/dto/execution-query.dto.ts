@@ -12,7 +12,7 @@ import { LOG_LEVEL_VALUES } from "../log-level.util";
  * service. An explicit DTO class restores the whitelist.
  */
 export class TaskExecutionsQueryDto extends PaginationDto {
-  @ApiPropertyOptional({ description: "Filter by execution status" })
+  @ApiPropertyOptional({ description: "按执行状态过滤" })
   @IsOptional()
   @IsString()
   status?: string;
@@ -25,29 +25,29 @@ export class TaskExecutionsQueryDto extends PaginationDto {
  * AuditQueryDto convention.
  */
 export class AllExecutionsQueryDto extends PaginationDto {
-  @ApiPropertyOptional({ description: "Filter by execution status" })
+  @ApiPropertyOptional({ description: "按执行状态过滤" })
   @IsOptional()
   @IsString()
   status?: string;
 
-  @ApiPropertyOptional({ description: "Filter by task id" })
+  @ApiPropertyOptional({ description: "按任务 id 过滤" })
   @IsOptional()
   @IsString()
   taskId?: string;
 
-  @ApiPropertyOptional({ description: "Fuzzy search by task name" })
+  @ApiPropertyOptional({ description: "按任务名模糊搜索" })
   @IsOptional()
   @IsString()
   taskName?: string;
 
-  @ApiPropertyOptional({ description: "Fuzzy filter by executor address" })
+  @ApiPropertyOptional({ description: "按执行器地址模糊过滤" })
   @IsOptional()
   @IsString()
   executorAddress?: string;
 
   /** ISO 8601 timestamp; admin-web sends dayjs .toISOString() values. */
   @ApiPropertyOptional({
-    description: "Only executions created at/after this time (ISO 8601)",
+    description: "仅返回在该时刻及之后创建的执行（ISO 8601）",
   })
   @IsOptional()
   @IsISO8601()
@@ -55,7 +55,7 @@ export class AllExecutionsQueryDto extends PaginationDto {
 
   /** ISO 8601 timestamp; admin-web sends dayjs .toISOString() values. */
   @ApiPropertyOptional({
-    description: "Only executions created at/before this time (ISO 8601)",
+    description: "仅返回在该时刻及之前创建的执行（ISO 8601）",
   })
   @IsOptional()
   @IsISO8601()
@@ -77,24 +77,20 @@ export class AllExecutionsQueryDto extends PaginationDto {
  * /tasks/:id/executions 上引入白名单时接受的同一取舍一致。
  */
 export class ExecutionLogsQueryDto {
-  @ApiPropertyOptional({
-    description: "Start line number, default 0",
-  })
+  @ApiPropertyOptional({ description: "起始行号，缺省 0" })
   @IsOptional()
   @IsString()
   fromLine?: string;
 
-  @ApiPropertyOptional({
-    description: "Lines per page, default 500, max 2000",
-  })
+  @ApiPropertyOptional({ description: "每页行数，缺省 500，最大 2000" })
   @IsOptional()
   @IsString()
   limit?: string;
 
   @ApiPropertyOptional({
-    description:
-      "Filter log lines by inferred level (SQL-level equality); unknown-level (NULL) rows are excluded",
     enum: LOG_LEVEL_VALUES,
+    description:
+      "按推断出的日志级别过滤日志行（SQL 层等值匹配）；级别未知（NULL）的行被排除",
   })
   @IsOptional()
   @IsIn(LOG_LEVEL_VALUES as unknown as string[])

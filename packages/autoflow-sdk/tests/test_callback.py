@@ -10,6 +10,10 @@ from autoflow_sdk.callback import CALLBACK_MAX_ATTEMPTS, CallbackClient, Callbac
 
 URL = "http://admin.test/api/executions/callback"
 
+# ADR-017 阶段 3 (protocol v6): the same 64-lowercase-hex shape the executor
+# reports on register/heartbeat — sha256(deviceId + ":" + installSalt).
+DEVICE_FP = "3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9"
+
 
 def make_client(**overrides):
     kwargs = {
@@ -17,6 +21,7 @@ def make_client(**overrides):
         "token": "v1.exec-1.1700000000.deadbeef",
         "executor_address": "executor-py:8001",
         "execution_id": "exec-1",
+        "device_fingerprint": DEVICE_FP,
     }
     kwargs.update(overrides)
     return CallbackClient(**kwargs)
@@ -78,6 +83,7 @@ class TestReportSuccess:
             "executionId": "exec-1",
             "status": "success",
             "executorAddress": "executor-py:8001",
+            "deviceFingerprint": DEVICE_FP,
             "logs": "3 rows written",
             "durationMs": 1234,
         }]
@@ -91,6 +97,7 @@ class TestReportSuccess:
             "executionId": "exec-1",
             "status": "success",
             "executorAddress": "executor-py:8001",
+            "deviceFingerprint": DEVICE_FP,
         }
 
 
@@ -107,6 +114,7 @@ class TestReportFailure:
         assert item["logs"] == "partial run"
         assert item["executionId"] == "exec-1"
         assert item["executorAddress"] == "executor-py:8001"
+        assert item["deviceFingerprint"] == DEVICE_FP
 
     @respx.mock
     def test_custom_failure_reason_accepted(self):
@@ -138,6 +146,7 @@ class TestReportBatch:
         items = json.loads(route.calls.last.request.content)
         assert items[0]["executionId"] == "exec-1"
         assert items[0]["executorAddress"] == "executor-py:8001"
+        assert items[0]["deviceFingerprint"] == DEVICE_FP
         assert items[1]["executionId"] == "other"
         assert items[1]["executorAddress"] == "addr-2"
 
@@ -169,14 +178,14 @@ class TestExecutorAddressOptional:
     @respx.mock
     def test_report_success_omits_executor_address_when_unknown(self):
         route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
-        make_client(executor_address=None).report_success()
+        make_client(executor_address=None, device_fingerprint=None).report_success()
         item = json.loads(route.calls.last.request.content)[0]
         assert "executorAddress" not in item
 
     @respx.mock
     def test_report_failure_omits_executor_address_when_empty(self):
         route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
-        make_client(executor_address="").report_failure("boom")
+        make_client(executor_address="", device_fingerprint=None).report_failure("boom")
         item = json.loads(route.calls.last.request.content)[0]
         assert "executorAddress" not in item
         assert item["errorMessage"] == "boom"
@@ -184,9 +193,74 @@ class TestExecutorAddressOptional:
     @respx.mock
     def test_batch_report_only_fills_known_address(self):
         route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
-        make_client(executor_address=None).report([{"status": "success"}])
+        # device_fingerprint pinned to None as well: this case is about
+        # executorAddress alone (the fingerprint has its own class below).
+        make_client(executor_address=None, device_fingerprint=None).report(
+            [{"status": "success"}]
+        )
         item = json.loads(route.calls.last.request.content)[0]
         assert item == {"executionId": "exec-1", "status": "success"}
+
+
+class TestDeviceFingerprintOptional:
+    """ADR-017 阶段 3 (protocol v6): ``AUTOFLOW_DEVICE_FINGERPRINT`` mirrors
+    the ``executor_address`` handling exactly — optional, stamped when known,
+    and **omitted** (never empty string) when not. It is the callback face's
+    row identity on the shared/legacy token path, so being present matters;
+    being absent must stay invisible, not become ``""``."""
+
+    @respx.mock
+    def test_stamped_when_the_env_provides_it(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client().report_success()
+        item = json.loads(route.calls.last.request.content)[0]
+        assert item["deviceFingerprint"] == DEVICE_FP
+        assert item["executorAddress"] == "executor-py:8001"
+
+    @respx.mock
+    def test_report_failure_stamps_fingerprint(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client().report_failure("boom")
+        item = json.loads(route.calls.last.request.content)[0]
+        assert item["deviceFingerprint"] == DEVICE_FP
+
+    @respx.mock
+    def test_report_success_omits_fingerprint_when_unknown(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client(device_fingerprint=None).report_success()
+        item = json.loads(route.calls.last.request.content)[0]
+        assert "deviceFingerprint" not in item
+
+    @respx.mock
+    def test_report_failure_omits_fingerprint_when_empty(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client(device_fingerprint="").report_failure("boom")
+        item = json.loads(route.calls.last.request.content)[0]
+        assert "deviceFingerprint" not in item
+        assert item["errorMessage"] == "boom"
+
+    @respx.mock
+    def test_batch_report_only_fills_known_fingerprint(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client(device_fingerprint=None).report([{"status": "success"}])
+        item = json.loads(route.calls.last.request.content)[0]
+        assert item == {
+            "executionId": "exec-1",
+            "status": "success",
+            "executorAddress": "executor-py:8001",
+        }
+
+    @respx.mock
+    def test_explicit_fingerprint_is_never_overwritten(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+        make_client().report([{"status": "success", "deviceFingerprint": "explicit-fp"}])
+        item = json.loads(route.calls.last.request.content)[0]
+        assert item["deviceFingerprint"] == "explicit-fp"
+
+    def test_absence_of_fingerprint_does_not_disable_the_client(self):
+        client = make_client(device_fingerprint=None)
+        assert client.enabled is True
+        assert client.disabled_reason is None
 
 
 class TestEnvelopeUnwrapping:

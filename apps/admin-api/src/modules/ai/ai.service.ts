@@ -9,6 +9,11 @@ import {
   assertAndPinHttpUrl,
   pinnedAxiosConfig,
 } from "../../common/utils/safe-http.util";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。⚠️ 媒体 URL 校验原为**裸 Error**（对外 500），迁码时 status
+// 取 500 保持对外状态码不变。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 // ═══════════════════════════════════════════════════════════════════
 // P1（agent-and-deployment）：多模态消息契约
@@ -446,9 +451,11 @@ export class AiService {
               : undefined;
         if (url === undefined) continue;
         if (!MEDIA_URL_RE.test(url)) {
-          throw new Error(
-            `Refusing non-http(s) media URL (scheme not allowed): ${url.slice(0, 64)}`,
-          );
+          // 原实现截断到 64 字符——URL 由执行器上报，整串进日志/响应的收益
+          // 低于其体积与潜在敏感信息（签名 query）成本，故保持截断语义。
+          throw new AppError(ErrorCode.AI_MEDIA_URL_SCHEME_NOT_ALLOWED, {
+            url: url.slice(0, 64),
+          });
         }
       }
     }

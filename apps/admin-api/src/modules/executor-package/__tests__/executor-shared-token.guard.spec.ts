@@ -133,7 +133,7 @@ describe("ExecutorSharedTokenGuard (real util end-to-end semantics)", () => {
       guard.canActivate(makeContext("Bearer wrong-token")),
     ).rejects.toMatchObject({
       status: 401,
-      message: "Invalid executor token",
+      message: "执行器令牌无效",
     });
   });
 
@@ -145,7 +145,7 @@ describe("ExecutorSharedTokenGuard (real util end-to-end semantics)", () => {
       guard.canActivate(makeContext(undefined)),
     ).rejects.toMatchObject({
       status: 401,
-      message: "Invalid executor token",
+      message: "执行器令牌无效",
     });
   });
 
@@ -158,8 +158,7 @@ describe("ExecutorSharedTokenGuard (real util end-to-end semantics)", () => {
       guard.canActivate(makeContext("Bearer anything")),
     ).rejects.toMatchObject({
       status: 401,
-      message:
-        "Executor shared token is not configured; refusing unauthenticated executor access",
+      message: "未配置执行器共享令牌；拒绝未认证的执行器访问",
     });
   });
 });

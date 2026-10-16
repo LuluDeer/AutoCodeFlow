@@ -4,7 +4,6 @@ import {
   Delete,
   Get,
   HttpCode,
-  ForbiddenException,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
@@ -15,6 +14,8 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { Request } from "express";
+// LANG-ERR-01：用户面抛出走稳定码（前端按用户语言渲染）
+import { AppError } from "../../common/errors/app-error";
 // ARCH-23 / N-12：响应体类型标注。此前本控制器**零 swagger 装饰器**，
 // openapi.json 里 10 个 2xx 全部只有 description 没有 schema，前端无从生成类型。
 // 用专用响应 DTO（实体无 @ApiProperty 会 emit 空壳 schema → PK-15 闸红）。
@@ -125,13 +126,11 @@ export class ProjectsController {
    *   ——那正是本轮要收敛的对象。
    */
   @Get()
-  @ApiOperation({ summary: "List projects visible to the caller" })
+  @ApiOperation({ summary: "列出调用者可访问的项目" })
   @ApiResponse({
     status: 200,
     description:
-      "No page/pageSize query → full ProjectViewRow array (legacy shape). " +
-      "Either param present → paginated envelope (list/items/total/page/" +
-      "pageSize/totalPages) over the caller's visible projects",
+      "不带 page/pageSize 查询参数时返回完整的 ProjectViewRow 数组（旧形态）；带任一参数时返回分页信封（list/items/total/page/pageSize/totalPages），范围为调用者可见的项目",
     type: ProjectListPageDto,
   })
   async findAll(
@@ -173,10 +172,10 @@ export class ProjectsController {
   }
 
   @Get(":id")
-  @ApiOperation({ summary: "Get project by id" })
+  @ApiOperation({ summary: "按 id 获取项目" })
   @ApiResponse({
     status: 200,
-    description: "Project (entity shape, no myRole)",
+    description: "项目（实体形态，不含 myRole）",
     type: ProjectEntityDto,
   })
   async findOne(@Param("id", ParseUUIDPipe) id: string): Promise<Project> {
@@ -186,10 +185,10 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post()
-  @ApiOperation({ summary: "Create project (ADMIN)" })
+  @ApiOperation({ summary: "创建项目（ADMIN）" })
   @ApiResponse({
     status: 201,
-    description: "Created project (entity shape)",
+    description: "已创建的项目（实体形态）",
     type: ProjectEntityDto,
   })
   async create(
@@ -212,10 +211,10 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Patch(":id")
-  @ApiOperation({ summary: "Update project (ADMIN)" })
+  @ApiOperation({ summary: "更新项目（ADMIN）" })
   @ApiResponse({
     status: 200,
-    description: "Updated project (entity shape)",
+    description: "已更新的项目（实体形态）",
     type: ProjectEntityDto,
   })
   async update(
@@ -270,10 +269,10 @@ export class ProjectsController {
   // -----------------------------------------------------------------------
 
   @Get(":id/members")
-  @ApiOperation({ summary: "List project members" })
+  @ApiOperation({ summary: "列出项目成员" })
   @ApiResponse({
     status: 200,
-    description: "Member rows",
+    description: "成员行",
     type: [ProjectMemberViewDto],
   })
   async listMembers(
@@ -284,7 +283,7 @@ export class ProjectsController {
     if (user?.role !== UserRole.ADMIN && id !== DEFAULT_PROJECT_ID) {
       const role = await this.access.resolveRole(user?.id, id);
       if (!role) {
-        throw new ForbiddenException("You are not a member of this project");
+        throw new AppError("PROJECT_ACCESS_DENIED");
       }
     }
     return this.access.listMembers(id);
@@ -293,10 +292,10 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post(":id/members")
-  @ApiOperation({ summary: "Add or upsert a project member (ADMIN)" })
+  @ApiOperation({ summary: "新增或更新项目成员（ADMIN）" })
   @ApiResponse({
     status: 201,
-    description: "Member row",
+    description: "成员行",
     type: ProjectMemberViewDto,
   })
   async addMember(
@@ -321,10 +320,10 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Patch(":id/members/:userId")
-  @ApiOperation({ summary: "Change a member's role (ADMIN)" })
+  @ApiOperation({ summary: "变更成员角色（ADMIN）" })
   @ApiResponse({
     status: 200,
-    description: "Updated member row",
+    description: "已更新的成员行",
     type: ProjectMemberViewDto,
   })
   async updateMember(
@@ -373,10 +372,10 @@ export class ProjectsController {
 
   /** AUTH-02：当前登录用户在各项目中的角色（admin-web 用它渲染可用项目）。 */
   @Get("me/roles")
-  @ApiOperation({ summary: "Caller's roles across projects" })
+  @ApiOperation({ summary: "调用者在各项目中的角色" })
   @ApiResponse({
     status: 200,
-    description: "Caller roles",
+    description: "调用者角色",
     type: MyProjectRolesDto,
   })
   async myRoles(

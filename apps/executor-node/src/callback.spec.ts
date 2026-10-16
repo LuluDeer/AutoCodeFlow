@@ -5,7 +5,7 @@ import type { CallbackRequest } from './callback';
 
 type CallbackModule = typeof import('./callback');
 
-function loadCallbackModule(mockWorkDir: string): CallbackModule {
+function loadCallbackModule(mockWorkDir: string, fingerprint: string | null = 'a'.repeat(64)): CallbackModule {
   jest.resetModules();
   jest.mock('./admin-client');
   jest.doMock('./config', () => ({
@@ -14,6 +14,15 @@ function loadCallbackModule(mockWorkDir: string): CallbackModule {
       executorAddress: 'internal-executor:8002',
       executorAddressPublic: 'public-executor:8002',
     },
+  }));
+  // 本轮回调行身份补口：把指纹**钉死**（与 middleware/auth.spec.ts 同款做法）。
+  // 真实 getDeviceFingerprint() 依赖 workDir 下的盐文件与机器身份探测，单测环境
+  // 两者都取不到 → 恒 null → 「覆盖全部回调载荷」的断言会因**环境**而非**代码**
+  // 空转；钉死后断言只度量本文件负责的事：载荷字段是否被盖上。采集算法本身由
+  // device-identity.spec.ts 独立度量。resetModules 会重建模块注册表，故此处的
+  // mock 必须在每次 require('./callback') 之前重新登记。
+  jest.mock('./device-identity', () => ({
+    getDeviceFingerprint: () => fingerprint,
   }));
   jest.mock('./logger', () => ({
     logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -68,8 +77,14 @@ describe('callbacks', () => {
     });
   }
 
+  // 回调的**唯一**盖章点 withExecutorAddress 的两个产物：executorAddress 取
+  // public 优先，deviceFingerprint 取钉死的 64×'a'（ADR-017 阶段 3 / 协议 v6）。
+  // 所有既有断言经此收敛，盖章一旦丢失即整片红——不必逐用例重复。
+  const FINGERPRINT = 'a'.repeat(64);
   const addressed = (request: CallbackRequest) => ({
-    executorAddress: 'public-executor:8002', ...request,
+    executorAddress: 'public-executor:8002',
+    deviceFingerprint: FINGERPRINT,
+    ...request,
   });
 
   it('adds a new entry to the queue', () => {
@@ -144,6 +159,68 @@ describe('callbacks', () => {
     expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {
       'x-executor-address': 'public-executor:8002',
     });
+  });
+
+  it('stamps deviceFingerprint onto every outbound callback body (ADR-017 §3 / protocol v6)', async () => {
+    // 反证有牙：删掉 withExecutorAddress 里 `...(fingerprint ? { deviceFingerprint } : {})`
+    // 的展开，本用例即红（回调 POST body 缺该键，admin 在「共享令牌 + 同址碰撞」
+    // 下无法把回调归到 dispatcher 实际派发的那一行）。
+    const request: CallbackRequest = { executionId: 'exec-1', status: 'success', exitCode: 0 };
+    cb.pushCallback(request);
+    cb.startCallbackThread();
+    await cb.stopCallbackThread();
+    const body = post.mock.calls[0][1] as CallbackRequest[];
+    expect(body[0].deviceFingerprint).toBe(FINGERPRINT);
+    expect(body).toEqual([addressed(request)]);
+  });
+
+  it('covers callers that never set deviceFingerprint themselves (single choke point)', async () => {
+    // 13 个构造点（routes/execute.ts / pull.ts / task-worker.ts）都不自己拼指纹，
+    // 全靠 pushCallback → withExecutorAddress 一个口子盖章；这里用「调用方完全
+    // 不知道指纹存在」的载荷形态（含终态失败、artifacts、result、traceparent）
+    // 证明覆盖面无遗漏。
+    const requests: CallbackRequest[] = [
+      { executionId: 'plain', status: 'success' },
+      { executionId: 'failed', status: 'failed', errorMessage: 'boom', failureReason: 'script_error' },
+      {
+        executionId: 'rich', status: 'success', durationMs: 12,
+        artifacts: [{ name: 'out.txt', size: 3, sha256: 'b'.repeat(64) }],
+        result: { interpreter: { requested: '3.12', resolved: null } },
+        traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      },
+    ];
+    requests.forEach(cb.pushCallback);
+    cb.startCallbackThread();
+    await cb.stopCallbackThread();
+    const body = post.mock.calls[0][1] as CallbackRequest[];
+    expect(body.map(r => r.deviceFingerprint)).toEqual([FINGERPRINT, FINGERPRINT, FINGERPRINT]);
+    expect(body).toEqual(requests.map(addressed));
+  });
+
+  it('omits the deviceFingerprint key entirely when collection failed (null, not undefined)', async () => {
+    // 采集失败（探测不到 machine-id 且无可用网卡 MAC / 盐文件不可写）时
+    // getDeviceFingerprint() 返回 null：键必须**整个不出现**，绝不能发 null——
+    // 显式 null 在 admin 侧会变成「v6 执行器上报了一个空指纹」而不是「未上报」，
+    // 回落语义与「行为与引入前逐字节一致」的红线同时被破坏（register / heartbeat
+    // 用 `?? undefined` 是同一规则）。
+    const nullCb = loadCallbackModule(dir, null);
+    // resetModules 会重建 admin-client 的 automock：必须重新取回新的 post/logger
+    // 实例（文件顶部 beforeEach 拿到的那两个指向上一代注册表）。
+    const nullPost = (jest.requireMock('./admin-client') as { post: jest.Mock }).post;
+    nullPost.mockReset().mockResolvedValue({ status: 200 });
+    const loggerMock = jest.requireMock('./logger') as {
+      logger: { warn: jest.Mock };
+    };
+    const request: CallbackRequest = { executionId: 'exec-null', status: 'success' };
+    nullCb.pushCallback(request);
+    // 键缺失 ⇒ 载荷仍满足 CallbackPayload（字段可选）⇒ 零协议漂移 warn。
+    expect(loggerMock.logger.warn).not.toHaveBeenCalled();
+    nullCb.startCallbackThread();
+    await nullCb.stopCallbackThread();
+    const body = nullPost.mock.calls[0][1] as CallbackRequest[];
+    expect(body).toEqual([{ executorAddress: 'public-executor:8002', ...request }]);
+    expect('deviceFingerprint' in body[0]).toBe(false);
+    expect(Object.keys(body[0])).toEqual(['executorAddress', 'executionId', 'status']);
   });
 
   it('returns 0 for an empty queue', () => {

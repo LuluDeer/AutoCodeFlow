@@ -60,6 +60,15 @@ jest.mock('../callback', () => ({
   truncateCallbackErrorMessage: jest.fn((m?: string) => m),
 }));
 
+// ADR-017 阶段 3（协议 v6）：指纹采集钉死（与 middleware/auth.spec.ts 同款做法）。
+// 真实采集依赖 workDir 下的盐文件与机器身份探测，单测环境取不到 → 恒 null，
+// 会让「指纹注入」这条断言因**环境**而非**代码**失败/空转。钉死后断言只度量
+// 本文件负责的事：**env 注入是否转发**。采集算法本身由 device-identity.spec.ts 度量。
+jest.mock('../device-identity', () => ({
+  getDeviceFingerprint: () => 'a'.repeat(64),
+  DEVICE_IDENTITY_DIR_NAME: '.device-identity',
+}));
+
 // NETOPT-F P2-3: zip 渠道包下载 mock。默认测试不触发 zip 下载；用例内再
 // mockImplementation 成挂起 Promise 捕获 signal，模拟真实 download.ts 的
 // abort→reject('Download aborted') 语义。
@@ -342,7 +351,7 @@ describe('POST /api/execute', () => {
     const res = await request(appNoAuth).post('/api/execute')
       .send({ executionId: 'exec-503-disk', task: { runtime: 'node' } });
     expect(res.status).toBe(503);
-    expect(res.body.error).toMatch(/disk is critically full/);
+    expect(res.body.error).toMatch(/磁盘已达临界水位/);
     expect(Atomics.load(_runningCountArr, 0)).toBe(0);
   });
 
@@ -357,7 +366,7 @@ describe('POST /api/execute', () => {
       const res = await request(appNoAuth).post('/api/execute')
         .send({ executionId: 'exec-503-shutdown', task: { runtime: 'node' } });
       expect(res.status).toBe(503);
-      expect(res.body.error).toMatch(/shutting down/);
+      expect(res.body.error).toMatch(/执行器正在停机/);
       // 账本不减不增（守卫在容量操作之前返回）
       expect(Atomics.load(_runningCountArr, 0)).toBe(0);
     } finally {
@@ -371,7 +380,7 @@ describe('POST /api/execute', () => {
       task: { runtime: 'node', gitRepo: 'file:///etc/passwd' },
     });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/gitRepo URL scheme not allowed/);
+    expect(res.body.error).toMatch(/不允许的 gitRepo URL 协议/);
   });
 
   it('returns 400 for invalid npm package name', async () => {
@@ -380,7 +389,7 @@ describe('POST /api/execute', () => {
       task: { runtime: 'node', requirements: ['valid-pkg', '; rm -rf /'] },
     });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid npm package name/);
+    expect(res.body.error).toMatch(/无效的 npm 包名/);
   });
 
   it('E-19: returns 400 when requirements is not an array', async () => {
@@ -391,7 +400,7 @@ describe('POST /api/execute', () => {
       task: { runtime: 'node', entrypoint: 'index.js', requirements: 'lodash' },
     });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/array/i);
+    expect(res.body.error).toMatch(/必须是包名数组/);
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -435,7 +444,7 @@ describe('POST /api/execute', () => {
         task: { runtime: 'python', entrypoint: 'main.py', requirements: [spec] },
       });
       expect([spec, res.status]).toEqual([spec, 400]);
-      expect(res.body.error).toMatch(/options are not allowed/i);
+      expect(res.body.error).toMatch(/不允许选项形式/);
     }
   });
 
@@ -451,7 +460,7 @@ describe('POST /api/execute', () => {
       },
     });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid npm package name/);
+    expect(res.body.error).toMatch(/无效的 npm 包名/);
   });
 
   it('returns 400 for duplicate execution (already active)', async () => {
@@ -479,7 +488,7 @@ describe('POST /api/execute', () => {
       executionId: 'exec-dup', task: { runtime: 'node', entrypoint: 'index.js' },
     });
     expect(res2.status).toBe(400);
-    expect(res2.body.error).toMatch(/already active/);
+    expect(res2.body.error).toMatch(/已在本执行器上活跃/);
     // 二次领取不得叠加占用并发槽（防双释放/计数失真）
     expect(Atomics.load(_runningCountArr, 0)).toBe(1);
   });
@@ -507,7 +516,7 @@ describe('POST /api/execute', () => {
     // Background failure callback
     const failCall = (pushCallback as jest.Mock).mock.calls
       .map(c => c[0])
-      .find(p => p.status === 'failed' && /git clone failed/.test(p.errorMessage || ''));
+      .find(p => p.status === 'failed' && /git clone 执行失败/.test(p.errorMessage || ''));
     expect(failCall).toBeTruthy();
     // BUG-10 细化：git clone 失败从 package_fetch_failed 拆分为 git_fetch_failed
     expect(failCall.failureReason).toBe('git_fetch_failed');
@@ -1014,7 +1023,7 @@ describe('task hardening', () => {
       task: { runtime: 'node', gitRepo: 'https://example.com/repo.git', gitBranch: '-b' },
     });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid git ref/);
+    expect(res.body.error).toMatch(/无效的 git ref/);
   });
 
   it('rejects out-of-bounds task timeouts (synchronous 400)', async () => {
@@ -1023,7 +1032,7 @@ describe('task hardening', () => {
       task: { runtime: 'node', entrypoint: 'index.js', timeout: 0.5 },
     });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid task timeout/);
+    expect(res.body.error).toMatch(/无效的任务超时/);
 
     const res2 = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-timeout-huge',
@@ -1075,7 +1084,7 @@ describe('task hardening', () => {
     await flushAsync();
     const failCall = (pushCallback as jest.Mock).mock.calls
       .map(c => c[0])
-      .find(p => p.status === 'failed' && /entrypoint escapes/.test(p.errorMessage || ''));
+      .find(p => p.status === 'failed' && /entrypoint 逃出了任务工作目录/.test(p.errorMessage || ''));
     expect(failCall).toBeTruthy();
     expect(Atomics.load(_runningCountArr, 0)).toBe(0);
   });
@@ -1185,7 +1194,7 @@ describe('git cache serialization', () => {
 
     await expect(
       gitCheckoutTo('https://example.com/repo.git', 'v9.9.9', '/tmp/test-workdir/exec-o13b'),
-    ).rejects.toThrow(/git checkout failed \(ref: v9\.9\.9\)/);
+    ).rejects.toThrow(/git checkout 执行失败（ref: v9\.9\.9）/);
 
     // 二次仍失败：unshallow 重试只发生一次（4 个子进程，不无限重试）
     expect(spawned.length).toBe(4);
@@ -1284,6 +1293,24 @@ describe('POST /api/execute — per-execution callback token (N23)', () => {
   it('user params cannot override AUTOFLOW_EXECUTOR_ADDRESS', async () => {
     const env = await postExecute('exec-addr-3', { executor_address: 'evil:1234' });
     expect(env.AUTOFLOW_EXECUTOR_ADDRESS).toBe('localhost:8002');
+  });
+
+  // ADR-017 阶段 3（协议 v6）：把本执行器指纹注入任务 env，供**任务代码**经
+  // SDK 直接回调时携带行身份（那些回调走共享/legacy 令牌，不绑定任何行；同址
+  // 多行时地址不足以指代一行，指纹是唯一的行身份来源）。
+  //
+  // 反证：删掉 execute.ts 里 AUTOFLOW_DEVICE_FINGERPRINT 的注入 → 本用例转红。
+  it('injects AUTOFLOW_DEVICE_FINGERPRINT into the task env (SDK callback row identity)', async () => {
+    const env = await postExecute('exec-fp-1');
+    // 测试环境钉死为 64×'a'（见本文件顶部对 ./device-identity 的 mock）。
+    expect(env.AUTOFLOW_DEVICE_FINGERPRINT).toBe('a'.repeat(64));
+  });
+
+  it('user params cannot override AUTOFLOW_DEVICE_FINGERPRINT', async () => {
+    const env = await postExecute('exec-fp-2', {
+      device_fingerprint: 'b'.repeat(64),
+    });
+    expect(env.AUTOFLOW_DEVICE_FINGERPRINT).toBe('a'.repeat(64));
   });
 
   it('AUTOFLOW_ADMIN_API_URL prefers the external URL (python parity)', async () => {
@@ -1455,7 +1482,7 @@ describe('buildNpmRcContent (改动3)', () => {
     const failCall = (pushCallback as jest.Mock).mock.calls
       .map(c => c[0])
       .find(p => p.executionId === 'exec-npm-failure-cleanup' && p.status === 'failed');
-    expect(failCall?.errorMessage).toMatch(/Dependency installation failed/);
+    expect(failCall?.errorMessage).toMatch(/依赖安装失败/);
   });
 
   it('cleans token-bearing npm config after an npm timeout', async () => {
@@ -1803,14 +1830,14 @@ describe('timeout alias parsing (P2 双端一致性)', () => {
       task: { runtime: 'node', entrypoint: 'index.js', timeout_seconds: -5 },
     });
     expect(resNeg.status).toBe(400);
-    expect(resNeg.body.error).toMatch(/Invalid task timeout: -5/);
+    expect(resNeg.body.error).toMatch(/无效的任务超时：-5/);
 
     const resBig = await request(appNoAuth).post('/api/execute').send({
       executionId: 'exec-alias-big',
       task: { runtime: 'node', entrypoint: 'index.js', timeoutSeconds: 86_401 },
     });
     expect(resBig.status).toBe(400);
-    expect(resBig.body.error).toMatch(/Invalid task timeout/);
+    expect(resBig.body.error).toMatch(/无效的任务超时/);
   });
 });
 
@@ -1885,7 +1912,7 @@ describe('run-phase failureReason classification (P2 双端一致性)', () => {
       .map(c => c[0])
       .find(p => p.status === 'failed');
     expect(failCall).toBeTruthy();
-    expect(failCall.errorMessage).toMatch(/Process exited with code 1/);
+    expect(failCall.errorMessage).toMatch(/进程以退出码 1 结束/);
     expect(failCall.failureReason).toBeUndefined();
   });
 });
@@ -2234,21 +2261,21 @@ describe('NETOPT-G P2-2: bwrap argv construction fail-closed branches', () => {
   it('win32: throws "not supported on Windows" (never runs unsandboxed)', () => {
     (testConfig as { taskSandbox: string }).taskSandbox = 'bwrap';
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-    expect(() => buildTaskSandboxArgv('node', [], '/work/a')).toThrow(/not supported on Windows/);
+    expect(() => buildTaskSandboxArgv('node', [], '/work/a')).toThrow(/TASK_SANDBOX=bwrap 在 Windows 上不受支持/);
     expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 
   it('bwrap not on PATH: throws fail-closed (no silent downgrade to unsandboxed)', () => {
     (testConfig as { taskSandbox: string }).taskSandbox = 'bwrap';
     spawnSyncMock.mockReturnValue({ status: 1, stdout: '' });
-    expect(() => buildTaskSandboxArgv('node', ['run.js'], '/work/a')).toThrow(/not on PATH/);
+    expect(() => buildTaskSandboxArgv('node', ['run.js'], '/work/a')).toThrow(/PATH 上没有 bwrap 二进制/);
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
   });
 
   it('probe timeout (status null): still throws fail-closed for THIS task, no cache poison', () => {
     (testConfig as { taskSandbox: string }).taskSandbox = 'bwrap';
     spawnSyncMock.mockReturnValue({ status: null, stdout: '' });
-    expect(() => buildTaskSandboxArgv('node', [], '/work/a')).toThrow(/not on PATH/);
+    expect(() => buildTaskSandboxArgv('node', [], '/work/a')).toThrow(/PATH 上没有 bwrap 二进制/);
     // 未写缓存：下一任务重新探测
     spawnSyncMock.mockReturnValue({ status: 0, stdout: '/usr/bin/bwrap\n' });
     expect(buildTaskSandboxArgv('node', [], '/work/a').cmd).toBe('/usr/bin/bwrap');
@@ -2319,13 +2346,13 @@ describe('A-2 — shell entrypoint charset whitelist (python parity)', () => {
     const { error } = await prepareShellTask('exec-a2-bad', entrypoint);
     expect(error).toBeDefined();
     expect(error!.message).toBe(
-      'Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]',
+      '拒绝执行含不安全字符的 shell entrypoint；允许的字符集为 [A-Za-z0-9._/ :\\-]',
     );
     // python 同款错误语义：走 prepare 失败回调路径
     expect(pushCallback).toHaveBeenCalledWith(expect.objectContaining({
       executionId: 'exec-a2-bad',
       status: 'failed',
-      errorMessage: 'Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]',
+      errorMessage: '拒绝执行含不安全字符的 shell entrypoint；允许的字符集为 [A-Za-z0-9._/ :\\-]',
     }));
   });
 

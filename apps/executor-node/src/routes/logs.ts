@@ -61,7 +61,7 @@ logsRouter.get('/logs/:executionId', async (req: Request<{ executionId: string }
   // N4: basename guard — reject if executionId contains path separators or is modified by basename
   const safeId = path.basename(executionId);
   if (safeId !== executionId || safeId === '' || safeId === '.' || safeId === '..') {
-    res.status(400).json({ error: 'Invalid executionId' });
+    res.status(400).json({ error: '无效的 executionId' });
     return;
   }
 
@@ -101,7 +101,7 @@ logsRouter.get('/logs/:executionId', async (req: Request<{ executionId: string }
   }
 
   if (!logFile) {
-    res.status(404).json({ error: 'Log file not found' });
+    res.status(404).json({ error: '日志文件不存在' });
     return;
   }
 
@@ -121,12 +121,12 @@ logsRouter.get('/logs/:executionId', async (req: Request<{ executionId: string }
     const checked = LogsResponseSchema.safeParse(page);
     if (!checked.success) {
       const where = checked.error.issues[0]?.path.join('.') || '(root)';
-      throw new Error(`logs response violates executor-protocol at ${where}`);
+      throw new Error(`logs 响应违反 executor-protocol 协议，位置 ${where}`);
     }
     res.json(page);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Failed to read log file ${logFile}: ${msg}`);
-    res.status(500).json({ error: 'Failed to read log file' });
+    res.status(500).json({ error: '读取日志文件失败' });
   }
 });

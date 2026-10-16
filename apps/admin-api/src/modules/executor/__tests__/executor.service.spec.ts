@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
   Logger,
   Provider,
 } from "@nestjs/common";
@@ -123,6 +124,22 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => {
     getCount: jest.fn().mockResolvedValue(0),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
   }));
+  // ADR-017 阶段 3：ExecutorService.releaseExecutorSlot 委托共享 util
+  // （block-strategy-gate.releaseExecutorSlotByAddress），该 util 走
+  // `repo.manager.createQueryBuilder()`。默认桩模拟「地址唯一命中一行，id 为
+  // 被冲销的行」——即引入本改动前的全部现实形态，单行行为逐字节不变。
+  // 需要验「同地址多行并存」的用例覆写 repo.manager 的 getRawMany 即可。
+  repo.manager = {
+    // ADR-017 阶段 3：槽位冲销经共享 util（block-strategy-gate）的**单条原子
+    // 语句**形态（`UPDATE … WHERE id = (SELECT id … WHERE address = :addr)`）——
+    // 地址唯一性判定与冲销在同一语句求值，故 mock 只需 update/set/where/execute。
+    createQueryBuilder: jest.fn(() => ({
+      where: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    })),
+  } as never;
   return { ...repo, ...overrides };
 };
 
@@ -372,6 +389,7 @@ describe("ExecutorService (__tests__)", () => {
       // 批次 D 把 take 提到 10000 + ORDER BY startTime——钉死 find 参数，
       // 防止未来悄悄回退 take:1000 而 CI 全绿。
       const existing = {
+        id: "executor-row-1",
         appName: "e1",
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
@@ -393,6 +411,22 @@ describe("ExecutorService (__tests__)", () => {
           order: { startTime: "ASC" },
         }),
       );
+      // ADR-017 阶段 3 复查补口（P0 反证）：匹配维度必须按**行身份**
+      // `executorId`——register 恒传 e.id，故 where 里必须出现 executorId 且
+      // **不得**是 `executorId: IsNull()` 的地址回落形态。
+      //
+      // 此前本用例只钉 take/order，where 谓词无人过问；而 execRepo.find 被
+      // 整个 mock（谓词被忽略）→ 8 处重启恢复用例全绿，掩盖了
+      // 「task_executions.executorId 从未落库 → `executorId = $1` 恒命中 0 行
+      // → 重启恢复静默失效」这个真实缺陷。现补形态断言，让"列没落库"这类
+      // 漏写在**调用形态**上就可见（落库侧另有 task.processor.spec 的补口）。
+      const findWhere = (
+        execRepo.find.mock.calls[0][0] as {
+          where: Record<string, unknown>;
+        }
+      ).where;
+      expect(findWhere.executorId).toBe(existing.id);
+      expect(findWhere).not.toHaveProperty("executorAddress");
     });
 
     it("NETOPT-E P2-1: recovery does not batch-release slots; count is zeroed by save", async () => {
@@ -1214,7 +1248,7 @@ describe("ExecutorService (__tests__)", () => {
           address: "10.0.0.9:3002",
           version: "1.2.9",
         }),
-      ).rejects.toThrow("below the required minimum 1.3.0");
+      ).rejects.toThrow("低于要求的最低版本 1.3.0");
       expect(repo.save).not.toHaveBeenCalled();
       expect(rotateSpy).not.toHaveBeenCalled();
       expect(warnSpy).not.toHaveBeenCalled();
@@ -1325,10 +1359,13 @@ describe("ExecutorService (__tests__)", () => {
       // tokenHash is select:false — the service reads it via QueryBuilder.
       // Return the SAME row object so rotations are visible to the reuse
       // verification below.
+      // ADR-017 阶段 3：无指纹时按地址走 getMany（需判定是否多行并存），
+      // 指纹路径仍走 getOne —— 两个都指向同一 row。
       repo.createQueryBuilder = jest.fn(() => ({
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         getOne: jest.fn().mockResolvedValue(row),
+        getMany: jest.fn().mockResolvedValue([row]),
       })) as any;
       const svc = await makeServiceWithRepo(repo);
       return { svc, row };
@@ -1536,6 +1573,71 @@ describe("ExecutorService (__tests__)", () => {
         startupId: "startup-1",
       });
       expect(third.token).toBe(second.token);
+    });
+
+    // ADR-017 阶段 3（复查补口）反证：幂等签发缓存必须按**行身份**（指纹优先）
+    // 分键。同地址两台执行器（pull 模式同址多行是常态，ADR-017 §5）若共用一条
+    // 缓存，第二台会命中第一台的「同 startupId」幂等分支，把**第一台的明文
+    // 令牌**发给第二台——越权级串台，且轮换语义退化成"谁先到谁赢"。
+    //
+    // 反证：把 issuedTokenCache 的键改回裸 address（或去掉 issueToken 里的
+    // tokenCacheIdentityKey）→ 本用例转红（second.token === first.token）。
+    it("same address + DIFFERENT fingerprint must not share the idempotent cache (no cross-row token hand-out)", async () => {
+      const FP_A = "a".repeat(64);
+      const FP_B = "b".repeat(64);
+      const rowA: any = {
+        id: "row-a",
+        address: "10.0.0.9:3002",
+        appName: "node",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        executorStartupId: null,
+        executorStartedAt: null,
+        deviceFingerprint: FP_A,
+        tokenHash: null,
+      };
+      const rowB: any = { ...rowA, id: "row-b", deviceFingerprint: FP_B };
+      const repo = makeRepo({
+        // 指纹优先定位：各指纹命中各自的行。
+        findOne: jest.fn((args: any) => {
+          const fp = args?.where?.deviceFingerprint;
+          if (fp === FP_A) return Promise.resolve(rowA);
+          if (fp === FP_B) return Promise.resolve(rowB);
+          return Promise.resolve(rowA);
+        }),
+        save: jest.fn((e: any) => Promise.resolve(e)),
+      });
+      repo.createQueryBuilder = jest.fn(() => ({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        // getCallbackSecretById / resolveExecutorRow 用 getOne：按 id 或指纹
+        // 返回对应行（两个 id 都是唯一键，不会歧义）。
+        getOne: jest.fn().mockResolvedValue(rowA),
+        getMany: jest.fn().mockResolvedValue([rowA]),
+      })) as any;
+      const svc = await makeServiceWithRepo(repo);
+
+      // 两台各自首次签发（同 address，不同指纹）——都带同一 startupId，
+      // 这正是「同进程」判据会误判为可复用的形状。
+      const a1 = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+        deviceFingerprint: FP_A,
+      });
+      const b1 = await svc.issueToken({
+        address: "10.0.0.9:3002",
+        appName: "node",
+        startupId: "startup-1",
+        deviceFingerprint: FP_B,
+      });
+      // 核心断言：两台的令牌必须**不同**（B 绝不能拿到 A 的明文令牌）。
+      expect(b1.token).not.toBe(a1.token);
+      // 缓存按身份分键 → 两条条目（而非同址一条）。
+      const cache = (svc as any).issuedTokenCache as Map<string, unknown>;
+      expect(cache.has(FP_A)).toBe(true);
+      expect(cache.has(FP_B)).toBe(true);
+      expect(cache.size).toBe(2);
     });
   });
 
@@ -2999,7 +3101,7 @@ describe("ExecutorService (__tests__)", () => {
       (service as unknown as { pullService: unknown }).pullService = null;
 
       await expect(service.dispatch(task, execution)).rejects.toThrow(
-        "Pull dispatch unavailable",
+        "拉取派发不可用",
       );
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
@@ -3106,7 +3208,7 @@ describe("ExecutorService (__tests__)", () => {
     it("throws when no executor is available", async () => {
       executorRepo.find.mockResolvedValue([]);
       await expect(service.dispatch(task, execution)).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
+        "没有在线执行器匹配所请求的 group/tags/runtime",
       );
     });
 
@@ -3171,7 +3273,7 @@ describe("ExecutorService (__tests__)", () => {
             { ...task, executorId: "e-pin" } as unknown as Task,
             execution,
           ),
-        ).rejects.toThrow(/Pinned executor .* is offline/);
+        ).rejects.toThrow(/已离线/);
         // No fallback: fleet never queried, nothing dispatched.
         expect(executorRepo.find).not.toHaveBeenCalled();
         expect(mockedAxios.post).not.toHaveBeenCalled();
@@ -3185,7 +3287,7 @@ describe("ExecutorService (__tests__)", () => {
             { ...task, executorId: "gone" } as unknown as Task,
             execution,
           ),
-        ).rejects.toThrow(/Pinned executor gone not found/);
+        ).rejects.toThrow(/固定执行器 gone 不存在/);
         expect(executorRepo.find).not.toHaveBeenCalled();
         expect(mockedAxios.post).not.toHaveBeenCalled();
       });
@@ -3210,7 +3312,7 @@ describe("ExecutorService (__tests__)", () => {
             { ...task, executorId: "e-pin" } as unknown as Task,
             execution,
           ),
-        ).rejects.toThrow(/No available executor/);
+        ).rejects.toThrow(/没有可用的执行器/);
         expect(mockedAxios.post).not.toHaveBeenCalled();
       });
     });
@@ -3241,14 +3343,14 @@ describe("ExecutorService (__tests__)", () => {
       ]);
       mockedAxios.post.mockRejectedValue(new Error("timeout"));
       await expect(service.dispatchBroadcast(task, execution)).rejects.toThrow(
-        "Broadcast failed",
+        "广播派发在全部",
       );
     });
 
     it("throws when no executors are available", async () => {
       executorRepo.find.mockResolvedValue([]);
       await expect(service.dispatchBroadcast(task, execution)).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
+        "没有在线执行器匹配所请求的 group/tags/runtime",
       );
     });
 
@@ -3307,9 +3409,18 @@ describe("ExecutorService (__tests__)", () => {
   describe("markOffline", () => {
     it("sets executor status to OFFLINE", async () => {
       executorRepo.update.mockResolvedValue({ affected: 1 });
+      // ADR-017 阶段 3：先按定位身份解析出**恰好一行**，再按 id 更新（此前是
+      // 按 address 无界 UPDATE —— pull 同址多行并存时会把别人也置离线）。
+      const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([
+        { id: "e-graceful", address: "127.0.0.1:3105" },
+      ]);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+
       await service.markOffline("127.0.0.1:3105");
+
       expect(executorRepo.update).toHaveBeenCalledWith(
-        { address: "127.0.0.1:3105" },
+        { id: "e-graceful" },
         expect.objectContaining({
           status: ExecutorStatus.OFFLINE,
           // 遗留 P1-24：优雅下线落 manual。
@@ -3318,14 +3429,33 @@ describe("ExecutorService (__tests__)", () => {
       );
     });
 
-    // FEAT-07 发布点（优雅停机路径）：落库后 re-find 并 emit executor.offline。
+    it("ADR-017: 同址多行且无指纹 → 不置任何行离线（不误伤别人）", async () => {
+      executorRepo.update.mockResolvedValue({ affected: 1 });
+      const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([
+        { id: "e-a", address: "192.168.1.100:8002" },
+        { id: "e-b", address: "192.168.1.100:8002" },
+      ]);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.markOffline("192.168.1.100:8002");
+
+      // 无法判定是谁下线 → 保守不动（fail-closed），而不是把两行都置离线。
+      expect(executorRepo.update).not.toHaveBeenCalled();
+    });
+
+    // FEAT-07 发布点（优雅停机路径）：落库后 emit executor.offline。
     it("emits executor.offline for the row after the graceful-shutdown write", async () => {
       executorRepo.update.mockResolvedValue({ affected: 1 });
-      executorRepo.findOne.mockResolvedValue({
-        id: "exec-3",
-        appName: "graceful",
-        address: "127.0.0.1:3105",
-      });
+      const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([
+        {
+          id: "exec-3",
+          appName: "graceful",
+          address: "127.0.0.1:3105",
+        },
+      ]);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
       const bus = { emit: jest.fn() };
       (service as unknown as { eventBus: unknown }).eventBus = bus;
 
@@ -3534,6 +3664,8 @@ describe("ExecutorService (__tests__)", () => {
       const rawToken = "raw-secret";
       const hash = await bcrypt.hash(rawToken, 1);
       const qb = executorRepo.createQueryBuilder();
+      // ADR-017 阶段 3：无指纹时按地址走 getMany（需判定是否多行并存）。
+      qb.getMany.mockResolvedValue([{ address: "host:3002", tokenHash: hash }]);
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: hash });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       const result = await service.validateTokenByAddress(
@@ -3545,6 +3677,7 @@ describe("ExecutorService (__tests__)", () => {
 
     it("falls back to shared token when no per-executor hash", async () => {
       const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([{ address: "host:3002", tokenHash: null }]);
       qb.getOne.mockResolvedValue({ address: "host:3002", tokenHash: null });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       configService.get.mockReturnValue("shared-secret");
@@ -3582,6 +3715,10 @@ describe("ExecutorService (__tests__)", () => {
   describe("getCallbackSecretByAddress", () => {
     it("returns the stored tokenHash and caches positive results", async () => {
       const qb = executorRepo.createQueryBuilder();
+      // ADR-017 阶段 3：无指纹时按地址走 getMany（需判定是否多行并存）。
+      qb.getMany.mockResolvedValue([
+        { address: "host:3002", tokenHash: "$2b$12$hash" },
+      ]);
       qb.getOne.mockResolvedValue({
         address: "host:3002",
         tokenHash: "$2b$12$hash",
@@ -3593,11 +3730,12 @@ describe("ExecutorService (__tests__)", () => {
       await expect(
         service.getCallbackSecretByAddress("host:3002"),
       ).resolves.toBe("$2b$12$hash");
-      expect(qb.getOne).toHaveBeenCalledTimes(1);
+      expect(qb.getMany).toHaveBeenCalledTimes(1);
     });
 
     it("returns null for unknown addresses and does not cache the miss", async () => {
       const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([]);
       qb.getOne.mockResolvedValue(null);
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       await expect(
@@ -3606,18 +3744,21 @@ describe("ExecutorService (__tests__)", () => {
       await expect(
         service.getCallbackSecretByAddress("ghost:1"),
       ).resolves.toBeNull();
-      expect(qb.getOne).toHaveBeenCalledTimes(2);
+      expect(qb.getMany).toHaveBeenCalledTimes(2);
     });
 
     it("rotateToken evicts the cached hash so the new value is read immediately", async () => {
       const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([
+        { address: "127.0.0.1", tokenHash: "$2b$12$old" },
+      ]);
       qb.getOne.mockResolvedValue({
         address: "127.0.0.1",
         tokenHash: "$2b$12$old",
       });
       executorRepo.createQueryBuilder.mockReturnValue(qb);
       await service.getCallbackSecretByAddress("127.0.0.1");
-      expect(qb.getOne).toHaveBeenCalledTimes(1);
+      expect(qb.getMany).toHaveBeenCalledTimes(1);
 
       const executor = { id: "e1", address: "127.0.0.1", tokenHash: null };
       executorRepo.findOne.mockResolvedValue(executor);
@@ -3625,7 +3766,7 @@ describe("ExecutorService (__tests__)", () => {
       await service.rotateToken("e1");
 
       await service.getCallbackSecretByAddress("127.0.0.1");
-      expect(qb.getOne).toHaveBeenCalledTimes(2);
+      expect(qb.getMany).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -3647,6 +3788,30 @@ describe("ExecutorService (__tests__)", () => {
       await expect(
         service.getExecutorExecutions("missing", { page: 1, pageSize: 10 }),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    // ADR-017 阶段 3（决策 §7 读面富化）反证：本方法**接收 executor id**，
+    // 此前却按 address 过滤——阶段 3 起 pull 同址多行并存（ADR-017 §5），
+    // 「查 A 台的执行历史」会把同址 B 台的执行一并列出。
+    //
+    // 反证：把 where 改回 `{ executorAddress: executor.address }` → 本用例转红。
+    it("queries by ROW IDENTITY (executorId), not by address alone", async () => {
+      const executor = { id: "row-a", address: "10.0.0.9:3002" };
+      executorRepo.findOne.mockResolvedValue(executor);
+      execRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getExecutorExecutions("row-a", { page: 1, pageSize: 10 });
+
+      const where = execRepo.findAndCount.mock.calls[0][0].where;
+      // 并集口径：新派发按行身份；存量行（executorId IS NULL）才按地址回落。
+      expect(Array.isArray(where)).toBe(true);
+      expect(where).toHaveLength(2);
+      // 支 1：纯行身份（无 address 谓词 → 不会卷入同址另一台的新派发行）。
+      expect(where[0]).toEqual({ executorId: "row-a" });
+      expect(where[0]).not.toHaveProperty("executorAddress");
+      // 支 2：存量行回落，且**必须**带 executorId IS NULL 守卫。
+      expect(where[1]).toMatchObject({ executorAddress: "10.0.0.9:3002" });
+      expect(where[1].executorId).toBeDefined();
     });
   });
 
@@ -3813,6 +3978,34 @@ describe("ExecutorService (__tests__)", () => {
 
     afterEach(() => warn.mockRestore());
 
+    /**
+     * ADR-017 阶段 3：槽位冲销经共享 util（`block-strategy-gate`），走
+     * `executorRepo.manager.createQueryBuilder()` 而非 `executorRepo.createQueryBuilder`。
+     *
+     * util 是**单条原子语句**：
+     *   UPDATE executors SET runningTaskCount = GREATEST(...-1,0)
+     *    WHERE id = (SELECT id FROM executors WHERE address = :addr)
+     * 地址唯一性判定（子查询多行 → PG 报错）与冲销同一语句求值。故一次冲销
+     * = 1 个 builder、1 次 execute。
+     */
+    const releaseSlotQueryBuilders = () =>
+      (
+        (
+          executorRepo as unknown as {
+            manager: { createQueryBuilder: jest.Mock };
+          }
+        ).manager.createQueryBuilder as jest.Mock
+      ).mock.results.map((r) => r.value);
+    /** 冲销语句的 WHERE 调用（含定位子查询与地址参数）。 */
+    const releaseSlotWhereCalls = () =>
+      releaseSlotQueryBuilders().flatMap((qb) => qb.where.mock.calls);
+    /** 冲销 UPDATE 的执行次数（槽位实际被减的次数）。 */
+    const releaseSlotExecuteCount = () =>
+      releaseSlotQueryBuilders().reduce(
+        (n, qb) => n + qb.execute.mock.calls.length,
+        0,
+      );
+
     it("conditionally marks FAILED and releases exactly one slot with a warning", async () => {
       await service.detectLostExecutions();
       expect(qb.update).toHaveBeenCalledWith(TaskExecution);
@@ -3830,12 +4023,18 @@ describe("ExecutorService (__tests__)", () => {
         logs: "existing logs\n[System] Execution timed out without callback, forcefully marked as FAILED",
       });
       expect(execRepo.save).not.toHaveBeenCalled();
-      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
-      const release = executorRepo.createQueryBuilder.mock.results[0].value;
-      expect(release.where).toHaveBeenCalledWith("address = :address", {
-        address: "host:3002",
-      });
-      expect(release.execute).toHaveBeenCalledTimes(1);
+      // ADR-017 阶段 3：槽位冲销委托共享 util（block-strategy-gate）的**单条原子
+      // 语句**——地址定位走子查询（多行并存时 PG 报错，绝不盲减别人的计数），
+      // 冲销落在该行 id 上。
+      expect(releaseSlotWhereCalls()).toEqual([
+        [
+          expect.stringContaining(
+            `"id" = (SELECT "id" FROM "executors" WHERE "address" = :addr)`,
+          ),
+          { addr: "host:3002" },
+        ],
+      ]);
+      expect(releaseSlotExecuteCount()).toBe(1);
       expect(warn).toHaveBeenCalledWith(
         "Lost execution marked FAILED: execId=lost-1, taskId=task-1",
       );
@@ -3851,11 +4050,10 @@ describe("ExecutorService (__tests__)", () => {
         raw: [{ id: "lost-1", executorAddress: "host:3002" }],
       });
       await service.detectLostExecutions();
-      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
-      const release = executorRepo.createQueryBuilder.mock.results[0].value;
-      expect(release.where).toHaveBeenCalledWith("address = :address", {
-        address: "host:3002",
-      });
+      expect(releaseSlotWhereCalls()).toEqual([
+        [expect.stringContaining(`"address" = :addr`), { addr: "host:3002" }],
+      ]);
+      expect(releaseSlotExecuteCount()).toBe(1);
       expect(warn).toHaveBeenCalledWith(
         "Lost execution marked FAILED: execId=lost-1, taskId=task-1",
       );
@@ -3881,7 +4079,8 @@ describe("ExecutorService (__tests__)", () => {
       await service.detectLostExecutions();
       await service.detectLostExecutions();
       expect(qb.execute).toHaveBeenCalledTimes(2);
-      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+      // 两次扫描只有第一次 affected=1 会冲销 —— 槽位恰好被减一次。
+      expect(releaseSlotExecuteCount()).toBe(1);
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
@@ -4504,7 +4703,7 @@ describe("ExecutorService (__tests__)", () => {
         executorRepo.findOne.mockResolvedValue(e);
         executorRepo.save.mockImplementation(async (x: any) => x);
 
-        await service.heartbeat({ address: "h:1" } as any, {} as any);
+        await service.heartbeat("h:1", {});
 
         expect(executorRepo.save).toHaveBeenCalled();
         const saved = executorRepo.save.mock.calls[0][0];
@@ -4525,7 +4724,10 @@ describe("ExecutorService (__tests__)", () => {
         executorRepo.save.mockImplementation(async (x: any) => x);
         const bus = { emit: jest.fn() };
         (service as unknown as { eventBus: unknown }).eventBus = bus;
-        await service.heartbeat({ address: "h:1" } as any, {} as any);
+        // heartbeat(address, metrics) —— 第一参是真地址字符串。旧写法传
+        // `{address:"h:1"}` 对象会被当成地址值，触发「地址漂移」分支把
+        // e.address 改写成那个对象（断言里的 address:"h:1" 因此失败）。
+        await service.heartbeat("h:1", {});
         return bus;
       };
 
@@ -4674,7 +4876,7 @@ describe("ExecutorService (__tests__)", () => {
       );
       (configService.get as jest.Mock).mockReturnValueOnce("");
       await expect(service.getInstallCmd()).rejects.toThrow(
-        /ADMIN_API_URL is not configured/,
+        /未配置 ADMIN_API_URL/,
       );
     });
   });
@@ -4706,7 +4908,7 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.find.mockResolvedValue([mk({ groupName: "staging" })]);
       await expect(
         service.selectLeastLoaded({ group: "production" }),
-      ).rejects.toThrow(/match the requested group\/tags\/runtime/);
+      ).rejects.toThrow(/没有在线执行器匹配所请求的 group\/tags\/runtime/);
     });
 
     it("filters by tags: candidates missing a required tag are excluded", async () => {
@@ -4724,7 +4926,7 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.find.mockResolvedValue([mk({ tags: ["cpu"] })]);
       await expect(
         service.selectLeastLoaded({ tags: ["gpu"] }),
-      ).rejects.toThrow(/match the requested group\/tags\/runtime/);
+      ).rejects.toThrow(/没有在线执行器匹配所请求的 group\/tags\/runtime/);
     });
 
     it("treats an executor with no capabilities as runtime-universal", async () => {
@@ -4739,7 +4941,7 @@ describe("ExecutorService (__tests__)", () => {
       ]);
       await expect(
         service.selectLeastLoaded({ runtime: "python" }),
-      ).rejects.toThrow(/match the requested group\/tags\/runtime/);
+      ).rejects.toThrow(/没有在线执行器匹配所请求的 group\/tags\/runtime/);
     });
 
     it("skips executors at max capacity and reports all-at-capacity otherwise", async () => {
@@ -4747,7 +4949,7 @@ describe("ExecutorService (__tests__)", () => {
         mk({ id: "e-full", runningTaskCount: 2, maxConcurrentTasks: 2 }),
       ]);
       await expect(service.selectLeastLoaded()).rejects.toThrow(
-        /all online executors are at maximum capacity/,
+        /所有在线执行器都已达到最大并发容量/,
       );
     });
 
@@ -4804,7 +5006,7 @@ describe("ExecutorService (__tests__)", () => {
           } as unknown as Task,
           execution,
         ),
-      ).rejects.toThrow(/No available executor with appName "ghost-app"/);
+      ).rejects.toThrow(/没有 appName 为 ghost-app 的可用执行器/);
     });
 
     it("filters by tag subset and never dispatches to an executor missing a tag", async () => {
@@ -4965,7 +5167,7 @@ describe("ExecutorService (__tests__)", () => {
           { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
           execution,
         ),
-      ).rejects.toThrow(/all candidates are offline or at capacity/);
+      ).rejects.toThrow(/所有候选执行器都已离线或达到容量上限/);
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -5123,7 +5325,7 @@ describe("ExecutorService (__tests__)", () => {
           } as unknown as Task,
           execution,
         ),
-      ).rejects.toThrow(/could not be decrypted for dispatch/);
+      ).rejects.toThrow(/任务密钥解密失败，无法派发/);
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -5191,7 +5393,7 @@ describe("ExecutorService (__tests__)", () => {
           } as unknown as Task,
           execution,
         ),
-      ).rejects.toThrow("No available executor for broadcast dispatch");
+      ).rejects.toThrow("没有可用于广播派发的执行器");
     });
 
     it("applies group/tag/runtime filters to the broadcast target set", async () => {
@@ -5599,9 +5801,7 @@ describe("ExecutorService (__tests__)", () => {
       ]);
       await expect(
         service.dispatch(mkTask({ executorAffinityTags: ["gpu"] }), execution),
-      ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -5609,9 +5809,7 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.find.mockResolvedValue([mkExecutor("e1", "a:1", ["misc"])]);
       await expect(
         service.dispatch(mkTask({ executorAffinityTags: ["gpu"] }), execution),
-      ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -5638,9 +5836,7 @@ describe("ExecutorService (__tests__)", () => {
           mkTask({ executorAntiAffinityTags: ["windows"] }),
           execution,
         ),
-      ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -5754,9 +5950,7 @@ describe("ExecutorService (__tests__)", () => {
           mkTask({ executorAffinityTags: ["gpu"] }),
           execution,
         ),
-      ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -7691,8 +7885,10 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     expect(executorRepo.create.mock.calls[0][0].deviceFingerprint).toBe(FP_A);
   });
 
-  /** 首注册携带非法指纹 → 视同未上报，列保持 NULL（不写脏值）。 */
-  it("首注册携带非法指纹时不落列（视同未上报）", async () => {
+  /** 首注册携带非法指纹 → 视同未上报，落**服务端生成的 legacy 兜底键**
+   * （ADR-017 阶段 3：列 NOT NULL，未上报/非法指纹一律走 `legacy:{address}`，
+   * 不写执行器上报的脏值；legacy 行仍按 address 定位，行为与引入前一致）。 */
+  it("首注册携带非法指纹时不落脏值（视同未上报 → legacy 兜底键）", async () => {
     const svc = await buildService();
     executorRepo.findOne.mockResolvedValue(null);
     executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -7703,9 +7899,9 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
       deviceFingerprint: "NOT-A-FINGERPRINT",
     });
 
-    expect(
-      executorRepo.create.mock.calls[0][0].deviceFingerprint,
-    ).toBeUndefined();
+    expect(executorRepo.create.mock.calls[0][0].deviceFingerprint).toBe(
+      `legacy:${ADDR}`,
+    );
   });
 
   /** 重注册采纳合法指纹（阶段 3 的读面数据来源）。 */
@@ -8056,9 +8252,7 @@ describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
           } as unknown as Task,
           execution,
         ),
-      ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -8069,9 +8263,7 @@ describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
           { id: "t1", name: "t", timeout: 10 } as unknown as Task,
           execution,
         ),
-      ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      ).rejects.toThrow("没有在线执行器匹配所请求的 group/tags/runtime");
       expect(executorRepo.find).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { status: ExecutorStatus.ONLINE },
@@ -8439,5 +8631,384 @@ describe("ExecutorService removal impact (B·1.1)", () => {
         }),
       }),
     );
+  });
+});
+
+/**
+ * ADR-017 阶段 3：执行器身份键定位切换（register/heartbeat 先按
+ * deviceFingerprint 定位行、命中即复用并更新 address；冲突按派发模式分叉）。
+ *
+ * 本组钉住 ADR 的验收项：
+ *  1. **同一 fingerprint 不同 address → 更新地址而非新建行**（换 IP 不产生幽灵行、
+ *     部署/执行历史不断裂——用户报告的生产故障）；
+ *  2. **同一 address 不同 fingerprint → push 409 / pull 各自成行**（用户明确要求：
+ *     两家不同内网同网段同 IP，pull 必须允许各自注册）；
+ *  3. **存量执行器（无 fingerprint）走 legacy 路径，行为与引入前逐字节一致**。
+ */
+describe("ExecutorService — ADR-017 阶段 3 指纹定位与冲突分叉", () => {
+  const ADDR = "192.168.1.100:8002";
+  const ADDR2 = "10.0.0.7:8002";
+  const FP_A = "a1".repeat(32);
+  const FP_B = "b2".repeat(32);
+  const FP_C = "c3".repeat(32);
+
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let configService: jest.Mocked<Pick<ConfigService, "get">>;
+  let sendAll: jest.Mock;
+
+  const buildService = async (): Promise<ExecutorService> => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        {
+          provide: getQueueToken("task-queue"),
+          useValue: { add: jest.fn().mockResolvedValue(undefined) },
+        },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll,
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+    return module.get(ExecutorService);
+  };
+
+  /** 绑到指定 executor repo mock（registerExecutor 的 token 幂等用例用）。 */
+  const buildServiceWithRepo = async (
+    repo: ReturnType<typeof makeRepo>,
+  ): Promise<ExecutorService> => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: repo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        {
+          provide: getQueueToken("task-queue"),
+          useValue: { add: jest.fn().mockResolvedValue(undefined) },
+        },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll,
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+    return module.get(ExecutorService);
+  };
+
+  const existingRow = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "e1",
+      address: ADDR,
+      appName: "node-a",
+      status: ExecutorStatus.ONLINE,
+      dispatchMode: "push",
+      runningTaskCount: 0,
+      version: 1,
+      ...overrides,
+    }) as never;
+
+  beforeEach(() => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    configService = { get: jest.fn().mockReturnValue("http") } as never;
+    sendAll = jest.fn().mockResolvedValue(undefined);
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("同指纹换地址（换 IP）→ 复用原行、更新 address，不新建行（接受项 1）", async () => {
+    const svc = await buildService();
+    const row = existingRow({
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+    });
+    executorRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined) return row;
+      return null; // 新地址空闲
+    });
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    const result = await svc.register({
+      appName: "node-a",
+      address: ADDR2,
+      deviceFingerprint: FP_A,
+    });
+
+    expect(executorRepo.create).not.toHaveBeenCalled(); // 不新建行
+    expect(result.id).toBe("e1"); // 同一行
+    expect((result as any).address).toBe(ADDR2); // 地址被更新（机器换网 = 地址变更）
+  });
+
+  it("同指纹换地址后，心跳从新地址来 → 命中旧行、补新 address（不再 NotFound/判死）", async () => {
+    const svc = await buildService();
+    const row = existingRow({
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+    });
+    executorRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined) return row; // 指纹命中（旧地址行）
+      return null; // 新地址无行（注册竞态未到）
+    });
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await expect(
+      svc.heartbeat(ADDR2, { deviceFingerprint: FP_A }),
+    ).resolves.not.toThrow();
+    expect((row as any).address).toBe(ADDR2); // 地址补新 → 行保持 ONLINE，不被 sweep 判死
+  });
+
+  it("push：同地址不同指纹 → 后到者 409（保留先注册者，接受项 2）", async () => {
+    const svc = await buildService();
+    const owner = existingRow({
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+      dispatchMode: "push",
+    });
+    executorRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined) return null; // FP_B 无行
+      return owner; // 地址被 FP_A 占用
+    });
+
+    await expect(
+      svc.register({
+        appName: "node-b",
+        address: ADDR,
+        deviceFingerprint: FP_B,
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(executorRepo.create).not.toHaveBeenCalled();
+  });
+
+  it("pull：同地址不同指纹 → 各自成行、不 409（跨网同网段同 IP 场景，接受项 2）", async () => {
+    const svc = await buildService();
+    const owner = existingRow({
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+      dispatchMode: "pull",
+    });
+    executorRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined) return null; // FP_B 无行
+      return owner; // 地址被另一家公司的 pull 执行器占用
+    });
+    executorRepo.create.mockImplementation((d: any) => ({ ...d, id: "e2" }));
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    const result = await svc.register({
+      appName: "node-b",
+      address: ADDR,
+      deviceFingerprint: FP_B,
+      dispatchMode: "pull",
+    });
+
+    expect(executorRepo.create).toHaveBeenCalled(); // 新建独立行
+    expect((result as any).id).toBe("e2");
+    expect((result as any).address).toBe(ADDR); // 同地址允许重复（pull 只是标签）
+    expect((result as any).deviceFingerprint).toBe(FP_B);
+  });
+
+  it("legacy（无指纹）首注册 → 落 `legacy:{address}` 兜底键（接受项 3 数据面）", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(null);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.register({ appName: "node", address: ADDR });
+
+    expect(executorRepo.create).toHaveBeenCalled();
+    expect(executorRepo.create.mock.calls[0][0].deviceFingerprint).toBe(
+      `legacy:${ADDR}`,
+    );
+  });
+
+  it("legacy（无指纹）重注册 → 按 address 命中，行为与引入前一致（接受项 3）", async () => {
+    const svc = await buildService();
+    const row = existingRow({
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: `legacy:${ADDR}`,
+    });
+    executorRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined) return null; // 无指纹 → 不走指纹查询
+      return row;
+    });
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    const result = await svc.register({ appName: "node", address: ADDR });
+
+    expect(executorRepo.create).not.toHaveBeenCalled();
+    expect((result as any).id).toBe("e1");
+    expect((result as any).deviceFingerprint).toBe(`legacy:${ADDR}`); // 身份键不被改写
+  });
+
+  it("legacy 行被同机 v3 接管：同地址注册带指纹 → 复用行、指纹被采纳（升级路径）", async () => {
+    const svc = await buildService();
+    const row = existingRow({
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: `legacy:${ADDR}`,
+    });
+    executorRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined) return null; // FP_A 尚无行
+      return row;
+    });
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    const result = await svc.register({
+      appName: "node",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+    });
+
+    expect(executorRepo.create).not.toHaveBeenCalled();
+    expect((result as any).id).toBe("e1");
+    expect((row as any).deviceFingerprint).toBe(FP_A); // legacy 键被真实指纹接管
+  });
+
+  it("push：漂移到被另一份安装占用的地址 → 409（不静默抢占）", async () => {
+    const svc = await buildService();
+    const row = existingRow({
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+    });
+    const owner = existingRow({
+      id: "e2",
+      address: ADDR2,
+      deviceFingerprint: FP_C,
+    });
+    executorRepo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined) return row; // 指纹命中本行
+      if (where.address === ADDR2) return owner; // 目标地址被他人占用
+      return null;
+    });
+
+    await expect(
+      svc.register({
+        appName: "node-a",
+        address: ADDR2,
+        deviceFingerprint: FP_A,
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect((row as any).address).toBe(ADDR); // 原地址保留
+  });
+
+  it("registerExecutor：同指纹换地址、同 startupId → 不 rotate token（N4 幂等跨漂移保持）", async () => {
+    const prior = {
+      id: "e1",
+      address: ADDR,
+      executorStartupId: "startup-1",
+      executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+      tokenHash: "$2b$12$existinghash",
+      deviceFingerprint: FP_A,
+    };
+    const repo = makeRepo({
+      createQueryBuilder: jest.fn(() => ({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(prior),
+      })),
+    });
+    repo.findOne.mockImplementation(async ({ where }: any) => {
+      if (where.deviceFingerprint !== undefined)
+        return { ...prior, status: ExecutorStatus.ONLINE };
+      return null; // 新地址空闲
+    });
+    repo.save.mockImplementation((e: any) => Promise.resolve(e));
+    const svc = await buildServiceWithRepo(repo);
+    const rotateSpy = jest.spyOn(svc, "rotateToken");
+
+    const { perExecutorToken } = await svc.registerExecutor({
+      appName: "node",
+      address: ADDR2,
+      startupId: "startup-1",
+      deviceFingerprint: FP_A,
+    });
+
+    expect(perExecutorToken).toBeNull();
+    expect(rotateSpy).not.toHaveBeenCalled();
+  });
+
+  it("validateTokenByAddress：指纹优先定位（pull 同地址多行时命中自己的行）", async () => {
+    const svc = await buildService();
+    // 行 A 与行 B 同地址（pull 并存），各自的 tokenHash 不同
+    const rowB = {
+      id: "e2",
+      address: ADDR,
+      deviceFingerprint: FP_B,
+      tokenHash: "$2b$12$hashB",
+    };
+    executorRepo.createQueryBuilder = jest.fn(() => ({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(rowB),
+    })) as never;
+    // 直接驱动校验：指纹定位命中行 B（而非同地址的行 A）
+    const compareSpy = jest
+      .spyOn(bcrypt, "compare")
+      .mockResolvedValue(true as never);
+    const ok = await svc.validateTokenByAddress(ADDR, "raw-token", FP_B);
+    expect(ok).toBe(true);
+    expect(compareSpy).toHaveBeenCalledWith("raw-token", "$2b$12$hashB");
+    compareSpy.mockRestore();
   });
 });

@@ -224,13 +224,13 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
         ids: ["e1"],
         patch: { status: ExecutionStatus.RUNNING },
       }),
-    ).rejects.toThrow(/must be terminal/);
+    ).rejects.toThrow(/必须是终态/);
     await expect(
       transitionToTerminal(repo as never, {
         ids: ["e1"],
         patch: { status: ExecutionStatus.PENDING },
       }),
-    ).rejects.toThrow(/must be terminal/);
+    ).rejects.toThrow(/必须是终态/);
   });
 
   it("单执行便捷入口 transitionOneToTerminal 与批量版语义一致", async () => {

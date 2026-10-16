@@ -308,9 +308,7 @@ describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
       ...STRONG_PRODUCTION_ENV,
       CORS_ALLOWED_ORIGINS: "admin.example.com",
     };
-    expect(() => loadConfig()).toThrow(
-      /must start with http:\/\/ or https:\/\//,
-    );
+    expect(() => loadConfig()).toThrow(/必须以 http:\/\/ 或 https:\/\//);
   });
 
   it("rejects a production origin that looks like a scheme but is not a URL", () => {
@@ -319,7 +317,7 @@ describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
       ...STRONG_PRODUCTION_ENV,
       CORS_ALLOWED_ORIGINS: "http://",
     };
-    expect(() => loadConfig()).toThrow(/is not a valid URL/);
+    expect(() => loadConfig()).toThrow(/不是合法的 URL/);
   });
 });
 

@@ -1,14 +1,14 @@
 import {
   Injectable,
   OnModuleInit,
-  BadRequestException,
   Logger,
-  NotFoundException,
-  ServiceUnavailableException,
-  ForbiddenException,
   Inject,
   forwardRef,
 } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
@@ -22,6 +22,9 @@ import {
   Not,
   Brackets,
   QueryFailedError,
+  // ADR-017 阶段 3：存量执行行没有 executorId，回落地址匹配时需限定
+  // `executorId IS NULL`，避免把新派发（已有行身份）的行也按地址卷进来。
+  IsNull,
 } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
@@ -90,6 +93,9 @@ import { ApplicationVersion } from "../application/entities/application-version.
 // MUTEX-01（应用互斥组）：占坑互斥错误（processor 分类链最前面识别并置
 // WAITING）；互斥组配置只读仓库（组内并发数）。
 import { MutexWaitError } from "../task/execution-mutex";
+// ADR-017 阶段 3：槽位冲销的单一事实源（与调度器/触发路径共用）。同地址多行
+// 并存时地址无法指代行身份，util 内部保守跳过（见其头注）。
+import { releaseExecutorSlotByAddress } from "../task/block-strategy-gate";
 // FEAT-22 方案 A v1：strict 部署约束的排队错误（processor 与 MutexWaitError
 // 同位识别，置 WAITING 不烧预算）。
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
@@ -132,12 +138,16 @@ import {
   createAddressConflictTracker,
   type AddressConflictObservation,
 } from "./executor-address-conflict.util";
-// ARCH-36（ADR-017 阶段 2）：deviceFingerprint 校验 + 冲突/漂移观测。
+// ARCH-36（ADR-017 阶段 2/3）：deviceFingerprint 校验 + 冲突/漂移观测 +
+// legacy 身份兜底键。
 // 与 P0 的 startupId 时序判据**并存**：P0 覆盖存量执行器（无新字段），本模块
 // 给出跨重启稳定身份带来的**直接**判据（零误报），两者互不替代（见 util 头注）。
+// 阶段 3 起 normalizeDeviceFingerprint 还是**定位键的规范化入口**（register/
+// heartbeat 先按指纹定位行、命中即复用并更新 address）。
 import {
   createDeviceFingerprintTracker,
   normalizeDeviceFingerprint,
+  legacyExecutorIdentity,
   type FingerprintObservation,
 } from "./executor-fingerprint.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
@@ -158,6 +168,26 @@ import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
 import { computeExecutorLoadScore } from "./executor-score.util";
 import type { EstimatedDurations } from "./executor-score.util";
+
+/**
+ * ADR-017 阶段 3（决策 §7 读面富化）：估时样本池的**取值器**。
+ *
+ * 为什么不是 `Map<string, EstimatedDurations>`：阶段 3 起样本池有两个来源——
+ * 新派发执行行按**行身份**归组（同址多行不互相污染），存量行（迁移 0055 刻意
+ * 不回填 `executorId`）只能按**地址**归组。调用方要的是「这台执行器的样本」，
+ * 由本取值器把两支合并，调用方无从只读其中一支（旧实现消费方只 `get(address)`，
+ * 正是"改了归组键、忘了改取值键"的漏改形态）。
+ */
+export interface EstimatedDurationsIndex {
+  forExecutor: (
+    executor: Pick<Executor, "id" | "address">,
+  ) => EstimatedDurations;
+}
+
+/** 空索引（无候选/查询失败降级）：恒返回空样本 → longTaskPenalty=0。 */
+const EMPTY_ESTIMATED_INDEX: EstimatedDurationsIndex = {
+  forExecutor: () => [],
+};
 // OBS-01: 派发链路追踪——dispatch span + traceparent 头透传执行器
 import { TracingService } from "../../common/tracing/tracing.service";
 // AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
@@ -266,6 +296,11 @@ export class ExecutorService implements OnModuleInit {
   // 管理动作，旧凭据本就该重新走一次 bcrypt 并被拒）。
   private static readonly TOKEN_CACHE_TTL_MS = 60_000;
   private static readonly TOKEN_CACHE_MAX = 1000;
+  /**
+   * ADR-017 阶段 3：同地址回调密钥候选的行数上限。真实碰撞场景是 2~3 台；
+   * 设上限是防御病态数据把回调验签退化成 O(全表) 的 bcrypt/ HMAC 循环。
+   */
+  private static readonly MAX_CALLBACK_SECRET_CANDIDATES = 16;
   private readonly tokenValidationCache = new Map<
     string,
     { address: string; cachedAt: number }
@@ -281,7 +316,7 @@ export class ExecutorService implements OnModuleInit {
   // candidate for at most TOKEN_CACHE_TTL_MS.
   private readonly callbackSecretCache = new Map<
     string,
-    { hash: string; cachedAt: number }
+    { hash: string; cachedAt: number; address: string }
   >();
 
   // R9 (round-8 P1 closure, W2): idempotency state for POST /executors/token.
@@ -316,9 +351,28 @@ export class ExecutorService implements OnModuleInit {
   // admin-api restart.
   private static readonly TOKEN_ISSUE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
   private static readonly TOKEN_ISSUE_CACHE_MAX = 1000;
+  /**
+   * 幂等签发的**明文令牌**正缓存。键 = **定位身份**（指纹优先，见
+   * {@link tokenCacheIdentityKey}），而非裸 address。
+   *
+   * 为什么阶段 3 起必须改键：pull 模式允许同地址多行并存（ADR-017 §5）。按
+   * address 做键时，同址两台的签发结果**共用一条缓存**——第二台请求会命中
+   * 第一台那条「同 startupId / legacy 窗口」的幂等分支，把**第一台的明文
+   * 令牌**发给第二台（越权级串台，且因为缓存的 token 与被轮换的
+   * `executor.id` 不属于同一行，N4 的「同进程不轮换」语义也退化成
+   * 「谁先到谁赢」的轮换风暴）。按定位身份分键后，各行的存续互不可见。
+   *
+   * `address` 随值保留：驱逐仍按 address 回扫（键是单向派生的，无法前缀
+   * 删除——与 `callbackSecretCache` 同一处置）。
+   */
   private readonly issuedTokenCache = new Map<
     string,
-    { token: string; startupId: string | null; issuedAt: number }
+    {
+      token: string;
+      startupId: string | null;
+      issuedAt: number;
+      address: string;
+    }
   >();
 
   // F-08（本轮审计）: applications.packageUrl 的短 TTL **正缓存**（30s）。
@@ -507,8 +561,21 @@ export class ExecutorService implements OnModuleInit {
   /** 三张令牌派生缓存的本地逐出（rotate/remove 的本实例半边；远端经广播触发）。 */
   private evictLocalTokenCaches(address: string): void {
     this.evictTokenValidationsFor(address);
-    this.callbackSecretCache.delete(address);
-    this.issuedTokenCache.delete(address);
+    // ADR-017 阶段 3：`issuedTokenCache` / `callbackSecretCache` 的键是**定位
+    // 身份**（指纹优先，非裸 address）——按 address 直接 delete 删不到指纹键的
+    // 条目，轮换后旧明文/旧哈希会继续命中正缓存，出现最长一个 TTL 的「撤销
+    // 凭据仍可用」窗口（与 evictTokenValidationsFor 注释所述同一类失效）。
+    // 故两张表都按**值里的 address** 回扫（键是单向派生的，无法前缀删除）。
+    for (const [key, entry] of this.issuedTokenCache) {
+      if (key === address || entry.address === address) {
+        this.issuedTokenCache.delete(key);
+      }
+    }
+    for (const [key, entry] of this.callbackSecretCache) {
+      if (key === address || entry.address === address) {
+        this.callbackSecretCache.delete(key);
+      }
+    }
   }
 
   /** 订阅（重）连上的自愈：全量清空。正缓存只存成功结果，代价是多一轮 bcrypt。 */
@@ -516,6 +583,25 @@ export class ExecutorService implements OnModuleInit {
     this.tokenValidationCache.clear();
     this.callbackSecretCache.clear();
     this.issuedTokenCache.clear();
+  }
+
+  /**
+   * ADR-017 阶段 3：三张令牌派生缓存的**统一键口径**——指纹优先，地址兜底。
+   *
+   * 为什么收敛成一个方法：`tokenValidationCache` / `callbackSecretCache` /
+   * `issuedTokenCache` 三张缓存若各写一份「指纹 ?? 地址」表达式，任一处漏改
+   * 就会出现「一张表按行身份分键、另一张按地址混键」的不一致——而混键的那张
+   * 恰是串台面（同址两台的凭据互相命中）。单一事实源让口径无法漂移。
+   *
+   * 缺省/非法指纹（legacy 执行器、采集失败）→ 回落 address：与引入前逐字节
+   * 一致（那时 address 就是唯一键）；同址多行的 legacy 组合下地址键虽有歧义，
+   * 但那种组合本就在 `resolveExecutorRow` 处 fail-closed，不会走到缓存判定。
+   */
+  private tokenCacheIdentityKey(
+    address: string,
+    deviceFingerprint?: string | null,
+  ): string {
+    return normalizeDeviceFingerprint(deviceFingerprint) ?? address;
   }
 
   /** 广播驱逐（fire-and-forget；同步服务缺席 = 其他实例走 60s TTL 兜底）。 */
@@ -844,9 +930,9 @@ export class ExecutorService implements OnModuleInit {
       decrypted = this.secretsCrypto.decryptForDispatch(task.secrets);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Task secrets could not be decrypted for dispatch: ${message}`,
-      );
+      throw new AppError("TASK_SECRET_DECRYPT_FAILED", {
+        detail: message,
+      });
     }
     return { ...(params ?? {}), ...(decrypted ?? {}) };
   }
@@ -877,20 +963,22 @@ export class ExecutorService implements OnModuleInit {
       return this.secretsCrypto.decryptForDispatch(task.secrets) ?? null;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Task secrets could not be decrypted for dispatch: ${message}`,
-      );
+      throw new AppError("TASK_SECRET_DECRYPT_FAILED", {
+        detail: message,
+      });
     }
   }
 
+  /**
+   * ADR-017 阶段 3：`address` 不再是唯一键——同地址多行并存（pull 模式，
+   * ADR-017 §5）时 `WHERE address = :address` 会命中多行，一次冲销把**别人的**
+   * `runningTaskCount` 也减 1。委托给共享 util（单一事实源，与调度器/触发路径
+   * 同规则）：地址命中多行时**保守跳过**而非盲减（失败方向选保守侧——少减一次
+   * 只是该执行器被保守少派，多减一次会让别人的计数虚低而被超发打爆）。
+   * 单行命中时行为与引入前逐字节一致。
+   */
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
-    if (!address) return;
-    await this.repo
-      .createQueryBuilder()
-      .update(Executor)
-      .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-      .where("address = :address", { address })
-      .execute();
+    await releaseExecutorSlotByAddress(this.repo.manager, address);
   }
 
   // NETOPT-F P3: releaseExecutorSlotBatch 已删除——批次 D 后重启恢复的计数
@@ -1117,13 +1205,32 @@ export class ExecutorService implements OnModuleInit {
     return execution.startTime.getTime() < onlyStartedBefore.getTime();
   }
 
+  /**
+   * 执行器重启后终态化其遗留的 RUNNING 执行。
+   *
+   * ADR-017 阶段 3：匹配维度**优先按行身份 `executorId`**，仅当调用方没有
+   * 行身份时才回落 `executorAddress`。
+   *
+   * 为什么必须改：阶段 3 允许 pull 同地址多行并存（ADR-017 §5），纯按地址匹配
+   * 会把**另一台机器正在跑的健康执行**一并判成 EXECUTOR_RESTART —— 这正是
+   * `executor-address-conflict.util.ts` 头注列为「三类静默故障」之一的形态，
+   * 而 partial 索引恰好把这个状态合法化了。存量执行行没有 executorId（可空），
+   * 那些行只能按地址匹配 —— 与引入前逐字节一致。
+   *
+   * @param executorId 行身份（新派发一律有）；null 时回落 address 匹配
+   * @param executorAddress 派发当时的地址（存量行/恢复基准）
+   */
   private async failRunningExecutionsAfterRestart(
     executorAddress: string,
     onlyStartedBefore?: Date | null,
+    executorId?: string | null,
   ): Promise<number> {
     const runningExecutions = await this.execRepo.find({
       where: {
-        executorAddress,
+        // 有行身份 → 精确限定那一行；否则回落地址（存量行语义不变）。
+        ...(executorId
+          ? { executorId }
+          : { executorAddress, executorId: IsNull() }),
         status: ExecutionStatus.RUNNING,
       },
       // NETOPT-C P3: take 与 E9 采纳域（maxConcurrentTasks ≤10000）对齐——旧 1000
@@ -1234,8 +1341,26 @@ export class ExecutorService implements OnModuleInit {
    * 地址是 register/heartbeat 的身份键（与 validateTokenByAddress 同源），
    * id 才是稳定的队列键——地址可漂移（重注册换网），id 不变。
    */
-  async findByAddress(address: string): Promise<Executor | null> {
-    return this.repo.findOne({ where: { address } });
+  async findByAddress(
+    address: string,
+    deviceFingerprint?: string | null,
+  ): Promise<Executor | null> {
+    // ADR-017 阶段 3：走统一解析（指纹优先 + 同址多行无指纹时 fail-closed）。
+    // 纯 `findOne({where:{address}})` 在 pull 同址多行时会返回**任一行**——
+    // `/executors/pull` 据此取 executor.id 去拉 Redis 队列，会拉到别人的任务。
+    if (deviceFingerprint !== undefined) {
+      return this.resolveExecutorRow(address, deviceFingerprint);
+    }
+    const byAddress = await this.repo.find({ where: { address }, take: 2 });
+    if (byAddress.length > 1) {
+      this.logger.warn(
+        `findByAddress("${address}") is ambiguous: ${byAddress.length}+ rows ` +
+          `share it (pull-mode duplicate address). Callers must pass ` +
+          `deviceFingerprint to identify the row.`,
+      );
+      return null;
+    }
+    return byAddress[0] ?? null;
   }
 
   /**
@@ -1300,9 +1425,7 @@ export class ExecutorService implements OnModuleInit {
     payload: Record<string, unknown>,
   ): Promise<string> {
     if (!this.pullService) {
-      throw new Error(
-        "Pull command channel unavailable: ExecutorPullService not wired",
-      );
+      throw new AppError("EXECUTOR_PULL_UNAVAILABLE");
     }
     const commandId = await this.pullService.enqueueCommand(
       executorId,
@@ -1370,16 +1493,70 @@ export class ExecutorService implements OnModuleInit {
     dispatchMode?: string;
     // PROTOCOL-VER（B-3/U-2）：协议版本（可选整数；缺省 → 不动 DB）。
     protocolVersion?: number | null;
-    // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；缺省/非法 → 不动 DB）。
-    // 只采集与观测——**不参与任何定位**（本方法首行仍按 address findOne）。
+    // ARCH-36（ADR-017 阶段 2/3）：稳定设备指纹（可选；缺省/非法 → 不动 DB）。
+    // 阶段 3 起它是本方法的**行定位键**（指纹优先，address 兜底）——命中即复用
+    // 原行并更新 address；未上报的 legacy 执行器由服务端落 legacy 兜底键，
+    // 行为与引入前逐字节一致（详见方法内「身份解析」段的注释）。
     deviceFingerprint?: string | null;
     // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单。
     // 缺省 → 不动 DB；结构非法 → 拒绝采纳 + warn；合法（含 []）→ 覆盖。
     interpreters?: ExecutorInterpreter[] | null;
   }) {
-    let e: Executor | null = await this.repo.findOne({
-      where: { address: data.address },
-    });
+    // ADR-017 阶段 3：身份解析——**指纹优先**（跨重启稳定的安装身份），
+    // `address` 兜底（legacy 执行器/采集失败）。命中指纹行即**复用原行**并
+    // 更新其 `address`：执行器换 IP = 同一台机器换地址，不产生「新设备幽灵行」，
+    // 部署/执行历史不断裂（本变更要修的生产故障，ADR-017 §2）。
+    //
+    // 冲突姿态按派发模式分叉（ADR-017 §4/§5，用户明确要求的 push/pull 区分）：
+    // - push（默认，中台主动连执行器）：`address` 是路由面 → 同地址出现**另一份
+    //   安装**（不同真实指纹）= 真冲突 → 保留先注册者、后到者 **409**；
+    // - pull（执行器主动连中台，零入站）：`address` 只是自报标签、不参与路由 →
+    //   两家不同内网的同网段同 IP **必须允许各自成行**（各自独立的历史/部署），
+    //   冲突只降级为既有观测告警（warn）。
+    const incomingFingerprint = normalizeDeviceFingerprint(
+      data.deviceFingerprint,
+    );
+    const incomingDispatchMode = data.dispatchMode === "pull" ? "pull" : "push";
+    const byFingerprint =
+      incomingFingerprint !== null
+        ? await this.repo.findOne({
+            where: { deviceFingerprint: incomingFingerprint },
+          })
+        : null;
+    let e: Executor | null = byFingerprint;
+    if (!e) {
+      const byAddress = await this.repo.findOne({
+        where: { address: data.address },
+      });
+      if (byAddress) {
+        // 同地址 + 不同真实指纹 = 该地址被**另一份安装**占用。
+        // legacy 键（存量未升级行）与 NULL（迁移前）恒不算占用——那是存量行被
+        // 同机指纹**接管**的升级路径，不是冲突。
+        //
+        // 判据用 isLegacyExecutorIdentity 显式表达「存量未升级行」，而不是让
+        // 读代码的人从 `normalize(...) === null` 反推语义。storedReal 为 null
+        // 只可能来自 legacy 键或 NULL 两种形态，故先排除 legacy 再比较即可。
+        const storedReal = normalizeDeviceFingerprint(
+          byAddress.deviceFingerprint,
+        );
+        const foreignInstall =
+          incomingFingerprint !== null &&
+          storedReal !== null &&
+          storedReal !== incomingFingerprint;
+        if (foreignInstall) {
+          if (incomingDispatchMode === "push") {
+            throw new AppError("EXECUTOR_ADDRESS_TAKEN", {
+              address: data.address,
+            });
+          }
+          // pull：不拒注册——下走创建分支，建**独立行**（同地址允许重复）。
+        } else {
+          // 同安装（同指纹）/ 存量 legacy 行（升级接管）/ 无指纹存量行
+          // （迁移前 NULL）→ 复用该行。
+          e = byAddress;
+        }
+      }
+    }
     const isFirstTime = !e;
     const capabilities = data.capabilities ?? data.runtime;
     // N-09 微基准暴露的注册/心跳**采纳域不对称**（本轮净新发现）：
@@ -1418,10 +1595,7 @@ export class ExecutorService implements OnModuleInit {
     // 与上一行同理必须在任何 DB 写入**之前**——冲突的原始形态（该地址上曾出现
     // 过哪些安装）与会话内已写入的 deviceFingerprint 无关，但"本次上报是否新增
     // 了一个指纹"这个事件只在本次上报时可见。
-    // 规范化后再观测/落库：非法形态（长度/字符集不符）视同未上报。
-    const incomingFingerprint = normalizeDeviceFingerprint(
-      data.deviceFingerprint,
-    );
+    // 规范化已在身份解析处完成（上方 const incomingFingerprint），此处直接观测。
     this.observeDeviceFingerprint(
       data.address,
       incomingFingerprint,
@@ -1481,20 +1655,25 @@ export class ExecutorService implements OnModuleInit {
           Number.isInteger(data.protocolVersion)
             ? data.protocolVersion
             : undefined,
-        // ARCH-36（ADR-017 阶段 2）：首注册即上报则落列；缺省/非法 → undefined
-        // → 列保持 NULL（= 未上报；存量旧执行器与采集失败都用 protocolVersion
-        // 区分：v3 却为 NULL = 采集失败需排查）。
-        deviceFingerprint: incomingFingerprint ?? undefined,
+        // ADR-017 阶段 3：首注册的身份键——上报指纹则落真实指纹；未上报
+        // （legacy 执行器/采集失败）则由**服务端生成** `legacy:{address}` 兜底
+        // 键（列 NOT NULL；执行器永不收到该值）。legacy 行仍按 address 定位，
+        // 行为与阶段 2 前逐字节一致（ADR-017 §6「兼容性红线」）。
+        deviceFingerprint:
+          incomingFingerprint ?? legacyExecutorIdentity(data.address),
         // python_task_multiversion：首注册即上报则落列；缺省/非法 → undefined
         // → 列保持 NULL（= 未上报，调度按 ["3.12"] 兜底）。
         interpreters: normalizedInterpreters ?? undefined,
         status: ExecutorStatus.ONLINE,
         lastHeartbeat: new Date(),
       } as Partial<Executor>);
-      // A-10（执行器域审计 P3）：上面的「按地址 findOne → 无行则 insert」是
-      // check-then-act——同地址并发首注册时败者的 save 撞 uq_executors_address
-      // （23505），此前未捕获直接 500。现在：唯一冲突 → 按地址重读，把本次
-      // 上报并入赢家的行走下方既有重注册分支（良性竞态收敛为一次普通重注册）；
+      // A-10（执行器域审计 P3）：上面的「按身份 findOne → 无行则 insert」是
+      // check-then-act——同身份并发首注册时败者的 save 撞唯一索引（23505）。
+      // 处理分两种（ADR-017 §4 姿态，与身份解析同判据）：
+      // - 同安装竞态（同指纹/legacy 对 legacy）：唯一冲突 → 按地址重读，把本次
+      //   上报并入赢家的行走下方既有重注册分支（良性竞态收敛为一次普通重注册）；
+      // - **push 模式 + 赢家是另一份安装（不同真实指纹）**：保留赢家、**409**
+      //   （与上方 foreignInstall 分支同口径——并发竞态不能绕过冲突姿态）。
       // 非 23505、或重读仍无行（赢家刚被删除等罕见竞态）→ 按原错误失败。
       try {
         const saved = await this.repo.save(e);
@@ -1511,15 +1690,54 @@ export class ExecutorService implements OnModuleInit {
         return saved;
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
-        this.logger.warn(
-          `Concurrent first registration lost the unique-address race for ${data.address}; merging this report into the winning row`,
-        );
         const winner = await this.repo.findOne({
           where: { address: data.address },
         });
         if (!winner) throw err;
+        const winnerReal = normalizeDeviceFingerprint(winner.deviceFingerprint);
+        if (
+          incomingFingerprint !== null &&
+          winnerReal !== null &&
+          winnerReal !== incomingFingerprint &&
+          incomingDispatchMode === "push"
+        ) {
+          throw new AppError("EXECUTOR_ADDRESS_TAKEN", {
+            address: data.address,
+          });
+        }
+        this.logger.warn(
+          `Concurrent first registration lost the unique-address race for ${data.address}; merging this report into the winning row`,
+        );
         e = winner;
       }
+    }
+    // ADR-017 阶段 3：地址漂移——同一安装从**新地址**上报（机器换网/换 IP）。
+    // 复用行 + 更新 `address`（这正是"换 IP 不再产生幽灵行"的落点）。
+    // push 模式不许抢占他人地址（新地址若被另一份安装占用 → 409）；pull 模式
+    // 地址只是标签，直接采纳（ADR-017 §5）。创建路径 e.address 已等于上报值，
+    // 不会进本分支。
+    // recoveryAddress：漂移前地址——重启恢复按它找 RUNNING 执行记录（漂移前
+    // 派发的行都记着旧地址；漂移+重启同刻才需要区分，常态下等于 data.address）。
+    let recoveryAddress = data.address;
+    if (e.address !== data.address) {
+      if (incomingDispatchMode === "push") {
+        const owner = await this.repo.findOne({
+          where: { address: data.address },
+        });
+        if (owner && owner.id !== e.id) {
+          throw new AppError("EXECUTOR_ADDRESS_TAKEN", {
+            address: data.address,
+          });
+        }
+      }
+      recoveryAddress = e.address;
+      this.logger.log(
+        `Executor ${e.id} install ${
+          incomingFingerprint?.slice(0, 12) ?? "(legacy)"
+        } reported from a new address: ${e.address} → ${data.address} ` +
+          `(address drift, same executor; not a new device)`,
+      );
+      e.address = data.address;
     }
     // Update mutable fields on re-registration (whitelisted per-field only)
     if (data.type) e.type = data.type as ExecutorType;
@@ -1569,13 +1787,18 @@ export class ExecutorService implements OnModuleInit {
         incomingStartupId,
         e.executorStartedAt,
       );
-      await this.failRunningExecutionsAfterRestart(data.address, baseline);
+      await this.failRunningExecutionsAfterRestart(
+        recoveryAddress,
+        baseline,
+        e.id,
+      );
       // R-P0-008: Reset runningTaskCount to 0 after executor restart
       e.runningTaskCount = 0;
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(
-        data.address,
+        recoveryAddress,
         incomingStartedAt,
+        e.id,
       );
       // R-P0-008: Reset runningTaskCount to 0 after recovery
       e.runningTaskCount = 0;
@@ -1625,6 +1848,9 @@ export class ExecutorService implements OnModuleInit {
     restartedAt?: string | Date | null;
     startupId?: string | null;
     dispatchMode?: string;
+    // ADR-017 阶段 3：稳定设备指纹（可选；与 register() 同源采纳规则——缺省/
+    // 非法即按 legacy/address 定位。controller 已在 F-7 白名单转发）。
+    deviceFingerprint?: string | null;
     interpreters?: ExecutorInterpreter[] | null;
   }): Promise<{ executor: Executor; perExecutorToken: string | null }> {
     // EXE-VER-1: 最低版本门禁。EXECUTOR_MIN_VERSION 非空时，执行器上报的
@@ -1639,10 +1865,10 @@ export class ExecutorService implements OnModuleInit {
       data.version &&
       !isVersionCompliant(data.version, minVersion)
     ) {
-      throw new ForbiddenException(
-        `Executor version ${data.version} is below the required minimum ${minVersion} (EXECUTOR_MIN_VERSION). ` +
-          `Upgrade the executor: re-run the install wizard / install-cmd, or download the latest executor artifact.`,
-      );
+      throw new AppError("EXECUTOR_VERSION_TOO_LOW", {
+        version: data.version,
+        minVersion,
+      });
     }
     if (minVersion && !data.version) {
       this.logger.warn(
@@ -1664,11 +1890,25 @@ export class ExecutorService implements OnModuleInit {
     }
     // Capture the pre-register row: register() overwrites executorStartupId
     // and the row's tokenHash is select:false, so read it explicitly here.
-    const prior = await this.repo
-      .createQueryBuilder("e")
-      .addSelect("e.tokenHash")
-      .where("e.address = :address", { address: data.address })
-      .getOne();
+    // ADR-017 阶段 3：与 register() 同源的身份解析——**指纹优先**，address 兜底。
+    // 换 IP 的重注册（同指纹）必须能命中旧行，否则 N4 的幂等语义退化（每次
+    // 漂移都 rotate 一次 token）；legacy 执行器（无指纹）仍按 address 定位。
+    const priorFingerprint = normalizeDeviceFingerprint(data.deviceFingerprint);
+    let prior: Executor | null = null;
+    if (priorFingerprint) {
+      prior = await this.repo
+        .createQueryBuilder("e")
+        .addSelect("e.tokenHash")
+        .where("e.deviceFingerprint = :fp", { fp: priorFingerprint })
+        .getOne();
+    }
+    if (!prior) {
+      prior = await this.repo
+        .createQueryBuilder("e")
+        .addSelect("e.tokenHash")
+        .where("e.address = :address", { address: data.address })
+        .getOne();
+    }
     const executor = await this.register(data);
     const incomingStartedAt = this.parseExecutorStartedAt(data.restartedAt);
     const incomingStartupId = data.startupId?.trim() || null;
@@ -1875,7 +2115,9 @@ export class ExecutorService implements OnModuleInit {
     this.logger.warn(
       `Dispatch blocked: failureReason=${ExecutionFailureReason.INTERPRETER_UNAVAILABLE} ${message}`,
     );
-    throw new Error(message);
+    throw new AppError("NO_EXECUTOR_INTERPRETER_MISMATCH", {
+      detail: message,
+    });
   }
 
   async heartbeat(
@@ -1905,8 +2147,54 @@ export class ExecutorService implements OnModuleInit {
       deviceFingerprint?: string | null;
     },
   ) {
-    const e = await this.repo.findOne({ where: { address } });
-    if (!e) throw new NotFoundException("Executor not found");
+    // ADR-017 阶段 3：身份解析——**指纹优先**（稳定安装身份），`address` 兜底。
+    // 指纹路径承担两件注册路径做不了的事：
+    //  1) 换 IP 后注册未到（竞态）时，按指纹命中旧行并把 address 补新——心跳
+    //     不因「新地址查无此行」抛 NotFound（此前换 IP 即断心跳 → 旧行被 sweep
+    //     判死 = 用户看到「旧设备离线」的直接成因）；
+    //  2) pull 模式同地址多行并存时，按指纹命中**自己的行**（按地址查会查错行）。
+    const incomingFingerprint = normalizeDeviceFingerprint(
+      metrics.deviceFingerprint,
+    );
+    let e: Executor | null = null;
+    if (incomingFingerprint) {
+      e = await this.repo.findOne({
+        where: { deviceFingerprint: incomingFingerprint },
+      });
+    }
+    if (!e) {
+      e = await this.repo.findOne({ where: { address } });
+      if (!e) throw new AppError("EXECUTOR_NOT_FOUND");
+    }
+    // 重启恢复按**漂移前**地址找 RUNNING 执行记录（`task_executions.
+    // executorAddress` 记的是派发当时的地址）。
+    //
+    // 顺序纪律（与 register() 的 :1613 同源，勿调换）：本赋值必须在下面「采纳
+    // 漂移」**之前**执行。放在之后会取到**新**地址，而漂移前派发的 RUNNING 行
+    // 记的是**旧**地址 —— 按新地址一条都命中不了，那些行永远不被恢复（正是本
+    // ADR 要修的「换 IP 后历史断裂」在重启恢复面上的复现）。常态下
+    // e.address === address，取值与引入前逐字节一致。
+    const recoveryAddress = e.address;
+    if (e.address !== address) {
+      // 地址漂移：同一安装换网/换 IP（正常现象，ADR-017 §2）。
+      // push 不抢占他人地址：目标地址被另一份安装占用 → 保留原地址、仅 warn
+      // （心跳是 30s 高频面，409 会打断心跳；注册面才是冲突裁决处）；
+      // pull 地址只是标签，直接采纳（ADR-017 §5）。
+      if (e.dispatchMode !== "pull") {
+        const owner = await this.repo.findOne({ where: { address } });
+        if (owner && owner.id !== e.id) {
+          this.logger.warn(
+            `Heartbeat from ${address} not adopted for executor ${e.id} ` +
+              `(install ${incomingFingerprint.slice(0, 12)}…): address occupied ` +
+              `by executor ${owner.id}; keeping ${e.address}`,
+          );
+        } else {
+          e.address = address;
+        }
+      } else {
+        e.address = address;
+      }
+    }
     const incomingStartedAt = this.parseExecutorStartedAt(metrics.restartedAt);
     const incomingStartupId = metrics.startupId?.trim() || null;
     // ARCH-34 P0：address 冲突观测（heartbeat 入口，30s 高频）。
@@ -1918,9 +2206,6 @@ export class ExecutorService implements OnModuleInit {
     // 心跳是**主要**的重复观测点（register 只在启动与补注册时发生），也是
     // 「同一 address 上两个指纹」最容易先暴露的地方——两台机器并存时它们各自
     // 30s 一次的心跳都会走到这里。
-    const incomingFingerprint = normalizeDeviceFingerprint(
-      metrics.deviceFingerprint,
-    );
     this.observeDeviceFingerprint(address, incomingFingerprint, "heartbeat");
     const hasStartupBaseline = Boolean(
       e.executorStartupId || e.executorStartedAt,
@@ -1968,15 +2253,17 @@ export class ExecutorService implements OnModuleInit {
         incomingStartupId,
         e.executorStartedAt,
       );
-      void this.failRunningExecutionsAfterRestart(address, baseline).catch(
-        (err: unknown) => {
-          this.logger.warn(
-            `Restart recovery for ${address} failed asynchronously: ${
-              err instanceof Error ? err.message : String(err)
-            }. Stale sweep will pick up remaining RUNNING rows.`,
-          );
-        },
-      );
+      void this.failRunningExecutionsAfterRestart(
+        recoveryAddress,
+        baseline,
+        e.id,
+      ).catch((err: unknown) => {
+        this.logger.warn(
+          `Restart recovery for ${recoveryAddress} failed asynchronously: ${
+            err instanceof Error ? err.message : String(err)
+          }. Stale sweep will pick up remaining RUNNING rows.`,
+        );
+      });
       // NETOPT-E P3-1: 重启分支同样清零内存 runningTaskCount（与 register
       // 分支 :870/:877 对齐）。异步恢复会批量减槽落库，但本心跳后续
       // save(e) 会把内存里的旧高值原样写回——用旧值覆盖恢复结果，派发
@@ -1988,7 +2275,11 @@ export class ExecutorService implements OnModuleInit {
       // （显示比真值少 1）。若本次心跳带真实上报值，下方采纳段仍会覆盖。
       e.reservedSlots = 0;
     } else if (shouldRecoverMissingBaseline) {
-      await this.failRunningExecutionsAfterRestart(address, incomingStartedAt);
+      await this.failRunningExecutionsAfterRestart(
+        recoveryAddress,
+        incomingStartedAt,
+        e.id,
+      );
       // NETOPT-F P2-F2: missing-baseline 分支与 register 同型分支（:908）对称
       // ——异步恢复会批量减槽落库，但本心跳后续 save(e) 会把内存里的旧高值
       // 原样写回，用旧值覆盖恢复结果，闸门 runningTaskCount 虚高、欠派。
@@ -2427,7 +2718,7 @@ export class ExecutorService implements OnModuleInit {
 
   async findOne(id: string): Promise<Executor> {
     const executor = await this.repo.findOne({ where: { id } });
-    if (!executor) throw new NotFoundException("Executor not found");
+    if (!executor) throw new AppError("EXECUTOR_NOT_FOUND");
     return executor;
   }
 
@@ -2461,9 +2752,9 @@ export class ExecutorService implements OnModuleInit {
         data.maxConcurrentTasks !== null &&
         !ExecutorService.isAdoptableMaxConcurrentTasks(data.maxConcurrentTasks)
       ) {
-        throw new BadRequestException(
-          `maxConcurrentTasks must be an integer in 1..10000, or null to clear the cap (got ${String(data.maxConcurrentTasks)})`,
-        );
+        throw new AppError("EXECUTOR_MAX_CONCURRENT_INVALID", {
+          value: String(data.maxConcurrentTasks),
+        });
       }
       executor.maxConcurrentTasks = data.maxConcurrentTasks;
     }
@@ -2486,7 +2777,7 @@ export class ExecutorService implements OnModuleInit {
       !Array.isArray(capabilities) ||
       capabilities.some((cap) => typeof cap !== "string" || !allowed.has(cap))
     ) {
-      throw new BadRequestException("Agent capabilities 含不支持的能力域");
+      throw new AppError("EXECUTOR_AGENT_CAPABILITY_UNSUPPORTED");
     }
     await this.repo.update(
       { id },
@@ -2619,7 +2910,7 @@ export class ExecutorService implements OnModuleInit {
       take: this.candidatePoolSize,
     });
     if (all.length === 0) {
-      throw new ServiceUnavailableException("No online executors available");
+      throw new AppError("NO_AVAILABLE_EXECUTOR_FOR_SELECTION");
     }
 
     let candidates = all;
@@ -2654,14 +2945,14 @@ export class ExecutorService implements OnModuleInit {
       this.logger.warn(
         `selectLeastLoaded blocked: failureReason=${ExecutionFailureReason.INTERPRETER_UNAVAILABLE} ${interpreterFiltered.message}`,
       );
-      throw new ServiceUnavailableException(interpreterFiltered.message);
+      throw new AppError("NO_EXECUTOR_INTERPRETER_MISMATCH", {
+        detail: interpreterFiltered.message,
+      });
     }
     candidates = interpreterFiltered.kept;
 
     if (candidates.length === 0) {
-      throw new ServiceUnavailableException(
-        "No online executors match the requested group/tags/runtime",
-      );
+      throw new AppError("NO_EXECUTOR_MATCHING_FILTERS");
     }
 
     // Weighted scoring (see executor-score.util.ts for the formula and units):
@@ -2679,15 +2970,13 @@ export class ExecutorService implements OnModuleInit {
       .map((e) => ({
         executor: e,
         score: computeExecutorLoadScore(e, {
-          estimatedDurations: estimatedDurations.get(e.address) ?? [],
+          estimatedDurations: estimatedDurations.forExecutor(e),
         }),
       }))
       .sort((a, b) => a.score - b.score);
 
     if (scored.length === 0) {
-      throw new ServiceUnavailableException(
-        "No available executor — all online executors are at maximum capacity",
-      );
+      throw new AppError("NO_EXECUTOR_CAPACITY_AVAILABLE");
     }
     // E-2（中台↔执行器深度审查）：与 dispatch 同款结构化决策日志——「为什么选
     // 这台、过滤掉多少、评分面多大、落选者差多少」可回溯。opts 恒为可选尾参，
@@ -2719,12 +3008,17 @@ export class ExecutorService implements OnModuleInit {
    * CORE-05: 批量读取候选执行器当前 RUNNING 任务的预估时长集合（秒）。
    * 任何失败（查询异常/行丢失）按"无估时"降级 → longTaskPenalty=0，
    * 评分退化为旧公式，调度永不因可观测性辅助面中断。
+   *
+   * ADR-017 阶段 3（决策 §7）：返回**取值器**而非裸 Map——阶段 3 起样本池有两
+   * 个来源（新派发执行行按行身份、存量行只能按地址），调用方要的是「这台执行器
+   * 的样本」而不是「某个键的样本」。把两个来源的合并收进本方法，调用方无从漏掉
+   * 其中一支（此前消费方只 `get(address)`，正是漏改的形态）。
    */
   private async estimatedDurationsByExecutor(
     executors: Executor[],
-  ): Promise<Map<string, EstimatedDurations>> {
+  ): Promise<EstimatedDurationsIndex> {
     const active = executors.filter((e) => e.runningTaskCount > 0);
-    if (active.length === 0) return new Map();
+    if (active.length === 0) return EMPTY_ESTIMATED_INDEX;
 
     try {
       const addresses = [...new Set(active.map((e) => e.address))];
@@ -2733,15 +3027,20 @@ export class ExecutorService implements OnModuleInit {
       // 一次无界读。估时只服务于 longTaskPenalty（0.1 权重的次级评分信号），
       // 每地址采样 50 行近似即可（无 order = 采样近随机，均值无偏）；总行数
       // 另加 5000 硬顶防病态候选集。截断只损失样本量，评分语义近似保持。
+      //
+      // ADR-017 阶段 3（决策 §7 读面富化）：同时取 `executorId` 以便**按行身份
+      // 归组**——阶段 3 起同址多行并存（ADR-017 §5），纯按地址归组会把两台的
+      // 在跑执行混成一个样本池，于是两台都拿到同一份（被对方污染过的）估时，
+      // longTaskPenalty 对两台同时偏大或偏小。
       const running = await this.execRepo.find({
         where: {
           executorAddress: In(addresses),
           status: ExecutionStatus.RUNNING,
         },
-        select: { executorAddress: true, taskId: true },
+        select: { executorAddress: true, executorId: true, taskId: true },
         take: Math.min(addresses.length * 50, 5000),
       });
-      if (running.length === 0) return new Map();
+      if (running.length === 0) return EMPTY_ESTIMATED_INDEX;
 
       const ids = [...new Set(running.map((r) => r.taskId))];
       const rows = await this.taskRepo.find({
@@ -2749,15 +3048,29 @@ export class ExecutorService implements OnModuleInit {
         select: { id: true, estimatedDurationSec: true },
       });
       const byId = new Map(rows.map((r) => [r.id, r.estimatedDurationSec]));
+      const byExecutorId = new Map<string, EstimatedDurations>();
       const byAddress = new Map<string, EstimatedDurations>();
       for (const row of running) {
-        const durations = byAddress.get(row.executorAddress) ?? [];
+        // 新派发执行行有行身份 → 归到**该行**（无歧义）；
+        // 存量行（迁移 0055 刻意不回填）没有 → 只能归到地址，且同址并存时两台
+        // 会共享这份池。这是**如实**的：那些历史执行在物理上无法归属到行。
+        const [bucket, key] = row.executorId
+          ? ([byExecutorId, row.executorId] as const)
+          : ([byAddress, row.executorAddress] as const);
+        const durations = bucket.get(key) ?? [];
         durations.push(byId.get(row.taskId) ?? null);
-        byAddress.set(row.executorAddress, durations);
+        bucket.set(key, durations);
       }
-      return byAddress;
+      return {
+        forExecutor: (executor) => [
+          ...(byExecutorId.get(executor.id) ?? []),
+          // 地址支只含**存量行**样本，故新派发执行器（有自己的 id 池）不会
+          // 因同址并存而读到别人的数据；反之存量执行器能拿回自己的历史近似。
+          ...(byAddress.get(executor.address) ?? []),
+        ],
+      };
     } catch {
-      return new Map();
+      return EMPTY_ESTIMATED_INDEX;
     }
   }
 
@@ -3129,14 +3442,25 @@ export class ExecutorService implements OnModuleInit {
         // No matching failureReason enum for "pinned target deleted/missing"
         // (EXECUTOR_OFFLINE would be a lie — it never registered here), so
         // the worker's message classifier leaves it UNKNOWN by design.
-        throw new Error(`Pinned executor ${task.executorId} not found`);
+        throw new AppError("PINNED_EXECUTOR_NOT_FOUND", {
+          executorId: task.executorId,
+        });
       }
       if (pinned.status !== ExecutorStatus.ONLINE) {
-        // Message shape matches the worker's EXECUTOR_OFFLINE classifier
-        // (task.processor.ts: /executor.*(offline|unavailable)/).
-        throw new Error(
-          `Pinned executor "${pinned.appName}" (${pinned.id}) is offline`,
-        );
+        // ⚠️ 本文案与中台失败分类链是**跨文件耦合**（LANG-ERR-01 复查教训）：
+        // 旧注释写「Message shape matches the worker's EXECUTOR_OFFLINE classifier
+        // (task.processor.ts: /executor.*(offline|unavailable)/)」——那是**英文**
+        // 形态的判据。文案经 LANG-ZH-01 中文化后，该断言不再成立，而分类链的
+        // 中文支容差（原 20 字符）又短于本文案（执行器→离线 实测 63 字符），
+        // 于是 pinned 离线被执行详情页错报成「脚本错误」（script_error）。
+        // 现分类链中文支容差已放宽到单行 120（见 task.service.ts 该规则注释），
+        // 并由 python-multiversion-write-path.spec.ts 的
+        // 「executor_offline 中文化回归」用例**用码表渲染真实文案**钉住——
+        // 改这里的码或改那边的正则，任一侧漂移都会立刻红。
+        throw new AppError("PINNED_EXECUTOR_OFFLINE", {
+          appName: pinned.appName,
+          executorId: pinned.id,
+        });
       }
       candidates = [pinned];
       dispatchPoolSize = 1;
@@ -3188,9 +3512,9 @@ export class ExecutorService implements OnModuleInit {
       if (task.executorAppName) {
         candidates = all.filter((e) => e.appName === task.executorAppName);
         if (candidates.length === 0) {
-          throw new Error(
-            `No available executor with appName "${task.executorAppName}"`,
-          );
+          throw new AppError("EXECUTOR_APP_NAME_NOT_FOUND", {
+            appName: task.executorAppName,
+          });
         }
         // python_task_multiversion（WS2 · CONTRACT §3.1）：appName 精确匹配是
         // **用户显式点名**（语义接近 pinning，与 executorId 的差别只是按名字
@@ -3288,9 +3612,7 @@ export class ExecutorService implements OnModuleInit {
         // 空转），由 !matched 的统一出口抛 DeploymentConstraintWaitError，
         // 失败消息带上「集合 N 台/在线 M 台/过滤后 0 台」的完整口径。
         if (filtered.length === 0 && deploymentCtx?.mode !== "strict") {
-          throw new Error(
-            "No online executors match the requested group/tags/runtime",
-          );
+          throw new AppError("NO_EXECUTOR_MATCHING_FILTERS");
         }
         candidates = filtered;
       }
@@ -3304,7 +3626,7 @@ export class ExecutorService implements OnModuleInit {
     const withScores = candidates.map((c) => ({
       executor: c,
       score: computeExecutorLoadScore(c, {
-        estimatedDurations: estimatedDurations.get(c.address) ?? [],
+        estimatedDurations: estimatedDurations.forExecutor(c),
       }),
     }));
     // E-2（中台↔执行器深度审查）：占坑前的**评分快照**（occupation 会原地
@@ -3459,9 +3781,7 @@ export class ExecutorService implements OnModuleInit {
             `（running 行先停止），或将 EXECUTOR_DEPLOYMENT_POLICY 切回 prefer`,
         );
       }
-      throw new Error(
-        "No available executor (all candidates are offline or at capacity)",
-      );
+      throw new AppError("NO_DISPATCHABLE_EXECUTOR");
     }
 
     // E-2（中台↔执行器深度审查）：调度决策**结构化日志**——之前只有一行
@@ -3492,6 +3812,11 @@ export class ExecutorService implements OnModuleInit {
       `Dispatching task "${task.name}" to executor ${matched.address} (runningTasks=${matched.runningTaskCount})`,
     );
     execution.executorAddress = matched.address;
+    // ADR-017 阶段 3：同时落**行身份**。`executorAddress` 在 pull 同址多行并存
+    // 时不再唯一（ADR-017 §5），重启恢复/产物归属/互斥占用等按地址匹配的面会
+    // 命中别人的行。executorId 是稳定且唯一的行键（存量行可空 → 那些面回落
+    // 地址匹配，与引入前逐字节一致）。
+    execution.executorId = matched.id;
 
     try {
       // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
@@ -3563,9 +3888,7 @@ export class ExecutorService implements OnModuleInit {
       // 执行器长轮询取件」。入队失败走下方同一 catch（回滚占坑 + 重试语义）。
       if (matched.dispatchMode === "pull") {
         if (!this.pullService) {
-          throw new Error(
-            "Pull dispatch unavailable: ExecutorPullService not wired",
-          );
+          throw new AppError("EXECUTOR_PULL_UNAVAILABLE");
         }
         const endPullSpan = this.tracing?.startSpan(
           execution.traceId,
@@ -3730,16 +4053,16 @@ export class ExecutorService implements OnModuleInit {
       // codeSource=application_zip 但无 applicationId：WS1 写面已互斥校验
       // （CONTRACT §2.1「codeSource=application_zip 时 applicationId 必填」），
       // 走到这里说明是迁移前的存量脏行或外部直写——派发失败，消息明确。
-      throw new Error(
-        `Task "${task.name}" (${task.id}) is codeSource=application_zip but has no applicationId; ` +
-          `cannot resolve packageUrl for dispatch`,
-      );
+      throw new AppError("PACKAGE_URL_APPLICATION_ID_MISSING", {
+        taskName: task.name,
+        taskId: task.id,
+      });
     }
     if (!this.applicationRepo) {
-      throw new Error(
-        `Cannot resolve packageUrl for task "${task.name}" (${task.id}): ` +
-          `Application repository is not wired into ExecutorService`,
-      );
+      throw new AppError("PACKAGE_URL_REPO_UNAVAILABLE", {
+        taskName: task.name,
+        taskId: task.id,
+      });
     }
     // F-08（本轮审计）: 命中未过期的正缓存 → 直接附加，跳过 DB 往返。
     const cached = this.packageUrlCache.get(task.applicationId);
@@ -3761,16 +4084,19 @@ export class ExecutorService implements OnModuleInit {
       select: { id: true, name: true, packageUrl: true, version: true },
     });
     if (!app) {
-      throw new Error(
-        `Cannot resolve packageUrl for task "${task.name}" (${task.id}): ` +
-          `application ${task.applicationId} not found`,
-      );
+      throw new AppError("PACKAGE_URL_APPLICATION_NOT_FOUND", {
+        taskName: task.name,
+        taskId: task.id,
+        applicationId: task.applicationId,
+      });
     }
     if (typeof app.packageUrl !== "string" || app.packageUrl.length === 0) {
-      throw new Error(
-        `Cannot resolve packageUrl for task "${task.name}" (${task.id}): ` +
-          `application "${app.name}" (${app.id}) has no packageUrl configured`,
-      );
+      throw new AppError("PACKAGE_URL_NOT_CONFIGURED", {
+        taskName: task.name,
+        taskId: task.id,
+        appName: app.name,
+        applicationId: app.id,
+      });
     }
     const packageVersion =
       typeof app.version === "string" && app.version.length > 0
@@ -4100,15 +4426,13 @@ export class ExecutorService implements OnModuleInit {
       }
       filtered = interpreterFiltered.kept;
       if (filtered.length === 0) {
-        throw new Error(
-          "No online executors match the requested group/tags/runtime",
-        );
+        throw new AppError("NO_EXECUTOR_MATCHING_FILTERS");
       }
       candidates = filtered;
     }
 
     if (candidates.length === 0) {
-      throw new Error("No available executor for broadcast dispatch");
+      throw new AppError("NO_BROADCAST_EXECUTOR");
     }
 
     this.logger.log(
@@ -4141,9 +4465,7 @@ export class ExecutorService implements OnModuleInit {
         // ARCH-32（ADR-015）: pull 执行器入队（不拨入站连接），其余走 push。
         if (executor.dispatchMode === "pull") {
           if (!this.pullService) {
-            throw new Error(
-              "Pull dispatch unavailable: ExecutorPullService not wired",
-            );
+            throw new AppError("EXECUTOR_PULL_UNAVAILABLE");
           }
           await this.pullService.enqueue(executor.id, {
             executionId: execution.id,
@@ -4250,9 +4572,10 @@ export class ExecutorService implements OnModuleInit {
     }
 
     if (successes.length === 0) {
-      throw new Error(
-        `Broadcast failed on all ${candidates.length} executors: ${failures.join("; ")}`,
-      );
+      throw new AppError("BROADCAST_DISPATCH_ALL_FAILED", {
+        count: candidates.length,
+        failures: failures.join("; "),
+      });
     }
 
     return successes;
@@ -4788,7 +5111,9 @@ export class ExecutorService implements OnModuleInit {
       // 与手动删除同款卫生：清 pull 队列与派生缓存（best-effort）。
       for (const exec of deletable) {
         await this.pullService?.clear(exec.id).catch(() => undefined);
-        this.issuedTokenCache.delete(exec.address);
+        // ADR-017 阶段 3：不再裸 delete(address) —— issuedTokenCache 的键是
+        // 定位身份（指纹优先），按 address 删不到指纹键条目。evictLocalTokenCaches
+        // 已按值里的 address 回扫两张派生缓存，此处单行删除反而是漏删的来源。
         this.evictLocalTokenCaches(exec.address);
       }
     }
@@ -4802,7 +5127,7 @@ export class ExecutorService implements OnModuleInit {
    */
   async rotateToken(id: string, reason?: string): Promise<{ token: string }> {
     const executor = await this.repo.findOne({ where: { id } });
-    if (!executor) throw new NotFoundException("Executor not found");
+    if (!executor) throw new AppError("EXECUTOR_NOT_FOUND");
     const rawToken = randomBytes(32).toString("hex");
     executor.tokenHash = await bcrypt.hash(rawToken, 12);
     await this.repo.save(executor);
@@ -4830,11 +5155,22 @@ export class ExecutorService implements OnModuleInit {
     // exactly this token (issueToken's possession re-verification still
     // guards against resurrecting a later rotated-away plaintext), making
     // "rotate in the UI" mean "the online executor adopts THIS token".
-    this.rememberIssuedToken(executor.address, {
-      token: rawToken,
-      startupId: executor.executorStartupId ?? null,
-      issuedAt: Date.now(),
-    });
+    //
+    // ADR-017 阶段 3：种入的键必须与 issueToken 读取的键**同口径**（定位身份，
+    // 指纹优先）——否则「UI 轮换 → 执行器自愈 POST /token」会读到另一条键，
+    // 找不到刚种入的明文 → bcrypt 复核失败 → 又轮换一次（本注释开头描述的
+    // 那个双轮换缺陷会在同址多行的场景重新出现）。行内指纹是 NOT NULL 列
+    // （真实指纹或 legacy 兜底键），legacy 键经 normalize 回落 address，与
+    // issueToken 的缺省分支同形。
+    this.rememberIssuedToken(
+      this.tokenCacheIdentityKey(executor.address, executor.deviceFingerprint),
+      {
+        token: rawToken,
+        startupId: executor.executorStartupId ?? null,
+        issuedAt: Date.now(),
+        address: executor.address,
+      },
+    );
     this.logger.log(`Rotated token for executor ${id} (${executor.address})`);
     // AUTH-05: rotate-token is a high-risk operation — audit it (with the
     // admin-supplied reason when present). Best-effort, after the mutation.
@@ -4865,6 +5201,16 @@ export class ExecutorService implements OnModuleInit {
     address: string;
     appName: string;
     startupId?: string | null;
+    // ADR-017 阶段 3（复查补口）：稳定设备指纹——**定位键**。两端
+    // `/executors/token` 均已随载荷上报（node middleware/auth.ts::fetchToken、
+    // python auth.py::_fetch_token），控制器经 F-7 白名单转发。
+    //
+    // 缺了它会发生什么（本补口要修的缺陷）：`register({address, appName})` 的
+    // 指纹入口拿到 null → 回落 `findOne({where:{address}})` → pull 同址多行时
+    // **任取一行** → `rotateToken(该行.id)`。即合法执行器的换发请求会去**轮换
+    // 另一台执行器的令牌**（那台随即 401，其执行卡在 RUNNING 直到 stale sweep）。
+    // 这是 30min 轮换 + 401 自愈的实际通路，故不是理论问题。
+    deviceFingerprint?: string | null;
   }): Promise<{ token: string; tokenHash: string | null }> {
     // Keep the existing register-on-token semantics (creates the row for
     // unknown addresses, refreshes ONLINE/lastHeartbeat). Deliberately NOT
@@ -4874,10 +5220,19 @@ export class ExecutorService implements OnModuleInit {
     const executor = await this.register({
       address: data.address,
       appName: data.appName,
+      // 指纹是定位键（非重启信号），与 startupId/restartedAt 的取舍不同：
+      // 转发它只影响「定位到哪一行」，不引入重启检测路径。
+      deviceFingerprint: data.deviceFingerprint,
     });
     const incomingStartupId = data.startupId?.trim() || null;
     const now = Date.now();
-    const cached = this.issuedTokenCache.get(data.address);
+    // ADR-017 阶段 3：缓存键取**定位身份**（指纹优先）——同址两行各自成键，
+    // 不会把第一台的明文令牌幂等回给第二台（见 issuedTokenCache 字段注释）。
+    const identityKey = this.tokenCacheIdentityKey(
+      data.address,
+      data.deviceFingerprint,
+    );
+    const cached = this.issuedTokenCache.get(identityKey);
     // N34: an entry past the TTL is treated as stale (rotate fresh) even if
     // the startupId still matches — same fail-safe as a cold cache.
     if (
@@ -4894,29 +5249,33 @@ export class ExecutorService implements OnModuleInit {
         // Verify the cached plaintext is STILL the token behind the stored
         // hash before handing it out again (an admin-UI rotation must not
         // be resurrected by this endpoint).
-        const stored = await this.repo
-          .createQueryBuilder("e")
-          .addSelect("e.tokenHash")
-          .where("e.address = :address", { address: data.address })
-          .getOne();
-        if (
-          stored?.tokenHash &&
-          (await bcrypt.compare(cached.token, stored.tokenHash))
-        ) {
+        //
+        // ADR-017 阶段 3：复核也必须走**同一行身份**——`register` 已把行解析
+        // 收敛到 `executor`，用它取哈希（此前的裸 address 查询在同址多行时
+        // 会读到别人的哈希，导致「缓存的明文与自己那行不匹配」→ 误判为需要
+        // 轮换 → 无谓轮换风暴）。
+        const stored = await this.getCallbackSecretById(executor.id);
+        if (stored && (await bcrypt.compare(cached.token, stored))) {
           this.logger.debug(
-            `Idempotent token reuse for executor ${data.address} (${incomingStartupId !== null ? "same startupId" : "legacy fetch in reuse window"}); no rotation`,
+            `Idempotent token reuse for executor ${executor.id} (${data.address}) (${
+              incomingStartupId !== null
+                ? "same startupId"
+                : "legacy fetch in reuse window"
+            }); no rotation`,
           );
-          return { token: cached.token, tokenHash: stored.tokenHash };
+          return { token: cached.token, tokenHash: stored };
         }
       }
     }
     const { token } = await this.rotateToken(executor.id);
-    // rotateToken() evicted the N26 cache, so this reads the FRESH hash.
-    const tokenHash = await this.getCallbackSecretByAddress(data.address);
-    this.rememberIssuedToken(data.address, {
+    // ADR-017 阶段 3：按**行身份**取回显哈希（pull 同址多行时 address 有歧义；
+    // rotateToken 刚清过缓存，故这是新哈希）。
+    const tokenHash = await this.getCallbackSecretById(executor.id);
+    this.rememberIssuedToken(identityKey, {
       token,
       startupId: incomingStartupId,
       issuedAt: now,
+      address: data.address,
     });
     return { token, tokenHash };
   }
@@ -4928,11 +5287,14 @@ export class ExecutorService implements OnModuleInit {
   /** Admin: manually remove an executor record by ID */
   async removeById(id: string, reason?: string): Promise<void> {
     const executor = await this.repo.findOne({ where: { id } });
-    if (!executor) throw new NotFoundException("Executor not found");
+    if (!executor) throw new AppError("EXECUTOR_NOT_FOUND");
     await this.repo.remove(executor);
     // R9: drop the idempotent-issuance plaintext cache entry with the row —
     // a re-registered address must get a fresh token, never the removed one.
-    this.issuedTokenCache.delete(executor.address);
+    //
+    // ADR-017 阶段 3：不再裸 delete(address) —— issuedTokenCache 的键是定位
+    // 身份（指纹优先），按 address 删不到指纹键条目。下面的
+    // evictLocalTokenCaches 已按值里的 address 回扫两张派生缓存。
     // 同理清掉该地址的 callback 密钥候选与 F-5 正缓存：行都没了，旧 token
     // 更不能继续被接受（否则删除执行器后旧凭据还有 60s 可用窗口）。
     // ARCH-31 §3.7：跨实例广播同 rotate——删除是更强的撤销，别的实例也必须
@@ -4971,7 +5333,7 @@ export class ExecutorService implements OnModuleInit {
     pendingPullItems: number;
   }> {
     const executor = await this.repo.findOne({ where: { id } });
-    if (!executor) throw new NotFoundException("Executor not found");
+    if (!executor) throw new AppError("EXECUTOR_NOT_FOUND");
     return {
       appName: executor.appName,
       address: executor.address,
@@ -5045,12 +5407,180 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
+   * ADR-017 阶段 3：**机器面身份解析的单一入口**——指纹优先，address 兜底。
+   *
+   * 为什么必须收敛到一个方法：阶段 3 把 `uq_executors_address` 收窄为 partial
+   * （仅 push 行），pull 模式**允许同地址多行并存**（ADR-017 §5）。此时任何
+   * 「按 address 取一行」的调用都可能是**别人的行**——鉴权会校验错 tokenHash、
+   * pull 会去拉错队列、回调会取错 HMAC 密钥。此前只有 heartbeat 传了指纹，
+   * 其余 9 个机器面调用点仍在裸按地址查（审查确认的 P0 缺口）。
+   *
+   * 语义：
+   * - 传入合法指纹 → 按指纹定位（跨重启稳定，且 pull 同址多行时**唯一定位**）；
+   * - 指纹缺省/非法（legacy 执行器、采集失败）→ 回落 address；
+   * - **地址命中多行且无指纹可判** → 返回 null（调用方 fail-closed）。
+   *   不能任取一行：取错行会让 A 的凭据被用来操作 B 的行。legacy 执行器在
+   *   「同址多行」这个状态下本就无法自证是哪一台——拒绝比猜错安全。
+   *   单行部署（引入本改动前的全部现实形态）行为与原来逐字节一致。
+   *
+   * @param opts.withTokenHash 为 true 时一并取出 `tokenHash`（select:false 列）。
+   */
+  private async resolveExecutorRow(
+    address: string,
+    deviceFingerprint?: string | null,
+    opts: { withTokenHash?: boolean } = {},
+  ): Promise<Executor | null> {
+    const fp = normalizeDeviceFingerprint(deviceFingerprint);
+    const build = () => {
+      const qb = this.repo.createQueryBuilder("e");
+      if (opts.withTokenHash) qb.addSelect("e.tokenHash");
+      return qb;
+    };
+    if (fp) {
+      const byFingerprint = await build()
+        .where("e.deviceFingerprint = :fp", { fp })
+        .getOne();
+      if (byFingerprint) return byFingerprint;
+    }
+    const byAddress = await build()
+      .where("e.address = :address", { address })
+      .getMany();
+    if (byAddress.length === 1) return byAddress[0];
+    if (byAddress.length > 1) {
+      // 同地址多行并存且本次未带指纹：无法判定归属。
+      this.logger.warn(
+        `Identity resolution for address "${address}" is ambiguous: ` +
+          `${byAddress.length} executor rows share it and this request carried ` +
+          `no deviceFingerprint, so the row cannot be identified. Refusing ` +
+          `(fail-closed) — upgrade the executor to protocol v3 so it reports ` +
+          `deviceFingerprint, or give it a unique EXECUTOR_ADDRESS_PUBLIC.`,
+      );
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * ADR-017 阶段 3：**同地址任一行**匹配即通过（用于执行回调等「只带地址、
+   * 无法携带指纹」的机器面）。
+   *
+   * 与 {@link validateTokenByAddress} 的分工：
+   * - `validateTokenByAddress` 用于**能带指纹**的面（心跳/注册/pull/config），
+   *   指纹优先、同址多行无指纹时 fail-closed——因为那些面要**定位到具体一行**
+   *   去做副作用（更新计数、拉队列），猜错行比拒绝更糟。
+   * - 本方法用于**只做凭据校验、不需要定位行**的面（回调上报）。此时「同址
+   *   另一行的哈希匹配」仍证明调用方持有该地址上某台执行器的合法凭据——不是
+   *   越权。逐个试全部候选既不会误拒合法执行器，也不放宽任何判定（每个候选都
+   *   走完整 bcrypt/共享 token 比对）。
+   *
+   * 单行地址（引入本改动前的全部现实形态）行为与原来逐字节一致。
+   */
+  async validateTokenByAddressAnyRow(
+    address: string,
+    presented: string,
+  ): Promise<boolean> {
+    if (!presented) return false;
+    if (!address) return false;
+    const rows = await this.repo
+      .createQueryBuilder("e")
+      .addSelect("e.tokenHash")
+      .where("e.address = :address", { address })
+      .limit(ExecutorService.MAX_CALLBACK_SECRET_CANDIDATES)
+      .getMany();
+    for (const row of rows) {
+      if (!row.tokenHash) continue;
+      // 每个候选都走完整比对；任一命中即持有该地址上某台的凭据。
+      if (await bcrypt.compare(presented, row.tokenHash)) {
+        return true;
+      }
+    }
+    // 回退共享 token（与原实现同序：per-executor 优先，共享兜底）。
+    const shared = await this.getSharedToken();
+    if (shared.length === 0) return false;
+    const sharedBuf = Buffer.from(shared, "utf8");
+    const presentedBuf = Buffer.from(presented, "utf8");
+    if (sharedBuf.length !== presentedBuf.length) return false;
+    return timingSafeEqual(sharedBuf, presentedBuf);
+  }
+
+  /**
+   * ADR-017 阶段 3（协议 v6，方案 C 补口）：按**回调自报的指纹**解析行 id。
+   *
+   * 用途见 `ExecutionCallbackController` 的「行身份三级阶梯」注释：指纹是回调
+   * 面的第一级归属依据，补上「共享令牌不绑定任何行」的缺口。
+   *
+   * 语义（**刻意极简**）：
+   * - 规范化（64 位小写十六进制，与 register/heartbeat 同一入口）；缺省/非法
+   *   → 直接返回 null（= 未上报），**不抛错**——回调主链绝不能因一个可选字段
+   *   的形态问题而失败（兼容性红线：旧执行器/采集失败/SDK 调用方都可能不带它）。
+   * - 查库按 `deviceFingerprint` 命中行 → 返回其 id；查不到（行已被
+   *   cleanupOfflineExecutors 删除，或指纹从未落库）→ null，由下一级承接。
+   * - **不做鉴权判定**：指纹是自报值，本方法只回答「这个自报值对应哪一行」，
+   *   是否接受该回调仍由 task.service 的行身份判据与鉴权链决定。
+   */
+  async resolveExecutorIdByFingerprint(
+    deviceFingerprint?: string | null,
+  ): Promise<string | null> {
+    const fp = normalizeDeviceFingerprint(deviceFingerprint);
+    if (!fp) return null;
+    const row = await this.repo.findOne({
+      where: { deviceFingerprint: fp },
+      select: { id: true },
+    });
+    return row?.id ?? null;
+  }
+
+  /**
+   * ADR-017 阶段 3（复查补口）：解析**所持凭据属于哪一行**。
+   *
+   * 与 {@link validateTokenByAddressAnyRow} 的分工：后者只回答「这个令牌能不
+   * 能通过」，本方法回答「它属于哪一行」——回调面需要后者来做行身份判定
+   * （同址多行并存时地址字符串不再能证明是同一台机器，见 task.service 的
+   * 回调闸与迁移 1790000000055 的类注释）。
+   *
+   * 语义：
+   * - 逐行 bcrypt 比对，**返回第一个匹配行的 id**；
+   * - 无任何行使 per-executor 令牌匹配（共享令牌、或已轮换/无效）→ 返回
+   *   `null`。**null 是"没有行身份可判"而非"校验失败"**：调用方据此回落
+   *   原有判据（共享令牌路径本就不绑定任何行）。校验通过与否仍由调用方
+   *   既有的 verifyExecutorToken / validateTokenByAddressAnyRow 决定，
+   *   本方法**不**作为唯一鉴权闸。
+   * - 上限 `MAX_CALLBACK_SECRET_CANDIDATES`（防病态数据把该面退化成 O(全表)
+   *   的 bcrypt 循环；真实碰撞场景是 2~3 台）。
+   */
+  async resolveCredentialExecutorId(
+    address: string,
+    presented: string,
+  ): Promise<string | null> {
+    if (!address || !presented) return null;
+    const rows = await this.repo
+      .createQueryBuilder("e")
+      .addSelect("e.tokenHash")
+      .where("e.address = :address", { address })
+      .limit(ExecutorService.MAX_CALLBACK_SECRET_CANDIDATES)
+      .getMany();
+    for (const row of rows) {
+      if (!row.tokenHash) continue;
+      if (await bcrypt.compare(presented, row.tokenHash)) return row.id;
+    }
+    return null;
+  }
+
+  /**
    * SEC-03: Validate executor token by address (used for heartbeat/register validation).
    * Supports both per-executor dynamic tokens and the legacy shared token.
+   *
+   * ADR-017 阶段 3：可选 `deviceFingerprint` 参数——提供时**先按指纹定位行**
+   * （命中即校验该行 token），再回落到 address 定位。必要性：pull 模式允许
+   * 同地址多行并存（ADR-017 §5），纯按 address 定位会把第二台的心跳/回调校验
+   * 到第一台的行上；且换 IP 后注册未到（竞态）时，指纹路径让心跳仍能命中自己
+   * 的行。legacy 执行器（不传指纹）行为与引入前逐字节一致；**唯一致命例外**是
+   * 「同址多行 + 无指纹」——那时 fail-closed 拒绝（见 resolveExecutorRow）。
    */
   async validateTokenByAddress(
     address: string,
     presented: string,
+    deviceFingerprint?: string | null,
   ): Promise<boolean> {
     // 真机冒烟（round-16）：无 Authorization 头的心跳（presented=undefined）
     // 曾在 Buffer.from 处抛 500——未携带凭据就是未通过，直接 false（fail-closed）
@@ -5058,8 +5588,13 @@ export class ExecutorService implements OnModuleInit {
     // F-5: positive-result cache — a repeated (address, token) pair within the
     // TTL skips the bcrypt compare entirely. Negative results are never cached
     // (a legitimate executor rotating its token must immediately succeed).
+    // ADR-017 阶段 3：缓存键取「定位身份」——指纹优先（pull 同地址多行时
+    // 地址键会把两台的成功结果混在一起，指错行）；驱逐仍按值里的 address
+    // 扫描，语义不变（多一行同地址的失效窗口可接受）。与 issuedTokenCache /
+    // callbackSecretCache 共用 tokenCacheIdentityKey，杜绝三张表口径漂移。
+    const identityKey = this.tokenCacheIdentityKey(address, deviceFingerprint);
     const cacheKey = createHash("sha256")
-      .update(`${address}|${presented}`)
+      .update(`${identityKey}|${presented}`)
       .digest("hex");
     const entry = this.tokenValidationCache.get(cacheKey);
     const now = Date.now();
@@ -5070,12 +5605,11 @@ export class ExecutorService implements OnModuleInit {
       return true;
     }
 
-    // First try to validate against per-executor token
-    const executor = await this.repo
-      .createQueryBuilder("e")
-      .addSelect("e.tokenHash")
-      .where("e.address = :address", { address })
-      .getOne();
+    // First try to validate against per-executor token.
+    // ADR-017 阶段 3：统一走 resolveExecutorRow（指纹优先 + 同址多行 fail-closed）。
+    const executor = await this.resolveExecutorRow(address, deviceFingerprint, {
+      withTokenHash: true,
+    });
 
     if (executor && executor.tokenHash) {
       const isValid = await bcrypt.compare(presented, executor.tokenHash);
@@ -5099,6 +5633,45 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
+   * ADR-017 阶段 3：**同地址全部行的**回调密钥候选（去重、非空）。
+   *
+   * 为什么需要「全部」而不是「第一行」：pull 模式允许同地址多行并存（ADR-017
+   * §5），而 `task_executions.executorAddress` 只记地址、不记行身份——回调面
+   * 无法从执行行反推出究竟是哪一台。按地址取第一行会拿到**别人的** tokenHash：
+   * 合法执行器的 v1 HMAC 验签失败 → 401 → 执行卡在 RUNNING 直到 stale sweep。
+   *
+   * HMAC 验签是「拿候选密钥逐个试」，试全部候选**不降低安全性**（每个候选都
+   * 仍须通过完整签名校验，且候选来自同一地址、数量受同址行数约束），但消除了
+   * 错行导致的误拒。签名匹配即证明持有该行凭据，归属由此唯一确定。
+   *
+   * 单行地址（引入本改动前的全部现实形态）返回长度 1 的数组，行为与原来一致。
+   */
+  async getCallbackSecretCandidatesByAddress(
+    address: string,
+  ): Promise<string[]> {
+    if (!address) return [];
+    const rows = await this.repo
+      .createQueryBuilder("e")
+      .addSelect("e.tokenHash")
+      .where("e.address = :address", { address })
+      // 同址并存的合法行数很小（真实碰撞场景是 2~3 台）；设上限防病态数据
+      // 让回调验签退化成 O(全表)。
+      .limit(ExecutorService.MAX_CALLBACK_SECRET_CANDIDATES)
+      .getMany();
+    if (rows.length > 1) {
+      this.logger.debug(
+        `Callback secret resolution for "${address}" returned ${rows.length} ` +
+          `candidate rows (pull-mode duplicate address); all candidates are ` +
+          `tried, ownership is proven by the HMAC match.`,
+      );
+    }
+    const hashes = rows
+      .map((r) => r.tokenHash)
+      .filter((h): h is string => typeof h === "string" && h.length > 0);
+    return [...new Set(hashes)];
+  }
+
+  /**
    * N26 (round-8): the per-executor callback secret candidate.
    *
    * Returns the executor row's bcrypt `tokenHash` string for `address`
@@ -5111,25 +5684,58 @@ export class ExecutorService implements OnModuleInit {
    *
    * Positive results are cached for TOKEN_CACHE_TTL_MS (same pattern as
    * validateTokenByAddress); rotateToken() evicts the entry.
+   *
+   * ADR-017 阶段 3：可选 `deviceFingerprint`——pull 同地址多行并存时按地址取行
+   * 会拿到**别人的** `tokenHash`，导致合法执行器的 v1 HMAC 回调 401（执行卡在
+   * RUNNING 直到 stale sweep）或跨执行器误验通过。传入指纹即唯一定位；
+   * 不传指纹且地址命中多行 → 返回 null（fail-closed，调用方继续试共享密钥）。
+   * 缓存也按指纹分键，避免两台在同址上互相串用缓存结果。
    */
-  async getCallbackSecretByAddress(address: string): Promise<string | null> {
+  async getCallbackSecretByAddress(
+    address: string,
+    deviceFingerprint?: string | null,
+  ): Promise<string | null> {
     const now = Date.now();
-    const cached = this.callbackSecretCache.get(address);
+    // 缓存键 = 定位身份（指纹优先），与 validateTokenByAddress /
+    // issuedTokenCache 同口径（共用 tokenCacheIdentityKey）。
+    const cacheKey = this.tokenCacheIdentityKey(address, deviceFingerprint);
+    const cached = this.callbackSecretCache.get(cacheKey);
     if (cached && now - cached.cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS) {
       return cached.hash;
     }
+    const executor = await this.resolveExecutorRow(address, deviceFingerprint, {
+      withTokenHash: true,
+    });
+    const hash = executor?.tokenHash ?? null;
+    if (hash) {
+      this.callbackSecretCache.set(cacheKey, {
+        hash,
+        cachedAt: now,
+        address,
+      });
+    } else {
+      this.callbackSecretCache.delete(cacheKey);
+    }
+    return hash;
+  }
+
+  /**
+   * ADR-017 阶段 3：按 `executors.id` 取回调密钥候选——注册响应回显用。
+   *
+   * 为什么需要它：pull 模式允许同地址多行并存（ADR-017 §5），
+   * `getCallbackSecretByAddress` 按地址取行会有歧义（返回先匹配行的哈希）；
+   * 注册控制器手里有刚解析出的 `executor.id`，按 id 取是**无歧义**的。
+   *
+   * 不缓存：register 是启动/低频路径，单次 DB 查询可忽略（也免去 rotateToken
+   * 对 id 键的额外驱逐逻辑）。
+   */
+  async getCallbackSecretById(id: string): Promise<string | null> {
     const executor = await this.repo
       .createQueryBuilder("e")
       .addSelect("e.tokenHash")
-      .where("e.address = :address", { address })
+      .where("e.id = :id", { id })
       .getOne();
-    const hash = executor?.tokenHash ?? null;
-    if (hash) {
-      this.callbackSecretCache.set(address, { hash, cachedAt: now });
-    } else {
-      this.callbackSecretCache.delete(address);
-    }
-    return hash;
+    return executor?.tokenHash ?? null;
   }
 
   /** F-5: store a successful validation, evicting expired/oldest entries. */
@@ -5176,17 +5782,25 @@ export class ExecutorService implements OnModuleInit {
   /**
    * N34 (round-9): store an issued plaintext token, evicting expired/oldest
    * entries past the cap — same bounded-growth defense as
-   * rememberTokenValidation (F-5). An OVERWRITE of an existing address skips
+   * rememberTokenValidation (F-5). An OVERWRITE of an existing key skips
    * eviction entirely (the map does not grow): R10's rotateToken seeding and
    * issueToken's startupId refinement both write the same key, and the
    * second write must not evict an unrelated executor's entry.
+   *
+   * ADR-017 阶段 3：`identityKey` 是**定位身份**（指纹优先），`address` 随值
+   * 保存供 `evictLocalTokenCaches` 按 address 回扫（键单向派生，无法前缀删除）。
    */
   private rememberIssuedToken(
-    address: string,
-    entry: { token: string; startupId: string | null; issuedAt: number },
+    identityKey: string,
+    entry: {
+      token: string;
+      startupId: string | null;
+      issuedAt: number;
+      address: string;
+    },
   ): void {
     if (
-      !this.issuedTokenCache.has(address) &&
+      !this.issuedTokenCache.has(identityKey) &&
       this.issuedTokenCache.size >= ExecutorService.TOKEN_ISSUE_CACHE_MAX
     ) {
       for (const [k, v] of this.issuedTokenCache) {
@@ -5205,7 +5819,7 @@ export class ExecutorService implements OnModuleInit {
         this.issuedTokenCache.delete(oldest);
       }
     }
-    this.issuedTokenCache.set(address, entry);
+    this.issuedTokenCache.set(identityKey, entry);
   }
 
   /**
@@ -5229,9 +5843,7 @@ export class ExecutorService implements OnModuleInit {
     // `curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''`
     // ——相对路径 + 空 api-url 的裸机不可用命令。宁可 503 也不返回废命令。
     if (!adminApiUrl) {
-      throw new ServiceUnavailableException(
-        "ADMIN_API_URL is not configured; cannot generate install command",
-      );
+      throw new AppError("EXECUTOR_INSTALL_CMD_NOT_CONFIGURED");
     }
     // DR-01: honor DB rotations rather than handing out a stale env credential.
     const sharedToken = await this.getSharedToken();
@@ -5251,9 +5863,34 @@ export class ExecutorService implements OnModuleInit {
   /**
    * Mark an executor as offline (graceful shutdown).
    */
-  async markOffline(address: string): Promise<void> {
+  /**
+   * 优雅下线（执行器停机时自报）。
+   *
+   * ADR-017 阶段 3：`address` 不再是唯一键。此前实现是
+   * `repo.update({ address }, …)`（无界 WHERE）+ `findOne({address})` 发事件——
+   * pull 同地址多行并存时（ADR-017 §5）会把**另一台仍在线的**执行器一起置
+   * OFFLINE（并从调度候选集里摘掉，直到它下一次心跳 ≤30s 才自愈），且
+   * `executor.offline` 事件可能挂着别人的 appName。
+   *
+   * 现在：先按「定位身份」（指纹优先）解析出**恰好一行**再按 id 更新；解析不到
+   * 唯一行时保守不动（不知道是谁下线，就不能替任何一行改状态）。
+   * 单行部署（引入本改动前的全部现实形态）行为与原来逐字节一致。
+   */
+  async markOffline(
+    address: string,
+    deviceFingerprint?: string | null,
+  ): Promise<void> {
+    const target = await this.resolveExecutorRow(address, deviceFingerprint);
+    if (!target) {
+      this.logger.warn(
+        `markOffline("${address}") could not resolve a unique executor row ` +
+          `(unknown address, or ${deviceFingerprint ? "no fingerprint match" : "multiple rows share it without a deviceFingerprint"}); ` +
+          `refusing to flip any row offline.`,
+      );
+      return;
+    }
     await this.repo.update(
-      { address },
+      { id: target.id },
       // 遗留 P1-24：优雅下线。
       {
         status: ExecutorStatus.OFFLINE,
@@ -5261,13 +5898,13 @@ export class ExecutorService implements OnModuleInit {
         lastHeartbeat: new Date(),
       },
     );
-    this.logger.log(`Executor ${address} marked as offline`);
+    this.logger.log(`Executor ${address} (id=${target.id}) marked as offline`);
     // FEAT-07: 状态落库后发布 executor.offline（优雅停机路径）。
-    const exec = await this.repo.findOne({
-      where: { address },
-      select: { id: true, appName: true, address: true },
+    this.emitExecutorOffline({
+      id: target.id,
+      appName: target.appName,
+      address: target.address,
     });
-    if (exec) this.emitExecutorOffline(exec);
   }
 
   /**
@@ -5290,6 +5927,19 @@ export class ExecutorService implements OnModuleInit {
 
   /**
    * Get task executions for a specific executor.
+   *
+   * ADR-017 阶段 3（决策 §7 读面富化）：本方法**接收的是 executor id**，此前却
+   * 按 `executorAddress` 过滤——阶段 3 起 pull 模式允许同址多行并存（ADR-017 §5），
+   * 于是「查 A 台的执行历史」会把**同址 B 台**的执行一并列出（并且 total 也偏大）。
+   * 这是纯粹的读面错配：调用方本来就持有行身份，没有理由降级成地址。
+   *
+   * 修法：**优先按行身份**（`executorId`）匹配；存量行（迁移 0055 前派发）没有
+   * 该值，故用 `executorId = id OR (executorId IS NULL AND executorAddress = addr)`
+   * 的并集把历史也带回来——刻意**不回填**存量行（地址→行映射在同址多行下有歧义，
+   * 猜错比留 NULL 更糟，见迁移 0055 类注释），因此这里的并集是唯一正确的口径。
+   *
+   * 为什么并集的地址支必须带 `executorId IS NULL`：否则同址并存时 B 台的新派发行
+   * （有 executorId 且指向 B）会被 A 的地址支卷进来，回到修复前的错配。
    */
   async getExecutorExecutions(
     id: string,
@@ -5297,7 +5947,12 @@ export class ExecutorService implements OnModuleInit {
   ): Promise<{ total: number; items: TaskExecution[] }> {
     const executor = await this.findOne(id);
     const [items, total] = await this.execRepo.findAndCount({
-      where: { executorAddress: executor.address },
+      where: [
+        // 新派发：按行身份（无歧义）。
+        { executorId: executor.id },
+        // 存量行：仅当它没有行身份时才按地址回落。
+        { executorId: IsNull(), executorAddress: executor.address },
+      ],
       order: { createdAt: "DESC" },
       take: pagination.pageSize,
       skip: (pagination.page - 1) * pagination.pageSize,
@@ -5329,10 +5984,19 @@ export class ExecutorService implements OnModuleInit {
    * @param address 执行器地址（路由参数，已过令牌校验）
    * @param since   水印：只回终态时间 >= since 的行
    * @param limit   单页条数（钳到 [1, TERMINAL_STATES_MAX_LIMIT]）
+   * @param executorId ADR-017 阶段 3（决策 §7）：调用方**已解析出的行身份**
+   *   （控制器在令牌校验时经 `findByAddress(address, deviceFingerprint)` 得到）。
+   *   提供时按行身份过滤；缺省（控制器未传/解析不到唯一行）→ 回落地址，
+   *   行为与引入前逐字节一致。
+   *
+   *   为什么本方法**不能**自己从 address 推：阶段 3 起同址多行并存（ADR-017 §5），
+   *   地址在本方法内无法指代一行。调用方（控制器）手里恰有更硬的判据——它刚用
+   *   指纹/凭据认证过调用方，知道是哪一行；把结论传进来比在这里重推更准，也避免
+   *   本方法长出第二套身份解析逻辑。
    */
   async getTerminalStates(
     address: string,
-    opts: { since: Date; limit?: number },
+    opts: { since: Date; limit?: number; executorId?: string | null },
   ): Promise<TerminalStatesResponseDto> {
     const limit = Math.min(
       Math.max(1, Math.floor(opts.limit ?? TERMINAL_STATES_DEFAULT_LIMIT)),
@@ -5342,7 +6006,18 @@ export class ExecutorService implements OnModuleInit {
     const rows = await this.execRepo
       .createQueryBuilder("e")
       .select(["e.id", "e.status", "e.endTime", "e.createdAt"])
-      .where("e.executorAddress = :address", { address })
+      // ADR-017 阶段 3（决策 §7 读面富化）：行身份优先，地址兜底且只覆盖存量行。
+      // 并集口径与 getExecutorExecutions / getExecutorMetrics 同源：
+      // `executorId = :id OR (executorId IS NULL AND executorAddress = :addr)`。
+      // 地址支带 IS NULL 守卫是必需的——否则同址另一台的新派发行会被卷进来，
+      // 死信对账会把「别人还没有终态的 executionId」也当成本机已终态（反之亦然）。
+      // 未传 executorId（旧调用方/解析不到行）→ 纯地址，行为与引入前一致。
+      .where(
+        opts.executorId
+          ? `(e.executorId = :executorId OR (e.executorId IS NULL AND e.executorAddress = :address))`
+          : `e.executorAddress = :address`,
+        { address, executorId: opts.executorId ?? undefined },
+      )
       .andWhere("e.status IN (:...statuses)", {
         statuses: TERMINAL_EXECUTION_STATUSES as readonly ExecutionStatus[],
       })
@@ -5430,7 +6105,14 @@ export class ExecutorService implements OnModuleInit {
         "AVG(CASE WHEN e.duration IS NOT NULL THEN e.duration END)",
         "avgDuration",
       )
-      .where("e.executorAddress = :address", { address: executor.address })
+      // ADR-017 阶段 3（决策 §7 读面富化）：本方法接收 executor **id**，聚合口径
+      // 必须与 getExecutorExecutions 同源——阶段 3 起同址多行并存（ADR-017 §5），
+      // 纯按地址会把**同址另一台**的 7 日统计并进来（成功率/均值都被污染）。
+      // 并集口径同上：新派发按行身份，存量行（executorId IS NULL）才按地址回落。
+      .where(
+        "(e.executorId = :executorId OR (e.executorId IS NULL AND e.executorAddress = :address))",
+        { executorId: executor.id, address: executor.address },
+      )
       .andWhere("e.createdAt >= :date", { date: sevenDaysAgo })
       .getRawOne();
 
@@ -5514,6 +6196,19 @@ export class ExecutorService implements OnModuleInit {
       runningTaskCount: number;
     }>
   > {
+    // ADR-017 阶段 3（决策 §7 读面富化）——**本面刻意不改，如实登记为已知歧义**：
+    // `executor_metrics_history` 表**只有** `executorAddress`，没有行身份列
+    // （见 executor-metrics-history.entity.ts：id/executorAddress/cpuUsage/…），
+    // 故同址多行并存时本时间序列在物理上无法拆分到行——不是本方法少写了一个
+    // 谓词，而是数据面缺一列。修复它需要一次迁移（加 `executorId` + 回填策略），
+    // 而回填同样面对「地址→行在多行下有歧义」的问题（与迁移 0055 不回填存量行
+    // 的理由同源）。
+    // 影响面评估（如实）：仅影响**趋势图**（CPU/内存/在跑数的 24h 曲线）在同址
+    // 多行时把两台的数据混画；不影响任何判定（派发闸门/恢复/槽位均不读本表），
+    // 也不影响 7 日统计与执行历史列表（两者已在 getExecutorMetrics /
+    // getExecutorExecutions 改为行身份优先）。
+    // 处置：登记进 ADR-017「相关轨道」，待机队全部上报指纹、同址并存收敛后再随
+    // metrics 表结构一并处理。
     const bucketSeconds = ExecutorService.METRICS_HISTORY_BUCKET_SECONDS;
     const since = new Date(
       Date.now() - ExecutorService.METRICS_HISTORY_WINDOW_MS,

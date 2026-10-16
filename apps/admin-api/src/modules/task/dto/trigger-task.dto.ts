@@ -4,7 +4,7 @@ import { IsInt, IsObject, IsOptional, Min } from "class-validator";
 import { TaskParamsMaxBytes } from "./params-size.constraint";
 export class TriggerTaskDto {
   @ApiPropertyOptional({
-    description: `Trigger params override; serialized size must not exceed 65536 bytes (same limit as the webhook face)`,
+    description: `触发参数覆盖；序列化后体积不得超过 65536 字节（与 webhook 面同一上限）`,
   })
   @IsOptional()
   @IsObject()

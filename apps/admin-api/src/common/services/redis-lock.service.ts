@@ -85,7 +85,7 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     if (client.status === "ready") return client;
     if (client.status === "end") {
       // Client was quit (shutdown) — it will never become ready.
-      throw new Error("Redis client has been closed (status=end)");
+      throw new Error("Redis 客户端已关闭（status=end）");
     }
     await new Promise<void>((resolve, reject) => {
       const onReady = () => {

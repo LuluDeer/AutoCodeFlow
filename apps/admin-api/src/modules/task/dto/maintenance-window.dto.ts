@@ -19,8 +19,8 @@ import { IsCron5Field } from "./cron-expression.constraint";
  */
 export class MaintenanceWindowDto {
   @ApiProperty({
-    description: "窗口开启 Cron（5 字段：分 时 日 月 周）",
     example: "30 2 * * *",
+    description: "窗口开启 Cron（5 字段：分 时 日 月 周）",
   })
   @IsString()
   @IsNotEmpty()
@@ -28,8 +28,8 @@ export class MaintenanceWindowDto {
   start: string;
 
   @ApiProperty({
-    description: "窗口关闭 Cron（5 字段：分 时 日 月 周）",
     example: "0 4 * * *",
+    description: "窗口关闭 Cron（5 字段：分 时 日 月 周）",
   })
   @IsString()
   @IsNotEmpty()

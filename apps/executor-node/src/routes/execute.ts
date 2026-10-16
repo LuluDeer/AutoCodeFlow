@@ -18,6 +18,9 @@ import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../arti
 import { getCurrentToken } from '../middleware/auth';
 import { getCurrentAdminUrl } from '../admin-client';
 import { resolveAdminApiBaseUrl } from '../admin-api-url';
+// ADR-017 阶段 3（协议 v6）：把本执行器指纹注入任务 env，供任务代码经 SDK
+// 直接回调时携带行身份（见下方 AUTOFLOW_DEVICE_FINGERPRINT 注入点）。
+import { getDeviceFingerprint } from '../device-identity';
 import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider, diskUsagePercent, DISK_CRITICAL_PERCENT, pinLogFilePath, unpinLogFilePath } from '../file-logger';
 import { LogStreamPusher } from '../log-stream-pusher';
 import { isExecutorShuttingDown } from '../shutdown-state';
@@ -189,14 +192,14 @@ export async function gitCheckoutTo(
       if (signal?.aborted) throw new ExecutionCancelledError(dest);
       if (r.status !== 0) {
         fs.rmSync(cacheDir, { recursive: true, force: true });
-        throw new Error(`git clone failed: ${r.stderr.trim()}`);
+        throw new Error(`git clone 执行失败：${r.stderr.trim()}`);
       }
     } else {
       const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all', '--unshallow'], { timeout: 60_000, signal });
       if (signal?.aborted) throw new ExecutionCancelledError(dest);
       if (r.status !== 0) {
         // Continuing with a stale cache made tasks silently run old code.
-        throw new Error(`git fetch failed: ${r.stderr.trim()}`);
+        throw new Error(`git fetch 执行失败：${r.stderr.trim()}`);
       }
     }
     fs.mkdirSync(dest, { recursive: true });
@@ -223,7 +226,7 @@ export async function gitCheckoutTo(
         if (signal?.aborted) throw new ExecutionCancelledError(dest);
       }
     }
-    if (r.status !== 0) throw new Error(`git checkout failed (ref: ${ref}): ${r.stderr.trim()}`);
+    if (r.status !== 0) throw new Error(`git checkout 执行失败（ref: ${ref}）：${r.stderr.trim()}`);
   });
 }
 
@@ -279,32 +282,32 @@ export function validateExecutionWorkDir(workDir: string, baseDir: string): stri
   const resolvedWorkDir = path.resolve(workDir);
   const resolvedBase = path.resolve(baseDir);
   if (!resolvedWorkDir.startsWith(resolvedBase + path.sep) && resolvedWorkDir !== resolvedBase) {
-    return 'Invalid executionId: path traversal detected';
+    return '无效的 executionId：检测到路径穿越';
   }
   // SEC-04: Check for symbolic link attacks
   try {
     // Check if the base directory exists and is not a symlink
     const baseStats = fs.lstatSync(resolvedBase);
     if (baseStats.isSymbolicLink()) {
-      return 'Base work directory cannot be a symbolic link';
+      return '基础工作目录不能是符号链接';
     }
 
     // If workDir already exists, check if it's a symlink
     if (fs.existsSync(resolvedWorkDir)) {
       const workDirStats = fs.lstatSync(resolvedWorkDir);
       if (workDirStats.isSymbolicLink()) {
-        return 'Work directory cannot be a symbolic link';
+        return '工作目录不能是符号链接';
       }
 
       // Check the real path to prevent symlink escape
       const realWorkDir = fs.realpathSync(resolvedWorkDir);
       const realBase = fs.realpathSync(resolvedBase);
       if (!realWorkDir.startsWith(realBase + path.sep) && realWorkDir !== realBase) {
-        return 'Symbolic link escape detected';
+        return '检测到符号链接逃逸';
       }
     }
   } catch (err) {
-    return `Path validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`;
+    return `路径校验失败：${err instanceof Error ? err.message : '未知错误'}`;
   }
   return null;
 }
@@ -357,12 +360,12 @@ function pushKilledCallbackOnce(executionId: string, entry: ExecutionEntry): voi
   writeExecMeta(executionId, {
     status: 'failed',
     endTime: Date.now(),
-    errorMessage: 'Killed by admin request',
+    errorMessage: '已按中台请求终止该执行',
   });
   pushCallback({
     executionId,
     status: 'failed',
-    errorMessage: 'Execution killed by admin request',
+    errorMessage: '已按中台请求终止该执行',
     failureReason: 'killed',
     ...(liveExecutions.get(executionId)?.traceparent
       ? { traceparent: liveExecutions.get(executionId)!.traceparent }
@@ -495,12 +498,12 @@ export function acceptExecution(
   // task with 200, only to be SIGKILLed at grace expiry (final callback lost,
   // admin left with a zombie RUNNING row).
   if (isExecutorShuttingDown()) {
-    return { status: 503, payload: { error: 'Executor is shutting down' } };
+    return { status: 503, payload: { error: '执行器正在停机' } };
   }
   if (slotPreReserved) {
     // E-01 预留模式（见 AcceptExecutionOptions）：不再 add——调用方已占位。
     if (Atomics.load(getRunningCountArray(), 0) > config.maxConcurrentTasks) {
-      return { status: 429, payload: { error: 'Executor is at capacity' } };
+      return { status: 429, payload: { error: '执行器已达并发上限' } };
     }
   } else {
     // BUG-03: Use atomic operations to prevent race conditions in capacity checking
@@ -508,7 +511,7 @@ export function acceptExecution(
     const current = Atomics.add(getRunningCountArray(), 0, 1);
     if (current >= config.maxConcurrentTasks) {
       Atomics.sub(getRunningCountArray(), 0, 1);
-      return { status: 429, payload: { error: 'Executor is at capacity' } };
+      return { status: 429, payload: { error: '执行器已达并发上限' } };
     }
   }
 
@@ -537,14 +540,14 @@ export function acceptExecution(
     // 提前拒绝新任务比让任务在准备阶段失败更诚实。statfs 是同步的，accept
     // 本来就是同步快路径；计量失败（返回 0）按无压力放行。
     if (diskUsagePercent() >= DISK_CRITICAL_PERCENT) {
-      return reject(503, 'Executor disk is critically full; new tasks are refused');
+      return reject(503, '执行器磁盘已达临界水位，拒绝接收新任务');
     }
 
     const executionId = body?.executionId;
     const params = body?.params ?? undefined;
 
     if (!executionId || !body.task) {
-      return reject(400, 'executionId and task are required');
+      return reject(400, 'executionId 与 task 为必填项');
     }
     // A3-C：executionId 必须是字符串。非字符串（JSON number 等）此前能穿过上面
     // 的真值判断与 isSafeExecutionIdSegment（RegExp.test 会做隐式类型转换），
@@ -552,15 +555,15 @@ export function acceptExecution(
     // **500**。畸形输入该是 400——协议里 executionId 本就是 string，这里与下面
     // 的协议闸门同向，只是先给一条比 schema 文案更具体的错误。
     if (typeof executionId !== 'string') {
-      return reject(400, 'executionId must be a string');
+      return reject(400, 'executionId 必须是字符串');
     }
     if (!isSafeExecutionIdSegment(executionId)) {
-      return reject(400, 'Invalid executionId: path traversal detected');
+      return reject(400, '无效的 executionId：检测到路径穿越');
     }
     // 重复领取守卫：同一 execution 仍在运行（含排队）时不得二次领取——
     // 二次 Atomics.add 与首个并发路径叠加会失真/双释放。
     if (liveExecutions.has(executionId)) {
-      return reject(400, `Execution ${executionId} is already active on this executor`);
+      return reject(400, `执行 ${executionId} 已在本执行器上活跃`);
     }
 
     const workDir = path.join(config.workDir, executionId);
@@ -577,19 +580,19 @@ export function acceptExecution(
       // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
       const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
       if (!allowedGitPattern.test(gitRepo)) {
-        return reject(400, `gitRepo URL scheme not allowed: ${gitRepo}`);
+        return reject(400, `不允许的 gitRepo URL 协议：${gitRepo}`);
       }
       // S7: SSRF guard — block private IP addresses and localhost
       const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
       if (privateIpPattern.test(gitRepo)) {
-        return reject(400, `gitRepo URL contains restricted address: ${gitRepo}`);
+        return reject(400, `gitRepo URL 指向受限网络地址：${gitRepo}`);
       }
       const ref = (body.task.gitCommit || body.task.gitBranch || 'main') as string;
       // git checkout uses array args (no shell injection), but an option-like
       // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
       // guard deploy.ts applies to its checkout path.
       if (/^-/.test(ref)) {
-        return reject(400, `Invalid git ref: ${ref}`);
+        return reject(400, `无效的 git ref：${ref}`);
       }
     }
     // S16: validate each package name against npm naming rules before any
@@ -600,7 +603,7 @@ export function acceptExecution(
     // null）仍当空数组，向后兼容。
     if (body.task.requirements !== undefined && body.task.requirements !== null
         && !Array.isArray(body.task.requirements)) {
-      return reject(400, 'requirements must be an array of package names');
+      return reject(400, 'requirements 必须是包名数组');
     }
     const reqs: string[] = Array.isArray(body.task.requirements)
       ? (body.task.requirements as string[])
@@ -631,8 +634,8 @@ export function acceptExecution(
         return reject(
           400,
           runtime === 'python'
-            ? `Invalid requirement (options are not allowed): ${pkg}`
-            : `Invalid npm package name: ${pkg}`,
+            ? `无效的 requirement（不允许选项形式）：${pkg}`
+            : `无效的 npm 包名：${pkg}`,
         );
       }
     }
@@ -645,13 +648,13 @@ export function acceptExecution(
     const rawTimeout = resolveTaskTimeoutRaw(body.task as Record<string, unknown>);
     const timeout = rawTimeout === 0 ? 0 : (rawTimeout as number) || config.taskTimeoutSeconds;
     if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86_400)) {
-      return reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
+      return reject(400, `无效的任务超时：${timeout}（期望 0（不限时）或 1..86400 秒）`);
     }
     // Glue 语言的字符串校验是同步 400 语义（与原实现一致），语言支持性判定
     // 依赖 runtime（可能被 manifest 覆盖），留在后台 prepare。
     const glueSource = (body.task.glueSource as string | undefined) || (body.task.glue_source as string | undefined);
     if (glueSource !== undefined && typeof glueSource !== 'string') {
-      return reject(400, 'glueSource must be a string');
+      return reject(400, 'glueSource 必须是字符串');
     }
     // A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     // 生成（zod 侧），与 executor-python 共用同一份。放在上述手检**之后**：
@@ -662,7 +665,7 @@ export function acceptExecution(
     if (!parsed.success) {
       const first = parsed.error.issues[0];
       const where = first.path.length ? first.path.join('.') : '(root)';
-      return reject(400, `Invalid execute request: ${where}: ${first.message}`);
+      return reject(400, `无效的 execute 请求（违反 executor-protocol 协议）：${where}：${first.message}`);
     }
 
     // 登记 + 立即 accepted。prepare（clone/checkout、依赖安装）与 spawn
@@ -683,7 +686,7 @@ export function acceptExecution(
     return { status: 200, payload: { status: 'accepted', executionId } };
   } catch (err) {
     // 同步 throw（容量预留之后）不得泄漏槽位——reject 内部幂等释放。
-    return reject(500, err instanceof Error ? err.message : 'Internal executor error');
+    return reject(500, err instanceof Error ? err.message : '执行器内部错误');
   }
 }
 
@@ -745,7 +748,7 @@ async function startExecutionInBackground(
     }
     await dispatchExecutionToWorker(executionId, body, params, workDir, entry);
   } catch (err) {
-    failStart(err instanceof Error ? err.message : 'Executor background start failed', 'unknown');
+    failStart(err instanceof Error ? err.message : '执行器后台启动失败', 'unknown');
   }
 }
 
@@ -767,30 +770,111 @@ async function startExecutionInBackground(
  *  缓存池），绝不能混为一类。 */
 export function prepareFailureReason(message: string): CallbackFailureReason {
   // WS5：解释器无法获取——必须最先判定（见上方注释）。
+  //
+  // LANG-ZH-01（面向用户文字中文化）配套：本函数是**执行器侧自己的**分类器，
+  // 与 admin 的 inferFailureReason 各有一份判据（两侧独立发版）。执行器产出的
+  // 用户可见文案已中文化，故每条规则都**英中并列**——只留英文会让新文案全部
+  // 落到 unknown（TIMEOUT/INTERPRETER_UNAVAILABLE 这类语义会退化），只留中文
+  // 则会让存量日志/旧文案失配。与 admin 侧同款纪律。
   if (
-    /interpreter \d+\.\d+ unavailable|No interpreter found|No download found|Python downloads are set to ['"]?manual|解释器.*无法获取/i.test(
+    /interpreter \d+\.\d+ unavailable|No interpreter found|No download found|Python downloads are set to ['"]?manual|解释器[^\n]{0,20}?(?:无法获取|不可用|不可获得|缺失|找不到)/i.test(
       message,
     )
   ) {
     return 'interpreter_unavailable';
   }
+  // LANG-ZH-01 缺口（本轮审计，与 python `_refine_failure_reason` 同款规则）：
+  // **任务执行超时**的结构化归类，必须在 git / dependency 规则**之前**。
+  //
+  // 为什么必须在前面：runProcess 的超时拒绝抛的是
+  // `任务执行超时（${timeoutSec}s）`，但对**阶段预算**超时（uv venv / git
+  // clone）我们拼的是 `uv venv failed: ...` / `git clone failed: ...` —— 一旦
+  // 把泛化的 "timed out" 收进来，`uv venv timed out after 600s` 会被本规则
+  // 抢走，而它语义上是**依赖装不上**（既有用例
+  // 'Dependency installation failed (timeout)' → dependency_install_failed 就
+  // 钉住了这条）。故本规则**只认执行器的任务超时骨架**，不收任何泛化短语。
+  //
+  // 为什么仍要在执行器侧分类（admin 的 inferFailureReason 也会按 /timeout|
+  // 超时/ 兜底）：`timeout` 是唯一会被"用户文案改动"静默摧毁的语义——文案里
+  // 一旦不再出现"超时"二字，admin 就落到 UNKNOWN，用户看到「未知原因」，且
+  // timeout 的可重试语义（RETRYABLE_ERROR_OPTIONS）随之后移。执行器是唯一
+  // 知道自己有无挂超时定时器的一方（timeout=0 = 不限时），结构化上报更诚实。
+  // 判据与 python 侧逐条同形，是两侧**同一份**分类契约。
+  if (/任务执行超时|execution timed out|task execution timed out/i.test(message)) {
+    return 'timeout';
+  }
   // git clone/fetch/checkout 或 CalledProcessError 形态（node 侧 git 也是子进程）
-  if (/git (clone|fetch|checkout) failed|\bgit\b.*returned non-zero|\bgit\b.*\b(clone|fetch|checkout)\b.*fail/i.test(message)) {
+  //
+  // 「阶段预算超时」也在本条内：`git fetch timed out after 60s`（runCommand 的
+  // timeout 命中 → 抛裸 Error，无 "failed" 字样）此前落兜底 unknown，而 python
+  // `_refine_failure_reason` 的 `'git'.{0,80}returned non-zero` / git 规则对同
+  // 类文本给出 git_fetch_failed——双端分因漂移。git 阶段超时的语义就是"代码
+  // 拉不下来"（仓库太大/网络慢），处置动作是查仓库与网络，与 timeout（调大任务
+  // 超时）不同，故归 git_fetch_failed。注意本条**必须**在 timeout 规则之后、
+  // 且 timeout 规则不认 "git fetch timed out"（只认任务超时骨架），两条互不侵吞。
+  if (
+    /git (clone|fetch|checkout) failed|git (clone|fetch|checkout) 执行失败|\bgit\b.*returned non-zero|\bgit\b.*\b(clone|fetch|checkout)\b.*fail|git (clone|fetch|checkout)[^\n]{0,20}?(timed out|超时)/i.test(
+      message,
+    )
+  ) {
     return 'git_fetch_failed';
   }
-  if (/npm install failed|uv pip install failed|pip install failed|Dependency installation failed/i.test(message)) {
+  if (
+    /npm install failed|uv pip install failed|pip install failed|Dependency installation failed|npm install[^\n]{0,10}?失败|uv pip install[^\n]{0,10}?失败|pip install[^\n]{0,10}?失败|依赖安装失败|uv venv[^\n]{0,20}?超时/i.test(
+      message,
+    )
+  ) {
     return 'dependency_install_failed';
   }
-  if (/spawn .*ENOENT|runtime .*not (supported|available)|executable .*not found|No such file or directory/i.test(message)) {
+  // 双端一致性补口（本轮审计）：`uv venv timed out`（venv 建置**阶段预算**超时，
+  // UV_VENV_TIMEOUT_MS=120s）此前在 node 侧落到兜底 unknown，而 python
+  // `_refine_failure_reason` 的 `uv venv timed out` 规则**一直**归入
+  // dependency_install_failed——同一份 uv 失败文本在两个执行器上分因不同，
+  // admin 的统计与重试白名单随之漂移。阶段预算超时语义是"依赖装不上"
+  // （环境/网络/私有源问题），不是"任务跑太久"，故与 python 同归一类；
+  // **绝不能**并进上面的 timeout 规则（那会把用户指向"调大任务超时"这条
+  // 完全错的处置动作）。单独的 uv venv 规则也覆盖 uv 原文不含 "failed" 的形态。
+  if (/uv venv timed out|uv venv[^\n]{0,20}?超时/i.test(message)) {
+    return 'dependency_install_failed';
+  }
+  if (
+    /spawn .*ENOENT|runtime .*not (supported|available)|executable .*not found|No such file or directory|runtime[^\n]{0,20}?(?:不可用|缺失|未安装|未找到)|不支持的 runtime|unsupported runtime/i.test(
+      message,
+    )
+  ) {
     return 'runtime_missing';
   }
-  if (/Invalid npm package name/i.test(message)) {
+  if (/Invalid npm package name|无效的 npm 包名/i.test(message)) {
     return 'package_fetch_failed';
+  }
+  // 本轮审计补口：**执行器停机**导致"已领取但尚未 spawn"的执行被终态化。
+  //
+  // 场景：执行器正在优雅停机（SIGTERM / config-reload），prepare 或排队阶段的
+  // 执行从未拿到进程。此前这条消息（`Executor is shutting down before this
+  // execution started` / python 侧 `执行器正在停机，该执行尚未开始`）不带
+  // failureReason，落 admin 的 inferFailureReason 兜底 → UNKNOWN——用户看到
+  // 「未知原因」，而这是一个 100% 已知、且处置动作明确的场景。
+  //
+  // 取值依据：`executor_restart` 在协议里是 **executorReportable**（protocol.json
+  // failureReason 段，adminInternalOnly 只有 stale_recovered / application_missing
+  // / never_dispatched），语义正是"执行器重启导致运行中任务中断"——admin 的标签
+  // （execDetail.failure.executorRestart「执行器重启」）与 runbook（"瞬时中断——
+  // 调度 sweep 已自动重新入队"）都精确匹配这个场景。故**不新增枚举值**，复用既有
+  // 正确取值（用户红线：绝不发明枚举）。
+  //
+  // 位置在 unknown 兜底之前、具体 prepare 规则之后——它与 git/依赖/运行时都无关，
+  // 但必须早于兜底。判据英中并列（停机消息两侧各有一份文案，且执行器独立发版）。
+  if (/shutting down before this execution started|正在停机/i.test(message)) {
+    return 'executor_restart';
   }
   // WS5：zip 整包渠道的获取类失败（缺 packageUrl / 下载失败 / 归档被安全闸
   // 拒绝）归入既有的 package_fetch_failed 兜底桶——它们都是"包没拿到"，
   // 复用既有分类，不为它们新增枚举值。
-  if (/packageUrl|Package download failed|Unsafe or invalid package archive/i.test(message)) {
+  if (
+    /packageUrl|Package download failed|Unsafe or invalid package archive|压缩包下载失败|压缩包不安全或不合法/i.test(
+      message,
+    )
+  ) {
     return 'package_fetch_failed';
   }
   // P2（双端一致性）：沙箱配置启用但不可用（bwrap 缺失 / 宿主拒绝用户命名
@@ -857,11 +941,10 @@ export { DEFAULT_PYTHON_VERSION };
  * 事故（用户只看到 "Python was not found"）原地复发。
  */
 const HOST_PYTHON_MISSING_DIAGNOSTIC =
-  'runtime "python" not available on this executor: no usable Python 3.8+ ' +
-  'interpreter was found locally — on Windows a Microsoft Store App Execution ' +
-  'Alias stub may be shadowing the real interpreter (the stub exists as a file ' +
-  'but fails on execution); install Python 3.8+ from python.org, or declare a ' +
-  'runtimeVersion so the executor can obtain an interpreter with uv';
+  '本执行器上 runtime "python" 不可用：本机未找到可用的 Python 3.8+ 解释器 —— ' +
+  '在 Windows 上，Microsoft Store 的应用执行别名（App Execution Alias）占位 stub 可能遮蔽了' +
+  '真正的解释器（该 stub 以文件形式存在，但一执行就失败）；请从 python.org 安装 Python 3.8+，' +
+  '或声明 runtimeVersion 让执行器用 uv 获取解释器';
 
 /** zip 整包下载预算（与 python 侧 ZIP_DOWNLOAD_TIMEOUT_SECONDS 对齐）。 */
 const ZIP_DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -1249,7 +1332,7 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
       const detail = (venvResult.stderr || venvResult.stdout || '').trim();
       // 解释器相关的失败要保留 uv 原文（`No interpreter found ...`），
       // `prepareFailureReason` 据此归类为 interpreter_unavailable。
-      throw new Error(`uv venv failed: ${detail || 'unknown error'}`);
+      throw new Error(`uv venv 执行失败：${detail || '未知错误'}`);
     }
   }
 
@@ -1265,7 +1348,7 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
     for (const spec of requirements) {
       if (typeof spec !== 'string' || !spec.trim() || spec.trim().startsWith('-')) {
         throw new Error(
-          `Invalid requirement (options are not allowed): ${String(spec)}`,
+          `无效的 requirement（不允许选项形式）：${String(spec)}`,
         );
       }
     }
@@ -1292,7 +1375,7 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
       // 是「替换默认索引、私有源无上游」语义，"私有源中不存在该包"是这条失败
       // 最常见的根因，此前报错对用户完全不可见（与 python 执行器同口径）。
       const indexHint = pypiIndexHint(registryUrl, extraRegistryUrl);
-      throw new Error(`uv pip install failed${indexHint}: ${detail || 'unknown error'}`);
+      throw new Error(`uv pip install 执行失败${indexHint}：${detail || '未知错误'}`);
     }
   }
 
@@ -1339,8 +1422,8 @@ async function resolveUvForExecute(): Promise<string> {
   const uv = await resolveUvBin();
   if (!uv.path) {
     throw new Error(
-      'uv is not available on this executor (no UV_BIN, not on PATH, no bundled binary); ' +
-        'install uv or use a client build that bundles it',
+      '本执行器上没有可用的 uv（既未设置 UV_BIN、也不在 PATH 上、也没有内置二进制）；'
+        + '请安装 uv，或改用内置 uv 的客户端构建',
     );
   }
   return uv.path;
@@ -1415,12 +1498,12 @@ export async function dispatchExecutionToWorker(
           writeExecMeta(executionId, {
             status: 'failed',
             endTime: Date.now(),
-            errorMessage: 'Executor is shutting down before this execution started',
+            errorMessage: '执行器正在停机，该执行尚未开始',
           });
           pushCallback({
             executionId,
             status: 'failed',
-            errorMessage: 'Executor is shutting down before this execution started',
+            errorMessage: '执行器正在停机，该执行尚未开始',
             ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
           });
         }
@@ -1429,7 +1512,7 @@ export async function dispatchExecutionToWorker(
       // prepare 真实失败（git clone / 依赖安装 / 参数非法）：这里完成回调上报
       // （原实现经 HTTP 500 反馈，现已 accepted），容量仍由 worker 的
       // onComplete 释放——不留悬挂状态。
-      const message = err instanceof Error ? err.message : 'Task preparation failed';
+      const message = err instanceof Error ? err.message : '任务准备阶段失败';
       appendLog(executionId, `[prepare] ${message}`);
       writeExecMeta(executionId, {
         status: 'failed',
@@ -1461,7 +1544,7 @@ export async function dispatchExecutionToWorker(
     entry.enqueued = true;
   } catch (err) {
     // 移交失败：worker 不会调用 onComplete，这里负责失败回调 + 释放。
-    const message = err instanceof Error ? err.message : 'Failed to enqueue task';
+    const message = err instanceof Error ? err.message : '任务入队失败';
     appendLog(executionId, `[prepare] ${message}`);
     pushCallback({
       executionId,
@@ -1513,7 +1596,7 @@ async function prepareExecution(
       await gitCheckoutTo(gitRepo, ref, workDir, signal);
     } catch (err) {
       if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
-      const message = err instanceof Error ? err.message : 'Git checkout failed';
+      const message = err instanceof Error ? err.message : 'Git 检出失败';
       logPrepare(`Git checkout failed: ${message}`);
       throw new Error(message);
     }
@@ -1589,9 +1672,9 @@ async function prepareExecution(
       // 只有**确实是** zip 任务（codeSource 显式声明）才会走到这里：歧义分支
       // 本就要求 packageUrl 存在，所以存量 git+applicationId 行不受影响。
       throw new Error(
-        'application_zip task has no packageUrl in the dispatch payload ' +
-          '(admin must attach the resolved applications.packageUrl); ' +
-          `applicationId=${String(applicationId)}`,
+        `application_zip 任务的派发载荷中没有 packageUrl `
+          + `（中台必须附带已解析的 applications.packageUrl）；`
+          + `applicationId=${String(applicationId)}`,
       );
     }
     const zipPath = path.join(workDir, 'package.zip');
@@ -1610,7 +1693,7 @@ async function prepareExecution(
     } catch (err) {
       if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
       throw new Error(
-        `Package download failed: ${err instanceof Error ? err.message : String(err)}`,
+        `压缩包下载失败：${err instanceof Error ? err.message : String(err)}`,
       );
     }
     checkAbort();
@@ -1622,7 +1705,7 @@ async function prepareExecution(
       safeExtractZip(zipPath, workDir, { removeArchive: true });
     } catch (err) {
       if (err instanceof ZipSafetyError) {
-        throw new Error(`Unsafe or invalid package archive: ${err.message}`);
+        throw new Error(`压缩包不安全或不合法：${err.message}`);
       }
       throw err;
     }
@@ -1646,7 +1729,7 @@ async function prepareExecution(
   // Bounded timeout: a negative value fires setTimeout immediately (instant
   // task kill) and an unbounded one arms a near-permanent timer.
   if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86_400)) {
-    throw new Error(`Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
+    throw new Error(`无效的任务超时：${timeout}（期望 0（不限时）或 1..86400 秒）`);
   }
   const requirements: string[] = (task.requirements as string[]) || [];
   const taskId = entry.taskId;
@@ -1672,7 +1755,7 @@ async function prepareExecution(
   const glueLanguage = (task.glueLanguage as string | undefined) || (task.glue_language as string | undefined);
   if (glueSource) {
     if (typeof glueSource !== 'string') {
-      throw new Error('glueSource must be a string');
+      throw new Error('glueSource 必须是字符串');
     }
     let glueFile: string;
     const glLower = glueLanguage ? glueLanguage.toLowerCase() : '';
@@ -1692,7 +1775,7 @@ async function prepareExecution(
       glueFile = path.join(workDir, process.platform === 'win32' ? 'glue_script.cmd' : 'glue_script.sh');
       actualRuntime = 'shell';
     } else {
-      throw new Error(`Unsupported glue language: ${glueLanguage}`);
+      throw new Error(`不支持的 glue 语言：${glueLanguage}`);
     }
     fs.writeFileSync(glueFile, glueSource, 'utf-8');
     fs.chmodSync(glueFile, 0o755);
@@ -1726,7 +1809,7 @@ async function prepareExecution(
     const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
     for (const pkg of actualRequirements) {
       if (!npmNameRe.test(pkg)) {
-        throw new Error(`Invalid npm package name: ${pkg}`);
+        throw new Error(`无效的 npm 包名：${pkg}`);
       }
     }
     logPrepare(`Installing ${actualRequirements.length} packages for task ${taskId}`);
@@ -1805,8 +1888,8 @@ async function prepareExecution(
     );
     if (entry.aborted) throw new ExecutionCancelledError(executionId);
     if (installResult.status !== 0) {
-      const errMsg = installResult.stderr.trim() || 'npm install failed';
-      let message = `Dependency installation failed: ${errMsg}`;
+      const errMsg = installResult.stderr.trim() || 'npm install 执行失败';
+      let message = `依赖安装失败：${errMsg}`;
       // 私服且未配 token 时，失败大概率是 401（registry-npm access=$authenticated）
       // ——把修复指引直接带到任务可见的失败信息里，而不是只留在执行器日志。
       if (!config.npmRegistryToken && config.npmRegistryUrl && isPrivateNpmRegistry(config.npmRegistryUrl)) {
@@ -2009,6 +2092,20 @@ async function prepareExecution(
   if (registeredAddress) {
     env['AUTOFLOW_EXECUTOR_ADDRESS'] = registeredAddress;
   }
+  // ADR-017 阶段 3（协议 v6）：把本执行器的稳定安装指纹也注入任务 env——**任务
+  // 代码**经 SDK 直接回调（不经过执行器的 pushCallback）时，SDK 从
+  // `AUTOFLOW_DEVICE_FINGERPRINT` 取值并随回调上报，中台据此把该回扣归到本行。
+  //
+  // 为什么任务代码需要它：SDK 回调走的是**共享/legacy 令牌**路径（任务进程只
+  // 持有 per-execution HMAC token），而该令牌不绑定任何行；加之中台可能同址
+  // 多行并存（ADR-017 §5），地址不足以指代一行——指纹是这类回调唯一的行身份
+  // 来源。采集失败（null）→ 不注入，SDK 与中台都走回落路径，行为与引入前一致。
+  // 与 AUTOFLOW_EXECUTOR_ADDRESS 同一纪律：在 params 循环之后注入，用户参数
+  // 覆盖不了它；且只注入**哈希**（非敏感、不可反查）。
+  const deviceFingerprint = getDeviceFingerprint();
+  if (deviceFingerprint) {
+    env['AUTOFLOW_DEVICE_FINGERPRINT'] = deviceFingerprint;
+  }
 
   // FEAT-05: 预建产物目录约定 <workDir>/artifacts/，注入 AUTOFLOW_ARTIFACTS_DIR，
   // 任务把交付物写此目录即被收集上传。best-effort，失败不阻断。
@@ -2105,9 +2202,9 @@ async function prepareExecution(
     // 使 prepareFailureReason 命中 runtime_missing（见 :745 的分类规则）。
     if (!nodeTool.verified || !nodeTool.path) {
       throw new Error(
-        'runtime "node" not available on this executor: ' +
-          `${nodeTool.detail ?? 'no usable node interpreter was resolved'} ` +
-          '(install Node.js, or run the desktop client which can reuse its bundled Electron runtime)',
+        '本执行器上 runtime "node" 不可用：' +
+          `${nodeTool.detail ?? '未解析出可用的 node 解释器'} ` +
+          '（请安装 Node.js，或使用可复用其内置 Electron 运行时的桌面客户端）',
       );
     }
     // **关键**：source==='self' 时必须置 ELECTRON_RUN_AS_NODE=1，否则 Electron
@@ -2138,8 +2235,8 @@ async function prepareExecution(
     // 静默跑在宿主解释器上会让"声明了版本"变成一句空话，且完全无声。
     if (declaredVersion !== null && !pythonBinFromVenv && !resolvedInterpreter) {
       throw new Error(
-        `interpreter ${declaredVersion} unavailable (internal): no interpreter was resolved ` +
-          `for a version-declaring task — refusing to fall back to the host interpreter`,
+        `解释器 ${declaredVersion} 不可用（内部错误）：声明了版本的任务却未解析出任何解释器 ` +
+          `——拒绝回落到宿主解释器`,
       );
     }
     // 无版本无依赖的兜底从"裸宿主命令名"改为**实跑验真过的**宿主解释器。
@@ -2242,7 +2339,7 @@ async function prepareExecution(
     // 回调）；非 shell runtime 不受影响（argv 数组直传，无 shell 解析）。
     if (!SHELL_ENTRYPOINT_SAFE_RE.test(actualEntrypoint)) {
       throw new Error(
-        'Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]',
+        '拒绝执行含不安全字符的 shell entrypoint；允许的字符集为 [A-Za-z0-9._/ :\\-]',
       );
     }
     if (process.platform === 'win32') {
@@ -2255,7 +2352,7 @@ async function prepareExecution(
       args = [actualEntrypoint];
     }
   } else {
-    throw new Error(`Unsupported runtime: ${actualRuntime}`);
+    throw new Error(`不支持的 runtime：${actualRuntime}`);
   }
 
   // Hardening: the entrypoint is resolved against the work dir by every
@@ -2265,7 +2362,7 @@ async function prepareExecution(
   const entryAbs = path.resolve(workDir, actualEntrypoint);
   const workDirAbs = path.resolve(workDir);
   if (entryAbs !== workDirAbs && !entryAbs.startsWith(workDirAbs + path.sep)) {
-    throw new Error('entrypoint escapes the task work directory');
+    throw new Error('entrypoint 逃出了任务工作目录');
   }
 
   // 桌面自包含改造（可观测性）：把本次 prepare 实际解析到的工具链摘要附在既有的
@@ -2397,7 +2494,7 @@ function createTemporaryNpmConfig(
       removeTemporaryNpmConfig(npmConfig);
     } catch (cleanupErr) {
       throw new Error(
-        `Failed to create npm config and failed to clean it up: ${
+        `创建 npm 配置失败，且清理也失败：${
           cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
         }`,
       );
@@ -2451,7 +2548,7 @@ function killBody(ok: boolean): { ok: boolean } {
   const checked = KillResponseSchema.safeParse(payload);
   if (!checked.success) {
     const where = checked.error.issues[0]?.path.join('.') || '(root)';
-    throw new Error(`kill response violates executor-protocol at ${where}`);
+    throw new Error(`kill 响应违反 executor-protocol 协议，位置 ${where}`);
   }
   return payload;
 }
@@ -2724,7 +2821,7 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
       status: 'failed',
       exitCode,
       logs: truncateCallbackLogs(logs),
-      errorMessage: truncateCallbackErrorMessage(killed ? 'Task process tree killed by admin request' : message),
+      errorMessage: truncateCallbackErrorMessage(killed ? '任务进程树已按中台请求终止' : message),
       ...(killed ? { failureReason: 'killed' as CallbackFailureReason } : {}),
       // P2（双端一致性）：运行期失败细分类。python `_run_and_callback` 对
       // run_task 的失败结果调 `_refine_failure_reason`（BUG-10 运行期分支），
@@ -2808,14 +2905,14 @@ export function buildTaskSandboxArgv(
   }
   if (process.platform === 'win32') {
     throw new Error(
-      'TASK_SANDBOX=bwrap is not supported on Windows; unset TASK_SANDBOX to run tasks unsandboxed',
+      'TASK_SANDBOX=bwrap 在 Windows 上不受支持；请取消 TASK_SANDBOX 以在无沙箱模式下运行任务',
     );
   }
   const bwrapPath = resolveBwrapPath();
   if (!bwrapPath) {
     throw new Error(
-      'TASK_SANDBOX=bwrap is configured but the bwrap binary is not on PATH; ' +
-        'install bubblewrap or unset TASK_SANDBOX (fail-closed, no sandbox downgrade)',
+      'TASK_SANDBOX=bwrap 已配置，但 PATH 上没有 bwrap 二进制；'
+        + '请安装 bubblewrap 或取消 TASK_SANDBOX（fail-closed，不降级沙箱）',
     );
   }
   return {
@@ -2955,7 +3052,7 @@ function runProcess(
           // Attach collected logs like the close path does — otherwise the
           // failure callback carries no logs and the admin-side full-log
           // backfill (LOG-01) never triggers.
-          const timeoutErr = new Error(`Task timeout after ${timeoutSec}s`) as Error & { logs: string };
+          const timeoutErr = new Error(`任务执行超时（${timeoutSec}s）`) as Error & { logs: string };
           timeoutErr.logs = logBuffer.toString();
           reject(timeoutErr);
         }, timeoutSec * 1000)
@@ -2991,7 +3088,7 @@ function runProcess(
           killProcessTree(proc, 'SIGKILL');
           unregister();
           const memErr = new Error(
-            `Task exceeded memory limit of ${config.taskMemoryLimitMb}MB`,
+            `任务超出了 ${config.taskMemoryLimitMb}MB 的内存上限`,
           ) as Error & { logs: string };
           memErr.logs = logBuffer.toString();
           reject(memErr);
@@ -3030,7 +3127,7 @@ function runProcess(
       const exitCode = code ?? 1;
       if (exitCode !== 0) {
         // Attach logs and exitCode as properties so callers can surface them independently
-        const err = new Error(`Process exited with code ${exitCode}`) as Error & { logs: string; exitCode: number };
+        const err = new Error(`进程以退出码 ${exitCode} 结束`) as Error & { logs: string; exitCode: number };
         (err as any).logs = logBuffer.toString();
         (err as any).exitCode = exitCode;
         reject(err);
@@ -3060,8 +3157,8 @@ function runProcess(
       // code.
       const hint =
         err && (err as NodeJS.ErrnoException).code === 'ENOENT' && cwd && cwd.length > 259
-          ? ' (cwd path exceeds Windows MAX_PATH (260) — enable LongPathsEnabled ' +
-            'or shorten WORK_DIR)'
+          ? '（cwd 路径超过 Windows MAX_PATH（260）——请启用 LongPathsEnabled '
+            + '或缩短 WORK_DIR）'
           : '';
       (err as Error & { logs?: string; exitCode?: number }).logs = logBuffer.toString();
       (err as Error & { exitCode?: number }).exitCode = -1;

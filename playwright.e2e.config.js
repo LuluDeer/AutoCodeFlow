@@ -25,6 +25,18 @@ module.exports = {
   use: {
     baseURL: 'http://localhost:5176',
     headless: true,
+    // LANG-ERR-01 / UI-10：**必须显式指定浏览器 locale**。
+    // 界面语言判定（apps/admin-web/src/i18n/index.ts 的 detectLanguage）已按产品
+    // 要求改为「优先跟随浏览器语言、其次默认英文」——而 Playwright 默认 Chromium
+    // 的 navigator.language 是 **en-US**，于是整套 e2e 渲染出**英文**界面，而三份
+    // legacy spec 断言的是**中文**文案（`系统`、`普通用户`、`通知设置`…），实测
+    // 26 例集体超时红（locator.click: waiting for getByText('系统')）。
+    //
+    // 与 admin-web 单测同款处置（src/test-setup.ts 钉 localStorage 语言）：语言是
+    // **测试环境属性**，不是某个用例的语义，故在 config 单点钉死 zh-CN，而不是去改
+    // 几十处断言。需要英文界面的用例可自行 page.addInitScript 覆盖
+    // localStorage('autoflow-lang')。
+    locale: 'zh-CN',
     screenshot: 'only-on-failure',
     video: 'off',
     actionTimeout: 15000,

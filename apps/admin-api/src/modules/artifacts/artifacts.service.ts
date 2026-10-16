@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  UnauthorizedException,
-} from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -20,6 +14,9 @@ import { SystemConfigService } from "../config/config.service";
 import { ExecutorService } from "../executor/executor.service";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { createResponseReadStream } from "../../common/utils/response-stream.util";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 import {
   getArtifactRootDir,
   MAX_ARTIFACT_COUNT,
@@ -67,15 +64,15 @@ export class ArtifactsService {
    */
   resolveArtifactPath(execId: string, name: string): string {
     if (!isUUID(execId)) {
-      throw new BadRequestException("Invalid execution id");
+      throw new AppError(ErrorCode.ARTIFACT_EXECUTION_ID_INVALID);
     }
     if (!SAFE_ARTIFACT_NAME_RE.test(name) || path.basename(name) !== name) {
-      throw new BadRequestException("Invalid artifact name");
+      throw new AppError(ErrorCode.ARTIFACT_NAME_INVALID);
     }
     const base = path.join(getArtifactRootDir(), execId);
     const full = path.join(base, name);
     if (full !== path.join(base, name) || !full.startsWith(base + path.sep)) {
-      throw new BadRequestException("Invalid artifact path");
+      throw new AppError(ErrorCode.ARTIFACT_PATH_INVALID);
     }
     return full;
   }
@@ -87,9 +84,9 @@ export class ArtifactsService {
       if (fs.existsSync(dir)) {
         const n = fs.readdirSync(dir).length;
         if (n >= MAX_ARTIFACT_COUNT) {
-          throw new BadRequestException(
-            `Artifact count cap (${MAX_ARTIFACT_COUNT}) reached for this execution`,
-          );
+          throw new AppError(ErrorCode.ARTIFACT_COUNT_LIMIT_REACHED, {
+            max: MAX_ARTIFACT_COUNT,
+          });
         }
       }
     } catch (err) {
@@ -111,15 +108,13 @@ export class ArtifactsService {
   ): Promise<ExecutionArtifact> {
     const full = this.resolveArtifactPath(execId, name);
     if (buf.length > MAX_ARTIFACT_SIZE_BYTES) {
-      throw new BadRequestException("Artifact exceeds size cap");
+      throw new AppError(ErrorCode.ARTIFACT_TOO_LARGE);
     }
     this.assertWithinCountCap(execId);
 
     const sha256 = crypto.createHash("sha256").update(buf).digest("hex");
     if (declaredSha256 && declaredSha256.toLowerCase() !== sha256) {
-      throw new BadRequestException(
-        "Artifact sha256 does not match uploaded bytes",
-      );
+      throw new AppError(ErrorCode.ARTIFACT_SHA256_MISMATCH);
     }
 
     const dir = path.dirname(full);
@@ -161,7 +156,7 @@ export class ArtifactsService {
   }> {
     const full = this.resolveArtifactPath(execId, name);
     if (!fs.existsSync(full)) {
-      throw new NotFoundException("Artifact not found");
+      throw new AppError(ErrorCode.ARTIFACT_NOT_FOUND);
     }
     const fileSize = fs.statSync(full).size;
     const ext = path.extname(name).toLowerCase();
@@ -178,9 +173,10 @@ export class ArtifactsService {
 
   /** 读取执行行的产物清单（供列表端点）。 */
   async getManifest(execId: string): Promise<ExecutionArtifact[]> {
-    if (!isUUID(execId)) throw new BadRequestException("Invalid execution id");
+    if (!isUUID(execId))
+      throw new AppError(ErrorCode.ARTIFACT_EXECUTION_ID_INVALID);
     const exec = await this.execRepo.findOne({ where: { id: execId } });
-    if (!exec) throw new NotFoundException("Execution not found");
+    if (!exec) throw new AppError(ErrorCode.TASK_EXECUTION_NOT_FOUND);
     return exec.artifacts ?? [];
   }
 
@@ -197,11 +193,11 @@ export class ArtifactsService {
     authHeader: string | undefined,
   ): Promise<TaskExecution> {
     if (!isUUID(execId)) {
-      throw new UnauthorizedException("Invalid executor credential");
+      throw new AppError(ErrorCode.EXECUTOR_CREDENTIAL_INVALID);
     }
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) {
-      throw new NotFoundException("Execution not found");
+      throw new AppError(ErrorCode.TASK_EXECUTION_NOT_FOUND);
     }
     const token = authHeader?.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length)
@@ -218,12 +214,15 @@ export class ArtifactsService {
       // 共享 token 不匹配 → 试每执行器动态 token。
     }
     if (exec.executorAddress && token) {
-      const ok = await this.executorService.validateTokenByAddress(
+      // ADR-017 阶段 3：同址任一行匹配即通过 —— 执行行只记地址不记行身份，
+      // pull 同址多行并存时按地址取单行会误拒合法上传（见 executor.service
+      // validateTokenByAddressAnyRow 头注）。判定强度不变。
+      const ok = await this.executorService.validateTokenByAddressAnyRow(
         exec.executorAddress,
         token,
       );
       if (ok) return exec;
     }
-    throw new UnauthorizedException("Invalid executor credential");
+    throw new AppError(ErrorCode.EXECUTOR_CREDENTIAL_INVALID);
   }
 }

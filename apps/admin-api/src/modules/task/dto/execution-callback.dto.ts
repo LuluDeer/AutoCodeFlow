@@ -88,7 +88,7 @@ export class IsBoundedJsonObjectConstraint implements ValidatorConstraintInterfa
  * 校验防路径穿越。size 为字节数，sha256 为文件内容十六进制摘要（供完整性核对）。
  */
 export class ArtifactManifestItemDto {
-  @ApiProperty({ description: "Artifact file name (bare, no path separators)" })
+  @ApiProperty({ description: "产物文件名（裸文件名，不含任何路径分隔符）" })
   @IsString()
   @IsNotEmpty()
   @Matches(/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/, {
@@ -97,12 +97,12 @@ export class ArtifactManifestItemDto {
   })
   name: string;
 
-  @ApiProperty({ description: "Artifact size in bytes" })
+  @ApiProperty({ description: "产物字节数" })
   @IsInt()
   @Min(0)
   size: number;
 
-  @ApiProperty({ description: "sha256 hex digest of the artifact bytes" })
+  @ApiProperty({ description: "产物内容的 sha256 十六进制摘要" })
   @IsString()
   @Matches(/^[0-9a-fA-F]{64}$/, { message: "sha256 must be a 64-hex digest" })
   sha256: string;
@@ -110,8 +110,8 @@ export class ArtifactManifestItemDto {
 
 export class CallbackItemDto {
   @ApiProperty({
-    description: "Execution ID (UUID)",
     example: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    description: "执行 ID（UUID）",
   })
   @IsString()
   @IsNotEmpty()
@@ -119,27 +119,40 @@ export class CallbackItemDto {
   executionId: string;
 
   @ApiProperty({
-    description: "Execution outcome",
     enum: ["success", "failed"],
+    description: "执行结果",
   })
   @IsIn(["success", "failed"])
   status: "success" | "failed";
 
-  @ApiPropertyOptional({
-    description: "Executor address for per-executor token validation",
-  })
+  @ApiPropertyOptional({ description: "执行器地址，用于按执行器校验 token" })
   @IsOptional()
   @IsString()
   executorAddress?: string;
 
-  @ApiPropertyOptional({ description: "Process exit code" })
+  @ApiPropertyOptional({
+    example: "3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    description:
+      "ADR-017 阶段 3（protocol v6）：发起回调的执行器的稳定安装标识——" +
+      "sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符，与 register/heartbeat 同值。" +
+      "它是本次回调的**行身份**：共享/旧版 token 不绑定任何行，且当 pull 模式的执行器共用同一地址后，" +
+      "`executorAddress` 已无法唯一标识一行（ADR-017 §5）。admin 用它把回调归属到该执行实际派发到的那一行。" +
+      "可选——旧版执行器、采集失败以及 SDK 调用方会省略；此时 admin 依次回落到凭据持有行、" +
+      "再回落到地址相等（绝不因缺失而拒绝）。",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  deviceFingerprint?: string;
+
+  @ApiPropertyOptional({ description: "进程退出码" })
   @IsOptional()
   @IsInt()
   exitCode?: number;
 
   @ApiPropertyOptional({
-    description: "Raw log output (max 500 KB)",
     maxLength: 512_000,
+    description: "原始日志输出（最大 500 KB）",
   })
   @IsOptional()
   @IsString()
@@ -147,8 +160,8 @@ export class CallbackItemDto {
   logs?: string;
 
   @ApiPropertyOptional({
-    description: "Error message on failure (max 4 KB)",
     maxLength: 4096,
+    description: "失败时的错误信息（最大 4 KB）",
   })
   @IsOptional()
   @IsString()
@@ -156,10 +169,10 @@ export class CallbackItemDto {
   errorMessage?: string;
 
   @ApiPropertyOptional({
-    description: "Structured failure reason",
     // A3: OpenAPI 上只暴露执行器**可上报**的子集——`stale_recovered` 由 admin
     // 内部写入，不该出现在回调契约的文档面上（此前用的是全集）。
-    enum: [...EXECUTOR_REPORTABLE_FAILURE_REASONS],
+    enum: [EXECUTOR_REPORTABLE_FAILURE_REASONS],
+    description: "结构化的失败原因",
   })
   @IsOptional()
   // A3: 收窄为执行器可上报集合（此前用全集，等于允许执行器上报 admin 内部专用的
@@ -167,20 +180,16 @@ export class CallbackItemDto {
   @IsIn([...EXECUTOR_REPORTABLE_FAILURE_REASONS])
   failureReason?: ExecutionFailureReason;
 
-  @ApiPropertyOptional({
-    description: "Wall-clock execution duration in milliseconds",
-  })
+  @ApiPropertyOptional({ description: "执行墙钟时长（毫秒）" })
   @IsOptional()
   @IsInt()
   @Min(0)
   durationMs?: number;
 
   @ApiPropertyOptional({
-    description:
-      "FEAT-05: execution artifacts manifest (best-effort, max 20 entries). " +
-      "File bytes are uploaded separately via the artifact upload endpoint; " +
-      "the manifest is persisted to task_executions.artifacts on the terminal callback.",
     type: [ArtifactManifestItemDto],
+    description:
+      "FEAT-05：执行产物清单（best-effort，最多 20 条）。文件字节通过产物上传端点单独上传；清单在终态回调时持久化到 task_executions.artifacts。",
   })
   @IsOptional()
   @IsArray()
@@ -190,14 +199,10 @@ export class CallbackItemDto {
   artifacts?: ArtifactManifestItemDto[];
 
   @ApiPropertyOptional({
-    description:
-      "python_task_multiversion (FR-12/AC-12a): structured execution detail. " +
-      "Currently carries the interpreter snapshot { requested, resolved, reason, detail, pool } " +
-      "so an interpreter_unavailable failure can be triaged without re-running the task. " +
-      "Persisted verbatim to task_executions.result. " +
-      "Constrained to an object with a bounded serialized size (4 KB).",
     type: Object,
     additionalProperties: true,
+    description:
+      "python_task_multiversion（FR-12/AC-12a）：结构化的执行明细。当前承载解释器快照 { requested, resolved, reason, detail, pool }，使得 interpreter_unavailable 失败无需重跑任务即可定位。原样持久化到 task_executions.result。约束为对象，且序列化体积有上限（4 KB）。",
   })
   @IsOptional()
   @IsObject()

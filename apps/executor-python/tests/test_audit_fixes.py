@@ -80,7 +80,7 @@ def test_run_task_timeout_kills_process_that_closed_stdout(tmp_path, monkeypatch
     elapsed = time.monotonic() - started
 
     assert result['success'] is False
-    assert 'Task timeout after 1s' in result['errorMessage']
+    assert '任务执行超时（1s）' in result['errorMessage']
     assert result['exitCode'] is None
     # run_task 必须按超时收敛（1s 预算 + 杀树），而不是永久挂在 proc.wait() 上
     assert elapsed < 30
@@ -185,7 +185,7 @@ class TestPullPayloadValidation:
         assert len(rejections) == 1
         eid, reason, tp = rejections[0]
         assert eid == 'exec-a3-drift'
-        assert 'validation failed' in reason
+        assert '载荷校验失败' in reason
         # 预留已释放，账本归零
         assert scheduler_module.get_running_count() == 0
 
@@ -249,7 +249,7 @@ def test_prepare_cancelled_during_git_clone_never_spawns(tmp_path, monkeypatch):
     result = asyncio.run(execute_module.run_task(req, entry))
 
     assert result['success'] is False
-    assert 'killed by admin request' in result['errorMessage'].lower()
+    assert '已按中台请求终止该执行' in result['errorMessage']
     assert spawned == [], 'prepare 被取消后绝不能再 spawn'
     execute_module.unregister_live_execution('exec-a5-git')
 
@@ -284,7 +284,7 @@ def test_prepare_cancelled_before_zip_download_never_spawns(tmp_path, monkeypatc
     result = asyncio.run(execute_module.run_task(req, entry))
 
     assert result['success'] is False
-    assert 'killed by admin request' in result['errorMessage'].lower()
+    assert '已按中台请求终止该执行' in result['errorMessage']
     assert spawned == []
     execute_module.unregister_live_execution('exec-a5-zip')
 
@@ -502,7 +502,7 @@ def test_download_package_too_many_redirects(tmp_path, monkeypatch):
     _patch_http_transport(monkeypatch, handler)
     dest = tmp_path / '.package.zip'
 
-    with pytest.raises(RuntimeError, match='too many redirects'):
+    with pytest.raises(RuntimeError, match='重定向次数过多'):
         asyncio.run(execute_module._download_package(
             'http://admin.local/packages/loop', dest,
         ))
@@ -520,7 +520,7 @@ def test_download_package_plain_404_still_reports_status(tmp_path, monkeypatch):
     _patch_http_transport(monkeypatch, handler)
     dest = tmp_path / '.package.zip'
 
-    with pytest.raises(RuntimeError, match='HTTP 404'):
+    with pytest.raises(RuntimeError, match='HTTP 状态码 404'):
         asyncio.run(execute_module._download_package(
             'http://admin.local/packages/missing.zip', dest,
         ))

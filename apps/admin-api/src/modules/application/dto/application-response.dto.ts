@@ -23,84 +23,103 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * `env` 的 secret 类键在读面被掩码为 `***`。
  */
 export class ApplicationResponseDto {
-  @ApiProperty({ description: "Application id (uuid)" })
+  @ApiProperty({ description: "应用 ID（uuid）" })
   id: string;
 
-  @ApiProperty({ description: "Unique application name" })
+  @ApiProperty({ description: "唯一应用名称" })
   name: string;
 
-  @ApiPropertyOptional({ description: "Human description", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "人类可读描述",
+  })
   description: string | null;
 
-  @ApiProperty({ description: "Application version" })
+  @ApiProperty({ description: "应用版本" })
   version: string;
 
-  @ApiProperty({ description: "Runtime identifier (node / python / shell …)" })
+  @ApiProperty({ description: "运行时标识（node / python / shell …）" })
   runtime: string;
 
-  @ApiProperty({ description: "Lifecycle status" })
+  @ApiProperty({ description: "生命周期状态" })
   status: string;
 
-  @ApiPropertyOptional({ description: "Git repository URL", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "Git 仓库 URL",
+  })
   gitRepo: string | null;
 
-  @ApiPropertyOptional({ description: "Git branch", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "Git 分支",
+  })
   gitBranch: string | null;
 
-  @ApiPropertyOptional({ description: "Pinned git commit", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "锁定的 git commit",
+  })
   gitCommit: string | null;
 
   @ApiPropertyOptional({
-    description: "Deployment manifest (jsonb)",
     nullable: true,
     type: Object,
+    description: "部署清单（jsonb）",
   })
   manifest: Record<string, unknown> | null;
 
   @ApiPropertyOptional({
-    description:
-      "Environment map; secret-class keys are masked as *** on every read surface",
     nullable: true,
     type: Object,
     example: { LOG_LEVEL: "info", DB_PASSWORD: "***" },
+    description: "环境变量映射；secret 类键在所有读面均被掩码为 ***",
   })
   env: Record<string, string> | null;
 
-  @ApiPropertyOptional({ description: "Entrypoint path", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "入口点路径",
+  })
   entrypoint: string | null;
 
-  @ApiPropertyOptional({ description: "Package download URL", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "包下载 URL",
+  })
   packageUrl: string | null;
 
-  @ApiProperty({ description: "Whether deployment requires approval" })
+  @ApiProperty({ description: "部署是否需要审批" })
   approvalRequired: boolean;
 
   @ApiPropertyOptional({
-    description: "Owning project id (null = default project view)",
     nullable: true,
+    description: "所属项目 ID（null = 默认项目视图）",
   })
   projectId: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "MUTEX-01: mutex group id (null = app does not participate in per-device mutual exclusion)",
     nullable: true,
+    description: "MUTEX-01：互斥组 ID（null = 该应用不参与按设备互斥）",
   })
   mutexGroupId: string | null;
 
-  @ApiPropertyOptional({ description: "Owner user id", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "属主用户 ID",
+  })
   ownerUserId: number | null;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Last update time (ISO-8601)" })
+  @ApiProperty({ description: "最后更新时间（ISO-8601）" })
   updatedAt: Date;
 
   @ApiPropertyOptional({
+    nullable: true,
     description:
       "R7 实测出现性：create/update 等 save() 回程把 select:false 列 hydrated 成 null 带出；findAll/findById select 读取不含该键。值恒 null（secret 不回传）。首版头注的『不声明』裁定据此修订",
-    nullable: true,
   })
   webhookSecret?: string | null;
 }
@@ -116,16 +135,14 @@ export class RemovalImpactResponseDto {
 
   @ApiProperty({
     description:
-      "Tasks losing their code source (ALL-RUN total, not page-truncated — DEEP-AUDIT B·4.1)",
+      "失去代码来源的任务数（全量统计，不按页截断 —— DEEP-AUDIT B·4.1）",
   })
   tasksLosingSource: number;
 
-  @ApiProperty({ description: "Deployments removed by cascade" })
+  @ApiProperty({ description: "随级联删除的部署行数" })
   deploymentCount: number;
 
-  @ApiProperty({
-    description: "Whether the uploaded package file on disk is deleted",
-  })
+  @ApiProperty({ description: "磁盘上已上传的包文件是否会被删除" })
   packageFileWillBeDeleted: boolean;
 }
 
@@ -138,8 +155,7 @@ export class ReleaseWebhookResponseDto {
   updatedApp: ApplicationResponseDto;
 
   @ApiProperty({
-    description:
-      "Count of RUNNING deployments upgraded when triggerDeploy=true; 0 otherwise",
+    description: "triggerDeploy=true 时被升级的 RUNNING 部署数；否则为 0",
   })
   triggeredDeployments: number;
 }
@@ -147,17 +163,16 @@ export class ReleaseWebhookResponseDto {
 /** GET /applications/:id/versions —— 版本历史行（快照行 + legacy 部署行合并）。 */
 export class ApplicationVersionHistoryRowDto {
   @ApiProperty({
-    description:
-      "application_versions.id; null = legacy deployment-derived row",
     nullable: true,
     format: "uuid",
+    description: "application_versions.id；null = 由 legacy 部署派生的行",
   })
   id: string | null;
 
   @ApiProperty({
-    description: "Legacy rows carry the deployment id",
     nullable: true,
     format: "uuid",
+    description: "legacy 行携带部署 ID",
   })
   deploymentId: string | null;
 
@@ -165,20 +180,20 @@ export class ApplicationVersionHistoryRowDto {
   sourceDeploymentId: string | null;
 
   @ApiProperty({
-    description: "Legacy rows fall back to '__unknown__' bucket key",
     nullable: true,
+    description: "legacy 行回退到 '__unknown__' 桶键",
   })
   version: string | null;
 
   @ApiProperty({ nullable: true })
   commit: string | null;
 
-  @ApiProperty({ description: "Snapshot status or legacy deployment status" })
+  @ApiProperty({ description: "快照状态或 legacy 部署状态" })
   status: string;
 
   @ApiProperty({
-    description: "Snapshot rows use the version creation time",
     nullable: true,
+    description: "快照行使用版本创建时间",
   })
   deployedAt: Date | null;
 
@@ -186,22 +201,20 @@ export class ApplicationVersionHistoryRowDto {
   createdAt: Date | null;
 
   @ApiProperty({
-    description:
-      "Legacy rows carry the deployment's executor; snapshot rows leave null",
     nullable: true,
+    description: "legacy 行携带该部署的执行器；快照行留为 null",
   })
   executorAddress: string | null;
 
   @ApiProperty({
-    description:
-      "Deploy count for this version (same-version multi-instance rolls count individually)",
+    description: "该版本的部署次数（同版本多实例滚动分别单独计数）",
   })
   deployCount: number;
 
   @ApiProperty({
-    description: "Masked version snapshot (read surface); null on legacy rows",
     nullable: true,
     additionalProperties: true,
+    description: "已掩码的版本快照（读面）；legacy 行为 null",
   })
   snapshot: Record<string, unknown> | null;
 }
@@ -209,10 +222,9 @@ export class ApplicationVersionHistoryRowDto {
 /** GET /applications/:id/releases —— DEP-01 统一发布追溯：一行 = 一次版本发布。 */
 export class AppReleaseRowDto {
   @ApiProperty({
-    description:
-      "application_versions.id; null = pure deployment history (no snapshot row)",
     nullable: true,
     format: "uuid",
+    description: "application_versions.id；null = 纯部署历史（无快照行）",
   })
   id: string | null;
 
@@ -220,9 +232,8 @@ export class AppReleaseRowDto {
   version: string | null;
 
   @ApiProperty({
-    description:
-      "Snapshot packageUrl (deploy-time value — does NOT fall back to the app's current URL)",
     nullable: true,
+    description: "快照中的 packageUrl（部署时刻的值 —— 不回退到应用当前 URL）",
   })
   packageUrl: string | null;
 
@@ -230,9 +241,8 @@ export class AppReleaseRowDto {
   gitCommit: string | null;
 
   @ApiProperty({
-    description:
-      "Most recent deployment completion (ISO string — this view stringifies)",
     nullable: true,
+    description: "最近一次部署完成时间（ISO 字符串 —— 本视图做了字符串化）",
   })
   deployedAt: string | null;
 
@@ -245,7 +255,7 @@ export class AppReleaseRowDto {
   })
   deploymentStatus: string | null;
 
-  @ApiProperty({ description: "Deploy count for this version" })
+  @ApiProperty({ description: "该版本的部署次数" })
   deploymentCount: number;
 
   @ApiProperty({ nullable: true })
@@ -255,16 +265,15 @@ export class AppReleaseRowDto {
   runMode: string | null;
 
   @ApiProperty({
-    description:
-      "Persisted column first, legacy rows derive (unknown when undecidable)",
     nullable: true,
     enum: ["manual", "upgrade", "rollback", "approval", "unknown"],
+    description: "优先取持久化列，legacy 行推导得出（无法判定时为 unknown）",
   })
   triggerType: string | null;
 
   @ApiProperty({
-    description: "Deployments.operator, falling back to versions.createdBy",
     nullable: true,
+    description: "取 deployments.operator，回退到 versions.createdBy",
   })
   operator: string | null;
 
@@ -274,8 +283,7 @@ export class AppReleaseRowDto {
   operatorSource: "deployments.operator" | "application_versions.createdBy";
 
   @ApiProperty({
-    description:
-      "Why operator is null when it is (RELEASE_OPERATOR_MISSING_REASON)",
+    description: "operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON）",
   })
   operatorMissingReason: string;
 }
@@ -291,7 +299,7 @@ export class AppReleasesResponseDto {
   @ApiProperty()
   page: number;
 
-  @ApiProperty({ description: "Default 50, capped 200" })
+  @ApiProperty({ description: "默认 50，上限 200" })
   pageSize: number;
 }
 
@@ -300,7 +308,7 @@ export class SyncTasksResponseDto {
   @ApiProperty({ enum: [true] })
   ok: true;
 
-  @ApiProperty({ description: "Task definitions registered by this sync" })
+  @ApiProperty({ description: "本次同步注册的任务定义数量" })
   registeredCount: number;
 }
 
@@ -313,8 +321,7 @@ export class AppHealthAnalysisResponseDto {
   appName: string;
 
   @ApiProperty({
-    description:
-      "AI assessment text (empty string = AI unavailable, fail-open)",
+    description: "AI 评估文本（空字符串 = AI 不可用，fail-open 放行）",
   })
   analysis: string;
 

@@ -30,7 +30,7 @@
 | [ADR-014](./adr-014-oidc-sso.md) | OIDC SSO 单点登录（授权码模式 / 无状态 state / oidcSub 三级绑定 / JIT 开关） | Accepted |
 | [ADR-015](./adr-015-executor-pull-dispatch.md) | 执行器 pull 模式派发——NAT 内执行器零入站回连（长轮询拉取，弃 WS 反连） | Accepted |
 | [ADR-016](./adr-016-executor-control-plane-pull.md) | 控制面 pull 通道——部署/停止/卸载/热更新/终止/包推送改走 pull 命令队列（协议 1→2，ARCH-33） | Accepted |
-| [ADR-017](./adr-017-executor-unique-identity.md) | 执行器唯一标识——设备指纹 + 安装实例盐（`address` 降级为可达性元数据，ARCH-34） | Proposed |
+| [ADR-017](./adr-017-executor-unique-identity.md) | 执行器唯一标识——设备指纹 + 安装实例盐（`address` 降级为可达性元数据，ARCH-34；阶段 3 已落地：指纹定位 + push 409 / pull 各自成行） | Accepted |
 | [ADR-018](./adr-018-executor-occupied-vs-running.md) | 心跳区分「已占槽位」与「在跑执行」——新增 `reservedSlots`（协议 3→4，E-01-RPT） | Accepted |
 | [ADR-019](./adr-019-center-agent-runtime.md) | 中台 Agent 运行时与隔离——独立队列 + 预算闸门 + fail-open 不回灌主链 | Accepted |
 | [ADR-020](./adr-020-agent-boundary-model.md) | 工具分级与边界闸门——五道检查 + 硬禁用不可配置 + scope 安全默认 | Accepted |

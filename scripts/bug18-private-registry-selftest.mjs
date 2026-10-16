@@ -255,17 +255,28 @@ function staticContractChecks() {
     pypi.includes('Uploaded {filename} (unchanged)') && pypiTests.includes('test_reupload_same_content_is_idempotent_200'));
   ok('PyPI changed duplicate is rejected 409 without overwrite',
     pypi.includes('status_code=409') && pypi.includes('overwriting published') && pypiTests.includes('test_reupload_different_content_rejected_409'));
+  // LANG-ZH-01：LANG-ZH-01 把执行器的**面向用户报错文案**中文化之后，下面这些
+  // 断言原先靠 grep 英文散文（'options are not allowed' / 'must not contain
+  // userinfo'）来证明「行为还在」——文案一翻译，守卫就假红。
+  //
+  // 判据改为**语言无关的功能标记**：断言的是会进 argv 的调用形态、被拒绝的
+  // 分支结构、以及**非散文**的标识符（`_validate_registry_url`、`userinfo`
+  // 是 URL 组件的技术名词，中英一致，不随面向用户文案翻译而变）。
+  // 这样守卫盯的是"护栏是否还在"，而不是"文案用了哪国语言"。
   ok('Python executor uses the validated configured index-url, not task-provided options',
     pyExecute.includes("install_args.extend(['--index-url', registry_url])") &&
-    pyExecute.includes('options are not allowed') &&
+    // requirement 以 '-' 开头（选项形态，--index-url 劫持向量）必须被拒。
+    pyExecute.includes('spec.strip().startswith(\'-\')') &&
     pyExecute.includes('_validate_registry_url'));
   ok('Python executor configuration has PYPI registry field',
     pyConfig.includes('pypi_registry_url: str'));
   ok('Python executor rejects credential-bearing PYPI_REGISTRY_URL',
     pyConfig.includes('validate_pypi_registry_url') &&
     pyConfig.includes('hide_input_in_errors=True') &&
-    pyConfig.includes('must not contain userinfo') &&
-    pyExecute.includes('must not contain userinfo'));
+    // userinfo/query/fragment 是 URL 组件的技术名词，中英一致——不随面向用户
+    // 文案翻译而变，故仍可作为「该拒绝分支还在」的稳定判据。
+    pyConfig.includes('userinfo') &&
+    pyExecute.includes('userinfo'));
   ok('Python dependency installs run under an isolated uv environment',
     pyExecute.includes('_build_install_env') &&
     pyExecute.includes("env['UV_NO_CONFIG'] = '1'") &&

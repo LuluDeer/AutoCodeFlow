@@ -150,7 +150,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
     try {
       await expect(
         downloadFile(`http://127.0.0.1:${port}/slow.zip`, dest, { timeoutMs: 400 }),
-      ).rejects.toThrow(/timed out/i);
+      ).rejects.toThrow(/下载超时/);
     } finally {
       await closeServer(server, sockets);
     }
@@ -166,7 +166,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
     try {
       await expect(
         downloadFile(`http://127.0.0.1:${port}/big.zip`, dest, { maxBytes: 100 }),
-      ).rejects.toThrow(/size limit/i);
+      ).rejects.toThrow(/下载体积超过上限/);
       // the partial download must not linger
       await expectFileGone(dest);
     } finally {
@@ -183,7 +183,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
     const dest = tempDest();
     try {
       await expect(downloadFile(`http://127.0.0.1:${port}/missing.zip`, dest)).rejects.toThrow(
-        /status 404/,
+        /下载失败，HTTP 状态码 404/,
       );
       await expectFileGone(dest);
     } finally {
@@ -216,7 +216,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
       // 等下载真正挂起（写流已开、响应已到），再 abort。
       await new Promise((r) => setTimeout(r, 150));
       controller.abort();
-      await expect(pending).rejects.toThrow(/Download aborted/);
+      await expect(pending).rejects.toThrow(/下载已中止/);
       await expectFileGone(dest);
     } finally {
       await closeServer(server, sockets);
@@ -252,7 +252,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
       });
       await new Promise((r) => setTimeout(r, 150));
       controller.abort();
-      await expect(pending).rejects.toThrow(/Download aborted/);
+      await expect(pending).rejects.toThrow(/下载已中止/);
       await expectFileGone(dest);
     } finally {
       await closeServer(serverA);
@@ -276,7 +276,7 @@ describe('downloadFile (shared Bearer downloader)', () => {
       controller.abort();
       await expect(
         downloadFile(`http://127.0.0.1:${port}/pkg.zip`, dest, { signal: controller.signal }),
-      ).rejects.toThrow(/Download aborted/);
+      ).rejects.toThrow(/下载已中止/);
       await new Promise((r) => setTimeout(r, 50));
       expect(requests).toBe(0);
     } finally {

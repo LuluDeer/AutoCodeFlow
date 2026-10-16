@@ -1,12 +1,7 @@
-import {
-  Controller,
-  Get,
-  NotFoundException,
-  Query,
-  Res,
-  UseGuards,
-} from "@nestjs/common";
+import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
 import { Response } from "express";
+// LANG-ERR-01：用户/抓取方可见的错误走稳定码
+import { AppError } from "../../common/errors/app-error";
 import {
   ApiTags,
   ApiBearerAuth,
@@ -52,24 +47,22 @@ export class MetricsController {
    */
   @Get()
   @ApiOperation({
-    summary: "Prometheus metrics endpoint",
     description:
-      "Prometheus text exposition format: scheduler counters (autoflow_scheduler_*), BullMQ queue depth gauges (autoflow_queue_*) and process default metrics (CPU/memory/GC). Requires JWT; disable entirely with METRICS_PROMETHEUS_ENABLED=false.",
+      "Prometheus 文本 exposition 格式：调度器计数器（autoflow_scheduler_*）、BullMQ 队列深度 gauge（autoflow_queue_*）以及进程默认指标（CPU/内存/GC）。需要 JWT；可用 METRICS_PROMETHEUS_ENABLED=false 完全关闭该端点。",
+    summary: "Prometheus 指标端点",
   })
   @ApiResponse({
     status: 200,
-    description: "Prometheus text exposition format",
+    description: "Prometheus 文本 exposition 格式",
     content: { "text/plain": { schema: { type: "string" } } },
   })
   @ApiResponse({
     status: 404,
-    description: "Endpoint disabled via METRICS_PROMETHEUS_ENABLED=false",
+    description: "端点已通过 METRICS_PROMETHEUS_ENABLED=false 关闭",
   })
   async getPrometheusMetrics(@Res() res: Response): Promise<void> {
     if (!this.prometheusSvc.enabled) {
-      throw new NotFoundException(
-        "Prometheus metrics endpoint is disabled (METRICS_PROMETHEUS_ENABLED=false)",
-      );
+      throw new AppError("METRICS_ENDPOINT_DISABLED");
     }
     const body = await this.prometheusSvc.render();
     res.setHeader("Content-Type", this.prometheusSvc.contentType);

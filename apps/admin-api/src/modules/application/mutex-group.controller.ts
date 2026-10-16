@@ -37,9 +37,7 @@ export class MutexGroupController {
   constructor(private readonly mutexGroupService: MutexGroupService) {}
 
   @Get()
-  @ApiOperation({
-    summary: "List mutex groups (for app form dropdown & admin)",
-  })
+  @ApiOperation({ summary: "列出互斥组（供应用表单下拉与后台管理使用）" })
   @ApiOkResponse({ type: [MutexGroupResponseDto] })
   async findAll(): Promise<MutexGroupResponseDto[]> {
     return this.mutexGroupService.findAll();
@@ -47,7 +45,7 @@ export class MutexGroupController {
 
   @Post()
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Create a mutex group" })
+  @ApiOperation({ summary: "创建互斥组" })
   @ApiCreatedResponse({ type: MutexGroupResponseDto })
   async create(
     @Body() dto: CreateMutexGroupDto,
@@ -57,9 +55,7 @@ export class MutexGroupController {
 
   @Put(":id")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({
-    summary: "Update a mutex group (name / maxConcurrentPerDevice)",
-  })
+  @ApiOperation({ summary: "更新互斥组（名称 / maxConcurrentPerDevice）" })
   @ApiOkResponse({ type: MutexGroupResponseDto })
   async update(
     @Param("id", ParseUUIDPipe) id: string,
@@ -70,9 +66,7 @@ export class MutexGroupController {
 
   @Delete(":id")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({
-    summary: "Delete a mutex group (attached apps become ungrouped)",
-  })
+  @ApiOperation({ summary: "删除互斥组（已关联的应用会变为未分组）" })
   @ApiQuery({
     name: "force",
     required: false,

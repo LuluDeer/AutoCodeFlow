@@ -116,7 +116,7 @@ def test_mirror_rejects_credentials_query_fragment(url):
     with pytest.raises(ValueError) as exc:
         make_settings(uv_python_install_mirror=url)
 
-    assert 'must not contain userinfo, query, or fragment' in str(exc.value)
+    assert '不得包含 userinfo、query 或 fragment' in str(exc.value)
 
 
 @pytest.mark.parametrize('url', [
@@ -130,7 +130,7 @@ def test_mirror_rejects_non_http_or_malformed(url):
     with pytest.raises(ValueError) as exc:
         make_settings(uv_python_install_mirror=url)
 
-    assert 'UV_PYTHON_INSTALL_MIRROR must be a valid http(s) URL' in str(exc.value)
+    assert 'UV_PYTHON_INSTALL_MIRROR 必须是合法的 http(s) URL' in str(exc.value)
 
 
 def test_mirror_validation_does_not_echo_secret():
@@ -179,7 +179,7 @@ def test_download_timeout_rejects_out_of_range(value):
     with pytest.raises(ValueError) as exc:
         make_settings(interpreter_download_timeout_seconds=value)
 
-    assert 'INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS must be in [1, 86400]' in str(exc.value)
+    assert 'INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS 必须在 [1, 86400] 之间' in str(exc.value)
 
 
 @pytest.mark.parametrize('value', [64, 250, 1024])
@@ -192,7 +192,7 @@ def test_single_version_mb_rejects_nonsense(value):
     with pytest.raises(ValueError) as exc:
         make_settings(interpreter_single_version_mb=value)
 
-    assert 'INTERPRETER_SINGLE_VERSION_MB must be >= 64' in str(exc.value)
+    assert 'INTERPRETER_SINGLE_VERSION_MB 必须 >= 64' in str(exc.value)
 
 
 @pytest.mark.parametrize('value', [0, -4])
@@ -200,7 +200,7 @@ def test_total_gb_rejects_nonsense(value):
     with pytest.raises(ValueError) as exc:
         make_settings(interpreter_total_gb=value)
 
-    assert 'INTERPRETER_TOTAL_GB must be >= 1' in str(exc.value)
+    assert 'INTERPRETER_TOTAL_GB 必须 >= 1' in str(exc.value)
 
 
 def test_single_version_cap_must_not_exceed_total_pool_cap():
@@ -208,7 +208,7 @@ def test_single_version_cap_must_not_exceed_total_pool_cap():
     with pytest.raises(ValueError) as exc:
         make_settings(interpreter_single_version_mb=4096, interpreter_total_gb=1)
 
-    assert 'INTERPRETER_SINGLE_VERSION_MB must not exceed' in str(exc.value)
+    assert 'INTERPRETER_SINGLE_VERSION_MB 不得超过' in str(exc.value)
 
     # 边界等值合法（250MB 单版本 + 1GB 总池）
     assert make_settings(
@@ -248,7 +248,7 @@ def test_version_bounds_must_be_ordered():
     with pytest.raises(ValueError) as exc:
         make_settings(python_runtime_version_min='3.14', python_runtime_version_max='3.7')
 
-    assert 'PYTHON_RUNTIME_VERSION_MIN must not be greater' in str(exc.value)
+    assert 'PYTHON_RUNTIME_VERSION_MIN 不得大于' in str(exc.value)
 
 
 def test_version_bounds_numeric_not_lexicographic():

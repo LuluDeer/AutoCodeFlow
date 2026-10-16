@@ -226,9 +226,7 @@ describe("ExecutorController", () => {
       .catch((e) => e);
     expect(err).toBeInstanceOf(BadGatewayException);
     expect(err.getStatus()).toBe(502);
-    expect(err.message).toContain(
-      "Executor executor.local:8001 rejected the config push with 401 even after a token re-issue retry",
-    );
+    expect(err.message).toContain("重签令牌重试后仍以 401 拒收配置推送");
     expect(err.message).toContain("rotate-token");
     // F-8: 仍不回显 axios 错误文本
     expect(err.message).not.toContain("Invalid or missing executor token");
@@ -265,7 +263,7 @@ describe("ExecutorController", () => {
 
     await expect(
       controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
-    ).rejects.toThrow("Failed to reach executor");
+    ).rejects.toThrow("无法触达执行器");
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(svc.issueToken).toHaveBeenCalledTimes(1);
   });
@@ -475,8 +473,8 @@ describe("ExecutorController", () => {
       expect(err).toBeInstanceOf(BadGatewayException);
       expect(err.getStatus()).toBe(502);
       expect(err.message).toContain("executor.local:8001");
-      expect(err.message).toContain("even after a token re-issue retry");
-      expect(err.message).toContain("one heartbeat");
+      expect(err.message).toContain("重签令牌重试后仍以 401 拒收配置推送");
+      expect(err.message).toContain("一个心跳");
       expect(err.message).toContain("rotate-token");
       expect(retryCount("still_unauthorized")).toBe(1);
       expect(retryCount("reissued_success")).toBe(0);
@@ -503,7 +501,7 @@ describe("ExecutorController", () => {
 
       await expect(
         controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
-      ).rejects.toThrow("Failed to reach executor");
+      ).rejects.toThrow("无法触达执行器");
       expect(svc.issueToken).toHaveBeenCalledTimes(1);
       expect(mockedAxios.post).toHaveBeenCalledTimes(1);
       expect(retryCount("reissued_success")).toBe(0);

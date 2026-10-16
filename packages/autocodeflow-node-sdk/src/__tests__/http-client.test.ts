@@ -233,6 +233,111 @@ describe('HttpClient', () => {
         );
       });
     });
+
+    // ADR-017 阶段 3 (protocol v6): the callback face's row identity. The
+    // shared/legacy callback token binds to no executor row and pull mode
+    // lets several rows share one address, so `executorAddress` alone cannot
+    // attribute a callback — `deviceFingerprint` can.
+    describe('deviceFingerprint auto-fill (ADR-017 phase 3)', () => {
+      const ADDR = 'executor-node:8002';
+      const FP =
+        '3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9';
+
+      it('stamps deviceFingerprint when the env provides it', async () => {
+        mockInstance.post.mockResolvedValue({ data: { results: [] } });
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, ADDR, undefined, FP);
+        await client.post('/api/executions/callback', [
+          { executionId: 'e1', status: 'success' },
+        ]);
+        expect(mockInstance.post).toHaveBeenCalledWith(
+          '/api/executions/callback',
+          [{ executionId: 'e1', status: 'success', executorAddress: ADDR, deviceFingerprint: FP }],
+          undefined,
+        );
+      });
+
+      it('omits deviceFingerprint entirely when unknown (never empty string)', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        // address known, fingerprint unknown → address only.
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, ADDR);
+        await client.post('/api/executions/callback', [{ executionId: 'e1' }]);
+        const [, items] = mockInstance.post.mock.calls[0] as [
+          string,
+          Array<Record<string, unknown>>,
+        ];
+        expect(items[0]).toHaveProperty('executorAddress', ADDR);
+        expect(items[0]).not.toHaveProperty('deviceFingerprint');
+      });
+
+      it('stamps only deviceFingerprint when the address is unknown', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, undefined, FP);
+        await client.post('/api/executions/callback', [{ executionId: 'e1' }]);
+        const [, items] = mockInstance.post.mock.calls[0] as [
+          string,
+          Array<Record<string, unknown>>,
+        ];
+        expect(items[0]).toEqual({ executionId: 'e1', deviceFingerprint: FP });
+        expect(items[0]).not.toHaveProperty('executorAddress');
+      });
+
+      it('never overwrites an explicitly provided fingerprint', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, ADDR, undefined, FP);
+        await client.post('/api/executions/callback', [
+          { executionId: 'e1', deviceFingerprint: 'explicit-fp' },
+        ]);
+        const [, items] = mockInstance.post.mock.calls[0] as [
+          string,
+          Array<Record<string, unknown>>,
+        ];
+        expect(items[0].deviceFingerprint).toBe('explicit-fp');
+      });
+
+      it('leaves non-callback posts untouched', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, ADDR, undefined, FP);
+        await client.post('/items', { name: 'x' });
+        expect(mockInstance.post).toHaveBeenCalledWith('/items', { name: 'x' }, undefined);
+      });
+
+      it('forAdminApi wires env.deviceFingerprint into the client', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = HttpClient.forAdminApi({
+          executionId: 'e',
+          taskId: 't',
+          taskName: 'n',
+          adminApiUrl: BASE_URL,
+          executorToken: TOKEN,
+          executorAddress: ADDR,
+          deviceFingerprint: FP,
+        });
+        await client.post('/api/executions/callback', [{ executionId: 'e' }]);
+        expect(mockInstance.post).toHaveBeenCalledWith(
+          '/api/executions/callback',
+          [{ executionId: 'e', executorAddress: ADDR, deviceFingerprint: FP }],
+          undefined,
+        );
+      });
+
+      it('forAdminApi omits the key when the env lacks a fingerprint', async () => {
+        mockInstance.post.mockResolvedValue({ data: {} });
+        const client = HttpClient.forAdminApi({
+          executionId: 'e',
+          taskId: 't',
+          taskName: 'n',
+          adminApiUrl: BASE_URL,
+          executorToken: TOKEN,
+          executorAddress: ADDR,
+        });
+        await client.post('/api/executions/callback', [{ executionId: 'e' }]);
+        const [, items] = mockInstance.post.mock.calls[0] as [
+          string,
+          Array<Record<string, unknown>>,
+        ];
+        expect(items[0]).not.toHaveProperty('deviceFingerprint');
+      });
+    });
   });
 
   describe('put()', () => {

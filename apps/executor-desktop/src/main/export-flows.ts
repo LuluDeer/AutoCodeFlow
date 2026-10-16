@@ -82,6 +82,9 @@ export const IMPORTABLE_CONFIG_KEYS = [
   'autoStartExecutor',
   'notifyEnabled',
   'logLevel',
+  // i18n-DESK-01：界面语言设置（zh/en/auto，默认 zh）。进白名单 = 配置备份
+  // 跨机迁移时语言设置一并带走（导入侧仍走同一消毒通道，落盘前 clamp）。
+  'uiLanguage',
   'uvPath',
   'uvPythonInstallDir',
   'uvPythonInstallMirror',

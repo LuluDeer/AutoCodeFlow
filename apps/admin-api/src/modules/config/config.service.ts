@@ -1,10 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-  Optional,
-} from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -15,6 +9,11 @@ import { UpsertConfigDto } from "./dto/upsert-config.dto";
 // 公共设施（cappedBatchedDelete 分批 + LeaderGate 门禁，ARCH-31 §5 铁律）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 interface HistoryOptions {
   // PK-21（DEEP_REVIEW 0ef3bbe）：userId 对齐全库 integer 形态
@@ -57,7 +56,7 @@ export class SystemConfigService {
 
   async findOne(key: string): Promise<SystemConfig> {
     const config = await this.repo.findOneBy({ key });
-    if (!config) throw new NotFoundException(`Config key "${key}" not found`);
+    if (!config) throw new AppError(ErrorCode.CONFIG_ITEM_NOT_FOUND, { key });
     return config;
   }
 
@@ -134,7 +133,7 @@ export class SystemConfigService {
     options?: HistoryOptions,
   ): Promise<{ deleted: boolean }> {
     const config = await this.repo.findOneBy({ key });
-    if (!config) throw new NotFoundException(`Config key "${key}" not found`);
+    if (!config) throw new AppError(ErrorCode.CONFIG_ITEM_NOT_FOUND, { key });
 
     await this.recordHistory(this.historyRepo, {
       configKey: key,
@@ -243,8 +242,9 @@ export class SystemConfigService {
     options?: HistoryOptions,
   ): Promise<SystemConfig | { deleted: true }> {
     const history = await this.historyRepo.findOneBy({ id: historyId });
-    if (!history)
-      throw new NotFoundException(`History record "${historyId}" not found`);
+    if (!history) {
+      throw new AppError(ErrorCode.CONFIG_HISTORY_NOT_FOUND, { historyId });
+    }
 
     if (history.action === "create") {
       const existing = await this.repo.findOneBy({ key: history.configKey });
@@ -266,9 +266,9 @@ export class SystemConfigService {
     }
 
     if (history.action !== "delete" && history.oldValue == null) {
-      throw new BadRequestException(
-        `History record "${historyId}" has no oldValue to roll back to`,
-      );
+      throw new AppError(ErrorCode.CONFIG_HISTORY_NO_ROLLBACK_VALUE, {
+        historyId,
+      });
     }
 
     const current = await this.repo.findOneBy({ key: history.configKey });
@@ -277,9 +277,10 @@ export class SystemConfigService {
       history.oldValue === "***" &&
       (current?.isSecret || history.isSecret === true)
     ) {
-      throw new BadRequestException(
-        `History record "${historyId}" only holds the '***' mask for secret key "${history.configKey}"; refusing to write the mask back as a real value`,
-      );
+      throw new AppError(ErrorCode.CONFIG_HISTORY_SECRET_MASK_ROLLBACK, {
+        historyId,
+        configKey: history.configKey,
+      });
     }
 
     const dto: UpsertConfigDto = {
@@ -326,16 +327,17 @@ export class SystemConfigService {
   async validateConfig(dto: UpsertConfigDto): Promise<void> {
     const allowedTypes = ["string", "number", "boolean", "json"];
     if (dto.valueType && !allowedTypes.includes(dto.valueType)) {
-      throw new BadRequestException(
-        `Invalid valueType: ${dto.valueType}. Allowed types: ${allowedTypes.join(", ")}`,
-      );
+      throw new AppError(ErrorCode.CONFIG_VALUE_TYPE_INVALID, {
+        valueType: dto.valueType,
+        allowedTypes: allowedTypes.join(", "),
+      });
     }
 
     if (dto.valueType === "json") {
       try {
         JSON.parse(dto.value ?? "null");
       } catch {
-        throw new BadRequestException("Invalid JSON value");
+        throw new AppError(ErrorCode.CONFIG_JSON_VALUE_INVALID);
       }
     }
 
@@ -343,11 +345,11 @@ export class SystemConfigService {
       dto.valueType === "boolean" &&
       !["true", "false"].includes(dto.value?.toLowerCase() ?? "")
     ) {
-      throw new BadRequestException('Boolean value must be "true" or "false"');
+      throw new AppError(ErrorCode.CONFIG_BOOLEAN_VALUE_INVALID);
     }
 
     if (dto.valueType === "number" && isNaN(parseFloat(dto.value ?? ""))) {
-      throw new BadRequestException("Invalid number value");
+      throw new AppError(ErrorCode.CONFIG_NUMBER_VALUE_INVALID);
     }
   }
 

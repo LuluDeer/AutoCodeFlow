@@ -15,5 +15,5 @@
 #
 # 变更记录：
 #   - N-06 首版基线：worker 拆分 + playwright 分发接线（host=esbuild 7101KB）。
-source-digest: c6d8cd4fd9ef3f42bcbb61bf32ced11a97cff2b4c5c07a40503dc385da8edad7
-70426e3e5352a329f1a14f00673bec214e2b550751d82a9480a7c45e910f2958  dist/index.js
+source-digest: bcd4a7fb9bb1306f2a80c15db90fcc2ebee5d34076dc8667dd5c19fe7a4b85fc
+61e36c565516ad457d4bbb57a159ef554e44b64b905d1ccc24b6bb6588e80208  dist/index.js

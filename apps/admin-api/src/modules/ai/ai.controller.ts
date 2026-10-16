@@ -89,7 +89,7 @@ export class AiController {
   // RolesGuard reads this metadata; no extra @UseGuards entry is needed.
   @Get("config")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Get current AI configuration" })
+  @ApiOperation({ summary: "获取当前 AI 配置" })
   @ApiOkResponse({ type: AiConfigResponseDto })
   async getConfig() {
     const effective = await this.aiService.getEffectiveConfig();
@@ -103,7 +103,7 @@ export class AiController {
   @Post("config")
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Save AI configuration to system config store" })
+  @ApiOperation({ summary: "将 AI 配置保存到系统配置存储" })
   @ApiOkResponse({ type: AiConfigSaveResponseDto })
   async saveConfig(@Body() dto: SaveAiConfigDto) {
     const items: Array<{
@@ -115,50 +115,50 @@ export class AiController {
       {
         key: "ai.provider",
         value: dto.provider,
-        description: "AI provider: disabled | openai | ollama | qwen",
+        description: "AI 提供方：disabled | openai | ollama | qwen",
       },
       {
         key: "ai.openaiModel",
         value: dto.openaiModel ?? "gpt-4o-mini",
-        description: "OpenAI model name",
+        description: "OpenAI 模型名称",
       },
       {
         key: "ai.openaiBaseUrl",
         value: dto.openaiBaseUrl ?? "https://api.openai.com/v1",
-        description: "OpenAI-compatible API base URL",
+        description: "OpenAI 兼容 API 基础 URL",
       },
       {
         key: "ai.ollamaHost",
         value: dto.ollamaHost ?? "http://localhost:11434",
-        description: "Ollama host URL",
+        description: "Ollama 主机 URL",
       },
       {
         key: "ai.ollamaModel",
         value: dto.ollamaModel ?? "llama3",
-        description: "Ollama model name",
+        description: "Ollama 模型名称",
       },
       // P1: Qwen / DashScope 多模态配置
       {
         key: "ai.qwenModel",
         value: dto.qwenModel ?? "qwen-vl-max",
-        description: "Qwen model name (multimodal: text + image + video)",
+        description: "Qwen 模型名称（多模态：文本 + 图像 + 视频）",
       },
       {
         key: "ai.qwenBaseUrl",
         value:
           dto.qwenBaseUrl ??
           "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        description: "Qwen / DashScope OpenAI-compatible base URL",
+        description: "Qwen / DashScope 的 OpenAI 兼容基础 URL",
       },
       {
         key: "ai.qwenMaxTokens",
         value: dto.qwenMaxTokens ?? "4096",
-        description: "Qwen max_tokens (independent of openai's 500)",
+        description: "Qwen max_tokens（与 OpenAI 的 500 相互独立）",
       },
       {
         key: "ai.qwenTimeoutMs",
         value: dto.qwenTimeoutMs ?? "120000",
-        description: "Qwen request timeout ms (video understanding is slow)",
+        description: "Qwen 请求超时毫秒数（视频理解较慢）",
       },
     ];
 
@@ -168,7 +168,7 @@ export class AiController {
         key: "ai.openaiApiKey",
         value: dto.openaiApiKey,
         isSecret: true,
-        description: "OpenAI API key (sensitive)",
+        description: "OpenAI API 密钥（敏感）",
       });
     }
 
@@ -178,7 +178,7 @@ export class AiController {
         key: "ai.qwenApiKey",
         value: dto.qwenApiKey,
         isSecret: true,
-        description: "Qwen / DashScope API key (sensitive)",
+        description: "Qwen / DashScope API 密钥（敏感）",
       });
     }
 
@@ -195,9 +195,7 @@ export class AiController {
   @Post("test")
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: "Test current AI configuration with a sample prompt",
-  })
+  @ApiOperation({ summary: "用示例提示词测试当前 AI 配置" })
   @ApiOkResponse({ type: AiTestResponseDto })
   async testConfig() {
     const result = await this.aiService.analyzeFailure(

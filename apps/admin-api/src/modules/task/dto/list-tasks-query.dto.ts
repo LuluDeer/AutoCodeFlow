@@ -82,7 +82,7 @@ export class ListTasksQueryDto extends PaginationDto {
    */
   @ApiPropertyOptional({
     description:
-      "Fuzzy match on the task NAME only (backward-compatible channel; CLI/MCP use it). For the console search box — which promises name OR description — use `q` instead.",
+      "仅对任务**名称**做模糊匹配（向后兼容通道；CLI/MCP 使用它）。控制台搜索框承诺的是「任务名或描述」，请改用 `q`。",
   })
   @IsOptional()
   @IsString()
@@ -106,7 +106,7 @@ export class ListTasksQueryDto extends PaginationDto {
    */
   @ApiPropertyOptional({
     description:
-      "Keyword search across BOTH task name and description (LIKE metacharacters match literally). This is what the console search box sends.",
+      "跨任务名称**与**描述的关键字检索（LIKE 元字符按字面量匹配）。控制台搜索框发送的就是这个参数。",
   })
   @IsOptional()
   @IsString()

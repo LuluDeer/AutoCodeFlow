@@ -20,13 +20,12 @@ export class AppDeploymentResponseDto {
   applicationId: string;
 
   @ApiPropertyOptional({
-    description:
-      "Parent application (masked read surface — env secrets are '***')",
     type: ApplicationResponseDto,
+    description: "父应用（已掩码读面 —— env 中的 secret 为 '***'）",
   })
   application?: ApplicationResponseDto;
 
-  @ApiProperty({ description: "Executor address the app runs on" })
+  @ApiProperty({ description: "该应用运行所在执行器的地址" })
   executorAddress: string;
 
   @ApiProperty({ nullable: true, format: "uuid" })
@@ -42,95 +41,92 @@ export class AppDeploymentResponseDto {
   runMode: "once" | "daemon" | "scheduled";
 
   @ApiProperty({
-    description: "Git commit when deployed from git source",
     nullable: true,
+    description: "从 git 源部署时的 git commit",
   })
   deployedCommit: string | null;
 
   @ApiProperty({
-    description: "Version actually deployed (upgrade/rollback rewrites it)",
     nullable: true,
+    description: "实际部署的版本（升级/回滚会改写它）",
   })
   deployedVersion: string | null;
 
   @ApiProperty({
-    description: "Launch command snapshot (rollback/upgrade may rewrite it)",
     nullable: true,
+    description: "启动命令快照（回滚/升级可能改写它）",
   })
   startCommand: string | null;
 
   @ApiProperty({
-    description: "Deploy-time env snapshot, MASKED on every read surface (QA1)",
     nullable: true,
     additionalProperties: { type: "string" },
+    description: "部署时刻的 env 快照，在所有读面均被掩码（QA1）",
   })
   env: Record<string, string> | null;
 
   @ApiProperty({
-    description: "App process pid on the executor (heartbeat-maintained)",
     nullable: true,
+    description: "应用进程在执行器上的 pid（由心跳维护）",
   })
   pid: number | null;
 
   @ApiProperty({
-    description: "Last executor heartbeat for this deployment",
     nullable: true,
+    description: "该部署对应的最近一次执行器心跳",
   })
   lastHeartbeat: Date | null;
 
   @ApiProperty({
-    description:
-      "Last state transition message (stall/dup-deploy guards write here)",
     nullable: true,
+    description: "最近一次状态跃迁消息（停滞/重复部署防护在此写入）",
   })
   statusMessage: string | null;
 
   @ApiProperty({
-    description: "Most recent deployment completion time",
     nullable: true,
+    description: "最近一次部署完成时间",
   })
   deployedAt: Date | null;
 
   @ApiProperty({
-    description: "Canary rollout phase (DEP-02); null = not part of a batch",
     nullable: true,
     enum: ["pending", "probing", "promoted", "failed", "rolled_back"],
+    description: "金丝雀发布阶段（DEP-02）；null = 不属于任何批次",
   })
   rolloutState: string | null;
 
   @ApiProperty({
-    description: "Canary batch metadata (batchId/canaryIds/leasedBy...)",
     nullable: true,
     additionalProperties: true,
+    description: "金丝雀批次元数据（batchId/canaryIds/leasedBy...）",
   })
   rolloutMeta: Record<string, unknown> | null;
 
   @ApiProperty({
-    description:
-      "DEP-04 second-person approval state; null = approval not required",
     nullable: true,
     enum: ["pending_approval", "approved", "rejected"],
+    description: "DEP-04 第二人审批状态；null = 无需审批",
   })
   approvalStatus: string | null;
 
   @ApiProperty({
-    description: "Approval trail (actor/reason/timestamps)",
     nullable: true,
     additionalProperties: true,
+    description: "审批轨迹（操作者/原因/时间戳）",
   })
   approvalMeta: Record<string, unknown> | null;
 
   @ApiProperty({
-    description:
-      "Trigger semantics (FEAT-20 persisted column); null = legacy row",
     nullable: true,
     enum: ["manual", "upgrade", "rollback", "approval"],
+    description: "触发语义（FEAT-20 持久化列）；null = legacy 行",
   })
   triggerType: string | null;
 
   @ApiProperty({
-    description: "JWT username of the operator (FEAT-20)",
     nullable: true,
+    description: "操作者的 JWT 用户名（FEAT-20）",
   })
   operator: string | null;
 
@@ -140,9 +136,7 @@ export class AppDeploymentResponseDto {
   @ApiProperty()
   updatedAt: Date;
 
-  @ApiProperty({
-    description: "Optimistic-lock @VersionColumn (TypeORM version column)",
-  })
+  @ApiProperty({ description: "乐观锁 @VersionColumn（TypeORM 版本列）" })
   version: number;
 }
 
@@ -178,9 +172,9 @@ export class AppDeploymentStatsDto {
   failed: number;
 
   @ApiProperty({
+    nullable: true,
     description:
       "最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null",
-    nullable: true,
   })
   lastDeployedAt: string | null;
 }
@@ -190,15 +184,14 @@ export class DeploymentRemoveResponseDto {
   @ApiProperty({ enum: [true] })
   ok: true;
 
-  @ApiProperty({ description: "The removed deployment id" })
+  @ApiProperty({ description: "被删除的部署 ID" })
   deletedId: string;
 }
 
 /** POST /applications/:id/upgrade-all（DEP-02 灰度/全量升级的批次回执）。 */
 export class UpgradeAllResponseDto {
   @ApiProperty({
-    description:
-      "false = canary batch rejected (ARCH-31 in-flight mutual exclusion) or all failed",
+    description: "false = 金丝雀批次被拒绝（ARCH-31 在途互斥）或全部失败",
   })
   ok: boolean;
 
@@ -208,7 +201,7 @@ export class UpgradeAllResponseDto {
   })
   version?: string;
 
-  @ApiProperty({ description: "Running deployments at trigger time" })
+  @ApiProperty({ description: "触发时刻运行中的部署数" })
   total: number;
 
   @ApiProperty()
@@ -218,8 +211,6 @@ export class UpgradeAllResponseDto {
   failed: number;
 
   @ApiPropertyOptional({
-    description:
-      "Present when a canary batch was actually started (or blocked)",
     type: "object",
     properties: {
       batchId: { type: "string" },
@@ -228,11 +219,11 @@ export class UpgradeAllResponseDto {
       promotedIds: { type: "array", items: { type: "string", format: "uuid" } },
       blockedReason: {
         type: "string",
-        description:
-          "ARCH-31: in-flight batch on the same app (cross-instance mutual exclusion, not an exception)",
+        description: "ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常）",
       },
     },
     required: ["batchId", "strategy", "canaryIds", "promotedIds"],
+    description: "在实际启动了金丝雀批次（或被阻塞）时出现",
   })
   rollout?: {
     batchId: string;
@@ -264,32 +255,31 @@ export class ApplicationRollbackResponseDto {
 
   @ApiPropertyOptional({
     type: UpgradeAllResponseDto,
-    description: "Spread of the triggered upgrade-all batch receipt",
+    description: "透传所触发的 upgrade-all 批次回执",
   })
   rollout?: UpgradeAllResponseDto;
 
   @ApiProperty({
-    description:
-      "Version the app was rolled back to (deployedVersion for legacy path)",
+    description: "应用回滚到的版本（legacy 路径下取 deployedVersion）",
   })
   rolledBackTo: string | null;
 
   @ApiProperty({
-    description:
-      "application_versions.id when the snapshot path was taken; null = legacy deployment-row path",
     nullable: true,
     format: "uuid",
+    description:
+      "走快照路径时为 application_versions.id；null = 走了 legacy 部署行路径",
   })
   versionId: string | null;
 
   @ApiPropertyOptional({
-    description: "Only on the legacy path (always false there — R16)",
+    description: "仅在 legacy 路径下出现（该路径下恒为 false —— R16）",
   })
   packageUrlRestored?: boolean;
 
   @ApiProperty({
     type: ApplicationResponseDto,
-    description: "The restored application row (masked)",
+    description: "恢复后的应用行（已掩码）",
   })
   updatedApp: ApplicationResponseDto;
 }

@@ -1,7 +1,7 @@
 // UI-10 i18n 基础设施专项测试：
 //  - 中英字典 key 集合一致（缺 key 会导致英文环境回退中文——静默但非预期，
 //    用集合比对把「漏翻」变成测试失败）；
-//  - detectLanguage 默认 zh、localStorage 显式切换生效；
+//  - detectLanguage 优先级 = localStorage 显式切换 > 浏览器语言（zh*→zh，其余→en）> 默认 en；
 //  - setLanguage 切换后实例读取新文案（语言切换闭环）。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import zh from '../locales/zh';
@@ -27,8 +27,23 @@ describe('UI-10 i18n 基础设施', () => {
     expect(zhKeys.length).toBeGreaterThan(0);
   });
 
-  it('无 localStorage 设置时默认中文（产品基线）', () => {
+  // LANG-DEFAULT：产品要求「默认是英文，但优先跟随浏览器/系统语言」——故
+  // 判定链是「已保存 > 浏览器语言 > 默认英文」。这里按**系统语言**逐个钉住，
+  // 而不是只测一个方向：只测 en-US→en 会漏掉「未支持语言错误地掉回中文」这个
+  // 真实回归形态（旧实现是 startsWith('en') ? 'en' : 'zh'，fr 会拿到中文）。
+  it('无 localStorage 设置时跟随浏览器语言：zh* → 中文', () => {
+    vi.spyOn(window.navigator, 'language', 'get').mockReturnValue('zh-CN');
     expect(detectLanguage()).toBe('zh');
+  });
+
+  it('无 localStorage 设置时跟随浏览器语言：en* → 英文', () => {
+    vi.spyOn(window.navigator, 'language', 'get').mockReturnValue('en-US');
+    expect(detectLanguage()).toBe('en');
+  });
+
+  it('无 localStorage 设置且浏览器语言未支持（fr）→ 默认英文', () => {
+    vi.spyOn(window.navigator, 'language', 'get').mockReturnValue('fr-FR');
+    expect(detectLanguage()).toBe('en');
   });
 
   it('localStorage 显式设置后 detectLanguage 返回对应语言', () => {

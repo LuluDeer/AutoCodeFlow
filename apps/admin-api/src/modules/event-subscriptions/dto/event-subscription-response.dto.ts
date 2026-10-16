@@ -19,74 +19,69 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * `generatedSecret` 一次性回显）。契约按**真实返回**声明。
  */
 export class EventSubscriptionResponseDto {
-  @ApiProperty({ description: "Subscription UUID", format: "uuid" })
+  @ApiProperty({
+    format: "uuid",
+    description: "订阅 UUID",
+  })
   id: string;
 
   @ApiPropertyOptional({
-    description:
-      "Owner user id (integer). null = system-level subscription (ADMIN-managed, " +
-      "visible to every admin and to all users for troubleshooting reads).",
     nullable: true,
     type: "number",
+    description:
+      "属主用户 ID（整数）。null = 系统级订阅（由 ADMIN 管理，对所有管理员可见，并为排查问题向所有用户开放读权限）。",
   })
   userId: number | null;
 
   @ApiProperty({
-    description:
-      "Subscribed event names (stable catalog, append-only): execution.completed / " +
-      "execution.failed / executor.offline / deployment.completed",
     type: "array",
     items: { type: "string" },
     example: ["execution.failed"],
+    description:
+      "订阅的事件名（稳定目录，只增不改）：execution.completed / execution.failed / executor.offline / deployment.completed",
   })
   eventTypes: string[];
 
   @ApiProperty({
-    description:
-      "Callback URL (public http(s); SSRF deep-validated on write and re-checked " +
-      "before every outbound delivery)",
     maxLength: 2048,
+    description:
+      "回调 URL（公网 http(s)；写入时做 SSRF 深度校验，并在每次外发投递前重新检查）",
   })
   url: string;
 
   @ApiProperty({
-    description:
-      "HMAC signing secret — always the mask placeholder '******' on every read " +
-      "surface (plaintext returned once as generatedSecret on create only)",
     example: "******",
+    description:
+      "HMAC 签名 secret —— 在所有读面恒为掩码占位符 '******'（明文仅在创建时以 generatedSecret 返回一次）",
   })
   secret: string;
 
-  @ApiProperty({ description: "Whether delivery is enabled" })
+  @ApiProperty({ description: "是否启用投递" })
   enabled: boolean;
 
-  @ApiProperty({
-    description: "Consecutive delivery failures (reset to 0 on any success)",
-  })
+  @ApiProperty({ description: "连续投递失败次数（任一次成功即重置为 0）" })
   consecutiveFailures: number;
 
   @ApiPropertyOptional({
-    description:
-      "Timestamp of the most recent delivery failure; null = never failed",
     nullable: true,
     type: "string",
     format: "date-time",
+    description: "最近一次投递失败的时间戳；null = 从未失败",
   })
   lastFailureAt: Date | null;
 
   @ApiPropertyOptional({
-    description:
-      "Most recent failure summary (truncated to 512; never contains secret/payload)",
     nullable: true,
     type: "string",
     maxLength: 512,
+    description: "最近一次失败摘要（截断至 512 字符；绝不含 secret/payload）",
   })
   lastFailureError: string | null;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Last update time (ISO-8601)" })
+  @ApiProperty({ description: "最后更新时间（ISO-8601）" })
   updatedAt: Date;
 }
 
@@ -95,14 +90,13 @@ export class EventSubscriptionResponseDto {
  * secret 的一次性回显字段。`generatedSecret` 仅在调用方省略 secret 时存在。
  */
 export class EventSubscriptionCreateResponseDto {
-  @ApiProperty({ description: "Created subscription (secret masked)" })
+  @ApiProperty({ description: "新建的订阅（secret 已掩码）" })
   subscription: EventSubscriptionResponseDto;
 
   @ApiPropertyOptional({
-    description:
-      "Server-generated 32-byte hex secret — returned exactly once, on this " +
-      "response only. Absent when the caller supplied their own secret.",
     pattern: "^[0-9a-f]{64}$",
+    description:
+      "服务端生成的 32 字节十六进制 secret —— 仅在本响应中返回一次。调用方自带 secret 时不出现。",
   })
   generatedSecret?: string;
 }
@@ -112,52 +106,56 @@ export class EventSubscriptionCreateResponseDto {
  * 订阅终败的完整存档（死信列表 + 手动重放的数据源）。
  */
 export class EventSubscriptionDeadLetterResponseDto {
-  @ApiProperty({ description: "Dead letter UUID", format: "uuid" })
+  @ApiProperty({
+    format: "uuid",
+    description: "死信 UUID",
+  })
   id: string;
 
-  @ApiProperty({ description: "Owning subscription UUID", format: "uuid" })
+  @ApiProperty({
+    format: "uuid",
+    description: "所属订阅 UUID",
+  })
   subscriptionId: string;
 
   @ApiProperty({
-    description: "Event name that failed delivery (e.g. execution.failed)",
     maxLength: 64,
+    description: "投递失败的事件名（例如 execution.failed）",
   })
   eventType: string;
 
   @ApiProperty({
-    description:
-      "Complete outbound envelope at send time (event/occurredAt/data)",
     type: "object",
     additionalProperties: true,
+    description: "发送时刻的完整外发信封（event/occurredAt/data）",
   })
   payload: Record<string, unknown>;
 
   @ApiProperty({
-    description: "Last failure summary (truncated to 1024)",
     maxLength: 1024,
+    description: "最近一次失败摘要（截断至 1024 字符）",
   })
   error: string;
 
   @ApiProperty({
     description:
-      "Actual delivery attempts (first attempt + outbox scanner retries, " +
-      "bounded by MAX_OUTBOX_ATTEMPTS)",
+      "实际投递尝试次数（首次尝试 + outbox 扫描器重试，受 MAX_OUTBOX_ATTEMPTS 限制）",
   })
   attempts: number;
 
-  @ApiProperty({ description: "When this dead letter was recorded (ISO-8601)" })
+  @ApiProperty({ description: "该死信的记录时间（ISO-8601）" })
   createdAt: Date;
 }
 
 /** `GET /event-subscriptions/{id}/dead-letters` 的分页包装。 */
 export class EventSubscriptionDeadLetterPageDto {
   @ApiProperty({
-    description: "Page of dead letters, newest first",
     type: [EventSubscriptionDeadLetterResponseDto],
+    description: "死信分页，按最新在前",
   })
   data: EventSubscriptionDeadLetterResponseDto[];
 
-  @ApiProperty({ description: "Total matching rows before paging" })
+  @ApiProperty({ description: "分页前的匹配总行数" })
   total: number;
 }
 
@@ -166,13 +164,13 @@ export class EventSubscriptionDeadLetterPageDto {
  * 成功 `{ok:true}` 且死信行已删；失败 `{ok:false, error}` 且死信保留。
  */
 export class ReplayDeadLetterResponseDto {
-  @ApiProperty({ description: "Whether the single replay delivery succeeded" })
+  @ApiProperty({ description: "本次单次重放投递是否成功" })
   ok: boolean;
 
   @ApiPropertyOptional({
-    description: "Failure summary when ok=false (row is kept for another try)",
     type: "string",
     maxLength: 1024,
+    description: "ok=false 时的失败摘要（该行会保留以便再次尝试）",
   })
   error?: string;
 }

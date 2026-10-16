@@ -68,7 +68,7 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
     svc.authenticate.mockResolvedValue({ apiKey: null, failure: "unknown" });
     await expect(
       auth.authenticate(makeContext("GET", "tasks"), "acf_deadbeef"),
-    ).rejects.toThrow("Invalid or expired API key");
+    ).rejects.toThrow("API Key 无效或已过期");
     expect(svc.auditAuthFailure).toHaveBeenCalledWith(
       "acf_dead",
       "unknown",

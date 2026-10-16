@@ -18,7 +18,7 @@ import { PageQueryDto } from "../../../common/dto/pagination.dto";
  * 结果且无从分辨。改基类后契约如实，运行时行为零变化（那些字段本就被忽略）。
  */
 export class ConfigHistoryQueryDto extends PageQueryDto {
-  @ApiPropertyOptional({ description: "Filter history by config key" })
+  @ApiPropertyOptional({ description: "按配置 key 过滤历史记录" })
   @IsOptional()
   @IsString()
   @MaxLength(200)

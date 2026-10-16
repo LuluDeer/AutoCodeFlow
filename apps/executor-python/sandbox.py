@@ -170,15 +170,15 @@ def build_sandbox_cmd(
         return cmd
     if sys.platform == 'win32':
         raise SandboxUnavailable(
-            'TASK_SANDBOX=bwrap is not supported on Windows; unset TASK_SANDBOX '
-            'or run the executor on Linux with bubblewrap installed'
+            'TASK_SANDBOX=bwrap 在 Windows 上不受支持；请取消 TASK_SANDBOX，'
+            '或改在已安装 bubblewrap 的 Linux 上运行执行器'
         )
     bwrap = shutil.which('bwrap')
     if not bwrap:
         raise SandboxUnavailable(
-            'TASK_SANDBOX=bwrap is configured but the bwrap binary is not on PATH; '
-            'install bubblewrap (apt install bubblewrap / apk add bubblewrap) or '
-            'unset TASK_SANDBOX — refusing to run the task unsandboxed'
+            'TASK_SANDBOX=bwrap 已配置，但 PATH 上没有 bwrap 二进制；'
+            '请安装 bubblewrap（apt install bubblewrap / apk add bubblewrap）'
+            '或取消 TASK_SANDBOX —— 拒绝在无沙箱模式下运行任务'
         )
     wd = str(work_dir)
     return [

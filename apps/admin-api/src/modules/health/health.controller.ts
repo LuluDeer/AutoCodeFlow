@@ -24,10 +24,9 @@ export class HealthController {
   @Public()
   @Get()
   @ApiOperation({
-    summary: "Basic health check",
     description:
-      "Public health check. Returns only the overall status (healthy/degraded/unhealthy) and timestamp. " +
-      "Detailed metrics (executor count, queue depth, task counts) are available at GET /health/detailed (requires JWT).",
+      "公开健康检查。仅返回整体状态（healthy/degraded/unhealthy）与时间戳。详细指标（执行器数量、队列深度、任务计数）见 GET /health/detailed（需要 JWT）。",
+    summary: "基础健康检查",
   })
   @ApiOkResponse({ type: PublicHealthDto })
   async health() {
@@ -40,10 +39,9 @@ export class HealthController {
    */
   @Get("detailed")
   @ApiOperation({
-    summary: "Detailed health check (authenticated)",
     description:
-      "Full detailed health status and metrics including database, Redis, message queue, executors, and scheduler. " +
-      "Requires JWT authentication. Use GET /health for the public status-only endpoint.",
+      "完整的详细健康状态与指标，包括数据库、Redis、消息队列、执行器与调度器。需要 JWT 认证。仅需公开状态时请用 GET /health。",
+    summary: "详细健康检查（需认证）",
   })
   @ApiOkResponse({ type: DetailedHealthDto })
   async detailed() {
@@ -53,9 +51,9 @@ export class HealthController {
   @Public()
   @Get("live")
   @ApiOperation({
-    summary: "Liveness check",
     description:
-      "Simple liveness check, returns whether the service is running. Used for Kubernetes liveness probe.",
+      "简单的存活检查，返回服务是否在运行。用于 Kubernetes 存活探针。",
+    summary: "存活检查",
   })
   @ApiOkResponse({
     type: PublicHealthDto,
@@ -68,9 +66,9 @@ export class HealthController {
   @Public()
   @Get("ready")
   @ApiOperation({
-    summary: "Readiness check",
     description:
-      "Check whether the service is ready to accept requests. Verifies DB and Redis connections. Used for Kubernetes readiness probe.",
+      "检查服务是否已就绪、可接受请求。校验数据库与 Redis 连接。用于 Kubernetes 就绪探针。",
+    summary: "就绪检查",
   })
   // A3（DEEP_REVIEW §七 · executor-protocol）：此前本端点**恒返 200**——不就绪
   // 只在 body 里写 `status:"not_ready"`。而 K8s readinessProbe / 主流 LB 只看
@@ -91,9 +89,8 @@ export class HealthController {
   // 它们暴露 executor 在线数、队列深度等内部指标，需 JWT 鉴权。
   @Get("services")
   @ApiOperation({
-    summary: "Service status (authenticated)",
-    description:
-      "Get health status details for each core service. Requires JWT authentication.",
+    description: "获取各核心服务的健康状态详情。需要 JWT 认证。",
+    summary: "服务状态（需认证）",
   })
   @ApiOkResponse({ type: HealthServicesDto })
   async services() {
@@ -111,9 +108,9 @@ export class HealthController {
   // 暴露队列深度/executor 在线数，需 JWT 鉴权。
   @Get("metrics")
   @ApiOperation({
-    summary: "System metrics (authenticated)",
     description:
-      "Get key system metrics including task count, executor count, queue size, etc. Requires JWT authentication.",
+      "获取关键系统指标，包括任务数、执行器数、队列长度等。需要 JWT 认证。",
+    summary: "系统指标（需认证）",
   })
   @ApiOkResponse({ type: HealthMetricsDto })
   async metrics() {

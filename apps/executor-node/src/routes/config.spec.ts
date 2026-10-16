@@ -90,7 +90,7 @@ describe('config reload route', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       success: true,
-      message: 'Updated 4 field(s)',
+      message: '已更新 4 个字段',
       // A3-C：响应字段以 executor-protocol 为准（snake_case），与 python 对齐
       updated_fields: [
         'maxConcurrentTasks',
@@ -119,7 +119,7 @@ describe('config reload route', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       success: true,
-      message: 'Updated 3 field(s)',
+      message: '已更新 3 个字段',
       updated_fields: ['adminApiUrl', 'adminApiUrlInternal', 'adminApiUrlExternal'],
       ignored_fields: [],
     });
@@ -159,7 +159,7 @@ describe('config reload route', () => {
 
     expect(res.status).toBe(400);
     // NETOPT-D P3-5: 下界 1 保留，文案与上界钳制合并（1..10000 与 E9 采纳域一致）
-    expect(res.body).toEqual({ error: 'maxConcurrentTasks must be between 1 and 10000' });
+    expect(res.body).toEqual({ error: 'maxConcurrentTasks 必须在 1 到 10000 之间' });
     expect(mockConfig.maxConcurrentTasks).toBe(10);
   });
 
@@ -169,7 +169,7 @@ describe('config reload route', () => {
     const res = await authPost({ maxConcurrentTasks: 50_000 });
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'maxConcurrentTasks must be between 1 and 10000' });
+    expect(res.body).toEqual({ error: 'maxConcurrentTasks 必须在 1 到 10000 之间' });
     expect(mockConfig.maxConcurrentTasks).toBe(10);
   });
 
@@ -179,7 +179,7 @@ describe('config reload route', () => {
     const res = await authPost({ heartbeatIntervalSeconds: 600 });
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'heartbeatIntervalSeconds must be between 5 and 60' });
+    expect(res.body).toEqual({ error: 'heartbeatIntervalSeconds 必须在 5 到 60 之间' });
     expect(mockConfig.heartbeatIntervalSeconds).toBe(30);
   });
 
@@ -188,7 +188,7 @@ describe('config reload route', () => {
     const res = await authPost({ maxConcurrentTasks: '4' });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid config reload request: maxConcurrentTasks/);
+    expect(res.body.error).toMatch(/无效的 config reload 请求：maxConcurrentTasks/);
     expect(mockConfig.maxConcurrentTasks).toBe(10);
   });
 
@@ -197,7 +197,7 @@ describe('config reload route', () => {
     const res = await authPost({ adminApiUrls: 'http://only-one' });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Invalid config reload request: adminApiUrls/);
+    expect(res.body.error).toMatch(/无效的 config reload 请求：adminApiUrls/);
     expect(mockConfig.adminApiUrls).toBe(before);
   });
 
@@ -269,34 +269,34 @@ describe('config reload — workDir (WORK_DIR)', () => {
   it('rejects relative paths', async () => {
     const res = await authPost({ workDir: 'relative/dir' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/absolute path/);
+    expect(res.body.error).toMatch(/必须是绝对路径/);
   });
 
   it('rejects paths containing .. segments', async () => {
     const res = await authPost({ workDir: '/tmp/good/../evil' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/absolute path/);
+    expect(res.body.error).toMatch(/必须是绝对路径/);
   });
 
   it('rejects a base that does not exist', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(false);
     const res = await authPost({ workDir: newBase });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/does not exist/);
+    expect(res.body.error).toMatch(/workDir 不存在/);
   });
 
   it('rejects a symbolic-link base', async () => {
     (mockFs.lstatSync as jest.Mock).mockReturnValue({ isSymbolicLink: () => true });
     const res = await authPost({ workDir: newBase });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/symbolic link/);
+    expect(res.body.error).toMatch(/不能是符号链接/);
   });
 
   it('rejects while executions are still running on the old directory', async () => {
     (listActiveExecutionIds as jest.Mock).mockReturnValue(['exec-live-1']);
     const res = await authPost({ workDir: newBase });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/running on the old directory/);
+    expect(res.body.error).toMatch(/旧目录上仍有 1 个执行在运行/);
     expect(process.env.WORK_DIR).not.toBe(require('path').resolve(newBase));
   });
 

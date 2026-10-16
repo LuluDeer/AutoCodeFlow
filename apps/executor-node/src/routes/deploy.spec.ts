@@ -538,7 +538,7 @@ describe('POST /api/deploy — async pipeline', () => {
     try {
       const res = await request(app).post('/api/deploy').send(basePayload);
       expect(res.status).toBe(503);
-      expect(res.body.error).toMatch(/shutting down/i);
+      expect(res.body.error).toMatch(/执行器正在停机/);
       expect(mockCp.spawn).not.toHaveBeenCalled();
     } finally {
       (isExecutorShuttingDown as jest.Mock).mockReturnValue(false);
@@ -804,7 +804,7 @@ describe('python 应用部署：解释器解析（生产事故回归）', () => 
     const message = String((failed?.[1] as any)?.message ?? '');
     // 失败必须**可归因**：点名"本机没有可用 Python"与 Windows 上的 Store 占位
     // stub。事故里用户看到的是一句与平台毫无关系的英文，排障者只能猜。
-    expect(message).toMatch(/No usable Python interpreter/i);
+    expect(message).toMatch(/本次部署没有可用的 Python 解释器/i);
     expect(message).toMatch(/Microsoft Store/);
 
     // 最关键的一条：绝不能出现裸 python / python3 的 spawn（那正是事故形态）。
@@ -1029,9 +1029,9 @@ describe('python 应用部署：解释器解析（生产事故回归）', () => 
 
     expect(thrown).not.toBeNull();
     // 错误必须**可诊断**：点名 node、点出来源（Electron 自复用）与修法。
-    expect(thrown!.message).toMatch(/No usable Node\.js runtime/i);
+    expect(thrown!.message).toMatch(/本次部署没有可用的 Node\.js 运行时/i);
     expect(thrown!.message).toMatch(/ELECTRON_RUN_AS_NODE/);
-    expect(thrown!.message).toMatch(/install Node\.js/i);
+    expect(thrown!.message).toMatch(/安装 Node\.js/i);
     // 抛出发生在 spawn 之前 → 没有子进程、没有僵尸，也不会崩执行器。
     expect(mockCp.spawn).not.toHaveBeenCalled();
   });
@@ -1257,7 +1257,7 @@ describe('python 应用部署：解释器解析（生产事故回归）', () => 
           (c[1] as any).status === 'failed',
       );
       expect(failed).toBeTruthy();
-      expect(String((failed?.[1] as any).message)).toMatch(/No usable Python interpreter/);
+      expect(String((failed?.[1] as any).message)).toMatch(/本次部署没有可用的 Python 解释器/);
       // 抛出发生在 spawn 之前 → 没有任何子进程被留下（无僵尸）。
       expect(mockCp.spawn).not.toHaveBeenCalled();
     } finally {

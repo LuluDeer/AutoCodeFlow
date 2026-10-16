@@ -59,14 +59,13 @@ export class TaskTemplateController {
 
   @Get()
   @ApiOperation({
-    summary: "List task templates (official + custom)",
     description:
-      "Returns all task templates. Official presets (seeded by migration, aligned " +
-      "with the MCP `TASK_TEMPLATES`) come first; user-created custom templates follow.",
+      "返回全部任务模板。官方预置模板（由迁移脚本写入，与 MCP 的 `TASK_TEMPLATES` 对齐）在前，用户创建的自定义模板在后。",
+    summary: "列出任务模板（官方 + 自定义）",
   })
   @ApiResponse({
     status: 200,
-    description: "Template list",
+    description: "模板列表",
     type: [TaskTemplateResponseDto],
   })
   list(): Promise<TaskTemplate[]> {
@@ -75,17 +74,16 @@ export class TaskTemplateController {
 
   @Get(":id")
   @ApiOperation({
-    summary: "Get one task template",
-    description:
-      "Used by the create-task form to prefetch a template's `config` for prefilling.",
+    description: "供创建任务表单预取模板的 `config` 用于预填。",
+    summary: "获取单个任务模板",
   })
-  @ApiParam({ name: "id", description: "Template UUID" })
+  @ApiParam({ name: "id", description: "模板 UUID" })
   @ApiResponse({
     status: 200,
-    description: "Template",
+    description: "模板",
     type: TaskTemplateResponseDto,
   })
-  @ApiResponse({ status: 404, description: "Template not found" })
+  @ApiResponse({ status: 404, description: "模板不存在" })
   one(@Param("id", ParseUUIDPipe) id: string): Promise<TaskTemplate> {
     return this.svc.findOne(id);
   }
@@ -93,18 +91,17 @@ export class TaskTemplateController {
   @WriteGuard("task-template", { scope: "authenticated" })
   @Post()
   @ApiOperation({
-    summary: "Create a custom task template",
     description:
-      "The `config` object is validated against CreateTaskDto semantics before " +
-      "persisting; a stray/invalid field is rejected with 400.",
+      "持久化前会按 CreateTaskDto 语义校验 `config` 对象；出现多余或非法字段将以 400 拒绝。",
+    summary: "创建自定义任务模板",
   })
   @ApiResponse({
     status: 201,
-    description: "Created custom template",
+    description: "已创建的自定义模板",
     type: TaskTemplateResponseDto,
   })
-  @ApiResponse({ status: 400, description: "Invalid config / key" })
-  @ApiResponse({ status: 409, description: "Template key already exists" })
+  @ApiResponse({ status: 400, description: "config / key 非法" })
+  @ApiResponse({ status: 409, description: "模板 key 已存在" })
   create(
     @Body() dto: CreateTaskTemplateDto,
     @CurrentUser() user: AuthUser,
@@ -116,24 +113,22 @@ export class TaskTemplateController {
   @WriteGuard("task-template", { scope: "authenticated" })
   @Post(":id/instantiate")
   @ApiOperation({
-    summary: "Create a runnable task from a template (one-click clone)",
     description:
-      "Expands the template's config as defaults and overlays the request body " +
-      "(explicit fields win; at least `name` is required). The merged payload is " +
-      "validated against CreateTaskDto and created via the standard task path.",
+      "把模板的 config 展开为默认值，再叠加请求体（显式字段优先；至少需要 `name`）。合并后的载荷按 CreateTaskDto 校验，并走标准任务创建路径落库。",
+    summary: "从模板创建可运行任务（一键克隆）",
   })
-  @ApiParam({ name: "id", description: "Template UUID" })
+  @ApiParam({ name: "id", description: "模板 UUID" })
   // B-3: instantiate 201 契约最小面（此前零 schema——前端只能手写或丢弃类型）。
   @ApiResponse({
     status: 201,
-    description: "Created task (minimal face: identity/status/trigger fields)",
+    description: "已创建的任务（最小字段面：标识/状态/触发字段）",
     type: InstantiateTaskResponseDto,
   })
   @ApiResponse({
     status: 400,
-    description: "Missing name / invalid merged payload",
+    description: "缺少 name / 合并后的载荷非法",
   })
-  @ApiResponse({ status: 404, description: "Template not found" })
+  @ApiResponse({ status: 404, description: "模板不存在" })
   // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 instantiate 用 Record<string, unknown> 无
   // @ApiBody，openapi 缺 requestBody。补 @ApiBody({ type: InstantiateTaskOverlayDto })
   //（运行时 @Body() 类型不变，自由 overlay 不被 whitelist 拦截）。
@@ -155,15 +150,15 @@ export class TaskTemplateController {
   @WriteGuard("task-template", { scope: "authenticated" })
   @Delete(":id")
   @ApiOperation({
-    summary: "Delete a custom task template",
-    description: "Official templates cannot be deleted (403).",
+    description: "官方模板不可删除（403）。",
+    summary: "删除自定义任务模板",
   })
-  @ApiParam({ name: "id", description: "Template UUID" })
+  @ApiParam({ name: "id", description: "模板 UUID" })
   @ApiResponse({
     status: 403,
-    description: "Official template cannot be deleted",
+    description: "官方模板不可删除",
   })
-  @ApiResponse({ status: 404, description: "Template not found" })
+  @ApiResponse({ status: 404, description: "模板不存在" })
   @ApiOkResponse({ type: SimpleOkResponseDto })
   async remove(
     @Param("id", ParseUUIDPipe) id: string,

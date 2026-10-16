@@ -186,7 +186,7 @@ describe("OidcService — 无状态 state cookie（HMAC）", () => {
     )
       .update(body)
       .digest("base64url")}`;
-    expect(() => service.verifyStateCookieValue(good)).toThrow(/expired/);
+    expect(() => service.verifyStateCookieValue(good)).toThrow(/已过期/);
   });
 
   it("缺 cookie → 拒", () => {

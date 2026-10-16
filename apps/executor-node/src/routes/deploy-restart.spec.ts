@@ -163,7 +163,7 @@ describe('daemon 自动重启', () => {
       expect.objectContaining({
         deploymentId: 'dep-4',
         status: 'failed',
-        message: expect.stringContaining('auto-restart attempts'),
+        message: expect.stringContaining('自动重启已连续 10 次失败'),
       }),
     );
   });

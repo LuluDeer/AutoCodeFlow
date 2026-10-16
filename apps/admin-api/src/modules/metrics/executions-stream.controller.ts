@@ -74,19 +74,14 @@ export class ExecutionsStreamController {
   @SkipThrottle()
   @ApiResponse({
     status: 200,
-    description:
-      "Server-Sent Events stream (Res passthrough; envelope interceptor bypassed)",
+    description: "Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器）",
     content: { "text/event-stream": { schema: { type: "string" } } },
   })
   @Get("stream")
   @ApiOperation({
-    summary: "Execution terminal-state SSE stream (FEAT-16)",
     description:
-      "Server-Sent Events stream forwarding execution terminal events " +
-      "(execution.completed / execution.failed / execution.killed) from the " +
-      "in-process domain event bus. Payload: ExecutionTerminalEventPayload. " +
-      "Auth: JWT bearer header, or ?ticket= short-lived SSE ticket " +
-      "(POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers.",
+      "Server-Sent Events 流，从进程内领域事件总线转发执行终态事件（execution.completed / execution.failed / execution.killed）。载荷：ExecutionTerminalEventPayload。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。",
+    summary: "执行终态 SSE 流（FEAT-16）",
   })
   @SkipTimeout()
   async stream(@Req() req: Request, @Res() res: Response): Promise<void> {

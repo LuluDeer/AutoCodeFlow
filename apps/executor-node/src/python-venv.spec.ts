@@ -172,7 +172,7 @@ describe('resolveDeployInterpreter — 解释器解析顺序', () => {
 
     await expect(
       resolveDeployInterpreter('3.13', { ensureVersion, cachedToolchain }),
-    ).rejects.toThrow(/Cannot obtain Python 3\.13/);
+    ).rejects.toThrow(/本次部署无法获取解释器 Python 3\.13/);
     // 宿主验真过也不行：声明了版本就必须兑现，否则"看着成功其实违约"。
     expect(cachedToolchain).not.toHaveBeenCalled();
   });
@@ -211,7 +211,7 @@ describe('resolveDeployInterpreter — 解释器解析顺序', () => {
     });
 
     await expect(resolveDeployInterpreter(null, deps)).rejects.toThrow(
-      /No usable Python interpreter/,
+      /本次部署没有可用的 Python 解释器/,
     );
   });
 
@@ -268,7 +268,7 @@ describe('resolveDeployInterpreter — 解释器解析顺序', () => {
     expect((err as Error).message).toMatch(/Microsoft Store/);
     expect((err as Error).message).toMatch(/9009/);
     // 且必须显式说明默认版本这条路也失败了（否则运维不知道 uv 也试过）。
-    expect((err as Error).message).toMatch(/default Python 3\.12 via uv failed/);
+    expect((err as Error).message).toMatch(/经 uv 获取默认版本 Python 3\.12 也失败了/);
     expect((err as Error).message).toMatch(/mirror unreachable/);
   });
 
@@ -482,7 +482,7 @@ describe('ensurePythonVenv — venv 创建与依赖安装', () => {
 
     await expect(
       ensurePythonVenv({ venvDir: VENV_DIR, requirementsFile: '/tmp/req/requirements.txt', deps }),
-    ).rejects.toThrow(/Microsoft Store|No usable Python interpreter/);
+    ).rejects.toThrow(/Microsoft Store|本次部署没有可用的 Python 解释器/);
     expect(calls).toEqual([]);
     // 事故的原始形态就是 spawn 了一个 Store stub；这里把它钉死。
     expect(calls.some((c) => c.cmd === 'python' || c.cmd === 'python3' || c.cmd === 'python.exe')).toBe(false);
@@ -499,7 +499,7 @@ describe('ensurePythonVenv — venv 创建与依赖安装', () => {
     };
 
     await expect(ensurePythonVenv({ venvDir: VENV_DIR, deps })).rejects.toThrow(
-      /python3 -m venv failed: boom/,
+      /python3 -m venv 执行失败：boom/,
     );
     // rmSync 由模块内的真实 fs 调用；用 jest.spyOn 捕获一次即可。
     const fsMod = jest.requireActual<typeof import('fs')>('fs');
@@ -626,7 +626,7 @@ describe('resolveStartPython — startApp 的同步解析（不得回落 Store s
           ...hostPythonDeps({ path: null, source: 'none', verified: false }),
         },
       }),
-    ).toThrow(/No usable Python interpreter/);
+    ).toThrow(/本次部署没有可用的 Python 解释器/);
   });
 });
 

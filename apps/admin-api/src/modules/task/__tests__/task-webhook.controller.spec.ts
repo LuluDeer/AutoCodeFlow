@@ -164,7 +164,12 @@ describe("TaskWebhookController / TaskWebhookService（FEAT-21）", () => {
 
     for (const err of [unknownTaskErr, disabledErr, badSigErr]) {
       expect(err).toBeInstanceOf(UnauthorizedException);
-      expect(err.message).toBe("Task webhook authentication failed");
+      // LANG-ERR-01：401 文案改为「稳定码 + 前端翻译」，故断言从英文字面量
+      // 换成渲染出的中文兜底 `message` + 稳定 `errorCode`。反枚举契约的**判据
+      // 强度不变**：三态必须给出**同一个码、同一句话**（按原因分码即重新打开
+      // taskId 枚举面）——这正是下面两条断言在守的东西。
+      expect(err.message).toBe("任务 Webhook 鉴权失败");
+      expect(err.errorCode).toBe("TASK_WEBHOOK_AUTH_FAILED");
     }
   });
 
@@ -175,7 +180,8 @@ describe("TaskWebhookController / TaskWebhookService（FEAT-21）", () => {
       timestamp: stale,
     }).catch((e) => e);
     expect(err).toBeInstanceOf(UnauthorizedException);
-    expect(err.message).toBe("Task webhook authentication failed");
+    expect(err.message).toBe("任务 Webhook 鉴权失败");
+    expect(err.errorCode).toBe("TASK_WEBHOOK_AUTH_FAILED");
   });
 
   // ── 公开触发：成功链路 ────────────────────────────────────────────────

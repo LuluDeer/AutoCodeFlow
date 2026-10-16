@@ -17,6 +17,9 @@ import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
 import { TaskService } from "../task.service";
+// LANG-ERR-01 复查：分类链的回归用例必须**用错误码表渲染真实文案**，而不是手抄
+// 一条"看起来像"的短串——本缺陷正是被"短中文样例"掩盖的（见下方 LANG-ZH-01 表）。
+import { renderZh } from "../../../common/errors/error-codes";
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
@@ -184,6 +187,48 @@ describe("TaskProcessor", () => {
     expect(patch.executorAddress).toBe("127.0.0.1:3105");
   });
 
+  // ADR-017 阶段 3 复查补口（P0）：执行行的**行身份** `executorId` 必须与
+  // executorAddress 同批落库。缺了它 `failRunningExecutionsAfterRestart` 的
+  // `executorId = $1` 恒命中 0 行（该列全表 NULL），重启恢复**静默失效**。
+  // 反证：删掉 ownedPatch 里的 executorId 投影 → 本用例转红。
+  it("ADR-017 P0: persists executorId (row identity) in the transactional patch", async () => {
+    executorService.dispatch.mockImplementation(async (_task, target: any) => {
+      // 真实现 dispatch 通过入参引用把**两个**身份字段写到执行行。
+      target.executorAddress = "127.0.0.1:3105";
+      target.executorId = "11111111-1111-4111-8111-111111111111";
+      return {
+        status: "accepted",
+        executionId: "exec-1",
+        executorAddress: "127.0.0.1:3105",
+      };
+    });
+    await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+    const queryRunner = dataSource.createQueryRunner.mock.results[0].value;
+    const qb = (queryRunner.manager.createQueryBuilder as jest.Mock).mock
+      .results[0].value;
+    const patch = qb.set.mock.calls[0][0];
+    expect(patch.executorAddress).toBe("127.0.0.1:3105");
+    expect(patch.executorId).toBe("11111111-1111-4111-8111-111111111111");
+  });
+
+  // 广播执行不挑单一目标 → dispatch 不设 executorId → 该键**不得**进 patch
+  // （undefined 时保持存量/广播行 NULL，回落地址匹配，与引入前逐字节一致）。
+  it("ADR-017 P0: broadcast (no single target) leaves executorId out of the patch", async () => {
+    executorService.dispatch.mockImplementation(async (_task, target: any) => {
+      // 广播语义：executorAddress 亦不落（R-06），executorId 同理缺席。
+      target.executorAddress = undefined;
+      return { status: "accepted", executionId: "exec-1" };
+    });
+    await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+    const queryRunner = dataSource.createQueryRunner.mock.results[0].value;
+    const qb = (queryRunner.manager.createQueryBuilder as jest.Mock).mock
+      .results[0].value;
+    const patch = qb.set.mock.calls[0][0];
+    expect(patch).not.toHaveProperty("executorId");
+  });
+
   it("marks execution FAILED and rethrows when dispatch fails", async () => {
     executorService.dispatch.mockRejectedValue(new Error("exec failed"));
     await expect(
@@ -275,6 +320,77 @@ describe("TaskProcessor", () => {
     const live = await execRepo.findOne.mock.results[0].value;
     expect(live.failureReason).toBe(ExecutionFailureReason.TIMEOUT);
     expect(live.status).toBe(ExecutionStatus.TIMEOUT);
+  });
+
+  // LANG-ZH-01（面向用户文字中文化）配套反证：派发失败分类链**必须中英双语**。
+  //
+  // 执行器侧的用户可见文案正在中文化；若只改执行器文案而不同步这里的关键词，
+  // 分类会**静默失效**（全落 UNKNOWN，且 TIMEOUT / INTERPRETER_UNAVAILABLE 这类
+  // 「不进默认重试集」的语义会反转 —— 白白烧重试预算）。反之若只留中文，存量
+  // 未升级执行器与已落库的历史英文 message 会全部退化为 UNKNOWN。故英中并列是
+  // 唯一安全口径（两侧独立发版，滚动升级必然新旧并存）。
+  //
+  // 反证：把下方任一中文支删掉 → 对应用例转红（落 UNKNOWN）。
+  describe("LANG-ZH-01: 派发失败分类链中英双语（中文文案同样被正确归类）", () => {
+    /**
+     * LANG-ERR-01 复查（e2e 用例 27 抓到的真实缺陷）：下面的中文 EXECUTOR_OFFLINE
+     * 样例此前**全是短串**（`无可用执行器…`、`目标执行器不可达`——「执行器→离线/不可达」
+     * 间隔 ≤20），恰好落在旧容差 20 之内，于是**掩盖了容差缺陷**。
+     * 而中台自己产出的 pinned 离线文案间隔达 **63 字符**，被判成 SCRIPT_ERROR。
+     *
+     * 故此处**用错误码表渲染真实文案**入表：文案或正则任一侧漂移，本用例立刻红。
+     */
+    const pinnedOfflineZh = renderZh("PINNED_EXECUTOR_OFFLINE", {
+      appName: "executor-python-e2e",
+      executorId: "8a7e160b-80e5-4dff-b88a-b414908fc9c8",
+    });
+    const cases: Array<[string, ExecutionFailureReason]> = [
+      ["任务执行超时，已强制终止", ExecutionFailureReason.TIMEOUT],
+      ["执行已超时", ExecutionFailureReason.TIMEOUT],
+      [
+        "无可用执行器：全部候选均离线或满载",
+        ExecutionFailureReason.EXECUTOR_OFFLINE,
+      ],
+      ["目标执行器不可达", ExecutionFailureReason.EXECUTOR_OFFLINE],
+      // ⬆ 以上两条是**短**中文样例（在旧容差 20 内，故当时全绿）
+      // ⬇ 这条是**真实**文案（间隔 63，旧容差下会误判成 script_error）
+      [pinnedOfflineZh, ExecutionFailureReason.EXECUTOR_OFFLINE],
+      [
+        "git clone 失败：认证被拒绝",
+        ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      ],
+      [
+        "依赖安装失败：pip install 返回非零",
+        ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      ],
+      ["代码拉取失败", ExecutionFailureReason.PACKAGE_FETCH_FAILED],
+      [
+        "脚本错误：Traceback (most recent call last)",
+        ExecutionFailureReason.SCRIPT_ERROR,
+      ],
+    ];
+    for (const [msg, expected] of cases) {
+      it(`中文失败文案「${msg}」→ ${expected}`, async () => {
+        executorService.dispatch.mockRejectedValue(new Error(msg));
+        // 断言**原始中文文案被保留**（而不是空 `toThrow()`）——分类链只读文案、
+        // 不改写它；若哪天实现开始包装/吞掉原始消息，本断言应当转红。
+        await expect(
+          processor.handle({ data: { executionId: "exec-1" } } as any),
+        ).rejects.toThrow(msg);
+        const live = await execRepo.findOne.mock.results[0].value;
+        expect(live.failureReason).toBe(expected);
+      });
+    }
+
+    it("英文存量文案仍被正确归类（未升级执行器 / 历史 errorMessage）", async () => {
+      const legacy = "no available executor (all candidates are offline)";
+      executorService.dispatch.mockRejectedValue(new Error(legacy));
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.toThrow(legacy);
+      const live = await execRepo.findOne.mock.results[0].value;
+      expect(live.failureReason).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+    });
   });
 
   // BUG-21（nginx SSE 真机验证暴露）：派发阶段失败此前**不发领域事件**，

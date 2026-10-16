@@ -54,7 +54,7 @@ export class SendNotificationDto {
 export class SendNotificationResultDto {
   @ApiProperty({
     example: true,
-    description: "Request accepted; NOT equivalent to every channel delivering",
+    description: "请求已受理；**不**等同于各通道均已投递成功",
   })
   success: boolean;
 
@@ -71,10 +71,7 @@ export class SendNotificationResultDto {
       wecom: "skipped",
     },
     description:
-      "Per-channel delivery result: 'sent' delivered; 'blocked' rejected by " +
-      "the SSRF guard (private/loopback/link-local/benchmark/CGNAT target); " +
-      "'failed' transport error after retries; 'skipped' channel not " +
-      "configured (no saved config and no env default).",
+      "逐通道投递结果：'sent' 已投递；'blocked' 被 SSRF 防护拒绝（目标为内网/环回/链路本地/benchmark/CGNAT）；'failed' 重试后仍传输失败；'skipped' 通道未配置（既无保存的配置也无环境变量缺省值）。",
   })
   results: Record<string, ChannelDeliveryStatus>;
 }

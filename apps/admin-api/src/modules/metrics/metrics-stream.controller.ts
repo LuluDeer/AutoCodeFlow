@@ -77,18 +77,14 @@ export class MetricsStreamController {
   @SkipThrottle()
   @ApiResponse({
     status: 200,
-    description:
-      "Server-Sent Events stream (Res passthrough; envelope interceptor bypassed)",
+    description: "Server-Sent Events 流（Res 直传；绕过统一响应包装拦截器）",
     content: { "text/event-stream": { schema: { type: "string" } } },
   })
   @Get("stream")
   @ApiOperation({
-    summary: "Dashboard summary SSE stream (UI-14 phase 1)",
     description:
-      "Server-Sent Events stream pushing a snapshot every ~3s: { summary, executors, scheduler } " +
-      "(+ error frames on degraded queries). Auth: JWT bearer header, or ?ticket= short-lived " +
-      "SSE ticket (POST /auth/sse-ticket, 30s TTL) — EventSource cannot set headers. " +
-      "Concurrency: METRICS_STREAM_MAX_GLOBAL slots per instance (503 when full).",
+      "Server-Sent Events 流，每约 3 秒推送一次快照：{ summary, executors, scheduler }（查询降级时追加错误帧）。鉴权：JWT bearer 请求头，或 ?ticket= 短效 SSE 票据（POST /auth/sse-ticket，TTL 30 秒）——EventSource 无法设置请求头。并发：每实例 METRICS_STREAM_MAX_GLOBAL 个名额（占满返回 503）。",
+    summary: "仪表盘汇总 SSE 流（UI-14 第一阶段）",
   })
   @SkipTimeout()
   async stream(@Req() req: Request, @Res() res: Response): Promise<void> {

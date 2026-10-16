@@ -99,14 +99,14 @@ const CD_HEADER_SIZE = 46;
 export function locateEocd(buf: Buffer): number {
   const minStart = buf.length - EOCD_FIXED_SIZE;
   if (minStart < 0) {
-    throw new ZipGuardError('unparseable', 'file smaller than an EOCD record');
+    throw new ZipGuardError('unparseable', '文件小于一条 EOCD 记录');
   }
   const MAX_COMMENT = 65_536 + EOCD_FIXED_SIZE;
   const scanStart = Math.max(0, buf.length - MAX_COMMENT);
   for (let off = minStart; off >= scanStart; off--) {
     if (U32(buf, off) === SIG_EOCD) return off;
   }
-  throw new ZipGuardError('unparseable', 'EOCD signature not found');
+  throw new ZipGuardError('unparseable', '未找到 EOCD 签名');
 }
 
 export interface ZipCentralDirectorySummary {
@@ -126,7 +126,7 @@ export function parseCentralDirectory(buf: Buffer): ZipCentralDirectorySummary {
   if (cdOffset === 0xffffffff || cdEntries === 0xffff || cdSize === 0xffffffff) {
     throw new ZipGuardError(
       'unparseable',
-      'zip64 EOCD sentinels present — unsupported',
+      'zip64 EOCD 哨兵值存在——不支持',
     );
   }
 
@@ -140,7 +140,7 @@ export function parseCentralDirectory(buf: Buffer): ZipCentralDirectorySummary {
     if (off + CD_HEADER_SIZE > buf.length || U32(buf, off) !== SIG_CD) {
       throw new ZipGuardError(
         'unparseable',
-        `central directory record ${seen} missing or corrupted`,
+        `中央目录记录 ${seen} 缺失或已损坏`,
       );
     }
     const compressedSize = U32(buf, off + 20);
@@ -151,7 +151,7 @@ export function parseCentralDirectory(buf: Buffer): ZipCentralDirectorySummary {
     const nameStart = off + CD_HEADER_SIZE;
     const nameEnd = nameStart + nameLen;
     if (nameEnd > buf.length) {
-      throw new ZipGuardError('unparseable', 'CD name overruns buffer');
+      throw new ZipGuardError('unparseable', '中央目录中的条目名越出缓冲区');
     }
     const name = buf.toString('utf8', nameStart, nameEnd);
     totalCompressed += compressedSize;
@@ -163,7 +163,7 @@ export function parseCentralDirectory(buf: Buffer): ZipCentralDirectorySummary {
   if (off !== cdOffset + cdSize) {
     throw new ZipGuardError(
       'unparseable',
-      'central directory size mismatch with EOCD record',
+      '中央目录大小与 EOCD 记录不一致',
     );
   }
 
@@ -178,13 +178,13 @@ export function checkSummaryAgainstLimits(
   if (summary.entries > limits.maxEntries) {
     throw new ZipGuardError(
       'too_many_entries',
-      `zip declares ${summary.entries} entries (limit ${limits.maxEntries})`,
+      `zip 声明了 ${summary.entries} 个条目（上限 ${limits.maxEntries}）`,
     );
   }
   if (summary.totalUncompressed > limits.maxTotalUncompressedBytes) {
     throw new ZipGuardError(
       'total_uncompressed_exceeded',
-      `zip declares ${summary.totalUncompressed} uncompressed bytes (limit ${limits.maxTotalUncompressedBytes})`,
+      `zip 声明的未压缩总字节数为 ${summary.totalUncompressed}（上限 ${limits.maxTotalUncompressedBytes}）`,
     );
   }
   if (
@@ -193,7 +193,7 @@ export function checkSummaryAgainstLimits(
   ) {
     throw new ZipGuardError(
       'ratio_exceeded',
-      `compression ratio ${(summary.totalUncompressed / summary.totalCompressed).toFixed(1)} exceeds limit ${limits.maxRatio}`,
+      `压缩比 ${(summary.totalUncompressed / summary.totalCompressed).toFixed(1)} 超过上限 ${limits.maxRatio}`,
     );
   }
 }
@@ -222,7 +222,7 @@ export function assertZipSafe(
       if (size > limits.maxFileBytes) {
         throw new ZipGuardError(
           'single_file_too_large',
-          `zip declares an entry of ${size} uncompressed bytes (limit ${limits.maxFileBytes})`,
+          `zip 声明某个条目的未压缩大小为 ${size} 字节（上限 ${limits.maxFileBytes}）`,
         );
       }
       const nameLen = U16(buf, off + 28);
@@ -238,7 +238,7 @@ export function assertZipSafe(
       if (!inner) {
         throw new ZipGuardError(
           'unparseable',
-          `nested zip "${name}" could not be located/extracted for vetting`,
+          `无法定位/解出嵌套 zip "${name}" 以进行安全审查`,
         );
       }
       try {
@@ -247,7 +247,7 @@ export function assertZipSafe(
         if (err instanceof ZipGuardError && err.violation === 'unparseable') {
           throw new ZipGuardError(
             'unparseable',
-            `nested zip "${name}" is corrupt or unreadable`,
+            `嵌套 zip "${name}" 已损坏或不可读`,
           );
         }
         throw err;
@@ -256,7 +256,7 @@ export function assertZipSafe(
   } else if (summary.nestedZipNames.length > 0 && depth >= 16) {
     throw new ZipGuardError(
       'nested_zip_too_deep',
-      `zip nesting exceeds ${limits.maxNestingDepth} eagerly-vetted level(s)`,
+      `zip 嵌套层级超过主动审查的 ${limits.maxNestingDepth} 层`,
     );
   }
   return summary;
@@ -322,7 +322,7 @@ function readFullyAt(fd: number, position: number, length: number): Buffer {
   while (filled < length) {
     const n = fs.readSync(fd, buf, filled, length - filled, position + filled);
     if (n === 0) {
-      throw new ZipGuardError('unparseable', 'unexpected EOF while reading zip');
+      throw new ZipGuardError('unparseable', '读取 zip 时意外到达文件末尾（EOF）');
     }
     filled += n;
   }
@@ -393,7 +393,7 @@ export function assertZipFileSafe(
     const cdOffset = U32(eocdBlock, eocdRelOff + 16);
 
     if (cdOffset === 0xffffffff || cdEntries === 0xffff || cdSize === 0xffffffff) {
-      throw new ZipGuardError('unparseable', 'zip64 EOCD sentinels present — unsupported');
+      throw new ZipGuardError('unparseable', 'zip64 EOCD 哨兵值存在——不支持');
     }
 
     // 2. Read exactly the Central Directory block.
@@ -407,7 +407,7 @@ export function assertZipFileSafe(
     const eocdAbsOff = eocdBlockStart + eocdRelOff;
     const realCdBytes = eocdAbsOff - cdOffset;
     if (cdOffset < 0 || realCdBytes <= 0) {
-      throw new ZipGuardError('unparseable', 'central directory offset is out of range');
+      throw new ZipGuardError('unparseable', '中央目录偏移超出范围');
     }
     const cdReadBytes = Math.min(cdSize, realCdBytes);
     const cdBuf = readFullyAt(fd, cdOffset, cdReadBytes);
@@ -423,7 +423,7 @@ export function assertZipFileSafe(
       if (off + CD_HEADER_SIZE > cdBuf.length || U32(cdBuf, off) !== SIG_CD) {
         throw new ZipGuardError(
           'unparseable',
-          `central directory record ${seen} missing or corrupted`,
+          `中央目录记录 ${seen} 缺失或已损坏`,
         );
       }
       const compressedSize = U32(cdBuf, off + 20);
@@ -434,7 +434,7 @@ export function assertZipFileSafe(
       const nameStart = off + CD_HEADER_SIZE;
       const nameEnd = nameStart + nameLen;
       if (nameEnd > cdBuf.length) {
-        throw new ZipGuardError('unparseable', 'CD name overruns buffer');
+        throw new ZipGuardError('unparseable', '中央目录中的条目名越出缓冲区');
       }
       const name = cdBuf.toString('utf8', nameStart, nameEnd);
       totalCompressed += compressedSize;
@@ -446,7 +446,7 @@ export function assertZipFileSafe(
     if (off !== cdSize) {
       throw new ZipGuardError(
         'unparseable',
-        'central directory size mismatch with EOCD record',
+        '中央目录大小与 EOCD 记录不一致',
       );
     }
 
@@ -468,7 +468,7 @@ export function assertZipFileSafe(
       if (size > limits.maxFileBytes) {
         throw new ZipGuardError(
           'single_file_too_large',
-          `zip declares an entry of ${size} uncompressed bytes (limit ${limits.maxFileBytes})`,
+          `zip 声明某个条目的未压缩大小为 ${size} 字节（上限 ${limits.maxFileBytes}）`,
         );
       }
       const nameLen = U16(cdBuf, off + 28);
@@ -487,7 +487,7 @@ export function assertZipFileSafe(
         if (!inner) {
           throw new ZipGuardError(
             'unparseable',
-            `nested zip "${name}" could not be located/extracted for vetting`,
+            `无法定位/解出嵌套 zip "${name}" 以进行安全审查`,
           );
         }
         try {
@@ -496,7 +496,7 @@ export function assertZipFileSafe(
           if (err instanceof ZipGuardError && err.violation === 'unparseable') {
             throw new ZipGuardError(
               'unparseable',
-              `nested zip "${name}" is corrupt or unreadable`,
+              `嵌套 zip "${name}" 已损坏或不可读`,
             );
           }
           throw err;
@@ -520,7 +520,7 @@ export function guardZipOrThrow(filePath: string): void {
       logger.warn(
         `[zip-guard] Package rejected [${err.violation}]: ${err.message} (${filePath})`,
       );
-      throw new Error(`Unsafe package rejected by zip-guard [${err.violation}]`);
+      throw new Error(`压缩包被 zip-guard 判定为不安全并拒绝 [${err.violation}]`);
     }
     throw err;
   }

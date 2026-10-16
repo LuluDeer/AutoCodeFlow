@@ -25,6 +25,9 @@ interface CapturedRequest {
   method: string;
   auth: string;
   body: Record<string, unknown>;
+  /** multipart 请求的原始正文（JSON 请求为 undefined）——见 rawBody 采集。 */
+  rawBody?: string;
+  contentType?: string;
 }
 
 /** 起一个本地 http server：记录请求，按注册的 handler 回响应。 */
@@ -40,12 +43,18 @@ function makeServer(handler: (req: CapturedRequest, res: http.ServerResponse) =>
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>;
+        const raw = Buffer.concat(chunks).toString('utf8') || '';
+        const contentType = (req.headers['content-type'] as string) ?? '';
+        // multipart 正文不是 JSON——不能盲目 JSON.parse（会抛）。仅为 multipart
+        // 保留原始串供断言，JSON 走原有解析路径。
+        const isMultipart = contentType.startsWith('multipart/form-data');
+        const body = isMultipart ? {} : (JSON.parse(raw || '{}') as Record<string, unknown>);
         const captured: CapturedRequest = {
           path: req.url ?? '/',
           method: req.method ?? '',
           auth: req.headers.authorization ?? '',
           body,
+          ...(isMultipart ? { rawBody: raw, contentType } : {}),
         };
         requests.push(captured);
         handler(captured, res);
@@ -108,7 +117,40 @@ async function main(): Promise<void> {
     await s.close();
   }
 
-  // ── 2. LLM relay ──
+  // ── 1b. multipart 上传必带 address 字段（ADR-017 阶段 3 复查补口）──
+  // admin 侧 `@Body() body.address` 是这两个端点的机器面鉴权入口
+  // （authenticateAgent(body?.address, …)）：缺了它 body.address 恒空 →
+  // 400「address 必填」→ 媒体/候选包上传整片失败。
+  // 反证：删掉 uploadMedia / uploadCandidatePackage 里拼的 address 字段 → 转红。
+  console.log('-- 1b. multipart 上传字段形状 --');
+  {
+    const s = await makeServer((_req, res) => {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ mediaPath: '/api/agent-collab/media/m-1', packageId: 'pkg-1', name: 'n', version: 'v' }));
+    });
+    const client = new CollabClient({ baseUrl: s.url, token: 'tok-123' });
+
+    const media = await client.uploadMedia('office-pc:8002', 'asg-1', {
+      name: 'shot.png', mime: 'image/png', buf: Buffer.from('PNGDATA'),
+    });
+    check('media 上传 ok', media.ok === true && media.mediaPath === '/api/agent-collab/media/m-1');
+    const rMedia = s.requests[0];
+    check('media 路径带 assignmentId', rMedia.path === '/api/agent-collab/assignments/asg-1/media');
+    check('media multipart 携带 address 字段', (rMedia.rawBody ?? '').includes('name="address"') && (rMedia.rawBody ?? '').includes('office-pc:8002'));
+    check('media multipart 携带 file 字段', (rMedia.rawBody ?? '').includes('name="file"') && (rMedia.rawBody ?? '').includes('PNGDATA'));
+
+    const pkg = await client.uploadCandidatePackage('office-pc:8002', 'asg-1', {
+      filename: 'cand.zip', buf: Buffer.from('ZIPDATA'), runtime: 'python',
+      sopSlug: 'daily', sopVersion: '1.0.0', contentHash: 'h1',
+    });
+    check('candidate 上传 ok', pkg.ok === true && pkg.packageId === 'pkg-1');
+    const rPkg = s.requests[1];
+    check('candidate 路径带 assignmentId', rPkg.path === '/api/agent-collab/assignments/asg-1/candidate-package');
+    check('candidate multipart 携带 address 字段', (rPkg.rawBody ?? '').includes('name="address"') && (rPkg.rawBody ?? '').includes('office-pc:8002'));
+    check('candidate multipart 携带 runtime 字段', (rPkg.rawBody ?? '').includes('name="type"') && (rPkg.rawBody ?? '').includes('python'));
+
+    await s.close();
+  }
   console.log('-- 2. LLM relay --');
   {
     const s = await makeServer((_req, res) => {

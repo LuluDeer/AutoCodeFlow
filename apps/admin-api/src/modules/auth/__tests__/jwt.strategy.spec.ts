@@ -200,7 +200,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
         type: "access",
         ver: 3,
       }),
-    ).rejects.toThrow(new UnauthorizedException("Session has been revoked"));
+    ).rejects.toThrow(new UnauthorizedException("会话已被吊销"));
   });
 
   it("无 ver claim 的存量旧令牌 → 兼容放行（到期自然失效，不被新逻辑立即打死）", async () => {
@@ -226,7 +226,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
         type: "access",
         ver: 3,
       }),
-    ).rejects.toThrow(new UnauthorizedException("Account is disabled"));
+    ).rejects.toThrow(new UnauthorizedException("账号已被禁用"));
   });
 
   // R-04: H-3 半修复的收口——已删除用户仍持有效 access token 时必须 401
@@ -258,7 +258,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
         type: "refresh",
         ver: 3,
       }),
-    ).rejects.toThrow(new UnauthorizedException("Invalid token type"));
+    ).rejects.toThrow(new UnauthorizedException("令牌类型非法"));
     // 类型门必须先于取数：查库零调用
     expect(usersService.findByIdOrNull).not.toHaveBeenCalled();
   });
@@ -274,7 +274,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
         type: "access",
         ver: 3,
       }),
-    ).rejects.toThrow(new UnauthorizedException("User not found"));
+    ).rejects.toThrow(new UnauthorizedException("用户不存在"));
     expect(usersService.findByIdOrNull).toHaveBeenCalledWith(1);
     // 404 泄漏面（findById）必须保持零调用
     expect(usersService.findById).not.toHaveBeenCalled();

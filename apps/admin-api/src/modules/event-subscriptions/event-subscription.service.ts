@@ -1,11 +1,4 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  Optional,
-} from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { IsNull, Repository } from "typeorm";
@@ -29,6 +22,9 @@ import {
   MAX_EVENT_SUBSCRIPTIONS,
   SECRET_MASK,
 } from "./event-subscription.util";
+// LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * FEAT-07: 出站事件订阅 CRUD。
@@ -108,7 +104,7 @@ export class EventSubscriptionService {
     recordOwnershipAssertion("event-subscription", "write");
     if (this.isAdmin(user)) return;
     if (sub.userId !== null && sub.userId === user.id) return;
-    throw new ForbiddenException("You do not own this subscription");
+    throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_NOT_OWNER);
   }
 
   /**
@@ -122,8 +118,8 @@ export class EventSubscriptionService {
       this.config.get<boolean>("eventWebhook.allowPrivateNetwork") === true &&
       !this.isAdmin(user)
     ) {
-      throw new ForbiddenException(
-        "Creating/updating event subscriptions requires ADMIN while EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true",
+      throw new AppError(
+        ErrorCode.EVENT_SUBSCRIPTION_PRIVATE_NETWORK_REQUIRES_ADMIN,
       );
     }
   }
@@ -138,15 +134,17 @@ export class EventSubscriptionService {
 
     const count = await this.subRepo.count();
     if (count >= MAX_EVENT_SUBSCRIPTIONS) {
-      throw new BadRequestException(
-        `Too many event subscriptions (max ${MAX_EVENT_SUBSCRIPTIONS}). Remove unused ones first.`,
-      );
+      throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_TOO_MANY, {
+        max: MAX_EVENT_SUBSCRIPTIONS,
+      });
     }
 
     // 事件名最终防线：DTO @IsIn 已挡，这里兜底（service 可被绕过 controller 调）。
     for (const t of dto.eventTypes) {
       if (!isSubscribableEvent(t)) {
-        throw new BadRequestException(`Unknown event type: ${t}`);
+        throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_EVENT_TYPE_UNKNOWN, {
+          eventType: t,
+        });
       }
     }
 
@@ -201,7 +199,8 @@ export class EventSubscriptionService {
 
   async findOne(id: string, user: AuthUser): Promise<EventSubscription> {
     const sub = await this.subRepo.findOne({ where: { id } });
-    if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
+    if (!sub)
+      throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_NOT_FOUND, { id });
     this.assertCanManage(sub, user);
     return this.mask(sub);
   }
@@ -212,7 +211,8 @@ export class EventSubscriptionService {
     user: AuthUser,
   ): Promise<EventSubscription> {
     const sub = await this.subRepo.findOne({ where: { id } });
-    if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
+    if (!sub)
+      throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_NOT_FOUND, { id });
     this.assertCanManage(sub, user);
     // D3-B-P1-3: 捕获改向前 URL 哈希（用于比对改向）。
     const oldUrlHash = this.urlHash(sub.url);
@@ -225,7 +225,9 @@ export class EventSubscriptionService {
     if (dto.eventTypes !== undefined) {
       for (const t of dto.eventTypes) {
         if (!isSubscribableEvent(t)) {
-          throw new BadRequestException(`Unknown event type: ${t}`);
+          throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_EVENT_TYPE_UNKNOWN, {
+            eventType: t,
+          });
         }
       }
       sub.eventTypes = [...new Set(dto.eventTypes)];
@@ -250,7 +252,8 @@ export class EventSubscriptionService {
 
   async remove(id: string, user: AuthUser): Promise<void> {
     const sub = await this.subRepo.findOne({ where: { id } });
-    if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
+    if (!sub)
+      throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_NOT_FOUND, { id });
     this.assertCanManage(sub, user);
     await this.subRepo.delete(id);
     // D3-B-P1-3: 删除落证。
@@ -273,7 +276,8 @@ export class EventSubscriptionService {
     limit = 20,
   ): Promise<{ data: EventSubscriptionDeadLetter[]; total: number }> {
     const sub = await this.subRepo.findOne({ where: { id } });
-    if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
+    if (!sub)
+      throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_NOT_FOUND, { id });
     this.assertCanManage(sub, user);
     const safeLimit = Math.min(Math.max(1, limit), 100);
     const safePage = Math.max(1, page);
@@ -296,13 +300,16 @@ export class EventSubscriptionService {
     deadLetter: EventSubscriptionDeadLetter;
   }> {
     const sub = await this.subRepo.findOne({ where: { id } });
-    if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
+    if (!sub)
+      throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_NOT_FOUND, { id });
     this.assertCanManage(sub, user);
     const deadLetter = await this.deadLetterRepo.findOne({
       where: { id: deadLetterId, subscriptionId: id },
     });
     if (!deadLetter) {
-      throw new NotFoundException(`Dead letter ${deadLetterId} not found`);
+      throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_DEAD_LETTER_NOT_FOUND, {
+        deadLetterId,
+      });
     }
     return { subscription: sub, deadLetter };
   }

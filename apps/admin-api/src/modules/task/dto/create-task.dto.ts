@@ -59,9 +59,9 @@ export class CreateTaskDto {
    * TaskService.update 的 23505 分支转成可读 409。
    */
   @ApiProperty({
-    description:
-      "Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.",
     example: "每日备份",
+    description:
+      "任务名称——允许任意语言（含中文/日文/emoji）。拒绝控制字符与首尾空白；长度上限 255 字符。全部任务（含软删除行）内全局唯一。",
   })
   @IsString()
   @IsNotEmpty()
@@ -81,7 +81,7 @@ export class CreateTaskDto {
   @IsCron5Field()
   cronExpression?: string;
   @ApiPropertyOptional({
-    description: "IANA timezone for cron schedules, e.g. Asia/Shanghai",
+    description: "cron 调度使用的 IANA 时区，例如 Asia/Shanghai",
   })
   @IsString()
   // P2：非法时区此前静默降级为服务器时区调度（getCronOptions warn 后放行）
@@ -99,10 +99,10 @@ export class CreateTaskDto {
    * PATCH 语义（N28）：字段缺省 = 保留旧值；显式 null / [] = 清空。
    */
   @ApiPropertyOptional({
-    description:
-      "Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries.",
     type: [MaintenanceWindowDto],
     maxItems: 10,
+    description:
+      "任务级维护窗口：落在窗口内的定时触发会被跳过（手动/API 触发不受影响）。每项为 {start, end, description?}，start/end 均为 5 字段 cron；窗口在最近一次 start-cron 触达时开启、在最近一次 end-cron 触达时关闭。最多 10 条。",
   })
   @IsArray()
   @ArrayMaxSize(10)
@@ -128,7 +128,7 @@ export class CreateTaskDto {
    */
   @ApiPropertyOptional({
     description:
-      'Python interpreter version the task requires, as "major.minor" (e.g. "3.7", "3.12"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python.',
+      '任务所需的 Python 解释器版本，格式为 \\"major.minor\\"（例如 \\"3.7\\"、\\"3.12\\"）。支持区间默认 3.7–3.14；3.7 仅支持离线预置（uv 无法在线下载）。仅在 runtime=python 时有意义。',
   })
   @Matches(RUNTIME_VERSION_PATTERN, {
     message:
@@ -146,9 +146,9 @@ export class CreateTaskDto {
    * instead of burning a queued execution.
    */
   @ApiPropertyOptional({
-    description:
-      'Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"]',
     type: [String],
+    description:
+      '任务运行前由执行器安装的依赖声明——pip 依赖（python runtime，每任务独立 uv venv）或 npm 包（node runtime）。GLUE 脚本任务忽略该字段。示例：[\\"requests>=2.31\\", \\"rich==13.7.1\\"]',
   })
   @IsArray()
   @ArrayMaxSize(50)
@@ -167,11 +167,11 @@ export class CreateTaskDto {
    * 1790000000048 幂等翻转。
    */
   @ApiPropertyOptional({
-    description:
-      "Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.",
     type: "object",
     additionalProperties: { type: "string" },
     example: { "task-a-name": "uuid-of-task-a" },
+    description:
+      "上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。",
   })
   @IsObject()
   @IsOptional()
@@ -183,7 +183,7 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() currentVersion?: string;
   @ApiPropertyOptional({
     description:
-      "Task execution timeout in seconds (legacy field; prefer timeoutSeconds). 0 = no limit; bounded to the executor's 1..86400 window (executor-node rejects larger values with 400 on every attempt).",
+      "任务执行超时秒数（遗留字段；建议使用 timeoutSeconds）。0 = 不限制；上限为执行器的 1..86400 窗口（executor-node 每次尝试都会以 400 拒绝更大的值）。",
   })
   @IsInt()
   @Min(0)
@@ -192,7 +192,7 @@ export class CreateTaskDto {
   timeout?: number;
   @ApiPropertyOptional({
     description:
-      "Task execution timeout in seconds. 0 = no limit; bounded to the executor's 1..86400 window (normalized to `timeout`, which executor-node rejects above 86400 with 400).",
+      "任务执行超时秒数。0 = 不限制；上限为执行器的 1..86400 窗口（会归一化到 `timeout`，executor-node 对超过 86400 的值以 400 拒绝）。",
   })
   @IsInt()
   @Min(0)
@@ -207,9 +207,9 @@ export class CreateTaskDto {
    * PATCH 语义（N28 同源）：缺省 = 保留旧值；显式 null = 回到缺省 kill。
    */
   @ApiPropertyOptional({
-    description:
-      "CORE-04: what happens when the task times out. kill (default) = executor tree-kills the process (existing behavior); kill_retry = also kill, but admin re-enqueues a fresh execution using the task's retry budget; notify_only = admin sends the timeout alert and issues no extra kill command (the executor's own hard timeout still applies). Omit on PATCH to keep the current value; explicit null resets to kill.",
     enum: TIMEOUT_ACTIONS,
+    description:
+      "CORE-04：任务超时后的动作。kill（缺省）= 执行器按既有语义树杀进程；kill_retry = 同样树杀，但 admin 按任务的重试预算重新入队一次执行；notify_only = admin 只下发超时告警、不额外下发终止指令（执行器自身的硬超时仍然生效）。PATCH 时缺省 = 保留当前值；显式 null = 重置回 kill。",
   })
   @IsIn(TIMEOUT_ACTIONS as unknown as string[])
   @IsOptional()
@@ -221,7 +221,7 @@ export class CreateTaskDto {
    */
   @ApiPropertyOptional({
     description:
-      "CORE-04: timeout warning threshold as a percentage of the timeout (integer 0-90). A single WARNING notification is sent once the running time reaches timeout × ratio/100 (at most once per execution). Omit/null = disabled.",
+      "CORE-04：超时预警阈值，取 timeout 的百分数（整数 0-90）。运行时长达到 timeout × ratio/100 时发送一次 WARNING 预警通知（每个执行至多一次）。缺省/null = 未启用。",
   })
   @IsInt()
   @Min(0)
@@ -245,7 +245,7 @@ export class CreateTaskDto {
    */
   @ApiPropertyOptional({
     description:
-      "CORE-05: estimated execution duration in seconds (0 or omitted = unknown). Used only by scheduler-side executor load scoring (longer estimates penalize busy executors more); never consumed by the execution chain (heartbeat/timeout/stats). Explicit null on PATCH resets to unknown.",
+      "CORE-05：预估执行时长（秒；0 或缺省 = 未知）。仅用于调度侧的 executor 负载评分（预估越长，对繁忙执行器的惩罚越大）；执行链路（心跳/超时/统计）从不消费该字段。PATCH 时显式 null = 重置为未知。",
   })
   @IsInt()
   @Min(0)
@@ -264,7 +264,7 @@ export class CreateTaskDto {
    */
   @ApiPropertyOptional({
     description:
-      "Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps).",
+      "派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。",
   })
   @IsEnum(ExecuteMode)
   @IsOptional()
@@ -281,7 +281,7 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsArray() @IsOptional() alarmChannels?: string[];
   @ApiPropertyOptional({
     description:
-      "Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face).",
+      "任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。",
   })
   @IsObject()
   @IsOptional()
@@ -309,21 +309,21 @@ export class CreateTaskDto {
    * 却报"缺少凭据"，这是本次生产故障的形状）。
    */
   @ApiPropertyOptional({
-    description:
-      "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.",
     type: "object",
     additionalProperties: { type: "string" },
-    example: { API_TOKEN: "sk-live-...", DB_PASSWORD: "hunter2" },
+    example: { API_TOKEN: "sk-live-", DB_PASSWORD: "hunter2" },
+    description:
+      "任务级 secrets（凭据键值对，独立于 params 的普通运行参数；配置了 SEC_SECRETS_KEY 时以 AES-256-GCM 加密落库，未配置则降级明文并告警）。读路径一律以字面量 ****** 掩码。派发时走两条通道：合并进 params（AUTOFLOW_<KEY>，旧执行器通道）并作为独立载荷字段下发，使执行器按**原名**注入（第三方 SDK 要求规范名）。PATCH 时按**逐键合并**：键缺省或叶子值为 ****** 时保留已存值，叶子值为 null 时删除该键，其它值覆盖；整个字段显式 null 时清空全部 secret。",
   })
   @IsObject()
   @IsOptional()
   @Validate(IsSecretKeyMapConstraint)
   secrets?: Record<string, unknown> | null;
   @ApiPropertyOptional({
-    description:
-      "FEAT-22: task-level deployment dispatch policy override. 'strict' narrows candidates to the set of devices with explicit deployments of the bound application (running/stopped/upgrading); when none of them can take the execution it is queued as WAITING instead of silently dispatched elsewhere. 'prefer' keeps the ARCH-35 soft preference (deployed-and-running devices are tried first, falls back to the fleet). Omitted/null follows the global executor.deploymentPolicy (EXECUTOR_DEPLOYMENT_POLICY). Precedence: executorId pin > executorAppName > deployment constraint > fleet; the master switch executor.preferDeployedExecutor=false disables deployment awareness entirely. PATCH: omit = keep; explicit null = follow global.",
     enum: ["strict", "prefer"],
     nullable: true,
+    description:
+      "FEAT-22：任务级部署派发策略覆盖。'strict' 把候选收窄为显式部署了绑定应用的设备集合（running/stopped/upgrading）；当其中没有任何设备可承接该执行时，执行会以 WAITING 排队，而不是静默派发到别处。'prefer' 保留 ARCH-35 的软偏好（优先尝试已部署且运行中的设备，否则回落到全集群）。缺省/null = 跟随全局 executor.deploymentPolicy（EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId 钉定 > executorAppName > 部署约束 > 全集群；总开关 executor.preferDeployedExecutor=false 会彻底关闭部署感知。PATCH：缺省 = 保留；显式 null = 跟随全局。",
   })
   @IsIn(["strict", "prefer"])
   @IsOptional()
@@ -340,9 +340,9 @@ export class CreateTaskDto {
    * PATCH 语义（N28）：缺省 = 保留旧值；显式 null / [] = 清除约束。
    */
   @ApiPropertyOptional({
-    description:
-      "NF-04: executor affinity tags (OR semantics — an executor holding ANY of these tags is an eligible candidate; loadScore then picks within the matched set). In broadcast mode the fan-out narrows to executors matching the affinity tags. Orthogonal to executorTags (hard AND-subset capability requirement). PATCH: omit = keep; explicit null/[] = clear.",
     type: [String],
+    description:
+      "NF-04：执行器标签亲和（OR 语义——持有其中**任一**标签的执行器即为候选；随后在命中集合内按 loadScore 择优）。broadcast 模式下扇出收窄为命中亲和标签的执行器子集。与 executorTags（硬性 AND 子集能力要求）正交。PATCH：缺省 = 保留；显式 null/[] = 清除。",
   })
   @IsArray()
   @IsString({ each: true })
@@ -356,9 +356,9 @@ export class CreateTaskDto {
    * 实体列 → 调度侧 null = 无约束（见 update 注释）。
    */
   @ApiPropertyOptional({
-    description:
-      "NF-04: executor anti-affinity tags (exclusion semantics — an executor holding ANY of these tags is excluded). Applies to both single and broadcast dispatch; combined with affinity tags the matched set is filtered further. PATCH: omit = keep; explicit null/[] = clear.",
     type: [String],
+    description:
+      "NF-04：执行器标签反亲和（排除语义——持有其中**任一**标签的执行器即被排除）。单发与 broadcast 均生效；与亲和标签组合时，先取亲和命中集再在其上剔除。PATCH：缺省 = 保留；显式 null/[] = 清除。",
   })
   @IsArray()
   @IsString({ each: true })
@@ -366,7 +366,7 @@ export class CreateTaskDto {
   executorAntiAffinityTags?: string[] | null;
   @ApiPropertyOptional({
     description:
-      "Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast.",
+      "把任务钉定到指定执行器：派发**只**发往该执行器（绕过分组/标签过滤）；它离线时快速失败。与 executeMode=broadcast 互斥。",
   })
   @IsUUID()
   @IsOptional()
@@ -387,17 +387,17 @@ export class CreateTaskDto {
    * `requirements`（PyPI）属依赖型渠道，可与任一来源并存（AC-18b）。
    */
   @ApiPropertyOptional({
-    description:
-      "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.",
     enum: TaskCodeSource,
     nullable: true,
+    description:
+      "代码来源渠道。gitRepo / glueSource / codeSource=application_zip（需配 applicationId）三者中只能设置一个。PATCH 时缺省 = 保留当前值；显式 null = 清除声明。requirements/PyPI 属于依赖型渠道，可与任一代码来源并存。",
   })
   @IsIn(Object.values(TaskCodeSource))
   @IsOptional()
   codeSource?: TaskCodeSource | null;
   @ApiPropertyOptional({
     description:
-      "FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts.",
+      "FEAT-11：markdown 运维手册——展示在任务详情页，并随失败通知/告警一并附上。",
   })
   @IsString()
   @IsOptional()
@@ -427,7 +427,7 @@ export class CreateTaskDto {
    */
   @ApiPropertyOptional({
     description:
-      "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project.",
+      "所属项目。缺省/null = 未分配（计入默认项目视图；与既有行为一致）。设置它需要 ADMIN 或该项目的 editor/admin。",
   })
   @IsUuidShape()
   @IsOptional()

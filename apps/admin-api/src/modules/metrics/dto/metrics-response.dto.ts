@@ -14,14 +14,13 @@ export class MetricsSummaryResponseDto {
   @ApiProperty()
   totalExecutors: number;
 
-  @ApiProperty({ description: "Executors with status=online" })
+  @ApiProperty({ description: "status=online 的执行器数量" })
   onlineExecutors: number;
 
-  @ApiProperty({ description: "Executions created since local midnight" })
+  @ApiProperty({ description: "本地零点以来创建的执行数" })
   todayRuns: number;
 
   @ApiProperty({
-    description: "Status counts over the aggregation window",
     type: "object",
     properties: {
       total: { type: "number" },
@@ -30,6 +29,7 @@ export class MetricsSummaryResponseDto {
       running: { type: "number" },
     },
     required: ["total", "success", "failed", "running"],
+    description: "聚合窗口内的状态计数",
   })
   executions: {
     total: number;
@@ -38,20 +38,16 @@ export class MetricsSummaryResponseDto {
     running: number;
   };
 
-  @ApiProperty({ description: "Percent (two decimals), 0 when no runs" })
+  @ApiProperty({ description: "百分比（保留两位小数），无执行时为 0" })
   successRate: number;
 
-  @ApiProperty({
-    description: "Mean duration ms of successful runs in the window",
-  })
+  @ApiProperty({ description: "窗口内成功执行的平均耗时（毫秒）" })
   avgDurationMs: number;
 }
 
 /** GET /metrics/trend —— 按天聚合行（仅 success/failed/timeout 三类计数）。 */
 export class MetricsTrendRowDto {
-  @ApiProperty({
-    description: "Local day bucket (ISO yyyy-mm-dd of createdAt)",
-  })
+  @ApiProperty({ description: "本地日期分桶（createdAt 的 ISO yyyy-mm-dd）" })
   date: string;
 
   @ApiProperty()
@@ -105,12 +101,15 @@ export class MetricsRecentFailureDto {
   @ApiProperty({ nullable: true })
   errorMessage: string | null;
 
-  @ApiProperty({ description: "Classified failure token", nullable: true })
+  @ApiProperty({
+    nullable: true,
+    description: "归类后的失败原因标识",
+  })
   failureReason: string | null;
 
   @ApiProperty({
-    description: "Raw exit code reported by the executor (observable backfill)",
     nullable: true,
+    description: "执行器上报的原始退出码（可观测性回填）",
   })
   exitCode: number | null;
 
@@ -124,21 +123,18 @@ export class MetricsRecentFailureDto {
 /** GET /metrics/scheduler —— 调度器运行面（counters/derived 快照 + 队列深度）。 */
 export class MetricsSchedulerResponseDto {
   @ApiProperty({
-    description:
-      "Raw scheduler metric counters snapshot (SchedulerMetricsSnapshot)",
     additionalProperties: { type: "number" },
+    description: "原始调度器指标计数器快照（SchedulerMetricsSnapshot）",
   })
   counters: Record<string, number>;
 
   @ApiProperty({
-    description: "Derived ratios/rates computed from counters",
     additionalProperties: { type: "number" },
+    description: "由计数器推导出的比率/速率",
   })
   derived: Record<string, number>;
 
   @ApiProperty({
-    description:
-      "BullMQ queue depth (null value = Redis unavailable, NOT an empty queue)",
     type: "object",
     properties: {
       waiting: { type: "number", nullable: true },
@@ -148,6 +144,8 @@ export class MetricsSchedulerResponseDto {
       completed: { type: "number", nullable: true },
     },
     required: ["waiting", "active", "delayed", "failed", "completed"],
+    description:
+      "BullMQ 队列深度（值为 null 表示 Redis 不可用，**不是**空队列）",
   })
   queue: {
     waiting: number | null;
@@ -158,17 +156,17 @@ export class MetricsSchedulerResponseDto {
   };
 
   @ApiProperty({
-    description: "Scheduler liveness snapshot (getStats)",
     type: "object",
     additionalProperties: true,
+    description: "调度器存活快照（getStats）",
   })
   scheduler: Record<string, unknown>;
 
   @ApiProperty({
-    description: "Emitting process identity",
     type: "object",
     properties: { pid: { type: "number" }, hostname: { type: "string" } },
     required: ["pid", "hostname"],
+    description: "上报进程的身份标识",
   })
   instance: { pid: number; hostname: string };
 }

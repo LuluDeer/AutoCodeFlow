@@ -75,7 +75,7 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
     it("rejects URLs embedding credentials", async () => {
       await expect(
         assertSafeExecutorUrl("http://user:pass@10.0.0.9:3002/api/execute"),
-      ).rejects.toThrow(/credentials/);
+      ).rejects.toThrow(/内嵌凭据/);
     });
 
     it("allows private LAN 10.x by default (docker-compose internal topology)", async () => {
@@ -171,19 +171,19 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
     it("blocks RFC 2544 benchmark 198.18.0.0/15 (the round-7 TUN bypass)", async () => {
       await expect(
         assertSafeHttpUrl("http://198.18.0.1:9999/webhook"),
-      ).rejects.toThrow(/deny list/);
+      ).rejects.toThrow(/拒绝名单/);
       await expect(
         assertSafeHttpUrl("http://198.19.0.1/webhook"),
-      ).rejects.toThrow(/deny list/);
+      ).rejects.toThrow(/拒绝名单/);
     });
 
     it("blocks CGNAT 100.64.0.0/10 (Tailscale range)", async () => {
       await expect(
         assertSafeHttpUrl("http://100.64.0.1/webhook"),
-      ).rejects.toThrow(/deny list/);
+      ).rejects.toThrow(/拒绝名单/);
       await expect(
         assertSafeHttpUrl("http://100.127.255.254/webhook"),
-      ).rejects.toThrow(/deny list/);
+      ).rejects.toThrow(/拒绝名单/);
     });
 
     it("keeps adjacent public ranges reachable (no over-block)", async () => {
@@ -208,10 +208,10 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
   describe("assertSafeHttpUrl — allowPrivateNetwork option (ARCH-31)", () => {
     it("default (no opts) keeps the blanket posture — loopback/private-LAN refused", async () => {
       await expect(assertSafeHttpUrl("http://127.0.0.1:9000")).rejects.toThrow(
-        /deny list/,
+        /拒绝名单/,
       );
       await expect(assertSafeHttpUrl("http://10.0.0.5/admin")).rejects.toThrow(
-        /deny list/,
+        /拒绝名单/,
       );
     });
 
@@ -238,10 +238,10 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       const allow = { allowPrivateNetwork: true };
       await expect(
         assertSafeHttpUrl("http://169.254.169.254/latest", allow),
-      ).rejects.toThrow(/deny list/);
+      ).rejects.toThrow(/拒绝名单/);
       await expect(
         assertSafeHttpUrl("http://0.0.0.0:9000", allow),
-      ).rejects.toThrow(/deny list/);
+      ).rejects.toThrow(/拒绝名单/);
     });
   });
 
@@ -380,7 +380,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ]);
       await expect(
         assertSafeHttpUrl("http://evil.example.com/webhook"),
-      ).rejects.toThrow(/blocked address/);
+      ).rejects.toThrow(/解析到被阻断的地址/);
     });
 
     it("blocks mapped loopback / private / benchmark DNS answers", async () => {
@@ -393,7 +393,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
         mockedLookup.mockResolvedValue([{ address: addr, family: 6 }]);
         await expect(
           assertSafeHttpUrl("http://evil.example.com/webhook"),
-        ).rejects.toThrow(/blocked address/);
+        ).rejects.toThrow(/解析到被阻断的地址/);
       }
     });
 
@@ -411,7 +411,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
         mockedLookup.mockResolvedValue([{ address: addr, family: 6 }]);
         await expect(
           assertSafeHttpUrl("http://evil.example.com/webhook"),
-        ).rejects.toThrow(/blocked address/);
+        ).rejects.toThrow(/解析到被阻断的地址/);
       }
     });
   });
@@ -525,7 +525,7 @@ describe("safe-http.util — assertSafeGitRepoUrl (R4)", () => {
     mockedLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
     await expect(
       assertSafeGitRepoUrl("http://evil.example.com/r.git"),
-    ).rejects.toThrow(/link-local.*clone refused|clone refused/);
+    ).rejects.toThrow(/link-local.*已拒绝克隆|已拒绝克隆/);
   });
 
   it("blocks loopback IP literal in https form", async () => {
@@ -551,7 +551,7 @@ describe("safe-http.util — assertSafeGitRepoUrl (R4)", () => {
       mockedLookup.mockResolvedValue([{ address: addr, family: 4 }]);
       await expect(
         assertSafeGitRepoUrl("https://overlay.example.com/r.git"),
-      ).rejects.toThrow(/clone refused/);
+      ).rejects.toThrow(/已拒绝克隆/);
     }
   });
 
@@ -559,7 +559,7 @@ describe("safe-http.util — assertSafeGitRepoUrl (R4)", () => {
     mockedLookup.mockResolvedValue([{ address: "fd12:3456::7", family: 6 }]);
     await expect(
       assertSafeGitRepoUrl("https://ula.example.com/r.git"),
-    ).rejects.toThrow(/clone refused/);
+    ).rejects.toThrow(/已拒绝克隆/);
   });
 
   it("blocks IPv4-mapped IPv6 metadata literal (::ffff:169.254.169.254)", async () => {
@@ -570,7 +570,7 @@ describe("safe-http.util — assertSafeGitRepoUrl (R4)", () => {
 
   it("rejects unsupported repo shapes (no https/ssh/git@ prefix)", async () => {
     await expect(assertSafeGitRepoUrl("/etc/passwd")).rejects.toThrow(
-      /Unsupported git repository URL shape/,
+      /不支持的 Git 仓库 URL 形式/,
     );
   });
 
@@ -578,6 +578,6 @@ describe("safe-http.util — assertSafeGitRepoUrl (R4)", () => {
     mockedLookup.mockResolvedValue([]);
     await expect(
       assertSafeGitRepoUrl("https://nx.example.invalid/r.git"),
-    ).rejects.toThrow(/did not resolve/);
+    ).rejects.toThrow(/无法解析/);
   });
 });

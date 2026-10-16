@@ -9,7 +9,7 @@
 //             TaskFormPage 执行器策略四模式（auto/group/pinned/broadcast）、executorId 残留清理
 // 第九轮新增：pinned 任务部署全链 UI 闭环——API/UI 建 pinned → 详情页绑定可见 →
 //             手动 trigger 实际落在目标执行器（executorAddress 复核）→
-//             pinned 离线/目标不存在语义（FAILED + "Pinned executor" 错误 UI 可读）
+//             pinned 离线/目标不存在语义（FAILED + 「指定的固定执行器…已离线/不存在」错误 UI 可读）
 const { test, expect } = require('@playwright/test');
 const { randomUUID } = require('node:crypto');
 
@@ -1143,20 +1143,23 @@ test('26. pinned 全链 — 详情页绑定可见、UI 触发、执行记录 exe
   expect(exec.executorAddress).toBe(executor.address);
   console.log(`  ✓ 执行 ${exec.id} success，executorAddress=${exec.executorAddress}（=目标执行器）`);
 
-  // UI 执行历史：行内可见执行器地址与成功状态；执行详情页展示执行节点
+  // UI 执行历史：行内可见执行器（**可读名**，地址降为 tooltip 副信息——
+  // ADR-017 阶段 3 决策 §7 的读面富化）与成功状态；执行详情页展示执行节点地址。
+  // 注：本列此前直接渲染 executorAddress，故旧断言用地址定位行；改为可读名后
+  // 行内文本是 appName，地址仍在 Tooltip title 里（鼠标悬停可见）。
   await page.getByRole('tab', { name: /执行记录/ }).click();
   await page.getByRole('button', { name: /刷新/ }).click();
-  const row = page.locator('.ant-table-tbody tr', { hasText: executor.address }).first();
+  const row = page.locator('.ant-table-tbody tr', { hasText: executor.appName }).first();
   await expect(row).toBeVisible({ timeout: 10000 });
   await expect(row).toContainText('成功');
   await row.getByRole('button', { name: /详情/ }).click();
   await page.waitForURL(/\/executions\//);
   await expect(page.getByText(executor.address).first()).toBeVisible({ timeout: 10000 });
-  console.log('  ✓ 执行历史行与执行详情页均如实展示 executorAddress');
+  console.log('  ✓ 执行历史行展示可读名、执行详情页如实展示 executorAddress');
   await page.screenshot({ path: '/tmp/e2e-26-pinned-chain.png' });
 });
 
-// ── 27. pinned 离线语义 — 目标执行器 set-offline → trigger FAILED「Pinned executor ... is offline」UI 可读 ──
+// ── 27. pinned 离线语义 — 目标执行器 set-offline → trigger FAILED「指定的固定执行器 … 已离线」UI 可读 ──
 test('27. pinned 离线语义 — 目标执行器离线 trigger FAILED，错误消息与失败分类 UI 可读', async ({ page, request }) => {
   const executor = await getFirstOnlineExecutor(request);
   // W-29 心跳竞态防御：set-offline 只是 DB 状态写，而活着的 executor-node 会按
@@ -1189,35 +1192,45 @@ test('27. pinned 离线语义 — 目标执行器离线 trigger FAILED，错误�
     console.log(`  ⚠ 心跳竞态：第一次尝试拿到 ${exec.status}，换新任务重试（W-29）`);
     ({ seeded, exec } = await runOfflineScenario());
   }
-  expect(exec.status).toBe('failed');
-  expect(exec.errorMessage, 'pinned 离线应报 "Pinned executor ... is offline"').toMatch(/Pinned executor .* is offline/);
-  expect(exec.failureReason).toBe('executor_offline');
-  expect(exec.executorAddress, '离线失败不应发生派发，executorAddress 应为空').toBeFalsy();
-  console.log(`  ✓ 执行 FAILED：${exec.errorMessage}`);
 
-  // UI：详情页执行历史行展示错误；执行详情页展示失败分类「执行器离线」+ 错误信息
-  // 注：UI 断言包在 try/finally 中——无论成败都等心跳恢复 online，
-  //     避免离线窗口级联打挂后续用例（28/29 依赖在线执行器）。
+  // ⚠️ **本用例从 set-offline 起就必须整体处于 try/finally 内**（run 38879509009 教训）。
+  // 原先只有下方的 UI 断言段被 try 包住，而 API 断言段在其**之前**——一旦 API 断言
+  // 失败（当时正是 failureReason 断言红），finally 根本不会执行 → 执行器被永久留在
+  // offline → 后续用例 28/29/30/33/37 集体以「无在线执行器 / deploy 503
+  // NO_AVAILABLE_EXECUTOR_FOR_SELECTION」级联失败（一次真缺陷被放大成 5 个红）。
+  // 故把 API 断言一并纳入 try，确保**任何**失败路径都恢复 online。
   try {
+    expect(exec.status).toBe('failed');
+    // LANG-ZH-01：报错文案已按「面向用户文字全部中文」中文化，故断言中文而非原英文
+    // （原 `/Pinned executor .* is offline/`）。真值源 = admin-api 错误码表
+    // PINNED_EXECUTOR_OFFLINE 的 zh 模板（`指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`），
+    // 由后端渲染进 errorMessage（服务端兜底中文）；前端按 errorCode 查自身词条渲染同一句。
+    expect(exec.errorMessage, 'pinned 离线应报「指定的固定执行器 … 已离线」').toMatch(/已离线/);
+    expect(exec.failureReason).toBe('executor_offline');
+    expect(exec.executorAddress, '离线失败不应发生派发，executorAddress 应为空').toBeFalsy();
+    console.log(`  ✓ 执行 FAILED：${exec.errorMessage}`);
+
+    // UI：详情页执行历史行展示错误；执行详情页展示失败分类「执行器离线」+ 错误信息
     await login(page);
     await page.goto(`${BASE}/tasks/${seeded.id}`);
     await page.getByRole('tab', { name: /执行记录/ }).click();
-    const row = page.locator('.ant-table-tbody tr', { hasText: 'Pinned executor' }).first();
+    const row = page.locator('.ant-table-tbody tr', { hasText: '已离线' }).first();
     await expect(row).toBeVisible({ timeout: 10000 });
     await expect(row).toContainText('失败');
     await row.getByRole('button', { name: /详情/ }).click();
     await page.waitForURL(/\/executions\//);
     await expect(page.getByText('执行器离线', { exact: true })).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText(/Pinned executor .* is offline/).first()).toBeVisible();
+    await expect(page.getByText(/已离线/).first()).toBeVisible();
     console.log('  ✓ 执行详情页失败分类「执行器离线」+ 错误消息 UI 可读');
     await page.screenshot({ path: '/tmp/e2e-27-pinned-offline.png' });
   } finally {
     // 恢复：等待心跳把执行器带回 online，避免离线窗口影响后续用例
+    // （28/29/30/33/37 都依赖在线执行器）。
     await apiWaitExecutorOnline(request, executor.id);
   }
 });
 
-// ── 28. pinned 目标不存在 — executorId 指向随机 uuid → FAILED「Pinned executor ... not found」UI 可读 ──
+// ── 28. pinned 目标不存在 — executorId 指向随机 uuid → FAILED「指定的固定执行器 … 不存在」UI 可读 ──
 test('28. pinned 目标不存在 — executorId 幽灵 uuid trigger FAILED，UI 错误展示可读', async ({ page, request }) => {
   const ghost = randomUUID();
   const seeded = await apiCreateTask(request, {
@@ -1235,19 +1248,19 @@ test('28. pinned 目标不存在 — executorId 幽灵 uuid trigger FAILED，UI 
   await apiTriggerTask(request, seeded.id);
   const exec = await apiWaitExecution(request, seeded.id, 30000);
   expect(exec.status).toBe('failed');
-  expect(exec.errorMessage, '目标缺失应报 "Pinned executor ... not found"').toMatch(/Pinned executor .* not found/);
+  expect(exec.errorMessage, '目标缺失应报「指定的固定执行器 … 不存在」').toMatch(/不存在/);
   expect(exec.executorAddress, '目标不存在不应发生派发').toBeFalsy();
   console.log(`  ✓ 执行 FAILED：${exec.errorMessage}`);
 
   await login(page);
   await page.goto(`${BASE}/tasks/${seeded.id}`);
   await page.getByRole('tab', { name: /执行记录/ }).click();
-  const row = page.locator('.ant-table-tbody tr', { hasText: 'Pinned executor' }).first();
+  const row = page.locator('.ant-table-tbody tr', { hasText: '不存在' }).first();
   await expect(row).toBeVisible({ timeout: 10000 });
   await expect(row).toContainText('失败');
   await row.getByRole('button', { name: /详情/ }).click();
   await page.waitForURL(/\/executions\//);
-  await expect(page.getByText(/Pinned executor .* not found/).first()).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText(/不存在/).first()).toBeVisible({ timeout: 10000 });
   console.log('  ✓ 执行详情页错误信息 UI 可读（无 fallback 到其他执行器）');
   await page.screenshot({ path: '/tmp/e2e-28-pinned-ghost.png' });
 });
@@ -1292,8 +1305,9 @@ test('29. UI 向导建 pinned 任务 → 触发执行 executorAddress=绑定执�
 
   await page.getByRole('tab', { name: /执行记录/ }).click();
   await page.getByRole('button', { name: /刷新/ }).click();
-  await expect(page.locator('.ant-table-tbody tr', { hasText: executor.address }).first()).toBeVisible({ timeout: 10000 });
-  console.log('  ✓ 执行历史行展示目标执行器地址（UI 创建→执行→展示闭环）');
+  // 同上：执行历史行展示**可读名**（ADR-017 阶段 3 §7 读面富化），非地址。
+  await expect(page.locator('.ant-table-tbody tr', { hasText: executor.appName }).first()).toBeVisible({ timeout: 10000 });
+  console.log('  ✓ 执行历史行展示目标执行器可读名（UI 创建→执行→展示闭环）');
   await page.screenshot({ path: '/tmp/e2e-29-pinned-wizard-chain.png' });
 });
 

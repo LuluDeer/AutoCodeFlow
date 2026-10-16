@@ -20,7 +20,7 @@
     "test:e2e": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json",
     "typecheck": "tsc --noEmit",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli",
-    "swagger:export": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\"",
+    "swagger:export": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\" && node ../../scripts/api-i18n/inject-openapi-en.mjs",
     "migration:run": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts up",
     "migration:revert": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts down",
     "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts",

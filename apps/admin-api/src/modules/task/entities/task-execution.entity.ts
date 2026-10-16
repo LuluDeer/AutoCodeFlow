@@ -168,6 +168,12 @@ export interface ExecutionArtifact {
 @Index("idx_task_executions_running", ["executorAddress", "startTime"], {
   where: "\"status\" = 'running'",
 })
+// ADR-017 阶段 3（迁移 1790000000055）：重启恢复查询形态 `executorId = $1
+// AND status='running' ORDER BY startTime` 的部分索引。与上面按 address 的
+// 那条同款——地址在 pull 同址多行并存时不再唯一，恢复必须按行身份走。
+@Index("idx_task_executions_executor_id_running", ["executorId", "startTime"], {
+  where: "\"status\" = 'running'",
+})
 // O-2: the stale sweep filters only on status='running' AND startTime < cutoff
 // (no executorAddress predicate), so the (executorAddress, startTime) index
 // above cannot be used. A leading-column (startTime) partial index serves it.
@@ -210,6 +216,22 @@ export class TaskExecution {
   @JoinColumn({ name: "taskId" })
   task: Task | null;
   @Column({ nullable: true }) executorAddress: string;
+  /**
+   * ADR-017 阶段 3：派发到的那台执行器的 `executors.id`（行身份）。
+   *
+   * 为什么必须与 `executorAddress` 并存：阶段 3 把 `uq_executors_address` 收窄为
+   * partial（仅 push 行），pull 模式**允许同地址多行并存**（ADR-017 §5）——此时
+   * `executorAddress` 不再唯一指代一行，任何「按地址匹配执行行」的面都会命中
+   * 别人的行：重启恢复会误杀、互斥占用会算错、产物归属会串台。
+   *
+   * 可空是刻意的：存量行（本次迁移前派发的）没有该值，那些面回落到地址匹配，
+   * 行为与引入前逐字节一致；新派发一律写入。读面（决策 §7 读面富化）也靠它
+   * 无歧义地展示「部署到哪台机器」。
+   *
+   * 不加 FK：执行器行可被删除（cleanupOfflineExecutors），而执行历史必须保留
+   * （删行会让历史断裂——正是本 ADR 要消灭的故障）。故以裸 uuid 存快照语义。
+   */
+  @Column({ type: "uuid", nullable: true }) executorId: string | null;
   @Column({ type: "text", nullable: true }) logs: string;
   /** Where the detailed log lives: 'db' (execution_log_lines) or 's3' object. */
   @Column({ type: "varchar", nullable: true, default: "db" })

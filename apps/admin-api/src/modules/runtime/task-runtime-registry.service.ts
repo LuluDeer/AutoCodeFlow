@@ -18,6 +18,11 @@ import type {
   RegisterRuntimeOptions,
   TaskRuntimeDefinition,
 } from "./task-runtime.types";
+// LANG-ERR-01（后端错误码化）：抛出统一走 AppError（带稳定码，文案由前端按
+// 用户语言渲染）。⚠️ 本处原为**裸 Error**（对外 500），迁码时 status 取 500
+// 保持对外状态码不变。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 @Injectable()
 export class TaskRuntimeRegistry {
@@ -65,9 +70,9 @@ export class TaskRuntimeRegistry {
     options: RegisterRuntimeOptions = {},
   ): void {
     if (this.definitions.has(definition.runtime) && !options.override) {
-      throw new Error(
-        `Task runtime "${definition.runtime}" is already registered; pass { override: true } to replace it`,
-      );
+      throw new AppError(ErrorCode.TASK_RUNTIME_ALREADY_REGISTERED, {
+        runtime: definition.runtime,
+      });
     }
     this.definitions.set(definition.runtime, { ...definition });
   }

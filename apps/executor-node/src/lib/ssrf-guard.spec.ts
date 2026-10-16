@@ -15,31 +15,31 @@ jest.mock('../config', () => ({
 
 describe('assertSafeHttpUrl (E-04 SSRF guard)', () => {
   it('rejects non-http(s) schemes', () => {
-    expect(() => assertSafeHttpUrl('file:///etc/passwd')).toThrow(/scheme not allowed/);
-    expect(() => assertSafeHttpUrl('ftp://example.com/file')).toThrow(/scheme not allowed/);
+    expect(() => assertSafeHttpUrl('file:///etc/passwd')).toThrow(/不允许的 URL 协议/);
+    expect(() => assertSafeHttpUrl('ftp://example.com/file')).toThrow(/不允许的 URL 协议/);
   });
 
   it('rejects loopback addresses', () => {
-    expect(() => assertSafeHttpUrl('http://127.0.0.1:8080/pkg.zip')).toThrow(/restricted network address/);
-    expect(() => assertSafeHttpUrl('http://127.0.0.2:8080/pkg.zip')).toThrow(/restricted network address/);
-    expect(() => assertSafeHttpUrl('http://localhost:8080/pkg.zip')).toThrow(/restricted network address/);
+    expect(() => assertSafeHttpUrl('http://127.0.0.1:8080/pkg.zip')).toThrow(/指向受限网络地址/);
+    expect(() => assertSafeHttpUrl('http://127.0.0.2:8080/pkg.zip')).toThrow(/指向受限网络地址/);
+    expect(() => assertSafeHttpUrl('http://localhost:8080/pkg.zip')).toThrow(/指向受限网络地址/);
   });
 
   it('rejects RFC1918 private network addresses', () => {
-    expect(() => assertSafeHttpUrl('http://10.0.0.5:8080/pkg.zip')).toThrow(/restricted/);
-    expect(() => assertSafeHttpUrl('http://172.16.0.1:8080/pkg.zip')).toThrow(/restricted/);
-    expect(() => assertSafeHttpUrl('http://172.31.255.255:8080/pkg.zip')).toThrow(/restricted/);
-    expect(() => assertSafeHttpUrl('http://192.168.1.100:8080/pkg.zip')).toThrow(/restricted/);
+    expect(() => assertSafeHttpUrl('http://10.0.0.5:8080/pkg.zip')).toThrow(/受限网络地址/);
+    expect(() => assertSafeHttpUrl('http://172.16.0.1:8080/pkg.zip')).toThrow(/受限网络地址/);
+    expect(() => assertSafeHttpUrl('http://172.31.255.255:8080/pkg.zip')).toThrow(/受限网络地址/);
+    expect(() => assertSafeHttpUrl('http://192.168.1.100:8080/pkg.zip')).toThrow(/受限网络地址/);
   });
 
   it('rejects cloud metadata address 169.254.169.254', () => {
-    expect(() => assertSafeHttpUrl('http://169.254.169.254/latest/meta-data/')).toThrow(/restricted/);
-    expect(() => assertSafeHttpUrl('http://169.254.1.1/')).toThrow(/restricted/);
+    expect(() => assertSafeHttpUrl('http://169.254.169.254/latest/meta-data/')).toThrow(/受限网络地址/);
+    expect(() => assertSafeHttpUrl('http://169.254.1.1/')).toThrow(/受限网络地址/);
   });
 
   it('rejects IPv6 loopback and link-local', () => {
-    expect(() => assertSafeHttpUrl('http://[::1]:8080/pkg.zip')).toThrow(/restricted/);
-    expect(() => assertSafeHttpUrl('http://[fe80::1]:8080/pkg.zip')).toThrow(/restricted/);
+    expect(() => assertSafeHttpUrl('http://[::1]:8080/pkg.zip')).toThrow(/受限网络地址/);
+    expect(() => assertSafeHttpUrl('http://[fe80::1]:8080/pkg.zip')).toThrow(/受限网络地址/);
   });
 
   it('accepts public internet addresses', () => {
@@ -57,7 +57,7 @@ describe('assertSafeHttpUrl (E-04 SSRF guard)', () => {
   });
 
   it('rejects invalid URLs', () => {
-    expect(() => assertSafeHttpUrl('not-a-url')).toThrow(/Invalid URL/);
+    expect(() => assertSafeHttpUrl('not-a-url')).toThrow(/无效的 URL/);
   });
 });
 
@@ -70,7 +70,7 @@ describe('assertSafeDnsResolution (S-1 DNS rebinding)', () => {
     try {
       await expect(
         assertSafeDnsResolution('http://evil.example.com/pkg.zip'),
-      ).rejects.toThrow(/resolves to restricted network address 10\.0\.0\.5/);
+      ).rejects.toThrow(/解析到受限网络地址 10\.0\.0\.5/);
     } finally {
       spy.mockRestore();
     }
@@ -95,7 +95,7 @@ describe('assertSafeDnsResolution (S-1 DNS rebinding)', () => {
     try {
       await expect(
         assertSafeDnsResolution('http://nx.example.com/pkg.zip'),
-      ).rejects.toThrow(/failed DNS resolution/);
+      ).rejects.toThrow(/DNS 解析失败/);
     } finally {
       spy.mockRestore();
     }
@@ -126,7 +126,7 @@ describe('assertSafeDnsResolution (S-1 DNS rebinding)', () => {
   it('非 http(s) scheme 直接拒绝，不发起解析', async () => {
     const spy = jest.spyOn(dns.promises, 'lookup');
     try {
-      await expect(assertSafeDnsResolution('file:///etc/passwd')).rejects.toThrow(/scheme not allowed/);
+      await expect(assertSafeDnsResolution('file:///etc/passwd')).rejects.toThrow(/不允许的 URL 协议/);
       expect(spy).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();

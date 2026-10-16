@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import {
@@ -7,6 +7,11 @@ import {
   DEFAULT_PROJECT_NAME,
 } from "./project.entity";
 import { CreateProjectDto, UpdateProjectDto } from "./project.dto";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * AUTH-01（多租户 Project，第一批后端）：Projects CRUD。
@@ -42,7 +47,7 @@ export class ProjectsService {
 
   async findOne(id: string): Promise<Project> {
     const row = await this.repo.findOne({ where: { id } });
-    if (!row) throw new NotFoundException(`Project ${id} not found`);
+    if (!row) throw new AppError(ErrorCode.PROJECT_NOT_FOUND, { id });
     return row;
   }
 
@@ -52,9 +57,7 @@ export class ProjectsService {
       dto.name &&
       dto.name !== DEFAULT_PROJECT_NAME
     ) {
-      throw new NotFoundException(
-        "The Default project cannot be renamed or deleted",
-      );
+      throw new AppError(ErrorCode.PROJECT_DEFAULT_IMMUTABLE);
     }
     const row = await this.findOne(id);
     if (dto.name !== undefined) row.name = dto.name;
@@ -64,9 +67,7 @@ export class ProjectsService {
 
   async remove(id: string): Promise<{ deleted: boolean }> {
     if (id === DEFAULT_PROJECT_ID) {
-      throw new NotFoundException(
-        "The Default project cannot be renamed or deleted",
-      );
+      throw new AppError(ErrorCode.PROJECT_DEFAULT_IMMUTABLE);
     }
     const row = await this.findOne(id);
     await this.repo.delete(row.id);

@@ -101,11 +101,11 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`Invalid URL: ${url}`);
+    throw new Error(`无效的 URL：${url}`);
   }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`URL scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`);
+    throw new Error(`不允许的 URL 协议：${parsed.protocol}。仅允许 http 与 https。`);
   }
 
   const allow = options.allowPrivateNetwork === true || config.allowPrivateNetwork === true;
@@ -114,9 +114,9 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
   const host = parsed.hostname;
   if (isRestrictedHost(host)) {
     throw new Error(
-      `URL targets restricted network address: ${host}. ` +
-      'Private/loopback/link-local addresses are blocked. ' +
-      'Set EXECUTOR_ALLOW_PRIVATE_NETWORK=true (or 1) to override (not recommended for production).',
+      `URL 指向受限网络地址：${host}。` +
+      '私有/回环/link-local 地址已被阻断。' +
+      '如需放行，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
     );
   }
 }
@@ -145,12 +145,12 @@ export async function assertSafeDnsResolution(
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`Invalid URL: ${url}`);
+    throw new Error(`无效的 URL：${url}`);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     // 独立调用时的纵深防御：download 链路上游已过 assertSafeHttpUrl，
     // 但本函数不应在未校验 scheme 的情况下对任意协议发起解析。
-    throw new Error(`URL scheme not allowed: ${parsed.protocol}. Only http and https are permitted.`);
+    throw new Error(`不允许的 URL 协议：${parsed.protocol}。仅允许 http 与 https。`);
   }
   const host = parsed.hostname;
   // 字面 IP / localhost 同义词：语法级闸已覆盖，无需（也无法再）解析。
@@ -169,7 +169,7 @@ export async function assertSafeDnsResolution(
   } catch {
     // 解析失败 = 无法证明安全：fail-closed，绝不带病连接。
     throw new Error(
-      `URL host ${host} failed DNS resolution; refusing connection (SSRF guard)`,
+      `URL 主机 ${host} DNS 解析失败；拒绝连接（SSRF 防护）`,
     );
   }
   for (const { address } of addresses) {
@@ -178,9 +178,9 @@ export async function assertSafeDnsResolution(
       : isRestrictedIpv4(address);
     if (restricted) {
       throw new Error(
-        `URL host ${host} resolves to restricted network address ${address}; ` +
-          'possible DNS rebinding. Private/loopback/link-local addresses are blocked. ' +
-          'Set EXECUTOR_ALLOW_PRIVATE_NETWORK=true (or 1) to override (not recommended for production).',
+        `URL 主机 ${host} 解析到受限网络地址 ${address}；` +
+          '疑似 DNS rebinding。私有/回环/link-local 地址已被阻断。' +
+          '如需放行，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
       );
     }
   }

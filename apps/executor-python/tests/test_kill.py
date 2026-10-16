@@ -117,7 +117,7 @@ def test_kill_queued_execution_cancels_pushes_killed_callback_and_unregisters(
     assert payload['executionId'] == 'exec-queued-kill'
     assert payload['status'] == 'failed'
     assert payload['failureReason'] == 'killed'
-    assert 'killed by admin request' in payload['errorMessage'].lower()
+    assert '已按中台请求终止该执行' in payload['errorMessage']
 
 
 def test_kill_running_execution_tree_kills_process(auth_client, monkeypatch):
@@ -193,7 +193,7 @@ def test_run_and_callback_marks_killed_by_request(monkeypatch):
     payload = posted[0][0]
     assert payload['status'] == 'failed'
     assert payload['failureReason'] == 'killed'
-    assert payload['errorMessage'] == 'Task process tree killed by admin request'
+    assert payload['errorMessage'] == '任务进程树已按中台请求终止'
     assert not execute_module.execution_exists('exec-killed-run')
 
 
@@ -270,7 +270,7 @@ def test_run_task_cancelled_entry_skips_spawn(tmp_path, monkeypatch):
     )
     result = asyncio.run(run_task(req, entry))
     assert result['success'] is False
-    assert 'killed by admin request' in result['errorMessage'].lower()
+    assert '已按中台请求终止该执行' in result['errorMessage']
 
 
 def test_run_task_killed_during_prepare_bails_before_spawn(tmp_path, monkeypatch):
@@ -307,7 +307,7 @@ def test_run_task_killed_during_prepare_bails_before_spawn(tmp_path, monkeypatch
     )
     result = asyncio.run(run_task(req, entry))
     assert result['success'] is False
-    assert 'killed by admin request' in result['errorMessage'].lower()
+    assert '已按中台请求终止该执行' in result['errorMessage']
 
 
 # ---------------------------------------------------------------------------

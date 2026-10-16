@@ -19,11 +19,20 @@ function harness(opts?: {
 }) {
   const executor = { id: "exec-1", address: "office-pc-07:8002" };
   const executors = {
-    findByAddress: jest.fn(async (address: string) =>
+    // ADR-017 阶段 3：还接受可选 deviceFingerprint（指纹优先定位）。
+    findByAddress: jest.fn(async (address: string, _fp?: string | null) =>
       address === "unknown" ? null : executor,
     ),
     validateTokenByAddress: jest.fn(
       async (..._a: unknown[]) => opts?.tokenOk ?? true,
+    ),
+    // ADR-017 阶段 3（复查补口）：指纹缺省时用所持凭据反查行身份。
+    // 本 fake 对该地址返回自己的行（= 凭据匹配），unknown 地址返回 null。
+    resolveCredentialExecutorId: jest.fn(async (address: string) =>
+      address === "unknown" ? null : executor.id,
+    ),
+    findOne: jest.fn(async (id: string) =>
+      id === executor.id ? executor : null,
     ),
     getAgentCapabilities: jest.fn(async () => opts?.agentCaps ?? ["agent:sop"]),
     updateCapabilities: jest.fn(async () => undefined),
@@ -122,6 +131,65 @@ describe("SopCollabController · 鉴权链（11 §2 + 能力闸 11 §5.1）", ()
     expect(h.executors.validateTokenByAddress.mock.calls[0][1]).toBe("tok-1");
     expect(h.executors.validateTokenByAddress.mock.calls[1][1]).toBe("raw-tok");
     expect(h.executors.validateTokenByAddress.mock.calls[2][1]).toBe("");
+  });
+
+  // ADR-017 阶段 3（复查补口）反证：**指纹缺省时必须能用凭据反查行身份**，
+  // 而不是 fail-closed 拒绝。
+  //
+  // 为什么这条对本仓库是硬需求：desktop 的 Agent（agent-worker 子进程）走的
+  // 就是这个协作面，而它**无法**产出指纹——盐按 `<workDir>/.device-identity/
+  // <kind>.salt` 分域，那个盐属于内嵌的 executor-node bundle（kind=desktop），
+  // Agent worker 是另一个进程、不共享该盐。若只认指纹，「pull 同址多行 + 桌面
+  // Agent」会整片 401/404。
+  //
+  // 反证：删掉 authenticate 里的 resolveCredentialExecutorId 兜底分支 →
+  // 本用例转红（NotFoundException）。
+  it("ADR-017: no fingerprint + duplicate address → credential resolves the row (not fail-closed)", async () => {
+    const h = harness();
+    // 同址多行：findByAddress 无指纹时 fail-closed 返回 null（模拟真实行为）。
+    h.executors.findByAddress.mockResolvedValue(null);
+    h.executors.resolveCredentialExecutorId.mockResolvedValue("exec-1");
+    h.executors.findOne.mockResolvedValue({
+      id: "exec-1",
+      address: "office-pc-07:8002",
+    });
+
+    await h.ctl.capability(
+      { address: "office-pc-07:8002", capabilities: ["agent:sop"] } as never,
+      h.auth,
+    );
+
+    // 凭据反查命中自己的行 → 鉴权通过（未抛 404）。
+    expect(h.executors.resolveCredentialExecutorId).toHaveBeenCalledWith(
+      "office-pc-07:8002",
+      "tok-1",
+    );
+    expect(h.executors.findOne).toHaveBeenCalledWith("exec-1");
+  });
+
+  it("ADR-017: fingerprint supplied → address/fingerprint resolution wins (no credential fallback)", async () => {
+    const h = harness();
+    const FP = "a".repeat(64);
+    h.executors.findByAddress.mockResolvedValue({
+      id: "exec-fp",
+      address: "office-pc-07:8002",
+    });
+
+    await h.ctl.capability(
+      {
+        address: "office-pc-07:8002",
+        deviceFingerprint: FP,
+        capabilities: ["agent:sop"],
+      } as never,
+      h.auth,
+    );
+
+    expect(h.executors.findByAddress).toHaveBeenCalledWith(
+      "office-pc-07:8002",
+      FP,
+    );
+    // 指纹路径已定位到行 → 不再走凭据反查。
+    expect(h.executors.resolveCredentialExecutorId).not.toHaveBeenCalled();
   });
 });
 

@@ -69,19 +69,19 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
   const body = req.body as UpdatePackagePayload;
 
   if (!body.packageId || !body.downloadUrl || !body.version) {
-    res.status(400).json({ error: 'Missing required fields: packageId, downloadUrl, version' });
+    res.status(400).json({ error: '缺少必填字段：packageId、downloadUrl、version' });
     return;
   }
   // The temp filename is derived from packageId — an unvalidated value with
   // '/' or '..' could write the download outside .pkg-updates.
   if (!isSafePathSegment(body.packageId)) {
-    res.status(400).json({ error: 'packageId contains unsupported characters' });
+    res.status(400).json({ error: 'packageId 含不受支持的字符' });
     return;
   }
   // An unverified package update is an unacceptable risk — admin-api always
   // sends the SHA-256, so a missing checksum means a malformed request.
   if (!body.checksum) {
-    res.status(400).json({ error: 'checksum is required for package updates' });
+    res.status(400).json({ error: '执行器包更新必须提供 checksum' });
     return;
   }
 
@@ -89,20 +89,20 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
   try {
     const parsedUrl = new URL(body.downloadUrl);
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      res.status(400).json({ error: `downloadUrl scheme not allowed: ${parsedUrl.protocol}. Only http and https are permitted.` });
+      res.status(400).json({ error: `不允许的 downloadUrl 协议：${parsedUrl.protocol}。仅允许 http 与 https。` });
       return;
     }
     // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 闸——fail-closed 拒绝 loopback/私网/
     // link-local（含云元数据）。与 deploy.ts/execute.ts 对齐。
     assertSafeHttpUrl(body.downloadUrl);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'downloadUrl is not a valid URL';
+    const msg = e instanceof Error ? e.message : 'downloadUrl 不是合法的 URL';
     res.status(400).json({ error: msg });
     return;
   }
 
   if (updateInProgress) {
-    res.status(409).json({ error: 'An update is already in progress' });
+    res.status(409).json({ error: '已有一次更新正在进行中' });
     return;
   }
 
@@ -115,7 +115,7 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
   res.json({
     accepted: true,
     mode: 'download-only',
-    message: `Update to ${body.name}@${body.version} accepted, downloading (the executor downloads and verifies the package only; applying it is the deployment pipeline's job)...`,
+    message: `已受理更新到 ${body.name}@${body.version}，正在下载（执行器只负责下载并校验该包，应用更新由部署流水线完成）...`,
   });
 
   // Run async so the HTTP response is sent before we potentially restart
@@ -149,7 +149,7 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
       if (body.checksum) {
         const actual = await fileChecksum(tmpFile);
         if (actual !== body.checksum) {
-          throw new Error(`Checksum mismatch: expected ${body.checksum}, got ${actual}`);
+          throw new Error(`校验和不匹配：期望 ${body.checksum}，实际 ${actual}`);
         }
         logger.info(`[update-package] Checksum verified OK`);
       }

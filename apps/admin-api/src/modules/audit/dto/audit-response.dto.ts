@@ -14,13 +14,13 @@ export class AuditLogDto {
   userId: number | null;
 
   @ApiProperty({
-    description: "Snapshot of the acting username (survives user deletion)",
     nullable: true,
+    description: "操作人用户名的快照（用户被删除后仍保留）",
   })
   username: string | null;
 
   @ApiProperty({
-    description: "Dotted action token, e.g. 'task.trigger' / 'user.create'",
+    description: "点分格式的操作标识，例如 'task.trigger' / 'user.create'",
   })
   action: string;
 
@@ -31,18 +31,16 @@ export class AuditLogDto {
   resourceId: string | null;
 
   @ApiProperty({
-    description: "Free-form context (ip, detail payloads)",
     nullable: true,
     additionalProperties: true,
+    description: "自由格式的上下文（ip、明细载荷）",
   })
   detail: Record<string, unknown> | null;
 
   @ApiProperty({ nullable: true })
   ip: string | null;
 
-  @ApiProperty({
-    description: "Write outcome recorded by the audit sink (default 'success')",
-  })
+  @ApiProperty({ description: "审计落库时记录的写入结果（缺省 'success'）" })
   result: string;
 
   @ApiProperty()

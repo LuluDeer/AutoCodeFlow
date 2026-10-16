@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  ConflictException,
-} from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { QueryFailedError, Repository } from "typeorm";
 import { MutexGroup } from "./entities/mutex-group.entity";
@@ -12,12 +7,18 @@ import {
   UpdateMutexGroupDto,
 } from "./dto/mutex-group.dto";
 import { MutexGroupResponseDto } from "./dto/mutex-group-response.dto";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 
 /**
  * R6（对齐 task.service 同名先例）：PG 唯一约束冲突（SQLSTATE 23505
  * unique_violation）。create/update 的同名预检查是 check-then-act，并发
  * 同名时两个请求都过检查、后落库者撞 unique(name)——不拦截会经全局过滤器
- * 裸 500，识别后统一转 409 ConflictException。
+ * 裸 500，识别后统一转 409（LANG-ERR-01 起为 `MUTEX_GROUP_NAME_EXISTS`，
+ * AppError 按 status=409 挂 `ConflictException` 原型，`instanceof` 仍为真）。
  */
 function isUniqueViolation(err: unknown): boolean {
   return (
@@ -49,7 +50,7 @@ export class MutexGroupService {
     const name = dto.name.trim();
     const exists = await this.repo.findOne({ where: { name } });
     if (exists) {
-      throw new ConflictException(`互斥组 "${name}" 已存在`);
+      throw new AppError(ErrorCode.MUTEX_GROUP_NAME_EXISTS, { name });
     }
     const group = this.repo.create({
       name,
@@ -67,7 +68,7 @@ export class MutexGroupService {
     } catch (err) {
       // 并发同名 TOCTOU：预检查之后撞 unique(name) → 409（不再裸 500）。
       if (isUniqueViolation(err)) {
-        throw new ConflictException(`互斥组 "${name}" 已存在`);
+        throw new AppError(ErrorCode.MUTEX_GROUP_NAME_EXISTS, { name });
       }
       throw err;
     }
@@ -104,12 +105,13 @@ export class MutexGroupService {
 
   async update(id: string, dto: UpdateMutexGroupDto): Promise<MutexGroup> {
     const group = await this.repo.findOne({ where: { id } });
-    if (!group) throw new NotFoundException(`互斥组 ${id} 不存在`);
+    if (!group)
+      throw new AppError(ErrorCode.MUTEX_GROUP_NOT_FOUND, { groupId: id });
     if (dto.name !== undefined) {
       const name = dto.name.trim();
       const clash = await this.repo.findOne({ where: { name } });
       if (clash && clash.id !== id) {
-        throw new ConflictException(`互斥组 "${name}" 已存在`);
+        throw new AppError(ErrorCode.MUTEX_GROUP_NAME_EXISTS, { name });
       }
       group.name = name;
     }
@@ -130,7 +132,9 @@ export class MutexGroupService {
       // 更名并发 TOCTOU：预检查已排除自身 id（clash.id !== id），且同名落本行
       // 自身不构成唯一冲突——此处 23505 只可能来自与其他行的并发同名 → 409。
       if (isUniqueViolation(err)) {
-        throw new ConflictException(`互斥组 "${group.name}" 已存在`);
+        throw new AppError(ErrorCode.MUTEX_GROUP_NAME_EXISTS, {
+          name: group.name,
+        });
       }
       throw err;
     }
@@ -138,16 +142,15 @@ export class MutexGroupService {
 
   async remove(id: string, force = false): Promise<void> {
     const group = await this.repo.findOne({ where: { id } });
-    if (!group) throw new NotFoundException(`互斥组 ${id} 不存在`);
+    if (!group)
+      throw new AppError(ErrorCode.MUTEX_GROUP_NOT_FOUND, { groupId: id });
     const attached = await this.repo.manager.query(
       `SELECT COUNT(*)::int AS count FROM "applications" WHERE "mutexGroupId" = $1`,
       [id],
     );
     const count = attached[0]?.count ?? 0;
     if (count > 0 && !force) {
-      throw new ConflictException(
-        `仍有 ${count} 个应用挂在该组上；删除将解除它们的互斥约束，请确认后带 force=true 重试`,
-      );
+      throw new AppError(ErrorCode.MUTEX_GROUP_HAS_APPLICATIONS, { count });
     }
     await this.repo.remove(group);
     this.logger.warn(

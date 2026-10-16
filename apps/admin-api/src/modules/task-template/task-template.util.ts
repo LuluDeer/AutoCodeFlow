@@ -1,7 +1,8 @@
-import { BadRequestException } from "@nestjs/common";
 import { plainToInstance } from "class-transformer";
 import { validate, type ValidationError } from "class-validator";
 import { CreateTaskDto } from "../task/dto/create-task.dto";
+// LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
+import { AppError } from "../../common/errors/app-error";
 
 /**
  * CORE-03：模板 config 的**校验**与**展开**纯逻辑。
@@ -38,7 +39,7 @@ export async function assertValidTaskTemplateConfig(
   config: unknown,
 ): Promise<Record<string, unknown>> {
   if (typeof config !== "object" || config === null || Array.isArray(config)) {
-    throw new BadRequestException("模板 config 必须是对象");
+    throw new AppError("TASK_TEMPLATE_CONFIG_NOT_OBJECT");
   }
   const dto = plainToInstance(CreateTaskDto, {
     name: CONFIG_PROBE_NAME,
@@ -54,7 +55,9 @@ export async function assertValidTaskTemplateConfig(
   if (errors.length > 0) {
     const detail = flattenErrors(errors).filter((m) => !m.startsWith("name:"));
     if (detail.length > 0) {
-      throw new BadRequestException(`模板 config 非法：${detail.join(" | ")}`);
+      throw new AppError("TASK_TEMPLATE_CONFIG_INVALID", {
+        detail: detail.join(" | "),
+      });
     }
   }
   return config as Record<string, unknown>;
@@ -76,9 +79,9 @@ export async function assertValidCreateTaskPayload(
     forbidUnknownValues: false,
   });
   if (errors.length > 0) {
-    throw new BadRequestException(
-      `任务载荷非法：${flattenErrors(errors).join(" | ")}`,
-    );
+    throw new AppError("TASK_TEMPLATE_PAYLOAD_INVALID", {
+      detail: flattenErrors(errors).join(" | "),
+    });
   }
   return dto;
 }

@@ -80,7 +80,7 @@ export class WriteGuardEnforcementInterceptor implements NestInterceptor {
               `已落证据=[${snapshotOwnershipAssertions().join(", ")}]`,
           );
           throw new InternalServerErrorException(
-            "Write endpoint authorization assertion missing (server misconfiguration)",
+            "写端点缺少授权断言（服务端配置错误）",
           );
         },
       }),

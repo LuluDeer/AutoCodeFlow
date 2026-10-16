@@ -59,53 +59,47 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
  * 以及回滚成功分支的单条配置行。
  */
 export class SystemConfigResponseDto {
-  @ApiProperty({ description: "Config row id (serial)" })
+  @ApiProperty({ description: "配置行 ID（自增序列）" })
   id: number;
 
   @ApiProperty({
-    description: "Unique config key (e.g. executor.sharedToken)",
     example: "executor.sharedToken",
+    description: "唯一配置键（例如 executor.sharedToken）",
   })
   key: string;
 
   @ApiPropertyOptional({
-    description:
-      "Stored value. Read surfaces (GET /config, GET /config/{key}) replace it with " +
-      "the mask sentinel '***' when isSecret=true; write/rollback surfaces " +
-      "(PUT /config, POST /config/batch, POST /config/history/{id}/rollback) return " +
-      "the real persisted value. May be null when the row was written without a value.",
     nullable: true,
     example: "***",
+    description:
+      "存储值。读面（GET /config、GET /config/{key}）在 isSecret=true 时把它替换为掩码哨兵 '***'；写面/回滚面（PUT /config、POST /config/batch、POST /config/history/{id}/rollback）返回真实持久化的值。若该行写入时未带值，则可能为 null。",
   })
   value: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "Human description. Also the field matched by the `tag` query filter on " +
-      "GET /config (regex on description) — there is no separate tag column.",
     nullable: true,
+    description:
+      "人类可读描述。同时也是 GET /config 的 `tag` 查询过滤所匹配的字段（对 description 做正则）—— 并不存在单独的 tag 列。",
   })
   description: string | null;
 
   @ApiProperty({
-    description:
-      "Value type. All write paths validate against this closed set " +
-      "(SystemConfigService.validateConfig), so any value in the store came from it.",
     enum: ["string", "number", "boolean", "json"],
+    description:
+      "值类型。所有写入路径都按这个封闭集合校验（SystemConfigService.validateConfig），因此库中任何值都来自该集合。",
   })
   valueType: string;
 
   @ApiProperty({
     description:
-      "True when the value is secret: read surfaces mask it as '***' and a " +
-      "submitted '***' means 'keep the stored value' rather than 'write the mask'",
+      "值为 secret 时为 true：读面将其掩码为 '***'，而提交 '***' 表示“保持已存值”而非“写入该掩码”",
   })
   isSecret: boolean;
 
-  @ApiProperty({ description: "Creation time (ISO-8601)" })
+  @ApiProperty({ description: "创建时间（ISO-8601）" })
   createdAt: Date;
 
-  @ApiProperty({ description: "Last update time (ISO-8601)" })
+  @ApiProperty({ description: "最后更新时间（ISO-8601）" })
   updatedAt: Date;
 }
 
@@ -116,87 +110,85 @@ export class SystemConfigResponseDto {
  * **掩码**语义见类头注（`null` ≠ `"***"`）。
  */
 export class ConfigHistoryResponseDto {
-  @ApiProperty({ description: "History row id (serial)" })
+  @ApiProperty({ description: "历史行 ID（自增序列）" })
   id: number;
 
-  @ApiProperty({ description: "Config key this history row belongs to" })
+  @ApiProperty({ description: "该历史行所属的配置键" })
   configKey: string;
 
   @ApiPropertyOptional({
-    description:
-      "Previous value. '***' when masked (row isSecret=true, or the key is " +
-      "currently secret); null when the entry did not exist before. null is " +
-      "distinct from the mask and must not be rendered as 'hidden'.",
     nullable: true,
+    description:
+      "变更前的值。被掩码时为 '***'（该行 isSecret=true，或该键当前为 secret）；此前不存在该条目时为 null。null 与掩码是两种不同语义，不得渲染为“已隐藏”。",
   })
   oldValue: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "New value. '***' when masked; null when the entry was deleted by this " +
-      "change (remove records newValue=null).",
     nullable: true,
+    description:
+      "变更后的值。被掩码时为 '***'；该条目被本次变更删除（remove 记录 newValue=null）时为 null。",
   })
   newValue: string | null;
 
   @ApiPropertyOptional({
-    description: "Description snapshot taken when this change was recorded",
     nullable: true,
+    description: "记录本次变更时留下的描述快照",
   })
   description: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "valueType snapshot persisted with this row (migration 1790000000018). " +
-      "null = pre-migration row, metadata unknown — do not read null as 'string'.",
     nullable: true,
     enum: ["string", "number", "boolean", "json"],
+    description:
+      "随该行持久化的 valueType 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 'string'。",
   })
   valueType: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "isSecret snapshot persisted with this row (migration 1790000000018). " +
-      "null = pre-migration row, metadata unknown — do not read null as false. " +
-      "true always masks oldValue/newValue on the read surfaces.",
     nullable: true,
+    description:
+      "随该行持久化的 isSecret 快照（迁移 1790000000018）。null = 迁移前的旧行，元数据未知 —— 不要把 null 读作 false。为 true 时读面总会掩码 oldValue/newValue。",
   })
   isSecret: boolean | null;
 
   @ApiProperty({
-    description:
-      "What produced this row (rollback marks rows written by the rollback endpoint)",
     enum: ["create", "update", "delete", "rollback"],
+    description: "产生该行的动作（rollback 标记由回滚端点写入的行）",
   })
   action: string;
 
   @ApiPropertyOptional({
-    description:
-      "Acting user id (integer since migration 1790000000023); null when the " +
-      "actor is unknown (e.g. rows written before operator context was recorded)",
     nullable: true,
+    description:
+      "操作者用户 ID（自迁移 1790000000023 起为整数）；操作者未知时为 null（例如在记录操作者上下文之前写入的行）",
   })
   userId: number | null;
 
-  @ApiPropertyOptional({ description: "Acting username", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "操作者用户名",
+  })
   username: string | null;
 
-  @ApiPropertyOptional({ description: "Acting client IP", nullable: true })
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "操作客户端 IP",
+  })
   ipAddress: string | null;
 
-  @ApiProperty({ description: "When this change was recorded (ISO-8601)" })
+  @ApiProperty({ description: "本次变更的记录时间（ISO-8601）" })
   createdAt: Date;
 }
 
 /** `GET /config/history`、`GET /config/history/{key}` 的分页包装。 */
 export class ConfigHistoryPageDto {
   @ApiProperty({
-    description: "Page of history rows, newest first (old/new masked per row)",
     type: [ConfigHistoryResponseDto],
+    description: "历史行分页，按最新在前（每行的 old/new 各自掩码）",
   })
   data: ConfigHistoryResponseDto[];
 
-  @ApiProperty({ description: "Total matching rows before paging" })
+  @ApiProperty({ description: "分页前的匹配总行数" })
   total: number;
 }
 
@@ -210,8 +202,7 @@ export class ConfigHistoryPageDto {
  */
 export class ConfigDeleteResultDto {
   @ApiProperty({
-    description:
-      "Always true on success — a missing key is a 404, never {deleted:false}",
+    description: "成功时恒为 true —— 键不存在是 404，绝不会是 {deleted:false}",
   })
   deleted: boolean;
 }
@@ -219,11 +210,9 @@ export class ConfigDeleteResultDto {
 /** `POST /config/executor-shared-token/generate` 的响应（明文仅此一次）。 */
 export class ExecutorSharedTokenDto {
   @ApiProperty({
-    description:
-      "Freshly generated executor shared token (64 hex chars). Returned once at " +
-      "rotation time; the config store keeps it with isSecret=true so later reads " +
-      "of GET /config return '***'.",
     example: "9f2c4a1d7b3e5f8091a2b3c4d5e6f70819a2b3c4d5e6f70819a2b3c4d5e6f708",
+    description:
+      "新生成的执行器共享令牌（64 位十六进制字符）。仅在轮换时返回一次；配置存储以 isSecret=true 保存它，因此后续 GET /config 读回 '***'。",
   })
   token: string;
 }
@@ -236,16 +225,13 @@ export class ExecutorSharedTokenDto {
  */
 export class ExecutorSharedTokenStatusDto {
   @ApiPropertyOptional({
-    description:
-      "Current shared token in plaintext (ADMIN only). null when no token is " +
-      "stored — this endpoint never 404s for a missing key.",
     nullable: true,
+    description:
+      "当前共享令牌的明文（仅 ADMIN）。未存储令牌时为 null —— 本端点对缺失的键绝不返回 404。",
   })
   token: string | null;
 
-  @ApiProperty({
-    description: "True when a non-empty token is stored (token !== null)",
-  })
+  @ApiProperty({ description: "存储了非空令牌时为 true（token !== null）" })
   hasToken: boolean;
 }
 
@@ -258,32 +244,28 @@ export class ExecutorSharedTokenStatusDto {
  */
 export class RuntimeVersionContractDto {
   @ApiProperty({
-    description:
-      "Currently effective declareable lower bound (PYTHON_RUNTIME_VERSION_MIN, default 3.7)",
     example: "3.7",
+    description: "当前生效的可声明下界（PYTHON_RUNTIME_VERSION_MIN，默认 3.7）",
   })
   min: string;
 
   @ApiProperty({
-    description:
-      "Currently effective declareable upper bound (PYTHON_RUNTIME_VERSION_MAX, default 3.14)",
     example: "3.14",
+    description:
+      "当前生效的可声明上界（PYTHON_RUNTIME_VERSION_MAX，默认 3.14）",
   })
   max: string;
 
   @ApiProperty({
-    description:
-      "Online-download floor (contract constant, not configurable): uv cannot " +
-      "download interpreters below it, so those versions need an offline " +
-      "pre-populated cache volume",
     example: "3.8",
+    description:
+      "在线下载下限（契约常量，不可配置）：uv 无法下载低于该版本的解释器，因此这些版本需要预置好的离线缓存卷",
   })
   onlineMin: string;
 
   @ApiProperty({
-    description:
-      "Fallback interpreter for legacy executors that report no interpreters list",
     example: "3.12",
+    description: "legacy 执行器未上报解释器列表时的兜底解释器",
   })
   legacyDefaultInterpreter: string;
 }

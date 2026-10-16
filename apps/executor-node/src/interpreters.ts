@@ -254,7 +254,7 @@ function compareKey(a: [number, number], b: [number, number]): number {
 export function normalizeRuntimeVersion(version: unknown): string {
   if (typeof version !== 'string' || !RUNTIME_VERSION_PATTERN.test(version.trim())) {
     throw new Error(
-      `Invalid runtimeVersion (expected X.Y): ${JSON.stringify(version)}`,
+      `无效的 runtimeVersion（期望 X.Y 格式）：${JSON.stringify(version)}`,
     );
   }
   return version.trim();
@@ -1433,8 +1433,7 @@ async function installVersion(
     throw new InterpreterUnavailableError(
       requested,
       'uv_missing',
-      'uv is not installed on this executor; install uv, set UV_BIN, or use a '
-        + 'client build that bundles uv',
+      '本执行器未安装 uv；请安装 uv、设置 UV_BIN，或改用内置 uv 的客户端构建',
     );
   }
 
@@ -1452,7 +1451,7 @@ async function installVersion(
     throw new InterpreterUnavailableError(
       requested,
       'not_downloadable',
-      `version is outside the supported range ${range.min}~${range.max}`,
+      `版本超出支持区间 ${range.min}~${range.max}`,
     );
   }
 
@@ -1472,12 +1471,12 @@ async function installVersion(
     throw new InterpreterUnavailableError(
       requested,
       'not_downloadable',
-      `uv cannot download Python ${requested} online (only >= ${ONLINE_DOWNLOAD_MIN} is downloadable); `
-        + `pre-provision it offline by placing python-build-standalone `
-        + `python/install/* into ${path.join(root, `cpython-${requested}.x-${platform}`)} `
-        + `(directory name: cpython-<full-version>-<uv platform triple>, `
-        + `e.g. linux-x86_64-gnu / linux-x86_64-musl / windows-x86_64-none; `
-        + `do NOT append an extra "-none" after the triple)`,
+      `uv 无法在线下载 Python ${requested}（仅 >= ${ONLINE_DOWNLOAD_MIN} 可在线下载）；`
+        + `请离线预置：把 python-build-standalone 的 `
+        + `python/install/* 放到 ${path.join(root, `cpython-${requested}.x-${platform}`)} `
+        + `（目录名格式：cpython-<完整版本>-<uv 平台三元组>，`
+        + `例如 linux-x86_64-gnu / linux-x86_64-musl / windows-x86_64-none；`
+        + `请勿在三元组之后再追加 "-none"）`,
     );
   }
 
@@ -1500,14 +1499,14 @@ async function installVersion(
   const elapsed = Date.now() - started;
 
   if (result.status !== 0) {
-    const detail = (result.stderr.trim() || result.stdout.trim() || 'uv python install failed');
+    const detail = (result.stderr.trim() || result.stdout.trim() || 'uv python install 执行失败');
     // run-command 超时会 SIGKILL 进程树，close 事件带回非零 status；用耗时
     // 是否触顶区分"超时"与"真的失败"——两者的运维处置完全不同。
     if (elapsed >= timeoutMs - 1_000) {
       throw new InterpreterUnavailableError(
         requested,
         'download_timeout',
-        `download did not finish within ${timeoutMs}ms`,
+        `下载未能在 ${timeoutMs}ms 内完成`,
       );
     }
     // 分因归类对齐 python 侧 interpreters._classify_install_failure（审计二轮
@@ -1561,7 +1560,7 @@ async function installVersion(
     throw new InterpreterUnavailableError(
       requested,
       'corrupt',
-      `uv reported success but no usable Python ${requested} appeared in ${root}`,
+      `uv 报告成功，但 ${root} 中未出现可用的 Python ${requested}`,
     );
   }
 

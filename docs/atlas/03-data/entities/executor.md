@@ -37,7 +37,7 @@
 | `groupName` | varchar nullable | 逻辑分组（任务 `executorGroup` 的匹配对象） |
 | `tags` | simple-array nullable | 路由标签（任务 `executorTags` AND 子集 / 亲和反亲和） |
 | `description` | text nullable | 描述 |
-| `deviceFingerprint` | varchar(64) nullable | ARCH-36（ADR-017 阶段 2）：稳定设备唯一身份 `sha256(deviceId + ":" + installSalt)`（64 位小写十六进制），执行器经 register/heartbeat 上报。**只采集与观测，不参与任何定位**（注册仍按 `address` 定位行）。NULL = 未上报（存量旧执行器，或协议 v3 却采集失败——两者用 `protocolVersion` 区分）；字段缺省或形态非法一律**保留 DB 旧值**（不得把已存历史擦成 NULL）。采集组成见 [ADR-017](../../../adr/adr-017-executor-unique-identity.md)（迁移 `1790000000038`） |
+| `deviceFingerprint` | varchar(80) NOT NULL（迁移 `1790000000054` 前为 varchar(64) 可空） | **ADR-017 阶段 2/3：注册/心跳定位键** `sha256(deviceId + ":" + installSalt)`（64 位小写十六进制），执行器经 register/heartbeat 上报。阶段 3 起 register/heartbeat **先按本列定位行**、命中即复用并更新 `address`（换 IP = 同机换地址，不产生幽灵行）；未上报指纹的存量执行器由中台落 **legacy 兜底键**（`legacy:{address}`，超长退化为 `legacy-h:` + sha256，`legacyExecutorIdentity`）——legacy 行仍按 `address` 定位，行为与引入前逐字节一致。同地址不同指纹按派发模式分叉（push 409 / pull 各自成行）。字段缺省/非法 → 保留 DB 旧值（阶段 2 三态纪律的残留，见下）。采集组成见 [ADR-017](../../../adr/adr-017-executor-unique-identity.md)（迁移 `1790000000038` 加列、`1790000000054` 提升为定位键） |
 | `projectId` | uuid nullable | AUTH-01：归属项目；迁移 `1790000000009` 加列 + FK ON DELETE SET NULL + 索引；存量不回填 |
 | `createdAt` / `updatedAt` | timestamptz | 自动维护 |
 | `version` | int | `@VersionColumn` 乐观锁（R-P0-006，防派发竞态） |
@@ -46,10 +46,10 @@
 
 | 索引/约束 | 定义处 | 说明 |
 |---|---|---|
-| `uq_executors_address` | 实体 `@Index(…, ["address"], { unique: true })` | 地址唯一（重复注册走更新） |
+| `uq_executors_address` | 实体 `@Index(…, ["address"], { unique: true, where: … })` | **ADR-017 阶段 3 起为 partial 唯一**：仅约束 push 模式行（`WHERE "dispatchMode" = 'push'`）。push 的 `address` 是路由面必须唯一（冲突 409 处置）；pull 零入站、`address` 只是自报标签，**允许同地址各自成行**（两家不同内网同网段同 IP 的常态，ADR-017 §5）。迁移 `1790000000054` 由全局唯一收窄 |
 | `status` / `groupName` / `lastHeartbeat` | 实体 `@Index` | 调度过滤三件套 |
 | `projectId` FK `ON DELETE SET NULL` + 索引 | 迁移 `1790000000009` | AUTH-01 |
-| `idx_executors_device_fingerprint` | 实体 `@Index("idx_executors_device_fingerprint", ["deviceFingerprint"])` | ARCH-36：**故意非唯一**——阶段 2 只按指纹做冲突/漂移观测（「同址多指纹」= 硬冲突），唯一性约束留 ADR-017 阶段 3 回填 `legacy:${address}` 后单独加 |
+| `idx_executors_device_fingerprint` | 实体 `@Index("idx_executors_device_fingerprint", ["deviceFingerprint"])` | **刻意非唯一**：阶段 2 存量行全 NULL、过渡期允许「同一安装短时间内出现两行」；阶段 3 后 register 的按指纹定位在稳态保证一行一指纹，唯一索引留待机队全部上报指纹后单独加（ADR-017「相关轨道」） |
 
 ## 关系
 
@@ -58,7 +58,7 @@
 
 ## 生命周期与写入方
 
-- **创建/更新**：`ExecutorService`——注册（upsert by address）、心跳（status/指标/runningTaskCount/runningExecutionIds/deadLetterCount 全量刷新）、token 轮换。ARCH-36 起 register/heartbeat 还双向写入 `deviceFingerprint`（三态采纳：缺省/非法不动 DB），并在写入**之前**做冲突/漂移观测（`executor-fingerprint.util.ts`）——观测必须在 DB 写入前，否则「本次上报是否新增了一个指纹」这个事件会被自己的写入掩盖。
+- **创建/更新**：`ExecutorService`——注册（**ADR-017 阶段 3：先按 `deviceFingerprint` 定位行、address 兜底**；命中复用 + 更新 address；push 同址异指纹 409 / pull 各自成行）、心跳（status/指标/runningTaskCount/runningExecutionIds/deadLetterCount 全量刷新，同指纹定位 + 地址漂移采纳）、token 轮换。ARCH-36 起 register/heartbeat 还在写入**之前**做冲突/漂移观测（`executor-fingerprint.util.ts`）——观测必须在 DB 写入前，否则「本次上报是否新增了一个指纹」这个事件会被自己的写入掩盖。
 - **状态维护**：`ExecutorService` 离线 sweep（心跳超时置 offline）；执行器进程重启经 `executorStartupId` 识别。
 - **读取**：调度派发（group/tags/runtime 过滤 → 亲和/反亲和 → loadScore 择优，CORE-05 的 `estimatedDurationSec` 参与加权）、stale 扫描、admin-web 执行器页。
 

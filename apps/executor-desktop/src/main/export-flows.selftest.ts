@@ -122,6 +122,16 @@ function main(): void {
     // 文件大小上限是导出的配套常量：配置是 KB 级 JSON
     assert.ok(CONFIG_IMPORT_MAX_BYTES >= 64 * 1024, '导入上限不得小到卡死合法配置');
     assert.ok(CONFIG_IMPORT_MAX_BYTES <= 16 * 1024 * 1024, '导入上限必须足以拦下"拿错的大文件"');
+    // i18n-DESK-01：界面语言设置必须**能**随备份迁移（跨机恢复时语言偏好一并
+    // 带走），而不是被白名单静默丢掉——丢字段的形态是"导入成功但设置没搬过来"。
+    {
+      const r = parseImportedConfig({ uiLanguage: 'en' });
+      assert.ok(r.ok && r.payload.uiLanguage === 'en', '导入白名单必须带上 uiLanguage（语言设置随备份迁移）');
+      // 坏值不在这里拦（形状校验不复制消毒语义）——它必须能进补丁，
+      // 由下游 sanitizeConfigInput 归一化成默认中文（同 save 链路）。
+      const bad = parseImportedConfig({ uiLanguage: 'fr' });
+      assert.ok(bad.ok && bad.payload.uiLanguage === 'fr', '非法语言值交给下游消毒层归一化，不在导入解析层静默丢弃');
+    }
   }
 
   // ── 4. 日志导出的大文件阈值（200MB 边界）────────────────────────────

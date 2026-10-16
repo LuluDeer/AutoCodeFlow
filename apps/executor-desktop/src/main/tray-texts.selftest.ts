@@ -2,6 +2,9 @@
  * 审计二轮 B-7②：tray-texts selftest（node:assert，无测试框架）。
  * 直接驱动 src/main/tray-texts.ts 的真实实现（该模块无 electron 依赖）：
  *   · locale 判定（en* 英文，其余回落中文，含空串/未知 locale）；
+ *   · i18n-DESK-01：**界面语言设置**（uiLanguage）优先于 app.getLocale()，
+ *     'auto' = 跟随系统语言（zh*→zh，其余含未支持语言→en），非法值 = 默认英文（与渲染层 renderer.selftest.mjs
+ *     的同一组用例对称——两端共用 ui-language.ts 的同一份规则）；
  *   · linux click 支持判定；
  *   · 双语文案表键位对齐（两语言必须提供同一组键/同一组函数，防止后续
  *     只改一种语言造成静默缺键）。
@@ -9,6 +12,7 @@
  */
 import * as assert from 'node:assert';
 import { TRAY_TEXTS, resolveTrayLocale, traySupportsClick } from './tray-texts';
+import { resolveUiLanguage } from './ui-language';
 
 function main(): void {
   // ── locale 判定 ──────────────────────────────────────────────
@@ -16,10 +20,40 @@ function main(): void {
   assert.equal(resolveTrayLocale(() => 'en'), 'en', 'en → en');
   assert.equal(resolveTrayLocale(() => 'en_GB'), 'en', 'en_GB → en');
   assert.equal(resolveTrayLocale(() => 'zh-CN'), 'zh', 'zh-CN → zh');
-  assert.equal(resolveTrayLocale(() => 'fr-FR'), 'zh', 'unknown locale falls back to zh');
-  assert.equal(resolveTrayLocale(() => ''), 'zh', 'empty locale falls back to zh');
+  // LANG-DEFAULT：产品要求「默认英文，但优先跟随系统语言」——只有系统**确实是
+  // 中文**才给中文，未支持语言（fr/空/未知）一律回落**英文**（旧口径是"非 en
+  // 即中文"，一台法语机器会拿到中文界面）。
+  assert.equal(resolveTrayLocale(() => 'fr-FR'), 'en', 'unsupported locale falls back to en');
+  assert.equal(resolveTrayLocale(() => ''), 'en', 'empty locale falls back to en');
   // 大小写不敏感（个别平台报 EN-us 形态）
   assert.equal(resolveTrayLocale(() => 'EN-us'), 'en', 'case-insensitive en prefix');
+
+  // ── i18n-DESK-01：界面语言**设置**优先于 app.getLocale() ─────────────
+  // 反证过的真实缺口：改动前托盘只有「按系统语言自动判定」，用户在设置页
+  // 选了语言也无处生效（英文系统上永远看不到中文托盘菜单）。以下三组断言
+  // 钉住「显式设置赢」「auto = 跟随系统语言」「非法值 = 默认英文」。
+  {
+    // ① 显式设置赢过系统语言（两个方向都要，防止"只测试了 en 赢"）
+    assert.equal(resolveTrayLocale(() => 'en-US', 'zh'), 'zh', "显式 'zh' 必须赢过 app.getLocale()='en-US'");
+    assert.equal(resolveTrayLocale(() => 'zh-CN', 'en'), 'en', "显式 'en' 必须赢过 app.getLocale()='zh-CN'");
+    // ② 'auto' = 跟随系统语言（产品要求：默认英文，但优先跟随系统语言）
+    assert.equal(resolveTrayLocale(() => 'en-US', 'auto'), 'en', "'auto' + en-US → en（既有判定）");
+    assert.equal(resolveTrayLocale(() => 'zh-CN', 'auto'), 'zh', "'auto' + zh-CN → zh（既有判定）");
+    assert.equal(resolveTrayLocale(() => 'fr-FR', 'auto'), 'en', "'auto' + 未支持语言 → en（默认英文）");
+    // ③ 非法值（手改 config.json 进来的值）→ 默认英文，而不是回落自动判定
+    assert.equal(resolveTrayLocale(() => 'en-US', 'fr'), 'en', "非法值 'fr' 必须按默认英文，不得回落 en-US 判定");
+    assert.equal(resolveTrayLocale(() => 'en-US', ''), 'en', "空串设置 → 默认英文");
+    assert.equal(resolveTrayLocale(() => 'en-US', 42), 'en', '非字符串设置 → 默认英文');
+    assert.equal(resolveTrayLocale(() => 'en-US', null), 'en', 'null 设置 → 默认英文');
+    // ④ 大小写/空白归一化
+    assert.equal(resolveTrayLocale(() => 'zh-CN', '  EN  '), 'en', '设置值大小写/空白不敏感');
+    // ⑤ 显式设置下**不该**再读系统语言（读 = 判定层还在偷看 getLocale）
+    let localeReads = 0;
+    resolveTrayLocale(() => { localeReads++; return 'en-US'; }, 'zh');
+    assert.equal(localeReads, 0, "显式设置生效时不得调用 getLocale()（否则是'设置没赢'的另一种写法）");
+    // ⑥ 与判定层的**同一份**规则同源（tray-texts 只是收窄类型，不复制逻辑）
+    assert.equal(resolveUiLanguage(() => 'en-US', 'zh'), resolveTrayLocale(() => 'en-US', 'zh'), 'SYNC: 托盘与 ui-language 判定必须同源');
+  }
 
   // ── linux click 支持 ────────────────────────────────────────
   assert.equal(traySupportsClick('darwin'), true, 'macOS supports tray click');

@@ -661,8 +661,7 @@ describe("ExecutorPackageService", () => {
         config.get.mockReturnValue(baseUrl);
         await expect(controller.push(mockPkg.id, {})).rejects.toMatchObject({
           status: 503,
-          message:
-            "ADMIN_API_URL is not configured; cannot push executor package",
+          message: "未配置 ADMIN_API_URL，无法推送执行器包",
         });
         expect(axios.post).not.toHaveBeenCalled();
       },
@@ -768,7 +767,7 @@ describe("ExecutorPackageService", () => {
       ] as any;
       await expect(
         service.pushToExecutors(mockPkg.id, undefined, offlineOnly, "db-token"),
-      ).rejects.toThrow("No target executors found for push");
+      ).rejects.toThrow("没有找到可推送的目标执行器");
       expect(axios.post).not.toHaveBeenCalled();
     });
 

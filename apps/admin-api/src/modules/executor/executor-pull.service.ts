@@ -122,7 +122,7 @@ export class ExecutorPullService {
     payload: Record<string, unknown>,
   ): Promise<void> {
     const client = this.ensureClient();
-    if (!client) throw new Error("Pull queue unavailable (Redis client error)");
+    if (!client) throw new Error("拉取队列不可用（Redis 客户端错误）");
     // PK-14: 派发载荷顶层附 schemaVersion（与 webhook 信封同源常量）——执行器
     // 未知字段忽略即可（天然向后兼容）；载荷形状演进时执行器可据此分支解析。
     const body = JSON.stringify({
@@ -168,8 +168,7 @@ export class ExecutorPullService {
     payload: Record<string, unknown>,
   ): Promise<string> {
     const client = this.ensureClient();
-    if (!client)
-      throw new Error("Command queue unavailable (Redis client error)");
+    if (!client) throw new Error("命令队列不可用（Redis 客户端错误）");
     const commandId = randomUUID();
     const body = JSON.stringify({
       commandId,

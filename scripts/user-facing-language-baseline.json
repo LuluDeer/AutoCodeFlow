@@ -1,0 +1,5 @@
+{
+  "$comment": "LANG-ZH-01 面向用户英文文字欠账清单（棘轮）。只许减少，不许新增；新增英文会被 check-user-facing-language.mjs 判红。中文化后跑 --update 收紧。",
+  "maxKnown": 0,
+  "known": []
+}

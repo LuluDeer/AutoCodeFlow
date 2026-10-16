@@ -32,7 +32,7 @@ function sendReady(
   if (!checked.success) {
     const where = checked.error.issues[0]?.path.join('.') || '(root)';
     throw new Error(
-      `readiness response violates executor-protocol at ${where}: ` +
+      `readiness 响应违反 executor-protocol 协议，位置 ${where}：` +
         checked.error.issues[0]?.message,
     );
   }
@@ -202,7 +202,7 @@ healthRouter.get('/health/ready', async (_req: Request, res: Response) => {
   // NETOPT-C P3: drain 窗口内探活不得认为可接流——停机中一律 not_ready（LB
   // 摘流），与 admin-api /api/health/ready 对等语义。
   if (isExecutorShuttingDown()) {
-    sendReady(res, 503, { status: 'not_ready', reason: 'executor is shutting down' });
+    sendReady(res, 503, { status: 'not_ready', reason: '执行器正在停机' });
     return;
   }
   const totalMem = os.totalmem();
@@ -221,10 +221,10 @@ healthRouter.get('/health/ready', async (_req: Request, res: Response) => {
     const adminUrl = new URL(config.adminApiUrlInternal || config.adminApiUrl || 'http://localhost:3000');
     sendReady(res, 503, {
       status: 'not_ready',
-      reason: `admin-api unreachable (${buildAdminHealthPath(adminUrl)})`,
+      reason: `admin-api 不可达（${buildAdminHealthPath(adminUrl)}）`,
     });
   } else if (cpuUsage >= 90 || memUsage >= 90) {
-    sendReady(res, 503, { status: 'not_ready', reason: 'Resource usage too high' });
+    sendReady(res, 503, { status: 'not_ready', reason: '资源占用过高' });
   } else {
     sendReady(res, 200, { status: 'ready' });
   }

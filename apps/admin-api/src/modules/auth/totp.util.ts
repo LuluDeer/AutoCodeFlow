@@ -37,13 +37,13 @@ export function base32Encode(buf: Buffer): string {
  */
 export function base32Decode(input: string): Buffer {
   const normalized = input.replace(/[\s-]/g, "").toUpperCase();
-  if (normalized.length === 0) throw new Error("empty base32 input");
+  if (normalized.length === 0) throw new Error("base32 输入为空");
   let bits = 0;
   let value = 0;
   const bytes: number[] = [];
   for (const ch of normalized) {
     const idx = BASE32_ALPHABET.indexOf(ch);
-    if (idx === -1) throw new Error(`invalid base32 character: ${ch}`);
+    if (idx === -1) throw new Error(`base32 字符非法：${ch}`);
     value = (value << 5) | idx;
     bits += 5;
     if (bits >= 8) {

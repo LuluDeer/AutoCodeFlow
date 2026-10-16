@@ -35,14 +35,21 @@ export enum ExecutorType {
 @Index(["status"])
 @Index(["groupName"])
 @Index(["lastHeartbeat"])
-@Index("uq_executors_address", ["address"], { unique: true })
-// ARCH-36（ADR-017 阶段 2）：指纹查询索引（非唯一）。
-// 为什么现在就建：本阶段只有「同一地址是否出现多个指纹」的内存观测，看似用
-// 不上；但**阶段 3** 要把「先按 fingerprint 定位行」变成注册幂等键（`WHERE
-// deviceFingerprint = $1`），那是每次注册/心跳都要走的路径。索引与列同批落盘，
-// 好过阶段 3 再补一条迁移（且 check-index-drift 要求命名声明必须有对应 DDL）。
-// 非唯一是刻意的：唯一性约束留到阶段 3 回填完成后再加——现在存量行全为 NULL
-// 且允许「同一安装短时间内出现两行」的过渡态，此刻加唯一约束会让迁移失败。
+// ADR-017 阶段 3（迁移 1790000000054）：`address` 唯一性从「全局唯一」收窄为
+// 「**push 模式**行唯一」——pull 执行器零入站、address 只是自报标签（ADR-015/
+// ADR-016），两家不同内网的同网段同 IP 必须允许各自成行（ADR-017 §5）。冲突
+// 处置按 §4：push 模式下同地址不同指纹 → 保留先注册者、后到者 409；pull 模式
+// 降级为 warn。partial 谓词由迁移 DDL 承载（check-index-drift 不比 WHERE）。
+@Index("uq_executors_address", ["address"], {
+  unique: true,
+  where: `"dispatchMode" = 'push'`,
+})
+// ARCH-36（ADR-017 阶段 2/3）：指纹查询索引（**刻意非唯一**——阶段 2 存量行
+// 全 NULL 且过渡期允许「同一安装短时间内出现两行」（先注册到新 address、旧行
+// 由 stale sweep 收敛），此刻加唯一约束会让迁移失败；阶段 3 回填完成后仍非
+// 唯一：并发首注册竞态下同指纹两行是已接受的过渡态（唯一性由 register 的
+// 按指纹定位在稳态保证，不靠 DB 约束兜底——升级为唯一索引留待机队全部上报
+// 指纹后单独加，见 ADR-017「阶段 3 未做项」）。
 @Index("idx_executors_device_fingerprint", ["deviceFingerprint"])
 export class Executor {
   @PrimaryGeneratedColumn("uuid") id: string;
@@ -115,24 +122,29 @@ export class Executor {
   @Column({ nullable: true }) executorStartupId: string | null;
 
   /**
-   * ARCH-36（ADR-017 阶段 2）：执行器上报的**稳定唯一身份**
+   * ARCH-36（ADR-017 阶段 2 + 阶段 3）：执行器上报的**稳定唯一身份**
    * `sha256(deviceId + ":" + installSalt)`（64 位小写十六进制）。
    * 采集实现见 `apps/executor-node/src/device-identity.ts` 与
    * `apps/executor-python/device_identity.py`（同源）。
    *
-   * 三态语义（与 `interpreters` / `deadLetterCount` 同款采纳规则）：
-   * - `null` = **未上报**：存量旧执行器（协议 < 3），或新执行器采集失败
-   *   （容器无 machine-id、数据目录只读——fail-open 是硬约束）。两种情形
-   *   用 `protocolVersion` 区分：v3 执行器却为 null = 采集失败需排查。
-   * - 具体值 = 上报并被采纳。字段缺省/非法 → 保留 DB 旧值（不被擦除）。
+   * **阶段 3（迁移 1790000000054）起，该列是注册/心跳的定位键**：
+   * - `register()`/`heartbeat()` 先按 `deviceFingerprint` 定位行，命中即
+   *   复用原行并**更新其 `address`**——执行器换 IP = 同一台机器换地址，
+   *   不再产生「新设备幽灵行」，部署/执行历史不断裂（ADR-017 §2）；
+   * - 未上报指纹的存量执行器（协议 < 3）由中台落 `legacy:{address}` 兜底键
+   *   （`legacyExecutorIdentity`，见 `executor-fingerprint.util.ts`），仍按
+   *   `address` 定位，行为与引入前逐字节一致；升级到 v3 后首注册即被接管。
+   * - `NULL` 只在迁移前存在（= 未上报）；迁移回填后列 NOT NULL。
+   * - 采集失败的 v3 执行器（容器无 machine-id 等）`deviceFingerprint` 为
+   *   NULL → 走 legacy 路径（fail-open 硬约束），用 `protocolVersion` 区分
+   *   「未上报」与「采集失败」。
    *
-   * **本阶段（阶段 2）该列只用于采集与观测，不参与任何定位**——注册仍按
-   * `address` 定位行（`executor.service.ts` register 首行 findOne）。阶段 3
-   * 才会把它提升为幂等键、把 `address` 降级为可达性元数据（见 ADR-017）。
-   * 索引语义见类级 `@Index("idx_executors_device_fingerprint")` 的注释。
+   * 冲突姿态（ADR-017 §4/§5，register 内执行）：push 模式同地址不同指纹 →
+   * 保留先注册者、后到者 409；pull 模式地址只是标签，允许同地址各自成行
+   * （warn 不拒）。
    */
-  @Column({ type: "varchar", length: 64, nullable: true })
-  deviceFingerprint: string | null;
+  @Column({ type: "varchar", length: 80 })
+  deviceFingerprint: string;
   /**
    * 当前在跑任务数（派发闸门 selectLeastLoaded / 容量守卫直接读它判满）。
    * 心跳白名单采纳域：非负整数 0..10000（与 runningExecutionIds 数组截顶

@@ -120,9 +120,7 @@ export class SecretsCryptoService {
   // Exposed for tests and advanced callers (e.g. future key-rotation jobs).
   encryptValue(plaintext: string): string {
     if (!this.key) {
-      throw new Error(
-        "Cannot encrypt: SEC_SECRETS_KEY is not configured (SEC-02 degraded mode)",
-      );
+      throw new Error("无法加密：未配置 SEC_SECRETS_KEY（SEC-02 降级模式）");
     }
     return encryptSecretValue(plaintext, this.key);
   }

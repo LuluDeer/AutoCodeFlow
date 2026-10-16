@@ -1,11 +1,8 @@
-import {
-  Injectable,
-  NotFoundException,
-  ConflictException,
-  BadRequestException,
-  Logger,
-  OnModuleInit,
-} from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+// LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
+// 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
+// 断言的 spec 不受影响。
+import { AppError } from "../../common/errors/app-error";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -116,20 +113,16 @@ export class UsersService implements OnModuleInit {
    */
   private validatePasswordStrength(password: string): void {
     if (!password || password.length < 8) {
-      throw new BadRequestException("Password must be at least 8 characters");
+      throw new AppError("PASSWORD_TOO_SHORT");
     }
     if (!/[A-Z]/.test(password)) {
-      throw new BadRequestException(
-        "Password must contain at least one uppercase letter",
-      );
+      throw new AppError("PASSWORD_NEEDS_UPPERCASE");
     }
     if (!/[0-9]/.test(password)) {
-      throw new BadRequestException("Password must contain at least one digit");
+      throw new AppError("PASSWORD_NEEDS_DIGIT");
     }
     if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
-      throw new BadRequestException(
-        "Password must contain at least one special character",
-      );
+      throw new AppError("PASSWORD_NEEDS_SPECIAL");
     }
   }
 
@@ -141,8 +134,7 @@ export class UsersService implements OnModuleInit {
         { email: createUserDto.email },
       ],
     });
-    if (existing)
-      throw new ConflictException("Username or email already exists");
+    if (existing) throw new AppError("USER_EXISTS");
     const hashed = await bcrypt.hash(createUserDto.password, 12);
     const user = this.usersRepository.create({
       ...createUserDto,
@@ -172,7 +164,7 @@ export class UsersService implements OnModuleInit {
 
   async findById(id: number) {
     const user = await this.usersRepository.findOne({ where: { id } });
-    if (!user) throw new NotFoundException(`User #${id} not found`);
+    if (!user) throw new AppError("USER_ID_NOT_FOUND", { id });
     return user;
   }
 
@@ -237,14 +229,14 @@ export class UsersService implements OnModuleInit {
       return this.usersRepository.manager.transaction(async (manager) => {
         const users = manager.getRepository(User);
         const target = await users.findOne({ where: { id } });
-        if (!target) throw new NotFoundException(`User #${id} not found`);
+        if (!target) throw new AppError("USER_ID_NOT_FOUND", { id });
         const admins = await users
           .createQueryBuilder("u")
           .setLock("pessimistic_write")
           .where("u.role = :role", { role: UserRole.ADMIN })
           .getMany();
         if (admins.length <= 1) {
-          throw new BadRequestException("Cannot demote the last administrator");
+          throw new AppError("USER_LAST_ADMIN_CANNOT_DEMOTE");
         }
         Object.assign(target, updateUserDto);
         const savedInTx = await users.save(target);
@@ -291,12 +283,12 @@ export class UsersService implements OnModuleInit {
    */
   async remove(id: number, actingUserId?: number) {
     if (actingUserId !== undefined && actingUserId === id) {
-      throw new BadRequestException("Cannot delete your own account");
+      throw new AppError("USER_SELF_DELETE_FORBIDDEN");
     }
     return this.usersRepository.manager.transaction(async (manager) => {
       const users = manager.getRepository(User);
       const target = await users.findOne({ where: { id } });
-      if (!target) throw new NotFoundException(`User #${id} not found`);
+      if (!target) throw new AppError("USER_ID_NOT_FOUND", { id });
       if (target.role === UserRole.ADMIN) {
         const admins = await users
           .createQueryBuilder("u")
@@ -304,7 +296,7 @@ export class UsersService implements OnModuleInit {
           .where("u.role = :role", { role: UserRole.ADMIN })
           .getMany();
         if (admins.length <= 1) {
-          throw new BadRequestException("Cannot delete the last administrator");
+          throw new AppError("USER_LAST_ADMIN_CANNOT_DELETE");
         }
       }
       await manager.getRepository(RefreshToken).delete({ userId: id });

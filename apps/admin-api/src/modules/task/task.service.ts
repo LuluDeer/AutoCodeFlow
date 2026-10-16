@@ -1,15 +1,15 @@
 import {
   Injectable,
   Logger,
-  NotFoundException,
-  BadRequestException,
   ConflictException,
   ForbiddenException,
-  ServiceUnavailableException,
   Inject,
   Optional,
   forwardRef,
 } from "@nestjs/common";
+// LANG-ERR-01: 用户可见失败一律抛 AppError（稳定码 + 结构化参数），文案由前端
+// 按用户语言翻译；`zh` 仅作不翻译消费者（CLI/MCP/日志/落库）的兜底。
+import { AppError } from "../../common/errors/app-error";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   assertAndPinExecutorUrl,
@@ -64,8 +64,7 @@ import {
   applyBlockStrategyGate,
   canonicalizeParams,
   releaseExecutorSlotByAddress,
-} from "./block-strategy-gate";
-// A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算。
+} from "./block-strategy-gate"; // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算。
 import { toBullPriority } from "../../common/utils/task-priority.util";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
@@ -460,6 +459,36 @@ export const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
   ].join("|"),
 );
 
+/**
+ * EXECUTOR_OFFLINE 的判据（**单一事实源**，F-01 同款纪律）。
+ *
+ * 为什么必须共用一份：同一条正则此前在 `task.service.ts::inferFailureReason`
+ * （回调路径）与 `task.processor.ts`（派发失败路径）**各抄了一份**，于是
+ * LANG-ERR-01 复查时同一个缺陷要修两遍——我先只修了 service 侧，CI 的 e2e
+ * 用例 27 仍红（它走的是 processor 侧），正是"两处判据漂移"的现场。
+ *
+ * ## 容差为什么是 120 而不是 20（真实缺陷记录）
+ *
+ * 中文支原为 `执行器[^\n]{0,20}?…`，而中台自己产出的 pinned 离线文案是
+ * `指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`——「执行器→离线」
+ * 间隔实测 **63 字符**（44 + appName 19；executorId 是 36 位 uuid）。20 的容差
+ * **短于自家文案** → 规则不命中 → 归因落到 SCRIPT_ERROR：
+ *   ① 用户在执行详情页看到「脚本错误」而非「执行器离线」，排障方向被带偏；
+ *   ② SCRIPT_ERROR 在**默认重试集**里，白白消耗重试预算。
+ *
+ * 英文支 `executor.*(offline|unavailable)` 用无界 `.*` 故无此问题——中英容差
+ * 不一致本身就是隐患。这里统一取**单行**足够大的界：`[^\n]` 才是真正的精度
+ * 护栏（不跨行 ⇒ 不会把日志里相隔很远的两个词连起来，同上方解释器规则的理由）；
+ * 同一行内同时出现「执行器」与「离线」几乎必然是离线归因。120 可覆盖 appName
+ * 长达 ~56 字符，远超 appName 列宽。
+ *
+ * 回归护栏：`python-multiversion-write-path.spec.ts` 的
+ * 「executor_offline 中文化回归」用例**用错误码表渲染真实文案**再断言分类
+ * （回调路径），另有一条覆盖**派发路径**（task.processor）。
+ */
+export const EXECUTOR_OFFLINE_PATTERN =
+  /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,120}?(?:离线|不可用|不可达)/i;
+
 @Injectable()
 export class TaskService {
   private readonly logger = new Logger(TaskService.name);
@@ -477,9 +506,7 @@ export class TaskService {
     executeMode?: ExecuteMode,
   ): void {
     if (executorId && executeMode === ExecuteMode.BROADCAST) {
-      throw new BadRequestException(
-        "executorId (pinned executor) is mutually exclusive with executeMode=broadcast",
-      );
+      throw new AppError("TASK_PIN_BROADCAST_EXCLUSIVE");
     }
   }
 
@@ -514,10 +541,12 @@ export class TaskService {
       })
       .catch(() => null);
     if (!app?.mutexGroupId) return;
-    throw new BadRequestException(
-      `executeMode=broadcast is incompatible with a mutex group: application "${app.name}" (${applicationId}) is bound to mutex group ${app.mutexGroupId}. ` +
-        `Broadcast fans out to every online executor simultaneously and cannot honor the group's concurrency cap — switch the task to executeMode=single, or remove the mutex group from the application (${context})`,
-    );
+    throw new AppError("TASK_BROADCAST_MUTEX_INCOMPATIBLE", {
+      appName: app.name,
+      appId: applicationId,
+      mutexGroupId: app.mutexGroupId,
+      context,
+    });
   }
 
   /**
@@ -550,9 +579,9 @@ export class TaskService {
       // 与 DTO 的 @Matches 同源判据（RUNTIME_VERSION_PATTERN）；service 层
       // 兜底覆盖内部调用方（application.service 自动注册 / 模板 / 回滚），
       // 它们绕过全局 ValidationPipe。
-      throw new BadRequestException(
-        buildUnsupportedVersionMessage(runtimeVersion),
-      );
+      throw new AppError("TASK_RUNTIME_VERSION_UNSUPPORTED", {
+        detail: buildUnsupportedVersionMessage(runtimeVersion),
+      });
     }
     // runtime 缺省 = 实体列默认值 python（`@Column({ enum: TaskRuntime,
     // default: TaskRuntime.PYTHON })`）——create 不传 runtime 时不得误判为
@@ -560,16 +589,14 @@ export class TaskService {
     // 报错，本校验不改变该失败面）。
     const effectiveRuntime = runtime ?? TaskRuntime.PYTHON;
     if (effectiveRuntime !== TaskRuntime.PYTHON) {
-      throw new BadRequestException(
-        `runtimeVersion is only supported for runtime=python (got runtime=${String(
-          effectiveRuntime,
-        )})`,
-      );
+      throw new AppError("TASK_RUNTIME_VERSION_REQUIRES_PYTHON", {
+        runtime: String(effectiveRuntime),
+      });
     }
     if (!isRuntimeVersionSupported(runtimeVersion)) {
-      throw new BadRequestException(
-        buildUnsupportedVersionMessage(runtimeVersion),
-      );
+      throw new AppError("TASK_RUNTIME_VERSION_UNSUPPORTED", {
+        detail: buildUnsupportedVersionMessage(runtimeVersion),
+      });
     }
   }
 
@@ -630,9 +657,9 @@ export class TaskService {
     // （不受作用域门约束：该组合只可能由本次声明产生，且必然导致派发拿不到
     // packageUrl）。
     if (isZip && !state.applicationId) {
-      throw new BadRequestException(
-        `codeSource=application_zip requires applicationId (${opts.context})`,
-      );
+      throw new AppError("TASK_CODE_SOURCE_ZIP_REQUIRES_APPLICATION", {
+        context: opts.context,
+      });
     }
 
     if (opts.touchesCodeSource) {
@@ -641,11 +668,9 @@ export class TaskService {
       if (hasGlue) declaredChannels.push("glueSource");
       if (isZip) declaredChannels.push("codeSource=application_zip");
       if (declaredChannels.length > 1) {
-        throw new BadRequestException(
-          `Task code source must be exactly one of gitRepo / glueSource / codeSource=application_zip (got: ${declaredChannels.join(
-            ", ",
-          )})`,
-        );
+        throw new AppError("TASK_CODE_SOURCE_EXCLUSIVE", {
+          channels: declaredChannels.join(", "),
+        });
       }
       // 显式声明了 codeSource 时，终态必须与该声明自洽（不允许"声明 git 却
       // 只有 glueSource"这类漂移——否则读面按 codeSource 判定会与执行器实际
@@ -657,12 +682,12 @@ export class TaskService {
           (codeSource === TaskCodeSource.APPLICATION_ZIP &&
             Boolean(state.applicationId));
         if (!consistent) {
-          throw new BadRequestException(
-            `codeSource=${codeSource} is inconsistent with the task's code source fields ` +
-              `(gitRepo=${hasGit ? "set" : "empty"}, glueSource=${
-                hasGlue ? "set" : "empty"
-              }, applicationId=${state.applicationId ? "set" : "empty"})`,
-          );
+          throw new AppError("TASK_CODE_SOURCE_MISMATCH", {
+            codeSource,
+            hasGit: hasGit ? "set" : "empty",
+            hasGlue: hasGlue ? "set" : "empty",
+            hasApplicationId: state.applicationId ? "set" : "empty",
+          });
         }
       }
     }
@@ -683,16 +708,16 @@ export class TaskService {
     if (!app) {
       // 弱引用（无 FK 强约束）指向不存在的应用——执行器侧必然拿不到
       // packageUrl。早失败成 400，而不是派发期才炸。
-      throw new BadRequestException(
-        `Application #${state.applicationId} referenced by codeSource=application_zip not found`,
-      );
+      throw new AppError("TASK_CODE_SOURCE_APPLICATION_NOT_FOUND", {
+        applicationId: state.applicationId,
+      });
     }
     if (app.runtime !== effectiveRuntime) {
-      throw new BadRequestException(
-        `Application "${app.name}" runtime=${app.runtime} is inconsistent with task runtime=${String(
-          effectiveRuntime,
-        )} (AC-19a: the uploaded package's runtime must match the task's runtime)`,
-      );
+      throw new AppError("TASK_CODE_SOURCE_RUNTIME_MISMATCH", {
+        appName: app.name,
+        appRuntime: app.runtime,
+        taskRuntime: String(effectiveRuntime),
+      });
     }
   }
 
@@ -763,12 +788,10 @@ export class TaskService {
       normalized.requirements = normalized.requirements.map((raw) => {
         const spec = typeof raw === "string" ? raw.trim() : raw;
         if (typeof spec !== "string" || spec.length === 0) {
-          throw new BadRequestException("Task requirement must be non-empty");
+          throw new AppError("TASK_REQUIREMENT_EMPTY");
         }
         if (spec.startsWith("-")) {
-          throw new BadRequestException(
-            `Invalid task requirement (options are not allowed): ${spec}`,
-          );
+          throw new AppError("TASK_REQUIREMENT_OPTION_LIKE", { spec });
         }
         return spec;
       });
@@ -790,9 +813,7 @@ export class TaskService {
   private assertNormalizableCron(value: unknown, field: string): string {
     const normalized = normalizeCron5Field(value);
     if (normalized === null) {
-      throw new BadRequestException(
-        `${field} must be a valid 5-field cron expression (min hour day month weekday)`,
-      );
+      throw new AppError("TASK_CRON_FIELD_INVALID", { field });
     }
     return normalized;
   }
@@ -815,18 +836,27 @@ export class TaskService {
       return ExecutionFailureReason.INTERPRETER_UNAVAILABLE;
     }
 
-    if (/timeout|timed out|etimedout|execution timed/.test(text)) {
+    // LANG-ZH-01（面向用户文字中文化）配套：以下分类正则**必须中英双语**。
+    //
+    // 为什么不能只留英文：执行器侧的用户可见文案正在中文化，若只改执行器产出的
+    // 文案而不同步这里的关键词，失败分类会**静默失效**（全部落 UNKNOWN → 用户
+    // 看到「未知原因」，且 TIMEOUT/INTERPRETER_UNAVAILABLE 这类「不进默认重试集」
+    // 的语义会反转，白白烧重试预算）。
+    //
+    // 为什么也不能只留中文：① 存量执行器（未升级）与**已落库的历史 errorMessage**
+    // 仍是英文，去掉英文支会让它们全部退化为 UNKNOWN；② 两侧是**独立发版**的
+    // 进程，滚动升级期间必然新旧并存。故英中并列是唯一安全口径
+    // （与 INTERPRETER_UNAVAILABLE_PATTERN 已有的中西双语写法同款）。
+    if (
+      /timeout|timed out|etimedout|execution timed|超时|执行已超时/.test(text)
+    ) {
       return ExecutionFailureReason.TIMEOUT;
     }
-    if (
-      /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up/.test(
-        text,
-      )
-    ) {
+    if (EXECUTOR_OFFLINE_PATTERN.test(text)) {
       return ExecutionFailureReason.EXECUTOR_OFFLINE;
     }
     if (
-      /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|module not found|cannot find module/.test(
+      /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|module not found|cannot find module|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/.test(
         text,
       )
     ) {
@@ -836,7 +866,7 @@ export class TaskService {
       return ExecutionFailureReason.SCRIPT_ERROR;
     }
     if (
-      /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/.test(
+      /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/.test(
         text,
       )
     ) {
@@ -943,12 +973,10 @@ export class TaskService {
     recordOwnershipAssertion("task", "write");
     if (user?.role === UserRole.ADMIN) return;
     if (row.ownerUserId === null) {
-      throw new ForbiddenException(
-        "This task has no owner (legacy row); only admins can modify it",
-      );
+      throw new AppError("TASK_HAS_NO_OWNER");
     }
     if (row.ownerUserId !== user?.id) {
-      throw new ForbiddenException("You do not own this task");
+      throw new AppError("TASK_NOT_OWNER");
     }
   }
 
@@ -1019,10 +1047,7 @@ export class TaskService {
         role: user?.role,
       });
       if (!allowed) {
-        throw new ForbiddenException(
-          "TASK_OPERATE_SCOPE=owner: triggering or changing schedule state requires " +
-            "being the task owner, an editor of its project, or an administrator",
-        );
+        throw new AppError("TASK_OPERATE_SCOPE_OWNER");
       }
       return;
     }
@@ -1034,9 +1059,7 @@ export class TaskService {
       row.projectId ?? null,
     );
     if (role === "viewer") {
-      throw new ForbiddenException(
-        "Your role in this project is viewer (read-only); triggering or changing schedule state requires the editor role",
-      );
+      throw new AppError("TASK_OPERATE_VIEWER_READONLY");
     }
   }
 
@@ -1065,38 +1088,30 @@ export class TaskService {
     // 1) 存在性：早失败成 400，而不是让 FK 违例冒成 500
     if (!this.projectRepo) {
       // 仓储缺席（既有单测装配）——无法校验存在性，故拒绝而非放行（宁严不松）。
-      throw new BadRequestException(
-        "Project assignment is unavailable in this deployment",
-      );
+      throw new AppError("TASK_PROJECT_UNSUPPORTED");
     }
     const exists = await this.projectRepo.findOne({
       where: { id: projectId },
       select: { id: true },
     });
     if (!exists) {
-      throw new BadRequestException(`Project #${projectId} not found`);
+      throw new AppError("TASK_PROJECT_NOT_FOUND", { projectId });
     }
 
     // 2) 授权：ADMIN 无条件；其余须为该项目 editor/admin
     if (user?.role === UserRole.ADMIN) return;
     if (!user?.id) {
       // 无用户主体（内部/机器调用且非 ADMIN）——不允许改归属，避免绕过授权。
-      throw new ForbiddenException(
-        "Only administrators may assign a task to a project",
-      );
+      throw new AppError("TASK_PROJECT_ASSIGN_ADMIN_ONLY");
     }
     if (!this.projectAccess) {
       // 项目权限服务缺席：与 assertCanWriteProjectAware 同款姿态——不 fail-open，
       // 退化为「仅 ADMIN 可设置」（上面已放行 ADMIN）。
-      throw new ForbiddenException(
-        "Only administrators may assign a task to a project",
-      );
+      throw new AppError("TASK_PROJECT_ASSIGN_ADMIN_ONLY");
     }
     const role = await this.projectAccess.resolveRole(user.id, projectId);
     if (role !== "editor" && role !== "admin") {
-      throw new ForbiddenException(
-        "Assigning a task to a project requires ADMIN or editor/admin of that project",
-      );
+      throw new AppError("TASK_PROJECT_ASSIGN_FORBIDDEN");
     }
   }
 
@@ -1149,15 +1164,15 @@ export class TaskService {
     user: { id: number; role: UserRole } | null | undefined,
   ): Promise<void> {
     if (!execution.taskId) {
-      throw new ForbiddenException(
-        "This execution has no owning task; refusing the write",
-      );
+      throw new AppError("TASK_EXECUTION_SCOPE_UNKNOWN");
     }
     const task = await this.taskRepo.findOne({
       where: { id: execution.taskId },
     });
     if (!task) {
-      throw new NotFoundException(`Task ${execution.taskId} not found`);
+      throw new AppError("TASK_NOT_FOUND", {
+        taskId: execution.taskId,
+      });
     }
     await this.assertCanWriteProjectAware(task, user);
   }
@@ -1175,7 +1190,9 @@ export class TaskService {
     // 同一纪律（见 548 行注释：服务层守卫存在的理由正是这些内部调用方）。
     const nameProblem = describeTaskNameProblem(dto?.name);
     if (nameProblem) {
-      throw new BadRequestException(`任务名称不可用：${nameProblem}`);
+      throw new AppError("TASK_NAME_UNAVAILABLE", {
+        reason: nameProblem,
+      });
     }
     if (dto.dependencies && Object.keys(dto.dependencies).length > 0) {
       // FIX-1.1（依赖链契约）：先校验 value 是真实存在的任务 id——value 是
@@ -1237,9 +1254,12 @@ export class TaskService {
         withDeleted: true,
       });
       if (existing) {
-        throw new ConflictException(
-          `Task with id "${normalized.id}" already exists`,
-        );
+        // LANG-ZH-01 / LANG-ERR-01：本消息同时被
+        // `application.service.ts` 的清单自动注册路径以 `.includes("已存在")`
+        // 判据识别为「正常跳过」，故迁移到错误码后渲染出的 `zh` **仍然必须
+        // 含「已存在」**（`TASK_ID_EXISTS.zh` = 任务 ID「{{id}}」已存在 ✓）
+        // ——否则「任务已存在」这个正常场景会被记成 error 级故障。
+        throw new AppError("TASK_ID_EXISTS", { id: normalized.id });
       }
     }
     try {
@@ -1252,15 +1272,13 @@ export class TaskService {
         // 索引 idx_tasks_name_unique——预检查窗口外的**并发同名创建**在此落网，
         // 按约束名分流给可读文案（其余唯一冲突维持 R6 既有口径）。
         if (uniqueConstraintName(err) === "idx_tasks_name_unique") {
-          throw new ConflictException(
-            `Task with name "${normalized.name}" already exists`,
-          );
+          throw new AppError("TASK_NAME_EXISTS", {
+            name: normalized.name,
+          });
         }
-        throw new ConflictException(
-          normalized.id
-            ? `Task with id "${normalized.id}" already exists`
-            : "Task conflicts with an existing record",
-        );
+        throw normalized.id
+          ? new AppError("TASK_ID_EXISTS", { id: normalized.id })
+          : new AppError("RESOURCE_EXISTS");
       }
       throw err;
     }
@@ -1338,9 +1356,7 @@ export class TaskService {
 
     for (const depId of dependencyIds) {
       if (depId === taskId) {
-        throw new BadRequestException(
-          `Circular dependency detected: task ${taskId} depends on itself`,
-        );
+        throw new AppError("TASK_CIRCULAR_DEPENDENCY", { taskId });
       }
     }
 
@@ -1367,9 +1383,9 @@ export class TaskService {
     const foundIds = new Set(found.map((t) => t.id));
     const missing = values.filter((id) => !foundIds.has(id));
     if (missing.length > 0) {
-      throw new BadRequestException(
-        `dependencies values must be existing task ids (value = upstream task id); not found: ${missing.join(", ")}`,
-      );
+      throw new AppError("TASK_DEPENDENCY_NOT_FOUND", {
+        ids: missing.join(", "),
+      });
     }
   }
 
@@ -1393,17 +1409,13 @@ export class TaskService {
     if (state.triggerType === TaskTriggerType.CRON) {
       const expr = (state.cronExpression ?? "").trim();
       if (!expr) {
-        throw new BadRequestException(
-          "triggerType=cron requires cronExpression (5-field cron) — a task without it would be scheduled as active but never fire",
-        );
+        throw new AppError("TASK_TRIGGER_CRON_CONFIG_REQUIRED");
       }
     }
     if (state.triggerType === TaskTriggerType.FIXED_RATE) {
       const rate = state.fixedRate;
       if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 1) {
-        throw new BadRequestException(
-          "triggerType=fixed_rate requires fixedRate >= 1 (seconds) — a task without it would be scheduled as active but never fire",
-        );
+        throw new AppError("TASK_TRIGGER_FIXED_RATE_CONFIG_REQUIRED");
       }
     }
   }
@@ -1417,20 +1429,16 @@ export class TaskService {
   ): Promise<void> {
     // TASK-007: 递归深度上限——防止深层依赖链的串行 N+1 查询 DoS。
     if (depth > MAX_DEPENDENCY_DEPTH) {
-      throw new BadRequestException("dependency chain too deep");
+      throw new AppError("TASK_DEPENDENCY_TOO_DEEP");
     }
 
     for (const depId of dependencyIds) {
       if (depId === taskId) {
-        throw new BadRequestException(
-          `Circular dependency detected: task ${taskId} has a cyclic dependency chain`,
-        );
+        throw new AppError("TASK_CIRCULAR_DEPENDENCY", { taskId });
       }
 
       if (currentPath.has(depId)) {
-        throw new BadRequestException(
-          `Circular dependency detected: task ${taskId} -> ... -> ${depId} (cycle)`,
-        );
+        throw new AppError("TASK_CIRCULAR_DEPENDENCY", { taskId });
       }
 
       if (visited.has(depId)) {
@@ -1440,7 +1448,7 @@ export class TaskService {
       // TASK-007: 已访问节点集合上限——超宽扇出的依赖图同样拒绝，
       // 上限保证单次校验的数据库查询次数有硬性边界。
       if (visited.size > MAX_DEPENDENCY_DEPTH) {
-        throw new BadRequestException("dependency chain too deep");
+        throw new AppError("TASK_DEPENDENCY_TOO_DEEP");
       }
 
       visited.add(depId);
@@ -1561,10 +1569,10 @@ export class TaskService {
       const whitelist = new Set<string>(TASK_PROJECTION_WHITELIST);
       const illegal = requested.filter((f) => !whitelist.has(f));
       if (illegal.length) {
-        throw new BadRequestException(
-          `Illegal projection field(s): ${illegal.join(", ")}. ` +
-            `Allowed: ${TASK_PROJECTION_WHITELIST.join(", ")}`,
-        );
+        throw new AppError("TASK_PROJECTION_FIELD_INVALID", {
+          fields: illegal.join(", "),
+          allowed: TASK_PROJECTION_WHITELIST.join(", "),
+        });
       }
       select = Object.fromEntries(requested.map((f) => [f, true])) as Record<
         string,
@@ -1579,10 +1587,10 @@ export class TaskService {
     if (p.sortBy) {
       const sortKey = p.sortBy.trim() as TaskSortKey;
       if (!TASK_SORT_WHITELIST.includes(sortKey as never)) {
-        throw new BadRequestException(
-          `Illegal sortBy: ${p.sortBy}. ` +
-            `Allowed: ${TASK_SORT_WHITELIST.join(", ")}`,
-        );
+        throw new AppError("TASK_SORT_FIELD_INVALID", {
+          sortBy: p.sortBy,
+          allowed: TASK_SORT_WHITELIST.join(", "),
+        });
       }
       order = {
         [sortKey]:
@@ -1789,7 +1797,7 @@ export class TaskService {
     const t = await this.taskRepo.findOne({
       where: { id, status: Not(TaskStatus.DELETED) },
     });
-    if (!t) throw new NotFoundException("Task not found");
+    if (!t) throw new AppError("TASK_NOT_FOUND", { taskId: id });
     // SEC-02: 详情响应同样脱敏；写路径（update）走独立归一化，不受影响
     t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
       Record<string, unknown> | null | undefined;
@@ -1808,7 +1816,7 @@ export class TaskService {
     const t = await this.taskRepo.findOne({
       where: { id, status: Not(TaskStatus.DELETED) },
     });
-    if (!t) throw new NotFoundException("Task not found");
+    if (!t) throw new AppError("TASK_NOT_FOUND", { taskId: id });
     return t;
   }
 
@@ -1847,9 +1855,7 @@ export class TaskService {
         !Number.isFinite(expectedMs) ||
         expectedMs !== t.updatedAt.getTime()
       ) {
-        throw new ConflictException(
-          "任务已被其他修改抢先更新（数据版本不一致），请刷新后重试",
-        );
+        throw new AppError("TASK_UPDATE_STALE");
       }
     }
     const normalized = this.normalizeTaskDto(dto);
@@ -1952,9 +1958,7 @@ export class TaskService {
         isUniqueViolation(err) &&
         uniqueConstraintName(err) === "idx_tasks_name_unique"
       ) {
-        throw new ConflictException(
-          `已存在同名任务「${updated.name}」（任务名全局唯一，回收站中的任务同样占用该名称）；请换一个名称`,
-        );
+        throw new AppError("TASK_NAME_TAKEN", { name: updated.name });
       }
       throw err;
     }
@@ -2006,9 +2010,7 @@ export class TaskService {
     // null/undefined，从不经过本方法）。
     // ---------------------------------------------------------------------
     if (typeof source !== "string" || source.trim().length === 0) {
-      throw new BadRequestException(
-        "Glue script source must not be empty — refusing to overwrite the stored script with no code",
-      );
+      throw new AppError("TASK_GLUE_SOURCE_EMPTY");
     }
     t.glueSource = source;
     if (language) t.glueLanguage = language;
@@ -2047,7 +2049,7 @@ export class TaskService {
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
     if (t.status === TaskStatus.PAUSED) {
-      throw new BadRequestException("Task is already paused");
+      throw new AppError("TASK_ALREADY_PAUSED");
     }
     this.schedulerService.stop(id);
     t.status = TaskStatus.PAUSED;
@@ -2061,7 +2063,7 @@ export class TaskService {
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
     if (t.status !== TaskStatus.PAUSED) {
-      throw new BadRequestException("Task is not paused and cannot be resumed");
+      throw new AppError("TASK_NOT_PAUSED");
     }
     t.status = TaskStatus.ACTIVE;
     await this.taskRepo.save(t);
@@ -2117,9 +2119,9 @@ export class TaskService {
         },
       );
       if (gateOutcome === "skip") {
-        throw new ConflictException(
-          `Task "${task.name}" already has an active execution with the same params (blockStrategy=discard) — trigger rejected`,
-        );
+        throw new AppError("TASK_BLOCK_STRATEGY_REJECTED", {
+          name: task.name,
+        });
       }
       // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
       const traceparent = this.tracing?.startTrace() ?? null;
@@ -2205,7 +2207,7 @@ export class TaskService {
         patch: {
           status: ExecutionStatus.FAILED,
           endTime: new Date(),
-          errorMessage: `Failed to enqueue execution: ${message}`,
+          errorMessage: `任务入队失败：${message}`,
           failureReason: ExecutionFailureReason.UNKNOWN,
         },
         from: [ExecutionStatus.PENDING],
@@ -2213,7 +2215,7 @@ export class TaskService {
       // FIX-4.2: 补偿终态已落库，同样唤醒 webhook wait 等待方。
       this.publishExecutionWake(exec.id);
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
-      throw new Error(`Failed to enqueue execution: ${message}`);
+      throw new AppError("TASK_ENQUEUE_FAILED", { message });
     }
     endSpan?.();
     return exec;
@@ -2269,9 +2271,9 @@ export class TaskService {
       return null;
     }
     if (!lock) {
-      throw new ConflictException(
-        `Task "${task.name}" already has a concurrent trigger with the same params in flight — trigger rejected, retry shortly`,
-      );
+      throw new AppError("TASK_TRIGGER_CONCURRENT", {
+        name: task.name,
+      });
     }
     return lock;
   }
@@ -2291,9 +2293,10 @@ export class TaskService {
       where: { taskId: task.id, version: `v${versionNumber}` },
     });
     if (!row) {
-      throw new NotFoundException(
-        `Task version v${versionNumber} not found for task ${task.id}`,
-      );
+      throw new AppError("TASK_VERSION_NOT_FOUND", {
+        taskId: task.id,
+        version: versionNumber,
+      });
     }
     return row;
   }
@@ -2421,7 +2424,7 @@ export class TaskService {
     fallback?: boolean;
   }> {
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
-    if (!task) throw new NotFoundException(`Task ${taskId} not found`);
+    if (!task) throw new AppError("TASK_NOT_FOUND", { taskId });
     // A2-B: 本端点声明 scope='ownership'，此前完全未校验（任意登录用户可拉取
     // 他人任务的执行历史交给 AI 分析）；补上与 update 同档的属主守卫。
     await this.assertCanWriteProjectAware(task, user);
@@ -2577,7 +2580,11 @@ export class TaskService {
     const e = await this.execRepo.findOne({
       where: taskId ? { id, taskId } : { id },
     });
-    if (!e) throw new NotFoundException("Execution not found");
+    if (!e) {
+      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
+        executionId: id,
+      });
+    }
     return e;
   }
 
@@ -2626,7 +2633,11 @@ export class TaskService {
     user?: { id: number; role: UserRole } | null,
   ): Promise<TaskExecution> {
     const exec = await this.execRepo.findOne({ where: { id: execId } });
-    if (!exec) throw new NotFoundException("Execution not found");
+    if (!exec) {
+      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
+        executionId: execId,
+      });
+    }
     // A2-B: 同上——声明 'ownership' 却无校验的缺口，补属主守卫。
     await this.assertCanWriteExecution(exec, user);
     // Use errorMessage + logs as analysis input; fall back gracefully when logs are empty
@@ -2678,7 +2689,11 @@ export class TaskService {
     // Cap limit to prevent accidental memory exhaustion
     const safeLimit = Math.min(Math.max(1, limit), 2000);
     const exec = await this.execRepo.findOne({ where: { id: execId } });
-    if (!exec) throw new NotFoundException("Execution not found");
+    if (!exec) {
+      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
+        executionId: execId,
+      });
+    }
     // LOG-02 + High-6.1: S3-stored logs are streamed line-by-line so we never
     // hold the full decompressed payload in memory; DB rows remain the
     // fallback (and the db-driver path).
@@ -2777,15 +2792,16 @@ export class TaskService {
       // 可观测性补齐：并发拒绝计数（autoflow_sse_streams_rejected_total）——
       // 只在超限抛错路径记录，成功占用不计数。
       recordRuntime("autoflow_sse_streams_rejected_total");
-      throw new ServiceUnavailableException(
-        `Too many concurrent log streams for execution ${execId} (max ${perExec})`,
-      );
+      throw new AppError("TASK_LOG_STREAM_LIMIT_PER_EXECUTION", {
+        executionId: execId,
+        max: perExec,
+      });
     }
     if (this.sseStreamsGlobal >= global) {
       recordRuntime("autoflow_sse_streams_rejected_total");
-      throw new ServiceUnavailableException(
-        `Too many concurrent log streams server-wide (max ${global})`,
-      );
+      throw new AppError("TASK_LOG_STREAM_LIMIT_GLOBAL", {
+        max: global,
+      });
     }
 
     this.sseStreamsPerExecution.set(execId, currentForExec + 1);
@@ -3074,7 +3090,7 @@ export class TaskService {
         patch: {
           status: ExecutionStatus.FAILED,
           endTime: new Date(),
-          errorMessage: `Failed to enqueue execution: ${message}`,
+          errorMessage: `任务入队失败：${message}`,
           failureReason: ExecutionFailureReason.UNKNOWN,
         },
         from: [ExecutionStatus.PENDING],
@@ -3082,7 +3098,7 @@ export class TaskService {
       // FIX-4.2: 补偿终态已落库，同样唤醒 webhook wait 等待方。
       this.publishExecutionWake(exec.id);
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
-      throw new Error(`Failed to enqueue execution: ${message}`);
+      throw new AppError("TASK_ENQUEUE_FAILED", { message });
     }
     await this.saveVersion(task.id, undefined, undefined, task);
     // N11: re-schedule so active cron/fixed-rate tasks pick up the new commit immediately
@@ -3096,14 +3112,13 @@ export class TaskService {
     };
   }
 
+  /**
+   * ADR-017 阶段 3：同地址多行并存（pull 模式，ADR-017 §5）时按地址无界冲销会
+   * 把**别人的** `runningTaskCount` 也减 1。委托共享 util（单一事实源）：地址
+   * 命中多行时保守跳过。单行命中时行为与引入前逐字节一致。
+   */
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
-    if (!address) return;
-    await this.dataSource
-      .createQueryBuilder()
-      .update("executors")
-      .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-      .where("address = :addr", { addr: address })
-      .execute();
+    await releaseExecutorSlotByAddress(this.dataSource, address);
   }
 
   /**
@@ -3592,7 +3607,9 @@ export class TaskService {
       select: { id: true, status: true },
     });
     if (!exec) {
-      throw new NotFoundException(`Execution ${executionId} not found`);
+      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
+        executionId,
+      });
     }
 
     const entities = lines.map((content, i) =>
@@ -4038,6 +4055,13 @@ export class TaskService {
       failureReason?: ExecutionFailureReason;
       durationMs?: number;
       executorAddress?: string;
+      /**
+       * ADR-017 阶段 3（协议 v6）：执行器自报的稳定安装身份（64 位小写十六
+       * 进制）——回调面的**行身份**输入，由控制器解析为行 id 后经
+       * `fingerprintExecutorIdByAddress` 传入。缺省（旧执行器/采集失败/SDK
+       * 调用方）→ 该级不参与，行为与引入前一致。
+       */
+      deviceFingerprint?: string;
       /** FEAT-05: 执行产物清单（可选，best-effort，随终态回调上报）。 */
       artifacts?: Array<{ name: string; size: number; sha256: string }>;
       /**
@@ -4047,6 +4071,30 @@ export class TaskService {
        */
       result?: Record<string, unknown>;
     }>,
+    /**
+     * ADR-017 阶段 3（复查补口）：地址 → **所持凭据所属行 id** 的映射，由
+     * 控制器在令牌校验时推导（`resolveCredentialExecutorId`）。**刻意是独立
+     * 参数而非 callback item 字段**：它是服务端推导的事实，若放进回调体就
+     * 变成调用方自报——等于把不可伪造的行身份判据交给伪造方。
+     *
+     * 缺省（未传 / 该地址无匹配行）→ 行身份判据不参与，回落地址相等判据，
+     * 行为与引入前逐字节一致。test 与内部调用方不传即零变化。
+     */
+    credentialExecutorIdByAddress?: Map<string, string | null>,
+    /**
+     * ADR-017 阶段 3（协议 v6，方案 C）：executionId → **回调自报指纹解析出的
+     * 行 id**。
+     *
+     * 行身份三级阶梯的**第一级**（见 ExecutionCallbackController 注释）。为什么
+     * 它比凭据归属行更强：共享令牌不绑定任何行，故第二级在「共享令牌 + 同址
+     * 多行」下拿不到行身份——正是本方案要补的缺口。指纹由 v6 执行器上报，
+     * 服务端已查库校验其对应行存在（`resolveExecutorIdByFingerprint`）。
+     *
+     * **按 executionId 分键而非 address**：同批次里可以有两个同址但不同行的
+     * 执行（ADR-017 §5），各自上报自己的指纹；按 address 分键会把第二条
+     * 判到第一条的行走上，误拒合法回调。
+     */
+    fingerprintExecutorIdByExecution?: Map<string, string | null>,
   ) {
     const results = [];
     // F-11（本轮审计）: 批量回调 N+1 消除。关键判据：N+1 问题只存在于
@@ -4153,6 +4201,58 @@ export class TaskService {
         // P1: once an execution has been dispatched to a specific executor,
         // callbacks must come from that address — a missing or different
         // address is rejected (both executor runtimes always send it).
+        //
+        // ADR-017 阶段 3（复查补口）：**行身份优先**。阶段 3 把
+        // `uq_executors_address` 收窄为 partial（仅 push 行），pull 模式允许
+        // **同地址多行并存**（ADR-017 §5）——此时「地址相等」不再是「同一台
+        // 机器」的证明：两台自报同一地址时本闸恒等，拦不住串台（迁移
+        // 1790000000055 的类注释已把这条列为待修面之一）。
+        //
+        // 修法用**行身份三级阶梯**（优先级从高到低）：
+        //   ① 回调自报指纹解析出的行（协议 v6；**独立于令牌类型**，故共享
+        //      令牌路径也能拿到行身份——这正是方案 C 要补的缺口）；
+        //   ② 调用方所持凭据所属行（per-executor 令牌专有；由控制器服务端
+        //      推导后作为独立参数传入）；
+        //   ③ 地址相等（唯一行时的 legacy 兜底）。
+        // 三级都拿不到行身份 → 只走 ③，行为与引入前逐字节一致。
+        //
+        // 判据语义：拿到行身份后，要求 `row === execution.executorId`——即
+        // 「你自称/自证的那一行，必须就是 dispatcher 派发的那一行」。不一致
+        // 即拒（跨行申领别人那行的执行）。执行行无 `executorId`（存量行）时
+        // 无从比对，回落 ③。
+        const fingerprintRowId =
+          fingerprintExecutorIdByExecution?.get(cb.executionId) ?? null;
+        const credentialRowId = cb.executorAddress
+          ? (credentialExecutorIdByAddress?.get(cb.executorAddress.trim()) ??
+            null)
+          : null;
+        const claimedRowId = fingerprintRowId ?? credentialRowId;
+        const claimedBy = fingerprintRowId
+          ? "deviceFingerprint"
+          : credentialRowId
+            ? "per-executor credential"
+            : null;
+        if (
+          execution.executorId &&
+          claimedRowId &&
+          claimedRowId !== execution.executorId
+        ) {
+          recordRuntime("autoflow_callback_business_total", {
+            result: "executor_identity_mismatch",
+          });
+          this.logger.warn(
+            `ADR-017: Rejected terminal callback for execution ${cb.executionId} — ` +
+              `the callback identifies executor row ${claimedRowId} (via ${claimedBy}), ` +
+              `but the execution was dispatched to row ${execution.executorId} ` +
+              `(address ${execution.executorAddress ?? "-"}).`,
+          );
+          results.push({
+            executionId: cb.executionId,
+            success: false,
+            error: "Executor identity mismatch",
+          });
+          continue;
+        }
         if (
           execution.executorAddress &&
           cb.executorAddress !== execution.executorAddress
@@ -4496,7 +4596,7 @@ export class TaskService {
     const task =
       taskSnapshot ?? (await this.taskRepo.findOne({ where: { id: taskId } }));
     if (!task) {
-      throw new NotFoundException("Task not found");
+      throw new AppError("TASK_NOT_FOUND", { taskId });
     }
 
     // Use MAX(version number) + 1 to avoid race condition from COUNT-based numbering
@@ -4642,7 +4742,7 @@ export class TaskService {
       where: { id: versionId, taskId },
     });
     if (!version) {
-      throw new NotFoundException("Version not found");
+      throw new AppError("TASK_VERSION_ID_NOT_FOUND", { taskId });
     }
     return version;
   }
@@ -4656,7 +4756,7 @@ export class TaskService {
 
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
     if (!task) {
-      throw new NotFoundException("Task not found");
+      throw new AppError("TASK_NOT_FOUND", { taskId });
     }
 
     // R-03: 写面归属守卫（镜像 update 口径）。本路径直接以 repo 查询取
@@ -4683,10 +4783,10 @@ export class TaskService {
         isUniqueViolation(err) &&
         uniqueConstraintName(err) === "idx_tasks_name_unique"
       ) {
-        throw new ConflictException(
-          `无法回滚到版本 ${version.version}：该版本的任务名「${task.name}」已被其它任务占用` +
-            `（任务名全局唯一，回收站中的任务同样占用）。请先重命名占用该名称的任务，或改用其它版本。`,
-        );
+        throw new AppError("TASK_ROLLBACK_NAME_TAKEN", {
+          version: version.version,
+          name: task.name,
+        });
       }
       throw err;
     }
@@ -4776,7 +4876,7 @@ export class TaskService {
       taskName: execution.taskName ?? execution.taskId,
       status: "killed",
       failureReason: ExecutionFailureReason.KILLED,
-      errorMessage: "Manually terminated by administrator",
+      errorMessage: "管理员手动终止",
       aiAnalysis: execution.aiAnalysis ?? null,
       durationMs,
       finishedAt: finishedAt.toISOString(),
@@ -4795,7 +4895,9 @@ export class TaskService {
   ): Promise<{ success: boolean; message: string }> {
     const execution = await this.execRepo.findOne({ where: { id: execId } });
     if (!execution) {
-      throw new NotFoundException(`Execution ${execId} not found`);
+      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
+        executionId: execId,
+      });
     }
     // A2-B: 终止执行是写面且声明 'ownership'——此前任何登录用户都能终止他人
     // 任务的执行。补上属主守卫（project editor/admin 同样放行，与 update 同档）。
@@ -4818,16 +4920,16 @@ export class TaskService {
         status: ExecutionStatus.KILLED,
         endTime: now,
         duration: duration,
-        errorMessage: "Manually terminated by administrator",
+        errorMessage: "管理员手动终止",
         failureReason: ExecutionFailureReason.KILLED,
       },
       addressSnapshot: { [execId]: execution.executorAddress ?? null },
     });
 
     if (!result.affected || result.affected === 0) {
-      throw new BadRequestException(
-        `Execution is in '${execution.status}' status (terminal state) and cannot be terminated`,
-      );
+      throw new AppError("TASK_EXECUTION_TERMINAL", {
+        status: execution.status,
+      });
     }
 
     // FEAT-18: KILLED 终态已落库（UPDATE 命中 winner），发布 execution.killed。

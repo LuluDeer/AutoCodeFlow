@@ -1,6 +1,7 @@
-import { BadRequestException, ConflictException } from "@nestjs/common";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { Task } from "./entities/task.entity";
+// LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
+import { AppError } from "../../common/errors/app-error";
 // FEAT-RENAME: 导入重名后缀必须裁剪到任务名上限内（见 importNameCandidate）。
 import { TASK_NAME_MAX_LENGTH } from "./dto/task-name.constraint";
 
@@ -138,9 +139,9 @@ export function assertNoSecretMaterial(node: unknown, path = "payload"): void {
   if (node && typeof node === "object") {
     for (const [key, value] of Object.entries(node)) {
       if (/secret/i.test(key)) {
-        throw new ConflictException(
-          `Task definition export invariant violated: "${path}.${key}" matches the secrets red line (/secret/i) — secrets must never appear in an export payload (SEC-02)`,
-        );
+        throw new AppError("TASK_EXPORT_SECRET_LEAK", {
+          path: `${path}.${key}`,
+        });
       }
       assertNoSecretMaterial(value, `${path}.${key}`);
     }
@@ -233,9 +234,7 @@ export function mapExportToCreateDto(payload: {
   const source = (payload?.task ?? {}) as Record<string, unknown>;
   const name = source["name"];
   if (typeof name !== "string" || name.trim() === "") {
-    throw new BadRequestException(
-      'Invalid import payload: "task.name" is required and must be a non-empty string',
-    );
+    throw new AppError("TASK_IMPORT_NAME_REQUIRED");
   }
   const dto: Record<string, unknown> = {};
   for (const key of TASK_DEFINITION_EXPORT_KEYS) {

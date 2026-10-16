@@ -2165,6 +2165,9 @@ describe("SchedulerService", () => {
     };
     const reportRunning = (
       rows: Array<{
+        // ADR-017 阶段 3：活性探测按**行身份**定位，故夹具必须能给出 id
+        // （真实实现 select 了 id/address/status/runningExecutionIds 四列）。
+        id?: string;
         address: string;
         status: ExecutorStatus;
         runningExecutionIds: string[] | null;
@@ -2228,6 +2231,89 @@ describe("SchedulerService", () => {
       await service.recoverStaleExecutions();
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    // ADR-017 阶段 3（复查补口）反证：活性探测必须按**行身份**定位执行器。
+    // 阶段 3 允许 pull 同址多行并存（ADR-017 §5）——旧实现用
+    // `new Map(rows.map(ex => [ex.address, ex]))` 建地址索引，同址多行时**静默
+    // 折叠为最后一行**：A 的健康长任务去读 B 的 runningExecutionIds，命中与否
+    // 全凭巧合 → A 失去存活宽限被提前恢复成 FAILED。
+    //
+    // 反证：把 collectRunningLiveness 的定位改回纯地址索引 → 本用例转红。
+    describe("ADR-017 阶段 3: liveness probe resolves by row identity", () => {
+      it("defers recovery using the row that MATCHES executorId (not a duplicate-address peer)", async () => {
+        await makeLeader();
+        // 候选执行派发到 row-A，行身份已知。
+        const exec = { ...mkExec(20), executorId: "row-a" };
+        setupScan(exec);
+        // 同址两行：row-B（先出现，ONLINE，但不含该 executionId）与
+        // row-A（真正持有该执行，ONLINE，含该 id）。
+        // 纯地址索引会折叠成 row-B → 探测判"不在跑" → 恢复（误杀）。
+        reportRunning([
+          {
+            id: "row-b",
+            address: "host:3002",
+            status: ExecutorStatus.ONLINE,
+            runningExecutionIds: ["some-other-exec"],
+          },
+          {
+            id: "row-a",
+            address: "host:3002",
+            status: ExecutorStatus.ONLINE,
+            runningExecutionIds: ["exec-live"],
+          },
+        ]);
+
+        await service.recoverStaleExecutions();
+
+        // 按行身份命中 row-A → 活性成立 → 不恢复。
+        expect(dataSource.transaction).not.toHaveBeenCalled();
+      });
+
+      it("legacy row (no executorId) with an AMBIGUOUS duplicate address is NOT deferred", async () => {
+        await makeLeader();
+        // 存量行无行身份 + 同址两行 → 地址无法指代一行 → 保守不跳过
+        // （= 本方法既有的失败方向：宁可恢复一次，也不放大容量误判）。
+        const exec = mkExec(20); // 无 executorId
+        setupScan(exec);
+        reportRunning([
+          {
+            id: "row-b",
+            address: "host:3002",
+            status: ExecutorStatus.ONLINE,
+            runningExecutionIds: ["exec-live"],
+          },
+          {
+            id: "row-a",
+            address: "host:3002",
+            status: ExecutorStatus.ONLINE,
+            runningExecutionIds: ["exec-live"],
+          },
+        ]);
+
+        await service.recoverStaleExecutions();
+
+        expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      });
+
+      it("legacy row (no executorId) with a UNIQUE address keeps the original behaviour", async () => {
+        await makeLeader();
+        const exec = mkExec(20); // 无 executorId，单行部署 = 引入前的现实形态
+        setupScan(exec);
+        reportRunning([
+          {
+            id: "row-a",
+            address: "host:3002",
+            status: ExecutorStatus.ONLINE,
+            runningExecutionIds: ["exec-live"],
+          },
+        ]);
+
+        await service.recoverStaleExecutions();
+
+        // 唯一地址命中 → 活性成立 → 不恢复（与引入前逐字节一致）。
+        expect(dataSource.transaction).not.toHaveBeenCalled();
+      });
     });
 
     it("recovers when the executor is ONLINE but the id is not in its report", async () => {

@@ -23,7 +23,7 @@ export function initAdminClients(urls: string[]): void {
   adminUrls = urls.map(normalizeAdminApiBaseUrl).filter(Boolean);
   currentIndex = 0;
   if (adminUrls.length === 0) {
-    throw new Error('No admin URLs configured');
+    throw new Error('未配置任何中台（admin）地址');
   }
   logger.info(`Initialized ${adminUrls.length} admin server(s): ${adminUrls.join(', ')}`);
 }
@@ -213,12 +213,12 @@ async function performRequest<T = any>(
         // 不可用"），让上层心跳/回调日志能显示真实状态码。
         throw error;
       } else {
-        throw new Error(`All ${adminUrls.length} admin servers are unavailable`);
+        throw new Error(`全部 ${adminUrls.length} 个中台（admin）服务器均不可用`);
       }
     }
   }
 
-  throw new Error('Request failed after all retries');
+  throw new Error('重试耗尽后请求仍然失败');
 }
 
 export async function request<T = any>(

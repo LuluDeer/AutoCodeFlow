@@ -222,8 +222,24 @@ export class CollabClient {
     assignmentId: string,
     file: { name: string; mime: string; buf: Buffer },
   ): Promise<{ ok: boolean; error?: string; mediaPath?: string }> {
-    // node:http 无 FormData——手工拼 multipart（字段一个：file）
+    // node:http 无 FormData——手工拼 multipart（字段：address + file）
     const boundary = `----acfagent${Date.now()}${Math.floor(Math.random() * 1e8)}`;
+    // ADR-017 阶段 3（复查补口）：multipart 也必须带 `address` 字段——admin 侧
+    // 用 `@Body() body.address` 做机器面鉴权（`authenticateAgent(body?.address,
+    // auth, body?.deviceFingerprint)`），缺了它 body.address 恒为空 →
+    // authenticate 抛 400「address 必填」→ **媒体上传整片失败**。
+    // 此前两个 multipart 方法都没拼该字段（JSON 路径的 post() 把它们放在 body
+    // 里，multipart 路径是手工拼的，漏了）。
+    const addressField = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="address"',
+        '',
+        address,
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
     const head = Buffer.from(
       [
         `--${boundary}`,
@@ -235,7 +251,7 @@ export class CollabClient {
       'utf8',
     );
     const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
-    const body = Buffer.concat([head, file.buf, tail]);
+    const body = Buffer.concat([addressField, head, file.buf, tail]);
 
     const res = await this.rawRequest(
       'POST',
@@ -286,6 +302,10 @@ export class CollabClient {
     );
     const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
     const body = Buffer.concat([
+      // ADR-017 阶段 3（复查补口）：`address` 字段同样必带——理由见
+      // uploadMedia 的同款注释（admin 的 `@Body() body.address` 是机器面鉴权
+      // 入口，缺失即 400「address 必填」）。
+      field('address', address),
       field('name', `sop-${pkg.sopSlug}`),
       field('version', `${pkg.sopVersion}+agent.${Date.now().toString(36)}`),
       field('type', pkg.runtime),
