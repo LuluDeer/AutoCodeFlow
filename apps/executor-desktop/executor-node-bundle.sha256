@@ -517,4 +517,4 @@
 #     ②（末行字节哈希）需按构建器在 CI 侧重打后回填——见下方「两道闸的分工」。
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0。source-digest 46 个输入文件。
 source-digest: 7ffe4fd85132456b8d682c247147dcd69a6738f6b242f5dfa542f890a1828c2d
-e335aabc5d7e90a521a303aac9b268be0aafa89a82686abb41c35533ee122eee  index.js
+ac6fedff199a3f6ae57f1fed9afb0dc550028f4424e8b1e664febfea080f2f76  index.js
