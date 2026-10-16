@@ -29,7 +29,11 @@ import { AiAnalysisService } from "../ai/ai-analysis.service";
 // 的引用归零（grep notificationService\. / auditService\. 0 命中），属死依赖与
 // 遗留模块耦合。终态事件改由 taskService.publishTerminalEventForDispatch 经
 // 事件总线统一发布。
-import { TaskService, INTERPRETER_UNAVAILABLE_PATTERN } from "./task.service";
+import {
+  TaskService,
+  INTERPRETER_UNAVAILABLE_PATTERN,
+  EXECUTOR_OFFLINE_PATTERN,
+} from "./task.service";
 // LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
 import { AppError } from "../../common/errors/app-error";
 // MUTEX-01：互斥阻塞错误前缀（dispatch 抛出，processor 分类链最前面识别）。
@@ -312,9 +316,12 @@ export class TaskProcessor extends WorkerHost {
                 failureText,
               )
             ? ExecutionFailureReason.TIMEOUT
-            : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,20}?(?:离线|不可用|不可达)/i.test(
-                  failureText,
-                )
+            : // F-01 同款纪律（LANG-ERR-01 复查补口）：EXECUTOR_OFFLINE 的判据
+              // 与 task.service.ts 的 inferFailureReason **共用同一份常量**。
+              // 此前这里是自行抄写的一份，且容差（20）短于中台自己产出的 pinned
+              // 离线文案（间隔 63）→ pinned 离线被归成 SCRIPT_ERROR（e2e 用例 27
+              // 抓到）。详见 EXECUTOR_OFFLINE_PATTERN 的注释。
+              EXECUTOR_OFFLINE_PATTERN.test(failureText)
               ? ExecutionFailureReason.EXECUTOR_OFFLINE
               : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/i.test(
                     failureText,

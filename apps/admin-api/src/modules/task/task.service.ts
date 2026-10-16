@@ -459,6 +459,36 @@ export const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
   ].join("|"),
 );
 
+/**
+ * EXECUTOR_OFFLINE 的判据（**单一事实源**，F-01 同款纪律）。
+ *
+ * 为什么必须共用一份：同一条正则此前在 `task.service.ts::inferFailureReason`
+ * （回调路径）与 `task.processor.ts`（派发失败路径）**各抄了一份**，于是
+ * LANG-ERR-01 复查时同一个缺陷要修两遍——我先只修了 service 侧，CI 的 e2e
+ * 用例 27 仍红（它走的是 processor 侧），正是"两处判据漂移"的现场。
+ *
+ * ## 容差为什么是 120 而不是 20（真实缺陷记录）
+ *
+ * 中文支原为 `执行器[^\n]{0,20}?…`，而中台自己产出的 pinned 离线文案是
+ * `指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`——「执行器→离线」
+ * 间隔实测 **63 字符**（44 + appName 19；executorId 是 36 位 uuid）。20 的容差
+ * **短于自家文案** → 规则不命中 → 归因落到 SCRIPT_ERROR：
+ *   ① 用户在执行详情页看到「脚本错误」而非「执行器离线」，排障方向被带偏；
+ *   ② SCRIPT_ERROR 在**默认重试集**里，白白消耗重试预算。
+ *
+ * 英文支 `executor.*(offline|unavailable)` 用无界 `.*` 故无此问题——中英容差
+ * 不一致本身就是隐患。这里统一取**单行**足够大的界：`[^\n]` 才是真正的精度
+ * 护栏（不跨行 ⇒ 不会把日志里相隔很远的两个词连起来，同上方解释器规则的理由）；
+ * 同一行内同时出现「执行器」与「离线」几乎必然是离线归因。120 可覆盖 appName
+ * 长达 ~56 字符，远超 appName 列宽。
+ *
+ * 回归护栏：`python-multiversion-write-path.spec.ts` 的
+ * 「executor_offline 中文化回归」用例**用错误码表渲染真实文案**再断言分类
+ * （回调路径），另有一条覆盖**派发路径**（task.processor）。
+ */
+export const EXECUTOR_OFFLINE_PATTERN =
+  /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,120}?(?:离线|不可用|不可达)/i;
+
 @Injectable()
 export class TaskService {
   private readonly logger = new Logger(TaskService.name);
@@ -822,31 +852,7 @@ export class TaskService {
     ) {
       return ExecutionFailureReason.TIMEOUT;
     }
-    if (
-      // LANG-ERR-01 复查修正（**容差不得低于中台自己生成的文案长度**）：
-      // 中文支原为 `执行器[^\n]{0,20}?(?:离线|不可用|不可达)`，20 字符的容差
-      // **短于中台自己产出的 pinned 离线文案**——
-      //   `指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`
-      //   执行器→离线 的间隔 = 44 + len(appName)（appName 常 19、executorId 是
-      //   36 位 uuid）实测 **63 字符** → 规则不命中 → 落到 SCRIPT_ERROR。
-      // 后果是**用户可见的归因错误**：执行器离线被执行详情页显示成「脚本错误」
-      // （且 SCRIPT_ERROR 在默认重试集里，白白烧重试预算）。e2e 用例 27 抓到。
-      //
-      // 为何英文支没有这个问题：`executor.*(offline|unavailable)` 用的是**无界**
-      // `.*`。中英两支容差不一致本身就是隐患，故这里取**单行**足够大的界：
-      // `[^\n]` 才是真正的精度护栏（不跨行=不会把日志里相隔很远的两个词连起来，
-      // 见上方 INTERPRETER_UNAVAILABLE_PATTERN 的同款理由）；同一行内同时出现
-      // 「执行器」与「离线」几乎必然是离线归因。120 覆盖 appName 长达 ~56 字符，
-      // 远超 appName 列宽。
-      //
-      // 回归护栏：python-multiversion-write-path.spec.ts 的
-      // 「executor_offline 中文化回归」用例**直接用错误码表渲染真实文案**再断言
-      // 分类，故日后改动码表文案/本正则任一侧都会被立刻抓住（本缺陷正是
-      // 「文案与分类器各自漂移」的形态）。
-      /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,120}?(?:离线|不可用|不可达)/.test(
-        text,
-      )
-    ) {
+    if (EXECUTOR_OFFLINE_PATTERN.test(text)) {
       return ExecutionFailureReason.EXECUTOR_OFFLINE;
     }
     if (

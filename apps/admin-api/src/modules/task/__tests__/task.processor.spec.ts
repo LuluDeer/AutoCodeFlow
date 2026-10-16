@@ -17,6 +17,9 @@ import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { NotificationService } from "../../notification/notification.service";
 import { AuditService } from "../../audit/audit.service";
 import { TaskService } from "../task.service";
+// LANG-ERR-01 复查：分类链的回归用例必须**用错误码表渲染真实文案**，而不是手抄
+// 一条"看起来像"的短串——本缺陷正是被"短中文样例"掩盖的（见下方 LANG-ZH-01 表）。
+import { renderZh } from "../../../common/errors/error-codes";
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
@@ -329,6 +332,18 @@ describe("TaskProcessor", () => {
   //
   // 反证：把下方任一中文支删掉 → 对应用例转红（落 UNKNOWN）。
   describe("LANG-ZH-01: 派发失败分类链中英双语（中文文案同样被正确归类）", () => {
+    /**
+     * LANG-ERR-01 复查（e2e 用例 27 抓到的真实缺陷）：下面的中文 EXECUTOR_OFFLINE
+     * 样例此前**全是短串**（`无可用执行器…`、`目标执行器不可达`——「执行器→离线/不可达」
+     * 间隔 ≤20），恰好落在旧容差 20 之内，于是**掩盖了容差缺陷**。
+     * 而中台自己产出的 pinned 离线文案间隔达 **63 字符**，被判成 SCRIPT_ERROR。
+     *
+     * 故此处**用错误码表渲染真实文案**入表：文案或正则任一侧漂移，本用例立刻红。
+     */
+    const pinnedOfflineZh = renderZh("PINNED_EXECUTOR_OFFLINE", {
+      appName: "executor-python-e2e",
+      executorId: "8a7e160b-80e5-4dff-b88a-b414908fc9c8",
+    });
     const cases: Array<[string, ExecutionFailureReason]> = [
       ["任务执行超时，已强制终止", ExecutionFailureReason.TIMEOUT],
       ["执行已超时", ExecutionFailureReason.TIMEOUT],
@@ -337,6 +352,9 @@ describe("TaskProcessor", () => {
         ExecutionFailureReason.EXECUTOR_OFFLINE,
       ],
       ["目标执行器不可达", ExecutionFailureReason.EXECUTOR_OFFLINE],
+      // ⬆ 以上两条是**短**中文样例（在旧容差 20 内，故当时全绿）
+      // ⬇ 这条是**真实**文案（间隔 63，旧容差下会误判成 script_error）
+      [pinnedOfflineZh, ExecutionFailureReason.EXECUTOR_OFFLINE],
       [
         "git clone 失败：认证被拒绝",
         ExecutionFailureReason.PACKAGE_FETCH_FAILED,
