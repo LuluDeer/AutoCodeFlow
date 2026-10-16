@@ -20,6 +20,14 @@
  *
  * 字节级幂等：JSON.stringify(document, null, 2) + 尾部换行；装饰器元数据
  * 键序稳定，两次运行逐字节一致（CI git diff --exit-code drift 闸依赖此性质）。
+ *
+ * ⚠️ API-I18N（2026-10-16 教训）：本 spec 落盘的是**纯中文**文档，而入库的
+ * `openapi.json` 还带 `x-i18n-en` 英文扩展键（由
+ * `scripts/api-i18n/inject-openapi-en.mjs` 注入）。故 `swagger:export` 必须
+ * **串联注入步骤**——只跑本 spec 会写出一份缺英文的产物，而 CI 的
+ * api-types-drift job 正是「重跑 swagger:export 再 diff」，于是必然报
+ * 「openapi.json 与装饰器元数据漂移」（实测：本轮推送即被该闸拦下）。
+ * 注入是幂等的（已注入的键不重复写），故串联后连跑两次仍逐字节一致。
  */
 import { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
@@ -71,7 +79,6 @@ describe("OpenAPI export (e2e)", () => {
     const json = JSON.stringify(document, null, 2) + "\n";
     const outPath = path.resolve(__dirname, "..", "openapi.json");
     fs.writeFileSync(outPath, json, "utf8");
-
     console.log(
       `[openapi-export] wrote ${outPath} (${Buffer.byteLength(json)} bytes, ${pathCount} paths)`,
     );

@@ -806,8 +806,15 @@ jobs:
         run: |
           node scripts/api-i18n/inject-openapi-en.mjs --selftest
           node scripts/api-i18n/inject-openapi-en.mjs --check
-          # 语言开关对**真实生成物**的覆盖（合成样本证明不了真实文档的形态杂度）
-          cd apps/admin-api && npx --node-options=--experimental-vm-modules jest src/common/i18n --silent
+          # 语言开关对**真实生成物**的覆盖：此前这里跑
+          #   cd apps/admin-api && npx --… jest src/common/i18n --silent
+          # 是**错的**——本 job（check-migrations）刻意不装依赖（纯零依赖脚本守卫，
+          # 秒级），而 jest 需要 apps/admin-api/node_modules 里的 ts-jest，实测 CI 报
+          # `Module ts-jest in the transform option was not found` 直接红。
+          # npx 还会"好心"去装一个 jest@30（无关版本），把失败伪装成配置问题。
+          # 真实生成物的形态覆盖改由 API-I18N 的 --selftest 承担（它内含真实文档
+          # 样本），故此处不再需要 jest；语言开关的**端到端**断言由
+          # admin-api-test（有 npm ci + PG/Redis）里的 swagger-i18n-* spec 覆盖。
       # 发布配置一致性守卫（改名发布 @autocodeflow/cli 时新增）。
       # 本仓发版链路跨四份互不校验的配置：release-please-config.json 的
       # packages / linked-versions，与 release.yml 的 version-guard /

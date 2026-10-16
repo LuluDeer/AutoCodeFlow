@@ -498,5 +498,23 @@
 #   · 桌面端内嵌执行器若漏打，客户端侧报给中台的失败文案仍是英文
 #     （与「平台全中文」的产品要求不符），故按 ADR-005 同 commit 重打。
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0。source-digest 46 个输入文件。
-source-digest: 40760a533b30d13d7186a6916c82eeb331365116e0337991759f4a959bf2326e
+#
+# 2026-10-16（ADR-017 阶段 3：执行器唯一身份提升为注册/心跳定位键，协议 v5 → v6）：
+#   · `callback.ts` / `admin-client.ts` 等回调面新增 `deviceFingerprint` 透传
+#     （回调载荷的**可选**字段，缺省时 admin 逐级回落凭据归属行 → 地址相等，
+#     绝不因缺该字段拒绝合法回调）；`config.ts` 的 `PROTOCOL_VERSION` 5 → 6；
+#     `generated/protocol.schemas.ts` 随 protocol.json 同步重生成（CallbackPayload
+#     新增可选 `deviceFingerprint`）。
+#   · 本批另有 LANG-ZH-01 的收尾中文化（`lib/download.ts` / `routes/health.ts` /
+#     `routes/update-package.ts` / `task-worker.ts` 等用户可见文案）——同属 bundle
+#     输入，故一并计入本次摘要。
+#   · 桌面端内嵌执行器若漏打，桌面端回调不带行身份 → 中台在「共享令牌 + pull 同址
+#     多行」下无法把回调精确归到派发的那一行（ADR-017 阶段 3 的核心目的在客户端
+#     侧缺席）。故按 ADR-005 同 commit 重打回填。
+#   · ⚠️ 本次为**补账**：源改动与产物同 commit 的纪律此前在本批被漏掉，CI 的
+#     desktop-bundle-drift 已如实报红（actual=7ffe4fd8… ≠ expected=40760a53…），
+#     与上文 cc54aa2f / NETOPT-8③ / 2026-09-23 三次漏打同型。①已按实测回填；
+#     ②（末行字节哈希）需按构建器在 CI 侧重打后回填——见下方「两道闸的分工」。
+#   回填环境：本机(Windows) node 24 / ncc 0.45.0。source-digest 46 个输入文件。
+source-digest: 7ffe4fd85132456b8d682c247147dcd69a6738f6b242f5dfa542f890a1828c2d
 e335aabc5d7e90a521a303aac9b268be0aafa89a82686abb41c35533ee122eee  index.js
