@@ -1452,6 +1452,113 @@
         }
       }
     },
+    "/tasks/executions/export": {
+      "get": {
+        "description": "导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。",
+        "operationId": "TaskController_exportExecutions",
+        "parameters": [
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "按执行状态过滤（同列表端点）",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by execution status (same as the list endpoint)"
+          },
+          {
+            "name": "taskId",
+            "required": false,
+            "in": "query",
+            "description": "按任务 id 过滤",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by task id"
+          },
+          {
+            "name": "taskName",
+            "required": false,
+            "in": "query",
+            "description": "按任务名模糊搜索（命中执行行自身或 tasks.name）",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Fuzzy search by task name (matches the execution row itself or tasks.name)"
+          },
+          {
+            "name": "executorAddress",
+            "required": false,
+            "in": "query",
+            "description": "按执行器地址模糊过滤",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Fuzzy filter by executor address"
+          },
+          {
+            "name": "startTime",
+            "required": false,
+            "in": "query",
+            "description": "仅返回在该时刻及之后创建的执行（ISO 8601）",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Return only executions created at or after this instant (ISO 8601)"
+          },
+          {
+            "name": "endTime",
+            "required": false,
+            "in": "query",
+            "description": "仅返回在该时刻及之前创建的执行（ISO 8601）",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Return only executions created at or before this instant (ISO 8601)"
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "本次导出的行数上限（安全阀，不是分页）。可调小；超过硬顶（50000）按硬顶处理，达上限时 CSV 末尾追加截断注释行。",
+            "schema": {
+              "minimum": 1,
+              "maximum": 50000,
+              "default": 50000,
+              "type": "number"
+            },
+            "x-i18n-en": "Row cap for this export (a safety valve, not pagination). May be lowered; values above the hard cap (50000) are clamped, and reaching the cap appends a truncation comment line to the end of the CSV."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV 文本导出（Res 直传，流动写出，最多 50 000 行）",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "x-i18n-en": "CSV text export (written directly to the response as a stream, at most 50,000 rows)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "导出执行记录为 CSV（流式，仅管理员）",
+        "tags": [
+          "Task Management"
+        ],
+        "x-i18n-en": {
+          "summary": "Export execution records as CSV (streaming, admin only)",
+          "description": "Export execution records as a CSV file (UTF-8, RFC 4180). Accepts exactly the same filters as GET /tasks/executions/all (status/taskId/taskName/executorAddress/startTime/endTime) — both share a single filter assembly. **Streaming output**: pages through (createdAt DESC, id DESC) and writes chunk by chunk instead of materialising the whole result set in memory. When the row cap is reached (default hard cap 50000, can be lowered via limit) a `# truncated at N rows` comment line is appended so truncation is visible. Cells are guarded against CSV formula injection (values starting with = + - @ tab or carriage return get a leading apostrophe). Columns: id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage."
+        }
+      }
+    },
     "/tasks/executions/{execId}/logs": {
       "get": {
         "description": "GET /tasks/:id/executions/:execId/logs 的兼容别名——无需知道任务 ID，直接按执行自身的 ID 定位。acf-cli 与 mcp-server 使用它。",
@@ -7157,6 +7264,7 @@
     },
     "/audit": {
       "get": {
+        "description": "分页查询审计日志。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（action/resource/resourceId/username/startTime/endTime/userId/result）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
         "operationId": "AuditController_findAll",
         "parameters": [
           {
@@ -7300,6 +7408,16 @@
               "type": "string"
             },
             "x-i18n-en": "Return only logs created at or before this instant (ISO 8601)"
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有的 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（action/resource/resourceId/username/startTime/endTime/userId/result）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Opaque keyset cursor (the data.nextCursor from the previous page). When omitted, the existing OFFSET pagination is used and the response is exactly as before; when supplied, the keyset branch is used and nextCursor is appended to the response. To enter keyset mode for the first time, pass an empty value (?cursor=). Combinable with every filter (action/resource/resourceId/username/startTime/endTime/userId/result) — they are ANDed with the cursor predicate. An invalid cursor returns 400 (VALIDATION_FAILED) and never silently falls back to the first page."
           }
         ],
         "responses": {
@@ -7324,7 +7442,8 @@
           "audit"
         ],
         "x-i18n-en": {
-          "summary": "Query audit logs with paging (admin only)"
+          "summary": "Query audit logs with paging (admin only)",
+          "description": "Paginated audit log query. PLAN-BACKEND-ARCHITECTURE §2.1 (additive transition, same shape as GET /tasks, GET /tasks/:id/executions and GET /tasks/executions/all): adds an optional `cursor` parameter — when omitted the existing OFFSET pagination is used and the response is **byte-for-byte identical** to before (no nextCursor key); when supplied with the previous page data.nextCursor the keyset branch is used ((createdAt,id) tuple cursor, row-value comparison, so deep pagination no longer slows down with OFFSET) and `nextCursor` is **appended** to the response (null = last page reached). This endpoint always orders by createdAt DESC, id DESC, so the cursor can be freely combined with every filter (action/resource/resourceId/username/startTime/endTime/userId/result) — they are ANDed with the cursor predicate. An invalid cursor returns 400 (VALIDATION_FAILED) and never silently falls back to the first page. To enter keyset mode for the first time, pass an empty value `?cursor=`."
         }
       }
     },
@@ -7474,6 +7593,16 @@
               "type": "string"
             },
             "x-i18n-en": "Return only logs created at or before this instant (ISO 8601)"
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有的 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（action/resource/resourceId/username/startTime/endTime/userId/result）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Opaque keyset cursor (the data.nextCursor from the previous page). When omitted, the existing OFFSET pagination is used and the response is exactly as before; when supplied, the keyset branch is used and nextCursor is appended to the response. To enter keyset mode for the first time, pass an empty value (?cursor=). Combinable with every filter (action/resource/resourceId/username/startTime/endTime/userId/result) — they are ANDed with the cursor predicate. An invalid cursor returns 400 (VALIDATION_FAILED) and never silently falls back to the first page."
           }
         ],
         "responses": {
@@ -9154,6 +9283,7 @@
         }
       },
       "get": {
+        "description": "获取执行器包列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /audit、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较），并在响应中**追加** `nextCursor`（null = 已到末页）。响应形状保持裸 {items,total} 不变（不换成 paginate 信封——items 被 admin-web 包表与安装向导消费）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（name/type/status/platform）自由组合。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
         "operationId": "ExecutorPackageController_findAll",
         "parameters": [
           {
@@ -9213,6 +9343,16 @@
               "type": "string"
             },
             "x-i18n-en": "Filter by runtime (python/node/shell)"
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "不透明的 keyset 游标（上一页响应的 nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（name/type/status/platform）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Opaque keyset cursor (the nextCursor from the previous page). When omitted, the existing OFFSET pagination is used and the response is exactly as before; when supplied, the keyset branch is used and nextCursor is appended to the response. To enter keyset mode for the first time, pass an empty value (?cursor=). Combinable with every filter (name/type/status/platform) — they are ANDed with the cursor predicate. An invalid cursor returns 400 (VALIDATION_FAILED) and never silently falls back to the first page."
           }
         ],
         "responses": {
@@ -9238,7 +9378,8 @@
           "Executor Package Management"
         ],
         "x-i18n-en": {
-          "summary": "Get executor package list"
+          "summary": "Get executor package list",
+          "description": "List executor packages. PLAN-BACKEND-ARCHITECTURE §2.1 (additive transition, same shape as GET /audit and GET /tasks/executions/all): adds an optional `cursor` parameter — when omitted the existing OFFSET pagination is used and the response is **byte-for-byte identical** to before (no nextCursor key); when supplied with the previous page nextCursor the keyset branch is used ((createdAt,id) tuple cursor, row-value comparison) and `nextCursor` is **appended** to the response (null = last page reached). The response shape stays the bare {items,total} (deliberately NOT switched to the paginate envelope — items is consumed by the admin-web package table and the install wizard). This endpoint always orders by createdAt DESC, id DESC, so the cursor can be freely combined with every filter (name/type/status/platform). An invalid cursor returns 400 (VALIDATION_FAILED) and never silently falls back to the first page. To enter keyset mode for the first time, pass an empty value `?cursor=`."
         }
       }
     },
@@ -18559,6 +18700,12 @@
           },
           "total": {
             "type": "number"
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标绑定本端点固定排序（createdAt DESC, id DESC）。",
+            "x-i18n-en": "Next-page cursor for keyset pagination; null = no more pages. Present only when the request carries the cursor parameter (keyset branch); requests without cursor use the OFFSET branch and the key is absent from the response. The cursor is bound to this endpoint's fixed ordering (createdAt DESC, id DESC)."
           }
         },
         "required": [
@@ -20194,6 +20341,12 @@
             "type": "number",
             "description": "匹配的包总数（分页前）",
             "x-i18n-en": "Total matching packages (before paging)"
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。",
+            "x-i18n-en": "Next-page cursor for keyset pagination; null = no more pages. Present only when the request carries the cursor parameter (keyset branch); requests without cursor use the OFFSET branch and the key is absent from the response."
           }
         },
         "required": [

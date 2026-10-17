@@ -52,6 +52,35 @@ export interface KeysetCursor {
 }
 
 /**
+ * 整数主键表的游标载荷（`audit_logs.id` 是 `integer`，**不是** uuid）。
+ *
+ * ## 为什么必须单独一个类型，而不是把 `KeysetCursor.id` 放宽成 `string | number`
+ *
+ * 判定"游标里的 id 长什么样"**只在解码时能知道**——解码器需要知道目标表的主键
+ * 类型才能决定用哪条判据（uuid 形状 vs 十进制正整数）。若把两者合并成一个
+ * 宽松的 `id: string` 并在服务层再判一次，就会出现两份互不相同的合法性判据，
+ * 正是本模块头注要消灭的漂移源。
+ *
+ * 更关键的是**放宽度量**：`audit_logs.id` 若接受任意字符串，`isUuidShape` 那层
+ * 对注入类载荷的拦截就完全不存在了。整型判据（`/^[1-9][0-9]*$/`）比 uuid 形状
+ * **更窄**——它只接受十进制非零正整数，连 `-1` / `0` / `01` / `1e3` / `1.0`
+ * 都拒绝（这些要么不是合法主键，要么在 PG 里会与 `1` 混为同一行，制造"同一
+ * 行两个游标"的歧义）。
+ *
+ * ## 为什么载荷里 id 仍存**字符串**
+ *
+ * 与 `KeysetCursor` 同因：`number` 在超过 2^53 时会静默丢精度（`audit_logs` 是
+ * 序列主键，理论上限 2^63 远超 JS 安全整数）。载荷保持字符串，绑定 SQL 时由
+ * PG 自己做数值转换——DB 值比 DB 值，与时间分量同一套零精度损失纪律。
+ */
+export interface NumericKeysetCursor {
+  /** ISO 8601 时间串（解码后已校验为合法时间）。 */
+  createdAt: string;
+  /** 行主键的十进制字符串形态（已校验为正整数；绑定时由 PG 转数值）。 */
+  id: string;
+}
+
+/**
  * 语义化别名：keyset 元组本身与表无关（`(createdAt, id)`），本模块只有**一份**
  * 实现。`ExecutionCursor` 是 `GET /tasks/:id/executions` 引入时的历史命名，保留
  * 为别名以免既有调用点改名；新代码用 `KeysetCursor`。两者**同一个类型**——不是
@@ -197,6 +226,23 @@ export function encodeExecutionCursor(
  * （行值比较），不能因为"tasks 行比执行行少、不太可能同刻"就退化成毫秒近似。
  */
 export function decodeKeysetCursor(raw: unknown): KeysetCursor {
+  const { iso, id } = splitCursorPayload(raw);
+  if (!isUuidShape(id)) invalidKeysetCursor();
+  return { createdAt: iso, id };
+}
+
+/**
+ * 把任意输入解成 `(已校验的 ISO 时间, id 原串)` 两段；**任何**形态问题一律 400。
+ *
+ * 这是 `decodeKeysetCursor` / `decodeNumericKeysetCursor` 的**唯一**公共前半段，
+ * 两者只在"id 段用什么判据"上分叉（uuid 形状 vs 十进制正整数）。抽出它而不是
+ * 让两个解码器各抄一遍，理由与 `applyExtraFilters` 同款：**同一份判据只能有一个
+ * 副本**，否则"时间校验放宽了一处忘另一处"会让两个端点对同一串游标给出相反结论。
+ *
+ * 时间那段的校验强度与本模块历史实现**逐条一致**（含日历回读、不含
+ * `toISOString()` 比对），详见下方行内注释。
+ */
+function splitCursorPayload(raw: unknown): { iso: string; id: string } {
   const invalid = (): never => invalidKeysetCursor();
 
   if (typeof raw !== "string") invalid();
@@ -213,7 +259,7 @@ export function decodeKeysetCursor(raw: unknown): KeysetCursor {
     return invalid();
   }
 
-  // 解出来必须是「ISO 时间 | uuid」两段，不能多也不能少。
+  // 解出来必须是「ISO 时间 | id」两段，不能多也不能少。
   const parts = decoded.split(SEGMENT_SEPARATOR);
   if (parts.length !== 2) invalid();
   const [iso, id] = parts;
@@ -241,9 +287,60 @@ export function decodeKeysetCursor(raw: unknown): KeysetCursor {
     invalid();
   }
 
-  if (!isUuidShape(id)) invalid();
+  return { iso, id };
+}
 
+/**
+ * 十进制正整数的严格判据（整数主键表的游标 id 段）。
+ *
+ * **刻意比 `Number.isInteger(Number(s))` 严得多**，因为这个判断直接决定
+ * "游标是否被接受"，宽一丝就会放进语义歧义：
+ *
+ *   · `01` / `001` —— 拒。它们与 `1` 是**同一行**，但编码不同 ⇒ 同一行有两个
+ *     游标串，客户端的"去重/比较游标"逻辑会失效，且无法判断哪个是伪造的。
+ *   · `+1` / `-1` / `1e3` / `1.0` / ` 1` —— 拒。PG 会把它们**全部**解析成合法
+ *     数值（`'1e3'::bigint` = 1000），于是游标能"恰好"落到某一行上并静默给出
+ *     一个并非调用方所想的切片。拒绝 = 明确的 400。
+ *   · `0` —— 拒。序列列不产生 0（`audit_logs_id_seq` 从 1 开始），出现 0 只
+ *     可能是伪造或别表主键误用。
+ *   · 超过 2^53 —— **接受**（载荷是字符串，不做 JS 数值转换）；PG 自己按
+ *     `bigint` 解析，故不丢精度。
+ */
+const DECIMAL_POSITIVE_INT_RE = /^[1-9][0-9]*$/;
+
+/**
+ * 整数主键表的 keyset 游标解码（当前唯一使用方：`GET /audit`）。
+ *
+ * **为什么不是第二个平级实现**：前半段（base64url / 段数 / ISO 时间 + 日历回读）
+ * 与 `decodeKeysetCursor` 共用 `splitCursorPayload`，本函数只替换 id 段判据。
+ * 于是"时间校验"永远只有一份代码，两个端点对同一串时间分量给出完全相同的
+ * 接受/拒绝结论。
+ *
+ * 精度/时区结论**与 `decodeKeysetCursor` 完全一致**（载荷里的时间串不参与任何
+ * 比较运算，只作排障可读；绑定层只交 id，时间由子查询从库里取原值）——已实测
+ * `audit_logs."createdAt"` 是 `timestamp without time zone, datetime_precision = 6`，
+ * 与 `task_executions."createdAt"` 逐字段相同，故必须用同一套行值比较谓词。
+ */
+export function decodeNumericKeysetCursor(raw: unknown): NumericKeysetCursor {
+  const { iso, id } = splitCursorPayload(raw);
+  if (!DECIMAL_POSITIVE_INT_RE.test(id)) invalidKeysetCursor();
   return { createdAt: iso, id };
+}
+
+/**
+ * 整数主键表的编码（`<ISO>|<十进制 id>` 再 base64url）。
+ *
+ * 与 `encodeKeysetCursor` **共用同一套字节布局**，只是 id 的类型是
+ * `string | number`（实体读出来是 `number`，raw 查询读出来可能是字符串）。
+ * 编码结果与 `encodeKeysetCursor` 对同一对值**逐字节相同**——这不是巧合，是
+ * 刻意：游标格式必须与表无关，否则"同一个 base64 串在哪个端点都合法"这条
+ * 直觉会被打破。
+ */
+export function encodeNumericKeysetCursor(
+  createdAt: Date | string,
+  id: string | number,
+): string {
+  return encodeKeysetCursor(createdAt, String(id));
 }
 
 /**
@@ -379,6 +476,30 @@ export function nextExecutionCursor(
   rows: ReadonlyArray<{ createdAt?: Date | string | null; id?: string | null }>,
 ): string | null {
   return nextKeysetCursor(rows);
+}
+
+/**
+ * 整数主键表的"下一页游标"：取本页最后一行的 `(createdAt, id)`。
+ *
+ * 与 `nextKeysetCursor` **契约逐条相同**（空页 → null、缺列 → null 且**不抛错**），
+ * 唯一差别是 id 可以是 `number` 或 `string`——`audit_logs.id` 是序列整型，实体
+ * 读出来是 `number`。
+ *
+ * 为什么另起一个而不是把 `nextKeysetCursor` 的签名放宽成 `id?: string | number`：
+ * 放宽会让 uuid 表也接受数字 id，从而把"编出一个永远解不回来的游标"这种服务端
+ * bug 从编译期挪到运行期（`decodeKeysetCursor` 会拒掉它，端点表现为"翻到某页就
+ * 400"）。类型上分开，错误就落在写字面量的那一刻。
+ */
+export function nextNumericKeysetCursor<
+  T extends { createdAt?: Date | string | null; id?: string | number | null },
+>(rows: ReadonlyArray<T>): string | null {
+  if (!rows || rows.length === 0) return null;
+  const last = rows[rows.length - 1];
+  const { createdAt, id } = last ?? {};
+  // 行缺关键列 → 不编游标（返回 null）。**不抛错**：这是服务端数据完整性问题的
+  // 信号，不该伪装成客户端的 400（与 nextKeysetCursor 同理由）。
+  if (createdAt == null || id == null) return null;
+  return encodeNumericKeysetCursor(createdAt, id);
 }
 
 /**

@@ -1,5 +1,13 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { IsISO8601, IsIn, IsOptional, IsString } from "class-validator";
+import { Type } from "class-transformer";
+import {
+  IsISO8601,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Min,
+} from "class-validator";
 import { PaginationDto } from "../../../common/dto/pagination.dto";
 import { LOG_LEVEL_VALUES } from "../log-level.util";
 
@@ -108,6 +116,97 @@ export class AllExecutionsQueryDto extends PaginationDto {
   @IsOptional()
   @IsString()
   cursor?: string;
+}
+
+/**
+ * `GET /tasks/executions/export` 的查询 DTO——**筛选条件 + 上限**。
+ *
+ * ## 为什么不直接复用 `AllExecutionsQueryDto`
+ *
+ * 复用的诱惑在于"过滤器一字不差"，但那正是本 DTO 必须独立的理由：导出端点与
+ * 列表端点共享的是**过滤器**（由 service 侧唯一真值源
+ * `applyAllExecutionsFilters` 保证），不共享的是**分页语义**。`PaginationDto`
+ * 带着 `page` / `pageSize` / `name` / `status` / `runtime`（后者三个是任务域
+ * 遗留的混装字段，见 pagination.dto.ts 头注 API-07），把它们挂到导出端点上会
+ * 造成两处静默误导：
+ *
+ *   ① `page=3` 对导出**毫无意义**（导出恒从最新一行开始，全量流式），但契约上
+ *      它存在且合法 → 调用方合理地以为"能分段导出第 3 页"，拿到的却是从头开始
+ *      的全量，且没有任何信号说明它被忽略了（这正是 API-07 记录过的那类
+ *      "静默忽略"缺陷，只是这次发生在导出面）。
+ *   ② `pageSize` 与导出自己的 `limit` 是两套完全不同的量纲（一页 20 行 vs
+ *      最多 5 万行），都挂上去必然有人传错，而传错的表现是"导出少了几万行"。
+ *
+ * 故这里只声明**导出真正消费**的字段：六个过滤器（与列表端点同源）+ 一个
+ * `limit`。白名单（`forbidNonWhitelisted`）因此会把 `?page=3` 变成 400——
+ * 对导出端点这是**正确**反应：调用方立刻知道"分页参数在这里不适用"，
+ * 而不是拿到一份看起来正确、实际语义错位的文件。
+ *
+ * ## `limit` 为什么是"请求上限"而不是"分页大小"
+ *
+ * 它是安全阀而非分页：导出必须是一次连续的快照（分段导出会因期间新增/删除
+ * 行而重叠或漏行——导出没有游标，无法续传）。缺省与硬顶都由 service 侧的
+ * `EXECUTION_EXPORT_ROW_CAP` 决定，此处只允许**调小**（见 controller 注释：
+ * 大于硬顶一律归一到硬顶，不报错）。
+ */
+export class ExportExecutionsQueryDto {
+  @ApiPropertyOptional({ description: "按执行状态过滤" })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({ description: "按任务 id 过滤" })
+  @IsOptional()
+  @IsString()
+  taskId?: string;
+
+  @ApiPropertyOptional({ description: "按任务名模糊搜索" })
+  @IsOptional()
+  @IsString()
+  taskName?: string;
+
+  @ApiPropertyOptional({ description: "按执行器地址模糊过滤" })
+  @IsOptional()
+  @IsString()
+  executorAddress?: string;
+
+  /** ISO 8601 timestamp; 与列表端点同为 `createdAt` 范围（不是 startTime 列）。 */
+  @ApiPropertyOptional({
+    description: "仅返回在该时刻及之后创建的执行（ISO 8601）",
+  })
+  @IsOptional()
+  @IsISO8601()
+  startTime?: string;
+
+  /** ISO 8601 timestamp; 与列表端点同为 `createdAt` 范围（不是 endTime 列）。 */
+  @ApiPropertyOptional({
+    description: "仅返回在该时刻及之前创建的执行（ISO 8601）",
+  })
+  @IsOptional()
+  @IsISO8601()
+  endTime?: string;
+
+  /**
+   * 本次导出的行数上限（安全阀，不是分页）。
+   *
+   * 只允许**调小**：超过服务端硬顶（50000）时归一到硬顶而不是报错——运维在
+   * 事故中想要"尽快拿到最近 100 万条里的前若干万条"，此时回一个 400 是最糟
+   * 的响应（他会以为导出坏了）。归一 + 文件末尾的截断注释行，把"你拿到的不是
+   * 全量"如实写在文件里。
+   */
+  @ApiPropertyOptional({
+    type: Number,
+    description:
+      "本次导出的行数上限（安全阀，不是分页）。可调小；超过服务端硬顶（50000）时按硬顶处理，并在 CSV 末尾追加 `# truncated at N rows` 注释行。",
+    minimum: 1,
+    maximum: 50_000,
+    default: 50_000,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limit?: number;
 }
 
 /**

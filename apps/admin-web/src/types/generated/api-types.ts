@@ -473,6 +473,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tasks/executions/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 导出执行记录为 CSV（流式，仅管理员）
+         * @description 导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。
+         */
+        get: operations["TaskController_exportExecutions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tasks/executions/{execId}/logs": {
         parameters: {
             query?: never;
@@ -2492,7 +2512,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 分页查询审计日志（仅管理员） */
+        /**
+         * 分页查询审计日志（仅管理员）
+         * @description 分页查询审计日志。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（action/resource/resourceId/username/startTime/endTime/userId/result）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
+         */
         get: operations["AuditController_findAll"];
         put?: never;
         post?: never;
@@ -3090,7 +3113,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 获取执行器包列表 */
+        /**
+         * 获取执行器包列表
+         * @description 获取执行器包列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /audit、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较），并在响应中**追加** `nextCursor`（null = 已到末页）。响应形状保持裸 {items,total} 不变（不换成 paginate 信封——items 被 admin-web 包表与安装向导消费）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（name/type/status/platform）自由组合。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
+         */
         get: operations["ExecutorPackageController_findAll"];
         put?: never;
         /** 上传执行器包 */
@@ -6325,6 +6351,8 @@ export interface components {
         PaginatedAuditLogsDto: {
             data: components["schemas"]["AuditLogDto"][];
             total: number;
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标绑定本端点固定排序（createdAt DESC, id DESC）。 */
+            nextCursor?: string | null;
         };
         PublicHealthDto: {
             /** @enum {string} */
@@ -6910,6 +6938,8 @@ export interface components {
             items: components["schemas"]["ExecutorPackageResponseDto"][];
             /** @description 匹配的包总数（分页前） */
             total: number;
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。 */
+            nextCursor?: string | null;
         };
         UpdateExecutorPackageDto: {
             /** @description 包名称 */
@@ -8153,6 +8183,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedExecutionListDto"];
+                };
+            };
+        };
+    };
+    TaskController_exportExecutions: {
+        parameters: {
+            query?: {
+                /** @description 按执行状态过滤（同列表端点） */
+                status?: string;
+                /** @description 按任务 id 过滤 */
+                taskId?: string;
+                /** @description 按任务名模糊搜索（命中执行行自身或 tasks.name） */
+                taskName?: string;
+                /** @description 按执行器地址模糊过滤 */
+                executorAddress?: string;
+                /** @description 仅返回在该时刻及之后创建的执行（ISO 8601） */
+                startTime?: string;
+                /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
+                endTime?: string;
+                /** @description 本次导出的行数上限（安全阀，不是分页）。可调小；超过硬顶（50000）按硬顶处理，达上限时 CSV 末尾追加截断注释行。 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV 文本导出（Res 直传，流动写出，最多 50 000 行） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
                 };
             };
         };
@@ -11306,6 +11371,8 @@ export interface operations {
                 startTime?: string;
                 /** @description 仅返回在该时刻及之前创建的日志（ISO 8601） */
                 endTime?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有的 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（action/resource/resourceId/username/startTime/endTime/userId/result）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -11350,6 +11417,8 @@ export interface operations {
                 startTime?: string;
                 /** @description 仅返回在该时刻及之前创建的日志（ISO 8601） */
                 endTime?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有的 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（action/resource/resourceId/username/startTime/endTime/userId/result）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -12199,6 +12268,8 @@ export interface operations {
                 status?: string;
                 /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（name/type/status/platform）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
             };
             header?: never;
             path?: never;

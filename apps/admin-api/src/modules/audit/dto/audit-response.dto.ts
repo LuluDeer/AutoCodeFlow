@@ -1,4 +1,4 @@
-import { ApiProperty } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 /**
  * ARCH-23 / N-12（2026-10-07 A1 批）：审计域响应契约。
@@ -47,11 +47,47 @@ export class AuditLogDto {
   createdAt: Date;
 }
 
-/** GET /audit —— 裸 {data,total}。 */
+/**
+ * GET /audit —— 裸 `{data,total}`（**不是** paginate() 的双键信封）。
+ *
+ * PLAN-BACKEND-ARCHITECTURE §2.1（游标分页·加性过渡）：本类**只新增**了可选的
+ * `nextCursor`，既有两个字段的类型与名字一个都没动—— `{data,total}` 被
+ * admin-web 的审计页、`packages/acf-cli` 的 `audit list`（读 `data.data` /
+ * `data.total`）消费。改信封形状是破坏性的，故本轮只做加性扩展。
+ *
+ * `nextCursor` 的**出现条件**（别按"恒下发"理解，与 task 域三个端点逐字一致）：
+ *   · 请求不带 `cursor` → 走 OFFSET 分支，该键**根本不出现**（响应与引入游标
+ *     之前逐字节一致）。故它不可能是必填。
+ *   · 请求带 `cursor` → 走 keyset 分支，该键必然出现：字符串 = 下一页游标，
+ *     `null` = 已到末页。调用方据"键是否存在"判断服务端是否在 keyset 模式，
+ *     据"是否 null"判断是否翻完。
+ *
+ * 之所以是 `@ApiPropertyOptional` 而不是 `@ApiProperty({ nullable: true })`：
+ * 契约必须能表达"**键可能不存在**"，否则与 OFFSET 分支的真实响应不符——而
+ * OFFSET 分支是当前全部消费方唯一在用的路径。
+ *
+ * 注意 `total`：keyset 分支下**仍然是真实总数**（复用同条件的 COUNT，见
+ * audit.service 的 `findAllByKeyset`），不返回 -1/近似值——审计页按 `total`
+ * 渲染"共 N 条"，撒谎会让管理员看到错的分页总数。
+ */
 export class PaginatedAuditLogsDto {
   @ApiProperty({ type: [AuditLogDto] })
   data: AuditLogDto[];
 
   @ApiProperty()
   total: number;
+
+  /**
+   * 仅当请求带 `cursor` 时出现（keyset 分支）：`null` = 已到末页。
+   *
+   * 与 `PaginatedExecutionListDto#nextCursor` 同款契约；游标里的 id 是本表
+   * `integer` 主键的十进制字符串形态（`audit_logs.id` 不是 uuid）。
+   */
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      "keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标绑定本端点固定排序（createdAt DESC, id DESC）。",
+  })
+  nextCursor?: string | null;
 }

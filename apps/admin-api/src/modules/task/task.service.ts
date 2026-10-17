@@ -104,6 +104,11 @@ import {
   executionListSelectMap,
   executionListSelectColumnsAliased,
 } from "./execution-list-projection";
+// CSV 导出的列定义（表头 + 行渲染）与公共安全原语（公式注入防护 / RFC 4180 /
+// 有痕截断注释行）。抽到独立模块是为了让"防护"与"业务列"分层：前者是跨端点
+// 复用的判据，后者是本域自己的取舍。
+import { executionCsvHeaderRow, executionToCsvRow } from "./execution-csv";
+import { csvTruncationMarker } from "../../common/utils/csv-export.util";
 // §2.1 游标分页：keyset 游标的编解码（纯函数，非法输入一律 400 VALIDATION_FAILED）。
 // 推广到 GET /tasks 后**只有一份实现**——`*KeysetCursor*` 是通用名，
 // `*ExecutionCursor*` 是 executions 端点沿用下来的别名（转调，不是副本）。
@@ -273,6 +278,25 @@ export { MAX_DEPENDENCY_EXECUTION_SCAN };
 // DTO → service 模块环）；此处 re-export 维持既有 import 面（task-webhook 等）。
 import { TASK_PARAMS_MAX_BYTES } from "./params-size.util";
 export { TASK_PARAMS_MAX_BYTES };
+
+/**
+ * `GET /tasks/executions/export` 的行上限（安全阀）。
+ *
+ * 取 5 万而不是对齐审计导出的 1 万：执行记录是**按天增长、按 90 天硬删**的
+ * 运维事实表，1 万行在中等规模的实例上连三天都不到，导出会变成"永远被截断"
+ * ——一个永远触发截断提示的能力等于没有能力。5 万行 × 平均 300 字节 ≈ 15 MB，
+ * 对一个手动触发的 ADMIN 导出是可接受的量级；真需要更多请按 `startTime`/
+ * `endTime` 分段导出（那是有意义的切分，OFFSET 式的"第 N 页"不是）。
+ */
+export const EXECUTION_EXPORT_ROW_CAP = 50_000;
+
+/**
+ * 导出时的单次 DB 取数页大小。
+ *
+ * 与行上限解耦：它是"每次往返拿多少行进内存"的量，不是"导出多少行"。1000
+ * 行足以摊薄往返开销，又不会让单页文本大到撑爆背压窗口（约 300 KB/页）。
+ */
+const EXECUTION_CSV_PAGE_SIZE = 1_000;
 
 export const UPSTREAM_SENTINEL = "$upstream";
 
@@ -2805,6 +2829,127 @@ export class TaskService {
 
     const items = await this.backfillExecutionTaskNames(list);
     return paginate(items, total, p.page, p.pageSize);
+  }
+
+  /**
+   * 导出执行记录为 CSV——**真正的流式**写入（`GET /tasks/executions/export`）。
+   *
+   * ## 为什么入口在 service 而不是 controller
+   *
+   * 导出要做三件互相依赖的事：按固定排序**分页拉取**（不能一次 `find` 全量）、
+   * 逐行做 CSV 编码、以及把行写进响应并处理**背压**。前两件与 HTTP 无关，第三件
+   * 需要一个"写一段文本"的能力——故这里只依赖一个 `write` 回调，由 controller
+   * 把它绑到 `res.write` + `drain`。这样背压逻辑可被单测直接验证（见
+   * `__tests__/executions-export.spec.ts` 的 drain 用例），不必起真 HTTP。
+   *
+   * ## 为什么必须流式（而不是"查全量 → 拼一个大字符串 → res.send"）
+   *
+   * 表的上限不是理由（有 5 万行硬顶，内存可控），**行宽**才是：单条
+   * `errorMessage` 允许 512_000 字符，5 万行理论上是 25 GB；即便实际分布温和，
+   * 拼接也意味着"整份 CSV 在内存里同时存在一份字符串 + 一份 Buffer"，
+   * 且首字节要等到最后一个数据库页返回才发出（反代 60s 空闲断流先例）。
+   * 流式把峰值内存压到"一页行 + 一页文本"，且第一个字节在第一次 DB 往返后
+   * 就出去。
+   *
+   * ## 背压（这是"流式"与"往 res 里循环 write"的分水岭）
+   *
+   * `res.write()` 返回 false 表示内核发送缓冲已满，继续写会把整份结果堆在
+   * Node 的进程内 buffer 里——OOM 的成因不是"结果太大"而是"没人等 drain"。
+   * 故每次写完检查返回值，false 时 `await once(drain)`。同时监听 socket 的
+   * `close`：客户端中途取消下载时立刻停止拉库，不把剩下的页空跑完。
+   *
+   * ## 与列表端点的过滤同源
+   *
+   * 六个过滤器**全部**经 `applyAllExecutionsFilters` 下发——那是
+   * `GET /tasks/executions/all` 与 `GET /tasks/:id/executions` 的唯一真值源。
+   * 本方法**不复制**任何 where 构造（复制一份是"导出与列表筛选结果不一致"的
+   * 唯一成因，且这种不一致不会有任何报错）。
+   *
+   * ## 排序与列表一致（createdAt DESC, id DESC）
+   *
+   * 同一份 (createdAt, id) 全序键：导出文件的行序与列表页**逐行对应**，运维
+   * 拿 CSV 与页面比对时不会看到"同样的筛选，顺序却不同"。分页走
+   * `(createdAt, id)` **行值比较**的 keyset——不用 OFFSET，因为导出要跨几百页，
+   * 深 OFFSET 随页数线性变慢，且分页期间的并发写入会让 OFFSET 漏行/重行
+   * （导出比列表更需要"不漏不重"：它是要被归档的一次快照）。行值比较的
+   * 微秒精度论证见 `getExecutionsByKeyset` 头注。
+   */
+  async streamExecutionsCsv(
+    filters: {
+      status?: string;
+      taskId?: string;
+      taskName?: string;
+      executorAddress?: string;
+      startTime?: string;
+      endTime?: string;
+    },
+    write: (chunk: string) => Promise<void>,
+    options: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<{ rows: number; truncated: boolean }> {
+    const cap = EXECUTION_EXPORT_ROW_CAP;
+    const requested = options.limit;
+    // 只允许调小（契约见 ExportExecutionsQueryDto.limit）：>硬顶一律归一，
+    // 不报错——事故中回 400 比给一份"截断但有痕"的文件糟得多。
+    const limit =
+      typeof requested === "number" &&
+      Number.isFinite(requested) &&
+      requested > 0
+        ? Math.min(Math.floor(requested), cap)
+        : cap;
+
+    // 表头自带换行：数据页每块都以 `\n` 结尾，表头也必须如此，否则第一条
+    // 数据行会与表头拼成同一行（一个只在"恰好 0 行"时才不出现的静默错位）。
+    await write(`${executionCsvHeaderRow()}\n`);
+
+    let written = 0;
+    // 上一页最后一行的 (createdAt, id)：下一页的键集下界（无 OFFSET）。
+    let lastCursor: { createdAt: Date; id: string } | null = null;
+
+    for (;;) {
+      if (options.signal?.aborted) break;
+      // 每页取 min(剩余额度, PAGE) —— 额度在循环里收缩，最后一页不必多取。
+      const pageSize = Math.min(EXECUTION_CSV_PAGE_SIZE, limit - written);
+      if (pageSize <= 0) break;
+
+      const qb = this.execRepo
+        .createQueryBuilder("e")
+        .select(executionListSelectColumnsAliased(this.execRepo))
+        .orderBy("e.createdAt", "DESC")
+        .addOrderBy("e.id", "DESC")
+        .take(pageSize);
+      // 过滤条件：唯一真值源（**绝不**在此复写 where 构造）。
+      this.applyAllExecutionsFilters(qb, filters);
+      if (lastCursor) {
+        // 键集续页：行值比较（DB 值比 DB 值，微秒零损失，同 getAllExecutionsByKeyset）。
+        qb.andWhere(
+          `(e.createdAt, e.id) < (SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId)`,
+          { cursorId: lastCursor.id },
+        );
+      }
+
+      const rows: TaskExecution[] = await qb.getMany();
+      if (rows.length === 0) break;
+
+      const lines = rows.map((r) => executionToCsvRow(r));
+      written += rows.length;
+      // 一页一次 write（不是一行一次）：每行一个 write 会把系统调用放大到
+      // 行数量级，而一页通常已是几十 KB，足够摊薄调用开销。
+      await write(`${lines.join("\n")}\n`);
+
+      if (written >= limit) break;
+      if (rows.length < pageSize) break; // 已到末页
+      const last = rows[rows.length - 1];
+      lastCursor = { createdAt: last.createdAt, id: last.id };
+    }
+
+    // 有痕截断：达到上限即追加注释行。判据用 `>=`（不是 `>`）——"恰好取满
+    // limit 行"时**无法区分**是否还有更多行（本循环取满即 break，不再多探
+    // 一行），这种情况必须按"可能被截断"如实标注，绝不能让人误以为是全量。
+    const truncated = written >= limit;
+    if (truncated) {
+      await write(`${csvTruncationMarker(limit)}\n`);
+    }
+    return { rows: written, truncated };
   }
 
   /**

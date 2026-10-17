@@ -1,8 +1,14 @@
 import { BadRequestException } from "@nestjs/common";
 import {
   decodeExecutionCursor,
+  decodeKeysetCursor,
+  decodeNumericKeysetCursor,
   encodeExecutionCursor,
+  encodeKeysetCursor,
+  encodeNumericKeysetCursor,
   nextExecutionCursor,
+  nextKeysetCursor,
+  nextNumericKeysetCursor,
 } from "../keyset-cursor.util";
 
 /**
@@ -258,6 +264,169 @@ describe("§2.1 keyset 游标编解码", () => {
           nextExecutionCursor([{ createdAt: ISO, id: UUID }])!,
         ),
       ).toEqual({ createdAt: ISO, id: UUID });
+    });
+  });
+
+  /**
+   * 整型主键表（当前唯一使用方：`GET /audit`，`audit_logs.id` 是 `integer`）。
+   *
+   * 真库实测（information_schema）：
+   *   audit_logs.id                 integer   nextval('audit_logs_id_seq')
+   *   audit_logs."createdAt"        timestamp without time zone, precision 6
+   *
+   * 时间列与 task_executions **逐字段相同** ⇒ 时间段判据必须共用同一份实现；
+   * id 段判据不同（十进制正整数 vs uuid 形状）⇒ 必须分开，不能放宽成一个。
+   */
+  describe("整型主键游标（audit_logs.id 是 integer）", () => {
+    it("encode → decode 还原出同一对 (createdAt, id)", () => {
+      const cursor = encodeNumericKeysetCursor(ISO, 42);
+      expect(decodeNumericKeysetCursor(cursor)).toEqual({
+        createdAt: ISO,
+        id: "42",
+      });
+    });
+
+    it("编码字节布局与 uuid 版**完全相同**（游标格式与表无关）", () => {
+      // 同一对值经两个编码器必须产出同一个串——否则"一个 base64 串在哪个
+      // 端点都合法"这条直觉会被打破。
+      expect(encodeNumericKeysetCursor(ISO, "42")).toBe(
+        encodeKeysetCursor(ISO, "42"),
+      );
+      expect(encodeNumericKeysetCursor(new Date(ISO), 42)).toBe(
+        encodeKeysetCursor(ISO, "42"),
+      );
+    });
+
+    it("接受 sequence 的值域两端（1 与超过 2^53 的值都不丢精度）", () => {
+      // 载荷是**字符串**，不做 JS 数值转换 ⇒ bigint 范围的值也能原样往返。
+      expect(
+        decodeNumericKeysetCursor(encodeNumericKeysetCursor(ISO, 1)).id,
+      ).toBe("1");
+      const big = "9007199254740993"; // 2^53 + 1，JS Number 会截成 …992
+      expect(String(Number(big))).not.toBe(big); // 先证明前提成立
+      expect(
+        decodeNumericKeysetCursor(encodeNumericKeysetCursor(ISO, big)).id,
+      ).toBe(big);
+    });
+
+    it("保留微秒（与 uuid 版同一理由，同一份时间段实现）", () => {
+      const micro = "2026-01-02T03:04:05.123456Z";
+      expect(
+        decodeNumericKeysetCursor(encodeNumericKeysetCursor(micro, 7))
+          .createdAt,
+      ).toBe(micro);
+    });
+
+    /** 与 uuid 版同一条断言口径：400 + VALIDATION_FAILED + detail 点名游标。 */
+    const expectInvalidNumeric = (input: unknown) => {
+      let caught: unknown;
+      try {
+        decodeNumericKeysetCursor(input);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(BadRequestException);
+      const err = caught as BadRequestException & { errorCode?: string };
+      expect(err.getStatus()).toBe(400);
+      const body = err.getResponse() as {
+        errorCode?: string;
+        params?: { detail?: string };
+      };
+      expect(err.errorCode).toBe("VALIDATION_FAILED");
+      expect(body.errorCode).toBe("VALIDATION_FAILED");
+      expect(body.params?.detail).toContain("游标");
+    };
+
+    /**
+     * id 段判据刻意**比 Number.isInteger(Number(s)) 严得多**：放宽一丝就会放进
+     * "同一行有多个游标串"（`01` vs `1`）或"PG 能解析但语义歧义"（`1e3`、`+1`、
+     * ` 1`）的输入。
+     */
+    it.each([
+      ["uuid 形状（错表主键）", `${ISO}|${UUID}`],
+      ["前导零", `${ISO}|01`],
+      ["零", `${ISO}|0`],
+      ["负数", `${ISO}|-1`],
+      ["正号", `${ISO}|+1`],
+      ["科学计数", `${ISO}|1e3`],
+      ["小数", `${ISO}|1.0`],
+      ["前导空白", `${ISO}| 1`],
+      ["尾随空白", `${ISO}|1 `],
+      ["十六进制", `${ISO}|0x10`],
+      ["注入串", `${ISO}|1; DROP TABLE audit_logs; --`],
+      ["空 id 段", `${ISO}|`],
+    ])("id 段非法（%s）→ 400", (_label: string, payload: string) => {
+      expectInvalidNumeric(b64url(payload));
+    });
+
+    it("时间段判据与 uuid 版共用一份实现（非法时间同样被拒）", () => {
+      // 「Date 会静默归一化」的日期、非 ISO 形态、NaN —— 两个解码器必须给出
+      // 完全相同的接受/拒绝结论，否则两条端点对同一串时间自相矛盾。
+      for (const iso of [
+        "2026-02-30T00:00:00.000Z",
+        "2026-13-01T00:00:00.000Z",
+        "2026-01-02|03:04:05",
+        "not-a-date",
+        "2026-01-02T03:04:05+08:00",
+      ]) {
+        expectInvalidNumeric(b64url(`${iso}|42`));
+        // 对照：uuid 版对同一个时间分量同样拒绝
+        let uuidCaught: unknown;
+        try {
+          decodeKeysetCursor(b64url(`${iso}|${UUID}`));
+        } catch (err) {
+          uuidCaught = err;
+        }
+        expect(uuidCaught).toBeInstanceOf(BadRequestException);
+      }
+    });
+
+    it("nextNumericKeysetCursor：取最后一行，接受 number 与 string 两种 id", () => {
+      const rows = [
+        { createdAt: new Date("2026-01-03T00:00:00.000Z"), id: 9 },
+        { createdAt: new Date("2026-01-02T00:00:00.000Z"), id: 5 },
+        { createdAt: new Date("2026-01-01T00:00:00.000Z"), id: 2 },
+      ];
+      expect(decodeNumericKeysetCursor(nextNumericKeysetCursor(rows)!)).toEqual(
+        {
+          createdAt: "2026-01-01T00:00:00.000Z",
+          id: "2",
+        },
+      );
+      // raw 查询把 id 读成字符串的形态也支持
+      expect(
+        decodeNumericKeysetCursor(
+          nextNumericKeysetCursor([{ createdAt: ISO, id: "77" }])!,
+        ).id,
+      ).toBe("77");
+    });
+
+    it("nextNumericKeysetCursor：空页 / 缺列 → null（不抛客户端 400）", () => {
+      expect(nextNumericKeysetCursor([])).toBeNull();
+      expect(nextNumericKeysetCursor([{ createdAt: null, id: 1 }])).toBeNull();
+      expect(
+        nextNumericKeysetCursor([{ createdAt: ISO, id: null }]),
+      ).toBeNull();
+      expect(nextNumericKeysetCursor([{}])).toBeNull();
+    });
+
+    it("uuid 版**不会**接受整型 id（两张表判据不能混用）", () => {
+      // 反过来同样成立：uuid 表若误用了整型解码器会拒绝 uuid，audit 表若误用
+      // uuid 解码器会拒绝整型 id。这条钉住"混用即失败"而不是"混用即静默"。
+      let caught: unknown;
+      try {
+        decodeKeysetCursor(encodeNumericKeysetCursor(ISO, 42));
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(BadRequestException);
+    });
+
+    it("nextKeysetCursor 与 nextNumericKeysetCursor 对同一行编出同一串", () => {
+      const row = { createdAt: ISO, id: "42" };
+      expect(nextNumericKeysetCursor([row])).toBe(
+        nextKeysetCursor([{ createdAt: ISO, id: "42" }]),
+      );
     });
   });
 });

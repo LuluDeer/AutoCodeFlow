@@ -29,6 +29,8 @@ import {
 } from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import {
   AuthUser,
@@ -82,6 +84,7 @@ import { ExecutionStatus } from "./entities/task-execution.entity";
 import {
   AllExecutionsQueryDto,
   ExecutionLogsQueryDto,
+  ExportExecutionsQueryDto,
   TaskExecutionsQueryDto,
 } from "./dto/execution-query.dto";
 import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
@@ -507,6 +510,146 @@ export class TaskController {
   })
   allExecutions(@Query() p: AllExecutionsQueryDto) {
     return this.taskService.getAllExecutions(p);
+  }
+
+  /**
+   * 执行记录 CSV 导出（**流式**，`@Res()` library mode）。
+   *
+   * ## 路由顺序（本仓踩过的那类坑）
+   *
+   * `@Get("executions/export")` 必须声明在**所有 `:id/...` 路由之前**——
+   * 同一控制器内 Nest/Express 按**声明顺序**注册，`:id/executions` 出现在前面
+   * 时 `GET /tasks/executions/export` 仍能匹配它（`id="executions"` 且第二段
+   * 须为 `executions`，此处第二段是 `export`，实际上不会误配）；真正会误配的
+   * 是 `@Get(":id")`——它会把 `/tasks/executions` 整个当成任务 id。本端点与
+   * `executions/all` 同处于 `:id` 之前（见上方 `@Get(":id")` 在 603 行），
+   * 顺序沿用既有布局：所有 "executions/*" 字面量路由集中在中段。
+   *
+   * ## 为什么排除 @SkipTimeout 也不排除
+   *
+   * 5 万行 × 每页 1000 行的往返，实测（本机真 PG）总耗时在秒级；全局 30s
+   * 预算对正常导出足够，而**保留**超时反而是必要的护栏——一个因为连接池排队/
+   * 大 `errorMessage` 而卡住的导出不该永久占住一个连接。故这里**不加**
+   * `@SkipTimeout`：真超时交由全局 408 处理（此时响应头可能已发出，客户端看到
+   * 的是截断的 CSV——这比"假装成功"诚实，且截断点之后没有截断注释行，
+   * 调用方用行数即可识别）。
+   *
+   * ## 鉴权
+   *
+   * `@Roles(UserRole.ADMIN)`：执行记录含 `errorMessage`（执行器上报的任意文本，
+   * 可能带内部路径/凭据片段）、`executorAddress`、失败原因等敏感面。与
+   * `GET /audit/export` 的收紧口径一致；列表端点 `GET /tasks/executions/all`
+   * 保持全员可读（它是排障面），导出则是"把整张表带走"的批量外流面。
+   */
+  @Get("executions/export")
+  @ApiOperation({
+    description:
+      "导出执行记录为 CSV 文件（UTF-8，RFC 4180）。支持与 GET /tasks/executions/all 完全相同的过滤条件（status/taskId/taskName/executorAddress/startTime/endTime）——两处共用同一份过滤装配。**流式输出**：按 (createdAt DESC, id DESC) 逐页拉取并分块写出，不把全量结果拼进内存。行数达上限（默认硬顶 5 万行，可用 limit 调小）时在文件末尾追加 `# truncated at N rows` 注释行，便于识别截断。单元格做 CSV 公式注入防护（以 = + - @ 制表符 回车 开头的值前缀单引号）。列：id/taskId/taskName/status/triggerType/executorId/executorAddress/createdAt/startTime/endTime/durationMs/retryCount/exitCode/failureReason/errorMessage。",
+    summary: "导出执行记录为 CSV（流式，仅管理员）",
+  })
+  @ApiQuery({
+    name: "status",
+    required: false,
+    description: "按执行状态过滤（同列表端点）",
+  })
+  @ApiQuery({ name: "taskId", required: false, description: "按任务 id 过滤" })
+  @ApiQuery({
+    name: "taskName",
+    required: false,
+    description: "按任务名模糊搜索（命中执行行自身或 tasks.name）",
+  })
+  @ApiQuery({
+    name: "executorAddress",
+    required: false,
+    description: "按执行器地址模糊过滤",
+  })
+  @ApiQuery({
+    name: "startTime",
+    required: false,
+    description: "仅返回在该时刻及之后创建的执行（ISO 8601）",
+  })
+  @ApiQuery({
+    name: "endTime",
+    required: false,
+    description: "仅返回在该时刻及之前创建的执行（ISO 8601）",
+  })
+  @ApiQuery({
+    name: "limit",
+    required: false,
+    description:
+      "本次导出的行数上限（安全阀，不是分页）。可调小；超过硬顶（50000）按硬顶处理，达上限时 CSV 末尾追加截断注释行。",
+  })
+  // ARCH-23：非 JSON 成功载荷也必须声明 schema——`text/csv` 的内容是一个
+  // 字符串，与 audit export 逐字同形（check:response-schema 按首个 content
+  // 取 schema，缺了会被计成"未声明"）。
+  @ApiOkResponse({
+    description: "CSV 文本导出（Res 直传，流动写出，最多 50 000 行）",
+    content: { "text/csv": { schema: { type: "string" } } },
+  })
+  @Roles(UserRole.ADMIN)
+  async exportExecutions(
+    @Query() query: ExportExecutionsQueryDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="task-executions.csv"',
+    );
+    // 不缓冲：边拉边发给反代/浏览器（nginx 的 proxy_buffering 仍可能攒包，
+    // 但应用侧不主动攒——X-Accel-Buffering 是给 nginx 的显式放行信号）。
+    res.setHeader("X-Accel-Buffering", "no");
+
+    // 客户端取消（关闭标签页/取消下载）→ 立刻停止拉库，不空跑剩下的页。
+    const ac = new AbortController();
+    res.on("close", () => ac.abort());
+
+    /**
+     * 背压处理：`res.write()` 返回 false = 内核发送缓冲已满。此时**必须**等
+     * `drain` 再写下一块，否则后续数据全部堆进进程内存——那正是"流式"退化成
+     * "更慢的全量拼接"的形态（也是 OOM 的真实成因）。`writableEnded` 守卫防
+     * 止对已结束的响应写入（客户端中途断开后 Node 会抛 ERR_STREAM_WRITE_AFTER_END）。
+     */
+    const write = (chunk: string): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        if (res.writableEnded) {
+          resolve();
+          return;
+        }
+        const onError = (err: Error) => {
+          res.off("drain", onDrain);
+          reject(err);
+        };
+        const onDrain = () => {
+          res.off("error", onError);
+          resolve();
+        };
+        if (res.write(chunk)) {
+          resolve();
+          return;
+        }
+        res.once("drain", onDrain);
+        res.once("error", onError);
+      });
+
+    try {
+      await this.taskService.streamExecutionsCsv(
+        {
+          status: query.status,
+          taskId: query.taskId,
+          taskName: query.taskName,
+          executorAddress: query.executorAddress,
+          startTime: query.startTime,
+          endTime: query.endTime,
+        },
+        write,
+        // limit 只在"调小"方向生效——归一逻辑在 service，此处原样透传。
+        { limit: query.limit, signal: ac.signal },
+      );
+    } finally {
+      // 双保险：无论服务内部怎么收尾，响应都在这里关闭。已 end 过则幂等。
+      if (!res.writableEnded) res.end();
+    }
   }
 
   // ---- Compat aliases (by execution ID only) — used by acf-cli & mcp-server ----

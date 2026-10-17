@@ -148,6 +148,30 @@ describe("AuditController", () => {
       } as any);
       expect(result).toEqual({ data: [], total: 0 });
     });
+
+    // §2.1：`cursor` 必须**原样透传**（不能写成 `?? ""`——那会把每个不带游标的
+    // 请求都推进 keyset 分支，破坏"不带 cursor 时响应逐字节不变"的加性契约）。
+    it("§2.1: passes cursor through to the service verbatim", async () => {
+      svc.findAll.mockResolvedValue({ data: [], total: 0, nextCursor: null });
+      await controller.findAll({
+        page: 1,
+        pageSize: 10,
+        cursor: "abc123",
+      } as any);
+      expect(svc.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: "abc123" }),
+      );
+    });
+
+    it("§2.1: omitting cursor does NOT synthesise an empty-string cursor", async () => {
+      svc.findAll.mockResolvedValue({ data: [], total: 0 });
+      await controller.findAll({ page: 1, pageSize: 10 } as any);
+      // 显式断言成 undefined（而不是 ""）——空串在服务层意味着"进入 keyset 模式"，
+      // 而"没传"必须走 OFFSET 分支。
+      expect(svc.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: undefined }),
+      );
+    });
   });
 
   describe("exportCsv", () => {
