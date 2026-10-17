@@ -1,5 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { ThrottlerGuard, ThrottlerStorage, ThrottlerStorageService } from "@nestjs/throttler";
+import { ThrottlerStorage, ThrottlerStorageService } from "@nestjs/throttler";
 import {
   EXECUTOR_MACHINE_PATH_PATTERNS,
   ExecutorAwareThrottlerGuard,
@@ -41,7 +41,9 @@ describe("ExecutorAwareThrottlerGuard — SEC-THROTTLE-BUCKET", () => {
         ProbeGuard,
         {
           provide: "THROTTLER:MODULE_OPTIONS",
-          useValue: { throttlers: [{ name: "default", ttl: 60_000, limit: 60 }] },
+          useValue: {
+            throttlers: [{ name: "default", ttl: 60_000, limit: 60 }],
+          },
         },
         {
           provide: ThrottlerStorage as unknown as string,
@@ -50,13 +52,13 @@ describe("ExecutorAwareThrottlerGuard — SEC-THROTTLE-BUCKET", () => {
       ],
     }).compile();
     guard = module.get<ProbeGuard>(ProbeGuard);
-    await (guard as unknown as { onModuleInit: () => Promise<void> })
-      .onModuleInit();
+    await (
+      guard as unknown as { onModuleInit: () => Promise<void> }
+    ).onModuleInit();
   });
 
-  const callTracker = (
-    req: Record<string, any>,
-  ): Promise<string> => guard.tracker(req);
+  const callTracker = (req: Record<string, any>): Promise<string> =>
+    guard.tracker(req);
 
   // ─── 人操作面：头必须被完全忽略 ──────────────────────────────────────────
   it("P1-1 回归：/api/auth/login 上伪造 100 个不同的 x-executor-address 仍得到同一个桶", async () => {
@@ -129,9 +131,9 @@ describe("ExecutorAwareThrottlerGuard — SEC-THROTTLE-BUCKET", () => {
   });
 
   it("RT-LOG 日志上报（/executions/:id/logs）属于机器面，路径参数不破坏匹配", async () => {
-    expect(
-      isExecutorMachinePath("/api/executions/exec-abc-123/logs"),
-    ).toBe(true);
+    expect(isExecutorMachinePath("/api/executions/exec-abc-123/logs")).toBe(
+      true,
+    );
     // 不能被前缀误吞到别的端点
     expect(isExecutorMachinePath("/api/executions/exec-1/logs/stream")).toBe(
       false,

@@ -310,7 +310,9 @@ describe("UsersService", () => {
         username: "admin",
         role: UserRole.ADMIN,
       });
-      txRepo.createQueryBuilder.mockReturnValue(adminQb([{ id: 1 }, { id: 2 }]));
+      txRepo.createQueryBuilder.mockReturnValue(
+        adminQb([{ id: 1 }, { id: 2 }]),
+      );
       repo.manager.transaction.mockImplementation(async (cb: any) =>
         cb({
           getRepository: (entity: unknown) =>

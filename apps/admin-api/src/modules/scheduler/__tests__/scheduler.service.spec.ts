@@ -1564,7 +1564,10 @@ describe("SchedulerService", () => {
     const cronTicks = [
       { name: "checkMisfires", method: "checkMisfires" },
       { name: "recoverStaleExecutions", method: "recoverStaleExecutions" },
-      { name: "wakeMutexQueuedExecutions", method: "wakeMutexQueuedExecutions" },
+      {
+        name: "wakeMutexQueuedExecutions",
+        method: "wakeMutexQueuedExecutions",
+      },
       { name: "reload", method: "reload" },
     ] as const;
 

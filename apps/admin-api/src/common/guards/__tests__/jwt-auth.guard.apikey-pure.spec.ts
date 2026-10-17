@@ -71,18 +71,22 @@ describe("AUTH-03 guard 纯函数", () => {
       });
     }
     for (const p of JWT_ONLY_API_KEY_PATHS) {
-      expect(isJwtOnlyPath(normalizeApiPath({ path: `/api/${p.toUpperCase()}` })))
-        .toBe(true);
       expect(
-        isJwtOnlyPath(normalizeApiPath({ path: `/api/${p.toUpperCase()}/x/1` })),
+        isJwtOnlyPath(normalizeApiPath({ path: `/api/${p.toUpperCase()}` })),
+      ).toBe(true);
+      expect(
+        isJwtOnlyPath(
+          normalizeApiPath({ path: `/api/${p.toUpperCase()}/x/1` }),
+        ),
       ).toBe(true);
     }
   });
 
   it("CASE-01：业务路径大写后仍**不**被误判为 JWT-only（反证）", () => {
     expect(isJwtOnlyPath(normalizeApiPath({ path: "/api/TASKS" }))).toBe(false);
-    expect(isJwtOnlyPath(normalizeApiPath({ path: "/api/USERS-LEGACY-X" })))
-      .toBe(false);
+    expect(
+      isJwtOnlyPath(normalizeApiPath({ path: "/api/USERS-LEGACY-X" })),
+    ).toBe(false);
     expect(isJwtOnlyPath(normalizeApiPath({ path: "/api/AUDIT" }))).toBe(false);
   });
 
