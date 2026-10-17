@@ -1276,5 +1276,7 @@
   "验证码错误，或没有预登记的密钥": "Invalid verification code, or no pre-registered key",
   "默认 50，上限 200": "Default 50, maximum 200",
   "默认运行参数（纯运行时参数，不含凭据）": "Default run parameters (pure runtime parameters, no credentials)",
-  "（过滤后）行集合的真实总数": "True total of the (filtered) row set"
+  "（过滤后）行集合的真实总数": "True total of the (filtered) row set",
+  "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时行为与引入该参数前完全一致。": "Opaque keyset cursor (the data.nextCursor from the previous page). When omitted, behaviour is exactly as before this parameter existed.",
+  "keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。": "Next-page cursor for keyset pagination; null = no more pages. Present only when the request carries the cursor parameter (keyset branch); requests without cursor use the OFFSET branch and the key is absent from the response."
 }

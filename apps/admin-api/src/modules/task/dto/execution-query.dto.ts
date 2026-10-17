@@ -16,6 +16,31 @@ export class TaskExecutionsQueryDto extends PaginationDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  /**
+   * §2.1（本轮）：**可选**的不透明游标。
+   *
+   * 只做加性过渡——不传它时行为与引入本字段之前**逐字节不变**（走 OFFSET 分支，
+   * 响应里连 `nextCursor` 这个键都不出现）。传了它才切到 keyset 分支。
+   *
+   * 这里**刻意不做格式校验**（不挂 `@Matches` / 自定义 validator）：游标的合法性
+   * 判定（base64url → ISO 时间 → uuid 形状）全部集中在纯函数
+   * `decodeExecutionCursor`（common/utils/keyset-cursor.util.ts）里，由它抛
+   * `VALIDATION_FAILED`（400，带可翻译错误码）。
+   *
+   * 为什么不交给 class-validator：管道抛的是 `VALIDATION_FAILED` + 字段名数组，
+   * 前端只能渲染成"参数校验失败：cursor must be …"，既没有"游标坏了、请从第一页
+   * 重来"这句可操作的指引，也让"游标非法"在监控里与"任意别的参数写错"混在一起
+   * 无法区分。语义上它也确实是**领域状态**不合法（编码后的排序键），不是普通
+   * 参数格式错误。
+   */
+  @ApiPropertyOptional({
+    description:
+      "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有的 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }
 
 /**

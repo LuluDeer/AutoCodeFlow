@@ -103,6 +103,11 @@ import {
   executionListSelectMap,
   executionListSelectColumnsAliased,
 } from "./execution-list-projection";
+// §2.1 游标分页：keyset 游标的编解码（纯函数，非法输入一律 400 VALIDATION_FAILED）。
+import {
+  decodeExecutionCursor,
+  nextExecutionCursor,
+} from "../../common/utils/keyset-cursor.util";
 import {
   isValidRuntimeVersionFormat,
   isRuntimeVersionSupported,
@@ -2301,7 +2306,42 @@ export class TaskService {
     return row;
   }
 
-  async getExecutions(taskId: string, p: PaginationDto & { status?: string }) {
+  /**
+   * GET /tasks/:id/executions 的读实现。
+   *
+   * PLAN-BACKEND-ARCHITECTURE §2.1「游标分页」——**加性过渡**，两条路径严格分离：
+   *
+   *   · `p.cursor` **未传** → 走下方**原有**的 `findAndCount` + skip/take（OFFSET
+   *     分支）。这一支的代码路径、SQL 形态、返回对象全部与引入游标之前逐字节
+   *     相同（`paginate` 不传 options，信封里连 `nextCursor` 键都不出现）。
+   *   · `p.cursor` **已传** → 走 `getExecutionsByKeyset`（见其注释）。
+   *
+   * 为什么用"参数是否存在"而不是"page 是否 > 1"来分流：游标语义与页码无关，
+   * 调用方可能只想给一个全新入口（永远不传 page）。两种模式混用会得到彼此矛盾
+   * 的页（keyset 的"第 2 页"不等于 OFFSET 的第 2 页），故只要带了 cursor 就
+   * **忽略 page**（响应里的 page 回显 1，见 keyset 分支注释）。
+   *
+   * ## 空的 `cursor=` 是**显式的「从最新一行开始 keyset」标记**
+   *
+   * 这是本方案唯一的"引导入口"，不解决它调用方永远进不了 keyset 模式：OFFSET
+   * 分支出于逐字节不变的硬要求**不返回** `nextCursor`，所以客户端拿不到第一个
+   * 游标。故约定 `?cursor=`（值为空串）表示"以 keyset 模式从第一页开始"——服务端
+   * 照常下发 `nextCursor`，客户端此后只需原样回传即可一直翻到底。
+   *
+   * ⚠️ 这与"坏游标静默退回第一页"**必须区分开**：那是**未声明的**降级（客户端
+   * 以为自己在中途，服务端悄悄给了开头 → 死循环）；这里是调用方**显式声明**的
+   * 起点。故 `""` 在进入 keyset 分支后直接表示"无下界"，而任何**非空**的畸形
+   * 游标一律 400（`decodeExecutionCursor` 不放松，它仍然拒绝空串——起点语义只
+   * 存在于服务层的这个入口判断里）。
+   */
+  async getExecutions(
+    taskId: string,
+    p: PaginationDto & { status?: string; cursor?: string },
+  ) {
+    if (p.cursor !== undefined && p.cursor !== null) {
+      return this.getExecutionsByKeyset(taskId, p, p.cursor);
+    }
+
     const where: Record<string, unknown> = { taskId };
     if (p.status) where["status"] = p.status;
 
@@ -2329,6 +2369,123 @@ export class TaskService {
       order: { createdAt: "DESC", id: "DESC" },
     });
     return paginate(list, total, p.page, p.pageSize);
+  }
+
+  /**
+   * §2.1 keyset 分支：`(createdAt, id) < (cursorCreatedAt, cursorId)` 的元组游标
+   * 翻页。
+   *
+   * ## 游标的非法处理
+   *
+   * `decodeExecutionCursor` 是**唯一**的合法性判定点（纯函数 + 独立单测），任何
+   * 畸形输入都在这里抛 400 `VALIDATION_FAILED`。**绝不**把非法游标当成"没传游标"
+   * 降级到 OFFSET 分支——那会让客户端陷入"带着坏游标请求、每次拿回第 1 页、
+   * 每次都是 200"的死循环（详见 keyset-cursor.util.ts 头注）。
+   *
+   * ## 为什么 SQL 里要写成"区间"而不是直接的元组比较
+   *
+   * PostgreSQL 本身支持行值比较 `(a, b) < (:at, :id)`，但这里**不能**用它，原因是
+   * 精度而非语法：
+   *
+   *   · `task_executions."createdAt"` 的列类型是 `TIMESTAMP`（无时区，PG 精度
+   *      **微秒**，`now()` 生成），而 JS `Date` 只有**毫秒**；
+   *   · 执行行写入时**不显式给 createdAt**（executor/scheduler/task 三处
+   *     `execRepo.create({...})` 都不带该列），取的是数据库默认值 `now()`——
+   *     即库里的值通常是 `…:00.123456` 这种带微秒的形态；
+   *   · 实体读出来时已被驱动截成毫秒（`…:00.123`）。若把游标原样回传做
+   *     `(createdAt, id) < (…:00.123, uuid)`，数据库里 `…:00.123456` 的行
+   *     满足 `createdAt > :at`，于是被判定为"仍排在游标之后"而**重复返回**。
+   *
+   * 故游标时间在 SQL 里按**毫秒半开区间**处理（`:at` = 游标时间，`:atNext` =
+   * 游标时间 + 1 毫秒），两个分支合起来恰好是"字典序严格小于 `(at, id)`"：
+   *
+   *   e.createdAt < :at
+   *     → 游标所在毫秒**之前**的行，无论微秒为何都排在游标之后（决胜键无关）。
+   *       这一支因此不必比 id，纯索引扫描即可。
+   *   e.createdAt < :atNext AND e.id < :cursorId
+   *     → 与游标**同一毫秒**的行（含微秒精度的那些）：此刻排序完全由决胜键
+   *       决定，只有 `id < cursorId` 的才排在后面。
+   *
+   * 为什么不是直接的行值比较 `(createdAt, id) < (:at, :id)`：那会把游标那一行
+   * 的**同一毫秒**邻居按"数据库微秒值 vs 毫秒游标"比较，`…:00.123456` 被判成
+   * `> …:00.123` 而重复返回。上面的形态对**微秒精度与毫秒精度的行集给出完全
+   * 一致的判定**，故无论该行来自 DB 默认值 `now()` 还是显式传入的毫秒 Date，
+   * 翻页都不漏不重。代价是 `:at` 那个毫秒内的行无法纯走索引（要逐个比 id），
+   * 量级是单个任务同一毫秒内的并发执行数，可忽略。
+   *
+   * ## `total`：仍然给真实总数（不撒谎）
+   *
+   * keyset 分支复用**同条件**的 `COUNT`。为什么不按"keyset 不需要总数"省掉它：
+   * `total` 的类型是 `number` 且四端都在渲染"共 N 条"（分页器、CLI 输出、MCP 工具
+   * 载荷）。返回 `-1`/近似值/上一次的值都是**撒谎**——`total` 没有任何字段级的
+   * "这是估算"标记，调用方无从分辨。代价是一次 COUNT（`(taskId, ...)` 上有索引，
+   * 且与 OFFSET 分支本来就在做的 `findAndCount` 是同一量级），换来的是语义正确。
+   * 若将来真需要省这一条，正确做法是新增 `totalExact: false` 之类的显式标记，
+   * 而不是悄悄改 `total` 的含义。
+   *
+   * ## 为什么 `page` 回显 1
+   *
+   * keyset 与 OFFSET 的"第 N 页"不是同一套坐标系（前者是无状态的"从游标继续"，
+   * 后者是"跳过前 N-1 页"）。回显调用方的 `p.page` 会让响应看起来像 OFFSET 的
+   * 第 N 页——那正是最容易让调用方把两种模式混用、进而漏页的误解。回显 1
+   * （= "本次是从某个位置继续取的第一页"）诚实且不会诱导混用；`page` 的类型与
+   * 是否出现都没变（仍是 `number`），只影响 keyset 分支下的取值。
+   */
+  private async getExecutionsByKeyset(
+    taskId: string,
+    p: PaginationDto & { status?: string },
+    rawCursor: string,
+  ) {
+    // 空串 = 调用方显式声明的 keyset 起点（见 getExecutions 注释）；非空则必须
+    // 是合法游标，否则 400。
+    const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
+
+    // 游标时间的毫秒下界（区间右开）：见方法头注的精度论证。
+    const at = cursor ? new Date(cursor.createdAt) : null;
+    const atNext = at ? new Date(at.getTime() + 1) : null;
+
+    const where: Record<string, unknown> = { taskId };
+    if (p.status) where["status"] = p.status;
+
+    const qb = this.execRepo
+      .createQueryBuilder("e")
+      .select(executionListSelectColumnsAliased(this.execRepo))
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
+      // 起点与结果集排序不符，翻页会漏/重。
+      .orderBy("e.createdAt", "DESC")
+      .addOrderBy("e.id", "DESC")
+      .where("e.taskId = :taskId", { taskId });
+
+    if (cursor && at && atNext) {
+      // 元组游标，按毫秒区间表达（见头注）：
+      //   ① `e.createdAt < :at` —— 游标所在毫秒**之前**的行，一定排在游标之后；
+      //   ② `e.createdAt < :atNext AND e.id < :cursorId` —— 与游标**同一毫秒**
+      //      的行（含微秒精度），排序由决胜键决定：只有 id 更小的才排在后面。
+      //
+      // ⚠️ 第一分支必须是 `< :at` 而不是 `<= :at`：用 `<=` 会把游标所在毫秒的
+      // **整桶**都当成"在游标之后"，于是本页最后一行（就是游标本身那一行）会
+      // 被再次返回 → 翻页原地打转、永不到末页（实测用例直接死于死循环保险）。
+      qb.andWhere(
+        "(e.createdAt < :at OR (e.createdAt < :atNext AND e.id < :cursorId))",
+        { at: cursor.createdAt, atNext, cursorId: cursor.id },
+      );
+    }
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(p.pageSize + 1);
+
+    if (p.status) qb.andWhere("e.status = :status", { status: p.status });
+
+    const [rows, total] = await Promise.all([
+      qb.getMany(),
+      this.execRepo.count({ where: where as never }),
+    ]);
+
+    const hasMore = rows.length > p.pageSize;
+    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
+    return paginate(list, total, 1, p.pageSize, {
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      nextCursor: hasMore ? nextExecutionCursor(list) : null,
+    });
   }
 
   async getAllExecutions(

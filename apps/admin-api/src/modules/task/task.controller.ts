@@ -863,7 +863,8 @@ export class TaskController {
 
   @Get(":id/executions")
   @ApiOperation({
-    description: "获取任务的执行历史列表。",
+    description:
+      "获取任务的执行历史列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
     summary: "执行记录",
   })
   @ApiParam({ name: "id", description: "任务 ID" })
@@ -873,6 +874,12 @@ export class TaskController {
     name: "status",
     required: false,
     description: "按执行状态过滤",
+  })
+  @ApiQuery({
+    name: "cursor",
+    required: false,
+    description:
+      "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时行为与引入该参数前完全一致。",
   })
   @ApiOkResponse({
     type: PaginatedExecutionListDto,

@@ -68,11 +68,37 @@ export class PaginationDto extends PageQueryDto {
   runtime?: string;
 }
 
+/**
+ * 分页信封的**加性**扩展开关（PLAN-BACKEND-ARCHITECTURE §2.1 游标分页）。
+ *
+ * 现状：信封恒为 `{list, items, total, page, pageSize, totalPages}`，被**四端**
+ * 消费——admin-web / acf-cli / mcp-server / 执行器机器面。直接换成 keyset 形态
+ * 会一次性打断四端，且本仓大量既有用例压在现行为上。
+ *
+ * 故本轮只做**加性过渡**：
+ *   · 不带 `cursor` 的请求 → 走原有 OFFSET 分支，响应**逐字节不变**
+ *     （`nextCursor` 这个键**根本不出现**）；
+ *   · 带 `cursor` 的请求 → 走 keyset 分支，响应**追加** `nextCursor`。
+ *
+ * ## 为什么旧路径不是"恒下发 null"而是"键不出现"
+ *
+ * "加性字段恒下发 null" 看似更整齐，但它会让 OFFSET 分支的响应体**多一个键**：
+ * 逐字节比对（`toEqual` 严格比较键集合、快照断言、以及下游四端里任何
+ * "键集合"式校验）都会红。硬要求是旧路径逐字节不变，所以这里用 `undefined`
+ * 让 JSON 序列化把键**整个丢掉**（`JSON.stringify` 不输出 `undefined` 值），
+ * 旧路径的线上响应与改动前完全相同；新路径（keyset）显式传 `null` 或字符串，
+ * 键必然出现。
+ *
+ * @param options.nextCursor keyset 分支的下一页游标。`undefined` = 调用方走
+ *   OFFSET 分支（键不下发）；`null` = 走 keyset 但已到末页（键下发 null）。
+ *   **两者语义不同，不要为了"少一个分支"把它们合并**——那正是上面在防的事。
+ */
 export function paginate<T>(
   list: T[],
   total: number,
   page: number,
   pageSize: number,
+  options?: { nextCursor?: string | null },
 ) {
   // R-21（DEEP_REVIEW 0ef3bbe）: paginate 同时下发 list/items 双键——契约漂移
   // 土壤，但**本轮不改**（DEFERRED-CROSS-SCOPE）：收敛为单键会破坏范围外消费方。
@@ -81,7 +107,7 @@ export function paginate<T>(
   // 且后二者不在本域（apps/admin-api）内、无法同步改。删除任一键都会造成跨包
   // 静默回归（如 acf-cli `task list` 会退化为空表）。故保持双键不变，待各 SDK/
   // CLI 统一到 items 后另轮收敛（届时同步删 list）。
-  return {
+  const envelope: PaginatedEnvelope<T> = {
     list,
     items: list,
     total,
@@ -89,4 +115,21 @@ export function paginate<T>(
     pageSize,
     totalPages: Math.ceil(total / pageSize),
   };
+  // §2.1：只在调用方明确要求时追加——`undefined` 保持键不出现（旧路径零变化）。
+  if (options?.nextCursor !== undefined) {
+    envelope.nextCursor = options.nextCursor;
+  }
+  return envelope;
+}
+
+/** `paginate` 的返回形状：既有 6 键 + 可选 `nextCursor`（§2.1）。 */
+export interface PaginatedEnvelope<T> {
+  list: T[];
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  /** 仅 keyset 分支下发；OFFSET 分支这个键不存在（见 paginate 注释）。 */
+  nextCursor?: string | null;
 }

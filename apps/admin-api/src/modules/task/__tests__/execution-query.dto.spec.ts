@@ -60,6 +60,26 @@ describe("TaskExecutionsQueryDto (GET /tasks/:id/executions)", () => {
     expect(result.status).toBe("failed");
   });
 
+  // §2.1 游标分页：cursor 必须**通过白名单**（否则全局
+  // forbidNonWhitelisted 会把它打成 400，加性参数根本用不了）。
+  it("§2.1: accepts the additive `cursor` query param (whitelist)", async () => {
+    const result = await validate({ page: "1", cursor: "abc_-123" });
+    expect(result.cursor).toBe("abc_-123");
+  });
+
+  it("§2.1: cursor is optional (omitting it keeps the OFFSET path reachable)", async () => {
+    const result = await validate({ page: "1" });
+    expect(result.cursor).toBeUndefined();
+  });
+
+  it("§2.1: 格式校验**不**在 DTO 层做（合法性统一由 decodeExecutionCursor 判 400）", async () => {
+    // 这不是"宽松"，是刻意的分层：DTO 报的是 VALIDATION_FAILED + 字段名数组，
+    // 而游标坏掉需要一条可操作的指引（"请从第一页重新开始"），且语义上是领域
+    // 状态不合法而非参数格式错误。纯函数是唯一判定点，见它的单测。
+    const result = await validate({ cursor: "!!!not-base64!!!" });
+    expect(result.cursor).toBe("!!!not-base64!!!");
+  });
+
   it("rejects unknown query params such as ?bogus=1", async () => {
     await expect(validate({ page: "1", bogus: "1" })).rejects.toThrow(
       BadRequestException,

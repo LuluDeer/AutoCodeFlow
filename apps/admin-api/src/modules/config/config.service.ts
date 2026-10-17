@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -15,6 +15,9 @@ import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.ut
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
+// §4.2 跨实例失效：配置写面广播 + 订阅端逐出（设计决策逐条对齐
+// executor/token-cache-sync.service.ts 的先例，见该服务头注）。
+import { ConfigCacheSyncService } from "./config-cache-sync.service";
 
 interface HistoryOptions {
   // PK-21（DEEP_REVIEW 0ef3bbe）：userId 对齐全库 integer 形态
@@ -45,7 +48,7 @@ export const CONFIG_HISTORY_RETENTION_BATCH_SIZE = 5000;
 export const SYSTEM_CONFIG_CACHE_TTL_DEFAULT_MS = 1000;
 
 @Injectable()
-export class SystemConfigService {
+export class SystemConfigService implements OnModuleInit {
   private readonly logger = new Logger(SystemConfigService.name);
 
   /**
@@ -58,17 +61,19 @@ export class SystemConfigService {
    * ## 正确性（本设计唯一不能出错的地方）
    *
    * 全部写面（upsert / batchUpsert / remove / rollback）都收敛在本服务内，
-   * 故**每一处写完都调 invalidateCache()**，同进程内「写后读」立即可见——
-   * 不依赖 TTL 到期。TTL 只约束下面「多实例限制」那一类情况。
+   * 故**每一处写完都调 notifyConfigChanged()**（本地全清 + 跨实例广播），
+   * 同进程内「写后读」立即可见——不依赖 TTL 到期。TTL 只约束下面「多实例」
+   * 那一类情况里的丢消息兜底。
    *
-   * ## 多实例限制（本轮刻意不做，见任务边界）
+   * ## 多实例（§4.2：跨实例失效广播）
    *
-   * 缓存是**进程内**的。HA（`--scale admin-api=N`）下实例 A 改配置，实例 B
-   * 的缓存要到自己的 TTL 窗口过期才收敛——窗口内 B 可能用旧值（例如旧
-   * 的 executor.sharedToken）。跨实例失效需要 pub/sub（先例：
-   * executor/token-cache-sync.service.ts），本轮**不做**：它引入 Redis 依赖
-   * 与新的失败面，而 TTL 已把最坏滞后压到 1s。真要跨实例强一致，把
-   * SYSTEM_CONFIG_CACHE_TTL_MS 设为 0（回到逐次读库）即可，无需改代码。
+   * 缓存是**进程内**的；HA（`--scale admin-api=N`）下实例 A 改配置，实例 B 的
+   * 缓存靠 `config-cache-sync.service.ts` 的 pub/sub 广播**毫秒级逐出**（写面
+   * 在本地逐出后再广播，远端收到即逐出；订阅端重连时全量清空自愈漏掉的消息）。
+   * Redis 不可用 / PUBLISH 失败时广播被吞，退化为 TTL 窗口兜底（窗口内 B 可能
+   * 读到旧值，例如旧的 executor.sharedToken）——与未做广播前等价，不劣化。
+   * 真要连 TTL 窗口都不接受，把 SYSTEM_CONFIG_CACHE_TTL_MS 设为 0（回到逐次
+   * 读库）即可，无需改代码。
    *
    * 存的是**实体引用**（与 TypeORM 返回的是同一个对象）：调用方若原地改写
    * 返回值会污染缓存。本服务的读面只读不写，调用方（控制器/守卫）同样只读；
@@ -96,6 +101,13 @@ export class SystemConfigService {
     // eventBus）——ConfigService 缺席时回落常量默认值，缓存照常工作。
     @Optional()
     private readonly configService: ConfigService | null = null,
+    // §4.2 跨实例失效广播（pub/sub）。@Optional 与 executor.service 的
+    // tokenCacheSync **同一姿态**——既有 spec 不提供该 provider，缺席时为
+    // null，多实例失效窗口退化为既有 TTL 兜底（不劣化）。**必须是最后一个
+    // 位置参数**（带默认值的尾参不破坏既有装配；本地 providers 由
+    // config.module.ts 在真实应用里提供）。
+    @Optional()
+    private readonly cacheSync: ConfigCacheSyncService | null = null,
   ) {
     const raw = this.configService?.get<number>("systemConfig.cacheTtlMs");
     const parsed = typeof raw === "string" ? parseInt(raw, 10) : raw;
@@ -113,15 +125,47 @@ export class SystemConfigService {
   }
 
   /**
-   * PERF-2: 清空整个读缓存。
+   * PERF-2: 清空整个读缓存（`key` 缺省）或只逐出单个键。
    *
-   * 刻意做成**全清**而不是按 key 精确删：配置表只有个位数行，全清的代价是
-   * 几条 SELECT，而按 key 删在 batchUpsert / rollback（一次动多个 key、且
-   * 失败回滚后 DB 与缓存可能不一致）下极易漏删——漏删就是静默的陈旧读，
-   * 正是本缓存唯一不能犯的错。宁可多读几次，不可读到旧值。
+   * 本地写面一律走**全清**：配置表只有个位数行，全清的代价是几条 SELECT，而
+   * 按 key 删在 batchUpsert / rollback（一次动多个 key、且失败回滚后 DB 与
+   * 缓存可能不一致）下极易漏删——漏删就是静默的陈旧读，正是本缓存唯一不能
+   * 犯的错。宁可多读几次，不可读到旧值。
+   *
+   * §4.2: 单键形态只服务**远端广播**（`{key}` 载荷）——远端已精确告知哪个键
+   * 变了，精确删能顺手让「`findOne` 高频读 + 一次低频写」的场景少一次全表重读。
+   * 本地写面**不**使用它（见上）。两者都不缓存「不存在」，故逐出不会留下
+   * 负缓存残留。
    */
-  private invalidateCache(): void {
-    this.cache.clear();
+  private invalidateCache(key?: string): void {
+    if (key === undefined) {
+      this.cache.clear();
+      return;
+    }
+    this.cache.delete(key);
+  }
+
+  /**
+   * §4.2: 接通跨实例失效广播（姿态与 ExecutorService.onModuleInit 一致）。
+   * 本实例写配置时广播（`notifyConfigChanged`）；远端广播与重连 flush 经这两个
+   * 回调逐出本地缓存。同步服务缺席（@Optional）或 Redis 不可用时是 no-op——
+   * 多实例失效窗口退化为既有 TTL 兜底。
+   */
+  onModuleInit(): void {
+    this.cacheSync?.bindHandlers({
+      onEvict: (key) => this.invalidateCache(key),
+      onFlush: () => this.invalidateCache(),
+    });
+  }
+
+  /**
+   * §4.2: 本地逐出 + 跨实例广播。本地逐出是同步的（写后读本进程立即可见）；
+   * 广播是 fire-and-forget（`publishInvalidate` 内部吞掉一切失败）——**绝不**
+   * 让 Redis 的可用性改变配置写操作的结果。
+   */
+  private notifyConfigChanged(key?: string): void {
+    this.invalidateCache();
+    void this.cacheSync?.publishInvalidate(key);
   }
 
   async findOne(key: string): Promise<SystemConfig> {
@@ -163,7 +207,8 @@ export class SystemConfigService {
     } finally {
       // PERF-2: 失败也要失效——写事务/语句可能已部分生效（如历史行已落、
       // 配置行 upsert 失败），此时缓存里的旧值比「多读一次库」危险得多。
-      this.invalidateCache();
+      // §4.2: 同时广播到其他实例（失败/异常路径同样广播——保守方向）。
+      this.notifyConfigChanged(dto.key);
     }
   }
 
@@ -252,7 +297,9 @@ export class SystemConfigService {
       await this.repo.remove(config);
       return { deleted: true };
     } finally {
-      this.invalidateCache();
+      // §4.2: 删除同样广播（其他实例必须立刻忘掉该键——否则旧配置还能在
+      // TTL 窗口内被读到，对 executor.sharedToken 这类键尤其危险）。
+      this.notifyConfigChanged(key);
     }
   }
 
@@ -294,7 +341,8 @@ export class SystemConfigService {
     } finally {
       // PERF-2: 事务提交/回滚后都全清——提交后要看到新值，回滚后要丢掉
       // 可能已被 upsertInStores 内 findOneBy 之外的路径污染的任何缓存行。
-      this.invalidateCache();
+      // §4.2: 一次动多个键（键集合还依赖事务是否提交）→ 广播全量清空。
+      this.notifyConfigChanged();
     }
   }
 
@@ -444,7 +492,9 @@ export class SystemConfigService {
 
       return this.repo.findOneBy({ key: history.configKey });
     } finally {
-      this.invalidateCache();
+      // §4.2: 三个返回点（create 回滚删除 / 404 早退 / 正常回写）统一在此
+      // 广播——404 早退时 configKey 未知（history 都没读到），故按全量清空。
+      this.notifyConfigChanged();
     }
   }
 

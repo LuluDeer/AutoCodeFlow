@@ -4327,6 +4327,8 @@ export interface components {
             page: number;
             pageSize: number;
             totalPages: number;
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。 */
+            nextCursor?: string | null;
         };
         ExecutionLogsPageResponseDto: {
             /** @description 从 fromLine 起的原始日志行（给定级别过滤时生效） */
@@ -8557,6 +8559,8 @@ export interface operations {
                 status?: string;
                 /** @description 按 runtime 过滤（python/node/shell） */
                 runtime?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时行为与引入该参数前完全一致。 */
+                cursor?: string;
                 /** @description 每页条数 */
                 limit?: unknown;
             };
