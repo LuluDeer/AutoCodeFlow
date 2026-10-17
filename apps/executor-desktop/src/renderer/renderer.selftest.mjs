@@ -389,6 +389,89 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── PLAN-EXECUTOR-DESKTOP-UX 2.1：并发进度条（running/max 上「今日汇总」）──
+// 计划原文：「在既有「今日汇总」块上补 running/max，**不引组件库**」。
+// 三道闸：① 纯函数行为（除零/NaN/超额/阈值分档）；② 两个数确实来自**既有**
+// 通道（不新增 IPC）；③ 进度条用原生 <progress>，零组件库、零 inline style。
+{
+  const { concurrencyGauge, concurrencyAriaText, CONCURRENCY_WARN_RATIO } =
+    await import('./concurrency-gauge.ts');
+
+  const eq = (got, want, msg) => {
+    if (got !== want) throw new Error(`2.1: ${msg}（得到 ${got}，期望 ${want}）`);
+  };
+
+  // ① 正常分档
+  let g = concurrencyGauge(0, 10);
+  eq(g.state, 'idle', '空转');
+  eq(g.percent, 0, '空转百分比');
+  eq(g.known, true, '有上限时 known=true');
+  g = concurrencyGauge(2, 10);
+  eq(g.state, 'ok', '有余量');
+  eq(g.percent, 20, '2/10 = 20%');
+  // 阈值以上（含）算 warn：80% 是分界，边界必须包含在内
+  eq(concurrencyGauge(8, 10).state, 'warn', `${CONCURRENCY_WARN_RATIO * 100}% 起必须提示`);
+  eq(concurrencyGauge(7, 10).state, 'ok', '70% 仍算有余量');
+  eq(concurrencyGauge(10, 10).state, 'full', '打满');
+  eq(concurrencyGauge(10, 10).percent, 100, '打满 = 100%');
+
+  // ② 超额：running > max（上限刚被调小 / 中台又派了单）
+  g = concurrencyGauge(12, 10);
+  eq(g.state, 'over', '超额必须单独一档（不是 full）');
+  eq(g.percent, 100, '超额百分比钳到 100（不画超过 100% 的条）');
+  eq(g.running, 12, '超额时保留真实 running（不得悄悄改成 max）');
+  eq(g.max, 10, 'max 不被改写');
+
+  // ③ 脏输入：max 不可用 → known=false，**不谎报 0%**
+  for (const badMax of [0, null, undefined, NaN, '', 'abc', -5]) {
+    const gg = concurrencyGauge(3, badMax);
+    eq(gg.known, false, `max=${String(badMax)} 时必须 known=false`);
+    eq(gg.percent, 0, `max=${String(badMax)} 时不得画进度`);
+    eq(gg.running, 3, `max 不可用时 running 仍要如实显示`);
+  }
+  // running 脏值 → 0（与既有 runningCount 的 ?? [] 口径一致）
+  for (const badRunning of [null, undefined, NaN, '', -1]) {
+    eq(concurrencyGauge(badRunning, 10).running, 0, `running=${String(badRunning)} 必须归 0`);
+  }
+  // 字符串数字（IPC 边界上可能出现）仍按数字解释
+  eq(concurrencyGauge('4', '8').running, 4, '字符串 running');
+  eq(concurrencyGauge('4', '8').max, 8, '字符串 max');
+  // 小数向下取整（并发数是整数语义）
+  eq(concurrencyGauge(3.9, 10.7).running, 3, 'running 向下取整');
+  eq(concurrencyGauge(3.9, 10.7).max, 10, 'max 向下取整');
+
+  // ④ aria 文本：上限未知时不能写 "3/0"
+  eq(concurrencyAriaText(concurrencyGauge(3, 0)), '3/—', '上限未知时 aria 文案');
+  eq(concurrencyAriaText(concurrencyGauge(3, 10)), '3/10', '有上限时 aria 文案');
+
+  // ⑤ 接线：状态页必须真的用它，且两个数来自**既有**通道（无新 IPC）
+  const status = pages[3]; // StatusWindow.tsx
+  if (!status.includes("from '../concurrency-gauge'")) {
+    throw new Error('2.1: StatusWindow 未接线 concurrency-gauge（会把算术内联回页面）');
+  }
+  if (!status.includes('concurrencyGauge(runningCount')) {
+    throw new Error('2.1: 并发条必须由 runningCount + 已读到的 config 派生');
+  }
+  // max 的真值源必须是 executor:status 已返回的 config.maxConcurrentTasks，
+  // 不得为此新建 IPC（本仓纪律：不制造第二套采集）
+  if (!status.includes('config.maxConcurrentTasks')) {
+    throw new Error('2.1: max 必须取自 executor:status 已返回的 config.maxConcurrentTasks');
+  }
+  // ⑥ 零组件库 + 零 inline style：进度条必须是原生 <progress>
+  if (!/<progress[\s\S]{0,400}?className="today-summary-gauge-bar"/.test(status)) {
+    throw new Error('2.1: 并发条必须用原生 <progress>（零组件库，自带 role=progressbar）');
+  }
+  if (!/aria-label=\{t\('status\.concurrencyAria'/.test(status)) {
+    throw new Error('2.1: <progress> 必须有 aria-label（屏幕阅读器要知道占用情况）');
+  }
+  for (const cls of ['.today-summary-gauge', '.today-summary-gauge-bar', '.today-summary-gauge-num']) {
+    if (!css.includes(cls)) throw new Error(`2.1: 缺少样式 ${cls}`);
+  }
+  if (!/\.today-summary-gauge\.is-over/.test(css)) {
+    throw new Error('2.1: 超额态必须有独立样式（否则超额与打满视觉上无从区分）');
+  }
+}
+
 // ── UX-DSK-UV：uv 诊断不得谎报"未找到 uv" ──────────────────────────────
 // 真实故障（已反证）：诊断把"没显式配置 + 没自带 uv"渲染成
 // 「未找到 uv —— 声明了 Python 版本的任务将无法执行」，但 executor-node 的
@@ -1539,4 +1622,110 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report passed');
+// ── PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板（渲染层接线 + 单真值源）──
+// 计划原文：「复用现有 test-connection / python-env-status，补 Node 版本 /
+// workDir 可写 / 磁盘可用聚合面板（诊断报告已具备这些数据源，面板是纯展示层）」。
+// 这里钉的是**接线与纪律**；判定逻辑的行为闸在 health-panel.selftest.ts
+// （main 侧纯函数，能真执行断言）。
+{
+  const ipcHealth = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
+  const preloadHealth = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+  const panelSrc = readFileSync(resolve(root, 'components', 'HealthPanelCard.tsx'), 'utf8');
+  const i18nHealth = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+
+  // ① 三端成对在位：main handler / preload 通道 / 页面组件
+  if (!ipcHealth.includes("ipcMain.handle('diagnostics:health-panel'")) {
+    throw new Error('5.1: 缺少 diagnostics:health-panel 主进程 handler');
+  }
+  if (!preloadHealth.includes('diagnostics:health-panel')) {
+    throw new Error('5.1: preload 未暴露 diagnostics:health-panel');
+  }
+  if (!config.includes('HealthPanelCard')) {
+    throw new Error('5.1: 设置页未挂载健康检查面板');
+  }
+  // ② **单一真值源**（本守卫的核心）：handler 必须复用既有的
+  //    collectDiagnosticInputs + buildDiagnosticReport，不得自建采集
+  const handlerStart = ipcHealth.indexOf("ipcMain.handle('diagnostics:health-panel'");
+  const handlerRest = ipcHealth.slice(handlerStart + 10);
+  const handlerNext = handlerRest.indexOf('ipcMain.handle(');
+  const handlerBlock = handlerNext >= 0 ? handlerRest.slice(0, handlerNext) : handlerRest;
+  if (!handlerBlock.includes('buildDiagnosticReport(')) {
+    throw new Error('5.1: 面板必须复用纯函数 buildDiagnosticReport（否则形成第二套真值源）');
+  }
+  if (!handlerBlock.includes('collectDiagnosticInputs(')) {
+    throw new Error('5.1: 面板必须复用既有 collectDiagnosticInputs 收现场（探针/statfs 都在那里）');
+  }
+  if (!handlerBlock.includes('projectHealthInputs(')) {
+    throw new Error('5.1: 面板必须经 projectHealthInputs 投影（只放行 runtime/health/workDir）');
+  }
+  // ③ 渲染层**不得**自己采集：不探 /health、不 statfs、不 spawn uv。
+  //    先去注释再判——本仓库解释该纪律的中文注释里就写着这些词（同上方
+  //    UX-DSK-UV / split(':') 的反证教训）。
+  const panelNoComments = panelSrc
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  for (const forbidden of ['fetch(', 'statfs', 'execSync', 'spawnSync', 'require(']) {
+    if (panelNoComments.includes(forbidden)) {
+      throw new Error(`5.1: HealthPanelCard 不得自行采集（出现 ${forbidden}）——面板是纯展示层`);
+    }
+  }
+  // ④ 判定逻辑只有一份：组件必须调用 buildHealthPanel，不得自带一套 if 树
+  if (!panelSrc.includes('buildHealthPanel(')) {
+    throw new Error('5.1: 组件必须调用 main/health-panel 的 buildHealthPanel（判定不得在渲染层复制一份）');
+  }
+  if (!panelSrc.includes("from '../../main/health-panel'")) {
+    throw new Error('5.1: 组件必须直接引用 main/health-panel 的纯函数（同一条真值源）');
+  }
+  // ⑤ 三条既有数据源都在用（复用而非新采集）
+  for (const src of ['getHealthPanel', 'getPythonEnvStatus', 'testConnection']) {
+    if (!panelSrc.includes(src)) throw new Error(`5.1: 面板未复用既有通道 ${src}`);
+  }
+  // ⑥ 失败必须页内可见（桌面端无 toast 体系）+ 必须 try/finally
+  if (!panelSrc.includes('health.error') || !panelSrc.includes('role="alert"')) {
+    throw new Error('5.1: 面板失败必须页内可见（health.error + role="alert"）');
+  }
+  if (!/try\s*\{[\s\S]{0,2500}?\}\s*catch[\s\S]{0,600}?\}\s*finally\s*\{/.test(panelSrc)) {
+    throw new Error('5.1: 刷新必须 try/catch/finally（否则 reject 后按钮永久禁用）');
+  }
+  // ⑦ 旧版 preload 缺通道时降级，不得同步抛导致白屏
+  if (!panelSrc.includes("typeof api().getHealthPanel === 'function'")) {
+    throw new Error('5.1: 面板必须对旧版 preload 做 typeof 守卫');
+  }
+  // ⑧ 双语键：zh/en 两块都要有（N-04 全表对齐之外的行为复核）
+  const zhIdxH = i18nHealth.indexOf('  zh: {');
+  const enIdxH = i18nHealth.indexOf('  en: {');
+  const zhBlockH = i18nHealth.slice(zhIdxH, enIdxH);
+  const enBlockH = i18nHealth.slice(enIdxH);
+  for (const key of [
+    'health.title',
+    'health.refresh',
+    'health.refreshing',
+    'health.overall.ok',
+    'health.overall.warn',
+    'health.overall.bad',
+    'health.overall.unknown',
+    'health.row.adminApi',
+    'health.row.executor',
+    'health.row.adminReg',
+    'health.row.heartbeat',
+    'health.row.python',
+    'health.row.node',
+    'health.row.workDir',
+    'health.row.disk',
+    'health.state.ok',
+    'health.state.warn',
+    'health.state.bad',
+    'health.state.unknown',
+    'health.error',
+    'health.unsupported',
+  ]) {
+    if (!zhBlockH.includes(`'${key}':`)) throw new Error(`5.1: zh 表缺键 ${key}`);
+    if (!enBlockH.includes(`'${key}':`)) throw new Error(`5.1: en 表缺键 ${key}`);
+  }
+  // ⑨ 样式在位
+  for (const cls of ['.health-panel', '.health-row', '.health-badge', '.health-summary', '.health-row-state']) {
+    if (!css.includes(cls)) throw new Error(`5.1: 缺少样式 ${cls}`);
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel passed');

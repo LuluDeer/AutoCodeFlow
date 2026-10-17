@@ -2244,6 +2244,12 @@ export default {
   'taskForm.breadcrumb.edit': '编辑任务',
   'taskForm.back': '返回',
   'taskForm.anchorAria': '表单分区导航',
+  // §2.3 表单完成度：只统计必填项（口径见 utils/formCompletion.ts）
+  'taskForm.completion.label': '完成度',
+  'taskForm.completion.percent': '{{percent}}%',
+  'taskForm.completion.aria': '表单完成度 {{percent}}%',
+  'taskForm.completion.section.complete': '{{section}}：必填项已填齐',
+  'taskForm.completion.section.incomplete': '{{section}}：还有必填项未填',
   'taskForm.section.basic': '基本配置',
   'taskForm.section.trigger': '触发与告警',
   'taskForm.section.executor': '执行器策略',

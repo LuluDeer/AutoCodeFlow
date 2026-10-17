@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 纯函数 buildDiagnosticReport() 组装（凭据恒掩码，见 export-flows.ts），
   // 渲染层只收结果路径，永远拿不到报告内容本身。
   exportDiagnosticReport: () => ipcRenderer.invoke('diagnostics:export'),
+  // PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板的只读取数。主进程内部走
+  // **同一个** collectDiagnosticInputs + buildDiagnosticReport，只投影
+  // runtime / health / workDir 三段（不带 config 与 recentLogs）；渲染层
+  // 因此不必自己探 /health 或 statfs（那会形成第二套真值源）。
+  getHealthPanel: () => ipcRenderer.invoke('diagnostics:health-panel'),
 
   // Agent 托管状态（P7b，只读）——设置页 Agent 组的状态行；旧版 preload
   // 未暴露时渲染层容错降级为不显示（同 getAutoLaunch 先例）。

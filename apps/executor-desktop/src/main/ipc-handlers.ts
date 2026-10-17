@@ -58,6 +58,9 @@ import {
   parseImportedConfig,
 } from './export-flows';
 import type { DiagnosticInputs, DiagnosticWorkDirInfo } from './export-flows';
+// PLAN-EXECUTOR-DESKTOP-UX 5.1：健康面板只投影诊断报告的三段（纯函数，
+// 零 electron 依赖，行为由 health-panel.selftest.ts 驱动）。
+import { projectHealthInputs } from './health-panel';
 // B-9/B-11：向导完成面的启动结果反馈——健康等待与注册预检（纯 Node 原语）。
 import { fetchAdminRegistration, probeHealthLive, waitForExecutorHealthy } from './port-probe';
 // UX-DSK-PORT：向导预检用的端口归一化（与 HeartbeatMonitor 同一实现）。
@@ -637,6 +640,25 @@ export function registerIpcHandlers(): void {
       return { ok: true, path: result.filePath };
     } catch (err: any) {
       log.warn(`diagnostic report export failed: ${err?.message ?? err}`);
+      return { ok: false, error: err?.message ?? String(err) };
+    }
+  });
+
+  // ── PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板的**只读**取数通道 ──────
+  // 面板是纯展示层（计划原文），因此这里**不新增任何采集逻辑**：
+  //   · 现场仍由既有的 collectDiagnosticInputs() 收（探针/statfs/日志都在那里）；
+  //   · 组装仍交给既有的纯函数 buildDiagnosticReport()（三层脱敏随之生效）；
+  //   · 只把面板需要的三段投影出去（projectHealthInputs），**不带** config 段
+  //     与 recentLogs 段——那两段过了桥就是白给的额外暴露面，面板也用不到。
+  // 与 diagnostics:export 的关系是「同一条真值源的两种出口」：导出走文件，
+  // 面板走 IPC。渲染层因此永远不需要自己探 /health 或 statfs（第二套真值源）。
+  ipcMain.handle('diagnostics:health-panel', async () => {
+    try {
+      const report = buildDiagnosticReport(await collectDiagnosticInputs(new Date()));
+      return { ok: true, report: projectHealthInputs(report) };
+    } catch (err: any) {
+      // 面板失败必须页内可见（桌面端无 toast 体系），因此不吞错。
+      log.warn(`health panel collection failed: ${err?.message ?? err}`);
       return { ok: false, error: err?.message ?? String(err) };
     }
   });

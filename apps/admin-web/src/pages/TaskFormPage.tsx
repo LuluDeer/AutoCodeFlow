@@ -87,6 +87,9 @@ import TaskFormTemplateModal, {
 } from '../components/task-form/TaskFormTemplateModal';
 // REFACTOR-TASKFORM-11：锚点条 + 校验播报区（页框架 JSX 原样迁出）
 import TaskFormNavRail from '../components/task-form/TaskFormNavRail';
+// PLAN-FRONTEND-UX-IMPROVEMENTS §2.3：表单完成度口径（纯函数，只数必填项；
+// 条件性字段按当前 triggerType/codeSource/executorMode 排除出分母）
+import { computeFormCompletion } from '../utils/formCompletion';
 // REFACTOR-TASKFORM-07：参照数据加载 hook（执行器分组/标签/清单、应用、项目、
 // 依赖候选；失败降级哲学见其头注释；?applicationId= 回填在本页独立 effect，
 // 见 BUGFIX 注释）
@@ -101,6 +104,10 @@ import '../i18n';
 
 // UI-06: 单页分区锚点。全部 Form.Item 同时挂载，锚点条只负责滚动定位。
 const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', 'sec-glue'] as const;
+
+// §2.3：`Form.useWatch` 的**整表单**订阅形态。必须是模块级常量——每次渲染新建
+// `[]` 会让 useWatch 的依赖比较认成「变了」而重复重算（见其 flattenDeps）。
+const ALL_FORM_FIELDS: string[] = [];
 
 export default function TaskFormPage() {
   const { t } = useTranslation();
@@ -251,6 +258,42 @@ export default function TaskFormPage() {
   // TaskFormTriggerSection 内 useWatch）。
   const runtimeWatch = Form.useWatch('runtime', form);
   const applicationIdWatch = Form.useWatch('applicationId', form);
+  // PLAN-FRONTEND-UX-IMPROVEMENTS §2.3：表单完成度指示。
+  //
+  // `useWatch([])` 是 rc-field-form 的**整表单**订阅形态（getNamePath([]) 对
+  // store 取值即返回 store 本身），等价于「任意字段变更都让我重算」——这正是
+  // 百分比需要的行为，且不必为每个必填项各写一行 useWatch。用空的常量数组
+  // （模块级 ALL_FORM_FIELDS）而非字面量 `[]`：useMemo 的依赖比较、以及 useWatch
+  // 内部的 flattenDeps 都以引用/序列化值判定，每次渲染新建数组会让它重跑。
+  //
+  // 取值用 getFieldsValue(true)（= 整个 store）而不是 useWatch 的返回值：
+  // 后者只含**已注册字段**，尚未挂载/已被条件分支卸载的字段读不到——而条件性
+  // 字段（applicationId 在 zip 分支、executorId 在 pinned 分支）恰恰是我们要
+  // 按现值判定适用性的对象。useWatch 在这里只承担「何时重算」的驱动作用。
+  const formValuesForCompletion = Form.useWatch(ALL_FORM_FIELDS, form);
+  const completion = useMemo(
+    () =>
+      computeFormCompletion({
+        ...(form.getFieldsValue(true) as Record<string, unknown>),
+        // 两个不在字段树里的自持 state——与提交链路同一份清单
+        // （见 captureDraftSnapshot / applyCodeSourcePayload 的取值来源）。
+        codeSource,
+        executorMode,
+      }),
+    // formValuesForCompletion 是「什么时候重算」的信号：值本身经
+    // getFieldsValue(true) 现取，所以它不在闭包里出现——但去掉它百分比就
+    // 不再随输入更新（这条 disable 是刻意的，别当冗余依赖删掉）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [formValuesForCompletion, codeSource, executorMode, form],
+  );
+  const sectionStatus = useMemo(() => {
+    const map: Record<string, 'complete' | 'incomplete'> = {};
+    for (const section of completion.sections) {
+      // 无必填项的分区没有可判定的状态，不给状态点（避免「永远是完成」的噪声）。
+      if (section.requiredTotal > 0) map[section.id] = section.filled ? 'complete' : 'incomplete';
+    }
+    return map;
+  }, [completion]);
   const { token } = theme.useToken();
 
   // python_task_multiversion：`?applicationId=` 创建态语义 = 以该应用整包为
@@ -949,12 +992,16 @@ export default function TaskFormPage() {
           alignItems: 'flex-start',
         }}
       >
-        {/* 页框架（REFACTOR-TASKFORM-11 原样迁出）：左侧锚点条（UI-06 具名
-            navigation + G-4 断点显隐）与 UI-12 校验失败播报区（role="status"）。
-            jsdom 无布局——测试只断言锚点渲染与点击可滚，不测监听。 */}
+        {/* 页框架（REFACTOR-TASKFORM-11）：左侧锚点条（UI-06 具名 navigation +
+            G-4 断点显隐）与 UI-12 校验失败播报区（role="status"）。
+            jsdom 无布局——测试只断言锚点渲染与点击可滚，不测监听。
+            §2.3：整体完成度与分区状态点由 NavRail 自身渲染（它是那一列的
+            sticky 容器），本页只下传口径计算结果，不复制布局/断点逻辑。 */}
         <TaskFormNavRail
           anchorItems={anchorItems}
           announcement={validationAnnouncement}
+          completionPercent={completion.percent}
+          sectionStatus={sectionStatus}
         />
 
         {/* FORM-WIDTH-01：内容列限宽 1080px——此前输入框在 1536px+ 视口下全宽

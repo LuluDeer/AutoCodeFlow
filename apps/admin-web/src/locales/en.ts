@@ -2229,6 +2229,12 @@ export default {
   'taskForm.breadcrumb.edit': 'Edit Task',
   'taskForm.back': 'Back',
   'taskForm.anchorAria': 'Form section navigation',
+  // §2.3 form completion: required fields only (see utils/formCompletion.ts)
+  'taskForm.completion.label': 'Completion',
+  'taskForm.completion.percent': '{{percent}}%',
+  'taskForm.completion.aria': 'Form completion {{percent}}%',
+  'taskForm.completion.section.complete': '{{section}}: all required fields filled',
+  'taskForm.completion.section.incomplete': '{{section}}: required fields missing',
   'taskForm.section.basic': 'Basic Config',
   'taskForm.section.trigger': 'Trigger & Alert',
   'taskForm.section.executor': 'Executor Strategy',

@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Icon, { type IconName } from '../components/Icon';
 import PageHeader from '../components/PageHeader';
 import ConfirmBar from '../components/ConfirmBar';
+// PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板（纯展示层，判定逻辑在
+// main/health-panel.ts 的纯函数里，行为由 health-panel.selftest.ts 钉住）。
+import HealthPanelCard from '../components/HealthPanelCard';
 import {
   DOWNLOAD_TIMEOUT_MS,
   EXECUTOR_PORT,
@@ -1297,6 +1300,12 @@ export default function ConfigPage() {
                 <div className="cfg-group">
                   <div className="cfg-group-title">{t('cfg.about.groupDiagnostics')}</div>
                   <div className="cfg-field">
+                    {/* PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板。纯展示层——
+                        数据来自主进程对**同一份** buildDiagnosticReport 输出的
+                        投影（runtime/health/workDir）+ 既有 python-env-status +
+                        既有 test-connection；渲染层不自行采集任何指标。
+                        放在诊断组内导出按钮之上：先看"当前怎么样"，再看"要不要打包"。 */}
+                    <HealthPanelCard apiUrl={String(savedForm.adminApiUrl || '')} />
                     <div className="cfg-row">
                       <button
                         type="button"
