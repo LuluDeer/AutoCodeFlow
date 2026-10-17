@@ -986,6 +986,13 @@ jobs:
           # docs/PRE-EXISTING-CI-GAPS-2026-10-08.md。
           npm run test:agent
           npm run test:sop
+          # AI 域（qwen 多模态）的两层检查：运行时行为（转译 ai.service.ts +
+          # mock axios 真跑）+ 结构断言（读源码锁安全姿态）。
+          # 2026-10 纳入：与上面 test:agent/test:sop 同一病史——存在但不在任何
+          # CI job 清单里，已腐烂到红（断言写死中文文案 / 字面量 500 / 精确语法
+          # 形态，随 F-6 可配置化与 error catalog 迁移集体失效）。修好后立即纳入。
+          # 这两条只读源码 + 桩依赖，无 DB/网络依赖，可与其他 selftest 串跑。
+          npm run test:qwen
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:

@@ -277,7 +277,22 @@ console.log("\n── 安全姿态 ──");
       messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "file:///etc/passwd" } }] }],
     });
   } catch (e) { threw = e; }
-  check("拒绝 file:// 媒体 URL", threw !== null && /non-http\(s\) media URL/.test(threw.message), threw?.message);
+  // 断言**稳定契约**而不是文案：AppError 的 `message` 是「中文兜底」（renderZh），
+  // 它服务于不翻译的消费者，且随错误目录文案调整而变——历史上这里断言英文
+  // /non-http(s) media URL/，错误迁入 catalog 后整条检查变红但不是产品缺陷。
+  // 真正该锁的是：① 业务码是 AI_MEDIA_URL_SCHEME_NOT_ALLOWED；
+  //              ② 抛出的是 AppError（带 errorCode），不是裸 Error（裸 Error
+  //                 经全局 filter 只会落一句泛化的 500 文案，前端无从翻译）。
+  check(
+    "拒绝 file:// 媒体 URL（业务码 AI_MEDIA_URL_SCHEME_NOT_ALLOWED）",
+    threw !== null && threw.errorCode === "AI_MEDIA_URL_SCHEME_NOT_ALLOWED",
+    threw === null ? "未抛错" : `errorCode=${threw.errorCode} message=${threw.message}`,
+  );
+  check(
+    "拒绝时抛的是带 errorCode 的 AppError（非裸 Error）",
+    threw !== null && threw.errorCode !== undefined && /非 http\(s\) 的媒体 URL/.test(threw.message),
+    threw?.message,
+  );
   check("拒绝后未发出请求", lastCall === null);
 }
 {

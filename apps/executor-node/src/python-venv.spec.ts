@@ -115,6 +115,20 @@ function poolDeps(
 ): PythonVenvDeps {
   return {
     discoverInstalled: async () => entries.map((e) => ({ ...e })),
+    // 同步池快照同样要注入：`resolveStartPython`（同步路径）**不**走
+    // discoverInstalled，它读的是进程内的 interpreterSnapshot 缓存。只注入
+    // 前者时后者会落到**真实**实现，于是"池空"的用例在本机装过解释器的机器
+    // 上读到真池而变红/变绿——与 hostPythonDeps 注释里同一个坑（读取路径有
+    // 两条，注入点必须覆盖两条）。
+    interpreterSnapshot: () => entries.map((e) => ({ ...e })),
+    // 同理：`resolveDeployInterpreter` 在"池空 + 无宿主"之后还有**默认版本兜底**
+    // （经 uv 取 DEFAULT_PYTHON_VERSION）。不注入它，"必须失败"的用例会真的去
+    // 下载/命中宿主真实池，以 E:\tmp\interpreters\... 的形式**成功返回**——
+    // 断言 rejects 直接崩（本机 Windows 实测）。
+    // 默认给"取不到"：要覆盖兜底成功路径的用例自己显式注入 ensureVersion。
+    ensureVersion: async () => {
+      throw new Error('interpreter pool unavailable (test stub)');
+    },
     ...extra,
   };
 }

@@ -70,9 +70,18 @@ check(
   "max_tokens 来自 qwen 独立配置（不共享 openai 的 500）",
   /maxTokens = req\.maxTokens \?\?/.test(svc),
 );
+// F-6（审计）把 openai 分支的 max_tokens 提为可配（ai.openaiMaxTokens），
+// 请求体不再出现字面量 `max_tokens: 500`——原断言因此腐烂。要锁的不变量有两层：
+//   ① 请求体仍用**变量**下发（而不是又被写死成一个新字面量）；
+//   ② 该变量的**默认值**仍是 500（= 旧硬编码，零行为漂移），解析兜底也回 500。
 check(
-  "既有 callOpenAI 的 500 未被改动",
-  /max_tokens:\s*500/.test(svc),
+  "既有 callOpenAI 的 max_tokens 走配置变量下发（非字面量）",
+  /max_tokens:\s*maxTokens/.test(svc),
+);
+check(
+  "既有 callOpenAI 的 max_tokens 默认值仍为 500（F-6 零行为漂移）",
+  /getOpenAiMaxTokens[\s\S]{0,400}?"openaiMaxTokens",\s*"500"/.test(svc)
+    && /getOpenAiMaxTokens[\s\S]{0,600}?return\s+Number\.isFinite\(n\)\s*&&\s*n\s*>\s*0\s*\?\s*n\s*:\s*500/.test(svc),
 );
 
 // tool-calling（P3 的 Agent 循环依赖它）
@@ -163,9 +172,22 @@ check(
   "analyzeFailure 仍走 sanitizeLogs",
   /const sanitized = this\.sanitizeLogs\(logs\)/.test(svc),
 );
+// WIKI-OPT-3 的 cron 校验现在先规范化再验（AI 会产出 POSIX 裸 n/step 形态，
+// 如 "12/20 * * * *"，直接喂 nodeCron.validate 会被误判非法）。原断言写死了
+// `nodeCron.validate(parsed.suggestedCron)` 这一精确形态，规范化引入后即腐烂。
+// 锁真正的不变量：校验存在 + **校验对象是规范化后的 canonical**（不是原始串），
+// 且非法分支仍走 warn + fallback:true。
 check(
   "suggestSchedule 的 cron 校验未被删（WIKI-OPT-3）",
-  /nodeCron\.validate\(parsed\.suggestedCron\)/.test(svc),
+  /nodeCron\.validate\(canonical\)/.test(svc),
+);
+check(
+  "cron 校验作用在规范化后的值上，而不是 AI 原始串",
+  /normalizeCron5Field\(parsed\.suggestedCron\)[\s\S]{0,200}?nodeCron\.validate\(canonical\)/.test(svc),
+);
+check(
+  "非法 cron → warn + fallback:true（不静默透出）",
+  /nodeCron\.validate\(canonical\)[\s\S]{0,400}?fallback:\s*true/.test(svc),
 );
 
 console.log(
