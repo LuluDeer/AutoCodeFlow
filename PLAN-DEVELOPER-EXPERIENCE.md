@@ -4,6 +4,52 @@
 **预计工作量**: 4-6 人天  
 **目标**: 提升开发效率、降低上手难度、改善本地开发体验
 
+> ## ⚠️ 实施前必读（2026-10-17 核验结论）
+>
+> **18 个条目里 11 项早已实现**，另有 4 项按计划实施会与既有机制冲突。
+>
+> | 条目 | 真实状态 | 说明 |
+> |---|---|---|
+> | 1.1 一键启动 | ✅ **已实现** | `Makefile:20-58`（dev / infra-up）+ `dev.sh` + `scripts/start-isolated.sh` |
+> | 1.2 环境健康检查 | ✅ **已实现** | `Makefile doctor` → `deploy.sh doctor --json` + `scripts/verify-config.cjs` |
+> | 1.3 .env 模板生成 | ✅ **已实现** | `deploy.sh:421`（openssl rand）、`:457-462`（从 `.env.example` 生成） |
+> | 2.1 文档网站 | ✅ **已实现** | `packages/docs-site`（VitePress 1.6.4）+ `docs-site-deploy.yml` |
+> | 2.2 示例库 | ✅ **已实现** | `examples/` 5 个目录 + `docs-site/examples.md` |
+> | 2.3 ADR 模板 | ✅ **已实现** | `docs/adr/adr-template.md` + `adr-001..023` |
+> | 3.1 Husky + lint-staged | ⛔ **勿实施** | 已有 `.pre-commit-config.yaml` + gitleaks 两套钩子；且本仓**没有根级 workspace 安装**，`prepare: husky install` 会破坏按 app 独立安装的模型（ARCH-20） |
+> | 3.2 Commitlint | ⚠️ 部分 | 无 commitlint 配置，但 `release-please` 已按 conventional 解析。**不要加 `scope-enum`**——会拒绝合法 scope |
+> | 3.3 CHANGELOG | ✅ **已实现** | `CHANGELOG.md` + `release-please-config.json` |
+> | 4.1 测试分组 | ⚠️ 部分 | `test:unit` 聚合 14 套件 + CI `--shard 1/4`；无 `test:quick` / `--onlyChanged` |
+> | 4.2 测试数据工厂 | ⬜ 缺失 | 无 faker / factories |
+> | 4.3 快照测试 | ⛔ 勿实施 | 600+ 行为断言 + design-audit 分片已覆盖；快照只会带来 churn |
+> | 5.1 Redux DevTools | — **不适用** | 本仓用 zustand，没有 Redux |
+> | 5.2 React Query DevTools | ⬜ 缺失 | devDep，可用 |
+> | 5.3 VSCode 调试 | ⬜ 缺失 | 无 `.vscode/` |
+> | 6.1 PR 模板 | ✅ **已实现** | `.github/PULL_REQUEST_TEMPLATE.md`（含 API 变更清单） |
+> | 6.2 Dependabot 自动合并 | ⚠️ 部分 | `dependabot.yml` 只覆盖 actions（分组），无 auto-merge 工作流 |
+> | 6.3 CODEOWNERS | ⬜ 缺失 | 零依赖、零风险 |
+> | 7.1 Bundle 分析 | ⬜ 缺失 | 只有 `manualChunks`，无可视化 |
+> | 7.2 Lighthouse CI | ⬜ 缺失 | 无 `@lhci/cli` |
+>
+> ### ⛔ 不要实施
+> - **3.1 Husky**——双钩子系统 + 破坏按 app 独立安装模型
+> - **3.2 commitlint `scope-enum`**——会拒绝合法 scope；release-please 已守门
+> - **4.3 快照测试**——只带来 churn
+> - **5.1 Redux DevTools**——仓库用 zustand
+> - **1.1-1.3 的脚本重写**——`Makefile doctor` / `deploy.sh doctor --json` /
+>   `verify-config.cjs` / `check-env-drift.mjs` 已覆盖；且计划里的
+>   `docker-compose`（v1 语法）调用会**回退** `dev.sh:15-21` 已有的 v2 探测
+>
+> ### ✅ 真正值得做的三项
+> 1. **6.3 CODEOWNERS**——零依赖、零风险
+> 2. **5.2 React Query DevTools**——devDep，注意必须加进
+>    `apps/admin-web/package-lock.json`（**不是根**，`check-no-hoisting.mjs` 禁止提升）
+> 3. **7.1 Bundle 分析**——`rollup-plugin-visualizer` + `analyze` 脚本，同上注意 lockfile
+>
+> ### ⚠️ 新依赖的硬约束
+> 任何新 npm 依赖必须落到**使用它的那个 app 自己的 `package-lock.json`**，
+> 绝不能加到根——`check-no-hoisting.mjs`（ARCH-20）会直接判红。
+
 ---
 
 ## 1. 本地开发环境改进
@@ -615,32 +661,75 @@ jobs:
 
 ---
 
-## 实施路线图
+## 实施路线图（2026-10-17 核验后重排）
 
-### 阶段 1（本月）
-- [ ] 1.1-1.3 本地开发环境改进
-- [ ] 3.1-3.2 代码质量工具链
-- [ ] 4.1 测试分组
+### ✅ 已完成（无需动工）
+- [x] **1.1-1.3 本地开发环境**——`Makefile dev/infra-up/doctor` + `dev.sh` +
+      `deploy.sh doctor --json` + `verify-config.cjs` + `.env` 生成
+- [x] **2.1 交互式文档网站**——VitePress + `docs-site-deploy.yml`
+- [x] **2.2 代码示例库**——`examples/` + docs-site 页面
+- [x] **2.3 ADR 模板**——`docs/adr/`（模板 + 23 篇）
+- [x] **3.3 自动 CHANGELOG**——`release-please`
+- [x] **6.1 PR 模板**——含 API 变更清单
 
-### 阶段 2（下月）
-- [ ] 2.1 交互式文档网站
-- [ ] 2.2 代码示例库
-- [ ] 5.1-5.3 调试工具
+### ⛔ 不要实施
+- **3.1 Husky + lint-staged**——已有 `.pre-commit-config.yaml` + gitleaks；
+  且无根级 workspace 安装，`prepare: husky install` 会破坏按 app 独立安装（ARCH-20）
+- **3.2 commitlint `scope-enum`**——会拒绝合法 scope；release-please 已守门
+- **4.3 快照测试**——600+ 行为断言已覆盖，快照只带来 churn
+- **5.1 Redux DevTools**——本仓用 zustand
+- **1.1-1.3 脚本重写**——计划里的 `docker-compose`（v1 语法）会回退
+  `dev.sh:15-21` 已有的 v2 探测
 
-### 阶段 3（下季度）
-- [ ] 2.3 ADR 模板
-- [ ] 3.3 自动 CHANGELOG
-- [ ] 4.2-4.3 测试工厂和快照
-- [ ] 6.1-6.3 开发工作流优化
-- [ ] 7.1-7.2 性能分析工具
+### ✅ 已实施（2026-10-17 第二轮）
+1. ~~6.3 CODEOWNERS~~ ✅ **已实施**——`.github/CODEOWNERS`，按域分组（控制面 /
+   执行器 / SDK / registry / CI 门禁 / 基础设施 / 迁移 / 文档）。
+   ⚠️ owner 必须写**真实存在**的账号——写错 GitHub **静默失效**、不报错，
+   故没有留空而是显式写 `@LuluDeer`（并在文件头注明团队扩张后应按域拆分）。
+2. ~~5.3 VSCode 调试配置~~ ✅ **已实施**——但**不是**直接入库 `.vscode/launch.json`：
+   `.gitignore:31` 刻意忽略 `.vscode/`（与 `.idea/` 并列，属「编辑器个人配置不入库」
+   的既有策略）。故入库 `docs/vscode-launch.template.json` +
+   `scripts/gen-vscode-launch.mjs`（生成到本地）。生成器带**漂移校验**：
+   模板里每个 `npm run <script>` 必须在对应 app 的 package.json 里真实存在、
+   `program` 必须与 package.json `main` 一致——脚本改名而模板没改时调试会
+   **静默失效**（启动即退出 / 断点不停），比直接报错难查。已接 CI
+   （`npm run check:vscode-launch`）。实测反证：把 `dev` 改成不存在的 script，
+   校验器立即报错并列出真实可用脚本。
 
-## 依赖项
+### ⬜ 仍然待办（按价值排序）
+1. **5.2 React Query DevTools**——devDep；**必须加进 `apps/admin-web/package-lock.json`**
+2. **7.1 Bundle 分析**——`rollup-plugin-visualizer` + `analyze` 脚本，同上
+3. ~~**4.1 `test:quick`**（`--onlyChanged`）~~ ✅ **已完成（2026-10-17 第三轮）**：
+   根 `package.json` 新增 `test:quick` + 6 个分片（admin-api / executor-node /
+   admin-web / acf-cli / mcp-server / autocodeflow-node-sdk）。两个**踩过的坑**已内建：
+   ① jest `--onlyChanged` 与 vitest `--changed` 在"没有受影响的测试"时**默认 exit 1**
+   → 必须带 `--passWithNoTests`（否则"本次改动确实没碰到测试"会被误报成红，
+   实测 executor-node 与 node-sdk 正是这个分支）；② Python 侧（pytest 无等价 changed
+   模式）与 desktop（其 test 脚本串 40+ 个本就秒级的 selftest）**刻意不纳入**，已在
+   脚本注释里写明口径。已端到端跑通（exit 0）。
+4. ~~**6.2 Dependabot auto-merge**~~ ⚠️ **部分完成（2026-10-17 第三轮）**：
+   `dependabot.yml` 从"只有 github-actions"扩展到 **8 个 npm 安装单元**（逐目录，
+   因为本仓刻意不做 workspace 提升；weekly + minor/patch 归组 + 单目录上限 3）。
+   **auto-merge 刻意没配**：`gh pr merge --auto` 在**分支保护未要求任何 status check**
+   时会立即合并，而本仓正确性几乎全压在 CI 上——把"是否已过 CI"的判定权交给仓库设置
+   （而非工作流自己读 CI 结论）是不可接受的隐式依赖。日后若要开，正确形态是
+   `workflow_run`（CI completed + conclusion == success + head 前缀 `dependabot/`）
+   再 `--squash`，理由与配方写在 `dependabot.yml` 内注释里。
+5. **4.2 测试数据工厂**——需 `@faker-js/faker`，注意落进各 app 自己的 lockfile
+6. **7.2 Lighthouse CI**——需 `@lhci/cli` + 新 CI job
 
-- VitePress: 文档网站
-- Husky + lint-staged: Git hooks
-- @faker-js/faker: 测试数据生成
-- @redux-devtools/extension: Redux 调试
-- @lhci/cli: Lighthouse CI
+## 依赖项（核验后）
+
+- VitePress: **已引入**
+- Husky + lint-staged: **不要引入**（双钩子系统 + 破坏独立安装模型）
+- `@faker-js/faker`: 待引入（测试工厂）
+- `@redux-devtools/extension`: **不需要**（本仓用 zustand）
+- `@lhci/cli`: 待引入（Lighthouse CI）
+- `@tanstack/react-query-devtools`: 待引入（devDep）
+- `rollup-plugin-visualizer`: 待引入（bundle 分析）
+
+> **新依赖硬约束**：必须落到使用它的 app 自己的 `package-lock.json`，
+> 绝不能加到根——`check-no-hoisting.mjs` 会判红。
 
 ## 验收标准
 

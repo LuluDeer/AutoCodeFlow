@@ -91,6 +91,7 @@ security_opt:
 | `LOG_STORAGE_DRIVER` | `db` | 执行日志存储：`db` 或 `s3`（`s3` 需启用 minio profile 并配置 `LOG_STORAGE_*` 与 `MINIO_ROOT_PASSWORD`） |
 | `MINIO_ROOT_PASSWORD` | - | MinIO root 密码（启用 minio profile 时必填，无默认值） |
 | `LOG_RETENTION_DAYS` | `7` | 执行器工作目录/日志 TTL 回收天数（下限 1） |
+| `TASK_EXECUTION_RETENTION_DAYS` | `90` | **`task_executions` 执行记录保留天数**（Q7 每日 02:00 cron，仅 cron Leader 执行）。⚠️ **硬删除且不可逆**：到期行连同其执行日志与 S3 日志对象一并回收，**没有归档表**——需要留存的历史必须在到期前自行导出。缺省 90 与硬编码时期行为一致；非法/零/负数一律回落 90（绝不让配错把 cutoff 推到未来而删空表）。调小=更早丢历史，调大=占更多磁盘 |
 | `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update |
 | `ZIP_MAX_RATIO` | `100` | SEC-05 上传面 zip bomb 防护——解压比上限（中央目录声明的 uncompressed 总量 / compressed 总量），超出拒绝上传（400） |
 | `ZIP_MAX_ENTRIES` | `10000` | SEC-05——zip 条目数上限，超出拒绝上传（400） |
@@ -531,7 +532,7 @@ docker compose --profile replica up -d postgres-replica
 
 平台在 `OTEL_ENABLED=true` 时启用 admin-api → 执行器 → 回调的全链路 traceId 贯穿（W3C Trace Context）；**默认 `false`，开启与否不影响任何既有行为**（关闭时不生成 traceId、不加请求头、`task_executions.traceId` 保持 null）。trace-id 在触发/入队侧生成落库，dispatch 指令以 `traceparent` 头透传执行器并注入任务 env `AUTOFLOW_TRACE_ID`（任务代码可读），执行器终态回调回传同名头关联。管理台执行详情页在 traceId 有值时展示追踪标识与「复制 traceId」按钮。契约细节见 api-reference.md「Distributed Tracing」段。
 
-**架构决策（@opentelemetry/api-only）**：当前仅依赖 `@opentelemetry/api`（轻量 API 包，无 SDK 实现）——span 树在 admin-api 进程内管理并以 `[trace] start/end` 结构化日志输出，**不引入 `@opentelemetry/sdk-*` 全家桶与 exporter**。理由：本项目无稳定部署的 collector，SDK 捆绑大量传递依赖并引入每 span 出站序列化开销，而当前唯一消费场景是「traceId 贯穿 + UI 展示/复制检索」；埋点边界（trigger/enqueue/dispatch/callback）已按 OpenAPI 语义收敛，未来接 Jaeger/Tempo 时只需实现 SDK `TracerProvider` 挂载到 `@opentelemetry/api` 全局并配置 OTLP exporter，无需改动任何埋点代码。
+**架构决策（@opentelemetry/api-only）**：范围上只用 `@opentelemetry/api`（轻量 API 包，无 SDK 实现）——span 树在 admin-api 进程内管理并以 `[trace] start/end` 结构化日志输出，**不引入 `@opentelemetry/sdk-*` 全家桶与 exporter**。注意该包**当前零 import**（手写 `TracingService` 只依赖 `crypto`）：它是有意保留的 **SDK 挂载锚点**，而且 `prom-client` 本就把 `@opentelemetry/api` 作为硬运行时依赖引入——**删掉 admin-api 的直接声明不会把它从依赖树移除**，只会让将来的 import 退回"依赖传递依赖"，故保留（`^1.9.1` 实际在钉版本）。理由（不引 SDK）：本项目无稳定部署的 collector，SDK 捆绑大量传递依赖并引入每 span 出站序列化开销，而当前唯一消费场景是「traceId 贯穿 + UI 展示/复制检索」；埋点边界（trigger/enqueue/dispatch/callback）已按 OpenAPI 语义收敛，未来接 Jaeger/Tempo 时只需实现 SDK `TracerProvider` 挂载到 `@opentelemetry/api` 全局并配置 OTLP exporter，无需改动任何埋点代码。
 
 **Jaeger 接入（可选 profile，当前为预置）**：
 
@@ -605,9 +606,33 @@ docker compose --profile monitoring up -d
 
 - **指标**：Prometheus 自动抓取 postgres / redis / admin-api（`/api/metrics`，
   prom-client 内置，R7 默认开启）；Grafana 已预置 Prometheus+Loki 数据源。
-- **告警**：最小告警集（InstanceDown）已内置；平台侧 Alertmanager webhook
-  （OBS-02）需要 HMAC 签名，Alertmanager 原生 webhook 无法直接调用——需一个
-  HMAC 转发侧车，接线说明见 `config/monitoring/alertmanager.yml` 注释。
+- **告警进平台通知渠道**（OBS-02，已接线）：`Alertmanager → alertmanager-hmac-proxy
+  → POST /api/alerts/webhook → 企业微信/钉钉/Slack/邮件`。启用只需两步：
+
+  ```bash
+  # 1) .env 里设置与 admin-api 同源的 secret（侧车用它签名、admin-api 用它验签）
+  #    ALERT_WEBHOOK_SECRET=<随机串>
+  # 2) 拉起 monitoring profile
+  docker compose --profile monitoring up -d
+  ```
+
+  侧车是仓库内的 `scripts/alertmanager-hmac-proxy.mjs`（**零依赖，只用 Node
+  标准库**，容器镜像 `node:24-alpine`，仅挂载该脚本只读运行）。为什么必须多
+  这一个组件：Alertmanager 原生 `webhook_configs` **不支持自定义签名头**，而
+  `/api/alerts/webhook` 强制 HMAC-SHA256——`ALERT_WEBHOOK_SECRET` 未配置时
+  端点直接 503、鉴权失败 401（安全缺省，防公网路由面被伪造成告警注入入口）。
+
+  - **fail-closed 而非降级**：侧车拿不到 secret 时**拒绝启动**（exit 1，
+    `restart: 'no'` 因此不会变重启刷屏）。症状是 Alertmanager 自身日志报投递
+    失败——**可见的失败**，刻意不做成静默黑洞。
+  - **时钟**：签名头用侧车本机时间戳，接收侧只接受 ±5 分钟窗口。同一宿主上的
+    容器天然一致；跨机部署须保证 NTP 漂移 < 5 分钟。
+  - **网络**：侧车只在 `autoflow-internal` 网络暴露 `9099`，**不映射宿主端口**；
+    对外无需任何开放面。
+  - **自检**：`npm run test:alert-proxy`（金向量 + 与 admin-api 签名工具的源码级
+    契约对账 + 真实 HTTP 端到端 + fail-closed），已进 CI。
+  - 只想在 Alertmanager UI 看告警、不推送任何渠道时，把
+    `config/monitoring/alertmanager.yml` 的 `route.receiver` 改回 `'noop'`。
 - **日志聚合**：Promtail 经宿主 `docker.sock` 采集全部容器日志推 Loki（Grafana
   Explore 可按 `container` 标签过滤）；日志保留 7 天（`config/monitoring/loki.yml`
   的 `limits_config.retention_period`）。

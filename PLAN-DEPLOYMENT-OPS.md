@@ -4,6 +4,25 @@
 **预计工作量**: 8-10 人天  
 **目标**: 简化部署流程、提升系统稳定性、降低运维成本
 
+> ## ⚠️ 实施前必读（2026-10-17 核验结论）
+>
+> 本计划编写时对现状有较多误判（例如以为没有多阶段构建、没有定时备份）。
+> 核验后的事实：
+>
+> | 计划条目 | 真实状态 |
+> |---|---|
+> | §1.1-1.2 容器优化 | ✅ **早已实现**（多阶段 + 非 root + HEALTHCHECK + 优雅关闭） |
+> | §1.3 Kubernetes | ⬜ 仓内零清单，需真实集群 |
+> | §2.1 迁移自动化 | ✅ **早已实现**（CI 幂等性守卫 + 漂移检查 + revert 演练） |
+> | §2.2 定时备份 | ✅ **早已实现**（compose `pg-backup` + crond） |
+> | §2.3 备份恢复演练 | ✅ **本次新增**（`pg-restore.sh` + 77 例离线 selftest + CI） |
+> | §3.1 AlertManager | ✅ **已完成（本轮）**：加签侧车 `scripts/alertmanager-hmac-proxy.mjs` 落地 + `alertmanager.yml` 默认 receiver 指向它（详见 PLAN-OBSERVABILITY「仍然待办」第 2 条的说明） |
+> | §5.1-5.3 灾难恢复 | ⬜ replica 服务存在但无人使用；chaos 场景 D 是 skip 桩 |
+> | §7.1 Trivy / §7.2 Vault | ⬜ 零匹配 |
+>
+> **最重要的一条**：本仓原本**只有备份、没有恢复**——dump 从未被证明可恢复。
+> 本次已补齐，详见文末「实施路线图」的「本次新增」小节。
+
 ---
 
 ## 1. 容器化与编排优化
@@ -683,35 +702,70 @@ spec:
 
 ---
 
-## 实施路线图
+## 实施路线图（2026-10-17 核验后重排）
 
-### 阶段 1（本月）
-- [ ] 1.1-1.2 容器优化
-- [ ] 2.1 迁移自动化
-- [ ] 6.1 资源调优
+### ✅ 已完成
+- [x] **1.1-1.2 容器优化**——**早已实现**。admin-api 是多阶段构建
+      （`node:24-alpine` builder → runtime，`npm ci --omit=dev`，`USER appuser`
+      非 root，`HEALTHCHECK` 打 `/api/health/live`）。5 个 Dockerfile 全部存在，
+      10 个服务有 healthcheck，优雅关闭（`enableShutdownHooks` + 10s 硬超时）已就位。
+- [x] **2.1 迁移自动化**——**早已实现**。CI `admin-api-migrations` job 跑空库全链 +
+      **幂等性守卫**（第二次必须是 no-op）+ schedule 轮跑 entity↔migration 漂移检查
+      与 `migrate:revert` 演练；`check-migrations.mjs` 强制时间戳全局唯一且登记。
+- [x] **2.2 定时备份**——**早已实现**。`pg-backup.sh`（`pg_dump|gzip`，**拒绝 <256
+      字节的可疑 dump**，按 `BACKUP_RETENTION_DAYS` 清理）+ `pg-backup-entrypoint.sh`
+      （写 crontab 后 `exec crond`），已接线为 compose `pg-backup` 服务（profile
+      `backup`），`deploy.sh` 在迁移前也会调用它。
+- [x] **2.3 备份恢复演练**——**本次新增**（见下）。
 
-### 阶段 2（下月）
-- [ ] 1.3 Kubernetes 部署
-- [ ] 2.2 定时备份
-- [ ] 3.1 AlertManager 配置
-- [ ] 7.1 镜像扫描
+### 🆕 本次新增：备份可恢复性演练
 
-### 阶段 3（下季度）
-- [ ] 2.3 备份恢复演练
-- [ ] 3.2 自动修复
-- [ ] 4.1-4.2 蓝绿/金丝雀
-- [ ] 5.1-5.3 灾难恢复
-- [ ] 6.2-6.3 成本优化
-- [ ] 7.2 Secret 管理
+此前仓里只有**备份**脚本，**没有任何恢复脚本**——dump 从未被证明可恢复，也没有
+任何 CI 校验。本次补齐：
 
-## 依赖项
+- `scripts/pg-restore.sh`——**默认恢复到一次性 scratch 库**
+  （`restore_drill_<stamp>`），恢复进生产库必须显式 `--force-overwrite-production`
+  且目标等于 `$PGDATABASE` 时**在任何 DB 连接之前**就拒绝。
+- 归档闸门严格有序：`<256` 字节 → `gzip -t` → `pg_dump` TOC 令牌 → 才
+  `createdb`/`psql`。加载用 `-v ON_ERROR_STOP=1 --single-transaction`，
+  半截失败整体回滚；EXIT trap 清理 scratch 库。
+- 表名**对着迁移核实过**（不是猜的）：交叉检查了 `apps/admin-api/src/migrations/`
+  里所有 `DROP TABLE`/`RENAME`，确认 InitialSchema 的表仍然存活。非空断言只用在
+  `task_templates` / `projects` / `migrations`（前两者有 `ON CONFLICT DO NOTHING`
+  种子，非空由「迁移跑过」推出），`users`/`tasks` 只断言存在——空表是合法状态。
+- `scripts/pg-restore.selftest.sh`——77 条断言，**纯离线**：用 PATH shim 桩掉
+  `psql`/`createdb`/`dropdb`/`gzip` 并记录调用日志，`PGHOST=stub.invalid`，
+  所以「有没有碰过数据库」是**观察到的行为**而不是读源码猜的。
+  已做变异测试：删掉两个生产库闸门 → 70 通过 / 7 失败，
+  `✘ 目标库 == PGDATABASE 且无 --force 竟被接受（会覆盖生产！）` 如期触发。
+- CI 接线：`npm run test:pg-restore` 已进 `selftests` job。
 
-- Kubernetes: 容器编排
-- Helm: 包管理
-- Istio: 服务网格（金丝雀）
-- KEDA: 事件驱动扩缩容
-- Trivy: 镜像扫描
-- Vault: Secret 管理
+### ⬜ 仍然待办
+1. **1.3 Kubernetes / Helm**——仓内零清单（无 `Chart.yaml`/`kustomization.yaml`）。
+   需要真实集群才能验证，不宜盲写。
+2. ~~**3.1 AlertManager 真实接收端**~~ ✅ **已完成（本轮）**：原来是
+   `receiver: 'noop'` + 被 `/api/alerts/webhook` 的 HMAC 要求阻塞。现落地
+   零依赖加签侧车 `scripts/alertmanager-hmac-proxy.mjs`（`node:24-alpine` 只读
+   挂载，仅 `autoflow-internal` 可达，不映射宿主端口），`alertmanager.yml`
+   默认路由指向它。未配置 `ALERT_WEBHOOK_SECRET` 时侧车 fail-closed 退出
+   （`restart: 'no'`，不重启刷屏），失败可见。自检 `npm run test:alert-proxy`
+   已进 CI；金向量与 admin-api 校验侧双向钉死。
+3. **7.1 镜像扫描（Trivy）**——零匹配。现有 `secret-scan` / `npm-audit` /
+   `pip-audit` / `lockfile-integrity` 覆盖的是依赖面，不是容器 CVE。
+4. **7.2 Vault**——零匹配；当前是 `.env` + compose `${VAR:?}` fail-fast。
+5. **4.1-4.2 蓝绿/金丝雀**——`docker-compose.ha.yml` 是 2 副本 + nginx，
+   不是流量切分；`deploy.sh` 有 rollback manifest 但无 canary。
+6. **5.1-5.3 灾难恢复**——`postgres-replica` 服务存在（profile `replica`）但
+   没有任何脚本或演练使用它；`chaos-drill.sh` 的场景 D 是**刻意 skip 的桩**。
+7. **6.2-6.3 成本优化 / 自动扩缩容**——无 `deploy.resources` 块，无 HPA/KEDA。
+8. **备份未离机**——`backup_data` 是本地 docker volume，宿主丢失则库与备份同时丢失。
+
+## 依赖项（核验后）
+
+- **已用**：Docker Compose（20 服务 / 5 profiles）、Prometheus + Grafana +
+  Alertmanager + Loki + Promtail、postgres/redis exporter、nginx。
+- **计划中提到但仓内不存在**：Kubernetes、Helm、Istio、KEDA、Trivy、Vault。
+  这些都需要外部基础设施，属于「有环境才能落地」的类别，不建议盲写清单。
 
 ## 运维指标
 
@@ -724,10 +778,16 @@ spec:
 | 变更失败率 | ~10% | < 5% |
 | 可用性 | 99.5% | 99.9% |
 
+> 这些是**目标值**，需真机基线才能填「当前」。本次工作把其中两项从「不可测」
+> 变成「可测」：备份可恢复性有了自动化演练，执行器全离线有了告警。
+
 ## 验收标准
 
-- [ ] 所有部署脚本有回滚机制
-- [ ] 备份可在 30 分钟内恢复
-- [ ] 告警 95% 可自动修复
-- [ ] DR 演练每季度一次
-- [ ] 成本优化 20% 以上
+- [x] 所有部署脚本有回滚机制——`deploy.sh` 有 `.deploy-manifest.json` 回滚，
+      `deploy.selftest.sh` 50 例覆盖（含 P1-6 退出码传播、P1-7 mode 恢复）
+- [x] 备份可在 30 分钟内恢复——**本次新增可验证路径**（`pg-restore.sh` +
+      77 例离线演练）；真机 RTO 仍需实测
+- [ ] 告警 95% 可自动修复——未实现（无自动修复 Runbook）
+- [ ] DR 演练每季度一次——`chaos-drill.sh` 有 A/B/C 三场景可跑，
+      **D（PG 主备切换）是 skip 桩**
+- [ ] 成本优化 20% 以上——未实施

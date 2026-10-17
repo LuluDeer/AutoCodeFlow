@@ -1,0 +1,59 @@
+# CODEOWNERS — 变更评审归属
+#
+# 语法：<路径 glob> <owner...>；owner 必须是**真实存在的 GitHub 账号或 team**，
+# 写错不会报错、只会静默失效（GitHub 对无法解析的 owner 不告警）。
+# 本仓当前为单人维护，故 owner 一律为 @LuluDeer——**这不是最优形态**，
+# 而是「与其留空、不如显式声明」的务实选择：留空时 GitHub 不请求任何评审，
+# 有了它至少能把 PR 路由给正确的人，且新增协作者时改这里即可生效。
+#
+# 维护提醒：团队扩张后按域拆分 owner（例如把 apps/executor-desktop 交给
+# 桌面端负责人、packages/* 交给 SDK 负责人），不要继续集中在一个人身上——
+# CODEOWNERS 的价值在于**领域归属**，不是形式主义。
+
+# ── 全局兜底：未匹配任何下文的路径 ───────────────────────────────────────
+*                                   @LuluDeer
+
+# ── 控制面（安全敏感：鉴权 / 限流 / 审计 / 迁移）────────────────────────
+# 这些目录的改动影响面最大，历史审计的 P1 缺陷多集中于此。
+/apps/admin-api/                    @LuluDeer
+/apps/admin-web/                    @LuluDeer
+
+# ── 执行器（跨语言契约：改动须三端同步）──────────────────────────────────
+# executor-node / executor-python / executor-desktop 与 packages/executor-protocol
+# 共享同一份协议契约（protocol.json）。改任一端通常需要同批改其余端，
+# 故整组交给同一 owner，避免「只改了一端」的半成品合入。
+/apps/executor-node/                @LuluDeer
+/apps/executor-python/              @LuluDeer
+/apps/executor-desktop/             @LuluDeer
+/packages/executor-protocol/        @LuluDeer
+/packages/contract-fixtures/        @LuluDeer
+
+# ── 对外 SDK / CLI（breaking 变更需同批适配）────────────────────────────
+/packages/acf-cli/                  @LuluDeer
+/packages/mcp-server/               @LuluDeer
+/packages/autocodeflow-node-sdk/    @LuluDeer
+/packages/autoflow-sdk/             @LuluDeer
+
+# ── 私有 registry ────────────────────────────────────────────────────────
+/apps/registry-npm/                 @LuluDeer
+/apps/registry-pypi/                @LuluDeer
+
+# ── CI 与门禁（改这里等于改「什么算通过」，必须评审）────────────────────
+# 这些文件定义 CI 判据本身。历史上出现过「守卫写了但没接上」的形态，
+# 故任何对门禁脚本的改动都应有第二双眼睛。
+/.github/                           @LuluDeer
+/scripts/                           @LuluDeer
+
+# ── 基础设施与部署（生产影响面）────────────────────────────────────────
+/docker-compose*.yml                @LuluDeer
+/deploy.sh                          @LuluDeer
+/infra/                             @LuluDeer
+/config/monitoring/                 @LuluDeer
+
+# ── 数据库迁移（时间戳冲突与不可逆变更的高发区）────────────────────────
+/apps/admin-api/src/migrations/     @LuluDeer
+
+# ── 文档与计划（低风险，但保持归属可见）────────────────────────────────
+/docs/                              @LuluDeer
+/PLAN-*.md                          @LuluDeer
+/PLANS-INDEX.md                     @LuluDeer

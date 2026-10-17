@@ -17,3 +17,97 @@ updates:
         update-types:
           - minor
           - patch
+
+  # ── npm：8 个独立安装单元（ARCH-20 无 hoisting，每个子项目自带 lockfile）──
+  # 为什么值得开：本仓的依赖安全策略是「npm-audit 门槛 moderate + 显式豁免清单
+  # + 复查日期」（见 ci.yml 的 npm-audit job 与 scripts/check-dependency-review.mjs），
+  # 那套机制能**发现问题**，却没有**推进升级**的入口——豁免条目到期时只能靠人
+  # 记得去查新版本。dependabot 把「有新版本可用」变成可见的 PR，升级仍走人工评审。
+  #
+  # 每个目录一条：本仓刻意不为多包做 workspace 提升（ARCH-20，根 package.json
+  # 一旦列 workspaces，8 个子项目的 `npm ci` 会全部 ERESOLVE 失败），
+  # 故 dependabot 也必须**逐目录**工作。根目录不列（无依赖）。
+  #
+  # ⚠️ 刻意**不**配 auto-merge（原 DevEx 6.2 条目）：`gh pr merge --auto` 在
+  # **分支保护未要求任何 status check** 时会立即合并——而本仓的正确性几乎全部
+  # 压在 CI 门禁上，把「是否已通过 CI」的判定权交给仓库设置（而不是工作流自己
+  # 读 CI 结论）是不可接受的隐式依赖。日后若要开，正确形态是 `workflow_run`
+  # 触发（CI completed + conclusion == success + head 分支前缀 `dependabot/`）
+  # 再 `--squash`，**不要**用裸 `--auto`。届时按分支保护现状由维护者评估。
+  #
+  # 限量 3：本仓有刻意钉版本的纪律（Python 侧 `==`、Node 侧部分 pin），
+  # 每周 8 目录 × N 条 PR 会淹没评审。minor+patch 归一组，major 单独出（要人核
+  # breaking change）。到期豁免的依赖升级仍应按需手动指定版本号。
+  - package-ecosystem: npm
+    directory: '/apps/admin-api'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      admin-api-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: '/apps/admin-web'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      admin-web-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: '/apps/executor-node'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      executor-node-minor-and-patch:
+        update-types: [minor, patch]
+
+  # 注意：executor-desktop 的 postinstall 会跑 electron-builder install-app-deps，
+  # dependabot 不执行 postinstall（只改 manifest/lock），故不会拖下 electron 二进制。
+  - package-ecosystem: npm
+    directory: '/apps/executor-desktop'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      executor-desktop-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: '/packages/acf-cli'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      acf-cli-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: '/packages/mcp-server'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      mcp-server-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: '/packages/autocodeflow-node-sdk'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      node-sdk-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: '/packages/docs-site'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    groups:
+      docs-site-minor-and-patch:
+        update-types: [minor, patch]

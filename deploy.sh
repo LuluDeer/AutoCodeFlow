@@ -1363,7 +1363,7 @@ EOF
         # P1-7：回滚到上一次部署的 mode。两套运行时并存会互相覆盖端口与
         # 数据目录，因此切换前先把「另一种模式」的服务停掉。
         if [ -n "$prev_mode" ] && [ "$prev_mode" != "$MODE" ]; then
-            log "  回滚目标模式为 $prev_mode（当前 $MODE）——先停掉当前模式的服务"
+            log "  回滚目标模式为 ${prev_mode}（当前 ${MODE}）——先停掉当前模式的服务"
             stop_for_mode_switch "$MODE"
             MODE="$prev_mode"
             ok "  已切换到 $prev_mode 模式"
@@ -1379,7 +1379,7 @@ EOF
         BUILD=true build_phase
         start_phase
         verify_phase
-        ok "已回滚到 $prev_commit（$MODE 模式）"
+        ok "已回滚到 ${prev_commit}（${MODE} 模式）"
         if [ -n "$prev_branch" ]; then
             warn "仓库现在处于 detached HEAD（commit ${prev_commit}）；回滚前分支为 ${prev_branch}，确认稳定后执行 git checkout $prev_branch 可切回"
         else

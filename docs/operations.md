@@ -775,6 +775,19 @@ docker system prune -f
 find ./data/executor-logs -name '*.log' -mtime +90 -delete
 ```
 
+> **执行记录（`task_executions`）的保留期**：由 `TASK_EXECUTION_RETENTION_DAYS`
+> （默认 **90**）控制，每日 02:00 cron（`executor.service.cleanupOldRecords`，
+> 多实例下仅 cron Leader 执行）分批删除 `createdAt` 早于该天数的行 —— 这是
+> **不可逆的硬删除**，且**没有归档表**：删行会连带回收该行的执行日志、并在
+> `LOG_STORAGE_DRIVER=s3` 下先 `remove` 对应的 S3 日志对象再删行（否则指针随
+> 行消失、对象永远无人回收）。因此：
+>
+> - 需要留档的历史（审计、复盘、计费口径）**必须在到期前自行导出**，没有
+>   "先归档再删除"的自动路径；
+> - 调小该值等于**提前丢弃历史**，属于破坏性变更，改前先备份；
+> - 非法/零/负数会被归一为 90（取用点也再归一一次）——这是刻意的危险方向防护：
+>   cutoff 一旦被推到未来就会把整张表删空。
+
 ---
 
 ## 监控与告警

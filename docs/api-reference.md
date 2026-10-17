@@ -667,7 +667,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 ## Distributed Tracing — 分布式追踪契约（OBS-01，本轮新增）
 
-平台在 `OTEL_ENABLED=true` 时启用跨三端（admin-api → 执行器 → 回调）的 W3C Trace Context 贯穿。**默认 `false`——零开销零行为变化**（不生成 traceId、不带头、不落库，执行行 `traceId` 保持 null）。仅依赖 `@opentelemetry/api`（轻量 API 包），span 树在 admin-api 进程内管理并输出结构化日志（`[trace] start/end` 行）；不引入 `sdk-*`/exporter——接 Jaeger/Tempo 的升级路径见 deployment.md「OTEL / Jaeger」段。
+平台在 `OTEL_ENABLED=true` 时启用跨三端（admin-api → 执行器 → 回调）的 W3C Trace Context 贯穿。**默认 `false`——零开销零行为变化**（不生成 traceId、不带头、不落库，执行行 `traceId` 保持 null）。范围上**只用 `@opentelemetry/api`**（轻量 API 包，不引 `sdk-*`/exporter——无稳定 collector 部署）；注意该包**当前零 import**，它是刻意的 SDK 挂载锚点（且 `prom-client` 已传递依赖它）。span 树在 admin-api 进程内管理并输出结构化日志（`[trace] start/end` 行）；接 Jaeger/Tempo 的升级路径见 deployment.md「OTEL / Jaeger」段。
 
 **traceparent 头契约（W3C Trace Context，版本 00）：**
 

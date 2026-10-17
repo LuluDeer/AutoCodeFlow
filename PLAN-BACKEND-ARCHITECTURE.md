@@ -4,6 +4,52 @@
 **预计工作量**: 8-12 人天  
 **目标**: 提升 admin-api 的性能、可扩展性和可维护性
 
+> ## ⚠️ 实施前必读（2026-10-17 核验结论）
+>
+> 19 个条目逐项用 CodeGraph 核验后：**5 项早已实现**，**2 项按计划实施会造成
+> 严重破坏**，真正值得做的只有 3 项。
+>
+> | 条目 | 真实状态 | 说明 |
+> |---|---|---|
+> | 1.1 批量预取 | ✅ **已实现** | `scheduler.service.ts:1517-1591` keyset 分页 id 扫描 + 一次 `In(missingIds)` 批量取。计划里的 `nextTriggerTime` 列**不存在**（调度器是内存定时器） |
+> | 1.2 触发窗口索引 | ⚠️ 部分 | 有 `idx_tasks_status` / `idx_tasks_status_trigger_type`，**缺 `(status,id)`**——真实查询是 `status=ACTIVE AND id>$cursor ORDER BY id` |
+> | 1.3 调度器指标 | ✅ **已实现且更细** | 5 种 skip reason + P99 直方图 + per-tick 计时 |
+> | 2.1 游标分页 | ⛔ **勿按文本实施** | 见下方「最高风险」 |
+> | 2.2 执行记录归档 | ⚠️ 部分 | 有 90 天保留 cron（leader 门禁 + 分批），但**只删不归档** |
+> | 2.3 物化视图 | ⛔ 勿实施 | 需要 `pg_cron` 扩展，本部署没有 |
+> | 3.1 动态连接池 | ✅ **已实现** | `DB_POOL_SIZE` + min/idle/conn/`statement_timeout` 全部可配 |
+> | 3.2 连接池监控 | ✅ **已实现** | 4 个 `autoflow_db_pool_*` gauge 已导出 |
+> | 3.3 慢查询日志 | ⬜ **缺失** | 无 subscriber / `maxQueryExecutionTime`，只有 `logging` 开关 |
+> | 4.1 Redis 缓存层 | ⬜ 缺失 | 无 `cache-manager` 依赖 |
+> | 4.2 系统配置缓存 | ⬜ **缺失** | `config.service.ts:57-61` 每次调用都查库 |
+> | 4.3 HTTP 响应缓存 | ⬜ 缺失 | 只有一处 ETag + SSE `no-cache` |
+> | 5.1 分层限流 | ⚠️ 部分 | 有 AUTH/OPS/WEBHOOK 档 + IP/executor 维度，**无 per-user 维度** |
+> | 5.2 动态限流 | ⬜ 缺失 | 无负载自适应 |
+> | 6.1 事件总线订阅 | ✅ **已实现且超出** | `outbound-event-dispatcher` + outbox + dead-letter 表 |
+> | 6.2 事件重放 | ⚠️ 部分 | 只有 dead-letter 重放，无按类型/时间范围重放 |
+> | 7.1 URL 版本控制 | ⛔ **勿按文本实施** | 见下方「最高风险」 |
+> | 7.2 向后兼容层 | ⚠️ 部分 | 逐端点 compat 别名，无通用 DTO 转换层（大概率不需要） |
+>
+> ### 🚨 最高风险：§7.1 会一次打断四端
+>
+> 计划建议 `setGlobalPrefix('api/v1')`。但 `main.ts:297-307` 已经用了
+> `enableVersioning({type: URI})` 且**刻意不设 `defaultVersion`**
+> （VERSION_NEUTRAL）。加 `/v1` 前缀会**同时**打断 admin-web、acf-cli、
+> mcp-server 与执行器机器面路由——这是本计划里危害最大的一条。
+>
+> ### 🚨 §2.1 会破坏响应契约
+>
+> 游标分页要改响应信封（`nextCursor`），而
+> `apps/admin-web/src/api/tasks.ts:396-430` 是**逐字段校验**的，
+> `check:openapi-response-schema` 也钉住了 226 个响应形态。
+>
+> ### ✅ 真正值得做的三项
+> 1. **3.3 慢查询日志**（`maxQueryExecutionTime`，配置层）
+> 2. **1.2 `(status,id)` 复合索引**（纯迁移；`check-index-drift.mjs` 是单向的
+>    entity ⊆ DDL，DDL-only 索引能过）
+> 3. **4.2 SystemConfig 缓存**（写路径全部收敛在 `upsert/remove/rollback`，
+>    本地失效完备；跨实例可复用 `token-cache-sync.service.ts:141-154` 的 pub/sub）
+
 ---
 
 ## 1. 调度器性能优化
@@ -557,26 +603,54 @@ export class CreateTaskDto {
 
 ---
 
-## 实施路线图
+## 实施路线图（2026-10-17 核验后重排）
 
-### 阶段 1（本月）- 快速收益
-- [ ] 1.1 批量预取任务
-- [ ] 1.2 触发窗口索引
-- [ ] 1.3 调度器指标细化
-- [ ] 3.2 连接池监控
+### ✅ 已完成（无需动工）
+- [x] **1.1 批量预取任务**——keyset 分页 + 单次批量取
+- [x] **1.3 调度器指标细化**——5 种 skip reason + P99 直方图 + per-tick 计时
+- [x] **3.1 动态连接池**——`DB_POOL_SIZE` + min/idle/conn/statement 全可配
+- [x] **3.2 连接池监控**——4 个 `autoflow_db_pool_*` gauge
+- [x] **6.1 事件总线订阅**——outbound dispatcher + outbox + dead-letter
+- [x] **7.1 URL 版本控制**——`enableVersioning(URI)`，刻意 VERSION_NEUTRAL
 
-### 阶段 2（下月）- 性能优化
-- [ ] 2.1 游标分页
-- [ ] 2.2 执行记录归档
-- [ ] 3.1 动态连接池
-- [ ] 3.3 慢查询日志
+### ⛔ 不要实施（会造成破坏）
+- **7.1 按计划文本加 `/api/v1` 前缀**——同时打断四端
+- **2.1 游标分页**——改响应信封，破坏 admin-web 逐字段校验与 226 个 schema 基线
+- **2.3 物化视图**——依赖 `pg_cron`，本部署没有
 
-### 阶段 3（下季度）- 架构升级
-- [ ] 2.3 物化视图
-- [ ] 4.1-4.3 缓存策略
-- [ ] 5.1-5.2 分层限流
-- [ ] 6.1-6.2 事件驱动增强
-- [ ] 7.1-7.2 API 版本管理
+### ✅ 已实施（2026-10-17 第二轮）
+1. ~~3.3 慢查询日志~~ ✅ **已实施**——`DB_SLOW_QUERY_MS`（默认 1000，0=关闭）→
+   TypeORM **顶层** `maxQueryExecutionTime`（非 `extra`：`PostgresQueryRunner`
+   读的是 `driver.options.maxQueryExecutionTime`）+ Joi 校验 + `.env.example` 登记。
+2. ~~1.2 `(status,id)` 复合索引~~ ✅ **已实施**——迁移 `1790000000056`，
+   `idx_tasks_status_id`，`CREATE INDEX CONCURRENTLY` + `transaction=false`。
+   **刻意不删**已冗余的 `idx_tasks_status`（删索引不可逆，需先量测）。
+3. ~~4.2 SystemConfig 缓存~~ ✅ **已实施**——`SYSTEM_CONFIG_CACHE_TTL_MS`
+   （默认 1000，0=关闭），**4 条写路径全部 `try/finally` 失效**
+   （upsert / batchUpsert / remove / rollback——失败也要失效，因为写可能部分生效）。
+   不做负缓存；跨实例 pub/sub **明确未做**，限制与逃生舱写在代码注释里。
+
+### ⬜ 仍然待办（按价值排序）
+1. **2.2 执行记录保留**——**部分完成（2026-10-17 第三轮）**：
+   · ✅ 复核确认 `task_executions` 走 **90 天硬删**（`executor.service.cleanupOldRecords`
+     → `cleanupOldTaskExecutions`，每日 02:00 cron + LeaderGate，分批 DELETE 并连带
+     回收执行日志与 S3 日志对象），且 **90 天此前是硬编码**。已改为可配置
+     `TASK_EXECUTION_RETENTION_DAYS`（缺省 90 = 行为逐字节不变；非法/零/负数归一为 90，
+     取用点再归一一次——**防"配错一个字符把 cutoff 推到未来而删空表"**）。
+     "硬删除且不可逆、没有归档表"的语义已写进 `.env.example` / `docs/deployment.md`
+     / `docs/operations.md` 三处（此前是隐含约定）。
+   · ⬜ **归档表本身未建**：这是**业务决策**（"合规是否要求留存超过保留期的执行
+     记录"），没有这个前提就建表 = 凭空多一条要长期维护的写入路径 + 一份永远没人
+     查的数据。前置信息本轮已备齐，决策留给维护者。
+2. **2.1 游标分页**——**仍未做，且需要先出「信封过渡方案」**：本仓响应信封是
+   `{data, total, page, pageSize}`，四端（admin-web / acf-cli / mcp-server / 执行器
+   机器面）都消费它。正确形态是**先加** `cursor`/`nextCursor` 且旧字段保留一个版本，
+   再逐端迁移——直接换信封会一次打断四端。
+3. **5.1 per-user 限流维度**、**4.1/4.3 缓存层**、**5.2 动态限流**、
+   **6.2 按类型/时间重放**——价值中等，需先有真实负载基线再决定。
+4. **4.2 跨实例缓存失效**——本轮只做单进程缓存。多实例部署下 TTL 窗口内
+   各实例可能读到旧值；需要强一致时置 `SYSTEM_CONFIG_CACHE_TTL_MS=0`，
+   或复用 `token-cache-sync.service.ts` 的 pub/sub 先例补跨实例失效。
 
 ## 依赖项
 

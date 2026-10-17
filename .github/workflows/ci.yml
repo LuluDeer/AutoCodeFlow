@@ -864,6 +864,22 @@ jobs:
         run: |
           node scripts/check-alerts-rules.mjs --selftest
           node scripts/check-alerts-rules.mjs
+      # OBS-02：告警入站的**加签侧车**自检（零依赖、无网络出口；真实起 HTTP
+      # 服务走真实 TCP）。判据包含金向量（接收侧用 WebCrypto 独立复核）、与
+      # admin-api webhook-hmac.util.ts 的源码级契约对账、上游状态码原样回传
+      # （Alertmanager 的重试语义不能被抹平）、以及 secret 未配置即 fail-closed。
+      # 接线理由同上方守卫族：脚本存在 ≠ 在门禁里跑（写了但没接上）。
+      - name: Alertmanager HMAC proxy selftest (OBS-02)
+        run: node scripts/alertmanager-hmac-proxy.selftest.mjs
+      # SECURITY §3.1：密码策略**后端 ⇔ 前端同源**守卫（零依赖）。判据不是文本
+      # 对比，而是把两侧正则从源码里抽出来**真正执行**：四规则字面量逐字相等 +
+      # 517 个探针上行为等价 + 前端合并正则与其四条规则合取同义。漂移的两种方向
+      # 都是静默故障（表单放行但后端 400 / 表单拒绝后端可接受的密码），且
+      # tsc/eslint/单测都看不见——各自以自己为基准。含 4 条反证的自检。
+      - name: Password policy sync guard (SECURITY §3.1)
+        run: |
+          node scripts/check-password-policy-sync.mjs --selftest
+          node scripts/check-password-policy-sync.mjs
       - name: Env drift guard (B-6)
         run: |
           node scripts/check-env-drift.mjs --selftest
@@ -1016,6 +1032,36 @@ jobs:
       - name: load-test selftest
         # 压测脚本的 SSE 路径解析 / 参数边界 / 速率校验，26 组断言。
         run: node scripts/load-test.selftest.mjs
+      # ── 2026-10-17 优化计划轮：限流白名单同源守卫 ──────────────────
+      # PLAN-SECURITY-HARDENING §1.1 的落地。白名单
+      # （EXECUTOR_MACHINE_PATH_PATTERNS）与真实机器面路由不同源时，
+      # 漏登记端点会静默退回 IP 计桶——本仓已真实发生一次
+      # （SEC-THROTTLE-WHITELIST-GAP：/executors/config 与
+      # /executors/:address/terminal-states 漏在白名单外，多执行器共享
+      # NAT 出口时配置热更新与死信对账会被叠加限流）。零依赖、离线、秒级。
+      - name: Throttler whitelist selftest + scan
+        run: npm run check:throttler-whitelist
+      # ── M-1 配套：备份可恢复性演练（此前只有备份、没有恢复路径）──────
+      # scripts/pg-backup.sh 每天往 backup_data 卷写 db_<stamp>.sql.gz，但仓库
+      # 里从未有过任何恢复脚本——「备份成功」因此从未被证明「可恢复」。
+      # 与本 job 上方五个 selftest 同型病史（写了不接门禁 → 腐烂到红无人知，
+      # 本仓已重演三次）：恢复路径若只存在于某人的笔记本上，等真出事那天才
+      # 发现 dump 是半截的，就已经没有第二次机会了。
+      # 本 step 是**纯离线**的：psql/createdb/dropdb/gzip 全部由 PATH 前置桩
+      # 替换，无 DB、无网络，秒级。核心断言是安全不变量——默认目标必须是
+      # 一次性 restore_drill_* 演练库，目标库 == PGDATABASE 且无
+      # --force-overwrite-production 时必须在任何数据库调用之前拒绝。
+      - name: pg-restore drill selftest (备份可恢复性)
+        run: npm run test:pg-restore
+      # ── VSCode 调试模板同步守卫（PLAN-DEVELOPER-EXPERIENCE §5.3）──────
+      # .vscode/ 被 .gitignore:31 忽略（编辑器个人配置不入库的既有策略），
+      # 故可入库的是 docs/vscode-launch.template.json，由脚本生成到本地。
+      # 本守卫校验模板里每条配置引用的 `npm run <script>` 与 `program`
+      # 入口**仍然存在于各 app 的真实 package.json**——脚本改名而模板没改时
+      # 调试会静默失效（启动即退出 / 断点不停），比直接报错难查得多。
+      # 零依赖、离线、秒级。
+      - name: VSCode launch template sync
+        run: npm run check:vscode-launch
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:
