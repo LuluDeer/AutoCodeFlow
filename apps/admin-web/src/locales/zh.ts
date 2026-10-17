@@ -341,6 +341,12 @@ export default {
   'execs.empty': '暂无执行记录',
   'execs.empty.noMatch': '没有匹配的执行记录',
   'execs.count': '共 {{count}} 条',
+  // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
+  'execs.stablePaging': '稳定翻页',
+  'execs.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'execs.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。关闭则回到原来的页码分页。',
+  'execs.pager.prev': '上一页',
+  'execs.pager.next': '下一页',
   'execs.col.task': '任务',
   'execs.col.status': '状态',
   'execs.col.trigger': '触发方式',

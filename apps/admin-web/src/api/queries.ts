@@ -47,6 +47,15 @@ export const queryKeys = {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      /**
+       * keyset 分页游标（可选）。**必须进 queryKey**：游标不同 = 不同的结果页，
+       * 若把它排除在外，第 1/2/3 页会共用同一个缓存条目（翻回上一页拿到的是
+       * 别的页的数据，且不会有任何报错）。
+       *
+       * `undefined`（OFFSET 路径）与 `''`（keyset 起点）在 queryKey 序列化里也
+       * 是不同的——前者键值为 undefined，后者为空串，不会互相命中。
+       */
+      cursor?: string;
     }) => ['executions', 'list', params] as const,
     /** GET /tasks/:taskId/executions/:execId 单执行详情 */
     detail: (taskId: string, execId: string) =>
@@ -206,7 +215,14 @@ export function useSchedulerStats() {
 
 // ── 执行记录列表 hook（ARCH-26 示范页二：ExecutionsPage） ────────────────
 
-/** GET /tasks/executions 全局执行列表（分页 + 筛选参数进 queryKey）。 */
+/**
+ * GET /tasks/executions/all 全局执行列表（分页 + 筛选参数进 queryKey）。
+ *
+ * `cursor` 三态（见 `tasksApi.allExecutions` 的注释）：`undefined` = 不带该参数
+ * （后端走原 OFFSET 路径，响应不含 nextCursor）；`''` = keyset 起点；非空串 =
+ * 上一页返回的不透明游标原样回传。这里**原样透传，不做任何归一化**——
+ * `cursor ?? ''` 之类会把「不带游标」变成「带空游标」，正好破坏零风险的默认路径。
+ */
 export function useExecutionsList(params: {
   page: number;
   pageSize: number;
@@ -215,7 +231,9 @@ export function useExecutionsList(params: {
   executorAddress?: string;
   startTime?: string;
   endTime?: string;
-}): UseQueryResult<{ items: TaskExecution[]; total: number }> {
+  /** keyset 分页游标（不透明）。缺省 = 走 OFFSET 路径（现有行为，响应无 nextCursor）。 */
+  cursor?: string;
+}): UseQueryResult<{ items: TaskExecution[]; total: number; nextCursor?: string | null }> {
   return useQuery({
     queryKey: queryKeys.executions.list(params),
     queryFn: ({ signal }) => tasksApi.allExecutions(params, signal),

@@ -313,6 +313,19 @@ export interface PageResult<T> {
   page: number;
   pageSize: number;
   totalPages?: number;
+  /**
+   * keyset（游标）分页的「下一页」游标；`null` = 已到末页。
+   *
+   * **这个键可能根本不存在**：仅当请求带 `cursor` 参数时后端才走 keyset 分支
+   * 并追加该键；不带 `cursor` 的 OFFSET 分支响应与加游标分页之前**逐字节一致**
+   * （连这个键都没有，见 `PaginatedExecutionListDto.nextCursor` 的
+   * `@ApiPropertyOptional` 说明）。
+   *
+   * 故类型是 `?:` 而不是 `| null`——`undefined`（键缺失 = 走的 OFFSET 路径）
+   * 与 `null`（keyset 路径且已翻完）是**两种不同语义**，读侧必须分开处理，
+   * 不能用 `?? null` 糊成一团。游标本身**不透明**，禁止前端解析。
+   */
+  nextCursor?: string | null;
 }
 
 export type TaskListParams = {
@@ -633,13 +646,38 @@ export const tasksApi = {
       : client.get(`/tasks/${id}/stats`) as Promise<TaskStats>,
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
+  /**
+   * GET /tasks/executions/all —— 全局执行记录（OFFSET / keyset 双路径）。
+   *
+   * `cursor` 的三态语义（**不许混成一个**）：
+   *   · `undefined`（或键不存在）→ 请求里**没有** `cursor` 参数 → 后端走**原
+   *     OFFSET 路径**，响应逐字节不变（连 `nextCursor` 键都不出现）；
+   *   · `''`（空串）→ 序列化成 `cursor=` → 后端识别为「keyset 起点」，从最新
+   *     一行开始翻（响应含 `nextCursor`）；注意空串**不是** falsy 判断能兜住的
+   *     ——`if (cursor)` 会把 `''` 当成「没传」，正好踩掉起点语义；
+   *   · 非空串 → 上一页响应的 `nextCursor`，**当作不透明令牌原样回传**，禁止
+   *     解析；非法游标后端返回 400（VALIDATION_FAILED），不会静默退回第一页。
+   *
+   * 第 ① 条不依赖 axios 的序列化细节：下面显式把 `undefined` 的 cursor 键删掉
+   * （并断言删除可用），使"不带参数"成为本函数自己的保证，而非某个库版本的
+   * 未成文行为——旧路径逐字节不变是硬要求，不该押在别人身上。
+   */
   allExecutions: (
-    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string },
+    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string; cursor?: string },
     signal?: AbortSignal,
-  ) =>
-    signal
-      ? client.get('/tasks/executions/all', { params, signal }) as Promise<PageResult<TaskExecution>>
-      : client.get('/tasks/executions/all', { params }) as Promise<PageResult<TaskExecution>>,
+  ) => {
+    // 显式归一：三态里的第 ① 态落在这里，二/三态（含空串）原样透传。
+    // 注意判据是 `=== undefined` 而不是 `!params.cursor`——后者会把空串一起删掉。
+    let query = params;
+    if (query && query.cursor === undefined) {
+      const { cursor: _omit, ...rest } = query;
+      void _omit;
+      query = rest;
+    }
+    return signal
+      ? client.get('/tasks/executions/all', { params: query, signal }) as Promise<PageResult<TaskExecution>>
+      : client.get('/tasks/executions/all', { params: query }) as Promise<PageResult<TaskExecution>>;
+  },
   killExecution: (taskId: string, execId: string) =>
     client.post(`/tasks/${taskId}/executions/${execId}/kill`) as Promise<{ success: boolean; message: string }>,
   analyzeExecution: (taskId: string, execId: string) =>

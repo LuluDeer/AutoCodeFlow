@@ -335,6 +335,12 @@ export default {
   'execs.empty': 'No executions yet',
   'execs.empty.noMatch': 'No matching executions',
   'execs.count': '{{count}} records',
+  // §2.1: stable paging (keyset/cursor pagination) switch + custom pager.
+  'execs.stablePaging': 'Stable paging',
+  'execs.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'execs.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. Turn it off to return to numbered pages.',
+  'execs.pager.prev': 'Previous',
+  'execs.pager.next': 'Next',
   'execs.col.task': 'Task',
   'execs.col.status': 'Status',
   'execs.col.trigger': 'Trigger',
