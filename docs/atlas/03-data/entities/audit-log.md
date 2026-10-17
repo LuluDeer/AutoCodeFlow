@@ -40,10 +40,18 @@
 
 DB 层触发器 `audit_logs_append_only_guard()`：`UPDATE`/`DELETE` 一律 `RAISE EXCEPTION`（SQLSTATE P0001, errcode=ACFAUDIT）。唯一放行口：会话显式 `SET LOCAL app.bypass_audit_guard = 'on'`——仅保留期清理任务（180 天，Q7）使用；直连 psql 默认仍被拦截。合法 UPDATE 场景经全仓核查为零。迁移幂等（`DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`、函数 `CREATE OR REPLACE`）。
 
+**边界（实测，别读成"不可篡改"）**：`TRUNCATE audit_logs` 会被**放行**——触发器是
+`BEFORE UPDATE OR DELETE ... FOR EACH ROW`，**没有 `BEFORE TRUNCATE`**；
+表属主 `DISABLE TRIGGER`、超级用户 `SET session_replication_role=replica` 同样能绕过
+（后两者是 PG 固有语义）。而当前应用账号**就是** `postgres`（`configuration.ts` 的
+`DB_USERNAME || "postgres"`），所以迁移头注所称的「DB 账号权限模型兜底」实际并不存在。
+详见 [ADR-025](../../../adr/adr-025-audit-log-tamper-evidence.md) 与
+[DB-LEAST-PRIVILEGE.md](../../../DB-LEAST-PRIVILEGE.md)（后者是待拍板的改进方案）。
+
 ## 关系
 
 - **引用**：`users.id`（无 FK，弱引用——`userId` 可悬垂）。
-- **被引用**：无。审计行只写不改不删（触发器保证）。
+- **被引用**：无。审计行只写不改不删（**普通 SQL 层面**；TRUNCATE 与 DBA 绕过见上）。
 
 ## 生命周期与写入方
 

@@ -917,10 +917,26 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
 
 ### 审计防篡改（SEC-10）
 
-审计表 `audit_logs` 为 **append-only**：迁移 `1790000000006` 在 DB 层安装了行级触发器 `trg_audit_logs_append_only`（BEFORE UPDATE OR DELETE → RAISE EXCEPTION），任何 UPDATE/DELETE 都会被拒绝。
+审计表 `audit_logs` 为 **append-only**：迁移 `1790000000006` 在 DB 层安装了行级触发器 `trg_audit_logs_append_only`（BEFORE UPDATE OR DELETE → RAISE EXCEPTION），**应用层与普通 SQL 的 UPDATE/DELETE 都会被拒绝**。
 
 - **唯一放行点**：审计保留清理任务（Q7，每日 02:05，清理 180 天前数据）在事务内以 `SET LOCAL app.bypass_audit_guard = 'on'` 放行批量 DELETE，事务提交即失效。应用代码中不存在其他写/删审计行的路径。
+- **⚠️ 这个触发器挡不住什么（实测，见 [ADR-025](./adr/adr-025-audit-log-tamper-evidence.md)）**——别把"有触发器"读成"不可篡改"：
+
+  | 操作 | 结果 | 原因 |
+  |---|---|---|
+  | `UPDATE` / `DELETE`（应用层、普通 SQL） | **拒绝** | 行级触发器（`ERRCODE P0001`） |
+  | `TRUNCATE audit_logs` | **放行** ⚠️ | 触发器是 `BEFORE UPDATE OR DELETE ... FOR EACH ROW`，**没有 `BEFORE TRUNCATE`** |
+  | `ALTER TABLE ... DISABLE TRIGGER` 后改删 | **放行** ⚠️ | 表属主本就能关触发器（PG 固有语义） |
+  | `SET session_replication_role=replica` 后改删 | **放行** ⚠️ | 超级用户固有能力 |
+
+  ⇒ **纯 DB 内机制无法对抗表属主与超级用户**。当前部署里应用账号**就是** `postgres`
+  （`configuration.ts` 的 `DB_USERNAME || "postgres"`，且全仓从未建过最小权限角色），
+  所以这层"权限兜底"实际并不存在——真正在挡的仅是"应用代码里没写 UPDATE/DELETE"。
+  撤销 `TRUNCATE` 权限 + 把应用账号降为非属主，是比"上哈希链"更便宜也更强的改进；
+  方案见 [`DB-LEAST-PRIVILEGE.md`](./DB-LEAST-PRIVILEGE.md)（**待维护者拍板**，
+  属部署契约变更）。
 - **验证工具**：`node scripts/audit-verify.mjs`（在仓库根或 apps/admin-api 下运行）连库输出验证报告：触发器安装与启用检查、受控 UPDATE/DELETE 写试（ROLLBACK 事务内，不产生持久改动）、行序一致性（id 序 vs createdAt 序）与 7 天窗口行数密度。`--report-only` 跳过写试；退出码非 0 = 发现可篡改面或结构缺失。纯函数自检：`node scripts/audit-verify.selftest.mjs`。
+  ⚠️ **它不是完整性校验器**：只试 `UPDATE`（不试 `DELETE`/`TRUNCATE`），且 id 空洞被当作合法（保留期清理本就会造成空洞）⇒ **它检测不出删除**。
 - **限流分域（SEC-09）关联**：`THROTTLE_ENABLED=false` 可全局旁路限流（排障逃生门）；auth 敏写面（refresh/totp*）默认 10 次/分钟/IP、触发/部署干预写面默认 30 次/分钟/IP，SSE 长连接豁免——见 `apps/admin-api/.env.example` 与 `src/config/throttle-profiles.ts` 的分域矩阵。
 
 ---
