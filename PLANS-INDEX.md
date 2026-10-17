@@ -203,15 +203,14 @@
     决策与前置条件已写入 PLAN-SECURITY-HARDENING.md §4.2。
 26. **PLAN-BACKEND-ARCHITECTURE.md** §2.2 归档表——**需要业务决策**：见 ADR-024。
     决策所需信息已备齐，等合规口径。
-27. ~~游标分页推广~~ ✅ **已完成五/七轮**：`GET /tasks`、`GET /tasks/:id/executions`、
-    `GET /tasks/executions/all`、`GET /api/audit`、`GET /api/executor-packages`。
-    **前端只迁了 ExecutionsPage 一个样板**（其余页面仍 OFFSET——刻意分轮，见第 34 条）。
+27. ~~游标分页推广~~ ✅ **已完成**：5 个端点（`GET /tasks`、`GET /tasks/:id/executions`、
+    `GET /tasks/executions/all`、`GET /api/audit`、`GET /api/executor-packages`）
+    和 4 个前端页（见第 34/44 条）。
 28. **PLAN-OBSERVABILITY.md** §4 追踪 exporter（需要 collector）。
     另：手写 `TracingService` 的 `parentSpanId` 恒为 `null`，没有真正的父子 span 树。
 29. ~~**后端执行记录流式导出端点**~~ ✅ **已完成（第八轮，4cc26327）**：
     `GET /tasks/executions/export` 真流式（背压 + socket close 中止），keyset 取数，
     公式注入防护（8 条安全用例 + 变异测试验证有牙），50 000 行有痕截断，`@Roles(ADMIN)`。
-    前端接它是后续小事（页面已有「稳定翻页」开关可复用同一开关位）。
 30. **⚠️ 最小权限 DB 角色（ADR-025 核出，价值最高的待办）**——方案已写好在
     `docs/DB-LEAST-PRIVILEGE.md`（21 条断言在真 PG 上实测全绿）。**属部署契约变更，
     需维护者拍板后再动手**。四条 ADR-025 未预见的硬约束已探明，其中一条是阻塞项：
@@ -221,13 +220,8 @@
       `CREATE TABLE ... PARTITION OF` ⇒ **恒需父表属主**，故必须有唯一属主例外；
     · `ALTER TABLE ... OWNER TO` 要求新属主有 schema CREATE（副作用：app 能在 public 建表）；
     · 属主检查认可角色成员关系 ⇒ 用单向 `GRANT acf_app TO acf_migrator` 即可。
-31. ~~**前端其余页面迁 `nextCursor`**~~ ✅ **已全部完成**（第十轮）：ExecutionsPage /
-    AuditLogPage / ExecutorPackagesPage / TaskListPage——四个列表页都有「稳定翻页」开关，
-    默认关闭、零风险。TaskListPage 最难（`cursor` 与 `lastStatus` 在后端**显式互斥** +
-    `useUrlStateSync` 深链 6 个字段），互斥用请求层代码保证（`effectiveLastStatus`）
-    而非只靠 UI 禁用——UI 禁用挡不住 `/tasks?lastStatus=failed` 这条深链绕过路径。
-32. ~~**`GET /tasks/executions/export` 前端已接**~~ ✅ 已完成（0fe64906）——
-    「导出全部」与既有「导出当前页」并列，不改后者语义。
+    ⬜ **剩余两条纯 DB 内挡不住的**（属主 `DISABLE TRIGGER` / 超管
+    `session_replication_role`）只有它能解——TRUNCATE 已在第十一轮用触发器补上。
 
 ### ✅ 已完成（第七轮，2026-10-18）
 33. **`GET /tasks/executions/all` keyset 分页**（2e0c5d28）——新增
@@ -277,6 +271,21 @@
       必须按 `name: /稳定翻页/` 定位，不能用裸 `getByRole('switch')`；
     · 「状态」「触发方式」既是筛选 placeholder 又是表格列标题 ⇒ 须按
       `.ant-select-placeholder` 过滤。
+### ✅ 已完成（第十一轮，2026-10-18）
+44. **`audit_logs` 补 `BEFORE TRUNCATE` 守卫**（3d12113d）——堵住「一条 TRUNCATE 清空
+    全部审计」。既有守卫是 `BEFORE DELETE OR UPDATE ... FOR EACH ROW`，对 TRUNCATE
+    **完全不生效**（语句级操作不走行触发器）；我曾复刻同款守卫实测确认 TRUNCATE 放行。
+    新迁移 `1790000000057` 加 `BEFORE TRUNCATE ... FOR EACH STATEMENT`，**不给逃生门**
+    （保留期清理走 bypass+DELETE，全仓零处 TRUNCATE audit_logs）。
+    **对照实验**：摘掉守卫 → TRUNCATE ALLOWED（洞复现）；装回 → DENIED。
+45. **修正审计防篡改的过度承诺**（7d48cd9e）——`docs/operations.md` 与 `docs/atlas/…/
+    audit-log.md` 原写「任何 UPDATE/DELETE 都会被拒绝」，让读者把"有触发器"读成
+    "不可篡改"。已补一张实测边界表：TRUNCATE（现已守住）/ 属主 `DISABLE TRIGGER` /
+    超管 `session_replication_role`（后两条**仍放行**，PG 固有语义，不谎称挡住）。
+    并注明 `scripts/audit-verify.mjs` **不是完整性校验器**（只试 UPDATE、不试 DELETE/
+    TRUNCATE、把 id 空洞当合法 ⇒ 检测不出删除）。
+
+
 ### 🚫 不要做（核验后判定）
 - **PLAN-SECURITY-HARDENING.md §4.1**（DNS rebinding 双解析）——现有 DNS pinning
   更强，按计划实施是**安全回归**
