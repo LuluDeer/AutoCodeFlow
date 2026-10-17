@@ -176,12 +176,59 @@ describe("AuthService (__tests__)", () => {
         lockedUntil: new Date(Date.now() + 10 * 60_000),
       };
       usersService.findByUsername.mockResolvedValue(lockedUser as any);
-      jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);
+      const compareSpy = jest
+        .spyOn(bcrypt, "compare")
+        .mockResolvedValue(true as never);
+      // 该 spy 在本文件内跨用例共享，先清计数再断言「本用例恰好一次」。
+      compareSpy.mockClear();
       await expect(
         service.login({ username: "admin", password: "pass" }),
       ).rejects.toThrow(UnauthorizedException);
       // R10: an ACTIVE lock must not be cleared — only expired ones are.
       expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
+      // SEC-LOCK-TIMING: a locked account must NOT short-circuit before
+      // bcrypt — otherwise its response time (<10ms) is distinguishable from
+      // the unknown-user path (~100ms), enumerating "exists AND locked".
+      expect(compareSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // SEC-LOCK-TIMING（审计 P1-3）：锁定路径与「用户不存在」路径必须付出
+    // 等价的 bcrypt 成本——两者都恰好一次 compare（不存在的用户比对
+    // DUMMY_BCRYPT_HASH，锁定的用户比对真实 hash）。
+    it("SEC-LOCK-TIMING: 锁定路径与未知用户路径的 bcrypt 次数一致（无时序预言机）", async () => {
+      const compareSpy = jest.spyOn(bcrypt, "compare");
+
+      usersService.findByUsername.mockResolvedValue({
+        ...mockUser,
+        lockedUntil: new Date(Date.now() + 10 * 60_000),
+      } as any);
+      compareSpy.mockClear();
+      await expect(
+        service.login({ username: "admin", password: "pass" }),
+      ).rejects.toThrow(UnauthorizedException);
+      const lockedCalls = compareSpy.mock.calls.length;
+
+      usersService.findByUsername.mockResolvedValue(null);
+      compareSpy.mockClear();
+      await expect(
+        service.login({ username: "nobody", password: "pass" }),
+      ).rejects.toThrow(UnauthorizedException);
+      const unknownCalls = compareSpy.mock.calls.length;
+
+      expect(lockedCalls).toBe(1);
+      expect(unknownCalls).toBe(lockedCalls);
+    });
+
+    it("SEC-LOCK-TIMING: 锁定期间不递增失败计数（不给锁窗续期）", async () => {
+      usersService.findByUsername.mockResolvedValue({
+        ...mockUser,
+        lockedUntil: new Date(Date.now() + 10 * 60_000),
+      } as any);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(false as never);
+      await expect(
+        service.login({ username: "admin", password: "wrong" }),
+      ).rejects.toThrow(/账号已锁定/);
+      expect(usersService.recordLoginFailure).not.toHaveBeenCalled();
     });
 
     // R10: after the lock window expires, the fail counter must be reset

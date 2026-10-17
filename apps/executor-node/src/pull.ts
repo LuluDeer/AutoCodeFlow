@@ -79,6 +79,36 @@ function untrackReservation(): void {
 registerPullReservedSlotsProvider(() => pullReservedSlots);
 
 /**
+ * E-01-STARVE（审计 P1-5）：pull 长轮询上报给服务端的 `freeSlots`。
+ *
+ * 语义是「**除本次预留之外**还能接多少任务」。预留成立时 `runningCount`
+ * 已经含了这 1 个预留（`Atomics.add` 在发起长轮询之前完成），所以必须把这
+ * 一个加回去才是真实空闲数。
+ *
+ * 缺陷现场（修复前为 `max(0, max - running)`）：`maxConcurrentTasks = 1`
+ * 且预留成功 → `max(0, 1-1) = 0` → 服务端判定「无空槽」永不出队 → 执行器
+ * **永久饥饿**。desktop 默认就是 pull 模式，且 `MAX_CONCURRENT_TASKS=1` 是
+ * 受支持的真实配置。
+ *
+ * **不能**只看账本数字推断预留（`running = max` 既可能是「满载」也可能是
+ * 「max-1 个真任务 + 1 个预留」），所以预留状态必须由调用方显式传入——这也
+ * 是修复前那条「max-1 ≥ 1」注释出错的根本原因：它假设了一个账本里并不存在
+ * 的信息。
+ *
+ * 纯函数，供 pull.ts 与 spec 共用同一份口径（python 侧
+ * `scheduler.pull_free_slots` 是它的镜像实现，两侧必须同时改）。
+ */
+export function pullFreeSlotsFor(
+  maxConcurrentTasks: number,
+  runningCount: number,
+  slotReserved: boolean,
+): number {
+  const capacity = Math.max(1, maxConcurrentTasks);
+  const available = capacity - runningCount + (slotReserved ? 1 : 0);
+  return Math.max(0, Math.min(capacity, available));
+}
+
+/**
  * E-07（残差收口）：在飞长轮询的中止句柄。
  *
  * 旧实现只 clearInterval——已发出的那一轮长轮询（服务端阻塞至多 25s）仍在
@@ -285,11 +315,21 @@ export async function pullOnce(): Promise<void> {
         // （pull 模式允许同地址多行并存，否则会拉到别人的队列）。
         deviceFingerprint: getDeviceFingerprint() ?? undefined,
         waitMs: 25_000,
-        // ARCH-33: 服务端据此决定是否出队任务。预留已经计入账本
-        // （getRunningCount() 含本次预留），故直接按当前账本算即可：
-        //   预留成功 → max-1 ≥ 1 → 服务端派任务（正是预留的目的）；
-        //   满载/竞态 → max-max = 0 → 服务端只发命令，不派任务。
-        freeSlots: Math.max(0, config.maxConcurrentTasks - getRunningCount()),
+        // ARCH-33: 服务端据此决定是否出队任务（`freeSlots > 0` 才出队）。
+        //
+        // **E-01-STARVE（审计 P1-5，2026-10-17）**：此前的注释假设「预留成功
+        // → max-1 ≥ 1」，那个不等式只在 maxConcurrentTasks ≥ 2 时成立。
+        // 预留后 getRunningCount() 已含本次预留，于是 max=1 时上报
+        // max(0, 1-1)=0 → 服务端永不派任务 → **执行器永久饥饿**（desktop
+        // 默认 pull 模式 + MAX_CONCURRENT_TASKS=1 是真实配置）。
+        //
+        // 现在显式把「本轮是否持有预留」传进去（账本数字本身区分不了
+        // 「满载」与「max-1 个任务 + 1 个预留」），见 pullFreeSlotsFor 头注。
+        freeSlots: pullFreeSlotsFor(
+          config.maxConcurrentTasks,
+          getRunningCount(),
+          slotReserved,
+        ),
       },
       40_000,
       controller.signal,

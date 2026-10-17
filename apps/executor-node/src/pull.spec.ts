@@ -52,13 +52,22 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
   let pullOnce: () => Promise<void>;
   let resetConfigPullThrottleForTest: () => void;
   let resetPullReservedSlotsForTest: () => number;
+  let pullFreeSlotsFor: (
+    maxConcurrentTasks: number,
+    runningCount: number,
+    slotReserved: boolean,
+  ) => number;
   let logger: { warn: jest.Mock; info: jest.Mock };
 
   beforeEach(() => {
     jest.clearAllMocks();
     Atomics.store(ledger, 0, 0);
-    ({ pullOnce, resetConfigPullThrottleForTest, resetPullReservedSlotsForTest } =
-      require('./pull'));
+    ({
+      pullOnce,
+      resetConfigPullThrottleForTest,
+      resetPullReservedSlotsForTest,
+      pullFreeSlotsFor,
+    } = require('./pull'));
     resetConfigPullThrottleForTest(); // NETOPT-9-6: 节流是粘性模块状态，跨用例重置
     // E-01-RPT: 预留计数同为粘性模块状态（用例在断言前提前 return 会残留）。
     resetPullReservedSlotsForTest();
@@ -288,16 +297,69 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     ).toBe(true);
   });
 
-  // ARCH-33: 有空槽时 freeSlots 如实上报（预留后的实际空闲数）。
-  it('有空槽：freeSlots 按预留后的实际空闲数上报', async () => {
+  // ARCH-33: 有空槽时 freeSlots 如实上报「除本次预留之外」的空闲数。
+  //
+  // E-01-STARVE（审计 P1-5）：max=2、预留后账本=1 → 除预留外仍有 1 个空槽
+  // （max - running + reserved = 2 - 1 + 1 = 2？不——预留的那 1 个正是本次
+  // 要接的任务，接完之后剩 max - running = 1）。上报值供服务端判断**能否
+  // 出队**（>0 判定），故 2 与 1 都放行；旧实现上报 1，在 max=1 时退化为 0
+  // → 永久饥饿，这才是缺陷。
+  it('有空槽：freeSlots 上报「除本次预留之外」的空闲数（max=2 → 2）', async () => {
     Atomics.store(ledger, 0, 0); // maxConcurrentTasks = 2
     await pullOnce();
     expect(postMock).toHaveBeenCalledWith(
       '/api/executors/pull',
-      expect.objectContaining({ freeSlots: 1 }),
+      expect.objectContaining({ freeSlots: 2 }),
       40_000,
       expect.any(AbortSignal),
     );
+  });
+
+  // ─── E-01-STARVE（审计 P1-5）：pullFreeSlotsFor 的口径 ────────────────────
+  // 缺陷现场：maxConcurrentTasks=1（desktop 默认 pull 配置）时旧公式
+  // max(0, 1 - 1) = 0 → 服务端判定无空槽 → 永不出队 → **执行器永久饥饿**。
+  describe('pullFreeSlotsFor（E-01-STARVE）', () => {
+    it('max=1 + 预留成功（running=1）→ 1（修复前为 0，执行器永久饥饿）', () => {
+      expect(pullFreeSlotsFor(1, 1, true)).toBe(1);
+    });
+
+    it('max=1 + 满载（running=1，未预留）→ 0（只发命令，不派任务）', () => {
+      expect(pullFreeSlotsFor(1, 1, false)).toBe(0);
+    });
+
+    it('max=10 空闲 + 预留 → 10；max=10 跑 3 个 + 预留 → 7', () => {
+      // 语义：capacity - (running - reserved) = 「真实在跑之外还剩多少槽」
+      expect(pullFreeSlotsFor(10, 1, true)).toBe(10);
+      // 10 - (4 - 1) = 7：3 个真任务在跑，预留那 1 个是本次要接的
+      expect(pullFreeSlotsFor(10, 4, true)).toBe(7);
+      // 无预留时就是 10 - 4 = 6
+      expect(pullFreeSlotsFor(10, 4, false)).toBe(6);
+    });
+
+    it('满载（running=max）→ 0；账本被异常推高也不为负', () => {
+      expect(pullFreeSlotsFor(5, 5, false)).toBe(0);
+      expect(pullFreeSlotsFor(5, 6, false)).toBe(0);
+      expect(pullFreeSlotsFor(5, 99, false)).toBe(0);
+      expect(pullFreeSlotsFor(5, 99, true)).toBe(0);
+    });
+
+    it('容量非法（0 / 负数）按 1 处理，绝不返回负值', () => {
+      expect(pullFreeSlotsFor(0, 1, true)).toBe(1);
+      expect(pullFreeSlotsFor(-3, 1, true)).toBe(1);
+      expect(pullFreeSlotsFor(0, 0, false)).toBe(1);
+    });
+
+    it('结果恒在 [0, capacity] 区间内', () => {
+      for (const max of [1, 2, 5, 10]) {
+        for (let running = 0; running <= max + 3; running++) {
+          for (const reserved of [true, false]) {
+            const v = pullFreeSlotsFor(max, running, reserved);
+            expect(v).toBeGreaterThanOrEqual(0);
+            expect(v).toBeLessThanOrEqual(max);
+          }
+        }
+      }
+    });
   });
 
   // E-07 残差收口：旧实现只 clearInterval，已发出的那轮长轮询（服务端阻塞至多

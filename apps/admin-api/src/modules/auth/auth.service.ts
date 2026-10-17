@@ -61,24 +61,29 @@ export class AuthService {
   ) {
     const user = await this.usersService.findByUsername(loginDto.username);
 
-    // SEC-003: check the lockout state BEFORE running bcrypt — if the account
-    // is currently locked, fail fast without paying the bcrypt CPU cost and
-    // without leaking whether the username exists.
-    if (user && user.lockedUntil && user.lockedUntil > new Date()) {
-      const minutesLeft = Math.ceil(
-        (user.lockedUntil.getTime() - Date.now()) / 60_000,
-      );
-      throw new AppError("LOGIN_LOCKED", { minutes: minutesLeft });
-    }
-
-    // R10: the lock window has expired — atomically reset the fail counter
-    // BEFORE the password check. loginFailCount still sits at MAX_FAIL from
-    // the original lockout, so without this a single fresh failure would
-    // re-trip the threshold and re-lock for another full window (effectively
-    // a permanent lockout for anyone who mistypes once after expiry). The
-    // conditional UPDATE only clears a genuinely expired lock, so a
-    // concurrent request cannot race a reset against an active window.
-    if (user && user.lockedUntil) {
+    // SEC-003（原始意图）+ SEC-LOCK-TIMING（审计 P1-3，2026-10-17）：
+    //
+    // 锁定时**不**再提前 return。原实现把「账户是否锁定」放在 bcrypt 之前
+    // 快速失败（为了省 CPU），代价是这条路径**完全跳过 bcrypt**：
+    //   · 锁定账户  →  <10ms 返回 LOGIN_LOCKED
+    //   · 不存在的用户 → ~100ms（DUMMY_BCRYPT_HASH 的 compare 照跑）
+    // 响应时间的量级差异把「用户名是否存在且当前被锁」变成可直接探测的
+    // 预言机——正是 SEC-05/F-4 花力气抹平的同一类泄漏，只是从「用户存在
+    // 与否」缩小到「用户存在且已锁定」。
+    //
+    // 现在锁定判定移到 bcrypt **之后**：所有失败路径（不存在 / 密码错 /
+    // 已锁定）都付一次等价的 bcrypt 成本。锁定账户即使密码正确也仍被拒
+    // （LOCKED 优先于签发），安全语义不变，只是不再以 CPU 时间为代价换
+    // 时序侧信道。
+    //
+    // R10: 锁窗已过期时先原子清计数，再走密码校验——否则 loginFailCount
+    // 仍停在 MAX_FAIL，一次新失败会立刻重新锁满一整窗（等价永久锁死）。
+    // 条件 UPDATE 只清「确实已过期」的锁，并发请求无法把活跃窗口竞态清掉。
+    //
+    // SEC-LOCK-TIMING: 只对**已过期**的锁发这条 UPDATE。活跃锁若也发，每次
+    // 被拒的尝试都会多一次 DB 写（放大成本，且与「未知用户」路径的写次数
+    // 不同——那正是时序差本身）。下面这个纯内存判定不改变任何写行为。
+    if (user && user.lockedUntil && user.lockedUntil <= new Date()) {
       await this.usersService.clearExpiredLock(user.id);
     }
 
@@ -89,6 +94,16 @@ export class AuthService {
       loginDto.password,
       user != null ? user.password : DUMMY_BCRYPT_HASH,
     );
+
+    // SEC-LOCK-TIMING: 锁判定移到 bcrypt 之后（见上）。**先于**密码结果的
+    // 处理——锁定期间不递增计数（否则每次尝试都在给窗口续期），也不泄露
+    // 密码是否正确。
+    if (user && user.lockedUntil && user.lockedUntil > new Date()) {
+      const minutesLeft = Math.ceil(
+        (user.lockedUntil.getTime() - Date.now()) / 60_000,
+      );
+      throw new AppError("LOGIN_LOCKED", { minutes: minutesLeft });
+    }
 
     if (!user || !passwordOk) {
       // SEC-05: increment failure counter and lock if threshold reached
@@ -135,20 +150,14 @@ export class AuthService {
   }) {
     const user = await this.usersService.findByUsername(dto.username);
 
-    if (user && user.lockedUntil && user.lockedUntil > new Date()) {
-      const minutesLeft = Math.ceil(
-        (user.lockedUntil.getTime() - Date.now()) / 60_000,
-      );
-      throw new AppError("LOGIN_LOCKED", { minutes: minutesLeft });
-    }
-
     // R-05（DEEP_REVIEW 0ef3bbe）: align with login() — an expired lock must be
     // cleared BEFORE the password/TOTP check. Without this, a client that reaches
     // /auth/totp/verify directly (bypassing /auth/login, which already clears
     // expired locks) keeps loginFailCount stuck at MAX_FAIL, so ONE fresh failure
     // immediately re-locks for another full window. clearExpiredLock is a
     // conditional UPDATE that only resets a genuinely expired lock.
-    if (user && user.lockedUntil) {
+    // SEC-LOCK-TIMING: 只对已过期的锁发（活跃锁跳过，避免写放大与时序差）。
+    if (user && user.lockedUntil && user.lockedUntil <= new Date()) {
       await this.usersService.clearExpiredLock(user.id);
     }
 
@@ -156,6 +165,16 @@ export class AuthService {
       dto.password,
       user != null ? user.password : DUMMY_BCRYPT_HASH,
     );
+
+    // SEC-LOCK-TIMING（审计 P1-3）：与 login() 同款——锁判定放在 bcrypt
+    // **之后**，让「锁定 / 密码错 / 用户不存在」三条失败路径付出等价的
+    // bcrypt 成本，不再用响应时间区分「该用户名存在且已锁定」。
+    if (user && user.lockedUntil && user.lockedUntil > new Date()) {
+      const minutesLeft = Math.ceil(
+        (user.lockedUntil.getTime() - Date.now()) / 60_000,
+      );
+      throw new AppError("LOGIN_LOCKED", { minutes: minutesLeft });
+    }
 
     if (!user || !passwordOk) {
       if (user) {

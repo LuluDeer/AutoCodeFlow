@@ -246,6 +246,40 @@ else
     pass "备份命令不再吞 stderr"
 fi
 
+# P1-6（审计 2026-10-17）：docker 分支的备份退出码必须传播。
+# 缺陷现场：run_pre_migration_backup_cmd 的 docker 分支无条件 `return 0`，
+# 备份失败被当作成功 → migration_phase 的「生产备份失败即中止」守卫对
+# docker 部署完全失效 → 可能在无备份前提下跑破坏性 DDL。
+# 断言：函数体里不再出现「compose run ... pg-backup」之后紧跟的裸 return 0。
+#
+# 注意：本脚本启用了 `set -o pipefail`，而 `awk ... | grep -q` 会在 grep 命中
+# 后提前退出、让 awk 吃 SIGPIPE——整条管道因此返回非 0，`if` 判成「没匹配」。
+# 故一律先落临时文件再 grep（本文件其它断言也遵循同一写法）。
+_func_body="$(mktemp)"
+awk '/run_pre_migration_backup_cmd\(\)/,/^}/' "$DEPLOY" > "$_func_body"
+if grep -A2 'pg-backup /usr/local/bin/pg-backup.sh' "$_func_body" \
+        | grep -qE '^[[:space:]]*return 0[[:space:]]*$'; then
+    fail "P1-6：docker 备份失败仍被 return 0 吞掉"
+else
+    pass "P1-6：docker 备份退出码如实传播（不再 return 0 吞失败）"
+fi
+
+# P1-7（审计 2026-10-17）：rollback 必须从 MANIFEST_PREV 恢复 mode。
+# 缺陷现场：只读 gitCommit，MODE 沿用命令行默认（docker）——源码模式部署
+# 后回滚会去起容器，systemd 仍跑新代码，报假成功。
+awk '/^cmd_rollback\(\)/,/^}/' "$DEPLOY" > "$_func_body"
+if grep -q 'prev_mode' "$_func_body"; then
+    pass "P1-7：rollback 读取上一次部署的 mode"
+else
+    fail "P1-7：rollback 未读取 mode（仍按当前默认模式回滚）"
+fi
+if grep -q 'stop_for_mode_switch' "$_func_body"; then
+    pass "P1-7：模式切换前先停掉旧运行时"
+else
+    fail "P1-7：模式切换未停旧运行时（两套并存）"
+fi
+rm -f "$_func_body"
+
 # B-5：rollback 遗留的 detached HEAD 必须在部署启动时告警（提示基于该 commit
 # 继续 + 如何切回）。构造一个独立 git 仓库并 detach——deploy.sh 以自身所在目录
 # 为 ROOT_DIR，所以要把脚本复制进去跑。

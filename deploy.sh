@@ -790,9 +790,16 @@ run_pre_migration_backup_cmd() {
         # 产物进 backup_data 卷、BACKUP_RETENTION_DAYS 保留策略共用。不能裸
         # `run pg-backup`——pg-backup-entrypoint.sh 无视参数起 crond 常驻，
         # 必须覆盖 entrypoint 直跑备份脚本本体。
+        #
+        # P1-6（审计，2026-10-17）：此前这里无条件 `return 0`，把 `run compose
+        # ... run --rm pg-backup` 的退出码**整个吞掉**——docker 模式下备份失败
+        # （卷满/权限/库连不上）被当作成功，migration_phase 的
+        # 「生产模式备份失败即中止」守卫因此对 docker 部署完全失效，迁移照跑，
+        # 可能在无备份的前提下执行破坏性 DDL。
+        # 修复：让 compose 的退出码原样传播（source 分支本就是这个语义）。
         run compose -f "$ROOT_DIR/docker-compose.yml" --profile backup \
                 run --rm -T --entrypoint /bin/sh pg-backup /usr/local/bin/pg-backup.sh
-        return 0
+        return $?
     fi
     parse_db_conn
     if [ -z "$DBF_PASS" ]; then
@@ -884,6 +891,27 @@ start_phase() {
         start_docker
     else
         start_source
+    fi
+}
+
+# P1-7（审计）：回滚切换运行时模式前，停掉即将被替换的那一套。
+#
+# 为什么必须停：两套运行时并存会争抢同一批端口（3105/5173）与同一个数据
+# 目录，后启动的一方 bind 失败，而 verify_phase 检查的是**新**那一套——
+# 结果是「旧服务继续跑新代码 + 新服务起不来」，回滚报假成功。
+#
+# 只停不删：容器/单元定义保留，下一次 deploy 走正常 start_phase 即可复用。
+stop_for_mode_switch() {
+    local from_mode="$1"
+    if [ "$from_mode" = "docker" ]; then
+        log "  停止 Docker 服务..."
+        run compose -f "$ROOT_DIR/docker-compose.yml" down 2>/dev/null || \
+            warn "  docker compose down 失败（可能本就未运行），继续"
+    else
+        log "  停止 systemd 服务..."
+        for c in $(resolve_components); do
+            run_root systemctl stop "${SYSTEMD_PREFIX}-${c}.service" 2>/dev/null || true
+        done
     fi
 }
 
@@ -1273,10 +1301,28 @@ cmd_rollback() {
     local prev_commit
     prev_commit="$(grep -o '"gitCommit": *"[^"]*"' "$MANIFEST_PREV" | cut -d'"' -f4)"
 
+    # P1-7（审计，2026-10-17）：回滚必须回到**上一次部署当时的 mode**。
+    #
+    # 缺陷现场：此前只从清单里读 gitCommit，MODE 仍是本次命令行/环境的默认值
+    # （缺省 docker）。于是「源码模式部署 → 回滚」会走 docker 分支：构建镜像、
+    # 起容器、verify 容器健康——而真正在跑的 systemd 服务仍然加载着**新代码**，
+    # 回滚既没生效、还报「已回滚到 <commit>」的假成功（运维以为退回去了）。
+    # 反向（docker 部署 → 源码回滚）同样错。
+    #
+    # 修复：从 MANIFEST_PREV 恢复 mode（缺省时保留当前 MODE，兼容无 mode 字段
+    # 的旧清单），并在切换前**停掉另一种模式的服务**，避免两套并存。
+    local prev_mode
+    prev_mode="$(grep -o '"mode": *"[^"]*"' "$MANIFEST_PREV" | cut -d'"' -f4)"
+    case "$prev_mode" in
+        docker|source) ;;
+        *) prev_mode="" ;;
+    esac
+
     hr
     cat <<EOF
   上一次部署记录：
     commit:  $prev_commit
+    mode:    ${prev_mode:-<清单未记录，沿用当前模式 $MODE>}
 EOF
     hr
 
@@ -1315,17 +1361,27 @@ EOF
         # HEAD（连续回滚）时保留更早的状态文件，不覆盖。
         local prev_branch
         prev_branch="$(git -C "$ROOT_DIR" symbolic-ref --short HEAD 2>/dev/null || echo '')"
+
+        # P1-7：回滚到上一次部署的 mode。两套运行时并存会互相覆盖端口与
+        # 数据目录，因此切换前先把「另一种模式」的服务停掉。
+        if [ -n "$prev_mode" ] && [ "$prev_mode" != "$MODE" ]; then
+            log "  回滚目标模式为 $prev_mode（当前 $MODE）——先停掉当前模式的服务"
+            stop_for_mode_switch "$MODE"
+            MODE="$prev_mode"
+            ok "  已切换到 $prev_mode 模式"
+        fi
+
         log "  检出 $prev_commit ..."
         run bash -c "cd '$ROOT_DIR' && git checkout '$prev_commit'"
         if [ "$DRY_RUN" != true ] && [ -n "$prev_branch" ]; then
             mkdir -p "$DEPLOY_STATE_DIR"
             printf '%s\n' "$prev_branch" > "$DEPLOY_STATE_DIR/detached-from-branch"
         fi
-        # 重新构建并启动
+        # 重新构建并启动（BUILD=true 强制重建，避免复用新代码的产物）
         BUILD=true build_phase
         start_phase
         verify_phase
-        ok "已回滚到 $prev_commit"
+        ok "已回滚到 $prev_commit（$MODE 模式）"
         if [ -n "$prev_branch" ]; then
             warn "仓库现在处于 detached HEAD（commit ${prev_commit}）；回滚前分支为 ${prev_branch}，确认稳定后执行 git checkout $prev_branch 可切回"
         else

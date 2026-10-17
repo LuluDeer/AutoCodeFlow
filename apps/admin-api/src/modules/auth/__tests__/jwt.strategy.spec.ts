@@ -18,6 +18,19 @@ const makeReq = (partial: Partial<Record<string, any>>): Request =>
 
 const STREAM_PATH = "/api/tasks/some-task-id/executions/exec-1/logs/stream";
 
+/**
+ * SEC-SSE-TICKET（审计 P1-2）：validate 现在以 `passReqToCallback: true` 形态
+ * 接收 (req, payload)——「票据只在三条 stream 路径上有效」这条约束必须在
+ * validate 里按请求路径复核。默认 REQ 落在一个**普通 REST 路径**（对 access
+ * 令牌无影响；对 sse_ticket 会被拒），需要放行票据的用例显式传 STREAM_REQ。
+ */
+const REQ = makeReq({ headers: {}, originalUrl: "/api/users/1" });
+const STREAM_REQ = makeReq({
+  headers: {},
+  originalUrl: `${STREAM_PATH}?ticket=t`,
+  query: { [SSE_TICKET_PARAM]: "t" },
+});
+
 describe("jwt.strategy — extractJwtFromRequest (A5 SSE ticket)", () => {
   afterEach(() => {
     delete process.env.NODE_ENV;
@@ -180,7 +193,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
 
     await expect(
-      strategy.validate({
+      strategy.validate(REQ, {
         sub: 1,
         username: "alice",
         type: "access",
@@ -194,7 +207,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     usersService.findByIdOrNull.mockResolvedValue(activeUser(4) as never);
 
     await expect(
-      strategy.validate({
+      strategy.validate(REQ, {
         sub: 1,
         username: "alice",
         type: "access",
@@ -208,7 +221,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     usersService.findByIdOrNull.mockResolvedValue(activeUser(0) as never);
 
     await expect(
-      strategy.validate({ sub: 1, username: "alice", type: "access" }),
+      strategy.validate(REQ, { sub: 1, username: "alice", type: "access" }),
     ).resolves.toMatchObject({ id: 1 });
   });
 
@@ -220,7 +233,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     } as never);
 
     await expect(
-      strategy.validate({
+      strategy.validate(REQ, {
         sub: 1,
         username: "alice",
         type: "access",
@@ -232,16 +245,49 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
   // R-04: H-3 半修复的收口——已删除用户仍持有效 access token 时必须 401
   //（UnauthorizedException），而不是经 findById 泄漏 404 "User #N not
   // found"（存在性 + 数字 id 泄漏）。findByIdOrNull 返回 null 是唯一取数路径。
-  // ─── A5：ticket 的类型门 ────────────────────────────────────────────────
-  it("A5: type=sse_ticket 且会话未撤销 → 放行（票据的取数/停用校验与 access 一致）", async () => {
+  // ─── A5：ticket 的类型门 + SEC-SSE-TICKET 的路径门 ──────────────────────
+  it("A5: type=sse_ticket 在 stream 路径上且会话未撤销 → 放行（取数/停用校验与 access 一致）", async () => {
     const { strategy, usersService } = buildStrategy();
     usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
 
     await expect(
-      strategy.validate({
+      strategy.validate(STREAM_REQ, {
         sub: 1,
         username: "alice",
         type: "sse_ticket",
+        ver: 3,
+      }),
+    ).resolves.toMatchObject({ id: 1 });
+  });
+
+  // SEC-SSE-TICKET（审计 P1-2）：票据被塞进 Authorization 头打到普通 REST
+  // 路由时必须 401。此前 validate 只校验 type，这枚 30 秒票据在 REST 面上
+  // 等价于全权 access token（可改配置/删用户），正是设计承诺的反面。
+  it("SEC-SSE-TICKET: 票据用于非 stream 路由（如 /api/users）→ 401，且先于取数拒绝", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
+
+    await expect(
+      strategy.validate(REQ, {
+        sub: 1,
+        username: "alice",
+        type: "sse_ticket",
+        ver: 3,
+      }),
+    ).rejects.toThrow(new UnauthorizedException("令牌类型非法"));
+    // 路径门同样先于查库：不给「票据是否有效」的探测面，也省一次 DB 往返
+    expect(usersService.findByIdOrNull).not.toHaveBeenCalled();
+  });
+
+  it("SEC-SSE-TICKET: 同一条 stream 路径上 access 令牌照常放行（行为零变化）", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
+
+    await expect(
+      strategy.validate(STREAM_REQ, {
+        sub: 1,
+        username: "alice",
+        type: "access",
         ver: 3,
       }),
     ).resolves.toMatchObject({ id: 1 });
@@ -252,7 +298,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
 
     await expect(
-      strategy.validate({
+      strategy.validate(STREAM_REQ, {
         sub: 1,
         username: "alice",
         type: "refresh",
@@ -268,7 +314,7 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     usersService.findByIdOrNull.mockResolvedValue(null as never);
 
     await expect(
-      strategy.validate({
+      strategy.validate(REQ, {
         sub: 1,
         username: "alice",
         type: "access",
@@ -311,7 +357,7 @@ describe("jwt.strategy — validate 透传 sid（A-2）", () => {
     const { strategy, usersService } = buildStrategy();
     usersService.findByIdOrNull.mockResolvedValue({ ...activeUser } as never);
 
-    const principal = await strategy.validate({
+    const principal = await strategy.validate(REQ, {
       sub: 1,
       username: "alice",
       type: "access",
@@ -325,7 +371,7 @@ describe("jwt.strategy — validate 透传 sid（A-2）", () => {
     const { strategy, usersService } = buildStrategy();
     usersService.findByIdOrNull.mockResolvedValue({ ...activeUser } as never);
 
-    const principal = await strategy.validate({
+    const principal = await strategy.validate(STREAM_REQ, {
       sub: 1,
       username: "alice",
       type: "sse_ticket",

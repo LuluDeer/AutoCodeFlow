@@ -802,7 +802,7 @@ class TestPullDispatch:
         """
         import scheduler as scheduler_module
         self._reset_running_count()
-        monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 0)
+        monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 1)
         resp = httpx.Response(
             200,
             json={'code': 0, 'message': 'ok', 'data': {'task': None}},
@@ -812,14 +812,16 @@ class TestPullDispatch:
 
         await self._run_loop_briefly(1.4)
 
-        # 满载仍发起了 pull，且如实上报 freeSlots=0
-        assert self.pull_request_kwargs.get('json', {}).get('freeSlots') == 0
-        # 未预留槽位：账本保持 0（max=0，本就无槽可留）
+        # 满载仍发起了 pull。E-01-STARVE：max=1 时预留成功 → 上报 1
+        # （旧公式恒 0，执行器永久饥饿）；「满载」本身由账本决定，
+        # 服务端只按 >0 判定能否出队。
+        assert self.pull_request_kwargs.get('json', {}).get('freeSlots') == 1
+        # 无任务返回 → finally 归还预留，账本回到 0（与既有释放语义一致）
         assert scheduler_module.get_running_count() == 0
 
     @pytest.mark.asyncio
     async def test_pull_loop_reports_free_slots_when_idle(self, monkeypatch):
-        """有空槽时 freeSlots 如实上报（预留后的实际空闲数）。"""
+        """有空槽时 freeSlots 如实上报「除本次预留之外」的空闲数。"""
         import scheduler as scheduler_module
         self._reset_running_count()
         monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 3)
@@ -832,8 +834,62 @@ class TestPullDispatch:
 
         await self._run_loop_briefly(1.4)
 
-        # 预留已计入账本（1），故 3 - 1 = 2
-        assert self.pull_request_kwargs.get('json', {}).get('freeSlots') == 2
+        # E-01-STARVE：预留已计入账本（1），按「除预留之外」口径
+        # 3 - 1 + 1 = 3（修复前是 2；差别在 max=1 时才会致命）。
+        assert self.pull_request_kwargs.get('json', {}).get('freeSlots') == 3
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_max_one_is_not_starved(self, monkeypatch):
+        """E-01-STARVE（审计 P1-5）：MAX_CONCURRENT_TASKS=1 不得永久饥饿。
+
+        缺陷现场：预留成功 → running_count=1 → 旧公式 max(0, 1-1)=0 →
+        admin 判定「无空槽」永不出队 → 执行器**永远拿不到任务**。
+        desktop 默认 pull 模式 + MAX_CONCURRENT_TASKS=1 是受支持的真实配置。
+        """
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 1)
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok', 'data': {'task': None}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+
+        await self._run_loop_briefly(1.4)
+
+        # 关键断言：>0（服务端据此才出队任务）。修复前此处恒为 0。
+        assert self.pull_request_kwargs.get('json', {}).get('freeSlots') == 1
+
+    def test_pull_free_slots_mirrors_node_pullFreeSlotsFor(self):
+        """E-01-STARVE：python `pull_free_slots` 与 node `pullFreeSlotsFor` 同口径。"""
+        import scheduler as scheduler_module
+
+        # (max, running, reserved) -> 期望值（与 node pull.spec.ts 的用例逐条对齐）
+        cases = [
+            ((1, 1, True), 1),    # max=1 + 预留 → 1（修复前 0，永久饥饿）
+            ((1, 1, False), 0),   # max=1 满载 → 0（只发命令）
+            ((10, 1, True), 10),
+            ((10, 4, True), 7),
+            ((10, 4, False), 6),
+            ((5, 5, False), 0),
+            ((5, 99, False), 0),
+            ((5, 99, True), 0),
+            ((0, 1, True), 1),    # 容量非法 → 按 1
+            ((-3, 1, True), 1),
+        ]
+        for (capacity, running, reserved), expected in cases:
+            assert scheduler_module.pull_free_slots(
+                capacity, running, reserved
+            ) == expected, (capacity, running, reserved)
+
+        # 值域恒在 [0, capacity]
+        for capacity in (1, 2, 5, 10):
+            for running in range(0, capacity + 4):
+                for reserved in (True, False):
+                    v = scheduler_module.pull_free_slots(
+                        capacity, running, reserved)
+                    assert 0 <= v <= capacity, (capacity, running, reserved, v)
 
     @pytest.mark.asyncio
     async def test_pull_loop_at_capacity_does_not_claim_task(self, monkeypatch):

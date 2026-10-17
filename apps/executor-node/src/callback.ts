@@ -249,7 +249,7 @@ function traceparentHeaderFor(requests: CallbackRequest[]): Record<string, strin
  * 值取自与请求体同源的 executorAddress（withExecutorAddress 同一表达式），
  * 不透传用户可控值。
  */
-function executorAddressHeaderFor(): Record<string, string> {
+export function executorAddressHeaderFor(): Record<string, string> {
   const address = config.executorAddressPublic || config.executorAddress;
   return address ? { 'x-executor-address': address } : {};
 }
