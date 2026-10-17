@@ -32,9 +32,9 @@ interface UpdateApi {
   downloadUpdate?: () => Promise<{ ok: boolean }>;
   installUpdate?: () => Promise<{ ok: boolean }>;
   // payload 类型与 preload 契约（src/preload/index.ts onUpdateAvailable）一致：
-  // previouslyDownloaded 已入契约（B-3②），此处不再需要本地补宽可选字段；
+  // previouslyDownloaded 已入契约（B-3②），releaseNotes 同理（4.2）。
   // 方法保持可选是「electronAPI 缺失时防御性降级」的既有口径。
-  onUpdateAvailable?: (cb: (p: { version: string; current: string; previouslyDownloaded: boolean }) => void) => () => void;
+  onUpdateAvailable?: (cb: (p: { version: string; current: string; previouslyDownloaded: boolean; releaseNotes: string }) => void) => () => void;
   onUpdateProgress?: (cb: (p: { percent: number; transferred: number; total: number }) => void) => () => void;
   onUpdateDownloaded?: (cb: (p: { version: string }) => void) => () => void;
   onUpdateError?: (cb: (p: { message: string }) => void) => () => void;
@@ -61,6 +61,12 @@ export default function UpdateBanner() {
   const [total, setTotal] = useState(0);
   // B-3②：主进程持久化标记命中（同一版本此前已下载完成、待装缓存仍有效）。
   const [previouslyDownloaded, setPreviouslyDownloaded] = useState(false);
+  // 4.2：更新日志（主进程已归一化为纯文本并封顶）。空串 = 该版本没有日志，
+  // 不渲染任何入口（不给用户点开一个空框）。
+  const [releaseNotes, setReleaseNotes] = useState('');
+  // 折叠态是**默认**：更新日志常有几十行，展开会把横幅撑成半屏，把「下载更新」
+  // 按钮挤到视线外。用户想读再点开。
+  const [notesOpen, setNotesOpen] = useState(false);
 
   // 订阅主进程更新事件。所有订阅走 onXxx 返回的取消函数，卸载时清理，
   // 避免开发模式热重载或窗口重建时监听器泄漏（重复注册会让一次事件多次 setState）。
@@ -72,6 +78,11 @@ export default function UpdateBanner() {
       offs.push(a.onUpdateAvailable((p) => {
         setVersion(p?.version || '');
         setPreviouslyDownloaded(p?.previouslyDownloaded === true);
+        // 只收字符串：主进程恒发 string（normalizeReleaseNotes 保证），但旧版
+        // 主进程可能发 undefined——两种情况都归一成空串，渲染层不必分支。
+        setReleaseNotes(typeof p?.releaseNotes === 'string' ? p.releaseNotes : '');
+        // 新版本到达即复位折叠态（上一版展开过不代表这一版也要展开）
+        setNotesOpen(false);
         setPhase('available');
         setError('');
       }));
@@ -220,6 +231,22 @@ export default function UpdateBanner() {
             ? t('update.availableCachedHint')
             : t('update.availableHint')}
         </span>
+        {/* 4.2：更新日志——**默认折叠**，点开才展开。
+            纯文本渲染（{releaseNotes}），不走 dangerouslySetInnerHTML：
+            内容来自 GitHub Releases / 私有化 feed，是不可信外部输入，
+            注入 HTML 就是 XSS 面。主进程已把标签剥掉（normalizeReleaseNotes），
+            这里再保证一次"只当文本显示"——两道防线互不依赖。
+            无日志时不渲染入口（空框比没有更糟）。 */}
+        {releaseNotes !== '' && (
+          <details
+            className="update-notes"
+            open={notesOpen}
+            onToggle={(e) => setNotesOpen((e.currentTarget as HTMLDetailsElement).open)}
+          >
+            <summary>{notesOpen ? t('update.notesHide') : t('update.notesShow')}</summary>
+            <pre className="update-notes-body">{releaseNotes}</pre>
+          </details>
+        )}
       </div>
       <div className="update-banner-actions">
         <button className="btn btn-sm btn-primary" onClick={handleDownload} disabled={busy}>

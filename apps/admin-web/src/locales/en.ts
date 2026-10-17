@@ -642,7 +642,11 @@ export default {
   'users.field.password': 'Password',
   'users.field.passwordRequired': 'Please enter a password',
   'users.field.passwordMin': 'Password must be at least 8 characters',
-  'users.field.passwordPattern': 'Password must contain uppercase, lowercase, digit and special characters',
+  // ⚠️ Wording must match the backend validatePasswordStrength: lowercase is
+  // NOT required. This used to say "uppercase, lowercase, digit and special"
+  // while the form regex really did require (?=.*[a-z]) — stricter than the
+  // backend, so it rejected passwords the backend accepts (SECURITY §3.1).
+  'users.field.passwordPattern': 'Password must contain uppercase, digit and special characters',
   'users.field.passwordPlaceholder': 'Enter password',
   'users.field.email': 'Email',
   'users.field.emailRequired': 'Please enter an email',
@@ -1069,6 +1073,18 @@ export default {
   'security.password.submit': 'Change Password',
   'security.password.changed': 'Password changed. Please sign in again with the new password.',
   'security.password.changeFail': 'Failed to change the password',
+  // SECURITY §3.1: live password strength feedback (PasswordStrengthMeter).
+  // Level wording is sourced from the same policy the backend enforces — a
+  // non-compliant password can never read "Strong" (see the clamping invariant
+  // in utils/passwordPolicy). "Acceptable" is answered by the rule checklist.
+  'security.password.strength.label': 'Strength',
+  'security.password.strength.empty': 'Not entered yet',
+  'security.password.strength.weak': 'Weak',
+  'security.password.strength.fair': 'Fair',
+  'security.password.strength.good': 'Good',
+  'security.password.strength.strong': 'Strong',
+  'security.password.strength.unmetHint':
+    'Requirements not fully met — the backend will reject this password',
 
   'apiKeys.title': 'API Keys (Restricted Machine Credentials)',
   'apiKeys.create': 'New API Key',
@@ -2187,6 +2203,10 @@ export default {
   'execDetail.log.noLevelLogs': 'No {{level}} logs',
   'execDetail.log.noLevelLogsDesc': 'The current execution has no log lines at this level; switch to All levels to view the full logs.',
   'execDetail.log.noSearchHit': 'No log content matching "{{keyword}}"',
+  // LOG-JSON-01: "expand to view pretty JSON" popover copy for JSON log payloads
+  'execDetail.log.json.prettyTitle': 'Formatted JSON',
+  'execDetail.log.json.prettyTruncated': 'Formatted JSON (truncated; payload too long)',
+  'execDetail.log.json.expandAria': 'Expand formatted JSON',
   'execDetail.report.aiAnalysisTitle': '🤖 AI Failure Analysis',
   'execDetail.retry.chainTitle': 'Retry Chain',
   'execDetail.retry.budget': 'Retry budget: Attempt #{{attempt}} of {{total}}',
@@ -2278,6 +2298,11 @@ export default {
   'taskForm.unsaved.message': 'You have unsaved changes. Leaving now will discard them. Are you sure?',
   'taskForm.unsaved.ok': 'Leave',
   'taskForm.unsaved.cancel': 'Stay',
+  // DRAFT-01: form draft (localStorage autosave/restore) — after a crash, an
+  // accidentally closed tab, or an expired session, your input is still here.
+  'taskForm.draft.restored': 'Restored your unsaved draft',
+  'taskForm.draft.restoredDesc': 'The form was filled with the content from your previous edit. If you do not want this draft, discard it and start over.',
+  'taskForm.draft.discard': 'Discard draft',
   'taskForm.submit.updateFail': 'Update failed',
   'taskForm.submit.createFail': 'Create failed',
   // A4 (third-round audit): optimistic-lock conflict (409) — stay on the form, no navigation

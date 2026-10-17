@@ -44,6 +44,9 @@ declare const window: Window & {
       restartDeferred?: boolean;
       error?: string;
     }>;
+    // PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出（主进程 saveDialog + 纯函数
+    // buildDiagnosticReport 组装；渲染层只收结果路径，拿不到报告内容）。
+    exportDiagnosticReport?: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
   };
 };
 
@@ -244,6 +247,12 @@ export default function ConfigPage() {
   const ioSupported =
     typeof window.electronAPI.exportConfig === 'function' &&
     typeof window.electronAPI.importConfig === 'function';
+  // PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出。独立于 ioBusy 的 in-flight
+  // 状态——它与配置备份是两条不同的链路（一个改配置、一个只读现场），
+  // 共用 busy 会让「导入进行中」误禁用诊断按钮，反之亦然。
+  const [diagBusy, setDiagBusy] = useState(false);
+  const [diagMsg, setDiagMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const diagSupported = typeof window.electronAPI.exportDiagnosticReport === 'function';
   // V4-4（X-02）：改动清单显隐。清单内容由 form/savedForm 派生（useMemo）。
   const [showDiff, setShowDiff] = useState(false);
   const changedEntries = useMemo(
@@ -531,6 +540,29 @@ export default function ConfigPage() {
       setIoMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
     } finally {
       setIoBusy(null);
+    }
+  }
+
+  // PLAN-EXECUTOR-DESKTOP-UX 5.2：导出诊断报告。
+  // 主进程侧一次性收齐现场（版本/环境、脱敏配置、健康、工作目录、最近日志）
+  // 并写成单个 JSON；渲染层只呈现结果路径（用户取消 = 无声返回，不弹失败）。
+  // 与 exportConfig 同款 try/catch/finally——reject 后按钮必须能再点。
+  async function exportDiagnostics() {
+    if (diagBusy) return;
+    setDiagBusy(true);
+    setDiagMsg(null);
+    try {
+      const r = await window.electronAPI.exportDiagnosticReport?.();
+      if (!r || r.canceled) return;
+      if (r.ok !== true) {
+        setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', r.error ?? '') });
+      } else {
+        setDiagMsg({ kind: 'ok', text: t('cfg.io.diagnosticDone', r.path ?? '') });
+      }
+    } catch (err) {
+      setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', err instanceof Error ? err.message : String(err)) });
+    } finally {
+      setDiagBusy(false);
     }
   }
 
@@ -1252,6 +1284,39 @@ export default function ConfigPage() {
                         role={ioMsg.kind === 'ok' ? 'status' : 'alert'}
                       >
                         <Icon name={ioMsg.kind === 'ok' ? 'check' : 'warning'} className="icon-xs" /> {ioMsg.text}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告。
+                    报障的第一句话永远是「把日志发我」，但日志里没有版本、没有
+                    配置、没有工作目录状态——运维得追问四五轮才能开工。这里一次
+                    打包现场（脱敏配置 + 健康 + 目录可写性 + 剩余空间 + 最近日志），
+                    用户点一下就能给出全部信息。 */}
+                <div className="cfg-group">
+                  <div className="cfg-group-title">{t('cfg.about.groupDiagnostics')}</div>
+                  <div className="cfg-field">
+                    <div className="cfg-row">
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void exportDiagnostics()}
+                        disabled={diagBusy || !diagSupported}
+                        title={!diagSupported ? t('cfg.gen.unsupported') : undefined}
+                      >
+                        {diagBusy
+                          ? <><Icon name="refresh" className="icon-spin" /> {t('cfg.io.diagnosticExporting')}</>
+                          : <><Icon name="download" /> {t('cfg.io.diagnosticExport')}</>}
+                      </button>
+                    </div>
+                    <span className="cfg-hint">{t('cfg.about.diagnosticsHint')}</span>
+                    {diagMsg && (
+                      <div
+                        className={diagMsg.kind === 'ok' ? 'test-result ok' : 'test-result fail'}
+                        role={diagMsg.kind === 'ok' ? 'status' : 'alert'}
+                      >
+                        <Icon name={diagMsg.kind === 'ok' ? 'check' : 'warning'} className="icon-xs" /> {diagMsg.text}
                       </div>
                     )}
                   </div>

@@ -24,6 +24,7 @@ import { Form,
   Typography,
   Tooltip,
   theme,
+  Alert,
   Modal } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
@@ -90,6 +91,8 @@ import TaskFormNavRail from '../components/task-form/TaskFormNavRail';
 // 依赖候选；失败降级哲学见其头注释；?applicationId= 回填在本页独立 effect，
 // 见 BUGFIX 注释）
 import { useTaskFormReferenceData } from '../hooks/useTaskFormReferenceData';
+// DRAFT-01：表单草稿的 localStorage 持久化（崩溃/误关标签页/会话过期后的恢复）
+import { useDraft, draftKey, DRAFT_SCHEMA_VERSION } from '../hooks/useDraft';
 // BUGFIX（P3，commit 7d66a9b0 清单）：创建成功滚 Glue 的等待渲染就绪工具
 // （rAF 两连 + 存在性轮询，替代 setTimeout(50) 魔法延时）。
 import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
@@ -152,6 +155,48 @@ export default function TaskFormPage() {
   // Glue: createdTaskId is set after create so GlueEditor can save to the real task id
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
   const [savedRuntime, setSavedRuntime] = useState('python');
+
+  // ── DRAFT-01：表单草稿自动保存 ──────────────────────────────────────────
+  //
+  // 与既有 dirty 守卫（P1-4）的分工：
+  //  · dirty 守卫负责"问一句"——误点返回/关标签页时拦下确认；
+  //  · 草稿负责"真的还在"——崩溃、误关、会话过期被踢、笔记本没电这些
+  //    守卫**拦不住**的场景，回来时输入不归零。
+  // 两者语义不冲突：守卫仍照旧弹窗，草稿在后台静默保存；用户选"离开"时
+  // 草稿**保留**（下次进来可恢复），只有成功提交或显式"丢弃草稿"才清除。
+  //
+  // 作用域：新建 / 编辑某任务 / 模板预填 三者互不串味（否则编辑 A 任务时
+  // 会恢复出 B 任务的草稿）。key 由下面 draftScope 决定。
+  //
+  // 落盘时机（enabled）：
+  //  · 编辑态必须等任务回填完成（loadingTask=false）——否则首帧的空表单
+  //    会把真正的草稿覆盖成空；
+  //  · 创建态带 templateId 时等模板预填完成（templatePrefilled）；
+  //  · 提交中不写（避免把"已提交"的内容又存成草稿）。
+  const draftScope = useMemo<string[]>(
+    () => (isEdit ? ['edit', editId ?? ''] : templateId ? ['template', templateId] : ['new']),
+    [isEdit, editId, templateId],
+  );
+  const draftStorageKey = draftKey('taskform.draft', DRAFT_SCHEMA_VERSION, draftScope);
+  // 模板预填完成标记：模板请求失败时也要置位（否则草稿永远不落盘）
+  const [templatePrefilled, setTemplatePrefilled] = useState(!templateId || isEdit);
+  // 表单值的快照（草稿的持久化对象）。用 state 而非 ref：值变化要驱动
+  // useDraft 的防抖 effect 重跑。onValuesChange 里 setState 会多一次渲染，
+  // 但表单本就每次击键重渲，代价可忽略。
+  const [draftValues, setDraftValues] = useState<Record<string, unknown> | null>(null);
+  const { restored: restoredDraft, discard: discardDraft } = useDraft({
+    key: draftStorageKey,
+    value: draftValues,
+    // 回填完成 + 未在提交中 + **用户真的输入过**才落盘（见上方注释）。
+    // `draftValues === null` 表示 onValuesChange 从未触发——程序化回填不经过
+    // 该回调，因此这个判据天然把"服务端值"排除在草稿之外。
+    enabled: !loadingTask && templatePrefilled && !saving && draftValues !== null,
+    delay: 800,
+  });
+  // 用户点过"丢弃草稿"或成功提交后，不再提示"已恢复草稿"
+  const [draftNoticeDismissed, setDraftNoticeDismissed] = useState(false);
+  const showDraftNotice =
+    !draftNoticeDismissed && !!restoredDraft && !!restoredDraft.data && !saving;
 
   // python_task_multiversion（FR-06）：声明的 Python 主.次版本。null = 不声明
   // （宿主默认解释器）。**刻意不入 antd 字段树**——RuntimeVersionField 是
@@ -346,7 +391,12 @@ export default function TaskFormPage() {
         setExecutorMode(templateExecutorMode(tpl.config));
         depNameSnapshotRef.current = templateDependencySnapshot(tpl.config);
       })
-      .catch(() => message.warning(tRef.current('taskForm.load.templateFailed')));
+      .catch(() => message.warning(tRef.current('taskForm.load.templateFailed')))
+      // DRAFT-01：模板预填结束（成功或失败）才允许草稿落盘——否则首帧空表单
+      // 会把真正的草稿覆盖成空。
+      .finally(() => {
+        if (!cancelled) setTemplatePrefilled(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -359,6 +409,78 @@ export default function TaskFormPage() {
   // 弹窗交互原样迁出至 useCodeSourceSwitchGuard（判据复用 applyCodeSourcePayload，
   // 与提交路径同源）。codeSource 的持有方与消费方（提交链路）仍在本页。
   const handleCodeSourceChange = useCodeSourceSwitchGuard(form, codeSource, setCodeSource);
+
+  /**
+   * DRAFT-01：草稿恢复。
+   *
+   * **恢复时机的硬约束**（照搬本页既有 BUGFIX 的教训，见编辑回填/模板预填两个
+   * effect 的头注释）：
+   *   · 编辑态必须等 `loadingTask` 结束——任务回填会 `setFieldsValue` 整表覆盖，
+   *     提前恢复等于白恢复；
+   *   · 创建态带 `templateId` 时必须等模板预填完成，理由同上；
+   *   · **只恢复一次**（restoredDraftKeyRef）：dirty 翻转、语言切换等引发的
+   *     重跑不得把用户已经改过的字段再次覆盖回草稿值（这正是 commit 7d66a9b0
+   *     那批 BUGFIX 修的形态）。
+   *   · 用户已手动改过表单（dirty）时不恢复——**绝不静默覆盖用户编辑**。
+   *
+   * 恢复是"字段级合并"而不是整表替换：草稿里缺的键保留表单当前值（编辑态
+   * 即服务端值），草稿里有的键才覆盖。这样旧版本草稿（少几个新字段）也不会
+   * 把新字段清空。
+   */
+  const restoredDraftKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!restoredDraft) return;
+    if (restoredDraftKeyRef.current === draftStorageKey) return;
+    if (isEdit && loadingTask) return;
+    if (templateId && !isEdit && !templatePrefilled) return;
+    // 用户已经开始编辑 → 不覆盖（守卫语义优先）
+    if (dirty) return;
+    restoredDraftKeyRef.current = draftStorageKey;
+    const data = restoredDraft.data;
+    if (!data || typeof data !== 'object') return;
+    const values = data as Record<string, unknown>;
+    // 字段级合并：只覆盖草稿里显式存在的键
+    form.setFieldsValue(values);
+    // 非字段树的自持 state 必须显式同步（与编辑回填/模板预填同一份清单，
+    // 见那两处 effect 的注释：漏一个就会出现"界面显示 A、提交 B"）。
+    if (typeof values.triggerType === 'string') setTriggerType(values.triggerType);
+    if (typeof values.runtime === 'string') setSavedRuntime(values.runtime);
+    if ('runtimeVersion' in values) {
+      setRuntimeVersion(normalizeRuntimeVersion(values.runtimeVersion as string | null));
+    }
+    if (typeof values.codeSource === 'string') {
+      const src = values.codeSource as CodeSource;
+      setCodeSource(src);
+      previousCodeSourceRef.current = src;
+    }
+    if (typeof values.executorMode === 'string') {
+      setExecutorMode(values.executorMode as typeof executorMode);
+    }
+    // 恢复出内容即视为"有未保存改动"——离开时必须照旧弹守卫（否则用户改完
+    // 恢复的内容直接关页，会以为已经保存了）。
+    setDirty(true);
+    message.info(t('taskForm.draft.restored'));
+    // t 刻意不入依赖：语言切换重跑会重复恢复（同编辑回填 effect 的 BUGFIX）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoredDraft, draftStorageKey, isEdit, loadingTask, templateId, templatePrefilled, dirty, form]);
+
+  /** DRAFT-01：把当前表单 + 自持 state 快照成草稿载荷（由 onValuesChange 驱动） */
+  const captureDraftSnapshot = useCallback(() => {
+    setDraftValues({
+      ...form.getFieldsValue(true),
+      // 不在表单字段树里的自持 state（与提交链路同一份清单）
+      runtimeVersion,
+      codeSource,
+      executorMode,
+    });
+  }, [form, runtimeVersion, codeSource, executorMode]);
+
+  /** DRAFT-01：显式丢弃草稿——同时取消挂起的防抖写入（防"丢弃后又复活"） */
+  const handleDiscardDraft = useCallback(() => {
+    discardDraft();
+    setDraftNoticeDismissed(true);
+    setDraftValues(null);
+  }, [discardDraft]);
 
   // F-04（DEEP_REVIEW @0ef3bbe）：AI 建议 Cron 应用——编辑态必须等任务回填
   // 完成后再覆盖 cronExpression，否则任务加载 effect 会用库内旧值盖掉建议值；
@@ -548,6 +670,11 @@ export default function TaskFormPage() {
         // A4（第三轮审计）：失效任务/执行/metrics 面——30s staleTime 内跳转
         // 到详情/列表时不再渲染过期数据。
         await invalidateTaskData(queryClient);
+        // DRAFT-01：提交成功即清除草稿（本次输入已落库，再"恢复"它是干扰）。
+        // 与 dirty 守卫的语义一致：成功后不再需要拦截离开。
+        discardDraft();
+        setDraftValues(null);
+        setDraftNoticeDismissed(true);
         message.success(t('taskForm.submit.updated'));
         if (cronNormalizeNote) message.info(cronNormalizeNote);
         nav(`/tasks/${editId}`);
@@ -556,6 +683,10 @@ export default function TaskFormPage() {
           payload as components["schemas"]["CreateTaskDto"],
         );
         await invalidateTaskData(queryClient);
+        // DRAFT-01：创建成功即清除草稿（同编辑态，见上）。
+        discardDraft();
+        setDraftValues(null);
+        setDraftNoticeDismissed(true);
         message.success(t('taskForm.submit.created'));
         if (cronNormalizeNote) message.info(cronNormalizeNote);
         setSavedRuntime(
@@ -785,6 +916,32 @@ export default function TaskFormPage() {
       {/* UI-06: 分区单页——Steps 四步改锚点导航。全部 Form.Item 同时挂载，
           消除「分步渲染卸载字段 → validateFields 只见当前步」的 P0 缺陷土壤
           （第八轮兜底保留为双保险，见 handleSubmit 注释）。 */}
+
+      {/* DRAFT-01：草稿已恢复的非侵入提示。
+          非 Modal/非 message：草稿恢复是**已发生的事实**而非需要确认的动作，
+          弹窗会打断填表；一条可关闭的行内提示 + 一个「丢弃草稿」出口即可。
+          之所以必须有「丢弃草稿」：草稿可能来自一次错误尝试（填错任务、想
+          重来），没有出口的话用户只能逐个字段手动清空。
+          role="status"：读屏会播报恢复事件（与 UI-12 的校验播报同一套语义）。 */}
+      {showDraftNotice && (
+        <Alert
+          type="info"
+          showIcon
+          closable
+          data-testid="task-form-draft-restored"
+          role="status"
+          title={t('taskForm.draft.restored')}
+          description={t('taskForm.draft.restoredDesc')}
+          style={{ marginBottom: 16 }}
+          onClose={() => setDraftNoticeDismissed(true)}
+          action={
+            <Button size="small" danger onClick={handleDiscardDraft}>
+              {t('taskForm.draft.discard')}
+            </Button>
+          }
+        />
+      )}
+
       <div
         style={{
           display: 'flex',
@@ -814,6 +971,9 @@ export default function TaskFormPage() {
               if (changed.triggerType) setTriggerType(changed.triggerType);
               // P1-4：用户手改即标记未保存（antd setFieldsValue 程序化回填不触发本回调）。
               setDirty(true);
+              // DRAFT-01：用户手改即快照进草稿（程序化回填不触发本回调，
+              // 因此草稿只会记录**用户真的输入过**的内容）。
+              captureDraftSnapshot();
             }}
           >
             {/* 分区一：基本配置（原 step 0）——REFACTOR-TASKFORM-03 迁至

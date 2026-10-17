@@ -104,6 +104,9 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 beforeEach(() => {
+  // DRAFT-01：草稿落 localStorage——用例之间必须隔离（否则上一例的输入被"恢复"，
+  // 表现为「表单已填但提交载荷带上了上一个用例的值」）。
+  localStorage.clear();
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = {};
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
@@ -122,6 +125,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
 describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {

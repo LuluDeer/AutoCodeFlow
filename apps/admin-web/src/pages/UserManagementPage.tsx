@@ -32,6 +32,11 @@ import { useTranslation } from 'react-i18next';
 // 刷新、后退、分享链接不再丢状态。
 import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
+import PasswordStrengthMeter from '../components/PasswordStrengthMeter';
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_POLICY_PATTERN,
+} from '../utils/passwordPolicy';
 import StateError from '../components/StateError';
 import PageSkeleton from '../components/PageSkeleton';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
@@ -83,6 +88,15 @@ export default function UserManagementPage() {
   const [resetPwdModalOpen, setResetPwdModalOpen] = useState(false);
   const [resetPwdUser, setResetPwdUser] = useState<UserWithActive | null>(null);
   const [resetPwdForm] = Form.useForm();
+
+  // SECURITY §3.1：两张表单各自的强度计实时读密码字段（字段级订阅，
+  // 不让整页跟着每次击键重渲染）。
+  const formWatchedPassword = Form.useWatch('password', createForm) as
+    | string
+    | undefined;
+  const resetPwdWatchedPassword = Form.useWatch('newPassword', resetPwdForm) as
+    | string
+    | undefined;
 
   const roleLabels = ROLE_LABELS(t);
 
@@ -489,23 +503,36 @@ export default function UserManagementPage() {
             <Input placeholder={t('users.field.usernamePlaceholder')} />
           </Form.Item>
           {!editing && (
-            <Form.Item
-              name="password"
-              label={t('users.field.password')}
-              rules={[
-                { required: true, message: t('users.field.passwordRequired') },
-                { min: 8, message: t('users.field.passwordMin') },
-                {
-                  pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z\d])/,
-                  message: t('users.field.passwordPattern'),
-                },
-              ]}
-            >
-              <Input.Password
-                placeholder={t('users.field.passwordPlaceholder')}
-                autoComplete="new-password"
-              />
-            </Form.Item>
+            <>
+              <Form.Item
+                name="password"
+                label={t('users.field.password')}
+                // SECURITY §3.1：此前这里内联 `/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)
+                // (?=.*[^a-zA-Z\d])/`——**比后端更严**（多要求小写字母），会拒绝
+                // 后端本可接受的密码（如 ADMIN2026!）。现统一走 utils/passwordPolicy
+                // 的单条合取正则（后端策略的语义镜像，由守卫逐字符核验）。
+                rules={[
+                  { required: true, message: t('users.field.passwordRequired') },
+                  { min: PASSWORD_MIN_LENGTH, message: t('users.field.passwordMin') },
+                  {
+                    pattern: PASSWORD_POLICY_PATTERN,
+                    message: t('users.field.passwordPattern'),
+                  },
+                ]}
+              >
+                <Input.Password
+                  placeholder={t('users.field.passwordPlaceholder')}
+                  autoComplete="new-password"
+                />
+              </Form.Item>
+              {/* 实时强度 + 逐条规则清单（不合规时明确告知"提交会被后端拒绝"） */}
+              <div style={{ marginTop: -16, marginBottom: 12 }}>
+                <PasswordStrengthMeter
+                  password={(formWatchedPassword as string | undefined) ?? ''}
+                  idPrefix="pwd-create"
+                />
+              </div>
+            </>
           )}
           <Form.Item
             name="email"
@@ -563,9 +590,9 @@ export default function UserManagementPage() {
             label={t('users.resetPwd.newPassword')}
             rules={[
               { required: true, message: t('users.resetPwd.newPasswordRequired') },
-              { min: 8, message: t('users.resetPwd.newPasswordMin') },
+              { min: PASSWORD_MIN_LENGTH, message: t('users.resetPwd.newPasswordMin') },
               {
-                pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z\d])/,
+                pattern: PASSWORD_POLICY_PATTERN,
                 message: t('users.field.passwordPattern'),
               },
             ]}
@@ -575,6 +602,12 @@ export default function UserManagementPage() {
               autoComplete="new-password"
             />
           </Form.Item>
+          <div style={{ marginTop: -16, marginBottom: 12 }}>
+            <PasswordStrengthMeter
+              password={(resetPwdWatchedPassword as string | undefined) ?? ''}
+              idPrefix="pwd-reset"
+            />
+          </div>
           <Form.Item
             name="confirmPassword"
             label={t('users.resetPwd.confirm')}

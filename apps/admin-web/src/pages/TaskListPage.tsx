@@ -31,7 +31,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tasks';
-import { useTasksList, invalidateTaskData } from '../api/queries';
+import { useTasksList, invalidateTaskData, usePauseTask, useResumeTask } from '../api/queries';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 // URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
@@ -181,6 +181,12 @@ export default function TaskListPage() {
   const queryClient = useQueryClient();
   const refresh = () => void invalidateTaskData(queryClient);
 
+  // OPTIMISTIC-01：任务暂停/恢复的乐观 mutation（全仓唯一两处 onMutate）。
+  // 行内 Switch 点下去立刻翻态，失败自动回滚——见 api/queries.ts 的
+  // usePauseTask / useResumeTask 与 OPTIMISTIC-01 段注释。
+  const pauseMutation = usePauseTask();
+  const resumeMutation = useResumeTask();
+
   const tasks: Task[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
 
@@ -302,17 +308,32 @@ export default function TaskListPage() {
   const handlePause = async (id: string) => {
     if (togglingId) return;
     setTogglingId(id);
-    try { await tasksApi.pause(id); message.success(t('taskList.paused')); refresh(); }
-    catch (err: unknown) { showApiError(err, t('taskList.pauseFail')); }
-    finally { setTogglingId(null); }
+    // OPTIMISTIC-01：pause 走带 onMutate 的 mutation——Switch 在**请求发出前**
+    // 就翻到目标态（乐观值写进 tasks 缓存），失败由 onError 精确回滚，
+    // onSettled 再失效任务面由服务端校正。语义细节见 api/queries.ts 的
+    // OPTIMISTIC-01 段注释（含与 SSE invalidateExecutionData 的互操作）。
+    try {
+      await pauseMutation.mutateAsync(id);
+      message.success(t('taskList.paused'));
+    } catch (err: unknown) {
+      showApiError(err, t('taskList.pauseFail'));
+    } finally {
+      setTogglingId(null);
+    }
   };
 
   const handleResume = async (id: string) => {
     if (togglingId) return;
     setTogglingId(id);
-    try { await tasksApi.resume(id); message.success(t('taskList.resumed')); refresh(); }
-    catch (err: unknown) { showApiError(err, t('taskList.resumeFail')); }
-    finally { setTogglingId(null); }
+    // OPTIMISTIC-01：与 handlePause 对称（目标态 active）。
+    try {
+      await resumeMutation.mutateAsync(id);
+      message.success(t('taskList.resumed'));
+    } catch (err: unknown) {
+      showApiError(err, t('taskList.resumeFail'));
+    } finally {
+      setTogglingId(null);
+    }
   };
 
   // 空页钳制（一致性）：服务端分页下删除当前页最后一条后，total 减小但本页的

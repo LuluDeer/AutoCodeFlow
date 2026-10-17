@@ -26,13 +26,14 @@ import { getApiBaseUrl } from '../api/client';
 import { createSseClient } from '../api/sse-client';
 import { showApiError } from '../utils/error';
 import { copyText } from '../utils/clipboard';
-import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
+import { LOG_LEVEL_VALUES, logLineHighlightClass, jsonLineTokens } from '../utils/logLevel';
+import type { JsonToken } from '../utils/logLevel';
 // UI-05: 搜索高亮分段（纯函数）+ 防抖常量
 import { buildLogSearchSegments, LOG_SEARCH_DEBOUNCE_MS } from '../utils/log-search';
 // UI-05: 失败定位映射（语义镜像 mcp FAILURE_RUNBOOK，BUG-10 分类 + 解释器不可用）
 import { failureRunbookAction, FAILURE_CARD_STATUSES } from '../pages/failure-runbook';
 // LOG-WIN-01：大日志窗口化渲染组件（零依赖虚拟滚动，见组件头注释）
-import LogWindow from './LogWindow';
+import LogWindow, { JsonLine, JsonPrettyPopover } from './LogWindow';
 
 const { Text } = Typography;
 
@@ -423,28 +424,45 @@ export default function ExecutionLogSection({
    * 有关键词：按行构建（行类 + 命中 mark 分段）。
    * 两个维度都由 useMemo 缓存，拼接文本与 displayLogs 逐字符一致
    * （复制/下载/滚动行为不受影响）。
+   *
+   * LOG-JSON-01（JSON 着色）：**只对「含 JSON 载荷的行」**单独成段，其余行
+   * 仍聚合为单个文本块——这样万行日志的节点数不因着色而线性膨胀（只有真正
+   * 带结构化载荷的行才多付几个 span）。着色 token 拼接 === 原文行，故
+   * `<pre>` 的 textContent 与 displayLogs 仍逐字符一致（复制/下载不受影响，
+   * execution-detail-log-level 的保真用例锚定这一点）。
    */
   const logSegments = useMemo(() => {
     if (!displayLogs) return null;
     if (!activeKeyword) {
       // OBS-03 原分段：无高亮行聚合为单块，控制节点数量
       const lines = displayLogs.split('\n');
-      const segs: { text: string; cls: string }[] = [];
+      const segs: { text: string; cls: string; tokens?: JsonToken[] }[] = [];
       let buf = '';
+      const flush = () => {
+        if (buf) {
+          segs.push({ text: buf, cls: '' });
+          buf = '';
+        }
+      };
       for (let i = 0; i < lines.length; i++) {
         const sep = i < lines.length - 1 ? '\n' : '';
         const cls = logLineHighlightClass(lines[i]);
         if (cls) {
-          if (buf) {
-            segs.push({ text: buf, cls: '' });
-            buf = '';
-          }
+          flush();
           segs.push({ text: lines[i] + sep, cls });
-        } else {
-          buf += lines[i] + sep;
+          continue;
         }
+        // LOG-JSON-01：JSON 载荷行单独成段并携带着色 token；非法 JSON 行
+        // 的 jsonLineTokens 返回 null，走下方聚合分支（与原行为逐字一致）。
+        const tokens = jsonLineTokens(lines[i]);
+        if (tokens) {
+          flush();
+          segs.push({ text: lines[i] + sep, cls: '', tokens });
+          continue;
+        }
+        buf += lines[i] + sep;
       }
-      if (buf) segs.push({ text: buf, cls: '' });
+      flush();
       return segs;
     }
     return buildLogSearchSegments(displayLogs, activeKeyword, logLineHighlightClass);
@@ -796,6 +814,10 @@ export default function ExecutionLogSection({
  * UI-05: 分段渲染。无关键词时沿用 OBS-03 的扁平 span 流（行类可选、
  * 无高亮行为纯文本节点）；有关键词时逐行渲染：行类 span 包裹整行 +
  * 命中片段 mark.log-search-hit，行间换行符跟随前一行（拼接保真）。
+ *
+ * LOG-JSON-01：无关键词路径下，携带着色 token 的段（含 JSON 载荷的行）渲染为
+ * 「可点开的单行着色」——浮层给出缩进美化形态。文本拼接严格 === 原文，故
+ * `<pre>` 的 textContent 保真契约不变。
  */
 function renderLogSegment(
   seg: unknown,
@@ -803,7 +825,20 @@ function renderLogSegment(
   activeKeyword: string,
 ): React.ReactNode {
   if (!activeKeyword) {
-    const s = seg as { text: string; cls: string };
+    const s = seg as { text: string; cls: string; tokens?: JsonToken[] };
+    // LOG-JSON-01：JSON 载荷行——单行着色 + 点开看缩进美化。着色 token 的
+    // 文本拼接 === 该段原文（含尾随换行），故保真不变。
+    if (s.tokens && s.tokens.length > 0) {
+      const body = s.text.replace(/\n$/, '');
+      return (
+        <span key={index} className={s.cls || undefined}>
+          <JsonPrettyPopover line={body}>
+            <JsonLine tokens={s.tokens} />
+          </JsonPrettyPopover>
+          {s.text.endsWith('\n') ? '\n' : ''}
+        </span>
+      );
+    }
     return s.cls ? (
       <span key={index} className={s.cls}>{s.text}</span>
     ) : (

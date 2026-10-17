@@ -516,5 +516,30 @@
 #     与上文 cc54aa2f / NETOPT-8③ / 2026-09-23 三次漏打同型。①已按实测回填；
 #     ②（末行字节哈希）需按构建器在 CI 侧重打后回填——见下方「两道闸的分工」。
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0。source-digest 46 个输入文件。
-source-digest: 7ffe4fd85132456b8d682c247147dcd69a6738f6b242f5dfa542f890a1828c2d
-ac6fedff199a3f6ae57f1fed9afb0dc550028f4424e8b1e664febfea080f2f76  index.js
+#
+# 2026-10-17（审计「7 项 P1 高危缺陷」批次 f3e340df 的**补账**）：
+#   · `callback.ts` 新增导出 `executorAddressHeaderFor()`——执行器机器面凭据头
+#     `x-executor-address` 的**单一出处**；`log-stream-pusher.ts` 的日志上报
+#     改带该头。原因：admin 的 `ExecutorAwareThrottlerGuard` 现在**只对执行器
+#     机器面路由**认这个头（人操作面一律按出口 IP 计桶，防伪造头绕过限流），
+#     而日志上报属于机器面——不带头就退回按 IP 计桶，多执行器共享 NAT 出口时
+#     120/min 档位会被叠加打穿（RT-LOG 要修的「话痨任务日志被限流截断」）。
+#   · `pull.ts` 新增纯函数 `pullFreeSlotsFor(max, running, slotReserved)`
+#     （E-01-STARVE）：此前上报 `freeSlots = max(0, max - running)`，在
+#     `MAX_CONCURRENT_TASKS=1`（desktop 默认 pull 模式的真实配置）且预留成立时
+#     恒为 0 → 服务端判定「无空槽」永不出队 → **执行器永久饥饿**。新口径把
+#     「本轮是否持有预留」由调用方**显式传入**（账本数字本身区分不了「满载」与
+#     「max-1 个真任务 + 1 个预留」）。python 侧 `scheduler.pull_free_slots`
+#     是镜像实现，两侧必须同时改。
+#   · `pull.spec.ts` 是测试文件 → **不计入** source-digest（不进 ncc 产物）。
+#   · ⚠️ 该批次**漏打 bundle**（「改 src 与重打同 commit」的纪律被漏掉），CI 的
+#     desktop-bundle-drift 语义闸如实报红（actual=55d884d4… ≠ expected=7ffe4fd8…）。
+#     本次按 ADR-005 补打并回填 ①②。
+#   · 桌面端内嵌执行器若漏打，后果不是"少个功能"而是**功能失效**：日志上报仍被
+#     NAT 叠加限流截断，且 `MAX_CONCURRENT_TASKS=1` 的桌面执行器**永久拉不到任务**。
+#   回填环境：本机(Windows) node 24 / ncc 0.45.0。bundle 4296635 bytes。
+#   字节确定性实测：**同目录连续两次重打逐字节一致**（a32b60f5…）——与既有先例
+#   （本文件 §386 / §430）结论一致：ncc 0.45 的产物与 map 均无绝对路径，
+#   ② 可本地回填，CI 仍权威复验。source-digest 46 个输入文件。
+source-digest: 55d884d43b46f9727cff20edc013b6c0185671e353eadfc6e82a0d7119243849
+a32b60f59f6204e55af2e07da895190b2135794464f2d857ea64cdf09a74ce90  index.js

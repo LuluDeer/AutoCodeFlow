@@ -1,0 +1,265 @@
+/**
+ * DRAFT-01：TaskFormPage 草稿自动保存 / 恢复 / 丢弃（集成层）。
+ *
+ * 本文件钉住的是**页面语义**，不是 hook 的重复测试（hook 自身见
+ * use-draft.test.ts）。四条关键契约：
+ *
+ *  ① 恢复时机：编辑态必须等任务回填完成才恢复——提前恢复会被回填覆盖，
+ *     等于白恢复（本页历史上 commit 7d66a9b0 那批 BUGFIX 的同一类问题）。
+ *  ② 不覆盖用户编辑：用户已开始改表单（dirty）时**不**恢复草稿。
+ *     守卫语义优先于草稿语义——静默覆盖用户输入是最坏的结果。
+ *  ③ 作用域隔离：新建 / 编辑 A / 编辑 B 各有独立 key，草稿不串味。
+ *  ④ 丢弃出口：提示条上的「丢弃草稿」删除存储并取消挂起的写入，
+ *     之后不会"复活"。
+ *
+ * 另外钉住：恢复后置 dirty（离开仍要弹守卫）、成功提交清草稿、
+ * 版本不符的旧草稿整体丢弃。
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
+import { render, cleanup, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  DRAFT_SCHEMA_VERSION,
+  draftKey,
+  readDraft,
+  writeDraft,
+} from '../hooks/useDraft';
+
+vi.mock('../api/tasks', () => ({
+  tasksApi: {
+    get: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    updateGlue: vi.fn(),
+    list: vi.fn(),
+    listAll: vi.fn(),
+  },
+}));
+vi.mock('../api/executors', () => ({
+  executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
+}));
+vi.mock('../api/applications', () => ({ applicationsApi: { list: vi.fn() } }));
+vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="glue-editor" /> }));
+
+let mockRouteParams: { id?: string } = {};
+let mockSearchParams = new URLSearchParams('');
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
+  useParams: () => mockRouteParams,
+  useSearchParams: () => [mockSearchParams, vi.fn()],
+  Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
+}));
+
+const g = globalThis as Record<string, unknown>;
+if (!g.ResizeObserver) {
+  g.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+}
+if (!window.matchMedia) {
+  window.matchMedia = ((q: string) => ({
+    matches: false, media: q, onchange: null,
+    addListener: () => {}, removeListener: () => {},
+    addEventListener: () => {}, removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
+
+import TaskFormPage from '../pages/TaskFormPage';
+import { tasksApi } from '../api/tasks';
+import { executorsApi } from '../api/executors';
+import { applicationsApi } from '../api/applications';
+
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
+
+function makeTask(over: Record<string, unknown> = {}) {
+  return {
+    id: 'task-1',
+    name: 'server-task-name',
+    runtime: 'python',
+    entrypoint: 'main.py',
+    triggerType: 'manual',
+    executeMode: 'single',
+    timeoutSeconds: 300,
+    timeout: 300,
+    maxRetry: 3,
+    params: {},
+    ...over,
+  };
+}
+
+/** 名字输入框（基本分区第一个 text input） */
+function nameInput(): HTMLInputElement {
+  const el = document.querySelector('input#name') as HTMLInputElement | null;
+  if (!el) throw new Error('未找到任务名称输入框');
+  return el;
+}
+
+const EDIT_KEY = draftKey('taskform.draft', DRAFT_SCHEMA_VERSION, ['edit', 'task-1']);
+const NEW_KEY = draftKey('taskform.draft', DRAFT_SCHEMA_VERSION, ['new']);
+
+beforeEach(() => {
+  localStorage.clear();
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
+  mockRouteParams = {};
+  mockSearchParams = new URLSearchParams('');
+  vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(executorsApi.getGroups).mockReset().mockResolvedValue([] as never);
+  vi.mocked(executorsApi.getTags).mockReset().mockResolvedValue([] as never);
+  vi.mocked(applicationsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(tasksApi.listAll).mockReset().mockResolvedValue({
+    items: [], total: 0, page: 1, pageSize: 100,
+  } as never);
+});
+
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
+
+describe('DRAFT-01 恢复：编辑态等回填完成，不覆盖用户编辑', () => {
+  it('编辑态草稿在任务回填后恢复（提示条 + 字段值）', async () => {
+    writeDraft(EDIT_KEY, { name: 'draft-name', timeout: 42 }, DRAFT_SCHEMA_VERSION);
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+
+    // 提示条出现
+    const notice = await screen.findByTestId('task-form-draft-restored');
+    expect(notice.textContent).toContain('已恢复上次未保存的草稿');
+    // 草稿值覆盖服务端值
+    await waitFor(() => expect(nameInput().value).toBe('draft-name'));
+  });
+
+  it('无草稿时不渲染提示条', async () => {
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await waitFor(() => expect(nameInput().value).toBe('server-task-name'));
+    expect(screen.queryByTestId('task-form-draft-restored')).toBeNull();
+  });
+
+  it('版本不符的旧草稿整体丢弃（不渲染提示、不覆盖表单）', async () => {
+    writeDraft(EDIT_KEY, { name: 'legacy-name' }, DRAFT_SCHEMA_VERSION - 1);
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await waitFor(() => expect(nameInput().value).toBe('server-task-name'));
+    expect(screen.queryByTestId('task-form-draft-restored')).toBeNull();
+  });
+
+  it('恢复后置 dirty：离开仍走既有守卫语义（不会被当成"已保存"）', async () => {
+    // useBlocker 被 mock 成 unblocked，故这里用「再改一次表单不报错 +
+    // 提示条仍在」间接验证 dirty 路径未被打断；dirty 本身在 hook 层无法观测，
+    // 因此改为断言恢复是**一次性**的：后续 setFieldsValue 不会被草稿回冲。
+    writeDraft(EDIT_KEY, { name: 'draft-name' }, DRAFT_SCHEMA_VERSION);
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await waitFor(() => expect(nameInput().value).toBe('draft-name'));
+    // 用户改成自己的内容
+    fireEvent.change(nameInput(), { target: { value: 'user-typed' } });
+    await waitFor(() => expect(nameInput().value).toBe('user-typed'));
+    // 再等一拍：草稿恢复 effect 不得把值冲回 draft-name
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    expect(nameInput().value).toBe('user-typed');
+  });
+});
+
+describe('DRAFT-01 落盘：用户输入进草稿（程序化回填不进）', () => {
+  it('用户改名后防抖落盘到编辑作用域 key', async () => {
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await waitFor(() => expect(nameInput().value).toBe('server-task-name'));
+
+    fireEvent.change(nameInput(), { target: { value: 'typed-by-user' } });
+    // 防抖 800ms + 余量
+    await waitFor(
+      () => {
+        const env = readDraft<Record<string, unknown>>(EDIT_KEY, DRAFT_SCHEMA_VERSION);
+        expect(env?.data?.name).toBe('typed-by-user');
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  it('程序化回填（服务端值）不会自己写进草稿', async () => {
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await waitFor(() => expect(nameInput().value).toBe('server-task-name'));
+    // 给足防抖时间：没有任何用户输入 → 不应产生草稿
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1200));
+    });
+    expect(readDraft(EDIT_KEY, DRAFT_SCHEMA_VERSION)).toBeNull();
+  });
+
+  it('作用域隔离：编辑 task-1 的草稿不写进 new 作用域', async () => {
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await waitFor(() => expect(nameInput().value).toBe('server-task-name'));
+    fireEvent.change(nameInput(), { target: { value: 'edit-scope' } });
+    await waitFor(
+      () => expect(readDraft(EDIT_KEY, DRAFT_SCHEMA_VERSION)?.data).toBeTruthy(),
+      { timeout: 5000 },
+    );
+    expect(readDraft(NEW_KEY, DRAFT_SCHEMA_VERSION)).toBeNull();
+  });
+});
+
+describe('DRAFT-01 丢弃与提交清理', () => {
+  it('点「丢弃草稿」→ 存储清空、提示条消失', async () => {
+    writeDraft(EDIT_KEY, { name: 'draft-name' }, DRAFT_SCHEMA_VERSION);
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await screen.findByTestId('task-form-draft-restored');
+
+    fireEvent.click(screen.getByRole('button', { name: '丢弃草稿' }));
+    await waitFor(() => expect(readDraft(EDIT_KEY, DRAFT_SCHEMA_VERSION)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('task-form-draft-restored')).toBeNull());
+  });
+
+  it('丢弃后继续输入不会把草稿写回来（不复活）', async () => {
+    writeDraft(EDIT_KEY, { name: 'draft-name' }, DRAFT_SCHEMA_VERSION);
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await screen.findByTestId('task-form-draft-restored');
+
+    fireEvent.click(screen.getByRole('button', { name: '丢弃草稿' }));
+    await waitFor(() => expect(readDraft(EDIT_KEY, DRAFT_SCHEMA_VERSION)).toBeNull());
+
+    fireEvent.change(nameInput(), { target: { value: 'after-discard' } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1200));
+    });
+    expect(readDraft(EDIT_KEY, DRAFT_SCHEMA_VERSION)).toBeNull();
+  });
+
+  it('编辑提交成功 → 草稿被清除', async () => {
+    writeDraft(EDIT_KEY, { name: 'draft-name' }, DRAFT_SCHEMA_VERSION);
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(makeTask() as never);
+    vi.mocked(tasksApi.update).mockResolvedValue(makeTask() as never);
+    renderPage();
+    await waitFor(() => expect(nameInput().value).toBe('draft-name'));
+
+    const save = screen.getByRole('button', { name: /保存更改/ });
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    await waitFor(() => expect(vi.mocked(tasksApi.update)).toHaveBeenCalled(), { timeout: 5000 });
+    expect(readDraft(EDIT_KEY, DRAFT_SCHEMA_VERSION)).toBeNull();
+  });
+});

@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // （token 不落明文）；导入走 config:save 同一条消毒+保存链路。
   exportConfig: () => ipcRenderer.invoke('config:export'),
   importConfig: () => ipcRenderer.invoke('config:import'),
+  // PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出——把环境/配置(脱敏)/健康/
+  // 工作目录/最近日志拼成**单一 JSON 包**经 saveDialog 落盘。载荷由主进程的
+  // 纯函数 buildDiagnosticReport() 组装（凭据恒掩码，见 export-flows.ts），
+  // 渲染层只收结果路径，永远拿不到报告内容本身。
+  exportDiagnosticReport: () => ipcRenderer.invoke('diagnostics:export'),
 
   // Agent 托管状态（P7b，只读）——设置页 Agent 组的状态行；旧版 preload
   // 未暴露时渲染层容错降级为不显示（同 getAutoLaunch 先例）。
@@ -136,8 +141,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // B-3②：previouslyDownloaded——main 侧 update-available 实发（同一版本此前
   // 已下载过、待装缓存应复用），渲染层 UpdateBanner 据此切换展示形态；此前
   // 本契约漏了该字段，渲染层只能各自补声明（类型漂移）。
-  onUpdateAvailable: (cb: (payload: { version: string; current: string; previouslyDownloaded: boolean }) => void) => {
-    const handler = (_: Electron.IpcRendererEvent, payload: { version: string; current: string; previouslyDownloaded: boolean }) => cb(payload);
+  // 4.2：releaseNotes 由主进程**归一化成纯文本并封顶**（updater.ts 的
+  // normalizeReleaseNotes）——这里原样透传，渲染层只做文本渲染，绝不把它
+  // 当 HTML/Markdown 解析（内容来自 GitHub Releases，是不可信外部输入）。
+  onUpdateAvailable: (cb: (payload: { version: string; current: string; previouslyDownloaded: boolean; releaseNotes: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { version: string; current: string; previouslyDownloaded: boolean; releaseNotes: string }) => cb(payload);
     ipcRenderer.on('updater:available', handler);
     return () => ipcRenderer.removeListener('updater:available', handler);
   },

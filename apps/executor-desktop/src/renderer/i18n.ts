@@ -298,6 +298,13 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     // 拓展包：配置备份（导出/导入），与「检查更新」同栏收拢的低频运维项
     'cfg.about.groupBackup': '配置备份',
     'cfg.about.backupHint': '导出完整配置（执行器密钥以掩码导出，不落明文），可在其他机器「导入配置」恢复。',
+    // ── PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告（排障现场一键打包）──
+    'cfg.about.groupDiagnostics': '诊断',
+    'cfg.about.diagnosticsHint': '导出一份 JSON 诊断包：版本与环境、脱敏后的配置、健康状态、工作目录可写性与剩余空间、最近日志。报障时附上它，可省掉多轮追问。执行器密钥恒以掩码导出。',
+    'cfg.io.diagnosticExport': '导出诊断报告',
+    'cfg.io.diagnosticExporting': '正在生成…',
+    'cfg.io.diagnosticDone': (p) => `诊断报告已导出到 ${p}`,
+    'cfg.io.diagnosticFailed': (err) => `诊断报告导出失败：${err}`,
     // ── i18n-DESK-01：界面语言（可切换，默认跟随系统）──
     'cfg.gen.groupInterface': '界面',
     'cfg.gen.uiLanguageLabel': '界面语言',
@@ -736,6 +743,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'update.availableHint': '当前版本已可升级',
     'update.downloading': '下载中…',
     'update.download': '下载更新',
+    // ── 4.2：更新日志（默认折叠，纯文本渲染；见 UpdateBanner 的 update-notes）──
+    'update.notesShow': '查看更新内容',
+    'update.notesHide': '收起更新内容',
     // ── 错误边界（i18n 二期收尾：components/ErrorBoundary.tsx 兜底 UI）──
     'errorBoundary.title': '渲染层遇到错误',
     'errorBoundary.hint': '界面已停止工作。点击下方按钮重载渲染层；若反复出现，请重启应用并附上错误摘要反馈。',
@@ -950,6 +960,13 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     // grouped with "Check for updates"
     'cfg.about.groupBackup': 'Config backup',
     'cfg.about.backupHint': "Export the full configuration (the executor secret is masked, never written in plaintext); import it on another machine to restore.",
+    // ── PLAN-EXECUTOR-DESKTOP-UX 5.2: diagnostic report (one-click support bundle) ──
+    'cfg.about.groupDiagnostics': 'Diagnostics',
+    'cfg.about.diagnosticsHint': 'Export a single JSON bundle: version and runtime, redacted configuration, health status, work directory writability and free space, and recent logs. Attach it to a bug report to skip several rounds of questions. The executor secret is always masked.',
+    'cfg.io.diagnosticExport': 'Export diagnostic report',
+    'cfg.io.diagnosticExporting': 'Generating...',
+    'cfg.io.diagnosticDone': (p) => `Diagnostic report exported to ${p}`,
+    'cfg.io.diagnosticFailed': (err) => `Diagnostic report export failed: ${err}`,
     // ── i18n-DESK-01: interface language (switchable, follows system by default) ──
     'cfg.gen.groupInterface': 'Interface',
     'cfg.gen.uiLanguageLabel': 'Interface language',
@@ -1379,6 +1396,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'update.availableHint': 'The current version can be upgraded',
     'update.downloading': 'Downloading...',
     'update.download': 'Download update',
+    // ── 4.2: release notes (collapsed by default, rendered as plain text) ──
+    'update.notesShow': "What's new",
+    'update.notesHide': 'Hide release notes',
     // ── Error boundary (components/ErrorBoundary.tsx fallback UI) ──
     'errorBoundary.title': 'The renderer hit an error',
     'errorBoundary.hint': 'The interface has stopped working. Click the button below to reload the renderer; if this keeps happening, restart the app and report the error summary.',

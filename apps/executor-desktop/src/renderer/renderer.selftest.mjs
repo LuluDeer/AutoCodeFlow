@@ -1399,4 +1399,144 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards passed');
+// ── PLAN-EXECUTOR-DESKTOP-UX 4.2：更新日志展示 ──────────────────────────
+// 背景：UpdateBanner 此前只显示版本号+进度+安装按钮，releaseNotes 全仓零命中。
+// 四条守卫，每条都对应一个真实失效形态：
+//  ① 主进程/ preload 必须真的把 releaseNotes 带过来（否则渲染层永远拿不到）；
+//  ② 渲染层必须**纯文本**渲染——dangerouslySetInnerHTML 是 XSS 面（内容来自
+//     GitHub Releases，是不可信外部输入）；
+//  ③ 默认必须**折叠**（更新日志常有几十行，展开会把横幅撑成半屏）；
+//  ④ 折叠控件必须可键盘操作 + 有双语键（不得内联中文）。
+{
+  const bannerNotes = readFileSync(resolve(root, 'components', 'UpdateBanner.tsx'), 'utf8');
+  // 去注释版：本仓库解释缺陷的中文注释会引用被禁的 API 名（自我触发教训，
+  // 与上方 split(':')[0] / uvMissing 的反证同一处置）。
+  const bannerNotesCode = bannerNotes
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const updaterSrcNotes = readFileSync(resolve(root, '..', 'main', 'updater.ts'), 'utf8');
+  const preloadSrcNotes = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+  const i18nSrcNotes = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+
+  // ① 链路：主进程 → preload → 渲染层
+  if (!updaterSrcNotes.includes('releaseNotes')) {
+    throw new Error('4.2: updater.ts 的 available 载荷未带 releaseNotes');
+  }
+  if (!preloadSrcNotes.includes('releaseNotes')) {
+    throw new Error('4.2: preload 的 onUpdateAvailable 契约未带 releaseNotes（渲染层收不到）');
+  }
+  if (!bannerNotes.includes('releaseNotes')) {
+    throw new Error('4.2: UpdateBanner 未消费 releaseNotes（功能静默失效）');
+  }
+  // ② 纯文本渲染：不得走 HTML 注入
+  if (bannerNotesCode.includes('dangerouslySetInnerHTML')) {
+    throw new Error('4.2: UpdateBanner 不得用 dangerouslySetInnerHTML 渲染更新日志（XSS 面）');
+  }
+  if (/innerHTML\s*=/.test(bannerNotesCode)) {
+    throw new Error('4.2: UpdateBanner 不得直接写 innerHTML（XSS 面）');
+  }
+  // 也不得引 Markdown 渲染库（手写 CSS、零组件库是本仓红线）
+  if (/react-markdown|marked|markdown-it/.test(bannerNotesCode)) {
+    throw new Error('4.2: 不得为更新日志引入 Markdown 渲染库（release notes 按纯文本展示）');
+  }
+  // ③ 默认折叠：必须用 <details>（open 由 state 驱动，初始 false）
+  if (!bannerNotes.includes('className="update-notes"') || !bannerNotes.includes('<summary>')) {
+    throw new Error('4.2: 更新日志必须用 <details>/<summary> 折叠展示（原生元素，零 JS、键盘可达）');
+  }
+  if (!/const \[notesOpen, setNotesOpen\] = useState\(false\)/.test(bannerNotes)) {
+    throw new Error('4.2: 更新日志必须**默认折叠**（useState(false)）');
+  }
+  // 无日志时不渲染入口（空框比没有更糟）
+  if (!/releaseNotes !== ''/.test(bannerNotes)) {
+    throw new Error("4.2: 无更新日志时必须不渲染折叠入口（releaseNotes !== ''）");
+  }
+  // ④ 文案必须走双语键，且 zh/en 两侧都非空
+  for (const key of ['update.notesShow', 'update.notesHide']) {
+    if (!bannerNotes.includes(`t('${key}')`)) {
+      throw new Error(`4.2: UpdateBanner 未接线双语键 ${key}`);
+    }
+    const zhIdx = i18nSrcNotes.indexOf('  zh: {');
+    const enIdx = i18nSrcNotes.indexOf('  en: {');
+    const zhBlock = i18nSrcNotes.slice(zhIdx, enIdx);
+    const enBlock = i18nSrcNotes.slice(enIdx);
+    if (!zhBlock.includes(`'${key}':`) || !enBlock.includes(`'${key}':`)) {
+      throw new Error(`4.2: 双语键 ${key} 必须在 zh 与 en 两块都存在`);
+    }
+  }
+  // 样式必须在位（缺样式会让折叠控件裸奔/不可辨识）
+  for (const cls of ['.update-notes', '.update-notes-body']) {
+    if (!css.includes(cls)) throw new Error(`4.2: 缺少样式 ${cls}`);
+  }
+  // 正文必须保换行（<pre> 或 white-space: pre-wrap）——否则日志挤成一坨
+  if (!/white-space:\s*pre-wrap/.test(css)) {
+    throw new Error('4.2: .update-notes-body 必须 white-space: pre-wrap（否则换行全丢）');
+  }
+  // 正文必须有高度上限（封顶失效时横幅也不得被撑爆）
+  if (!/\.update-notes-body \{[\s\S]*?max-height:/.test(css)) {
+    throw new Error('4.2: .update-notes-body 必须有 max-height（超长日志不得撑爆横幅）');
+  }
+}
+
+// ── PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出（渲染层接线）────────────
+// main 侧行为（段齐全 / 密钥永不出现 / 体积有界）由 export-flows.selftest.ts
+// 直接驱动纯函数钉住；这里钉**接线**——通道完整但零调用 = 用户永远点不到
+// （DSK-05 同款守卫哲学）。
+{
+  const configSrcDiag = pages[1]; // ConfigPage.tsx
+  const ipcDiag = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
+  const preloadDiag = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+  const i18nDiag = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+
+  // ① 三端成对在位：main handler / preload 通道 / 渲染层按钮
+  if (!ipcDiag.includes("ipcMain.handle('diagnostics:export'")) {
+    throw new Error('5.2: 缺少 diagnostics:export 主进程 handler');
+  }
+  if (!preloadDiag.includes('diagnostics:export')) {
+    throw new Error('5.2: preload 未暴露 diagnostics:export');
+  }
+  if (!configSrcDiag.includes('exportDiagnosticReport')) {
+    throw new Error('5.2: ConfigPage 未接线「导出诊断报告」按钮');
+  }
+  // ② 按钮必须落在「关于」分区（低频运维项收拢处，与配置备份同栏）
+  if (!configSrcDiag.includes("cfg.about.groupDiagnostics")) {
+    throw new Error('5.2: 诊断报告入口必须落在「关于」分区的诊断组');
+  }
+  // ③ 失败必须页内可见（桌面端无 toast 体系）+ 必须 try/catch/finally
+  //    （reject 后按钮永久 disabled 是本仓反复出现的缺陷形态）
+  if (!configSrcDiag.includes('cfg.io.diagnosticFailed') || !configSrcDiag.includes('diagMsg')) {
+    throw new Error('5.2: 诊断导出失败必须页内可见（diagMsg + cfg.io.diagnosticFailed）');
+  }
+  if (!/async function exportDiagnostics\(\)[\s\S]{0,900}?try\s*\{[\s\S]{0,600}?\}\s*catch[\s\S]{0,400}?\}\s*finally\s*\{/.test(configSrcDiag)) {
+    throw new Error('5.2: exportDiagnostics 必须 try/catch/finally（否则失败后按钮永久禁用）');
+  }
+  // ④ 旧版 preload 无该方法时必须降级（typeof 守卫，不得同步抛 TypeError 白屏）
+  if (!configSrcDiag.includes("typeof window.electronAPI.exportDiagnosticReport === 'function'")) {
+    throw new Error('5.2: 诊断导出必须做 typeof 守卫（旧 preload 下会同步抛异常导致白屏）');
+  }
+  // ⑤ 主进程 handler 必须经纯函数组装（行为闸在 export-flows.selftest）
+  if (!ipcDiag.includes('buildDiagnosticReport(')) {
+    throw new Error('5.2: diagnostics:export 必须经纯函数 buildDiagnosticReport 组装');
+  }
+  // ⑥ 双语键：zh/en 两块都必须有（N-04 键位对齐守卫之外的行为复核）
+  const zhIdx = i18nDiag.indexOf('  zh: {');
+  const enIdx = i18nDiag.indexOf('  en: {');
+  const zhBlock = i18nDiag.slice(zhIdx, enIdx);
+  const enBlock = i18nDiag.slice(enIdx);
+  for (const key of [
+    'cfg.about.groupDiagnostics',
+    'cfg.about.diagnosticsHint',
+    'cfg.io.diagnosticExport',
+    'cfg.io.diagnosticExporting',
+    'cfg.io.diagnosticDone',
+    'cfg.io.diagnosticFailed',
+  ]) {
+    if (!zhBlock.includes(`'${key}':`)) throw new Error(`5.2: zh 表缺键 ${key}`);
+    if (!enBlock.includes(`'${key}':`)) throw new Error(`5.2: en 表缺键 ${key}`);
+  }
+  // ⑦ 脱敏承诺必须在用户可见文案里说清楚（用户要知道密钥不会跟着文件走）
+  if (!zhBlock.includes('密钥恒以掩码导出') && !zhBlock.includes('执行器密钥')) {
+    throw new Error('5.2: 诊断组 hint 必须向用户说明密钥以掩码导出');
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report passed');

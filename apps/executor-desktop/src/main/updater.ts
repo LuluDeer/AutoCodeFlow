@@ -137,6 +137,108 @@ function resolveGenericFeedUrl(): string | null {
   }
 }
 
+/**
+ * PLAN-EXECUTOR-DESKTOP-UX 4.2：`updater:available` 载荷里 releaseNotes 的
+ * **展示上限**（字符数）。
+ *
+ * 为什么必须封顶：releaseNotes 来自 GitHub Releases（或私有化 feed 的
+ * latest-*.yml），内容完全由发布者决定。一个把整个 CHANGELOG 贴进 release
+ * 的版本会产出几十万字符，经 IPC 序列化一次到渲染层，再被塞进横幅——主进程
+ * 序列化卡顿 + 渲染层布局被撑爆，用户看到的是一条滚不动的巨墙。
+ *
+ * 4000 字符 ≈ 60 行中文正文：足够展示一个版本的要点，又不至于压垮横幅。
+ */
+export const RELEASE_NOTES_MAX_CHARS = 4_000;
+
+/**
+ * 纯函数：把 electron-updater 的 `updateInfo.releaseNotes` 归一化成**单段
+ * 纯文本**（渲染层只做文本渲染，绝不走 HTML/Markdown）。
+ *
+ * 三种输入形态（见 builder-util-runtime 的 UpdateInfo）：
+ *  · `string`            —— 常见（`updater.fullChangelog` 关闭）；
+ *  · `Array<{version,note}>` —— `fullChangelog=true` 时的跨版本变更列表；
+ *  · `null` / `undefined` / 其它脏值 —— 返回 ''（无更新日志，不是错误）。
+ *
+ * 归一化纪律：
+ *  1. 数组按**版本从新到旧**拼接（electron-updater 给的顺序），每段前置
+ *     `v<version>` 小标题；`note` 为 null 的版本跳过（有版本号没内容没意义）。
+ *  2. 只做文本层面的规整（去 HTML 标签、压空行），**不做** Markdown → HTML
+ *     转换——渲染层只用 {text}，任何标签进来都只会原样显示，没有 XSS 面。
+ *  3. 超长截断到 RELEASE_NOTES_MAX_CHARS，末尾留省略标记（用户要知道"还有
+ *     更多"而不是以为日志就这么短）。
+ *  4. 绝不抛错——release notes 是锦上添花，任何异常都只能降级为空串，不得
+ *     让 update-available 分支整体失败（那会让更新提示彻底消失）。
+ *
+ * 放在 selftest 里逐条断言（dist-selftest/updater.selftest.js）。
+ */
+export function normalizeReleaseNotes(raw: unknown): string {
+  try {
+    const blocks: string[] = [];
+    if (typeof raw === 'string') {
+      blocks.push(raw);
+    } else if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (item === null || typeof item !== 'object') continue;
+        const entry = item as { version?: unknown; note?: unknown };
+        const note = typeof entry.note === 'string' ? entry.note : '';
+        if (note.trim() === '') continue;
+        const version = typeof entry.version === 'string' ? entry.version.trim() : '';
+        blocks.push(version ? `v${version}\n${note}` : note);
+      }
+    } else {
+      return '';
+    }
+
+    const cleaned = blocks
+      .map((block) => sanitizeReleaseNoteText(block))
+      .filter((block) => block !== '');
+    if (cleaned.length === 0) return '';
+
+    const joined = cleaned.join('\n\n');
+    if (joined.length <= RELEASE_NOTES_MAX_CHARS) return joined;
+    // 截断标记占 1 字符（与 clip 同口径），保证结果长度 <= 上限。
+    return `${joined.slice(0, RELEASE_NOTES_MAX_CHARS - 1)}…`;
+  } catch {
+    // 见上方纪律 4：任何异常都降级为空串。
+    return '';
+  }
+}
+
+/**
+ * release note 正文的文本规整（normalizeReleaseNotes 的内部实现）：
+ *  · HTML 标签整段删除——GitHub release body 是 Markdown，但私有化 feed 里
+ *    出现过手写 HTML；渲染层不做 HTML 解析，留着标签只是噪音。
+ *  · `<br>` / `</p>` / `</li>` 先换成换行，否则删标签会把相邻段落黏成一行。
+ *  · 逐行去首尾空白、连续空行压成一个、整体去首尾空白。
+ *  · 制表符换成两个空格（横幅是等宽排版，制表符会被浏览器渲染成巨大缩进）。
+ */
+function sanitizeReleaseNoteText(text: string): string {
+  return text
+    // <script>/<style> 整块（含内容）删除——只删标签会把 `alert(1)` 或整段 CSS
+    // 当成正文留在横幅里。这里不做 HTML 解析，但这两个标签的内容永远不是
+    // 人类可读的更新说明，整块丢弃比留下更接近"纯文本"的目标。
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    // 块级/换行标签 → 换行（在删标签之前处理，否则段落边界丢失）
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|li|div|h[1-6]|tr)>/gi, '\n')
+    // 其余标签整段删除（含属性里的引号内容）
+    .replace(/<[^>]*>/g, '')
+    // HTML 实体：只处理最常见的四个，其余保持原样（不赌完整实体表）
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    // 控制字符（含 \r、\t 之外）一律清掉，防止不可见字符撑乱布局
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '  ')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 // NETOPT-C P3: updater:error 的显性化开关——用户主动检查 / 用户确认的下载
 // 才广播；后台定时检查保持静默（离线/私服 404 不打扰用户）。
 // NETOPT-D P3-1 / NETOPT-E P3-1 / NETOPT-E P2-4: runCheck 互斥 + 归因局部化
@@ -231,7 +333,19 @@ export function initUpdater(): void {
         (previouslyDownloaded ? ' (previously downloaded, pending cache should be reused)' : ''),
     );
     runCheckState.resetSurface();
-    broadcast(UPDATE_EVENTS.available, { version: remote, current: local, previouslyDownloaded });
+    // PLAN-EXECUTOR-DESKTOP-UX 4.2：把 releaseNotes 一并带出去（归一化 +
+    // 封顶见 normalizeReleaseNotes 头注）。**已经过文本规整的纯字符串**——
+    // 渲染层只做 {text} 渲染，绝不 dangerouslySetInnerHTML（release notes 来自
+    // GitHub Releases，是外部不可信内容，注入 HTML 就是 XSS 面）。
+    // 空串（无日志/全被过滤）照常带上：字段恒存在让渲染层不必猜"是没日志还是
+    // 旧版主进程"，展示侧按空串隐藏即可。
+    const releaseNotes = normalizeReleaseNotes((info as { releaseNotes?: unknown }).releaseNotes);
+    broadcast(UPDATE_EVENTS.available, {
+      version: remote,
+      current: local,
+      previouslyDownloaded,
+      releaseNotes,
+    });
     // V4 审计 P2：广播之外补一条系统通知（状态窗关闭时横幅无人看见）。
     // 同版本只通知一次（6h 周期检查会重复触发 update-available）；新版本号
     // 到达即再通知。remote 已过 isNewerVersion（semver 字符集），进通知安全。

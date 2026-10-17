@@ -653,7 +653,10 @@ export default {
   'users.field.password': '密码',
   'users.field.passwordRequired': '请输入密码',
   'users.field.passwordMin': '密码至少8个字符',
-  'users.field.passwordPattern': '密码须包含大写字母、小写字母、数字和特殊符号',
+  // ⚠️ 措辞必须与后端 validatePasswordStrength 一致：**不要求小写字母**。
+  // 此前文案写「大写字母、小写字母、数字和特殊符号」且表单正则真的加了
+  // `(?=.*[a-z])`——比后端更严，会拒绝后端本可接受的密码（SECURITY §3.1 修复）。
+  'users.field.passwordPattern': '密码须包含大写字母、数字和特殊符号',
   'users.field.passwordPlaceholder': '请输入密码',
   'users.field.email': '邮箱',
   'users.field.emailRequired': '请输入邮箱',
@@ -1080,6 +1083,17 @@ export default {
   'security.password.submit': '修改密码',
   'security.password.changed': '密码已修改，请使用新密码重新登录',
   'security.password.changeFail': '修改密码失败',
+  // SECURITY §3.1：密码强度实时反馈（组件 PasswordStrengthMeter）。
+  // 等级文案与后端策略**同源**——不合规的密码永远不会显示为「强」（见
+  // utils/passwordPolicy 的封顶不变量），故这里的措辞只描述"强度"，
+  // 不承诺"可用"；"可用"由下方逐条规则清单回答。
+  'security.password.strength.label': '强度',
+  'security.password.strength.empty': '尚未输入',
+  'security.password.strength.weak': '弱',
+  'security.password.strength.fair': '一般',
+  'security.password.strength.good': '较好',
+  'security.password.strength.strong': '强',
+  'security.password.strength.unmetHint': '尚未满足全部要求，提交会被后端拒绝',
 
   'apiKeys.title': 'API Keys（限权机器凭证）',
   'apiKeys.create': '新建 API Key',
@@ -2204,6 +2218,10 @@ export default {
   'execDetail.log.noLevelLogs': '无 {{level}} 级别日志',
   'execDetail.log.noLevelLogsDesc': '当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。',
   'execDetail.log.noSearchHit': '未找到匹配「{{keyword}}」的日志内容',
+  // LOG-JSON-01：日志行内 JSON 载荷的「展开看美化」浮层文案
+  'execDetail.log.json.prettyTitle': '格式化后的 JSON',
+  'execDetail.log.json.prettyTruncated': '格式化后的 JSON（内容过长，已截断）',
+  'execDetail.log.json.expandAria': '展开查看格式化 JSON',
   'execDetail.report.aiAnalysisTitle': '🤖 AI 故障分析',
   'execDetail.retry.chainTitle': '重试链路',
   'execDetail.retry.budget': '重试预算：Attempt #{{attempt}} of {{total}}',
@@ -2295,6 +2313,11 @@ export default {
   'taskForm.unsaved.message': '表单有未保存的修改，离开将丢失这些更改。确定离开吗？',
   'taskForm.unsaved.ok': '离开',
   'taskForm.unsaved.cancel': '留下',
+  // DRAFT-01：表单草稿（localStorage 自动保存/恢复）——崩溃、误关标签页、
+  // 会话过期后回来，输入不归零。提示为非侵入行内条，含「丢弃草稿」出口。
+  'taskForm.draft.restored': '已恢复上次未保存的草稿',
+  'taskForm.draft.restoredDesc': '表单已填入上次编辑的内容。若不想要这份草稿，可丢弃后重新填写。',
+  'taskForm.draft.discard': '丢弃草稿',
   'taskForm.submit.updateFail': '更新失败',
   'taskForm.submit.createFail': '创建失败',
   // A4（第三轮审计）：乐观锁冲突（409）——留在表单页不跳转的专门指引

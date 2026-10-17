@@ -102,6 +102,9 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 beforeEach(() => {
+  // DRAFT-01：草稿落 localStorage——每个用例必须从干净状态起跑，否则上一个
+  // 用例的输入会被下一个用例"恢复"进表单（真实产品行为，但测试需隔离）。
+  localStorage.clear();
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = { id: 'task-1' };
   mockSearch = '';
@@ -125,6 +128,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
 describe('deriveExecutorMode（加载态 mode 映射，N19）', () => {
@@ -603,6 +607,7 @@ describe('TaskFormPage suggestCron（F-04 AI 建议 Cron 死链修复）', () =>
  */
 describe('TASK-PROJ-01 归属项目选择器', () => {
   beforeEach(() => {
+    localStorage.clear(); // DRAFT-01：创建态草稿同样按用例隔离
     mockRouteParams = {}; // 创建态
     mockSearch = '';
     vi.mocked(tasksApi.get).mockReset();
