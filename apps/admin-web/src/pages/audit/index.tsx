@@ -169,7 +169,23 @@ export default function AuditLogPage() {
     { label: t('audit.range.30d'), value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
   ];
 
-  const hasFilters = !!(pending.action || pending.resource || pending.resourceId || pending.username || pending.result || pending.startTime || pending.endTime);
+  // AUDIT-HASFILTERS（审计 P2，2026-10-17）：判据必须读**已应用**的 filters，
+  // 不能读 pending（表单里还没点「查询」的草稿值）。
+  //
+  // 缺陷现场：hasFilters 读 pending，而列表查询与 CSV 导出都用 filters。于是
+  // 用户在输入框里敲了个用户名但没点查询时，「重置」按钮就出现了（列表其实
+  // 没筛选），点重置只是清空草稿；更糟的是此时点导出，导出的仍是**无筛选**
+  // 的全量数据，而按钮存在本身在暗示「当前有筛选」。反过来，应用筛选后若
+  // 再改草稿回空，按钮消失但列表仍是筛选态。
+  const hasFilters = !!(
+    filters.action ||
+    filters.resource ||
+    filters.resourceId ||
+    filters.username ||
+    filters.result ||
+    filters.startTime ||
+    filters.endTime
+  );
 
   const columns = [
     { title: 'ID', dataIndex: 'id', width: 70 },

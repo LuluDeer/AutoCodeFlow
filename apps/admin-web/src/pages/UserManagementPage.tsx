@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { Table,
   Button,
   Space,
@@ -38,6 +38,8 @@ import PageSkeleton from '../components/PageSkeleton';
 import { useIsMobile } from '../hooks/useIsMobile';
 // USER-SEARCH-01：搜索防抖（列表查询跟随 debounced 值，输入框即时回显）
 import { useDebounce } from '../hooks/useDebounce';
+// URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
+import { useUrlStateSync } from '../hooks/useUrlStateSync';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -61,7 +63,7 @@ export default function UserManagementPage() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   // F-15（DEEP_REVIEW 0ef3bbe）：占位次要色走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
   const [searchText, setSearchText] = useState(() => searchParams.get('q') || '');
@@ -98,14 +100,13 @@ export default function UserManagementPage() {
   const users: UserWithActive[] = data?.list ?? [];
   const total: number = data?.total ?? 0;
 
-  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入保持 URL 干净）
-  useEffect(() => {
-    const next = new URLSearchParams();
-    if (page !== 1) next.set('page', String(page));
-    if (pageSize !== 20) next.set('pageSize', String(pageSize));
-    if (debouncedSearch) next.set('q', debouncedSearch);
-    setSearchParams(next, { replace: true });
-  }, [page, pageSize, debouncedSearch, setSearchParams]);
+  // URL-SYNC-02（审计 P2）：双向同步——外部深链/前进后退现在会真正生效。
+  // 此前只有「初始值读 URL + 单向回写」，组件已挂载时改 URL 会被回写抹掉。
+  useUrlStateSync(
+    { page, pageSize, q: debouncedSearch },
+    { page: 1, pageSize: 20, q: '' },
+    { page: setPage, pageSize: setPageSize, q: setSearchText },
+  );
 
   // Reset to page 1 when search text changes（后端按新 search 重新分页）
   const handleSearch = (val: string) => { setSearchText(val); setPage(1); };

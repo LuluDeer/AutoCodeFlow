@@ -34,6 +34,8 @@ import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tas
 import { useTasksList, invalidateTaskData } from '../api/queries';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
+// URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
+import { useUrlStateSync } from '../hooks/useUrlStateSync';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { priorityTag } from '../utils/priority';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源（与 status/priority 同范式）
@@ -108,7 +110,7 @@ export default function TaskListPage() {
   const { token } = theme.useToken();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写——刷新/分享不丢状态
   // （与 ExecutionsPage 同一约定：q/status/trigger/page/pageSize）。
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>(() => searchParams.get('trigger') || undefined);
@@ -136,17 +138,34 @@ export default function TaskListPage() {
   // 搜索防抖：输入框即时回显 search，列表查询跟随 debounced 值，避免每击键发请求
   const debouncedSearch = useDebounce(search);
 
-  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；空值不写入）
-  useEffect(() => {
-    const next = new URLSearchParams();
-    if (page !== 1) next.set('page', String(page));
-    if (pageSize !== 20) next.set('pageSize', String(pageSize));
-    if (statusFilter) next.set('status', statusFilter);
-    if (debouncedSearch) next.set('q', debouncedSearch);
-    if (triggerFilter) next.set('trigger', triggerFilter);
-    if (lastStatusFilter) next.set('lastStatus', lastStatusFilter);
-    setSearchParams(next, { replace: true });
-  }, [page, pageSize, statusFilter, debouncedSearch, triggerFilter, lastStatusFilter, setSearchParams]);
+  // URL-SYNC-02（审计 P2）：双向同步——外部深链/前进后退现在会真正生效。
+  // 此前只有「初始值读 URL + 单向回写」：组件已挂载时改 URL 会被回写抹掉。
+  useUrlStateSync(
+    {
+      page,
+      pageSize,
+      status: statusFilter,
+      q: debouncedSearch,
+      trigger: triggerFilter,
+      lastStatus: lastStatusFilter,
+    },
+    {
+      page: 1,
+      pageSize: 20,
+      status: undefined,
+      q: '',
+      trigger: undefined,
+      lastStatus: undefined,
+    },
+    {
+      page: setPage,
+      pageSize: setPageSize,
+      status: setStatusFilter,
+      q: setSearch,
+      trigger: setTriggerFilter,
+      lastStatus: setLastStatusFilter,
+    },
+  );
 
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,

@@ -27,6 +27,8 @@ import { useExecutionsList, invalidateExecutionData } from '../api/queries';
 import { useExecutionsStream } from '../hooks/useExecutionsStream';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
+// URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
+import { useUrlStateSync } from '../hooks/useUrlStateSync';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
 // 阶段 3 起 pull 允许同址多行并存，仅显示 IP:端口 无法回答「哪台机器」。
@@ -130,7 +132,7 @@ export default function ExecutionsPage() {
   //    此前页面从不读 URL 参数，深链被静默丢弃；
   // ② 刷新/分享页面后筛选与页码全部丢失。
   // 时间范围不在 URL（Dayjs 序列化噪音大、深链价值低），仍仅存会话内。
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [page, setPage] = useState(() => {
     const p = Number(searchParams.get('page'));
     return Number.isInteger(p) && p > 0 ? p : 1;
@@ -171,17 +173,27 @@ export default function ExecutionsPage() {
   // 搜索防抖：避免每击键发一次列表请求
   const debouncedSearch = useDebounce(search);
 
-  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录）。空值不写入，
-  // 保持深链 URL 干净；清空筛选后 URL 回到裸 /executions。
-  useEffect(() => {
-    const next = new URLSearchParams();
-    if (page !== 1) next.set('page', String(page));
-    if (pageSize !== 20) next.set('pageSize', String(pageSize));
-    if (statusFilter) next.set('status', statusFilter);
-    if (debouncedSearch) next.set('q', debouncedSearch);
-    if (executorFilter) next.set('executor', executorFilter);
-    setSearchParams(next, { replace: true });
-  }, [page, pageSize, statusFilter, debouncedSearch, executorFilter, setSearchParams]);
+  // URL-SYNC-02（审计 P2）：双向同步——外部深链（通知铃铛「查看失败」、
+  // Dashboard「全部失败」、浏览器前进后退）现在会真正改变列表。
+  // 此前只有「初始值读 URL + 单向回写」：组件已挂载时改 URL 会被回写抹掉，
+  // 地址栏闪过 ?status=failed 随即消失，列表仍是全量——深链形同失效。
+  useUrlStateSync(
+    {
+      page,
+      pageSize,
+      status: statusFilter,
+      q: debouncedSearch,
+      executor: executorFilter,
+    },
+    { page: 1, pageSize: 20, status: undefined, q: '', executor: '' },
+    {
+      page: setPage,
+      pageSize: setPageSize,
+      status: setStatusFilter,
+      q: setSearch,
+      executor: setExecutorFilter,
+    },
+  );
 
   // ARCH-26: TanStack Query 改造——useRequest 轮询（15s）换 query hooks：
   // 筛选参数进 queryKey（参数变化自动重取，等价 refreshDeps）；

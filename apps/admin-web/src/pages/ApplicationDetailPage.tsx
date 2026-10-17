@@ -42,6 +42,7 @@ import { triggerLabel, releaseStatusLabel, TRIGGER_COLOR } from '../utils/trigge
 // D-P2-02b（设计审计 2026-09-22）：runtime 读面走唯一事实源 runtimeLabel
 // （与筛选下拉同源；未知值回退原始 token）。
 import { runtimeLabel } from '../utils/runtime-label';
+import { useRaceGuard } from '../utils/raceGuard';
 // D-P2-09：时间格式化统一走共享 formatDateTime（与全站同源）。
 import { formatDateTime } from '../utils/timeFormat';
 // P3 审计：应用/发布部署状态 → Tag color 映射收敛到单一事实源
@@ -668,20 +669,36 @@ function ReleasesTab({ app }: { app: Application }) {
   // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
   const { nameOf } = useExecutorNames();
 
+  /**
+   * RACE-PAGE（审计 P2，2026-10-17）：分页响应的序号守卫。
+   *
+   * 缺陷现场：快速点「下一页→上一页」时两个请求并发在飞，先发的可能后到
+   * ——旧页数据覆盖新页，用户看到的是上一页的内容但页码显示当前页，必须
+   * 再点一次才纠正。setRows/setTotal/setPage 三者还会被拆开写（中间态
+   * 可能行数与总数不同步）。
+   *
+   * 现在每次请求领取一个自增序号，只有「最新那一发」的响应才被采纳；过期
+   * 响应的 setLoading(false) 也不执行（否则会提前熄掉当前请求的 loading）。
+   */
+  const raceGuard = useRaceGuard();
+
   const fetchReleases = useCallback(async (p: number) => {
+    const seq = raceGuard.next();
     setLoading(true);
     setError(null);
     try {
       const res = await applicationsApi.getReleases(app.id, p, 20);
+      if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃
       setRows(res.data ?? []);
       setTotal(res.total ?? 0);
       setPage(res.page ?? p);
     } catch (err: unknown) {
+      if (!raceGuard.isLatest(seq)) return; // 过期失败同样不覆盖当前视图
       setError(err);
     } finally {
-      setLoading(false);
+      if (raceGuard.isLatest(seq)) setLoading(false);
     }
-  }, [app.id]);
+  }, [app.id, raceGuard]);
 
   useEffect(() => { fetchReleases(1); }, [fetchReleases]);
 
