@@ -221,10 +221,13 @@
       `CREATE TABLE ... PARTITION OF` ⇒ **恒需父表属主**，故必须有唯一属主例外；
     · `ALTER TABLE ... OWNER TO` 要求新属主有 schema CREATE（副作用：app 能在 public 建表）；
     · 属主检查认可角色成员关系 ⇒ 用单向 `GRANT acf_app TO acf_migrator` 即可。
-31. **前端其余页面迁 `nextCursor`**——目前只有 ExecutionsPage 有「稳定翻页」开关。
-    可复用同一范式（游标栈 + keyset 下页码器换成上/下一页）。
-32. **`audit` 与 `executor-package` 的前端**仍读 `data`/`items`+`total`，未消费 `nextCursor`
-    （后端已加性支持，零破坏）。
+31. **前端其余页面迁 `nextCursor`**——已完成四页：ExecutionsPage / AuditLogPage /
+    ExecutorPackagesPage（+「导出全部」接后端流式端点）。**只剩 TaskListPage**
+    ——它有 `useUrlStateSync` 深链 + `lastStatus` 筛选，而 `cursor` 与 `lastStatus`
+    在后端是**显式互斥**（带 cursor + lastStatus → 400），迁移时必须处理这个组合
+    （例如 keyset 模式下禁用 lastStatus 筛选并给提示），复杂度高于前三页，刻意留作独立一轮。
+32. **`GET /tasks/executions/export` 前端已接**（0fe64906）——「导出全部」按钮与
+    既有「导出当前页」并列，不改后者语义。
 
 ### ✅ 已完成（第七轮，2026-10-18）
 33. **`GET /tasks/executions/all` keyset 分页**（2e0c5d28）——新增
@@ -248,6 +251,19 @@
 38. **审计过滤器收口**——原态是「2 份复制 + 1 个部分共用」的三段式：`findAll` 与
     `exportCsv` 各自内联**同样四条**（连注释都抄），`applyExtraFilters` 只装后四条。
     即「两条路径同一过滤集」这条承诺实际只覆盖 8 个里的 4 个。已收口成 `applyAuditFilters`。
+
+### ✅ 已完成（第九轮，2026-10-18）
+39. **AuditLogPage 与 ExecutorPackagesPage 消费 `nextCursor`**（0fe64906）——
+    照抄 ExecutionsPage 范式：开关默认关闭、游标栈、keyset 下页码器整体消失换自绘上/下页、
+    cursor 三态在状态层分开、"关闭时请求里没有 cursor 键"做成代码保证。
+    两处按实际代码裁剪：AuditLogPage 无 `useUrlStateSync`（那条重置点不存在）；
+    它是「草稿 → 点搜索才应用」两段式，故重置落在应用瞬间而非 onChange。
+40. **「导出全部」前端接入**（0fe64906）——并列而非替换；下载走 axios blob；
+    筛选映射按后端 DTO 逐个核实（搜索框→`taskName`、执行器→`executorAddress`、
+    时间范围过滤的是 **createdAt** 不是执行 startTime 列）；"不分页"做成
+    类型 + 装配层的代码保证（用例断言 `'page' in params === false`）。
+41. **`listLatest()` 不得改走 keyset，用独立 spec 钉住**——它要的是
+    "active 前 100" 固定切片，不是翻页；放在页面 spec 里只会检验 mock 自己。
 
 ### 🚫 不要做（核验后判定）
 - **PLAN-SECURITY-HARDENING.md §4.1**（DNS rebinding 双解析）——现有 DNS pinning
