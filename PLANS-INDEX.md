@@ -196,7 +196,6 @@
 24. **全链 Playwright e2e 真跑通过**：49 通过 / 2 跳过 / 0 失败（3.6 分钟），
     覆盖真实 PG + Redis + admin-api + executor-node + executor-python + Chromium UI。
 
-### ⬜ 建议接下来做
 25. **PLAN-SECURITY-HARDENING.md** §4.2（出口代理隔离）——**评估后不建议盲接**：
     squid 属"deny-by-default 才能称得上隔离"，而本仓出站面含**用户可配**的 AI
     provider / SMTP / webhook 地址，"盲接会先把可用性打死"（报告原文即警告
@@ -204,14 +203,39 @@
     决策与前置条件已写入 PLAN-SECURITY-HARDENING.md §4.2。
 26. **PLAN-BACKEND-ARCHITECTURE.md** §2.2 归档表——**需要业务决策**：见 ADR-024。
     决策所需信息已备齐，等合规口径。
-27. **游标分页再推广**：`GET /tasks/executions/all` → audit → executor-package。
-    本轮已完成 `GET /tasks` 与 `GET /tasks/:id/executions` 两个。
-    **admin-web 前端迁移消费 `nextCursor` 仍未做**（刻意：一次改四端是反模式）。
+27. **游标分页再推广**：audit → executor-package（`GET /tasks/executions/all` 已于
+    2026-10-18 完成，见第 32 条）。已完成三个端点：`GET /tasks`、
+    `GET /tasks/:id/executions`、`GET /tasks/executions/all`。
 28. **PLAN-OBSERVABILITY.md** §4 追踪 exporter（需要 collector）。
     另：手写 `TracingService` 的 `parentSpanId` 恒为 `null`，没有真正的父子 span 树。
 29. **后端执行记录流式导出端点**（ADR-024 里单独记录）——现有三处文档都说
     "需要留存的历史必须自行导出"，但该能力**不成立**：前端 CSV 只导当前页，
     后端导出端点只有审计日志有。补一个流式导出端点独立于归档选型都有价值。
+30. **⚠️ 最小权限 DB 角色（ADR-025 核出，价值最高的待办）**——方案已写好在
+    `docs/DB-LEAST-PRIVILEGE.md`（21 条断言在真 PG 上实测全绿）。**属部署契约变更，
+    需维护者拍板后再动手**。四条 ADR-025 未预见的硬约束已探明，其中一条是阻塞项：
+    · `main.ts:129` 在**非 development 启动时自动跑迁移** ⇒ 应用账号必须有 DDL 权限，
+      会让整个最小权限自我抵消（必须先解决，推荐删掉 boot 自动迁移）；
+    · `log-retention-cleanup.service.ts:208/233-234` 运行时跑 `DETACH PARTITION` 与
+      `CREATE TABLE ... PARTITION OF` ⇒ **恒需父表属主**，故必须有唯一属主例外；
+    · `ALTER TABLE ... OWNER TO` 要求新属主有 schema CREATE（副作用：app 能在 public 建表）；
+    · 属主检查认可角色成员关系 ⇒ 用单向 `GRANT acf_app TO acf_migrator` 即可。
+
+### ✅ 已完成（第七轮，2026-10-18）
+32. **`GET /tasks/executions/all` keyset 分页**（2e0c5d28）——第三个端点。新增
+    `applyAllExecutionsFilters` 作过滤条件唯一真值源（OFFSET/keyset 共用一份，
+    有「两条路径发出同一组谓词」的用例钉死）。真 PG 独立验证：同毫秒 4 行、
+    id 与微秒反序 → 行值比较返回 3 行 ✅ / 半开区间变体返回 **0 行** ❌。
+33. **前端消费 `nextCursor`**（03d5d944）——ExecutionsPage 加「稳定翻页」开关
+    （**默认关闭 = 现有行为逐字节不变**），游标**栈**支撑「上一页」，keyset 下
+    页码器整体消失换成上一页/下一页（杜绝"点第 5 页其实是第 2 页"）。
+    cursor 三态（`undefined`/空串/非空）在**状态层**就分开；"关闭时请求里没有
+    cursor 键"做成了代码保证而非 axios 库行为。
+34. **`docs/DB-LEAST-PRIVILEGE.md`** 最小权限 DB 角色实施方案——文档内 6 个 SQL 块
+    被**逐字抽取送进真 PG 执行**建库，再在它上面跑 21 条断言（PASS=21 BROKEN=0），
+    含 9 条「期望失败」（UPDATE/DELETE/TRUNCATE/DISABLE TRIGGER/SET ROLE 等）
+    与 9 条「期望成功」（保留下发通道不被打断）。
+
 ### 🚫 不要做（核验后判定）
 - **PLAN-SECURITY-HARDENING.md §4.1**（DNS rebinding 双解析）——现有 DNS pinning
   更强，按计划实施是**安全回归**
