@@ -97,12 +97,23 @@ if ! npm run migration:run; then
 fi
 
 # ---- 跑 e2e -------------------------------------------------------------
+# ⚠️ 另一个实测踩到的坑：apps/admin-api/.env 若存在，dotenv 会读它，可能与
+#    本脚本导出的 E2E 库/凭据冲突（"迁移跑到东边、e2e 连西边"）。若发现库不对，
+#    先确认没有 .env 在抢。同理 apps/executor-node/.env 里的 EXECUTOR_SHARED_TOKEN
+#    会盖掉外部注入的 EXECUTOR_SECRET，导致执行器注册 401（见 e2e-full.sh 场景）。
 say "跑 e2e"
 npm run test:e2e
 STATUS=$?
 
 if [ "$STATUS" -eq 0 ]; then
   say "e2e 全部通过"
+  # ⚠️ 重要：e2e 套件里含 test/openapi-export.e2e-spec.ts，它会把
+  # apps/admin-api/openapi.json 重写成**纯中文**（剥掉全部 x-i18n-en）。
+  # 只有 `npm run swagger:export` 会串联注入英文。所以跑完 e2e 后
+  # openapi.json 一定显示巨大 diff —— 那是假象，不是你的改动。
+  # 恢复方法（需同样的 DB/Redis 环境）：
+  #   cd apps/admin-api && npm run swagger:export
+  say "提示：openapi.json 已被 e2e 重写为纯中文；提交前请跑 swagger:export 恢复"
 else
   die "e2e 有失败（exit=$STATUS）。注意：若大面积 401，先确认 admin 用户是否建出来了
    （INITIAL_ADMIN_PASSWORD 是否生效、users 表是否非空），而不是先怀疑鉴权代码。"

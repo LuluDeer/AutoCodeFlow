@@ -104,9 +104,13 @@ import {
   executionListSelectColumnsAliased,
 } from "./execution-list-projection";
 // §2.1 游标分页：keyset 游标的编解码（纯函数，非法输入一律 400 VALIDATION_FAILED）。
+// 推广到 GET /tasks 后**只有一份实现**——`*KeysetCursor*` 是通用名，
+// `*ExecutionCursor*` 是 executions 端点沿用下来的别名（转调，不是副本）。
 import {
   decodeExecutionCursor,
+  decodeKeysetCursor,
   nextExecutionCursor,
+  nextKeysetCursor,
 } from "../../common/utils/keyset-cursor.util";
 import {
   isValidRuntimeVersionFormat,
@@ -1603,6 +1607,14 @@ export class TaskService {
       };
     }
 
+    // §2.1（本轮推广）: 游标分页分支——必须在**排序解析之后、过滤装配之前**接入，
+    // 因为"游标能不能用"取决于 this.sortKey 的解析结果（见 assertCursorCompatible）。
+    // 不带 cursor 时下面一行都不执行，旧路径逐字节不变。
+    if (p.cursor !== undefined && p.cursor !== null) {
+      this.assertCursorCompatibleWithQuery(p);
+      return this.findAllByKeyset(p, select);
+    }
+
     // P2-18: lastStatus（最近一次执行状态）——执行维度的派生过滤，Task 实体
     // 无冗余列（刻意不改 schema），走 QueryBuilder 关联子查询分支；不带
     // lastStatus 时保持 findAndCount 既有路径逐字节不变。
@@ -1614,27 +1626,48 @@ export class TaskService {
       return this.findAllByLastStatus(p, select, sortKey, dir);
     }
 
-    // 过滤条件装配。q（关键字，name OR description）走 findAndCount 的
-    // **数组 where**（TypeORM 数组 = 元素间 OR、元素内 AND）；无 q 时保持
-    // 单对象 where，既有路径逐字节不变。
+    // 过滤条件装配（抽成私有方法，keyset 分支复用同一份，杜绝两套过滤漂移）
+    const where = this.buildTaskListWhere(p);
+
+    const [list, total] = await this.taskRepo.findAndCount({
+      where,
+      select,
+      skip: (p.page - 1) * p.pageSize,
+      take: p.pageSize,
+      order,
+    });
+    this.maskListSecrets(list, select);
+    return paginate(list, total, p.page, p.pageSize);
+  }
+
+  /**
+   * `findAll` 的过滤条件装配（**唯一**真值源，OFFSET / lastStatus / keyset 三条
+   * 路径共用）。
+   *
+   * 提取动机：§2.1 推广引入第三条分支时，若把这段复制过去，任何一处过滤语义
+   * 变更（例如新加一个 `triggerType` 过滤）都必须记得改三遍——漏一处就是"某个
+   * 端点悄悄不过滤"，而这类缺陷在 mock 掉 API 层的单测里全是绿的。故只留一份。
+   *
+   * 语义（与提取前逐字节一致）：
+   *   · 基线 `status != DELETED`；显式 `p.status` 精确等值**替换**基线；
+   *   · `q`（name OR description）走**数组 where**（TypeORM 数组 = 元素间 OR、
+   *     元素内 AND）；无 q 时保持单对象 where，既有路径逐字节不变。
+   *     NETOPT-3⑤：ILIKE 的 `_`/`%` 一律转义按字面量匹配。
+   *   · `name` + `q` 同时给出取**交集**（DTO 明文契约）：q 的 name 分支用
+   *     `And()` 并列而非展开覆盖（展开会把 p.name 静默丢弃、结果集变宽）。
+   *   · AUTH-01：`projectId="default"` → 未分配行与默认项目行一起命中。
+   */
+  private buildTaskListWhere(
+    p: ListTasksQueryDto,
+  ): Record<string, unknown> | Record<string, unknown>[] {
     const base: Record<string, unknown> = {
       status: Not(TaskStatus.DELETED),
     };
     if (p.status) base.status = p.status as TaskStatus;
-    // NETOPT-3⑤ 同源修复：ILIKE 里 `_` = 任意单字符、`%` = 任意串。此前这条
-    // name 过滤是裸插值——搜 `daily_report` 会命中 `dailyXreport`，搜 `%`
-    // 命中全部，结果集静默变宽。同文件的 getAllExecutions 早已转义，此处补齐。
     if (p.name) base.name = ILike(`%${escapeLikePattern(p.name)}%`);
-    // name + q 同时给出时取**交集**（DTO 明文契约，见 list-tasks-query.dto）。
-    // 下面 q 分支的数组元素若直接 `{ ...base, name: ILike(q) }`，展开会把
-    // base.name **覆盖**掉 → p.name 被静默丢弃、结果集变宽（本仓反复警示的
-    // "静默变宽"类缺陷），且与 QB 分支（两条 andWhere 真 AND）对同一输入
-    // 给出不同结果。故此处记下 name 条件，供 q 分支用 And() 并列。
     const nameFilter = base.name as never;
     if (p.runtime) base.runtime = p.runtime;
     if (p.applicationId) base.applicationId = p.applicationId;
-    // AUTH-01: projectId 过滤——"default" 映射为默认项目（未分配 NULL 行
-    // 一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。
     if (p.projectId) {
       if (p.projectId === "default") {
         base.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
@@ -1646,10 +1679,9 @@ export class TaskService {
     // 关键字检索：name OR description。两个数组元素各自带上 base 的全部
     // AND 条件（TypeORM 的数组语义是元素间 OR，元素内 AND）——否则
     // runtime/projectId 等过滤会被 OR 短路掉。
-    let where: Record<string, unknown> | Record<string, unknown>[] = base;
     if (p.q) {
       const like = `%${escapeLikePattern(p.q)}%`;
-      where = [
+      return [
         // name 分支：base 已有 name 过滤时并列（And）而非覆盖。
         {
           ...base,
@@ -1663,16 +1695,200 @@ export class TaskService {
         { ...base, description: ILike(like) },
       ];
     }
+    return base;
+  }
 
-    const [list, total] = await this.taskRepo.findAndCount({
-      where,
-      select,
-      skip: (p.page - 1) * p.pageSize,
-      take: p.pageSize,
-      order,
-    });
+  /**
+   * §2.1（推广到 GET /tasks）：**游标与本次查询是否可组合**的唯一判定点。
+   *
+   * 只做"能不能用"的判定，不碰游标内容——格式合法性由 `decodeKeysetCursor`
+   * 负责（纯函数，见 common/utils/keyset-cursor.util.ts）。两个组合一律 400：
+   *
+   * ## ① `cursor` + 显式 `sortBy`（哪怕写的正是 `createdAt`）
+   *
+   * keyset 游标编码的是**某一组排序键的原值**。本端点的 `sortBy` 白名单有 14 个
+   * 键、且方向可正可反，而游标只对 `(createdAt DESC, id DESC)` 这一套序有意义。
+   * 放开自由组合的结果不是报错，而是**语义错乱**：查询按 `priority` 序返回，游标
+   * 里的 `createdAt` 在该序里毫无位置 → "继续"的起点无意义 → 漏行/重行，且每页
+   * 都是 200。故宁可显式拒绝。
+   *
+   * 为什么连 `sortBy=createdAt` 也拒：调用方传它就说明它认为"可以自定义排序 +
+   * 游标"，这个心智模型本身就是错的；而放行它还要额外确认 `sortOrder` 也是
+   * `desc`（`asc` 时游标方向相反，必然错乱）。与其做一串"恰好正确才放行"的
+   * 条件判断，不如让契约只有一种正确姿势：**带 cursor 就不许带 sortBy**。
+   *
+   * ## ② `cursor` + `lastStatus`
+   *
+   * `lastStatus` 走独立的 QueryBuilder 分支（EXISTS 关联子查询，见
+   * findAllByLastStatus）。技术上并非不可支持——外层 task 的过滤与排序和 keyset
+   * 完全正交，把元组谓词加到同一 qb 上即可。**但本轮不做**，理由是范围与风险：
+   * 那条分支的 where 装配是手写的 qb 链（与 findAndCount 的 where 对象是两套
+   * 表达），要复核它 6 个过滤项与 keyset 谓词的 AND 优先级、投影形态、count 语义
+   * （getManyAndCount 会剥掉 take 但保留 where），属于"再写一条新查询路径"。
+   * 在无法保证同等的漏/重验证覆盖之前，**拒绝比静默错乱好**——这与本模块头注
+   * "非法一律 400，绝不静默降级"是同一取舍。
+   *
+   * ⚠️ 拒绝这两组合是**加性**的：不带 cursor 时它们的行为一个字节都没变
+   * （`sortBy` / `lastStatus` 单独使用照常工作）。
+   */
+  private assertCursorCompatibleWithQuery(p: ListTasksQueryDto): void {
+    if (p.sortBy !== undefined && p.sortBy !== null) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          "cursor 不能与 sortBy 同时使用（分页游标绑定固定的排序键 createdAt DESC, id DESC；自定义排序请改用 page/pageSize 的 OFFSET 分页）",
+      });
+    }
+    if (p.lastStatus !== undefined && p.lastStatus !== null) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          "cursor 不能与 lastStatus 同时使用（按最近一次执行状态过滤走独立的子查询分支，暂不支持游标分页；请改用 page/pageSize 的 OFFSET 分页）",
+      });
+    }
+  }
+
+  /**
+   * §2.1（推广到 GET /tasks）keyset 分支：`(createdAt, id) < (cursorAt, cursorId)`
+   * 的元组游标翻页。
+   *
+   * ## 与 executions 分支（getExecutionsByKeyset）的关系
+   *
+   * 形态与论证**照抄**那边，两处差异都是本端点（任务列表）特有的：
+   *   · 过滤条件来自 `buildTaskListWhere`（status/name/q/runtime/applicationId/
+   *     projectId），不是 executions 的 `{taskId, status}`；
+   *   · 排序**只有一种**：`(createdAt DESC, id DESC)`——`sortBy` 已被
+   *     `assertCursorCompatibleWithQuery` 拒掉，故这里的排序键与游标元组**必然
+   *     同源**（这正是 keyset 正确性的前提）。
+   *
+   * ## 为什么 SQL 里用"行值比较 + 子查询取游标行"，而不是毫秒区间
+   *
+   * 与 `getExecutionsByKeyset` 同一结论（那里有完整实测与证伪记录，此处不重复
+   * 长篇论证）。要点：
+   *
+   *   · `tasks."createdAt"` 是 **naive** `timestamp`，`information_schema` 给出
+   *     `datetime_precision = 6`（微秒）；建表迁移 `"createdAt" TIMESTAMP NOT
+   *     NULL DEFAULT now()`（未限定精度 = PG 默认 `timestamp(6)`），实体是裸
+   *     `@CreateDateColumn()`，全量迁移史里**没有** `ALTER COLUMN ... TYPE` 降精度；
+   *   · 写路径不显式赋值 createdAt → 取 `now()`（**事务开始时间**）。同事务批量
+   *     插入共享同一微秒值，**跨事务**的同毫秒插入会得到不同微秒值（实测
+   *     autoflow_test 里 3/3 行都带非零微秒分量，如 `…:01.357218`）；实体读出后
+   *     被截成毫秒（`…:01.357`）。
+   *
+   * 故 **不能**用下面这种"毫秒半开区间"（704f749e 的原实现，已用真 PG 证伪）：
+   *
+   *      (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
+   *
+   * 分支②隐含"同毫秒内排序完全由 id 决定"，**只在同毫秒行的微秒值恰好相等时
+   * 成立**。
+   *
+   * #### 精确触发条件
+   *
+   * 同毫秒内存在「**微秒更小**（时间上在游标之后）但 **id 更大**（`> cursorId`）」
+   * 的行 → 分支② 的 `id < cursorId` 判它"不满足" → **静默漏行**；反向则会把
+   * 时间上在游标**之前**的行误返回（游标行被再次返回 → 原地打转）。
+   * ⚠️ **id 与微秒同序时不显形**，故能同时骗过 CI 与人工冒烟。
+   *
+   * 实测（同毫秒 4 行微秒 .000100/.000200/.000300/.000400，取 .000400 做游标）：
+   * 半开区间返回 **4 行**（含游标行本身）❌，行值比较返回 **3 行** ✅。
+   *
+   * 现在用的写法：
+   *
+   *      (task.createdAt, task.id) < (
+   *        SELECT c."createdAt", c.id FROM tasks c WHERE c.id = :cursorId
+   *      )
+   *
+   * 游标只带 `id`，精确时间由子查询按主键取**库内原值**（含微秒）——DB 值比
+   * DB 值，JS 毫秒截断不参与运算，零精度损失；子查询是 PK 单行查找，外层仍走
+   * (createdAt, id) 范围扫描。
+   *
+   * #### 已知且**有意**的语义：游标行被删除 → 该页为空
+   *
+   * 上面的子查询依赖"游标行仍在库里"。若调用方翻页期间该任务被删除（或硬删），
+   * 子查询无行 → 行值比较得 NULL → WHERE 为假 → **本页返回空 items**，
+   * `nextCursor: null`。这是刻意选择的**安全提前结束**：
+   *   · 不会错行、不会重复（对比：用毫秒近似值硬续会重新引入精度缺陷）；
+   *   · 调用方看到"空页 + nextCursor:null"即可判定翻完，语义自洽；
+   *   · 任务列表是**软删**（`status=deleted`）为主，硬删极少，实际触发面很小。
+   * 有一条用例专门钉住这个行为（tasks-keyset-pagination.spec.ts「游标行被删除」），
+   * 将来若有人想改回半开区间，会先撞上它。
+   *
+   * ### 附带消除的两个坑
+   *
+   * ① **时区**：早期实现把游标里的 UTC ISO 串**当字符串**绑定。naive
+   *    `timestamp` 列上，PG 把带 `Z` 的文本强转时会**丢弃时区**、按会话本地墙钟
+   *    解释；`TimeZone=Asia/Shanghai` 下比较值比真实值早 8 小时。实测（同一游标
+   *    行，`WHERE "createdAt" < $1` 命中行数，真值 2 行）：字符串参数 → **0 行**
+   *    （静默漏行），`Date` 参数 → **2 行**。正偏移时区漏行、负偏移时区重复返回，
+   *    `TZ=UTC` 容器里完全隐形 —— 故测试必须用**与时区无关**的断言。
+   * ② **精度**：见上，半开区间本身不成立。
+   *
+   * 现行写法**完全不把时间下传**（由子查询取库内值），两类问题从根上消失；游标
+   * 载荷仍保留 ISO 串（毫秒）只为排障可读与 forward-compat，不参与比较运算。
+   *
+   * ## `total` / `page` 的口径
+   *
+   * 与 executions 分支一致：`getManyAndCount()` 会剥掉 take/limit 再 COUNT（见
+   * typeorm `executeCountQuery`），故 `total` 仍是**同过滤条件下的真实总数**，
+   * 不返回 -1/近似值；`page` 回显 1（keyset 与 OFFSET 的"第 N 页"不是同一套
+   * 坐标系，回显调用方的 page 会诱导混用）。
+   */
+  private async findAllByKeyset(
+    p: ListTasksQueryDto,
+    select: Record<string, true> | undefined,
+  ) {
+    // 空串 = 调用方显式声明的 keyset 起点（见 getExecutions 的同款约定）；
+    // 非空则必须是合法游标，否则 400 —— 绝不降级到 OFFSET 分支。
+    const cursor = p.cursor === "" ? null : decodeKeysetCursor(p.cursor);
+
+    const qb = this.taskRepo
+      .createQueryBuilder("task")
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC）——sortBy 已在
+      // assertCursorCompatibleWithQuery 拒掉，故此处恒为该序。
+      .orderBy("task.createdAt", "DESC")
+      .addOrderBy("task.id", "DESC");
+
+    // 过滤条件：与 OFFSET 分支共用 buildTaskListWhere（单对象或 OR 数组）。
+    // qb.where 接受对象**数组**并按 "(a) OR (b)" 加括号拼接（实测 typeorm
+    // 1.1.1 getWhereCondition → createWhereConditionExpression），与
+    // findAndCount 的数组 where 语义完全一致——故两条路径不会漂移。
+    qb.where(this.buildTaskListWhere(p) as never);
+
+    if (cursor) {
+      // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
+      // 主键从库里取回（含微秒）。**不要**改回"毫秒半开区间"：那版在同毫秒内
+      // 微秒不同的行上会漏行/返回游标之前的行，已用真 PG 实测证伪，完整论证见
+      // `getExecutionsByKeyset` 头注「已证伪的写法 / 现在的写法」两节。
+      //
+      // 精度：DB 值比 DB 值，JS Date 的毫秒截断完全不参与运算 → 零精度损失。
+      // 索引：子查询是 PK 单行查找，外层仍走 (createdAt, id) 范围扫描。
+      // 游标行被并发删除：子查询无行 → 比较得 NULL → WHERE 为假 → 本页为空，
+      // 调用方看到 nextCursor: null 即视为翻完（安全地提前结束，不错行不重复）。
+      qb.andWhere(
+        `(task.createdAt, task.id) < (
+           SELECT c."createdAt", c.id FROM tasks c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
+      );
+    }
+
+    // F-10 投影（QB 形态：task.<col> 列表）——白名单校验已在 findAll 前置段完成，
+    // secrets 永不可能出现在 select 内。不投影时 qb 实体化全部列，与
+    // findAndCount 的默认投影一致（含 secrets，随后由 maskListSecrets 脱敏）。
+    if (select) {
+      qb.select(Object.keys(select).map((col) => `task.${col}`));
+    }
+
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(p.pageSize + 1);
+
+    const [rows, total] = await qb.getManyAndCount();
+
+    const hasMore = rows.length > p.pageSize;
+    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
     this.maskListSecrets(list, select);
-    return paginate(list, total, p.page, p.pageSize);
+    return paginate(list, total, 1, p.pageSize, {
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      nextCursor: hasMore ? nextKeysetCursor(list) : null,
+    });
   }
 
   /**
@@ -2382,36 +2598,76 @@ export class TaskService {
    * 降级到 OFFSET 分支——那会让客户端陷入"带着坏游标请求、每次拿回第 1 页、
    * 每次都是 200"的死循环（详见 keyset-cursor.util.ts 头注）。
    *
-   * ## 为什么 SQL 里要写成"区间"而不是直接的元组比较
+   * ## 为什么 SQL 里用"行值比较 + 子查询取游标行"，而不是毫秒区间
    *
-   * PostgreSQL 本身支持行值比较 `(a, b) < (:at, :id)`，但这里**不能**用它，原因是
-   * 精度而非语法：
+   * PostgreSQL 支持行值比较 `(a, b) < (:at, :id)`，正是这里要的形状。但**不能**
+   * 把 `:at` 绑成"实体读出的毫秒 Date"或游标里的 ISO 串——两版都已被实测证伪：
    *
    *   · `task_executions."createdAt"` 的列类型是 `TIMESTAMP`（无时区，PG 精度
-   *      **微秒**，`now()` 生成），而 JS `Date` 只有**毫秒**；
+   *     **微秒**，`now()` 生成），而 JS `Date` 只有**毫秒**；
    *   · 执行行写入时**不显式给 createdAt**（executor/scheduler/task 三处
-   *     `execRepo.create({...})` 都不带该列），取的是数据库默认值 `now()`——
-   *     即库里的值通常是 `…:00.123456` 这种带微秒的形态；
-   *   · 实体读出来时已被驱动截成毫秒（`…:00.123`）。若把游标原样回传做
-   *     `(createdAt, id) < (…:00.123, uuid)`，数据库里 `…:00.123456` 的行
-   *     满足 `createdAt > :at`，于是被判定为"仍排在游标之后"而**重复返回**。
+   *     `execRepo.create({...})` 都不带该列），取数据库默认值 `now()` = **事务
+   *     开始时间**。同事务批量插入共享同一微秒值，但**跨事务**的同毫秒插入会
+   *     得到不同的微秒值（`.000456` 这种），在高频执行面上很常见。
    *
-   * 故游标时间在 SQL 里按**毫秒半开区间**处理（`:at` = 游标时间，`:atNext` =
-   * 游标时间 + 1 毫秒），两个分支合起来恰好是"字典序严格小于 `(at, id)`"：
+   * ### 已证伪的写法：毫秒半开区间
    *
-   *   e.createdAt < :at
-   *     → 游标所在毫秒**之前**的行，无论微秒为何都排在游标之后（决胜键无关）。
-   *       这一支因此不必比 id，纯索引扫描即可。
-   *   e.createdAt < :atNext AND e.id < :cursorId
-   *     → 与游标**同一毫秒**的行（含微秒精度的那些）：此刻排序完全由决胜键
-   *       决定，只有 `id < cursorId` 的才排在后面。
+   *      (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
    *
-   * 为什么不是直接的行值比较 `(createdAt, id) < (:at, :id)`：那会把游标那一行
-   * 的**同一毫秒**邻居按"数据库微秒值 vs 毫秒游标"比较，`…:00.123456` 被判成
-   * `> …:00.123` 而重复返回。上面的形态对**微秒精度与毫秒精度的行集给出完全
-   * 一致的判定**，故无论该行来自 DB 默认值 `now()` 还是显式传入的毫秒 Date，
-   * 翻页都不漏不重。代价是 `:at` 那个毫秒内的行无法纯走索引（要逐个比 id），
-   * 量级是单个任务同一毫秒内的并发执行数，可忽略。
+   * 分支②隐含"同一毫秒内的行排序完全由 id 决定"，**只在同毫秒行的微秒值恰好
+   * 相等时成立**。
+   *
+   * #### 精确触发条件（本缺陷最有价值的部分）
+   *
+   * 同毫秒内存在「**微秒更小**（时间上在游标之后）但 **id 更大**（`> cursorId`）」
+   * 的行 → 分支② 的 `id < cursorId` 把它判为"不满足" → **静默漏行**。
+   * 反向同样成立：微秒更大（时间上在游标之前）但 `id < cursorId` 的行会被误返回
+   * （游标行本身被再次返回 → 翻页原地打转）。
+   *
+   * ⚠️ **id 与微秒同序时不显形**——这正是它能同时通过 CI、既有单测与人工冒烟的
+   * 原因：只有当 uuid 的随机字典序与微秒的写入顺序**反着**时才会漏行。
+   *
+   * #### 实测（真 PG，Asia/Shanghai，同毫秒 4 行）
+   *
+   *     id…50  .0004  ← 游标行
+   *     id…10  .0003
+   *     id…40  .0002
+   *     id…60  .0001
+   *
+   *     期望下一页          : 10, 40, 60
+   *     半开区间（旧实现）  : 10, 40      ← 漏 id…60（在游标之后，但 60 > 50）
+   *     行值比较（现实现）  : 10, 40, 60  ✅
+   *
+   * 另一组同毫秒 4 行（微秒 .000100/.000200/.000300/.000400，取 .000400 做游标）：
+   * 半开区间返回 **4 行**（含游标行本身）❌，行值比较返回 **3 行** ✅。
+   *
+   * ### 现在的写法（正确）
+   *
+   *      (e.createdAt, e.id) < (
+   *        SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
+   *      )
+   *
+   * 游标只带 `id`，精确时间由子查询按主键从库里取**原值**（含微秒）——DB 值比
+   * DB 值，JS 的毫秒截断完全不参与运算，零精度损失。子查询是主键单行查找，外层
+   * 仍走 (createdAt, id) 范围扫描。
+   *
+   * 游标行被并发删除时：子查询无行 → 行值比较得 NULL → WHERE 为假 → 本页为空，
+   * 调用方看到 `nextCursor: null` 即视为翻完。这是**安全地提前结束**（不错行、
+   * 不重复），比"用毫秒近似值硬续"安全得多。
+   *
+   * ### 附带修掉的时区陷阱（保留记录）
+   *
+   * 早期实现把 `cursor.createdAt`（UTC 形态的 `'…T16:58:01.357Z'`）**当字符串**
+   * 绑定。`task_executions."createdAt"` 是 **naive** `timestamp`（无时区）；PG 把
+   * 带 `Z` 的文本强转成 naive timestamp 时**丢弃时区**、按**会话本地墙钟**解释，
+   * 于是 `TimeZone=Asia/Shanghai` 时比较值比真实值**早 8 小时**。实测（同一游标
+   * 行，`WHERE "createdAt" < $1` 命中行数，真值 2 行）：字符串参数 → **0 行**
+   * （静默漏行），`Date` 参数 → **2 行**（正确）。正偏移时区漏行、负偏移时区重复
+   * 返回，`TZ=UTC` 容器里完全隐形——故测试必须用**与时区无关**的断言。
+   *
+   * 现行写法里时间完全不下传（由子查询取库内值），这类时区/精度问题被从根上
+   * 消除；游标载荷仍保留 ISO 串（毫秒）只为**排障可读**与 forward-compat，
+   * 不参与比较运算。
    *
    * ## `total`：仍然给真实总数（不撒谎）
    *
@@ -2440,10 +2696,6 @@ export class TaskService {
     // 是合法游标，否则 400。
     const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
 
-    // 游标时间的毫秒下界（区间右开）：见方法头注的精度论证。
-    const at = cursor ? new Date(cursor.createdAt) : null;
-    const atNext = at ? new Date(at.getTime() + 1) : null;
-
     const where: Record<string, unknown> = { taskId };
     if (p.status) where["status"] = p.status;
 
@@ -2456,18 +2708,38 @@ export class TaskService {
       .addOrderBy("e.id", "DESC")
       .where("e.taskId = :taskId", { taskId });
 
-    if (cursor && at && atNext) {
-      // 元组游标，按毫秒区间表达（见头注）：
-      //   ① `e.createdAt < :at` —— 游标所在毫秒**之前**的行，一定排在游标之后；
-      //   ② `e.createdAt < :atNext AND e.id < :cursorId` —— 与游标**同一毫秒**
-      //      的行（含微秒精度），排序由决胜键决定：只有 id 更小的才排在后面。
+    if (cursor) {
+      // 元组游标——**行值比较**，游标那一行的精确值由子查询从库里取回。
       //
-      // ⚠️ 第一分支必须是 `< :at` 而不是 `<= :at`：用 `<=` 会把游标所在毫秒的
-      // **整桶**都当成"在游标之后"，于是本页最后一行（就是游标本身那一行）会
-      // 被再次返回 → 翻页原地打转、永不到末页（实测用例直接死于死循环保险）。
+      // 为什么不能再用"毫秒半开区间"（704f749e 的原实现，已实测证伪）：
+      // 原实现是
+      //     (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
+      // 其中 `:at` 来自实体读出的 JS `Date`（**毫秒**，微秒被截断），而列是
+      // 微秒精度。分支②隐含假设"同一毫秒内的行排序完全由 id 决定"——**该假设
+      // 只在同毫秒行的微秒值恰好相等时成立**。同毫秒但微秒不同时（跨事务写出的
+      // 行很常见；`now()` 是事务开始时间，同事务批量插入才会共享微秒）：
+      //   · 该行时间上在游标**之后**、却 `id > cursorId` → 被判不满足 → **漏行**；
+      //   · 该行时间上在游标**之前**、却 `id < cursorId` → 被判满足 → **返回游标
+      //     之前的行**（实测：游标行本身被再次返回，翻页原地打转）。
+      //
+      // 真 PG 实测（autoflow_test，同毫秒 4 行微秒 .000100/.000200/.000300/.000400，
+      // 取 .000400 那行做游标）：
+      //   半开区间谓词 → 返回 4 行（含游标行本身） ❌
+      //   行值比较     → 返回 3 行，与期望逐项一致 ✅
+      //
+      // 故改为 `(createdAt, id) < (游标行的精确 (createdAt, id))`，由子查询按主键
+      // 取游标行的**库内原值**（含微秒）——DB 值比 DB 值，JS 的毫秒截断完全不
+      // 参与运算，没有任何精度损失。子查询是主键单行查找，外层仍是
+      // (createdAt, id) 上的范围扫描。
+      //
+      // 游标行被并发删除时：子查询无行 → 行值比较得 NULL → WHERE 为假 → 本页为
+      // 空（此时调用方看到 `nextCursor: null` 即视为翻完）。这是**安全地提前
+      // 结束**，不会错行/重复——比"用毫秒近似值继续"要安全得多。
       qb.andWhere(
-        "(e.createdAt < :at OR (e.createdAt < :atNext AND e.id < :cursorId))",
-        { at: cursor.createdAt, atNext, cursorId: cursor.id },
+        `(e.createdAt, e.id) < (
+           SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
       );
     }
     // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。

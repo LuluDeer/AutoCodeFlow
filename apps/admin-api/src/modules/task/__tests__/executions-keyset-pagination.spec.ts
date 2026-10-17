@@ -40,13 +40,37 @@ import { decodeExecutionCursor } from "../../../common/utils/keyset-cursor.util"
  * 收集到的 id 集合 === 全量 id 集合且无重复"成为一个可判定的事实。
  */
 
-/** 表里的行（createdAt 用毫秒精度的 Date，与实体读出来的一致）。 */
+/**
+ * 表里的行：`createdAt` 用**毫秒精度的 Date** 表示。
+ *
+ * 真实的列是微秒精度，实体读出来才被截成毫秒。本 spec 的内存表同样只存毫秒
+ * （等价于实体视角），但**额外**用 `--` 一组"同毫秒不同微秒"的用例证明：
+ * 只要判定走的是"行值比较"（DB 值比 DB 值），毫秒截断不影响正确性；而"毫秒
+ * 半开区间"才会在那种数据上翻车（见下方专门的用例）。
+ */
 interface Row {
   id: string;
   taskId: string;
   status: ExecutionStatus;
   createdAt: Date;
+  /**
+   * 微秒分量（0–999）。0 = 该毫秒的"整点"。仅用于"同毫秒不同微秒"用例：
+   * 排序必须先比 createdAt（毫秒 + 微秒），再比 id。
+   */
+  micro?: number;
 }
+
+/** 行的精确时间戳（毫秒 * 1000 + 微秒），用于有序比较。 */
+const preciseMicros = (r: Row): number =>
+  r.createdAt.getTime() * 1000 + (r.micro ?? 0);
+
+/** `(createdAt, id) < (cursor.createdAt, cursor.id)`——行值比较（DESC 语义）。 */
+const tupleLess = (a: Row, cursor: Row): boolean => {
+  const ta = preciseMicros(a);
+  const tc = preciseMicros(cursor);
+  if (ta !== tc) return ta < tc;
+  return a.id < cursor.id;
+};
 
 const TASK_ID = "task-1";
 
@@ -84,11 +108,10 @@ function makeRows(): Row[] {
   return rows;
 }
 
-/** 字典序比较 `(createdAt, id)`：DESC 用 `>` 表示"排在前面"。 */
+/** 字典序比较 `(createdAt 微秒, id)`：DESC 用正数表示 a 排在前面。 */
 const compareDesc = (a: Row, b: Row): number => {
-  const t = b.createdAt.getTime() - a.createdAt.getTime();
+  const t = preciseMicros(b) - preciseMicros(a);
   if (t !== 0) return t;
-  // id DESC
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
 };
 
@@ -103,28 +126,42 @@ function makeExecRepo(rowset: Row[]) {
     lastCountWhere: null as unknown,
     lastKeysetSql: null as string | null,
     lastKeysetParams: null as unknown,
+    lastKeysetPredicate: null as string | null,
   };
 
   /** 从 QueryBuilder 链上抓到的条件，模拟 PG 执行。 */
   const runKeysetQuery = (
     filters: { taskId?: string; status?: string },
-    cursorCond: { at: string; atNext: Date; cursorId: string } | null,
+    cursorParams: Record<string, unknown> | null,
     take: number,
   ): { rows: Row[]; sql: string; params: unknown } => {
     let rows = rowset.filter((r) => r.taskId === filters.taskId);
     if (filters.status) rows = rows.filter((r) => r.status === filters.status);
-    if (cursorCond) {
-      const at = new Date(cursorCond.at);
-      const atNext = new Date(cursorCond.atNext);
-      rows = rows.filter((r) => {
-        // 与生产 SQL 逐字节同构的谓词：
-        //   (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
-        if (r.createdAt.getTime() < at.getTime()) return true;
-        if (r.createdAt.getTime() < atNext.getTime()) {
-          return r.id < cursorCond.cursorId;
-        }
-        return false;
-      });
+    if (cursorParams) {
+      // ⚠️ 关键：按**生产实际发出的 SQL 形态**执行对应语义，而不是永远用正确的
+      // 那一种。否则"把生产改回毫秒半开区间"时数据断言照样绿——mock 又会比生产
+      // "更正确"（ADR-008 的老坑，本 spec 原版就是这样漏掉缺陷的）。
+      if ("atNext" in cursorParams) {
+        // 毫秒半开区间形态（旧实现）：按毫秒桶比较，微秒被忽略。
+        // 这正是漏行的来源：同毫秒内微秒更小但 id 更大的行会被 `id < cursorId` 拒掉。
+        const at = new Date(cursorParams.at as string | Date).getTime();
+        const atNext = new Date(cursorParams.atNext as string | Date).getTime();
+        const cursorId = String(cursorParams.cursorId);
+        rows = rows.filter((r) => {
+          const t = r.createdAt.getTime();
+          if (t < at) return true;
+          if (t < atNext) return r.id < cursorId;
+          return false;
+        });
+      } else {
+        // 行值比较形态（现实现）：游标行按 id 从内存表取**精确**值
+        // （等价于生产按主键的子查询）。**不替生产做任何转换**。
+        const cursorRow = rowset.find(
+          (r) => r.id === String(cursorParams.cursorId),
+        );
+        // 游标行已被删除 → 行值比较得 NULL → WHERE 为假 → 空页
+        rows = cursorRow ? rows.filter((r) => tupleLess(r, cursorRow)) : [];
+      }
     }
     rows = [...rows].sort(compareDesc);
     return {
@@ -132,11 +169,11 @@ function makeExecRepo(rowset: Row[]) {
       sql:
         "SELECT e.* FROM task_executions e WHERE e.taskId = $1" +
         (filters.status ? " AND e.status = $2" : "") +
-        (cursorCond
-          ? " AND (e.createdAt < $3 OR (e.createdAt < $4 AND e.id < $5))"
+        (cursorParams
+          ? ' AND (e."createdAt", e.id) < (SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId)'
           : "") +
         " ORDER BY e.createdAt DESC, e.id DESC LIMIT $6",
-      params: { ...filters, ...(cursorCond ?? {}), take },
+      params: { ...filters, ...(cursorParams ?? {}), take },
     };
   };
 
@@ -160,8 +197,8 @@ function makeExecRepo(rowset: Row[]) {
     }),
     createQueryBuilder: jest.fn(() => {
       const filters: { taskId?: string; status?: string } = {};
-      let cursorCond: { at: string; atNext: Date; cursorId: string } | null =
-        null;
+      let cursorParams: Record<string, unknown> | null = null;
+      let predicate: string | null = null;
       let take = 20;
       const qb: any = {
         select: jest.fn(() => qb),
@@ -179,19 +216,19 @@ function makeExecRepo(rowset: Row[]) {
         }),
         andWhere: jest.fn((sql: string, params: any) => {
           if (/status/.test(sql)) filters.status = params.status;
-          if (/createdAt/.test(sql) && params?.at) {
-            cursorCond = {
-              at: params.at,
-              atNext: params.atNext,
-              cursorId: params.cursorId,
-            };
+          // 游标谓词识别：行值比较只带 cursorId；毫秒区间会带 at/atNext。
+          // 两者都记录下来，让假仓库能**区分形态**（反证的前提）。
+          if (params && "cursorId" in params) {
+            cursorParams = params;
+            predicate = sql;
           }
           return qb;
         }),
         getMany: jest.fn(async () => {
-          const out = runKeysetQuery(filters, cursorCond, take);
+          const out = runKeysetQuery(filters, cursorParams, take);
           state.lastKeysetSql = out.sql;
           state.lastKeysetParams = out.params;
+          state.lastKeysetPredicate = predicate;
           return out.rows;
         }),
         getRawMany: jest.fn(async () => []),
@@ -563,7 +600,7 @@ describe("§2.1 TaskService.getExecutions — OFFSET / keyset 双路径", () => 
       ).toBe(true);
     });
 
-    it("SQL 谓词是毫秒半开区间形态（微秒精度下列不会因截断而重复返回）", async () => {
+    it("SQL 谓词是**行值比较**形态（不是毫秒半开区间——那版在微秒打平时漏/重）", async () => {
       const first: any = await service.getExecutions(TASK_ID, {
         page: 1,
         pageSize: 2,
@@ -574,25 +611,76 @@ describe("§2.1 TaskService.getExecutions — OFFSET / keyset 双路径", () => 
         pageSize: 2,
         cursor: first.nextCursor,
       });
-      // 断言形态而非具体值：`(createdAt < :at OR (createdAt < :atNext AND id < :cursorId))`
+      const predicate = state.lastKeysetPredicate as string;
+      expect(predicate).toBeTruthy();
+      // 必须是行值比较：(e."createdAt", e.id) < (子查询取游标行的精确值)
+      expect(predicate).toMatch(/\(\s*e\.\"?createdAt\"?\s*,\s*e\.id\s*\)\s*</);
+      expect(predicate).toContain("SELECT");
+      // 参数只有游标行 id（时间由子查询从库里取，不再由 JS 传入）
       const params = state.lastKeysetParams as any;
-      expect(params.at).toBeTruthy();
-      expect(params.atNext).toBeInstanceOf(Date);
-      // atNext 恰好是 at + 1ms（毫秒桶的上界，左闭右开）
-      expect(
-        (params.atNext as Date).getTime() - new Date(params.at).getTime(),
-      ).toBe(1);
       expect(params.cursorId).toBe(first.items[1].id); // 上一页最后一行
-      // 谓词里**必须**是 `< :at`；写成 `<=` 会让游标那一行被再次返回（死循环）。
-      // 取最近一次 QueryBuilder（第二次调用才是带游标的那次）。
-      const qbs = execRepo.createQueryBuilder.mock.results;
-      const qb = qbs[qbs.length - 1].value;
-      const predicate = (qb.andWhere.mock.calls as unknown[][])
-        .map((c) => String(c[0]))
-        .find((s) => s.includes("createdAt"));
-      expect(predicate).toBeDefined();
-      expect(predicate).toContain("e.createdAt < :at");
-      expect(predicate).not.toContain("<=");
+      // ⚠️ 反面断言：绝不能再出现毫秒区间那套（`< :at` / `:atNext`）
+      expect(predicate).not.toContain(":atNext");
+      expect(predicate).not.toContain("<= ");
+      expect(params.at).toBeUndefined();
+      expect(params.atNext).toBeUndefined();
+    });
+
+    /**
+     * ⚠️ 微秒打平的回归防线（本轮真实缺陷的直接防线）。
+     *
+     * 造同毫秒、不同微秒的行，并断言翻页不漏不重。**毫秒半开区间**在这样的数据
+     * 上必然翻车（已用真 PG 实测：游标行被再次返回）；行值比较才对。
+     * 用 `micro` 字段建模微秒分量——mock 与真库语义一致，不替生产做任何转换。
+     */
+    it("同毫秒不同微秒、且 id 与微秒**反序**时不漏不重（半开区间在此必漏）", async () => {
+      // 4 行同一毫秒，微秒递增 .000100→.000400，而 id 字典序**递减**（f…→0…）。
+      //
+      // ⚠️ 反序是**关键**：这是父级独立复现出的精确触发条件——
+      // 同毫秒内存在「微秒更小（时间上在游标之后）但 id 更大（> cursorId）」的行，
+      // 半开区间的 `id < cursorId` 会把它判为不满足 → **静默漏行**。
+      // 若 id 与微秒**同序**，半开区间恰好也能得到正确结果，缺陷不显形
+      // （这正是本用例最初写成同序时反证失败的原因，已修正）。
+      const ms = new Date("2026-05-06T07:08:09.000Z");
+      // 只保留这 4 行（跨任务隔离已由上文"pageSize=2 翻完全部页恰好 9 条"覆盖，
+      // 那里若混入 other-task 行会因 9→10 而红）。
+      rowset = [
+        { micro: 100, id: "ffffffff-ffff-4fff-8fff-000000000001" },
+        { micro: 200, id: "aaaaaaaa-aaaa-4aaa-8aaa-000000000002" },
+        { micro: 300, id: "55555555-5555-4555-8555-000000000003" },
+        { micro: 400, id: "00000000-0000-4000-8000-000000000004" },
+      ].map(({ micro, id }) => ({
+        id,
+        taskId: TASK_ID,
+        status: ExecutionStatus.SUCCESS,
+        createdAt: ms,
+        micro,
+      }));
+      await build();
+
+      const collected: string[] = [];
+      let cursor: string | null = "";
+      let pages = 0;
+      for (;;) {
+        const res: any = await service.getExecutions(TASK_ID, {
+          page: 1,
+          pageSize: 1, // 每页 1 条 → 每行都要单独跨一次游标
+          cursor: cursor as string,
+        });
+        pages++;
+        collected.push(...res.items.map((r: Row) => r.id));
+        cursor = res.nextCursor;
+        if (cursor === null) break;
+        expect(pages).toBeLessThan(20);
+      }
+
+      const expected = [...rowset]
+        .filter((r) => r.taskId === TASK_ID)
+        .sort(compareDesc)
+        .map((r) => r.id);
+      expect(collected).toEqual(expected);
+      expect(new Set(collected).size).toBe(collected.length);
+      expect(collected).toHaveLength(4);
     });
 
     it("PERF-03 投影在 keyset 分支也生效（logs/aiAnalysis 仍被排除）", async () => {

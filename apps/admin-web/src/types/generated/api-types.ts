@@ -338,7 +338,7 @@ export interface paths {
         };
         /**
          * 列出任务
-         * @description 获取任务列表，支持分页与搜索。可按状态过滤。
+         * @description 获取任务列表，支持分页与搜索。可按状态过滤。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。游标绑定默认排序 createdAt DESC, id DESC，故与 `sortBy` 或 `lastStatus` 同时给出会返回 400（不静默错乱）；非法游标同样 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
          */
         get: operations["TaskController_findAll"];
         put?: never;
@@ -4319,6 +4319,8 @@ export interface components {
             page: number;
             pageSize: number;
             totalPages: number;
+            /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标与默认排序（createdAt DESC, id DESC）绑定：与 sortBy 或 lastStatus 同时给出会返回 400。 */
+            nextCursor?: string | null;
         };
         PaginatedExecutionListDto: {
             list: components["schemas"]["ExecutionListItemDto"][];
@@ -7918,6 +7920,8 @@ export interface operations {
                 runtime?: string;
                 /** @description 同时按任务名称与描述做关键字搜索。LIKE 元字符（% 与 _）按字面匹配，因此搜索 `daily_report` 不会同时命中 `dailyXreport`。可与其他所有列表过滤条件组合。 */
                 q?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。仅与默认排序组合——与 sortBy 或 lastStatus 同时给出返回 400。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
                 /** @description F-10：逗号分隔的投影白名单（例如 'id,name'）。只查询白名单内的轻量列——跳过 params/secrets/glueSource 等重型列。非法字段 → 400。 */
                 fields?: unknown;
                 /** @description P2-18：过滤「最近一次执行」处于该状态的任务（每个任务取最新一行 task_executions：createdAt DESC、id DESC）。取值：pending/running/waiting/success/failed/timeout/killed/cancelled。最近一次执行仍在进行中（pending/running）时按原样匹配。以 EXISTS 子查询实现——可与其他列表过滤条件组合。 */
@@ -7929,7 +7933,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。 */
+            /** @description 分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。带 cursor 时额外含 nextCursor。 */
             200: {
                 headers: {
                     [name: string]: unknown;

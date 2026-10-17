@@ -213,7 +213,8 @@ export class TaskController {
 
   @Get()
   @ApiOperation({
-    description: "获取任务列表，支持分页与搜索。可按状态过滤。",
+    description:
+      "获取任务列表，支持分页与搜索。可按状态过滤。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。游标绑定默认排序 createdAt DESC, id DESC，故与 `sortBy` 或 `lastStatus` 同时给出会返回 400（不静默错乱）；非法游标同样 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
     summary: "列出任务",
   })
   @ApiQuery({
@@ -265,10 +266,19 @@ export class TaskController {
     description:
       "F-10：逗号分隔的投影白名单（例如 'id,name'）。只查询白名单内的轻量列——跳过 params/secrets/glueSource 等重型列。非法字段 → 400。",
   })
+  // §2.1：keyset 游标（与 executions 端点同款参数）。显式声明以便契约里出现
+  // ——虽然 ListTasksQueryDto 已带 @ApiPropertyOptional，但本端点的其余 query
+  // 参数都在控制器侧以 @ApiQuery 逐一列出（历史风格），保持一致。
+  @ApiQuery({
+    name: "cursor",
+    required: false,
+    description:
+      "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。仅与默认排序组合——与 sortBy 或 lastStatus 同时给出返回 400。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+  })
   @ApiOkResponse({
     type: PaginatedTaskListDto,
     description:
-      "分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。",
+      "分页列表（list/items 双键，R-21）。默认投影 = 完整实体但密钥已掩码；?fields= 会裁剪 items（F-10）。带 cursor 时额外含 nextCursor。",
   })
   findAll(@Query() p: ListTasksQueryDto) {
     return this.taskService.findAll(p);
