@@ -1789,6 +1789,471 @@
    ],
    "title": "调度延迟 P99（区间累计瞬时值）",
    "type": "stat"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 62
+   },
+   "id": 6,
+   "panels": [],
+   "title": "HTTP RED（Rate / Error / Duration）",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "HTTP 请求速率（R）。autoflow_http_requests_total{method,route,status_class} 的每秒速率，按 series 展开（legend 显示路由模板）。route 是 **Express 路由模板**（/tasks/:id），不是原始 URL——具体 id 已被拦截器折叠，因此 series 数量由代码里的路由数决定、不会随数据量膨胀；未匹配到任何路由的请求（404 扫描等）统一落在 route=\"unmatched\"。SSE 长流不入账（拦截器按 text/event-stream 与 /logs/stream 排除）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 63
+   },
+   "id": 601,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull"
+     ],
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "rate(autoflow_http_requests_total{instance=~\"$instance\"}[$__rate_interval])",
+     "legendFormat": "{{route}} {{method}} {{status_class}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "HTTP request rate（按路由模板，R）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "服务端错误率（E）：5xx 占该路由全部请求的比例。4xx 刻意不计入——鉴权失败/参数错/扫描器是调用方问题，混进来会让「有人在扫接口」看起来像服务端故障（4xx 曲线见右侧面板）。阈值参考线 5%（告警 AUTOFLOW_HTTP_5XX_RATE_HIGH，持续 10m）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "line"
+      }
+     },
+     "mappings": [],
+     "max": 1,
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 0.05
+       },
+       {
+        "color": "red",
+        "value": 0.2
+       }
+      ]
+     },
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 63
+   },
+   "id": 602,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "rate(autoflow_http_requests_total{instance=~\"$instance\", status_class=\"5xx\"}[$__rate_interval]) / clamp_min(rate(autoflow_http_requests_total{instance=~\"$instance\"}[$__rate_interval]), 1e-9)",
+     "legendFormat": "5xx {{route}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "rate(autoflow_http_requests_total{instance=~\"$instance\", status_class=\"4xx\"}[$__rate_interval]) / clamp_min(rate(autoflow_http_requests_total{instance=~\"$instance\"}[$__rate_interval]), 1e-9)",
+     "legendFormat": "4xx（调用方问题，不告警） {{route}}",
+     "range": true,
+     "refId": "B"
+    }
+   ],
+   "title": "HTTP error rate（5xx 占比，阈值 5%/20%；4xx 仅参考）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "请求耗时（D）P99 / 均值，按路由。直方图源 = autoflow_http_request_duration_ms_bucket（手写累积桶，le = 5/10/25/50/100/250/500/1000/2500/5000/+Inf ms，本仓无 prom-client Histogram，与 CORE-06 调度延迟同一口径）；P99 用 histogram_quantile 区间插值，均值 = rate(_sum)/clamp_min(rate(_count), 1e-9)。已排除 5xx——失败请求的耗时没有容量意义。SSE 长流不入账，故曲线不会被长挂日志流带偏。阈值参考线 2000ms（告警 AUTOFLOW_HTTP_LATENCY_P99_HIGH，持续 10m）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "line"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 500
+       },
+       {
+        "color": "red",
+        "value": 2000
+       }
+      ]
+     },
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 16,
+    "x": 0,
+    "y": 71
+   },
+   "id": 603,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{instance=~\"$instance\", status_class!=\"5xx\"}[$__rate_interval])))",
+     "legendFormat": "P99 {{route}}",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "rate(autoflow_http_request_duration_ms_sum{instance=~\"$instance\", status_class!=\"5xx\"}[$__rate_interval]) / clamp_min(rate(autoflow_http_request_duration_ms_count{instance=~\"$instance\", status_class!=\"5xx\"}[$__rate_interval]), 1e-9)",
+     "legendFormat": "avg {{route}}",
+     "range": true,
+     "refId": "B"
+    }
+   ],
+   "title": "HTTP duration P99 / 均值（按路由，阈值 500/2000ms）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "执行器 fleet 水位（本轮新增，解锁 AllExecutorsOffline 告警）。online = executors 表中 status=online 的行数，total = 全部行数；数据源与 OBS-05 磁盘水位同一取数路径。**DB 查询失败时保留上一轮值、绝不 reset 成 0**——否则每次 PG 毛刺都会把 online 打成 0，告警立刻误报「整个 fleet 掉线」。判据：online 触 0 且 total > 0 持续 10m（AUTOFLOW_ALL_EXECUTORS_OFFLINE，critical）。全新部署 total=0 时不告警。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 71
+   },
+   "id": 604,
+   "options": {
+    "legend": {
+     "calcs": [
+      "lastNotNull",
+      "min"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum(autoflow_executors_online{instance=~\"$instance\"})",
+     "legendFormat": "online（fleet 合计）",
+     "range": true,
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum(autoflow_executors_total{instance=~\"$instance\"})",
+     "legendFormat": "total（已注册）",
+     "range": true,
+     "refId": "B"
+    }
+   ],
+   "title": "Executor fleet（online vs total，online=0 且 total>0 即告警）",
+   "type": "timeseries"
   }
  ],
  "refresh": "30s",

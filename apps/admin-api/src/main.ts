@@ -30,6 +30,7 @@ import { config as loadEnvFile } from "dotenv";
 loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
 const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
+import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";
 import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
 import { TimeoutInterceptor } from "./common/interceptors/timeout.interceptor";
 import { isOriginAllowed } from "./common/utils/cors-origin.util";
@@ -37,6 +38,7 @@ import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.uti
 import { buildHelmetOptions } from "./common/utils/security-headers.util";
 import { sseAwareCompressionFilter } from "./common/utils/sse-compression.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
+import { PrometheusMetricsService } from "./modules/metrics/prometheus-metrics.service";
 import { SystemConfigService } from "./modules/config/config.service";
 import { DataSource, DataSourceOptions } from "typeorm";
 import { runMigrationsWithAdvisoryLock } from "./common/utils/migration-runner.util";
@@ -349,7 +351,13 @@ async function bootstrap() {
   // @Exclude() fields are stripped before the response wrapper runs.
   // ARCH-27: TimeoutInterceptor reads app.requestTimeoutMs via ConfigService
   // (no more module-load-time process.env read).
+  // HTTP RED（本轮新增）：最先安装，让 finalize() 落在整条拦截器链的**外层**
+  // ——此时 ClassSerializerInterceptor 的字段裁剪与 ResponseInterceptor 的信封
+  // 包装都已跑完，读到的 statusCode 就是真正写回客户端的那个。服务实例从
+  // 容器取（MetricsModule 已导出 PrometheusMetricsService），埋点只写该服务
+  // 的进程内快照，与 /api/metrics 抓取端点解耦。
   app.useGlobalInterceptors(
+    new HttpMetricsInterceptor(app.get(PrometheusMetricsService)),
     new TimeoutInterceptor(app.get(Reflector), app.get(ConfigService)),
     new ClassSerializerInterceptor(app.get(Reflector)),
     new ResponseInterceptor(),

@@ -411,6 +411,27 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     expect(loadConfig().executor.allowPrivateNetwork).toBe(true);
   });
 
+  // Q7 执行记录保留（task_executions）。这是**不可逆硬删除**的保留期旋钮：
+  // 缺省必须与硬编码时期一致（90），且**非法值必须回退 90 而不是 0/NaN**
+  // ——cutoff 一旦被推到未来就会删空整张表，是这条配置唯一的危险方向。
+  it("registers taskExecutionRetention.days from TASK_EXECUTION_RETENTION_DAYS (default 90)", () => {
+    delete process.env.TASK_EXECUTION_RETENTION_DAYS;
+    expect(loadConfig().taskExecutionRetention.days).toBe(90);
+
+    process.env.TASK_EXECUTION_RETENTION_DAYS = "365";
+    expect(loadConfig().taskExecutionRetention.days).toBe(365);
+
+    process.env.TASK_EXECUTION_RETENTION_DAYS = "7";
+    expect(loadConfig().taskExecutionRetention.days).toBe(7);
+  });
+
+  it("taskExecutionRetention.days 非法/零/负数一律回退 90（绝不产生会删空表的 cutoff）", () => {
+    for (const bad of ["", "abc", "0", "-1", "-90", "NaN"]) {
+      process.env.TASK_EXECUTION_RETENTION_DAYS = bad;
+      expect(loadConfig().taskExecutionRetention.days).toBe(90);
+    }
+  });
+
   // ARCH-35 P1（生产事故 2026-09-23）：部署归属偏好开关。
   // 这是修「部署在 A、任务跑在 B」主因的开关——默认必须是 **true**，
   // 且只有字面量 "false" 才关闭（其余任何值/未设置都保持开启）。
@@ -540,5 +561,26 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     expect(loadConfig().ai.openaiMaxTokens).toBe(2048);
     process.env.OPENAI_MAX_TOKENS = "abc";
     expect(loadConfig().ai.openaiMaxTokens).toBe(500);
+  });
+
+  // ── PERF-1 / PERF-2（后端性能项）────────────────────────────────────────
+  it("PERF-1: registers database.slowQueryMs from DB_SLOW_QUERY_MS (default 1000ms)", () => {
+    delete process.env.DB_SLOW_QUERY_MS;
+    expect(loadConfig().database.slowQueryMs).toBe(1000);
+    process.env.DB_SLOW_QUERY_MS = "250";
+    expect(loadConfig().database.slowQueryMs).toBe(250);
+    // 0 = 显式关闭（必须原样透传，不能被 `|| 1000` 吃掉）
+    process.env.DB_SLOW_QUERY_MS = "0";
+    expect(loadConfig().database.slowQueryMs).toBe(0);
+  });
+
+  it("PERF-2: registers systemConfig.cacheTtlMs from SYSTEM_CONFIG_CACHE_TTL_MS (default 1000ms)", () => {
+    delete process.env.SYSTEM_CONFIG_CACHE_TTL_MS;
+    expect(loadConfig().systemConfig.cacheTtlMs).toBe(1000);
+    process.env.SYSTEM_CONFIG_CACHE_TTL_MS = "5000";
+    expect(loadConfig().systemConfig.cacheTtlMs).toBe(5000);
+    // 0 = 关闭（同上：不能被 `|| 1000` 吃掉，否则「关掉缓存」变成「缓 1s」）
+    process.env.SYSTEM_CONFIG_CACHE_TTL_MS = "0";
+    expect(loadConfig().systemConfig.cacheTtlMs).toBe(0);
   });
 });

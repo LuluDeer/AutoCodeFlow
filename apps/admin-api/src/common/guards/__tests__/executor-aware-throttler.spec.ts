@@ -5,6 +5,7 @@ import {
   ExecutorAwareThrottlerGuard,
   isExecutorMachinePath,
   normalizeThrottlePath,
+  suggestWhitelistTemplate,
 } from "../executor-aware-throttler.guard";
 
 /**
@@ -168,6 +169,9 @@ describe("ExecutorAwareThrottlerGuard — SEC-THROTTLE-BUCKET", () => {
       "/api/executors/command-result",
       "/api/executors/offline",
       "/api/executors/token",
+      // SEC-THROTTLE-WHITELIST-GAP：pull 配置热更新 + 死信对账此前漏登记。
+      "/api/executors/config",
+      "/api/executors/RPA5:8002/terminal-states",
     ];
     for (const path of expected) {
       expect({ path, ok: isExecutorMachinePath(path) }).toEqual({
@@ -176,5 +180,101 @@ describe("ExecutorAwareThrottlerGuard — SEC-THROTTLE-BUCKET", () => {
       });
     }
     expect(EXECUTOR_MACHINE_PATH_PATTERNS.length).toBe(expected.length);
+  });
+
+  // ─── SEC-THROTTLE-WHITELIST-GAP：漏登记的两条机器面路由 ──────────────────
+  it("漏登记修复：pull 配置热更新与死信对账按执行器分桶（不再退回 IP 键）", async () => {
+    for (const path of [
+      "/api/executors/config",
+      "/api/executors/RPA5:8002/terminal-states",
+    ]) {
+      const tracker = await callTracker({
+        ip: "10.0.0.1",
+        path,
+        headers: { "x-executor-address": "exec-a:8002" },
+      });
+      // 退回 IP 键时这里会是 "10.0.0.1"——正是多执行器共享 NAT 下被误杀的形态。
+      expect({ path, tracker }).toEqual({
+        path,
+        tracker: "executor:exec-a:8002",
+      });
+    }
+  });
+
+  it("新登记的模式不越权吞掉相邻的人操作面路由", () => {
+    for (const path of [
+      "/api/executors/config/extra",
+      "/api/executors/terminal-states",
+      "/api/executors/1/terminal-states/2",
+      "/api/executors",
+      "/api/executors/1",
+    ]) {
+      expect({ path, ok: isExecutorMachinePath(path) }).toEqual({
+        path,
+        ok: false,
+      });
+    }
+  });
+
+  // ─── 运行时漏登记告警（PLAN-SECURITY-HARDENING §1.2）─────────────────────
+  it("模板收敛：具体路径 → 可登记的正则模板", () => {
+    expect(
+      suggestWhitelistTemplate("/api/executors/RPA5:8002/terminal-states"),
+    ).toBe("/api/executors/:addr/terminal-states");
+    expect(
+      suggestWhitelistTemplate(
+        "/api/executions/550e8400-e29b-41d4-a716-446655440000/logs",
+      ),
+    ).toBe("/api/executions/:addr/logs");
+    // 字面量路由段不被抽象成参数
+    expect(suggestWhitelistTemplate("/api/executors/config")).toBe(
+      "/api/executors/config",
+    );
+  });
+
+  it("带机器面头的非白名单路径 → 告警一次后节流，且**仍**降级为 IP 键", async () => {
+    const warn = jest
+      .spyOn(
+        (guard as unknown as { logger: { warn: (m: string) => void } }).logger,
+        "warn",
+      )
+      .mockImplementation(() => undefined);
+    warn.mockClear();
+
+    const req = {
+      ip: "203.0.113.9",
+      path: "/api/tasks/ghost-machine-surface",
+      headers: { "x-executor-address": "exec-a:8002" },
+    };
+
+    // 安全不变量优先：即使告警，也绝不认头分桶（否则重新打开 P1-1 绕过面）。
+    expect(await callTracker(req)).toBe("203.0.113.9");
+    // 节流：同一（模板, 地址）连续 20 次只告警一条。
+    for (let i = 0; i < 20; i++) {
+      expect(await callTracker(req)).toBe("203.0.113.9");
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain(
+      "/api/tasks/ghost-machine-surface",
+    );
+    expect(String(warn.mock.calls[0][0])).toContain(
+      "EXECUTOR_MACHINE_PATH_PATTERNS",
+    );
+    warn.mockRestore();
+  });
+
+  it("人操作面不带头时不产生任何告警（避免噪声）", async () => {
+    const warn = jest
+      .spyOn(
+        (guard as unknown as { logger: { warn: (m: string) => void } }).logger,
+        "warn",
+      )
+      .mockImplementation(() => undefined);
+    warn.mockClear();
+    for (const path of ["/api/auth/login", "/api/tasks", "/api/users/1"]) {
+      await callTracker({ ip: "198.51.100.7", path, headers: {} });
+    }
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

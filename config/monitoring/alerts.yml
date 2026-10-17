@@ -331,3 +331,79 @@ groups:
         annotations:
           summary: '回调凭证使用异常'
           description: 'v1_binding_mismatch / missing_token / bad_address 合计速率 {{ $value }}/s 持续 10 分钟。常见原因：执行端复用其他 execution 的 token、未带 Authorization 头、legacy 回调缺 executorAddress。按 result 维度拆开定位到具体执行器后修正其集成配置。'
+
+      # ── HTTP RED（服务端错误率 / 慢请求）────────────────────────────
+      # 数据源：autoflow_http_requests_total{method,route,status_class} 与
+      # autoflow_http_request_duration_ms_bucket/_sum/_count（本轮新增，
+      # HttpMetricsInterceptor 埋点）。route 是 **Express 路由模板**
+      # （/tasks/:id），不是原始 URL——基数有界；未匹配到路由的请求统一落在
+      # route="unmatched"（404 扫描等），因此本条按 cluster 级评估即可，
+      # 逐路由下钻走 Grafana「HTTP RED」行（表格按 route 分行）。
+      #
+      # 5xx 占比：低流量自部署下绝对速率与占比都要看，这里用占比（> 5%）
+      # 避免「总请求少 → 绝对数永远达不到阈值」的漏报。4xx 刻意不计入：
+      # 那是调用方问题（鉴权失败/参数错/扫描器），混进来会让「有人在扫接口」
+      # 触发服务端故障告警。
+      - alert: AUTOFLOW_HTTP_5XX_RATE_HIGH
+        expr: sum(rate(autoflow_http_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(autoflow_http_requests_total[5m])), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'HTTP 5xx 占比升高（服务端错误率 > 5%）'
+          description: '5xx 占全部 HTTP 请求的 {{ $value | humanizePercentage }} 持续 10 分钟（阈值 5%）。排查：先在 Grafana「HTTP RED」行按 route 分行定位是哪个路由在报 5xx（表格面板），再按该 route 过滤 admin-api 结构化日志的 context 字段；HTTP 异常过滤器只在未捕获异常时产出 5xx，栈里通常就是根因；伴生观察 PG 连接池（AUTOFLOW_DB_POOL_WAITING）与 Redis（AUTOFLOW_QUEUE_UNREADABLE）——存储层故障会先在多个路由上同时表现为 5xx。若 5xx 集中在 route="unmatched"，说明错误来自全局中间件/异常过滤器而非具体处理器。'
+
+      # 慢请求（P99 > 2s）：直方图消费口径与 CORE-06 一致——
+      # histogram_quantile 读的是 autoflow_http_request_duration_ms_bucket 的
+      # le 累计值（桶上界 5/10/25/50/100/250/500/1000/2500/5000ms + Inf）。
+      # 阈值 2s 是管理台 API 的保守起点（列表页含分页查询，正常在百毫秒级）。
+      # SSE/长连接不入账（拦截器按 text/event-stream 与 /logs/stream 排除），
+      # 因此这里的 P99 不会被长挂日志流带偏；status_class!="5xx" 排除失败
+      # 请求——失败请求的耗时没有容量意义。
+      - alert: AUTOFLOW_HTTP_LATENCY_P99_HIGH
+        expr: histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{status_class!="5xx"}[5m]))) > 2000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'HTTP P99 延迟超 2s（服务端慢请求）'
+          description: '全部路由的 HTTP P99 耗时 {{ $value }}ms 持续 10 分钟（阈值 2000ms，已排除 5xx）。排查：窗口均值用 sum(rate(_sum))/clamp_min(sum(rate(_count)), 1e-9) 与 P99 对照——均值也高 = 整体变慢（慢 SQL/大结果集分页/序列化放大），均值正常而 P99 高 = 少量长尾（锁等待、GC、偶发慢查询）；按 route 下钻看 Grafana「HTTP RED」行的 P99 曲线定位具体路由；结合 autoflow_db_pool_waiting_requests 与 nodejs_eventloop_lag_seconds 判断是存储层还是事件循环；注意 SSE 长流不入账，故本条不会因日志流挂得久而误报。'
+
+      # ── 执行器 fleet 水位 ─────────────────────────────────────────
+      # 全部执行器离线（本轮新增，此前无法表达：admin-api 的 Prometheus
+      # 端点没有在线状态 series，执行器状态只存在于 executors 表）。
+      # 判据必须带 `and autoflow_executors_total > 0`：
+      #   · 全新部署/未注册任何执行器时 total=0，不告警（否则一装就炸）；
+      #   · 数据源是 DB 计数，而渲染侧在查询失败时**保留上一轮值**（不会
+      #     把 online 打成 0），所以 DB 抖动不会误触发本条——这正是
+      #     renderExecutorFleetGauges 那条纪律的意义。
+      # 10m 的 for 覆盖心跳判定离线的迟滞窗口（heartbeat 判定本身要几个
+      # 心跳周期），避免滚动重启期间抖动。
+      - alert: AUTOFLOW_ALL_EXECUTORS_OFFLINE
+        expr: sum(autoflow_executors_online) == 0 and sum(autoflow_executors_total) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: '全部执行器离线：没有任何在线执行器可接单'
+          description: 'executors 表中已注册 {{ $labels.instance }} 所在 fleet 共 {{ $value }} 台执行器，但在线数为 0 持续 10 分钟——所有任务将只在队列积压（伴生 AUTOFLOW_QUEUE_BACKLOG 的 waiting 曲线上升），不会被执行。排查：① 执行器进程是否存活（各节点服务/桌面端托盘状态）；② 心跳是否到达 admin-api（GET /api/metrics/executors 看 lastHeartbeat 与 offlineReason：manual=被手动下线、stale_timeout=心跳超时）；③ 网络与防火墙（pull 模式下执行器需能回连 admin-api）；④ 是否刚做过 token 轮换/升级导致全量注册失败（伴生 AUTOFLOW_PUSH_AUTH_STILL_UNAUTHORIZED）。注意 autoflow_executors_online 在 DB 查询失败时保留旧值，若本条与 PG 告警同时出现，先确认 DB 是否真的可查。'
+
+      # ── SSE 票据安全（PLAN-SECURITY-HARDENING §2.2）────────────────────
+      # 一枚有效的 SSE 票据被拿到**非 stream 路由**上使用 = 泄漏的票据正在被
+      # 试探复用。这是纯安全信号，正常业务下**恒为 0**：合法前端只会在三条
+      # /stream 路由的 ?ticket= 上带票据（EventSource 无法设请求头），而
+      # access 令牌走 Authorization 头不受本规则影响。
+      #
+      # 阈值取 >0（不是速率）：任何一次拒绝都意味着有人拿到了票据文件——
+      # 票据只能从 URL/浏览器历史/反代日志中泄漏。误报面极低（前端代码路径
+      # 固定），因此宁可一次就报。reason 维度预留（当前只有 wrong_path）。
+      # 处置：按审计日志定位票据签发给谁、从哪个 IP 复用；该用户全部会话
+      # 应立即 revoke（POST /api/auth/sessions/revoke-others 或直接改密）。
+      - alert: AUTOFLOW_SSE_TICKET_REJECTED
+        expr: sum(increase(autoflow_sse_ticket_rejected_total{reason="wrong_path"}[15m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'SSE 票据被用于非 stream 路由（疑似票据泄漏后被复用）'
+          description: '15 分钟内有 {{ $value }} 枚 SSE 票据被塞进非 stream 路由的 Authorization 头而遭拒（reason=wrong_path）。合法前端从不会这样做——EventSource 只在三条 /stream 路由的 ?ticket= 上传票据，access 令牌走 Authorization 头。因此这几乎必然意味着票据已从 URL、浏览器历史或反代访问日志中泄漏，且有人正在尝试把它当全权令牌复用（票据 30 秒有效、路径受限，成功即等于全权访问）。处置：① 按 admin-api 日志定位票据的 sub（用户）与来源 IP；② 立即 revoke 该用户全部会话并强制改密；③ 检查反代 access log 是否记录了 ?ticket=（应在 nginx 侧对该查询参数脱敏）。'

@@ -757,3 +757,281 @@ describe("capacity water-level gauges (OBS-05)", () => {
     );
   });
 });
+
+// ── HTTP RED（本轮新增）────────────────────────────────────────────────────
+// 自包含作用域：拦截器只写进程内快照，这里直接调 recordHttpRequest 驱动
+// snapshot → exposition 的映射（拦截器自身的判定在
+// common/interceptors/__tests__/http-metrics.interceptor.spec.ts 里测）。
+describe("HTTP RED metrics (autoflow_http_*)", () => {
+  const QUEUE_EMPTY = {
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
+  };
+
+  const makeService = () => {
+    const config = { get: jest.fn(() => true) };
+    return new PrometheusMetricsService(
+      config as unknown as ConfigService,
+      new SchedulerMetricsService(),
+      {
+        getQueueDepth: jest.fn().mockResolvedValue({ ...QUEUE_EMPTY }),
+      } as unknown as SchedulerService,
+      new ExecutionCallbackMetricsService(),
+    );
+  };
+
+  it("declares counter/gauge types for the whole RED surface", async () => {
+    const out = await makeService().render();
+    expect(out).toContain("# TYPE autoflow_http_requests_total counter");
+    expect(out).toContain(
+      "# TYPE autoflow_http_request_duration_ms_sum counter",
+    );
+    expect(out).toContain(
+      "# TYPE autoflow_http_request_duration_ms_count counter",
+    );
+    expect(out).toContain(
+      "# TYPE autoflow_http_request_duration_ms_bucket counter",
+    );
+    // 本仓没有 prom-client Histogram——RED 直方图沿用三个手写 Counter
+    expect(out).not.toContain(
+      "# TYPE autoflow_http_request_duration_ms histogram",
+    );
+  });
+
+  it("renders method / route / status_class label series", async () => {
+    const svc = makeService();
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 200, 12);
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 200, 30);
+    svc.recordHttpRequest("POST", "/api/tasks", 201, 40);
+
+    const out = await svc.render();
+    expect(out).toContain(
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="2xx"} 2',
+    );
+    expect(out).toContain(
+      'autoflow_http_requests_total{method="POST",route="/api/tasks",status_class="2xx"} 1',
+    );
+    expect(out).toContain(
+      'autoflow_http_request_duration_ms_count{method="GET",route="/api/tasks/:id",status_class="2xx"} 2',
+    );
+    // 12 + 30
+    expect(out).toContain(
+      'autoflow_http_request_duration_ms_sum{method="GET",route="/api/tasks/:id",status_class="2xx"} 42',
+    );
+  });
+
+  it("keeps 4xx and 5xx in distinguishable status_class series (error rate)", async () => {
+    const svc = makeService();
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 404, 3);
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 500, 4);
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 503, 5);
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 301, 1);
+    // 非标准状态码（响应未写 statusCode）归 other，不伪造 2xx/5xx
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 0, 1);
+
+    const out = await svc.render();
+    expect(out).toContain(
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="4xx"} 1',
+    );
+    expect(out).toContain(
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="5xx"} 2',
+    );
+    expect(out).toContain(
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="3xx"} 1',
+    );
+    expect(out).toContain(
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="other"} 1',
+    );
+  });
+
+  it("writes cumulative histogram buckets plus a +Inf bucket equal to count", async () => {
+    const svc = makeService();
+    svc.recordHttpRequest("GET", "/api/health", 200, 3);
+    svc.recordHttpRequest("GET", "/api/health", 200, 120);
+    svc.recordHttpRequest("GET", "/api/health", 200, 9000);
+
+    const out = await svc.render();
+    const at = (le: string) =>
+      `autoflow_http_request_duration_ms_bucket{method="GET",route="/api/health",status_class="2xx",le="${le}"}`;
+    // 累计口径：le=5 只有 3ms；le=250 含 3+120；le=5000 仍只有前两个；
+    // +Inf 收口全部 3 个样本。
+    expect(out).toContain(`${at("5")} 1`);
+    expect(out).toContain(`${at("10")} 1`);
+    expect(out).toContain(`${at("100")} 1`);
+    expect(out).toContain(`${at("250")} 2`);
+    expect(out).toContain(`${at("5000")} 2`);
+    expect(out).toContain(`${at("+Inf")} 3`);
+    expect(out).toContain(
+      'autoflow_http_request_duration_ms_count{method="GET",route="/api/health",status_class="2xx"} 3',
+    );
+  });
+
+  it("keeps counter series monotonic across scrapes and does not duplicate series", async () => {
+    const svc = makeService();
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 200, 10);
+    const first = await svc.render();
+    expect(first).toContain(
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="2xx"} 1',
+    );
+
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 200, 10);
+    const second = await svc.render();
+    expect(second).toContain(
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="2xx"} 2',
+    );
+    expect(
+      second.match(
+        /autoflow_http_requests_total\{method="GET",route="\/api\/tasks\/:id",status_class="2xx"\} \d+/g,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("does not fabricate series for label combinations never observed", async () => {
+    const svc = makeService();
+    svc.recordHttpRequest("GET", "/api/tasks/:id", 200, 10);
+    const out = await svc.render();
+    // 未观测过的路由/状态类不铺 0 基线（路由集合由代码决定，基数有界）
+    expect(out).not.toContain('route="/api/executors"');
+    expect(out).not.toContain('status_class="5xx"');
+  });
+
+  it("clamps a negative/non-finite duration instead of poisoning the histogram", async () => {
+    const svc = makeService();
+    svc.recordHttpRequest("GET", "/api/health", 200, -5);
+    svc.recordHttpRequest("GET", "/api/health", 200, Number.NaN);
+    const out = await svc.render();
+    expect(out).toContain(
+      'autoflow_http_request_duration_ms_bucket{method="GET",route="/api/health",status_class="2xx",le="5"} 2',
+    );
+    expect(out).toContain(
+      'autoflow_http_request_duration_ms_sum{method="GET",route="/api/health",status_class="2xx"} 0',
+    );
+  });
+});
+
+// ── 执行器 fleet 水位（本轮新增）──────────────────────────────────────────
+// 解锁 AllExecutorsOffline 告警的两个 gauge。核心纪律与 OBS-05 磁盘水位一致：
+// **DB 抖动保留上一轮值，绝不 reset 成 0**——否则每次 PG 毛刺都会误报
+// 「全部执行器离线」。
+describe("executor fleet gauges (autoflow_executors_online / _total)", () => {
+  const QUEUE_EMPTY = {
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
+  };
+
+  /**
+   * count() 的 mock：按 where 分派——带 status 过滤的算 online，不带的是 total。
+   * `count` 可被单个用例替换（用于模拟 DB 抖动）。
+   */
+  const makeFleetRepo = (counts: { total: number; online: number }) => {
+    const count = jest.fn((options?: { where?: { status?: string } }) =>
+      Promise.resolve(options?.where?.status ? counts.online : counts.total),
+    );
+    return { count } as unknown as { count: jest.Mock };
+  };
+
+  const makeService = (executorRepository?: Record<string, unknown>) => {
+    const config = { get: jest.fn(() => true) };
+    return new PrometheusMetricsService(
+      config as unknown as ConfigService,
+      new SchedulerMetricsService(),
+      {
+        getQueueDepth: jest.fn().mockResolvedValue({ ...QUEUE_EMPTY }),
+      } as unknown as SchedulerService,
+      new ExecutionCallbackMetricsService(),
+      executorRepository as never,
+    );
+  };
+
+  it("renders online and total as gauges from the Executor repository", async () => {
+    const repo = makeFleetRepo({ total: 5, online: 3 });
+    const out = await makeService(repo).render();
+
+    expect(out).toContain("# TYPE autoflow_executors_online gauge");
+    expect(out).toContain("# TYPE autoflow_executors_total gauge");
+    expect(out).toContain("autoflow_executors_online 3");
+    expect(out).toContain("autoflow_executors_total 5");
+  });
+
+  it("queries ONLINE for the online gauge and no filter for the total gauge", async () => {
+    const repo = makeFleetRepo({ total: 2, online: 2 });
+    await makeService(repo).render();
+    expect(repo.count).toHaveBeenCalledWith({
+      where: { status: "online" },
+    });
+    expect(repo.count).toHaveBeenCalledWith();
+  });
+
+  it("renders 0 online when the fleet is genuinely offline (total > 0)", async () => {
+    const repo = makeFleetRepo({ total: 4, online: 0 });
+    const out = await makeService(repo).render();
+    // 真实的全离线：online=0 且 total 仍 > 0 → AllExecutorsOffline 可判据
+    expect(out).toContain("autoflow_executors_online 0");
+    expect(out).toContain("autoflow_executors_total 4");
+  });
+
+  it("keeps the last value on a DB error instead of resetting to 0 (no false AllExecutorsOffline)", async () => {
+    const repo = makeFleetRepo({ total: 5, online: 3 });
+    const svc = makeService(repo);
+    const first = await svc.render();
+    expect(first).toContain("autoflow_executors_online 3");
+    expect(first).toContain("autoflow_executors_total 5");
+
+    // DB 抖动：count 直接 reject
+    (repo.count as jest.Mock).mockRejectedValue(new Error("db blip"));
+    const out = await svc.render();
+    expect(out).toContain("autoflow_executors_online 3");
+    expect(out).toContain("autoflow_executors_total 5");
+    // 关键反例：绝不能被渲染成 0
+    expect(out).not.toContain("autoflow_executors_online 0");
+  });
+
+  it("keeps the last value when only the second count() fails", async () => {
+    const repo = makeFleetRepo({ total: 5, online: 3 });
+    const svc = makeService(repo);
+    await svc.render();
+
+    let call = 0;
+    (repo.count as jest.Mock).mockImplementation(() => {
+      call += 1;
+      // 第一个查询（total）成功、第二个（online）失败：整轮丢弃
+      return call === 1
+        ? Promise.resolve(9)
+        : Promise.reject(new Error("blip"));
+    });
+    const out = await svc.render();
+    expect(out).toContain("autoflow_executors_total 5");
+    expect(out).toContain("autoflow_executors_online 3");
+    expect(out).not.toContain("autoflow_executors_total 9");
+  });
+
+  it("keeps total=0 when the repository is not injected, so AllExecutorsOffline cannot false-fire", async () => {
+    const out = await makeService(undefined).render();
+    // 无标签 Gauge 由 prom-client 在 reset 时铺 0 基线，故两者都在且都是 0。
+    // 这正是告警表达式要的形态：AllExecutorsOffline 的判据是
+    // `online == 0 and total > 0`——取数路径缺席（total=0）时不会误报
+    // 「全部执行器离线」，只会在真有注册执行器时判据成立。
+    expect(out).toContain("autoflow_executors_online 0");
+    expect(out).toContain("autoflow_executors_total 0");
+  });
+
+  it("picks up fleet changes on the next scrape (gauge is not monotonic)", async () => {
+    const repo = makeFleetRepo({ total: 5, online: 3 });
+    const svc = makeService(repo);
+    expect(await svc.render()).toContain("autoflow_executors_online 3");
+
+    (repo.count as jest.Mock).mockImplementation(
+      (options?: { where?: { status?: string } }) =>
+        Promise.resolve(options?.where?.status ? 5 : 6),
+    );
+    const out = await svc.render();
+    expect(out).toContain("autoflow_executors_online 5");
+    expect(out).toContain("autoflow_executors_total 6");
+  });
+});

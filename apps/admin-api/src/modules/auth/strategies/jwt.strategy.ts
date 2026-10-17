@@ -3,6 +3,9 @@ import { ConfigService } from "@nestjs/config";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
 import { AppError } from "../../../common/errors/app-error";
+// PLAN-SECURITY-HARDENING §2.2：票据被拒计数（模块级进程内计数器，
+// 与 metrics 模块的渲染侧解耦——见 runtime-metrics-entry.ts 头注）。
+import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { PassportStrategy } from "@nestjs/passport";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import type { Request } from "express";
@@ -118,6 +121,16 @@ export function isSseTicketPath(path: string): boolean {
 function assertTicketOnlyOnStreamPath(payload: JwtPayload, req: unknown): void {
   if (payload.type !== "sse_ticket") return;
   if (isSseTicketPath(requestPath(req))) return;
+  // PLAN-SECURITY-HARDENING §2.2（2026-10-17 优化计划轮）：拒绝时必须留下
+  // 可观测痕迹。修复本身（P1-2）把泄漏面关掉了，但**没有计数器**——一枚
+  // 泄漏的票据被拿去打 REST 端点时，系统只是静默 401，安全事件完全不可见。
+  // 这条 counter 是"票据正在被试探复用"的唯一信号，配套告警见
+  // config/monitoring/alerts.yml 的 AUTOFLOW_SSE_TICKET_REJECTED。
+  //
+  // 埋点用**具体路径**（已剥离 query）而非归一化模板：票据复用的排查需要
+  // 知道攻击者打了哪个端点。基数受控——只有持有效签名票据的人才能到达这里，
+  // 且路径来自真实路由表而非用户输入的自由字符串。
+  recordRuntime("autoflow_sse_ticket_rejected_total", { reason: "wrong_path" });
   // 与「令牌类型非法」同一错误码：对调用方不区分「票据用在错路径」与
   // 「类型不对」，避免给攻击者一个探测票据有效性的侧信道。
   throw new AppError("ACCESS_TOKEN_TYPE_INVALID");

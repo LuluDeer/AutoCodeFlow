@@ -34,6 +34,29 @@ const QUEUE_STATES = [
 ] as const;
 
 /**
+ * HTTP RED 指标：`route` label 的兜底值。
+ *
+ * 未匹配到任何 Express 路由（404 / 全局中间件短路 / 错误请求行）时一律归到
+ * 这个固定值，**绝不用原始 URL**——原始 URL 带具体 id 与查询串，每个 id 一条
+ * series，是标签基数爆炸的头号来源（HttpMetricsInterceptor 只送路由模板）。
+ *
+ * 导出给拦截器共用，避免两处各写一个字面量后悄悄漂移。
+ */
+export const HTTP_ROUTE_UNMATCHED = "unmatched";
+
+/**
+ * HTTP RED 指标：请求时长直方图的桶上界（毫秒）。
+ *
+ * 沿用 CORE-06（autoflow_scheduler_trigger_latency_ms_*）的手写 counter 口径
+ * ——本仓没有任何 prom-client Histogram（见 doRender 内 CORE-06 注释），
+ * 新指标同样只允许 Counter/Gauge + reset+inc 快照重建。桶覆盖管理台 API 的
+ * 常见量级：5ms ~ 5s（+Inf 由样本数收口）。
+ */
+const HTTP_DURATION_BUCKETS_MS = [
+  5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000,
+] as const;
+
+/**
  * R7: Prometheus 抓取端点（GET /api/metrics，text exposition format）。
  *
  * 映射策略：抓取时读取 SchedulerMetricsService 的进程内快照，reset+inc
@@ -79,6 +102,30 @@ export class PrometheusMetricsService {
   private readonly triggerLatencyBuckets: Counter;
   private readonly triggerLatencySum: Counter;
   private readonly triggerLatencyCount: Counter;
+  /**
+   * HTTP RED（本轮新增）：请求数 / 时长直方图三件套 + 执行器在线水位。
+   *
+   * 与上面所有计数器同一姿态——**声明在这里、值由 HttpMetricsInterceptor
+   * 经 recordHttpRequest() 写进程内快照**，doRender 再 reset+inc 重建：
+   * prom-client 的 Counter/Gauge 是渲染层，不是埋点层（埋点侧只碰快照）。
+   * 这样 /api/metrics 关闭（METRICS_PROMETHEUS_ENABLED=false）或 registry
+   * 尚未抓取时，埋点仍然是零成本的内存加法。
+   */
+  private readonly httpRequestsTotal: Counter;
+  private readonly httpRequestDurationMsBuckets: Counter;
+  private readonly httpRequestDurationMsSum: Counter;
+  private readonly httpRequestDurationMsCount: Counter;
+  /** 执行器在线水位（AllExecutorsOffline 告警的唯一数据源） */
+  private readonly executorsOnline: Gauge;
+  private readonly executorsTotal: Gauge;
+  /**
+   * HTTP RED 快照：key = (method, route, statusClass) 的稳定编码。
+   *
+   * 只记录被显式观测过的标签组合（不像 scheduler 那批有固定枚举全集）——
+   * 路由模板集合由代码决定、基数有界；未观测过的组合不造 0 值 series，
+   * 否则「所有路由 × 所有方法 × 4 个状态类」会在首次抓取就撑爆输出体积。
+   */
+  private readonly httpSnapshots = new Map<string, HttpRedSnapshot>();
   private readonly _enabled: boolean;
   /** N31: 进行中的 render（并发抓取共享同一次重建，见 render 注释） */
   private renderInFlight: Promise<string> | null = null;
@@ -242,6 +289,60 @@ export class PrometheusMetricsService {
       help: "Scheduled triggers recorded in the latency histogram",
       registers: [this.registry],
     });
+    // HTTP RED（本轮新增）：Rate / Error / Duration。
+    //
+    // **没有 prom-client Histogram**——本仓全库没有任何 Histogram（CORE-06 的
+    // autoflow_scheduler_trigger_latency_ms_bucket/_sum/_count 也是三个手写
+    // Counter），这里逐字沿用同一套「三个 Counter 拼出累积直方图」的形态：
+    // _bucket{le} 是累计计数、_sum 是累计毫秒、_count 是样本数，
+    // histogram_quantile()/rate() 的消费口径与真实 Histogram 完全一致。
+    //
+    // 标签三件套固定为 method / route / status_class：
+    //   · route 是 **Express 路由模板**（如 /tasks/:id），由拦截器从
+    //     req.route.path + req.baseUrl 合成，绝不含具体 id 与查询串；
+    //     未匹配到路由时为固定值 "unmatched"。这是控制标签基数的唯一手段。
+    //   · status_class 是 "2xx"/"3xx"/"4xx"/"5xx"（非标准状态码归 "other"），
+    //     4xx 与 5xx 因此可分别聚合成错误率（Error 的 E）。
+    this.httpRequestsTotal = new Counter({
+      name: "autoflow_http_requests_total",
+      help: "HTTP requests handled by this process, by method, matched route template and status class (RED rate; route is the Express template, never the raw URL)",
+      labelNames: ["method", "route", "status_class"] as const,
+      registers: [this.registry],
+    });
+    this.httpRequestDurationMsBuckets = new Counter({
+      name: "autoflow_http_request_duration_ms_bucket",
+      help: "HTTP request duration cumulative buckets in milliseconds by method, route template and status class (le in ms; +Inf = count) — same hand-rolled histogram idiom as autoflow_scheduler_trigger_latency_ms_bucket (no prom-client Histogram in this repo)",
+      labelNames: ["method", "route", "status_class", "le"] as const,
+      registers: [this.registry],
+    });
+    this.httpRequestDurationMsSum = new Counter({
+      name: "autoflow_http_request_duration_ms_sum",
+      help: "Cumulative HTTP request duration in milliseconds by method, route template and status class",
+      labelNames: ["method", "route", "status_class"] as const,
+      registers: [this.registry],
+    });
+    this.httpRequestDurationMsCount = new Counter({
+      name: "autoflow_http_request_duration_ms_count",
+      help: "HTTP requests recorded in the duration histogram by method, route template and status class (avg = sum/count, P99 via histogram_quantile over _bucket)",
+      labelNames: ["method", "route", "status_class"] as const,
+      registers: [this.registry],
+    });
+    // 执行器 fleet 水位（本轮新增，数据源 = Executor 仓库，同 OBS-05 磁盘水位
+    // 的取数路径）。total = executors 表行数（全部状态），online = status 为
+    // ONLINE 的行数；两者都是**绝对值 set()**（gauge 语义，非单调）。
+    // 关键纪律（与 renderExecutorDiskWaterLevel 一致）：DB 抖动时保留上一轮
+    // 值、绝不 reset 成 0——否则一次查询失败就会把 online 打成 0，
+    // AllExecutorsOffline 立刻误报「整个 fleet 掉线」。
+    this.executorsOnline = new Gauge({
+      name: "autoflow_executors_online",
+      help: "Executors whose status is online in the executors table (fleet water level) — alert when this reaches 0 while autoflow_executors_total > 0 sustained 10m (AUTOFLOW_ALL_EXECUTORS_OFFLINE, critical); on a DB query error the previous value is kept (never reset to 0)",
+      registers: [this.registry],
+    });
+    this.executorsTotal = new Gauge({
+      name: "autoflow_executors_total",
+      help: "Executor rows registered in the executors table (all statuses) — denominator of the online fleet water level; on a DB query error the previous value is kept (never reset to 0)",
+      registers: [this.registry],
+    });
   }
 
   /** METRICS_PROMETHEUS_ENABLED 开关（false 时控制器对端点返回 404） */
@@ -380,6 +481,12 @@ export class PrometheusMetricsService {
     this.triggerLatencyCount.reset();
     this.triggerLatencyCount.inc(s.triggerLatencyCount);
 
+    // HTTP RED（本轮新增）：同一 reset+inc 快照模式。差异只有一处——快照是
+    // 稀疏 Map（见 httpSnapshots 注释），因此这里**按观测到的标签组合重建**，
+    // 不做「已知组合 inc(0)」的基线铺底：路由模板集合由代码决定、基数有界，
+    // 而未观测过的组合本来就不该出现在抓取面上。
+    this.renderHttpRed();
+
     const depth = await this.schedulerService.getQueueDepth();
     // getQueueDepth 在 Redis 不可用时返回全 null：以 autoflow_queue_up=0
     // 表达"队列不可读"，深度 series 置 0 保持集合稳定（抓取方无需处理
@@ -394,8 +501,90 @@ export class PrometheusMetricsService {
     // 均为 gauge 绝对值 set()（同 BUG-05 runtime gauges 语义，无 reset 需要）。
     this.renderPgPoolWaterLevel();
     await this.renderExecutorDiskWaterLevel();
+    // 执行器 fleet 水位（online/total）——同一取数路径，DB 抖动保留旧值。
+    await this.renderExecutorFleetGauges();
 
     return this.registry.metrics();
+  }
+
+  /**
+   * HTTP RED（本轮新增）：拦截器侧的唯一写入口。
+   *
+   * 只做内存快照加法，不碰 Registry——render 才是 Registry 的唯一写者
+   * （与 scheduler/callback/runtime 三批计数器同一纪律：埋点零成本、抓取时
+   * 统一重建，抓取端点关闭时埋点也不产生 prom-client 副作用）。
+   *
+   * @param method      HTTP 方法（拦截器已归一为大写）
+   * @param route       **路由模板**（如 /tasks/:id），未匹配时为 "unmatched"
+   * @param statusCode  响应状态码（用于推导 status_class）
+   * @param durationMs  请求耗时毫秒
+   */
+  recordHttpRequest(
+    method: string,
+    route: string,
+    statusCode: number,
+    durationMs: number,
+  ): void {
+    const statusClass = classifyHttpStatus(statusCode);
+    const key = JSON.stringify([method, route, statusClass]);
+    let snap = this.httpSnapshots.get(key);
+    if (!snap) {
+      snap = {
+        method,
+        route,
+        statusClass,
+        count: 0,
+        durationMsSum: 0,
+        // 桶数组按 HTTP_DURATION_BUCKETS_MS 的**累计**口径维护（见本方法
+        // 下方的桶累加循环），初值全 0。
+        buckets: HTTP_DURATION_BUCKETS_MS.map(() => 0),
+      };
+      this.httpSnapshots.set(key, snap);
+    }
+    snap.count += 1;
+    const duration = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+    snap.durationMsSum += duration;
+    // 累计桶：每个 clamped <= bound 的桶 +1（与 scheduler-metrics 的
+    // recordTriggerLatency 同一写法）——*_bucket 必须是累积直方图，
+    // histogram_quantile 直接消费各 le 的绝对值。
+    for (let i = 0; i < HTTP_DURATION_BUCKETS_MS.length; i++) {
+      if (duration <= HTTP_DURATION_BUCKETS_MS[i]) snap.buckets[i] += 1;
+    }
+  }
+
+  /**
+   * HTTP RED：快照 → Registry（reset 后按绝对值 inc，counter 单调语义成立）。
+   *
+   * 全部四个 metric 都先 reset：**重置即清空所有标签组合**（prom-client 的
+   * Counter.reset() 把 hashMap 置空），所以「已消失的组合」会随路由下线自然
+   * 收口，不会残留旧 series。
+   */
+  private renderHttpRed(): void {
+    this.httpRequestsTotal.reset();
+    this.httpRequestDurationMsBuckets.reset();
+    this.httpRequestDurationMsSum.reset();
+    this.httpRequestDurationMsCount.reset();
+    for (const snap of this.httpSnapshots.values()) {
+      const labels = {
+        method: snap.method,
+        route: snap.route,
+        status_class: snap.statusClass,
+      };
+      this.httpRequestsTotal.inc(labels, snap.count);
+      this.httpRequestDurationMsSum.inc(labels, snap.durationMsSum);
+      this.httpRequestDurationMsCount.inc(labels, snap.count);
+      for (let i = 0; i < HTTP_DURATION_BUCKETS_MS.length; i++) {
+        this.httpRequestDurationMsBuckets.inc(
+          { ...labels, le: String(HTTP_DURATION_BUCKETS_MS[i]) },
+          snap.buckets[i],
+        );
+      }
+      // +Inf 桶 = 累计样本数，与中间桶同口径（CORE-06 的既有渲染约定）。
+      this.httpRequestDurationMsBuckets.inc(
+        { ...labels, le: "+Inf" },
+        snap.count,
+      );
+    }
   }
 
   /**
@@ -478,6 +667,75 @@ export class PrometheusMetricsService {
       }
     }
   }
+
+  /**
+   * 执行器 fleet 水位渲染（本轮新增）：autoflow_executors_online / _total。
+   *
+   * 取数路径与 renderExecutorDiskWaterLevel 完全一致（同一个 Executor 仓库、
+   * 同一次 online 过滤），但这里要的是**两个计数**：
+   *   · total  = executors 表全部行（不分状态，`count()` 无 where）；
+   *   · online = status === ONLINE 的行数。
+   *
+   * **DB 抖动必须保留上一轮值**（本方法最重要的一条纪律，也是
+   * AllExecutorsOffline 告警可信的前提）：两次查询任一失败就整体 return，
+   * 不 reset 也不 set 0。反例代价极高——把「查不到」渲染成 online=0 会让
+   * 「全部执行器离线」这条 critical 告警在每次 PG 毛刺时误报，值班人很快就
+   * 会把它静音，真正掉线时反而没人看见。宁可水位陈旧（下一轮抓取自愈）。
+   *
+   * 注：`count()` 两次串行查询而不是一次 GROUP BY——与磁盘水位的
+   * find() 同一量级（表行数受执行器部署规模约束，非业务表），换来的是
+   * 取数面最小、mock 面最简单（单测直接给 count 队列）。
+   */
+  private async renderExecutorFleetGauges(): Promise<void> {
+    if (!this.executorRepository) return;
+    let total: number;
+    let online: number;
+    try {
+      total = await this.executorRepository.count();
+      online = await this.executorRepository.count({
+        where: { status: ExecutorStatus.ONLINE },
+      });
+    } catch {
+      // 刻意 return（保留旧值）：见上方注释。
+      return;
+    }
+    this.executorsTotal.set(total);
+    this.executorsOnline.set(online);
+  }
+}
+
+/**
+ * HTTP RED（本轮新增）：请求耗时直方图的进程内快照行。
+ *
+ * `buckets` 是**累计**口径（下标与 HTTP_DURATION_BUCKETS_MS 对齐），
+ * 与 scheduler-metrics.service.ts 的 triggerLatencyBuckets 同语义。
+ */
+interface HttpRedSnapshot {
+  method: string;
+  /** Express 路由模板（/tasks/:id）或 "unmatched" */
+  route: string;
+  /** "2xx" | "3xx" | "4xx" | "5xx" | "other" */
+  statusClass: string;
+  count: number;
+  durationMsSum: number;
+  /** 累计桶计数，长度 = HTTP_DURATION_BUCKETS_MS.length */
+  buckets: number[];
+}
+
+/**
+ * HTTP 状态码 → status_class 标签值。
+ *
+ * 4xx 与 5xx 必须可区分（错误率告警的判据是 5xx 占比；4xx 是调用方问题，
+ * 混在一起会让「有人在扫接口」触发服务端故障告警）。非标准状态码
+ * （如响应未写 statusCode 时的 undefined/0）归 "other"，不造 2xx/5xx 假象。
+ */
+function classifyHttpStatus(statusCode: number): string {
+  if (!Number.isFinite(statusCode)) return "other";
+  if (statusCode >= 200 && statusCode < 300) return "2xx";
+  if (statusCode >= 300 && statusCode < 400) return "3xx";
+  if (statusCode >= 400 && statusCode < 500) return "4xx";
+  if (statusCode >= 500 && statusCode < 600) return "5xx";
+  return "other";
 }
 
 /** OBS-05：PG 连接池水位快照（readPgPoolSnapshot 的取数契约） */

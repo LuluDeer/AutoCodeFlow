@@ -1,18 +1,39 @@
 # Alertmanager 配置（M-3，compose monitoring profile）
-# 默认路由把所有告警静默到 noop 接收器（告警只进 Alertmanager UI，不打扰）。
-# 要打通平台通知渠道（企业微信/钉钉/Slack/邮件）：
-#   1. admin-api 侧设 ALERT_WEBHOOK_SECRET（OBS-02，未配置时 /api/alerts/webhook 503）；
-#   2. 由于该端点要求 HMAC-SHA256 签名（X-AutoCodeFlow-Timestamp +
-#      X-Hub-Signature-256，见 apps/admin-api/src/modules/notification/alerts.controller.ts），
-#      Alertmanager 原生 webhook 无法直接签名——需一个 HMAC 转发侧车（如 nginx
-#      subrequest 或小脚本），把 webhook 请求加签后转发到
-#      http://admin-api:3105/api/alerts/webhook。
+#
+# 默认路由把告警交给 OBS-02 加签侧车（alertmanager-hmac-proxy），由它按平台
+# 契约加 HMAC-SHA256 签名后转发到 admin-api 的 POST /api/alerts/webhook，
+# 告警由此进入平台既有通知渠道（企业微信 / 钉钉 / Slack / 邮件）。
+#
+# 为什么需要侧车：Alertmanager 原生 webhook_configs **不支持自定义签名头**，
+# 而该端点强制要求签名（未配置 secret 时 503、鉴权失败 401，安全缺省，见
+# apps/admin-api/src/modules/notification/alerts.controller.ts）。侧车实现见
+# scripts/alertmanager-hmac-proxy.mjs（零依赖，含离线自检）。
+#
+# 启用步骤（两件，缺一不可）：
+#   1. 在 .env 设置 ALERT_WEBHOOK_SECRET=<随机串>（admin-api 与侧车同源消费）；
+#   2. docker compose --profile monitoring up -d
+#
+# 未配置 secret 时的行为是**可见的失败**、不是静默黑洞：侧车拒绝启动
+# （docker compose logs alertmanager-hmac-proxy 可见原因），且 Alertmanager
+# 自身的通知投递会失败并写日志。若确实不需要任何告警推送、只想在 UI 看，
+# 把下方 route.receiver 改成 'noop'。
 route:
   group_by: ['alertname']
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
-  receiver: 'noop'
+  receiver: 'hmac-proxy'
 
 receivers:
+  # OBS-02：经加签侧车进平台通知渠道（推荐）
+  - name: 'hmac-proxy'
+    webhook_configs:
+      # url = compose 内侧车服务名（同一 monitoring profile 网络可达）；
+      # send_resolved: true → 恢复通知也发（admin 侧映射为 level=info）；
+      # max_alerts: 0 = 不截断（侧车有 ALERT_PROXY_MAX_BODY_BYTES 上限兜底）。
+      - url: http://alertmanager-hmac-proxy:9099/
+        send_resolved: true
+        max_alerts: 0
+
+  # 兜底：只收集不推送（切到本接收器即可完全静默）
   - name: 'noop'

@@ -136,6 +136,75 @@ describe("buildTypeOrmDataSourceOptions (ARCH-24 read replica)", () => {
 });
 
 /**
+ * PERF-1（慢查询日志）：`maxQueryExecutionTime` 是 TypeORM **顶层**选项
+ * （PostgresQueryRunner 读 `driver.options.maxQueryExecutionTime`，不是
+ * `extra`），0 = 关闭（`if (maxQueryExecutionTime && ...)` 的短路）。
+ *
+ * 这里钉三件事：
+ *  a) 缺省（未传 slowQueryMs）→ 0，与未引入该选项的旧行为逐字节一致；
+ *  b) 传入正数 → 原样落到顶层 maxQueryExecutionTime；
+ *  c) 非法值（0 / 负数 / NaN）→ 归一化为 0，绝不把脏值透给 TypeORM
+ *     （否则「配了阈值却永不触发」是查不出来的静默失效）。
+ *
+ * 另：`query-slow` 在 TypeORM 的 isLogEnabledFor 里恒返回 true，与
+ * `logging` 数组无关——故用例同时钉住 production（logging=false）下阈值
+ * 依然生效，避免后人「顺手」把它挪进 logging 或 extra。
+ */
+describe("buildTypeOrmDataSourceOptions (PERF-1 slow query logging)", () => {
+  it("defaults maxQueryExecutionTime to 0 (disabled) when slowQueryMs is unset", () => {
+    const options = buildTypeOrmDataSourceOptions({ ...baseConfig });
+    expect(options.maxQueryExecutionTime).toBe(0);
+  });
+
+  it("maps a positive slowQueryMs onto the top-level maxQueryExecutionTime", () => {
+    const options = buildTypeOrmDataSourceOptions({
+      ...baseConfig,
+      database: { ...baseConfig.database, slowQueryMs: 1500 },
+    });
+    expect(options.maxQueryExecutionTime).toBe(1500);
+    // 顶层选项：放进 extra 的话 pg 会把它当连接参数忽略，慢查询永不触发
+    expect(
+      (options.extra as Record<string, unknown>).maxQueryExecutionTime,
+    ).toBe(undefined);
+  });
+
+  it("is independent of the logging flag (production keeps slow-query logging)", () => {
+    for (const nodeEnv of ["production", "development", "test"]) {
+      const options = buildTypeOrmDataSourceOptions({
+        ...baseConfig,
+        database: { ...baseConfig.database, slowQueryMs: 800 },
+        app: { nodeEnv },
+      });
+      expect(options.maxQueryExecutionTime).toBe(800);
+    }
+  });
+
+  it("normalizes 0 / negative / NaN to 0 (off) instead of leaking a dirty value", () => {
+    for (const bad of [0, -1, Number.NaN]) {
+      const options = buildTypeOrmDataSourceOptions({
+        ...baseConfig,
+        database: { ...baseConfig.database, slowQueryMs: bad },
+      });
+      expect(options.maxQueryExecutionTime).toBe(0);
+    }
+  });
+
+  it("applies in the read-replica (replication) shape too", () => {
+    const options = buildTypeOrmDataSourceOptions({
+      ...baseConfig,
+      database: {
+        ...baseConfig.database,
+        readReplicaUrl:
+          "postgres://readonly@db-replica.internal:5432/autocodeflow",
+        slowQueryMs: 1200,
+      },
+    });
+    expect(options.maxQueryExecutionTime).toBe(1200);
+    expect("replication" in options).toBe(true);
+  });
+});
+
+/**
  * c) Joi 注册面：app.module validationSchema 中 DB_READ_REPLICA_URL 为
  *    scheme 锁定（postgres/postgresql）的可选 uri。validationSchema 在
  *    ConfigModule.forRoot 闭包内无法反射取出，故 app.module 把该 schema

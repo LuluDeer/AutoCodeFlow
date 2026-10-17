@@ -5,6 +5,11 @@ import {
   JwtStrategy,
   SSE_TICKET_PARAM,
 } from "../strategies/jwt.strategy";
+// PLAN-SECURITY-HARDENING §2.2：票据被拒计数的断言缝
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../metrics/runtime-metrics-entry";
 
 /**
  * A5: EventSource cannot send Authorization headers, so the SSE streams carry a
@@ -291,6 +296,85 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
         ver: 3,
       }),
     ).resolves.toMatchObject({ id: 1 });
+  });
+
+  // ─── PLAN-SECURITY-HARDENING §2.2：票据被拒的可观测性 ──────────────────
+  //
+  // 修复（P1-2）把泄漏面关掉了，但此前没有任何计数器——泄漏票据被拿去试探
+  // 复用时系统只是静默 401，安全事件完全不可见。这组用例钉住「拒绝必有
+  // 计数」，且计数**不因合法路径或 access 令牌而误增**。
+  describe("SSE 票据被拒计数（autoflow_sse_ticket_rejected_total）", () => {
+    const rejectedCount = (): number => {
+      const byLabel = getRuntimeCountersSnapshot().get(
+        "autoflow_sse_ticket_rejected_total",
+      );
+      if (!byLabel) return 0;
+      return byLabel.get(JSON.stringify({ reason: "wrong_path" })) ?? 0;
+    };
+
+    beforeEach(() => {
+      resetRuntimeMetrics();
+    });
+
+    it("票据用于非 stream 路由 → wrong_path 计数 +1", async () => {
+      const { strategy } = buildStrategy();
+      expect(rejectedCount()).toBe(0);
+
+      await expect(
+        strategy.validate(REQ, {
+          sub: 1,
+          username: "alice",
+          type: "sse_ticket",
+          ver: 3,
+        }),
+      ).rejects.toThrow();
+
+      expect(rejectedCount()).toBe(1);
+    });
+
+    it("连续试探多次逐次累加（这是「泄漏票据被复用」的强度信号）", async () => {
+      const { strategy } = buildStrategy();
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          strategy.validate(REQ, {
+            sub: 1,
+            username: "alice",
+            type: "sse_ticket",
+          }),
+        ).rejects.toThrow();
+      }
+      expect(rejectedCount()).toBe(5);
+    });
+
+    it("stream 路径上的合法票据不计数（不制造噪声）", async () => {
+      const { strategy, usersService } = buildStrategy();
+      usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
+
+      await expect(
+        strategy.validate(STREAM_REQ, {
+          sub: 1,
+          username: "alice",
+          type: "sse_ticket",
+          ver: 3,
+        }),
+      ).resolves.toMatchObject({ id: 1 });
+      expect(rejectedCount()).toBe(0);
+    });
+
+    it("access 令牌打 REST 路由不计数（正常业务流量）", async () => {
+      const { strategy, usersService } = buildStrategy();
+      usersService.findByIdOrNull.mockResolvedValue(activeUser(3) as never);
+
+      await expect(
+        strategy.validate(REQ, {
+          sub: 1,
+          username: "alice",
+          type: "access",
+          ver: 3,
+        }),
+      ).resolves.toMatchObject({ id: 1 });
+      expect(rejectedCount()).toBe(0);
+    });
   });
 
   it("A5: refresh token 不能借道类型门（type 白名单仍只有 access / sse_ticket）", async () => {
