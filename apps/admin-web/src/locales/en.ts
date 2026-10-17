@@ -321,6 +321,15 @@ export default {
   // Audit P2: current-page CSV export for execution history (PageHeader extra)
   'execs.exportCsv': 'Export CSV',
   'execs.exportCsvSuccess': 'Exported {{count}} executions of the current page',
+  // Full export (GET /tasks/executions/export, streaming endpoint). Sits next to
+  // the current-page export above with a *different* meaning, so the two labels
+  // must be distinguishable at a glance.
+  'execs.exportAll': 'Export all',
+  'execs.exportAll.hint': 'Streams every execution matching the current filters from the server (CSV, up to 50,000 rows; if truncated, the file says so at the end). Use "Export CSV" on the left for just this page.',
+  'execs.exportAll.adminOnly': 'Only admins can export all executions (current-page export is not restricted)',
+  'execs.exportAll.running': 'Downloading… a large export may take tens of seconds',
+  'execs.exportAll.success': 'Started downloading all executions (CSV)',
+  'execs.exportAll.fail': 'Full export failed',
   'execs.kill.success': 'Termination signal sent',
   'execs.kill.fail': 'Terminate failed',
   'execs.compare': 'Compare ({{count}})',
@@ -759,6 +768,12 @@ export default {
   'audit.action.subscription_deadLetter_delete': 'Delete subscription dead-letter',
   'audit.total': '{{count}} in total',
   'audit.modal.detail': 'Detail',
+  // §2.1: stable (cursor/keyset) paging switch + hand-rolled pager. Hidden when off.
+  'audit.stablePaging': 'Stable paging',
+  'audit.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'audit.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. Turn it off to return to numbered pages.',
+  'audit.pager.prev': 'Previous',
+  'audit.pager.next': 'Next',
 
   'notFound.title': 'Page Not Found',
   'notFound.subTitle': 'The page you visited does not exist. Please check the address.',
@@ -1394,6 +1409,13 @@ export default {
   'execPkg.searchPlaceholder': 'Search package name…',
   'execPkg.filter.type': 'Type',
   'execPkg.filter.status': 'Status',
+  // §2.1: stable paging (keyset/cursor pagination) switch + custom pager.
+  // Word-for-word aligned with execs.stablePaging.* (same UX language).
+  'execPkg.stablePaging': 'Stable paging',
+  'execPkg.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'execPkg.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. Turn it off to return to numbered pages.',
+  'execPkg.pager.prev': 'Previous',
+  'execPkg.pager.next': 'Next',
   'execPkg.refresh': 'Refresh',
   'execPkg.count': '{{count}} packages total',
   'execPkg.fleetVersions.label': 'Fleet executor versions',

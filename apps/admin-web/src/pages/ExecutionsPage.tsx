@@ -46,6 +46,8 @@ import { useIsMobile } from '../hooks/useIsMobile';
 // 与同列相邻的中文状态 Badge 中英混排。收敛到 utils/trigger-label 唯一事实源，
 // 与 TaskListPage/TaskDetailPage/ApplicationDetailPage 同一份映射。
 import { triggerLabel } from '../utils/trigger-label';
+// R5 角色门控：ADMIN-only 操作统一以此判断（本轮：全量导出端点 @Roles(ADMIN)）。
+import { useAuthStore, isAdminUser } from '../store/auth';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -115,10 +117,16 @@ const initialCursorStack = (
 
 /**
  * 审计 P2：执行记录 CSV 导出（纯客户端）。仅导出当前筛选结果的**当前页**——
- * 与服务端分页语义一致，全量导出需要后端流式端点，此处不做。列取值与上方
- * Table columns 同源（同 dataIndex、同格式化函数 statusMap/triggerLabel/
- * formatDateTime/formatDuration），避免两处口径漂移；时间列导出可读的
- * 完整时刻（formatDateTime）而非表格里的相对时间。首行 BOM 保证 Excel
+ * 与服务端分页语义一致。
+ *
+ * ⚠️ 本函数**保持「当前页」语义不变**：全量导出走的是服务端流式端点
+ * `GET /tasks/executions/export`（见下方 `handleExportAll`），是**并列的第二个
+ * 按钮**，不是本函数的替代。把这里悄悄改成"导另一个东西"会让既有用户
+ * （和本文件的回归用例）拿到与按钮文案不符的结果，故两个入口各自独立。
+ *
+ * 列取值与上方 Table columns 同源（同 dataIndex、同格式化函数 statusMap/
+ * triggerLabel/formatDateTime/formatDuration），避免两处口径漂移；时间列导出
+ * 可读的完整时刻（formatDateTime）而非表格里的相对时间。首行 BOM 保证 Excel
  * 以 UTF-8 解码中文不乱码。
  */
 function buildExecutionsCsv(
@@ -186,6 +194,12 @@ export default function ExecutionsPage() {
   const [executorFilter, setExecutorFilter] = useState(() => searchParams.get('executor') || '');
   const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [killingId, setKillingId] = useState<string | null>(null);
+  /** 全量导出的在途标记（流式下载可能几十秒，必须给反馈并防重复触发）。 */
+  const [exportingAll, setExportingAll] = useState(false);
+  // P1-5 同款口径：`GET /tasks/executions/export` 是 @Roles(ADMIN)——普通用户
+  // 点了必然吃 403。故**禁用 + 提示**，不发起注定被拒的请求。
+  // role 缺失（profile 尚未拉取）按非 ADMIN 处理（isAdminUser 的既有语义）。
+  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
   // FEAT-03: 多选对比——选中本页行后一键打开指标对比 modal
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -444,6 +458,65 @@ export default function ExecutionsPage() {
     message.success(t('execs.exportCsvSuccess', { count: executions.length }));
   };
 
+  /**
+   * 全量导出（服务端流式 CSV）。与上面「导出当前页」**并列的两个入口**：
+   * 本按钮带的是**当前筛选**（不含分页），导出的是整个结果集。
+   *
+   * ## 筛选参数映射（逐字段对齐后端 ExportExecutionsQueryDto，不猜）
+   *
+   * | 页面 state        | 请求参数          | 后端语义                    |
+   * |-------------------|-------------------|-----------------------------|
+   * | `statusFilter`    | `status`          | 等值                        |
+   * | `debouncedSearch` | `taskName`        | **模糊**匹配任务名          |
+   * | `executorFilter`  | `executorAddress` | **模糊**匹配执行器地址      |
+   * | `timeRange[0/1]`  | `startTime`/`endTime` | **createdAt** 范围（ISO 8601） |
+   *
+   * 三处易错点，都在这里钉死：
+   * 1. **搜索框 → `taskName`**，不是 `search`/`q`/`name`——后端 DTO 只有
+   *    `taskName`，写错会被 `forbidNonWhitelisted` 判 400。
+   * 2. **执行器筛选 → `executorAddress`**，不是 `executorId`（页面上的输入框
+   *    是地址子串，后端对该列做模糊匹配）。
+   * 3. `startTime`/`endTime` 过滤的是**创建时间**，不是执行的 `startTime` 列
+   *    （后端 DTO 明写，与列表端点同源）。故这里与列表请求用**同一个**
+   *    `timeRange?.[0]?.toISOString()`，两个入口的口径不会漂移。
+   *
+   * ## 不分页
+   *
+   * **不传** `page`/`pageSize`：后端 DTO 没有这两个字段（传了会 400，这是刻意
+   * 的——静默忽略分页参数正是 API-07 记录的那类缺陷）。`exportExecutions`
+   * 内部也只按白名单装配参数，此处不可能泄漏进去。
+   *
+   * ## 非 ADMIN
+   *
+   * 按钮已 `disabled`，但 handler 里再挡一次：禁用态在某些无障碍工具/程序化
+   * 调用下仍可能被触发，而这一发必然是 403——不如给一句准确的话。
+   */
+  const handleExportAll = async () => {
+    if (exportingAll) return;
+    if (!isAdmin) {
+      message.warning(t('execs.exportAll.adminOnly'));
+      return;
+    }
+    setExportingAll(true);
+    const hide = message.loading(t('execs.exportAll.running'), 0);
+    try {
+      await tasksApi.exportExecutions({
+        status: statusFilter || undefined,
+        taskName: debouncedSearch || undefined,
+        executorAddress: executorFilter || undefined,
+        startTime: timeRange?.[0]?.toISOString(),
+        endTime: timeRange?.[1]?.toISOString(),
+      });
+      message.success(t('execs.exportAll.success'));
+    } catch (err: unknown) {
+      // 拦截器已对 4xx/5xx 弹过 toast（打标去重），这里兜底网络/中断类失败。
+      showApiError(err, t('execs.exportAll.fail'));
+    } finally {
+      hide();
+      setExportingAll(false);
+    }
+  };
+
   // UI-09：375px 可用性——关键列=任务/状态/开始时间/错误/操作（值班首查项），
   // 触发方式/执行器/耗时为次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险）；
   // scroll.x 兜底横向滚动。onHeaderCell/onCell 挂类供媒体查询隐藏次要列。
@@ -584,7 +657,8 @@ export default function ExecutionsPage() {
         description={t('execs.description')}
         extra={
           <>
-            {/* 审计 P2：导出当前筛选结果的当前页为 CSV（空页禁用，无可导内容） */}
+            {/* 审计 P2：导出当前筛选结果的当前页为 CSV（空页禁用，无可导内容）。
+                ⚠️ 语义**保持不变**：仍只导这一页。全量导出是右边那个独立按钮。 */}
             <Button
               icon={<DownloadOutlined />}
               disabled={executions.length === 0}
@@ -592,6 +666,26 @@ export default function ExecutionsPage() {
             >
               {t('execs.exportCsv')}
             </Button>
+            {/* 全量导出（GET /tasks/executions/export，@Roles(ADMIN)）。
+                与「导出当前页」并列而非替换——两个按钮文案本身就写明了区别
+                （一个带「当前页」语义在成功提示里，一个写「导出全部」）。
+                非 ADMIN 禁用并在 Tooltip 里说明原因：点一个必然 403 的按钮
+                只会让人以为系统坏了。 */}
+            <Tooltip
+              title={isAdmin ? t('execs.exportAll.hint') : t('execs.exportAll.adminOnly')}
+            >
+              {/* 禁用按钮不触发鼠标事件 → 包一层 span 让 Tooltip 仍能提示 */}
+              <span>
+                <Button
+                  icon={<DownloadOutlined />}
+                  loading={exportingAll}
+                  disabled={!isAdmin || exportingAll}
+                  onClick={() => void handleExportAll()}
+                >
+                  {t('execs.exportAll')}
+                </Button>
+              </span>
+            </Tooltip>
             <Button icon={<ReloadOutlined />} onClick={() => void refetch()}>{t('execs.refresh')}</Button>
           </>
         }

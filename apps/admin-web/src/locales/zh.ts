@@ -327,6 +327,15 @@ export default {
   // 审计 P2：执行记录当前页 CSV 导出（PageHeader 操作区）
   'execs.exportCsv': '导出 CSV',
   'execs.exportCsvSuccess': '已导出当前页 {{count}} 条执行记录',
+  // 全量导出（GET /tasks/executions/export，后端流式端点）。与上方「当前页导出」
+  // **并列且语义不同**，故两个按钮的文案必须能一眼区分：一个点明「当前页」
+  // （成功提示里），一个点明「全部」。
+  'execs.exportAll': '导出全部',
+  'execs.exportAll.hint': '从服务端流式导出「当前筛选」下的全部执行记录（CSV，最多 5 万行；超出时文件末尾会标注截断，看得见）。只导当前页请用左边的「导出 CSV」。',
+  'execs.exportAll.adminOnly': '仅管理员可导出全部执行记录（当前页导出不受此限制）',
+  'execs.exportAll.running': '正在下载…大导出可能需要几十秒',
+  'execs.exportAll.success': '已开始下载全部执行记录（CSV）',
+  'execs.exportAll.fail': '全量导出失败',
   'execs.kill.success': '已发送终止信号',
   'execs.kill.fail': '终止失败',
   'execs.compare': '对比 ({{count}})',
@@ -769,6 +778,12 @@ export default {
   'audit.action.subscription_deadLetter_delete': '删除订阅死信',
   'audit.total': '共 {{count}} 条',
   'audit.modal.detail': '详情',
+  // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
+  'audit.stablePaging': '稳定翻页',
+  'audit.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'audit.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。关闭则回到原来的页码分页。',
+  'audit.pager.prev': '上一页',
+  'audit.pager.next': '下一页',
 
   'notFound.title': '页面不存在',
   'notFound.subTitle': '您访问的页面不存在，请检查地址是否正确。',
@@ -1402,6 +1417,13 @@ export default {
   'execPkg.searchPlaceholder': '搜索包名…',
   'execPkg.filter.type': '类型',
   'execPkg.filter.status': '状态',
+  // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
+  // 与 ExecutionsPage 的 execs.stablePaging.* 逐字对齐（同一套 UX 语言）。
+  'execPkg.stablePaging': '稳定翻页',
+  'execPkg.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'execPkg.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。关闭则回到原来的页码分页。',
+  'execPkg.pager.prev': '上一页',
+  'execPkg.pager.next': '下一页',
   'execPkg.refresh': '刷新',
   'execPkg.count': '共 {{count}} 个包',
   'execPkg.fleetVersions.label': '机队执行器版本',
