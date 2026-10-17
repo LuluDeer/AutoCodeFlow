@@ -221,13 +221,13 @@
       `CREATE TABLE ... PARTITION OF` ⇒ **恒需父表属主**，故必须有唯一属主例外；
     · `ALTER TABLE ... OWNER TO` 要求新属主有 schema CREATE（副作用：app 能在 public 建表）；
     · 属主检查认可角色成员关系 ⇒ 用单向 `GRANT acf_app TO acf_migrator` 即可。
-31. **前端其余页面迁 `nextCursor`**——已完成四页：ExecutionsPage / AuditLogPage /
-    ExecutorPackagesPage（+「导出全部」接后端流式端点）。**只剩 TaskListPage**
-    ——它有 `useUrlStateSync` 深链 + `lastStatus` 筛选，而 `cursor` 与 `lastStatus`
-    在后端是**显式互斥**（带 cursor + lastStatus → 400），迁移时必须处理这个组合
-    （例如 keyset 模式下禁用 lastStatus 筛选并给提示），复杂度高于前三页，刻意留作独立一轮。
-32. **`GET /tasks/executions/export` 前端已接**（0fe64906）——「导出全部」按钮与
-    既有「导出当前页」并列，不改后者语义。
+31. ~~**前端其余页面迁 `nextCursor`**~~ ✅ **已全部完成**（第十轮）：ExecutionsPage /
+    AuditLogPage / ExecutorPackagesPage / TaskListPage——四个列表页都有「稳定翻页」开关，
+    默认关闭、零风险。TaskListPage 最难（`cursor` 与 `lastStatus` 在后端**显式互斥** +
+    `useUrlStateSync` 深链 6 个字段），互斥用请求层代码保证（`effectiveLastStatus`）
+    而非只靠 UI 禁用——UI 禁用挡不住 `/tasks?lastStatus=failed` 这条深链绕过路径。
+32. ~~**`GET /tasks/executions/export` 前端已接**~~ ✅ 已完成（0fe64906）——
+    「导出全部」与既有「导出当前页」并列，不改后者语义。
 
 ### ✅ 已完成（第七轮，2026-10-18）
 33. **`GET /tasks/executions/all` keyset 分页**（2e0c5d28）——新增
@@ -265,6 +265,18 @@
 41. **`listLatest()` 不得改走 keyset，用独立 spec 钉住**——它要的是
     "active 前 100" 固定切片，不是翻页；放在页面 spec 里只会检验 mock 自己。
 
+
+### ✅ 已完成（第十轮，2026-10-18）
+42. **TaskListPage 消费 `nextCursor`**（cbf1714b）——前端 keyset 迁移收尾。
+    一处任务前提被我写错、agent 正确更正：我要求"先核实有没有排序 UI"——
+    核实结论是本页**没有排序 UI**（名称列 `sorter` 是纯客户端排序，从不发
+    `sortBy`/`sortOrder`），故只需处理 `lastStatus`。agent 把这条写进页面注释，
+    防日后加排序下拉时漏掉。
+43. **新增记住两个测试侧坑**（不是产品缺陷，是判据定位方式）：
+    · TaskListPage 每行「启用」列也是 `role="switch"`，全页 N+1 个 ⇒ 稳定翻页开关
+      必须按 `name: /稳定翻页/` 定位，不能用裸 `getByRole('switch')`；
+    · 「状态」「触发方式」既是筛选 placeholder 又是表格列标题 ⇒ 须按
+      `.ant-select-placeholder` 过滤。
 ### 🚫 不要做（核验后判定）
 - **PLAN-SECURITY-HARDENING.md §4.1**（DNS rebinding 双解析）——现有 DNS pinning
   更强，按计划实施是**安全回归**
