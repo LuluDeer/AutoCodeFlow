@@ -773,3 +773,101 @@ Tests: 2 failed, 21 passed, 23 total
 17. **做游标/水位线/区间比较前，先确认列精度与时区语义**。`timestamp WITHOUT TIME ZONE`
     + 正偏移会话 + 字符串绑定 = 静默漏掉一个时区偏移量的行。
     **教科书式元组比较在这里是错的，行值比较才对。**
+---
+
+## 十一、第八轮：兑现一条空承诺 + keyset 收尾（2026-10-18）
+
+### 11.1 最有价值的一项：一条对用户/运维的空承诺被兑现
+
+三处文档都对用户承诺「需要留存的历史必须在到期前**自行导出**」：
+`.env.example:373`、`docs/deployment.md:94`、`docs/operations.md:785`。
+
+**而该能力此前不存在**：
+- 前端 `ExecutionsPage.tsx` 的 CSV 导出是**纯客户端当前页**，原注释自认
+  「全量导出需要后端流式端点，此处不做」；
+- 后端唯一的导出端点是 `GET /api/audit/export`（审计日志，1 万行封顶）；
+- `/tasks/:id/export` 是**任务定义**导出，不是执行记录。
+
+叠加 ADR-024 的结论（`task_executions` 90 天**硬删除且不可逆、无归档表**），
+这条承诺等于「你的数据会被删，请自行备份——但备份工具没做」。
+
+已补 `GET /tasks/executions/export`：
+- **真流式**（`res.write` + `await once("drain")` 背压 + socket close 走 AbortController），
+  依据是**行宽不是行数**——单条 `errorMessage` 允许 512_000 字符，
+  拼接会让首字节等到最后一页才发出；
+- **keyset 取数**而非 OFFSET（导出跨几十页，深 OFFSET 退化且并发写会漏/重）；
+- **公式注入防护**（8 条安全用例）、50 000 行**有痕截断**、`@Roles(ADMIN)`。
+
+**我做的独立变异测试**：把 `FORMULA_PREFIX` 改成永不匹配 → **8 个安全用例全部变红**；
+恢复后全绿。证明防护断言真有牙。
+
+### 11.2 一个比"补决胜键"更根本的漂移源
+
+任务书假设「审计过滤器已经共用一份」。核验后发现**比预想更糟**：
+现状是「2 份复制 + 1 个部分共用」的三段式——
+`findAll` 与 `exportCsv` **各自内联同样四条**（逐字复制，连注释都抄），
+`applyExtraFilters` 只装后四条（username/startTime/endTime/result）。
+即「R4 P1-2：两条路径同一过滤集」这条承诺**实际只覆盖 8 个过滤器里的 4 个**，
+前 4 个靠复制粘贴维持一致。已收口成 `applyAuditFilters`，并加「findAll / keyset /
+exportCsv 三条路径发出同一组 (sql, params) 谓词」的逐条比对用例。
+
+### 11.3 两条任务假设被证伪（记下来，省后人重复核验）
+
+| 假设 | 实际 |
+|---|---|
+| audit 的 `findAll` 可能只有 exportCsv 加了 id 决胜键 | **两处都有**（`audit.service.ts:268-269` 与 `:162-163`，A-8 当年一起改的） |
+| executor-package 缺 id 决胜键（我判断是真缺陷） | **已被上游某轮补上**，且已有专门 spec 钉住 |
+
+第二个我判断错了——但错误方向是"把已修好的当成没修"，不是"把没修的当成修好了"。
+
+### 11.4 技术难点：`audit_logs.id` 是 `integer` 不是 `uuid`
+
+现有游标解码器硬性要求 id 为 **uuid 形状**，直接复用会让**每个审计游标都 400**。
+
+错误解法：把判据放宽成 `string | number`——那会同时削弱 uuid 表的校验面，
+且把编译期错误推到运行期。
+
+正确解法：
+- 抽出 `splitCursorPayload()` 作 base64url / 段数 / ISO 时间 + 日历回读的
+  **唯一**公共前半段（保证"时间判据永远只有一份代码"）；
+- 新增 `decodeNumericKeysetCursor` 等，id 段判据 `/^[1-9][0-9]*$/`
+  （**比 `Number.isInteger` 严得多**：拒 `01`（同一行两个游标串）/`0`/`-1`/`+1`/
+  `1e3`/`1.0`/` 1` —— 这些 PG 都能解析成合法数值，接受即静默歧义）；
+- 编码字节布局与 uuid 版**逐字节相同**（有单测钉死）；
+- 载荷里 id 保持**字符串**：序列主键理论上限 2^63，超 2^53 用 JS number 会静默丢精度。
+
+### 11.5 executor-package 保持加性（核实消费方后决定）
+
+`ExecutorPackagesPage.load()` 读 `res.items` / `res.total`，`listLatest()` 读 `res.items`
+（安装向导取"最新可用包"）⇒ 改成 `paginate()` 信封会让 **包表恒空 + 安装向导取不到任何包**。
+故只追加可选 `nextCursor`，并有用例断言 keyset 分支键序是
+`["items","total","nextCursor"]` 且**不含** `list`/`page`/`totalPages`。
+
+### 11.6 本轮验证
+
+| 范围 | 结果 |
+|---|---|
+| **admin-api 全量** | **298 套件 / 5160 例全绿**（基线 4992，+168） |
+| `npx tsc --noEmit` / `npx eslint src` | 0 error / 0 error |
+| CI 门禁（20 个） | 全绿 |
+| `check:response-schema` | **227/227**（基线棘轮 226→227，只增不减） |
+| swagger:export 幂等 | 二次导出 SHA256 逐字节相同 |
+
+**真库 + 真 HTTP 验证**（一次性脚本，跑完即删）：路由未被 `:id` 抢占、
+`Content-Type: text/csv`、响应体是裸 CSV（未被 ResponseInterceptor 包装）、
+真流式分块、六过滤器过白名单、`?page=2` → 400（分页参数不静默忽略）、
+无 token → 401、**非 ADMIN → 403**、普通用户仍可读列表端点；
+`=HYPERLINK("http://x")` 落库后导出为 `'=HYPERLINK(""http://x"")` 无裸公式；
+1100 行同刻跨页不漏不重；审计真库 49 行 / 7 页无漏无重。
+
+### 11.7 编排教训（我自己犯的）
+
+本轮我犯了两个编排错误，都值得记下：
+
+1. **派了两个 agent 做同一件事**：我给一个**已完成**的 agent 发了新任务的前置事实，
+   它据此开始干活，与 workflow 里的 agent 撞在同一批文件上。
+   虽然合并结果验证通过（298 套件全绿），但这是运气而非设计。
+   **教训：派发前先确认该 agent 是否已 inactive（不可再被消息唤醒）。**
+2. **任务书里给了未核实的判断**：我说「executor-package 缺决胜键」——实际已被修过；
+   说「audit 可能只有 exportCsv 有决胜键」——实际两处都有。
+   两个 agent 都正确地自行核实并反驳了我。**这正是"先核验再动手"纪律的价值**。

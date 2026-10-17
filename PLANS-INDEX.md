@@ -203,14 +203,15 @@
     决策与前置条件已写入 PLAN-SECURITY-HARDENING.md §4.2。
 26. **PLAN-BACKEND-ARCHITECTURE.md** §2.2 归档表——**需要业务决策**：见 ADR-024。
     决策所需信息已备齐，等合规口径。
-27. **游标分页再推广**：audit → executor-package（`GET /tasks/executions/all` 已于
-    2026-10-18 完成，见第 32 条）。已完成三个端点：`GET /tasks`、
-    `GET /tasks/:id/executions`、`GET /tasks/executions/all`。
+27. ~~游标分页推广~~ ✅ **已完成五/七轮**：`GET /tasks`、`GET /tasks/:id/executions`、
+    `GET /tasks/executions/all`、`GET /api/audit`、`GET /api/executor-packages`。
+    **前端只迁了 ExecutionsPage 一个样板**（其余页面仍 OFFSET——刻意分轮，见第 34 条）。
 28. **PLAN-OBSERVABILITY.md** §4 追踪 exporter（需要 collector）。
     另：手写 `TracingService` 的 `parentSpanId` 恒为 `null`，没有真正的父子 span 树。
-29. **后端执行记录流式导出端点**（ADR-024 里单独记录）——现有三处文档都说
-    "需要留存的历史必须自行导出"，但该能力**不成立**：前端 CSV 只导当前页，
-    后端导出端点只有审计日志有。补一个流式导出端点独立于归档选型都有价值。
+29. ~~**后端执行记录流式导出端点**~~ ✅ **已完成（第八轮，4cc26327）**：
+    `GET /tasks/executions/export` 真流式（背压 + socket close 中止），keyset 取数，
+    公式注入防护（8 条安全用例 + 变异测试验证有牙），50 000 行有痕截断，`@Roles(ADMIN)`。
+    前端接它是后续小事（页面已有「稳定翻页」开关可复用同一开关位）。
 30. **⚠️ 最小权限 DB 角色（ADR-025 核出，价值最高的待办）**——方案已写好在
     `docs/DB-LEAST-PRIVILEGE.md`（21 条断言在真 PG 上实测全绿）。**属部署契约变更，
     需维护者拍板后再动手**。四条 ADR-025 未预见的硬约束已探明，其中一条是阻塞项：
@@ -220,21 +221,33 @@
       `CREATE TABLE ... PARTITION OF` ⇒ **恒需父表属主**，故必须有唯一属主例外；
     · `ALTER TABLE ... OWNER TO` 要求新属主有 schema CREATE（副作用：app 能在 public 建表）；
     · 属主检查认可角色成员关系 ⇒ 用单向 `GRANT acf_app TO acf_migrator` 即可。
+31. **前端其余页面迁 `nextCursor`**——目前只有 ExecutionsPage 有「稳定翻页」开关。
+    可复用同一范式（游标栈 + keyset 下页码器换成上/下一页）。
+32. **`audit` 与 `executor-package` 的前端**仍读 `data`/`items`+`total`，未消费 `nextCursor`
+    （后端已加性支持，零破坏）。
 
 ### ✅ 已完成（第七轮，2026-10-18）
-32. **`GET /tasks/executions/all` keyset 分页**（2e0c5d28）——第三个端点。新增
+33. **`GET /tasks/executions/all` keyset 分页**（2e0c5d28）——新增
     `applyAllExecutionsFilters` 作过滤条件唯一真值源（OFFSET/keyset 共用一份，
     有「两条路径发出同一组谓词」的用例钉死）。真 PG 独立验证：同毫秒 4 行、
     id 与微秒反序 → 行值比较返回 3 行 ✅ / 半开区间变体返回 **0 行** ❌。
-33. **前端消费 `nextCursor`**（03d5d944）——ExecutionsPage 加「稳定翻页」开关
+34. **前端消费 `nextCursor`**（03d5d944）——ExecutionsPage 加「稳定翻页」开关
     （**默认关闭 = 现有行为逐字节不变**），游标**栈**支撑「上一页」，keyset 下
     页码器整体消失换成上一页/下一页（杜绝"点第 5 页其实是第 2 页"）。
-    cursor 三态（`undefined`/空串/非空）在**状态层**就分开；"关闭时请求里没有
-    cursor 键"做成了代码保证而非 axios 库行为。
-34. **`docs/DB-LEAST-PRIVILEGE.md`** 最小权限 DB 角色实施方案——文档内 6 个 SQL 块
-    被**逐字抽取送进真 PG 执行**建库，再在它上面跑 21 条断言（PASS=21 BROKEN=0），
-    含 9 条「期望失败」（UPDATE/DELETE/TRUNCATE/DISABLE TRIGGER/SET ROLE 等）
-    与 9 条「期望成功」（保留下发通道不被打断）。
+35. **`docs/DB-LEAST-PRIVILEGE.md`** 最小权限 DB 角色实施方案——文档内 6 个 SQL 块
+    被**逐字抽取送进真 PG 执行**建库，再在它上面跑 21 条断言（PASS=21 BROKEN=0）。
+
+### ✅ 已完成（第八轮，2026-10-18）
+36. **执行记录流式导出端点**（4cc26327，见第 29 条）——兑现了一条空承诺。
+37. **keyset 推广到 `GET /api/audit` 与 `GET /api/executor-packages`**（4cc26327）——
+    关键技术难点：`audit_logs.id` 是 **integer 不是 uuid**，现有游标解码器的 uuid 形状
+    校验会让每个审计游标 400。解法是抽出 `splitCursorPayload()` 作唯一公共前半段，
+    另加 `decodeNumericKeysetCursor`（id 判据 `/^[1-9][0-9]*$/`，比 `Number.isInteger`
+    严得多——拒 `01`/`0`/`-1`/`+1`/`1e3`/`1.0`/` 1`，这些 PG 都能解析成合法数值）。
+    载荷里 id 保持**字符串**（序列主键上限 2^63，超 2^53 用 JS number 会静默丢精度）。
+38. **审计过滤器收口**——原态是「2 份复制 + 1 个部分共用」的三段式：`findAll` 与
+    `exportCsv` 各自内联**同样四条**（连注释都抄），`applyExtraFilters` 只装后四条。
+    即「两条路径同一过滤集」这条承诺实际只覆盖 8 个里的 4 个。已收口成 `applyAuditFilters`。
 
 ### 🚫 不要做（核验后判定）
 - **PLAN-SECURITY-HARDENING.md §4.1**（DNS rebinding 双解析）——现有 DNS pinning
