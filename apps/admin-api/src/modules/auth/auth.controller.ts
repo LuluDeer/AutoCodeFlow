@@ -181,8 +181,11 @@ export class AuthController {
     status: 401,
     description: "Refresh Token 无效或已过期",
   })
-  refreshToken(@Body() dto: RefreshTokenDto) {
-    return this.authService.refreshToken(dto.refreshToken);
+  refreshToken(@Body() dto: RefreshTokenDto, @Req() req: Request) {
+    // REFRESH-META（审计 P2）：把当前请求的 UA/IP 交给轮换，配合
+    // AuthService 对「被消费那一行」的继承，保证会话列表的设备/来源列
+    // 在多次轮换后仍然可读（此前轮换出的行恒为 null）。
+    return this.authService.refreshToken(dto.refreshToken, requestMeta(req));
   }
 
   // SEC-02: logout revokes all refresh tokens for the current user

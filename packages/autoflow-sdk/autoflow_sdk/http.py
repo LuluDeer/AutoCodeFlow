@@ -86,43 +86,101 @@ def _raise(resp: httpx.Response) -> None:
 
 
 class AsyncHttpClient:
-    """Async HTTP client backed by httpx.AsyncClient."""
+    """Async HTTP client backed by httpx.AsyncClient.
+
+    **POOL-01（审计 P2，2026-10-17）**：底层 ``AsyncClient`` 此前在
+    ``__init__`` 里就创建，而只有 ``__aexit__`` 会关闭它。任务代码最常见的
+    形式 ``client = AsyncHttpClient(); await client.get(...)``（不写
+    ``async with``）因此**从不关闭连接池**——httpx 的 AsyncClient 持有
+    keep-alive 连接池，长跑任务在循环里反复构造就在进程里累积 CLOSE_WAIT
+    socket（审计实测数十个）。
+
+    现与 ``autocodeflow-http`` / ``autocodeflow-notify`` 对齐为**懒初始化
+    实例级单例**：首次请求才建，``aclose()`` / ``__aexit__`` 关闭后置空，
+    再次请求自动重建（关闭后仍可用，比「关闭即报废」宽容，且与既有
+    ``async with`` 用法逐字节兼容）。``close`` 是 ``aclose`` 的同义方法
+    （同步 SDK 侧叫 close，任务作者容易照写）。
+
+    未显式关闭的实例由 ``__del__`` 尽力兜底释放——但长跑任务仍应显式
+    关闭：析构时机由 GC 决定，且循环引用下可能迟迟不触发。
+    """
 
     def __init__(self, base_url: str = "", timeout: float = 30.0, headers: Optional[Dict[str, str]] = None):
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._headers = headers or {}
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=self._timeout,
-            headers=self._headers,
-            # NETOPT-E P3-4: 同 _client()——内部通道禁代理直连内网
-            # （AI 外发例外见 analyzer.py 三分法定调注释）。
-            trust_env=False,
-        )
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """懒初始化实例级 AsyncClient（复用连接池）。
+
+        asyncio 单线程事件循环内 check-then-set 原子，无需锁——与
+        autocodeflow-http 的 ``_get_client`` 同款依据。
+        """
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self._timeout,
+                headers=self._headers,
+                # NETOPT-E P3-4: 同 _client()——内部通道禁代理直连内网
+                # （AI 外发例外见 analyzer.py 三分法定调注释）。
+                trust_env=False,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """显式关闭底层 AsyncClient（连接池释放；幂等）。"""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
+    async def close(self) -> None:
+        """``aclose`` 的同义方法（同步 SDK 侧叫 close，作者容易照写）。"""
+        await self.aclose()
 
     async def __aenter__(self) -> "AsyncHttpClient":
+        self._get_client()
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        await self._client.aclose()
+        await self.aclose()
+
+    def __del__(self) -> None:  # pragma: no cover - 析构兜底，无法确定性测试
+        """析构兜底：尽力而为地释放连接池，**绝不**抛异常。"""
+        client = getattr(self, "_client", None)
+        if client is None or client.is_closed:
+            return
+        try:
+            import asyncio
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None and loop.is_running():
+                # 事件循环仍在跑：排后台任务关闭（不阻塞析构）。
+                loop.create_task(client.aclose())
+            else:
+                asyncio.run(client.aclose())
+        except Exception:  # noqa: BLE001 - 析构路径禁止抛异常
+            pass
 
     async def get(self, path: str, **kwargs) -> httpx.Response:
-        resp = await self._client.get(path, **kwargs)
+        resp = await self._get_client().get(path, **kwargs)
         _raise(resp)
         return resp
 
     async def post(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
-        resp = await self._client.post(path, json=json, **kwargs)
+        resp = await self._get_client().post(path, json=json, **kwargs)
         _raise(resp)
         return resp
 
     async def put(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
-        resp = await self._client.put(path, json=json, **kwargs)
+        resp = await self._get_client().put(path, json=json, **kwargs)
         _raise(resp)
         return resp
 
     async def delete(self, path: str, **kwargs) -> httpx.Response:
-        resp = await self._client.delete(path, **kwargs)
+        resp = await self._get_client().delete(path, **kwargs)
         _raise(resp)
         return resp

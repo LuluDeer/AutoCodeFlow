@@ -93,9 +93,29 @@ describe("AuthController", () => {
       authSvc.refreshToken.mockResolvedValue(newTokens);
 
       const dto = { refreshToken: "old-rt" } as any;
-      controller.refreshToken(dto);
+      controller.refreshToken(dto, mockReq);
 
-      expect(authSvc.refreshToken).toHaveBeenCalledWith("old-rt");
+      expect(authSvc.refreshToken).toHaveBeenCalledWith(
+        "old-rt",
+        expect.objectContaining({ ip: "192.168.1.1" }),
+      );
+    });
+
+    // REFRESH-META（审计 P2）：轮换必须把当前请求的 UA/IP 交给 service，
+    // 否则新 refresh 行的设备/来源列恒为 null（会话列表排查失去依据）。
+    it("REFRESH-META: 透传请求 UA/IP 给 service", () => {
+      authSvc.refreshToken.mockResolvedValue({} as any);
+      const req = {
+        headers: { "user-agent": "pytest/1.0" },
+        ip: "203.0.113.5",
+      } as any;
+
+      controller.refreshToken({ refreshToken: "rt" } as any, req);
+
+      expect(authSvc.refreshToken).toHaveBeenCalledWith("rt", {
+        userAgent: "pytest/1.0",
+        ip: "203.0.113.5",
+      });
     });
   });
 

@@ -552,9 +552,23 @@ export class HttpClient {
       // NETOPT-F P2-4: callback 直报通道豁免（对齐 autoflow-sdk）。
       isTerminalCallbackUrl(url, method);
     const maxAttempts = this.retry.maxRetries + 1;
+    // BREAKER-MASK（审计 P3，2026-10-17）：重试途中熔断器打开时，保留真实错误。
+    //
+    // 缺陷现场：一次 503/超时失败会 `onFailure()` 计熔断；若这次失败恰好把熔断
+    // 器推过阈值，下一次循环回到 `tryAcquire()` 就会抛 CircuitBreakerOpenError
+    // ——调用方看到的是「熔断器打开」，而**真正的原因**（503 / 连接超时）被
+    // 覆盖掉。排障时最需要的信息恰恰是后者（熔断只是它的一种后果）。
+    //
+    // 现在记住本轮最后一次真实传输错误：循环头被熔断器拒绝时，若已有真实错误
+    // 就抛它（熔断器状态仍如实反映在 breaker 上），只有「一次都没发出去就被
+    // 熔断器挡住」才抛 CircuitBreakerOpenError（那才是纯熔断语义）。
+    let lastTransportError: unknown;
 
     for (let attempt = 0; ; attempt++) {
       if (!this.breaker.tryAcquire()) {
+        // BREAKER-MASK：有真实传输错误时优先暴露它（熔断器打开是它的后果，
+        // 不是根因）；纯熔断（从未发出请求）才抛 CircuitBreakerOpenError。
+        if (lastTransportError !== undefined) throw lastTransportError;
         throw new CircuitBreakerOpenError();
       }
       // NETOPT-6①（PK-09 parity）：本尝试是否占用了 half-open 探测槽。
@@ -581,6 +595,8 @@ export class HttpClient {
         const canRetry =
           breakable && isSafe && attempt < maxAttempts - 1;
         if (!canRetry) throw error;
+        // BREAKER-MASK: 记住真实错误——若下一轮被熔断器挡住，抛的是它。
+        lastTransportError = error;
         // 指数退避（封顶 maxWaitMs），并与 Retry-After 头取大（同样封顶）
         const backoff = Math.min(
           this.retry.maxWaitMs,

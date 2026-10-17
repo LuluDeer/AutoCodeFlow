@@ -629,6 +629,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug("checkMisfires skipped: not the scheduler leader");
       return;
     }
+    // CRON-GUARD：顶层异常闸门——DB 抖动不得升级为未处理 rejection（进程退出）。
+    await this.guardTick("checkMisfires", () => this.checkMisfiresBody());
+  }
+
+  /** checkMisfires 的扫描体（异常由 guardTick 统一兜住）。 */
+  private async checkMisfiresBody(): Promise<void> {
     const now = Date.now();
     // P2-8：先收集命中 FIRE_ONCE 补偿的任务，再 Promise.allSettled 并发入队。
     // 每任务使用独立 Redis 锁 key / DB claim（互不依赖），并发安全；单个任务
@@ -739,6 +745,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
+    // CRON-GUARD：顶层异常闸门——DB 抖动不得升级为未处理 rejection（进程退出）。
+    await this.guardTick("recoverStaleExecutions", () =>
+      this.recoverStaleExecutionsBody(),
+    );
+  }
+
+  /** recoverStaleExecutions 的扫描体（异常由 guardTick 统一兜住）。 */
+  private async recoverStaleExecutionsBody(): Promise<void> {
     // Medium-1.2: scan only RUNNING rows whose startTime is older than the
     // initial cutoff — the rest are presumed healthy and should not be
     // materialized into memory. The per-task timeout refinement below may
@@ -1289,6 +1303,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   @Cron(CronExpression.EVERY_10_SECONDS)
   async wakeMutexQueuedExecutions() {
     if (!this.isLeader) return;
+    // CRON-GUARD：顶层异常闸门——DB 抖动不得升级为未处理 rejection（进程退出）。
+    await this.guardTick("wakeMutexQueuedExecutions", () =>
+      this.wakeMutexQueuedExecutionsBody(),
+    );
+  }
+
+  /** wakeMutexQueuedExecutions 的扫描体（异常由 guardTick 统一兜住）。 */
+  private async wakeMutexQueuedExecutionsBody(): Promise<void> {
     // B-4（调度域审计）：分页循环——旧实现单次 take:200 无翻页，积压 > 200
     // 且最早 200 条同属满组时（组内探针翻转后很快被 dispatch 失败退回
     // WAITING，回到页首），第 201+ 条永远拿不到探针。改为 (createdAt,id)
@@ -1416,6 +1438,39 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * CRON-GUARD（审计 P2，2026-10-17）：定时回调的**顶层**异常闸门。
+   *
+   * 缺陷现场：四个 `@Cron` 方法（checkMisfires / recoverStaleExecutions /
+   * wakeMutexQueuedExecutions / reload）都是直接 `async` 体，体内任何一次
+   * 未捕获的 DB 异常（连接池抖动、语句超时、序列化冲突重试耗尽）都会变成
+   * **未处理的 Promise rejection**。@nestjs/schedule 的 cron 回调不 await
+   * 返回的 Promise，于是：
+   *   · Node 20 默认 `--unhandled-rejections=throw` → 进程直接退出；
+   *   · 即使被宿主兜住，该轮 tick 也静默丢失、无日志可循。
+   * 一次短暂的数据库抖动就能把整个 admin-api 打挂（所有 API 一起 503），
+   * 而正确的处置只是「记日志 + 下一轮重试」。
+   *
+   * 现在所有 cron 体都经本方法包裹：异常被捕获、以 warn 记栈（含 tick 名），
+   * 下一轮周期自然重试。**刻意不重试本轮**——这些 tick 全是幂等扫描，下一轮
+   * 5s/10s/1min/2min 后重跑比在本轮内紧循环重试更安全（不放大 DB 压力）。
+   */
+  private async guardTick(
+    name: string,
+    body: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await body();
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Scheduler tick "${name}" failed and was skipped this round ` +
+          `(next tick retries): ${
+            err instanceof Error ? (err.stack ?? err.message) : String(err)
+          }`,
+      );
+    }
+  }
+
+  /**
    * N5: stale 扫描的初始窗口 = min(所有 active 任务中最短的
    * max(2×timeout, 60s) 阈值, 1h 兜底)。timeout=0（不限时）任务不参与收缩，
    * 仍由 1h 兜底覆盖；没有任何短 timeout 任务时窗口保持 1h，扫描开销不变。
@@ -1448,10 +1503,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug("reload skipped: not the scheduler leader");
       return;
     }
-    // R4-§5.5: tick 计数 + 耗时（含本 tick 的全部扫描/注册工作）
+    // CRON-GUARD：顶层异常闸门——DB 抖动不得升级为未处理 rejection（进程退出）。
+    // 计时/指标仍包住扫描体本身（recordTick 在 finally 里，异常路径同样记账）。
     const tickStart = Date.now();
     try {
-      await this.reloadActiveTasks();
+      await this.guardTick("reload", () => this.reloadActiveTasks());
     } finally {
       this.schedulerMetrics.recordTick(Date.now() - tickStart);
     }

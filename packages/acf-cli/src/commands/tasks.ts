@@ -798,15 +798,29 @@ export function tasksCommand(): Command {
           { taskIds },
         );
         spinner.stop();
+        // 逐项失败计数——**先算后分支**：`--json` 此前在计数之前就 return，
+        // 于是 `acf task batch ... --json` 即使整批失败也以退出码 0 结束
+        // （CLI-EXIT-01 的「部分失败 → 非零」语义只在人类可读分支生效）。
+        // CI 脚本据此把部分失败当成功，继续跑本不该跑的下游步骤。
+        const failures = (results ?? []).filter(
+          (r) => r && typeof r === 'object' && 'error' in r,
+        );
+        const failed = failures.length;
         if (opts.json) {
           console.log(JSON.stringify(results ?? []));
+          if (failed > 0) {
+            // 机器可读模式同样要把失败信号交给 shell：stdout 保持纯 JSON
+            // （不污染调用方的 jq），失败原因走 stderr。
+            console.error(
+              `Batch ${action} finished with ${failed} failure(s) out of ${taskIds.length} task(s).`,
+            );
+            process.exitCode = 1;
+          }
           return;
         }
-        let failed = 0;
         (results ?? []).forEach((r, i) => {
           const tid = taskIds[i] ?? String(i);
           if (r && typeof r === 'object' && 'error' in r) {
-            failed++;
             console.log(chalk.red(`✗ ${tid}: ${String((r as { error: unknown }).error)}`));
           } else {
             console.log(chalk.green(`✔ ${tid}`));

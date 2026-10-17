@@ -286,6 +286,56 @@ describe("UsersService", () => {
       expect(repo.save).toHaveBeenCalled();
     });
 
+    /**
+     * DEADLOCK-01（审计 P2，2026-10-17）：降级管理员 + 同时改密。
+     *
+     * 缺陷现场：事务已持有目标行写锁，而 `await this.bumpSessionVersion(id)`
+     * 走 this.usersRepository（连接池里的**另一条**连接）去 UPDATE 同一行 →
+     * 外部 UPDATE 等事务提交，事务又在 await 它 → 互等。单连接池下是确定性
+     * 死锁，请求挂到连接超时。
+     *
+     * 断言：改密路径的 sessionVersion 自增必须落在**事务内的仓储**上。
+     */
+    it("DEADLOCK-01：降级 + 改密时 sessionVersion 自增走事务内仓储（不跨连接死锁）", async () => {
+      // update() 先经 this.usersRepository 做一次 findById 预检（事务外）。
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      // 事务内 User 仓储换成独立桩，才能证明改密用的是哪一个。
+      const txRepo = makeRepo();
+      txRepo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      txRepo.createQueryBuilder.mockReturnValue(adminQb([{ id: 1 }, { id: 2 }]));
+      repo.manager.transaction.mockImplementation(async (cb: any) =>
+        cb({
+          getRepository: (entity: unknown) =>
+            entity === RefreshToken
+              ? refreshRepo
+              : entity === ProjectMember
+                ? memberRepo
+                : txRepo,
+        }),
+      );
+
+      await service.update(1, {
+        role: UserRole.USER,
+        password: "NewPassw0rd!",
+      } as any);
+
+      // 关键：事务内仓储收到 increment，外部仓储一次都没有
+      expect(txRepo.increment).toHaveBeenCalledWith(
+        { id: 1 },
+        "sessionVersion",
+        1,
+      );
+      expect(repo.increment).not.toHaveBeenCalled();
+    });
+
     it("does not take the lock path when promoting a plain user", async () => {
       repo.findOne.mockResolvedValue({
         id: 5,

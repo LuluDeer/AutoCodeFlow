@@ -313,6 +313,67 @@ describe("AuthService (__tests__)", () => {
       expect(result).toHaveProperty("refreshToken");
     });
 
+    /**
+     * REFRESH-META（审计 P2，2026-10-17）：轮换必须保留会话的 UA/IP。
+     *
+     * 缺陷现场：`return this.generateTokens(user)` 不带 meta，轮换出的新
+     * refresh_tokens 行 userAgent/ip 恒为 NULL。access token 只有 15 分钟，
+     * 几乎所有活跃会话一天后都轮换过——GET /auth/sessions 的设备/来源列
+     * 大面积变 null，异常登录排查失去依据。
+     */
+    it("REFRESH-META：新行继承被消费行的 UA/IP（会话列表不丢设备信息）", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: "valid-jti-uuid",
+      } as any);
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: "valid-jti-uuid",
+        userId: 1,
+        revoked: false,
+        userAgent: "Mozilla/5.0 (original)",
+        ip: "203.0.113.7",
+      } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue(mockUser as any);
+
+      await service.refreshToken("valid-token");
+
+      const saved = refreshTokenRepo.save.mock.calls.at(-1)?.[0];
+      expect(saved).toMatchObject({
+        userAgent: "Mozilla/5.0 (original)",
+        ip: "203.0.113.7",
+      });
+    });
+
+    it("REFRESH-META：调用方显式传入的 UA/IP 优先于继承值", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: "valid-jti-uuid",
+      } as any);
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: "valid-jti-uuid",
+        userAgent: "old-agent",
+        ip: "10.0.0.1",
+      } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue(mockUser as any);
+
+      await service.refreshToken("valid-token", {
+        userAgent: "new-agent",
+        ip: "198.51.100.2",
+      });
+
+      const saved = refreshTokenRepo.save.mock.calls.at(-1)?.[0];
+      expect(saved).toMatchObject({
+        userAgent: "new-agent",
+        ip: "198.51.100.2",
+      });
+    });
+
     it("rejects refresh token without jti (SEC-002)", async () => {
       jwtService.verify.mockReturnValue({
         sub: 1,

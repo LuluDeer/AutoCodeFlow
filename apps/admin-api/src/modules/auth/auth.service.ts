@@ -305,7 +305,10 @@ export class AuthService {
     return { disabled: true };
   }
 
-  async refreshToken(token: string) {
+  async refreshToken(
+    token: string,
+    meta?: { userAgent?: string | null; ip?: string | null },
+  ) {
     let payload: JwtPayload & { type: string; jti?: string };
     try {
       // S2: verify using the dedicated refresh secret and require type='refresh'
@@ -325,6 +328,13 @@ export class AuthService {
     if (!payload.jti) {
       throw new AppError("REFRESH_TOKEN_MISSING_JTI");
     }
+    // REFRESH-META（审计 P2）：先读回被消费的那一行——它携带这条会话签发
+    // 时刻的 userAgent/ip 快照，轮换后的新行要继承（否则会话列表的设备/IP
+    // 列在第一次轮换后就变成 null，异常登录排查失去依据）。
+    // 读在 UPDATE 之前：UPDATE 只置 revoked，行本身不删，但先读更直白。
+    const previous = await this.refreshTokenRepo.findOne({
+      where: { jti: payload.jti, revoked: false },
+    });
     const result = await this.refreshTokenRepo.update(
       { jti: payload.jti, revoked: false },
       { revoked: true },
@@ -349,7 +359,20 @@ export class AuthService {
     if (payload.ver !== undefined && payload.ver !== user.sessionVersion) {
       throw new AppError("SESSION_REVOKED");
     }
-    return this.generateTokens(user);
+    // REFRESH-META（审计 P2，2026-10-17）：轮换后保留原会话的 UA/IP。
+    //
+    // 缺陷现场：refreshToken() 直接 `return this.generateTokens(user)` —— 不带
+    // meta，于是轮换出来的新 refresh_tokens 行 userAgent/ip 恒为 NULL。而
+    // access token 只有 15 分钟，**几乎所有活跃会话**在登录一天后都已轮换过
+    // 至少一次：GET /auth/sessions 的「设备 / 来源 IP」列大面积变成 null，
+    // 异常登录排查（"这条会话来自哪个 IP"）直接失去依据。
+    //
+    // 修复：从被消费的那一行继承 userAgent/ip（它就是这条会话的签发快照），
+    // 调用方显式传入时以其为准（controller 现在传当前请求的 UA/IP）。
+    return this.generateTokens(user, {
+      userAgent: meta?.userAgent ?? previous?.userAgent ?? null,
+      ip: meta?.ip ?? previous?.ip ?? null,
+    });
   }
 
   /**

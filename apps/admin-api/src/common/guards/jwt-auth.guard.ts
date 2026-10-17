@@ -64,11 +64,22 @@ export function extractBearerCredential(
  * AUTH-03: normalize a request path for scope/exclusion matching — strips
  * the global `api` prefix (with or without a leading slash) and the query
  * string, so guards are independent of mount/prefix details.
+ *
+ * **CASE-01（审计 P2，2026-10-17）**：结果统一转小写。Express 的路由匹配
+ * 默认 **大小写不敏感**（`caseSensitive: false`），所以 `POST /api/API-KEYS`
+ * 会命中 `@Controller("api-keys")` 的处理器；而本函数此前按原样返回
+ * `API-KEYS`，`isJwtOnlyPath` 拿它跟小写白名单比必然不匹配 → 该请求被
+ * 判定为「非 JWT-only 面」，于是**持 API Key 也能打 api-keys / auth /
+ * users / config 这些本该只认 JWT 的端点**（API Key 通常权限更低、更易
+ * 泄漏，这正是 AUTH-03 要隔离的面）。转小写后两种写法归一到同一判据。
  */
 export function normalizeApiPath(req: Record<string, any>): string {
   const raw: string = req?.path ?? req?.url ?? "";
   const noQuery = raw.split("?")[0];
-  return noQuery.replace(/^\//, "").replace(/^api\//, "");
+  return noQuery
+    .replace(/^\//, "")
+    .replace(/^api\//i, "")
+    .toLowerCase();
 }
 
 /** True when the normalized path lands on a JWT-only surface. */

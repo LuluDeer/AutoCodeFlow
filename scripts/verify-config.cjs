@@ -1,11 +1,53 @@
-// AutoCodeFlow 配置验证脚本（临时，交付前自检用）
+// AutoCodeFlow 配置验证脚本（交付前自检用）
 // 1) YAML 语法解析所有改动的 YAML 文件
 // 2) 提取 docker-compose.yml / infra compose 的 ${VAR...} 插值，核对 .env.example
+//
+// PORTABLE（审计 P2，2026-10-17）：此前 `require` 与 `ROOT` 都写死了作者本机的
+// 绝对路径（`E:/softwareData/coding/AutoCodeFlow/...`）——在任何其它机器/CI
+// 上，`require` 直接 MODULE_NOT_FOUND 崩掉，而 `ROOT` 若碰巧存在还会静默读
+// **别人的仓库**。现改为：
+//   · ROOT 取脚本所在目录的上一级（本脚本位于 <repo>/scripts/）；
+//   · js-yaml 先按正常解析（依赖提升/本地 node_modules 都能命中），
+//     失败再回落到已知的 workspace 内位置，最后才报可行动的错。
 const fs = require('fs');
 const path = require('path');
-const yaml = require('E:/softwareData/coding/AutoCodeFlow/apps/admin-web/node_modules/js-yaml');
 
-const ROOT = 'E:/softwareData/coding/AutoCodeFlow';
+const ROOT = path.resolve(__dirname, '..');
+
+function requireJsYaml() {
+  const candidates = [
+    'js-yaml', // 正常解析：根 node_modules / 依赖提升 / pnpm 软链
+  ];
+  // 回落：js-yaml 是多个 workspace 的传递依赖，位置随 lockfile 变动
+  // （原先写死的 apps/admin-web 已不再持有它——这正是写死路径的脆弱之处）。
+  // 扫一遍已知 workspace 的 node_modules，命中即用。
+  for (const ws of [
+    'apps/admin-api',
+    'apps/admin-web',
+    'apps/executor-node',
+    'apps/executor-desktop',
+    'packages/autocodeflow-node-sdk',
+  ]) {
+    candidates.push(path.join(ROOT, ws, 'node_modules', 'js-yaml'));
+  }
+  candidates.push(path.join(ROOT, 'node_modules', 'js-yaml'));
+
+  const errors = [];
+  for (const spec of candidates) {
+    try {
+      return require(spec);
+    } catch (e) {
+      errors.push(`${spec}: ${e.code || e.message}`);
+    }
+  }
+  console.error(
+    '[verify-config] 无法加载 js-yaml。请先在仓库根目录安装依赖（npm ci）。尝试过：\n  ' +
+      errors.join('\n  '),
+  );
+  process.exit(2);
+}
+
+const yaml = requireJsYaml();
 const yamlFiles = [
   'docker-compose.yml',
   'docker-compose.staging.yml',

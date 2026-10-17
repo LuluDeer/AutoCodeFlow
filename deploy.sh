@@ -647,7 +647,6 @@ build_phase() {
         esac
     done
 
-    write_manifest_artifacts
     ok "构建完成"
 }
 
@@ -1222,18 +1221,17 @@ dump_recent_logs() {
 # 部署清单与回滚
 # ══════════════════════════════════════════════════════════════════
 
-write_manifest_artifacts() {
-    [ "$DRY_RUN" = true ] && return 0
-    mkdir -p "$DEPLOY_STATE_DIR"
-    for c in $(resolve_components); do
-        local dist="$ROOT_DIR/apps/$c/dist"
-        if [ -d "$dist" ]; then
-            local hash
-            hash="$(find "$dist" -type f -exec sha256sum {} + 2>/dev/null | sort -k2 | sha256sum | cut -d' ' -f1)"
-            printf '%s  %s\n' "$hash" "$c" >> "$DEPLOY_STATE_DIR/artifacts.txt"
-        fi
-    done
-}
+# P3-DEADCODE（审计，2026-10-17）：原 write_manifest_artifacts() 已删除。
+#
+# 它把每个组件的 dist 目录 sha256 追加写进 $DEPLOY_STATE_DIR/artifacts.txt，
+# 但**全仓库没有任何读者**（deploy.sh / scripts / docs 全无引用）——纯死代码，
+# 而且用的是 `>>` 追加：每次部署都往同一文件末尾堆一行，长期运行的主机上该
+# 文件无界增长，且内容因组件集合变化而失去可比性（没人能从中读出「本次部署
+# 的产物指纹」）。真正的部署指纹已经在 .deploy-manifest.json 的 gitCommit /
+# components / deployedAt 里，语义完整且被 rollback 消费。
+#
+# 如果将来确实需要产物级指纹，正确做法是**覆盖写**成
+# `{"<component>": "<hash>", ...}` 并入 manifest——而不是现在这样追加。
 
 # 查询 typeorm 已执行迁移名称列表（回填 manifest.appliedMigrations，审计二轮
 # B-5——此前恒为 []，占位无信息量）。typeorm 默认迁移记录表名即 "migrations"

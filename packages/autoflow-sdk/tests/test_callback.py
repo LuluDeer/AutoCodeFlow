@@ -370,6 +370,88 @@ class TestRetrySemantics:
 
         assert route.call_count == 1
 
+
+class TestConnectionPool:
+    """POOL-02（审计 P2，2026-10-17）：重试不得每次新建连接池。
+
+    缺陷现场：report() 的每次尝试都在 `with httpx.Client(...)` 里新建客户端，
+    最坏（3 次重试）付 3 次完整 TLS 握手——而重试恰恰发生在网络不稳时，把
+    重试预算烧在建立连接上。现为实例级懒初始化单例。
+    """
+
+    @staticmethod
+    def _patch_sleep(monkeypatch):
+        monkeypatch.setattr(
+            callback_module.CallbackClient,
+            "_sleep_before_retry",
+            staticmethod(lambda _attempt: None),
+        )
+
+    @respx.mock
+    def test_retries_reuse_one_pool(self, monkeypatch):
+        """3 次重试全程只建 1 个 httpx.Client（此前 3 个）。"""
+        self._patch_sleep(monkeypatch)
+        built = []
+        orig = httpx.Client.__init__
+
+        def spy(self, *a, **kw):
+            built.append(kw)
+            return orig(self, *a, **kw)
+
+        monkeypatch.setattr(httpx.Client, "__init__", spy)
+        respx.post(URL).mock(side_effect=httpx.ReadTimeout("blip"))
+
+        client = make_client(timeout=0.1)
+        with pytest.raises(httpx.ReadTimeout):
+            client.report_success()
+
+        assert len(built) == 1, f"重试期间应复用同一连接池，实际建了 {len(built)} 个"
+        # 信任策略仍然钉死（内部通道禁代理）
+        assert built[0].get("trust_env") is False
+
+    @respx.mock
+    def test_pool_is_lazy(self):
+        """构造期不建池——只有真正 report 才建（避免未使用的实例占连接）。"""
+        built = []
+        orig = httpx.Client.__init__
+
+        client = make_client()
+        assert client._client is None
+        # 直接检查内部状态即可，无需真的发请求
+        assert not built
+        del orig
+
+    @respx.mock
+    def test_close_releases_and_rebuilds(self):
+        """close() 释放池；之后再 report 自动重建（语义不降级）。"""
+        respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+
+        client = make_client()
+        client.report_success()
+        first = client._client
+        assert first is not None and not first.is_closed
+
+        client.close()
+        assert client._client is None
+        assert first.is_closed
+
+        client.report_success()
+        second = client._client
+        assert second is not None and second is not first
+        client.close()
+
+    @respx.mock
+    def test_context_manager_closes(self):
+        """`with CallbackClient(...)` 退出即释放（新用法，向后兼容）。"""
+        respx.post(URL).mock(return_value=httpx.Response(200, json={"results": []}))
+
+        with make_client() as client:
+            client.report_success()
+            pool = client._client
+            assert pool is not None and not pool.is_closed
+        assert pool.is_closed
+        assert client._client is None
+
     @respx.mock
     def test_408_is_not_retried(self, monkeypatch):
         """NETOPT-C P3: 与 executor 侧 401/408 重试的差异是**有意的**——SDK 4xx

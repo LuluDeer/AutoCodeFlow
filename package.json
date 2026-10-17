@@ -1,6 +1,6 @@
 {
   "name": "autocodeflow-monorepo",
-  "version": "1.0.1",
+  "version": "1.11.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "AutoCodeFlow monorepo root — unified command entry (per-app installs remain independent; no workspace hoisting by design, see ARCH-20)",

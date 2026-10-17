@@ -155,6 +155,17 @@ class CallbackClient:
         # existing keyword parameters so every positional/keyword call site
         # written against N23/N27 keeps working unchanged.
         self.device_fingerprint = device_fingerprint or ""
+        # POOL-02（审计 P2，2026-10-17）：实例级 httpx.Client 单例。
+        #
+        # 此前 report() 的每次尝试（含 NETOPT-10-1 的三次重试）都在 with 里
+        # 新建一个 httpx.Client——单次 report 最坏付 3 次完整 TLS 握手，而
+        # 回调恰恰是在「网络已经不稳」时才重试，重复握手把重试预算烧在
+        # 建立连接上。现与 autocodeflow-notify / autocodeflow-http 对齐：
+        # 懒初始化实例级 client 复用连接池，close() 显式释放。
+        #
+        # 为什么可以安全复用：CallbackClient 本就是「一次执行一个实例」的
+        # 短生命周期对象（TaskContext 持有），同步单线程使用，无并发写。
+        self._client: Optional[httpx.Client] = None
 
         # U14: enabled semantics aligned with the node SDK — only url+token
         # are required. AUTOFLOW_EXECUTOR_ADDRESS is optional since N27: the
@@ -193,6 +204,43 @@ class CallbackClient:
         if self.admin_api_url.endswith("/api"):
             return f"{self.admin_api_url}/executions/callback"
         return f"{self.admin_api_url}/api/executions/callback"
+
+    # ------------------------------------------------------------------ pool
+
+    def _get_client(self) -> httpx.Client:
+        """POOL-02: 懒初始化实例级 httpx.Client（复用连接池）。
+
+        同步单线程使用（CallbackClient 一次执行一个实例），check-then-set
+        无需锁。``is_closed`` 检查让 close() 之后的再次使用自动重建——
+        report() 的语义因此不受「先 close 后 report」影响。
+        """
+        if self._client is None or self._client.is_closed:
+            # NETOPT-E P3-4: 内部通道禁代理直连内网（与 http.py / notify 同款）
+            self._client = httpx.Client(timeout=self.timeout, trust_env=False)
+        return self._client
+
+    def close(self) -> None:
+        """显式关闭底层 client（连接池释放；幂等）。"""
+        if self._client is not None and not self._client.is_closed:
+            self._client.close()
+        self._client = None
+
+    def __enter__(self) -> "CallbackClient":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:  # pragma: no cover - 析构兜底，无法确定性测试
+        """析构兜底：尽力而为地释放连接池，**绝不**抛异常。"""
+        client = getattr(self, "_client", None)
+        if client is None:
+            return
+        try:
+            if not client.is_closed:
+                client.close()
+        except Exception:  # noqa: BLE001 - 析构路径禁止抛异常
+            pass
 
     # ------------------------------------------------------------------ core
 
@@ -233,12 +281,13 @@ class CallbackClient:
         last_error: Optional[Exception] = None
         for attempt in range(1, CALLBACK_MAX_ATTEMPTS + 1):
             try:
-                with httpx.Client(timeout=self.timeout, trust_env=False) as client:
-                    resp = client.post(
-                        self.callback_url,
-                        json=payload,
-                        headers={"Authorization": f"Bearer {self.token}"},
-                    )
+                # POOL-02: 复用实例级连接池——重试不再每次新建 client
+                # （此前最坏 3 次完整 TLS 握手，而重试恰恰发生在网络不稳时）。
+                resp = self._get_client().post(
+                    self.callback_url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self.token}"},
+                )
                 if resp.status_code >= 500 or resp.status_code == 429:
                     last_error = self._status_error(resp)
                     if attempt < CALLBACK_MAX_ATTEMPTS:
