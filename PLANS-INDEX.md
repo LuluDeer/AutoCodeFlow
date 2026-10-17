@@ -178,23 +178,40 @@
     改静态 `Logger.error`（stack 走第二参数位，内容无损）。新增**源码级门禁 spec**
     + 双向反证（改回 `console.error` → 红；重建死文件 → 红）。
 
+### ✅ 已完成（第五轮，2026-10-17 续）
+19. **WSL 环境解锁**——本机 WSL(Ubuntu 24.04) 提供 PostgreSQL 16 + Redis 7，
+    Windows 侧 127.0.0.1 直连可用（端口转发已通）。这解除了「需真实基础设施」的
+    阻塞：`swagger:export`、`npm run test:e2e`、`scripts/e2e-full.sh` 全部**真跑**。
+20. **`GET /tasks` keyset 游标分页**——推广完成（`sortBy`/`lastStatus` + cursor 显式
+    400，过滤条件抽成 `buildTaskListWhere` 供三条路径共用）。
+21. **修掉 704f749e 的两个真实翻页缺陷**（详见 IMPLEMENTATION-REPORT §十）：
+    · 毫秒半开区间谓词**本身不成立**——同毫秒内「微秒更小但 id 更大」的行被静默漏掉
+      （真 PG 实测：6 行只返回 1 行）；已改**行值比较 + 子查询取库内原值**；
+    · 游标时间以字符串绑定 → naive timestamp 列丢时区（UTC+8 会话下漏 8 小时）；
+      行值比较方案让**时间完全不下传**，从根本上消除。
+22. **ADR-024 执行记录归档决策**（`docs/adr/adr-024-*.md`）——四选项 + 触发条件，
+    **本轮不实施**（业务决策未定）。核出 6 条此前无人记录的事实（见该 ADR）。
+23. **`scripts/e2e-local.sh`** + e2e 可重复运行修复：把「本机怎么把 e2e 跑起来」
+    从口头知识变成可执行脚本，并对**环境问题与真实失败**做区分。
+24. **全链 Playwright e2e 真跑通过**：49 通过 / 2 跳过 / 0 失败（3.6 分钟），
+    覆盖真实 PG + Redis + admin-api + executor-node + executor-python + Chromium UI。
+
 ### ⬜ 建议接下来做
-19. **PLAN-SECURITY-HARDENING.md** §4.2（出口代理隔离）——**评估后不建议盲接**：
+25. **PLAN-SECURITY-HARDENING.md** §4.2（出口代理隔离）——**评估后不建议盲接**：
     squid 属"deny-by-default 才能称得上隔离"，而本仓出站面含**用户可配**的 AI
     provider / SMTP / webhook 地址，"盲接会先把可用性打死"（报告原文即警告
     `NO_PROXY` 必须覆盖 `postgres,redis,executor-*`）；且纯配置层改动**离线不可验证**。
     决策与前置条件已写入 PLAN-SECURITY-HARDENING.md §4.2。
-20. **PLAN-BACKEND-ARCHITECTURE.md** §2.2 归档表——**需要业务决策**：只有确认
-    "合规要求留存超过保留期的执行记录"才值得建；否则 archive 表是凭空多一份要维护的
-    写入路径。本轮已把"不可逆删除"的语义与旋钮显式化，决策所需信息已备齐。
-21. **游标分页推广到其余分页端点 + admin-web 迁移消费 `nextCursor`**——本轮只给
-    `GET /tasks/:id/executions` 一个样板端点做了加性能力，前端仍走 OFFSET
-    （**刻意**：一次改四端是反模式，且会让新旧两种分页"第 N 页"语义混用）。
-    建议推广顺序：`GET /tasks` → `GET /tasks/executions/all` → audit →
-    executor-package。每接一个都要保留「不带 cursor 逐字节不变」的用例。
-22. **PLAN-OBSERVABILITY.md** §4 追踪 exporter（需要 collector）。
+26. **PLAN-BACKEND-ARCHITECTURE.md** §2.2 归档表——**需要业务决策**：见 ADR-024。
+    决策所需信息已备齐，等合规口径。
+27. **游标分页再推广**：`GET /tasks/executions/all` → audit → executor-package。
+    本轮已完成 `GET /tasks` 与 `GET /tasks/:id/executions` 两个。
+    **admin-web 前端迁移消费 `nextCursor` 仍未做**（刻意：一次改四端是反模式）。
+28. **PLAN-OBSERVABILITY.md** §4 追踪 exporter（需要 collector）。
     另：手写 `TracingService` 的 `parentSpanId` 恒为 `null`，没有真正的父子 span 树。
-
+29. **后端执行记录流式导出端点**（ADR-024 里单独记录）——现有三处文档都说
+    "需要留存的历史必须自行导出"，但该能力**不成立**：前端 CSV 只导当前页，
+    后端导出端点只有审计日志有。补一个流式导出端点独立于归档选型都有价值。
 ### 🚫 不要做（核验后判定）
 - **PLAN-SECURITY-HARDENING.md §4.1**（DNS rebinding 双解析）——现有 DNS pinning
   更强，按计划实施是**安全回归**
