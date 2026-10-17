@@ -993,6 +993,29 @@ jobs:
           # 形态，随 F-6 可配置化与 error catalog 迁移集体失效）。修好后立即纳入。
           # 这两条只读源码 + 桩依赖，无 DB/网络依赖，可与其他 selftest 串跑。
           npm run test:qwen
+      # ── 2026-10-17 审计：补挂 5 个「写了但没接上」的自检脚本 ──────────
+      # 与上方 test:agent/test:sop/test:qwen 完全同型病史：脚本早已实现且本地
+      # 可跑通，却从未被任何 workflow 调用——回归发生时 CI 全绿放行，等到有人
+      # 本地手跑才发现已腐烂（本仓已重演过三次）。五者均为零依赖/离线自检
+      # （不碰 DB、不发网络请求），秒级到十秒级。
+      - name: Deploy script selftest (P1-6/P1-7 回归护栏)
+        # deploy.sh 是唯一会改动生产主机的脚本：50 例覆盖迁移前备份的退出码
+        # 传播、rollback 的 mode 恢复、dry-run 安全性、health 闸门。
+        run: npm run test:deploy-script
+      - name: Private registry dispatch selftest
+        # 真机派发部分在无 docker 时**显式跳过并退 0**（不虚报绿），静态契约
+        # 部分照常断言。
+        run: npm run test:private-registry:dispatch
+      - name: chaos-drill selftest
+        # 故障演练脚本的 helper 函数 + library 模式隔离（source 不得产生副作用
+        # 执行）。33 例。
+        run: bash scripts/chaos-drill.selftest.sh
+      - name: audit-verify selftest
+        # 审计流水线的 sequence/window 判据纯函数断言。
+        run: node scripts/audit-verify.selftest.mjs
+      - name: load-test selftest
+        # 压测脚本的 SSE 路径解析 / 参数边界 / 速率校验，26 组断言。
+        run: node scripts/load-test.selftest.mjs
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:
