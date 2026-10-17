@@ -521,3 +521,101 @@ bundle 输入（`callback.ts` 新增 `executorAddressHeaderFor()`、`log-stream-
 
 
 
+
+---
+
+## 九、第五轮：剩余真缺口收尾（同日，5 个 agent 并行）
+
+本轮把上一轮报告里「属下一批」的四项真缺口全部落地，并额外补了 §4.2。
+编排方式：按**互不重叠的文件足迹**把 5 项派给 5 个 agent 并行实施，
+主会话只做核验、契约产物收口与提交。每个 agent 的第一条指令都是
+「先核验缺口是否真实存在」——本仓有 53% 的计划条目其实早已实现的前科。
+
+### 9.1 落地物
+
+| 项 | 落地 | 关键设计判断 |
+|---|---|---|
+| BACKEND §2.1 游标分页 | `keyset-cursor.util.ts`（纯函数）+ `task.service.getExecutionsByKeyset` + 可选 `cursor` 参数 + 响应追加 `nextCursor` | **只做加性**：旧 OFFSET 路径逐字节不变（`undefined` 让键整个不出现，而非恒下发 `null`——后者会多一个键）。**修掉一个真实精度缺陷**（见 9.2） |
+| BACKEND §4.2 跨实例缓存失效 | `config-cache-sync.service.ts`（pub/sub 逐出） | **逐条照抄** `token-cache-sync.service.ts` 的已验证先例，不发明第三套缓存方言 |
+| OBS §4/§5 遗留 | 删 `TraceMiddleware` 死代码；`main.ts` 4 处裸 `console.error` → 静态 `Logger.error` | 新增**源码级门禁 spec** + 双向反证（改回去即红） |
+| FRONTEND §2.3 表单完成度 | `utils/formCompletion.ts` 纯函数 + NavRail 百分比/状态点 | 分母只数「必须回答的问题」；分母为 0 返回 **0% 而非 100%** |
+| DESKTOP §5.1 + §2.1 | 健康面板 + 并发进度条 | 健康面板**复用同一个** `buildDiagnosticReport()` 纯函数，绝无第二套真值源 |
+
+### 9.2 游标分页里那个值得单说的缺陷
+
+教科书写法是元组比较 `(createdAt, id) < (:at, :id)`。但本仓 `task_executions."createdAt"`
+是 **PG `TIMESTAMP`（微秒精度，列默认 `now()`）**，而游标经 JS `Date` 往返只有**毫秒**。
+于是库里 `…:00.123456` 的行满足 `createdAt > :at`（`:at` = `…:00.123`），
+被判定为「仍排在游标之后」→ **同一行被重复返回 → 翻页永不到末页**。
+
+改成毫秒**半开区间**谓词，对微秒/毫秒两种行集给出完全一致的判定：
+
+```sql
+(createdAt < :at)                                  -- 游标所在毫秒之前的行
+OR (createdAt < :atNext AND id < :cursorId)        -- 与游标同一毫秒的行，靠决胜键
+```
+
+`:atNext` = `:at + 1ms`。第一支必须是 `<` 而不是 `<=`——用 `<=` 会把游标那一整毫秒
+都当成「在游标之后」，游标行自己被再次返回，翻页原地打转（实测就是这样红的）。
+
+**另一处不妥协**：`total` 仍返回**真实总数**（复用同条件 COUNT），不返回 `-1`/近似值。
+理由是 `total` 是 `number` 且四端都在渲染「共 N 条」，没有任何字段级「这是估算」标记——
+悄悄改语义就是撒谎。要省这条 COUNT，正确做法是新增显式的 `totalExact: false`。
+
+### 9.3 契约产物的离线收口（本机无 DB/Redis）
+
+`openapi.json` 的唯一写入方是 `test/openapi-export.e2e-spec.ts`，它要引导完整
+AppModule（需 PG + Redis）。本机两者都没有，`swagger:export` 跑不了，
+而 CI 的 api-types-drift job 正是「重跑 swagger:export 再 diff」——不补产物 CI 必红。
+
+做法：写一个**只取 `TaskController` 装饰器元数据**的临时探针（不引导 AppModule，
+因此不需要 DB/Redis），用它产出真实的 Swagger 结果，再与手工补丁**逐字节比对**：
+
+```
+ORDER  match: true | gen: id,page,pageSize,name,status,runtime,cursor,limit
+CURSOR match: true
+SCHEMA match: true
+```
+
+**这一步抓到了一次真实的猜错**：我最初按直觉把 `cursor` 放在 `limit` 之后，
+探针实测是**之前**（`@ApiQuery` 在 DTO 派生参数**之前**落位）。若不做实测，
+CI 会红在我自己「看起来很像」的补丁上——这正是「不要按计划文档的片段照抄」的同一个教训。
+
+配套：新增 2 条英文映射进 `scripts/api-i18n/data/openapi-en-map.json`
+（`check:api-i18n` 会如实报缺），注入幂等（连跑两次 SHA256 一致），
+随后 `gen:api-types` 重生成前端类型。探针用完即删，未留在仓库。
+
+### 9.4 本轮验证
+
+| 范围 | 结果 |
+|---|---|
+| **admin-api 全量** | **292 套件 / 4959 例全绿**（基线 4892，+67） |
+| admin-web 全量 | **214 文件 / 1750 例全绿**（基线 1721，+29） |
+| Desktop `test:main` + `test:renderer` | 全绿 |
+| `typecheck:api` / `:web` / `:desktop` | 全部 exit 0 |
+| `eslint`（admin-api / admin-web） | **0 error**（admin-web 63 warning 均为既有） |
+| `lint:i18n` 双守卫 | 通过，**无需更新 baseline** |
+| CI 门禁（20 个） | 全绿，含 `check:response-schema`(226/226) / `check:api-i18n`(1582 节点) / `test:consumer-routes` |
+| bash 自检（deploy / pg-restore） | 全绿（50 + 77 断言） |
+
+**仓库内仍无已知红灯。**
+
+### 9.5 本轮**没做**的（如实）
+
+| 项 | 为什么 |
+|---|---|
+| 游标分页推广到其余 5 个端点 + 前端迁移 | **刻意**。一次改四端是反模式；且新旧两种「第 N 页」语义混用会漏页。本轮只出后端加性能力 + 一个样板端点 |
+| BACKEND §2.2 归档表 | 仍是业务决策（合规是否要求留存超期记录），前置信息已备齐 |
+| SECURITY §4.2 出口代理隔离 | 仍是「不建议盲接」，理由见 8.6 |
+| SECURITY §6.1-6.2 审计哈希链 | 需先解决并发串行化；现有 append-only 触发器已是有效控制 |
+
+### 9.6 给下一个 agent 的新增提醒
+
+11. **`openapi.json` / `api-types.ts` 是入库生成物**。改了任何 `@ApiProperty` /
+    `@ApiQuery` / `@ApiOkResponse` 就必须同步产物，否则 CI 的 api-types-drift 红。
+    本机无 DB/Redis 时不能跑 `swagger:export`——用「只取 controller 装饰器元数据」
+    的探针实测，别按直觉猜（本轮就猜错过一次参数顺序）。
+12. **新增中文 `description` 必须在同轮补进 `scripts/api-i18n/data/openapi-en-map.json`**，
+    否则 `check:api-i18n` 红。
+13. **PG 微秒 vs JS 毫秒**：任何用时间戳做游标/水位线/区间比较的地方都要先确认
+    列的精度与往返精度，教科书式元组比较在这里是错的（见 9.2）。

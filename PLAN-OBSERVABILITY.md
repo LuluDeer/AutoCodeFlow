@@ -103,8 +103,14 @@
    `npm run test:alert-proxy`（已进 CI）；同一组金向量同时钉在 admin-api 的
    `webhook-hmac.util.spec.ts`，两侧算法单侧漂移必然被拦。
 3. **APM / Profiling**（§6-§7）：可选层，未实现。
-4. `TraceMiddleware` 是死代码（`TraceIdMiddleware` 已接线，`TraceMiddleware` 没有）。
-5. `main.ts` 的 fatal 路径仍用裸 `console.error`，会污染 JSON 日志流。
+4. ~~`TraceMiddleware` 是死代码~~ ✅ **已清理（2026-10-17 第五轮）**：全仓唯一引用
+   是 `main.ts` 里被注释掉的一行 import，已连同文件一并删除；真正接线的
+   `TraceIdMiddleware`（`app.module.ts:740`）不受影响。
+5. ~~`main.ts` 的 fatal 路径仍用裸 `console.error`~~ ✅ **已修（2026-10-17 第五轮）**：
+   4 处改静态 `Logger.error`（`stack` 走 Nest 的第二参数位，内容无损；静态方法不依赖
+   DI 容器，启动/退出期安全）。文件里那条"`console.error` 保持原样"的自我否定注释已同步更正。
+   新增**源码级门禁 spec** `middleware/__tests__/observability-hygiene.guard.spec.ts`
+   （fs 读源码断言），并做了**双向反证**：改回 `console.error` → 红；重建死文件 → 红。
 
 ---
 

@@ -642,15 +642,26 @@ export class CreateTaskDto {
    · ⬜ **归档表本身未建**：这是**业务决策**（"合规是否要求留存超过保留期的执行
      记录"），没有这个前提就建表 = 凭空多一条要长期维护的写入路径 + 一份永远没人
      查的数据。前置信息本轮已备齐，决策留给维护者。
-2. **2.1 游标分页**——**仍未做，且需要先出「信封过渡方案」**：本仓响应信封是
-   `{data, total, page, pageSize}`，四端（admin-web / acf-cli / mcp-server / 执行器
-   机器面）都消费它。正确形态是**先加** `cursor`/`nextCursor` 且旧字段保留一个版本，
-   再逐端迁移——直接换信封会一次打断四端。
+2. ~~**2.1 游标分页**~~ ✅ **已完成（2026-10-17 第五轮，加性过渡）**：`GET /tasks/:id/executions`
+   已支持可选 `cursor` 参数 + 响应**追加** `nextCursor`。既有 6 个信封字段的名字/类型/
+   必现性**一个没动**——不带 `cursor` 时走原 OFFSET 路径且**逐字节不变**（用 `undefined`
+   让键整个不出现，而不是恒下发 `null`，后者会多一个键）。带 `cursor` 时走 keyset 分支，
+   复用既有 `(taskId, createdAt DESC, id DESC)` 索引。
+   **修掉一个真实精度缺陷**：`createdAt` 是 PG `TIMESTAMP`（微秒）而 JS `Date` 只有毫秒，
+   教科书式元组比较 `(a,b) < (:at,:id)` 会把同一毫秒内的行**重复返回**（库里
+   `…:00.123456 > …:00.123`）→ 翻页永不到末页。改用毫秒半开区间谓词
+   `(createdAt < :at OR (createdAt < :atNext AND id < :cursorId))`，对微秒/毫秒两种行集
+   判定完全一致。非法游标一律 400（**绝不**静默退回第一页——那是死循环的源头）。
+   `total` 仍返回真实总数：它不是「估算」，四端都在渲染「共 N 条」，改语义即撒谎。
+   ⬜ **仍未做**：推广到其余分页端点（`GET /tasks` / `executions/all` / audit /
+   executor-package）+ admin-web 迁移消费 `nextCursor`。**刻意分轮**：一次改四端是反模式。
 3. **5.1 per-user 限流维度**、**4.1/4.3 缓存层**、**5.2 动态限流**、
    **6.2 按类型/时间重放**——价值中等，需先有真实负载基线再决定。
-4. **4.2 跨实例缓存失效**——本轮只做单进程缓存。多实例部署下 TTL 窗口内
-   各实例可能读到旧值；需要强一致时置 `SYSTEM_CONFIG_CACHE_TTL_MS=0`，
-   或复用 `token-cache-sync.service.ts` 的 pub/sub 先例补跨实例失效。
+4. ~~**4.2 跨实例缓存失效**~~ ✅ **已完成（2026-10-17 第五轮）**：新增
+   `config-cache-sync.service.ts`，**逐条照抄** `token-cache-sync.service.ts` 已验证的
+   先例（不发明第三套缓存方言）：写面 PUBLISH 逐出、`ready` 事件全量清空自愈断连窗口、
+   fail-open 三层（PUBLISH 失败不改写操作结果 / Redis 不可用靠 TTL 兜底 / 不建立订阅）。
+   `@Optional` 尾参注入，既有 `config.service` 单测零破坏。
 
 ## 依赖项
 

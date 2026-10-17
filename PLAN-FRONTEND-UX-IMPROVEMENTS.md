@@ -570,13 +570,25 @@ const isMobile = useMediaQuery({ maxWidth: 768 });
    里只有这 2 个带 `onMutate`。`cancelQueries` 先于快照；快照去重用
    `JSON.stringify` 而非 `join`。
 
+### ✅ 已实施（2026-10-17 第五轮）
+1. ~~**2.3 表单完成度指示**~~ ✅ 已实施（零新依赖）——`utils/formCompletion.ts` 纯函数
+   （零 React、零 i18n），22 例单测；NavRail 上显示百分比 + 每分区状态点。
+   **口径诚实性**（本仓红线：不造语义虚假的指标）：
+   · 分母只数**用户必须回答的问题**，判据对齐 `handleSubmit` 的 missing 清单 +
+     `CreateTaskDto` 必填面；条件性字段 `appliesWhen=false` 时**既不进分子也不进分母**
+     （连控件都不在页面上）；
+   · 必填/推荐分开：推荐项（description/runbook）缺失不影响 filled 与 percent；
+   · **分母为 0 返回 0% 而非 100%**（不替用户断言「已完成」）；
+   · 必有取舍：手动切 Cron 时分母 3→4，百分比如实**下降**，不做「只涨不跌」的美化；
+   · `0`/`false` 算已填（`timeout=0` 不限时是真取值），空串/纯空白算未填。
+   a11y：`role=progressbar` + `aria-valuenow` + 带数值的 `aria-label`；状态点
+   `aria-hidden` 纯装饰，语义由视觉隐藏文本承载。
+
 ### ⬜ 仍然待办（按价值排序）
-1. **2.3 表单完成度指示**（在现有 NavRail 上补百分比）
 2. **7.2 触摸操作**——低优先级，注意「滑动删除」是毁灭性误触面
 3. **1.2 扩大到其他 mutation**——本轮只做了暂停/恢复。若继续推广，务必逐条按
    「cancel → 快照 → 乐观 → 回滚 → 失效」的顺序落地，并配**只有回滚能救**的
    用例（重取成功的用例证明不了回滚接上了——本轮实测踩过这个坑）。
-
 ## 依赖项（核验后）
 
 - `recharts`: **已引入**（趋势图在用）

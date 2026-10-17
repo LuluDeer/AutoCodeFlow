@@ -147,15 +147,53 @@
    provider / SMTP / webhook 地址，"盲接会先把可用性打死"（报告原文即警告
    `NO_PROXY` 必须覆盖 `postgres,redis,executor-*`）；且纯配置层改动**离线不可验证**。
    决策与前置条件已写入 PLAN-SECURITY-HARDENING.md §4.2。
-10. **PLAN-BACKEND-ARCHITECTURE.md** §2.1 游标分页——仍需先出「信封过渡方案」
-    （同时返回 cursor 与 total、旧字段保留一个版本），否则一次打断四端客户端。
-11. **PLAN-BACKEND-ARCHITECTURE.md** §2.2 归档表——**需要业务决策**：只有确认
+### ✅ 已完成（第四轮，2026-10-17 续）
+14. **PLAN-BACKEND-ARCHITECTURE.md** §2.1 游标分页——**已按「信封过渡方案」落地**：
+    新增可选 `cursor` 查询参数 + 响应**追加** `nextCursor`。既有 6 个信封字段
+    （`list/items/total/page/pageSize/totalPages`）的名字、类型、必现性**一个没动**，
+    四端零改动零感知。不带 `cursor` 走原 OFFSET 路径且**逐字节不变**（用 `undefined`
+    让键整个不出现，而不是恒下发 null——后者会多一个键）。keyset 分支复用既有
+    `(taskId, createdAt DESC, id DESC)` 索引。
+    **顺带修掉一个真实精度缺陷**：`createdAt` 是 PG 微秒精度而 JS `Date` 只有毫秒，
+    教科书式元组比较 `(a,b) < (:at,:id)` 会把同一毫秒内的行**重复返回**；改用毫秒
+    半开区间谓词 `(createdAt < :at OR (createdAt < :atNext AND id < :cursorId))`，
+    对微秒/毫秒两种行集判定完全一致。非法游标一律 400（**绝不**静默退回第一页——
+    那是翻页死循环的源头）。
+15. **PLAN-BACKEND-ARCHITECTURE.md** §4.2 跨实例缓存失效——`config-cache-sync.service.ts`
+    逐条照抄 `token-cache-sync.service.ts` 已验证的先例（**不发明第三套缓存方言**）：
+    写面 PUBLISH 逐出、`ready` 事件全量清空自愈断连窗口、fail-open 三层
+    （PUBLISH 失败不改写操作结果 / Redis 不可用靠 TTL 兜底 / 不建立订阅）。
+    `@Optional` 尾参注入，既有 `config.service` 单测零破坏。
+16. **PLAN-FRONTEND-UX-IMPROVEMENTS.md** §2.3 表单完成度指示——`utils/formCompletion.ts`
+    纯函数 + 22 例单测。分母只数「用户必须回答的问题」，条件性字段
+    （`appliesWhen=false`）既不进分子也不进分母；分母为 0 返回 **0% 而非 100%**
+    （不替用户断言"已完成"）。a11y：`role=progressbar` + `aria-valuenow` + 带数值的
+    `aria-label`；状态点 `aria-hidden` 纯装饰，语义由视觉隐藏文本承载。
+17. **PLAN-EXECUTOR-DESKTOP-UX.md** §5.1 健康面板 / §2.1 并发进度条——零新依赖。
+    健康面板**未重复采集**：新 IPC 内部调用**同一个** `buildDiagnosticReport()`
+    纯函数，绝无第二套真值源。并发条用原生 `<progress>` + 手写 CSS，未引组件库；
+    `max` 不可用时显示 `N/—` 而非 `N/0`（后者会被读成"一切都超额"）。
+18. **PLAN-OBSERVABILITY.md**「仍然待办」第 4、5 条——删除死代码 `TraceMiddleware`
+    （全仓唯一引用是 `main.ts` 里被注释掉的一行）；`main.ts` 4 处裸 `console.error`
+    改静态 `Logger.error`（stack 走第二参数位，内容无损）。新增**源码级门禁 spec**
+    + 双向反证（改回 `console.error` → 红；重建死文件 → 红）。
+
+### ⬜ 建议接下来做
+19. **PLAN-SECURITY-HARDENING.md** §4.2（出口代理隔离）——**评估后不建议盲接**：
+    squid 属"deny-by-default 才能称得上隔离"，而本仓出站面含**用户可配**的 AI
+    provider / SMTP / webhook 地址，"盲接会先把可用性打死"（报告原文即警告
+    `NO_PROXY` 必须覆盖 `postgres,redis,executor-*`）；且纯配置层改动**离线不可验证**。
+    决策与前置条件已写入 PLAN-SECURITY-HARDENING.md §4.2。
+20. **PLAN-BACKEND-ARCHITECTURE.md** §2.2 归档表——**需要业务决策**：只有确认
     "合规要求留存超过保留期的执行记录"才值得建；否则 archive 表是凭空多一份要维护的
-   写入路径。本轮已把"不可逆删除"的语义与旋钮显式化，决策所需信息已备齐。
-12. **PLAN-FRONTEND-UX-IMPROVEMENTS.md** §2.3 表单完成度指示、
-    **PLAN-EXECUTOR-DESKTOP-UX.md** §5.1 健康面板 / §2.1 并发进度条——均为
-    零新依赖的小改动，属下一批。
-13. **PLAN-OBSERVABILITY.md** §4 追踪 exporter（需要 collector）。
+    写入路径。本轮已把"不可逆删除"的语义与旋钮显式化，决策所需信息已备齐。
+21. **游标分页推广到其余分页端点 + admin-web 迁移消费 `nextCursor`**——本轮只给
+    `GET /tasks/:id/executions` 一个样板端点做了加性能力，前端仍走 OFFSET
+    （**刻意**：一次改四端是反模式，且会让新旧两种分页"第 N 页"语义混用）。
+    建议推广顺序：`GET /tasks` → `GET /tasks/executions/all` → audit →
+    executor-package。每接一个都要保留「不带 cursor 逐字节不变」的用例。
+22. **PLAN-OBSERVABILITY.md** §4 追踪 exporter（需要 collector）。
+    另：手写 `TracingService` 的 `parentSpanId` 恒为 `null`，没有真正的父子 span 树。
 
 ### 🚫 不要做（核验后判定）
 - **PLAN-SECURITY-HARDENING.md §4.1**（DNS rebinding 双解析）——现有 DNS pinning

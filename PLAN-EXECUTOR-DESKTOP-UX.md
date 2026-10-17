@@ -621,11 +621,24 @@ const { t } = useTranslation();
    三层脱敏（键级 / 值自动采集 / 全串擦洗），断言打在整个序列化结果上；
    截断与脱敏都进 `meta`，**可审计而非静默**。
 
-### ⬜ 仍然待办（按价值排序，均零新依赖）
-1. **5.1 健康检查面板**——复用现有 `test-connection` / `python-env-status`，
-   补 Node 版本 / workDir 可写 / 磁盘可用聚合面板（诊断报告已具备这些数据源，
-   面板是纯展示层）
-2. **2.1 并发进度条**——在既有「今日汇总」块上补 running/max，**不引组件库**
+### ✅ 已实施（2026-10-17 第五轮，均零新依赖）
+1. ~~**5.1 健康检查面板**~~ ✅ 已实施——**未重复采集**：新 IPC 内部调用**同一个**
+   `buildDiagnosticReport()` 纯函数（诊断报告的数据源），绝无第二套真值源。
+   只投影 runtime / health / workDir 三段过桥，**刻意不带** config 段与 recentLogs
+   （额外暴露面）。判定逻辑全在主进程纯函数 `buildHealthPanel()`，渲染层只查双语表插值；
+   renderer selftest 额外禁止组件内出现 `fetch(`/`statfs`/`execSync`/`spawnSync`/`require(`
+   （去注释后判定）——防它退回成第二套采集。
+   **脱敏**：复用报告既有三层，另把 `workDir.path` 与 `uvPath` 收敛为末两段；
+   断言打在 `JSON.stringify(panel)` 上，禁止出现真实用户名与绝对路径。
+2. ~~**2.1 并发进度条**~~ ✅ 已实施——在既有「今日汇总」条内补 running/max，
+   用原生 `<progress>`（自带 `role=progressbar`）+ 手写 CSS，**未引组件库、零 inline style**。
+   `running` 取自同一份 `allRecords`（不额外发一次 `getHistory`），`max` 取自
+   `executor:status` 已返回的 `config.maxConcurrentTasks`——**无新 IPC**。
+   `max` 不可用时 `known=false` 显示「N/—」而非「N/0」（后者会被读成"一切都超额"）；
+   `running > max` 单独一档 `over`，百分比钳 100 但保留真实 running。
+
+### ⬜ 仍然待办
+（本轮无新增待办。剩余「需要外部基础设施」类见 PLANS-INDEX。本文件所有 ⬜ 条目已清零。）
 
 ## 依赖项
 
