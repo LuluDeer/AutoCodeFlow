@@ -744,7 +744,7 @@ export interface paths {
         };
         /**
          * 执行记录
-         * @description 获取任务的执行历史列表。
+         * @description 获取任务的执行历史列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。
          */
         get: operations["TaskController_executions"];
         put?: never;

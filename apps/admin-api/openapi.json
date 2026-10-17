@@ -2162,7 +2162,7 @@
     },
     "/tasks/{id}/executions": {
       "get": {
-        "description": "获取任务的执行历史列表。",
+        "description": "获取任务的执行历史列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
         "operationId": "TaskController_executions",
         "parameters": [
           {
@@ -2278,7 +2278,7 @@
         ],
         "x-i18n-en": {
           "summary": "Execution records",
-          "description": "Get the execution history list for a task."
+          "description": "Get a task's execution history. PLAN-BACKEND-ARCHITECTURE §2.1 (additive transition): a new optional `cursor` parameter — when omitted, the existing OFFSET pagination is used and the response is byte-for-byte identical to before (no nextCursor key); when the previous page's `data.nextCursor` is passed, keyset pagination is used ((createdAt,id) tuple cursor, so deep paging no longer slows down with OFFSET) and `nextCursor` is appended to the response (null = last page). An invalid cursor returns 400 (VALIDATION_FAILED) and never silently falls back to the first page."
         }
       }
     },
