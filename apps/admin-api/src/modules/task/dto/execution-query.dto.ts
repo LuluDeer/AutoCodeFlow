@@ -85,6 +85,29 @@ export class AllExecutionsQueryDto extends PaginationDto {
   @IsOptional()
   @IsISO8601()
   endTime?: string;
+
+  /**
+   * §2.1（推广到 GET /tasks/executions/all）：**可选**的不透明游标。
+   *
+   * 与 `TaskExecutionsQueryDto#cursor` 逐字同款（同一套编码/解码纯函数
+   * `common/utils/keyset-cursor.util.ts`，同一套 400 语义）——本端点只是把它
+   * 推广到"跨任务的全局执行列表"。
+   *
+   * 只做加性过渡——不传它时行为与引入本字段之前**逐字节不变**（走 OFFSET
+   * 分支，响应里连 `nextCursor` 这个键都不出现）。传了它才切到 keyset 分支。
+   *
+   * 本端点**没有** sortBy / lastStatus 那类会与游标冲突的参数（排序恒为
+   * `createdAt DESC, id DESC`），故无需像 `GET /tasks` 那样再做可组合性判定：
+   * 六个过滤器（status/taskId/taskName/executorAddress/startTime/endTime）全部
+   * 与游标条件是 AND 关系，可以任意组合。
+   */
+  @ApiPropertyOptional({
+    description:
+      "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有的 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }
 
 /**

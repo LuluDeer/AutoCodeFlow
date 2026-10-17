@@ -460,7 +460,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 全局执行记录 */
+        /**
+         * 全局执行记录
+         * @description 全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。
+         */
         get: operations["TaskController_allExecutions"];
         put?: never;
         post?: never;
@@ -8134,6 +8137,8 @@ export interface operations {
                 startTime?: string;
                 /** @description 仅返回在该时刻及之前创建的执行（ISO 8601） */
                 endTime?: string;
+                /** @description 不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器组合，非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。 */
+                cursor?: string;
             };
             header?: never;
             path?: never;

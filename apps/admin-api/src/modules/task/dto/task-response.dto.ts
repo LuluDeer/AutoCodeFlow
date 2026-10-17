@@ -639,7 +639,8 @@ export class PaginatedTaskListDto {
 }
 
 /**
- * GET /tasks 与 GET /tasks/:id/executions 共用信封（载荷不同）。
+ * 执行列表信封：`GET /tasks/:id/executions` 与 `GET /tasks/executions/all`
+ * 共用（载荷同为执行行）。
  *
  * PLAN-BACKEND-ARCHITECTURE §2.1（游标分页·加性过渡）：本类**只新增**了可选的
  * `nextCursor`，既有 6 个字段的类型与名字一个都没动——它们被四端消费
@@ -653,8 +654,9 @@ export class PaginatedTaskListDto {
  *     据"是否为 null"判断是否翻完。
  *
  * 注意 `total`：keyset 分支下**仍然是真实总数**（复用同条件的 COUNT，见
- * task.service.getExecutions 的注释），不返回 -1/近似值——`total` 的类型断言
- * 不能撒谎，否则所有按 `total` 渲染"共 N 条"的四端都会显示错值。
+ * task.service 里 `getExecutionsByKeyset` / `getAllExecutionsByKeyset` 的注释），
+ * 不返回 -1/近似值——`total` 的类型断言不能撒谎，否则所有按 `total` 渲染
+ * "共 N 条"的四端都会显示错值。
  */
 export class PaginatedExecutionListDto {
   @ApiProperty({ type: [ExecutionListItemDto] })

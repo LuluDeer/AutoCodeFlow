@@ -129,6 +129,41 @@ describe("AllExecutionsQueryDto (GET /tasks/executions/all)", () => {
       BadRequestException,
     );
   });
+
+  // §2.1 游标分页推广：cursor 必须**通过白名单**（否则全局
+  // forbidNonWhitelisted 会把它打成 400，加性参数根本用不了）。
+  it("§2.1: accepts the additive `cursor` query param (whitelist)", async () => {
+    const result = await validate({ page: "1", cursor: "abc_-123" });
+    expect(result.cursor).toBe("abc_-123");
+  });
+
+  it("§2.1: cursor is optional (omitting it keeps the OFFSET path reachable)", async () => {
+    const result = await validate({ page: "1" });
+    expect(result.cursor).toBeUndefined();
+  });
+
+  it("§2.1: cursor combines with the full filter set (same DTO, same whitelist)", async () => {
+    // 本端点没有 sortBy/lastStatus 那类与游标冲突的参数：六个过滤器
+    // 全部与游标条件是 AND 关系，故 DTO 层不需要任何互斥判定。
+    const result = await validate({
+      status: "failed",
+      taskId: "t1",
+      taskName: "nightly",
+      executorAddress: "10.0.0.5",
+      startTime: "2026-01-01T00:00:00.000Z",
+      endTime: "2026-01-31T23:59:59.000Z",
+      cursor: "abc_-123",
+    });
+    expect(result.cursor).toBe("abc_-123");
+    expect(result.taskId).toBe("t1");
+  });
+
+  it("§2.1: 格式校验**不**在 DTO 层做（合法性统一由 decodeExecutionCursor 判 400）", async () => {
+    // 与 TaskExecutionsQueryDto 同款分层：游标坏掉要一条可操作的指引
+    // （"请从第一页重新开始"），而不是 "cursor must be …"。
+    const result = await validate({ cursor: "!!!not-base64!!!" });
+    expect(result.cursor).toBe("!!!not-base64!!!");
+  });
 });
 
 // NETOPT-3④: page 深分页防御——page 只进 OFFSET，无上限的 `?page=99999999`

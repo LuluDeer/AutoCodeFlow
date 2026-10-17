@@ -479,7 +479,11 @@ export class TaskController {
   }
 
   @Get("executions/all")
-  @ApiOperation({ summary: "全局执行记录" })
+  @ApiOperation({
+    description:
+      "全局执行记录（跨任务）。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（status/taskId/taskName/executorAddress/startTime/endTime）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
+    summary: "全局执行记录",
+  })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "pageSize", required: false })
   @ApiQuery({ name: "status", required: false })
@@ -488,6 +492,15 @@ export class TaskController {
   @ApiQuery({ name: "executorAddress", required: false })
   @ApiQuery({ name: "startTime", required: false })
   @ApiQuery({ name: "endTime", required: false })
+  // §2.1：keyset 游标（与 GET /tasks、GET /tasks/:id/executions 同款参数）。
+  // 显式声明是为了与本端点其余 query 参数的历史风格一致；DTO 侧
+  // AllExecutionsQueryDto 也已带 @ApiPropertyOptional（白名单必需）。
+  @ApiQuery({
+    name: "cursor",
+    required: false,
+    description:
+      "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器组合，非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+  })
   @ApiOkResponse({
     type: PaginatedExecutionListDto,
     description: "全局执行记录（已排除大文本列）",

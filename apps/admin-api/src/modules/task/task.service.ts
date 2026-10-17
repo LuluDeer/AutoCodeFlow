@@ -29,6 +29,7 @@ import {
   Between,
   QueryFailedError,
   Repository,
+  SelectQueryBuilder,
 } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
@@ -2768,8 +2769,16 @@ export class TaskService {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      cursor?: string;
     },
   ) {
+    // §2.1（推广到 GET /tasks/executions/all）: 游标分页分支。
+    // 不带 cursor 时下面一行都不执行，旧路径**逐字节不变**（响应里连
+    // nextCursor 这个键都不出现，见 paginate 的 options.nextCursor 契约）。
+    if (p.cursor !== undefined && p.cursor !== null) {
+      return this.getAllExecutionsByKeyset(p, p.cursor);
+    }
+
     // DB-003: 原 getRawAndEntities + getCount 会产生 3 条 SQL（raw 页查询、
     // entities 页查询、count），executions 被全表扫描两次。改为：
     // 1) getManyAndCount：页查询 + count 共 2 条（仅 executions 扫描）；
@@ -2789,6 +2798,40 @@ export class TaskService {
       .skip((p.page - 1) * p.pageSize)
       .take(p.pageSize);
 
+    // 过滤条件：与 keyset 分支**共用同一份**装配（见 applyAllExecutionsFilters）
+    this.applyAllExecutionsFilters(qb, p);
+
+    const [list, total] = await qb.getManyAndCount();
+
+    const items = await this.backfillExecutionTaskNames(list);
+    return paginate(items, total, p.page, p.pageSize);
+  }
+
+  /**
+   * `getAllExecutions` 的过滤条件装配（**唯一**真值源，OFFSET / keyset 两条
+   * 路径共用——与 `buildTaskListWhere` 之于 `findAll` 是同一个先例）。
+   *
+   * 为什么必须是"一份"而不是各写一份：这些过滤器全是**放宽/收窄结果集**的
+   * 条件（status/taskId/taskName/executorAddress/startTime/endTime）。两份实现
+   * 一旦漂移，最典型的表现不是报错而是"两种分页模式返回的集合不同"——
+   * 客户端从 OFFSET 整页翻到 keyset 后结果集**静默**变宽/变窄，且没有任何
+   * 信号（`total` 也会跟着变）。那正是本仓反复在修的"静默损坏"。
+   *
+   * 本端点的排序键恒为 `(createdAt DESC, id DESC)`（无 sortBy 参数），故
+   * 游标与全部过滤器都只是 AND 关系，不需要 `assertCursorCompatibleWithQuery`
+   * 那样的可组合性拒绝。
+   */
+  private applyAllExecutionsFilters(
+    qb: SelectQueryBuilder<TaskExecution>,
+    p: {
+      status?: string;
+      taskId?: string;
+      taskName?: string;
+      executorAddress?: string;
+      startTime?: string;
+      endTime?: string;
+    },
+  ): void {
     if (p.status) qb.andWhere("e.status = :status", { status: p.status });
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
     if (p.taskName) {
@@ -2811,10 +2854,17 @@ export class TaskService {
       qb.andWhere("e.createdAt >= :startTime", { startTime: p.startTime });
     if (p.endTime)
       qb.andWhere("e.createdAt <= :endTime", { endTime: p.endTime });
+  }
 
-    const [list, total] = await qb.getManyAndCount();
-
-    // 一次性批量补齐缺失的 taskName（替代原 leftJoin + raw Map 组装）
+  /**
+   * 一次性批量补齐缺失的 taskName（替代原 leftJoin + raw Map 组装）。
+   *
+   * OFFSET 与 keyset 两条路径共用：两条路径的响应形状必须一致，包括
+   * `taskName` 的回填语义（行自身有值则优先，否则按 taskId 批量取 tasks.name）。
+   */
+  private async backfillExecutionTaskNames(
+    list: TaskExecution[],
+  ): Promise<Array<TaskExecution & { taskName: string | null }>> {
     const missingIds = [
       ...new Set(
         list
@@ -2831,11 +2881,96 @@ export class TaskService {
       for (const t of tasks) taskNameMap.set(t.id, t.name);
     }
 
-    const items = list.map((e) => ({
+    return list.map((e) => ({
       ...e,
       taskName: e.taskName || taskNameMap.get(e.taskId) || null,
     }));
-    return paginate(items, total, p.page, p.pageSize);
+  }
+
+  /**
+   * §2.1（推广到 GET /tasks/executions/all）keyset 分支：
+   * `(createdAt, id) < (游标行的库内原值)` 的元组游标翻页。
+   *
+   * 形态与 `getExecutionsByKeyset` / `findAllByKeyset` **逐字同款**（同一份
+   * `decodeExecutionCursor` / `nextExecutionCursor`，同一个行值比较谓词），
+   * 不重新设计。三处差异都是本端点固有的，不是随意的：
+   *
+   *   ① 过滤条件走 `applyAllExecutionsFilters`（六个全局过滤器，而不是单任务
+   *      的 taskId/status）——与 OFFSET 分支共用同一份装配；
+   *   ② 多取一行的判断用 `getCount()` 而不是 `getManyAndCount()`：后者在
+   *      `taskName` 过滤生效时会带上 leftJoin，而 typeorm 的 `lazyCount` 在
+   *      "有 join + 有 take" 时会退化成 `COUNT(DISTINCT e.id)`（见
+   *      SelectQueryBuilder.lazyCount）——语义仍是"该过滤下的总行数"，但它是
+   *      从**本页已取的 N+1 行**推算的，翻页越深越依赖它，白付一次 DISTINCT。
+   *      拆成"页查询 getMany + 独立 getCount"则与 `getExecutionsByKeyset` 的
+   *      `Promise.all([qb.getMany(), count()])` 完全同构，且 total 恒定等于
+   *      同过滤条件下的全量行数（不含游标下界——游标只决定"从哪继续"）。
+   *   ③ taskName 回填复用 `backfillExecutionTaskNames`（与 OFFSET 分支同源）。
+   *
+   * 精度：`task_executions."createdAt"` 已核实为 `timestamp without time zone`
+   * （information_schema.datetime_precision = 6，微秒）。游标只带 `id`，时间由
+   * 子查询按主键取**库内原值**——DB 值比 DB 值，JS Date 的毫秒截断完全不参与
+   * 运算，零精度损失。**不要**改回毫秒半开区间：完整证伪论证见
+   * `getExecutionsByKeyset` 头注（真 PG 实测：那版会漏行/返回游标之前的行）。
+   */
+  private async getAllExecutionsByKeyset(
+    p: PaginationDto & {
+      status?: string;
+      taskId?: string;
+      taskName?: string;
+      executorAddress?: string;
+      startTime?: string;
+      endTime?: string;
+    },
+    rawCursor: string,
+  ) {
+    // 空串 = 调用方显式声明的 keyset 起点（与 getExecutions / findAll 同款约定）；
+    // 非空则必须是合法游标，否则 400 —— 绝不降级到 OFFSET 分支。
+    const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
+
+    const qb = this.execRepo
+      .createQueryBuilder("e")
+      .select(executionListSelectColumnsAliased(this.execRepo))
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
+      // 起点与结果集排序不符，翻页会漏/重。
+      .orderBy("e.createdAt", "DESC")
+      .addOrderBy("e.id", "DESC");
+
+    // 过滤条件：与 OFFSET 分支共用同一份装配（单份真值源，杜绝漂移）。
+    this.applyAllExecutionsFilters(qb, p);
+
+    if (cursor) {
+      // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
+      // 主键从库里取回（含微秒）。论证见 getExecutionsByKeyset 头注。
+      //
+      // 游标行被并发删除：子查询无行 → 比较得 NULL → WHERE 为假 → 本页为空，
+      // 调用方看到 nextCursor: null 即视为翻完（安全地提前结束，不错行不重复）。
+      qb.andWhere(
+        `(e.createdAt, e.id) < (
+           SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
+      );
+    }
+
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(p.pageSize + 1);
+
+    // total 用独立的 COUNT（同过滤条件、不含游标下界）——语义与 OFFSET 分支的
+    // `getManyAndCount` 返回值一致：真实总数，不是"剩余条数"、也不是 -1。
+    // 两次查询**顺序**执行（不 Promise.all 同一个 qb）：getMany 会改写
+    // expressionMap.queryEntity，与并发的 getCount 抢同一个可变对象不安全。
+    const rows = await qb.getMany();
+    const total = await qb.getCount();
+
+    const hasMore = rows.length > p.pageSize;
+    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
+    const items = await this.backfillExecutionTaskNames(list);
+    return paginate(items, total, 1, p.pageSize, {
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      // 内层取原始行 list（不是 items）——编游标只读 (createdAt, id)。
+      nextCursor: hasMore ? nextExecutionCursor(list) : null,
+    });
   }
 
   /**
