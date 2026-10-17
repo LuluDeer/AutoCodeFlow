@@ -7,6 +7,20 @@ describe("Tasks (e2e)", () => {
   let accessToken: string;
   let createdTaskId: string;
 
+  /**
+   * 任务名必须**每次运行唯一**。
+   *
+   * 踩过的坑：这里原本硬编码 "e2e-test-task"，而 `afterAll` 只调 DELETE 端点
+   * ——那是**软删除**（`tasks.status = 'deleted'`），行还在表里，唯一约束
+   * 与"名字是否被占用"都仍看得见它。于是**同一台机器上第二次跑 e2e 必然 409**
+   * （`POST /tasks` → Conflict），而 CI 每次都是全新库，所以这个缺陷在 CI 里
+   * 永远不显形，只在本地重复跑时炸——正是「mock/一次性环境不等于能跑」的又一例。
+   *
+   * 修复：名字带进程级唯一后缀（时间戳 + 随机串）。断言也用这个变量而不是
+   * 字面量，避免测试自己写死一份真相。
+   */
+  const taskName = `e2e-test-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   beforeAll(async () => {
     app = await createTestApp();
     accessToken = await loginAsAdmin(app);
@@ -65,7 +79,7 @@ describe("Tasks (e2e)", () => {
       // the global ValidationPipe uses forbidNonWhitelisted, so legacy
       // `type`/`schedule`/`executorAddress` keys would be rejected with 400.
       const payload = {
-        name: "e2e-test-task",
+        name: taskName,
         description: "Created by e2e tests",
         triggerType: "cron",
         cronExpression: "0 * * * *",
@@ -80,7 +94,7 @@ describe("Tasks (e2e)", () => {
 
       const task = res.body?.data ?? res.body;
       expect(task).toHaveProperty("id");
-      expect(task.name).toBe("e2e-test-task");
+      expect(task.name).toBe(taskName);
       createdTaskId = task.id;
     });
 
