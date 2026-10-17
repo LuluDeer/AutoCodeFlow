@@ -925,7 +925,7 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
   | 操作 | 结果 | 原因 |
   |---|---|---|
   | `UPDATE` / `DELETE`（应用层、普通 SQL） | **拒绝** | 行级触发器（`ERRCODE P0001`） |
-  | `TRUNCATE audit_logs` | **放行** ⚠️ | 触发器是 `BEFORE UPDATE OR DELETE ... FOR EACH ROW`，**没有 `BEFORE TRUNCATE`** |
+  | `TRUNCATE audit_logs` | **拒绝** | `BEFORE TRUNCATE` 语句级触发器，迁移 `1790000000057` |
   | `ALTER TABLE ... DISABLE TRIGGER` 后改删 | **放行** ⚠️ | 表属主本就能关触发器（PG 固有语义） |
   | `SET session_replication_role=replica` 后改删 | **放行** ⚠️ | 超级用户固有能力 |
 

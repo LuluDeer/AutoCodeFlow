@@ -52,6 +52,7 @@
 **为什么 TRUNCATE 挡不住**：触发器声明是 `BEFORE UPDATE OR DELETE ... FOR EACH ROW`
 （`1790000000006:57-59`）——**没有 `BEFORE TRUNCATE`**，而 `TRUNCATE` 是语句级操作、不逐行走行触发器。
 全仓检索：迁移目录内 `TRUNCATE|session_replication_role|DISABLE TRIGGER` **零命中**，即没有任何地方补过这个缺口。
+> **更新（已收口）**：`TRUNCATE` 已于迁移 `1790000000057-AuditLogsNoTruncateGuard.ts` 收口（`BEFORE TRUNCATE ... FOR EACH STATEMENT` 守卫，恒拒绝、无逃生门）；上表该行与下文同类表述是收口前的实测记录，其余两行（属主关触发器 / 超管改复制角色）**仍然放行**。
 
 **为什么后两条挡不住**：触发器的禁用权在**表属主**手里，用户触发器的触发与否受
 `session_replication_role` 控制（该 GUC 仅超级用户可设）。这两条不是实现疏漏，是 PostgreSQL 的固有语义
