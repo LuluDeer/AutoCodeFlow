@@ -85,6 +85,17 @@ export const queryKeys = {
       name?: string;
       status?: string;
       triggerType?: string;
+      /**
+       * keyset（游标）分页令牌——**必须进 queryKey**。游标不同 = 不同的结果页，
+       * 若把它排除在外，第 1/2/3 页会共用同一个缓存条目（翻回上一页拿到的是
+       * 别的页的数据，且不会有任何报错）。这是 ExecutionsPage / AuditLogPage
+       * 两轮已经踩过一次的同型缺陷，口径逐字对齐它们。
+       *
+       * `undefined`（OFFSET 路径）与 `''`（keyset 起点）在 queryKey 序列化里
+       * 也是不同的值（前者键值为 undefined，后者为空串），不会互相命中，故
+       * 这里不需要（也**不许**）做任何归一。
+       */
+      cursor?: string;
     }) => ['tasks', 'list', params] as const,
     detail: (id: string) => ['tasks', 'detail', id] as const,
     stats: (id: string) => ['tasks', 'stats', id] as const,
@@ -271,8 +282,23 @@ export function useTasksList(params: {
   triggerType?: string;
   /** P2-18：最近一次执行结果筛选（lastStatus），透传 GET /tasks 查询参数。 */
   lastStatus?: string;
+  /**
+   * keyset（游标）分页令牌——**三态原样透传，不在这里归一**。
+   *
+   *   · `undefined` → 参数对象里没有这个键，`tasksApi.list` 的
+   *     `taskListRequestConfig` 再把键构造掉 → 请求里没有 cursor（OFFSET
+   *     路径，现有行为不变）；
+   *   · `''` → keyset 起点；
+   *   · 非空串 → keyset 中途页。
+   *
+   * 调用方（TaskListPage）用"三元里展开 `{}` 或 `{ cursor }`"的写法把它传进
+   * 来，语义与箭头函数里 `if (cursor)` 归一完全不同——见 ExecutionsPage 的
+   * `...(activeCursor === undefined ? {} : { cursor: activeCursor })`。
+   */
+  cursor?: string;
 }): UseQueryResult<PageResult<Task>> {
   return useQuery({
+    // cursor 已在 queryKeys.tasks.list 的 params 形状里 → 自动进缓存键。
     queryKey: queryKeys.tasks.list(params),
     queryFn: ({ signal }) => tasksApi.list(params, signal),
   });

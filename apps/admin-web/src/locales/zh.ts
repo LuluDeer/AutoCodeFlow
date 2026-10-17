@@ -208,6 +208,15 @@ export default {
   'taskList.statusAll': '全部状态',
   'taskList.triggerAll': '触发方式',
   'taskList.lastRunAll': '最近执行',
+  // §2.1 keyset（稳定翻页）。文案骨架与 execs.* / audit.* 逐字对齐（同一套
+  // UX 语言），额外两条是本页独有的后端互斥约束说明。
+  'taskList.stablePaging': '稳定翻页',
+  'taskList.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'taskList.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。开启期间「最近执行」筛选不可用。关闭则回到原来的页码分页。',
+  'taskList.stablePaging.lastStatusDisabled': '稳定翻页模式不能按最近执行状态筛选（后端游标分页不支持该组合），请先关闭稳定翻页',
+  'taskList.stablePaging.lastStatusIgnored': '「最近执行」筛选在稳定翻页下已失效（结果未按该条件过滤）',
+  'taskList.pager.prev': '上一页',
+  'taskList.pager.next': '下一页',
   'taskList.clearFilters': '清除筛选',
   'taskList.count': '共 {{count}} 条',
   'taskList.selected': '已选 <1>{{count}}</1> 项',

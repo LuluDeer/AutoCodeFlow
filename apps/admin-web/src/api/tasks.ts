@@ -377,6 +377,26 @@ export type TaskListParams = {
    * 待 openapi 重导出后并入生成类型。
    */
   lastStatus?: string;
+  /**
+   * §2.1 keyset（游标）分页令牌——**三态**，且三态必须在状态层就分开：
+   *
+   *   · `undefined`（键缺省）→ 请求里**没有** `cursor` 这个键 → 后端走既有
+   *     OFFSET 分支，响应与加游标分页之前逐字节相同（连 `nextCursor` 都
+   *     不出现）。这是「稳定翻页」开关关闭时的零风险路径。
+   *   · `''`（空串）→ `?cursor=` → 后端 keyset 分支的**起点**。
+   *   · 非空串 → keyset 的中途页。
+   *
+   * ⚠️ 绝不能写 `if (cursor)` 或 `cursor ?? ''` 归一：前者把空串当"没传"，
+   * keyset 起点永远进不去（页面表现为"开了开关但一直停在第 1 页"，且不报错）；
+   * 后者把 OFFSET 路径也变成 keyset 路径，"旧路径逐字节不变"当场破功。
+   *
+   * 游标**不透明**：前端只搬运，不解析、不截断、不重新编码。
+   *
+   * 与 `lastStatus` / `sortBy` 互斥（后端 `assertCursorCompatibleWithQuery`
+   * 直接 400 VALIDATION_FAILED）：调用方必须自己保证不同时发这两组参数，
+   * 见 TaskListPage 的「稳定翻页 ⇒ 禁用最近执行筛选」。
+   */
+  cursor?: string;
   runtime?: string;
   applicationId?: string;
   /** F-10: 逗号分隔的投影字段白名单（如 'id,name'）。 */
@@ -421,8 +441,43 @@ export interface ExecutionLogsPage {
   hasMore: boolean;
 }
 
+/**
+ * `GET /tasks` 的请求配置——**游标三态的唯一落点**。
+ *
+ * ## 为什么需要一个专门的装配函数，而不是把 params 原样交给 axios
+ *
+ * `cursor` 是**三态**的，而"这个键存不存在"在后端是有语义的：
+ *   · 键不出现 → 既有 OFFSET 分支（响应逐字节不变）；
+ *   · `cursor=` → keyset 起点；
+ *   · `cursor=<令牌>` → keyset 中途页。
+ *
+ * 若把 `params` 原样交给 axios，"`undefined` 的键会被整个丢掉"就成了
+ * **库的序列化细节**，而不是我们这边的保证：升个 axios 小版本、或某天换成
+ * 别的 HTTP 层，旧路径就可能悄悄变成 `?cursor=undefined`（后端会把它当非法
+ * 游标 400）。所以：`cursor === undefined` 时在这里把键**显式构造掉**，
+ * 非 `undefined`（含空串）时原样保留。这是"关闭开关时请求里没有 cursor 键"
+ * 的**代码保证**，不押在库行为上。
+ *
+ * 其余参数照旧整体透传——本次改动对它们零影响。
+ */
 function taskListRequestConfig(params: TaskListParams | undefined, signal?: AbortSignal) {
-  return signal ? { params, signal } : { params };
+  const normalized: TaskListParams | undefined = params
+    ? withExplicitCursor(params)
+    : params;
+  return signal ? { params: normalized, signal } : { params: normalized };
+}
+
+/**
+ * 按三态规则产出一个新的参数对象。
+ *
+ * 用 `{ ...rest }` 解构而不是 `delete`：`delete` 会改写调用方传进来的对象
+ * （TanStack 的 queryKey/params 是同一个引用，被就地改掉会让缓存键与实际
+ * 请求漂移——那是比 undefined 序列化更难查的一类缺陷）。
+ */
+function withExplicitCursor(params: TaskListParams): TaskListParams {
+  const { cursor, ...rest } = params;
+  // 注意判据是 `undefined` 本身，**不是** truthy：空串必须保留。
+  return cursor === undefined ? rest : { ...rest, cursor };
 }
 
 function invalidTaskListResponse(reason: string): Error {

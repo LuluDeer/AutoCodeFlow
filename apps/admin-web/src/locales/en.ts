@@ -202,6 +202,15 @@ export default {
   'taskList.statusAll': 'All statuses',
   'taskList.triggerAll': 'Trigger type',
   'taskList.lastRunAll': 'Last run',
+  // §2.1 stable paging — wording aligned with execs.* / audit.*; the two
+  // extra keys explain this page's backend-only mutual exclusion.
+  'taskList.stablePaging': 'Stable paging',
+  'taskList.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'taskList.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. While on, the "Last run" filter is unavailable. Turn it off to return to numbered pages.',
+  'taskList.stablePaging.lastStatusDisabled': 'Stable paging cannot filter by last run status (the backend cursor pagination does not support that combination). Turn off stable paging first.',
+  'taskList.stablePaging.lastStatusIgnored': 'The "Last run" filter is not applied while stable paging is on (results are not filtered by it).',
+  'taskList.pager.prev': 'Previous',
+  'taskList.pager.next': 'Next',
   'taskList.clearFilters': 'Clear filters',
   'taskList.count': '{{count}} records',
   'taskList.selected': '{{count}} selected',
