@@ -426,6 +426,7 @@
 | 1790000000054 | AddExecutorDeviceFingerprintIdentity | ADR-017 阶段 3（执行器身份键定位切换的数据面）：deviceFingerprint 加宽 VARCHAR(80) + 回填 NULL→legacy 身份键（legacyExecutorIdentity，与 register 创建路径同形）+ SET NOT NULL + address 唯一收窄为 push 模式行（partial unique index WHERE dispatchMode='push'，pull 允许同地址各自成行）；down 逆序回收（并存 pull 行未收敛时全局唯一重建会如实失败） |
 | 1790000000055 | AddTaskExecutionsExecutorId | ADR-017 阶段 3 配套：task_executions 增可空 `executorId`（执行行**行身份**，迁移前存量行为 NULL 且**刻意不回填**——地址→行映射在 pull 同址多行下有歧义，猜错比留 NULL 更糟）；部分索引 idx_task_executions_executor_id_running (executorId,startTime) WHERE status='running'（CONCURRENTLY，transaction=false）；修「A 机器重启误杀 B 机器健康执行」等按 address 匹配的串台面；不加 FK（执行器行可删、执行历史必须留痕） |
 | 1790000000056 | AddTasksStatusIdIndex | PERF-3 调度扫描复合索引：tasks 增 `(status, id)`（`idx_tasks_status_id`）——调度器三条热查询同为「status 等值 + id keyset 翻页 + ORDER BY id」形态，既有 `idx_tasks_status`（单列，命中后仍需排序）与 `idx_tasks_status_trigger_type`（第二列 triggerType 与 ORDER BY 不对齐）都吃不满；复合索引让等值前缀定界、id 天然有序，排序步骤整个消失。CREATE INDEX CONCURRENTLY + transaction=false（tasks 上万行且调度器持续在读，普通建索引的写锁会阻塞任务创建/更新，同 0049/0053/0055 大表纪律）；IF NOT EXISTS 可重入。**刻意不删**冗余的 `idx_tasks_status`（严格左前缀）——删索引不可逆且需实测依据，收敛留后续轮 |
+| 1790000000057 | AuditLogsNoTruncateGuard | SEC-10 审计日志防 TRUNCATE 守卫：audit_logs 补语句级 BEFORE TRUNCATE 触发器（既有 trg_audit_logs_append_only 是行级 UPDATE/DELETE 守卫，对语句级 TRUNCATE 不生效）——一条 TRUNCATE 即可清空全部审计记录的缺口。触发器无条件 RAISE EXCEPTION 拒绝（无逃生门：全仓检索 TRUNCATE audit_logs 零命中，保留期删除走分批 DELETE 不需要 TRUNCATE）；down 逆序 DROP TRIGGER IF EXISTS |
 
 ## 变更日志
 
