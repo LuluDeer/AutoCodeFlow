@@ -59,7 +59,7 @@ die() { printf '\n\033[31m✘ %s\033[0m\n' "$*" >&2; exit 1; }
 say "探测依赖"
 if command -v pg_isready >/dev/null 2>&1; then
   pg_isready -h "$DB_HOST" -p "$DB_PORT" >/dev/null 2>&1 \
-    || die "PostgreSQL 不可达（$DB_HOST:$DB_PORT）。先起库：docker compose up -d postgres"
+    || die "PostgreSQL 不可达（${DB_HOST}:${DB_PORT}）。先起库：docker compose up -d postgres"
   echo "    PostgreSQL OK ($DB_HOST:$DB_PORT)"
 else
   echo "    (pg_isready 不在 PATH，跳过探测，交给迁移报错)"
@@ -67,10 +67,10 @@ fi
 if command -v redis-cli >/dev/null 2>&1; then
   if [ -n "${REDIS_PASSWORD:-}" ]; then
     redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" --no-auth-warning ping 2>/dev/null | grep -q PONG \
-      || die "Redis 不可达（$REDIS_HOST:$REDIS_PORT）"
+      || die "Redis 不可达（${REDIS_HOST}:${REDIS_PORT}）"
   else
     redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping 2>/dev/null | grep -q PONG \
-      || die "Redis 不可达（$REDIS_HOST:$REDIS_PORT）"
+      || die "Redis 不可达（${REDIS_HOST}:${REDIS_PORT}）"
   fi
   echo "    Redis OK ($REDIS_HOST:$REDIS_PORT)"
 else
@@ -115,6 +115,6 @@ if [ "$STATUS" -eq 0 ]; then
   #   cd apps/admin-api && npm run swagger:export
   say "提示：openapi.json 已被 e2e 重写为纯中文；提交前请跑 swagger:export 恢复"
 else
-  die "e2e 有失败（exit=$STATUS）。注意：若大面积 401，先确认 admin 用户是否建出来了
+  die "e2e 有失败（exit=${STATUS}）。注意：若大面积 401，先确认 admin 用户是否建出来了
    （INITIAL_ADMIN_PASSWORD 是否生效、users 表是否非空），而不是先怀疑鉴权代码。"
 fi
