@@ -687,7 +687,7 @@ jobs:
       # 上传 HTML 报告为构建产物（供查看详细性能数据）
       - name: Upload Lighthouse reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lighthouse-reports
           path: apps/admin-web/.lighthouseci
