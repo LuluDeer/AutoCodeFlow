@@ -178,15 +178,21 @@ export class ExecutorPackageController {
   }
 
   @Get()
-  @ApiOperation({ summary: "获取执行器包列表" })
+  @ApiOperation({
+    description:
+      "获取执行器包列表。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /audit、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较），并在响应中**追加** `nextCursor`（null = 已到末页）。响应形状保持裸 {items,total} 不变（不换成 paginate 信封——items 被 admin-web 包表与安装向导消费）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（name/type/status/platform）自由组合。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
+    summary: "获取执行器包列表",
+  })
   @ApiResponse({
     status: 200,
     description: "包列表",
     type: ExecutorPackageListDto,
   })
-  findAll(
-    @Query() query: QueryExecutorPackageDto,
-  ): Promise<{ items: ExecutorPackage[]; total: number }> {
+  findAll(@Query() query: QueryExecutorPackageDto): Promise<{
+    items: ExecutorPackage[];
+    total: number;
+    nextCursor?: string | null;
+  }> {
     return this.svc.findAll(query);
   }
 

@@ -138,6 +138,15 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // 的 buildTypeOrmDataSourceOptions；schema 本体抽到
         // DB_READ_REPLICA_URL_SCHEMA（供 spec 直接复用，防漂移）。
         DB_READ_REPLICA_URL: DB_READ_REPLICA_URL_SCHEMA,
+        // PERF-1（慢查询日志）：超过该毫秒数的语句由 TypeORM 记 warn
+        // （configuration.ts database.slowQueryMs → buildTypeOrmDataSourceOptions
+        // 的 maxQueryExecutionTime）。默认 1000ms（只捞真正值得看的慢查询）；
+        // 0 = 关闭。上限 10 分钟——再大的阈值等于静默关闭，没有配置价值。
+        DB_SLOW_QUERY_MS: Joi.number()
+          .integer()
+          .min(0)
+          .max(600000)
+          .default(1000),
 
         // Redis
         REDIS_HOST: Joi.string().hostname().default("localhost"),
@@ -505,6 +514,16 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .max(1)
           .default(0.5),
         HEALTH_CACHE_TTL_MS: Joi.number().integer().min(0).default(0),
+
+        // PERF-2（SystemConfig 读缓存）：configuration.ts systemConfig.cacheTtlMs
+        // → config.service.ts 的进程内短 TTL 缓存窗口。默认 1000ms（一秒内合并
+        // 重复读；写入侧恒失效本地缓存，故同进程改完立即可见）；0 = 关闭。
+        // 上限 60000——再长的窗口会让「改了配置但没生效」成为难查的运维事故。
+        SYSTEM_CONFIG_CACHE_TTL_MS: Joi.number()
+          .integer()
+          .min(0)
+          .max(60000)
+          .default(1000),
       }),
       // Only validate in production and test environments
       // @nestjs/config 12 迁移到 Standard Schema：对 joi schema 包内默认即
@@ -553,6 +572,8 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
             database: cfg.get("database.database"),
             poolSize: cfg.get<number>("database.poolSize"),
             readReplicaUrl: cfg.get("database.readReplicaUrl"),
+            // PERF-1: 慢查询阈值透传（0/非法值在 builder 内归一化为关闭）。
+            slowQueryMs: cfg.get<number>("database.slowQueryMs"),
           },
           app: { nodeEnv: cfg.get("app.nodeEnv") },
         });

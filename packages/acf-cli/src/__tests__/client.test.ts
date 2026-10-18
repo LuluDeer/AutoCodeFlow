@@ -304,10 +304,14 @@ describe("401 refresh self-heal (BUG-13)", () => {
 
     const result = (await onRejected(retriable401())) as { data: unknown };
 
-    // 单飞刷新：POST {base}/auth/refresh，双 token 均换发入库
+    // 单飞刷新：POST {normalizeApiBase(base)}/auth/refresh，双 token 均换发入库
+    //
+    // P1-4 回归：admin-api 有全局 `api` 前缀，refresh 端点必须打到
+    // `.../api/auth/refresh`。此前这里固定的是**缺 /api** 的 URL——正是
+    // 「每次令牌过期都 404 → clearAuth() → 用户被迫重新登录」的现场。
     expect(axios.post).toHaveBeenCalledTimes(1);
     expect(axios.post).toHaveBeenCalledWith(
-      "http://localhost:3105/auth/refresh",
+      "http://localhost:3105/api/auth/refresh",
       { refreshToken: "refresh-token" },
       expect.objectContaining({ timeout: 10_000 }),
     );

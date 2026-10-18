@@ -1554,6 +1554,91 @@ describe("SchedulerService", () => {
     });
   });
 
+  // CRON-GUARD（审计 P2，2026-10-17）：定时回调的顶层异常闸门。
+  //
+  // 缺陷现场：四个 @Cron 方法都是裸 async 体，体内未捕获的 DB 异常会变成
+  // **未处理的 Promise rejection**——@nestjs/schedule 不 await cron 返回的
+  // Promise，Node 20 默认 `--unhandled-rejections=throw` 直接杀进程。一次
+  // 短暂的数据库抖动即可让整个 admin-api 下线。
+  describe("CRON-GUARD: 定时回调顶层异常隔离", () => {
+    const cronTicks = [
+      { name: "checkMisfires", method: "checkMisfires" },
+      { name: "recoverStaleExecutions", method: "recoverStaleExecutions" },
+      {
+        name: "wakeMutexQueuedExecutions",
+        method: "wakeMutexQueuedExecutions",
+      },
+      { name: "reload", method: "reload" },
+    ] as const;
+
+    it.each(cronTicks)(
+      "$name: DB 抖动（repo 抛错）→ 不向调用方抛（不产生未处理 rejection）",
+      async ({ method }) => {
+        await makeLeader();
+        // 让所有扫描入口的第一个 DB 调用就抛——模拟连接池抖动。
+        const boom = new Error("connection pool exhausted");
+        taskRepo.find.mockRejectedValue(boom);
+        taskRepo.findOne.mockRejectedValue(boom);
+        execRepo.find.mockRejectedValue(boom);
+        taskRepo.findBy.mockRejectedValue(boom);
+
+        // 关键断言：**resolve**（不是 rejects）——cron 回调不得逃逸异常。
+        await expect(
+          (service as unknown as Record<string, () => Promise<void>>)[method](),
+        ).resolves.toBeUndefined();
+      },
+    );
+
+    it("异常被记录为 warn（含 tick 名 + 原因），便于排障", async () => {
+      await makeLeader();
+      taskRepo.find.mockRejectedValue(new Error("deadlock detected"));
+      const warnSpy = jest.spyOn(
+        (service as unknown as { logger: { warn: (m: string) => void } })
+          .logger,
+        "warn",
+      );
+
+      await service.checkMisfires();
+
+      const messages = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(
+        messages.some(
+          (m) => m.includes("checkMisfires") && m.includes("deadlock detected"),
+        ),
+      ).toBe(true);
+      warnSpy.mockRestore();
+    });
+
+    it("正常路径不受影响（反证：成功扫描不得被吞或误报 warn）", async () => {
+      await makeLeader();
+      taskRepo.find.mockResolvedValue([]);
+      taskRepo.findOne.mockResolvedValue(null);
+      execRepo.find.mockResolvedValue([]);
+      taskRepo.findBy.mockResolvedValue([]);
+      const warnSpy = jest.spyOn(
+        (service as unknown as { logger: { warn: (m: string) => void } })
+          .logger,
+        "warn",
+      );
+
+      await expect(service.recoverStaleExecutions()).resolves.toBeUndefined();
+      expect(
+        warnSpy.mock.calls.some((c) => String(c[0]).includes("Scheduler tick")),
+      ).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it("非 Leader 节点仍然短路（不因闸门而多跑扫描）", async () => {
+      // 默认非 Leader（makeLeader 未被调用）
+      expect(service.getStats().isLeader).toBe(false);
+      taskRepo.find.mockClear();
+      await service.checkMisfires();
+      await service.recoverStaleExecutions();
+      await service.reload();
+      expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+  });
+
   describe("recoverStaleExecutions (TASK-004 batch update)", () => {
     it("recovers stale RUNNING executions with a single transactional batch UPDATE", async () => {
       await makeLeader();

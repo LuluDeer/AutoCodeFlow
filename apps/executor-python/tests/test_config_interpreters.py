@@ -3,6 +3,7 @@
 覆盖：镜像 URL 校验（http(s)、拒绝 userinfo/query/fragment/非 http）、数值边界、
 版本区间常量格式与顺序、以及**默认值与 CONTRACT.md 一致**。
 """
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,38 @@ from config import (
 )
 
 
+# 本套件断言的是「**默认值** = CONTRACT.md」。BaseSettings 的解析顺序是
+# 真实 process env > .env > 字段默认值——`_env_file=None` 只切断了中间那一层，
+# 开发机/CI runner 上**已导出**的变量仍然会覆盖默认值。
+#
+# TEST-ISOLATION（审计 2026-10-17，实测复现）：某台机器把
+# UV_PYTHON_INSTALL_MIRROR 导成了内网镜像（这是完全合法的部署配置），
+# test_defaults_match_contract 便恒红——断言 `== ''` 拿到的是镜像 URL。
+# 同一形态对 PYPI_REGISTRY_URL / INTERPRETER_* / PYTHON_RUNTIME_VERSION_*
+# 等任何 Settings 字段都成立：本套件此前只在"机器上恰好没设这些变量"时通过。
+#
+# 修复：断言默认值的用例先摘掉全部相关环境变量（fixture 在用例结束后还原，
+# 不影响同进程的其它测试）。
+_SETTINGS_ENV_KEYS = [
+    'UV_PYTHON_INSTALL_MIRROR',
+    'UV_PYTHON_INSTALL_DIR',
+    'INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS',
+    'INTERPRETER_SINGLE_VERSION_MB',
+    'INTERPRETER_TOTAL_GB',
+    'PYTHON_RUNTIME_VERSION_MIN',
+    'PYTHON_RUNTIME_VERSION_MAX',
+    'PYPI_REGISTRY_URL',
+]
+
+
+@pytest.fixture()
+def clean_env(monkeypatch):
+    """摘掉可能覆盖 Settings 默认值的环境变量（用例结束自动还原）。"""
+    for key in _SETTINGS_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    return monkeypatch
+
+
 def make_settings(**overrides) -> Settings:
     """构造不读 .env 的 Settings（测试必须与开发机 .env 隔离）。"""
     return Settings(_env_file=None, **overrides)
@@ -25,7 +58,7 @@ def make_settings(**overrides) -> Settings:
 # 默认值 = CONTRACT.md（§1.1 / §2.5 / D11 / D12）
 # ---------------------------------------------------------------------------
 
-def test_defaults_match_contract():
+def test_defaults_match_contract(clean_env):
     settings = make_settings()
 
     assert settings.uv_python_install_dir == '/data/interpreters'

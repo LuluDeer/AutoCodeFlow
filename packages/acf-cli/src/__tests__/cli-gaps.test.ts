@@ -443,6 +443,47 @@ describe('acf task batch', () => {
     const line = logs.find((l) => l.startsWith('['));
     expect(JSON.parse(line as string)).toEqual(raw);
   });
+
+  // CLI-EXIT-01 的 --json 缺口（审计 P2，2026-10-17）：此前 `--json` 分支在
+  // 失败计数之前就 return，部分失败照样以退出码 0 结束——CI 脚本据此把部分
+  // 失败当成功，继续跑本不该跑的下游步骤。
+  it('P2: --json 部分失败 → stdout 仍是纯 JSON，但退出码为 1', async () => {
+    const raw = [
+      { id: 't1', error: 'task not found' },
+      { id: 't2', status: 'paused' },
+    ];
+    mockedPost.mockResolvedValueOnce(raw);
+    const logs = captureStdout();
+    const errs = captureStderr();
+    await run(tasksCommand(), 'task batch pause t1 t2 --json');
+
+    // stdout 保持可被 jq 消费的纯 JSON（失败原因只走 stderr）
+    const jsonLine = logs.find((l) => l.startsWith('['));
+    expect(JSON.parse(jsonLine as string)).toEqual(raw);
+    expect(logs.join('\n')).not.toContain('failure(s) out of');
+    expect(errs.join('\n')).toContain('1 failure(s) out of 2');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('P2: --json 全部失败 → 退出码仍为 1', async () => {
+    mockedPost.mockResolvedValueOnce([
+      { id: 't1', error: 'boom' },
+      { id: 't2', error: 'boom' },
+    ]);
+    captureStdout();
+    const errs = captureStderr();
+    await run(tasksCommand(), 'task batch trigger t1 t2 --json');
+    expect(errs.join('\n')).toContain('2 failure(s) out of 2');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('P2: --json 全部成功 → 退出码保持 0（反证：不得把成功判失败）', async () => {
+    mockedPost.mockResolvedValueOnce([{ id: 't1', status: 'paused' }]);
+    captureStdout();
+    captureStderr();
+    await run(tasksCommand(), 'task batch pause t1 --json');
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

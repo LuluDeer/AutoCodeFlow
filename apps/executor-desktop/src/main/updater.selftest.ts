@@ -101,6 +101,90 @@ function extractCopySegment(source: string): string {
   return source.slice(start, end);
 }
 
+// ── 4.2 副本：releaseNotes 归一化 + 封顶 ──────────────────────────────
+// 与 src/main/updater.ts 的 normalizeReleaseNotes / sanitizeReleaseNoteText
+// 逐字同构。**刻意放在 SYNC_GUARD 的提取区间之外**（源文件的提取段是
+// 「预发布标识排序权重 → 解析 AUTOUPDATE_URL」，releaseNotes 段在其后），
+// 否则 comparePrerelease 段的逐字符比对会因为多出这一整块而红。
+// 两块实现的一致性由下方 RELEASE_NOTES SYNC 守卫单独钉住。
+export const RELEASE_NOTES_MAX_CHARS = 4_000;
+
+export function normalizeReleaseNotes(raw: unknown): string {
+  try {
+    const blocks: string[] = [];
+    if (typeof raw === 'string') {
+      blocks.push(raw);
+    } else if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (item === null || typeof item !== 'object') continue;
+        const entry = item as { version?: unknown; note?: unknown };
+        const note = typeof entry.note === 'string' ? entry.note : '';
+        if (note.trim() === '') continue;
+        const version = typeof entry.version === 'string' ? entry.version.trim() : '';
+        blocks.push(version ? `v${version}\n${note}` : note);
+      }
+    } else {
+      return '';
+    }
+
+    const cleaned = blocks
+      .map((block) => sanitizeReleaseNoteText(block))
+      .filter((block) => block !== '');
+    if (cleaned.length === 0) return '';
+
+    const joined = cleaned.join('\n\n');
+    if (joined.length <= RELEASE_NOTES_MAX_CHARS) return joined;
+    return `${joined.slice(0, RELEASE_NOTES_MAX_CHARS - 1)}…`;
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeReleaseNoteText(text: string): string {
+  return text
+    // <script>/<style> 整块（含内容）删除——只删标签会把 `alert(1)` 或整段 CSS
+    // 当成正文留在横幅里。这里不做 HTML 解析，但这两个标签的内容永远不是
+    // 人类可读的更新说明，整块丢弃比留下更接近"纯文本"的目标。
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    // 块级/换行标签 → 换行（在删标签之前处理，否则段落边界丢失）
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|li|div|h[1-6]|tr)>/gi, '\n')
+    // 其余标签整段删除（含属性里的引号内容）
+    .replace(/<[^>]*>/g, '')
+    // HTML 实体：只处理最常见的四个，其余保持原样（不赌完整实体表）
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    // 控制字符（含 \r、\t 之外）一律清掉，防止不可见字符撑乱布局
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '  ')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// 副本 releaseNotes 段（供 RELEASE_NOTES SYNC 守卫与源文件同构比对）。
+function extractCopyNotesSegment(source: string): string {
+  const start = source.indexOf('export function normalizeReleaseNotes');
+  const end = source.indexOf('// 副本 releaseNotes 段');
+  assert.ok(start >= 0, 'selftest: notes copy start marker not found');
+  assert.ok(end > start, 'selftest: notes copy end marker not found');
+  return source.slice(start, end);
+}
+
+// 源文件 releaseNotes 段（同一对函数，位于 resolveGenericFeedUrl 之后）。
+function extractSourceNotesSegment(source: string): string {
+  const start = source.indexOf('export function normalizeReleaseNotes');
+  const end = source.indexOf('// NETOPT-C P3: updater:error');
+  assert.ok(start >= 0, 'updater.ts: notes segment start marker not found');
+  assert.ok(end > start, 'updater.ts: notes segment end marker not found');
+  return source.slice(start, end);
+}
+
 function main(): void {
   // selftest 产物位于 apps/executor-desktop/dist-selftest/，源码在其上级 src/
   const srcPath = path.join(__dirname, '..', 'src', 'main', 'updater.ts');
@@ -211,7 +295,143 @@ function main(): void {
     'B-7①: one-shot checkTimer wiring must stay removed',
   );
 
-  console.log('updater selftest: all assertions passed (pure segment in sync)');
+
+  // ══════════════════════════════════════════════════════════════════════
+  // 4.2 更新日志展示：releaseNotes 的归一化 + 封顶 + 载荷接线
+  // ══════════════════════════════════════════════════════════════════════
+  // 副本与 SYNC_GUARD 同款处境：updater.ts 顶层 import electron，行为只能靠
+  // 下方副本验证，再以「源文件必须包含同样的实现锚点」做接线守卫。
+  {
+    // ⓪ RELEASE_NOTES SYNC：副本的 normalizeReleaseNotes + sanitizeReleaseNoteText
+    //    必须与源文件逐字同构（归一化后比对，同 SYNC_GUARD 的做法）。
+    {
+      const copyNotes = extractCopyNotesSegment(main_copySource);
+      const sourceNotes = extractSourceNotesSegment(source);
+      assert.equal(
+        normalize(copyNotes),
+        normalize(sourceNotes),
+        '4.2: updater.selftest.ts 的 releaseNotes 副本与 src/main/updater.ts 不同步 —— ' +
+          '改一处必须改两处（或改为直接 import）',
+      );
+    }
+
+    // ① 字符串形态：原样规整（去首尾空白）
+    assert.equal(
+      normalizeReleaseNotes('  - 修复登录超时\n- 新增诊断导出  '),
+      '- 修复登录超时\n- 新增诊断导出',
+      '4.2: 字符串形态必须原样保留（仅去首尾空白）',
+    );
+    // ② null/undefined/脏值 → 空串（不是错误，渲染层按空串隐藏入口）
+    for (const empty of [null, undefined, 42, {}, [], [null], [{ version: '1.0.0' }]]) {
+      assert.equal(
+        normalizeReleaseNotes(empty),
+        '',
+        `4.2: ${JSON.stringify(empty)} 必须归一成空串（无日志 ≠ 错误）`,
+      );
+    }
+    // ③ 数组形态（updater.fullChangelog=true）：带版本小标题、note 为 null 的跳过
+    assert.equal(
+      normalizeReleaseNotes([
+        { version: '1.9.0', note: '修复 A' },
+        { version: '1.8.0', note: '新增 B' },
+        { version: '1.7.0', note: null },
+      ]),
+      'v1.9.0\n修复 A\n\nv1.8.0\n新增 B',
+      '4.2: 数组形态必须逐版本加 v 标题拼接，note=null 的版本跳过',
+    );
+    // ④ 数组里的脏元素（字符串/数字/null）必须被忽略而不是炸掉
+    assert.equal(
+      normalizeReleaseNotes(['junk', 42, null, { version: '2.0.0', note: 'ok' }]),
+      'v2.0.0\nok',
+      '4.2: 数组里的非对象元素必须被跳过',
+    );
+    // ⑤ HTML 标签必须剥掉（内容来自 GitHub Releases，是不可信外部输入；
+    //    渲染层只做文本渲染，主进程这一层是第二道防线）
+    assert.equal(
+      normalizeReleaseNotes('<p>修复 <b>登录</b> 超时</p><script>alert(1)</script>'),
+      '修复 登录 超时',
+      '4.2: HTML 标签必须剥除（含 <script>——XSS 防线第一层）',
+    );
+    assert.equal(
+      normalizeReleaseNotes('第一行<br>第二行'),
+      '第一行\n第二行',
+      '4.2: <br> 必须转成换行（否则段落黏成一行）',
+    );
+    // ⑥ 实体解码：&lt; &gt; &amp; &nbsp;（只处理最常见的四个）
+    assert.equal(
+      normalizeReleaseNotes('a &lt;b&gt; &amp; c&nbsp;d'),
+      'a <b> & c d',
+      '4.2: 常见 HTML 实体必须解码',
+    );
+    // ⑦ 控制字符清除 + CRLF 归一 + 连续空行压缩
+    assert.equal(
+      normalizeReleaseNotes('a\u0000b\r\n\r\n\r\n\r\nc'),
+      'ab\n\nc',
+      '4.2: 控制字符清除、CRLF 归一、连续空行压成一个',
+    );
+    // ⑧ **封顶**：超长日志必须截断到 RELEASE_NOTES_MAX_CHARS 以内
+    {
+      const huge = 'x'.repeat(RELEASE_NOTES_MAX_CHARS * 3);
+      const out = normalizeReleaseNotes(huge);
+      assert.ok(
+        out.length <= RELEASE_NOTES_MAX_CHARS,
+        `4.2: 超长 release notes 必须封顶到 ${RELEASE_NOTES_MAX_CHARS} 字符以内（实际 ${out.length}）`,
+      );
+      assert.ok(
+        out.endsWith('…'),
+        '4.2: 截断必须留省略标记（用户要知道"还有更多"而不是以为就这么短）',
+      );
+      // 边界：恰好等于上限时不截断、不加省略号
+      const exact = 'y'.repeat(RELEASE_NOTES_MAX_CHARS);
+      assert.equal(
+        normalizeReleaseNotes(exact),
+        exact,
+        '4.2: 恰好等于上限时不得截断（> 而非 >=）',
+      );
+    }
+    // ⑨ 常量本身：太小展示不了要点，太大撑爆横幅/IPC 载荷
+    assert.ok(
+      RELEASE_NOTES_MAX_CHARS >= 1_000 && RELEASE_NOTES_MAX_CHARS <= 16_000,
+      `4.2: RELEASE_NOTES_MAX_CHARS（${RELEASE_NOTES_MAX_CHARS}）必须在 1k–16k 的合理区间`,
+    );
+  }
+
+  // ── 4.2 接线守卫：源文件必须把 releaseNotes 带进 available 载荷 ──────
+  {
+    assert.ok(
+      source.includes('normalizeReleaseNotes('),
+      '4.2: updater.ts 的 update-available 分支必须调用 normalizeReleaseNotes',
+    );
+    assert.ok(
+      /broadcast\(\s*UPDATE_EVENTS\.available\s*,\s*\{[\s\S]{0,400}?releaseNotes[\s\S]{0,100}?\}\s*\)/.test(
+        source,
+      ),
+      '4.2: updater:available 的广播载荷必须包含 releaseNotes 字段',
+    );
+    assert.ok(
+      source.includes('export const RELEASE_NOTES_MAX_CHARS'),
+      '4.2: updater.ts 必须导出 RELEASE_NOTES_MAX_CHARS（封顶值可被测试与渲染层引用）',
+    );
+    // 不得把原始 note 直接塞进载荷（绕过归一化 = 未剥 HTML + 未封顶）
+    assert.ok(
+      !/broadcast\(\s*UPDATE_EVENTS\.available[\s\S]{0,400}?info\.releaseNotes/.test(source),
+      '4.2: available 载荷不得直接使用 info.releaseNotes（必须经 normalizeReleaseNotes）',
+    );
+    // preload 契约必须与主进程一致（漏字段 = 渲染层永远收不到更新日志）
+    const preloadSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'preload', 'index.ts'),
+      'utf-8',
+    );
+    assert.ok(
+      /onUpdateAvailable[\s\S]{0,400}?releaseNotes/.test(preloadSrc),
+      '4.2: preload 的 onUpdateAvailable 载荷类型必须包含 releaseNotes（类型漂移）',
+    );
+  }
+
+  console.log(
+    'updater selftest: all assertions passed (pure segment in sync, ' +
+      `releaseNotes normalization + ${RELEASE_NOTES_MAX_CHARS}-char cap)`,
+  );
 }
 
 // 副本源码引用（SYNC_GUARD 比对用）：读 selftest 自身的 TS 源做归一化比对。

@@ -66,6 +66,9 @@ export type RuntimeCounterName =
   | "autoflow_notification_delivery_total"
   | "autoflow_callback_business_total"
   | "autoflow_push_auth_retry_total"
+  // PLAN-SECURITY-HARDENING §2.2：SSE 票据被拒分类——wrong_path 是核心
+  // 安全信号（票据被拿去打非 stream 路由 = 泄漏票据被试探复用）。
+  | "autoflow_sse_ticket_rejected_total"
   // ARCH-30: AI 分析服务化——aiAnalysis 落库率三分类（ok=有分析落库 /
   // fail=重试耗尽 fail-open / skipped=provider 未配置或返回空）。
   | "autoflow_ai_analysis_total"
@@ -135,6 +138,22 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       help: "SSE log-stream slot acquisitions rejected by the per-execution / global concurrency limits",
       labelNames: [],
       labelValueSets: [{}],
+    },
+    // PLAN-SECURITY-HARDENING §2.2（2026-10-17 优化计划轮）：SSE 票据被拒
+    // 分类。埋点在 JwtStrategy.assertTicketOnlyOnStreamPath 的拒绝分支。
+    //
+    // 为什么需要：A5 把 SSE 凭据从「15 分钟 access token 进 URL」改成
+    // 「30 秒、路径受限的 ticket」，SEC-SSE-TICKET（P1-2）又补上了「票据
+    // 只在三条 stream 路径有效」。但**修复本身没有可观测性**——票据被拿去
+    // 打 REST 端点（= 泄漏的票据正被试探复用，典型攻击形态）时，系统只是
+    // 静默返回 401，没有任何计数器、没有审计、没有告警，安全事件完全不可见。
+    //
+    // 单值 reason（而非标签矩阵）：当前唯一的拒绝原因是路径不符；保留
+    // reason 标签是为了将来加「票据类型错配」「票据已用过」时不必改指标名。
+    autoflow_sse_ticket_rejected_total: {
+      help: "SSE tickets rejected by the path-binding guard, by reason (wrong_path = a ticket was presented on a non-stream route, i.e. a leaked ticket being replayed)",
+      labelNames: ["reason"],
+      labelValueSets: [{ reason: "wrong_path" }],
     },
     autoflow_notification_delivery_total: {
       help: "Notification fan-out deliveries by channel and result (success / failure)",

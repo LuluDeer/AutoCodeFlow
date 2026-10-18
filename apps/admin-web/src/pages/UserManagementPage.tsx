@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { Table,
   Button,
   Space,
@@ -32,12 +32,19 @@ import { useTranslation } from 'react-i18next';
 // 刷新、后退、分享链接不再丢状态。
 import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
+import PasswordStrengthMeter from '../components/PasswordStrengthMeter';
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_POLICY_PATTERN,
+} from '../utils/passwordPolicy';
 import StateError from '../components/StateError';
 import PageSkeleton from '../components/PageSkeleton';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
 // USER-SEARCH-01：搜索防抖（列表查询跟随 debounced 值，输入框即时回显）
 import { useDebounce } from '../hooks/useDebounce';
+// URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
+import { useUrlStateSync } from '../hooks/useUrlStateSync';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -61,7 +68,7 @@ export default function UserManagementPage() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   // F-15（DEEP_REVIEW 0ef3bbe）：占位次要色走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
   const [searchText, setSearchText] = useState(() => searchParams.get('q') || '');
@@ -82,6 +89,15 @@ export default function UserManagementPage() {
   const [resetPwdUser, setResetPwdUser] = useState<UserWithActive | null>(null);
   const [resetPwdForm] = Form.useForm();
 
+  // SECURITY §3.1：两张表单各自的强度计实时读密码字段（字段级订阅，
+  // 不让整页跟着每次击键重渲染）。
+  const formWatchedPassword = Form.useWatch('password', createForm) as
+    | string
+    | undefined;
+  const resetPwdWatchedPassword = Form.useWatch('newPassword', resetPwdForm) as
+    | string
+    | undefined;
+
   const roleLabels = ROLE_LABELS(t);
 
   // USER-SEARCH-01：搜索走**后端** search 参数（username/email ILIKE 模糊匹配）
@@ -98,14 +114,13 @@ export default function UserManagementPage() {
   const users: UserWithActive[] = data?.list ?? [];
   const total: number = data?.total ?? 0;
 
-  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入保持 URL 干净）
-  useEffect(() => {
-    const next = new URLSearchParams();
-    if (page !== 1) next.set('page', String(page));
-    if (pageSize !== 20) next.set('pageSize', String(pageSize));
-    if (debouncedSearch) next.set('q', debouncedSearch);
-    setSearchParams(next, { replace: true });
-  }, [page, pageSize, debouncedSearch, setSearchParams]);
+  // URL-SYNC-02（审计 P2）：双向同步——外部深链/前进后退现在会真正生效。
+  // 此前只有「初始值读 URL + 单向回写」，组件已挂载时改 URL 会被回写抹掉。
+  useUrlStateSync(
+    { page, pageSize, q: debouncedSearch },
+    { page: 1, pageSize: 20, q: '' },
+    { page: setPage, pageSize: setPageSize, q: setSearchText },
+  );
 
   // Reset to page 1 when search text changes（后端按新 search 重新分页）
   const handleSearch = (val: string) => { setSearchText(val); setPage(1); };
@@ -488,23 +503,36 @@ export default function UserManagementPage() {
             <Input placeholder={t('users.field.usernamePlaceholder')} />
           </Form.Item>
           {!editing && (
-            <Form.Item
-              name="password"
-              label={t('users.field.password')}
-              rules={[
-                { required: true, message: t('users.field.passwordRequired') },
-                { min: 8, message: t('users.field.passwordMin') },
-                {
-                  pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z\d])/,
-                  message: t('users.field.passwordPattern'),
-                },
-              ]}
-            >
-              <Input.Password
-                placeholder={t('users.field.passwordPlaceholder')}
-                autoComplete="new-password"
-              />
-            </Form.Item>
+            <>
+              <Form.Item
+                name="password"
+                label={t('users.field.password')}
+                // SECURITY §3.1：此前这里内联 `/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)
+                // (?=.*[^a-zA-Z\d])/`——**比后端更严**（多要求小写字母），会拒绝
+                // 后端本可接受的密码（如 ADMIN2026!）。现统一走 utils/passwordPolicy
+                // 的单条合取正则（后端策略的语义镜像，由守卫逐字符核验）。
+                rules={[
+                  { required: true, message: t('users.field.passwordRequired') },
+                  { min: PASSWORD_MIN_LENGTH, message: t('users.field.passwordMin') },
+                  {
+                    pattern: PASSWORD_POLICY_PATTERN,
+                    message: t('users.field.passwordPattern'),
+                  },
+                ]}
+              >
+                <Input.Password
+                  placeholder={t('users.field.passwordPlaceholder')}
+                  autoComplete="new-password"
+                />
+              </Form.Item>
+              {/* 实时强度 + 逐条规则清单（不合规时明确告知"提交会被后端拒绝"） */}
+              <div style={{ marginTop: -16, marginBottom: 12 }}>
+                <PasswordStrengthMeter
+                  password={(formWatchedPassword as string | undefined) ?? ''}
+                  idPrefix="pwd-create"
+                />
+              </div>
+            </>
           )}
           <Form.Item
             name="email"
@@ -562,9 +590,9 @@ export default function UserManagementPage() {
             label={t('users.resetPwd.newPassword')}
             rules={[
               { required: true, message: t('users.resetPwd.newPasswordRequired') },
-              { min: 8, message: t('users.resetPwd.newPasswordMin') },
+              { min: PASSWORD_MIN_LENGTH, message: t('users.resetPwd.newPasswordMin') },
               {
-                pattern: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z\d])/,
+                pattern: PASSWORD_POLICY_PATTERN,
                 message: t('users.field.passwordPattern'),
               },
             ]}
@@ -574,6 +602,12 @@ export default function UserManagementPage() {
               autoComplete="new-password"
             />
           </Form.Item>
+          <div style={{ marginTop: -16, marginBottom: 12 }}>
+            <PasswordStrengthMeter
+              password={(resetPwdWatchedPassword as string | undefined) ?? ''}
+              idPrefix="pwd-reset"
+            />
+          </div>
           <Form.Item
             name="confirmPassword"
             label={t('users.resetPwd.confirm')}

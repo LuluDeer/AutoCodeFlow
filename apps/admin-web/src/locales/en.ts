@@ -202,6 +202,15 @@ export default {
   'taskList.statusAll': 'All statuses',
   'taskList.triggerAll': 'Trigger type',
   'taskList.lastRunAll': 'Last run',
+  // §2.1 stable paging — wording aligned with execs.* / audit.*; the two
+  // extra keys explain this page's backend-only mutual exclusion.
+  'taskList.stablePaging': 'Stable paging',
+  'taskList.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'taskList.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. While on, the "Last run" filter is unavailable. Turn it off to return to numbered pages.',
+  'taskList.stablePaging.lastStatusDisabled': 'Stable paging cannot filter by last run status (the backend cursor pagination does not support that combination). Turn off stable paging first.',
+  'taskList.stablePaging.lastStatusIgnored': 'The "Last run" filter is not applied while stable paging is on (results are not filtered by it).',
+  'taskList.pager.prev': 'Previous',
+  'taskList.pager.next': 'Next',
   'taskList.clearFilters': 'Clear filters',
   'taskList.count': '{{count}} records',
   'taskList.selected': '{{count}} selected',
@@ -321,6 +330,15 @@ export default {
   // Audit P2: current-page CSV export for execution history (PageHeader extra)
   'execs.exportCsv': 'Export CSV',
   'execs.exportCsvSuccess': 'Exported {{count}} executions of the current page',
+  // Full export (GET /tasks/executions/export, streaming endpoint). Sits next to
+  // the current-page export above with a *different* meaning, so the two labels
+  // must be distinguishable at a glance.
+  'execs.exportAll': 'Export all',
+  'execs.exportAll.hint': 'Streams every execution matching the current filters from the server (CSV, up to 50,000 rows; if truncated, the file says so at the end). Use "Export CSV" on the left for just this page.',
+  'execs.exportAll.adminOnly': 'Only admins can export all executions (current-page export is not restricted)',
+  'execs.exportAll.running': 'Downloading… a large export may take tens of seconds',
+  'execs.exportAll.success': 'Started downloading all executions (CSV)',
+  'execs.exportAll.fail': 'Full export failed',
   'execs.kill.success': 'Termination signal sent',
   'execs.kill.fail': 'Terminate failed',
   'execs.compare': 'Compare ({{count}})',
@@ -335,6 +353,12 @@ export default {
   'execs.empty': 'No executions yet',
   'execs.empty.noMatch': 'No matching executions',
   'execs.count': '{{count}} records',
+  // §2.1: stable paging (keyset/cursor pagination) switch + custom pager.
+  'execs.stablePaging': 'Stable paging',
+  'execs.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'execs.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. Turn it off to return to numbered pages.',
+  'execs.pager.prev': 'Previous',
+  'execs.pager.next': 'Next',
   'execs.col.task': 'Task',
   'execs.col.status': 'Status',
   'execs.col.trigger': 'Trigger',
@@ -642,7 +666,11 @@ export default {
   'users.field.password': 'Password',
   'users.field.passwordRequired': 'Please enter a password',
   'users.field.passwordMin': 'Password must be at least 8 characters',
-  'users.field.passwordPattern': 'Password must contain uppercase, lowercase, digit and special characters',
+  // ⚠️ Wording must match the backend validatePasswordStrength: lowercase is
+  // NOT required. This used to say "uppercase, lowercase, digit and special"
+  // while the form regex really did require (?=.*[a-z]) — stricter than the
+  // backend, so it rejected passwords the backend accepts (SECURITY §3.1).
+  'users.field.passwordPattern': 'Password must contain uppercase, digit and special characters',
   'users.field.passwordPlaceholder': 'Enter password',
   'users.field.email': 'Email',
   'users.field.emailRequired': 'Please enter an email',
@@ -749,6 +777,12 @@ export default {
   'audit.action.subscription_deadLetter_delete': 'Delete subscription dead-letter',
   'audit.total': '{{count}} in total',
   'audit.modal.detail': 'Detail',
+  // §2.1: stable (cursor/keyset) paging switch + hand-rolled pager. Hidden when off.
+  'audit.stablePaging': 'Stable paging',
+  'audit.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'audit.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. Turn it off to return to numbered pages.',
+  'audit.pager.prev': 'Previous',
+  'audit.pager.next': 'Next',
 
   'notFound.title': 'Page Not Found',
   'notFound.subTitle': 'The page you visited does not exist. Please check the address.',
@@ -1069,6 +1103,18 @@ export default {
   'security.password.submit': 'Change Password',
   'security.password.changed': 'Password changed. Please sign in again with the new password.',
   'security.password.changeFail': 'Failed to change the password',
+  // SECURITY §3.1: live password strength feedback (PasswordStrengthMeter).
+  // Level wording is sourced from the same policy the backend enforces — a
+  // non-compliant password can never read "Strong" (see the clamping invariant
+  // in utils/passwordPolicy). "Acceptable" is answered by the rule checklist.
+  'security.password.strength.label': 'Strength',
+  'security.password.strength.empty': 'Not entered yet',
+  'security.password.strength.weak': 'Weak',
+  'security.password.strength.fair': 'Fair',
+  'security.password.strength.good': 'Good',
+  'security.password.strength.strong': 'Strong',
+  'security.password.strength.unmetHint':
+    'Requirements not fully met — the backend will reject this password',
 
   'apiKeys.title': 'API Keys (Restricted Machine Credentials)',
   'apiKeys.create': 'New API Key',
@@ -1372,6 +1418,13 @@ export default {
   'execPkg.searchPlaceholder': 'Search package name…',
   'execPkg.filter.type': 'Type',
   'execPkg.filter.status': 'Status',
+  // §2.1: stable paging (keyset/cursor pagination) switch + custom pager.
+  // Word-for-word aligned with execs.stablePaging.* (same UX language).
+  'execPkg.stablePaging': 'Stable paging',
+  'execPkg.stablePaging.aria': 'Stable paging (cursor pagination; deep pages unaffected by data changes)',
+  'execPkg.stablePaging.hint': 'Switches to cursor pagination: deep pages stay stable, but only Previous/Next are available — there is no page jumping. Turn it off to return to numbered pages.',
+  'execPkg.pager.prev': 'Previous',
+  'execPkg.pager.next': 'Next',
   'execPkg.refresh': 'Refresh',
   'execPkg.count': '{{count}} packages total',
   'execPkg.fleetVersions.label': 'Fleet executor versions',
@@ -2187,6 +2240,10 @@ export default {
   'execDetail.log.noLevelLogs': 'No {{level}} logs',
   'execDetail.log.noLevelLogsDesc': 'The current execution has no log lines at this level; switch to All levels to view the full logs.',
   'execDetail.log.noSearchHit': 'No log content matching "{{keyword}}"',
+  // LOG-JSON-01: "expand to view pretty JSON" popover copy for JSON log payloads
+  'execDetail.log.json.prettyTitle': 'Formatted JSON',
+  'execDetail.log.json.prettyTruncated': 'Formatted JSON (truncated; payload too long)',
+  'execDetail.log.json.expandAria': 'Expand formatted JSON',
   'execDetail.report.aiAnalysisTitle': '🤖 AI Failure Analysis',
   'execDetail.retry.chainTitle': 'Retry Chain',
   'execDetail.retry.budget': 'Retry budget: Attempt #{{attempt}} of {{total}}',
@@ -2209,6 +2266,12 @@ export default {
   'taskForm.breadcrumb.edit': 'Edit Task',
   'taskForm.back': 'Back',
   'taskForm.anchorAria': 'Form section navigation',
+  // §2.3 form completion: required fields only (see utils/formCompletion.ts)
+  'taskForm.completion.label': 'Completion',
+  'taskForm.completion.percent': '{{percent}}%',
+  'taskForm.completion.aria': 'Form completion {{percent}}%',
+  'taskForm.completion.section.complete': '{{section}}: all required fields filled',
+  'taskForm.completion.section.incomplete': '{{section}}: required fields missing',
   'taskForm.section.basic': 'Basic Config',
   'taskForm.section.trigger': 'Trigger & Alert',
   'taskForm.section.executor': 'Executor Strategy',
@@ -2278,6 +2341,11 @@ export default {
   'taskForm.unsaved.message': 'You have unsaved changes. Leaving now will discard them. Are you sure?',
   'taskForm.unsaved.ok': 'Leave',
   'taskForm.unsaved.cancel': 'Stay',
+  // DRAFT-01: form draft (localStorage autosave/restore) — after a crash, an
+  // accidentally closed tab, or an expired session, your input is still here.
+  'taskForm.draft.restored': 'Restored your unsaved draft',
+  'taskForm.draft.restoredDesc': 'The form was filled with the content from your previous edit. If you do not want this draft, discard it and start over.',
+  'taskForm.draft.discard': 'Discard draft',
   'taskForm.submit.updateFail': 'Update failed',
   'taskForm.submit.createFail': 'Create failed',
   // A4 (third-round audit): optimistic-lock conflict (409) — stay on the form, no navigation

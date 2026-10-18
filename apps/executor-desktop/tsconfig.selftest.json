@@ -44,6 +44,8 @@
     "src/main/config-sanitize.selftest.ts",
     "src/main/export-flows.ts",
     "src/main/export-flows.selftest.ts",
+    "src/main/health-panel.ts",
+    "src/main/health-panel.selftest.ts",
     "src/main/heartbeat.ts",
     "src/main/heartbeat.selftest.ts",
     "src/main/history-watcher.ts",

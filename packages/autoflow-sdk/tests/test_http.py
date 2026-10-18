@@ -33,8 +33,51 @@ class TestTrustEnvPinned:
             return orig(self, *a, **kw)
 
         monkeypatch.setattr(httpx.AsyncClient, "__init__", spy)
-        AsyncHttpClient(base_url="http://api.test")
+        c = AsyncHttpClient(base_url="http://api.test")
+        # POOL-01（审计 P2）：底层 client 改为懒初始化（此前在 __init__ 里
+        # 就建，导致不写 `async with` 的任务代码从不关闭连接池 → CLOSE_WAIT
+        # 累积）。信任策略的断言点因此跟着移到「真正建连接池的那一刻」。
+        assert captured == {}, "POOL-01: AsyncHttpClient 不应在构造期建连接池"
+        c._get_client()
         assert captured.get("trust_env") is False
+
+    def test_async_client_pool_is_lazy_and_reused(self):
+        """POOL-01：懒初始化 + 实例级复用（同一实例多次请求共享一个池）。"""
+        c = AsyncHttpClient(base_url="http://api.test")
+        assert c._client is None, "构造期不得建池"
+        first = c._get_client()
+        assert c._get_client() is first, "多次请求必须复用同一连接池"
+
+    @pytest.mark.asyncio
+    async def test_async_client_aclose_resets_pool_and_rebuilds(self):
+        """POOL-01：aclose 释放池；关闭后再用自动重建（语义不降级）。"""
+        c = AsyncHttpClient(base_url="http://api.test")
+        first = c._get_client()
+        await c.aclose()
+        assert c._client is None
+        assert first.is_closed
+        # 关闭后仍可用：重建新池（而非 AttributeError / 已关闭连接）
+        second = c._get_client()
+        assert second is not first
+        assert not second.is_closed
+        await c.aclose()
+
+    @pytest.mark.asyncio
+    async def test_async_client_close_is_alias_of_aclose(self):
+        """POOL-01：close() 与 aclose() 等价（同步 SDK 习惯写法）。"""
+        c = AsyncHttpClient(base_url="http://api.test")
+        c._get_client()
+        await c.close()
+        assert c._client is None
+
+    @pytest.mark.asyncio
+    async def test_async_client_context_manager_closes_pool(self):
+        """POOL-01：`async with` 退出时释放池（既有用法零变化）。"""
+        async with AsyncHttpClient(base_url="http://api.test") as c:
+            pool = c._get_client()
+            assert not pool.is_closed
+        assert pool.is_closed
+        assert c._client is None
 
 
 class TestHttpClientInit:

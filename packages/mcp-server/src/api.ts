@@ -50,12 +50,24 @@ let currentToken = API_TOKEN;
 let currentRefreshToken = process.env.AUTOCODEFLOW_API_REFRESH_TOKEN || '';
 let refreshInFlight: Promise<boolean> | null = null;
 
+/**
+ * 刷新 access token。
+ *
+ * **NETOPT-7（审计 P1-4，2026-10-17）**：此前这里直接用裸 `API_URL` 拼接，
+ * 而 admin-api 有全局 `api` 前缀——默认配置（`http://localhost:3105`）下
+ * 请求打到 `/auth/refresh` → **404** → `res.ok` 为 false → 返回 false。
+ * 与 acf-cli 同源的缺陷：令牌一旦过期，自愈永久失效，MCP 的所有工具调用
+ * 都停在 401，只能重启进程换环境变量。
+ *
+ * 修复：与 `apiRequest` 使用**同一个** `normalizeApiBase(API_URL)` 归一
+ * 入口，两条路径的 base 不可能再漂移。
+ */
 async function refreshAccessToken(): Promise<boolean> {
   const envRefresh = process.env.AUTOCODEFLOW_API_REFRESH_TOKEN || '';
   const refreshToken = currentRefreshToken || envRefresh;
   if (!refreshToken) return false;
   try {
-    const res = await fetch(`${API_URL}/auth/refresh`, {
+    const res = await fetch(`${normalizeApiBase(API_URL)}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken }),

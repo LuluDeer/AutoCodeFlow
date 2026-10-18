@@ -155,6 +155,33 @@ def release_running_slot() -> None:
     decrement_running()
 
 
+def pull_free_slots(
+    max_concurrent_tasks: int, running_count_value: int, slot_reserved: bool
+) -> int:
+    """E-01-STARVE（审计 P1-5）：pull 长轮询上报的 ``freeSlots``。
+
+    语义是「**除本次预留之外**还能接多少任务」。预留成立时 ``running_count``
+    已经含了这 1 个预留（``try_reserve_running_slot`` 在发起长轮询之前完成），
+    所以必须把这一个加回去才是真实空闲数。
+
+    缺陷现场（修复前为 ``max(0, max_concurrent_tasks - get_running_count())``）：
+    ``max_concurrent_tasks == 1`` 且预留成功 → ``max(0, 1-1) = 0`` → admin 判定
+    「无空槽」永不出队 → 执行器**永久饥饿**。desktop 默认就是 pull 模式，
+    且 ``MAX_CONCURRENT_TASKS=1`` 是受支持的真实配置。
+
+    **不能**只看账本数字推断预留（``running == max`` 既可能是「满载」也可能是
+    「max-1 个真任务 + 1 个预留」），所以预留状态必须由调用方显式传入——这也
+    正是修复前那条「max-1 ≥ 1」注释出错的根本原因：它假设了一个账本里并不
+    存在的信息。
+
+    node 侧 ``pull.ts`` 的 ``pullFreeSlotsFor`` 是同一口径的镜像实现，
+    两侧必须同时改（pull.spec.ts / test_scheduler.py 各钉一份）。
+    """
+    capacity = max(1, int(max_concurrent_tasks))
+    available = capacity - int(running_count_value) + (1 if slot_reserved else 0)
+    return max(0, min(capacity, available))
+
+
 def _get_admin_api_url() -> str:
     """Get the appropriate Admin API base URL for heartbeat."""
     return get_admin_api_base_url()
@@ -609,11 +636,15 @@ async def pull_task() -> None:
                     # （pull 允许同地址多行并存，否则会拉到别人的队列）。
                     'deviceFingerprint': get_device_fingerprint() or None,
                     'waitMs': 25000,
-                    # ARCH-33: 服务端据此决定是否出队任务。预留已计入账本
-                    # （running_count 含本次预留），故直接按当前账本算：
-                    #   预留成功 → max-1 ≥ 1 → 服务端派任务（正是预留的目的）；
-                    #   满载/竞态 → max-max = 0 → 服务端只发命令，不派任务。
-                    'freeSlots': max(0, settings.max_concurrent_tasks - get_running_count()),
+                    # ARCH-33: 服务端据此决定是否出队任务（>0 才出队）。
+                    # E-01-STARVE（审计 P1-5）：预留已计入账本，故必须按
+                    # 「除本次预留之外」的空槽数上报——见 pull_free_slots
+                    # 头注（max=1 时旧公式恒 0，执行器永久饥饿）。
+                    'freeSlots': pull_free_slots(
+                        settings.max_concurrent_tasks,
+                        get_running_count(),
+                        reserved,
+                    ),
                 },
                 timeout=35,
             )

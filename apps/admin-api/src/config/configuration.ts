@@ -61,6 +61,12 @@ export default () => ({
     poolSize: parseInt(process.env.DB_POOL_SIZE || "20", 10),
     // ARCH-006: synchronize 不再依赖 NODE_ENV 推断，改为显式 DB_SYNCHRONIZE 开关
     // （Joi 默认 "false"）；生产环境强制 false 并 warn，见文件尾的 fail-fast 校验块。
+    // PERF-1（慢查询日志）：超过该毫秒数的语句由 TypeORM 记一条 warn
+    // （`maxQueryExecutionTime`，见 buildTypeOrmDataSourceOptions）。默认
+    // 1000ms——只捞真正值得看的慢查询；0 = 关闭（显式 opt-out）。刻意不随
+    // `logging` 开关联动：logging 在 development 下是「每条 SQL 都打」，生产
+    // 恒关，而慢查询是**生产**最需要的信号，两件事不能共用一个开关。
+    slowQueryMs: parseInt(process.env.DB_SLOW_QUERY_MS || "1000", 10),
     // D 线可观测性:Prometheus 抓取令牌(可选)。设置后 /api/metrics 接受
     // Bearer <METRICS_SCRAPER_TOKEN>(恒时比较),未设置仍走 JWT。
     metricsScraperToken: process.env.METRICS_SCRAPER_TOKEN || undefined,
@@ -542,6 +548,40 @@ export default () => ({
   logRetention: {
     days: parseInt(process.env.LOG_RETENTION_DAYS || "30", 10),
   },
+  // Q7 执行记录保留（task_executions）。**这是硬删除**：每日 02:00 cron
+  // （executor.service.cleanupOldRecords，仅 cron Leader 执行）按
+  // `createdAt < now - days` 分批 DELETE 行，并连带回收该行的执行日志与 S3
+  // 日志对象（driver=s3 时先 remove 对象再删行，防永久孤儿）。**没有归档表、
+  // 删除不可逆**——需要留存的历史必须在到期前自行导出（见 docs/deployment.md
+  // 「执行记录保留」段）。
+  //
+  // 为什么把它做成可配置（本键此前是**硬编码 90 天**）：
+  //   · 运维需要一个**可见的旋钮**——磁盘/合规口径因部署而异，"改保留期必须改
+  //     源码重新打包"意味着实际上没人能改；
+  //   · 也让"保留多久"从隐含约定变成**显式配置**，与 LOG_RETENTION_DAYS /
+  //     AGENT_MEDIA_RETENTION_DAYS / artifacts 的既有形态一致。
+  // 缺省 90 与硬编码时期**逐字节等价**（部署行为不变）。
+  // 非法值（NaN/≤0）回退 90——绝不让 0 或负数把 cutoff 推到未来而**删掉全部
+  // 记录**（那是最危险的失败方向：配错一个字符就清库）。
+  taskExecutionRetention: {
+    days: (() => {
+      const n = parseInt(process.env.TASK_EXECUTION_RETENTION_DAYS || "90", 10);
+      return Number.isFinite(n) && n > 0 ? n : 90;
+    })(),
+  },
+  // PERF-2（SystemConfig 读缓存）：config.service.ts 的 findOne 此前每次都打
+  // 一次 DB（配置读面是全链路热路径——每次派发/回调/令牌校验都会读
+  // executor.sharedToken）。此处给出进程内短 TTL 缓存窗口。
+  //
+  // 语义：**默认 1000ms**（一秒内合并重复读，人工改配置后最多 1s 可见）；
+  // 0 = 关闭（逐字节回到未缓存的旧行为）。写入侧（upsert/batchUpsert/
+  // remove/rollback）**恒**失效本地缓存，故同进程内改完立即可见——TTL 只
+  // 约束「别的实例/绕过本服务的直接 SQL 改动」的收敛速度。
+  // 多实例限制见 config.service.ts 的 systemConfigCache 注释（本轮不做
+  // 跨实例 pub/sub）。
+  systemConfig: {
+    cacheTtlMs: parseInt(process.env.SYSTEM_CONFIG_CACHE_TTL_MS || "1000", 10),
+  },
   // ARCH-22: execution_log_lines 按日分区的清理路径开关。默认 true——
   // 库已分区化（迁移 1789900000002）时清理走 DETACH PARTITION + 每日
   // 预建未来分区；false 回退 legacy 分批 DELETE 路径（schema 不回滚，
@@ -634,6 +674,25 @@ export default () => ({
       process.env.HEALTH_PUBLIC_CACHE_TTL_MS || "5000",
       10,
     ),
+    // PLAN-OBSERVABILITY §5.1（2026-10-17 优化计划轮）：磁盘 / 堆水位检查。
+    // 两者只进 /health/detailed（需鉴权），**不进** /health/ready——就绪探针
+    // 只管核心依赖，磁盘慢不该触发全站摘流量。阈值与 config/monitoring/
+    // alerts.yml 里 AUTOFLOW_EXECUTOR_DISK_USAGE_* 的保守起点保持一致。
+    diskUsageDegradedPercent: parseFloat(
+      process.env.HEALTH_DISK_USAGE_DEGRADED_PERCENT || "85",
+    ),
+    diskUsageUnhealthyPercent: parseFloat(
+      process.env.HEALTH_DISK_USAGE_UNHEALTHY_PERCENT || "95",
+    ),
+    heapUsedDegradedPercent: parseFloat(
+      process.env.HEALTH_HEAP_USED_DEGRADED_PERCENT || "85",
+    ),
+    heapUsedUnhealthyPercent: parseFloat(
+      process.env.HEALTH_HEAP_USED_UNHEALTHY_PERCENT || "95",
+    ),
+    // 探测路径，缺省由 health.service 回落 process.cwd()（admin-api 的
+    // 日志与上传产物落盘处，即真正会被写满的那块盘）。
+    diskCheckPath: process.env.HEALTH_DISK_CHECK_PATH || undefined,
   },
 });
 
@@ -659,6 +718,19 @@ export default () => ({
  *    entityManager/repo 默认 "master" 模式）走 master；
  *  - 迁移（migrationsRun → MigrationExecutor → createQueryRunner()
  *    默认 master）恒走 master。
+ *
+ * PERF-1（慢查询日志）：`maxQueryExecutionTime` 是 TypeORM 的**顶层**选项
+ * （不是 `extra`），PostgresQueryRunner 每条语句实测耗时后与它比较，超阈值
+ * 调 `logger.logQuerySlow()`。两条容易踩的事实（已核对 typeorm 源码）：
+ *  1. `query-slow` 在 AbstractLogger.isLogEnabledFor 里**恒返回 true**——与
+ *     `logging` 数组无关。故 development（logging=true）与 production
+ *     （logging=false）都会打慢查询，这正是我们要的；关闭只能靠把阈值设成
+ *     0（`if (maxQueryExecutionTime && ...)` 的短路）。
+ *  2. 默认 logger（AdvancedConsoleLogger）把它打到 `PlatformTools.logWarn`，
+ *     而 Nest 的 ConsoleLogger 已 patch console.*（main.ts），故日志与其他
+ *     warn 同形（含 traceId 上下文），无需自造 logger 类。
+ * 注意：慢查询日志含**完整 SQL 文本**（参数值由 TypeORM 单独打印），排障
+ * 必需；如需脱敏请改 logger 而非本配置。
  */
 export const buildTypeOrmDataSourceOptions = (config: {
   database: {
@@ -669,9 +741,24 @@ export const buildTypeOrmDataSourceOptions = (config: {
     database: string;
     poolSize: number;
     readReplicaUrl?: string;
+    /**
+     * PERF-1：慢查询阈值（毫秒）。>0 = 记录超过该耗时的语句；0/负数/未定义
+     * = 关闭（与未引入该选项的旧行为逐字节一致）。
+     */
+    slowQueryMs?: number;
   };
   app: { nodeEnv: string };
 }): Record<string, unknown> => {
+  // PERF-1: 归一化——非法值（NaN / 负数 / undefined）一律视为关闭，避免把
+  // 脏值透给 TypeORM 造成「看起来配了其实没生效」的静默失效。
+  const slowQueryMs = config.database.slowQueryMs;
+  const maxQueryExecutionTime =
+    typeof slowQueryMs === "number" &&
+    Number.isFinite(slowQueryMs) &&
+    slowQueryMs > 0
+      ? slowQueryMs
+      : 0;
+
   const common = {
     entities: [__dirname + "/../**/*.entity{.ts,.js}"],
     migrations: [__dirname + "/../migrations/*{.ts,.js}"],
@@ -692,6 +779,8 @@ export const buildTypeOrmDataSourceOptions = (config: {
     migrationsTransactionMode: "each",
     synchronize: false,
     logging: config.app.nodeEnv === "development",
+    // PERF-1（慢查询日志）: 顶层选项（非 extra），0 = 关闭。详见函数头注。
+    maxQueryExecutionTime,
     extra: {
       max: config.database.poolSize,
       // F-10（本轮审计）: 保底空闲连接（poolSize/4，至少 1）。此前只配 max，

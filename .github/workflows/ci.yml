@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ develop ]
+    # main 分支的 push 不触发 CI（已由 PR 验证过）
+    # tags 的 push 也不触发 CI（release.yml 有独立验证）
   pull_request:
     branches: [ main, develop ]
   # W-28 专指 `e2e-full-windows`（windows-latest + PG 服务 + portable redis 下载
@@ -654,6 +656,43 @@ jobs:
       - run: npm test -- --coverage
         working-directory: apps/admin-web
 
+  # ── Lighthouse CI 性能监控 ────────────────────────────────────
+  # 自动化前端性能审计，防止性能回归。在 admin-web-build 之后运行，复用
+  # 构建产物。初期设为 continue-on-error 不阻塞 CI，建立性能基线后再收严。
+  admin-web-lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: admin-web-build
+    if: github.event_name != 'schedule'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/admin-web/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-web
+      # 构建生产版本（Lighthouse 审计生产构建的性能）
+      - name: Build production bundle
+        run: npm run build
+        working-directory: apps/admin-web
+        env:
+          VITE_API_URL: http://localhost:3105
+      # 运行 Lighthouse CI（会自动启动 vite preview 服务器）
+      - name: Run Lighthouse CI
+        run: npm run lighthouse
+        working-directory: apps/admin-web
+      # 上传 HTML 报告为构建产物（供查看详细性能数据）
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: apps/admin-web/.lighthouseci
+          retention-days: 30
+
   # ── lockfile 完整性校验（SEC-06 ②）────────────────────────────
   # 各包独立 lockfile 的多包仓（无 workspace 统一锁）最易出的漂移是：
   # 改了 package.json 忘了同步 lockfile——npm install 时 lock 会被静默
@@ -864,6 +903,22 @@ jobs:
         run: |
           node scripts/check-alerts-rules.mjs --selftest
           node scripts/check-alerts-rules.mjs
+      # OBS-02：告警入站的**加签侧车**自检（零依赖、无网络出口；真实起 HTTP
+      # 服务走真实 TCP）。判据包含金向量（接收侧用 WebCrypto 独立复核）、与
+      # admin-api webhook-hmac.util.ts 的源码级契约对账、上游状态码原样回传
+      # （Alertmanager 的重试语义不能被抹平）、以及 secret 未配置即 fail-closed。
+      # 接线理由同上方守卫族：脚本存在 ≠ 在门禁里跑（写了但没接上）。
+      - name: Alertmanager HMAC proxy selftest (OBS-02)
+        run: node scripts/alertmanager-hmac-proxy.selftest.mjs
+      # SECURITY §3.1：密码策略**后端 ⇔ 前端同源**守卫（零依赖）。判据不是文本
+      # 对比，而是把两侧正则从源码里抽出来**真正执行**：四规则字面量逐字相等 +
+      # 517 个探针上行为等价 + 前端合并正则与其四条规则合取同义。漂移的两种方向
+      # 都是静默故障（表单放行但后端 400 / 表单拒绝后端可接受的密码），且
+      # tsc/eslint/单测都看不见——各自以自己为基准。含 4 条反证的自检。
+      - name: Password policy sync guard (SECURITY §3.1)
+        run: |
+          node scripts/check-password-policy-sync.mjs --selftest
+          node scripts/check-password-policy-sync.mjs
       - name: Env drift guard (B-6)
         run: |
           node scripts/check-env-drift.mjs --selftest
@@ -986,6 +1041,66 @@ jobs:
           # docs/PRE-EXISTING-CI-GAPS-2026-10-08.md。
           npm run test:agent
           npm run test:sop
+          # AI 域（qwen 多模态）的两层检查：运行时行为（转译 ai.service.ts +
+          # mock axios 真跑）+ 结构断言（读源码锁安全姿态）。
+          # 2026-10 纳入：与上面 test:agent/test:sop 同一病史——存在但不在任何
+          # CI job 清单里，已腐烂到红（断言写死中文文案 / 字面量 500 / 精确语法
+          # 形态，随 F-6 可配置化与 error catalog 迁移集体失效）。修好后立即纳入。
+          # 这两条只读源码 + 桩依赖，无 DB/网络依赖，可与其他 selftest 串跑。
+          npm run test:qwen
+      # ── 2026-10-17 审计：补挂 5 个「写了但没接上」的自检脚本 ──────────
+      # 与上方 test:agent/test:sop/test:qwen 完全同型病史：脚本早已实现且本地
+      # 可跑通，却从未被任何 workflow 调用——回归发生时 CI 全绿放行，等到有人
+      # 本地手跑才发现已腐烂（本仓已重演过三次）。五者均为零依赖/离线自检
+      # （不碰 DB、不发网络请求），秒级到十秒级。
+      - name: Deploy script selftest (P1-6/P1-7 回归护栏)
+        # deploy.sh 是唯一会改动生产主机的脚本：50 例覆盖迁移前备份的退出码
+        # 传播、rollback 的 mode 恢复、dry-run 安全性、health 闸门。
+        run: npm run test:deploy-script
+      - name: Private registry dispatch selftest
+        # 真机派发部分在无 docker 时**显式跳过并退 0**（不虚报绿），静态契约
+        # 部分照常断言。
+        run: npm run test:private-registry:dispatch
+      - name: chaos-drill selftest
+        # 故障演练脚本的 helper 函数 + library 模式隔离（source 不得产生副作用
+        # 执行）。33 例。
+        run: bash scripts/chaos-drill.selftest.sh
+      - name: audit-verify selftest
+        # 审计流水线的 sequence/window 判据纯函数断言。
+        run: node scripts/audit-verify.selftest.mjs
+      - name: load-test selftest
+        # 压测脚本的 SSE 路径解析 / 参数边界 / 速率校验，26 组断言。
+        run: node scripts/load-test.selftest.mjs
+      # ── 2026-10-17 优化计划轮：限流白名单同源守卫 ──────────────────
+      # PLAN-SECURITY-HARDENING §1.1 的落地。白名单
+      # （EXECUTOR_MACHINE_PATH_PATTERNS）与真实机器面路由不同源时，
+      # 漏登记端点会静默退回 IP 计桶——本仓已真实发生一次
+      # （SEC-THROTTLE-WHITELIST-GAP：/executors/config 与
+      # /executors/:address/terminal-states 漏在白名单外，多执行器共享
+      # NAT 出口时配置热更新与死信对账会被叠加限流）。零依赖、离线、秒级。
+      - name: Throttler whitelist selftest + scan
+        run: npm run check:throttler-whitelist
+      # ── M-1 配套：备份可恢复性演练（此前只有备份、没有恢复路径）──────
+      # scripts/pg-backup.sh 每天往 backup_data 卷写 db_<stamp>.sql.gz，但仓库
+      # 里从未有过任何恢复脚本——「备份成功」因此从未被证明「可恢复」。
+      # 与本 job 上方五个 selftest 同型病史（写了不接门禁 → 腐烂到红无人知，
+      # 本仓已重演三次）：恢复路径若只存在于某人的笔记本上，等真出事那天才
+      # 发现 dump 是半截的，就已经没有第二次机会了。
+      # 本 step 是**纯离线**的：psql/createdb/dropdb/gzip 全部由 PATH 前置桩
+      # 替换，无 DB、无网络，秒级。核心断言是安全不变量——默认目标必须是
+      # 一次性 restore_drill_* 演练库，目标库 == PGDATABASE 且无
+      # --force-overwrite-production 时必须在任何数据库调用之前拒绝。
+      - name: pg-restore drill selftest (备份可恢复性)
+        run: npm run test:pg-restore
+      # ── VSCode 调试模板同步守卫（PLAN-DEVELOPER-EXPERIENCE §5.3）──────
+      # .vscode/ 被 .gitignore:31 忽略（编辑器个人配置不入库的既有策略），
+      # 故可入库的是 docs/vscode-launch.template.json，由脚本生成到本地。
+      # 本守卫校验模板里每条配置引用的 `npm run <script>` 与 `program`
+      # 入口**仍然存在于各 app 的真实 package.json**——脚本改名而模板没改时
+      # 调试会静默失效（启动即退出 / 断点不停），比直接报错难查得多。
+      # 零依赖、离线、秒级。
+      - name: VSCode launch template sync
+        run: npm run check:vscode-launch
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:

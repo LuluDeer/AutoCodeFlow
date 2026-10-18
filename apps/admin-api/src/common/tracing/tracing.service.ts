@@ -11,7 +11,12 @@ import {
  * OBS-01: 极薄 span 管理（进程内）。
  *
  * 架构决策（认领记录已论证）：
- * - 只依赖 `@opentelemetry/api`（轻量 API 包，无 SDK 实现），span 树在本
+ * - 架构决策是「**只用 `@opentelemetry/api`，不引 `sdk-*`/exporter**」——注意本
+ *   服务**自身并不 import 它**（纯 `crypto` + `traceparent.util`），该依赖是刻意的
+ *   **SDK 挂载锚点**：接 Jaeger/Tempo 时把 SDK `TracerProvider` 挂到
+ *   `@opentelemetry/api` 全局并替换本服务的日志输出即可，埋点调用点零改动。
+ *   （另：`prom-client` 本就把 `@opentelemetry/api` 作为硬运行时依赖引入，
+ *   所以这个包无论如何都在依赖树里——「删掉声明」并不会删掉它。）span 树在本
  *   进程内自管理（AsyncLocalStorage 串联父子）并仅输出到结构化日志
  *   （`[trace] start/end` 行）。**不引 `@opentelemetry/sdk-*` 全家桶/exporter**
  *   ——本项目无稳定 collector 部署，SDK 捆绑大量传递依赖与出站序列化开销，

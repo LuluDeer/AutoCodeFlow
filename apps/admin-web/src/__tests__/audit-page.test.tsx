@@ -271,6 +271,47 @@ describe('AUTH-05 资源ID 筛选', () => {
       expect(lastAuditQuery()).not.toContain('resourceId=');
     });
   });
+
+  /**
+   * AUDIT-HASFILTERS（审计 P2，2026-10-17）：「重置」按钮的可见性必须跟随
+   * **已应用**的筛选（filters），而不是表单草稿（pending）。
+   *
+   * 缺陷现场：hasFilters 读 pending，而列表查询与 CSV 导出都用 filters。于是
+   * 用户只在输入框里敲了字、还没点搜索时，「重置」按钮就出现了——暗示
+   * 「当前有筛选」，但列表其实是全量；此时点导出，导出的也是全量数据。
+   */
+  it('AUDIT-HASFILTERS：只改输入框（未点搜索）不出现「重置」按钮', async () => {
+    renderPage();
+    await screen.findByText('创建任务');
+
+    // 初始：无筛选 → 无重置按钮
+    expect(findBtn(document.body, '重置')).toBeNull();
+
+    // 只敲字，不点搜索：草稿变了但筛选未应用 → 仍然不应出现
+    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    expect(findBtn(document.body, '重置')).toBeNull();
+
+    // 点搜索 → 筛选真正应用 → 按钮出现
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      expect(findBtn(document.body, '重置')).toBeTruthy();
+    });
+  });
+
+  it('AUDIT-HASFILTERS：应用筛选后再把草稿清空，「重置」按钮仍在（列表仍筛选中）', async () => {
+    renderPage();
+    await screen.findByText('创建任务');
+
+    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('action=task');
+    });
+
+    // 把输入框清空但**不**点搜索：列表仍是筛选态，按钮必须还在
+    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: '' } });
+    expect(findBtn(document.body, '重置')).toBeTruthy();
+  });
 });
 
 describe('AuditLogPage 空态（QA-03 / UI-08）', () => {

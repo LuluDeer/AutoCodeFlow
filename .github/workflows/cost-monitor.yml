@@ -1,0 +1,122 @@
+name: Cost Monitor
+
+# 监控 GitHub Actions 使用情况，每周一生成报告
+on:
+  schedule:
+    # 每周一 UTC 02:00（北京时间 10:00）
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Get workflow runs statistics
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "## GitHub Actions 使用统计（最近 7 天）" > report.md
+          echo "" >> report.md
+          
+          # 获取过去 7 天的 workflow runs
+          since_date=$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')
+          
+          echo "### 总览" >> report.md
+          echo "" >> report.md
+          
+          # CI workflow 统计
+          ci_runs=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?created=>=$since_date&per_page=100" \
+            | jq '[.workflow_runs[] | select(.conclusion != null)] | length')
+          
+          ci_minutes=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?created=>=$since_date&per_page=100" \
+            | jq '[.workflow_runs[] | select(.conclusion != null) | ((.updated_at | fromdate) - (.created_at | fromdate)) / 60] | add // 0 | floor')
+          
+          echo "- **CI Workflow**: $ci_runs 次运行, 约 $ci_minutes 分钟" >> report.md
+          
+          # Release workflow 统计
+          release_runs=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/workflows/release.yml/runs?created=>=$since_date&per_page=100" \
+            | jq '[.workflow_runs[] | select(.conclusion != null)] | length')
+          
+          if [ "$release_runs" -gt 0 ]; then
+            release_minutes=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/actions/workflows/release.yml/runs?created=>=$since_date&per_page=100" \
+              | jq '[.workflow_runs[] | select(.conclusion != null) | ((.updated_at | fromdate) - (.created_at | fromdate)) / 60] | add // 0 | floor')
+            echo "- **Release Workflow**: $release_runs 次运行, 约 $release_minutes 分钟" >> report.md
+          else
+            echo "- **Release Workflow**: 0 次运行" >> report.md
+          fi
+          
+          # 成功率统计
+          echo "" >> report.md
+          echo "### 成功率" >> report.md
+          echo "" >> report.md
+          
+          ci_success=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?created=>=$since_date&per_page=100" \
+            | jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          
+          if [ "$ci_runs" -gt 0 ]; then
+            ci_rate=$((ci_success * 100 / ci_runs))
+            echo "- **CI 成功率**: $ci_rate% ($ci_success/$ci_runs)" >> report.md
+          fi
+          
+          echo "" >> report.md
+          echo "### 优化建议" >> report.md
+          echo "" >> report.md
+          
+          # 根据统计给出建议
+          if [ "$ci_minutes" -gt 1000 ]; then
+            echo "⚠️ CI 分钟数较高 ($ci_minutes 分钟/周)，建议：" >> report.md
+            echo "- 检查是否有重复的测试执行" >> report.md
+            echo "- 考虑增加缓存策略" >> report.md
+            echo "- 评估是否可以减少测试范围" >> report.md
+          else
+            echo "✅ CI 分钟数在合理范围内 ($ci_minutes 分钟/周)" >> report.md
+          fi
+          
+          echo "" >> report.md
+          echo "---" >> report.md
+          echo "*生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> report.md
+          
+          cat report.md
+          
+      - name: Create or update issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 检查是否已有打开的成本监控 issue
+          existing_issue=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "cost-monitor" \
+            --state open \
+            --json number \
+            --jq '.[0].number')
+          
+          if [ -n "$existing_issue" ]; then
+            # 更新现有 issue
+            gh issue comment "$existing_issue" \
+              --repo "${{ github.repository }}" \
+              --body-file report.md
+            echo "Updated issue #$existing_issue"
+          else
+            # 创建新 issue
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "GitHub Actions 成本监控 - $(date '+%Y 年第 %V 周')" \
+              --body-file report.md \
+              --label "cost-monitor,automation"
+            echo "Created new cost monitoring issue"
+          fi

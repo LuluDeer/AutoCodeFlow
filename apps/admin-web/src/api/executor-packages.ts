@@ -43,6 +43,38 @@ export interface ExecutorPackageListParams {
   platform?: string;
   name?: string;
   status?: string;
+  /**
+   * §2.1（推广到 `GET /executor-packages`）：**可选**的不透明 keyset 游标。
+   *
+   * 三态语义（**不许混成一个**，与 `tasksApi.allExecutions` 逐字同规）：
+   *   · `undefined`（或键不存在）→ 请求里**没有** `cursor` 参数 → 后端走原有
+   *     OFFSET 分页，响应与加游标分页之前**逐字节一致**（连 `nextCursor` 都不出现）；
+   *   · `''`（空串）→ 序列化成 `cursor=` → 后端识别为「keyset 起点」，从最新
+   *     一行开始翻（响应含 `nextCursor`）。注意 `if (cursor)` 会把 `''` 当没传，
+   *     正好踩掉起点语义（见 `list` 里的显式归一）；
+   *   · 非空串 → 上一页响应的 `nextCursor`，**当作不透明令牌原样回传**，禁止解析；
+   *     非法游标后端返回 400（VALIDATION_FAILED），不会静默退回第一页。
+   */
+  cursor?: string;
+}
+
+/**
+ * `GET /executor-packages` 的响应形状。
+ *
+ * ⚠️ 本端点返回**裸 `{items,total}`**，不是 `paginate()` 双键信封（与 tasks 域
+ * 不同源，见后端 `ExecutorPackageService.findAll` 头注）。keyset 分支也**不改变**
+ * 这个形状，只**追加** `nextCursor`——刻意如此：`items` 同时被包表
+ * （`listPackages`）与安装向导的 `listLatest` 消费，改成信封会让 `res.items`
+ * 变 undefined、包表恒空。
+ *
+ * `nextCursor` 因此是 `?:` 而非 `| null`：`undefined`（键缺失 = 走的 OFFSET
+ * 路径）与 `null`（keyset 路径且已翻完）是两种不同语义，读侧必须分开处理。
+ */
+export interface ExecutorPackageListResult {
+  items: ExecutorPackage[];
+  total: number;
+  /** keyset 分支专有：字符串 = 下一页令牌，`null` = 末页。OFFSET 分支该键不存在。 */
+  nextCursor?: string | null;
 }
 
 /**
@@ -66,15 +98,40 @@ export interface PushResult {
 }
 
 export const executorPackagesApi = {
-  /** 获取执行器安装包列表 */
-  list: (params?: ExecutorPackageListParams) =>
-    client.get('/executor-packages', { params }) as Promise<{ items: ExecutorPackage[]; total: number }>,
+  /**
+   * 获取执行器安装包列表（OFFSET / keyset 双路径）。
+   *
+   * `cursor` 的三态语义见 `ExecutorPackageListParams#cursor`。第 ① 条（不带
+   * cursor）**不依赖 axios 的序列化细节**：下面显式把值为 `undefined` 的
+   * cursor 键删掉——"不带参数"是本函数自己的保证，而不是某个库版本的未成文
+   * 行为。「旧路径逐字节不变」是硬要求，不该押在别人身上。
+   *
+   * 注意判据是 `=== undefined` 而不是 `!params.cursor`——后者会把空串一起删掉，
+   * keyset 起点就永远进不去。
+   */
+  list: (params?: ExecutorPackageListParams) => {
+    let query = params;
+    if (query && query.cursor === undefined) {
+      const { cursor: _omit, ...rest } = query;
+      void _omit;
+      query = rest;
+    }
+    return client.get('/executor-packages', { params: query }) as Promise<ExecutorPackageListResult>;
+  },
 
   /**
-   * 获取最新可用安装包列表。
+   * 获取最新可用安装包列表（安装向导 step 2 的候选来源）。
+   *
    * 注：后端 GET /executor-packages/latest 需要 type 参数且仅返回单个最新包（或 null），
    * 无法一次取得全部类型；这里改为拉取 active 包列表（按 createdAt 倒序，最多 100 条），
    * 由调用方按 类型+平台 自行匹配最新。
+   *
+   * ⚠️ **不得改成走 keyset**：本函数走的是同一个 `GET /executor-packages` 端点，
+   * 但它要的是"最新 100 个 active 包"这一**固定切片**，不是"翻页"。它**不传
+   * cursor**，故后端仍走 OFFSET 分支、响应形态与加游标之前**逐字节一致**。
+   * 给它加 cursor 会让返回集变成"游标之后的一页"，向导的候选列表就随上一次
+   * 翻页而变——那是本页游标化的副作用泄漏到别的功能。已有用例钉住这条
+   * （executor-packages-keyset-paging.test.tsx）。
    */
   listLatest: async (): Promise<ExecutorPackage[]> => {
     const res = await client.get<{ items?: ExecutorPackage[]; total?: number }>(

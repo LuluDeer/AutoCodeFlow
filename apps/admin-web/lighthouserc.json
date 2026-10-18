@@ -1,0 +1,44 @@
+{
+  "ci": {
+    "collect": {
+      "startServerCommand": "node scripts/lhci-serve.cjs",
+      "startServerReadyPattern": "Local: http://localhost:4173",
+      "startServerReadyTimeout": 30000,
+      "url": [
+        "http://localhost:4173/",
+        "http://localhost:4173/login"
+      ],
+      "numberOfRuns": 3
+    },
+    "assert": {
+      "preset": "lighthouse:recommended",
+      "assertions": {
+        "categories:performance": ["warn", {"minScore": 0.9}],
+        "categories:accessibility": ["error", {"minScore": 0.9}],
+        "categories:best-practices": ["warn", {"minScore": 0.85}],
+        "categories:seo": ["warn", {"minScore": 0.8}],
+
+        "uses-http2": "off",
+        "viewport": "off",
+        "uses-long-cache-ttl": "off",
+        "unsized-images": "warn",
+
+        "heading-order": ["error", {"minScore": 1}],
+        "meta-description": ["error", {"minScore": 1}],
+        "robots-txt": ["error", {"minScore": 1}],
+        "errors-in-console": ["error", {"minScore": 1}],
+
+        "unused-css-rules": ["warn", {"maxLength": 0}],
+        "unused-javascript": ["warn", {"maxLength": 0}],
+        "network-dependency-tree-insight": "off",
+        "forced-reflow-insight": "off",
+        "legacy-javascript": "off",
+        "render-blocking-insight": "off",
+        "render-blocking-resources": ["warn", {"maxLength": 0}]
+      }
+    },
+    "upload": {
+      "target": "temporary-public-storage"
+    }
+  }
+}

@@ -47,18 +47,55 @@ describe("AuditService — SEC-10 append-only 旁路封堵", () => {
     const publicMethods = Object.getOwnPropertyNames(
       AuditService.prototype,
     ).filter((m) => m !== "constructor");
-    // 白名单 = 公开 API + 私有助手（retentionDelete/applyExtraFilters，
-    // TS private 在运行时仍是原型属性）；白名单外出现新方法即审计缺口
+    // 白名单 = 公开 API + 私有助手（TS private 在运行时仍是原型属性）；
+    // 白名单外出现新方法即审计缺口。
+    //
+    // §2.1 游标分页（GET /audit keyset 分支）新增了两个**纯读**助手，已逐个核对：
+    //   · findAllByKeyset   —— 只 createQueryBuilder().getMany()/getCount()，
+    //                          无 create/save/update/delete/softRemove；
+    //   · applyAuditFilters —— 只向已存在的 QB 追加 andWhere，不执行任何语句。
+    // 二者都不新增写删入口，故按本用例的判据（"有无其他写删入口"）合法。
+    //
+    // `applyExtraFilters` 已随本次收口**删除**（它只装了 8 个过滤器中的 4 个，
+    // 另 4 个在 findAll/exportCsv 里各抄一份——真实漂移源），合并进
+    // `applyAuditFilters`。故它从白名单移除：proto 上不再有该方法，
+    // 保留它会让"已删除的方法又被加回来"不被发现。
     const allowed = [
       "log",
       "findAll",
       "exportCsv",
       "cleanupOldAuditLogs",
       "retentionDelete",
-      "applyExtraFilters",
+      "findAllByKeyset",
+      "applyAuditFilters",
     ];
     const unexpected = publicMethods.filter((m) => !allowed.includes(m));
     expect(unexpected).toEqual([]);
+  });
+
+  it("§2.1 新增助手确实是纯读面（源码级：不含任何写删动词）", () => {
+    const src = SRC(join(__dirname, "../audit.service.ts"));
+    // 切出 findAllByKeyset 与 applyAuditFilters 两个方法的源码段（到下一个
+    // 顶层方法注释/方法定义为止），断言其中不出现写删调用——把"新增的方法是
+    // 读面"从注释承诺变成可判定的断言。
+    const sliceFrom = (marker: string): string => {
+      const start = src.indexOf(marker);
+      expect(start).toBeGreaterThan(-1);
+      // 到下一次"  private async " / "  private " / 类的收尾 "}" 为止
+      const rest = src.slice(start + marker.length);
+      const end = rest.search(/\n {2}(?:private |async |public |@)/);
+      return end === -1 ? rest : rest.slice(0, end);
+    };
+    for (const marker of [
+      "private async findAllByKeyset",
+      "private applyAuditFilters",
+    ]) {
+      const body = sliceFrom(marker);
+      expect(body).not.toMatch(
+        /\.(create|save|update|delete|softRemove|restore)\(/,
+      );
+      expect(body).not.toContain("AUDIT_GUARD_BYPASS_SQL");
+    }
   });
 
   it("AuditService 源码：唯一 repo.delete 调用点在 retentionDelete 内（bypass 事务包裹）", () => {

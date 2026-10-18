@@ -182,6 +182,57 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+/* PLAN-EXECUTOR-DESKTOP-UX 2.1：并发饱和度（running/max）。
+   零组件库：进度条用原生 <progress>，这里只做外观。状态四档配色：
+   idle/ok 蓝（常态）、warn 黄（逼近上限）、full 黄加粗、over 红（超额，
+   上限刚被调小或中台又派了单时会出现——超额本身就是用户要看的信息）。 */
+.today-summary-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin-left: 2px;
+}
+.today-summary-gauge-label { color: var(--text3); }
+.today-summary-gauge-num {
+  color: var(--blue-text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.today-summary-gauge-bar {
+  width: 64px;
+  height: 5px;
+  appearance: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  overflow: hidden;
+  flex: none;
+}
+.today-summary-gauge-bar::-webkit-progress-bar { background: var(--surface-3); }
+.today-summary-gauge-bar::-webkit-progress-value {
+  background: var(--blue-text);
+  border-radius: var(--radius-sm);
+}
+.today-summary-gauge-bar::-moz-progress-bar { background: var(--blue-text); }
+.today-summary-gauge.is-warn .today-summary-gauge-num { color: var(--yellow-text); }
+.today-summary-gauge.is-warn .today-summary-gauge-bar::-webkit-progress-value { background: var(--yellow); }
+.today-summary-gauge.is-warn .today-summary-gauge-bar::-moz-progress-bar { background: var(--yellow); }
+.today-summary-gauge.is-full .today-summary-gauge-num,
+.today-summary-gauge.is-over .today-summary-gauge-num { color: var(--red-text); }
+.today-summary-gauge.is-full .today-summary-gauge-bar::-webkit-progress-value,
+.today-summary-gauge.is-over .today-summary-gauge-bar::-webkit-progress-value { background: var(--red); }
+.today-summary-gauge.is-full .today-summary-gauge-bar::-moz-progress-bar,
+.today-summary-gauge.is-over .today-summary-gauge-bar::-moz-progress-bar { background: var(--red); }
+.today-summary-gauge-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--red-bg);
+  color: var(--red-text);
+  font-size: 11px;
+  font-weight: 600;
+}
 
 /* 主体双栏：左日志工作区（吃满剩余宽高），右整高信息面板
    （R3：右栏 356→320px，日志工作区相应加宽） */
@@ -1513,6 +1564,105 @@
   color: var(--text);
   font-size: 12px;
 }
+
+/* PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板（纯展示层，零组件库）。
+   与 .py-env-status 同族排版：白卡 + 发丝边 + 左侧状态色描边；行内三段
+   （图标 / 标题 / 值 + 说明 / 状态文字）——状态既靠色也靠文字，色觉障碍
+   用户不能只靠颜色读状态。 */
+.health-panel {
+  margin-bottom: 20px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.health-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.health-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.health-panel-hint {
+  margin: 5px 0 0;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.health-badge {
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-3);
+  color: var(--text3);
+}
+.health-badge.is-ok { background: var(--green-bg); color: var(--accent); }
+.health-badge.is-warn { background: var(--yellow-bg); color: var(--yellow-text); }
+.health-badge.is-bad { background: var(--red-bg); color: var(--red-text); }
+.health-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--text3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.health-summary-time { color: var(--text4); }
+.health-rows {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.health-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 4px 0;
+}
+.health-row + .health-row { border-top: 1px solid var(--border); }
+.health-row-icon { flex: none; display: inline-flex; }
+.health-row.is-ok .health-row-icon { color: var(--accent); }
+.health-row.is-warn .health-row-icon { color: var(--yellow-text); }
+.health-row.is-bad .health-row-icon { color: var(--red-text); }
+.health-row.is-unknown .health-row-icon { color: var(--text4); }
+.health-row-label { flex: 0 0 118px; color: var(--text3); font-size: 11px; }
+.health-row-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.health-row-detail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text3);
+  font-size: 11px;
+}
+.health-row-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--text3);
+  font-size: 11px;
+}
+.health-row.is-bad .health-row-state { color: var(--red-text); font-weight: 600; }
+.health-row.is-warn .health-row-state { color: var(--yellow-text); }
 
 /* Python 环境诊断块 */
 .py-env-status {

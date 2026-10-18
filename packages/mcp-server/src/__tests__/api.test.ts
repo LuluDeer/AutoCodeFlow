@@ -285,7 +285,9 @@ describe("401 refresh self-heal (BUG-14)", () => {
     expect(result).toEqual({ ok: 1 });
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const [refreshUrl, refreshInit] = fetchMock.mock.calls[1];
-    expect(refreshUrl).toContain("/auth/refresh");
+    // P1-4 回归：必须带 `/api` 前缀（admin-api 的全局前缀）——此前固定的是
+    // 裸 `${API_URL}/auth/refresh`，默认配置下恒 404，自愈永久失效。
+    expect(String(refreshUrl)).toMatch(/\/api\/auth\/refresh$/);
     expect(JSON.parse(String(refreshInit.body))).toEqual({
       refreshToken: "env-refresh",
     });

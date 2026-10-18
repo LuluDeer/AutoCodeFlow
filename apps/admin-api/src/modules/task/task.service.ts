@@ -29,6 +29,7 @@ import {
   Between,
   QueryFailedError,
   Repository,
+  SelectQueryBuilder,
 } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
@@ -103,6 +104,20 @@ import {
   executionListSelectMap,
   executionListSelectColumnsAliased,
 } from "./execution-list-projection";
+// CSV 导出的列定义（表头 + 行渲染）与公共安全原语（公式注入防护 / RFC 4180 /
+// 有痕截断注释行）。抽到独立模块是为了让"防护"与"业务列"分层：前者是跨端点
+// 复用的判据，后者是本域自己的取舍。
+import { executionCsvHeaderRow, executionToCsvRow } from "./execution-csv";
+import { csvTruncationMarker } from "../../common/utils/csv-export.util";
+// §2.1 游标分页：keyset 游标的编解码（纯函数，非法输入一律 400 VALIDATION_FAILED）。
+// 推广到 GET /tasks 后**只有一份实现**——`*KeysetCursor*` 是通用名，
+// `*ExecutionCursor*` 是 executions 端点沿用下来的别名（转调，不是副本）。
+import {
+  decodeExecutionCursor,
+  decodeKeysetCursor,
+  nextExecutionCursor,
+  nextKeysetCursor,
+} from "../../common/utils/keyset-cursor.util";
 import {
   isValidRuntimeVersionFormat,
   isRuntimeVersionSupported,
@@ -263,6 +278,25 @@ export { MAX_DEPENDENCY_EXECUTION_SCAN };
 // DTO → service 模块环）；此处 re-export 维持既有 import 面（task-webhook 等）。
 import { TASK_PARAMS_MAX_BYTES } from "./params-size.util";
 export { TASK_PARAMS_MAX_BYTES };
+
+/**
+ * `GET /tasks/executions/export` 的行上限（安全阀）。
+ *
+ * 取 5 万而不是对齐审计导出的 1 万：执行记录是**按天增长、按 90 天硬删**的
+ * 运维事实表，1 万行在中等规模的实例上连三天都不到，导出会变成"永远被截断"
+ * ——一个永远触发截断提示的能力等于没有能力。5 万行 × 平均 300 字节 ≈ 15 MB，
+ * 对一个手动触发的 ADMIN 导出是可接受的量级；真需要更多请按 `startTime`/
+ * `endTime` 分段导出（那是有意义的切分，OFFSET 式的"第 N 页"不是）。
+ */
+export const EXECUTION_EXPORT_ROW_CAP = 50_000;
+
+/**
+ * 导出时的单次 DB 取数页大小。
+ *
+ * 与行上限解耦：它是"每次往返拿多少行进内存"的量，不是"导出多少行"。1000
+ * 行足以摊薄往返开销，又不会让单页文本大到撑爆背压窗口（约 300 KB/页）。
+ */
+const EXECUTION_CSV_PAGE_SIZE = 1_000;
 
 export const UPSTREAM_SENTINEL = "$upstream";
 
@@ -1598,6 +1632,14 @@ export class TaskService {
       };
     }
 
+    // §2.1（本轮推广）: 游标分页分支——必须在**排序解析之后、过滤装配之前**接入，
+    // 因为"游标能不能用"取决于 this.sortKey 的解析结果（见 assertCursorCompatible）。
+    // 不带 cursor 时下面一行都不执行，旧路径逐字节不变。
+    if (p.cursor !== undefined && p.cursor !== null) {
+      this.assertCursorCompatibleWithQuery(p);
+      return this.findAllByKeyset(p, select);
+    }
+
     // P2-18: lastStatus（最近一次执行状态）——执行维度的派生过滤，Task 实体
     // 无冗余列（刻意不改 schema），走 QueryBuilder 关联子查询分支；不带
     // lastStatus 时保持 findAndCount 既有路径逐字节不变。
@@ -1609,27 +1651,48 @@ export class TaskService {
       return this.findAllByLastStatus(p, select, sortKey, dir);
     }
 
-    // 过滤条件装配。q（关键字，name OR description）走 findAndCount 的
-    // **数组 where**（TypeORM 数组 = 元素间 OR、元素内 AND）；无 q 时保持
-    // 单对象 where，既有路径逐字节不变。
+    // 过滤条件装配（抽成私有方法，keyset 分支复用同一份，杜绝两套过滤漂移）
+    const where = this.buildTaskListWhere(p);
+
+    const [list, total] = await this.taskRepo.findAndCount({
+      where,
+      select,
+      skip: (p.page - 1) * p.pageSize,
+      take: p.pageSize,
+      order,
+    });
+    this.maskListSecrets(list, select);
+    return paginate(list, total, p.page, p.pageSize);
+  }
+
+  /**
+   * `findAll` 的过滤条件装配（**唯一**真值源，OFFSET / lastStatus / keyset 三条
+   * 路径共用）。
+   *
+   * 提取动机：§2.1 推广引入第三条分支时，若把这段复制过去，任何一处过滤语义
+   * 变更（例如新加一个 `triggerType` 过滤）都必须记得改三遍——漏一处就是"某个
+   * 端点悄悄不过滤"，而这类缺陷在 mock 掉 API 层的单测里全是绿的。故只留一份。
+   *
+   * 语义（与提取前逐字节一致）：
+   *   · 基线 `status != DELETED`；显式 `p.status` 精确等值**替换**基线；
+   *   · `q`（name OR description）走**数组 where**（TypeORM 数组 = 元素间 OR、
+   *     元素内 AND）；无 q 时保持单对象 where，既有路径逐字节不变。
+   *     NETOPT-3⑤：ILIKE 的 `_`/`%` 一律转义按字面量匹配。
+   *   · `name` + `q` 同时给出取**交集**（DTO 明文契约）：q 的 name 分支用
+   *     `And()` 并列而非展开覆盖（展开会把 p.name 静默丢弃、结果集变宽）。
+   *   · AUTH-01：`projectId="default"` → 未分配行与默认项目行一起命中。
+   */
+  private buildTaskListWhere(
+    p: ListTasksQueryDto,
+  ): Record<string, unknown> | Record<string, unknown>[] {
     const base: Record<string, unknown> = {
       status: Not(TaskStatus.DELETED),
     };
     if (p.status) base.status = p.status as TaskStatus;
-    // NETOPT-3⑤ 同源修复：ILIKE 里 `_` = 任意单字符、`%` = 任意串。此前这条
-    // name 过滤是裸插值——搜 `daily_report` 会命中 `dailyXreport`，搜 `%`
-    // 命中全部，结果集静默变宽。同文件的 getAllExecutions 早已转义，此处补齐。
     if (p.name) base.name = ILike(`%${escapeLikePattern(p.name)}%`);
-    // name + q 同时给出时取**交集**（DTO 明文契约，见 list-tasks-query.dto）。
-    // 下面 q 分支的数组元素若直接 `{ ...base, name: ILike(q) }`，展开会把
-    // base.name **覆盖**掉 → p.name 被静默丢弃、结果集变宽（本仓反复警示的
-    // "静默变宽"类缺陷），且与 QB 分支（两条 andWhere 真 AND）对同一输入
-    // 给出不同结果。故此处记下 name 条件，供 q 分支用 And() 并列。
     const nameFilter = base.name as never;
     if (p.runtime) base.runtime = p.runtime;
     if (p.applicationId) base.applicationId = p.applicationId;
-    // AUTH-01: projectId 过滤——"default" 映射为默认项目（未分配 NULL 行
-    // 一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。
     if (p.projectId) {
       if (p.projectId === "default") {
         base.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
@@ -1641,10 +1704,9 @@ export class TaskService {
     // 关键字检索：name OR description。两个数组元素各自带上 base 的全部
     // AND 条件（TypeORM 的数组语义是元素间 OR，元素内 AND）——否则
     // runtime/projectId 等过滤会被 OR 短路掉。
-    let where: Record<string, unknown> | Record<string, unknown>[] = base;
     if (p.q) {
       const like = `%${escapeLikePattern(p.q)}%`;
-      where = [
+      return [
         // name 分支：base 已有 name 过滤时并列（And）而非覆盖。
         {
           ...base,
@@ -1658,16 +1720,200 @@ export class TaskService {
         { ...base, description: ILike(like) },
       ];
     }
+    return base;
+  }
 
-    const [list, total] = await this.taskRepo.findAndCount({
-      where,
-      select,
-      skip: (p.page - 1) * p.pageSize,
-      take: p.pageSize,
-      order,
-    });
+  /**
+   * §2.1（推广到 GET /tasks）：**游标与本次查询是否可组合**的唯一判定点。
+   *
+   * 只做"能不能用"的判定，不碰游标内容——格式合法性由 `decodeKeysetCursor`
+   * 负责（纯函数，见 common/utils/keyset-cursor.util.ts）。两个组合一律 400：
+   *
+   * ## ① `cursor` + 显式 `sortBy`（哪怕写的正是 `createdAt`）
+   *
+   * keyset 游标编码的是**某一组排序键的原值**。本端点的 `sortBy` 白名单有 14 个
+   * 键、且方向可正可反，而游标只对 `(createdAt DESC, id DESC)` 这一套序有意义。
+   * 放开自由组合的结果不是报错，而是**语义错乱**：查询按 `priority` 序返回，游标
+   * 里的 `createdAt` 在该序里毫无位置 → "继续"的起点无意义 → 漏行/重行，且每页
+   * 都是 200。故宁可显式拒绝。
+   *
+   * 为什么连 `sortBy=createdAt` 也拒：调用方传它就说明它认为"可以自定义排序 +
+   * 游标"，这个心智模型本身就是错的；而放行它还要额外确认 `sortOrder` 也是
+   * `desc`（`asc` 时游标方向相反，必然错乱）。与其做一串"恰好正确才放行"的
+   * 条件判断，不如让契约只有一种正确姿势：**带 cursor 就不许带 sortBy**。
+   *
+   * ## ② `cursor` + `lastStatus`
+   *
+   * `lastStatus` 走独立的 QueryBuilder 分支（EXISTS 关联子查询，见
+   * findAllByLastStatus）。技术上并非不可支持——外层 task 的过滤与排序和 keyset
+   * 完全正交，把元组谓词加到同一 qb 上即可。**但本轮不做**，理由是范围与风险：
+   * 那条分支的 where 装配是手写的 qb 链（与 findAndCount 的 where 对象是两套
+   * 表达），要复核它 6 个过滤项与 keyset 谓词的 AND 优先级、投影形态、count 语义
+   * （getManyAndCount 会剥掉 take 但保留 where），属于"再写一条新查询路径"。
+   * 在无法保证同等的漏/重验证覆盖之前，**拒绝比静默错乱好**——这与本模块头注
+   * "非法一律 400，绝不静默降级"是同一取舍。
+   *
+   * ⚠️ 拒绝这两组合是**加性**的：不带 cursor 时它们的行为一个字节都没变
+   * （`sortBy` / `lastStatus` 单独使用照常工作）。
+   */
+  private assertCursorCompatibleWithQuery(p: ListTasksQueryDto): void {
+    if (p.sortBy !== undefined && p.sortBy !== null) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          "cursor 不能与 sortBy 同时使用（分页游标绑定固定的排序键 createdAt DESC, id DESC；自定义排序请改用 page/pageSize 的 OFFSET 分页）",
+      });
+    }
+    if (p.lastStatus !== undefined && p.lastStatus !== null) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          "cursor 不能与 lastStatus 同时使用（按最近一次执行状态过滤走独立的子查询分支，暂不支持游标分页；请改用 page/pageSize 的 OFFSET 分页）",
+      });
+    }
+  }
+
+  /**
+   * §2.1（推广到 GET /tasks）keyset 分支：`(createdAt, id) < (cursorAt, cursorId)`
+   * 的元组游标翻页。
+   *
+   * ## 与 executions 分支（getExecutionsByKeyset）的关系
+   *
+   * 形态与论证**照抄**那边，两处差异都是本端点（任务列表）特有的：
+   *   · 过滤条件来自 `buildTaskListWhere`（status/name/q/runtime/applicationId/
+   *     projectId），不是 executions 的 `{taskId, status}`；
+   *   · 排序**只有一种**：`(createdAt DESC, id DESC)`——`sortBy` 已被
+   *     `assertCursorCompatibleWithQuery` 拒掉，故这里的排序键与游标元组**必然
+   *     同源**（这正是 keyset 正确性的前提）。
+   *
+   * ## 为什么 SQL 里用"行值比较 + 子查询取游标行"，而不是毫秒区间
+   *
+   * 与 `getExecutionsByKeyset` 同一结论（那里有完整实测与证伪记录，此处不重复
+   * 长篇论证）。要点：
+   *
+   *   · `tasks."createdAt"` 是 **naive** `timestamp`，`information_schema` 给出
+   *     `datetime_precision = 6`（微秒）；建表迁移 `"createdAt" TIMESTAMP NOT
+   *     NULL DEFAULT now()`（未限定精度 = PG 默认 `timestamp(6)`），实体是裸
+   *     `@CreateDateColumn()`，全量迁移史里**没有** `ALTER COLUMN ... TYPE` 降精度；
+   *   · 写路径不显式赋值 createdAt → 取 `now()`（**事务开始时间**）。同事务批量
+   *     插入共享同一微秒值，**跨事务**的同毫秒插入会得到不同微秒值（实测
+   *     autoflow_test 里 3/3 行都带非零微秒分量，如 `…:01.357218`）；实体读出后
+   *     被截成毫秒（`…:01.357`）。
+   *
+   * 故 **不能**用下面这种"毫秒半开区间"（704f749e 的原实现，已用真 PG 证伪）：
+   *
+   *      (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
+   *
+   * 分支②隐含"同毫秒内排序完全由 id 决定"，**只在同毫秒行的微秒值恰好相等时
+   * 成立**。
+   *
+   * #### 精确触发条件
+   *
+   * 同毫秒内存在「**微秒更小**（时间上在游标之后）但 **id 更大**（`> cursorId`）」
+   * 的行 → 分支② 的 `id < cursorId` 判它"不满足" → **静默漏行**；反向则会把
+   * 时间上在游标**之前**的行误返回（游标行被再次返回 → 原地打转）。
+   * ⚠️ **id 与微秒同序时不显形**，故能同时骗过 CI 与人工冒烟。
+   *
+   * 实测（同毫秒 4 行微秒 .000100/.000200/.000300/.000400，取 .000400 做游标）：
+   * 半开区间返回 **4 行**（含游标行本身）❌，行值比较返回 **3 行** ✅。
+   *
+   * 现在用的写法：
+   *
+   *      (task.createdAt, task.id) < (
+   *        SELECT c."createdAt", c.id FROM tasks c WHERE c.id = :cursorId
+   *      )
+   *
+   * 游标只带 `id`，精确时间由子查询按主键取**库内原值**（含微秒）——DB 值比
+   * DB 值，JS 毫秒截断不参与运算，零精度损失；子查询是 PK 单行查找，外层仍走
+   * (createdAt, id) 范围扫描。
+   *
+   * #### 已知且**有意**的语义：游标行被删除 → 该页为空
+   *
+   * 上面的子查询依赖"游标行仍在库里"。若调用方翻页期间该任务被删除（或硬删），
+   * 子查询无行 → 行值比较得 NULL → WHERE 为假 → **本页返回空 items**，
+   * `nextCursor: null`。这是刻意选择的**安全提前结束**：
+   *   · 不会错行、不会重复（对比：用毫秒近似值硬续会重新引入精度缺陷）；
+   *   · 调用方看到"空页 + nextCursor:null"即可判定翻完，语义自洽；
+   *   · 任务列表是**软删**（`status=deleted`）为主，硬删极少，实际触发面很小。
+   * 有一条用例专门钉住这个行为（tasks-keyset-pagination.spec.ts「游标行被删除」），
+   * 将来若有人想改回半开区间，会先撞上它。
+   *
+   * ### 附带消除的两个坑
+   *
+   * ① **时区**：早期实现把游标里的 UTC ISO 串**当字符串**绑定。naive
+   *    `timestamp` 列上，PG 把带 `Z` 的文本强转时会**丢弃时区**、按会话本地墙钟
+   *    解释；`TimeZone=Asia/Shanghai` 下比较值比真实值早 8 小时。实测（同一游标
+   *    行，`WHERE "createdAt" < $1` 命中行数，真值 2 行）：字符串参数 → **0 行**
+   *    （静默漏行），`Date` 参数 → **2 行**。正偏移时区漏行、负偏移时区重复返回，
+   *    `TZ=UTC` 容器里完全隐形 —— 故测试必须用**与时区无关**的断言。
+   * ② **精度**：见上，半开区间本身不成立。
+   *
+   * 现行写法**完全不把时间下传**（由子查询取库内值），两类问题从根上消失；游标
+   * 载荷仍保留 ISO 串（毫秒）只为排障可读与 forward-compat，不参与比较运算。
+   *
+   * ## `total` / `page` 的口径
+   *
+   * 与 executions 分支一致：`getManyAndCount()` 会剥掉 take/limit 再 COUNT（见
+   * typeorm `executeCountQuery`），故 `total` 仍是**同过滤条件下的真实总数**，
+   * 不返回 -1/近似值；`page` 回显 1（keyset 与 OFFSET 的"第 N 页"不是同一套
+   * 坐标系，回显调用方的 page 会诱导混用）。
+   */
+  private async findAllByKeyset(
+    p: ListTasksQueryDto,
+    select: Record<string, true> | undefined,
+  ) {
+    // 空串 = 调用方显式声明的 keyset 起点（见 getExecutions 的同款约定）；
+    // 非空则必须是合法游标，否则 400 —— 绝不降级到 OFFSET 分支。
+    const cursor = p.cursor === "" ? null : decodeKeysetCursor(p.cursor);
+
+    const qb = this.taskRepo
+      .createQueryBuilder("task")
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC）——sortBy 已在
+      // assertCursorCompatibleWithQuery 拒掉，故此处恒为该序。
+      .orderBy("task.createdAt", "DESC")
+      .addOrderBy("task.id", "DESC");
+
+    // 过滤条件：与 OFFSET 分支共用 buildTaskListWhere（单对象或 OR 数组）。
+    // qb.where 接受对象**数组**并按 "(a) OR (b)" 加括号拼接（实测 typeorm
+    // 1.1.1 getWhereCondition → createWhereConditionExpression），与
+    // findAndCount 的数组 where 语义完全一致——故两条路径不会漂移。
+    qb.where(this.buildTaskListWhere(p) as never);
+
+    if (cursor) {
+      // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
+      // 主键从库里取回（含微秒）。**不要**改回"毫秒半开区间"：那版在同毫秒内
+      // 微秒不同的行上会漏行/返回游标之前的行，已用真 PG 实测证伪，完整论证见
+      // `getExecutionsByKeyset` 头注「已证伪的写法 / 现在的写法」两节。
+      //
+      // 精度：DB 值比 DB 值，JS Date 的毫秒截断完全不参与运算 → 零精度损失。
+      // 索引：子查询是 PK 单行查找，外层仍走 (createdAt, id) 范围扫描。
+      // 游标行被并发删除：子查询无行 → 比较得 NULL → WHERE 为假 → 本页为空，
+      // 调用方看到 nextCursor: null 即视为翻完（安全地提前结束，不错行不重复）。
+      qb.andWhere(
+        `(task.createdAt, task.id) < (
+           SELECT c."createdAt", c.id FROM tasks c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
+      );
+    }
+
+    // F-10 投影（QB 形态：task.<col> 列表）——白名单校验已在 findAll 前置段完成，
+    // secrets 永不可能出现在 select 内。不投影时 qb 实体化全部列，与
+    // findAndCount 的默认投影一致（含 secrets，随后由 maskListSecrets 脱敏）。
+    if (select) {
+      qb.select(Object.keys(select).map((col) => `task.${col}`));
+    }
+
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(p.pageSize + 1);
+
+    const [rows, total] = await qb.getManyAndCount();
+
+    const hasMore = rows.length > p.pageSize;
+    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
     this.maskListSecrets(list, select);
-    return paginate(list, total, p.page, p.pageSize);
+    return paginate(list, total, 1, p.pageSize, {
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      nextCursor: hasMore ? nextKeysetCursor(list) : null,
+    });
   }
 
   /**
@@ -2301,7 +2547,42 @@ export class TaskService {
     return row;
   }
 
-  async getExecutions(taskId: string, p: PaginationDto & { status?: string }) {
+  /**
+   * GET /tasks/:id/executions 的读实现。
+   *
+   * PLAN-BACKEND-ARCHITECTURE §2.1「游标分页」——**加性过渡**，两条路径严格分离：
+   *
+   *   · `p.cursor` **未传** → 走下方**原有**的 `findAndCount` + skip/take（OFFSET
+   *     分支）。这一支的代码路径、SQL 形态、返回对象全部与引入游标之前逐字节
+   *     相同（`paginate` 不传 options，信封里连 `nextCursor` 键都不出现）。
+   *   · `p.cursor` **已传** → 走 `getExecutionsByKeyset`（见其注释）。
+   *
+   * 为什么用"参数是否存在"而不是"page 是否 > 1"来分流：游标语义与页码无关，
+   * 调用方可能只想给一个全新入口（永远不传 page）。两种模式混用会得到彼此矛盾
+   * 的页（keyset 的"第 2 页"不等于 OFFSET 的第 2 页），故只要带了 cursor 就
+   * **忽略 page**（响应里的 page 回显 1，见 keyset 分支注释）。
+   *
+   * ## 空的 `cursor=` 是**显式的「从最新一行开始 keyset」标记**
+   *
+   * 这是本方案唯一的"引导入口"，不解决它调用方永远进不了 keyset 模式：OFFSET
+   * 分支出于逐字节不变的硬要求**不返回** `nextCursor`，所以客户端拿不到第一个
+   * 游标。故约定 `?cursor=`（值为空串）表示"以 keyset 模式从第一页开始"——服务端
+   * 照常下发 `nextCursor`，客户端此后只需原样回传即可一直翻到底。
+   *
+   * ⚠️ 这与"坏游标静默退回第一页"**必须区分开**：那是**未声明的**降级（客户端
+   * 以为自己在中途，服务端悄悄给了开头 → 死循环）；这里是调用方**显式声明**的
+   * 起点。故 `""` 在进入 keyset 分支后直接表示"无下界"，而任何**非空**的畸形
+   * 游标一律 400（`decodeExecutionCursor` 不放松，它仍然拒绝空串——起点语义只
+   * 存在于服务层的这个入口判断里）。
+   */
+  async getExecutions(
+    taskId: string,
+    p: PaginationDto & { status?: string; cursor?: string },
+  ) {
+    if (p.cursor !== undefined && p.cursor !== null) {
+      return this.getExecutionsByKeyset(taskId, p, p.cursor);
+    }
+
     const where: Record<string, unknown> = { taskId };
     if (p.status) where["status"] = p.status;
 
@@ -2331,6 +2612,179 @@ export class TaskService {
     return paginate(list, total, p.page, p.pageSize);
   }
 
+  /**
+   * §2.1 keyset 分支：`(createdAt, id) < (cursorCreatedAt, cursorId)` 的元组游标
+   * 翻页。
+   *
+   * ## 游标的非法处理
+   *
+   * `decodeExecutionCursor` 是**唯一**的合法性判定点（纯函数 + 独立单测），任何
+   * 畸形输入都在这里抛 400 `VALIDATION_FAILED`。**绝不**把非法游标当成"没传游标"
+   * 降级到 OFFSET 分支——那会让客户端陷入"带着坏游标请求、每次拿回第 1 页、
+   * 每次都是 200"的死循环（详见 keyset-cursor.util.ts 头注）。
+   *
+   * ## 为什么 SQL 里用"行值比较 + 子查询取游标行"，而不是毫秒区间
+   *
+   * PostgreSQL 支持行值比较 `(a, b) < (:at, :id)`，正是这里要的形状。但**不能**
+   * 把 `:at` 绑成"实体读出的毫秒 Date"或游标里的 ISO 串——两版都已被实测证伪：
+   *
+   *   · `task_executions."createdAt"` 的列类型是 `TIMESTAMP`（无时区，PG 精度
+   *     **微秒**，`now()` 生成），而 JS `Date` 只有**毫秒**；
+   *   · 执行行写入时**不显式给 createdAt**（executor/scheduler/task 三处
+   *     `execRepo.create({...})` 都不带该列），取数据库默认值 `now()` = **事务
+   *     开始时间**。同事务批量插入共享同一微秒值，但**跨事务**的同毫秒插入会
+   *     得到不同的微秒值（`.000456` 这种），在高频执行面上很常见。
+   *
+   * ### 已证伪的写法：毫秒半开区间
+   *
+   *      (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
+   *
+   * 分支②隐含"同一毫秒内的行排序完全由 id 决定"，**只在同毫秒行的微秒值恰好
+   * 相等时成立**。
+   *
+   * #### 精确触发条件（本缺陷最有价值的部分）
+   *
+   * 同毫秒内存在「**微秒更小**（时间上在游标之后）但 **id 更大**（`> cursorId`）」
+   * 的行 → 分支② 的 `id < cursorId` 把它判为"不满足" → **静默漏行**。
+   * 反向同样成立：微秒更大（时间上在游标之前）但 `id < cursorId` 的行会被误返回
+   * （游标行本身被再次返回 → 翻页原地打转）。
+   *
+   * ⚠️ **id 与微秒同序时不显形**——这正是它能同时通过 CI、既有单测与人工冒烟的
+   * 原因：只有当 uuid 的随机字典序与微秒的写入顺序**反着**时才会漏行。
+   *
+   * #### 实测（真 PG，Asia/Shanghai，同毫秒 4 行）
+   *
+   *     id…50  .0004  ← 游标行
+   *     id…10  .0003
+   *     id…40  .0002
+   *     id…60  .0001
+   *
+   *     期望下一页          : 10, 40, 60
+   *     半开区间（旧实现）  : 10, 40      ← 漏 id…60（在游标之后，但 60 > 50）
+   *     行值比较（现实现）  : 10, 40, 60  ✅
+   *
+   * 另一组同毫秒 4 行（微秒 .000100/.000200/.000300/.000400，取 .000400 做游标）：
+   * 半开区间返回 **4 行**（含游标行本身）❌，行值比较返回 **3 行** ✅。
+   *
+   * ### 现在的写法（正确）
+   *
+   *      (e.createdAt, e.id) < (
+   *        SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
+   *      )
+   *
+   * 游标只带 `id`，精确时间由子查询按主键从库里取**原值**（含微秒）——DB 值比
+   * DB 值，JS 的毫秒截断完全不参与运算，零精度损失。子查询是主键单行查找，外层
+   * 仍走 (createdAt, id) 范围扫描。
+   *
+   * 游标行被并发删除时：子查询无行 → 行值比较得 NULL → WHERE 为假 → 本页为空，
+   * 调用方看到 `nextCursor: null` 即视为翻完。这是**安全地提前结束**（不错行、
+   * 不重复），比"用毫秒近似值硬续"安全得多。
+   *
+   * ### 附带修掉的时区陷阱（保留记录）
+   *
+   * 早期实现把 `cursor.createdAt`（UTC 形态的 `'…T16:58:01.357Z'`）**当字符串**
+   * 绑定。`task_executions."createdAt"` 是 **naive** `timestamp`（无时区）；PG 把
+   * 带 `Z` 的文本强转成 naive timestamp 时**丢弃时区**、按**会话本地墙钟**解释，
+   * 于是 `TimeZone=Asia/Shanghai` 时比较值比真实值**早 8 小时**。实测（同一游标
+   * 行，`WHERE "createdAt" < $1` 命中行数，真值 2 行）：字符串参数 → **0 行**
+   * （静默漏行），`Date` 参数 → **2 行**（正确）。正偏移时区漏行、负偏移时区重复
+   * 返回，`TZ=UTC` 容器里完全隐形——故测试必须用**与时区无关**的断言。
+   *
+   * 现行写法里时间完全不下传（由子查询取库内值），这类时区/精度问题被从根上
+   * 消除；游标载荷仍保留 ISO 串（毫秒）只为**排障可读**与 forward-compat，
+   * 不参与比较运算。
+   *
+   * ## `total`：仍然给真实总数（不撒谎）
+   *
+   * keyset 分支复用**同条件**的 `COUNT`。为什么不按"keyset 不需要总数"省掉它：
+   * `total` 的类型是 `number` 且四端都在渲染"共 N 条"（分页器、CLI 输出、MCP 工具
+   * 载荷）。返回 `-1`/近似值/上一次的值都是**撒谎**——`total` 没有任何字段级的
+   * "这是估算"标记，调用方无从分辨。代价是一次 COUNT（`(taskId, ...)` 上有索引，
+   * 且与 OFFSET 分支本来就在做的 `findAndCount` 是同一量级），换来的是语义正确。
+   * 若将来真需要省这一条，正确做法是新增 `totalExact: false` 之类的显式标记，
+   * 而不是悄悄改 `total` 的含义。
+   *
+   * ## 为什么 `page` 回显 1
+   *
+   * keyset 与 OFFSET 的"第 N 页"不是同一套坐标系（前者是无状态的"从游标继续"，
+   * 后者是"跳过前 N-1 页"）。回显调用方的 `p.page` 会让响应看起来像 OFFSET 的
+   * 第 N 页——那正是最容易让调用方把两种模式混用、进而漏页的误解。回显 1
+   * （= "本次是从某个位置继续取的第一页"）诚实且不会诱导混用；`page` 的类型与
+   * 是否出现都没变（仍是 `number`），只影响 keyset 分支下的取值。
+   */
+  private async getExecutionsByKeyset(
+    taskId: string,
+    p: PaginationDto & { status?: string },
+    rawCursor: string,
+  ) {
+    // 空串 = 调用方显式声明的 keyset 起点（见 getExecutions 注释）；非空则必须
+    // 是合法游标，否则 400。
+    const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
+
+    const where: Record<string, unknown> = { taskId };
+    if (p.status) where["status"] = p.status;
+
+    const qb = this.execRepo
+      .createQueryBuilder("e")
+      .select(executionListSelectColumnsAliased(this.execRepo))
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
+      // 起点与结果集排序不符，翻页会漏/重。
+      .orderBy("e.createdAt", "DESC")
+      .addOrderBy("e.id", "DESC")
+      .where("e.taskId = :taskId", { taskId });
+
+    if (cursor) {
+      // 元组游标——**行值比较**，游标那一行的精确值由子查询从库里取回。
+      //
+      // 为什么不能再用"毫秒半开区间"（704f749e 的原实现，已实测证伪）：
+      // 原实现是
+      //     (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
+      // 其中 `:at` 来自实体读出的 JS `Date`（**毫秒**，微秒被截断），而列是
+      // 微秒精度。分支②隐含假设"同一毫秒内的行排序完全由 id 决定"——**该假设
+      // 只在同毫秒行的微秒值恰好相等时成立**。同毫秒但微秒不同时（跨事务写出的
+      // 行很常见；`now()` 是事务开始时间，同事务批量插入才会共享微秒）：
+      //   · 该行时间上在游标**之后**、却 `id > cursorId` → 被判不满足 → **漏行**；
+      //   · 该行时间上在游标**之前**、却 `id < cursorId` → 被判满足 → **返回游标
+      //     之前的行**（实测：游标行本身被再次返回，翻页原地打转）。
+      //
+      // 真 PG 实测（autoflow_test，同毫秒 4 行微秒 .000100/.000200/.000300/.000400，
+      // 取 .000400 那行做游标）：
+      //   半开区间谓词 → 返回 4 行（含游标行本身） ❌
+      //   行值比较     → 返回 3 行，与期望逐项一致 ✅
+      //
+      // 故改为 `(createdAt, id) < (游标行的精确 (createdAt, id))`，由子查询按主键
+      // 取游标行的**库内原值**（含微秒）——DB 值比 DB 值，JS 的毫秒截断完全不
+      // 参与运算，没有任何精度损失。子查询是主键单行查找，外层仍是
+      // (createdAt, id) 上的范围扫描。
+      //
+      // 游标行被并发删除时：子查询无行 → 行值比较得 NULL → WHERE 为假 → 本页为
+      // 空（此时调用方看到 `nextCursor: null` 即视为翻完）。这是**安全地提前
+      // 结束**，不会错行/重复——比"用毫秒近似值继续"要安全得多。
+      qb.andWhere(
+        `(e.createdAt, e.id) < (
+           SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
+      );
+    }
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(p.pageSize + 1);
+
+    if (p.status) qb.andWhere("e.status = :status", { status: p.status });
+
+    const [rows, total] = await Promise.all([
+      qb.getMany(),
+      this.execRepo.count({ where: where as never }),
+    ]);
+
+    const hasMore = rows.length > p.pageSize;
+    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
+    return paginate(list, total, 1, p.pageSize, {
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      nextCursor: hasMore ? nextExecutionCursor(list) : null,
+    });
+  }
+
   async getAllExecutions(
     p: PaginationDto & {
       status?: string;
@@ -2339,8 +2793,16 @@ export class TaskService {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      cursor?: string;
     },
   ) {
+    // §2.1（推广到 GET /tasks/executions/all）: 游标分页分支。
+    // 不带 cursor 时下面一行都不执行，旧路径**逐字节不变**（响应里连
+    // nextCursor 这个键都不出现，见 paginate 的 options.nextCursor 契约）。
+    if (p.cursor !== undefined && p.cursor !== null) {
+      return this.getAllExecutionsByKeyset(p, p.cursor);
+    }
+
     // DB-003: 原 getRawAndEntities + getCount 会产生 3 条 SQL（raw 页查询、
     // entities 页查询、count），executions 被全表扫描两次。改为：
     // 1) getManyAndCount：页查询 + count 共 2 条（仅 executions 扫描）；
@@ -2360,6 +2822,161 @@ export class TaskService {
       .skip((p.page - 1) * p.pageSize)
       .take(p.pageSize);
 
+    // 过滤条件：与 keyset 分支**共用同一份**装配（见 applyAllExecutionsFilters）
+    this.applyAllExecutionsFilters(qb, p);
+
+    const [list, total] = await qb.getManyAndCount();
+
+    const items = await this.backfillExecutionTaskNames(list);
+    return paginate(items, total, p.page, p.pageSize);
+  }
+
+  /**
+   * 导出执行记录为 CSV——**真正的流式**写入（`GET /tasks/executions/export`）。
+   *
+   * ## 为什么入口在 service 而不是 controller
+   *
+   * 导出要做三件互相依赖的事：按固定排序**分页拉取**（不能一次 `find` 全量）、
+   * 逐行做 CSV 编码、以及把行写进响应并处理**背压**。前两件与 HTTP 无关，第三件
+   * 需要一个"写一段文本"的能力——故这里只依赖一个 `write` 回调，由 controller
+   * 把它绑到 `res.write` + `drain`。这样背压逻辑可被单测直接验证（见
+   * `__tests__/executions-export.spec.ts` 的 drain 用例），不必起真 HTTP。
+   *
+   * ## 为什么必须流式（而不是"查全量 → 拼一个大字符串 → res.send"）
+   *
+   * 表的上限不是理由（有 5 万行硬顶，内存可控），**行宽**才是：单条
+   * `errorMessage` 允许 512_000 字符，5 万行理论上是 25 GB；即便实际分布温和，
+   * 拼接也意味着"整份 CSV 在内存里同时存在一份字符串 + 一份 Buffer"，
+   * 且首字节要等到最后一个数据库页返回才发出（反代 60s 空闲断流先例）。
+   * 流式把峰值内存压到"一页行 + 一页文本"，且第一个字节在第一次 DB 往返后
+   * 就出去。
+   *
+   * ## 背压（这是"流式"与"往 res 里循环 write"的分水岭）
+   *
+   * `res.write()` 返回 false 表示内核发送缓冲已满，继续写会把整份结果堆在
+   * Node 的进程内 buffer 里——OOM 的成因不是"结果太大"而是"没人等 drain"。
+   * 故每次写完检查返回值，false 时 `await once(drain)`。同时监听 socket 的
+   * `close`：客户端中途取消下载时立刻停止拉库，不把剩下的页空跑完。
+   *
+   * ## 与列表端点的过滤同源
+   *
+   * 六个过滤器**全部**经 `applyAllExecutionsFilters` 下发——那是
+   * `GET /tasks/executions/all` 与 `GET /tasks/:id/executions` 的唯一真值源。
+   * 本方法**不复制**任何 where 构造（复制一份是"导出与列表筛选结果不一致"的
+   * 唯一成因，且这种不一致不会有任何报错）。
+   *
+   * ## 排序与列表一致（createdAt DESC, id DESC）
+   *
+   * 同一份 (createdAt, id) 全序键：导出文件的行序与列表页**逐行对应**，运维
+   * 拿 CSV 与页面比对时不会看到"同样的筛选，顺序却不同"。分页走
+   * `(createdAt, id)` **行值比较**的 keyset——不用 OFFSET，因为导出要跨几百页，
+   * 深 OFFSET 随页数线性变慢，且分页期间的并发写入会让 OFFSET 漏行/重行
+   * （导出比列表更需要"不漏不重"：它是要被归档的一次快照）。行值比较的
+   * 微秒精度论证见 `getExecutionsByKeyset` 头注。
+   */
+  async streamExecutionsCsv(
+    filters: {
+      status?: string;
+      taskId?: string;
+      taskName?: string;
+      executorAddress?: string;
+      startTime?: string;
+      endTime?: string;
+    },
+    write: (chunk: string) => Promise<void>,
+    options: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<{ rows: number; truncated: boolean }> {
+    const cap = EXECUTION_EXPORT_ROW_CAP;
+    const requested = options.limit;
+    // 只允许调小（契约见 ExportExecutionsQueryDto.limit）：>硬顶一律归一，
+    // 不报错——事故中回 400 比给一份"截断但有痕"的文件糟得多。
+    const limit =
+      typeof requested === "number" &&
+      Number.isFinite(requested) &&
+      requested > 0
+        ? Math.min(Math.floor(requested), cap)
+        : cap;
+
+    // 表头自带换行：数据页每块都以 `\n` 结尾，表头也必须如此，否则第一条
+    // 数据行会与表头拼成同一行（一个只在"恰好 0 行"时才不出现的静默错位）。
+    await write(`${executionCsvHeaderRow()}\n`);
+
+    let written = 0;
+    // 上一页最后一行的 (createdAt, id)：下一页的键集下界（无 OFFSET）。
+    let lastCursor: { createdAt: Date; id: string } | null = null;
+
+    for (;;) {
+      if (options.signal?.aborted) break;
+      // 每页取 min(剩余额度, PAGE) —— 额度在循环里收缩，最后一页不必多取。
+      const pageSize = Math.min(EXECUTION_CSV_PAGE_SIZE, limit - written);
+      if (pageSize <= 0) break;
+
+      const qb = this.execRepo
+        .createQueryBuilder("e")
+        .select(executionListSelectColumnsAliased(this.execRepo))
+        .orderBy("e.createdAt", "DESC")
+        .addOrderBy("e.id", "DESC")
+        .take(pageSize);
+      // 过滤条件：唯一真值源（**绝不**在此复写 where 构造）。
+      this.applyAllExecutionsFilters(qb, filters);
+      if (lastCursor) {
+        // 键集续页：行值比较（DB 值比 DB 值，微秒零损失，同 getAllExecutionsByKeyset）。
+        qb.andWhere(
+          `(e.createdAt, e.id) < (SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId)`,
+          { cursorId: lastCursor.id },
+        );
+      }
+
+      const rows: TaskExecution[] = await qb.getMany();
+      if (rows.length === 0) break;
+
+      const lines = rows.map((r) => executionToCsvRow(r));
+      written += rows.length;
+      // 一页一次 write（不是一行一次）：每行一个 write 会把系统调用放大到
+      // 行数量级，而一页通常已是几十 KB，足够摊薄调用开销。
+      await write(`${lines.join("\n")}\n`);
+
+      if (written >= limit) break;
+      if (rows.length < pageSize) break; // 已到末页
+      const last = rows[rows.length - 1];
+      lastCursor = { createdAt: last.createdAt, id: last.id };
+    }
+
+    // 有痕截断：达到上限即追加注释行。判据用 `>=`（不是 `>`）——"恰好取满
+    // limit 行"时**无法区分**是否还有更多行（本循环取满即 break，不再多探
+    // 一行），这种情况必须按"可能被截断"如实标注，绝不能让人误以为是全量。
+    const truncated = written >= limit;
+    if (truncated) {
+      await write(`${csvTruncationMarker(limit)}\n`);
+    }
+    return { rows: written, truncated };
+  }
+
+  /**
+   * `getAllExecutions` 的过滤条件装配（**唯一**真值源，OFFSET / keyset 两条
+   * 路径共用——与 `buildTaskListWhere` 之于 `findAll` 是同一个先例）。
+   *
+   * 为什么必须是"一份"而不是各写一份：这些过滤器全是**放宽/收窄结果集**的
+   * 条件（status/taskId/taskName/executorAddress/startTime/endTime）。两份实现
+   * 一旦漂移，最典型的表现不是报错而是"两种分页模式返回的集合不同"——
+   * 客户端从 OFFSET 整页翻到 keyset 后结果集**静默**变宽/变窄，且没有任何
+   * 信号（`total` 也会跟着变）。那正是本仓反复在修的"静默损坏"。
+   *
+   * 本端点的排序键恒为 `(createdAt DESC, id DESC)`（无 sortBy 参数），故
+   * 游标与全部过滤器都只是 AND 关系，不需要 `assertCursorCompatibleWithQuery`
+   * 那样的可组合性拒绝。
+   */
+  private applyAllExecutionsFilters(
+    qb: SelectQueryBuilder<TaskExecution>,
+    p: {
+      status?: string;
+      taskId?: string;
+      taskName?: string;
+      executorAddress?: string;
+      startTime?: string;
+      endTime?: string;
+    },
+  ): void {
     if (p.status) qb.andWhere("e.status = :status", { status: p.status });
     if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
     if (p.taskName) {
@@ -2382,10 +2999,17 @@ export class TaskService {
       qb.andWhere("e.createdAt >= :startTime", { startTime: p.startTime });
     if (p.endTime)
       qb.andWhere("e.createdAt <= :endTime", { endTime: p.endTime });
+  }
 
-    const [list, total] = await qb.getManyAndCount();
-
-    // 一次性批量补齐缺失的 taskName（替代原 leftJoin + raw Map 组装）
+  /**
+   * 一次性批量补齐缺失的 taskName（替代原 leftJoin + raw Map 组装）。
+   *
+   * OFFSET 与 keyset 两条路径共用：两条路径的响应形状必须一致，包括
+   * `taskName` 的回填语义（行自身有值则优先，否则按 taskId 批量取 tasks.name）。
+   */
+  private async backfillExecutionTaskNames(
+    list: TaskExecution[],
+  ): Promise<Array<TaskExecution & { taskName: string | null }>> {
     const missingIds = [
       ...new Set(
         list
@@ -2402,11 +3026,96 @@ export class TaskService {
       for (const t of tasks) taskNameMap.set(t.id, t.name);
     }
 
-    const items = list.map((e) => ({
+    return list.map((e) => ({
       ...e,
       taskName: e.taskName || taskNameMap.get(e.taskId) || null,
     }));
-    return paginate(items, total, p.page, p.pageSize);
+  }
+
+  /**
+   * §2.1（推广到 GET /tasks/executions/all）keyset 分支：
+   * `(createdAt, id) < (游标行的库内原值)` 的元组游标翻页。
+   *
+   * 形态与 `getExecutionsByKeyset` / `findAllByKeyset` **逐字同款**（同一份
+   * `decodeExecutionCursor` / `nextExecutionCursor`，同一个行值比较谓词），
+   * 不重新设计。三处差异都是本端点固有的，不是随意的：
+   *
+   *   ① 过滤条件走 `applyAllExecutionsFilters`（六个全局过滤器，而不是单任务
+   *      的 taskId/status）——与 OFFSET 分支共用同一份装配；
+   *   ② 多取一行的判断用 `getCount()` 而不是 `getManyAndCount()`：后者在
+   *      `taskName` 过滤生效时会带上 leftJoin，而 typeorm 的 `lazyCount` 在
+   *      "有 join + 有 take" 时会退化成 `COUNT(DISTINCT e.id)`（见
+   *      SelectQueryBuilder.lazyCount）——语义仍是"该过滤下的总行数"，但它是
+   *      从**本页已取的 N+1 行**推算的，翻页越深越依赖它，白付一次 DISTINCT。
+   *      拆成"页查询 getMany + 独立 getCount"则与 `getExecutionsByKeyset` 的
+   *      `Promise.all([qb.getMany(), count()])` 完全同构，且 total 恒定等于
+   *      同过滤条件下的全量行数（不含游标下界——游标只决定"从哪继续"）。
+   *   ③ taskName 回填复用 `backfillExecutionTaskNames`（与 OFFSET 分支同源）。
+   *
+   * 精度：`task_executions."createdAt"` 已核实为 `timestamp without time zone`
+   * （information_schema.datetime_precision = 6，微秒）。游标只带 `id`，时间由
+   * 子查询按主键取**库内原值**——DB 值比 DB 值，JS Date 的毫秒截断完全不参与
+   * 运算，零精度损失。**不要**改回毫秒半开区间：完整证伪论证见
+   * `getExecutionsByKeyset` 头注（真 PG 实测：那版会漏行/返回游标之前的行）。
+   */
+  private async getAllExecutionsByKeyset(
+    p: PaginationDto & {
+      status?: string;
+      taskId?: string;
+      taskName?: string;
+      executorAddress?: string;
+      startTime?: string;
+      endTime?: string;
+    },
+    rawCursor: string,
+  ) {
+    // 空串 = 调用方显式声明的 keyset 起点（与 getExecutions / findAll 同款约定）；
+    // 非空则必须是合法游标，否则 400 —— 绝不降级到 OFFSET 分支。
+    const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
+
+    const qb = this.execRepo
+      .createQueryBuilder("e")
+      .select(executionListSelectColumnsAliased(this.execRepo))
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
+      // 起点与结果集排序不符，翻页会漏/重。
+      .orderBy("e.createdAt", "DESC")
+      .addOrderBy("e.id", "DESC");
+
+    // 过滤条件：与 OFFSET 分支共用同一份装配（单份真值源，杜绝漂移）。
+    this.applyAllExecutionsFilters(qb, p);
+
+    if (cursor) {
+      // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
+      // 主键从库里取回（含微秒）。论证见 getExecutionsByKeyset 头注。
+      //
+      // 游标行被并发删除：子查询无行 → 比较得 NULL → WHERE 为假 → 本页为空，
+      // 调用方看到 nextCursor: null 即视为翻完（安全地提前结束，不错行不重复）。
+      qb.andWhere(
+        `(e.createdAt, e.id) < (
+           SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
+      );
+    }
+
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(p.pageSize + 1);
+
+    // total 用独立的 COUNT（同过滤条件、不含游标下界）——语义与 OFFSET 分支的
+    // `getManyAndCount` 返回值一致：真实总数，不是"剩余条数"、也不是 -1。
+    // 两次查询**顺序**执行（不 Promise.all 同一个 qb）：getMany 会改写
+    // expressionMap.queryEntity，与并发的 getCount 抢同一个可变对象不安全。
+    const rows = await qb.getMany();
+    const total = await qb.getCount();
+
+    const hasMore = rows.length > p.pageSize;
+    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
+    const items = await this.backfillExecutionTaskNames(list);
+    return paginate(items, total, 1, p.pageSize, {
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      // 内层取原始行 list（不是 items）——编游标只读 (createdAt, id)。
+      nextCursor: hasMore ? nextExecutionCursor(list) : null,
+    });
   }
 
   /**

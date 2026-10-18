@@ -23,6 +23,7 @@ import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
   CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
   CheckSquareOutlined, FileTextOutlined, ColumnWidthOutlined,
+  LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
 // PK-02（DEEP_REVIEW 0ef3bbe）：clone payload 经 Object.keys 删除 undefined 后
 // 类型变宽，create 调用点显式断言为生成的 CreateTaskDto。
@@ -31,9 +32,11 @@ import { Trans, useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tasks';
-import { useTasksList, invalidateTaskData } from '../api/queries';
+import { useTasksList, invalidateTaskData, usePauseTask, useResumeTask } from '../api/queries';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
+// URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
+import { useUrlStateSync } from '../hooks/useUrlStateSync';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { priorityTag } from '../utils/priority';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源（与 status/priority 同范式）
@@ -97,6 +100,38 @@ const COLUMN_LABEL_KEY: Record<TaskColumnKey, string> = {
   actions: 'taskList.col.actions',
 };
 
+/**
+ * §2.1 keyset 分页的前端状态：游标**栈** + 当前索引。
+ *
+ * 照抄 ExecutionsPage / AuditLogPage / ExecutorPackagesPage 的同一套范式
+ * （那三处已被用例钉死，不另造一套）：游标分页没有「跳到第 N 页」——后端只给
+ * 「下一页」令牌（`nextCursor`），**没有**「上一页」令牌，要支持「上一页」
+ * 客户端必须自己记住走过的路径。
+ *
+ * 约定：`stack[0]` 恒为第 1 页的起点，`stack[i]` 是「要显示第 i+1 页时要发给
+ * 后端的 cursor」。栈里存的是**不透明**令牌，前端一律原样回传，绝不解析拼接。
+ */
+type CursorStack = {
+  /** stack[0] 恒为 keyset 起点（空串）或 null（关闭开关时）；stack[i] 为第 i+1 页的游标。 */
+  stack: (string | null)[];
+  /** 当前页在栈中的下标（0-based）。 */
+  index: number;
+};
+
+/**
+ * 栈的初始形态（与 ExecutionsPage / AuditLogPage 逐字同款）。
+ *
+ * `firstPageCursor` 的三态语义**必须**在这里保留：
+ *   · `undefined` → `stack = [null]`，第 1 页**不带** cursor 参数（OFFSET 路径）；
+ *   · `''`        → `stack = ['']`，第 1 页带 `cursor=`（keyset 起点）。
+ *
+ * 若写成 `firstPageCursor ?? ''`，关闭开关时 stack 首项会变成空串——一旦渲染
+ * 期再取 `stack[index] ?? ''`，"空串也当没传"的判据就永远分不开两种模式。
+ */
+const initialCursorStack = (
+  firstPageCursor: string | undefined,
+): CursorStack => ({ stack: [firstPageCursor ?? null], index: 0 });
+
 export default function TaskListPage() {
   const nav = useNavigate();
   // MOBILE-CARD-01：≤768px 表格 → 卡片列表
@@ -108,7 +143,7 @@ export default function TaskListPage() {
   const { token } = theme.useToken();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写——刷新/分享不丢状态
   // （与 ExecutionsPage 同一约定：q/status/trigger/page/pageSize）。
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>(() => searchParams.get('trigger') || undefined);
@@ -136,17 +171,128 @@ export default function TaskListPage() {
   // 搜索防抖：输入框即时回显 search，列表查询跟随 debounced 值，避免每击键发请求
   const debouncedSearch = useDebounce(search);
 
-  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；空值不写入）
-  useEffect(() => {
-    const next = new URLSearchParams();
-    if (page !== 1) next.set('page', String(page));
-    if (pageSize !== 20) next.set('pageSize', String(pageSize));
-    if (statusFilter) next.set('status', statusFilter);
-    if (debouncedSearch) next.set('q', debouncedSearch);
-    if (triggerFilter) next.set('trigger', triggerFilter);
-    if (lastStatusFilter) next.set('lastStatus', lastStatusFilter);
-    setSearchParams(next, { replace: true });
-  }, [page, pageSize, statusFilter, debouncedSearch, triggerFilter, lastStatusFilter, setSearchParams]);
+  /**
+   * §2.1：稳定翻页（keyset / 游标分页）开关。
+   *
+   * **默认关闭** = 现有 OFFSET 行为逐字节不变（零风险）。打开后请求带 `cursor`
+   * 参数走后端 keyset 分支，响应里才有 `nextCursor`。
+   *
+   * ## 本页为什么比 ExecutionsPage / AuditLogPage 复杂（两个后端硬约束）
+   *
+   * `apps/admin-api/src/modules/task/task.service.ts` 的
+   * `assertCursorCompatibleWithQuery` 规定：请求同时带 `cursor` 与
+   * `sortBy` **或** `lastStatus` → 直接 400 VALIDATION_FAILED。本页这两个都有：
+   *
+   *   · `lastStatus`：筛选区的「最近执行」下拉（P2-18，值班最常用的筛选）。
+   *   · `sortBy`：本页**没有**排序 UI（名称列的 `sorter` 是纯客户端排序，
+   *     不发 `sortBy`/`sortOrder`），故无需处理——但下面仍把它列进互斥判据的
+   *     注释里，避免日后有人加排序下拉时漏掉这条后端约束。
+   *
+   * 处理办法不是"让用户选完再吃 400"，而是：**keyset 模式下禁用「最近执行」
+   * 筛选并给出可见说明**，已有选择则不让打开开关（Tooltip 说明原因）。理由：
+   * 二者在结果集语义上就冲突——keyset 绑死 `(createdAt, id) DESC` 且走关联
+   * 子查询分支，后端明确不支持；禁用一个入口比放行后弹一句"参数不合法"诚实
+   * 得多。
+   */
+  const [stablePaging, setStablePaging] = useState(false);
+
+  /**
+   * 游标栈（见 `CursorStack`）。初始 `[null]` = 关闭开关的形态：第 1 页不带
+   * cursor 参数。由 `resetCursorStack` 在开关切换/结果集变化时重置成 `''`
+   * （空串 = keyset 起点）或 `null`（OFFSET 路径）。两种形态在状态里就是不同
+   * 的值，不在渲染期用 `??` 归一——那样 keyset 起点永远进不去。
+   */
+  const [cursorState, setCursorState] = useState<CursorStack>(() => initialCursorStack(undefined));
+
+  /**
+   * 重置游标栈（回到第 1 页）。
+   *
+   * `keysetStart` 取**当前模式**而不是"刚切到的模式"，两种首页语义不同：
+   *   · `false` → `stack = [null]`（第 1 页不带 cursor 参数，OFFSET 路径）；
+   *   · `true`  → `stack = ['']`（第 1 页带 `cursor=`，keyset 起点）。
+   *
+   * 为什么必须重置：游标是**筛选条件下的位置令牌**。带着旧筛选的游标去筛新
+   * 结果集，后端会把游标条件与过滤器取交集，返回"从某条不相干的行往后"的
+   * 错乱内容——不报错、不空白，只是数据错了。这是本类改动里最难被发现的
+   * 缺陷形态，故每个改变结果集的入口都要调用它。
+   */
+  const resetCursorStack = (keysetStart: boolean) => {
+    setCursorState(initialCursorStack(keysetStart ? '' : undefined));
+  };
+
+  /**
+   * 当前请求应携带的游标——**三态在此分开**。
+   *
+   *   · `undefined` = 不带该参数（键整个不出现）→ 后端 OFFSET 分支；
+   *   · `''`        = `?cursor=` → 后端 keyset 起点；
+   *   · 非空串      = keyset 中途页。
+   *
+   * **两个模式与 lastStatus 的互斥在此落地**：keyset 模式下 lastStatus 恒不
+   * 参与请求（见下方 `effectiveLastStatus`），从根上杜绝"cursor + lastStatus"
+   * 这个后端必 400 的组合——而不是靠 UI 禁用了事（禁用只是可见性，代码保证
+   * 才防得住绕过 UI 的路径，比如 URL 深链）。
+   */
+  const effectiveLastStatus = stablePaging ? undefined : lastStatusFilter;
+  /**
+   * keyset 模式下若用户之前已经选了「最近执行」，打开开关时栈首仍是 keyset
+   * 起点，但那一维筛选被忽略——必须让用户看见，否则"我明明筛了失败任务，
+   * 结果里却混着成功的"会是比 400 更难查的静默错乱。
+   */
+  const lastStatusIgnored = stablePaging && !!lastStatusFilter;
+
+  /**
+   * 当前请求游标（三态）。关闭开关时恒为 `undefined`——默认路径的请求参数里
+   * **不可能**出现 cursor，这是"旧路径零风险"的代码保证（配合
+   * `tasksApi.list` 里 `taskListRequestConfig` 的显式键构造双保险）。
+   */
+  const activeCursor = stablePaging ? cursorState.stack[cursorState.index] ?? '' : undefined;
+
+  /** 开关切换：两条路径的首页语义不同，必须重置栈，否则会带着上一模式的游标越界。 */
+  const toggleStablePaging = (next: boolean) => {
+    setStablePaging(next);
+    resetCursorStack(next);
+    // keyset 没有"第 N 页"的坐标系，切模式后页码回 1（关闭时也回 1，避免
+    // 「页码 5 + 无游标」的自相矛盾组合）。
+    setPage(1);
+  };
+
+  // URL-SYNC-02（审计 P2）：双向同步——外部深链/前进后退现在会真正生效。
+  // 此前只有「初始值读 URL + 单向回写」：组件已挂载时改 URL 会被回写抹掉。
+  //
+  // §2.1 补充（本页独有重点）：**URL→state 方向也必须重置游标栈**。深链
+  // （如 `/tasks?status=paused&lastStatus=failed`）会让若干筛选项一起变，但
+  // 游标**不在 URL 里**（不透明令牌不该进地址栏，也无法从 URL 还原）。若只改
+  // 筛选而不清栈，keyset 模式下载第 3 页的游标会带着新筛选继续请求，结果就是
+  // "从旧筛选某个不相干位置往后"的错乱数据。
+  //
+  // 六个字段逐个处理（page/pageSize/status/q/trigger/lastStatus）——全部包一层
+  // setter，任何外部写入都顺带把栈重置回起点。
+  useUrlStateSync(
+    {
+      page,
+      pageSize,
+      status: statusFilter,
+      q: debouncedSearch,
+      trigger: triggerFilter,
+      lastStatus: lastStatusFilter,
+    },
+    {
+      page: 1,
+      pageSize: 20,
+      status: undefined,
+      q: '',
+      trigger: undefined,
+      lastStatus: undefined,
+    },
+    {
+      page: (v) => { setPage(v); resetCursorStack(stablePaging); },
+      pageSize: (v) => { setPageSize(v); resetCursorStack(stablePaging); },
+      status: (v) => { setStatusFilter(v); resetCursorStack(stablePaging); },
+      q: (v) => { setSearch(v); resetCursorStack(stablePaging); },
+      trigger: (v) => { setTriggerFilter(v); resetCursorStack(stablePaging); },
+      lastStatus: (v) => { setLastStatusFilter(v); resetCursorStack(stablePaging); },
+    },
+  );
 
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
@@ -156,16 +302,70 @@ export default function TaskListPage() {
     q: debouncedSearch || undefined,
     status: statusFilter,
     triggerType: triggerFilter,
-    lastStatus: lastStatusFilter,
+    // §2.1：keyset 模式下恒为 undefined（后端契约：cursor 与 lastStatus 互斥，
+    // 同时带 = 400）。关闭开关时原样透传，行为不变。
+    lastStatus: effectiveLastStatus,
+    // keyset 三态的**唯一**出口，落在下面这个三元里：
+    //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
+    //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
+    //
+    // 为什么不是恒传 `{ cursor: activeCursor }` 让 axios 丢弃 undefined：键要
+    // 不要在**我们**这一层就必须确定——"旧路径逐字节不变"是硬要求，把它押在
+    // axios 的序列化细节上等于把风险外包给库版本。
+    ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
   });
   // FEAT-17: 写后失效句柄（原 useRequest refresh → invalidate 面收口）
   const queryClient = useQueryClient();
   const refresh = () => void invalidateTaskData(queryClient);
 
+  // OPTIMISTIC-01：任务暂停/恢复的乐观 mutation（全仓唯一两处 onMutate）。
+  // 行内 Switch 点下去立刻翻态，失败自动回滚——见 api/queries.ts 的
+  // usePauseTask / useResumeTask 与 OPTIMISTIC-01 段注释。
+  const pauseMutation = usePauseTask();
+  const resumeMutation = useResumeTask();
+
   const tasks: Task[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
 
   const hasFilters = !!(search || statusFilter || triggerFilter || lastStatusFilter);
+
+  /**
+   * keyset 模式下本页是否还有下一页。
+   *
+   * 严谨区分三种来源（**不能**用 `!!nextCursor` 一句糊过去）：
+   *   · 关闭开关 → 根本不是 keyset 模式，`nextCursor` 键不存在（undefined），
+   *     这里恒为 `null`（不渲染自绘分页器）；
+   *   · keyset 且 `nextCursor === null` → 后端明确说「已到末页」（含「游标行
+   *     被删 → 空页 + null」的提前结束）→ 禁用下一页；
+   *   · keyset 且拿到了字符串 → 还有下一页。
+   *
+   * 取 `undefined` 视为"无法判断"→ 保守地按"没有下一页"处理（禁用一个凭空
+   * 猜测的「下一页」比让用户点进一个必然报 400 的请求安全）。
+   */
+  const nextCursor: string | null = stablePaging ? (data?.nextCursor ?? null) : null;
+  const canNext = stablePaging && nextCursor !== null;
+
+  /**
+   * 下一页：把刚拿到的游标压栈并前进一格（无游标或到末页时不动）。
+   *
+   * 连点安全：第二次点击时 `data` 仍是上一页的（TanStack 在新请求返回前保留
+   * 旧数据），`nextCursor` 因此还是同一个令牌——下面「同一游标不重复压栈」的
+   * 判据会把第二下变成空操作，不会在栈里堆出重复条目、也不会跳过一页。
+   */
+  const goNext = () => {
+    if (!canNext || nextCursor === null) return;
+    setCursorState((s) => {
+      const stack = s.stack.slice(0, s.index + 1);
+      if (stack[stack.length - 1] === nextCursor) return s;
+      stack.push(nextCursor);
+      return { stack, index: stack.length - 1 };
+    });
+  };
+
+  /** 上一页：在栈内回退一格（栈首禁用）。 */
+  const goPrev = () => {
+    setCursorState((s) => (s.index > 0 ? { ...s, index: s.index - 1 } : s));
+  };
 
   // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
   // （与 ExecutionsPage 同一约定；旧实现只随批量操作清空，筛选后残留的
@@ -283,17 +483,32 @@ export default function TaskListPage() {
   const handlePause = async (id: string) => {
     if (togglingId) return;
     setTogglingId(id);
-    try { await tasksApi.pause(id); message.success(t('taskList.paused')); refresh(); }
-    catch (err: unknown) { showApiError(err, t('taskList.pauseFail')); }
-    finally { setTogglingId(null); }
+    // OPTIMISTIC-01：pause 走带 onMutate 的 mutation——Switch 在**请求发出前**
+    // 就翻到目标态（乐观值写进 tasks 缓存），失败由 onError 精确回滚，
+    // onSettled 再失效任务面由服务端校正。语义细节见 api/queries.ts 的
+    // OPTIMISTIC-01 段注释（含与 SSE invalidateExecutionData 的互操作）。
+    try {
+      await pauseMutation.mutateAsync(id);
+      message.success(t('taskList.paused'));
+    } catch (err: unknown) {
+      showApiError(err, t('taskList.pauseFail'));
+    } finally {
+      setTogglingId(null);
+    }
   };
 
   const handleResume = async (id: string) => {
     if (togglingId) return;
     setTogglingId(id);
-    try { await tasksApi.resume(id); message.success(t('taskList.resumed')); refresh(); }
-    catch (err: unknown) { showApiError(err, t('taskList.resumeFail')); }
-    finally { setTogglingId(null); }
+    // OPTIMISTIC-01：与 handlePause 对称（目标态 active）。
+    try {
+      await resumeMutation.mutateAsync(id);
+      message.success(t('taskList.resumed'));
+    } catch (err: unknown) {
+      showApiError(err, t('taskList.resumeFail'));
+    } finally {
+      setTogglingId(null);
+    }
   };
 
   // 空页钳制（一致性）：服务端分页下删除当前页最后一条后，total 减小但本页的
@@ -663,7 +878,10 @@ export default function TaskListPage() {
           placeholder={t('taskList.searchPlaceholder')}
           prefix={<SearchOutlined />}
           value={search}
-          onChange={e => { setSearch(e.target.value); setPage(1); }}
+          // §2.1：任何改变结果集的入口都要重置游标栈（原因见 resetCursorStack
+          // 注释）。本页筛选是"即时应用"式（无 pending/搜索按钮两段式），故重置
+          // 点就在 onChange 里。
+          onChange={e => { setSearch(e.target.value); setPage(1); resetCursorStack(stablePaging); }}
           allowClear
           style={{ width: 220, maxWidth: '100%' }}
         />
@@ -672,7 +890,7 @@ export default function TaskListPage() {
           allowClear
           style={{ width: 110, maxWidth: '100%' }}
           value={statusFilter}
-          onChange={v => { setStatusFilter(v); setPage(1); }}
+          onChange={v => { setStatusFilter(v); setPage(1); resetCursorStack(stablePaging); }}
           suffixIcon={<FilterOutlined />}
           options={[
             { value: 'active', label: t('taskList.status.active') },
@@ -684,31 +902,51 @@ export default function TaskListPage() {
           allowClear
           style={{ width: 120, maxWidth: '100%' }}
           value={triggerFilter}
-          onChange={v => { setTriggerFilter(v); setPage(1); }}
+          onChange={v => { setTriggerFilter(v); setPage(1); resetCursorStack(stablePaging); }}
           options={[
             { value: 'manual', label: t('taskList.trigger.manual') },
             { value: 'cron', label: t('taskList.trigger.cron') },
             { value: 'fixed_rate', label: t('taskList.trigger.fixed_rate') },
           ]}
         />
-        {/* P2-18（生产审查）：「最近执行」筛选——任务实体 status 只有 active/paused，
-            失败在执行维度；后端 GET /tasks 以 lastStatus（@IsEnum(ExecutionStatus)）
-            支持按最近一次执行结果筛任务。值班最常用三档：success/failed/timeout
-            （label 复用既有执行状态 key execs.status.*）。 */}
+        {/* §2.1：**keyset 模式下禁用**。后端 assertCursorCompatibleWithQuery 明确
+            拒绝 `cursor` + `lastStatus`（按最近执行状态过滤走独立的关联子查询分支，
+            不支持游标分页），放行只会让用户选完再吃一次 400。
+
+            禁用之外**必须**给出可见原因：给一个点不动又不说为什么的死控件，等
+            于把「后端不支持」这个事实藏起来。这里刻意用**常驻可见文本**而不是
+            只挂 Tooltip——Tooltip 需要悬停，键盘/读屏用户拿不到（本题要求里
+            Tooltip 与提示文案都算，选能覆盖全部用户的后者）。 */}
         <Select
           placeholder={t('taskList.lastRunAll')}
           allowClear
+          disabled={stablePaging}
+          aria-label={t('taskList.lastRunAll')}
+          aria-describedby={stablePaging ? 'tasklist-laststatus-note' : undefined}
           style={{ width: 110, maxWidth: '100%' }}
           value={lastStatusFilter}
-          onChange={v => { setLastStatusFilter(v); setPage(1); }}
+          onChange={v => { setLastStatusFilter(v); setPage(1); resetCursorStack(stablePaging); }}
           options={[
             { value: 'success', label: t('execs.status.success') },
             { value: 'failed', label: t('execs.status.failed') },
             { value: 'timeout', label: t('execs.status.timeout') },
           ]}
         />
+        {stablePaging && (
+          // 已选过值时是"数据可能不符预期"（更严重，红色）；未选值时是"该入口
+          // 为何不可用"（灰色说明）。两者都常驻可见，不依赖悬停。
+          lastStatusIgnored ? (
+            <Text type="danger" id="tasklist-laststatus-note" style={{ fontSize: 12 }} data-testid="tasklist-laststatus-ignored">
+              {t('taskList.stablePaging.lastStatusIgnored')}
+            </Text>
+          ) : (
+            <Text type="secondary" id="tasklist-laststatus-note" style={{ fontSize: 12 }} data-testid="tasklist-laststatus-disabled-note">
+              {t('taskList.stablePaging.lastStatusDisabled')}
+            </Text>
+          )
+        )}
         {hasFilters && (
-          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); setLastStatusFilter(undefined); setPage(1); }}>
+          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); setLastStatusFilter(undefined); setPage(1); resetCursorStack(stablePaging); }}>
             {t('taskList.clearFilters')}
           </Button>
         )}
@@ -747,6 +985,22 @@ export default function TaskListPage() {
             </Button>
           </Popover>
         )}
+        {/* §2.1：稳定翻页开关（默认关闭）。
+            用 antd Switch——它本身就是 role="switch" + 原生 button 语义，
+            Tab 可聚焦、Space/Enter 可切换，无需再补键盘处理；aria-label 给出
+            可访问名（开关没有可见文字标签时，纯靠旁边的文字不构成可访问名）。
+            关闭时不发任何 cursor 参数，后端与页面行为都回到改动前。 */}
+        <Space size={6} style={{ marginLeft: 'auto' }}>
+          <Switch
+            size="small"
+            checked={stablePaging}
+            onChange={toggleStablePaging}
+            aria-label={t('taskList.stablePaging.aria')}
+          />
+          <Tooltip title={t('taskList.stablePaging.hint')}>
+            <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.stablePaging')}</Text>
+          </Tooltip>
+        </Space>
       </Space>
 
       {selectedRowKeys.length > 0 && (
@@ -903,11 +1157,25 @@ export default function TaskListPage() {
         // 1280×800 桌面首列逐字竖排不可读。新增/加宽固定列时必须同步上调 scroll.x
         // （task-list-deep 列宽契约测试钉住）。
         scroll={{ x: 1392 }}
-        pagination={{
+        /* §2.1：keyset 模式 = `false`（页码器整体消失，改由下方自绘「上一页 /
+           下一页」承担），OFFSET 模式 = 原有配置（逐字节不变）。
+
+           为什么 keyset 下必须**删掉**而不是保留页码：游标分页没有"第 N 页"
+           这个坐标系。保留页码会让用户点「第 5 页」时其实还在第 2 页（`total`
+           是真实总数，antd 会照着算出总页数并渲染出来），这是"页码还在但点
+           第 5 页其实是第 2 页"式静默错乱。
+
+           pageSize 变更同样重置游标栈：keyset 下页大小变了，旧游标对应的切片
+           边界就不成立了（本页有 size changer，这条是真会走到的路径）。 */
+        pagination={stablePaging ? false : {
           total,
           current: page,
           pageSize,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps ?? 20); },
+          onChange: (p, ps) => {
+            setPage(p);
+            setPageSize(ps ?? 20);
+            if (ps !== undefined && ps !== pageSize) resetCursorStack(stablePaging);
+          },
           showTotal: (t2) => t('taskList.count', { count: t2 }),
           showSizeChanger: true,
         }}
@@ -924,6 +1192,45 @@ export default function TaskListPage() {
               )),
         }}
       />
+      )}
+      {/* §2.1：keyset 模式的自绘分页器（桌面表格与移动端卡片**共用**——两者是
+          同一份数据的两种渲染，分页器必须一致）。
+
+          游标分页只有「下一页」令牌，没有「上一页」令牌——上一页靠游标栈回退，
+          故这里只有两个按钮，没有页码、没有页码跳转（见上方 pagination 注释）。 */}
+      {stablePaging && (
+        <div
+          style={{
+            marginTop: 16,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: 12,
+          }}
+        >
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('taskList.count', { count: total })}
+          </Text>
+          <Button
+            size="small"
+            icon={<LeftOutlined />}
+            // 栈首禁用：没有上一页可回（此时再点只会重复请求同一游标）
+            disabled={cursorState.index === 0}
+            onClick={goPrev}
+          >
+            {t('taskList.pager.prev')}
+          </Button>
+          <Button
+            size="small"
+            // 后端说没有下一页（nextCursor === null，含"游标行被删 → 空页"的
+            // 提前结束）；首屏 data 未到时 nextCursor 视为 null，同样禁用。
+            disabled={!canNext}
+            onClick={goNext}
+          >
+            {t('taskList.pager.next')}
+            <RightOutlined />
+          </Button>
+        </div>
       )}
     </div>
   );

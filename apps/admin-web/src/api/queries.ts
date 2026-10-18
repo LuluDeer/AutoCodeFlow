@@ -17,7 +17,7 @@
  * queryKey 工厂（queryKeyFactory 模式）：层级常量前缀，避免散落字符串
  * 导致 invalidate 时前后缀对不上。
  */
-import { useQuery, type UseQueryResult, type QueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type UseMutationResult, type UseQueryResult, type QueryClient } from '@tanstack/react-query';
 import { getSSEStatus, SSE_STATUS_KEYS } from './sse-client';
 import { metricsApi, type MetricsSummary, type DailyTrend } from './metrics';
 import { tasksApi, type Task, type TaskExecution, type TaskStats, type PageResult } from './tasks';
@@ -47,6 +47,15 @@ export const queryKeys = {
       executorAddress?: string;
       startTime?: string;
       endTime?: string;
+      /**
+       * keyset 分页游标（可选）。**必须进 queryKey**：游标不同 = 不同的结果页，
+       * 若把它排除在外，第 1/2/3 页会共用同一个缓存条目（翻回上一页拿到的是
+       * 别的页的数据，且不会有任何报错）。
+       *
+       * `undefined`（OFFSET 路径）与 `''`（keyset 起点）在 queryKey 序列化里也
+       * 是不同的——前者键值为 undefined，后者为空串，不会互相命中。
+       */
+      cursor?: string;
     }) => ['executions', 'list', params] as const,
     /** GET /tasks/:taskId/executions/:execId 单执行详情 */
     detail: (taskId: string, execId: string) =>
@@ -76,6 +85,17 @@ export const queryKeys = {
       name?: string;
       status?: string;
       triggerType?: string;
+      /**
+       * keyset（游标）分页令牌——**必须进 queryKey**。游标不同 = 不同的结果页，
+       * 若把它排除在外，第 1/2/3 页会共用同一个缓存条目（翻回上一页拿到的是
+       * 别的页的数据，且不会有任何报错）。这是 ExecutionsPage / AuditLogPage
+       * 两轮已经踩过一次的同型缺陷，口径逐字对齐它们。
+       *
+       * `undefined`（OFFSET 路径）与 `''`（keyset 起点）在 queryKey 序列化里
+       * 也是不同的值（前者键值为 undefined，后者为空串），不会互相命中，故
+       * 这里不需要（也**不许**）做任何归一。
+       */
+      cursor?: string;
     }) => ['tasks', 'list', params] as const,
     detail: (id: string) => ['tasks', 'detail', id] as const,
     stats: (id: string) => ['tasks', 'stats', id] as const,
@@ -206,7 +226,14 @@ export function useSchedulerStats() {
 
 // ── 执行记录列表 hook（ARCH-26 示范页二：ExecutionsPage） ────────────────
 
-/** GET /tasks/executions 全局执行列表（分页 + 筛选参数进 queryKey）。 */
+/**
+ * GET /tasks/executions/all 全局执行列表（分页 + 筛选参数进 queryKey）。
+ *
+ * `cursor` 三态（见 `tasksApi.allExecutions` 的注释）：`undefined` = 不带该参数
+ * （后端走原 OFFSET 路径，响应不含 nextCursor）；`''` = keyset 起点；非空串 =
+ * 上一页返回的不透明游标原样回传。这里**原样透传，不做任何归一化**——
+ * `cursor ?? ''` 之类会把「不带游标」变成「带空游标」，正好破坏零风险的默认路径。
+ */
 export function useExecutionsList(params: {
   page: number;
   pageSize: number;
@@ -215,7 +242,9 @@ export function useExecutionsList(params: {
   executorAddress?: string;
   startTime?: string;
   endTime?: string;
-}): UseQueryResult<{ items: TaskExecution[]; total: number }> {
+  /** keyset 分页游标（不透明）。缺省 = 走 OFFSET 路径（现有行为，响应无 nextCursor）。 */
+  cursor?: string;
+}): UseQueryResult<{ items: TaskExecution[]; total: number; nextCursor?: string | null }> {
   return useQuery({
     queryKey: queryKeys.executions.list(params),
     queryFn: ({ signal }) => tasksApi.allExecutions(params, signal),
@@ -253,8 +282,23 @@ export function useTasksList(params: {
   triggerType?: string;
   /** P2-18：最近一次执行结果筛选（lastStatus），透传 GET /tasks 查询参数。 */
   lastStatus?: string;
+  /**
+   * keyset（游标）分页令牌——**三态原样透传，不在这里归一**。
+   *
+   *   · `undefined` → 参数对象里没有这个键，`tasksApi.list` 的
+   *     `taskListRequestConfig` 再把键构造掉 → 请求里没有 cursor（OFFSET
+   *     路径，现有行为不变）；
+   *   · `''` → keyset 起点；
+   *   · 非空串 → keyset 中途页。
+   *
+   * 调用方（TaskListPage）用"三元里展开 `{}` 或 `{ cursor }`"的写法把它传进
+   * 来，语义与箭头函数里 `if (cursor)` 归一完全不同——见 ExecutionsPage 的
+   * `...(activeCursor === undefined ? {} : { cursor: activeCursor })`。
+   */
+  cursor?: string;
 }): UseQueryResult<PageResult<Task>> {
   return useQuery({
+    // cursor 已在 queryKeys.tasks.list 的 params 形状里 → 自动进缓存键。
     queryKey: queryKeys.tasks.list(params),
     queryFn: ({ signal }) => tasksApi.list(params, signal),
   });
@@ -321,6 +365,212 @@ export async function invalidateTaskData(client: QueryClient): Promise<void> {
   // executors 统计；不失效的话 30s staleTime 窗口内回 Dashboard 直接跳过重取
   // （metrics SSE 只在 Dashboard 挂载时活跃），KPI 最长滞后一个轮询周期。
   await client.invalidateQueries({ queryKey: queryKeys.metrics.all });
+}
+
+// ── OPTIMISTIC-01：任务暂停/恢复的乐观更新（**唯一**转换点）──────────────
+//
+// ## 为什么只有这两个 mutation
+//
+// 全仓 ~35 个 useMutation，此前 0 个带 onMutate。整批转换是高风险低收益：
+// 每个写面的回滚语义不同（创建要撤销临时行、删除要恢复整行、批量要逐项
+// 回滚），一次性铺开等于在 35 处同时引入"失败后 UI 与库不一致"的新故障面。
+// 本项只挑**语义最干净**的一对：pause/resume 是幂等的状态翻转、只改一个
+// 布尔语义字段（status: active ↔ paused）、服务端返回完整 Task 实体可用来
+// 校正，且用户对它的延迟最敏感（行内 Switch，点下去必须立刻动）。
+//
+// ## 与既有 SSE / invalidate 的互操作（关键）
+//
+// 任务面有两套新鲜度机制，必须确认乐观更新不会和它们打架：
+//  ① `useExecutionsStream`（SSE 终态事件）→ 200ms 合并窗后调
+//     `invalidateExecutionData`，**只失效 executions + metrics，不碰 tasks**
+//     （见该 hook 头注释：终态载荷是 id 级信息，无法精准改写任意筛选下的行集）。
+//     因此 SSE 不会覆盖我们乐观写入的 tasks 缓存；
+//  ② `invalidateTaskData`（写后失效）→ 失效 tasks.all 前缀（含所有筛选组合
+//     的 list 与 detail）。这是 onSettled 的收尾动作：乐观值只是**过渡态**，
+//     服务端真相到达后由它统一校正。
+//
+// 所以顺序必须是：onMutate 先 `cancelQueries(tasks.all)` 掐掉在途 GET
+// （否则一个更早发出、更晚返回的 GET 会把乐观值盖回旧 status，用户看到开关
+// 弹回去）→ 写乐观值 → onError 用快照回滚 → onSettled 无条件 invalidate
+// 让服务端校正（**成功也失效**：服务端可能顺带改了 updatedAt/调度器状态）。
+//
+// ## 只改 status，不动其它字段
+//
+// 乐观补丁是 `{ ...task, status }`——不用服务端返回值猜测其余字段。列表行
+// 里还有 lastTriggerTime / 下次执行时刻等派生展示，它们由 invalidate 后的
+// 真实数据刷新；乐观阶段只保证"用户点的那一下立刻有反馈"。
+
+/** 暂停/恢复的乐观目标状态（与后端 TaskStatus 枚举的两个可翻转值对齐） */
+export type TaskToggleStatus = 'active' | 'paused';
+
+/** 单条任务行/详情的乐观补丁：只覆盖 status（见上方「只改 status」） */
+export function applyTaskStatusPatch<T extends { status: string }>(
+  task: T,
+  status: TaskToggleStatus,
+): T {
+  return task.status === status ? task : { ...task, status };
+}
+
+/**
+ * 对 `PageResult<Task>` 分页缓存应用状态补丁（纯函数，导出可测）。
+ *
+ * 匹配规则：id 相同才改；未命中返回**原对象**（引用不变，React Query 不会
+ * 误判为变更而触发额外渲染）。
+ */
+export function patchTaskInPage<T extends { id: string; status: string }>(
+  page: PageResult<T> | undefined,
+  taskId: string,
+  status: TaskToggleStatus,
+): PageResult<T> | undefined {
+  if (!page || !Array.isArray(page.items)) return page;
+  let changed = false;
+  const items = page.items.map((task) => {
+    if (task.id !== taskId) return task;
+    const next = applyTaskStatusPatch(task, status);
+    if (next !== task) changed = true;
+    return next;
+  });
+  // 未命中 → 原引用（避免无谓的缓存写与重渲染）
+  return changed ? { ...page, items } : page;
+}
+
+/**
+ * 乐观写入：把 taskId 的 status 改成 `status`，覆盖 tasks 面的**全部**缓存形态。
+ *
+ * 覆盖面（缺一个就会出现"列表变了但详情没变"这类割裂）：
+ *  · `tasks.list(params)` 的各种筛选组合 —— 遍历 `['tasks','list']` 前缀下
+ *    所有已缓存条目逐个打补丁（不做 key 结构假设，page/pageSize/q 任意组合都能命中）；
+ *  · `tasks.detail(id)` —— 任务详情页/编辑页读的是它；
+ *  · `tasks.allForDag` —— DAG 图节点状态。
+ *
+ * 返回撤销函数：调用即把上述缓存恢复为写入前的快照（onError 回滚用）。
+ * 快照只存**被改过的 key 及其原值**，未命中的缓存不占内存。
+ */
+export function optimisticallySetTaskStatus(
+  client: QueryClient,
+  taskId: string,
+  status: TaskToggleStatus,
+): () => void {
+  const snapshots: [readonly unknown[], unknown][] = [];
+
+  /**
+   * 快照去重的键。
+   *
+   * **不能**用 `key.join()`：list 的 queryKey 第三段是 params **对象**，
+   * `join` 会把它变成 `[object Object]`——于是 `{page:1}` 与
+   * `{page:2,status:'active'}` 判成同一个键，第二个组合的快照被漏记，
+   * 回滚时它停在乐观值上（列表页出现"一半恢复、一半没恢复"）。
+   * `JSON.stringify` 对同一 params 对象稳定、对不同 params 可区分。
+   */
+  const snapshotId = (key: readonly unknown[]) => JSON.stringify(key);
+
+  /** 记录快照后写入（同一 key 只记一次，重复调用时以**最早**的原值为准） */
+  const patch = <T,>(key: readonly unknown[], patchFn: (prev: T | undefined) => T | undefined) => {
+    const prev = client.getQueryData<T>(key);
+    const next = patchFn(prev);
+    if (next === prev) return;
+    const id = snapshotId(key);
+    if (!snapshots.some(([k]) => snapshotId(k) === id)) {
+      snapshots.push([key, prev]);
+    }
+    client.setQueryData<T>(key, next);
+  };
+
+  // 1) 任务列表：遍历已缓存的 list 条目（不做 key 结构假设）
+  const listEntries = client.getQueryCache().findAll({
+    queryKey: ['tasks', 'list'],
+    exact: false,
+  });
+  for (const query of listEntries) {
+    const key = query.queryKey;
+    patch<PageResult<Task>>(key, (prev) => patchTaskInPage(prev, taskId, status));
+  }
+
+  // 2) 任务详情（单实体）
+  patch<Task>(queryKeys.tasks.detail(taskId), (prev) =>
+    prev ? applyTaskStatusPatch(prev, status) : prev,
+  );
+
+  // 3) DAG 全量表（分页聚合形态，与列表同构）
+  patch<PageResult<Task>>(queryKeys.tasks.allForDag, (prev) =>
+    patchTaskInPage(prev, taskId, status),
+  );
+
+  // 撤销：逆序恢复（后写的先还原，避免嵌套写入时被中间态覆盖）
+  return () => {
+    for (let i = snapshots.length - 1; i >= 0; i -= 1) {
+      const [key, prev] = snapshots[i];
+      if (prev === undefined) {
+        // 原本没有该缓存 → 直接移除（写回 undefined 会留下一个空条目）
+        client.removeQueries({ queryKey: key, exact: true });
+      } else {
+        client.setQueryData(key, prev);
+      }
+    }
+  };
+}
+
+/** pause/resume 共用的乐观 mutation 配置（两者只有 mutationFn 与目标状态不同） */
+function taskToggleMutation(
+  client: QueryClient,
+  targetStatus: TaskToggleStatus,
+  mutationFn: (id: string) => Promise<Task>,
+): {
+  mutationFn: (id: string) => Promise<Task>;
+  onMutate: (id: string) => Promise<() => void>;
+  onError: (err: unknown, _id: string, rollback: (() => void) | undefined) => void;
+  onSettled: () => Promise<void>;
+} {
+  return {
+    mutationFn,
+    /**
+     * ① 掐掉在途 GET（关键）：乐观值写入后，一个更早发出、更晚返回的列表
+     *    请求会把 status 盖回旧值——用户看到开关自己弹回去，比不做乐观更新
+     *    更糟。`cancelQueries` 会中止这些请求，它们不会再写缓存。
+     */
+    onMutate: async (id: string) => {
+      await client.cancelQueries({ queryKey: queryKeys.tasks.all });
+      // ② 快照 + 写乐观值（返回的撤销函数即快照）
+      const rollback = optimisticallySetTaskStatus(client, id, targetStatus);
+      return rollback;
+    },
+    /** ③ 失败回滚：恢复快照（不 invalidate——回滚本身就是精确还原） */
+    onError: (_err: unknown, _id: string, rollback: (() => void) | undefined) => {
+      rollback?.();
+    },
+    /**
+     * ④ 无论成败都失效任务面：成功时用服务端真相校正乐观值（服务端可能顺带
+     *    改了 updatedAt / 调度器状态），失败时回滚后再拉一次确保一致
+     *    （回滚是本地快照，若期间别处也改过，服务端仍是权威）。
+     */
+    onSettled: () => invalidateTaskData(client),
+  };
+}
+
+/**
+ * OPTIMISTIC-01：暂停任务（行内 Switch / 详情页按钮共用）。
+ *
+ * 行为：`onMutate` 取消在途 GET → 快照 → 乐观把 status 改成 `paused`；
+ * `onError` 回滚；`onSettled` 失效任务面由服务端校正。完整论证见上方
+ * OPTIMISTIC-01 段注释（含与 SSE `invalidateExecutionData` 的互操作分析）。
+ *
+ * 注意 `onSettled` 走 `invalidateTaskData`（tasks + executions + metrics）而
+ * 不是只失效 tasks：pause 会停掉调度器计时器，Dashboard 的
+ * `scheduler.activeCronTasks` / 任务统计随之变化。
+ */
+export function usePauseTask(): UseMutationResult<Task, unknown, string, (() => void) | undefined> {
+  const client = useQueryClient();
+  return useMutation({
+    ...taskToggleMutation(client, 'paused', (id: string) => tasksApi.pause(id)),
+  });
+}
+
+/** OPTIMISTIC-01：恢复任务（与 usePauseTask 完全对称，目标状态 `active`）。 */
+export function useResumeTask(): UseMutationResult<Task, unknown, string, (() => void) | undefined> {
+  const client = useQueryClient();
+  return useMutation({
+    ...taskToggleMutation(client, 'active', (id: string) => tasksApi.resume(id)),
+  });
 }
 
 // 执行器面 ────────────────────────────────────────────────────────────────

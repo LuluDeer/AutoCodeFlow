@@ -614,9 +614,50 @@ export class PaginatedTaskListDto {
 
   @ApiProperty()
   totalPages: number;
+
+  /**
+   * 仅当请求带 `cursor` 时出现（keyset 分支）：`null` = 已到末页。
+   *
+   * PLAN-BACKEND-ARCHITECTURE §2.1 的**加性**扩展——既有 6 个字段的类型与名字
+   * 一个都没动（四端消费：admin-web / acf-cli / mcp-server / 执行器机器面）。
+   *
+   * 出现条件与 `PaginatedExecutionListDto#nextCursor` 逐字相同：
+   *   · 不带 `cursor` → OFFSET 分支，该键**根本不出现**（旧路径逐字节不变）；
+   *   · 带 `cursor` → keyset 分支，该键必然出现（字符串 = 下一页；null = 末页）。
+   *
+   * 之所以是 `@ApiPropertyOptional` 而不是 `@ApiProperty({ nullable: true })`：
+   * 契约必须能表达"**键可能不存在**"，否则与 OFFSET 分支的真实响应不符——而
+   * OFFSET 分支正是当前四端唯一在用的路径。
+   */
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      "keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标与默认排序（createdAt DESC, id DESC）绑定：与 sortBy 或 lastStatus 同时给出会返回 400。",
+  })
+  nextCursor?: string | null;
 }
 
-/** GET /tasks 与 GET /tasks/:id/executions 共用信封（载荷不同）。 */
+/**
+ * 执行列表信封：`GET /tasks/:id/executions` 与 `GET /tasks/executions/all`
+ * 共用（载荷同为执行行）。
+ *
+ * PLAN-BACKEND-ARCHITECTURE §2.1（游标分页·加性过渡）：本类**只新增**了可选的
+ * `nextCursor`，既有 6 个字段的类型与名字一个都没动——它们被四端消费
+ * （admin-web / acf-cli / mcp-server / 执行器机器面）。
+ *
+ * `nextCursor` 的**出现条件**（重要，别按"恒下发"理解）：
+ *   · 请求不带 `cursor` → 走 OFFSET 分支，该键**根本不出现**（响应与引入游标
+ *     之前逐字节一致）。故 `required` 里**没有**它。
+ *   · 请求带 `cursor` → 走 keyset 分支，该键必然出现：字符串 = 下一页游标，
+ *     `null` = 已到末页。调用方据"键是否存在"即可判断服务端是否在 keyset 模式，
+ *     据"是否为 null"判断是否翻完。
+ *
+ * 注意 `total`：keyset 分支下**仍然是真实总数**（复用同条件的 COUNT，见
+ * task.service 里 `getExecutionsByKeyset` / `getAllExecutionsByKeyset` 的注释），
+ * 不返回 -1/近似值——`total` 的类型断言不能撒谎，否则所有按 `total` 渲染
+ * "共 N 条"的四端都会显示错值。
+ */
 export class PaginatedExecutionListDto {
   @ApiProperty({ type: [ExecutionListItemDto] })
   list: ExecutionListItemDto[];
@@ -635,6 +676,21 @@ export class PaginatedExecutionListDto {
 
   @ApiProperty()
   totalPages: number;
+
+  /**
+   * 仅当请求带 `cursor` 时出现（keyset 分支）：`null` = 已到末页。
+   *
+   * 之所以是 `@ApiPropertyOptional` 而不是 `@ApiProperty({ nullable: true })`：
+   * 它必须能在 OpenAPI 里表达"**键可能不存在**"。若声明成必填，契约会与 OFFSET
+   * 分支的真实响应（无此键）不符——而 OFFSET 分支是当前四端唯一在用的路径。
+   */
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      "keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。",
+  })
+  nextCursor?: string | null;
 }
 
 /** GET /tasks/executions/:execId/logs 行分页读面（无 envelope 之下的 data）。 */

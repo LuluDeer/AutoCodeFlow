@@ -32,12 +32,9 @@ export const ANALYZE_TIMEOUT_MS = 120_000;
  */
 export const UPLOAD_TIMEOUT_MS = 300_000;
 
-/** base URL without trailing slashes（/auth/refresh 直连拼接用） */
-function baseUrl(): string {
-  return getApiUrl().replace(/\/+$/, "");
-}
-
-/** Reset client (needed after config changes in same process). */
+/**
+ * Reset client (needed after config changes in same process).
+ */
 export function resetClient(): void {
   _client = null;
 }
@@ -81,12 +78,27 @@ export function unwrap<T>(raw: unknown): T {
 //   被拒」的认证态，不是业务副作用重试，单次重放安全。
 let refreshInFlight: Promise<string | null> | null = null;
 
+/**
+ * 刷新 access token。
+ *
+ * BUG-13 的原始自愈逻辑：401 → POST /auth/refresh → 拿到新 token 后重放。
+ *
+ * **NETOPT-7（审计 P1-4，2026-10-17）**：此前这里用裸 `baseUrl()` 拼接，
+ * 而 admin-api 有全局 `api` 前缀（main.ts setGlobalPrefix）——请求实际打到
+ * `http://host:3105/auth/refresh`（缺 `/api`）→ **404** → catch 吞掉 → 返回
+ * null → 调用方 `clearAuth()` 把 access + refresh token 一起清空。也就是说
+ * **每一次正常的令牌过期都会把用户登出**，用户被迫重新 `acf login`（而
+ * refresh token 本身还有 30 天寿命、完全有效）。
+ *
+ * 修复：走与其它请求同一个归一入口 `normalizeApiBase(getApiUrl())`，
+ * 两条路径的 base 永远一致（同源漂移已被本缺陷证明代价极高）。
+ */
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return null;
   try {
     const r = await axios.post(
-      `${baseUrl()}/auth/refresh`,
+      `${normalizeApiBase(getApiUrl())}/auth/refresh`,
       { refreshToken },
       { timeout: 10_000 },
     );

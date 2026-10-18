@@ -43,6 +43,53 @@ describe("AUTH-03 guard 纯函数", () => {
     expect(isJwtOnlyPath("users-legacy-x")).toBe(false);
   });
 
+  /**
+   * CASE-01（审计 P2，2026-10-17）：大小写不得绕过 JWT-only 面。
+   *
+   * Express 的路由匹配默认大小写不敏感（`caseSensitive: false`），所以
+   * `POST /api/API-KEYS` 会命中 `@Controller("api-keys")` 的处理器。而
+   * normalizeApiPath 此前按原样返回 `API-KEYS`，与全小写白名单比对必然
+   * 不匹配 → 被判为「非 JWT-only 面」→ **持 API Key 即可打 api-keys /
+   * auth / users / config**（AUTH-03 明确要隔离的面，API Key 权限更低
+   * 且更易泄漏）。
+   */
+  it("CASE-01：大写/混合大小写路径归一后仍命中 JWT-only 面（不得绕过）", () => {
+    for (const raw of [
+      "/api/API-KEYS",
+      "/api/Api-Keys",
+      "/API/api-keys",
+      "/api-keys",
+    ]) {
+      const normalized = normalizeApiPath({ path: raw });
+      expect({ raw, normalized }).toEqual({
+        raw,
+        normalized: "api-keys",
+      });
+      expect({ raw, jwtOnly: isJwtOnlyPath(normalized) }).toEqual({
+        raw,
+        jwtOnly: true,
+      });
+    }
+    for (const p of JWT_ONLY_API_KEY_PATHS) {
+      expect(
+        isJwtOnlyPath(normalizeApiPath({ path: `/api/${p.toUpperCase()}` })),
+      ).toBe(true);
+      expect(
+        isJwtOnlyPath(
+          normalizeApiPath({ path: `/api/${p.toUpperCase()}/x/1` }),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("CASE-01：业务路径大写后仍**不**被误判为 JWT-only（反证）", () => {
+    expect(isJwtOnlyPath(normalizeApiPath({ path: "/api/TASKS" }))).toBe(false);
+    expect(
+      isJwtOnlyPath(normalizeApiPath({ path: "/api/USERS-LEGACY-X" })),
+    ).toBe(false);
+    expect(isJwtOnlyPath(normalizeApiPath({ path: "/api/AUDIT" }))).toBe(false);
+  });
+
   it("acf_ 前缀常量与 util 前缀一致，JWT 形态不会误判为 API Key", () => {
     expect(API_KEY_PREFIX).toBe("acf_");
     expect(looksLikeApiKey("acf_abc")).toBe(true);

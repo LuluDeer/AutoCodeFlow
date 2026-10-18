@@ -5,6 +5,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { pickRecentMetaFiles } from './meta-files';
 // 用户报障（执行器应用显示不对）：应用清单必须按执行器**真实**的
 // apps/<appId>/releases/<version>-<deploymentId>/ 布局解析，而不是把
@@ -49,13 +50,19 @@ import {
   CONFIG_IMPORT_MAX_BYTES,
   LOG_EXPORT_MAX_BYTES,
   buildConfigExportPayload,
+  buildDiagnosticReport,
   configExportFileName,
+  diagnosticReportFileName,
   execLogExportFileName,
   logExportTooLarge,
   parseImportedConfig,
 } from './export-flows';
+import type { DiagnosticInputs, DiagnosticWorkDirInfo } from './export-flows';
+// PLAN-EXECUTOR-DESKTOP-UX 5.1：健康面板只投影诊断报告的三段（纯函数，
+// 零 electron 依赖，行为由 health-panel.selftest.ts 驱动）。
+import { projectHealthInputs } from './health-panel';
 // B-9/B-11：向导完成面的启动结果反馈——健康等待与注册预检（纯 Node 原语）。
-import { fetchAdminRegistration, waitForExecutorHealthy } from './port-probe';
+import { fetchAdminRegistration, probeHealthLive, waitForExecutorHealthy } from './port-probe';
 // UX-DSK-PORT：向导预检用的端口归一化（与 HeartbeatMonitor 同一实现）。
 import { normalizeHeartbeatPort } from './heartbeat';
 // B-13：releases 保留期自动清扫（纯 Node 模块，决策在 release-retention.ts）。
@@ -601,6 +608,59 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('config:test-connection', async (_event, url: string) => {
     return testAdminApiConnection(url);
+  });
+
+  // ── PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出 ────────────────────────
+  // 报障时的第一句话永远是「把日志发我」——但日志里没有版本、没有配置、
+  // 没有工作目录状态，运维还得追问四五轮。本 handler 把现场一次收齐，
+  // 组装逻辑全在纯函数 buildDiagnosticReport()（export-flows.ts，零 electron
+  // 依赖，行为由 export-flows.selftest.ts 直接驱动）。
+  //
+  // 与 config:export 的**刻意差异**：那边拿错真值源要抛错（宁可失败也不写
+  // 错文件），这边**绝不失败**——诊断是排障的最后手段。因此：
+  //   · 配置一律走 getAllMasked()（第一层脱敏），且 buildDiagnosticReport 内部
+  //     还会对凭据键强制掩码 + 对已知真值做子串抹除（第二、三层）；
+  //   · 探针/statfs 任何异常都降级为 null，不阻断报告生成。
+  ipcMain.handle('diagnostics:export', async () => {
+    const now = new Date();
+    const result = await dialog.showSaveDialog({
+      title: '导出诊断报告（执行器密钥已脱敏）',
+      defaultPath: path.join(app.getPath('downloads'), diagnosticReportFileName(now)),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+    try {
+      const report = buildDiagnosticReport(await collectDiagnosticInputs(now));
+      await fs.promises.writeFile(
+        result.filePath,
+        `${JSON.stringify(report, null, 2)}\n`,
+        'utf-8',
+      );
+      log.info(`diagnostic report exported to ${result.filePath}`);
+      return { ok: true, path: result.filePath };
+    } catch (err: any) {
+      log.warn(`diagnostic report export failed: ${err?.message ?? err}`);
+      return { ok: false, error: err?.message ?? String(err) };
+    }
+  });
+
+  // ── PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板的**只读**取数通道 ──────
+  // 面板是纯展示层（计划原文），因此这里**不新增任何采集逻辑**：
+  //   · 现场仍由既有的 collectDiagnosticInputs() 收（探针/statfs/日志都在那里）；
+  //   · 组装仍交给既有的纯函数 buildDiagnosticReport()（三层脱敏随之生效）；
+  //   · 只把面板需要的三段投影出去（projectHealthInputs），**不带** config 段
+  //     与 recentLogs 段——那两段过了桥就是白给的额外暴露面，面板也用不到。
+  // 与 diagnostics:export 的关系是「同一条真值源的两种出口」：导出走文件，
+  // 面板走 IPC。渲染层因此永远不需要自己探 /health 或 statfs（第二套真值源）。
+  ipcMain.handle('diagnostics:health-panel', async () => {
+    try {
+      const report = buildDiagnosticReport(await collectDiagnosticInputs(new Date()));
+      return { ok: true, report: projectHealthInputs(report) };
+    } catch (err: any) {
+      // 面板失败必须页内可见（桌面端无 toast 体系），因此不吞错。
+      log.warn(`health panel collection failed: ${err?.message ?? err}`);
+      return { ok: false, error: err?.message ?? String(err) };
+    }
   });
 
   // ── 解释器下载源连通性探测（首启向导「下载源」步）────────────────────
@@ -1408,6 +1468,132 @@ function probeInterpreterSource(url: string): Promise<InterpreterSourceProbe> {
       done(false, err?.message ?? String(err));
     }
   });
+}
+
+/**
+ * PLAN-EXECUTOR-DESKTOP-UX 5.2：把**当前进程的现场**收成 buildDiagnosticReport
+ * 的注入面。
+ *
+ * 与 buildDiagnosticReport 的分工是本文件的一贯口径（同 export-flows 的
+ * 「纯函数层 / electron 接线层」划分）：所有碰 electron / process / fs 的读取
+ * 都在这里，纯函数只管拼装与脱敏。因此 selftest 能直接驱动纯函数而不需要
+ * 拉起 Electron。
+ *
+ * 三条降级纪律（诊断报告**绝不**因为某项读不到而失败）：
+ *  · 探针（/health/live、admin-status）超时/拒绝 → 字段置 null，不抛；
+ *  · statfs 在 Windows 某些盘符/网络盘会失败 → freeBytes/totalBytes 置 null；
+ *  · 日志读取失败 → recentLogs 空数组。
+ */
+async function collectDiagnosticInputs(now: Date): Promise<DiagnosticInputs> {
+  const cfg = configStore.getAll();
+  const masked = configStore.getAllMasked() as unknown as Record<string, unknown>;
+  const port = normalizeHeartbeatPort(cfg.executorPort);
+
+  // ── 健康快照 ─────────────────────────────────────────────────────────
+  // 本地 /health/live 是一次 2s 上限的实探（同 probeHealthLive 的既有口径）；
+  // 中台注册判定走 fetchAdminRegistration（'unknown' = 旧 bundle 无该端点，
+  // 不得据此断言失败，与 B-11 的向导预检同一语义）。
+  const [localHealthLive, adminRegistration] = await Promise.all([
+    executorProcess.isRunning() ? probeHealthLive(port, 2_000) : Promise.resolve(null),
+    executorProcess.isRunning() ? fetchAdminRegistration(port, 2_000) : Promise.resolve('unknown'),
+  ]);
+
+  // ── 工作目录可写性 + 剩余空间 ────────────────────────────────────────
+  const workDirPath = (cfg.workDir || '').trim();
+  const workDir = workDirPath ? await probeWorkDir(workDirPath) : {};
+
+  // ── 最近日志（桌面端自身当天日志的尾部）───────────────────────────────
+  // 与 logs:getToday 同一真值源（userData/logs/executor-YYYY-MM-DD.log），
+  // 但上限更小：报告是给人读的，200 行足够看出"最近在干什么"。
+  let recentLogs: string[] = [];
+  try {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    const fileName = `executor-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}.log`;
+    const filePath = path.join(logDir, fileName);
+    if (fs.existsSync(filePath)) recentLogs = readLastLines(filePath, 200);
+  } catch {
+    /* 日志读不到不影响报告（诊断不能因为一个可选项失败而失败） */
+  }
+
+  return {
+    now,
+    runtime: {
+      appVersion: app.getVersion(),
+      electronVersion: process.versions.electron ?? '',
+      nodeVersion: process.versions.node ?? '',
+      chromeVersion: process.versions.chrome ?? '',
+      osVersion: `${os.type()} ${os.version()}`.trim(),
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: os.release(),
+      packaged: app.isPackaged,
+      locale: app.getLocale(),
+    },
+    // 掩码读面（第一层脱敏）；buildDiagnosticReport 内部还有两层。
+    config: masked,
+    health: {
+      executorStatus: executorProcess.getStatus(),
+      executorRunning: executorProcess.isRunning(),
+      // 未运行时不探测（避免给用户一个"离线"的假告警——执行器本来就没开）
+      localHealthLive: localHealthLive ?? undefined,
+      adminRegistration: adminRegistration ?? 'unknown',
+      executorPort: port,
+      adminApiUrl: cfg.adminApiUrl || undefined,
+    },
+    workDir,
+    recentLogs,
+    // 已知凭据真值：让自由文本（日志行/错误消息）里的 token 也被抹掉。
+    // getAll() 的 token 可能是 enc:ss: 信封也可能是明文——两种都是真凭据。
+    knownSecrets: [cfg.executorToken].filter(
+      (v): v is string => typeof v === 'string' && v.trim() !== '',
+    ),
+  };
+}
+
+/**
+ * 工作目录探测：存在性 + 可写性 + 剩余空间。
+ *
+ * 可写性用「真的写一个临时文件再删」判定（accessSync(W_OK) 在 Windows 上
+ * 对只读目录/ACL 拒绝的判定不可靠，且不会暴露"能 stat 不能写"这类 ACL 形态）。
+ * 写入目标是目录内一个唯一命名的空文件，失败即删；任何异常都转成 probeError
+ * 文本回流，绝不抛。
+ */
+async function probeWorkDir(dir: string): Promise<DiagnosticWorkDirInfo> {
+  const out: DiagnosticWorkDirInfo = { path: dir };
+  try {
+    out.exists = fs.existsSync(dir);
+  } catch {
+    out.exists = false;
+  }
+  if (out.exists) {
+    const probePath = path.join(dir, `.acf-diag-${process.pid}-${Date.now()}.tmp`);
+    try {
+      await fs.promises.writeFile(probePath, '');
+      out.writable = true;
+    } catch (err: any) {
+      out.writable = false;
+      out.probeError = err?.message ?? String(err);
+    } finally {
+      // 清理失败不影响判定（文件是空的，且名字可辨识）。
+      await fs.promises.unlink(probePath).catch(() => undefined);
+    }
+  } else {
+    // 不存在就是"不可写"——不是"未知"。用户要看到的是"目录不存在"。
+    out.writable = false;
+  }
+  // statfs：Windows 上对非根盘/网络盘可能抛，失败保持 undefined（→ null）。
+  try {
+    const stats = await fs.promises.statfs(dir);
+    // bavail = 非特权进程真正可用的块数（同 admin-api checkDisk 的口径）；
+    // 用 bfree 会在保留块上系统性低估可用空间。
+    out.freeBytes = Number(stats.bavail) * Number(stats.bsize);
+    out.totalBytes = Number(stats.blocks) * Number(stats.bsize);
+    if (!Number.isFinite(out.freeBytes) || out.freeBytes < 0) delete out.freeBytes;
+    if (!Number.isFinite(out.totalBytes) || out.totalBytes <= 0) delete out.totalBytes;
+  } catch {
+    /* 空间读不到：字段留空（报告里显示 null），不影响其余段 */
+  }
+  return out;
 }
 
 function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: string }> {

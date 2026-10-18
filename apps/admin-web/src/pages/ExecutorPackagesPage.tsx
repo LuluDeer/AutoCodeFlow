@@ -17,6 +17,7 @@ import { Table,
   Badge,
   Card,
   Progress,
+  Switch,
   theme } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
@@ -25,6 +26,7 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   UploadOutlined, CloudDownloadOutlined, SendOutlined, DeleteOutlined,
   ReloadOutlined, PlusOutlined, StopOutlined, CheckCircleOutlined,
+  LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
 import {
   listPackages, uploadPackage, deletePackage, pushPackage,
@@ -111,6 +113,39 @@ function fmtBytes(b?: number) {
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/**
+ * §2.1 keyset 分页的前端状态：游标**栈** + 当前索引。
+ *
+ * 照抄 ExecutionsPage 的同一套范式（那边已被 14 条用例钉死，不另造一套）：
+ * 游标分页没有「跳到第 N 页」——后端只给「下一页」令牌（`nextCursor`），
+ * **没有**「上一页」令牌，要支持「上一页」客户端必须自己记住走过的路径。
+ *
+ * 约定：`stack[0]` 恒为第 1 页的起点，`stack[i]` 是「要显示第 i+1 页时要发给
+ * 后端的 cursor」。栈里存的是**不透明**令牌，前端一律原样回传，绝不解析拼接。
+ */
+type CursorStack = {
+  /** stack[0] 恒为 null（= 不带 cursor 参数）；stack[i] 为第 i+1 页的游标。 */
+  stack: (string | null)[];
+  /** 当前页在栈中的下标（0-based）。 */
+  index: number;
+};
+
+/**
+ * 栈的初始形态。
+ *
+ * `firstPageCursor === undefined` → `stack = [null]`：第 1 页**不带** cursor 参数，
+ * 后端走原 OFFSET 路径（关闭开关时的现有行为，逐字节不变）。
+ * `firstPageCursor === ''` → `stack = ['']`：第 1 页带 `cursor=`（空串），
+ * 后端走 keyset 分支的起点。
+ *
+ * 这两种形态必须在**状态层**就分开，而不是在渲染期用 `??` 归一——一旦糊成
+ * 「空串也当没传」，keyset 起点就永远进不去（axios 会把 undefined 的键整个丢掉，
+ * 把空串序列化成 `cursor=`，两者在网络层是可区分的，别在本地先毁掉这个区分）。
+ */
+const initialCursorStack = (
+  firstPageCursor: string | undefined,
+): CursorStack => ({ stack: [firstPageCursor ?? null], index: 0 });
+
 export default function ExecutorPackagesPage() {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：浅填充走 antd token，暗色主题自适应。
@@ -118,6 +153,11 @@ export default function ExecutorPackagesPage() {
   const statusTags = STATUS_TAG(t);
   const [rows, setRows] = useState<PkgRow[]>([]);
   const [total, setTotal] = useState(0);
+  /**
+   * keyset 分支专有的「下一页」令牌。`null` = 末页；关掉开关时恒为 `null`
+   * （OFFSET 响应里连这个键都没有，见 `ExecutorPackageListResult#nextCursor`）。
+   */
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [search, setSearch] = useState('');
@@ -129,6 +169,51 @@ export default function ExecutorPackagesPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 20;
+
+  /**
+   * §2.1「稳定翻页」开关——默认**关闭**。
+   *
+   * 关闭 = 完全走既有的 OFFSET 分页：请求里**不带** `cursor` 参数，后端走原
+   * 路径、响应逐字节不变（连 `nextCursor` 这个键都不出现），页面行为与本轮改动
+   * 之前完全一致。这是刻意保留的零风险默认值：keyset 是加性能力，不是默认切换。
+   *
+   * 打开 = 走 keyset 分页：列表底部换自绘的「上一页 / 下一页」+ 游标栈，
+   * **不再提供页码跳转**（游标分页没有"第 N 页"这个概念）。
+   */
+  const [stablePaging, setStablePaging] = useState(false);
+  /**
+   * 游标栈（仅 keyset 模式有意义）。`stack[0]` 在关闭开关时是 `null`（第 1 页
+   * **不带** cursor 参数）；开关打开时由 `toggleStablePaging` 重置成 `''`
+   * （空串 = keyset 起点）。两种形态在状态里就是不同的值，不在渲染期糊成同一个。
+   */
+  const [cursorState, setCursorState] = useState<CursorStack>(() => initialCursorStack(undefined));
+
+  /**
+   * 重置游标栈（回到第 1 页）。
+   *
+   * **所有会改变结果集的入口都必须调用它**：带着旧筛选的游标继续翻，游标里的
+   * (createdAt, id) 与新的过滤条件毫无关系，后端的游标条件与过滤器取交集后会
+   * 返回"从某条不相干的行往后"的错乱结果——不报错、不空白，只是内容错了。
+   *
+   * `keysetStart` 决定重置到哪条路径的首页：
+   *   · `false` → `stack = [null]`（第 1 页不带 cursor 参数，OFFSET 路径）；
+   *   · `true`  → `stack = ['']`（第 1 页带 `cursor=`，keyset 起点）。
+   */
+  const resetCursorStack = (keysetStart: boolean) => {
+    setCursorState(initialCursorStack(keysetStart ? '' : undefined));
+  };
+
+  /**
+   * 当前请求应携带的游标。
+   *
+   * `undefined` = 不带该参数（axios 把键整个丢掉）→ 后端 OFFSET 分支；
+   * `''`        = `?cursor=` → 后端 keyset 起点；
+   * 非空串      = keyset 中途页。
+   *
+   * 关闭开关时恒为 `undefined`（外加把栈重置回 `[null]` 双保险）：默认路径的
+   * 请求参数里**不可能**出现 cursor——这是"旧路径没被碰到"的可执行保证。
+   */
+  const activeCursor = stablePaging ? cursorState.stack[cursorState.index] ?? '' : undefined;
 
   // UI-16 竞态守卫：筛选、分页、刷新或重试快速重入时，仅最新请求允许更新列表状态。
   const loadSeq = useRef(0);
@@ -194,6 +279,14 @@ export default function ExecutorPackagesPage() {
         name: debouncedSearch || undefined,
         type: typeFilter || undefined,
         status: statusFilter || undefined,
+        // keyset 三态的**唯一**出口，落在下面这个三元里：
+        //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
+        //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
+        //
+        // 为什么不是恒传 `cursor: activeCursor` 让 axios 丢弃 undefined：键要
+        // 不要在**我们**这一层就必须确定——"旧路径逐字节不变"是硬要求，把它押在
+        // axios 的序列化细节上等于把风险外包给库版本。
+        ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
       });
       if (seq !== loadSeq.current) return;
       // 后端响应里本就带 `status`（executor_packages.status 列）。此前这里用
@@ -203,6 +296,9 @@ export default function ExecutorPackagesPage() {
       // 对全部包不可达**。如实使用响应里的值即可。
       setRows(res.items);
       setTotal(res.total);
+      // `nextCursor` 只在 keyset 分支出现（OFFSET 分支连键都没有），如实落库；
+      // 关闭开关时强制清空，避免切回 OFFSET 后残留上一模式的末页标记。
+      setNextCursor(stablePaging ? res.nextCursor ?? null : null);
       setLoadError(null);
     } catch (err: unknown) {
       if (seq !== loadSeq.current) return;
@@ -211,13 +307,57 @@ export default function ExecutorPackagesPage() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [page, debouncedSearch, typeFilter, statusFilter, t]);
+  }, [page, debouncedSearch, typeFilter, statusFilter, activeCursor, stablePaging, t]);
 
   useEffect(() => {
     load();
     // 与 AppDeploymentPage 对齐：依赖变化/卸载时作废本 effect 发起的旧请求。
     return () => { loadSeq.current += 1; };
   }, [load]);
+
+  /**
+   * keyset 模式下本页是否还有下一页。
+   *
+   * 严谨区分三种来源（**不能**用 `!!nextCursor` 一句糊过去）：
+   *   · 关闭开关 → 根本不是 keyset 模式，`nextCursor` 键不存在 → 这里恒为 null；
+   *   · keyset 且 `nextCursor === null` → 后端明确说「已到末页」→ 禁用下一页；
+   *   · keyset 且拿到了字符串 → 还有下一页。
+   *
+   * 关闭开关时即使 state 里残留了值也不认（`stablePaging &&`）——那只会让
+   * 页码分页的底部凭空多出一个禁用的自绘分页器。
+   */
+  const canNext = stablePaging && nextCursor !== null;
+
+  /**
+   * 下一页：把刚拿到的游标压栈并前进一格（无游标或到末页时不动）。
+   *
+   * 连点安全：第二次点击时 `nextCursor` 可能仍是同一个令牌（state 尚未被新响应
+   * 覆盖），下面「同一游标不重复压栈」的判据会把第二下变成空操作，不会在栈里
+   * 堆出重复条目、也不会跳过一页。
+   */
+  const goNext = () => {
+    if (!canNext || nextCursor === null) return;
+    setCursorState((s) => {
+      const stack = s.stack.slice(0, s.index + 1);
+      if (stack[stack.length - 1] === nextCursor) return s;
+      stack.push(nextCursor);
+      return { stack, index: stack.length - 1 };
+    });
+  };
+
+  /** 上一页：在栈内回退一格（栈首禁用）。 */
+  const goPrev = () => {
+    setCursorState((s) => (s.index > 0 ? { ...s, index: s.index - 1 } : s));
+  };
+
+  /** 开关切换：两条路径的首页语义不同，必须重置栈，否则会带着上一模式的游标越界。 */
+  const toggleStablePaging = (next: boolean) => {
+    setStablePaging(next);
+    resetCursorStack(next);
+    // keyset 没有"第 N 页"的坐标系，切模式后页码回 1（关闭时也回 1，避免
+    // 「页码 5 + 无游标」的自相矛盾组合）。
+    setPage(1);
+  };
 
   // 补充 P2：自动刷新——包表/推送结果会异步变化（入队任务完成、状态翻转），
   // 旧实现必须手动点刷新。30s 轮询一次；弹窗打开或正在加载时跳过，避免打断交互。
@@ -465,16 +605,17 @@ export default function ExecutorPackagesPage() {
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
           placeholder={t('execPkg.searchPlaceholder')} value={search} allowClear style={{ width: 200 }}
-          onChange={e => { setSearch(e.target.value); setPage(1); }}
+          // §2.1：筛选变化必须同时重置游标栈（原因见 resetCursorStack 注释）
+          onChange={e => { setSearch(e.target.value); setPage(1); resetCursorStack(stablePaging); }}
         />
         <Select
           placeholder={t('execPkg.filter.type')} value={typeFilter || undefined} allowClear style={{ width: 120 }}
-          onChange={v => { setTypeFilter(v ?? ''); setPage(1); }}
+          onChange={v => { setTypeFilter(v ?? ''); setPage(1); resetCursorStack(stablePaging); }}
           options={[...PACKAGE_TYPES]}
         />
         <Select
           placeholder={t('execPkg.filter.status')} value={statusFilter || undefined} allowClear style={{ width: 120 }}
-          onChange={v => { setStatusFilter(v ?? ''); setPage(1); }}
+          onChange={v => { setStatusFilter(v ?? ''); setPage(1); resetCursorStack(stablePaging); }}
           options={[
             { value: 'active', label: t('execPkg.status.active') },
             { value: 'deprecated', label: t('execPkg.status.deprecated') },
@@ -484,6 +625,22 @@ export default function ExecutorPackagesPage() {
         />
         <Button icon={<ReloadOutlined />} onClick={load}>{t('execPkg.refresh')}</Button>
         <Text type="secondary">{t('execPkg.count', { count: total })}</Text>
+        {/* §2.1：稳定翻页开关（默认关闭）。
+            用 antd Switch——它本身就是 role="switch" + 原生 button 语义，
+            Tab 可聚焦、Space/Enter 可切换，无需再补键盘处理；aria-label 给出
+            可访问名（开关没有可见文字标签时，纯靠旁边的文字不构成可访问名）。
+            关闭时不发任何 cursor 参数，后端与页面行为都回到改动前。 */}
+        <Space size={6} style={{ marginLeft: 'auto' }}>
+          <Switch
+            size="small"
+            checked={stablePaging}
+            onChange={toggleStablePaging}
+            aria-label={t('execPkg.stablePaging.aria')}
+          />
+          <Tooltip title={t('execPkg.stablePaging.hint')}>
+            <Text type="secondary" style={{ fontSize: 12 }}>{t('execPkg.stablePaging')}</Text>
+          </Tooltip>
+        </Space>
       </Space>
 
       {/* 补充 P2：机队执行器版本分布摘要——多版本并存即漂移，橙色 Tag 提示。 */}
@@ -507,8 +664,20 @@ export default function ExecutorPackagesPage() {
         // 首屏 emptyText 骨架（UI-08）原样保留
         loading={loading}
         scroll={{ x: 1060 }}
-        pagination={{
-          current: page, pageSize: PAGE_SIZE, total, onChange: setPage,
+        // §2.1：两种分页形态**互斥**——这是本页最关键的一处语义切换。
+        //
+        // keyset 模式（开关打开）下 `pagination={false}`：游标分页没有"第 N 页"
+        // 这个概念，页码器必须**整体消失**而不是留在原地。若只禁用它、或保留
+        // 页码却把 current 硬钉在 1，用户点「第 5 页」会被告知"在第 1 页"，
+        // 或更糟——页码变了但列表没变（静默错乱）。宁可没有页码，也不能给一个
+        // 骗人的页码。翻页改由表格下方自绘的「上一页 / 下一页」承担。
+        //
+        // OFFSET 模式（开关关闭）保持原样，逐字节不变。
+        pagination={stablePaging ? false : {
+          current: page, pageSize: PAGE_SIZE, total,
+          // §2.1：pageSize/页码变更同样要重置游标栈——每页条数变了，旧的
+          // (createdAt,id) 游标与新的切片边界不再对应。
+          onChange: (p) => { setPage(p); resetCursorStack(stablePaging); },
           showTotal: (totalCount) => t('execPkg.countRows', { count: totalCount }),
         }}
         locale={{
@@ -520,6 +689,44 @@ export default function ExecutorPackagesPage() {
               : <AntEmpty image={AntEmpty.PRESENTED_IMAGE_SIMPLE} description={t('execPkg.empty')} />,
         }}
       />
+
+      {/* §2.1：keyset 模式的自绘分页器。
+          游标分页只有「下一页」令牌，没有「上一页」令牌——上一页靠游标栈回退，
+          故这里**只有两个按钮，没有页码、没有页码跳转**（见上方 pagination 注释）。
+          关闭开关时整块不渲染（`stablePaging ?`），旧页面形态零变化。 */}
+      {stablePaging ? (
+        <div
+          style={{
+            marginTop: 16,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: 12,
+          }}
+        >
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('execPkg.countRows', { count: total })}
+          </Text>
+          <Button
+            size="small"
+            icon={<LeftOutlined />}
+            // 栈首禁用：没有上一页可回（此时再点只会重复请求同一游标）
+            disabled={cursorState.index === 0}
+            onClick={goPrev}
+          >
+            {t('execPkg.pager.prev')}
+          </Button>
+          <Button
+            size="small"
+            // 后端说没有下一页（nextCursor === null，含"游标行被删"的提前结束）
+            disabled={!canNext}
+            onClick={goNext}
+          >
+            {t('execPkg.pager.next')}
+            <RightOutlined />
+          </Button>
+        </div>
+      ) : null}
 
       {/* 上传弹窗 */}
       <Modal

@@ -25,6 +25,13 @@ import { showApiError } from '../../utils/error';
 // 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
 import { formatDateTime } from '../../utils/timeFormat';
 import StateError from '../../components/StateError';
+import PasswordStrengthMeter from '../../components/PasswordStrengthMeter';
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_RULE_DIGIT,
+  PASSWORD_RULE_SPECIAL,
+  PASSWORD_RULE_UPPERCASE,
+} from '../../utils/passwordPolicy';
 import { useAuthStore } from '../../store/auth';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -225,6 +232,11 @@ export function PasswordCard() {
   const user = useAuthStore((s) => s.user);
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  // SECURITY §3.1：强度计要实时读「新密码」——useWatch 只订阅该字段，
+  // 不会让整张卡跟着每次击键重渲染（antd 的 useWatch 是字段级订阅）。
+  const watchedNewPassword = Form.useWatch('newPassword', form) as
+    | string
+    | undefined;
 
   const onSubmit = async (values: PasswordFormValues) => {
     if (!user?.id) return;
@@ -273,16 +285,26 @@ export function PasswordCard() {
         <Form.Item
           name="newPassword"
           label={t('security.password.new')}
+          // SECURITY §3.1：规则收敛到 utils/passwordPolicy（后端
+          // validatePasswordStrength 的逐字镜像）——此前这里内联三条 pattern，
+          // 与 UserManagementPage 内联的正则**不一致**（那边多要求小写字母）。
           rules={[
             { required: true, message: t('security.password.newRequired') },
-            { min: 8, message: t('security.password.rule.length') },
-            { pattern: /[A-Z]/, message: t('security.password.rule.uppercase') },
-            { pattern: /[0-9]/, message: t('security.password.rule.digit') },
-            { pattern: /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/, message: t('security.password.rule.special') },
+            { min: PASSWORD_MIN_LENGTH, message: t('security.password.rule.length') },
+            { pattern: PASSWORD_RULE_UPPERCASE, message: t('security.password.rule.uppercase') },
+            { pattern: PASSWORD_RULE_DIGIT, message: t('security.password.rule.digit') },
+            { pattern: PASSWORD_RULE_SPECIAL, message: t('security.password.rule.special') },
           ]}
         >
           <Input.Password placeholder={t('security.password.newPlaceholder')} autoComplete="new-password" />
         </Form.Item>
+        {/* 实时强度反馈：直接读表单里的新密码值（useWatch 不触发额外渲染风暴） */}
+        <div style={{ marginTop: -8, marginBottom: 12, maxWidth: 420 }}>
+          <PasswordStrengthMeter
+            password={watchedNewPassword ?? ''}
+            idPrefix="pwd-self"
+          />
+        </div>
         <Form.Item
           name="confirmPassword"
           label={t('security.password.confirm')}

@@ -55,6 +55,12 @@ if (!window.matchMedia) {
 }
 
 beforeEach(() => {
+  // DRAFT-01：草稿落 localStorage——每个用例必须从干净状态起跑。
+  // 本文件里「必填项缺失时入口被校验门拦截」依赖表单**为空**；不清理时上一个
+  // 用例（openTplModal 会填必填项）写下的草稿会被本用例恢复进表单，于是校验
+  // 通过、Modal 打开，断言反了过来。这不是草稿功能的缺陷——恢复是真实产品
+  // 行为（同 task-form-page.test 的隔离注释）——而是本文件缺少隔离。
+  localStorage.clear();
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = {};
   vi.mocked(tasksApi.get).mockReset().mockResolvedValue({} as never);
@@ -67,6 +73,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
 describe('templateConfigFromFormValues 纯映射（FEAT-13）', () => {

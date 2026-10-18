@@ -702,7 +702,7 @@ export default function SopsPage() {
       >
         <Space direction="vertical" style={{ width: '100%' }} size="small">
           {assignable.length === 0 && (
-            <Alert type="warning" showIcon message={t('sops.assignEmpty')} />
+            <Alert type="warning" showIcon title={t('sops.assignEmpty')} />
           )}
           <Select
             style={{ width: '100%' }}

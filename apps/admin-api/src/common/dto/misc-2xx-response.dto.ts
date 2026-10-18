@@ -261,6 +261,19 @@ export class DetailedHealthDto {
     };
     tasks: { status: "healthy" | "degraded" | "unhealthy"; details?: string };
     scheduler: { status: "healthy" | "unhealthy"; details?: string };
+    // PLAN-OBSERVABILITY §5.1：磁盘 / 堆水位（只在本端点，不在 /health/ready）。
+    disk: {
+      status: "healthy" | "degraded" | "unhealthy";
+      details?: string;
+      usedPercent?: number;
+    };
+    memory: {
+      status: "healthy" | "degraded" | "unhealthy";
+      details?: string;
+      heapUsedBytes?: number;
+      heapLimitBytes?: number;
+      heapUsedPercent?: number;
+    };
   };
 
   @ApiProperty({

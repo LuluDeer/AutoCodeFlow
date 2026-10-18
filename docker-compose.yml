@@ -660,6 +660,7 @@ services:
   # ── 监控与告警 (可选，profile: monitoring) — M-3/M-4 ─────────────
   # 启用: docker compose --profile monitoring up -d
   # 组件：Prometheus(指标采集) + Grafana(看板) + Alertmanager(告警路由) +
+  #       alertmanager-hmac-proxy(告警加签侧车，OBS-02) +
   #       postgres_exporter / redis_exporter(基础设施指标) +
   #       Loki + Promtail(经 docker.sock 聚合全部容器日志)
   # 端口（loopback-only）：Grafana http://localhost:3000（默认 admin/admin，
@@ -667,8 +668,9 @@ services:
   # http://localhost:9090；Alertmanager http://localhost:9093；Loki
   # http://localhost:3100。
   # admin-api 已内置 /api/metrics（prom-client，R7 默认开启）——Prometheus 直接
-  # 抓取应用指标。OBS-02 告警入站需 HMAC 签名（Alertmanager 原生 webhook 无法
-  # 直接产生 HMAC），接线需 HMAC 转发侧车，见 docs/deployment.md「监控」段。
+  # 抓取应用指标。告警进平台通知渠道的链路：Alertmanager →（加签侧车）
+  # → POST /api/alerts/webhook；侧车不映射宿主端口，仅内网可达，详见
+  # scripts/alertmanager-hmac-proxy.mjs 与 docs/deployment.md「监控」段。
   prometheus:
     image: prom/prometheus:v2.53.0
     profiles: ['monitoring']
@@ -727,6 +729,48 @@ services:
     networks:
       - autoflow-internal
       - autoflow-public
+
+  # OBS-02：Alertmanager 加签侧车。Alertmanager 原生 webhook_configs 不支持
+  # 自定义签名头，而 admin-api 的 /api/alerts/webhook 强制要求 HMAC-SHA256
+  # （未配置 ALERT_WEBHOOK_SECRET 时端点直接 503）——本服务就是两者之间那个
+  # 「最小加签反代」：收 Alertmanager 的 POST 原始字节 → 附加
+  # X-AutoCodeFlow-Timestamp / X-Hub-Signature-256 → 转发到 admin-api。
+  # 实现与设计取舍见 scripts/alertmanager-hmac-proxy.mjs 头部注释；
+  # 离线自检 scripts/alertmanager-hmac-proxy.selftest.mjs（CI 常驻）。
+  alertmanager-hmac-proxy:
+    # 只需 Node 标准库（零依赖、无构建）：直接挂脚本运行，不引入自定义镜像
+    image: node:24-alpine
+    profiles: ['monitoring']
+    # 刻意**不用** unless-stopped：未配置 ALERT_WEBHOOK_SECRET 时侧车 fail-closed
+    # 退出（exit 1），配 unless-stopped 会变成无限重启刷屏。用 'no' 让它干净停下，
+    # 原因留在 docker compose logs alertmanager-hmac-proxy 里（可见的失败）。
+    restart: 'no'
+    command: ['node', '/opt/alert-proxy/alertmanager-hmac-proxy.mjs']
+    environment:
+      # 与 admin-api **同源**：同一个 secret 既签（侧车）又验（admin-api）。
+      # 空值时侧车拒绝启动，绝不退化成无鉴权转发。
+      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}
+      ALERT_PROXY_TARGET: ${ALERT_PROXY_TARGET:-http://admin-api:3105/api/alerts/webhook}
+      # 容器内必须监听非回环地址（代码默认 127.0.0.1 只适合本机裸跑）。
+      # 本服务**不映射宿主端口** ⇒ 仅在 compose 内网可达。
+      ALERT_PROXY_BIND: ${ALERT_PROXY_BIND:-0.0.0.0}
+      ALERT_PROXY_PORT: ${ALERT_PROXY_PORT:-9099}
+      ALERT_PROXY_TIMEOUT_MS: ${ALERT_PROXY_TIMEOUT_MS:-10000}
+    volumes:
+      - ./scripts/alertmanager-hmac-proxy.mjs:/opt/alert-proxy/alertmanager-hmac-proxy.mjs:ro
+    depends_on:
+      admin-api:
+        condition: service_healthy
+    healthcheck:
+      # 端口经同一变量插值，改 ALERT_PROXY_PORT 不会让探针失联
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:${ALERT_PROXY_PORT:-9099}/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      # 只需内网（admin-api 同在 autoflow-internal）；不给 public 面
+      - autoflow-internal
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0

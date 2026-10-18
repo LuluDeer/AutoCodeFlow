@@ -8,6 +8,13 @@ import { AuditLog } from "./entities/audit-log.entity";
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
 // NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
+// §2.1 keyset 游标：`audit_logs.id` 是 integer（**不是** uuid），故用整型游标
+// 解码器——前半段（base64url / ISO 时间 + 日历回读）与 uuid 版**共用同一份**
+// 实现（splitCursorPayload），只有 id 判据不同。
+import {
+  decodeNumericKeysetCursor,
+  nextNumericKeysetCursor,
+} from "../../common/utils/keyset-cursor.util";
 
 /**
  * SEC-10: append-only 语义开关——迁移 1790000000006 给 audit_logs 加了
@@ -60,6 +67,24 @@ export interface AuditLogPayload {
   resourceId?: string;
   detail?: Record<string, any>;
   ip?: string;
+  result?: "success" | "failure";
+}
+
+/**
+ * 审计域的**过滤条件集合**（不含分页参数）。
+ *
+ * 抽成具名类型而不是在三处各写一遍内联字面量：`findAll` / `exportCsv` /
+ * `findAllByKeyset` 的入参必须**结构完全一致**，否则"CSV 与列表同滤"这条
+ * 承诺在类型层面就无法被 `tsc` 守住（少一个字段只会静默不过滤）。
+ */
+export interface AuditFilterOptions {
+  action?: string;
+  resource?: string;
+  resourceId?: string;
+  username?: string;
+  startTime?: string;
+  endTime?: string;
+  userId?: number;
   result?: "success" | "failure";
 }
 
@@ -144,17 +169,7 @@ export class AuditService {
    * Applies the same filters as findAll but streams all matching rows (no pagination cap).
    * Returns a CSV string with headers.
    */
-  async exportCsv(options: {
-    action?: string;
-    resource?: string;
-    resourceId?: string;
-    username?: string;
-    startTime?: string;
-    endTime?: string;
-    userId?: number;
-    result?: "success" | "failure";
-  }): Promise<string> {
-    const { action, resource, userId } = options;
+  async exportCsv(options: AuditFilterOptions): Promise<string> {
     const qb = this.repo
       .createQueryBuilder("log")
       // A-8: 同事务批量写的时间戳常碰撞（PG 默认微秒精度下同批行同值），
@@ -162,26 +177,12 @@ export class AuditService {
       .orderBy("log.createdAt", "DESC")
       .addOrderBy("log.id", "DESC");
 
-    if (action) {
-      // API-09：放宽原来的 `^[a-zA-Z0-9_.\-\s]+$` 白名单（那会让中文 / `:` / `/`
-      // 等合法搜索直接吃 400，而注入风险早已由绑定参数消除），改为只限长度 +
-      // 转义 LIKE 元字符。见 escapeLikePattern 注释。
-      const sanitizedAction = action.trim().slice(0, 100);
-      qb.andWhere("log.action ILIKE :action", {
-        action: `%${escapeLikePattern(sanitizedAction)}%`,
-      });
-    }
-    if (resource) qb.andWhere("log.resource = :resource", { resource });
-    // AUTH-05: exact match on the identifier column — the DTO field is a
-    // plain string, but a bound-parameter cap keeps oversized query-string
-    // needles from reaching PG at all.
-    if (options.resourceId) {
-      qb.andWhere("log.resourceId = :resourceId", {
-        resourceId: options.resourceId.slice(0, 100),
-      });
-    }
-    if (userId) qb.andWhere("log.userId = :userId", { userId });
-    this.applyExtraFilters(qb, options);
+    // §2.1（审计域收口）：过滤条件**全部**经这一个方法下发。
+    // 改造前这里在本方法内联了 action/resource/resourceId/userId 四条谓词，
+    // findAll 里**又抄了一遍同样四条**（只有后四条走 applyExtraFilters）——
+    // 见 applyAuditFilters 的头注（那是 R4 P1-2 "两条路径同一过滤集" 承诺的
+    // 真实漏点：改一处忘另一处不会被任何断言发现）。
+    this.applyAuditFilters(qb, options);
 
     // Cap export at 10 000 rows; select raw columns only to avoid loading
     // entities and the heavy jsonb `detail` column into memory
@@ -248,19 +249,24 @@ export class AuditService {
     return [header, ...lines, ...truncatedMarker].join("\n");
   }
 
-  async findAll(options: {
-    page?: number;
-    pageSize?: number;
-    action?: string;
-    resource?: string;
-    resourceId?: string;
-    username?: string;
-    startTime?: string;
-    endTime?: string;
-    userId?: number;
-    result?: "success" | "failure";
-  }): Promise<{ data: AuditLog[]; total: number }> {
-    const { page = 1, pageSize = 20, action, resource, userId } = options;
+  async findAll(
+    options: AuditFilterOptions & {
+      page?: number;
+      pageSize?: number;
+      /**
+       * §2.1：**可选**不透明游标。语义与 task 域三个端点逐条一致：
+       * 省略 → OFFSET 分支（响应**逐字节不变**，连 `nextCursor` 这个键都不出现）；
+       * 传入（含空串，表示 keyset 起点）→ keyset 分支并**追加** `nextCursor`。
+       */
+      cursor?: string;
+    },
+  ): Promise<{ data: AuditLog[]; total: number; nextCursor?: string | null }> {
+    // §2.1：不带 cursor 时下面一行都不执行，旧路径**逐字节不变**。
+    if (options.cursor !== undefined && options.cursor !== null) {
+      return this.findAllByKeyset(options, options.cursor);
+    }
+
+    const { page = 1, pageSize = 20 } = options;
     const qb = this.repo
       .createQueryBuilder("log")
       // A-8: createdAt 同值碰撞（同事务批量写）下仅按时间排序会让翻页重复/
@@ -268,33 +274,9 @@ export class AuditService {
       .orderBy("log.createdAt", "DESC")
       .addOrderBy("log.id", "DESC");
 
-    // API-09（本轮体验审查）：放宽 SEC-03 的白名单。
-    //
-    // 原实现要求 `^[a-zA-Z0-9_.\-\s]+$`，否则 400。但：
-    //   · 注入风险早已由**绑定参数**消除（值从不拼进 SQL，`ILIKE :action`），
-    //     该白名单对安全没有增量；
-    //   · 它只剩副作用——用户输入中文、`:`、`/` 这类**完全正常**的搜索词会吃
-    //     400 + 英文技术报错，而用户期待的是"没有匹配"或结果列表。
-    //
-    // 改为只限长度（防 DoS），并转义 LIKE 元字符保证 `%`/`_` 按字面量匹配。
-    // 与 exportCsv 的同款判断逐条对齐（R4 P1-2 要求两条路径同一过滤集）。
-    if (action) {
-      const sanitizedAction = action.trim().slice(0, 100);
-      qb.andWhere("log.action ILIKE :action", {
-        action: `%${escapeLikePattern(sanitizedAction)}%`,
-      });
-    }
+    // 过滤条件：与 exportCsv / keyset 分支**共用同一份**装配（见 applyAuditFilters）。
+    this.applyAuditFilters(qb, options);
 
-    if (resource) qb.andWhere("log.resource = :resource", { resource });
-    // AUTH-05: exact match, same bound-parameter cap as exportCsv — both
-    // paths honour the identical filter set (R4 P1-2 parity).
-    if (options.resourceId) {
-      qb.andWhere("log.resourceId = :resourceId", {
-        resourceId: options.resourceId.slice(0, 100),
-      });
-    }
-    if (userId) qb.andWhere("log.userId = :userId", { userId });
-    this.applyExtraFilters(qb, options);
     // Q12: cap pageSize to prevent full-table scans regardless of caller input
     const safePageSize = Math.min(pageSize, 100);
     const [data, total] = await qb
@@ -305,21 +287,159 @@ export class AuditService {
   }
 
   /**
-   * R4 P1-2: shared username / time-range filters, used by both findAll and
-   * exportCsv so the CSV export honours the same filter set as the list page.
-   * All values are bound as query parameters (no string interpolation).
+   * §2.1（推广到 `GET /audit`）keyset 分支：`(createdAt, id)` 行值比较翻页。
+   *
+   * ## 为什么与 task 域三个端点用**完全一样**的谓词
+   *
+   * 唯一差别是 `audit_logs.id` 的类型。已实测（真 PG，`information_schema`）：
+   *
+   *     audit_logs."createdAt"        timestamp without time zone, precision 6
+   *     audit_logs.id                 integer（`nextval('audit_logs_id_seq')`）
+   *
+   * 时间列与 `task_executions."createdAt"` **逐字段相同**（都是微秒精度），故那套
+   * "毫秒半开区间会漏行"的论证对本表逐字成立；唯一需要换的是 id 的判据
+   * （`decodeNumericKeysetCursor`，见其注释）。
+   *
+   * 实测佐证（本机 autoflow_test，同毫秒 4 行、id 与微秒**反序**、取 id=3 那一行
+   * 做游标）：
+   *   行值比较 `(createdAt, id) < (SELECT c."createdAt", c.id ...)` → `[4]` ✅
+   *   毫秒半开区间                                                → `[1, 2]` ❌
+   * 即半开区间既**漏掉** 4（时间上在游标之后，但 id 4 > 3 被判"不满足"），又
+   * **返回了** 1、2（游标之前的行，翻页原地打转）。构造见
+   * `audit-keyset-pagination.spec.ts` 的"id 与微秒反序"用例。
+   *
+   * ## 与 OFFSET 分支唯一的有意差异
+   *
+   * `pageSize` **不**在这里再 `Math.min(…, 100)` 一次：`applyAuditFilters` 不含
+   * 分页，`safePageSize` 是 OFFSET 分支的局部量。这里改用同一套上限（见下），
+   * 保证两条路径对 `pageSize=9999` 给出同样大的页。
    */
-  private applyExtraFilters(
+  private async findAllByKeyset(
+    options: AuditFilterOptions & { pageSize?: number },
+    rawCursor: string,
+  ): Promise<{ data: AuditLog[]; total: number; nextCursor: string | null }> {
+    // 空串 = 调用方显式声明的 keyset 起点（与 task 域三端点同款约定）；
+    // 非空则必须是合法游标，否则 400 —— 绝不降级到 OFFSET 分支（那会造成
+    // "带着坏游标反复拿回第 1 页、每次都是 200"的翻页死循环）。
+    const cursor =
+      rawCursor === "" ? null : decodeNumericKeysetCursor(rawCursor);
+
+    const safePageSize = Math.min(options.pageSize ?? 20, 100);
+
+    const qb = this.repo
+      .createQueryBuilder("log")
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
+      // 起点与结果集排序不符，翻页会漏/重。
+      .orderBy("log.createdAt", "DESC")
+      .addOrderBy("log.id", "DESC");
+
+    // 过滤条件：与 OFFSET / exportCsv 共用同一份装配（单份真值源，杜绝漂移）。
+    this.applyAuditFilters(qb, options);
+
+    if (cursor) {
+      // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
+      // 主键从库里取回（含微秒）。论证见 task.service.getExecutionsByKeyset 头注；
+      // 本表的实测结论见本方法头注。
+      //
+      // 子查询里的 `$1` 是**字符串**，由 PG 按 `integer` 解析（`'42'::integer`
+      // 合法）；这是刻意的——载荷保持字符串可容纳超过 2^53 的序列值而不丢精度
+      // （见 decodeNumericKeysetCursor）。
+      //
+      // 游标行被并发删除时：子查询无行 → 行值比较得 NULL → WHERE 为假 → 本页为
+      // 空（调用方看到 `nextCursor: null` 即视为翻完）。这是**安全地提前结束**，
+      // 不会错行/重复。审计日志虽为 append-only，但 180 天 retention 会真删行。
+      qb.andWhere(
+        `(log."createdAt", log.id) < (
+           SELECT c."createdAt", c.id FROM audit_logs c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
+      );
+    }
+
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(safePageSize + 1);
+
+    // total 用独立的 COUNT（同过滤条件、**不含**游标下界）——语义与 OFFSET 分支
+    // 的 `getManyAndCount` 返回值一致：真实总数，不是"剩余条数"、也不是 -1。
+    // 两次查询**顺序**执行（不 Promise.all 同一个 qb）：getCount 会改写
+    // expressionMap.queryEntity，与并发的 getMany 抢同一个可变对象不安全。
+    const rows = await qb.getMany();
+    const total = await qb.getCount();
+
+    const hasMore = rows.length > safePageSize;
+    const data = hasMore ? rows.slice(0, safePageSize) : rows;
+    return {
+      data,
+      total,
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      // 注意 `null` 与"键不出现"是两种语义：keyset 分支的末页必须**出现**该键。
+      nextCursor: hasMore ? nextNumericKeysetCursor(data) : null,
+    };
+  }
+
+  /**
+   * 审计域过滤条件的**唯一真值源**：`findAll`（OFFSET）、`findAllByKeyset`、
+   * `exportCsv` 三条路径全部经此装配。
+   *
+   * ## 为什么必须收成一份（本轮发现的真实漂移源）
+   *
+   * 改造前的形态是**两处各写一份**：
+   *   · `findAll` 内联 action / resource / resourceId / userId 四条谓词；
+   *   · `exportCsv` 内联**同样四条**（逐字复制，注释都跟着抄）；
+   *   · 另有一个 `applyExtraFilters` 只装 username / startTime / endTime / result。
+   *
+   * 也就是说"R4 P1-2 两条路径同一过滤集"这条承诺，实际只有**后四条**真的共用
+   * 一份实现，前四条靠两段复制粘贴维持一致。这不会立刻出错，但它让"改一处忘
+   * 另一处"变成纯靠自觉——例如给 action 的 LIKE 转义再多转一个字符，或给
+   * resourceId 的长度上限从 100 调到 80，只要漏改一侧，**列表与 CSV 会静默
+   * 返回不同的行集**，而两边都不报错。这正是 `GET /tasks/executions/all` 那边
+   * `applyAllExecutionsFilters` 已经收口掉的同一个问题。
+   *
+   * 收口后，"两条路径发出同一组谓词"成为可断言的事实：spec 里对同一组过滤参数
+   * 分别走 findAll / exportCsv / keyset，逐条比对 `andWhere` 的 `(sql, params)`
+   * 序列。
+   *
+   * ## 安全
+   *
+   * 全部值都是**绑定参数**（`andWhere(sql, { … })`），从不拼进 SQL 文本；
+   * LIKE 元字符经 `escapeLikePattern` 转义；超长 needle 在绑定前截断。
+   */
+  private applyAuditFilters(
     qb: import("typeorm").SelectQueryBuilder<AuditLog>,
-    options: {
-      username?: string;
-      startTime?: string;
-      endTime?: string;
-      result?: "success" | "failure";
-    },
+    options: AuditFilterOptions,
   ): void {
-    // result 筛选（success/failure）：两条查询路径共用本方法，CSV 导出与
-    // 列表页天然同滤（R4 P1-2 parity）。IsIn 白名单在 DTO 层兜住非法值。
+    const { action, resource, resourceId, userId } = options;
+
+    if (action) {
+      // API-09（本轮体验审查）：放宽 SEC-03 的白名单。
+      //
+      // 原实现要求 `^[a-zA-Z0-9_.\-\s]+$`，否则 400。但：
+      //   · 注入风险早已由**绑定参数**消除（值从不拼进 SQL，`ILIKE :action`），
+      //     该白名单对安全没有增量；
+      //   · 它只剩副作用——用户输入中文、`:`、`/` 这类**完全正常**的搜索词会吃
+      //     400 + 英文技术报错，而用户期待的是"没有匹配"或结果列表。
+      //
+      // 改为只限长度（防 DoS），并转义 LIKE 元字符保证 `%`/`_` 按字面量匹配。
+      const sanitizedAction = action.trim().slice(0, 100);
+      qb.andWhere("log.action ILIKE :action", {
+        action: `%${escapeLikePattern(sanitizedAction)}%`,
+      });
+    }
+
+    if (resource) qb.andWhere("log.resource = :resource", { resource });
+
+    // AUTH-05: (resource, resourceId) 成对过滤。resourceId 走**精确匹配**
+    // （值是 opaque uuid/整数 id，部分匹配只会带来意外命中）；DTO 字段是普通
+    // 字符串，但绑定前仍截断到 100 字符，避免超长 query string 直达 PG。
+    if (resourceId) {
+      qb.andWhere("log.resourceId = :resourceId", {
+        resourceId: resourceId.slice(0, 100),
+      });
+    }
+
+    if (userId) qb.andWhere("log.userId = :userId", { userId });
+
+    // result 筛选（success/failure）：IsIn 白名单在 DTO 层兜住非法值。
     if (options.result) {
       qb.andWhere("log.result = :result", { result: options.result });
     }

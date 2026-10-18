@@ -1,424 +1,545 @@
 # AutoCodeFlow
 
-AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本任务（JavaScript / Python）的定时调度、多执行器管理、实时监控与通知。
+[![CI](https://github.com/LuluDeer/AutoCodeFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/LuluDeer/AutoCodeFlow/actions/workflows/ci.yml)
+[![Release](https://github.com/LuluDeer/AutoCodeFlow/actions/workflows/release.yml/badge.svg)](https://github.com/LuluDeer/AutoCodeFlow/actions/workflows/release.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/@autocodeflow/sdk.svg)](https://www.npmjs.com/package/@autocodeflow/sdk)
+[![PyPI version](https://img.shields.io/pypi/v/autoflow-sdk.svg)](https://pypi.org/project/autoflow-sdk/)
 
-## 功能概览
+[English](#english) | [中文](#chinese)
 
-- **任务管理** — 创建、编辑、启停定时任务；支持 Cron 表达式调度
-- **Glue 脚本** — 在线编写 JavaScript / Python 胶水脚本，任务执行时动态下发给执行器
-- **多执行器** — 横向扩展；Node.js 与 Python 执行器自动注册、心跳保活
-- **桌面执行器** — Electron 桌面应用，常驻系统托盘，可在任意设备上安装运行
-- **私有包仓库** — 内置 npm (Verdaccio) 与 PyPI 私有仓库，任务可安装内部依赖
-- **应用分组** — 将任务归属到应用（Application），支持批量操作与权限隔离
-- **通知渠道** — 企业微信、钉钉、Slack Webhook、邮件（SMTP）
-- **AI 辅助** — 可选接入 OpenAI / Ollama，辅助编写脚本与失败分析
-- **MCP 集成** — 提供 MCP Server，AI Agent 可直接管理任务与执行，并可查看 SOP 指派/澄清、回复人工澄清与跟踪 Agent 会话
-- **CLI 工具** — `acf` 命令行工具，支持任务/执行器/应用的脚本化管理（`acf sop list|show`、`acf agent sessions` 覆盖 SOP 与 Agent 会话查询）
-- **SDK 生态** — Python / Node.js SDK，提供任务上下文、HTTP 客户端、日志等能力
-- **监控告警** — Prometheus 指标端点；健康检查接口
-- **审计日志** — 所有执行记录可追溯，支持执行详情对比
+---
 
-## 技术栈
+<a name="english"></a>
+
+## 🚀 Overview
+
+**AutoCodeFlow** is an enterprise-grade distributed task orchestration platform with built-in AI capabilities. Schedule, execute, and monitor JavaScript/Python tasks across multiple executors with real-time observability and intelligent failure analysis.
+
+### ✨ Key Features
+
+- **🎯 Smart Scheduling** — Cron expressions, fixed intervals, manual triggers, and dependency-based execution
+- **🧩 Glue Scripts** — Write JavaScript/Python scripts in the browser, dynamically distributed to executors at runtime
+- **⚡ Horizontal Scaling** — Auto-registering executors with health checks and load balancing
+- **🖥️ Desktop Executor** — Electron-based executor runs as a system tray app on any device
+- **📦 Private Registries** — Built-in npm (Verdaccio) and PyPI repositories for internal packages
+- **🤖 AI-Powered** — OpenAI/Ollama integration for script generation and failure root-cause analysis
+- **🔗 MCP Integration** — Model Context Protocol server for AI agent task management
+- **📊 Full Observability** — Prometheus metrics, distributed tracing (OpenTelemetry), real-time logs
+- **🔔 Multi-Channel Alerts** — WeCom, DingTalk, Slack webhooks, SMTP email
+- **🛡️ Enterprise Security** — RBAC, API keys with scoped permissions, audit logs
+- **🌐 Bilingual UI** — Chinese/English interface with i18n support
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Control Plane                            │
+│  ┌──────────────────┐          ┌─────────────────────┐         │
+│  │   Admin Web UI   │ ◄──────► │   Admin API         │         │
+│  │  (React + Vite)  │          │ (NestJS + TypeORM)  │         │
+│  └──────────────────┘          └──────────┬──────────┘         │
+│                                            │                     │
+│         ┌──────────────────────────────────┼──────────────┐    │
+│         │                                   │              │    │
+│         ▼                                   ▼              ▼    │
+│  ┌─────────────┐                  ┌─────────────┐  ┌──────────┐│
+│  │ PostgreSQL  │                  │   Redis     │  │ BullMQ   ││
+│  │  (Metadata) │                  │  (Cache)    │  │ (Queue)  ││
+│  └─────────────┘                  └─────────────┘  └──────────┘│
+└─────────────────────────────────────────────────────────────────┘
+                                     │
+                   ┌─────────────────┼─────────────────┐
+                   │                 │                 │
+                   ▼                 ▼                 ▼
+          ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+          │  Executor   │   │  Executor   │   │  Executor   │
+          │   (Node)    │   │  (Python)   │   │  (Desktop)  │
+          └─────────────┘   └─────────────┘   └─────────────┘
+                   │                 │                 │
+                   └─────────────────┼─────────────────┘
+                                     │
+                            ┌────────┴────────┐
+                            │                 │
+                     ┌──────▼──────┐   ┌──────▼──────┐
+                     │ npm Registry│   │PyPI Registry│
+                     │ (Verdaccio) │   │  (Private)  │
+                     └─────────────┘   └─────────────┘
+```
+
+---
+
+## 📦 Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| **Control Plane** | NestJS · TypeORM · PostgreSQL · Redis · BullMQ |
+| **Web UI** | React 18 · Vite · Ant Design · TypeScript |
+| **Executors** | Node.js (Express) · Python (FastAPI) · Electron |
+| **Registries** | Verdaccio (npm) · Custom PyPI Server |
+| **CLI** | TypeScript · Commander.js (`acf` command) |
+| **SDKs** | `@autocodeflow/sdk` (Node) · `autoflow-sdk` (Python) |
+| **MCP Server** | TypeScript · MCP SDK (AI agent integration) |
+| **Deployment** | Docker Compose · Source Mode for production |
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Docker** ≥ 24 & **Docker Compose** ≥ 2.20
+- **(Local dev)** Node.js ≥ 20, Python ≥ 3.11
+
+### One-Command Deployment
+
+The `deploy.sh` script supports **dual-mode deployment**:
+
+```bash
+# Production (source mode, requires root, recommended)
+sudo ./deploy.sh --mode source --env production --i-know-its-production
+
+# Staging (Docker mode)
+./deploy.sh --mode docker --env staging
+
+# Pre-deployment health check
+./deploy.sh doctor
+```
+
+**8-stage pipeline**: Pre-check → Config → Dependencies → Build → Infrastructure → Migration (with auto-backup) → Startup → Validation
+
+See [Deployment Guide](docs/deployment.md) for details.
+
+### Manual Docker Compose
+
+```bash
+# 1. Clone repository
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
+cd AutoCodeFlow
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env: set POSTGRES_PASSWORD, JWT_SECRET, JWT_REFRESH_SECRET, EXECUTOR_SECRET
+vim .env
+
+# 3. Start all services
+docker compose up -d
+
+# 4. Check status
+docker compose ps
+docker compose logs -f admin-api
+```
+
+**Access Points:**
+
+| Service | URL |
+|---------|-----|
+| Admin Dashboard | http://localhost |
+| API Documentation | http://localhost:3105/api/docs |
+| Health Check | http://localhost:3105/api/health/live |
+| Prometheus Metrics | http://localhost:3105/metrics |
+| npm Registry | http://localhost/npm/ |
+| PyPI Registry | http://localhost/pypi/ |
+
+Default admin credentials are set via `INITIAL_ADMIN_PASSWORD` in `.env`.
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Quick Start](docs/quickstart.md) | Get running in 5 minutes |
+| [Deployment Guide](docs/deployment.md) | System requirements, environment variables, upgrade guide |
+| [Operations Manual](docs/operations.md) | Daily operations, backup/restore, scaling, troubleshooting |
+| [Development Guide](docs/development.md) | Local setup, testing, code conventions |
+| [SDK Guide](docs/sdk-guide.md) | Python/Node.js SDK usage and examples |
+| [API Reference](docs/api-reference.md) | REST API endpoints, authentication, error codes |
+| [Knowledge Atlas](docs/atlas/README.md) | Comprehensive architecture documentation |
+
+---
+
+## 🛠️ CLI Tool
+
+```bash
+# Install globally
+npm install -g @autocodeflow/cli
+
+# Login
+acf login --url http://localhost:3105 --user admin
+
+# Manage tasks
+acf task list
+acf task trigger <taskId>
+
+# Manage executors
+acf executor list
+
+# Manage applications
+acf app list
+```
+
+---
+
+## 🤖 AI Integration
+
+### MCP Server
+
+Integrate with Claude Desktop, Cursor, and other AI agents:
+
+```json
+{
+  "mcpServers": {
+    "autocodeflow": {
+      "command": "npx",
+      "args": ["-y", "autocodeflow-mcp-server"],
+      "env": {
+        "ACF_API_URL": "http://localhost:3105",
+        "ACF_TOKEN": "your-jwt-token"
+      }
+    }
+  }
+}
+```
+
+See [packages/mcp-server/README.md](packages/mcp-server/README.md) for details.
+
+---
+
+## 🔒 Security
+
+- **RBAC** — Project-level roles (owner/developer/viewer)
+- **API Keys** — Scoped tokens for CI/CD integration
+- **Sandbox Execution** — Python tasks run in bubblewrap containers (Linux)
+- **Audit Logs** — Complete operation history
+- **Secret Management** — Encrypted storage for sensitive data
+
+---
+
+## 📈 Monitoring
+
+- **Prometheus Metrics** — Task execution rates, durations, failure rates
+- **Distributed Tracing** — OpenTelemetry integration
+- **Real-time Logs** — WebSocket streaming
+- **Alertmanager** — Rule-based alerts with HMAC webhook security
+
+---
+
+## 🌟 Use Cases
+
+- **Data Pipelines** — ETL jobs, data synchronization
+- **Scheduled Reports** — Daily/weekly report generation
+- **System Maintenance** — Database backups, log rotation
+- **API Polling** — Third-party service integration
+- **Desktop Automation** — RPA-style UI automation (see [examples/desktop-automation](examples/desktop-automation))
+
+---
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feat/your-feature`
+3. Commit your changes (follow [Conventional Commits](https://www.conventionalcommits.org/))
+4. Run tests: `npm run test`
+5. Submit a Pull Request
+
+---
+
+## 📄 License
+
+AutoCodeFlow uses **component-based licensing** (since v1.4.0):
+
+| Component | License |
+|-----------|---------|
+| **Platform Core** (apps/* + docs-site) | [AGPL-3.0-only](LICENSE) |
+| **Client SDKs & Tools** (CLI, SDKs, MCP server) | MIT |
+| **Executor Protocol** (for third-party integrations) | MIT |
+
+Versions ≤ v1.3.0 remain under MIT.
+
+---
+
+## 🙏 Acknowledgments
+
+Built with ❤️ using:
+- [NestJS](https://nestjs.com/) - Progressive Node.js framework
+- [React](https://react.dev/) - UI library
+- [Ant Design](https://ant.design/) - Component library
+- [TypeORM](https://typeorm.io/) - ORM for TypeScript
+- [BullMQ](https://docs.bullmq.io/) - Queue system
+- [Electron](https://www.electronjs.org/) - Desktop framework
+
+---
+
+<a name="chinese"></a>
+
+# AutoCodeFlow
+
+[English](#english) | [中文](#chinese)
+
+---
+
+## 🚀 产品概述
+
+**AutoCodeFlow** 是企业级分布式任务编排平台，内置 AI 能力。跨多执行器调度、执行和监控 JavaScript/Python 任务，提供实时可观测性和智能故障分析。
+
+### ✨ 核心功能
+
+- **🎯 智能调度** — Cron 表达式、固定频率、手动触发、依赖触发
+- **🧩 Glue 脚本** — 浏览器内编写 JavaScript/Python 脚本，运行时动态分发到执行器
+- **⚡ 横向扩展** — 执行器自动注册、健康检查、负载均衡
+- **🖥️ 桌面执行器** — 基于 Electron 的系统托盘应用，可在任意设备运行
+- **📦 私有仓库** — 内置 npm (Verdaccio) 和 PyPI 私有仓库，支持内部包依赖
+- **🤖 AI 赋能** — OpenAI/Ollama 集成，辅助脚本生成和故障根因分析
+- **🔗 MCP 集成** — Model Context Protocol 服务器，AI Agent 可直接管理任务
+- **📊 全链路可观测** — Prometheus 指标、分布式追踪 (OpenTelemetry)、实时日志
+- **🔔 多渠道告警** — 企业微信、钉钉、Slack Webhook、SMTP 邮件
+- **🛡️ 企业安全** — RBAC 权限、作用域 API Key、审计日志
+- **🌐 双语界面** — 中英文界面切换，完整 i18n 支持
+
+---
+
+## 🏗️ 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          控制面                                  │
+│  ┌──────────────────┐          ┌─────────────────────┐         │
+│  │   管理后台 UI    │ ◄──────► │   管理后台 API      │         │
+│  │  (React + Vite)  │          │ (NestJS + TypeORM)  │         │
+│  └──────────────────┘          └──────────┬──────────┘         │
+│                                            │                     │
+│         ┌──────────────────────────────────┼──────────────┐    │
+│         │                                   │              │    │
+│         ▼                                   ▼              ▼    │
+│  ┌─────────────┐                  ┌─────────────┐  ┌──────────┐│
+│  │ PostgreSQL  │                  │   Redis     │  │ BullMQ   ││
+│  │  (元数据)   │                  │  (缓存)     │  │ (队列)   ││
+│  └─────────────┘                  └─────────────┘  └──────────┘│
+└─────────────────────────────────────────────────────────────────┘
+                                     │
+                   ┌─────────────────┼─────────────────┐
+                   │                 │                 │
+                   ▼                 ▼                 ▼
+          ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+          │   执行器    │   │   执行器    │   │   执行器    │
+          │   (Node)    │   │  (Python)   │   │  (桌面端)   │
+          └─────────────┘   └─────────────┘   └─────────────┘
+                   │                 │                 │
+                   └─────────────────┼─────────────────┘
+                                     │
+                            ┌────────┴────────┐
+                            │                 │
+                     ┌──────▼──────┐   ┌──────▼──────┐
+                     │ npm 私有仓库│   │PyPI 私有仓库│
+                     │ (Verdaccio) │   │  (自建)     │
+                     └─────────────┘   └─────────────┘
+```
+
+---
+
+## 📦 技术栈
 
 | 组件 | 技术 |
-|---|---|
-| admin-api | NestJS · TypeORM · PostgreSQL · Redis · BullMQ |
-| admin-web | React · Vite · Ant Design |
-| executor-node | Node.js (Express) |
-| executor-python | Python (FastAPI) |
-| executor-desktop | Electron · React · Node.js |
-| registry-npm | Verdaccio |
-| registry-pypi | 自建 FastAPI PyPI 服务 |
-| acf-cli | TypeScript · Commander.js，发布为 `@autocodeflow/cli`（命令名 `acf`） |
-| mcp-server | TypeScript · MCP SDK |
-| autoflow-sdk | Python (httpx) |
-| @autocodeflow/sdk | Node.js (axios)，独立 npm 包（已发布） |
-| executor-protocol | JSON Schema · 双生成器（三方执行器协议契约单一事实源） |
-| contract-fixtures | JSON · 四端信封契约向量（拆包判据） |
-| 部署 | Docker Compose |
+|-----|------|
+| **控制面** | NestJS · TypeORM · PostgreSQL · Redis · BullMQ |
+| **管理界面** | React 18 · Vite · Ant Design · TypeScript |
+| **执行器** | Node.js (Express) · Python (FastAPI) · Electron |
+| **私有仓库** | Verdaccio (npm) · 自建 PyPI 服务 |
+| **CLI 工具** | TypeScript · Commander.js (`acf` 命令) |
+| **SDK** | `@autocodeflow/sdk` (Node) · `autoflow-sdk` (Python) |
+| **MCP Server** | TypeScript · MCP SDK (AI Agent 集成) |
+| **部署** | Docker Compose · 生产推荐源码模式 |
 
-## 快速启动
+---
+
+## 🚀 快速开始
 
 ### 前置条件
 
-- Docker >= 24 & Docker Compose >= 2.20
-- （本地开发）Node.js >= 20，Python >= 3.11，npm >= 10
+- **Docker** ≥ 24 & **Docker Compose** ≥ 2.20
+- **(本地开发)** Node.js ≥ 20，Python ≥ 3.11
 
-### 一键部署（推荐）
+### 一键部署
 
-`deploy.sh` 支持**双模部署**——生产端推荐**源码模式**（性能：执行器高频 fork 短命任务，
-容器网络/overlayfs 开销是复利的），开发/试跑用 Docker 模式：
+`deploy.sh` 脚本支持**双模部署**：
 
 ```bash
-# 源码模式（生产推荐，需 root）
+# 生产环境（源码模式，需 root，推荐）
 sudo ./deploy.sh --mode source --env production --i-know-its-production
 
-# Docker 模式（试跑）
+# 测试环境（Docker 模式）
 ./deploy.sh --mode docker --env staging
 
-# 环境体检（部署前/排障）
-./deploy.sh doctor            # 人类可读
-./deploy.sh doctor --json     # 结构化（供 Agent 消费）
+# 部署前环境体检
+./deploy.sh doctor
 ```
 
-> 不带 `--mode` 时默认 `docker`，与旧版行为一致；`-e/--env` 等旧参数仍可用。
+**8 阶段流水线**：预检 → 配置 → 依赖 → 构建 → 基础设施 → 迁移（自动备份）→ 启动 → 验证
 
-8 阶段流水线：预检 → 配置 → 依赖 → 构建 → 基础设施 → 迁移（**迁移前强制备份**）→ 启动 → 验证。
-含 `status` / `health` / `logs` / `restart` / `rollback` 子命令，以及 `--dry-run` 试跑。
 详见 [部署指南](docs/deployment.md)。
 
-### 一键 Docker Compose 启动（手动路线）
+### 手动 Docker Compose
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/your-org/AutoCodeFlow.git
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
 cd AutoCodeFlow
 
 # 2. 配置环境变量
 cp .env.example .env
-# 编辑 .env，至少设置以下必填项：
-#   POSTGRES_PASSWORD  DB_PASSWORD  JWT_SECRET  JWT_REFRESH_SECRET  EXECUTOR_SECRET
+# 编辑 .env：设置 POSTGRES_PASSWORD、JWT_SECRET、JWT_REFRESH_SECRET、EXECUTOR_SECRET
 vim .env
 
 # 3. 启动所有服务
 docker compose up -d
 
-# 4. 查看启动状态
+# 4. 查看状态
 docker compose ps
 docker compose logs -f admin-api
 ```
 
-服务启动后访问：
+**服务访问地址：**
 
-| 服务 | 地址 |
-|---|---|
+| 服务 | URL |
+|-----|-----|
 | 管理后台 | http://localhost |
-| API 文档 (Swagger) | http://localhost:3105/api/docs |
-| API 健康检查 | http://localhost:3105/api/health/live |
+| API 文档 | http://localhost:3105/api/docs |
+| 健康检查 | http://localhost:3105/api/health/live |
 | Prometheus 指标 | http://localhost:3105/metrics |
-| executor-node | http://localhost:8002/health |
-| executor-python | http://localhost:8001/health |
-| executor-desktop | 桌面应用托盘启动 |
-| npm registry | http://localhost:4873 |
-| PyPI registry | http://localhost:8003 |
+| npm 私有仓库 | http://localhost/npm/ |
+| PyPI 私有仓库 | http://localhost/pypi/ |
 
-> **私有包仓库反代路由（B-1）**：管理台所在站点（`http://localhost`，即 admin-web nginx）同步反代了两个私有仓库的客户端面——`/pypi/` → registry-pypi:8003（含 `/packages/` 制品下载）、`/npm/` → registry-npm:4873，`Authorization` 头端到端透传。管理台「包注册中心」页可复制的 `pip config set global.index-url <站点>/pypi/simple/`、`npm config set registry <站点>/npm/` 命令即依赖这些路由；两个仓库仍要求凭据（PyPI 索引面 Basic 认证、Verdaccio `$authenticated`），凭据为部署下发的 `REGISTRY_USER` / `REGISTRY_PASS` 与 npm 服务账号。仓库服务的宿主端口默认只绑 `127.0.0.1`（上表地址仅宿主机本机可达），局域网开发者请走反代路由或显式覆写端口映射。
+默认管理员凭据通过 `.env` 中的 `INITIAL_ADMIN_PASSWORD` 设置。
 
-> **私有 PyPI 源语义（重要）**：`PYPI_REGISTRY_URL` 是 `--index-url`（**替换**默认索引）而非附加，且自建 registry-pypi **无上游代理**——默认部署下，任何未手动上传到私有源的包（含 PyPI 官方包）安装都会失败。如需同时可见官方源，设置 `PYPI_EXTRA_INDEX_URL`（以 `--extra-index-url` 追加，executor-node / executor-python 同构支持），或将 `PYPI_REGISTRY_URL` 显式置空回落官方源（B-2：compose 用 bash `${VAR-default}` 语义注入执行器——仅「未设置」才落到私有源默认值，显式置空对 uv/npm 生效；`NPM_REGISTRY_URL` / `PYTHON_REGISTRY_URL` 同族同语义）。npm 侧 Verdaccio 自带 npmjs 上游代理，无此限制。
+---
 
-默认管理员账号由 `INITIAL_ADMIN_PASSWORD` 环境变量设置，首次登录后请立即修改密码。
+## 📚 文档
 
-### 本地开发启动
+| 文档 | 说明 |
+|-----|------|
+| [快速上手](docs/quickstart.md) | 5 分钟快速入门 |
+| [部署指南](docs/deployment.md) | 系统要求、环境变量、升级指南 |
+| [运维手册](docs/operations.md) | 日常运维、备份恢复、扩容、故障排查 |
+| [开发指南](docs/development.md) | 本地开发、测试、代码规范 |
+| [SDK 使用指南](docs/sdk-guide.md) | Python/Node.js SDK 使用示例 |
+| [API 参考](docs/api-reference.md) | REST API 接口、认证、错误码 |
+| [知识图谱](docs/atlas/README.md) | 完整架构文档 |
 
-```bash
-# 启动基础设施（PostgreSQL + Redis）
-docker compose up -d postgres redis
+---
 
-# 安装依赖
-npm install
-
-# 配置各服务环境变量
-cp apps/admin-api/.env.example apps/admin-api/.env
-cp apps/admin-web/.env.example apps/admin-web/.env
-cp apps/executor-node/.env.example apps/executor-node/.env
-cp apps/executor-python/.env.example apps/executor-python/.env
-
-# 运行数据库迁移
-cd apps/admin-api && npm run migration:run && cd ../..
-
-# 并行启动所有服务（根目录）
-npm run dev
-# 或分别启动：
-# cd apps/admin-api && npm run start:dev
-# cd apps/admin-web && npm run dev
-# cd apps/executor-node && npm run dev
-```
-
-## 项目结构
-
-```
-AutoCodeFlow/
-├── apps/
-│   ├── admin-api/          # NestJS 后端 API
-│   ├── admin-web/          # React 管理前端
-│   ├── executor-node/      # Node.js 任务执行器
-│   ├── executor-python/    # Python 任务执行器
-│   ├── executor-desktop/   # Electron 桌面执行器
-│   ├── registry-npm/       # Verdaccio 私有 npm 仓库配置
-│   └── registry-pypi/      # 私有 PyPI 仓库服务
-├── packages/
-│   ├── acf-cli/               # 命令行工具 (acf)
-│   ├── mcp-server/            # MCP Server（AI Agent 集成）
-│   ├── autoflow-sdk/          # Python 任务 SDK
-│   ├── autocodeflow-node-sdk/ # Node.js 任务 SDK
-│   ├── autocodeflow-ai/       # AI 分析引擎
-│   ├── autocodeflow-db/       # 数据库连接工具
-│   ├── autocodeflow-http/     # HTTP 客户端工具
-│   ├── autocodeflow-notify/   # 通知发送工具
-│   ├── executor-protocol/     # 三方执行器协议契约（JSON Schema 单一事实源）
-│   ├── contract-fixtures/     # 四端信封契约向量（拆包判据）
-│   └── docs-site/             # SDK 文档站（VitePress）
-├── examples/
-│   └── desktop-automation/    # 桌面自动化（RPA）示例任务
-├── design-system/             # 设计系统规范（UI/UX）
-├── infra/                     # 本地开发基础设施 docker-compose
-├── docs/                      # 项目文档
-├── docker-compose.yml         # 生产/staging 完整部署
-├── .env.example               # 环境变量模板
-└── Makefile                   # 常用命令快捷方式
-```
-
-## 配置说明
-
-所有配置通过环境变量注入。各服务的完整变量列表见对应的 `.env.example`：
-
-| 文件 | 说明 |
-|---|---|
-| `.env.example` | Docker Compose 根配置（生产部署用） |
-| `apps/admin-api/.env.example` | API 服务完整配置 |
-| `apps/admin-web/.env.example` | 前端 Vite 配置 |
-| `apps/executor-node/.env.example` | Node.js 执行器配置 |
-| `apps/executor-python/.env.example` | Python 执行器配置 |
-
-### 生产环境必填项
-
-| 变量 | 要求 | 说明 |
-|---|---|---|
-| `DB_PASSWORD` | >= 16 字符，非弱密码 | PostgreSQL 密码 |
-| `JWT_SECRET` | >= 32 字符随机串 | JWT 签名密钥 |
-| `JWT_REFRESH_SECRET` | >= 32 字符随机串 | JWT 刷新令牌密钥 |
-| `EXECUTOR_SECRET` | >= 16 字符随机串 | 执行器注册共享密钥 |
-| `CORS_ORIGINS` | 实际域名，不含 localhost | 跨域允许来源 |
-
-生成强随机值示例：
-```bash
-openssl rand -hex 32   # JWT_SECRET / JWT_REFRESH_SECRET
-openssl rand -hex 16   # EXECUTOR_SECRET
-```
-
-## 扩展组件
-
-### 桌面执行器 (executor-desktop)
-
-基于 Electron 的桌面执行器应用，可在 Windows / macOS / Linux 上安装运行。常驻系统托盘，支持开机自启，无需手动维护。
-
-详见 [executor-desktop/README.md](apps/executor-desktop/README.md)
-
-### CLI 工具 (acf)
+## 🛠️ CLI 工具
 
 ```bash
-# 从 npm 安装（包名 @autocodeflow/cli，命令名仍是 acf）
+# 全局安装
 npm install -g @autocodeflow/cli
 
-# 或从源码本地开发
-cd packages/acf-cli && npm install && npm run build && npm link
-
-# 使用
+# 登录
 acf login --url http://localhost:3105 --user admin
+
+# 管理任务
 acf task list
 acf task trigger <taskId>
+
+# 管理执行器
 acf executor list
+
+# 管理应用
 acf app list
 ```
 
-> 包名是 `@autocodeflow/cli` 而命令名是 `acf`——两者不必一致。npm 上 `acf-cli`
-> 这个**包名**已被第三方占用（一个与本项目无关的包），故改用本仓持有的
-> `@autocodeflow` scope（与 `@autocodeflow/sdk` 同 scope）；而 `acf` 作为**命令名**
-> 保持不变，避免破坏已有脚本与操作习惯。
+---
 
-推荐使用 `acf login` 保存 access token 与 refresh token，CLI 会在普通 API 请求遇到 401 时自动刷新并重放一次。`--token` / `ACF_TOKEN` / `acf config set-token` 只适合短期 CI 调用；未配置 refresh token 时，access token 过期会快速失败并提示重新登录。
-
-**凭据落盘与 CI 建议（SEC-NEW-4）**：`acf login` 会把 access token 与长期 refresh token 明文写入用户配置目录（如 `~/.config/acf-cli/config.json`，`acf config show` 可打印实际路径）。CLI 无跨平台 OS keyring（纯 Node，非 Electron，不引入 keytar 原生依赖），因此采取**最低限度加固**：配置文件以 `0600`（仅属主可读写）创建，历史遗留的组/其他可读文件在下次启动时自动收紧为 `0600`（只改权限，不迁移、不删除凭据）。**CI / 定时任务等无人值守场景建议不要落盘**，改为按次注入环境变量：`ACF_API_URL` + `ACF_TOKEN`（`ACF_REFRESH_TOKEN` 可选，未设置时 access token 过期会快速失败并提示重新登录）。如需重定向凭据目录（只读 home / 共享机器 / 测试），可设 `ACF_CONFIG_DIR=<绝对路径>`。
+## 🤖 AI 集成
 
 ### MCP Server
 
-让 Claude Desktop、Cursor 等 AI Agent 直接管理 AutoCodeFlow 任务与执行。暴露 **49 个工具**，覆盖任务 CRUD 与版本管理、手动触发、执行分析与日志、终止/重试、应用与部署审批、执行器监控、审计日志、项目角色、SOP 指派与澄清回复、Agent 会话查看等（完整清单见下方 mcp-server README）。
+与 Claude Desktop、Cursor 等 AI Agent 集成：
 
-详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)
-
-### SDK 生态
-
-| 包名 | 语言 | 说明 |
-|------|------|------|
-| `autoflow-sdk` | Python | 任务上下文、HTTP 客户端、日志、结果上报 |
-| `autocodeflow-node-sdk` | Node.js | 完整版任务 SDK（含更多工具） |
-| `autocodeflow-ai` | Python | AI 执行分析引擎 |
-| `autocodeflow-db` | Python | 数据库连接工具 |
-| `autocodeflow-http` | Python | HTTP 客户端封装 |
-| `autocodeflow-notify` | Python | 多通道通知发送 |
-
-详见 [SDK 使用指南](docs/sdk-guide.md)
-
-### 契约治理
-
-| 包 | 分工边界 |
-|---|---|
-| [executor-protocol](packages/executor-protocol/README.md) | 三方执行器协议契约（协议信封/执行/日志/终止等），JSON Schema **单一事实源**，双端生成 + CI 漂移兜底 |
-| [contract-fixtures](packages/contract-fixtures/README.md) | 四端信封契约向量：admin-api / executor / SDK / CLI 对信封的**拆包判据**（unwrap 数值 code、截断识别等） |
-
-两者协作关系：`executor-protocol` 定义协议报文结构与校验规则；`contract-fixtures` 固化各客户端如何拆包/解析这些报文的实测判据。协议变更必须同步回归两端契约向量。
-
-### 示例任务
-
-`examples/desktop-automation/` 提供桌面自动化（RPA 风格）示例任务：
-
-- 浏览器自动化（网页操作、截图）
-- 桌面 GUI 自动化（鼠标/键盘操作、图像识别）
-- 文件系统自动化（批量操作、目录同步）
-- 系统集成自动化（进程管理、系统监控）
-
-详见 [examples/desktop-automation/README.md](examples/desktop-automation/README.md)
-
-## API 文档
-
-启动服务后，Swagger UI 可在以下地址访问：
-
-```
-http://localhost:3105/api/docs
+```json
+{
+  "mcpServers": {
+    "autocodeflow": {
+      "command": "npx",
+      "args": ["-y", "autocodeflow-mcp-server"],
+      "env": {
+        "ACF_API_URL": "http://localhost:3105",
+        "ACF_TOKEN": "your-jwt-token"
+      }
+    }
+  }
+}
 ```
 
-主要 API 模块：
+详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)。
 
-| 模块 | 路径前缀 | 说明 |
-|---|---|---|
-| 认证 | `/api/auth` | 登录、刷新 Token |
-| 任务 | `/api/tasks` | 任务 CRUD、启停、手动触发 |
-| 应用 | `/api/applications` | 应用分组管理 |
-| 执行记录 | `/api/executions` | 执行历史、日志查看 |
-| 执行器 | `/api/executors` | 执行器注册与状态 |
-| 通知配置 | `/api/notification` | 通知渠道管理 |
-| 用户管理 | `/api/users` | 用户 CRUD、密码修改 |
-| 系统配置 | `/api/config` | 系统参数读写 |
-| 执行器包 | `/api/executor-packages` | 应用包上传与管理 |
-| 注册表 | `/api/registry` | 私有 npm/PyPI 仓库信息 |
-| 健康检查 | `/health` | 服务健康状态 |
-| 指标 | `/metrics` | Prometheus 格式指标 |
+---
 
-## 文档
+## 🔒 安全特性
 
-| 文档 | 说明 |
-|------|------|
-| [快速上手](docs/quickstart.md) | 5 分钟跑起来，完成第一个定时任务，常见问题解答 |
-| [部署指南](docs/deployment.md) | 系统要求、环境变量、快速部署、运维命令、升级指南 |
-| [运维手册](docs/operations.md) | 日常运维、备份恢复、多执行器扩容、故障排查、安全加固 |
-| [开发指南](docs/development.md) | 本地启动、端口说明、迁移命令、测试命令、代码规范 |
-| [SDK 使用指南](docs/sdk-guide.md) | manifest 格式、注入变量、Python/Node SDK 示例 |
-| [API 参考](docs/api-reference.md) | 所有接口端点、认证说明、响应格式、错误码 |
-| [优化建议](docs/optimization-notes.md) | E2E 测试发现的 Bug、各组件优化建议、跨平台路线图 |
-| [知识图谱 atlas](docs/atlas/README.md) | 项目知识图谱：01-apps~08-workflows 八大分类、数十个主题子文档 |
+- **RBAC** — 项目级角色（owner/developer/viewer）
+- **API Keys** — 作用域 Token，支持 CI/CD 集成
+- **沙箱执行** — Python 任务在 bubblewrap 容器中运行（Linux）
+- **审计日志** — 完整操作历史记录
+- **密钥管理** — 敏感数据加密存储
 
-## 常用 Make 命令
+---
 
-```bash
-make help          # 查看所有可用命令
-make dev           # 启动开发环境
-make build         # 构建所有服务镜像
-make test          # 运行所有测试
-make migration     # 运行数据库迁移
-make logs          # 查看服务日志
+## 📈 监控告警
 
-# P0 一键部署（deploy.sh 双模）
-make deploy          # Docker 模式部署（等同旧 ./deploy.sh）
-make deploy-source   # 源码模式部署（生产推荐，需 root）
-make deploy-dry-run  # 试跑部署流程（不改系统）
-make doctor          # 环境体检
-make selftest-deploy # deploy.sh 自检（29 项回归）
-```
+- **Prometheus 指标** — 任务执行速率、耗时、失败率
+- **分布式追踪** — OpenTelemetry 集成
+- **实时日志** — WebSocket 流式传输
+- **Alertmanager** — 基于规则的告警，HMAC Webhook 安全校验
 
-## 数据库迁移
+---
 
-迁移文件位于 `apps/admin-api/src/migrations/`，截至 2026-09 共 **70 个迁移**（目录内 71 个 `.ts` 文件，含 1 个 `migrations.spec.ts` 测试），覆盖完整 schema。
+## 🌟 应用场景
 
-**自动行为：**
-- `NODE_ENV=development`：`synchronize: true`，schema 随实体自动同步，无需手动迁移
-- 其他环境：`migrationsRun: true`，服务启动时自动执行所有待执行迁移
+- **数据管道** — ETL 作业、数据同步
+- **定时报表** — 日报、周报自动生成
+- **系统维护** — 数据库备份、日志轮转
+- **API 轮询** — 第三方服务集成
+- **桌面自动化** — RPA 风格的 UI 自动化（参见 [examples/desktop-automation](examples/desktop-automation)）
 
-**手动操作（CLI）：**
+---
 
-```bash
-cd apps/admin-api
+## 🤝 贡献指南
 
-# 查看迁移状态
-npm run migration:show
+1. Fork 本仓库
+2. 创建功能分支：`git checkout -b feat/your-feature`
+3. 提交代码（遵循 [Conventional Commits](https://www.conventionalcommits.org/) 规范）
+4. 运行测试：`npm run test`
+5. 提交 Pull Request
 
-# 手动运行所有待执行迁移
-npm run migration:run
+---
 
-# 回滚最后一次迁移
-npm run migration:revert
+## 📄 开源协议
 
-# 从实体变更生成新迁移
-npm run migration:generate -- src/migrations/<MigrationName>
-```
+AutoCodeFlow 采用**分组件许可**（自 v1.4.0 起）：
 
-在容器内执行：
+| 组件 | 许可证 |
+|-----|--------|
+| **平台核心**（apps/* + docs-site）| [AGPL-3.0-only](LICENSE) |
+| **客户端 SDK 与工具**（CLI、SDK、MCP server）| MIT |
+| **执行器协议**（三方执行器集成）| MIT |
 
-```bash
-docker compose exec admin-api npm run migration:show
-docker compose exec admin-api npm run migration:run
-```
+v1.3.0 及更早版本继续按 MIT 供用。
 
-## 常见问题
+---
 
-**启动时报 JWT_SECRET 错误**
+## 🙏 致谢
 
-生产环境（`NODE_ENV=production`）要求 `JWT_SECRET` 长度 >= 32 字符且不能是已知弱值。请执行 `openssl rand -hex 32` 生成后填入 `.env`。
+基于以下优秀开源项目构建：
+- [NestJS](https://nestjs.com/) - 渐进式 Node.js 框架
+- [React](https://react.dev/) - UI 库
+- [Ant Design](https://ant.design/) - 组件库
+- [TypeORM](https://typeorm.io/) - TypeScript ORM
+- [BullMQ](https://docs.bullmq.io/) - 队列系统
+- [Electron](https://www.electronjs.org/) - 桌面应用框架
 
-**执行器无法连接 admin-api**
+---
 
-检查 `EXECUTOR_SHARED_TOKEN` 是否与 admin-api 配置一致，并确认 `ADMIN_API_URL` 指向正确的地址（Docker 内部使用服务名 `http://admin-api:3105`）。
-
-**数据库迁移失败**
-
-```bash
-# 查看迁移状态
-docker compose exec admin-api npm run migration:show
-# 手动运行迁移
-docker compose exec admin-api npm run migration:run
-```
-
-## 贡献指南
-
-1. Fork 本仓库并创建功能分支：`git checkout -b feat/your-feature`
-2. 提交代码并确保测试通过：`npm run test`
-3. 提交 Pull Request，描述变更内容
-
-> **安装须知**：根目录 `package.json` 是零依赖的命令入口（声明了 `packageManager`
-> 与 `turbo.json`，但**不承载任何依赖图**——根 lock 只登记根包自身，这是 ARCH-20
-> 的 no-hoisting 裁定，`scripts/check-no-hoisting.mjs` 在 CI 常设守卫）——请进入
-> `apps/*` 与 `packages/*` 各自目录分别 `npm install`。开发/编排入口见 `Makefile`
-> 与 `dev.sh`。
->
-> **turbo（N-01 弱形态）**：根 `turbo.json` 把根级 `typecheck:* / lint:* / build:* /
-> test:*` 转发脚本编排成并行任务图，用于本机把原本 `typecheck:all` / `lint:all`
-> 一类串行链并行化。turbo 本体**不经根 `devDependencies` 安装**（那会让根
-> lockfile 承载依赖图、触发 no-hoisting 守卫，实测证据见
-> `docs/ARCH-28b-turbo-adoption.md` 附录 A），而是固定版本经 npx 调用：
->
-> > ```bash
-> > # 全量类型检查并行化（对应原 npm run typecheck:all 的串行链）
-> > npx -y turbo@2.11.6 run typecheck:api typecheck:node typecheck:cli typecheck:mcp \
-> >   typecheck:node-sdk typecheck:desktop typecheck:web
-> > # 子集并行构建；lint / test 任务同理（test:* 任务已声明 cache:false）
-> > npx -y turbo@2.11.6 run build:web build:cli build:mcp
-> > ```
->
-> Windows 上脚本化调用建议追加 `--no-daemon`（turbo 守护进程在异常退出后可能残留
-> `.turbo/` 状态拖慢后续调用）；任务缓存落在 `.turbo/`（已 gitignore）。CI 侧
-> 不使用 turbo（独立 runner 无本地缓存可复用，收益不成立，见 ARCH-28b §4.2/§6.3）。
-
-## 开源协议
-
-AutoCodeFlow 自 2026-10 起采用**分组件许可**（此前发布的版本均以 MIT 供用）：
-
-| 范围 | 许可证 |
-|---|---|
-| 平台核心：`apps/` 全部（admin-api · admin-web · executor-node · executor-python · executor-desktop · registry*）与 `packages/docs-site` | [AGPL-3.0-only](LICENSE) |
-| 客户端与生态包：`acf-cli` · `@autocodeflow/sdk` · `autoflow-sdk` · `mcp-server` · `autocodeflow-http/-ai/-notify/-db` | MIT（各包目录内附 `LICENSE`） |
-| 执行器协议契约：`packages/executor-protocol` · `packages/contract-fixtures` | MIT（面向三方执行器实现者开放复用） |
-
-- 平台核心采用 **GNU Affero General Public License v3.0（`AGPL-3.0-only`）**：核心代码的修改版若经网络向用户提供交互，须依第 13 条向这些用户提供对应源码；未修改的自托管部署（含企业内部使用）不产生额外义务。
-- 客户端/SDK 包保持 **MIT**：这些包会被引入用户自有代码与任务脚本，宽松许可是生态可用性的前提。
-- 历史版本（v1.3.0 及更早的 git tag 与 npm 发布物）继续按 MIT 供用；本次变更仅对变更后的版本生效。
-
-© 2026 LuluDeer
+**© 2026 LuluDeer**

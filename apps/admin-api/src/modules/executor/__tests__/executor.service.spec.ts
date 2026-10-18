@@ -4147,7 +4147,13 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("cleanupOldRecords", () => {
-    it("cron 入口按 90 天 cutoff 委派分批清理", async () => {
+    // ⚠️ 本用例同时是「保留期取用点必须做数值归一」的**回归锁**：本文件顶部把
+    // ConfigService mock 成 `get: () => "http"`（一个非数值），于是
+    // `taskExecutionRetention.days` 拿到的是字符串。若取用点写成 `?? 90`，
+    // `"http" * 86400000` = NaN → cutoff 变 Invalid Date → 下面的时间差断言
+    // 直接失败。这正是想要的：**不可逆删除**的 cutoff 绝不允许被一个类型不对的
+    // 配置值污染（改成 NaN/未来时刻会删空表）。
+    it("cron 入口按 90 天 cutoff 委派分批清理（且非数值配置回落 90）", async () => {
       const spy = jest
         .spyOn(service, "cleanupOldTaskExecutions")
         .mockResolvedValue(5);

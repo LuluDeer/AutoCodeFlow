@@ -55,16 +55,17 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 
 ### jaeger（profile: `jaeger`，OBS-01）
 - 镜像 `jaegertracing/all-in-one:1.57`；`COLLECTOR_OTLP_ENABLED=true`；端口 `127.0.0.1:4317/4318/16686`；卷 `jaeger_data:/badger`。
-- 现状：平台仅用 `@opentelemetry/api`，span 未出站——此服务为未来接 Jaeger/Tempo 预置，未启用时零资源。
+- 现状：平台范围上只用 `@opentelemetry/api`（**该包当前零 import**——它是刻意的 SDK 挂载锚点，且 `prom-client` 已把它作为硬运行时依赖引入），span 未出站——此服务为未来接 Jaeger/Tempo 预置，未启用时零资源。
 
 ### pg-backup（profile: `backup`，M-1）
 - 镜像 `postgres:16-alpine`（复用 pg_dump）；卷 `backup_data:/backup`；挂载 `scripts/pg-backup.sh`（只读）为入口脚本，`scripts/pg-backup-entrypoint.sh` 把 `BACKUP_SCHEDULE`（busybox crond，缺省每日 02:00）写进 crontab 后前台跑 crond。
 - 备份保留 `BACKUP_RETENTION_DAYS`（缺省 30）天；depends_on postgres `service_healthy`。脚本带 `-o pipefail` + 最小尺寸校验（NETOPT-4），pg_dump 失败不会伪装成空备份成功。
 
-### monitoring 栈（profile: `monitoring`，M-3/M-4，7 服务）
+### monitoring 栈（profile: `monitoring`，M-3/M-4，8 服务）
 - `prometheus`（`prom/prometheus:v2.53.0`，127.0.0.1:9090，卷 `prometheus_data`）+ `grafana`（11.1.0，127.0.0.1:3000，卷 `grafana_data`；管理口令 `GRAFANA_ADMIN_PASSWORD` 走 `:?` 显式注入，无 admin 弱缺省）+ `alertmanager`（v0.27.0，127.0.0.1:9093）。
+- `alertmanager-hmac-proxy`（OBS-02 加签侧车）：镜像 `node:24-alpine`，只读挂载 `scripts/alertmanager-hmac-proxy.mjs`，**不映射宿主端口**（仅 `autoflow-internal` 可达），`restart: 'no'`——未配置 `ALERT_WEBHOOK_SECRET` 时 fail-closed 退出而非重启刷屏（`docker compose logs alertmanager-hmac-proxy` 可见）。
 - `postgres-exporter` / `redis-exporter`（基础设施指标，仅 internal 网络）；`loki`（3.0.0，127.0.0.1:3100，卷 `loki_data`）+ `promtail`（经宿主 `/var/run/docker.sock` 聚合全部容器日志；`cap_drop: [ALL]` + `read_only: true` + tmpfs /tmp 最小加固，positions 由 tmpfs 承载）。
-- 启用：`docker compose --profile monitoring up -d`；配置文件在 `config/monitoring/`。OBS-02 告警入站需 HMAC 签名，接线见 docs/deployment.md「监控」段。
+- 启用：`docker compose --profile monitoring up -d`；配置文件在 `config/monitoring/`。告警进平台通知渠道的链路 `Alertmanager → alertmanager-hmac-proxy（加签）→ POST /api/alerts/webhook` 已接线，接线与排障见 docs/deployment.md「监控」段 + docs/observability/README.md §3.5。
 
 ## 卷清单（13 个命名卷）
 

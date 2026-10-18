@@ -114,6 +114,8 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 beforeEach(() => {
+  // DRAFT-01：草稿落 localStorage——用例之间必须隔离（否则上一例的输入被"恢复"）
+  localStorage.clear();
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = {};
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
@@ -126,7 +128,10 @@ beforeEach(() => {
   vi.mocked(tasksApi.update).mockReset().mockResolvedValue({ id: 'task-1' } as never);
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
 describe('NF-04 affinity helpers', () => {
   it('normalizes undefined, empty, and non-array values to explicit null', () => {

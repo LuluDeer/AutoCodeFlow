@@ -775,6 +775,19 @@ docker system prune -f
 find ./data/executor-logs -name '*.log' -mtime +90 -delete
 ```
 
+> **执行记录（`task_executions`）的保留期**：由 `TASK_EXECUTION_RETENTION_DAYS`
+> （默认 **90**）控制，每日 02:00 cron（`executor.service.cleanupOldRecords`，
+> 多实例下仅 cron Leader 执行）分批删除 `createdAt` 早于该天数的行 —— 这是
+> **不可逆的硬删除**，且**没有归档表**：删行会连带回收该行的执行日志、并在
+> `LOG_STORAGE_DRIVER=s3` 下先 `remove` 对应的 S3 日志对象再删行（否则指针随
+> 行消失、对象永远无人回收）。因此：
+>
+> - 需要留档的历史（审计、复盘、计费口径）**必须在到期前自行导出**，没有
+>   "先归档再删除"的自动路径；
+> - 调小该值等于**提前丢弃历史**，属于破坏性变更，改前先备份；
+> - 非法/零/负数会被归一为 90（取用点也再归一一次）——这是刻意的危险方向防护：
+>   cutoff 一旦被推到未来就会把整张表删空。
+
 ---
 
 ## 监控与告警
@@ -904,10 +917,26 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
 
 ### 审计防篡改（SEC-10）
 
-审计表 `audit_logs` 为 **append-only**：迁移 `1790000000006` 在 DB 层安装了行级触发器 `trg_audit_logs_append_only`（BEFORE UPDATE OR DELETE → RAISE EXCEPTION），任何 UPDATE/DELETE 都会被拒绝。
+审计表 `audit_logs` 为 **append-only**：迁移 `1790000000006` 在 DB 层安装了行级触发器 `trg_audit_logs_append_only`（BEFORE UPDATE OR DELETE → RAISE EXCEPTION），**应用层与普通 SQL 的 UPDATE/DELETE 都会被拒绝**。
 
 - **唯一放行点**：审计保留清理任务（Q7，每日 02:05，清理 180 天前数据）在事务内以 `SET LOCAL app.bypass_audit_guard = 'on'` 放行批量 DELETE，事务提交即失效。应用代码中不存在其他写/删审计行的路径。
+- **⚠️ 这个触发器挡不住什么（实测，见 [ADR-025](./adr/adr-025-audit-log-tamper-evidence.md)）**——别把"有触发器"读成"不可篡改"：
+
+  | 操作 | 结果 | 原因 |
+  |---|---|---|
+  | `UPDATE` / `DELETE`（应用层、普通 SQL） | **拒绝** | 行级触发器（`ERRCODE P0001`） |
+  | `TRUNCATE audit_logs` | **拒绝** | `BEFORE TRUNCATE` 语句级触发器，迁移 `1790000000057` |
+  | `ALTER TABLE ... DISABLE TRIGGER` 后改删 | **放行** ⚠️ | 表属主本就能关触发器（PG 固有语义） |
+  | `SET session_replication_role=replica` 后改删 | **放行** ⚠️ | 超级用户固有能力 |
+
+  ⇒ **纯 DB 内机制无法对抗表属主与超级用户**。当前部署里应用账号**就是** `postgres`
+  （`configuration.ts` 的 `DB_USERNAME || "postgres"`，且全仓从未建过最小权限角色），
+  所以这层"权限兜底"实际并不存在——真正在挡的仅是"应用代码里没写 UPDATE/DELETE"。
+  撤销 `TRUNCATE` 权限 + 把应用账号降为非属主，是比"上哈希链"更便宜也更强的改进；
+  方案见 [`DB-LEAST-PRIVILEGE.md`](./DB-LEAST-PRIVILEGE.md)（**待维护者拍板**，
+  属部署契约变更）。
 - **验证工具**：`node scripts/audit-verify.mjs`（在仓库根或 apps/admin-api 下运行）连库输出验证报告：触发器安装与启用检查、受控 UPDATE/DELETE 写试（ROLLBACK 事务内，不产生持久改动）、行序一致性（id 序 vs createdAt 序）与 7 天窗口行数密度。`--report-only` 跳过写试；退出码非 0 = 发现可篡改面或结构缺失。纯函数自检：`node scripts/audit-verify.selftest.mjs`。
+  ⚠️ **它不是完整性校验器**：只试 `UPDATE`（不试 `DELETE`/`TRUNCATE`），且 id 空洞被当作合法（保留期清理本就会造成空洞）⇒ **它检测不出删除**。
 - **限流分域（SEC-09）关联**：`THROTTLE_ENABLED=false` 可全局旁路限流（排障逃生门）；auth 敏写面（refresh/totp*）默认 10 次/分钟/IP、触发/部署干预写面默认 30 次/分钟/IP，SSE 长连接豁免——见 `apps/admin-api/.env.example` 与 `src/config/throttle-profiles.ts` 的分域矩阵。
 
 ---

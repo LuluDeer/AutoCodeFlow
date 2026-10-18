@@ -64,6 +64,9 @@ on:
   push:
     branches:
       - main
+    # 只在非 tag push 时触发（避免与 release.yml 重复）
+    tags-ignore:
+      - '**'
 
 permissions:
   contents: write

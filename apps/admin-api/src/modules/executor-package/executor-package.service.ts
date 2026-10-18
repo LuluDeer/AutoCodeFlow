@@ -4,7 +4,12 @@ import { Injectable, Logger, OnModuleInit, Optional } from "@nestjs/common";
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, Like, FindOptionsWhere } from "typeorm";
+import {
+  Repository,
+  Like,
+  FindOptionsWhere,
+  SelectQueryBuilder,
+} from "typeorm";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
@@ -38,6 +43,12 @@ import {
 import { ExecutorStatus } from "../executor/entities/executor.entity";
 // ARCH-33（ADR-016）：pull 执行器的包推送改走命令队列（控制面 pull 通道）。
 import { ExecutorService } from "../executor/executor.service";
+// §2.1 keyset 游标：`executor_packages.id` 是 uuid，故用 uuid 版解码/编码器
+// （审计端点用的是整型版——两张表主键类型不同，判据不能混用）。
+import {
+  decodeKeysetCursor,
+  nextKeysetCursor,
+} from "../../common/utils/keyset-cursor.util";
 
 /** Upload directory for executor package files (relative to process working directory) */
 const UPLOAD_DIR = path.join(process.cwd(), "uploads", "executor-packages");
@@ -363,9 +374,36 @@ export class ExecutorPackageService implements OnModuleInit {
     }
   }
 
-  async findAll(
-    query: QueryExecutorPackageDto,
-  ): Promise<{ items: ExecutorPackage[]; total: number }> {
+  /**
+   * `GET /executor-packages` 列表。
+   *
+   * ## 响应形状：保持裸 `{items,total}`，只**加性**追加可选 `nextCursor`
+   *
+   * 本方法**不是** `paginate()` 信封（无 list/page/pageSize/totalPages），且形状
+   * 有真实外部消费方，已逐一核实：
+   *   · `apps/admin-web/src/api/executor-packages.ts` 的 `list()`
+   *     返回类型写死 `{ items, total }`，`ExecutorPackagesPage` 的 load() 读
+   *     `res.items` / `res.total`（分页条 `total`、`showTotal` 计数）；
+   *   · 同文件的 `listLatest()` 读 `res.items`（安装向导页取「最新可用包」）。
+   * 改成 `paginate()` 信封会一次性打断这两处（`res.items` 变 undefined →
+   * 包表恒空、安装向导取不到任何包），属于**破坏性**变更，超出本轮「加性」纪律。
+   * 故这里只追加一个可选键：
+   *   · 不带 `cursor` → 走原有 `findAndCount`，响应**逐字节不变**（连
+   *     `nextCursor` 这个键都不出现，`JSON.stringify` 会把 undefined 整个丢掉）；
+   *   · 带 `cursor` → keyset 分支，追加 `nextCursor`（字符串 = 下一页，
+   *     `null` = 末页）。
+   */
+  async findAll(query: QueryExecutorPackageDto): Promise<{
+    items: ExecutorPackage[];
+    total: number;
+    nextCursor?: string | null;
+  }> {
+    // §2.1（推广到 GET /executor-packages）：不带 cursor 时下面一行都不执行，
+    // 旧路径**逐字节不变**（仍走 findAndCount + 同一组 find 选项）。
+    if (query.cursor !== undefined && query.cursor !== null) {
+      return this.findAllByKeyset(query, query.cursor);
+    }
+
     const { page = 1, pageSize = 20, name, type, status, platform } = query;
     const where: FindOptionsWhere<ExecutorPackage> = {};
     if (name) where.name = Like(`%${name}%`);
@@ -375,11 +413,136 @@ export class ExecutorPackageService implements OnModuleInit {
 
     const [items, total] = await this.repo.findAndCount({
       where,
-      order: { createdAt: "DESC" },
+      // A-8 推广（本轮深审）：`createdAt` 非唯一——同一事务批量上传/并发上传
+      // 的多行会拿到**完全相同**的 timestamp(6) 值（真实库实测该列为
+      // `timestamp without time zone`，precision 6，与 task_executions 同款）。
+      // 单键排序在这种并列上的相对顺序由 PG 的执行计划决定、**不保证稳定**：
+      // 跨页翻页时同一行可能在第 1 页和第 2 页各出现一次，另一行则彻底消失。
+      // 这是**独立于游标分页的真实缺陷**——OFFSET 分页同样会漏行/重行。
+      //
+      // 补 `id` 决胜键后构成确定性全序 (createdAt DESC, id DESC)，翻页稳定。
+      // 与 audit.service（A-8 原处）/ task.service（FIX-5.3）同一纪律。
+      //
+      // 顺序保证：TypeORM 的 find 选项按对象键插入顺序生成 ORDER BY，故
+      // createdAt 仍是主排序键，id 只在其后决胜——既有"按时间倒序"语义不变。
+      order: { createdAt: "DESC", id: "DESC" },
       skip: (page - 1) * pageSize,
       take: pageSize,
     });
     return { items, total };
+  }
+
+  /**
+   * §2.1（推广到 `GET /executor-packages`）keyset 分支：`(createdAt, id)` 行值
+   * 比较翻页。语义与 task 域三个端点、审计端点**逐条一致**。
+   *
+   * ## 为什么这里必须用 QueryBuilder（不能用 findAndCount）
+   *
+   * 游标谓词是**行值比较 + 子查询**：
+   *
+   *     ("createdAt", id) < (SELECT c."createdAt", c.id FROM executor_packages c
+   *                          WHERE c.id = :cursorId)
+   *
+   * `find`/`findAndCount` 的 FindOptions 表达不了"与另一行的元组比较"（它只
+   * 支持 `LessThan(常量)`），故 keyset 分支走 QueryBuilder。**OFFSET 分支保持
+   * `findAndCount` 原样**——那是旧路径逐字节不变的一部分，不要顺手统一。
+   *
+   * ## 精度
+   *
+   * 实测（真 PG `information_schema`）：
+   *   executor_packages."createdAt"  timestamp without time zone, precision 6
+   *   executor_packages.id           uuid（`uuid_generate_v4()`，不是整型）
+   * 时间列与 `task_executions."createdAt"` 逐字段相同 ⇒ 微秒打平会漏行的论证
+   * 对本表同样成立，故必须用行值比较，**不能**用毫秒半开区间。id 是 uuid，故
+   * 用 `decodeKeysetCursor` / `nextKeysetCursor`（与审计端点的整型版区分开）。
+   *
+   * ## 过滤器
+   *
+   * `name`（模糊）/`type`/`status`/`platform` 与游标条件是 AND 关系，可任意组合。
+   * 它们由 `applyPackageFilters` 装配，与 OFFSET 分支**共用同一份**（否则"两条
+   * 路径过滤集漂移"会静默改变结果集）。
+   */
+  private async findAllByKeyset(
+    query: QueryExecutorPackageDto,
+    rawCursor: string,
+  ): Promise<{
+    items: ExecutorPackage[];
+    total: number;
+    nextCursor: string | null;
+  }> {
+    // 空串 = 调用方显式声明的 keyset 起点；非空则必须是合法游标，否则 400 ——
+    // 绝不降级到 OFFSET 分支（那会造成"带着坏游标反复拿回第 1 页"的死循环）。
+    const cursor = rawCursor === "" ? null : decodeKeysetCursor(rawCursor);
+    const pageSize = query.pageSize ?? 20;
+
+    const qb = this.repo
+      .createQueryBuilder("p")
+      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
+      // 起点与结果集排序不符，翻页会漏/重。
+      .orderBy("p.createdAt", "DESC")
+      .addOrderBy("p.id", "DESC");
+
+    this.applyPackageFilters(qb, query);
+
+    if (cursor) {
+      // 行值比较；游标那一行的精确 (createdAt, id) 由子查询按主键取库内原值
+      // （含微秒）——DB 值比 DB 值，JS 的毫秒截断不参与运算，零精度损失。
+      //
+      // 游标行被并发删除（管理员刚删了该包）：子查询无行 → 比较得 NULL →
+      // WHERE 为假 → 本页为空，调用方看到 `nextCursor: null` 即视为翻完。
+      // 这是**安全地提前结束**，不会错行/重复。
+      qb.andWhere(
+        `(p."createdAt", p.id) < (
+           SELECT c."createdAt", c.id FROM executor_packages c WHERE c.id = :cursorId
+         )`,
+        { cursorId: cursor.id },
+      );
+    }
+
+    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
+    qb.take(pageSize + 1);
+
+    // total 用独立的 COUNT（同过滤条件、**不含**游标下界）——与 OFFSET 分支
+    // findAndCount 的 total 语义一致：真实总数，不是"剩余条数"、也不是 -1。
+    // 顺序执行（不 Promise.all 同一个 qb）：getCount 会改 expressionMap.queryEntity。
+    const rows = await qb.getMany();
+    const total = await qb.getCount();
+
+    const hasMore = rows.length > pageSize;
+    const items = hasMore ? rows.slice(0, pageSize) : rows;
+    return {
+      items,
+      total,
+      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
+      // `null` 与"键不出现"是两种不同语义：keyset 分支的末页必须**出现**该键。
+      nextCursor: hasMore ? nextKeysetCursor(items) : null,
+    };
+  }
+
+  /**
+   * 执行器包列表过滤条件的**唯一真值源**（OFFSET / keyset 两条路径共用）。
+   *
+   * 改造前过滤条件内联在 `findAll` 的 `FindOptionsWhere` 里；keyset 分支改用
+   * QueryBuilder 后若照抄一遍，就成了两份判据——`name` 的模糊匹配方式（是否
+   * 转义 LIKE 元字符、是否大小写敏感）在两个分支各写一次，改一处忘另一处会
+   * 让"翻下一页"与"第 1 页"返回**不同的行集**，且两边都不报错。故收口于此。
+   *
+   * 语义刻意与改造前的 FindOptions 逐条对齐（不是"顺手改进"）：
+   *   · `name` 用 `Like('%…%')`——**不**转义 LIKE 元字符。改造前就是如此，
+   *     改它会改变既有 `?name=a_b` 的匹配结果（属于行为变更，不在本轮范围）；
+   *   · `type` / `status` / `platform` 都是精确等值。
+   */
+  private applyPackageFilters(
+    qb: SelectQueryBuilder<ExecutorPackage>,
+    query: QueryExecutorPackageDto,
+  ): void {
+    const { name, type, status, platform } = query;
+    // 绑定参数写法与 FindOptions 生成的 SQL 语义一致（`ILIKE`/`LIKE` 取决于
+    // 列的 collation；TypeORM 的 Like() 生成 `LIKE`，这里同样用 `LIKE`）。
+    if (name) qb.andWhere("p.name LIKE :name", { name: `%${name}%` });
+    if (type) qb.andWhere("p.type = :type", { type });
+    if (status) qb.andWhere("p.status = :status", { status });
+    if (platform) qb.andWhere("p.platform = :platform", { platform });
   }
 
   async findOne(id: string): Promise<ExecutorPackage> {

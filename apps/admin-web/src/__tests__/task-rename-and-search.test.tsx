@@ -111,6 +111,8 @@ const baseTask = {
 };
 
 beforeEach(() => {
+  // DRAFT-01：草稿落 localStorage——用例之间必须隔离（否则上一例的输入被"恢复"）
+  localStorage.clear();
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = { id: 'task-1' };
   mockSearch = '';

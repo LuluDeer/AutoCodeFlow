@@ -3,6 +3,9 @@ import { ConfigService } from "@nestjs/config";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
 import { AppError } from "../../../common/errors/app-error";
+// PLAN-SECURITY-HARDENING §2.2：票据被拒计数（模块级进程内计数器，
+// 与 metrics 模块的渲染侧解耦——见 runtime-metrics-entry.ts 头注）。
+import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { PassportStrategy } from "@nestjs/passport";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import type { Request } from "express";
@@ -75,18 +78,62 @@ export function extractJwtFromRequest(req: Request): string | null {
   // A5: SSE ticket fallback — restricted to the SSE stream paths. Note that
   // the legacy `?access_token=` channel is intentionally GONE: accepting it
   // again would reintroduce a 15-minute full-privilege token in access logs.
-  const url = (req as any)?.originalUrl ?? (req as any)?.url ?? "";
-  const path = typeof url === "string" ? url.split("?")[0] : "";
-  const isStreamPath = SSE_TICKET_PATH_SUFFIXES.some((suffix) =>
-    path.endsWith(suffix),
-  );
-  if (!isStreamPath) return null;
+  if (!isSseTicketPath(requestPath(req))) return null;
 
   const queryToken = (req as any)?.query?.[SSE_TICKET_PARAM];
   // 数组形态（?ticket=a&ticket=b）一律拒绝——防 HTTP 参数污染。
   return typeof queryToken === "string" && queryToken.length > 0
     ? queryToken
     : null;
+}
+
+/**
+ * Request path without the query string (also strips a trailing slash).
+ *
+ * SEC-SSE-TICKET（审计 P1-2）：路径判定抽成单一函数，`extractJwtFromRequest`
+ * 与 `JwtStrategy.validate` **必须**用同一份实现——两边各写一份就会漂移，
+ * 而这里的判定正是「票据能不能用」的唯一门。
+ */
+export function requestPath(req: unknown): string {
+  const url = (req as any)?.originalUrl ?? (req as any)?.url ?? "";
+  if (typeof url !== "string") return "";
+  return url.split("?")[0].replace(/\/+$/, "");
+}
+
+/** True when the request path is one of the three SSE stream endpoints. */
+export function isSseTicketPath(path: string): boolean {
+  return SSE_TICKET_PATH_SUFFIXES.some((suffix) => path.endsWith(suffix));
+}
+
+/**
+ * SEC-SSE-TICKET（审计 P1-2）：**票据不得当作普通 Bearer 令牌使用**。
+ *
+ * 此前 `validate()` 只校验 `type === 'sse_ticket'`，并没有约束「这个票据是
+ * 从哪条路由上被读出来的」——`extractJwtFromRequest` 只在三条 stream 路径上
+ * 从查询串读票据，但 **Authorization 头分支对任何路由都生效**：把一枚泄漏的
+ * 30 秒票据放进 `Authorization: Bearer <ticket>` 发到任意 REST 端点（例如
+ * `POST /api/users/:id`、`PATCH /api/config`），校验照样通过，票据在这 30 秒
+ * 内等于一枚**全权 access token**——正是该设计要消除的泄漏面。
+ *
+ * 现在改为双条件放行：类型是 sse_ticket **且** 当前请求路径是三条 stream 之一。
+ * 二者任一不满足即拒绝（stream 路径上使用 access token 仍然合法，行为不变）。
+ */
+function assertTicketOnlyOnStreamPath(payload: JwtPayload, req: unknown): void {
+  if (payload.type !== "sse_ticket") return;
+  if (isSseTicketPath(requestPath(req))) return;
+  // PLAN-SECURITY-HARDENING §2.2（2026-10-17 优化计划轮）：拒绝时必须留下
+  // 可观测痕迹。修复本身（P1-2）把泄漏面关掉了，但**没有计数器**——一枚
+  // 泄漏的票据被拿去打 REST 端点时，系统只是静默 401，安全事件完全不可见。
+  // 这条 counter 是"票据正在被试探复用"的唯一信号，配套告警见
+  // config/monitoring/alerts.yml 的 AUTOFLOW_SSE_TICKET_REJECTED。
+  //
+  // 埋点用**具体路径**（已剥离 query）而非归一化模板：票据复用的排查需要
+  // 知道攻击者打了哪个端点。基数受控——只有持有效签名票据的人才能到达这里，
+  // 且路径来自真实路由表而非用户输入的自由字符串。
+  recordRuntime("autoflow_sse_ticket_rejected_total", { reason: "wrong_path" });
+  // 与「令牌类型非法」同一错误码：对调用方不区分「票据用在错路径」与
+  // 「类型不对」，避免给攻击者一个探测票据有效性的侧信道。
+  throw new AppError("ACCESS_TOKEN_TYPE_INVALID");
 }
 
 @Injectable()
@@ -98,6 +145,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: extractJwtFromRequest,
       ignoreExpiration: false,
+      // SEC-SSE-TICKET（审计 P1-2）：把 Request 一并交给 validate——票据的
+      // 「只能用在三条 stream 路径上」这条约束必须在 validate 里复核，而
+      // validate 原本只看 payload、拿不到路由。passport-jwt 在
+      // `passReqToCallback: true` 时以 (req, payload, done) 调用 verify 回调，
+      // 于是 validate 的签名变成 (req, payload)。
+      passReqToCallback: true,
       // A-11（R3-A 审计）: 30s 时钟容差——多实例/反代链路上验证方与签发方
       // 时钟毫秒级漂移时，刚签发的令牌可能被 exp/nbf 判定误拒；OIDC 侧已有
       // 60s skew 先例（oidc.service CLOCK_SKEW_SECONDS）。容忍窗远小于 15min
@@ -108,15 +161,18 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: JwtPayload) {
+  async validate(req: unknown, payload: JwtPayload) {
     // SEC-001: require an explicit type marker — tokens that omit `type` are
     // old-format or attacker-crafted and must be rejected. A5: `sse_ticket`
-    // is the only other accepted type; it is only ever *read* on the three
-    // SSE stream paths (see extractJwtFromRequest), so a ticket can never be
-    // replayed against a normal REST route.
+    // is the only other accepted type.
     if (payload.type !== "access" && payload.type !== "sse_ticket") {
       throw new AppError("ACCESS_TOKEN_TYPE_INVALID");
     }
+    // SEC-SSE-TICKET（审计 P1-2）：票据**只在三条 SSE stream 路径上**有效。
+    // 此前只校验 type，Authorization 头分支又对任意路由生效——一枚泄漏的
+    // 30 秒票据放进 `Authorization: Bearer <ticket>` 打任意 REST 端点即可
+    // 获得全权，正是该设计要消除的泄漏面。此处按「当前请求路径」复核。
+    assertTicketOnlyOnStreamPath(payload, req);
     // R-04: findByIdOrNull — a token belonging to a deleted user must 401
     // ("User not found"), never 404 via findById (presence/id disclosure).
     // With the null-returning lookup the guard below is finally live code.

@@ -4,6 +4,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { check, NPM_SUBPROJECTS } from './check-no-hoisting.mjs';
 
 let failures = 0;
@@ -133,7 +134,14 @@ for (const name of ['pnpm-workspace.yaml', 'pnpm-workspace.yml', 'lerna.json', '
 
 // ── 反证有牙：把真实仓库当前状态喂进去必须绿（守卫不能空转） ──────
 {
-  const { failures: f } = check(join(dirname(new URL(import.meta.url).pathname), '..'));
+  // SELFTEST-PATH（审计 2026-10-17）：此前用
+  //   join(new URL(import.meta.url).pathname, '..')
+  // 在 Windows 上得到 `\E:\...\scripts`（前导反斜杠）——`check()` 于是在一个
+  // **不存在的根**上跑，所有子项目「缺 lockfile」被逐条报成 failure，本断言
+  // 恒红（Linux CI 上 pathname 恰好是可用的 `/home/...`，故只在 Windows 复现，
+  // 长期被当成"本地环境问题"）。`fileURLToPath` 是 URL→路径的正确入口。
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const { failures: f } = check(repoRoot);
   assert('真实仓库当前状态全绿（守卫真的在跑）', f.length === 0);
 }
 

@@ -37,6 +37,8 @@
 | [ADR-021](./adr-021-sop-as-executable-contract.md) | SOP 即可执行契约——文档与契约分离、版本不可变 + contentHash | Accepted |
 | [ADR-022](./adr-022-executor-agent-arbitrary-code.md) | 执行器 Agent 与「受控的任意代码执行」信任模型变更——权限档位 + 硬闸门 + 默认最保守 | Accepted |
 | [ADR-023](./adr-023-params-env-injection-contract.md) | params → 子进程 env 的注入口径——字符串回归裸值 + 类型化 `AUTOFLOW_PARAMS_JSON` 通道（协议 4→5，A-11R） | Accepted |
+| [ADR-024](./adr-024-execution-record-archive.md) | 执行记录归档——保留期之外的 `task_executions` 是留是删（PLAN-BACKEND-ARCHITECTURE §2.2；四选项 + 触发条件 + 本轮不实施） | Proposed |
+| [ADR-025](./adr-025-audit-log-tamper-evidence.md) | 审计日志不可篡改性——append-only 触发器已是有效控制，不引入哈希链（PLAN-SECURITY-HARDENING §6.1-6.2；五类假阴性 + 实测 TRUNCATE/DBA 绕过边界 + 本轮不实施） | Accepted |
 
 ## DOC-04 覆盖状态
 

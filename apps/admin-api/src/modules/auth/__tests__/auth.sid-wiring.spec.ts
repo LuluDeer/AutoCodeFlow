@@ -79,9 +79,16 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
   const makeReq = (user: unknown) =>
     ({ headers: {}, ip: "127.0.0.1", user }) as never;
 
+  /**
+   * SEC-SSE-TICKET（审计 P1-2）：validate 以 `passReqToCallback: true` 形态
+   * 接收 (req, payload)。本套件只走 access 令牌，REQ 落在普通 REST 路径上
+   * 即可（路径门对 access 类型不生效）。
+   */
+  const REQ = { headers: {}, originalUrl: "/api/auth/sessions" } as never;
+
   it("真实 validate 产出带 sid 的主体 → revoke-others 保留当前会话（jti != sid）", async () => {
     // ① 真实 JwtStrategy.validate —— sid claim 必须出现在返回主体上
-    const principal = await strategy.validate({
+    const principal = await strategy.validate(REQ, {
       sub: 1,
       username: "alice",
       type: "access",
@@ -116,7 +123,7 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
   });
 
   it("真实 listSessions 接线：sid 透传后当前行被标记 current=true", async () => {
-    const principal = await strategy.validate({
+    const principal = await strategy.validate(REQ, {
       sub: 1,
       username: "alice",
       type: "access",
@@ -154,7 +161,7 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
   });
 
   it("回归守卫：无 sid 的存量令牌仍 fail-safe（revoke-others 退化为全量吊销）", async () => {
-    const principal = await strategy.validate({
+    const principal = await strategy.validate(REQ, {
       sub: 1,
       username: "alice",
       type: "access",
@@ -182,7 +189,7 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
       sessionVersion: 5,
     });
     await expect(
-      strategy.validate({
+      strategy.validate(REQ, {
         sub: 1,
         username: "alice",
         type: "access",

@@ -17,6 +17,15 @@ services:
     environment:
       # staging 默认 debug 日志（可被 .env 的 LOG_LEVEL 覆盖前，此处强制 debug）
       LOG_LEVEL: debug
+      # STAGING-HEAP（审计 P2，2026-10-17）：容器 mem_limit 减半到 512m，
+      # 但基线 compose 的 `--max-old-space-size=512` 会被本 override **继承**
+      # ——堆上限与容器上限完全重合。debug 日志下 RSS 还含非堆部分
+      # （Buffer/元数据/原生内存），堆一逼近 512MB 就先撞 cgroup 硬限被
+      # SIGKILL（OOMKilled），而不是 Node 自己 GC/报 heap out of memory。
+      # 症状是「staging 的 admin-api 随机重启、日志无异常结尾」。
+      # 与生产同款思路（生产 768m 容器配 512 堆，留 256m 非堆余量）：这里
+      # 512m 容器配 320 堆，留 192m 余量。
+      NODE_OPTIONS: '--max-old-space-size=320'
 
   executor-python:
     mem_limit: 768m
@@ -29,3 +38,6 @@ services:
     cpus: '0.5'
     environment:
       LOG_LEVEL: debug
+      # STAGING-HEAP：同上——基线是 1024 堆 / 1G 容器，本 override 把容器
+      # 减到 768m，堆必须同步下调（否则堆上限 > 容器上限，必然 OOMKilled）。
+      NODE_OPTIONS: '--max-old-space-size=512'

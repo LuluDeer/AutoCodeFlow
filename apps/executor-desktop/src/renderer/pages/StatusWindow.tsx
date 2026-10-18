@@ -8,6 +8,9 @@ import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from 
 import { requestTabSwitch } from '../tab-switch';
 // V4 后续优化（6）i18n 二期：状态页文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, resolveRendererLocale } from '../i18n';
+// PLAN-EXECUTOR-DESKTOP-UX 2.1：并发饱和度是纯算术（除零/NaN/超额/阈值配色
+// 都只在一处），抽到 concurrency-gauge.ts 由 test:renderer 真执行断言。
+import { concurrencyGauge } from '../concurrency-gauge';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -379,6 +382,16 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const runningCount = useMemo(
     () => (allRecords ?? []).filter((r) => r?.status === 'running').length,
     [allRecords],
+  );
+  // 2.1：并发饱和度（running/max）。两个数都来自**已有**通道，无新 IPC：
+  //   · running ← 上面那份全量 records（同一份数据，不再发一次 getHistory）；
+  //   · max     ← executor:status 已返回的 config.maxConcurrentTasks（与设置页
+  //               及 executor-node 的 MAX_CONCURRENT_TASKS 同源）。
+  // 配置读不到时 max 为 0 → gauge.known=false → 显示「N/—」而不是「N/0」
+  // （后者会被读成"上限是 0、一切都超额"）。
+  const gauge = useMemo(
+    () => concurrencyGauge(runningCount, config.maxConcurrentTasks),
+    [runningCount, config.maxConcurrentTasks],
   );
   // V4-3（I-05 右栏）：最近失败 Top3（全量 records，按开始时间倒序）。
   // records 未知（null）时整卡不渲染——不谎报「没有失败」。
@@ -830,6 +843,36 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 <span>{t('status.todayFail')} <b className="today-summary-num is-fail">{todaySummary.failed}</b></span>
                 <span className="today-summary-sep" aria-hidden="true">·</span>
                 <span>{t('status.todayRunning')} <b className="today-summary-num is-run">{todaySummary.running}</b></span>
+                {/* 2.1：并发饱和度（running/max + 零依赖进度条）。数字就在
+                    这一行里，不再新开卡片——计划原文是"在既有「今日汇总」块上补"。
+                    <progress> 是原生元素（自带 role=progressbar），零组件库；
+                    max 未知时退化成「N/—」文本，不画一条 0% 的假条。 */}
+                <span
+                  className={`today-summary-gauge is-${gauge.state}`}
+                  title={gauge.known
+                    ? t('status.concurrencyAria', gauge.running, gauge.max, gauge.percent)
+                    : t('status.concurrencyAriaUnknown', gauge.running)}
+                >
+                  <span className="today-summary-gauge-label">{t('status.concurrency')}</span>
+                  <b className="today-summary-gauge-num">
+                    {gauge.known
+                      ? t('status.concurrencyValue', gauge.running, gauge.max)
+                      : t('status.concurrencyUnknown', gauge.running)}
+                  </b>
+                  {gauge.known && (
+                    <progress
+                      className="today-summary-gauge-bar"
+                      value={gauge.percent}
+                      max={100}
+                      aria-label={t('status.concurrencyAria', gauge.running, gauge.max, gauge.percent)}
+                    />
+                  )}
+                  {(gauge.state === 'full' || gauge.state === 'over') && (
+                    <span className="today-summary-gauge-tag">
+                      {gauge.state === 'over' ? t('status.concurrencyOver') : t('status.concurrencyFull')}
+                    </span>
+                  )}
+                </span>
                 {todaySummary.lastFailedClock && (
                   <>
                     <span className="today-summary-sep" aria-hidden="true">·</span>

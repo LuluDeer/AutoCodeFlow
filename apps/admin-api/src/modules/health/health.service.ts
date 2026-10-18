@@ -4,6 +4,8 @@ import { Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
+import { promises as fs } from "node:fs";
+import v8 from "node:v8";
 import { Task, TaskStatus } from "../task/entities/task.entity";
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import {
@@ -43,6 +45,24 @@ export interface FullHealthReport {
       details?: string;
     };
     scheduler: { status: "healthy" | "unhealthy"; details?: string };
+    // PLAN-OBSERVABILITY §5.1（2026-10-17 优化计划轮）：磁盘与堆水位。
+    // 此前 /health/detailed 会在容器文件系统 99% 满、V8 堆耗尽时照样报
+    // healthy——磁盘写满后新执行的日志/产物写入全部失败，堆耗尽则进程
+    // 直接 OOM 崩溃，两者都是"看着绿、其实马上要挂"的形态。
+    // 刻意**不**纳入 /health/ready（就绪探针只管核心依赖，磁盘慢不会让
+    // 流量需要被摘除；纳入会让一次日志堆积触发全站摘流量）。
+    disk: {
+      status: "healthy" | "degraded" | "unhealthy";
+      details?: string;
+      usedPercent?: number;
+    };
+    memory: {
+      status: "healthy" | "degraded" | "unhealthy";
+      details?: string;
+      heapUsedBytes?: number;
+      heapLimitBytes?: number;
+      heapUsedPercent?: number;
+    };
   };
   metrics: {
     totalTasks: number;
@@ -94,6 +114,15 @@ export class HealthService {
       timestamp: string;
     };
   } | null = null;
+  // PLAN-OBSERVABILITY §5.1：磁盘 / 堆水位阈值（configuration.ts health 节，
+  // 默认值与 alert 侧保守起点一致）。
+  private readonly diskUsageDegradedPercent: number;
+  private readonly diskUsageUnhealthyPercent: number;
+  private readonly heapUsedDegradedPercent: number;
+  private readonly heapUsedUnhealthyPercent: number;
+  // 磁盘检查探测路径（默认进程 cwd——admin-api 的日志与上传产物都落在这里，
+  // 是真正会被写满的那块盘，不是 /tmp）。
+  private readonly diskCheckPath: string;
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -174,6 +203,26 @@ export class HealthService {
     this.publicCacheTtlMs = this.configService.get<number>(
       "health.publicCacheTtlMs",
       5_000,
+    );
+    this.diskUsageDegradedPercent = this.configService.get<number>(
+      "health.diskUsageDegradedPercent",
+      85,
+    );
+    this.diskUsageUnhealthyPercent = this.configService.get<number>(
+      "health.diskUsageUnhealthyPercent",
+      95,
+    );
+    this.heapUsedDegradedPercent = this.configService.get<number>(
+      "health.heapUsedDegradedPercent",
+      85,
+    );
+    this.heapUsedUnhealthyPercent = this.configService.get<number>(
+      "health.heapUsedUnhealthyPercent",
+      95,
+    );
+    this.diskCheckPath = this.configService.get<string>(
+      "health.diskCheckPath",
+      process.cwd(),
     );
   }
 
@@ -381,6 +430,150 @@ export class HealthService {
   }
 
   /**
+   * PLAN-OBSERVABILITY §5.1：磁盘水位检查。
+   *
+   * 为什么需要：admin-api 的日志、上传产物、临时下载都写在容器本地盘上，
+   * 盘满之后**新执行的日志/产物写入全部失败**，而在此之前所有既有健康
+   * 检查（DB/Redis/队列/执行器/调度器）都还是绿的——运维唯一的信号是
+   * 执行开始成批 FAILED（AUTOFLOW_EXECUTION_FAILURE_STORM），那时已经
+   * 晚了。本检查把"还有多少空间"变成一条可探针化的信号。
+   *
+   * 实现取舍：用 `fs.promises.statfs`（Node 18.15+ 稳定，Node 24 环境无需
+   * 实验标志）读文件系统块统计，而不是引入 `check-disk-space` 依赖——本
+   * 模块现有零外部依赖的姿态（只用 node:fs / node:os 等价物）保持不变。
+   * statfs 在部分平台/文件系统上可能 ENOSYS，故整体 try/catch：**读不到
+   * 水位时报 degraded 并如实标注，而不是报 healthy 假装一切正常**（未知
+   * ≠ 健康，这与 AUTOFLOW_EXECUTOR_DISK_USAGE_* 的"旧执行器缺席而非 0"
+   * 同一取舍：不臆造数值）。
+   */
+  async checkDisk(): Promise<{
+    status: "healthy" | "degraded" | "unhealthy";
+    details?: string;
+    usedPercent?: number;
+  }> {
+    try {
+      const stats = await fs.statfs(this.diskCheckPath);
+      const totalBytes = Number(stats.blocks) * Number(stats.bsize);
+      // bfree 含 root 保留块，bavail 才是非特权进程真正能写的量。容器内
+      // 进程常以非 root 运行（Dockerfile 的 USER appuser），用 bavail 才
+      // 反映真实可用空间——用 bfree 会在保留块上系统性低估水位。
+      const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+      if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+        return {
+          status: "degraded",
+          details: `Disk usage unreadable for ${this.diskCheckPath} (statfs returned no usable block count)`,
+        };
+      }
+      const usedPercent =
+        Math.round(((totalBytes - availableBytes) / totalBytes) * 1000) / 10;
+      const usedMb = Math.round((totalBytes - availableBytes) / 1024 / 1024);
+      const totalMb = Math.round(totalBytes / 1024 / 1024);
+
+      if (usedPercent >= this.diskUsageUnhealthyPercent) {
+        return {
+          status: "unhealthy",
+          usedPercent,
+          details:
+            `Disk ${usedPercent}% full at ${this.diskCheckPath} (${usedMb}/${totalMb} MB used, ` +
+            `threshold ${this.diskUsageUnhealthyPercent}%); new execution logs/artifacts will fail to write`,
+        };
+      }
+      if (usedPercent >= this.diskUsageDegradedPercent) {
+        return {
+          status: "degraded",
+          usedPercent,
+          details:
+            `Disk ${usedPercent}% full at ${this.diskCheckPath} (${usedMb}/${totalMb} MB used, ` +
+            `degraded threshold ${this.diskUsageDegradedPercent}%)`,
+        };
+      }
+      return { status: "healthy", usedPercent };
+    } catch (error: unknown) {
+      // 见方法头注：读不到水位 = 未知，不是健康。degraded 而非 unhealthy
+      // ——磁盘本身未必有问题，是这项探测不可用，不该把整体判成故障。
+      return {
+        status: "degraded",
+        details: `Disk usage check failed for ${this.diskCheckPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+  }
+
+  /**
+   * PLAN-OBSERVABILITY §5.1：V8 堆水位检查。
+   *
+   * 为什么需要：堆耗尽时进程被 OOM killer 直接带走（没有任何 5xx、没有
+   * 优雅关闭日志），健康检查在此之前全绿。用 `process.memoryUsage()`
+   * 而非外部 exporter，因为这里要的是**本进程**的堆压力，而
+   * `nodejs_heap_size_used_bytes` 只进 Prometheus、不参与健康判定。
+   *
+   * 分母取 `v8.getHeapStatistics().heap_size_limit`（V8 实际允许的上限，
+   * 受 --max-old-space-size 影响），而不是 os.totalmem()——后者是整个
+   * 宿主机的内存，容器限 512MB 而宿主 32GB 时用它算比例毫无意义（恒
+   * 个位数百分比，永远不会告警）。
+   */
+  checkMemory(): {
+    status: "healthy" | "degraded" | "unhealthy";
+    details?: string;
+    heapUsedBytes?: number;
+    heapLimitBytes?: number;
+    heapUsedPercent?: number;
+  } {
+    try {
+      const heapUsedBytes = process.memoryUsage().heapUsed;
+      const heapLimitBytes = v8.getHeapStatistics().heap_size_limit;
+      if (!Number.isFinite(heapLimitBytes) || heapLimitBytes <= 0) {
+        return {
+          status: "degraded",
+          details:
+            "Heap limit unreadable (v8.getHeapStatistics().heap_size_limit returned no usable value)",
+        };
+      }
+      const heapUsedPercent =
+        Math.round((heapUsedBytes / heapLimitBytes) * 1000) / 10;
+      const usedMb = Math.round(heapUsedBytes / 1024 / 1024);
+      const limitMb = Math.round(heapLimitBytes / 1024 / 1024);
+
+      if (heapUsedPercent >= this.heapUsedUnhealthyPercent) {
+        return {
+          status: "unhealthy",
+          heapUsedBytes,
+          heapLimitBytes,
+          heapUsedPercent,
+          details:
+            `Heap ${heapUsedPercent}% used (${usedMb}/${limitMb} MB, threshold ` +
+            `${this.heapUsedUnhealthyPercent}%); OOM kill is imminent`,
+        };
+      }
+      if (heapUsedPercent >= this.heapUsedDegradedPercent) {
+        return {
+          status: "degraded",
+          heapUsedBytes,
+          heapLimitBytes,
+          heapUsedPercent,
+          details:
+            `Heap ${heapUsedPercent}% used (${usedMb}/${limitMb} MB, degraded threshold ` +
+            `${this.heapUsedDegradedPercent}%)`,
+        };
+      }
+      return {
+        status: "healthy",
+        heapUsedBytes,
+        heapLimitBytes,
+        heapUsedPercent,
+      };
+    } catch (error: unknown) {
+      return {
+        status: "degraded",
+        details: `Heap usage check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+  }
+
+  /**
    * 全量健康检查。WIKI-OPT-1：HEALTH_CACHE_TTL_MS > 0 时在 TTL 窗口内
    * 直接返回缓存的整个响应对象（含 timestamp），降低高频探针对数据库
    * count / 队列统计 / Redis ping 的压力；默认 0 = 关闭，行为与未缓存
@@ -415,6 +608,11 @@ export class HealthService {
       this.checkTasks(),
       this.checkScheduler(),
     ]);
+    // PLAN-OBSERVABILITY §5.1：磁盘 / 堆水位。两者都不碰网络与 DB，
+    // checkMemory 是同步纯计算，故不并入上面的 Promise.all（保持其语义
+    // 为"网络/DB 依赖面"），单独算完后与其余组件一起聚合。
+    const disk = await this.checkDisk();
+    const memory = this.checkMemory();
 
     // WIKI-OPT-1: tasks 纳入 components 聚合（此前 6 项检查只聚合 5 项，
     // tasks 缺席导致其异常状态在整体判定中不可见）。
@@ -441,6 +639,8 @@ export class HealthService {
         status: scheduler.status as "healthy" | "degraded" | "unhealthy",
         message: scheduler.details,
       },
+      { name: "disk", status: disk.status, message: disk.details },
+      { name: "memory", status: memory.status, message: memory.details },
     ];
 
     const hasUnhealthy = components.some((c) => c.status === "unhealthy");
@@ -462,6 +662,8 @@ export class HealthService {
         executors,
         tasks,
         scheduler,
+        disk,
+        memory,
       },
       metrics: {
         totalTasks: tasks.totalCount,

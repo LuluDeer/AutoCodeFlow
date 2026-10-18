@@ -241,7 +241,18 @@ export class UsersService implements OnModuleInit {
         Object.assign(target, updateUserDto);
         const savedInTx = await users.save(target);
         if (updateUserDto.password) {
-          await this.bumpSessionVersion(id);
+          // DEADLOCK-01（审计 P2，2026-10-17）：**必须**用事务内的 manager，
+          // 不能用 this.bumpSessionVersion（它走 this.usersRepository，即
+          // 连接池里的**另一条**连接）。
+          //
+          // 缺陷现场：事务已持有目标行的写锁，而这条外部 UPDATE 需要同一行
+          // 的行锁 → 它排队等事务提交；事务又在 await 它 → 二者互等。单连接
+          // 池（DATABASE_POOL_SIZE=1，或池被并发请求耗尽）下是**确定性死锁**，
+          // 请求挂到连接超时；多连接下也会把池占满并放大锁等待。
+          //
+          // 事务内单条 UPDATE 语义与 bumpSessionVersion 逐字节一致
+          // （increment → SET "sessionVersion" = "sessionVersion" + 1）。
+          await users.increment({ id }, "sessionVersion", 1);
         }
         return savedInTx;
       });

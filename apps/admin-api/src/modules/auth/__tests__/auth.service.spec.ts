@@ -176,12 +176,59 @@ describe("AuthService (__tests__)", () => {
         lockedUntil: new Date(Date.now() + 10 * 60_000),
       };
       usersService.findByUsername.mockResolvedValue(lockedUser as any);
-      jest.spyOn(bcrypt, "compare").mockResolvedValue(true as never);
+      const compareSpy = jest
+        .spyOn(bcrypt, "compare")
+        .mockResolvedValue(true as never);
+      // 该 spy 在本文件内跨用例共享，先清计数再断言「本用例恰好一次」。
+      compareSpy.mockClear();
       await expect(
         service.login({ username: "admin", password: "pass" }),
       ).rejects.toThrow(UnauthorizedException);
       // R10: an ACTIVE lock must not be cleared — only expired ones are.
       expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
+      // SEC-LOCK-TIMING: a locked account must NOT short-circuit before
+      // bcrypt — otherwise its response time (<10ms) is distinguishable from
+      // the unknown-user path (~100ms), enumerating "exists AND locked".
+      expect(compareSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // SEC-LOCK-TIMING（审计 P1-3）：锁定路径与「用户不存在」路径必须付出
+    // 等价的 bcrypt 成本——两者都恰好一次 compare（不存在的用户比对
+    // DUMMY_BCRYPT_HASH，锁定的用户比对真实 hash）。
+    it("SEC-LOCK-TIMING: 锁定路径与未知用户路径的 bcrypt 次数一致（无时序预言机）", async () => {
+      const compareSpy = jest.spyOn(bcrypt, "compare");
+
+      usersService.findByUsername.mockResolvedValue({
+        ...mockUser,
+        lockedUntil: new Date(Date.now() + 10 * 60_000),
+      } as any);
+      compareSpy.mockClear();
+      await expect(
+        service.login({ username: "admin", password: "pass" }),
+      ).rejects.toThrow(UnauthorizedException);
+      const lockedCalls = compareSpy.mock.calls.length;
+
+      usersService.findByUsername.mockResolvedValue(null);
+      compareSpy.mockClear();
+      await expect(
+        service.login({ username: "nobody", password: "pass" }),
+      ).rejects.toThrow(UnauthorizedException);
+      const unknownCalls = compareSpy.mock.calls.length;
+
+      expect(lockedCalls).toBe(1);
+      expect(unknownCalls).toBe(lockedCalls);
+    });
+
+    it("SEC-LOCK-TIMING: 锁定期间不递增失败计数（不给锁窗续期）", async () => {
+      usersService.findByUsername.mockResolvedValue({
+        ...mockUser,
+        lockedUntil: new Date(Date.now() + 10 * 60_000),
+      } as any);
+      jest.spyOn(bcrypt, "compare").mockResolvedValue(false as never);
+      await expect(
+        service.login({ username: "admin", password: "wrong" }),
+      ).rejects.toThrow(/账号已锁定/);
+      expect(usersService.recordLoginFailure).not.toHaveBeenCalled();
     });
 
     // R10: after the lock window expires, the fail counter must be reset
@@ -264,6 +311,67 @@ describe("AuthService (__tests__)", () => {
       const result = await service.refreshToken("valid-token");
       expect(result).toHaveProperty("accessToken");
       expect(result).toHaveProperty("refreshToken");
+    });
+
+    /**
+     * REFRESH-META（审计 P2，2026-10-17）：轮换必须保留会话的 UA/IP。
+     *
+     * 缺陷现场：`return this.generateTokens(user)` 不带 meta，轮换出的新
+     * refresh_tokens 行 userAgent/ip 恒为 NULL。access token 只有 15 分钟，
+     * 几乎所有活跃会话一天后都轮换过——GET /auth/sessions 的设备/来源列
+     * 大面积变 null，异常登录排查失去依据。
+     */
+    it("REFRESH-META：新行继承被消费行的 UA/IP（会话列表不丢设备信息）", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: "valid-jti-uuid",
+      } as any);
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: "valid-jti-uuid",
+        userId: 1,
+        revoked: false,
+        userAgent: "Mozilla/5.0 (original)",
+        ip: "203.0.113.7",
+      } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue(mockUser as any);
+
+      await service.refreshToken("valid-token");
+
+      const saved = refreshTokenRepo.save.mock.calls.at(-1)?.[0];
+      expect(saved).toMatchObject({
+        userAgent: "Mozilla/5.0 (original)",
+        ip: "203.0.113.7",
+      });
+    });
+
+    it("REFRESH-META：调用方显式传入的 UA/IP 优先于继承值", async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 1,
+        username: "admin",
+        type: "refresh",
+        jti: "valid-jti-uuid",
+      } as any);
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: "valid-jti-uuid",
+        userAgent: "old-agent",
+        ip: "10.0.0.1",
+      } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue(mockUser as any);
+
+      await service.refreshToken("valid-token", {
+        userAgent: "new-agent",
+        ip: "198.51.100.2",
+      });
+
+      const saved = refreshTokenRepo.save.mock.calls.at(-1)?.[0];
+      expect(saved).toMatchObject({
+        userAgent: "new-agent",
+        ip: "198.51.100.2",
+      });
     });
 
     it("rejects refresh token without jti (SEC-002)", async () => {

@@ -32,7 +32,11 @@ export class AuditController {
   @Get()
   @ApiOkResponse({ type: PaginatedAuditLogsDto })
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "分页查询审计日志（仅管理员）" })
+  @ApiOperation({
+    description:
+      "分页查询审计日志。PLAN-BACKEND-ARCHITECTURE §2.1（加性过渡，与 GET /tasks、GET /tasks/:id/executions、GET /tasks/executions/all 同款）：新增可选 `cursor` 参数——省略时走既有 OFFSET 分页，响应与之前**逐字节一致**（不含 nextCursor 键）；传入上一页响应的 `data.nextCursor` 时走 keyset 分页（(createdAt,id) 元组游标，行值比较，深翻页不再随 OFFSET 变慢），并在响应中**追加** `nextCursor`（null = 已到末页）。本端点排序恒为 createdAt DESC, id DESC，故游标可与全部过滤器（action/resource/resourceId/username/startTime/endTime/userId/result）自由组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。首次进入 keyset 模式请传空值 `?cursor=`。",
+    summary: "分页查询审计日志（仅管理员）",
+  })
   findAll(@Query() query: AuditQueryDto) {
     return this.svc.findAll({
       page: query.page,
@@ -48,6 +52,10 @@ export class AuditController {
       endTime: query.endTime,
       userId: query.userId,
       result: query.result,
+      // §2.1：`undefined` = 走 OFFSET 分支（响应不含 nextCursor 键，逐字节不变）；
+      // 传了才切 keyset。**不要**写成 `?? ""`——那会把每个不带游标的请求都推进
+      // keyset 分支，直接破坏加性契约。
+      cursor: query.cursor,
     });
   }
 

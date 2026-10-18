@@ -208,6 +208,15 @@ export default {
   'taskList.statusAll': '全部状态',
   'taskList.triggerAll': '触发方式',
   'taskList.lastRunAll': '最近执行',
+  // §2.1 keyset（稳定翻页）。文案骨架与 execs.* / audit.* 逐字对齐（同一套
+  // UX 语言），额外两条是本页独有的后端互斥约束说明。
+  'taskList.stablePaging': '稳定翻页',
+  'taskList.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'taskList.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。开启期间「最近执行」筛选不可用。关闭则回到原来的页码分页。',
+  'taskList.stablePaging.lastStatusDisabled': '稳定翻页模式不能按最近执行状态筛选（后端游标分页不支持该组合），请先关闭稳定翻页',
+  'taskList.stablePaging.lastStatusIgnored': '「最近执行」筛选在稳定翻页下已失效（结果未按该条件过滤）',
+  'taskList.pager.prev': '上一页',
+  'taskList.pager.next': '下一页',
   'taskList.clearFilters': '清除筛选',
   'taskList.count': '共 {{count}} 条',
   'taskList.selected': '已选 <1>{{count}}</1> 项',
@@ -327,6 +336,15 @@ export default {
   // 审计 P2：执行记录当前页 CSV 导出（PageHeader 操作区）
   'execs.exportCsv': '导出 CSV',
   'execs.exportCsvSuccess': '已导出当前页 {{count}} 条执行记录',
+  // 全量导出（GET /tasks/executions/export，后端流式端点）。与上方「当前页导出」
+  // **并列且语义不同**，故两个按钮的文案必须能一眼区分：一个点明「当前页」
+  // （成功提示里），一个点明「全部」。
+  'execs.exportAll': '导出全部',
+  'execs.exportAll.hint': '从服务端流式导出「当前筛选」下的全部执行记录（CSV，最多 5 万行；超出时文件末尾会标注截断，看得见）。只导当前页请用左边的「导出 CSV」。',
+  'execs.exportAll.adminOnly': '仅管理员可导出全部执行记录（当前页导出不受此限制）',
+  'execs.exportAll.running': '正在下载…大导出可能需要几十秒',
+  'execs.exportAll.success': '已开始下载全部执行记录（CSV）',
+  'execs.exportAll.fail': '全量导出失败',
   'execs.kill.success': '已发送终止信号',
   'execs.kill.fail': '终止失败',
   'execs.compare': '对比 ({{count}})',
@@ -341,6 +359,12 @@ export default {
   'execs.empty': '暂无执行记录',
   'execs.empty.noMatch': '没有匹配的执行记录',
   'execs.count': '共 {{count}} 条',
+  // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
+  'execs.stablePaging': '稳定翻页',
+  'execs.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'execs.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。关闭则回到原来的页码分页。',
+  'execs.pager.prev': '上一页',
+  'execs.pager.next': '下一页',
   'execs.col.task': '任务',
   'execs.col.status': '状态',
   'execs.col.trigger': '触发方式',
@@ -653,7 +677,10 @@ export default {
   'users.field.password': '密码',
   'users.field.passwordRequired': '请输入密码',
   'users.field.passwordMin': '密码至少8个字符',
-  'users.field.passwordPattern': '密码须包含大写字母、小写字母、数字和特殊符号',
+  // ⚠️ 措辞必须与后端 validatePasswordStrength 一致：**不要求小写字母**。
+  // 此前文案写「大写字母、小写字母、数字和特殊符号」且表单正则真的加了
+  // `(?=.*[a-z])`——比后端更严，会拒绝后端本可接受的密码（SECURITY §3.1 修复）。
+  'users.field.passwordPattern': '密码须包含大写字母、数字和特殊符号',
   'users.field.passwordPlaceholder': '请输入密码',
   'users.field.email': '邮箱',
   'users.field.emailRequired': '请输入邮箱',
@@ -760,6 +787,12 @@ export default {
   'audit.action.subscription_deadLetter_delete': '删除订阅死信',
   'audit.total': '共 {{count}} 条',
   'audit.modal.detail': '详情',
+  // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
+  'audit.stablePaging': '稳定翻页',
+  'audit.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'audit.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。关闭则回到原来的页码分页。',
+  'audit.pager.prev': '上一页',
+  'audit.pager.next': '下一页',
 
   'notFound.title': '页面不存在',
   'notFound.subTitle': '您访问的页面不存在，请检查地址是否正确。',
@@ -1080,6 +1113,17 @@ export default {
   'security.password.submit': '修改密码',
   'security.password.changed': '密码已修改，请使用新密码重新登录',
   'security.password.changeFail': '修改密码失败',
+  // SECURITY §3.1：密码强度实时反馈（组件 PasswordStrengthMeter）。
+  // 等级文案与后端策略**同源**——不合规的密码永远不会显示为「强」（见
+  // utils/passwordPolicy 的封顶不变量），故这里的措辞只描述"强度"，
+  // 不承诺"可用"；"可用"由下方逐条规则清单回答。
+  'security.password.strength.label': '强度',
+  'security.password.strength.empty': '尚未输入',
+  'security.password.strength.weak': '弱',
+  'security.password.strength.fair': '一般',
+  'security.password.strength.good': '较好',
+  'security.password.strength.strong': '强',
+  'security.password.strength.unmetHint': '尚未满足全部要求，提交会被后端拒绝',
 
   'apiKeys.title': 'API Keys（限权机器凭证）',
   'apiKeys.create': '新建 API Key',
@@ -1382,6 +1426,13 @@ export default {
   'execPkg.searchPlaceholder': '搜索包名…',
   'execPkg.filter.type': '类型',
   'execPkg.filter.status': '状态',
+  // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
+  // 与 ExecutionsPage 的 execs.stablePaging.* 逐字对齐（同一套 UX 语言）。
+  'execPkg.stablePaging': '稳定翻页',
+  'execPkg.stablePaging.aria': '稳定翻页（游标分页，深翻页不受数据变动影响）',
+  'execPkg.stablePaging.hint': '改用游标分页：深翻页速度稳定，但只能「上一页 / 下一页」，没有页码跳转。关闭则回到原来的页码分页。',
+  'execPkg.pager.prev': '上一页',
+  'execPkg.pager.next': '下一页',
   'execPkg.refresh': '刷新',
   'execPkg.count': '共 {{count}} 个包',
   'execPkg.fleetVersions.label': '机队执行器版本',
@@ -2204,6 +2255,10 @@ export default {
   'execDetail.log.noLevelLogs': '无 {{level}} 级别日志',
   'execDetail.log.noLevelLogsDesc': '当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。',
   'execDetail.log.noSearchHit': '未找到匹配「{{keyword}}」的日志内容',
+  // LOG-JSON-01：日志行内 JSON 载荷的「展开看美化」浮层文案
+  'execDetail.log.json.prettyTitle': '格式化后的 JSON',
+  'execDetail.log.json.prettyTruncated': '格式化后的 JSON（内容过长，已截断）',
+  'execDetail.log.json.expandAria': '展开查看格式化 JSON',
   'execDetail.report.aiAnalysisTitle': '🤖 AI 故障分析',
   'execDetail.retry.chainTitle': '重试链路',
   'execDetail.retry.budget': '重试预算：Attempt #{{attempt}} of {{total}}',
@@ -2226,6 +2281,12 @@ export default {
   'taskForm.breadcrumb.edit': '编辑任务',
   'taskForm.back': '返回',
   'taskForm.anchorAria': '表单分区导航',
+  // §2.3 表单完成度：只统计必填项（口径见 utils/formCompletion.ts）
+  'taskForm.completion.label': '完成度',
+  'taskForm.completion.percent': '{{percent}}%',
+  'taskForm.completion.aria': '表单完成度 {{percent}}%',
+  'taskForm.completion.section.complete': '{{section}}：必填项已填齐',
+  'taskForm.completion.section.incomplete': '{{section}}：还有必填项未填',
   'taskForm.section.basic': '基本配置',
   'taskForm.section.trigger': '触发与告警',
   'taskForm.section.executor': '执行器策略',
@@ -2295,6 +2356,11 @@ export default {
   'taskForm.unsaved.message': '表单有未保存的修改，离开将丢失这些更改。确定离开吗？',
   'taskForm.unsaved.ok': '离开',
   'taskForm.unsaved.cancel': '留下',
+  // DRAFT-01：表单草稿（localStorage 自动保存/恢复）——崩溃、误关标签页、
+  // 会话过期后回来，输入不归零。提示为非侵入行内条，含「丢弃草稿」出口。
+  'taskForm.draft.restored': '已恢复上次未保存的草稿',
+  'taskForm.draft.restoredDesc': '表单已填入上次编辑的内容。若不想要这份草稿，可丢弃后重新填写。',
+  'taskForm.draft.discard': '丢弃草稿',
   'taskForm.submit.updateFail': '更新失败',
   'taskForm.submit.createFail': '创建失败',
   // A4（第三轮审计）：乐观锁冲突（409）——留在表单页不跳转的专门指引

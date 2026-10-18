@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync, constants as zlibConstants } from 'node:zlib';
 import { readdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
+import { visualizer } from 'rollup-plugin-visualizer';
 // F-30（DEEP_REVIEW 0ef3bbe）：首帧主题脚本的单一来源。
 import { THEME_INIT_SCRIPT } from './src/theme/tokens.ts';
 
@@ -81,7 +82,15 @@ export default defineConfig({
     react(),
     themeInitPlugin(),
     precompressAssetsPlugin(),
-  ],
+    // Bundle 分析工具：仅在 ANALYZE=true 时启用
+    process.env.ANALYZE === 'true' &&
+      visualizer({
+        filename: 'stats.html',
+        open: true,
+        gzipSize: true,
+        brotliSize: false,
+      }),
+  ].filter(Boolean),
   resolve: {
     // F-01：monaco-editor 0.53 的 package.json 无 main/exports（仅 module），
     // 显式补上 module 解析条件——vitest 会把 resolve.mainFields 重置为 []，

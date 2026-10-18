@@ -702,6 +702,42 @@ describe('HttpClient', () => {
       expect(mockInstance.get.mock.calls.length).toBe(5);
     });
 
+    /**
+     * BREAKER-MASK（审计 P3，2026-10-17）：重试途中熔断器打开时，必须暴露
+     * **真实**的传输错误（503 / 超时），而不是用 CircuitBreakerOpenError
+     * 把它盖掉。熔断只是失败的后果，排障需要根因。
+     */
+    it('BREAKER-MASK: 重试把熔断器推到 open 时抛真实错误（503），不掩盖为 CircuitBreakerOpenError', async () => {
+      // 阈值 5：本次请求重试 5 次（maxRetries:5 → 6 次尝试），第 5 次失败后
+      // 熔断器已 open，第 6 次循环头被拒 → 必须抛最初的 503。
+      mockInstance.get.mockRejectedValue(err503());
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 5, minWaitMs: 1, maxWaitMs: 1 },
+      });
+
+      const err = await client.get('/items').catch((e: unknown) => e);
+      expect(err).not.toBeInstanceOf(CircuitBreakerOpenError);
+      expect((err as { response?: { status?: number } }).response?.status).toBe(
+        503,
+      );
+    });
+
+    it('BREAKER-MASK: 纯熔断（从未发出请求）仍抛 CircuitBreakerOpenError', async () => {
+      mockInstance.get.mockRejectedValue(err503());
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 0 },
+      });
+
+      for (let i = 0; i < 5; i++) {
+        await client.get('/items').catch(() => undefined);
+      }
+      const callsBeforeOpen = mockInstance.get.mock.calls.length;
+
+      // 这次请求一次都没发出去——纯熔断语义，抛 CircuitBreakerOpenError
+      await expect(client.get('/items')).rejects.toThrow(CircuitBreakerOpenError);
+      expect(mockInstance.get.mock.calls.length).toBe(callsBeforeOpen);
+    });
+
     it('a non-breakable 4xx error neither retries nor counts toward the breaker', async () => {
       const badRequest = Object.assign(
         new Error('Request failed with status code 400'),

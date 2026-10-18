@@ -1,0 +1,149 @@
+{
+  // VSCode 调试配置（PLAN-DEVELOPER-EXPERIENCE §5.3）
+  //
+  // 纪律：每条配置的 command / runtimeArgs 必须与**仓库真实脚本**逐字对应，
+  // 不臆造入口。对应关系见各条注释；改脚本时请同步改这里，否则调试会静默失效
+  // （表现为「启动即退出」或「断点不停」，比直接报错更难排查）。
+  //
+  // 本仓是 monorepo 且**刻意不做 workspace 提升**（ARCH-20）：每个 app 有
+  // 自己的 node_modules 与 package-lock.json，因此所有配置都带
+  // `cwd` + `sourceMaps`，不要假设根目录有 node_modules。
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // 对应 apps/admin-api/package.json 的 `start:debug`
+      // = `nest start --debug --watch`。Nest CLI 自己会起 inspector，
+      // 故这里用 node 直连 9229（attach），而不是再叠一层 --inspect。
+      "name": "admin-api: attach (start:debug)",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "restart": true,
+      "cwd": "${workspaceFolder}/apps/admin-api",
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/apps/admin-api/dist/**/*.js"],
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      // 不依赖 nest CLI 的直连调试：先 `npm run build`（tsc → dist），
+      // 再直接跑 dist/main.js。适合想用「编译产物 = 生产形态」复现问题时。
+      "name": "admin-api: launch dist/main.js",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/admin-api/dist/main.js",
+      "cwd": "${workspaceFolder}/apps/admin-api",
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/apps/admin-api/dist/**/*.js"],
+      "skipFiles": ["<node_internals>/**"],
+      // .env 由 main.ts 内的 dotenv 自行加载（loadEnvFile），
+      // 这里不重复注入，避免两处配置打架。
+      "console": "integratedTerminal"
+    },
+    {
+      // 对应 apps/admin-api/package.json 的 `test`
+      // = `npx --node-options=--experimental-vm-modules jest`。
+      // ⚠️ --experimental-vm-modules 是**必需**的：本仓依赖已是 ESM-only，
+      // 裸跑 jest 会在 import 处直接 ERR_REQUIRE_ESM 全红（CI 注释 ESM-1）。
+      "name": "admin-api: jest (current file)",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": [
+        "--experimental-vm-modules",
+        "${workspaceFolder}/apps/admin-api/node_modules/jest/bin/jest.js"
+      ],
+      "args": ["--runInBand", "--silent=false", "${relativeFile}"],
+      "cwd": "${workspaceFolder}/apps/admin-api",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      // 对应 apps/admin-web/package.json 的 `dev` = `vite`。
+      // Vite 由浏览器调试，这里只是启动器；实际断点在浏览器 DevTools
+      // 或下面的 Chrome 配置里下。
+      "name": "admin-web: vite dev server",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "${workspaceFolder}/apps/admin-web",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      // 前端断点：附加到已打开的 Chrome。需先以
+      // `--remote-debugging-port=9222` 启动 Chrome，或直接用下面
+      // 「admin-web: chrome」那条（VSCode 自己拉起）。
+      //
+      // ⚠️ 端口是 **5176** 不是 Vite 默认的 5173：vite.config.ts:104 是
+      // `port: Number(process.env.VITE_PORT || 5176)`。改端口时这里要同步。
+      "name": "admin-web: attach to Chrome",
+      "type": "chrome",
+      "request": "attach",
+      "port": 9222,
+      "url": "http://localhost:5176/*",
+      "webRoot": "${workspaceFolder}/apps/admin-web/src"
+    },
+    {
+      "name": "admin-web: chrome (launch)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5176",
+      "webRoot": "${workspaceFolder}/apps/admin-web/src",
+      "sourceMaps": true
+    },
+    {
+      // 对应 apps/admin-web/package.json 的 `test` = `vitest run`。
+      // 调试单个用例时把它改成 `vitest`（watch 模式）更顺手。
+      "name": "admin-web: vitest (current file)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vitest", "run", "${relativeFile}"],
+      "cwd": "${workspaceFolder}/apps/admin-web",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      // 对应 apps/executor-desktop/package.json 的 `dev` = `vite`
+      // （vite-plugin-electron 会顺带起主进程）。
+      "name": "executor-desktop: dev",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "${workspaceFolder}/apps/executor-desktop",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      // 主进程断点：package.json 的 `main` 是 dist/main/index.js，
+      // 故必须先 `npm run build:main`（tsc -p tsconfig.json）。
+      "name": "executor-desktop: main process",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/executor-desktop/dist/main/index.js",
+      "cwd": "${workspaceFolder}/apps/executor-desktop",
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/apps/executor-desktop/dist/**/*.js"],
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      // 对应 apps/executor-node/package.json 的 `build` 产物 + 仓库脚本。
+      // 注意：executor-node 的入口在 dist/ 下，需先 build。
+      "name": "executor-node: launch",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/apps/executor-node/dist/main.js",
+      "cwd": "${workspaceFolder}/apps/executor-node",
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/apps/executor-node/dist/**/*.js"],
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}

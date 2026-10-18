@@ -187,3 +187,133 @@ groups:
   #     severity: warning
   #   annotations:
   #     summary: "执行器离线数量超阈值"
+
+  # ── HTTP RED（本轮新增）────────────────────────────────────────────────
+  # 数据源：autoflow_http_requests_total / autoflow_http_request_duration_ms_*
+  # （HttpMetricsInterceptor 埋点，声明在 prometheus-metrics.service.ts）。
+  # route label 是 **Express 路由模板**（/tasks/:id），不是原始 URL——原始
+  # URL 带具体 id，每个 id 一条 series，是 RED 指标最常见的基数爆炸源；
+  # 未匹配路由统一折成 "unmatched"（扫描器爱打的 /.env、/wp-admin 等）。
+  # SSE / 长连接不入账（拦截器按 text/event-stream 与 /logs/stream 排除），
+  # 否则一条挂几小时的日志流会把 P99 与 _sum 直接带偏。
+  - name: autoflow-http-red
+    rules:
+      # 5xx 占比（cluster 级）。4xx 刻意不计入：鉴权失败/参数错/扫描器是
+      # 调用方问题，混进来会让「有人在扫接口」触发服务端故障告警。
+      # 调优思路：
+      # - 5% 是保守起点；上线两周后按基线回调（本仓纪律：取 p99 的 2~3 倍）。
+      # - 需要逐路由下钻时，把 `sum(...)` 换成 `sum by (route) (...)`——
+      #   本文件与接线版必须保持 expr 空白归一后逐字一致，改这里要同步改
+      #   config/monitoring/alerts.yml。
+      # - clamp_min 分母防除零：无流量时占比无意义（NaN 不触发）。
+      - alert: AUTOFLOW_HTTP_5XX_RATE_HIGH
+        expr: |
+          sum(rate(autoflow_http_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(autoflow_http_requests_total[5m])), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HTTP 5xx 占比升高（服务端错误率 > 5%）"
+          description: >-
+            5xx 占全部 HTTP 请求的 {{ $value | humanizePercentage }} 持续
+            10 分钟（阈值 5%）。先在 Grafana「HTTP RED」行按 route 分行定位
+            是哪个路由在报 5xx，再按该 route 过滤 admin-api 结构化日志的
+            context 字段；HTTP 异常过滤器只在未捕获异常时产出 5xx，栈里通常
+            就是根因。若 5xx 集中在 route="unmatched"，说明错误来自全局
+            中间件/异常过滤器而非具体处理器。
+          runbook: "docs/observability/README.md#http-red"
+
+      # P99 慢请求。histogram_quantile 读的是手写累积桶
+      # （le = 5/10/25/50/100/250/500/1000/2500/5000/+Inf ms），与 CORE-06
+      # 的调度延迟直方图同一套渲染口径（本仓无 prom-client Histogram）。
+      # 调优思路：
+      # - 2s 是管理台 API 的保守起点（列表页含分页查询，正常在百毫秒级）。
+      # - status_class!="5xx" 排除失败请求：失败请求的耗时没有容量意义，
+      #   且 5xx 往往快速返回，会把 P99 拉低掩盖真实的慢请求。
+      # - 均值对照：sum(rate(_sum))/clamp_min(sum(rate(_count)), 1e-9)。
+      #   均值也高 = 整体变慢；均值正常而 P99 高 = 少量长尾。
+      - alert: AUTOFLOW_HTTP_LATENCY_P99_HIGH
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{status_class!="5xx"}[5m]))) > 2000
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HTTP P99 延迟超 2s（服务端慢请求）"
+          description: >-
+            全部路由的 HTTP P99 耗时 {{ $value }}ms 持续 10 分钟（阈值
+            2000ms，已排除 5xx）。均值高 = 整体变慢（慢 SQL/大结果集分页/
+            序列化放大），均值正常而 P99 高 = 少量长尾（锁等待、GC、偶发慢
+            查询）；结合 autoflow_db_pool_waiting_requests 与
+            nodejs_eventloop_lag_seconds 判断是存储层还是事件循环。SSE 长流
+            不入账，故本条不会因日志流挂得久而误报。
+          runbook: "docs/observability/README.md#http-red"
+
+  # ── 执行器 fleet 水位（本轮新增）────────────────────────────────────────
+  # 本节替代上方 ExecutorOffline 的「暂不启用」注释：本轮在
+  # prometheus-metrics.service.ts 补了 autoflow_executors_online /
+  # autoflow_executors_total 两个 gauge（数据源 = Executor 仓库，与 OBS-05
+  # 磁盘水位同一取数路径），该告警从此可以表达。
+  #
+  # 纪律：渲染侧在 DB 查询失败时**保留上一轮值、绝不 reset 成 0**——
+  # 否则每次 PG 毛刺都会把 online 打成 0，AllExecutorsOffline 立刻误报，
+  # 值班人很快就会把它静音，真正掉线时反而没人看见。
+  - name: autoflow-executor-fleet
+    rules:
+      # 全部执行器离线。`and autoflow_executors_total > 0` 是必需的前提守卫：
+      # 全新部署/尚未注册任何执行器时 total=0，不告警（否则一装就炸）。
+      # 10m 的 for 覆盖心跳判定离线的迟滞窗口，避免滚动重启期间抖动。
+      - alert: AUTOFLOW_ALL_EXECUTORS_OFFLINE
+        expr: |
+          sum(autoflow_executors_online) == 0 and sum(autoflow_executors_total) > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "全部执行器离线：没有任何在线执行器可接单"
+          description: >-
+            已注册执行器总数 > 0 但在线数为 0 持续 10 分钟——所有任务将只在
+            队列积压（伴生 AUTOFLOW_QUEUE_BACKLOG 的 waiting 曲线上升），
+            不会被执行。排查：① 执行器进程是否存活（各节点服务/桌面端托盘
+            状态）；② 心跳是否到达 admin-api（GET /api/metrics/executors 看
+            lastHeartbeat 与 offlineReason：manual=被手动下线、
+            stale_timeout=心跳超时）；③ 网络与防火墙（pull 模式下执行器需
+            能回连 admin-api）；④ 是否刚做过 token 轮换/升级导致全量注册失败
+            （伴生 AUTOFLOW_PUSH_AUTH_STILL_UNAUTHORIZED）。注意
+            autoflow_executors_online 在 DB 查询失败时保留旧值，若本条与 PG
+            告警同时出现，先确认 DB 是否真的可查。
+          runbook: "docs/observability/README.md#autoflow_all_executors_offline"
+
+      # SSE 票据被用于非 stream 路由（PLAN-SECURITY-HARDENING §2.2）。
+      #
+      # 这是纯安全信号，正常业务下**恒为 0**：合法前端只会在三条 /stream
+      # 路由的 ?ticket= 上传票据（EventSource 无法设请求头），access 令牌
+      # 走 Authorization 头、不受本规则影响。因此任何一次拒绝都意味着有人
+      # 拿到了票据文件（票据只能从 URL、浏览器历史或反代日志泄漏），并且
+      # 正在尝试把它当全权令牌复用。
+      #
+      # 阈值取 >0 而非速率：误报面极低（前端代码路径固定），宁可一次就报。
+      # reason 维度预留，当前只有 wrong_path 一个取值。
+      - alert: AUTOFLOW_SSE_TICKET_REJECTED
+        expr: |
+          sum(increase(autoflow_sse_ticket_rejected_total{reason="wrong_path"}[15m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "SSE 票据被用于非 stream 路由（疑似票据泄漏后被复用）"
+          description: >-
+            15 分钟内有 SSE 票据被塞进非 stream 路由的 Authorization 头而
+            遭拒（reason=wrong_path）。合法前端从不会这样做——EventSource
+            只在三条 /stream 路由的 ?ticket= 上传票据，access 令牌走
+            Authorization 头。因此这几乎必然意味着票据已从 URL、浏览器历史
+            或反代访问日志中泄漏，且有人正在尝试把它当全权令牌复用（票据
+            30 秒有效、路径受限，成功即等于全权访问）。处置：① 按 admin-api
+            日志定位票据的 sub（用户）与来源 IP；② 立即 revoke 该用户全部
+            会话并强制改密；③ 检查反代 access log 是否记录了 ?ticket=
+            （应在 nginx 侧对该查询参数脱敏）。
+          runbook: "docs/observability/README.md#autoflow_sse_ticket_rejected"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useRaceGuard } from '../utils/raceGuard';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
@@ -106,20 +107,36 @@ export default function AgentSessionsPage() {
   const [resuming, setResuming] = useState(false);
 
   // B-14：silent 轮询不闪 loading（对齐 SopsPage 同款处理）
+  //
+  // RACE-POLL（审计 P2，2026-10-17）：请求序列号守卫。
+  //
+  // 缺陷现场：15s 静默轮询与「筛选变化触发的 load」并发在飞时没有先后判据
+  // ——筛选后新请求已返回并渲染，而上一拍轮询（携带**旧** kind/status）随后
+  // 返回，把列表覆盖回旧筛选的结果。用户看到「筛选没生效」，必须等下一个
+  // 15s 拍或手动刷新才纠正。
+  //
+  // 现在每次 load 领取自增序号，只有最新一发能写 items/total/错误态/loading；
+  // 过期响应一律丢弃。序号同时覆盖 silent 与非 silent 两种调用（二者共用同一
+  // 条「谁是最新」的判据，否则轮询仍可能盖掉手动刷新）。
+  // 判据抽在 utils/raceGuard（纯逻辑、可单测；见 race-guard.test.ts）。
+  const raceGuard = useRaceGuard();
   const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const seq = raceGuard.next();
     if (!opts?.silent) { setLoading(true); setLoadError(null); }
     try {
       const res = await agentApi.list({ kind: kindFilter, status: statusFilter, page, pageSize });
+      if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（不覆盖更新的筛选结果）
       setItems(res.items);
       setTotal(res.total);
     } catch (err: unknown) {
+      if (!raceGuard.isLatest(seq)) return;
       // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据。
       // 非 silent（首屏/手动刷新）失败改为页内错误态（UI-16），不再只弹 toast。
       if (!opts?.silent) setLoadError(err ?? new Error('load failed'));
     } finally {
-      if (!opts?.silent) setLoading(false);
+      if (raceGuard.isLatest(seq) && !opts?.silent) setLoading(false);
     }
-  }, [kindFilter, statusFilter, page, pageSize]);
+  }, [kindFilter, statusFilter, page, pageSize, raceGuard]);
 
   // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入）
   useEffect(() => {

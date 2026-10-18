@@ -4690,17 +4690,42 @@ export class ExecutorService implements OnModuleInit {
     }
   }
 
-  /** Q7: Daily at 2am, clean up old execution records (90d) and audit logs (180d) to prevent DB bloat */
+  /**
+   * Q7: Daily at 2am, clean up old execution records and audit logs (180d) to
+   * prevent DB bloat.
+   *
+   * 保留期可配置（`TASK_EXECUTION_RETENTION_DAYS`，缺省 90 —— 与硬编码时期
+   * 逐字节等价）。**这是硬删除且不可逆**：删行同时回收该行的执行日志与 S3
+   * 日志对象，**没有归档表**。需要留存的历史必须在到期前自行导出；口径见
+   * configuration.ts 的 `taskExecutionRetention` 注释与 docs/deployment.md
+   * 「执行记录保留」段。
+   *
+   * 非法/非正数已被 configuration.ts 归一为 90，故这里拿到的 days 恒 > 0
+   * ——cutoff 永远不会被推到未来（那会删掉全部记录）。
+   */
   @Cron("0 0 2 * * *")
   async cleanupOldRecords(): Promise<void> {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    // 取用点**再归一一次**（configuration.ts 已归一，但这里是不可逆删除的最后
+    // 一道闸）：非数值/NaN/≤0 一律回落 90。`?? 90` 抓不到"类型不对"的值——
+    // 实测本文件的既有单测把 ConfigService mock 成 `get: () => "http"`，
+    // 那种值乘上毫秒数会得到 Invalid Date，进而把 cutoff 变成无效比较。
+    const configured = this.configService?.get<unknown>(
+      "taskExecutionRetention.days",
+    );
+    const retentionDays =
+      typeof configured === "number" &&
+      Number.isFinite(configured) &&
+      configured > 0
+        ? configured
+        : 90;
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
     // NETOPT-1②: 单条无界 DELETE 在峰值行数下是长事务（锁表 + WAL 风暴），
     // 改分批 DELETE（对齐下方 cleanupExpiredMetricsHistory 的 R-09 模式）。
-    const deleted = await this.cleanupOldTaskExecutions(ninetyDaysAgo);
+    const deleted = await this.cleanupOldTaskExecutions(cutoff);
     if (deleted > 0) {
       this.logger.log(
-        `Q7 Cleanup: removed ${deleted} old task executions (>90 days)`,
+        `Q7 Cleanup: removed ${deleted} old task executions (>${retentionDays} days)`,
       );
     }
   }

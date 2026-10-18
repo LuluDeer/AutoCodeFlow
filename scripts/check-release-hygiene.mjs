@@ -24,27 +24,20 @@ import { readFileSync } from "node:fs";
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 
-if (!repo || !token) {
-  console.error(
-    "[release-hygiene] 需要 GITHUB_REPOSITORY 与 GITHUB_TOKEN（CI 自动注入；本地可用 `gh auth token`）",
-  );
-  process.exit(2);
-}
-
-async function ghApi(path) {
-  const res = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`GitHub API ${path} → ${res.status}: ${await res.text()}`);
-  }
-  return res.json();
-}
-
+/**
+ * TOKEN-FALLBACK（审计 P2，2026-10-17）：本地直跑时从 `gh` 的 hosts.yml 兜底取
+ * token。
+ *
+ * 缺陷现场：本函数**先于**定义处被一个早退守卫挡死——
+ *   `if (!repo || !token) { …exit(2) }`
+ * 在 `token` 为空时直接退出，于是「本地没设 GITHUB_TOKEN」这个**唯一**需要
+ * 兜底的场景永远走不到下面 `const effectiveToken = token || readTokenFromGhConfig()`
+ * ——兜底分支是死代码，本地跑只会得到 exit 2（而脚本注释与错误文案都在
+ * 承诺「本地可用 gh auth token」）。
+ *
+ * 现在把守卫拆开：repo 缺失是硬错（无法确定目标仓库），token 缺失则先尝试
+ * 兜底，兜底也失败才报错。
+ */
 function readTokenFromGhConfig() {
   // 本地直跑兜底：gh CLI 的 keyring 不可脚本化读，仅支持 hosts.yml 明文形态；
   // 读不到返回空，由调用方报缺 token。
@@ -62,10 +55,31 @@ function readTokenFromGhConfig() {
   }
 }
 
+if (!repo) {
+  console.error(
+    "[release-hygiene] 需要 GITHUB_REPOSITORY（CI 自动注入；本地运行请 GITHUB_REPOSITORY=owner/repo）",
+  );
+  process.exit(2);
+}
+
 const effectiveToken = token || readTokenFromGhConfig();
 if (!effectiveToken) {
   console.error("[release-hygiene] 本地未取到 token（gh keyring 加密存储不可脚本读）——请 GITHUB_TOKEN=... 运行或仅在 CI 跑");
   process.exit(2);
+}
+
+async function ghApi(path) {
+  const res = await fetch(`https://api.github.com${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub API ${path} → ${res.status}: ${await res.text()}`);
+  }
+  return res.json();
 }
 
 const releases = [];

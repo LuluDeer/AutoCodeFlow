@@ -307,12 +307,55 @@ export interface TaskStats {
   totalRuns: number;
 }
 
+/**
+ * `GET /tasks/executions/export` 的过滤参数（**逐字**对齐后端
+ * `ExportExecutionsQueryDto`，见
+ * `apps/admin-api/src/modules/task/dto/execution-query.dto.ts`）。
+ *
+ * 刻意**没有** `page` / `pageSize`：导出是"一次带走整个结果集"，后端 DTO 也
+ * 没有这两个字段（挂上它们会被全局 `forbidNonWhitelisted` 判 400）。把缺省做成
+ * 类型层面的事实，比在文档里写一句"别传分页"更难被绕过。
+ *
+ * 命名陷阱：`startTime` / `endTime` 过滤的是**创建时间**（`createdAt`）范围，
+ * 不是 `startTime` 列——与列表端点同源（后端口径一致，见 DTO 注释）。
+ * 同理页面上的「任务名搜索」映射到 `taskName`（后端对它做模糊匹配），
+ * 「执行器筛选」映射到 `executorAddress`（模糊匹配），不是 `executorId`。
+ */
+export interface ExecutionExportFilters {
+  status?: string;
+  /** 任务 id 精确过滤（页面当前不提供，保留给调用方） */
+  taskId?: string;
+  /** 任务名模糊匹配 —— 对应页面上的「搜索任务名」输入框 */
+  taskName?: string;
+  /** 执行器地址模糊匹配 —— 对应页面上的「执行器地址」输入框 */
+  executorAddress?: string;
+  /** createdAt >= 该 ISO 8601 时刻 */
+  startTime?: string;
+  /** createdAt <= 该 ISO 8601 时刻 */
+  endTime?: string;
+  /** 行数上限（安全阀，不是分页）；只能调小，后端硬顶 50000 */
+  limit?: number;
+}
+
 export interface PageResult<T> {
   items: T[];
   total: number;
   page: number;
   pageSize: number;
   totalPages?: number;
+  /**
+   * keyset（游标）分页的「下一页」游标；`null` = 已到末页。
+   *
+   * **这个键可能根本不存在**：仅当请求带 `cursor` 参数时后端才走 keyset 分支
+   * 并追加该键；不带 `cursor` 的 OFFSET 分支响应与加游标分页之前**逐字节一致**
+   * （连这个键都没有，见 `PaginatedExecutionListDto.nextCursor` 的
+   * `@ApiPropertyOptional` 说明）。
+   *
+   * 故类型是 `?:` 而不是 `| null`——`undefined`（键缺失 = 走的 OFFSET 路径）
+   * 与 `null`（keyset 路径且已翻完）是**两种不同语义**，读侧必须分开处理，
+   * 不能用 `?? null` 糊成一团。游标本身**不透明**，禁止前端解析。
+   */
+  nextCursor?: string | null;
 }
 
 export type TaskListParams = {
@@ -334,6 +377,26 @@ export type TaskListParams = {
    * 待 openapi 重导出后并入生成类型。
    */
   lastStatus?: string;
+  /**
+   * §2.1 keyset（游标）分页令牌——**三态**，且三态必须在状态层就分开：
+   *
+   *   · `undefined`（键缺省）→ 请求里**没有** `cursor` 这个键 → 后端走既有
+   *     OFFSET 分支，响应与加游标分页之前逐字节相同（连 `nextCursor` 都
+   *     不出现）。这是「稳定翻页」开关关闭时的零风险路径。
+   *   · `''`（空串）→ `?cursor=` → 后端 keyset 分支的**起点**。
+   *   · 非空串 → keyset 的中途页。
+   *
+   * ⚠️ 绝不能写 `if (cursor)` 或 `cursor ?? ''` 归一：前者把空串当"没传"，
+   * keyset 起点永远进不去（页面表现为"开了开关但一直停在第 1 页"，且不报错）；
+   * 后者把 OFFSET 路径也变成 keyset 路径，"旧路径逐字节不变"当场破功。
+   *
+   * 游标**不透明**：前端只搬运，不解析、不截断、不重新编码。
+   *
+   * 与 `lastStatus` / `sortBy` 互斥（后端 `assertCursorCompatibleWithQuery`
+   * 直接 400 VALIDATION_FAILED）：调用方必须自己保证不同时发这两组参数，
+   * 见 TaskListPage 的「稳定翻页 ⇒ 禁用最近执行筛选」。
+   */
+  cursor?: string;
   runtime?: string;
   applicationId?: string;
   /** F-10: 逗号分隔的投影字段白名单（如 'id,name'）。 */
@@ -378,8 +441,43 @@ export interface ExecutionLogsPage {
   hasMore: boolean;
 }
 
+/**
+ * `GET /tasks` 的请求配置——**游标三态的唯一落点**。
+ *
+ * ## 为什么需要一个专门的装配函数，而不是把 params 原样交给 axios
+ *
+ * `cursor` 是**三态**的，而"这个键存不存在"在后端是有语义的：
+ *   · 键不出现 → 既有 OFFSET 分支（响应逐字节不变）；
+ *   · `cursor=` → keyset 起点；
+ *   · `cursor=<令牌>` → keyset 中途页。
+ *
+ * 若把 `params` 原样交给 axios，"`undefined` 的键会被整个丢掉"就成了
+ * **库的序列化细节**，而不是我们这边的保证：升个 axios 小版本、或某天换成
+ * 别的 HTTP 层，旧路径就可能悄悄变成 `?cursor=undefined`（后端会把它当非法
+ * 游标 400）。所以：`cursor === undefined` 时在这里把键**显式构造掉**，
+ * 非 `undefined`（含空串）时原样保留。这是"关闭开关时请求里没有 cursor 键"
+ * 的**代码保证**，不押在库行为上。
+ *
+ * 其余参数照旧整体透传——本次改动对它们零影响。
+ */
 function taskListRequestConfig(params: TaskListParams | undefined, signal?: AbortSignal) {
-  return signal ? { params, signal } : { params };
+  const normalized: TaskListParams | undefined = params
+    ? withExplicitCursor(params)
+    : params;
+  return signal ? { params: normalized, signal } : { params: normalized };
+}
+
+/**
+ * 按三态规则产出一个新的参数对象。
+ *
+ * 用 `{ ...rest }` 解构而不是 `delete`：`delete` 会改写调用方传进来的对象
+ * （TanStack 的 queryKey/params 是同一个引用，被就地改掉会让缓存键与实际
+ * 请求漂移——那是比 undefined 序列化更难查的一类缺陷）。
+ */
+function withExplicitCursor(params: TaskListParams): TaskListParams {
+  const { cursor, ...rest } = params;
+  // 注意判据是 `undefined` 本身，**不是** truthy：空串必须保留。
+  return cursor === undefined ? rest : { ...rest, cursor };
 }
 
 function invalidTaskListResponse(reason: string): Error {
@@ -633,13 +731,85 @@ export const tasksApi = {
       : client.get(`/tasks/${id}/stats`) as Promise<TaskStats>,
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
+  /**
+   * GET /tasks/executions/all —— 全局执行记录（OFFSET / keyset 双路径）。
+   *
+   * `cursor` 的三态语义（**不许混成一个**）：
+   *   · `undefined`（或键不存在）→ 请求里**没有** `cursor` 参数 → 后端走**原
+   *     OFFSET 路径**，响应逐字节不变（连 `nextCursor` 键都不出现）；
+   *   · `''`（空串）→ 序列化成 `cursor=` → 后端识别为「keyset 起点」，从最新
+   *     一行开始翻（响应含 `nextCursor`）；注意空串**不是** falsy 判断能兜住的
+   *     ——`if (cursor)` 会把 `''` 当成「没传」，正好踩掉起点语义；
+   *   · 非空串 → 上一页响应的 `nextCursor`，**当作不透明令牌原样回传**，禁止
+   *     解析；非法游标后端返回 400（VALIDATION_FAILED），不会静默退回第一页。
+   *
+   * 第 ① 条不依赖 axios 的序列化细节：下面显式把 `undefined` 的 cursor 键删掉
+   * （并断言删除可用），使"不带参数"成为本函数自己的保证，而非某个库版本的
+   * 未成文行为——旧路径逐字节不变是硬要求，不该押在别人身上。
+   */
   allExecutions: (
-    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string },
+    params?: { page?: number; pageSize?: number; status?: string; taskId?: string; taskName?: string; startTime?: string; endTime?: string; executorAddress?: string; cursor?: string },
     signal?: AbortSignal,
-  ) =>
-    signal
-      ? client.get('/tasks/executions/all', { params, signal }) as Promise<PageResult<TaskExecution>>
-      : client.get('/tasks/executions/all', { params }) as Promise<PageResult<TaskExecution>>,
+  ) => {
+    // 显式归一：三态里的第 ① 态落在这里，二/三态（含空串）原样透传。
+    // 注意判据是 `=== undefined` 而不是 `!params.cursor`——后者会把空串一起删掉。
+    let query = params;
+    if (query && query.cursor === undefined) {
+      const { cursor: _omit, ...rest } = query;
+      void _omit;
+      query = rest;
+    }
+    return signal
+      ? client.get('/tasks/executions/all', { params: query, signal }) as Promise<PageResult<TaskExecution>>
+      : client.get('/tasks/executions/all', { params: query }) as Promise<PageResult<TaskExecution>>;
+  },
+  /**
+   * GET /tasks/executions/export —— **全量**执行记录 CSV（后端 4cc26327，真流式）。
+   *
+   * 与 `allExecutions` 的关系：**过滤器同源**（status/taskId/taskName/
+   * executorAddress/startTime/endTime，后端由 `applyAllExecutionFilters` 保证
+   * 两条路径的谓词逐字相同），但**不共享分页语义**——导出是"把整个结果集带走"，
+   * 没有第 N 页。
+   *
+   * ## 为什么用 axios blob + objectURL 而不是 `<a href>`
+   *
+   * 本端点挂在 `JwtAuthGuard` 之后且 JWT **只从 Authorization 头提取**，`<a>`
+   * 直链带不了鉴权头，必然 401。与 `api/executor-packages.ts#download`、
+   * `api/audit.ts#exportAuditCsv` 同一写法（先例已存在，不另造一套）。
+   *
+   * ## 为什么显式白名单装配 params，而不是 spread 调用方对象
+   *
+   * 后端 `ExportExecutionsQueryDto` **刻意没有** page/pageSize（传了会被全局
+   * `forbidNonWhitelisted` 判 400——静默忽略分页参数正是 API-07 记录的那类
+   * 缺陷）。把"请求里不可能出现分页参数"做成**本函数自己的保证**，而不是
+   * 押在"调用方不会传"上：逐字段白名单让任何多余键在源头就进不来。
+   */
+  exportExecutions: async (filters?: ExecutionExportFilters): Promise<void> => {
+    const params: Record<string, string | number> = {};
+    if (filters) {
+      if (filters.status) params.status = filters.status;
+      if (filters.taskId) params.taskId = filters.taskId;
+      if (filters.taskName) params.taskName = filters.taskName;
+      if (filters.executorAddress) params.executorAddress = filters.executorAddress;
+      if (filters.startTime) params.startTime = filters.startTime;
+      if (filters.endTime) params.endTime = filters.endTime;
+      if (typeof filters.limit === 'number') params.limit = filters.limit;
+    }
+    const blob = await client.get<Blob>('/tasks/executions/export', {
+      params,
+      responseType: 'blob',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    // 文件名带导出日期便于归档（后端响应头给的是固定 task-executions.csv，
+    // 浏览器在 objectURL 下载下不读 Content-Disposition，故由本层决定）。
+    a.download = `task-executions-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   killExecution: (taskId: string, execId: string) =>
     client.post(`/tasks/${taskId}/executions/${execId}/kill`) as Promise<{ success: boolean; message: string }>,
   analyzeExecution: (taskId: string, execId: string) =>

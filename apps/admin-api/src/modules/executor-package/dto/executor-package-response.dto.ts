@@ -120,7 +120,23 @@ export class ExecutorPackageResponseDto {
   // 下载走 GET /executor-packages/:id/download（服务端解析路径，不由客户端拼）。
 }
 
-/** GET /executor-packages 的列表包装。 */
+/**
+ * GET /executor-packages 的列表包装。
+ *
+ * PLAN-BACKEND-ARCHITECTURE §2.1（游标分页·加性过渡）：本类**只新增**了可选的
+ * `nextCursor`，既有 `items` / `total` 的名字与类型一个都没动。
+ *
+ * 为什么**不**改造成 `paginate()` 信封（`{list,items,total,page,pageSize,totalPages}`）：
+ * `items`/`total` 有真实消费方（`apps/admin-web/src/api/executor-packages.ts` 的
+ * `list()` 与 `listLatest()`，前者喂包表分页、后者喂安装向导的「最新可用包」），
+ * 换信封会让 `res.items` 变 undefined ⇒ 包表恒空、安装向导取不到任何包。
+ * 那是破坏性变更，故本轮只做加性扩展（与审计端点同款取舍）。
+ *
+ * `nextCursor` 的**出现条件**：请求带 `cursor` 时才出现（字符串 = 下一页，
+ * `null` = 已到末页）；不带 `cursor` 走 OFFSET 分支，该键**根本不出现**。
+ * 故它是 `@ApiPropertyOptional` 而不是必填 + nullable——契约必须能表达
+ * "键可能不存在"，否则与 OFFSET 分支的真实响应不符。
+ */
 export class ExecutorPackageListDto {
   @ApiProperty({
     type: [ExecutorPackageResponseDto],
@@ -130,6 +146,20 @@ export class ExecutorPackageListDto {
 
   @ApiProperty({ description: "匹配的包总数（分页前）" })
   total: number;
+
+  /**
+   * 仅当请求带 `cursor` 时出现（keyset 分支）：`null` = 已到末页。
+   *
+   * 游标绑定本端点固定排序 `createdAt DESC, id DESC`；载荷里的 id 是包表的
+   * uuid 主键（子查询按主键取库内 `createdAt` 原值，零精度损失）。
+   */
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      "keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。",
+  })
+  nextCursor?: string | null;
 }
 
 // ── ARCH-23 / N-12（2026-10-07 A2 批补）：push 面 + Registry + Artifacts ──

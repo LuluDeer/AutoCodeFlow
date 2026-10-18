@@ -1,5 +1,6 @@
 import { logger } from './logger';
 import { post } from './admin-client';
+import { executorAddressHeaderFor } from './callback';
 
 interface LogChunk {
   fromLine: number;
@@ -133,10 +134,19 @@ export class LogStreamPusher {
   private async pushChunk(chunk: LogChunk): Promise<void> {
     const path = `/api/executions/${encodeURIComponent(this.executionId)}/logs`;
 
-    const response = await post<{ count: number }>(path, {
-      fromLine: chunk.fromLine,
-      lines: chunk.lines,
-    });
+    // SEC-THROTTLE-BUCKET（审计 P1-1 配套）：与回调同款附带
+    // `x-executor-address`——admin 侧 ExecutorAwareThrottlerGuard 现在**只对
+    // 执行器机器面路由**认这个头（人操作面一律按 IP 计，防伪造头绕过限流），
+    // 日志上报属于机器面，不带头就会退回按出口 IP 计桶，多执行器共享 NAT 时
+    // 120/min 档位会被叠加打穿（RT-LOG 要修的正是「话痨任务日志被限流截断」）。
+    const response = await post<{ count: number }>(
+      path,
+      {
+        fromLine: chunk.fromLine,
+        lines: chunk.lines,
+      },
+      executorAddressHeaderFor(),
+    );
 
     if (response.status !== 200 && response.status !== 201) {
       logger.debug(

@@ -30,6 +30,7 @@ import { config as loadEnvFile } from "dotenv";
 loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
 const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
+import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";
 import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
 import { TimeoutInterceptor } from "./common/interceptors/timeout.interceptor";
 import { isOriginAllowed } from "./common/utils/cors-origin.util";
@@ -37,15 +38,49 @@ import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.uti
 import { buildHelmetOptions } from "./common/utils/security-headers.util";
 import { sseAwareCompressionFilter } from "./common/utils/sse-compression.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
+import { PrometheusMetricsService } from "./modules/metrics/prometheus-metrics.service";
 import { SystemConfigService } from "./modules/config/config.service";
 import { DataSource, DataSourceOptions } from "typeorm";
 import { runMigrationsWithAdvisoryLock } from "./common/utils/migration-runner.util";
-// import { TraceMiddleware } from "./common/middleware/trace.middleware";
 
 // OPS-06 / ARCH-008: graceful-shutdown state shared with the process-level
 // unhandledRejection handler below — bootstrap() assigns it once the app exists.
 let runningApp: INestApplication | null = null;
 let shuttingDown = false;
+
+/**
+ * F-13 收口：fatal 路径的日志出口 —— 统一走 Nest 的**静态** Logger。
+ *
+ * 为什么是静态方法：这几处都落在进程启动期/退出期，此刻 Nest 应用可能还没
+ * 建好（bootstrap 早期）或正在关闭，按实例注入 LoggerService 不可靠；静态
+ * 方法不经过 DI 容器，只需要静态实例引用即可，且在 app.useLogger() 之后仍
+ * 由那个 JSON ConsoleLogger 输出，与其余日志同一条流（不再游离在裸文本）。
+ *
+ * 内容等价性（替换 console.error 时最容易丢的就是它，故显式钉住）：
+ *  - Error   → 第二个参数就是 Nest 的 stack 位，原始调用链因此完整落进 JSON
+ *              的 `stack` 字段（只传 message 会丢行号，排障时分不清抛出点）。
+ *  - object  → 原样交给 Nest（ConsoleLogger 会 inspect / 收进 `params`），
+ *              与 console.error 打印对象的行为一致；若在这里 String()，
+ *              会退化成 "[object Object]"——把排障信息**反向删掉**。
+ *  - 其他原始值 → String() 拼在消息后；分隔符与 console.error 的多参数口径
+ *              一致（空格），日志正文逐字不变。
+ */
+function logFatal(message: string, detail?: unknown): void {
+  if (detail instanceof Error) {
+    Logger.error(`${message} ${detail.message}`, detail.stack, "Bootstrap");
+    return;
+  }
+  if (detail === undefined) {
+    Logger.error(message, "Bootstrap");
+    return;
+  }
+  if (typeof detail === "object" && detail !== null) {
+    // 交给 Nest inspect / params 收口（不 String()，否则丢内容）
+    Logger.error(message, detail, "Bootstrap");
+    return;
+  }
+  Logger.error(`${message} ${String(detail)}`, "Bootstrap");
+}
 
 /**
  * OPS-06 / ARCH-008: attempt a graceful shutdown instead of an abrupt
@@ -54,20 +89,18 @@ let shuttingDown = false;
  * exits non-zero (so the container orchestrator restarts it) if cleanup hangs.
  */
 async function gracefulFatalShutdown(reason: unknown): Promise<void> {
-  console.error("[FATAL]", reason);
+  logFatal("[FATAL]", reason);
   if (shuttingDown) return; // 递归信号（close 期间的 rejection）不重复触发
   shuttingDown = true;
   const forceExit = setTimeout(() => {
-    console.error(
-      "[FATAL] Graceful shutdown timed out after 10s — forcing exit(1)",
-    );
+    logFatal("[FATAL] Graceful shutdown timed out after 10s — forcing exit(1)");
     process.exit(1);
   }, 10_000);
   forceExit.unref();
   try {
     await runningApp?.close();
   } catch (closeErr) {
-    console.error("[FATAL] Error during graceful shutdown:", closeErr);
+    logFatal("[FATAL] Error during graceful shutdown:", closeErr);
   }
   process.exit(1);
 }
@@ -309,8 +342,10 @@ async function bootstrap() {
   // `{level, pid, timestamp, message, context?, stack?}`，ELK/Loki 可直接索引，
   // 取代默认人类可读文本（[Nest] 12345 - ...）。级别按 LOG_LEVEL 映射
   //（error/warn/info/debug/verbose，Joi 已注册、configuration.ts app.logLevel
-  // 已映射，见 F-13 配置段）。注意：main.ts 里的 console.error("[FATAL]") 等
-  // 原生 console 调用不经过本 logger，保持原样（进程级兜底，本就该落裸文本）。
+  // 已映射，见 F-13 配置段）。注意：main.ts 里**已不再有裸 console 调用**——
+  // fatal 路径（gracefulFatalShutdown / bootstrap().catch）统一走静态
+  // Logger.error（见文件头 logFatal 的注释：静态方法不依赖 DI，启动期和
+  // 退出期都安全），因此同样落在本 JSON logger 的输出流里。
   const logLevel = configService.get<string>("app.logLevel") || "info";
   const logLevels: LogLevel[] =
     logLevel === "verbose"
@@ -349,7 +384,13 @@ async function bootstrap() {
   // @Exclude() fields are stripped before the response wrapper runs.
   // ARCH-27: TimeoutInterceptor reads app.requestTimeoutMs via ConfigService
   // (no more module-load-time process.env read).
+  // HTTP RED（本轮新增）：最先安装，让 finalize() 落在整条拦截器链的**外层**
+  // ——此时 ClassSerializerInterceptor 的字段裁剪与 ResponseInterceptor 的信封
+  // 包装都已跑完，读到的 statusCode 就是真正写回客户端的那个。服务实例从
+  // 容器取（MetricsModule 已导出 PrometheusMetricsService），埋点只写该服务
+  // 的进程内快照，与 /api/metrics 抓取端点解耦。
   app.useGlobalInterceptors(
+    new HttpMetricsInterceptor(app.get(PrometheusMetricsService)),
     new TimeoutInterceptor(app.get(Reflector), app.get(ConfigService)),
     new ClassSerializerInterceptor(app.get(Reflector)),
     new ResponseInterceptor(),
@@ -534,6 +575,6 @@ process.on("uncaughtException", (err: Error) => {
 });
 
 bootstrap().catch((err: unknown) => {
-  console.error("[FATAL] Bootstrap failed:", err);
+  logFatal("[FATAL] Bootstrap failed:", err);
   process.exit(1);
 });

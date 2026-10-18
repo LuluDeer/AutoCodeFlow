@@ -4,6 +4,9 @@ import { ConfigService } from "@nestjs/config";
 import { EventEmitter } from "events";
 // NETOPT-5②: 断言 createClient 收到的 TLS 入参
 import { createClient } from "redis";
+// PLAN-OBSERVABILITY §5.1: 磁盘 / 堆水位检查的边界断言（statfs / V8 堆上限）
+import { promises as fs } from "node:fs";
+import v8 from "node:v8";
 import { HealthService } from "../health.service";
 import { Task } from "../../task/entities/task.entity";
 import { Executor } from "../../executor/entities/executor.entity";
@@ -329,7 +332,143 @@ describe("HealthService", () => {
         "executors",
         "tasks",
         "scheduler",
+        // PLAN-OBSERVABILITY §5.1：磁盘 / 堆水位
+        "disk",
+        "memory",
       ]);
+    });
+  });
+
+  // PLAN-OBSERVABILITY §5.1（2026-10-17 优化计划轮）：磁盘 / 堆水位检查。
+  //
+  // 为什么值得一组独立用例：这两个检查的价值全在**边界判定**与**未知态
+  // 不谎报健康**上。盘满/堆满在真机上无法按需复现，只能靠这里钉住：
+  //   · 阈值分档（85 degraded / 95 unhealthy）方向正确；
+  //   · statfs 抛错 → degraded（未知 ≠ 健康），不是 healthy；
+  //   · 分母用 V8 heap_size_limit 而非 os.totalmem（容器内才有意义）。
+  describe("checkDisk (PLAN-OBSERVABILITY §5.1)", () => {
+    const MB = 1024 * 1024;
+
+    /** 造一个 statfs 返回值：totalMb 总容量，usedPercent 已用百分比。 */
+    const statfsOf = (totalMb: number, usedPercent: number) => {
+      const bsize = 4096;
+      const blocks = (totalMb * MB) / bsize;
+      const availBlocks = Math.round((blocks * (100 - usedPercent)) / 100);
+      return { blocks, bsize, bavail: availBlocks, bfree: availBlocks };
+    };
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it("returns healthy below the degraded threshold", async () => {
+      jest
+        .spyOn(fs, "statfs")
+        .mockResolvedValue(statfsOf(1000, 50) as unknown as never);
+      const result = await service.checkDisk();
+      expect(result.status).toBe("healthy");
+      expect(result.usedPercent).toBeCloseTo(50, 0);
+    });
+
+    it("returns degraded at/above 85% and unhealthy at/above 95%", async () => {
+      jest
+        .spyOn(fs, "statfs")
+        .mockResolvedValue(statfsOf(1000, 85) as unknown as never);
+      expect((await service.checkDisk()).status).toBe("degraded");
+
+      jest
+        .spyOn(fs, "statfs")
+        .mockResolvedValue(statfsOf(1000, 95) as unknown as never);
+      const critical = await service.checkDisk();
+      expect(critical.status).toBe("unhealthy");
+      // 文案必须点名"写入会失败"——运维要能直接从探针响应判断处置优先级
+      expect(critical.details).toContain("fail to write");
+    });
+
+    it("returns degraded (never healthy) when statfs throws — unknown is not healthy", async () => {
+      jest
+        .spyOn(fs, "statfs")
+        .mockRejectedValue(new Error("ENOSYS: statfs not supported"));
+      const result = await service.checkDisk();
+      expect(result.status).toBe("degraded");
+      expect(result.details).toContain("ENOSYS");
+      // 读不到水位时不得臆造数值
+      expect(result.usedPercent).toBeUndefined();
+    });
+
+    it("thresholds follow configuration", async () => {
+      const custom = await buildService({
+        "health.diskUsageDegradedPercent": 10,
+        "health.diskUsageUnhealthyPercent": 20,
+      });
+      jest
+        .spyOn(fs, "statfs")
+        .mockResolvedValue(statfsOf(1000, 50) as unknown as never);
+      expect((await custom.checkDisk()).status).toBe("unhealthy");
+    });
+  });
+
+  describe("checkMemory (PLAN-OBSERVABILITY §5.1)", () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    /** 伪造 V8 堆上限 + 已用量（process.memoryUsage 与 getHeapStatistics 同改）。 */
+    const mockHeap = (usedBytes: number, limitBytes: number) => {
+      jest
+        .spyOn(process, "memoryUsage")
+        .mockReturnValue({ heapUsed: usedBytes } as NodeJS.MemoryUsage);
+      jest
+        .spyOn(v8, "getHeapStatistics")
+        .mockReturnValue({ heap_size_limit: limitBytes } as never);
+    };
+
+    it("returns healthy well below the threshold", () => {
+      mockHeap(100 * 1024 * 1024, 1024 * 1024 * 1024);
+      const result = service.checkMemory();
+      expect(result.status).toBe("healthy");
+      expect(result.heapUsedPercent).toBeCloseTo(9.8, 0);
+    });
+
+    it("returns degraded at 85% and unhealthy at 95%", () => {
+      mockHeap(850 * 1024 * 1024, 1000 * 1024 * 1024);
+      expect(service.checkMemory().status).toBe("degraded");
+
+      mockHeap(960 * 1024 * 1024, 1000 * 1024 * 1024);
+      const critical = service.checkMemory();
+      expect(critical.status).toBe("unhealthy");
+      expect(critical.details).toContain("OOM kill is imminent");
+    });
+
+    it("uses the V8 heap limit as the denominator, not total system memory", () => {
+      // 容器限 512MB、宿主 32GB 的场景：若误用 os.totalmem 作分母，
+      // 400MB 已用会被算成 ~1%，永远不告警。
+      mockHeap(400 * 1024 * 1024, 512 * 1024 * 1024);
+      const result = service.checkMemory();
+      expect(result.heapUsedPercent).toBeCloseTo(78.1, 0);
+      expect(result.status).toBe("healthy"); // < 85
+    });
+
+    it("returns degraded (never healthy) when the heap limit is unreadable", () => {
+      jest
+        .spyOn(v8, "getHeapStatistics")
+        .mockReturnValue({ heap_size_limit: 0 } as never);
+      const result = service.checkMemory();
+      expect(result.status).toBe("degraded");
+      expect(result.heapUsedPercent).toBeUndefined();
+    });
+  });
+
+  describe("readiness stays core-dependency-only (PLAN-OBSERVABILITY §5.1)", () => {
+    it("does not consult disk/memory — a full disk must not pull traffic", async () => {
+      const statfsSpy = jest
+        .spyOn(fs, "statfs")
+        .mockRejectedValue(new Error("ENOSYS"));
+      const result = await service.getReadiness();
+      expect(result.status).toBe("ready");
+      expect(result.checks.map((c) => c.name)).toEqual(["database", "redis"]);
+      expect(statfsSpy).not.toHaveBeenCalled();
+      jest.restoreAllMocks();
     });
   });
 

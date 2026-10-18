@@ -119,6 +119,33 @@ export class QueryExecutorPackageDto extends PaginationDto {
   @IsOptional()
   @IsString()
   platform?: string;
+
+  /**
+   * §2.1（推广到 `GET /executor-packages`）：**可选**的不透明游标。
+   *
+   * 只做加性过渡——不传它时行为与引入本字段之前**逐字节不变**（走 OFFSET 分支，
+   * 响应里连 `nextCursor` 这个键都不出现）。传了它才切到 keyset 分支。
+   *
+   * **响应形状**：本端点返回裸 `{items,total}`（不是 paginate() 信封），keyset
+   * 分支也**不改变**该形状，只**追加** `nextCursor`。这是刻意的——`items` 被
+   * admin-web 的 `listPackages()`（包表分页）与 `listLatest()`（安装向导取最新包）
+   * 消费，改成信封会让 `res.items` 变 undefined、包表恒空。
+   *
+   * 为什么不做 `@Matches` 格式校验：与 `TaskExecutionsQueryDto#cursor` 逐字同因
+   * ——合法性判定集中在纯函数 `decodeKeysetCursor` 里，由它抛
+   * `VALIDATION_FAILED`（400 + 可操作 detail），而不是让管道抛"字段名数组"让
+   * 前端渲染成"参数校验失败"。
+   *
+   * `name`/`type`/`status`/`platform` 四个过滤器与游标条件是 AND 关系，可任意
+   * 组合（本端点排序恒为 `createdAt DESC, id DESC`，没有 sortBy 那类冲突参数）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "不透明的 keyset 游标（上一页响应的 nextCursor）。省略时走原有 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。首次进入 keyset 模式传空值（?cursor=）。可与全部过滤器（name/type/status/platform）组合——它们与游标条件取交集。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }
 
 // 审计 E-P2-S3：push 端点入参此前是 `@Body("executorIds") executorIds?: string[]`

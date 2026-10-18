@@ -130,7 +130,11 @@ export default function LoginPage() {
           >
             <ThunderboltOutlined style={{ fontSize: 24, color: '#fff' }} />
           </div>
-          <Title level={3} style={{ margin: 0, fontSize: 'clamp(20px, 5vw, 24px)' }}>AutoCodeFlow</Title>
+          {/* LIGHTHOUSE-HEADING（本轮）：此前品牌名 h3、表单标题 h5，页内
+              没有任何 h1/h2——Lighthouse heading-order 判定为跳级（h3→h5，
+              score 0，属真实 a11y 缺陷而非噪声）。品牌名改为 h1（页面级
+              主标题的正当归属），表单标题改 h2（区块标题，紧随其后）。 */}
+          <Title level={1} style={{ margin: 0, fontSize: 'clamp(20px, 5vw, 24px)' }}>AutoCodeFlow</Title>
           <Text type="secondary">{t('brand.tagline')}</Text>
         </div>
 
@@ -145,12 +149,18 @@ export default function LoginPage() {
           {/* UI-12：表单标题与 Form 建立 aria-labelledby 关联——读屏进入表单时
               先播报「登录账号/两步验证」，而不是孤立的一串输入框 */}
           <Title
-            level={5}
+            level={2}
             id={totpStage ? 'login-form-title-totp' : 'login-form-title'}
             // UX-02：此前硬编码 color: '#333'——暗色卡面 #1A1E2F 上对比度仅
             // 1.31:1，标题「登录账号」几乎看不见。去掉该属性让 antd 的
             // colorText token 生效（随主题翻转）。
-            style={{ margin: '0 0 24px' }}
+            style={{
+              margin: '0 0 24px',
+              // 语义层级（h2）与视觉层级解耦：h5→h2 会让 antd 默认字号从
+              // 14px 跳到 30px，撑破卡片排版。字号锁在原 h5 观感（16px），
+              // 读屏拿到正确层级，肉眼观感零变化。
+              fontSize: 16,
+            }}
           >
             {totpStage ? t('login.twoFactor') : t('login.account')}
           </Title>

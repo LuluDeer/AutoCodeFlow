@@ -185,37 +185,53 @@ rule_files:
 - secret 走环境变量 `ALERT_WEBHOOK_SECRET`；**未配置时端点返回 503（安全
   缺省——绝不退化为无鉴权接收）**。鉴权失败统一 401，不区分具体原因。
 
-### 3.5.2 Alertmanager 侧配置样例（v2）
+### 3.5.2 Alertmanager 侧配置（v2，**已接线**）
+
+Alertmanager 原生 `webhook_configs` **不支持自定义签名头**，故链路里必须有一个
+加签转发件。该件已在仓库内落地为 **`scripts/alertmanager-hmac-proxy.mjs`**
+（零依赖，只用 `node:http` / `node:crypto`；compose 内以 `node:24-alpine`
+只读挂载运行，不映射宿主端口），`config/monitoring/alertmanager.yml` 的默认
+`route.receiver` 已指向它。
+
+启用只需两步（`ALERT_WEBHOOK_SECRET` 是**同一个** secret：侧车签、admin-api 验）：
+
+```bash
+# 1) .env：ALERT_WEBHOOK_SECRET=<随机串>
+# 2) 拉起 monitoring profile
+docker compose --profile monitoring up -d
+```
 
 ```yaml
-# alertmanager.yml —— route + receiver 指向 admin-api 新端点
+# config/monitoring/alertmanager.yml（节选，实际文件即如此）
 route:
-  receiver: autoflow-webhook
-  group_by: [alertname, instance]
+  receiver: 'hmac-proxy'
+  group_by: [alertname]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
 
 receivers:
-  - name: autoflow-webhook
+  - name: 'hmac-proxy'
     webhook_configs:
-      - url: http://<admin-api-host>:3000/api/alerts/webhook
-        # Alertmanager v2 会 POST 标准 v2 JSON（alerts[] 带
-        # status/labels/annotations/startsAt）到该端点。
-        # 签名需要 timestamp + HMAC(secret, "${timestamp}.${rawBody}")，
-        # 原生 webhook_config 不支持自定义签名头——用 alertmanager 的
-        # webhook 代理（或 nginx njs / simple proxy 加签）注入：
-        #   X-AutoCodeFlow-Timestamp: <now ms>
-        #   X-Hub-Signature-256: sha256=<hex>
-        max_alerts: 0
+      - url: http://alertmanager-hmac-proxy:9099/
         send_resolved: true   # resolved 恢复通知也发（level=info）
+        max_alerts: 0         # 不截断（侧车有 1 MiB 上限兜底）
+  - name: 'noop'            # 兜底：只收集不推送时把 route.receiver 改成它
 ```
 
-> 加签实现提示：原生 Alertmanager 不带 HMAC 头。最小做法是在 admin-api 同
-> 侧放一个 10 行的反代（nginx njs / node 一行脚本）：收到 Alertmanager POST
-> 后计算 `HMAC_SHA256(ALERT_WEBHOOK_SECRET, "${ts}.${rawBody}")` 并附加两个
-> header 转发。平台侧测试向量见
-> `apps/admin-api/src/modules/notification/__tests__/alerts.controller.spec.ts`。
+侧车的四条关键设计（改它之前先读 `scripts/alertmanager-hmac-proxy.mjs` 头部注释）：
+
+1. **body 逐字节直通**，不做 `JSON.parse`→`JSON.stringify` 往返；
+2. **时间戳用侧车本进程 `now()`**，接收侧窗口 ±5 分钟（跨机部署须 NTP 对齐）；
+3. **上游状态码原样回传**——admin-api 在「一个渠道都没送到」时**刻意**返回 502，
+   抹成 200 就等于让 Alertmanager 永不重试（告警被静默吞掉）；
+4. **secret 缺失即拒绝启动**（exit 1），不降级为无鉴权转发。
+
+> 自检：`npm run test:alert-proxy` —— 金向量（接收侧用 WebCrypto 独立复核）+
+> 与 `webhook-hmac.util.ts` 的源码级契约对账 + 真实 HTTP 端到端（含上游 4xx/5xx
+> 原样回传、不可达/超时 → 502、超限 → 413、secret 不外泄）+ fail-closed 退出码。
+> 同一组金向量也钉在 `apps/admin-api/src/common/utils/__tests__/webhook-hmac.util.spec.ts`
+> ——两侧各钉一次，单侧算法漂移必然让另一侧变红。
 
 ### 3.5.3 告警消息形态（含 runbook 链接）
 
@@ -235,16 +251,78 @@ content = labels / annotations 摘要 + startsAt；任一 firing → level=error
 
 PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/metrics`
 （`AUTOFLOW_METRICS_TARGET_DOWN` / `AUTOFLOW_SCHEDULER_DOWN` 即覆盖 PG 不可
-读场景）→ Alertmanager 触发 → 加签转发 `POST /api/alerts/webhook` →
-`notificationService.sendAll` 全渠道扇出（企业微信渠道需已配置
-`WECOM_WEBHOOK` 或管理台渠道配置）。
+读场景）→ Alertmanager 触发 → **`alertmanager-hmac-proxy` 加签转发** →
+`POST /api/alerts/webhook` → `notificationService.sendAll` 全渠道扇出
+（企业微信渠道需已配置 `WECOM_WEBHOOK` 或管理台渠道配置）。
+
+## 3.6 Runbook：本轮新增的四条告警
+
+`alerting-rules.yml` 里每条规则的 `runbook:` 字段指向本节的锚点。以下四条是
+2026-10-17 优化计划轮新增的（其余告警的处置口径见 `docs/operations.md`
+「告警规则与 Runbook」与规则文件内的注释）。
+
+### http-red
+
+**触发**：`AUTOFLOW_HTTP_5XX_RATE_HIGH` / `AUTOFLOW_HTTP_LATENCY_P99_HIGH`。
+
+数据源是本轮新增的 RED 指标（`autoflow_http_requests_total` /
+`autoflow_http_request_duration_ms_{bucket,sum,count}`，标签 `method` /
+`route` / `status_class`）。`route` 是 **Express 路由模板**（`/tasks/:id`），
+未匹配固定 `unmatched`。
+
+排查顺序：
+
+1. **先按 route 分组**看是单路由还是全局。Grafana「HTTP RED」行有分路由表格；
+   单路由 → 查该 handler；多路由同时 5xx → 查存储层（伴生看
+   `AUTOFLOW_DB_POOL_WAITING` / `AUTOFLOW_QUEUE_UNREADABLE`）。
+2. `route="unmatched"` 的 5xx 来自**全局中间件/异常过滤器**而非具体处理器
+   ——查 admin-api 日志的启动段与 `HttpExceptionFilter`。
+3. **P99 被 SSE 带偏的情况不存在**：拦截器按 `isSsePath` + `text/event-stream`
+   双判据跳过，长连接不入账。若 P99 突然飙到小时级，那是真异常，不是埋点问题。
+4. 注意 `_bucket` 是**手写直方图**（三个 Counter + `doRender` 里 reset+inc
+   重建），与 `autoflow_scheduler_trigger_latency_ms_*` 同一形态；桶上界见
+   `HTTP_DURATION_BUCKETS_MS`。
+
+### autoflow_all_executors_offline
+
+**触发**：`sum(autoflow_executors_online) == 0 and sum(autoflow_executors_total) > 0`
+持续 10 分钟。
+
+`autoflow_executors_online` / `autoflow_executors_total` 是本轮新增的 Gauge，
+数据源是 DB 的 `Executor.status` 计数。
+
+**关键前提**：`renderExecutorFleetGauges` 在 **DB 查询失败时保留上一轮值**，
+不会把 online 打成 0。因此若本条与 PG 告警同时出现，**先确认 DB 是否真的可查**
+——PG 抖动本身不会触发本条。
+
+`and sum(autoflow_executors_total) > 0` 是全新部署的守卫：一台执行器都没注册时
+不告警。处置见 `docs/operations.md` 的执行器离线章节；速查：
+`GET /api/metrics/executors` 看 `lastHeartbeat` 与 `offlineReason`
+（`manual` = 被手动下线，`stale_timeout` = 心跳超时）。
+
+### autoflow_sse_ticket_rejected
+
+**触发**：`sum(increase(autoflow_sse_ticket_rejected_total{reason="wrong_path"}[15m])) > 0`。
+
+**这是安全告警，正常恒为 0。** 合法前端只会在三条 `/stream` 路由的 `?ticket=`
+上传票据（EventSource 无法设请求头），access 令牌走 `Authorization` 头、
+不受影响。因此任何一次拒绝都意味着**票据已从 URL、浏览器历史或反代日志泄漏，
+且有人正在尝试把它当全权令牌复用**。
+
+处置：
+
+1. 按 admin-api 日志定位该票据的 `sub`（用户）与来源 IP。
+2. **立即 revoke 该用户全部会话并强制改密**
+   （`POST /api/auth/sessions/revoke-others`）。
+3. 检查反代 access log 是否记录了 `?ticket=`——应在 nginx 侧对该查询参数脱敏
+   （票据 30 秒有效且路径受限，但日志里的票据在有效期内仍可用）。
+4. 票据本身无 `jti` 黑名单（见 `issueSseTicket` 的残差注释），故**不能**
+   单枚吊销，只能靠 30 秒 TTL 与用户级 revoke。
 
 ## 4. 指标字典
 
 业务 series（注册于 `prometheus-metrics.service.ts`；均为 per-process 计数，
-进程重启归零；`job`/`instance` label 由 Prometheus 抓取注入，代码不设置）：
-
-| series | 类型 | labels | 语义 |
+进程重启归零；`job`/`instance` label 由 Prometheus 抓取注入，代码不设置）：| series | 类型 | labels | 语义 |
 | --- | --- | --- | --- |
 | `autoflow_scheduler_ticks_total` | counter | — | 本进程执行的调度扫描 tick（reload）次数；停增 = 调度停摆 |
 | `autoflow_scheduler_tick_duration_ms_total` | counter | — | tick 累计耗时（毫秒）；与 ticks 相除得窗口均值 |

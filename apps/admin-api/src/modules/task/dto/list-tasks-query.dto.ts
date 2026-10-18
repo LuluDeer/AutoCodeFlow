@@ -165,4 +165,37 @@ export class ListTasksQueryDto extends PaginationDto {
   @IsOptional()
   @IsString()
   fields?: string;
+
+  /**
+   * §2.1（本轮）：**可选**的不透明游标——`GET /tasks/:id/executions` 上已落地的
+   * keyset 分页推广到本端点。
+   *
+   * 只做加性过渡——不传它时行为与引入本字段之前**逐字节不变**（走 OFFSET 分支，
+   * 响应里连 `nextCursor` 这个键都不出现）。传了它才切到 keyset 分支。
+   *
+   * ## 与 executions 端点的关键差异：这里游标必须与排序键同源
+   *
+   * 本端点支持 `sortBy`/`sortOrder` 白名单排序（`TASK_SORT_WHITELIST`，14 个键），
+   * 而 keyset 游标编码的是**特定一组排序键的原值**。若允许"任意 sortBy + 任意
+   * cursor"自由组合，会出现语义错乱：游标里的值来自 `createdAt` 序，查询却按
+   * `priority` 序返回——"继续"的起点在该序里毫无意义，翻页必然漏行/重行，而且
+   * 每一页都是 HTTP 200，调用方无从察觉。故 service 层对下列组合**显式 400 拒绝**
+   * （见 `TaskService.assertCursorCompatibleWithQuery`），绝不静默降级：
+   *   · `cursor` + 显式 `sortBy`（哪怕写的正是 `createdAt`——那也说明调用方对
+   *     "游标绑定了哪套排序"存在误解，且未来若默认排序变更会静默出错）；
+   *   · `cursor` + `lastStatus`（派生过滤分支见下）。
+   *
+   * 这里**刻意不做格式校验**（不挂 `@Matches`）：游标合法性判定（base64url →
+   * ISO 时间 → uuid 形状）全部集中在纯函数 `decodeKeysetCursor`
+   * （common/utils/keyset-cursor.util.ts）里，由它抛 `VALIDATION_FAILED`。
+   * 理由与 `TaskExecutionsQueryDto#cursor` 逐字相同：管道抛的是字段名数组，
+   * 无法给出"游标坏了、请从第一页重来"这句可操作指引。
+   */
+  @ApiPropertyOptional({
+    description:
+      "不透明的 keyset 游标（上一页响应的 data.nextCursor）。省略时走原有的 OFFSET 分页，响应与之前完全一致；传入时走 keyset 分支并在响应中追加 nextCursor。仅与**默认排序**（createdAt DESC, id DESC）组合；与 sortBy 或 lastStatus 同时给出返回 400。非法游标返回 400（VALIDATION_FAILED），不会静默退回第一页。",
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }
