@@ -89,6 +89,7 @@
 | [feature-dev-workflow.md](feature-dev-workflow.md) | 新功能开发 checklist |
 | [VERIFY-MATRIX.md](VERIFY-MATRIX.md) | 真机验证矩阵（按变更类型必跑） |
 | [vscode-launch.template.json](vscode-launch.template.json) | VSCode 调试配置模板 |
+| [skills/](skills/README.md) | 面向 AI 助手的可复用任务规范（Python 任务包等） |
 
 ### 2.7 归档区
 
