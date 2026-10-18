@@ -126,8 +126,8 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       expect(channels).toEqual(
         [
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
-          'downloadUpdate', 'exportConfig', 'exportExecLog', 'getAgentStatus', 'getAutoLaunch',
-          'getConfig', 'getHistory',
+          'downloadUpdate', 'exportConfig', 'exportDiagnosticReport', 'exportExecLog', 'getAgentStatus', 'getAutoLaunch',
+          'getConfig', 'getHealthPanel', 'getHistory',
           'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
           'getWindowState', 'importConfig', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow',
           'onHistoryChanged', 'onLogLine',
