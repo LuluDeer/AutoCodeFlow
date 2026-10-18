@@ -216,7 +216,15 @@ export function appsCommand(): Command {
         // form-data 依赖。字段名 file/name/runtime/version 是服务端 multer +
         // DTO 白名单；不手动设 Content-Type（会把 boundary 写死）。
         const form = new FormData();
-        form.append('file', new Blob([buf], { type: 'application/zip' }), path.basename(zip));
+        // @types/node 26 收紧了 Buffer 与 DOM BlobPart 的关系：Buffer 是
+        // Uint8Array<ArrayBufferLike>，而 BlobPart 要 ArrayBuffer-backed，
+        // 直接传 buf 会 TS2322。用 Uint8Array 视图包一层（**零拷贝**，共享
+        // 同一块内存，运行时行为与原来完全一致）即可满足签名。
+        form.append(
+          'file',
+          new Blob([new Uint8Array(buf)], { type: 'application/zip' }),
+          path.basename(zip),
+        );
         form.append('name', opts.name);
         if (opts.runtime) form.append('runtime', opts.runtime);
         if (opts.version) form.append('version', opts.version);
