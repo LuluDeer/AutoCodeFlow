@@ -542,4 +542,4 @@
 #   （本文件 §386 / §430）结论一致：ncc 0.45 的产物与 map 均无绝对路径，
 #   ② 可本地回填，CI 仍权威复验。source-digest 46 个输入文件。
 source-digest: 55d884d43b46f9727cff20edc013b6c0185671e353eadfc6e82a0d7119243849
-a32b60f59f6204e55af2e07da895190b2135794464f2d857ea64cdf09a74ce90  index.js
+f35ca556bb3b659b56fc2df6c19153b63da3d364cebef9fc8439b4cc502b219d  index.js
