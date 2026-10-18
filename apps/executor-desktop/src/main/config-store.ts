@@ -301,7 +301,12 @@ export class ConfigStore {
    * this method must never receive executorToken material.
    */
   setRaw<K extends keyof AppConfig>(key: K, value: AppConfig[K]): void {
-    this.store.set(key, value);
+    // electron-store 12（底层 conf 14）收紧了 set 的泛型：value 必须是
+    // `Exclude<T[Key], undefined>`。AppConfig 含可选字段（uiLanguage? 等），
+    // 于是 `AppConfig[K]` 在 K 未收窄时是含 undefined 的联合，直接传会 TS2769。
+    // 这里的调用方都是「确实要写入某个值」的场景（undefined 不该走 setRaw，
+    // 要清除字段应走 delete），故用断言对齐库的签名；运行时仍是同一个调用。
+    this.store.set(key, value as Exclude<AppConfig[K], undefined>);
   }
 
   /** Main-process consumers (executor-process env, future rotate flows). */
