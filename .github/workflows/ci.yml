@@ -654,6 +654,43 @@ jobs:
       - run: npm test -- --coverage
         working-directory: apps/admin-web
 
+  # ── Lighthouse CI 性能监控 ────────────────────────────────────
+  # 自动化前端性能审计，防止性能回归。在 admin-web-build 之后运行，复用
+  # 构建产物。初期设为 continue-on-error 不阻塞 CI，建立性能基线后再收严。
+  admin-web-lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: admin-web-build
+    if: github.event_name != 'schedule'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/admin-web/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-web
+      # 构建生产版本（Lighthouse 审计生产构建的性能）
+      - name: Build production bundle
+        run: npm run build
+        working-directory: apps/admin-web
+        env:
+          VITE_API_URL: http://localhost:3105
+      # 运行 Lighthouse CI（会自动启动 vite preview 服务器）
+      - name: Run Lighthouse CI
+        run: npm run lighthouse
+        working-directory: apps/admin-web
+      # 上传 HTML 报告为构建产物（供查看详细性能数据）
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: apps/admin-web/.lighthouseci
+          retention-days: 30
+
   # ── lockfile 完整性校验（SEC-06 ②）────────────────────────────
   # 各包独立 lockfile 的多包仓（无 workspace 统一锁）最易出的漂移是：
   # 改了 package.json 忘了同步 lockfile——npm install 时 lock 会被静默
