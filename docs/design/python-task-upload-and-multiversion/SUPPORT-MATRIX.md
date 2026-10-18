@@ -196,7 +196,7 @@ OQ-6 授权的前提是"升级 uv 可以补上缺失的下界版本"。实测证
 3. **3.6 及以下拒绝声明**（NG-09 修正：需求 §9.2 矩阵中的 `3.6` 应删除）。
 
 > 处置结论已获负责人确认，落点见 CONTRACT.md §0.1 与 §1.1（`RUNTIME_VERSION_MIN="3.7"` / `RUNTIME_VERSION_MAX="3.14"` / `ONLINE_DOWNLOAD_MIN="3.8"`）。
-> 运维侧操作步骤见 [`OFFLINE-PROVISIONING.md`](./OFFLINE-PROVISIONING.md)。
+> 运维侧操作步骤见 [`OFFLINE-PROVISIONING.md`](OFFLINE-PROVISIONING.md)。
 
 ---
 

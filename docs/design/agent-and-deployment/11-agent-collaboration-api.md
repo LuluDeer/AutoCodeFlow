@@ -1,6 +1,6 @@
 # 11 · Agent 协作 API（执行器 Agent ↔ 中台 Agent）
 
-> **这是复审发现的缺失子系统**（见 [10 §一·缺口 3](./10-design-review.md)）。原设计只定义了「中台 Agent」和「执行器 Agent」，但**没说它们之间怎么通信**——而 mcp-server 是 stdio-only，43 个工具全是「管理平台资源」，没有一个能用于 Agent 协作。
+> **这是复审发现的缺失子系统**（见 [10 §一·缺口 3](10-design-review.md)）。原设计只定义了「中台 Agent」和「执行器 Agent」，但**没说它们之间怎么通信**——而 mcp-server 是 stdio-only，43 个工具全是「管理平台资源」，没有一个能用于 Agent 协作。
 
 ## 1. 为什么必须新建
 
@@ -15,7 +15,7 @@
 
 ### 1.2 需要什么
 
-执行器 Agent 需要的动作（[04 §3](./04-sop-protocol.md)）：
+执行器 Agent 需要的动作（[04 §3](04-sop-protocol.md)）：
 
 ```
 ① 领取指派          ← 拉取 SOP（含版本、contentHash）
@@ -32,7 +32,7 @@
 | 原则 | 说明 |
 |---|---|
 | **走执行器身份** | 复用既有 `validateTokenByAddress`（per-executor token），**不新造凭据体系** |
-| **复用能力标记** | 用 `executors.capabilities` 加 `agent:sop` 域（[10 §缺口2补](./10-design-review.md)），复用既有派发过滤 |
+| **复用能力标记** | 用 `executors.capabilities` 加 `agent:sop` 域（[10 §缺口2补](10-design-review.md)），复用既有派发过滤 |
 | **拉模式优先** | 执行器多在 NAT 后（这是 ADR-015 pull 模式存在的理由）。**协作也应以拉为主**，避免中台拨入 |
 | **幂等** | 网络不可靠，所有上报必须可重放 |
 | **有界** | 澄清轮次、载荷大小、媒体时长全部有上限 |
@@ -108,7 +108,7 @@ POST /api/agent-collab/poll
 }
 ```
 
-> **`sopPolicy` 随 poll 返回**——这是企业集中管控的落地方式：执行器每次轮询都拿到最新策略，**员工本地改配置也突破不了**（[09 §4.2](./09-permission-profiles.md)）。也顺带解决了[调整 4 的离线问题](./10-design-review.md)：离线时用最近一次缓存。
+> **`sopPolicy` 随 poll 返回**——这是企业集中管控的落地方式：执行器每次轮询都拿到最新策略，**员工本地改配置也突破不了**（[09 §4.2](09-permission-profiles.md)）。也顺带解决了[调整 4 的离线问题](10-design-review.md)：离线时用最近一次缓存。
 
 ### 3.2 上报侧（执行器 → 中台）
 
@@ -143,9 +143,9 @@ POST /api/agent-collab/poll
 
 ## 4. 数据模型补充
 
-### 4.1 新表：`agent_assignments`（细化 [04 §2.3](./04-sop-protocol.md))
+### 4.1 新表：`agent_assignments`（细化 [04 §2.3](04-sop-protocol.md))
 
-原 [04 §2.3](./04-sop-protocol.md) 定义了 `sop_assignments`。协作 API 需要额外字段：
+原 [04 §2.3](04-sop-protocol.md) 定义了 `sop_assignments`。协作 API 需要额外字段：
 
 | 列 | 说明 |
 |---|---|
@@ -167,7 +167,7 @@ POST /api/agent-collab/poll
 | `reportedAt` | |
 | `hash` | 内容哈希（变更检测，避免重复传输） |
 
-**建议**：`capabilities`（简单数组）用于**派发过滤**，`executor_capabilities.reportJson`（富结构）用于**SOP 可行性预检**（[10 §建议2](./10-design-review.md)）。两者分工明确。
+**建议**：`capabilities`（简单数组）用于**派发过滤**，`executor_capabilities.reportJson`（富结构）用于**SOP 可行性预检**（[10 §建议2](10-design-review.md)）。两者分工明确。
 
 ## 5. 安全设计
 
@@ -189,21 +189,21 @@ POST /api/agent-collab/poll
 | `bodyMarkdown`（SOP 内含） | 平台生成，执行器不回传 |
 | `answer`（澄清回复） | 中台生成 |
 | **`question`（执行器提问）** | ⚠️ **不可信**——长度上限 + 送模型前脱敏 + 不进 system prompt |
-| `mediaRefs`（媒体 URL） | ⚠️ **绝不接受任意 URL**——必须走平台 artifacts 上传（[05 §3.1](./05-qwen-multimodal.md)） |
+| `mediaRefs`（媒体 URL） | ⚠️ **绝不接受任意 URL**——必须走平台 artifacts 上传（[05 §3.1](05-qwen-multimodal.md)） |
 | `progressJson` / `resultJson` | 大小上限 + schema 校验 |
 
 > ⚠️ **最重要的一条**：执行器 Agent 上传的媒体**不能是任意 URL**。否则就是「执行器让中台去下载任意 URL 然后转给 DashScope」——SSRF 转嫁。必须是**执行器上传文件到平台 artifacts**，再由平台给出不可猜测的 URL 转给 DashScope。
 
 ### 5.3 澄清的提示注入面
 
-执行器 Agent 的提问会**进入中台 Agent 的上下文**。这是一条**跨 Agent 注入通道**（与 [04 §4](./04-sop-protocol.md) 的 SOP 注入是对称的另一半）。
+执行器 Agent 的提问会**进入中台 Agent 的上下文**。这是一条**跨 Agent 注入通道**（与 [04 §4](04-sop-protocol.md) 的 SOP 注入是对称的另一半）。
 
 | 防护 | 说明 |
 |---|---|
 | 明确分隔 | 中台 Agent 的 prompt 里，执行器的提问必须**明确标注为「不可信的对方陈述」**，与平台指令分离 |
 | 脱敏 | 走 `sanitizeLogs()` 同款 |
 | 长度上限 | 防止塞入超长内容冲击上下文 |
-| **不赋予指令权** | 提问只能作为**事实输入**，中台 Agent 的安全决策（是否修订 SOP、是否升级人工）**不受提问措辞影响**——这要靠 [03 §5](./03-agent-tools-and-boundary.md) 的代码层闸门兜底，不能靠 prompt |
+| **不赋予指令权** | 提问只能作为**事实输入**，中台 Agent 的安全决策（是否修订 SOP、是否升级人工）**不受提问措辞影响**——这要靠 [03 §5](03-agent-tools-and-boundary.md) 的代码层闸门兜底，不能靠 prompt |
 
 ## 6. 生命周期与超时
 
@@ -211,7 +211,7 @@ POST /api/agent-collab/poll
 |---|---|---|
 | 指派后无人领取 | `pulledAt IS NULL` 且超 `assignmentTtl`（默认 30min） | 标记 `failed` + 通知；中台可换机器重派 |
 | 领取后失联 | `lastProgressAt` 超 `progressTtl`（默认 10min） | 标记 `stalled`；中台决定等待或重派 |
-| 澄清无人回 | 中台 Agent 会话超时 | 转人工（[04 §3](./04-sop-protocol.md)） |
+| 澄清无人回 | 中台 Agent 会话超时 | 转人工（[04 §3](04-sop-protocol.md)） |
 | 执行器权限档位被下调 | poll 返回的 `sopPolicy` 变化 | 执行器**立即遵守**；正在跑的指派需中止或降权 |
 
 **最后一条很重要**：企业 IT 在中台把某台机器的档位从 `ops-assist` 降到 `standard` 时，**正在运行的 Agent 必须立刻受影响**，而不是等下次重启。所以策略随 poll 下发（[§3.1](#31-拉取侧执行器--中台)）。
@@ -251,7 +251,7 @@ Agent 协作**不是三方共有**（只有 desktop 参与），所以**不应�
 
 1. **协作协议纳入 `executor-protocol` 治理**（放 `agentCollab` 段，**不进 `schemas`**）——我建议是，理由见 §7。
 2. **复用 pull 长轮询模式**（而非 WebSocket）——我建议是，ADR-015 已有「弃 WS 反连」决策。
-3. **`agent:sop` 能力标记**——复用既有 `capabilities` 字段（[10 §缺口2补](./10-design-review.md)），零新列。
+3. **`agent:sop` 能力标记**——复用既有 `capabilities` 字段（[10 §缺口2补](10-design-review.md)），零新列。
 4. **指派超时默认值**（领取 30min / 进度 10min）是否合适？
 
 > 这 4 项我都有明确建议，若无异议我按建议推进。

@@ -1,8 +1,8 @@
 # executor-desktop Agent 子系统（P7a 骨架 + P7a 续批执行体 + P7b 浏览器/托管）
 
 > 所属: docs/atlas/01-apps/executor-desktop · 最后核对: 2026-09（P7b） · 对应代码: `apps/executor-desktop/src/main/agent/`
-> 设计文档: [docs/design/agent-and-deployment/](../../../../design/agent-and-deployment/README.md)（07 执行器 Agent / 08 分工 / 09 权限档位 / 11 协作 API）
-> ADR: [ADR-022](../../../../adr/adr-022-executor-agent-arbitrary-code.md)（受控的任意代码执行 · 信任模型变更）
+> 设计文档: [docs/design/agent-and-deployment/](../../../design/agent-and-deployment/README.md)（07 执行器 Agent / 08 分工 / 09 权限档位 / 11 协作 API）
+> ADR: [ADR-022](../../../adr/adr-022-executor-agent-arbitrary-code.md)（受控的任意代码执行 · 信任模型变更）
 
 ## 定位
 
@@ -137,10 +137,10 @@ src/main/agent/
 - **调硬闸门数值**：`gates.ts` 的 `DEFAULT_GATE_LIMITS`；改完同步 07 §7.1 与本文。注意 selftest 钉住了默认值本身。
 - **改 LLM 协议**：`runtime.ts` 的 SYSTEM_PROMPT + `extractJsonObject` + 动作映射表是三件一体——改响应形状必须三处同步，selftest 钉住了「错映射 = 澄清变 retry」这一形态。
 - **加协作端点**：`collab-client.ts` 加方法 + selftest 的本地 http server 加用例；中台侧同步 `sop-collab.controller.ts`。
-- **新增 IPC 面（Agent 状态/只读视图）**：走 `ipc-handlers.ts` 白名单 + `path-domain.ts` 域校验，见 [ipc-and-security.md](./ipc-and-security.md)。
+- **新增 IPC 面（Agent 状态/只读视图）**：走 `ipc-handlers.ts` 白名单 + `path-domain.ts` 域校验，见 [ipc-and-security.md](ipc-and-security.md)。
 
 ## 相关文档
 
-- [设计 07 执行器 Agent](../../../../design/agent-and-deployment/07-executor-agent.md) · [08 分工](../../../../design/agent-and-deployment/08-executor-agent-scope.md) · [09 权限档位](../../../../design/agent-and-deployment/09-permission-profiles.md)
-- [设计 11 协作 API](../../../../design/agent-and-deployment/11-agent-collaboration-api.md)（中台侧 `modules/sop/sop-collab.controller.ts` + LLM relay 已落地；执行器侧 `collab-client.ts` 已落地）
-- [中台 agent 模块](../admin-api/modules/agent.md) · [桌面总览](./README.md)
+- [设计 07 执行器 Agent](../../../design/agent-and-deployment/07-executor-agent.md) · [08 分工](../../../design/agent-and-deployment/08-executor-agent-scope.md) · [09 权限档位](../../../design/agent-and-deployment/09-permission-profiles.md)
+- [设计 11 协作 API](../../../design/agent-and-deployment/11-agent-collaboration-api.md)（中台侧 `modules/sop/sop-collab.controller.ts` + LLM relay 已落地；执行器侧 `collab-client.ts` 已落地）
+- [中台 agent 模块](../admin-api/modules/agent.md) · [桌面总览](README.md)

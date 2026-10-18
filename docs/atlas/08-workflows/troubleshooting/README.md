@@ -32,7 +32,7 @@ YYYY-MM-DD-<简短英文 slug>.md
 | 位置 | 记什么 | 例子 |
 |---|---|---|
 | `docs/atlas/08-workflows/troubleshooting/` | **问题知识**：单个问题的根因/修复/预防，长期有效、按问题组织 | 本目录 `YYYY-MM-DD-*.md` |
-| `docs/` 根（`VERIFY-*.md`、`PROGRESS-*.md`、`windows-findings.md` 等） | **轮次过程**：某轮验证/交接的时序性记录，按时间组织、不拆散 | `docs/VERIFY-round11-DEP04-approval.md` 等 |
+| `docs/` 根（`VERIFY-*.md`、`PROGRESS-*.md`、`windows-findings.md` 等） | **轮次过程**：某轮验证/交接的时序性记录，按时间组织、不拆散 | `docs/archive/verifies/verify-round11-dep04-approval.md` 等 |
 
 判断口诀：**"下次遇到同类问题该读哪份？"**——读哪份就把知识写进哪份的体系；轮次文档不回填、不改写（历史快照），问题文件会随认知更新。既有轮次文档里的结论若值得沉淀，复制提炼成问题文件，**不要**在两处重复维护同一份内容。
 

@@ -211,7 +211,7 @@ async function fetchToken(): Promise<string | null> {
       // directly yielded undefined forever, so every getCurrentToken() call
       // re-hit POST /token — which used to rotate on every call — putting the
       // stored tokenHash on a ~30s rotation cycle and breaking the N26
-      // per-execution callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+      // per-execution callback-token invariant (docs/archive/verifies/verify-round8-e2e.md §1.5).
       const payload = unwrapAdminResponseData(response.data);
       const token =
         typeof payload?.token === 'string' && payload.token.length > 0

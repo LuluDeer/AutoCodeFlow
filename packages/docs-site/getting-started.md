@@ -126,6 +126,6 @@ npx tsx tasks/send_report.ts
 
 ## 下一步
 
-- [Node.js SDK 参考](./sdk-node) / [Python SDK 参考](./sdk-python)
-- [能力矩阵](./capability-matrix)：两侧行为差异逐条裁定
-- [示例库](./examples)：回调上报、私服依赖完整链路
+- [Node.js SDK 参考](sdk-node) / [Python SDK 参考](sdk-python)
+- [能力矩阵](capability-matrix)：两侧行为差异逐条裁定
+- [示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples)：回调上报、私服依赖完整链路

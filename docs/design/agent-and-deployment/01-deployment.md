@@ -196,7 +196,7 @@ executor 的 unit 同构，差异只在 `WorkingDirectory` 与 `ExecStart`。
 | 崩溃自愈 | `Restart=always` + `RestartSec=5` | 替代容器 `restart: unless-stopped` |
 | 日志 | journald，配置 `MaxRetentionSec` | 替代容器的 json-file 驱动 |
 | 文件描述符 | `LimitNOFILE=65535` | 高并发执行器必需 |
-| 内存上限 | `MemoryMax` | 项目有过 OOM 事故（`docs/INCIDENT-2026-09-23-admin-api-oom.md`），显式设限 + 触顶时 systemd 重启比内核 OOM killer 更可控 |
+| 内存上限 | `MemoryMax` | 项目有过 OOM 事故（`docs/archive/incidents/incident-2026-09-23-admin-api-oom.md`），显式设限 + 触顶时 systemd 重启比内核 OOM killer 更可控 |
 
 > ⚠️ **OOM 历史教训**：项目发生过 admin-api OOM 事故。systemd 的 `MemoryMax` 会让进程在触顶时被杀并重启，**优于**内核 OOM killer 随机杀进程。但必须同时确认 `NODE_OPTIONS=--max-old-space-size` 与 `MemoryMax` 匹配，否则 Node 堆上限高于 cgroup 上限时，systemd 先杀、Node 来不及 GC。此处需要一个**一致性校验**写进 `doctor`。
 
@@ -213,7 +213,7 @@ executor 的 unit 同构，差异只在 `WorkingDirectory` 与 `ExecStart`。
 
 ## 6. `doctor` 子命令（诊断不部署）
 
-这是给**中台 Agent 用的接口**——见 [03](./03-agent-tools-and-boundary.md)，Agent 排查环境异常时第一个调用的就是它。
+这是给**中台 Agent 用的接口**——见 [03](03-agent-tools-and-boundary.md)，Agent 排查环境异常时第一个调用的就是它。
 
 ```
 $ ./deploy.sh doctor
@@ -236,7 +236,7 @@ admin-api 最近错误     近 1h 无 ERROR                     ✔
 结论：可部署。1 项警告（执行器心跳延迟，通常自愈）
 ```
 
-**输出契约**：`doctor --json` 输出结构化结果，供 Agent 程序化消费。字段设计见 [03 §5](./03-agent-tools-and-boundary.md)。
+**输出契约**：`doctor --json` 输出结构化结果，供 Agent 程序化消费。字段设计见 [03 §5](03-agent-tools-and-boundary.md)。
 
 ## 7. 回滚设计
 

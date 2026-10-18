@@ -2,7 +2,7 @@
 
 状态：Proposed（待拍板；**本轮不实施**，理由见文末）
 
-> 本文把 `PLAN-BACKEND-ARCHITECTURE.md` §2.2「执行记录归档」从悬而未决转成**可拍板**的决策文档。
+> 本文把 `docs/archive/plans/backend-architecture.md` §2.2「执行记录归档」从悬而未决转成**可拍板**的决策文档。
 > 结论前置：这**不是**技术方案选型题，是「合规是否要求留存超过保留期的执行记录」这道**业务题**。
 > 在拿到该前提之前，本文推荐维持现状（选项 D/A），不建归档表。
 
@@ -171,7 +171,7 @@ cutoff 变成无效比较。而归一后的危险方向只有一个：**cutoff �
 | `apps/admin-api/src/config/configuration.ts` | `:551-571` | 代码注释：硬删除、没有归档表、归一理由 |
 | `apps/admin-api/src/modules/executor/executor.service.ts` | `:4697-4701` | 方法头注释：硬删除且不可逆、没有归档表、需留存须自行导出 |
 
-另有两处**不能直接照抄**的：`PLAN-BACKEND-ARCHITECTURE.md:171-199` 的 §2.2 示例代码写的是
+另有两处**不能直接照抄**的：`docs/archive/plans/backend-architecture.md:171-199` 的 §2.2 示例代码写的是
 `executions` / `executions_archive` / `created_at` / `@Cron('0 3 * * *')` / 90 天 ——
 **与真实 schema 全不符**（真实表 `task_executions`、真实列 `createdAt`、真实 cron `0 0 2 * * *`）；
 以及 `:634-644` 的进度说明（本轮之前的状态快照）。
@@ -181,7 +181,7 @@ cutoff 变成无效比较。而归一后的危险方向只有一个：**cutoff �
 清理链本身已经工程完备：LeaderGate、分批、轮数/墙钟双闸、S3 先回收、fail-open、两级归一。
 **剩下的唯一未知量是「这些数据该不该在 90 天后消失」**——外部输入，不是代码能回答的。
 
-上一轮驳回「顺手建表」的理由（`PLAN-BACKEND-ARCHITECTURE.md:642-644`）依然成立：
+上一轮驳回「顺手建表」的理由（`docs/archive/plans/backend-architecture.md:642-644`）依然成立：
 没有「合规要求留存」这个前提就建归档表 = **凭空多一条要长期维护的写入路径 + 一份永远没人查的数据**。
 
 ---
@@ -394,7 +394,7 @@ SELECT pg_size_pretty(pg_total_relation_size('task_executions'));
 1. **缺少前提**：「合规是否要求留存超过保留期的执行记录」尚未回答。
    在没有这个前提时建表，等于凭空增加一条需要长期维护的写入路径，
    和一份永远没人查的数据——这正是上一轮驳回它的理由
-   （`PLAN-BACKEND-ARCHITECTURE.md:642-644`），本轮没有新证据推翻它。
+   （`docs/archive/plans/backend-architecture.md:642-644`），本轮没有新证据推翻它。
 2. **前置条件未就绪**：B 的四个坎（事务原子性、与 Q7 的竞态、S3 指针归属、索引裁剪）
    与 C 的 fail-closed 删除闸，都取决于「留存粒度」这个还没人回答的问题。
    先写代码会把猜测固化进 schema。
@@ -407,7 +407,7 @@ SELECT pg_size_pretty(pg_total_relation_size('task_executions'));
 
 ## 替代方案（被否）
 
-- **照抄 `PLAN-BACKEND-ARCHITECTURE.md:171-199` 的 §2.2 示例代码**：不能直接落地。
+- **照抄 `docs/archive/plans/backend-architecture.md:171-199` 的 §2.2 示例代码**：不能直接落地。
   它写的是 `executions` / `executions_archive` / `created_at` / `@Cron('0 3 * * *')`，
   与真实 schema 全不符（`task_executions` / `createdAt` / `0 0 2 * * *`）；
   且示例是「先 INSERT 再 DELETE」两条独立语句、无事务、无分批、无双闸——
@@ -429,7 +429,7 @@ SELECT pg_size_pretty(pg_total_relation_size('task_executions'));
 
 ## 关联
 
-- 计划项：`PLAN-BACKEND-ARCHITECTURE.md` §2.2「执行记录归档」（`:171-199` 原设计、`:634-644` 状态）
+- 计划项：`docs/archive/plans/backend-architecture.md` §2.2「执行记录归档」（`:171-199` 原设计、`:634-644` 状态）
 - 相关实现：
   - `apps/admin-api/src/modules/executor/executor.service.ts:4693-4754`（Q7 主链）
   - `apps/admin-api/src/common/utils/capped-batched-delete.util.ts:24-87`（轮数/墙钟双闸）

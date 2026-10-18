@@ -113,7 +113,7 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
 
     // ---------------------------------------------------------------------
     // --check: guard mode (CI). Asserts the invariants that
-    // docs/MCP-AGENT-UX-AUDIT-2026-10-08.md established, so a future edit
+    // docs/archive/audits/mcp-agent-ux-audit-2026-10-08.md established, so a future edit
     // cannot silently drop annotation coverage or re-prose the runMode enum.
     // ---------------------------------------------------------------------
     if (CHECK_MODE) {

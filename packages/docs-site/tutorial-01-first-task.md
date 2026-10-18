@@ -79,9 +79,9 @@ return { message: msg, success: true };
 | 现象 | 排查 |
 |------|------|
 | 「无可用执行器」 | 执行器页看在线状态；心跳同步约 10-15 秒 |
-| 报模块找不到 | 有第三方依赖 → [教程 02](./tutorial-02-private-registry-deps) |
+| 报模块找不到 | 有第三方依赖 → [教程 02](tutorial-02-private-registry-deps) |
 | 一直「运行中」 | 检查是否配了 `timeout` |
 
 ## 7. 下一步
 
-[教程 02 · 私服依赖](./tutorial-02-private-registry-deps)。
+[教程 02 · 私服依赖](tutorial-02-private-registry-deps)。

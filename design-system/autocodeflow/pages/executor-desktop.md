@@ -11,7 +11,7 @@
 
 - 适用 `apps/executor-desktop` 渲染层（`src/renderer/styles/`）。
 - 样式载体：tokens / base / components / pages 四文件；令牌值以 tokens.css 为载体。
-- V4（2026-10-05，`docs/UX-V4-AUDIT-REDESIGN-2026-10-05.md`）新增：内嵌品牌字体、
+- V4（2026-10-05，`docs/archive/audits/ux-v4-audit-redesign-2026-10-05.md`）新增：内嵌品牌字体、
   共享 ConfirmBar / EmptyState / LogLineList 组件、顶栏合并、collapsible 过渡——
   详见 §4/§6/§8。
 
@@ -126,8 +126,8 @@ status / wizard 两窗均已对齐）。教训：frameless + transparent 在部�
 ## 8. 演进状态
 
 - 2026-10 v3：令牌翻转、四文件拆分、日志工作台三合一、信息架构重组（详见
-  `docs/UX-AUDIT-DESKTOP-2026-10-05.md`）；
-- 2026-10 V4（`docs/UX-V4-AUDIT-REDESIGN-2026-10-05.md`，当日全五期落地）：内嵌品牌字体、
+  `docs/archive/audits/ux-audit-desktop-2026-10-05.md`）；
+- 2026-10 V4（`docs/archive/audits/ux-v4-audit-redesign-2026-10-05.md`，当日全五期落地）：内嵌品牌字体、
   状态色语义修正（标识态中性化）、顶栏合并（90px→48px）、Tab 按频率重排
   （状态→历史→应用→配置）、日志渲染管线归一（LogLineList：预览/全屏同管线 +
   INFO 降噪 + 行内工具）、状态页活动条「运行中任务」可见化 + 右栏「最近失败」、

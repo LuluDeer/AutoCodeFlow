@@ -1,7 +1,7 @@
 # AutoCodeFlow Agent Handoff
 
 > 跨会话交接文档：新会话从这里恢复。
-> 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
+> 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
 更新时间：2026-09-28（轮 30：executor-desktop 客户端 UI 全面深度优化）
 当前分支：`codex/executor-client-ui`（worktree：`C:\Users\12154\.codex\worktrees\executor-client-ui\AutoCodeFlow`）
@@ -24,7 +24,7 @@
   - **metrics 守卫 DI 之谜根因收口**（c900865e 遗留"成因待查"）：Nest `reflectConstructorParams` 合并 self-declared deps 用**原型链敏感**的 `Reflect.getMetadata`——基类 JwtAuthGuard 构造器 index[1] 的 `@Inject(API_KEY_AUTH_FACADE)` 沿原型链覆写子类 MetricsScraperAuthGuard index[1] 的 ConfigService 类型推断 → 按不存在 token 解析失败 → @Optional 吞成 undefined（strict-clone 探针实证 Nest 报 "argument API_KEY_AUTH_FACADE at index [1]"；TS 6 对 `ConfigService | undefined` 的元数据 emit 正确，嫌疑排除）。修复=守卫参数显式 `@Inject(ConfigService)`；DI 装配回归测试组入 spec（真装配断言 + 上游行为锁定）。**Nest 上游 issue 待报**（reflectOptionalParams 用 getOwnMetadata 而 self-deps 未做同样限定，同文件注释自相矛盾）。
   - **N-02③ 产品拍板（AskUserQuestion 留痕）：温和下放并实施完毕**——executor.controller PATCH `:id` / reload-config 移除 @Roles(ADMIN)，判定下沉 assertCanManageMetadata（ADMIN 短路 + 项目 editor+；projectId=null 平台级执行器非 ADMIN 恒 403；@Optional 缺席退化仅 ADMIN fail-closed）；A2 声明 `@WriteGuard("executor",{scope:"ownership"})` + `executor:write` 落证 + 穷举守卫清单显式登记；rotate-token/set-offline/DELETE 与 executor-package 不动；admin-web 详情页按钮拆分（列表页批量入口维持 ADMIN）。**验收**：RBAC 矩阵 +6、admin-api 253 套件 4206 例绿（基线 4199 只增）、admin-web 176 套件 1346 例绿、双端 lint/tsc 绿、swagger/api-types 同批（纯描述 diff）。N-02 整条 **done 销账**（①②④ 轮 28 已复核兑现）。
   - **N-05 前置拍板：暂缓**（DashScope 暂不开通；条目已注记，下轮候选顺位 N-06 > N-07/N-08）。
-  - **Win 侧对账简报落档 `docs/HANDOFF-2026-10-02.md`**（v1.7.0 发版对账 + N-14/N-15 + chaos 七场景 + 9 条真缺陷清单；npm 三包 1.7.0 registry 实测；PyPI 本机网络未复核如实注明）。上会话遗留"N-14 kill 链路未实测备注"**未找到**（穷尽 PLAN-CLAIMS/CHAOS/AGENT_HANDOFF/atlas；候选=场景③D3/场景⑤E3/QA-03 py trace 遗留），未强行改。
+  - **Win 侧对账简报落档 `docs/archive/handoffs/handoff-2026-10-02.md`**（v1.7.0 发版对账 + N-14/N-15 + chaos 七场景 + 9 条真缺陷清单；npm 三包 1.7.0 registry 实测；PyPI 本机网络未复核如实注明）。上会话遗留"N-14 kill 链路未实测备注"**未找到**（穷尽 PLAN-CLAIMS/CHAOS/AGENT_HANDOFF/atlas；候选=场景③D3/场景⑤E3/QA-03 py trace 遗留），未强行改。
 
 - **本轮（2026-09-28 → 轮 30：executor-desktop 客户端 UI 全面深度优化，codex/executor-client-ui）**：用户在 codex 基线（`f45f1049`/`cdfbb247`/`b68afe5d` 已完成体系化重构与图标收口）之上，认为 zcode 接手那轮「很一般」，指定**均衡全面升维**（视觉精致 + 排版节奏 + 交互反馈三路并进），聚焦 `apps/executor-desktop` 渲染层。
   - **方法**：先通读 renderer 全部页面与 2289 行 app.css 建立问题台账，按自测守卫锚点安全增强；每步跑 `renderer.selftest` + `tsc --noEmit` + `vite build` 三件套，最后用 `e2e/screenshots.cjs` 真实启动应用逐页截图，并经两轮独立视觉评审迭代（第一轮抓出"大片死空/ID裸露/应用卡片无锚点/已停止态平淡"四处真实短板并逐条修复，第二轮确认升维）。
@@ -179,7 +179,7 @@
   - **其余**：checkMisfires 挂 Leader 晋升点（failover 后 FIRE_ONCE 兑现）、分页 page @Max(10000)、getAllExecutions ILIKE 转义（API-09 util 第三处落点）、Grafana 口令 `:?`、promtail cap_drop/read_only/tmpfs、docs 三篇漂移修正（docker-compose.md 两处安全语义反向、executors-comparison.md 鉴权缺省姿态写反、CI 计数 26→37/43→48）、双 nginx conf S-08 头继承修复 + try_files =404（第一轮遗留）。
   - **残差（如实）**：depsFiredAt 周期对账 sweeper 未建；NETOPT-3③ fail-open 降级路径不补跑 misfire；index-drift 守卫对 25 处未命名 @Index 只计数不强推；nginx `-t` 本机不可跑（无 docker）；「并发双重复回调败者先落标记」窄竞态已在代码注释记录。
 
-- **本轮（2026-09-19 → 净新优化批次 NETOPT-1/2，主控编排 + 2 路只读探查代理 + 2 路执行子代理，develop）**：用户指令「全方位探索优化的地方，多维度多角度，用 codegraph 快速推进了解状态，然后推进优化」。两路只读探查代理先对齐黑名单（optimization-notes 十三轮 / DEEP_REVIEW 145 条 / REVIEW_REMEDIATION_VERIFICATION 归档 / HANDOFF 快照）**只报净新**，共 **19 条（1 P1 / 3 P2 / 15 P3）**，全部带 file:line 证据与周边代码复核；其中 4 条溯源自 `docs/review_round4_concurrency.md`「已记录但未进入 145 条处置清单」的漏网项。两路执行子代理足迹不相交并行落地（NETOPT-1 后端 admin-api 域 11 条 / NETOPT-2 边缘域 acf-cli+nginx+desktop+web 构建 8 条），**14 commit 全部在申报足迹内**（主控 `git diff --name-only` 审计零越界），**19/19 全部落地、全部带反证**。**主树复验**：admin-api 185 套件 **3051/3051**（基线 3036，+15）、acf-cli **121**（+9）、executor-desktop 自检 **11** 个全绿（+3）、admin-web build 绿（dist .br 84→0 / .gz 82，monaco 首屏守卫 5/5）、tsc/eslint 0。commit：NETOPT-1 = 6513754/f2ed090/012ed62/ec62263/d0e3ff8/85e0312/95b230c/82bc518；NETOPT-2 = ffed6cc/3ee5fda/5486510/cb5824c/5882a08/fcda92a。
+- **本轮（2026-09-19 → 净新优化批次 NETOPT-1/2，主控编排 + 2 路只读探查代理 + 2 路执行子代理，develop）**：用户指令「全方位探索优化的地方，多维度多角度，用 codegraph 快速推进了解状态，然后推进优化」。两路只读探查代理先对齐黑名单（optimization-notes 十三轮 / DEEP_REVIEW 145 条 / REVIEW_REMEDIATION_VERIFICATION 归档 / HANDOFF 快照）**只报净新**，共 **19 条（1 P1 / 3 P2 / 15 P3）**，全部带 file:line 证据与周边代码复核；其中 4 条溯源自 `docs/archive/reviews/round4-concurrency.md`「已记录但未进入 145 条处置清单」的漏网项。两路执行子代理足迹不相交并行落地（NETOPT-1 后端 admin-api 域 11 条 / NETOPT-2 边缘域 acf-cli+nginx+desktop+web 构建 8 条），**14 commit 全部在申报足迹内**（主控 `git diff --name-only` 审计零越界），**19/19 全部落地、全部带反证**。**主树复验**：admin-api 185 套件 **3051/3051**（基线 3036，+15）、acf-cli **121**（+9）、executor-desktop 自检 **11** 个全绿（+3）、admin-web build 绿（dist .br 84→0 / .gz 82，monaco 首屏守卫 5/5）、tsc/eslint 0。commit：NETOPT-1 = 6513754/f2ed090/012ed62/ec62263/d0e3ff8/85e0312/95b230c/82bc518；NETOPT-2 = ffed6cc/3ee5fda/5486510/cb5824c/5882a08/fcda92a。
   - **P1｜rolloutTick/probeDeployment fire-and-forget 无兜底 → 一次 DB 抖动整实例退出**（6513754，净新项里性价比最高）。`app-deployment.service.ts` 的 `void this.rolloutTick(...)`/`void this.probeDeployment(...)` 方法体此前零 try/catch，而 main.ts 的 `unhandledRejection` → gracefulFatalShutdown → exit(1)——灰度推进 tick 期间一次瞬时 DB 故障 = 单实例部署服务中断。修法：拆 wrapper+inner 加顶层兜底（记 error 不外抛、不改批次/行状态），tick 出错且批次在途则续排下一 tick，对齐 outbox-dispatcher「全程兜底绝不外抛」纪律。反证：catch 改 rethrow → 3 例全红。
   - **P2｜round4 漏网三连**（012ed62/ec62263/d0e3ff8）：① task_executions 日清理从单条无界 DELETE（峰值行长事务锁表、阻塞回调路径条件 UPDATE）改 `id IN (SELECT...LIMIT 5000)` 分批（照抄同文件 R-09 模式），audit 侧每批各自 bypass 事务；② `triggerDependentTasks` 收窄 `.select(id, dependencies)`——此前每次 SUCCESS 回调都全实体扫 tasks 表（glueSource/runbook/secrets 密文全部物化后丢弃）；③ handleCallback 循环内逐条 task 点查改批前 `In()` 建 Map；④ getSummary 聚合加 30 天时间界 + getTodayReport 并发首访 23505 兜底重读。
   - **P2｜acf-cli 两条「假绿」退出码通道关闭**（ffed6cc）：`task trigger --wait` 轮询超时此前静默 exit 0（>10min 长任务必触发，CI 里 `acf task trigger --wait && deploy` 假绿）→ exitCode=1 + `--wait-timeout` 选项；`exec tail` SSE 断流（未收 done 帧）此前同样 exit 0 → `sawDone` 判据 + 断流 exitCode=1。
@@ -392,7 +392,7 @@
   - **DSK-01 done**：desktop-macos-bundle workflow_dispatch 实测绿（dmg/zip × x64+arm64）；两处次生修复=package.json homepage（linux/deb 元数据必需）+ dist 调用 `--publish never`（repository 字段触发默认 GitHub publisher 缺 GH_TOKEN）。
   - **遗留（如实，非本批任务面）**：desktop-e2e-smoke 仍红——electron 在 windows runner「Process failed to launch」3/3，v1.2.0 起文档化的既有现象（PR-only 非门禁），疑显示层/Playwright 形态问题，独立于本批改动，留 QA-12 CI 形态专项。
   - **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d、desktop Linux 更新链签名。
-- **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/DEVELOPMENT-PLAN-2026-09H2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（销账台账用）**
+- **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读；含 2026-09-08 起的「H2 新任务段」41 任务点 + 「迁移时间戳分配表」常设段）；长期计划：`docs/archive/plans/development-plan-2026-09h2.md`（H2 版，2026-09-08 建账）；上期计划：`docs/archive/plans/development-plan-2026-09.md`（销账台账用）**
 - **本轮（2026-09-14 UI-17 执行器列表双徽标，主会话）**：EXE-VER-1/ARCH-32 配套 UI 收口（handoff 上轮建议③①两小件同批，子代理第 3 次 reasoning-level-missing 全量直落）。① **admin-api 读面**：findAll 逐行投影 `versionCompliant`（isVersionCompliant(executorVersion, EXECUTOR_MIN_VERSION) 派生值不落库；门禁关/未上报版本恒 true）——中心端下限是配置、执行器版本在行上，合规态是两者的派生，读面计算最简且零迁移；② **admin-web**：ExecutorListPage status 列追加两枚条件 Tag——pull 执行器紫色「Pull 回连」（默认 push 不渲染防噪，U16 死信同款纪律）+ versionCompliant===false 火橙色「版本过低」（tooltip 提示升级、不引用具体下限值——minVersion 未从接口下发，避免再扩契约）；zh/en 各 4 key；api/executors.ts Executor 接口补两可选字段（旧快照兼容）；③ **测试**：admin-api +2（findAll 投影矩阵）= **2498/2498** · admin-web 新 executor-list-badges +3（pull 渲染/缺省不渲染、合规两态、双 Tag 并存）= **662/662** + tsc -b 0 错 + lint 0 error（27 warnings 全存量，stash 对照确认）。**基线**：admin-api 2498 · admin-web 662 · executor-node 279 · executor-python 253 · develop 领先 origin 6 commit（待 push）。**下轮建议**：① push 时机由用户定（本批 6 commit 含 ARCH-32/EXE-VER-1/DEP-HA-1/UI-17 四任务）；② 生产真机项不变（QA-05 24h、BUG-07、DSK-01）；③ 可选拓展：批量操作条对 pull 执行器禁用 reload-config 类入站推送（当前对其静默失败可接受，产品级优化）。
 - **本轮（2026-09-13 ARCH-32 执行器 pull 模式派发（NAT 回连），主会话）**。背景：部署成熟度评估第 5 项（跨 NAT 执行器不可达）经用户确认「多层 NAT 场景存在」后转正立项。裁定 ADR-015：**长轮询拉取**（弃 WebSocket 反连——与 DEP-HA-1 多副本轮询冲突需 sticky/实例注册表；长轮询每请求独立、任意副本可应答、复用既有出站通道）。
   - **核心形态**：执行器 `EXECUTOR_PULL_MODE=true` 注册自报 `dispatchMode=pull`（迁移 1790000000019 默认 push 零影响）；调度侧全部既有选择语义不变（pinning/appName/group/tags/亲和/loadScore/原子占坑），仅传输层分支——占坑成功后 LPUSH 派发载荷（含 traceparent/pushedAt）到 Redis `acf:pull:{executorId}`；执行器空闲槽位时长轮询 `POST /executors/pull`（服务端 500ms 间隔 RPOP、waitMs 钳位 ≤55s、per-executor token 鉴权）取件走既有 acceptExecution/回调链。never-pulled 兜底=载荷 TTL 丢弃 + 既有 stale sweep，零新增后台任务；广播逐台入队；长轮询任意 admin 副本可应答（与 DEP-HA-1 天然兼容）。
@@ -466,7 +466,7 @@
   - **WIKI-OPT-4 MCP unwrap 收紧（9d0278d）**：判据收紧为「data 键 + code 为数值」（对齐 ResponseInterceptor），消除业务实体 data+message 被误解包截断的已知边界；mcp-server 105→108。
   - **验证与更正**：主控复跑 admin-api 2373/2373（148 套件，基线 2292 只增）+ tsc 0 错、mcp-server 108/108；子代理报告的 mcp tools.ts TS2589 经复验为**本地 node_modules 漂移伪红**（CI 同 lockfile typecheck 绿、本机 npm ci 后绿），仓库零缺陷。
   - **遗留（如实）**：① health.controller /health 的 Swagger example 缺 tasks 项——openapi.json 由需真实 PG/Redis 的 e2e 用例生成，本机无 docker/无栈，强改源会触发 api-types-drift 红，偏差已在 atlas health.md 注记（有栈环境跑一次 `npm run swagger:export` 即收敛）；② acf-cli client.ts 仍为宽松信封启发式（与 mcp 新判据并存，fixtures 描述已对齐）；③ wiki 中更大件扩展方向未在本批立项：访问令牌撤销黑名单/会话版本（page-16）、S3 日志对象与 DB 行保留策略对齐（page-47）、executor push-result 专用守卫（page-29）、OpenTelemetry（OBS-01 既有）。
-- **此前（2026-09-12 第十三轮：多实例一致性收口 + AUTH-02 项目级角色 + 三处真实缺陷，主会话）**——完整小结见 `docs/PROGRESS-round13-2026-09-12.md`：
+- **此前（2026-09-12 第十三轮：多实例一致性收口 + AUTH-02 项目级角色 + 三处真实缺陷，主会话）**——完整小结见 `docs/archive/progress/progress-round13-2026-09-12.md`：
   - **ARCH-31 多实例一致性（矩阵第 5 项 🔴→🟡，代码完成 + 真机验证）**：灰度批次四条破坏路径逐条闭合——① **心跳 hydration**（非属主实例从 DB 行痕迹重建只读上下文，心跳不再被静默丢弃；无痕迹行零额外 DB 往返）② **失败 claim**（条件 UPDATE 认领在途行，只有赢家自动回滚）③ **并发批次互斥**（canary 启动前查在途灰度行 → `ok:false` + `blockedReason` 含持有者实例）④ **活性租约**（tick 刷新 `leasedAt/leasedBy`，重启 sweep 跳过租约新鲜 60s 的行——滚动重启不再误杀另一实例的灰度）。**新真机套件** `scripts/arch31-multi-instance-selftest.mjs`（`npm run test:arch31-multi-instance`）：两个真实 admin-api 进程共享同一 PG16+Redis7（空库迁移链真跑）**15/15 通过**——核心断言「A 保存渠道配置 → 刷新前 B 仍是默认值（实证改造前多实例必然失效）→ 一个读穿周期后 B 读到 A 的值」，静默跨实例 + 调度 Leader 恰一持有者同验。
   - **AUTH-02 项目级角色 done（ADR-013）**：`project_members`（迁移 1790000000015，(projectId,userId) 唯一、FK 级联、**不回填任何成员行**）+ 三档角色 viewer/editor/admin（全局 ADMIN 恒全量放行）+ 端点 `GET/POST/PATCH/DELETE /projects/:id/members` 与 `GET /projects/me/roles`（成员管理保持 ADMIN-only，避免嵌套提权链）。**只增放行不收紧**：写面 = NF-03 属主守卫 **或** 项目 ≥editor（无主存量行可由项目成员接管）；执行类写面（trigger/pause/resume 含批量）透传主体并按 **viewer 拒绝**（NF-03 遗留归属闭合）；ProjectAccessService 缺席/API-Key 主体整体旁路、查询抖动 fail-open + warn。**保留缺口**：非成员仍可 trigger（既有宽松语义，收紧属破坏性变更，ADR-013 待产品拍板）。
   - **BUG-17 nginx SSE 长流验证 done**：`scripts/nginx-sse-selftest.mjs`（`npm run test:nginx-sse`）用 `infra/nginx/default.conf` **原件**起真实 nginx 容器 + **自带探针执行器**（接受派发不回报 + 周期心跳）把执行钉在 RUNNING，**19/19 通过**——流式契约（首帧不迟滞 = 缓冲关闭的行为证据）、专用位置长流不断连 + 保活帧 ≤45s、事件穿透（回调 → 终态 winner → 领域事件 → executions/stream 帧经 nginx 到达 + 日志流 `[DONE]` 收尾）、三条 SSE 并发、长流期间普通请求 <5s、RSS 受控。24h 档（`NGINX_SOAK_SECONDS=86400`）留目标环境作为上线门禁。
@@ -479,7 +479,7 @@
   - **基线与状态**：admin-web 651/651 · e2e-full 44/44 · executor-python 247/247 · 其余基线同第十一轮（admin-api 2263/mcp 100/node-sdk 63/py-sdk 111/registry-pypi 68/executor-node 273/acf-cli 89 · desktop e2e 3/3）。
   - **下轮建议**：① **UI-10 第三阶段**（全站剩余约 52 文件/5000+ 硬编码中文：form 密集页 ApplicationList/TaskForm/ExecutionDetail/TaskDetail/ApplicationDetail、执行器详情/安装/包、settings 三 Tab/通知/审计/用户、Registry/CommandPalette 及公共组件——按「每批多页+全量验证」持续推进，越晚越贵）；② **AUTH-02**（C 类项目级角色细化，需产品拍板角色模型）；③ **QA-05 四档容量目标 + 服务端水位**（生产形态，留部署轮）；④ **BUG-07/DSK-01/P0-2 生产留验项**（B 类需特定环境）；⑤ **AUTH-04**（OIDC SSO 可选）。
 - **上轮（2026-09-11 第十一轮：P0-2/DSK-05/DOC-08/UI-10 四连闭环，主会话）**：
-  - **P0-2 done（5e58c12）**：DEP-04 审批正向闭环——e2e 新增用例 36（第二人 approve → 201+approved+actedByName 记录 → 30s 内部署行离开 pending 进入 push 链），补上旧 30~35 全失败路径的正向锚；full e2e **44/44 绿**；VERIFY 文档 docs/VERIFY-round11-DEP04-approval.md。
+  - **P0-2 done（5e58c12）**：DEP-04 审批正向闭环——e2e 新增用例 36（第二人 approve → 201+approved+actedByName 记录 → 30s 内部署行离开 pending 进入 push 链），补上旧 30~35 全失败路径的正向锚；full e2e **44/44 绿**；VERIFY 文档 docs/archive/verifies/verify-round11-dep04-approval.md。
   - **DOC-08 done（f1a4b67）**：windows-findings 长尾逐项终态核对（文档追加清偿段）——W-03/W-05 测试平台化本机复核 executor-python 247/247 0 skip、executor-node 273/273；W-08 requirements-dev.txt 实证；W-09B loop 噪音 QA-11 已修；W-07/12/13/20/22/24~26/27/28 均 P-批修复在位。**留产品决策 2 项（非缺陷）**：W-10（GBK 解码体验级）、W-06（flaky 观察，复跑全绿）。
   - **DSK-05 done（335748f）**：ARM64 镜像矩阵本机核验——装 buildx 0.17.1 + QEMU binfmt（qemu-aarch64），docker-container builder（--platform linux/amd64,linux/arm64）下 admin-api / executor-node / executor-python **三镜像双架构构建全部通过**（CI docker-multiarch-build 同款形态）；Dockerfile 全 alpine/slim 无 native 依赖；非 root adduser 与 uv venv 探针 arm64 路径实际执行。deployment.md 补核验记录。ARM 真机运行冒烟留部署轮。
   - **UI-10 第一阶段 done（e853ef6，claimed 持续）**：i18n 基础设施（i18next@23+react-i18next@15；src/i18n/index.ts 单一实例，lng=localStorage 显式切换>默认 zh——产品基线一致性，测试环境 navigator=en-US 不误切；fallback zh 防裸 key）+ src/locales/{zh,en}.ts 双语字典 + **LoginPage 全量示范页迁移**（文案/aria/校验消息全走 key）+ i18n 专项测试 5 例（key 集合一致防漏翻/默认 zh/切换/setLanguage 生效/fallback）。admin-web **651/651** + tsc/build/lint 0 error。**剩余**：19 页约 63+ 硬编码中文逐页迁移（越晚越贵）。
@@ -556,7 +556,7 @@
 
 - **本轮（2026-09-08 H2 计划建账，主会话）**：
   - 盘点确认 DEP-04 前端（374bbe8）与销账（403b0ad）已全部入库，工作区干净，九套件基线 2037/480/266/222/74/84/61/110/68 有效。
-  - 新建 `docs/DEVELOPMENT-PLAN-2026-09H2.md`：P0 清偿 4 项（QA-09 收尾/DEP-04 真机/docs-site host/safeStorage 拍板）+ 遗留 bug 池 7 项 + 功能补漏 FEAT-13~20 + 新功能 NF-01~08 + 架构 ARCH-28~31 + UI-15~16 + QA-11~12 + SEC-10 + DOC-07~09，共 41 个新任务点全部注册入 PLAN-CLAIMS「H2 新任务段」。
+  - 新建 `docs/archive/plans/development-plan-2026-09h2.md`：P0 清偿 4 项（QA-09 收尾/DEP-04 真机/docs-site host/safeStorage 拍板）+ 遗留 bug 池 7 项 + 功能补漏 FEAT-13~20 + 新功能 NF-01~08 + 架构 ARCH-28~31 + UI-15~16 + QA-11~12 + SEC-10 + DOC-07~09，共 41 个新任务点全部注册入 PLAN-CLAIMS「H2 新任务段」。
   - 里程碑建议：轮 17 清偿速通 → 18 发布+生态（ECO-04 v1.1.0，需用户配 NPM_TOKEN/PYPI_API_TOKEN secrets）→ 19 部署域收口（outbox/KILLED 事件）→ 20 安全纵深（safeStorage/审计防篡改）→ 21 压测容量 → 22 架构二期 → 23 平台扩展 → 24 体验三期 → 25 隔离预研（AUTH-01 拍板）→ 26 i18n。
 
 - **本轮（2026-09-08 win 侧接棒首轮，接手会话）**：
@@ -567,7 +567,7 @@
   - 交接更正：executor-python unraisable 修复已由 win 侧 86bf0ef 实施（跨会话记忆中"已定位未实施"过期）。
   - 真机轮留验：双人账号第二人规则全链（提交者被禁用审批+他人放行后真机派发）；单管理员团队开启审批后只能 cancel 自撤（文档已写明）。
 - 上一轮（2026-09-08 第十六轮·批 subagent-T 终验收）：- 最新提交：见 `git log -1`
-- **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/DEVELOPMENT-PLAN-2026-09.md`（105 任务分级排期）**
+- **任务认领板：`docs/PLAN-CLAIMS.md`（多会话并行认领唯一事实源，开工前必读）；中期计划：`docs/archive/plans/development-plan-2026-09.md`（105 任务分级排期）**
 - 本轮（2026-09-08 第十六轮·批 subagent-T 终验收，主会话）：
   - `e9bddce` **AUTH-05 交接项（001）单台高危二次确认 done**：ExecutorDetailPage 轮换改受控 Modal（Alert 警示+Descriptions 影响清单+reason 可选 TextArea ≤200 超限拦截）；新增删除执行器入口同形态；reason 链路与 admin-api 契约逐字对齐（空 reason 不发 body）；+10 例。
   - `409d9f3` **QA-03（001）两阶段整体 done（+94 例，297→472）**：第二阶段四页深交互 38 例——TaskList（筛选组合/批量触发暂停/克隆链路 -copy-XXXX 命名）、ApplicationDetail（回滚三重门控/同步任务门控）、Registry（上传拦截/npm Tab/空态兜底）、ApiKeys（scope 三级/payload 精确/吊销门控——吊销失败无 onError 如实断言未虚报）。
@@ -705,7 +705,7 @@
   - `0409000` **FEAT-03**：孤儿组件 ExecutionCompare（零引用）拆出 ExecutionCompareModal 接回 ExecutionsPage 多选对比；admin-web 93/93
   - 复核销账：**BUG-02**（sweep 重试预算第十四轮已实现+测试）；**BUG-01/N51**（401 重签重试 R11 已实现，收口改进在 executor.controller.ts 被并行会话占用→blocked，且该重试路径无专项测试）
   - `3caabb4` **BUG-05**：SSE 活跃流 gauge（autoflow_sse_streams_active/limit）——runtime-gauges 模块级注册表+task.service 占用/释放两点埋点+prom 绝对值渲染；observability README 字典补录 4 runtime counter+2 gauge（此前后台字典滞后）；admin-api **1179/1179** + lint 0
-  - 批五~批七（01:04-02:00，main-A 持续推进）：`SEC-01 复审四项`（BUG-13 CLI 401 刷新自愈+refreshToken 入库 / BUG-14 MCP AUTOCODEFLOW_API_REFRESH_TOKEN 长驻自愈 / BUG-15 SDK 契约对称性 / BUG-16+12 复审）→ docs/SEC-01-复审报告.md，新发现 desktop token 明文落盘→SEC-NEW-1；`BUG-06` S3 回退指针语义（replace STALE 指针/append 孤儿行，storeLogLines 全量并入+指针收回）；`FEAT-02` 依赖 DAG 可视化（dag-layout 纯函数+TaskDependencyGraph+详情页 Tab）；`CORE-01` 优先级 UI 化（双形态契约 utils/priority）；`ECO-02` acf exec tail（SSE）+ task lint；`DOC-04` ADR-001~010；`FEAT-12` pypi 索引页增强；`BUG-10` 失败分类细化四端联动（git_fetch/dependency_install/runtime_missing）。基线：admin-api 1218 · executor-node 240 · executor-python 206 · autoflow-sdk 100 · acf-cli 66 · mcp-server 46 · registry-pypi 52 · admin-web 118。⚠️ 流程事故复盘：共享 index 暂存碰撞（dc82ac7 顺带带走 main-A 已暂存的 ECO-02 文件，无内容丢失）——**add 后立即 commit，禁长时暂存**。
+  - 批五~批七（01:04-02:00，main-A 持续推进）：`SEC-01 复审四项`（BUG-13 CLI 401 刷新自愈+refreshToken 入库 / BUG-14 MCP AUTOCODEFLOW_API_REFRESH_TOKEN 长驻自愈 / BUG-15 SDK 契约对称性 / BUG-16+12 复审）→ docs/archive/audits/sec-01-review-report.md，新发现 desktop token 明文落盘→SEC-NEW-1；`BUG-06` S3 回退指针语义（replace STALE 指针/append 孤儿行，storeLogLines 全量并入+指针收回）；`FEAT-02` 依赖 DAG 可视化（dag-layout 纯函数+TaskDependencyGraph+详情页 Tab）；`CORE-01` 优先级 UI 化（双形态契约 utils/priority）；`ECO-02` acf exec tail（SSE）+ task lint；`DOC-04` ADR-001~010；`FEAT-12` pypi 索引页增强；`BUG-10` 失败分类细化四端联动（git_fetch/dependency_install/runtime_missing）。基线：admin-api 1218 · executor-node 240 · executor-python 206 · autoflow-sdk 100 · acf-cli 66 · mcp-server 46 · registry-pypi 52 · admin-web 118。⚠️ 流程事故复盘：共享 index 暂存碰撞（dc82ac7 顺带带走 main-A 已暂存的 ECO-02 文件，无内容丢失）——**add 后立即 commit，禁长时暂存**。
   - ⚠️ 并行会话在途（勿动）：W1 通知设置页/W2 API 半场/应用三页面+MainLayout/logout.test/app-deployment-race.test.tsx（该文件 tsc 在途报错，全量 build 被其阻塞）
 - 测试基线（全绿）：
   - admin-api **870/870** (jest, 53 suites) + eslint **0/0** + coverage 地板（68/58/56/69）
@@ -713,8 +713,8 @@
   - admin-web vitest **35/35** · Playwright E2E **29/29**（pinned 全链 4 例）
   - acf-cli **48** · mcp-server **52** · registry-pypi **33** · autocodeflow-node-sdk **43** · autocodeflow-notify **7**
   - 全端 tsc ✓ · admin-web build ✓ · `scripts/ci-local.sh` 本机等价 11 job 全绿
-- 本轮（2026-09-03 第八轮，A/B/C/D 四路 → W1/W2 修复 → V 真机 5/5 → W P1 击穿修复；详见 `docs/PROGRESS-round8-2026-09-03.md`、`docs/VERIFY-round8-e2e.md`）：
-- 本轮（2026-09-03 第六轮，A/B/C/D 四路并行 → audit triage → F1/F2/F3 三路修复 → V 真机验证 6/6 PASS；详见 `docs/PROGRESS-round6-2026-09-03.md`、`docs/VERIFY-round6-e2e.md`）：
+- 本轮（2026-09-03 第八轮，A/B/C/D 四路 → W1/W2 修复 → V 真机 5/5 → W P1 击穿修复；详见 `docs/archive/progress/progress-round8-2026-09-03.md`、`docs/archive/verifies/verify-round8-e2e.md`）：
+- 本轮（2026-09-03 第六轮，A/B/C/D 四路并行 → audit triage → F1/F2/F3 三路修复 → V 真机验证 6/6 PASS；详见 `docs/archive/progress/progress-round6-2026-09-03.md`、`docs/archive/verifies/verify-round6-e2e.md`）：
 - 本轮（2026-09-02 第三轮，4 并行 stream + 集成 + 文档验收，7 个 commit）：
   - `8bb3790` **调度器多实例（P0）**：Leader Election（`scheduler:leader` 锁 TTL 30s、TTL/2 续约校验、Redis 挂时 fail-open）+ `claimTaskTrigger` 条件 UPDATE 原子领取；recoverStaleExecutions 分批；TASK-007 依赖深度上限 64；TASK-008 SSE 并发上限（per-execution 4 / global 64，超限 503）；DB-001 task 软删除；DB-003 N+1 收敛
   - `7851ebd` **通知/AI/Webhook**：NOTIF-002 摘要脱敏截断；NOTIF-003 silences 上限 1000 + 定时清理；AI-002 `fallback` 标记（task 层响应已透传）；APP-001 webhook 失败统一 401；APP-002 缺 API_BASE_URL fail-fast；ARCH-003 上传走 `UploadApplicationDto`
@@ -723,14 +723,14 @@
   - `eadedca` **executor-node**：包下载携带 `Authorization: Bearer <共享token>`，跨主机重定向剥离 token
   - `295e3b1` **文档验收阶段发现的 2 个代码 bug 修复**：configuration.ts 补注册 `sse` 配置节（此前 `SSE_MAX_STREAMS_*` env 覆盖是死代码，task.service.ts 读不到）+ CreateExecutorPackageDto 删除必填 `filePath`/`fileSize`（服务端从上传文件推导，真实 multipart 请求被全局 ValidationPipe 400 拒绝）
   - 新增环境变量：`CORS_ALLOWED_ORIGINS`、`THROTTLE_LIMIT`/`THROTTLE_TTL`、`REDIS_TLS`/`REDIS_TLS_REJECT_UNAUTHORIZED`、`DB_SYNCHRONIZE`、`LOG_RETENTION_DAYS`、`SSE_MAX_STREAMS_PER_EXECUTION`/`SSE_MAX_STREAMS_GLOBAL`（自 `295e3b1` 起真正生效）；`API_BASE_URL` 上传包时必需
-- 本轮（2026-09-02 第四轮，全新对抗性排查：4 路只读 audit → 负责人 triage → 7 路 fix，5 个代码 commit；详见 `docs/PROGRESS-round4-2026-09-02.md` 与 `docs/review_round4_*.md`）：
+- 本轮（2026-09-02 第四轮，全新对抗性排查：4 路只读 audit → 负责人 triage → 7 路 fix，5 个代码 commit；详见 `docs/archive/progress/progress-round4-2026-09-02.md` 与 `docs/review_round4_*.md`）：
   - `d2613d6` **调度/任务链 2P0+2P1**：触发去重锁被 watchdog 无限续期致每任务只触发一次（acquireLock 新增 renew 选项，trigger 锁 renew:false）；依赖任务链死代码（worker 永不写 SUCCESS）迁入 handleCallback 赢家路径；多页日志回填丢页（storeLogLines append 语义）；COVER_EARLY 盲写改条件 UPDATE
   - `b0aa67f` **安全 2P1+6P2**：RolesGuard 全局注册 + config 写端点/共享 token/executor-package 收紧 @Roles(ADMIN)（@Public 机器端点用空 @Roles() 覆盖）；heartbeat/register 列注入白名单（原 Object.assign 可覆写 tokenHash 成持久后门）；SSRF 层新增 assertSafeExecutorUrl 接入 dispatch/broadcast/reload/push + 3 通知渠道；登录枚举时序拉平；callback 限流 + token 校验 60s 缓存；trust proxy 改 `TRUST_PROXY=true` 才启用；SSE 仅 /logs/stream 路径接受 `?access_token=`；config/history 与 audit 筛选 QueryDto（修恒 400）
   - `f792e10` **executor-python 1P0+1P1+12 项**：shell entrypoint 注入（白名单+位置参数，对齐 node 6062bee）；日志 10MB/64MB 上限；回调重试退避；git 缓存 hash 盐；REQUIRE_TOKEN fail-closed 等
   - `f0f61e5` **executor-node 5P1+8 项**：callback ≤100 分片 + dead-letter 毒文件终态；部署子进程 env 白名单（共享 token 不再透传给被管应用）；NODE_PATH 修 requirements 不可解析；BoundedLogBuffer；TTL 磁盘回收；共享下载器（Bearer+deadline+防穿越）；spawnSync→async；进程组 kill
   - `75c8d2b` **客户端契约 2P0+7P1**：CLI login accessToken（原字段名错致 CLI 全 401）；应用编辑不发 name；安装向导走 install-cmd（后端删坏 curlCmd）；包下载带 auth fetch；AI 分析字段对齐；SSE 参数名；trigger executorId 移除
   - 新增环境变量：`TRUST_PROXY`（默认 false——**nginx 后部署必须设 true**，否则限流键/审计 IP 全变代理 IP）、`EXECUTOR_ALLOW_PRIVATE_NETWORK`（默认 false：executor 出站放行私网段但拒 loopback/元数据；**同机 127.0.0.1 executor 部署必须设 true**）
-- 本轮（2026-09-02 第五轮，收尾 + **首次真机验证**：4 代码流 + V/W1/W2/V2，7 个代码 commit；详见 `docs/PROGRESS-round5-2026-09-02.md`、`docs/VERIFY-round5-e2e.md`、`docs/VERIFY-round5v2-n2.md`）：
+- 本轮（2026-09-02 第五轮，收尾 + **首次真机验证**：4 代码流 + V/W1/W2/V2，7 个代码 commit；详见 `docs/archive/progress/progress-round5-2026-09-02.md`、`docs/archive/verifies/verify-round5-e2e.md`、`docs/archive/verifies/verify-round5v2-n2.md`）：
   - `0a7ebcb` 依赖扇出 10s DB claim（双上游并发只触发一次）+ checkDependencies take 兜底；storeLogLines DB 路径事务化；**可观测性**：SchedulerMetricsService（tick/claimed/skipped/failed 进程内计数）+ BullMQ 队列深度 + `GET /metrics/scheduler`（零新依赖）
   - `1864597` executor-node flake 元凶坐实：file-logger spec 用 UTC 日期而生产按本地时区（超前时区机器每天 8 小时确定性失败）；4 spec 确定性化，5 连跑全绿 + 5 种 TZ 交叉
   - `51469d6` audit 两端点收紧 ADMIN；删除孤儿 install-token 端点；admin-web 角色门控（role 唯一来源 `GET /auth/profile`——登录响应无 user 字段；RequireAdmin 路由守卫 + 菜单隐藏 + settings 写禁用）
@@ -738,7 +738,7 @@
   - `2642293` **真机发现 N2(P0) 修复**：PG enum 列运行时返回字符串 label（'normal'），原样传 BullMQ 致**所有调度入队 100% 失败**（单测全 mock queue 故从未暴露）——normalizeTaskPriority 入队边界归一化；N3 readyClient 消 ~15s 假 Leader；N4 register 幂等（同 address+startupId 不再轮换 token）；N5 stale cutoff 动态化；N6 去重锁 TTL 按触发周期（修 15s 任务被压成 300s）
   - `d2be430` **真机发现 N1(P1) 修复**：全新 DB 迁移链 3 处断裂（app_deployments 无建表、version 列撞名、rename 时序）幂等化 + CreateAppDeploymentsTable 补偿迁移 + migrations.spec describe 守卫（修 typeorm CLI 崩）；docker postgres 空库 24/24 + 存量续跑数据无损双验证
   - V 真机验证（`b2be111`）：Leader Election 双实例 80 execution 无重复、kill 后 35s 接管；LOG-11 S3 对象闭环；负载均衡精确 2+2——**三项全通过**；V2 复验 N2/N6/N3/N1 修复全部生效（96/96 success）
-- 本轮（2026-09-03 第六轮，详见 `docs/PROGRESS-round6-2026-09-03.md`、`docs/VERIFY-round6-e2e.md`）：
+- 本轮（2026-09-03 第六轮，详见 `docs/archive/progress/progress-round6-2026-09-03.md`、`docs/archive/verifies/verify-round6-e2e.md`）：
   - **N6 残留抖动修复**：fixed_rate 去重锁 TTL 改 `周期−500ms`（`TRIGGER_DEDUP_JITTER_BUFFER_MS`，claim 窗口同源）——真机复验 15s 任务 11 个 gap 全部 14.999–15.001s、零 30s 级 gap（修复前 15/30 混合）
   - **任务 API 契约**：CreateTaskDto.id UUID 校验（字符串 400/重复 409 含软删预检与 23505 兜底）；**executor pinning**（tasks.executorId 新列迁移 25 + dispatch pinned 分支：在线只派目标/离线 executor_offline/不存在 unknown；与 broadcast 互斥）——真机三语义 PASS
   - **install.sh 闭环**：`install-script.content.ts` 单一事实源 + `GET /executors/install.sh`（@Public text/plain）+ install-cmd 重建 curl|bash + N15 参数注入校验（六种注入 exit 1 零落盘）+ 逐字节漂移守卫
@@ -749,7 +749,7 @@
   - acf-cli 需随轮重新分发（executions 请求移除 limit + killed 终态）
   - mcp-server 需随轮重新分发（30s 超时 + 错误文案）
   - 迁移 25（tasks.executorId）为幂等 ADD COLUMN，例行窗口执行即可
-- 本轮（2026-09-03 第七轮，详见 `docs/PROGRESS-round7-2026-09-03.md`、`docs/VERIFY-round7-e2e.md`、`docs/VERIFY-round7v2-fixes.md`）：
+- 本轮（2026-09-03 第七轮，详见 `docs/archive/progress/progress-round7-2026-09-03.md`、`docs/archive/verifies/verify-round7-e2e.md`、`docs/archive/verifies/verify-round7v2-fixes.md`）：
   - **依赖/质量清偿**：四端 npm audit 官方源清偿（browserslist HIGH 等全消，executor-node qs 经 overrides 升级，admin-api 残留 3 moderate 属 minio 链上游未修）+ CI `npm-audit` job（--audit-level=high）；admin-api eslint **163→0/0**（tsconfig.eslint.json 修解析错误根因 + no-unused-vars 下划线约定固化）；coverageThreshold 地板化（68/58/56/69）恢复 CI coverage
   - **可观测性**：prom-client 15.1.3 落地 `GET /api/metrics`（8 条 autoflow_scheduler_* series + 进程默认指标，JwtAuthGuard 姿态同 /metrics/scheduler，`METRICS_PROMETHEUS_ENABLED` 开关）——真机 counters 单调增长验证
   - **RBAC 收尾**：admin-web /notifications RequireAdmin + settings AI Tab 非 admin 降级（组件测试先例建立）
@@ -761,20 +761,20 @@
   - **SSRF deny 扩大**：198.18.0.0/15、100.64.0.0/10 段通知外发/executor 出站均被拒（TUN/CGNAT 环境 executor 部署注意）
   - install.sh 不再尝试远程下载 artifact（明确失败语义），目标机安装需 executor-packages 通道或项目 checkout
   - acf-cli/mcp-server 需随轮重新分发（--executor 选项 / update_task 工具）
-- 本轮（2026-09-03 第八轮，详见 `docs/PROGRESS-round8-2026-09-03.md`、`docs/VERIFY-round8-e2e.md`）：
+- 本轮（2026-09-03 第八轮，详见 `docs/archive/progress/progress-round8-2026-09-03.md`、`docs/archive/verifies/verify-round8-e2e.md`）：
   - **per-execution 回调 token（N23 根治）**：`v1.<execId>.<exp>.<hmac>` 域分离 HMAC（key=HMAC(secret,固定域)），TTL=timeout+900s；executor-node 注入 AUTOFLOW_CALLBACK_TOKEN/AUTOFLOW_ADMIN_API_URL/AUTOFLOW_EXECUTOR_ADDRESS（extra 通道，SEC-01 白名单不动）；admin `v1.` 分支验证（候选 secret + per-executor tokenHash 回退 + executionId 逐 item 绑定，fail-closed）；node-sdk fromEnv 自动启用；双端 spec 钉死同一测试向量防算法漂移
   - **install.sh artifact 通道**：`GET /executors/artifact/executor-node.tar.gz`（共享 token fail-closed）+ bundle 脚本——真机从 artifact 装出执行器注册 online；`scripts/ci-local.sh` 13 job 本机等价（push 无凭证期间验收通道）；registry-npm verdaccio healthcheck 修复（localhost→127.0.0.1 恒 unhealthy bug）+ 加固 + README
   - **Playwright E2E 25/25**：新增 9 例（角色门控/AI Tab 降级零请求/四模式/executorId 残留服务端复核）；**抓到 P0**——TaskFormPage 分步渲染 validateFields 只回当前挂载字段，创建 UI 完全不可用 → getFieldsValue(true)+分步兜底，fixme 转正
   - **audit N25-N32**：N25(P1) `::ffff:` IPv4-mapped IPv6 绕过 SSRF 分类 → normalizeIpForClassification 归一（含 ::/96 与完整 IPv6 危险段）；N26 回调 token 密钥缺口（tokenHash 是 bcrypt → 改双端以 tokenHash 字符串为 HMAC key，register 回传+采纳+60s 缓存验签）；N27 SDK 自动补 executorAddress；N28 admin-web 模式清理 delete→显式 null；N29 通知 test 面真实 results；N30 registry-pypi 并发上传 os.link 原子防重；N31 /api/metrics 并发 render 串行化
   - **真机 P1 击穿修复（V 抓到）**：executor-node fetchToken 不拆信封 + Nest POST 201 误判 200 → token 恒 undefined → 心跳每 30s 旋转 token（9 分钟 14 次）→ 回调 token 稳态必 401。三层修复：fetchToken 拆信封/2xx 区间；admin issueToken 幂等（startupId 稳态永不轮换+内存缓存明文+legacy 60s 窗）；心跳响应回传 tokenHash 三点采纳
-- 本轮（2026-09-03 第九轮，A/B/C/D 四路 → V 真机 5/5 + audit N33-N36 → W 收尾修复；详见 `docs/PROGRESS-round9-2026-09-03.md`、`docs/VERIFY-round9-e2e.md`）：
+- 本轮（2026-09-03 第九轮，A/B/C/D 四路 → V 真机 5/5 + audit N33-N36 → W 收尾修复；详见 `docs/archive/progress/progress-round9-2026-09-03.md`、`docs/archive/verifies/verify-round9-e2e.md`）：
   - **python 侧 token 链对齐**：executor-python `_fetch_token` 三缺口（201 误判/未拆信封/缺 startupId）修复——动态 token 首次真正生效；register/heartbeat 采纳 tokenHash（三点不变量补齐）
   - **autoflow-sdk 回调能力**（node-sdk 对等）：from_env 读三变量（排除出 params）+ CallbackClient（enabled/disabled_reason）+ report_success/failure；executor-python 注入回调三变量（HMAC 移植，与 admin/node 三方同测试向量逐字节一致）
   - **回调 401 分类观测**：`autoflow_execution_callback_auth_total{result}` 七分类 series（controller 埋点 util 保持纯函数）
   - **webhook 配置面补全**（V2 遗留）：PATCH channels/webhook 合法 + config-first + URL query 脱敏 + 掩码回显守卫
   - **Playwright 29/29**：pinned 部署全链 4 例（在线/离线/不存在/全 UI 闭环）
   - **P1 修复（V 抓到）**：python register 用动态 token 打 bootstrap 端点 401（R9 修复揭开）→ 改静态 token + 状态码检查；**N33-N36**：issuedTokenCache 有界化（1000/24h）、artifact query token 风险标注、ci-local 差异声明
-- **里程碑（2026-09-05）**：**v1.0.1 三包发布完成**（npm `@autocodeflow/sdk` + `autocodeflow-mcp-server` 1.0.1、PyPI `autoflow-sdk` 1.0.1，双版本可回溯）；**develop→main 发版合并完成**（main 与 develop 树一致，两父 merge commit `bddac27`，main CI 全绿）；**Windows 深度测试任务书就绪**：`docs/WINDOWS-TESTING-PLAN.md`（R13 基线→R14 功能冒烟→R15 修复批→R16 desktop 打包，含 13 项已知平台风险点与问题回传模板——Win 机器拉取后按此推进）
+- **里程碑（2026-09-05）**：**v1.0.1 三包发布完成**（npm `@autocodeflow/sdk` + `autocodeflow-mcp-server` 1.0.1、PyPI `autoflow-sdk` 1.0.1，双版本可回溯）；**develop→main 发版合并完成**（main 与 develop 树一致，两父 merge commit `bddac27`，main CI 全绿）；**Windows 深度测试任务书就绪**：`docs/archive/plans/windows-testing-plan.md`（R13 基线→R14 功能冒烟→R15 修复批→R16 desktop 打包，含 13 项已知平台风险点与问题回传模板——Win 机器拉取后按此推进）
 - 本轮（2026-09-06 第十五轮，gh 凭证打通后首度 CI 真跑；员工 001/002/005/006 四波编排 + 主控亲修；存在并行会话同期协作，e0c30ef/1734958 为其产物）：
   - **CI 红灯清偿**：push 后首跑三红灯——e2e-full 根因为**实体↔迁移链漂移**（task_versions/config_history/execution_reports/executor_metrics_history 4 表 + applications.packageUrl/webhookSecret + executor_packages 4 列从未建过迁移，历史靠 DB_SYNCHRONIZE=true 掩盖，空库纯迁移链上任务创建直接 500——「mock 一切不等于能跑」第五轮教训再验证）；admin-api-test 败于 lint（spec 内 require()）；executor-node-test 败于 Linux 侧 kill 时序（assertion timing）。均已在 e0c30ef 修复，后续 run **24 job 全绿**（含 29 例 e2e）。
   - **部署链路加固**（6ed5b21，admin-api 1098→1123）：R4 spawnSync→spawnAsync（clone 120s 不再冻结全进程）；R5 在途部署部分唯一索引+23505→409（upgrade 保持 UPGRADING 防多实例滚动升级互撞）；R6 卡死扫描 createdAt→updatedAt；R8 push/stop 接入 assertSafeExecutorUrl；R9 包上传 diskStorage+流式哈希+rename 落位+下载 pipeline（500MB 不再驻留内存）；R16/R18。
@@ -801,7 +801,7 @@
   - **packages**：autocodeflow-http 变更方法默认不自动重试（`safe_methods_only`，U4）；autoflow-sdk 回调 enabled 仅要求 url+token + 双 SDK 信封拆包（U14）；acf-cli 补 exitCode/failureReason/runningExecutionIds（U11）；mcp-server 新增 get_executor_metrics + 描述如实（U12）。
   - 本轮遗留（下一轮候选）：sweep 对 worker 崩溃型 RUNNING 行 re-enqueue 重试语义（P2，需产品拍板）；python 回调落盘/死信（E2）、git/venv 并发锁（E6）、磁盘 TTL 回收（E8）；admin-web 截断日志走分页端点兜底（U2）；deadLetterCount 中台侧落库可见（U16）；python kill 端点响应体若与 node 契约有差异需真机核对。
   - 测试基线刷新：admin-api **1014**（57 套件）· executor-node **218** · executor-python **153** · admin-web **83** · acf-cli **53** · mcp-server **63** · node-sdk **49** · autoflow-sdk **100** · autocodeflow-http **18**。
-- **里程碑（2026-09-05 Windows 轮，R13-R16 全完成，Windows 侧接手主导）**：项目首个非 Linux 平台全验证（Win11 26200 / Node 24.17 / Python 3.12-uv / WSL2 mirrored 网络跑 PG16+Redis7）。findings **W-01~W-26**、生产修复 **P-1~P-20**（`docs/windows-findings.md`）：
+- **里程碑（2026-09-05 Windows 轮，R13-R16 全完成，Windows 侧接手主导）**：项目首个非 Linux 平台全验证（Win11 26200 / Node 24.17 / Python 3.12-uv / WSL2 mirrored 网络跑 PG16+Redis7）。findings **W-01~W-26**、生产修复 **P-1~P-20**（`docs/archive/reports/windows-findings.md`）：
   - **5 枚生产级缺陷修复**：executor-python `os.setsid/killpg` 全任务崩（P-1/2）；venv `bin/python` 布局（P-3）；`['python3']` 硬编码致 python glue 全挂——两处均为单测全 mock 未暴露、人工审查发现（P-3/4）；entrypoint `/xxx` 逃逸守卫绕过（P-5，安全）；shell glue 缺 glueLanguage fallback + win32 `.cmd` 化（P-11）；控制台 Ctrl 事件波及任务/后台 SIGBREAK 缺失/desktop stop() SIGTERM 失效（P-9/10/12，R-08 全景收口）
   - **R-01/R-03 治本**：`.gitattributes` 全仓 LF + renormalize（admin-api eslint 37078→0、install.sh 字节守卫转绿）；`killProcessTree` win32 升级为 `taskkill /T /F` 树杀（超时/取消/停止三链孙进程实测 0 残留）
   - **双平台绿灯基线**：executor-node 164/164（3 连跑稳）、executor-python **128/128 零 skip**、admin-api 887/887 + eslint 0/0（含 W-22 守卫 3 例与 W-21 requirements 11 例）、acf-cli 48、mcp-server 61、registry-pypi 33、admin-web 35 + e2e **16/16**（16 例版；W-12 闭环：29 例全量版已由 Linux 侧入库根级 `e2e-full.spec.js` + `playwright.e2e.config.js`，test#16 同步 W-13 修复）
@@ -813,7 +813,7 @@
   - **W-12 销账**（Linux 侧）：29 例根级 e2e 基线入库（`e2e-full.spec.js` + `playwright.e2e.config.js`）；Windows 首跑暴露登录节流级联 429 → 定位 **W-22/P-16**（`@Throttle` 装饰器求值期读 `process.env`，`.env` 文件对 `LOGIN_THROTTLE_LIMIT` 原为死配置，仅真实进程环境生效——容器部署从未暴露）→ main.ts 预载 `.env` + app.module 动态 import 修复；修复后 Windows 纯 `.env` 栈 **29/29** 全绿
   - **W-21 requirements 端到端接通**（产品决策：接通）：admin-api 实体 jsonb 列（幂等迁移）+ DTO 结构校验 + normalize（trim/拒 option 形 `-` 前缀）+ version snapshot 收录 + dispatch 透传零改动（manifest `as any` 路径现真实落库）；admin-web 任务表单 Select tags（逗号不切分，pip spec 合法含逗号）+ 空集显式 null（N28 PATCH 语义）+ 详情页展示；sdk-guide 补字段行。基线刷新：**admin-api 884 · admin-web 40 · e2e 29/29**，CI run 33947112177 **22/22 全绿**
   - **Windows 侧续推（同日，Windows agent）**：① W-21 补遗——`syncTasksFromManifest` 回归两例（requirements 透传进 create 载荷 + 'already exists' 隔离），manifest→任务链路自此有守（aa9429f）；② **W-18 永久闭环**——CI 新增 `desktop-bundle-drift` 守卫（离线重打 ncc bundle + git diff，产物与源码不同步即红；ncc 0.44 字节确定性/禁网可跑已在 Windows 侧预验证，首跑即绿，37a5de3）；③ **W-28：Windows 全栈 e2e 接入 CI**（方案 A：仅 PR/workflow_dispatch 触发，不占 develop push）——复用同一 `e2e-full.sh` 编排（参数化 WORK_DIR 至 C:/tmp，node 盘符解析），PG 用 runner 预装服务（postgres/root）、redis 用 redis-windows portable zip，见 findings W-28；④ 修正本人一处状态误判（"W-12 未推"实为已在共享历史，见 findings W-28 状态澄清）。CI 现状：develop push 24/24（含守卫），PR/dispatch 另加 windows e2e（首跑已验证 success，298s，run 33967431348）
-- 本轮（2026-09-04 第十轮，A/B/C/D 四路 → W 收尾 N37-N42；详见 `docs/PROGRESS-round10-2026-09-04.md`）：
+- 本轮（2026-09-04 第十轮，A/B/C/D 四路 → W 收尾 N37-N42；详见 `docs/archive/progress/progress-round10-2026-09-04.md`）：
   - **可观测性**：docs/observability/（Grafana dashboard 11 panels + 6 条告警规则 + README 抓取配置/指标字典，series 与源码逐字核对零偏差）
   - **SDK 发布管道**（路线图 #10 收尾）：release.yml（tag 触发 + version-guard 四处版本一致性 + npm/PyPI 发布 + environment: release 审批门）；双 SDK README + sdk-guide 矩阵；修掉 autoflow-sdk 未声明 pydantic 依赖的发布级 bug
   - **旋转 token 即时对齐**：窗口评估实为最坏 30min（60s 缓存掷硬币 + 离线级联）→ executor-node 401 自愈（forceTokenRefresh + 单次重试，窗口收敛到一次往返）+ admin rotateToken 播种 issuedTokenCache（UI 展示的 token 即执行器采纳的 token，零二次轮换）
@@ -862,7 +862,7 @@ cd packages/mcp-server && npx tsc --noEmit
 
 1. 小步提交：一个方向一批改动，先补测试再改实现，提交前跑该子项目验证命令。
 2. 每次提交信息用中文 conventional commits（feat/fix/docs/chore/refactor/test）。
-3. 功能落地后同步更新 `docs/api-reference.md` 与 `docs/optimization-notes.md` 的状态标记。
+3. 功能落地后同步更新 `docs/api-reference.md` 与 `docs/archive/reports/optimization-notes.md` 的状态标记。
 4. 会话结束前更新本文件「状态快照」并提交。
 
 ## 长期路线图状态

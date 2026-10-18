@@ -5,7 +5,7 @@
 > agent-and-deployment P0–P7e + Linux GUI S1/S2/S3 全落。
 > 基线数字：admin-api 3790 测试（覆盖率 87.6/76.4/80.6/88.6，地板 84/75/78/85）·
 > desktop test:main 35 套 · admin-web vitest 1265 · release 链 v1.5.0 打通。
-> **认领事实源仍为 [PLAN-CLAIMS.md](./PLAN-CLAIMS.md)**；本表 §2 注册本期新任务，
+> **认领事实源仍为 [PLAN-CLAIMS.md](PLAN-CLAIMS.md)**；本表 §2 注册本期新任务，
 > 认领纪律不变（claimed→in_progress→done + 足迹独占）。
 
 ---
@@ -23,7 +23,7 @@ H2 计划（2026-09-08 建账）的任务池已全部清偿。本期不是"清�
 
 | 项 | 触达条件 | 动作 |
 |---|---|---|
-| Xorg 会话生态复跑 | 目标机登录「Ubuntu on Xorg」 | 复跑 `scripts/gui-x11-s2-verify.mjs` + 负向脚本，补 [VERIFY-2026-09-27-gui-x11.md](./VERIFY-2026-09-27-gui-x11.md) §5 滚动项 |
+| Xorg 会话生态复跑 | 目标机登录「Ubuntu on Xorg」 | 复跑 `scripts/gui-x11-s2-verify.mjs` + 负向脚本，补 [VERIFY-2026-09-27-gui-x11.md](archive/verifies/verify-2026-09-27-gui-x11.md) §5 滚动项 |
 | 跨机拓扑留验 | 第二台机器/云主机 | ARCH-MULTI-INSTANCE-MATRIX 跨机清单（AGNET/DB/Redis 分离部署） |
 | BUG-04 minio 上游 | **复查日 2026-10-01 临近** | 复查 GHSA patched_versions 是否实际发版；未发则续期豁免归档 |
 | P7d 后半端到端 | DashScope 账号+配额 | SOP→Agent 造包→DEP-04 审批→拉包部署→中台验收真闭环（06-roadmap §9.6 残差） |

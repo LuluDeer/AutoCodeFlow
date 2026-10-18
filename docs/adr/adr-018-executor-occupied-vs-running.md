@@ -17,7 +17,7 @@ RPA5 执行器在中台详情页长期恒显：
 
 这不是计数泄漏，也不是漏减，而是 **E-01 防超卖机制的固有上报口径缺口**：
 
-1. **E-01**（`docs/DEEP_REVIEW_0ef3bbe.md` §E-01，修于 `44d6a2b`）要求 pull 循环在发起 25s 长轮询**之前**先原子预留一个容量槽位，并让预留计入**同一个并发账本**：
+1. **E-01**（`docs/archive/reviews/deep-review-0ef3bbe.md` §E-01，修于 `44d6a2b`）要求 pull 循环在发起 25s 长轮询**之前**先原子预留一个容量槽位，并让预留计入**同一个并发账本**：
    - executor-node `pull.ts`：`Atomics.add(getRunningCountArray(), 0, 1)`，`finally` 是唯一释放点；
    - executor-python `scheduler.py`：`try_reserve_running_slot()`（同一把 `_running_count_lock`），`finally` 释放。
 
@@ -40,7 +40,7 @@ RPA5 执行器在中台详情页长期恒显：
 
 ### 为什么必须作为契约决策处理
 
-修法天然有两条路，而**错的那条会把已关闭的 P1 竞态重新打开**，且不会在单测里显形（E-01 当年的表现正是「高峰期高概率」，见 `docs/reviews/audit-r3-verify-exec-pkg.md` §E-01）。因此这属于线缆协议语义决策，必须钉进 `protocol.json` 与兼容性红线，而不是留在一句代码注释里。
+修法天然有两条路，而**错的那条会把已关闭的 P1 竞态重新打开**，且不会在单测里显形（E-01 当年的表现正是「高峰期高概率」，见 `docs/archive/reviews/audit-r3-verify-exec-pkg.md` §E-01）。因此这属于线缆协议语义决策，必须钉进 `protocol.json` 与兼容性红线，而不是留在一句代码注释里。
 
 ## 决策
 
@@ -92,7 +92,7 @@ RPA5 执行器在中台详情页长期恒显：
 ## 替代方案（被否）
 
 - **方案 B：用 `runningExecutionIds.length` 覆盖 `runningTaskCount`**（用户初步提议的方向）。
-  **否决，且是危险方向。** 后果链：中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 `acceptExecution` 容量复检失败返回 **429** → 任务被回调为**永久失败**。这恰是 E-01 当年要关闭的竞态（`docs/DEEP_REVIEW_0ef3bbe.md` §E-01：「pull 模式容量竞态把『暂时没槽位』变成『任务永久失败』」）。
+  **否决，且是危险方向。** 后果链：中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 `acceptExecution` 容量复检失败返回 **429** → 任务被回调为**永久失败**。这恰是 E-01 当年要关闭的竞态（`docs/archive/reviews/deep-review-0ef3bbe.md` §E-01：「pull 模式容量竞态把『暂时没槽位』变成『任务永久失败』」）。
   附加缺陷：`runningExecutionIds` 只是「真正领取到的执行」的**子集**，且两端都按 `MAX_RUNNING_EXECUTION_IDS=10000` 截顶（`executor-node` `scheduler.ts` / `executor-python` `config.py`），并发逼近封顶时数组必然少于真实在跑数，用它覆盖计数会**系统性低报**容量、把派发闸门放开到超卖。
   （注：本条原先还引用了「python 侧截断到 200」作为附加理由。该 200 是 python 侧一个**独立缺陷**——它抄了一个不存在的 "node parity"，node 从来是 10000——已在 NETOPT-C P2-1 修正为三端同值 10000。修正后本方案的否决理由**不依赖**该缺陷：即便两端封顶完全一致，用派生量覆盖源量仍然是错的，见下一段。）
   另一层理由：两个字段本就是两个账本，`runningExecutionIds.length === runningTaskCount` 从来不是不变量（`pull.ts` 只增计数、不登记 id），把「长度」当权威等于用一个派生量去覆盖源量。
@@ -109,5 +109,5 @@ RPA5 执行器在中台详情页长期恒显：
 ## 关联
 
 - 计划项：E-01-RPT（生产报障，承接 E-01 / `44d6a2b`）
-- 相关 ADR：[ADR-005](./adr-005-bundle-same-commit.md)（同 commit 重打 bundle）、[ADR-015](./adr-015-executor-pull-dispatch.md)（pull 派发模式，E-01 预留槽位所在）、[ADR-016](./adr-016-executor-control-plane-pull.md)（控制面 pull 通道，`freeSlots` 与预留同源）
+- 相关 ADR：[ADR-005](adr-005-bundle-same-commit.md)（同 commit 重打 bundle）、[ADR-015](adr-015-executor-pull-dispatch.md)（pull 派发模式，E-01 预留槽位所在）、[ADR-016](adr-016-executor-control-plane-pull.md)（控制面 pull 通道，`freeSlots` 与预留同源）
 - 相关文档：[执行器协议契约](../atlas/01-apps/executor-contract.md) · [executor 实体](../atlas/03-data/entities/executor.md) · [API 参考](../api-reference.md) · `packages/executor-protocol/protocol.json`（`versioning.compatibilityMatrix` v4 条目）

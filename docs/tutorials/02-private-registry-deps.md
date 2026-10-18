@@ -2,7 +2,7 @@
 
 > 目标：任务脚本 `import` 一个只存在于**私有包仓库**的依赖，由执行器在
 > 任务执行前自动安装。全程不修改执行器镜像。
-> 前提：已完成[教程 01](./01-first-scheduled-task)，平台全栈在线。
+> 前提：已完成[教程 01](01-first-scheduled-task.md)，平台全栈在线。
 
 ## 0. 原理一图流
 
@@ -97,7 +97,7 @@ npm publish --registry http://localhost:4873/
 
 ## 4. 建一个引用私服依赖的任务
 
-1. 新建任务（参照[教程 01](./01-first-scheduled-task)），脚本类型
+1. 新建任务（参照[教程 01](01-first-scheduled-task.md)），脚本类型
    **Python**，执行方式选 **entrypoint（打包任务）**——requirements 只对
    这类任务生效；
 2. entrypoint 可直接用官方示例脚本
@@ -134,4 +134,4 @@ requirements 填你的私有 npm 包名，完整说明见
 ## 6. 下一步
 
 依赖问题解决后，任务量大了单执行器扛不住？→
-[教程 03 · 多执行器扩容](./03-multi-executor-scaling)。
+[教程 03 · 多执行器扩容](03-multi-executor-scaling.md)。

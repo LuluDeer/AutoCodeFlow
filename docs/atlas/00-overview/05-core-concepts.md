@@ -51,5 +51,5 @@ erDiagram
 
 ## 相关文档
 
-- 各实体字段级细节: [../03-data/entities/](../03-data/entities/)
+- 各实体字段级细节: [../03-data/entities/](../03-data/entities)
 - 任务全流程时序: [../04-flows/task-lifecycle.md](../04-flows/task-lifecycle.md)

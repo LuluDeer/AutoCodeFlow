@@ -38,7 +38,7 @@
 | autocodeflow-node-sdk | `packages/autocodeflow-node-sdk/src/__tests__/contract.test.ts` | jest import JSON |
 | autoflow-sdk | `packages/autoflow-sdk/tests/test_contract.py` | pytest `json.loads(pathlib...)` |
 
-对应根命令：`npm run test:cli` / `test:mcp` / `test:node-sdk` / `test:sdk-py`（见根 [package.json](../../package.json)）。docs-site 的 [契约页](docs-site.md) 也把本 README 重组为站点内容。
+对应根命令：`npm run test:cli` / `test:mcp` / `test:node-sdk` / `test:sdk-py`（见根 [package.json](../../../package.json)）。docs-site 的 [契约页](docs-site.md) 也把本 README 重组为站点内容。
 
 ## 修改纪律（README.md 原文约束，改前必读）
 

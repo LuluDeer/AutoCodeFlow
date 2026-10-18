@@ -3,8 +3,8 @@
 演示 `@autocodeflow/sdk` 的**主动回调**：任务运行中把阶段性成功/失败信息，
 用执行器注入的 per-execution token 上报给 Admin API。
 
-- 入口脚本：[callback_report.js](./callback_report.js)
-- 任务配置样例：[task.example.json](./task.example.json)
+- 入口脚本：[callback_report.js](callback_report.js)
+- 任务配置样例：[task.example.json](task.example.json)
 - Python 版对应示例：[../callback-report/callback_report.py](../callback-report/callback_report.py)
 
 ## 前置条件（executor 侧）

@@ -78,6 +78,6 @@ admin-web 包管理页 ──► /api/registry/*（JWT）──► 本模块（�
 
 ## 相关文档
 
-- [registry-npm（Verdaccio）](../../../01-apps/registry-npm.md) · [registry-pypi](../../../01-apps/registry-pypi/README.md)（规划路径）
+- [registry-npm（Verdaccio）](../../registry-npm.md) · [registry-pypi](../../registry-pypi/README.md)（规划路径）
 - [executor-package](executor-package.md)（执行器程序包分发，区分场景）
 - [task](task.md)（任务 requirements 字段 → 执行器侧依赖安装）

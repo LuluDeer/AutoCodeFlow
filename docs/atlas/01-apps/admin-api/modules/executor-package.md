@@ -90,4 +90,4 @@ multipart file（diskStorage → upload-tmp）
 
 - [executor](executor.md)（内置分发与执行器身份）
 - [artifacts](artifacts.md)（复用 buildContentDisposition；同卷 uploads 布局）
-- 执行器侧消费：[executor-node](../../../01-apps/executor-node/README.md)（规划路径）
+- 执行器侧消费：[executor-node](../../executor-node/README.md)（规划路径）

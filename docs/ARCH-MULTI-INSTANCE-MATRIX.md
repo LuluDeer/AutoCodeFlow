@@ -411,9 +411,9 @@ fail-open 回内存态，与 NOTIF-003 降级一致）。
 ## 6. 引用
 
 - `docs/adr/adr-002-scheduler-dual-guard.md` — 调度双保险决策
-- `docs/review_round4_concurrency.md` §P2 — 多实例 @Cron 无门禁（本矩阵重列并分级）
+- `docs/archive/reviews/round4-concurrency.md` §P2 — 多实例 @Cron 无门禁（本矩阵重列并分级）
 - `docs/operations.md` §多实例与 SSE 容量 / §滚动升级
-- `docs/DEVELOPMENT-PLAN-2026-09H2.md` ARCH-31 条目
+- `docs/archive/plans/development-plan-2026-09h2.md` ARCH-31 条目
 - 源码：`scheduler.service.ts`、`redis-lock.service.ts`、`notification.service.ts`、
   `notification-silence.service.ts`、`channel-config.store.ts`、`app-deployment.service.ts`、
   `outbox-dispatcher.service.ts`、`outbound-event-dispatcher.service.ts`、

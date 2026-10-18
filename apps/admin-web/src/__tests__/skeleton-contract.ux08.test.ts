@@ -2,7 +2,7 @@
  * UX-08（本轮体验审查）：UI-08 契约要求「骨架屏替代 Spin」，但仍有整页级
  * 加载态用的是裸 `<Spin />`。
  *
- * 契约原文（docs/DEVELOPMENT-PLAN-2026-09.md §6.2 UI-08）：
+ * 契约原文（docs/archive/plans/development-plan-2026-09.md §6.2 UI-08）：
  *   「空态/加载态/错误态标准化 … **骨架屏替代 Spin**；错误态统一
  *    「重试 + 复制错误信息」」
  *

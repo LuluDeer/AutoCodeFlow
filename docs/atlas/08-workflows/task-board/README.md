@@ -14,7 +14,7 @@
 
 **状态字典**：`unclaimed`（待认领）/ `claimed`（已认领排队）/ `in_progress`（进行中）/ `done` / `blocked`（备注写原因）。另有特殊态 `documented/blocked`（如 ARCH-31：盘点/文档完成但实现与验证未完，勿标 done）。
 
-**找任务**：优先看板上 `unclaimed` 行（当前快照见 [../troubleshooting/known-issues.md](../troubleshooting/known-issues.md)）；H2 新任务段（`P0-*`/`FEAT-13+`/`NF-*`/`ARCH-28+`…）详情在 `docs/DEVELOPMENT-PLAN-2026-09H2.md` §10。
+**找任务**：优先看板上 `unclaimed` 行（当前快照见 [../troubleshooting/known-issues.md](../troubleshooting/known-issues.md)）；H2 新任务段（`P0-*`/`FEAT-13+`/`NF-*`/`ARCH-28+`…）详情在 `docs/archive/plans/development-plan-2026-09h2.md` §10。
 
 ## 二、用 atlas 文档树当分工边界
 
@@ -22,7 +22,7 @@
 
 | 想领的方向 | 先读的边界文档 | 典型足迹 |
 |---|---|---|
-| 后端某模块 | [../../01-apps/admin-api/modules/<模块>.md](../../01-apps/admin-api/) | `apps/admin-api/src/modules/<模块>/**` |
+| 后端某模块 | [../../01-apps/admin-api/modules/<模块>.md](../../01-apps/admin-api) | `apps/admin-api/src/modules/<模块>/**` |
 | 前端某页/某面 | [../../01-apps/admin-web/README.md](../../01-apps/admin-web/README.md) | `apps/admin-web/src/pages/**`、`src/api/**` |
 | 某个执行器 | [../../01-apps/executors-comparison.md](../../01-apps/executors-comparison.md) | `apps/executor-node/**` 或 `executor-python` / `executor-desktop` |
 | 某个可复用包 | [../../02-packages/README.md](../../02-packages/README.md) | `packages/<包>/**`（双 SDK 注意对称足迹，见 [../add-new-sdk-capability.md](../add-new-sdk-capability.md)） |
@@ -44,7 +44,7 @@
 以"给后端加一个新端点"为例（各步的板上行号会漂移，认时间戳与任务名）：
 
 1. `git pull --rebase` → `git status` 盘点在途改动；
-2. 在 `docs/PLAN-CLAIMS.md` 找到目标行（或按 `docs/DEVELOPMENT-PLAN-2026-09H2.md` §10 的新任务详情开行），状态改 `claimed`，填 Owner/时间/文件足迹；
+2. 在 `docs/PLAN-CLAIMS.md` 找到目标行（或按 `docs/archive/plans/development-plan-2026-09h2.md` §10 的新任务详情开行），状态改 `claimed`，填 Owner/时间/文件足迹；
 3. 按卡（[TEMPLATE.md](TEMPLATE.md)）"涉及文档"链接读完再动第一行代码；
 4. 涉及迁移 → 分配表先占号（本节第 4 条）；涉及 API → 记得 openapi/types 重导出与 `docs/api-reference.md` 同批（PR 模板「API 变更？」四查，见 `.github/PULL_REQUEST_TEMPLATE.md`）；
 5. 测试全绿 → commit（中文 conventional commits，一任务一提交）→ 板行 `done` + commit hash → `AGENT_HANDOFF.md` 快照；
@@ -64,4 +64,4 @@
 - [TEMPLATE.md](TEMPLATE.md)（任务卡模板）
 - [../troubleshooting/known-issues.md](../troubleshooting/known-issues.md)（当前遗留快照）
 - [../add-new-api-module.md](../add-new-api-module.md) / [../add-new-web-page.md](../add-new-web-page.md)（两大最常见任务类型的操作手册）
-- 仓库根 `docs/DEVELOPMENT-PLAN-2026-09H2.md`、`docs/feature-dev-workflow.md`、`AGENT_HANDOFF.md`
+- 仓库根 `docs/archive/plans/development-plan-2026-09h2.md`、`docs/feature-dev-workflow.md`、`AGENT_HANDOFF.md`

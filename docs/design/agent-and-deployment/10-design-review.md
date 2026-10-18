@@ -35,7 +35,7 @@
 | **配额耗尽可观测** | 新增指标 `autoflow_ai_provider_quota_exhausted_total{consumer="task_analysis|agent"}` |
 | **降级优先级** | 配额紧张时，**保任务失败分析，让 Agent 排队**（任务链路优先级更高） |
 
-> 这一条应写进 [02](./02-agent-architecture.md) 的「资源与隔离」章节——原先我只考虑了 CPU/队列隔离，**漏了配额隔离**。
+> 这一条应写进 [02](02-agent-architecture.md) 的「资源与隔离」章节——原先我只考虑了 CPU/队列隔离，**漏了配额隔离**。
 
 ### ★ 缺口 2：Agent 的动作走哪条凭据链？（[03 §7] 说对了但没落实）
 
@@ -46,7 +46,7 @@
 任务子进程一次性 token  |  外部订阅方 HMAC
 ```
 
-我在 [03 §7](./03-agent-tools-and-boundary.md) 说「新增 `agent@system` + `AGENT` 角色」，但**没说它用哪种凭据**。这是缺口。
+我在 [03 §7](03-agent-tools-and-boundary.md) 说「新增 `agent@system` + `AGENT` 角色」，但**没说它用哪种凭据**。这是缺口。
 
 **关键发现**：`JWT_ONLY_API_KEY_PATHS = ["api-keys","auth","users","config"]` ——**API Key 永远碰不到系统配置面**。
 
@@ -58,7 +58,7 @@
 | **Agent 用内部服务身份（不走 HTTP）** | ✅ **推荐**——Agent 在 admin-api 进程内，直接调 Service 层，不需要 HTTP 凭据 |
 | Agent 用专用 JWT | ⚠️ 需要签发与轮换机制，增加复杂度 |
 
-**补充结论**：中台 Agent 是 **in-process** 的（[02](./02-agent-architecture.md) 的设计），它应**直接调用 Service 层**，只在审计与 RBAC 判定时**代入 `agent@system` 身份**。这样：
+**补充结论**：中台 Agent 是 **in-process** 的（[02](02-agent-architecture.md) 的设计），它应**直接调用 Service 层**，只在审计与 RBAC 判定时**代入 `agent@system` 身份**。这样：
 - 不需要给它签发凭据（无泄露面）
 - 但 `RolesGuard` 的判定逻辑要能被显式代入身份（需要一个小改造）
 
@@ -100,7 +100,7 @@ capabilities: ["python", "node", "agent:sop", "browser", "gui"]
 
 > **传输：仅 stdio**（`StdioServerTransport`）。代码中无 HTTP/SSE transport——**若需远程 MCP 需自行扩展**。
 
-我在 [03 §1](./03-agent-tools-and-boundary.md) 说「收编 mcp-server 的 43 工具」，但**没注意它只是个 stdio 进程**——它是给 Claude Desktop 本地拉起的，**不是服务**。
+我在 [03 §1](03-agent-tools-and-boundary.md) 说「收编 mcp-server 的 43 工具」，但**没注意它只是个 stdio 进程**——它是给 Claude Desktop 本地拉起的，**不是服务**。
 
 中台 Agent 在 admin-api 进程内，可以不走 MCP 直接调 Service；但**执行器 Agent 在外面**，它需要工具就必须有网络通道。
 
@@ -112,7 +112,7 @@ capabilities: ["python", "node", "agent:sop", "browser", "gui"]
 | 外部 AI（Claude/Cursor） | 既有 stdio MCP（不变） |
 | **执行器 Agent** | **需要新的通道**——见下 |
 
-执行器 Agent 需要的能力（[04 §3](./04-sop-protocol.md)）：
+执行器 Agent 需要的能力（[04 §3](04-sop-protocol.md)）：
 - 拉取 SOP
 - 发起澄清
 - 回报完成
@@ -120,7 +120,7 @@ capabilities: ["python", "node", "agent:sop", "browser", "gui"]
 
 **这些都不在 43 个工具里**（43 个工具是「管理平台资源」的，不是「执行 Agent 协作」的）。所以要**新增一组 API**，且要走执行器身份鉴权。
 
-> **这是一个原设计遗漏的完整子系统**。建议在 [02](./02-agent-architecture.md) 之外补一节「Agent 协作 API」，或独立成 [11](./11-agent-collaboration-api.md)。
+> **这是一个原设计遗漏的完整子系统**。建议在 [02](02-agent-architecture.md) 之外补一节「Agent 协作 API」，或独立成 [11](11-agent-collaboration-api.md)。
 
 ### 缺口 4：DEP-04 的「一个应用只能有一个 in-flight 部署」会影响 Agent
 
@@ -136,7 +136,7 @@ capabilities: ["python", "node", "agent:sop", "browser", "gui"]
 - 建议 Agent 用**独立的 `agentTriggerType`**，便于识别与批量清理
 - 会话超时时**先 cancel 部署再结束会话**，不能留下占坑的行
 
-这条要写进 [03 §3](./03-agent-tools-and-boundary.md) 的审批流程。
+这条要写进 [03 §3](03-agent-tools-and-boundary.md) 的审批流程。
 
 ### 缺口 5：审计的 append-only 特性与 Agent 高频写入
 
@@ -151,7 +151,7 @@ Agent 会**高频**产生工具调用记录。若每条都写 `audit_logs`：
 - 明确哪些动作必须进审计（不可省）：任何 `write`/`dangerous` tier 调用、权限档位变更、SOP 发布
 - 只读工具调用**不进 audit_logs**（它们量大且价值低）
 
-原先 [03 §6](./03-agent-tools-and-boundary.md) 说「同时写入现有 audit 模块」，**过于笼统**，会撑爆审计表。
+原先 [03 §6](03-agent-tools-and-boundary.md) 说「同时写入现有 audit 模块」，**过于笼统**，会撑爆审计表。
 
 ### 缺口 6：Agent 会话与「执行」的关系没定义
 
@@ -181,12 +181,12 @@ Agent 会**高频**产生工具调用记录。若每条都写 `audit_logs`：
 
 ### 调整 2：工具数量不是 43
 
-[03 §2](./03-agent-tools-and-boundary.md) 我按 43 个 MCP 工具做分级。但实际 Agent 还需要：
+[03 §2](03-agent-tools-and-boundary.md) 我按 43 个 MCP 工具做分级。但实际 Agent 还需要：
 
 | 来源 | 数量 |
 |---|---|
 | 既有 MCP 工具 | 43 |
-| 内部工具（[03 §4](./03-agent-tools-and-boundary.md)） | 12 |
+| 内部工具（[03 §4](03-agent-tools-and-boundary.md)） | 12 |
 | **Agent 协作 API 工具**（缺口 3） | ~6 |
 | 合计 | **~61** |
 
@@ -194,13 +194,13 @@ Agent 会**高频**产生工具调用记录。若每条都写 `audit_logs`：
 
 ### 调整 3：`agent@system` 与 `JWT_ONLY_API_KEY_PATHS` 的交互
 
-若未来 Agent 需要经 HTTP 访问（如远程运行时模式 [02 §8](./02-agent-architecture.md)），**API Key 到不了 config 面**这个限制会卡住它。
+若未来 Agent 需要经 HTTP 访问（如远程运行时模式 [02 §8](02-agent-architecture.md)），**API Key 到不了 config 面**这个限制会卡住它。
 
-**修正**：远程模式下 Agent 需要**专用 JWT 或内部网络信任**，不能复用 API Key。这一点要在 [02 §8](./02-agent-architecture.md) 的升级路径里写明——否则将来切远程时会踩坑。
+**修正**：远程模式下 Agent 需要**专用 JWT 或内部网络信任**，不能复用 API Key。这一点要在 [02 §8](02-agent-architecture.md) 的升级路径里写明——否则将来切远程时会踩坑。
 
 ### 调整 4：权限档位的配置位置
 
-[09 §4.1](./09-permission-profiles.md) 说配置放 `config-store.ts`。但**企业集中管控**（[09 §4.2](./09-permission-profiles.md)）要求中台下发。
+[09 §4.1](09-permission-profiles.md) 说配置放 `config-store.ts`。但**企业集中管控**（[09 §4.2](09-permission-profiles.md)）要求中台下发。
 
 **修正**：需要明确**两条配置路径的合并语义**：
 ```
@@ -214,7 +214,7 @@ Agent 会**高频**产生工具调用记录。若每条都写 `audit_logs`：
 
 ### 调整 5：会话与 steps 的保留期 vs 审计保留期
 
-[02 §9.2](./02-agent-architecture.md) 我定的是 steps 30 天 / tool_calls 90 天。但审计是 **180 天**。
+[02 §9.2](02-agent-architecture.md) 我定的是 steps 30 天 / tool_calls 90 天。但审计是 **180 天**。
 
 **问题**：若 90 天后 `agent_tool_calls` 被清理，而审计要求 180 天可查，则**90-180 天区间的 Agent 动作无法追溯细节**。
 
@@ -224,7 +224,7 @@ Agent 会**高频**产生工具调用记录。若每条都写 `audit_logs`：
 
 ### 建议 1：Agent 的「能力自述」接口
 
-执行器 Agent 上岗时要让中台知道**这台机器能做什么**（[07 §7 ①感知层](./07-executor-agent.md)）。建议标准化为 `capability_report`：
+执行器 Agent 上岗时要让中台知道**这台机器能做什么**（[07 §7 ①感知层](07-executor-agent.md)）。建议标准化为 `capability_report`：
 
 ```json
 {
@@ -282,18 +282,18 @@ Agent 卡住时，人应该能**接管会话**：
 
 | 文档 | 章节 | 修订 |
 |---|---|---|
-| [02](./02-agent-architecture.md) | §5.3 预算与资源隔离 | **补配额隔离**（缺口 1）：Agent 独立 `agent.llm.*`，不与任务失败分析共享配额；新增配额耗尽指标；降级时任务链路优先 |
-| [02](./02-agent-architecture.md) | §3 数据模型 | **补 `task_executions.agentSessionId`**（缺口 6）——复用既有 `triggerType` 扩展点，标记 `triggerType='agent'` |
-| [02](./02-agent-architecture.md) | §8 升级路径 | **补**：远程模式不能用 API Key（`JWT_ONLY_API_KEY_PATHS` 挡住 config 面），需专用 JWT 或内网信任（调整 3） |
-| [02](./02-agent-architecture.md) | §9.2 会话保留 | **修正**：写/危险 tier 的 tool_calls 保留 ≥180 天（对齐审计保留期），只读的 30 天（调整 5） |
-| [03](./03-agent-tools-and-boundary.md) | §1 工具来源 | **修正**：中台 Agent in-process **直接调 Service 层**，不走 HTTP；`TOOL_SPECS` 共享仍保留（调整 1） |
-| [03](./03-agent-tools-and-boundary.md) | §2 工具分级 | **扩充**：43 MCP + 12 内部 + ~6 协作 API ≈ 61 个，新增工具补 tier（调整 2） |
-| [03](./03-agent-tools-and-boundary.md) | §3 审批 | **补**：部署提交需**超时自动撤回**（DEP-04 待审批行占坑会 409 卡死该应用）；用独立 `agentTriggerType` 便于识别清理（缺口 4） |
-| [03](./03-agent-tools-and-boundary.md) | §6 审计 | **修正**：不是「同时写 audit」，而是**只读工具不进 audit_logs**（表膨胀 + append-only 不可删），仅写/危险 tier 双写（缺口 5） |
-| [03](./03-agent-tools-and-boundary.md) | §7 身份 | **补**：中台 Agent in-process 代入 `agent@system` 身份（不签发凭据）；执行器 Agent 复用 `validateTokenByAddress` + `capabilities` 扩展（缺口 2） |
-| [07](./07-executor-agent.md) | §7 迭代循环 | **补** `capability_report` 标准化（建议 1）+ SOP 可行性预检（建议 2） |
-| [09](./09-permission-profiles.md) | §4 配置 | **补**离线语义（调整 4）：离线沿用缓存的中台策略，**不回落成无限制** |
-| **新增** | — | **[11-agent-collaboration-api.md](./11-agent-collaboration-api.md)**：执行器 Agent ↔ 中台 Agent 的协作 API（缺口 3，原设计整个漏掉的子系统） |
+| [02](02-agent-architecture.md) | §5.3 预算与资源隔离 | **补配额隔离**（缺口 1）：Agent 独立 `agent.llm.*`，不与任务失败分析共享配额；新增配额耗尽指标；降级时任务链路优先 |
+| [02](02-agent-architecture.md) | §3 数据模型 | **补 `task_executions.agentSessionId`**（缺口 6）——复用既有 `triggerType` 扩展点，标记 `triggerType='agent'` |
+| [02](02-agent-architecture.md) | §8 升级路径 | **补**：远程模式不能用 API Key（`JWT_ONLY_API_KEY_PATHS` 挡住 config 面），需专用 JWT 或内网信任（调整 3） |
+| [02](02-agent-architecture.md) | §9.2 会话保留 | **修正**：写/危险 tier 的 tool_calls 保留 ≥180 天（对齐审计保留期），只读的 30 天（调整 5） |
+| [03](03-agent-tools-and-boundary.md) | §1 工具来源 | **修正**：中台 Agent in-process **直接调 Service 层**，不走 HTTP；`TOOL_SPECS` 共享仍保留（调整 1） |
+| [03](03-agent-tools-and-boundary.md) | §2 工具分级 | **扩充**：43 MCP + 12 内部 + ~6 协作 API ≈ 61 个，新增工具补 tier（调整 2） |
+| [03](03-agent-tools-and-boundary.md) | §3 审批 | **补**：部署提交需**超时自动撤回**（DEP-04 待审批行占坑会 409 卡死该应用）；用独立 `agentTriggerType` 便于识别清理（缺口 4） |
+| [03](03-agent-tools-and-boundary.md) | §6 审计 | **修正**：不是「同时写 audit」，而是**只读工具不进 audit_logs**（表膨胀 + append-only 不可删），仅写/危险 tier 双写（缺口 5） |
+| [03](03-agent-tools-and-boundary.md) | §7 身份 | **补**：中台 Agent in-process 代入 `agent@system` 身份（不签发凭据）；执行器 Agent 复用 `validateTokenByAddress` + `capabilities` 扩展（缺口 2） |
+| [07](07-executor-agent.md) | §7 迭代循环 | **补** `capability_report` 标准化（建议 1）+ SOP 可行性预检（建议 2） |
+| [09](09-permission-profiles.md) | §4 配置 | **补**离线语义（调整 4）：离线沿用缓存的中台策略，**不回落成无限制** |
+| **新增** | — | **[11-agent-collaboration-api.md](11-agent-collaboration-api.md)**：执行器 Agent ↔ 中台 Agent 的协作 API（缺口 3，原设计整个漏掉的子系统） |
 
 ## 七、复审结论
 
@@ -318,4 +318,4 @@ Agent 卡住时，人应该能**接管会话**：
 2. 缺口 1/2 是**小改动**（配额隔离、身份落实），已在上面给出具体落点
 3. **同时开工 P0 部署脚本**——它不受这些缺口影响，独立可用
 
-要我继续写 [11-agent-collaboration-api.md](./11-agent-collaboration-api.md)，还是先开工 P0？
+要我继续写 [11-agent-collaboration-api.md](11-agent-collaboration-api.md)，还是先开工 P0？

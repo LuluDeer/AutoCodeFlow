@@ -83,4 +83,4 @@ curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
 
 ## 5. 下一步
 
-[教程 04 · 告警接入值班](./tutorial-04-alerting-oncall)。
+[教程 04 · 告警接入值班](tutorial-04-alerting-oncall)。

@@ -6,10 +6,10 @@
 > 且本库 macOS 侧**只有打包 CI、没有真机开发/测试矩阵**——本文的 macOS 事实全部
 > 来自 Apple 文档与生态事实（诚实声明：**零实测数据**），立项前必须过 §5 的
 > POC 判定门（真机 spike）。
-> 依据：[12-executor-gui-linux.md](./12-executor-gui-linux.md) §5.3 待拍板项 3
+> 依据：[12-executor-gui-linux.md](12-executor-gui-linux.md) §5.3 待拍板项 3
 > （「macOS 建议独立侦察，不并入本切片」——本文就此收口）、
-> [07-executor-agent.md](./07-executor-agent.md) §6 capabilities 能力声明
-> （`gui` 域）、[09-permission-profiles.md](./09-permission-profiles.md) §2.3
+> [07-executor-agent.md](07-executor-agent.md) §6 capabilities 能力声明
+> （`gui` 域）、[09-permission-profiles.md](09-permission-profiles.md) §2.3
 > hostAccess 档位、roadmap §9.9 残差行。
 
 ## 1. 现有资产与硬不变量（macOS 后端必须逐条继承）
@@ -204,12 +204,12 @@ macOS 的实情是：TCC 授权是**进程级一次性**的，不逐动作；但
 
 ## 6. 引用与依据
 
-- [12-executor-gui-linux.md](./12-executor-gui-linux.md)：七条不变量表（§1）、
+- [12-executor-gui-linux.md](12-executor-gui-linux.md)：七条不变量表（§1）、
   已知差异登记形态（§3.3）、切片与验收形态（§4/§3.5）、§5.3 待拍板项 3（本文由来）
-- [07-executor-agent.md](./07-executor-agent.md) §6：`capabilities: [browser, gui,
+- [07-executor-agent.md](07-executor-agent.md) §6：`capabilities: [browser, gui,
   filesystem, http]` 能力声明（gui 域的定义处）
-- [09-permission-profiles.md](./09-permission-profiles.md) §2.3：hostAccess 档位
+- [09-permission-profiles.md](09-permission-profiles.md) §2.3：hostAccess 档位
   （none/app-scoped/session）与 app-scoped 推荐档
-- [06-roadmap.md](./06-roadmap.md) §9.9：P7c 残差行（macOS 尚未适配 → 本文收口）
+- [06-roadmap.md](06-roadmap.md) §9.9：P7c 残差行（macOS 尚未适配 → 本文收口）
 - Apple 平台事实（TCC/CGEvent/ScreenCaptureKit）均为公开文档语义，**零实测**——
   §5 的 POC 判定门就是为此存在

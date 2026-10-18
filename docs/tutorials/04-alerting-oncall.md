@@ -3,7 +3,7 @@
 > 目标：任务失败、执行器掉线这类事件能在 5 分钟内出现在值班群
 > （企业微信/钉钉/Slack/邮件），Prometheus/Alertmanager 告警也能汇入同一
 > 套通知渠道，且每条告警自带 runbook。
-> 前提：已完成[教程 03](./03-multi-executor-scaling)；有 ADMIN 角色。
+> 前提：已完成[教程 03](03-multi-executor-scaling.md)；有 ADMIN 角色。
 
 ## 0. 通知体系一张图
 

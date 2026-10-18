@@ -1,7 +1,7 @@
 # sop 模块 — SOP 协议（P5 起草发布指派 + P6 澄清循环）
 
 > 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09（P5/P6） · 对应代码: apps/admin-api/src/modules/sop
-> 设计文档: [docs/design/agent-and-deployment/](../../../../design/agent-and-deployment/)（04 / 11）
+> 设计文档: [docs/design/agent-and-deployment/](../../../../design/agent-and-deployment)（04 / 11）
 
 ## 职责
 

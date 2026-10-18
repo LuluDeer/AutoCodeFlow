@@ -9,10 +9,10 @@ admin 下发任务(requirements)
   → NODE_PATH 指向隔离目录，require() 命中私有包
 ```
 
-- 入口脚本：[private_dep_task.js](./private_dep_task.js)
-- 任务配置样例：[task.example.json](./task.example.json)
-- 本地依赖清单：[package.json](./package.json)
-- Python 版对应示例：[../private-registry-deps/](../private-registry-deps/)
+- 入口脚本：[private_dep_task.js](private_dep_task.js)
+- 任务配置样例：[task.example.json](task.example.json)
+- 本地依赖清单：[package.json](package.json)
+- Python 版对应示例：[../private-registry-deps/](../private-registry-deps)
 
 ## 前置条件（executor 侧）
 

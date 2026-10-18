@@ -194,7 +194,7 @@ curl http://localhost:3105/api/health/live
 revert 重放均无副作用；CI 已有「空库 + 续跑」双轮幂等 job 兜底。恢复点版本落后于
 当前代码版本时，`migration:run` 会补齐差异迁移——这正是恢复步骤中总是跑一次
 `migration:run` 的原因。存量库跨 3 个版本升级的演练（QA-08 第三态）尚未完成
-（见 `docs/DEVELOPMENT-PLAN-2026-09.md` §7），跨大版本升级后的恢复演练应先在
+（见 `docs/archive/plans/development-plan-2026-09.md` §7），跨大版本升级后的恢复演练应先在
 测试环境执行。
 
 ### 物理备份建议（pgBackRest）与定期 dump
@@ -278,7 +278,7 @@ curl -H 'Authorization: Bearer <token>' http://localhost:3105/api/executors
 
 executor-desktop 的 Agent（实验性）能力域中，`gui`（操作本机应用窗口）在 Linux 上由
 X11/XWayland 后端承载（设计见
-[agent-and-deployment/12-executor-gui-linux.md](./design/agent-and-deployment/12-executor-gui-linux.md)）。
+[agent-and-deployment/12-executor-gui-linux.md](design/agent-and-deployment/12-executor-gui-linux.md)）。
 按「依赖文档化 + probe 如实降级」交付——不装依赖不会报错，只是能力租约里**不出现** `gui`，
 中台不会把需要 GUI 的 SOP 派到这台机器：
 
@@ -292,7 +292,7 @@ sudo apt-get install -y xdotool ffmpeg
 | `xdotool` | 窗口枚举 / focus / 点击 / 键入（XWayland） | 能力上报不含 `gui`（probe 失败） |
 | `ffmpeg`（x11grab） | 目标窗口区域截图 | 仅 screenshot 动作报 `x11_tool_unavailable`，其余动作可用 |
 
-**会话要求（S2 实测，[VERIFY-2026-09-27-gui-x11.md](./VERIFY-2026-09-27-gui-x11.md)）**：
+**会话要求（S2 实测，[VERIFY-2026-09-27-gui-x11.md](archive/verifies/verify-2026-09-27-gui-x11.md)）**：
 probe 的第三道硬条件是 EWMH 活动窗口可读——GNOME **Wayland** 会话上该属性恒空，
 能力会被如实 withhold；**Xorg/X11 会话**（登录界面选「Ubuntu on Xorg」，或 XFCE/KDE-X11）
 完整可用。旧版 ImageMagick `import` 在本机栈 XGetImage 报 EAGAIN，已由 ffmpeg 替代
@@ -378,7 +378,7 @@ curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
 > 本节为 DOC-02 规划内容：水位指标与告警阈值提炼自
 > `docs/observability/README.md` 4.2 节（OBS-05 容量水位四件套）与
 > `docs/observability/alerting-rules.yml`。**容量白皮书已产出：
-> [`docs/CAPACITY-WHITEPAPER.md`](./CAPACITY-WHITEPAPER.md)**（QA-05 并发压测专项，
+> [`docs/CAPACITY-WHITEPAPER.md`](CAPACITY-WHITEPAPER.md)**（QA-05 并发压测专项，
 > 2026-09-12 真机实测：四档目标全部达成 + 服务端水位 + 瓶颈定位 + 调参清单 +
 > 扩容公式）。下列阈值与白皮书 §8 一致；白皮书未覆盖的场景（24h 长稳、多主机
 > 拓扑、真实业务时长分布）在该文 §10 逐条列出。
@@ -400,7 +400,7 @@ series 名已与唯一注册处
 ### 横向扩容要点
 
 > 全部进程内单例状态的多实例兼容盘点与风险分级见
-> [`docs/ARCH-MULTI-INSTANCE-MATRIX.md`](./ARCH-MULTI-INSTANCE-MATRIX.md)
+> [`docs/ARCH-MULTI-INSTANCE-MATRIX.md`](ARCH-MULTI-INSTANCE-MATRIX.md)
 > （调度链已安全；**通知静默 / 渠道配置 / 灰度批次 / 本地文件系统**为已知单实例约束）。
 
 - **admin-api 多实例与 SSE 容量**：SSE 流计数为**进程内** gauge（per-instance，进程重启
@@ -426,8 +426,8 @@ series 名已与唯一注册处
 
 ### 解释器缓存池运维（python_task_multiversion）
 
-> 部署侧配置与容量公式见 [`docs/deployment.md`](./deployment.md)「解释器缓存与私有化模式」；
-> 离线预填完整 runbook 见 [`docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md)。
+> 部署侧配置与容量公式见 [`docs/deployment.md`](deployment.md)「解释器缓存与私有化模式」；
+> 离线预填完整 runbook 见 [`docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`](design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md)。
 
 #### 它是什么
 
@@ -529,7 +529,7 @@ glue 任务 → 轮询终态 → 吞吐 / p50/p95 / 429 / 重复执行违规报�
 
 **容量白皮书（QA-05 并发压测专项）尚未产出**：单实例 500 并发执行、1000 任务/分钟入队、
 SSE 500 连接、回调风暴等规划目标，以及 PG 连接池 / BullMQ / 回调路由的瓶颈定位，全部
-**待压测确认**后再回填本节（规划项见 `docs/DEVELOPMENT-PLAN-2026-09.md` §7 QA-05）。
+**待压测确认**后再回填本节（规划项见 `docs/archive/plans/development-plan-2026-09.md` §7 QA-05）。
 本节当前不给出任何经验证的容量上限数字。
 
 ---
@@ -541,14 +541,14 @@ SSE 500 连接、回调风暴等规划目标，以及 PG 连接池 / BullMQ / �
 已对 `apps/admin-api/src` 实现核实（fail-open 判定、判离线阈值、Leader 锁
 TTL），脚本内注释标注了断言窗口与实现常量的对应关系。
 
-> **实测报告**：`docs/CHAOS-DRILL-REPORT.md`（2026-09-12）。本轮**修掉一个严重缺陷**：
+> **实测报告**：`docs/archive/incidents/chaos-drill-report.md`（2026-09-12）。本轮**修掉一个严重缺陷**：
 > 场景体原以管道子 shell 运行，`fail_scenario` 对 `FAILED` 的改动随子 shell 退出丢失，
 > 导致**任何失败都被静默报成通过**（已复现 A1 失败却打印「通过 1/失败 0」）；改为进程
 > 替换后计数正确（B 通过→正确计过、A 失败→正确计败）。场景 B（执行器断网判离线 70s /
 > 恢复 10s）已真机跑通；场景 A 因本环境只能取到 R5 旧镜像（Redis 客户端坏）而失败，
 > 当前源码 `health` 端点恒返回 200-with-degraded（已核实），需在当前镜像上重跑。
 
-> **复跑任务书（2026-10）**：`docs/CHAOS-DRILL-REPORT-2026-10.md`。本轮（2026-09 下旬
+> **复跑任务书（2026-10）**：`docs/archive/incidents/chaos-drill-report-2026-10.md`。本轮（2026-09 下旬
 > 至 10-01）develop 合入了大量故障路径修复（空库 boot 容错、BullMQ retryStrategy、
 > SSE relay fail-open、失败通知聚合降级、killed 计数 + KILLED_SPIKE 告警、COVER_EARLY
 > 补 kill 下发、Leader watchdog 抖动容忍、心跳 diskUsage 两级告警、迁移 advisory-lock
@@ -920,7 +920,7 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
 审计表 `audit_logs` 为 **append-only**：迁移 `1790000000006` 在 DB 层安装了行级触发器 `trg_audit_logs_append_only`（BEFORE UPDATE OR DELETE → RAISE EXCEPTION），**应用层与普通 SQL 的 UPDATE/DELETE 都会被拒绝**。
 
 - **唯一放行点**：审计保留清理任务（Q7，每日 02:05，清理 180 天前数据）在事务内以 `SET LOCAL app.bypass_audit_guard = 'on'` 放行批量 DELETE，事务提交即失效。应用代码中不存在其他写/删审计行的路径。
-- **⚠️ 这个触发器挡不住什么（实测，见 [ADR-025](./adr/adr-025-audit-log-tamper-evidence.md)）**——别把"有触发器"读成"不可篡改"：
+- **⚠️ 这个触发器挡不住什么（实测，见 [ADR-025](adr/adr-025-audit-log-tamper-evidence.md)）**——别把"有触发器"读成"不可篡改"：
 
   | 操作 | 结果 | 原因 |
   |---|---|---|
@@ -933,7 +933,7 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
   （`configuration.ts` 的 `DB_USERNAME || "postgres"`，且全仓从未建过最小权限角色），
   所以这层"权限兜底"实际并不存在——真正在挡的仅是"应用代码里没写 UPDATE/DELETE"。
   撤销 `TRUNCATE` 权限 + 把应用账号降为非属主，是比"上哈希链"更便宜也更强的改进；
-  方案见 [`DB-LEAST-PRIVILEGE.md`](./DB-LEAST-PRIVILEGE.md)（**待维护者拍板**，
+  方案见 [`DB-LEAST-PRIVILEGE.md`](DB-LEAST-PRIVILEGE.md)（**待维护者拍板**，
   属部署契约变更）。
 - **验证工具**：`node scripts/audit-verify.mjs`（在仓库根或 apps/admin-api 下运行）连库输出验证报告：触发器安装与启用检查、受控 UPDATE/DELETE 写试（ROLLBACK 事务内，不产生持久改动）、行序一致性（id 序 vs createdAt 序）与 7 天窗口行数密度。`--report-only` 跳过写试；退出码非 0 = 发现可篡改面或结构缺失。纯函数自检：`node scripts/audit-verify.selftest.mjs`。
   ⚠️ **它不是完整性校验器**：只试 `UPDATE`（不试 `DELETE`/`TRUNCATE`），且 id 空洞被当作合法（保留期清理本就会造成空洞）⇒ **它检测不出删除**。

@@ -9,7 +9,7 @@
 | 编号 | 优先级 | 一句话 | 补充背景（摘自板上备注） | 去向建议 |
 |---|---|---|---|---|
 | BUG-04 | P3 | minio 依赖链 moderate 漏洞跟踪 | "无代码（跟踪上游），minio 链 moderate，等上游"；`apps/admin-api/package.json` 当前 `minio: ^8.0.7` | 跟踪上游发版后升依赖 + 跑 `npm run test:api` 回归；无需自研修复 |
-| BUG-07 | P2 | QA8 detached 信号深验 | "Windows 测试任务书 + e2e 脚本；需 Windows 真机窗口"；platform 矩阵见 `docs/VERIFY-MATRIX.md` | 需 Windows 真机或扩 CI windows job；任务书线索在 `docs/windows-findings.md` |
+| BUG-07 | P2 | QA8 detached 信号深验 | "Windows 测试任务书 + e2e 脚本；需 Windows 真机窗口"；platform 矩阵见 `docs/VERIFY-MATRIX.md` | 需 Windows 真机或扩 CI windows job；任务书线索在 `docs/archive/reports/windows-findings.md` |
 | AUTH-04 | P3 | OIDC SSO（可选） | "admin-api auth 模块"，可选项非阻塞 | 新功能，从 [../../01-apps/admin-api/modules/auth.md](../../01-apps/admin-api/modules/auth.md) 读起；认证信任链背景见 [../../04-flows/security-model.md](../../04-flows/security-model.md) |
 | DSK-01 | P2 | macOS 打包 | "executor-desktop + CI（需 macOS 真机）" | 参照 DSK-02 Linux 先例（electron-builder 双 target + `ci.yml` `desktop-linux-bundle` job 形态） |
 
@@ -56,5 +56,5 @@ grep -n "blocked" docs/PLAN-CLAIMS.md          # blocked 与 documented/blocked 
 - [README.md](README.md)（问题记录规范）· [TEMPLATE.md](TEMPLATE.md)（问题记录模板，排障知识入册用）
 - [../task-board/README.md](../task-board/README.md)（如何认领上表任务）
 - [../add-new-api-module.md](../add-new-api-module.md) / [../add-new-web-page.md](../add-new-web-page.md)（常见任务类型的操作手册）
-- `docs/PLAN-CLAIMS.md`、`docs/DEVELOPMENT-PLAN-2026-09H2.md`（任务详情与验收口径）
+- `docs/PLAN-CLAIMS.md`、`docs/archive/plans/development-plan-2026-09h2.md`（任务详情与验收口径）
 - `docs/CAPACITY-WHITEPAPER.md`、`docs/QA-05-capacity-boundaries.md`、`docs/ARCH-MULTI-INSTANCE-MATRIX.md`（上表两行遗留的技术底稿）

@@ -108,7 +108,7 @@ describe('auth token fetch', () => {
   // every success in {code,message,data} and the token endpoint answers 201.
   // The old code read response.data.token on a 200-only check — both wrong —
   // so every fetch "failed", retried every 30s, and each retry rotated the
-  // stored tokenHash (docs/VERIFY-round8-e2e.md §1.5).
+  // stored tokenHash (docs/archive/verifies/verify-round8-e2e.md §1.5).
   it('unwraps the {code,message,data} envelope and accepts the 201 status', async () => {
     const { post, getCurrentToken, config } = await freshAuth();
     post.mockResolvedValue({

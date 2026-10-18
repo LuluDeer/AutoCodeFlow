@@ -129,5 +129,5 @@ curl -s -X POST http://localhost:3105/api/sop/<sopId>/assign \
 - 复核链路不信执行器自述：platform 验收由中台独立触发任务核对
 - GUI 域 = X11 后端 + app-scoped 白名单 + 逐动作复核（macOS 侦察结论见
   [13-executor-gui-macos](../design/agent-and-deployment/13-executor-gui-macos.md)）
-- 下一步：[03 · 多执行器扩容](./03-multi-executor-scaling.md)（多执行器给
-  SOP 指派做容量池）/ [04 · 告警接入值班](./04-alerting-oncall.md)
+- 下一步：[03 · 多执行器扩容](03-multi-executor-scaling.md)（多执行器给
+  SOP 指派做容量池）/ [04 · 告警接入值班](04-alerting-oncall.md)

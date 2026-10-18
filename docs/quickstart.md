@@ -208,8 +208,8 @@ docker compose logs executor-node | grep '429\|throttle\|rate'
 
 ## 下一步
 
-- 🧭 [教程系列：从 0 到生产](./tutorials/) — 第一个定时任务、私服依赖、多执行器扩容、告警接入值班
-- 📖 [部署指南](./deployment.md) — 生产环境部署、HTTPS、反向代理配置
-- 🔧 [开发指南](./development.md) — 本地开发环境搭建、调试方法
-- 📦 [SDK 指南](./sdk-guide.md) — 脚本中使用私有包仓库
-- 🔗 [API 参考](./api-reference.md) — 通过 API 集成外部系统
+- 🧭 [教程系列：从 0 到生产](tutorials) — 第一个定时任务、私服依赖、多执行器扩容、告警接入值班
+- 📖 [部署指南](deployment.md) — 生产环境部署、HTTPS、反向代理配置
+- 🔧 [开发指南](development.md) — 本地开发环境搭建、调试方法
+- 📦 [SDK 指南](sdk-guide.md) — 脚本中使用私有包仓库
+- 🔗 [API 参考](api-reference.md) — 通过 API 集成外部系统
