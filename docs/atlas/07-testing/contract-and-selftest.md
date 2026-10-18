@@ -1,5 +1,5 @@
 # 契约测试与自测脚本
-> 所属: docs/atlas/07-testing · 最后核对: 2026-09-13 · 对应代码: packages/contract-fixtures/、scripts/*selftest*（15 个）、docs/VERIFY-MATRIX.md、docs/WINDOWS-TESTING-PLAN.md
+> 所属: docs/atlas/07-testing · 最后核对: 2026-09-13 · 对应代码: packages/contract-fixtures/、scripts/*selftest*（15 个）、docs/VERIFY-MATRIX.md、docs/archive/plans/windows-testing-plan.md
 
 ## 契约测试：contract-fixtures 的四个消费测试
 
@@ -71,7 +71,7 @@
 ## 真机矩阵（既有文档，直接链接）
 
 - [docs/VERIFY-MATRIX.md](../../VERIFY-MATRIX.md) — QA-04 真机验证矩阵 Checklist：把十五轮真机验证（V 系列）"单测全绿 ≠ 能跑"的教训固化为**按改动类型必跑**的清单。
-- [docs/WINDOWS-TESTING-PLAN.md](../../WINDOWS-TESTING-PLAN.md) — Windows 深度测试任务书（R13–R16 路线）：逐轮任务、验收标准、已知风险点（附源码位置）与问题回传格式。
+- [docs/archive/plans/windows-testing-plan.md](../../archive/plans/windows-testing-plan.md) — Windows 深度测试任务书（R13–R16 路线）：逐轮任务、验收标准、已知风险点（附源码位置）与问题回传格式。
 
 ## 失败时先看什么
 

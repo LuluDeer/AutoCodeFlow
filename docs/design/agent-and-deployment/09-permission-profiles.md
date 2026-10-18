@@ -29,7 +29,7 @@
 |---|---|---|---|
 | **`off`** | Agent 不能执行任何生成的代码，只能产出代码文本供人审阅 | 高合规环境（金融、医疗）；SOP 仅作建议 | Agent 无法自验证，SOP 交付变成「给人看」 |
 | **`sandbox`**（默认） | 生成的代码只能在受限 workspace 内试跑：无网络、仅限工作目录、无系统命令、有超时与资源上限 | **绝大多数企业**——能自验证，且爆炸半径可控 | 部分场景跑不通（需要真实网络的、需要访问内网系统的） |
-| **`host`** | 生成的代码可在本机正常运行（仍受白名单与超时约束） | 需要操作内网系统 / 已登录软件的场景 | **等于在该主机上开启任意代码执行**（[07 §3](./07-executor-agent.md)） |
+| **`host`** | 生成的代码可在本机正常运行（仍受白名单与超时约束） | 需要操作内网系统 / 已登录软件的场景 | **等于在该主机上开启任意代码执行**（[07 §3](07-executor-agent.md)） |
 
 **配置：**
 ```
@@ -78,7 +78,7 @@ EXECUTOR_AGENT_ALLOWED_APPS=chrome,excel             # app-scoped 时的白名�
 EXECUTOR_AGENT_ALLOWED_DOMAINS=erp.corp.com,crm.corp.com
 ```
 
-> ⚠️ **必须向企业 IT 明示的诚实结论**：选 `session` 就等于把这个员工的账号权限交给 Agent 使用。对企业的实际含义是——**Agent 能做的事，这个人也能做；出问题时，审计日志里两者难以区分**（这也是 [03 §7](./03-agent-tools-and-boundary.md) 建议 Agent 用独立身份的原因之一）。
+> ⚠️ **必须向企业 IT 明示的诚实结论**：选 `session` 就等于把这个员工的账号权限交给 Agent 使用。对企业的实际含义是——**Agent 能做的事，这个人也能做；出问题时，审计日志里两者难以区分**（这也是 [03 §7](03-agent-tools-and-boundary.md) 建议 Agent 用独立身份的原因之一）。
 >
 > **`app-scoped` 是推荐档**：企业通常能列出「这个自动化任务只该碰 ERP 和 CRM」，白名单化后风险大幅收敛。
 
@@ -86,8 +86,8 @@ EXECUTOR_AGENT_ALLOWED_DOMAINS=erp.corp.com,crm.corp.com
 
 | 档位 | 行为 | 安全分析 |
 |---|---|---|
-| **`deploy-only`**（默认） | Agent 只产出候选应用包，交给 executor-node 的既有部署通道跑 | ✅ 零冲突（[08 §5 方案 C](./08-executor-agent-scope.md)） |
-| **`isolated-runner`** | Agent 用**独立执行端点**直接跑任务（不经过 `/execute`） | ✅ 满足「直接执行」，且不污染既有 manifest 劫持防护（[08 §2.4 方案 A](./08-executor-agent-scope.md)） |
+| **`deploy-only`**（默认） | Agent 只产出候选应用包，交给 executor-node 的既有部署通道跑 | ✅ 零冲突（[08 §5 方案 C](08-executor-agent-scope.md)） |
+| **`isolated-runner`** | Agent 用**独立执行端点**直接跑任务（不经过 `/execute`） | ✅ 满足「直接执行」，且不污染既有 manifest 劫持防护（[08 §2.4 方案 A](08-executor-agent-scope.md)） |
 | **`shared-runner`** | Agent 复用既有 `/execute` 端点 | ❌ **不提供此档**——会破坏已验证的安全属性 |
 
 **配置：**
@@ -123,7 +123,7 @@ EXECUTOR_AGENT_ALLOWED_DOMAINS=erp.corp.com
 
 ### 4.1 配置存放位置（遵循既有模式）
 
-客户端 Agent 的配置应放在 **`config-store.ts`**，遵循 [该文件既有纪律](../atlas/01-apps/executor-desktop/)：
+客户端 Agent 的配置应放在 **`config-store.ts`**，遵循 [该文件既有纪律](../../atlas/01-apps/executor-desktop/README.md)：
 
 | 纪律 | 本设计如何遵守 |
 |---|---|

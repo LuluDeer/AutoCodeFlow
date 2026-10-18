@@ -33,7 +33,7 @@
 | `routes/deploy.spec.ts` | 应用部署接收面 |
 | `routes/prepare-failure-reason.spec.ts` | 失败原因归类准备 |
 
-- **失败时先看**：先跑 `npm run build` 排除类型错误；POSIX 假设类失败（taskkill 树杀、SIGBREAK、.cmd glue）看 CI `windows-node-tests` job——那是 R13 轮 Windows 兼容修复的防回退闸（含 executor-node / acf-cli / mcp-server 三包矩阵），深挖见 [WINDOWS-TESTING-PLAN](../../WINDOWS-TESTING-PLAN.md)。执行链路语义背景见 [executor-node README](../01-apps/executor-node/README.md) 与 [execution-pipeline](../01-apps/executor-node/execution-pipeline.md)。
+- **失败时先看**：先跑 `npm run build` 排除类型错误；POSIX 假设类失败（taskkill 树杀、SIGBREAK、.cmd glue）看 CI `windows-node-tests` job——那是 R13 轮 Windows 兼容修复的防回退闸（含 executor-node / acf-cli / mcp-server 三包矩阵），深挖见 [WINDOWS-TESTING-PLAN](../../archive/plans/windows-testing-plan.md)。执行链路语义背景见 [executor-node README](../01-apps/executor-node/README.md) 与 [execution-pipeline](../01-apps/executor-node/execution-pipeline.md)。
 
 ## executor-python（pytest）
 

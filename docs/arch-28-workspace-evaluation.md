@@ -211,7 +211,7 @@ run、`gh run view --json jobs` 步骤级时长）回填对比表。
 
 ARCH-28b 已执行，**结论=不接入 turbo 多包模式**（turbo 的启用前提与本仓
 ARCH-20 no-hoisting 裁定互斥：根一旦声明 `workspaces`，8 个子项目 `npm ci`
-全部 ERESOLVE 失败）。完整实测见 **[ARCH-28b-turbo-adoption.md](./ARCH-28b-turbo-adoption.md)**。
+全部 ERESOLVE 失败）。完整实测见 **[ARCH-28b-turbo-adoption.md](ARCH-28b-turbo-adoption.md)**。
 
 同口径基线（run 36300739454，develop，全绿，2026-09-27）：
 

@@ -1322,7 +1322,7 @@ describe("ExecutorService (__tests__)", () => {
   // R9 (round-8 P1 closure, W2): POST /executors/token used to rotateToken()
   // on EVERY call, so any re-fetching client put the stored tokenHash on a
   // ~30s rotation cycle that broke the N26 per-execution callback-token
-  // invariant (docs/VERIFY-round8-e2e.md §1.5). issueToken() is idempotent
+  // invariant (docs/archive/verifies/verify-round8-e2e.md §1.5). issueToken() is idempotent
   // per (address, startupId) — same-process re-fetches return the CURRENT
   // token; rotation only happens on first issuance, a changed startupId, a
   // legacy fetch outside the reuse window, or when the cached plaintext no

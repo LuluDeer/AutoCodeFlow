@@ -1,7 +1,7 @@
 # 12 · 执行器 GUI 能力的 Linux 适配侦察（P7c 残差）
 
 > 状态：**侦察稿（2026-09-26）**，未立项实施。结论先行：**做 X11/XWayland 后端（gui-x11.ts），Wayland 原生窗口如实不支持**。
-> 依据：[07-executor-agent.md](./07-executor-agent.md) §6 GUI 能力域、[09-permission-profiles.md](./09-permission-profiles.md) §2.3 hostAccess 档位、roadmap §9.9 残差行。
+> 依据：[07-executor-agent.md](07-executor-agent.md) §6 GUI 能力域、[09-permission-profiles.md](09-permission-profiles.md) §2.3 hostAccess 档位、roadmap §9.9 残差行。
 > 本文的全部实测数据来自 Linux 侧开发机（Ubuntu GNOME Wayland 会话，`XDG_SESSION_TYPE=wayland`）——P7c Windows 切片当年没有的验证条件，现在有了。
 
 ## 1. 现有资产与硬不变量（Linux 后端必须逐条继承）

@@ -107,7 +107,7 @@ ctx.log.warning("fallback used")
 
 - `ctx.log` 即 `logging` 标准库 logger（`get_logger(task_name)`，stdout handler，
   `%(asctime)s [%(levelname)s] %(name)s - %(message)s` 格式）——**无内存 buffer**，
-  stdout/stderr 由执行器采集为执行日志（与 node 侧采集路径不同，见[能力矩阵](./capability-matrix)）。
+  stdout/stderr 由执行器采集为执行日志（与 node 侧采集路径不同，见[能力矩阵](capability-matrix)）。
 
 ## 结果构造器
 
@@ -148,5 +148,5 @@ config = TaskConfig(
 
 ## 下一步
 
-- [能力矩阵](./capability-matrix)：与 node SDK 的 5 条差异逐条裁定
-- [官方示例库](./examples)
+- [能力矩阵](capability-matrix)：与 node SDK 的 5 条差异逐条裁定
+- [官方示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples)

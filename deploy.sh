@@ -1028,7 +1028,7 @@ install_systemd_units() {
             admin-api)
                 exec_start="/usr/bin/env node dist/main.js"
                 memory_max="2G"
-                # OOM 事故教训（docs/INCIDENT-2026-09-23-admin-api-oom.md）：
+                # OOM 事故教训（docs/archive/incidents/incident-2026-09-23-admin-api-oom.md）：
                 # Node 堆上限必须低于 systemd MemoryMax，否则 systemd 先杀进程、
                 # Node 来不及 GC。此处显式对齐。
                 env_lines="Environment=NODE_OPTIONS=--max-old-space-size=1536"
@@ -1540,7 +1540,7 @@ check_env_requirements() {
 }
 
 # Node 堆上限 vs systemd MemoryMax 一致性
-# 背景：docs/INCIDENT-2026-09-23-admin-api-oom.md——两者错配会导致
+# 背景：docs/archive/incidents/incident-2026-09-23-admin-api-oom.md——两者错配会导致
 # systemd 先杀进程、Node 来不及 GC。
 check_node_heap_alignment() {
     [ "$PLATFORM" = "linux" ] || return 0

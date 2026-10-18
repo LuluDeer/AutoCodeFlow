@@ -169,7 +169,7 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 
 `doctor` 的检查项：平台/Bash/Docker/Node/npm/Python 版本、端口占用（3105/80/8001/8002/5432/6379）、
 磁盘、服务存活、DB+Redis 连通性、`.env` 必填项与 JWT 强度、**Node 堆上限 vs systemd `MemoryMax` 一致性**
-（防 `docs/INCIDENT-2026-09-23-admin-api-oom.md` 那类 OOM：堆上限高于 cgroup 上限时 systemd 会先杀进程）。
+（防 `docs/archive/incidents/incident-2026-09-23-admin-api-oom.md` 那类 OOM：堆上限高于 cgroup 上限时 systemd 会先杀进程）。
 
 ### 常用选项
 
@@ -885,7 +885,7 @@ GitHub Releases**。原因与启用步骤：
 
 ## Windows 部署（R14 实测路线，2026-09）
 
-> 本章按 Windows 深度测试轮（`docs/WINDOWS-TESTING-PLAN.md` / `docs/windows-findings.md`）实测行为编写。
+> 本章按 Windows 深度测试轮（`docs/archive/plans/windows-testing-plan.md` / `docs/archive/reports/windows-findings.md`）实测行为编写。
 > `install.sh` 一键脚本依赖 systemd，**仅支持 Linux**；非 Linux 平台脚本会主动报错并给出指引（R-02）。
 > Windows 上 executor-node 作为普通前台/后台进程运行即可，功能与 Linux 一致（R14 全链路 9 项冒烟通过）。
 
@@ -1022,7 +1022,7 @@ Python 任务可声明 `runtimeVersion`（主.次版本，如 `3.7` / `3.12` / `
 
 **uv 的可下载清单只覆盖 `3.8 ~ 3.14`，不含 3.7**——`uv python install 3.7` 必然失败（`error: No download found for request: cpython-3.7-<platform>`，exit 2），**升级 uv 也无法解决**（已交叉实测 0.11.14，下界同样是 3.8）。
 
-3.7 因此**只能由部署方离线预填缓存卷**（可选模式 B 的强制场景）。完整操作步骤、平台三元组对照表、故障诊断见 **[`docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md)**；支持矩阵定稿（含 3.7 仅 x86_64 可用等限制）见同目录 [`SUPPORT-MATRIX.md`](./design/python-task-upload-and-multiversion/SUPPORT-MATRIX.md)。
+3.7 因此**只能由部署方离线预填缓存卷**（可选模式 B 的强制场景）。完整操作步骤、平台三元组对照表、故障诊断见 **[`docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`](design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md)**；支持矩阵定稿（含 3.7 仅 x86_64 可用等限制）见同目录 [`SUPPORT-MATRIX.md`](design/python-task-upload-and-multiversion/SUPPORT-MATRIX.md)。
 
 可声明区间 `3.7 ~ 3.14`；在线可下载区间 `3.8 ~ 3.14`。区间外版本声明被拒绝保存。
 
@@ -1060,7 +1060,7 @@ Python 任务可声明 `runtimeVersion`（主.次版本，如 `3.7` / `3.12` / `
 - 显式豁免：`maintenance.py` 跳过解释器层（物理隔离是主防线，豁免是第二道——即便部署方把池配进了 `WORK_DIR`，清扫也会放过它）；
 - 改由**体积红线**治理：单版本 > `INTERPRETER_SINGLE_VERSION_MB`（250MB）或总池 > `INTERPRETER_TOTAL_GB`（4GB）→ **告警 + 回收最久未使用版本**（按目录 mtime）。
 
-> **回收是「引用感知」的**：仍被任务 venv 依赖的版本一律跳过（venv 的 `bin/python` 只是指向池内目录的 shim，删了 venv 当场报废）。若所有超限候选都被引用，则**一个都不删**、只告警——宁可池暂时超红线，也不静默弄废用户 venv。此时需等 `.venvs` 到期被 TTL 清扫，或调大 `INTERPRETER_TOTAL_GB`。详见 [`docs/operations.md`](./operations.md)「解释器缓存池运维」。
+> **回收是「引用感知」的**：仍被任务 venv 依赖的版本一律跳过（venv 的 `bin/python` 只是指向池内目录的 shim，删了 venv 当场报废）。若所有超限候选都被引用，则**一个都不删**、只告警——宁可池暂时超红线，也不静默弄废用户 venv。此时需等 `.venvs` 到期被 TTL 清扫，或调大 `INTERPRETER_TOTAL_GB`。详见 [`docs/operations.md`](operations.md)「解释器缓存池运维」。
 
 > ⚠️ **不要**把 `UV_PYTHON_INSTALL_DIR` 设成 `WORK_DIR` 的子目录（如 `/data/tasks/interpreters`），否则会被 TTL 清扫误删。
 
@@ -1103,7 +1103,7 @@ volumes:
   interpreter_cache:
 ```
 
-> **⚠️ 两个执行器基底 libc 不同，解释器产物不可互换**：`executor-python` 基于 `python:3.12-slim`（Debian/**glibc**，池目录用 `linux-x86_64-**gnu**`），`executor-node` 基于 `node:24-alpine`（Alpine/**musl**，用 `linux-x86_64-**musl**`）。**共卷是安全的**（uv 按平台分量过滤，非本平台条目被安全跳过——实测池内混放时 `uv python list --only-installed` 仍 exit 0），但**离线预填时须两个 libc 各放一份**，否则其中一个执行器探测不到该版本。详见 [`OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md) §5.4。
+> **⚠️ 两个执行器基底 libc 不同，解释器产物不可互换**：`executor-python` 基于 `python:3.12-slim`（Debian/**glibc**，池目录用 `linux-x86_64-**gnu**`），`executor-node` 基于 `node:24-alpine`（Alpine/**musl**，用 `linux-x86_64-**musl**`）。**共卷是安全的**（uv 按平台分量过滤，非本平台条目被安全跳过——实测池内混放时 `uv python list --only-installed` 仍 exit 0），但**离线预填时须两个 libc 各放一份**，否则其中一个执行器探测不到该版本。详见 [`OFFLINE-PROVISIONING.md`](design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md) §5.4。
 
 > **⚠️ 池内同平台损坏条目会拖垮整份清单**：一个"目录名看着对、但 uv 查询其版本失败"的条目，会让 `uv python list --only-installed` **整条 exit 2**；执行器随即 fail-safe 上报**空清单**（正常版本其实仍可用，只是上报被拖垮，管理台该执行器 `interpreters` 列变空）。预填后务必按 runbook §3.5 三关验证，**只把验证通过的解释器放进生产池**。详见 runbook §5.5 / §7.5。
 

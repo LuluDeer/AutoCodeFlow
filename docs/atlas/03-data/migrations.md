@@ -27,7 +27,7 @@ npm run typeorm             # ts-node -r tsconfig-paths/register ./node_modules/
 - 实体 glob `src/modules/**/*.entity{.ts,.js}`（**模块根直放的实体也能加载**，如 `project/project.entity.ts`、`executor-package/executor-package.entity.ts`）；迁移 glob `src/migrations/*{.ts,.js}`。
 - `synchronize: false`——schema 只能靠迁移演进。
 
-运行面（App 启动）另有一套 `TypeOrmModule.forRootAsync` → `buildTypeOrmDataSourceOptions()`（`src/config/configuration.ts`）：`migrationsRun: NODE_ENV !== "development"`（**非 dev 启动时自动执行迁移**）、`synchronize` 由显式开关 `DB_SYNCHRONIZE` 收口（默认关闭）、`DB_READ_REPLICA_URL` 非空时启用读写分离（SELECT 走 replica，迁移恒走 master）。环境变量全表见 [06-infra](../../06-infra/)。
+运行面（App 启动）另有一套 `TypeOrmModule.forRootAsync` → `buildTypeOrmDataSourceOptions()`（`src/config/configuration.ts`）：`migrationsRun: NODE_ENV !== "development"`（**非 dev 启动时自动执行迁移**）、`synchronize` 由显式开关 `DB_SYNCHRONIZE` 收口（默认关闭）、`DB_READ_REPLICA_URL` 非空时启用读写分离（SELECT 走 replica，迁移恒走 master）。环境变量全表见 [06-infra](../06-infra/README.md)。
 
 ## migrations.spec.ts 的作用（DB-005 回归防护）
 

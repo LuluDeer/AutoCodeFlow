@@ -137,4 +137,4 @@ task.executorId 非空 ──► pinning：只投该执行器（离线/满载即
 
 - [task](task.md) · [scheduler](scheduler.md) · [executor-package](executor-package.md) · [artifacts](artifacts.md)
 - [执行器注册流程](../../../04-flows/executor-registration.md)（规划路径）
-- [executor-node](../../../01-apps/executor-node/README.md) / [executor-python](../../../01-apps/executor-python/README.md)（规划路径）
+- [executor-node](../../executor-node/README.md) / [executor-python](../../executor-python/README.md)（规划路径）

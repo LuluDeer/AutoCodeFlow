@@ -324,7 +324,7 @@ export class ExecutorService implements OnModuleInit {
   // re-fetched on a loop (executor-node's envelope-parse bug made every fetch
   // "fail" and retry every 30s; executor-python still re-fetches per request)
   // put the stored tokenHash on a rotation cycle that broke the N26
-  // per-execution callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+  // per-execution callback-token invariant (docs/archive/verifies/verify-round8-e2e.md §1.5).
   // issueToken() now returns the CURRENT token while the caller proves it is
   // the same process life (same startupId — N4 register semantics), and only
   // rotates on a new/changed startupId, on a legacy (startupId-less) fetch
@@ -345,7 +345,7 @@ export class ExecutorService implements OnModuleInit {
   // holding the shared token could grow the Map unbounded by hitting
   // POST /executors/token with fresh addresses. The TTL is deliberately NOT
   // the 60s TOKEN_CACHE_TTL_MS: idempotent same-startupId reuse must survive
-  // the executors' ~30min token-refresh cycle (docs/VERIFY-round9-e2e.md §1.3
+  // the executors' ~30min token-refresh cycle (docs/archive/verifies/verify-round9-e2e.md §1.3
   // observed reuse at 25.5min). An executor living past the TTL just rotates
   // once on its next fetch — the same harmless cold-start behavior as an
   // admin-api restart.

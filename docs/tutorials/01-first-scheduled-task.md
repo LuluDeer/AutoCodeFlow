@@ -99,7 +99,7 @@ return { message: msg, success: true };
 | 现象 | 排查 |
 |------|------|
 | 提示「无可用执行器」 | 「执行器」页看是否在线；注册后心跳同步约需 10-15 秒（见[快速上手常见问题](../quickstart.md#常见问题)） |
-| 日志报模块找不到 | 说明脚本有依赖，请先读[教程 02 · 私服依赖](./02-private-registry-deps) |
+| 日志报模块找不到 | 说明脚本有依赖，请先读[教程 02 · 私服依赖](02-private-registry-deps.md) |
 | 一直显示「运行中」 | 检查是否配了 `timeout`；没配超时的任务会一直挂到执行器重启 |
 
 ## 7. 已学到的与下一步
@@ -109,4 +109,4 @@ return { message: msg, success: true };
 - 手动触发 + cron 调度双验证 ✓
 
 下一步：任务脚本需要 `import` 第三方包？→
-[教程 02 · 私服依赖](./02-private-registry-deps)。
+[教程 02 · 私服依赖](02-private-registry-deps.md)。

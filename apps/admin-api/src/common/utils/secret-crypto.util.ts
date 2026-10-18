@@ -8,7 +8,7 @@ import {
 /**
  * SEC-02: task-level secrets at-rest encryption (AES-256-GCM).
  *
- * Design (docs/DEVELOPMENT-PLAN-2026-09.md §8):
+ * Design (docs/archive/plans/development-plan-2026-09.md §8):
  * - Key material comes from env (KMS semantics: the deployment injects the
  *   32-byte key via `SEC_SECRETS_KEY`; rotation = re-write rows with the new
  *   key, the self-describing `enc:v1:` prefix leaves room for a future

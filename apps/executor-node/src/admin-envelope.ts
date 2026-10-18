@@ -12,7 +12,7 @@
  * middleware/auth.ts fetch a fresh token every 30s, and because the token
  * endpoint rotated on every call it put the DB tokenHash on a ~30s rotation
  * cycle that broke the N26 per-execution callback-token invariant
- * (docs/VERIFY-round8-e2e.md §1.5).
+ * (docs/archive/verifies/verify-round8-e2e.md §1.5).
  */
 import { config } from './config';
 

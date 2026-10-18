@@ -12,7 +12,7 @@
 ### 触发事故（2026-09-23 生产反馈）
 
 中台上传的应用只部署到执行器 A，但创建任务下发时却是执行器 B 在运行；B 的客户端「本地已部署应用」列表为空，A 的列表有该应用。排查报告见
-[`docs/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md`](../reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md)。
+[`docs/archive/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md`](../archive/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md)。
 
 排查定位到**两个独立缺陷**：
 
@@ -367,13 +367,13 @@ workDir **顶层的一切（含文件）**都会被 TTL 清扫按 mtime 删除�
   它在 `address` 仍是身份的前提下也能正确工作（判据 `app_deployments.executorId`
   优先、`executorAddress` 兜底），因此**不必等本 ADR 落地**。本 ADR 落地后会
   顺带消除该切片在 address 碰撞下的残余误判（两机共享一行 → 偏好可能指错）。
-- 相关 ADR：[ADR-003](./adr-003-idempotent-token-issuance.md)（幂等签发，本 ADR 改其幂等键）、
-  [ADR-005](./adr-005-bundle-same-commit.md)（三端同批发布）、
-  [ADR-008](./adr-008-mock-vs-reality.md)（真机冒烟）、
-  [ADR-012](./adr-012-executor-token-safestorage.md)（token 存储姿态，本 ADR 不改认证面）、
-  [ADR-015](./adr-015-executor-pull-dispatch.md) / [ADR-016](./adr-016-executor-control-plane-pull.md)（pull 通道，队列键受益方）
-- 排查报告：[`docs/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md`](../reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md)
-- **验收记录**：[`docs/VERIFY-2026-09-23-executor-identity.md`](../VERIFY-2026-09-23-executor-identity.md)
+- 相关 ADR：[ADR-003](adr-003-idempotent-token-issuance.md)（幂等签发，本 ADR 改其幂等键）、
+  [ADR-005](adr-005-bundle-same-commit.md)（三端同批发布）、
+  [ADR-008](adr-008-mock-vs-reality.md)（真机冒烟）、
+  [ADR-012](adr-012-executor-token-safestorage.md)（token 存储姿态，本 ADR 不改认证面）、
+  [ADR-015](adr-015-executor-pull-dispatch.md) / [ADR-016](adr-016-executor-control-plane-pull.md)（pull 通道，队列键受益方）
+- 排查报告：[`docs/archive/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md`](../archive/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md)
+- **验收记录**：[`docs/archive/verifies/verify-2026-09-23-executor-identity.md`](../archive/verifies/verify-2026-09-23-executor-identity.md)
   —— 按 `VERIFY-MATRIX` 逐项交代 CI/本机证据，并**如实列出未执行的真机项**
   （executor-node 真机全链、调度真机冒烟、以及本 ADR 的「两台同网段机器 → 冲突告警」
   真机冒烟；后者只有用户侧的两台机器能复现）。

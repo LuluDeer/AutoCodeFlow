@@ -115,7 +115,7 @@ node scripts/load-test.mjs \
 
 ### 后续 QA-05/BUG-19 目标（未实测、未验收）
 
-以下数字来自 `docs/DEVELOPMENT-PLAN-2026-09H2.md` §7 QA-05，仅作为实验设计目标：
+以下数字来自 `docs/archive/plans/development-plan-2026-09h2.md` §7 QA-05，仅作为实验设计目标：
 
 - 单实例 **500 并发执行**：需逐级递增并发，确认 executor `MAX_CONCURRENT_TASKS`、BullMQ、PG 连接池和 admin-api CPU/RSS 水位；脚本并发参数不是容量承诺。
 - **1000 任务/分钟入队**：需用专门入队节奏与足够高但可解释的服务端限流，区分 API 限流瓶颈与队列/数据库瓶颈。

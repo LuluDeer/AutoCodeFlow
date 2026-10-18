@@ -537,9 +537,14 @@
 #     本次按 ADR-005 补打并回填 ①②。
 #   · 桌面端内嵌执行器若漏打，后果不是"少个功能"而是**功能失效**：日志上报仍被
 #     NAT 叠加限流截断，且 `MAX_CONCURRENT_TASKS=1` 的桌面执行器**永久拉不到任务**。
+#   · DOC-GOV（2026-10-19）：文档治理把 `docs/VERIFY-round*-e2e.md` 等一次性报告迁入
+#     `docs/archive/`，`executor-node/src` 里 **7 处注释中的文档路径**随之更新。
+#     注释不改变运行行为，但 ncc 会把它原样内联进产物 → source-digest 与字节哈希
+#     都变（actual=178388c6… ≠ expected=55d884d4…）。按 ADR-005 重打并回填 ①②，
+#     这是纪律要求的正确处置，不是漂移。
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0。bundle 4296635 bytes。
 #   字节确定性实测：**同目录连续两次重打逐字节一致**（a32b60f5…）——与既有先例
 #   （本文件 §386 / §430）结论一致：ncc 0.45 的产物与 map 均无绝对路径，
 #   ② 可本地回填，CI 仍权威复验。source-digest 46 个输入文件。
-source-digest: 55d884d43b46f9727cff20edc013b6c0185671e353eadfc6e82a0d7119243849
-aa0893709d93ea399356957d4a05e2eae8e7a9cc5fae0ac5f0aaa947a5cc2802  index.js
+source-digest: 178388c62de8a70ec49d0f757da106b833f1b1dd86a6860691708f3ee19b3e1f
+2b72e0c8528133909eaeb43e346583ee62ab6e3942e2040df409d8f53385df40  index.js

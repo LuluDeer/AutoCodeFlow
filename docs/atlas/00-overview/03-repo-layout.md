@@ -74,5 +74,5 @@ AutoCodeFlow/
 
 ## 相关文档
 
-- 各应用细节: [../01-apps/](../01-apps/)
+- 各应用细节: [../01-apps/](../01-apps)
 - 包生态: [../02-packages/README.md](../02-packages/README.md)

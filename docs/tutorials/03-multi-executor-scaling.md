@@ -2,7 +2,7 @@
 
 > 目标：把执行器从 1 台扩到 2 台，理解平台如何分派任务、如何在应用发布时
 > 用灰度策略保护生产。
-> 前提：已完成[教程 02](./02-private-registry-deps)；你有 ADMIN 角色账号。
+> 前提：已完成[教程 02](02-private-registry-deps.md)；你有 ADMIN 角色账号。
 
 ## 0. 平台如何挑执行器
 
@@ -132,4 +132,4 @@ curl -X POST -H "Authorization: Bearer <JWT>" \
 > `pending_approval` 部署行，审批/驳回流程可直接演示。
 
 多台执行器跑起来后，故障面也随之变大——谁在半夜发现执行器掉线？→
-[教程 04 · 告警接入值班](./04-alerting-oncall)。
+[教程 04 · 告警接入值班](04-alerting-oncall.md)。

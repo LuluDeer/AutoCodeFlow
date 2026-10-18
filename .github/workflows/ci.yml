@@ -773,6 +773,15 @@ jobs:
         run: |
           node scripts/check-migrations.mjs
           node scripts/check-migrations.selftest.mjs
+      # DOC-GOV：文档仓库守卫（死链 / 孤儿文档 / 根目录洁癖）。
+      # 为什么挂在这里：零依赖、秒级、与迁移守卫同属「结构纪律」。
+      # 治理前实测 51 条死链、77 篇孤儿文档、13 份一次性报告堆在仓库根目录，
+      # 而没有任何东西会读它们——问题可以静默存在几个月。现在退化即红灯。
+      # 判据与自检见 scripts/docs/check-docs.mjs 与 check-docs.selftest.mjs。
+      - name: Docs governance guard (DOC-GOV)
+        run: |
+          node scripts/docs/check-docs.selftest.mjs
+          node scripts/docs/check-docs.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
@@ -1038,7 +1047,7 @@ jobs:
           # 而无人发现（agent-boundary-check 的硬编码 43 与"必须镜像 mcp"前提
           # 过期、agent-sop-check 未跟上 ingestClarification 的归属断言）。
           # 修好后立即纳入，否则会再次腐烂 —— 见
-          # docs/PRE-EXISTING-CI-GAPS-2026-10-08.md。
+          # docs/archive/incidents/pre-existing-ci-gaps-2026-10-08.md。
           npm run test:agent
           npm run test:sop
           # AI 域（qwen 多模态）的两层检查：运行时行为（转译 ai.service.ts +

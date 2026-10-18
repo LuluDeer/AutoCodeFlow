@@ -243,7 +243,7 @@ SOP 是「一个 Agent 给另一个 Agent 的指令」——这是**跨 Agent �
 
 ### 4.3 谁有权发布 SOP
 
-`sop_publish` 归入 `write` tier 且需审批（[03 §4](./03-agent-tools-and-boundary.md)）。理由：SOP 会成为另一个 Agent 的执行依据，发布权 = 间接的指令注入权。**建议 SOP 首次发布必须人工审批**，后续小版本修订可由 Agent 自主（可配）。
+`sop_publish` 归入 `write` tier 且需审批（[03 §4](03-agent-tools-and-boundary.md)）。理由：SOP 会成为另一个 Agent 的执行依据，发布权 = 间接的指令注入权。**建议 SOP 首次发布必须人工审批**，后续小版本修订可由 Agent 自主（可配）。
 
 ## 5. 多模态入口（视频理解的落点）
 
@@ -284,7 +284,7 @@ POST /api/agent/clarifications
 
 **这就是视频理解的真实价值点**：把「文字描述不清楚的 UI 卡点」变成可诊断的输入。
 
-### 5.1 边界（见 [05 §4](./05-qwen-multimodal.md)）
+### 5.1 边界（见 [05 §4](05-qwen-multimodal.md)）
 
 视频理解成本高（按帧/秒计费）、延迟大（上传+推理数十秒）。**只在这条窄路径启用**，不做通用能力。
 
@@ -303,7 +303,7 @@ POST /api/agent/clarifications
 
 ## 7. ★ 执行器 Agent 已确认：通用自主智能体
 
-**（本节原为「待确认项」，现已定案，详见 [07-executor-agent.md](./07-executor-agent.md)）**
+**（本节原为「待确认项」，现已定案，详见 [07-executor-agent.md](07-executor-agent.md)）**
 
 已确认的方向：执行器上是**通用 agent**——读 SOP 后，自主观察所在的这台电脑（有什么软件？目标系统什么形态？），自主决定实现方式（写 Playwright / 操作桌面 GUI / 直接调 API），自己写、自己跑、自己改到能用，然后回报中台。
 

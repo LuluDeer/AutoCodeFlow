@@ -129,7 +129,7 @@
 
 ## 🔗 相关资源
 
-- [CI 优化文档](../docs/ci-optimization-2026.md)
+- [CI 优化文档](../docs/archive/reports/ci-optimization-2026.md)
 - [GitHub Actions 文档](https://docs.github.com/en/actions)
 - [成本监控 Issue](#) - 由 workflow 自动创建
 - [项目 Wiki](https://github.com/LuluDeer/AutoCodeFlow/wiki)

@@ -8,17 +8,17 @@
 
 | 文档 | 内容 | 读它来解决什么问题 |
 |---|---|---|
-| [01-deployment.md](./01-deployment.md) | 一键部署：源码模式 + Docker 模式 | 生产端为什么用源码部署？一条命令怎么跑起来？ |
-| [02-agent-architecture.md](./02-agent-architecture.md) | 中台 Agent 运行时架构 | Agent 装在哪、怎么常驻、工具怎么调、会话怎么存 |
-| [03-agent-tools-and-boundary.md](./03-agent-tools-and-boundary.md) | 工具集与边界控制 | 43 个 MCP 工具怎么收编？危险动作怎么拦？ |
-| [04-sop-protocol.md](./04-sop-protocol.md) | SOP 协议与多 Agent 协作 | SOP 长什么样？执行器 Agent 不懂时怎么回问？ |
-| [05-qwen-multimodal.md](./05-qwen-multimodal.md) | Qwen / DashScope 多模态接入 | 视频理解怎么接？现有 `ai.service.ts` 怎么改？ |
-| [06-roadmap.md](./06-roadmap.md) | 分阶段落地路线图 | 先做什么、后做什么、每阶段的验收标准 |
-| [07-executor-agent.md](./07-executor-agent.md) | ★ 执行器 Agent（通用自主智能体） | 它凭什么能自己做？代价是什么？怎么不失控？ |
-| [08-executor-agent-scope.md](./08-executor-agent-scope.md) | ★ 执行器 Agent 最终分工（已确认） | 哪些执行器加 Agent？与既有安全防线冲突在哪？ |
-| [09-permission-profiles.md](./09-permission-profiles.md) | ★ 企业权限档位模型 | 那四个安全决策怎么变成企业可配的选项？ |
-| [10-design-review.md](./10-design-review.md) | ★ 设计复审：缺口与补充 | 对照代码复审发现的 6 个缺口 / 5 处调整 / 5 条建议 |
-| [11-agent-collaboration-api.md](./11-agent-collaboration-api.md) | ★ Agent 协作 API（缺失子系统） | 执行器 Agent 和中台 Agent 到底怎么通信？ |
+| [01-deployment.md](01-deployment.md) | 一键部署：源码模式 + Docker 模式 | 生产端为什么用源码部署？一条命令怎么跑起来？ |
+| [02-agent-architecture.md](02-agent-architecture.md) | 中台 Agent 运行时架构 | Agent 装在哪、怎么常驻、工具怎么调、会话怎么存 |
+| [03-agent-tools-and-boundary.md](03-agent-tools-and-boundary.md) | 工具集与边界控制 | 43 个 MCP 工具怎么收编？危险动作怎么拦？ |
+| [04-sop-protocol.md](04-sop-protocol.md) | SOP 协议与多 Agent 协作 | SOP 长什么样？执行器 Agent 不懂时怎么回问？ |
+| [05-qwen-multimodal.md](05-qwen-multimodal.md) | Qwen / DashScope 多模态接入 | 视频理解怎么接？现有 `ai.service.ts` 怎么改？ |
+| [06-roadmap.md](06-roadmap.md) | 分阶段落地路线图 | 先做什么、后做什么、每阶段的验收标准 |
+| [07-executor-agent.md](07-executor-agent.md) | ★ 执行器 Agent（通用自主智能体） | 它凭什么能自己做？代价是什么？怎么不失控？ |
+| [08-executor-agent-scope.md](08-executor-agent-scope.md) | ★ 执行器 Agent 最终分工（已确认） | 哪些执行器加 Agent？与既有安全防线冲突在哪？ |
+| [09-permission-profiles.md](09-permission-profiles.md) | ★ 企业权限档位模型 | 那四个安全决策怎么变成企业可配的选项？ |
+| [10-design-review.md](10-design-review.md) | ★ 设计复审：缺口与补充 | 对照代码复审发现的 6 个缺口 / 5 处调整 / 5 条建议 |
+| [11-agent-collaboration-api.md](11-agent-collaboration-api.md) | ★ Agent 协作 API（缺失子系统） | 执行器 Agent 和中台 Agent 到底怎么通信？ |
 
 ## 一、目标（你的原话拆解）
 
@@ -79,7 +79,7 @@
 ### 三处必须守住的既有纪律
 
 1. **fail-open 不可破**：现有 AI 全链路「AI 不可用绝不影响任务主链」。Agent 是新链路，**允许它自己失败**，但绝不能让它的失败回灌到调度/执行主链。设计上 Agent 只订阅事件、只调工具，不嵌在 `TaskProcessor` 的关键路径里。
-2. **SSRF 守卫不新开旁路**：Agent 的视频/图片 URL 拉取、MCP 工具转发、provider 出站，**全部**走 `assertAndPinHttpUrl` + `pinnedAxiosConfig`。这一条是安全红线，见 [03](./03-agent-tools-and-boundary.md)。
+2. **SSRF 守卫不新开旁路**：Agent 的视频/图片 URL 拉取、MCP 工具转发、provider 出站，**全部**走 `assertAndPinHttpUrl` + `pinnedAxiosConfig`。这一条是安全红线，见 [03](03-agent-tools-and-boundary.md)。
 3. **危险动作走既有审批**：Agent 要部署应用/改生产配置，必须命中 DEP-04 的 `pending_approval` 流程，**不允许**给 Agent 开"免审批"后门。
 
 ## 四、一句话架构
@@ -107,11 +107,11 @@
 
 ## 五、评审要点（请重点看这几处）
 
-1. **★ 执行器 Agent 是通用自主智能体** —— 见 [07](./07-executor-agent.md)。这个设想**能做且价值最大**，但它要求把「执行器上可跑任意代码」变成合法状态，与你项目现有加固方向相反。**这是必须你拍板的第一件事**（[07 §10](./07-executor-agent.md)）。
-2. **Agent 常驻是否会拖垮 admin-api？** —— 见 [02 §5 资源与隔离](./02-agent-architecture.md)，判断是「会有影响，需要 BullMQ 独立队列 + 并发上限 + 熔断」。
-3. **工具集分级而非全开** —— 见 [03 §2](./03-agent-tools-and-boundary.md)。`approve_deployment` 建议**硬编码禁用**（双人原则不能被 Agent 架空）。
-4. **SOP 从「操作手册」变成「声明式目标」** —— 见 [04 §7](./04-sop-protocol.md)。这是通用 Agent 带来的关键转变：SOP 不再因目标系统改版而批量失效。
-5. **视频理解只用于一条窄路径** —— 见 [05 §4](./05-qwen-multimodal.md)。执行器 Agent 卡住时上传录屏，中台看懂后判断是 SOP 不清还是页面变了。
+1. **★ 执行器 Agent 是通用自主智能体** —— 见 [07](07-executor-agent.md)。这个设想**能做且价值最大**，但它要求把「执行器上可跑任意代码」变成合法状态，与你项目现有加固方向相反。**这是必须你拍板的第一件事**（[07 §10](07-executor-agent.md)）。
+2. **Agent 常驻是否会拖垮 admin-api？** —— 见 [02 §5 资源与隔离](02-agent-architecture.md)，判断是「会有影响，需要 BullMQ 独立队列 + 并发上限 + 熔断」。
+3. **工具集分级而非全开** —— 见 [03 §2](03-agent-tools-and-boundary.md)。`approve_deployment` 建议**硬编码禁用**（双人原则不能被 Agent 架空）。
+4. **SOP 从「操作手册」变成「声明式目标」** —— 见 [04 §7](04-sop-protocol.md)。这是通用 Agent 带来的关键转变：SOP 不再因目标系统改版而批量失效。
+5. **视频理解只用于一条窄路径** —— 见 [05 §4](05-qwen-multimodal.md)。执行器 Agent 卡住时上传录屏，中台看懂后判断是 SOP 不清还是页面变了。
 
 ## 六、决策状态
 
@@ -133,7 +133,7 @@
 > **P7a 进度说明**：骨架已落地（`apps/executor-desktop/src/main/agent/`），但 **LLM 与真实
 > 试跑执行体尚未接入**——`loop.ts` 已留依赖注入口。能力域**如实**只报 `filesystem` / `http`，
 > 未实现浏览器前不声明 `browser`（否则中台的可行性预检会把需要浏览器的 SOP 派过来然后卡住）。
-> 详见 [06 §9.4](./06-roadmap.md)。
+> 详见 [06 §9.4](06-roadmap.md)。
 
 ### P3 安全态势（红队已验证）
 
@@ -153,22 +153,22 @@
 | 客户端 Agent 职责 | 不只「造」，**也能直接执行任务** |
 | Agent 交付形态 | **内置 executor-desktop**（Agent 以子进程运行，由 desktop 托管） |
 | Qwen 接入方式 | 新增 `provider=qwen`，走 DashScope OpenAI 兼容端点 |
-| 四项安全决策 | 转为**企业权限档位**（[09](./09-permission-profiles.md)），默认 `standard` |
+| 四项安全决策 | 转为**企业权限档位**（[09](09-permission-profiles.md)），默认 `standard` |
 
 ### ✅ 自主分析定案（12 项）
 
-`approve_deployment` 硬编码禁用、审批复用 DEP-04、预算并发 2 / 每日 5M 令牌、SOP 首发必须人工批、媒体走 artifacts + 7 天保留、无 Docker 生产环境不支持、多机部署后置、会话保留 30/90 天（写操作对齐审计 180 天）等。清单见 [06 §11](./06-roadmap.md)。
+`approve_deployment` 硬编码禁用、审批复用 DEP-04、预算并发 2 / 每日 5M 令牌、SOP 首发必须人工批、媒体走 artifacts + 7 天保留、无 Docker 生产环境不支持、多机部署后置、会话保留 30/90 天（写操作对齐审计 180 天）等。清单见 [06 §11](06-roadmap.md)。
 
 ### ⚠️ 复审发现的缺口（开工前需补）
 
-[10-design-review.md](./10-design-review.md) 对照代码复审后发现 **6 个缺口**，其中最严重的三个：
+[10-design-review.md](10-design-review.md) 对照代码复审后发现 **6 个缺口**，其中最严重的三个：
 
 | # | 缺口 | 影响 |
 |---|---|---|
-| 3 | **执行器 Agent 协作 API 整个缺失** | mcp-server 是 stdio-only，43 工具无一可用于协作 → 已补 [11](./11-agent-collaboration-api.md) |
+| 3 | **执行器 Agent 协作 API 整个缺失** | mcp-server 是 stdio-only，43 工具无一可用于协作 → 已补 [11](11-agent-collaboration-api.md) |
 | 2 | Agent 凭据链未定义 | 直接决定实现方式 → 已定：中台 in-process 走 Service 层；执行器复用 `validateTokenByAddress` + `capabilities` |
 | 1 | **Agent 与任务失败分析抢 AI 配额** | 会让任务失败分析**静默失效且不可观测** → 需独立配额 + 指标 |
 
 其余：DEP-04 待审批行占坑会卡死应用（缺口 4）、审计 append-only 表膨胀（缺口 5）、Agent 触发与执行的关联未定义（缺口 6）。
 
-**具体修订清单**（哪份文档哪一节怎么改）见 [10 §六](./10-design-review.md)。
+**具体修订清单**（哪份文档哪一节怎么改）见 [10 §六](10-design-review.md)。

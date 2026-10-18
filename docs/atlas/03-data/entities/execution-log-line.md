@@ -57,5 +57,5 @@
 
 1. **加列**：实体 + 迁移（幂等）；**注意分区表上所有唯一约束必须包含 `createdAt`**；同时考虑 legacy 表是否需要手工同步。
 2. **调整级别推断**：只改 `task/log-level.util.ts`，无 schema 变化（存量 NULL 行不回填）。
-3. **改保留期**：环境变量 `LOG_RETENTION_DAYS`，无 schema 改动（见 [06-infra](../../06-infra/)）。
+3. **改保留期**：环境变量 `LOG_RETENTION_DAYS`，无 schema 改动（见 [06-infra](../../06-infra)）。
 4. **分区运维**（手工 DETACH/清理 legacy）：见仓库 `docs/operations.md`「分区表运维」段。

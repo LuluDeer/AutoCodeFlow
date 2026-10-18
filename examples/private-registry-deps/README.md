@@ -9,10 +9,10 @@ admin 下发任务(requirements)
   → 任务代码 import 私有包
 ```
 
-- 入口脚本：[private_dep_task.py](./private_dep_task.py)
-- 依赖清单：[requirements.txt](./requirements.txt)
-- 任务配置样例：[task.example.json](./task.example.json)
-- Node 版对应示例：[../private-registry-deps-node/](../private-registry-deps-node/)
+- 入口脚本：[private_dep_task.py](private_dep_task.py)
+- 依赖清单：[requirements.txt](requirements.txt)
+- 任务配置样例：[task.example.json](task.example.json)
+- Node 版对应示例：[../private-registry-deps-node/](../private-registry-deps-node)
 
 ## 前置条件（executor 侧）
 
