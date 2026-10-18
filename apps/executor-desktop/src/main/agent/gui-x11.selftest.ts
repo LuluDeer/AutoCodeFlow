@@ -102,7 +102,7 @@ async function main(): Promise<void> {
       },
     });
     const out = await h.driver.run({ action: 'focus', app: 'gedit' });
-    assert.equal(out.ok, true, out.error);
+    assert.equal(out.ok, true, out.error ?? 'focus should succeed');
     // search used an anchored class pattern — app dots cannot widen the match
     const search = h.calls.find((c) => c.args[0] === 'search');
     // --onlyvisible 已移除（XWayland 可见位不可靠）；锚定模式带大小写折叠
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
     assert.equal((await h.driver.run({ action: 'click', app: 'gedit', x: 800, y: 10 })).error,
       'click_outside_window');
     const ok = await h.driver.run({ action: 'click', app: 'gedit', x: 10, y: 20 });
-    assert.equal(ok.ok, true, ok.error);
+    assert.equal(ok.ok, true, ok.error ?? 'action should succeed');
     const move = h.calls.find((c) => c.args[0] === 'mousemove');
     assert.deepEqual(move?.args, ['mousemove', '--sync', '110', '220']);
     assert.equal(h.calls.some((c) => c.args[0] === 'click' && c.args[1] === '1'), true);
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
       },
     });
     const ok = await h.driver.run({ action: 'type', app: 'gedit', text: 'x'.repeat(100) });
-    assert.equal(ok.ok, true, ok.error);
+    assert.equal(ok.ok, true, ok.error ?? 'action should succeed');
     const typeCalls = h.calls.filter((c) => c.args[0] === 'type');
     assert.equal(typeCalls.length, 4, '100 chars / 32-char chunks = 4 spawns');
     assert.deepEqual(typeCalls[0].args, ['type', '--delay', '12', '--', 'x'.repeat(32)]);
@@ -237,7 +237,7 @@ async function main(): Promise<void> {
     try {
       const target = path.join(dir, 'shot.png');
       const out = await h.driver.run({ action: 'screenshot', app: 'gedit', screenshotPath: target });
-      assert.equal(out.ok, true, out.error);
+      assert.equal(out.ok, true, out.error ?? 'focus should succeed');
       assert.equal(fs.readFileSync(target, 'utf8'), 'png', 'capture renamed into place');
       assert.equal(fs.existsSync(`${target}.tmp-${process.pid}`), false, 'tmp cleaned up');
       // 捕获后端 = ffmpeg x11grab（区域抓取自活动窗口矩形；import 在本机栈
