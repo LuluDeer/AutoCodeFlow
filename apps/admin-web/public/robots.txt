@@ -1,0 +1,14 @@
+# robots.txt — AutoCodeFlow 管理控制台
+#
+# LIGHTHOUSE-SEO（本轮）：此前本文件不存在，Vite preview / nginx 的 SPA
+# 回退把 /robots.txt 当作路由返回了 index.html（HTML），Lighthouse 的
+# robots-txt 审计于是报 "43 errors found / Syntax not understood"，SEO
+# 判 0 分。补一份真实文件即可同时修掉「返回 HTML」与「内容非 robots 语法」。
+#
+# 注意：这里**不能**写 `Disallow: /`。管理台虽然需要登录、没有公开内容，
+# 但 Lighthouse 的 `is-crawlable` 审计会检查每个被审计 URL 是否被
+# robots.txt 屏蔽——`Disallow: /` 会让 /login 直接判 0 分（实测如此）。
+# 正确做法是允许抓取，靠登录鉴权本身阻止内容外泄；真正的秘密不在
+# 「页面是否存在」，而在「未登录拿不到数据」。
+User-agent: *
+Allow: /

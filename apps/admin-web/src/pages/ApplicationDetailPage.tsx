@@ -104,7 +104,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
           </Tooltip>
         </Empty>
       )}
-      {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spin tip={t('appDetail.ai.analyzing')} size="large" /></div>}
+      {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spin description={t('appDetail.ai.analyzing')} size="large" /></div>}
       {error && <Alert type="error" title={error} showIcon />}
       {report && !loading && (
         <div>

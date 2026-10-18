@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- LIGHTHOUSE-SEO（本轮）：此前无 meta description，Lighthouse SEO
+         审计 meta-description 直接判 0 分并失败。管理台虽主要面向内网登录
+         用户，缺失描述仍会让搜索结果页与被分享的链接退化成裸标题。 -->
+    <meta
+      name="description"
+      content="AutoCodeFlow 管理与运维控制台：任务编排、执行器管理、执行记录与审计。"
+    />
     <title>AutoCodeFlow</title>
     <!-- UI-02：DOM 解析前注入 data-theme，防首帧闪白（FOUC）。
          F-30（DEEP_REVIEW 0ef3bbe）：脚本正文收敛为单一来源 src/theme/tokens.ts 的
