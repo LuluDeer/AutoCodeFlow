@@ -3,7 +3,7 @@ import {
   ApiKey,
   ApiKeyScope,
 } from '../../src/modules/api-keys/entities/api-key.entity';
-import { generateApiKey, hashApiKey } from '../../src/modules/api-keys/api-key.util';
+import { generateApiKey } from '../../src/modules/api-keys/api-key.util';
 
 /**
  * 测试数据工厂：ApiKey 实体
