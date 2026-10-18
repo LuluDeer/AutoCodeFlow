@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ develop ]
+    # main 分支的 push 不触发 CI（已由 PR 验证过）
+    # tags 的 push 也不触发 CI（release.yml 有独立验证）
   pull_request:
     branches: [ main, develop ]
   # W-28 专指 `e2e-full-windows`（windows-latest + PG 服务 + portable redis 下载

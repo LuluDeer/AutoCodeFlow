@@ -1,0 +1,66 @@
+name: README Sync
+
+# 当 README 更新时，自动同步到其他需要展示的地方
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'README.md'
+      - '.github/workflows/readme-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      
+      - name: Extract English README
+        run: |
+          # 提取英文部分（从 <a name="english"> 到 <a name="chinese"> 之前）
+          awk '/<a name="english">/,/<a name="chinese">/{
+            if (/<a name="chinese">/) exit;
+            print
+          }' README.md > README.en.md
+          
+          # 添加导航链接
+          echo "" >> README.en.md
+          echo "---" >> README.en.md
+          echo "" >> README.en.md
+          echo "📖 **[查看中文版](README.md#chinese) | View Chinese Version**" >> README.en.md
+      
+      - name: Extract Chinese README
+        run: |
+          # 提取中文部分（从 <a name="chinese"> 到文件结尾）
+          awk '/<a name="chinese">/,0' README.md > README.zh.md
+          
+          # 添加导航链接
+          echo "" >> README.zh.md
+          echo "---" >> README.zh.md
+          echo "" >> README.zh.md
+          echo "📖 **[View English Version](README.md#english) | 查看英文版**" >> README.zh.md
+      
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet README.en.md README.zh.md 2>/dev/null; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Commit and push if changed
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.en.md README.zh.md
+          git commit -m "docs: 自动同步 README 中英文版本
+
+由 readme-sync workflow 自动生成"
+          git push
