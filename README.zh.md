@@ -141,6 +141,32 @@ docker compose logs -f admin-api
 
 ---
 
+## 🗂️ 仓库结构
+
+```
+AutoCodeFlow/
+├── apps/                 控制面与执行器
+│   ├── admin-api/        NestJS 后端（REST + 调度 + 审计）
+│   ├── admin-web/        React 管理前端
+│   ├── executor-node/    Node.js 执行器
+│   ├── executor-python/  Python 执行器
+│   ├── executor-desktop/ Electron 桌面执行器
+│   └── registry-*/       私有 npm / PyPI 仓库
+├── packages/             共享 SDK 与协议契约
+├── interpreters/         Python 运行时环境
+├── infra/                反向代理、监控等部署配置
+├── scripts/              构建、校验与自检脚本
+├── examples/             可运行的官方示例
+└── docs/                 全部文档（入口见下方「文档」）
+```
+
+**根目录只放仓库级文件**（`README` / `LICENSE` / `CHANGELOG` / `CONTRIBUTING` /
+`SECURITY` / 部署脚本与 compose 文件）。审计报告、实施总结、已完成的计划一律进
+[`docs/archive/`](docs/archive/README.md)，由 CI 的 `DOC-GOV` 守卫强制
+（`scripts/docs/check-docs.mjs`：死链 / 孤儿文档 / 根目录洁癖三项）。
+
+---
+
 ## 📚 文档
 
 | 文档 | 说明 |
@@ -152,6 +178,10 @@ docker compose logs -f admin-api
 | [SDK 使用指南](docs/sdk-guide.md) | Python/Node.js SDK 使用示例 |
 | [API 参考](docs/api-reference.md) | REST API 接口、认证、错误码 |
 | [知识图谱](docs/atlas/README.md) | 完整架构文档 |
+| [**文档中心**](docs/README.md) | **从这里开始** — 按角色索引全部文档 |
+| [教程](docs/tutorials/index.md) | 五篇按真实上线顺序编排的教程 |
+| [架构决策记录](docs/adr/README.md) | 改架构前必读的 ADR |
+| [获取帮助](SUPPORT.md) · [安全策略](SECURITY.md) | 去哪提问、怎么报漏洞 |
 
 ---
 

@@ -146,6 +146,10 @@ Default admin credentials are set via `INITIAL_ADMIN_PASSWORD` in `.env`.
 | [SDK Guide](docs/sdk-guide.md) | Python/Node.js SDK usage and examples |
 | [API Reference](docs/api-reference.md) | REST API endpoints, authentication, error codes |
 | [Knowledge Atlas](docs/atlas/README.md) | Comprehensive architecture documentation |
+| [**Documentation Hub**](docs/README.md) | **Start here** — every doc indexed by role |
+| [Tutorials](docs/tutorials/index.md) | Five step-by-step tutorials in production order |
+| [Architecture Decisions](docs/adr/README.md) | ADRs — read before changing architecture |
+| [Support](SUPPORT.md) · [Security](SECURITY.md) | Where to ask, how to report a vulnerability |
 
 ---
 
