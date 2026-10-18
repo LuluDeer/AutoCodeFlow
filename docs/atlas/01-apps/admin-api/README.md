@@ -90,6 +90,7 @@ main.ts
 | registry | 私有 npm/PyPI 仓库代理（Verdaccio/自建 PyPI 转发） | [registry 模块](modules/registry.md)（下一批次） |
 | event-subscriptions | 出站事件订阅（DomainEventBus → webhook） | [出站订阅模块](modules/event-subscriptions.md)（下一批次） |
 | runtime | 任务 runtime 注册表（@Global，python/node/shell 描述层） | [runtime 模块](modules/runtime.md)（下一批次） |
+| sop | SOP 声明式契约、版本快照、发布/指派/复核 | [SOP 模块](modules/sop.md) |
 
 ## 运行要素
 

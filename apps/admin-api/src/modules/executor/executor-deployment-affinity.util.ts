@@ -5,7 +5,7 @@
  *
  * ── 背景：这次事故的真正主因 ─────────────────────────────────────────────
  * 中台上「应用只部署在执行器 A」，但创建/下发任务时任务跑到了执行器 B。
- * 排查结论（详见 docs/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md）：
+ * 排查结论（详见 docs/archive/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md）：
  * `app_deployments` 行**记了** `executorId`/`executorAddress`，但 manifest 驱动的
  * 任务自动注册不写 `task.executorId`，于是任务恒为 `executorId = NULL` →
  * `dispatch()` 走**全机队分支** → 按负载评分挑一台空闲的 → 挑中 B。

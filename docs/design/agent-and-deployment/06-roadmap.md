@@ -15,7 +15,7 @@
 | **P6** | 澄清循环 + 视频理解 | P5 + P1 | **高** | 是 |
 | **P7** | 执行器 Agent（网页自动化） | P5 | **最高** | 是 |
 
-**关键判断**：P0 和 P1 可以**立刻并行开工**，它们不依赖任何未定项。P7 依赖你还没定的「执行器 Agent 是什么」（[04 §7.1](./04-sop-protocol.md)）——**这个不定，P6/P7 无法收尾**。
+**关键判断**：P0 和 P1 可以**立刻并行开工**，它们不依赖任何未定项。P7 依赖你还没定的「执行器 Agent 是什么」（[04 §7.1](04-sop-protocol.md)）——**这个不定，P6/P7 无法收尾**。
 
 ## 2. P0 · 一键部署脚本 ✅ 已实现
 
@@ -27,7 +27,7 @@
 | 任务 | 产出 | 状态 |
 |---|---|---|
 | 参数解析 + 向后兼容 | `--mode` 默认 `docker`，现有用法零变化 | ✅ |
-| 8 阶段流水线骨架 | §[01 §4](./01-deployment.md) | ✅ |
+| 8 阶段流水线骨架 | §[01 §4](01-deployment.md) | ✅ |
 | `doctor` 子命令 + `--json` | Agent 的前置依赖（P3 要用） | ✅ |
 | systemd unit 模板 + 生成 | 源码模式核心 | ✅ |
 | `.deploy-manifest.json` + rollback | 回滚能力 | ✅ |
@@ -65,7 +65,7 @@
 > `ai.controller.ts` 的 qwen 配置面、`configuration.ts` + `app.module.ts`（Joi）配置注册、
 > 前端设置页 Qwen 段、`scripts/qwen-runtime-check.mjs`（34 项运行时断言）、`scripts/ai-qwen-structural-check.mjs`（44 项结构断言）。
 
-见 [05 §5 改造清单](./05-qwen-multimodal.md)（7 项，全部完成）。
+见 [05 §5 改造清单](05-qwen-multimodal.md)（7 项，全部完成）。
 
 ### 实现要点
 
@@ -103,7 +103,7 @@
 | 任务 | 产出 | 状态 |
 |---|---|---|
 | 三张表 + 迁移 | `agent_sessions` / `agent_steps` / `agent_tool_calls` + `task_executions.agentSessionId` | ✅ |
-| `AgentRuntimeService` 推理循环 | [02 §4](./02-agent-architecture.md) | ✅ |
+| `AgentRuntimeService` 推理循环 | [02 §4](02-agent-architecture.md) | ✅ |
 | 预算闸门 | 四道（steps/tokens/wallClock/toolCalls） | ✅ |
 | 独立 BullMQ 队列 `agent-jobs` | 并发固定 2，与 `task-queue` 分开 | ✅ |
 | 挂起/恢复机制 | 可重入的 `run()`（从 DB 重建 messages） | ✅ |
@@ -269,7 +269,7 @@
 - ✅ 能指派给一个模拟的执行器 Agent（手工 HTTP 经 agent-collab poll 领取，见 P6）
 - ⏳ front-matter 与 `docs/autoapp-skill.md` 的对齐（P7 起草真实 SOP 时收敛）
 
-**风险**：中。front-matter 与既有 `docs/autoapp-skill.md` 的对齐是关键（[04 §6](./04-sop-protocol.md)）。
+**风险**：中。front-matter 与既有 `docs/autoapp-skill.md` 的对齐是关键（[04 §6](04-sop-protocol.md)）。
 
 ## 8. P6 · 澄清循环 + 视频理解 ✅ 已实现（中台侧）
 
@@ -315,7 +315,7 @@
 
 **目标**：执行器上是**通用 agent**——读 SOP 后自主观察本机环境、自主决定实现方式、自己写自己跑自己改，回报中台。
 
-**★ 已定案，完整设计见 [07-executor-agent.md](./07-executor-agent.md)**。原「待定项」已解决。拆成四个子阶段：
+**★ 已定案，完整设计见 [07-executor-agent.md](07-executor-agent.md)**。原「待定项」已解决。拆成四个子阶段：
 
 | 子阶段 | 内容 | 关键 |
 |---|---|---|
@@ -338,12 +338,12 @@
 
 **这个设想要求把「执行器上可跑任意代码」变成合法状态**，与你项目现有加固方向（env-whitelist / shell 校验 / 封闭枚举）相反。这是**信任模型的根本改变**，必须：
 - 写 ADR（`adr-022-executor-agent-arbitrary-code.md`）
-- 用**权限档位**承载这个变化（[09](./09-permission-profiles.md)），而不是一个硬编码的「允许/禁止」
-- 明确「Agent 拥有宿主用户权限」这一固有属性（[07 §5](./07-executor-agent.md) 末警告）
+- 用**权限档位**承载这个变化（[09](09-permission-profiles.md)），而不是一个硬编码的「允许/禁止」
+- 明确「Agent 拥有宿主用户权限」这一固有属性（[07 §5](07-executor-agent.md) 末警告）
 
 **建议 P7a 作为 spike 先跑**——两周内就能知道这个设想在真实环境里是否成立，不必等全部做完。
 
-### 9.3 权限档位的实现顺序（[09 §6](./09-permission-profiles.md)）
+### 9.3 权限档位的实现顺序（[09 §6](09-permission-profiles.md)）
 
 不必一次做完所有档位：
 
@@ -430,7 +430,7 @@
 | 总开关 | `agentEnabled`（默认 false，ADR-022 显式开启）+ 消毒层布尔纪律 + index.ts 轮询循环接线（30s tick，host 内部 0 等待） | ✅ |
 | **设置面（P7c 前置增量）** | ConfigPage 新增「Agent（实验性）」组：开关 / 预设（未实现档位显示为禁用——选了也会被解析层钳回，界面与行为一致）/ codeExecution 覆盖 / 浏览器域名白名单；`agent:get-status` IPC + 状态行（working/processed/lastOutcome/生效档位，进组与保存后刷新）；config:save 热同步托管 | ✅ |
 | LLM 协议扩展 | plan/diagnose 可带 `"browser":[actions]`——先看页面再写代码；输出（页面文本/截图 mediaPath/录屏）进下一轮上下文 | ✅ |
-| 桌面 GUI 能力 | Windows 原生输入/目标窗口截图 + app-scoped 白名单 | ◐ Windows 切片已交付；Linux X11 已交付（12 号稿 → S1/S2/S3 全链）；macOS 侦察完成（[13-executor-gui-macos.md](./13-executor-gui-macos.md)）——可行性成立但**缓议**，POC 判定门见该稿 §5 |
+| 桌面 GUI 能力 | Windows 原生输入/目标窗口截图 + app-scoped 白名单 | ◐ Windows 切片已交付；Linux X11 已交付（12 号稿 → S1/S2/S3 全链）；macOS 侦察完成（[13-executor-gui-macos.md](13-executor-gui-macos.md)）——可行性成立但**缓议**，POC 判定门见该稿 §5 |
 | 端到端闭环 | — | ⏳ P7d |
 
 ### 实现中的关键判断
@@ -525,7 +525,7 @@
 
 **验收**：desktop `test:main` 全链通过（新增 GUI 权限/拒绝、Windows driver、运行时观察和状态展示自检）；主进程 TypeScript、renderer build/selftest 均通过。Windows 原生冒烟验证了当前窗口聚焦与拒绝路径；实际点击、输入和成功截图需在授权应用的交互桌面进行真机验收。
 
-**残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。Linux GUI 后端：侦察（[12-executor-gui-linux.md](./12-executor-gui-linux.md)）→ **S1 已落地（2026-09-26）**：`X11GuiDriver`（xdotool argv 封闭、逐动作前台进程复核、窗口边界点击、窗口级截图、缺依赖如实降级）+ agent-host 平台选择器 + gui-x11 selftest 接链（desktop test:main 35 套全绿）；S2 真机验收已完成（[VERIFY-2026-09-27-gui-x11.md](../../../VERIFY-2026-09-27-gui-x11.md)：正向 Xvfb 全链 7/7——focus/截图/点击/按键物理生效；负向 GNOME Wayland 实机如实拒绝，probe 增加 EWMH 活动窗口硬条件），S3 依赖清单已入 docs/operations.md（依赖改为 xdotool + ffmpeg）。Wayland 原生窗口如实不支持（能力上报不含 `gui`）；macOS GUI 后端侦察已收口（[13-executor-gui-macos.md](./13-executor-gui-macos.md)，2026-10-06）：可行性成立但缓议——签名/TCC/ScreenCaptureKit 三块新工程面 + 真机验证条件缺席，重开触发条件与 POC 判定门见该稿 §5。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
+**残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。Linux GUI 后端：侦察（[12-executor-gui-linux.md](12-executor-gui-linux.md)）→ **S1 已落地（2026-09-26）**：`X11GuiDriver`（xdotool argv 封闭、逐动作前台进程复核、窗口边界点击、窗口级截图、缺依赖如实降级）+ agent-host 平台选择器 + gui-x11 selftest 接链（desktop test:main 35 套全绿）；S2 真机验收已完成（[VERIFY-2026-09-27-gui-x11.md](../../archive/verifies/verify-2026-09-27-gui-x11.md)：正向 Xvfb 全链 7/7——focus/截图/点击/按键物理生效；负向 GNOME Wayland 实机如实拒绝，probe 增加 EWMH 活动窗口硬条件），S3 依赖清单已入 docs/operations.md（依赖改为 xdotool + ffmpeg）。Wayland 原生窗口如实不支持（能力上报不含 `gui`）；macOS GUI 后端侦察已收口（[13-executor-gui-macos.md](13-executor-gui-macos.md)，2026-10-06）：可行性成立但缓议——签名/TCC/ScreenCaptureKit 三块新工程面 + 真机验证条件缺席，重开触发条件与 POC 判定门见该稿 §5。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
 
 ### 9.10 P7d 执行器侧鲁棒性切片（2026-09-26）：澄清闭环 + 崩溃恢复 ✅
 
@@ -686,11 +686,11 @@ tsc 0 + nest build 绿 + lint gates 绿；env 三处文档同步（TTL/保留期
 3. 是 P3 的前置（`doctor --json` 是 Agent 的 `run_doctor` 工具）
 4. 风险最低，可以在等 Agent 设计定稿期间并行推进
 
-P1（Qwen）同样可以并行——但它需要 DashScope 账号（[05 §6.1](./05-qwen-multimodal.md)）。
+P1（Qwen）同样可以并行——但它需要 DashScope 账号（[05 §6.1](05-qwen-multimodal.md)）。
 
 ## 11. 决策状态（已收敛）
 
-**全部决策已解决**。原先标为「必须你拍板」的 4 项安全决策，已按「企业场景 + 可选权限选项」重构为**权限档位**（[09-permission-profiles.md](./09-permission-profiles.md)）——它们变成企业部署时的配置项，各有保守默认值，不再需要你逐个回答。
+**全部决策已解决**。原先标为「必须你拍板」的 4 项安全决策，已按「企业场景 + 可选权限选项」重构为**权限档位**（[09-permission-profiles.md](09-permission-profiles.md)）——它们变成企业部署时的配置项，各有保守默认值，不再需要你逐个回答。
 
 ### ✅ 已由你定案
 
@@ -736,8 +736,8 @@ P1（Qwen）同样可以并行——但它需要 DashScope 账号（[05 §6.1](.
 
 | # | 项 | 出处 |
 |---|---|---|
-| 1 | DashScope 账号与配额是否就绪 | [05 §6.1](./05-qwen-multimodal.md) |
-| 2 | `qwen-vl-max` vs `qwen-vl-plus`（需实测） | [05 §6.4](./05-qwen-multimodal.md) |
+| 1 | DashScope 账号与配额是否就绪 | [05 §6.1](05-qwen-multimodal.md) |
+| 2 | `qwen-vl-max` vs `qwen-vl-plus`（需实测） | [05 §6.4](05-qwen-multimodal.md) |
 
 ## 12. 与项目既有开发纪律的衔接
 

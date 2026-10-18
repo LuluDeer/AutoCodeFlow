@@ -1,0 +1,49 @@
+name: 文档问题
+description: 报告文档错误、缺失或过期
+title: "docs: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        文档入口：[docs/README.md](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/README.md)。
+        报告前请确认你看的不是**归档区的历史快照**（`docs/archive/`，不随代码更新）。
+
+  - type: input
+    id: location
+    attributes:
+      label: 文档位置
+      description: 文件路径或页面 URL
+      placeholder: "docs/deployment.md §多副本（HA）部署"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 问题类型
+      options:
+        - 内容错误（与代码实际行为不符）
+        - 内容过期（描述的是旧版本）
+        - 链接失效
+        - 表述不清 / 缺少步骤
+        - 缺少文档（某能力完全没写）
+        - 排版 / 格式
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: 具体问题
+      description: 现在文档怎么写的？实际情况是什么？给出可核实的依据（代码路径、命令输出）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议改法
+      description: 如果你知道正确内容，直接写在这里，可以省一轮往返。
+    validations:
+      required: false

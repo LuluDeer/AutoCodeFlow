@@ -4,7 +4,7 @@ admin-api / executor-node / executor-python **三方共享的执行器协议契�
 
 ## 背景
 
-评审 `docs/DEEP_REVIEW_0ef3bbe.md` §七 A3 指出：dispatch 载荷（timeout=0 / requirements /
+评审 `docs/archive/reviews/deep-review-0ef3bbe.md` §七 A3 指出：dispatch 载荷（timeout=0 / requirements /
 traceparent）、回调载荷（failureReason 枚举 / 日志截断 / artifacts）、运维端点（`/health/ready`
 形状与状态码）的三方一致性**只靠两侧注释互相引用维持**（"见 node execute.ts:xxx parity"、
 "python 侧同步"），每轮一致性修复都在补漏——即"注释里的 parity"。

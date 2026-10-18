@@ -123,7 +123,7 @@
 | 0-9 | 声明版本的 python 任务**首跑要联网下载**（池空时） | [interpreters.ts:1410](../../../apps/executor-node/src/interpreters.ts) `uv python install`；在线可下载区间 3.8~3.14 |
 | 0-10 | **启动/心跳路径完全不预热解释器** | `grep -n "warmup\|prewarm\|ensureVersion" main.ts scheduler.ts` → 无 |
 | 0-11 | `defaultRuntimeVersion` 是**死字段**：**无任何生产消费者**（仅类型定义、三项内置 runtime 的 `null` 字面量、测试 fixture 与 dist 声明），且三项内置 runtime 全是 `null` | [builtin-runtimes.ts:20,31,42](../../../apps/admin-api/src/modules/runtime/builtin-runtimes.ts)；[task-runtime.types.ts:39](../../../apps/admin-api/src/modules/runtime/task-runtime.types.ts)；`grep -rn defaultRuntimeVersion apps/{admin-api,admin-web}/src` 除上述外**零命中** |
-| 0-12 | 「默认 3.12」只存在于**调度兜底常量**与**需求描述**，不产生任何安装行为 | [interpreter-match.util.ts:52](../../../apps/admin-api/src/modules/executor/interpreter-match.util.ts) `LEGACY_DEFAULT_INTERPRETERS = ["3.12"]`（仅 `interpreters===null` 时的过滤豁免）；[REQUIREMENTS.md:126](../../../docs/requirements/python-task-upload-and-multiversion/REQUIREMENTS.md) FR-10 括号内「现状语义：Python 3.12」指容器宿主 |
+| 0-12 | 「默认 3.12」只存在于**调度兜底常量**与**需求描述**，不产生任何安装行为 | [interpreter-match.util.ts:52](../../../apps/admin-api/src/modules/executor/interpreter-match.util.ts) `LEGACY_DEFAULT_INTERPRETERS = ["3.12"]`（仅 `interpreters===null` 时的过滤豁免）；[REQUIREMENTS.md:126](../../requirements/python-task-upload-and-multiversion/REQUIREMENTS.md) FR-10 括号内「现状语义：Python 3.12」指容器宿主 |
 | 0-13 | **应用链没有 `runtimeVersion` 概念** | `grep -rn runtimeVersion apps/admin-api/src/modules/application/` → 无命中；[application.entity.ts:32](../../../apps/admin-api/src/modules/application/entities/application.entity.ts) 只有 `runtime: string` |
 | 0-14 | 应用 runtime **缺省即 python** | [application.controller.ts:487](../../../apps/admin-api/src/modules/application/application.controller.ts) `runtime: runtime \|\| manifestRuntime \|\| "python"` |
 | 0-15 | **git 也是宿主依赖** | [execute.ts:123](../../../apps/executor-node/src/routes/execute.ts) `runCommand('git', ...)` 等 5 处；[deploy.ts:1143](../../../apps/executor-node/src/routes/deploy.ts) 同 |
@@ -385,7 +385,7 @@ UV_PYTHON_INSTALL_DIR="${PYTHON_DEST}" \
   "${UV_DEST}/uv" python install "${ACF_PYTHON_VERSION}"
 ```
 
-优势：**目录名/平台三元组由 uv 自己生成**，天然避开 [CONTRACT §0.2](../../../docs/design/python-task-upload-and-multiversion/CONTRACT.md) 记载的「pbs 三元组 vs uv 三元组」静默失效坑（那是实测踩过的坑，手工搬运极易复发）。
+优势：**目录名/平台三元组由 uv 自己生成**，天然避开 [CONTRACT §0.2](../python-task-upload-and-multiversion/CONTRACT.md) 记载的「pbs 三元组 vs uv 三元组」静默失效坑（那是实测踩过的坑，手工搬运极易复发）。
 
 落点：`resources/interpreters/`，经 `electron-builder.yml` 的 `extraResources` 出包（照抄 uv 的写法）。运行期由桌面端把它作为 `UV_PYTHON_INSTALL_DIR` 的**只读基线**。
 
@@ -456,7 +456,7 @@ capabilityDetail?: {
 };
 ```
 
-admin 侧**本期只需落库 + 展示**（不参与派发决策，避免扩大改动面）；派发决策仍只看 `capabilities`。这符合 [CONTRACT §4 红线 8](../../../docs/design/python-task-upload-and-multiversion/CONTRACT.md)「新增字段全为增量（可空/可缺省），旧客户端零破坏」。
+admin 侧**本期只需落库 + 展示**（不参与派发决策，避免扩大改动面）；派发决策仍只看 `capabilities`。这符合 [CONTRACT §4 红线 8](../python-task-upload-and-multiversion/CONTRACT.md)「新增字段全为增量（可空/可缺省），旧客户端零破坏」。
 
 ### 4.5 需显式决策的点（**不决策不得实施**）
 
@@ -514,7 +514,7 @@ admin 侧**本期只需落库 + 展示**（不参与派发决策，避免扩大�
 | **R1** | `ELECTRON_RUN_AS_NODE` 被 env 白名单剥掉 | [env-whitelist.ts](../../../apps/executor-node/src/env-whitelist.ts) 只放行白名单；该键**不在**其中。漏了则 Electron 以 GUI 模式启动、任务挂死 | 在 `execute.ts` 显式注入（不走白名单）；selftest 断言「spawn 前 env 里确有该键」 |
 | **R2** | Electron 当 node 跑的**版本语义**与任务期望不符 | Electron 内置 Node 版本固定，任务可能有 engines 要求 | 诊断面如实显示版本；本期不做 node 多版本（与 NG-02 一致） |
 | **R3** | `UV_PYTHON_DOWNLOADS=manual` 下无版本回退**不能**触发下载 | [uv-paths.ts:101](../../../apps/executor-desktop/src/main/uv-paths.ts) 硬设为 manual；若池内没有默认版本，回退会**失败而非下载** | 这正是 §4.4.1 必须预置 3.12 的原因；未预置时明确失败并指引（**不**改成 automatic——那会破坏 D8 加固语义） |
-| **R4** | 预置解释器与 pbs/uv 目录名不匹配 → 静默失效 | [CONTRACT §0.2](../../../docs/design/python-task-upload-and-multiversion/CONTRACT.md) 实测坑 | 用 uv 自己 `python install` 生成目录（§4.4.1）；CI 断言 `uv python list --only-installed` 能列出 |
+| **R4** | 预置解释器与 pbs/uv 目录名不匹配 → 静默失效 | [CONTRACT §0.2](../python-task-upload-and-multiversion/CONTRACT.md) 实测坑 | 用 uv 自己 `python install` 生成目录（§4.4.1）；CI 断言 `uv python list --only-installed` 能列出 |
 | **R5** | mac 的 `.app` 内 Electron 路径 + bwrap | bwrap 仅 Linux；mac 无此路径 | 确认 `buildTaskSandboxArgv` 的 win32 抛错分支不覆盖 darwin（当前 Linux-only 使用） |
 | **R6** | 首启播种阻塞启动 | 复制 ~60MB | 后台异步 + 失败降级；不阻塞注册（对齐 AC-14b 纪律） |
 | **R7** | 打包体积增长 | +~60MB/平台（解释器） | 属必要成本（G1 的前提）；release 体积红线需重新评估 |
@@ -593,7 +593,7 @@ admin 侧**本期只需落库 + 展示**（不参与派发决策，避免扩大�
 3. 无 TODO / 无静默吞异常；
 4. 容器执行器既有测试全绿（G5 硬门禁）；
 5. 汇报格式：改动文件清单 + 测试命令与结果 + 未决风险；
-6. **文档同步**：`apps/executor-desktop/README.md`（前置要求从「需要宿主 Python」改为「自带默认解释器」）、`docs/deployment.md` §解释器缓存、`docs/atlas/01-apps/executor-desktop/`、以及 [docs/windows-findings.md](../../../docs/windows-findings.md) 补本条（Store stub 在**任务/部署链**的复发）。
+6. **文档同步**：`apps/executor-desktop/README.md`（前置要求从「需要宿主 Python」改为「自带默认解释器」）、`docs/deployment.md` §解释器缓存、`docs/atlas/01-apps/executor-desktop/`、以及 [docs/archive/reports/windows-findings.md](../../archive/reports/windows-findings.md) 补本条（Store stub 在**任务/部署链**的复发）。
 
 ---
 

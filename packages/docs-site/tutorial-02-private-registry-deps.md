@@ -103,4 +103,4 @@ npm publish --registry http://localhost:4873/
 
 ## 6. 下一步
 
-[教程 03 · 多执行器扩容](./tutorial-03-multi-executor-scaling)。
+[教程 03 · 多执行器扩容](tutorial-03-multi-executor-scaling)。

@@ -6,11 +6,11 @@
 
 | 篇 | 主题 | 你将学会 |
 |----|------|---------|
-| [01 · 第一个定时任务](./01-first-scheduled-task) | 登录 → 建任务 → 触发 → 看结果 | 平台核心概念（应用/任务/执行器/执行记录）与最小闭环；会用任务模板（CORE-03）少填 90% 表单 |
-| [02 · 私服依赖](./02-private-registry-deps) | 起内置 npm/PyPI 私服 → 发布内部包 → 任务 requirements 引用 | 任务级依赖声明（W-21）+ 私服安装链路，让任务脚本脱离「把依赖装进执行器镜像」的苦力活 |
-| [03 · 多执行器扩容](./03-multi-executor-scaling) | 第二台执行器注册 → 负载感知调度 → 灰度发布 | 横向扩容执行器、理解负载评分（CORE-05）与 canary 灰度（DEP-02）如何保护生产 |
-| [04 · 告警接入值班](./04-alerting-oncall) | 通知渠道 → 静默窗口 → Alertmanager → 告警路由 | 把平台通知与 Prometheus/Alertmanager 告警接入企业微信/钉钉/Slack，runbook 随告警直达 |
-| [05 · SOP 生态演示](./05-sop-agent-demo) | 种子预置 SOP → 指派 → Agent 执行 → 平台复核 → GUI/X11 演示 | SOP 声明式契约（capabilities/acceptance/constraints）、版本快照与幂等发布、复核会话不信自述的独立验证链路 |
+| [01 · 第一个定时任务](01-first-scheduled-task.md) | 登录 → 建任务 → 触发 → 看结果 | 平台核心概念（应用/任务/执行器/执行记录）与最小闭环；会用任务模板（CORE-03）少填 90% 表单 |
+| [02 · 私服依赖](02-private-registry-deps.md) | 起内置 npm/PyPI 私服 → 发布内部包 → 任务 requirements 引用 | 任务级依赖声明（W-21）+ 私服安装链路，让任务脚本脱离「把依赖装进执行器镜像」的苦力活 |
+| [03 · 多执行器扩容](03-multi-executor-scaling.md) | 第二台执行器注册 → 负载感知调度 → 灰度发布 | 横向扩容执行器、理解负载评分（CORE-05）与 canary 灰度（DEP-02）如何保护生产 |
+| [04 · 告警接入值班](04-alerting-oncall.md) | 通知渠道 → 静默窗口 → Alertmanager → 告警路由 | 把平台通知与 Prometheus/Alertmanager 告警接入企业微信/钉钉/Slack，runbook 随告警直达 |
+| [05 · SOP 生态演示](05-sop-agent-demo.md) | 种子预置 SOP → 指派 → Agent 执行 → 平台复核 → GUI/X11 演示 | SOP 声明式契约（capabilities/acceptance/constraints）、版本快照与幂等发布、复核会话不信自述的独立验证链路 |
 
 ## 阅读前提
 

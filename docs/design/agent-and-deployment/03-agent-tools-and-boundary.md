@@ -23,7 +23,7 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 - 语义一致 —— Agent 调的接口与 Claude Desktop 调的是同一个，不存在"行为漂移"
 - 已有测试可复用 —— `tools.test.ts`（44 KB）覆盖了这些工具
 
-**必要改造**：`tools.ts` 现在是「注册到 McpServer」，需要抽出**工具描述元数据**为独立导出（如 `export const TOOL_SPECS`），使 MCP 注册与 Agent 消费共享同一份定义。这是对 mcp-server 的**非破坏性重构**（见 [06 路线图](./06-roadmap.md) 阶段 3）。
+**必要改造**：`tools.ts` 现在是「注册到 McpServer」，需要抽出**工具描述元数据**为独立导出（如 `export const TOOL_SPECS`），使 MCP 注册与 Agent 消费共享同一份定义。这是对 mcp-server 的**非破坏性重构**（见 [06 路线图](06-roadmap.md) 阶段 3）。
 
 ## 2. 工具分级（边界控制的基础）
 
@@ -175,7 +175,7 @@ check(session, toolCall): Verdict
 
 ## 6. 审计与不可否认
 
-每个工具调用落 `agent_tool_calls`（见 [02 §3.3](./02-agent-architecture.md)），关键字段：
+每个工具调用落 `agent_tool_calls`（见 [02 §3.3](02-agent-architecture.md)），关键字段：
 
 - `argsJson` —— **已脱敏**（复用 `sanitizeLogs()`，且额外剥离凭据类字段）
 - `status` —— `denied` / `awaiting_approval` 也记录（**被拒的尝试同样有价值**，是攻击信号）

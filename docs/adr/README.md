@@ -5,7 +5,7 @@
 
 ## 写作规则
 
-- 新 ADR 使用 [adr-template.md](./adr-template.md)，文件名格式为 `adr-XXX-short-title.md`。
+- 新 ADR 使用 [adr-template.md](adr-template.md)，文件名格式为 `adr-XXX-short-title.md`。
 - 只记录会影响后续代码、测试、运维或安全边界的决策；普通实现说明不要写成 ADR。
 - 若修改既有决策，优先新增 ADR 并把旧 ADR 标为 `Superseded by ADR-XXX`，避免重写历史。
 - 决策必须能落到可验证约束，例如测试、CI 检查、迁移规则、部署 runbook 或代码不变量。
@@ -14,31 +14,31 @@
 
 | ADR | 标题 | 状态 |
 |---|---|---|
-| [ADR-001](./adr-001-per-execution-callback-token.md) | per-execution 回调 token（域分离 HMAC，v1.&lt;execId&gt;.&lt;exp&gt;.&lt;hmac&gt;） | Accepted |
-| [ADR-002](./adr-002-scheduler-dual-guard.md) | 调度器多实例双保险：Redis Leader Election + DB 条件 claim | Accepted |
-| [ADR-003](./adr-003-idempotent-token-issuance.md) | 执行器 per-executor token 幂等签发（startupId 稳态不轮换） | Accepted |
-| [ADR-004](./adr-004-response-envelope-contract.md) | 全局响应信封 `{code,message,data}` 是所有客户端的隐形契约 | Accepted |
-| [ADR-005](./adr-005-bundle-same-commit.md) | executor-node 源码与 ncc bundle 必须同 commit | Accepted |
-| [ADR-006](./adr-006-rbac-same-release.md) | RBAC 收紧与前端门控同批发布 | Accepted |
-| [ADR-007](./adr-007-config-first-ownership.md) | 多来源配置的优先级必须钉死在契约与测试里 | Accepted |
-| [ADR-008](./adr-008-mock-vs-reality.md) | 调度/队列/迁移改动的验收必须含真机冒烟 | Accepted |
-| [ADR-009](./adr-009-log-storage-dual-store.md) | S3 日志驱动的跨存储一致性边界 | Accepted |
-| [ADR-010](./adr-010-db-claim-dedup-window.md) | 触发去重窗口的语义：TTL 即窗口（renew:false） | Accepted |
-| [ADR-011](./adr-011-domain-event-bus.md) | 进程内领域事件总线——执行终态副作用与回调主链解耦（ARCH-21，FEAT-07 基座） | Accepted |
-| [ADR-012](./adr-012-executor-token-safestorage.md) | executorToken safeStorage 加密——三平台差异、basic_text 降级姿态与存量迁移（P0-4） | Accepted |
-| [ADR-013](./adr-013-project-roles.md) | 项目级角色细化——project_members 成员模型与 viewer/editor/admin 三档角色（AUTH-02） | Accepted |
-| [ADR-014](./adr-014-oidc-sso.md) | OIDC SSO 单点登录（授权码模式 / 无状态 state / oidcSub 三级绑定 / JIT 开关） | Accepted |
-| [ADR-015](./adr-015-executor-pull-dispatch.md) | 执行器 pull 模式派发——NAT 内执行器零入站回连（长轮询拉取，弃 WS 反连） | Accepted |
-| [ADR-016](./adr-016-executor-control-plane-pull.md) | 控制面 pull 通道——部署/停止/卸载/热更新/终止/包推送改走 pull 命令队列（协议 1→2，ARCH-33） | Accepted |
-| [ADR-017](./adr-017-executor-unique-identity.md) | 执行器唯一标识——设备指纹 + 安装实例盐（`address` 降级为可达性元数据，ARCH-34；阶段 3 已落地：指纹定位 + push 409 / pull 各自成行） | Accepted |
-| [ADR-018](./adr-018-executor-occupied-vs-running.md) | 心跳区分「已占槽位」与「在跑执行」——新增 `reservedSlots`（协议 3→4，E-01-RPT） | Accepted |
-| [ADR-019](./adr-019-center-agent-runtime.md) | 中台 Agent 运行时与隔离——独立队列 + 预算闸门 + fail-open 不回灌主链 | Accepted |
-| [ADR-020](./adr-020-agent-boundary-model.md) | 工具分级与边界闸门——五道检查 + 硬禁用不可配置 + scope 安全默认 | Accepted |
-| [ADR-021](./adr-021-sop-as-executable-contract.md) | SOP 即可执行契约——文档与契约分离、版本不可变 + contentHash | Accepted |
-| [ADR-022](./adr-022-executor-agent-arbitrary-code.md) | 执行器 Agent 与「受控的任意代码执行」信任模型变更——权限档位 + 硬闸门 + 默认最保守 | Accepted |
-| [ADR-023](./adr-023-params-env-injection-contract.md) | params → 子进程 env 的注入口径——字符串回归裸值 + 类型化 `AUTOFLOW_PARAMS_JSON` 通道（协议 4→5，A-11R） | Accepted |
-| [ADR-024](./adr-024-execution-record-archive.md) | 执行记录归档——保留期之外的 `task_executions` 是留是删（PLAN-BACKEND-ARCHITECTURE §2.2；四选项 + 触发条件 + 本轮不实施） | Proposed |
-| [ADR-025](./adr-025-audit-log-tamper-evidence.md) | 审计日志不可篡改性——append-only 触发器已是有效控制，不引入哈希链（PLAN-SECURITY-HARDENING §6.1-6.2；五类假阴性 + 实测 TRUNCATE/DBA 绕过边界 + 本轮不实施） | Accepted |
+| [ADR-001](adr-001-per-execution-callback-token.md) | per-execution 回调 token（域分离 HMAC，v1.&lt;execId&gt;.&lt;exp&gt;.&lt;hmac&gt;） | Accepted |
+| [ADR-002](adr-002-scheduler-dual-guard.md) | 调度器多实例双保险：Redis Leader Election + DB 条件 claim | Accepted |
+| [ADR-003](adr-003-idempotent-token-issuance.md) | 执行器 per-executor token 幂等签发（startupId 稳态不轮换） | Accepted |
+| [ADR-004](adr-004-response-envelope-contract.md) | 全局响应信封 `{code,message,data}` 是所有客户端的隐形契约 | Accepted |
+| [ADR-005](adr-005-bundle-same-commit.md) | executor-node 源码与 ncc bundle 必须同 commit | Accepted |
+| [ADR-006](adr-006-rbac-same-release.md) | RBAC 收紧与前端门控同批发布 | Accepted |
+| [ADR-007](adr-007-config-first-ownership.md) | 多来源配置的优先级必须钉死在契约与测试里 | Accepted |
+| [ADR-008](adr-008-mock-vs-reality.md) | 调度/队列/迁移改动的验收必须含真机冒烟 | Accepted |
+| [ADR-009](adr-009-log-storage-dual-store.md) | S3 日志驱动的跨存储一致性边界 | Accepted |
+| [ADR-010](adr-010-db-claim-dedup-window.md) | 触发去重窗口的语义：TTL 即窗口（renew:false） | Accepted |
+| [ADR-011](adr-011-domain-event-bus.md) | 进程内领域事件总线——执行终态副作用与回调主链解耦（ARCH-21，FEAT-07 基座） | Accepted |
+| [ADR-012](adr-012-executor-token-safestorage.md) | executorToken safeStorage 加密——三平台差异、basic_text 降级姿态与存量迁移（P0-4） | Accepted |
+| [ADR-013](adr-013-project-roles.md) | 项目级角色细化——project_members 成员模型与 viewer/editor/admin 三档角色（AUTH-02） | Accepted |
+| [ADR-014](adr-014-oidc-sso.md) | OIDC SSO 单点登录（授权码模式 / 无状态 state / oidcSub 三级绑定 / JIT 开关） | Accepted |
+| [ADR-015](adr-015-executor-pull-dispatch.md) | 执行器 pull 模式派发——NAT 内执行器零入站回连（长轮询拉取，弃 WS 反连） | Accepted |
+| [ADR-016](adr-016-executor-control-plane-pull.md) | 控制面 pull 通道——部署/停止/卸载/热更新/终止/包推送改走 pull 命令队列（协议 1→2，ARCH-33） | Accepted |
+| [ADR-017](adr-017-executor-unique-identity.md) | 执行器唯一标识——设备指纹 + 安装实例盐（`address` 降级为可达性元数据，ARCH-34；阶段 3 已落地：指纹定位 + push 409 / pull 各自成行） | Accepted |
+| [ADR-018](adr-018-executor-occupied-vs-running.md) | 心跳区分「已占槽位」与「在跑执行」——新增 `reservedSlots`（协议 3→4，E-01-RPT） | Accepted |
+| [ADR-019](adr-019-center-agent-runtime.md) | 中台 Agent 运行时与隔离——独立队列 + 预算闸门 + fail-open 不回灌主链 | Accepted |
+| [ADR-020](adr-020-agent-boundary-model.md) | 工具分级与边界闸门——五道检查 + 硬禁用不可配置 + scope 安全默认 | Accepted |
+| [ADR-021](adr-021-sop-as-executable-contract.md) | SOP 即可执行契约——文档与契约分离、版本不可变 + contentHash | Accepted |
+| [ADR-022](adr-022-executor-agent-arbitrary-code.md) | 执行器 Agent 与「受控的任意代码执行」信任模型变更——权限档位 + 硬闸门 + 默认最保守 | Accepted |
+| [ADR-023](adr-023-params-env-injection-contract.md) | params → 子进程 env 的注入口径——字符串回归裸值 + 类型化 `AUTOFLOW_PARAMS_JSON` 通道（协议 4→5，A-11R） | Accepted |
+| [ADR-024](adr-024-execution-record-archive.md) | 执行记录归档——保留期之外的 `task_executions` 是留是删（PLAN-BACKEND-ARCHITECTURE §2.2；四选项 + 触发条件 + 本轮不实施） | Proposed |
+| [ADR-025](adr-025-audit-log-tamper-evidence.md) | 审计日志不可篡改性——append-only 触发器已是有效控制，不引入哈希链（PLAN-SECURITY-HARDENING §6.1-6.2；五类假阴性 + 实测 TRUNCATE/DBA 绕过边界 + 本轮不实施） | Accepted |
 
 ## DOC-04 覆盖状态
 

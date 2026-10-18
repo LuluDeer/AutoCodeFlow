@@ -32,7 +32,7 @@ assignees: ''
 ### 优化参考
 
 参考文档：
-- [CI 优化方案](../docs/ci-optimization-2026.md)
+- [CI 优化方案](../../docs/archive/reports/ci-optimization-2026.md)
 - [GitHub Actions 最佳实践](https://docs.github.com/en/actions/learn-github-actions/usage-limits-billing-and-administration)
 
 ---

@@ -2,7 +2,7 @@
 
 状态：Accepted（本轮拍板；**不实施哈希链**，理由见「决策」与「本轮实施与否」）
 
-> 本文把 `PLAN-SECURITY-HARDENING.md` §6.1–6.2「审计日志不可篡改性」从「待办」转成**已拍板**。
+> 本文把 `docs/archive/plans/security-hardening.md` §6.1–6.2「审计日志不可篡改性」从「待办」转成**已拍板**。
 > 结论前置：**本轮不做哈希链，也不做链式校验脚本。** 现有 DB 层 append-only 触发器是有效控制，
 > 但它的**真实边界**必须写清楚（本文「实测」一节）；而计划 §6.1-6.2 的哈希链设计在这张表的
 > 实际约束下存在**四类结构性假阴性**（尾部截断 / TRUNCATE 清空 / 无密钥可重算 / 存量行无基线），
@@ -166,7 +166,7 @@ CSV 导出另有两条纵深（`audit.service.ts`）：公式注入前缀转义 
 校验「从头算到尾、每步比对」会**全部通过**。
 这正是迁移头注「链头要另存受保护位置」说的那件事——而**本仓没有任何受保护的外部锚点**
 （无 WORM 存储、无外部日志汇聚、无签名高水位）。**在补齐锚点前，A 类机制对「删掉最近的痕迹」这一
-最现实的攻击（灭迹）完全无效。** 计划 §6.2 的校验脚本 `PLAN-SECURITY-HARDENING.md:433-449`
+最现实的攻击（灭迹）完全无效。** 计划 §6.2 的校验脚本 `docs/archive/plans/security-hardening.md:433-449`
 正是「从头顺序重算」的形态，**不含任何锚点比对**。
 
 **② `TRUNCATE` 清空——校验在空表上「通过」**
@@ -174,7 +174,7 @@ CSV 导出另有两条纵深（`audit.service.ts`）：公式注入前缀转义 
 清空后校验遍历零行、零违例 → 退出码 0。**「表被清空」与「表本来就是空的」在校验输出上不可区分。**
 
 **③ 全链重算——无密钥哈希对「有 DB 写权限者」提供零保护**
-计划 §6.1（`PLAN-SECURITY-HARDENING.md:426-429`）用的是 `sha256(JSON.stringify({...entry, previousHash}))`
+计划 §6.1（`docs/archive/plans/security-hardening.md:426-429`）用的是 `sha256(JSON.stringify({...entry, previousHash}))`
 ——**无密钥**。任何能写这张表的人（= 当前的属主/超级用户，见上文）都能 O(n) 地把全部哈希重新算一遍，
 产出一条**完全合法**的新链。这与「同时也能直接改内容」是同一批人。
 → 对 §6 明确点名的威胁模型（「理论上可被 ADMIN 修改」，`:402-403`），A 的防护强度是 **0，不是打折**。
@@ -189,13 +189,13 @@ CSV 导出另有两条纵深（`audit.service.ts`）：公式注入前缀转义 
 且链的起点本身是一个无锚点的「创世哈希」，投毒/伪造成本为零。
 
 **⑤ 并发分叉——若容忍分叉则产生假阴性，若不容忍则产生假报警**
-计划 §6.1 的写法是 `findOne({order:{id:'DESC'}})` 再 `save`（`PLAN-SECURITY-HARDENING.md:423-429`），
+计划 §6.1 的写法是 `findOne({order:{id:'DESC'}})` 再 `save`（`docs/archive/plans/security-hardening.md:423-429`），
 这是典型的 **read-then-write 竞态**：两个并发 `log()` 会读到同一个链头，写出两行 `previousHash` 相同的记录
 → 链**分叉**。之后：
 - 若校验**不容忍**分叉（要求 `row[i].previousHash === row[i-1].selfHash`）→ 正常业务并发就**报篡改**（假阳性）；
 - 若校验**容忍**分叉 → 分叉区间内删行**检不出**（假阴性）。
 
-**这正是上一轮的判定**（`PLAN-SECURITY-HARDENING.md:487-488`）：
+**这正是上一轮的判定**（`docs/archive/plans/security-hardening.md:487-488`）：
 「计划里的 `findOne` + `save` 在并发下不是安全的链式写入，需要串行化或 advisory lock」。
 本轮补充的是：**即使串行化了，① ② ③ ④ 依然全部成立**——串行化只解决 ⑤，而 ⑤ 是五个里最不重要的一个。
 
@@ -251,7 +251,7 @@ CSV 导出另有两条纵深（`audit.service.ts`）：公式注入前缀转义 
 | **B** A+串行化 | ❌ 同 A | ⚠️ 同 A | ❌ 同 A | ❌ **0** | **高（热路径全局锁）** | 高 | ❌ 同 A，且多一层锁故障面 |
 | **C** 现状+文档 | ⚠️ 只防「删一行」（触发器），不防 TRUNCATE | ✅ **防改行（硬拒绝）** | ❌ 不防 | ❌ 不防（但**不假装防**） | **0** | 0 | ✅ **边界诚实** |
 
-> 关键判据：**A/B 在「抗 DBA」这一列是 0，而 §6 的问题陈述（`PLAN-SECURITY-HARDENING.md:403`）
+> 关键判据：**A/B 在「抗 DBA」这一列是 0，而 §6 的问题陈述（`docs/archive/plans/security-hardening.md:403`）
 > 恰恰是「理论上可被 ADMIN 修改」。对同一个威胁，一个提供 0 保护却声称「可校验完整性」的机制，
 > 比明确的「不防 DBA，只防应用层与普通 SQL」更危险**——后者会让运维在真出事时去查别的方向。
 
@@ -367,8 +367,8 @@ CSV 导出另有两条纵深（`audit.service.ts`）：公式注入前缀转义 
 
 ## 替代方案（被否）
 
-- **照抄 `PLAN-SECURITY-HARDENING.md:408-431` 的 §6.1 实现**：不能落地。
-  它的 `findOne({order:{id:'DESC'}})` + `save` 是 read-then-write 竞态（并发分叉，`PLAN-SECURITY-HARDENING.md:487-488`
+- **照抄 `docs/archive/plans/security-hardening.md:408-431` 的 §6.1 实现**：不能落地。
+  它的 `findOne({order:{id:'DESC'}})` + `save` 是 read-then-write 竞态（并发分叉，`docs/archive/plans/security-hardening.md:487-488`
   上一轮已记录）；哈希是**无密钥 SHA256**（对 DBA 零保护）；`JSON.stringify({...entry, previousHash})`
   的键序依赖对象字面量插入顺序、且 `createdAt` 的 JS `Date` 会丢微秒（本机 49/49 行受影响）。
 - **照抄 §6.2 的校验脚本（`:433-449`）**：它「从头顺序重算 + 逐步比对」，**不含外部锚点**，
@@ -388,7 +388,7 @@ CSV 导出另有两条纵深（`audit.service.ts`）：公式注入前缀转义 
 
 ## 关联
 
-- 计划项：`PLAN-SECURITY-HARDENING.md` §6「审计日志不可篡改性」（`:400-449`）、
+- 计划项：`docs/archive/plans/security-hardening.md` §6「审计日志不可篡改性」（`:400-449`）、
   路线图第 4 项「6.1-6.2 审计日志哈希链」（`:487-488`，本轮给出终结判定）、
   概览表 `:19`、`:31-32`
 - 前序拍板：迁移 `1790000000006` 头注 `:9-30`（append-only vs hash-chain 的原始论证，

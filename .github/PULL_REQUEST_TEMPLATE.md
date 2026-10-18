@@ -43,3 +43,6 @@
 - [ ] `PLAN-CLAIMS.md` 认领状态已同步（in_progress → done + commit hash）；
 - [ ] 中文 conventional commits，`git log --stat` 核对无他人文件误带入。
 - [ ] 提交已携带 `Signed-off-by`（DCO：`git commit -s`，见 `CONTRIBUTING.md`）；
+- [ ] **新增/移动文档？** → 已在 [`docs/README.md`](../docs/README.md) 挂链（否则 CI 的
+      `DOC-GOV` 孤儿检查会红）；一次性报告请放 `docs/archive/`，**不要放仓库根目录**。
+      本地自查：`npm run test:docs`。

@@ -42,7 +42,7 @@ import { TaskContext } from '@autocodeflow/sdk';
 | `ADMIN_API_URL` / `EXECUTOR_TOKEN` / `TRACE_ID` | 同上对应字段 | 旧式手动覆盖变量，**显式设置时优先** |
 
 > 注意：`fromEnv()` **不读** `AUTOFLOW_<KEY>` 触发参数（node 任务用
-> `process.env.AUTOFLOW_X` 直读；与 py SDK 的设计分歧见[能力矩阵](./capability-matrix)）。
+> `process.env.AUTOFLOW_X` 直读；与 py SDK 的设计分歧见[能力矩阵](capability-matrix)）。
 
 ## HttpClient（回调 + 通用请求）
 
@@ -129,5 +129,5 @@ return ctx.failure('boom', { partial: state }); // TaskResult{ success: false, .
 
 ## 下一步
 
-- [能力矩阵](./capability-matrix)：与 py SDK 的 5 条差异逐条裁定
-- [官方示例库](./examples)
+- [能力矩阵](capability-matrix)：与 py SDK 的 5 条差异逐条裁定
+- [官方示例库](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples)

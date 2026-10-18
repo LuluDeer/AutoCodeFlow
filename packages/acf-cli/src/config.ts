@@ -8,7 +8,7 @@
  * protection matters. Node has no cross-platform OS keyring (unlike Electron's
  * safeStorage — see ADR-012; acf-cli is plain Node, not Electron), so the CLI
  * cannot encrypt at rest without pulling a native keytar dependency. The chosen
- * minimum posture — explicitly allowed by docs/SEC-01-复审报告.md §四 — is:
+ * minimum posture — explicitly allowed by docs/archive/audits/sec-01-review-report.md §四 — is:
  *   1. the config file is created with 0600 (owner read/write only), and any
  *      legacy group/world-readable file is repaired to 0600 on load;
  *   2. credentials can be injected per-invocation via ACF_TOKEN /

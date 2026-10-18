@@ -35,14 +35,14 @@
 
 ### 1.2 我原设计的问题（你纠正得对）
 
-我在 [07](./07-executor-agent.md) 里提议新增独立的 `apps/executor-agent`，由 desktop 托管。你这版更好：
+我在 [07](07-executor-agent.md) 里提议新增独立的 `apps/executor-agent`，由 desktop 托管。你这版更好：
 
 - 少一个部署单元
 - 复用 desktop 已有的**子进程托管能力**（`executor-process.ts` 已经会 spawn/监控/重启 `executor-node`，Agent 可以走同一套模式）
 - 复用 desktop 已有的 **IPC 白名单 + 路径域校验**（`ipc-and-security.md` 里那套）
 - 用户能在托盘看到 Agent 状态（透明性）
 
-**采纳你的方案。** 我把 [07 §4.2](./07-executor-agent.md) 的建议改为「内置进 desktop」。
+**采纳你的方案。** 我把 [07 §4.2](07-executor-agent.md) 的建议改为「内置进 desktop」。
 
 ## 2. ⚠️ 一个必须你知情的冲突
 
@@ -103,7 +103,7 @@ Agent 生成的候选应用 → 走一条独立的、显式的执行路径
 
 ### 2.4 处理方式：已定案 → 配置档 `taskExecution`
 
-**（原 A/B/C 三选一已按「企业场景 + 可选权限选项」定案，详见 [09 §2.4](./09-permission-profiles.md)）**
+**（原 A/B/C 三选一已按「企业场景 + 可选权限选项」定案，详见 [09 §2.4](09-permission-profiles.md)）**
 
 | 档位 | 做法 | 是否提供 |
 |---|---|---|
@@ -155,7 +155,7 @@ apps/executor-desktop/src/main/
 
 ### 3.3 待你决策项的变化
 
-**全部 4 项已解决**——按「企业场景 + 可选权限选项」转为配置档（[09-permission-profiles.md](./09-permission-profiles.md)）：
+**全部 4 项已解决**——按「企业场景 + 可选权限选项」转为配置档（[09-permission-profiles.md](09-permission-profiles.md)）：
 
 | # | 决策 | 状态 |
 |---|---|---|
@@ -169,7 +169,7 @@ apps/executor-desktop/src/main/
 
 ## 4. 对路线图的影响
 
-P7 需要调整（[06 §9](./06-roadmap.md)）：
+P7 需要调整（[06 §9](06-roadmap.md)）：
 
 | 原 | 新 |
 |---|---|

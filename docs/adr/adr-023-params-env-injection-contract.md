@@ -204,10 +204,10 @@ SDK 这三类消费方**根本无法**自行规避——它们的读取方式由
 ## 关联
 
 - 计划项：A-11R（承接 A-11 / `89f4af45`；生产报障 `tk-ship-notify`）
-- 相关 ADR：[ADR-005](./adr-005-bundle-same-commit.md)（同 commit 重打 bundle）、
-  [ADR-007](./adr-007-config-first-ownership.md)（多来源配置的优先级必须钉死在
+- 相关 ADR：[ADR-005](adr-005-bundle-same-commit.md)（同 commit 重打 bundle）、
+  [ADR-007](adr-007-config-first-ownership.md)（多来源配置的优先级必须钉死在
   契约与测试里——本次"两条通道各自职责"同源）、
-  [ADR-018](./adr-018-executor-occupied-vs-running.md)（同款协议 bump 纪律：
+  [ADR-018](adr-018-executor-occupied-vs-running.md)（同款协议 bump 纪律：
   中台必须能区分两种上报口径，猜错的方向恰好是危险方向）
 - 相关文档：[执行器协议契约](../atlas/01-apps/executor-contract.md) ·
   [SDK 指南](../sdk-guide.md) · [应用开发指南](../app-development-guide.md) ·

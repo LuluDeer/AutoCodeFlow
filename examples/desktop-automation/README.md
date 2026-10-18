@@ -329,7 +329,7 @@ curl -X POST http://<HOST>:3105/api/applications/upload \
   -F "file=@my-app-1.0.0.zip"
 ```
 
-> 完整规范见 [`.qoder/skills/acf-python-task-package/SKILL.md`](../../.qoder/skills/acf-python-task-package/SKILL.md)
+> 完整规范见 [`.qoder/skills/acf-python-task-package/SKILL.md`](../../docs/skills/python-task-package/SKILL.md)
 > 与 [`docs/autoapp-skill.md`](../../docs/autoapp-skill.md)。
 
 ### 方式四：本地测试
@@ -555,7 +555,7 @@ A: 平台只接受**严格 5 段**（`分 时 日 月 周`）、**纯数字**的
 ## 📚 相关资源
 
 - [AutoCodeFlow 官方文档](../../README.md)
-- [任务包开发规范（skill）](../../.qoder/skills/acf-python-task-package/SKILL.md)
+- [任务包开发规范（skill）](../../docs/skills/python-task-package/SKILL.md)
 - [平台侧应用开发说明](../../docs/autoapp-skill.md)
 - [Python SDK 文档](../../packages/autoflow-sdk/README.md)
 - [Selenium 文档](https://selenium-python.readthedocs.io/)

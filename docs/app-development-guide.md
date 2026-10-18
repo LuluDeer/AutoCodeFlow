@@ -443,7 +443,7 @@ node -e "require('./tasks/taskA').then(r => console.log(r)).catch(console.error)
 
 ## 参考文档
 
-- [快速上手](./quickstart.md) — 5 分钟跑起来
-- [SDK 详细参考](./sdk-guide.md) — 完整 API 和参数 Schema
-- [API 参考](./api-reference.md) — 通过 HTTP API 触发任务、查询执行记录
-- [部署指南](./deployment.md) — 生产环境部署
+- [快速上手](quickstart.md) — 5 分钟跑起来
+- [SDK 详细参考](sdk-guide.md) — 完整 API 和参数 Schema
+- [API 参考](api-reference.md) — 通过 HTTP API 触发任务、查询执行记录
+- [部署指南](deployment.md) — 生产环境部署

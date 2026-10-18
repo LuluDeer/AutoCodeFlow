@@ -3,7 +3,7 @@
 > **适用对象**：平台部署方 / 运维（Operator）
 > **对应需求**：NFR-14c（可选·离线预填）、NFR-15（缓存池治理）、ASM-07（私有化可选模式）、D9③、D14（降级语义）
 > **对应设计**：`DESIGN.md` §2.5「私有化可选模式」、`CONTRACT.md` §0 / §2.3
-> **配套文件**：[`SUPPORT-MATRIX.md`](./SUPPORT-MATRIX.md)（支持矩阵定稿）
+> **配套文件**：[`SUPPORT-MATRIX.md`](SUPPORT-MATRIX.md)（支持矩阵定稿）
 > **适用版本**：uv 0.8.17（仓库锁定值）；本手册步骤已在 uv 0.8.17 与 uv 0.11.14 上交叉实测
 
 ---

@@ -1328,7 +1328,7 @@ export class ExecutorController {
     // R9 (round-8 P1 closure, W2): issueToken() replaces the old
     // register()+rotateToken() pair that rotated on EVERY call — the root of
     // the ~30s tokenHash rotation cycle that broke the N26 per-execution
-    // callback-token invariant (docs/VERIFY-round8-e2e.md §1.5).
+    // callback-token invariant (docs/archive/verifies/verify-round8-e2e.md §1.5).
     return this.svc.issueToken({
       address: body.address,
       appName: body.appName || "executor",

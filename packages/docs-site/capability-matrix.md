@@ -42,7 +42,7 @@
    cli/mcp 用宽松 `data+(code|message)` 启发式——分歧已留档
    [packages/contract-fixtures/contract.json](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/packages/contract-fixtures/contract.json)
    的 `knownDivergence`（admin-api 恒发 code，真实流量不受影响，
-   四端统一需 breaking release）。详见[契约页](./contract)。
+   四端统一需 breaking release）。详见[契约页](contract)。
 3. **failureReason 校验位置**：py 在客户端抛 `ValueError`（白名单 = 执行器
    可上报子集 10 项；admin 全集 11 项，其中 `stale_recovered` 为 admin 内部
    专用、上报方不得使用——契约见 `packages/executor-protocol/protocol.json`），

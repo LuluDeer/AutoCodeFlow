@@ -63,7 +63,7 @@ modules/runtime/
 
 - 依赖 [task](task.md)：仅 import `TaskRuntime` 枚举与 `TaskRuntimeDefinition` 类型（类型层依赖，无运行时环）。
 - 被（规划中）任务表单/校验消费：`@Global` 使消费方零成本取用。
-- 执行器侧对应实现：[executor-node](../../../01-apps/executor-node/README.md)、[executor-python](../../../01-apps/executor-python/README.md)（规划路径）——新增 runtime 必须两侧同步。
+- 执行器侧对应实现：[executor-node](../../executor-node/README.md)、[executor-python](../../executor-python/README.md)（规划路径）——新增 runtime 必须两侧同步。
 
 ## 常见改动场景
 
