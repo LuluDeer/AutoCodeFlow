@@ -75,7 +75,7 @@
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
-    "@types/node": "^24.13.6",
+    "@types/node": "^26.6.5",
     "@types/nodemailer": "^8.0.2",
     "@types/passport-jwt": "^3.0.9",
     "@types/supertest": "^7.2.1",
