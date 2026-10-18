@@ -2254,6 +2254,538 @@
    ],
    "title": "Executor fleet（online vs total，online=0 且 total>0 即告警）",
    "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 79
+   },
+   "id": 7,
+   "panels": [],
+   "title": "业务指标（Task Execution Business Metrics）",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "任务执行结果趋势（autoflow_execution_result_total{status} 按终态状态分组）。status 五分类：SUCCESS（成功）、FAILED（失败）、TIMEOUT（超时）、KILLED（手动终止）、CANCELLED（被新触发覆盖）。数据源来自 TaskService.transitionToTerminal 统一终态入口，仅记录唯一 winner 更新（重复回调不重复计数）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "linear",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "reqps"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "SUCCESS"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "green",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "FAILED"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "red",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "TIMEOUT"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "orange",
+         "mode": "fixed"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 16,
+    "x": 0,
+    "y": 80
+   },
+   "id": 701,
+   "options": {
+    "legend": {
+     "calcs": [
+      "mean",
+      "lastNotNull",
+      "sum"
+     ],
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "rate(autoflow_execution_result_total{instance=~\"$instance\"}[$__rate_interval])",
+     "legendFormat": "{{status}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "任务执行趋势（按终态状态，每秒速率）",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "任务执行成功率 = SUCCESS / (SUCCESS + FAILED + TIMEOUT + KILLED + CANCELLED) × 100%。计算基于时间窗口内的累计增量（increase），排除了重复回调。SUCCESS 占比 < 95% 时变黄色，< 80% 时变红色。新部署无数据时显示 0%。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "mappings": [],
+     "max": 100,
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 80
+       },
+       {
+        "color": "yellow",
+        "value": 95
+       },
+       {
+        "color": "green",
+        "value": 98
+       }
+      ]
+     },
+     "unit": "percent"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 80
+   },
+   "id": 702,
+   "options": {
+    "colorMode": "background",
+    "graphMode": "area",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "100 * sum(increase(autoflow_execution_result_total{instance=~\"$instance\", status=\"SUCCESS\"}[$__range])) / clamp_min(sum(increase(autoflow_execution_result_total{instance=~\"$instance\"}[$__range])), 1)",
+     "legendFormat": "成功率",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "任务执行成功率（窗口累计，阈值 80/95/98）",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "任务执行结果分布饼图（时间窗口内累计）。SUCCESS 扇区绿色，FAILED/TIMEOUT 红色，KILLED/CANCELLED 灰色。与上方趋势图互补——趋势图看速率变化，本面板看占比构成。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      }
+     },
+     "mappings": [],
+     "unit": "short"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "SUCCESS"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "green",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "FAILED"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "red",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "TIMEOUT"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "dark-red",
+         "mode": "fixed"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 0,
+    "y": 88
+   },
+   "id": 703,
+   "options": {
+    "displayLabels": [
+     "name",
+     "percent"
+    ],
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true,
+     "values": [
+      "value",
+      "percent"
+     ]
+    },
+    "pieType": "donut",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "single",
+     "sort": "none"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "sum by (status) (increase(autoflow_execution_result_total{instance=~\"$instance\"}[$__range]))",
+     "instant": true,
+     "legendFormat": "{{status}}",
+     "refId": "A"
+    }
+   ],
+   "title": "任务执行结果分布（区间累计占比）",
+   "type": "piechart"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "执行器健康度 = online / total × 100%。online 从 executors 表中 status=ONLINE 的行数实时统计，total 为全部已注册执行器。阈值：< 50% 变黄色，< 30% 变红色。与右侧 fleet 绝对值面板（panel 604）互补——本面板看占比健康度，604 看绝对在线数与告警（online=0 且 total>0）。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "mappings": [],
+     "max": 100,
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 30
+       },
+       {
+        "color": "orange",
+        "value": 50
+       },
+       {
+        "color": "green",
+        "value": 80
+       }
+      ]
+     },
+     "unit": "percent"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 8,
+    "y": 88
+   },
+   "id": 704,
+   "options": {
+    "colorMode": "background",
+    "graphMode": "area",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "100 * sum(autoflow_executors_online{instance=~\"$instance\"}) / clamp_min(sum(autoflow_executors_total{instance=~\"$instance\"}), 1)",
+     "legendFormat": "健康度",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "执行器健康度（online/total %，阈值 30/50/80）",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "非成功结果的绝对值累计（counter 原值，重启归零）。显示 FAILED、TIMEOUT、KILLED、CANCELLED 四条曲线的台阶增长，用于观察异常分类的绝对增长趋势与发生时刻。SUCCESS 曲线刻意排除（成功不是异常）。与上方速率/占比面板互补——本面板看绝对计数台阶。",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "",
+      "axisPlacement": "auto",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "stepAfter",
+      "lineWidth": 1,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "never",
+      "spanNulls": false,
+      "stacking": {
+       "group": {
+        "A": 1
+       },
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "min": 0,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 16,
+    "y": 88
+   },
+   "id": 705,
+   "options": {
+    "legend": {
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "maxHeight": 600,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "editorMode": "code",
+     "expr": "autoflow_execution_result_total{instance=~\"$instance\", status!=\"SUCCESS\"}",
+     "legendFormat": "{{status}} @ {{instance}}",
+     "range": true,
+     "refId": "A"
+    }
+   ],
+   "title": "异常结果绝对值（status != SUCCESS，累计 counter）",
+   "type": "timeseries"
   }
  ],
  "refresh": "30s",
@@ -2262,6 +2794,8 @@
   "autoflow",
   "scheduler",
   "callback-auth",
+  "business-metrics",
+  "task-execution",
   "prometheus"
  ],
  "templating": {
