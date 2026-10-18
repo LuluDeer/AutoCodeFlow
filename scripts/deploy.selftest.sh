@@ -297,11 +297,21 @@ assert_contains "detached HEAD 提示基于该 commit 继续" "基于该 commit 
 rm -rf "$tmp_git"
 
 # 反证：正常分支上不得出现该告警（真仓库自身即分支工作树）
-out="$(bash "$DEPLOY" --dry-run --skip-preflight 2>&1 || true)"
-if printf '%s' "$out" | grep -qF "detached HEAD"; then
-    fail "分支工作树上竟报 detached HEAD（反证失败）"
+# CI 环境特例：GitHub Actions 在 PR 时可能使用 detached HEAD（合并预览提交），
+# 这是 CI 的正常行为，不是 deploy.sh 的 bug——若确实处于 detached HEAD，
+# deploy.sh 正确报告它即为预期；本检查只在本地分支工作树（symbolic-ref 成功）
+# 时验证告警不误触发。
+if git -C "$ROOT_DIR" symbolic-ref --short HEAD >/dev/null 2>&1; then
+    # 确认在分支上，检查不应该报 detached HEAD
+    out="$(bash "$DEPLOY" --dry-run --skip-preflight 2>&1 || true)"
+    if printf '%s' "$out" | grep -qF "detached HEAD"; then
+        fail "分支工作树上竟报 detached HEAD（反证失败）"
+    else
+        pass "分支工作树无 detached HEAD 告警"
+    fi
 else
-    pass "分支工作树无 detached HEAD 告警"
+    # CI 环境或已处于 detached HEAD，跳过此检查
+    pass "分支工作树无 detached HEAD 告警（跳过：当前已是 detached HEAD，无需验证）"
 fi
 
 # ── 11. health 闸门 / logs 透传（桩 curl/docker/journalctl，不打真实服务）──
