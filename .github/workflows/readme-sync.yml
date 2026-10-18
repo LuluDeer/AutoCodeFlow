@@ -15,6 +15,13 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # Dependabot 的 push 由其自带的 GITHUB_TOKEN 发出，行为与普通 push 不同
+    # （踩过：本 workflow 曾因 YAML 语法错误长期无法加载，名字退化成文件
+    # 路径、31 次运行 0 个 job、在每个 dependabot/* 分支上都刷一条失败）。
+    # 语法修好后 branches: [main] 已能挡住非 main 分支，这里再显式排除
+    # dependabot，确保任何情况下都不会在依赖升级分支上做「自动提交」这类
+    # 写操作（bot 分支上的改动应只来自 dependabot 本身）。
+    if: github.actor != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,10 +55,15 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          if git diff --quiet README.en.md README.zh.md 2>/dev/null; then
-            echo "changed=false" >> $GITHUB_OUTPUT
+          # README.en.md / README.zh.md 是**构建产物**（未被 git 跟踪）。
+          # `git diff --quiet <untracked>` 对未跟踪文件恒返回 0（视为无差异），
+          # 于是「是否变更」永远判 false、下面那步永远不执行——workflow 会
+          # 变成纯空转（实测：未跟踪文件上 git diff --quiet 退出码 0）。
+          # 改用 git status --porcelain 检测未跟踪 + 已修改两种情况。
+          if [ -n "$(git status --porcelain README.en.md README.zh.md)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
       
       - name: Commit and push if changed
@@ -60,7 +72,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README.en.md README.zh.md
-          git commit -m "docs: 自动同步 README 中英文版本
-
-由 readme-sync workflow 自动生成"
+          # 多行 commit message 用两次 -m 表达。原写法把 message 直接拆成
+          # 裸多行字符串（续行从第 1 列开始），第 2 行 "由 readme-sync..." 被
+          # YAML 当成新的顶层键，整个文件解析失败——GitHub 因此**从未**成功
+          # 加载过本 workflow（workflow 名显示成文件路径、31 次运行 0 job
+          # 0 成功、且在 develop 与每个 dependabot 分支上都误触发）。两次 -m
+          # 既保住 commit message 的两段结构，又不依赖 YAML 多行缩进。
+          git commit -m "docs: 自动同步 README 中英文版本" -m "由 readme-sync workflow 自动生成"
           git push
