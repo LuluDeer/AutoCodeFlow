@@ -5140,6 +5140,12 @@ export class ExecutorService implements OnModuleInit {
         // 定位身份（指纹优先），按 address 删不到指纹键条目。evictLocalTokenCaches
         // 已按值里的 address 回扫两张派生缓存，此处单行删除反而是漏删的来源。
         this.evictLocalTokenCaches(exec.address);
+        // G1（R32-A3）：自动清理与手动删除（removeById）是同一强度的撤销，必须
+        // 同样跨实例广播。此前这里只做本地逐出：别的实例上被删执行器的
+        // per-executor 令牌/回调密钥仍命中正缓存，还能再活一个
+        // TOKEN_CACHE_TTL_MS（60s）——「删除即撤销」在集群范围变成「删除后 60s
+        // 撤销」。广播失败仍走 TTL 兜底（见 broadcastTokenEviction 头注）。
+        this.broadcastTokenEviction(exec.address);
       }
     }
   }

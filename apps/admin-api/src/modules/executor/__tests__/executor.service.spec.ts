@@ -6081,6 +6081,26 @@ describe("ExecutorService (__tests__)", () => {
       expect(anySvc.issuedTokenCache.has(ADDR)).toBe(false);
     });
 
+    // G1（R32-A3）：Cron 自动清理（7 天离线）与手动删除是同一强度的撤销，但
+    // 此前只做了本地逐出、漏了广播——多实例部署下被删执行器的 per-executor
+    // 令牌/回调密钥在其他实例的正缓存里还能再活一个 TTL（60s）。
+    it("cleanupOfflineExecutors 同样广播（自动清理也是撤销）", async () => {
+      const { svc, row, fakeSync } = await makeFixture();
+      const repo = (svc as any).repo;
+      repo.find = jest
+        .fn()
+        .mockResolvedValue([{ id: row.id, address: ADDR, appName: "node" }]);
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+      populateCaches(svc);
+
+      await svc.cleanupOfflineExecutors();
+
+      expect(repo.delete).toHaveBeenCalled();
+      expect(fakeSync.publishTokenEviction).toHaveBeenCalledWith(ADDR);
+      // 本地半边同样生效（两条路径都不能只做一半）
+      expect((svc as any).callbackSecretCache.has(ADDR)).toBe(false);
+    });
+
     it("远端广播 onEvict：逐出该地址的全部三条目，不动其他地址", async () => {
       const { svc, fakeSync } = await makeFixture();
       svc.onModuleInit();
