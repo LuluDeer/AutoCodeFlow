@@ -16,7 +16,7 @@ fail-closed 语义。能力对照如下：
 |------|------------------------|----------------------|
 | 包目录 | `packages/autocodeflow-node-sdk` | `packages/autoflow-sdk` |
 | 安装 | `npm install @autocodeflow/sdk` | `pip install autoflow-sdk` |
-| 运行时 | Node ≥ 18（executor-node 注入 env） | Python ≥ 3.9（executor-python 注入 env） |
+| 运行时 | Node ≥ 18（executor-node 注入 env） | Python ≥ 3.10（executor-python 注入 env） |
 | 执行上下文 | `TaskContext.fromEnv()`（缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` 抛错）；`TaskContext.create(env)` 显式构造 | `TaskContext.from_env()`（缺失变量回落 `"unknown"`）；`AUTOFLOW_*` 归入 `ctx.params`，凭证三件套除外 |
 | HTTP 客户端 | `ctx.http` / `new HttpClient(baseURL, token, traceId?, executorAddress?)`（axios；`enabled`/`disabledReason`） | `autoflow_sdk.HttpClient` / `AsyncHttpClient`（httpx，通用请求）+ `ctx.callback`（`CallbackClient`，回调专用） |
 | 回调上报 | `ctx.http.post('/api/executions/callback', [item])`，`executorAddress` 自动补齐（N27）；**ECO-01 起**另有 `ctx.reportSuccess()` / `ctx.reportFailure()` 便捷方法 | `ctx.report_success()` / `ctx.report_failure(e, failure_reason=...)` / `ctx.callback.report([item])`，`executionId`/`executorAddress` 自动补齐 |
