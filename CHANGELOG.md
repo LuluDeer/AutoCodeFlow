@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.12.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.12.0...v1.12.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **deps:** 一次性清偿 38 条 Dependabot 告警（27 修复 + 11 登记豁免） ([d7e5f29](https://github.com/LuluDeer/AutoCodeFlow/commit/d7e5f292759a2b40ce8e2d1aef4f0fd172c8c203))
+* **deps:** 一次性清偿 38 条 Dependabot 告警（27 修复 + 11 豁免） ([3e59683](https://github.com/LuluDeer/AutoCodeFlow/commit/3e59683872aa29bea1446eabb62962ab0ff7cc39))
+* **deps:** 依赖告警清偿合入 main（27 修复 + 11 豁免） ([3adfe01](https://github.com/LuluDeer/AutoCodeFlow/commit/3adfe014a253c1d3004047ef749db65cf22ea20a))
+
 ## [1.12.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.11.0...v1.12.0) (2026-10-18)
 
 
