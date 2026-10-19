@@ -50,7 +50,6 @@
   },
   "overrides": {
     "fast-uri": "^3.1.8",
-    "brace-expansion": "^2.1.7",
     "undici": "^7.29.1",
     "app-builder-lib": {
       "js-yaml": "^4.3.2"
@@ -63,6 +62,15 @@
     },
     "electron-updater": {
       "js-yaml": "^4.3.2"
+    },
+    "minimatch@^1.0.0": {
+      "brace-expansion": "1.1.21"
+    },
+    "minimatch@^2.0.0": {
+      "brace-expansion": "2.1.7"
+    },
+    "minimatch@^5.0.0": {
+      "brace-expansion": "5.0.12"
     }
   },
   "homepage": "https://github.com/LuluDeer/AutoCodeFlow",
