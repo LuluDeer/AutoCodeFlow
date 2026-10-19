@@ -55,7 +55,7 @@
 
 ## lockstep 版本发布策略（证据：release-please-config.json + .github/workflows/，2026-10 根治轮）
 
-四个**对外发布**的包走 **lockstep 单版本线**（`@autocodeflow/sdk`、`autocodeflow-mcp-server`、`@autocodeflow/cli`、`autoflow-sdk`，当前均 1.9.0）：
+四个**对外发布**的包走 **lockstep 单版本线**（`@autocodeflow/sdk`、`autocodeflow-mcp-server`、`@autocodeflow/cli`、`autoflow-sdk`，当前均 1.12.1）：
 
 1. **release-please.yml**（push main 触发）：按中文 conventional commits 汇总，开/更新 Release PR，bump 版本并追加 CHANGELOG。`release-please-config.json` 关键配置：
    - **单一 root 条目（`.`）**承担整条 1.x 版本线（`release-type: simple` + `version-file: version.txt`）；
