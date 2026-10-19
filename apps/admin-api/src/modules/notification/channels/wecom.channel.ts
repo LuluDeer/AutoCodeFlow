@@ -15,6 +15,7 @@ import {
 import { ChannelConfigStore } from "../channel-config.store";
 // A-6: markdown 注入防护（title/content 剥离链接语法字符后再拼 markdown）
 import { escapeMarkdownText } from "./markdown-escape.util";
+import { redactUrlForLog } from "./log-safe-url.util";
 
 @Injectable()
 export class WecomChannel extends BaseChannel {
@@ -54,7 +55,7 @@ export class WecomChannel extends BaseChannel {
       });
     } catch (err: unknown) {
       this.logger.warn(
-        `[Wecom] SSRF-blocked URL ${url}: ${err instanceof Error ? err.message : String(err)}`,
+        `[Wecom] SSRF-blocked URL ${redactUrlForLog(url)}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return "blocked";
     }

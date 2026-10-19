@@ -503,8 +503,16 @@ export class NotificationConfigService implements OnModuleInit {
         };
       }
 
+      // R32-A2: 'skipped' 同样是"没投出去"——渠道已启用但没解析到 URL/
+      // 凭据（零次投递尝试）。此前只把 blocked/failed 判失败，于是
+      // sendTest 对"一条都没发"的请求回 success:true + "sent"，与
+      // ChannelTestResponseDto 的契约（"当所有目标通道都失败/跳过时为 false"）
+      // 直接冲突，也是 testChannel（N29 起）已修好的同一类 "fake OK"。
+      // 语义与 blocked/failed 一致：任一路非 'sent' 即回 success:false（本方法
+      // 的 message 也照实列出每个未投递成功的渠道），不因为"另一路发了"就
+      // 把这条渠道的 skipped 记成成功。
       const bad = Object.entries(results).filter(
-        ([, s]) => s === "blocked" || s === "failed",
+        ([, s]) => s === "blocked" || s === "failed" || s === "skipped",
       );
       if (bad.length > 0) {
         const detail = bad.map(([c, s]) => `${c}=${s}`).join(", ");

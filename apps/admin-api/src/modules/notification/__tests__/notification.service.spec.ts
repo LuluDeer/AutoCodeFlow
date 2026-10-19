@@ -1513,6 +1513,60 @@ describe("NotificationService", () => {
       ]);
       expect(auditLog).not.toHaveBeenCalled();
     });
+
+    // R32-A2：真实渠道**从不抛错**——传输失败被吞成返回值 "failed"（正是本
+    // describe 头注描述的形态）。此前"全部失败"的判据只看 rejected promise
+    // （failures 数组），于是「全部渠道 status='failed'」这条**生产常态**路径
+    // 一条审计都不落：A-1 声称消灭的盲区原样还在，只是从"渠道级故障"换成了
+    // "状态级故障"。判据应是逐渠道**投递结果**，不是 promise 有没有 reject。
+    it("R32-A2: 全部渠道 status=failed（不抛错）同样落一条 NOTIFICATION_FAILED 审计", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      email.send.mockResolvedValue("failed");
+      slack.send.mockResolvedValue("failed");
+
+      const results = await svc.sendToChannels(
+        { title: "Task failed: t", content: "boom", level: "error" },
+        ["email" as any, "slack" as any],
+      );
+
+      expect(results).toEqual({ email: "failed", slack: "failed" });
+      expect(auditLog).toHaveBeenCalledTimes(1);
+      expect(auditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "NOTIFICATION_FAILED",
+          resource: "notification_fanout",
+          detail: expect.objectContaining({
+            channels: ["email", "slack"],
+            results: { email: "failed", slack: "failed" },
+          }),
+        }),
+      );
+      warnSpy.mockRestore();
+    });
+
+    // 反向钉子：部分成功（哪怕另一路是 status='failed'）仍不落审计——
+    // fail-open 语义与"不放大审计噪声"不变。
+    it("R32-A2: 部分渠道 status=failed（有渠道成功）时不落审计", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      email.send.mockResolvedValue("sent");
+      slack.send.mockResolvedValue("failed");
+
+      const results = await svc.sendToChannels(
+        { title: "t", content: "c", level: "error" },
+        ["email" as any, "slack" as any],
+      );
+      expect(results).toEqual({ email: "sent", slack: "failed" });
+      expect(auditLog).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
   });
 
   // ============================================================================

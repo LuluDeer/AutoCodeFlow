@@ -14,6 +14,7 @@ import {
   pinnedAxiosConfig,
 } from "../../../common/utils/safe-http.util";
 import { ChannelConfigStore } from "../channel-config.store";
+import { redactUrlForLog } from "./log-safe-url.util";
 
 /**
  * NF-05: 飞书（Lark）自定义机器人渠道（open.feishu.cn 自定义机器人 webhook）。
@@ -88,7 +89,7 @@ export class FeishuChannel extends BaseChannel {
       });
     } catch (err: unknown) {
       this.logger.warn(
-        `[Feishu] SSRF-blocked URL ${url}: ${err instanceof Error ? err.message : String(err)}`,
+        `[Feishu] SSRF-blocked URL ${redactUrlForLog(url)}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return "blocked";
     }
@@ -141,7 +142,7 @@ export class FeishuChannel extends BaseChannel {
       return this.buildSignature(secret);
     } catch (err: unknown) {
       this.logger.warn(
-        `[Feishu] sign failed for ${url} — falling back to unsigned mode: ${err instanceof Error ? err.message : String(err)}`,
+        `[Feishu] sign failed for ${redactUrlForLog(url)} — falling back to unsigned mode: ${err instanceof Error ? err.message : String(err)}`,
       );
       return undefined;
     }

@@ -13,6 +13,7 @@ import {
   pinnedAxiosConfig,
 } from "../../../common/utils/safe-http.util";
 import { ChannelConfigStore } from "../channel-config.store";
+import { redactUrlForLog } from "./log-safe-url.util";
 
 @Injectable()
 export class WebhookChannel extends BaseChannel {
@@ -77,7 +78,7 @@ export class WebhookChannel extends BaseChannel {
       });
     } catch (err: unknown) {
       this.logger.warn(
-        `[Webhook] SSRF-blocked URL ${url_}: ${err instanceof Error ? err.message : String(err)}`,
+        `[Webhook] SSRF-blocked URL ${redactUrlForLog(url_)}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return "blocked";
     }
@@ -106,7 +107,10 @@ export class WebhookChannel extends BaseChannel {
           ...pinCfg,
         });
       });
-      this.logger.log(`[Webhook] sent: ${p.title} → ${url_}`);
+      // R32-A2: 成功路径此前打**整条 URL**——dingtalk/wecom 形态的
+      // `?access_token=`、企业微信 `?key=` 会逐条落进日志（其余渠道只打
+      // title，本渠道是唯一的例外）。保留 host/path 供排障，凭据掩码。
+      this.logger.log(`[Webhook] sent: ${p.title} → ${redactUrlForLog(url_)}`);
       return "sent";
     } catch (error) {
       // QA5: with maxRedirects:0 a 3xx lands here as a deterministic reject —

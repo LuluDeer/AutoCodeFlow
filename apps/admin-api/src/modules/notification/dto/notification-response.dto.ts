@@ -31,7 +31,13 @@ export type ChannelDeliveryStatus = "sent" | "blocked" | "failed" | "skipped";
 
 /** POST /notification/channels/{key}/test 与 POST /notification/test 的回执。 */
 export class ChannelTestResponseDto {
-  @ApiProperty({ description: "当所有目标通道都失败/跳过时为 false" })
+  // R32-A2: 描述与实现对齐——实现是「任一路非 'sent' 即 false」（skipped
+  // 也算未投递：渠道已启用但没解析到 URL/凭据，零次尝试）。旧文案只说
+  // "所有目标通道都失败/跳过"，读者会以为部分 skipped 仍是成功。
+  @ApiProperty({
+    description:
+      "仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results",
+  })
   success: boolean;
 
   @ApiProperty()

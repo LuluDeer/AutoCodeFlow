@@ -365,6 +365,52 @@ describe("NotificationConfigService", () => {
       expect(result.results).toEqual({ slack: "blocked" });
     });
 
+    // R32-A2: 契约写在 dto/notification-response.dto.ts:34——「当所有目标通道
+    // 都失败/跳过时为 false」。实现此前只把 blocked/failed 判失败：一个
+    // **已启用但没有配置**的渠道返回 'skipped'（零次投递尝试），sendTest 却
+    // 回 success:true + "Test notification sent"。这正是 testChannel 已经修好
+    // （N29）、sendTest 漏掉的同一类 "fake OK"。
+    it("R32-A2: 已启用但未配置（skipped）的渠道不得报 success", async () => {
+      service.updateChannel("slack", { enabled: true });
+      (notificationService as any)["slack"] = {
+        send: jest.fn().mockResolvedValue("skipped"),
+      };
+
+      const result = await service.sendTest({
+        channels: ["slack"],
+        title: "Test",
+        content: "content",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("slack=skipped");
+      expect(result.results).toEqual({ slack: "skipped" });
+    });
+
+    // 反向钉子：本方法的既有语义是「任一路非 sent 即失败」（blocked/failed
+    // 早已如此，见上一条 spec），skipped 必须与之一致——否则同一个回执里
+    // "一路没发出去"记 success 还是 failure，取决于它撞上哪个状态值。
+    it("R32-A2: 一路 sent + 一路 skipped 仍报失败（任一路非 sent 即失败）", async () => {
+      service.updateChannel("slack", { enabled: true });
+      service.updateChannel("wecom", { enabled: true });
+      (notificationService as any)["slack"] = {
+        send: jest.fn().mockResolvedValue("sent"),
+      };
+      (notificationService as any)["wecom"] = {
+        send: jest.fn().mockResolvedValue("skipped"),
+      };
+
+      const result = await service.sendTest({
+        channels: ["slack", "wecom"],
+        title: "Test",
+        content: "content",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("wecom=skipped");
+      expect(result.results).toEqual({ slack: "sent", wecom: "skipped" });
+    });
+
     it("reports successful sends with per-channel results", async () => {
       service.updateChannel("slack", { enabled: true });
       (notificationService as any)["slack"] = {

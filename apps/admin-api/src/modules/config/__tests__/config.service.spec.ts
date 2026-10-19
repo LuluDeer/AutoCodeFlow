@@ -260,6 +260,64 @@ describe("SystemConfigService", () => {
       );
     });
 
+    // R32-A2: S3 哨兵的**另一半**——判据必须来自"库里这行是不是密钥"，
+    // 而不是"本次请求有没有带 isSecret"。否则一次省略 isSecret 的 PUT（只带
+    // key/value，常见于脚本/API 直调，DTO 里 isSecret 是 optional）会：
+    //   ① 把读面回显的 '***' 当成真实值写进库（密钥被"***"覆盖，不可逆）；
+    //   ② 同时把 isSecret 降级为 false——读面随即明文回显该密钥。
+    // 两句合起来正是 S3 想防的数据破坏 + 一次静默解密。
+    it("R32-A2: 省略 isSecret 的 PUT 仍把 '***' 解析为库中真值，且不降级密钥分类", async () => {
+      repo.findOneBy.mockReset();
+      repo.findOneBy
+        .mockResolvedValueOnce({
+          key: "executor.sharedToken",
+          value: "real-secret",
+          isSecret: true,
+        } as SystemConfig)
+        .mockResolvedValueOnce({
+          key: "executor.sharedToken",
+          value: "real-secret",
+          isSecret: true,
+        } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+
+      // 没有 isSecret 字段（DTO 里 optional，缺省语义是 false）
+      await service.upsert({
+        key: "executor.sharedToken",
+        value: "***",
+        valueType: "string",
+      });
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ value: "real-secret", isSecret: true }),
+        expect.anything(),
+      );
+      // 历史行同样不得把掩码记成"新值"
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oldValue: "real-secret",
+          newValue: "real-secret",
+          isSecret: true,
+        }),
+      );
+    });
+
+    // 反证的另一半：新建（库里没有该 key）时 isSecret 缺省仍按 DTO 契约落 false。
+    it("R32-A2: 新建条目缺省 isSecret 仍按 DTO 契约落 false", async () => {
+      repo.findOneBy.mockReset();
+      repo.findOneBy
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ key: "plain", value: "v" } as SystemConfig);
+      repo.upsert.mockResolvedValue(undefined);
+
+      await service.upsert({ key: "plain", value: "v", valueType: "string" });
+
+      expect(repo.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ value: "v", isSecret: false }),
+        expect.anything(),
+      );
+    });
+
     // WIKI-OPT-2: 历史行持久化元数据快照——upsert 路径记落库后的最终值。
     it("WIKI-OPT-2: 历史行记录落库后的 valueType/isSecret 终值（缺省回退 string/false）", async () => {
       await service.upsert(baseDto);

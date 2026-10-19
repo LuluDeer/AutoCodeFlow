@@ -453,7 +453,19 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // 在审计面零痕迹可查。部分失败仍只走日志+指标（既有 fail-open 语义不变，
     // 不放大审计噪声）。审计写失败自身 try/catch——兜底路径绝不允许二次炸
     // 主链。不做死信表：重放依赖审计行 + 人工/上游重触发（记录在本注释）。
-    if (entries.length > 0 && failures.length === entries.length) {
+    // R32-A2: 判据必须是**逐渠道投递结果**，不是 promise 有没有 reject。
+    // 真实渠道把传输失败吞成 status='failed'（见上方 failures.push 只在
+    // rejected 分支——即本兜底此前只在"渠道实现违反了 fail-open 契约、真的
+    // 抛错"时才触发），于是 A-1 声称消灭的盲区在生产原样存在：全部渠道
+    // status='failed' 时一条审计都没有。这里按结果判定：
+    //   · 全部请求渠道都是 'failed' → 落审计（无论它来自 reject 还是返回值）；
+    //   · 'blocked' 是策略结果、'skipped' 是未配置，均不算投递故障（既有
+    //     spec 已钉住 blocked/skipped 不落审计），部分失败仍只走日志+指标，
+    //     不放大审计噪声。
+    const failedEverywhere =
+      entries.length > 0 &&
+      entries.every((e) => delivery[e.name] === "failed");
+    if (failedEverywhere) {
       try {
         await this.auditService?.log({
           action: "NOTIFICATION_FAILED",
@@ -463,7 +475,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
             level: base.level,
             channels: entries.map((e) => e.name),
             results: delivery,
-            failures,
+            // rejection 的异常文本更具体；纯 status='failed' 的渠道没有异常
+            // 可摘，据实写明"渠道自报 failed"，不让审计里出现空数组。
+            failures:
+              failures.length > 0
+                ? failures
+                : entries.map(
+                    (e) => `${e.name}: delivery failed (channel reported 'failed')`,
+                  ),
           },
         });
       } catch {

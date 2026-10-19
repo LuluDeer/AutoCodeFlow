@@ -234,7 +234,15 @@ export class SystemConfigService implements OnModuleInit {
     // Same sentinel semantics as the notification ChannelConfigStore write
     // path: a value of '***' on an isSecret item means "unchanged" — keep the
     // stored value instead of persisting the mask.
-    const isSecret = dto.isSecret ?? false;
+    // R32-A2: 两个判据都必须能看见「库里这行是不是密钥」
+    //   · isSecret 省略 ≠ 取消密钥标记。DTO 的 default:false 是**新建**语义；
+    //     对已存在的行沿用库里的分类，否则一次「只改描述/只改值」的 PUT
+    //     （脚本/API 直调，isSecret 是 optional）会把密钥静默降级成普通配置
+    //     项——读面随即将它明文回显，等于一次无痕解密。
+    //   · '***' 哨兵同理：只有「本次显式 isSecret:false」才意味着"提交的字面量
+    //     就是真值"（显式取消密钥标记）；省略时按库里分类判定，把读面回显的
+    //     掩码解析回真值，绝不把 '***' 写进库（S3 的同一类数据破坏）。
+    const isSecret = dto.isSecret ?? (existing?.isSecret === true);
     let value = dto.value;
     if (isSecret && value === "***" && existing) {
       value = existing.value;

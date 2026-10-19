@@ -1,4 +1,6 @@
 import { ConfigService } from "@nestjs/config";
+// R32-A2: 出站日志凭据脱敏的断言需要拦 Logger 输出（见文件末尾的 describe）
+import { Logger } from "@nestjs/common";
 import axios from "axios";
 import * as nodemailer from "nodemailer";
 import { createHmac } from "node:crypto";
@@ -1090,5 +1092,111 @@ describe("A-6: markdown 注入防护（wecom/dingtalk/slack 共用 escapeMarkdow
       }),
     );
     createTransportSpy.mockRestore();
+  });
+});
+
+// ============================================================================
+// R32-A2: 渠道日志的凭据回显
+//
+// 各渠道在「发送成功」「SSRF 拒绝」「加签失败」时都会打日志。URL 恰恰常带
+// 凭据（dingtalk/wecom 的 ?access_token=/?key=、slack 的 path token），而
+// 日志会进文件/采集端/工单——比读面更远离权限控制。webhook 渠道此前打的是
+// **整条 URL**，其余渠道只打 title；同一仓库两种姿态，前者是缺口。
+// ============================================================================
+// ============================================================================
+// R32-A2: SSRF 守卫的**回归钉子**（审计轴 2 复核结论 = 已有正确守卫）
+//
+// 现状：六个 HTTP 渠道都走 assertAndPinHttpUrl（逐 DNS 答案过 deny 表 +
+// 钉住首个校验通过的 IP），并全部带 maxRedirects:0。字符串校验 + 重定向已由
+// 既有 spec 钉住（NOTIF-001 / R3），这里补上**钉 IP**这一环的回归——
+// 没有它，DNS rebinding（校验答 public、连接答 127.0.0.1）就重新打开。
+// ============================================================================
+describe("R32-A2: SSRF DNS pinning 回归钉子", () => {
+  it("hostname 目标：axios 收到 pin 后的 agent，其 lookup 恒答校验过的 IP", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WebhookChannel(makeStore());
+    await expect(
+      channel.send({ title: "t", content: "c" }, "http://rebind.example.com/hook"),
+    ).resolves.toBe("sent");
+
+    const opts = (mockedAxios.post as jest.Mock).mock.calls[0][2] as {
+      httpAgent?: { options: { lookup?: (...a: any[]) => void } };
+      httpsAgent?: unknown;
+    };
+    expect(opts.httpAgent).toBeDefined();
+    expect(opts.httpsAgent).toBeUndefined();
+
+    // node:dns/promises 在本文件被 mock 成唯一答案 93.184.216.34
+    const answers: unknown[] = [];
+    opts.httpAgent!.options.lookup!(
+      "rebind.example.com",
+      {},
+      (_e: unknown, addr: unknown) => answers.push(addr),
+    );
+    expect(answers[0]).toBe("93.184.216.34");
+  });
+
+  it("私有网段豁免缺省关闭：同一 URL 在未经 notification.allowPrivateNetwork 时被拒（不因引脚而放行）", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WebhookChannel(makeStore());
+    await expect(
+      channel.send({ title: "t", content: "c" }, "http://127.0.0.1/hook"),
+    ).resolves.toBe("blocked");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("R32-A2: 出站日志不得回显凭据 URL", () => {
+  const SECRET_URL =
+    "https://hooks.example.com/notify?access_token=s3cr3t-value&format=json";
+  const PRIVATE_SECRET_URL =
+    "http://10.0.0.5/hook?access_token=s3cr3t-value&x=1";
+
+  const joinLogs = (spy: jest.SpyInstance) =>
+    spy.mock.calls.map((c) => c.map((a) => String(a)).join(" ")).join("\n");
+
+  it("WebhookChannel 发送成功日志：保留 host/路径，掩码 query 凭据", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const logSpy = jest.spyOn(Logger.prototype, "log").mockImplementation();
+    const channel = new WebhookChannel(makeStore());
+    await expect(
+      channel.send({ title: "t", content: "c" }, SECRET_URL),
+    ).resolves.toBe("sent");
+
+    const logged = joinLogs(logSpy);
+    expect(logged).toContain("hooks.example.com/notify");
+    expect(logged).toContain("access_token=***");
+    expect(logged).not.toContain("s3cr3t-value");
+    logSpy.mockRestore();
+  });
+
+  it("WebhookChannel SSRF 拒绝日志同样掩码（拒绝理由里没有凭据）", async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, "warn").mockImplementation();
+    const channel = new WebhookChannel(makeStore());
+    await expect(
+      channel.send({ title: "t", content: "c" }, PRIVATE_SECRET_URL),
+    ).resolves.toBe("blocked");
+
+    const logged = joinLogs(warnSpy);
+    expect(logged).toContain("10.0.0.5/hook");
+    expect(logged).toContain("access_token=***");
+    expect(logged).not.toContain("s3cr3t-value");
+    warnSpy.mockRestore();
+  });
+
+  it("DingtalkChannel SSRF 拒绝日志同样掩码（兄弟渠道同源）", async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, "warn").mockImplementation();
+    const channel = new DingtalkChannel(
+      makeConfig({}),
+      makeStore({ dingtalk: { webhookUrl: PRIVATE_SECRET_URL } }),
+    );
+    await expect(channel.send({ title: "t", content: "c" })).resolves.toBe(
+      "blocked",
+    );
+
+    const logged = joinLogs(warnSpy);
+    expect(logged).toContain("access_token=***");
+    expect(logged).not.toContain("s3cr3t-value");
+    warnSpy.mockRestore();
   });
 });

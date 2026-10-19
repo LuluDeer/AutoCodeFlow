@@ -16,6 +16,7 @@ import { ChannelConfigStore } from "../channel-config.store";
 // A-6: markdown 注入防护（mrkdwn section 剥离链接语法字符；header 是
 // plain_text 类型无注入面，不转义）
 import { escapeMarkdownText } from "./markdown-escape.util";
+import { redactUrlForLog } from "./log-safe-url.util";
 
 @Injectable()
 export class SlackChannel extends BaseChannel {
@@ -55,7 +56,7 @@ export class SlackChannel extends BaseChannel {
       });
     } catch (err: unknown) {
       this.logger.warn(
-        `[Slack] SSRF-blocked URL ${webhook}: ${err instanceof Error ? err.message : String(err)}`,
+        `[Slack] SSRF-blocked URL ${redactUrlForLog(webhook)}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return "blocked";
     }
