@@ -487,13 +487,34 @@ describe('UI-09 R3 ProjectsPage 375px 产物', () => {
     expect(add!.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('桌面端回归：表格保留（scroll.x 880 兜底），成员抽屉恢复 736px', async () => {
+  it('桌面端回归：表格保留横向 scroll.x，成员抽屉恢复 736px', async () => {
     stubMatchMedia(false);
     renderPage(<ProjectsPage />, '/projects');
     expect(await screen.findByText('Default')).toBeTruthy();
     const table = document.querySelector('.ant-table table') as HTMLElement | null;
     expect(table).not.toBeNull();
-    expect(Number.parseFloat(table!.style.width)).toBe(880);
+    // COLWIDTH-01：断言的是**不变量**而不是某个魔数——scroll.x 必须 ≥ 各列
+    // width 之和（此前写死 880 < 固定列之和，rc-table 的 useWidthColumns 会把
+    // 差额从弹性列里反向扣除，名称列被压到 262px、操作列内容溢出后被裁）。
+    // 列宽调整时本用例自动跟随，只有「scroll.x 又小于列宽之和」才变红。
+    const scrollX = Number.parseFloat(table!.style.width);
+    const colWidths = Array.from(
+      document.querySelectorAll('.ant-table colgroup col'),
+    ).map((c) => Number.parseFloat((c as HTMLElement).style.width) || 0);
+    expect(colWidths).toHaveLength(5);
+    const declaredSum = colWidths.reduce((a, b) => a + b, 0);
+    // 注意这条断言的**强度边界**：rc-table 会把 scroll.x 归一后写进 colgroup
+    // （无 width 的列补平均宽），所以 `scrollX >= declaredSum` 在多数情况下
+    // 恒真——它只能挡住「scroll.x 被改到明显小于列宽之和」这一种回归。
+    expect(scrollX).toBeGreaterThanOrEqual(declaredSum);
+    // 真正有判别力的是下面两条：
+    expect(scrollX).toBeGreaterThan(880);
+    // 描述列是**弹性列**（columns 里刻意不设 width），故它在 colgroup 里
+    // width 为空串、上面被记成 0。它实际拿到的份额 = scroll.x − 已声明列之和，
+    // 这个差额必须够读（≥150），否则宽屏下描述列被压成一条窄缝——正是
+    // COLWIDTH-01 要防的那个现象。改列宽时本断言自动跟随，不会锁死魔数。
+    const flexibleShare = scrollX - declaredSum;
+    expect(flexibleShare).toBeGreaterThanOrEqual(150);
     fireEvent.click((await screen.findAllByRole('button', { name: /成员/ }))[0]);
     await screen.findByText('7');
     const wrapper = document.querySelector('.ant-drawer-content-wrapper') as HTMLElement | null;

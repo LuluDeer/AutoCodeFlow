@@ -2957,6 +2957,62 @@ export default {
   'projects.role.editor': 'Editor',
   'projects.role.admin': 'Project admin',
   'projects.count': '{{count}} projects in total',
+
+  // ── Projects: create / update / delete (PROJECT-CRUD-01) ──
+  // The page previously exposed only the "Members" entry; create/rename/delete
+  // had no UI anywhere, while POST/PATCH/DELETE /projects were already
+  // ADMIN-only and working on the backend — a pure frontend gap.
+  'projects.create': 'New project',
+  'projects.createDisableHint': 'Only admins can create projects',
+  'projects.editDisableHint': 'Only admins can edit projects',
+  'projects.deleteDisableHint': 'Only admins can delete projects',
+  // Note: 'projects.empty' is already defined at the end of this section (UI-09
+  // mobile empty state) — intentionally not duplicated here.
+  'projects.empty.createFirst': 'Create the first project',
+  'projects.modal.create': 'New project',
+  'projects.modal.edit': 'Edit project',
+  'projects.form.name': 'Project name',
+  'projects.form.namePlaceholder': 'e.g. Data Platform',
+  'projects.form.nameRequired': 'Please enter a project name',
+  'projects.form.nameMax': 'Project name must be at most 100 characters',
+  'projects.form.description': 'Description',
+  'projects.form.descriptionPlaceholder': 'What tasks and applications belong to this project (optional)',
+  'projects.form.descriptionMax': 'Description must be at most 500 characters',
+  'projects.form.ok': 'Save',
+  'projects.form.cancel': 'Cancel',
+  'projects.created': 'Project created',
+  'projects.createFail': 'Failed to create project',
+  'projects.updated': 'Project updated',
+  'projects.updateFail': 'Failed to update project',
+  'projects.deleted': 'Project deleted',
+  'projects.deleteFail': 'Failed to delete project',
+  'projects.deleteConfirmTitle': 'Delete project "{{name}}"?',
+  // PROJECT-IMPACT-01: body describes only the *real* consequence. The previous
+  // wording said "tasks and applications will fall back to unassigned" — the
+  // application half is false: applications/executors/executor_packages have a
+  // projectId column with an FK, but no DTO field can ever set it (it is always
+  // NULL at runtime), so deleting a project never touches any application.
+  'projects.deleteConfirmBody': 'Tasks in this project will fall back to "unassigned" (the tasks themselves are not deleted and will keep being triggered on schedule), and all member grants are removed. This cannot be undone.',
+  'projects.deleteConfirmOk': 'Delete',
+  'projects.deleteConfirmCancel': 'Cancel',
+  // Impact lines (counts come from GET /projects/:id/removal-impact)
+  'projects.deleteImpact.tasks': '{{count}} task(s) will lose their project ({{active}} of them are still enabled and will keep being triggered)',
+  'projects.deleteImpact.members': '{{count}} project member grant(s) will be removed',
+  'projects.deleteImpact.none': 'This project has no tasks or members; deleting it affects no resources',
+  'projects.deleteImpact.unavailable': 'Impact preview unavailable — please check the project for tasks yourself',
+  // Option B-lite: compact wording for the popover (full sentences live in the Modal)
+  'projects.deletePop.loading': 'Counting impact…',
+  'projects.deletePop.tasks': '{{count}} task(s) ({{active}} still enabled)',
+  'projects.deletePop.members': '{{count}} member grant(s)',
+  // The OK label must be honest: for a non-empty project this step only expands details
+  'projects.deletePop.ok': 'Delete',
+  'projects.deletePop.continue': 'Review impact & delete',
+  'projects.deleteModal.title': 'Impact of deleting project "{{name}}"',
+  'projects.deleteModal.ok': 'Delete project',
+  'projects.action.edit': 'Edit',
+  'projects.action.delete': 'Delete',
+  'projects.defaultImmutable': 'The Default project cannot be renamed or deleted',
+  'projects.defaultBadge': 'Default',
   // UI-09 round 3: mobile card list empty state (the desktop table keeps antd's default "No data")
   'projects.empty': 'No projects yet',
 

@@ -130,12 +130,30 @@ export class ProjectAccessService {
     return this.toView(await this.repo.save(row));
   }
 
+  /**
+   * 移除成员。
+   *
+   * PROJECT-MEMBER-404：目标没有成员行时抛 404 `PROJECT_NOT_MEMBER`，与
+   * `updateMember` 同口径——此前是「删 0 行也返回 `{deleted:false}` + 200」，
+   * 而前端 `MembersDrawer` 的成功回调**不看返回值**，直接弹「已移除」：并发
+   * 场景下（另一管理员刚移除同一人）用户会拿到一条假成功提示，回列表才发现
+   * 人早就不在了。同一个服务里两个写方法对「行不存在」给出相反结论，是缺陷
+   * 而不是风格差异。
+   *
+   * 为什么不做成幂等 200：本端点的语义是「移除这条成员关系」，寻址失败与
+   * 「已经是你想要的状态」在审计面上是两件事（`D3-B-P1-1` 对成员移除落了
+   * 审计证，假成功会让审计表记下一次从未发生的授权变更）。
+   */
   async removeMember(
     projectId: string,
     userId: number,
   ): Promise<{ deleted: boolean }> {
-    const res = await this.repo.delete({ projectId, userId });
-    return { deleted: (res.affected ?? 0) > 0 };
+    const row = await this.repo.findOne({ where: { projectId, userId } });
+    if (!row) {
+      throw new AppError(ErrorCode.PROJECT_NOT_MEMBER, { userId, projectId });
+    }
+    await this.repo.delete({ projectId, userId });
+    return { deleted: true };
   }
 
   private assertRole(role: unknown): asserts role is ProjectRole {

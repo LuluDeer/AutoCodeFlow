@@ -463,6 +463,17 @@ export default function ApplicationListPage() {
       title: t('appList.col.name'),
       dataIndex: 'name',
       key: 'name',
+      // COLWIDTH-01（生产反馈「名称列宽度太宽」）：弹性列**必须**给 width。
+      //
+      // 机理（@rc-component/table 的 useWidthColumns）：`scroll.x` 有值时它先
+      // 统计「已给 width 的列」之和，把 `maxFitWidth - 已用` **全部**平摊给
+      // 「没给 width 的列」。此前名称列是**唯一**没给 width 的列，于是它独占
+      // 了所有剩余空间——实测真实 Chromium：1280px 视口 262px、1440 → 422px、
+      // 1920 → 902px、2560 → 1542px（同一份数据，列宽随视口线性膨胀）。
+      //
+      // 给 260 之后它按比例参与分配，不再吞掉全部余量（口径对齐
+      // UserManagementPage：每列都有 width，scroll.x = 各列之和）。
+      width: 260,
       sorter: (a: AppWithStats, b: AppWithStats) => a.name.localeCompare(b.name),
       render: (name: string, record: AppWithStats) => (
         // UI 打磨：名称单行 ellipsis——弹性列内 minWidth:0 + display:block 让省略号生效
@@ -551,7 +562,22 @@ export default function ApplicationListPage() {
     {
       title: t('appList.col.actions'),
       key: 'actions',
-      width: 210,
+      // FIXEDCOL-01（生产反馈「操作区域没有固定在右侧，编辑只显示到『编』字」）：
+      // 根因是**列宽不足导致内容溢出单元格**，不是 fixed 没写。
+      //
+      // 真实 Chromium 实测（1280px 视口）：操作列 td 宽 210px，而列内
+      // 「详情 / 新建部署 / 编辑 / 删除」四个带文字按钮的 .ant-space 实际需要
+      // 272px —— 溢出 62px。溢出部分被横向滚动容器裁掉，于是**未滚动时**
+      // 右侧正好切在「编辑」的「编」字之后（与用户描述逐字吻合）。
+      //
+      // 为什么这会让 fixed 看起来失效：`position: sticky` 约束的是 td 自身盒子，
+      // 溢出到盒外的内容不参与 sticky，滚动时它跟着内容一起走 —— 用户看到的就是
+      // 「操作列没固定住，要拖横向滚动条才能看到」。把列宽给足（> 内容宽）后
+      // 溢消失，sticky 立刻恢复正常（已用真实 Chromium 在 scrollLeft 两端验证）。
+      //
+      // 300 的取值依据：zh 实测内容 272px（en 的 Details/Deploy/Edit/Delete 更宽，
+      // 约 290px）+ 单元格左右内边距余量。改动此处必须同步下面的 scroll.x。
+      width: 300,
       fixed: 'right' as const,
       render: (_: unknown, record: AppWithStats) => (
         <Space>
@@ -745,7 +771,20 @@ export default function ApplicationListPage() {
         dataSource={filtered}
         rowKey="id"
         loading={loading}
-        scroll={{ x: 1000 }}
+        // COLWIDTH-01 / FIXEDCOL-01：scroll.x **恰好等于**各列 width 之和
+        // （260 + 90 + 90 + 100 + 150 + 110 + 300 = 1100），口径对齐
+        // UserManagementPage（其 scroll.x=1010 也正是各列之和）。
+        //
+        // 两条边界都实测过：
+        //  · 小于列宽之和 → rc-table 的 useWidthColumns 反向压缩弹性列（名称列
+        //    被压到 262px），且表格宽度可能 ≤ 容器宽 → 横向滚动量为 0，fixed 列
+        //    失去参照系、在容器内跟着内容滚（用户看到的「没固定住」）；
+        //  · 大于列宽之和 → 多出一截纯空白滚动区，稍窄的视口下会有一整列被固定
+        //    列完全盖住（实测 1140 时 1280px 视口的「最后部署」列被遮挡）。
+        // 恰好等于之和时：宽屏按比例放大铺满（无横向滚动），窄屏才出现最小必要的
+        // 横向滚动量。改任一列 width 必须同步本值（守卫见
+        // __tests__/application-list-column-layout.test.tsx）。
+        scroll={{ x: 1100 }}
         // D-P2-10（设计审计）：主表此前无 pagination prop，antd 默认分页不带
         // 总数——用户看不到一共多少应用。补 showTotal（客户端筛选后的总数）。
         pagination={{
