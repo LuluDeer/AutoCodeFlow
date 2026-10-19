@@ -91,5 +91,44 @@ SDK 实例，跑 `makeBucket → putObject → statObject → getObject+gunzip �
 
 ### 5. 下次复查
 
-- **判据日 2026-10-01**（`GHSA-528h-pc64-c93x` 唯一在册豁免）。
+- **判据日 2026-10-01**（`GHSA-528h-pc64-c93x` 当时唯一在册豁免；2026-10-19 起已非唯一，见「依赖审计轮 #2」）。
+- 到期时脚本会红并打印到期动作，无需依赖任何人记得。
+
+---
+
+## 依赖审计轮 #2 —— 2026-10-19（Dependabot 告警清偿，PR #99/#100）
+
+**触发**：Dependabot 对默认分支报出 38 条告警。本轮逐条溯源：**27 条修复、11 条豁免**。
+
+### 1. 已修复（27 条）
+
+| 范围 | 处置 |
+|---|---|
+| `admin-web` | js-yaml / tmp / dompurify / uuid / brace-expansion |
+| `executor-desktop` | brace-expansion / undici / js-yaml |
+| `admin-api` / `executor-node` | glob / brace-expansion |
+| `docs-site` | vitepress 1.6.4 → 2.0.0-alpha.20，vite / esbuild 告警归零 |
+| Python | anyio 4.12.1 → 4.15.1（**critical**）、pytest 8.4.2 → 9.1.1 |
+
+- **Python SDK 最低解释器由 3.9 提高到 3.10**（`autoflow-sdk` 的 `requires-python`）。
+
+### 2. 豁免（11 条）
+
+共同特征：**上游无修复版**（`first_patched_version=null`），且全部位于开发期工具链，
+不进生产运行时。已登记在 `scripts/check-dependency-review.mjs` 的 `EXEMPTIONS`，
+并同步到 CI 的 `known` 列表。
+
+其中本轮在脚本中新登记 4 条，复查日均为 **2026-12-30**：
+
+| GHSA | 包 | 依赖链 | 可达范围 / 到期动作 |
+|---|---|---|---|
+| `GHSA-7pqw-9j4j-h8q3` | extract-zip@2.0.1 | admin-web devDep `@lhci/cli` → `@puppeteer/browsers` | 仅 Lighthouse CI；不得 override（无目标版本） |
+| `GHSA-jmr9-qjv8-65gv` | extract-zip@2.0.1 | 同上 | 仅 Lighthouse CI；随 GHSA-7pqw 同批复查 |
+| `GHSA-ch52-4w7c-c8xp` | http-cache-semantics@4.2.0 | executor-desktop `electron-builder` → `@electron/get` | 仅构建期 |
+| `GHSA-hp3w-g68c-fv3c` | sprintf-js | `@istanbuljs/load-nyc-config` → js-yaml@3 → argparse@1 | 仅测试期；**不得 override js-yaml**（会破坏 load-nyc-config 的 API） |
+
+### 3. 下次复查
+
+- `GHSA-528h-pc64-c93x` 不再是唯一在册豁免；新一批的**判据日 2026-12-30**。
+- 到期动作：复查上游是否发布新版（extract-zip、`@lhci/cli`、`@electron/get`、jest 对 `@istanbuljs/load-nyc-config` 的 js-yaml@3 依赖）；已发布则升级并移除对应豁免，否则续期。
 - 到期时脚本会红并打印到期动作，无需依赖任何人记得。
