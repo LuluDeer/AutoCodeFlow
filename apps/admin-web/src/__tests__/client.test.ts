@@ -4,6 +4,7 @@ import { message } from 'antd';
 import { client, getApiBaseUrl, __resetToastDedupe } from '../api/client';
 import { logoutRemote } from '../api/logout';
 import { useAuthStore } from '../store/auth';
+import { setLanguage } from '../i18n';
 
 vi.mock('antd', () => ({ message: { error: vi.fn() } }));
 
@@ -282,5 +283,70 @@ describe('401 refresh and DR-04 logout race', () => {
     expect(post.mock.calls.map(([url]) => url)).toEqual([
       `${getApiBaseUrl()}/auth/refresh`, `${getApiBaseUrl()}/auth/logout`,
     ]);
+  });
+});
+
+// LANG-ERR-01（2026-10-20）：拦截器 toast 必须**先按 errorCode 翻译**再回落服务端
+// message。这是前端使用率最高的一条失败出口（403/404/409/429/5xx 全在这里弹，
+// 且弹完就打 __toastedByClient 标抑制页面兜底），此前它把单语言的服务端中文 message
+// 排在 i18n 之前 —— 英文界面的用户在所有 4xx/5xx 上都拿到中文，而页面 catch 里
+// 那条**会**按码翻译的 showApiError 又被去重标记跳过，等于整条码化在这条路径上被绕过。
+describe('LANG-ERR-01: 拦截器 toast 按 errorCode 本地化', () => {
+  const failWithBody = (status: number, data: unknown): AxiosAdapter => async (config) => {
+    throw new AxiosError('Request failed', undefined, config, undefined, {
+      config, status, statusText: 'Error', headers: new AxiosHeaders(), data,
+    });
+  };
+
+  afterEach(async () => {
+    // 用**产品真实切换路径** setLanguage：en 语言包是按需 import 的（i18n 启动时
+    // 只在检测到 en 才加载），直接调 i18n.changeLanguage('en') 会因缺 en 资源
+    // 而回落到 fallbackLng=zh —— 那样测出来的就不是用户实际看到的语言。
+    await setLanguage('zh');
+  });
+
+  it('英文界面 + 有 errorCode → 英文文案（不是服务端中文 message）', async () => {
+    await setLanguage('en');
+    adapter.mockImplementation(
+      failWithBody(404, {
+        errorCode: 'TASK_NOT_FOUND',
+        params: { taskId: 't-42' },
+        message: '任务 t-42 不存在',
+      }),
+    );
+    await expect(client.get('/tasks/t-42', { adapter })).rejects.toBeDefined();
+    // 反证：把 translateByErrorCode 从拦截器里去掉 → 这里会变成「任务 t-42 不存在」
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('Task t-42 not found', 4);
+  });
+
+  it('中文界面 + 有 errorCode → 中文词条（插值生效），与服务端 message 无关', async () => {
+    await setLanguage('zh');
+    adapter.mockImplementation(
+      failWithBody(404, {
+        errorCode: 'TASK_NOT_FOUND',
+        params: { taskId: 't-7' },
+        message: 'SERVER-SIDE-RAW-MESSAGE',
+      }),
+    );
+    await expect(client.get('/tasks/t-7', { adapter })).rejects.toBeDefined();
+    const shown = vi.mocked(message.error).mock.calls[0][0] as string;
+    expect(shown).toContain('t-7');
+    expect(shown).not.toContain('SERVER-SIDE-RAW-MESSAGE');
+  });
+
+  it('有码但字典没有该码 → 回落服务端 message，绝不渲染裸码', async () => {
+    adapter.mockImplementation(
+      failWithBody(409, { errorCode: 'FUTURE_CODE_NOT_SHIPPED_YET', message: '未来的新码' }),
+    );
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    const shown = vi.mocked(message.error).mock.calls[0][0] as string;
+    expect(shown).toBe('未来的新码');
+    expect(shown).not.toContain('err.');
+  });
+
+  it('无码（老后端）→ 业务 message 仍然优先（既有行为不被本修复改变）', async () => {
+    adapter.mockImplementation(failWithBody(409, { message: '该应用正在部署中，请先停止' }));
+    await expect(client.get('/tasks', { adapter })).rejects.toBeDefined();
+    expect(message.error).toHaveBeenCalledExactlyOnceWith('该应用正在部署中，请先停止', 4);
   });
 });
