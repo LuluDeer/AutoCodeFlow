@@ -25,6 +25,13 @@ import { ILike } from "typeorm";
 import { escapeLikePattern } from "../audit/audit.service";
 
 /**
+ * R32-C3: update() 允许落库的列——UpdateUserDto（PartialType(CreateUserDto)）的
+ * 全部业务列。单独拎成类型别名的用意：**编译期**就把可写面钉死在这四列上，
+ * 将来谁想在 patch 里多加一列，tsc 先红（不必等线上问题复现）。
+ */
+type UpdatableUserColumn = "username" | "email" | "password" | "role";
+
+/**
  * ARCH-31: PG 唯一约束冲突（23505）判定——种子竞态里「输家」据此降级为跳过。
  * 只认 driver 层的 code，不做错误消息匹配（防 PG 文案/版本漂移）。
  */
@@ -236,14 +243,15 @@ export class UsersService implements OnModuleInit {
       updateUserDto.role !== UserRole.ADMIN;
 
     try {
-      return await this.applyUpdate(id, updateUserDto, user, demotingAdmin);
+      return await this.applyUpdate(id, updateUserDto, demotingAdmin);
     } catch (e: unknown) {
       // R32-A5（轴4）：唯一性竞态兜底。
       //
       // 缺陷现场：唯一性预检只在 controller 侧、只覆盖「非 admin 自改」
-      // （users.controller.ts:143-159），预检与 save 之间是 TOCTOU 窗口。两个
-      // 请求同时改成同一个 username/email 时两者都过预检，输家的 INSERT/UPDATE
-      // 撞唯一索引 → PG 23505 一路穿到全局 filter（http-exception.filter.ts:114）
+      // （users.controller.ts:143-159）——预检与落库（R32-C3 起是列级 UPDATE）
+      // 之间是 TOCTOU 窗口。两个请求同时改成同一个 username/email 时两者都过
+      // 预检，输家的写入撞唯一索引 → PG 23505 一路穿到全局 filter
+      // （http-exception.filter.ts:114）
       // 落成笼统的 RESOURCE_EXISTS「资源已存在」：状态码还是 409、不 500，但
       // **不知道撞的是哪个字段**，而同一语义的另一条路径（预检命中）给的是点名
       // 409 USERNAME_TAKEN / EMAIL_TAKEN。admin 改他人账号更是零预检，本兜底
@@ -260,15 +268,63 @@ export class UsersService implements OnModuleInit {
   }
 
   /**
+   * R32-C3: update 的写入列集合——**只**包含本次真正要改的列。
+   *
+   * 缺陷现场（L2 / 与 R32-A4 在 auth.service 修掉的 TOTP 三处同形态）：此前是
+   * 「findById 读整行快照 → bcrypt + 唯一性/降级判定 → save(user) 整行回写」。
+   * TypeORM 的 save 会按 id 重读库中行逐列 diff
+   * （persistence/SubjectChangedColumnsComputer.computeDiffColumns），于是内存
+   * 实体里的**陈旧快照值**与并发写入后的新值不同 → 被判成"脏列" → 按旧值写回。
+   * 触发窗口是 [快照读, save 内部那次 SELECT]，中间夹着 bcrypt(12) 与预检，
+   * 完全不是理论窄窗。同一行上的三种并发写因此被静默回滚：
+   *   · 并发 logout / 改密 bump 的 sessionVersion 被回退 ⇒ 已吊销 access token
+   *     的 ver 又匹配上（令牌复活，WIKI-AUTH-REVOC 失效）；
+   *   · 管理员刚落库的 isActive=false 被撤销 ⇒ 禁用失效（账号逃逸隔离）；
+   *   · 并发写入的新密码哈希被旧哈希覆盖 ⇒ 改密被静默撤销。
+   *
+   * 逐列取舍（其余列宁可不动）：
+   *   · username / email / password / role = `UpdateUserDto`
+   *     （PartialType(CreateUserDto)）的全部业务列，也是旧实现整行回写下**唯一**
+   *     可能被 PATCH 改到的列：main.ts 的 ValidationPipe 是 whitelist +
+   *     forbidNonWhitelisted（main.ts:370-375），契约外的键到不了这里。故对
+   *     **可达**列而言，列级写入与旧行为逐字节等价，不是语义收敛。
+   *   · isActive / loginFailCount / lockedUntil / totpEnabled / totpSecret /
+   *     lastTotpCounter / oidcSub 各自有自己的原子写点（禁用面、登录失败计数、
+   *     TOTP 状态、OIDC 绑定），本路径绝不能带着快照值重写它们。
+   *   · sessionVersion 的唯一写入点是 bumpSessionVersion（原子自增）与降级事务
+   *     内的 increment——把快照值写回正是"令牌复活"的根因。
+   *   · id / createdAt 不可变；updatedAt 交给 UpdateQueryBuilder 自动追加的
+   *     `"updatedAt" = CURRENT_TIMESTAMP`（query-builder/UpdateQueryBuilder.js
+   *     的 updateDateColumn 分支），与 save 的修改时间语义一致且用库时钟，
+   *     故不手写。
+   *
+   * 用 `!== undefined` 而非真值判断：false / 0 / 空串等有意义的取值也必须照写。
+   */
+  private buildUpdatePatch(
+    updateUserDto: UpdateUserDto,
+  ): Partial<Pick<User, UpdatableUserColumn>> {
+    const patch: Partial<Pick<User, UpdatableUserColumn>> = {};
+    if (updateUserDto.username !== undefined)
+      patch.username = updateUserDto.username;
+    if (updateUserDto.email !== undefined) patch.email = updateUserDto.email;
+    if (updateUserDto.password !== undefined)
+      patch.password = updateUserDto.password;
+    if (updateUserDto.role !== undefined) patch.role = updateUserDto.role;
+    return patch;
+  }
+
+  /**
    * R32-A5：update 的实际写入路径（拆出仅为让 23505 兜底只包一层 try）。
-   * 语义与拆分前逐字节一致。
+   * 失败面（23505 / AppError）与拆分前一致；R32-C3 起写入本身改为**列级
+   * UPDATE**（逐列取舍见 buildUpdatePatch 的头注）。
    */
   private async applyUpdate(
     id: number,
     updateUserDto: UpdateUserDto,
-    user: User,
     demotingAdmin: boolean,
   ) {
+    const patch = this.buildUpdatePatch(updateUserDto);
+
     if (demotingAdmin) {
       return this.usersRepository.manager.transaction(async (manager) => {
         const users = manager.getRepository(User);
@@ -282,8 +338,12 @@ export class UsersService implements OnModuleInit {
         if (admins.length <= 1) {
           throw new AppError("USER_LAST_ADMIN_CANNOT_DEMOTE");
         }
-        Object.assign(target, updateUserDto);
-        const savedInTx = await users.save(target);
+        // R32-C3: 与事务外路径同款列级 UPDATE。事务内 findOne 到这条 UPDATE
+        // 之间仍可能夹着已提交的并发写（行锁要等下面 FOR UPDATE 才拿到），整行
+        // 回写在这里同样会按旧快照把并发结果盖回去。
+        await users.update({ id }, patch);
+        const savedInTx = await users.findOne({ where: { id } });
+        if (!savedInTx) throw new AppError("USER_ID_NOT_FOUND", { id });
         if (updateUserDto.password) {
           // DEADLOCK-01（审计 P2，2026-10-17）：**必须**用事务内的 manager，
           // 不能用 this.bumpSessionVersion（它走 this.usersRepository，即
@@ -302,11 +362,18 @@ export class UsersService implements OnModuleInit {
       });
     }
 
-    Object.assign(user, updateUserDto);
-    const saved = await this.usersRepository.save(user);
+    // R32-C3: 列级 UPDATE——只写 patch 里出现的列，快照里的并发安全列
+    // （sessionVersion / isActive / password 等）一个字都不进 SQL。
+    await this.usersRepository.update({ id }, patch);
+    // 响应实体改为写后重读（不再把陈旧快照当响应）：UserResponseDto 暴露
+    // isActive / sessionVersion / loginFailCount，拿快照会把这些列报成旧值。
+    // 查询次数不增——TypeORM 的 save 本来就会按 id 先 SELECT 一次做 diff。
+    // 行若在 update 与本次读之间被并发删除：findById 抛 USER_ID_NOT_FOUND，
+    // 比旧行为诚实（save 在行已不存在时会把实体 INSERT 回来 = 删除被复活）。
+    const saved = await this.findById(id);
     // WIKI-AUTH-REVOC: 改密成功后原子 bump 会话版本——该用户所有在途
     // access token 的 ver 快照失配即 401（含管理员重置他人密码的场景）。
-    // 放在 save 成功之后：改密失败（校验/落库异常）不误伤在途会话。
+    // 放在写入成功之后：改密失败（校验/落库异常）不误伤在途会话。
     // 返回实体中的 sessionVersion 为 bump 前快照（响应展示无消费方，语义
     // 以签发时重新读取的库中值为准）。
     if (updateUserDto.password) {
