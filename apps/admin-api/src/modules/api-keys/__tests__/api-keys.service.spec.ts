@@ -211,6 +211,60 @@ describe("AUTH-03 ApiKeysService", () => {
       expect(repo.save).not.toHaveBeenCalled();
       expect(audit.log).not.toHaveBeenCalled();
     });
+
+    // R32-C1（类别 2「整行 save 实体 vs 列级 update」）：
+    // 本文件两个写面此前口径相反——touchLastUsed 列级只写 lastUsedAt（刻意，
+    // 避免写放大），revoke 却整行 save（把 findOne 读到的快照整体回写）。
+    // 整行回写的受害者是**并发写入的列**：吊销发生在一次 authenticate 的
+    // lastUsedAt 刷新之后时，快照里的 lastUsedAt（null/旧时间）被写回去 →
+    // 下一请求又判「首次使用」→ 重复落 apikey.used firstUse 审计行。
+    // 反证方式：忠实模拟 TypeORM 的两种写（save=整行覆盖 / update=只写给出的
+    // 列），并让 revoke 读到**并发写之前**的快照。改回 save(row) 本用例即转红。
+    it("列级写：只更新 revokedAt，不回滚并发写入的 lastUsedAt", async () => {
+      const db = new Map<number, Record<string, any>>();
+      db.set(9, {
+        id: 9,
+        userId: 42,
+        name: "k",
+        keyPrefix: "acf_aa",
+        scope: "readonly",
+        keyHash: "h",
+        expiresAt: null,
+        revokedAt: null,
+        lastUsedAt: null,
+        createdAt: new Date(0),
+      });
+      // revoke 里的 findOne 读到的是「并发写之前」的那一行（读快照）。
+      repo.findOne.mockResolvedValueOnce({ ...db.get(9) });
+      repo.save.mockImplementation(async (e: any) => {
+        db.set(Number(e.id), { ...e });
+        return e;
+      });
+      repo.update.mockImplementation((async (criteria: any, patch: any) => {
+        const id = Number(criteria?.id);
+        db.set(id, { ...db.get(id), ...patch });
+        return { affected: 1 };
+      }) as any);
+
+      // 并发：认证面刚把 lastUsedAt 写进去（touchLastUsed 走列级 update）。
+      const usedAt = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
+      // （repoMock 的 update 是零参签名，这里按真实 TypeORM 形状调用。）
+      await (repo.update as any)({ id: 9 }, { lastUsedAt: usedAt });
+
+      const view = await svc.revoke(9, 42);
+
+      // 语义不变：吊销生效、返回视图是吊销后的值。
+      expect(view.revokedAt).toBeInstanceOf(Date);
+      expect(db.get(9)!.revokedAt).toBeInstanceOf(Date);
+      // 反证点（先断言**数据**，让红态直接指向回滚本身而不是调用形状）：
+      // 整行回写会把它打回快照里的 null。
+      expect(db.get(9)!.lastUsedAt).toEqual(usedAt);
+      // 修复点：写面只碰 revokedAt 一列（不是整行）。
+      expect(repo.update).toHaveBeenLastCalledWith(
+        { id: 9 },
+        { revokedAt: expect.any(Date) },
+      );
+    });
   });
 
   describe("authenticate（guard 消费）", () => {

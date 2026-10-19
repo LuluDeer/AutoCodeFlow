@@ -164,8 +164,25 @@ export class ApiKeysService {
     const row = await this.repo.findOne({ where: { id } });
     if (!row || row.userId !== userId) return null;
     if (!row.revokedAt) {
-      row.revokedAt = new Date();
-      await this.repo.save(row);
+      const revokedAt = new Date();
+      // R32-C1（类别 2，同型漏改）：**列级 UPDATE，只写 revokedAt**。
+      //
+      // 此前是 `row.revokedAt = new Date(); await this.repo.save(row)`——整行
+      // 回写（TypeORM save 无脏检查，row 是 findOne 读到的**快照**，其
+      // lastUsedAt/keyHash/expiresAt 全带值）。而同一个文件的另一半
+      // （touchLastUsed:234）**刻意**用列级 update 只写 lastUsedAt，两处口径
+      // 相反，于是整行写会把 touchLastUsed 刚落的 lastUsedAt 覆盖回快照值
+      // （null 或旧时间）→ 下一次 authenticate 又判「首次使用」，重复落
+      // `apikey.used` firstUse 审计行——凭据卫生审计的证据被污染（R32-A4 刚
+      // 把「哪一把 key / 属于谁」做成可追溯，这里会把该证据打回旧值）。
+      //
+      // 更根本的口径：api_keys 是**凭据实体**，写面只应触碰自己要改的列。
+      // 与 R32-A4 把 totp 三处（auth.service:255/282/317）从 saveUser 改成
+      // 列级 UPDATE 是同一纪律——那次只修了 auth 域，本处属同型漏改。
+      await this.repo.update({ id }, { revokedAt });
+      // 返回值仍是「吊销后的视图」：显式回填刚写入的值（不是重新查库——
+      // 与改动前 save() 返回同一对象语义一致，且少一次往返）。
+      row.revokedAt = revokedAt;
       await this.safeAudit({
         userId,
         username: username ?? undefined,

@@ -810,17 +810,32 @@ export class ApplicationService implements OnModuleInit {
   }
 
   /**
-   * NETOPT-8③: 取该应用的部署行（id + executorAddress 两列）。deploymentRepo
-   * 缺席（既有单测装配）或查询失败时返回空集——扇出跳过但删除主链照常。
+   * NETOPT-8③: 取该应用的部署行（id + executorAddress + executorId 三列）。
+   * deploymentRepo 缺席（既有单测装配）或查询失败时返回空集——扇出跳过但删除
+   * 主链照常。
+   *
+   * R32-C1（类别 1，同型漏改）：**必须把 executorId 一起 select 出来**。部署行
+   * 自创建起就带行身份（deploy: `executorId: executor.id`，见 app-deployment.
+   * entity.ts 的 executorId 列），此前这里只取 executorAddress，于是扇出只能按
+   * 地址分组、传输解析也只能按地址（`repo.findOne({where:{address}})` = 首行
+   * 获胜）。ADR-017 §5 允许 pull 模式同址多行并存，此时那条链路会：
+   *   ① 把 app-stop/app-uninstall 投进**另一台执行器**的 pull 命令队列
+   *      （executor.service.ts 的 resolveExecutorTransport 支持 id 优先，但拿不到
+   *      id 就退化为地址 → 命中的是另一份安装的命令队列）；
+   *   ② 同址两台被合并成一个目标，第二台的部署行没人清理（残留进程/目录）。
+   * 取上行身份后同样的路径变成无歧义：按 executorId 分组、按 id 解析传输。
+   * 存量/异常行（executorId 为 NULL）仍按地址分组，行为与引入前逐字节一致。
    */
   private async findDeploymentsForRemovalFanout(
     appId: string,
-  ): Promise<{ id: string; executorAddress: string | null }[]> {
+  ): Promise<
+    { id: string; executorAddress: string | null; executorId: string | null }[]
+  > {
     if (!this.deploymentRepo) return [];
     try {
       return await this.deploymentRepo.find({
         where: { applicationId: appId },
-        select: { id: true, executorAddress: true },
+        select: { id: true, executorAddress: true, executorId: true },
       });
     } catch (err: unknown) {
       this.logger.warn(
@@ -833,7 +848,8 @@ export class ApplicationService implements OnModuleInit {
   }
 
   /**
-   * NETOPT-8③: 对每台有部署的执行器（按地址去重）并行扇出清理通知。
+   * NETOPT-8③: 对每台有部署的执行器（R32-C1 起按**行身份**去重，无行身份才
+   * 回落地址）并行扇出清理通知。
    * Promise.allSettled + 单台内部全兜底 ⇒ 整体绝不外抛。
    *
    * DEEP-AUDIT B·4.3: 扇出结果**可观测**——旧实现 allSettled 后把 per-台
@@ -844,34 +860,65 @@ export class ApplicationService implements OnModuleInit {
   private async fanOutAppRemovalToExecutors(
     appId: string,
     appName: string,
-    deployments: { id: string; executorAddress: string | null }[],
+    deployments: {
+      id: string;
+      executorAddress: string | null;
+      executorId?: string | null;
+    }[],
     userId?: number,
   ): Promise<void> {
-    const byAddress = new Map<string, string[]>();
+    // R32-C1（类别 1）：分组键优先用**行身份**（executorId），地址只是没有行
+    // 身份时的回落（存量迁移前派发的行、或部署行早于 executorId 列的历史）。
+    // 此前一律按地址分组：pull 同址多行时两台执行器会被折叠成一个目标，
+    // 后者的部署行从此无人清理，而前者的队列会被塞进别人的命令。
+    const targetsByKey = new Map<
+      string,
+      {
+        key: string;
+        executorId: string | null;
+        address: string;
+        deploymentIds: string[];
+      }
+    >();
     for (const d of deployments) {
-      if (!d.executorAddress) continue;
-      const ids = byAddress.get(d.executorAddress) ?? [];
-      ids.push(d.id);
-      byAddress.set(d.executorAddress, ids);
+      const executorId = d.executorId ?? null;
+      // 既无行身份也无地址的行无法作为扇出目标（旧行为同样跳过）。
+      if (!executorId && !d.executorAddress) continue;
+      const key = executorId ? `id:${executorId}` : `addr:${d.executorAddress}`;
+      const existing = targetsByKey.get(key);
+      if (existing) {
+        existing.deploymentIds.push(d.id);
+        continue;
+      }
+      targetsByKey.set(key, {
+        key,
+        executorId,
+        address: d.executorAddress ?? "",
+        deploymentIds: [d.id],
+      });
     }
-    if (byAddress.size === 0) return;
+    if (targetsByKey.size === 0) return;
     if (!this.executorService) {
       this.logger.warn(
         `NETOPT-8③: ExecutorService 缺席，跳过应用 ${appId} 的执行器清理通知`,
       );
       return;
     }
-    const targets = [...byAddress.entries()];
+    const targets = [...targetsByKey.values()];
     const settled = await Promise.allSettled(
-      targets.map(async ([address, deploymentIds]) => ({
-        address,
-        ...(await this.uninstallAppOnExecutor(appId, address, deploymentIds)),
+      targets.map(async (target) => ({
+        address: target.address,
+        ...(await this.uninstallAppOnExecutor(
+          appId,
+          { executorId: target.executorId, address: target.address },
+          target.deploymentIds,
+        )),
       })),
     );
     // allSettled 语义保持：单台 promise 本身 rejected（理论不可达，防御兜底）
     // 也计为该台失败，不让防御路径把结果统计打穿。
     const results = settled.map((r, i) => {
-      const address = targets[i][0];
+      const address = targets[i].address;
       if (r.status === "fulfilled") return r.value;
       return {
         address,
@@ -936,18 +983,29 @@ export class ApplicationService implements OnModuleInit {
    */
   private async uninstallAppOnExecutor(
     appId: string,
-    address: string,
+    target: { executorId: string | null; address: string },
     deploymentIds: string[],
   ): Promise<{ ok: boolean; error?: string }> {
     const executorService = this.executorService;
     if (!executorService)
       return { ok: false, error: "ExecutorService unavailable" };
+    // R32-C1（类别 1）：本台执行器的**地址**用于 push 的 URL 与日志；解析不到
+    // 行时它就等于部署行记下的地址（引入前语义）。
+    const address = target.address;
 
     // ARCH-33: 先判一次传输方式——整批命令要么全走 pull，要么全走 push，
     // 不允许一台执行器上两条路径混发（否则 stop 走队列、uninstall 走 HTTP，
     // 时序就乱了）。resolveExecutorTransport 是纯读判定，不会产生副作用。
+    //
+    // R32-C1（类别 1，同型漏改）：**传 executorId**（部署行自带，调用方已按行
+    // 身份分组）。resolveExecutorTransport 本就是 id 优先、地址只是回落；此前
+    // 调用点只给 address，于是 pull 同址多行时首行获胜 → 清理命令入错队列、
+    // 另一台永远收不到自己的 app-stop/app-uninstall。
     const transport = await executorService
-      .resolveExecutorTransport({ address })
+      .resolveExecutorTransport({
+        executorId: target.executorId,
+        address: target.address,
+      })
       .catch(() => ({ mode: "push" as const, executor: null }));
     if (transport.mode === "pull" && transport.executor) {
       const executorId = transport.executor.id;

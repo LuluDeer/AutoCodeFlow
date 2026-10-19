@@ -1037,6 +1037,57 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
     expect(appRepo.remove).toHaveBeenCalled();
   });
 
+  // R32-C1（类别 1「按 address vs 按 id 取」）：部署行自带 executorId（deploy 时
+  // 写入），但扇出此前只 select executorAddress → 按地址分组 + 按地址解析传输。
+  // ADR-017 §5 允许 pull 同址多行并存，于是那两条退化成：
+  //   ① resolveExecutorTransport 只给 address → findOne({where:{address}}) 首行
+  //      获胜 → 清理命令进到**另一台**的队列；
+  //   ② 同址两台被折叠成一个目标 → 第二台永远收不到自己的 stop/uninstall。
+  // 反证：把 select 的 executorId 去掉、或把分组键改回 address，本用例即转红。
+  it("同址两台（executorId 不同）按行身份各自扇出：不合并、不串队", async () => {
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-a1", executorId: "exec-a", executorAddress: "shared:8100" },
+      { id: "dep-b1", executorId: "exec-b", executorAddress: "shared:8100" },
+    ]);
+    // pull 模式：每台都从自己的队列取件。
+    executorService.resolveExecutorTransport.mockImplementation(
+      async (opts: { executorId?: string | null; address?: string }) => ({
+        mode: "pull",
+        executor: { id: opts.executorId ?? `addr:${opts.address}` },
+      }),
+    );
+
+    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+
+    // ① 传输解析带上了行身份（不再只给 address）。
+    expect(
+      executorService.resolveExecutorTransport.mock.calls
+        .map((c: any[]) => c[0].executorId)
+        .sort(),
+    ).toEqual(["exec-a", "exec-b"]);
+    // ② 每台的命令只进自己的队列，两台都被清理。
+    const enq = executorService.enqueueExecutorCommand.mock.calls;
+    expect(enq).toContainEqual([
+      "exec-a",
+      "app-stop",
+      { deploymentId: "dep-a1" },
+    ]);
+    expect(enq).toContainEqual([
+      "exec-b",
+      "app-stop",
+      { deploymentId: "dep-b1" },
+    ]);
+    expect(enq).toContainEqual(["exec-a", "app-uninstall", { appId: "app-1" }]);
+    expect(enq).toContainEqual(["exec-b", "app-uninstall", { appId: "app-1" }]);
+    // ③ 不串队（修复前 B 的部署会被塞进 A 的队列）。
+    expect(enq).not.toContainEqual([
+      "exec-a",
+      "app-stop",
+      { deploymentId: "dep-b1" },
+    ]);
+  });
+
   it("执行器全挂时应用仍被删且 remove() 不抛错", async () => {
     appRepo.findOne.mockResolvedValue(appRow());
     deploymentRepo.find.mockResolvedValue([
