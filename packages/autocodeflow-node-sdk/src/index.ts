@@ -22,4 +22,9 @@ export {
 } from './context';
 export { TaskLogger } from './logger';
 export { HttpClient } from './http-client';
+// R31-E1: 稳定错误码透传——调用方可按码分支，不必匹配中文兜底文案。
+// `HttpClientError` 是类型（axios 错误被就地标记），`getErrorCode` /
+// `getErrorParams` 是永不抛的读取帮手，`attachErrorCode` 供自定义拦截器复用。
+export { getErrorCode, getErrorParams, attachErrorCode } from './http-client';
+export type { HttpClientError } from './http-client';
 export type { TaskEnv, TaskResult, LogEntry, LogLevel } from './types';

@@ -277,6 +277,96 @@ export function isNetworkLevelError(error: unknown): boolean {
   ].includes(code);
 }
 
+// ---------------------------------------------------------------------------
+// R31-E1: 稳定错误码透传（消费 admin-api 全量错误码化的错误体）
+// ---------------------------------------------------------------------------
+// admin-api 的错误响应体形如
+//   { code: <数字 HTTP 状态>, message: <中文兜底>, errorCode: '<稳定码>', params: {...} }
+// 此前响应拦截器只把 `message` 拼进 `err.message`，`errorCode` / `params`
+// 被直接丢弃——任务脚本只能字符串匹配中文兜底文案来分支（文案改一个字就
+// 静默断掉），也拿不到插值参数。这里把两者**原样挂到被 reject 的 Error 上**：
+//
+// - 只**新增**只读属性：`err.message` 的拼接语义逐字节不变（既有调用方零影响）；
+// - 无码时（老后端 / 非本机制的错误体）**不添加**任何属性——不制造
+//   `errorCode: undefined` 这种"有键无值"的形态，`'errorCode' in err` 仍可靠；
+// - 挂载失败（异常对象被冻结 / 不可扩展）绝不吞掉原始错误，只是不带码。
+
+/**
+ * 带稳定错误码的 HTTP 错误。
+ *
+ * axios 的 `AxiosError` 在运行时被**就地标记**为本类型（不新建类，故
+ * `instanceof Error` / `instanceof AxiosError` / 既有的 `rejects.toBe(err)`
+ * 断言全部保持）。用法：`catch (e) { if (getErrorCode(e) === 'TASK_NOT_FOUND') … }`
+ * 或 `const err = e as HttpClientError`。
+ */
+export interface HttpClientError extends Error {
+  /** 服务端稳定错误码（如 `TASK_NOT_FOUND`）；无码时该键不存在。 */
+  readonly errorCode?: string;
+  /** 错误码的插值参数（模板里的 `{{name}}` ← `params.name`）；无参时该键不存在。 */
+  readonly params?: Record<string, unknown>;
+}
+
+/** 从任意错误上读稳定码；无码 / 非字符串 → `undefined`（永不抛）。 */
+export function getErrorCode(error: unknown): string | undefined {
+  const value = (error as { errorCode?: unknown } | null | undefined)?.errorCode;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** 从任意错误上读插值参数；无参 / 非普通对象 → `undefined`（永不抛）。 */
+export function getErrorParams(
+  error: unknown,
+): Record<string, unknown> | undefined {
+  const value = (error as { params?: unknown } | null | undefined)?.params;
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** 只读定义（可枚举，便于日志 / `JSON.stringify` 落到 meta 里）。 */
+function defineErrorField(
+  target: object,
+  key: 'errorCode' | 'params',
+  value: unknown,
+): void {
+  try {
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: false,
+    });
+  } catch {
+    // 冻结 / 不可扩展的异常对象：宁可不带码，也绝不吞掉原始错误。
+  }
+}
+
+/**
+ * 把错误响应体里的 `errorCode` / `params` 挂到错误对象上，返回同一个对象
+ * （拦截器 `Promise.reject(attachErrorCode(error))` 即可，保持引用不变）。
+ *
+ * 只做「有值才挂」：既有的错误体（只有 `message`）对象形状完全不变。
+ */
+export function attachErrorCode(error: unknown): unknown {
+  if (error === null || typeof error !== 'object') return error;
+  const data = (error as { response?: { data?: unknown } }).response?.data;
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return error;
+  }
+  const payload = data as { errorCode?: unknown; params?: unknown };
+  const errorCode =
+    typeof payload.errorCode === 'string' && payload.errorCode.length > 0
+      ? payload.errorCode
+      : undefined;
+  if (errorCode !== undefined) {
+    defineErrorField(error, 'errorCode', errorCode);
+  }
+  const params = payload.params;
+  if (params !== null && typeof params === 'object' && !Array.isArray(params)) {
+    defineErrorField(error, 'params', params);
+  }
+  return error;
+}
+
 /** 是否可重试错误（状态码在可重试集，或网络层错误）——与 python 可重试异常集对齐。 */
 export function isRetryableError(
   error: unknown,
@@ -411,6 +501,11 @@ export class HttpClient {
     // same `{ code, message, data }` envelope (HttpExceptionFilter); surface
     // the server-side reason in the rejected Error instead of axios's bare
     // "Request failed with status code 401".
+    //
+    // R31-E1: 同一个拦截器顺带把 `errorCode` / `params` 挂到被 reject 的错误上
+    // ——此前这两个字段在这里被丢弃，脚本无法按码分支（见上方 attachErrorCode）。
+    // 顺序刻意放在 message 拼接**之后**：即使某个字段的挂载抛错（已在
+    // attachErrorCode 内部吞掉），message 的既有语义也已经落地。
     this.client.interceptors.response.use(undefined, (error: unknown) => {
       const data = (error as { response?: { data?: unknown } })?.response?.data;
       const message =
@@ -423,7 +518,7 @@ export class HttpClient {
           err.message = `${err.message}: ${message}`;
         }
       }
-      return Promise.reject(error);
+      return Promise.reject(attachErrorCode(error));
     });
   }
 

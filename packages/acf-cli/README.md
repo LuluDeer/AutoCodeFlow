@@ -82,6 +82,23 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
 `--json` 不裁剪字段：后端返回什么就输出什么，消费方按 `--help` 示例里的
 形状断言即可。
 
+### 失败时的结构化错误（stderr）
+
+`--json` 调用的失败输出同样是机器可读的**一行 JSON**（写 stderr，stdout 保持
+纯净，`| jq` 不被污染）：
+
+```json
+{"ok":false,"scope":"Failed to fetch task","code":404,"errorCode":"TASK_NOT_FOUND","category":"not_found","params":{"taskId":"t1"},"message":"任务不存在","exitCode":1}
+```
+
+- `code` = HTTP 状态，`errorCode` = admin-api 的稳定码，`params` = 文案插值参数；
+- `errorCode` / `category` / `params` **只在有值时出现**（未知码或无码时该键缺失，
+  用 `'errorCode' in payload` 判断最可靠）；
+- `category` ∈ `auth | permission | not_found | conflict | capacity | validation`
+  —— 人类可读输出同样按这 6 类在原文案后追加一句话处置建议（`[CODE] — 建议`）；
+  未知码与无码**逐字节保持原输出**（透传后端文案）；
+- 退出码不因 JSON 化改变（仍见上面的 Exit codes 表）。
+
 ## 认证与配置
 
 凭据保存在用户配置目录（`acf config show` 查看实际路径），文件权限 0600；

@@ -1,12 +1,16 @@
 import axios from 'axios';
 import {
+  attachErrorCode,
   CircuitBreaker,
   CircuitBreakerOpenError,
+  getErrorCode,
+  getErrorParams,
   HttpClient,
   isRetryableError,
   parseRetryAfterHeader,
   stripTrailingApiSuffix,
 } from '../http-client';
+import type { HttpClientError } from '../http-client';
 
 jest.mock('axios');
 
@@ -906,5 +910,135 @@ describe('HttpClient', () => {
         parseRetryAfterHeader(Object.assign(new Error('e'), { response: { headers: { 'retry-after': 'garbage' } } })),
       ).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R31-E1: 稳定错误码透传（admin-api 全量错误码化的消费侧）
+// ---------------------------------------------------------------------------
+// 反证：把响应拦截器里的 `attachErrorCode(error)` 换回 `error`（或删掉
+// getErrorCode 的读取），下面「挂码」与「按码分支」两组用例立刻转红。
+describe('R31-E1 稳定错误码透传（errorCode / params）', () => {
+  const BASE_URL = 'http://api.example.com';
+  const TOKEN = 'test-token';
+
+  let mockInstance: {
+    get: jest.Mock;
+    post: jest.Mock;
+    put: jest.Mock;
+    delete: jest.Mock;
+    interceptors: {
+      request: { use: jest.Mock };
+      response: { use: jest.Mock };
+    };
+  };
+
+  beforeEach(() => {
+    mockInstance = {
+      get: jest.fn(),
+      post: jest.fn(),
+      put: jest.fn(),
+      delete: jest.fn(),
+      interceptors: { request: { use: jest.fn() }, response: { use: jest.fn() } },
+    };
+    (axios.create as jest.Mock).mockReturnValue(mockInstance as never);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  /** 造一个 admin-api 形状的错误响应（code/message/errorCode/params 四件套）。 */
+  const apiError = (data: Record<string, unknown> | undefined) =>
+    Object.assign(new Error('Request failed with status code 404'), {
+      response: { status: 404, data },
+    });
+
+  /** 取拦截器的 onRejected 处理器（axios 被 mock，回调不会自己跑）。 */
+  const onRejected = (): ((e: unknown) => Promise<unknown>) => {
+    new HttpClient(BASE_URL, TOKEN);
+    return mockInstance.interceptors.response.use.mock.calls[0][1];
+  };
+
+  it('把响应体的 errorCode / params 挂到被 reject 的错误上（同一对象引用）', async () => {
+    const handler = onRejected();
+    const error = apiError({
+      code: 404,
+      message: '任务不存在',
+      errorCode: 'TASK_NOT_FOUND',
+      params: { taskId: 't-42' },
+    });
+    await expect(handler(error)).rejects.toBe(error);
+    expect(getErrorCode(error)).toBe('TASK_NOT_FOUND');
+    expect(getErrorParams(error)).toEqual({ taskId: 't-42' });
+    // 类型层面也可直接读（axios 错误被就地标记为 HttpClientError）
+    expect((error as unknown as HttpClientError).errorCode).toBe('TASK_NOT_FOUND');
+  });
+
+  it('向后兼容：message 的拼接语义逐字节不变（错误码不参与文案）', async () => {
+    const handler = onRejected();
+    const error = apiError({
+      code: 404,
+      message: '任务不存在',
+      errorCode: 'TASK_NOT_FOUND',
+      params: { taskId: 't-42' },
+    });
+    await expect(handler(error)).rejects.toBe(error);
+    expect(error.message).toBe('Request failed with status code 404: 任务不存在');
+  });
+
+  it('无码错误体：不添加任何属性（不制造 errorCode: undefined 的有键无值形态）', async () => {
+    const handler = onRejected();
+    const error = apiError({ code: 400, message: '旧的兜底文案' });
+    await expect(handler(error)).rejects.toBe(error);
+    expect('errorCode' in error).toBe(false);
+    expect('params' in error).toBe(false);
+    expect(getErrorCode(error)).toBeUndefined();
+    expect(getErrorParams(error)).toBeUndefined();
+    expect(error.message).toBe('Request failed with status code 404: 旧的兜底文案');
+  });
+
+  it('网络层错误（无 response）与空串码都安全返回 undefined', async () => {
+    const handler = onRejected();
+    const networkError = Object.assign(new Error('Network Error'), { response: undefined });
+    await expect(handler(networkError)).rejects.toBe(networkError);
+    expect(getErrorCode(networkError)).toBeUndefined();
+
+    const blank = apiError({ errorCode: '', params: null });
+    await expect(handler(blank)).rejects.toBe(blank);
+    expect('errorCode' in blank).toBe(false);
+    expect('params' in blank).toBe(false);
+  });
+
+  it('只读：挂上后改写无效（调用方无法伪造码）', () => {
+    const error = apiError({ errorCode: 'TASK_NOT_FOUND', params: { taskId: 't1' } });
+    attachErrorCode(error);
+    // strict mode（ts-jest 产物）下写只读属性抛 TypeError；非 strict 下静默无效。
+    try {
+      (error as { errorCode?: string }).errorCode = 'FORGED';
+    } catch {
+      /* 严格模式抛错是预期 */
+    }
+    expect(getErrorCode(error)).toBe('TASK_NOT_FOUND');
+  });
+
+  it('attachErrorCode 对非对象 / 数组响应体 / 冻结错误都不抛', () => {
+    expect(attachErrorCode(null)).toBeNull();
+    expect(attachErrorCode('boom')).toBe('boom');
+    const arrayBody = Object.assign(new Error('e'), { response: { data: [1, 2] } });
+    expect(attachErrorCode(arrayBody)).toBe(arrayBody);
+    const frozen = Object.freeze(apiError({ errorCode: 'X_Y', params: { a: 1 } }));
+    expect(() => attachErrorCode(frozen)).not.toThrow();
+    // 冻结对象挂不上属性，但原错误照常返回、消息不受影响
+    expect(attachErrorCode(frozen)).toBe(frozen);
+  });
+
+  it('getErrorCode / getErrorParams 对任意脏输入永不抛', () => {
+    for (const value of [undefined, null, 42, 'x', {}, { errorCode: 123 }, { params: 'x' }, { params: [1] }]) {
+      expect(() => getErrorCode(value)).not.toThrow();
+      expect(() => getErrorParams(value)).not.toThrow();
+    }
+    expect(getErrorCode({ errorCode: 'TASK_NOT_FOUND' })).toBe('TASK_NOT_FOUND');
+    expect(getErrorParams({ params: { a: 1 } })).toEqual({ a: 1 });
   });
 });

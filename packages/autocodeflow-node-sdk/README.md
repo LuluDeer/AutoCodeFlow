@@ -90,6 +90,30 @@ const tasks = await http.get('/api/tasks');
 的 10 秒超时控制；SDK 不做隐式重试，401/403/timeout 等错误会保留后端 message 后
 原样传播给任务代码，避免重复上报或重复触发外部副作用。
 
+### 按稳定错误码分支
+
+admin-api 的错误响应体带稳定码（`errorCode`）与插值参数（`params`）。SDK 把它们
+**原样挂到被 reject 的错误上**（只读属性，`message` 的拼接语义逐字节不变），
+脚本不必再匹配中文兜底文案：
+
+```ts
+import { getErrorCode, getErrorParams } from '@autocodeflow/sdk';
+
+try {
+  await http.post('/api/executions/callback', items);
+} catch (e) {
+  if (getErrorCode(e) === 'TASK_NOT_FOUND') {
+    // 任务已被删除：不再重试，按业务语义收尾
+    console.warn('task gone', getErrorParams(e)); // { taskId: '…' }
+  }
+  throw e;
+}
+```
+
+无码时（老后端 / 非本机制的错误体）这两个属性**不存在**（而不是值为
+`undefined`），`getErrorCode` 返回 `undefined`；`attachErrorCode(error)` 也可
+单独复用于自定义拦截器。
+
 ## 执行器注入的环境变量
 
 与 [docs/sdk-guide.md](../../docs/sdk-guide.md) 的注入表逐字一致：
