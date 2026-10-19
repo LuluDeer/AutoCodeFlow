@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import {
@@ -8,6 +8,8 @@ import {
   isProjectRole,
 } from "./entities/project-member.entity";
 import { DEFAULT_PROJECT_ID } from "./project.entity";
+// R32-A5（轴1/轴3）：成员授予前校验目标用户存在（project_members.userId 无 FK）。
+import { UsersService } from "../users/users.service";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
@@ -40,6 +42,11 @@ export class ProjectAccessService {
   constructor(
     @InjectRepository(ProjectMember)
     private readonly repo: Repository<ProjectMember>,
+    // R32-A5（轴1/轴3）：成员授予前的目标用户存在性校验。@Optional + 置尾——
+    // 既有单测/极简装配（new ProjectAccessService(repo)）不破，缺席时跳过校验
+    // （与 AUTH-02 之前逐字节一致）。
+    @Optional()
+    private readonly usersService?: UsersService | null,
   ) {}
 
   /** 项目内角色；非成员返回 null（ADMIN 主体由调用方先行短路）。 */
@@ -107,6 +114,8 @@ export class ProjectAccessService {
     role: ProjectRole,
   ): Promise<ProjectMemberView> {
     this.assertRole(role);
+    // R32-A5（轴1 幽灵成员 / 轴3 成员管理）：授予对象必须在场。
+    await this.assertTargetUserExists(userId);
     const existing = await this.repo.findOne({ where: { projectId, userId } });
     if (existing) {
       existing.role = role;
@@ -154,6 +163,40 @@ export class ProjectAccessService {
     }
     await this.repo.delete({ projectId, userId });
     return { deleted: true };
+  }
+
+  /**
+   * R32-A5：成员授予的目标用户存在性闸。
+   *
+   * 缺陷现场：A-8 只补了「删除用户 → 清 project_members」这一侧，创建侧对
+   * userId 零校验。project_members.userId 无 FK，于是
+   * `POST /projects/:id/members {userId: 987654}` 能 201 一条指向**没有人**的
+   * 成员行：成员面板展示一个无对应用户的成员，而 `resolveRole(987654, pid)`
+   * 对该 id 是**既成授权**——id 复用、跨环境/备份导入时立刻变成真实访问权。
+   * 授予是授权动作，故 fail-closed（与 hasProjectRole 判定侧的 fail-open 姿态相反）。
+   *
+   * 三条回落，都刻意如此：
+   * - usersService 缺席（单测/极简装配）→ 跳过校验，行为与 AUTH-02 之前一致；
+   * - 查询失败 → warn 后跳过（本文件既定姿态：权限表抖动不该让业务写面 500，
+   *   也不该在已通过 ADMIN-only 守卫的授予动作上制造假失败）；
+   * - 不存在 → 404 USER_ID_NOT_FOUND（复用 users 域的既有点名码，不新增码）。
+   */
+  private async assertTargetUserExists(userId: number): Promise<void> {
+    if (!this.usersService) return;
+    let target: { id: number } | null | undefined;
+    try {
+      target = await this.usersService.findByIdOrNull(userId);
+    } catch (e: unknown) {
+      this.logger.warn(
+        `[project-access] target user lookup failed (grant allowed): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      return;
+    }
+    if (!target) {
+      throw new AppError(ErrorCode.USER_ID_NOT_FOUND, { id: userId });
+    }
   }
 
   private assertRole(role: unknown): asserts role is ProjectRole {

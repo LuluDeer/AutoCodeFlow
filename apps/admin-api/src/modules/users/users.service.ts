@@ -3,6 +3,8 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
+// R32-A5：唯一性竞态兜底按码归因（USERNAME_TAKEN / EMAIL_TAKEN / USER_EXISTS）。
+import { ErrorCode } from "../../common/errors/error-codes";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -11,6 +13,8 @@ import { User, UserRole } from "./entities/user.entity";
 import { RefreshToken } from "../auth/entities/refresh-token.entity";
 // A-8: 删除用户时同事务清理其 project_members 行（该列无 FK，残留即幽灵成员）。
 import { ProjectMember } from "../project/entities/project-member.entity";
+// R32-A5: 删除用户时同事务回收其 api_keys 行（同样无 FK，残留即孤儿凭据）。
+import { ApiKey } from "../api-keys/entities/api-key.entity";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { ListUsersDto } from "./dto/list-users.dto";
@@ -25,7 +29,13 @@ import { escapeLikePattern } from "../audit/audit.service";
  * 只认 driver 层的 code，不做错误消息匹配（防 PG 文案/版本漂移）。
  */
 function isUniqueViolation(e: unknown): boolean {
-  const code = (e as { code?: unknown } | null)?.code;
+  // TypeORM 把 PG 原始错误挂在 driverError 上，不同驱动/版本也会直接放顶层
+  // （与 projects.service.isUniqueViolationOn / executor.service 同款两处都看）。
+  const err = e as
+    | { code?: unknown; driverError?: { code?: unknown } }
+    | null
+    | undefined;
+  const code = err?.code ?? err?.driverError?.code;
   return code === "23505";
 }
 
@@ -225,6 +235,40 @@ export class UsersService implements OnModuleInit {
       updateUserDto.role !== undefined &&
       updateUserDto.role !== UserRole.ADMIN;
 
+    try {
+      return await this.applyUpdate(id, updateUserDto, user, demotingAdmin);
+    } catch (e: unknown) {
+      // R32-A5（轴4）：唯一性竞态兜底。
+      //
+      // 缺陷现场：唯一性预检只在 controller 侧、只覆盖「非 admin 自改」
+      // （users.controller.ts:143-159），预检与 save 之间是 TOCTOU 窗口。两个
+      // 请求同时改成同一个 username/email 时两者都过预检，输家的 INSERT/UPDATE
+      // 撞唯一索引 → PG 23505 一路穿到全局 filter（http-exception.filter.ts:114）
+      // 落成笼统的 RESOURCE_EXISTS「资源已存在」：状态码还是 409、不 500，但
+      // **不知道撞的是哪个字段**，而同一语义的另一条路径（预检命中）给的是点名
+      // 409 USERNAME_TAKEN / EMAIL_TAKEN。admin 改他人账号更是零预检，本兜底
+      // 就是那条路径的唯一归因点。
+      //
+      // 归因方式：事务已随异常回滚，改在池连接上按 dto 里出现的字段重读一次
+      // （不依赖约束名——TypeORM 的 UQ_<hash> 名不稳定，PG 侧也可能漂移）。
+      // 重读失败/无命中/命中自己 → 回落 USER_EXISTS（仍是 409，绝不冒充成功）。
+      if (isUniqueViolation(e)) {
+        throw await this.classifyUniqueConflict(id, updateUserDto);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * R32-A5：update 的实际写入路径（拆出仅为让 23505 兜底只包一层 try）。
+   * 语义与拆分前逐字节一致。
+   */
+  private async applyUpdate(
+    id: number,
+    updateUserDto: UpdateUserDto,
+    user: User,
+    demotingAdmin: boolean,
+  ) {
     if (demotingAdmin) {
       return this.usersRepository.manager.transaction(async (manager) => {
         const users = manager.getRepository(User);
@@ -272,6 +316,40 @@ export class UsersService implements OnModuleInit {
   }
 
   /**
+   * R32-A5：把 PG 23505 归因到具体字段（update 的唯一性竞态兜底）。
+   *
+   * 只看 dto 里**实际出现**的字段：未改的列不可能被这次写入撞到，为它多查
+   * 一次只会带来「把别人的冲突算到你头上」的误报。命中他人 → 点名 409；否则
+   * 回落 USER_EXISTS（笼统但仍是 409）。重读本身失败也不改写失败语义。
+   */
+  private async classifyUniqueConflict(
+    id: number,
+    updateUserDto: UpdateUserDto,
+  ): Promise<AppError> {
+    try {
+      if (updateUserDto.username) {
+        const holder = await this.usersRepository.findOne({
+          where: { username: updateUserDto.username },
+        });
+        if (holder && holder.id !== id) {
+          return new AppError(ErrorCode.USERNAME_TAKEN);
+        }
+      }
+      if (updateUserDto.email) {
+        const holder = await this.usersRepository.findOne({
+          where: { email: updateUserDto.email },
+        });
+        if (holder && holder.id !== id) {
+          return new AppError(ErrorCode.EMAIL_TAKEN);
+        }
+      }
+    } catch {
+      // 归因重读失败：保持 409 的失败面，不让排障查询把原错误改写成 500。
+    }
+    return new AppError(ErrorCode.USER_EXISTS);
+  }
+
+  /**
    * R-14（DEEP_REVIEW 0ef3bbe）：删除用户的三重守卫 + 凭据回收。
    *
    *  - **自删拒绝**：管理员删掉自己会让当前会话立刻失效（WIKI-AUTH-REVOC 后
@@ -311,6 +389,14 @@ export class UsersService implements OnModuleInit {
         }
       }
       await manager.getRepository(RefreshToken).delete({ userId: id });
+      // R32-A5（轴1）: api_keys.userId 同样无 FK——用户删除后残留的是**长期有效
+      // 的凭据行**（永不过期的 key 也在其中）。认证面已由 R32-A4 的属主闸兜住
+      // （api-keys.service.ts:215-218：属主不存在或已禁用 → owner_inactive → 401），
+      // 所以这里不是堵"删了还能用"，而是补齐凭据回收：与 refresh_tokens 同一
+      // 卫生口径（"不把孤儿令牌/凭据留在库里"），也避免会话/审计面扫到悬空 userId。
+      // 同事务、行在用户行之前删——api_keys 无 FK，删除顺序只影响半清理状态，
+      // 放前面可保证「用户行没了但凭据还在」这个窗口不存在。
+      await manager.getRepository(ApiKey).delete({ userId: id });
       // A-8（R3-A 审计）: project_members.userId 无 FK——用户删除后残留成员行
       // 会造成「幽灵成员」：成员面板显示已删用户、resolveRole 仍命中已删 id
       // 参与项目角色判定。同事务清理（与 refresh_tokens 回收同点），删除失败

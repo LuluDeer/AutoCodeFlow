@@ -5,6 +5,8 @@ import { UsersService } from "../users.service";
 import { User, UserRole } from "../entities/user.entity";
 import { RefreshToken } from "../../auth/entities/refresh-token.entity";
 import { ProjectMember } from "../../project/entities/project-member.entity";
+// R32-A5: 删用户同事务回收 api_keys 行（凭据卫生）。
+import { ApiKey } from "../../api-keys/entities/api-key.entity";
 import bcrypt from "bcrypt";
 
 jest.mock("bcrypt");
@@ -44,6 +46,8 @@ describe("UsersService", () => {
   let refreshRepo: ReturnType<typeof makeRepo>;
   // A-8: 删用户事务内的 project_members 清理桩。
   let memberRepo: ReturnType<typeof makeRepo>;
+  // R32-A5: 删用户事务内的 api_keys 清理桩。
+  let apiKeyRepo: ReturnType<typeof makeRepo>;
   // ARCH-27: initialAdmin 配置经 ConfigService 读取 —— spec 注入桩实现。
   let configService: { get: jest.Mock };
 
@@ -51,8 +55,9 @@ describe("UsersService", () => {
     repo = makeRepo();
     refreshRepo = makeRepo();
     memberRepo = makeRepo();
-    // R-14/A-8: 事务桩——把事务内 getRepository 映射到 User/RefreshToken/
-    // ProjectMember 三个 mock。
+    apiKeyRepo = makeRepo();
+    // R-14/A-8/R32-A5: 事务桩——把事务内 getRepository 映射到 User/RefreshToken/
+    // ProjectMember/ApiKey 四个 mock。
     repo.manager.transaction.mockImplementation(async (cb: any) =>
       cb({
         getRepository: (entity: unknown) =>
@@ -60,7 +65,9 @@ describe("UsersService", () => {
             ? refreshRepo
             : entity === ProjectMember
               ? memberRepo
-              : repo,
+              : entity === ApiKey
+                ? apiKeyRepo
+                : repo,
       }),
     );
     configService = { get: jest.fn().mockReturnValue(undefined) };
@@ -380,6 +387,88 @@ describe("UsersService", () => {
     });
   });
 
+  // R32-A5（轴4）：username/email 唯一性**竞态**（预检与 save 非原子）。
+  //
+  // 缺陷现场：controller 的唯一性预检（users.controller.ts:143-159）只覆盖
+  // 「非 admin 自改」，且预检与 save 之间存在 TOCTOU 窗口——两个请求同时把
+  // 名字改成同一个值时两者都通过预检，输家的 save 撞 user.username / user.email
+  // 唯一索引抛 PG 23505。此前该错误一路穿到全局 filter
+  // （http-exception.filter.ts:114-118）落成笼统的 RESOURCE_EXISTS「资源已存在」：
+  // 状态码仍是 409、不 500，但**用户不知道撞的是哪个字段**，而同一字段的另一条
+  // 路径（预检命中）给的是点名 409 USERNAME_TAKEN / EMAIL_TAKEN。同一个失败
+  // 语义有两种码 = 缺陷。admin 改他人账号更是完全没有预检，唯一兜底就是这里。
+  describe("update — 唯一性竞态 23505 兜底（R32-A5）", () => {
+    const uniqueViolation = () =>
+      Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+      });
+
+    it("save 撞 username 唯一索引 → 409 USERNAME_TAKEN（不落成笼统 RESOURCE_EXISTS）", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        // 归因重读：该 username 已被**他人**占用（并发赢家已落库）
+        .mockResolvedValueOnce({ id: 9, username: "racer", email: "other@x.io" });
+      repo.save.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { username: "racer" } as any),
+      ).rejects.toMatchObject({ errorCode: "USERNAME_TAKEN" });
+    });
+
+    it("save 撞 email 唯一索引 → 409 EMAIL_TAKEN", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        .mockResolvedValueOnce({ id: 9, username: "racer", email: "taken@x.io" });
+      repo.save.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { email: "taken@x.io" } as any),
+      ).rejects.toMatchObject({ errorCode: "EMAIL_TAKEN" });
+    });
+
+    it("重读无法归因（对手已删/已回滚）→ 回落 USER_EXISTS，绝不冒充成功", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        .mockResolvedValueOnce(null);
+      repo.save.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { username: "racer" } as any),
+      ).rejects.toMatchObject({ errorCode: "USER_EXISTS" });
+    });
+
+    it("重读命中的是自己（同一行）→ 不误报占用，回落 USER_EXISTS", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        .mockResolvedValueOnce({ id: 5, username: "racer" });
+      repo.save.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { username: "racer" } as any),
+      ).rejects.toMatchObject({ errorCode: "USER_EXISTS" });
+    });
+  });
+
   // WIKI-AUTH-REVOC: 改密成功后原子 bump 会话版本——该用户所有在途 access
   // token 的 ver 快照失配即 401（含管理员重置他人密码的场景）。
   describe("update — sessionVersion bump (WIKI-AUTH-REVOC)", () => {
@@ -541,6 +630,46 @@ describe("UsersService", () => {
       // 三段写都在同一事务回调里完成；用户行删除收尾
       expect(order).toEqual(["refresh", "members", "user"]);
       expect(memberRepo.delete).toHaveBeenCalledTimes(1);
+    });
+
+    // R32-A5（轴1）：被删用户的 API Key 行是**孤儿**——api_keys.userId 无 FK，
+    // 而 remove() 此前只回收 refresh_tokens（:313）与 project_members（:318）。
+    // 认证面已被 R32-A4 的属主闸兜住（api-keys.service.ts:215-218：
+    // findByIdOrNull + isActive → owner_inactive → 401），所以这不构成"删了还能用"，
+    // 但残留的**长期有效凭据行**没有回收点：审计面看不到"哪些 key 属于已删账号"，
+    // 且与 refresh_tokens「不把孤儿令牌留在库里」的既定卫生口径不一致。
+    // 与 A-8 同姿：清行与删用户同一事务，失败一并回滚，不留半清理状态。
+    it("R32-A5: api_key rows are reclaimed inside the same transaction as the user row", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 5,
+        username: "bob",
+        role: UserRole.USER,
+      });
+
+      await expect(service.remove(5, 1)).resolves.toEqual({ deleted: true });
+
+      expect(apiKeyRepo.delete).toHaveBeenCalledWith({ userId: 5 });
+    });
+
+    it("R32-A5: api_key cleanup happens before the user row is removed (FK-free table, order matters)", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 5,
+        username: "bob",
+        role: UserRole.USER,
+      });
+      const order: string[] = [];
+      apiKeyRepo.delete.mockImplementation(async () => {
+        order.push("apikeys");
+        return { affected: 2 };
+      });
+      repo.remove.mockImplementation(async () => {
+        order.push("user");
+        return { id: 5 };
+      });
+
+      await service.remove(5, 1);
+
+      expect(order).toEqual(["apikeys", "user"]);
     });
 
     it("refuses to delete the last administrator (locked count)", async () => {

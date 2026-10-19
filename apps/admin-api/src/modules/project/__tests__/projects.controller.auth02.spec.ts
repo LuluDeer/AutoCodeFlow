@@ -1,4 +1,6 @@
 import { ForbiddenException } from "@nestjs/common";
+// R32-A5：ADMIN-only 边界的元数据断言钉（RolesGuard 只读 ROLES_KEY）。
+import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { ProjectsController } from "../projects.controller";
 import { DEFAULT_PROJECT_ID } from "../project.entity";
 import { UserRole } from "../../users/entities/user.entity";
@@ -454,5 +456,54 @@ describe("ProjectsController 路由参数 UUID 校验（PROJECT-UUID-01）", () 
         data: "id",
       }),
     ).resolves.toBe(DEFAULT_PROJECT_ID);
+  });
+});
+
+/**
+ * R32-A5（轴2/轴3）钉子：项目模块**每个写端点**都必须是 ADMIN-only。
+ *
+ * 为什么需要这条钉：本文件头注（:11）一直写着「写面保持 ADMIN-only
+ * （RolesGuard 元数据断言）」，但此前**没有任何断言真的读 ROLES_KEY**——
+ * 那半句是承诺而非契约。删掉某一行 @Roles(ADMIN) 时，RolesGuard 在
+ * 「无 @Roles → 放行任意已登录用户」（roles.guard.ts:26-29）这条分支上静默放行，
+ * 于是任何普通用户都能给任意项目增删成员——**而既有用例全绿**。
+ *
+ * 同时这条钉回答了「成员管理提权链」：项目 admin 不是任何一档全局角色，
+ * 成员写面只要死死钉在 UserRole.ADMIN 上，项目内角色就**没有**通向全局
+ * 授权的入口（不存在「项目 admin 自升全局 ADMIN」的路径）。
+ */
+describe("ProjectsController ADMIN-only 边界（R32-A5）", () => {
+  const ADMIN_ONLY_HANDLERS = [
+    "create",
+    "update",
+    "remove",
+    "describeRemovalImpact",
+    "addMember",
+    "updateMember",
+    "removeMember",
+  ] as const;
+
+  it.each(ADMIN_ONLY_HANDLERS)(
+    "%s 的 @Roles 元数据精确等于 [admin]（删掉这行 = 任意登录用户可写）",
+    (handler) => {
+      const roles = Reflect.getMetadata(
+        ROLES_KEY,
+        (ProjectsController.prototype as unknown as Record<string, unknown>)[
+          handler
+        ] as object,
+      ) as UserRole[] | undefined;
+      expect(roles).toEqual([UserRole.ADMIN]);
+    },
+  );
+
+  it("写端点集合本身非空（防止路由改名后本文件静默假绿）", async () => {
+    const writeHandlers = ADMIN_ONLY_HANDLERS.filter(
+      (h) =>
+        typeof (ProjectsController.prototype as unknown as Record<
+          string,
+          unknown
+        >)[h] === "function",
+    );
+    expect(writeHandlers).toHaveLength(ADMIN_ONLY_HANDLERS.length);
   });
 });

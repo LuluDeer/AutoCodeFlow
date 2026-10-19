@@ -2,6 +2,10 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ProjectAccessService } from "../project-access.service";
 import { PROJECT_ROLE_RANK } from "../entities/project-member.entity";
 import { DEFAULT_PROJECT_ID } from "../project.entity";
+// R32-A5：装配钉子——@Optional 注入若静默退化为 undefined，存在性校验就形同虚设。
+import { ProjectsModule } from "../projects.module";
+import { UsersModule } from "../../users/users.module";
+import { UsersService } from "../../users/users.service";
 
 /**
  * AUTH-02（项目级角色细化）：ProjectAccessService 单元矩阵。
@@ -10,7 +14,12 @@ import { DEFAULT_PROJECT_ID } from "../project.entity";
  * warn，不抛给业务面）、CRUD 与角色校验、未分配 projectId → 默认项目。
  */
 describe("ProjectAccessService（AUTH-02）", () => {
-  const makeService = (overrides: Partial<Record<string, jest.Mock>> = {}) => {
+  // R32-A5: 第二个 ctor 参数是 @Optional 的 UsersService——默认不提供
+  // （null），既有 14 条用例因此逐字节走「未接线」的旧路径。
+  const makeService = (
+    overrides: Partial<Record<string, jest.Mock>> = {},
+    usersService: unknown = null,
+  ) => {
     const repo = {
       findOne: jest.fn().mockResolvedValue(null),
       find: jest.fn().mockResolvedValue([]),
@@ -19,7 +28,7 @@ describe("ProjectAccessService（AUTH-02）", () => {
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
       ...overrides,
     };
-    const svc = new ProjectAccessService(repo as never);
+    const svc = new ProjectAccessService(repo as never, usersService as never);
     return { svc, repo };
   };
 
@@ -110,6 +119,72 @@ describe("ProjectAccessService（AUTH-02）", () => {
       });
     });
 
+    // R32-A5（轴1 幽灵成员 / 轴3 成员管理）：**创建路径**的幽灵成员。
+    //
+    // A-8 只补了「删除用户」方向的清理（users.service.remove 同事务删
+    // project_members）。但 project_members.userId 无 FK，创建路径此前对目标
+    // userId 不做任何校验：POST /projects/:id/members {userId: 987654} 会 201
+    // 一条指向"没有人"的成员行 → 成员面板展示一个无对应用户的成员；
+    // 更关键的是 resolveRole(987654, pid) 对该 id 是**既成授权**——将来 id
+    // 复用、跨环境/备份导入数据时它立刻变成真实访问权。授予是授权动作，
+    // 授予对象必须在场（fail-closed），与 hasProjectRole 的判定侧姿态相反。
+    describe("addMember 目标用户存在性（R32-A5）", () => {
+      it("目标用户不存在 → 404 USER_ID_NOT_FOUND，且不落成员行", async () => {
+        const users = { findByIdOrNull: jest.fn().mockResolvedValue(null) };
+        const { svc, repo } = makeService({}, users);
+
+        await expect(
+          svc.addMember("p1", 987654, "editor"),
+        ).rejects.toMatchObject({ errorCode: "USER_ID_NOT_FOUND" });
+
+        expect(users.findByIdOrNull).toHaveBeenCalledWith(987654);
+        expect(repo.findOne).not.toHaveBeenCalled();
+        expect(repo.create).not.toHaveBeenCalled();
+        expect(repo.save).not.toHaveBeenCalled();
+      });
+
+      it("目标用户存在 → 照常落行（零行为变化）", async () => {
+        const users = { findByIdOrNull: jest.fn().mockResolvedValue({ id: 8 }) };
+        const { svc, repo } = makeService({}, users);
+
+        await svc.addMember("p1", 8, "viewer");
+
+        expect(users.findByIdOrNull).toHaveBeenCalledWith(8);
+        expect(repo.create).toHaveBeenCalledWith({
+          projectId: "p1",
+          userId: 8,
+          role: "viewer",
+        });
+      });
+
+      it("usersService 未接线（既有极简装配）→ 跳过校验，维持既有行为", async () => {
+        const { svc, repo } = makeService();
+        await expect(svc.addMember("p1", 8, "viewer")).resolves.toBeTruthy();
+        expect(repo.create).toHaveBeenCalled();
+      });
+
+      it("存在性查询抖动 → warn 后继续落行（不把权限表抖动放大成 500）", async () => {
+        const users = {
+          findByIdOrNull: jest.fn().mockRejectedValue(new Error("connection reset")),
+        };
+        const { svc, repo } = makeService({}, users);
+        const warnSpy = jest
+          .spyOn(
+            (svc as unknown as { logger: { warn: jest.Mock } }).logger,
+            "warn",
+          )
+          .mockImplementation(() => {});
+
+        await svc.addMember("p1", 8, "viewer");
+
+        expect(repo.create).toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("target user lookup failed"),
+        );
+        warnSpy.mockRestore();
+      });
+    });
+
     it("非法角色 → 400（DTO 之外的第二道闸，防 service 被内部调用绕过）", async () => {
       const { svc } = makeService();
       await expect(
@@ -194,5 +269,30 @@ describe("ProjectAccessService（AUTH-02）", () => {
         },
       ]);
     });
+  });
+});
+
+/**
+ * R32-A5 装配钉子：addMember 的目标用户存在性校验依赖 **@Optional 注入**。
+ *
+ * @Optional 的代价是「装配漏了也不报错，只是悄悄不校验」——恰是本轮要补的那类
+ * 静默缺口。故把装配本身钉住：ProjectsModule 必须 import UsersModule，且
+ * ProjectAccessService 的第二构造参数类型确实是 UsersService（Nest 的
+ * design:paramtypes 反射来源）。两条任一被破坏，addMember 就退回「谁都能被授予」，
+ * 而所有业务用例仍然全绿。
+ */
+describe("ProjectAccessService 装配（R32-A5）", () => {
+  it("ProjectsModule imports UsersModule（否则 @Optional 注入静默为 undefined）", () => {
+    const imports = (Reflect.getMetadata("imports", ProjectsModule) ??
+      []) as unknown[];
+    expect(imports).toContain(UsersModule);
+  });
+
+  it("ProjectAccessService 的 ctor 第二参类型是 UsersService", () => {
+    const paramTypes = Reflect.getMetadata(
+      "design:paramtypes",
+      ProjectAccessService,
+    ) as unknown[] | undefined;
+    expect(paramTypes?.[1]).toBe(UsersService);
   });
 });
