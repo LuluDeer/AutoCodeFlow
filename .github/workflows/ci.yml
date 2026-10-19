@@ -867,6 +867,14 @@ jobs:
           node scripts/check-error-i18n.mjs --selftest
           node scripts/gen-error-i18n.mjs --check
           node scripts/check-error-i18n.mjs
+      # LANG-ERR-01 的**回退守卫**：上一步只验「码表 ↔ 前端词条 ↔ 生成物」一致，
+      # **不扫描调用点**——新写一处 throw new BadRequestException("中文…") 它照样绿，
+      # 而响应体因此少掉 errorCode，英文用户看到「英文外壳 + 中文报错」。
+      # 本闸把 admin-api 生产代码的裸内置异常 throw 钉在 0（AppError 是唯一允许形态）。
+      - name: Error-code migration regression guard (LANG-ERR-01)
+        run: |
+          node scripts/check-error-migration.mjs --selftest
+          node scripts/check-error-migration.mjs
       # API-I18N（用户决策「openapi/文档站 API 文档双语」）：**API 文档中英齐备**守卫。
       # openapi.json 是入库生成物，其 description/summary 只写中文（产品默认），
       # 英文走 `x-i18n-en` 扩展键，由 `scripts/api-i18n/inject-openapi-en.mjs`
