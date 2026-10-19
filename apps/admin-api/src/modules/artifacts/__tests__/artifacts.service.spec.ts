@@ -11,6 +11,7 @@ import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { ArtifactsService } from "../artifacts.service";
+import { isArtifactPathWithin } from "../artifacts.constants";
 import { TaskExecution } from "../../task/entities/task-execution.entity";
 import { SystemConfigService } from "../../config/config.service";
 import { ExecutorService } from "../../executor/executor.service";
@@ -108,6 +109,46 @@ describe("ArtifactsService（FEAT-05）", () => {
       expect(() => svc.resolveArtifactPath("not-a-uuid", "a.png")).toThrow(
         BadRequestException,
       );
+    });
+  });
+
+  /**
+   * R31：原先这里第二层守卫是**死的**——`if (full !== path.join(base, name) || ...)`
+   * 的第一个合取项恒为假（两个表达式逐字相同、纯函数），于是注释宣称的「基名 +
+   * 拼接双保险」实际只有 startsWith 在起作用。抽成纯函数后可以直接钉住那层
+   * 「万一正则被放宽」的最后一道网：`..` / `.` 目前确实被 SAFE_ARTIFACT_NAME_RE
+   * 挡在外面，所以它们正是只靠正则时覆盖不到的形态。
+   */
+  describe("isArtifactPathWithin（纵深防御：正则被放宽时的最后一道网）", () => {
+    // 纯函数判定不依赖真实落盘目录（tmpRoot 在用例内才赋值），用独立常量即可。
+    const ROOT = path.join(os.tmpdir(), "acf-artifact-path-tests");
+    const base = path.join(ROOT, EXEC_ID);
+
+    it("裸文件名落在 base 之下 → true", () => {
+      expect(isArtifactPathWithin(base, "screenshot_01.png")).toBe(true);
+      expect(isArtifactPathWithin(base, "a.b-c_d.txt")).toBe(true);
+    });
+
+    it("父目录上跳（..）→ false（拼接后的父目录不再是 base）", () => {
+      expect(isArtifactPathWithin(base, "..")).toBe(false);
+      expect(isArtifactPathWithin(base, "../evil.sh")).toBe(false);
+    });
+
+    it("当前目录（.）→ false（拼出来的落点就是 base 本身，不是 base 下的文件）", () => {
+      expect(isArtifactPathWithin(base, ".")).toBe(false);
+    });
+
+    it("含分隔符 / 绝对路径 / 空名 → false", () => {
+      expect(isArtifactPathWithin(base, "a/b.png")).toBe(false);
+      expect(isArtifactPathWithin(base, "/etc/passwd")).toBe(false);
+      expect(isArtifactPathWithin(base, "")).toBe(false);
+    });
+
+    it("前缀相近的兄弟目录不会被误判为「在 base 之下」", () => {
+      // 反例形态：<root>/<execId>xxx —— 字符串前缀命中但**不是**目录前缀
+      const siblingLike = path.join(ROOT, EXEC_ID + "xxx");
+      expect(isArtifactPathWithin(siblingLike, "..")).toBe(false);
+      expect(isArtifactPathWithin(base, "a.png")).toBe(true);
     });
   });
 

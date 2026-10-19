@@ -19,6 +19,7 @@ import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 import {
   getArtifactRootDir,
+  isArtifactPathWithin,
   MAX_ARTIFACT_COUNT,
   MAX_ARTIFACT_SIZE_BYTES,
   SAFE_ARTIFACT_NAME_RE,
@@ -70,11 +71,14 @@ export class ArtifactsService {
       throw new AppError(ErrorCode.ARTIFACT_NAME_INVALID);
     }
     const base = path.join(getArtifactRootDir(), execId);
-    const full = path.join(base, name);
-    if (full !== path.join(base, name) || !full.startsWith(base + path.sep)) {
+    // 纵深防御判定抽成纯函数（isArtifactPathWithin，见 artifacts.constants.ts）——
+    // 原实现里那一项 `full !== path.join(base, name)` **恒为假**（同一个表达式），
+    // 是"看起来在防、其实永不触发"的死守卫；抽出来后可以直接对 `..` / `.`
+    // 这类畸形名做单测，不必依赖上面那条正则是否被放宽。
+    if (!isArtifactPathWithin(base, name)) {
       throw new AppError(ErrorCode.ARTIFACT_PATH_INVALID);
     }
-    return full;
+    return path.join(base, name);
   }
 
   /** 目录内文件数上限预检（上传前）。 */
