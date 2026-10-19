@@ -470,6 +470,11 @@
 #   飞书通知）。桌面端内嵌执行器若漏打，**桌面端跑的应用仍会带着引号**——
 #   即用户装了新客户端、故障照旧。故按 ADR-005 同 commit 重打。
 #
+#   · DOC-GOV / DEP-AUDIT（2026-10-19）：本批改动的是**依赖树**（brace-expansion /
+#     undici / js-yaml 的 override）。ncc 会把 node_modules 内联进产物，所以即使
+#     `src/` 一个字节没动，重打后的字节哈希也会变——这不是源码漂移，是打包输入变了。
+#     本值取 **CI Ubuntu runner 的实测产物**（本地 Windows/WSL 重打与 CI 不一致，
+#     以 CI 为权威，与文件末尾既有先例一致）。
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0。bundle 4180kB。
 #   source-digest 46 个输入文件（新增 param-env.ts）。
 #
@@ -547,4 +552,4 @@
 #   （本文件 §386 / §430）结论一致：ncc 0.45 的产物与 map 均无绝对路径，
 #   ② 可本地回填，CI 仍权威复验。source-digest 46 个输入文件。
 source-digest: 178388c62de8a70ec49d0f757da106b833f1b1dd86a6860691708f3ee19b3e1f
-eddd27ac62333c468d7cf1743f825433853e2c44cd998da0d97d49051c3fbf07  index.js
+6a34ed0af16440ce1a72378d399da0dc06a6485cd1ba7ff936b43a4dda002835  index.js
