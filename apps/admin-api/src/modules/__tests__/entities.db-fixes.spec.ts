@@ -6,6 +6,8 @@ import { ExecutionLogLine } from "../task/entities/execution-log-line.entity";
 import { TaskExecution } from "../task/entities/task-execution.entity";
 import { ExecutorPackage } from "../executor-package/executor-package.entity";
 import { ApplicationVersion } from "../application/entities/application-version.entity";
+// R32-C2：Executor 的安全列依赖 select:false 才不被整实体 save 回写。
+import { Executor } from "../executor/entities/executor.entity";
 
 /**
  * Stream D（DB-002/004/006/007）entity 元数据回归测试：
@@ -140,4 +142,40 @@ describe("PK-10 (3): ExecutionLogLine 联合 PK (id, createdAt) 对齐分区表"
     // @CreateDateColumn({ primary: true }) 让 createDate 列同时进 primaryColumns。
     expect(column!.options.primary).toBe(true);
   });
+});
+
+/**
+ * R32-C2（L4 收口）：**「整实体 save 不会覆盖此列」这条护栏必须有测试守着**。
+ *
+ * 背景：heartbeat / register 用 TypeORM  的 `save(entity)` 回写执行器行。save 不是盲写
+ * 整行——它先现取 DB 行做 diff，且 `entityValue === undefined` 的列直接跳过。于是
+ * `select: false` 的列在快照里是 undefined ⇒ 永不进 SET ⇒ 不会被旧快照覆盖。
+ *
+ * 这正是「轮换后的 tokenHash 不会被心跳回滚」的**唯一**原因：R32-C2 用真 TypeORM + 真
+ * PostgreSQL 实测过两条——
+ *   · A：快照 tokenHash=undefined → 并发 update(hash-new) → save(快照) → DB 仍 hash-new；
+ *   · B（反证）：把该行改成 addSelect 装载 tokenHash → 并发轮换 → save 把 DB 写回 hash-old。
+ *
+ * 也就是说：**把 select:false 去掉等于悄悄打开「旧凭据复活」的通道，而任何既有测试都不会红**
+ * （单测拿到的快照同样没有该列，行为一致）。这条 spec 就是那层护栏本身。
+ *
+ * 只钉「安全性依赖它」的三列；将来若新增依赖 select:false 的凭据列，请一并加入。
+ */
+describe("R32-C2: 安全列必须保持 select:false（整实体 save 的护栏）", () => {
+  const REQUIRED_SELECT_FALSE: Array<[string, string]> = [
+    ["tokenHash", "per-executor bcrypt 令牌哈希：去掉即「心跳整实体 save 回滚轮换」→ 旧凭据复活"],
+    ["agentCapabilities", "Agent 协作能力：去掉即可能被心跳旧快照擦掉"],
+    ["agentCapabilitiesUpdatedAt", "Agent 能力租约续报时间：同上"],
+  ];
+
+  it.each(REQUIRED_SELECT_FALSE)(
+    "Executor.%s 的列定义必须是 select: false（%s）",
+    (propertyName) => {
+      const column = getMetadataArgsStorage()
+        .columns.filter((c) => c.target === Executor)
+        .find((c) => c.propertyName === propertyName);
+      expect(column).toBeDefined();
+      expect(column!.options.select).toBe(false);
+    },
+  );
 });
