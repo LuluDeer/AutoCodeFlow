@@ -216,6 +216,7 @@ export default {
   'err.PROJECT_NAME_EXISTS': '项目名称「{{name}}」已被占用，请换一个',
   'err.PROJECT_NOT_FOUND': '项目 {{id}} 不存在',
   'err.PROJECT_NOT_MEMBER': '用户 {{userId}} 不是项目 {{projectId}} 的成员',
+  'err.PROJECT_ROLE_UNAVAILABLE': '项目角色判定暂不可用，请稍后重试',
   'err.REFRESH_TOKEN_INVALID': '刷新令牌无效',
   'err.REFRESH_TOKEN_MISSING_JTI': '刷新令牌缺少 jti 声明',
   'err.REFRESH_TOKEN_REVOKED': '刷新令牌已被吊销',

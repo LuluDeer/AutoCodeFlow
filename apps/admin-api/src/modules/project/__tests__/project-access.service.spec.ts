@@ -90,6 +90,90 @@ describe("ProjectAccessService（AUTH-02）", () => {
     });
   });
 
+  /**
+   * R32-B1：判定三态。
+   *
+   * 缺陷成因是「两种语义共用一个 null」：`resolveRole` 的 null 既是「查到了、没有
+   * 成员行」又是「查询失败、判定没做完」，而执行类写面只认得前者的宽松语义，于是
+   * 把故障也放行了。本组用例钉住两件事：(1) 三态在类型/取值上分得开；
+   * (2) `resolveRole` 的二态折叠**逐字节不变**（读面契约不破）。
+   */
+  describe("R32-B1：三态 resolveRoleState（写面契约）", () => {
+    it("有成员行 → { status: 'role' }（判定成功且有角色）", async () => {
+      const { svc, repo } = makeService();
+      repo.findOne.mockResolvedValue({ role: "viewer" });
+      await expect(svc.resolveRoleState(7, "p1")).resolves.toEqual({
+        status: "role",
+        role: "viewer",
+      });
+    });
+
+    it("无成员行 → { status: 'none' }（判定成功、无角色关系）", async () => {
+      const { svc } = makeService();
+      await expect(svc.resolveRoleState(7, "p1")).resolves.toEqual({
+        status: "none",
+      });
+      // 无主体同样不是"判定失败"，而是"没有可判定的角色"。
+      await expect(svc.resolveRoleState(null, "p1")).resolves.toEqual({
+        status: "none",
+      });
+      await expect(svc.resolveRoleState(undefined, "p1")).resolves.toEqual({
+        status: "none",
+      });
+    });
+
+    it("查询抛错 → { status: 'unavailable' }（既不是 role 也不是 none）", async () => {
+      const { svc } = makeService({
+        findOne: jest.fn().mockRejectedValue(new Error("connection reset")),
+      });
+      const warnSpy = jest
+        .spyOn(
+          (svc as unknown as { logger: { warn: jest.Mock } }).logger,
+          "warn",
+        )
+        .mockImplementation(() => {});
+
+      const state = await svc.resolveRoleState(7, "p1");
+
+      expect(state).toEqual({ status: "unavailable" });
+      // 三种取值互不相等：任何调用点都必须显式处理 unavailable，无法用
+      // `if (!role)` 之类的二态写法蒙混过关。
+      expect(state).not.toEqual({ status: "none" });
+      // 现场证据必须留：判定不可用时的 warn 文案未变（既有断言依赖该子串）。
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("resolveRole failed"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("resolveRole 仍是二态折叠：unavailable → null（读面 fail-open 逐字节不变）", async () => {
+      const { svc } = makeService({
+        findOne: jest.fn().mockRejectedValue(new Error("connection reset")),
+      });
+      const warnSpy = jest
+        .spyOn(
+          (svc as unknown as { logger: { warn: jest.Mock } }).logger,
+          "warn",
+        )
+        .mockImplementation(() => {});
+
+      await expect(svc.resolveRole(7, "p1")).resolves.toBeNull();
+      await expect(svc.hasProjectRole(7, "p1", "viewer")).resolves.toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it("脏角色值仍在 role 分支里交出去（不在这里折成 none）", async () => {
+      const { svc, repo } = makeService();
+      repo.findOne.mockResolvedValue({ role: "superuser" });
+      await expect(svc.resolveRoleState(7, "p1")).resolves.toEqual({
+        status: "role",
+        role: "superuser",
+      });
+      // 拒绝的责任仍在 isProjectRole（与改动前同一条判定链）。
+      await expect(svc.hasProjectRole(7, "p1", "viewer")).resolves.toBe(false);
+    });
+  });
+
   describe("成员管理", () => {
     it("addMember：已存在则改角色（upsert 语义，不产生重复行）", async () => {
       const { svc, repo } = makeService();

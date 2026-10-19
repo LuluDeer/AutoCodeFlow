@@ -216,6 +216,7 @@ export default {
   'err.PROJECT_NAME_EXISTS': 'A project named "{{name}}" already exists; please choose another name',
   'err.PROJECT_NOT_FOUND': 'Project {{id}} not found',
   'err.PROJECT_NOT_MEMBER': 'User {{userId}} is not a member of project {{projectId}}',
+  'err.PROJECT_ROLE_UNAVAILABLE': 'Project role check is temporarily unavailable. Please retry later.',
   'err.REFRESH_TOKEN_INVALID': 'Invalid refresh token',
   'err.REFRESH_TOKEN_MISSING_JTI': 'Refresh token is missing the jti claim',
   'err.REFRESH_TOKEN_REVOKED': 'Refresh token has been revoked',

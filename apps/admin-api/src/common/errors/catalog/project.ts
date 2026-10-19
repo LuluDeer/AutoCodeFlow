@@ -95,4 +95,30 @@ export const PROJECT_CODES = {
     zh: "你不是该项目成员",
     en: "You are not a member of this project",
   },
+  /**
+   * R32-B1：**项目角色判定本身不可用**（project_members 查询失败：连接中断、
+   * 语句超时、库不可达……）——注意与上面 403 的 `PROJECT_ACCESS_DENIED` 是
+   * **两件不同的事**，别看都在"访问控制"里就合并：
+   *   · `PROJECT_ACCESS_DENIED`（403）：判定**成功**，答案是"你不是成员"；
+   *   · 本码（503）：判定**没做完**，我们根本不知道你是不是成员。
+   *
+   * 为什么必须是 503 而不是 403/500：
+   *   · 客户端处置不同——403 的正确动作是"找管理员申请加入"，503 的正确动作
+   *     是"等几秒重试"。把后者渲染成前者，等于在数据库抖动的十几秒里劝所有
+   *     viewer 去向管理员申请一个他本就有的权限；
+   *   · 500 的语义是"服务端有 bug"，而这里是**依赖暂时不可用**（重试即可恢复），
+   *     且 500 会进错误预算/告警的错误分类，制造噪声。
+   *
+   * 只用于**执行类写面**（trigger/pause/resume/rollback 等）的 fail-closed 分支；
+   * 读面（列表/成员/项目过滤）遇到同一故障必须继续宽容（不因权限表抖动让列表
+   * 接口 500），见 `ProjectAccessService.resolveRole` 的 fail-open 既定姿态。
+   *
+   * zh 必须**自足**（裸 API / CLI / MCP / 日志 / 落库字段只拿得到 message），
+   * 故写成完整可读的一句话，而不是裸码或需要前端补全的片段。
+   */
+  PROJECT_ROLE_UNAVAILABLE: {
+    status: 503,
+    zh: "项目角色判定暂不可用，请稍后重试",
+    en: "Project role check is temporarily unavailable. Please retry later.",
+  },
 } as const satisfies Record<string, ErrorCodeDef>;

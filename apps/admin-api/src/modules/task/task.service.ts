@@ -10,6 +10,8 @@ import {
 // LANG-ERR-01: 用户可见失败一律抛 AppError（稳定码 + 结构化参数），文案由前端
 // 按用户语言翻译；`zh` 仅作不翻译消费者（CLI/MCP/日志/落库）的兜底。
 import { AppError } from "../../common/errors/app-error";
+// R32-B1：执行类写面的「判定不可用」必须抛出稳定码（503），故按规范用取值形态。
+import { ErrorCode } from "../../common/errors/error-codes";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   assertAndPinExecutorUrl,
@@ -155,7 +157,10 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
 // 回填值共享同一常量出处 project.entity.ts）。
 import { DEFAULT_PROJECT_ID, Project } from "../project/project.entity";
 // AUTH-02: 项目级角色（写面/执行类写面归属判定）
-import { ProjectAccessService } from "../project/project-access.service";
+import {
+  ProjectAccessService,
+  type ProjectRoleResolution,
+} from "../project/project-access.service";
 // CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
 // FIX-3.1: timeoutWarnThresholdMs 首次接入运行期消费点（超时预警，见
 // maybeNotifyTimeoutWarning）。
@@ -1088,11 +1093,21 @@ export class TaskService {
 
     if (!this.projectAccess || principalId === undefined) return;
     if (user?.role === UserRole.ADMIN) return;
-    const role = await this.projectAccess.resolveRole(
+    // R32-B1（fail-closed）：判定是**三态**的，先回答「判定到底做完了没有」。
+    // 旧代码在这里直接拿二态 `resolveRole`：DB 抖动 → null → 与「非成员」同形 →
+    // 下面的 `role === "viewer"` 不成立 → 函数自然返回 = **放行**。也就是说权限
+    // 检查在故障窗口里不存在（R32-A5 登记的 fail-open）。
+    const resolution = await this.resolveOperateRoleState(
       principalId,
       row.projectId ?? null,
     );
-    if (role === "viewer") {
+    if (resolution.status === "unavailable") {
+      // 判定没做完 ≠ 没有权限关系。对执行类写面唯一安全的答案是拒绝，且必须是
+      // 503（依赖暂时不可用、重试即可）而不是 403——403 会把用户引向"找管理员
+      // 申请权限"，而他的权限其实一直都在，只是这一秒查不到。
+      throw new AppError(ErrorCode.PROJECT_ROLE_UNAVAILABLE);
+    }
+    if (resolution.status === "role" && resolution.role === "viewer") {
       throw new AppError("TASK_OPERATE_VIEWER_READONLY");
     }
   }
@@ -1174,12 +1189,51 @@ export class TaskService {
     if (user.role === UserRole.ADMIN) return true;
     if (row.ownerUserId !== null && row.ownerUserId === user.id) return true;
     if (!this.projectAccess) return false;
-    const role = await this.projectAccess.resolveRole(
+    // R32-B1：owner 档同样走三态。旧代码把「判定不可用」折成 null 后按非成员
+    // 拒绝——方向上已经是 fail-closed（不会放行），但给出的结论是错的：数据库
+    // 抖动窗口里用户会收到 403「你不是该任务的属主」，而真实原因与他的权限无关。
+    // 这里只把 unavailable 这一支从 403 改成 503，其余分支逐字节不变。
+    const resolution = await this.resolveOperateRoleState(
       user.id,
       row.projectId ?? null,
     );
-    // editor / admin 放行；viewer 与「非成员」（resolveRole 返回 null）拒绝。
-    return role === "editor" || role === "admin";
+    if (resolution.status === "unavailable") {
+      throw new AppError(ErrorCode.PROJECT_ROLE_UNAVAILABLE);
+    }
+    // editor / admin 放行；viewer 与「非成员」（status: "none"）拒绝。
+    return (
+      resolution.status === "role" &&
+      (resolution.role === "editor" || resolution.role === "admin")
+    );
+  }
+
+  /**
+   * R32-B1：执行类写面的三态判定入口（`assertCanOperate` 与其 owner 档分支共用）。
+   *
+   * 为什么不直接调 `this.projectAccess.resolveRoleState`：本仓三处既有单测把
+   * projectAccess 铸成 `{ hasProjectRole, resolveRole }` 这样的**二态替身**
+   * （`modules/api-keys/__tests__/api-key-owner-scope.spec.ts`、
+   * `common/guards/__tests__/ownership-assertion-recording.spec.ts` 等），
+   * 它们对「查询失败」没有表达能力。故对这类替身退化为二态折叠（与改动前逐字节
+   * 一致）；**生产装配注入的是真实的 ProjectAccessService**，永远命中三态分支。
+   * 这条不变量由 `__tests__/task-operate-role-unavailable.spec.ts` 用真服务钉住
+   * （它同时断言替身路径仍然可用，防止"垫片"变成新的静默降级点）。
+   */
+  private async resolveOperateRoleState(
+    userId: number,
+    projectId: string | null,
+  ): Promise<ProjectRoleResolution> {
+    const access: {
+      resolveRoleState?: ProjectAccessService["resolveRoleState"];
+      resolveRole: ProjectAccessService["resolveRole"];
+    } = this.projectAccess as never;
+    if (typeof access.resolveRoleState === "function") {
+      return access.resolveRoleState(userId, projectId);
+    }
+    const role = await access.resolveRole(userId, projectId);
+    return role === null || role === undefined
+      ? { status: "none" }
+      : { status: "role", role };
   }
 
   /**
