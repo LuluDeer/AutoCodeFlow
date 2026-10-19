@@ -5142,6 +5142,117 @@ describe("TaskService (__tests__)", () => {
         "10.0.0.9:8002",
       ]);
     });
+
+    // R31-B2（回调终态幂等性审计）：**乱序回调**——终态不可逆。
+    //
+    // 既有用例只覆盖「同状态重放」（duplicate 同一条回调再来一次），没有覆盖
+    // 「不同状态的后到者」：先到 failure 把行写成 FAILED，随后（执行器重试
+    // 乱序 / 两个来源各报一次）到达的 success 若被当作正常终态写，就会把
+    // FAILED 覆盖成 SUCCESS——执行历史与告警结论被静默改写。
+    //
+    // 守卫是 transitionToTerminal 的 status IN (OPEN_EXECUTION_STATUSES)
+    // 门槛（execution-terminal.ts:156-169）+ handleCallback 的
+    // if (!updated.affected) continue（task.service.ts:5111）。本用例钉住
+    // 三件事：① 终态不被翻转；② 输家零副作用（不二次 emit / 不二次释放槽位）；
+    // ③ 对执行器仍返回 success——否则 at-least-once 投递会被当成失败无限重试。
+    it("R31-B2: an out-of-order late success cannot overwrite an earlier FAILED terminal state", async () => {
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "job",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "host-a:1",
+        failureReason: null as ExecutionFailureReason | null,
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      // 先到：失败 → winner，落 FAILED 并释放一次槽位 + emit 一次。
+      const first = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          errorMessage: "boom",
+          executorAddress: "host-a:1",
+        },
+      ]);
+      expect(first[0].success).toBe(true);
+      expect(exec.status).toBe(ExecutionStatus.FAILED);
+      const failureReasonAfterFirst = exec.failureReason;
+      const emitsAfterFirst = eventBus.emit.mock.calls.length;
+      expect(emitsAfterFirst).toBe(1);
+
+      // 后到：success（乱序）——必须被终态门挡下。
+      mockedReleaseSlot.mockClear();
+      const second = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          durationMs: 5,
+          executorAddress: "host-a:1",
+        },
+      ]);
+
+      // ① 终态未被覆盖：仍是 FAILED，失败分类原样保留。
+      expect(exec.status).toBe(ExecutionStatus.FAILED);
+      expect(exec.failureReason).toBe(failureReasonAfterFirst);
+      // ② 输家零副作用：不二次 emit、不二次释放槽位。
+      expect(eventBus.emit.mock.calls.length).toBe(emitsAfterFirst);
+      expect(mockedReleaseSlot).not.toHaveBeenCalled();
+      // ③ 仍回报 success（幂等确认，让执行器停止重试）。
+      expect(second[0].success).toBe(true);
+    });
+
+    // R31-B2（回调终态幂等性审计）：**与 sweep 竞争**——scheduler 的僵尸执行
+    // 回收（recoverStaleExecutionsBody）与回调同时终态同一行时，两路径写的是
+    // 同一条 UPDATE ... WHERE status IN (open)（execution-terminal.ts:161-169），
+    // PG 行锁把二者串行化，输家 affected=0 直接短路。没有 read-then-write 窗口，
+    // 因此也不存在「后到者把一个已收敛的判定覆盖掉」。
+    //
+    // 本用例钉住输家侧的完整零副作用契约：sweep 先赢（STALE_RECOVERED）后，
+    // 迟到的 timeout 回调**不得**释放槽位（会二次 -1）、不得兑现 kill_retry
+    // 重试（会二次入队）、不得 emit，且 sweep 的分类必须原样保留。
+    it("R31-B2: a callback arriving after the stale sweep already terminalized the row is a no-op loser", async () => {
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "job",
+        // sweep 先赢：行已被 recoverStaleExecutionsBody 写成终态。
+        status: ExecutionStatus.FAILED,
+        failureReason: ExecutionFailureReason.STALE_RECOVERED,
+        executorAddress: "host-a:1",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        // 若迟到的回调被误当 winner，下面两个副作用都会发生。
+        timeoutAction: "kill_retry",
+        maxRetry: 3,
+      });
+
+      const res = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          failureReason: ExecutionFailureReason.TIMEOUT,
+          executorAddress: "host-a:1",
+        },
+      ]);
+
+      // sweep 的判定不被迟到的 timeout 分类覆盖。
+      expect(exec.status).toBe(ExecutionStatus.FAILED);
+      expect(exec.failureReason).toBe(ExecutionFailureReason.STALE_RECOVERED);
+      // 输家零副作用：不二次释放槽位、不二次入队重试、不二次 emit。
+      expect(mockedReleaseSlot).not.toHaveBeenCalled();
+      expect(
+        executorServiceMock.scheduleRetryAfterRecovery,
+      ).not.toHaveBeenCalled();
+      expect(eventBus.emit).not.toHaveBeenCalled();
+      // 仍回报 success（幂等确认）。
+      expect(res[0].success).toBe(true);
+    });
   });
 
   describe("saveVersion", () => {
