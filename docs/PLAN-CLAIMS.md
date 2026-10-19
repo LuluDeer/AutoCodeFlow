@@ -725,3 +725,9 @@
   另补 3 条钉子（jwt.strategy 每请求现读库 → 多实例撤销天然收敛，不需要 executor 那套 evict+broadcast；API Key 吊销下一请求即生效；查找只按全哈希）。验证 16 套件 259 例全绿（基线 246）+ tsc 0；总控独立反证属主闸 → **3 failed / 66 passed**。**遗留**：refresh_tokens 无 familyId 只能全量吊销（DoS 面）；TOTP 备份码全仓不存在（丢设备=锁死）；单会话 revoke 的在途 access 仍活 ≤15min；users.service.remove 不回收 api_keys（属主闸已兜住）。
 - 2026-10-20 **流程教训（记一笔）**：逐文件 git add 的循环里仍有文件被漏加（auth.service.ts 未进 commit，是 12 文件里只提交了 11 个），靠 `git status` 收尾检查才发现并用 --amend 修正。**提交前必须比对 `git diff --cached --stat` 的文件数与预期一致**。
 - 2026-10-20 **R32-A5 claimed（agent 运行中）**：users + project 权限与生命周期审计（删/禁用用户的级联孤儿、三档项目角色在每个写端点的一致性、成员管理提权链、用户更新面唯一性竞态与 sessionVersion）。
+- 2026-10-20 **R32-A5 done（commit fd9d3241）**：users + project 四轴审计，**3 个真缺口**。
+  **① users.update 遇 PG 23505 只能落笼统 409**：唯一性预检只覆盖「非 admin 自改」且与 save 非原子，admin 改他人**零预检** ⇒ 竞态一律退化成「资源已存在」，前端无法定位是 username 还是 email 撞了；改按 23505 重读 dto 出现的字段归因到 USERNAME_TAKEN / EMAIL_TAKEN（不依赖约束名；命不中/命中自己/重读失败回落 USER_EXISTS）。
+  **② users.remove 不回收 api_keys**（只清 refresh_tokens + project_members，api_keys 留孤儿）：认证面已由 R32-A4 属主闸兜住，本条只清孤儿行（与 refresh_tokens 同事务同口径）。
+  **③ project.addMember 不校验目标用户存在** → 幽灵成员行（project_members.userId 无 FK，A-8 只补了删除方向）：授予前校验，不存在 → 404 USER_ID_NOT_FOUND；@Optional 缺席跳过、查询抖动 warn 放行（既定姿态）。
+  **补 3 组钉子**：project 模块 7 个写端点的 @Roles 元数据 == [admin]（文件头注承诺过但从未断言）、非 admin 连 role:'user' 也拒、ProjectsModule imports UsersModule + design:paramtypes[1] === UsersService（防 @Optional 静默退化成永不校验）。核实无提权链、无跨项目 id 注入面。验证 108→129 例全绿 + tsc 0；总控独立反证幽灵成员闸 → 1 failed / 67 passed。**遗留**：task_templates.createdBy 按 username 键（删号/改名后属主悬空、同名新号可继承）；resolveRole 失败 fail-open 使 viewer 门禁在 DB 抖动窗口放行；addMember 不校验项目存在 → 23503 → 422 语义错位；**「禁用用户」在 API 上根本没有写面**（DTO 无 isActive + forbidNonWhitelisted → 400），靠 jwt.strategy 与 api-keys 逐请求兜底。
+- 2026-10-20 **R32-B1 claimed（agent 运行中）**：把「权限判定失败」从 fail-open 改为 fail-closed——resolveRole 查询失败按非成员返回，导致 task.service 的 viewer 门禁在 DB 抖动窗口不触发、写操作按宽松语义放行。要求三态化（有角色/无角色/判定不可用），仅执行类写面在「不可用」时 503，读面保持宽容，正常路径行为逐字节不变。
