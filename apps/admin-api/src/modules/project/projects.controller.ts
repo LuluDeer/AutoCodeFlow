@@ -6,7 +6,6 @@ import {
   HttpCode,
   Param,
   ParseIntPipe,
-  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -25,6 +24,7 @@ import {
   ProjectMemberViewDto,
   MyProjectRolesDto,
   ProjectListPageDto,
+  ProjectRemovalImpactResponseDto,
 } from "./dto/project-response.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -33,6 +33,11 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { ProjectsService } from "./projects.service";
 import { ProjectAccessService } from "./project-access.service";
+// PROJECT-UUID-01（生产故障）：路由参数不能用 ParseUUIDPipe——它拒绝默认项目
+// 自己的 id（版本位 0），项目管理页点「成员」必现 400
+// "Validation failed (uuid is expected)"。本管道形状校验，接受面与
+// @IsUuidShape 逐字一致。详见 common/pipes/parse-uuid-shape.pipe.ts 头注。
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import {
   CreateProjectDto,
   UpdateProjectDto,
@@ -178,7 +183,7 @@ export class ProjectsController {
     description: "项目（实体形态，不含 myRole）",
     type: ProjectEntityDto,
   })
-  async findOne(@Param("id", ParseUUIDPipe) id: string): Promise<Project> {
+  async findOne(@Param("id", ParseUuidShapePipe) id: string): Promise<Project> {
     return this.service.findOne(id);
   }
 
@@ -218,7 +223,7 @@ export class ProjectsController {
     type: ProjectEntityDto,
   })
   async update(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: UpdateProjectDto,
     @CurrentUser() user: { id: number; username: string } | undefined,
     @Req() req: Request,
@@ -235,13 +240,35 @@ export class ProjectsController {
     return updated;
   }
 
+  /**
+   * PROJECT-IMPACT-01（生产隐患）：删除影响面预览。
+   *
+   * ADMIN-only，与 `remove` 同权限面——能删的人就是该看到后果的人
+   * （对齐 P0-3 应用删除、DEEP-AUDIT B·1.1 执行器删除的既有约定）。
+   *
+   * 为什么路由放在 `:id` 之后也不会被它吃掉：`GET /projects/:id` 是单段模板，
+   * 匹配不到两段的 `/projects/<id>/removal-impact`（path-to-regexp 默认锚定），
+   * 故不存在 application.controller 里那种「`stats` 被 `:id` 捕获后 400」的
+   * 路由次序陷阱。
+   */
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Get(":id/removal-impact")
+  @ApiOperation({ summary: "预览删除该项目的后果" })
+  @ApiOkResponse({ type: ProjectRemovalImpactResponseDto })
+  describeRemovalImpact(
+    @Param("id", ParseUuidShapePipe) id: string,
+  ): Promise<ProjectRemovalImpactResponseDto> {
+    return this.service.describeRemovalImpact(id);
+  }
+
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Delete(":id")
   @ApiOkResponse({ type: ProjectDeleteResponseDto })
   @HttpCode(200)
   async remove(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: { id: number; username: string } | undefined,
     @Req() req: Request,
   ): Promise<{ deleted: boolean }> {
@@ -276,7 +303,7 @@ export class ProjectsController {
     type: [ProjectMemberViewDto],
   })
   async listMembers(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: { id: number; role: UserRole } | undefined,
   ): Promise<ProjectMemberView[]> {
     // 默认项目恒可读：它是「未分配资源」的归属视图，读它不构成越权。
@@ -299,7 +326,7 @@ export class ProjectsController {
     type: ProjectMemberViewDto,
   })
   async addMember(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: UpsertProjectMemberDto,
     @CurrentUser() user: { id: number; username: string } | undefined,
     @Req() req: Request,
@@ -327,7 +354,7 @@ export class ProjectsController {
     type: ProjectMemberViewDto,
   })
   async updateMember(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("userId", ParseIntPipe) userId: number,
     @Body() dto: UpdateProjectMemberDto,
     @CurrentUser() user: { id: number; username: string } | undefined,
@@ -352,7 +379,7 @@ export class ProjectsController {
   @ApiOkResponse({ type: ProjectDeleteResponseDto })
   @HttpCode(200)
   async removeMember(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("userId", ParseIntPipe) userId: number,
     @CurrentUser() user: { id: number; username: string } | undefined,
     @Req() req: Request,

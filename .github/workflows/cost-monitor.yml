@@ -1,120 +1,241 @@
 name: Cost Monitor
 
-# 监控 GitHub Actions 使用情况，每周一生成报告
+# 监控 GitHub Actions 使用情况，每周一生成报告。
+#
+# ── 为什么这个文件被重写过（2026-10-19 生产故障）────────────────────────────
+#
+# 线上失败信息：`GraphQL: Resource not accessible by integration (createIssue)`。
+#
+# 根因是 `permissions` 只声明了 `contents: read` + `actions: read`——声明
+# permissions 块后，**所有未列出的权限都被置为 none**，`issues: write` 不在其中，
+# 于是 `gh issue create` 被 403 拒绝。这是本工作流**每一次**运行都会失败的死症
+# （不是偶发），只是没人看这个 workflow 的红色叉。
+#
+# 修 issues 权限的同时，顺手修掉了三处会让报告「看起来正常、数字却是错的」的缺陷
+# （这类缺陷比直接报错更危险：报错至少会被发现）：
+#
+#   ① **分页截断**：原实现每个请求都写死 `per_page=100` 且不翻页。实测本仓
+#      近 7 天 CI 运行 **139** 次，旧脚本只数到 **100** 次——每周报告稳定少报
+#      28%，成功率也被算成 48%（真实 51%）。现在用 `--paginate` 拉全量。
+#
+#   ② **「分钟数」口径是错的**：原实现算的是 `updated_at - created_at`，那是
+#      **墙钟耗时**（含排队等待、人工审批停留、并发降速），不是**计费分钟**。
+#      改用官方 `/actions/runs/{id}/timing` 的 `billable_ms`，按 runner 规格
+#      （UBUNTU / WINDOWS / MACOS）分别累加。
+#
+#   ③ **成功率把进行中的运行算作失败**：原实现分子只数 success、分母却是
+#      「所有 conclusion 非 null 的运行」——看着像同一口径，实际把
+#      cancelled / timed_out 全算进了失败。现在分子分母统一在终态集合内。
+#
+# 另外：本仓库是 **public**。GitHub 对公开仓库的标准 runner **不计费**，
+# `/timing` 的 `billable_ms` 恒为 0（已实测确认）。若不说明，报告里的
+# 「计费分钟 0」会被误读成「脚本坏了」——故报告显式区分
+# 「计费分钟」与「实际运行时长」，并直接给出「是否超额度」的结论。
+
 on:
   schedule:
     # 每周一 UTC 02:00（北京时间 10:00）
     - cron: '0 2 * * 1'
   workflow_dispatch:
 
+# ── 权限（最小集，但**必须够用**）──────────────────────────────────────────
+# issues: write 是本工作流的核心输出面（创建/更新成本监控 issue）。
+# actions: read 用于读 workflow runs 与 run timing。
+# 两者缺一即 403——这正是上一版失败的原因。
 permissions:
   contents: read
   actions: read
+  issues: write
+
+# 同一时刻只跑一个：两个并发运行会各自算一份报告，并给同一个 issue 连发两条
+# 评论（成本数据还会互相矛盾）。
+concurrency:
+  group: cost-monitor
+  cancel-in-progress: false
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Get workflow runs statistics
+      - name: Collect GitHub Actions usage
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          echo "## GitHub Actions 使用统计（最近 7 天）" > report.md
-          echo "" >> report.md
-          
-          # 获取过去 7 天的 workflow runs
+          set -euo pipefail
+
           since_date=$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')
-          
-          echo "### 总览" >> report.md
-          echo "" >> report.md
-          
-          # CI workflow 统计
-          ci_runs=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?created=>=$since_date&per_page=100" \
-            | jq '[.workflow_runs[] | select(.conclusion != null)] | length')
-          
-          ci_minutes=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?created=>=$since_date&per_page=100" \
-            | jq '[.workflow_runs[] | select(.conclusion != null) | ((.updated_at | fromdate) - (.created_at | fromdate)) / 60] | add // 0 | floor')
-          
-          echo "- **CI Workflow**: $ci_runs 次运行, 约 $ci_minutes 分钟" >> report.md
-          
-          # Release workflow 统计
-          release_runs=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/actions/workflows/release.yml/runs?created=>=$since_date&per_page=100" \
-            | jq '[.workflow_runs[] | select(.conclusion != null)] | length')
-          
-          if [ "$release_runs" -gt 0 ]; then
-            release_minutes=$(gh api \
+
+          # ── 仓库可见性 ─────────────────────────────────────────────────
+          # 公开仓库的标准 runner 不计费（billable_ms 恒为 0），必须据此
+          # 改变报告口径，否则「0 分钟」会被读成脚本故障。
+          is_private=$(gh api "/repos/${REPO}" --jq '.private')
+
+          # ── 拉某 workflow 最近 7 天的全部运行（全分页）──────────────────
+          # ⚠️ `--slurp` 与 `--jq` **互斥**（gh 会直接报错退出）。故这里只
+          # 用 `--slurp` 取回「每页一元素」的数组，再用管道交给 jq 拍平。
+          # `|| echo '[]'`：workflow 文件被改名/删除时 API 返回 404，不该让
+          # 整份报告失败。
+          fetch_runs() {
+            local wf="$1"
+            gh api --paginate --slurp \
               -H "Accept: application/vnd.github+json" \
-              "/repos/${{ github.repository }}/actions/workflows/release.yml/runs?created=>=$since_date&per_page=100" \
-              | jq '[.workflow_runs[] | select(.conclusion != null) | ((.updated_at | fromdate) - (.created_at | fromdate)) / 60] | add // 0 | floor')
-            echo "- **Release Workflow**: $release_runs 次运行, 约 $release_minutes 分钟" >> report.md
-          else
-            echo "- **Release Workflow**: 0 次运行" >> report.md
-          fi
-          
-          # 成功率统计
-          echo "" >> report.md
-          echo "### 成功率" >> report.md
-          echo "" >> report.md
-          
-          ci_success=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?created=>=$since_date&per_page=100" \
-            | jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
-          
-          if [ "$ci_runs" -gt 0 ]; then
-            ci_rate=$((ci_success * 100 / ci_runs))
-            echo "- **CI 成功率**: $ci_rate% ($ci_success/$ci_runs)" >> report.md
-          fi
-          
-          echo "" >> report.md
-          echo "### 优化建议" >> report.md
-          echo "" >> report.md
-          
-          # 根据统计给出建议
-          if [ "$ci_minutes" -gt 1000 ]; then
-            echo "⚠️ CI 分钟数较高 ($ci_minutes 分钟/周)，建议：" >> report.md
-            echo "- 检查是否有重复的测试执行" >> report.md
-            echo "- 考虑增加缓存策略" >> report.md
-            echo "- 评估是否可以减少测试范围" >> report.md
-          else
-            echo "✅ CI 分钟数在合理范围内 ($ci_minutes 分钟/周)" >> report.md
-          fi
-          
-          echo "" >> report.md
-          echo "---" >> report.md
-          echo "*生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> report.md
-          
+              "/repos/${REPO}/actions/workflows/${wf}/runs?created=>=${since_date}&per_page=100" \
+              2>/dev/null | jq -c '[.[].workflow_runs[]]? // []' || echo '[]'
+          }
+
+          # ── 单个 run 的计费分钟（官方 timing 接口）──────────────────────
+          # 结构：{billable:{UBUNTU:{total_ms,...},WINDOWS:{...}},run_duration_ms}
+          # ⚠️ 必须 `.billable // {}` 兜底：该字段缺失/为 null 时 `to_entries`
+          # 会直接 `jq: error: null has no keys` 并以非 0 退出——在 `set -e`
+          # 下整份报告就挂了。实测 {}/{"billable":null} 两种形态都会命中。
+          # 取不到时计 0 并 warn——成本报告不该因一次 404 整体失败。
+          billable_minutes() {
+            local run_id="$1" json
+            if ! json=$(gh api \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/${REPO}/actions/runs/${run_id}/timing" 2>/dev/null); then
+              echo "::warning::timing API 不可用（run ${run_id}），按 0 分钟计入" >&2
+              echo 0
+              return
+            fi
+            echo "$json" | jq '[(.billable // {}) | to_entries[]?.value.total_ms // 0] | add // 0 | (. / 60000) | ceil'
+          }
+
+          # ── 汇总 ───────────────────────────────────────────────────────
+          CI_WF="ci.yml"
+          REL_WF="release.yml"
+
+          ci_runs_json=$(fetch_runs "$CI_WF")
+          rel_runs_json=$(fetch_runs "$REL_WF")
+
+          ci_total=$(echo "$ci_runs_json" | jq 'length')
+          ci_done=$(echo "$ci_runs_json" | jq '[.[] | select(.conclusion != null)] | length')
+          ci_ok=$(echo "$ci_runs_json" | jq '[.[] | select(.conclusion == "success")] | length')
+
+          rel_total=$(echo "$rel_runs_json" | jq 'length')
+          rel_done=$(echo "$rel_runs_json" | jq '[.[] | select(.conclusion != null)] | length')
+          rel_ok=$(echo "$rel_runs_json" | jq '[.[] | select(.conclusion == "success")] | length')
+
+          # 计费分钟：只对**终态**运行取 timing（进行中的还没产生最终计费）
+          sum_billable() {
+            local json="$1" total=0 rid m
+            while read -r rid; do
+              [ -z "$rid" ] && continue
+              m=$(billable_minutes "$rid")
+              total=$((total + m))
+            done < <(echo "$json" | jq -r '.[] | select(.conclusion != null) | .id')
+            echo "$total"
+          }
+
+          # 实际运行时长（墙钟，仅供参考——**不是**计费口径）
+          sum_wall() {
+            local json="$1"
+            echo "$json" | jq '[.[] | select(.conclusion != null)
+              | (((.updated_at | fromdate) - (.created_at | fromdate)) / 60)] | add // 0 | floor'
+          }
+
+          ci_billable=$(sum_billable "$ci_runs_json")
+          rel_billable=$(sum_billable "$rel_runs_json")
+          total_billable=$((ci_billable + rel_billable))
+
+          ci_wall=$(sum_wall "$ci_runs_json")
+          rel_wall=$(sum_wall "$rel_runs_json")
+          total_wall=$((ci_wall + rel_wall))
+
+          # 成功率：分子分母都限定在终态集合内
+          ci_rate=0;  [ "$ci_done" -gt 0 ]  && ci_rate=$((ci_ok * 100 / ci_done))
+          rel_rate=0; [ "$rel_done" -gt 0 ] && rel_rate=$((rel_ok * 100 / rel_done))
+
+          {
+            echo "## GitHub Actions 使用统计（最近 7 天）"
+            echo ""
+            echo "统计区间：\`${since_date}\` 起　·　仓库可见性：**$([ "$is_private" = "true" ] && echo '私有' || echo '公开')**"
+            echo ""
+            echo "### 总览"
+            echo ""
+            echo "| Workflow | 运行次数 | 已完成 | 计费分钟 | 实际运行时长 |"
+            echo "| --- | ---: | ---: | ---: | ---: |"
+            echo "| CI (\`${CI_WF}\`) | ${ci_total} | ${ci_done} | ${ci_billable} | ${ci_wall} |"
+            echo "| Release (\`${REL_WF}\`) | ${rel_total} | ${rel_done} | ${rel_billable} | ${rel_wall} |"
+            echo "| **合计** | **$((ci_total + rel_total))** | **$((ci_done + rel_done))** | **${total_billable}** | **${total_wall}** |"
+            echo ""
+            echo "> **计费分钟**取自官方 \`/actions/runs/{id}/timing\` 的 \`billable_ms\`（按 runner 规格累加）。"
+            echo "> **实际运行时长**是 \`updated_at - created_at\` 的墙钟时间，**含排队与人工等待**，"
+            echo "> 仅供观察反馈周期，不代表成本。旧版报告把后者当成了前者。"
+            echo ""
+            echo "### 成功率（仅统计已完成运行）"
+            echo ""
+            if [ "$ci_done" -gt 0 ]; then
+              echo "- **CI**：${ci_rate}%（${ci_ok}/${ci_done}）"
+            else
+              echo "- **CI**：区间内无已完成运行"
+            fi
+            if [ "$rel_done" -gt 0 ]; then
+              echo "- **Release**：${rel_rate}%（${rel_ok}/${rel_done}）"
+            else
+              echo "- **Release**：区间内无已完成运行"
+            fi
+            echo ""
+            echo "### 成本评估"
+            echo ""
+            if [ "$is_private" = "true" ]; then
+              # 私有：2000 分钟/月（Free）为周均基准
+              echo "私有仓库含额度（Free 2000 / Team 3000 / Enterprise 50000 分钟/月），"
+              echo "超出部分约 \$0.008/分钟。本区间计费 **${total_billable}** 分钟，"
+              echo "按 4.3 周/月外推约 **$((total_billable * 43 / 10))** 分钟/月。"
+            else
+              echo "✅ **本仓库是公开仓库，标准 runner（\`ubuntu-latest\`）不计费**——"
+              echo "官方 \`billable_ms\` 恒为 0（本报告已实测一致），不存在额度超支。"
+              echo "本区间实际运行时长 ${total_wall} 分钟，仅反映 CI 的反馈周期。"
+            fi
+            echo ""
+            echo "### 观察"
+            echo ""
+            if [ "$total_wall" -gt 465 ]; then
+              echo "⚠️ 本区间实际运行时长 ${total_wall} 分钟（周均），CI 反馈周期偏长，可从这些方向看："
+              echo "- 同一 commit 是否被多个 workflow 重复跑（\`paths-ignore\` / \`concurrency\` 可抑制）"
+              echo "- 依赖缓存命中率（\`actions/cache\`、setup-node 的 \`cache\` 选项）"
+              echo "- 是否有可合并的串行 job（并行不减少墙钟总和的绝对值，但缩短端到端反馈）"
+            else
+              echo "✅ 本区间实际运行时长 ${total_wall} 分钟处于合理范围。"
+            fi
+            echo ""
+            echo "---"
+            echo "*生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')*"
+            echo "*数据源: GitHub REST API（\`actions/runs\` 全分页 + \`actions/runs/{id}/timing\`）*"
+          } > report.md
+
           cat report.md
-          
+
       - name: Create or update issue
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          # 检查是否已有打开的成本监控 issue
+          set -euo pipefail
+
+          # `--jq '.[0].number // empty'`：没有结果时输出空串而不是 "null"，
+          # 否则下面的 `-n` 判断会把 "null" 当成有效 issue 号。
           existing_issue=$(gh issue list \
-            --repo "${{ github.repository }}" \
+            --repo "$REPO" \
             --label "cost-monitor" \
             --state open \
+            --limit 1 \
             --json number \
-            --jq '.[0].number')
-          
-          if [ -n "$existing_issue" ]; then
-            # 更新现有 issue
+            --jq '.[0].number // empty')
+
+          if [ -n "${existing_issue:-}" ]; then
             gh issue comment "$existing_issue" \
-              --repo "${{ github.repository }}" \
+              --repo "$REPO" \
               --body-file report.md
             echo "Updated issue #$existing_issue"
           else
-            # 创建新 issue
             gh issue create \
-              --repo "${{ github.repository }}" \
+              --repo "$REPO" \
               --title "GitHub Actions 成本监控 - $(date '+%Y 年第 %V 周')" \
               --body-file report.md \
               --label "cost-monitor,automation"

@@ -126,6 +126,52 @@ export class ProjectMemberViewDto {
 }
 
 /**
+ * GET /projects/:id/removal-impact —— 删除影响面预览（PROJECT-IMPACT-01）。
+ *
+ * 为什么需要它：项目删除走 FK `ON DELETE SET NULL`，任务不会消失、cron 照旧
+ * 触发，但 `projectId` 被静默置空后会被 `ProjectAccessService.resolveRole`
+ * 按**默认项目**判定（`projectId ?? DEFAULT_PROJECT_ID`）——原本靠「项目 editor」
+ * 身份才能改的任务，删项目后对非 ADMIN 变成「看得见但改不动」。这个后果在
+ * 界面上完全看不出来，只能在确认框里如实告知。
+ *
+ * 与本仓既有约定同构：`application.service.describeRemovalImpact`（P0-3）、
+ * `executor.service.describeRemovalImpact`（DEEP-AUDIT B·1.1）。
+ *
+ * 注意**没有** applicationCount：applications/executors/executor_packages 三表
+ * 虽然都有 `projectId` 列，但 `CreateApplicationDto` / `UpdateApplicationDto` /
+ * 执行器 DTO 里**都没有 projectId 字段**，运行期无任何写入口能把它们挂到某个
+ * 项目下（列恒为 NULL）。给一个永远为 0 的字段会让确认框写出
+ * 「删除后 0 个应用回到未分配」这种看似精确、实则毫无信息量的废话。
+ */
+export class ProjectRemovalImpactResponseDto {
+  @ApiProperty({ description: "项目名称（确认框标题回显）" })
+  projectName: string;
+
+  @ApiProperty({
+    description:
+      "该项目下未软删除的任务数（status != deleted）。这些任务删除后会退回「未分配」视图",
+  })
+  taskCount: number;
+
+  @ApiProperty({
+    description:
+      "其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分",
+  })
+  activeTaskCount: number;
+
+  @ApiProperty({
+    description: "项目成员关系行数（删除时由 FK ON DELETE CASCADE 一并清除）",
+  })
+  memberCount: number;
+
+  @ApiProperty({
+    description:
+      "是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE）",
+  })
+  deletable: boolean;
+}
+
+/**
  * GET /projects/me/roles 的响应。
  *
  * 字段按 `projects.controller.ts:myRoles` 的**实际返回**逐一对齐（查证后修正了

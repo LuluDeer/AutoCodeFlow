@@ -213,6 +213,7 @@ export default {
   'err.PROJECT_ACCESS_DENIED': '你不是该项目成员',
   'err.PROJECT_DEFAULT_IMMUTABLE': '默认项目不能重命名或删除',
   'err.PROJECT_INVALID_ROLE': '项目角色非法：{{role}}；应为 viewer、editor、admin 之一',
+  'err.PROJECT_NAME_EXISTS': '项目名称「{{name}}」已被占用，请换一个',
   'err.PROJECT_NOT_FOUND': '项目 {{id}} 不存在',
   'err.PROJECT_NOT_MEMBER': '用户 {{userId}} 不是项目 {{projectId}} 的成员',
   'err.REFRESH_TOKEN_INVALID': '刷新令牌无效',

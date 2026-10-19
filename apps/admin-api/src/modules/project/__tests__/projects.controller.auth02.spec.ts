@@ -365,3 +365,94 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
     expect(mixed.pageSize).toBe(1);
   });
 });
+
+/**
+ * PROJECT-UUID-01（生产故障）：项目管理页点「成员」必现
+ * `Validation failed (uuid is expected)`。
+ *
+ * 该用例锁的是**路由层**（`@Param("id", ParseUuidShapePipe)`）——纯 service 级
+ * 单测永远发现不了它，因为缺陷在参数校验就 400 了，根本走不到 service。故这里
+ * 直接读 NestJS 落在**方法**上的 `ROUTE_ARGS_METADATA`（键形如 `5:0`，
+ * paramtype 5 = PARAM、冒号后是参数索引；**不是**类级元数据——首版按类读，
+ * 读到空对象后落进「元数据缺失就跳过」的分支，用例假绿，已按实测修正），把
+ * 「每个带 :id 的路由都用形状管道」钉成契约：日后有人把它换回 `ParseUUIDPipe`，
+ * 默认项目（版本位 0）就会再次全站 400，本用例立即变红。
+ */
+describe("ProjectsController 路由参数 UUID 校验（PROJECT-UUID-01）", () => {
+  const PATH_METADATA = "path";
+  const METHOD_METADATA = "method";
+  const ROUTE_ARGS_METADATA = "__routeArguments__";
+  /** NestJS RouteParamtypes.PARAM */
+  const PARAM_TYPE_PARAM = 5;
+
+  type ArgMeta = { data?: unknown; pipes?: unknown[] };
+
+  const protoOf = () =>
+    ProjectsController.prototype as unknown as Record<string, unknown>;
+
+  /** 取控制器所有路由方法及其路径模板。 */
+  const routesOf = (): { name: string; path: string }[] =>
+    Object.getOwnPropertyNames(protoOf())
+      .filter((k) => k !== "constructor" && typeof protoOf()[k] === "function")
+      .map((k) => {
+        const fn = protoOf()[k] as Record<string, unknown>;
+        const path = Reflect.getMetadata(PATH_METADATA, fn) as
+          string | string[] | undefined;
+        const method = Reflect.getMetadata(METHOD_METADATA, fn) as
+          number | undefined;
+        if (path === undefined || method === undefined) return null;
+        return { name: k, path: Array.isArray(path) ? path.join(",") : path };
+      })
+      .filter((r): r is { name: string; path: string } => r !== null);
+
+  /**
+   * 取某路由方法上 `:id` 参数实际绑定的管道类。
+   *
+   * 元数据挂在**方法**上（`Reflect.getMetadata(KEY, Controller, methodName)`），
+   * 键是 `${paramtype}:${index}`。返回 `null` 表示「找不到该参数的元数据」——
+   * 与「找到了但管道为空」区分开，避免再次出现静默跳过的假绿。
+   */
+  const idPipesOf = (name: string): unknown[] | null => {
+    const args = Reflect.getMetadata(
+      ROUTE_ARGS_METADATA,
+      ProjectsController,
+      name,
+    ) as Record<string, ArgMeta> | undefined;
+    if (!args) return null;
+    const entry = Object.entries(args).find(
+      ([key, meta]) =>
+        key.startsWith(`${PARAM_TYPE_PARAM}:`) && meta.data === "id",
+    )?.[1];
+    return entry ? (entry.pipes ?? []) : null;
+  };
+
+  it("带 :id 的路由一律使用 ParseUuidShapePipe，而不是 ParseUUIDPipe", async () => {
+    const { ParseUuidShapePipe } =
+      await import("../../../common/pipes/parse-uuid-shape.pipe");
+    const { ParseUUIDPipe } = await import("@nestjs/common");
+
+    const idRoutes = routesOf().filter((r) => r.path.includes(":id"));
+    // 守卫 1：路由集合本身不能空（否则本用例会「因为没找到路由而假绿」）
+    expect(idRoutes.length).toBeGreaterThanOrEqual(6);
+
+    for (const route of idRoutes) {
+      const pipes = idPipesOf(route.name);
+      // 守卫 2：元数据必须真的读到——读不到就红，不许静默跳过
+      expect(pipes).not.toBeNull();
+      expect(pipes).toContain(ParseUuidShapePipe);
+      expect(pipes).not.toContain(ParseUUIDPipe);
+    }
+  });
+
+  it("默认项目 id 能通过该管道（生产故障的原始输入）", async () => {
+    const { ParseUuidShapePipe } =
+      await import("../../../common/pipes/parse-uuid-shape.pipe");
+    await expect(
+      new ParseUuidShapePipe().transform(DEFAULT_PROJECT_ID, {
+        type: "param",
+        metatype: String,
+        data: "id",
+      }),
+    ).resolves.toBe(DEFAULT_PROJECT_ID);
+  });
+});

@@ -33,6 +33,25 @@ export const PROJECT_CODES = {
     en: "The Default project cannot be renamed or deleted",
   },
   /**
+   * PROJECT-DUPNAME-01：项目重名（`UQ_projects_name` 唯一索引冲突）。
+   *
+   * ⚠️ 与 404 的 `PROJECT_DEFAULT_IMMUTABLE` 相邻但语义无关，别合并：
+   * 本码是**写面撞唯一索引**（409），默认项目保护是**寻址被拒**（404）。
+   *
+   * 为什么要专门一个码而不是复用 `RESOURCE_EXISTS`：后者渲染成「资源已存在」，
+   * 用户看不出是**名字**撞了——而「新建项目」正是 PROJECT-CRUD-01 新开的入口，
+   * 撞重名是最高频的失败。带 `{{name}}` 参数把用户填的那个名字回显出来，
+   * 才能一眼判断"是我刚建过"还是"别人占了"。
+   *
+   * 状态码 409 与全局 filter 的 23505 兜底保持一致（前端按 409 走"提示冲突"
+   * 分支，见 admin-web `utils/error.ts`）——本码只是把兜底文案换成可读的。
+   */
+  PROJECT_NAME_EXISTS: {
+    status: 409,
+    zh: "项目名称「{{name}}」已被占用，请换一个",
+    en: 'A project named "{{name}}" already exists; please choose another name',
+  },
+  /**
    * AUTH-02：目标用户在项目里没有成员行（`updateMember` 不静默创建）。
    *
    * ⚠️ `status` 是 **404**（原 `NotFoundException`），非 403：本码只有一个消费

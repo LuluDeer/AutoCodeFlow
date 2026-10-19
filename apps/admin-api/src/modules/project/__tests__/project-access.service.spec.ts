@@ -127,17 +127,35 @@ describe("ProjectAccessService（AUTH-02）", () => {
       );
     });
 
-    it("removeMember：按 (projectId, userId) 精确删除并回传是否命中", async () => {
+    it("removeMember：按 (projectId, userId) 精确删除（行存在时）", async () => {
       const { svc, repo } = makeService();
+      repo.findOne.mockResolvedValue({
+        id: "m1",
+        projectId: "p1",
+        userId: 7,
+        role: "viewer",
+      });
       await expect(svc.removeMember("p1", 7)).resolves.toEqual({
         deleted: true,
       });
       expect(repo.delete).toHaveBeenCalledWith({ projectId: "p1", userId: 7 });
+    });
 
-      repo.delete.mockResolvedValue({ affected: 0 });
-      await expect(svc.removeMember("p1", 7)).resolves.toEqual({
-        deleted: false,
-      });
+    /**
+     * PROJECT-MEMBER-404：行不存在 → 404，而不是「删 0 行 + 200」。
+     *
+     * 旧行为会让前端 MembersDrawer 弹出一条假成功（它的成功回调不看返回值），
+     * 并发场景下用户以为移除了、回列表才发现人还在（或早就没了）。本用例与
+     * 上面 updateMember 的 404 用例成对，钉住「同一服务对『行不存在』给同一结论」。
+     */
+    it("removeMember：成员不存在 → 404（与 updateMember 同口径，不静默 200）", async () => {
+      const { svc, repo } = makeService();
+      repo.findOne.mockResolvedValue(null);
+      await expect(svc.removeMember("p1", 7)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      // 关键：没找到行就不该发 DELETE（否则又是一次「看起来做了什么」）
+      expect(repo.delete).not.toHaveBeenCalled();
     });
 
     it("listRolesForUser：查询失败返回空数组（读面不因权限表抖动 500）", async () => {

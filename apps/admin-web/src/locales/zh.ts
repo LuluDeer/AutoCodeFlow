@@ -2966,6 +2966,59 @@ export default {
   'projects.role.editor': '编辑者',
   'projects.role.admin': '项目管理员',
   'projects.count': '共 {{count}} 个项目',
+
+  // ── 项目管理：增删改（PROJECT-CRUD-01）──
+  // 此前页面只有「成员」一个入口，创建/改名/删除全站没有 UI——而后端
+  // POST/PATCH/DELETE /projects 早已是 ADMIN-only 可用状态，属于纯前端缺口。
+  'projects.create': '新建项目',
+  'projects.createDisableHint': '仅管理员可新建项目',
+  'projects.editDisableHint': '仅管理员可编辑项目',
+  'projects.deleteDisableHint': '仅管理员可删除项目',
+  // 注：'projects.empty' 已在本段末尾（UI-09 移动端空态）定义，此处不重复。
+  'projects.empty.createFirst': '创建第一个项目',
+  'projects.modal.create': '新建项目',
+  'projects.modal.edit': '编辑项目',
+  'projects.form.name': '项目名称',
+  'projects.form.namePlaceholder': '例如：数据平台组',
+  'projects.form.nameRequired': '请填写项目名称',
+  'projects.form.nameMax': '项目名称不能超过 100 个字符',
+  'projects.form.description': '描述',
+  'projects.form.descriptionPlaceholder': '这个项目用来归集哪些任务与应用（可选）',
+  'projects.form.descriptionMax': '描述不能超过 500 个字符',
+  'projects.form.ok': '保存',
+  'projects.form.cancel': '取消',
+  'projects.created': '项目已创建',
+  'projects.createFail': '创建项目失败',
+  'projects.updated': '项目已更新',
+  'projects.updateFail': '更新项目失败',
+  'projects.deleted': '项目已删除',
+  'projects.deleteFail': '删除项目失败',
+  'projects.deleteConfirmTitle': '确认删除项目「{{name}}」？',
+  // PROJECT-IMPACT-01：正文只描述**真实**后果。此前写的是「任务与应用会回到
+  // 未分配」——"应用"那半句是错的：applications/executors/executor_packages
+  // 的 projectId 列虽有 FK，但对应 DTO 里没有该字段，运行期无任何写入口能给
+  // 它赋值（列恒 NULL），删除项目不会影响任何应用。留着会让管理员误判风险。
+  'projects.deleteConfirmBody': '删除后该项目下的任务会回到「未分配」（任务本身不会被删除，仍会照常触发），项目成员关系一并清除。此操作不可恢复。',
+  'projects.deleteConfirmOk': '删除',
+  'projects.deleteConfirmCancel': '取消',
+  // 影响面逐条（数量来自 GET /projects/:id/removal-impact）
+  'projects.deleteImpact.tasks': '{{count}} 个任务将失去项目归属，其中 {{active}} 个仍在启用状态（会继续被定时触发）',
+  'projects.deleteImpact.members': '{{count}} 条项目成员关系将被清除',
+  'projects.deleteImpact.none': '该项目下没有任务或成员，删除不会影响任何资源',
+  'projects.deleteImpact.unavailable': '影响面未能获取，请自行确认该项目下是否有任务',
+  // 方案 B-lite：气泡内的紧凑版（完整句子留给 Modal 详情）
+  'projects.deletePop.loading': '正在统计影响…',
+  'projects.deletePop.tasks': '{{count}} 个任务（{{active}} 个仍在启用）',
+  'projects.deletePop.members': '{{count}} 条成员关系',
+  // 确定键文案必须诚实：非空项目这一下只展开详情、不删任何东西
+  'projects.deletePop.ok': '删除',
+  'projects.deletePop.continue': '查看影响并删除',
+  'projects.deleteModal.title': '删除项目「{{name}}」的影响',
+  'projects.deleteModal.ok': '确认删除',
+  'projects.action.edit': '编辑',
+  'projects.action.delete': '删除',
+  'projects.defaultImmutable': '默认项目不能重命名或删除',
+  'projects.defaultBadge': '默认',
   // UI-09 第三轮：移动端卡片列表空态（桌面表格沿用 antd 默认「暂无数据」）
   'projects.empty': '暂无项目',
 

@@ -213,6 +213,7 @@ export default {
   'err.PROJECT_ACCESS_DENIED': 'You are not a member of this project',
   'err.PROJECT_DEFAULT_IMMUTABLE': 'The Default project cannot be renamed or deleted',
   'err.PROJECT_INVALID_ROLE': 'Invalid project role: {{role}}; expected one of viewer, editor, admin',
+  'err.PROJECT_NAME_EXISTS': 'A project named "{{name}}" already exists; please choose another name',
   'err.PROJECT_NOT_FOUND': 'Project {{id}} not found',
   'err.PROJECT_NOT_MEMBER': 'User {{userId}} is not a member of project {{projectId}}',
   'err.REFRESH_TOKEN_INVALID': 'Invalid refresh token',
