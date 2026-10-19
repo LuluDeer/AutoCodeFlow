@@ -10,6 +10,7 @@
  *
  * Redis 用内存替身（DigestRedisClient 结构化注入，见服务内注释）。
  */
+import RedisMock from "ioredis";
 import { NotificationDigestService } from "../notification-digest.service";
 import { NotificationService } from "../notification.service";
 import { AuditService } from "../../audit/audit.service";
@@ -22,6 +23,41 @@ import {
   DigestRedisClient,
   DigestWindowState,
 } from "../notification-digest.service";
+
+/**
+ * R31-A3: 惰性建连面（ensureClient）的真实路径需要「ioredis 构造器」可观测。
+ * 只替换模块出口，不改服务代码——测试可直接断言构造参数、connect() 调用、
+ * error 监听与 quit/disconnect 收尾。
+ */
+interface MockRedisInstance {
+  opts: Record<string, unknown>;
+  on: jest.Mock;
+  connect: jest.Mock;
+  quit: jest.Mock;
+  disconnect: jest.Mock;
+  hgetall: jest.Mock;
+  del: jest.Mock;
+}
+const mockRedisInstances: MockRedisInstance[] = [];
+
+jest.mock("ioredis", () => {
+  const RedisMock = jest.fn((opts: Record<string, unknown>) => {
+    const inst: MockRedisInstance = {
+      opts,
+      on: jest.fn(),
+      connect: jest.fn().mockResolvedValue(undefined),
+      quit: jest.fn().mockResolvedValue("OK"),
+      disconnect: jest.fn(),
+      hgetall: jest.fn().mockResolvedValue({}),
+      del: jest.fn().mockResolvedValue(0),
+    };
+    mockRedisInstances.push(inst);
+    return inst;
+  });
+  return { __esModule: true, default: RedisMock };
+});
+
+const redisCtor = RedisMock as unknown as jest.Mock;
 
 /** DigestRedisClient 的内存实现（hash 语义 + 计数器）。 */
 class FakeRedis implements DigestRedisClient {
@@ -416,5 +452,228 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       expect(timers.has("t1")).toBe(true);
       expect(await redis.hget(`${DIGEST_KEY_PREFIX}t1`, "start")).toBeDefined();
     });
+  });
+});
+
+// ============================================================================
+// R31-A3: 生命周期与 fail-open 的**另一半**（此前完全未测的面）：
+//  · ensureClient 惰性建连（ioredis 构造参数 / connect() / error 监听）；
+//  · 建连失败 → 客户端缺席，record 回退 bypass、flush 返回 null（fail-open 第一层）；
+//  · onModuleDestroy 的 quit / 清定时器表 / 丢弃替身（句柄不泄漏）；
+//  · flush 的**取窗**失败（不是发送失败）→ null + NOTIFICATION_FAILED 审计；
+//  · 窗到期由**定时器自己**触发 flush——这是聚合的唯一正常出口，此前只测了
+//    手工调用 flush(taskId)，没钉「没人调用也会汇总」与「只汇总一次」。
+// ============================================================================
+describe("NotificationDigestService 生命周期与 fail-open（R31-A3）", () => {
+  /** 窗口 = 10 分钟（默认值），定时器到期即汇总。 */
+  const WINDOW_MINUTES = 10;
+
+  let notificationService: { notifyFailureWithConfig: jest.Mock };
+  let auditService: { log: jest.Mock };
+  let redisConfig: Record<string, unknown>;
+
+  const config = () =>
+    ({
+      get: (key: string) =>
+        key === "notification.failureDigestMinutes"
+          ? WINDOW_MINUTES
+          : redisConfig[key],
+    }) as unknown as ConfigService;
+
+  const build = (audit?: { log: jest.Mock }) =>
+    new NotificationDigestService(
+      notificationService as unknown as NotificationService,
+      config(),
+      audit as unknown as AuditService,
+    );
+
+  const timersOf = (svc: NotificationDigestService) =>
+    (svc as unknown as { timers: Map<string, unknown> }).timers;
+
+  beforeEach(() => {
+    mockRedisInstances.length = 0;
+    redisCtor.mockClear();
+    notificationService = {
+      notifyFailureWithConfig: jest.fn().mockResolvedValue(undefined),
+    };
+    auditService = { log: jest.fn().mockResolvedValue(undefined) };
+    redisConfig = {
+      "redis.host": "redis-host",
+      "redis.port": 6380,
+      "redis.password": "pw",
+      "redis.db": 3,
+    };
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  it("惰性建连：首次用到才 new ioredis（host/port/password/db + lazyConnect + commandTimeout），注册 error 监听并 connect()；之后复用同一连接", async () => {
+    const svc = build();
+
+    await expect(svc.flush("t-live")).resolves.toBeNull();
+
+    expect(mockRedisInstances).toHaveLength(1);
+    const inst = mockRedisInstances[0];
+    expect(inst.opts).toMatchObject({
+      host: "redis-host",
+      port: 6380,
+      password: "pw",
+      db: 3,
+      lazyConnect: true,
+      commandTimeout: 3000,
+    });
+    expect(inst.connect).toHaveBeenCalledTimes(1);
+    expect(inst.on).toHaveBeenCalledWith("error", expect.any(Function));
+    // 重连退避：线性 100ms 递增、上限 3s（安静重试，不惊动主链）
+    const retry = inst.opts.retryStrategy as (times: number) => number;
+    expect(retry(5)).toBe(500);
+    expect(retry(100)).toBe(3000);
+
+    // error 监听只记 warn（聚合是增强面，绝不因连接抖动打扰主链）
+    const onError = inst.on.mock.calls[0][1] as (err: Error) => void;
+    onError(new Error("conn reset"));
+    expect(Logger.prototype.warn).toHaveBeenCalledWith(
+      "digest redis error: conn reset",
+    );
+
+    // 第二次使用不重复构造（连接池复用）
+    await expect(svc.flush("t-live-2")).resolves.toBeNull();
+    expect(mockRedisInstances).toHaveLength(1);
+    expect(inst.connect).toHaveBeenCalledTimes(1);
+
+    await svc.onModuleDestroy();
+  });
+
+  it("建连构造失败（驱动/参数抛错）→ 客户端缺席：flush 返回 null、recordFailure 回退 bypass（fail-open 第一层）", async () => {
+    redisCtor.mockImplementationOnce(() => {
+      throw new Error("ECONNREFUSED 6379");
+    });
+    const svc = build();
+
+    await expect(svc.flush("t1")).resolves.toBeNull();
+    await expect(svc.recordFailure(rec())).resolves.toBe("bypass");
+
+    expect(Logger.prototype.warn).toHaveBeenCalledWith(
+      expect.stringContaining("digest redis unavailable: ECONNREFUSED 6379"),
+    );
+    // 降级为逐条直发由调用方负责：digest 自身一条都不发
+    expect(notificationService.notifyFailureWithConfig).not.toHaveBeenCalled();
+  });
+
+  it("onModuleDestroy：quit 惰性建连的存活连接（不留句柄拖住进程），二次调用幂等", async () => {
+    const svc = build();
+    await svc.flush("t-boot");
+    const inst = mockRedisInstances[0];
+
+    await svc.onModuleDestroy();
+    expect(inst.quit).toHaveBeenCalledTimes(1);
+    expect(
+      (svc as unknown as { client: unknown }).client,
+    ).toBeNull();
+
+    await expect(svc.onModuleDestroy()).resolves.toBeUndefined();
+    expect(inst.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it("setRedisClientForTesting 替换客户端时先断开旧连接；onModuleDestroy 清空定时器表与替身", async () => {
+    const svc = build();
+    await svc.flush("t-boot"); // 真实客户端先就位
+    const inst = mockRedisInstances[0];
+
+    svc.setRedisClientForTesting(new FakeRedis());
+    expect(inst.disconnect).toHaveBeenCalledTimes(1);
+
+    await svc.recordFailure(rec());
+    expect(timersOf(svc).size).toBe(1);
+
+    await svc.onModuleDestroy();
+    expect(timersOf(svc).size).toBe(0);
+    expect(
+      (svc as unknown as { testClient?: unknown }).testClient,
+    ).toBeNull();
+  });
+
+  it("窗到期由定时器自己 flush（不依赖调用方）：只发一条汇总，定时器先摘表，窗不再重复发", async () => {
+    const svc = build();
+    svc.setRedisClientForTesting(new FakeRedis());
+
+    jest.useFakeTimers();
+    try {
+      await svc.recordFailure(rec());
+      expect(timersOf(svc).has("t1")).toBe(true);
+      // 窗内不发：聚合的全部意义
+      expect(notificationService.notifyFailureWithConfig).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(WINDOW_MINUTES * 60_000 + 1);
+
+      expect(timersOf(svc).has("t1")).toBe(false);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
+      const call = notificationService.notifyFailureWithConfig.mock.calls[0];
+      expect(call[10]).toBe("任务失败汇总: nightly-etl");
+      expect(call[2]).toContain("窗口内共失败 1 次");
+
+      // 窗已原子取走：再等一个窗口不会复发
+      await jest.advanceTimersByTimeAsync(WINDOW_MINUTES * 60_000 + 1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+
+    await svc.onModuleDestroy();
+  });
+
+  it("flush 取窗失败 → 返回 null + NOTIFICATION_FAILED 审计兜底（审计自身再失败也不外泄）", async () => {
+    const broken = {
+      hgetall: jest.fn().mockRejectedValue(new Error("redis gone")),
+    } as unknown as DigestRedisClient;
+    const svc = build(auditService);
+    svc.setRedisClientForTesting(broken);
+
+    await expect(svc.flush("t1")).resolves.toBeNull();
+
+    expect(Logger.prototype.warn).toHaveBeenCalledWith(
+      expect.stringContaining("digest flush failed for task t1: redis gone"),
+    );
+    expect(auditService.log).toHaveBeenCalledWith({
+      action: "NOTIFICATION_FAILED",
+      resource: "notification_digest",
+      resourceId: "t1",
+      detail: { error: "redis gone" },
+    });
+
+    // 审计是 best-effort：它自己抛也不许冒泡
+    auditService.log.mockRejectedValueOnce(new Error("audit down"));
+    await expect(svc.flush("t1")).resolves.toBeNull();
+
+    // 非 Error 抛出物同样收敛为字符串（String(err) 分支）
+    const stringThrower = {
+      hgetall: jest.fn().mockRejectedValue("plain-string-redis-error"),
+    } as unknown as DigestRedisClient;
+    svc.setRedisClientForTesting(stringThrower);
+    await expect(svc.flush("t1")).resolves.toBeNull();
+    expect(Logger.prototype.warn).toHaveBeenCalledWith(
+      expect.stringContaining("plain-string-redis-error"),
+    );
+  });
+
+  it("审计服务缺席（@Optional）时 flush 失败只记 warn，不抛错", async () => {
+    const broken = {
+      hgetall: jest.fn().mockRejectedValue(new Error("redis gone")),
+    } as unknown as DigestRedisClient;
+    const svc = build(); // 未提供 AuditService
+    svc.setRedisClientForTesting(broken);
+
+    await expect(svc.flush("t1")).resolves.toBeNull();
+    expect(Logger.prototype.warn).toHaveBeenCalledWith(
+      expect.stringContaining("digest flush failed for task t1"),
+    );
   });
 });
