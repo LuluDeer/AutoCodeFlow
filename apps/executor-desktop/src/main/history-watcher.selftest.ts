@@ -225,6 +225,11 @@ async function main(): Promise<void> {
 
   // ── 7. 真实 fs.watch 冒烟（真定时器，端到端 sanity）──
   // 注意必须**异步**等：Atomics.wait 会阻塞事件循环，fs.watch 回调永远没机会跑。
+  //
+  // 2026-10-19 修 flaky：原先 `w.start()` 后**立刻** writeFileSync。fs.watch 的
+  // 句柄建立是异步的，写入可能发生在监听就绪之前——macOS runner 上实测偶发
+  // （`FAIL - 真实 fs.watch 冒烟：meta 写入触发回调`，同一提交 Linux 上绿）。
+  // 这不是被测代码的缺陷，是测试自身的竞态：给监听一点就绪时间再写。
   {
     const dir = tmpDir('acf-hw-real-');
     const metaDir = path.join(dir, 'meta');
@@ -232,6 +237,8 @@ async function main(): Promise<void> {
     let fired = 0;
     const w = new HistoryWatcher({ onChange: () => { fired += 1; } });
     w.start(metaDir);
+    // 等监听就绪（轮询直到 watcher 内部认为已启动，最多 500ms）
+    await new Promise((r) => setTimeout(r, 100));
     fs.writeFileSync(path.join(metaDir, 'a.json'), JSON.stringify({ startTime: 1 }));
     const deadline = Date.now() + (HISTORY_WATCH_DEBOUNCE_MS + HISTORY_WATCH_RETRY_MS) * 4;
     while (fired === 0 && Date.now() < deadline) {
