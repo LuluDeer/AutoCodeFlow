@@ -475,9 +475,20 @@ export class UsersService implements OnModuleInit {
   }
 
   /**
-   * SEC-03: persist a fully-loaded user entity (TOTP staging / enable /
-   * disable paths). Caller must have fetched the entity via findById /
-   * findByIdRaw — this is a plain save, no partial-update semantics.
+   * SEC-03: persist a fully-loaded user entity.
+   *
+   * ⚠️ **已无生产调用方（R32-C3 后）—— 新代码不要用它。**
+   *
+   * 它是**整行回写**：TypeORM 的 save 会按 id 重读库中行做逐列 diff，但比的是
+   * 「内存里的陈旧快照 vs 写入时刻库中行」，陈旧值 ≠ 新值 ⇒ 被判成脏列并**按旧值
+   * 写回**。users 表上恰好有四个「各自有原子写点」的安全列（sessionVersion 由
+   * bumpSessionVersion / 事务内 increment、isActive / password / totpSecret 各有
+   * 独立写点），一旦经由本方法回写，并发的登出（令牌复活）、禁用（失效）、改密
+   * （被撤销）会被静默回滚——R32-C3 已实测复现（窗口含 bcrypt(12)，不是窄窗）。
+   *
+   * 局部更新请走 `update({id}, patch)`（见本文件 buildUpdatePatch：编译期钉死
+   * 可写面）。保留本方法只为兼容既有装配与测试替身；真正删除需要同时改
+   * auth.totp-sessions.spec 的 mock 形态，留作单独一轮。
    */
   async saveUser(user: import("./entities/user.entity").User) {
     return this.usersRepository.save(user);
