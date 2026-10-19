@@ -3594,6 +3594,23 @@ export interface paths {
         patch: operations["ProjectsController_update"];
         trace?: never;
     };
+    "/projects/{id}/removal-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 预览删除该项目的后果 */
+        get: operations["ProjectsController_describeRemovalImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/members": {
         parameters: {
             query?: never;
@@ -7366,6 +7383,18 @@ export interface components {
             name?: string;
             /** @description 项目描述 */
             description?: string;
+        };
+        ProjectRemovalImpactResponseDto: {
+            /** @description 项目名称（确认框标题回显） */
+            projectName: string;
+            /** @description 该项目下未软删除的任务数（status != deleted）。这些任务删除后会退回「未分配」视图 */
+            taskCount: number;
+            /** @description 其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分 */
+            activeTaskCount: number;
+            /** @description 项目成员关系行数（删除时由 FK ON DELETE CASCADE 一并清除） */
+            memberCount: number;
+            /** @description 是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE） */
+            deletable: boolean;
         };
         ProjectDeleteResponseDto: {
             /** @description true = 删除/移除生效 */
@@ -13344,6 +13373,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectEntityDto"];
+                };
+            };
+        };
+    };
+    ProjectsController_describeRemovalImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRemovalImpactResponseDto"];
                 };
             };
         };

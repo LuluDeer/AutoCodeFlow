@@ -11017,6 +11017,40 @@
         ]
       }
     },
+    "/projects/{id}/removal-impact": {
+      "get": {
+        "operationId": "ProjectsController_describeRemovalImpact",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectRemovalImpactResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "预览删除该项目的后果",
+        "tags": [
+          "Projects"
+        ],
+        "x-i18n-en": {
+          "summary": "Preview the consequences of deleting this project"
+        }
+      }
+    },
     "/projects/{id}/members": {
       "get": {
         "operationId": "ProjectsController_listMembers",
@@ -21357,6 +21391,43 @@
             "x-i18n-en": "Project description"
           }
         }
+      },
+      "ProjectRemovalImpactResponseDto": {
+        "type": "object",
+        "properties": {
+          "projectName": {
+            "type": "string",
+            "description": "项目名称（确认框标题回显）",
+            "x-i18n-en": "Project name (echoed as the confirmation dialog title)"
+          },
+          "taskCount": {
+            "type": "number",
+            "description": "该项目下未软删除的任务数（status != deleted）。这些任务删除后会退回「未分配」视图",
+            "x-i18n-en": "Number of non-soft-deleted tasks in this project (status != deleted). After deletion these tasks fall back to the \"unassigned\" view"
+          },
+          "activeTaskCount": {
+            "type": "number",
+            "description": "其中处于 active 状态的任务数——删除后仍会被 cron 触发，是真正会持续产生副作用的那部分",
+            "x-i18n-en": "How many of those tasks are active -- they keep being triggered by cron after the deletion, which is the part that keeps producing side effects"
+          },
+          "memberCount": {
+            "type": "number",
+            "description": "项目成员关系行数（删除时由 FK ON DELETE CASCADE 一并清除）",
+            "x-i18n-en": "Number of project member rows (cleared together by FK ON DELETE CASCADE on delete)"
+          },
+          "deletable": {
+            "type": "boolean",
+            "description": "是否可删；默认项目恒为 false（remove 会返回 404 PROJECT_DEFAULT_IMMUTABLE）",
+            "x-i18n-en": "Whether the project is deletable; always false for the Default project (remove returns 404 PROJECT_DEFAULT_IMMUTABLE)"
+          }
+        },
+        "required": [
+          "projectName",
+          "taskCount",
+          "activeTaskCount",
+          "memberCount",
+          "deletable"
+        ]
       },
       "ProjectDeleteResponseDto": {
         "type": "object",
