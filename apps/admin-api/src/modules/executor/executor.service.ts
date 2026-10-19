@@ -2163,8 +2163,40 @@ export class ExecutorService implements OnModuleInit {
       });
     }
     if (!e) {
-      e = await this.repo.findOne({ where: { address } });
-      if (!e) throw new AppError("EXECUTOR_NOT_FOUND");
+      // R32-C4（L1）：地址**不是身份**。ADR-017 §5 明文允许同址多行（pull 模式
+      // 两台机器同网段同 IP 各自成行），此时只有 deviceFingerprint 能消歧。
+      // 认证面（validateTokenByAddress → resolveExecutorRow）对「同址多行 +
+      // 无指纹」早已 fail-closed（返回 null），但**共享令牌兜底**会让这类请求
+      // 仍然认证通过、走到这里。若此处继续用 findOne({ address })（无 ORDER BY
+      // ⇒ 首行获胜），整行 status / runningTaskCount / cpu / lastHeartbeat 就会
+      // 写进**别人那一行**：已下线的旧行被点亮成 ONLINE（派发闸门随后按它的空
+      // 槽位派任务），或另一台机器的在跑读数被覆盖（两台互写状态）。
+      // 故与认证面同策 fail-closed：拒绝写库，让这台执行器重注册（协议 v3 带
+      // 指纹）或配唯一的 EXECUTOR_ADDRESS_PUBLIC —— 宁可让它显式失败被运维看到，
+      // 也不要让两台互相覆盖状态。
+      // 单行地址（引入本改动前的全部现实形态）行为逐字节不变：先按地址取行，
+      // 仅当**同址还存在别的行**时拒绝（bounded take: 2，只要「是否不止一行」）。
+      const resolved = await this.repo.findOne({ where: { address } });
+      if (!resolved) throw new AppError("EXECUTOR_NOT_FOUND");
+      // select 收窄到 id：本探针只需要「是否还有别的行」，不把 ±10000 条的
+      // runningExecutionIds 等重列拉回来（心跳是 30s 高频面）。
+      const sameAddress = await this.repo.find({
+        where: { address },
+        take: 2,
+        select: { id: true },
+      });
+      if (sameAddress.some((r) => r.id !== resolved.id)) {
+        this.logger.warn(
+          `Heartbeat from "${address}" refused (409): ${sameAddress.length}+ ` +
+            `executor rows share this address and the request carried no matching ` +
+            `deviceFingerprint, so the row cannot be identified. Writing to the ` +
+            `first row would overwrite another install's state (ADR-017 §5). ` +
+            `Upgrade the executor to protocol v3 (reports deviceFingerprint) or ` +
+            `give it a unique EXECUTOR_ADDRESS_PUBLIC.`,
+        );
+        throw new AppError("EXECUTOR_ADDRESS_TAKEN", { address });
+      }
+      e = resolved;
     }
     // 重启恢复按**漂移前**地址找 RUNNING 执行记录（`task_executions.
     // executorAddress` 记的是派发当时的地址）。
