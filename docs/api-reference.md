@@ -1031,9 +1031,22 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 |------|------|:--------:|------|
 | GET | `/projects` | 是 | 项目列表（按 createdAt ASC；**AUTH-02 后续读面过滤**：ADMIN 全量，普通用户仅「默认项目 ∪ 自己是成员的项目」；每行附 `myRole`——当前主体在该项目的角色，非成员 null） |
 | GET | `/projects/:id` | 是 | 项目详情（详情不过滤，读面收紧仅限列表，见 ADR-013 §6） |
+| GET | `/projects/:id/removal-impact` | 是（ADMIN） | 删除影响面预览（PROJECT-IMPACT-01，见下） |
 | POST | `/projects` | 是（ADMIN） | 创建项目 |
 | PATCH | `/projects/:id` | 是（ADMIN） | 更新项目（默认项目仅允许改 description） |
 | DELETE | `/projects/:id` | 是（ADMIN） | 删除项目（默认项目被拦截，404） |
+
+**删除影响面预览（PROJECT-IMPACT-01）**
+
+`GET /projects/:id/removal-impact` 返回 `{projectName, taskCount, activeTaskCount, memberCount, deletable}`，供删除确认框如实告知后果。ADMIN-only，与 `DELETE /projects/:id` 同权限面。
+
+- `taskCount` 只数**未软删除**（`status != deleted`）的任务——软删行对用户不可见，计入会报出界面上数不出来的数字；
+- `activeTaskCount` 是其中**仍会被 cron 触发**的部分；
+- `deletable` 对默认项目恒为 `false`（真正的拦截仍在 `remove`，此处仅供前端据实渲染）。
+
+为什么要这个端点：项目删除走 FK `ON DELETE SET NULL`，任务**不会消失**、cron **照旧触发**，但 `projectId` 置空后会被权限层按默认项目判定（`ProjectAccessService.resolveRole` 的 `projectId ?? DEFAULT_PROJECT_ID`），原本靠「项目 editor」身份才能改的任务对非 ADMIN 变成「看得见但改不动」。这是界面上完全看不出来的权限静默收缩，只能在删除前告知。
+
+注意**没有** `applicationCount`：applications / executors / executor_packages 三表虽有 `projectId` 列与外键，但对应 DTO 均无该字段，运行期无任何写入口能赋值（列恒 `NULL`），删除项目不影响任何应用。
 
 **POST/PATCH 请求体**
 
@@ -1067,6 +1080,17 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | 角色查询 DB 抖动 | fail-open 视为非成员 + `warn`（不 500、不误放行） |
 
 > 已知缺口（需产品拍板后方可收紧）：**非成员用户仍可 trigger/pause/resume 任意任务**——这是 AUTH-02 之前就存在的宽松语义，单方面收紧属破坏性变更，详见 ADR-013。
+
+**项目域错误码**（LANG-ERR-01，前端按 `errorCode` 渲染本地化文案）
+
+| 码 | HTTP | 场景 |
+|---|:---:|---|
+| `PROJECT_NOT_FOUND` | 404 | 项目 id 不存在 |
+| `PROJECT_DEFAULT_IMMUTABLE` | 404 | 试图改名/删除默认项目 |
+| `PROJECT_NAME_EXISTS` | 409 | 新建/改名撞 `UQ_projects_name` 唯一索引（**PROJECT-DUPNAME-01**，此前落到笼统的 `RESOURCE_EXISTS`） |
+| `PROJECT_NOT_MEMBER` | 404 | 改角色/移除成员时该成员行不存在（`removeMember` 与 `updateMember` 同口径，不再"删 0 行 + 200"） |
+| `PROJECT_INVALID_ROLE` | 400 | 角色不在 viewer/editor/admin 内 |
+| `PROJECT_ACCESS_DENIED` | 403 | 非成员读取某项目成员列表 |
 
 ---
 
