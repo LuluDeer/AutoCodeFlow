@@ -184,11 +184,24 @@ export function inject(doc, map, { apply = true } = {}) {
   const missing = new Map();
   let injected = 0;
   let already = 0;
+  // 三类计数分开记（R31-D2 复查发现的口径缺陷）：total 把「空描述」也算成
+  // 「可翻译节点」，于是输出「1614 个可翻译节点全部有英文」——其中 99 个根本没有
+  // 文本可翻。报数口径夸大 = 让读者以为覆盖面比实际更大，是门禁最不该有的形态。
+  let empty = 0;
+  let alreadyEnglish = 0;
+  let translatable = 0;
   for (const t of targets) {
     const text = t.text;
-    if (typeof text !== "string" || !text.trim()) continue;
+    if (typeof text !== "string" || !text.trim()) {
+      empty++;
+      continue;
+    }
     // 已经是英文（无 CJK）→ 无需双语：它就是英文读者的那份
-    if (!CJK.test(text)) continue;
+    if (!CJK.test(text)) {
+      alreadyEnglish++;
+      continue;
+    }
+    translatable++;
     const en = map[text];
     if (typeof en !== "string" || !en.trim()) {
       if (!missing.has(text)) missing.set(text, []);
@@ -207,11 +220,45 @@ export function inject(doc, map, { apply = true } = {}) {
       injected++;
     }
   }
-  return { injected, already, missing, total: targets.length };
+  return {
+    injected,
+    already,
+    missing,
+    total: targets.length,
+    translatable,
+    empty,
+    alreadyEnglish,
+  };
 }
 
 function node_has(node, key) {
   return Object.prototype.hasOwnProperty.call(node, key);
+}
+
+/**
+ * **收集面下界（只增不减的地板）**。
+ *
+ * 为什么需要它：本闸此前唯一的判据是「收集到的中文节点是否都有英文」，而
+ * **收集不到 = 永远绿**。R31-D2 就此实测到真实缺口——内联对象的嵌套 properties
+ * 与 requestBody 内联 schema 从未进收集面，4 个节点有中文、映射表里也有英文，
+ * 却始终是中文单语，而门禁一路绿。换句话说：这道闸只能防「有中文没英文」，
+ * 防不住「压根没被看见」。
+ *
+ * 地板把「悄悄少收一批节点」从**静默单语化**变成**CI 红**：任何重构如果让收集面
+ * 收缩到 1500 个以下，先红再谈。上探方式：收集面扩大后把本常量一起调高（棘轮）。
+ */
+const MIN_TRANSLATABLE_NODES = 1500;
+
+/**
+ * 映射表里**在文档中找不到**的条目（疑似死条目）。只报告、不失败：
+ * 同一条文可能被 docs-site 或历史版本消费，贸然删除会让别人的构建缺英文。
+ */
+function deadMapEntries(doc, map) {
+  const seen = new Set();
+  for (const t of collectTargets(doc)) {
+    if (typeof t.text === "string" && t.text.trim()) seen.add(t.text);
+  }
+  return Object.keys(map).filter((zh) => !seen.has(zh));
 }
 
 // ───────────────────────── CLI ─────────────────────────
@@ -242,15 +289,41 @@ function run() {
     return 1;
   }
 
+  // 收集面棘轮：先于「注入成功」输出——收集面收缩时这里必须比任何"✔"更早红。
+  if (res.translatable < MIN_TRANSLATABLE_NODES) {
+    console.error(
+      `✘ API-I18N 收集面收缩：只收集到 ${res.translatable} 个中文可翻译节点，` +
+        `低于地板 ${MIN_TRANSLATABLE_NODES}。`,
+    );
+    console.error(
+      `  历史上这类收缩不会报错，只会让相应文档**静默变回中文单语**（R31-D2 实测：` +
+        `内联对象的嵌套 properties 与 requestBody 内联 schema 从未进收集面，4 个节点因此永久单语）。`,
+    );
+    console.error(
+      `  处置：检查 collectTargets / collectInlineProps 是否漏掉某个子树；确属合理收缩才调低该常量，并在提交信息里写清理由。`,
+    );
+    return 1;
+  }
+
+  const dead = argv.includes("--report") ? deadMapEntries(doc, map) : [];
+
   if (!check) {
     fs.writeFileSync(OPENAPI, JSON.stringify(doc, null, 2) + "\n", "utf8");
     console.log(
-      `✔ API-I18N 已注入 ${res.injected} 处 x-i18n-en（覆盖 ${res.total} 个可翻译节点）。`,
+      `✔ API-I18N 已注入 ${res.injected} 处 x-i18n-en（覆盖 ${res.translatable} 个中文可翻译节点；` +
+        `另有 ${res.alreadyEnglish} 个纯英文、${res.empty} 个空描述不计入）。`,
     );
   } else {
     console.log(
-      `✔ API-I18N 检查通过：${res.total} 个可翻译节点全部有英文（映射表 ${Object.keys(map).length} 条）。`,
+      `✔ API-I18N 检查通过：${res.translatable} 个中文可翻译节点全部有英文` +
+        `（纯英文 ${res.alreadyEnglish} 个、空描述 ${res.empty} 个不计入；映射表 ${Object.keys(map).length} 条` +
+        `${dead.length ? `，其中 ${dead.length} 条在本文档中未出现（疑似死条目，见 --report）` : ""}）。`,
     );
+  }
+  if (dead.length) {
+    console.log("\n映射表中未在本文档出现的条目（仅供参考，不据此删除）：");
+    for (const zh of dead.slice(0, 30)) console.log(`  · ${zh.slice(0, 80)}`);
+    if (dead.length > 30) console.log(`  … 其余 ${dead.length - 30} 条`);
   }
   return 0;
 }
