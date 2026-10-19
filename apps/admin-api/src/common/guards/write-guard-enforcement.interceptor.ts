@@ -2,12 +2,12 @@ import {
   CallHandler,
   ExecutionContext,
   Injectable,
-  InternalServerErrorException,
   Logger,
   NestInterceptor,
 } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import { Observable, tap } from "rxjs";
+import { AppError } from "../errors/app-error";
 import {
   WRITE_GUARD_KEY,
   WriteGuardMetadata,
@@ -79,9 +79,10 @@ export class WriteGuardEnforcementInterceptor implements NestInterceptor {
               ` 但本请求未执行对应属主/项目角色校验——拒绝该写操作。` +
               `已落证据=[${snapshotOwnershipAssertions().join(", ")}]`,
           );
-          throw new InternalServerErrorException(
-            "写端点缺少授权断言（服务端配置错误）",
-          );
+          // LANG-ERR-01 收口：文案交给码表（前端按 errorCode 翻译），
+          // 服务端只抛稳定码。状态码/文案与旧实现逐字一致（500 +
+          // 「写端点缺少授权断言（服务端配置错误）」），行为零变化。
+          throw new AppError("WRITE_GUARD_ASSERTION_MISSING");
         },
       }),
     );

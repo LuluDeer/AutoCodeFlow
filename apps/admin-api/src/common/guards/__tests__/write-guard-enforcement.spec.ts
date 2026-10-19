@@ -157,6 +157,11 @@ describe("A2-B 写面授权强制（WriteGuardEnforcementInterceptor）", () => 
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("ProbeController.ownedUnchecked"),
     );
+    // LANG-ERR-01 收口：这个 500 也必须带**稳定码**，否则前端只能把服务端
+    // 中文兜底文案直接渲染给英文用户（正是本机制要消灭的形态）。裸
+    // InternalServerErrorException 的响应体没有 errorCode，故这条断言在
+    // 还原成旧实现时必红。
+    expect(res.body.errorCode).toBe("WRITE_GUARD_ASSERTION_MISSING");
   });
 
   it("落证资源与声明 resource 不符 → 500（校验了别的东西不算数）", async () => {
