@@ -5,9 +5,22 @@
 
 ### Bug Fixes
 
-* **deps:** 一次性清偿 38 条 Dependabot 告警（27 修复 + 11 登记豁免） ([d7e5f29](https://github.com/LuluDeer/AutoCodeFlow/commit/d7e5f292759a2b40ce8e2d1aef4f0fd172c8c203))
-* **deps:** 一次性清偿 38 条 Dependabot 告警（27 修复 + 11 豁免） ([3e59683](https://github.com/LuluDeer/AutoCodeFlow/commit/3e59683872aa29bea1446eabb62962ab0ff7cc39))
-* **deps:** 依赖告警清偿合入 main（27 修复 + 11 豁免） ([3adfe01](https://github.com/LuluDeer/AutoCodeFlow/commit/3adfe014a253c1d3004047ef749db65cf22ea20a))
+* **deps:** 一次性清偿 38 条 Dependabot 告警——27 条修复（js-yaml / tmp / dompurify / uuid / brace-expansion / glob / undici / vite / esbuild / anyio / pytest）+ 11 条登记豁免（extract-zip / http-cache-semantics / sprintf-js / stream-json，均为上游无修复版） ([d7e5f29](https://github.com/LuluDeer/AutoCodeFlow/commit/d7e5f292759a2b40ce8e2d1aef4f0fd172c8c203))
+* **docs-site:** vitepress 1.6.4 → 2.0.0-alpha.20，vite 5 → 8.3.4，esbuild 告警归零 ([d7e5f29](https://github.com/LuluDeer/AutoCodeFlow/commit/d7e5f292759a2b40ce8e2d1aef4f0fd172c8c203))
+* **desktop:** 修 history-watcher 真实 fs.watch 冒烟的测试竞态（macOS runner 偶发） ([494ff6a](https://github.com/LuluDeer/AutoCodeFlow/commit/494ff6a9))
+
+### ⚠️ Breaking Changes
+
+* **python-sdk:** `autoflow-sdk` 的 `requires-python` 由 `>=3.9` 收紧到 `>=3.10`。
+  anyio 的修复版（4.14.2+）只支持 Python ≥3.10，而 3.9 分支解析到含 **critical** 漏洞
+  且无修复版的 4.12.1。Python 3.9 用户需先升级解释器。
+
+<!--
+本节经人工校正（release-please 生成时把同一条修复按 develop commit / merge commit /
+main merge 列了三次）。这是本仓已记录的已知偏差（见 1.11.0 / 1.10.1 小节注释与
+.github/workflows/release-please.yml 的 v1.3.0 注记），根因是「非规范 merge 标题 +
+develop 直推 commit」与 release-please 的遍历交互。此处按 1.11.0 的同一做法人工合并。
+-->
 
 ## [1.12.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.11.0...v1.12.0) (2026-10-18)
 
