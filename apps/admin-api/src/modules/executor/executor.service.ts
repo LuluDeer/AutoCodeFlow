@@ -1529,6 +1529,50 @@ export class ExecutorService implements OnModuleInit {
         where: { address: data.address },
       });
       if (byAddress) {
+        // R32-C5（L1，R32-C4 同族）：地址**不是身份**。ADR-017 §5 允许同址多行
+        // （pull 双机同网段同 IP 各自成行 / 存量 legacy 行 + 已升级行 / 迁移前
+        // NULL 行），此时只有 deviceFingerprint 能消歧。本次上报**未带指纹**时，
+        // 下面的 findOne({ address })（无 ORDER BY ⇒ 首行获胜）就是在猜：
+        //  - 首行可能是**别人的行** → 复用并就地改写它的 appName/executorVersion/
+        //    capabilities/interpreters/executorStartupId，status 点亮成 ONLINE；
+        //  - registerExecutor 随后按同一地址取 prior、判 didRestart 再
+        //    rotateToken(executor.id) —— **别人那行的 per-executor 令牌被吊销**，
+        //    而本该新建行的这一方拿到的是「绑在别人行上」的新令牌。
+        // 落点只由 DB 行序决定、与身份无关（实测翻转行序，受害者从 v3 行换成
+        // legacy 行）。故与认证面 resolveExecutorRow、心跳面（R32-C4）**同策
+        // fail-closed**：拒绝（409，同码），让执行器升级到协议 v3（上报指纹）或
+        // 配唯一的 EXECUTOR_ADDRESS_PUBLIC —— 宁可显式失败被运维看到，也不要
+        // 两行互相覆盖身份。
+        // pull 为何不「照常新建行」：无指纹时创建分支落下的兜底键恒为
+        // legacy:{address}，而 deviceFingerprint 列**不唯一**（地址唯一索引是
+        // partial：WHERE dispatchMode='push'），所以 pull 下真能建出第二行——
+        // 但那一行**永远无法心跳**：心跳面对「同址多行 + 无指纹」恒 409
+        // （R32-C4），且每次重注册都会再造一行（同址行数随注册次数膨胀，
+        // 「首行获胜」下派发/历史归属更乱）。即「注册成功、随后永久 409」的死行，
+        // 比在注册面显式失败更难被运维发现。
+        // 单行地址（引入本改动前的全部现实形态）行为逐字节不变：bounded take:2
+        // 只回答「是否不止一行」，不把同址大列表拉回来。
+        if (incomingFingerprint === null) {
+          const sameAddress = await this.repo.find({
+            where: { address: data.address },
+            take: 2,
+            select: { id: true },
+          });
+          if (sameAddress.some((row) => row.id !== byAddress.id)) {
+            this.logger.warn(
+              `Registration from "${data.address}" refused (409): ${sameAddress.length}+ ` +
+                `executor rows share this address and the request carried no ` +
+                `deviceFingerprint, so the row cannot be identified. Reusing the ` +
+                `first row would overwrite another install's identity/metadata and ` +
+                `revoke its per-executor token (ADR-017 §5). Upgrade the executor to ` +
+                `protocol v3 (reports deviceFingerprint) or give it a unique ` +
+                `EXECUTOR_ADDRESS_PUBLIC.`,
+            );
+            throw new AppError("EXECUTOR_ADDRESS_TAKEN", {
+              address: data.address,
+            });
+          }
+        }
         // 同地址 + 不同真实指纹 = 该地址被**另一份安装**占用。
         // legacy 键（存量未升级行）与 NULL（迁移前）恒不算占用——那是存量行被
         // 同机指纹**接管**的升级路径，不是冲突。
