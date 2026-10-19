@@ -497,8 +497,16 @@ export class OidcService {
           );
           throw new AppError("OIDC_AUTOBIND_DENIED");
         }
+        // R32-A4: 列级 UPDATE——绑定只碰 oidcSub 一列。此前是
+        // usersRepo.save(byUsername)：把进入方法时读到的**整行快照**回写
+        // （TypeORM save 无脏检查），若此刻另一条路径（登出 bump sessionVersion
+        // / 管理员改密 / 禁用账号）刚落了库，这次 SSO 登录会把那些变更静默
+        // 回滚——与 auth.service 的 TOTP 写入同款缺陷，只是入口不同。
         byUsername.oidcSub = profile.sub;
-        await this.usersRepo.save(byUsername);
+        await this.usersRepo.update(
+          { id: byUsername.id },
+          { oidcSub: profile.sub },
+        );
       } else {
         // 同 username 已绑定其他 sub：声明冲突，拒绝而非静默换绑
         throw new AppError("OIDC_SUB_ALREADY_BOUND");

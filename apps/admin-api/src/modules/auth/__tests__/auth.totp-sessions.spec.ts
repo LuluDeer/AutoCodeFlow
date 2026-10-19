@@ -6,6 +6,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { AuthService } from "../auth.service";
 import { UsersService } from "../../users/users.service";
 import { RefreshToken } from "../entities/refresh-token.entity";
+import { User } from "../../users/entities/user.entity";
 import bcrypt from "bcrypt";
 import { hotp } from "../totp.util";
 
@@ -53,6 +54,8 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
   let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
   let refreshTokenRepo: any;
+  // R32-A4: TOTP 状态写入改走 users 表的列级 UPDATE（auth.service 注入 User 仓储）
+  let userRepo: any;
 
   const makeUser = (over: Record<string, any> = {}) => ({
     ...baseUser,
@@ -92,6 +95,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       find: jest.fn().mockResolvedValue([]),
       createQueryBuilder: jest.fn(),
     };
+    userRepo = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -103,6 +107,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
           provide: getRepositoryToken(RefreshToken),
           useValue: refreshTokenRepo,
         },
+        { provide: getRepositoryToken(User), useValue: userRepo },
       ],
     }).compile();
     service = module.get(AuthService);
@@ -366,12 +371,14 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       expect(result.secret).toMatch(/^[A-Z2-7]{32}$/);
       expect(result.otpauthUrl).toContain("otpauth://totp/AutoCodeFlow:alice");
       expect(result.otpauthUrl).toContain(`secret=${result.secret}`);
-      expect(usersService.saveUser).toHaveBeenCalledWith(
-        expect.objectContaining({ totpSecret: result.secret }),
+      // R32-A4: 列级写入——只碰 totpSecret，不整行回写
+      expect(userRepo.update).toHaveBeenCalledWith(
+        { id: 1 },
+        { totpSecret: result.secret },
       );
       // enabled flag untouched by setup
-      const saved = usersService.saveUser.mock.calls[0][0];
-      expect(saved.totpEnabled).toBe(false);
+      const patch = userRepo.update.mock.calls[0][1];
+      expect(Object.keys(patch)).toEqual(["totpSecret"]);
     });
 
     it("setup refuses when TOTP is already enabled", async () => {
@@ -385,11 +392,16 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       // stage
       usersService.findById.mockResolvedValue(makeUser() as any);
       const { secret } = await service.totpSetup(1);
+      // R32-A4: setup 改走列级 UPDATE（不再就地改实体），桩需要模拟「已落库」
+      usersService.findById.mockResolvedValue(
+        makeUser({ totpSecret: secret }) as any,
+      );
       // enable with correct code derived from the staged secret
       const code = hotp(secret, CURRENT_COUNTER);
       await service.totpEnable(1, code);
-      expect(usersService.saveUser).toHaveBeenLastCalledWith(
-        expect.objectContaining({ totpEnabled: true }),
+      expect(userRepo.update).toHaveBeenLastCalledWith(
+        { id: 1 },
+        { totpEnabled: true },
       );
 
       // login now demands the second factor
@@ -415,7 +427,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       await expect(service.totpEnable(1, badCode())).rejects.toThrow(
         "TOTP 验证码错误",
       );
-      expect(usersService.saveUser).not.toHaveBeenCalled();
+      expect(userRepo.update).not.toHaveBeenCalled();
     });
 
     it("enable without a staged secret is rejected", async () => {
@@ -431,9 +443,11 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       );
       const result = await service.totpDisable(1, { password: "pw" });
       expect(result).toEqual({ disabled: true });
-      const saved = usersService.saveUser.mock.calls[0][0];
-      expect(saved.totpEnabled).toBe(false);
-      expect(saved.totpSecret).toBeNull();
+      // R32-A4: 两列同时清空——单条列级 UPDATE，不整行回写
+      expect(userRepo.update).toHaveBeenCalledWith(
+        { id: 1 },
+        { totpEnabled: false, totpSecret: null },
+      );
     });
 
     it("disable with a valid TOTP code works (password optional)", async () => {
@@ -452,13 +466,101 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       await expect(
         service.totpDisable(1, { password: "wrong", code: badCode() }),
       ).rejects.toThrow(UnauthorizedException);
-      expect(usersService.saveUser).not.toHaveBeenCalled();
+      expect(userRepo.update).not.toHaveBeenCalled();
     });
 
     it("disable on a non-TOTP account is an idempotent no-op", async () => {
       usersService.findByIdRaw.mockResolvedValue(makeUser() as any);
       const result = await service.totpDisable(1, {});
       expect(result).toEqual({ disabled: false });
+      expect(userRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── R32-A4: TOTP 状态写入的列级语义（整行回写 → 并发状态回滚）──────────
+  /**
+   * 缺陷现场（R32-A4 审计）：setup / enable / disable 此前都走
+   * `usersService.saveUser(user)`——user 是方法开头读到的**整行快照**。
+   * TypeORM 的 `save` 没有脏检查：实体上带值的列（password / isActive /
+   * role / sessionVersion / loginFailCount / lockedUntil / lastTotpCounter）
+   * 会被原样写回。于是「读快照 → 另一条路径（logout bump sessionVersion /
+   * 管理员改密 / 禁用账号）落库 → 本行整行回写」会把那些变更**静默回滚**：
+   *   · sessionVersion 回退 ⇒ 已吊销的 access token 重新可用（ver 又匹配）；
+   *   · isActive 回退 ⇒ 管理员刚做的禁用被撤销（账号逃逸隔离）；
+   *   · password 回退 ⇒ 刚改的密码被旧哈希覆盖。
+   * 修复：只写 totpSecret / totpEnabled 两列（列级 UPDATE）。
+   */
+  describe("TOTP 状态写入的列级语义（R32-A4）", () => {
+    let dbRow: Record<string, any>;
+    /**
+     * 模拟「读快照 → 并发写入落库」：返回快照后立刻把库里的值改掉，模拟
+     * 另一条路径（logout / 改密 / 禁用）在读与写之间完成。
+     */
+    const snapshotting = () =>
+      jest.fn(async () => {
+        const snapshot = { ...dbRow };
+        dbRow.sessionVersion = snapshot.sessionVersion + 1;
+        dbRow.password = "hash-rotated";
+        dbRow.isActive = false;
+        return snapshot as unknown as User;
+      });
+
+    beforeEach(() => {
+      dbRow = {
+        id: 1,
+        username: "alice",
+        password: "hash-original",
+        role: "user",
+        isActive: true,
+        loginFailCount: 0,
+        lockedUntil: null,
+        totpSecret: FIXED_SECRET,
+        totpEnabled: true,
+        sessionVersion: 4,
+        lastTotpCounter: null,
+      };
+      usersService.findByIdRaw.mockImplementation(snapshotting());
+      usersService.findById.mockImplementation(snapshotting());
+      // TypeORM save 的等价物：整行合并回库
+      usersService.saveUser.mockImplementation(async (u: any) => {
+        Object.assign(dbRow, u);
+        return u;
+      });
+      // 列级 UPDATE 的等价物：只合并 patch 里出现的列
+      userRepo.update.mockImplementation(async (_criteria: any, patch: any) => {
+        Object.assign(dbRow, patch);
+        return { affected: 1 };
+      });
+    });
+
+    it("disable 不得回滚并发的 sessionVersion / 密码 / 禁用状态", async () => {
+      await service.totpDisable(1, { password: "pw" });
+
+      expect(dbRow.sessionVersion).toBe(5); // 并发 bump 未被回滚
+      expect(dbRow.password).toBe("hash-rotated"); // 改密未被回滚
+      expect(dbRow.isActive).toBe(false); // 禁用未被回滚
+      // 目标列仍然生效
+      expect(dbRow.totpEnabled).toBe(false);
+      expect(dbRow.totpSecret).toBeNull();
+      // 绝不再走整行回写（回归即红）
+      expect(usersService.saveUser).not.toHaveBeenCalled();
+    });
+
+    it("setup 只写 totpSecret 一列（会话版本等其它列原样保留）", async () => {
+      dbRow.totpEnabled = false;
+      dbRow.totpSecret = null;
+
+      const { secret } = await service.totpSetup(1);
+
+      expect(userRepo.update).toHaveBeenCalledWith(
+        { id: 1 },
+        { totpSecret: secret },
+      );
+      expect(Object.keys(userRepo.update.mock.calls[0][1])).toEqual([
+        "totpSecret",
+      ]);
+      expect(dbRow.sessionVersion).toBe(5);
+      expect(dbRow.isActive).toBe(false);
       expect(usersService.saveUser).not.toHaveBeenCalled();
     });
   });

@@ -6,6 +6,7 @@ import { ApiKeysService } from "../api-keys.service";
 import { AuditService } from "../../audit/audit.service";
 import { ApiKey } from "../entities/api-key.entity";
 import { hashApiKey } from "../api-key.util";
+import { UsersService } from "../../users/users.service";
 
 /**
  * AUTH-03: CRUD 服务专项——明文仅创建响应回显一次、keyHash 持久化、
@@ -24,19 +25,28 @@ const repoMock = () => ({
 
 const auditMock = () => ({ log: jest.fn(async () => undefined) });
 
+// R32-A4: 认证面复核属主账号状态（存在 + 未禁用）——默认给出活跃属主，
+// 「禁用/删除」用例单独覆写。
+const usersMock = () => ({
+  findByIdOrNull: jest.fn(async () => ({ id: 42, isActive: true })),
+});
+
 describe("AUTH-03 ApiKeysService", () => {
   let svc: ApiKeysService;
   let repo: ReturnType<typeof repoMock>;
   let audit: ReturnType<typeof auditMock>;
+  let users: ReturnType<typeof usersMock>;
 
   beforeEach(async () => {
     repo = repoMock();
     audit = auditMock();
+    users = usersMock();
     const moduleRef = await Test.createTestingModule({
       providers: [
         ApiKeysService,
         { provide: getRepositoryToken(ApiKey), useValue: repo },
         { provide: AuditService, useValue: audit },
+        { provide: UsersService, useValue: users },
         // A-9: ConfigService 缺席（@Optional）→ maxActiveKeysPerUser 回落常量
       ],
     }).compile();
@@ -122,6 +132,7 @@ describe("AUTH-03 ApiKeysService", () => {
           ApiKeysService,
           { provide: getRepositoryToken(ApiKey), useValue: repo },
           { provide: AuditService, useValue: audit },
+          { provide: UsersService, useValue: users },
           { provide: ConfigService, useValue: configMock },
         ],
       }).compile();
@@ -252,6 +263,122 @@ describe("AUTH-03 ApiKeysService", () => {
       expect((await svc.authenticate("acf_x")).failure).toBe("expired");
     });
 
+    // R32-A4: 活性判定的第三条腿——属主账号状态。此前只看 key 自身两列，
+    // 禁用/删除用户对已签发的 API Key 完全无效（长效旁路）。
+    describe("属主账号状态（R32-A4）", () => {
+      const activeRow = () => ({
+        id: 5,
+        userId: 42,
+        name: "ci-key",
+        keyPrefix: "acf_aaaa",
+        keyHash: hashApiKey("acf_k"),
+        scope: "readonly",
+        revokedAt: null,
+        expiresAt: null,
+        lastUsedAt: null,
+      });
+
+      it("属主被禁用 → 不认证（failure=owner_inactive），且不刷新 lastUsedAt", async () => {
+        repo.findOne.mockResolvedValueOnce(activeRow());
+        users.findByIdOrNull.mockResolvedValueOnce({ id: 42, isActive: false });
+
+        const { apiKey, failure, row } = await svc.authenticate("acf_k");
+
+        expect(apiKey).toBeNull();
+        expect(failure).toBe("owner_inactive");
+        // 命中的行要带出来（供审计定位到具体 key）
+        expect(row?.id).toBe(5);
+        expect(repo.update).not.toHaveBeenCalled();
+      });
+
+      it("属主已被删除（findByIdOrNull → null）→ 同样拒绝", async () => {
+        repo.findOne.mockResolvedValueOnce(activeRow());
+        users.findByIdOrNull.mockResolvedValueOnce(null);
+
+        expect((await svc.authenticate("acf_k")).failure).toBe(
+          "owner_inactive",
+        );
+      });
+
+      it("每次请求都现读属主（无缓存）：先放行，禁用后同一 key 立刻失效", async () => {
+        repo.findOne.mockResolvedValue(activeRow());
+        users.findByIdOrNull
+          .mockResolvedValueOnce({ id: 42, isActive: true })
+          .mockResolvedValueOnce({ id: 42, isActive: false });
+
+        expect((await svc.authenticate("acf_k")).apiKey?.id).toBe(5);
+        expect((await svc.authenticate("acf_k")).apiKey).toBeNull();
+        expect(users.findByIdOrNull).toHaveBeenCalledTimes(2);
+      });
+
+      it("属主活跃 → 正常认证（回归）", async () => {
+        repo.findOne.mockResolvedValueOnce(activeRow());
+        const { apiKey, failure } = await svc.authenticate("acf_k");
+        expect(failure).toBeUndefined();
+        expect(apiKey?.id).toBe(5);
+      });
+    });
+
+    // R32-A4（审计轴 4「作用域与过期是否在每次请求生效（含缓存）、撤销是否
+    // 即时」）：认证面**没有**任何缓存层——每次 authenticate 现查库。本例钉住
+    // 它与「吊销即时生效」之间的因果关系：同一个 service 实例的两次调用之间
+    // 把行改成 revokedAt 已置位，第二次必须立刻失败（有缓存即会放过）。
+    it("无缓存：两次认证之间行被吊销 → 第二次立即失败（吊销即时生效）", async () => {
+      const row = {
+        id: 5,
+        userId: 42,
+        keyHash: hashApiKey("acf_k"),
+        scope: "readonly",
+        revokedAt: null,
+        expiresAt: null,
+        lastUsedAt: new Date(),
+      };
+      repo.findOne
+        .mockResolvedValueOnce(row)
+        .mockResolvedValueOnce({ ...row, revokedAt: new Date() });
+
+      expect((await svc.authenticate("acf_k")).apiKey?.id).toBe(5);
+      expect((await svc.authenticate("acf_k")).failure).toBe("revoked");
+      expect(repo.findOne).toHaveBeenCalledTimes(2);
+    });
+
+    // R32-A4（审计轴 4「key 前缀碰撞与查找是否唯一」）：查找键只有 sha256
+    // 全哈希（唯一索引），keyPrefix（acf_ + 4 hex ≈ 16 bit）纯粹是展示/审计
+    // 字段。两把前缀相同的 key 必须各自命中自己的行——若有人把查找改成按
+    // 前缀（"反正前缀也唯一"），本例如红。
+    it("前缀碰撞不影响查找：命中只由全哈希决定", async () => {
+      const keyA = {
+        id: 1,
+        userId: 42,
+        keyPrefix: "acf_aaaa",
+        keyHash: hashApiKey("acf_" + "a".repeat(64)),
+        scope: "readonly",
+        revokedAt: null,
+        expiresAt: null,
+        lastUsedAt: new Date(),
+      };
+      const keyB = {
+        ...keyA,
+        id: 2,
+        keyHash: hashApiKey("acf_" + "b".repeat(64)),
+      };
+      repo.findOne.mockResolvedValueOnce(keyA).mockResolvedValueOnce(keyB);
+
+      expect((await svc.authenticate("acf_" + "a".repeat(64))).apiKey?.id).toBe(
+        1,
+      );
+      expect((await svc.authenticate("acf_" + "b".repeat(64))).apiKey?.id).toBe(
+        2,
+      );
+      // 两次查询的 where 都是完整哈希，从未用 keyPrefix 定位
+      const wheres = repo.findOne.mock.calls.map(
+        (c: any[]) => c[0].where,
+      ) as Array<Record<string, unknown>>;
+      expect(wheres[0].keyHash).toBe(hashApiKey("acf_" + "a".repeat(64)));
+      expect(wheres[1].keyHash).toBe(hashApiKey("acf_" + "b".repeat(64)));
+      expect(wheres[0].keyPrefix).toBeUndefined();
+    });
+
     it("lastUsedAt 写库失败不影响认证结果", async () => {
       repo.findOne.mockResolvedValueOnce({
         id: 5,
@@ -266,12 +393,42 @@ describe("AUTH-03 ApiKeysService", () => {
   });
 
   describe("auditAuthFailure", () => {
-    it("写 auth_failure 审计（result=failure）", async () => {
-      await svc.auditAuthFailure("acf_dead", "revoked", "1.2.3.4");
+    it("未命中（unknown）→ 审计退化为前缀（库里没有行，只能记前缀）", async () => {
+      await svc.auditAuthFailure("acf_dead", "unknown", "1.2.3.4");
       expect(audit.log).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "apikey.auth_failure",
           result: "failure",
+          resourceId: "acf_dead",
+          detail: expect.objectContaining({ keyPrefix: "acf_dead" }),
+        }),
+      );
+    });
+
+    // R32-A4: 命中行时必须指向**具体 key**——前缀只有 16 bit，既不唯一也
+    // 反查不到属主，安全排查（"吊销后还在用的那把是谁的"）就断了。
+    it("命中行（revoked/expired/owner_inactive）→ 审计记录行 id + 属主", async () => {
+      const hit = {
+        id: 9,
+        userId: 42,
+        name: "ci-key",
+        keyPrefix: "acf_dead",
+        scope: "readonly",
+      } as ApiKey;
+      await svc.auditAuthFailure("acf_dead", "revoked", "1.2.3.4", hit);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "apikey.auth_failure",
+          result: "failure",
+          resourceId: "9",
+          userId: 42,
+          detail: expect.objectContaining({
+            keyPrefix: "acf_dead",
+            failure: "revoked",
+            apiKeyId: 9,
+            name: "ci-key",
+            ownerId: 42,
+          }),
         }),
       );
     });

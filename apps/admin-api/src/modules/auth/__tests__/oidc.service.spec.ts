@@ -67,6 +67,8 @@ function makeService(overrides: Record<string, unknown> = {}) {
     findOne: jest.fn().mockResolvedValue(null),
     create: jest.fn((x) => ({ id: 42, isActive: true, ...x })),
     save: jest.fn(async (x) => x),
+    // R32-A4: SSO 绑定改走列级 UPDATE（只写 oidcSub）
+    update: jest.fn(async () => ({ affected: 1 })),
   };
   const authService = {
     issueTokensForOidcUser: jest
@@ -421,9 +423,13 @@ describe("OidcService — 身份定位与 JIT 建号", () => {
       }));
     const user = await service.resolveAndBindUser(profile);
     expect(user.id).toBe(8);
-    expect(usersRepo.save).toHaveBeenCalledWith(
-      expect.objectContaining({ oidcSub: "sub-abc-123" }),
+    // R32-A4: 绑定走列级 UPDATE（只写 oidcSub），绝不再整行回写——整行回写
+    // 会把并发的 sessionVersion（logout/改密）/isActive/password 变更回滚。
+    expect(usersRepo.update).toHaveBeenCalledWith(
+      { id: 8 },
+      { oidcSub: "sub-abc-123" },
     );
+    expect(usersRepo.save).not.toHaveBeenCalled();
   });
 
   it("username 已绑定其他 sub → 拒（不静默换绑）", async () => {
@@ -535,9 +541,12 @@ describe("OidcService — 自动绑定收紧（A-3）", () => {
     mockCollision(usersRepo, hitByUsername());
     const user = await service.resolveAndBindUser(baseProfile);
     expect(user.id).toBe(1);
-    expect(usersRepo.save).toHaveBeenCalledWith(
-      expect.objectContaining({ oidcSub: "sub-abc-123" }),
+    // R32-A4: 列级绑定（只写 oidcSub），不再整行回写
+    expect(usersRepo.update).toHaveBeenCalledWith(
+      { id: 1 },
+      { oidcSub: "sub-abc-123" },
     );
+    expect(usersRepo.save).not.toHaveBeenCalled();
   });
 
   it("ADMIN 目标账号（无预置 oidcSub）→ 403，即使 email 已核验且一致", async () => {

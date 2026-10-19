@@ -48,14 +48,17 @@ export class ApiKeyAuth implements ApiKeyAuthFacade {
       throw new AppError("API_KEY_JWT_ONLY_SURFACE");
     }
 
-    const { apiKey, failure } =
+    const { apiKey, failure, row } =
       await this.apiKeysService.authenticate(credential);
     if (!apiKey) {
       try {
+        // R32-A4: 命中行一并交给审计——失败审计要指向具体 key（id/属主），
+        // 不能只有 8 字符前缀（不唯一、无法反查）。
         await this.apiKeysService.auditAuthFailure(
           credential.slice(0, 8),
           failure ?? "unknown",
           ip,
+          row,
         );
       } catch {
         // audit is fail-open inside the service; double guard here anyway

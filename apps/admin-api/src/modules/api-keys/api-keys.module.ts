@@ -6,6 +6,9 @@ import { ApiKeysController } from "./api-keys.controller";
 import { ApiKeyAuth } from "./api-key-auth.helper";
 import { API_KEY_AUTH_FACADE } from "../../common/guards/jwt-auth.guard";
 import { AuditModule } from "../audit/audit.module";
+// R32-A4: 认证面复核 key 属主的账号状态（禁用/删除即失效）——只读依赖，
+// UsersModule 导出 UsersService 且不反向依赖本模块，无循环。
+import { UsersModule } from "../users/users.module";
 
 /**
  * AUTH-03: limited API Keys — entity, CRUD service/controller and the
@@ -15,7 +18,7 @@ import { AuditModule } from "../audit/audit.module";
  * exported for testing).
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([ApiKey]), AuditModule],
+  imports: [TypeOrmModule.forFeature([ApiKey]), AuditModule, UsersModule],
   controllers: [ApiKeysController],
   providers: [
     ApiKeysService,
