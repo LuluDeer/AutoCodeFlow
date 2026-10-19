@@ -81,4 +81,26 @@ export const COMMON_CODES = {
     zh: "未授权：下载执行器包需要有效的 access JWT 或执行器令牌",
     en: "Unauthorized: downloading executor packages requires a valid access JWT or executor token",
   },
+  /**
+   * 通用 503：**判定所依赖的服务不可用**（依赖查询抛错/连接抖动）。
+   *
+   * 为什么需要一条通用码：本仓既有 503 全是**域专用**码
+   * （`METRICS_STREAM_LIMIT_REACHED` / `EXECUTOR_PULL_UNAVAILABLE` /
+   * `PROJECT_ROLE_UNAVAILABLE` …），语义都是"这个功能此刻不可用"；而有一类
+   * 场景要表达的恰恰是**与业务无关的第三个答案**——「我没能判定」，既不是
+   * 「存在」，也不是「不存在」。
+   *
+   * 首个使用点（R32-C2 / L6）：project-access 的成员授予前目标用户存在性校验。
+   * 查询失败时**不能**当成"用户不存在"（那会把一次抖动报成 404，用户以为账号
+   * 被删）更不能 warn 后放行（project_members.userId 无 FK，放行即写出无主
+   * 成员行 = 幽灵授权）。fail-closed 才是正确姿态：让调用方重试。
+   *
+   * 文案自足（见 `error-codes.ts` 的 zh 契约）：裸 API/CLI/日志消费者只读
+   * `message`，故两行文案都不含未替换占位符，也不指向任何具体依赖名。
+   */
+  DEPENDENCY_UNAVAILABLE: {
+    status: 503,
+    zh: "依赖服务暂不可用，请稍后重试",
+    en: "A dependency is temporarily unavailable. Please retry later.",
+  },
 } as const satisfies Record<string, ErrorCodeDef>;

@@ -247,7 +247,13 @@ describe("ProjectAccessService（AUTH-02）", () => {
         expect(repo.create).toHaveBeenCalled();
       });
 
-      it("存在性查询抖动 → warn 后继续落行（不把权限表抖动放大成 500）", async () => {
+      // R32-C2（L6，真 fail-open 收口）：R32-A5 只堵了「查得到、但不存在」。
+      // 「**查不动**」这条分支当时是 warn 后放行——DB 抖动窗口内的授予动作会
+      // 直接写出 project_members 行，而该表 userId **无 FK**，于是又长出一条
+      // A5 刚堵掉的幽灵成员/既成授权。判定不可用 ≠ 用户不存在：既不能折成
+      // 404（会把抖动报成"账号不存在"），也不能放行。fail-closed = 503 +
+      // 明确可重试的通用码 DEPENDENCY_UNAVAILABLE。
+      it("存在性查询抖动 → 503 DEPENDENCY_UNAVAILABLE，且绝不落成员行（fail-closed）", async () => {
         const users = {
           findByIdOrNull: jest.fn().mockRejectedValue(new Error("connection reset")),
         };
@@ -259,12 +265,21 @@ describe("ProjectAccessService（AUTH-02）", () => {
           )
           .mockImplementation(() => {});
 
-        await svc.addMember("p1", 8, "viewer");
+        await expect(
+          svc.addMember("p1", 8, "viewer"),
+        ).rejects.toMatchObject({
+          errorCode: "DEPENDENCY_UNAVAILABLE",
+          status: 503,
+        });
 
-        expect(repo.create).toHaveBeenCalled();
+        // 现场证据必须留在日志里（503 是给调用方的姿势，不是免掉 warn 的理由）
         expect(warnSpy).toHaveBeenCalledWith(
           expect.stringContaining("target user lookup failed"),
         );
+        // 闸门在写库之前——查询失败时连"查重"都不该发生
+        expect(repo.findOne).not.toHaveBeenCalled();
+        expect(repo.create).not.toHaveBeenCalled();
+        expect(repo.save).not.toHaveBeenCalled();
         warnSpy.mockRestore();
       });
     });

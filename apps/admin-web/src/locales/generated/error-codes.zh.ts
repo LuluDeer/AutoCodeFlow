@@ -73,6 +73,7 @@ export default {
   'err.CONFIG_VALUE_TYPE_INVALID': 'valueType 非法：{{valueType}}。允许的类型：{{allowedTypes}}',
   'err.CURRENT_PASSWORD_INCORRECT': 'currentPassword 不正确',
   'err.CURRENT_PASSWORD_REQUIRED': '修改密码时必须提供 currentPassword',
+  'err.DEPENDENCY_UNAVAILABLE': '依赖服务暂不可用，请稍后重试',
   'err.EMAIL_TAKEN': '邮箱已被占用',
   'err.EVENT_OUTBOUND_SSRF_BLOCKED': 'URL 被 SSRF 策略拒绝：{{message}}',
   'err.EVENT_OUTBOUND_SUBSCRIPTIONS_LOAD_FAILED': '外发重投 "{{eventName}}"：加载订阅失败：{{message}}',

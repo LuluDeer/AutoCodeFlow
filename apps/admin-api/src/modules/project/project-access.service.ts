@@ -235,8 +235,15 @@ export class ProjectAccessService {
    *
    * 三条回落，都刻意如此：
    * - usersService 缺席（单测/极简装配）→ 跳过校验，行为与 AUTH-02 之前一致；
-   * - 查询失败 → warn 后跳过（本文件既定姿态：权限表抖动不该让业务写面 500，
-   *   也不该在已通过 ADMIN-only 守卫的授予动作上制造假失败）；
+   * - **查询失败 → 503 DEPENDENCY_UNAVAILABLE（R32-C2 · L6：不放过、也不折成
+   *   404）**。旧实现是 warn 后跳过，即"真 fail-open"：判定**没做完**的窗口里
+   *   照样写出成员行，而 project_members.userId 无 FK ⇒ 又长出一条 A5 刚堵掉的
+   *   幽灵成员/既成授权。三态必须分清：「存在」放行、「确定不存在」404、
+   *   「**没能判定**」是第三种答案——既不是 404（那会把抖动报成"账号不存在"），
+   *   也不是放行（那是 fail-open）。fail-closed 让调用方重试，且 warn 照留
+   *   （503 是给调用方的姿势，不是免掉现场证据的理由）。
+   *   注意：这条闸只覆盖「查询失败」；「查不到 → 404」与「@Optional 缺席 →
+   *   跳过」两条行为逐字节未变。
    * - 不存在 → 404 USER_ID_NOT_FOUND（复用 users 域的既有点名码，不新增码）。
    */
   private async assertTargetUserExists(userId: number): Promise<void> {
@@ -245,12 +252,14 @@ export class ProjectAccessService {
     try {
       target = await this.usersService.findByIdOrNull(userId);
     } catch (e: unknown) {
+      // R32-C2（L6）：判定不可用 ≠ 用户不存在。fail-closed（503）——见上方
+      // 三条回落里「查询失败」那一条的理由；warn 保留（唯一的现场证据）。
       this.logger.warn(
-        `[project-access] target user lookup failed (grant allowed): ${
+        `[project-access] target user lookup failed (grant refused): ${
           e instanceof Error ? e.message : String(e)
         }`,
       );
-      return;
+      throw new AppError(ErrorCode.DEPENDENCY_UNAVAILABLE);
     }
     if (!target) {
       throw new AppError(ErrorCode.USER_ID_NOT_FOUND, { id: userId });

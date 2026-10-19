@@ -73,6 +73,7 @@ export default {
   'err.CONFIG_VALUE_TYPE_INVALID': 'Invalid valueType: {{valueType}}. Allowed types: {{allowedTypes}}',
   'err.CURRENT_PASSWORD_INCORRECT': 'currentPassword is incorrect',
   'err.CURRENT_PASSWORD_REQUIRED': 'currentPassword is required when changing the password',
+  'err.DEPENDENCY_UNAVAILABLE': 'A dependency is temporarily unavailable. Please retry later.',
   'err.EMAIL_TAKEN': 'Email is already taken',
   'err.EVENT_OUTBOUND_SSRF_BLOCKED': 'URL rejected by SSRF policy: {{message}}',
   'err.EVENT_OUTBOUND_SUBSCRIPTIONS_LOAD_FAILED': 'Outbound redeliver "{{eventName}}": failed to load subscriptions: {{message}}',
