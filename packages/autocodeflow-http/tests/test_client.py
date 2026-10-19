@@ -6,7 +6,13 @@ import pytest_asyncio
 import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from autocodeflow_http import AutoFlowHttpClient, CircuitBreaker, RetryConfig, SAFE_METHODS
+from autocodeflow_http import (
+    ApiHttpStatusError,
+    AutoFlowHttpClient,
+    CircuitBreaker,
+    RetryConfig,
+    SAFE_METHODS,
+)
 
 
 class TestCircuitBreaker:
@@ -547,3 +553,142 @@ class TestClientLifecycle:
             c = client._get_client()
             assert not c.is_closed
         assert c.is_closed
+
+
+# ---------------------------------------------------------------------------
+# R31-E2: 稳定错误码透出（admin-api 错误体 { code, message, errorCode, params }）
+# ---------------------------------------------------------------------------
+class TestR31E2ErrorCodePassthrough:
+    """抛出的 5xx/429 异常必须带 error_code / params，且向后兼容。
+
+    反证：把 _do 里的 ApiHttpStatusError 换回裸 httpx.HTTPStatusError（或删掉
+    两个 property）后，本类全部用例转红（AttributeError）。
+    """
+
+    #: 只发一次：避免 4 次退避拖慢测试，也让断言对准单个响应。
+    ONCE = dict(max_retries=0, min_wait_sec=0.001, max_wait_sec=0.002)
+
+    BODY = {
+        "code": 503,
+        "message": "服务繁忙，请稍后重试",
+        "errorCode": "SERVICE_BUSY",
+        "params": {"retryAfterSec": 5, "resource": "task"},
+    }
+
+    @pytest.mark.asyncio
+    async def test_error_code_and_params_are_exposed(self, respx_mock):
+        respx_mock.post("http://api.example.com/tasks").mock(
+            return_value=httpx.Response(503, json=self.BODY)
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.ONCE),
+        )
+        with pytest.raises(ApiHttpStatusError) as excinfo:
+            await client.post("/tasks", data={"name": "x"})
+        await client.aclose()
+
+        err = excinfo.value
+        assert err.error_code == "SERVICE_BUSY"
+        assert err.params == {"retryAfterSec": 5, "resource": "task"}
+        # 既有字段与 message 逐字节不变（PK-32 契约）
+        assert str(err) == "503 Service Unavailable"
+        assert err.response.status_code == 503
+        assert isinstance(err, httpx.HTTPStatusError)  # 老 except 子句仍然命中
+
+    @pytest.mark.asyncio
+    async def test_legacy_except_clause_still_catches(self, respx_mock):
+        respx_mock.get("http://api.example.com/data").mock(
+            return_value=httpx.Response(500, json=self.BODY)
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.ONCE),
+        )
+        try:
+            with pytest.raises(httpx.HTTPStatusError) as excinfo:
+                await client.get("/data")
+        finally:
+            await client.aclose()
+        assert excinfo.value.error_code == "SERVICE_BUSY"
+
+    @pytest.mark.asyncio
+    async def test_missing_code_and_params_degrade_quietly(self, respx_mock):
+        respx_mock.post("http://api.example.com/tasks").mock(
+            return_value=httpx.Response(503, json={"code": 503, "message": "服务繁忙"})
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.ONCE),
+        )
+        try:
+            with pytest.raises(ApiHttpStatusError) as excinfo:
+                await client.post("/tasks", data={"name": "x"})
+        finally:
+            await client.aclose()
+        assert excinfo.value.error_code is None
+        assert excinfo.value.params == {}
+
+    @pytest.mark.asyncio
+    async def test_non_json_body_does_not_mask_the_http_error(self, respx_mock):
+        respx_mock.post("http://api.example.com/tasks").mock(
+            return_value=httpx.Response(
+                503, content=b"<html>bad gateway</html>", headers={"content-type": "text/html"}
+            )
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.ONCE),
+        )
+        try:
+            with pytest.raises(ApiHttpStatusError) as excinfo:
+                await client.post("/tasks", data={"name": "x"})
+        finally:
+            await client.aclose()
+        assert excinfo.value.error_code is None
+        assert excinfo.value.params == {}
+        assert excinfo.value.response.text == "<html>bad gateway</html>"
+
+    @pytest.mark.asyncio
+    async def test_non_object_params_are_ignored(self, respx_mock):
+        respx_mock.post("http://api.example.com/tasks").mock(
+            return_value=httpx.Response(
+                503, json={"code": 503, "errorCode": "SERVICE_BUSY", "params": ["a", "b"]}
+            )
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.ONCE),
+        )
+        try:
+            with pytest.raises(ApiHttpStatusError) as excinfo:
+                await client.post("/tasks", data={"name": "x"})
+        finally:
+            await client.aclose()
+        assert excinfo.value.error_code == "SERVICE_BUSY"
+        assert excinfo.value.params == {}  # 非对象一律丢弃，恒为 dict
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_business_error_still_returns_response(self, respx_mock):
+        """PK-32 契约不变：409 等业务错误原样返回 resp，不抛、不重试。"""
+        respx_mock.post("http://api.example.com/tasks").mock(
+            return_value=httpx.Response(
+                409,
+                json={
+                    "code": 409,
+                    "message": "任务名已存在",
+                    "errorCode": "TASK_NAME_CONFLICT",
+                    "params": {"name": "x"},
+                },
+            )
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.ONCE),
+        )
+        try:
+            resp = await client.post("/tasks", data={"name": "x"})
+        finally:
+            await client.aclose()
+        assert resp.status_code == 409
+        assert resp.json()["errorCode"] == "TASK_NAME_CONFLICT"

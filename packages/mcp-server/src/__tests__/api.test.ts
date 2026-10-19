@@ -506,3 +506,86 @@ describe("contract-fixtures (QA-07 shared vectors)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// R31-E2: 稳定错误码透出（admin-api 错误体 { code, message, errorCode, params }）
+// ---------------------------------------------------------------------------
+describe("R31-E2 errorCode / params passthrough", () => {
+  /** 抓住 apiRequest 抛出的错误（保留 Error 实例与挂载字段）。 */
+  async function captureError(): Promise<Error & Record<string, unknown>> {
+    try {
+      await apiRequest("GET", "/tasks");
+    } catch (e) {
+      return e as Error & Record<string, unknown>;
+    }
+    throw new Error("expected apiRequest to reject");
+  }
+
+  it("attaches errorCode and params to the thrown Error, message unchanged", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        {
+          code: 404,
+          message: "任务不存在",
+          errorCode: "TASK_NOT_FOUND",
+          params: { taskId: "t-1" },
+        },
+        404,
+      ),
+    );
+    const err = await captureError();
+    // 既有文案逐字节不变（含 MCP 专属的 404 下一步提示）
+    expect(err.message).toBe(
+      "API error (404): 任务不存在 — confirm the resource exists; resolve the ID with the matching list_* tool and retry",
+    );
+    expect(err.errorCode).toBe("TASK_NOT_FOUND");
+    expect(err.params).toEqual({ taskId: "t-1" });
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("只读挂载：外部赋值不改变已挂的码", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { code: 409, message: "冲突", errorCode: "TASK_NAME_CONFLICT" }, 409),
+    );
+    const err = await captureError();
+    expect(() => {
+      (err as Record<string, unknown>).errorCode = "HACKED";
+    }).toThrow(TypeError);
+    expect(err.errorCode).toBe("TASK_NAME_CONFLICT");
+  });
+
+  it("无码 / 无参时对象形状与旧行为完全一致（键不存在）", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { code: 500, message: "内部错误" }, 500),
+    );
+    const err = await captureError();
+    expect("errorCode" in err).toBe(false);
+    expect("params" in err).toBe(false);
+    expect(err.message).toBe("API error (500): 内部错误");
+  });
+
+  it("params 非普通对象 / errorCode 非字符串 → 丢弃（不写 undefined 键）", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        { code: 400, message: "参数错", errorCode: 42, params: ["a", "b"] },
+        400,
+      ),
+    );
+    const err = await captureError();
+    expect("errorCode" in err).toBe(false);
+    expect("params" in err).toBe(false);
+    expect(err.message).toBe("API error (400): 参数错");
+  });
+
+  it("非 JSON 错误体：既有原始文本兜底不变，且不产生机读键", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, "<html>bad gateway</html>", 502),
+    );
+    const err = await captureError();
+    expect(err.message).toBe("API GET /tasks → 502: <html>bad gateway</html>");
+    expect("errorCode" in err).toBe(false);
+    expect("params" in err).toBe(false);
+  });
+});

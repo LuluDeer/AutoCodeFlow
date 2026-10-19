@@ -35,6 +35,8 @@ import {
   SOP_PENDING_STATUSES,
   buildExecutionTimeline,
   ANALYZE_TIMEOUT_MS,
+  withStructuredToolErrors,
+  extractToolErrorInfo,
 } from "../tools";
 
 const registerFns = [
@@ -1881,5 +1883,110 @@ describe("D1-P2-2 path id UUID validation", () => {
     const taskIdFilter = (tools.get("list_executions")!.schema as Record<string, ZodLike>).taskId;
     expect(() => taskIdFilter.parse(undefined)).not.toThrow();
     expect(() => taskIdFilter.parse(VALID_UUID)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R31-E2: 工具错误的结构化面（structuredContent 带 errorCode / params）
+// ---------------------------------------------------------------------------
+describe("R31-E2 structuredContent on tool errors", () => {
+  const UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+  /** 与 setup() 同形的假 server，但注册走 withStructuredToolErrors 包装。 */
+  function setupWrapped() {
+    const registered = new Map<
+      string,
+      { handler: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }
+    >();
+    const call = vi.fn();
+    const fakeServer = {
+      tool: (
+        name: string,
+        _description: string,
+        _schema: Record<string, z.ZodTypeAny>,
+        fourth: unknown,
+        fifth?: unknown,
+      ) => {
+        registered.set(name, {
+          handler: (fifth ?? fourth) as (
+            args: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>,
+        });
+      },
+    };
+    const wrapped = withStructuredToolErrors(fakeServer as never);
+    registerTaskTools(wrapped as never, call as never);
+    return { registered, call };
+  }
+
+  const httpError = (message: string, extra: Record<string, unknown> = {}) =>
+    Object.assign(new Error(message), extra);
+
+  it("带 errorCode/params 的 HTTP 错误 → isError + structuredContent，text 逐字节不变", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockRejectedValueOnce(
+      httpError("API error (404): Task not found — confirm the resource exists", {
+        errorCode: "TASK_NOT_FOUND",
+        params: { taskId: "t-1" },
+      }),
+    );
+    const r = await registered.get("get_task")!.handler({ taskId: UUID });
+    expect(r.isError).toBe(true);
+    // 既有文本输出不变：仍是 err.message（与 MCP SDK 默认转换同款）
+    expect(r.content).toEqual([
+      {
+        type: "text",
+        text: "API error (404): Task not found — confirm the resource exists",
+      },
+    ]);
+    expect(r.structuredContent).toEqual({
+      errorCode: "TASK_NOT_FOUND",
+      params: { taskId: "t-1" },
+    });
+  });
+
+  it("只有 errorCode 时只带该键（不写 undefined 的 params）", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockRejectedValueOnce(
+      httpError("Forbidden (403): nope", { errorCode: "FORBIDDEN" }),
+    );
+    const r = await registered
+      .get("list_tasks")!
+      .handler({ page: 1, pageSize: 20 });
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toEqual({ errorCode: "FORBIDDEN" });
+    expect("params" in (r.structuredContent as Record<string, unknown>)).toBe(
+      false,
+    );
+  });
+
+  it("无码错误原样抛出（MCP SDK 既有路径，行为零变化）", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockRejectedValueOnce(httpError("API error (500): boom"));
+    await expect(
+      registered.get("get_task")!.handler({ taskId: UUID }),
+    ).rejects.toThrow("API error (500): boom");
+  });
+
+  it("用法错误（handler 内 return 的 JSON_ERROR）不受包装器影响", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockResolvedValueOnce([{ id: "tpl-1", key: "scheduled_backup" }]);
+    const r = await registered
+      .get("create_task_from_template")!
+      .handler({ template: "nope", name: "x" });
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toBeUndefined();
+  });
+
+  it("extractToolErrorInfo 是可单测的纯函数（非对象 / 空字段 → null）", () => {
+    expect(extractToolErrorInfo("boom")).toBeNull();
+    expect(extractToolErrorInfo(null)).toBeNull();
+    expect(extractToolErrorInfo(new Error("x"))).toBeNull();
+    expect(extractToolErrorInfo({ errorCode: "" })).toBeNull();
+    expect(extractToolErrorInfo({ params: [1] })).toBeNull();
+    expect(extractToolErrorInfo({ errorCode: "X", params: { a: 1 } })).toEqual({
+      errorCode: "X",
+      params: { a: 1 },
+    });
   });
 });

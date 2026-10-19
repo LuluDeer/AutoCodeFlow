@@ -40,6 +40,92 @@ const JSON_ERROR = (data: unknown) => ({
 });
 
 /**
+ * R31-E2: 工具错误的结构化面。
+ *
+ * admin-api 的错误体是 `{ code, message, errorCode, params }`——MCP 侧此前只把
+ * `message` 转成文本给 agent，稳定码与插值参数全丢。现在 api.ts 把这两个字段挂到
+ * 抛出的 Error 上（只读、可枚举、有值才挂），本文件的注册包装器再把它们放进
+ * **structuredContent**：既有 text 逐字节不变，机读面新增。
+ */
+export interface ToolErrorStructuredContent {
+  /** 服务端稳定错误码（如 `TASK_NOT_FOUND`）；无码时该键不存在。 */
+  errorCode?: string;
+  /** 错误码的插值参数；无参 / 非普通对象时该键不存在。 */
+  params?: Record<string, unknown>;
+}
+
+/**
+ * 从任意抛出的错误上抽 errorCode / params；两者都没有 → `null`
+ * （= 该错误没有机读面，按原样抛给 MCP SDK，行为逐字节不变）。
+ */
+export function extractToolErrorInfo(
+  err: unknown,
+): ToolErrorStructuredContent | null {
+  if (err === null || typeof err !== "object") return null;
+  const { errorCode, params } = err as {
+    errorCode?: unknown;
+    params?: unknown;
+  };
+  const info: ToolErrorStructuredContent = {};
+  if (typeof errorCode === "string" && errorCode.length > 0) {
+    info.errorCode = errorCode;
+  }
+  if (params !== null && typeof params === "object" && !Array.isArray(params)) {
+    info.params = params as Record<string, unknown>;
+  }
+  return Object.keys(info).length > 0 ? info : null;
+}
+
+/**
+ * R31-E2: 在**注册边界**给每个工具错误补上 structuredContent。
+ *
+ * 为什么不改 handler 内部：既有约 20 个用例钉住「HTTP 错误 -> handler 抛错 ->
+ * `.rejects.toThrow(/API error \(4xx\)/)`」这条行为（src/__tests__/tools.test.ts），
+ * 改成 return 会让它们全红。用 Proxy 包一层 server.tool 后：
+ *
+ * - 带 errorCode / params 的错 → 返回 `{ content: [原文本], isError: true,
+ *   structuredContent }`，text 仍是 `err.message`（与 MCP SDK 的默认转换逐字节
+ *   一致），客户端读 structuredContent 就能按码分支；
+ * - 不带码的错 → 原样 rethrow，交给 MCP SDK 走既有路径（完全无变化）。
+ */
+export function withStructuredToolErrors(server: McpServer): McpServer {
+  return new Proxy(server, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target) as unknown;
+      if (prop !== "tool" || typeof value !== "function") return value;
+      const register = value as (...a: unknown[]) => unknown;
+      return (...args: unknown[]) => {
+        const handler = args[args.length - 1];
+        if (typeof handler !== "function") {
+          // 兼容未来可能出现的非函数 handler 形态：不改变注册行为。
+          return register.apply(target, args);
+        }
+        args[args.length - 1] = async (...handlerArgs: unknown[]) => {
+          try {
+            return await (handler as (...a: unknown[]) => unknown)(...handlerArgs);
+          } catch (err) {
+            const info = extractToolErrorInfo(err);
+            if (!info) throw err;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  // 与 MCP SDK 的默认错误转换同款文案，只在此之上附加机读面。
+                  text: err instanceof Error ? err.message : String(err),
+                },
+              ],
+              isError: true as const,
+              structuredContent: info as Record<string, unknown>,
+            };
+          }
+        };
+        return register.apply(target, args);
+      };
+    },
+  });
+}
+
+/**
  * D1-P2-2: 路径插值 id 的入站白名单。后端 task/task-version/task-execution/
  * application/app-deployment/executor/project 主键均为 @PrimaryGeneratedColumn("uuid")。
  * 此前裸 z.string() 直接拼进 /tasks/:id 路径，畸形值（../、斜杠、编码穿越）可造成

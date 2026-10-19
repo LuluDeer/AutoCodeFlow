@@ -15,6 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { apiRequest, API_URL, API_TOKEN } from "./api";
 import pkg from "../package.json";
 import {
+  withStructuredToolErrors,
   registerTaskTools,
   registerApplicationTools,
   registerMutexTools,
@@ -34,15 +35,20 @@ const server = new McpServer({
   version: pkg.version,
 });
 
-registerTaskTools(server, apiRequest);
-registerApplicationTools(server, apiRequest);
-registerMutexTools(server, apiRequest);
-registerDeploymentTools(server, apiRequest);
-registerExecutorTools(server, apiRequest);
-registerObservabilityTools(server, apiRequest);
-registerAuditTools(server, apiRequest);
-registerProjectTools(server, apiRequest);
-registerSopTools(server, apiRequest);
+// R31-E2: 注册走 Proxy——handler 抛出的 admin-api 错误带 errorCode/params 时，
+// 结果里补 structuredContent（text 逐字节不变）。Proxy 只用于注册，connect 等
+// 其余方法照旧用真实 server。
+const registering = withStructuredToolErrors(server);
+
+registerTaskTools(registering, apiRequest);
+registerApplicationTools(registering, apiRequest);
+registerMutexTools(registering, apiRequest);
+registerDeploymentTools(registering, apiRequest);
+registerExecutorTools(registering, apiRequest);
+registerObservabilityTools(registering, apiRequest);
+registerAuditTools(registering, apiRequest);
+registerProjectTools(registering, apiRequest);
+registerSopTools(registering, apiRequest);
 
 // ---------------------------------------------------------------------------
 // CLI — argument handling for the bin entry (autocodeflow-mcp)

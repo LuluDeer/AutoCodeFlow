@@ -152,6 +152,19 @@ export async function apiRequest<T>(
   return unwrap<T>(raw);
 }
 
+/** 把错误响应体解析成普通对象；非 JSON / 非对象 → undefined（永不抛）。 */
+function parseErrorBody(text: string): Record<string, unknown> | undefined {
+  try {
+    const d = JSON.parse(text) as unknown;
+    if (d && typeof d === 'object' && !Array.isArray(d)) {
+      return d as Record<string, unknown>;
+    }
+  } catch {
+    /* not JSON — 由调用方回落到原始文本 */
+  }
+  return undefined;
+}
+
 /**
  * Extract the human-readable message from an error body — admin-api errors
  * arrive as `{ code, message, data }` envelopes or NestJS
@@ -160,46 +173,105 @@ export async function apiRequest<T>(
  * except 404, which carries an MCP-specific next-step hint (agents resolve
  * ids via list_* tools; the CLI prints human-facing hints instead).
  */
-function extractDetail(text: string): string {
-  try {
-    const d = JSON.parse(text) as Record<string, unknown> | null;
-    if (d && typeof d === 'object') {
-      const m = d.message;
-      if (typeof m === 'string' && m) return m;
-      if (Array.isArray(m) && m.length) return m.map(String).join('; ');
-      if (typeof d.error === 'string' && d.error) return d.error;
-    }
-  } catch {
-    /* not JSON — fall through to the raw-text fallback */
-  }
+function detailFromBody(d: Record<string, unknown> | undefined): string {
+  if (!d) return '';
+  const m = d.message;
+  if (typeof m === 'string' && m) return m;
+  if (Array.isArray(m) && m.length) return m.map(String).join('; ');
+  if (typeof d.error === 'string' && d.error) return d.error;
   return '';
 }
 
+/**
+ * R31-E2: 管理员侧稳定码面（缺什么就没有对应键，绝不写 `undefined`）。
+ *
+ * 与 node SDK 的 `HttpClientError`（packages/autocodeflow-node-sdk）和 python
+ * 侧的 `error_code` / `params` 同语义：消费方可以按码分支、按 params 本地化，
+ * 不必解析中文 message。
+ */
+export interface ApiErrorCodeFields {
+  /** 服务端稳定错误码（如 `TASK_NOT_FOUND`）；无码时该键不存在。 */
+  readonly errorCode?: string;
+  /** 错误码的插值参数；无参 / 非普通对象时该键不存在。 */
+  readonly params?: Record<string, unknown>;
+}
+
+/** 从已解析的错误体里抽稳定码面；只做「有值才给」。 */
+export function extractErrorCodeFields(
+  d: Record<string, unknown> | undefined,
+): ApiErrorCodeFields {
+  if (!d) return {};
+  const out: { errorCode?: string; params?: Record<string, unknown> } = {};
+  const { errorCode, params } = d;
+  if (typeof errorCode === 'string' && errorCode.length > 0) {
+    out.errorCode = errorCode;
+  }
+  if (params !== null && typeof params === 'object' && !Array.isArray(params)) {
+    out.params = params as Record<string, unknown>;
+  }
+  return out;
+}
+
+/** 只读定义（可枚举，便于日志 / JSON.stringify 落到 meta 里）。 */
+function defineErrorField(
+  target: object,
+  key: 'errorCode' | 'params',
+  value: unknown,
+): void {
+  try {
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: false,
+    });
+  } catch {
+    // 冻结 / 不可扩展的异常对象：宁可不带码，也绝不吞掉原始错误。
+  }
+}
+
+/** 把稳定码面挂到错误对象上，返回同一个引用（message 逐字节不变）。 */
+function attachErrorCodeFields(error: Error, fields: ApiErrorCodeFields): Error {
+  if (fields.errorCode !== undefined) {
+    defineErrorField(error, 'errorCode', fields.errorCode);
+  }
+  if (fields.params !== undefined) {
+    defineErrorField(error, 'params', fields.params);
+  }
+  return error;
+}
+
 function buildHttpError(method: string, path: string, status: number, text: string): Error {
-  const detail = extractDetail(text);
+  // R31-E2: 错误体只解析一次，人读文案（detail）与机读面（errorCode/params）
+  // 都从同一份对象取——两个字段此前在这里被丢弃，agent 只能看到中文 message。
+  const body = parseErrorBody(text);
+  const detail = detailFromBody(body);
+  const fields = extractErrorCodeFields(body);
   if (!detail) {
     // 解析不出 message 时保持旧行为：透传原始文本，不吞信息。
-    return new Error(`API ${method} ${path} → ${status}: ${text}`);
+    return attachErrorCodeFields(
+      new Error(`API ${method} ${path} → ${status}: ${text}`),
+      fields,
+    );
   }
+  let message: string;
   switch (status) {
     case 401:
-      return new Error(
-        `Unauthorized (401): ${detail} — token missing, expired or invalid; refresh AUTOCODEFLOW_API_TOKEN (e.g. run "acf login")`,
-      );
+      message = `Unauthorized (401): ${detail} — token missing, expired or invalid; refresh AUTOCODEFLOW_API_TOKEN (e.g. run "acf login")`;
+      break;
     case 403:
-      return new Error(
-        `Forbidden (403): ${detail} — your account is not allowed to perform this operation (some endpoints require the ADMIN role)`,
-      );
+      message = `Forbidden (403): ${detail} — your account is not allowed to perform this operation (some endpoints require the ADMIN role)`;
+      break;
     case 404:
       // 404 也给下一步动作（对齐 401/403 的可恢复性口径）：id 已是 UUID 白名单
       // 校验过的，404 基本意味着「id 对但资源不存在/被删」或「拿错了 id 类型」
       // ——指引 agent 用对应 list 工具重新解析 id。
-      return new Error(
-        `API error (404): ${detail} — confirm the resource exists; resolve the ID with the matching list_* tool and retry`,
-      );
+      message = `API error (404): ${detail} — confirm the resource exists; resolve the ID with the matching list_* tool and retry`;
+      break;
     default:
-      return new Error(`API error (${status}): ${detail}`);
+      message = `API error (${status}): ${detail}`;
   }
+  return attachErrorCodeFields(new Error(message), fields);
 }
 
 /**
