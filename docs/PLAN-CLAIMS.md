@@ -717,3 +717,11 @@
   **否决 5 个怀疑**（rotate 无宽限窗口 / 共享 token 语义 / 包路径穿越 / 重复 push 不去重是刻意 / 容量钳制对称）。验证 28 套件 885 例全绿 + tsc 0；总控独立反证 G3 → **6 failed / 45 passed**。
   **登记未修**：R1 download 只校验 type==='access'（文档写管理员，任何登录用户可下载包；access JWT 无 role，收紧须改 auth 模块）；R2 downloadCount 实体无此列而前端在展示；R5 push-result 回调无 DTO 校验（可向任意包 pushHistory 写脏数据）；R3 update-package 无去重键。
 - 2026-10-20 **工具链坑（记一笔）**：git add <目录A> <目录B> 在本机会**静默不生效**（exit=0 但暂存区空），必须**逐文件** git add。本轮两次踩到，已改逐文件暂存。
+- 2026-10-20 **R32-A4 done（commit 805eae17）**：auth + api-keys 四轴审计，**4 个真缺口**。
+  **① refresh 重放不级联吊销**：原子消费只保证并发只有一个赢家，输掉的那个只是被拒——而轮换的威胁模型是「同一枚 refresh 出现两次 ⇒ 至少一次来自窃取者」，窃取者通常就是赢家，他手里新签发的链毫发无损。现在 affected=0 时按 jti 查行，命中即吊销该行 userId 的全部活跃 refresh + bump sessionVersion（在途 access 立刻 401），目标取库中 userId 而非 payload.sub，未知 jti 不误伤，级联失败只 warn 仍 401。
+  **② TOTP/OIDC 写 users 走整行实体回写**：TypeORM save 无脏检查 ⇒ 并发 logout/改密/禁用刚落库的 sessionVersion+1 / password / isActive 被静默回滚（令牌复活、禁用失效、改密被撤销）。改列级 UPDATE。
+  **③ API Key 活性不看属主**：只看自身 revokedAt/expiresAt ⇒「禁用用户」「删除用户」对已签发 key 完全无效（remove 只回收 refresh_tokens），长效旁路。改为每次认证复核属主 isActive（现读无缓存），与 JWT 面 TOKEN_USER_NOT_FOUND/ACCOUNT_INACTIVE 对齐；失败原因只落审计、线上统一 401 防枚举。
+  **④ 失败审计只有 8 字符前缀**（acf_+4hex=16bit，不唯一不可反查）：命中行时 resourceId=行 id + userId + name。
+  另补 3 条钉子（jwt.strategy 每请求现读库 → 多实例撤销天然收敛，不需要 executor 那套 evict+broadcast；API Key 吊销下一请求即生效；查找只按全哈希）。验证 16 套件 259 例全绿（基线 246）+ tsc 0；总控独立反证属主闸 → **3 failed / 66 passed**。**遗留**：refresh_tokens 无 familyId 只能全量吊销（DoS 面）；TOTP 备份码全仓不存在（丢设备=锁死）；单会话 revoke 的在途 access 仍活 ≤15min；users.service.remove 不回收 api_keys（属主闸已兜住）。
+- 2026-10-20 **流程教训（记一笔）**：逐文件 git add 的循环里仍有文件被漏加（auth.service.ts 未进 commit，是 12 文件里只提交了 11 个），靠 `git status` 收尾检查才发现并用 --amend 修正。**提交前必须比对 `git diff --cached --stat` 的文件数与预期一致**。
+- 2026-10-20 **R32-A5 claimed（agent 运行中）**：users + project 权限与生命周期审计（删/禁用用户的级联孤儿、三档项目角色在每个写端点的一致性、成员管理提权链、用户更新面唯一性竞态与 sessionVersion）。
