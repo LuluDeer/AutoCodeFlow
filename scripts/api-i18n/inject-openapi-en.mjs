@@ -73,6 +73,41 @@ export function readMap() {
   return m;
 }
 
+/**
+ * 递归下钻**内联对象**的属性描述。
+ *
+ * `components.schemas.<name>.properties.*.description` 只覆盖一层；实测存在
+ * 「属性本身还是个内联对象」的写法（如 `ExecutorMetricsDto.current.reservedSlots`），
+ * 以及 `requestBody.content.*.schema` 里的内联对象（如
+ * `/executor-packages/{id}/push` 的 `executorIds`）。这些节点以前**根本不进收集面**，
+ * 于是「有中文、映射表里也有英文，却永远是中文单语」——差集实测 4 个（第 5 个在
+ * `example` 载荷里，见下）。
+ *
+ * ⚠️ 只顺着 schema 的**结构**键下钻（properties / items / allOf|oneOf|anyOf /
+ * additionalProperties），**绝不**进 `example` / `examples` / `default` / `enum`：
+ * 那些是样例**载荷数据**，往里面塞 `x-i18n-en` 会污染示例本身。
+ */
+function collectInlineProps(schema, push, depth = 0) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return;
+  if (depth > 8) return; // 防递归爆炸（本仓实测最深 3 层）
+  for (const key of ["properties", "patternProperties"]) {
+    const props = schema[key];
+    if (!props || typeof props !== "object" || Array.isArray(props)) continue;
+    for (const prop of Object.values(props)) {
+      if (!prop || typeof prop !== "object" || Array.isArray(prop)) continue;
+      if (typeof prop.description === "string") push(prop, "value", "description");
+      collectInlineProps(prop, push, depth + 1);
+    }
+  }
+  if (schema.items && typeof schema.items === "object") collectInlineProps(schema.items, push, depth + 1);
+  for (const key of ["allOf", "oneOf", "anyOf"]) {
+    const arr = schema[key];
+    if (Array.isArray(arr)) for (const sub of arr) collectInlineProps(sub, push, depth + 1);
+  }
+  const ap = schema.additionalProperties;
+  if (ap && typeof ap === "object") collectInlineProps(ap, push, depth + 1);
+}
+
 /** 遍历一个 OpenAPI 文档，收集所有"需要英文"的节点与其装载方式。 */
 export function collectTargets(doc) {
   const targets = [];
@@ -81,9 +116,8 @@ export function collectTargets(doc) {
 
   const schemas = doc?.components?.schemas ?? {};
   for (const schema of Object.values(schemas)) {
-    for (const prop of Object.values(schema?.properties ?? {})) {
-      if (typeof prop?.description === "string") push(prop, "value", "description");
-    }
+    // 顶层 properties 由此函数的首层循环覆盖，内联对象由递归覆盖（顺序与旧版一致）
+    collectInlineProps(schema, push);
   }
 
   /**
@@ -101,6 +135,10 @@ export function collectTargets(doc) {
     }
     const rb = obj?.requestBody;
     if (typeof rb?.description === "string") push(rb, "value", "description");
+    // requestBody 的内联 JSON schema 也带属性描述（以前漏收）
+    for (const media of Object.values(rb?.content ?? {})) {
+      if (media && typeof media === "object") collectInlineProps(media.schema, push);
+    }
     for (const r of Object.values(obj?.responses ?? {})) {
       if (typeof r?.description === "string") push(r, "value", "description");
     }
@@ -257,6 +295,45 @@ function selftest() {
   t("收集到 operation description", targets.some((x) => x.kind === "description" && x.text === "返回全部执行器"));
   t("收集到 parameter", targets.some((x) => x.text === "关键字"));
   t("收集到 response", targets.some((x) => x.text === "成功"));
+
+  // 内联对象：嵌套 properties 与 requestBody 内联 schema 必须进收集面（否则永远中文单语）；
+  // example 是**样例载荷**，里面的 description 是数据不是散文，必须**不**进收集面。
+  const mkNested = () => ({
+    components: {
+      schemas: {
+        B: {
+          properties: {
+            cur: { type: "object", properties: { nested: { description: "嵌套字段" } } },
+            ex: { type: "object", example: { description: "样例值" } },
+          },
+        },
+      },
+    },
+    paths: {
+      "/y": {
+        post: {
+          requestBody: {
+            description: "请求体",
+            content: {
+              "application/json": { schema: { properties: { ids: { description: "目标 ID" } } } },
+            },
+          },
+          responses: { "200": { description: "成功" } },
+        },
+      },
+    },
+  });
+  const tNested = collectTargets(mkNested());
+  t("收集到嵌套内联属性", tNested.some((x) => x.text === "嵌套字段"));
+  t("收集到 requestBody 内联 schema 属性", tNested.some((x) => x.text === "目标 ID"));
+  t("不收集 example 载荷里的字段（它是数据不是散文）", !tNested.some((x) => x.text === "样例值"));
+  const docNested = mkNested();
+  const rNested = inject(docNested, { 嵌套字段: "Nested field", "目标 ID": "Target IDs", 请求体: "Request body", 成功: "OK" });
+  t("嵌套面无缺失", rNested.missing.size === 0);
+  t(
+    "嵌套内联属性注入裸字符串",
+    docNested.components.schemas.B.properties.cur.properties.nested["x-i18n-en"] === "Nested field",
+  );
 
   // 注入形态：value 面是裸字符串，operation 面是对象
   const doc = mk();

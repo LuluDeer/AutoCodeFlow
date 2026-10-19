@@ -9829,7 +9829,8 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "目标执行器 ID 列表，为空 = 全部"
+                    "description": "目标执行器 ID 列表，为空 = 全部",
+                    "x-i18n-en": "List of target executor IDs; empty = all"
                   }
                 }
               }
@@ -15991,7 +15992,8 @@
               "reservedSlots": {
                 "type": "number",
                 "nullable": true,
-                "description": "null = 执行器未上报（旧版）→ 前端回落旧口径"
+                "description": "null = 执行器未上报（旧版）→ 前端回落旧口径",
+                "x-i18n-en": "null = executor did not report (legacy) -> frontend falls back to the old semantics"
               },
               "cpuUsage": {
                 "type": "number",
@@ -16003,7 +16005,8 @@
               },
               "pendingPullItems": {
                 "type": "number",
-                "description": "pull 队列深度；push 恒 0；Redis 故障按 0 呈现"
+                "description": "pull 队列深度；push 恒 0；Redis 故障按 0 呈现",
+                "x-i18n-en": "pull queue depth; always 0 for push; reported as 0 when Redis fails"
               }
             },
             "required": [
@@ -19581,7 +19584,8 @@
               },
               "blockedReason": {
                 "type": "string",
-                "description": "ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常）"
+                "description": "ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常）",
+                "x-i18n-en": "ARCH-31: an in-flight batch exists for the same application (cross-instance mutex, not an error)"
               }
             },
             "description": "在实际启动了金丝雀批次（或被阻塞）时出现",
