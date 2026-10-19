@@ -430,10 +430,40 @@ jobs:
           #   复查：2026-12-30（随 GHSA-528h 同批复查；到期动作=续期豁免或换 S3
           #         客户端，不得 override）
           #
+          # ── 2026-10-19 批次：无修复版的 devDependency 链（4 条 GHSA）──────────
+          # 本轮把 38 条 Dependabot 告警逐条溯源，27 条已用 override/升级消除
+          # （js-yaml / tmp / dompurify / uuid / brace-expansion / glob / undici /
+          #  vite / esbuild / anyio / pytest）。以下 4 条上游**无修复版**
+          # （first_patched_version = null），且全部只在开发期工具链可达。
+          # GHSA-7pqw-9j4j-h8q3  extract-zip ≤2.0.1 符号链接归档条目可任意写文件
+          # GHSA-jmr9-qjv8-65gv  extract-zip ≤2.0.1 未校验符号链接路径穿越
+          #   链：admin-web devDep @lhci/cli@0.15.1 → @puppeteer/browsers → extract-zip
+          #   原因：extract-zip 最新即 2.0.1（vulnerable range 含 2.0.1），
+          #         @lhci/cli 最新 0.15.1 无法再升；该链仅 Lighthouse CI 性能审计用，
+          #         不进任何生产构建产物。
+          #   复查：2026-12-30（到期动作=复查上游是否发版或换链；无目标版本，不得 override）
+          # GHSA-ch52-4w7c-c8xp  http-cache-semantics ≤4.2.0 max-stale 跨用户缓存泄露
+          #   链：executor-desktop devDep electron-builder@26 → @electron/get
+          #   原因：上游无修复版（4.2.0 即最新）；仅构建期下载 Electron 二进制时使用，
+          #         缓存目录是本机构建机私有，无跨用户共享场景。
+          #   复查：2026-12-30（到期动作=复查 @electron/get 是否换链）
+          # GHSA-hp3w-g68c-fv3c  sprintf-js ≤1.1.3 无界精度说明符 DoS
+          #   链：5 个包的 @istanbuljs/load-nyc-config → js-yaml@3.15.2 →
+          #       argparse@1.x → sprintf-js@1.0.3
+          #   原因：上游无修复版。实测 argparse 2.x 起已不依赖 sprintf-js，但 js-yaml@3
+          #         钉 argparse ^1.0.7，而 js-yaml@3 由 jest 覆盖率工具锁定；升级需 jest
+          #         换代。sprintf-js 仅被 argparse CLI 格式化路径调用，本项目从不以
+          #         不受信输入调用它，且**仅测试期可达**。
+          #   复查：2026-12-30（到期动作=复查 jest 是否可解析到 js-yaml@4+；不得 override）
+          #
           echo "Still failing after retries — matching against exemption list (SEC-06)..."
           known='GHSA-528h-pc64-c93x
           GHSA-hqr4-qq8f-hg3x
-          GHSA-mjw6-4jj6-33hc'
+          GHSA-mjw6-4jj6-33hc
+          GHSA-7pqw-9j4j-h8q3
+          GHSA-jmr9-qjv8-65gv
+          GHSA-ch52-4w7c-c8xp
+          GHSA-hp3w-g68c-fv3c'
           # 提取 JSON 中所有 moderate 及以上 advisory 的 GHSA id（去重排序）
           found=$(node -e '
             const a = require("/tmp/audit.json");
