@@ -823,6 +823,10 @@ jobs:
       # 读的人会以为「这个能力没有接口」。附录由 openapi 生成，本守卫要求逐字节一致。
       - name: API reference endpoints vs OpenAPI guard
         run: node scripts/gen-api-reference-appendix.mjs --check
+      # CLI 命令地图：每节标题带手写计数、标题里再写死总数，没有任何东西校验 → 必然漂。
+      # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
+      - name: CLI command map vs code guard
+        run: node scripts/check-cli-doc.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
