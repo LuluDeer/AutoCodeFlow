@@ -981,3 +981,18 @@
   **教训**：任何带豁免机制的守卫，都要检查豁免标记会不会被**别的**扫描器当成正文。
 - 2026-10-20 **顺带核查（无提交）**：`verifyExecutorToken` 的凭据比较实现正确（先比长度、再 `timingSafeEqual`），无需改动；`getExecutorSharedToken` 每次请求读 `SystemConfigService.findOne`，由 PERF-2 的 TTL 缓存兜底。
 - 2026-10-20 **R86-A1 进行中**：executor-desktop **主进程**安全面审计（IPC 面 / 凭据存储 / 更新链 / 子进程）——此前从未被系统审计。agent 已列出主进程文件清单并建立检查点（含 test:main 串联 ~50 个 selftest 的事实）。
+- 2026-10-20 **R88 · 发现：两个 selftest 从来没在 CI 跑过（工作树已修，**待与 R86-A1 一并提交**）**：`src/main` 下有 48 个 `*.selftest.ts`，
+  而 `test:main` 只列了 46 —— 漏掉的是 `agent/browser.selftest.ts`（P7b **浏览器工具的动作枚举 + 域名白名单**闸）与
+  `agent/package-candidate.selftest.ts`（P7d 的 ZIP 写入器 + **穿越载荷在写入层被拒**）。两个都是**安全相关**的闸，却从未在 CI 执行。
+  更刺眼：这两个文件的头注都写着 `Run via: npm run test:main` —— **文档说它跑，实际不跑**。与 R82「守卫没接 CI」同一类失败。
+  实测两者单独跑均 **exit 0**（browser 在无 playwright 二进制时**显式打印跳过**，不是假绿）。已把它们加进 `test:main`（46 → 48 项），
+  并新增守卫 `scripts/check-desktop-selftests-wired.mjs`（**双向**：每个 selftest 必须在清单里 / 清单每项必须有源文件）。
+  **未提交原因（如实）**：`apps/executor-desktop/package.json` 同时被 R86-A1 改动（它新增了 `ipc-sender-guard.selftest` / `port-check.selftest` 并已接线，
+  当前清单 50 项）—— 若此刻只提交我这个文件的改动，会把**尚未提交的 agent 源文件**一起带进清单，CI 的 `test:main` 将 ENOENT。
+  故本轮只登记，下一轮与 R86-A1 一并提交。
+- 2026-10-20 **R86-A1 进展（agent 运行中，已出四轴判定表）**：**IPC 轴 43 个 handler、0 个校验 `senderFrame`**（全部 `(_event, …)`）；
+  路径类 handler 有守卫（`log:open-file` / `apps:log:read` / `apps:open-folder` / delete-release 白名单 + containment）；
+  **`config:check-port` 无类型/边界校验**（已产出修复 `port-check.ts` + `ipc-sender-guard.ts` 两个新 selftest）。
+  凭据轴：`safeStorage` 信封 `enc:ss:` + IPC 只发掩码（`config-store.ts:321`）+ 文件级原子写；**跨键非事务**（save 逐键 set，崩溃可留半套配置，非安全关键）。
+  更新链：generic feed **只收 https、无主机白名单**；完整性依赖 electron-updater 的 sha512（同源 yml）+ Windows Authenticode；**Linux 无签名（遗留）**。
+  子进程：`spawn(process.execPath,[entry])` 数组参数无 shell；win32 `taskkill /T /F` 树杀；**POSIX 强杀不是树杀**；worker 单杀无树杀；输出上限 1MB。
