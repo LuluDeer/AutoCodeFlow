@@ -996,3 +996,14 @@
   凭据轴：`safeStorage` 信封 `enc:ss:` + IPC 只发掩码（`config-store.ts:321`）+ 文件级原子写；**跨键非事务**（save 逐键 set，崩溃可留半套配置，非安全关键）。
   更新链：generic feed **只收 https、无主机白名单**；完整性依赖 electron-updater 的 sha512（同源 yml）+ Windows Authenticode；**Linux 无签名（遗留）**。
   子进程：`spawn(process.execPath,[entry])` 数组参数无 shell；win32 `taskkill /T /F` 树杀；**POSIX 强杀不是树杀**；worker 单杀无树杀；输出上限 1MB。
+- 2026-10-20 **R88 续（工作树，仍未提交）**：把新守卫**接进 CI**（`check:desktop-selftests-wired` + ci.yml step），并确认 `check-guards-wired` 绿
+  （30 个 check-*.mjs 全部被 CI 执行 + 1 个豁免）。**仍未提交的原因不变**：`apps/executor-desktop/package.json` 与 R86-A1 的改动混在同一文件
+  （它新增 `ipc-sender-guard.selftest` / `port-check.selftest` 并已接线，清单 50 项）；此刻若只提交桌面 package.json，会把**未提交的 agent 源文件**带进清单 ⇒
+  `tsc -p tsconfig.selftest.json` 不产出对应 js ⇒ `test:main` 在 CI 里 ENOENT。故等 R86-A1 收尾后一并提交。
+- 2026-10-20 **R86-A1 代码审阅（只读，未改动）**：质量高于预期，两处值得记 ——
+  ① `ipc-sender-guard.ts` **单一注册入口**：`electronIpcMain` 只作别名导入，本地 `ipcMain` 由 `createGuardedIpcMain` 产出 ⇒ 43 个 handler 想绕过必须
+    显式再 import 一个 ipcMain（TS 直接报重复声明）；还有一条 **源码钉子 selftest** 禁止按原名导入。文件头自己写明**边界**：「本闸判 URL 与 frame 身份，
+    不是进程身份 —— 同 frame 内被注入的脚本仍拦不住，那需要按 channel 做能力分级」。
+  ② `port-check.ts` 的缺陷是**实证**而非推测：Node 的 `listen` 对字符串走 IPC 管道分支 ⇒ 渲染层能让主进程建管道；`listen(null,…)` 会绑 0 号临时端口并**成功**
+    ⇒ 用户清空端口输入框后预检**永远显示可用**。修法把参数收成「整数 + IP 字面量/localhost」。
+  ③ 已核对装配：`ipcMain.handle` 43 处、`ipcMain.on` 0 处、`electronIpcMain` 仅 2 处引用（别名 + 包装），**无旁路**。
