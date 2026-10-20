@@ -939,3 +939,10 @@
   `check-ssrf-deny-parity.mjs` 从「只校验 node」扩到**两侧都校验**，缺哪侧报哪侧。
   验证：pytest 25 passed、parity 绿（18×2）、lint-gates 绿；反证：删掉 python 里 `fd00::1234` → 守卫报「缺在
   executor-python」。**意义**：三份实现里两份被同一张矩阵钉住，将来「只改一侧」会立刻红，而不是等下次偶然发现。
+- 2026-10-20 **R80 done（commit f0627ac8）**：新增**「同族实现」雷达** `scripts/report-sibling-implementations.mjs`（只报告、永不失败）。
+  由来：R74 修 executor-node 的 SSRF、R77 偶然发现 admin-api 有更硬的一份、python 还有第三份 —— **三次发现全是撞上的，不是查过的**。
+  monorepo 里同一安全概念被多个 app 各实现一遍是**结构性**的，所以把「记得去搜」变成「跑一下」：按 8 个安全概念列出实现点并按 app 归组，只回答
+  「这个概念除了我刚改的那处，还有几处？」。**首跑 978 个源文件，8 个概念全部跨 ≥2 个 app**（SSRF 4/10、恒定时间比较 4/12、zip-slip 3/15、
+  密钥脱敏 5/40、原子写 5/14、凭据哈希 3/36、HMAC 3/8、路径包含 2/14）。
+  **顺手抽查 zip-slip**：`executor-python/zip_safety.py` 文件头已写明镜像 node 的 `ZIP_GUARD_DEFAULT_LIMITS` 并接受同名 `ZIP_MAX_*` 环境变量、默认值逐项对齐 ⇒ **这一族已有人维护，无需动作**（雷达第一个候选是干净的，本身是有用结论）。
+  脚本刻意不做门禁（正则宽松、只报告）：真正的处置不是合并成包，而是像 R77/R79 那样「共享矩阵 + parity 守卫」——雷达负责告诉你**该钉哪一对**。
