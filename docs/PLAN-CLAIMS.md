@@ -2397,3 +2397,28 @@ Python 那段文档值得原文抄下来，因为它同时记录了**一次「�
 | 明确「python 侧不重试是设计」并在 README 显著位置写 | 诚实的现状 + 期望管理 |
 
 **留给 agent 报告 + 你拍板**，我不在这次审计里顺手改 python 的重试语义。
+- 2026-10-20 **R181 · agent 纠正了我任务书里的一条错误指令（我的错）**。
+
+我给 `R177-A1` 的任务书写的是：「node 包 `cd packages/autocodeflow-node-sdk` 后 `npx vitest run`」。
+它实测发现**该包根本没有 vitest**：
+
+```
+npx vitest run → 4 failed "describe is not defined" / "jest is not defined"
+```
+
+我核实了 `package.json`：`scripts.test = jest`，devDeps 有 `jest` + `ts-jest`、**没有 vitest**。
+**正确入口是 `npx jest`（= `npm test`）。**
+
+## 这是我的错，且是一个可复发的错
+
+我这几轮跑过 admin-web / mcp-server / acf-cli 的 `npx vitest run`（那几个确实是 vitest），
+于是**把「本仓的 node 包用 vitest」当成了通例**，套到了这个包上。
+
+> 而 vitest 面对 jest 写的测试不会报「找不到 runner」，它会**报一堆 `describe is not defined`** ——
+> 一个看起来像「测试文件写错了」的错误，而不是「你跑错 runner 了」。
+
+**如果 agent 不较真，它会得出「这个包的测试本来就坏」的结论，然后绕开测试直接改代码** ——
+那会是最坏的结果：改完没有基线可比。它没有，它去看了 `package.json`。
+
+**教训写给我自己**：给子任务写跑测命令时，**要么先读一眼 `package.json` 的 `scripts.test`，要么写「按本包自身约定」**，
+不要把上一个包的入口当默认值。今天我已经在「改完要跑哪些测试」上错过一次（`R127`），这是同一族的第二次。
