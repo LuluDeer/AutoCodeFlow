@@ -946,3 +946,10 @@
   密钥脱敏 5/40、原子写 5/14、凭据哈希 3/36、HMAC 3/8、路径包含 2/14）。
   **顺手抽查 zip-slip**：`executor-python/zip_safety.py` 文件头已写明镜像 node 的 `ZIP_GUARD_DEFAULT_LIMITS` 并接受同名 `ZIP_MAX_*` 环境变量、默认值逐项对齐 ⇒ **这一族已有人维护，无需动作**（雷达第一个候选是干净的，本身是有用结论）。
   脚本刻意不做门禁（正则宽松、只报告）：真正的处置不是合并成包，而是像 R77/R79 那样「共享矩阵 + parity 守卫」——雷达负责告诉你**该钉哪一对**。
+- 2026-10-20 **R81 done（commit c531c9a0）**：**恒定时间比较守卫**。R80 雷达显示这一族跨 4 app / 12 文件；**抽查结论是「当前没有真实缺陷」**
+  （python `hmac.compare_digest`/`secrets.compare_digest` 在位、`auth.py:339` 还专门改 bytes 比较避免非 ASCII 抛 500；node `timingSafeEqual` 在位）。
+  但**没有任何东西阻止将来退化成 `===`** —— 这种退化**功能完全等价**、所有测试都不会红、只有时序不同、review 极难看出来。
+  新增 `check-constant-time-compare.mjs`（978 文件）：`===`/`==` 任一侧标识符名含 token/secret/password/hash/signature/apikey/credential 且另一侧非字面量 ⇒ 红。
+  **首跑 5 处全是误报**，逐条按纪律写豁免（不放宽判据）：sop 的 contentHash（发布判重的自算哈希）、app-name-recovery 的 cachedSignature（缓存键）、
+  export-flows 的 EXPORT_TOKEN_MASK（与 `'***'` 掩码常量比）、updater-runcheck ×2（`{}` 对象身份哨兵，并发去重）。豁免窗口 3 行（比 ADR-026 的 5 行更紧）。
+  验证 978 文件绿 + lint-gates/docs 绿，接入 CI；反证：删掉任一条豁免 → 守卫点名 `updater-runcheck.ts:72`。**结论：实现是对的，缺的是防止退化的机器。**
