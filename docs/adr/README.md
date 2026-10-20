@@ -39,6 +39,7 @@
 | [ADR-023](adr-023-params-env-injection-contract.md) | params → 子进程 env 的注入口径——字符串回归裸值 + 类型化 `AUTOFLOW_PARAMS_JSON` 通道（协议 4→5，A-11R） | Accepted |
 | [ADR-024](adr-024-execution-record-archive.md) | 执行记录归档——保留期之外的 `task_executions` 是留是删（PLAN-BACKEND-ARCHITECTURE §2.2；四选项 + 触发条件 + 本轮不实施） | Proposed |
 | [ADR-025](adr-025-audit-log-tamper-evidence.md) | 审计日志不可篡改性——append-only 触发器已是有效控制，不引入哈希链（PLAN-SECURITY-HARDENING §6.1-6.2；五类假阴性 + 实测 TRUNCATE/DBA 绕过边界 + 本轮不实施） | Accepted |
+| [ADR-026](adr-026-conditional-state-writes.md) | 状态迁移写必须条件化——四个模块的同一根因（整行回写 / 无前置状态 UPDATE）与六条可验收规则（R32-C3 / R32-C1 / R33-B2 / R33-A2） | Accepted |
 
 ## DOC-04 覆盖状态
 
