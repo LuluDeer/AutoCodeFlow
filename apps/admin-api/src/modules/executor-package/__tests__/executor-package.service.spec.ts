@@ -203,6 +203,8 @@ describe("ExecutorPackageService", () => {
             findOne: jest.fn(),
             findAndCount: jest.fn(),
             create: jest.fn(),
+            // R60-A1：update() 改列级 patch（repo.update），不再整行 save。
+            update: jest.fn(),
             save: jest.fn(),
             remove: jest.fn(),
             createQueryBuilder: jest.fn(),
@@ -402,13 +404,19 @@ describe("ExecutorPackageService", () => {
   });
 
   describe("update", () => {
-    it("should update and return the package", async () => {
-      repo.findOne.mockResolvedValue(mockPkg);
-      repo.save.mockResolvedValue({ ...mockPkg, description: "updated" });
+    // R60-A1（ADR-026 规则 4）：写面 = 白名单 ∩ 显式提供的列；不再整行 save
+    //（并发交错用例见 executor-package-stale-snapshot-write.spec.ts）。
+    it("should update and return the package (column-level patch, no whole-row save)", async () => {
+      repo.findOne.mockResolvedValue({ ...mockPkg });
       const result = await service.update("pkg-001", {
         description: "updated",
       } as any);
       expect(result.description).toBe("updated");
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: "pkg-001" },
+        { description: "updated" },
+      );
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it("should throw ConflictException on duplicate name/version", async () => {
@@ -984,25 +992,29 @@ describe("ExecutorPackageService", () => {
 
   describe("deprecate / activate", () => {
     it("should set status to DEPRECATED", async () => {
-      const deprecated = {
-        ...mockPkg,
-        status: ExecutorPackageStatus.DEPRECATED,
-      };
-      repo.findOne.mockResolvedValue(mockPkg);
-      repo.save.mockResolvedValue(deprecated);
+      repo.findOne.mockResolvedValue({ ...mockPkg });
       const result = await service.deprecate("pkg-001");
       expect(result.status).toBe(ExecutorPackageStatus.DEPRECATED);
+      // 只写 status 一列（pushHistory 等并发列不进入写面）。
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: "pkg-001" },
+        { status: ExecutorPackageStatus.DEPRECATED },
+      );
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it("should set status to ACTIVE", async () => {
-      const active = { ...mockPkg, status: ExecutorPackageStatus.ACTIVE };
       repo.findOne.mockResolvedValue({
         ...mockPkg,
         status: ExecutorPackageStatus.DEPRECATED,
       });
-      repo.save.mockResolvedValue(active);
       const result = await service.activate("pkg-001");
       expect(result.status).toBe(ExecutorPackageStatus.ACTIVE);
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: "pkg-001" },
+        { status: ExecutorPackageStatus.ACTIVE },
+      );
+      expect(repo.save).not.toHaveBeenCalled();
     });
   });
 });

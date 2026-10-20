@@ -103,6 +103,37 @@ export function appendPushHistoryEntry(
   return [...base, entry].slice(-max);
 }
 
+/**
+ * R60-A1（ADR-026 规则 4）：`update()` **真正拥有**的列 —— 正向白名单。
+ *
+ * 为什么是白名单而不是"整行 save 后 delete 几列"：黑名单只拦今天想得起来的列，
+ * 明天给 `executor_packages` 加一列（迁移加列是常态）就自动从"不写"变成"按
+ * 陈旧快照写回"，腐化是静默的。白名单下新列默认**不属于** PATCH 的写面，
+ * 想写它必须先显式加进来并说明依据。
+ *
+ * 清单 = `UpdateExecutorPackageDto` 的全部字段（name/version/type/platform/
+ * description/checksum/filePath/fileSize/status）：管理台 PATCH 的语义就是
+ * "把这几个元数据列改成我给的值"。**刻意不含**：
+ *   · `pushHistory` —— 唯一写者是 `appendPushHistory()`（事务 + FOR UPDATE，
+ *     追加语义）。PATCH 拿着旧快照覆盖它 = 回滚并发 push-result 回调的记录；
+ *   · `projectId` —— 归属变更走独立路径（AUTH-01 多租户），不属于包元数据编辑；
+ *   · `id` / `uploadedBy` / `createdAt` / `updatedAt` —— 服务端/DB 所有。
+ */
+const PACKAGE_UPDATE_OWNED_COLUMNS = [
+  "name",
+  "version",
+  "type",
+  "platform",
+  "description",
+  "checksum",
+  "filePath",
+  "fileSize",
+  "status",
+] as const;
+
+/** update() 白名单列名（逐列依据见 PACKAGE_UPDATE_OWNED_COLUMNS）。 */
+type PackageUpdateOwnedColumn = (typeof PACKAGE_UPDATE_OWNED_COLUMNS)[number];
+
 @Injectable()
 export class ExecutorPackageService implements OnModuleInit {
   private readonly logger = new Logger(ExecutorPackageService.name);
@@ -345,6 +376,9 @@ export class ExecutorPackageService implements OnModuleInit {
       });
       let saved: ExecutorPackage;
       try {
+        // R60-A1 分类：**创建/插入路径**（保留整行 save）。pkg 由上面的
+        // `this.repo.create({...})` 就地构造、没有既有主键 ⇒ save 等价 INSERT，
+        // 快照里不存在"别人的列"，没有可被覆盖的并发事实。
         saved = await this.repo.save(pkg);
       } catch (err: unknown) {
         // QA9: the file has already been moved into its final location when
@@ -578,12 +612,54 @@ export class ExecutorPackageService implements OnModuleInit {
         });
       }
     }
-    Object.assign(pkg, updateDto);
-    const saved = await this.repo.save(pkg);
+    // R60-A1（ADR-026 规则 4）：这里此前是「findOne 快照 → Object.assign(updateDto)
+    // → 整行 save()」。TypeORM 的 save 对既有主键走 UPDATE，且按「读当前行 → 列 diff」
+    // 只写**与当前行不同**的列——于是快照里**过期的** pushHistory 与当前行不等，
+    // 被判成"改动"写回，把并发 push-result 回调（appendPushHistory，事务内 FOR
+    // UPDATE）刚追加的记录整列回滚。本方法语义上只拥有白名单里的元数据列，
+    // 故改成「白名单 ∩ 调用方显式提供」的列级 patch（与 executor.service.update
+    // 的 R51-A1 同款）。
+    const patch = this.pickUpdateColumns(updateDto);
+    if (Object.keys(patch).length === 0) {
+      // 空 patch：不发写请求。旧的整行 save 在这里会发一条 no-op UPDATE，
+      // 那同样是一个「读快照 → 写回」的可交错窗口。
+      return pkg;
+    }
+    // 内存对象同步一份：返回值（controller 回包）与既有调用方语义不变。
+    Object.assign(pkg, patch);
+    // 为什么这里**不该**加 CAS：写面只有 PACKAGE_UPDATE_OWNED_COLUMNS ∩ 调用方显式提供
+    // 的列（patch 里没有 pushHistory/projectId/凭据/计数列）；status 携带的是管理台
+    // 「启用/弃用」的**绝对目标值**（不是"读到的旧值"），last-writer-wins 即正确语义
+    // ——加 CAS 会让两个管理员并发开关包、或 PATCH 撞上并发的 deprecate() 时凭空 409，
+    // 而这些列不承载任何依赖「读取时刻状态」的生命周期不变量（对比 ADR-026 要治的
+    // tokenHash/isActive 类：那是"用旧值复活一个已被别人撤销的事实"，这里不存在）。
+    // adr-026-exempt: 列级 patch（白名单 ∩ 显式提供），状态列是绝对目标值、LWMW 即正确语义。
+    await this.repo.update({ id: pkg.id }, patch);
     this.logger.log(
-      `Updated executor package: ${saved.name}@${saved.version} [${saved.id}]`,
+      `Updated executor package: ${pkg.name}@${pkg.version} [${pkg.id}]`,
     );
-    return saved;
+    return pkg;
+  }
+
+  /**
+   * R60-A1：把 `UpdateExecutorPackageDto` 收窄成「白名单 ∩ 显式提供」的列 patch。
+   *
+   * 两重保险缺一不可：
+   *   · 白名单 —— DTO 的内联类型只是编译期的，运行时 `@Body()` 对象可以带任意
+   *     属性（`pushHistory` / `id` / `projectId`）；不裁剪就等于把"客户端能写
+   *     哪些列"交给客户端决定。
+   *   · `!== undefined` —— 与 TypeORM save 的 undefined 语义对齐（未提供 = 不动
+   *     该列）。`null` 仍然写入（可空列的"清空"是显式意图）。
+   */
+  private pickUpdateColumns(
+    updateDto: UpdateExecutorPackageDto,
+  ): Partial<Pick<ExecutorPackage, PackageUpdateOwnedColumn>> {
+    const source = updateDto as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    for (const column of PACKAGE_UPDATE_OWNED_COLUMNS) {
+      if (source[column] !== undefined) patch[column] = source[column];
+    }
+    return patch as Partial<Pick<ExecutorPackage, PackageUpdateOwnedColumn>>;
   }
 
   /**
@@ -623,6 +699,11 @@ export class ExecutorPackageService implements OnModuleInit {
         ...(report.error ? { error: report.error } : {}),
         timestamp: new Date().toISOString(),
       });
+      // R60-A1 分类：**锁内整行回写**（保留）。pkg 是上面 `pessimistic_write`
+      // 事务内重读的**最新行**，行锁持有到 commit ⇒ 并发写者要么在本事务前提交
+      // （本行已读到其值），要么阻塞到本事务结束——不存在"读后写前"的陈旧窗口。
+      // 不改成列 patch 的理由：pushHistory 是**整列覆盖**语义（追加在内存完成），
+      // 且本方法（连同其上方锁）是该列的唯一写者。
       await em.save(pkg);
     });
   }
