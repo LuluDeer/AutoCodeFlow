@@ -1140,3 +1140,10 @@
   验证：tsc 0（两套 tsconfig）、5 个相关 selftest 全绿、新 selftest 接进 test:main（守卫 52/52），含**接线钉子**；反证：删 `apps:uninstall` 的确认调用 → exit 1，还原后 0。
   **反证暴露我自己一个 bug（重要）**：接线钉子初版用 `path.join(__dirname,'..','ipc-handlers.ts')` + `if (existsSync)`，而编译产物在 `dist-selftest/` 下该路径**不存在** ⇒ 整段检查被**静默跳过**，撤掉调用后仍全绿。
   **一条会静默跳过的接线钉子，比没有更糟 —— 它给出「已检查」的错觉。** 改成逐个候选 + 全都找不到即失败后，反证才生效。
+- 2026-10-20 **R106 done（commit 248a6ef9）**：**导航白名单钉到入口页本身 + 补 will-redirect**。原判据 `url.startsWith('file://')` 在生产形态下等于**放行任意本地文件**，
+  而导航后 **preload 桥仍挂在同一 webContents 上** ⇒ 「导航到一个本地 HTML」= 「那个页面拿到整套 electronAPI」。渲染层目前无设置 location 的能力（D 轴守卫也拦新增），
+  故**不是可直接利用的洞**，但那是「靠没人用」而非「用不了」—— 本轮把判据从**前缀**改成**归一后全等**（只认 `pathToFileURL(RENDERER_INDEX)`，忽略 hash/query）。
+  抽出纯函数 `navigation-policy.ts::isAllowedNavigation`（不 import electron）+ 补 `will-redirect`（与 will-navigate 是**独立事件**，只挂前者等于给服务端 3xx 留后门）。
+  验证：tsc 0（两套）、6 个相关 selftest 全绿、接线守卫 **53/53**；**两条反证**（均还原即绿）：① 回退成 `startsWith('file://')` → exit 1；② 删掉 `will-redirect` 一行 → exit 1。
+  **取舍**：判据改全等后，将来「渲染层打开本地帮助文档」会被挡 —— 那是**有意的**：该类需求应走 `shell.openExternal`/`openPath` 既有 IPC（带 path-domain 白名单），
+  而不是让应用自己的窗口导航过去、把 preload 桥一起带过去。
