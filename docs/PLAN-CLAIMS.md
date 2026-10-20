@@ -1351,3 +1351,11 @@
   **执行器本地背压不该影响那个决策**；用只对人说话的文案 `... [N log lines dropped by local backpressure] ...`。
   验证：pusher **17 passed**、全量 **1199 passed / 3 skipped**；新增两条（marker 落在缺口行号且后续行号不受影响 / 一轮只出一条 marker）；**既有用例也改了**（`test_backpressure_drops_oldest` 原本假设首发布即真实片 ⇒ 改为「首发布是 marker + 排除后首片 fromLine=100 且总数 901」，**断言未放松**）；
   反证：marker 发射条件改 `if False` → **3 条红**（含那条既有用例），还原 1199 绿 —— 说明改的是**预期**而非把测试改绿。
+- 2026-10-20 **R125 的落库侧复核（无提交，但重要）**：上轮我把 marker 行插进实时流，前提是「admin 按 fromLine+i 落库、每片自带起点」——
+  本轮去读了实现而不是停在假设：`task.service.ts:4724-4765` 的 `appendLogChunk` 做的是
+  **按范围先删后插**：`delete where lineNumber Between(fromLine, fromLine+len-1)`，再 `save(entities)`（`lineNumber = fromLine + i`），
+  **没有任何单调性校验**。
+  三重结论：① marker 成片（单行、`fromLine = 第一条被丢行`）与该语义**兼容**；② 重发同一片是**幂等**的（先删后插）；
+  ③ 被丢的行从未发送过 ⇒ marker 占用的行号不会与后续真实切片冲突。
+  另外 `levelOfLine(content)` 会把 marker 判成 info（文案里没有 error 关键字）—— 不会在 UI 里被染成红色错误行。
+  **这条复核的价值**：它把上轮那个 marker 从「我认为安全」变成「读过落库实现后安全」。**假设与事实之间隔着一次阅读。**
