@@ -2785,3 +2785,29 @@ agent 报「9 个 `--json` 命令的 stdout 可整体 `JSON.parse`，失败时 s
 它做的是后者，而且顺带发现了一条我 `R193/R195` 都没列出来的：`enable` 本身**不在我列的破坏性命令词表里**
 （我的 grep 只找 `delete|kill|rotate|rollback|revoke|remove`），所以**靠名字筛永远会漏** ——
 这也是「按名字找破坏性命令」这个方法的天花板。
+- 2026-10-20 **R201 · 它的 README 更新是今天见过最好的一次文档改动（把清单换成了分类）**。
+
+改前是一句不完整的枚举：
+
+> `app delete` / `task delete` / `deploy remove` 有交互确认。
+
+改后是**按效果分类的表格**：
+
+| 类别 | 命令 |
+|---|---|
+| 删除 | `app delete` / `task delete` / `task batch delete` / `deploy remove` / `mutex delete` |
+| **一次性密钥轮换（旧值立即失效）** | `executor rotate` / `task webhook enable`·`rotate`·`disable` |
+| **强制终止（KILLED 是终态，无法恢复）** | `task kill` |
+| 全量滚动升级（`--strategy canary` **不加门**） | `app upgrade-all` |
+| 撤销凭据（影响仍在用它的外部系统） | `apikey revoke` |
+
+三个细节值得单独指出：
+
+1. **分类的依据是「后果」而不是「动词」** —— `enable` 出现在「密钥轮换」那一行，因为它的后果是轮换；
+   这正是我 `R200` 说的「按名字筛永远会漏」的反面：**按效果归类，`enable` 就不会被漏掉**。
+2. **`--strategy canary` 不加门** 被显式写明 —— 同一个命令，**全量升级加门、金丝雀不加**。
+   这是**按比例**而不是按命令名一刀切；不写出来，下一个人会以为漏了。
+3. **`status` 是只读面，不加门**也被写明 —— 「什么都不做的那个子命令」同样需要一句解释。
+
+**这条是本 session 里我想推广的那种文档**：它不描述代码怎么写，而描述**为什么这样分类**，
+于是以后新增一个破坏性命令时，**作者知道该问「它属于哪一类后果」而不是「它名字里有没有 delete」**。
