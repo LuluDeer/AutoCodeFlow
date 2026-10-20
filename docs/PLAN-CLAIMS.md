@@ -2325,3 +2325,13 @@ logStreamPusher.finalFlush().catch(...)
   这恰好区分了两种红：**「套件失败」与「用例失败」** —— 前者一个用例都没跑，后者至少跑了。我第一眼只看 `Test Suites: 1 failed` 差点当成断言挂了。
   **连带**：改了 executor-node 源码 ⇒ `check-desktop-bundle-drift` 又红（内嵌 bundle 语义摘要变了）⇒ 重打 + 回填 `.sha256`，现已双段一致。
   （**这条教训今天第三次出现**：改完一个应用，要跑的不只是它的测试 —— 还有它会连带影响的下游守卫。）
+- 2026-10-20 **R176 done（commit f2e242ad + fc97b56a）**：**decoder 尾巴必须同时喂实时流 pusher**。
+  `runProcess` 的 `close` 回调里，`StringDecoder.end()` 的残字节此前只喂**两个** sink（`logBuffer` 终态回调 / `appendLog` 落盘），
+  **漏了第三个**（`logStreamPusher`）—— 而正常数据路径 `processOutput` 是喂三个的。
+  ⇒ 进程在多字节字符中间被切断时，末行末尾 1-3 字节只出现在终态回调里，**实时视图那一行残缺且无标记**。
+  **这是结构性证明**：三个 sink 的输入集必须相同，这是 `processOutput` 已确立的契约，`close` 路径违反它 —— 不需要构造真实进程就能判定。
+  改法 2 行：`logStreamPusher?.addOutput(tail, 'stdout'/'stderr')`（带流身份，正好用上 `R164-A1` 刚加的按流隔离）；顺序在 `finalFlush()` 之前且 `addOutput` 同步 ⇒ 无时序问题。
+  验证：executor-node **48 suites / 1218 passed**、tsc 0、`jest src/routes` 15/424 全绿。**如实标注：这条没新增用例** —— 钉它需要真实子进程在多字节处断流；
+  我接受「结构性证明 + 全量不回归」，而不用 mock 冒充（**用 mock 模拟「decoder 有残字节」等于把实现抄一遍，那不是验证**）。
+  **这一类今天第四次**：`R94` 无调用方 / `R150-A1` isEnabled 只一处 / `R164-A1` node 没跟 python / 本轮三 sink 只喂两个 —— **「同一份数据多个消费者时新增分支只喂其中几个」**。
+  连带又重打了一次内嵌 bundle（`fc97b56a`）。
