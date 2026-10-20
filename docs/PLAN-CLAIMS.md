@@ -2156,3 +2156,24 @@ agent 报：`loadFromEnv` 把渠道 `enabled` 默认发布成 false，历史 DB 
 
 **这份底稿的用法**：agent 的对照表如果与它不一致，先怀疑 agent 读漏；如果一致但我上面某格填错，**以代码为准**。
 两边独立得到同一张表，才算这张表可信。
+- 2026-10-20 **R167 · 对照表补两行：node 侧没有 flush 串行化（python 侧有）**。
+
+读 `log-stream-pusher.ts` 的 `scheduleFlush` / `flush` / `finalFlush`：
+
+- `scheduleFlush`：`setTimeout` 回调里**先**把 `this.timer = null` **再**调 `flush()` ⇒ **不存在 python 那个「flush 取消自己」的 bug**
+  （python 用 `asyncio.create_task`，node 用 `setTimeout`，机制不同天然避开）。
+- **但 `flush()` 没有锁**：`finalFlush()` 直接 `await this.flush()`；若此刻有一次 timer flush 正卡在 `await post(...)`，
+  两者会**并发推不同切片**。
+
+| 维度 | python | node |
+|---|---|---|
+| flush 串行化 | `_flush_lock`（asyncio.Lock） | **无** |
+| final flush 是否等待在飞 flush | 是（锁 + await） | **否**（各自 splice 自己那批） |
+
+**后果推演**（不写成「已确认缺陷」，因为要真 admin 才能定）：两批切片行号不重叠 ⇒ admin 的「按范围先删后插」**不会写坏数据**；
+但 `finalFlush()` 只等自己那批 ⇒ **在飞那批还没回来，收尾就继续往下走了**。若进程此时销毁或回调已发出，
+那批日志的失败只会被 timer 回调里的 `.catch` 记一条 debug ⇒ **尾部落日志静默丢失**。
+这正是 python 侧加 `_flush_lock` 要防的形状（那边更严重：`chunks.clear()` 后一条没发出去）。
+
+**验证难度**：需要「一次 flush 卡在网络上 + 收尾同时发生」的时序，mock 里可构造，真机需慢 admin。**判定留给 agent**；
+我只把这一行写进底稿 —— 若它报「并发/顺序轴 ✅ 已正确」，我会拿这两行去对。
