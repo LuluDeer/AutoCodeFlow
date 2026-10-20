@@ -931,3 +931,11 @@
   18 条危险地址 + `::ffff:127.0.0.1` / `::ffff:7f00:1` / `::ffff:6440:5` **全部判受限**，而
   `::ffff:808:808`（公网映射）判**放行** —— 即三份实现里 python 那份是最强的。**结论：无需改动**，
   但把它纳入 `check-ssrf-deny-parity` 的后续覆盖范围（当前只镜像到 node 侧）已登记。
+- 2026-10-20 **R79 done（commit 7df07bee）**：**executor-python 的 SSRF 闸首次有直测，并纳入跨 app 矩阵**。
+  python 那份实现其实**最强**（`ipaddress` 的 `is_*` + `not is_global` 兜底，实测 22 探针全对，含
+  `::ffff:7f00:1`），但**此前没有任何用例直接钉它** —— 一份「恰好写对了」的实现，没有任何东西阻止
+  它将来被改坏。新增 `tests/test_ssrf_guard.py`（25 例）：18 条危险地址**由脚本从 admin-api 矩阵生成**
+  （避免手抄漂移）+ `::ffff:` 映射形态 + **必须放行**的公网对照（防「一律拒绝」假绿）+ 方括号/zone 归一化。
+  `check-ssrf-deny-parity.mjs` 从「只校验 node」扩到**两侧都校验**，缺哪侧报哪侧。
+  验证：pytest 25 passed、parity 绿（18×2）、lint-gates 绿；反证：删掉 python 里 `fd00::1234` → 守卫报「缺在
+  executor-python」。**意义**：三份实现里两份被同一张矩阵钉住，将来「只改一侧」会立刻红，而不是等下次偶然发现。
