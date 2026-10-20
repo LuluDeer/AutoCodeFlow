@@ -708,3 +708,57 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
     );
   });
 });
+
+// ── R56：系统动作（cron 扫描）也留痕 ──────────────────────────────────────
+// R41-A1 当时把 cron 三类扫描整体排除，理由是「系统动作无操作人 + 5 分钟一次会刷量」。
+// 刷量只存在于「每次扫描都记」；这里只记**真正发生了状态迁移**的那几次（affected===1 之后），
+// 量级由业务事件决定而不是由 cron 频率决定 ⇒ 不需要去重。下面两条把这个分界钉住。
+describe("R56 · 超时扫描的审计（只在真迁移时落账）", () => {
+  const staleRow = () => ({
+    id: "as-1",
+    sopId: "sop-1",
+    sopVersion: "1.0.0",
+    targetExecutorId: "e1",
+    status: "assigned",
+    pulledAt: null,
+    createdAt: new Date(Date.now() - 60 * 60 * 1000),
+    updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    lastProgressAt: null,
+    resultJson: null,
+  });
+
+  it("真的置 failed 才落一条 sop.timeout.unclaimed（userId=null，actor=system:sweep）", async () => {
+    const h = harness();
+    const row = staleRow();
+    (h.assignments as Any).find = jest.fn(async () => [row]);
+    (h.assignments as Any).update = jest.fn(async () => ({ affected: 1 }));
+    (h.service as Any).notifyTimeout = jest.fn(() => Promise.resolve());
+
+    await h.service.sweepAssignmentTimeouts();
+
+    const logged = (h.auditService.log as jest.Mock).mock.calls
+      .map((c: Any[]) => c[0])
+      .filter((p: Any) => p.action === "sop.timeout.unclaimed");
+    expect(logged).toHaveLength(1);
+    expect(logged[0].userId).toBeNull();
+    expect(logged[0].resource).toBe("sop_assignment");
+    expect(logged[0].resourceId).toBe("as-1");
+    expect(logged[0].detail.actor).toBe("system:sweep");
+    expect(logged[0].detail.to).toBe("failed");
+  });
+
+  it("条件写未命中（别人先推进了）→ 不落账（否则每 5 分钟刷一条假记录）", async () => {
+    const h = harness();
+    (h.assignments as Any).find = jest.fn(async () => [staleRow()]);
+    (h.assignments as Any).update = jest.fn(async () => ({ affected: 0 }));
+    (h.service as Any).notifyTimeout = jest.fn(() => Promise.resolve());
+
+    await h.service.sweepAssignmentTimeouts();
+
+    const logged = (h.auditService.log as jest.Mock).mock.calls
+      .map((c: Any[]) => c[0])
+      .filter((p: Any) => p.action === "sop.timeout.unclaimed");
+    expect(logged).toHaveLength(0);
+  });
+});
+

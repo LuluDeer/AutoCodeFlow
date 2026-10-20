@@ -1324,6 +1324,25 @@ export class SopService {
       this.logger.warn(
         `SOP assignment unclaimed timeout: id=${a.id} sopVersion=${a.sopVersion}`,
       );
+      // R56：**系统动作也留痕**。R41-A1 当时把 cron 三类扫描整体排除，理由是「系统动作无操作人
+      // + 5 分钟一次会刷量」。刷量问题只存在于「每次扫描都记」；这里只记**真正发生了状态迁移**
+      // 的那几次（affected===1 之后），量级由业务事件决定而不是由 cron 频率决定 ⇒ 无需去重。
+      // 操作人记 null，主体用 detail.actor（与执行器面的 actor 同一约定）。
+      await this.safeAudit({
+        userId: null,
+        ip: null,
+        action: "sop.timeout.unclaimed",
+        resource: "sop_assignment",
+        resourceId: a.id,
+        detail: {
+          sopId: a.sopId,
+          sopVersion: a.sopVersion,
+          from: "assigned",
+          to: "failed",
+          outcome: "unclaimed_timeout",
+          actor: "system:sweep",
+        },
+      });
       this.notifyTimeout(a, "无人领取（领取超时）").catch(() => undefined);
     }
     for (const a of stalled) {
@@ -1341,6 +1360,21 @@ export class SopService {
       );
       if (markedStalled.affected !== 1) continue;
       this.logger.warn(`SOP assignment progress stalled: id=${a.id}`);
+      await this.safeAudit({
+        userId: null,
+        ip: null,
+        action: "sop.timeout.stalled",
+        resource: "sop_assignment",
+        resourceId: a.id,
+        detail: {
+          sopId: a.sopId,
+          sopVersion: a.sopVersion,
+          from: "in_progress",
+          to: "stalled",
+          outcome: "progress_stalled",
+          actor: "system:sweep",
+        },
+      });
       this.notifyTimeout(a, "进度心跳停滞（卡死嫌疑）").catch(() => undefined);
     }
 
@@ -1396,6 +1430,24 @@ export class SopService {
         { resolution: "escalated_to_human" },
       );
       if (escalated.affected !== 1) continue;
+      // R56：兜底升级同样只记**真的发生了**的那一次（affected!==1 已在上面 continue）。
+      await this.safeAudit({
+        userId: null,
+        ip: null,
+        action: "sop.clarification.escalated",
+        resource: "sop_clarification",
+        resourceId: row.id,
+        detail: {
+          assignmentId: row.assignmentId,
+          round: row.round,
+          from: null,
+          to: "escalated_to_human",
+          // 兜底判据本身在 sop-timeout 里（会话缺失/终态/超 TTL），这里只记录
+          // 「扫描时看到的复核会话状态」这一事实，不臆测原因。
+          reviewSessionStatus: s.reviewSessionStatus,
+          actor: "system:sweep",
+        },
+      });
       // blocked → in_progress：升级即复核完毕（与 replyClarification 同一
       // 落库后态）；若执行器已失联，in_progress 会被失联扫描接住，不会再
       // 被 blocked 的豁免挡住
