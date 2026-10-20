@@ -833,6 +833,10 @@ jobs:
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
       - name: CLI command map vs code guard
         run: node scripts/check-cli-doc.mjs
+      # 「文件存在 ≠ 在链路里」的第四个载体：packages 下有 pyproject/package.json 却没接进 release.yml
+      # 的包，版本守卫与发布矩阵都覆盖不到（实测四个 Python 库版本冻结在 0.2.3、仓内零消费者）。
+      - name: Publishable packages are wired into release.yml
+        run: node scripts/check-publishable-wiring.mjs
       # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
       # 且只在多副本时显形、单机开发永远看不到。22 处目前全有门禁，此闸防新增时漏写。
       - name: Every @Cron has a leader gate

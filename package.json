@@ -141,6 +141,7 @@
     "check:desktop-selftests-wired": "node scripts/check-desktop-selftests-wired.mjs",
     "check:interface-maps": "node scripts/check-interface-maps.mjs",
     "check:atlas-counts": "node scripts/check-atlas-counts.mjs",
-    "check:cron-leader-gate": "node scripts/check-cron-leader-gate.mjs --selftest && node scripts/check-cron-leader-gate.mjs"
+    "check:cron-leader-gate": "node scripts/check-cron-leader-gate.mjs --selftest && node scripts/check-cron-leader-gate.mjs",
+    "check:publishable-wiring": "node scripts/check-publishable-wiring.mjs"
   }
 }
