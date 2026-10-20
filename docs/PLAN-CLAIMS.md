@@ -1799,3 +1799,19 @@ expect(items(client)[0].status).toBe('active');
   **执行者主动披露两点（我认可）**：① 改动前全量基线**没取到数字**（后台任务 20+ 分钟无输出被终止），给了替代证据链而非编一个数；② 自陈**它有一条用例期望写反了**（实现对、测试错），已修正并标注。
   **边界如实**：全部是 jsdom + mock 后端结论；真浏览器观感、kill 后列表滞后是否肉眼可见 —— 未冒充。
   判定为**有意为之**（只加注释未改）：重置密码不失效 users 列表；`invalidateExecutionData` 不联动 `tasks.lastStatus`/统计（与 SSE 终态同口径）。
+- 2026-10-20 **R151 · 对 notification 域做了一次只读交叉探底（给 R150-A1 的验收预先备好基线）**。
+
+不读实现、只看**结构性痕迹**，四条读数：
+
+1. **出站全部走 DNS 钉扎**：`dingtalk` / `feishu` 等 channel 里是 `pinnedAxiosConfig(pinned)` + `axios.post`，
+   而不是裸 `axios.post(url)` ⇒ SSRF 这道闸**至少被接上了**（`R94` 修的那类「守卫写了没调用」在这里不成立）；
+2. **存在 `channels/log-safe-url.util.ts`** —— 说明「URL 里的 token 不能进日志」这件事**有人想过并落了文件**；
+3. 六个 channel（base/dingtalk/feishu/slack/webhook/wecom）+ config service/controller，规模适中；
+4. `notification-config.controller.ts` 在 R104 改过审计，读面掩码那部分此前有覆盖。
+
+**这条记录的作用**：等 agent 报告回来时，我能立刻分辨哪些是**新发现**、哪些是**它把已知的再报一遍**。
+以及：如果它报「SSRF 未接」或「日志泄漏 token」，我会先怀疑它的判据 —— 因为结构性痕迹显示这两点都处理过。
+
+**注意**：这只是「痕迹」，不是「已验证」。`R94` 的教训正是「文件存在 ≠ 在链路里」——
+`pinnedAxiosConfig` 存在且被调用，但它返回的配置**是否真的被 axios 用来连接钉扎的 IP**，要读实现才能定。
+这一步留给 agent，我只把「该问什么」先钉住。
