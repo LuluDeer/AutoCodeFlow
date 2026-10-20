@@ -1169,6 +1169,75 @@ describe("AppDeploymentService", () => {
       jest.restoreAllMocks();
     });
 
+    it("R34-A2: 推送成功但行已被心跳推进 → 不回退状态，只补部署元数据", async () => {
+      jest.spyOn(global, "setTimeout").mockImplementation((cb: any) => {
+        cb();
+        return 0 as any;
+      });
+      const deployment: any = {
+        id: "deploy-r34a2c",
+        applicationId: "app-1",
+        executorAddress: "203.0.113.10:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.DEPLOYING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // 第一次条件写未命中（行已被心跳推进），第二次（元数据补写）命中
+      repo.update
+        .mockResolvedValueOnce({ affected: 0 })
+        .mockResolvedValue({ affected: 1 });
+      mockAxiosPost.mockResolvedValue({ data: {} });
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      const condWhere = repo.update.mock.calls[0][0];
+      expect(condWhere.status).toBeDefined(); // 条件写带前置状态
+      // 元数据补写：只带元数据、**不带 status**（状态不回退）
+      const metaPatch = repo.update.mock.calls[1][1] as any;
+      expect(metaPatch.status).toBeUndefined();
+      expect(metaPatch.deployedVersion).toBe(mockApp.version);
+      expect(metaPatch.deployedAt).toBeInstanceOf(Date);
+      // 内存实体也不得被回退
+      expect(deployment.status).toBe(DeploymentStatus.DEPLOYING);
+      expect(deployment.deployedVersion).toBe(mockApp.version);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("already advanced"),
+      );
+      warnSpy.mockRestore();
+      jest.restoreAllMocks();
+    });
+
+    it("R34-A2 对照：推送成功且行仍在飞 → 状态与元数据一起落（一次条件写）", async () => {
+      jest.spyOn(global, "setTimeout").mockImplementation((cb: any) => {
+        cb();
+        return 0 as any;
+      });
+      const deployment: any = {
+        id: "deploy-r34a2d",
+        applicationId: "app-1",
+        executorAddress: "203.0.113.10:3001",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.DEPLOYING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      repo.update.mockResolvedValue({ affected: 1 });
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      expect(deployment.status).toBe(DeploymentStatus.DEPLOYING);
+      expect(deployment.statusMessage).toContain("Deploy command sent");
+      expect(deployment.deployedVersion).toBe(mockApp.version);
+      jest.restoreAllMocks();
+    });
+
     it("R34-A2 对照：SSRF 分支条件写命中 → 正常落 FAILED", async () => {
       const deployment = {
         id: "deploy-r34a2b",

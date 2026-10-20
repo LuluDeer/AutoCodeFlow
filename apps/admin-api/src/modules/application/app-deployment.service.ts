@@ -1730,16 +1730,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       payload,
     });
     if (routed.delivered === "pull") {
-      deployment.status = upgrade
-        ? DeploymentStatus.UPGRADING
-        : DeploymentStatus.DEPLOYING;
       // A-2①：statusMessage 记下 commandId（前缀常量供卡死扫描识别「命令
       // 未决」行——见 PULL_QUEUED_MESSAGE_PREFIX 注释）。
-      deployment.statusMessage = `${PULL_QUEUED_MESSAGE_PREFIX} (commandId=${routed.commandId})`;
-      deployment.deployedCommit = app.gitCommit || null;
-      deployment.deployedVersion = app.version || null;
-      deployment.deployedAt = new Date();
-      await this.repo.save(deployment);
+      // R34-A2：状态写条件化（见 persistDeployProgress 头注）。
+      await this.persistDeployProgress(
+        deployment,
+        upgrade ? DeploymentStatus.UPGRADING : DeploymentStatus.DEPLOYING,
+        `${PULL_QUEUED_MESSAGE_PREFIX} (commandId=${routed.commandId})`,
+        app,
+      );
       await this.saveVersionSnapshot(deployment, app, "deploying");
       this.logger.log(
         `Deploy ${deployment.id} queued for pull executor ${deployment.executorAddress} (commandId=${routed.commandId})`,
@@ -1774,15 +1773,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           maxRedirects: 0, // R3 parity: 首跳是唯一经 SSRF 校验的地址
           ...pinCfg,
         });
-        // Success
-        deployment.status = upgrade
-          ? DeploymentStatus.UPGRADING
-          : DeploymentStatus.DEPLOYING;
-        deployment.statusMessage = "Deploy command sent to executor";
-        deployment.deployedCommit = app.gitCommit || null;
-        deployment.deployedVersion = app.version || null;
-        deployment.deployedAt = new Date();
-        await this.repo.save(deployment);
+        // Success（R34-A2：条件写，见 persistDeployProgress 头注）
+        await this.persistDeployProgress(
+          deployment,
+          upgrade ? DeploymentStatus.UPGRADING : DeploymentStatus.DEPLOYING,
+          "Deploy command sent to executor",
+          app,
+        );
         await this.saveVersionSnapshot(deployment, app, "deploying");
         return;
       } catch (err: unknown) {
@@ -1822,6 +1819,55 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   }
 
 
+
+  /**
+   * R34-A2（ADR-026）：推送**成功**路径的状态写也必须条件化。
+   *
+   * 两处（pull 已入队 / push 已送达）都在一次 await 之后写 `DEPLOYING|UPGRADING`。
+   * 若执行器极快（pull 模式尤其：「入队后立刻被取走并跑完」），心跳可能已把行推进到
+   * RUNNING —— 无条件 save 会把状态**回退**成 DEPLOYING（随后又被卡死扫描判 stalled）。
+   *
+   * 但这里不能像失败分支那样「整条跳过」：本次推送的 deployedCommit / deployedVersion /
+   * deployedAt 是**真实事实**（部署确实发生了），丢掉会丢部署记录。故采取：
+   *   · 行仍在飞 → 一次条件写，状态 + 元数据一起落；
+   *   · 行已被推进 → **只补元数据，不回退状态**（并 warn 说明让位）。
+   */
+  private async persistDeployProgress(
+    deployment: AppDeployment,
+    status: DeploymentStatus,
+    statusMessage: string,
+    app: Application,
+  ): Promise<void> {
+    const metadata = {
+      statusMessage,
+      deployedCommit: app.gitCommit || null,
+      deployedVersion: app.version || null,
+      deployedAt: new Date(),
+    };
+    const applied = await this.repo.update(
+      {
+        id: deployment.id,
+        status: In([
+          DeploymentStatus.PENDING,
+          DeploymentStatus.DEPLOYING,
+          DeploymentStatus.UPGRADING,
+        ]),
+      },
+      { status, ...metadata },
+    );
+    if (applied.affected) {
+      Object.assign(deployment, { status, ...metadata });
+      return;
+    }
+    await this.repo.update({ id: deployment.id }, metadata);
+    Object.assign(deployment, metadata);
+    this.logger.warn(
+      "Deploy push to " +
+        deployment.id +
+        " succeeded but the row was already advanced by its heartbeat — status kept, " +
+        "deploy metadata recorded.",
+    );
+  }
   /**
    * R34-A2（ADR-026）：把「本次推送失败」写成终态时，必须是**条件写**。
    *
