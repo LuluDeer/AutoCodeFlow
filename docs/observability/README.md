@@ -345,7 +345,7 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 | --- | --- | --- | --- |
 | `autoflow_execution_result_total` | counter | `status=success\|failed\|timeout` | 回调终态唯一赢家 UPDATE 命中后的执行结果分类 |
 | `autoflow_sse_streams_rejected_total` | counter | — | SSE 日志流因 per-execution / global 并发上限被拒次数（TASK-008） |
-| `autoflow_notification_delivery_total` | counter | `channel=email\|slack\|dingtalk\|wecom\|webhook` × `result=success\|failure` | 通知扇出投递结果 |
+| `autoflow_notification_delivery_total` | counter | `channel=email\|slack\|dingtalk\|wecom\|webhook` × `result=success\|failure\|blocked\|skipped` | 通知扇出投递结果（R33-A1 起四值：`success` = 真的投出；`failure` = 传输/API 故障，含渠道自报 `failed` 与 promise rejected；`blocked` = 被 SSRF 策略拦截；`skipped` = 渠道未配置、零次尝试。四值均在 `RUNTIME_NOTIFICATION_RESULTS` 登记并铺 0 值基线，否则新值在首次命中前是「无数据」而非 0，告警会漏） |
 | `autoflow_callback_business_total` | counter | `result=accepted\|duplicate\|not_found\|address_mismatch\|address_mismatch_missing_address\|error` | 回调业务结果分类（终态重复/地址不符等） |
 | `autoflow_scheduler_trigger_latency_ms_bucket` | counter/hist | `le=10\|50\|100\|250\|500\|1000\|2500\|5000\|+Inf` | CORE-06：定时触发（fixed_rate/cron）fire→入队延迟累计桶（毫秒）；与 scheduler-metrics.service.ts 的 TRIGGER_LATENCY_BUCKETS_MS 逐字对齐 |
 | `autoflow_scheduler_trigger_latency_ms_sum` / `_count` | counter | — | 延迟累计和 / 样本数（avg = sum/count） |
