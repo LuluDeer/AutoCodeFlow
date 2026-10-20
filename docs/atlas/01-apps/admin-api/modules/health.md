@@ -91,6 +91,6 @@ modules/health/
 ## 相关文档
 
 - Prometheus 指标（另一套可观测面）：[metrics.md](metrics.md)
-- 执行器状态语义：[executor.md](executor.md)（下一批次）
-- 调度器：[scheduler.md](scheduler.md)（下一批次）
+- 执行器状态语义：[executor.md](executor.md)
+- 调度器：[scheduler.md](scheduler.md)
 - 部署与探针配置：[../../06-infra/README.md](../../../06-infra/README.md)（规划中）

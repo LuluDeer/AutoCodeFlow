@@ -81,5 +81,5 @@ modules/metrics/
 ## 相关文档
 
 - 健康检查（另一套可观测面）：[health.md](health.md)；JWT 查询参数兜底：[auth.md](auth.md)
-- 调度器指标来源：[scheduler.md](scheduler.md)（下一批次）；事件总线：[../README.md](../README.md) 的 DomainEventModule
+- 调度器指标来源：[scheduler.md](scheduler.md)；事件总线：[../README.md](../README.md) 的 DomainEventModule
 - 执行回调链路：[../../04-flows/execution-callback.md](../../../04-flows/execution-callback.md)

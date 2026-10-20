@@ -83,5 +83,5 @@ modules/api-keys/
 ## 相关文档
 
 - 认证（JWT 线）：[auth.md](auth.md)；审计：[audit.md](audit.md)
-- 任务触发面：[task.md](task.md)（下一批次）
+- 任务触发面：[task.md](task.md)
 - 安全模型：[../../04-flows/security-model.md](../../../04-flows/security-model.md)

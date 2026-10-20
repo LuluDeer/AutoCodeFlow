@@ -17,8 +17,8 @@
  *
  * 用法：node scripts/check-atlas-counts.mjs
  */
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const ROOT = process.cwd();
 let failures = 0;
@@ -107,6 +107,37 @@ const NON_APP_DIRS = new Set([".pytest-tmp", "test-results"]);
     return;
   }
   console.log(`✔ 应用数自述一致：${apps.length} 个。`);
+})();
+
+/* ④ 「（下一批次）」占位标记：文件已存在就不该再挂这个标记 */
+(function checkPendingBatchMarkers() {
+  const DOC_DIR = join(ROOT, "docs", "atlas", "01-apps");
+  const stale = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(p);
+        continue;
+      }
+      if (!e.name.endsWith(".md")) continue;
+      const text = readFileSync(p, "utf8");
+      const rel = p.slice(ROOT.length + 1).split("\\").join("/");
+      for (const m of text.matchAll(/\]\(([^)]+\.md)\)（下一批次）/g)) {
+        const target = join(dirname(p), m[1]);
+        if (existsSync(target)) stale.push(rel + " → " + m[1]);
+      }
+    }
+  };
+  walk(DOC_DIR);
+  if (stale.length > 0) {
+    console.error(`✖ ${stale.length} 处「（下一批次）」标记挂在**已存在**的文档上（读者会以为还没写）：`);
+    for (const s of stale) console.error("  · " + s);
+    console.error("  修法：删掉标记（文档已经写好了）。");
+    failures += 1;
+    return;
+  }
+  console.log("✔ 无「（下一批次）」占位标记挂在已有文档上。");
 })();
 
 if (failures > 0) process.exit(1);

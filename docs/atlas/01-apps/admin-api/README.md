@@ -79,19 +79,19 @@ main.ts
 | health | 健康/就绪/存活检查（DB/Redis/队列/执行器/调度器） | [modules/health.md](modules/health.md) |
 | config | 系统配置键值（system_configs）+ 配置历史与回滚 | [modules/config.md](modules/config.md) |
 | metrics | Dashboard 指标查询 + Prometheus 抓取端点 + SSE 流 + execution_reports 日聚合 | [modules/metrics.md](modules/metrics.md) |
-| task | 任务 CRUD/触发/执行回调（`/tasks`、`/tasks-batch`、`/executions`） | [任务模块](modules/task.md)（下一批次） |
-| scheduler | Cron 调度器（BullMQ 入队、调度指标） | [调度模块](modules/scheduler.md)（下一批次） |
-| executor | 执行器注册/心跳/管理（`/executors`） | [执行器模块](modules/executor.md)（下一批次） |
-| executor-package | 执行器安装包分发（`/executor-packages`） | [executor-package.md](modules/executor-package.md)（下一批次） |
-| artifacts | 执行产物存储与下载（MinIO/S3） | [产物模块](modules/artifacts.md)（下一批次） |
-| notification | 通知渠道配置 + 告警入口（`/notification`、`/alerts`） | [通知模块](modules/notification.md)（下一批次） |
-| ai | AI 辅助（脚本生成/失败分析，OpenAI/Ollama） | [AI 模块](modules/ai.md)（下一批次） |
-| task-template | 任务模板（`/task-templates`） | [任务模板模块](modules/task-template.md)（下一批次） |
-| registry | 私有 npm/PyPI 仓库代理（Verdaccio/自建 PyPI 转发） | [registry 模块](modules/registry.md)（下一批次） |
-| event-subscriptions | 出站事件订阅（DomainEventBus → webhook） | [出站订阅模块](modules/event-subscriptions.md)（下一批次） |
-| runtime | 任务 runtime 注册表（@Global，python/node/shell 描述层） | [runtime 模块](modules/runtime.md)（下一批次） |
+| task | 任务 CRUD/触发/执行回调（`/tasks`、`/tasks-batch`、`/executions`） | [任务模块](modules/task.md) |
+| scheduler | Cron 调度器（BullMQ 入队、调度指标） | [调度模块](modules/scheduler.md) |
+| executor | 执行器注册/心跳/管理（`/executors`） | [执行器模块](modules/executor.md) |
+| executor-package | 执行器安装包分发（`/executor-packages`） | [executor-package.md](modules/executor-package.md) |
+| artifacts | 执行产物存储与下载（MinIO/S3） | [产物模块](modules/artifacts.md) |
+| notification | 通知渠道配置 + 告警入口（`/notification`、`/alerts`） | [通知模块](modules/notification.md) |
+| ai | AI 辅助（脚本生成/失败分析，OpenAI/Ollama） | [AI 模块](modules/ai.md) |
+| task-template | 任务模板（`/task-templates`） | [任务模板模块](modules/task-template.md) |
+| registry | 私有 npm/PyPI 仓库代理（Verdaccio/自建 PyPI 转发） | [registry 模块](modules/registry.md) |
+| event-subscriptions | 出站事件订阅（DomainEventBus → webhook） | [出站订阅模块](modules/event-subscriptions.md) |
+| runtime | 任务 runtime 注册表（@Global，python/node/shell 描述层） | [runtime 模块](modules/runtime.md) |
 | sop | SOP 声明式契约、版本快照、发布/指派/复核 | [SOP 模块](modules/sop.md) |
-| agent | 中心 agent 会话与预算（ADR-019；`/agent`）+ 执行器侧协作入口（`/agent-collab`，独立 controller 文件挂在同目录） | [agent 模块](modules/agent.md)（下一批次） |
+| agent | 中心 agent 会话与预算（ADR-019；`/agent`）+ 执行器侧协作入口（`/agent-collab`，独立 controller 文件挂在同目录） | [agent 模块](modules/agent.md) |
 
 ## 运行要素
 

@@ -67,7 +67,7 @@ batchUpsert(items) → **单数据库事务**承载整批（每条的配置写�
 - **被广泛依赖（被依赖方）**：`SystemConfigService` 消费方（代码 grep 核实）：
   - `main.ts` + `common/middleware/upload-auth.middleware.ts`：`/uploads` 静态面鉴权（执行器共享 token 校验）
   - `common/utils/verify-executor-token.util.ts`：执行器 token 校验回退
-  - [executor.md](executor.md)（下一批次）：executor.controller/service
+  - [executor.md](executor.md)：executor.controller/service
   - [ai.md](ai.md)（规划中）、artifacts（产物）、executor-package、task/execution-callback.controller
 - **依赖 [audit.md](audit.md) 不成立**：配置变更走自己的 `config_history`，不写审计表（两套记录线语义不同，见 [audit.md](audit.md)）。
 - **与 `.env`/configuration.ts 的分工**：进程引导必需项（DB/JWT/Redis 等）在 `src/config/configuration.ts` + Joi，改它们要重启；本模块是业务运行期可热改的键值。env 变量清单见 [../../06-infra/README.md](../../../06-infra/README.md)（规划中）。
@@ -81,6 +81,6 @@ batchUpsert(items) → **单数据库事务**承载整批（每条的配置写�
 
 ## 相关文档
 
-- 执行器共享 token 的消费方：[executor.md](executor.md)（下一批次）、[api-keys.md](api-keys.md)
+- 执行器共享 token 的消费方：[executor.md](executor.md)、[api-keys.md](api-keys.md)
 - 审计（另一条记录线）：[audit.md](audit.md)
 - env 配置面：[../../06-infra/README.md](../../../06-infra/README.md)（规划中）
