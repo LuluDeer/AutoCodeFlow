@@ -1365,3 +1365,19 @@
   **这条判据从来就没验证过它声称的事**。改法：① 判据改到**结构级**（截出 will-navigate 自己的 handler 切片，要求 preventDefault 在切片内，兄弟顶替不了）；② window-manager 两个 handler 各自内联，去掉 helper —— **这里可检查性优先于 DRY**。
   验证：test:renderer 0（此前 1）、tsc 0；**反证**：删掉 will-navigate 的 preventDefault → **exit 1** 并点名「不能被兄弟 handler 顶替」，还原 0。
   **教训**：① 改完必须跑「我改的那个模块的测试」，而不是只跑类型检查与相邻 selftest；② 一条判据的「通过」可能只是「函数里恰好有那段文本」—— 这次是**别人写的判据**，而我一直在它假绿的状态下干活。
+- 2026-10-20 **R128 · executor-desktop selftest 全量普查（无提交）**：R127 之后需要确认「桌面端到底哪些 selftest 能跑、哪些不能」。逐个实跑结果：
+
+| 类别 | 结果 |
+|---|---|
+| 与 R86/R102/R105/R106 相关的 8 个 | **全部 0**（`navigation-policy` / `destructive-actions` / `ipc-sender-guard` / `port-check` / `network-util` / `path-domain` / `main-index` / `agent/agent-host`） |
+| `token-crypto` / `heartbeat` | **1（环境性）**：`Downloading Electron binary... → TypeError: fetch failed` ⇒ `node_modules/electron/index.js` 抛错。**本机无网络安装 Electron 二进制**，与代码无关 |
+| 接线 | `check-desktop-selftests-wired` 报 **53/53** |
+
+**独立复核了 R102-A1 的「48 PASS / 2 FAIL（环境性）」**：同样的两个套件红，同样的原因（Electron 二进制缺失）。
+这条以前只是它报告里的一句话，现在是我自己跑出来的两个 exit code。
+
+**顺带纠正我自己的一个误判**：第一遍我把 `agent-host` 写成 `dist-selftest/agent-host.selftest.js`（实际在 `dist-selftest/agent/`），
+报 `Cannot find module` —— 我差点把它记成「第三个红的 selftest」。**路径错不是失败**，但如果不看错误内容就会记错。
+
+**R127 的改动范围复核**（`git show 9c6f76c1 -- window-manager.ts`）：只改了守卫的**形态**（helper → 两个 handler 各自内联），
+判据 `isAllowedNavigation(url, policy)` 与 `will-navigate` / `will-redirect` 两个事件都原样保留 ⇒ **行为等价**，只是变得可被静态检查。
