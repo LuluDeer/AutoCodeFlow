@@ -832,6 +832,67 @@
 - 2026-10-20 **R67-A1 claimed（agent 运行中）**：审计页 action 过滤从**自由文本**改成**可发现的下拉**（后端加 `GET /audit/actions` 去重列表）。61 个动作靠自由输入 = 「能筛、筛不到」。
 - 2026-10-20 **R68 done（commit a2a7684c，总控自干）**：**`api-reference.md` 端点清单改为 openapi 生成 + 守卫**。实测漂移很大：OpenAPI **194** 个路径、文档**缺 47 个** —— 整个 SOP 面（`/sop`、`/sop/{id}/publish`、`/sop/assignments/{id}/...`）、`agent-collab` 全套、`agent/sessions`、通知静默、若干 `removal-impact`/机器面端点全无。**API 参考缺端点比缺形容词严重**：读的人会以为「这个能力没有接口」，于是自己另造一条路。做法同 R66：把易腐化的枚举交给代码——新增 `scripts/gen-api-reference-appendix.mjs` 从 openapi 生成「补充端点」附录（241 行 / 194 路径），`--check` 要求①每个路径都出现在文档里 ②**附录与生成结果逐字节一致**（「少一行」也能抓到）；正文仍手写（职责/约定/鉴权是**描述**不是清单）。接入 CI + npm scripts。反证：从附录删掉 `POST /users` 一行 → 守卫立刻报不一致。
 
+## 里程碑快照 · 第 100 轮（2026-10-20）
+
+第 50 轮快照之后又推进了 50 轮。本节同样**只放可复核的数字**，每条都给得出命令。
+
+| 维度 | 第 50 轮 | 第 100 轮 | 复核命令 |
+|---|---|---|---|
+| 零依赖守卫 | 20 | **32**（+1 报告型豁免） | `node scripts/check-guards-wired.mjs` |
+| ADR | 27 | **28**（+028 配置密钥静态加密边界） | `ls docs/adr/adr-*.md` |
+| ADR-026 无条件状态写 | 0 | **0**（保持） | `node scripts/check-conditional-writes.mjs` |
+| 整行回写候选 | 32 | **31** | `node scripts/check-conditional-writes.mjs --report-saves` |
+| 审计动作 | 61 / 19 域 | **64 / 16 域**（并入 config 三件套） | `node scripts/check-audit-actions-doc.mjs` |
+| REST 端点（附录） | 194 | **195**，逐字节一致 | `node scripts/gen-api-reference-appendix.mjs --check` |
+| 迁移 | 60 → 103 | **103**（文档自述已对齐） | `node scripts/check-migrations.mjs` |
+| 全仓用例 | — | **约 10,878 例全绿** | 逐组件跑（见 R118） |
+
+### 这 50 轮新增的 12 道守卫（及它们各自抓到的东西）
+
+| 守卫 | 建立时的发现 |
+|---|---|
+| `check-audit-actions-doc` | 审计动作表落后 40+ 个 action |
+| `gen-api-reference-appendix --check` | 端点附录落后 47 个端点 |
+| `check-cli-doc` | CLI 命令地图漏了整个 `mutex` 域 |
+| `check-ssrf-deny-parity` | **首跑就抓到** `198.18.0.0/15` 缺失 |
+| `check-constant-time-compare` | 5 处命中**全是误报**（逐条写豁免，未放宽判据） |
+| `check-guards-wired` | **首次运行抓到自己**（新守卫未接线） |
+| `check-interface-maps` | MCP 工具地图停在 40（实际 56，漏 16）；REST 地图缺 7 个整域 |
+| `check-atlas-counts` | 迁移数停 60（实际 103）、模块索引漏 `agent` |
+| `check-desktop-selftests-wired` | `browser` / `package-candidate` 两个**安全 selftest 从未在 CI 跑过** |
+| `check-cron-leader-gate` | 22 处 `@Cron` 目前全有门禁（防新增漏写） |
+| `tsconfig.spec.json` + `typecheck:specs` | 一个套件因 **ts-jest 类型错误**从 R32-A4 起就没运行过 |
+| `check-pending-batch-markers`（并入 atlas-counts） | 20 处「（下一批次）」挂在**已写完**的文档上 |
+
+### 这 50 轮找到的**真缺陷**（安全面为主）
+
+1. **`executor-node` SSRF 可绕过**：`isRestrictedIpv6Address` 是字符串前缀黑名单，`[::ffff:127.0.0.1]` 经 WHATWG 规范化成 `[::ffff:7f00:1]` 后**整条放行**；`fe80::/10` 只黑 3 段；`ff00::/8` 未覆盖。
+2. **三个平面的 zip 上限不一致**：python 停在事故前的 1 GiB / 2 GiB，node 与 admin 早已收紧到 512 MiB / 1 GiB ⇒ 同一个包在 python 通过、在 node 被拒。
+   **而钉住旧值的正是测试本身**（`test_default_limits_mirror_executor_node_zip_guard` 把漂移当契约）。
+3. **`ZIP_MAX_*` 在 python 侧从未生效**：`get_zip_limits_from_env()` 有定义、有测试、文档也说支持，**却没有任何生产调用方**。
+4. **executor-desktop IPC：43 个 handler / 0 个校验 sender**；`config:check-port` 把渲染层参数原样喂 `net.listen`（`listen(null)` 会绑 0 号端口并回报「可用」）。
+5. **渲染层 CSP 含裸 `ws:`**（= 允许 WebSocket 连任意 host，CSP 本职就是堵外带）；破坏性 IPC 通道**确认只在 UI**，注入脚本可跳过。
+6. **registry-pypi**：上传**零日志**（审计只由 admin-api 代理写，而 twine 直连 8003）、别人上传中的 `.upload` 半成品**可被下载**、413 后留幻影包目录。
+7. **mcp-server**：`params: {}` 被当成「覆盖成空」⇒ **参数被整组清空而响应是成功**；三个「假成功」（空载荷 ×2 + 形状漂移给出 `totalDeadLetters: 0`）。
+8. **`config` 模块此前完全没有审计**（最敏感的 `executor.sharedToken` 没有不可篡改的留痕）。
+
+### 第 50 轮之后学到的三句话
+
+1. **「长度」有三套口径**：UTF-16 码元（zod `.max`）/ 码点（validator.js `isLength`）/ UTF-8 字节（`Buffer.byteLength`）。
+   用错要么放过后端必拒的载荷，要么拒掉后端接受的载荷。
+2. **一条守卫的「通过」，只有在反证失败之后才有意义** —— `check-cron-leader-gate` 被反证打回两次：
+   第一次在数**注释**，第二次在数**邻居**。
+3. **同一个检查器的「不做」和「做」一样要留证据** —— 已否决四次：openapi 路由覆盖、死导出扫描、`secret` 列 `select:false`、
+   「跳过 desktop 的 test:unit 包装」。它们的共同点：**静态看代码 ≠ 执行代码**。
+
+### 已知未收口（如实）
+
+- `executor-desktop` 本机无法跑 `test:main`（Electron 二进制缺失）；已逐个手跑 6 个 selftest。
+- `executor-node` `auth.spec.ts` 曾出现「1 failed / 106.9s」，重跑全绿 ⇒ **负载抖动，未定位到具体用例**。
+- `config` 类密钥**静态明文**（ADR-028 明确接受 + 四条重开条件）。
+- python 侧嵌套 zip >64 MiB 仍是 warn（admin 是 fail-closed），修需同步契约文档。
+- `mcp-server` 的错误面口径（`errorCode` 三套键形状）未统一，需动 4 个既有断言。
+
 ## 里程碑快照 · 第 50 轮（2026-10-20）
 
 本节是**可复核的状态快照**，不是总结陈词：每条都给得出命令，随时可重跑。
