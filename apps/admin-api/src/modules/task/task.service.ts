@@ -3509,6 +3509,8 @@ export class TaskService {
     //     执行重新入队 → 同一个执行被**二次派发**；
     //   · 本次真正要落库的其实只有 aiAnalysis 一列，且它是纯展示列、无并发写者。
     // 故单列 UPDATE 足够，且天然无竞态（行级锁只作用于这一列）。
+    // adr-026-exempt: 只写 aiAnalysis 一个**纯展示列**，patch 里不含 status/endTime/
+    // exitCode 等状态列；状态迁移由 execution-terminal 的条件 UPDATE 独占。
     await this.execRepo.update({ id: exec.id }, { aiAnalysis: analysis });
     // 返回读侧视图：取库中当前行而不是方法早期快照，避免把窗口内已经变化的
     // status/endTime 一并回给前端（会让详情页显示"已完成但仍 RUNNING"）。
