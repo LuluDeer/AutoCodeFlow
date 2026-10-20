@@ -1175,3 +1175,9 @@
   并**显式检查 `redactSensitive` 在 tools.ts 出现 4 次**（防 R107 那次静默还原失败重演）。
   **已知残余风险（登记而非假装覆盖）**：`env` 判据是键名启发式 ⇒ `DATABASE_URL='postgres://user:pass@h/db'` 这种**值含凭据但键名不含关键词**的不会被掩；
   按值形态猜（URL userinfo / base64 / JWT）会误伤正常配置且与上游判据不一致，故**不做**。
+- 2026-10-20 **R112 done（commit 31e14c10）**：**空载荷不再伪装成成功**（R107-A1 遗留④前两项）。`get_execution` 的 `JSON_CONTENT(null)` 让 agent **无法区分「执行不存在」与「执行存在但字段全空」**；
+  `get_execution_timeline` 的 `buildExecutionTimeline(data ?? {})` 会拼出 `executionId:""` 的**成功载荷**（看起来像「查到了但没 ID」，真相是没查到）。两处补 `JSON_ERROR(EXECUTION_NOT_FOUND)` 并**带上 executionId**（agent 要知道是哪个 ID 没查到）。
+  验证 mcp-server **192 → 195 passed**（+3，含一条「正常载荷不回归」）、tsc 0；反证：去掉 timeline 闸块 → **1 failed**，还原 195 绿。
+  **我自己的两次失误**：① 第一次反证只改 `return` 行、**闸块还在**，测试仍全绿 —— 差一点得出「用例没鉴别力」的错误结论，第二次替换**整块**才红；
+  ② 把 39 行测试块误 append 到 `tools.ts`（不是 `tools.test.ts`），被 **tsc 立刻抓出**（`Cannot find name 'describe'`）—— 若这是 `.js` 项目，那 39 行会静静躺到运行时。
+  **并发协调**：R111-A1 的 agent 正在改同一文件，它**主动上报**了并发冲突并改为「局部 edit + 冲突重试」，且指出改动点不相交。R112 先落地，已发消息告知它「基线更新为 195 passed、以当前内容为准重新定位行号、我不再动该目录」。
