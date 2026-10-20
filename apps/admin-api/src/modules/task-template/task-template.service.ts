@@ -10,15 +10,23 @@ import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
 import {
   assertValidCreateTaskPayload,
   assertValidTaskTemplateConfig,
+  buildTemplateOwnerKey,
   expandTemplateConfigIntoTaskDto,
+  isTemplateOwner,
   suggestTemplateKey,
+  type TemplateOwnerRef,
 } from "./task-template.util";
 import { OFFICIAL_TEMPLATE_KEYS } from "./task-template.constants";
 import { UserRole } from "../users/entities/user.entity";
 
-/** E-P2-S1：删除模板时的请求方身份（属主/管理员判定用）。 */
-export interface TemplateRequester {
-  username: string;
+/**
+ * 删除模板时的请求方身份（属主/管理员判定用）。
+ *
+ * R39-A1：`id` 现在是**必填**——属主判定按 user id（见 `isTemplateOwner`），
+ * username 只用于历史行（裸 username）兼容。请求方缺 id 时判定恒为「非属主」
+ * （fail-closed），绝不回退到比名字。
+ */
+export interface TemplateRequester extends TemplateOwnerRef {
   role: UserRole;
 }
 
@@ -60,9 +68,17 @@ export class TaskTemplateService {
     return tpl.config;
   }
 
+  /**
+   * 新建自定义模板。
+   *
+   * R39-A1：`creator` 收**身份对象**（id 权威、username 仅可读），落库为
+   * `user:<id>|<username>` 属主键。此前收裸 username 字符串，导致删号后同名
+   * 新号继承归属——编码规则见 `buildTemplateOwnerKey`。缺省（内部/系统调用）
+   * 仍落 NULL（历史行语义：仅 ADMIN 可删）。
+   */
   async create(
     dto: CreateTaskTemplateDto,
-    createdBy?: string,
+    creator?: TemplateOwnerRef,
   ): Promise<TaskTemplate> {
     // config 合法性：CreateTaskDto 语义校验，脏模板 400（不落库）。
     await assertValidTaskTemplateConfig(dto.config);
@@ -81,8 +97,9 @@ export class TaskTemplateService {
       config: dto.config,
       // 永远由本端点创建为自定义模板；官方仅由迁移 seed 产生。
       isOfficial: false,
-      // E-P2-S1：记录创建人 username（供删除属主校验）。
-      createdBy: createdBy ?? null,
+      // R39-A1：属主键 = `user:<id>|<username>`（id 权威）。不再存裸 username：
+      // username 可变（改名即失属主）且可回收（硬删后同名新号继承归属）。
+      createdBy: creator ? buildTemplateOwnerKey(creator) : null,
     });
     return this.repo.save(entity);
   }
@@ -133,13 +150,16 @@ export class TaskTemplateService {
     if (tpl.isOfficial || OFFICIAL_TEMPLATE_KEYS.includes(tpl.key)) {
       throw new AppError("TASK_TEMPLATE_OFFICIAL_READONLY");
     }
-    // E-P2-S1：属主或 ADMIN 才可删。历史行 createdBy=NULL 安全回退——仅 ADMIN。
+    // 属主或 ADMIN 才可删。createdBy=NULL（迁移 seed / 无主体写入）安全回退——仅 ADMIN。
     const isAdmin = requester.role === UserRole.ADMIN;
     if (tpl.createdBy == null) {
       if (!isAdmin) {
         throw new AppError("TASK_TEMPLATE_LEGACY_ADMIN_ONLY");
       }
-    } else if (tpl.createdBy !== requester.username && !isAdmin) {
+    } else if (!isAdmin && !isTemplateOwner(tpl.createdBy, requester)) {
+      // R39-A1：判定改走 `isTemplateOwner`——新键按 user id（删号后同名新号
+      // id 不同 ⇒ 403），历史行（裸 username）仍按 username 比对（兼容路径，
+      // 去掉它历史模板就会变成「谁都删不掉」）。
       throw new AppError("TASK_TEMPLATE_NOT_OWNER");
     }
     await this.repo.delete({ id });

@@ -106,8 +106,10 @@ export class TaskTemplateController {
     @Body() dto: CreateTaskTemplateDto,
     @CurrentUser() user: AuthUser,
   ): Promise<TaskTemplate> {
-    // E-P2-S1：记录创建人 username。
-    return this.svc.create(dto, user.username);
+    // R39-A1：记录创建人**身份**（service 落成 `user:<id>|<username>` 属主键）。
+    // 此前这里传 user.username，属主判定按可回收的 username 键 → 删号后同名
+    // 新号继承删除权。
+    return this.svc.create(dto, { id: user.id, username: user.username });
   }
 
   @WriteGuard("task-template", { scope: "authenticated" })
@@ -164,8 +166,13 @@ export class TaskTemplateController {
     @Param("id", ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
   ): Promise<{ ok: true }> {
-    // E-P2-S1：属主或 ADMIN 才可删；NULL 历史行仅 ADMIN。
-    await this.svc.remove(id, { username: user.username, role: user.role });
+    // 属主或 ADMIN 才可删；NULL 历史行仅 ADMIN。
+    // R39-A1：必须带上 user.id——属主判定按 id（历史行才回退比 username）。
+    await this.svc.remove(id, {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+    });
     // D3-B-P2-2: 删除落证。
     await this.audit.log({
       username: user.username,

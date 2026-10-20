@@ -43,8 +43,17 @@ export class TaskTemplate {
   @Column({ type: "boolean", default: false })
   isOfficial: boolean;
 
-  /** E-P2-S1：创建人用户名（JWT username）。NULL=历史行/迁移 seed，
-   *  删除时仅 ADMIN 可删（安全回退）；新建时记录当前用户。 */
+  /**
+   * 属主键。**历史形态 = 裸 username**（可变且可回收：用户改名即失属主，被硬删后
+   * 同名新注册账号会继承删除权——R39-A1 的缺陷）；**新形态 = `user:<id>|<username>`**
+   * 或（展示段超列宽时）`user:<id>|<截断的名字>`，id 是唯一权威。
+   *
+   * 读取一律走 `isTemplateOwner`（新键按 id、历史行按 username），见
+   * task-template.util.ts。NULL = 迁移 seed / 无主体写入，删除时仅 ADMIN（安全回退）。
+   *
+   * 列宽 100 是既有 schema（迁移 1790000000035）：键由 `buildTemplateOwnerKey`
+   * 保证不超过它，故不随 username 最长 128 而溢出。
+   */
   @Column({ type: "varchar", length: 100, nullable: true })
   createdBy: string | null;
 

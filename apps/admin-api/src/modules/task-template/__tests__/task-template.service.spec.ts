@@ -145,7 +145,11 @@ describe("TaskTemplateService (CORE-03)", () => {
   it("remove 官方模板被拒 403", async () => {
     repo.findOne.mockResolvedValue(official());
     await expect(
-      svc.remove("official-1", { username: "alice", role: UserRole.USER }),
+      svc.remove("official-1", {
+        id: 1,
+        username: "alice",
+        role: UserRole.USER,
+      }),
     ).rejects.toThrow(ForbiddenException);
     expect(repo.delete).not.toHaveBeenCalled();
   });
@@ -159,7 +163,8 @@ describe("TaskTemplateService (CORE-03)", () => {
         createdBy: "alice",
       }),
     );
-    await svc.remove("c-1", { username: "alice", role: UserRole.USER });
+    // R39-A1：createdBy 是裸 username = 历史行形态，仍按 username 放行（兼容路径）。
+    await svc.remove("c-1", { id: 1, username: "alice", role: UserRole.USER });
     expect(repo.delete).toHaveBeenCalledWith({ id: "c-1" });
   });
 
@@ -174,7 +179,7 @@ describe("TaskTemplateService (CORE-03)", () => {
       }),
     );
     await expect(
-      svc.remove("c-1", { username: "mallory", role: UserRole.USER }),
+      svc.remove("c-1", { id: 2, username: "mallory", role: UserRole.USER }),
     ).rejects.toThrow(ForbiddenException);
     expect(repo.delete).not.toHaveBeenCalled();
   });
@@ -188,7 +193,7 @@ describe("TaskTemplateService (CORE-03)", () => {
         createdBy: "alice",
       }),
     );
-    await svc.remove("c-1", { username: "root", role: UserRole.ADMIN });
+    await svc.remove("c-1", { id: 99, username: "root", role: UserRole.ADMIN });
     expect(repo.delete).toHaveBeenCalledWith({ id: "c-1" });
   });
 
@@ -202,7 +207,7 @@ describe("TaskTemplateService (CORE-03)", () => {
       }),
     );
     await expect(
-      svc.remove("legacy", { username: "alice", role: UserRole.USER }),
+      svc.remove("legacy", { id: 1, username: "alice", role: UserRole.USER }),
     ).rejects.toThrow(ForbiddenException);
     expect(repo.delete).not.toHaveBeenCalled();
   });
@@ -216,21 +221,33 @@ describe("TaskTemplateService (CORE-03)", () => {
         createdBy: null,
       }),
     );
-    await svc.remove("legacy", { username: "root", role: UserRole.ADMIN });
+    await svc.remove("legacy", { id: 99, username: "root", role: UserRole.ADMIN });
     expect(repo.delete).toHaveBeenCalledWith({ id: "legacy" });
   });
 
-  it("create：记录创建人 username 到 createdBy", async () => {
+  // R39-A1：属主键必须是 `user:<id>|<username>`（id 权威），不再是裸 username。
+  it("create：createdBy 落成属主键 user:<id>|<username>", async () => {
     repo.findOne.mockResolvedValue(null);
     await svc.create(
       {
         name: "Owned",
         config: { triggerType: "manual", runtime: "node", entrypoint: "x.js" },
       },
-      "alice",
+      { id: 42, username: "alice" },
     );
     expect(repo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ createdBy: "alice" }),
+      expect.objectContaining({ createdBy: "user:42|alice" }),
+    );
+  });
+
+  it("create：不传创建者 → createdBy=null（历史行语义，仅 ADMIN 可删）", async () => {
+    repo.findOne.mockResolvedValue(null);
+    await svc.create({
+      name: "anon",
+      config: { triggerType: "manual", runtime: "node", entrypoint: "x.js" },
+    });
+    expect(repo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ createdBy: null }),
     );
   });
 
