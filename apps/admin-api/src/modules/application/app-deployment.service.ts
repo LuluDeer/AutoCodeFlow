@@ -1758,9 +1758,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       pinned = await assertAndPinExecutorUrl(url);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      deployment.status = DeploymentStatus.FAILED;
-      deployment.statusMessage = msg;
-      await this.repo.save(deployment);
+      await this.failDeploymentIfInFlight(deployment, msg);
       return;
     }
 
@@ -1819,28 +1817,50 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // FAILED；已被心跳推进（RUNNING/FAILED/STOPPED…）就一个字都不动，只留
     // 一条 warn（这是并发收敛，不是错误）。与 upgrade/stop 的
     // saveWithOptimisticLock 同方向：**让后来的写者看见别人已经写完**。
-    const markedFailed = await this.repo.update(
+    // R33-B2 / R34-A2: 条件写在 failDeploymentIfInFlight 里（与 SSRF 分支同一实现）。
+    await this.failDeploymentIfInFlight(deployment, exhaustedMsg);
+  }
+
+
+  /**
+   * R34-A2（ADR-026）：把「本次推送失败」写成终态时，必须是**条件写**。
+   *
+   * 两个调用点的窗口都不短：SSRF 校验要**做 DNS 解析**（秒级），重试耗尽要
+   * 3 次 30s 超时 + 退避（约 93 秒）。期间执行器完全可能已经收到命令并成功
+   * 部署、心跳把行推进到 RUNNING —— 此时无条件写 FAILED 会把**成功回滚成
+   * 失败**（并整份陈旧快照覆盖 deployedCommit/deployedVersion/statusMessage）。
+   *
+   * 判据用「行是否仍在飞」：只有仍在 DEPLOYING/UPGRADING 时才落 FAILED；
+   * 已被推进就一个字都不写，只留 warn（并发收敛，不是错误）。
+   *
+   * @returns 是否真的写了 FAILED（false = 让位给了并发写者）
+   */
+  private async failDeploymentIfInFlight(
+    deployment: AppDeployment,
+    message: string,
+  ): Promise<boolean> {
+    const marked = await this.repo.update(
       {
         id: deployment.id,
         status: In([DeploymentStatus.DEPLOYING, DeploymentStatus.UPGRADING]),
       },
-      {
-        status: DeploymentStatus.FAILED,
-        statusMessage: exhaustedMsg,
-      },
+      { status: DeploymentStatus.FAILED, statusMessage: message },
     );
-    if (!markedFailed.affected) {
+    if (!marked.affected) {
       this.logger.warn(
-        `Deploy push to ${deployment.id} exhausted retries, but the row is no longer ` +
-          `in-flight（状态已由心跳或其它动作推进，执行器很可能已经成功）— not overwriting it ` +
-          `with FAILED. Last error: ${lastError}`,
+        "Deploy push to " +
+          deployment.id +
+          " failed, but the row is no longer in-flight (the executor may already have " +
+          "succeeded and been advanced by its heartbeat) — not overwriting it with FAILED. " +
+          "Reason: " +
+          message,
       );
-      return;
+      return false;
     }
     deployment.status = DeploymentStatus.FAILED;
-    deployment.statusMessage = exhaustedMsg;
+    deployment.statusMessage = message;
+    return true;
   }
-
   private buildSnapshot(app: Application): Record<string, any> {
     return {
       id: app.id,

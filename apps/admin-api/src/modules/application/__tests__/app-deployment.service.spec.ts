@@ -1136,6 +1136,56 @@ describe("AppDeploymentService", () => {
       jest.restoreAllMocks();
     });
 
+    it("R34-A2: SSRF 校验失败分支同样是条件写（行已被心跳推进则不覆盖）", async () => {
+      const deployment = {
+        id: "deploy-r34a2",
+        applicationId: "app-1",
+        // 非法地址格式 → validateExecutorAddress 抛错 → 走 FAILED 分支。
+        // 该分支前有 DNS 解析（秒级窗口），执行器可能已成功并被心跳推进。
+        executorAddress: "not-an-address",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.DEPLOYING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      repo.update.mockResolvedValue({ affected: 0 });
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => {});
+
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+
+      const condCall = repo.update.mock.calls.find(
+        ([where]: any[]) => where && where.id === "deploy-r34a2",
+      );
+      expect(condCall).toBeDefined();
+      expect((condCall as any[])[0].status).toBeDefined();
+      expect(deployment.status).toBe(DeploymentStatus.DEPLOYING);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("not overwriting it"),
+      );
+      warnSpy.mockRestore();
+      jest.restoreAllMocks();
+    });
+
+    it("R34-A2 对照：SSRF 分支条件写命中 → 正常落 FAILED", async () => {
+      const deployment = {
+        id: "deploy-r34a2b",
+        applicationId: "app-1",
+        executorAddress: "not-an-address",
+        runMode: RunMode.DAEMON,
+        env: null,
+        startCommand: null,
+        status: DeploymentStatus.DEPLOYING,
+      };
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+      repo.update.mockResolvedValue({ affected: 1 });
+      await (service as any).pushDeployToExecutor(deployment, mockApp);
+      expect(deployment.status).toBe(DeploymentStatus.FAILED);
+      jest.restoreAllMocks();
+    });
+
     it("QA6: an unrelated unique violation on the snapshot save still fails the push", async () => {
       jest.spyOn(global, "setTimeout").mockImplementation((cb: any) => {
         cb();
