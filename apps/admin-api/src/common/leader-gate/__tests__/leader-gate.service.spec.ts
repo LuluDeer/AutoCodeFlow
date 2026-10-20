@@ -10,6 +10,7 @@ import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { AuthService } from "../../../modules/auth/auth.service";
 import { UsersService } from "../../../modules/users/users.service";
+import { User } from "../../../modules/users/entities/user.entity";
 import { RefreshToken } from "../../../modules/auth/entities/refresh-token.entity";
 
 /** 构造一个已获取的锁句柄（release 可断言） */
@@ -208,6 +209,11 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
         {} as JwtService,
         {} as ConfigService,
         repo,
+        // R32-A4（TOTP）给 AuthService 插了 userRepo（第 5 个位置参数），
+        // 本 spec 当时没跟着改 ⇒ `leaderGate` 落进 `Repository<User>` 的槽位，
+        // ts-jest 直接 TS2345 把整个套件判为「无法运行」（不是断言失败，是类型错误）。
+        // 这个 spec 属于 @Cron 门禁的 10 处同构用例，长期没被跑到就没人发现。
+        {} as Repository<User>,
         leaderGate,
       );
 

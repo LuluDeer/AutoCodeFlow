@@ -23,6 +23,11 @@
  */
 
 import { DataSource, type DataSourceOptions } from "typeorm";
+// R113：本 spec 要在 beforeAll 里用**运行时同款实体 glob** 建一次 DataSource 元数据，
+// 全量并发跑（319 个套件、多 worker）时实测 ~5.9s，恰好顶到 jest 默认 5s 超时 ⇒
+// 曾出现「单独跑 6 passed、全量跑 6 failed」的假回归。这里显式放宽——
+// 放宽的是**等待**，不是断言。
+jest.setTimeout(30_000);
 import {
   AppDeployment,
   DeploymentStatus,
