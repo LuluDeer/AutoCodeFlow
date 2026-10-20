@@ -2177,3 +2177,28 @@ agent 报：`loadFromEnv` 把渠道 `enabled` 默认发布成 false，历史 DB 
 
 **验证难度**：需要「一次 flush 卡在网络上 + 收尾同时发生」的时序，mock 里可构造，真机需慢 admin。**判定留给 agent**；
 我只把这一行写进底稿 —— 若它报「并发/顺序轴 ✅ 已正确」，我会拿这两行去对。
+- 2026-10-20 **R168 · 独立复现了 agent 报的「node 独有」缺陷，并给它的严重性降了半档**。
+
+它报：**node 侧 stdout/stderr 共用一个 partial 缓冲**（python 侧 stderr 在 OS 层合并成单流）⇒ 交错错位。
+
+我去读了调用点，**确认结构就是这样**（`execute.ts:3019-3026`）：
+
+```ts
+proc.stdout.on('data', d => processOutput(stdoutDecoder.write(d)));
+proc.stderr.on('data', d => processOutput(stderrDecoder.write(d)));
+// processOutput → logBuffer.append / appendLog / logStreamPusher.addOutput
+```
+
+→ stdout 与 stderr **进同一个 `processOutput`**，而 `addOutput` 只有**一个** `this.partial`。
+于是「stdout 的半行」+「stderr 的半行」会被拼成**一行**（例：stdout 出 `abc` 无换行，stderr 出 `XYZ\n` ⇒ `abcXYZ`）。
+
+**但我把它的严重性降了半档**，因为顺着同一段代码看下去：
+`processOutput` 里三处消费（`logBuffer.append` / `appendLog` / `logStreamPusher.addOutput`）**吃的是同一份合并流**。
+
+> ⇒ 行**内容**会被粘连，但**三个 sink 粘得一模一样** ⇒ **行号仍对齐**，回调日志与实时流仍然逐行一致。
+
+所以这不是「行号错位」级的缺陷（那会像 `R124` 钉的那条一样导致**静默数据错位**），
+而是**可读性/忠实性**缺陷：用户会看到两行被拼成一行，且**没有任何标记说明这里拼过**。
+
+**这条校准很重要**：如果我照抄 agent 的定级，就会把「日志看起来怪」当成「数据可能错位」，
+从而低估真正的行号错位风险，或高估这条的修复优先级。**同一个根因，不同的观测面，严重性不同。**
