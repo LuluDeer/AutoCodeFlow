@@ -27,7 +27,9 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
     create: jest.fn((v: unknown) => ({ id: "s-new", ...(v as object) })),
     save: jest.fn(async (v: unknown) => ({ ...(v as object), id: "s-new" })),
     findOne: jest.fn(async (): Promise<unknown> => sessionRow),
-    update: jest.fn(async () => undefined),
+    // ADR-027（替身保真）：update 必须返回 `{ affected }`——否则「条件写命中/未命中」
+    // 这条分支在测试里无法表达（返回 undefined ⇒ 被当成未命中），守卫等于没测。
+    update: jest.fn(async () => ({ affected: 1 })),
     find: jest.fn(async () => [{ id: "child-1" }]),
     createQueryBuilder: jest.fn((alias?: string) =>
       alias === "s" ? listQb : sessionQb,
@@ -224,8 +226,9 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
   it("markWaiting：不设 finishedAt（非终态）", async () => {
     const h = harness();
     await h.svc.markWaiting("s-1", "clarification_reply");
+    // R36：WHERE 带「非终态」——防止把已收敛的会话翻回 waiting_input
     expect(h.sessions.update).toHaveBeenCalledWith(
-      { id: "s-1" },
+      expect.objectContaining({ id: "s-1", status: expect.anything() }),
       { status: "waiting_input", waitingFor: "clarification_reply" },
     );
   });
@@ -259,8 +262,9 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
       result: { verdict: "ok" },
       summary: "done",
     });
+    // R36：WHERE 必须带「非终态」前置条件——这才是幂等的实现方式（ADR-026）
     expect(h.sessions.update).toHaveBeenCalledWith(
-      { id: "s-1" },
+      expect.objectContaining({ id: "s-1", status: expect.anything() }),
       expect.objectContaining({
         status: "succeeded",
         finishedAt: expect.any(Date),
@@ -284,7 +288,7 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
     });
     await h.svc.finish("s-1", "aborted");
     expect(h.sessions.update).toHaveBeenCalledWith(
-      { id: "s-1" },
+      expect.objectContaining({ id: "s-1", status: expect.anything() }),
       expect.objectContaining({ resultJson: { keep: 1 }, summary: "keep" }),
     );
   });
@@ -401,3 +405,32 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
     );
   });
 });
+
+// ── R36（ADR-026）：终态收敛的条件写 ──────────────────────────────────────
+// 这一类缺陷在单线程测试里永远绿：先 findOne 看快照再 update({id}) 与「条件写」
+// 在没有并发时行为完全相同。故这里直接驱动「条件未命中」的那条分支。
+describe("AgentSessionService · finish/markWaiting 的并发收敛", () => {
+  it("finish：条件写未命中（别人已收敛）→ 不再通知、不重复计数", async () => {
+    const h = harness({ id: "s-1", status: "running", kind: "sop" });
+    // 快照仍是非终态（所以能走到 update），但落库时条件未命中 = 并发方先赢
+    (h.sessions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+
+    await h.svc.finish("s-1", "succeeded", { summary: "late" });
+
+    // 关键断言：输了竞争就**不能**发终态通知（否则用户收到两条「任务已完成」）
+    expect(h.notify.sessionFinished).not.toHaveBeenCalled();
+  });
+
+  it("markWaiting：会话已终态时条件未命中 → 不把终态翻回 waiting_input", async () => {
+    const h = harness({ id: "s-1", status: "running", kind: "sop" });
+    (h.sessions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+    await h.svc.markWaiting("s-1", "clarification_reply");
+    // WHERE 里必须带非终态前置条件（否则终态可被翻回）
+    const where = (h.sessions.update as jest.Mock).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(where.status).toBeDefined();
+  });
+});
+
