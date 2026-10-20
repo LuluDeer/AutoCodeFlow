@@ -270,3 +270,60 @@ def test_utf8_len_counts_bytes_not_chars() -> None:
     assert lsp._utf8_len('中') == 3
     assert lsp._utf8_len('中文') == 6
 
+
+# ---------------------------------------------------------------------------
+# R124：**片内行号必须连续**（admin 按 `fromLine + i` 落库）
+#
+# 来自 R116 分析里的一条洞察：admin 的 `appendLogChunk` 用 `fromLine + i` 决定每行落哪个
+# 行号。所以**一个片里的 lines 必须是连续行号**——只要片内出现缺口，后面所有行都会被写到
+# 错位的位置上，而且**没有任何报错**（admin 只会照它算出来的行号写）。
+#
+# 当前实现天然满足（片是 append-only 的连续块），但这条不变式**没有被任何用例钉住**：
+# 将来若把缓冲改成「扁平 (lineNo, text) 列表 + 按需切片」，丢行就会在扁平列表里留下缺口，
+# 朴素切片会立刻产出带缺口的片 —— 这类重写很容易做，而后果是静默的数据错位。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chunks_are_contiguous_so_admin_line_numbers_stay_correct() -> None:
+    """丢行发生之后，**存活片的 fromLine 仍与内容严格连续**。"""
+    pusher = LogStreamPusher('exec-contig')
+    pusher._schedule_flush = lambda: None
+
+    # 1100 行 ⇒ 跨过 1000 行上限 ⇒ 头部的片会被丢弃
+    for i in range(1100):
+        await pusher.add_line(f'line-{i}')
+
+    assert len(pusher.chunks) == pusher.max_chunks_in_memory
+    for prev, nxt in zip(pusher.chunks, pusher.chunks[1:]):
+        assert nxt['fromLine'] == prev['fromLine'] + len(prev['lines']), (
+            f'片间缺口：{prev["fromLine"]}+{len(prev["lines"])} != {nxt["fromLine"]}',
+        )
+
+    # 更强的一条：每片的 (fromLine + i) 必须等于该行**真实的行号**（内容里编码了行号）
+    for chunk in pusher.chunks:
+        for offset, text in enumerate(chunk['lines']):
+            assert text == f'line-{chunk["fromLine"] + offset}', (
+                f'行号错位：片 fromLine={chunk["fromLine"]} offset={offset} 期望 line-{chunk["fromLine"] + offset}，实际 {text}',
+            )
+
+
+@pytest.mark.asyncio
+async def test_pushed_payload_preserves_true_line_numbers_after_drops(pusher_env) -> None:
+    """从**出站请求体**验证：丢行之后推给 admin 的 (fromLine, lines) 仍然自洽。"""
+    pusher = LogStreamPusher('exec-wire')
+
+    for i in range(1100):
+        await pusher.add_line(f'line-{i}')
+    await pusher.flush()
+
+    assert pusher_env.calls, '没有发出任何请求'
+    for call in pusher_env.calls:
+        body = call['json']
+        from_line = body['fromLine']
+        for offset, text in enumerate(body['lines']):
+            # admin 会把它写到 fromLine + offset —— 必须与内容里的真实行号一致
+            assert text == f'line-{from_line + offset}', (
+                f'出站体行号错位：fromLine={from_line} offset={offset} 期望 line-{from_line + offset}，实际 {text}',
+            )
+
