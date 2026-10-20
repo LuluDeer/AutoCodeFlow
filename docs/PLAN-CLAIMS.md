@@ -1393,3 +1393,11 @@
 
   **方法论**：一条「我实测过」的结论，如果拿不出可重跑的脚本，它与「我认为」在可信度上是同一档。
   这不是否定那条发现 —— 是给它标注正确的证据等级。
+- 2026-10-20 **★ R126-A1 done（commit 54a0dd5b）—— 两个确认的重复派发缺陷（scheduler 首次被系统审计）**：
+  ① **部分 Redis 故障 → 同窗口派两次**：A 实例 acquireLock 超时走 DB claim 并推进 lastTriggerTime；B 实例 Redis 正常拿到 `task:trigger:*`（A **从未持有该 key**）⇒ 再派一次。
+  根因是**去重有两个互不知情的权威**（Redis 锁 / DB 条件 UPDATE），两个赢家可同时存在。修：**DB claim 成为唯一判决**，Redis 锁降级为快筛；删掉入队后那次无条件 UPDATE。claim 放在 blockStrategy 闸门**之前**（闸门有 kill 副作用，先过闸门再输 claim 会「杀了人家却没派新的」）。
+  ② **FIRE_ONCE 补偿用陈旧快照**：判定读扫描**开始**时的快照、入队在**末尾**，cron 去重窗口恒 1s ⇒ 滞后 >1s 时同一落点「正常触发 + 补偿」各执行一次。修：兑现前按主键**复核** lastTriggerTime（毫秒级单行读），陈旧不兑现。
+  ③ **四个 @Cron 扫描体无重入闸**：并发全表扫描×N、reloadTickCount 漂移、两份 reload 抢注册致 node-cron 相位重置丢一拍。修：inFlightTicks 重入闸，重叠轮丢弃+warn 且**不计 tick 指标**。
+  验证：**168 → 173 全绿**、typecheck 0、typecheck:specs 0；**总控独立反证 ×2**：绕过重入闸 → 1 failed；退回陈旧快照 → 1 failed；均还原后 173 绿。
+  **遗留**：需真多副本+真 Redis/PG 才能确认收敛与行锁争用；**DST 那条我没能独立复现**（getNextRun/getNextMatch 入参语义与假设不符，连续返回同一时刻）⇒ 按「agent 实测声明」记录、**未升级为已复核**，已要求交付探针脚本；手动触发/resume 不重锚 lastTriggerTime 属 task.service，报告不改。
+  （顺带清掉我自己遗留的 apps/admin-api/.dstprobe.js 探针文件。）
