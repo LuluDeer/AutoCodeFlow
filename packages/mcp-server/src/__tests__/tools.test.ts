@@ -2226,3 +2226,39 @@ describe('R112 空载荷与形状漂移不能伪装成成功', () => {
     expect(parse(res).executionId).toBe('55555555-5555-4555-8555-555555555555');
   });
 });
+
+// ---------------------------------------------------------------------------
+// R114：形状漂移不能伪装成「全清」
+// ---------------------------------------------------------------------------
+describe('R114 list_dead_letters 对响应形状漂移的处理', () => {
+  it('裸数组形态仍正常汇总（不回归）', async () => {
+    call.mockResolvedValue([{ id: 'e1', appName: 'a', deadLetterCount: 3 }]);
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBeUndefined();
+    expect(parse(res).totalDeadLetters).toBe(3);
+  });
+
+  it('{ data: [...] } 形态仍正常汇总（不回归）', async () => {
+    call.mockResolvedValue({ data: [{ id: 'e1', appName: 'a', deadLetterCount: 5 }] });
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBeUndefined();
+    expect(parse(res).totalDeadLetters).toBe(5);
+  });
+
+  it('形状漂移（既不是数组也没有 data 数组）→ isError，而不是 totalDeadLetters:0', async () => {
+    call.mockResolvedValue({ items: [{ id: 'e1', deadLetterCount: 9 }] });
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBe(true);
+    const parsed = parse(res);
+    expect(parsed.errorCode).toBe('UNEXPECTED_RESPONSE_SHAPE');
+    // 关键：不能给出「全清」的假象
+    expect(parsed.totalDeadLetters).toBeUndefined();
+  });
+
+  it('data 存在但不是数组 → 同样 isError（不是空列表）', async () => {
+    call.mockResolvedValue({ data: { items: [] } });
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBe(true);
+    expect(parse(res).errorCode).toBe('UNEXPECTED_RESPONSE_SHAPE');
+  });
+});

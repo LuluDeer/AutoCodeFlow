@@ -1760,7 +1760,21 @@ export function registerObservabilityTools(
         | { data?: Array<Record<string, unknown>> }
         | Array<Record<string, unknown>>
       >("GET", "/executors");
-      const rows = Array.isArray(data) ? data : (data?.data ?? []);
+      // R114：**形状漂移不能变成「全清」**。旧写法 `data?.data ?? []` 在响应形状变了（比如后端从
+      // `{data:[...]}` 改成裸数组之外的形态）时会得到空数组 ⇒ `totalDeadLetters: 0` ⇒ agent 以为
+      // 「所有执行器的死信都清空了」。这是最危险的一种假成功：**把「读不懂」说成「没问题」**。
+      const rows = Array.isArray(data)
+        ? data
+        : Array.isArray((data as { data?: unknown })?.data)
+          ? ((data as { data: Array<Record<string, unknown>> }).data)
+          : null;
+      if (rows === null) {
+        return JSON_ERROR({
+          error:
+            "Unexpected response shape from GET /executors (expected an array or { data: [...] })",
+          errorCode: "UNEXPECTED_RESPONSE_SHAPE",
+        });
+      }
       const summary = rows
         .map((r) => {
           const deadLetterCount = r["deadLetterCount"];
