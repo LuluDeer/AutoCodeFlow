@@ -2344,19 +2344,76 @@ export class TaskService {
     return { deleted: true };
   }
 
+  /**
+   * R46-A1（四轴审计 · ADR-026 规则 1/2/4）：`tasks` 行状态迁移的**唯一**写入口。
+   *
+   * 为什么不能「findByIdRaw 判一下 → 赋 status → save(t)」（本方法取代的旧实现）：
+   *
+   * 1. **read-then-write 不是条件写**（规则 2 点名的反例）：判与写之间是可乘之机，
+   *    两个并发 pause、或 pause 与 remove 并发时，双方都能在"自己看来合法"的
+   *    前提下走完，最后谁 save 谁赢；
+   * 2. `save(entity)` 的语义是**整行回写**（规则 4）：实体是方法早期读到的快照，
+   *    窗口内并发 PATCH 写下的 name / timeout / cronExpression / params / secrets
+   *    会被静默盖回旧值；并发的 remove 写入的 status='deleted' 也会被盖回
+   *    paused/active —— 即**软删行复活**（TypeORM 的 save 仍会写 status 列）；
+   * 3. 条件不命中必须是"跳过写"而不是"照写"（规则 3）。
+   *
+   * 故这里的证据全部交给数据库行谓词：`WHERE id AND status = :from AND "deletedAt"
+   * IS NULL`，且**只写 status 一列**（+ 库时钟 updatedAt）——本次动作真正改变的
+   * 列只有它。返回 false = 状态已被别人推进（并发收敛），调用方按各自业务语义
+   * 决定对外错误码，但**绝不能**再按旧快照回写。
+   *
+   * @returns true = 本次动作赢得迁移（affected > 0）
+   */
+  private async transitionTaskStatus(
+    id: string,
+    transition: { from: TaskStatus; to: TaskStatus },
+  ): Promise<boolean> {
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({
+        status: transition.to,
+        // 规则 4：时间戳用**库时钟**。QueryBuilder 的 UPDATE 不像 save() 那样
+        // 自动刷新 @UpdateDateColumn，漏了它会让 updatedAt 停在旧值——而
+        // PATCH 的乐观锁（expectedUpdatedAt）正是拿它比对的。
+        updatedAt: () => "CURRENT_TIMESTAMP",
+      })
+      .where('"id" = :id', { id })
+      .andWhere('"status" = :from', { from: transition.from })
+      .andWhere('"deletedAt" IS NULL')
+      .execute();
+    return (result?.affected ?? 0) > 0;
+  }
+
   async pause(id: string, user?: { id: number; role: UserRole } | null) {
-    // R-01: RAW 取数——暂停落库会把实体整体 UPDATE 回库，脱敏副本同样
-    // 会把 "******" 覆盖到真实 secrets（每次 pause/resume 必现）。
+    // R-01: RAW 取数——响应体要脱敏，而写面不得消费脱敏副本（"******" 落库）。
     const t = await this.findByIdRaw(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
+    // R46-A1: 这里的前置判定只为「顺序执行时给出稳定错误码」而保留；**判据的
+    // 最终解释权在数据库**（transitionTaskStatus 的行谓词），不再靠它决定写。
     if (t.status === TaskStatus.PAUSED) {
       throw new AppError("TASK_ALREADY_PAUSED");
     }
     this.schedulerService.stop(id);
-    t.status = TaskStatus.PAUSED;
-    const saved = await this.taskRepo.save(t);
-    return this.maskSecretsForResponse(saved);
+    const applied = await this.transitionTaskStatus(id, {
+      from: TaskStatus.ACTIVE,
+      to: TaskStatus.PAUSED,
+    });
+    if (!applied) {
+      // 规则 3：命中 0 = 并发收敛（行已被别的动作推进/软删），不是 500，
+      // 更不许按旧快照盖回去。对外与「顺序执行时第二次 pause」同解（同码同 400），
+      // 使"输了竞态"和"来晚了"对调用方不可区分——这正是幂等该有的样子。
+      this.logger.warn(
+        `pause ${id}: status 已被并发迁移（不再是 active），跳过写入以保留并发结果`,
+      );
+      throw new AppError("TASK_ALREADY_PAUSED");
+    }
+    // 返回读侧视图：重新取数（而非返回方法早期快照），避免把窗口内已被别人
+    // 改掉的列当成"本次写的结果"回给调用方。
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    return this.maskSecretsForResponse(saved ?? t);
   }
 
   async resume(id: string, user?: { id: number; role: UserRole } | null) {
@@ -2364,13 +2421,24 @@ export class TaskService {
     const t = await this.findByIdRaw(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
+    // R46-A1: 同 pause——前置判定只为稳定错误码，写面的判据是行谓词。
     if (t.status !== TaskStatus.PAUSED) {
       throw new AppError("TASK_NOT_PAUSED");
     }
-    t.status = TaskStatus.ACTIVE;
-    await this.taskRepo.save(t);
-    await this.schedulerService.scheduleOne(t);
-    return this.maskSecretsForResponse(t);
+    const applied = await this.transitionTaskStatus(id, {
+      from: TaskStatus.PAUSED,
+      to: TaskStatus.ACTIVE,
+    });
+    if (!applied) {
+      this.logger.warn(
+        `resume ${id}: status 已被并发迁移（不再是 paused），跳过写入以保留并发结果`,
+      );
+      throw new AppError("TASK_NOT_PAUSED");
+    }
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    const row = saved ?? t;
+    await this.schedulerService.scheduleOne(row);
+    return this.maskSecretsForResponse(row);
   }
 
   async trigger(
@@ -3421,7 +3489,7 @@ export class TaskService {
     };
     // ARCH-30: 走服务化封装（重试 1 次 + 指标 + 永不抛错）；空串结果原样
     // 落库（前端按"无分析"降级渲染），与此前直调 AiService 的空串语义一致。
-    exec.aiAnalysis = await this.aiAnalysisService.analyzeFailure(
+    const analysis = await this.aiAnalysisService.analyzeFailure(
       task,
       logContent,
       {
@@ -3430,8 +3498,22 @@ export class TaskService {
         runbook: taskRow?.runbook ?? null,
       },
     );
-    await this.execRepo.save(exec);
-    return exec;
+    // R46-A1（四轴审计 · ADR-026 规则 4）：**只写本次动作真正改变的列**。
+    //
+    // 旧实现是 `this.execRepo.save(exec)`——把方法早期读到的**执行行快照**整行
+    // 回写。AI 调用是秒级甚至更长的窗口，窗口内执行器回调 / 管理员 kill /
+    // 超时扫描完全可能已把该行推进到终态；整行 save 会把 status / endTime /
+    // exitCode / duration / failureReason 全部按旧值盖回去，于是：
+    //   · 终态 SUCCESS/KILLED 被"复活"成 RUNNING（**终态之后仍可改写**）；
+    //   · 随后 scheduler 的 stale sweep 把这条"RUNNING 但没心跳"的行当丢失
+    //     执行重新入队 → 同一个执行被**二次派发**；
+    //   · 本次真正要落库的其实只有 aiAnalysis 一列，且它是纯展示列、无并发写者。
+    // 故单列 UPDATE 足够，且天然无竞态（行级锁只作用于这一列）。
+    await this.execRepo.update({ id: exec.id }, { aiAnalysis: analysis });
+    // 返回读侧视图：取库中当前行而不是方法早期快照，避免把窗口内已经变化的
+    // status/endTime 一并回给前端（会让详情页显示"已完成但仍 RUNNING"）。
+    const fresh = await this.execRepo.findOne({ where: { id: exec.id } });
+    return fresh ?? { ...exec, aiAnalysis: analysis };
   }
 
   /**

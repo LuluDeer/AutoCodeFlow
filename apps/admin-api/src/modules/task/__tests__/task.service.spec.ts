@@ -5989,21 +5989,33 @@ describe("TaskService (__tests__)", () => {
       await expect(
         service.analyzeExecution("exec-1", intruder),
       ).rejects.toThrow(ForbiddenException);
+      // R46-A1: 写面已从整行 save 改为单列 UPDATE——越权时两者都不得发生
       expect(execRepo.save).not.toHaveBeenCalled();
+      expect(execRepo.update).not.toHaveBeenCalled();
     });
 
     it("analyzeExecution：属主本人 → 放行并落 AI 分析", async () => {
       givenTask(7);
-      execRepo.findOne.mockResolvedValue({
+      const exec: Record<string, any> = {
         id: "exec-1",
         taskId: "t1",
         taskName: "job",
-        aiAnalysis: null as string | null,
+        aiAnalysis: null,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      // R46-A1: 落库从「整行 save」改为「单列条件写」（ADR-026 规则 4），
+      // 替身按真实语义只回填被写的那一列。
+      execRepo.update.mockImplementation(async (_c: any, patch: any) => {
+        Object.assign(exec, patch);
+        return { affected: 1 };
       });
-      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       const r = await service.analyzeExecution("exec-1", ownerUser);
       // 落库即已走完 AI 分析（桩默认返回空串，不断言具体文案）
-      expect(execRepo.save).toHaveBeenCalled();
+      expect(execRepo.update).toHaveBeenCalledWith(
+        { id: "exec-1" },
+        { aiAnalysis: "" },
+      );
+      expect(execRepo.save).not.toHaveBeenCalled();
       expect(r.aiAnalysis).toBe("");
     });
 
@@ -7528,7 +7540,11 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       };
       givenOwnedExecution(exec);
       aiService.analyzeFailure.mockResolvedValue("AI: fix it");
-      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // R46-A1: 单列条件写（不再整行 save）；替身只回填 aiAnalysis
+      execRepo.update.mockImplementation(async (_c: any, patch: any) => {
+        Object.assign(exec, patch);
+        return { affected: 1 };
+      });
 
       const result = await service.analyzeExecution("exec-1", ADMIN_USER);
       // FIX-6.2: 第三参为结构化上下文（failureReason/exitCode/runbook）——
@@ -7554,6 +7570,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       );
     });
   });
+
 });
 
 // R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。
