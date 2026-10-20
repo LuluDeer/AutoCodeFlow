@@ -2317,3 +2317,11 @@ logStreamPusher.finalFlush().catch(...)
   验证：**48 suites / 1205 → 1217 passed**、tsc 0；探针 5 例先全红再全绿后删除；**总控独立反证 ×2**：放开字节闸 → 3 failed、marker 模板改 `x` → 4 failed，均还原 23/23。
   **总控独立核对常量逐字节相同**（`1_000_000` vs `1024*1024` 差 4.8%，各写各的「1MB」会让边界分叉而两侧测试都绿）。
   **遗留如实**：需真 admin 才能定的三条；**跨侧共享弱点**（失败片不重发 / 非 2xx 算成功 / marker 被推迟 / 单行 >512KB 被拒整片）—— 单改一侧会破 parity，未动；**node 独有已证明未改**：decoder tail 只进 logBuffer 不进 pusher，末行多字节字符缺 1-3 字节；**超时/重试差异**（20s×3 vs 5s×1）非缺陷但建议 pusher 传 5s。
+- 2026-10-20 **R175 done（commit c924604c）**：**日志推送显式传 5s 超时，与 python 对齐**。`admin-client.post` 默认 20s，而 flush 串行化后单片超时直接决定「慢 admin 阻塞后续多久」：
+  python **5s/无重试** ≈ 5s 窗口；node 改前 **20s × 3 次 + 500ms 退避 ≈ 61s** —— 这 61 秒里正常产出的日志会被背压丢弃，**而丢的正是排障最需要的那段**。
+  改法：`post` 增加**可选**第 4 参 `timeoutMs`（不传即沿用默认，行为逐字不变；实现上把已有的 `request(..., timeoutMs)` 透出，`postLong` 早就这么用）；pusher 新增 `PUSH_TIMEOUT_MS = 5_000` 并显式传入。
+  验证：spec **24 passed**（+1 例，钉住「真的传了超时」且「值等于 5s」）、tsc 0；**反证**：删掉调用处实参 → **1 failed**，还原 24 passed。
+  **一次自伤**：加导入时写成 `BACKPRESSURE_MARKER,, PUSH_TIMEOUT_MS`（双逗号）⇒ 套件 `TS1003` 起不来、**0 个用例运行**。
+  这恰好区分了两种红：**「套件失败」与「用例失败」** —— 前者一个用例都没跑，后者至少跑了。我第一眼只看 `Test Suites: 1 failed` 差点当成断言挂了。
+  **连带**：改了 executor-node 源码 ⇒ `check-desktop-bundle-drift` 又红（内嵌 bundle 语义摘要变了）⇒ 重打 + 回填 `.sha256`，现已双段一致。
+  （**这条教训今天第三次出现**：改完一个应用，要跑的不只是它的测试 —— 还有它会连带影响的下游守卫。）
