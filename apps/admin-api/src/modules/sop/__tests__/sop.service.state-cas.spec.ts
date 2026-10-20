@@ -413,3 +413,21 @@ describe("R33-A2 状态机 · completeAssignment 以 attempt CAS 为准", () => 
   });
 });
 
+
+describe("R39 · resend 重新排队按领取状态做 CAS（ADR-026）", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const svcSrc = readFileSync(
+    require("node:path").join(__dirname, "..", "sop.service.ts"),
+    "utf8",
+  ) as string;
+
+  it("resend 分支的 assignments.update WHERE 里带 pulledAt（不是只有 id）", () => {
+    // pulledAt 是领取 CAS 的判据列。无条件清零会抹掉「谁领了这张单」的凭据：
+    // resend 与普通领取并发时，后到者清掉对方刚拿到的领取态 ⇒ 同一张单被两个
+    // 实例同时认为归自己。判据必须按**读取时的值**做 CAS（ADR-026 规则 2）。
+    const re =
+      /if \(resendAll && !firstPull\) \{[\s\S]{0,600}?assignments\.update\(\s*\{\s*id: a\.id,\s*pulledAt: a\.pulledAt \?\? IsNull\(\)/;
+    expect(re.test(svcSrc)).toBe(true);
+  });
+});
+

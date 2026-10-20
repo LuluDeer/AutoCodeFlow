@@ -384,7 +384,16 @@ export class SopService {
       // 失败）重新排队，由后续普通 poll 逐个送出；否则 Host 侧这些已领取单
       // 会永久丢失。按 id 重发（崩溃恢复）是定向动作，不触碰其它单的排队状态。
       if (resendAll && !firstPull) {
-        await this.assignments.update({ id: a.id }, { pulledAt: null });
+        // R39（ADR-026）：`pulledAt` 是**领取 CAS 的判据列**（见 :356 的
+        // `WHERE pulledAt IS NULL`）。无条件清零等于把「谁领了这张单」的凭据抹掉：
+        // 若两个 poll 并发（resend 与普通领取交错），后到者会把对方**刚拿到**的
+        // 领取状态清掉 ⇒ 同一张单被两个执行器实例同时认为「归自己」。
+        // 条件写按**读取时的值**做 CAS：只有这一行仍是本循环读到的那份领取状态时，
+        // 才把它退回队列；否则说明别人已经动过它，让位。
+        await this.assignments.update(
+          { id: a.id, pulledAt: a.pulledAt ?? IsNull() },
+          { pulledAt: null },
+        );
       }
     }
 
@@ -732,6 +741,9 @@ export class SopService {
       // ——澄清来自执行器（不可信），会话权限必须最小化。
       scope: { sops: [a.sopId] },
     });
+    // adr-026-exempt: 只写 reviewSessionId 这一个**指针列**（会话关联），且上一段 CAS
+    // 已经确立了唯一胜者（并发 ingest 只有一个能推进轮次）。指针列没有「状态机」语义：
+    // 并发覆盖最坏是关联到另一场同样合法的复核会话，不影响归属/终态判定。
     await this.clarifications.update(
       { id: saved.id },
       { reviewSessionId: session.id },
@@ -878,6 +890,8 @@ export class SopService {
       }
       // 版本锚是本次动作真正改变的列——认领已确立唯一胜者，这里按 id 只写这一列
       // （写多列才需要状态谓词；ADR-026 规则 4：不整行回写）。
+      // adr-026-exempt: 只写 newSopVersion 一个**结果列**；该行的状态迁移已由上方
+      // 「先条件认领」独占（WHERE resolution = 读取值），失败时还有条件回滚。
       await this.clarifications.update(
         { id: row.id },
         { newSopVersion: newSopVersion ?? null },
@@ -1421,6 +1435,9 @@ export class SopService {
     assignmentId: string,
     sessionId: string,
   ): Promise<void> {
+    // adr-026-exempt: 只写 targetAgentSessionId 一个**指针列**（透传执行器 Agent 会话 id）。
+    // 同一指派只有一个执行器在用，重复上报是「同一会话覆盖同一值」；即使并发，
+    // 最坏是记录到另一场合法会话 id，不影响状态机/归属/终态。
     await this.assignments.update(
       { id: assignmentId },
       { targetAgentSessionId: sessionId.slice(0, 128) },
