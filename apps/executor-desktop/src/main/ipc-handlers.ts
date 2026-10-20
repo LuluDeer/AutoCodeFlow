@@ -29,6 +29,7 @@ import {
 import * as childProcess from 'child_process';
 import { configStore, executorProcess, getAgentHostStatus, heartbeat, syncAgentHostWithConfig, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import type { AppConfig } from './config-store';
+import { EXECUTOR_RESTART_REQUIRED_FIELDS } from './config-restart';
 import { decryptToken } from './token-crypto';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
 import { checkForUpdatesUserInitiated, downloadUpdate, quitAndInstall } from './updater';
@@ -209,35 +210,10 @@ export async function openTaskLogFolder(): Promise<{ ok: boolean; path?: string;
 }
 
 /**
- * 会真正进入 executor-node 子进程的配置字段——executor-process.start() 组装
- * 子进程 env 的全部输入（APP_NAME、PORT、BIND_ADDRESS、EXECUTOR_ADDRESS、
- * EXECUTOR_ADDRESS_PUBLIC、ADMIN_API_URL、WORK_DIR、MAX_CONCURRENT_TASKS、
- * EXECUTOR_SHARED_TOKEN、uv 组环境变量）+ spawn 参数。改动这些字段必须重启
- * 子进程才生效；其余字段（notifyEnabled / logLevel / autoStart / agent* 档位
- * 等）由桌面主进程热同步（syncNotifierWithConfig / syncAgentHostWithConfig /
- * applyLogLevel）或根本不进子进程，保存后不需要重启。
- */
-const EXECUTOR_RESTART_REQUIRED_FIELDS: ReadonlyArray<keyof AppConfig> = [
-  'adminApiUrl',
-  'executorName',
-  'executorHost',
-  'executorPort',
-  'executorAddressPublic',
-  'executorToken',
-  'workDir',
-  'maxConcurrentTasks',
-  // python_task_multiversion：uv / 解释器池 / 私有源（buildUvChildEnv 下发）。
-  'uvPath',
-  'uvPythonInstallDir',
-  'uvPythonInstallMirror',
-  'interpreterDownloadTimeoutMs',
-  'pypiRegistryUrl',
-  // ARCH-33：pull 回连模式（EXECUTOR_PULL_MODE 只在 true 时下发）。
-  'pullMode',
-];
-
-/**
  * 判断两次**已落盘**配置之间是否存在"必须重启执行器才生效"的字段变化。
+ *
+ * 字段清单见 config-restart.ts（渲染层同源 import，避免"改语言也提示会重启"
+ * 这类两套判据漂移）；本函数只额外处理 executorToken 的密文差异。
  *
  * 为什么需要：旧 config:save 只要执行器在跑就无条件 stop+start——改一个通知
  * 开关也会杀掉正在运行的任务。其余字段（notifyEnabled / logLevel / autoStart /
@@ -438,9 +414,16 @@ export function readLastLines(
  * 返回值供 UI 如实呈现（配置本身均已落盘成功）：
  *  · reloadError：执行器热重载失败——它已停留在停止态；
  *  · restartDeferred：用户选择暂不重启——下次启动执行器时生效。
+ *
+ * restartConfirmed：调用方（config:save 的渲染层）已经就"重启会中断任务"
+ * 征得用户同意。此时不能再弹一次原生确认框——2026-10 真机 E2E 实测：
+ * 渲染层 ConfirmBar 确认后主进程又弹 `dialog.showMessageBox`，同一个问题
+ * 问两遍，且原生框在自动化/远程桌面下会额外阻塞保存。config:import 没有
+ * 渲染层确认面，仍走原生征询。
  */
 async function finalizeConfigSave(
   configBefore: AppConfig,
+  options: { restartConfirmed?: boolean } = {},
 ): Promise<{ reloadError?: string; restartDeferred?: boolean }> {
   // P3-1：logLevel 不再是死字段——保存后立即作用于桌面端自身的文件日志。
   applyLogLevel(configStore.get('logLevel'));
@@ -465,7 +448,7 @@ async function finalizeConfigSave(
       log.info(
         'Config saved; no restart-required fields changed — executor left running',
       );
-    } else if (await confirmExecutorRestart()) {
+    } else if (options.restartConfirmed || (await confirmExecutorRestart())) {
       try {
         heartbeat.stop();
         await executorProcess.stop();
@@ -533,7 +516,9 @@ export function registerIpcHandlers(): void {
     configStore.save(sanitizeConfigInput(cfg));
     // 热同步 / 重启征询等收尾与 config:import 共用同一实现（见
     // finalizeConfigSave 注——两处各写一遍必然漂移）。
-    const outcome = await finalizeConfigSave(configBefore);
+    // 渲染层在调用本通道前已用 ConfirmBar 确认过「会重启执行器」；
+    // 不再二次弹原生对话框（见 finalizeConfigSave 的 options 注释）。
+    const outcome = await finalizeConfigSave(configBefore, { restartConfirmed: true });
     if (outcome.reloadError) return { ok: true, reloadError: outcome.reloadError };
     if (outcome.restartDeferred) return { ok: true, restartDeferred: true };
     return { ok: true };

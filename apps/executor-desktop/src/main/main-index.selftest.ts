@@ -26,6 +26,7 @@ function main(): void {
   // 去注释版：结构性顺序断言统一用它——否则解释缺陷的中文注释会自我触发。
   const indexCode = indexSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
   const execSrc = read('executor-process.ts');
+  const ipcSrc = read('ipc-handlers.ts');
   const preloadSrc = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'preload', 'index.ts'),
     'utf-8',
@@ -185,6 +186,34 @@ function main(): void {
     assert.ok(
       entryBlock.includes('const fromDist') && entryBlock.includes('fs.existsSync(fromDist)'),
       'E2E-ENTRY: 必须先用 __dirname 路径并用 existsSync 守卫，再回退 app.getAppPath()',
+    );
+  }
+
+  // ── CFG-SAVE：渲染层已确认的重启不得再弹原生确认 ─────────────────
+  // 2026-10 真机 E2E 抓到：ConfigPage 的 ConfirmBar 点「确认保存并重启」后，
+  // 主进程 finalizeConfigSave 又弹 dialog.showMessageBox，同一个问题问两遍，
+  // 且原生框阻塞保存、自动化无法继续。
+  {
+    const saveIdx = ipcSrc.indexOf("ipcMain.handle('config:save'");
+    assert.ok(saveIdx >= 0, 'CFG-SAVE: config:save handler 必须存在');
+    const saveBlock = ipcSrc.slice(
+      saveIdx,
+      ipcSrc.indexOf("ipcMain.handle('config:save-and-close-wizard'", saveIdx),
+    );
+    assert.ok(
+      saveBlock.includes('finalizeConfigSave(configBefore, { restartConfirmed: true })'),
+      'CFG-SAVE: config:save 必须把渲染层确认传下去（否则重复弹原生重启确认框）',
+    );
+    const importIdx = ipcSrc.indexOf("ipcMain.handle('config:import'");
+    const importBlock = ipcSrc.slice(importIdx, ipcSrc.indexOf("ipcMain.handle('config:test-connection'", importIdx));
+    assert.ok(
+      importBlock.includes('finalizeConfigSave(configBefore);') && !importBlock.includes('restartConfirmed'),
+      'CFG-SAVE: config:import 无渲染层确认面，必须保留原生重启征询',
+    );
+    assert.ok(
+      ipcSrc.includes("from './config-restart'") &&
+        !ipcSrc.includes('const EXECUTOR_RESTART_REQUIRED_FIELDS'),
+      'CFG-SAVE: 重启必需字段清单必须来自 config-restart.ts（不得在 ipc-handlers 再抄一份）',
     );
   }
 
