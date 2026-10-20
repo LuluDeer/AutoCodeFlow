@@ -177,6 +177,11 @@ function isRestrictedIpv4(ip: string): boolean {
   if (a === 100 && b >= 64 && b <= 127) return true;
   // Multicast / reserved (224.0.0.0/4, 240.0.0.0/4)
   if (a >= 224) return true;
+  // R77：198.18.0.0/15 benchmark 段。admin-api 的 SSRF_DENY_HOST_PATTERNS 里它是 `restricted`，
+  // 而本侧一直没有 —— `ssrf-deny-parity.spec.ts` 第一次跑就把它揪出来了
+  // （`::ffff:198.18.0.1` 经 IPv4-mapped 落到这里，返回 false ⇒ 整条放行）。
+  // 这一段不可路由，但**用途是压测/基准**，落到真实网络里可能被中间设备当公网处理。
+  if (a === 198 && (b === 18 || b === 19)) return true;
 
   return false;
 }

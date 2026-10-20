@@ -827,6 +827,11 @@ jobs:
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
       - name: CLI command map vs code guard
         run: node scripts/check-cli-doc.mjs
+      # 同一道 SSRF 闸在两个 app 各有一份实现：admin-api 是表驱动 + 18 条矩阵，
+      # executor-node 长期是弱版本（R74-A1 实测 ::ffff:127.0.0.1 整条放行）。
+      # 镜像矩阵必须跟着长，否则「加了危险段、只在一侧生效」永远不会被发现。
+      - name: SSRF deny matrix parity (admin-api vs executor-node)
+        run: node scripts/check-ssrf-deny-parity.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
