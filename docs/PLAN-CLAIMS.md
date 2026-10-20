@@ -2308,3 +2308,12 @@ logStreamPusher.finalFlush().catch(...)
 而两者的测试都会绿 —— 因为它们各自测自己的实现。**只有把两边的字面量并排打出来，才看得见。**
 
 （这也是今天反复用的动作：**不要问「它们一致吗」，去把两个值并排打出来**。）
+- 2026-10-20 **★ R164-A1 done（commit 3f5209cf）—— node 侧日志链路与 python 对齐，四个缺陷**：
+  ① **无字节闸**：只有 10 片×100 行，单行无上限 ⇒ 实测 200×64KB=**12.8MB 全驻留**（python 已是 1MB/片 + 10MB 缓冲）⇒ 同一部署 python 任务不炸、node 任务炸。
+  ② **丢行无 marker**：1001 行丢 100 行，出站体 **0 条 marker**，行号 99→1100 静默跳跃。
+  ③ **flush 并发**：第一片卡网络时 finalFlush 立刻发第二片，到达顺序可与行号相反且不等在飞请求（我 `R167` 独立发现的同一条）。
+  ④ **stdout/stderr 共用一个 partial（node 独有）**：`'out-partial'+'err-line\n'` ⇒ `out-partialerr-line`（我 `R168` 独立复现）。**校准**：三个 sink 吃同一合并流 ⇒ 行号仍对齐，属**可读性**而非行号错位。
+  改法：`MAX_BYTES_PER_CHUNK=1_000_000` / `MAX_BUFFERED_BYTES=10_000_000`（**与 python 同值同名**）+ 条数 OR 字节切片/丢最旧 + marker（**文案逐字同 python**）+ flush Promise 链串行 + partial 按流隔离。
+  验证：**48 suites / 1205 → 1217 passed**、tsc 0；探针 5 例先全红再全绿后删除；**总控独立反证 ×2**：放开字节闸 → 3 failed、marker 模板改 `x` → 4 failed，均还原 23/23。
+  **总控独立核对常量逐字节相同**（`1_000_000` vs `1024*1024` 差 4.8%，各写各的「1MB」会让边界分叉而两侧测试都绿）。
+  **遗留如实**：需真 admin 才能定的三条；**跨侧共享弱点**（失败片不重发 / 非 2xx 算成功 / marker 被推迟 / 单行 >512KB 被拒整片）—— 单改一侧会破 parity，未动；**node 独有已证明未改**：decoder tail 只进 logBuffer 不进 pusher，末行多字节字符缺 1-3 字节；**超时/重试差异**（20s×3 vs 5s×1）非缺陷但建议 pusher 传 5s。
