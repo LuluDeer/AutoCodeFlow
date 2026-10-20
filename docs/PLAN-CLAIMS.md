@@ -1147,3 +1147,12 @@
   验证：tsc 0（两套）、6 个相关 selftest 全绿、接线守卫 **53/53**；**两条反证**（均还原即绿）：① 回退成 `startsWith('file://')` → exit 1；② 删掉 `will-redirect` 一行 → exit 1。
   **取舍**：判据改全等后，将来「渲染层打开本地帮助文档」会被挡 —— 那是**有意的**：该类需求应走 `shell.openExternal`/`openPath` 既有 IPC（带 path-domain 白名单），
   而不是让应用自己的窗口导航过去、把 preload 桥一起带过去。
+- 2026-10-20 **R108 done（commit 02a52f2e）**：**18% 的错误码给不出处置建议**。admin-api 错误码目录 **383** 个，CLI 的 `error-code.ts` 刻意不逐码写建议（「三百多个码逐条写必然腐化」）
+  而用 6 类规则归类、**未归类不追加提示** —— 设计对，但有静默缺口：**新码撞不上规则时用户永远拿不到建议，且无任何东西提醒**。实测 **66/383（17%）**。
+  这些不是「忘了归类」：`TASK_SECRET_DECRYPT_FAILED`（部署期密钥）、`EXECUTOR_HOST_DNS_LOOKUP_FAILED`（网络配置）、`APP_UPLOAD_MALWARE_DETECTED`（安全策略拒）、
+  `INTERNAL_ERROR`（6 类无「服务端错误」）、`ARTIFACT_COUNT_LIMIT_REACHED`（有 LIMIT 但撞不上 capacity 的 `RATE_LIMIT`/`QUOTA` 一族）—— **硬塞会给出误导性建议，比不给更糟**。
+  落地：`packages/acf-cli/src/__tests__/error-code-coverage.test.ts`（4 条）——未归类必须逐一在基线（带分组理由）/ 基线里已能归类的要删 / 基线里不存在的要删 / 扫描下界。
+  **方法自我纠正（试错三次）**：先写 `scripts/` 守卫用**正则解析 TS 里的正则字面量**，撞多行元组、撞转义、撞块内 `];` 边界各一次；改成 vitest 直接 `import { classifyErrorCode }` 后一次通过。
+  **判据要用被检查的实物本身，不要用它的文本投影** —— 与本仓已否掉的 openapi 路由守卫、死导出扫描是同一条教训的第三次出现。
+  验证 4 passed；反证：插一个 `R108_PROBE_UNCLASSIFIED_CODE` → 红，删后绿；过程中第 3 条判据真实抓到我把 3 个**本可归类**的码放进了基线。
+  **待产品裁量**：① 是否把 6 类扩成 7 类（加 `server`/`config`，其中 ≥35 个码的处置建议是稳定的）？② 或对 66 个码做**域级兜底建议**（与原设计取舍相反）。
