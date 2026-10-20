@@ -201,7 +201,24 @@ export class SopService {
       if (input.bodyMarkdown !== undefined) {
         existing.bodyMarkdown = input.bodyMarkdown;
       }
-      const savedExisting = await this.sops.save(existing);
+      // R57（ADR-026 规则 4）：只写本次编辑真正改变的列，**不整行 save**。
+      // 整行回写会把进入方法时读到的 status / currentVersion 一并写回：若这期间
+      // 有人发布（publish 刚把 currentVersion 前移到新版本），这次「保存草稿」
+      // 会把主表的版本锚**回滚**成旧值——版本行已经落库、主表却指回上一版，
+      // 执行器与控制台从此各看一个版本。窗口虽短（读与写之间没有 await），
+      // 但 save 本身是异步落库，与并发的 publish 完全可以交错。
+      const draftPatch: Record<string, unknown> = {};
+      if (input.title !== undefined) draftPatch.title = existing.title;
+      if (frontMatter) draftPatch.frontMatterJson = existing.frontMatterJson;
+      if (input.bodyMarkdown !== undefined)
+        draftPatch.bodyMarkdown = existing.bodyMarkdown;
+      // adr-026-exempt: 只写**内容列**（title / frontMatterJson / bodyMarkdown），
+      // patch 里不含 status / currentVersion 等状态列——这正是本改动的目的（不把版本锚
+      // 按旧快照写回）。并发编辑工作副本本就是「后写者赢」（draft 语义），无终态需保护。
+      if (Object.keys(draftPatch).length > 0) {
+        await this.sops.update({ id: existing.id }, draftPatch);
+      }
+      const savedExisting = { ...existing, ...draftPatch } as Sop;
       // R41-A1：编辑工作副本是**内容写入**（发布的版本正文就取自这里）——
       // 留痕，但只记「改了哪些字段」，正文 / front-matter 内容一律不进审计。
       // 刻意**不**记 actor=createdBy：那一列是**归属**不是本次操作者（见

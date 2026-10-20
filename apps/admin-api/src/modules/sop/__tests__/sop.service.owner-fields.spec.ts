@@ -94,6 +94,25 @@ describe("R34-A1 轴4 · sop 的 owner 字段（归属契约）", () => {
     expect(h.sopStore.title).toBe("日报 v2");
   });
 
+  it("R57 并发：编辑草稿不得把 publish 刚前移的 currentVersion 回滚（列级写）", async () => {
+    const h = harness();
+    // 模拟「读到快照之后、落库之前」有人完成了一次发布：主表版本锚已经前移。
+    h.sopStore.currentVersion = "1.0.1";
+
+    await h.service.draft({
+      slug: "daily-report",
+      title: "日报 v3",
+      bodyMarkdown: "再改一版正文",
+      createdBy: "user:11111111-2222-3333-4444-555555555555",
+    });
+
+    // 本次编辑的列生效
+    expect(h.sopStore.title).toBe("日报 v3");
+    expect(h.sopStore.bodyMarkdown).toBe("再改一版正文");
+    // 核心：版本锚没有被「保存草稿」按旧快照写回（旧实现整行 save 会写成 1.0.0）
+    expect(h.sopStore.currentVersion).toBe("1.0.1");
+    expect(h.sops.save).not.toHaveBeenCalled();
+  });
   it("新建 SOP：createdBy 原样落库（service 不加/不改前缀，形态由控制器统一决定）", async () => {
     const h = harness();
 
