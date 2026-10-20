@@ -3114,11 +3114,19 @@ function runProcess(
       if (stdoutTail) {
         logBuffer.append(stdoutTail);
         if (executionId) appendLog(executionId, stdoutTail);
+        // R176：**第三路 sink 也必须收到这段尾巴**。
+        //
+        // 此前这里只喂 logBuffer / appendLog（回调日志与落盘），漏了实时流的 pusher ⇒
+        // 若进程在多字节字符中间被切断，末行末尾 1-3 字节只出现在终态回调里，
+        // **实时视图那一行是残缺的**（且没有任何标记说明它残缺）。
+        // 三个 sink 必须吃同一份字节，否则「实时流」与「最终日志」在尾部对不上。
+        logStreamPusher?.addOutput(stdoutTail, 'stdout');
       }
       const stderrTail = stderrDecoder.end();
       if (stderrTail) {
         logBuffer.append(stderrTail);
         if (executionId) appendLog(executionId, stderrTail);
+        logStreamPusher?.addOutput(stderrTail, 'stderr');
       }
       // RT-LOG: Fire-and-forget final flush of log stream pusher before resolving
       if (logStreamPusher) {
