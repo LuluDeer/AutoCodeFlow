@@ -2592,3 +2592,12 @@ def _parse_retry_after(raw): ...      # delta-seconds 或 HTTP-date
 | Retry-After 上限 | **可选**，默认 `None`（保旧契约） | **固定 5.0s**（新行为，无旧契约） |
 
 **同一个问题，两处不同的取舍，而两处都对**：有没有旧契约要保，决定了默认值该松还是该紧。
+- 2026-10-20 **★ R177-A1 done（commit 0bba3bcf）—— 两个**发布件** SDK 审计，六处缺陷**：
+  **PY**：① 回调通道抛裸 `httpx.HTTPStatusError` 而通用通道抛 `HttpClientError` ⇒ `except HttpClientError` **接不住 401**、拿不到 `error_code`；② `_raise` 的 `if resp.is_error` 前置判断让 **3xx 漏出 SDK 类型**（反代 302 场景）；③ **429/5xx 完全忽略 `Retry-After`**（固定 0.5/1.0s ⇒ 必然再吃 429 烧光预算）。
+  **NODE**：④ `CircuitBreakerOpenError` **从包入口不可达**（`index.ts` 没转出 ⇒ 用户 `import` 编译失败）；⑤ 禁用态抛裸 `Error`（配置错不可分类）；⑥ `isTerminalCallbackUrl`/`withExecutorAddress` 用裸正则 ⇒ **带查询串或绝对 URL 时静默失配**（丢重试豁免 + 丢 `executorAddress` 盖章），且两谓词对 `/callback/sub` **互相矛盾**。
+  改法要点：`Retry-After` 解析（delta + HTTP-date）+ `CALLBACK_RETRY_MAX_WAIT_S=5.0` **硬上限**（同步阻塞 API 不能被服务端一句话钉住）；`_raise` 收敛单一路径；新增 `requestPath()` 归一化并让两个谓词共用；`HttpClientDisabledError` 导出。
+  验证：**PY 157→169**、**NODE 133→139**、tsc 0；执行者先红后绿（8F/3F/5F → 全绿）；**总控独立反证 ×2**：`_raise` 退回 `is_error` 前置 → **3 failed**、`index.ts` 退回只转 `HttpClient` → **2 failed**，均还原全绿。
+  **判「干净」的三轴都有证据**（重试非幂等：admin 三道闸逐个读并给 file:line / 错误未吞：9 处 except 逐处说明 / 资源关闭：含异常路径）。
+  **★ 更正执行者的一条遗留**：它把「CI/文档用 `vitest run` 跑 jest ⇒ 必然全红」列为遗留 7 —— 我核了 `ci.yml:637` 是 `npm test -- --coverage`（= jest），**CI 没问题**；那条 vitest 命令的出处是**我自己的任务书**（`R181` 已记）。
+  **遗留（需决策）**：配置错语义两包相反（`from_env` 不抛 / `fromEnv` 抛）/ Python 缺异步回调客户端 / **Node 回调重试最坏 ≈130s vs PY ≈41s**（临近 `timeoutSeconds` 可能被杀反而丢终态）/ `isNetworkLevelError` 可能漏 `EPIPE`（未实测）/ 熔断能力不对等。
+  **如实标注**：幂等性来自读 admin 源码，未真起 admin-api 发重复回调；Retry-After/429 全 mock 验证。
