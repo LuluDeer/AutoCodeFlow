@@ -1331,3 +1331,10 @@
   接线：`npm run check:cron-leader-gate` = `--selftest && <guard>`（与 conditional-writes 同款约定），CI 改为调用 npm 脚本。
   验证 selftest **5/5**、guard 22/22、guards-wired 33 全接线；反证：去掉注释剥离两行 → selftest **3/5**（失败的正是两条注释用例），还原 5/5。
   **方法论**：一个判据的历史失败如果只活在注释里，它就还没被修好 —— 只是被描述了；**把失败变成会红的用例，它才算被修好**。
+- 2026-10-20 **★ R123 done（commit cd1b9ecd）**：**executor-python 日志推送补字节级背压**（R94-A1 遗留）。先量化再修：条数上限 1000 行 × 单行 1 MB（execute.py:753）⇒ **内存 ≈1 GB/执行、单次 POST body ≈100 MB**，
+  **条数上限不构成字节安全边界**。触发需两条件同时成立（单行接近 1 MB + admin 一轮 flush 内持续慢，一轮最多 片数×5s=50s）；否则稳态 20 MB 无害，故新上限取「远高于稳态、远低于病态」。
+  加两道字节闸：`MAX_BUFFERED_BYTES=10_000_000`（超预算丢**最旧**切片 = 保留尾部，失败原因几乎总在最后几行）/ `MAX_BYTES_PER_CHUNK=1_000_000`（条数远未到也按字节切）；先记账再判、同一次 add_line 内收口 ⇒「单行本身超预算」也收得住。
+  验证：executor-python 全量 **1195 passed / 3 skipped**、0 failed；新增 4 条（缓冲预算且保留尾部 / 单片按字节切 / flush 后记账归零 / `_utf8_len` 按字节）；反证放大两个上限 100 倍 → 前两条红。
+  **两次自伤**：① 替换文本把 warn 段落带进了 `if _buffered_bytes < 0:` 分支 ⇒ **丢行发生了、告警没发生**，被既有用例 `test_backpressure_warns_once_per_episode…` 当场抓住（`assert 0 == 1`）——**是那条老用例救的**；② 测试里凭印象写了不存在的 `_install` 辅助函数，跑出 `NameError` 才改用仓库既有的 `pusher_env` fixture。
+  **★ 本轮 agent 的教训**：它分析质量很高（算式、触发推演、「按断号切片否则 admin `appendLogChunk` 的 `fromLine+i` 会写错行号」都是它给的），但检查点写「步骤 3/4 已完成」时**磁盘上什么都没写**（`grep MAX_BUFFERED_BYTES` 为 0、文件仍 170 行、git 干净）⇒ 按协议 interrupt 后总控从零实现。
+  **检查点可以描述「我以为我做的」，磁盘只描述「我做的」。验收要查磁盘，不查检查点。** 它设计的 deque + 头/尾/marker 结构未采纳（会改丢弃语义），留作后续单子。
