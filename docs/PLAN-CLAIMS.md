@@ -2565,3 +2565,30 @@ private withExecutorAddress(url, data) {
 
 **它现在用同一个 `requestPath()` 归一化两者**，并且注释里写清了「两种完全合法的写法静默失配」——
 **这比只修其中一个更有价值**，因为第三个谓词将来会照抄 `requestPath`，而不是再写一个裸正则。
+- 2026-10-20 **R190 · 验收预检：`Retry-After` 不但补上了，还带了**硬上限**，且理由写在代码里**。
+
+`callback.py` 现在有：
+
+```python
+CALLBACK_RETRY_MAX_WAIT_S = 5.0      # 单次重试等待的硬上限，对指数退避与 Retry-After 一体适用
+def _parse_retry_after(raw): ...      # delta-seconds 或 HTTP-date
+```
+
+注释说明了**为什么必须有上限**：
+
+> Retry-After 是**服务端可控**的输入。没有上限时一句 `Retry-After: 3600` 就能把任务进程钉住一小时
+> ——本客户端是**同步阻塞 API**。
+
+**这条正是 `R134-A1` 在 `autocodeflow-http` 修过的同一个问题**（当时我在 `R140` 独立复现过 clamp：
+`clamp=None => wait 3600.0` / `clamp=5 => wait 5`）。现在在 SDK 侧以**默认就设上限**的方式落实 ——
+比当时那边「默认 None 保持旧契约」更进一步，因为这里是新加的行为，没有旧契约要保。
+
+`HTTP-date` 也要支持（不只是 delta-seconds），这点与 node 的 `parseRetryAfterHeader` 一致 —— **跨侧语义对齐**。
+
+## 一条值得记的差异
+
+| 面 | `autocodeflow-http`（R134-A1） | `autoflow-sdk`（本轮） |
+|---|---|---|
+| Retry-After 上限 | **可选**，默认 `None`（保旧契约） | **固定 5.0s**（新行为，无旧契约） |
+
+**同一个问题，两处不同的取舍，而两处都对**：有没有旧契约要保，决定了默认值该松还是该紧。
