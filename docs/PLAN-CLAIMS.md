@@ -1242,3 +1242,25 @@
   第三次后反证才生效：注释掉 → 红（点名 `agent-trigger.service.ts:277`）/ 整行删除 → 红 / 还原 → 绿。
   **教训：一条守卫的「通过」，只有在反证失败之后才有意义。** 前两次「绿」不是代码没问题，而是检查在数**注释**、数**邻居** —— 两者都会给出漂亮 ✔。
   落地：下界 15、`ALLOWLIST` 空但保留（须写理由）、接 CI + npm；`check-guards-wired` 报 **33 个全部接线**；头注写明已知边界（文本判据，挡「忘了写」不挡「写错了」）。
+- 2026-10-20 **R120 · 一次被否决的守卫 + 一份核实过的清单（无提交）**。想法：给实体里「名字像密钥」的列加守卫
+  （要求 `select: false`），因为这正是 R107-A1/R110 反复担心的泄漏面。
+
+**实测否决。** 扫描 35 个 entity、15 个 secret-ish 列，其中 14 个没有 `select: false` —— 但逐个核对后，
+**保护机制在本仓有三套并存**：
+
+| 机制 | 覆盖 |
+|---|---|
+| `select: false` | `application.webhookSecret`、`executor.tokenHash` |
+| `@Exclude` + 全局 ClassSerializerInterceptor | `user.password` / `user.totpSecret` / `user.oidcSub`（见 user-response.dto.ts 头注：契约=实际响应） |
+| 手动 mask / 加密 + DTO 投影 | `task.secrets`（SEC-02 加密 + `maskForResponse` 叶子永不回传）、`task.webhookSecret`（`enc:v1:` 信封）、`event_subscription.secret`（响应恒为 `'******'`，明文只在 create 的 `generatedSecret` 一次性回显）、`application.env`（`maskReadSurface`） |
+
+其余命中全是误报：`maxTokens` / `totalTokensIn/Out` / `tokensIn/Out` 是 **LLM 用量计数**，
+`keyHash` / `contentHash` 是**不可逆哈希**，`isSecret` 是**布尔开关**，`leaseToken` 是**锁租约标识**。
+
+**结论：不加这道守卫。** 一个只认 `select: false` 的判据会对 14 处**假报**、同时对真正在用另外两套机制的列
+**视而不见** —— 它测的不是「有没有保护」，而是「有没有用我认识的那一种保护」。
+
+这类「看起来在测安全、实际在测代码风格」的守卫，比没有更糟：它会让人以为这个面被守住了。
+（同族已否决三次：openapi 路由覆盖、死导出扫描、现在的 secret 列。）
+
+**顺带确认的正面事实**：三套机制各自都有文档化的出处（实体注释 / DTO 头注 / 服务层注释），不是口口相传。
