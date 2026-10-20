@@ -62,3 +62,49 @@
 - 计划项：R32-C3 / R32-C1 / R33-B2 / R33-A2（同一根因的四个实例）
 - 相关 ADR：ADR-002（调度器双保险：Redis Leader + DB 条件 claim，本决策的同源先例）、ADR-017
   （执行器身份：`address` 不是身份 ⇒ 同址多行的身份解析也必须是条件化 / fail-closed）
+
+## 附录：整行回写（`repo.save(entity)`）普查
+
+静态守卫 `scripts/check-conditional-writes.mjs` 只看 `.update({ id }, …)` 一种形态；**整行回写**是它
+的已知盲区（见该脚本头注），靠 `--report-saves`（只报告、永不失败）枚举。
+
+### 判定口径（三问，按顺序）
+
+1. **这个实体是刚 create 出来的，还是方法早期读到的快照？** 前者是 INSERT，无害。
+2. **写的时候是否持有行锁或版本列？** `findOne(..., { lock: "pessimistic_write" })` 在事务内持有到
+   commit；`@VersionColumn` 会让 save 自动追加版本谓词。两者都**不存在「读后写前」窗口**。
+3. **它拥有的列 vs 实体上的全部列，差集里有没有别的写者？** 有 ⇒ 真缺陷：那就是「用旧快照盖掉
+   别人刚写的事实」。**修复方式优先正向白名单 ∩ 采纳集，不用黑名单 delete**（黑名单会随新列腐化）。
+
+### 已判定为无害（26 处，逐处依据）
+
+| 类别 | 位置 | 依据 |
+|---|---|---|
+| 插入 | `agent-session:122/376/433` | 同一处 `create(...)` 之后立即 save |
+| 插入 | `app-deployment:914/1029`、`application:556` | 同上（含请求行/部署行/应用行） |
+| 插入 | `audit:147`、`config:569`、`metrics:216` | 审计/配置历史/指标上报行，只追加 |
+| 插入 | `oidc:555`、`users:105`、`task-template:104` | JIT 建号 / 管理员 seed / 模板新建 |
+| 插入 | `executor:1217/1876`、`executor-package:382` | 重试行 / 首注册新行 / 包新建 |
+| 插入 | `notification-silence:124`、`project-access:190`、`projects:87` | 静默窗口 / 成员行 / 项目行新建 |
+| 插入 | `sop:256/317/429/819/879`、`task:4606/4672` | SOP/版本/指派/澄清 ×2、执行日志行 |
+| 锁内 | `executor-package:707` | 事务内 `pessimistic_write` 重读后写回 |
+| 版本列保护 | `app-deployment:366` | 就是 `saveWithOptimisticLock()` 本体（`@VersionColumn`） |
+
+### 已修（本轮之前逐处修掉的，list 供追溯）
+
+`sop.publish` / `sop.draft` / `sop` 澄清修订 / `sop` resend 重排队 / `executor.markOffline` /
+`executor.setOfflineById` / `executor.rotateToken` / `executor.update` / `executor.heartbeat` /
+`executor.register` / `executor-package.update` / `application.deployFromGit`（头 + 收尾） /
+`application.update` / `app-deployment` rollout 痕迹 ×2 / `agent-session.finish`+`markWaiting` /
+`task.analyzeExecution` / `task.update`+`updateGlue`+`remove` / `project-access` 成员写 ×2 /
+`projects.update` / `event-subscription.update`。
+
+### 待判定（版本快照类，风险低但同型）
+
+- `app-deployment:2019`（部署产物 version.status）
+- `application:489`（版本快照的 packageUrl 回填）
+- `mutex-group:130`（互斥组配置更新：实体当前只有 name/scope/description，与 `projects.update` 同型）
+
+这三处的共同点：**写的是「几乎没有第二个写者」的列**，所以现在不构成缺陷；但按 `projects.update`
+（R62）的理由，它们同样是**定时炸弹** —— 实体加一列、且那列有别的写者，就会变成缺陷。
+处理顺序：等它们各自的模块有其他改动时顺带收紧，**不为它们单独开一轮**。
