@@ -103,6 +103,7 @@ function harness(
       : { ...opts.clarification };
 
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     findOne: jest.fn(async ({ where }: Any) =>
       where.id === sopRow.id || where.slug === sopRow.slug
         ? { ...sopRow }
@@ -515,7 +516,13 @@ describe("R41-A1 · 审计失败策略（不阻断业务，但必须 error 留�
     // 业务副作用照常完成
     expect(r.sop.currentVersion).toBe("1.0.0");
     expect(h.versions.save).toHaveBeenCalledTimes(1);
-    expect(h.sops.save).toHaveBeenCalledTimes(1);
+    // R47（ADR-026 规则 4）：发布只写 currentVersion/status 两列，不再整行 save
+    expect(h.sops.save).not.toHaveBeenCalled();
+    // R47：列级写 + currentVersion CAS（首发布时 WHERE 用 IS NULL 表达「还没有版本」）
+    expect(h.sops.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "sop-1", currentVersion: expect.anything() }),
+      { currentVersion: "1.0.0", status: "published" },
+    );
     // 不阻断 ≠ 静默：必须 error 级别留痕（含动作与错误原因）
     expect(h.logger.error).toHaveBeenCalledTimes(1);
     const line = String(h.logger.error.mock.calls[0][0]);
@@ -614,6 +621,7 @@ describe("R41-A1 · 没有写动作的路径一条都不落（不放大计量）
 describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
   function controllerHarness() {
     const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
       getAssignment: jest.fn(async (id: string) => ({
         assignment: { id },
         clarifications: [{ id: "cl-1" }],
@@ -662,6 +670,7 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
       updateCapabilities: jest.fn(async () => undefined),
     };
     const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
       ingestClarification: jest.fn(async () => ({
         clarification: { id: "cl-1", clientClarificationId: "cc-1", round: 1 },
         escalated: false,

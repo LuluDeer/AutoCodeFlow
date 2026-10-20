@@ -44,6 +44,7 @@ function harness() {
     );
 
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     findOne: jest.fn(
       async ({ where }: Any) => matchWhere(sopRows, where)[0] ?? null,
     ),

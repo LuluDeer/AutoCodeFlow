@@ -38,6 +38,7 @@ function harness(opts?: {
     updateCapabilities: jest.fn(async () => undefined),
   };
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     pollPending: jest.fn(async () => [] as unknown[]),
     ingestClarification: jest.fn(async () => ({
       clarification: { id: "c-1", clientClarificationId: "cc-1", round: 1 },

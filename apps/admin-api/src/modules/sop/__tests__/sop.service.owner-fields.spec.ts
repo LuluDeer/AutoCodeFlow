@@ -36,6 +36,10 @@ function harness(sop?: Any) {
   };
   const versionRows: Any[] = [];
   const sops = {
+    update: jest.fn(async (where: Any, patch: Any) => {
+      Object.assign(sopStore, patch);
+      return { affected: 1 };
+    }),
     findOne: jest.fn(async ({ where }: Any) =>
       where.slug === sopStore.slug || where.id === sopStore.id
         ? { ...sopStore }

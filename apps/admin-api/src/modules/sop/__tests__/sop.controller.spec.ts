@@ -36,6 +36,7 @@ type Any = Record<string, any>;
 function harness() {
   const calls: Any = {};
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     list: jest.fn(async (o: Any) => {
       calls.list = o;
       return { items: [], total: 0 };

@@ -299,9 +299,31 @@ export class SopService {
     });
     const saved = await this.versions.save(version);
 
+    // R47（ADR-026 规则 4）：**列级写**，不是整行 save。
+    //
+    // 本次动作真正改变的只有两列：currentVersion / status。整行 save 会把进入方法时
+    // 读到的**快照**写回——若这期间有人 draft/编辑了工作副本（frontMatterJson /
+    // bodyMarkdown / slug / name），那份新内容会被静默回滚，而版本快照里存的却是
+    // 新内容 ⇒ 主表与最新版本不一致（执行器拉到的是新内容、控制台看到的却是旧的）。
+    // 并发发布的版本号由 versions 的 (sopId, version) 唯一索引兜住，与本列级写不冲突。
+    // 条件写：以读到的 currentVersion 为 CAS 基准（首发布时为 NULL）。
+    // 并发发布虽然已被 versions 的 (sopId, version) 唯一索引挡住，但「从哪个版本前移」
+    // 这件事也应该由 DB 判定——否则两个不同 bump 的并发发布可能各自算出不同的下一版号、
+    // 都插入成功，最后主表被后写者覆盖成与最新版本行不一致的值。
+    const published = await this.sops.update(
+      {
+        id: sop.id,
+        currentVersion: sop.currentVersion ?? IsNull(),
+      },
+      { currentVersion: nextVersion, status: "published" },
+    );
+    if (!published.affected) {
+      // 行在「读快照 → 落版本 → 写主表」之间被并发删除：版本行已插入，但主表没了。
+      // 如实报 404，而不是让调用方以为发布成功。
+      throw new AppError(ErrorCode.SOP_NOT_FOUND, { id: sop.id });
+    }
     sop.currentVersion = nextVersion;
     sop.status = "published";
-    await this.sops.save(sop);
 
     // R41-A1：发布是**指令注入面**的关键动作（04 §4.3）——「谁在什么时候
     // 发布了哪个版本」必须能从审计表单表回答，而不是靠会轮转的应用日志。
@@ -1003,7 +1025,19 @@ export class SopService {
         }
         if (input.amendedBodyMarkdown)
           sop.bodyMarkdown = input.amendedBodyMarkdown;
-        await this.sops.save(sop);
+        // R47（ADR-026 规则 4）：只写本次修订真正改动的两列，**不整行 save**。
+        // 整行回写会把「读 SOP 快照 → 修订 → 落库」之间的并发编辑（例如管理员同时
+        // 改了 slug/name）按旧值盖回去。这里只可能改 frontMatterJson 与 bodyMarkdown
+        // （两个 if 各自决定），故按改动集合下发。
+        const amendmentPatch: { frontMatterJson?: Record<string, unknown>; bodyMarkdown?: string } = {};
+        if (input.amendedFrontMatterYaml)
+          amendmentPatch.frontMatterJson = sop.frontMatterJson as unknown as Record<string, unknown>;
+        if (input.amendedBodyMarkdown)
+          amendmentPatch.bodyMarkdown = sop.bodyMarkdown;
+        // adr-026-exempt: 只写**内容列**（frontMatterJson / bodyMarkdown），不碰状态；
+        // 该行的状态推进由紧随其后的 publish() 用 currentVersion CAS 完成。并发编辑
+        // 工作副本本就是「后写者赢」（draft 语义），没有需要保护的终态。
+        await this.sops.update({ id: sop.id }, amendmentPatch);
 
         const { version } = await this.publish({
           sopId: sop.id,

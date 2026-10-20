@@ -50,7 +50,8 @@ function harness(required: string[] = []) {
   };
   const rows: any[] = [];
   const clarificationRows: any[] = [];
-  const sops = { findOne: jest.fn().mockResolvedValue(sop) };
+  const sops = {
+    update: jest.fn(async () => ({ affected: 1 })), findOne: jest.fn().mockResolvedValue(sop) };
   const versions = { findOne: jest.fn().mockResolvedValue(version) };
   const assignments = {
     create: jest.fn((value: unknown) => value),

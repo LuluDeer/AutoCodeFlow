@@ -207,6 +207,7 @@ function harness(
     ...options.sop,
   };
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     findOne: jest.fn(async () => ({ ...sopStore })),
     save: jest.fn(async (v: Any) => {
       Object.assign(sopStore, v);

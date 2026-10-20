@@ -162,6 +162,7 @@ function harness(
   };
 
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     findOne: jest.fn(async () => ({
       id: "sop-1",
       slug: "demo",
