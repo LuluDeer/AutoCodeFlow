@@ -1424,3 +1424,27 @@
   **要不要让 FIRE_ONCE 补偿把「窗口内存在任何执行」也当作已覆盖？**（代价：每次候选多一条索引查询；收益：消掉手动跑之后的那次多余补跑）
 
   已确认**不是**缺陷的部分：依赖扇出那条本来就推锚点，B-1 判据正是为它而存在；resume 的追赶行为可辩护。
+- 2026-10-20 **R131 · 追 R126-A1 遗留「6 字段 cron 会静默降级」，结论：**写边界已拦住，不可达**（无提交）**。
+
+agent 的说法是：落点解析/周期估算只认 5 字段 ⇒ 6 字段 cron 会静默降级（补偿变死代码、阈值回落 2min），
+而写面有 `@IsCron5Field` 拦，**只有非 DTO 写路径可达**。去查「非 DTO 写路径到底存不存在」：
+
+| 写入口 | 是否过 `normalizeTaskDto` |
+|---|---|
+| `create()` | ✅ `task.service.ts:1364` |
+| `update()` | ✅ `:2250` |
+| `importDefinition()`（导入/`import_task`） | ✅ 走 `this.create(...)`（`:1486`） |
+| 模板 instantiate | ✅ 同样走 `create()` |
+
+而 `normalizeTaskDto` 对 `cronExpression` 调 `assertNormalizableCron` ⇒ `normalizeCron5Field` 失败即抛
+`TASK_CRON_FIELD_INVALID`（`:923-929`）。**也就是说：非 5 字段的 cron 在落库前就被拒了。**
+
+更有意思的是那段代码的注释本来就是为这个担心写的：
+
+> 「结构不可解析时 fail-closed 400（**DTO 放行的输入到不了这里，属于对非 DTO 调用方的纵深防御**）」
+
+所以这条遗留的正确结论不是「待修」，而是 **proven-not-reachable**：
+6 字段 cron 只能通过**绕过服务层的直接 SQL / 迁移**写进库 —— 那是 DBA 的显式动作，不是产品路径。
+
+**这也修正了 agent 的分类**：它把这条报成「报告级、仅非 DTO 写路径可达」，措辞暗示存在那样一条路；
+实测四条写入口全部收口在同一个 normalize 边界上。**一个「报告级」的判定，也应该被验证。**
