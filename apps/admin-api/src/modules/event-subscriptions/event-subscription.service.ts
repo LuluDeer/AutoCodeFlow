@@ -235,7 +235,25 @@ export class EventSubscriptionService {
     if (dto.secret !== undefined) sub.secret = dto.secret;
     if (dto.enabled !== undefined) sub.enabled = dto.enabled;
 
-    const saved = await this.subRepo.save(sub);
+    // R64（ADR-026 规则 4）：只写本次 PATCH 真正带来的列，**不整行回写**。
+    //
+    // `sub` 是上面 findOne 的快照；整行 save 会把 `consecutiveFailures` / `lastFailureAt` /
+    // `lastFailureError` 也按旧值写回 —— 而这三列的主人是 `recordDeliveryFailure`（DB 内**原子
+    // 自增**）。于是「管理员改一次 URL / 关一次开关」就会把并发投递失败攒起来的计数清零，
+    // 让一个**正在持续失败**的订阅重新看起来是健康的，自动禁用阈值也就永远攒不满。
+    const subPatch: Record<string, unknown> = {};
+    if (dto.url !== undefined) subPatch.url = sub.url;
+    if (dto.eventTypes !== undefined) subPatch.eventTypes = sub.eventTypes;
+    if (dto.secret !== undefined) subPatch.secret = sub.secret;
+    if (dto.enabled !== undefined) subPatch.enabled = sub.enabled;
+    // adr-026-exempt: patch 只含 dto 显式带来的四列（url/eventTypes/secret/enabled），
+    // 没有一列来自快照——这正是本次改动的目的（不覆盖并发失败计数/最后失败信息）。
+    // 不加状态谓词：enabled 是管理台的**绝对目标值**（显式意图），不是「读到的旧值」。
+    if (Object.keys(subPatch).length > 0) {
+      await this.subRepo.update({ id }, subPatch);
+      Object.assign(sub, subPatch);
+    }
+    const saved = sub;
     // D3-B-P1-3: 更新落证（新旧 URL 哈希，不落密钥明文）。
     await this.writeAudit({
       user,

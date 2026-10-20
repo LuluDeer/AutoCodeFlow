@@ -487,6 +487,14 @@ describe("FEAT-07 EventSubscriptionService", () => {
     create: jest.fn((x) => x),
     count: jest.fn().mockResolvedValue(0),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    // R64：update() 改列级写 —— 假仓储需要 update，且按真实语义把 patch 落到 findOne 的行上
+    // （永远返回 affected=1 的替身会让「不覆盖并发失败计数」这条路径在测试里不存在）。
+    update: jest.fn(async (where: any, patch: any) => {
+      const row = await (subRepoMock as any).findOne({ where });
+      if (!row) return { affected: 0 };
+      Object.assign(row, patch);
+      return { affected: 1 };
+    }),
   };
   const dlRepoMock = {
     findAndCount: jest.fn().mockResolvedValue([[], 0]),
@@ -580,6 +588,35 @@ describe("FEAT-07 EventSubscriptionService", () => {
     ).rejects.toThrow(/不存在/);
   });
 
+  it("R64: update 不得把并发投递失败攒的计数清零（列级写）", async () => {
+    const row: any = {
+      id: "sub-1",
+      url: "https://ci.example.com/hooks",
+      eventTypes: ["execution.failed"],
+      secret: "s",
+      enabled: true,
+      createdBy: 1,
+      // recordDeliveryFailure 用 DB 内原子自增写的三列：
+      consecutiveFailures: 4,
+      lastFailureAt: new Date("2026-10-20T01:00:00.000Z"),
+      lastFailureError: "connect ECONNREFUSED",
+    };
+    subRepoMock.findOne.mockResolvedValue(row);
+
+    await svc.update("sub-1", { enabled: false } as any, adminUser);
+
+    // 本次 PATCH 的列生效
+    expect(row.enabled).toBe(false);
+    // 关键：失败计数三列**原样保留** —— 整行 save 会把它们按快照写回（快照里也是 4，
+    // 看似无害；真正的场景是并发投递失败把计数推到 5 之后，这里一次 PATCH 就把它打回 4，
+    // 于是一个持续失败的订阅重新看起来健康、自动禁用阈值永远攒不满）。
+    expect(row.consecutiveFailures).toBe(4);
+    expect(row.lastFailureError).toBe("connect ECONNREFUSED");
+    // 写面只有 dto 带来的那一列
+    const [, patch] = (subRepoMock as any).update.mock.calls[0];
+    expect(Object.keys(patch)).toEqual(["enabled"]);
+    expect(subRepoMock.save).not.toHaveBeenCalled();
+  });
   it("update：url 变更时再次 SSRF 校验", async () => {
     subRepoMock.findOne.mockResolvedValue(makeSub({ userId: plainUser.id }));
     await svc.update(
@@ -744,6 +781,12 @@ describe("FEAT-07 EventSubscriptionService — D3-B-P1-3 审计落证", () => {
     create: jest.fn((x) => x),
     count: jest.fn().mockResolvedValue(0),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    update: jest.fn(async (where: any, patch: any) => {
+      const row = await (subRepo as any).findOne({ where });
+      if (!row) return { affected: 0 };
+      Object.assign(row, patch);
+      return { affected: 1 };
+    }),
   };
   const dlRepo = {
     findAndCount: jest.fn().mockResolvedValue([[], 0]),
