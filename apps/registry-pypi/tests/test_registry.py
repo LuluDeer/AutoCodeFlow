@@ -1321,3 +1321,266 @@ class TestContentLengthPrecheck:
         resp = client.get("/simple/weird-cl/", auth=AUTH,
                           headers={"content-length": "not-a-number"})
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# R90-A1（registry-pypi 私有上传面安全审计）
+#
+# 本服务是「接受包上传」的面，此前从未被系统审计。以下四组用例分别钉住四条
+# 判定表里的缺口（先红后绿，均已做过还原反证）：
+#   ① 上传面：用户可控的 filename 直接成为落盘名与 mkstemp 前缀——超过
+#      NAME_MAX 的名字让 mkstemp 抛 OSError 逃逸成 500；Windows/URL 敌对字符
+#      同样 500，或（Linux）产生 href 里带 ?/#/% 的坏锚点。
+#   ② 下载面：/packages/<pkg>/<file> 只做 is_file 判定，索引侧用的
+#      is_meta_file 闸没跟到下载侧——.sha256 sidecar 与**并发上传中的
+#      .upload 半成品**都能被整段读走。
+#   ③ 大小/失败面：pkg_dir 在流式累计闸之前就 mkdir，413 之后空包目录永久
+#      留在盘上 → 根索引/包索引里出现「幻影包」。
+#   ④ 审计面：本仓 audit 目录登记了 registry.pypi.upload，但那个 action 只由
+#      admin-api 的代理（apps/admin-api/src/modules/registry/registry.controller.ts
+#      的 recordUploadAudit）写；**直连 8003 的上传（twine 默认行为）不留任何
+#      痕迹**——main.py 此前一条日志/审计都没有。
+# ---------------------------------------------------------------------------
+
+AUDIT_LOGGER_NAME = "audit.registry.pypi"
+AUDIT_ACTION = "registry.pypi.upload"
+
+
+def _audit_records(caplog):
+    """从 caplog 里取本服务写的审计行（JSON），忽略其它 logger 的噪声。"""
+    import json
+    out = []
+    for record in caplog.records:
+        if record.name != AUDIT_LOGGER_NAME:
+            continue
+        try:
+            out.append(json.loads(record.getMessage()))
+        except ValueError:  # 非 JSON 行不是审计记录
+            continue
+    return out
+
+
+def json_dumps_lower(obj) -> str:
+    import json
+    return json.dumps(obj, ensure_ascii=False).lower()
+
+
+@pytest.fixture()
+def audit_caplog(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+    return caplog
+
+
+class TestR90A1UploadAudit:
+    """④ 上传必须落 registry.pypi.upload 审计（成功与失败都要有）。"""
+
+    def test_successful_upload_emits_audit_record(self, client, audit_caplog):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "audit-pkg", "version": "1.2.3"},
+                           files={"content": ("audit-pkg-1.2.3.whl", b"payload",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        rec = records[0]
+        assert rec["action"] == AUDIT_ACTION
+        assert rec["result"] == "success"
+        assert rec["user"] == AUTH[0]
+        assert rec["package"] == "audit-pkg"
+        assert rec["version"] == "1.2.3"
+        assert rec["filename"] == "audit-pkg-1.2.3.whl"
+        assert rec["size"] == len(b"payload")
+        import hashlib
+        assert rec["sha256"] == hashlib.sha256(b"payload").hexdigest()
+
+    def test_audit_record_never_contains_the_password(self, client, audit_caplog):
+        """审计行会进日志聚合：口令绝不能随行。"""
+        client.post("/", auth=AUTH,
+                    data={"name": "audit-pw", "version": "1.0"},
+                    files={"content": ("audit-pw-1.0.whl", b"x",
+                                       "application/octet-stream")})
+        raw = "\n".join(r.getMessage() for r in audit_caplog.records
+                        if r.name == AUDIT_LOGGER_NAME)
+        assert AUTH[1] not in raw
+        assert "password" not in raw.lower()
+
+    def test_unauthorized_upload_is_not_a_credential_submission(self, client, audit_caplog):
+        """401 是「凭据不对」，不该被记成一次上传尝试的内容（避免伪造审计）。"""
+        resp = client.post("/", auth=BAD_AUTH,
+                           data={"name": "audit-401", "version": "1.0"},
+                           files={"content": ("audit-401-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 401
+        assert _audit_records(audit_caplog) == []
+
+    @pytest.mark.parametrize("file_tuple,data,reason_code", [
+        (("bad-1.0.exe", b"x", "application/octet-stream"),
+         {"name": "audit-bad", "version": "1.0"}, "invalid_format"),
+        (("probe-1.0.whl", b"x", "application/octet-stream"),
+         {"name": "/tmp/audit-escape", "version": "1.0"}, "invalid_package_name"),
+    ])
+    def test_rejected_upload_emits_failure_audit(self, client, audit_caplog,
+                                                 file_tuple, data, reason_code):
+        resp = client.post("/", auth=AUTH, data=data,
+                           files={"content": file_tuple})
+        assert resp.status_code == 400
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["result"] == "failure"
+        assert records[0]["action"] == AUDIT_ACTION
+        # 失败原因用稳定码，不把内部路径/异常文本写进审计
+        assert reason_code in json_dumps_lower(records[0])
+
+    def test_conflict_upload_emits_failure_audit(self, client, audit_caplog):
+        client.post("/", auth=AUTH, data={"name": "audit-cf", "version": "1.0"},
+                    files={"content": ("audit-cf-1.0.whl", b"one",
+                                       "application/octet-stream")})
+        audit_caplog.clear()
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "audit-cf", "version": "1.0"},
+                           files={"content": ("audit-cf-1.0.whl", b"two",
+                                              "application/octet-stream")})
+        assert resp.status_code == 409
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["result"] == "failure"
+        assert "conflict" in json_dumps_lower(records[0])
+
+    def test_idempotent_reupload_is_audited_as_success_unchanged(self, client, audit_caplog):
+        """幂等重传（同 sha）也必须留痕：它同样是「有人往仓库里推字节」。"""
+        payload = b"same-bytes"
+        for _ in range(2):
+            assert client.post("/", auth=AUTH,
+                               data={"name": "audit-idem", "version": "1.0"},
+                               files={"content": ("audit-idem-1.0.whl", payload,
+                                                  "application/octet-stream")}).status_code == 200
+        records = _audit_records(audit_caplog)
+        assert [r["result"] for r in records] == ["success", "success"]
+        assert records[1].get("unchanged") is True
+
+    def test_alias_endpoint_also_audits_once(self, client, audit_caplog):
+        """/upload 是薄 alias：审计只能写一条，不能重复也不能漏。"""
+        resp = client.post("/upload", auth=AUTH,
+                           data={"name": "audit-alias", "version": "1.0"},
+                           files={"content": ("audit-alias-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["package"] == "audit-alias"
+
+
+class TestR90A1FilenameGate:
+    """① 上传面的 filename 闸：可控落盘名必须收敛成「安全、有界、URL 干净」。"""
+
+    @pytest.mark.parametrize("bad_filename", [
+        "pkg-1.0-" + "a" * 300 + ".whl",  # 超 NAME_MAX：mkstemp/落盘 OSError → 500
+        "bad\x00name-1.0.whl",          # NUL：OS 层 ValueError/OSError
+        "bad\nname-1.0.whl",            # 换行：日志/响应头注入面
+        "bad#name-1.0.whl",             # 索引 href 的 fragment 分隔符（可篡改 #sha256）
+        "bad?name-1.0.whl",             # query 分隔符：href 被截断 → 404
+        "bad%2fname-1.0.whl",           # 已编码分隔符：二次解码面
+        "bad:name-1.0.whl",             # 盘符形态 / Windows 非法
+        "bad*name-1.0.whl",
+        "bad|name-1.0.whl",
+        r"..\..\evil-1.0.whl",          # 反斜杠：Windows 上是分隔符，Linux 上不是
+    ])
+    def test_hostile_filenames_rejected_with_400(self, client, tmp_packages_dir, bad_filename):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "gate-pkg", "version": "1.0"},
+                           files={"content": (bad_filename, b"x",
+                                              "application/octet-stream")})
+        # 稳定 400（此前多种形态直接 500），且 detail 不泄露内部路径
+        assert resp.status_code == 400, (bad_filename, resp.status_code, resp.text)
+        assert "Internal Server Error" not in resp.text
+        assert str(tmp_packages_dir) not in resp.text
+
+    @pytest.mark.parametrize("good_filename", [
+        "gate-ok-1.0.whl",
+        "Gate_Ok-1.0.0-py3-none-any.whl",
+        "gate-ok-1.0.tar.gz",
+        "gate-ok-1.0-&.zip",            # & 在 HTML 里被转义，仍是合法文件名
+        "gate-ok-1.0+build.7.whl",
+        "gate.ok-1.0.whl",
+    ])
+    def test_legitimate_filenames_still_accepted(self, client, good_filename):
+        """回归护栏：真实 wheel/sdist 命名形态（含 +、&、_、.）不受影响。"""
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "gate-ok", "version": "1.0"},
+                           files={"content": (good_filename, b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200, (good_filename, resp.text)
+
+    def test_rejected_filename_leaves_no_partial_state(self, client, tmp_packages_dir):
+        """被拒的上传不得留下包目录/临时文件（否则是幻影包 + 磁盘垃圾）。"""
+        client.post("/", auth=AUTH,
+                    data={"name": "gate-clean", "version": "1.0"},
+                    files={"content": ("gate-clean-1.0-" + "a" * 300 + ".whl", b"x",
+                                       "application/octet-stream")})
+        pkg = tmp_packages_dir / "gate-clean"
+        assert list(pkg.glob("*")) == []
+        assert client.get("/simple/gate-clean/", auth=AUTH).status_code == 404
+
+
+class TestR90A1MetaFileDownload:
+    """② 下载面：索引侧过滤的元数据文件，下载侧也必须过滤。"""
+
+    def test_sha256_sidecar_is_not_downloadable(self, client):
+        assert client.post("/", auth=AUTH,
+                           data={"name": "meta-pkg", "version": "1.0"},
+                           files={"content": ("meta-pkg-1.0.whl", b"bytes",
+                                              "application/octet-stream")}).status_code == 200
+        # 制品本身照常可下
+        assert client.get("/packages/meta-pkg/meta-pkg-1.0.whl", auth=AUTH).status_code == 200
+        assert client.get("/packages/meta-pkg/meta-pkg-1.0.whl.sha256",
+                          auth=AUTH).status_code == 404
+
+    def test_inflight_upload_temp_file_is_not_downloadable(self, client, tmp_packages_dir):
+        """上传中的 .upload 半成品被读走等于跨请求数据泄露。"""
+        pkg = tmp_packages_dir / "meta-pkg"
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "meta-pkg-2.0.whl").write_bytes(b"published")
+        (pkg / "meta-pkg-2.0.whl.abc123.upload").write_bytes(b"IN-FLIGHT-SECRET")
+        resp = client.get("/packages/meta-pkg/meta-pkg-2.0.whl.abc123.upload", auth=AUTH)
+        assert resp.status_code == 404
+        assert b"IN-FLIGHT-SECRET" not in resp.content
+
+    def test_meta_download_still_requires_auth(self, client, tmp_packages_dir):
+        pkg = tmp_packages_dir / "meta-pkg"
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "meta-pkg-1.0.whl.sha256").write_text("0" * 64)
+        assert client.get("/packages/meta-pkg/meta-pkg-1.0.whl.sha256",
+                          auth=BAD_AUTH).status_code == 401
+
+
+class TestR90A1FailedUploadLeavesNoPhantomPackage:
+    """③ 413 之后不得让「幻影包」出现在索引里（枚举面 + 脏数据）。"""
+
+    def test_streaming_413_leaves_no_package_dir(self, client, tmp_packages_dir, monkeypatch):
+        """让 Content-Length 预检放行、由 handler 的流式累计闸触发 413。"""
+        import main as m
+        monkeypatch.setattr(m, "MAX_UPLOAD_BYTES", 4)
+        resp = client.post("/", auth=AUTH, data={"name": "ghost-pkg", "version": "1.0"},
+                           files={"content": ("ghost-pkg-1.0.whl", b"0123456789",
+                                              "application/octet-stream")})
+        assert resp.status_code == 413
+        assert not (tmp_packages_dir / "ghost-pkg").exists(), \
+            "failed upload must not leave an empty package dir behind"
+        assert client.get("/simple/ghost-pkg/", auth=AUTH).status_code == 404
+        assert "ghost-pkg" not in client.get("/simple/", auth=AUTH).text
+
+    def test_cleanup_never_touches_a_package_that_already_has_artifacts(self, client, tmp_packages_dir, monkeypatch):
+        """失败清理只能删「本次尝试新建的空目录」，不能动已发布的包。"""
+        import main as m
+        assert client.post("/", auth=AUTH, data={"name": "keep-pkg", "version": "1.0"},
+                           files={"content": ("keep-pkg-1.0.whl", b"published",
+                                              "application/octet-stream")}).status_code == 200
+        # 先发布成功再收紧上限：把 413 精确打在「同包目录已非空」的第二发上
+        monkeypatch.setattr(m, "MAX_UPLOAD_BYTES", 4)
+        resp = client.post("/", auth=AUTH, data={"name": "keep-pkg", "version": "2.0"},
+                           files={"content": ("keep-pkg-2.0.whl", b"0123456789",
+                                              "application/octet-stream")})
+        assert resp.status_code == 413
+        assert (tmp_packages_dir / "keep-pkg" / "keep-pkg-1.0.whl").exists()
+        assert client.get("/simple/keep-pkg/", auth=AUTH).status_code == 200

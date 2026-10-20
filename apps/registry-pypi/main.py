@@ -15,6 +15,8 @@ from pathlib import Path
 import base64
 import binascii
 import hashlib
+import json
+import logging
 import os
 import re
 import tempfile
@@ -105,6 +107,101 @@ def verify_auth(request: Request):
     if not (ok_user and ok_pass):
         raise unauthorized
     return username
+
+
+# ── 审计面（R90-A1）───────────────────────────────────────────────────────────
+# 本服务是**接受包上传**的面：上传动作必须有可追溯记录，否则投毒/误传无法
+# 归因。改动前本服务一条日志都没有——本仓 audit 目录里的 registry.pypi.upload
+# 只由 admin-api 的代理写 (apps/admin-api/src/modules/registry/registry.controller.ts
+# 的 recordUploadAudit)，而 twine 的默认行为是**直连**本服务
+# (http://host:8003/)，那条路径完全不落审计。这里补上服务端自己的审计行：
+#
+#   logger = audit.registry.pypi   （一行一条 JSON，便于日志平台解析）
+#   action = registry.pypi.upload  （与本仓 audit 目录登记的 action 同名）
+#
+# 只记「谁、往哪个包推了什么字节、成功/失败、失败原因码」——**不记**口令、
+# 不记 Authorization 头、不记内部绝对路径（审计日志会外流到 SIEM/日志平台）；
+# 拒绝原因一律用稳定码（invalid_filename / invalid_format /
+# invalid_package_name / too_large / conflict / storage_error / internal_error），
+# 不把异常文本或堆栈写进去。
+AUDIT_LOGGER_NAME = "audit.registry.pypi"
+AUDIT_ACTION = "registry.pypi.upload"
+#: 审计里回显的 filename 上限——客户端可控，不能让它把日志行撑爆。
+AUDIT_FILENAME_MAX = 120
+
+audit_logger = logging.getLogger(AUDIT_LOGGER_NAME)
+logger = logging.getLogger("registry-pypi")
+
+
+def _setup_audit_logging() -> None:
+    """保证审计行真的落 stderr，而不是被宿主 logging 的默认 WARNING 静默吞掉。
+
+    uvicorn 只配置自己的 logger（uvicorn / uvicorn.error / uvicorn.access），
+    root 既不设 level 也没有 handler——兜底的 lastResort 只放 WARNING 及以上，
+    于是 INFO 级审计行会被整条丢弃（审计面最坏的失败形态：以为记了，其实没记）。
+    这里给审计 logger 自备 level + stderr handler。
+
+    propagate 保持 True：宿主若另配了 handler，同一行可能在两处出现——审计的
+    第一性质是「不能丢」，重复落行由采集侧去重，不做静默丢弃。
+    """
+    if audit_logger.level == logging.NOTSET:
+        audit_logger.setLevel(logging.INFO)
+    if not audit_logger.handlers:
+        handler = logging.StreamHandler()  # stderr
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        audit_logger.addHandler(handler)
+
+
+_setup_audit_logging()
+
+
+def _peer_ip(request: Request) -> str | None:
+    """真实对端地址。
+
+    X-Forwarded-For 在经 admin-api/nginx 代理时才有意义，但它是**客户端可伪造**
+    的：因此 ip 永远取 TCP 对端，XFF 只作为独立字段 x_forwarded_for 附上，绝不
+    回填 ip（否则审计可被伪造）。
+    """
+    client = getattr(request, "client", None)
+    return getattr(client, "host", None)
+
+
+def audit_upload(
+    request: Request,
+    *,
+    user: str,
+    result: str,
+    package: str,
+    version: str,
+    filename: str,
+    size: int | None = None,
+    sha256: str | None = None,
+    reason: str | None = None,
+    unchanged: bool | None = None,
+) -> None:
+    """写一条 registry.pypi.upload 审计（best-effort：绝不把请求打挂）。"""
+    record = {
+        "action": AUDIT_ACTION,
+        "service": "registry-pypi",
+        "result": result,
+        "user": user,
+        "package": package,
+        "version": version,
+        "filename": filename[:AUDIT_FILENAME_MAX],
+        "size": size,
+        "sha256": sha256,
+        "reason": reason,
+        "ip": _peer_ip(request),
+    }
+    if unchanged is not None:
+        record["unchanged"] = unchanged
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        record["x_forwarded_for"] = forwarded[:AUDIT_FILENAME_MAX]
+    try:
+        audit_logger.info(json.dumps(record, ensure_ascii=False, sort_keys=True))
+    except Exception:  # pragma: no cover - 审计故障不得影响上传语义
+        logger.exception("registry.pypi.upload audit write failed")
 
 
 def normalize(name: str) -> str:
@@ -206,6 +303,58 @@ def sidecar_path(path: Path) -> Path:
 def is_meta_file(name: str) -> bool:
     """Sidecar / in-flight upload files must never appear in the index."""
     return name.endswith(SIDECAR_SUFFIX) or name.endswith(UPLOAD_SUFFIX)
+
+
+# ── 上传面文件名闸（R90-A1）───────────────────────────────────────────────────
+# filename 是**客户端完全可控**的字符串，此前直接成为落盘名与 mkstemp 的
+# prefix：超过 NAME_MAX 的名字让 mkstemp 抛 OSError(ENAMETOOLONG) 逃逸成 500；
+# NUL/换行/Windows 非法字符同样 500；`?` `#` `%` 在 Linux 上虽能落盘，却会
+# 破坏索引页 href（`#` 甚至能把 #sha256= 片段截断/重定向）。这里在落盘之前把
+# 它收敛成「单分量 + 有界 + URL 干净」的名字，不合法一律 400（稳定错误码），
+# 而不是让 OS 层的 OSError 变成 500。
+#
+# 跨平台一致性：Path(raw).name 的结果依赖运行平台（Windows 剥反斜杠与盘符，
+# Linux 不剥），同一请求在两个平台会得到不同落盘名——所以这里不依赖 OS 语义，
+# 直接按「出现 / 或 \ 就是带目录分量」拒绝。
+MAX_FILENAME_BYTES = 200
+
+#: 控制字符 + Windows 非法字符 + URL 分隔符。% 一并拒：索引页的 href 不做
+#: 百分号编码，%2f 这类字面量会在二次解码时变成分隔符。
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\x00-\x1f\x7f<>:"|?*\\/%#]')
+
+_ALLOWED_SUFFIX_RE = re.compile(r"\.(whl|tar\.gz|zip)$", re.IGNORECASE)
+
+
+def _is_safe_artifact_filename(name: str) -> bool:
+    """制品名必须是单个、有界、可安全编码进 href 的路径分量。
+
+    上传侧（400）与下载侧（404）共用同一判据，避免两侧闸不一致。
+    """
+    if not name or name in (".", ".."):
+        return False
+    if _UNSAFE_FILENAME_CHARS.search(name):
+        return False
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeEncodeError:  # 孤立代理项等不可编码形态
+        return False
+    return len(encoded) <= MAX_FILENAME_BYTES
+
+
+def sanitize_artifact_filename(raw: str) -> tuple[str, str | None]:
+    """把上传表单里的 filename 收敛成可安全落盘的单分量名。
+
+    返回 (filename, None)；不合法返回 ("", 稳定错误文案)。错误文案会原样回给
+    客户端并进审计，因此**不含**内部路径或异常文本。
+    """
+    if not raw:
+        return "", "No filename"
+    if not _is_safe_artifact_filename(raw):
+        return "", (
+            "Invalid filename: must be a single path component, at most "
+            f"{MAX_FILENAME_BYTES} bytes, without control characters or any of "
+            '<>:"|?*/\\%#')
+    return raw, None
 
 
 def hash_file_streamed(path: Path) -> str:
@@ -567,6 +716,13 @@ def download_package(package_name: str, filename: str, _user: str = Depends(veri
     if not is_safe_package_name(safe_name):
         raise HTTPException(status_code=404, detail="File not found")
     safe_filename = Path(filename).name  # strip any directory components
+    # R90-A1: 索引侧用 is_meta_file 过滤的元数据文件，下载侧此前没有任何闸——
+    # .sha256 sidecar（只是哈希，危害低）与 **.upload 半成品**（别人正在上传的
+    # 部分字节，可跨请求读走）都能整段下载。这里与索引同一判据；顺带用
+    # _is_safe_artifact_filename 兜住 NUL 等会让 Path.exists() 抛 ValueError 的
+    # 形态（否则是一个 500 而不是 404）。
+    if is_meta_file(safe_filename) or not _is_safe_artifact_filename(safe_filename):
+        raise HTTPException(status_code=404, detail="File not found")
     f = PACKAGES_DIR / safe_name / safe_filename
     if not f.exists() or not f.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -605,6 +761,7 @@ def delete_package(package_name: str, _user: str = Depends(verify_auth)):
 
 @app.post("/")
 async def upload_package(
+    request: Request,
     content: UploadFile = File(...),
     name: str = Form(...),
     version: str = Form(...),
@@ -617,21 +774,74 @@ async def upload_package(
     ``POST /upload`` is a thin deprecated alias over it (see below), not a
     second code path — auth, format whitelist, 50 MB cap, sha256 sidecar and
     the 409 no-overwrite guard are shared verbatim.
+
+    R90-A1：本函数只承载 FastAPI 的线上契约（路由 + 表单解析），校验、落盘与
+    审计全在 _store_upload——alias 必须走同一份实现，否则审计会漏或重复。
     """
-    # N14: strip directory components to prevent path traversal via filename
-    filename = Path(content.filename).name if content.filename else ""
-    if not filename:
-        raise HTTPException(status_code=400, detail="No filename")
-    if not re.search(r'\.(whl|tar\.gz|zip)$', filename, re.IGNORECASE):
-        raise HTTPException(status_code=400, detail="Invalid package format. Only .whl, .tar.gz, .zip are allowed")
-    # PKG-DIR-01: 文件名侧的目录分量上面已剥掉；包目录名同样必须先判安全再
-    # 交给 pkg_dir——否则绝对路径/盘符名会让 ``PACKAGES_DIR / name`` 丢弃
+    return await _store_upload(request, _user, content, name, version)
+
+
+@app.post("/upload")
+async def upload_package_alt(
+    request: Request,
+    content: UploadFile = File(...),
+    name: str = Form(...),
+    version: str = Form(...),
+    _user: str = Depends(verify_auth),
+):
+    """Deprecated alias of ``POST /`` (E-39).
+
+    Kept for one release so existing admin-api proxy routes / scripts that
+    target ``/upload`` keep working; it delegates to :func:`_store_upload`
+    with no semantic difference. New integrations must use ``POST /``
+    (twine-compatible). Removal is a breaking change for those callers and
+    therefore belongs to a documented release, not this cleanup.
+    """
+    return await _store_upload(request, _user, content, name, version)
+
+
+async def _store_upload(
+    request: Request,
+    user: str,
+    content: UploadFile,
+    name: str,
+    version: str,
+):
+    """上传的唯一实现：文件名闸 → 包名闸 → 临时文件 → 原子落盘 → sidecar → 审计。"""
+    raw_filename = content.filename or ""
+
+    def reject(status: int, detail: str, reason: str, **extra) -> None:
+        """拒绝 = 落一条 failure 审计 + 抛稳定 HTTP 错误码。
+
+        reason 是稳定码（不随文案变），审计消费方按它聚合；detail 是回给客户端
+        的文案。两者都不含内部绝对路径或异常文本。
+        """
+        audit_upload(request, user=user, result="failure", package=name,
+                     version=version, filename=raw_filename, reason=reason,
+                     **extra)
+        raise HTTPException(status_code=status, detail=detail)
+
+    # R90-A1: 文件名闸必须在**落盘之前**——包括 mkstemp 的 prefix。此前客户端
+    # 可控的 300 字节名字会让 mkstemp 抛 OSError(ENAMETOOLONG) 逃逸成 500；
+    # NUL/换行/Windows 非法字符同理，`?` `#` `%` 则在 Linux 上落盘后破坏索引页
+    # 的 href（`#` 能把 #sha256= 片段截断或重定向）。
+    filename, filename_error = sanitize_artifact_filename(raw_filename)
+    if filename_error:
+        reject(400, filename_error, "invalid_filename")
+    if not _ALLOWED_SUFFIX_RE.search(filename):
+        reject(400, "Invalid package format. Only .whl, .tar.gz, .zip are allowed",
+               "invalid_format")
+    # PKG-DIR-01: 文件名侧的目录分量/非法字符上面已拒；包目录名同样必须先判
+    # 安全再交给 pkg_dir——否则绝对路径/盘符名会让 PACKAGES_DIR / name 丢弃
     # 包根（pathlib 语义），制品落到包根之外。
-    if not is_safe_package_name(normalize(name)):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid package name: must be a single relative name "
-                   "(no leading '/', drive letter or path separator)")
+    normalized = normalize(name)
+    if not is_safe_package_name(normalized):
+        reject(400, "Invalid package name: must be a single relative name "
+                    "(no leading '/', drive letter or path separator)",
+               "invalid_package_name")
+    # R90-A1: 记下包目录是不是本次新建的——失败清理只删自己新建的空目录
+    # （见函数末尾 finally），已发布的包一律不动。
+    created_dir = not (PACKAGES_DIR / normalized).is_dir()
     d = pkg_dir(name)
     dest = d / filename
 
@@ -639,25 +849,25 @@ async def upload_package(
     # package directory while computing sha256 in the same 1 MiB-chunk pass,
     # so peak memory stays O(chunk) instead of O(wheel size). The hash is
     # computed once and reused for both the duplicate check and the sidecar.
+    total = 0
+    sha = None
     fd, tmp_name = tempfile.mkstemp(dir=d, prefix=filename + ".", suffix=UPLOAD_SUFFIX)
     tmp = Path(tmp_name)
     try:
         h = hashlib.sha256()
-        total = 0
         with os.fdopen(fd, "wb") as out:
             while True:
                 chunk = await content.read(HASH_CHUNK_SIZE)
                 if not chunk:
                     break
                 total += len(chunk)
-                # S10: enforce the cap mid-stream — raise before os.link so the
-                # destination is never created; the finally below removes the
-                # partial .upload temp file.
+                # S10: enforce the cap mid-stream — reject() raises before
+                # os.link so the destination is never created; the finally
+                # below removes the partial .upload temp file.
                 if total > MAX_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(f"Package too large: exceeds the "
-                                f"{MAX_UPLOAD_BYTES} byte upload limit"))
+                    reject(413, (f"Package too large: exceeds the "
+                                 f"{MAX_UPLOAD_BYTES} byte upload limit"),
+                           "too_large", size=total)
                 h.update(chunk)
                 out.write(chunk)
         sha = h.hexdigest()
@@ -680,33 +890,40 @@ async def upload_package(
             if existing == sha:
                 # Idempotent re-upload (twine retry / CI double-run): same
                 # bytes -> 200, original artifact untouched.
+                audit_upload(request, user=user, result="success", package=name,
+                             version=version, filename=filename, size=total,
+                             sha256=sha, unchanged=True)
                 return {"message": f"Uploaded {filename} (unchanged)",
                         "package": name, "version": version, "unchanged": True}
-            raise HTTPException(
-                status_code=409,
-                detail=(f"Artifact {filename} already exists with a different "
-                        f"sha256 ({existing} != {sha}); overwriting published "
-                        f"packages is not allowed"))
+            reject(409, (f"Artifact {filename} already exists with a different "
+                         f"sha256 ({existing} != {sha}); overwriting published "
+                         f"packages is not allowed"),
+                   "conflict", size=total, sha256=sha)
 
         sidecar_path(dest).write_text(sha)
+    except HTTPException:
+        raise  # reject() 已落过 failure 审计，不重复记
+    except Exception as exc:
+        # 非预期故障（磁盘满、权限、链接失败……）：也留痕，原因码不含异常文本；
+        # 异常原样抛给框架（对外仍是 500，但不额外泄露内部路径）。
+        audit_upload(request, user=user, result="failure", package=name,
+                     version=version, filename=filename, size=total,
+                     reason="storage_error")
+        logger.error("upload failed while storing artifact (%s)", type(exc).__name__)
+        raise
     finally:
-        tmp.unlink(missing_ok=True)  # no-op after a successful rename
+        tmp.unlink(missing_ok=True)  # no-op after a successful os.link
+        # R90-A1: 失败路径不留「幻影包」——pkg_dir 在流式累计闸之前就 mkdir，
+        # 413/异常之后空目录会永久留在盘上并出现在根索引与包索引里（脏数据，
+        # 同时也是「某个包名被尝试过」的枚举面）。只删本次新建且仍为空的目录：
+        # rmdir 对非空目录抛 OSError（已发布的包自然保住），并发第二发的临时
+        # 文件也让 rmdir 失败——两者都按「不删」处理。
+        if created_dir:
+            try:
+                os.rmdir(d)
+            except OSError:
+                pass
+
+    audit_upload(request, user=user, result="success", package=name,
+                 version=version, filename=filename, size=total, sha256=sha)
     return {"message": f"Uploaded {filename}", "package": name, "version": version}
-
-
-@app.post("/upload")
-async def upload_package_alt(
-    content: UploadFile = File(...),
-    name: str = Form(...),
-    version: str = Form(...),
-    _user: str = Depends(verify_auth),
-):
-    """Deprecated alias of ``POST /`` (E-39).
-
-    Kept for one release so existing admin-api proxy routes / scripts that
-    target ``/upload`` keep working; it delegates to :func:`upload_package`
-    with no semantic difference. New integrations must use ``POST /``
-    (twine-compatible). Removal is a breaking change for those callers and
-    therefore belongs to a documented release, not this cleanup.
-    """
-    return await upload_package(content=content, name=name, version=version, _user=_user)
