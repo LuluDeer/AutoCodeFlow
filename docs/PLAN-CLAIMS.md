@@ -1027,3 +1027,12 @@
   已加形状闸 `ERRNO_CODE_RE`（只认大写码），**结构上不可能回显任意文本**。验证：tsc 0；新增 `network-util.selftest`（已接 test:main）全绿，
   覆盖 8 种 errno + 8 组敌意输入，逐一断言不含地址/域名/`getaddrinfo`；反证：去掉形状闸 → selftest **exit 1**。
   **遗留②由「疑似缺口」降级为「已收口的残余风险」**：发起能力仍在（功能需要），回显已切断。
+- 2026-10-20 **R91 · 健康复查（无提交，全部只读）**：今日累计 ~95 笔提交后跑了一遍全量门禁 ——
+  **26 道零依赖守卫全绿**（no-hoisting / consumer-routes / dependency-review / throttler / password-policy / failure-reasons / error-i18n /
+  error-migration / conditional-writes / constant-time / api-i18n / response-schema / docs / lint-gates / env-drift / alerts / bundle-drift /
+  sop-check / agent-check / audit-doc / api-reference / cli-doc / ssrf-parity / guards-wired / desktop-selftests / migrations）；
+  今日动过的 6 个模块 **56 套件 / 978 例全绿**（config / audit / sop / event-subscriptions / application / project）；
+  三处 typecheck 全 0（admin-api 隐式由 jest 覆盖、executor-desktop、admin-web）。
+  **另核查两条「以为有问题、实际已被前人做好」的**：① `acf-cli` 的配置/凭据文件已硬化到 `0o600`（`CONFIG_FILE_MODE` + `hardenConfigPermissions()` 修复路径，
+  注释明确「Windows chmod 语义不支持时回落 mode-less store 并在平台允许时单独修复」）；② 桌面端 `assignment-journal.ts` 已是 `tmp + rename` 原子写。
+  这两条说明 **「同族雷达列出的族」不等于「有缺陷」** —— 与 R80/R81 的结论一致：多数族被前人认真做过，真正缺的是**防止退化的机器**。
