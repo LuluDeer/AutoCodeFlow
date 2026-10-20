@@ -2422,3 +2422,27 @@ npx vitest run → 4 failed "describe is not defined" / "jest is not defined"
 
 **教训写给我自己**：给子任务写跑测命令时，**要么先读一眼 `package.json` 的 `scripts.test`，要么写「按本包自身约定」**，
 不要把上一个包的入口当默认值。今天我已经在「改完要跑哪些测试」上错过一次（`R127`），这是同一族的第二次。
+- 2026-10-20 **R184 · 独立确认了 agent 的 3xx 缺陷，并定位到**具体那一行**。
+
+`http.py:117-130` 的 `_raise`：
+
+```python
+if resp.is_error:                      # ← 只对 4xx/5xx 成立
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HttpClientError(...) from exc
+resp.raise_for_status()                # ← 3xx 从这里漏出去，抛的是**裸** HTTPStatusError
+```
+
+**机制**：httpx 的 `resp.is_error` 只覆盖 4xx/5xx；3xx 会走到最后那行 `raise_for_status()`，
+而它**对 3xx 也抛**（重定向响应在不 follow 时被视为错误）⇒ 调用方拿到的是 `httpx.HTTPStatusError`，
+**不是 `HttpClientError`** ⇒ `except HttpClientError` 捕获不到。
+
+**这不是理论问题**：httpx 默认 `follow_redirects=False`（对本包是**正确**选择 —— 内部通道不该跟外部重定向），
+所以任何一次 301/302/307（admin 换域名、反代配置错、`http→https` 跳转）都会以「**不可捕获的类型**」炸到任务代码里。
+
+**修法极小**（4 行变 3 行）：把 `raise_for_status` 无条件包进 try —— 它对 2xx 是 no-op，所以不需要 `is_error` 这个前置判断。
+那个前置判断**本身就是 bug 的来源**：它想「只包装错误状态」，但把「3xx 也算错误」这件事漏了。
+
+**agent 已独立发现同一处**（它的 `test_http.py` 有 302/301/307 三条红），所以我**不动手**，只把机制记下来供它参考/供验收核对。
