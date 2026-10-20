@@ -160,3 +160,33 @@ describe('runCommand chunk decoding (NETOPT-9-8)', () => {
     await expect(promise).resolves.toEqual({ status: 1, stdout: '', stderr: '警告' });
   });
 });
+
+// R74-A1（安全面四轴审计·轴 4 执行隔离）：子进程输出上限。
+// prepare 阶段的 git/npm/pip 输出会整段进内存——一个刷屏的子进程（死循环
+// console.log / npm 依赖树爆炸）能把执行器 OOM 掉，而 OOM 会连带打死同进程里
+// **所有**并发任务。run-command.ts 的 CAP 就是这条防线，此前零单测：删掉 CAP
+// 判断用例也全绿。这里直接灌 12MB，钉住"内存不随输出线性增长"。
+describe('runCommand output cap (R74-A1 轴 4)', () => {
+  const CAP = 10 * 1024 * 1024;
+
+  it('caps captured stdout/stderr instead of accumulating unbounded output', async () => {
+    const proc = fakeProc();
+    mockSpawn.mockReturnValue(proc);
+    const promise = runCommand('npm', ['install'], {});
+    const chunk = Buffer.from('x'.repeat(1024 * 1024));
+    // 12 × 1MB，远超 CAP；末块允许越过上限一块（实现是"追加前判长度"）
+    for (let i = 0; i < 12; i++) proc.stdout.emit('data', chunk);
+    for (let i = 0; i < 12; i++) proc.stderr.emit('data', chunk);
+    proc.emit('close', 0);
+
+    const result = await promise;
+    expect(result.status).toBe(0);
+    // 上限生效（含单块余量），且没有把 12MB 全吃进内存
+    expect(result.stdout.length).toBeLessThanOrEqual(CAP + chunk.length);
+    expect(result.stderr.length).toBeLessThanOrEqual(CAP + chunk.length);
+    expect(result.stdout.length).toBeLessThan(12 * 1024 * 1024);
+    expect(result.stderr.length).toBeLessThan(12 * 1024 * 1024);
+    // 上限之内的输出必须完整保留（不能为了省内存把正常日志也丢了）
+    expect(result.stdout.length).toBeGreaterThanOrEqual(CAP);
+  });
+});
