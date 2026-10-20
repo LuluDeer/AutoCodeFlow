@@ -1156,3 +1156,14 @@
   **判据要用被检查的实物本身，不要用它的文本投影** —— 与本仓已否掉的 openapi 路由守卫、死导出扫描是同一条教训的第三次出现。
   验证 4 passed；反证：插一个 `R108_PROBE_UNCLASSIFIED_CODE` → 红，删后绿；过程中第 3 条判据真实抓到我把 3 个**本可归类**的码放进了基线。
   **待产品裁量**：① 是否把 6 类扩成 7 类（加 `server`/`config`，其中 ≥35 个码的处置建议是稳定的）？② 或对 66 个码做**域级兜底建议**（与原设计取舍相反）。
+- 2026-10-20 **★ R107-A1 done（commit 56cfb502）**：**mcp-server 56 个工具的输入/输出面审计**（agent 直接调用的面，入参来自 LLM）。修 **2 个真问题**：
+  ① **8 个枚举字段是裸 `z.string()`**（list_tasks/list_executions.status、update_task.status/triggerType/runtime/executeMode、agent_session_list.kind/status）—— 值域只写在 describe 里；
+  入参来自 LLM，`"Active"`/`"running "`/`"both"` 是常态 ⇒ 要跑一趟网络才吃后端 400，而 NestJS 的 400 **不告诉合法值**。改为与后端 DTO 逐字对齐的 `z.enum`（**不增不减**，收窄过头会拒合法值）；
+  刻意不收紧 `sop_list.status`（后端是裸 `@Query string`）与 `update_application.status`（PUT 透传已被测试钉死）。
+  ② **`params: {}` 不是「无覆盖」而是「覆盖成空」**：后端 `dto.params ?? task.params`，`{}` 不是 nullish ⇒ 把任务默认参数/原执行参数**整组清空**，响应却是成功，agent 在假数据上继续动作。
+  修法 `hasParams = params !== undefined && Object.keys(params).length > 0`；**保留 faithful replay**（原执行行上真实存在的 `{}` 仍逐字回放 —— 那是「当时确实以空参数运行」，与「没给覆盖」是两件事）。
+  三个「看似缺口」用后端源码证据**排除**（env 掩码 / webhookSecret select:false / body id 的 @IsUUID），没写成结论。验证：vitest **176→183**、tsc 0；**总控独立反证**：换回 HEAD → **3 failed / 180 passed**，还原后 183 绿。
+  **★ 总控自己的操作事故**：反证后用 `Copy-Item` 还原**静默失败**，`git status` 显示文件与 HEAD 一致、`hasParams` 计数为 0 才发现——**一次静默失败的还原，会让你以为修复还在**（与 R105 的「静默跳过的接线钉子」同族：没有报错的失败比报错的失败更危险）。改法：还原后**显式验证**（行数 + 关键符号计数 + git status）再跑测试。
+- 2026-10-20 **R109 done（commit 61d7adc8）**：**MCP 工具地图补「分域计数」判据**。R95 补地图时数字是**手改**的（40→56、Task 18→21），而守卫只校验名字 ⇒ **名字全对、数字全错照样绿**。
+  新增：解析每个 `### <域> 域 — register<X>Tools（N 个…）` 的 N 与该函数实际注册数逐个比对；标题正则放宽到 `（(\d+) 个[^）]*）` —— Deployment 写的是「9 个，DEP-04 审批语义」，严格匹配会**漏掉整节**（第一版就漏了）。
+  验证四节全绿；反证：Task 21→18 → 红并点名。**顺带 admin-web 全量：224 文件 / 1854 例全绿**（确认 R104 的标签补全未波及别处）。
