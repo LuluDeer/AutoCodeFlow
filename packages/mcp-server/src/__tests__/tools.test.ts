@@ -2188,3 +2188,41 @@ describe('R110 工具出参的凭据剥除', () => {
     expect(parse(res).secrets).toBe('[redacted]');
   });
 });
+
+// ---------------------------------------------------------------------------
+// R112：假成功三例（空载荷 / 形状漂移 都被当成「查到了」）
+// ---------------------------------------------------------------------------
+describe('R112 空载荷与形状漂移不能伪装成成功', () => {
+  it('get_execution 收到 null 载荷 → isError:true 且点名 executionId', async () => {
+    call.mockResolvedValue(null);
+    const res = await tools.get('get_execution')!.handler({
+      executionId: '33333333-3333-4333-8333-333333333333',
+    });
+    expect(res.isError).toBe(true);
+    const parsed = parse(res);
+    expect(parsed.errorCode).toBe('EXECUTION_NOT_FOUND');
+    expect(parsed.executionId).toBe('33333333-3333-4333-8333-333333333333');
+  });
+
+  it('get_execution_timeline 收到 null 载荷 → isError:true（不再拼 executionId:"" 的成功载荷）', async () => {
+    call.mockResolvedValue(undefined);
+    const res = await tools.get('get_execution_timeline')!.handler({
+      executionId: '44444444-4444-4444-8444-444444444444',
+    });
+    expect(res.isError).toBe(true);
+    expect(parse(res).errorCode).toBe('EXECUTION_NOT_FOUND');
+  });
+
+  it('正常载荷仍走成功分支（不回归）', async () => {
+    call.mockResolvedValue({
+      id: '55555555-5555-4555-8555-555555555555',
+      status: 'success',
+      duration: 12,
+    });
+    const res = await tools.get('get_execution_timeline')!.handler({
+      executionId: '55555555-5555-4555-8555-555555555555',
+    });
+    expect(res.isError).toBeUndefined();
+    expect(parse(res).executionId).toBe('55555555-5555-4555-8555-555555555555');
+  });
+});

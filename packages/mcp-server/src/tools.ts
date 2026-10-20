@@ -201,6 +201,52 @@ const AGENT_SESSION_STATUS = z.enum([
   "budget_exceeded",
 ]);
 
+/**
+ * R111-A1（MCP 入参**字符串长度**审计）：按**码点**计数的字符串上限。
+ *
+ * 为什么不用 `z.string().max(N)`：zod 的 `.max()` 数的是 **UTF-16 码元**
+ * （`String.prototype.length`），而后端所有 `@MaxLength(N)` 都走
+ * class-validator → validator.js `isLength`——它减掉代理对后按**码点**计数
+ * （与 PG `varchar(N)` 口径一致）。对 emoji 等增补平面字符两者差一倍：
+ * 128 个 emoji = 128 码点 = 256 码元，**后端接受**，`.max(255)` 会拒。
+ * 上限一旦比后端更严，就是「拒掉后端接受的合法值」——与收窄枚举时
+ * 「不越过 @IsEnum」是同一条红线（见上面 R107-A1 的说明）。
+ *
+ * 本轮每一处上限都**逐个**有出处（同时写在调用点旁），汇总：
+ *  - `255` 任务名：task-name.constraint.ts:43 `TASK_NAME_MAX_LENGTH`
+ *    （同文件 :52-54 / :77 明确「按码点计，与 PG varchar(255) 一致」），
+ *    由 CreateTaskDto.name 的 `@IsTaskName()` 施加（create-task.dto.ts:66-69）；
+ *    UpdateTaskDto = PartialType(CreateTaskDto)，PATCH 继承同一约束。
+ *  - `500` 应用描述：application.dto.ts:27 `@MaxLength(500)`
+ *    （UpdateApplicationDto :85 是 PartialType，继承同一上限）。
+ *  - `256` webhookSecret：application.dto.ts:102 `@MaxLength(256)`。
+ *  - `2000` startCommand：app-deployment.dto.ts:84 `@MaxLength(2000)`。
+ *  - `2000` 任务描述：**后端无约束**（create-task.dto.ts:70 只有
+ *    `@IsString() @IsOptional()`，无 `@MaxLength`；DB 列也无长度，
+ *    task.entity.ts:136）。**此处是客户端保护，不是与后端对齐**；取 2000 是
+ *    因为本仓对「随行落库并进读面的大文本」已有同款 2KB 闸先例
+ *    （PublishSopDto.changelog / DeploymentHeartbeatDto.message 的 @MaxLength(2000)）。
+ *
+ * 刻意**不**设上限的字段及原因见 R111 报告表「待定」段：后端只有**截断**
+ * 而非拒绝（audit action/username 的 slice(0,100)），或只有**格式**约束而无
+ * 长度契约（cronExpression / timezone）；给这些拍一个数字会与后端语义分叉。
+ */
+export function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
+/** 任务名上限，逐字对齐 admin-api（task-name.constraint.ts:43）。 */
+export const TASK_NAME_MAX_LENGTH = 255;
+
+/** 有码点数上限的字符串；上限出处见上方汇总表（每个调用点也各带一行注释）。 */
+function textWithin(max: number, message?: string) {
+  return z.string().refine((v) => codePointLength(v) <= max, {
+    message:
+      message ??
+      `String must contain at most ${max} characters (counted as code points)`,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Task templates (CORE-03: list_task_templates / create_task_from_template)
 // ---------------------------------------------------------------------------
@@ -313,8 +359,19 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     'Update an existing task via PATCH (only the fields you pass are changed). Supports executor pinning: set executorId to pin the task to one executor (fails fast if it is offline), or pass executorId: null to clear the pin. executorId is mutually exclusive with executeMode="broadcast" — the backend rejects that combination with 400.',
     {
       taskId: UUID_PATH_ID.describe("Task ID to update"),
-      name: z.string().optional().describe("New task name"),
-      description: z.string().optional().describe("New task description"),
+      // R111-A1 上限出处：CreateTaskDto.name 的 @IsTaskName()
+      // （apps/admin-api/src/modules/task/dto/create-task.dto.ts:66-69）→
+      // TASK_NAME_MAX_LENGTH=255（同目录 task-name.constraint.ts:43，按**码点**计）。
+      // UpdateTaskDto 是 PartialType(CreateTaskDto)，PATCH 继承同一 255。
+      name: textWithin(TASK_NAME_MAX_LENGTH).optional().describe(
+        "New task name (max 255 chars — the backend's IsTaskName limit)",
+      ),
+      // R111-A1：**后端无约束**（create-task.dto.ts:70 只有 @IsString/@IsOptional，
+      // tasks.description 列也无长度，task.entity.ts:136）——2000 是本侧**客户端保护**，
+      // 刻意不假称与后端对齐（口径取本仓既有 2KB 文本闸：PublishSopDto.changelog）。
+      description: textWithin(2000).optional().describe(
+        "New task description (max 2000 chars — client-side cap; the backend imposes none)",
+      ),
       status: TASK_STATUS.optional().describe(
         "Task status: active | paused | deleted",
       ),
@@ -502,6 +559,16 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         "GET",
         `/tasks/executions/${executionId}`,
       );
+      // R112：**空载荷不是成功**。此前 `JSON_CONTENT(null)` 会让 agent 拿到一个「成功但内容为 null」
+      // 的响应，它没有任何办法区分「执行不存在」与「执行存在但字段全空」——于是继续在假数据上动作。
+      // （正常路径下后端 404 会抛错；这里兜的是 200 + 空体/空载荷的形态。）
+      if (data === null || data === undefined) {
+        return JSON_ERROR({
+          error: "Execution not found (the API returned an empty payload)",
+          errorCode: "EXECUTION_NOT_FOUND",
+          executionId,
+        });
+      }
       if (data && typeof data === "object" && "logs" in data) {
         const { logs: _logs, ...rest } = data;
         return JSON_CONTENT({
@@ -796,11 +863,17 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Template key or uuid (resolve with list_task_templates; official keys: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping)",
         ),
-      name: z.string().describe("Unique task name for the new task"),
-      description: z
-        .string()
+      // R111-A1 上限出处：与 update_task.name 同一字段、同一 DTO 约束
+      // （CreateTaskDto.name 的 @IsTaskName() → task-name.constraint.ts:43，255 码点）。
+      name: textWithin(TASK_NAME_MAX_LENGTH).describe(
+        "Unique task name for the new task (max 255 chars — the backend's IsTaskName limit)",
+      ),
+      // R111-A1：**后端无约束**（create-task.dto.ts:70），2000 为客户端保护，同 update_task。
+      description: textWithin(2000)
         .optional()
-        .describe("Task description (defaults to the template's description)"),
+        .describe(
+          "Task description (max 2000 chars — client-side cap; the backend imposes none; defaults to the template's description)",
+        ),
       overrides: z
         .record(z.string(), z.unknown())
         .optional()
@@ -1648,7 +1721,16 @@ export function registerObservabilityTools(
         "GET",
         `/tasks/executions/${executionId}`,
       );
-      return JSON_CONTENT(buildExecutionTimeline((data ?? {}) as RawExecution));
+      // R112：空载荷不再拼一个 `executionId: ""` 的成功载荷 —— 那看起来像「查询成功但执行没有 ID」，
+      // 而真相是「没查到」。
+      if (data === null || data === undefined) {
+        return JSON_ERROR({
+          error: "Execution not found (the API returned an empty payload)",
+          errorCode: "EXECUTION_NOT_FOUND",
+          executionId,
+        });
+      }
+      return JSON_CONTENT(buildExecutionTimeline(data as RawExecution));
     },
   );
 
@@ -2058,3 +2140,4 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
     },
   );
 }
+
