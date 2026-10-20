@@ -26,6 +26,15 @@ export const MAX_BYTES_PER_CHUNK = 1_000_000;
 export const MAX_BUFFERED_BYTES = 10_000_000;
 
 /**
+ * 单片推送超时，**故意不再用 admin-client 的 20s 默认值**。
+ *
+ * 与 python 侧 `_push_chunk` 的 `timeout=5.0` 对齐：flush 已串行化，
+ * 单片超时直接决定「一个慢 admin 会阻塞多久后续日志」。20s × 3 次重试 = 61s 的窗口
+ * 里，正常产出的日志会被背压丢弃 —— 而丢的正是排障最需要的那段。
+ */
+export const PUSH_TIMEOUT_MS = 5_000;
+
+/**
  * R164-A1: 丢行必须在**流里留下可见的一行**（对齐 python R125）。
  *
  * 只在本机 warn 时，实时视图的行号会直接从 100 跳到 1100 —— 没有任何一行说明
@@ -263,6 +272,7 @@ export class LogStreamPusher {
         lines: chunk.lines,
       },
       executorAddressHeaderFor(),
+      PUSH_TIMEOUT_MS,
     );
 
     if (response.status !== 200 && response.status !== 201) {

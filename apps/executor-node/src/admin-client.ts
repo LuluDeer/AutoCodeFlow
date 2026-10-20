@@ -284,12 +284,23 @@ export async function get<T = any>(path: string): Promise<AxiosResponse<T>> {
   return request('get', path);
 }
 
+/**
+ * R164-A1（日志链路审计）：可选超时。
+ *
+ * 默认 `DEFAULT_TIMEOUT_MS`（20s）对**心跳/回调**是合适的（跨境链路抖动时值得多等），
+ * 但对**日志切片推送**太长：`log-stream-pusher` 现在把 flush 串行化，一个慢 flush 会阻塞
+ * 后面所有 flush，而 pusher 的单片上限只有 1 MB。python 侧同一路径用 **5s**，
+ * 于是同一部署下 node 的阻塞窗口是 python 的 4 倍 ⇒ 背压丢行概率也高 4 倍。
+ *
+ * 这里只加**可选**参数（不传 == 行为逐字不变），由 pusher 显式传 5s。
+ */
 export async function post<T = any>(
   path: string,
   data?: Record<string, any>,
   extraHeaders?: Record<string, string>,
+  timeoutMs?: number,
 ): Promise<AxiosResponse<T>> {
-  return request('post', path, data, adminUrls.length, 'current', extraHeaders);
+  return request('post', path, data, adminUrls.length, 'current', extraHeaders, timeoutMs);
 }
 
 /**

@@ -21,8 +21,7 @@ import {
   LogStreamPusher,
   MAX_BYTES_PER_CHUNK,
   MAX_BUFFERED_BYTES,
-  BACKPRESSURE_MARKER,
-} from './log-stream-pusher';
+  BACKPRESSURE_MARKER, PUSH_TIMEOUT_MS } from './log-stream-pusher';
 import { post } from './admin-client';
 import { logger } from './logger';
 
@@ -393,3 +392,28 @@ describe('LogStreamPusher（R164-A1：与 python 侧契约对齐）', () => {
   });
 });
 
+describe('R164-A1 推送超时与 python 侧对齐', () => {
+  it('pushChunk 传 5s 超时，而不是 admin-client 的 20s 默认值', async () => {
+    const calls: Array<{ path: string; timeoutMs?: number }> = [];
+    const mod = await import('./admin-client');
+    const spy = jest.spyOn(mod, 'post').mockImplementation((async (
+      path: string,
+      _data?: unknown,
+      _headers?: unknown,
+      timeoutMs?: number,
+    ) => {
+      calls.push({ path, timeoutMs });
+      return { status: 200, data: { count: 1 } } as never;
+    }) as never);
+    try {
+      const pusher = new LogStreamPusher('exec-timeout');
+      pusher.addLine('hello');
+      await pusher.finalFlush();
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls[0].timeoutMs).toBe(PUSH_TIMEOUT_MS);
+      expect(PUSH_TIMEOUT_MS).toBe(5_000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
