@@ -4805,15 +4805,44 @@ describe("ExecutorService (__tests__)", () => {
         status: ExecutorStatus.ONLINE,
       };
       executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.update.mockResolvedValue({ affected: 1 });
       const saved = await service.setOfflineById("exec-9");
       expect(executorRepo.findOne).toHaveBeenCalledWith({
         where: { id: "exec-9" },
       });
-      expect(executorRepo.save).toHaveBeenCalledWith(executor);
+      // R45（ADR-026 规则 4）：不再整行 save，改条件写——WHERE 带读取时的
+      // lastHeartbeat（此处为 undefined ⇒ IsNull 算子），SET 只含三个要改的列。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "exec-9", lastHeartbeat: expect.anything() }),
+        expect.objectContaining({ status: ExecutorStatus.OFFLINE }),
+      );
       expect(saved.status).toBe(ExecutorStatus.OFFLINE);
       // 遗留 P1-24：管理员手动下线落 manual。
       expect(saved.offlineReason).toBe(ExecutorOfflineReason.MANUAL);
       expect(saved.lastHeartbeat).toBeInstanceOf(Date);
+    });
+
+    it("R45: 条件写未命中（执行器刚有新活动）→ 不置离线、不发布事件、返回真实行", async () => {
+      const stale: any = {
+        id: "exec-9",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        lastHeartbeat: new Date(0),
+      };
+      executorRepo.findOne
+        .mockResolvedValueOnce(stale) // 第一次读：快照
+        .mockResolvedValueOnce({ ...stale, status: ExecutorStatus.ONLINE, lastHeartbeat: new Date() }); // 让位后重读
+      executorRepo.update.mockResolvedValue({ affected: 0 });
+      const emitSpy = jest
+        .spyOn(service as never as { emitExecutorOffline: (p: unknown) => void }, "emitExecutorOffline")
+        .mockImplementation(() => undefined);
+
+      const returned = await service.setOfflineById("exec-9");
+
+      expect(emitSpy).not.toHaveBeenCalled();
+      expect(returned.status).toBe(ExecutorStatus.ONLINE); // 返回真实行，不是陈旧快照
+      emitSpy.mockRestore();
     });
 
     it("throws NotFoundException when executor does not exist", async () => {

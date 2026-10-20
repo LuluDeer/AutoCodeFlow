@@ -6095,17 +6095,42 @@ export class ExecutorService implements OnModuleInit {
    */
   async setOfflineById(id: string): Promise<Executor> {
     const executor = await this.findOne(id);
+    // R45（ADR-026 规则 4）：这里此前是「findOne → 改三个字段 → **整行 save**」，
+    // 与 markOffline 是**同族缺陷**——R40 只修了按地址那条，这条漏了（也正是静态守卫
+    // 的盲区①：它只看 update，看不到 save）。两个后果：
+    //   ① 整行回写把并发心跳/注册刚落库的 status / lastHeartbeat / runningTaskCount
+    //      按旧快照覆盖（select:false 的列不在快照里，侥幸不被写，其余列照写不误）；
+    //   ② 没有「活跃证据是否已变」的前置断言 —— 管理员点下线与执行器重新上线撞在一起时
+    //      谁后写谁赢，而不是按语义让位。
+    // 与 markOffline 同口径：按读取到的 lastHeartbeat 做 CAS；命中 0 只重新读一次真实行
+    // 返回，且**不**发布 executor.offline（否则下游会按「已离线」处置活着的执行器）。
+    const marked = await this.repo.update(
+      { id: executor.id, lastHeartbeat: executor.lastHeartbeat ?? IsNull() },
+      // 遗留 P1-24：管理员手动下线。
+      {
+        status: ExecutorStatus.OFFLINE,
+        offlineReason: ExecutorOfflineReason.MANUAL,
+        lastHeartbeat: new Date(),
+      },
+    );
+    if (!marked.affected) {
+      this.logger.warn(
+        "setOfflineById(" +
+          id +
+          ") lost the race: the row showed newer activity (a register/heartbeat landed " +
+          "after we read it) — not flipping it OFFLINE.",
+      );
+      return this.findOne(id);
+    }
     executor.status = ExecutorStatus.OFFLINE;
-    // 遗留 P1-24：管理员手动下线。
     executor.offlineReason = ExecutorOfflineReason.MANUAL;
     executor.lastHeartbeat = new Date();
-    const saved = await this.repo.save(executor);
     this.logger.log(
       `Executor ${executor.address} set offline by admin (id=${id})`,
     );
     // FEAT-07: 状态落库后发布 executor.offline（管理台置离线路径）。
-    this.emitExecutorOffline(saved);
-    return saved;
+    this.emitExecutorOffline(executor);
+    return executor;
   }
 
   /**
