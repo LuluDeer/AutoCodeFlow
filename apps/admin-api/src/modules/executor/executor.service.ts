@@ -1594,9 +1594,48 @@ export class ExecutorService implements OnModuleInit {
             });
           }
           // pull：不拒注册——下走创建分支，建**独立行**（同地址允许重复）。
+        } else if (
+          incomingFingerprint !== null &&
+          storedReal === null &&
+          (await this.hasOtherAddressRow(data.address, byAddress.id))
+        ) {
+          // R32-C6（C5 遗留①）：**升级接管只在无歧义时成立**。
+          //
+          // 上面 foreignInstall 把「存量 legacy 键 / 迁移前 NULL」判为"不算占用"，
+          // 于是 condition 落到 else 分支直接 e = byAddress —— 语义是"这台机器
+          // 升级上来了，接管自己那行老行"。单个地址只有一行时这个假设成立。
+          // 但 ADR-017 §5 允许同址多行（pull 双机同网段同 IP 各自成行；存量
+          // legacy 行与已升级行并存），此时 byAddress 只是**首行**：若它是
+          // **另一份安装**的 legacy 墓碑行，接管就是把别人的行改写成自己
+          // （appName/version/capabilities/startupId 全被覆盖、status 点亮
+          // ONLINE、随后 rotateToken 吊销对方的 per-executor 令牌）——与 C5 修的
+          // 无指纹形态同一后果，只是入口从「无指纹」换成「有真实指纹但首行是
+          // legacy 行」。地址在这一步仍然不构成身份，故不能猜：
+          //   · push（地址是路由面、地址唯一）→ 409，与 C5 / resolveExecutorRow
+          //     同策（这台机器无法在该地址上成为唯一 push 行）；
+          //   · pull（地址只是自报标签）→ 不接管，落下去**新建独立行**（它的
+          //     指纹是真实的，新行可正常心跳，不像 C5 那个 legacy 键死行）。
+          if (incomingDispatchMode === "push") {
+            this.logger.warn(
+              `Registration from "${data.address}" refused (409): the first row at this ` +
+                `address is a legacy/NULL-fingerprint row while "${data.address}" also has ` +
+                `other rows, so "adopt the legacy row" cannot be distinguished from ` +
+                `"take over another install's row". Give this install a unique ` +
+                `EXECUTOR_ADDRESS_PUBLIC.`,
+            );
+            throw new AppError("EXECUTOR_ADDRESS_TAKEN", {
+              address: data.address,
+            });
+          }
+          this.logger.warn(
+            `Registration from "${data.address}" did not adopt the legacy row: ` +
+              `${data.address} has other rows and the first row is legacy/NULL, so adoption ` +
+              `is ambiguous. Creating a separate row for this install (R32-C6).`,
+          );
+          // 不赋 e → 走创建分支建独立行（pull 允许同址重复）。
         } else {
-          // 同安装（同指纹）/ 存量 legacy 行（升级接管）/ 无指纹存量行
-          // （迁移前 NULL）→ 复用该行。
+          // 同安装（同指纹）/ 存量 legacy 行且地址无歧义（升级接管）/ 无指纹
+          // 存量行（迁移前 NULL）→ 复用该行。
           e = byAddress;
         }
       }
@@ -5478,6 +5517,26 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /** DEEP-AUDIT B·1.1：task.executorAppName 按名字绑定到本执行器的任务数。 */
+  /**
+   * R32-C6：该地址上是否**还存在别的行**（bounded take:2，只回答「不止一行」）。
+   *
+   * 用途见 register() 的「升级接管」分支：legacy 行接管只在地址无歧义时成立，
+   * 一旦同址还有别的行，就无法区分「自己那行老行」与「别人的墓碑行」。
+   * select 收窄到 id —— register/heartbeat 都是高频面，不拉 appName/
+   * runningExecutionIds 这类重列。
+   */
+  private async hasOtherAddressRow(
+    address: string,
+    rowId: string,
+  ): Promise<boolean> {
+    const rows = await this.repo.find({
+      where: { address },
+      take: 2,
+      select: { id: true },
+    });
+    return rows.some((r) => r.id !== rowId);
+  }
+
   private async countTasksBoundByAppName(appName: string): Promise<number> {
     try {
       return await this.taskRepo.count({

@@ -400,4 +400,70 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
     expect(perExecutorToken).not.toBeNull();
     expect(onlyRow.tokenHash).not.toBe("$2b$12$legacyhash");
   });
+
+  // ── R32-C6（C5 遗留①）：带**真实指纹**但首行是 legacy 行时的「升级接管」歧义 ──
+  //
+  // foreignInstall 把 legacy / NULL 行判为"不算占用"，于是落到 else 分支直接
+  // e = byAddress —— 语义是"这台机器升级上来了，接管自己那行老行"。当地址只有
+  // 一行时成立；同址还有别的行时，byAddress 只是**首行**，接管就是把别人的墓碑行
+  // 改写成自己（随后 rotateToken 吊销对方令牌）。
+  it("首行是 legacy 行 + 同址还有别的行 + 上报真实指纹 / push → 409，两行零写入", async () => {
+    const legacy = legacyRow();
+    const foreign = foreignRow();
+    await setup([legacy, foreign]);
+
+    const err = await service
+      .registerExecutor(registerPayload({ dispatchMode: "push", deviceFingerprint: FP_A }) as any)
+      .then(() => null, (e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ConflictException);
+    expect((err as AppError).errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
+    expect(executorRepo.save).not.toHaveBeenCalled();
+    expect(ledger).toEqual([]);
+    expect(legacy).toMatchObject({
+      appName: "legacy-node",
+      status: ExecutorStatus.OFFLINE,
+      tokenHash: "$2b$12$legacyhash",
+    });
+    expect(foreign).toMatchObject({ appName: "victim-node", tokenHash: "$2b$12$victimhash" });
+  });
+
+  it("同形态 / pull → 不接管、新建独立行；legacy 行与别人那行都原样不动", async () => {
+    const legacy = legacyRow();
+    const foreign = foreignRow();
+    await setup([legacy, foreign]);
+
+    const { executor } = await service.registerExecutor(
+      registerPayload({ dispatchMode: "pull", deviceFingerprint: FP_A }) as any,
+    );
+
+    // 新行：不是 legacy 那行，也不是别人那行。
+    expect(executor.id).not.toBe("old-legacy");
+    expect(executor.id).not.toBe("victim-v3");
+    expect(executor.deviceFingerprint).toBe(FP_A);
+    expect(executor.appName).toBe("intruder-node");
+    // legacy 行一个字都没被改写（含令牌与在线态）。
+    expect(legacy).toMatchObject({
+      appName: "legacy-node",
+      status: ExecutorStatus.OFFLINE,
+      executorVersion: "0.9.0",
+      capabilities: ["legacy-cap"],
+      tokenHash: "$2b$12$legacyhash",
+    });
+    expect(legacy.executorStartupId).toBeUndefined();
+    expect(foreign).toMatchObject({ appName: "victim-node", tokenHash: "$2b$12$victimhash" });
+  });
+
+  it("对照组：地址只有一行 legacy + 上报真实指纹 → 仍按「升级接管」复用该行（不加严）", async () => {
+    const onlyRow = legacyRow();
+    await setup([onlyRow]);
+
+    const { executor } = await service.registerExecutor(
+      registerPayload({ dispatchMode: "push", deviceFingerprint: FP_A, appName: "legacy-node" }) as any,
+    );
+
+    expect(executor.id).toBe("old-legacy");
+    expect(onlyRow.deviceFingerprint).toBe(FP_A);
+    expect(onlyRow.status).toBe(ExecutorStatus.ONLINE);
+  });
 });
