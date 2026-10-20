@@ -2229,3 +2229,31 @@ if (!keepStreamed) await this.storeLogLines(cb.executionId, cb.logs);   // ← �
 修复本身依然正确（实时视图不该有静默缺口），**但它的定级被我抬高了**。
 
 （顺带：这也是给 node 侧 marker 的定级依据 —— **对齐 python 是对的，但别用「会丢日志」去说服人**。）
+- 2026-10-20 **R170 · 把 agent 判为「两侧一致」的一条往下追了一层：`finalFlush` 是 fire-and-forget，而且正好在 kill 路径上**。
+
+它报「finalFlush 全部 fire-and-forget（两侧一致）」。**「一致」不等于「没问题」** —— 我去看了调用点：
+
+```ts
+// execute.ts:3044  RT-LOG: Fire-and-forget final flush ... before timeout
+logStreamPusher.finalFlush().catch(...)
+// execute.ts:3082  ... before memory limit kill
+logStreamPusher.finalFlush().catch(...)
+```
+
+两处都是**超时 / 内存超限 kill 之前**的收尾，且都**不 await**。于是：
+
+> `finalFlush()` 发出去的 POST 与随后的 `proc.kill()` **在赛跑**。
+
+**这正好落在最需要日志的时刻**：任务是「为什么超时」「为什么 OOM」—— 而这两条路径上的尾部日志，
+恰恰是最可能没发出去的那几行。
+
+**但要按 `R169` 的校准来定级**：终态回调会用 `cb.logs` 覆盖实时流，所以**只要回调发出去了，数据仍会补齐**。
+真正的风险是**回调也没发出**（进程被强杀 / admin 不可达）—— 那时实时流是唯一副本，而它漏了尾。
+
+| 情形 | 后果 |
+|---|---|
+| 回调正常发出 | 实时流尾部临时缺失，终态自愈 |
+| 回调未发出（强杀 / admin 不可达） | **尾部日志永久缺失** |
+
+所以这条的正确说法不是「两侧一致所以免检」，而是「**两侧都在这条路径上赌回调会成功**」。
+要我改的话，最小改动是 kill 前 `await` 一个**有超时上限**的 finalFlush（例如 2s），而不是无限等。**留给验收轮决定做不做。**
