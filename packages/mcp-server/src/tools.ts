@@ -248,6 +248,78 @@ function textWithin(max: number, message?: string) {
 }
 
 // ---------------------------------------------------------------------------
+// R115：**字节**口径的上限（与 R111 的「码点」口径区分开）
+//
+// 后端有两处约束是按 **UTF-8 字节**算的，不是字符数：
+//   · `DEPLOYMENT_ENV_MAX_KEYS=50` / `DEPLOYMENT_ENV_VALUE_MAX_BYTES=4096`
+//     （app-deployment.dto.ts:24-25；键**和**值各算字节，见 :39-40）；
+//   · `TASK_PARAMS_MAX_BYTES=65_536`（task/params-size.util.ts:15，
+//     用 `Buffer.byteLength(JSON.stringify(params))` 算，见 :21-27）。
+//
+// 所以这里**不能**用 `z.string().max(...)` 或 `JSON.stringify(x).length`：
+// 前者数码元、后者数 UTF-16 单元，中文/emoji 场景下都与字节数差一截 ——
+// 用错口径要么放过后端必拒的载荷（agent 白跑一趟），要么拒掉后端接受的载荷。
+// ---------------------------------------------------------------------------
+
+/** 部署 env 的上限（逐字对齐 admin-api app-deployment.dto.ts:24-25）。 */
+export const DEPLOYMENT_ENV_MAX_KEYS = 50;
+export const DEPLOYMENT_ENV_VALUE_MAX_BYTES = 4096;
+
+/** 任务 params 的序列化体积上限（逐字对齐 task/params-size.util.ts:15）。 */
+export const TASK_PARAMS_MAX_BYTES = 65_536;
+
+/** `str` 的 UTF-8 字节数（与后端 `Buffer.byteLength(s, "utf8")` 同口径）。 */
+export function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+/**
+ * params 序列化后的字节数；**不可序列化（循环引用等）返回 null** ——
+ * 后端对此的处理是「按超限算」（params-size.util.ts:18-19），调用方也照此 fail-closed。
+ */
+export function jsonByteLength(value: unknown): number | null {
+  try {
+    return Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** 部署 env：≤50 键，且每个键/值 UTF-8 字节 ≤4096。 */
+function deploymentEnvWithinLimits() {
+  return z.record(z.string(), z.string()).refine(
+    (env) => {
+      const entries = Object.entries(env);
+      if (entries.length > DEPLOYMENT_ENV_MAX_KEYS) return false;
+      return entries.every(
+        ([key, val]) =>
+          utf8ByteLength(key) <= DEPLOYMENT_ENV_VALUE_MAX_BYTES &&
+          utf8ByteLength(val) <= DEPLOYMENT_ENV_VALUE_MAX_BYTES,
+      );
+    },
+    {
+      message:
+        `env must have at most ${DEPLOYMENT_ENV_MAX_KEYS} keys, and every key/value ` +
+        `string must be at most ${DEPLOYMENT_ENV_VALUE_MAX_BYTES} UTF-8 bytes`,
+    },
+  );
+}
+
+/** 任务 params：序列化后 UTF-8 字节 ≤65536（不可序列化按超限处理）。 */
+function taskParamsWithinLimits() {
+  return z.record(z.string(), z.unknown()).refine(
+    (params) => {
+      const bytes = jsonByteLength(params);
+      return bytes !== null && bytes <= TASK_PARAMS_MAX_BYTES;
+    },
+    {
+      message:
+        `params must serialize to at most ${TASK_PARAMS_MAX_BYTES} UTF-8 bytes ` +
+        `(and must be JSON-serializable)`,
+    },
+  );
+}
+// ---------------------------------------------------------------------------
 // Task templates (CORE-03: list_task_templates / create_task_from_template)
 // ---------------------------------------------------------------------------
 // The historical hardcoded TASK_TEMPLATES copy was removed: the admin-api
@@ -322,8 +394,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Manually trigger a task to run immediately. Returns the execution ID that can be polled with get_execution.",
     {
       taskId: UUID_PATH_ID.describe("Task ID to trigger"),
-      params: z
-        .record(z.string(), z.unknown())
+      // R115：后端 `@TaskParamsMaxBytes()` = 65536 字节（task/params-size.util.ts:15）——
+      // 超限的 params 会被后端 400，agent 白跑一趟网络。
+      params: taskParamsWithinLimits()
         .optional()
         .describe(
           "Optional runtime parameters to pass to the task. Merged as a WHOLE override, not per-key: an empty object ({}) is treated as 'no override' (= use the task's configured default params), never as 'run with zero params'",
@@ -434,10 +507,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Restrict auto-dispatch to executors carrying all these tags",
         ),
-      params: z
-        .record(z.string(), z.unknown())
-        .optional()
-        .describe("Default runtime parameters"),
+      // R115：同 trigger_task —— 后端 65536 字节上限。
+      params: taskParamsWithinLimits().optional().describe("Default runtime parameters"),
       applicationId: z
         .string()
         .optional()
@@ -711,8 +782,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     {
       taskId: UUID_PATH_ID.describe("Task ID that owns the execution"),
       executionId: UUID_PATH_ID.describe("Execution ID to re-run (from list_executions / get_execution)"),
-      params: z
-        .record(z.string(), z.unknown())
+      // R115：同 trigger_task —— 后端 65536 字节上限。
+      params: taskParamsWithinLimits()
         .optional()
         .describe(
           "Override the replayed runtime parameters (when absent — or when an empty object — the original execution's params are reused; if it had none, the task's current defaults apply)",
@@ -874,8 +945,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Task description (max 2000 chars — client-side cap; the backend imposes none; defaults to the template's description)",
         ),
-      overrides: z
-        .record(z.string(), z.unknown())
+      // R115：overrides 会并进 CreateTaskDto 的 params 一路落库 —— 同 65536 字节口径。
+      overrides: taskParamsWithinLimits()
         .optional()
         .describe(
           "Field overrides applied on top of the template config (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, executorGroup)",
@@ -960,7 +1031,8 @@ export function registerApplicationTools(
         .record(z.string(), z.unknown())
         .optional()
         .describe("Application manifest object"),
-      env: z.record(z.string(), z.string()).optional().describe("Environment variables"),
+      // R115：后端 env 上限 50 键 / 键值各 4096 UTF-8 字节（app-deployment.dto.ts:24-25）。
+      env: deploymentEnvWithinLimits().optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
     }, { destructiveHint: false },
@@ -996,7 +1068,8 @@ export function registerApplicationTools(
         .record(z.string(), z.unknown())
         .optional()
         .describe("Application manifest object"),
-      env: z.record(z.string(), z.string()).optional().describe("Environment variables"),
+      // R115：后端 env 上限 50 键 / 键值各 4096 UTF-8 字节（app-deployment.dto.ts:24-25）。
+      env: deploymentEnvWithinLimits().optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
       // R111-A1 上限出处：UpdateApplicationDto.webhookSecret 的 @MaxLength(256)
@@ -1272,10 +1345,8 @@ export function registerDeploymentTools(
         .describe(
           "Run mode. OMIT for the safe default: scheduled = deploy-only, nothing starts until a task/cron triggers it. once = start the entry script immediately (no restart). daemon = start immediately AND auto-restart on crash — only for resident services.",
         ),
-      env: z
-        .record(z.string(), z.string())
-        .optional()
-        .describe("Environment variable overrides"),
+      // R115：后端 env 上限 50 键 / 键值各 4096 UTF-8 字节。
+      env: deploymentEnvWithinLimits().optional().describe("Environment variable overrides"),
       // R111-A1 上限出处：CreateDeploymentDto.startCommand 的 @MaxLength(2000)
       // （apps/admin-api/src/modules/application/dto/app-deployment.dto.ts:84）。
       // deploy_application 与 deploy_app 共用同一 POST /app-deployments/.../deploy 体。
@@ -1358,10 +1429,8 @@ export function registerDeploymentTools(
         .describe(
           "Run mode. OMIT for the safe default: scheduled = deploy-only, nothing starts until a task/cron triggers it. once = start the entry script immediately (no restart). daemon = start immediately AND auto-restart on crash — only for resident services.",
         ),
-      env: z
-        .record(z.string(), z.string())
-        .optional()
-        .describe("Environment variable overrides"),
+      // R115：后端 env 上限 50 键 / 键值各 4096 UTF-8 字节。
+      env: deploymentEnvWithinLimits().optional().describe("Environment variable overrides"),
       // R111-A1 上限出处：CreateDeploymentDto.startCommand 的 @MaxLength(2000)
       // （apps/admin-api/src/modules/application/dto/app-deployment.dto.ts:84）。
       // deploy_application 与 deploy_app 共用同一 POST /app-deployments/.../deploy 体。
