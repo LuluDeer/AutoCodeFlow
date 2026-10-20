@@ -85,6 +85,15 @@ describe("R83 · 配置写动作落审计", () => {
     expect(call.detail.valueLength).toBe("super-secret-token-value".length);
     // 硬约束：值不得进审计（哪怕 key 本身不敏感）
     expect(JSON.stringify(call.detail)).not.toContain("super-secret-token-value");
+    // ADR-028 / R83：**键集合**也钉死 —— 只允许这几个元数据字段。
+    // 只断言「不含这个值」不够：将来有人加一个 value/raw 字段，换个值就漏过去了。
+    expect(Object.keys(call.detail).sort()).toEqual([
+      "isSecret",
+      "maskSentinelResolved",
+      "previousValueLength",
+      "valueLength",
+      "valueType",
+    ]);
   });
 
   it("已有密钥 + 提交掩码哨兵 → config.update 且 maskSentinelResolved=true（值仍不入审计）", async () => {

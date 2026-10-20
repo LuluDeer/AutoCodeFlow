@@ -41,6 +41,7 @@
 | [ADR-025](adr-025-audit-log-tamper-evidence.md) | 审计日志不可篡改性——append-only 触发器已是有效控制，不引入哈希链（PLAN-SECURITY-HARDENING §6.1-6.2；五类假阴性 + 实测 TRUNCATE/DBA 绕过边界 + 本轮不实施） | Accepted |
 | [ADR-026](adr-026-conditional-state-writes.md) | 状态迁移写必须条件化——四个模块的同一根因（整行回写 / 无前置状态 UPDATE）与六条可验收规则（R32-C3 / R32-C1 / R33-B2 / R33-A2） | Accepted |
 | [ADR-027](adr-027-test-double-fidelity.md) | 测试替身必须保真——替身不保真 ⇒ 整类缺陷隐形（FindOperator 求值 / 快照读 / save 逐列 diff / 并发交错钩子 / 未知操作符必须抛错） | Accepted |
+| [ADR-028](adr-028-config-secret-at-rest.md) | 配置类密钥的静态加密边界——**接受现状**（现值明文），明确**拒绝**「只加密历史表」的安全剧场，并给出四条重开条件（R83 顺着密钥脱敏数据流发现） |
 
 ## DOC-04 覆盖状态
 
