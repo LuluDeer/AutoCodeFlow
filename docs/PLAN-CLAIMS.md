@@ -1068,3 +1068,12 @@
   验证：56/56 一致、docs / cli-doc / guards-wired 全绿（`check-guards-wired` 现报 **31 个全部接线**）；反证：删掉 `list_task_templates` 一行 → 守卫报「文档缺 1 个」并给出修法。
   四道文档守卫合计 <300 行，共同教训：**手写清单一定单向腐烂——加东西的人不会回头改清单，删东西的人才会**；正确姿势是从代码生成 + 逐项比对。
 - 2026-10-20 **R94-A1 认领**：`executor-python` **执行面**安全审计（沙箱隔离 / 解压面与 node 侧逐项等价 / 回调令牌 / 日志上限），已派发，明确「不要重复审 SSRF」。
+- 2026-10-20 **R96 done（commit bdfb4643）**：**REST 地图补 7 个整域 + 合并出「接口地图」守卫**。`docs/atlas/05-interfaces/rest-api.md` 自述「24 controller / 21 前缀」，
+  实际 **30 / 28**；更重的是 **7 个路由前缀整域缺失**（agent / agent-collab / auth-oidc / mutex-groups / sop / task-templates / webhooks-tasks），
+  连同其下 **41 条路由**在「REST 接口地图」里一条都查不到 —— 读图的人会以为这些能力不存在。补齐七节 + 头部计数 + 日期；
+  并把上轮 MCP 守卫合并为 `check-interface-maps.mjs`（两节：工具名 / 路由前缀，同一个病不必两个脚本），删 `check-mcp-tools-doc.mjs`。
+  **★ 反证逼出的坑**：第一版 REST 判据是 `doc.includes(prefix)`，反证时**没能红** —— 删掉整个「## SOP」一节，守卫仍通过，
+  因为别处 `/sop/assignments/...` 文本含 `sop` 字样。改成「必须作为**反引号包住的路由路径**出现」后同样的反证立刻报 `/sop`。
+  **教训：宽松子串匹配会让守卫看起来在工作，实际只是在匹配自己的回声**；是「删掉再跑」这一步把它逼出来的。
+  验证：MCP 56/56、REST 27/27（30 controller）、docs / cli-doc / guards-wired（31 个全接线）/ lint-gates 全绿；两处反证各红一次。
+  **现在有守卫的「文档↔代码」面**：CLI 命令表 / REST 全量附录 / 审计动作表 / MCP 工具地图 + REST 域地图（本轮）。
