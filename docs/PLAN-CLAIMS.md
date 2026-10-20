@@ -1199,3 +1199,9 @@
 - 2026-10-20 **executor-node「1 failed / 106.9s」定性为抖动（无提交）**：上一轮全量跑 `middleware/auth.spec.ts` 报 1 failed 且耗时 106.9s；本轮**原样重跑全量**得
   `48 passed / 1205 passed / 7 skipped / 0 failed`，单独跑该 spec 也是 34 passed ⇒ **负载下超时抖动**，与 R113 修的 `beforeAll` 超时同类。
   但**未修**：我**没定位到具体哪个用例超时**（只看到套件级失败）⇒ 登记为**已知抖动，不假装已解决**。106.9s 对一个鉴权中间件套件仍异常慢，值得后续单独看它在等什么。
+- 2026-10-20 **R115 done（commit 7c1a78ff）**：**env 与 params 补「字节」口径上限**（R111-A1 的两条遗留）。后端两处约束按 **UTF-8 字节**算：env ≤50 键、键与值各 ≤4096 字节（app-deployment.dto.ts:24-25/:39-40）；
+  params 序列化 ≤65536 字节（task/params-size.util.ts:15，量法 :21-27）。**不能照抄 R111 的码点实现** —— 中文 1 字符 = 3 字节：22000 个中文的 params ≈66000 字节**超后端上限**，但按字符只 22000 ⇒ **字符口径会放过后端必拒的载荷**。
+  新增 `utf8ByteLength` / `jsonByteLength`（不可序列化返回 null = 按超限，与后端同语义）+ 两个 refine；接线 9 处（env×4 / params×3 / overrides×1）。
+  验证 vitest **257→266**、tsc 0；用例**全部用中文**构造（ASCII 测不出两种口径差异）：env 1365 中文=4095B 通过、1366=4098B 拒；env **键**同样按字节；params 22000 中文≈66000B 拒（按字符会误放）；边界 65536 通过 / 65537 拒。
+  反证：退回无字节约束 → **5 failed / 4 passed**，还原 266 绿（并确认两个 helper 共出现 10 次，防静默还原失败）。
+  **「长度」在本仓至少三套口径**：码元（zod `.max`）/ 码点（validator.js `isLength`）/ 字节（`Buffer.byteLength`）—— 混用即缺陷，每次都要回后端看它到底怎么算。
