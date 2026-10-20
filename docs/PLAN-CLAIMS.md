@@ -1584,3 +1584,34 @@ UPDATE tasks SET lastTriggerTime = now()
 **被验证的代码依赖一个第三方类型，而我按记忆伪造了它**。下次应先读该类型的真实定义，或直接用它的构造器。
 
 **这条留在账上**：`_WaitWithRetryAfter` 的 clamp 目前只有 agent 的用例覆盖，**没有总控独立复核**。
+- 2026-10-20 **R140 · 把上一轮没做成的复核**做成了**（clamp 行为已独立验证）**。
+
+上一轮我用鸭子类型伪造 `RetryCallState` 失败（clamp 读不到 Retry-After，两次都返回基础退避 0.5）。
+这轮换方法：**先读第三方类型的真实构造签名，再用它的构造器**：
+
+```python
+inspect.signature(tenacity.Future.__init__)  # → (self, attempt_number: int)
+```
+
+按真实签名重建状态（`Future(1)` 而不是 `Future()`），得到**决定性结果**：
+
+```
+Retry-After 3600.0s exceeds RetryConfig.max_retry_after_sec 5.0s - clamped
+Retry-After=3600 clamp=None => wait 3600.0
+Retry-After=3600 clamp=5    => wait 5
+```
+
+三件事同时成立：
+1. **默认 `None` 时行为逐字不变**（3600 秒仍然无条件尊重服务端）⇒ agent 声称的「不改旧契约」**成立**；
+2. **`clamp=5` 真的截断到 5**（不是只加了个字段）；
+3. **截断时有 warning**（可观测，不是静默改行为）。
+
+**方法论（这条值得记）**：两次复核失败（node-cron 的 DST、上一轮的 clamp）根因相同 ——
+**被验证的代码依赖一个第三方类型，而我按记忆伪造了它**。
+这次的差别只有一个动作：**先 `inspect.signature` 再伪造**。
+
+> 复核别人的结论时，「我大概知道这个 API」是最危险的一种确定性。
+> 一个 `inspect.signature` 的成本是 1 行代码，收益是「这次复核算不算数」。
+
+**账上那条已销**：`_WaitWithRetryAfter` 的 clamp 不再只有 agent 的用例覆盖。
+（`node-cron` 的 DST 那条**仍未复核**，同样的方法可以试，但那条没有代码要改，优先级更低。）
