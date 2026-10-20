@@ -306,6 +306,8 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
       ip: "1.1.1.1",
     });
     expect(row.detail).toMatchObject({
+      // R70-A1：resourceId 是澄清行 id，审计页深链要的是 SOP id
+      sopId: "sop-1",
       assignmentId: "as-1",
       round: 1,
       escalated: false,
@@ -328,7 +330,11 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
     expect(r.escalated).toBe(true);
     const row = onlyOne(h.auditService);
     expect(row.action).toBe("sop.clarify");
-    expect(row.detail).toMatchObject({ escalated: true, round: 4 });
+    expect(row.detail).toMatchObject({
+      escalated: true,
+      round: 4,
+      sopId: "sop-1", // R70-A1：触顶升级路径同样可深链
+    });
   });
 
   it("sop.reply · 答复澄清（resolution + 版本锚，主体=replyBy）", async () => {
@@ -359,6 +365,7 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
       ip: "10.0.0.9",
     });
     expect(row.detail).toMatchObject({
+      sopId: "sop-1",
       assignmentId: "as-1",
       round: 2,
       resolution: "answered",
@@ -421,6 +428,7 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
       ip: "1.1.1.1",
     });
     expect(row.detail).toMatchObject({
+      sopId: "sop-1",
       status: "failed",
       attempt: 1,
       actor: "executor:exec-1",
@@ -759,6 +767,208 @@ describe("R56 · 超时扫描的审计（只在真迁移时落账）", () => {
       .map((c: Any[]) => c[0])
       .filter((p: Any) => p.action === "sop.timeout.unclaimed");
     expect(logged).toHaveLength(0);
+  });
+});
+
+// ── R70-A1：澄清类 / 交付类审计行也能深链回 SOP ────────────────────────────
+// R65 给审计页加了 SOP 深链（`/sops?sop=<sopId>`）：`sop` 用 resourceId 直接拼，
+// `sop_assignment` / `sop_clarification` 用 `detail.sopId`。但 R41 落账时这几类
+// detail 里只有 assignmentId，于是**澄清行在审计页不可点** —— 深链静默失效
+// （`resourceIdHref` 拿不到 sopId 就返回 null：宁可不点，也不跳到空页）。
+// 下面把「这几条审计行的 detail 里必须带 sopId」钉成契约，并且钉住
+// **不许多查一次库**（assignment 行本来就在作用域内，sopId 是它的列）。
+describe("R70-A1 · 澄清/交付审计行的 detail 带 sopId（审计页深链的输入）", () => {
+  /** 与 admin-web `resourceIdHref` 同一读法：detail.sopId 必须是非空字符串。 */
+  const deepLinkSopId = (detail: Any): string | null => {
+    const v = detail?.sopId;
+    return typeof v === "string" && v ? v : null;
+  };
+
+  const openClarification = {
+    id: "cl-1",
+    assignmentId: "as-1",
+    round: 2,
+    resolution: null,
+    answer: null,
+    newSopVersion: null,
+  };
+
+  it("sop.clarify（上报）/ sop.reply（答复）/ sop.complete（交付）三类都可深链", async () => {
+    const h1 = harness();
+    await h1.service.ingestClarification({
+      assignmentId: "as-1",
+      executorId: "exec-1",
+      question: "q",
+      audit: { ip: "1.1.1.1" },
+    });
+    const ingested = onlyOne(h1.auditService);
+
+    const h2 = harness({
+      clarification: { ...openClarification },
+      assignment: { status: "blocked" },
+    });
+    await h2.service.replyClarification({
+      clarificationId: "cl-1",
+      resolution: "answered",
+      answer: "a",
+      replyBy: "user:7",
+      audit: AUDIT,
+    });
+    const replied = onlyOne(h2.auditService);
+
+    const h3 = harness();
+    await h3.service.completeAssignment({
+      assignmentId: "as-1",
+      executorId: "exec-1",
+      status: "failed",
+      attempt: 1,
+      audit: { ip: "1.1.1.1" },
+    });
+    const completed = onlyOne(h3.auditService);
+
+    expect([ingested.action, replied.action, completed.action]).toEqual([
+      "sop.clarify",
+      "sop.reply",
+      "sop.complete",
+    ]);
+    for (const row of [ingested, replied, completed]) {
+      expect(deepLinkSopId(row.detail)).toBe("sop-1");
+    }
+    // resourceId 仍是「这一行自己的 id」——深链靠 detail 分流，把它换成 sopId
+    // 会让审计行指错对象（「谁答了哪条澄清」变成「答了哪个 SOP」）。
+    expect(ingested.resourceId).toBe("cl-new");
+    expect(replied.resourceId).toBe("cl-1");
+    expect(completed.resourceId).toBe("as-1");
+  });
+
+  it("最大轮次触顶升级（sop.clarify, escalated=true）同样带 sopId", async () => {
+    const h = harness({ assignment: { clarificationRound: 3, maxRounds: 3 } });
+    await h.service.ingestClarification({
+      assignmentId: "as-1",
+      executorId: "exec-1",
+      question: "q",
+      audit: { ip: "1.1.1.1" },
+    });
+    const row = onlyOne(h.auditService);
+    expect(row.detail.escalated).toBe(true);
+    expect(deepLinkSopId(row.detail)).toBe("sop-1");
+  });
+
+  it("兜底升级（sop.clarification.escalated）也带 sopId——同类行不能继续不可点", async () => {
+    const h = harness({
+      // 行必须真实存在：harness 的条件 UPDATE 要能在这一行上命中
+      // （resolution IS NULL → escalated_to_human），否则扫描会走「让位」分支。
+      clarification: {
+        ...openClarification,
+        createdAt: new Date(0),
+        reviewSessionId: null,
+      },
+    });
+    (h.clarifications as Any).find = jest.fn(async () => [
+      {
+        id: "cl-1",
+        assignmentId: "as-1",
+        round: 1,
+        createdAt: new Date(0),
+        reviewSessionId: null,
+      },
+    ]);
+    await (h.service as Any).sweepStuckClarifications();
+
+    const logged = (h.auditService.log as jest.Mock).mock.calls
+      .map((c: Any[]) => c[0])
+      .filter((p: Any) => p.action === "sop.clarification.escalated");
+    expect(logged).toHaveLength(1);
+    expect(deepLinkSopId(logged[0].detail)).toBe("sop-1");
+  });
+
+  it("补 sopId 不为审计多打一次库（复用作用域内的 assignment 行）", async () => {
+    const h = harness({
+      clarification: { ...openClarification },
+      assignment: { status: "blocked" },
+    });
+    await h.service.replyClarification({
+      clarificationId: "cl-1",
+      resolution: "answered",
+      answer: "a",
+      replyBy: "user:7",
+      audit: AUDIT,
+    });
+    expect(h.assignments.findOne).toHaveBeenCalledTimes(1);
+
+    const h2 = harness();
+    await h2.service.completeAssignment({
+      assignmentId: "as-1",
+      executorId: "exec-1",
+      status: "failed",
+      attempt: 1,
+      audit: { ip: "1.1.1.1" },
+    });
+    expect(h2.assignments.findOne).toHaveBeenCalledTimes(1);
+    // 交付回报完全不需要读澄清表——sopId 是 assignment 行自带的列
+    expect(h2.clarifications.findOne).not.toHaveBeenCalled();
+  });
+
+  it("带上 sopId 之后 detail 仍然不含正文（R41-A1 的硬约束不破）", async () => {
+    const QUESTION = "R70-QUESTION-BODY";
+    const ANSWER = "R70-ANSWER-BODY";
+    const RESULT = "R70-RESULT-BODY";
+    const payloads: Any[] = [];
+
+    const h1 = harness();
+    await h1.service.ingestClarification({
+      assignmentId: "as-1",
+      executorId: "exec-1",
+      question: QUESTION,
+      audit: { ip: "1.1.1.1" },
+    });
+    payloads.push(h1.auditService.log.mock.calls[0][0]);
+
+    const h2 = harness({
+      clarification: { ...openClarification },
+      assignment: { status: "blocked" },
+    });
+    await h2.service.replyClarification({
+      clarificationId: "cl-1",
+      resolution: "answered",
+      answer: ANSWER,
+      replyBy: "user:7",
+      audit: AUDIT,
+    });
+    payloads.push(h2.auditService.log.mock.calls[0][0]);
+
+    const h3 = harness();
+    await h3.service.completeAssignment({
+      assignmentId: "as-1",
+      executorId: "exec-1",
+      status: "failed",
+      result: { note: RESULT },
+      attempt: 1,
+      audit: { ip: "1.1.1.1" },
+    });
+    payloads.push(h3.auditService.log.mock.calls[0][0]);
+
+    const serialized = JSON.stringify(payloads);
+    for (const secret of [QUESTION, ANSWER, RESULT]) {
+      expect(serialized).not.toContain(secret);
+    }
+    // 仍是「只记长度」
+    expect(payloads[0].detail.questionLength).toBe(QUESTION.length);
+    expect(payloads[1].detail.answerLength).toBe(ANSWER.length);
+    expect(payloads[2].detail.resultLength).toBeGreaterThan(0);
+    // 且 sopId 只是 id：答复行的 detail 键集合被钉死，免得日后有人顺手
+    // 把 slug / body / 题目正文加进来。
+    expect(Object.keys(payloads[1].detail).sort()).toEqual(
+      [
+        "actor",
+        "answerLength",
+        "assignmentId",
+        "newSopVersion",
+        "resolution",
+        "round",
+        "sopId",
+      ].sort(),
+    );
   });
 });
 

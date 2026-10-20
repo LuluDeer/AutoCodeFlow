@@ -833,6 +833,7 @@ export class SopService {
         await this.auditClarificationIngested({
           audit: input.audit,
           clarificationId: saved.id,
+          sopId: a.sopId,
           assignmentId: a.id,
           round: saved.round,
           escalated: true,
@@ -929,6 +930,7 @@ export class SopService {
     await this.auditClarificationIngested({
       audit: input.audit,
       clarificationId: saved.id,
+      sopId: a.sopId,
       assignmentId: a.id,
       round,
       escalated: false,
@@ -1118,6 +1120,10 @@ export class SopService {
       resource: "sop_clarification",
       resourceId: row.id,
       detail: {
+        // R70-A1：澄清行本身不是 SOP 行，审计页深链要的是 SOP id（R65 的
+        // `sop_clarification` 分支读 detail.sopId）。assignment 已在上面读出来，
+        // 复用 a.sopId——零额外查库。
+        sopId: a.sopId,
         assignmentId: a.id,
         round: row.round,
         resolution: answeredBy,
@@ -1271,6 +1277,8 @@ export class SopService {
       resource: "sop_assignment",
       resourceId: a.id,
       detail: {
+        // R70-A1：同 sop.reply——深链需要 sopId，assignment 行（a）已在作用域内。
+        sopId: a.sopId,
         status: input.status,
         attempt,
         resultLength: input.result ? JSON.stringify(input.result).length : 0,
@@ -1455,6 +1463,9 @@ export class SopService {
         resource: "sop_clarification",
         resourceId: row.id,
         detail: {
+          // R70-A1：与 sop.reply / sop.clarify 同一类——resource=sop_clarification，
+          // 审计页深链读 detail.sopId（a 已在上面读出，零额外查库）。
+          sopId: a.sopId,
           assignmentId: row.assignmentId,
           round: row.round,
           from: null,
@@ -1853,6 +1864,8 @@ export class SopService {
   private async auditClarificationIngested(input: {
     audit?: SopAuditContext;
     clarificationId: string;
+    /** R70-A1：所属 SOP id（两个调用点的 `a` 都有，零额外查库），供审计页深链。 */
+    sopId: string;
     assignmentId: string;
     round: number;
     escalated: boolean;
@@ -1869,6 +1882,9 @@ export class SopService {
       resource: "sop_clarification",
       resourceId: input.clarificationId,
       detail: {
+        // R70-A1：`sop_clarification` 的 resourceId 是澄清行 id，审计页拿不到
+        // SOP 就无法深链；sopId 是指派行的外键，调用点已持有。
+        sopId: input.sopId,
         assignmentId: input.assignmentId,
         round: input.round,
         escalated: input.escalated,
