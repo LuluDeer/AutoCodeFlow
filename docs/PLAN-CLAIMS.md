@@ -1506,3 +1506,32 @@ UPDATE tasks SET lastTriggerTime = now()
 
 **顺带**：`claimDependencyTrigger` 的注释里早就写了「副作用 2：依赖触发会推进 lastTriggerTime，使 misfire 缺口从
 最近一次依赖触发起算——方向安全」。这正是我 R130 推了半天的那个结论 —— **它一直在代码里写着，只是没人读**。
+- 2026-10-20 **R135 · 发现四个 Python 库**存在但从未接线**（无提交）**。审计 `packages/autocodeflow-{ai,http,notify,db}` 时的第一个发现不是代码缺陷，而是**它们的处境**：
+
+| 事实 | 证据 |
+|---|---|
+| 四个包都有源码 + 测试 + pyproject + CHANGELOG + README | `packages/autocodeflow-*/{<mod>/*.py, tests/, pyproject.toml}` |
+| **版本冻结在 0.2.3** | 四个 `pyproject.toml` 与 `__init__.py` 一致（无漂移），但平台其余包已在 **1.12.1** |
+| **不在 `release.yml` 的 version-guard 里** | 守卫只列 node-sdk / acf-cli / mcp-server / autoflow-sdk |
+| **不在任何 publish 矩阵里** | npm publish 3 个；`publish-pypi` 只 `working-directory: packages/autoflow-sdk` |
+| **仓内无消费者** | 全仓 grep 这四包名，命中只有它们自己的源码/测试/README —— `admin-api` 里那两处是**注释**（描述「与之同语义」），不是 import |
+| **现行文档里没有它们** | 只出现在 `docs/archive/**`（审计与进度归档） |
+
+**它们是什么**：`ai-analysis.service.ts:18` 的注释给了答案 —— 「packages/autocodeflow-ai 同语义能力的 TS 消费面」。
+即它们是**给用户任务代码用的库**（任务脚本里 `import autocodeflow_ai` 就能用同语义的 AI 分析 / HTTP / 通知 / DB 助手）。
+
+**问题**：如果它们是给用户用的，那**用户装不到** —— 没发布；如果不是给用户用的，那**没人用** —— 仓内零消费者。
+两条都成立不了，它们就只是一直在被测试维护的死重。
+
+**这不是我该单方面决定的事**（删四个包 / 或把它们接进发布线，都会改变对外承诺）。两个选项：
+
+| 选 | 代价 | 收益 |
+|---|---|---|
+| **接进发布线** | 写 PyPI 发布矩阵 + 补文档 + 版本线归位（并入 1.12.x 或明确独立线） | 承诺兑现：任务代码里真的能 `pip install autocodeflow-ai` |
+| **删掉** | 删 4 个包及其测试 | 少 ~1100 行无人调用的维护面；`autocodeflow-http` 里那个 `ApiHttpStatusError` 是四包中唯一的自定义异常，也一并消失 |
+
+**无论选哪个，先加一道守卫**：让「有 pyproject 但不在发布矩阵」这种状态**不能安静地存在**。
+（这与本 session 反复修的那族同型：**文件存在 ≠ 在链路里**。）
+
+**顺带**：这四包的公开面里，只有 `autocodeflow-http` 导出了一个可捕获的异常类型（`ApiHttpStatusError`），
+其余三个的调用方只能 catch 内建/第三方异常 —— 这件事在「它们是否该存在」定下来之后再谈才有意义。
