@@ -2601,3 +2601,30 @@ def _parse_retry_after(raw): ...      # delta-seconds 或 HTTP-date
   **★ 更正执行者的一条遗留**：它把「CI/文档用 `vitest run` 跑 jest ⇒ 必然全红」列为遗留 7 —— 我核了 `ci.yml:637` 是 `npm test -- --coverage`（= jest），**CI 没问题**；那条 vitest 命令的出处是**我自己的任务书**（`R181` 已记）。
   **遗留（需决策）**：配置错语义两包相反（`from_env` 不抛 / `fromEnv` 抛）/ Python 缺异步回调客户端 / **Node 回调重试最坏 ≈130s vs PY ≈41s**（临近 `timeoutSeconds` 可能被杀反而丢终态）/ `isNetworkLevelError` 可能漏 `EPIPE`（未实测）/ 熔断能力不对等。
   **如实标注**：幂等性来自读 admin 源码，未真起 admin-api 发重复回调；Retry-After/429 全 mock 验证。
+- 2026-10-20 **R193 · 独立发现：`acf apikey revoke` 是全 CLI 唯一**没有确认**的破坏性命令**。
+
+先夸一下这套设计：`confirmDestructive(question, { yes })`（`ui.ts:176-204`）做得很好 ——
+`--yes` 直通；**非 TTY 且没有 `--yes` 时 `emitUsageError` 直接拒（不是静默执行）**；接住 SIGINT 走 130；默认 `[y/N]` 只认 `y|yes`。
+这正是 CI/agent 场景需要的 **fail-closed**。
+
+然后我按文件数了「破坏性子命令数 vs `confirmDestructive` 调用数」：
+
+| 文件 | 破坏性子命令 | confirmDestructive |
+|---|---|---|
+| `tasks.ts` | 3 | 3 ✅ |
+| `apps.ts` | 1 | 3 ✅ |
+| `mutex.ts` | 1 | 3 ✅ |
+| `deploy.ts` | 1 | 2 ✅ |
+| `executors.ts` | 1 | 2 ✅ |
+| **`apikeys.ts`** | **1** | **0** ❌ |
+
+那一条是 `acf apikey revoke <id>`，它的 description 自己写着：
+
+> Revoke an API key (soft-delete — takes effect on its next request, **cannot be undone**)
+
+⇒ **不可撤销、立即生效、零确认**。一次手滑或一个错误的 id 就把生产集成打断，而且没有 `--yes` 也没有回滚。
+
+**这是今天第 N 次「同一修法只落一半」**：五个文件都接了统一确认，第六个漏了 —— 而漏的那个恰好是
+**唯一一个 description 里明写 cannot be undone 的**。
+
+（agent 正在审 `acf-cli`，可能也会发现；我不动手以免冲突，验收时若它没报，我自己补。）
