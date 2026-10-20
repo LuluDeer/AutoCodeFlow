@@ -2514,3 +2514,28 @@ http-client.ts (HEAD)  exports class          = 1
 因为它**在自己的模块里是可见的**。只有从包外用**包名**去导入才会失败，而仓内没有人那样写过测试。
 
 这解释了一个常见现象：**单仓内的测试全绿，用户第一次 `import` 就崩**。
+- 2026-10-20 **R188 · agent 顺手抓到的一条：终态回调 URL 判定是**前缀匹配**，比它该有的宽**。
+
+改前（`HEAD`）：
+
+```ts
+export function isTerminalCallbackUrl(url, method) {
+  return method.toUpperCase() === 'POST' &&
+         /^\/api\/executions\/callback(?:\/|\?|$)/.test(url);
+}
+```
+
+这条正则允许 `callback` 后面跟**任意路径段**：`/api/executions/callback/anything` 也算「终态回调」。
+而它的语义是「**唯一豁免重试的非幂等通道**」—— 豁免理由很强：admin 侧对该通道有自己的重试与服务端语义。
+
+⇒ 后果是**策略越界**而非数据损坏：任何以 `/api/executions/callback/` 开头的 POST 都会拿到回调的豁免语义
+（不进重试、熔断记账不同），而它其实是一条普通的业务 POST。
+
+**判定为「前缀匹配冒充精确匹配」**，与本 session 反复出现的形状同族：
+`R119` 的门禁正则数到注释/邻居、`R134-A1` 的 `?key=` 漏判、`R164-A1` 的 marker 缺失 ——
+**共同点都是「判据覆盖的范围，比它声称的范围宽或窄」**。
+
+它的修法正确：改成 `^/api/executions/callback/?$`，**并对 URL 做归一化**（否则 `callback?x=1` 会失配 ——
+那会把一条**真正的**终态回调判成普通 POST，方向反过来也错）。
+
+**这条我核了原实现，确认成立**；具体归一化细节留给它交付时看代码。
