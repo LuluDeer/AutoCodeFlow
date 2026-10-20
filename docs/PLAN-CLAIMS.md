@@ -2539,3 +2539,29 @@ export function isTerminalCallbackUrl(url, method) {
 那会把一条**真正的**终态回调判成普通 POST，方向反过来也错）。
 
 **这条我核了原实现，确认成立**；具体归一化细节留给它交付时看代码。
+- 2026-10-20 **R189 · 独立确认「同一条 URL 判定被两个谓词各写一遍，两个都错」**。
+
+`R188` 我记的是 `isTerminalCallbackUrl`（前缀匹配过宽）。读文档时发现它的注释提到**第二个谓词**，去看了：
+
+```ts
+private withExecutorAddress(url, data) {
+  if (!/\/executions\/callback\/?$/.test(requestPath(url))) return data;   // ← 现在已归一化
+...
+}
+```
+
+改前它是直接对**调用方传进来的 url** 套正则，于是 `POST /api/executions/callback?batch=2` **静默失配**，
+**`executorAddress` / `deviceFingerprint` 盖章被跳过** ⇒ admin 侧那一行无法归属到执行器（N27 失效）。
+
+**同一个正则语义、两个调用点、两种后果**：
+
+| 谓词 | 带查询串时的后果 |
+|---|---|
+| `isTerminalCallbackUrl` | 重试豁免失效 ⇒ 终态回调退回「单发即抛」，**一次抖动就丢终态** |
+| `withExecutorAddress` | 盖章失效 ⇒ **行归属丢失**（数据面） |
+
+而两个谓词原本各写了一遍「是不是回调端点」的判据 —— **又是「同一条规则多份实现」**，
+这次的两份都在**同一个文件**里，相隔 500 行。
+
+**它现在用同一个 `requestPath()` 归一化两者**，并且注释里写清了「两种完全合法的写法静默失配」——
+**这比只修其中一个更有价值**，因为第三个谓词将来会照抄 `requestPath`，而不是再写一个裸正则。
