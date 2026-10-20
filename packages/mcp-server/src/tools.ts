@@ -133,6 +133,65 @@ export function withStructuredToolErrors(server: McpServer): McpServer {
  */
 const UUID_PATH_ID = z.string().uuid();
 
+/**
+ * R107-A1（MCP 输入面审计）：**枚举型入参的入站白名单**。
+ *
+ * 这些字段此前是裸 `z.string()` + 只把枚举写进描述里 —— 值域实际只有后端
+ * DTO 的 @IsEnum 把关。agent 的入参来自 LLM，大小写/拼写漂移（"Active"、
+ * "running "、"both"）是常态：旧形状下它要先跑一趟网络才吃 400，而 NestJS 的
+ * 400 文案只有 "status must be a valid enum value"，**不告诉调用方合法值**。
+ * 收窄后非法值在 MCP SDK 的入站校验层即被拒，zod 的报错自带完整值域
+ * （"Invalid enum value. Expected 'active' | 'paused' | 'deleted'"），
+ * 同时与 get_execution_logs.level / deploy_application.runMode 的既有做法一致。
+ *
+ * 值域出处（逐字对齐，不增不减——收窄越过 @IsEnum 会拒掉后端合法值）：
+ *  - TaskStatus       apps/admin-api/src/modules/task/entities/task.entity.ts:14
+ *  - ExecutionStatus  .../task/entities/task-execution.entity.ts:13
+ *  - TaskTriggerType  .../task/entities/task.entity.ts:84
+ *  - TaskRuntime      .../task/entities/task.entity.ts:90
+ *  - ExecuteMode      .../task/entities/task.entity.ts:76
+ *  - AGENT_SESSION_*  .../agent/entities/agent-session.entity.ts:31,54
+ * 校验侧：list-tasks-query.dto.ts:120/135/143；create-task.dto.ts:71/72/114/269
+ * （UpdateTaskDto = PartialType(CreateTaskDto)，继承同一批 @IsEnum）。
+ *
+ * 刻意**不**收紧的两处（收紧即造缺陷）：
+ *  - `sop_list.status`：后端是裸 `@Query("status") status?: string`
+ *    （apps/admin-api/src/modules/sop/sop.controller.ts:224），没有枚举可对齐；
+ *  - `update_application.status`：PUT 透传语义已由 tools.test.ts 钉死
+ *    （"INACTIVE" 原样转发）。
+ */
+const TASK_STATUS = z.enum(["active", "paused", "deleted"]);
+const EXECUTION_STATUS = z.enum([
+  "pending",
+  "running",
+  "waiting",
+  "success",
+  "failed",
+  "timeout",
+  "killed",
+  "cancelled",
+]);
+const TASK_TRIGGER_TYPE = z.enum(["cron", "fixed_rate", "api", "manual"]);
+const TASK_RUNTIME = z.enum(["python", "node", "shell"]);
+const EXECUTE_MODE = z.enum(["single", "broadcast"]);
+const AGENT_SESSION_KIND = z.enum([
+  "ops_watch",
+  "incident",
+  "sop_authoring",
+  "sop_review",
+  "app_scaffold",
+  "chat",
+]);
+const AGENT_SESSION_STATUS = z.enum([
+  "pending",
+  "running",
+  "waiting_input",
+  "succeeded",
+  "failed",
+  "aborted",
+  "budget_exceeded",
+]);
+
 // ---------------------------------------------------------------------------
 // Task templates (CORE-03: list_task_templates / create_task_from_template)
 // ---------------------------------------------------------------------------
@@ -167,10 +226,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .max(100)
         .default(20)
         .describe("Items per page (default 20)"),
-      status: z
-        .string()
-        .optional()
-        .describe("Filter by task status: active | paused"),
+      status: TASK_STATUS.optional().describe(
+        "Filter by task status: active | paused | deleted (deleted = soft-deleted rows)",
+      ),
       name: z
         .string()
         .optional()
@@ -212,7 +270,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       params: z
         .record(z.string(), z.unknown())
         .optional()
-        .describe("Optional runtime parameters to pass to the task"),
+        .describe(
+          "Optional runtime parameters to pass to the task. Merged as a WHOLE override, not per-key: an empty object ({}) is treated as 'no override' (= use the task's configured default params), never as 'run with zero params'",
+        ),
       // NOTE: no executorId parameter here — TriggerTaskDto only accepts
       // `params`, and the backend's global ValidationPipe runs with
       // forbidNonWhitelisted, so a per-trigger pin would be rejected with 400.
@@ -221,9 +281,19 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       // tool), not a per-run override.
     }, { destructiveHint: false },
     async ({ taskId, params }) => {
-      const data = await call<unknown>("POST", `/tasks/${taskId}/trigger`, {
-        ...(params ? { params } : {}),
-      });
+      // R107-A1: 空对象 ≠ 覆盖。后端是
+      // `const effectiveParams = dto.params ?? task.params`
+      // （apps/admin-api/src/modules/task/task.service.ts:2730）——`{}` 不是
+      // nullish，所以 `params: {}` 会把任务的默认参数**整组清空**。agent 说
+      // 「不加参数直接跑一次」时最容易发 `{}`，而响应仍是成功，于是它就在
+      // 「参数被清空」的假数据上继续动作（真实执行的输入与它以为的不一致）。
+      // 契约：空对象按「无覆盖」处理（省略 body 才等价于任务默认参数）。
+      const hasParams = params !== undefined && Object.keys(params).length > 0;
+      const data = await call<unknown>(
+        "POST",
+        `/tasks/${taskId}/trigger`,
+        hasParams ? { params } : {},
+      );
       return JSON_CONTENT(data);
     },
   );
@@ -236,11 +306,12 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       taskId: UUID_PATH_ID.describe("Task ID to update"),
       name: z.string().optional().describe("New task name"),
       description: z.string().optional().describe("New task description"),
-      status: z.string().optional().describe("Task status: active | paused"),
-      triggerType: z
-        .string()
-        .optional()
-        .describe("Trigger type: cron | fixed_rate | api | manual"),
+      status: TASK_STATUS.optional().describe(
+        "Task status: active | paused | deleted",
+      ),
+      triggerType: TASK_TRIGGER_TYPE.optional().describe(
+        "Trigger type: cron | fixed_rate | api | manual",
+      ),
       cronExpression: z
         .string()
         .optional()
@@ -255,10 +326,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .min(1)
         .optional()
         .describe("Fixed interval in seconds for fixed_rate triggers"),
-      runtime: z
-        .string()
-        .optional()
-        .describe("Runtime type: node | python | shell (backend enum — other values are rejected with 400)"),
+      runtime: TASK_RUNTIME.optional().describe(
+        "Runtime type: python | node | shell (backend enum — other values are rejected with 400)",
+      ),
       entrypoint: z
         .string()
         .optional()
@@ -278,12 +348,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .max(10)
         .optional()
         .describe("Max retry attempts (0-10)"),
-      executeMode: z
-        .string()
-        .optional()
-        .describe(
-          "Dispatch mode: single | broadcast. broadcast fans out to all online executors and cannot be combined with executorId.",
-        ),
+      executeMode: EXECUTE_MODE.optional().describe(
+        "Dispatch mode: single | broadcast. broadcast fans out to all online executors and cannot be combined with executorId.",
+      ),
       executorId: z
         .string()
         .nullable()
@@ -377,12 +444,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "List recent task executions (newest first). Optionally filter by taskId and status.",
     {
       taskId: UUID_PATH_ID.optional().describe("Filter by task ID"),
-      status: z
-        .string()
-        .optional()
-        .describe(
-          "Filter by status: pending | running | waiting | success | failed | timeout | killed | cancelled",
-        ),
+      status: EXECUTION_STATUS.optional().describe(
+        "Filter by status: pending | running | waiting | success | failed | timeout | killed | cancelled",
+      ),
       page: z
         .number()
         .int()
@@ -575,12 +639,18 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .record(z.string(), z.unknown())
         .optional()
         .describe(
-          "Override the replayed runtime parameters (when absent, the original execution's params are reused; if it had none, the task's current defaults apply)",
+          "Override the replayed runtime parameters (when absent — or when an empty object — the original execution's params are reused; if it had none, the task's current defaults apply)",
         ),
     }, { destructiveHint: false },
     async ({ taskId, executionId, params }) => {
       let body: Record<string, unknown> = {};
-      if (params) {
+      // R107-A1: 与 trigger_task 同一口径——`params: {}` 是「不加覆盖」，
+      // 不是「用空参数重跑」。后者会同时丢掉原执行的参数**和**任务默认参数
+      // （后端 task.service.ts:2730），而响应仍是成功。
+      // 注意：原执行行上真实存在的 `params: {}` 仍被逐字回放（faithful
+      // replay）——它记录的正是「当时确实以空参数运行」，语义不同。
+      const hasParams = params !== undefined && Object.keys(params).length > 0;
+      if (hasParams) {
         body = { params };
       } else {
         const prev = await call<{ params?: Record<string, unknown> | null }>(
@@ -1888,18 +1958,12 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
     "agent_session_list",
     "ADMIN only. List agent sessions (ops_watch / incident / sop_authoring / sop_review / app_scaffold / chat runs) newest first. Sessions in waiting_input are paused waiting on a human decision (approval or SOP clarification) — use agent_session_get for their reasoning steps and tool calls.",
     {
-      kind: z
-        .string()
-        .optional()
-        .describe(
-          "Filter by kind: ops_watch | incident | sop_authoring | sop_review | app_scaffold | chat",
-        ),
-      status: z
-        .string()
-        .optional()
-        .describe(
-          "Filter by status: pending | running | waiting_input | succeeded | failed | aborted | budget_exceeded",
-        ),
+      kind: AGENT_SESSION_KIND.optional().describe(
+        "Filter by kind: ops_watch | incident | sop_authoring | sop_review | app_scaffold | chat",
+      ),
+      status: AGENT_SESSION_STATUS.optional().describe(
+        "Filter by status: pending | running | waiting_input | succeeded | failed | aborted | budget_exceeded",
+      ),
       page: z
         .number()
         .int()

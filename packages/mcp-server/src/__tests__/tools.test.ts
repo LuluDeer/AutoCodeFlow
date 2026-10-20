@@ -2024,3 +2024,131 @@ describe("R33-B1: index.ts 的每个工具族都注册在结构化错误包装�
     expect(offenders).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R107-A1（MCP 输入面审计）：agent 传参天然来自 LLM —— 值域必须在**入站**
+// 拦住，而不是跑一趟网络拿 NestJS 的 400。值域逐字对齐后端 DTO：
+//   - TaskStatus        apps/admin-api/src/modules/task/entities/task.entity.ts:14
+//   - ExecutionStatus   .../task/entities/task-execution.entity.ts:13
+//   - TaskTriggerType   .../task/entities/task.entity.ts:84
+//   - TaskRuntime       .../task/entities/task.entity.ts:90
+//   - ExecuteMode       .../task/entities/task.entity.ts:76
+//   - AGENT_SESSION_*   .../agent/entities/agent-session.entity.ts:31,54
+// 校验侧出处：list-tasks-query.dto.ts:120/135/143 + create-task.dto.ts:71/72/114/269
+// （UpdateTaskDto = PartialType(CreateTaskDto)，继承同一批 @IsEnum）。
+//
+// 反例（**不要**收紧的）：sop_list.status 在后端是裸 @Query("status") string
+// （sop.controller.ts:224）——收紧反而会拒掉后端接受的值。
+// ---------------------------------------------------------------------------
+describe("R107-A1: 枚举型过滤/更新字段在入站即拒（对齐后端 @IsEnum）", () => {
+  type EnumLike = {
+    parse: (v: unknown) => unknown;
+    safeParse: (v: unknown) => { success: boolean };
+  };
+  const enumField = (tool: string, field: string): EnumLike =>
+    (tools.get(tool)!.schema as Record<string, EnumLike>)[field];
+
+  /** 值域表：每个 [tool, field, 合法值全量] 三元组。 */
+  const enums: Array<[string, string, readonly string[]]> = [
+    ["list_tasks", "status", ["active", "paused", "deleted"]],
+    ["list_executions", "status", [
+      "pending", "running", "waiting", "success",
+      "failed", "timeout", "killed", "cancelled",
+    ]],
+    ["update_task", "status", ["active", "paused", "deleted"]],
+    ["update_task", "triggerType", ["cron", "fixed_rate", "api", "manual"]],
+    ["update_task", "runtime", ["python", "node", "shell"]],
+    ["update_task", "executeMode", ["single", "broadcast"]],
+    ["agent_session_list", "kind", [
+      "ops_watch", "incident", "sop_authoring", "sop_review", "app_scaffold", "chat",
+    ]],
+    ["agent_session_list", "status", [
+      "pending", "running", "waiting_input", "succeeded",
+      "failed", "aborted", "budget_exceeded",
+    ]],
+  ];
+
+  it("不丢任何后端合法值（收紧不得越过 @IsEnum 值域）", () => {
+    for (const [tool, field, values] of enums) {
+      for (const v of values) {
+        expect(
+          enumField(tool, field).safeParse(v).success,
+          `${tool}.${field} 应接受合法值 ${v}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("大小写漂移 / 拼写漂移 / 空串在入站被拒（不到网络层）", () => {
+    const drift = ["Active", "ACTIVE", "running", "", "active ", "queued", "both"];
+    for (const [tool, field, values] of enums) {
+      const illegal = drift.filter((d) => !values.includes(d));
+      expect(illegal.length, `${tool}.${field} 需要至少一个非法样值`).toBeGreaterThan(0);
+      for (const bad of illegal) {
+        expect(
+          enumField(tool, field).safeParse(bad).success,
+          `${tool}.${field} 应拒绝 ${JSON.stringify(bad)}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("可选枚举仍然接受 undefined（省略 = 不过滤）", () => {
+    for (const [tool, field] of enums) {
+      expect(
+        enumField(tool, field).safeParse(undefined).success,
+        `${tool}.${field} 应接受 undefined`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R107-A1（工具语义陷阱）：空 params 对象 ≠ 「覆盖成空」
+//
+// 后端 task.service.ts:2730 `const effectiveParams = dto.params ?? task.params`
+// —— `{}` 不是 nullish，所以传 `params: {}` 会把任务的默认参数**整组丢掉**。
+// agent 说「不加参数重跑一次」时最容易发出 `{}`，而响应是成功，
+// 于是它在"参数被清空"的假数据上继续动作。契约：空对象 = 无覆盖。
+// ---------------------------------------------------------------------------
+describe("R107-A1: 空 params 对象视为「无覆盖」（不得清空任务默认参数）", () => {
+  it("trigger_task 对 params:{} 不带 body（= 用任务默认 params）", async () => {
+    await tools.get("trigger_task")!.handler({ taskId: "t1", params: {} });
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/trigger", {});
+  });
+
+  it("trigger_task 对非空 params 仍然原样覆盖（不回归）", async () => {
+    await tools.get("trigger_task")!.handler({ taskId: "t1", params: { a: 1 } });
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/trigger", {
+      params: { a: 1 },
+    });
+  });
+
+  it("retry_execution 对 params:{} 仍回放原执行参数", async () => {
+    call.mockResolvedValueOnce({
+      id: "e1",
+      taskId: "t1",
+      status: "failed",
+      params: { url: "http://x" },
+    });
+    call.mockResolvedValueOnce({ id: "e9", status: "pending" });
+    await tools
+      .get("retry_execution")!
+      .handler({ taskId: "t1", executionId: "e1", params: {} });
+    expect(call).toHaveBeenNthCalledWith(1, "GET", "/tasks/executions/e1");
+    expect(call).toHaveBeenNthCalledWith(2, "POST", "/tasks/t1/trigger", {
+      params: { url: "http://x" },
+    });
+  });
+
+  it("retry_execution 对非空 params 仍然跳过 GET 直接覆盖（不回归）", async () => {
+    call.mockResolvedValueOnce({ id: "e10", status: "pending" });
+    await tools
+      .get("retry_execution")!
+      .handler({ taskId: "t1", executionId: "e2", params: { a: 1 } });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/trigger", {
+      params: { a: 1 },
+    });
+  });
+});
