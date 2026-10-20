@@ -74,6 +74,8 @@ import log, { applyLogLevel } from './logger';
 import { createGuardedIpcMain } from './ipc-sender-guard';
 // R89：连接失败文案归一（只回错误码，不回显解析后的地址）。
 import { describeConnectionError } from './network-util';
+// R105：破坏性通道的主进程二次确认（渲染层的 ConfirmBar 拦不住注入脚本）。
+import { CONFIRM_CANCELED, confirmDestructive } from './destructive-actions';
 // SEC-IPC-TYPE（R86-A1 轴 1）：config:check-port 的参数闸 + 探测实现（纯 Node）。
 import { checkPortAvailable } from './port-check';
 // sender 白名单的 file: 锚点必须与 loadFile 的入口页同源（window-manager 唯一真值源）。
@@ -100,6 +102,31 @@ import { resolveRendererIndex } from './window-manager';
  * 的可能**——想绕过必须显式再 import 一个 electron 的 ipcMain，TS 会因重复
  * 声明直接报错，selftest 的源码锚点也会变红。
  */
+/**
+ * R105：原生模态确认的适配器。modal 到发起窗口，渲染层无法自证「用户已同意」。
+ * 窗口取不到时仍弹（无父窗口），但绝不静默放行。
+ */
+async function confirmViaNativeDialog(policy: {
+  label: string;
+  detail: string;
+}): Promise<boolean> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const options = {
+    type: 'warning' as const,
+    buttons: ['取消', '继续'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: policy.label,
+    message: `确定要${policy.label}吗？`,
+    detail: policy.detail,
+  };
+  const result = win
+    ? await dialog.showMessageBox(win, options)
+    : await dialog.showMessageBox(options);
+  return result.response === 1;
+}
+
 const ipcMain = createGuardedIpcMain(electronIpcMain, {
   // 每次调用重新取策略：dev/packaged 切换、窗口重建后仍然正确。
   policy: () => ({
@@ -879,7 +906,11 @@ export function registerIpcHandlers(): void {
 
   // 用户确认升级：下载完成后退出并安装（AppImage/deb 均由 electron-updater
   // 按 resources/package-type 分派对应安装器）
-  ipcMain.handle('updater:install', () => {
+  ipcMain.handle('updater:install', async () => {
+    // R105：安装更新会退出应用并中断在跑的任务 —— 必须主进程自己再问一次。
+    if (!(await confirmDestructive('updater:install', confirmViaNativeDialog))) {
+      return CONFIRM_CANCELED;
+    }
     quitAndInstall();
     return { ok: true };
   });
@@ -939,7 +970,11 @@ export function registerIpcHandlers(): void {
   // 已删除；需要该功能时连同 preload 通道与 UI 一起加回（git 历史可找回实现，
   // readFile 的路径遍历守卫需一并恢复）。
 
-  ipcMain.handle('history:clear', () => {
+  ipcMain.handle('history:clear', async () => {
+    // R105：删除本机历史条目，不可撤销。
+    if (!(await confirmDestructive('history:clear', confirmViaNativeDialog))) {
+      return CONFIRM_CANCELED;
+    }
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return { ok: false };
     const metaDir = path.join(workDir, 'meta');
@@ -1172,6 +1207,10 @@ export function registerIpcHandlers(): void {
 
   // 卸载整个应用（用户报障：无法撤销部署(删除)）
   ipcMain.handle('apps:uninstall', async (_event, appId: string) => {
+    // R105：删除本地发布目录与运行配置，不可撤销。
+    if (!(await confirmDestructive('apps:uninstall', confirmViaNativeDialog))) {
+      return CONFIRM_CANCELED;
+    }
     const workDir = configStore.get('workDir') as string | undefined;
     const outcome = await uninstallApp({
       workDir,
@@ -1193,6 +1232,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     'apps:delete-release',
     async (_event, appId: string, releaseKey: string, deploymentId: string) => {
+      // R105：从磁盘删除发布产物，不可撤销。
+      if (!(await confirmDestructive('apps:delete-release', confirmViaNativeDialog))) {
+        return CONFIRM_CANCELED;
+      }
       const workDir = configStore.get('workDir') as string | undefined;
       const resolved = resolveReleaseDir(workDir, appId, releaseKey);
       if (!resolved.ok) {
