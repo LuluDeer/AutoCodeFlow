@@ -1036,3 +1036,14 @@
   **另核查两条「以为有问题、实际已被前人做好」的**：① `acf-cli` 的配置/凭据文件已硬化到 `0o600`（`CONFIG_FILE_MODE` + `hardenConfigPermissions()` 修复路径，
   注释明确「Windows chmod 语义不支持时回落 mode-less store 并在平台允许时单独修复」）；② 桌面端 `assignment-journal.ts` 已是 `tmp + rename` 原子写。
   这两条说明 **「同族雷达列出的族」不等于「有缺陷」** —— 与 R80/R81 的结论一致：多数族被前人认真做过，真正缺的是**防止退化的机器**。
+- 2026-10-20 **R92 · 审计归属分析（为验收 R90-A1 做准备，无提交）**：`registry.pypi.upload` 这个 action **不是** `apps/registry-pypi`（python）写的，
+  而是 **admin-api 的 `registry.controller.ts::recordUploadAudit`** 写的（成功与失败都写，含 userId/username/ip，resourceId=`name==version`）。
+  三条事实决定了「独立 registry-pypi 该不该有 audit_logs 行」：① python 服务**没有 DB、也没有 admin-api 连接**；② 它的鉴权是
+  **单一共享凭据**（`REGISTRY_USER`/`REGISTRY_PASS` 来自 env），**没有 per-user 身份可记**；③ 但它确实在部署拓扑里（docker-compose `127.0.0.1:8003`，
+  执行器以 `PYPI_REGISTRY_URL` 作 `--index-url` 使用，无上游代理）。
+  因此正确形态是：**admin-api 侧可审计（已有）**，独立服务侧只能做到**结构化日志**（谁=共享账号、什么=`name==version`、来源 IP），
+  而不是往 audit_logs 写行。若 R90-A1 的「补审计」实现成调用 admin-api 或断言 audit 行，我会在验收时打回。
+- 2026-10-20 **R90-A1 进展**：基线 **126 passed**（并发现「从仓库根跑 pytest 会 ModuleNotFoundError: main」是既有问题，仅在 `cd apps/registry-pypi` 下成立）。
+  它先写红用例再改：新增 24 例 → **21 failed / 135 passed** 确认红，随后改 `main.py`（审计面 + filename 闸 + 下载面 meta 闸 + 失败清理空包目录）。
+  探查期已确认的行为：长文件名→500、Windows 下 `?` 文件名→500、`.sha256`/`.upload` 可下载、413 后留**幻影空包目录**、非 ASCII 凭据 401（无崩溃）、
+  name/version 与文件名不符仍 200。
