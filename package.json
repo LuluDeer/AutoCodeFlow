@@ -119,6 +119,8 @@
     "gen:error-i18n": "node scripts/gen-error-i18n.mjs",
     "check:error-i18n-drift": "node scripts/gen-error-i18n.mjs --check",
     "check:error-migration": "node scripts/check-error-migration.mjs",
+    "check:conditional-writes": "node scripts/check-conditional-writes.mjs --selftest && node scripts/check-conditional-writes.mjs",
+    "check:conditional-writes:report": "node scripts/check-conditional-writes.mjs --report",
     "check:error-migration:selftest": "node scripts/check-error-migration.mjs --selftest",
     "check:error-migration:report": "node scripts/check-error-migration.mjs --report",
     "demo:seed": "node scripts/demo-seed.mjs",

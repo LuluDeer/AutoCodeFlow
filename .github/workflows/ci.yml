@@ -875,6 +875,14 @@ jobs:
         run: |
           node scripts/check-error-migration.mjs --selftest
           node scripts/check-error-migration.mjs
+      # ADR-026 静态守卫：**状态写必须条件化**的「只减不增」棘轮。
+      # 这类缺陷在测试里永远绿（单线程无并发时「无条件写」与「条件写」行为相同），
+      # 只能靠静态判据 + 基线拦。判据刻意保守：只抓 `.update({ id }, …)` 这种
+      # where 顶层键只有 id 的形态；带 status/version/attempt 的自动通过。
+      - name: Conditional state-write guard (ADR-026)
+        run: |
+          node scripts/check-conditional-writes.mjs --selftest
+          node scripts/check-conditional-writes.mjs
       # API-I18N（用户决策「openapi/文档站 API 文档双语」）：**API 文档中英齐备**守卫。
       # openapi.json 是入库生成物，其 description/summary 只写中文（产品默认），
       # 英文走 `x-i18n-en` 扩展键，由 `scripts/api-i18n/inject-openapi-en.mjs`
