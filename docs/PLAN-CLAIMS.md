@@ -1047,3 +1047,17 @@
   它先写红用例再改：新增 24 例 → **21 failed / 135 passed** 确认红，随后改 `main.py`（审计面 + filename 闸 + 下载面 meta 闸 + 失败清理空包目录）。
   探查期已确认的行为：长文件名→500、Windows 下 `?` 文件名→500、`.sha256`/`.upload` 可下载、413 后留**幻影空包目录**、非 ASCII 凭据 401（无崩溃）、
   name/version 与文件名不符仍 200。
+- 2026-10-20 **★ R90-A1 done（commit b1cb9f65）**：**registry-pypi（私有 PyPI 上传面）安全审计** —— 第三个从没被系统看过的 app，**四处真缺口**：
+  ① **上传零痕迹**（最硬）：`main.py` 改动前**一条日志都没有**，而 `registry.pypi.upload` 只由 admin-api 代理写，**twine 默认直连 8003** ⇒ 完全不可追溯。
+     补 `audit.registry.pypi` JSON 行（成功/幂等/400/409/413/存储故障全路径 + 稳定 reason 码），不记口令与 Authorization、不记绝对路径、filename 截断 120；
+     **ip 取 TCP 对端，XFF 只作独立字段绝不回填**（防审计伪造）；另配 `_setup_audit_logging`（实测 uvicorn 下 root 无 handler 时 INFO 被 lastResort 吞掉）。
+  ② **别人上传中的 `.upload` 半成品能被下载**（跨请求数据泄露）+ `.sha256` sidecar 可读 ⇒ 下载面与索引面同判据过滤。
+  ③ **413 后留「幻影包」**：`pkg_dir` 在流式闸**之前** mkdir ⇒ 空目录永久留下并进索引（脏数据 + 枚举面）。
+  ④ **文件名闸**：300 字节 → 500、`bad?.whl`(Windows) → 500、`?`/`#`/`%` 破坏索引 href ⇒ 确定性跨平台判据（单分量/≤200 字节/拒控制字符与 `<>:"|?*\/%#`），统一 400。
+  验证 **126 → 156 passed**（+30 例），顺带修好**基线就有**的「仓库根跑 pytest 会 ModuleNotFoundError」（加 `tests/conftest.py`）。
+  执行者逐项反证 6/11/2/1 failed；**总控独立复验**：`audit_upload` 提前 return → **6 failed / 150 passed**，还原 156 passed。
+  遗留 5 条如实：name/version 与文件名不符仍 200（低危，硬闸会破 twine 兼容，建议在 admin-api 代理侧校验）/ chunked 上传需 nginx 兜底 / HEAD 405 / 单一共享凭据无 per-user / href 未 quote。
+  **验收要点**：上轮我预判「若它把审计实现成调用 admin-api 或断言 audit 行就打回」——它选了**结构化日志**这条路（与我 R92 的分析一致），故通过。
+- 2026-10-20 **R93 done（commit 7996e0fe）**：**给两道守卫补规模下界**。自查今天新守卫时发现两处**永真断言**：`check-audit-actions-doc` 正则失效 → 0 条 action → 「0 条缺失」变绿；
+  `gen-api-reference-appendix --check` 结构变 → 0 个路径 → 同样变绿。补 下界（action ≥50 现 64 / 路径 ≥100 现 195），低于下界判**扫描器失效**。
+  另自查确认其余新守卫已有该防线（`check-guards-wired` 的 `guards.length === 0`、`check-desktop-selftests-wired` 的 `files.length === 0`、`check-cli-doc` 在文档变形时是**红**的安全方向）。
