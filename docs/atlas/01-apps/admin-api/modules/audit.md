@@ -67,7 +67,7 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽 `action: "<域>.<动作>"`
 字面量生成并校验：**代码里新增一个 action 而文档没同步，守卫会红**（反向不校验——文档可以记录历史动作）。
 
-共 **61** 个 action / **15** 个域。
+共 **64** 个 action / **16** 个域。
 
 | 域 | action |
 |---|---|
@@ -75,6 +75,7 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 | `application` | `application.create` · `application.delete` · `application.deploy` · `application.remove.fanout` · `application.update` |
 | `artifact` | `artifact.download` |
 | `auth` | `auth.login` · `auth.logout` · `auth.session.revoke` · `auth.session.revoke_others` |
+| `config` | `config.create` · `config.delete` · `config.update` |
 | `deployment` | `deployment.approve` · `deployment.stop` |
 | `executor` | `executor.cleanup_skipped` · `executor.rotate_token` |
 | `member` | `member.grant` · `member.revoke` · `member.update` |

@@ -13,7 +13,20 @@
  *   ② 每个抽到的 action 必须出现在 audit.md 里；缺一个就失败并列出缺的；
  *   ③ **反向不校验**：文档可以保留历史动作（迁移/下线后仍值得记录），这不是漂移。
  *
- * 用法：node scripts/check-audit-actions-doc.mjs
+ * ## 已知盲区（**必须知道**）
+ *
+ * 判据是「源码里出现 `action: "<域>.<动作>"` 字面量」。所以**动态拼出来的 action 对本守卫隐形**：
+ * 例如 `action: isCreate ? "config.create" : "config.update"` —— 两个动作确实在写，但一条也扫不到，
+ * 文档表里也不会有它们，而守卫照样绿。
+ *
+ * 这类隐形在 R83 落地时真实发生过（config 的 create/update 起初就是三元拼的，守卫只看到 delete）。
+ * 处置：**审计调用处一律写 action 字面量**；需要分支就分成两个调用（复用同一份 detail 构造），
+ * 不要用三元/变量拼。透传包装（如 application.service 的 `action: payload.action`）不受影响，
+ * 因为它的**调用点**是字面量，守卫扫的是那些点。
+ *
+ * 为什么不做成「动态即报错」：`action: query.action` 这类**读取/查询**用法的形状与写入完全相同，
+ * 静态区分不了，硬判会产出大量假红。
+ * * 用法：node scripts/check-audit-actions-doc.mjs
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
