@@ -1754,3 +1754,22 @@ const syncTotpEnabled = (enabled: boolean) => {
 2. 「反证为什么要等」写进了本板，以免下一轮的我忘了当时为什么没验。
 
 **下一轮**：它交付后立刻做反证（回滚改回整条快照 → 并发用例应变红），然后一次性提交。
+- 2026-10-20 **R148 · 只读评估并发用例的鉴别力（等它全量跑完，不动文件）**：
+
+读 `task-toggle-concurrency.r138.test.tsx` 前 70 行就已能判断它有没有牙齿：
+
+```ts
+const rollbackA = optimisticallySetTaskStatus(client, 'a', 'paused');
+const rollbackB = optimisticallySetTaskStatus(client, 'b', 'paused');
+rollbackA();
+expect(items(client)[0].status).toBe('active');
+// B 的请求还在飞：它的乐观值必须存活（此前被 A 的整条快照抹成 active）
+```
+
+这段**直接编码了交错时序**，不是「两次 mutate 各自成功/失败」的伪并发。用旧的整条快照回滚时，
+`rollbackA()` 会把 B 也写成 `active` ⇒ 断言必红。**所以它有鉴别力，不是形式上的镜像。**
+
+它的文件头也自陈了反证方式（把回滚改回 `setQueryData(key, prev)` → 前两条用例变红）——
+**但那是它的声称，我仍要自己跑一遍**（今天已吃过一次「agent 说验证过、其实没落盘」的教训）。
+
+**当前**：机器上 14 个 node 进程在跑（vitest worker 启于 20:44:5x），它的全量套件正在进行 ⇒ 继续不动文件。
