@@ -622,8 +622,20 @@ export class ApplicationService implements OnModuleInit {
           env: this.mergeEnvPreservingMaskedEcho(app.env, dto.env),
         }
       : dto;
-    Object.assign(app, next);
-    const saved = await this.repo.save(app);
+    // R61（ADR-026 规则 4）：只写本次 PATCH **真正带来的列**，不整行回写。
+    //
+    // `app` 是上面 findByIdRaw 的快照；整行 save 会把快照里的 status / manifest /
+    // gitRepo 等一并写回。窗口内若有一次部署刚把 status 推到 DEPLOYING/RUNNING，
+    // 这次「改描述」就会把它按旧值盖回去——而 deployFromGit 的收尾谓词要求
+    // status=DEPLOYING，一旦被盖掉，那次部署就永远收不了尾（卡在 DEPLOYING）。
+    // 注：env 已在上面按「保留掩码位」合并（R1），仍走 patch 原样落库。
+    // adr-026-exempt: patch 只含 dto 显式带来的键（无顺手带回的旧值）；status 仅在调用方
+    // 显式给出时进 patch，故不加状态谓词（加了会让管理员显式设状态在并发部署时凭空失败）。
+    const patch = next as unknown as Record<string, unknown>;
+    if (Object.keys(patch).length > 0) {
+      await this.repo.update({ id }, patch);
+    }
+    const saved = { ...app, ...patch } as Application;
     // D3-B-P1-2: 更新落证（systemBypass=CI webhook 无操作人，userId 留空）。
     if (!opts?.systemBypass) {
       await this.writeAudit({

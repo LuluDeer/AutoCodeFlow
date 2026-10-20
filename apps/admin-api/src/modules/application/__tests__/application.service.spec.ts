@@ -247,7 +247,9 @@ describe("ApplicationService", () => {
     // R1: update() must load the RAW row. If it went through the masked
     // findById(), every env-less update (webhook version bump, upload
     // upsert) would persist '***' over the real secret values.
-    it("R1: persists the RAW env — a masked read surface is never written back", async () => {
+    // R1 的**结构解**（R61）：不带 env 的 update 现在根本不写 env 列 ——
+    // 掩码副本落库从「靠先取 RAW 行规避」变成**没有这条路径**。
+    it("R61: env-less update 的 patch 里根本没有 env（'***' 无路可走）", async () => {
       const row = {
         id: "1",
         name: "app1",
@@ -257,9 +259,13 @@ describe("ApplicationService", () => {
 
       await service.update("1", { description: "bumped by webhook" });
 
-      const saved = appRepo.save.mock.calls[0][0];
-      expect(saved.env.API_KEY).toBe("sk-real");
-      expect(saved.env.NODE_ENV).toBe("prod");
+      const patch = appRepo.update.mock.calls[0][1];
+      expect(patch).not.toHaveProperty("env");
+      expect(patch.description).toBe("bumped by webhook");
+      // 其余列也不许被「顺手带回」——整行回写才会带 status/manifest/gitRepo
+      expect(patch).not.toHaveProperty("status");
+      expect(patch).not.toHaveProperty("manifest");
+      expect(appRepo.save).not.toHaveBeenCalled();
     });
 
     it("R1: an admin form echoing '***' for a secret key keeps the saved raw value", async () => {
@@ -268,8 +274,9 @@ describe("ApplicationService", () => {
 
       await service.update("1", { env: { API_KEY: "***", NEW_VAR: "v" } });
 
-      const saved = appRepo.save.mock.calls[0][0];
-      expect(saved.env).toEqual({ API_KEY: "sk-real", NEW_VAR: "v" });
+      // dto 带 env 时，落库的是**合并后保留原值的** RAW env（掩码位被真实值替换）
+      const patch = appRepo.update.mock.calls[0][1];
+      expect(patch.env).toEqual({ API_KEY: "sk-real", NEW_VAR: "v" });
     });
 
     it("R1: the update RESPONSE is masked (public webhook route must never echo raw env)", async () => {
