@@ -65,6 +65,50 @@ let failures = 0;
     failures += 1;
     return;
   }
+  // ② 分域计数：文档每个 `### <域> 域 — register<X>Tools（N 个…）` 的 N 必须等于该函数实际注册数。
+  // 只校验工具名（上面那段）是不够的：R95 修文档时手改过 `18 → 21`、`40 → 56` 这类数字，
+  // 而名字全对、数字全错的地图同样会误导人（「Task 域 18 个」而实际 21 个）。
+  const fnPositions = [...src.matchAll(/export function (register\w+Tools)\(/g)].map((m) => ({
+    name: m[1],
+    idx: m.index,
+  }));
+  if (fnPositions.length < 5) {
+    console.error(`✖ MCP：只解析出 ${fnPositions.length} 个 register*Tools 函数（<5）—— 解析器失效。`);
+    failures += 1;
+    return;
+  }
+  const actualByFn = new Map();
+  for (let i = 0; i < fnPositions.length; i++) {
+    const start = fnPositions[i].idx;
+    const end = i + 1 < fnPositions.length ? fnPositions[i + 1].idx : src.length;
+    const seg = src.slice(start, end);
+    actualByFn.set(
+      fnPositions[i].name,
+      [...seg.matchAll(/server\.(?:tool|registerTool)\(\s*["'`]([a-z0-9_]+)["'`]/g)].length,
+    );
+  }
+  // 标题形如 `### Task 域 — registerTaskTools（21 个）` / `（9 个，DEP-04 审批语义）`
+  const docCounts = new Map();
+  for (const m of doc.matchAll(/^###[^\n]*—\s*(register\w+Tools)（(\d+) 个[^）]*）/gm)) {
+    docCounts.set(m[1], Number(m[2]));
+  }
+  const countProblems = [];
+  for (const [fn, actual] of actualByFn) {
+    const documented = docCounts.get(fn);
+    if (documented === undefined) {
+      countProblems.push(`${fn}：文档没有带计数的分节标题（实际 ${actual} 个）`);
+    } else if (documented !== actual) {
+      countProblems.push(`${fn}：文档写 ${documented} 个，实际 ${actual} 个`);
+    }
+  }
+  if (countProblems.length > 0) {
+    console.error("✖ MCP 工具地图**分域计数**漂移：");
+    for (const p of countProblems) console.error("  · " + p);
+    console.error("  修法：改 docs/atlas/05-interfaces/mcp-tools.md 里对应小标题的计数。");
+    failures += 1;
+    return;
+  }
+
   console.log("✔ MCP 工具地图一致：" + names.length + " 个工具全部在文档中出现。");
 })();
 
