@@ -1100,3 +1100,11 @@
   正解：新增 `test_zip_guard_parity.py`（6 条）**直接读另两个平面的源码常量**逐项比，而不是抄一份常量。
   验证：pytest **1187 → 1193 passed**（+6）/ 0 failed / 3 skipped；**总控独立反证**：只还原两个常量 → 3 条立即红（含 600 MiB `DID NOT RAISE`），还原后全绿。
   遗留 7 条如实：嵌套成员 >64 MiB python 跳过+warn vs admin fail-closed（需同步 CONTRACT.md，疑似）/ bwrap `--ro-bind / /` 可读其它 execution（裸机 .env 形态需部署验证，且已被 test_sandbox 钉住=有意设计）/ setrlimit 失败 fail-open / `timeout=0` 无 CPU 兜底且注释与行为不符 / tmpdir 回落宿主 / pusher 无字节上限 + final_flush 即发即弃 / ZIP_MAX_* 也允许放宽。
+- 2026-10-20 **R100 done（commit e581f28a）**：**放弃「死导出」静态扫描，改做定向执行判据**。目标是把 R94-A1 那类缺口（函数存在/有测试/文档写会生效，但生产路径从不调用）变成机器可查。
+  静态方案三次迭代后放弃：无跨文件引用 **506**（多为同文件内部使用）→ 仅被测试引用 **265** → 补上同文件引用后仍 **114**，且抽查的「最像真问题」两个
+  （`invalidateUvResolution`、`setDeadLetterReconcileIntervalMs`）注释都写明是**测试钩子**；`listAuditActions` 看似无人用，实际在 `.tsx` 里被引用（我漏扫了 `.tsx`）。
+  **假阳性率接近 100%** —— 静态「没人调用」无法区分「测试钩子」「框架按名字调用」「跨扩展名引用」与「真漏接线」。与 R98 否掉的 openapi 路由守卫同类：实现成本高于收益。
+  改做定向判据 `test_every_declared_env_var_is_actually_honored`：枚举 `ZIP_LIMIT_ENV_VARS` **全部键**、逐个设非默认值、断言 `get_zip_limits_from_env()` 对应字段确实改变；
+  并断言**探针键集合 == 映射表键集合**（新增上限字段忘了同步即红）。刻意不做成脚本：证明「读进去了」必须**执行**，静态只能证明「有个分支看起来读了」。
+  验证：7 passed；反证：把 `max_ratio=_num(...)` 改成 `max_ratio=defaults.max_ratio` → 该条红（`ZIP_MAX_RATIO 未生效`），还原后绿。
+  **方法论（连续两轮否定两个静态守卫的总结）**：静态检查擅长「文本与清单是否一致」，不擅长「这段代码有没有被执行到」；后者要用**执行**的判据（定向用例 / 端到端探针），而不是更聪明的正则。
