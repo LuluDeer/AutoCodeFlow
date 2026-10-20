@@ -1990,3 +1990,37 @@ describe("R31-E2 structuredContent on tool errors", () => {
     });
   });
 });
+
+/**
+ * R33-B1（总控补的护栏）：**每个工具族都必须注册在「结构化错误」包装器上**。
+ *
+ * R31-E2 用 Proxy 在注册边界给工具错误补 structuredContent（text 逐字节不变）。
+ * 它只对**经过包装器**注册的工具生效——若以后新增一个工具族时写成
+ * `registerXxxTools(server, apiRequest)`（忘了换成 `registering`），那一族
+ * 的错误就会静默退回"纯文本"，而**任何既有测试都不会红**（各族的 handler 单测
+ * 直接调 handler，根本不经过注册边界）。这正是本仓反复踩到的"同一修法只落一半"。
+ *
+ * 判据放在源码层：读 index.ts，断言每个 register*Tools 调用的第一个实参都是
+ * `registering`，且包装器确实由 `withStructuredToolErrors(server)` 得到。
+ * 刻意不做"函数名白名单"（新增工具族不该需要改测试），只断言形状。
+ */
+describe("R33-B1: index.ts 的每个工具族都注册在结构化错误包装器上", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(__dirname, "..", "index.ts"), "utf8");
+
+  it("包装器由 withStructuredToolErrors(server) 得到，且注册用的是它", () => {
+    expect(src).toMatch(
+      /const\s+registering\s*=\s*withStructuredToolErrors\(server\)/,
+    );
+  });
+
+  it("不存在「把裸 server 传给 register*Tools」的调用（新增工具族不得漏包装）", () => {
+    const registrations = src.match(/register\w+Tools\s*\(\s*([A-Za-z_$][\w$]*)/g);
+    expect(registrations).not.toBeNull();
+    // 断言规模下界：防「一个都没匹配到」的永真（正则写错时最容易发生）。
+    expect(registrations!.length).toBeGreaterThanOrEqual(9);
+    const offenders = registrations!.filter((c) => !/register\w+Tools\s*\(\s*registering/.test(c));
+    expect(offenders).toEqual([]);
+  });
+});
