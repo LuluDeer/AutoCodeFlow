@@ -126,7 +126,20 @@ export class ProjectsService {
     if (dto.name !== undefined) row.name = dto.name;
     if (dto.description !== undefined) row.description = dto.description;
     try {
-      return await this.repo.save(row);
+      // R62（ADR-026 规则 4）：只写 dto 带来的两列。projects 现在只有 name/description
+      // 可写，整行 save 与列级写当前等价；但整行 save 是**定时炸弹**——实体以后加一列、
+      // 且那列有别的写者（例如归属/归档/统计），这里就会变成「顺手把旧值写回去」。
+      // 现在就收紧，成本是一行；等它变成缺陷时再收紧，成本是一次线上事故。
+      const patch: Record<string, unknown> = {};
+      if (dto.name !== undefined) patch.name = dto.name;
+      if (dto.description !== undefined) patch.description = dto.description;
+      // adr-026-exempt: patch 只含 dto 显式带来的两列（name/description），没有一列来自快照；
+      // 这两列也不承载生命周期不变量（本项目无状态机列），并发改名冲突由唯一索引兜住。
+      if (Object.keys(patch).length > 0) {
+        await this.repo.update({ id }, patch);
+        Object.assign(row, patch);
+      }
+      return row;
     } catch (err: unknown) {
       // 改名撞同一唯一索引：与 create 同款分流（否则用户拿到"资源已存在"，
       // 完全不知道撞的是另一个项目的名字）。
