@@ -199,6 +199,10 @@ export const STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER = 6;
  * 与 claimTaskTrigger 只是 Leader 竞态过渡期（旧 Leader 残余定时器与新
  * Leader 并存）的双保险。claimTaskTrigger 的 lockTtlMs 与本 TTL 在 enqueue
  * 顶部同源计算，Redis 锁窗口与 DB claim 窗口自动保持一致。
+ * R126-A1 补充：上面的"双保险"现为**强**关系——DB claim 是每条入队路径的唯一
+ * 判决（不依赖 Redis 可用性），本 TTL 只决定"去重窗口多宽"，不再决定"谁说了
+ * 算"。因此 cron 档的 1s 下限只挡"同一拍内的重放"，挡不住跨秒的重复源——那
+ * 部分由 checkMisfiresBody 的补偿前复核 + claimTaskTrigger 的窗口裁决共同收口。
  * 导出仅供单元测试，视为模块内部函数。
  */
 export function computeTriggerDedupTtlMs(task: Task): number {
@@ -335,6 +339,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private runningTasks = new Map<string, boolean>();
   // Prevent reload() and scheduleOne() from registering the same task concurrently.
   private schedulingTasks = new Set<string>();
+
+  /**
+   * R126-A1: 扫描型 tick 的在飞登记表（重入闸）。@nestjs/schedule 的 cron 回调
+   * 不 await 返回值，扫描体超周期时下一拍会并发进入——见 guardTick。
+   */
+  private readonly inFlightTicks = new Set<string>();
   // F-1: 本地注册指纹表——scheduleOne 注册时记录该次注册所依据的触发配置
   // 指纹，reload 的对账轮把它与 DB 侧指纹比对，漂移者重排。stop 时同步删除
   // （与 timers/cronTasks 的清理语义一致，防 inactive 任务残留泄漏）。
@@ -661,15 +671,31 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         const threshold = computeMisfireThresholdMs(task);
         if (gap > threshold) {
           if (task.misfireStrategy === MisfireStrategy.FIRE_ONCE) {
+            // R126-A1：上面判 gap 用的 lastTriggerTime 是本轮**分页扫描开始时的
+            // 快照**，而补偿入队发生在扫描末尾的 Promise.allSettled——万级 active
+            // 表上「读快照 → 入队」的滞后远超 cron 的去重窗口（computeTriggerDedupTtlMs
+            // 对 cron 恒为 TRIGGER_DEDUP_MIN_TTL_MS = 1s，与真实周期解耦）。
+            // 这期间定时器完全可能已经按点正常触发过，于是同一个落点被
+            // 「正常触发 + 补偿」各执行一次，去重锁早已过期挡不住。
+            // 处置：补偿是**不可撤销的副作用**，兑现前必须按主键复核一次真实
+            // 状态（单行读，毫秒级，远小于 1s 去重窗口）——陈旧快照不得直接兑现。
+            const fresh = await this.taskRepo.findOne({
+              where: { id: task.id },
+              select: { id: true, lastTriggerTime: true },
+            });
+            const anchor = fresh?.lastTriggerTime ?? task.lastTriggerTime;
+            if (now - anchor.getTime() <= threshold) {
+              this.logger.debug(
+                `Misfire for "${task.name}" was already covered by a trigger at ` +
+                  `${anchor.toISOString()} (scan snapshot was stale) — not compensating`,
+              );
+              continue;
+            }
             // B-1 落点校验：错失的计划触达点必须确实落在
             // (lastTriggerTime, now] 内，才允许在计划外补偿入队。
             if (
               task.triggerType === TaskTriggerType.CRON &&
-              !this.cronHasMissedFirePoint(
-                task,
-                task.lastTriggerTime,
-                new Date(now),
-              )
+              !this.cronHasMissedFirePoint(task, anchor, new Date(now))
             ) {
               this.logger.debug(
                 `Misfire window for "${task.name}" contains no scheduled cron fire point — not compensating`,
@@ -1457,9 +1483,28 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private async guardTick(
     name: string,
     body: () => Promise<void>,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    // R126-A1（重入闸）：上面说的「cron 回调不 await 返回的 Promise」还有另一面
+    // ——扫描体跑得比周期长时，下一拍的实例必然**与上一拍并发**。异常有 catch
+    // 兜住，重叠此前完全没人管：
+    //   · 万级 active 表上并发跑 2 份 keyset 全表扫描（DB 压力 ×2，且可能叠加
+    //     到 3 份、4 份，没有上界）；
+    //   · 两份 reload 并发推进 reloadTickCount → F-1 对账轮次漂移；
+    //   · 两份 reload 都把同一批任务判为「未注册」→ 后一份 scheduleOne 先 stop
+    //     再重排刚注册的定时器，node-cron 相位被重置，短周期 cron 丢一拍。
+    // 丢弃重叠轮是安全的：四个 tick 都是幂等扫描，下一拍自然接上（与异常路径
+    // 的处理一致），不会漏掉终态收敛——最坏只是延后一个周期。
+    // 返回值语义：true = 本轮真的跑了扫描体（调用方据此决定是否记 tick 指标）。
+    if (this.inFlightTicks.has(name)) {
+      this.logger.warn(
+        `Scheduler tick "${name}" is still in flight — overlapping invocation skipped`,
+      );
+      return false;
+    }
+    this.inFlightTicks.add(name);
     try {
       await body();
+      return true;
     } catch (err: unknown) {
       this.logger.warn(
         `Scheduler tick "${name}" failed and was skipped this round ` +
@@ -1467,6 +1512,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             err instanceof Error ? (err.stack ?? err.message) : String(err)
           }`,
       );
+      return true;
+    } finally {
+      this.inFlightTicks.delete(name);
     }
   }
 
@@ -1506,10 +1554,13 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // CRON-GUARD：顶层异常闸门——DB 抖动不得升级为未处理 rejection（进程退出）。
     // 计时/指标仍包住扫描体本身（recordTick 在 finally 里，异常路径同样记账）。
     const tickStart = Date.now();
+    let ran = false;
     try {
-      await this.guardTick("reload", () => this.reloadActiveTasks());
+      ran = await this.guardTick("reload", () => this.reloadActiveTasks());
     } finally {
-      this.schedulerMetrics.recordTick(Date.now() - tickStart);
+      // R126-A1: 被重入闸丢弃的重叠轮不计入 tick 指标（否则 tick 数与真实
+      // 扫描次数脱钩，tick 时延分位数被一堆 0ms 的空转污染）。
+      if (ran) this.schedulerMetrics.recordTick(Date.now() - tickStart);
     }
   }
 
@@ -1679,8 +1730,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // short-period tasks down to the task timeout). See computeTriggerDedupTtlMs.
     const lockTTL = computeTriggerDedupTtlMs(task);
 
+    // R126-A1（去重权威单一化）：触发去重的**唯一权威是 DB 条件 claim**
+    // （claimTaskTrigger 的条件 UPDATE）。Redis 锁 task:trigger:* 降级为
+    // 「先手快筛」——它能在不写库的情况下挡掉绝大多数跨实例重复，但不能
+    // 单独充任去重。
+    //
+    // 缺陷现场（旧写法）：只有 acquireLock **抛错**时才走 DB claim，Redis
+    // 正常时入队完全不读 lastTriggerTime。于是「部分 Redis 故障」（连接池
+    // 耗尽 / 单次超时，而不是整个 Redis 挂掉）会同时激活两条互不相认的
+    // 权威：实例 A 超时 → DB claim 推进 lastTriggerTime → 入队；实例 B
+    // Redis 正常 → 拿到 task:trigger:<id>（A 从未持有过它）→ 同一去重窗口
+    // 内再派一次。跨实例去重实际由「谁先拿到 Redis 锁」单点决定，DB 侧的
+    // CAS 只在 Redis 全挂时生效——两条路径不同源就是没有权威。
+    //
+    // 现在无论 Redis 是否可用，入队前都必须赢得同一条条件 UPDATE：Redis
+    // 锁只是快筛，DB claim 是判决。写入次数不增加（原先入队成功后本来就有
+    // 一次无条件 UPDATE lastTriggerTime，现由 claim 取代）。
     let lock: Lock | null = null;
-    let claimedViaDb = false;
+    let redisUnavailable = false;
     try {
       // R4-P0: renew:false — this lock is never released (see finally): its
       // TTL IS the cross-instance dedup window. A renewing watchdog would
@@ -1692,23 +1759,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         { renew: false },
       );
     } catch (err: unknown) {
-      // TASK-006 降级路径：Redis 不可用时改用 DB 条件 UPDATE 原子 claim 兜底
-      // （Leader Election + claim 双保险的第二道）。claim 失败即跳过。
-      const claimed = await this.claimTaskTrigger(task, lockTTL);
-      if (!claimed) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.debug(
-          `Task "${task.name}" trigger claimed by another instance (db claim, redis=${message}), skip`,
-        );
-        this.schedulerMetrics.recordTriggerSkippedDbClaim();
-        return null;
-      }
-      claimedViaDb = true;
+      // TASK-006 降级路径：Redis 不可用时不能因此丢掉调度——快筛失效，
+      // 交由下方统一的 DB 条件 claim 独自裁决。
+      redisUnavailable = true;
+      const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        `Redis trigger lock unavailable for "${task.name}"; proceeding with DB claim`,
+        `Redis trigger lock unavailable for "${task.name}" (${message}); falling back to the DB conditional claim`,
       );
     }
-    if (!lock && !claimedViaDb) {
+    if (!lock && !redisUnavailable) {
       this.logger.debug(
         `Task "${task.name}" recently triggered by another instance, skip`,
       );
@@ -1725,6 +1784,19 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (!taskRecord) {
         this.logger.debug(`Task "${task.name}" is no longer active, skip`);
         this.schedulerMetrics.recordTriggerSkippedInactive();
+        return null;
+      }
+
+      // R126-A1: 与 Redis 是否可用无关的**唯一**去重判决。放在 blockStrategy
+      // 闸门之前是刻意的：闸门会做 kill/覆盖等**副作用**（COVER_EARLY 会杀掉
+      // 在跑执行），若先过闸门再输掉 claim，就会出现「杀了人家却没派新的」。
+      // 领取窗口与 Redis 锁 TTL 同源（lockTTL），两者语义保持一致。
+      const claimed = await this.claimTaskTrigger(task, lockTTL);
+      if (!claimed) {
+        this.logger.debug(
+          `Task "${task.name}" trigger already claimed inside the dedup window (db claim), skip`,
+        );
+        this.schedulerMetrics.recordTriggerSkippedDbClaim();
         return null;
       }
 
@@ -1809,12 +1881,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         this.schedulerMetrics.recordTriggerFailed();
         return null;
       }
-      // P1: record the trigger time so checkMisfires() has data to work
-      // with (this column was previously never written, leaving misfire
-      // compensation dead code).
-      await this.taskRepo.update(task.id, {
-        lastTriggerTime: new Date(),
-      });
+      // P1: lastTriggerTime 供 checkMisfires() 使用（该列历史上从未被写，
+      // 使 misfire 补偿成为死代码）。R126-A1: 该列现由上面的 claimTaskTrigger
+      // 在**领取触发时原子写入**，这里不再重复无条件 UPDATE——一来省一次写，
+      // 二来入队延迟（queue.add 可能几百 ms）不再污染去重窗口的起点，避免
+      // 「上一次的 lastTriggerTime 落到下一个窗口内」把合法的一拍压掉。
       // R4-§5.5: 触发成功（claim 赢家且执行已入队）
       this.schedulerMetrics.recordTriggerClaimed();
       // CORE-06：定时触发的 fire→入队延迟（手动触发无计划时刻，不记录）
@@ -1835,11 +1906,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * TASK-006: DB 层原子触发 claim——Redis 触发锁不可用（抛错）时的兜底。
+   * TASK-006 / R126-A1: DB 层原子触发 claim——**每条入队路径的唯一去重判决**。
    * 条件 UPDATE：仅当任务仍为 ACTIVE 且上一触发窗口（与 Redis 锁 TTL 同窗）
    * 之外未被领取过时，本实例才能推进 lastTriggerTime 并获得触发权；
-   * affected=0 表示另一实例（或旧 Leader 残余定时器）已领取，跳过本次触发。
-   * 与 Redis 锁的"不释放、靠 TTL 去重"语义保持一致。
+   * affected=0 表示另一实例（或旧 Leader 残余定时器、或另一条触发路径）已
+   * 领取，跳过本次触发。
+   *
+   * R126-A1 之前它只作为「Redis 抛错时的兜底」被调用，于是 Redis 健康的那条
+   * 路径完全不读 lastTriggerTime——两条路径不同源，部分 Redis 故障时同一窗口
+   * 会派两次。现在它与 Redis 锁的可用性无关：Redis 锁是快筛，本方法是判决。
+   * 语义仍与 Redis 锁的"不释放、靠 TTL 去重"保持一致（窗口同源）。
    */
   private async claimTaskTrigger(
     task: Task,
