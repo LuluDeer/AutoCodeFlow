@@ -24,6 +24,7 @@ import { join } from "node:path";
 
 const ROOT = process.cwd();
 const SRC = join(ROOT, "apps", "admin-api", "src");
+const FILE_ROOT = ROOT;
 
 /** 门禁 idiom（三种写法，都是本仓实际在用的）。 */
 const GATE = /(leaderGate|isLeader|isSchedulerLeader)/;
@@ -48,23 +49,23 @@ const files = [];
   }
 })(SRC);
 
-let total = 0;
-const missing = [];
-for (const f of files) {
-  const rel = f.slice(ROOT.length + 1).split("\\").join("/");
-  const lines = readFileSync(f, "utf8").split("\n");
+/**
+ * 判定单个源文件里哪些 `@Cron` 没有门禁。**抽成纯函数**，`--selftest` 用内联 fixture 直接驱动。
+ *
+ * 两个判据都是被反证打出来的，注释里写清缘由：
+ *  ① **先剥注释再判** —— 否则「把门禁注释掉」也能通过（注释里的 gate 文本与真实代码在正则眼里一模一样）；
+ *  ② **窗口止于方法体** —— 固定行数窗口会越过方法边界，把**下一个方法**的门禁算到当前方法头上。
+ */
+export function findUngatedCrons(source, { allowlist = new Map(), window = WINDOW } = {}) {
+  const lines = source.split("\n");
+  const found = [];
+  let total = 0;
   for (let i = 0; i < lines.length; i++) {
     if (!/@Cron\(/.test(lines[i])) continue;
     total += 1;
-    const key = `${rel}:${i + 1}`;
-    if (ALLOWLIST.has(key)) continue;
-    // ① **先剥注释再判**：否则「把门禁注释掉」也能通过 —— 反证实测过，这是这条守卫
-    //    最容易自欺的地方（注释里的 gate 文本与真实代码在正则眼里一模一样）。
-    // ② **窗口必须止于方法体**：固定 40 行会越过方法边界，把**下一个方法**的门禁算到
-    //    当前方法头上 —— 反证也实测过（sweepAggregator 的门禁被注释掉后仍绿，因为它后面
-    //    紧跟的 sweep() 方法里有 isLeader）。
+    if (allowlist.has(i + 1)) continue;
     let end = i + 1;
-    for (; end < lines.length && end < i + WINDOW; end++) {
+    for (; end < lines.length && end < i + window; end++) {
       if (/^  \}/.test(lines[end])) break;
     }
     const body = lines
@@ -72,10 +73,118 @@ for (const f of files) {
       .join("\n")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^\s*\/\/.*$/gm, "");
-    if (!GATE.test(body)) missing.push(key);
+    if (!GATE.test(body)) found.push(i + 1);
   }
+  return { total, ungated: found };
 }
 
+/**
+ * `--selftest`：用内联 fixture 验证上面两个判据。**这是这条守卫被反证打回两次之后的产物** ——
+ * 那两次失败（数注释、数邻居）如果只写在注释里，下一个人改写正则时仍会重新踩。
+ */
+function selftest() {
+  const cases = [
+    {
+      name: "正常门禁 → 通过",
+      src: [
+        "class A {",
+        '  @Cron("* * * * *")',
+        "  async tick() {",
+        "    if (!this.isLeader) return;",
+        "    await this.body();",
+        "  }",
+        "}",
+      ].join("\n"),
+      expectUngated: [],
+    },
+    {
+      name: "门禁被注释掉 → **红**（第一版在这里假绿）",
+      src: [
+        "class A {",
+        '  @Cron("* * * * *")',
+        "  async tick() {",
+        "    // if (!this.isLeader) return;",
+        "    await this.body();",
+        "  }",
+        "}",
+      ].join("\n"),
+      expectUngated: [2],
+    },
+    {
+      name: "门禁在**下一个方法**里 → **红**（第二版在这里假绿）",
+      src: [
+        "class A {",
+        '  @Cron("* * * * *")',
+        "  sweepAggregator() {",
+        "    this.aggregator.sweep();",
+        "  }",
+        "  next() {",
+        "    if (!this.isLeader) return;",
+        "  }",
+        "}",
+      ].join("\n"),
+      expectUngated: [2],
+    },
+    {
+      name: "块注释里的门禁不算 → 红",
+      src: [
+        "class A {",
+        '  @Cron("* * * * *")',
+        "  async tick() {",
+        "    /* if (!this.isLeader) return; */",
+        "    await this.body();",
+        "  }",
+        "}",
+      ].join("\n"),
+      expectUngated: [2],
+    },
+    {
+      name: "allowlist 命中 → 放行",
+      src: [
+        "class A {",
+        '  @Cron("* * * * *")',
+        "  localCleanup() {",
+        "    this.clean();",
+        "  }",
+        "}",
+      ].join("\n"),
+      allowlist: new Map([[2, "本应每实例都跑"]]),
+      expectUngated: [],
+    },
+  ];
+
+  let failed = 0;
+  for (const c of cases) {
+    const got = findUngatedCrons(c.src, { allowlist: c.allowlist ?? new Map() });
+    const ok = JSON.stringify(got.ungated) === JSON.stringify(c.expectUngated);
+    if (!ok) {
+      failed += 1;
+      console.error(`✖ SELFTEST 失败：${c.name}`);
+      console.error(`    期望 ungated=${JSON.stringify(c.expectUngated)}，实际=${JSON.stringify(got.ungated)}`);
+    }
+  }
+  if (failed > 0) {
+    console.error(`✖ selftest ${cases.length - failed}/${cases.length} 通过`);
+    process.exit(1);
+  }
+  console.log(`✔ cron-leader-gate selftest：${cases.length}/${cases.length} 通过（含「注释门禁」与「邻居门禁」两个历史假绿）`);
+}
+
+if (process.argv.includes("--selftest")) {
+  selftest();
+  process.exit(0);
+}
+
+let total = 0;
+const missing = [];
+for (const f of files) {
+  const rel = f.slice(FILE_ROOT.length + 1).split("\\").join("/");
+  const res = findUngatedCrons(readFileSync(f, "utf8"), {
+    allowlist: new Map([...ALLOWLIST.keys()].map((k) => [Number(k.split(":").pop()), k]).filter(([, k]) => k.startsWith(rel + ":"))),
+  });
+  total += res.total;
+  for (const line of res.ungated) missing.push(`${rel}:${line}`);
+}
 if (total < MIN_EXPECTED_CRONS) {
   console.error(`✖ 只扫到 ${total} 个 @Cron（下界 ${MIN_EXPECTED_CRONS}）—— 扫描器失效了。`);
   process.exit(1);
