@@ -103,7 +103,9 @@
     "src/main/network-util.ts",
     "src/main/network-util.selftest.ts",
     "src/main/destructive-actions.ts",
-    "src/main/destructive-actions.selftest.ts"
+    "src/main/destructive-actions.selftest.ts",
+    "src/main/navigation-policy.ts",
+    "src/main/navigation-policy.selftest.ts"
   ],
   "exclude": []
 }

@@ -2,6 +2,9 @@ import { BrowserWindow, app, screen } from 'electron';
 import * as path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import log from './logger';
+// R106：导航白名单判定（纯函数，selftest 直接驱动）。
+import { isAllowedNavigation } from './navigation-policy';
+import { pathToFileURL } from 'url';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
@@ -125,14 +128,25 @@ function loadPage(win: BrowserWindow, page: string): void {
  */
 function hardenWindow(win: BrowserWindow): void {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
+  // R106：生产只允许**入口页本身**（忽略 hash/query），不再放行任意 file://。
+  // 之前那条前缀判据等于「任何本地 HTML 都能接管这个 webContents」——而导航后
+  // preload 桥仍挂着，等于把整套 electronAPI 交给那个页面。
+  const policy = {
+    devUrl: devUrl ?? null,
+    rendererFileUrl: devUrl ? null : pathToFileURL(RENDERER_INDEX).toString(),
+  };
 
-  win.webContents.on('will-navigate', (event, url) => {
-    const allowed = devUrl ? url.startsWith(devUrl) : url.startsWith('file://');
-    if (!allowed) {
+  const blockNavigation = (event: { preventDefault: () => void }, url: string, kind: string): void => {
+    if (!isAllowedNavigation(url, policy)) {
       event.preventDefault();
-      log.warn(`Blocked navigation to ${url}`);
+      log.warn(`Blocked ${kind} to ${url}`);
     }
-  });
+  };
+
+  win.webContents.on('will-navigate', (event, url) => blockNavigation(event, url, 'navigation'));
+  // R106：`will-redirect` 与 `will-navigate` 是**两条独立事件**，只挂前者等于给服务端 3xx 留了后门
+  // （dev 形态下尤其明显）。同一条判据同时挂上去。
+  win.webContents.on('will-redirect', (event, url) => blockNavigation(event, url, 'redirect'));
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     log.warn(`Blocked window.open to ${url}`);
