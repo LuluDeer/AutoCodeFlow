@@ -293,6 +293,8 @@ export class SopService {
       const current = await this.versions.findOne({
         where: { sopId: sop.id, version: sop.currentVersion },
       });
+      // constant-time-exempt: 两侧都是本服务刚算出的内容哈希（发布判重），不是凭据；
+      // 且能走到这里的发布者本就能读到该内容，时序不泄露额外信息。
       if (current && current.contentHash === nextHash) {
         throw new AppError(ErrorCode.SOP_CONTENT_UNCHANGED);
       }

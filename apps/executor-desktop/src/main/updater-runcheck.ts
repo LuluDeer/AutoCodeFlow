@@ -69,6 +69,7 @@ export function createRunCheck(doCheck: () => Promise<void>): UpdaterCheckState 
           /* 错误经 error 事件按 surfaceError 归因广播；此处仅兜底（调用方落日志） */
         } finally {
           latestUserInitiated = false;
+          // constant-time-exempt: 同上——对象身份哨兵，不是凭据。
           if (checkToken === token) {
             checkToken = null;
             checkPromise = null;
@@ -89,6 +90,7 @@ export function createRunCheck(doCheck: () => Promise<void>): UpdaterCheckState 
         } catch {
           /* 静默：后台检查错误只落日志，不打扰用户 */
         } finally {
+          // constant-time-exempt: checkToken 是对象身份哨兵（{}），用于并发去重，不是凭据。
           if (checkToken === token) {
             checkToken = null;
             checkPromise = null;

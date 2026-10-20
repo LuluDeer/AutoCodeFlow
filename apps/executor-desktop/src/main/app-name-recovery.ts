@@ -121,6 +121,7 @@ export function collectReleaseAppNames(
   }
 
   const signature = buildSignature(files);
+  // constant-time-exempt: signature 是**文件列表的缓存键**（路径/mtime/size 派生），不是凭据。
   if (cachedSignature === signature) return cachedNames;
 
   const names = new Map<string, string>();

@@ -49,6 +49,7 @@
     "check:api-reference": "node scripts/gen-api-reference-appendix.mjs --check",
     "check:cli-doc": "node scripts/check-cli-doc.mjs",
     "check:ssrf-parity": "node scripts/check-ssrf-deny-parity.mjs",
+    "check:constant-time": "node scripts/check-constant-time-compare.mjs",
     "gen:api-reference": "node scripts/gen-api-reference-appendix.mjs",
     "test:alerts": "node scripts/check-alerts-rules.mjs --selftest && node scripts/check-alerts-rules.mjs",
     "test:qwen": "node scripts/qwen-runtime-check.mjs && node scripts/ai-qwen-structural-check.mjs",
