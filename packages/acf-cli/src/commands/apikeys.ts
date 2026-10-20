@@ -3,7 +3,7 @@ import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
 import { get, post, del } from '../client.js';
-import { emitError, emitUsageError } from '../ui.js';
+import { emitError, emitUsageError, confirmDestructive } from '../ui.js';
 
 /**
  * AUTH-03 限权 API Key（CI/CD 机器凭证）。服务端只存 SHA-256 哈希，
@@ -112,10 +112,22 @@ export function apikeysCommand(): Command {
 
   cmd.command('revoke <id>')
     .description('Revoke an API key (soft-delete — takes effect on its next request, cannot be undone)')
-    .action(async (id: string) => {
+    .option('-y, --yes', 'Skip confirmation prompt', false)
+    .action(async (id: string, opts: { yes?: boolean }) => {
       // 服务端 ParseIntPipe：id 是数字主键（acf apikey list 查看）。
       if (!/^\d+$/.test(id)) {
         emitUsageError(`API key id must be a number (got "${id}") — find ids with: acf apikey list`);
+      }
+      // R192-A1：撤销不可逆（服务端只做 revokedAt 软删，没有「取消撤销」面），
+      // 且影响面是**外部系统**——仍用这把 key 的 CI/SDK 会在下一次请求起 401。
+      // 与三处 delete 同一套确认语义：非 TTY 且缺 --yes → 退出码 2，请求不发出。
+      if (
+        !(await confirmDestructive(
+          `Revoke API key ${id}? This cannot be undone — any workload still using it starts failing on its next request.`,
+          { yes: opts.yes },
+        ))
+      ) {
+        return;
       }
       const spinner = ora('Revoking API key…').start();
       try {
