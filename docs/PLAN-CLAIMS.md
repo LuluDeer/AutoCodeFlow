@@ -1535,3 +1535,9 @@ UPDATE tasks SET lastTriggerTime = now()
 
 **顺带**：这四包的公开面里，只有 `autocodeflow-http` 导出了一个可捕获的异常类型（`ApiHttpStatusError`），
 其余三个的调用方只能 catch 内建/第三方异常 —— 这件事在「它们是否该存在」定下来之后再谈才有意义。
+- 2026-10-20 **R136 done（commit bbbdf2ff）**：**「有发布清单的包必须接进 release.yml」守卫**。R135 发现四个 Python 库有源码+测试+pyproject+CHANGELOG，却不在 version-guard、不在 publish 矩阵、版本冻结 0.2.3、仓内零消费者。
+  这是本 session 第四次遇到「**文件存在 ≠ 在链路里**」：守卫脚本没接 CI（R82 首跑抓到自己）/ selftest 没进 test:main（R88 browser·package-candidate 从未跑过）/ `ZIP_MAX_*` 无生产调用方（R94）/ **包没接发布线**（本轮）。
+  守卫判据：`packages/*` 下有 `pyproject.toml` 或非 private `package.json` 的必须出现在 release.yml；四个已知包进基线并写明「待产品决策：接发布线 or 删除」；**反向也判**（基线里的包若接线或消失 ⇒ 红，防豁免腐烂）。
+  **守卫不替人做决定**：那四个包留还是删是产品决策；守卫只让这个状态**不能安静地待着** —— 加第五个立刻红。
+  验证：8 个可发布包 / 4 已接线 / 4 基线豁免；**两条反证**：① 新建 `packages/probe-new-pkg/pyproject.toml` → exit 1 并点名（第一次建成 `.probe-pkg` 被 `.` 前缀跳过 ⇒ **假绿：探针本身也要符合判据的输入形态**）；② 把 autocodeflow-ai 塞进 publish 矩阵 → exit 1「基线该瘦身」。守卫数 **33 → 34**。
+  **与 R134-A1 协调**：已把事实同步给它，要求重心放在「保留/删除两种结局下都成立」的发现上（真错误吞没/资源泄漏/重试非幂等），**不要**为「补导出异常类」这类只有包保留才有意义的改动动代码 —— **如果一批代码可能被删，让它更规范的投入是没有回报的；这个判断应在动手前做。**
