@@ -663,3 +663,61 @@ describe('zip-safety: /api/deploy 必须走本模块（生产故障回归）', (
     expect(fs.readFileSync(path.join(destDir, 'a.txt'), 'utf8')).toBe('x');
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * R101：**生产默认路径**必须吃 `ZIP_MAX_*` 环境变量。
+ *
+ * 已有的 limits 用例一律**显式传 `limits`**，于是它们只证明了「参数生效」，没有证明
+ * 「不传参时从 env 求值」。这与 `executor-python` 刚被修掉的那个缺口是同一个形状：
+ * `get_zip_limits_from_env()` 存在、有单测、文档也写会生效，但**生产路径从不调用**它
+ * （python 侧 `_extract_package` 就是这么躺着的）。
+ *
+ * node 侧目前接线是对的（`vetZip` / `safeExtractZip` 都 default 到
+ * `getZipGuardLimitsFromEnv()`），但没有任何用例钉住它 —— 谁把这两处改成
+ * `ZIP_GUARD_DEFAULT_LIMITS`，测试会全绿而部署方按 `ZIP_MAX_*` 收紧后**静默失效**。
+ */
+describe('zip-safety: 生产默认路径吃 ZIP_MAX_* 环境变量（R101）', () => {
+  const saved: Record<string, string | undefined> = {};
+  const KEYS = ['ZIP_MAX_ENTRIES', 'ZIP_MAX_FILE_BYTES'];
+
+  beforeEach(() => {
+    for (const k of KEYS) saved[k] = process.env[k];
+  });
+
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('safeExtractZip 不传 limits 时按 ZIP_MAX_ENTRIES 拒绝', () => {
+    const entries: ZipEntryInput[] = [];
+    for (let i = 0; i < 20; i++) entries.push({ name: `e${i}.txt`, data: Buffer.from('x') });
+    const { zipPath, destDir } = stage(entries);
+
+    // 默认 10 000 条：不设 env 时这个包是合法的 —— 先证明这一点，
+    // 否则下面的「拒绝」可能来自与 env 无关的原因（假绿）。
+    safeExtractZip(zipPath, destDir);
+
+    process.env.ZIP_MAX_ENTRIES = '10';
+    try {
+      safeExtractZip(zipPath, destDir);
+      throw new Error('expected a throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ZipSafetyError);
+      expect((err as ZipSafetyError).violation).toBe('too_many_entries');
+    }
+  });
+
+  it('vetZip 不传 limits 时按 ZIP_MAX_FILE_BYTES 拒绝', () => {
+    const { zipPath } = stage([{ name: 'big.bin', data: Buffer.alloc(4096, 1), method: 0 }]);
+
+    expect(() => vetZip(zipPath)).not.toThrow();
+
+    process.env.ZIP_MAX_FILE_BYTES = String(1024);
+    expect(() => vetZip(zipPath)).toThrow(ZipSafetyError);
+  });
+});
