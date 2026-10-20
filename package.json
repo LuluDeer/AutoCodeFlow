@@ -46,6 +46,8 @@
     "test:docs": "node scripts/docs/check-docs.selftest.mjs && node scripts/docs/check-docs.mjs",
     "check:docs": "node scripts/docs/check-docs.mjs",
     "check:audit-doc": "node scripts/check-audit-actions-doc.mjs",
+    "check:api-reference": "node scripts/gen-api-reference-appendix.mjs --check",
+    "gen:api-reference": "node scripts/gen-api-reference-appendix.mjs",
     "test:alerts": "node scripts/check-alerts-rules.mjs --selftest && node scripts/check-alerts-rules.mjs",
     "test:qwen": "node scripts/qwen-runtime-check.mjs && node scripts/ai-qwen-structural-check.mjs",
     "test:agent": "node scripts/agent-runtime-check.mjs && node scripts/agent-boundary-check.mjs && node scripts/agent-trigger-check.mjs",

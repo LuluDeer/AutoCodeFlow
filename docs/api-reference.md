@@ -1193,3 +1193,245 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `429` | 请求频率超限（全局限流 60 次/分钟；登录/刷新有独立更严格限流） |
 | `500` | 服务器内部错误（含上传时 `API_BASE_URL` 未配置的 fail-fast） |
 | `503` | SSE 日志流并发超限（单 execution 4 / 全局 64） |
+
+<!-- API-APPENDIX:START -->
+
+## 补充端点（由 `openapi.json` 生成，勿手改）
+
+> 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
+> 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
+
+共 228 个操作，覆盖 194 个路径。
+
+| 方法 | 路径 | 摘要 |
+|---|---|---|
+| POST | `/agent-collab/assignments/{id}/candidate-package` | - |
+| POST | `/agent-collab/assignments/{id}/clarifications/ack` | - |
+| POST | `/agent-collab/assignments/{id}/complete` | - |
+| POST | `/agent-collab/assignments/{id}/media` | - |
+| POST | `/agent-collab/assignments/{id}/progress` | - |
+| POST | `/agent-collab/capability` | - |
+| POST | `/agent-collab/clarifications` | - |
+| POST | `/agent-collab/llm` | - |
+| POST | `/agent-collab/poll` | - |
+| GET | `/agent/budget` | 获取生效的 Agent 预算设置 |
+| GET | `/agent/sessions` | 列出 Agent 会话（最新在前） |
+| POST | `/agent/sessions` | 创建一个 Agent 会话并入队执行 |
+| GET | `/agent/sessions/{id}` | 获取某个 Agent 会话及其步骤 |
+| POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
+| GET | `/ai/config` | 获取当前 AI 配置 |
+| POST | `/ai/config` | 将 AI 配置保存到系统配置存储 |
+| POST | `/ai/test` | 用示例提示词测试当前 AI 配置 |
+| POST | `/alerts/webhook` | Alertmanager v2 Webhook 接收端 |
+| GET | `/api-keys` | 列出我的 API Key（脱敏） |
+| POST | `/api-keys` | 创建 API Key |
+| DELETE | `/api-keys/{id}` | 撤销（软删除）我的 API Key |
+| POST | `/api-keys/{id}/revoke` | 撤销我的 API Key（显式别名，幂等） |
+| GET | `/app-deployments` | 列出部署 |
+| DELETE | `/app-deployments/{id}` | 删除已结束的部署记录（failed/stopped） |
+| GET | `/app-deployments/{id}` | 获取部署详情 |
+| POST | `/app-deployments/{id}/approval/approve` | 审批通过待处理的部署（第二人审批） |
+| POST | `/app-deployments/{id}/approval/cancel` | 撤销自己发起的待审批部署请求（仅发起人） |
+| POST | `/app-deployments/{id}/approval/reject` | 驳回待处理的部署（第二人审批） |
+| POST | `/app-deployments/{id}/stop` | 停止运行中的部署 |
+| POST | `/app-deployments/{id}/upgrade` | 触发叠加升级 |
+| POST | `/app-deployments/applications/{appId}/deploy` | 将应用分配到执行器 |
+| GET | `/app-deployments/approvals/pending` | 列出待审批的部署 |
+| POST | `/app-deployments/heartbeat` | 执行器上报应用运行状态（需要 X-Executor-Token） |
+| GET | `/app-deployments/stats` | 各应用的部署统计（聚合） |
+| GET | `/applications` | 获取应用列表 |
+| POST | `/applications` | 创建应用 |
+| DELETE | `/applications/{id}` | 删除应用 |
+| GET | `/applications/{id}` | 获取应用详情 |
+| PUT | `/applications/{id}` | 更新应用 |
+| POST | `/applications/{id}/analyze` | 应用健康度 AI 分析 |
+| GET | `/applications/{id}/releases` | 列出应用的统一发布记录（版本 × 最新部署） |
+| GET | `/applications/{id}/removal-impact` | 预览删除该应用会破坏什么 |
+| POST | `/applications/{id}/rollback/{deploymentId}` | 将应用回滚到历史版本 |
+| POST | `/applications/{id}/sync-tasks` | 从 manifest.json 同步任务注册 |
+| POST | `/applications/{id}/upgrade-all` | 触发所有运行中实例升级到最新版本 |
+| GET | `/applications/{id}/versions` | 获取应用版本历史 |
+| POST | `/applications/upload` | 上传应用包（zip） |
+| POST | `/applications/webhook` | 版本发布 Webhook |
+| GET | `/audit` | 分页查询审计日志（仅管理员） |
+| GET | `/audit/export` | 导出审计日志为 CSV（最多 10 000 行，仅管理员） |
+| POST | `/auth/login` | 用户登录 |
+| POST | `/auth/logout` | 登出（撤销全部 Refresh Token） |
+| GET | `/auth/oidc/callback` | - |
+| GET | `/auth/oidc/login` | - |
+| GET | `/auth/oidc/status` | - |
+| GET | `/auth/profile` | 获取当前用户信息 |
+| POST | `/auth/refresh` | 刷新令牌 |
+| GET | `/auth/sessions` | 列出我的活跃登录会话 |
+| DELETE | `/auth/sessions/{id}` | 撤销我的一个会话 |
+| POST | `/auth/sessions/revoke-others` | 撤销除当前会话外我的全部会话 |
+| POST | `/auth/sse-ticket` | 签发短效 SSE 票据 |
+| POST | `/auth/totp/disable` | 停用 TOTP |
+| POST | `/auth/totp/enable` | 启用 TOTP（可选启用 2FA，第 2 步） |
+| POST | `/auth/totp/setup` | 预登记 TOTP 密钥（可选启用 2FA，第 1 步） |
+| POST | `/auth/totp/verify` | 完成 TOTP 登录（第二因子） |
+| GET | `/config` | 列出所有配置项 |
+| PUT | `/config` | 创建或更新配置项 |
+| DELETE | `/config/{key}` | 删除配置项 |
+| GET | `/config/{key}` | 获取单个配置项 |
+| POST | `/config/batch` | 批量创建或更新配置项 |
+| GET | `/config/executor-shared-token` | 获取当前执行器共享令牌（明文，仅管理员） |
+| POST | `/config/executor-shared-token/generate` | 生成或轮换执行器共享令牌 |
+| GET | `/config/history` | 获取配置变更历史 |
+| POST | `/config/history/{id}/rollback` | 将配置回滚到历史版本 |
+| GET | `/config/history/{key}` | 获取指定配置 key 的历史 |
+| GET | `/config/runtime-version` | 获取权威的 Python 运行时版本契约 |
+| GET | `/event-subscriptions` | 列出出站事件订阅 |
+| POST | `/event-subscriptions` | 创建出站事件订阅（仅 ADMIN） |
+| DELETE | `/event-subscriptions/{id}` | 删除订阅（死信级联删除） |
+| PATCH | `/event-subscriptions/{id}` | 更新订阅（启用/停用、url、eventTypes、secret 轮换） |
+| GET | `/event-subscriptions/{id}/dead-letters` | 列出死信（所有重试均失败的投递） |
+| POST | `/event-subscriptions/{id}/dead-letters/{dlId}/replay` | 用订阅当前的 url/secret 重放一次死信 |
+| PUT | `/executions/{execId}/artifacts/{name}` | 上传单个执行产物（执行器 → 中台，尽力而为） |
+| POST | `/executions/{id}/logs` | 实时执行日志流式上报 |
+| POST | `/executions/callback` | 执行结果回调 |
+| GET | `/executions/stream` | 执行终态 SSE 流（FEAT-16） |
+| GET | `/executor-packages` | 获取执行器包列表 |
+| POST | `/executor-packages` | 上传执行器包 |
+| DELETE | `/executor-packages/{id}` | 删除执行器包 |
+| GET | `/executor-packages/{id}` | 获取执行器包详情 |
+| PATCH | `/executor-packages/{id}` | 更新执行器包信息 |
+| PATCH | `/executor-packages/{id}/activate` | 激活执行器包 |
+| PATCH | `/executor-packages/{id}/deprecate` | 弃用执行器包 |
+| GET | `/executor-packages/{id}/download` | 下载执行器包文件 |
+| POST | `/executor-packages/{id}/push` | 将执行器包推送到调度节点 |
+| GET | `/executor-packages/latest` | 按类型获取最新的 ACTIVE 执行器包 |
+| POST | `/executor-packages/push-result` | 执行器包推送结果回调（由 executor-node 调用） |
+| GET | `/executors` | 列出执行器 |
+| GET | `/executors/{address}/terminal-states` | 对账终态执行记录（只读） |
+| DELETE | `/executors/{id}` | 删除执行器记录 |
+| GET | `/executors/{id}` | 获取单个执行器详情 |
+| PATCH | `/executors/{id}` | 更新执行器元数据 |
+| GET | `/executors/{id}/executions` | 获取执行器的任务执行历史 |
+| GET | `/executors/{id}/metrics` | 获取执行器性能指标 |
+| POST | `/executors/{id}/reload-config` | 向执行器推送配置热更新 |
+| GET | `/executors/{id}/removal-impact` | 预览删除该执行器会破坏什么 |
+| POST | `/executors/{id}/rotate-token` | 轮换执行器令牌 |
+| POST | `/executors/{id}/set-offline` | 将执行器标记为离线 |
+| GET | `/executors/artifact/executor-node.tar.gz` | 下载 executor-node 安装产物（tar.gz） |
+| POST | `/executors/command-result` | 上报 pull 控制命令的执行结果 |
+| GET | `/executors/config` | 获取面向执行器的配置（pull 模式热更新） |
+| GET | `/executors/groups` | 获取全部执行器分组 |
+| POST | `/executors/heartbeat` | 心跳上报 |
+| GET | `/executors/install-cmd` | 获取执行器安装命令 |
+| GET | `/executors/install.sh` | 下载执行器安装脚本 |
+| POST | `/executors/offline` | 执行器下线通知 |
+| GET | `/executors/picker` | 列出执行器选择器选项（轻量） |
+| POST | `/executors/pull` | 拉取派发载荷（长轮询） |
+| POST | `/executors/register` | 注册执行器 |
+| GET | `/executors/runtime-config` | 获取生效的执行器运行配置 |
+| GET | `/executors/tags` | 获取全部执行器标签 |
+| POST | `/executors/token` | 获取动态令牌 |
+| GET | `/health` | 基础健康检查 |
+| GET | `/health/detailed` | 详细健康检查（需认证） |
+| GET | `/health/live` | 存活检查 |
+| GET | `/health/metrics` | 系统指标（需认证） |
+| GET | `/health/ready` | 就绪检查 |
+| GET | `/health/services` | 服务状态（需认证） |
+| GET | `/metrics` | Prometheus 指标端点 |
+| GET | `/metrics/executors` | - |
+| GET | `/metrics/failures` | - |
+| GET | `/metrics/scheduler` | - |
+| GET | `/metrics/stream` | 仪表盘汇总 SSE 流（UI-14 第一阶段） |
+| GET | `/metrics/summary` | - |
+| GET | `/metrics/trend` | - |
+| GET | `/mutex-groups` | 列出互斥组（供应用表单下拉与后台管理使用） |
+| POST | `/mutex-groups` | 创建互斥组 |
+| DELETE | `/mutex-groups/{id}` | 删除互斥组（已关联的应用会变为未分组） |
+| PUT | `/mutex-groups/{id}` | 更新互斥组（名称 / maxConcurrentPerDevice） |
+| GET | `/notification/channels` | 获取所有通知渠道配置 |
+| PATCH | `/notification/channels/{key}` | 更新通知渠道配置 |
+| POST | `/notification/channels/{key}/test` | 测试通知渠道 |
+| POST | `/notification/send` | 从任务代码发送通知（SDK，仅管理员） |
+| GET | `/notification/silences` | 列出通知静默（已持久化） |
+| POST | `/notification/silences` | 创建通知静默 |
+| DELETE | `/notification/silences/{id}` | 移除通知静默 |
+| POST | `/notification/test` | 向渠道发送测试通知 |
+| GET | `/projects` | 列出调用者可访问的项目 |
+| POST | `/projects` | 创建项目（ADMIN） |
+| DELETE | `/projects/{id}` | - |
+| GET | `/projects/{id}` | 按 id 获取项目 |
+| PATCH | `/projects/{id}` | 更新项目（ADMIN） |
+| GET | `/projects/{id}/members` | 列出项目成员 |
+| POST | `/projects/{id}/members` | 新增或更新项目成员（ADMIN） |
+| DELETE | `/projects/{id}/members/{userId}` | - |
+| PATCH | `/projects/{id}/members/{userId}` | 变更成员角色（ADMIN） |
+| GET | `/projects/{id}/removal-impact` | 预览删除该项目的后果 |
+| GET | `/projects/me/roles` | 调用者在各项目中的角色 |
+| GET | `/registry/npm/packages` | - |
+| GET | `/registry/pypi/packages` | - |
+| POST | `/registry/pypi/upload` | - |
+| GET | `/sop` | SOP 列表（可按 status 过滤） |
+| POST | `/sop` | 起草 SOP（draft 态；slug 重复则覆盖草稿） |
+| GET | `/sop/{id}` | SOP 详情 |
+| PATCH | `/sop/{id}` | 编辑工作副本（published 态也可编辑——真身在不可变版本快照） |
+| POST | `/sop/{id}/assign` | 指派给执行器（executorId 或 executorAddress 二选一） |
+| GET | `/sop/{id}/assignments` | 指派记录 |
+| POST | `/sop/{id}/publish` | 发布（严格校验 + 不可变版本快照 + contentHash） |
+| GET | `/sop/{id}/versions` | 版本历史（不可变快照列表） |
+| GET | `/sop/assignable-executors` | 当前租约内可接 SOP 指派的执行器（agent:sop） |
+| GET | `/sop/assignments/{assignmentId}` | 指派详情（含澄清对话全量） |
+| POST | `/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply` | 人工回复一条澄清（升级转人工后的答复入口） |
+| GET | `/sop/assignments/{assignmentId}/media` | 指派的媒体清单 |
+| GET | `/sop/media/{mediaId}` | 下载执行器回传的媒体（截图/录屏） |
+| GET | `/task-templates` | 列出任务模板（官方 + 自定义） |
+| POST | `/task-templates` | 创建自定义任务模板 |
+| DELETE | `/task-templates/{id}` | 删除自定义任务模板 |
+| GET | `/task-templates/{id}` | 获取单个任务模板 |
+| POST | `/task-templates/{id}/instantiate` | 从模板创建可运行任务（一键克隆） |
+| GET | `/tasks` | 列出任务 |
+| POST | `/tasks` | 创建任务 |
+| POST | `/tasks-batch/delete` | 批量删除任务（已废弃） |
+| POST | `/tasks-batch/pause` | 批量暂停任务（已废弃） |
+| POST | `/tasks-batch/resume` | 批量恢复任务（已废弃） |
+| POST | `/tasks-batch/trigger` | 批量触发任务（已废弃） |
+| DELETE | `/tasks/{id}` | 删除任务 |
+| GET | `/tasks/{id}` | 任务详情 |
+| PATCH | `/tasks/{id}` | 更新任务 |
+| GET | `/tasks/{id}/executions` | 执行记录 |
+| GET | `/tasks/{id}/executions/{execId}` | 执行详情 |
+| POST | `/tasks/{id}/executions/{execId}/analyze` | AI 分析执行 |
+| POST | `/tasks/{id}/executions/{execId}/kill` | 取消执行 |
+| GET | `/tasks/{id}/executions/{execId}/logs` | 执行日志 |
+| GET | `/tasks/{id}/executions/{execId}/logs/stream` | 执行日志 SSE 流 |
+| GET | `/tasks/{id}/executions/{execId}/report` | 执行报告 + 时间线 |
+| GET | `/tasks/{id}/export` | 将任务定义导出为可下载的 JSON 文件 |
+| PUT | `/tasks/{id}/glue` | 更新 GLUE 脚本 |
+| POST | `/tasks/{id}/pause` | 暂停任务 |
+| POST | `/tasks/{id}/resume` | 恢复任务 |
+| POST | `/tasks/{id}/rollback` | Git 回滚（按 commit SHA） |
+| GET | `/tasks/{id}/stats` | 任务执行统计 |
+| POST | `/tasks/{id}/suggest-schedule` | AI 调度建议 |
+| POST | `/tasks/{id}/trigger` | 手动触发 |
+| GET | `/tasks/{id}/versions` | 版本列表 |
+| POST | `/tasks/{id}/versions/{versionId}/rollback` | 版本回滚（按任务配置快照） |
+| GET | `/tasks/{id}/versions/{versionId1}/compare/{versionId2}` | 版本差异 |
+| GET | `/tasks/{id}/webhook` | 获取任务 Webhook 状态 |
+| POST | `/tasks/{id}/webhook/disable` | 停用任务 Webhook |
+| POST | `/tasks/{id}/webhook/enable` | 启用任务 Webhook |
+| POST | `/tasks/{id}/webhook/rotate` | 轮换任务 Webhook 密钥 |
+| POST | `/tasks/batch/delete` | 批量删除任务 |
+| POST | `/tasks/batch/pause` | 批量暂停任务 |
+| POST | `/tasks/batch/resume` | 批量恢复任务 |
+| POST | `/tasks/batch/trigger` | 批量触发任务 |
+| GET | `/tasks/executions/{execId}` | 执行详情（按执行 ID） |
+| GET | `/tasks/executions/{execId}/artifacts` | 列出执行产物（manifest，仅管理员） |
+| GET | `/tasks/executions/{execId}/artifacts/{name}` | 下载单个执行产物（流式，仅管理员） |
+| GET | `/tasks/executions/{execId}/logs` | 执行日志（按执行 ID） |
+| GET | `/tasks/executions/all` | 全局执行记录 |
+| GET | `/tasks/executions/export` | 导出执行记录为 CSV（流式，仅管理员） |
+| POST | `/tasks/import` | 导入任务定义（JSON 导出载荷） |
+| GET | `/tasks/scheduler/stats` | 调度器状态 |
+| GET | `/users` | 获取用户列表 |
+| POST | `/users` | 创建用户 |
+| DELETE | `/users/{id}` | 删除用户 |
+| GET | `/users/{id}` | 获取用户详情 |
+| PATCH | `/users/{id}` | 更新用户 |
+| POST | `/webhooks/tasks/{taskId}` | 通过入站 Webhook 触发任务 |
+
+<!-- API-APPENDIX:END -->
