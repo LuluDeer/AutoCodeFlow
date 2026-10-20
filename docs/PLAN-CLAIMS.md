@@ -2673,3 +2673,35 @@ def _parse_retry_after(raw): ...      # delta-seconds 或 HTTP-date
 最后改成**按方法体边界**才可靠。**两次都是「近似判据」被「精确枚举」取代。**
 
 **结果**：缺口不是 1 处而是 **7 处候选**，需要按严重性分级（不可逆的 `apikey revoke` 最重，`task kill` 可重跑最轻）。
+- 2026-10-20 **R196 · 独立确认 `isJsonInvocation` 的误判来源：一个 deprecated 的 `--json <body>` 旗标**。
+
+`ui.ts:73-77`：
+
+```ts
+export function isJsonInvocation(argv = process.argv): boolean {
+  return argv.slice(2).includes('--json');
+}
+```
+
+它是**全局 argv 探针**（不是读已解析的 options）。而 `apps.ts:160` 有：
+
+```
+.option('--json <body>', 'DEPRECATED (renamed to --body): Application body as JSON string.')
+```
+
+⇒ `acf app create --json '{"name":"x"}'`（用旧旗标传 body）会让 `argv` 里出现 `--json`，
+于是**错误输出被判成 JSON 模式**（`emitError` 走 `JSON.stringify(apiErrorToJson(...))`），而用户要的是人读输出。
+
+**严重性校准（低）**：它只影响**错误输出格式**，不影响业务行为、不影响退出码。而既有写法 `opts.json ?? isJsonInvocation()`
+说明主路径是读 options 的，探针只是兜底。
+
+## 但根因值得指出
+
+> 一个**已废弃**的旗标，污染了一个**正在使用**的判据。
+
+废弃旗标的问题不只是「还有人用」，而是**它仍占用同一个名字**，于是任何按名字做的判断都会误命中。
+
+**我的建议（比修探针更彻底）**：直接**删掉 `--json <body>`**（它已标 DEPRECATED 且已改名为 `--body`），
+探针的误判来源就消失了 —— 不需要给 `isJsonInvocation` 加更多条件，**那只会让一个兜底逻辑越来越聪明**。
+
+（具体删不删要看过是否有用户在用 —— 这是发布件的兼容性决策，我不单方面删。）
