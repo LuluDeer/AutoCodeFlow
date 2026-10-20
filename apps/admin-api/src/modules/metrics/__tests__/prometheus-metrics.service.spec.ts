@@ -6,6 +6,8 @@ import { SchedulerService } from "../../scheduler/scheduler.service";
 import { ExecutionCallbackMetricsService } from "../../task/execution-callback-metrics.service";
 // 可观测性补齐轮：运行时计数器模块级入口（Task/Notification 埋点的同一实例）
 import { recordRuntime, resetRuntimeMetrics } from "../runtime-metrics-entry";
+// R33-A1: 通知投递结果值域登记（四值）——本 spec 独立钉住契约与基数
+import { RUNTIME_NOTIFICATION_RESULTS } from "../runtime-metrics";
 
 /**
  * R7: prom-client exposition 端点测试。
@@ -238,6 +240,8 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
         );
       }
       expect(text).toContain("autoflow_sse_streams_rejected_total 0");
+      // R33-A1: 通知投递结果值域 = 四值。这里**写死字面量**而非常量——
+      // 常量被删值时本用例必须红（契约独立于实现，才是防漂移钉子）。
       for (const channel of [
         "email",
         "slack",
@@ -246,12 +250,24 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
         "webhook",
         "feishu",
       ]) {
-        for (const result of ["success", "failure"]) {
+        for (const result of ["success", "failure", "blocked", "skipped"]) {
           expect(text).toContain(
             `autoflow_notification_delivery_total{channel="${channel}",result="${result}"} 0`,
           );
         }
       }
+      // 基数钉子：6 渠道 × 4 值 = 24 条 0 值 series（R33-A1 之前是 12）。
+      // 多登记/漏登记都会改变这个数字（漏登记 → 新值无基线 → 告警「无数据」）。
+      expect(
+        text.match(/autoflow_notification_delivery_total\{/g),
+      ).toHaveLength(24);
+      // 登记表与上面的契约字面量必须完全一致（两个方向都钉）
+      expect([...RUNTIME_NOTIFICATION_RESULTS].sort()).toEqual([
+        "blocked",
+        "failure",
+        "skipped",
+        "success",
+      ]);
       for (const result of [
         "accepted",
         "duplicate",

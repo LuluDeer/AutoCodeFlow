@@ -108,6 +108,54 @@ export interface AlertSilence {
  */
 export type ChannelDeliveryResults = Record<string, ChannelDeliveryStatus>;
 
+/**
+ * R33-A1: `autoflow_notification_delivery_total` 的 result 标签值域。
+ *
+ * 为什么不是 {success, failure} 二值：渠道有四种**语义不同**的投递结局，
+ * 把它们折叠成二值会让看板/告警说出错误的话——
+ *  - success  — 渠道真的投出去了（"sent"；以及 mock/legacy 渠道返回 undefined
+ *               的历史契约，见下方 sendToChannels 的 `?? "sent"`）；
+ *  - failure  — 传输/API 故障（渠道自报 "failed"，或 promise rejected）；
+ *  - blocked  — 被 SSRF 策略拦截（assertSafeHttpUrl 拒绝）：一种**策略决定**，
+ *               不是传输故障，也不代表目标不可达；
+ *  - skipped  — 渠道未配置（无 URL/凭据，零次尝试）：既不是投递成功，也不是
+ *               投递失败，把它计入 failure 会伪造出一条渠道故障。
+ *
+ * 加性变更：success / failure 两个老值语义不变（仅口径变严——self-reported
+ * 'failed' 从 success 迁出，见 R33-A1 报告），blocked / skipped 是新增 series，
+ * 老看板与告警规则里的 `result="failure"` 表达式无需改动即可继续工作。
+ */
+export type DeliveryMetricResult =
+  | "success"
+  | "failure"
+  | "blocked"
+  | "skipped";
+
+/**
+ * R33-A1: 把一次逐渠道投递结局映射成指标 result label。
+ *
+ * 这曾是缺陷所在：旧实现用 `result.status === "rejected" ? "failure" : "success"`
+ * 直接判 promise 状态，完全绕过了渠道自报的 ChannelDeliveryStatus。生产常态恰恰
+ * 是渠道把传输失败吞成返回值 'failed'（重试耗尽，见各 channel.send 的 catch），
+ * 于是「没投出去」被 100% 记成 success，看板与告警系统性低估投递失败。
+ * 单一事实来源必须是 delivery status 本身（与同函数 A-1 审计兜底、DTO 口径一致）。
+ */
+export function mapDeliveryResultLabel(
+  status: ChannelDeliveryStatus,
+): DeliveryMetricResult {
+  switch (status) {
+    case "failed":
+      return "failure";
+    case "blocked":
+      return "blocked";
+    case "skipped":
+      return "skipped";
+    case "sent":
+    default:
+      return "success";
+  }
+}
+
 @Injectable()
 export class NotificationService implements OnModuleInit, OnModuleDestroy {
   private logger = new Logger(NotificationService.name);
@@ -410,14 +458,22 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     const failures: string[] = [];
     results.forEach((result, i) => {
       const name = entries[i].name;
-      // 可观测性补齐：per-channel 投递结果计数（success/failure）。判定口径：
-      // promise rejected（渠道异常）计 failure，其余（含 mocked/blocked——
-      // SSRF 拦截是策略结果而非投递故障）计 success。fail-open 语义不变：
+      // R33-A1: 先把「这次投递的真实结局」算成一个 ChannelDeliveryStatus，
+      // 再让指标、日志、返回值、审计全部读同一个值——单一事实来源。
+      // 旧实现反过来：指标直接看 promise 状态（非 rejected 即 success），
+      // 于是渠道自报的 'failed'/'blocked'/'skipped' 全被记成 success，
+      // 与下方返回值和 A-1 审计兜底（按 'failed' 判未投递）自相矛盾。
+      const status: ChannelDeliveryStatus =
+        result.status === "rejected"
+          ? "failed"
+          : ((result.value ?? "sent") as ChannelDeliveryStatus);
+      // 可观测性补齐：per-channel 投递结果计数。fail-open 语义不变：
       // 只记计数，不影响返回值与控制流。
       recordRuntime("autoflow_notification_delivery_total", {
         channel: name,
-        result: result.status === "rejected" ? "failure" : "success",
+        result: mapDeliveryResultLabel(status),
       });
+      delivery[name] = status;
       if (result.status === "rejected") {
         const msg =
           result.reason instanceof Error
@@ -428,15 +484,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
           result.reason instanceof Error ? result.reason.stack : undefined,
         );
         failures.push(`${name}: ${msg}`);
-        delivery[name] = "failed";
-      } else {
-        const status = (result.value ?? "sent") as ChannelDeliveryStatus;
-        delivery[name] = status;
-        if (status === "blocked") {
-          this.logger.warn(
-            `${name} notification blocked by SSRF guard — see channel log for the URL`,
-          );
-        }
+      } else if (status === "blocked") {
+        this.logger.warn(
+          `${name} notification blocked by SSRF guard — see channel log for the URL`,
+        );
       }
     });
 

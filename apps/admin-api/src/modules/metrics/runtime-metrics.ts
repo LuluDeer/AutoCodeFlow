@@ -39,8 +39,33 @@ export const RUNTIME_NOTIFICATION_CHANNELS = [
   "feishu",
 ] as const;
 
-/** autoflow_notification_delivery_total 的 result 标签全集 */
-export const RUNTIME_NOTIFICATION_RESULTS = ["success", "failure"] as const;
+/**
+ * autoflow_notification_delivery_total 的 result 标签全集。
+ *
+ * R33-A1: 从 {success, failure} 扩到四值，与 NotificationService 导出的
+ * `mapDeliveryResultLabel` 映射表一一对应（漂移由两侧 spec 各自钉住）：
+ *  - success — 渠道真的投出去了（'sent'；legacy/mock 渠道返回 undefined 同义）；
+ *  - failure — 传输/API 故障（渠道自报 'failed'，或 promise rejected）；
+ *  - blocked — 被 SSRF 策略拦截（assertSafeHttpUrl 拒绝）：**策略决定**，
+ *              不是传输故障，也不代表目标不可达；
+ *  - skipped — 渠道未配置（无 URL/凭据，零次尝试）：既非成功也非失败，
+ *              计入 failure 会伪造一条渠道故障。
+ *
+ * 为什么必须**登记**（而不是只依赖渲染侧「快照里出现才画」的兜底）：未登记的
+ * 组合在首次命中前根本不存在，rate()/increase() 与看板呈现的是「无数据」而
+ * 不是 0 —— 对告警表达式来说「无数据」与「0」语义完全不同（尤其是
+ * `result="blocked"` 这类要新加告警的值，无基线时告警在首次拦截前是黑的）。
+ *
+ * 基数影响：labelValueSets = 渠道 × 值，6 × 4 = **24 条 0 值 series**
+ * （R33-A1 之前是 12 条）。24 条全零整数 series 的抓取/存储成本可忽略，
+ * 换取的是「已知标签组合全部有基线」这条既有不变量的完整性。
+ */
+export const RUNTIME_NOTIFICATION_RESULTS = [
+  "success",
+  "failure",
+  "blocked",
+  "skipped",
+] as const;
 
 /**
  * autoflow_callback_business_total 的 result 标签全集——与 handleCallback
@@ -117,7 +142,7 @@ export interface RuntimeCounterSpec {
   labelValueSets: ReadonlyArray<Readonly<Record<string, string>>>;
 }
 
-/** 已知渠道 × {success, failure} 的全部组合 */
+/** 已知渠道 × {success, failure, blocked, skipped} 的全部组合（R33-A1 起 6×4=24） */
 const notificationLabelValueSets: Array<Record<string, string>> = [];
 for (const channel of RUNTIME_NOTIFICATION_CHANNELS) {
   for (const result of RUNTIME_NOTIFICATION_RESULTS) {
@@ -156,7 +181,7 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       labelValueSets: [{ reason: "wrong_path" }],
     },
     autoflow_notification_delivery_total: {
-      help: "Notification fan-out deliveries by channel and result (success / failure)",
+      help: "Notification fan-out deliveries by channel and result (success / failure / blocked = SSRF policy block / skipped = channel not configured)",
       labelNames: ["channel", "result"],
       labelValueSets: notificationLabelValueSets,
     },

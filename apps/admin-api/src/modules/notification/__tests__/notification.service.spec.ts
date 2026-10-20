@@ -5,6 +5,8 @@ import {
   AlertLevel,
   AlertChannel,
   MAX_ALERT_SILENCES,
+  // R33-A1: 投递结局 → 指标 result label 的映射（口径钉子）
+  mapDeliveryResultLabel,
 } from "../notification.service";
 import { WecomChannel } from "../channels/wecom.channel";
 import { DingtalkChannel } from "../channels/dingtalk.channel";
@@ -24,6 +26,8 @@ import {
   getRuntimeCountersSnapshot,
   resetRuntimeMetrics,
 } from "../../metrics/runtime-metrics-entry";
+// R33-A1: 指标 result 值域登记（metrics 侧）；本 spec 校验映射表与之无漂移
+import { RUNTIME_NOTIFICATION_RESULTS } from "../../metrics/runtime-metrics";
 
 const mockChannel = () => ({ send: jest.fn() });
 
@@ -331,11 +335,21 @@ describe("NotificationService", () => {
       resetRuntimeMetrics();
     });
     const payload = { title: "t", content: "c", level: "info" as const };
-    const deliveryCount = (channel: string, result: "success" | "failure") =>
+    const deliveryCount = (
+      channel: string,
+      result: "success" | "failure" | "blocked" | "skipped",
+    ) =>
       runtimeCount("autoflow_notification_delivery_total", {
         channel,
         result,
       });
+    /** 该计数器当前落地的全部 label 组合（复现/取证用：打印实际收到的值） */
+    const deliveryLabels = () =>
+      Array.from(
+        getRuntimeCountersSnapshot()
+          .get("autoflow_notification_delivery_total" as never)
+          ?.entries() ?? [],
+      ).map(([key, count]) => ({ ...JSON.parse(key), count }));
 
     it("counts per-channel success/failure and accumulates across fan-outs", async () => {
       const errSpy = jest
@@ -359,17 +373,50 @@ describe("NotificationService", () => {
       warnSpy.mockRestore();
     });
 
-    it("counts blocked/skipped/legacy-void outcomes as success (not delivery failures)", async () => {
+    // R33-A1: 旧断言是「blocked/skipped 一律计 success」——那正是缺陷的固化
+    // （SSRF 策略拦截 ≠ 投递成功，但也不是投递故障；二者语义还互不相同）。
+    // 现为三条互斥 series：blocked / skipped / legacy-void→success。
+    it("R33-A1: blocked / skipped / legacy-void are three distinct series — none is success", async () => {
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
+      // slack 被 SSRF 拦截、dingtalk 未配置、wecom 是老 mock 渠道（返回 undefined）
       slack.send.mockResolvedValue("blocked");
-      wecom.send.mockResolvedValue(undefined); // legacy mock 渠道
+      dingtalk.send.mockResolvedValue("skipped");
+      wecom.send.mockResolvedValue(undefined);
 
-      await service.sendToChannels(payload, ["slack" as any, "wecom" as any]);
-      expect(deliveryCount("slack", "success")).toBe(1);
+      await service.sendToChannels(payload, [
+        "slack" as any,
+        "dingtalk" as any,
+        "wecom" as any,
+      ]);
+      // blocked 与 skipped 各自成值，既不混入 success 也不混入 failure
+      expect(deliveryCount("slack", "blocked")).toBe(1);
+      expect(deliveryCount("slack", "success")).toBe(0);
       expect(deliveryCount("slack", "failure")).toBe(0);
+      expect(deliveryCount("dingtalk", "skipped")).toBe(1);
+      expect(deliveryCount("dingtalk", "success")).toBe(0);
+      expect(deliveryCount("dingtalk", "failure")).toBe(0);
+      // legacy 渠道返回 undefined 仍按历史契约算 "sent" → success（零破坏）
       expect(deliveryCount("wecom", "success")).toBe(1);
+      expect(deliveryCount("wecom", "failure")).toBe(0);
+      warnSpy.mockRestore();
+    });
+
+    it("R33-A1: rejected promise and channel-reported 'failed' land on the SAME failure series", async () => {
+      jest.spyOn(Logger.prototype, "error").mockImplementation(() => {});
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      // 两种「没投出去」的到达路径：抛错 vs 自报 failed（生产常态）
+      email.send.mockRejectedValue(new Error("smtp down"));
+      slack.send.mockResolvedValue("failed");
+
+      await service.sendToChannels(payload, ["email" as any, "slack" as any]);
+      expect(deliveryCount("email", "failure")).toBe(1);
+      expect(deliveryCount("slack", "failure")).toBe(1);
+      expect(deliveryCount("email", "success")).toBe(0);
+      expect(deliveryCount("slack", "success")).toBe(0);
       warnSpy.mockRestore();
     });
 
@@ -380,6 +427,59 @@ describe("NotificationService", () => {
       ).resolves.toBe("sent");
       expect(deliveryCount("webhook", "success")).toBe(0);
       expect(deliveryCount("webhook", "failure")).toBe(0);
+    });
+
+    // ── R33-A1 复现 ────────────────────────────────────────────────
+    // 缺陷：:417-420 的判据是 `result.status === "rejected" ? "failure" : "success"`,
+    // 只问 promise 有没有 reject，**完全不看渠道自报的 ChannelDeliveryStatus**。
+    // 而生产常态恰恰是渠道把传输失败吞成返回值 'failed'（重试 3 次退避耗尽，
+    // wecom/dingtalk/slack/email 同型，见各 channel.send 的 catch 分支），
+    // 于是「没投出去」在指标里 100% 记成 success。同一函数下方 :465-467 的 A-1
+    // 审计兜底却按 delivery[name] === 'failed' 判定，两套口径并存。
+    it("R33-A1 repro: a channel self-reporting 'failed' must NOT be counted as success", async () => {
+      jest.spyOn(Logger.prototype, "error").mockImplementation(() => {});
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      slack.send.mockResolvedValue("failed");
+
+      const results = await service.sendToChannels(payload, ["slack" as any]);
+      // 返回值侧口径本来就是对的（'failed'）——只有指标侧失真
+      expect(results).toEqual({ slack: "failed" });
+
+      // 打印实际落地的 label，让「被记成什么」可肉眼核验
+      // eslint-disable-next-line no-console
+      console.log("R33-A1 actual delivery labels:", JSON.stringify(deliveryLabels()));
+
+      expect(deliveryCount("slack", "success")).toBe(0);
+      expect(deliveryCount("slack", "failure")).toBe(1);
+      warnSpy.mockRestore();
+    });
+
+    // R33-A1: 映射表的硬约束钉子——(a) 'failed' 绝不进 success；
+    // (b) 'blocked'（SSRF 策略拦截）与 'skipped'（渠道未配置）不得合并成一个值；
+    // (c) success/failure 两个老 label 值仍在（加性变更，老 series 不消失）。
+    it("R33-A1: mapDeliveryResultLabel keeps the four outcomes pairwise distinct", () => {
+      expect(mapDeliveryResultLabel("sent")).toBe("success");
+      expect(mapDeliveryResultLabel("failed")).toBe("failure");
+      expect(mapDeliveryResultLabel("blocked")).toBe("blocked");
+      expect(mapDeliveryResultLabel("skipped")).toBe("skipped");
+      const statuses = ["sent", "failed", "blocked", "skipped"] as const;
+      const labels = statuses.map(mapDeliveryResultLabel);
+      // 四态 → 四值，无折叠
+      expect(new Set(labels).size).toBe(statuses.length);
+      // 加性：老的两个值仍在值域内
+      expect(labels).toEqual(expect.arrayContaining(["success", "failure"]));
+      // 只有 'sent' 能落进 success —— 'failed'/'blocked'/'skipped' 都不行
+      expect(
+        statuses.filter((s) => mapDeliveryResultLabel(s) === "success"),
+      ).toEqual(["sent"]);
+      // 与 metrics 侧登记表零漂移：映射表能产出的值 === RUNTIME_NOTIFICATION_RESULTS。
+      // 漏登记 → 新值没有 0 值基线（rate()/告警在首次命中前是「无数据」）；
+      // 多登记 → 永远为 0 的死 series。两边任一改动而不同步，本断言即红。
+      expect([...RUNTIME_NOTIFICATION_RESULTS].sort()).toEqual(
+        [...new Set(labels)].sort(),
+      );
     });
   });
 
