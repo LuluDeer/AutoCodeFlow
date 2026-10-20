@@ -1568,3 +1568,19 @@ UPDATE tasks SET lastTriggerTime = now()
   **按指示不动的**（纯 API 美化）：http 熔断裸 RuntimeError / http·notify 无 `__del__` 兜底 / db `DatabaseSession` 所有权语义 / ai 计费 POST 超时重试 / notify `level` 客户端不校验。
   **需真环境**：真网络（TLS/代理/真 Retry-After）、真 PG（pool_pre_ping/连接失效下的 rollback）、admin-api 真实错误体契约 —— 均如实标注，未用单测冒充。
   **遗留 A（依赖「包保留」前提）**：这些修复 + 20 个新用例 + 4 份 README 的价值，全部取决于 R135/R136 那个待决策项（四包接发布线 or 删除）。
+- 2026-10-20 **R139 · 复核 R134-A1 的两处可机验结论（部分成功，如实记）**：
+
+**✅ 复核成立**：`RetryConfig` 的字段表实测为
+`['max_retries', 'min_wait_sec', 'max_wait_sec', 'retryable_statuses', 'safe_methods_only', 'max_retry_after_sec']` ——
+新字段**追加在末尾且带默认值** ⇒ 既有按位置构造的调用不受影响；`max_retry_after_sec` 默认 `None` ⇒
+「无条件尊重服务端 Retry-After」的旧契约**逐字保留**（这正是 agent 声称的、也是不该悄悄改的东西）。
+
+**⚠️ 复核未成立（我的探针问题，不是代码问题）**：想直接验证 clamp 行为，用鸭子类型伪造 `RetryCallState` 调
+`_WaitWithRetryAfter.__call__`，结果 `clamp=None` 与 `clamp=5` 都返回 `0.5`（基础退避）——说明我伪造的状态对象
+没被识别（它对真实 `RetryCallState` 的取值路径与我猜的不同），**Retry-After 根本没被读到**。
+所以这次探针**既没证实也没证伪** clamp，我不把它写成结论。
+
+这已是本 session 第二次「想独立复核却卡在 API 形状」上（上次是 node-cron 的 DST）。两次的共同点：
+**被验证的代码依赖一个第三方类型，而我按记忆伪造了它**。下次应先读该类型的真实定义，或直接用它的构造器。
+
+**这条留在账上**：`_WaitWithRetryAfter` 的 clamp 目前只有 agent 的用例覆盖，**没有总控独立复核**。
