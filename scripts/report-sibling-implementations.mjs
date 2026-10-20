@@ -114,7 +114,15 @@ for (const c of CONCEPTS) {
   for (const f of files) {
     const rel = relative(ROOT, f).split(sep).join("/");
     const src = readFileSync(f, "utf8");
-    if (!c.patterns.some((p) => p.test(src))) continue;
+    // 排除**守卫自己的豁免标记行**：`constant-time-exempt: …` 这类注释里带着概念词，
+    // 会被当成「这里实现了该概念」—— 那是**测量工具污染自己的测量结果**。
+    // 实测：R81 给桌面端三处加豁免注释后，本雷达立刻把 `executor-desktop` 报成
+    // 「新增一个 app 的恒定时间实现」（4 app/12 文件 → 5 app/16 文件），而那里一行实现都没有。
+    const sourceWithoutMarkers = src
+      .split("\n")
+      .filter((line) => !line.includes("-exempt"))
+      .join("\n");
+    if (!c.patterns.some((p) => p.test(sourceWithoutMarkers))) continue;
     const app = appOf(rel);
     if (!byApp.has(app)) byApp.set(app, []);
     byApp.get(app).push(rel);
