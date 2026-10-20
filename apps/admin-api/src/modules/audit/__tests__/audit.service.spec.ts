@@ -679,4 +679,54 @@ describe("AuditService", () => {
       expect(csv.split("\n")).toHaveLength(10_000); // header + 9999
     });
   });
+
+  // ─── R67-A1: GET /audit/actions 的数据源（去重动作清单）─────────────────────
+  // 关键纪律：去重与排序必须**留在 DB**（audit_logs 只增、表可以很大）。
+  describe("R67-A1 listDistinctActions", () => {
+    const makeDistinctQb = (rows: unknown[]) => ({
+      select: jest.fn().mockReturnThis(),
+      distinct: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rows),
+    });
+
+    it("DISTINCT 与 ORDER BY 都下推给 SQL（不把全表搬进内存）", async () => {
+      const qb = makeDistinctQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      await service.listDistinctActions();
+
+      expect(qb.select).toHaveBeenCalledWith("log.action", "action");
+      // 去重在 DB 侧：显式 distinct(true)，而不是 JS 里 new Set()
+      expect(qb.distinct).toHaveBeenCalledWith(true);
+      // 字母序也由 SQL 给（前端下拉照序渲染，不再自己排）
+      expect(qb.orderBy).toHaveBeenCalledWith("log.action", "ASC");
+      // 反证：一旦退化成"find 全表 + Set"，这两条立刻红
+      expect(repo.find).not.toHaveBeenCalled();
+      expect(qb.getRawMany).toHaveBeenCalledTimes(1);
+    });
+
+    it("把 raw 行映射成 string[]，并丢弃 null / 空串 / 缺键行", async () => {
+      const qb = makeDistinctQb([
+        { action: "auth.login" },
+        { action: "task.create" },
+        { action: null },
+        { action: "" },
+        {},
+      ]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      // 脏行不能让前端下拉崩掉（选项 label 取不到值时的渲染事故）
+      await expect(service.listDistinctActions()).resolves.toEqual([
+        "auth.login",
+        "task.create",
+      ]);
+    });
+
+    it("空库返回空数组（不是 null / undefined）", async () => {
+      const qb = makeDistinctQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await expect(service.listDistinctActions()).resolves.toEqual([]);
+    });
+  });
 });

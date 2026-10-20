@@ -287,6 +287,61 @@ export class AuditService {
   }
 
   /**
+   * R67-A1：GET /audit/actions 的数据源——**去重后的 action 列表**。
+   *
+   * 解决的问题不是"能不能筛"，而是"**筛得到吗**"：审计动作已有 61 个（19 个域），
+   * 页面上的 action 过滤器长期是自由文本输入框，用户必须**先知道**动作名（还得分
+   * 大小写/点号写法）才能筛。能筛，但只有把名字背下来的管理员能用。
+   *
+   * ## 为什么是 DB 侧 DISTINCT，而不是把行拉回来再 new Set()
+   *
+   * audit_logs 是**只增表**（180 天 retention 之外不删），量级与部署时长成正比。
+   * 取 distinct 的朴素写法（find 全表 → Set）会把整张表连同 jsonb 的 detail 列搬进
+   * 内存，只为了取几十个字符串——既是 O(表) 内存，也是把 DB 往网络里倒灌。
+   * 故 DISTINCT 与 ORDER BY **都下推到 SQL**，返回值只有"动作种数"那么几行。
+   *
+   * ## 成本与索引现状（先查实体/迁移，不靠猜）
+   *
+   * 本表**已有** action 索引，本端点无需新迁移：
+   *   · idx_audit_logs_action（单列 action，迁移 1717473142683-AddPerformanceIndexes）；
+   *   · idx_audit_logs_action_created_at（action + createdAt 复合索引，迁移
+   *     1790000000022，为「按 action 过滤 + createdAt DESC 排序」而建，见实体 @Index）。
+   *
+   * 所以 SELECT DISTINCT action FROM audit_logs ORDER BY action 可以走
+   * **index-only scan**（只读索引页、不回表），再对已按 action 排好序的索引输出做
+   * Unique/Group：成本约 O(action 索引大小)，与表行宽（detail jsonb、ip 等）无关；
+   * 排序也由索引顺序免费获得，不需要额外 Sort 节点。
+   *
+   * 但仍要正视：它**是**一次全索引扫描，不是 O(1)。故本方法只被 GET /audit/actions
+   * 消费（页面首屏一次），**绝不**进列表查询路径；若要再压成本，正确方向是给该端点
+   * 加短 TTL 缓存（动作集合变化极慢），而不是把它塞进 findAll。
+   *
+   * ## 顺序与形状
+   *
+   * 按 action 字母序返回（下拉直接照序渲染，前端不用再排）；非字符串/空串行被丢弃
+   * ——action 列在实体上是 NOT NULL，但历史数据与手工修库不能假设干净，一个 null
+   * 混进下拉会让前端选项渲染直接崩掉。响应形状见 AuditActionsDto（{ actions }）。
+   */
+  async listDistinctActions(): Promise<string[]> {
+    const rows = await this.repo
+      .createQueryBuilder("log")
+      .select("log.action", "action")
+      // DISTINCT 下推（PG: SELECT DISTINCT）——不是 JS 侧去重，见方法头注。
+      .distinct(true)
+      // 排序键与 select 列同源：PG 对 SELECT DISTINCT 要求 ORDER BY 表达式出现在
+      // select 列表里，而 log.action 正是被 select 的那一列，故合法。
+      .orderBy("log.action", "ASC")
+      .getRawMany<{ action: string | null }>();
+
+    return rows
+      .map((row) => row.action)
+      .filter(
+        (action): action is string =>
+          typeof action === "string" && action.length > 0,
+      );
+  }
+
+  /**
    * §2.1（推广到 `GET /audit`）keyset 分支：`(createdAt, id)` 行值比较翻页。
    *
    * ## 为什么与 task 域三个端点用**完全一样**的谓词

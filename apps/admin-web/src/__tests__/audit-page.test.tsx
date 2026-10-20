@@ -84,6 +84,48 @@ function lastAuditQuery(): string {
   return String(calls[calls.length - 1]?.[0] ?? '');
 }
 
+/** 读取最近一次 /audit/actions（动作清单）请求的 URL */
+function lastActionsQuery(): string {
+  const calls = mockedClient.get.mock.calls.filter(([url]) => String(url).startsWith('/audit/actions'));
+  return String(calls[calls.length - 1]?.[0] ?? '');
+}
+
+/**
+ * R67-A1：定位 action 过滤器（tags 模式 Select）的根节点。
+ *
+ * 不能像改造前那样用 `getByPlaceholderText('操作关键词')`：antd 6 的 Select 把
+ * placeholder 渲染成**浮层文本**（`.ant-select-placeholder`），input 上没有
+ * placeholder 属性——而且一旦选中值，那段文本就消失了。`.ant-select-multiple`
+ * 只出现在本页唯一的多选/可自由输入控件上（资源类型、执行结果都是单选），
+ * 故选它做稳定锚点。
+ */
+function actionSelect(): HTMLElement {
+  const root = document.querySelector('.ant-select-multiple') as HTMLElement | null;
+  expect(root, '未找到 action 过滤器（tags 模式 Select）').toBeTruthy();
+  return root!;
+}
+
+/**
+ * R67-A1：往 action 过滤器里**自由输入**一个关键词。
+ *
+ * 该过滤器已从 Input 换成 tags 模式 Select：键入的文字要**回车**才会成为一个 tag
+ * （= 一个过滤值），change 只更新搜索词。这是真实用户手势的等价物（打字 + Enter），
+ * 也是"自由输入没有被下拉吃掉"的可执行证据。
+ */
+function typeActionKeyword(value: string) {
+  const input = actionSelect().querySelector('input') as HTMLInputElement;
+  fireEvent.change(input, { target: { value } });
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 13 });
+}
+
+/** R67-A1：点掉 action 上的 tag（tags 模式的「×」）——清草稿但不触发搜索。 */
+function clearActionDraft() {
+  const remove = actionSelect().querySelector('.ant-select-selection-item-remove') as HTMLElement | null;
+  expect(remove, '未找到 action tag 的移除按钮').toBeTruthy();
+  // antd 6 的 tag 移除走 onClick（mouseDown 不会触发移除）
+  fireEvent.click(remove!);
+}
+
 beforeEach(() => {
   mockedClient.get.mockReset().mockResolvedValue({
     data: [
@@ -152,7 +194,7 @@ describe('AuditLogPage 筛选链路（QA-03）', () => {
     renderPage();
     await screen.findByText('创建任务');
 
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    typeActionKeyword('task');
     fireEvent.change(screen.getByPlaceholderText('操作人'), { target: { value: 'root' } });
     fireEvent.click(findBtn(document.body, '搜索')!);
 
@@ -168,7 +210,7 @@ describe('AuditLogPage 筛选链路（QA-03）', () => {
     renderPage();
     await screen.findByText('创建任务');
 
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    typeActionKeyword('task');
     fireEvent.click(findBtn(document.body, '搜索')!);
     await waitFor(() => {
       expect(lastAuditQuery()).toContain('action=task');
@@ -287,8 +329,8 @@ describe('AUTH-05 资源ID 筛选', () => {
     // 初始：无筛选 → 无重置按钮
     expect(findBtn(document.body, '重置')).toBeNull();
 
-    // 只敲字，不点搜索：草稿变了但筛选未应用 → 仍然不应出现
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    // 只敲字（回车成 tag），不点搜索：草稿变了但筛选未应用 → 仍然不应出现
+    typeActionKeyword('task');
     expect(findBtn(document.body, '重置')).toBeNull();
 
     // 点搜索 → 筛选真正应用 → 按钮出现
@@ -302,14 +344,14 @@ describe('AUTH-05 资源ID 筛选', () => {
     renderPage();
     await screen.findByText('创建任务');
 
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    typeActionKeyword('task');
     fireEvent.click(findBtn(document.body, '搜索')!);
     await waitFor(() => {
       expect(lastAuditQuery()).toContain('action=task');
     });
 
-    // 把输入框清空但**不**点搜索：列表仍是筛选态，按钮必须还在
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: '' } });
+    // 把草稿里的 tag 清掉但**不**点搜索：列表仍是筛选态，按钮必须还在
+    clearActionDraft();
     expect(findBtn(document.body, '重置')).toBeTruthy();
   });
 });
@@ -361,7 +403,7 @@ describe('A-12 审计 CSV 导出', () => {
     await screen.findByText('创建任务');
 
     // 应用一个筛选（action=task），导出应携带同一筛选
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    typeActionKeyword('task');
     fireEvent.click(findBtn(document.body, '搜索')!);
     await waitFor(() => {
       expect(lastAuditQuery()).toContain('action=task');
@@ -406,5 +448,105 @@ describe('A-12 审计 CSV 导出', () => {
       expect(lastExportQuery()).toBe('/audit/export');
     });
     successSpy.mockRestore();
+  });
+});
+
+// ─── R67-A1: action 过滤器 = 可发现下拉（GET /audit/actions 供选项）──────────
+/**
+ * 缺陷现场：动作已有 61 个（19 个域），而 action 过滤器是个自由文本输入框——
+ * 用户必须先**知道**动作名（还得分大小写/点号写法）才能筛。"能筛、筛不到"。
+ *
+ * 本组钉四件事：
+ *  ① 首屏向 /audit/actions 拉一次清单，并渲染成**可选**项（可发现）；
+ *  ② 选中即筛（查询串带 action），不必手打动作名；
+ *  ③ 下拉是**单选**语义（再选一个 = 替换），界面不撒谎（标签数 ≠ 过滤条件数）；
+ *  ④ 清单失败**不阻断页面**，且自由输入这条老能力仍在（降级而非坏掉）。
+ */
+describe('R67-A1 动作下拉（可发现）', () => {
+  /** 分别应答 /audit/actions 与 /audit（此前用例共用一个 mockResolvedValue） */
+  function mockBackend(actions: string[]) {
+    mockedClient.get.mockImplementation((async (url: unknown) => {
+      if (String(url).startsWith('/audit/actions')) return { actions };
+      return { data: [makeLog({})], total: 1 };
+    }) as never);
+  }
+
+  it('首屏拉取一次 /audit/actions，并渲染成可选下拉项（未知动作显示原始 code）', async () => {
+    mockBackend(['auth.login', 'sop.timeout.unclaimed', 'task.create']);
+    renderPage();
+    await screen.findByText('创建任务');
+
+    await waitFor(() => expect(lastActionsQuery()).toBe('/audit/actions'));
+
+    fireEvent.mouseDown(actionSelect());
+    // 断言只看**下拉项**本体：rc-select 另有一个 aria-live 的礼貌播报节点会重复
+    // 第一项文案（selector 收窄后不会撞车，也与既有「资源类型」用例同款写法）。
+    const option = (text: string) =>
+      screen.findByText(text, { selector: '.ant-select-item-option-content' });
+    // 已知动作：本地化名 + code（管理员是从文档/CSV 认 code 的）
+    expect(await option('创建任务 (task.create)')).toBeTruthy();
+    expect(await option('登录 (auth.login)')).toBeTruthy();
+    // 未知动作：原样露出 code，不抹成"未知操作"（AUDIT-01 同款口径）
+    expect(await option('sop.timeout.unclaimed')).toBeTruthy();
+    // 清单只拉一次（不随筛选/翻页重复取）
+    expect(
+      mockedClient.get.mock.calls.filter(([url]) => String(url).startsWith('/audit/actions')),
+    ).toHaveLength(1);
+  });
+
+  it('从下拉里选一个动作 → 搜索后查询串携带 action（不必背动作名）', async () => {
+    mockBackend(['auth.login', 'task.create']);
+    renderPage();
+    await screen.findByText('创建任务');
+
+    fireEvent.mouseDown(actionSelect());
+    fireEvent.click(await screen.findByText('创建任务 (task.create)'));
+    fireEvent.click(findBtn(document.body, '搜索')!);
+
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('action=task.create');
+    });
+  });
+
+  it('再选一个动作 = 替换（单选语义），界面标签数与过滤条件数一致', async () => {
+    mockBackend(['auth.login', 'task.create']);
+    renderPage();
+    await screen.findByText('创建任务');
+
+    fireEvent.mouseDown(actionSelect());
+    fireEvent.click(await screen.findByText('创建任务 (task.create)'));
+    fireEvent.mouseDown(actionSelect());
+    fireEvent.click(await screen.findByText('登录 (auth.login)'));
+
+    // 只留一个 tag：绝不出现"界面 2 个标签、实际只过滤 1 个"的撒谎 UI
+    expect(document.querySelectorAll('.ant-select-selection-item')).toHaveLength(1);
+
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      const qs = lastAuditQuery();
+      expect(qs).toContain('action=auth.login');
+      expect(qs).not.toContain('task.create');
+    });
+  });
+
+  it('清单请求失败 → 页面照常渲染且仍可自由输入（回落而不是坏掉）', async () => {
+    mockedClient.get.mockImplementation((async (url: unknown) => {
+      if (String(url).startsWith('/audit/actions')) throw new Error('actions boom');
+      return { data: [makeLog({})], total: 1 };
+    }) as never);
+
+    renderPage();
+
+    // 列表照常渲染
+    expect(await screen.findByText('创建任务')).toBeTruthy();
+    // 没有页内错误块：那是**列表**查询失败的形态，下拉失败不该冒充它
+    expect(screen.queryByText('审计日志加载失败')).toBeNull();
+
+    // 自由输入这条既有路径仍然生效（后端是 ILIKE 子串匹配，片段即可）
+    typeActionKeyword('task');
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('action=task');
+    });
   });
 });

@@ -7447,6 +7447,38 @@
         }
       }
     },
+    "/audit/actions": {
+      "get": {
+        "description": "返回 audit_logs 中出现过的所有 action（去重、字母序），供审计页的 action 过滤器渲染可发现下拉。不新增动作、不改任何既有响应形状；空库返回空数组而非 404。",
+        "operationId": "AuditController_distinctActions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditActionsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "审计动作清单（去重，仅管理员）",
+        "tags": [
+          "audit"
+        ],
+        "x-i18n-en": {
+          "summary": "Distinct audit action list (ADMIN only)",
+          "description": "Returns every action that has ever appeared in audit_logs (deduplicated, alphabetical) so the audit page can render a discoverable action filter. Adds no new actions and changes no existing response shape; an empty database returns an empty array rather than a 404."
+        }
+      }
+    },
     "/audit/export": {
       "get": {
         "description": "返回 CSV 文件附件。支持与列表接口相同的过滤条件。",
@@ -18748,6 +18780,22 @@
         "required": [
           "data",
           "total"
+        ]
+      },
+      "AuditActionsDto": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "description": "库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "Distinct audit action values seen in the database (deduplicated, alphabetical). Sourced from historical writes to audit_logs.action, so it may include actions that are no longer emitted."
+          }
+        },
+        "required": [
+          "actions"
         ]
       },
       "PublicHealthDto": {

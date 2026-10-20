@@ -2525,6 +2525,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/audit/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 审计动作清单（去重，仅管理员）
+         * @description 返回 audit_logs 中出现过的所有 action（去重、字母序），供审计页的 action 过滤器渲染可发现下拉。不新增动作、不改任何既有响应形状；空库返回空数组而非 404。
+         */
+        get: operations["AuditController_distinctActions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audit/export": {
         parameters: {
             query?: never;
@@ -6370,6 +6390,10 @@ export interface components {
             total: number;
             /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标绑定本端点固定排序（createdAt DESC, id DESC）。 */
             nextCursor?: string | null;
+        };
+        AuditActionsDto: {
+            /** @description 库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。 */
+            actions: string[];
         };
         PublicHealthDto: {
             /** @enum {string} */
@@ -11415,6 +11439,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedAuditLogsDto"];
+                };
+            };
+        };
+    };
+    AuditController_distinctActions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditActionsDto"];
                 };
             };
         };

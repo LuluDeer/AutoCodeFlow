@@ -8,6 +8,8 @@ import { UserRole } from "../../users/entities/user.entity";
 const mockAuditService = () => ({
   findAll: jest.fn(),
   exportCsv: jest.fn(),
+  // R67-A1: GET /audit/actions 的数据源（去重动作清单）
+  listDistinctActions: jest.fn(),
 });
 
 describe("AuditController", () => {
@@ -43,6 +45,36 @@ describe("AuditController", () => {
         AuditController.prototype.exportCsv,
       );
       expect(roles).toEqual([UserRole.ADMIN]);
+    });
+
+    // R67-A1: 动作清单虽是"只有字符串"的响应，但"系统里存在哪些操作"本身是
+    // 运维拓扑信息，与列表/导出同级别 —— 不给非管理员。
+    it("distinctActions (GET /audit/actions) is restricted to ADMIN", () => {
+      const roles = Reflect.getMetadata(
+        ROLES_KEY,
+        AuditController.prototype.distinctActions,
+      );
+      expect(roles).toEqual([UserRole.ADMIN]);
+    });
+  });
+
+  // ─── R67-A1: 审计动作清单（审计页 action 下拉的可发现数据源）───────────────
+  describe("distinctActions", () => {
+    it("wraps the service's action list in { actions }", async () => {
+      svc.listDistinctActions.mockResolvedValue(["auth.login", "task.create"]);
+
+      const result = await controller.distinctActions();
+
+      expect(svc.listDistinctActions).toHaveBeenCalledTimes(1);
+      // 形状是 { actions: string[] }（不是分页信封，不是裸数组）
+      expect(result).toEqual({ actions: ["auth.login", "task.create"] });
+    });
+
+    it("returns { actions: [] } on an empty database (no 404 / null)", async () => {
+      svc.listDistinctActions.mockResolvedValue([]);
+      await expect(controller.distinctActions()).resolves.toEqual({
+        actions: [],
+      });
     });
   });
 
