@@ -1181,3 +1181,14 @@
   **我自己的两次失误**：① 第一次反证只改 `return` 行、**闸块还在**，测试仍全绿 —— 差一点得出「用例没鉴别力」的错误结论，第二次替换**整块**才红；
   ② 把 39 行测试块误 append 到 `tools.ts`（不是 `tools.test.ts`），被 **tsc 立刻抓出**（`Cannot find name 'describe'`）—— 若这是 `.js` 项目，那 39 行会静静躺到运行时。
   **并发协调**：R111-A1 的 agent 正在改同一文件，它**主动上报**了并发冲突并改为「局部 edit + 冲突重试」，且指出改动点不相交。R112 先落地，已发消息告知它「基线更新为 195 passed、以当前内容为准重新定位行号、我不再动该目录」。
+- 2026-10-20 **R111-A1 done（commit 1b1632f1）**：**mcp-server 入参字符串长度上限**。33 个自由文本入参**完全无上限**，本轮只给**有后端锚点**的 9 个字段加，其余 17 个显式待定。
+  **★ 一个事先没想到的坑：码点 vs 码元** —— 最自然的 `z.string().max(255)` **比后端更严**：zod 数 **UTF-16 码元**，后端 `@MaxLength` 走 validator.js `isLength` 数**码点**；
+  128 个 emoji = 128 码点 = **256 码元** ⇒ 后端接受而 `.max(255)` 会拒。**上限比后端更严 = 拒掉合法值**，与初衷相反。新增 `codePointLength()`/`textWithin(max)`，并有专项用例（255 emoji 通过 / 256 码点拒）。
+  **刻意不动**：`audit action/username`（后端是 `slice(0,100)` **截断而非拒绝**，设 100 会把后端接受的请求变成 400）/ cronExpression·timezone（只有格式约束）/ 时间字段（`@IsISO8601`）/ **17 个后端仅 `@IsString` 且仓内无先例的字段**（拍数字即无出处臆断）。
+  验证 vitest **195→253**（+58）、tsc 0；反证 3 例 before=true→after=false 且合法值不变（未过度收紧）。
+  **提交实情**：agent 与我（R112）并发改同一文件，它主动上报并改局部 edit；但**我的 R112 提交顺带把它已落盘的 task 域改动吸了进去** ⇒ 本提交只含 application/deployment 域。已如实写进 commit message。
+- 2026-10-20 **R113 done（commit c7c50f81）**：**全量跑 admin-api（319 套件）抓到两处红，都不是本轮引入**：
+  ① `leader-gate.service.spec.ts` **整套件无法运行** —— `AuthService` 在 R32-A4 插入了 `userRepo`（第 5 位），spec 仍按旧 5 参构造 ⇒ `leaderGate` 落进 `Repository<User>` 槽位，**ts-jest 报 TS2345 判成「failed to run」而非断言失败**，
+  即「长期跑不到」被当成「这次没跑到」。修后 11 passed。② `executor-deployment-entity-registration.spec.ts` **单独跑绿、全量跑红** —— `beforeAll` 构建 TypeORM 元数据在并发下 ~5.9s 顶到 jest 默认 5s ⇒ 6 用例一起红，看似六个缺陷实则一个超时。加 `jest.setTimeout(30_000)`（放宽等待非断言）。
+  **共同点：测试基础设施的两种静默失真** —— 套件没运行与套件通过，在 CI 日志里长得很像。
+  **待查**：executor-node 全量里 `middleware/auth.spec.ts` **1 failed / 106.9s**，异常慢，疑同类负载超时，**尚未定位到用例**，留下一轮。
