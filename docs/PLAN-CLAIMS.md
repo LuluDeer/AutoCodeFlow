@@ -1994,3 +1994,28 @@ wecom.channel.ts    => x2
 **这条核对的价值**：如果它只接进了 5 个渠道，整套测试仍然会绿（没接的那个不会有断言失败），
 而缺陷会以「某个渠道的失败日志依然只有 failed」的形式**静默存在**。
 这与我 `R94` 抓到的「`ZIP_MAX_*` 定义了没有调用方」是同一类：**机制存在 ≠ 机制在链路上**。
+- 2026-10-20 **R159 · 把 agent 归类为「报告不改」的一条，用 UI 证据升级为「真缺陷」**。
+
+它报的遗留里有一条：`enabled=false` **只对 webhook 渠道生效**，另 5 个渠道仍用已保存配置投递 —— 归为「行为变更需产品确认」。
+
+我独立查了两侧：
+
+**投递侧**（`grep` 全模块）：`isEnabled()` 只在 **`webhook.channel.ts:60`** 被调用一次。
+`channel-config.store.ts:70` 的 `isEnabled` 默认返回 `true`，注释还写着「disabled channel's config must [not take effect]」—— **意图明确，只实现了一处**。
+
+**UI 侧**（决定性）：`admin-web/__tests__/notification-settings-page.test.tsx:109` 有用例名
+
+```
+it('关闭邮件渠道开关 → PATCH /notification/channels/email {enabled:false} + 禁用 toast', ...)
+```
+
+⇒ **管理台对每个渠道都提供了开关**，用户点了「关闭邮件通知」、后端也存了 `enabled:false`、toast 还告诉他成功了 ——
+**然后邮件照发**。
+
+**所以这不是「行为变更需产品确认」，而是产品已经承诺了、实现只落了一半。** 判据不在产品侧，在这条 UI 用例里。
+
+这也修正了 agent 的分类标准：它把「会改变现有投递行为」等同于「需产品确认」，
+但**如果现有行为本身就是 bug，修好它不叫改需求**。区分两者的方法就是找一个**产品已经写下来的承诺** ——
+这里就是那条开关用例 + 存储层注释里的 “must not take effect”。
+
+**验收时我会把它当缺陷处理**：给 5 个渠道补上 `isEnabled` 闸，并确认既有用例（尤其是不设 enabled 的 fixture 默认 true）不破。
