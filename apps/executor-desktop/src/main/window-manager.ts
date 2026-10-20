@@ -136,17 +136,28 @@ function hardenWindow(win: BrowserWindow): void {
     rendererFileUrl: devUrl ? null : pathToFileURL(RENDERER_INDEX).toString(),
   };
 
-  const blockNavigation = (event: { preventDefault: () => void }, url: string, kind: string): void => {
+  // R127：**两个 handler 各自内联 preventDefault**，不再抽 helper。
+  //
+  // 抽 helper 更 DRY，但会让「守卫必须真的阻止」这条静态判据失去锚点：
+  // 判据只能在 will-navigate 附近找 preventDefault，而 helper 写在上面 —— 于是它
+  // 会去**同一个函数里 will-attach-webview 那一处**找，把「删掉 will-navigate 的阻止逻辑」
+  // 也判成绿（本轮反证实测）。
+  //
+  // 在这里**可检查性优先于 DRY**：多写三行，换一条判据真的能红。
+  win.webContents.on('will-navigate', (event, url) => {
     if (!isAllowedNavigation(url, policy)) {
       event.preventDefault();
-      log.warn(`Blocked ${kind} to ${url}`);
+      log.warn(`Blocked navigation to ${url}`);
     }
-  };
-
-  win.webContents.on('will-navigate', (event, url) => blockNavigation(event, url, 'navigation'));
+  });
   // R106：`will-redirect` 与 `will-navigate` 是**两条独立事件**，只挂前者等于给服务端 3xx 留了后门
   // （dev 形态下尤其明显）。同一条判据同时挂上去。
-  win.webContents.on('will-redirect', (event, url) => blockNavigation(event, url, 'redirect'));
+  win.webContents.on('will-redirect', (event, url) => {
+    if (!isAllowedNavigation(url, policy)) {
+      event.preventDefault();
+      log.warn(`Blocked redirect to ${url}`);
+    }
+  });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     log.warn(`Blocked window.open to ${url}`);

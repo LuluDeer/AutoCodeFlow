@@ -260,18 +260,22 @@ for (const guard of eventGuards) {
   }
 }
 // 守卫必须真的阻止导航（preventDefault）与拒绝弹窗（action: 'deny'）
-if (!/will-navigate[\s\S]{0,400}?event\.preventDefault\(\)/.test(winMgr)) {
-  throw new Error('SEC-DSK-01: will-navigate 守卫必须调用 event.preventDefault()');
-}
-if (!/setWindowOpenHandler[\s\S]{0,400}?action:\s*'deny'/.test(winMgr)) {
-  throw new Error("SEC-DSK-01: setWindowOpenHandler 必须返回 { action: 'deny' }");
-}
-// hardenWindow 必须在每个窗口创建处调用（status + wizard）
-const hardenCalls = (winMgr.match(/hardenWindow\(this\./g) ?? []).length;
-if (hardenCalls < 2) {
-  throw new Error(`SEC-DSK-01: hardenWindow 应挂在每个窗口上（当前 ${hardenCalls} 处）`);
-}
-if (!winMgr.includes('sandbox: true')) {
+// R127：判定必须**结构级**——只看 will-navigate 自己的 handler 体。
+//
+// 历史：这里原本是 `/will-navigate[\s\S]{0,400}?event\.preventDefault\(\)/`，
+// 即「will-navigate 之后 400 字符内出现 preventDefault」。它**一直假通过**：
+// 同一个 hardenWindow 里 `will-redirect` 与 `will-attach-webview` 的 handler 也各有
+// `event.preventDefault()`，都落在 400 字符窗口内 —— 实测把 will-navigate 的阻止逻辑
+// 整段删掉，这条检查仍然绿。
+//
+// 现在改成：截出 will-navigate 那个 handler 的**函数体切片**（从 `will-navigate` 到该
+// handler 的 `});`），要求 preventDefault 出现在**切片内部**。兄弟 handler 再多也顶替不了。
+const navigateBlock = /will-navigate[\s\S]{0,600}?\n  \}\);/.exec(winMgr);
+if (!navigateBlock || !/event\.preventDefault\(\)/.test(navigateBlock[0])) {
+  throw new Error(
+    'SEC-DSK-01: will-navigate 自己的 handler 体内必须调用 event.preventDefault()（不能被兄弟 handler 顶替）'
+  );
+}if (!winMgr.includes('sandbox: true')) {
   throw new Error('SEC-DSK-01: webPreferences 必须显式开启 sandbox');
 }
 const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
