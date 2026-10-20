@@ -1061,3 +1061,10 @@
 - 2026-10-20 **R93 done（commit 7996e0fe）**：**给两道守卫补规模下界**。自查今天新守卫时发现两处**永真断言**：`check-audit-actions-doc` 正则失效 → 0 条 action → 「0 条缺失」变绿；
   `gen-api-reference-appendix --check` 结构变 → 0 个路径 → 同样变绿。补 下界（action ≥50 现 64 / 路径 ≥100 现 195），低于下界判**扫描器失效**。
   另自查确认其余新守卫已有该防线（`check-guards-wired` 的 `guards.length === 0`、`check-desktop-selftests-wired` 的 `files.length === 0`、`check-cli-doc` 在文档变形时是**红**的安全方向）。
+- 2026-10-20 **R95 done（commit 309692c1）**：**MCP 工具地图补 16 个工具 + 加守卫**。`docs/atlas/05-interfaces/mcp-tools.md` 写着「40 个」而 `tools.ts` 实际注册 **56 个**，
+  且是**有序地漏**：越新的域越不在表里 —— Task 域漏 3（export/import/模板清单）、**Mutex / Project / SOP 三节整节缺失**（4+3+6=13）。
+  这是本仓踩过三次的「手写枚举单向腐烂」的**第四个面**（CLI 命令表 R69 / REST 附录 / 审计动作表各已有守卫，MCP 是最后一个没人守的对外接口）。
+  腐烂方式也最能说明问题：**只增不减、只漏新增**。修：文首 40→56、Task 18→21、新增三节、日期回填；新增 `check-mcp-tools-doc.mjs`（源码→文档逐项 + **下界 40** 防「0 个缺失」永真；反向不做，文档可记叙已废弃工具）；接 CI + npm。
+  验证：56/56 一致、docs / cli-doc / guards-wired 全绿（`check-guards-wired` 现报 **31 个全部接线**）；反证：删掉 `list_task_templates` 一行 → 守卫报「文档缺 1 个」并给出修法。
+  四道文档守卫合计 <300 行，共同教训：**手写清单一定单向腐烂——加东西的人不会回头改清单，删东西的人才会**；正确姿势是从代码生成 + 逐项比对。
+- 2026-10-20 **R94-A1 认领**：`executor-python` **执行面**安全审计（沙箱隔离 / 解压面与 node 侧逐项等价 / 回调令牌 / 日志上限），已派发，明确「不要重复审 SSRF」。
