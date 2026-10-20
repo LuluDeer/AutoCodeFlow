@@ -8,8 +8,13 @@ AutoCodeFlow 任务脚本的告警通知库：任务代码经 admin-api 的
 - 渠道枚举与服务端对齐：`NotifyChannel`（email / dingtalk / wecom / slack /
   webhook / feishu）镜像 admin-api `notification.service.ts` 的
   `AlertChannel`，单测有枚举全集契约测试防漂移；
-- 永不抛异常：`notify()` 返回 `bool`（admin-api 是否 2xx 接受），检查返回值
-  即可知道告警是否真正送达；
+- 投递不抛异常：`notify()` 返回 `bool`（admin-api 是否 2xx 接受），检查返回值
+  即可知道告警是否真正送达；"为什么没送到"从 `client.last_error`（最近一次传输
+  失败的原始异常对象）与 `client.last_status_code`（最近一次响应状态码）读出，
+  传输失败的 traceback 同时进日志；
+- 参数错误响亮失败（R134-A1）：`channels` 接受 `NotifyChannel` 或等价字符串
+  （`"email"`），拼错的渠道名在**任何 I/O 之前**抛 `ValueError` 并列出合法值——
+  渠道名拼错是调用方 bug，静默返回 `False` 只会把排障引向网络层；
 - 连接池复用：实例级懒初始化 `httpx.AsyncClient` + `trust_env=False`
   （通知出站与回调/HTTP 客户端同一「不走代理」策略，NETOPT-C P3）；
 - 按次 webhook：`webhook_url` 参数服务端会自动补 webhook 渠道。
