@@ -1,5 +1,23 @@
 import { SopService } from "./sop.service";
 
+/**
+ * FindOperator 语义（in / isNull）：条件 UPDATE 的 where 可能带前置断言
+ * （pulledAt IS NULL / status IN (...)），fake 必须按真实语义求值。
+ */
+function matchesOperator(actual: unknown, expected: unknown): boolean {
+  if (
+    expected &&
+    typeof expected === "object" &&
+    "type" in (expected as Record<string, unknown>)
+  ) {
+    const op = expected as { type: string; value?: unknown };
+    if (op.type === "in") return (op.value as unknown[]).includes(actual);
+    if (op.type === "isNull") return actual === null || actual === undefined;
+    throw new Error(`fake 不支持的操作符: ${op.type}`);
+  }
+  return actual === expected;
+}
+
 function harness(required: string[] = []) {
   const sop = {
     id: "sop-1",
@@ -30,23 +48,16 @@ function harness(required: string[] = []) {
     update: jest.fn(
       async (where: { id: string }, patch: Record<string, unknown>) => {
         const row = rows.find((candidate) => candidate.id === where.id);
-        const pulledAtCriteria = (where as { pulledAt?: unknown }).pulledAt;
-        const expectedPulledAt =
-          typeof pulledAtCriteria === "object" &&
-          pulledAtCriteria !== null &&
-          "type" in pulledAtCriteria &&
-          pulledAtCriteria.type === "isNull"
-            ? null
-            : pulledAtCriteria;
-        if (
-          row &&
-          Object.prototype.hasOwnProperty.call(where, "pulledAt") &&
-          row.pulledAt !== expectedPulledAt
-        ) {
-          return { affected: 0 };
+        if (!row) return { affected: 0 };
+        // R33-A2：条件 UPDATE 的前置断言必须真实求值（FindOperator 语义）——
+        // 只比 id 的 fake 会让「无条件覆写」与「带前置条件」看起来一样，
+        // 状态守卫就永远测不出来。
+        for (const [key, expected] of Object.entries(where)) {
+          if (key === "id") continue;
+          if (!matchesOperator(row[key], expected)) return { affected: 0 };
         }
-        if (row) Object.assign(row, patch);
-        return { affected: row ? 1 : 0 };
+        Object.assign(row, patch);
+        return { affected: 1 };
       },
     ),
   };

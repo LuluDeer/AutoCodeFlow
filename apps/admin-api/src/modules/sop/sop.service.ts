@@ -4,7 +4,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import { Repository, In, IsNull } from "typeorm";
+import { Repository, In, IsNull, Not } from "typeorm";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { ExecutorService } from "../executor/executor.service";
 import {
@@ -623,8 +623,11 @@ export class SopService {
           answer: null,
         });
         const saved = await this.clarifications.save(row);
+        // R33-A2 前置状态条件：`snapshot` 是循环重读的快照，与这次落库之间
+        // 执行器可能已回报完成/失败。无条件 update({id}) 会把终态改成 blocked
+        // （交付已完成却被记成"等人工"，随后失联扫描也不会再覆盖它）。
         await this.assignments.update(
-          { id: a.id },
+          { id: a.id, status: In(["assigned", "in_progress", "blocked"]) },
           {
             status: "blocked",
             targetAgentSessionId:
@@ -799,9 +802,16 @@ export class SopService {
     row.newSopVersion = newSopVersion ?? null;
     await this.clarifications.save(row);
 
-    // 复核完毕 → 解除 blocked，执行器经 poll 拿到回复后继续
+    // 复核完毕 → 解除 blocked，执行器经 poll 拿到回复后继续。
+    // R33-A2：解除也必须带前置状态——`a.status` 是读取时刻的快照，它与这次
+    // 落库之间执行器可能已经回报完成/失败。无条件的 update({id}) 会把终态
+    // 改回 in_progress（completed → in_progress → 再被失联扫描判 stalled：
+    // 一次交付被改写成两次错误状态，复核会话也失去对账锚）。
     if (a.status === "blocked") {
-      await this.assignments.update({ id: a.id }, { status: "in_progress" });
+      await this.assignments.update(
+        { id: a.id, status: "blocked" },
+        { status: "in_progress" },
+      );
     }
 
     this.logger.log(
@@ -850,8 +860,12 @@ export class SopService {
     if (input.progressJson) {
       this.checkJsonSize(input.progressJson, RESULT_MAX_BYTES, "progress");
     }
+    // R33-A2：心跳也是「读-改-写」——requireOpenAssignment 的判定在读取时刻，
+    // 与这次落库之间执行器可能已回报完成/失败。update({id}) 无条件写会把终态
+    // 改回 in_progress（进而被失联扫描判 stalled：一次交付被改写成两次错误
+    // 状态）。前置状态集合 = 读取时允许的全部活跃态，等价于「非终态」。
     await this.assignments.update(
-      { id: a.id },
+      { id: a.id, status: In(["assigned", "in_progress", "blocked", "stalled"]) },
       {
         lastProgressAt: new Date(),
         progressJson: input.progressJson ?? a.progressJson,
@@ -901,14 +915,38 @@ export class SopService {
     if (input.result)
       this.checkJsonSize(input.result, RESULT_MAX_BYTES, "result");
 
-    await this.assignments.update(
-      { id: a.id },
+    // R33-A2（总控收尾）：上面的 a.attempt / a.status 都是**读取时刻的快照**，与这次
+    // 落库之间可能已有并发的 complete 落库（执行器重试、双回调）。无条件
+    // update({id}) 会让后到者覆盖先到者的结果——包括把 completed 改回 failed、
+    // 或把 attempt 回退。改为以 **attempt CAS** 为准：
+    //   · WHERE attempt = 读到的 attempt ⇒ 同一轮次的重复提交只有一个胜者；
+    //   · 把「终态不可改写」放进 WHERE，而不是只在上面用陈旧快照判一次。
+    // `failed` 刻意**不**排除：失败后允许以更大的 attempt 重试（既有语义）。
+    const applied = await this.assignments.update(
+      {
+        id: a.id,
+        attempt: a.attempt,
+        status: Not(In(["completed", "cancelled"])),
+      },
       {
         status: input.status,
         resultJson: input.result ?? a.resultJson,
         attempt,
       },
     );
+    if (applied.affected !== 1) {
+      // 并发收敛：别人先推进了这一行（或它已是终态）。与 ADR-026 规则 3 一致——
+      // 让位而不是抛 500，调用方拿到 accepted:false（幂等忽略，不是失败）。
+      this.logger.warn(
+        "SOP assignment complete lost the race: id=" +
+          a.id +
+          " attempt=" +
+          a.attempt +
+          " -> " +
+          attempt,
+      );
+      return { accepted: false };
+    }
     this.logger.log(
       `SOP assignment complete: id=${a.id} status=${input.status} attempt=${attempt}`,
     );
@@ -955,8 +993,12 @@ export class SopService {
     );
 
     for (const a of unclaimed) {
-      await this.assignments.update(
-        { id: a.id },
+      // R33-A2 前置状态条件：扫描读到的 assigned 是**快照**——它与落库之间，
+      // 执行器可能已回报完成（或并发 poll 已领取）。无条件的 update({id})
+      // 会把 completed 覆写成 failed（终止态被改写）并发出假超时通知。
+      // 条件 UPDATE 只有一个胜者：affected!==1 说明别人先推进了 → 让位。
+      const markedFailed = await this.assignments.update(
+        { id: a.id, status: "assigned" },
         {
           status: "failed",
           resultJson: {
@@ -965,14 +1007,17 @@ export class SopService {
           },
         },
       );
+      if (markedFailed.affected !== 1) continue;
       this.logger.warn(
         `SOP assignment unclaimed timeout: id=${a.id} sopVersion=${a.sopVersion}`,
       );
       this.notifyTimeout(a, "无人领取（领取超时）").catch(() => undefined);
     }
     for (const a of stalled) {
-      await this.assignments.update(
-        { id: a.id },
+      // R33-A2 同上：只有仍处于 in_progress 的行才置 stalled。已完成/已失败的
+      // 行被并发推进后，这里必须让位（否则 stalled 会把 completed 盖掉）。
+      const markedStalled = await this.assignments.update(
+        { id: a.id, status: "in_progress" },
         {
           status: "stalled",
           resultJson: {
@@ -981,6 +1026,7 @@ export class SopService {
           },
         },
       );
+      if (markedStalled.affected !== 1) continue;
       this.logger.warn(`SOP assignment progress stalled: id=${a.id}`);
       this.notifyTimeout(a, "进度心跳停滞（卡死嫌疑）").catch(() => undefined);
     }
@@ -1027,15 +1073,26 @@ export class SopService {
         where: { id: row.assignmentId },
       });
       if (!a) continue;
-      await this.clarifications.update(
-        { id: row.id },
+      // R33-A2：兜底与「人工/复核 Agent 答复」会同时打在这一行上——上面
+      // `find({ resolution: IsNull() })` 读到的是快照，答复可能已在此期间落库。
+      // 无条件 update({id}) 会把真答案覆写成 escalated_to_human：执行器经 poll
+      // 拿到的是升级答复而不是被问的答案，问题永远没被回答。条件 UPDATE 让
+      // 「已经有 resolution 的行」只由答复路径负责。
+      const escalated = await this.clarifications.update(
+        { id: row.id, resolution: IsNull() },
         { resolution: "escalated_to_human" },
       );
+      if (escalated.affected !== 1) continue;
       // blocked → in_progress：升级即复核完毕（与 replyClarification 同一
       // 落库后态）；若执行器已失联，in_progress 会被失联扫描接住，不会再
       // 被 blocked 的豁免挡住
+      // R33-A2：解除 blocked 同样带前置状态（快照里的 blocked 可能已过期，
+      // 执行器在此期间回报完成 → 终态不得被兜底改回 in_progress）。
       if (a.status === "blocked") {
-        await this.assignments.update({ id: a.id }, { status: "in_progress" });
+        await this.assignments.update(
+          { id: a.id, status: "blocked" },
+          { status: "in_progress" },
+        );
       }
       this.logger.warn(
         `SOP clarification review stuck → escalated: clarification=${row.id} assignment=${a.id} session=${row.reviewSessionId ?? "none"}`,
