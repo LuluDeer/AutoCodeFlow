@@ -1338,3 +1338,9 @@
   **两次自伤**：① 替换文本把 warn 段落带进了 `if _buffered_bytes < 0:` 分支 ⇒ **丢行发生了、告警没发生**，被既有用例 `test_backpressure_warns_once_per_episode…` 当场抓住（`assert 0 == 1`）——**是那条老用例救的**；② 测试里凭印象写了不存在的 `_install` 辅助函数，跑出 `NameError` 才改用仓库既有的 `pusher_env` fixture。
   **★ 本轮 agent 的教训**：它分析质量很高（算式、触发推演、「按断号切片否则 admin `appendLogChunk` 的 `fromLine+i` 会写错行号」都是它给的），但检查点写「步骤 3/4 已完成」时**磁盘上什么都没写**（`grep MAX_BUFFERED_BYTES` 为 0、文件仍 170 行、git 干净）⇒ 按协议 interrupt 后总控从零实现。
   **检查点可以描述「我以为我做的」，磁盘只描述「我做的」。验收要查磁盘，不查检查点。** 它设计的 deque + 头/尾/marker 结构未采纳（会改丢弃语义），留作后续单子。
+- 2026-10-20 **R124 done（commit 8f40a996）**：**钉住「片内行号必须连续」**。洞察来自 R116 分析（我上轮没做的那条）：admin 的 `appendLogChunk` 用 **`fromLine + i`** 落库，
+  ⇒ 片内只要出现缺口，后面所有行会被写到**错位**位置且**无任何报错**。当前实现天然满足（片是 append-only 连续块），但**这条不变式没有任何用例钉住** ——
+  将来改成「扁平 (lineNo,text) 列表 + 按需切片」（R116 设计方案的一部分，很自然的优化方向）时，丢行会在扁平列表留缺口、朴素切片立刻产出带缺口的片。
+  加两条：① 丢行后存活片 `nxt.fromLine == prev.fromLine + len(prev.lines)` 且每行真实行号 == `chunk.fromLine + offset`；② **从出站请求体**验证 `text == f'line-{fromLine+offset}'`（直接测 admin 会看到的形状，不只测内存）。
+  验证 15 passed；**反证**：把片创建时 `fromLine` 改成 `line_num - 1` → **5 条红**（含 3 条既有用例 `empty_lines_are_preserved` / `crlf_and_missing_trailing_newline` / `backpressure_drops_oldest`）⇒ 这条不变式不是只靠新用例守着。还原后 15 绿。
+  **为什么单独一轮**：修的不是「现在的 bug」而是「将来很容易引入的 bug」—— **现在的实现是对的，但对的理由只存在于当前数据结构里，不在任何一条断言里**；下一个改成扁平缓冲的人不会被任何红挡住。
