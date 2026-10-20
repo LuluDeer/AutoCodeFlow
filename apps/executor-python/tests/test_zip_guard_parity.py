@@ -174,3 +174,45 @@ def test_entry_declaring_500mib_is_still_accepted(tmp_path):
         compressed=5 * 1024 * 1024,
     )
     vet_zip(archive)  # 不抛即通过
+
+
+def test_every_declared_env_var_is_actually_honored(monkeypatch):
+    """`ZIP_LIMIT_ENV_VARS` 里声明的每个变量都必须**真的被读进去**。
+
+    这类漏接在本仓已经出现过一次：`get_zip_limits_from_env()` 存在、有测试、文档也写
+    「接受同名环境变量」，但**生产路径从不调用它** ⇒ 部署方按 `ZIP_MAX_*` 收紧后 python
+    静默放行。那条缺口是「函数没人调」；本条盯的是它的邻面 ——「映射表里加了变量，
+    构造逻辑却忘了读」。
+
+    做法：对每个声明的变量设一个**与默认值不同**的值，断言对应字段确实变了。
+    新增字段时若忘了写 `get_zip_limits_from_env` 的读取分支，这条会红。
+    """
+    from zip_safety import ZIP_LIMIT_ENV_VARS, get_zip_limits_from_env
+
+    defaults = ZIP_GUARD_DEFAULT_LIMITS
+    probes = {
+        'max_ratio': '7',
+        'max_entries': '42',
+        'max_file_bytes': str(3 * 1024 * 1024),
+        'max_total_uncompressed_bytes': str(5 * 1024 * 1024),
+        'max_nesting_depth': '0',
+    }
+
+    assert set(probes) == set(ZIP_LIMIT_ENV_VARS), (
+        'ZIP_LIMIT_ENV_VARS 与测试探针不一致：新增/删除上限字段时同步本测试',
+    )
+
+    for field, raw in probes.items():
+        env_name = ZIP_LIMIT_ENV_VARS[field]
+        monkeypatch.setenv(env_name, raw)
+        resolved = get_zip_limits_from_env()
+        monkeypatch.delenv(env_name)
+        expected = int(raw)
+        actual = getattr(resolved, field)
+        assert actual == expected, (
+            f'{env_name} 未生效：{field} 期望 {expected}，实际 {actual}',
+        )
+        assert actual != getattr(defaults, field) or expected == getattr(defaults, field), (
+            f'探针值与默认值相同，无法区分是否生效：{field}={expected}',
+        )
+
