@@ -1359,3 +1359,9 @@
   ③ 被丢的行从未发送过 ⇒ marker 占用的行号不会与后续真实切片冲突。
   另外 `levelOfLine(content)` 会把 marker 判成 info（文案里没有 error 关键字）—— 不会在 UI 里被染成红色错误行。
   **这条复核的价值**：它把上轮那个 marker 从「我认为安全」变成「读过落库实现后安全」。**假设与事实之间隔着一次阅读。**
+- 2026-10-20 **★ R127 done（commit 9c6f76c1）—— 我发现**自己五个回合前就把一个 selftest 弄红了**。清掉过期构建产物 `src/renderer/dist/**`（2026-09-24、未入库、无引用）后跑 `test:renderer` → 红：`SEC-DSK-01: will-navigate 守卫必须调用 event.preventDefault()`。
+  根因是我的 **R106** 改动：那次把 will-navigate 的内联守卫抽成 `blockNavigation(...)`，而判据只认「will-navigate 之后 400 字符内出现 event.preventDefault()」。R106 之后我只跑了 tsc 与 navigation-policy selftest，**没回头跑 test:renderer** ⇒ 一直红着。
+  **更糟**：把判据放宽成「也接受委托 helper」后**反证仍然绿** —— 因为 `hardenWindow` 里 will-redirect 与 will-attach-webview 的 handler **也各有** preventDefault，都在 400 字符窗口内 ⇒ **把 will-navigate 的阻止逻辑整段删掉，这条 SEC 判据还是绿**。
+  **这条判据从来就没验证过它声称的事**。改法：① 判据改到**结构级**（截出 will-navigate 自己的 handler 切片，要求 preventDefault 在切片内，兄弟顶替不了）；② window-manager 两个 handler 各自内联，去掉 helper —— **这里可检查性优先于 DRY**。
+  验证：test:renderer 0（此前 1）、tsc 0；**反证**：删掉 will-navigate 的 preventDefault → **exit 1** 并点名「不能被兄弟 handler 顶替」，还原 0。
+  **教训**：① 改完必须跑「我改的那个模块的测试」，而不是只跑类型检查与相邻 selftest；② 一条判据的「通过」可能只是「函数里恰好有那段文本」—— 这次是**别人写的判据**，而我一直在它假绿的状态下干活。
