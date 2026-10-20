@@ -1687,7 +1687,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deployment.statusMessage = upgrade
       ? "Pulling latest commit..."
       : "Cloning repository...";
-    await this.repo.save(deployment);
+    // R59：走本模块**自己的**乐观锁收口，而不是裸 save。
+    //
+    // 同文件 saveWithOptimisticLock 的头注写得很清楚：@VersionColumn 会让 save 自动追加
+    // 「AND version = :expected」，并发后写撞版本时 TypeORM 抛 OptimisticLockVersionMismatchError
+    // —— 那个 helper 负责把它翻成 409 APP_DEPLOYMENT_CONCURRENT_MODIFICATION。这里裸 save 意味着：
+    // 数据**确实**被版本列保护着（不会静默覆盖），但撞版本时抛的是**未映射的** TypeORM 异常 ⇒
+    // 调用方拿到 500，而不是「请重载重试」的 409。同一模块里两条写路径对同一类竞争给出不同
+    // 答案，是缺陷而非风格。
+    await this.saveWithOptimisticLock(deployment);
 
     // SSRF guard: validate address format before making any outbound request.
     // R8: format-only validation was not enough — the address is
