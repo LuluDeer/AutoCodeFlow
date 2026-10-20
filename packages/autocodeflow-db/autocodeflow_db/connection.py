@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Generator, Optional
@@ -35,6 +37,13 @@ DEFAULT_POOL_RECYCLE_SECONDS = 1800
 
 #: PK-08: env var read by :meth:`DatabaseConfig.from_env`.
 DATABASE_URL_ENV = "DATABASE_URL"
+
+#: R134-A1: 串行化 build() 的 check-then-set。此前两个线程首次并发调用
+#: 会各建一个 engine，输的一方永不 dispose（连接池泄漏），并且会暴露
+#: "engine 已赋值、session factory 仍是 None" 的半初始化窗口——旁路线程
+#: 从 build() 拿到 (engine, None)，随后 DatabaseSession 里 self._factory()
+#: 直接 TypeError。
+_BUILD_LOCK = threading.Lock()
 
 
 @dataclass
@@ -68,17 +77,23 @@ class DatabaseConfig:
         return cls()
 
     def build(self) -> tuple[Engine, sessionmaker]:
+        # R134-A1: 双重检查 + 模块级锁——并发首次调用只建一个 engine。
         if self._engine is None:
-            self._engine = create_engine(
-                self.url,
-                pool_size=self.pool_size,
-                max_overflow=self.pool_overflow,
-                echo=self.echo,
-                # PK-08: keep long-lived task connections healthy.
-                pool_pre_ping=True,
-                pool_recycle=self.pool_recycle,
-            )
-            self._session_factory = sessionmaker(bind=self._engine)
+            with _BUILD_LOCK:
+                if self._engine is None:
+                    engine = create_engine(
+                        self.url,
+                        pool_size=self.pool_size,
+                        max_overflow=self.pool_overflow,
+                        echo=self.echo,
+                        # PK-08: keep long-lived task connections healthy.
+                        pool_pre_ping=True,
+                        pool_recycle=self.pool_recycle,
+                    )
+                    # 顺序有意义：先发布 factory 再发布 engine，旁路读者不会
+                    # 看到 (engine, None) 这种半初始化组合。
+                    self._session_factory = sessionmaker(bind=engine)
+                    self._engine = engine
         return self._engine, self._session_factory  # type: ignore[return-value]
 
     def dispose(self) -> None:
@@ -99,13 +114,35 @@ class DatabaseSession:
     def session(self) -> Generator[Session, None, None]:
         sess = self._factory()
         try:
-            yield sess
-            sess.commit()
-        except Exception:
-            sess.rollback()
-            raise
+            try:
+                yield sess
+                sess.commit()
+            except BaseException:
+                # R134-A1: 原始错误必须原样逃出。rollback 本身也会失败
+                # （连接已被服务端/池判死），那只是次生异常——记录后丢弃，
+                # 绝不允许它把真正的 SQL/业务错误替换成 "rollback failed"。
+                try:
+                    sess.rollback()
+                except Exception:
+                    logger.exception(
+                        "session.rollback() failed while handling another error; "
+                        "the original error is preserved"
+                    )
+                raise
         finally:
-            sess.close()
+            # R134-A1: 同理——已有异常在飞时 close 失败只记录（不得掩盖主
+            # 异常）；成功路径上没有主异常，仍然抛给调用方，避免悄悄漏掉
+            # 一次"连接没还回池"的失败。
+            if sys.exc_info()[0] is not None:
+                try:
+                    sess.close()
+                except Exception:
+                    logger.exception(
+                        "session.close() failed while handling another error; "
+                        "the original error is preserved"
+                    )
+            else:
+                sess.close()
 
 
 #: PK-08: lazily-built default config backing ``get_session()`` without
