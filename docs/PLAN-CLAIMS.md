@@ -1541,3 +1541,19 @@ UPDATE tasks SET lastTriggerTime = now()
   **守卫不替人做决定**：那四个包留还是删是产品决策；守卫只让这个状态**不能安静地待着** —— 加第五个立刻红。
   验证：8 个可发布包 / 4 已接线 / 4 基线豁免；**两条反证**：① 新建 `packages/probe-new-pkg/pyproject.toml` → exit 1 并点名（第一次建成 `.probe-pkg` 被 `.` 前缀跳过 ⇒ **假绿：探针本身也要符合判据的输入形态**）；② 把 autocodeflow-ai 塞进 publish 矩阵 → exit 1「基线该瘦身」。守卫数 **33 → 34**。
   **与 R134-A1 协调**：已把事实同步给它，要求重心放在「保留/删除两种结局下都成立」的发现上（真错误吞没/资源泄漏/重试非幂等），**不要**为「补导出异常类」这类只有包保留才有意义的改动动代码 —— **如果一批代码可能被删，让它更规范的投入是没有回报的；这个判断应在动手前做。**
+- 2026-10-20 **R137 · 把 R136 守卫里「不适用」那一格也核实了（无提交）**。守卫对「无发布清单」的包直接跳过；
+  那是个**假定的安全区** —— 跳过的包到底是「不需要发布」还是「漏了清单」，守卫看不见。逐个查了：
+
+| 包 | 清单 | 消费者 | 结论 |
+|---|---|---|---|
+| `packages/contract-fixtures` | 无（只有 `contract.json` + LICENSE + README） | **8+ 处引用**：admin-api 的 `response-envelope-contract.spec` / `channel-list-contract.spec`、executor-node 的 `executor-protocol-contract.spec` / `param-env.ts`、executor-python 的 `routers/execute.py` / `test_logs.py` 等 | **合法装置包**，不需要清单 |
+| `packages/executor-protocol` | 无（`protocol.json` + `device-identity.vectors.json`） | **8+ 处**：`protocol-compat.util.ts`、`dispatch-task-payload.util.ts`、`executor.entity.ts`、迁移 1790000000028、`protocol-version-consistency.spec` 等 | **合法装置包**，不需要清单 |
+| `autocodeflow-{ai,http,notify,db}` | **有** pyproject | **0** | 已入基线，待产品决策 |
+
+⇒ 守卫那个「无清单则不适用」的分支是**正确的**，不是偷懒：两个装置包都被真实消费，而四个有清单的包一个消费者都没有。
+**「有没有清单」和「有没有人用」是两个正交的问题**，守卫现在按前者分流、由人看后者。
+
+**四个包当前测试数**（含 R134-A1 正在写的新用例）：`ai 63` / `http 45` / `notify 31` / `db 24`，全绿。
+
+**方法论**：给守卫留一个「跳过」分支时，要把**跳过的那一格也核实一遍** —— 否则它就是一个永久盲区，
+而且因为守卫是绿的，没人会再去看它。
