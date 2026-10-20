@@ -42,6 +42,10 @@ class AnalysisResult:
     # 调用方可区分「AI 结论不可用」与
     # 「网络瞬时失败」；成功路径为 ""。
     error_kind: str = ""
+    # R134-A1: 被 fallback 吞掉的原始异常的类型+文本（如
+    # "ConnectError: [Errno 111] Connection refused"）；成功路径为 ""。
+    # 此前 fallback 只剩 error_kind，调用方永远看不到"到底是 DNS 还是被拒"。
+    error_detail: str = ""
 
 
 # NETOPT-C P3: fallback 错误分类。httpx 在 _call_ai 内延迟 import，这里也
@@ -60,9 +64,27 @@ def _classify_ai_error(exc: Exception) -> str:
         # 否则调用方会去查 API key 配置而不是网络/代理层。注意 JSONDecodeError
         # 是 ValueError 子类，必须先于下面的 ValueError 分支判定。
         return "network"
+    if isinstance(exc, (KeyError, IndexError, TypeError)):
+        # R134-A1: 200 + 结构不对（网关返回 {"error": ...} 缺 choices、choices
+        # 为空、message/content 缺字段）在 _call_ai 里表现为 KeyError /
+        # IndexError / TypeError。这是「AI 响应不可用」，与 P2-5 的
+        # invalid_response 同一语义；此前落到 "unknown"，调用方按 error_kind
+        # 分流时会把"响应格式坏了"误判成未知错误。
+        return "invalid_response"
     if isinstance(exc, ValueError):
         return "provider_unavailable"
     return "unknown"
+
+
+def _describe_error(exc: BaseException) -> str:
+    """R134-A1: 把 fallback 吞掉的异常还原成可读、可排障的一行。
+
+    只取异常类型名 + str(exc)（不含 traceback）——这个字符串会随
+    AnalysisResult 回到调用方/入库，长度必须可预期。
+    """
+    name = type(exc).__name__
+    text = str(exc)
+    return f"{name}: {text}" if text else name
 
 
 class AIAnalyzer:
@@ -155,13 +177,17 @@ JSON:"""
             response_text = await self._call_ai(prompt)
             return self._parse_response(response_text)
         except Exception as e:
-            logger.error(f"AI analysis failed: {e}")
+            # R134-A1: 原始异常不得被 fallback 吞掉——traceback 进日志
+            # （exc_info），类型+文本进 error_detail。此前只剩一行 str(e)，
+            # 调用方拿到的 AnalysisResult 里一个字都找不到。
+            logger.error(f"AI analysis failed: {e}", exc_info=True)
             return AnalysisResult(
                 summary="AI analysis unavailable",
                 root_cause=error_message,
                 suggestions=["Check logs for more details"],
                 confidence=0.0,
                 error_kind=_classify_ai_error(e),
+                error_detail=_describe_error(e),
             )
 
     async def analyze_logs(
@@ -190,11 +216,13 @@ JSON:"""
             response_text = await self._call_ai(prompt)
             return self._parse_response(response_text)
         except Exception as e:
-            logger.error(f"AI log analysis failed: {e}")
+            # R134-A1: 同 analyze_error——traceback + error_detail 一并保留。
+            logger.error(f"AI log analysis failed: {e}", exc_info=True)
             return AnalysisResult(
                 summary=str(e),
                 confidence=0.0,
                 error_kind=_classify_ai_error(e),
+                error_detail=_describe_error(e),
             )
 
     async def _call_ai(self, prompt: str) -> str:
