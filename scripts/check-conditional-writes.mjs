@@ -153,6 +153,50 @@ export function findUnconditionalUpdates(src) {
   return hits;
 }
 
+/**
+ * **仅报告、永不失败**：列出 `.save(<裸标识符>)` 形态——即「把一个变量（多半是方法早期读到的
+ * 快照）整行写回」。这是本守卫的**已知盲区①**（见文件头），\`save\` 同时也是创建路径的写法，
+ * 语法上无法区分「插入」与「陈旧快照回写」，所以不能作为门禁判据；但把它列出来能让人在评审时
+ * 逐条看「这个变量是不是刚 create 出来的」。
+ *
+ * 判据只管**参数是裸标识符**的形态（\`repo.save(sop)\` / \`this.repos.save(row)\`）；
+ * 参数是构造函数调用（\`save(this.repo.create({...}))\`）或对象字面量的属于创建路径，跳过。
+ */
+export function findWholeRowSaves(src) {
+  const codeOnly = stripNonCode(src);
+  const hits = [];
+  const re = /\.save\s*\(/g;
+  let m;
+  while ((m = re.exec(codeOnly)) !== null) {
+    let i = m.index + m[0].length;
+    while (i < codeOnly.length && /\s/.test(codeOnly[i])) i++;
+    const rest = codeOnly.slice(i, i + 200);
+    // 裸标识符 + `)` 或 `,`：同一行内闭合参数列表（多参数的 save 极少见，宁可漏报）
+    const bare = /^([A-Za-z_$][A-Za-z0-9_$.]*)\s*[,)]/.exec(rest);
+    if (!bare) continue;
+    hits.push({ index: m.index, line: lineOf(codeOnly, m.index), target: bare[1] });
+  }
+  return hits;
+}
+
+function reportWholeRowSaves() {
+  const files = walk(join(ROOT, SCAN_DIR));
+  const rows = [];
+  for (const f of files) {
+    const rel = relative(ROOT, f).split(sep).join("/");
+    const src = readFileSync(f, "utf8");
+    for (const h of findWholeRowSaves(src)) rows.push({ file: rel, ...h });
+  }
+  for (const r of rows) console.log("  " + r.file + ":" + r.line + "  .save(" + r.target + ")");
+  console.log("");
+  console.log(
+    "ℹ 报告模式（不失败）：整行 save " + rows.length + " 处（扫了 " + files.length + " 个文件）。",
+  );
+  console.log(
+    "  这些是 **盲区①** 的候选：`save` 也可能是创建路径。逐条问一句「这个变量是刚 create 出来的，" +
+      "还是方法早期读到的快照？」——后者就是 ADR-026 规则 4 禁止的整行回写。",
+  );
+}
 function isExempt(src, idx) {
   const lines = src.slice(0, idx).split("\n");
   // 窗口取 5 行：豁免标记通常需要 1-3 行说明理由，3 行窗口会让「标记 + 两行理由」
@@ -190,6 +234,20 @@ function selftest() {
   for (const [name, src, expected] of cases) {
     t(name, findUnconditionalUpdates(src).length === expected);
   }
+
+  // 盲区①的报告扫描器自身也要有牙：判据写错会「一条都不报」，而报告模式永不失败
+  // ——那正是最容易无声失效的地方。
+  const saveCases = [
+    ["save(裸标识符) → 计入候选", "await this.repos.save(sop);", 1],
+    ["save(this.create(...)) → 创建路径，跳过", "await this.repos.save(this.repos.create({ a: 1 }));", 0],
+    ["save({ … }) 字面量 → 跳过", "await this.repos.save({ id: 1 });", 0],
+    ["注释里的 save(x) 不算", "// await this.repos.save(sop);", 0],
+    ["多级属性接收者同样计入", "await this.svc.repo.save(row);", 1],
+  ];
+  for (const [name, src, expected] of saveCases) {
+    t(name, findWholeRowSaves(src).length === expected);
+  }
+
   if (failed > 0) { console.error("✖ selftest 失败 " + failed + " 项"); process.exit(1); }
   console.log("✔ selftest 全部通过");
 }
@@ -197,6 +255,9 @@ function selftest() {
 const argv = process.argv.slice(2);
 if (argv.includes("--selftest")) {
   selftest();
+} else if (argv.includes("--report-saves")) {
+  // 盲区①的报告模式：**永不失败**，只列候选供人评审（见文件头「已知盲区」）。
+  reportWholeRowSaves();
 } else {
   const { files, violations } = scan();
   if (argv.includes("--report") || violations.length > BASELINE) {
