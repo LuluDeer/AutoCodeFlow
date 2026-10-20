@@ -2628,3 +2628,26 @@ def _parse_retry_after(raw): ...      # delta-seconds 或 HTTP-date
 **唯一一个 description 里明写 cannot be undone 的**。
 
 （agent 正在审 `acf-cli`，可能也会发现；我不动手以免冲突，验收时若它没报，我自己补。）
+- 2026-10-20 **R194 · 退出方式两套并存：`process.exitCode =`（11 处）与 `process.exit(`（20 处）**。
+
+`R192-A1` 的初判里有一条「`process.exit(0)` 紧接 `console.log` 大量 JSON → 管道截断」。我去数了全 CLI 的两种写法：
+
+| 写法 | 处数 | 语义 |
+|---|---|---|
+| `process.exitCode = N` | **11** | 设退出码后**让事件循环自然收尾** ⇒ stdout 被完整刷出 |
+| `process.exit(N)` | **20** | **立即**终止 ⇒ 管道上尚未刷出的写可能被丢 |
+
+**两套并存本身就是问题**：说明没有统一约定，谁写代码时想到哪套就用哪套。
+而 `process.exit()` 在**管道**（`acf ... --json | jq`）上是真实风险 —— 终端上通常看不出来，因为 TTY 写是同步的，
+**只有被管道/CI 消费时才可能截断**。这与 `R132` 那条「`$LASTEXITCODE` 与管道」是同一类环境差异。
+
+**我核了其中一处**（`tasks.ts:1027-1030`）：`console.log(green(...))` 紧跟 `process.exit(0)` —— 消息很短，
+实际截断概率低，但**形状是错的**：正确写法是 `process.exitCode = 0` 然后 `return`。
+
+**严重性校准**：
+- 短消息 + 管道 ⇒ 概率低（libuv 对小写入常能同步完成）；
+- **大 JSON 输出 + 管道** ⇒ 概率显著上升（`--json` 列全量任务/执行时正是这种）；
+⇒ 真正该改的是**输出体积大的那些路径**，不是把所有 `process.exit` 一律替换。
+
+**这条我给 agent 的验收判据**：如果它报「全部换成 exitCode」但没区分输出体积，那是**过度统一**；
+正确的收法是**统一到 exitCode，但先证明大输出路径确实会截断**（写一个 `acf ... --json | wc -c` 的复现）。
