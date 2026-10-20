@@ -139,6 +139,7 @@
     "bench:micro": "node scripts/micro-benchmark.mjs",
     "bench:micro:selftest": "node scripts/micro-benchmark.selftest.mjs",
     "check:desktop-selftests-wired": "node scripts/check-desktop-selftests-wired.mjs",
-    "check:interface-maps": "node scripts/check-interface-maps.mjs"
+    "check:interface-maps": "node scripts/check-interface-maps.mjs",
+    "check:atlas-counts": "node scripts/check-atlas-counts.mjs"
   }
 }

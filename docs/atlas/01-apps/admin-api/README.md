@@ -61,7 +61,7 @@ main.ts
 | `app.module.ts` | 模块装配中心：全部 env 的 Joi schema、DB/Redis/限流注册、全局 guard 注册 |
 | `common/` | 跨模块横切件：decorators（`@Public()`/`@Roles()`/`@CurrentUser()`）、guards（jwt-auth、roles）、interceptors（response/timeout）、filters、middleware（trace-id、upload-auth）、services（domain-event-bus、redis-lock）、tracing（OpenTelemetry）、utils |
 | `config/` | `configuration.ts`（配置树唯一来源 + `buildTypeOrmDataSourceOptions`）、`env.ts`（`getEnvVar`，供装饰器求值期/迁移 CLI 读取）、`throttle-profiles.ts`（AUTH_THROTTLE/OPS_THROTTLE 限流档） |
-| `migrations/` | 60 个 TypeORM 迁移（1717473142678-InitialSchema 起，1790000000015-CreateProjectMembers 止）+ `migrations.spec.ts` 守护测试 |
+| `migrations/` | **103** 个 TypeORM 迁移（`1717473142678-InitialSchema` 起，`1790000000058-FillTaskTemplateOwnerKeys` 止）+ `migrations.spec.ts` 守护测试（数量与首尾由 `scripts/check-atlas-counts.mjs` 守护） |
 | `data-source.ts` | 仅供 migration CLI 使用的独立 DataSource（不经 NestDI，经 `getEnvVar` 读 env） |
 | `modules/` | 业务模块，见下表 |
 | `__tests__/`、`@types/` | 进程级 spec（如 main-env-preload.spec.ts）与类型声明 |
@@ -91,6 +91,7 @@ main.ts
 | event-subscriptions | 出站事件订阅（DomainEventBus → webhook） | [出站订阅模块](modules/event-subscriptions.md)（下一批次） |
 | runtime | 任务 runtime 注册表（@Global，python/node/shell 描述层） | [runtime 模块](modules/runtime.md)（下一批次） |
 | sop | SOP 声明式契约、版本快照、发布/指派/复核 | [SOP 模块](modules/sop.md) |
+| agent | 中心 agent 会话与预算（ADR-019；`/agent`）+ 执行器侧协作入口（`/agent-collab`，独立 controller 文件挂在同目录） | [agent 模块](modules/agent.md)（下一批次） |
 
 ## 运行要素
 

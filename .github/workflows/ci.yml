@@ -827,6 +827,9 @@ jobs:
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
       - name: CLI command map vs code guard
         run: node scripts/check-cli-doc.mjs
+      # atlas 的「N 个 X」自述同样会腐烂：迁移数曾停在 60（实际 103）、模块索引漏了 agent。
+      - name: Atlas self-declared counts vs code
+        run: node scripts/check-atlas-counts.mjs
       # 「手写枚举单向腐烂」的两个剩余面：MCP 工具地图曾停在 40 个（实际 56，漏 16）；
       # REST 地图曾写「24 controller / 21 前缀」（实际 30 / 28），且 7 个路由前缀整域缺失。
       - name: Interface maps (MCP tool names + REST route prefixes) vs code
