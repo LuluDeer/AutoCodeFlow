@@ -207,8 +207,12 @@ def test_backpressure_drops_oldest(pusher_env):
     _run(scenario())
 
     bodies = [c['json'] for c in pusher_env.calls]
-    assert bodies[0]['fromLine'] == 100
-    assert sum(len(b['lines']) for b in bodies) == 901
+    # R125：首发是**一行 marker**（占用第一条被丢行的行号 0），其后才是真实切片。
+    assert bodies[0]['fromLine'] == 0
+    assert 'dropped by local backpressure' in bodies[0]['lines'][0]
+    real = [b for b in bodies if 'dropped by local backpressure' not in b['lines'][0]]
+    assert real[0]['fromLine'] == 100
+    assert sum(len(b['lines']) for b in real) == 901
 
 
 # ---------------------------------------------------------------------------
@@ -321,9 +325,53 @@ async def test_pushed_payload_preserves_true_line_numbers_after_drops(pusher_env
     for call in pusher_env.calls:
         body = call['json']
         from_line = body['fromLine']
+        # R125：marker 行不是真实日志行，跳过（它有自己的断言，见下一条用例）
+        if 'dropped by local backpressure' in body['lines'][0]:
+            continue
         for offset, text in enumerate(body['lines']):
             # admin 会把它写到 fromLine + offset —— 必须与内容里的真实行号一致
             assert text == f'line-{from_line + offset}', (
                 f'出站体行号错位：fromLine={from_line} offset={offset} 期望 line-{from_line + offset}，实际 {text}',
             )
+
+
+@pytest.mark.asyncio
+async def test_drops_emit_a_visible_marker_line_at_the_gap(pusher_env) -> None:
+    """丢行必须在流里**留下一行可见说明**，且落在缺口所在的行号上。"""
+    pusher = LogStreamPusher('exec-marker')
+
+    for i in range(1001):  # 第 11 片挤掉第 1 片（行 0..99）
+        await pusher.add_line(f'l{i}')
+    await pusher.flush()
+
+    bodies = [c['json'] for c in pusher_env.calls]
+    markers = [b for b in bodies if 'dropped by local backpressure' in b['lines'][0]]
+    assert len(markers) == 1, '丢行没有产生 marker 行 —— 实时视图里会是一个静默缺口'
+    m = markers[0]
+    # 一行成片；行号 = 第一条被丢行（0），这样它正好落在缺口位置
+    assert len(m['lines']) == 1
+    assert m['fromLine'] == 0
+    assert '100 log lines dropped' in m['lines'][0], m['lines'][0]
+
+    # marker 之后的真实切片行号**不受影响**（每片自带 fromLine）
+    real = [b for b in bodies if b is not m]
+    assert real[0]['fromLine'] == 100
+    for body in real:
+        for off, text in enumerate(body['lines']):
+            assert text == f'l{body["fromLine"] + off}'
+
+
+@pytest.mark.asyncio
+async def test_marker_is_emitted_once_per_flush_episode(pusher_env) -> None:
+    """同一轮里的多次丢行合并成**一条** marker（不是每次丢都加一行）。"""
+    pusher = LogStreamPusher('exec-marker2')
+
+    for i in range(1300):  # 丢 300 行，跨 3 个片
+        await pusher.add_line(f'l{i}')
+    await pusher.flush()
+
+    bodies = [c['json'] for c in pusher_env.calls]
+    markers = [b for b in bodies if 'dropped by local backpressure' in b['lines'][0]]
+    assert len(markers) == 1
+    assert '300 log lines dropped' in markers[0]['lines'][0], markers[0]['lines'][0]
 
