@@ -1192,3 +1192,10 @@
   即「长期跑不到」被当成「这次没跑到」。修后 11 passed。② `executor-deployment-entity-registration.spec.ts` **单独跑绿、全量跑红** —— `beforeAll` 构建 TypeORM 元数据在并发下 ~5.9s 顶到 jest 默认 5s ⇒ 6 用例一起红，看似六个缺陷实则一个超时。加 `jest.setTimeout(30_000)`（放宽等待非断言）。
   **共同点：测试基础设施的两种静默失真** —— 套件没运行与套件通过，在 CI 日志里长得很像。
   **待查**：executor-node 全量里 `middleware/auth.spec.ts` **1 failed / 106.9s**，异常慢，疑同类负载超时，**尚未定位到用例**，留下一轮。
+- 2026-10-20 **R114 done（commit ce05b7b1）**：**形状漂移不再伪装成「全清」**（R107-A1 遗留④最后一个假成功）。`list_dead_letters` 的 `data?.data ?? []` 在响应形状变化时得到空数组 ⇒
+  `totalDeadLetters: 0` ⇒ **agent 以为「所有执行器的死信都清空了」**。这是三个假成功里最危险的一个：前两个至少看得出「没有内容」，这个直接给出一个**乐观的数字** —— **把「读不懂」说成「没问题」**。
+  修：形状不认识就 `JSON_ERROR(UNEXPECTED_RESPONSE_SHAPE)` 且**不产出 `totalDeadLetters`**。验证 vitest **253→257**（+4）、tsc 0；反证退回旧写法 → **2 failed / 140 passed**，还原后 257 绿。
+  **至此 R107-A1 遗留④的三个假成功全部收口**（空载荷 ×2 + 形状漂移）。
+- 2026-10-20 **executor-node「1 failed / 106.9s」定性为抖动（无提交）**：上一轮全量跑 `middleware/auth.spec.ts` 报 1 failed 且耗时 106.9s；本轮**原样重跑全量**得
+  `48 passed / 1205 passed / 7 skipped / 0 failed`，单独跑该 spec 也是 34 passed ⇒ **负载下超时抖动**，与 R113 修的 `beforeAll` 超时同类。
+  但**未修**：我**没定位到具体哪个用例超时**（只看到套件级失败）⇒ 登记为**已知抖动，不假装已解决**。106.9s 对一个鉴权中间件套件仍异常慢，值得后续单独看它在等什么。
