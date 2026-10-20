@@ -2152,3 +2152,39 @@ describe("R107-A1: 空 params 对象视为「无覆盖」（不得清空任务�
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// R110：出参凭据剥除（防御纵深）
+// ---------------------------------------------------------------------------
+describe('R110 工具出参的凭据剥除', () => {
+  it('get_application 的响应里即使带了 webhookSecret，也不会进 LLM 上下文', async () => {
+    call.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'demo',
+      // 上游本该 select:false 掉 —— 这里刻意模拟「上游漏了一次」
+      webhookSecret: 'whsec_should_never_leave',
+      env: { PLAIN_SETTING: 'on', API_TOKEN: 'tok_leak' },
+    });
+    const res = await tools.get('get_application')!.handler({
+      applicationId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(res.content[0].text).not.toContain('whsec_should_never_leave');
+    expect(res.content[0].text).not.toContain('tok_leak');
+    const parsed = parse(res);
+    expect(parsed.webhookSecret).toBe('[redacted]');
+    expect(parsed.env.API_TOKEN).toBe('[redacted]');
+    // 非密配置原样保留（剥得太狠会让 agent 失去排障能力）
+    expect(parsed.env.PLAIN_SETTING).toBe('on');
+  });
+
+  it('错误载荷同样过剥除（JSON_ERROR 与 JSON_CONTENT 共用同一条路径）', async () => {
+    call.mockResolvedValue({ secrets: { a: 'b' }, tokenHash: 'h' });
+    const res = await tools.get('get_executor')!.handler({
+      executorId: '22222222-2222-4222-8222-222222222222',
+    });
+    // 键保留、值打码（保留键名便于排障；原文绝不能出现）
+    expect(res.content[0].text).not.toContain('"tokenHash": "h"');
+    expect(parse(res).tokenHash).toBe('[redacted]');
+    expect(parse(res).secrets).toBe('[redacted]');
+  });
+});

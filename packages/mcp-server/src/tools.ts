@@ -4,6 +4,8 @@
  * `call` function so routes/params/responses can be unit-tested with a mock.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+// R110：出参凭据剥除（防御纵深）。
+import { redactSensitive } from "./redact.js";
 import { z } from "zod";
 
 export type ApiCall = <T = unknown>(
@@ -23,8 +25,15 @@ export type ApiCall = <T = unknown>(
  */
 export const ANALYZE_TIMEOUT_MS = 120_000;
 
+/**
+ * R110（SEC-MCP-REDACT）：所有工具出参都经 `redactSensitive` 剥一层敏感键。
+ *
+ * 上游（admin-api）当前是干净的（`select:false` + 响应 DTO 排除 + `maskReadSurface`，R107-A1 逐项核过），
+ * 但那是**三处彼此独立的约定**；任何一处新增面时漏一次，凭据就会经这里**直接进 LLM 上下文**。
+ * 这一层不替代上游，只保证「上游漏了也还在本地被拦住」。
+ */
 const JSON_CONTENT = (data: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+  content: [{ type: "text" as const, text: JSON.stringify(redactSensitive(data), null, 2) }],
 });
 
 /**
@@ -35,7 +44,7 @@ const JSON_CONTENT = (data: unknown) => ({
  * （如 available 列表），让 agent 同时拿到失败信号与下一步可用的取值。
  */
 const JSON_ERROR = (data: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+  content: [{ type: "text" as const, text: JSON.stringify(redactSensitive(data), null, 2) }],
   isError: true as const,
 });
 
