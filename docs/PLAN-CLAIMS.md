@@ -1773,3 +1773,21 @@ expect(items(client)[0].status).toBe('active');
 **但那是它的声称，我仍要自己跑一遍**（今天已吃过一次「agent 说验证过、其实没落盘」的教训）。
 
 **当前**：机器上 14 个 node 进程在跑（vitest worker 启于 20:44:5x），它的全量套件正在进行 ⇒ 继续不动文件。
+- 2026-10-20 **R149 · 第三轮等待（并借机做了一次只读巡检）**。
+
+**为什么继续等**（用证据判断，不是凭感觉）：
+- 检查点在 **20:48:26** 有更新 ⇒ agent **活着**，不是卡死；
+- 机器上仍有 **11 个 node 进程**（vitest worker）⇒ 它的全量套件确实在跑；
+- 我此前自己跑过 admin-web 全量：**224 文件 / 1854 例**，本机约 6 分钟 —— 它这轮已经 8+ 分钟，**偏慢但在合理范围**（它可能重跑一次）。
+
+⇒ **不 interrupt**。判断依据是「活着 + 在干活」，不是「等了多久」。
+
+**借这段不碰 admin-web 的时间做了只读巡检**（7 道守卫全绿）：
+`check-guards-wired` / `check-publishable-wiring` / `check-interface-maps` / `check-atlas-counts` /
+`check-cron-leader-gate` / `check-ssrf-deny-parity` / `check-constant-time-compare` —— 全部 exit 0。
+
+其中 `check-guards-wired` 报 **34 个 check-*.mjs 全部被 CI 执行**；`check-publishable-wiring` 仍为
+「8 个可发布包 / 4 已接线 / 4 基线豁免」—— 说明 `R135` 那个待决策项**没有被任何人顺手改掉**（守卫在盯着）。
+
+**下一轮**：若它仍未交付，我按协议 interrupt 并接管验收（跑三个新用例 + tsc + 反证，再跑一次全量）。
+**继续等的边界**：检查点不再更新（>10 分钟）或进程数掉到 2 以下 —— 任一发生，立刻接管。
