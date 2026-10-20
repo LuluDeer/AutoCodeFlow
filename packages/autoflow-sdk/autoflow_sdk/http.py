@@ -119,15 +119,21 @@ def _raise(resp: httpx.Response) -> None:
 
     Kept behavior-compatible: same exception base, same message, same
     ``request``/``response`` attributes — just an SDK-identifiable type.
+
+    R177-A1（轴 1 错误面）：单一路径。此前实现先 `if resp.is_error` 包 4xx/5xx，
+    再在函数末尾无条件 `resp.raise_for_status()`——而 httpx 的 `is_error` 只覆盖
+    4xx/5xx，`raise_for_status()` 对 3xx 同样抛。于是 3xx 从末尾那条**裸路径**
+    逃出 SDK 类型：前面挂一层做 302（登录跳转 / 网关）的反代时，任务代码
+    `except HttpClientError` 会漏接，也拿不到 error_code。现在只留一条路径：
+    任何非 2xx 都被包成 HttpClientError（str(exc) 逐字节保留 httpx 的原始消息，
+    含 3xx 的 Redirect location 提示）。2xx 时 raise_for_status() 直接返回。
     """
-    if resp.is_error:
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise HttpClientError(
-                str(exc), request=exc.request, response=exc.response
-            ) from exc
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HttpClientError(
+            str(exc), request=exc.request, response=exc.response
+        ) from exc
 
 
 class AsyncHttpClient:

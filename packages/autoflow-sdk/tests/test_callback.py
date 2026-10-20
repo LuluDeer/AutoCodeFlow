@@ -1,4 +1,6 @@
 """Tests for autoflow_sdk.callback.CallbackClient (R9, round-9; U14)."""
+import datetime
+import email.utils
 import json
 
 import httpx
@@ -6,7 +8,12 @@ import pytest
 import respx
 
 from autoflow_sdk import callback as callback_module
-from autoflow_sdk.callback import CALLBACK_MAX_ATTEMPTS, CallbackClient, CallbackDisabledError
+from autoflow_sdk.callback import (
+    CALLBACK_MAX_ATTEMPTS,
+    CallbackClient,
+    CallbackDisabledError,
+)
+from autoflow_sdk.http import HttpClientError
 
 URL = "http://admin.test/api/executions/callback"
 
@@ -295,14 +302,14 @@ class TestRetrySemantics:
     in tests via monkeypatch so the suite stays fast and deterministic."""
 
     @staticmethod
-    def _no_sleep(_attempt):
+    def _no_sleep(_attempt, _retry_after_s=None):
         return None
 
     def _patch_sleep(self, monkeypatch):
         monkeypatch.setattr(
             callback_module.CallbackClient,
             "_sleep_before_retry",
-            staticmethod(lambda _attempt: None),
+            staticmethod(lambda _attempt, _retry_after_s=None: None),
         )
 
     @respx.mock
@@ -384,7 +391,7 @@ class TestConnectionPool:
         monkeypatch.setattr(
             callback_module.CallbackClient,
             "_sleep_before_retry",
-            staticmethod(lambda _attempt: None),
+            staticmethod(lambda _attempt, _retry_after_s=None: None),
         )
 
     @respx.mock
@@ -550,3 +557,179 @@ class TestErrorReadability:
         respx.post(URL).mock(return_value=httpx.Response(502, text="Bad Gateway"))
         with pytest.raises(httpx.HTTPStatusError):
             make_client().report_success()
+
+# ---------------------------------------------------------------------------
+# R177-A1（对外 SDK 健壮性审计）——轴 1「错误面」与轴 2「Retry-After」
+# ---------------------------------------------------------------------------
+
+
+class TestErrorTypeUnified:
+    """轴 1：回调通道的 HTTP 错误必须与 HttpClient 通道是同一个**导出的**类型。
+
+    缺陷现场（R177-A1 反证）：``CallbackClient._status_error`` 直接构造
+    ``httpx.HTTPStatusError``，而 ``http._raise`` 抛 ``HttpClientError``（其子类）。
+    于是 ``except autoflow_sdk.HttpClientError`` 能接住 ``client.get()`` 的 404，
+    却接不住 ``ctx.report_failure()`` 的 401——同一份任务代码要写两种 except，
+    且回调错误拿不到 admin-api 的 ``errorCode``，用户无法区分
+    「4xx 契约拒绝（不该重试）」与「429 限流（该退避）」。
+    """
+
+    BODY = {
+        "code": 400,
+        "message": "回调批次被拒绝",
+        "errorCode": "TASK_NOT_FOUND",
+        "params": {"taskId": "t-1"},
+    }
+
+    @staticmethod
+    def _patch_sleep(monkeypatch):
+        monkeypatch.setattr(
+            callback_module.CallbackClient,
+            "_sleep_before_retry",
+            staticmethod(lambda _attempt, _retry_after_s=None: None),
+        )
+
+    @respx.mock
+    def test_4xx_raises_exported_http_client_error(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(return_value=httpx.Response(400, json=self.BODY))
+
+        with pytest.raises(HttpClientError) as excinfo:
+            make_client().report_success()
+
+        err = excinfo.value
+        assert route.call_count == 1, "4xx 是契约拒绝，必须单发"
+        assert err.error_code == "TASK_NOT_FOUND"
+        assert err.params == {"taskId": "t-1"}
+        # 既有面不变：仍是 httpx.HTTPStatusError（子类），仍有 response/request
+        assert isinstance(err, httpx.HTTPStatusError)
+        assert err.response.status_code == 400
+        assert "回调批次被拒绝" in str(err)
+
+    @respx.mock
+    def test_5xx_exhausted_raises_exported_http_client_error(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(return_value=httpx.Response(503, text="busy"))
+
+        with pytest.raises(HttpClientError) as excinfo:
+            make_client().report_success()
+
+        assert route.call_count == CALLBACK_MAX_ATTEMPTS
+        assert excinfo.value.response.status_code == 503
+
+    @respx.mock
+    def test_401_is_classifiable_as_client_contract_rejection(self, monkeypatch):
+        """用户脚本的真实分支：401 不重试、429 重试——两者都必须是 SDK 类型。"""
+        self._patch_sleep(monkeypatch)
+        respx.post(URL).mock(return_value=httpx.Response(401, json={
+            "code": 401, "message": "Invalid or expired execution callback token", "data": None,
+        }))
+
+        with pytest.raises(HttpClientError) as excinfo:
+            make_client().report_success()
+
+        # 4xx 无 errorCode → error_code 为 None，但类型可分类
+        assert excinfo.value.error_code is None
+        assert excinfo.value.response.status_code == 401
+
+
+class TestRetryAfterHonoured:
+    """轴 2：429/503 必须尊重 ``Retry-After``，但有**硬上限**。
+
+    缺陷现场（R177-A1 反证）：``report()`` 对 429/5xx 一律用 0.5s/1.0s 固定退避，
+    完全无视服务端 ``Retry-After``——服务端说「5 秒后再来」，客户端 0.5 秒后
+    就再撞一次，必然再吃一个 429，把 3 次尝试预算全部烧掉（node SDK 在
+    ``parseRetryAfterHeader`` 里是尊重的，两包语义不一致）。
+
+    上限的必要性：``Retry-After: 3600`` 若无上限会把任务进程钉住一小时
+    （同步 API、阻塞调用方），故单次等待封顶 ``CALLBACK_RETRY_MAX_WAIT_S``。
+    """
+
+    @staticmethod
+    def _record_sleeps(monkeypatch):
+        calls = []
+
+        def fake_sleep(attempt, retry_after_s=None):
+            calls.append((attempt, retry_after_s))
+
+        monkeypatch.setattr(
+            callback_module.CallbackClient,
+            "_sleep_before_retry",
+            staticmethod(fake_sleep),
+        )
+        return calls
+
+    @respx.mock
+    def test_429_retry_after_seconds_is_forwarded(self, monkeypatch):
+        calls = self._record_sleeps(monkeypatch)
+        route = respx.post(URL).mock(side_effect=[
+            httpx.Response(429, text="slow down", headers={"Retry-After": "2"}),
+            httpx.Response(200, json={"results": []}),
+        ])
+
+        assert make_client().report_success() == {"results": []}
+        assert route.call_count == 2
+        assert calls[0][1] == 2.0, "必须把 Retry-After 交给退避计算，而不是忽略"
+
+    @respx.mock
+    def test_503_retry_after_http_date_is_forwarded(self, monkeypatch):
+        calls = self._record_sleeps(monkeypatch)
+        future = email.utils.format_datetime(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=3),
+            usegmt=True,
+        )
+        respx.post(URL).mock(side_effect=[
+            httpx.Response(503, text="busy", headers={"Retry-After": future}),
+            httpx.Response(200, json={"results": []}),
+        ])
+
+        assert make_client().report_success() == {"results": []}
+        assert calls[0][1] is not None
+        assert 0 < calls[0][1] <= 5.0
+
+    @respx.mock
+    def test_garbage_retry_after_falls_back_to_backoff(self, monkeypatch):
+        calls = self._record_sleeps(monkeypatch)
+        respx.post(URL).mock(side_effect=[
+            httpx.Response(429, text="x", headers={"Retry-After": "not-a-date"}),
+            httpx.Response(200, json={"results": []}),
+        ])
+
+        assert make_client().report_success() == {"results": []}
+        assert calls[0][1] is None
+
+    def test_retry_delay_is_capped_for_any_hint(self):
+        """纯函数：任何 Retry-After 都被封顶（无一小时钉死）。"""
+        from autoflow_sdk.callback import CALLBACK_RETRY_MAX_WAIT_S
+
+        client_cls = callback_module.CallbackClient
+        assert client_cls._retry_delay(1, 2.0) == 2.0
+        assert client_cls._retry_delay(1, 1.0) == 1.0
+        assert client_cls._retry_delay(2, 0.0) == 1.0  # max(backoff, hint)
+        assert client_cls._retry_delay(1, 3600.0) == callback_module.CALLBACK_RETRY_MAX_WAIT_S
+        assert client_cls._retry_delay(3, 999.0) == callback_module.CALLBACK_RETRY_MAX_WAIT_S
+
+    @respx.mock
+    def test_huge_retry_after_cannot_pin_the_caller(self, monkeypatch):
+        """无上限的 Retry-After = 服务端一句话钉死任务进程一小时。"""
+        from autoflow_sdk.callback import CALLBACK_RETRY_MAX_WAIT_S
+
+        calls = self._record_sleeps(monkeypatch)
+        respx.post(URL).mock(side_effect=[
+            httpx.Response(429, text="x", headers={"Retry-After": "3600"}),
+            httpx.Response(200, json={"results": []}),
+        ])
+
+        assert make_client().report_success() == {"results": []}
+        # 提示被原样透传，但真正落地的等待被 _retry_delay 封顶
+        assert calls[0][1] == 3600.0
+        delay = callback_module.CallbackClient._retry_delay(1, 3600.0)
+        assert delay == CALLBACK_RETRY_MAX_WAIT_S
+        assert delay <= 5.0
+
+    def test_retry_delay_keeps_plain_backoff_without_hint(self):
+        assert callback_module.CallbackClient._retry_delay(1) == 0.5
+        assert callback_module.CallbackClient._retry_delay(2) == 1.0
+        # 指数退避本身仍然封顶 CALLBACK_RETRY_MAX_DELAY_S
+        assert callback_module.CallbackClient._retry_delay(9) == callback_module.CALLBACK_RETRY_MAX_DELAY_S
+

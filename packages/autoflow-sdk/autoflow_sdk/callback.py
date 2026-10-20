@@ -45,10 +45,14 @@ the inner ``data`` — for the callback endpoint that is ``{results: [...]}``.
 """
 from typing import Any, Dict, List, Optional
 
+import datetime
+import email.utils
 import random
 import time
 
 import httpx
+
+from .http import HttpClientError
 
 # CallbackItemDto field constraints (keep in sync with the admin DTO).
 ERROR_MESSAGE_MAX_LENGTH = 4096
@@ -65,6 +69,19 @@ CALLBACK_MAX_ATTEMPTS = 3
 CALLBACK_RETRY_BASE_DELAY_S = 0.5
 CALLBACK_RETRY_MAX_DELAY_S = 2.0
 CALLBACK_RETRY_JITTER_S = 0.25
+
+# R177-A1: 单次重试等待的**硬上限**（秒），对指数退避与 Retry-After 一体适用。
+#
+# 为什么要上限：Retry-After 是**服务端可控**的输入。没有上限时一句
+# "Retry-After: 3600" 就能把任务进程钉住一小时——本客户端是同步阻塞 API，
+# 调用方（任务代码）没有任何脱身手段，而任务本身还有 executor 的超时预算。
+# 有上限时最坏总耗时可算：attempts×timeout + (attempts-1)×上限。
+#
+# 为什么上限取 5s（而不是 node SDK 的 maxWaitMs=30s）：本通道是任务内**同步**
+# 回调，阻塞的是任务自己的收尾路径；node 的 30s 上限对应它 4 次尝试的通用重试面
+# （含幂等 GET）。两者都"尊重但封顶"，只是预算不同——差异在两边的 parity
+# 注释里互相引用，改任何一端前先读另一端。
+CALLBACK_RETRY_MAX_WAIT_S = 5.0
 
 # ExecutionFailureReason enum values accepted by the DTO validation.
 #
@@ -97,6 +114,42 @@ VALID_FAILURE_REASONS = frozenset({
     "killed",
     "unknown",
 })
+
+
+def _parse_retry_after(raw: Any) -> Optional[float]:
+    """解析 ``Retry-After`` 头（delta-seconds 或 HTTP-date）为秒数；无法解析 → None。
+
+    R177-A1：429/503 是**服务端告诉我们什么时候再来**的唯一正式渠道。此前
+    ``report()`` 完全忽略它，固定 0.5s/1.0s 退避——服务端说「5 秒后再来」，
+    客户端 0.5 秒后就再撞一次，必然再吃一个 429，把 3 次尝试预算烧光。
+    node SDK（``parseRetryAfterHeader``）一直是尊重的，此处对齐。
+
+    只读头部，不做网络时间同步；HTTP-date 按本机时钟解释（与 node 同款语义）。
+    返回值**未封顶**——封顶由 ``_retry_delay`` 统一施加，便于单测分别验证。
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    # delta-seconds：只接受非负整数（HTTP 规范），"-5" / "1.5" 视为无效
+    if text.isdigit():
+        try:
+            return float(int(text))
+        except (TypeError, ValueError):  # pragma: no cover - isdigit 已保证
+            return None
+    # HTTP-date（如 Wed, 21 Oct 2015 07:28:00 GMT）；解析失败退化为 None（走普通退避）
+    try:
+        parsed = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        # 无时区的日期按 GMT 解释（HTTP-date 的规范时区），避免本机时区漂移
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    delta = (parsed - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    return max(0.0, delta)
 
 
 class CallbackDisabledError(RuntimeError):
@@ -253,9 +306,14 @@ class CallbackClient:
         success, error?}, ...]}`` — callers get that inner object directly.
         Non-enveloped bodies are passed through unchanged.
 
-        Raises CallbackDisabledError without credentials, httpx.HTTPStatusError
-        on a non-2xx answer from the Admin API (the message is enriched with
-        the envelope's ``message`` field when present).
+        Raises CallbackDisabledError without credentials, HttpClientError on a
+        non-2xx answer from the Admin API (the message is enriched with the
+        envelope's ``message`` field when present; ``error_code`` / ``params``
+        expose the stable code — R177-A1). HttpClientError subclasses
+        httpx.HTTPStatusError, so pre-existing ``except`` clauses still match.
+
+        429/503 的重试尊重服务端 Retry-After（delta-seconds 或 HTTP-date），
+        单次等待封顶 CALLBACK_RETRY_MAX_WAIT_S——尊重但不被钉死（R177-A1）。
         """
         if not self.enabled:
             raise CallbackDisabledError(self.disabled_reason)
@@ -291,7 +349,13 @@ class CallbackClient:
                 if resp.status_code >= 500 or resp.status_code == 429:
                     last_error = self._status_error(resp)
                     if attempt < CALLBACK_MAX_ATTEMPTS:
-                        self._sleep_before_retry(attempt)
+                        # R177-A1: 429/503 尊重服务端 Retry-After（delta-seconds
+                        # 或 HTTP-date）；解析不出 → None → 退回普通指数退避。
+                        # 上限由 _retry_delay 统一封顶（CALLBACK_RETRY_MAX_WAIT_S）。
+                        self._sleep_before_retry(
+                            attempt,
+                            _parse_retry_after(resp.headers.get("retry-after")),
+                        )
                         continue
                     raise last_error
                 if resp.status_code >= 400:
@@ -304,7 +368,10 @@ class CallbackClient:
                     # ValueError 不在契约内，调用方 catch HTTPStatusError 会漏）。
                     body_preview = resp.text[:200].replace("\n", " ")
                     # NETOPT-D P3: 消息带 body 摘要（前 200 字符），排障有信息量。
-                    raise httpx.HTTPStatusError(
+                    # R177-A1: 类型统一为 HttpClientError——回调通道抛出的每一个
+                    # 状态错误都必须是同一个**导出的**类型，否则调用方要为本通道
+                    # 单独写一份 except。
+                    raise HttpClientError(
                         "Admin API returned non-JSON body on 2xx callback response: "
                         f"{body_preview!r}",
                         request=resp.request,
@@ -323,22 +390,52 @@ class CallbackClient:
         raise last_error  # pragma: no cover - loop always returns or raises
 
     @staticmethod
-    def _sleep_before_retry(attempt: int) -> None:
-        """Exponential backoff with jitter between retry attempts."""
-        delay = min(
+    def _retry_delay(attempt: int, retry_after_s: Optional[float] = None) -> float:
+        """本次重试等待的秒数（**不含抖动**，纯函数，便于单测钉死）。
+
+        R177-A1 的两条不变量：
+        1. **尊重** Retry-After——服务端指定的等待优先于我们自己猜的指数退避
+           （取大者，而不是取小者：退避只是下限猜测，Retry-After 才是服务端的
+           明确答复）；
+        2. **有硬上限**——退避与 Retry-After 一并封顶 CALLBACK_RETRY_MAX_WAIT_S，
+           否则一句 "Retry-After: 3600" 就能把同步调用方钉死一小时。
+        """
+        backoff = min(
             CALLBACK_RETRY_BASE_DELAY_S * (2 ** (attempt - 1)),
             CALLBACK_RETRY_MAX_DELAY_S,
         )
+        if retry_after_s is None:
+            return backoff
+        return min(max(backoff, retry_after_s), CALLBACK_RETRY_MAX_WAIT_S)
+
+    @classmethod
+    def _sleep_before_retry(
+        cls, attempt: int, retry_after_s: Optional[float] = None
+    ) -> None:
+        """Sleep the bounded retry delay plus jitter between attempts.
+
+        retry_after_s 是服务端 Retry-After 的解析结果（秒）；None 表示没有该头或
+        无法解析——两种情况都退回普通指数退避。抖动只加在已封顶的延迟之上，
+        不会把上限顶穿（最多 +CALLBACK_RETRY_JITTER_S）。
+        """
+        delay = cls._retry_delay(attempt, retry_after_s)
         time.sleep(delay + random.uniform(0, CALLBACK_RETRY_JITTER_S))
 
     @staticmethod
-    def _status_error(resp: httpx.Response) -> httpx.HTTPStatusError:
-        """HTTPStatusError whose message carries admin-api's envelope detail.
+    def _status_error(resp: httpx.Response) -> HttpClientError:
+        """HttpClientError whose message carries admin-api's envelope detail.
 
         ``raise_for_status`` alone would only say "401 Client Error", hiding
         the server-side reason ("Invalid or expired execution callback
-        token", validation messages, ...). Keep the exception type unchanged
-        so callers can still catch httpx.HTTPStatusError.
+        token", validation messages, ...).
+
+        R177-A1（轴 1 错误面）：类型从裸 httpx.HTTPStatusError 收窄为
+        HttpClientError —— 即 http.py 里那个**已导出**的子类。此前同一个 SDK
+        的两条通道抛两种类型：client.get() 的 404 可以被
+        `except autoflow_sdk.HttpClientError` 接住，ctx.report_failure() 的 401
+        却接不住；而且回调错误拿不到 error_code / params，用户无法区分
+        「4xx 契约拒绝（重试无用）」与「429 限流（该退避）」。子类关系保证
+        既有的 `except httpx.HTTPStatusError` 逐字节照旧生效。
         """
         detail = ""
         try:
@@ -351,7 +448,7 @@ class CallbackClient:
                 detail = f": {message}"
             elif isinstance(message, list) and message:
                 detail = ": " + "; ".join(str(m) for m in message)
-        return httpx.HTTPStatusError(
+        return HttpClientError(
             f"Client error {resp.status_code} for {resp.request.method} "
             f"{resp.request.url}{detail}",
             request=resp.request,

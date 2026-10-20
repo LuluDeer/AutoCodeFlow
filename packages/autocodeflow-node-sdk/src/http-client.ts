@@ -101,21 +101,49 @@ export const SAFE_METHODS: ReadonlySet<string> = new Set([
  *  契约拒绝仍单发）。任务代码同步通道没有 executor 侧落盘重放兜底，一次
  *  瞬时抖动即丢终态、admin 侧该行滞留 RUNNING 直到 stale sweep 回收
  *  （真实 failureReason 丢失）。
- *  NETOPT-G P3: 路径判定用段界正则（`/api/executions/callback` 后必须是
- *  `/`、`?` 或串尾）而非裸 startsWith——兄弟路由 /api/executions/callback-extra
- *  不应被误判为回调端点而豁免重试。注意与 withExecutorAddress 的精确尾正则
- *  （/\/executions\/callback\/?$/）语义差异：前者是"是否回调通道"（豁免
- *  重试），后者是"是否 stamp executorAddress"（数据改写），两谓词对
- *  /api/executions/callback 系路径收敛一致即可，兄弟路由下各自收紧不互扰。 */
+ *  NETOPT-G P3: 路径判定用段界正则而非裸 startsWith——兄弟路由
+ *  /api/executions/callback-extra 不应被误判为回调端点而豁免重试。
+ *  R177-A1: 判定前先经 requestPath 归一化（查询串 / 绝对 URL 不再失配），并
+ *  **收紧到端点本身**：admin-api 只在 @Post('callback') 挂了这一个端点
+ *  （apps/admin-api/src/modules/task/execution-callback.controller.ts:100），
+ *  /api/executions/callback/xxx 这样的子路径并不存在，把它也算作「可豁免重试
+ *  的回调通道」只会让一个 404 被无谓重试 4 次。收紧后与 withExecutorAddress
+ *  的尾锚语义一致——两个谓词不再互相矛盾（此前 /callback/sub 对前者为真、
+ *  对后者为假）。 */
 export function isTerminalCallbackUrl(url: string, method: Method): boolean {
   return (
     method.toUpperCase() === 'POST' &&
-    /^\/api\/executions\/callback(?:\/|\?|$)/.test(url)
+    /^\/api\/executions\/callback\/?$/.test(requestPath(url))
   );
 }
 
 /** 与 python `_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}` 对齐。 */
 export const RETRYABLE_HTTP_STATUSES: readonly number[] = [429, 500, 502, 503, 504];
+
+/**
+ * R177-A1: 把请求 URL 收敛成「纯路径」形态，供回调端点谓词判定。
+ *
+ * 缺陷现场：两个谓词（isTerminalCallbackUrl / withExecutorAddress）都直接拿
+ * 调用方传进来的 url 套裸正则，于是两种完全合法的写法静默失配：
+ * - 带查询串（/api/executions/callback?batch=2）：重试豁免失效，终态回调退回
+ *   「单发即抛」，一次抖动就丢终态；executorAddress 盖章失效，admin 侧该行
+ *   无法归属到执行器（N27 失效）。
+ * - 绝对 URL（http://admin-api:3105/api/executions/callback）：^/api 锚点
+ *   直接失配，同上。
+ *
+ * 只做三件事：剥 scheme://host、去 ?query、去 #fragment。不做 ../ 归一化
+ * （调用方传的就是路径，归一化反而会掩盖可疑输入）。
+ */
+export function requestPath(url: string): string {
+  let path = String(url ?? '');
+  const schemeHost = /^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^/?#]*/.exec(path);
+  if (schemeHost) {
+    path = path.slice(schemeHost[0].length);
+    if (!path.startsWith('/')) path = '/' + path;
+  }
+  const cut = path.search(/[?#]/);
+  return cut >= 0 ? path.slice(0, cut) : path;
+}
 
 export interface HttpRetryConfig {
   /** 最大重试次数（不含首次请求；默认 3 → 至多 4 次尝试）。
@@ -150,6 +178,24 @@ export class CircuitBreakerOpenError extends Error {
         'requests are blocked until the reset timeout elapses',
     );
     this.name = 'CircuitBreakerOpenError';
+  }
+}
+
+/**
+ * R177-A1（轴 1 错误面 + 轴 3 两包一致性）：凭据缺失时抛出的**有类型**错误。
+ *
+ * 缺陷现场：requireEnabled() 抛的是 new Error(disabledReason)——消费方无法
+ * 用 instanceof 判断「这是配置错，不是网络错、不是服务端 4xx」，只能匹配英文
+ * 文案。python SDK 早在 CallbackDisabledError 上做了这件事，本包缺。
+ *
+ * 兼容性：继承 Error，name 改为 'HttpClientDisabledError'，message 逐字节
+ * 保留原文案——既有的 toThrow(/HttpClient is disabled/) 断言与
+ * instanceof Error 判断全部照旧成立。
+ */
+export class HttpClientDisabledError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'HttpClientDisabledError';
   }
 }
 
@@ -556,7 +602,10 @@ export class HttpClient {
    * either one is left untouched when the item already carries it.
    */
   private withExecutorAddress(url: string, data?: unknown): unknown {
-    if (!/\/executions\/callback\/?$/.test(url)) {
+    // R177-A1: 与 isTerminalCallbackUrl 共用 requestPath 归一化——查询串 /
+    // 绝对 URL 不再让盖章静默失效（此前带 ?batch=2 的回调 POST 会漏 stamp，
+    // admin 侧该行无法归属到执行器，N27 失效）。
+    if (!/\/executions\/callback\/?$/.test(requestPath(url))) {
       return data;
     }
     if (!this.executorAddress && !this.deviceFingerprint) {
@@ -583,7 +632,10 @@ export class HttpClient {
   /** Throws a descriptive error when the client lacks Admin API credentials. */
   private requireEnabled(): AxiosInstance {
     if (!this.client || !this.enabled) {
-      throw new Error(this.disabledReason ?? 'HttpClient is disabled');
+      // R177-A1: 有类型的配置错，而不是裸 Error（对齐 python CallbackDisabledError）
+      throw new HttpClientDisabledError(
+        this.disabledReason ?? 'HttpClient is disabled',
+      );
     }
     return this.client;
   }

@@ -304,3 +304,52 @@ class TestR31E2ErrorCodePassthrough:
         assert excinfo.value.error_code is None
         assert excinfo.value.params == {}
         assert excinfo.value.response.status_code == 502
+
+# ---------------------------------------------------------------------------
+# R177-A1（对外 SDK 健壮性审计）——轴 1：3xx 也必须落在 SDK 类型里
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectStatusIsSdkError:
+    """缺陷现场（R177-A1 反证）：``_raise`` 先用 ``if resp.is_error`` 判 4xx/5xx，
+    再在函数末尾无条件 ``resp.raise_for_status()``——httpx 的 ``is_error`` 只覆盖
+    4xx/5xx，而 ``raise_for_status()`` 对 3xx 也抛。于是 3xx 从**末尾那条路径**
+    裸抛 ``httpx.HTTPStatusError``，绕过 ``HttpClientError``：环境前面挂一层反代
+    做 302（登录页 / 网关跳转）时，任务代码 ``except HttpClientError`` 会漏接，
+    也拿不到 error_code。两端口径必须一致：SDK 抛出的状态错误只有一种类型。
+    """
+
+    @respx.mock
+    def test_sync_3xx_raises_http_client_error(self):
+        respx.get("http://api.test/moved").mock(return_value=httpx.Response(
+            302, headers={"Location": "http://api.test/elsewhere"},
+        ))
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/moved")
+        # 既有面不变：仍是 HTTPStatusError 子类，仍带 request/response
+        assert isinstance(excinfo.value, httpx.HTTPStatusError)
+        assert excinfo.value.response.status_code == 302
+        assert excinfo.value.request is not None
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_async_3xx_raises_http_client_error(self):
+        respx.get("http://async.test/moved").mock(return_value=httpx.Response(
+            301, headers={"Location": "http://async.test/elsewhere"},
+        ))
+        async with AsyncHttpClient(base_url="http://async.test") as c:
+            with pytest.raises(HttpClientError):
+                await c.get("/moved")
+
+    @respx.mock
+    def test_3xx_error_code_degrades_quietly(self):
+        respx.get("http://api.test/moved").mock(return_value=httpx.Response(
+            307, headers={"Location": "http://api.test/elsewhere"},
+        ))
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/moved")
+        assert excinfo.value.error_code is None
+        assert excinfo.value.params == {}
+
