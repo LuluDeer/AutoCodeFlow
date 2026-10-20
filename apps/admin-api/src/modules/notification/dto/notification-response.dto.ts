@@ -1,13 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+// R150-A1: 渠道 id 的单一事实源（与 send-notification.dto.ts 同源导入）。
+import { AlertChannel } from "../notification.service";
 
 /**
  * ARCH-23 / N-12（2026-10-07 A1 批）：通知配置域（tag "Notification Config"）
  * 响应契约。通道密钥值在读面恒掩码（config 值可能含 webhook secret/token）。
  */
 
-/** 通知通道配置行（key 是固定枚举：email/slack/dingtalk/wecom/webhook）。 */
+/**
+ * 通知通道配置行（key 是固定枚举：email/slack/dingtalk/wecom/webhook/feishu）。
+ *
+ * R150-A1（出站面审计 · 轴3）：这里的 swagger enum 曾是**手写第四份**渠道清单，
+ * NF-05 加 feishu 后没人同步——openapi/api-types 因此少一个渠道，而
+ * AlertChannel 才是单一事实源。改为直接从枚举派生，漂移不再可能。
+ */
 export class NotificationChannelDto {
-  @ApiProperty({ enum: ["email", "slack", "dingtalk", "wecom", "webhook"] })
+  @ApiProperty({ enum: Object.values(AlertChannel) })
   key: string;
 
   @ApiProperty()

@@ -544,13 +544,37 @@ describe("NotificationConfigService", () => {
       );
     });
 
-    it("non-secret query params (e.g. ?key=…) are left intact", () => {
+    // R150-A1（出站面审计 · 轴3）：本用例原来钉的是「?key= 不是机密，读面
+    // 原样回显」。该判断与本模块**自己的**日志脱敏口径冲突——
+    // channels/log-safe-url.util.ts 的 SECRET_QUERY_PARAM_RE 含 key|sign，理由
+    // 就写在它的头注里（"dingtalk/wecom 的 ?access_token=、企业微信的 ?key="）。
+    // WeCom 群机器人 URL 的形态是 /cgi-bin/webhook/send?key=<凭据>，那个 key
+    // 就是全部认证材料：不进日志、却进 GET/PATCH 响应体，等于把同一个值按
+    // 两个口径分类。现口径统一为"宁可多掩"（掩码只作用于读面回显，store 与
+    // 发送路径恒为原值；掩码回传由 isMaskedEcho 拦下，不会覆盖真实凭据）。
+    it("?key= 按机密处理（WeCom 机器人凭据），而 format/x 类参数照旧保留", () => {
+      service.updateChannel("webhook", {
+        config: { url: "https://example.com/hook?key=plain&x=1&format=json" },
+      });
+      expect(service.getChannel("webhook")!.config.url).toBe(
+        "https://example.com/hook?key=***&x=1&format=json",
+      );
+      // store（发送路径）不受掩码影响
+      expect(store.get("webhook")).toEqual({
+        url: "https://example.com/hook?key=plain&x=1&format=json",
+      });
+    });
+
+    it("?key=*** 的掩码回传不覆盖真实凭据（往返安全）", () => {
       service.updateChannel("webhook", {
         config: { url: "https://example.com/hook?key=plain&x=1" },
       });
-      expect(service.getChannel("webhook")!.config.url).toBe(
-        "https://example.com/hook?key=plain&x=1",
-      );
+      service.updateChannel("webhook", {
+        config: { url: "https://example.com/hook?key=***&x=1" },
+      });
+      expect(store.get("webhook")).toEqual({
+        url: "https://example.com/hook?key=plain&x=1",
+      });
     });
 
     it("covers dingtalk webhookUrl values carrying access_token too", () => {

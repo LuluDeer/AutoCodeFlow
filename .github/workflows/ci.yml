@@ -837,6 +837,10 @@ jobs:
       # 的包，版本守卫与发布矩阵都覆盖不到（实测四个 Python 库版本冻结在 0.2.3、仓内零消费者）。
       - name: Publishable packages are wired into release.yml
         run: node scripts/check-publishable-wiring.mjs
+      # 枚举扩了、手抄清单没跟（NF-05 加 feishu 后白名单与 swagger enum 各漏一处）。
+      # 两类判据：数组清单必须含枚举全集；同名声明（enum / 字符串联合）值集合必须一致。
+      - name: Enum consumers stay in sync with the enum
+        run: node scripts/check-enum-consumers.mjs
       # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
       # 且只在多副本时显形、单机开发永远看不到。22 处目前全有门禁，此闸防新增时漏写。
       - name: Every @Cron has a leader gate

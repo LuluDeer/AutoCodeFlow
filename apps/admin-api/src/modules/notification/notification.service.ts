@@ -450,6 +450,27 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         promise: this.feishu.send(rendered.feishu ?? base),
       });
 
+    // R150-A1（出站面审计 · 轴2）：未注册渠道名 = 告警静默消失。
+    //
+    // 现场：`Task.alarmChannels` 是**自由字符串数组**（task DTO 只挂 @IsArray，
+    // 没有 @IsIn(Object.values(AlertChannel))），到这里的两个入口
+    // （notifyFailureWithConfig / notifyTimeout）把它小写后直接 `as AlertChannel[]`
+    // 强转，然后靠上面六条 `if` 逐个匹配。一个名字都匹配不上时 entries 为空：
+    // 零投递（对）、零日志（错）、零指标（错），而且下方「全部渠道失败落审计」
+    // 的判据是 `entries.length > 0 && ...`——空扇出恰好绕过它。结果是该任务的
+    // 每一次失败告警都不留任何痕迹地消失：看板没有 failure series、审计没有
+    // NOTIFICATION_FAILED 行、日志一行 warn 都没有，运维无从知道告警没发出去。
+    //
+    // 处置：路由错配必须在日志与审计上留证。部分名字无效不发审计（有渠道真的
+    // 投出去了，fail-open 语义与"不放大审计噪声"不变）。
+    const knownChannels = new Set<string>(Object.values(AlertChannel));
+    const unknownChannels = channels.filter((c) => !knownChannels.has(c));
+    if (unknownChannels.length > 0) {
+      this.logger.warn(
+        `[sendToChannels] ignoring unregistered channel name(s): ${unknownChannels.join(", ")} (known: ${[...knownChannels].join(", ")}) — ${entries.length} channel(s) actually attempted`,
+      );
+    }
+
     const results = await Promise.allSettled(entries.map((e) => e.promise));
     // V2 (round-7): surface the per-channel outcome to the caller. Rejected
     // promises stay "failed"; fulfilled ones carry the channel's own status
@@ -516,7 +537,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     const failedEverywhere =
       entries.length > 0 &&
       entries.every((e) => delivery[e.name] === "failed");
-    if (failedEverywhere) {
+    // R150-A1：`entries.length === 0 && channels.length > 0` = 请求了渠道但一个
+    // 都没路由上（名字未注册）。它不是"没有渠道要发"（channels 为空），而是
+    // "以为发了、其实一条都没发"——与 failedEverywhere 同等严重，必须落审计。
+    const routedNothing = entries.length === 0 && channels.length > 0;
+    if (failedEverywhere || routedNothing) {
       try {
         await this.auditService?.log({
           action: "NOTIFICATION_FAILED",
@@ -525,15 +550,24 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
             title: base.title,
             level: base.level,
             channels: entries.map((e) => e.name),
+            // R150-A1: 请求侧原样留证——路由错配时 channels 为空、只有这里能
+            // 看出"调用方到底要求发给谁"。
+            requestedChannels: channels,
+            ...(unknownChannels.length > 0 ? { unknownChannels } : {}),
             results: delivery,
             // rejection 的异常文本更具体；纯 status='failed' 的渠道没有异常
             // 可摘，据实写明"渠道自报 failed"，不让审计里出现空数组。
+            // 零路由时 entries 为空，改按请求的渠道名逐条写明原因。
             failures:
               failures.length > 0
                 ? failures
-                : entries.map(
-                    (e) => `${e.name}: delivery failed (channel reported 'failed')`,
-                  ),
+                : entries.length > 0
+                  ? entries.map(
+                      (e) => `${e.name}: delivery failed (channel reported 'failed')`,
+                    )
+                  : channels.map(
+                      (c) => `${c}: unregistered channel name — not routed`,
+                    ),
           },
         });
       } catch {

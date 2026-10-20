@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import {
   BaseChannel,
+  // R150-A1（轴2）：失败原因分类（仅进日志，不改状态契约）
+  classifyDeliveryFailure,
   ChannelConfigOverride,
   ChannelDeliveryStatus,
   NotificationPayload,
@@ -124,7 +126,11 @@ export class WebhookChannel extends BaseChannel {
           : error instanceof Error
             ? error.message
             : String(error);
-      this.logger.error(`[Webhook] send failed after retries: ${reason}`);
+      // R150-A1（轴2）：括号里是原因分类——3xx 已在上面的 reason 里说清，
+      // 这里把 4xx/5xx/timeout/network 也标出来（状态仍是 "failed"，契约不变）。
+      this.logger.error(
+        `[Webhook] send failed after retries (${classifyDeliveryFailure(error)}): ${reason}`,
+      );
       return "failed";
     }
   }
