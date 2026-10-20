@@ -1344,3 +1344,10 @@
   加两条：① 丢行后存活片 `nxt.fromLine == prev.fromLine + len(prev.lines)` 且每行真实行号 == `chunk.fromLine + offset`；② **从出站请求体**验证 `text == f'line-{fromLine+offset}'`（直接测 admin 会看到的形状，不只测内存）。
   验证 15 passed；**反证**：把片创建时 `fromLine` 改成 `line_num - 1` → **5 条红**（含 3 条既有用例 `empty_lines_are_preserved` / `crlf_and_missing_trailing_newline` / `backpressure_drops_oldest`）⇒ 这条不变式不是只靠新用例守着。还原后 15 绿。
   **为什么单独一轮**：修的不是「现在的 bug」而是「将来很容易引入的 bug」—— **现在的实现是对的，但对的理由只存在于当前数据结构里，不在任何一条断言里**；下一个改成扁平缓冲的人不会被任何红挡住。
+- 2026-10-20 **R125 done（commit 00f52fb8）**：**背压丢行必须在流里留一行可见说明**。上轮做了「保留尾部」，但没有 marker ⇒ 实时视图里行号**从 1 直接跳到 900**，没有任何一行说明中间丢了 900 行 ——
+  **一个静默的缺口，看起来就像一段正常的日志**。改法：丢行时记下**第一条被丢行**的行号与累计数；下次 flush **先推一行 marker 成片**（`fromLine` = 那条行号）再推真实切片。
+  单行成片安全的前提正是 **R124 钉住的「每片自带 fromLine」不变式** —— 插入这一行不会让后续切片行号错位。同一轮多次丢行**合并成一条**。
+  **刻意的避让**：marker 文案**不复用** admin 的 `LOG_TRUNCATION_MARKER`（`/\[\s*(?:logs\s+)?truncated\b/i`），因为那条正则在 admin 侧参与「终态回调是否覆盖实时流」的判定（task.service.ts:5105/5122）——
+  **执行器本地背压不该影响那个决策**；用只对人说话的文案 `... [N log lines dropped by local backpressure] ...`。
+  验证：pusher **17 passed**、全量 **1199 passed / 3 skipped**；新增两条（marker 落在缺口行号且后续行号不受影响 / 一轮只出一条 marker）；**既有用例也改了**（`test_backpressure_drops_oldest` 原本假设首发布即真实片 ⇒ 改为「首发布是 marker + 排除后首片 fromLine=100 且总数 901」，**断言未放松**）；
+  反证：marker 发射条件改 `if False` → **3 条红**（含那条既有用例），还原 1199 绿 —— 说明改的是**预期**而非把测试改绿。
