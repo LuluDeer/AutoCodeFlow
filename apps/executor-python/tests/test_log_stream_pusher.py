@@ -209,3 +209,64 @@ def test_backpressure_drops_oldest(pusher_env):
     bodies = [c['json'] for c in pusher_env.calls]
     assert bodies[0]['fromLine'] == 100
     assert sum(len(b['lines']) for b in bodies) == 901
+
+
+# ---------------------------------------------------------------------------
+# R123：**字节**级背压（R94-A1 遗留：只有条数上限、无字节上限）
+#
+# 改前的算式：条数上限 10 片 × 100 行 = 1000 行；单行上限 1 MB（execute.py:753）
+# ⇒ 内存上界 ≈ **1 GB/执行**，单次 POST body 上界 ≈ **100 MB**。
+# 条数上限**不构成字节安全边界**，这两个用例钉住新加的两道字节闸。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buffer_bytes_are_bounded_by_byte_budget() -> None:
+    """200 行 × 64 KB = 12.8 MB 全塞进缓冲 → 必须被字节预算截住（改前 12.8 MB 全驻留）。"""
+    pusher = LogStreamPusher('exec-bytes')
+    line = 'x' * (64 * 1024)
+    for _ in range(200):
+        await pusher.add_line(line)
+
+    assert pusher._buffered_bytes <= lsp.MAX_BUFFERED_BYTES, (
+        f'缓冲字节 {pusher._buffered_bytes} 超过预算 {lsp.MAX_BUFFERED_BYTES}',
+    )
+    # 预算生效的直接后果：切片被丢，行数不再等于全部输入
+    buffered_lines = sum(len(c['lines']) for c in pusher.chunks)
+    assert buffered_lines < 200, '字节预算未生效：200 行全部驻留'
+    # 且**保留的是尾部**（失败原因几乎总在最后几行）
+    last = pusher.chunks[-1]['lines'][-1]
+    assert last == line
+
+
+@pytest.mark.asyncio
+async def test_single_chunk_is_bounded_by_bytes_not_just_line_count() -> None:
+    """每行 300 KB × 5 行（条数远未到 100）→ 仍须按字节切成多片。"""
+    pusher = LogStreamPusher('exec-chunk')
+    line = 'y' * (300 * 1024)
+    for _ in range(5):
+        await pusher.add_line(line)
+
+    assert len(pusher.chunks) > 1, '只在条数上切片：5×300KB 全挤进同一片（150 KB→1.5 MB 超 MAX_BYTES_PER_CHUNK）'
+    for chunk in pusher.chunks:
+        assert chunk['bytes'] <= lsp.MAX_BYTES_PER_CHUNK, (
+            f'单片字节 {chunk["bytes"]} 超过 {lsp.MAX_BYTES_PER_CHUNK}',
+        )
+
+
+def test_byte_accounting_resets_on_flush(pusher_env) -> None:
+    """flush 把切片取走后，字节记账必须归零（否则失败重试会重复计入、提前触发丢弃）。"""
+    pusher = LogStreamPusher('exec-reset')
+
+    _run(pusher.add_line('a' * 1024))
+    assert pusher._buffered_bytes == 1024
+    _run(pusher.flush())
+    assert pusher._buffered_bytes == 0, 'flush 后字节记账未归零'
+
+
+def test_utf8_len_counts_bytes_not_chars() -> None:
+    """中文 1 字符 = 3 字节 —— 记账必须是**字节**，否则 3 倍低估（同 R115 的教训）。"""
+    assert lsp._utf8_len('abc') == 3
+    assert lsp._utf8_len('中') == 3
+    assert lsp._utf8_len('中文') == 6
+
