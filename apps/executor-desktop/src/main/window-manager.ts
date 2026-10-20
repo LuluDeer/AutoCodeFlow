@@ -8,10 +8,20 @@ const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 // QA-12：裸 electron 跑 e2e 时 getAppPath()===__dirname（dist/main），
 //   dist/renderer 是上一级 sibling；打包形态才是 <app>/dist/renderer。
 // 双路径探测取存在者——两种形态同一语义，无行为差异。
-function resolveRendererIndex(): string {
-  const preferred = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
-  const adjacent = path.join(__dirname, '..', 'renderer', 'index.html');
-  return existsSync(preferred) ? preferred : adjacent;
+//
+// SEC-IPC-SENDER（R86-A1 轴 1）：**导出**给 ipc-handlers 做 sender 白名单锚点。
+// 必须复用这一份而不是另算一遍：loadFile 加载的入口页与 IPC 允许的页一旦漂移，
+// 要么闸门误杀（应用直接不可用），要么白名单形同虚设。
+let rendererIndexCache: string | null = null;
+export function resolveRendererIndex(): string {
+  // 进程内只判定一次（存在性探测有 I/O）：IPC 闸每次调用都要取锚点，
+  // 热路径（log:read 1.5s 轮询等）不该反复 stat 磁盘。
+  if (rendererIndexCache === null) {
+    const preferred = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
+    const adjacent = path.join(__dirname, '..', 'renderer', 'index.html');
+    rendererIndexCache = existsSync(preferred) ? preferred : adjacent;
+  }
+  return rendererIndexCache;
 }
 
 const RENDERER_INDEX = resolveRendererIndex();

@@ -137,6 +137,7 @@
     "demo:failure:seed:selftest": "node scripts/demo-failure-seed.selftest.mjs",
     "load-test": "node scripts/load-test.mjs",
     "bench:micro": "node scripts/micro-benchmark.mjs",
-    "bench:micro:selftest": "node scripts/micro-benchmark.selftest.mjs"
+    "bench:micro:selftest": "node scripts/micro-benchmark.selftest.mjs",
+    "check:desktop-selftests-wired": "node scripts/check-desktop-selftests-wired.mjs"
   }
 }

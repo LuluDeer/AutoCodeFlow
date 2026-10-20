@@ -842,6 +842,10 @@ jobs:
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
       - name: Guards are actually executed by CI
         run: node scripts/check-guards-wired.mjs
+      # desktop 的 selftest 必须被 test:main 执行：48 个文件里曾有 2 个（browser / package-candidate）
+      # 从未在 CI 跑过，而它们的头注都写着「Run via: npm run test:main」——文档说它跑，实际不跑。
+      - name: Desktop selftests are wired into test:main
+        run: node scripts/check-desktop-selftests-wired.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测

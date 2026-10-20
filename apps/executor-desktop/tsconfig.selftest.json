@@ -10,6 +10,10 @@
   "include": [
     "src/main/path-domain.ts",
     "src/main/path-domain.selftest.ts",
+    "src/main/ipc-sender-guard.ts",
+    "src/main/ipc-sender-guard.selftest.ts",
+    "src/main/port-check.ts",
+    "src/main/port-check.selftest.ts",
     "src/main/agent-status-view.selftest.ts",
     "src/main/agent-host-lifecycle.selftest.ts",
     "src/main/token-crypto.ts",

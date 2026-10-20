@@ -1,6 +1,9 @@
 // F-37（DEEP_REVIEW 0ef3bbe）：fs/path/os/net/https 等模块统一在模块顶层 import，
 // 不再在各 handler 函数体内 require（main 进程无打包懒加载收益，纯历史遗留噪音）。
-import { app, dialog, ipcMain, shell, BrowserWindow, clipboard } from 'electron';
+// SEC-IPC-SENDER（R86-A1 轴 1）：electron 的 ipcMain 必须以**别名**导入，本文件里
+// 的 `ipcMain` 由下方 createGuardedIpcMain 产出（所有 handle/on 一律过 sender 闸）。
+// 直接按原名导入会让 43 个 handler 全部绕过闸——ipc-sender-guard.selftest.ts 有源码钉子。
+import { app, dialog, ipcMain as electronIpcMain, shell, BrowserWindow, clipboard } from 'electron';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
@@ -23,7 +26,6 @@ import {
   readCurrentReleaseKey,
   deleteReleaseDir,
 } from './app-uninstall';
-import * as net from 'net';
 import * as childProcess from 'child_process';
 import { configStore, executorProcess, getAgentHostStatus, heartbeat, syncAgentHostWithConfig, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import type { AppConfig } from './config-store';
@@ -41,7 +43,7 @@ import {
 // 已注入 Electron 上下文的包装函数，而不是直接调 uv-paths 的纯函数。
 import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process';
 import { classifyUvResolution } from './uv-paths';
-import { listLocalIPv4s, normalizeListenHost } from './network-util';
+import { listLocalIPv4s } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
 // 拓展包「配置导入/导出 + 执行日志导出」：纯函数层（文件名/导入解析/掩码
 // 契约/大小阈值）抽离自 ipc-handlers——本文件顶层 import electron，裸 node
@@ -68,6 +70,43 @@ import { normalizeHeartbeatPort } from './heartbeat';
 // B-13：releases 保留期自动清扫（纯 Node 模块，决策在 release-retention.ts）。
 import { sweepAppReleases } from './release-retention';
 import log, { applyLogLevel } from './logger';
+// SEC-IPC-SENDER（R86-A1 轴 1）：渲染层 → 主进程 IPC 的 sender 白名单闸。
+import { createGuardedIpcMain } from './ipc-sender-guard';
+// SEC-IPC-TYPE（R86-A1 轴 1）：config:check-port 的参数闸 + 探测实现（纯 Node）。
+import { checkPortAvailable } from './port-check';
+// sender 白名单的 file: 锚点必须与 loadFile 的入口页同源（window-manager 唯一真值源）。
+import { resolveRendererIndex } from './window-manager';
+
+/**
+ * SEC-IPC-SENDER（R86-A1 轴 1）：**本文件唯一的 ipcMain 注册入口**。
+ *
+ * 43 个 handler 的历史签名一律是 `(_event, ...args)`——事件对象被显式丢弃，
+ * 于是主进程对"谁在调我"零判断：任何跑在本应用 webContents 里的执行上下文
+ * （渲染层注入点、被 devtools 附加的会话、将来新增的窗口/子 frame）都能直接
+ * 驱动 `executor:stop` / `apps:uninstall` / `updater:install` / `config:save`
+ * 这类带主进程能力（shell / spawn / 文件读写 / 退出安装）的通道。
+ *
+ * 这里把 electron 的 ipcMain 换成本地 `ipcMain`（别名导入见文件头）：
+ * 所有 handle/on 注册都先过 ipc-sender-guard 的 sender 闸——
+ *  · 生产（packaged）：只接受 `<renderer 目录>/index.html` 这族的 file: 页；
+ *  · 开发：只接受与 `VITE_DEV_SERVER_URL` **同源**（origin 全等）的页；
+ *  · 且必须来自**主 frame**（iframe / 已销毁 frame 一律拒绝）；
+ *  · 不可信来源：handle 抛错（invoke 侧 rejected），on 静默丢弃 + 落 warn。
+ *
+ * 为什么不逐个 handler 加参数：43 处各写一遍必然漂移（本仓库已有"加了参数但
+ * 大部分调用点没跟上"的 F-3 教训）；收敛成单一注册入口后，**没有"忘了校验"
+ * 的可能**——想绕过必须显式再 import 一个 electron 的 ipcMain，TS 会因重复
+ * 声明直接报错，selftest 的源码锚点也会变红。
+ */
+const ipcMain = createGuardedIpcMain(electronIpcMain, {
+  // 每次调用重新取策略：dev/packaged 切换、窗口重建后仍然正确。
+  policy: () => ({
+    devServerUrl: process.env.VITE_DEV_SERVER_URL ?? null,
+    // 与 window-manager.loadFile 的入口页**同源**（单一真值源，避免两处漂移）。
+    rendererIndexPath: resolveRendererIndex(),
+  }),
+  log,
+});
 
 /**
  * R13: the only directories renderer-supplied log paths may live under.
@@ -771,12 +810,16 @@ export function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle('config:check-port', async (_event, port: number, host?: string) => {
+  ipcMain.handle('config:check-port', async (_event, port: unknown, host?: unknown) => {
     // B-8：检测监听 host 必须与执行器**实际 bind** 的 executorHost 同源
     // （此前固定 0.0.0.0，与可配 127.0.0.1 的真实 bind 判定相反的场景见
-    // normalizeListenHost 注释）。host 由渲染层按其表单值传入；缺省回落
-    // 0.0.0.0（与 config-store 的 executorHost 缺省一致）。
-    return checkPortAvailable(port, normalizeListenHost(host));
+    // normalizeListenHost 注释）。host 由渲染层按其表单值传入。
+    //
+    // SEC-IPC-TYPE（R86-A1 轴 1）：参数类型/边界校验收在 port-check.ts（唯一
+    // 真值源）。渲染层送来的值**不可信**：Node 的 net.Server.listen 对任意
+    // 字符串走「管道路径」分支、对 null 绑 0 号端口后回报"可用"（清空端口
+    // 输入框 → NaN → IPC 序列化成 null → 预检永远显示可用，实测复现）。
+    return checkPortAvailable(port, host);
   });
 
   // ── 执行器控制 ────────────────────────────────────────
@@ -1248,25 +1291,6 @@ export function registerIpcHandlers(): void {
   // 与 executor-process 构造子进程 env 时的对外地址兜底同源（network-util），
   // 避免一处改了网卡筛选规则、另一处漂移。
   ipcMain.handle('network:local-ips', () => listLocalIPv4s());
-}
-
-function checkPortAvailable(port: number, host: string = '0.0.0.0'): Promise<{ available: boolean; message: string }> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', (err: any) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve({ available: false, message: `端口 ${port} 已被占用，请换一个端口` });
-      } else {
-        resolve({ available: false, message: `端口检测失败: ${err.message}` });
-      }
-    });
-    server.once('listening', () => {
-      server.close();
-      resolve({ available: true, message: `端口 ${port} 可用` });
-    });
-    // B-8：按调用方的表单 executorHost 监听检测（不再固定 0.0.0.0）。
-    server.listen(port, host);
-  });
 }
 
 /**
