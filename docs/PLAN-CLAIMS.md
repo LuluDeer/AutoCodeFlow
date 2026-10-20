@@ -1864,3 +1864,31 @@ WeCom webhook 的机器人 key 就以明文出现在响应里 —— 而同一�
 
 **因此验收标准更硬了**：不是「把 key 补进第一个正则」，而是**这个文件里只应剩一份正则**，另两处引用它。
 跨文件那三份（application / log-safe / mcp redact）语义不同，**不强求统一**，但要各自写明它管哪一类名字。
+- 2026-10-20 **R154 · 独立确认缺陷 B，并把「枚举扩了、硬编码清单没跟」做成了可复用的检测器**。
+
+**确认**：`AlertChannel`（`notification.service.ts:59-67`）有 **6** 个值，含 `FEISHU = "feishu"`（NF-05 新增）。
+而两处硬编码清单只有 **5** 个：
+
+- `notification-silence.service.ts:86` 的白名单 `["email","slack","dingtalk","wecom","webhook"]` ⇒ **建 feishu 静默直接 400**；
+- `notification-response.dto.ts:10` 的 swagger enum ⇒ **API 文档不承认 feishu 可以静默**。
+
+**这是「枚举扩了、枚举的消费者没跟」的教科书形态** —— 与我这几轮反复修的「同一修法只落一半」同族，
+但载体变了：不是函数调用点，而是**枚举值在别处被重新手抄了一遍**。
+
+**做了一个原型检测器**（不扫注释、只找「数组字面量里出现了该枚举 ≥2 个值但不是全部」）：对 `apps/admin-api/src` 全量扫，结果：
+
+```
+可疑数组 = 2
+  notification/dto/notification-response.dto.ts:10   有[email,dingtalk,wecom,slack,webhook] 缺[feishu]
+  notification/notification-silence.service.ts:86    有[email,dingtalk,wecom,slack,webhook] 缺[feishu]
+```
+
+**两个命中，全是真的；零假报。** 判据之所以干净：它不猜「这个数组是干嘛的」，只问「它是不是在枚举这个枚举」。
+一个随机数组命中 ≥2 个枚举值的概率极低，而真清单必然命中 ≥2。
+
+**计划**：等 agent 修完，把检测器正式化为 `scripts/check-enum-consumers.mjs` 并**与修复同一提交** ——
+这样守卫的首次运行就是绿的，同时它的鉴别力已由「修之前它红」证明。
+（若反过来先提交守卫，CI 会红一轮；若先提交修复，守卫就失去了「曾抓到过」的证据。）
+
+**注**：`check-enum-drift.mjs` 已存在，但它管的是 **TS 枚举 ⊆ PG 枚举**（`AlertChannel` 是 varchar 列，不在其覆盖面），
+两条判据正交，不重复。
