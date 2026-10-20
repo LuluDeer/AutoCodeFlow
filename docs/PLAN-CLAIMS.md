@@ -954,3 +954,10 @@
   export-flows 的 EXPORT_TOKEN_MASK（与 `'***'` 掩码常量比）、updater-runcheck ×2（`{}` 对象身份哨兵，并发去重）。豁免窗口 3 行（比 ADR-026 的 5 行更紧）。
   验证 978 文件绿 + lint-gates/docs 绿，接入 CI；反证：删掉任一条豁免 → 守卫点名 `updater-runcheck.ts:72`。**结论：实现是对的，缺的是防止退化的机器。**
 - 2026-10-20 **R82 done（commit 182df21b）**：**「守卫必须被 CI 真正执行」自检**。仓库现有 30 个 `check-*.mjs`，加守卫很便宜、**接进 CI 才是生效那一步**，而漏接**完全静默**（脚本在、本地能跑、README 可能还写着它，CI 从不执行）——与本仓踩过的「`.spec.ts` 放错目录不被收集」同型。判据两条：① 文件名出现在任一 workflow；② 或出现在 package.json 某 script 且**该 script 名**出现在 workflow（不解析这层间接会误报——我手查时就把 `check-throttler-whitelist.mjs` 误判成未接线，它其实在 ci.yml:1162 以 `npm run` 形式接线；`check-release-hygiene.mjs` 则在**另一个** workflow）。**它第一次跑，抓到的唯一一个是它自己**（新脚本尚未接线），已自接。验证：29 个全部被 CI 执行 + 1 个显式豁免（只报告的雷达）。反证：删掉自身 CI step → 立刻点名。
+- 2026-10-20 **R83 done（commit 23396f78）**：**配置写动作落审计**。查「密钥脱敏」族时顺着数据流走到持久化面，发现 `config` 模块**完全没有审计** ——
+  改一次 `executor.sharedToken`/`smtp.password`/webhook 签名密钥，能回答「谁改的」只有 `config_history` 那行（**有保留期清理、可删**，不是审计证据）；
+  而 `audit_logs` 才是 append-only（触发器拒绝 UPDATE/DELETE）。**最敏感的配置恰恰没有不可篡改的留痕。**
+  落地：`@Optional() AuditService` 注入 + 三动作（config.create/update/delete）；**detail 只放元数据不放值**（valueType/isSecret/valueLength/previousValueLength/maskSentinelResolved）——
+  配置项的价值往往就在值里，审计行长期保留且可 CSV 导出。验证 **11 套件 / 113 例全绿**（+4）+ tsc 0 + 4 道守卫绿。
+  **顺带修守卫盲区**：config.create/update 起初写成三元表达式 ⇒ 对 `check-audit-actions-doc`（只认字面量）**完全隐形**（它当时只看到 config.delete）；改字面量后守卫立刻报「2 个 action 文档里没有」，表从 61 涨到 64。已在守卫头注写明盲区与处置。
+  **另修位置参数错位**：AuditService 起初插在 cacheSync **之前**，而既有 spec 按位置构造（cacheSync 恒为第 5 参）⇒ 会把 CacheSync 误传成 AuditService；移到末尾后 10 个既有套件全绿。
