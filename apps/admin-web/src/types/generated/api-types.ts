@@ -5472,7 +5472,7 @@ export interface components {
         };
         NotificationChannelDto: {
             /** @enum {string} */
-            key: "email" | "slack" | "dingtalk" | "wecom" | "webhook";
+            key: "email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu";
             name: string;
             enabled: boolean;
             /** @description 通道专属配置；读取时凭据值会被掩码 */
