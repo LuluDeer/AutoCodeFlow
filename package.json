@@ -139,6 +139,6 @@
     "bench:micro": "node scripts/micro-benchmark.mjs",
     "bench:micro:selftest": "node scripts/micro-benchmark.selftest.mjs",
     "check:desktop-selftests-wired": "node scripts/check-desktop-selftests-wired.mjs",
-    "check:mcp-tools-doc": "node scripts/check-mcp-tools-doc.mjs"
+    "check:interface-maps": "node scripts/check-interface-maps.mjs"
   }
 }

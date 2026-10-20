@@ -1,5 +1,8 @@
 # REST 接口地图
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/*（24 个 controller 文件，21 个路由前缀）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-20 · 对应代码: apps/admin-api/src/modules/*（**30** 个 controller 文件，**28** 个路由前缀）
+>
+> 路由前缀由 `scripts/check-interface-maps.mjs` 守护：源码里每个 `@Controller("<前缀>")` 都必须在本页出现，缺一即红。
+> 本页是**地图**不是全量清单（全量 195 条见 [docs/api-reference.md](../../api-reference.md) 附录），但「整个域缺失」属于漂移。
 
 ## 怎么调
 
@@ -101,6 +104,82 @@
 2. 上传体积：执行器包 500MB / 应用包 200MB，直连 admin-api 无 nginx 时也受框架/代理限制约束；经反代必须保留 `client_max_body_size 510m`。
 3. 回调批量上限 100 条，`errorMessage` ≤4KB、`logs` ≤512KB（`CallbackItemDto`）。
 4. `/uploads/packages/*` 静态下载已收口鉴权（JWT 或共享 token），旧版执行器会 401。
+
+## Agent 会话（ADR-019 中心 agent）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/agent/sessions` | 会话列表（分页） |
+| GET | `/agent/sessions/:id` | 单会话详情（含轮次） |
+| POST | `/agent/sessions` | 新建会话 |
+| POST | `/agent/sessions/:id/resume` | 恢复暂停的会话 |
+| GET | `/agent/budget` | 当前租户的 agent 预算读数 |
+
+## Agent 协作（执行器侧 agent-collab）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/agent-collab/poll` | 拉取指派（长轮询） |
+| POST | `/agent-collab/capability` | 上报能力（模型/工具可用性） |
+| POST | `/agent-collab/clarifications` | 提交澄清问题 |
+| POST | `/agent-collab/assignments/:id/progress` | 汇报中间进度 |
+| POST | `/agent-collab/assignments/:id/complete` | 提交完成结果 |
+| POST | `/agent-collab/assignments/:id/clarifications/ack` | 确认已读澄清答复 |
+| POST | `/agent-collab/llm` | 代理 LLM 调用（执行器无外部网络时） |
+| GET | `/agent-collab/media/:mediaId` | 取协作文档/截图 |
+| POST | `/agent-collab/assignments/:id/media` | 上传协作产物 |
+| POST | `/agent-collab/assignments/:id/candidate-package` | 提交候选应用包 |
+
+## SOP
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/sop` | SOP 列表（分页/状态过滤） |
+| GET | `/sop/:id` | 详情（含版本与指派） |
+| POST | `/sop` | 新建 |
+| PATCH | `/sop/:id` | 更新（内容变更生成新版本） |
+| POST | `/sop/:id/publish` | 发布版本 |
+| POST | `/sop/:id/assign` | 指派给执行器/用户 |
+| GET | `/sop/:id/versions` | 版本历史 |
+| GET | `/sop/:id/assignments` | 该 SOP 的指派 |
+| GET | `/sop/assignments/:assignmentId` | 单指派详情 |
+| GET | `/sop/assignments/:assignmentId/media` | 指派产物列表 |
+| GET | `/sop/media/:mediaId` | 取产物文件 |
+| GET | `/sop/assignable-executors` | 可指派的执行器 |
+| POST | `/sop/assignments/:assignmentId/clarifications/:clarificationId/reply` | 回复澄清（审计 `sop.reply`） |
+
+## Mutex 组
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/mutex-groups` | 列表 |
+| POST | `/mutex-groups` | 新建 |
+| PUT | `/mutex-groups/:id` | 更新（列级补丁，ADR-026） |
+| DELETE | `/mutex-groups/:id` | 删除 |
+
+## 任务模板
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/task-templates` | 模板列表 |
+| GET | `/task-templates/:id` | 模板详情 |
+| POST | `/task-templates` | 新建模板 |
+| POST | `/task-templates/:id/instantiate` | 按模板建任务 |
+| DELETE | `/task-templates/:id` | 删除模板 |
+
+## OIDC（SSO，ADR-014）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/auth/oidc/status` | 是否启用 + 提供商元信息 |
+| GET | `/auth/oidc/login` | 跳转 IdP |
+| GET | `/auth/oidc/callback` | IdP 回调（换发本平台 token） |
+
+## 任务事件回调（webhook 面）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/webhooks/tasks/:taskId` | 外部系统回调触发任务（独立鉴权面） |
 
 ## 相关文档
 
