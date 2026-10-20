@@ -72,6 +72,8 @@ import { sweepAppReleases } from './release-retention';
 import log, { applyLogLevel } from './logger';
 // SEC-IPC-SENDER（R86-A1 轴 1）：渲染层 → 主进程 IPC 的 sender 白名单闸。
 import { createGuardedIpcMain } from './ipc-sender-guard';
+// R89：连接失败文案归一（只回错误码，不回显解析后的地址）。
+import { describeConnectionError } from './network-util';
 // SEC-IPC-TYPE（R86-A1 轴 1）：config:check-port 的参数闸 + 探测实现（纯 Node）。
 import { checkPortAvailable } from './port-check';
 // sender 白名单的 file: 锚点必须与 loadFile 的入口页同源（window-manager 唯一真值源）。
@@ -1648,7 +1650,11 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
           }
         },
       );
-      req.on('error', (err) => resolve({ ok: false, message: err.message }));
+      // R89：只回**稳定的错误码文案**，不回显 err.message —— Node 的消息里带解析后的地址
+      // （`connect ECONNREFUSED 192.168.1.5:3105`），等于把这条通道变成 DNS/内网探测器。
+      req.on('error', (err) =>
+        resolve({ ok: false, message: describeConnectionError((err as NodeJS.ErrnoException).code) }),
+      );
       req.on('timeout', () => {
         req.destroy();
         resolve({ ok: false, message: '连接超时 (5s)' });

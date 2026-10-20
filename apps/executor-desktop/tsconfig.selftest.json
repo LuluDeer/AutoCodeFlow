@@ -99,7 +99,9 @@
     "src/main/agent-worker-protocol.ts",
     "src/main/agent-worker-protocol.selftest.ts",
     "src/main/agent-worker-process.ts",
-    "src/main/agent-worker-process.selftest.ts"
+    "src/main/agent-worker-process.selftest.ts",
+    "src/main/network-util.ts",
+    "src/main/network-util.selftest.ts"
   ],
   "exclude": []
 }
