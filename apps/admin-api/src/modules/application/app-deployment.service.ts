@@ -1802,12 +1802,43 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
 
     // All attempts exhausted
-    deployment.status = DeploymentStatus.FAILED;
-    deployment.statusMessage = `Failed to reach executor after ${MAX_ATTEMPTS} attempts: ${lastError}`;
+    const exhaustedMsg = `Failed to reach executor after ${MAX_ATTEMPTS} attempts: ${lastError}`;
     this.logger.error(
       `Deploy push failed for ${deployment.id} after ${MAX_ATTEMPTS} attempts: ${lastError}`,
     );
-    await this.repo.save(deployment);
+    // R33-B2: **条件写**，不是无条件 save。
+    //
+    // 本分支的窗口很长：3 次尝试 × 30s 超时 + 1s/2s 退避 ⇒ 最长约 93 秒。而
+    // 「HTTP 请求被对端接受、响应超时」是完全常见的形态——执行器其实**已经**
+    // 收到命令并成功部署，随后心跳把行推进到 RUNNING。旧实现此刻无条件
+    // save(FAILED) 会把这个成功**回滚成失败**（并把整份陈旧快照写回，连
+    // deployedCommit/deployedVersion/statusMessage 一起盖掉）——运维看到
+    // 「部署失败」而去重试，实际线上是好的。
+    //
+    // 判据用「行是否仍在飞」：只有仍在 PENDING/DEPLOYING/UPGRADING 时才写
+    // FAILED；已被心跳推进（RUNNING/FAILED/STOPPED…）就一个字都不动，只留
+    // 一条 warn（这是并发收敛，不是错误）。与 upgrade/stop 的
+    // saveWithOptimisticLock 同方向：**让后来的写者看见别人已经写完**。
+    const markedFailed = await this.repo.update(
+      {
+        id: deployment.id,
+        status: In([DeploymentStatus.DEPLOYING, DeploymentStatus.UPGRADING]),
+      },
+      {
+        status: DeploymentStatus.FAILED,
+        statusMessage: exhaustedMsg,
+      },
+    );
+    if (!markedFailed.affected) {
+      this.logger.warn(
+        `Deploy push to ${deployment.id} exhausted retries, but the row is no longer ` +
+          `in-flight（状态已由心跳或其它动作推进，执行器很可能已经成功）— not overwriting it ` +
+          `with FAILED. Last error: ${lastError}`,
+      );
+      return;
+    }
+    deployment.status = DeploymentStatus.FAILED;
+    deployment.statusMessage = exhaustedMsg;
   }
 
   private buildSnapshot(app: Application): Record<string, any> {
