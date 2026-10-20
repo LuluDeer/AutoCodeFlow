@@ -14,9 +14,16 @@
  *   ① 每个 `src/main/**` 的 `*.selftest.ts` 都必须在 `test:main` 里出现；
  *   ② `test:main` 里列的每一项都必须有对应源文件（删了 selftest 却忘删清单 = 命令直接报 ENOENT）。
  *
+ * 判据③（R102-A1 实证）：`build:main` 必须接 `scripts/bundle-preload.cjs`。
+ *   沙箱（sandbox: true）里的 preload 只支持受限 require，**相对 require 直接
+ *   加载失败**。tsc 是逐文件 emit，preload 一旦 import 同目录模块（bridge-args）
+ *   就会编译出 `require("./bridge-args")` → preload 整体不执行 →
+ *   window.electronAPI 为 undefined → 渲染层落进错误边界（CI desktop-e2e-smoke
+ *   10 条全红）。这道闸盯的是构建接线本身，不依赖先跑一遍 e2e 才发现。
+ *
  * 用法：node scripts/check-desktop-selftests-wired.mjs
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = process.cwd();
@@ -70,6 +77,19 @@ if (notRun.length > 0 || noSource.length > 0) {
   process.exit(1);
 }
 
+const buildMain = pkg.scripts?.["build:main"] ?? "";
+const preloadBundler = join(ROOT, "apps", "executor-desktop", "scripts", "bundle-preload.cjs");
+if (!buildMain.includes("bundle-preload.cjs") || !existsSync(preloadBundler)) {
+  console.error("");
+  console.error("✖ build:main 没有接 preload 自包含打包（scripts/bundle-preload.cjs）。");
+  console.error("  沙箱 preload 只能 require('electron') 这类受限模块，相对 require 会导致");
+  console.error("  整个 preload 加载失败（window.electronAPI 消失 → 界面落进错误边界）。");
+  console.error("  修法：build:main = \"tsc -p tsconfig.json && node scripts/bundle-preload.cjs\"。");
+  process.exit(1);
+}
+
 console.log(
-  "✔ desktop selftest 接线一致：" + files.length + " 个 selftest 全部在 test:main 中，且都有源文件。",
+  "✔ desktop 脚本接线一致：" +
+    files.length +
+    " 个 selftest 全部在 test:main 中且都有源文件；build:main 已接 preload 自包含打包。",
 );

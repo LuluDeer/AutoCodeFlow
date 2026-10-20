@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build:executor": "bash scripts/bundle-executor.sh",
-    "build:main": "tsc -p tsconfig.json",
+    "build:main": "tsc -p tsconfig.json && node scripts/bundle-preload.cjs",
     "build:agent-worker": "node scripts/bundle-agent-worker.cjs",
     "typecheck:worker": "tsc -p tsconfig.worker.json",
     "build:renderer": "vite build --config vite.renderer.config.ts",
