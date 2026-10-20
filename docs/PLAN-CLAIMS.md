@@ -974,3 +974,10 @@
   新增两条用例（list + by-key，`getSecretKeys` 返回空集、行 `isSecret: true` ⇒ 必须掩码；null 仍为 null）。验证 **11 套件 / 115 例全绿**（+2）。
   **反证两侧各做一次**：去掉 list 的行级条件 → 1 failed；去掉 by-key 的同名条件 → 1 failed；**各自只有对应那条新用例转红**，说明两条路径独立钉住、不互相兜底。
   **结论**：这条补偿控制**成立**（proven-present），但此前只是「写对了」而非「被守住了」——ADR-028 里那句「读面掩码」现在有测试背书。
+- 2026-10-20 **R87 done（commit fa427265）**：**雷达不再把自己的豁免标记当成实现**。R81 给 `executor-desktop` 三处加 `constant-time-exempt:` 注释后，雷达立刻把该 app
+  报成「恒定时间比较」的新增实现（**4 app/12 文件 → 5 app/16 文件**）—— 而那里**一行实现都没有**，只有三行注释。原因：概念正则 `/constant[-_ ]?time/i` 命中的是注释文本。
+  **守卫用来豁免的标记，被另一个工具当成了「这里实现了该概念」的证据** —— 典型测量工具污染自己的测量结果，而雷达的全部价值就在那个数字上（它决定下一族查哪个）。
+  修法：扫描前剔除含 `-exempt` 的行；修后回到 **4 app / 12 文件**（admin-api 6 / executor-node 2 / executor-python 3 / registry-pypi 1），与加注释前逐项一致。
+  **教训**：任何带豁免机制的守卫，都要检查豁免标记会不会被**别的**扫描器当成正文。
+- 2026-10-20 **顺带核查（无提交）**：`verifyExecutorToken` 的凭据比较实现正确（先比长度、再 `timingSafeEqual`），无需改动；`getExecutorSharedToken` 每次请求读 `SystemConfigService.findOne`，由 PERF-2 的 TTL 缓存兜底。
+- 2026-10-20 **R86-A1 进行中**：executor-desktop **主进程**安全面审计（IPC 面 / 凭据存储 / 更新链 / 子进程）——此前从未被系统审计。agent 已列出主进程文件清单并建立检查点（含 test:main 串联 ~50 个 selftest 的事实）。
