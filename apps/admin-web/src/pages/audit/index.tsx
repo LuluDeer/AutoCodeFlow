@@ -550,14 +550,20 @@ export default function AuditLogPage() {
           aria-label={t('audit.filter.keyword')}
           style={{ width: 260 }}
           allowClear
+          notFoundContent={null}
           // 选项可能为空（后端失败 / 空库 / 无历史动作）：不渲染"无数据"浮层。
           // 空列表 = 纯自由输入，与改造前的输入框行为等价（失败兜底就在这里）。
           //
-          // 这个 null 不只是"别显示空文案"的装饰：rc-select 在
-          // notFoundContent=null 且无匹配项时会**收起**浮层，回车因此走
-          // "提交输入框文本"的路径（浮层展开时回车是"选中高亮项"，无项时什么
-          // 都不做）。去掉它，选项为空时自由输入就按不了回车——兜底路径会静默失效。
-          notFoundContent={null}
+          // 这个 null 不只是"别显示空文案"的装饰：rc-select 在 notFoundContent=null 且
+          // 无匹配项时会**收起**浮层，回车因此走"提交输入框文本"的路径（浮层展开时回车是
+          // "选中高亮项"、无项时什么都不做）。
+          //
+          // ⚠️ **校准过的说法（R73 实测）**：上面这段在 **jsdom 下分辨不出来** —— 我把这一行
+          // 删掉重跑 audit-page 的 19 条用例，**全绿**（jsdom 里 rc-select 的浮层不会真的展开，
+          // Enter 无论如何都会提交）。所以：
+          //   · 保留它是**基于 rc-select 源码的防御性推断**，不是被测试证明的事实；
+          //   · 谁要删它，**别信单测** —— 去真实浏览器试一次「选项为空时打字 + 回车能否提交」
+          //     （本仓 apps/admin-web 有 playwright 配置，但本机未装浏览器）。
         />
         <Input
           placeholder={t('audit.filter.operator')}
