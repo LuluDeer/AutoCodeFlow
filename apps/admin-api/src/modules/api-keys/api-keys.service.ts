@@ -179,6 +179,9 @@ export class ApiKeysService {
       // 更根本的口径：api_keys 是**凭据实体**，写面只应触碰自己要改的列。
       // 与 R32-A4 把 totp 三处（auth.service:255/282/317）从 saveUser 改成
       // 列级 UPDATE 是同一纪律——那次只修了 auth 域，本处属同型漏改。
+      // adr-026-exempt: 只写 revokedAt 一列，且「吊销」是幂等语义——并发重复吊销写的是
+      // 同一语义值（先后相差毫秒），不存在「谁赢」的判定；真正的状态闸在 authenticate()
+      // 里按 revokedAt 判（R32-A4 的属主闸 + 本列共同构成活性条件）。
       await this.repo.update({ id }, { revokedAt });
       // 返回值仍是「吊销后的视图」：显式回填刚写入的值（不是重新查库——
       // 与改动前 save() 返回同一对象语义一致，且少一次往返）。
