@@ -2651,3 +2651,25 @@ def _parse_retry_after(raw): ...      # delta-seconds 或 HTTP-date
 
 **这条我给 agent 的验收判据**：如果它报「全部换成 exitCode」但没区分输出体积，那是**过度统一**；
 正确的收法是**统一到 exitCode，但先证明大输出路径确实会截断**（写一个 `acf ... --json | wc -c` 的复现）。
+- 2026-10-20 **R195 · 我 `R193` 的计数方法太粗（按文件），agent 按命令枚举后发现 7 处缺口而不是 1 处**。
+
+我的方法：**按文件**数「破坏性子命令数」与「`confirmDestructive` 调用数」，两者相等就认为齐。
+`tasks.ts` 是 **3 : 3** —— 看起来齐。
+
+但 agent 按**命令**逐个枚举的结果是：
+
+**有确认门**：app delete / task delete / deploy remove / task batch delete / app upgrade-all(all) / executor rotate / mutex delete。
+
+**无确认门（候选）**：task kill / task rollback / task webhook rotate·disable / apikey revoke / executor offline / deploy stop。
+
+⇒ `tasks.ts` 那 3 个确认门盖的是 **delete / batch delete** 等，**没盖 kill 和 rollback**。
+
+**我的方法错在哪**：文件级的「数量相等」**无法证明集合相等**。3 个门 + 3 个破坏性命令，可以是「每个都有门」，
+也可以是「三个门都给了别的命令」。**这是把「计数相关」当成了「逐项覆盖」。**
+
+**正确方法是按命令枚举**（agent 做的）：列出每个破坏性子命令，逐个问「它自己被门盖住了吗」。
+
+这与今天早些时候那条同族（`R119`）：`@Cron` 门禁守卫最初用 **40 行窗口**判 —— 那也是「位置相关」冒充「逐项覆盖」，
+最后改成**按方法体边界**才可靠。**两次都是「近似判据」被「精确枚举」取代。**
+
+**结果**：缺口不是 1 处而是 **7 处候选**，需要按严重性分级（不可逆的 `apikey revoke` 最重，`task kill` 可重跑最轻）。
