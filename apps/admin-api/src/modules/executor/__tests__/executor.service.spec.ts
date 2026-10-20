@@ -3419,14 +3419,34 @@ describe("ExecutorService (__tests__)", () => {
 
       await service.markOffline("127.0.0.1:3105");
 
+      // R40：WHERE 里额外带 lastHeartbeat 的 CAS（读取时为 undefined ⇒ IsNull 算子），
+      // 防「拿旧观察覆盖新事实」——注册/心跳若先落库，这里必须让位。
       expect(executorRepo.update).toHaveBeenCalledWith(
-        { id: "e-graceful" },
+        expect.objectContaining({ id: "e-graceful", lastHeartbeat: expect.anything() }),
         expect.objectContaining({
           status: ExecutorStatus.OFFLINE,
           // 遗留 P1-24：优雅下线落 manual。
           offlineReason: ExecutorOfflineReason.MANUAL,
         }),
       );
+    });
+
+    it("R40: 并发收敛——条件写未命中（执行器刚有新活动）→ 不置离线、不发布事件", async () => {
+      executorRepo.update.mockResolvedValue({ affected: 0 });
+      const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([
+        { id: "e-live", address: "127.0.0.1:3106", lastHeartbeat: new Date(0) },
+      ]);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      const emitSpy = jest.spyOn(service as never as {
+        emitExecutorOffline: (p: unknown) => void;
+      }, "emitExecutorOffline").mockImplementation(() => undefined);
+
+      await service.markOffline("127.0.0.1:3106");
+
+      // 命中 0 ⇒ 让位：不发 executor.offline 事件（否则下游会按「已离线」做处置）
+      expect(emitSpy).not.toHaveBeenCalled();
+      emitSpy.mockRestore();
     });
 
     it("ADR-017: 同址多行且无指纹 → 不置任何行离线（不误伤别人）", async () => {

@@ -30,9 +30,9 @@ const SCAN_DIR = join("apps", "admin-api", "src", "modules");
  * 存量基线（只减不增）。**只能下调**：改掉一处就把这个数字减一。
  * 上调需要在提交信息里写明为什么这处新增是安全的（例如该表无并发写者）。
  */
-// 剩余唯一一处（executor.markOffline）保留在清单里：它是**真状态写**，而与注册并发时
-// 「管理员显式下线」vs「执行器刚重新上线」谁该赢，是需要产品语义决定的，不该用豁免绕过。
-const BASELINE = 1;
+// **0**：ADR-026 的清单已清空（最后一处 executor.markOffline 已改 lastHeartbeat CAS）。
+// 任何新增的无条件状态写都会直接变红；确有并发安全理由的须写 adr-026-exempt 注释。
+const BASELINE = 0;
 
 /** 豁免标记：在调用的前 3 行内出现该注释即跳过（必须写理由）。 */
 const EXEMPT_MARKER = "adr-026-exempt";

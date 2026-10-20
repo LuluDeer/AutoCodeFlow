@@ -6057,8 +6057,16 @@ export class ExecutorService implements OnModuleInit {
       );
       return;
     }
-    await this.repo.update(
-      { id: target.id },
+    // R40（ADR-026 最后一项，语义已拍板）：置 OFFLINE 的条件是「**我们观察到的活跃证据
+    // 还没变**」——用读取到的 lastHeartbeat 做 CAS。
+    //
+    // 为什么不是简单加个 status 谓词：真正的竞争是「管理员点下线」与「执行器重新注册/
+    // 心跳」撞在一起。若注册/心跳先落库，说明此刻有**更新的活跃证据**，把它翻成 OFFLINE
+    // 会让派发闸门在最多一个心跳周期（30s）内拒绝一个其实活着的执行器。按 lastHeartbeat
+    // 做 CAS 能把这种「拿旧观察覆盖新事实」挡住；命中 0 就让位并 warn（并发收敛，不是错误）。
+    // lastHeartbeat 为 NULL（从未心跳的迁移前/新行）用 IS NULL 表达同一语义。
+    const marked = await this.repo.update(
+      { id: target.id, lastHeartbeat: target.lastHeartbeat ?? IsNull() },
       // 遗留 P1-24：优雅下线。
       {
         status: ExecutorStatus.OFFLINE,
@@ -6066,6 +6074,13 @@ export class ExecutorService implements OnModuleInit {
         lastHeartbeat: new Date(),
       },
     );
+    if (!marked.affected) {
+      this.logger.warn(
+        `markOffline(${address}) lost the race: executor ${target.id} showed newer ` +
+          `activity (a register/heartbeat landed after we resolved it) — not flipping it OFFLINE.`,
+      );
+      return;
+    }
     this.logger.log(`Executor ${address} (id=${target.id}) marked as offline`);
     // FEAT-07: 状态落库后发布 executor.offline（优雅停机路径）。
     this.emitExecutorOffline({
