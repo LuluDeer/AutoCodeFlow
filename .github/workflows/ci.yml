@@ -827,6 +827,10 @@ jobs:
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
       - name: CLI command map vs code guard
         run: node scripts/check-cli-doc.mjs
+      # 第四个「手写枚举腐烂」面：MCP 工具地图曾停在 40 个（实际 56 个，漏 16 个）。
+      # CLI 命令表 / REST 附录 / 审计动作表都已各有一道守卫，MCP 此前没有。
+      - name: MCP tool map vs code guard
+        run: node scripts/check-mcp-tools-doc.mjs
       # 同一道 SSRF 闸在两个 app 各有一份实现：admin-api 是表驱动 + 18 条矩阵，
       # executor-node 长期是弱版本（R74-A1 实测 ::ffff:127.0.0.1 整条放行）。
       # 镜像矩阵必须跟着长，否则「加了危险段、只在一侧生效」永远不会被发现。
