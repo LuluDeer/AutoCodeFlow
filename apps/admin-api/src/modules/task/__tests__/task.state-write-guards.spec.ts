@@ -8,7 +8,16 @@ import {
 } from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { UserRole } from "../../users/entities/user.entity";
-import { Task, TaskCodeSource, TaskStatus } from "../entities/task.entity";
+import {
+  Task,
+  BlockStrategy,
+  ExecuteMode,
+  TaskCodeSource,
+  TaskPriority,
+  TaskRuntime,
+  TaskStatus,
+  TaskTriggerType,
+} from "../entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -96,6 +105,9 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
   let service: TaskService;
   let taskRepo: Repo;
   let execRepo: Repo;
+  // R63-A1: rollbackToVersion 读版本行（getVersion）；rollback 走事务 manager。
+  let versionRepo: Repo;
+  let dataSource: { transaction: jest.Mock; createQueryBuilder: jest.Mock };
   let schedulerService: { stop: jest.Mock; scheduleOne: jest.Mock; getStats: jest.Mock };
   let executorService: { notifyExecutorKill: jest.Mock };
   let aiService: { analyzeFailure: jest.Mock; chat: jest.Mock };
@@ -104,6 +116,8 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
   beforeEach(async () => {
     taskRepo = makeRepo();
     execRepo = makeRepo();
+    versionRepo = makeRepo();
+    dataSource = { transaction: jest.fn(), createQueryBuilder: jest.fn() };
     schedulerService = {
       stop: jest.fn(),
       scheduleOne: jest.fn().mockResolvedValue(undefined),
@@ -124,18 +138,12 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
           provide: getRepositoryToken(ExecutionLogLine),
           useValue: makeRepo(),
         },
-        { provide: getRepositoryToken(TaskVersion), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
         {
           provide: getQueueToken("task-queue"),
           useValue: { add: jest.fn().mockResolvedValue({}) },
         },
-        {
-          provide: DataSource,
-          useValue: {
-            transaction: jest.fn(),
-            createQueryBuilder: jest.fn(),
-          },
-        },
+        { provide: DataSource, useValue: dataSource },
         { provide: SchedulerService, useValue: schedulerService },
         { provide: AiService, useValue: aiService },
         { provide: AiAnalysisService, useValue: aiService },
@@ -794,6 +802,296 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
       expect(execRepo.save).not.toHaveBeenCalled();
       // 已成功退出的执行器不得收到迟到的 kill 信号
       expect(executorService.notifyExecutorKill).not.toHaveBeenCalled();
+    });
+  });
+
+  // ==========================================================================
+  // R63-A1：清单里剩下两处「整行 save」的判定与修法（ADR-026 规则 4）。
+  //
+  // 四处逐处判定（判定表见交接报告）：
+  //   · storeLogLines / appendLogChunk 的 save(ExecutionLogLine, entities) ——
+  //     写的是本方法内 create() 出来的新实体（无 id），是**插入路径**，不改；
+  //   · rollback / rollbackToVersion 的 save(Task|task) —— 写的是方法早期读到
+  //     的快照，是**整行回写**，本轮修掉。
+  //
+  // 这两处的语义都**不是**「只改一列」，但都可以用「本次动作真正要写的列」表达：
+  //   · rollback 确实只改 gitCommit 一列 ⇒ 列级条件写；
+  //   · rollbackToVersion 是"版本恢复"，语义上要覆盖**快照里带的那些列** ⇒
+  //     「正向白名单 ∩ 采纳集（快照真的带了的键）」。快照里没有的列（status /
+  //     secrets / ownerUserId / webhookSecret / deletedAt）永远不写——这正是
+  //     旧实现 Object.assign + save 的越界处。
+  // ==========================================================================
+  describe("R63-A1: rollback / rollbackToVersion 不再整行回写快照", () => {
+    /**
+     * rollback() 的事务替身。两种写面各有**真实语义**：
+     *  · `manager.save(Task, entity)` = 整行回写（= 修复前的缺陷形态；真实
+     *    TypeORM save 会写实体上所有可写列，含 deletedAt ⇒ 软删行复活）；
+     *  · `manager.update(Task, criteria, patch)` = 求值行谓词后只落给出的列。
+     * 于是「用快照整行回写」会直接在行存储上现形。
+     */
+    const givenRollbackTransaction = (store: Record<string, any>) => {
+      const taskSaves: Array<Record<string, any>> = [];
+      const taskUpdates: Array<{
+        criteria: Record<string, any>;
+        patch: Record<string, any>;
+      }> = [];
+      const manager = {
+        save: jest.fn(async (...args: any[]) => {
+          const row = args[args.length - 1];
+          if (args.length >= 2 && args[0] === Task) {
+            taskSaves.push(row);
+            Object.assign(store, row);
+          }
+          return row;
+        }),
+        update: jest.fn(
+          async (
+            _target: unknown,
+            criteria: Record<string, any>,
+            patch: Record<string, any>,
+          ) => {
+            taskUpdates.push({ criteria, patch });
+            // 行谓词：id 命中 + 未软删（criteria 里的 deletedAt 是 IsNull()）
+            const hit = store.id === criteria.id && store.deletedAt == null;
+            if (!hit) return { affected: 0 };
+            Object.assign(store, patch);
+            return { affected: 1 };
+          },
+        ),
+        create: jest.fn(() => ({ id: "rb-exec" })),
+      };
+      dataSource.transaction.mockImplementation(async (fn: any) => fn(manager));
+      return { manager, taskSaves, taskUpdates };
+    };
+
+    /**
+     * 一枚"每个快照键都有真实值"的任务行——用于漂移钉子：只要 saveVersion 的
+     * 快照装配新增了键而 `VERSION_ROLLBACK_COLUMNS` 没跟上，本钉子就变红。
+     */
+    const fullTaskRow = (): Record<string, any> => ({
+      id: "t1",
+      name: "n",
+      description: "d",
+      runtime: TaskRuntime.PYTHON,
+      entrypoint: "main.py",
+      requirements: ["requests"],
+      params: { a: 1 },
+      timeout: 60,
+      timeoutAction: "kill",
+      timeoutWarnRatio: 80,
+      estimatedDurationSec: 30,
+      maxRetry: 2,
+      retryDelay: 7,
+      retryableErrors: ["timeout"],
+      triggerType: TaskTriggerType.CRON,
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      fixedRate: null,
+      blockStrategy: BlockStrategy.SERIAL,
+      misfireStrategy: "ignore",
+      priority: TaskPriority.NORMAL,
+      executeMode: ExecuteMode.SINGLE,
+      currentVersion: "v3",
+      gitRepo: "https://example.com/r.git",
+      gitBranch: "main",
+      gitCommit: "sha-1",
+      glueSource: "print(1)",
+      glueLanguage: "python",
+      runtimeVersion: "3.12",
+      codeSource: TaskCodeSource.GLUE,
+      applicationId: null,
+      maintenanceWindows: null,
+      runbook: "# rb",
+      dependencies: { "dep-a": "t2" },
+      deploymentPolicy: "prefer",
+      executorAffinityTags: ["gpu"],
+      executorAntiAffinityTags: ["edge"],
+      executorId: "e-1",
+      executorAppName: "app-a",
+      executorGroup: "g-1",
+      executorTags: ["py"],
+      projectId: "p-1",
+      alarmEmail: "a@b.c",
+      alarmChannels: ["email"],
+    });
+
+    it("rollback 只写 gitCommit 一列：窗口内并发 PATCH 的 name / cron 必须存活", async () => {
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          name: "旧名",
+          gitCommit: "old-sha",
+          cronExpression: "0 * * * *",
+          status: TaskStatus.ACTIVE,
+          params: {},
+          deletedAt: null,
+        },
+        (s) => {
+          s.name = "并发新名";
+          s.cronExpression = "0 3 * * *";
+        },
+      );
+      const { taskSaves, taskUpdates } = givenRollbackTransaction(store);
+
+      const result: any = await service.rollback("t1", { gitCommit: "new-sha" });
+
+      expect(store.gitCommit).toBe("new-sha");
+      // 反证核心：整行回写会把这两列盖回方法读到的旧值
+      expect(store.name).toBe("并发新名");
+      expect(store.cronExpression).toBe("0 3 * * *");
+      expect(taskSaves).toHaveLength(0);
+      expect(taskUpdates).toHaveLength(1);
+      expect(taskUpdates[0].patch).toEqual({ gitCommit: "new-sha" });
+      // 行谓词带软删过滤（ADR-026 规则 1/2）
+      expect(taskUpdates[0].criteria).toMatchObject({ id: "t1" });
+      expect(taskUpdates[0].criteria.deletedAt).toBeDefined();
+      expect(result.rolledBackFrom).toBe("old-sha");
+      expect(result.rolledBackTo).toBe("new-sha");
+    });
+
+    it("rollback 输给并发 remove（行已软删）→ 404，不建执行行、不入队、不复活软删行", async () => {
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          name: "n",
+          gitCommit: "old-sha",
+          status: TaskStatus.ACTIVE,
+          deletedAt: null,
+        },
+        (s) => {
+          s.deletedAt = new Date("2026-10-21T00:00:00.000Z");
+          s.status = TaskStatus.DELETED;
+        },
+      );
+      const { taskSaves } = givenRollbackTransaction(store);
+
+      await expect(
+        service.rollback("t1", { gitCommit: "new-sha" }),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(store.deletedAt).toEqual(new Date("2026-10-21T00:00:00.000Z"));
+      expect(store.status).toBe(TaskStatus.DELETED);
+      expect(store.gitCommit).toBe("old-sha");
+      expect(taskSaves).toHaveLength(0);
+      expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
+    });
+
+    it("rollbackToVersion 只写快照真的带了的列：窗口内并发 PATCH 的列必须存活", async () => {
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          name: "当前名",
+          description: "当前描述",
+          timeout: 300,
+          cronExpression: "0 * * * *",
+          currentVersion: "v3",
+          status: TaskStatus.ACTIVE,
+          deletedAt: null,
+        },
+        (s) => {
+          // 读之后、写之前的并发 PATCH（真实条件写已提交）
+          s.description = "并发改的描述";
+          s.cronExpression = "0 3 * * *";
+        },
+      );
+      versionRepo.findOne.mockResolvedValue({
+        id: "v1",
+        taskId: "t1",
+        version: "v2",
+        snapshot: { id: "t1", name: "旧版名", timeout: 60 },
+      });
+      const calls = givenRowPredicateUpdate(store);
+
+      const result: any = await service.rollbackToVersion("t1", "v1");
+
+      // 快照恢复语义保留：快照里的列照常覆盖
+      expect(store.name).toBe("旧版名");
+      expect(store.timeout).toBe(60);
+      expect(store.currentVersion).toBe("v2");
+      // 反证核心：快照里没有的并发列不得被整行回写盖回
+      expect(store.description).toBe("并发改的描述");
+      expect(store.cronExpression).toBe("0 3 * * *");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      expect(result.name).toBe("旧版名");
+      // 写入的列 = 快照键 ∩ 白名单（+ 库时钟）；主键 id 永不参与
+      expect(Object.keys(calls[0].setPatch ?? {}).sort()).toEqual([
+        "currentVersion",
+        "name",
+        "timeout",
+        "updatedAt",
+      ]);
+      expect(calls[0].whereSql.join(" AND ")).toContain("deletedAt");
+    });
+
+    it("rollbackToVersion 输给并发 remove（行已软删）→ 404，不复活软删行、不排调度", async () => {
+      const store = givenTaskStore(
+        { id: "t1", name: "当前名", status: TaskStatus.ACTIVE, deletedAt: null },
+        (s) => {
+          s.deletedAt = new Date("2026-10-21T00:00:00.000Z");
+          s.status = TaskStatus.DELETED;
+        },
+      );
+      versionRepo.findOne.mockResolvedValue({
+        id: "v1",
+        taskId: "t1",
+        version: "v2",
+        snapshot: { name: "旧版名" },
+      });
+      givenRowPredicateUpdate(store);
+
+      await expect(
+        service.rollbackToVersion("t1", "v1"),
+      ).rejects.toThrow(NotFoundException);
+
+      // 行没有被"写回来"：软删标记与并发写下的 status 全部原样
+      expect(store.deletedAt).toEqual(new Date("2026-10-21T00:00:00.000Z"));
+      expect(store.status).toBe(TaskStatus.DELETED);
+      expect(store.name).toBe("当前名");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      expect(schedulerService.stop).not.toHaveBeenCalled();
+    });
+
+    /**
+     * 漂移钉子：rollbackToVersion 的可写列是**正向白名单**（不是"snapshot 里
+     * 有什么就写什么"——那样一个被污染的/带 id 的快照就能改主键）。白名单与
+     * saveVersion 装配的快照键必须同步，否则新字段的回滚会静默失效
+     * （VER-DIFF-01 / A3 两轮审计踩的都是这一型）。这里用真实的 saveVersion
+     * 产出快照，再要求它每个键都被本次回滚写入。
+     */
+    it("漂移钉子：saveVersion 快照的每个键都必须可被回滚写入（id 除外）", async () => {
+      const row = fullTaskRow();
+      taskRepo.findOne.mockImplementation(async () => ({ ...row }));
+
+      await service.saveVersion("t1");
+      const snapshot = versionRepo.create.mock.calls[0][0]
+        .snapshot as Record<string, unknown>;
+
+      versionRepo.findOne.mockResolvedValue({
+        id: "v1",
+        taskId: "t1",
+        version: "v9",
+        snapshot,
+      });
+      const store: Record<string, any> = { ...row, deletedAt: null };
+      const calls = givenRowPredicateUpdate(store);
+
+      await service.rollbackToVersion("t1", "v1");
+
+      const written = calls[0].setPatch ?? {};
+      const expected = Object.keys(snapshot).filter(
+        (k) => k !== "id" && snapshot[k] !== undefined,
+      );
+      // 防止 snapshot 装配退化成空对象时本钉子假绿
+      expect(expected.length).toBeGreaterThan(30);
+      expect(expected.filter((k) => !(k in written))).toEqual([]);
+      // 主键 / 审计列 / 快照刻意不带的列，一律不写
+      expect(written).not.toHaveProperty("id");
+      expect(written).not.toHaveProperty("deletedAt");
+      expect(written).not.toHaveProperty("createdAt");
+      expect(written).not.toHaveProperty("status");
+      expect(written).not.toHaveProperty("secrets");
+      expect(written).not.toHaveProperty("ownerUserId");
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
   });
 });

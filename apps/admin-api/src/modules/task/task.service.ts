@@ -528,6 +528,77 @@ export const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
 export const EXECUTOR_OFFLINE_PATTERN =
   /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,120}?(?:离线|不可用|不可达)/i;
 
+/**
+ * R63-A1（ADR-026 规则 4）：`rollbackToVersion` 允许从版本快照恢复的**列白名单**。
+ *
+ * 为什么是正向白名单，而不是「snapshot 里有什么就写什么」或整行 `save(entity)`：
+ *
+ * 1. **整行回写**（旧实现 `Object.assign(task, snapshot); taskRepo.save(task)`）
+ *    写的是方法早期读到的快照——窗口内并发 PATCH 写下的 description /
+ *    cronExpression、并发 pause 写下的 status、并发 remove 写下的
+ *    status='deleted' + deletedAt 会被静默盖回（**软删行复活**）。回滚的语义是
+ *    「把这一版的配置恢复回来」，不是「把这一行的时间线倒回读取那一刻」。
+ * 2. 但快照恢复**确实**要覆盖一批列（不像 pause 只改 status），所以修法不是
+ *    「只写一列」，而是「只写快照真的带了的列」——采纳集 = 白名单 ∩ 快照键。
+ *    缺键保留现值的既有语义逐字不变（见 saveVersion 注释里的旧快照兼容说明），
+ *    只是写面从「整行」收窄到「这些列」。
+ * 3. **主键与框架列不在白名单里**：`version.snapshot` 带 `id` 只为可读性，
+ *    把它写进 UPDATE 等于允许一次回滚改主键；createdAt / updatedAt / deletedAt
+ *    是框架列，写它们会绕过乐观锁与软删语义。
+ * 4. secrets / webhookSecret / status / ownerUserId 刻意**不**入快照（见
+ *    saveVersion：版本端点会把 snapshot 原样回传，密文不能进版本历史），于是
+ *    也不在白名单里——回滚永远不碰凭据与生命周期列。
+ *
+ * 维护约定：`saveVersion` 的 snapshot 键集新增一项，就必须在这里同步加一列；
+ * `task.state-write-guards.spec.ts` 的「漂移钉子」会用真实 saveVersion 产出的
+ * 快照反查本白名单的覆盖率，漏加即红。
+ */
+const VERSION_ROLLBACK_COLUMNS: readonly (keyof Task)[] = [
+  "name",
+  "description",
+  "runtime",
+  "entrypoint",
+  "requirements",
+  "params",
+  "timeout",
+  "timeoutAction",
+  "timeoutWarnRatio",
+  "estimatedDurationSec",
+  "maxRetry",
+  "retryDelay",
+  "retryableErrors",
+  "triggerType",
+  "cronExpression",
+  "timezone",
+  "fixedRate",
+  "blockStrategy",
+  "misfireStrategy",
+  "priority",
+  "executeMode",
+  "currentVersion",
+  "gitRepo",
+  "gitBranch",
+  "gitCommit",
+  "glueSource",
+  "glueLanguage",
+  "runtimeVersion",
+  "codeSource",
+  "applicationId",
+  "maintenanceWindows",
+  "runbook",
+  "dependencies",
+  "deploymentPolicy",
+  "executorAffinityTags",
+  "executorAntiAffinityTags",
+  "executorId",
+  "executorAppName",
+  "executorGroup",
+  "executorTags",
+  "projectId",
+  "alarmEmail",
+  "alarmChannels",
+];
+
 @Injectable()
 export class TaskService {
   private readonly logger = new Logger(TaskService.name);
@@ -4081,9 +4152,26 @@ export class TaskService {
     const prevCommit = task.gitCommit;
 
     const exec = await this.dataSource.transaction(async (manager) => {
-      // Update task gitCommit
+      // R63-A1（ADR-026 规则 4）：这里此前是
+      //   `task.gitCommit = dto.gitCommit; await manager.save(Task, task);`
+      // ——把**方法早期读到的快照**整行写回：窗口内并发 PATCH 写的 name /
+      // cronExpression / params、并发 pause 写的 status、并发 remove 写的
+      // status='deleted' 与 deletedAt 都会被盖回旧值（save 连 deletedAt 一起写
+      // NULL ⇒ 软删行复活）。本动作真正改变的列只有 gitCommit 一列。
+      //
+      // 行谓词带 deletedAt IS NULL（规则 1/2）：命中 0 = 行已被并发软删 ——
+      // 按规则 3 让位（与"顺序执行时任务已不存在"同解：404），事务整体回滚，
+      // 执行行也不会落库——不给已删除的任务再派一次执行。
+      const applied = await manager.update(
+        Task,
+        { id: task.id, deletedAt: IsNull() },
+        { gitCommit: dto.gitCommit },
+      );
+      if ((applied?.affected ?? 0) === 0) {
+        throw new AppError("TASK_NOT_FOUND", { taskId: id });
+      }
+      // 内存视图同步（响应与版本快照取自该对象；写面已不再消费它）
       task.gitCommit = dto.gitCommit;
-      await manager.save(Task, task);
 
       // Create execution record
       return manager.save(
@@ -5811,12 +5899,33 @@ export class TaskService {
     //      什么；update() 已有可读文案，这里必须对齐。
     //   ② 引用方的依赖显示名 key 会残留旧名——update() 会刷新，回滚同样要刷。
     const previousName = task.name;
-    Object.assign(task, version.snapshot);
-    task.currentVersion = version.version;
 
-    let saved: Task;
+    // R63-A1（ADR-026 规则 4）：写面从「Object.assign(snapshot) + save(task)」
+    // 收窄成「正向白名单 ∩ 采纳集（快照真的带了的键）」的列级条件写。
+    //
+    // 旧实现的两种现形方式：
+    //   ① 窗口内并发 PATCH 写的 description / cronExpression 等**快照外**的列，
+    //      被整行 save 从旧快照盖回去（用户的并发编辑静默丢失）；
+    //   ② 窗口内并发 remove 把行软删，整行 save 把 deletedAt 写回 NULL
+    //      ——**软删行复活**（status 一起被写回 active）。
+    // 语义不变的部分：快照里带的列照常覆盖（版本恢复的本意）；快照缺键保留现值
+    // （旧快照向后兼容，理由见 saveVersion 的 11 键注释）。行谓词恒带
+    // `deletedAt IS NULL`——命中 0 = 行已被并发软删 → 规则 3 让位（404），
+    // 不按旧快照写回。
+    const snapshot = version.snapshot as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    for (const column of VERSION_ROLLBACK_COLUMNS) {
+      if (!(column in snapshot)) continue;
+      // undefined = 该版本没有这一列的取值 → 保留现值（null 是显式清空，照写）
+      if (snapshot[column] === undefined) continue;
+      patch[column] = snapshot[column];
+    }
+    // 当前版本号以本次应用的版本为准（快照里的 currentVersion 是"那一版当时"的值）
+    patch.currentVersion = version.version;
+
+    let applied: boolean;
     try {
-      saved = await this.taskRepo.save(task);
+      applied = await this.patchTaskColumns(taskId, patch);
     } catch (err) {
       if (
         isUniqueViolation(err) &&
@@ -5824,11 +5933,20 @@ export class TaskService {
       ) {
         throw new AppError("TASK_ROLLBACK_NAME_TAKEN", {
           version: version.version,
-          name: task.name,
+          name: String(patch.name ?? task.name),
         });
       }
       throw err;
     }
+    if (!applied) {
+      // 规则 3：行谓词落空 = 并发 remove 已软删该行。与"顺序执行时任务已不存在"
+      // 同解（404），绝不按旧快照写回（那正是软删行复活的入口）。
+      throw new AppError("TASK_NOT_FOUND", { taskId });
+    }
+    // 回读写面结果：不把方法早期读到的快照当"本次写的结果"返回（同 pause/resume）
+    const saved =
+      (await this.taskRepo.findOne({ where: { id: taskId } })) ??
+      (Object.assign(task, patch) as Task);
     await this.saveVersion(saved.id, undefined, undefined, saved);
     // 与 update() 同源：回滚若改变了任务名，同步刷新引用方的依赖别名
     if (previousName !== saved.name) {

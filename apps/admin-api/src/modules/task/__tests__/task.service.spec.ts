@@ -1667,7 +1667,10 @@ describe("TaskService (__tests__)", () => {
       expect(result.secrets).toEqual(MASKED);
     });
 
-    it("rollback：事务内 manager.save(Task, task) → secrets 保持 RAW 原值（非掩码）", async () => {
+    // R63-A1（ADR-026 规则 4）：写面从 `manager.save(Task, task)`（整行回写）改成
+    // 单列条件写。R-01 的结论不变、且更彻底：写面不再消费实体，掩码副本**结构上**
+    // 无从落库（此前靠"取数是 RAW"这一个前提兜着）。
+    it("rollback：只写 gitCommit 一列（不再整行 save）→ secrets 列永不参与写入", async () => {
       const task = {
         id: "1",
         name: "test",
@@ -1676,12 +1679,22 @@ describe("TaskService (__tests__)", () => {
         secrets: { ...RAW_SECRETS },
       };
       taskRepo.findOne.mockResolvedValue(task);
+      const updates: Array<{
+        criteria: Record<string, any>;
+        patch: Record<string, any>;
+      }> = [];
       const persisted: Array<Record<string, any>> = [];
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          // manager.save(Task, task)（两参）与 manager.save(exec)（单参）共用此桩
+          // R63-A1: 任务行 = 列级条件写（update）；执行行 = save(create(...))
+          update: jest.fn(
+            async (_t: unknown, criteria: any, patch: any) => {
+              updates.push({ criteria, patch });
+              return { affected: 1 };
+            },
+          ),
           save: jest.fn(async (...args: any[]) => {
-            const row = args.length >= 2 ? args[1] : args[0];
+            const row = args[args.length - 1];
             if (row && typeof row === "object") {
               persisted.push(JSON.parse(JSON.stringify(row)));
             }
@@ -1693,10 +1706,14 @@ describe("TaskService (__tests__)", () => {
 
       await service.rollback("1", { gitCommit: "new-sha" });
 
-      expect(persisted).toHaveLength(2);
-      expect(persisted[0].gitCommit).toBe("new-sha");
-      expect(persisted[0].secrets).toEqual(RAW_SECRETS);
-      expect(persisted[0].secrets).not.toEqual(MASKED);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].patch).toEqual({ gitCommit: "new-sha" });
+      expect(updates[0].criteria).toMatchObject({ id: "1" });
+      // 事务里只有一次 save：插入执行行
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0].id).toBe("rb-exec");
+      // secrets 列（无论 RAW 还是掩码）都不在 patch 里
+      expect(updates[0].patch).not.toHaveProperty("secrets");
     });
 
     // ------------------------------------------------------------------------
@@ -2795,10 +2812,9 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest
-            .fn()
-            .mockResolvedValueOnce(task) // first save: update task.gitCommit
-            .mockResolvedValueOnce(exec), // second save: persist execution
+          // R63-A1: 任务行改列级条件写；事务里只剩执行行的一次 save（插入）
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
+          save: jest.fn().mockResolvedValue(exec),
           create: jest.fn().mockReturnValue(exec),
         }),
       );
@@ -2836,10 +2852,8 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest
-            .fn()
-            .mockResolvedValueOnce(task)
-            .mockResolvedValueOnce(exec),
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
+          save: jest.fn().mockResolvedValue(exec),
           create: jest.fn().mockReturnValue(exec),
         }),
       );
@@ -5516,7 +5530,8 @@ describe("TaskService (__tests__)", () => {
         const violation = new QueryFailedError("UPDATE", [], new Error("dup"));
         (violation as any).code = "23505";
         (violation as any).constraint = "idx_tasks_name_unique";
-        taskRepo.save.mockRejectedValue(violation);
+        // R63-A1: 写面不再是 save —— 唯一索引冲突从列级写的 execute() 抛
+        failTaskWrite(violation);
 
         await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
           ConflictException,
@@ -5538,7 +5553,7 @@ describe("TaskService (__tests__)", () => {
         const violation = new QueryFailedError("UPDATE", [], new Error("pk"));
         (violation as any).code = "23505";
         (violation as any).constraint = "PK_ tasks_id";
-        taskRepo.save.mockRejectedValue(violation);
+        failTaskWrite(violation);
 
         await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
           QueryFailedError,
@@ -5562,12 +5577,9 @@ describe("TaskService (__tests__)", () => {
           id: "down-1",
           dependencies: { 当前名: "up-1" },
         };
-        const qb = {
-          where: jest.fn().mockReturnThis(),
-          andWhere: jest.fn().mockReturnThis(),
-          getMany: jest.fn().mockResolvedValue([dependent]),
-        };
-        taskRepo.createQueryBuilder.mockReturnValue(qb);
+        // R63-A1: 列级写也走同一个 createQueryBuilder —— 按别名参数分派：
+        // 带别名 → 依赖读侧替身；不带 → 默认（写）替身
+        givenAliasReadQb([dependent]);
 
         await service.rollbackToVersion("up-1", "v1");
 
@@ -5590,7 +5602,10 @@ describe("TaskService (__tests__)", () => {
 
         await service.rollbackToVersion("t1", "v1");
 
-        expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
+        // R63-A1: 列级写本身会走 createQueryBuilder —— "零副作用"的观察点
+        // 换成依赖别名刷新那条写路径（taskRepo.update）没被调用
+        expect(taskRepo.update).not.toHaveBeenCalled();
+        expect(taskWrites()).toHaveLength(1);
       });
     });
 
@@ -6393,7 +6408,11 @@ describe("R-03: updateGlue/rollback/rollbackToVersion 归属守卫接线", () =>
     await expect(
       service.rollbackToVersion("t1", "v1", admin),
     ).resolves.toMatchObject({ name: "snapshot-name" });
-    expect(taskRepo.save).toHaveBeenCalledTimes(1);
+    // R63-A1: 落库 = 一次列级条件写（不是整行 save）
+    expect(
+      (taskRepo as unknown as { updatePatches: unknown[] }).updatePatches,
+    ).toHaveLength(1);
+    expect(taskRepo.save).not.toHaveBeenCalled();
   });
 
   it("rollback：属主兼任项目 viewer → 403（assertCanOperate 接线生效）", async () => {
@@ -7550,6 +7569,8 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       // manager.save(create 结果) 返回执行行。
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          // R63-A1: 任务行改列级条件写
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
           save: jest.fn(async (_t: unknown, e: unknown) =>
             (e as { id?: string })?.id
               ? e
