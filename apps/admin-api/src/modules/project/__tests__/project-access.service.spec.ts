@@ -28,6 +28,20 @@ describe("ProjectAccessService（AUTH-02）", () => {
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
       ...overrides,
     };
+    // R58（ADR-027 第五次）：成员写面改成条件 UPDATE 后，假仓储必须提供 update，
+    // 且要按真实语义求值——affected 由「(projectId,userId) 这一行是否存在」决定。
+    // 一个永远返回 affected=1（或干脆没有 update）的替身会让「不复活已删行」这条路径
+    // 在测试里根本不存在。
+    (repo as Record<string, unknown>).update = jest.fn(
+      async (where: Record<string, unknown>, patch: Record<string, unknown>) => {
+        const row = (await (repo.findOne as jest.Mock)({ where })) as
+          | Record<string, unknown>
+          | null;
+        if (!row) return { affected: 0 };
+        Object.assign(row, patch);
+        return { affected: 1 };
+      },
+    );
     const svc = new ProjectAccessService(repo as never, usersService as never);
     return { svc, repo };
   };
@@ -188,9 +202,14 @@ describe("ProjectAccessService（AUTH-02）", () => {
 
       expect(view.role).toBe("editor");
       expect(repo.create).not.toHaveBeenCalled();
-      expect(repo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "m1", role: "editor" }),
+      // R58：改角色走条件 UPDATE（不再整行 save —— 整行 save 会把并发删除的行复活）
+      const repoAny = repo as unknown as { update: jest.Mock };
+      expect(repoAny.update).toHaveBeenCalledWith(
+        { projectId: "p1", userId: 7 },
+        { role: "editor" },
       );
+      expect(repoAny.update).toHaveBeenCalledTimes(1);
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it("addMember：不存在则新建", async () => {
@@ -294,6 +313,28 @@ describe("ProjectAccessService（AUTH-02）", () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it("R58: updateMember 走条件 UPDATE——并发 remove 之后不会把成员行「复活」", async () => {
+      const { svc, repo } = makeService();
+      repo.findOne.mockResolvedValue({
+        id: "m1",
+        projectId: "p1",
+        userId: 7,
+        role: "viewer",
+      });
+
+      const view = await svc.updateMember("p1", 7, "editor");
+
+      expect(view.role).toBe("editor");
+      // 核心：写面是 UPDATE，不是整行 save。整行 save 的语义是「把这条实体写回库」——
+      // 若此刻行已被并发 removeMember 删除，它会把那条授权关系**重新写出来**，
+      // 而审计表记的是「已移除」。UPDATE 天然不会复活已删行。
+      expect(repo.save).not.toHaveBeenCalled();
+      const repoAny = repo as unknown as { update: jest.Mock };
+      expect(repoAny.update).toHaveBeenCalledWith(
+        { projectId: "p1", userId: 7 },
+        { role: "editor" },
+      );
+    });
     it("updateMember：成员不存在 → 404（不静默创建）", async () => {
       const { svc } = makeService();
       await expect(svc.updateMember("p1", 7, "admin")).rejects.toBeInstanceOf(

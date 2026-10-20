@@ -174,13 +174,28 @@ export class ProjectAccessService {
     this.assertRole(role);
     // R32-A5（轴1 幽灵成员 / 轴3 成员管理）：授予对象必须在场。
     await this.assertTargetUserExists(userId);
-    const existing = await this.repo.findOne({ where: { projectId, userId } });
-    if (existing) {
-      existing.role = role;
-      return this.toView(await this.repo.save(existing));
+    // R58（ADR-026 规则 4）：先**条件 UPDATE**，再按需插入——不再 `findOne → 改字段 → 整行 save`。
+    //
+    // 那条旧路径有一个真实的复活窗口：并发的 removeMember 在 findOne 与 save 之间删掉这一行时，
+    // save 会把这个「已不存在的成员」按旧快照写回去（授权行复活，且审计表记的是移除）。
+    // UPDATE 天然不会复活已删行；affected===0 才走插入，插入撞唯一索引说明别人先建了 → 回退成更新。
+    const updated = await this.repo.update({ projectId, userId }, { role });
+    if (updated.affected) {
+      const row = await this.repo.findOne({ where: { projectId, userId } });
+      if (row) return this.toView(row);
+      throw new AppError(ErrorCode.PROJECT_NOT_MEMBER, { userId, projectId });
     }
-    const row = this.repo.create({ projectId, userId, role });
-    return this.toView(await this.repo.save(row));
+    try {
+      const row = this.repo.create({ projectId, userId, role });
+      return this.toView(await this.repo.save(row));
+    } catch (err) {
+      // 并发 addMember：另一个请求刚插入了同一 (projectId, userId) —— 退化成更新（幂等收敛）。
+      const retried = await this.repo.update({ projectId, userId }, { role });
+      if (!retried.affected) throw err;
+      const row = await this.repo.findOne({ where: { projectId, userId } });
+      if (!row) throw err;
+      return this.toView(row);
+    }
   }
 
   async updateMember(
@@ -189,12 +204,18 @@ export class ProjectAccessService {
     role: ProjectRole,
   ): Promise<ProjectMemberView> {
     this.assertRole(role);
+    // R58：条件 UPDATE —— affected===0 就是「这条成员关系不存在」。
+    // 旧实现 `findOne → row.role = role → save(row)` 同样有复活窗口：
+    // 并发的 removeMember 删掉行之后，save 会按旧快照把它写回去。
+    const updated = await this.repo.update({ projectId, userId }, { role });
+    if (!updated.affected) {
+      throw new AppError(ErrorCode.PROJECT_NOT_MEMBER, { userId, projectId });
+    }
     const row = await this.repo.findOne({ where: { projectId, userId } });
     if (!row) {
       throw new AppError(ErrorCode.PROJECT_NOT_MEMBER, { userId, projectId });
     }
-    row.role = role;
-    return this.toView(await this.repo.save(row));
+    return this.toView(row);
   }
 
   /**
