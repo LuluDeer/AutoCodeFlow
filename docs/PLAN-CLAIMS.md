@@ -1018,3 +1018,12 @@
   验证：tsc 0 / selftest-tsc 0；4 个相关 selftest 全绿；**总控独立反证**：`checkSender` 恒真 → `ipc-sender-guard` exit 1；守卫 4 道绿（含 bundle-drift，`resources/**` 与 `apps/executor-node/**` 零改动）。
   注：本机 `npm run test:main` 会在 `token-crypto` 中断（缺 Electron 二进制，`logger.ts:42 require('electron')` 抛错）——**修前修后一致**（44 PASS/2 FAIL → 48 PASS/2 FAIL），环境性非回归。
   **遗留 5 条如实登记**：POSIX 强杀非树杀（需真机验证）/ `config:test-connection` SSRF-lite（需产品事实确认）/ Linux 更新链无签名 / config-store 跨键非事务 / IPC 未做按 channel 能力分级。
+- 2026-10-20 **R89 done（commit fc467649）**：**连接测试只回错误码文案，不回显解析后的地址**（R86-A1 遗留②收口）。
+  **先定产品事实**：桌面端连的就是用户自己的 admin-api，`192.168.x.x` / `localhost` 是**主要部署形态** ⇒ 照 admin-api 的 SSRF 姿态禁私网会**废掉功能**。
+  所以问题不是「该不该禁」，而是「该不该回显」—— 而回显的正是浏览器沙箱里拿不到的那部分：`connect ECONNREFUSED 192.168.1.5:3105`（**解析后内网地址**）、
+  `getaddrinfo ENOTFOUND internal.corp.example`（域名存在性）⇒ 被注入的渲染层可拿它当 **DNS/内网端口探测器**（浏览器因 CORS 做不到）。
+  修法：保留发起能力、去掉回显。新增 `describeConnectionError(code)`：只取 `err.code`（不读 `message`），映射稳定中文文案；未知码回 `连接失败（<码>）`。
+  **写测试时抓到自己一个洞**：函数最初对「非码形状输入」落到 default 并**原样回显** ⇒ 把 `err.message` 误传进来就把整条消息带出去，函数自己成了泄漏点。
+  已加形状闸 `ERRNO_CODE_RE`（只认大写码），**结构上不可能回显任意文本**。验证：tsc 0；新增 `network-util.selftest`（已接 test:main）全绿，
+  覆盖 8 种 errno + 8 组敌意输入，逐一断言不含地址/域名/`getaddrinfo`；反证：去掉形状闸 → selftest **exit 1**。
+  **遗留②由「疑似缺口」降级为「已收口的残余风险」**：发起能力仍在（功能需要），回显已切断。
