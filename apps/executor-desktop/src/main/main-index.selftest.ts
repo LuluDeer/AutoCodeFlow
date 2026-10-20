@@ -169,6 +169,25 @@ function main(): void {
     );
   }
 
+  // ── E2E-ENTRY：开发态执行器入口必须按 __dirname 解析 ────────────────
+  // 2026-10 真机 E2E 抓到：Playwright 直接以 `electron dist/main/index.js`
+  // 启动时，app.getAppPath() 是 dist/main 而不是包根，拼出的
+  // resources/executor-node/index.js 不存在 → 子进程 MODULE_NOT_FOUND →
+  // 向导只报 8 秒健康检查超时。这里把「按 __dirname 回退」钉死。
+  {
+    const entryIdx = execSrc.indexOf('private getEntryPath(');
+    assert.ok(entryIdx >= 0, 'E2E-ENTRY: ExecutorProcess.getEntryPath 必须存在');
+    const entryBlock = execSrc.slice(entryIdx, execSrc.indexOf('async start(', entryIdx));
+    assert.ok(
+      entryBlock.includes("path.resolve(__dirname, '..', '..', 'resources', 'executor-node', 'index.js')"),
+      'E2E-ENTRY: 开发态入口必须以 __dirname 为基准解析（app.getAppPath() 在直接传入口文件时是 dist/main）',
+    );
+    assert.ok(
+      entryBlock.includes('const fromDist') && entryBlock.includes('fs.existsSync(fromDist)'),
+      'E2E-ENTRY: 必须先用 __dirname 路径并用 existsSync 守卫，再回退 app.getAppPath()',
+    );
+  }
+
   // ── B-14：未配置时托盘配置入口开向导 ───────────────────────────────
   {
     const cfgIdx = indexSrc.indexOf('trayManager.onOpenConfig');

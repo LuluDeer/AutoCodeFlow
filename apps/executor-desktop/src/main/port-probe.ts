@@ -190,12 +190,17 @@ export function fetchAdminRegistration(
           try {
             const parsed = JSON.parse(raw) as { registration?: string; heartbeatStatus?: string };
             if (parsed && typeof parsed === 'object') {
-              if (parsed.heartbeatStatus === 'ok' || parsed.registration === 'registered') {
-                resolve('registered');
-                return;
-              }
+              // 契约（executor-node routes/health.ts）是「registration 或
+              // heartbeat 任一 failed → 离线」。必须先判 failed 再判 ok：
+              // 反过来的话，「admin 可达（heartbeat ok）但注册被拒」会被读成
+              // registered，地址/设备指纹冲突就被静默吞掉——2026-10 真机 E2E
+              // 以两个安装共用 127.0.0.1:18082 命中过这一形态。
               if (parsed.heartbeatStatus === 'failed' || parsed.registration === 'failed') {
                 resolve('failed');
+                return;
+              }
+              if (parsed.heartbeatStatus === 'ok' || parsed.registration === 'registered') {
+                resolve('registered');
                 return;
               }
             }
