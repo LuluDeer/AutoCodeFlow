@@ -2494,9 +2494,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     try {
       const row = await this.repo.findOne({ where: { id: deploymentId } });
       if (!row) return;
+      // R50（ADR-026 规则 4）：只写这两列，**不整行 save**。整行回写会用本方法读到
+      // 的快照覆盖并发的 status / statusMessage / rollout 进度（心跳推进终态、管理员
+      // 停止等），而这里要改的只是「批次痕迹」两列——多写一列就是在替别人做决定。
+      // adr-026-exempt: 只写 rolloutState / rolloutMeta 两个**批次痕迹列**（patch 里不含
+      // status/statusMessage 等状态列）；状态迁移由 handleHeartbeat / 升级链的条件 UPDATE 独占。
+      await this.repo.update(
+        { id: deploymentId },
+        { rolloutState: state, rolloutMeta: meta },
+      );
+      // 同步内存视图：调用方随后还会读 row 的这两列；列级写不会回灌到已取出的实体。
       row.rolloutState = state;
       row.rolloutMeta = meta;
-      await this.repo.save(row);
     } catch (err: unknown) {
       // 批次痕迹写失败不阻断升级主链（fail-open，仅日志）。
       this.logger.warn(
@@ -2652,13 +2661,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // 的 set() 会撞 TypeORM 的类型收窄，且本路径不需要原子性。
       const row = await this.repo.findOne({ where: { id } });
       if (!row) return;
-      row.rolloutMeta = {
+      const nextMeta = {
         ...((row.rolloutMeta as Record<string, any>) ?? {}),
         ...this.lastRolloutMeta(batch),
         leasedAt: new Date().toISOString(),
         leasedBy: ROLLOUT_INSTANCE_ID,
       };
-      await this.repo.save(row);
+      // R50：同 markRolloutState——只写 rolloutMeta 一列。jsonb 会被
+      // _QueryDeepPartialEntity 深度收窄（字面量报 TS2322），故用一次窄化断言；
+      // 这只是编译期问题，退回 save() 会重新引入「覆盖并发列」的真实缺陷。
+      // adr-026-exempt: 只写 rolloutMeta 一列（租约心跳，advisory）；不碰任何状态列。
+      await this.repo.update(
+        { id },
+        { rolloutMeta: nextMeta } as unknown as Parameters<typeof this.repo.update>[1],
+      );
+      row.rolloutMeta = nextMeta;
     } catch {
       // 租约刷新是尽力而为（失败仅影响滚动重启时的 sweep 判据）
     }

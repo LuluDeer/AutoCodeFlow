@@ -49,6 +49,15 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   ...overrides,
 });
 
+/**
+ * R50：markRolloutState 从整行 save 改为**列级 update**（ADR-026 规则 4）。
+ * 「谁被持久化成什么」现在要从 **update 的 patch** 读——把 `where.id` 与 patch 合并成
+ * 与旧断言同形的行对象，断言口径不变（只读 save 的实参会漏掉这些行）。
+ */
+const persisted = (repo: any): any[] => [
+  ...repo.save.mock.calls.map(([e]: any[]) => e),
+  ...repo.update.mock.calls.map(([w, p]: any[]) => ({ ...w, ...p })),
+];
 /** 行工厂：rolloutState 可注入。 */
 const row = (
   id: string,
@@ -174,8 +183,8 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       // FEAT-20: 无触发上下文时 upgrade 以 ("d1", undefined) 调用（零破坏）
       expect(upSpy).toHaveBeenCalledWith("d1", undefined);
       // 无 rolloutState 写入
-      const rolloutSaves = repo.save.mock.calls.filter(
-        ([e]: any[]) => e.rolloutState !== undefined && e.rolloutState !== null,
+      const rolloutSaves = persisted(repo).filter(
+        (e: any) => e.rolloutState !== undefined && e.rolloutState !== null,
       );
       expect(rolloutSaves).toHaveLength(0);
     });
@@ -226,10 +235,16 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(upSpy).toHaveBeenCalledTimes(2); // 仅首批
       expect(upSpy).not.toHaveBeenCalledWith("d3");
       // 首批两行 pending
-      const pendingRows = repo.save.mock.calls
-        .map(([e]: any[]) => e)
+      const pendingRows = persisted(repo)
         .filter((e: any) => e.rolloutState === RolloutState.PENDING);
       expect(pendingRows.map((r: any) => r.id)).toEqual(["d1", "d2"]);
+      // R50：批次痕迹必须走**列级写**——整行 save 会用本方法读到的快照覆盖并发的
+      // status/statusMessage（心跳推进终态、管理员停止）。这条断言把「不许整行写」钉住。
+      expect(
+        repo.save.mock.calls.some(
+          ([e]: any[]) => e.rolloutState === RolloutState.PENDING,
+        ),
+      ).toBe(false);
       expect(pendingRows[0].rolloutMeta.batchId).toMatch(/^rollout-/);
       expect(pendingRows[0].rolloutMeta.percentage).toBe(34);
     });
@@ -265,8 +280,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
       expect(result.ok).toBe(false);
       expect(result.failed).toBe(1);
-      const failedRows = repo.save.mock.calls
-        .map(([e]: any[]) => e)
+      const failedRows = persisted(repo)
         .filter((e: any) => e.rolloutState === RolloutState.FAILED);
       expect(failedRows.length).toBeGreaterThanOrEqual(1);
       expect(failedRows.some((r: any) => r.id === "d1")).toBe(true);
@@ -419,8 +433,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(mockAxiosGet).not.toHaveBeenCalled();
       // fail-closed：canary 台判失败，不提升其余台
       expect(upSpy).not.toHaveBeenCalledWith("d2");
-      const failedRows = repo.save.mock.calls
-        .map(([e]: any[]) => e)
+      const failedRows = persisted(repo)
         .filter(
           (e: any) => e.id === "d1" && e.rolloutState === RolloutState.FAILED,
         );
@@ -503,8 +516,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
       // 回滚 push 被触发（d2 为已升级台）——axios.post 走 upgrade 链
       expect(mockAxiosPost).toHaveBeenCalled();
-      const rolledBack = repo.save.mock.calls
-        .map(([e]: any[]) => e)
+      const rolledBack = persisted(repo)
         .filter((e: any) => e.rolloutState === RolloutState.ROLLED_BACK);
       expect(rolledBack.map((r: any) => r.id)).toContain("d2");
       // 回滚载荷携带快照版本
@@ -540,8 +552,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         status: "failed",
       } as any);
       await new Promise((r) => setTimeout(r, 10));
-      const failedRows = repo.save.mock.calls
-        .map(([e]: any[]) => e)
+      const failedRows = persisted(repo)
         .filter((e: any) => e.rolloutState === RolloutState.FAILED);
       expect(failedRows.some((r: any) => r.id === "d1")).toBe(true);
     }, 15000);
@@ -554,8 +565,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         deploymentId: "d9",
         status: "running",
       } as any);
-      const rolloutSaves = repo.save.mock.calls
-        .map(([e]: any[]) => e)
+      const rolloutSaves = persisted(repo)
         .filter((e: any) => e.rolloutState != null);
       expect(rolloutSaves).toHaveLength(0);
     });

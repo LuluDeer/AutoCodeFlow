@@ -42,6 +42,9 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn(),
   create: jest.fn((d: any) => ({ ...d, id: d.id ?? "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve(e)),
+  // R50：markRolloutState / 租约刷新改列级 update（ADR-026 规则 4）——假仓储必须
+  // 提供 update，否则这条路径在测试里等于不存在（ADR-027 的同一教训）。
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
   // O-1: 批量 UPDATE 走 createQueryBuilder 链；默认链可独立断言（qbMock 见下）。
   createQueryBuilder: jest.fn(() => qbMock(1)),
   ...overrides,
@@ -156,8 +159,13 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
 
     await (service as any).notifyHeartbeatToRollout(d);
 
-    const saved = repo.save.mock.calls.map(([e]: any[]) => e);
-    const probed = saved.filter(
+    // R50：markRolloutState 改列级 update 后，持久化结果要从 update 的 patch 读
+    //（save 的实参里已经没有这次状态写）。
+    const persisted = [
+      ...repo.save.mock.calls.map(([e]: any[]) => e),
+      ...repo.update.mock.calls.map(([w, p]: any[]) => ({ ...w, ...p })),
+    ];
+    const probed = persisted.filter(
       (e: any) => e.rolloutState === RolloutState.PROBING,
     );
     expect(probed).toHaveLength(1);
