@@ -94,10 +94,27 @@ describe("R34-A1 轴4 · sop 的 owner 字段（归属契约）", () => {
     expect(h.sopStore.title).toBe("日报 v2");
   });
 
-  it("R57 并发：编辑草稿不得把 publish 刚前移的 currentVersion 回滚（列级写）", async () => {
-    const h = harness();
-    // 模拟「读到快照之后、落库之前」有人完成了一次发布：主表版本锚已经前移。
-    h.sopStore.currentVersion = "1.0.1";
+  it("R57/R71 并发交错：draft 读到旧快照后 publish 前移版本锚 → 存草稿不得把锚写回", async () => {
+    // R71：这条用例原先**判不出缺陷** —— 它在调用 draft() **之前**就把
+    // sopStore.currentVersion 设成 1.0.1，于是 draft 读到的快照本来就是 1.0.1，
+    // 无论实现是整行 save 还是列级写，「结果是 1.0.1」都成立（真正让它红的只有
+    // 「save 未被调用」那条旁证）。现在改成**真交错**：findOne 先返回旧快照（1.0.0），
+    // 返回之后再让并发 publish 把锚推到 1.0.1 —— 这才是要被覆盖的那个瞬间。
+    const h = harness({ currentVersion: "1.0.0" });
+    // 取**原始实现**而不是 mock 本身（取 mock 会在里面再调自己 → 栈溢出）
+    const realFind = h.sops.findOne.getMockImplementation() as (
+      arg: Any,
+    ) => Promise<Any>;
+    let firstRead = true;
+    h.sops.findOne.mockImplementation(async (arg: Any) => {
+      const row = await realFind(arg);
+      if (firstRead && row) {
+        firstRead = false;
+        // 并发 publish 已提交：主表版本锚前移，但 draft 手里的快照还是 1.0.0
+        h.sopStore.currentVersion = "1.0.1";
+      }
+      return row;
+    });
 
     await h.service.draft({
       slug: "daily-report",
