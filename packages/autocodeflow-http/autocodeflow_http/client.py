@@ -136,6 +136,15 @@ class RetryConfig:
     #: (only appropriate for endpoints whose payloads carry their own
     #: idempotency key).
     safe_methods_only: bool = True
+    #: R134-A1: optional ceiling for a **server-directed** wait (the
+    #: Retry-After header). None (default) keeps the historical behaviour --
+    #: the header is honoured verbatim even if it asks for hours;
+    #: max_wait_sec only caps our own exponential backoff, so a proxy
+    #: returning "Retry-After: 3600" used to park the task process for an
+    #: hour and blow through the execution budget. Set this when the caller
+    #: must stay inside its own scheduling budget; the server-directed wait
+    #: is then clamped and a warning is logged.
+    max_retry_after_sec: Optional[float] = None
 
 
 class _WaitWithRetryAfter:
@@ -145,10 +154,17 @@ class _WaitWithRetryAfter:
     a ``Retry-After`` header (either a delta-seconds integer or an HTTP-date),
     waits at least that long — taking the max of our backoff and the
     server-specified delay.
+
+    R134-A1: max_retry_after_sec 可选地对"服务端指定"的等待时间设上限
+    （None = 不设上限，即历史行为）。没有上限时一个 Retry-After: 3600 就能
+    把任务进程停一小时——max_wait_sec 从来不管这条路径。
     """
 
-    def __init__(self, base: wait_exponential):
+    def __init__(
+        self, base: wait_exponential, max_retry_after_sec: Optional[float] = None
+    ):
         self._base = base
+        self._max_retry_after = max_retry_after_sec
 
     def __call__(self, retry_state: RetryCallState) -> float:
         wait = self._base(retry_state)
@@ -158,6 +174,14 @@ class _WaitWithRetryAfter:
             if raw:
                 parsed = self._parse_retry_after(raw)
                 if parsed is not None:
+                    if self._max_retry_after is not None and parsed > self._max_retry_after:
+                        logger.warning(
+                            "Retry-After %.1fs exceeds RetryConfig.max_retry_after_sec "
+                            "%.1fs - clamped",
+                            parsed,
+                            self._max_retry_after,
+                        )
+                        parsed = self._max_retry_after
                     wait = max(wait, parsed)
         return wait
 
@@ -346,7 +370,9 @@ class AutoFlowHttpClient:
             _do = retry(
                 stop=stop_after_attempt(self._retry.max_retries + 1),
                 wait=_WaitWithRetryAfter(
-                    wait_exponential(multiplier=self._retry.min_wait_sec, max=self._retry.max_wait_sec)
+                    wait_exponential(multiplier=self._retry.min_wait_sec, max=self._retry.max_wait_sec),
+                    # R134-A1: 服务器指定的等待时间可选上限（None = 旧行为）。
+                    self._retry.max_retry_after_sec,
                 ),
                 retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError)),
                 reraise=True,

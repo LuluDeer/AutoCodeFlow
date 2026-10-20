@@ -37,12 +37,18 @@ async def run():
 ```python
 from autocodeflow_http import AutoFlowHttpClient, CircuitBreaker, RetryConfig
 
-client = AutoFlowHttpClient(
+async with AutoFlowHttpClient(
     base_url="https://api.example.com",
-    retry_config=RetryConfig(max_attempts=5),
+    retry_config=RetryConfig(max_retries=5),   # 最多 1 + 5 次尝试
     circuit_breaker=CircuitBreaker(failure_threshold=3),
-)
+) as client:
+    resp = await client.get("/data")
 ```
+
+> R134-A1：上面这段此前写的是 `RetryConfig(max_attempts=5)`——`RetryConfig`
+> 没有 `max_attempts` 字段，照抄会直接 `TypeError`；已改为 `max_retries`。
+> 同时示例改为 `async with`：本页声称"忘调 `aclose()` 也不会泄漏"，但那只在
+> `async with` 下成立，裸构造且不关闭的客户端仍会漏掉连接池。
 
 ## 开发
 
