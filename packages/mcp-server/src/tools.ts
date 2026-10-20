@@ -948,8 +948,9 @@ export function registerApplicationTools(
       name: z.string().max(100).describe("Unique application name"),
       version: z.string().describe("Application version number, e.g. 1.0.0"),
       runtime: z.string().describe("Runtime type, e.g. node or python"),
-      description: z
-        .string()
+      // R111-A1 上限出处：CreateApplicationDto.description 的 @MaxLength(500)
+      // （apps/admin-api/src/modules/application/dto/application.dto.ts:27）。
+      description: textWithin(500)
         .optional()
         .describe("Application description (max 500 chars)"),
       gitRepo: z.string().optional().describe("Git repository URL"),
@@ -975,7 +976,11 @@ export function registerApplicationTools(
     "Update an existing application. NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
-      description: z.string().optional().describe("Application description"),
+      // R111-A1 上限出处：UpdateApplicationDto 是 PartialType(CreateApplicationDto)
+      // （application.dto.ts:85），继承 description 的 @MaxLength(500)（:27）。
+      description: textWithin(500)
+        .optional()
+        .describe("Application description (max 500 chars)"),
       version: z.string().optional().describe("Application version number"),
       runtime: z.string().optional().describe("Runtime type"),
       status: z
@@ -994,11 +999,12 @@ export function registerApplicationTools(
       env: z.record(z.string(), z.string()).optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
-      webhookSecret: z
-        .string()
+      // R111-A1 上限出处：UpdateApplicationDto.webhookSecret 的 @MaxLength(256)
+      // （application.dto.ts:102）。
+      webhookSecret: textWithin(256)
         .optional()
         .describe(
-          "HMAC-SHA256 webhook secret (empty string disables webhook auth)",
+          "HMAC-SHA256 webhook secret (max 256 chars; empty string disables webhook auth)",
         ),
     }, { destructiveHint: true, idempotentHint: true },
     async ({ applicationId, ...fields }) => {
@@ -1270,7 +1276,12 @@ export function registerDeploymentTools(
         .record(z.string(), z.string())
         .optional()
         .describe("Environment variable overrides"),
-      startCommand: z.string().optional().describe("Startup command override"),
+      // R111-A1 上限出处：CreateDeploymentDto.startCommand 的 @MaxLength(2000)
+      // （apps/admin-api/src/modules/application/dto/app-deployment.dto.ts:84）。
+      // deploy_application 与 deploy_app 共用同一 POST /app-deployments/.../deploy 体。
+      startCommand: textWithin(2000)
+        .optional()
+        .describe("Startup command override (max 2000 chars)"),
     }, { destructiveHint: true },
     async ({ applicationId, executorId, runMode, env, startCommand }) => {
       // P0 (MCP-AGENT-UX-AUDIT): never let an omitted runMode fall through to the
@@ -1351,7 +1362,12 @@ export function registerDeploymentTools(
         .record(z.string(), z.string())
         .optional()
         .describe("Environment variable overrides"),
-      startCommand: z.string().optional().describe("Startup command override"),
+      // R111-A1 上限出处：CreateDeploymentDto.startCommand 的 @MaxLength(2000)
+      // （apps/admin-api/src/modules/application/dto/app-deployment.dto.ts:84）。
+      // deploy_application 与 deploy_app 共用同一 POST /app-deployments/.../deploy 体。
+      startCommand: textWithin(2000)
+        .optional()
+        .describe("Startup command override (max 2000 chars)"),
     }, { destructiveHint: true },
     async ({ appName, executorId, runMode, env, startCommand }) => {
       const apps = await call<
