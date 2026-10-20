@@ -9,14 +9,25 @@ import { MutexGroup } from "../entities/mutex-group.entity";
  * scope 透传、update 可改档。占坑语义的两档分支由
  * executor/__tests__/executor.mutex-claim.spec.ts 覆盖。
  */
-const makeRepo = () => ({
-  create: jest.fn((d) => d),
-  save: jest.fn(async (e) => ({ id: "g-1", ...e })),
-  findOne: jest.fn().mockResolvedValue(null),
-  find: jest.fn().mockResolvedValue([]),
-  manager: { query: jest.fn().mockResolvedValue([]) },
-  remove: jest.fn(),
-});
+const makeRepo = () => {
+  const repo: any = {
+    create: jest.fn((d) => d),
+    save: jest.fn(async (e) => ({ id: "g-1", ...e })),
+    findOne: jest.fn().mockResolvedValue(null),
+    find: jest.fn().mockResolvedValue([]),
+    manager: { query: jest.fn().mockResolvedValue([]) },
+    remove: jest.fn(),
+    // R75：update 改列级写 —— 假仓储需要 update，且按真实语义把 patch 落到 findOne 返回的行上
+    // （永远返回 affected=1 的替身，会让「改了哪几列」这条判据在测试里不存在）。
+    update: jest.fn(async (where: any, patch: any) => {
+      const row = await repo.findOne({ where });
+      if (!row) return { affected: 0 };
+      Object.assign(row, patch);
+      return { affected: 1 };
+    }),
+  };
+  return repo;
+};
 
 describe("MutexGroupService scope (N-15)", () => {
   let service: MutexGroupService;
@@ -54,6 +65,10 @@ describe("MutexGroupService scope (N-15)", () => {
     });
     const saved = await service.update("g-1", { scope: "device" } as never);
     expect(saved.scope).toBe("device");
+    // R75：只写 dto 带来的那一列，不整行 save（整行 save 会在实体将来多出
+    // 别的写者时，把那些列按快照写回去）
+    expect(repo.update).toHaveBeenCalledWith({ id: "g-1" }, { scope: "device" });
+    expect(repo.save).not.toHaveBeenCalled();
   });
 
   it("create：同名冲突仍 409（scope 改动不破坏既有唯一路径）", async () => {
