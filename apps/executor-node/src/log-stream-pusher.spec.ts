@@ -17,7 +17,12 @@
  *    `\r\n` 的 `\r` 也会留在行尾。
  *    修复：pusher 自持半行缓冲（addOutput），只在遇到 `\n` 时成行。
  */
-import { LogStreamPusher } from './log-stream-pusher';
+import {
+  LogStreamPusher,
+  MAX_BYTES_PER_CHUNK,
+  MAX_BUFFERED_BYTES,
+  BACKPRESSURE_MARKER,
+} from './log-stream-pusher';
 import { post } from './admin-client';
 import { logger } from './logger';
 
@@ -37,6 +42,20 @@ function bodyOf(call: number): { fromLine: number; lines: string[] } {
     fromLine: number;
     lines: string[];
   };
+}
+
+/** 出站分片是否为背压 marker（不是真实日志行）。 */
+function isMarker(body: { lines: string[] }): boolean {
+  return body.lines.length === 1 && /dropped by local backpressure/.test(body.lines[0] ?? '');
+}
+
+/** 当前在飞缓冲的字节数（与 python 侧 `_buffered_bytes` 同义）。 */
+function bufferedBytes(pusher: LogStreamPusher): number {
+  const chunks = (pusher as unknown as { chunks: { lines: string[] }[] }).chunks;
+  return chunks.reduce(
+    (n, c) => n + c.lines.reduce((m, l) => m + Buffer.byteLength(l, 'utf8'), 0),
+    0,
+  );
 }
 
 describe('LogStreamPusher（RT-LOG 出站凭据 + 行切分）', () => {
@@ -149,9 +168,13 @@ describe('LogStreamPusher（RT-LOG 出站凭据 + 行切分）', () => {
     await pusher.finalFlush();
 
     const bodies = mockedPost.mock.calls.map((_, i) => bodyOf(i));
-    // 第一片（fromLine 0）已被丢弃。
-    expect(bodies[0].fromLine).toBe(100);
-    expect(bodies.reduce((n, b) => n + b.lines.length, 0)).toBe(901);
+    // R164-A1：首发是**一行 marker**（占用第一条被丢行的行号 0），其后才是真实切片。
+    const real = bodies.filter((b) => !isMarker(b));
+    expect(bodies[0].fromLine).toBe(0);
+    expect(isMarker(bodies[0])).toBe(true);
+    // 第一片真实数据（fromLine 0）已被丢弃 → 存活片从 100 起。
+    expect(real[0].fromLine).toBe(100);
+    expect(real.reduce((n, b) => n + b.lines.length, 0)).toBe(901);
   });
 
   it('A8: 背压丢行 warn 恰好一次（每执行限 1 条防刷屏），全量推送成功后复位', async () => {
@@ -173,3 +196,200 @@ describe('LogStreamPusher（RT-LOG 出站凭据 + 行切分）', () => {
     await pusher.finalFlush();
   });
 });
+
+/**
+ * R164-A1：与 `executor-python/log_stream_pusher.py` 的**契约对齐**反证。
+ *
+ * 两侧写的是**同一张 admin 表**（`ExecutionLogLine`，按 `fromLine + i` 落库），
+ * 所以两侧的缓冲/切片/丢行语义必须一致。python 侧已在 R123（字节闸）、R124
+ * （片内行号连续）、R125（丢行留 marker）修过；node 侧此前只有条数上限、
+ * 丢行只写本机 warn、flush 不串行、半行缓冲两路共用。这组用例把每一条钉死。
+ *
+ * 全部用例在修复前是**红**的（逐条见各用例注释里的实测数字）。
+ */
+describe('LogStreamPusher（R164-A1：与 python 侧契约对齐）', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedPost.mockResolvedValue({ status: 200 } as never);
+  });
+
+  it('R123 对齐：字节闸的常量必须与 python 侧同值（否则同一部署两侧行为不同）', () => {
+    expect(MAX_BYTES_PER_CHUNK).toBe(1_000_000);
+    expect(MAX_BUFFERED_BYTES).toBe(10_000_000);
+    // 文案逐字一致：两侧的 marker 会出现在同一个实时视图里，不能有两种说法。
+    expect(BACKPRESSURE_MARKER(100)).toBe(
+      '... [100 log lines dropped by local backpressure] ...',
+    );
+  });
+
+  it('R123 对齐：单片按**字节**切片（5 × 300KB 不得挤进同一片）', async () => {
+    // 改前：5 行（条数远未到 100）全在 1 片 → 单片 1.5MB，实测只发出 1 次请求。
+    const pusher = new LogStreamPusher('exec-bytes-chunk');
+    const line = 'y'.repeat(300 * 1024);
+    for (let i = 0; i < 5; i++) pusher.addLine(line);
+    await pusher.finalFlush();
+
+    const bodies = mockedPost.mock.calls.map((_, i) => bodyOf(i));
+    expect(bodies.length).toBeGreaterThan(1);
+    for (const body of bodies) {
+      const bytes = body.lines.reduce((n, l) => n + Buffer.byteLength(l, 'utf8'), 0);
+      expect(bytes).toBeLessThanOrEqual(MAX_BYTES_PER_CHUNK);
+    }
+    // 切片不许改行号：fromLine 仍按 1 行递增
+    expect(bodies.map((b) => b.fromLine)).toEqual([0, 3]);
+  });
+
+  it('R123 对齐：在飞缓冲按**字节**截断（12.8MB → ≤ 10MB，且保留尾部）', async () => {
+    // 改前：200 × 64KB = 12.8MB 全部驻留（实测 bufferedBytes = 13107200）。
+    const pusher = new LogStreamPusher('exec-bytes-buffer');
+    (pusher as unknown as { scheduleFlush: () => void }).scheduleFlush = () => {};
+    const line = 'x'.repeat(64 * 1024);
+    for (let i = 0; i < 200; i++) pusher.addLine(line);
+
+    expect(bufferedBytes(pusher)).toBeLessThanOrEqual(MAX_BUFFERED_BYTES);
+    const chunks = (pusher as unknown as { chunks: { lines: string[] }[] }).chunks;
+    expect(chunks.reduce((n, c) => n + c.lines.length, 0)).toBeLessThan(200);
+    // 保留尾部：失败原因几乎总在最后几行
+    expect(chunks[chunks.length - 1].lines[chunks[chunks.length - 1].lines.length - 1]).toBe(line);
+  });
+
+  it('R123 对齐：字节记账按 **UTF-8 字节**（中文 1 字符 = 3 字节）', () => {
+    const pusher = new LogStreamPusher('exec-utf8');
+    (pusher as unknown as { scheduleFlush: () => void }).scheduleFlush = () => {};
+    pusher.addLine('abc');
+    expect(bufferedBytes(pusher)).toBe(3);
+    pusher.addLine('中文');
+    expect(bufferedBytes(pusher)).toBe(9);
+  });
+
+  it('R123 对齐：flush 取走切片后字节记账必须归零（否则重试会重复计入）', async () => {
+    const pusher = new LogStreamPusher('exec-bytes-reset');
+    pusher.addLine('a'.repeat(1024));
+    expect(bufferedBytes(pusher)).toBe(1024);
+    await pusher.finalFlush();
+    expect(bufferedBytes(pusher)).toBe(0);
+  });
+
+  it('R125 对齐：丢行必须在流里留下**可见的一行**，落在缺口所在的行号上', async () => {
+    // 改前：1001 行丢 100 行，出站体里 0 条 marker —— 实时视图从 99 直接跳到 1100，
+    // 静默缺口看起来就像一段正常的日志。
+    const pusher = new LogStreamPusher('exec-marker');
+    for (let i = 0; i < 1001; i++) pusher.addLine(`l${i}`);
+    await pusher.finalFlush();
+
+    const bodies = mockedPost.mock.calls.map((_, i) => bodyOf(i));
+    const markers = bodies.filter(isMarker);
+    expect(markers).toHaveLength(1);
+    expect(markers[0].fromLine).toBe(0); // 第一条被丢行（行 0..99）
+    expect(markers[0].lines).toHaveLength(1);
+    expect(markers[0].lines[0]).toContain('100 log lines dropped');
+
+    // marker 之后的真实切片行号**不受影响**（每片自带 fromLine）
+    const real = bodies.filter((b) => !isMarker(b));
+    expect(real[0].fromLine).toBe(100);
+    for (const body of real) {
+      for (const [off, text] of body.lines.entries()) {
+        expect(text).toBe(`l${body.fromLine + off}`);
+      }
+    }
+  });
+
+  it('R125 对齐：同一轮里的多次丢行合并成一条 marker（不是每次丢都加一行）', async () => {
+    const pusher = new LogStreamPusher('exec-marker2');
+    for (let i = 0; i < 1300; i++) pusher.addLine(`l${i}`); // 丢 300 行，跨 3 片
+    await pusher.finalFlush();
+
+    const markers = mockedPost.mock.calls.map((_, i) => bodyOf(i)).filter(isMarker);
+    expect(markers).toHaveLength(1);
+    expect(markers[0].lines[0]).toContain('300 log lines dropped');
+  });
+
+  it('R124 对齐：丢行之后**片内行号仍连续**（admin 按 fromLine + i 落库）', () => {
+    // 这条不变式此前没有任何用例钉住：将来若把缓冲改成「扁平 (lineNo, text) 列表 +
+    // 按需切片」，丢行就会在扁平列表里留下缺口，朴素切片会立刻产出带缺口的片，
+    // 后面所有行都被写到错位位置且**没有任何报错**。
+    const pusher = new LogStreamPusher('exec-contig');
+    (pusher as unknown as { scheduleFlush: () => void }).scheduleFlush = () => {};
+    for (let i = 0; i < 1100; i++) pusher.addLine(`line-${i}`);
+
+    const chunks = (pusher as unknown as {
+      chunks: { fromLine: number; lines: string[] }[];
+    }).chunks;
+    expect(chunks).toHaveLength(10); // 条数闸仍生效
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i].fromLine).toBe(chunks[i - 1].fromLine + chunks[i - 1].lines.length);
+    }
+    for (const chunk of chunks) {
+      for (const [off, text] of chunk.lines.entries()) {
+        expect(text).toBe(`line-${chunk.fromLine + off}`);
+      }
+    }
+  });
+
+  it('R164 并发：flush 必须串行——timer flush 在飞时 finalFlush 不得并发再发一片', async () => {
+    // 改前：第一片卡在网络上时 finalFlush 立刻发出第二片（实测 2 次 post），
+    // 于是 ① 到达 admin 的顺序可能与行号相反（SSE 实时视图乱序）；
+    // ② finalFlush 在在飞请求落地前就 resolve —— 结束路径「等日志发完」是空的。
+    let release: (v: unknown) => void = () => {};
+    mockedPost.mockImplementationOnce(
+      () => new Promise((res) => { release = res as (v: unknown) => void; }) as never,
+    );
+    const pusher = new LogStreamPusher('exec-lock');
+
+    pusher.addLine('a');
+    const first = (pusher as unknown as { flush: () => Promise<void> }).flush();
+    await new Promise((r) => setImmediate(r));
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+
+    pusher.addLine('b');
+    const final = pusher.finalFlush();
+    await new Promise((r) => setImmediate(r));
+    // 第二片必须排队：在飞的请求没落地前不得发第二片
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+
+    release({ status: 200 });
+    await Promise.all([first, final]);
+    expect(mockedPost).toHaveBeenCalledTimes(2);
+    // 且顺序与行号一致
+    expect([bodyOf(0).fromLine, bodyOf(1).fromLine]).toEqual([0, 1]);
+  });
+
+  it('R164 并发：flush 失败不得把后续 flush 永久卡死（链上吞拒绝）', async () => {
+    mockedPost
+      .mockRejectedValueOnce(new Error('admin down'))
+      .mockResolvedValue({ status: 200 } as never);
+    const pusher = new LogStreamPusher('exec-chain');
+    pusher.addLine('a');
+    await pusher.finalFlush();
+    pusher.addLine('b');
+    await expect(pusher.finalFlush()).resolves.toBeUndefined();
+    expect(mockedPost).toHaveBeenCalledTimes(2);
+  });
+
+  it('R164 并发：stdout/stderr 的半行缓冲必须按流隔离（不得张冠李戴）', async () => {
+    // 改前：两路共用一个 partial —— 'out-partial' + 'err-line\n' 被拼成
+    // "out-partialerr-line" 一行（stdout 的残行吞掉 stderr 的整行），行号跟着错位。
+    const pusher = new LogStreamPusher('exec-streams');
+    pusher.addOutput('out-partial', 'stdout');
+    pusher.addOutput('err-line\n', 'stderr');
+    pusher.addOutput('out-rest\n', 'stdout');
+    await pusher.finalFlush();
+
+    const lines = mockedPost.mock.calls.map((_, i) => bodyOf(i)).flatMap((b) => b.lines);
+    expect(lines).toEqual(['err-line', 'out-partialout-rest']);
+    // 行号空间仍只有一个，且按到达顺序
+    expect(bodyOf(0).fromLine).toBe(0);
+    expect(pusher.getCurrentLine()).toBe(2);
+  });
+
+  it('R164 并发：finalFlush 把**每一路**的残行各自补成一行（stdout 在前）', async () => {
+    const pusher = new LogStreamPusher('exec-tails');
+    pusher.addOutput('tail-out', 'stdout');
+    pusher.addOutput('tail-err', 'stderr');
+    await pusher.finalFlush();
+
+    const lines = mockedPost.mock.calls.map((_, i) => bodyOf(i)).flatMap((b) => b.lines);
+    expect(lines).toEqual(['tail-out', 'tail-err']);
+  });
+});
+

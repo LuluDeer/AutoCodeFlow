@@ -22,7 +22,7 @@ import { resolveAdminApiBaseUrl } from '../admin-api-url';
 // 直接回调时携带行身份（见下方 AUTOFLOW_DEVICE_FINGERPRINT 注入点）。
 import { getDeviceFingerprint } from '../device-identity';
 import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider, diskUsagePercent, DISK_CRITICAL_PERCENT, pinLogFilePath, unpinLogFilePath } from '../file-logger';
-import { LogStreamPusher } from '../log-stream-pusher';
+import { LogStreamPusher, type LogStream } from '../log-stream-pusher';
 import { isExecutorShuttingDown } from '../shutdown-state';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
@@ -3004,7 +3004,11 @@ function runProcess(
     const stderrDecoder = new StringDecoder('utf8');
 
     // RT-LOG: Helper to process output into lines and stream them
-    const processOutput = (output: string) => {
+    // R164-A1: `stream` 参与 pusher 的残行缓冲归属。stdout/stderr 是两条独立
+    // 管道，各自按任意字节边界到达——把两路的半行放进同一个缓冲，stdout 的
+    // 残行就会被拼到 stderr 的下一行前面（一行内容张冠李戴）。行号空间仍只有
+    // 一个（按到达顺序），只有**残行**按流隔离。
+    const processOutput = (output: string, stream: LogStream) => {
       if (!output) return;
       logBuffer.append(output);
       if (executionId) {
@@ -3012,17 +3016,17 @@ function runProcess(
         // RT-LOG: 交给 pusher 自己按行切分——它保留跨 chunk 的半行缓冲，
         // 行号才能与回调日志逐行对齐（此处再切一次会把一行劈成两行、
         // 并丢掉空行）。
-        logStreamPusher?.addOutput(output);
+        logStreamPusher?.addOutput(output, stream);
       }
     };
 
     proc.stdout.on('data', (d: Buffer) => {
       const output = stdoutDecoder.write(d);
-      processOutput(output);
+      processOutput(output, 'stdout');
     });
     proc.stderr.on('data', (d: Buffer) => {
       const output = stderrDecoder.write(d);
-      processOutput(output);
+      processOutput(output, 'stderr');
     });
 
     const unregister = () => {
