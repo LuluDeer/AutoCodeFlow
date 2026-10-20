@@ -2745,3 +2745,21 @@ export const EXIT_CODES = { OK: 0, GENERIC: 1, USAGE: 2, AUTH: 3, NETWORK: 4, IN
 **记这条的用处**：`R193/R195/R197` 那几条都是「**个别命令**没跟上这套设计」，
 而**设计本身没问题** —— 修的时候应当**复用 `confirmDestructive` / `EXIT_CODES`**，
 不要另发明一套。**先确认基线是好的，才能说清楚偏差在哪。**
+- 2026-10-20 **R199 · 结构确认：`acf-cli` 的 `--json` 输出为什么是干净的**。
+
+agent 报「9 个 `--json` 命令的 stdout 可整体 `JSON.parse`，失败时 stdout 空 + stderr 单行 JSON」。
+我去核了它为什么成立 —— 三个机制叠加：
+
+1. **spinner 走 stderr**：全仓 `ora(...)` 调用**没有一个传 `stream:`**，而 ora 默认 `stream = process.stderr` ⇒
+   进度帧永远不进 stdout；
+2. **spinner 在非 TTY 下自我禁用**：ora 的 `isEnabled` 会在流非 TTY / CI 环境下返回 false ⇒
+   **管道里连 stderr 的帧都没有**，不会污染「单行 JSON」；
+3. **错误走 `console.error`**（`emitError` 里 `console.error(JSON.stringify(apiErrorToJson(...)))`），
+   而人读行与 JSON 是**二选一分支**（`if (json) {...} else {...}`），不会混出。
+
+⇒ 这三条**缺一不可**：如果 ora 默认写 stdout、或非 TTY 仍打印帧、或错误混用 `console.log`，
+`--json` 契约就破了。**而三条都在**，所以这条契约是**成立且有结构性依据**的，不只是「测试碰巧过了」。
+
+**记这条的用处**：它把「`--json` 是干净的」从一个**观测结果**变成了一个**可复核的机制说明** ——
+将来有人改 `ora(...)` 加 `stream: process.stdout`，或者把某处 `console.error` 写成 `console.log`，
+**这次的记录会告诉他为什么不能那样改**。
