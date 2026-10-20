@@ -1723,3 +1723,17 @@ const syncTotpEnabled = (enabled: boolean) => {
 
 **这条缺陷的形态值得记**：它不是「忘了回滚」，而是「**回滚得太多**」——错误的修法比不修更隐蔽，
 因为它只在**并发**下显形，而单操作的手工测试永远绿。
+- 2026-10-20 **R146 · 审阅 R138-A1 的 AuthUser 字段声明（最小必要面）**：`store/auth.ts` 只加了 10 行，把 `totpEnabled?: boolean`
+  **显式声明**在 `AuthUser` 上，并写清它是**服务端状态**而非本地 UI 开关、以及此前为什么坏（页面用 `as` 绕过类型 + 失效指向不存在的 key ⇒ store 永远旧值）。
+
+这条小得几乎不值得记，但它示范了一件事：**类型逃逸（`as`）往往是缺陷的藏身处**。
+`(user as { totpEnabled?: boolean } | null)?.totpEnabled` 读起来像「稳妥地兼容可选字段」，
+实际效果是：**类型系统从此不再回答「这个字段是否存在」这个问题** —— 于是没人去问「那它到底由谁写入」。
+
+## 当前状态（交付前要盯的两件事）
+1. 工作区里有 `apps/admin-web/src/__tests__/zz-debug-r138.test.ts` —— 调试文件，**必须在提交前删掉**
+   （它会被 `npx vitest run` 收集，等于把调试断言留在回归网里）；
+2. `SecuritySettings.tsx` / `queries.ts` / `store/auth.ts` / `UserManagementPage.tsx` 四处已改，三个新用例文件已落盘，agent 仍在跑全量基线。
+
+**下一轮**：验收 + **我自己做一次反证**（把回滚改回整条快照，看它那条并发用例是否真的红）。
+这一条不验，本轮的「外科手术式回滚」就只是**读起来很对**。
