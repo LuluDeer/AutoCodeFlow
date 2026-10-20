@@ -140,12 +140,32 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'subscription.deadLetter.delete': 'audit.action.subscription_deadLetter_delete',
 };
 
-/** 可跳转的资源类型 → 前端详情路由（其余类型无独立详情页，返回 null） */
-function resourceIdHref(resource: string | undefined, id: string): string | null {
+/**
+ * 可跳转的资源类型 → 前端详情路由（其余类型无独立详情页，返回 null）。
+ *
+ * R65：补上 SOP 三类。审计行此前对新加的 `sop.*` 动作只显示一个孤零零的 id —— **能查到、
+ * 点不进去**，等于把「可追溯」做成了「可搜索」。SOP 没有独立详情路由（只有 /sops 一页 +
+ * 详情抽屉），故统一用深链参数 `?sop=<sopId>`，由 SopsPage 读参数自动打开对应抽屉。
+ *
+ * 三类里 `sop` 的 resourceId 就是 sopId；`sop_assignment` / `sop_clarification` 的 resourceId
+ * 分别是指派行 / 澄清行，需要从 detail 里取 sopId（三类审计的 detail 都记了它）。拿不到时
+ * 返回 null —— **宁可不可点，也不要跳到一个查不到东西的页面**。
+ */
+function resourceIdHref(
+  resource: string | undefined,
+  id: string,
+  detail?: Record<string, unknown> | null,
+): string | null {
   if (!resource || !id) return null;
   if (resource === 'task') return `/tasks/${id}`;
   if (resource === 'application') return `/applications/${id}`;
   if (resource === 'executor') return `/executors/${id}`;
+  if (resource === 'sop') return `/sops?sop=${encodeURIComponent(id)}`;
+  if (resource === 'sop_assignment' || resource === 'sop_clarification') {
+    const sopId = detail?.sopId;
+    if (typeof sopId !== 'string' || !sopId) return null;
+    return `/sops?sop=${encodeURIComponent(sopId)}`;
+  }
   return null;
 }
 
@@ -390,7 +410,7 @@ export default function AuditLogPage() {
       // 一步到位（其余类型无详情路由，维持纯文本）
       render: (v: string, r: AuditLog) => {
         if (!v) return '-';
-        const href = resourceIdHref(r.resource, v);
+        const href = resourceIdHref(r.resource, v, r.detail);
         const content = (
           <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
             {v.length > 8 ? v.slice(0, 8) + '…' : v}

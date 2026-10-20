@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
@@ -191,7 +192,40 @@ export default function SopsPage() {
     }
   }, [t]);
 
-  // 打开指派对话框：拉当前租约内可接单的执行器（空 = 没有机器开着 Agent）
+  // R65：审计深链 —— /sops?sop=<id> 打开对应详情抽屉。
+//
+// 背景：审计页此前对 sop.* 动作只显示一个 id（能查到、点不进去）。SOP 没有独立详情路由，
+// 只有这一页 + 详情抽屉，所以用查询参数当深链入口。
+// 两个细节：
+//  · **不在当前页也要能打开** —— 审计行指向的 SOP 大概率不在第一页，故走 sopsApi.get(id)
+//    单取，而不是只在 items 里找（否则深链有一半时候静默失效，比没有深链更糟）。
+//  · `deepLinkApplied` 记住已处理过的 id：轮询每 15s 刷新 items 会重跑本 effect，
+//    没有它就会反复重开抽屉、打断用户正在看的详情。
+const [searchParams] = useSearchParams();
+const deepLinkId = searchParams.get('sop');
+const deepLinkApplied = useRef<string | null>(null);
+useEffect(() => {
+  if (!deepLinkId) return;
+  if (deepLinkApplied.current === deepLinkId) return;
+  if (detail?.id === deepLinkId) {
+    deepLinkApplied.current = deepLinkId;
+    return;
+  }
+  deepLinkApplied.current = deepLinkId;
+  const fromList = items.find((it) => it.id === deepLinkId);
+  if (fromList) {
+    void openDetail(fromList);
+    return;
+  }
+  void sopsApi
+    .get(deepLinkId)
+    .then((sop) => openDetail(sop))
+    .catch(() => {
+      // 拿不到（已删/无权限）：回到列表，不弹错——用户只是点了一个失效链接
+      deepLinkApplied.current = null;
+    });
+}, [deepLinkId, items, detail, openDetail]);
+// 打开指派对话框：拉当前租约内可接单的执行器（空 = 没有机器开着 Agent）
   const openAssign = useCallback(async (sop: Sop, prefillVersion?: string) => {
     setAssignTarget(sop);
     setAssignForm({ version: prefillVersion || sop.currentVersion || '', executorId: '' });
