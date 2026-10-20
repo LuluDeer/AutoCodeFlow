@@ -30,7 +30,7 @@ const SCAN_DIR = join("apps", "admin-api", "src", "modules");
  * 存量基线（只减不增）。**只能下调**：改掉一处就把这个数字减一。
  * 上调需要在提交信息里写明为什么这处新增是安全的（例如该表无并发写者）。
  */
-const BASELINE = 7;
+const BASELINE = 6;
 
 /** 豁免标记：在调用的前 3 行内出现该注释即跳过（必须写理由）。 */
 const EXEMPT_MARKER = "adr-026-exempt";

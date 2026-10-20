@@ -425,8 +425,9 @@ describe("OidcService — 身份定位与 JIT 建号", () => {
     expect(user.id).toBe(8);
     // R32-A4: 绑定走列级 UPDATE（只写 oidcSub），绝不再整行回写——整行回写
     // 会把并发的 sessionVersion（logout/改密）/isActive/password 变更回滚。
+    // R38: WHERE 带「仍未绑定」（IsNull）——并发双绑只有一个胜者，后到者拒绝而不是静默换绑。
     expect(usersRepo.update).toHaveBeenCalledWith(
-      { id: 8 },
+      { id: 8, oidcSub: expect.anything() },
       { oidcSub: "sub-abc-123" },
     );
     expect(usersRepo.save).not.toHaveBeenCalled();
@@ -542,11 +543,46 @@ describe("OidcService — 自动绑定收紧（A-3）", () => {
     const user = await service.resolveAndBindUser(baseProfile);
     expect(user.id).toBe(1);
     // R32-A4: 列级绑定（只写 oidcSub），不再整行回写
+    // R38: 条件写——WHERE 带「仍未绑定」，防并发双绑静默换绑
     expect(usersRepo.update).toHaveBeenCalledWith(
-      { id: 1 },
+      { id: 1, oidcSub: expect.anything() },
       { oidcSub: "sub-abc-123" },
     );
     expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  // ── R38（ADR-026）：并发双绑只有一个胜者 ──────────────────────────────
+  // 缺陷：`!byUsername.oidcSub` 是读时判断。两个不同 sub 同时声明同一 username 时
+  // 都能通过，各自写自己的 sub ⇒ 后到者把先到者**静默换掉**，而本分支注释明确写着
+  // 「声明冲突，拒绝而非静默换绑」。条件写（WHERE oidcSub IS NULL）把判据挪进 SQL。
+  it("并发双绑：条件写未命中且已被绑成**别的** sub → 拒绝，不静默换绑", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(usersRepo, hitByUsername());
+    usersRepo.update.mockResolvedValueOnce({ affected: 0 });
+    // 第三次 findOne 是「未命中后重读」，看到别人刚绑上的 sub
+    usersRepo.findOne.mockResolvedValueOnce(hitByUsername({ oidcSub: "sub-other" }));
+
+    const err = await service.resolveAndBindUser(baseProfile).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).not.toBeNull();
+    expect((err as { errorCode?: string }).errorCode).toBe(
+      "OIDC_SUB_ALREADY_BOUND",
+    );
+  });
+
+  it("并发双绑：条件写未命中但已绑成**同一个** sub → 幂等通过（重入不报错）", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(usersRepo, hitByUsername());
+    usersRepo.update.mockResolvedValueOnce({ affected: 0 });
+    usersRepo.findOne.mockResolvedValueOnce(
+      hitByUsername({ oidcSub: "sub-abc-123" }),
+    );
+
+    const user = await service.resolveAndBindUser(baseProfile);
+    expect(user.id).toBe(1);
+    expect(user.oidcSub).toBe("sub-abc-123");
   });
 
   it("ADMIN 目标账号（无预置 oidcSub）→ 403，即使 email 已核验且一致", async () => {
