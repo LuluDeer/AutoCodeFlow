@@ -253,8 +253,13 @@ function staticContractChecks() {
     (pypi.match(/Depends\(verify_auth\)/g) || []).length >= 5);
   ok('PyPI same-bytes duplicate is idempotent 200',
     pypi.includes('Uploaded {filename} (unchanged)') && pypiTests.includes('test_reupload_same_content_is_idempotent_200'));
+  // R204：判据改为**与重构无关的功能标记**（同本文件 LANG-ZH-01 那条纪律）。
+  // 409 现在由 `reject(409, ...)` 这个审计包装器发出，而不是内联的
+  // `raise HTTPException(status_code=409, ...)` —— 行为没变，裸 grep 却会假红。
   ok('PyPI changed duplicate is rejected 409 without overwrite',
-    pypi.includes('status_code=409') && pypi.includes('overwriting published') && pypiTests.includes('test_reupload_different_content_rejected_409'));
+    (pypi.includes('status_code=409') || pypi.includes('reject(409,')) &&
+      pypi.includes('overwriting published') &&
+      pypiTests.includes('test_reupload_different_content_rejected_409'));
   // LANG-ZH-01：LANG-ZH-01 把执行器的**面向用户报错文案**中文化之后，下面这些
   // 断言原先靠 grep 英文散文（'options are not allowed' / 'must not contain
   // userinfo'）来证明「行为还在」——文案一翻译，守卫就假红。
