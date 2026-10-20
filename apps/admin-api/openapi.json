@@ -16089,10 +16089,11 @@
             "type": "string",
             "enum": [
               "email",
-              "slack",
               "dingtalk",
               "wecom",
-              "webhook"
+              "slack",
+              "webhook",
+              "feishu"
             ]
           },
           "name": {
