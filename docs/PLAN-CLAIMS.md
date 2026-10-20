@@ -1615,3 +1615,17 @@ Retry-After=3600 clamp=5    => wait 5
 
 **账上那条已销**：`_WaitWithRetryAfter` 的 clamp 不再只有 agent 的用例覆盖。
 （`node-cron` 的 DST 那条**仍未复核**，同样的方法可以试，但那条没有代码要改，优先级更低。）
+- 2026-10-20 **R141 · 独立复现了 R138-A1 的候选 A（真缺陷）**：`pages/settings/SecuritySettings.tsx:101/114` 在 TOTP
+  **启用/停用成功后**调用 `qc.invalidateQueries({ queryKey: ['auth-profile'] })`。
+
+**我用一条 grep 独立确认**：全 admin-web 源里 `auth-profile` 只出现在两个 `invalidateQueries` 调用点和 agent 的测试注释里 ——
+**从来没有一个 `queryKey: ['auth-profile']` 的查询被注册过**。
+
+⇒ 那两次失效是**静默空操作**：TOTP 启用成功、toast 弹出、`setStage('idle')` 复位，但卡片依赖的状态源没有被刷新，
+用户看到的是「启用成功」+「仍然显示『开始绑定』」并存 —— **两个互相矛盾的信号同时出现在屏幕上**。
+
+这类缺陷的形状值得单独指出：**「失效了一个不存在的 key」不会报错、不会警告、不会进日志**。
+React Query 把 `invalidateQueries` 当成一次「匹配 0 条」的正常查询，控制台一片安静。
+它比「忘了 invalidate」更难发现 —— 因为代码**看起来**做了正确的事。
+
+（agent 正在写 `totp-state-sync.r138.test.tsx` 与 `task-toggle-concurrency.r138.test.tsx`；本条只记录我的独立复现，等它交付后一并验收。）
