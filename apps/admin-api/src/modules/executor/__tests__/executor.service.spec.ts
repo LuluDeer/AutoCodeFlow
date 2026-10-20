@@ -2929,7 +2929,7 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("update", () => {
-    it("merges data into executor and saves", async () => {
+    it("merges data into executor and writes ONLY those columns", async () => {
       const executor = { id: "e1", groupName: "old", tags: [] };
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -2939,6 +2939,13 @@ describe("ExecutorService (__tests__)", () => {
       });
       expect(result.groupName).toBe("production");
       expect(result.tags).toEqual(["nodejs"]);
+      // R51-A1（ADR-026 规则 4）：列级写——patch 只含调用方给的列，
+      // 且不再整行 save（整行 save 的 diff 会回写过期列，见 stale-snapshot spec）。
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "e1" },
+        { groupName: "production", tags: ["nodejs"] },
+      );
+      expect(executorRepo.save).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException when executor not found", async () => {
@@ -2957,8 +2964,14 @@ describe("ExecutorService (__tests__)", () => {
           const executor = { id: "e1", maxConcurrentTasks: 4 };
           executorRepo.findOne.mockResolvedValue(executor);
           executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+          executorRepo.update.mockClear();
           await service.update("e1", { maxConcurrentTasks: valid });
           expect(executor.maxConcurrentTasks).toBe(valid);
+          // 落库面的强度：断言真正发出的 patch（而不是内存对象被 mutate）。
+          expect(executorRepo.update).toHaveBeenCalledWith(
+            { id: "e1" },
+            { maxConcurrentTasks: valid },
+          );
         }
       });
 
@@ -2974,6 +2987,7 @@ describe("ExecutorService (__tests__)", () => {
             }),
           ).rejects.toThrow(BadRequestException);
           expect(executor.maxConcurrentTasks).toBe(4);
+          expect(executorRepo.update).not.toHaveBeenCalled();
           expect(executorRepo.save).not.toHaveBeenCalled();
         },
       );
@@ -2984,7 +2998,12 @@ describe("ExecutorService (__tests__)", () => {
         executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
         await service.update("e1", { maxConcurrentTasks: null });
         expect(executor.maxConcurrentTasks).toBeNull();
-        expect(executorRepo.save).toHaveBeenCalled();
+        // null 必须进 patch（不能被当成"未提供"而丢掉清空语义）。
+        expect(executorRepo.update).toHaveBeenCalledWith(
+          { id: "e1" },
+          { maxConcurrentTasks: null },
+        );
+        expect(executorRepo.save).not.toHaveBeenCalled();
       });
     });
   });
@@ -3493,15 +3512,28 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("rotateToken", () => {
-    it("generates a new token, hashes and saves it", async () => {
+    it("generates a new token and writes ONLY the tokenHash column", async () => {
       const executor = { id: "e1", address: "127.0.0.1", tokenHash: null };
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      executorRepo.update.mockClear();
       const result = await service.rotateToken("e1");
       expect(result).toHaveProperty("token");
       expect(typeof result.token).toBe("string");
       expect(result.token.length).toBeGreaterThan(0);
       expect(executor.tokenHash).toBeTruthy();
+      // R51-A1（ADR-026 规则 4）：落库面断言改成读 update 的 patch——只写 tokenHash
+      // 一列，且不再整行 save（save 的 diff 会把 bcrypt 那几百毫秒窗口内并发落库的
+      // status / runningTaskCount / lastHeartbeat 按旧快照写回）。
+      expect(executorRepo.update).toHaveBeenCalledTimes(1);
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "e1" },
+        { tokenHash: executor.tokenHash },
+      );
+      expect(Object.keys(executorRepo.update.mock.calls[0][1])).toEqual([
+        "tokenHash",
+      ]);
+      expect(executorRepo.save).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException when executor not found", async () => {

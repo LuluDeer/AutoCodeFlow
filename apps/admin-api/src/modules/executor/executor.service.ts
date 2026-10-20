@@ -2853,9 +2853,23 @@ export class ExecutorService implements OnModuleInit {
     },
   ): Promise<Executor> {
     const executor = await this.findOne(id);
-    if (data.groupName !== undefined) executor.groupName = data.groupName;
-    if (data.tags !== undefined) executor.tags = data.tags;
-    if (data.description !== undefined) executor.description = data.description;
+    // R51-A1（ADR-026 规则 4）：这里此前是「findOne 快照 → 就地改 4 个字段 → 整行
+    // `save()`」。整行 save 的 diff 会把**快照里过期的其余列**判成"改动"写回：并发
+    // 心跳刚落库的 status / lastHeartbeat / cpuUsage / runningTaskCount、sweep 刚置的
+    // OFFLINE、派发原子 +1 的计数，都会被这条只管元数据的 PATCH 一起回滚。本方法语义上
+    // 只拥有 4 个元数据列，故改成显式 patch（列级写）。
+    // adr-026-exempt: 只写 groupName/tags/description/maxConcurrentTasks 四列，且这四列
+    // **不是状态列**（无生命周期/凭据/计数语义）——管理台 PATCH 的语义就是 last-writer-wins，
+    // 加前置断言（version/maxConcurrentTasks CAS）会让 PATCH 在心跳恰好落库时凭空 409。
+    const patch: Partial<
+      Pick<
+        Executor,
+        "groupName" | "tags" | "description" | "maxConcurrentTasks"
+      >
+    > = {};
+    if (data.groupName !== undefined) patch.groupName = data.groupName;
+    if (data.tags !== undefined) patch.tags = data.tags;
+    if (data.description !== undefined) patch.description = data.description;
     if (data.maxConcurrentTasks !== undefined) {
       // A-5（执行器域审计 P3）：管理台 PATCH 的容量上限必须过与 register/
       // heartbeat 相同的 1..10000 整数闸（isAdoptableMaxConcurrentTasks 先例）
@@ -2871,9 +2885,19 @@ export class ExecutorService implements OnModuleInit {
           value: String(data.maxConcurrentTasks),
         });
       }
-      executor.maxConcurrentTasks = data.maxConcurrentTasks;
+      patch.maxConcurrentTasks = data.maxConcurrentTasks;
     }
-    return this.repo.save(executor);
+    const keys = Object.keys(patch) as Array<keyof typeof patch>;
+    if (keys.length === 0) {
+      // 空 patch：不发写请求（此前会发一条 no-op 的整行 save，同样是可交错窗口）。
+      return executor;
+    }
+    // 内存对象同步一份：返回值（controller 回包）与既有调用方语义逐字节不变。
+    Object.assign(executor, patch);
+    // adr-026-exempt: 只写 groupName/tags/description/maxConcurrentTasks（非状态列，
+    // 管理台 PATCH = last-writer-wins 即正确语义）；详见方法内上方论证。
+    await this.repo.update({ id: executor.id }, patch);
+    return executor;
   }
 
   /**
@@ -5277,8 +5301,21 @@ export class ExecutorService implements OnModuleInit {
     const executor = await this.repo.findOne({ where: { id } });
     if (!executor) throw new AppError("EXECUTOR_NOT_FOUND");
     const rawToken = randomBytes(32).toString("hex");
-    executor.tokenHash = await bcrypt.hash(rawToken, 12);
-    await this.repo.save(executor);
+    const tokenHash = await bcrypt.hash(rawToken, 12);
+    executor.tokenHash = tokenHash;
+    // R51-A1（ADR-026 规则 4）：这里此前是 `save(executor)` **整行回写**——executor 是
+    // 上面 findOne 的快照，而 `bcrypt.hash(…, 12)` 的 await 是一段**数百毫秒**的可交错
+    // 窗口。窗口内任何并发写者落库后，整行 save 的 diff 都会把快照里过期的列判成"改动"
+    // 写回：stale sweep/管理台刚置的 `status=OFFLINE` 被改回 ONLINE（扇出到派发闸门 =
+    // 把任务派给一台死机）、派发原子 `+1`/sweep 原子 `-1` 的 `runningTaskCount`、
+    // `lastHeartbeat`、`cpuUsage` 等整批回滚。轮换真正要写的**只有一列**。
+    // 注：`tokenHash` 是 select:false（entity:234），快照里本来就是 undefined —— 所以本
+    // 改动**不是**为了"回滚 tokenHash"（R32-C2 已证伪），而是为了不再顺带写别的列。
+    // adr-026-exempt: 只写 tokenHash 一列且**末次写入即正确语义**（两次并发轮换的语义就是
+    // "后一次生效、前一次明文作废"，不存在需要前置断言的状态迁移）；不触碰 status /
+    // 生命周期 / 计数 / 指标列。反过来加 version/哈希 CAS 会让轮换在窗口内恰好有心跳时
+    // 凭空失败（心跳 30s 一次，命中率不低），把一个"少写列"的修复变成可用性回归。
+    await this.repo.update({ id: executor.id }, { tokenHash });
     // N26: a rotation invalidates the per-address callback-secret cache so
     // the new hash is visible immediately (and the stale one stops being
     // offered as an HMAC candidate). R9 (round-8 P1 closure): the executor

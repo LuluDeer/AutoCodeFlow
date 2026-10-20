@@ -496,12 +496,14 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         address: "host:3002",
         tokenHash: "$2b$12$old",
       });
-      executorRepo.save.mockImplementation((e: any) => {
-        // 轮换把新哈希写回库：此后查询必须返回它，旧 token 才该被拒
-        const rotated = { address: "host:3002", tokenHash: e.tokenHash };
+      // R51-A1（ADR-026 规则 4）：轮换改走列级 `update({ id }, { tokenHash })`
+      // ——替身必须按真实 UPDATE 语义把 patch 落到"库"上（此后查询返回新哈希），
+      // 否则本用例会退化成"save 被调过"，对列级写失明。
+      executorRepo.update.mockImplementation((_criteria: any, patch: any) => {
+        const rotated = { address: "host:3002", tokenHash: patch.tokenHash };
         qb.getOne.mockResolvedValue(rotated);
         qb.getMany.mockResolvedValue([rotated]);
-        return Promise.resolve(e);
+        return Promise.resolve({ affected: 1 });
       });
       await service.rotateToken("e1");
 
@@ -531,7 +533,7 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         address: "host:3002",
         tokenHash: "$2b$12$old",
       });
-      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      executorRepo.update.mockImplementation(() => Promise.resolve({ affected: 1 }));
       await service.rotateToken("e1");
 
       // 未被轮换的 host:3003 仍是缓存命中，不再消耗 bcrypt

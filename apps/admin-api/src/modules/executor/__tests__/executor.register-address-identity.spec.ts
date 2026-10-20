@@ -123,7 +123,27 @@ const makeRepo = (rows: Row[], ledger: Row[] = []) => {
       else rows.push({ ...e });
       return e;
     }),
-    update: jest.fn().mockResolvedValue({ affected: 1 }),
+    // R51-A1（ADR-026 规则 4）：写面已从整行 save 改成列级 `update({ id }, patch)`。
+    // 替身必须按真实 UPDATE 语义落库（命中行才写、只写 patch 里的列）——否则
+    // "轮换后库里是新哈希"这类断言会对列级写**失明**（ADR-027 第四次教训）。
+    update: jest.fn(async (criteria: any, patch: any) => {
+      const w = criteria ?? {};
+      const matches = (r: Row) =>
+        Object.entries(w).every(([k, v]) => {
+          const op = v as { _type?: string };
+          if (op && typeof op === "object" && op._type === "isNull") {
+            return r[k] === null || r[k] === undefined;
+          }
+          return r[k] === v;
+        });
+      let affected = 0;
+      for (const r of rows) {
+        if (!matches(r)) continue;
+        Object.assign(r, patch);
+        affected++;
+      }
+      return { affected };
+    }),
     increment: jest.fn().mockResolvedValue(undefined),
     decrement: jest.fn().mockResolvedValue(undefined),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
