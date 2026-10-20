@@ -73,11 +73,30 @@ export function summarizeUserAgent(ua: string | null, t?: (k: string) => string)
 export function TotpCard() {
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
-  const qc = useQueryClient();
   const [stage, setStage] = useState<'idle' | 'staged'>('idle');
   const [setup, setSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [code, setCode] = useState('');
   const [disablePassword, setDisablePassword] = useState('');
+
+  /**
+   * R138-A1（数据层审计）：TOTP 开关的**写后同步**。
+   *
+   * 此前 enable/disable 成功后调用的是
+   * `qc.invalidateQueries({ queryKey: ['auth-profile'] })`——而全仓没有任何
+   * `queryKey: ['auth-profile']` 的查询：profile 的真实来源是 zustand store 的
+   * `user`（由 MainLayout 的 `authApi.me()` 写入，且只在 role 缺失时才跑）。
+   * 于是这条失效是**静默空操作**（不报错、不重取、不刷新）：用户看到
+   * 「两步验证已开启」的 toast，卡片却仍停在「开始绑定」分支，只能整页刷新
+   * 才恢复正常——同一次操作，文案与界面自相矛盾。
+   *
+   * 修法：写后回写**真实数据源**。服务端已用 2xx 确认了这个布尔字段的终态，
+   * 因此直接以服务端确认值为权威写入 store（不需要二次 GET，也就不会引入
+   * 「刷新失败 → 页面更旧」的新故障面）。
+   */
+  const syncTotpEnabled = (enabled: boolean) => {
+    if (!user || user.totpEnabled === enabled) return;
+    useAuthStore.getState().setUser({ ...user, totpEnabled: enabled });
+  };
 
   const { mutateAsync: doSetup, isPending: settingUp } = useMutation({
     mutationFn: authApi.totpSetup,
@@ -98,7 +117,7 @@ export function TotpCard() {
       setStage('idle');
       setSetup(null);
       setCode('');
-      qc.invalidateQueries({ queryKey: ['auth-profile'] });
+      syncTotpEnabled(true);
     },
     // UI-15：动态码错误等失败反馈（常见失败=验证码错误/过期）
     onError: (err: unknown) => {
@@ -111,7 +130,7 @@ export function TotpCard() {
     onSuccess: () => {
       message.success(t('security.totp.disabled'));
       setDisablePassword('');
-      qc.invalidateQueries({ queryKey: ['auth-profile'] });
+      syncTotpEnabled(false);
     },
     // UI-15：密码校验失败等反馈
     onError: (err: unknown) => {
@@ -119,8 +138,9 @@ export function TotpCard() {
     },
   });
 
-  // totpEnabled 由 GET /auth/profile 返回（AuthUser 增量字段，旧数据 undefined 视为未启用）
-  const enabled = (user as { totpEnabled?: boolean } | null)?.totpEnabled === true;
+  // totpEnabled 由 GET /auth/profile 返回（AuthUser 增量字段，旧数据 undefined 视为未启用）。
+  // R138-A1：字段已在 AuthUser 上显式声明，不再需要 as 逃逸类型。
+  const enabled = user?.totpEnabled === true;
 
   if (enabled) {
     return (

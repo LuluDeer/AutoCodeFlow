@@ -6,6 +6,16 @@ export interface AuthUser {
   username: string;
   email?: string;
   role?: string;
+  /**
+   * R138-A1：两步验证开关状态（GET /auth/profile 的 AuthUser 增量字段）。
+   *
+   * 它是**服务端状态**，不是本地 UI 开关：安全设置页的 TOTP 卡片据此决定渲染
+   * 「开始绑定」还是「关闭入口」。此前这里没有声明该字段，页面用
+   * `(user as { totpEnabled?: boolean })` 绕过类型——而 enable/disable 成功后
+   * 只发了一条指向不存在的 queryKey `['auth-profile']` 的失效（静默空操作），
+   * store 永远是旧值，卡片停在旧分支。字段显式声明 + 写后回写 store 才是闭环。
+   */
+  totpEnabled?: boolean;
 }
 
 /**
