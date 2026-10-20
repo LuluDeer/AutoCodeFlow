@@ -2,10 +2,13 @@ import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
-import { BadRequestException } from "@nestjs/common";
+import {
+  BadRequestException,
+  NotFoundException,
+} from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { UserRole } from "../../users/entities/user.entity";
-import { Task, TaskStatus } from "../entities/task.entity";
+import { Task, TaskCodeSource, TaskStatus } from "../entities/task.entity";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -62,6 +65,17 @@ const makeRepo = (): Repo => {
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     returning: jest.fn().mockReturnThis(),
+    // R49-A1: update/updateGlue 会落版本快照（saveVersion 走 SELECT MAX(version)），
+    // 改名还会经 renameDependencyAlias 走读侧 QB——补上读链，否则列级写用例会撞
+    // `getRawOne is not a function` 这种与被测语义无关的红。
+    select: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
+    getRawMany: jest.fn().mockResolvedValue([]),
+    getMany: jest.fn().mockResolvedValue([]),
+    getOne: jest.fn().mockResolvedValue(null),
     execute: jest.fn().mockResolvedValue({ affected: 1, raw: [] }),
   };
   return {
@@ -155,6 +169,10 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
     const store: Record<string, any> = { ...row };
     let reads = 0;
     taskRepo.findOne.mockImplementation(async () => {
+      // 真实 findOne 会过滤软删行（@DeleteDateColumn）：deletedAt 非空 = 该行对
+      // TypeORM 读面**不存在**。S1/S2 的"输给并发 remove"用例依赖这一条，
+      // 否则写后回读会把已软删的行当成"还在"，断言变成假绿。
+      if (store.deletedAt != null) return null;
       const snapshot = { ...store };
       reads += 1;
       if (reads === 1 && afterFirstRead) afterFirstRead(store);
@@ -200,6 +218,97 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
     };
     taskRepo.createQueryBuilder = jest.fn(() => qb);
     return qb;
+  };
+
+  type WriteCall = {
+    setPatch: Record<string, any> | null;
+    whereSql: string[];
+    whereParams: Array<Record<string, any>>;
+  };
+
+  /**
+   * R49-A1：**行谓词替身**——把生产代码写进 WHERE ... AND ... 的条件按真实
+   * SQL 语义对存储求值（= PG 的 affected），并把每次写的 patch / 谓词录下来
+   * 供断言。
+   *
+   * 与上面 givenConditionalUpdate 的分工：那个替身只需要一个 boolean 谓词
+   * （pause/resume 的 from 是单一状态）；remove 的可删起点是**集合**、且要在
+   * 同一用例里观察"先置 deleted → 再补偿回滚"的两次写，故这里把谓词文本与
+   * 参数一起解析。只支持本模块用到的四种形态，遇到别的形态直接抛——替身悄悄
+   * 放行会让用例在错误的前提下变绿（ADR-027 替身保真度）。
+   */
+  const givenRowPredicateUpdate = (store: Record<string, any>): WriteCall[] => {
+    const calls: WriteCall[] = [];
+    taskRepo.createQueryBuilder = jest.fn(() => {
+      let patch: Record<string, any> | null = null;
+      const conds: Array<{ sql: string; params?: Record<string, any> }> = [];
+      const qb: any = {
+        update: jest.fn(() => qb),
+        set: jest.fn((p: Record<string, any>) => {
+          patch = p;
+          return qb;
+        }),
+        where: jest.fn((sql: string, params?: Record<string, any>) => {
+          conds.push({ sql, params });
+          return qb;
+        }),
+        andWhere: jest.fn((sql: string, params?: Record<string, any>) => {
+          conds.push({ sql, params });
+          return qb;
+        }),
+        returning: jest.fn(() => qb),
+        select: jest.fn(() => qb),
+        orderBy: jest.fn(() => qb),
+        addOrderBy: jest.fn(() => qb),
+        take: jest.fn(() => qb),
+        getRawOne: jest.fn(async () => ({ maxNum: 0 })),
+        getRawMany: jest.fn(async () => []),
+        getMany: jest.fn(async () => []),
+        getOne: jest.fn(async () => null),
+        execute: jest.fn(async () => {
+          const setPatch = patch;
+          calls.push({
+            setPatch,
+            whereSql: conds.map((c) => c.sql),
+            whereParams: conds
+              .map((c) => c.params)
+              .filter((p): p is Record<string, any> => Boolean(p)),
+          });
+          const hit = conds.every(({ sql, params }) => {
+            if (sql.includes('"id" = :id')) return store.id === params?.id;
+            if (sql.includes('"deletedAt" IS NULL')) {
+              return store.deletedAt == null;
+            }
+            if (sql.includes('"status" IN (:...fromStatuses)')) {
+              return (params?.fromStatuses ?? []).includes(store.status);
+            }
+            if (sql.includes('"status" = :from')) {
+              return store.status === params?.from;
+            }
+            throw new Error(
+              "givenRowPredicateUpdate: 无法求值的行谓词: " + sql,
+            );
+          });
+          if (!hit) return { affected: 0 };
+          Object.assign(store, setPatch ?? {});
+          return { affected: 1 };
+        }),
+      };
+      return qb;
+    });
+    return calls;
+  };
+
+  /** 软删替身：命中即落 deletedAt（= @DeleteDateColumn 真实语义）；可注入失败。 */
+  const givenSoftDelete = (
+    store: Record<string, any>,
+    opts?: { failWith?: Error },
+  ) => {
+    taskRepo.softDelete.mockImplementation(async () => {
+      if (opts?.failWith) throw opts.failWith;
+      store.deletedAt = new Date("2026-10-21T00:00:00.000Z");
+      return { affected: 1 };
+    });
   };
 
   describe("pause / resume", () => {
@@ -296,6 +405,262 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
       await expect(service.resume("t2")).rejects.toThrow(BadRequestException);
       expect(store.status).toBe(TaskStatus.DELETED);
       expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  // ==========================================================================
+  // R49-A1 · S2：update / updateGlue 只写**本次 DTO 出现的列**，不再整行回写
+  // 方法早期读到的快照（ADR-026 规则 4）。
+  //
+  // 旧实现的两种现形方式（都在下面的用例里被钉死）：
+  //   ① 窗口内并发 pause 把 status 改成 paused，PATCH 的整行 save 把快照里的
+  //      active 盖回去 —— 暂停"自己恢复了"；
+  //   ② 窗口内并发 remove 把行软删，整行 save 把 status 写回 active（软删行复活）。
+  // ==========================================================================
+  describe("R49-A1 S2: update / updateGlue 只写 dto 出现的列", () => {
+    it("update 只写 dto 列：窗口内并发 pause 的 status / 并发 PATCH 的 description 必须存活", async () => {
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          name: "旧名",
+          description: "旧描述",
+          timeout: 300,
+          status: TaskStatus.ACTIVE,
+          deletedAt: null,
+          secrets: null,
+        },
+        (s) => {
+          // 读之后、写之前的并发写（真实条件写已提交）
+          s.status = TaskStatus.PAUSED;
+          s.description = "并发改的描述";
+        },
+      );
+      const calls = givenRowPredicateUpdate(store);
+
+      const result: any = await service.update("t1", { timeout: 900 } as any);
+
+      // 本次 PATCH 的列生效
+      expect(store.timeout).toBe(900);
+      expect(result.timeout).toBe(900);
+      // 反证核心：快照里的 status / description 不参与任何写
+      expect(store.status).toBe(TaskStatus.PAUSED);
+      expect(store.description).toBe("并发改的描述");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      // 调度重排必须按**回读到的**状态判定：并发 pause 已生效 → 不得重排定时器
+      // （旧实现按快照里的 active 重排，等于把别人的暂停又恢复了）。
+      expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
+      // patch 的键集合 = DTO 出现的键（+ 库时钟 updatedAt）
+      expect(Object.keys(calls[0].setPatch ?? {}).sort()).toEqual([
+        "timeout",
+        "updatedAt",
+      ]);
+      // @UpdateDateColumn 在 QueryBuilder UPDATE 上**不会**自动刷新
+      // （R46-A1 踩过）——必须显式写库时钟
+      expect(typeof (calls[0].setPatch as any)?.updatedAt).toBe("function");
+      // 行谓词：id + 软删过滤
+      expect(calls[0].whereSql.join(" AND ")).toContain("deletedAt");
+    });
+
+    it("update 输给并发 remove（行已软删）→ 404，不复活软删行、不排调度", async () => {
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          name: "旧名",
+          status: TaskStatus.ACTIVE,
+          deletedAt: null,
+          secrets: null,
+        },
+        (s) => {
+          // 读之后、写之前：并发 remove 已把它软删
+          s.deletedAt = new Date("2026-10-21T00:00:00.000Z");
+          s.status = TaskStatus.DELETED;
+        },
+      );
+      const calls = givenRowPredicateUpdate(store);
+
+      await expect(
+        service.update("t1", { name: "新名" } as any),
+      ).rejects.toThrow(NotFoundException);
+
+      // 行没有被"写回来"：软删标记与并发写下的 status 全部原样
+      expect(store.deletedAt).toEqual(new Date("2026-10-21T00:00:00.000Z"));
+      expect(store.status).toBe(TaskStatus.DELETED);
+      expect(store.name).toBe("旧名");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      // 失败发生在任何副作用之前（不重排调度）
+      expect(schedulerService.stop).not.toHaveBeenCalled();
+      // 谓词确实求值过（不是"根本没写"的假绿）
+      expect(calls).toHaveLength(1);
+    });
+
+    it("update 只在 DTO 真的带 status 时才写 status（显式意图 ≠ 快照顺带）", async () => {
+      const store = givenTaskStore({
+        id: "t1",
+        name: "n",
+        status: TaskStatus.ACTIVE,
+        deletedAt: null,
+        secrets: null,
+      });
+      const calls = givenRowPredicateUpdate(store);
+
+      await service.update("t1", { status: TaskStatus.PAUSED } as any);
+
+      expect(store.status).toBe(TaskStatus.PAUSED);
+      expect(Object.keys(calls[0].setPatch ?? {}).sort()).toEqual([
+        "status",
+        "updatedAt",
+      ]);
+    });
+
+    it("updateGlue 只写 glue 四列：窗口内并发 pause 的 status 与并发改名必须存活", async () => {
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          name: "旧名",
+          status: TaskStatus.ACTIVE,
+          glueSource: "old",
+          glueLanguage: "js",
+          gitRepo: "https://example.com/r.git",
+          codeSource: TaskCodeSource.GIT,
+          deletedAt: null,
+          secrets: null,
+        },
+        (s) => {
+          s.status = TaskStatus.PAUSED;
+          s.name = "并发新名";
+        },
+      );
+      const calls = givenRowPredicateUpdate(store);
+
+      const result: any = await service.updateGlue(
+        "t1",
+        "new-source",
+        "python",
+      );
+
+      // 本方法的确定语义：切到 glue 且清 gitRepo（FR-18 不变式）
+      expect(store.glueSource).toBe("new-source");
+      expect(store.glueLanguage).toBe("python");
+      expect(store.codeSource).toBe(TaskCodeSource.GLUE);
+      expect(store.gitRepo).toBeNull();
+      expect(result.glueSource).toBe("new-source");
+      // 反证：并发 pause 的 status、并发改名都不被盖回
+      expect(store.status).toBe(TaskStatus.PAUSED);
+      expect(store.name).toBe("并发新名");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      expect(Object.keys(calls[0].setPatch ?? {}).sort()).toEqual([
+        "codeSource",
+        "gitRepo",
+        "glueLanguage",
+        "glueSource",
+        "updatedAt",
+      ]);
+    });
+  });
+
+  // ==========================================================================
+  // R49-A1 · S1：remove = 条件状态迁移（只写 status）+ 独立软删。
+  //
+  // 判定（写进实现注释，这里钉行为）：tasks 只有 active / paused / deleted
+  // 三个状态，没有"运行中"的任务态（执行态在 task_executions 上），故**可删
+  // 起点 = {active, paused}**；deleted 不是可删起点（findByIdRaw 已排除）。
+  // 不凭空收严：此前 active/paused 都能删，删除也不 kill 在跑的执行。
+  // ==========================================================================
+  describe("R49-A1 S1: remove 条件置 DELETED + 独立软删", () => {
+    it("先条件置 DELETED（只写 status）再独立软删：窗口内并发 PATCH 的 name/timeout 必须存活", async () => {
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          status: TaskStatus.ACTIVE,
+          name: "旧名",
+          timeout: 300,
+          deletedAt: null,
+          secrets: null,
+        },
+        (s) => {
+          s.name = "新名";
+          s.timeout = 900;
+        },
+      );
+      const calls = givenRowPredicateUpdate(store);
+      givenSoftDelete(store);
+
+      const result = await service.remove("t1");
+
+      expect(result).toEqual({ deleted: true });
+      expect(store.status).toBe(TaskStatus.DELETED);
+      // 反证核心：整行 save 会把旧 name/timeout 盖回去
+      expect(store.name).toBe("新名");
+      expect(store.timeout).toBe(900);
+      // 两步都在，且软删是**独立**的一次写
+      expect(taskRepo.softDelete).toHaveBeenCalledWith("t1");
+      expect(store.deletedAt).toBeInstanceOf(Date);
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      // 第一步只写 status 一列（+ 库时钟）
+      expect(Object.keys(calls[0].setPatch ?? {}).sort()).toEqual([
+        "status",
+        "updatedAt",
+      ]);
+      expect(calls[0].setPatch?.status).toBe(TaskStatus.DELETED);
+      // 行谓词：id + 可删起点集合 + 软删过滤
+      const where = calls[0].whereSql.join(" AND ");
+      expect(where).toContain("status");
+      expect(where).toContain("deletedAt");
+      // 可删起点集合 = {active, paused}——显式钉住"哪些状态可删"
+      const fromStatuses = calls[0].whereParams
+        .map((p) => p.fromStatuses)
+        .find(Boolean);
+      expect([...fromStatuses].sort()).toEqual(
+        [TaskStatus.ACTIVE, TaskStatus.PAUSED].sort(),
+      );
+      // 软删放在状态迁移**之后**：谓词要求 deletedAt IS NULL，顺序反了必丢写
+      expect(calls).toHaveLength(1);
+    });
+
+    it("输给并发 remove（行已软删）→ 404（与顺序执行同解），不重复软删、不改行", async () => {
+      const store = givenTaskStore(
+        { id: "t1", status: TaskStatus.ACTIVE, name: "n", deletedAt: null, secrets: null },
+        (s) => {
+          s.deletedAt = new Date("2026-10-21T00:00:00.000Z");
+        },
+      );
+      givenRowPredicateUpdate(store);
+      givenSoftDelete(store);
+
+      await expect(service.remove("t1")).rejects.toThrow(NotFoundException);
+
+      expect(taskRepo.softDelete).not.toHaveBeenCalled();
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      // 并发赢家的结果原样保留
+      expect(store.status).toBe(TaskStatus.ACTIVE);
+      expect(store.deletedAt).toEqual(new Date("2026-10-21T00:00:00.000Z"));
+    });
+
+    it("第二步软删失败 → 条件回滚 status（补偿），不留「已置 DELETED 但未软删」的行", async () => {
+      const store = givenTaskStore({
+        id: "t1",
+        status: TaskStatus.ACTIVE,
+        name: "n",
+        deletedAt: null,
+        secrets: null,
+      });
+      const calls = givenRowPredicateUpdate(store);
+      givenSoftDelete(store, { failWith: new Error("soft-delete boom") });
+
+      await expect(service.remove("t1")).rejects.toThrow("soft-delete boom");
+
+      // 第一次：active -> deleted；第二次：deleted -> active（补偿回滚）
+      expect(calls).toHaveLength(2);
+      expect(calls[0].setPatch?.status).toBe(TaskStatus.DELETED);
+      expect(calls[1].setPatch?.status).toBe(TaskStatus.ACTIVE);
+      // 补偿同样是**条件写**（from=deleted）：行若已被并发推进则不覆盖
+      expect(calls[1].whereSql.join(" AND ")).toContain("status");
+      expect(calls[1].whereSql.join(" AND ")).toContain("deletedAt");
+      expect(calls[1].setPatch?.status).not.toBe(TaskStatus.DELETED);
+      // 终态：可继续被正常暂停/删除，raw query 也不会看到"删除态但行还在"
+      expect(store.status).toBe(TaskStatus.ACTIVE);
+      expect(store.deletedAt).toBeNull();
       expect(taskRepo.save).not.toHaveBeenCalled();
     });
   });

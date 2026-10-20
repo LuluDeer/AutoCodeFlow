@@ -2187,6 +2187,8 @@ export class TaskService {
     // 掩码；整体替换会把掩码当作真实值落库（真实凭据被不可逆覆盖，而 UI 上键还
     // 在——正是本次生产故障的形状）。合并规则与掩码/删除语义见
     // secret-crypto.util.ts 的 mergeSecretsOnUpdate。
+    /** R49-A1（S2）：本次请求是否**真的带了** secrets —— 带才写该列。 */
+    let secretsPatch: Record<string, unknown> | null | undefined;
     if (normalized.secrets !== undefined) {
       t.secrets =
         normalized.secrets === null
@@ -2195,6 +2197,7 @@ export class TaskService {
               t.secrets,
               normalized.secrets as Record<string, unknown>,
             ) as Record<string, unknown>);
+      secretsPatch = t.secrets ?? null;
     }
     delete normalized.secrets;
     // A4: expectedUpdatedAt 只服务并发检查（消费即弃，同 timeoutSeconds 模式）
@@ -2247,9 +2250,21 @@ export class TaskService {
       touchesRuntime: "runtime" in dto,
       context: `task ${id}`,
     });
-    let saved: Task;
+    // R49-A1（S2 · ADR-026 规则 4）：**列级条件写**取代整行 `save(updated)`。
+    //
+    // patch 的键 = normalizeTaskDto 之后 DTO 里真正出现的键（被 normalize 的
+    // timeoutSeconds→timeout 映射算"出现的键"；显式 null 照写以保留清除语义）。
+    // status **只有 DTO 显式带它时**才进 patch —— 这一点是本次修复的核心：
+    // 旧实现把方法早期快照里的 status 一并写回，窗口内并发的 pause/remove 会被
+    // 静默盖掉（暂停"自己恢复"、软删行"复活"）。secrets 同理：不带就不写。
+    const writePatch = this.taskPatchFromDto(
+      normalized as unknown as Record<string, unknown>,
+    );
+    if (secretsPatch !== undefined) writePatch.secrets = secretsPatch;
+
+    let applied: boolean;
     try {
-      saved = await this.taskRepo.save(updated);
+      applied = await this.patchTaskColumns(id, writePatch);
     } catch (err) {
       // 改名撞唯一索引：tasks.name 上有全局唯一索引 idx_tasks_name_unique
       // （迁移 1790000000050，**含软删除行**）。create 早就有这条分流
@@ -2263,6 +2278,21 @@ export class TaskService {
         throw new AppError("TASK_NAME_TAKEN", { name: updated.name });
       }
       throw err;
+    }
+    // 返回体必须是**库里的当前行**，不是本次方法的早期快照：并发写赢家的列要
+    // 如实回给调用方（pause/resume 已是同款做法）。
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    if (!saved) {
+      // 规则 3：行谓词不成立的唯一现实来源是窗口内并发 remove 把它软删了。
+      // 对外与"先 remove 再 PATCH"的顺序执行同解（404），**绝不**把行写活。
+      throw new AppError("TASK_NOT_FOUND", { taskId: id });
+    }
+    if (!applied) {
+      // 写没有命中行谓词但行仍在（PG 仅在"值完全相同"时报 0；updatedAt 走库
+      // 时钟后实际不会发生）。按回读结果返回，不按旧快照回写。
+      this.logger.warn(
+        `update ${id}: 列级写未命中行谓词（行已被并发推进或值未变），按回读结果返回`,
+      );
     }
     await this.saveVersion(saved.id, undefined, undefined, saved);
     // 改名后刷新所有引用方的依赖**显示名** key：dependencies 是
@@ -2314,21 +2344,64 @@ export class TaskService {
     if (typeof source !== "string" || source.trim().length === 0) {
       throw new AppError("TASK_GLUE_SOURCE_EMPTY");
     }
-    t.glueSource = source;
-    if (language) t.glueLanguage = language;
     // python_task_multiversion（FR-18 / AC-17b）：glue 写入必须同时**声明**
     // codeSource 并**清空** gitRepo，否则终态变成"gitRepo + glueSource 并存"
     // ——正是三选一互斥要禁止的歧义态（读面按 codeSource 判定会与实际来源
     // 漂移；执行器侧 git clone 分支先跑，glue 代码根本不会生效）。
     // 这里就地收敛而非调用 assertCodeSourceConsistent：本方法的**语义**就是
     // "把代码来源切到 glue"，收敛是确定的，无需把合法请求判成 400。
-    t.codeSource = TaskCodeSource.GLUE;
-    t.gitRepo = null;
-    const saved = await this.taskRepo.save(t);
+    //
+    // R49-A1（S2 · ADR-026 规则 4）：改成**列级条件写**——只写本方法真正改变的
+    // 四列，绝不把方法早期快照里的 status / name / secrets 整行回写（并发 pause
+    // 会在一次"只改脚本"的请求里被悄悄恢复）。
+    const gluePatch: Record<string, unknown> = {
+      glueSource: source,
+      codeSource: TaskCodeSource.GLUE,
+      gitRepo: null,
+    };
+    // 缺省 language = 保留旧值（不写该列，而不是写回快照里的旧值）
+    if (language) gluePatch.glueLanguage = language;
+    const applied = await this.patchTaskColumns(id, gluePatch);
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    if (!saved) {
+      // 同 update：窗口内并发 remove 已把行软删 —— 与顺序执行同解（404）
+      throw new AppError("TASK_NOT_FOUND", { taskId: id });
+    }
+    if (!applied) {
+      this.logger.warn(
+        `updateGlue ${id}: 列级写未命中行谓词（行已被并发推进或值未变），按回读结果返回`,
+      );
+    }
     await this.saveVersion(saved.id, undefined, undefined, saved);
     return this.maskSecretsForResponse(saved);
   }
 
+  /**
+   * R49-A1（S1 · ADR-026 规则 1/2/3/4）：删除 = **条件状态迁移 + 独立软删**。
+   *
+   * ## 判定一：哪些状态可删（按现有业务，不收严）
+   *
+   * `TaskStatus` 只有 active / paused / deleted 三态，**没有"运行中"的任务态**
+   * ——执行态在 task_executions 上。故可删起点 = `{active, paused}`：
+   *   · 此前 active/paused 都能删，删除也不 kill 在跑的执行（stop 只摘定时器），
+   *     本轮维持该业务口径，不凭空收严；
+   *   · deleted 不是可删起点：findByIdRaw 已把它当"不存在"（404），且行谓词里
+   *     还有 `deletedAt IS NULL`，已软删的行永远不可能被"再删一次"写成别的值。
+   *
+   * ## 判定二：两步之间第二步失败，要不要补偿
+   *
+   * 要。失败中间态是 `status='deleted' 且 deletedAt IS NULL`——TypeORM 读面
+   * 看得见这一行（deletedAt 为空）、而 status 说它已删除，是全仓最容易被误当成
+   * "脏数据已由运维清理"的形态。故第二步失败时**条件回滚** status 到进入本方法
+   * 时观察到的起点（`WHERE status='deleted' AND deletedAt IS NULL`）：
+   *   · 回滚谓词 from=deleted 保证不会覆盖并发推进（例如另一个 remove 已成功
+   *     软删 → deletedAt 非空 → 回滚命中 0，保留赢家结果）；
+   *   · 回滚本身失败只记 error（best-effort），行会停在上述中间态，日志里有
+   *     明确文案供人工核对——此时不再二次尝试，避免把并发结果踩回去。
+   *
+   * 顺序为什么是"先状态、后软删"：第一步的谓词要求 `deletedAt IS NULL`，
+   * 软删一旦先做，条件状态写就必然命中 0（永远写不进去）。
+   */
   async remove(id: string, user?: { id: number; role: UserRole } | null) {
     // R-01: RAW 取数——软删落库同样不得把掩码副本写进 secrets 列
     const t = await this.findByIdRaw(id);
@@ -2336,11 +2409,40 @@ export class TaskService {
     await this.assertCanWriteProjectAware(t, user);
     // Stop schedule immediately without waiting for reload
     this.schedulerService.stop(id);
-    t.status = TaskStatus.DELETED;
-    await this.taskRepo.save(t);
-    // DB-001: 同步写入 TypeORM 软删除列，此后 Repository find/findOne
-    // 自动排除该行；status='deleted' 保留以兼容 raw query 消费方。
-    await this.taskRepo.softDelete(id);
+    // 第一步：只写 status 一列；判据（可删起点集合 + 软删过滤）在数据库行谓词上。
+    const applied = await this.transitionTaskStatus(id, {
+      from: [TaskStatus.ACTIVE, TaskStatus.PAUSED],
+      to: TaskStatus.DELETED,
+    });
+    if (!applied) {
+      // 规则 3：命中 0 = 并发收敛（行已被别的 remove 软删，或状态已被移出可删
+      // 集合）。与"顺序执行时第二次 remove"同解：404，绝不再按旧快照写回。
+      this.logger.warn(
+        `remove ${id}: status 已被并发迁移或行已软删，跳过写入以保留并发结果`,
+      );
+      throw new AppError("TASK_NOT_FOUND", { taskId: id });
+    }
+    // 第二步：DB-001 —— 独立写入 TypeORM 软删除列，此后 Repository
+    // find/findOne 自动排除该行；status='deleted' 保留以兼容 raw query 消费方。
+    try {
+      await this.taskRepo.softDelete(id);
+    } catch (err) {
+      // 补偿：把 status 条件回滚到进入本方法时观察到的起点（判据见方法注释）
+      const rolledBack = await this.transitionTaskStatus(id, {
+        from: TaskStatus.DELETED,
+        to: t.status,
+      });
+      if (!rolledBack) {
+        this.logger.error(
+          `remove ${id}: softDelete 失败后 status 回滚未命中（行已被并发推进），该行可能停在 status=deleted 且 deletedAt 为空，需人工核对`,
+        );
+      } else {
+        this.logger.warn(
+          `remove ${id}: softDelete 失败，已把 status 条件回滚为 ${t.status} 以消除中间态`,
+        );
+      }
+      throw err;
+    }
     return { deleted: true };
   }
 
@@ -2367,9 +2469,19 @@ export class TaskService {
    */
   private async transitionTaskStatus(
     id: string,
-    transition: { from: TaskStatus; to: TaskStatus },
+    transition: {
+      /**
+       * 合法起始态。单一状态用等值谓词（最易读）；**集合**（例：remove 的可删
+       * 起点 {active, paused}）用 IN —— 两者都把判据放在数据库行谓词上。
+       */
+      from: TaskStatus | readonly TaskStatus[];
+      to: TaskStatus;
+    },
   ): Promise<boolean> {
-    const result = await this.taskRepo
+    const rawFrom = transition.from;
+    const fromStatuses: TaskStatus[] =
+      typeof rawFrom === "string" ? [rawFrom] : [...rawFrom];
+    const qb = this.taskRepo
       .createQueryBuilder()
       .update(Task)
       .set({
@@ -2379,11 +2491,61 @@ export class TaskService {
         // PATCH 的乐观锁（expectedUpdatedAt）正是拿它比对的。
         updatedAt: () => "CURRENT_TIMESTAMP",
       })
+      .where('"id" = :id', { id });
+    if (fromStatuses.length === 1) {
+      qb.andWhere('"status" = :from', { from: fromStatuses[0] });
+    } else {
+      qb.andWhere('"status" IN (:...fromStatuses)', { fromStatuses });
+    }
+    const result = await qb.andWhere('"deletedAt" IS NULL').execute();
+    return (result?.affected ?? 0) > 0;
+  }
+
+  /**
+   * R49-A1（S2 · ADR-026 规则 1/2/4）：**列级条件写** —— 只写 patch 里给出的
+   * 列，且行谓词恒带 `deletedAt IS NULL`。
+   *
+   * 为什么不是 `repo.save(entity)`：save 的语义是**整行回写**（规则 4），entity
+   * 是方法早期读到的快照。窗口内并发 pause / remove / 另一个 PATCH 写下的
+   * status / name / timeout 会被静默盖回旧值（含"已软删行复活"）——PATCH 与
+   * updateGlue 真正改变的列只有有限几列，没有任何理由写全行。
+   *
+   * 为什么显式写 updatedAt：QueryBuilder 的 UPDATE **不会**像 save() 那样自动
+   * 刷新 `@UpdateDateColumn`（R46-A1 已踩过）。漏了它，PATCH 的乐观锁
+   * （expectedUpdatedAt）会读到恒定的 updatedAt，两个标签页可以无限互踩。
+   *
+   * @returns true = 行谓词成立且写落库（affected > 0）
+   */
+  private async patchTaskColumns(
+    id: string,
+    patch: Record<string, unknown>,
+  ): Promise<boolean> {
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ ...patch, updatedAt: () => "CURRENT_TIMESTAMP" })
       .where('"id" = :id', { id })
-      .andWhere('"status" = :from', { from: transition.from })
       .andWhere('"deletedAt" IS NULL')
       .execute();
     return (result?.affected ?? 0) > 0;
+  }
+
+  /**
+   * R49-A1（S2）：把 normalizeTaskDto 的结果投影成**列级 patch**。
+   *
+   * 只取本次请求真的带来的键：`undefined` = 没带（保留旧值，不写，语义同
+   * "NOT NULL 列不可置空"）；`null` = 显式清空，照写（可空列的 PATCH 清除
+   * 语义）。这里不再"补全"任何键——补全就是把快照写回库。
+   */
+  private taskPatchFromDto(
+    dto: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const patch: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dto)) {
+      if (value === undefined) continue;
+      patch[key] = value;
+    }
+    return patch;
   }
 
   async pause(id: string, user?: { id: number; role: UserRole } | null) {
