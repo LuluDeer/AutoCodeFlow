@@ -1557,3 +1557,14 @@ UPDATE tasks SET lastTriggerTime = now()
 
 **方法论**：给守卫留一个「跳过」分支时，要把**跳过的那一格也核实一遍** —— 否则它就是一个永久盲区，
 而且因为守卫是绿的，没人会再去看它。
+- 2026-10-20 **★ R134-A1 done（4 commits：4e667e3b / 6ffbe61e / f8b0cf01 / 44c4dc56）**：**四个 Python 库的错误处理与资源生命周期审计**。总控前一轮已同步「四包可能被删」的上下文，agent 据此把重心放在**两种结局下都成立**的缺陷上，并按包分别提交（release-please 友好）。
+  四数字：**ai 58→63 / http 42→45 / notify 24→31 / db 19→24**，全绿；四条真缺陷：
+  ① **ai**：两个 `except Exception` 把异常**对象+文本一起丢掉**（无 `exc_info`）⇒ traceback 消失、`AnalysisResult` 只剩 error_kind；且「200 + 载荷结构不对」落到 `unknown` 而非 `invalid_response`。
+  ② **http**：`Retry-After` 取 max **无上限**（`max_wait_sec` 只管自身退避）⇒ 代理回 `Retry-After: 3600` 就把任务停一小时、执行预算被单次退避吃穿。加 `max_retry_after_sec`（默认 None = **不改旧契约**）。
+  ③ **notify**：`channels` 传等价普通字符串 → `AttributeError`，且发生在 try 块**之外** ⇒ **「永不抛异常」被一个拼写错误击穿**；失败只回 False 丢掉异常对象。
+  ④ **db**：`except Exception: rollback(); raise` —— rollback 自身失败时**次生异常替换真因**；`build()` 无锁 check-then-set ⇒ 并发首建两个 engine（输的永不 dispose = 池泄漏）。
+  **README 全是照抄即崩的**（agent 实测、总控独立复核）：`RetryConfig(max_attempts=5)` → **实测 TypeError**（字段真名 `max_retries`）；`sess.execute("SELECT ...")` → 实测 `ArgumentError: ... text(...)`。
+  验证：四包 63/45/31/24 全绿；**总控独立反证**：恢复 db「rollback 失败重新抛出」→ **2 failed**，还原后 24 passed；并独立复核 `RetryConfig(max_attempts=5)` 确实抛 TypeError、新字段默认 None。
+  **按指示不动的**（纯 API 美化）：http 熔断裸 RuntimeError / http·notify 无 `__del__` 兜底 / db `DatabaseSession` 所有权语义 / ai 计费 POST 超时重试 / notify `level` 客户端不校验。
+  **需真环境**：真网络（TLS/代理/真 Retry-After）、真 PG（pool_pre_ping/连接失效下的 rollback）、admin-api 真实错误体契约 —— 均如实标注，未用单测冒充。
+  **遗留 A（依赖「包保留」前提）**：这些修复 + 20 个新用例 + 4 份 README 的价值，全部取决于 R135/R136 那个待决策项（四包接发布线 or 删除）。
