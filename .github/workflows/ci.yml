@@ -837,6 +837,11 @@ jobs:
       # 测试不会红、review 也难看出。R81 起把它变成静态判据。
       - name: Constant-time credential comparison guard
         run: node scripts/check-constant-time-compare.mjs
+      # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
+      # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
+      # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
+      - name: Guards are actually executed by CI
+        run: node scripts/check-guards-wired.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
