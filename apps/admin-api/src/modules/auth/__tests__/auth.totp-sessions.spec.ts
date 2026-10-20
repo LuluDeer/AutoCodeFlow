@@ -372,8 +372,9 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       expect(result.otpauthUrl).toContain("otpauth://totp/AutoCodeFlow:alice");
       expect(result.otpauthUrl).toContain(`secret=${result.secret}`);
       // R32-A4: 列级写入——只碰 totpSecret，不整行回写
+      // R35: WHERE 现在带前置状态（ADR-026）——只在该账号仍未启用时落 staged 密钥
       expect(userRepo.update).toHaveBeenCalledWith(
-        { id: 1 },
+        { id: 1, totpEnabled: false },
         { totpSecret: result.secret },
       );
       // enabled flag untouched by setup
@@ -400,7 +401,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       const code = hotp(secret, CURRENT_COUNTER);
       await service.totpEnable(1, code);
       expect(userRepo.update).toHaveBeenLastCalledWith(
-        { id: 1 },
+        { id: 1, totpEnabled: false, totpSecret: secret },
         { totpEnabled: true },
       );
 
@@ -444,8 +445,9 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       const result = await service.totpDisable(1, { password: "pw" });
       expect(result).toEqual({ disabled: true });
       // R32-A4: 两列同时清空——单条列级 UPDATE，不整行回写
+      // R35: WHERE 带「仍处于启用态」，命中 0 说明别人已经关掉（幂等返回 false）
       expect(userRepo.update).toHaveBeenCalledWith(
-        { id: 1 },
+        { id: 1, totpEnabled: true },
         { totpEnabled: false, totpSecret: null },
       );
     });
@@ -553,15 +555,61 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       const { secret } = await service.totpSetup(1);
 
       expect(userRepo.update).toHaveBeenCalledWith(
-        { id: 1 },
+        { id: 1, totpEnabled: false },
         { totpSecret: secret },
       );
+      // patch 只有一列（前置状态在 WHERE 里，不在 SET 里）
       expect(Object.keys(userRepo.update.mock.calls[0][1])).toEqual([
         "totpSecret",
       ]);
       expect(dbRow.sessionVersion).toBe(5);
       expect(dbRow.isActive).toBe(false);
       expect(usersService.saveUser).not.toHaveBeenCalled();
+    });
+
+    // ── R35（ADR-026）：TOTP 三处写入的条件化 ────────────────────────────
+    // 这一类缺陷在测试里永远绿：单线程下「无条件写」与「条件写」行为相同，
+    // 只有并发交错时才分叉。故这里直接驱动「条件未命中」的分支。
+    it("setup：条件写未命中（账号已被并发启用）→ 抛 ALREADY_ENABLED，不返回新密钥", async () => {
+      dbRow.totpEnabled = false;
+      dbRow.totpSecret = null;
+      // 条件 UPDATE 未命中 = 落库瞬间该账号已被另一处启用
+      userRepo.update.mockResolvedValueOnce({ affected: 0 });
+
+      await expect(service.totpSetup(1)).rejects.toThrow(BadRequestException);
+      // 关键：不得把「用户从未验证过的新密钥」写到已启用账号上（那会锁死 2FA）
+      expect(dbRow.totpSecret).toBeNull();
+    });
+
+    it("enable：条件写未命中且账号已启用 → ALREADY_ENABLED；密钥被换掉 → 码失效", async () => {
+      dbRow.totpEnabled = false;
+      dbRow.totpSecret = FIXED_SECRET;
+      const code = hotp(FIXED_SECRET, CURRENT_COUNTER);
+      userRepo.update.mockResolvedValueOnce({ affected: 0 });
+      usersService.findById.mockImplementation(
+        async () => makeUser({ totpEnabled: true }) as any,
+      );
+      await expect(service.totpEnable(1, code)).rejects.toThrow(
+        BadRequestException,
+      );
+
+      // 同一把未命中的 update，但账号仍未启用 ⇒ 说明 staged 密钥在本轮被换掉
+      dbRow.totpEnabled = false;
+      userRepo.update.mockResolvedValueOnce({ affected: 0 });
+      usersService.findById.mockImplementation(
+        async () => makeUser({ totpEnabled: false }) as any,
+      );
+      await expect(service.totpEnable(1, code)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it("disable：条件写未命中（别人已经关掉）→ 幂等返回 disabled:false", async () => {
+      dbRow.totpEnabled = true;
+      dbRow.totpSecret = FIXED_SECRET;
+      userRepo.update.mockResolvedValueOnce({ affected: 0 });
+      const r = await service.totpDisable(1, { password: "pw" });
+      expect(r).toEqual({ disabled: false });
     });
   });
 

@@ -252,7 +252,18 @@ export class AuthService {
     // 值），于是「读快照 → 并发改密/禁用/登出落库 → 本行整行回写」会把那些
     // 变更静默回滚（会话版本回退=被吊销的令牌重新可用；isActive 回退=禁用
     // 失效；password 回退=改密失效）。列级 UPDATE 只触碰 totpSecret。
-    await this.userRepo.update({ id: userId }, { totpSecret: secret });
+    // R35（ADR-026）：条件写——只在该账号**仍未启用**时才落 staged 密钥。
+    // 高危窗口：上面读到 totpEnabled=false 之后、这一行落库之前，用户可能在另一个
+    // 标签页完成了启用（totpEnable）。此时无条件覆盖 totpSecret 会把**已启用账号**
+    // 的密钥换成一把用户从未验证过的新密钥 ⇒ 下一次登录用旧验证码全部失败，等于
+    // 把账号锁死在 2FA 之外，而库里 totpEnabled 仍是 true。
+    const staged = await this.userRepo.update(
+      { id: userId, totpEnabled: false },
+      { totpSecret: secret },
+    );
+    if (!staged.affected) {
+      throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
+    }
     return {
       secret,
       otpauthUrl: buildOtpauthUrl(secret, "AutoCodeFlow", user.username),
@@ -279,7 +290,19 @@ export class AuthService {
       throw new AppError("TOTP_ENABLE_CODE_INVALID");
     }
     // R32-A4: 列级 UPDATE（同 totpSetup 头注）——只翻 totpEnabled 一位。
-    await this.userRepo.update({ id: userId }, { totpEnabled: true });
+    // R35（ADR-026）：条件写——必须**仍然**是刚才验证的那把 staged 密钥。否则
+    // 「验证码对旧密钥有效 → 另一个标签页重新 setup 换了密钥 → 本行启用」会把账号
+    // 启用在一个用户没验证过的密钥上（且那次 setup 的成功提示与实际不符）。
+    const enabled = await this.userRepo.update(
+      { id: userId, totpEnabled: false, totpSecret: user.totpSecret },
+      { totpEnabled: true },
+    );
+    if (!enabled.affected) {
+      const now = await this.usersService.findById(userId);
+      if (now.totpEnabled) throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
+      // 密钥已在本轮被重新 staging（或已被并发 disable 清空）——刚才验证的码失效。
+      throw new AppError("TOTP_ENABLE_CODE_INVALID");
+    }
     return { enabled: true };
   }
 
@@ -314,11 +337,14 @@ export class AuthService {
     }
 
     // R32-A4: 列级 UPDATE（同 totpSetup 头注）——只清这两列，绝不整行回写。
-    await this.userRepo.update(
-      { id: userId },
+    // R35（ADR-026）：条件写——只有**仍处于启用态**才算本次真正关闭。命中 0 说明
+    // 另一个请求已经关掉了（或行被删），按既有幂等语义返回 disabled:false，
+    // 不谎报「是我关的」。
+    const disabled = await this.userRepo.update(
+      { id: userId, totpEnabled: true },
       { totpEnabled: false, totpSecret: null },
     );
-    return { disabled: true };
+    return { disabled: Boolean(disabled.affected) };
   }
 
   async refreshToken(
