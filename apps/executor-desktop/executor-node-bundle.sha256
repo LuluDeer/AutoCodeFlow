@@ -561,5 +561,5 @@
 #   ⚠️ 这两处都是 **bundle 输入**：漏打即「修了源码却仍发布带洞的内嵌执行器」——正是本文件
 #   反复记载的 cc54aa2f / NETOPT-8③ / f3e340df 同型事故。本次按 ADR-005 同 commit 重打回填 ①②。
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0，bundle 4191kB（重打 26s）。
-source-digest: 73a6d81432ea51451cd724debb63d8c35f782beec533e717c3d6ed286f1de283
-4410bd892de61270b29f1e842ff287713386d4ef5f43fbde233b58e4759bbb5b  index.js
+source-digest: 1639a4a4c218be9fa66751dac40c6e4bc8f02a284db26165694f7e1bb668f01a
+52304bba71820688432b64daf82ad68189bdf667c45abd53a922108c3010e15d  index.js
