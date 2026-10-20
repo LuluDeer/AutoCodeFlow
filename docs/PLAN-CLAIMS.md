@@ -2725,3 +2725,23 @@ export function isJsonInvocation(argv = process.argv): boolean {
 加 `--json` 收益低；**`kill` / `rollback` 收益高**，因为脚本通常要继续判断「真的取消了没有 / 回滚到了哪个版本」。
 
 这与我 `R194` 那条判据同型：**「统一」不是目标，「按用途分级」才是**。
+- 2026-10-20 **R198 · 确认 `acf-cli` 的退出码契约是**设计过**的（正面结论，值得记以免重复审）**。
+
+`ui.ts:26-33`：
+
+```ts
+export const EXIT_CODES = { OK: 0, GENERIC: 1, USAGE: 2, AUTH: 3, NETWORK: 4, INTERRUPTED: 130 } as const;
+```
+
+且 `exitCodeFor(e)` 的分派是**按错误类型**而不是按消息文本：`UsageError → USAGE(2)`，其余走 `classifyApiError(e)`
+分成 `auth(3)` / `network(4)` / 默认 `GENERIC(1)`。130 走 SIGINT 出口。
+
+⇒ 这满足脚本化最需要的三件事：
+1. **码可判**（不是 0/1 二值），`if acf ...; then` 之外还能区分「参数错(2) / 鉴权错(3) / 网络错(4)」；
+2. **按类型分派**而非匹配文案 —— 文案改了不影响退出码；
+3. **非交互危险操作 fail-closed**：`confirmDestructive` 在非 TTY 缺 `--yes` 时抛 `UsageError` ⇒ **码 2**，
+   既不是 0（静默执行）也不是 1（笼统失败），**脚本能明确知道「我没给 --yes」**。
+
+**记这条的用处**：`R193/R195/R197` 那几条都是「**个别命令**没跟上这套设计」，
+而**设计本身没问题** —— 修的时候应当**复用 `confirmDestructive` / `EXIT_CODES`**，
+不要另发明一套。**先确认基线是好的，才能说清楚偏差在哪。**
