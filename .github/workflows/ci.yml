@@ -143,6 +143,12 @@ jobs:
         working-directory: apps/admin-api
       - run: npm run typecheck
         working-directory: apps/admin-api
+      # R117：根 tsconfig 排除了 `**/*.spec.ts` 与 `__tests__/**` ⇒ spec 里的类型错误对 `npm run typecheck`
+      # 不可见，只在 ts-jest 运行时炸成「Test suite failed to run」（没有断言失败、没有用例名，
+      # 看起来像环境问题）。leader-gate.service.spec.ts 就是这样自 R32-A4 起一直没运行过，直到 R113。
+      #   —— 一个套件「没运行」和「通过了」，在 CI 日志里长得几乎一样。
+      - run: npm run typecheck:specs
+        working-directory: apps/admin-api
       - run: npm run lint
         working-directory: apps/admin-api
       # U-2：jest 按文件哈希分片，4 片并行。覆盖率门不在此（见 admin-api-coverage）。
