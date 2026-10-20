@@ -918,3 +918,16 @@
   公网 `::ffff:8.8.8.8` 误判。实际不可达（URL 必规范化成十六进制），属**休眠缺陷**，仍按「解析器要自洽」修掉。
   **过程**：执行者写完实现与用例后卡在全量测试（检查点 6+ 分钟未更新、diff 不增长），按协议 interrupt 后由总控接管验收。
 - 2026-10-20 **R77 done（commit 29b7c408）**：**跨 app 的 SSRF 拒绝矩阵对齐**。R74-A1 修完 executor-node 的 IPv6 绕过之后，我问了一句「同一个判据在别的 app 是不是也有一份」—— 答案是**有，而且 admin-api 那份更硬**（SEC-04 早已表驱动 + 18 条危险地址矩阵）。这是 **「同一道闸两处实现、其中一处没跟上」**，即「同一修法只落一半」家族换成 app 维度的形态。产物：① `ssrf-deny-parity.spec.ts` 把 admin-api 的 18 条镜像过来逐条断言默认拒绝；② `check-ssrf-deny-parity.mjs` 守卫（admin-api 有而镜像无 ⇒ 红；反向不校验，更严不算漂移；扫描器带规模下界防「正则失效→0 条→永真」）；接入 CI。**首跑就抓到真实缺口**：`::ffff:198.18.0.1`（benchmark 段 `198.18.0.0/15`）在 admin-api 是 `restricted`，executor-node 的 `isRestrictedIpv4` 没有这一段 ⇒ 整条放行。已补并注明出处。验证 executor-node 全量 **48 套件 / 1203 例全绿** + tsc 0 + 守卫绿；反证：删掉镜像里那一行 → 守卫立刻报出。
+- 2026-10-20 **R78 done（commit bb24625d）——我自己踩了 ADR-005 的坑并补账**：R74-A1/R77 改的
+  `apps/executor-node/src/lib/{ssrf-guard,download}.ts` 是**桌面端内嵌 bundle 的输入**，而两次提交都
+  **没重打 bundle** ⇒ `check-desktop-bundle-drift` 如实报红（`source-digest 178388c6…` vs 实际 `73a6d814…`）。
+  这与该清单文件里反复记载的 cc54aa2f / NETOPT-8③ / f3e340df 是**同一型事故**，也正是我两轮前提醒过
+  某个 agent 的那个陷阱。补账：`npm run build:executor` 重打（ncc 0.45，26s，4191kB）+ 回填 ①② + 按惯例补变更记录。
+  验证 drift **EXIT=0**。**教训**：改 `apps/executor-node/src` 后必须**固定跑一次** `check-desktop-bundle-drift`
+  （本地即可判定、无需等 CI）；前几轮收尾只跑了 jest/tsc/若干守卫，漏了它。
+- 2026-10-20 **R77 后续（同轮完成）· 全仓「第四份 SSRF 实现」排查**：`executor-python` 的
+  `_host_is_restricted` 是第三份实现，但**比 node 侧更硬**——它用 Python `ipaddress` 的
+  `is_loopback/private/link_local/unspecified/multicast/reserved` **外加 `not is_global` 兜底**。实测探针：
+  18 条危险地址 + `::ffff:127.0.0.1` / `::ffff:7f00:1` / `::ffff:6440:5` **全部判受限**，而
+  `::ffff:808:808`（公网映射）判**放行** —— 即三份实现里 python 那份是最强的。**结论：无需改动**，
+  但把它纳入 `check-ssrf-deny-parity` 的后续覆盖范围（当前只镜像到 node 侧）已登记。
