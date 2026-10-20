@@ -1108,3 +1108,11 @@
   并断言**探针键集合 == 映射表键集合**（新增上限字段忘了同步即红）。刻意不做成脚本：证明「读进去了」必须**执行**，静态只能证明「有个分支看起来读了」。
   验证：7 passed；反证：把 `max_ratio=_num(...)` 改成 `max_ratio=defaults.max_ratio` → 该条红（`ZIP_MAX_RATIO 未生效`），还原后绿。
   **方法论（连续两轮否定两个静态守卫的总结）**：静态检查擅长「文本与清单是否一致」，不擅长「这段代码有没有被执行到」；后者要用**执行**的判据（定向用例 / 端到端探针），而不是更聪明的正则。
+- 2026-10-20 **R101 done（commit 0a43a080）**：**node 侧 `ZIP_MAX_*` 接线对称验证**。上轮给 python 补了「每个声明的 env 必须真被读进去」的定向判据，这轮对称查 node：
+  用 CodeGraph 一次看清 `getZipGuardLimitsFromEnv()` 在 `zip-safety.ts` 有 **4 个调用方**（`safeExtractZip` 的 `opts.limits ?? …`、`vetZip` 的 `assertZipFileSafe(zipPath, limits ?? …)`）
+  ⇒ **node 侧一直是对的，缺的只是 python 那侧**（假设被证伪，3 分钟内）。
+  但发现真问题：**没有任何用例钉住这条接线** —— `zip-safety.spec.ts` 所有 limits 用例都**显式传 limits**（只证明「参数生效」），`zip-guard.spec.ts` 的 env 用例又是**传 env 对象进去**的单测（绕开 process.env 与生产入口）。
+  即：谁把两处 `?? getZipGuardLimitsFromEnv()` 改成默认常量，**测试全绿**而部署方按 `ZIP_MAX_*` 收紧后静默失效 —— node 眼下没病，**离病只有一次重构**。
+  新增 2 条（先断言不设 env 时同包合法，再断言设 env 后拒绝 —— 防「拒绝来自别的原因」的假绿；env 在 beforeEach/afterEach 还原）。
+  验证 45 passed（原 43+2）、tsc 0；**反证**：两处换成内联默认常量 → **2 failed / 43 passed**（恰为新增两条），还原后 45 passed。
+  **两侧现在对称**：python `_extract_package`（R94-A1）+ node `safeExtractZip`/`vetZip`（本轮）都有「不传参 → 读 env → 生效」的证据，而不只是「函数本身能算对」。
