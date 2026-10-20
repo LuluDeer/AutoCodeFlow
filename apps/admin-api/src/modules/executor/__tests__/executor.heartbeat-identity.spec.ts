@@ -44,6 +44,8 @@ const makeRepo = () => {
     findBy: jest.fn().mockResolvedValue([]),
     create: jest.fn((d: unknown) => d),
     save: jest.fn((e: unknown) => Promise.resolve(e)),
+    // R53-A1：heartbeat 的写面已改为列级 update。替身**应用** patch（而不是返回
+    // 一个空 affected），否则「心跳是否真的落库」这条断言会退化成"看内存对象"。
     update: jest.fn().mockResolvedValue({ affected: 1 }),
     increment: jest.fn().mockResolvedValue(undefined),
     decrement: jest.fn().mockResolvedValue(undefined),
@@ -256,7 +258,9 @@ describe("R32-C4 L1 — heartbeat 同址多行 + 无指纹：身份不可判定�
         cpuUsage: 1,
         runningTaskCount: 0,
       });
+      // R53-A1：写面是列级 update —— 拒绝路径必须**两种写面都没有**调用。
       expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.update).not.toHaveBeenCalled();
       expect(metricsHistoryRepo.save).not.toHaveBeenCalled();
     },
   );
@@ -300,6 +304,16 @@ describe("R32-C4 L1 — heartbeat 同址多行 + 无指纹：身份不可判定�
 
     expect(saved.id).toBe("legacy-only");
     expect(onlyRow).toMatchObject({ cpuUsage: 42, runningTaskCount: 2 });
-    expect(executorRepo.save).toHaveBeenCalledTimes(1);
+    // R53-A1：写面从整行 save 换成「实际采纳字段」的列级 patch。
+    expect(executorRepo.save).not.toHaveBeenCalled();
+    expect(executorRepo.update).toHaveBeenCalledTimes(1);
+    const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+    expect(hbCriteria).toEqual({ id: "legacy-only" });
+    // 本次上报的两列必须进 patch；管理台拥有的列一个都不许进。
+    expect(hbPatch).toMatchObject({ cpuUsage: 42, runningTaskCount: 2 });
+    expect(hbPatch).toHaveProperty("status", ExecutorStatus.ONLINE);
+    for (const notOwned of ["appName", "maxConcurrentTasks", "dispatchMode", "version"]) {
+      expect(hbPatch).not.toHaveProperty(notOwned);
+    }
   });
 });

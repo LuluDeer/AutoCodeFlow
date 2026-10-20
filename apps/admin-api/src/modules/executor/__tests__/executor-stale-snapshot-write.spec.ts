@@ -257,3 +257,181 @@ describe("R51-A1 · update：PATCH 只许写 4 个元数据列（ADR-026 规则 
     expect(repo.store.maxConcurrentTasks).toBe(2);
   });
 });
+
+describe("R53-A1 · heartbeat：整行 save → 「实际采纳字段」的正向白名单（ADR-026 规则 4）", () => {
+  /**
+   * 上一轮 R51-A1 登记的最后一处整行回写：heartbeat 入口 findOne 拿快照，跨多个
+   * await 后就地改若干字段再 `save(e)`。原注释只为 runningTaskCount 的 ±1 偏差
+   * 辩护（「下一个心跳会自纠正」），却**没辩护**那些「由 register / 管理台拥有、
+   * 心跳永不自纠正」的列——整行 save 会把它们按快照写回，管理台刚改的配置
+   * 「随机回弹一次」，而且因为心跳不自纠正，会一直错到下一次 register。
+   *
+   * 本组用例用差分保真假仓库（findOne 给快照副本、save 按列 diff、update 只写
+   * patch、afterRead 注入并发写者）钉住两条对称的性质：
+   *   ① 心跳**不拥有**的列，窗口内被别人改了就绝不能被回弹；
+   *   ② 心跳**拥有**的列必须照常落库（不许把修复做成「什么都不写」）。
+   */
+  it("窗口内管理台改了 groupName/tags/description/maxConcurrentTasks → 心跳不得回弹", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRow());
+    const svc = makeService(repo);
+    // 交错点：findOne 读完快照之后、update 落库之前，管理台 PATCH 落了一批新事实。
+    repo.afterRead = () => {
+      repo.store.groupName = "staging";
+      repo.store.tags = ["b"];
+      repo.store.description = "new description";
+      repo.store.maxConcurrentTasks = 16;
+    };
+
+    const saved = await svc.heartbeat("10.0.0.9:3002", { cpuUsage: 42 });
+
+    // ① 管理台的四列原样存活（这正是整行 save 会把它们 diff 回旧值的地方）。
+    expect(repo.store.groupName).toBe("staging");
+    expect(repo.store.tags).toEqual(["b"]);
+    expect(repo.store.description).toBe("new description");
+    expect(repo.store.maxConcurrentTasks).toBe(16);
+    // ①b 返回值 = 「读到的快照 + 本次 patch」，**不重新 findOne**（多一次往返，
+    //     且可能读到别人的并发写，返回体/事件就会描述一个本次心跳没写的状态）。
+    //     故非心跳拥有的列在返回体里仍是快照值；权威值以 DB（上面四条）为准。
+    //     这里钉住「返回体不崩、且心跳拥有的列已更新」。
+    expect(saved.groupName).toBe("prod");
+    expect(saved.id).toBe("e1");
+    expect(saved.cpuUsage).toBe(42);
+    expect(saved.status).toBe("online");
+    expect(saved.lastHeartbeat).toBeInstanceOf(Date);
+    // ② 心跳确实落了库（修复不许变成"什么都不写"）。
+    expect(repo.store.cpuUsage).toBe(42);
+    // ③ 写面唯一：一次列级 update，整行 save 零调用。
+    expect(repo.saveCalls).toHaveLength(0);
+    expect(repo.updateCalls).toHaveLength(1);
+    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+  });
+
+  it("register 拥有的列（appName/capabilities/dispatchMode/版本）同样不被回弹", async () => {
+    const repo = new DiffAwareExecutorRepo(
+      mkRow({ capabilities: ["python"], dispatchMode: "push", executorVersion: "1.0.0" }),
+    );
+    const svc = makeService(repo);
+    repo.afterRead = () => {
+      repo.store.appName = "node-renamed";
+      repo.store.capabilities = ["python", "node"];
+      repo.store.dispatchMode = "pull";
+      repo.store.executorVersion = "2.0.0";
+      repo.store.protocolVersion = 3;
+      repo.store.type = "universal";
+    };
+
+    await svc.heartbeat("10.0.0.9:3002", { runningTaskCount: 3 });
+
+    expect(repo.store.appName).toBe("node-renamed");
+    expect(repo.store.capabilities).toEqual(["python", "node"]);
+    expect(repo.store.dispatchMode).toBe("pull");
+    expect(repo.store.executorVersion).toBe("2.0.0");
+    expect(repo.store.protocolVersion).toBe(3);
+    expect(repo.store.type).toBe("universal");
+    expect(repo.store.runningTaskCount).toBe(3);
+  });
+
+  it("patch 的键集合 ⊆ 心跳白名单（任何「顺手带上的旧值」都写不进去）", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRow());
+    const svc = makeService(repo);
+
+    await svc.heartbeat("10.0.0.9:3002", {
+      cpuUsage: 1,
+      memUsage: 2,
+      diskUsage: 3,
+      networkLatency: 4,
+      runningTaskCount: 5,
+      totalTaskCount: 6,
+      failedTaskCount: 7,
+      maxConcurrentTasks: 9,
+      deadLetterCount: 8,
+      runningExecutionIds: ["x"],
+      reservedSlots: 1,
+      interpreters: [{ version: "3.12" }],
+      deviceFingerprint: "a".repeat(64),
+      startupId: "startup-2",
+      restartedAt: D0,
+    });
+
+    const patch = repo.updateCalls[0].patch;
+    const owned = new Set([
+      "address", "status", "offlineReason", "consecutiveHeartbeatMisses",
+      "lastHeartbeat", "executorStartedAt", "executorStartupId",
+      "runningTaskCount", "reservedSlots", "runningExecutionIds",
+      "cpuUsage", "memUsage", "diskUsage", "networkLatency",
+      "totalTaskCount", "failedTaskCount", "maxConcurrentTasks",
+      "deadLetterCount", "interpreters", "deviceFingerprint",
+    ]);
+    for (const key of Object.keys(patch)) {
+      expect(owned.has(key)).toBe(true);
+    }
+    // 「从不被心跳修改」的列一个都不许出现（这正是整行 save 的缺陷来源）。
+    for (const notOwned of [
+      "id", "appName", "type", "executorVersion", "protocolVersion",
+      "dispatchMode", "capabilities", "agentCapabilities", "groupName",
+      "tags", "description", "projectId", "tokenHash", "version",
+      "createdAt", "updatedAt",
+    ]) {
+      expect(patch).not.toHaveProperty(notOwned);
+    }
+    // 本次全部上报 ⇒ 白名单里的「可上报列」应悉数在 patch 里。
+    for (const reported of [
+      "cpuUsage", "memUsage", "diskUsage", "networkLatency",
+      "runningTaskCount", "totalTaskCount", "failedTaskCount",
+      "maxConcurrentTasks", "deadLetterCount", "runningExecutionIds",
+      "interpreters", "deviceFingerprint", "executorStartupId",
+    ]) {
+      expect(patch).toHaveProperty(reported);
+    }
+  });
+
+  it("心跳拥有的四列仍然无条件落库：并发 sweep 置的 OFFLINE 被心跳纠正回 ONLINE", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRow());
+    const svc = makeService(repo);
+    repo.afterRead = () => {
+      // stale sweep 在窗口内判死：status=OFFLINE + 新的 lastHeartbeat 观测值。
+      repo.store.status = "offline";
+      repo.store.offlineReason = "stale_timeout";
+      repo.store.consecutiveHeartbeatMisses = 2;
+      repo.store.lastHeartbeat = D1;
+    };
+
+    await svc.heartbeat("10.0.0.9:3002", {});
+
+    // 覆盖式上报的语义就是 last-writer-wins：心跳必须把这四列写回去。
+    expect(repo.store.status).toBe("online");
+    expect(repo.store.offlineReason).toBeNull();
+    expect(repo.store.consecutiveHeartbeatMisses).toBe(0);
+    expect(repo.store.lastHeartbeat).not.toEqual(D1);
+    expect(repo.saveCalls).toHaveLength(0);
+  });
+
+  it("双主人列 maxConcurrentTasks：本次上报了 → 心跳值胜出（不许因噎废食整列不写）", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRow());
+    const svc = makeService(repo);
+    repo.afterRead = () => {
+      repo.store.maxConcurrentTasks = 16;
+    };
+
+    await svc.heartbeat("10.0.0.9:3002", { maxConcurrentTasks: 8 });
+
+    // 管理台值 16 被心跳上报的 8 覆盖 —— last-writer-wins 即正确语义
+    // （与"未上报时一个字都不写"是同一判据的两面）。
+    expect(repo.store.maxConcurrentTasks).toBe(8);
+    expect(repo.updateCalls[0].patch).toHaveProperty("maxConcurrentTasks", 8);
+  });
+
+  it("双主人列 maxConcurrentTasks：本次未上报 → 不进 patch（管理台值存活）", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRow());
+    const svc = makeService(repo);
+    repo.afterRead = () => {
+      repo.store.maxConcurrentTasks = 16;
+    };
+
+    await svc.heartbeat("10.0.0.9:3002", { cpuUsage: 5 });
+
+    expect(repo.store.maxConcurrentTasks).toBe(16);
+    expect(repo.updateCalls[0].patch).not.toHaveProperty("maxConcurrentTasks");
+  });
+});
+

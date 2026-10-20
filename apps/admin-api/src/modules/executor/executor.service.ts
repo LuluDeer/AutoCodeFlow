@@ -261,6 +261,67 @@ export function __resetTruncationWarnStateForTest(): void {
 const TRUNCATION_WARN_THROTTLE_MS = 60_000;
 
 /**
+ * R53-A1（ADR-026 规则 4）：心跳**真正拥有**的列 —— 正向白名单。
+ *
+ * 为什么需要它：heartbeat 在入口 `findOne` 拿到快照，跨多个 await
+ * （observeAddressConflict / observeDeviceFingerprint / failRunningExecutionsAfterRestart /
+ * metrics history）后就地改若干字段，此前用 `repo.save(e)` **整行**回写。
+ * TypeORM 的 save 是「读当前行 → 按列 diff → 只写有差异的列」——快照里那些
+ * **心跳从不修改**的列，只要在窗口内被别人改过，就会被 diff 判成"改动"按旧值
+ * 写回。受害列由 register / 管理台拥有，而心跳**永不自纠正**：
+ *   address / appName / capabilities / groupName / tags / description /
+ *   maxConcurrentTasks / dispatchMode / protocolVersion / executorVersion。
+ * 其中 groupName / tags / description / maxConcurrentTasks 恰是 `update()`
+ * （管理台 PATCH）的四列 —— 管理台刚改完，一次心跳就把它回弹到旧值，且因为心跳
+ * 不自纠正，会一直错到下一次 register（现象是"改一次弹一次"）。
+ *
+ * 正面清单**逐列**来自源码（行号为 R53-A1 落地时，改动时请同步核对）：
+ *   - address                    :2408 / :2412（仅当漂移被采纳；被占用时不写）
+ *   - status                     :2633
+ *   - consecutiveHeartbeatMisses :2637
+ *   - offlineReason              :2639
+ *   - lastHeartbeat              :2640
+ *   - executorStartedAt          :2642
+ *   - executorStartupId          :2646
+ *   - runningTaskCount           :2490 / :2507（重启清零）+ :2623（指标白名单环）
+ *   - reservedSlots              :2494 / :2509（重启清零）+ :2695（合法采纳）
+ *   - runningExecutionIds        :2655
+ *   - cpuUsage / memUsage / diskUsage / networkLatency /
+ *     totalTaskCount / failedTaskCount / maxConcurrentTasks /
+ *     deadLetterCount            : 指标白名单环（:2621-2629）
+ *   - interpreters               :2715
+ *   - deviceFingerprint          :2733
+ *
+ * 注意 maxConcurrentTasks / address 是**双主人**列（管理台 PATCH 也写）：心跳只在
+ * 「本轮真的采纳了值」时写它们（见 `adopted` 集合），未上报就一个字都不写。
+ */
+const HEARTBEAT_OWNED_COLUMNS = [
+  "address",
+  "status",
+  "offlineReason",
+  "consecutiveHeartbeatMisses",
+  "lastHeartbeat",
+  "executorStartedAt",
+  "executorStartupId",
+  "runningTaskCount",
+  "reservedSlots",
+  "runningExecutionIds",
+  "cpuUsage",
+  "memUsage",
+  "diskUsage",
+  "networkLatency",
+  "totalTaskCount",
+  "failedTaskCount",
+  "maxConcurrentTasks",
+  "deadLetterCount",
+  "interpreters",
+  "deviceFingerprint",
+] as const;
+
+/** 心跳白名单列名(见 HEARTBEAT_OWNED_COLUMNS 的逐列依据)。 */
+type HeartbeatOwnedColumn = (typeof HEARTBEAT_OWNED_COLUMNS)[number];
+
+/**
  * A-10（执行器域审计 P3）：PG 唯一约束冲突判定（SQLSTATE 23505）。
  * register 的「按地址 findOne → 无行则 insert」是 check-then-act——同地址并发
  * 首注册时败者的 save 会撞 uq_executors_address 抛 QueryFailedError（驱动把
@@ -2203,6 +2264,34 @@ export class ExecutorService implements OnModuleInit {
     });
   }
 
+  /**
+   * R53-A1（ADR-026 规则 4）：把心跳对实体的就地改动**投影**成一份列级 patch。
+   *
+   * 两个输入缺一不可：
+   *  - `e`：已被心跳就地改过的实体（值面）；
+   *  - `adopted`：本轮**实际采纳**了哪些列（面）。列不在白名单里 → 不写；
+   *    在白名单里但本轮没采纳（没上报 / 上报非法被拒）→ 也不写。
+   *
+   * 为什么是"白名单 ∩ 采纳集"而不是单纯的白名单：`maxConcurrentTasks` 与
+   * `address` 是**双主人**列（管理台 PATCH 也写）。单纯按白名单整批写，会在
+   * "本次心跳没上报容量"时把管理台刚改的值按快照写回 —— 缺陷只是变窄，没有消失。
+   *
+   * 返回类型刻意是 `Partial<Pick<Executor, HeartbeatOwnedColumn>>`：调用方
+   * 无法把白名单外的键塞进 patch，编译期即拦住（这是本条修复的**正向**约束，
+   * 比"删除 x 列"的黑名单更难被下一次改动绕过）。
+   */
+  private pickOwnedColumns(
+    e: Executor,
+    adopted: ReadonlySet<HeartbeatOwnedColumn>,
+  ): Partial<Pick<Executor, HeartbeatOwnedColumn>> {
+    const patch: Record<string, unknown> = {};
+    for (const column of HEARTBEAT_OWNED_COLUMNS) {
+      if (!adopted.has(column)) continue;
+      patch[column] = e[column];
+    }
+    return patch as Partial<Pick<Executor, HeartbeatOwnedColumn>>;
+  }
+
   async heartbeat(
     address: string,
     metrics: {
@@ -2290,6 +2379,18 @@ export class ExecutorService implements OnModuleInit {
     // ADR 要修的「换 IP 后历史断裂」在重启恢复面上的复现）。常态下
     // e.address === address，取值与引入前逐字节一致。
     const recoveryAddress = e.address;
+    // R53-A1：本轮**实际采纳**的列集合。只有登记在这里的列才会进最终 patch ——
+    // 未登记的白名单列（更不用说白名单外的列）一个字都不写，因此快照里过期的
+    // 旧值不会被 diff 判成"改动"写回。status / offlineReason /
+    // consecutiveHeartbeatMisses / lastHeartbeat 是"心跳永远拥有"的四列：
+    // 它们每次心跳都必须落库（哪怕值没变），否则并发写者刚落库的
+    // status=OFFLINE 不会被本次心跳的 last-writer-wins 语义纠正回来。
+    const adopted = new Set<HeartbeatOwnedColumn>([
+      "status",
+      "offlineReason",
+      "consecutiveHeartbeatMisses",
+      "lastHeartbeat",
+    ]);
     if (e.address !== address) {
       // 地址漂移：同一安装换网/换 IP（正常现象，ADR-017 §2）。
       // push 不抢占他人地址：目标地址被另一份安装占用 → 保留原地址、仅 warn
@@ -2305,9 +2406,11 @@ export class ExecutorService implements OnModuleInit {
           );
         } else {
           e.address = address;
+          adopted.add("address");
         }
       } else {
         e.address = address;
+        adopted.add("address");
       }
     }
     const incomingStartedAt = this.parseExecutorStartedAt(metrics.restartedAt);
@@ -2389,6 +2492,8 @@ export class ExecutorService implements OnModuleInit {
       // 「预留中」槽位必然不复存在，留着会让 UI 把陈旧预留从新计数里减掉
       // （显示比真值少 1）。若本次心跳带真实上报值，下方采纳段仍会覆盖。
       e.reservedSlots = 0;
+      adopted.add("runningTaskCount");
+      adopted.add("reservedSlots");
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(
         recoveryAddress,
@@ -2402,6 +2507,8 @@ export class ExecutorService implements OnModuleInit {
       e.runningTaskCount = 0;
       // E-01-RPT: 同 didRestart 分支——陈旧预留不得参与新计数的换算。
       e.reservedSlots = 0;
+      adopted.add("runningTaskCount");
+      adopted.add("reservedSlots");
     }
 
     // R-P0-006: Use save() without version check for heartbeat to avoid frequent conflicts
@@ -2514,6 +2621,10 @@ export class ExecutorService implements OnModuleInit {
     for (const key of metricsWhitelist) {
       if (metricValues[key] !== undefined) {
         writableMetrics[key] = metricValues[key];
+        // R53-A1：只有**本轮真的上报且通过校验**的指标才进 patch。未上报的
+        // 指标不写（此前整行 save 会把快照值写回，双主人列 maxConcurrentTasks
+        // 因此会把管理台刚改的容量顶掉）。
+        adopted.add(key);
       }
     }
     // NETOPT-G P1-6：记录跃迁前的状态——executor.online 只在**真实恢复**
@@ -2527,8 +2638,14 @@ export class ExecutorService implements OnModuleInit {
     // 遗留 P1-24：恢复在线即清除离线原因标注。
     e.offlineReason = null;
     e.lastHeartbeat = new Date();
-    if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
-    if (incomingStartupId) e.executorStartupId = incomingStartupId;
+    if (incomingStartedAt) {
+      e.executorStartedAt = incomingStartedAt;
+      adopted.add("executorStartedAt");
+    }
+    if (incomingStartupId) {
+      e.executorStartupId = incomingStartupId;
+      adopted.add("executorStartupId");
+    }
 
     // CONSISTENCY-02: persist executor-node 的活性上报。缺省字段写 null
     // （= 旧版执行器未上报，区别于 [] 的"已上报且空闲"）；仅在字段上报时才
@@ -2539,6 +2656,7 @@ export class ExecutorService implements OnModuleInit {
         runningExecutionIds,
         address,
       );
+      adopted.add("runningExecutionIds");
     }
     // E-01-RPT（生产实证：RPA5 恒显「当前运行任务 1/10」「活性上报 0 条，与运行
     // 计数 1 不一致」，而设备上无任务在跑）：采纳 pull 预留槽位数。
@@ -2575,6 +2693,7 @@ export class ExecutorService implements OnModuleInit {
         );
       } else {
         e.reservedSlots = reservedSlots;
+        adopted.add("reservedSlots");
       }
     }
     // python_task_multiversion（WS2 · CONTRACT §2.2/§2.3 · 兼容性红线 3）：
@@ -2594,6 +2713,7 @@ export class ExecutorService implements OnModuleInit {
         );
       } else {
         e.interpreters = normalizedInterpreters;
+        adopted.add("interpreters");
       }
     }
     // ARCH-36（ADR-017 阶段 2）：心跳采纳 `deviceFingerprint`。
@@ -2611,6 +2731,7 @@ export class ExecutorService implements OnModuleInit {
         );
       } else {
         e.deviceFingerprint = incomingFingerprint;
+        adopted.add("deviceFingerprint");
       }
     }
     if (
@@ -2623,12 +2744,35 @@ export class ExecutorService implements OnModuleInit {
       );
     }
 
-    // NETOPT-F P3-3（读改写竞态，仅文档化）：heartbeat 的整实体 save 可覆盖
+    // R53-A1（ADR-026 规则 4）：这里此前是 `repo.save(e)` **整行回写**。
+    // 缺陷（上一轮 R51-A1 登记）：save 是「读当前行 → 按列 diff → 只写差异列」，
+    // 快照里那些**心跳从不修改**、却由 register / 管理台拥有的列，只要在
+    // findOne 之后被改过，就会被 diff 判成"改动"按旧值写回。受害列：
+    // address / appName / capabilities / groupName / tags / description /
+    // maxConcurrentTasks / dispatchMode / protocolVersion / executorVersion。
+    // 而心跳**永不自纠正**这些列 —— 管理台每改一次就被回弹一次，且一直错到
+    // 下一次 register。原注释只为 runningTaskCount 的 ±1 偏差辩护（"下一心跳
+    // 自纠正"），从未辩护过上面这批。
+    //
+    // NETOPT-F P3-3（读改写竞态，仅文档化，语义不变）：本 patch 仍可覆盖
     // dispatch 的原子 +1 与 stale sweep 的原子 -1——每事件至多 1 槽偏差，且
     // 下一心跳（执行器如实上报 runningTaskCount）即自纠正。不加锁/版本校验
     // 是有意取舍（R-P0-006：心跳高频、乐观锁冲突会反噬吞吐）；偏差窗口内的
     // 闸门判满/判空是暂时的，不上报的旧版执行器才依赖该近似。
-    const saved = await this.repo.save(e);
+    const patch = this.pickOwnedColumns(e, adopted);
+    // 为什么这里**不该**加 CAS（status / version / lastHeartbeat 谓词）：心跳是
+    // 覆盖式上报（ADR-017 §2），last-writer-wins 即正确语义；而心跳 30s 一次、
+    // 机队规模下每秒都有心跳在写，任何「读取时刻的活跃证据」谓词都会在恰好有并发
+    // 写时凭空 affected=0 —— 丢一轮心跳 = lastHeartbeat 停在旧值 = stale sweep
+    // 误判失联（判死 → 离线通知 → 运行中任务被误标）。那是把「少写列」的修复换成
+    // 可用性回归。ADR-026 要挡的是「拿旧快照盖掉别人的新状态」，而这里写的每一列
+    // 都由本次上报**重新确定**（白名单 ∩ 采纳集），没有一列是「顺手带上的旧值」。
+    // adr-026-exempt: 心跳=覆盖式上报，last-writer-wins 即正确语义；加 CAS 会把
+    // 「少写列」的修复变成可用性回归（理由见上五行）。
+    await this.repo.update({ id: e.id }, patch);
+    // 返回值 = 内存实体（已是本次上报后的最终态）叠加 patch —— **不重新 findOne**：
+    // 多一次往返且可能读到别人的并发写（返回体与事件会描述一个本次心跳没写的状态）。
+    const saved = { ...e, ...patch } as Executor;
     // NETOPT-G P1-6（状态机对称性）：恢复在线的事件在**落库之后**发布，与
     // emitExecutorOffline 的三处调用点同口径（状态先落库，事件后发）。
     // 只在真实跃迁时发——心跳 30s 一次，无条件 emit 会把 outbox 打爆。

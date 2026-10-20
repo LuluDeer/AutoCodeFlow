@@ -1643,9 +1643,19 @@ describe("ExecutorService (__tests__)", () => {
 
   describe("heartbeat", () => {
     it("updates lastHeartbeat and metrics on heartbeat", async () => {
+      // R53-A1：写面已从 `repo.save(e)`（整行回写）改为「实际采纳字段」的列级
+      // patch。用例同时钉住两件事：① 该写的列都写了；② 管理台拥有的列
+      // （groupName / tags / description / appName / capabilities …）**一个都不写**
+      // —— 后者正是整行 save 的老缺陷（按快照 diff 把管理台刚改的值回弹）。
       const executor = {
+        id: "e-1",
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
+        appName: "node-a",
+        groupName: "prod",
+        tags: ["t1"],
+        description: "d",
+        capabilities: ["python"],
       };
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -1657,7 +1667,50 @@ describe("ExecutorService (__tests__)", () => {
         totalTaskCount: 10,
         failedTaskCount: 2,
       });
-      expect(executorRepo.save).toHaveBeenCalled();
+      // 整行 save 已消除；写面只有一次列级 update，WHERE 只有 id。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.update).toHaveBeenCalledTimes(1);
+      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(hbCriteria).toEqual({ id: "e-1" });
+      expect(Object.keys(hbPatch).sort()).toEqual([
+        "consecutiveHeartbeatMisses",
+        "cpuUsage",
+        "diskUsage",
+        "failedTaskCount",
+        "lastHeartbeat",
+        "memUsage",
+        "offlineReason",
+        "runningTaskCount",
+        "status",
+        "totalTaskCount",
+      ]);
+      expect(hbPatch).toMatchObject({
+        cpuUsage: 30,
+        memUsage: 50,
+        diskUsage: 70,
+        runningTaskCount: 1,
+        totalTaskCount: 10,
+        failedTaskCount: 2,
+        status: ExecutorStatus.ONLINE,
+        offlineReason: null,
+        consecutiveHeartbeatMisses: 0,
+      });
+      expect(hbPatch.lastHeartbeat).toBeInstanceOf(Date);
+      // 管理台 / register 拥有的列：不进 patch（= 不会按旧快照回弹）。
+      for (const notOwned of [
+        "appName",
+        "groupName",
+        "tags",
+        "description",
+        "capabilities",
+        "dispatchMode",
+        "protocolVersion",
+        "executorVersion",
+        "tokenHash",
+        "version",
+      ]) {
+        expect(hbPatch).not.toHaveProperty(notOwned);
+      }
       expect(metricsHistoryRepo.create).toHaveBeenCalledWith({
         executorAddress: "127.0.0.1:3105",
         cpuUsage: 30,
@@ -2098,13 +2151,17 @@ describe("ExecutorService (__tests__)", () => {
       expect(idsWhere?.[1].ids).toEqual(["exec-old"]);
       // ② 恢复不再触碰 executorRepo 计数（无 releaseExecutorSlotBatch）。
       expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
-      // ③ 计数归零由 save 承担（本次心跳未上报 runningTaskCount → 写 0）。
-      const saved = (executorRepo.save as jest.Mock).mock.calls[0][0] as any;
-      expect(saved.runningTaskCount).toBe(0);
+      // ③ 计数归零由列级 patch 承担（本次心跳未上报 runningTaskCount → 仍写 0，
+      //    因为重启分支**主动采纳**了这个清零值；R53-A1 后写面是 update 的 patch）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const [, restartPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(restartPatch.runningTaskCount).toBe(0);
+      expect(restartPatch.reservedSlots).toBe(0);
     });
 
     it("continues heartbeat restart recovery when one retry enqueue fails", async () => {
       const executor = {
+        id: "exec-hb-1",
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
         executorStartupId: "startup-old",
@@ -2188,7 +2245,17 @@ describe("ExecutorService (__tests__)", () => {
       expect(execRepo.delete).toHaveBeenCalledWith("retry-1");
       expect(taskQueue.add).toHaveBeenCalledTimes(2);
       expect(executor.executorStartupId).toBe("startup-new");
-      expect(executorRepo.save).toHaveBeenCalledWith(executor);
+      // R53-A1：写面是列级 patch；本次采纳的 executorStartupId / 重启清零的
+      // runningTaskCount 必须在 patch 里（不得因为"改成 update"而漏写）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(hbCriteria).toEqual({ id: executor.id });
+      expect(hbPatch).toMatchObject({
+        executorStartupId: "startup-new",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        reservedSlots: 0,
+      });
     });
 
     it("does not block the heartbeat on restart recovery (NETOPT-D P2-3)", async () => {
@@ -4763,9 +4830,14 @@ describe("ExecutorService (__tests__)", () => {
 
         await service.heartbeat("h:1", {});
 
-        expect(executorRepo.save).toHaveBeenCalled();
-        const saved = executorRepo.save.mock.calls[0][0];
-        expect(saved.consecutiveHeartbeatMisses).toBe(0);
+        // R53-A1：写面是列级 patch（整行 save 已消除）。
+        expect(executorRepo.save).not.toHaveBeenCalled();
+        const [, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+        expect(hbPatch.consecutiveHeartbeatMisses).toBe(0);
+        // 迟滞自愈的三件套必须一起落库（少写任一列 = 判死状态不会真正解除）。
+        expect(hbPatch.status).toBe(ExecutorStatus.ONLINE);
+        expect(hbPatch.offlineReason).toBeNull();
+        expect(hbPatch.lastHeartbeat).toBeInstanceOf(Date);
       });
     });
 
