@@ -953,3 +953,4 @@
   **首跑 5 处全是误报**，逐条按纪律写豁免（不放宽判据）：sop 的 contentHash（发布判重的自算哈希）、app-name-recovery 的 cachedSignature（缓存键）、
   export-flows 的 EXPORT_TOKEN_MASK（与 `'***'` 掩码常量比）、updater-runcheck ×2（`{}` 对象身份哨兵，并发去重）。豁免窗口 3 行（比 ADR-026 的 5 行更紧）。
   验证 978 文件绿 + lint-gates/docs 绿，接入 CI；反证：删掉任一条豁免 → 守卫点名 `updater-runcheck.ts:72`。**结论：实现是对的，缺的是防止退化的机器。**
+- 2026-10-20 **R82 done（commit 182df21b）**：**「守卫必须被 CI 真正执行」自检**。仓库现有 30 个 `check-*.mjs`，加守卫很便宜、**接进 CI 才是生效那一步**，而漏接**完全静默**（脚本在、本地能跑、README 可能还写着它，CI 从不执行）——与本仓踩过的「`.spec.ts` 放错目录不被收集」同型。判据两条：① 文件名出现在任一 workflow；② 或出现在 package.json 某 script 且**该 script 名**出现在 workflow（不解析这层间接会误报——我手查时就把 `check-throttler-whitelist.mjs` 误判成未接线，它其实在 ci.yml:1162 以 `npm run` 形式接线；`check-release-hygiene.mjs` 则在**另一个** workflow）。**它第一次跑，抓到的唯一一个是它自己**（新脚本尚未接线），已自接。验证：29 个全部被 CI 执行 + 1 个显式豁免（只报告的雷达）。反证：删掉自身 CI step → 立刻点名。
