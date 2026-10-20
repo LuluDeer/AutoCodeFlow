@@ -1471,3 +1471,38 @@ agent 的说法是：落点解析/周期估算只认 5 字段 ⇒ 6 字段 cron 
 
 **方法论**：一条「守卫很多所以 CI 慢了」的直觉，值 35 秒就能证伪；而如果不量，它会在某个时刻变成
 「把这道先注释掉，本地跑快点」的借口。
+- 2026-10-20 **R133 · 复核 R126-A1 的地基，并回答「能不能加 DB 唯一约束」（无提交）**。
+
+## ① 去重的地基是不是原子的？—— **是**
+
+`scheduler.service.ts:1920-1939`：
+
+```sql
+UPDATE tasks SET lastTriggerTime = now()
+ WHERE id = :id AND status = 'ACTIVE'
+   AND (lastTriggerTime IS NULL OR lastTriggerTime < :windowStart)
+```
+
+单条**条件 UPDATE** + 判 `affected > 0`。两个并发 claimer 抢同一行，**行锁保证只有一个拿到 affected=1**。
+附带确认：`status = ACTIVE` 让 PAUSED 任务赢不了 claim ⇒ 暂停期间不会派发。
+**所以「DB claim 作为唯一判决」这条设计是成立的**，不是「看起来原子」。
+
+## ② 能不能给 `task_executions` 加唯一约束？—— **现状不能，缺一列**
+
+读了实体（`task-execution.entity.ts:154-194`）：9 个索引**全部非唯一**，且**没有任何「计划触达点」列**。
+要表达「同一个触发落点至多一条执行」，需要 `(taskId, scheduledFor)` 或一个 `dedupKey` —— **都不存在**。
+也就是说：DB 层兜底**买不到**，除非新增列。
+
+新增列的代价是整套的：迁移 + 列语义（哪个时间戳算落点？cron 计划点还是 claim 时刻？）+ **所有写入点**
+（调度 / 手动 / 依赖 / webhook / 导入 / 模板实例化）都要能算出一个稳定的 dedupKey，还要处理存量行回填。
+**这不是一次修补，是一次 schema 设计。**
+
+## 结论
+
+- 现状的「DB 条件 claim + 补偿前复核」已经是**在既有 schema 内能做到的**最强防线；
+- 若将来重复派发再次出现（真多副本环境下复现），正确的下一步是 **`dedupKey` 列 + 唯一索引**，
+  而不是再加一层内存/Redis 判据 —— 本仓已经证明过「两个互不知情的权威 = 两个赢家」。
+- 已把这条写进遗留的**升级路径**，而不是留在「以后再说」。
+
+**顺带**：`claimDependencyTrigger` 的注释里早就写了「副作用 2：依赖触发会推进 lastTriggerTime，使 misfire 缺口从
+最近一次依赖触发起算——方向安全」。这正是我 R130 推了半天的那个结论 —— **它一直在代码里写着，只是没人读**。
