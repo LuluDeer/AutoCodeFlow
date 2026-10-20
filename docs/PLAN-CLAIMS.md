@@ -872,3 +872,5 @@
   无功能影响，但属于 TypeORM `update()` 的既有限制）。
 - 历史 `task_templates` 行的裸 username 属主（R39-A1 遗留）已由迁移 1790000000058 回填，
   但**未在真 PG 上实跑过**（本机无 PG/docker），上线前需 staging 验证。
+- 2026-10-20 **R69 done（commit d9da0569，总控自干）**：CLUS 命令地图补上**完全缺失**的 `acf mutex`。`mutexCommand` 自注册起（`index.ts` 的 `program.addCommand(mutexCommand())`）就一直存在，但 `docs/atlas/05-interfaces/cli.md` 的**命令地图里没有这一节** —— 读者会以为「没有互斥组的管理入口」，而互斥组恰是部署/升级流程里最容易踩的（挂载中的组删不掉、`--force` 语义）。补 `list`/`create`/`update`/`delete` 四节，头部计数 **63 → 67**。计数依据可复核：`commands/` 下 `.command(` **64** 处 + `login.ts` 里 `new Command('login'/'whoami'/'logout')` **3** 个根命令 = **67**；原来那个 63 恰好就是「漏掉 mutex 的 4 个」。
+  **遗留**：该文档的分节计数（`### task（23）`）仍是手写的，下一步应改成生成 + 守卫 —— 与 R66（audit 动作表）、R68（api-reference 端点表）同一处方。本轮只补「缺失」，不把两件事混在一起。
