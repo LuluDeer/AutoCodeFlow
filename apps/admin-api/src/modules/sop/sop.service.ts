@@ -1,4 +1,10 @@
-import { Injectable, Logger, Inject, forwardRef } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Inject,
+  forwardRef,
+  Optional,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -14,6 +20,8 @@ import {
 } from "typeorm";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { ExecutorService } from "../executor/executor.service";
+// R41-A1（R34-A1 遗留②）：关键写动作的审计落库（唯一可事后追溯的操作记录）。
+import { AuditService } from "../audit/audit.service";
 import {
   evaluateAssignmentTimeouts,
   evaluateStuckClarifications,
@@ -95,6 +103,21 @@ const POLL_ASSIGNMENTS_MAX = 3;
 const PLATFORM_MEDIA_PATH_RE =
   /^\/api\/(artifacts|executions|executor-package|sop\/media|agent-collab\/media)\//;
 
+/**
+ * R41-A1：审计上下文（**谁、从哪来**）。
+ *
+ * 管理面动作由控制器从 @CurrentUser() 与 @Ip() 取；执行器面动作没有登录
+ * 用户（userId 缺省），操作者身份由 `detail.actor` 里的 executor:<id> /
+ * agent:<session> 表达——两类主体都必须能落进同一张审计表，否则
+ * 「谁把这个版本发出去了」仍然答不上来。
+ */
+export interface SopAuditContext {
+  /** 登录用户 id（AuthUser.id，整数）；执行器/系统动作缺省为 null。 */
+  userId?: number | null;
+  /** 请求来源 ip（req.ip）；cron/内部调用缺省为 null。 */
+  ip?: string | null;
+}
+
 export interface DraftSopInput {
   slug: string;
   title: string;
@@ -102,6 +125,8 @@ export interface DraftSopInput {
   bodyMarkdown?: string;
   applicationId?: string | null;
   createdBy: string;
+  /** R41-A1：审计上下文（可选——内部/工具调用不传即只记 actor）。 */
+  audit?: SopAuditContext;
 }
 
 export interface PublishSopInput {
@@ -109,6 +134,8 @@ export interface PublishSopInput {
   bump?: "patch" | "minor" | "major";
   changelog?: string;
   publishedBy: string;
+  /** R41-A1：审计上下文。 */
+  audit?: SopAuditContext;
 }
 
 @Injectable()
@@ -132,6 +159,14 @@ export class SopService {
     private readonly executors: ExecutorService,
     // ARCH-27：TTL 等运行时配置经 ConfigService（app.module Joi 注册）
     private readonly config: ConfigService,
+    // R41-A1（R34-A1 遗留②）：SOP 关键动作的审计落库。
+    // @Optional 先例同 notification.service 的 auditService / api-keys 的
+    // configService——存量单测模块（Object.create / 直接 new）与
+    // AuditModule 缺席时审计整体旁路，业务语义逐字节不变；生产装配由
+    // SopModule imports AuditModule 提供。
+    @Optional()
+    @Inject(AuditService)
+    private readonly auditService?: AuditService,
   ) {}
 
   // ── 起草与发布（P5）────────────────────────────────────────────
@@ -166,7 +201,28 @@ export class SopService {
       if (input.bodyMarkdown !== undefined) {
         existing.bodyMarkdown = input.bodyMarkdown;
       }
-      return this.sops.save(existing);
+      const savedExisting = await this.sops.save(existing);
+      // R41-A1：编辑工作副本是**内容写入**（发布的版本正文就取自这里）——
+      // 留痕，但只记「改了哪些字段」，正文 / front-matter 内容一律不进审计。
+      // 刻意**不**记 actor=createdBy：那一列是**归属**不是本次操作者（见
+      // R34-A1 轴 4），把它当操作人写进审计会指错人；操作者靠 userId/ip。
+      await this.safeAudit({
+        userId: input.audit?.userId ?? null,
+        ip: input.audit?.ip ?? null,
+        action: "sop.update",
+        resource: "sop",
+        resourceId: savedExisting.id,
+        detail: {
+          slug,
+          // 只记「内容面」改了什么：title 是展示名（PATCH 恒传原值，记了
+          // 只会变成噪声），正文与 front-matter 才是会随版本发布出去的东西。
+          fields: [
+            input.bodyMarkdown !== undefined ? "bodyMarkdown" : null,
+            input.frontMatterYaml !== undefined ? "frontMatterYaml" : null,
+          ].filter((x): x is string => x !== null),
+        },
+      });
+      return savedExisting;
     }
 
     const sop = this.sops.create({
@@ -180,7 +236,23 @@ export class SopService {
       bodyMarkdown: input.bodyMarkdown ?? null,
       createdBy: input.createdBy,
     });
-    return this.sops.save(sop);
+    const savedSop = await this.sops.save(sop);
+    // R41-A1：起草落审计（正文只记长度——SOP 正文可能含业务数据）。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.draft",
+      resource: "sop",
+      resourceId: savedSop.id,
+      detail: {
+        slug,
+        bodyLength: input.bodyMarkdown?.length ?? 0,
+        frontMatterLength: input.frontMatterYaml?.length ?? 0,
+        // 创建路径上 createdBy 就是真实创建者（归属即本次操作），可作 actor
+        actor: input.createdBy,
+      },
+    });
+    return savedSop;
   }
 
   /**
@@ -231,6 +303,26 @@ export class SopService {
     sop.status = "published";
     await this.sops.save(sop);
 
+    // R41-A1：发布是**指令注入面**的关键动作（04 §4.3）——「谁在什么时候
+    // 发布了哪个版本」必须能从审计表单表回答，而不是靠会轮转的应用日志。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.publish",
+      resource: "sop",
+      resourceId: sop.id,
+      detail: {
+        slug: sop.slug,
+        version: nextVersion,
+        bump: input.bump ?? "patch",
+        // hash 前 12 位即可对账（完整值在不可变版本快照上）
+        contentHash: contentHash.slice(0, 12),
+        versionId: saved.id,
+        // changelog 是自由文本：只记长度
+        changelogLength: (input.changelog ?? "").length,
+        actor: input.publishedBy,
+      },
+    });
     this.logger.log(
       `SOP published: slug=${sop.slug} version=${nextVersion} hash=${contentHash.slice(0, 12)} by=${input.publishedBy}`,
     );
@@ -266,6 +358,8 @@ export class SopService {
     executorId: string;
     parentSessionId?: string | null;
     assignedBy: string;
+    /** R41-A1：审计上下文。 */
+    audit?: SopAuditContext;
   }): Promise<SopAssignment> {
     const sop = await this.requireSop(input.sopId);
     const version = input.version ?? sop.currentVersion;
@@ -293,7 +387,25 @@ export class SopService {
       parentSessionId: input.parentSessionId ?? null,
       assignedBy: input.assignedBy,
     });
-    return this.assignments.save(assignment);
+    const savedAssignment = await this.assignments.save(assignment);
+    // R41-A1：指派 / 重派（重派 = 再建一张指派行）留痕——「把哪张单指派给
+    // 了谁」是 SOP 流程的核心追责点。resource 用 sop_assignment：resourceId
+    // 可直接在审计页反查这张工单（sop 行只有资源 id，答不出目标机器）。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.assign",
+      resource: "sop_assignment",
+      resourceId: savedAssignment.id,
+      detail: {
+        sopId: sop.id,
+        slug: sop.slug,
+        version,
+        executorId: input.executorId,
+        actor: input.assignedBy,
+      },
+    });
+    return savedAssignment;
   }
 
   // ── 协作通道（P6，11 §3）───────────────────────────────────────
@@ -599,6 +711,8 @@ export class SopService {
     context?: Record<string, unknown> | null;
     mediaRefs?: SopClarificationMediaRef[];
     targetAgentSessionId?: string | null;
+    /** R41-A1：审计上下文（执行器面无 userId，通常只带 ip）。 */
+    audit?: SopAuditContext;
   }): Promise<{ clarification: SopClarification; escalated: boolean }> {
     const a = await this.assignments.findOne({
       where: { id: input.assignmentId },
@@ -624,6 +738,8 @@ export class SopService {
         },
       });
       if (dupe)
+        // R41-A1：**不落审计**——这条路径没有产生任何写动作（幂等重放），
+        // 落审计会把「澄清被发起次数」放大成轮询次数。
         return {
           clarification: dupe,
           escalated: dupe.resolution === "escalated_to_human",
@@ -674,6 +790,19 @@ export class SopService {
           },
         );
         await this.notifyEscalation(a, saved, "maxRounds 触顶");
+        // R41-A1：触顶升级也是一次澄清落库（escalated=true），同样留痕。
+        await this.auditClarificationIngested({
+          audit: input.audit,
+          clarificationId: saved.id,
+          assignmentId: a.id,
+          round: saved.round,
+          escalated: true,
+          questionLength: question.length,
+          hasContext: !!input.context,
+          mediaRefs: mediaRefs.length,
+          clientClarificationId: input.clientClarificationId ?? null,
+          executorId: input.executorId,
+        });
         return { clarification: saved, escalated: true };
       }
 
@@ -757,6 +886,19 @@ export class SopService {
       { jobId: session.id, attempts: 1 },
     );
 
+    // R41-A1：澄清上报同样留痕（谁在哪张单第几轮问了什么**长度**的澄清）。
+    await this.auditClarificationIngested({
+      audit: input.audit,
+      clarificationId: saved.id,
+      assignmentId: a.id,
+      round,
+      escalated: false,
+      questionLength: question.length,
+      hasContext: !!input.context,
+      mediaRefs: mediaRefs.length,
+      clientClarificationId: input.clientClarificationId ?? null,
+      executorId: input.executorId,
+    });
     this.logger.log(
       `SOP clarification ingested: assignment=${a.id} round=${round}/${a.maxRounds} session=${session.id}`,
     );
@@ -776,6 +918,8 @@ export class SopService {
     amendedBodyMarkdown?: string;
     changelog?: string;
     replyBy: string;
+    /** R41-A1：审计上下文（人工答复带 userId+ip；Agent 回复只带 actor）。 */
+    audit?: SopAuditContext;
   }): Promise<{ ok: true; newSopVersion?: string }> {
     const row = await this.clarifications.findOne({
       where: { id: input.clarificationId },
@@ -868,6 +1012,9 @@ export class SopService {
             input.changelog ??
             `澄清修订（assignment ${a.id} 第 ${row.round} 轮）`,
           publishedBy: input.replyBy,
+          // R41-A1：澄清修订自主发版同样产生一条 sop.publish——把本次答复的
+          // 主体带下去，否则「这个版本是谁发的」只剩 actor 字符串、没有 userId。
+          audit: input.audit,
         });
         newSopVersion = version.version;
       } catch (err) {
@@ -910,6 +1057,24 @@ export class SopService {
       );
     }
 
+    // R41-A1：答复留痕——「谁答复了哪条澄清、是直接答复还是修订发版」。
+    // **answer 正文不进审计**：它是复核 Agent / 人工的输出，审计行长期保留
+    // 且可 CSV 导出，正文落进去等于开一条持久外带通道；只记长度。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.reply",
+      resource: "sop_clarification",
+      resourceId: row.id,
+      detail: {
+        assignmentId: a.id,
+        round: row.round,
+        resolution: answeredBy,
+        answerLength: answer.length,
+        newSopVersion: newSopVersion ?? null,
+        actor: input.replyBy,
+      },
+    });
     this.logger.log(
       `SOP clarification replied: id=${row.id} resolution=${answeredBy} by=${input.replyBy} newVersion=${newSopVersion ?? "-"}`,
     );
@@ -990,6 +1155,8 @@ export class SopService {
     status: "completed" | "failed";
     result?: Record<string, unknown> | null;
     attempt?: number;
+    /** R41-A1：审计上下文（执行器面无 userId，通常只带 ip）。 */
+    audit?: SopAuditContext;
   }): Promise<{ accepted: boolean }> {
     const a = await this.assignments.findOne({
       where: { id: input.assignmentId },
@@ -1043,6 +1210,22 @@ export class SopService {
       );
       return { accepted: false };
     }
+    // R41-A1：交付回报留痕（**只在 CAS 胜出后**——让位/幂等重放没有写动作，
+    // 落审计会把「交付次数」放大成重试次数）。result 是执行器自述，
+    // 只记字节量，内容不进审计。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.complete",
+      resource: "sop_assignment",
+      resourceId: a.id,
+      detail: {
+        status: input.status,
+        attempt,
+        resultLength: input.result ? JSON.stringify(input.result).length : 0,
+        actor: `executor:${input.executorId}`,
+      },
+    });
     this.logger.log(
       `SOP assignment complete: id=${a.id} status=${input.status} attempt=${attempt}`,
     );
@@ -1521,6 +1704,78 @@ export class SopService {
     if (size > max) {
       throw new AppError(ErrorCode.SOP_JSON_FIELD_TOO_LARGE, { label, max });
     }
+  }
+
+  // ── 审计（R41-A1）────────────────────────────────────────────────
+
+  /**
+   * 审计落库的统一出口。
+   *
+   * **永不阻断业务**：审计是旁证，不是业务的前置条件（与 api-keys 的
+   * safeAudit、notification 的 NOTIFICATION_FAILED 兜底同一条 fail-open
+   * 纪律）。但失败**必须** `logger.error` 留痕——静默吞掉等于审计形同虚设：
+   * 出事时既没有行可查、也没有日志能定位「审计本身坏了」。
+   *
+   * `auditService` 缺席（@Optional：存量测试装配 / AuditModule 未装配）时
+   * 整体旁路——业务语义不变，不抛错也不刷日志。
+   */
+  private async safeAudit(
+    payload: Parameters<AuditService["log"]>[0],
+  ): Promise<void> {
+    if (!this.auditService) return;
+    try {
+      await this.auditService.log(payload);
+    } catch (err) {
+      this.logger.error(
+        "sop audit write failed: action=" +
+          payload.action +
+          " resource=" +
+          (payload.resource ?? "-") +
+          " resourceId=" +
+          (payload.resourceId ?? "-") +
+          " err=" +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  /**
+   * 澄清上报的审计载荷（两个落库出口共用：正常入队 / maxRounds 触顶升级）。
+   *
+   * **question 正文绝不入账**：它是执行器的不可信输入（11 §5.3），审计行是
+   * 长期保留、ADMIN 可导出 CSV 的面，正文进去等于给不可信文本开一条持久
+   * 存储 + 外带的通道。只记长度 / 轮次 / 媒体条数（这些足够回答「谁在何时
+   * 对哪张单发起过澄清」）。
+   */
+  private async auditClarificationIngested(input: {
+    audit?: SopAuditContext;
+    clarificationId: string;
+    assignmentId: string;
+    round: number;
+    escalated: boolean;
+    questionLength: number;
+    hasContext: boolean;
+    mediaRefs: number;
+    clientClarificationId: string | null;
+    executorId: string;
+  }): Promise<void> {
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.clarify",
+      resource: "sop_clarification",
+      resourceId: input.clarificationId,
+      detail: {
+        assignmentId: input.assignmentId,
+        round: input.round,
+        escalated: input.escalated,
+        questionLength: input.questionLength,
+        hasContext: input.hasContext,
+        mediaRefs: input.mediaRefs,
+        clientClarificationId: input.clientClarificationId,
+        actor: `executor:${input.executorId}`,
+      },
+    });
   }
 
   /** 升级人工通知（fail-open——通知失败不影响澄清落库）。 */

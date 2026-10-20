@@ -4,6 +4,7 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  Ip,
   Param,
   Post,
   UploadedFile,
@@ -270,6 +271,9 @@ export class SopCollabController {
   async clarify(
     @Body() body: AgentCollabClarificationDto,
     @Headers("authorization") auth: string,
+    // R41-A1：审计来源 ip（本面是机器身份，没有登录用户——操作者由服务层
+    // 记作 executor:<id>）。
+    @Ip() ip?: string,
   ) {
     // 鉴权 + 能力闸（结果本体不入账——澄清归属由 assignmentId 决定，
     // 但归属断言需要 executor.id，B-1）
@@ -294,6 +298,7 @@ export class SopCollabController {
       context: body.context ?? null,
       mediaRefs: body.mediaRefs ?? [],
       targetAgentSessionId: body.targetAgentSessionId ?? null,
+      audit: { ip: ip ?? null },
     });
     return {
       clarificationId: clarification.clientClarificationId ?? clarification.id,
@@ -340,6 +345,8 @@ export class SopCollabController {
     @Param("id") assignmentId: string,
     @Body() body: AgentCollabCompleteDto,
     @Headers("authorization") auth: string,
+    // R41-A1：审计来源 ip（执行器面，无登录用户）。
+    @Ip() ip?: string,
   ) {
     const executor = await this.authenticateAgent(
       body?.address,
@@ -355,6 +362,7 @@ export class SopCollabController {
       status: body.status,
       result: body.result ?? null,
       attempt: body.attempt,
+      audit: { ip: ip ?? null },
     });
     return { accepted };
   }

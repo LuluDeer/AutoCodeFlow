@@ -313,13 +313,16 @@ describe("SopController —— 起草/发布/只读面透传", () => {
     await h.controller.publish(
       "sop-1",
       { bump: "minor", changelog: "c" } as never,
-      { id: "admin-7" },
+      { id: 7 },
+      "10.0.0.9",
     );
     expect(h.calls.publish).toEqual({
       sopId: "sop-1",
       bump: "minor",
       changelog: "c",
-      publishedBy: "user:admin-7",
+      publishedBy: "user:7",
+      // R41-A1：审计上下文随调用一起进 service（谁 + 从哪来）
+      audit: { userId: 7, ip: "10.0.0.9" },
     });
   });
 

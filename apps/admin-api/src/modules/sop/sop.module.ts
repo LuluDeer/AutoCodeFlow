@@ -18,6 +18,8 @@ import { NotificationModule } from "../notification/notification.module";
 import { AiModule } from "../ai/ai.module";
 import { ExecutorPackageModule } from "../executor-package/executor-package.module";
 import { SchedulerModule } from "../scheduler/scheduler.module";
+// R41-A1（R34-A1 遗留②）：关键动作审计落库（AuditModule exports AuditService）。
+import { AuditModule } from "../audit/audit.module";
 import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
 
 /**
@@ -53,6 +55,9 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     AiModule,
     // P7d 前半：候选应用包交付——复用既有包校验链（SEC-05 zip bomb 等）
     ExecutorPackageModule,
+    // R41-A1：SOP 的写动作（发布/指派/澄清/答复/完成）落审计行。
+    // 无环：AuditModule 只依赖 TypeOrm/Config/LeaderGate，不回指 sop 域。
+    AuditModule,
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
   ],
   controllers: [SopController, SopCollabController],
