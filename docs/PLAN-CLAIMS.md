@@ -1007,3 +1007,14 @@
   ② `port-check.ts` 的缺陷是**实证**而非推测：Node 的 `listen` 对字符串走 IPC 管道分支 ⇒ 渲染层能让主进程建管道；`listen(null,…)` 会绑 0 号临时端口并**成功**
     ⇒ 用户清空端口输入框后预检**永远显示可用**。修法把参数收成「整数 + IP 字面量/localhost」。
   ③ 已核对装配：`ipcMain.handle` 43 处、`ipcMain.on` 0 处、`electronIpcMain` 仅 2 处引用（别名 + 包装），**无旁路**。
+- 2026-10-20 **★ R86-A1 + R88 done（commit c2bbca21）**：**executor-desktop 主进程安全面审计**（此前从未被系统审计）+ 两个从未在 CI 执行的 selftest 接线。
+  ① **IPC 面：43 个 handler、0 个校验 sender**（签名一律 `(_event,…)`）—— 任何拿到 webContents 的执行上下文都能驱动 `executor:stop`/`apps:uninstall`/`updater:install`。
+     新增 `ipc-sender-guard.ts`（生产只认 renderer 目录 `file:` 页 / dev 只认 `VITE_DEV_SERVER_URL` **origin 全等** / 必须主 frame；`senderFrame` 为 null **不回退** `getURL()`），
+     并把 electron 的 ipcMain 改别名导入、本地 `ipcMain` 由 `createGuardedIpcMain` 产出 ⇒ **单一注册入口，43 个注册点零改动即整体过闸**（想绕过必须显式再 import，TS 报重复声明）+ 源码钉子 selftest。
+     文件头自陈边界：「判 URL 与 frame 身份，不是进程身份 —— 同 frame 内注入的脚本仍拦不住」。
+  ② **`config:check-port` 把渲染层参数原样喂 `net.listen`**，实测三条：`listen('abc')` 走**管道路径**（主进程建管道）；`listen(null)` **绑 0 号端口并成功** ⇒ 清空端口输入框后**预检永远显示可用**；`listen(8002,'a b')` 触发主进程 `getaddrinfo`。
+     修法 `port-check.ts`：端口只认 **number 类型** 1..65535（字符串 `'8002'` 也拒——收字符串就把「端口」与「管道名」混成一件事）、host 只认 IP 字面量/localhost，**进 net 之前** fail-closed。
+  ③ **R88**：48 个 selftest 只有 46 个在 `test:main` 里，漏掉 `browser`（P7b 动作枚举+域名白名单）与 `package-candidate`（P7d ZIP 写入器+穿越载荷拒绝），**而两者头注都写着 Run via: npm run test:main**。已接线（50/50）+ 新增双向守卫 `check-desktop-selftests-wired.mjs` 接入 CI。
+  验证：tsc 0 / selftest-tsc 0；4 个相关 selftest 全绿；**总控独立反证**：`checkSender` 恒真 → `ipc-sender-guard` exit 1；守卫 4 道绿（含 bundle-drift，`resources/**` 与 `apps/executor-node/**` 零改动）。
+  注：本机 `npm run test:main` 会在 `token-crypto` 中断（缺 Electron 二进制，`logger.ts:42 require('electron')` 抛错）——**修前修后一致**（44 PASS/2 FAIL → 48 PASS/2 FAIL），环境性非回归。
+  **遗留 5 条如实登记**：POSIX 强杀非树杀（需真机验证）/ `config:test-connection` SSRF-lite（需产品事实确认）/ Linux 更新链无签名 / config-store 跨键非事务 / IPC 未做按 channel 能力分级。
