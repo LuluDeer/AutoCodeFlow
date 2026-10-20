@@ -1,5 +1,3 @@
-import { In, Raw } from "typeorm";
-
 import { SopService } from "../sop.service";
 
 /**
@@ -152,7 +150,8 @@ function harness(
     save: jest.fn(async (v: Any) => {
       runInterleave();
       const idx = clarificationRows.findIndex((c) => c.id === v.id);
-      if (idx >= 0) clarificationRows[idx] = { ...clarificationRows[idx], ...v };
+      if (idx >= 0)
+        clarificationRows[idx] = { ...clarificationRows[idx], ...v };
       else clarificationRows.push({ ...v });
       return v;
     }),
@@ -266,7 +265,12 @@ describe("R34-A1 轴3 · 两个复核会话同时答复同一澄清", () => {
   it("后到者不得覆盖先到者的答复（answer / resolution 归先到者）", async () => {
     const h = harness({
       clarifications: [
-        { id: "c1", assignmentId: "a1", round: 1, resolution: "escalated_to_human" },
+        {
+          id: "c1",
+          assignmentId: "a1",
+          round: 1,
+          resolution: "escalated_to_human",
+        },
       ],
       concurrentClarificationWrite: () => {
         // 另一个人工/复核会话在我们读取快照之后先提交了答复
@@ -431,6 +435,8 @@ describe("R34-A1 轴3 · 半成品 sop_amended 不得投递给执行器", () => 
     });
 
     const items = (await h.service.pollPending({ executorId: "e1" })) as Any[];
-    expect(items.filter((i) => i.kind === "clarification_reply")).toHaveLength(0);
+    expect(items.filter((i) => i.kind === "clarification_reply")).toHaveLength(
+      0,
+    );
   });
 });

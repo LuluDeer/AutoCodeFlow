@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { In, IsNull } from "typeorm";
 
 import { SopService } from "../sop.service";
@@ -115,7 +117,8 @@ function harness(
     create: jest.fn((v: Any) => ({ ...v })),
     save: jest.fn(async (v: Any) => {
       const idx = clarificationRows.findIndex((c) => c.id === v.id);
-      if (idx >= 0) clarificationRows[idx] = { ...clarificationRows[idx], ...v };
+      if (idx >= 0)
+        clarificationRows[idx] = { ...clarificationRows[idx], ...v };
       else clarificationRows.push({ ...v });
       return v;
     }),
@@ -360,10 +363,12 @@ describe("R33-A2 钉子 · 已验证守卫（poll 首领 CAS）", () => {
 
 describe("R33-A2 钉子 · 已验证守卫（条件 UPDATE 的 FindOperator 语义）", () => {
   it("fake 的 whereMatches 对 in / isNull 按真实语义求值（防假绿）", () => {
-    expect(whereMatches({ s: "blocked" }, { s: In(["blocked", "assigned"]) })).toBe(
-      true,
+    expect(
+      whereMatches({ s: "blocked" }, { s: In(["blocked", "assigned"]) }),
+    ).toBe(true);
+    expect(whereMatches({ s: "completed" }, { s: In(["blocked"]) })).toBe(
+      false,
     );
-    expect(whereMatches({ s: "completed" }, { s: In(["blocked"]) })).toBe(false);
     expect(whereMatches({ s: null }, { s: IsNull() })).toBe(true);
     expect(whereMatches({ s: "answered" }, { s: IsNull() })).toBe(false);
   });
@@ -414,13 +419,8 @@ describe("R33-A2 状态机 · completeAssignment 以 attempt CAS 为准", () => 
   });
 });
 
-
 describe("R39 · resend 重新排队按领取状态做 CAS（ADR-026）", () => {
-  const { readFileSync } = require("node:fs") as typeof import("node:fs");
-  const svcSrc = readFileSync(
-    require("node:path").join(__dirname, "..", "sop.service.ts"),
-    "utf8",
-  ) as string;
+  const svcSrc = readFileSync(join(__dirname, "..", "sop.service.ts"), "utf8");
 
   it("resend 分支的 assignments.update WHERE 里带 pulledAt（不是只有 id）", () => {
     // pulledAt 是领取 CAS 的判据列。无条件清零会抹掉「谁领了这张单」的凭据：
@@ -431,4 +431,3 @@ describe("R39 · resend 重新排队按领取状态做 CAS（ADR-026）", () => 
     expect(re.test(svcSrc)).toBe(true);
   });
 });
-
