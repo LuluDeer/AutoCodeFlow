@@ -424,7 +424,7 @@
 | 任务 | 产出 | 状态 |
 |---|---|---|
 | 浏览器能力 | `AgentBrowserSession`：7 个封闭动作（navigate/click/type/press/screenshot/extract_text/wait）+ **每次导航过域名白名单**（SOP constraints ∪ 权限档位，**空 = 全禁**）+ 全新临时 profile（不碰用户登录态，hostAccess=none 语义保持） | ✅ |
-| 截图/录屏回传 | 截图/录屏落工作区 → `uploadMedia` 即传中台 → `mediaPath`（/api/agent-collab/media/<id>）供澄清 mediaRefs 引用；admin-api 落盘（uploads/agent-media，100MB 上限、归属校验、路径越界终检）+ ADMIN 下载端点 | ✅ |
+| 截图/录屏回传 | 截图/录屏落工作区 → `uploadMedia` 即传中台 → `mediaPath`（**/api/sop/media/<id>** ——R35-A1 更正：此处原先记的 `/api/agent-collab/media/<id>` 从不是一条路由，下载端点是 `GET /api/sop/media/:mediaId`，ADMIN）供澄清 mediaRefs 引用；admin-api 落盘（uploads/agent-media，100MB 上限、归属校验、路径越界终检）+ ADMIN 下载端点 | ✅ |
 | tree-kill | `spawnWithTreeTimeout`：POSIX detached 进程组 `kill(-pid)`、Windows `taskkill /T /F`；**修复 P7a 残差**「超时只杀单进程、孙进程泄漏」（selftest 实测孙进程死亡） | ✅ |
 | Agent 托管 | `AgentHost`：poll → 能力上报（browser 按探测如实声明）→ 沙箱工作区 → **策略合并** → 循环 → 回报 completed/failed/澄清；单飞行防并发；`agentEnabled=false` 零动作 | ✅ |
 | 总开关 | `agentEnabled`（默认 false，ADR-022 显式开启）+ 消毒层布尔纪律 + index.ts 轮询循环接线（30s tick，host 内部 0 等待） | ✅ |

@@ -222,7 +222,11 @@ export default function SopsPage() {
     }
   }, [assignTarget, assignForm, detail, openDetail, load, t]);
 
-  /** 查看澄清附件：平台路径 /api/agent-collab/media/<id> → 取 id 经鉴权 blob 打开 */
+  /**
+   * 查看澄清附件：平台路径 /api/sop/media/<id>（R35-A1 更正——旧记的
+   * /api/agent-collab/media/<id> 从不是一条路由）→ 取尾部 id 经鉴权 blob 打开。
+   * 取 id 而非直链：下载端点要 ADMIN JWT 头，裸 URL 给浏览器只会 401。
+   */
   const viewClarificationMedia = useCallback(async (platformPath: string) => {
     const id = /media\/([^/]+)$/.exec(platformPath)?.[1];
     if (!id) return;

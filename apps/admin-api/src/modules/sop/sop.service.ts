@@ -85,11 +85,15 @@ const POLL_ASSIGNMENTS_MAX = 3;
 
 /**
  * mediaRefs 只接受平台内路径——外网 URL 一律拒绝（11 §5.2 SSRF 转嫁）。
- * `agent-collab/media`（P7b）：执行器经媒体回传端点上传的截图/录屏，
- * 返回的 mediaPath 即此形态。
+ * `sop/media`（P7b / R35-A1）：执行器经媒体回传端点上传的截图/录屏，返回的
+ * mediaPath 即此形态——它由 `SopController` 的 `@Get("media/:mediaId")` 真实
+ * 提供字节（`/api/sop/media/<id>`，ADMIN JWT）。
+ * `agent-collab/media`：**仅为灰度/存量宽容**保留——R35-A1 之前的旧形态，
+ * 它从不是一条路由（取回 404）；新代码不再产生它，等存量澄清行随媒体保留期
+ * （7 天）过期后即可删掉这一支。
  */
 const PLATFORM_MEDIA_PATH_RE =
-  /^\/api\/(artifacts|executions|executor-package|agent-collab\/media)\//;
+  /^\/api\/(artifacts|executions|executor-package|sop\/media|agent-collab\/media)\//;
 
 export interface DraftSopInput {
   slug: string;

@@ -468,9 +468,11 @@ export class SopCollabController {
    * 媒体回传（P7b）：执行器把截图/录屏挂到指派上。
    *
    * 返回的 `mediaPath` 是 mediaRefs 的**唯一合法引用形态**
-   * （/api/agent-collab/media/<id>）——澄清提问引用外网 URL 的门在
-   * SopService.validateMediaRefs 早已关死（SSRF 转嫁面），这里给出的是
-   * 平台内路径，中心侧（Qwen 视频理解）经下载端点取字节。
+   * （`/api/sop/media/<id>`，R35-A1 更正——此前写的
+   * `/api/agent-collab/media/<id>` 从不是一条路由，取回 404）——澄清提问
+   * 引用外网 URL 的门在 SopService.validateMediaRefs 早已关死（SSRF 转嫁面），
+   * 这里给出的是平台内路径，中心侧（Qwen 视频理解）与 admin-web 复核都经
+   * `SopController.downloadMedia`（@Get("media/:mediaId")，ADMIN）取字节。
    *
    * 归属校验：指派必须属于该执行器（防 A 机器给 B 的工单塞证据）；
    * 状态不设限——澄清期间（blocked）正是要发截图的场景。

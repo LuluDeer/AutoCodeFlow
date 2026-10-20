@@ -45,7 +45,15 @@ export interface StoredMedia {
   name: string;
   mime: string | null;
   sizeBytes: number;
-  /** 对客户端暴露的平台路径（mediaRefs 引用它——绝不接受其它形态）。 */
+  /**
+   * 对客户端暴露的平台路径（mediaRefs 引用它——绝不接受其它形态）。
+   *
+   * R35-A1：这里必须写成**真实存在**的下载端点
+   * `GET /api/sop/media/<id>`（sop.controller.ts 的 `@Get("media/:mediaId")`，
+   * 类级 JwtAuthGuard + Roles(ADMIN)）。历史上的
+   * `/api/agent-collab/media/<id>` 从不是一条路由（agent-collab 面只有 POST），
+   * 按它取只会 404——契约里出现的路径必须由某个 @Get 兑现，别再手写想象中的端点。
+   */
   mediaPath: string;
 }
 
@@ -116,7 +124,9 @@ export class SopMediaService {
       name,
       mime: input.mime ?? null,
       sizeBytes: input.buf.length,
-      mediaPath: `/api/agent-collab/media/${row.id}`,
+      // 指向真实存在的下载端点（见 StoredMedia.mediaPath 注释；R35-A1）：
+      // SOP 管理面的 @Get("media/:mediaId")，全局前缀 api ⇒ /api/sop/media/<id>。
+      mediaPath: `/api/sop/media/${row.id}`,
     };
   }
 

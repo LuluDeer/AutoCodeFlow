@@ -16094,8 +16094,8 @@
         "properties": {
           "success": {
             "type": "boolean",
-            "description": "当所有目标通道都失败/跳过时为 false",
-            "x-i18n-en": "false when all target channels failed/were skipped"
+            "description": "仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results",
+            "x-i18n-en": "true only when every requested channel actually delivered ('sent'); any 'blocked'/'failed'/'skipped' makes it false - per-channel outcomes in results"
           },
           "message": {
             "type": "string"
@@ -18072,8 +18072,8 @@
           },
           "mediaPath": {
             "type": "string",
-            "description": "平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式",
-            "x-i18n-en": "Platform path /api/agent-collab/media/<id> - the only valid form for mediaRefs"
+            "description": "平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式",
+            "x-i18n-en": "Platform path /api/sop/media/<id> - the only valid form for mediaRefs"
           }
         },
         "required": [

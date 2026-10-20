@@ -5462,7 +5462,7 @@ export interface components {
             description: string;
         };
         ChannelTestResponseDto: {
-            /** @description 当所有目标通道都失败/跳过时为 false */
+            /** @description 仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results */
             success: boolean;
             message: string;
             /** @description 逐通道投递状态 */
@@ -6132,7 +6132,7 @@ export interface components {
             name: string;
             mime: string | null;
             sizeBytes: number;
-            /** @description 平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式 */
+            /** @description 平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式 */
             mediaPath: string;
         };
         CollabCandidatePackageResponseDto: {

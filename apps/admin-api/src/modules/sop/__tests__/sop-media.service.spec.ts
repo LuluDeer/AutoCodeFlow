@@ -192,7 +192,10 @@ describe("SopMediaService.save · 落盘布局与登记（<assignmentId>/<uuid>-
       name: "shot.png",
       mime: null,
       sizeBytes: 7,
-      mediaPath: "/api/agent-collab/media/media-1",
+      // R35-A1：必须指向真实的下载端点（@Get("media/:mediaId")），
+      // 旧值 /api/agent-collab/media/<id> 从不是路由（另见
+      // sop-media.path-endpoint.contract.spec.ts 的端到端反证）。
+      mediaPath: "/api/sop/media/media-1",
     });
 
     const dir = path.join(root, ASG);

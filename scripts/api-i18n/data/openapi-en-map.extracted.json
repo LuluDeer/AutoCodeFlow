@@ -811,7 +811,7 @@
   "true = maxRounds 已耗尽，升级为人工通知（不会启动 sop_review 会话）": "true = maxRounds exhausted, escalated to a manual notification (no sop_review session is started)",
   "提供方被禁用/不可用时为空字符串（fail-open，执行器降级）": "Empty string when the provider is disabled/unavailable (fail-open, executor degrades)",
   "工具往返不向执行器暴露（恒为 null）": "Tool round-trips are not exposed to the executor (always null)",
-  "平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式": "Platform path /api/agent-collab/media/<id> - the only valid form for mediaRefs",
+  "平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式": "Platform path /api/sop/media/<id> - the only valid form for mediaRefs",
   "形如 'sop-<slug>' 的包名": "Package name of the form 'sop-<slug>'",
   "SOP 版本 + Agent 构建元数据（幂等重复投递）": "SOP version + Agent build metadata (idempotent re-delivery)",
   "false = 重复尝试/幂等重放被忽略": "false = duplicate attempts/idempotent replays are ignored",
