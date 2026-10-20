@@ -2151,12 +2151,28 @@ export class TaskService {
     // 比较两侧同一 hydrated Date 的毫秒值（PG 微秒精度在 hydration 时截断，
     // API 序列化与本次比对读的是同一形态，毫秒比较稳定）；不可解析的时间串
     // 按「版本不符」处理（fail-closed，同样 409）。
+    // R52（ADR-026 规则 2）：**乐观锁下沉到写谓词**，不再「读后比对」。
+    //
+    // 旧实现在这里比一次、再在 patchTaskColumns 里无条件写——两次之间的窗口仍是
+    // TOCTOU：另一个标签页的写可以**正好**落在这段间隙里，于是「检查通过但覆盖了
+    // 别人的更新」，乐观锁形同虚设。现在把期望版本作为**行谓词**下发，判据的解释权
+    // 归数据库（与 pause/resume/remove 同一姿态）。
+    //
+    // 为什么用区间而不是等值：PG 的 timestamptz 存**微秒**，而 hydration 到 JS Date
+    // 会截到毫秒；直接等值（哪怕 date_trunc）在不同驱动/时区下都容易出现「差 1μs
+    // 永不命中」。区间 [expectedMs, expectedMs + 1ms) 精确对应「同一个毫秒桶」，
+    // 既覆盖微秒尾数，也不依赖任何 PG 函数。
+    // 不可解析的时间串仍按「版本不符」处理（fail-closed，同旧语义）。
+    let expectedVersionMs: number | null = null;
     if (dto.expectedUpdatedAt != null) {
-      const expectedMs = new Date(dto.expectedUpdatedAt).getTime();
-      if (
-        !Number.isFinite(expectedMs) ||
-        expectedMs !== t.updatedAt.getTime()
-      ) {
+      const ms = new Date(dto.expectedUpdatedAt).getTime();
+      if (!Number.isFinite(ms)) throw new AppError("TASK_UPDATE_STALE");
+      expectedVersionMs = ms;
+      // 读时**预判**只用于「省掉一次注定失败的写」，**不是**判据的最终解释权：
+      // 现在是快照与期望值不符就立刻 409（零写入）；而快照看起来一致的情况，
+      // 真正的裁决发生在写谓词上（见 patchTaskColumns）——那一段才是关掉 TOCTOU
+      // 的地方。两层是分工，不是重复。
+      if (expectedVersionMs !== t.updatedAt.getTime()) {
         throw new AppError("TASK_UPDATE_STALE");
       }
     }
@@ -2264,7 +2280,7 @@ export class TaskService {
 
     let applied: boolean;
     try {
-      applied = await this.patchTaskColumns(id, writePatch);
+      applied = await this.patchTaskColumns(id, writePatch, expectedVersionMs);
     } catch (err) {
       // 改名撞唯一索引：tasks.name 上有全局唯一索引 idx_tasks_name_unique
       // （迁移 1790000000050，**含软删除行**）。create 早就有这条分流
@@ -2288,10 +2304,14 @@ export class TaskService {
       throw new AppError("TASK_NOT_FOUND", { taskId: id });
     }
     if (!applied) {
-      // 写没有命中行谓词但行仍在（PG 仅在"值完全相同"时报 0；updatedAt 走库
-      // 时钟后实际不会发生）。按回读结果返回，不按旧快照回写。
+      // 写未命中行谓词，但行仍在（否则上面已 404）。两种来源，**语义不同**：
+      //   · 带了 expectedUpdatedAt ⇒ 版本已被别人推进 ⇒ 409（乐观锁成立的唯一含义）；
+      //   · 没带（旧调用方）⇒ PG 仅在"值完全相同"时报 0，属无变化的成功，按回读返回。
+      if (expectedVersionMs !== null) {
+        throw new AppError("TASK_UPDATE_STALE");
+      }
       this.logger.warn(
-        `update ${id}: 列级写未命中行谓词（行已被并发推进或值未变），按回读结果返回`,
+        `update ${id}: 列级写未命中行谓词（值未变），按回读结果返回`,
       );
     }
     await this.saveVersion(saved.id, undefined, undefined, saved);
@@ -2519,14 +2539,22 @@ export class TaskService {
   private async patchTaskColumns(
     id: string,
     patch: Record<string, unknown>,
+    expectedVersionMs: number | null = null,
   ): Promise<boolean> {
-    const result = await this.taskRepo
+    let qb = this.taskRepo
       .createQueryBuilder()
       .update(Task)
       .set({ ...patch, updatedAt: () => "CURRENT_TIMESTAMP" })
       .where('"id" = :id', { id })
-      .andWhere('"deletedAt" IS NULL')
-      .execute();
+      .andWhere('"deletedAt" IS NULL');
+    if (expectedVersionMs !== null) {
+      // 乐观锁的行谓词（R52）：锁在「同一个毫秒桶」——见 update() 头注里为什么是区间。
+      qb = qb.andWhere('"updatedAt" >= :tsFrom AND "updatedAt" < :tsTo', {
+        tsFrom: new Date(expectedVersionMs),
+        tsTo: new Date(expectedVersionMs + 1),
+      });
+    }
+    const result = await qb.execute();
     return (result?.affected ?? 0) > 0;
   }
 

@@ -285,6 +285,14 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
             if (sql.includes('"status" = :from')) {
               return store.status === params?.from;
             }
+            // R52：乐观锁下沉到写谓词后的形态——半开区间 [tsFrom, tsTo)
+            // （PG 存微秒、hydration 截毫秒，用区间而不是等值/date_trunc）。
+            if (sql.includes('"updatedAt" >= :tsFrom')) {
+              const v = new Date(store.updatedAt).getTime();
+              const from = new Date(params?.tsFrom).getTime();
+              const to = new Date(params?.tsTo).getTime();
+              return v >= from && v < to;
+            }
             throw new Error(
               "givenRowPredicateUpdate: 无法求值的行谓词: " + sql,
             );
@@ -462,6 +470,39 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
       expect(calls[0].whereSql.join(" AND ")).toContain("deletedAt");
     });
 
+    it("R52 乐观锁下沉：读时一致但窗口内被别人推进 → 写谓词落空 → 409，且不落任何列", async () => {
+      const t0 = new Date("2026-10-01T08:00:00.000Z");
+      const t1 = new Date("2026-10-01T09:30:00.000Z");
+      const store = givenTaskStore(
+        {
+          id: "t1",
+          name: "旧名",
+          status: TaskStatus.ACTIVE,
+          deletedAt: null,
+          secrets: null,
+          updatedAt: t0,
+        },
+        (s) => {
+          // 读之后、写之前的并发推进：另一个标签页已经改过这一行
+          s.updatedAt = t1;
+        },
+      );
+      const calls = givenRowPredicateUpdate(store);
+
+      // 期望版本 = 读到的 t0 —— 读时预判能过（快照确实还是 t0），
+      // 但真正裁决在写谓词上：store 已是 t1，区间 [t0, t0+1ms) 不命中。
+      await expect(
+        service.update("t1", {
+          name: "新名",
+          expectedUpdatedAt: t0.toISOString(),
+        } as any),
+      ).rejects.toBeDefined();
+
+      // 关键：写确实发出去了（不是靠读时短路），但**一行都没改**。
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      expect(store.name).toBe("旧名");
+      expect(store.updatedAt).toBe(t1);
+    });
     it("update 输给并发 remove（行已软删）→ 404，不复活软删行、不排调度", async () => {
       const store = givenTaskStore(
         {
