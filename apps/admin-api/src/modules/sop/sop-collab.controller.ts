@@ -22,6 +22,7 @@ import {
 } from "@nestjs/swagger";
 
 import { Public } from "../../common/decorators/public.decorator";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { ExecutorService } from "../executor/executor.service";
 import type { Executor } from "../executor/entities/executor.entity";
 import { ExecutorPackageService } from "../executor-package/executor-package.service";
@@ -77,6 +78,18 @@ const POLL_TICK_MS = 500;
  * 进内存再被拒。与候选包端点的 500MB limits 同款先例。
  */
 export const MEDIA_UPLOAD_LIMITS = { fileSize: MAX_AGENT_MEDIA_BYTES } as const;
+
+/**
+ * R203-A1：本控制器 9 条写路由的授权形态声明文本（@WriteGuard scope='token'）。
+ *
+ * 此前这 9 条只有类级 @Public()——**免 JWT 写端点却没有任何声明**。A2 的纪律
+ * （write-guard-coverage：每个写端点必须显式声明 @Roles 或 @WriteGuard）之所以
+ * 没拦住它们，是因为那份 spec 的控制器清单是手写的且漏了本控制器（26/30）。
+ * 清单改为文件系统发现后这 9 条立刻变红，补上本条即恢复绿：声明不是文档，
+ * 是「这个免 JWT 的写面凭什么可以不鉴权」的必须答案。
+ */
+const AGENT_TOKEN_AUTH_REASON =
+  "执行器机器面：per-executor 令牌（validateTokenByAddress + resolveCredentialExecutorId 凭据反查），不进 JWT/API-Key 体系；令牌缺失或无效即 SOP_COLLAB_EXECUTOR_TOKEN_INVALID，协作写面另需 agent:sop 能力闸";
 
 function bearer(auth: string | undefined): string {
   return auth?.startsWith("Bearer ") ? auth.slice(7) : (auth ?? "");
@@ -193,6 +206,10 @@ export class SopCollabController {
    * 载荷随 poll 附带 `sopPolicy`（11 §3.1）——企业策略每轮下发，
    * 执行器本地配置突破不了（P7 执行器侧实现「min(本地, 中台上限)」合并）。
    */
+  @WriteGuard("agent-collab-poll", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("poll")
   @HttpCode(HttpStatus.OK)
   // N-12: items 是 assignment 与 clarification_reply 的混合数组（oneOf）。
@@ -235,6 +252,10 @@ export class SopCollabController {
   }
 
   /** 上报能力清单（覆盖式）。接 SOP 派发的机器在此声明 `agent:sop`。 */
+  @WriteGuard("agent-collab-capability", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("capability")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({
@@ -265,6 +286,10 @@ export class SopCollabController {
   }
 
   /** 发起澄清（P6 核心：执行器 Agent 回问）。 */
+  @WriteGuard("agent-collab-clarification", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("clarifications")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: CollabClarifyResponseDto })
@@ -309,6 +334,10 @@ export class SopCollabController {
   }
 
   /** 进度心跳（存活信号，卡死判定依据）。 */
+  @WriteGuard("agent-collab-progress", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/progress")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({
@@ -338,6 +367,10 @@ export class SopCollabController {
   }
 
   /** 回报完成（幂等键 attempt）。验收判定是中台 Agent 的职责，这里只落账。 */
+  @WriteGuard("agent-collab-completion", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/complete")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: CollabCompleteResponseDto })
@@ -372,6 +405,10 @@ export class SopCollabController {
    * （续跑循环）之后才确认；确认前该回复随每次 poll 重发（至少一次投递），
    * 执行器侧按 clarificationId 幂等去重——重复投递不产生重复消费。
    */
+  @WriteGuard("agent-collab-clarification", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/clarifications/ack")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({
@@ -417,6 +454,10 @@ export class SopCollabController {
    * 返回空 content——**原样透传**，执行器按「模型不可用」降级（不掩盖、
    * 不造成功假象）。
    */
+  @WriteGuard("agent-collab-llm", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("llm")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: CollabLlmRelayResponseDto })
@@ -485,6 +526,10 @@ export class SopCollabController {
    * 归属校验：指派必须属于该执行器（防 A 机器给 B 的工单塞证据）；
    * 状态不设限——澄清期间（blocked）正是要发截图的场景。
    */
+  @WriteGuard("agent-collab-media", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/media")
   @HttpCode(HttpStatus.CREATED)
   @ApiCreatedResponse({ type: CollabMediaUploadResponseDto })
@@ -533,6 +578,10 @@ export class SopCollabController {
    * 部署本身仍走既有 deploy_application（DEP-04 审批，方案 C）——本端点
    * 只负责"包进系统"，不触部署。
    */
+  @WriteGuard("agent-collab-package", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/candidate-package")
   @HttpCode(HttpStatus.CREATED)
   @ApiCreatedResponse({ type: CollabCandidatePackageResponseDto })
@@ -624,7 +673,10 @@ export class SopCollabController {
       // 所以这条兜底不会把共享令牌路径放宽（那条仍是 fail-closed 的 404）。
       // 指纹在场时**不进兜底**：指纹路径的 fail-closed 语义保持原样。
       if (!normalizeDeviceFingerprint(deviceFingerprint)) {
-        const byCredential = await this.executorByCredential(address, presented);
+        const byCredential = await this.executorByCredential(
+          address,
+          presented,
+        );
         if (byCredential) return byCredential;
       }
       throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_TOKEN_INVALID);

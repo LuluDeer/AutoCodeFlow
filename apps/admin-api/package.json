@@ -19,6 +19,8 @@
     "test:cov": "npx --node-options=--experimental-vm-modules jest --coverage",
     "test:e2e": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json",
     "typecheck": "tsc --noEmit",
+    "check:route-authz": "node scripts/check-route-authz-matrix.mjs",
+    "check:route-authz:selftest": "node scripts/check-route-authz-matrix.mjs --selftest",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli",
     "swagger:export": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\" && node ../../scripts/api-i18n/inject-openapi-en.mjs",
     "migration:run": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts up",
