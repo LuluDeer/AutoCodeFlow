@@ -1213,3 +1213,24 @@
   验证：当前全仓 **0 错**（无历史包袱）；**反证**撤掉修复 → 立刻给出 `leader-gate.service.spec.ts(216,9): TS2345`（**类型检查阶段点名 file:line**），还原 0 错。
   同时：**admin-api 全量 319 套件 / 5543 例全绿**（R113 两处修复之后）。价值：把「spec 能否编译」从 8 分钟的分片跑提前到 20 秒的静态检查，失败信息从 `suite failed to run` 变成 `file:line: TS2345`。
 - 2026-10-20 **R116-A1 认领**：`log_stream_pusher.py` 的**字节级背压**（R94-A1 遗留「只有条数上限、无字节上限，理论峰值 ≈1GB/执行，需压测」）。任务里明确要求：**先量化算式 → 再判断是否真问题 → 才决定改不改**；若判定不是真问题，如实说明并给证据，不许为产出而改代码。
+- 2026-10-20 **R118 · 全仓测试基线（无提交，逐个实跑）**：今天累计 ~125 笔提交后，把每个有测试的组件都跑了一遍：
+
+| 组件 | 结果 |
+|---|---|
+| apps/admin-api | 319 套件 / 5543 例 全绿 |
+| apps/admin-web | 224 文件 / 1854 例 全绿 |
+| apps/executor-node | 48 套件 / 1205 例 全绿（1 套件 / 7 例 skip） |
+| apps/executor-python | 1193 例 全绿（3 skip） |
+| packages/mcp-server | 266 例 全绿（6 文件） |
+| packages/acf-cli | 371 例 全绿（11 文件，1 skip） |
+| packages/autocodeflow-node-sdk | 4 套件 / 133 例 全绿 |
+| packages/autoflow-sdk（py） | 157 例 全绿 |
+| apps/registry-pypi | 156 例 全绿 |
+| apps/registry-npm | 配置自检通过 |
+| apps/executor-desktop | **本机跑不了**：node_modules/electron/dist 缺失 ⇒ logger.ts:42 require('electron') 抛错，test:main 在 token-crypto 处中断（**修前修后一致，环境性**）。已逐个手跑其中 6 个（navigation-policy / destructive-actions / ipc-sender-guard / port-check / network-util / path-index）全绿；接线守卫报 **53/53** |
+
+**合计约 10,878 例全绿**（除 desktop 的环境性中断）。另外 R117 新增的 spec 类型检查在 admin-api 上 **0 错**。
+
+**方法论**：根 package.json 的 test:unit 串起全部 14 步，但本机必然在 desktop 那步中断（Electron 二进制缺失），
+所以用「逐组件实跑」替代「一键跑」—— 两者对**已有结果**等价，但前者能拿到每项的真实数字。
+**不做的事**：不为这个环境缺口写「跳过 desktop」的包装脚本 —— 那会让「test:unit 绿了」变成一句在 CI 上成立、在本机不成立的话。
