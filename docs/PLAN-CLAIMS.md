@@ -1132,3 +1132,11 @@
   反向漂移 3 个（deployment.delete/reject/rollback）**保留**是对的：历史审计行里还有它们。修：补 19 个映射 + zh/en 各 17 条词条（另 2 条是「词条在、映射忘」的孤儿）+ 给 `check-interface-maps.mjs` 加**第四节**（每个 action 必须映射、每个键双语齐全、下界 40、反向不校验）。
   **顺手发现两条测试在钉住这个缺陷**：它们把 `config.update`/`sop.timeout.unclaimed` 当作「未知动作」fixture 断言「回退原始码」—— 正是 R94-A1 那条教训的第二次出现：**把「当前行为」当「预期行为」的 fixture 会把缺陷固化成契约**。改 fixture 为 `legacy.unknown_action`，让用例继续测回退语义。
   验证：vitest 20 passed（+1 新用例钉标签渲染）、tsc 0、守卫四节全绿；反证：删一条映射 → 守卫点名该动作。
+- 2026-10-20 **★ R105 done（commit 31b4a796）**：**破坏性 IPC 通道加主进程原生二次确认**。R102-A1 遗留里最高危的一条：`apps:uninstall` / `apps:delete-release` /
+  `updater:install` / `history:clear` 的确认**只做在 React ConfirmBar 上**，IPC 层没有 ⇒ 注入的渲染层脚本可直接 `electronAPI.uninstallApp(id)` **跳过确认**。
+  **关键判断**：sender 闸拦住了「外面的人」，拦不住「**里面已跑起来的代码**」（它就在主 frame 里）；要让确认无法被绕过，它必须发生在**渲染层碰不到的地方** —— 原生模态框。
+  这不是「再加一层 UI 确认」，是**把确认搬出攻击面**。新增纯模块 `destructive-actions.ts`：策略表（**只放不可逆/外发型 4 个**，`executor:start|stop` 可恢复刻意不纳入以免「确认疲劳」）+ `confirmDestructive` **fail-closed**
+  （未登记/缺失/抛错/非严格 true 一律不执行）+ `CONFIRM_CANCELED` 回执形态；`ipc-handlers` 加 `confirmViaNativeDialog` 适配器，4 个 handler 各一行守卫。
+  验证：tsc 0（两套 tsconfig）、5 个相关 selftest 全绿、新 selftest 接进 test:main（守卫 52/52），含**接线钉子**；反证：删 `apps:uninstall` 的确认调用 → exit 1，还原后 0。
+  **反证暴露我自己一个 bug（重要）**：接线钉子初版用 `path.join(__dirname,'..','ipc-handlers.ts')` + `if (existsSync)`，而编译产物在 `dist-selftest/` 下该路径**不存在** ⇒ 整段检查被**静默跳过**，撤掉调用后仍全绿。
+  **一条会静默跳过的接线钉子，比没有更糟 —— 它给出「已检查」的错觉。** 改成逐个候选 + 全都找不到即失败后，反证才生效。
