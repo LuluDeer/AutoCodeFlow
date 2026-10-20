@@ -1970,3 +1970,27 @@ agent 的做法是**对齐日志面口径（宁可多掩）**，并依赖既有�
 - **判断不该改** ⇒ **写下「为什么不改」**（`R130` 的 lastTriggerTime 三场景）
 
 三种都不是「什么都不做」：**每一种都留下了可复核的文字。**
+- 2026-10-20 **R158 · 逐渠道核对「共享判定是否真的六处都用了」（本轮最该查的一条）**。
+
+本 session 里我抓到的缺陷有一大半是「同一修法只落一半」，所以对 `classifyDeliveryFailure` 这个新加的共享纯函数，
+我做的第一件事不是读它的实现，而是**数调用点**：
+
+```
+base.channel.ts     => x1   （定义处）
+dingtalk.channel.ts => x2
+email.channel.ts    => x2
+feishu.channel.ts   => x2
+slack.channel.ts    => x2
+webhook.channel.ts  => x2
+wecom.channel.ts    => x2
+```
+
+**六个渠道全部 ×2（import + 调用），一个都没漏。**
+
+特别值得指出 **`email.channel.ts` 也在里面** —— 它是 SMTP 而不是 axios，错误形状完全不同（没有 `response.status`）。
+它仍然走同一个判定，说明这个函数的判定顺序（先看 HTTP status、再看 `code`、最后 `unknown`）对两类错误都成立，
+而不是「为 axios 写的，SMTP 那个凑合用」。
+
+**这条核对的价值**：如果它只接进了 5 个渠道，整套测试仍然会绿（没接的那个不会有断言失败），
+而缺陷会以「某个渠道的失败日志依然只有 failed」的形式**静默存在**。
+这与我 `R94` 抓到的「`ZIP_MAX_*` 定义了没有调用方」是同一类：**机制存在 ≠ 机制在链路上**。
