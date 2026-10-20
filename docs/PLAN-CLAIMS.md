@@ -1843,3 +1843,24 @@ WeCom webhook 的机器人 key 就以明文出现在响应里 —— 而同一�
 
 **正确的收口方式不是「把 key 补进第一个正则」**（那只是这一次对齐），而是**让第二个实现消失** ——
 两处都引用同一个常量。这条我会在验收时盯着：如果它只补了正则没消除重复，那下一次还会漂。
+- 2026-10-20 **R153 · 扩大扫描：同一个文件里就有三份「secret 查询参数」正则**。
+
+上轮我确认两份实现漂移（service 缺 key/sign、log util 有）。这轮全仓扫「名字像 secret 的匹配器」，结果更糟（六份）：
+
+1. `notification-config.service.ts:257` — 字段名 `|pass|secret|token|`（SECRET_FIELD_RE）
+2. `notification-config.service.ts:261` — **URL 查询参数掩码** `|pass|secret|token|`
+3. `notification-config.service.ts:265` — **「已掩码」探测** `|pass|secret|token|`
+4. `channels/log-safe-url.util.ts:18` — 日志脱敏 `|pass|secret|token|key|sign|`
+5. `application/application.service.ts:285` — 应用配置字段 `|pass|secret|token|api[_-]?key|`
+6. `mcp-server/src/redact.ts:43` — MCP 出站脱敏 `|SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|CREDENTIAL|PRIVATE|`
+
+**六份匹配器，六套词表。其中三份在同一个文件里，而且这三份都缺 `key`。**
+
+要注意区分：这六份**并不完全是同一条规则**（有的是 env 键名、有的是 JSON 字段名、有的是 URL 查询参数），混为一谈也不对。
+但同在 `notification-config.service.ts` 里的那三份**是同一条规则** ——「URL 里哪些查询参数算 secret」，它们理应是**一个常量**，现在是三个字面量。
+
+**这就是「多份实现、零机制强制一致」的完整形态**：不是谁忘了改，而是**根本没有「该改哪里」的单一位置**。
+补 `key` 要补三处（以后新增一处还得记得补）—— 这正是漂移会再次发生的原因。
+
+**因此验收标准更硬了**：不是「把 key 补进第一个正则」，而是**这个文件里只应剩一份正则**，另两处引用它。
+跨文件那三份（application / log-safe / mcp redact）语义不同，**不强求统一**，但要各自写明它管哪一类名字。
