@@ -20,10 +20,29 @@ import { join } from "node:path";
 
 const ROOT = process.cwd();
 const SRC = join(ROOT, "apps", "admin-api", "src", "common", "utils", "__tests__", "ssrf-deny-matrix.spec.ts");
-const DST = join(ROOT, "apps", "executor-node", "src", "lib", "ssrf-deny-parity.spec.ts");
+/**
+ * 三个消费方（本仓的 SSRF 拒绝判据有三份实现，都必须被同一张矩阵钉住）：
+ *   ① admin-api —— 矩阵的**出处**（表驱动 + 18 条），本身已有自己的 spec；
+ *   ② executor-node —— 镜像用例 `ssrf-deny-parity.spec.ts`；
+ *   ③ executor-python —— 镜像用例 `tests/test_ssrf_guard.py`（R79 新增）。
+ *
+ * 只校验 ②③：它们才是「会漏」的地方（① 是矩阵本身）。
+ */
+const TARGETS = [
+  {
+    path: join(ROOT, "apps", "executor-node", "src", "lib", "ssrf-deny-parity.spec.ts"),
+    label: "executor-node",
+    needle: (addr) => `addr: ${JSON.stringify(addr)}`,
+  },
+  {
+    path: join(ROOT, "apps", "executor-python", "tests", "test_ssrf_guard.py"),
+    label: "executor-python",
+    needle: (addr) => `"${addr}"`,
+  },
+];
 
 const src = readFileSync(SRC, "utf8");
-const dst = readFileSync(DST, "utf8");
+const sources = TARGETS.map((t) => ({ ...t, src: readFileSync(t.path, "utf8") }));
 
 /** admin-api 矩阵条目：`{ name: "…", addr: "…", risk: "…" }`。 */
 const entries = [...src.matchAll(/\{\s*name:\s*"([^"]+)",\s*addr:\s*"([^"]+)",\s*risk:\s*"([^"]+)"\s*\}/g)].map(
@@ -36,18 +55,30 @@ if (entries.length === 0) {
   process.exit(1);
 }
 
-const missing = entries.filter((e) => !dst.includes(`addr: ${JSON.stringify(e.addr)}`));
+const missing = [];
+for (const target of sources) {
+  for (const e of entries) {
+    if (!target.src.includes(target.needle(e.addr))) {
+      missing.push({ ...e, target: target.label });
+    }
+  }
+}
 
 if (missing.length > 0) {
   console.error("");
-  console.error("✖ SSRF 拒绝矩阵未对齐：admin-api 有、executor-node 镜像里没有 " + missing.length + " 条");
-  for (const m of missing) console.error(`  · ${m.addr}（${m.name}, risk=${m.risk}）`);
+  console.error("✖ SSRF 拒绝矩阵未对齐：admin-api 有、镜像里没有 " + missing.length + " 条");
+  for (const m of missing) {
+    console.error(`  · ${m.addr}（${m.name}, risk=${m.risk}）—— 缺在 ${m.target}`);
+  }
   console.error("");
-  console.error("  修法：把上面每条加进 apps/executor-node/src/lib/ssrf-deny-parity.spec.ts 的");
-  console.error("  DANGER_ADDRESSES，并确认 executor-node 的闸真的拒绝它。**不要**改守卫放行。");
+  console.error("  修法：把上面每条加进对应镜像文件的 DANGER_ADDRESSES ——");
+  console.error("    · executor-node：apps/executor-node/src/lib/ssrf-deny-parity.spec.ts");
+  console.error("    · executor-python：apps/executor-python/tests/test_ssrf_guard.py（带 # 注释即可）");
+  console.error("  并确认该侧的闸真的拒绝它。**不要**改守卫放行。");
   process.exit(1);
 }
 
 console.log(
-  "✔ SSRF 拒绝矩阵已对齐：admin-api 的 " + entries.length + " 条危险地址全部在 executor-node 的镜像用例中。",
+  "✔ SSRF 拒绝矩阵已对齐：admin-api 的 " + entries.length + " 条危险地址全部出现在 " +
+    sources.map((s) => s.label).join(" / ") + " 的镜像用例中。",
 );
