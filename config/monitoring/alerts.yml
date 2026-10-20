@@ -154,6 +154,22 @@ groups:
           summary: '通知投递风暴：全渠道失败过多'
           description: '15 分钟内全渠道投递失败合计 {{ $value }} 次（阈值 10）。多渠道同时失败 → 大概率 admin-api 容器出网故障（DNS/防火墙/代理）而非单渠道配置问题。排查：容器内 curl 渠道 endpoint 连通性；通知服务异常日志。恢复前告警外发链路不可用，建议同步盯 Alertmanager UI。'
 
+
+      # SSRF 策略拦截（R33-A1 建议 / R34-C1 落地）：`blocked` 是**策略决定**，
+      # 不是传输故障 —— 它意味着某个渠道地址被 assertSafeHttpUrl 拒绝。正常部署
+      # 里这个值应恒为 0，一旦非零几乎必然是两个信号之一：
+      #   ① 渠道 URL 被配成了内网/回环地址（配置错误）；
+      #   ② 有人在用通知配置探测内网（安全事件）。
+      # 阈值取 >0（而非某个容忍值）正是因为它不该出现；`blocked` 自 R33-A1 起已
+      # 登记为 0 值基线 series，所以首次拦截之前这里是 0 而不是「无数据」。
+      - alert: AUTOFLOW_NOTIFICATION_BLOCKED_SPIKE
+        expr: sum by (channel) (increase(autoflow_notification_delivery_total{result="blocked"}[15m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: '通知渠道被 SSRF 规则拦截（channel={{ $labels.channel }}）'
+          description: '渠道 {{ $labels.channel }} 15 分钟内有 {{ $value }} 次投递被 SSRF 策略拦截。该值正常应为 0。排查：① 管理台「设置 → 通知配置」核对该渠道 URL 是否被改成内网/回环/云元数据地址（NOTIF_ALLOW_PRIVATE_NETWORK 是否被误开）；② 若不是配置问题，按安全事件处理——查审计日志里最近修改通知配置的操作人与来源 IP。'
       # ── AI 分析 ───────────────────────────────────────────────────
       # AI 失败分析连续失败：fail = 重试耗尽后的 fail-open（分析缺失落库），
       # skipped = provider 未配置/返回空（正常态，不参与本告警）。「连续」的
