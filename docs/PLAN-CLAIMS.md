@@ -1205,3 +1205,11 @@
   验证 vitest **257→266**、tsc 0；用例**全部用中文**构造（ASCII 测不出两种口径差异）：env 1365 中文=4095B 通过、1366=4098B 拒；env **键**同样按字节；params 22000 中文≈66000B 拒（按字符会误放）；边界 65536 通过 / 65537 拒。
   反证：退回无字节约束 → **5 failed / 4 passed**，还原 266 绿（并确认两个 helper 共出现 10 次，防静默还原失败）。
   **「长度」在本仓至少三套口径**：码元（zod `.max`）/ 码点（validator.js `isLength`）/ 字节（`Buffer.byteLength`）—— 混用即缺陷，每次都要回后端看它到底怎么算。
+- 2026-10-20 **★ R117 done（commit 30e5182d）**：**spec 纳入类型检查**。查 R113 那个套件**何时开始红**：`git show 805eae17^` 与 `805eae17:` 对比证明 ——
+  R32-A4（插入 `userRepo` 参数）那一刻起，该 spec 的 `leaderGate` 就一直落在 `Repository<User>` 槽位。
+  **为什么能红 60+ 轮没人发现**：根 tsconfig `exclude` 了 `**/*.spec.ts` 与 `src/**/__tests__/**`（生产构建不需要它们，决定本身对），于是 spec 类型错误对 `tsc` **完全不可见**，只在 ts-jest 运行时报 `● Test suite failed to run` ——
+  **没有断言失败、没有用例名** ⇒ **一个套件「从没运行」和「全部通过」在 CI 日志里长得几乎一样**。
+  加 `tsconfig.spec.json`（extends 根配置、include `src/**/*.ts`、noEmit）+ `npm run typecheck:specs` + CI 一步（在 `npm run typecheck` 之后）。
+  验证：当前全仓 **0 错**（无历史包袱）；**反证**撤掉修复 → 立刻给出 `leader-gate.service.spec.ts(216,9): TS2345`（**类型检查阶段点名 file:line**），还原 0 错。
+  同时：**admin-api 全量 319 套件 / 5543 例全绿**（R113 两处修复之后）。价值：把「spec 能否编译」从 8 分钟的分片跑提前到 20 秒的静态检查，失败信息从 `suite failed to run` 变成 `file:line: TS2345`。
+- 2026-10-20 **R116-A1 认领**：`log_stream_pusher.py` 的**字节级背压**（R94-A1 遗留「只有条数上限、无字节上限，理论峰值 ≈1GB/执行，需压测」）。任务里明确要求：**先量化算式 → 再判断是否真问题 → 才决定改不改**；若判定不是真问题，如实说明并给证据，不许为产出而改代码。
