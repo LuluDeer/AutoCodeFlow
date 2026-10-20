@@ -2112,3 +2112,25 @@ agent 报：`loadFromEnv` 把渠道 `enabled` 默认发布成 false，历史 DB 
   验证：notification **11 suites/303 → 12/335 全绿**、两个 typecheck 0、migrations 46/270 全绿；全仓 320/5580（唯一失败 `agent-media-retention` 单跑 15/15 通过，与本轮无关）。
   **总控独立反证 ×3** + **反证逼出守卫自身一个 bug**：第二类判据写在 `const problems = []` 之前（TDZ），有漂移时**直接崩**而不是报红 —— 已修。
   **如实标注**：全部 mock axios/nodemailer + IP 字面量绕 DNS，未对真 Slack/SMTP/Feishu 做端到端投递。
+- 2026-10-20 **R165 · 派 agent 审 node 侧日志链路的同时，先做了一次结构探底（已能判定两侧契约不同步）**。
+
+`apps/executor-node/src/log-stream-pusher.ts`（178 行）里数关键词出现次数：
+
+| 关键词 | 次数 | 含义 |
+|---|---|---|
+| `fromLine` | 4 | 有行号语义 ✅ |
+| `MAX_` | 4 | 有上限常量 |
+| `dropped` | 3 | 有丢行处理 |
+| **`bytes`** | **0** | **无字节记账** |
+| **`truncat`** | **0** | **无截断 marker 行** |
+
+而 python 侧这轮刚补齐了 `MAX_BUFFERED_BYTES=10MB` / `MAX_BYTES_PER_CHUNK=1MB` 与
+`... [N log lines dropped by local backpressure] ...` marker。
+
+⇒ **两侧写的是同一张 `ExecutionLogLine` 表、同一个 `fromLine + i` 契约，但字节背压与丢行可见性只有一半有。**
+这比「同文件两份正则」更深一层：**同一个契约由两种语言、两个进程、两套测试各自维护，没有任何机制强制对齐。**
+
+所以给 agent 的任务里我特意要求出一张**与 python 侧的对照表**，并写明「**任何与 python 不一致的地方都是发现（哪怕各自都合理）**」。
+因为这种漂移最典型的辩护就是「我们这边这样也没错」—— 而**两侧都自洽，合起来就是不一致**。
+
+（本轮不做修复，等它交付后一并验收；探底的作用是**我事先就知道该看什么**。）
