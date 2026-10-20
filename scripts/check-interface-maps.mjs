@@ -114,4 +114,28 @@ let failures = 0;
   console.log("✔ REST 地图一致：" + prefixes.size + " 个路由前缀全部在文档中出现（" + files.length + " 个 controller 文件）。");
 })();
 
+/** ③ SDK 文档里的 lockstep 版本声明 */
+(function checkSdkVersionClaim() {
+  const DOC = join(ROOT, "docs", "atlas", "05-interfaces", "sdks.md");
+  const MCP_PKG = join(ROOT, "packages", "mcp-server", "package.json");
+
+  const doc = readFileSync(DOC, "utf8");
+  const mcpVersion = JSON.parse(readFileSync(MCP_PKG, "utf8")).version;
+  const claimed = /当前\s*\**\s*(\d+\.\d+\.\d+)/.exec(doc);
+  if (!claimed) {
+    console.error("✖ sdks.md 里找不到「当前 X.Y.Z」版本声明 —— 判据失配（不是声明消失了就是格式变了）。");
+    failures += 1;
+    return;
+  }
+  if (claimed[1] !== mcpVersion) {
+    console.error(
+      `✖ sdks.md 版本声明与实际不符：文档写 ${claimed[1]}，mcp-server 实际 ${mcpVersion}（lockstep 单版本线）。`,
+    );
+    console.error("  修法：把 sdks.md 的「当前 X.Y.Z」改成实际版本；不要改守卫。");
+    failures += 1;
+    return;
+  }
+  console.log(`✔ SDK 版本声明一致：sdks.md 与 mcp-server 均为 ${mcpVersion}。`);
+})();
+
 if (failures > 0) process.exit(1);
