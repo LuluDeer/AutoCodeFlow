@@ -2705,3 +2705,23 @@ export function isJsonInvocation(argv = process.argv): boolean {
 探针的误判来源就消失了 —— 不需要给 `isJsonInvocation` 加更多条件，**那只会让一个兜底逻辑越来越聪明**。
 
 （具体删不删要看过是否有用户在用 —— 这是发布件的兼容性决策，我不单方面删。）
+- 2026-10-20 **R197 · 独立确认：`task kill` / `task rollback` 没有 `--json`，写命令的机器可读面不齐**。
+
+核了 `tasks.ts` 两处：
+
+| 命令 | 选项 | 输出 |
+|---|---|---|
+| `task rollback <id>`（:487-497） | 只有 `--version`，**无 `--json`** | `spinner.succeed(...)` + 一行 gray 文本 |
+| `task kill <taskId> <execId>`（:845-855） | **无任何选项** | `spinner.succeed(r.message)` |
+
+而读命令那侧是齐的（`task list` / `exec` / `apikey list` / `approval list` 都有 `--json`）。
+
+⇒ **「读命令可机器解析、写命令只能人读」** —— 对 CI 消费者很别扭：
+一个脚本 `acf task kill 12 345` 之后拿不到结构化结果（成功/失败只能靠退出码），而 `acf task list --json` 又能拿到。
+
+**严重性（中）**：不影响正确性，但**影响「CLI 能否被编排」** —— 而这正是 CLI 相对 UI 的主要价值。
+
+**注意不要过度统一**：`approval approve/reject/cancel` 也缺 `--json`，但它们的输出就是一句确认，
+加 `--json` 收益低；**`kill` / `rollback` 收益高**，因为脚本通常要继续判断「真的取消了没有 / 回滚到了哪个版本」。
+
+这与我 `R194` 那条判据同型：**「统一」不是目标，「按用途分级」才是**。
