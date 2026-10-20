@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ModuleRef } from "@nestjs/core";
-import { Repository, IsNull, Or, In } from "typeorm";
+import { Repository, IsNull, Or, In, Not } from "typeorm";
 import { Application, ApplicationStatus } from "./entities/application.entity";
 // NETOPT-8③: 删除应用时 best-effort 通知执行器清理 apps/<appId>
 import { AppDeployment } from "./entities/app-deployment.entity";
@@ -1248,7 +1248,36 @@ export class ApplicationService implements OnModuleInit {
     app.gitRepo = gitRepo;
     app.gitBranch = gitBranch;
     if (gitCommit) app.gitCommit = gitCommit;
-    await this.repo.save(app);
+    const deployHeaderPatch: {
+      status: ApplicationStatus;
+      gitRepo: string;
+      gitBranch: string;
+      gitCommit?: string;
+    } = {
+      status: ApplicationStatus.DEPLOYING,
+      gitRepo,
+      gitBranch,
+      ...(gitCommit ? { gitCommit } : {}),
+    };
+    // R54（ADR-026 规则 4）：只写本次真正改变的 4 列，**不整行 save**。
+    // 这个方法的窗口是**分钟级**（clone + 构建 + 部署），跨窗口的整行回写会把期间管理台改的
+    // name / description / env / manifest 全部按进入方法时的快照写回。
+    // 顺带把 R-01（掩码副本落库）从「靠 RAW 取数规避」变成**结构上不可能**：patch 里没有 env，
+    // 就不存在把 '***' 写进 secrets 的路径。
+    // 条件写：**同一应用同一时刻只允许一次部署**（与 app-deployment 模块的 in-flight
+    // 唯一索引同一姿态）。DEPLOYING 是「已有人占位」的唯一含义，把它写进 WHERE：
+    // 命中 0 说明另一个部署正在进行，本次直接让位（不再往下 clone/构建/收尾，
+    // 否则两次部署会互相覆盖 status 与 manifest）。
+    const started = await this.repo.update(
+      { id, status: Not(In([ApplicationStatus.DEPLOYING])) },
+      deployHeaderPatch,
+    );
+    if (!started.affected) {
+      this.logger.warn(
+        `deployFromGit(${id}): 已有部署在进行中（status=DEPLOYING），本次让位`,
+      );
+      return;
+    }
     // D3-B-P1-2: git 部署触发落证（applicationId + git 元信息）。
     await this.writeAudit({
       action: "application.deploy",
@@ -1361,12 +1390,43 @@ export class ApplicationService implements OnModuleInit {
         }
       }
 
+      // R54：收尾同样只写 status 一列，且带前置状态——**只有在这次部署仍然持有
+      // DEPLOYING 时**才收尾。若窗口内已被取消/被另一次部署推进/被删，命中 0 就
+      // 不要按旧快照宣布「部署成功」（否则会覆盖别人刚写的状态）。
       app.status = ApplicationStatus.ACTIVE;
-      await this.repo.save(app);
+      // 收尾 patch 只包含**本次部署产生的结果列**：status + rev-parse 得到的 gitCommit
+      // + manifest 派生的 manifest/runtime/entrypoint（这三列在 1324/1330-1332 就地赋值，
+      // 旧实现靠收尾那次整行 save 顺带落库——改列级写后必须显式带上，否则会**静默丢失**）。
+      const resultPatch: Record<string, unknown> = {
+        status: ApplicationStatus.ACTIVE,
+        gitCommit: app.gitCommit ?? null,
+        manifest: app.manifest ?? null,
+        runtime: app.runtime ?? null,
+        entrypoint: app.entrypoint ?? null,
+      };
+      const settled = await this.repo.update(
+        { id, status: ApplicationStatus.DEPLOYING },
+        resultPatch,
+      );
+      if (!settled.affected) {
+        this.logger.warn(
+          `deployFromGit(${id}): 部署期间状态已被并发推进，跳过 ACTIVE 收尾以保留并发结果`,
+        );
+      }
       this.logger.log(`Application ${app.name} deployed successfully`);
     } catch (err: unknown) {
       app.status = ApplicationStatus.FAILED;
-      await this.repo.save(app);
+      // 失败收尾用「未终结」谓词而不是 =DEPLOYING：失败路径上状态可能已被别人改成别的
+      // 中间态，但**只要还没落到终态**，把这次失败如实记下来仍然是对的。
+      const failed = await this.repo.update(
+        { id, status: Not(In([ApplicationStatus.ACTIVE, ApplicationStatus.FAILED])) },
+        { status: ApplicationStatus.FAILED },
+      );
+      if (!failed.affected) {
+        this.logger.warn(
+          `deployFromGit(${id}): 失败收尾未命中（状态已是终态），保留并发结果`,
+        );
+      }
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Deployment failed for ${app.name}: ${msg}`);
       throw err;

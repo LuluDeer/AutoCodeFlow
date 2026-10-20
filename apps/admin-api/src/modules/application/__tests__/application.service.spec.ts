@@ -76,10 +76,26 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   find: jest.fn(),
   create: jest.fn((d: any) => d),
   save: jest.fn((e: any) => Promise.resolve(e)),
+  // R54：deployFromGit 的部署头/收尾改为列级 update（ADR-026 规则 4）——假仓储必须
+  // 提供 update，否则这条路径在测试里等于不存在（ADR-027 的同一教训）。
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
   remove: jest.fn(),
   delete: jest.fn().mockResolvedValue({ affected: 0 }),
   ...overrides,
 });
+
+
+/**
+ * R54：deployFromGit 的部署头/收尾改用**列级 update**（ADR-026 规则 4），因此
+ * 「最后一次状态写入」要从 update 的 patch 读（save 的实参里已经没有它了）。
+ * 没有 update 记录时回落到 save 实参，兼容尚未改写的路径。
+ */
+const lastStatusPatch = (appRepo: ReturnType<typeof makeRepo>): Record<string, any> => {
+  const updates = (appRepo.update as jest.Mock).mock.calls;
+  if (updates.length > 0) return updates[updates.length - 1]?.[1] ?? {};
+  const saves = (appRepo.save as jest.Mock).mock.calls;
+  return saves[saves.length - 1]?.[0] ?? {};
+};
 
 describe("ApplicationService", () => {
   let service: ApplicationService;
@@ -275,18 +291,16 @@ describe("ApplicationService", () => {
       mockedLookup.mockReset();
     });
 
-    it("persists the RAW env on the DEPLOYING save (not the masked row)", async () => {
+    it("R54: DEPLOYING 只写 4 列——env 根本不进 patch（R-01 从「靠 RAW 规避」变成结构上不可能）", async () => {
       const row = { id: "1", name: "app1", env: { API_KEY: "sk-real" } };
       appRepo.findOne.mockResolvedValue(row);
       mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
-      // Clone fails fast — we only care about the FIRST save (DEPLOYING).
-      // Snapshot each save arg: the service mutates the same entity object
-      // (status → FAILED) before saving again.
-      const saves: Array<Record<string, unknown>> = [];
-      appRepo.save.mockImplementation((e: any) => {
-        saves.push({ ...e });
-        return Promise.resolve(e);
+      const patches: Array<{ where: any; patch: any }> = [];
+      appRepo.update.mockImplementation((where: any, patch: any) => {
+        patches.push({ where, patch });
+        return Promise.resolve({ affected: 1 });
       });
+      // Clone fails fast — we only care about the FIRST write (DEPLOYING).
       mockedSpawn.mockImplementation(() =>
         fakeSpawn({ status: 128, stderr: "repository not found" }),
       );
@@ -295,8 +309,21 @@ describe("ApplicationService", () => {
         service.deployFromGit("1", "https://github.com/org/repo.git", "main"),
       ).rejects.toThrow("repository not found");
 
-      expect(saves[0].status).toBe(ApplicationStatus.DEPLOYING);
-      expect((saves[0].env as Record<string, string>).API_KEY).toBe("sk-real");
+      const first = patches[0];
+      // 部署头是**占位条件写**：WHERE 带 status 谓词（= 同一应用同时只允许一次部署）。
+      // 旧实现是 update/save 只带 id，两次并发部署会互相覆盖 status 与 manifest。
+      expect(first.where).toEqual(
+        expect.objectContaining({ id: "1", status: expect.anything() }),
+      );
+      expect(first.patch.status).toBe(ApplicationStatus.DEPLOYING);
+      expect(first.patch.gitRepo).toBe("https://github.com/org/repo.git");
+      expect(first.patch.gitBranch).toBe("main");
+      // 关键：env **不在 patch 里** —— 旧实现整行 save 必须靠「先取 RAW 行」来避免
+      // 把掩码 '***' 落库；现在这条风险从结构上消失，不再依赖调用顺序正确。
+      expect(first.patch).not.toHaveProperty("env");
+      expect(first.patch).not.toHaveProperty("name");
+      // 整行 save 彻底不再用于部署头写入
+      expect(appRepo.save).not.toHaveBeenCalled();
     });
 
     it("R4: refuses a repo whose host resolves to cloud metadata — git never spawns", async () => {
@@ -343,10 +370,19 @@ describe("ApplicationService", () => {
       );
 
       expect(mockedSpawn).toHaveBeenCalled();
-      const lastSave =
-        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
-      expect(lastSave.status).toBe(ApplicationStatus.ACTIVE);
-      expect(lastSave.gitCommit).toBe("deadbeef");
+      const updates = (appRepo.update as jest.Mock).mock.calls;
+      // 收尾只写 status（且带 DEPLOYING 前置），git 元信息在**部署头**那一次写里
+      const header = updates[0]?.[1] ?? {};
+      const settle = updates[updates.length - 1]?.[1] ?? {};
+      expect(header.status).toBe(ApplicationStatus.DEPLOYING);
+      expect(header.gitRepo).toBe("https://github.com/org/repo.git");
+      expect(settle.status).toBe(ApplicationStatus.ACTIVE);
+      expect(settle).not.toHaveProperty("gitRepo");
+      // rev-parse 得到的 commit 落库（在部署头之后、clone 成功时补写）
+      const withCommit = updates
+        .map(([, p]: any[]) => p)
+        .find((p: any) => p?.gitCommit != null);
+      expect(withCommit?.gitCommit).toBe("deadbeef");
     });
 
     it("R4: spawn stays async — no spawnSync import remains on the event loop", async () => {
@@ -411,7 +447,7 @@ describe("ApplicationService", () => {
 
         expect(mockedSpawn).toHaveBeenCalledTimes(2);
         const lastSave =
-          appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+          lastStatusPatch(appRepo);
         expect(lastSave.gitCommit).toBe("deadbeef");
       });
     });
@@ -824,8 +860,7 @@ describe("ApplicationService", () => {
       });
       expect(created[1].name).toBe("mt2");
       // already-exists 仅 warn 不中断（第二个任务仍被注册），终态 ACTIVE
-      const lastSave =
-        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+      const lastSave = lastStatusPatch(appRepo);
       expect(lastSave.status).toBe(ApplicationStatus.ACTIVE);
       expect(lastSave.gitCommit).toBe("deadbeef");
     });
@@ -845,8 +880,7 @@ describe("ApplicationService", () => {
       } finally {
         rmSpy.mockRestore();
       }
-      const lastSave =
-        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+      const lastSave = lastStatusPatch(appRepo);
       expect(lastSave.status).toBe(ApplicationStatus.FAILED);
     });
 
@@ -890,7 +924,7 @@ describe("ApplicationService", () => {
           service.deployFromGit("1", "https://github.com/o/r.git", "main"),
         ).rejects.toThrow(/git clone failed/);
         const lastSave =
-          appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+          lastStatusPatch(appRepo);
         expect(lastSave.status).toBe(ApplicationStatus.FAILED);
       } finally {
         rmSpy.mockRestore();
