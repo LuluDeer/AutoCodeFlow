@@ -78,10 +78,10 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: var(--space-2);
   height: 100%;
   color: var(--text3);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .app-loading::before,
 .page-loading::before {
@@ -109,9 +109,10 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  min-height: 48px;
+  min-height: var(--topbar-h);
   flex-shrink: 0;
-  padding: 0 6px 0 14px;
+  /* 右侧不留内边距：窗控钮贴齐窗口右上角（Windows/Linux 原生观感） */
+  padding: 0 0 0 14px;
   background: var(--surface-0);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
@@ -121,7 +122,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 48px;
+  height: var(--topbar-h);
   min-width: 0;
   overflow: hidden;
 }
@@ -170,21 +171,24 @@ textarea:focus-visible,
 
 .topbar-controls {
   display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 48px;
+  align-items: stretch;
+  gap: 0;
+  height: var(--topbar-h);
   flex: none;
   -webkit-app-region: no-drag;
 }
 
+/* 窗控钮：46×顶栏高、直角贴边——悬停色块铺满到窗口边缘（原生标题栏观感）。
+   此前是 36×32 的圆角小钮，右侧还留 6px 内边距，关闭钮悬停时红块悬在角落
+   中间，既不像原生也不像应用自绘；改为通高后两者合流。 */
 .titlebar-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 32px;
+  width: 46px;
+  height: 100%;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   background: transparent;
   color: var(--text3);
   cursor: pointer;
@@ -194,12 +198,13 @@ textarea:focus-visible,
 .titlebar-control-icon { width: 15px; height: 15px; }
 .titlebar-btn:hover { background: var(--surface-2); color: var(--text); }
 .titlebar-btn-close:hover { background: var(--red); color: #fff; }
+.titlebar-btn:focus-visible { outline-offset: -3px; border-radius: 0; }
 
 /* 窄窗：brand+窗控一行，tabs 独占次行（与旧两行结构同观感） */
 @media (max-width: 899px) {
   .topbar { padding-left: 10px; }
-  .topbar-brand { flex: 1; height: 42px; }
-  .topbar-controls { height: 42px; }
+  .topbar-brand { flex: 1; height: var(--topbar-h-narrow); }
+  .topbar-controls { height: var(--topbar-h-narrow); }
   .topbar-tabs {
     order: 3;
     flex-basis: 100%;
@@ -207,8 +212,6 @@ textarea:focus-visible,
     padding: 0 6px;
     border-top: 1px solid var(--border);
   }
-  /* 44px 行内下划线：按钮 34px 上下留 5px，-5px 恰落在顶栏底边 */
-  .topbar-tabs .tab.active::after { bottom: -5px; }
 }
 
 /* ── Tab 导航（嵌入顶栏：自带透明底，选中下划线落在顶栏底边上）──────── */
@@ -228,9 +231,9 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 14px;
+  gap: 7px;
+  height: 32px;
+  padding: 0 13px;
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: transparent;
@@ -256,18 +259,9 @@ textarea:focus-visible,
   font-weight: 600;
 }
 .tab.active:hover { background: var(--accent-muted); }
-.tab.active::after {
-  content: '';
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: -7px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--green);
-  /* 下划线从选中侧生长出来（v2 动效）：切换 Tab 时有"落笔"的方向感 */
-  animation: underlineIn 200ms var(--ease-out);
-}
+/* 选中态只保留药丸（浅绿底 + accent 描边 + accent 字）：
+   此前药丸之外还叠了一条 2px 绿色下划线，同一处出现两个"选中"信号，
+   且下划线用 -7px/-5px 两个魔数适配折行，视觉上像是没对齐的装饰线。 */
 .tab-icon { width: 16px; height: 16px; flex: none; }
 
 @media (max-width: 820px) {
@@ -280,6 +274,8 @@ textarea:focus-visible,
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 常驻滚动条槽：页面之间/空态与列表之间切换时不再出现 9px 横向跳动 */
+  scrollbar-gutter: stable;
   background: var(--bg);
 }
 .main-content::-webkit-scrollbar { width: 9px; }
@@ -306,10 +302,6 @@ textarea:focus-visible,
 @keyframes runsIn {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-@keyframes underlineIn {
-  from { transform: scaleX(0.2); opacity: 0; }
-  to { transform: scaleX(1); opacity: 1; }
 }
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(12px); }

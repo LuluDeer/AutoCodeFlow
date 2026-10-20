@@ -1370,6 +1370,7 @@ export default function ConfigPage() {
 
         {/* 底部保存栏 */}
         <div className="cfg-footer">
+          <div className="cfg-footer-inner">
           {saveError && (
             <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> {saveError}</div>
           )}
@@ -1399,6 +1400,7 @@ export default function ConfigPage() {
           <button className="btn btn-primary btn-lg" onClick={requestSave} disabled={saving || checkingSaveImpact || !isDirty || saveImpact !== null}>
             {saving ? <><Icon name="refresh" className="icon-spin" /> {t('cfg.footer.saving')}</> : checkingSaveImpact ? t('cfg.footer.checkingStatus') : t('cfg.footer.save')}
           </button>
+          </div>
         </div>
       </div>
     </div>

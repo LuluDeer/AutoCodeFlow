@@ -6,7 +6,7 @@ import EmptyState from '../components/EmptyState';
 import LogViewer, { ViewerLogLevel } from '../components/LogViewer';
 import { TAB_SWITCH_EVENT, requestTabSwitch } from '../tab-switch';
 // V4 后续优化（6）i18n 二期：历史页文案入双语表（zh 值与原硬编码逐字一致）。
-import { createCfgTexts, resolveRendererLocale } from '../i18n';
+import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -97,10 +97,11 @@ function formatDuration(ms?: number): string {
 function formatTime(ts?: number): string {
   if (!ts || !Number.isFinite(ts)) return '—';
   const d = new Date(ts);
-  return d.toLocaleString('zh-CN', { hour12: false,
+  return formatLocaleDateTime(d, {
     ...(d.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' }),
     month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit' });
+    hour: '2-digit', minute: '2-digit',
+  });
 }
 
 function statusBadge(status?: string) {
@@ -366,7 +367,7 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
       // （lineNoOffset - lines.length + index + 1，组件内置语义）。
       lineNoOffset={linesRef.current}
       // 汇总行三条数字并排：组件内置「显示 x / y 行」，这里追加已载入/文件共。
-      bufferNote={t('history.overlay.bufferNote', lines.length, linesRef.current)}
+      bufferNote={lines.length > 0 ? t('history.overlay.bufferNote', lines.length, linesRef.current) : undefined}
       emptyState={<span className="log-empty"><Icon name="terminal" className="icon-xs" />{t('history.overlay.empty')}</span>}
       emptyFilteredState={<span className="log-empty"><Icon name="search" className="icon-xs" />{t('history.overlay.emptyFiltered')}</span>}
     />
@@ -808,7 +809,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                         {failCount > 0 && <span className="history-stat failed">{t('history.group.failCount', failCount)}</span>}
                         <span className="history-stat total">{t('history.group.totalCount', runCount)}</span>
                       </span>
-                      <span className="history-stat time" title={lastRun?.startTime ? new Date(lastRun.startTime).toLocaleString('zh-CN', { hour12: false }) : undefined}>{formatTime(lastRun?.startTime)}</span>
+                      <span className="history-stat time" title={lastRun?.startTime ? formatLocaleDateTime(lastRun.startTime) : undefined}>{formatTime(lastRun?.startTime)}</span>
                     </div>
                   </button>
 
@@ -851,7 +852,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                         return (
                           <div key={run.executionId} className="history-run-row">
                             <span className="history-run-badge">{statusBadge(run.status)}</span>
-                            <span className="history-run-time" title={run.startTime ? new Date(run.startTime).toLocaleString('zh-CN', { hour12: false }) : undefined}>{formatTime(run.startTime)}</span>
+                            <span className="history-run-time" title={run.startTime ? formatLocaleDateTime(run.startTime) : undefined}>{formatTime(run.startTime)}</span>
                             <CopyableExecId id={run.executionId} />
                             <span
                               className={`history-run-dur${staleRunning ? ' history-run-dur-stale' : ''}`}

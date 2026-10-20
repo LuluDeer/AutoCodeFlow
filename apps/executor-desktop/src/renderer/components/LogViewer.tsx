@@ -285,17 +285,24 @@ export default function LogViewer({
             >{label} {count}</button>
           ))}
         </div>
-        <span className="log-fs-summary">
-          {q
-            ? (filtered.length > displayed.length
-              ? t('logviewer.matchSummaryRanged', filtered.length, searchStart + 1, searchStart + displayed.length)
-              : t('logviewer.matchSummary', filtered.length))
-            : t('logviewer.showSummary', displayed.length, filtered.length)}
-          {bufferNote ? ` · ${bufferNote}` : ''}
-        </span>
-        <button className="btn btn-sm" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>{wrapLines ? t('logviewer.unwrap') : t('logviewer.wrap')}</button>
-        <button className="btn btn-sm" onClick={jumpToLatest}>{following && !q ? t('logviewer.following') : t('logviewer.jumpLatest')}</button>
-        {extraTools}
+        {/* 汇总只在**发生了筛选/搜索或缓冲被窗口化**时出现：无过滤时
+            「显示 x / x 行」与标题里的行数完全重复，却占掉了工具行中间的位置，
+            挤得右侧按钮换行（窄窗尤其明显）。 */}
+        {(q || levelFilter !== 'all' || Boolean(bufferNote)) && (
+          <span className="log-fs-summary">
+            {q
+              ? (filtered.length > displayed.length
+                ? t('logviewer.matchSummaryRanged', filtered.length, searchStart + 1, searchStart + displayed.length)
+                : t('logviewer.matchSummary', filtered.length))
+              : t('logviewer.showSummary', displayed.length, filtered.length)}
+            {bufferNote ? ` · ${bufferNote}` : ''}
+          </span>
+        )}
+        <div className="log-fs-tools-actions">
+          <button className="btn btn-sm" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>{wrapLines ? t('logviewer.unwrap') : t('logviewer.wrap')}</button>
+          <button className="btn btn-sm" onClick={jumpToLatest}>{following && !q ? t('logviewer.following') : t('logviewer.jumpLatest')}</button>
+          {extraTools}
+        </div>
       </div>
       {notice && <div className="log-fs-notice" role="status">{notice}</div>}
 

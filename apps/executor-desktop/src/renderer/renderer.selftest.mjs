@@ -1377,13 +1377,14 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   const statusPage = pages[3];
 
   // ① 未知 status 不得渲染成空白：主进程 executor:status 以裸字符串下发，
-  //    STATUS_LABEL/STATUS_BADGE 是封闭表——已知值查表、未知值原样透出
+  //    STATUS_LABEL 是封闭表——已知值查表、未知值原样透出
   //    （对齐 HistoryPage.statusBadge 的「未知」回退与 agentOutcomeLabel 透传）。
   if (!statusPage.includes('STATUS_LABEL[status] ?? status')) {
     throw new Error('UX走查①: StatusWindow 状态大字缺少未知值回退（新状态枚举会渲染成空白）');
   }
-  if (!statusPage.includes("STATUS_BADGE[status] ?? 'badge-stopped'")) {
-    throw new Error('UX走查①: 状态徽章缺少未知值回退（className 会出现字面 undefined）');
+  // 状态大字旁边不再叠同文案徽章：2026-10 真机截图里「在线运行中」出现两次。
+  if (statusPage.includes('STATUS_BADGE')) {
+    throw new Error('UX走查①: 状态大字与徽章重复展示同一状态（应只保留 hero-name）');
   }
 
   // ② Agent 卡片读取失败时不得谎报「已处理 0 个指派」——未知显示 —。

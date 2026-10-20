@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Icon from './Icon';
-import { createCfgTexts, resolveRendererLocale } from '../i18n';
+import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 // PLAN-EXECUTOR-DESKTOP-UX 5.1：面板的**判定逻辑**全部在 main/health-panel.ts
 // 的纯函数里（行顺序、状态优先级、路径脱敏、畸形载荷降级都由
 // health-panel.selftest.ts 钉住）。渲染层只做两件事：
@@ -188,7 +188,7 @@ export default function HealthPanelCard({ apiUrl }: { apiUrl: string }) {
           {t('health.summary', summary.ok, summary.warn, summary.bad, summary.unknown)}
           {checkedAt && (
             <span className="health-summary-time">
-              {t('health.loadedAt', checkedAt.toLocaleTimeString('zh-CN', { hour12: false }))}
+              {t('health.loadedAt', formatLocaleDateTime(checkedAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}
             </span>
           )}
         </div>
