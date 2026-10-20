@@ -2464,3 +2464,25 @@ resp.raise_for_status()                # ← 3xx 从这里漏出去，抛的是*
 
 **这条的价值**：它挡住了一个很自然的错误修法（「两边不一样，那就都跟随」）。
 **一致不一定等于正确** —— 与 `R170`（两侧都 fire-and-forget，所以免检）是同一个陷阱的反面。
+- 2026-10-20 **R186 · 验收预检：`R185` 那条「别为了让两边一致去打开 follow_redirects」——它守住了**。
+
+读 `http.py` 的修复：
+
+```python
+def _raise(resp):
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HttpClientError(str(exc), request=exc.request, response=exc.response) from exc
+```
+
+**单一路径**，没有任何 `is_error` 前置判断 —— 与我在 `R184` 独立定位的机制完全一致（它给的注释甚至连
+「302 登录跳转 / 网关反代」这个触发场景都写到了）。
+
+**关键确认**：全包 `follow_redirects` 出现次数 = **0** ⇒ 它**没有**为了让 3xx 变绿而打开跟随，
+仍是 httpx 默认的「不跟随、把重定向当错误」—— 正是内部通道该有的姿态。
+
+⇒ 两件事同时成立：**异常类型被修正**（可捕获、带 `error_code`），**安全语义没被顺手改掉**。
+
+这是本轮我最想确认的一点，因为「让测试变绿的最小改动」有两个候选（改类型 / 打开跟随），
+**后者更省事且看起来也合理** —— 而它选了前者。
