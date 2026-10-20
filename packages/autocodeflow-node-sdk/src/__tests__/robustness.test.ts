@@ -7,7 +7,9 @@
  */
 import axios from 'axios';
 
-import { HttpClient, isTerminalCallbackUrl } from '../http-client';
+import { HttpClient, isTerminalCallbackUrl,
+  effectiveRetryMaxWaitMs,
+  CALLBACK_MAX_WAIT_MS } from '../http-client';
 
 jest.mock('axios');
 
@@ -95,5 +97,23 @@ describe('R177-A1 轴2：回调通道重试豁免的路径判定', () => {
     expect((body as Array<Record<string, unknown>>)[0].executorAddress).toBe(
       'executor-node:8002',
     );
+  });
+});
+
+describe('R191 终态回调的单次等待上限', () => {
+  const retry = { maxWaitMs: 30_000 };
+
+  it('回调通道封顶 5s', () => {
+    expect(effectiveRetryMaxWaitMs('/api/executions/callback', 'POST', retry)).toBe(5_000);
+    expect(effectiveRetryMaxWaitMs('/api/executions/callback?batch=2', 'POST', retry)).toBe(5_000);
+  });
+
+  it('回调通道不受更小上限影响（取更小者）', () => {
+    expect(effectiveRetryMaxWaitMs('/api/executions/callback', 'POST', { maxWaitMs: 2_000 })).toBe(2_000);
+  });
+
+  it('其余路径沿用 maxWaitMs', () => {
+    expect(effectiveRetryMaxWaitMs('/api/tasks', 'GET', retry)).toBe(30_000);
+    expect(effectiveRetryMaxWaitMs('/api/executions/callback', 'GET', retry)).toBe(30_000);
   });
 });

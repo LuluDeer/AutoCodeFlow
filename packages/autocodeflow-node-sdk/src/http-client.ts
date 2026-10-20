@@ -121,6 +121,36 @@ export function isTerminalCallbackUrl(url: string, method: Method): boolean {
 export const RETRYABLE_HTTP_STATUSES: readonly number[] = [429, 500, 502, 503, 504];
 
 /**
+ * R191：**终态回调通道**的单次重试等待上限（毫秒）。
+ *
+ * 与 `maxWaitMs = 30s` 的默认值不同：回调通道的重试预算是**有 deadline 压力**的 ——
+ * 执行器在 `timeoutSeconds` 到点时会 kill 进程，而终态回调恰恰是在「任务刚好结束」时报的，
+ * 最可能撞上那个窗口。按默认预算算最坏 ≈ 4×10s(超时) + 3×30s(等待) ≈ **130s**，
+ * 一旦超过剩余预算，**重试反而导致终态丢失**（回调没发出去就被杀）—— 那是「为可靠性做的重试，
+ * 把可靠性搞坏了」。
+ *
+ * 取 5s 与 python SDK 的 `CALLBACK_RETRY_MAX_WAIT_S = 5.0` 对齐；此时最坏 ≈ 4×10 + 3×5 = **55s**，
+ * 仍比 python(≈41s) 宽（node 默认多一次尝试，见下方 NETOPT-G P3 注），但已远离 130s 的量级。
+ */
+export const CALLBACK_MAX_WAIT_MS = 5_000;
+
+/**
+ * R191：本次请求的**单次重试等待上限**。纯函数（导出可测）。
+ *
+ * 终态回调通道有 deadline 压力（执行器 `timeoutSeconds` 到点 kill），故封顶更小；
+ * 其余路径沿用 `retry.maxWaitMs`。**只影响等待，不改尝试次数**。
+ */
+export function effectiveRetryMaxWaitMs(
+  url: string,
+  method: Method,
+  retry: Pick<HttpRetryConfig, 'maxWaitMs'>,
+): number {
+  return isTerminalCallbackUrl(url, method)
+    ? Math.min(retry.maxWaitMs, CALLBACK_MAX_WAIT_MS)
+    : retry.maxWaitMs;
+}
+
+/**
  * R177-A1: 把请求 URL 收敛成「纯路径」形态，供回调端点谓词判定。
  *
  * 缺陷现场：两个谓词（isTerminalCallbackUrl / withExecutorAddress）都直接拿
@@ -699,6 +729,7 @@ export class HttpClient {
       // NETOPT-F P2-4: callback 直报通道豁免（对齐 autoflow-sdk）。
       isTerminalCallbackUrl(url, method);
     const maxAttempts = this.retry.maxRetries + 1;
+    const effectiveMaxWaitMs = effectiveRetryMaxWaitMs(url, method, this.retry);
     // BREAKER-MASK（审计 P3，2026-10-17）：重试途中熔断器打开时，保留真实错误。
     //
     // 缺陷现场：一次 503/超时失败会 `onFailure()` 计熔断；若这次失败恰好把熔断
@@ -746,12 +777,12 @@ export class HttpClient {
         lastTransportError = error;
         // 指数退避（封顶 maxWaitMs），并与 Retry-After 头取大（同样封顶）
         const backoff = Math.min(
-          this.retry.maxWaitMs,
+          effectiveMaxWaitMs,
           this.retry.minWaitMs * 2 ** attempt,
         );
         const retryAfter = parseRetryAfterHeader(error);
         const waitMs = Math.min(
-          this.retry.maxWaitMs,
+          effectiveMaxWaitMs,
           retryAfter === null ? backoff : Math.max(backoff, retryAfter),
         );
         await sleep(waitMs);
