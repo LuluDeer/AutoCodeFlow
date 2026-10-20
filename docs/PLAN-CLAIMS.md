@@ -2486,3 +2486,31 @@ def _raise(resp):
 
 这是本轮我最想确认的一点，因为「让测试变绿的最小改动」有两个候选（改类型 / 打开跟随），
 **后者更省事且看起来也合理** —— 而它选了前者。
+- 2026-10-20 **R187 · 独立确认：发布包里有个错误类型**从入口不可达**（第三个「存在但不在链路上」的变体）**。
+
+`R177-A1` 报：`CircuitBreakerOpenError` 只在 `http-client.ts` 里 `export`，而 `index.ts` **没有转出** ⇒
+消费方 `import { CircuitBreakerOpenError } from '@autocodeflow/sdk'` **编译失败**，catch 端只能靠 `err.name` 字符串猜，
+`instanceof` 永远为 false。
+
+**我用 `git show HEAD:` 独立核了两处**：
+
+```
+index.ts (HEAD)        mentions CircuitBreaker = 0
+http-client.ts (HEAD)  exports class          = 1
+```
+
+⇒ 确认成立。而且是**发布件**（`release.yml` 的 publish 矩阵里有它），所以这不是内部瑕疵，
+**是用户装到的包里那个类摸不到**。
+
+## 这是「文件存在 ≠ 在链路里」的第三个变体
+
+| 变体 | 载体 | 表现 |
+|---|---|---|
+| 进程/模块级 | 守卫脚本、selftest、`ZIP_MAX_*` | 写了没被调用 |
+| 模块**入口**级 | `index.ts` 没转出 | **写了、被使用了、但对外不可见** |
+| 契约级 | node/python 两侧实现 | 一份改了另一份没跟 |
+
+**入口级这个变体特别隐蔽**：类在文件里 `export` 了、内部测试也 `import` 它、类型检查也过 ——
+因为它**在自己的模块里是可见的**。只有从包外用**包名**去导入才会失败，而仓内没有人那样写过测试。
+
+这解释了一个常见现象：**单仓内的测试全绿，用户第一次 `import` 就崩**。
