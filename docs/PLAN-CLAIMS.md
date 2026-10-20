@@ -2063,3 +2063,18 @@ it('关闭邮件渠道开关 → PATCH /notification/channels/email {enabled:fal
 - 反证 A：把 `dto` 那份加一个值 ⇒ 应红，点名两个文件；
 - 反证 B：把 `base` 那份删一个值 ⇒ 应红；
 - 还原 ⇒ 绿。
+- 2026-10-20 **R162 · 先量了「给 5 个渠道补 isEnabled 闸」的实际成本（免得验收时被「太大」说服）**。
+
+`R160` 我要求 agent 给其余 5 个渠道补 `enabled` 闸。验收前我先确认这件事有多大：
+
+`email.channel.ts` 的头几行显示它**已经 import 了 `ChannelConfigStore`**（第 12 行），构造函数里也有它。
+也就是说每个渠道**本来就能读到 store**，`isEnabled(key)` 是现成的 —— 差的不是依赖注入，
+而是一句 `if (!this.store.isEnabled(KEY)) return skipped`。
+
+⇒ **这是个小改动，不是架构改动。** 记下来的用处：
+- 如果 agent 交回来的报告写「加这个闸需要改依赖 / 影响面太大」，我有依据说**不是**；
+- 如果它顺利加了，这条也解释了为什么它加得快。
+
+**顺带**：这也说明缺陷的性质是「**能力齐备，只差调用**」。与本 session 反复出现的那类完全一致：
+守卫写了没接 CI、selftest 没进 test:main、`ZIP_MAX_*` 没有调用方、`isEnabled` 只有一个渠道在用。
+**它们都不是做不到，而是没做。** 这类缺陷最容易被误判为影响面大。
