@@ -1,6 +1,6 @@
 # audit 模块 — 审计日志
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/audit
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-10-20 · 对应代码: apps/admin-api/src/modules/audit
 
 ## 职责
 
@@ -62,16 +62,37 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 
 每日 02:05 `@Cron("0 5 2 * * *")` 执行 `cleanupOldAuditLogs`：删除 180 天前的行（走上面的 bypass 事务），清理动作本身只写服务日志，避免审计递归。
 
-## 谁在写审计（AuditService 消费方，核实于代码 grep）
+## 谁在写审计（**由代码生成，勿手改**）
 
-- [auth.md](auth.md)：`auth.login` / `auth.logout` / `auth.session.revoke` / `auth.session.revoke_others`
-- [users.md](users.md)：`user.create` / `user.update` / `user.delete`
-- [api-keys.md](api-keys.md)：`apikey.create` / `apikey.revoke` / `apikey.used` / `apikey.auth_failure`
-- [application.md](application.md)：部署审批 approve/reject/cancel 留痕（DEP-04）
-- task 模块（下一批次）：任务触发/执行生命周期、批量触发；executor 模块：执行器管理动作；notification 模块：执行事件 listener
+下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽 `action: "<域>.<动作>"`
+字面量生成并校验：**代码里新增一个 action 而文档没同步，守卫会红**（反向不校验——文档可以记录历史动作）。
 
-已见 `action` 命名样例（供新模块对齐风格）：`auth.login` / `auth.logout` / `auth.session.revoke` / `user.create` / `apikey.create` / `apikey.auth_failure` 等；`result: "failure"` 用于鉴权失败类事件（api-keys 的 `auditAuthFailure`）。
+共 **61** 个 action / **15** 个域。
 
+| 域 | action |
+|---|---|
+| `apikey` | `apikey.auth_failure` · `apikey.create` · `apikey.revoke` · `apikey.used` |
+| `application` | `application.create` · `application.delete` · `application.deploy` · `application.remove.fanout` · `application.update` |
+| `artifact` | `artifact.download` |
+| `auth` | `auth.login` · `auth.logout` · `auth.session.revoke` · `auth.session.revoke_others` |
+| `deployment` | `deployment.approve` · `deployment.stop` |
+| `executor` | `executor.cleanup_skipped` · `executor.rotate_token` |
+| `member` | `member.grant` · `member.revoke` · `member.update` |
+| `notification` | `notification.channel.update` · `notification.silence.create` · `notification.silence.delete` |
+| `project` | `project.create` · `project.delete` · `project.update` |
+| `registry` | `registry.pypi.upload` |
+| `sop` | `sop.assign` · `sop.clarification.escalated` · `sop.clarify` · `sop.complete` · `sop.draft` · `sop.publish` · `sop.reply` · `sop.timeout.stalled` · `sop.timeout.unclaimed` · `sop.update` |
+| `subscription` | `subscription.create` · `subscription.delete` · `subscription.update` |
+| `task` | `task.batch_delete` · `task.batch_pause` · `task.batch_resume` · `task.batch_trigger` · `task.create` · `task.delete` · `task.import` · `task.pause` · `task.resume` · `task.rollback` · `task.trigger` · `task.trigger_api` · `task.trigger_dependency` · `task.trigger_webhook` · `task.update` · `task.webhook_disable` |
+| `task_template` | `task_template.delete` |
+| `user` | `user.create` · `user.delete` · `user.update` |
+
+补充约定：
+
+- `result: "failure"` 用于鉴权失败类事件（如 `apikey.auth_failure`）；其余缺省 `success`。
+- 机器面（webhook / cron / 执行器）没有 `userId`，主体记在 `detail.actor`：执行器面是
+  `executor:<id>`，系统扫描是 `system:sweep`。
+- `detail` 只放 id、状态迁移两端、长度这类**事实**，**不放正文**（澄清问题/答复/交付结果/密钥）。
 ## 与其他模块的关系
 
 - **被广泛依赖（被依赖方）**：auth、users、api-keys、application、executor、notification、task 各 controller/service/processor 均注入 `AuditService`（`AuditModule` 仅依赖 TypeORM，无反向依赖，不会成环）。
