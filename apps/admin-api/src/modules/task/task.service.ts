@@ -1623,6 +1623,8 @@ export class TaskService {
         // `select: false` 的 webhookSecret 列：整行回写会把它清成 NULL
         // （本仓已有同型生产故障先例，见 update() 的 R-01 注释）。
         // 列级 update 既规避该风险，也不会无谓触碰 updatedAt 之外的列。
+        // adr-026-exempt: 只改 dependencies 一列（依赖别名重写），与状态机/生命周期无关；
+        // 值来自本次遍历读到的 deps 快照，并发改名属罕见且非破坏性（最坏是多写一次同一别名）。
         await this.taskRepo.update(
           { id: dependent.id },
           { dependencies: next },

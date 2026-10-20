@@ -2894,6 +2894,8 @@ export class ExecutorService implements OnModuleInit {
     ) {
       throw new AppError("EXECUTOR_AGENT_CAPABILITY_UNSUPPORTED");
     }
+    // adr-026-exempt: 只写 agentCapabilities + 更新时间两列——**上报语义**（执行器每轮覆盖式
+    // 上报能力），并发上报 last-writer-wins 即正确语义；不触碰状态/凭据/生命周期列。
     await this.repo.update(
       { id },
       {

@@ -345,6 +345,8 @@ export class EventSubscriptionService {
     // 基于同一快照写回相同值，consecutiveFailures 丢更新（实体无
     // @VersionColumn，save 无乐观锁保护）。改 DB 内原子自增的条件 UPDATE；
     // 列名为 camelCase（实体属性即列名），raw 表达式需带引号防小写折叠。
+    // adr-026-exempt: 计数器列（consecutiveFailures 用 DB 内原子自增 + lastFailure* 两列），
+    // 不是状态/凭据/生命周期字段；并发下最坏是多记或少记一次失败计数，重试逻辑按阈值判定，不自愈风险。
     await this.subRepo.update(
       { id: sub.id },
       {
@@ -360,6 +362,8 @@ export class EventSubscriptionService {
     // NETOPT-1⑨: 快照 save 同样有丢更新窗口（快照 2 与 DB 3 并发时写回 2，
     // 把别人的失败计数抹掉）——改显式 UPDATE 0。热路径守卫保持快照判断：
     // 快照为 0 时大概率 DB 也是 0，免一次写库。
+    // adr-026-exempt: 同上——清零计数器与两个 lastFailure* 列；快照为 0 时已提前 return，
+    // 这里的并发窗口只影响一次计数展示，不影响投递/禁用等生命周期。
     await this.subRepo.update(
       { id: sub.id },
       { consecutiveFailures: 0, lastFailureAt: null, lastFailureError: null },
