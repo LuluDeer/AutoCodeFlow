@@ -1659,3 +1659,26 @@ React Query 把 `invalidateQueries` 当成一次「匹配 0 条」的正常查�
   **方法论（本 session 第三次踩同一坑）**：两次（`tenacity.Future`、node-cron）我都以为「我知道这个 API」；唯一有效的动作是**先读签名**（`inspect.signature` 那次立刻成功）。
   **账上保留**：DST 仍记作「agent 的实测声明，未独立复核」——**不写成已复核，也不删掉这条发现**。
   （顺带清掉我自己遗留的 4 个探针文件。）
+- 2026-10-20 **R143 · 审阅 R138-A1 的 TOTP 修法（结论：修对了方向）**。我上一轮给验收定的关键问题是：
+  「它到底是改 key，还是同步真实数据源？如果卡片读的是 zustand store，改 key 只是换个地方做空操作。」
+
+读 diff 的结论：**修的是数据源，不是 key**。
+
+```ts
+const syncTotpEnabled = (enabled: boolean) => {
+  if (!user || user.totpEnabled === enabled) return;
+  useAuthStore.getState().setUser({ ...user, totpEnabled: enabled });
+};
+```
+
+三个细节值得记：
+1. **删掉**了那条失效空操作（不是留着「以防万一」）—— 留着会继续误导下一个读代码的人；
+2. **不引入二次 GET**：服务端 2xx 已确认该布尔字段的终态，直接用确认值回写。这条注释写得很准 ——
+   再 GET 一次会引入「刷新失败 → 页面比操作前更旧」的**新故障面**；
+3. 顺手把 `(user as { totpEnabled?: boolean } | null)?.totpEnabled` 的**类型逃逸**去掉，字段在 `AuthUser` 上显式声明。
+   原写法意味着「类型系统不认识这个字段，我保证它有」—— 而它确实有，只是没声明。
+
+它还给了这段的完整来龙去脉（`['auth-profile']` 全仓不存在、profile 真实来源是 store、`authMe` 只在 role 缺失时才跑），
+**这正是我 R141 独立 grep 出来的同一结论** —— 两边独立得到，互相印证。
+
+（agent 仍在跑，等它的全量基线；三个新用例文件已落盘。）
