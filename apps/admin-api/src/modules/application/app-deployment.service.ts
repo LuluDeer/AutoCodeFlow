@@ -1859,6 +1859,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       Object.assign(deployment, { status, ...metadata });
       return;
     }
+    // adr-026-exempt: 只写部署元数据（deployedCommit / deployedVersion / deployedAt /
+    // statusMessage），**patch 里不含 status** —— 无条件写是刻意的：状态由上面的条件写
+    // 决定，这里补的是「部署确实发生过」这一事实，与并发无关。
     await this.repo.update({ id: deployment.id }, metadata);
     Object.assign(deployment, metadata);
     this.logger.warn(

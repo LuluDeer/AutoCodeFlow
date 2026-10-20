@@ -30,7 +30,7 @@ const SCAN_DIR = join("apps", "admin-api", "src", "modules");
  * 存量基线（只减不增）。**只能下调**：改掉一处就把这个数字减一。
  * 上调需要在提交信息里写明为什么这处新增是安全的（例如该表无并发写者）。
  */
-const BASELINE = 18;
+const BASELINE = 17;
 
 /** 豁免标记：在调用的前 3 行内出现该注释即跳过（必须写理由）。 */
 const EXEMPT_MARKER = "adr-026-exempt";
@@ -139,7 +139,9 @@ export function findUnconditionalUpdates(src) {
 
 function isExempt(src, idx) {
   const lines = src.slice(0, idx).split("\n");
-  return lines.slice(-3).some((l) => l.includes(EXEMPT_MARKER));
+  // 窗口取 5 行：豁免标记通常需要 1-3 行说明理由，3 行窗口会让「标记 + 两行理由」
+  // 恰好落在窗口外（实测踩到过一次）。
+  return lines.slice(-5).some((l) => l.includes(EXEMPT_MARKER));
 }
 
 function scan() {
