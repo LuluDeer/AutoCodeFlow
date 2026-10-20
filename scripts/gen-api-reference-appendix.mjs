@@ -91,6 +91,14 @@ if (!check) {
 
 const spec = JSON.parse(readFileSync(OPENAPI, "utf8"));
 const apiPaths = Object.keys(spec.paths ?? {});
+// 规模下界：openapi 结构若变（paths 被改名/嵌套），下面会「0 个路径、0 个缺失」永真变绿。
+const MIN_EXPECTED_PATHS = 100;
+if (apiPaths.length < MIN_EXPECTED_PATHS) {
+  console.error(
+    "✖ openapi.json 只解析出 " + apiPaths.length + " 个路径（下界 " + MIN_EXPECTED_PATHS + "）—— 解析失效，不是端点变少。",
+  );
+  process.exit(1);
+}
 const docPaths = extractDocPaths(doc);
 const appendixOk = doc.includes(generated);
 const missing = apiPaths.filter((p) => !docPaths.has(p) && !doc.includes("`" + p + "`"));

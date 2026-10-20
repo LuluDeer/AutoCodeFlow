@@ -48,6 +48,11 @@ function walk(dir) {
 }
 
 const files = walk(join(ROOT, SRC));
+/**
+ * 规模下界：正则一旦失效（例如格式化改成单引号），`found` 会是 0 条，
+ * 而「0 条 → 0 条缺失」是**永真断言**，守卫会静默变绿。宁可红。
+ */
+const MIN_EXPECTED_ACTIONS = 50;
 if (files.length === 0) {
   console.error("✖ 扫不到文件：" + SRC);
   process.exit(1);
@@ -67,6 +72,13 @@ for (const f of files) {
       found.get(a).push(rel + ":" + (i + 1));
     }
   });
+}
+
+if (found.size < MIN_EXPECTED_ACTIONS) {
+  console.error(
+    "✖ 只解析出 " + found.size + " 个 action（下界 " + MIN_EXPECTED_ACTIONS + "）—— 扫描器失效了，不是动作变少了。",
+  );
+  process.exit(1);
 }
 
 const doc = readFileSync(join(ROOT, DOC), "utf8");
