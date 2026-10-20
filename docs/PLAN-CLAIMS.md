@@ -2446,3 +2446,21 @@ resp.raise_for_status()                # ← 3xx 从这里漏出去，抛的是*
 那个前置判断**本身就是 bug 的来源**：它想「只包装错误状态」，但把「3xx 也算错误」这件事漏了。
 
 **agent 已独立发现同一处**（它的 `test_http.py` 有 302/301/307 三条红），所以我**不动手**，只把机制记下来供它参考/供验收核对。
+- 2026-10-20 **R185 · 3xx 的两侧行为又不同：python 拦下（但抛裸异常），node 静默跟随**。
+
+查 node SDK 的 `http-client.ts`：**没有 `maxRedirects` / `validateStatus` 配置** ⇒ axios 默认**自动跟随重定向**（上限 21 跳），
+所以 3xx 在 node 侧**根本不会作为错误出现**。
+
+| 侧 | 重定向行为 | 3xx 的可观测性 |
+|---|---|---|
+| `autoflow-sdk`（Python） | `follow_redirects=False`（httpx 默认） | **会抛** —— 且当前抛的是裸 `httpx.HTTPStatusError` |
+| `autocodeflow-node-sdk` | axios 默认跟随 | **不可见**（悄悄跟随，最终返回 200） |
+
+**这条对修复方向很重要**：python 侧的正确修法是「**保持 `follow_redirects=False`，但把异常类型修正为 `HttpClientError`**」，
+**不是**「打开 follow_redirects 让两边一致」。理由：
+1. 这是**内部通道**（admin-api），重定向几乎总意味着配置错/域名迁移，**静默跟随会把凭据发到未预期的 host**；
+2. httpx 关掉 follow 是本包**已经在做的事**，改它属于行为变更，超出修 bug 的范围；
+3. node 侧真正的问题是「**静默**」，而不是「跟随」—— 若要统一，应当是 node 去**记一条 warn**，不是 python 去跟随。
+
+**这条的价值**：它挡住了一个很自然的错误修法（「两边不一样，那就都跟随」）。
+**一致不一定等于正确** —— 与 `R170`（两侧都 fire-and-forget，所以免检）是同一个陷阱的反面。
