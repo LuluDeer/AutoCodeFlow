@@ -2811,3 +2811,11 @@ agent 报「9 个 `--json` 命令的 stdout 可整体 `JSON.parse`，失败时 s
 
 **这条是本 session 里我想推广的那种文档**：它不描述代码怎么写，而描述**为什么这样分类**，
 于是以后新增一个破坏性命令时，**作者知道该问「它属于哪一类后果」而不是「它名字里有没有 delete」**。
+- 2026-10-20 **★ R192-A1 done（commit 03a15c1f）—— `acf-cli` 命令实现审计，两处缺陷**：
+  ① **四个破坏性命令零确认**：`task kill` / `task webhook enable·rotate·disable` / `apikey revoke` —— 非 TTY（CI/agent/管道）下**直接执行不可逆动作**（KILLED 是终态 / 旧 secret 永不回传 / 撤销无取消面）。补 `-y/--yes` + `confirmDestructive`，缺 `--yes` ⇒ **码 2 且请求不发出**。
+  ② **本地数值参数静默兜底**（它自己发现，不在我给的三轴里）：`task logs` 的 `--from-line`/`--limit`/`--tail` 用 `parseInt(x) || 默认` ⇒ `--tail 5o`、`--from-line 1O0` **不报错、被截断后照原样发请求**。改严格整数解析，非法值 commander 层报用法错误（码 2）。
+  **README 从清单改成按后果分类的表**（删除 / 一次性密钥轮换 / 强制终止 / 全量滚动升级 / 撤销凭据）—— `enable` 按后果归入「密钥轮换」、`--strategy canary` 不加门 与 `status` 只读不加门 都显式写明。
+  验证：**371 → 394 passed**（+23）、tsc 0、`check-cli-doc` 绿；执行者先红后绿（12 failed → 全绿）；**总控独立反证**：`{ yes: opts.yes }` → `{ yes: true }` ⇒ **1 failed**，还原全绿。
+  **判定不改并给理由**：`task rollback` 不加门（每次写入都落版本快照、当前状态可再回滚）；`isJsonInvocation` 与废弃 `--json <body>` 撞名（我 `R196` 独立发现同一条）；`exec tail` 的 `process.exit(0)` 截断风险**未证实不下结论**（我 `R194` 的观察，与它独立一致）。
+  **如实标注**：`kill` 的 `200+success:false` 分支、属主与终态语义、webhook secret 只存密文 —— 均读源码确认，未跑真实服务。
+  **三条我独立发现的事，它都独立命中了**（`R193` apikey revoke / `R196` 废弃旗标 / `R194` 退出方式）—— 且有两条它给出了比我更准的判据（`R195` 我按文件计数太粗、`R200` 我按名字筛破坏性命令会漏 `enable`）。
