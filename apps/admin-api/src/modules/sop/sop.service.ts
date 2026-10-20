@@ -4,7 +4,14 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import { Repository, In, IsNull, Not } from "typeorm";
+import {
+  Repository,
+  In,
+  IsNull,
+  LessThan,
+  Not,
+  Or,
+} from "typeorm";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { ExecutorService } from "../executor/executor.service";
 import {
@@ -416,6 +423,11 @@ export class SopService {
         (r) =>
           r.resolution !== null && new Date(r.updatedAt).getTime() > cursor,
       )
+      // R34-A1：sop_amended 的**投递载荷**是「修订版本身」（newSopVersion +
+      // 版本快照）。答复路径改成「先认领再发版」后，行会短暂停在
+      // resolution=sop_amended 而 newSopVersion 尚未落库——这个半成品绝不能
+      // 投递：执行器按修订版续跑与对账，投出去等于让它拿一个不存在的版本号。
+      .filter((r) => r.resolution !== "sop_amended" || !!r.newSopVersion)
       .sort((x, y) => x.round - y.round);
     const out: unknown[] = [];
     for (const r of pending) {
@@ -468,10 +480,24 @@ export class SopService {
       throw new AppError(ErrorCode.SOP_CLARIFICATION_NOT_REPLIED);
     }
     const stamp = new Date(row.updatedAt);
-    if (!a.lastReplyDeliveredAt || a.lastReplyDeliveredAt < stamp) {
-      await this.assignments.update(
-        { id: a.id },
-        { lastReplyDeliveredAt: stamp },
+    // R34-A1（ADR-026 规则 1/3）：游标是**投递生命周期**字段，必须条件写。
+    // 旧实现是「读快照 if 一下再 update({id})」——两个 ACK 并发时都读到旧游标
+    // （或都读到 null），后到者把游标写回更旧的值：已消费的回复重新变成待
+    // 投递（与上面「游标单调推进」的注释相反，注释是对的、代码没有那条谓词）。
+    // WHERE 谓词 = 「本次推进的合法起始状态」= 游标缺省 或 严格早于本次时间戳。
+    const advance = await this.assignments.update(
+      {
+        id: a.id,
+        lastReplyDeliveredAt: Or(IsNull(), LessThan(stamp)),
+      },
+      { lastReplyDeliveredAt: stamp },
+    );
+    if (advance.affected !== 1) {
+      // 并发收敛：别人已把游标推到更晚（或同一）时间点。乱序 ACK 让位，
+      // 不抛错——执行器重复 ACK 是幂等重试，不是失败。
+      this.logger.warn(
+        `SOP clarification ack did not advance cursor: assignment=${a.id} ` +
+          `clarification=${row.id} stamp=${stamp.toISOString()} (cursor already later)`,
       );
     }
     return { ok: true };
@@ -768,39 +794,91 @@ export class SopService {
     if (!a)
       throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND_FOR_CLARIFICATION);
 
-    let newSopVersion: string | undefined;
-    if (input.resolution === "sop_amended") {
-      const sop = await this.requireSop(a.sopId);
-      if (!input.amendedFrontMatterYaml && !input.amendedBodyMarkdown) {
-        throw new AppError(ErrorCode.SOP_CLARIFICATION_AMENDMENT_MISSING);
-      }
-      // 修订内容先落到主表（draft 语义），再走与 publish 相同的严格校验 +
-      // 快照路径——澄清自主修订与人工发布共享同一道版本闸门
-      if (input.amendedFrontMatterYaml) {
-        const raw = parseFrontMatterYaml(input.amendedFrontMatterYaml);
-        sop.frontMatterJson = validateFrontMatter(raw, {
-          strict: true,
-        }) as unknown as Record<string, unknown>;
-      }
-      if (input.amendedBodyMarkdown)
-        sop.bodyMarkdown = input.amendedBodyMarkdown;
-      await this.sops.save(sop);
-
-      const { version } = await this.publish({
-        sopId: sop.id,
-        bump: "patch",
-        changelog:
-          input.changelog ??
-          `澄清修订（assignment ${a.id} 第 ${row.round} 轮）`,
-        publishedBy: input.replyBy,
+    // R34-A1（ADR-026 规则 1/3）：**先认领，再产生副作用**。
+    // 澄清行会被两个复核会话 / 人工接管路径同时写：旧实现是「末尾
+    // save(row) 整行回写」，于是并发答复两侧都通过了上面的幂等闸（都读到
+    // resolution 尚未落定），后到者覆盖先到者的 answer；resolution=sop_amended
+    // 时两侧还各自发一个 patch 版本（同一次澄清产生两个版本，执行器拿到的
+    // 修订锚取决于谁最后落库）。
+    // 条件写的 WHERE 取「本次动作的合法起始状态」= 读取时的前置值
+    // （null 或 escalated_to_human），只有胜者继续做修订 / 发版 / 投递。
+    const answeredBy =
+      input.resolution as NonNullable<SopClarification["resolution"]>;
+    const answer = this.sanitizeUntrusted(input.answer);
+    const claim = await this.clarifications.update(
+      {
+        id: row.id,
+        resolution:
+          row.resolution === null ? IsNull() : (row.resolution as never),
+      },
+      { answer, resolution: answeredBy as never, newSopVersion: null },
+    );
+    if (claim.affected !== 1) {
+      // 并发收敛（ADR-026 规则 3）：另一会话先答复了这一行。让位——不修订、
+      // 不覆盖、不抛 500；返回该行现在的版本锚（与上面「已答复快速返回」同语义）。
+      const fresh = await this.clarifications.findOne({
+        where: { id: row.id },
       });
-      newSopVersion = version.version;
+      this.logger.warn(
+        `SOP clarification reply lost the race: id=${row.id} requested=${input.resolution} ` +
+          `current=${fresh?.resolution ?? "-"} (later writer does not overwrite)`,
+      );
+      return { ok: true, newSopVersion: fresh?.newSopVersion ?? undefined };
     }
 
-    row.answer = this.sanitizeUntrusted(input.answer);
-    row.resolution = input.resolution as SopClarification["resolution"];
-    row.newSopVersion = newSopVersion ?? null;
-    await this.clarifications.save(row);
+    let newSopVersion: string | undefined;
+    if (input.resolution === "sop_amended") {
+      try {
+        const sop = await this.requireSop(a.sopId);
+        if (!input.amendedFrontMatterYaml && !input.amendedBodyMarkdown) {
+          throw new AppError(ErrorCode.SOP_CLARIFICATION_AMENDMENT_MISSING);
+        }
+        // 修订内容先落到主表（draft 语义），再走与 publish 相同的严格校验 +
+        // 快照路径——澄清自主修订与人工发布共享同一道版本闸门
+        if (input.amendedFrontMatterYaml) {
+          const raw = parseFrontMatterYaml(input.amendedFrontMatterYaml);
+          sop.frontMatterJson = validateFrontMatter(raw, {
+            strict: true,
+          }) as unknown as Record<string, unknown>;
+        }
+        if (input.amendedBodyMarkdown)
+          sop.bodyMarkdown = input.amendedBodyMarkdown;
+        await this.sops.save(sop);
+
+        const { version } = await this.publish({
+          sopId: sop.id,
+          bump: "patch",
+          changelog:
+            input.changelog ??
+            `澄清修订（assignment ${a.id} 第 ${row.round} 轮）`,
+          publishedBy: input.replyBy,
+        });
+        newSopVersion = version.version;
+      } catch (err) {
+        // 修订/发版失败必须把认领回滚到读到的前置值（仍是条件写），否则这一行
+        // 会永久停在「已修订但没有版本锚」的半成品态——既不再投递，也不在
+        // 待复核集合里（sweep 只扫 resolution IS NULL）。
+        await this.clarifications.update(
+          {
+            id: row.id,
+            resolution: answeredBy as never,
+            newSopVersion: IsNull(),
+          },
+          {
+            answer: row.answer,
+            resolution: (row.resolution ?? null) as never,
+            newSopVersion: null,
+          },
+        );
+        throw err;
+      }
+      // 版本锚是本次动作真正改变的列——认领已确立唯一胜者，这里按 id 只写这一列
+      // （写多列才需要状态谓词；ADR-026 规则 4：不整行回写）。
+      await this.clarifications.update(
+        { id: row.id },
+        { newSopVersion: newSopVersion ?? null },
+      );
+    }
 
     // 复核完毕 → 解除 blocked，执行器经 poll 拿到回复后继续。
     // R33-A2：解除也必须带前置状态——`a.status` 是读取时刻的快照，它与这次
@@ -815,7 +893,7 @@ export class SopService {
     }
 
     this.logger.log(
-      `SOP clarification replied: id=${row.id} resolution=${row.resolution} newVersion=${newSopVersion ?? "-"}`,
+      `SOP clarification replied: id=${row.id} resolution=${answeredBy} by=${input.replyBy} newVersion=${newSopVersion ?? "-"}`,
     );
     return { ok: true, newSopVersion };
   }

@@ -193,6 +193,115 @@ describe("SopCollabController · 鉴权链（11 §2 + 能力闸 11 §5.1）", ()
   });
 });
 
+/**
+ * R34-A1（轴 2 · 身份与归属）：**同址多行 + 无指纹**下的行定位，以及
+ * 已被删除 / 匹配不到行时的 fail-closed 边界。
+ *
+ * 现场：`ExecutorService.validateTokenByAddress` 对「同地址多行 + 未带指纹」
+ * 走 fail-closed（ADR-017 §5 / executor.service.ts:5594-5627，resolveExecutorRow
+ * 返回 null ⇒ 只可能靠共享令牌通过）。也就是说 **per-executor 令牌**在这种
+ * 部署下必然拿到 false——桌面 Agent（无法产出指纹）会整片 401，而
+ * `authenticate` 里那段"凭据反查兜底"只挂在「校验通过之后」，永远走不到。
+ * 下面的用例按**真实语义**建模（校验失败 + 反查命中 / 反查落空 / 指纹在场），
+ * 把这条路径钉成可执行契约。
+ */
+describe("SopCollabController · 轴2 同址多行的身份解析（凭据反查兜底）", () => {
+  const ADDR = "office-pc-07:8002";
+
+  it("per-executor 令牌 + 同址多行 + 无指纹 → 凭据反查定位到自己的行（不再整片 401）", async () => {
+    const h = harness();
+    // 真实语义：resolveExecutorRow 因同址多行 + 无指纹而 fail-closed ⇒ false
+    h.executors.validateTokenByAddress.mockResolvedValue(false);
+    h.executors.findByAddress.mockResolvedValue(null);
+    // 但 per-executor 令牌是行绑定的：bcrypt 匹配到 exec-2 那一行
+    h.executors.resolveCredentialExecutorId.mockResolvedValue("exec-2");
+    h.executors.findOne.mockResolvedValue({ id: "exec-2", address: ADDR });
+
+    await expect(
+      h.ctl.capability(
+        { address: ADDR, capabilities: ["agent:sop"] } as never,
+        h.auth,
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    expect(h.executors.resolveCredentialExecutorId).toHaveBeenCalledWith(
+      ADDR,
+      "tok-1",
+    );
+    // 能力闸必须落在**反查出来的那一行**上（不是别人的行）
+    expect(h.executors.updateCapabilities).toHaveBeenCalledWith(
+      "exec-2",
+      ["agent:sop"],
+    );
+  });
+
+  it("反查命中的行不在该地址上 → 401（不得用一个错行的身份静默顶替）", async () => {
+    const h = harness();
+    h.executors.validateTokenByAddress.mockResolvedValue(false);
+    h.executors.findByAddress.mockResolvedValue(null);
+    h.executors.resolveCredentialExecutorId.mockResolvedValue("exec-other");
+    h.executors.findOne.mockResolvedValue({
+      id: "exec-other",
+      address: "another-host:9000",
+    });
+
+    await expect(
+      h.ctl.capability(
+        { address: ADDR, capabilities: ["agent:sop"] } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("同址多行 + 令牌谁也不匹配 → 401（兜底不得放宽判定）", async () => {
+    const h = harness();
+    h.executors.validateTokenByAddress.mockResolvedValue(false);
+    h.executors.findByAddress.mockResolvedValue(null);
+    h.executors.resolveCredentialExecutorId.mockResolvedValue(null);
+
+    await expect(
+      h.ctl.capability(
+        { address: ADDR, capabilities: ["agent:sop"] } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(h.executors.resolveCredentialExecutorId).toHaveBeenCalled();
+  });
+
+  it("共享令牌 + 同址多行 + 无指纹 → 404（共享令牌不绑定任何行，仍 fail-closed）", async () => {
+    const h = harness();
+    // 共享令牌能过 validateTokenByAddress，但它不绑定行 ⇒ 反查必空
+    h.executors.validateTokenByAddress.mockResolvedValue(true);
+    h.executors.findByAddress.mockResolvedValue(null);
+    h.executors.resolveCredentialExecutorId.mockResolvedValue(null);
+
+    await expect(
+      h.ctl.capability(
+        { address: ADDR, capabilities: ["agent:sop"] } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it("指纹在场时校验失败 → 直接 401，不触发凭据反查（指纹路径的 fail-closed 不被动摇）", async () => {
+    const h = harness();
+    h.executors.validateTokenByAddress.mockResolvedValue(false);
+    h.executors.findByAddress.mockResolvedValue(null);
+
+    await expect(
+      h.ctl.capability(
+        {
+          address: ADDR,
+          deviceFingerprint: "b".repeat(64),
+          capabilities: ["agent:sop"],
+        } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(h.executors.resolveCredentialExecutorId).not.toHaveBeenCalled();
+  });
+});
+
 describe("SopCollabController · poll（拉模式 + sopPolicy 下发）", () => {
   it("无等待（waitMs 缺省/非法）时立即返回 items + sopPolicy 回退值", async () => {
     const h = harness();

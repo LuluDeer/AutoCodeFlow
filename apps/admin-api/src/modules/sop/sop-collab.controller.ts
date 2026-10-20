@@ -22,6 +22,7 @@ import {
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecutorService } from "../executor/executor.service";
+import type { Executor } from "../executor/entities/executor.entity";
 import { ExecutorPackageService } from "../executor-package/executor-package.service";
 import { PACKAGE_UPLOAD_TMP_DIR } from "../executor-package/executor-package.service";
 import { AiService, type MultimodalMessage } from "../ai/ai.service";
@@ -599,7 +600,25 @@ export class SopCollabController {
       presented,
       deviceFingerprint,
     );
-    if (!ok) throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_TOKEN_INVALID);
+    if (!ok) {
+      // R34-A1（轴 2）：**per-executor 令牌 + 同址多行 + 无指纹**曾被整片 401。
+      // 原因：validateTokenByAddress 对「同地址多行且本次未带指纹」按 ADR-017 §5
+      // fail-closed 拒绝（resolveExecutorRow 返回 null ⇒ 只有共享令牌能通过），
+      // 而下面的凭据反查挂在「校验通过之后」——对唯一需要它的场景永远走不到。
+      // 桌面 Agent（agent-worker 子进程）恰恰产不出指纹，这正是当初「复查补口」
+      // 要解决的那台机器。
+      //
+      // 凭据反查为什么安全且等价：per-executor 令牌是**行绑定**的（bcrypt 比对
+      // 该行 tokenHash），「令牌匹配到哪一行」本身就是行证明——匿名调用方伪造
+      // 不出别人的令牌让本方法解析到别人的行。共享令牌不绑定任何行，反查必空，
+      // 所以这条兜底不会把共享令牌路径放宽（那条仍是 fail-closed 的 404）。
+      // 指纹在场时**不进兜底**：指纹路径的 fail-closed 语义保持原样。
+      if (!normalizeDeviceFingerprint(deviceFingerprint)) {
+        const byCredential = await this.executorByCredential(address, presented);
+        if (byCredential) return byCredential;
+      }
+      throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_TOKEN_INVALID);
+    }
     // ADR-017 阶段 3（复查补口）：指纹缺省时**用所持凭据反查行身份**，而不是
     // 直接 fail-closed 拒绝。
     //
@@ -622,16 +641,31 @@ export class SopCollabController {
     );
     if (!executor && !normalizeDeviceFingerprint(deviceFingerprint)) {
       // 指纹未上报时用凭据反查（同址多行也能唯一定位）。
-      const credentialRowId = await this.executors.resolveCredentialExecutorId(
-        address,
-        presented,
-      );
-      if (credentialRowId) {
-        executor = await this.executors.findOne(credentialRowId);
-      }
+      executor = await this.executorByCredential(address, presented);
     }
     if (!executor) throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_NOT_FOUND);
     return executor;
+  }
+
+  /**
+   * 凭据反查行身份（R34-A1 轴 2）。per-executor 令牌是行绑定的：bcrypt 命中
+   * 哪一行的 tokenHash，就证明调用方持有那一行的凭据。反查命中的行还必须真的
+   * 落在本次声明的 address 上——防 resolve 实现漂移时把一个错行的身份静默顶替
+   * 进来（那是跨机器的身份冒用）。共享令牌对任何行都不命中 ⇒ 恒 null。
+   */
+  private async executorByCredential(
+    address: string,
+    presented: string,
+  ): Promise<Executor | null> {
+    if (!presented) return null;
+    const rowId = await this.executors.resolveCredentialExecutorId(
+      address,
+      presented,
+    );
+    if (!rowId) return null;
+    const row = await this.executors.findOne(rowId);
+    if (!row || row.address !== address) return null;
+    return row;
   }
 
   /** 协作面鉴权 = 机器鉴权 + 显式 `agent:sop` 能力闸（11 §5.1）。 */

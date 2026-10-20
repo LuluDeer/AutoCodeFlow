@@ -345,7 +345,10 @@ export class SopController {
       title: dto.title ?? sop.title,
       frontMatterYaml: dto.frontMatterYaml,
       bodyMarkdown: dto.bodyMarkdown,
-      createdBy: `user:${sop.createdBy}`,
+      // R34-A1（轴 4）：createdBy 是**归属**不是「本次操作者」——库里已是
+      // `user:<uuid>` 形态，再套一层前缀会得到 `user:user:<uuid>`（不可解析）。
+      // 编辑不改归属：原样透传（draft 对既有 slug 也不写这一列，双重保险）。
+      createdBy: sop.createdBy,
     });
   }
 

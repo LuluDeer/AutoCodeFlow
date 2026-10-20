@@ -10,9 +10,26 @@ function matchesOperator(actual: unknown, expected: unknown): boolean {
     typeof expected === "object" &&
     "type" in (expected as Record<string, unknown>)
   ) {
-    const op = expected as { type: string; value?: unknown };
+    const op = expected as {
+      type: string;
+      value?: unknown;
+      child?: unknown;
+    };
     if (op.type === "in") return (op.value as unknown[]).includes(actual);
     if (op.type === "isNull") return actual === null || actual === undefined;
+    // R34-A1：ACK 游标用 Or(IsNull(), LessThan(stamp)) 表达「本次推进的合法
+    // 起始状态」——fake 必须按真实语义求值，否则该守卫在测试里是隐形的。
+    if (op.type === "or")
+      return (op.value as unknown[]).some((v) => matchesOperator(actual, v));
+    if (op.type === "and")
+      return (op.value as unknown[]).every((v) => matchesOperator(actual, v));
+    if (op.type === "lessThan") {
+      if (actual === null || actual === undefined) return false;
+      return (
+        new Date(actual as string).getTime() <
+        new Date(op.value as string).getTime()
+      );
+    }
     throw new Error(`fake 不支持的操作符: ${op.type}`);
   }
   return actual === expected;
@@ -468,6 +485,10 @@ describe("SOP clarification reply cursor pushdown (B-11)", () => {
       round: 2,
       resolution: "sop_amended",
       answer: "新答复",
+      // R34-A1：真实的 sop_amended 答复一定带版本锚（投递载荷是修订版本身；
+      // 半成品行不投递，见 pendingReplyItems 的投递闸）。本用例钉的是游标，
+      // 补上这个字段才符合它声称在测的「一条可投递的新答复」。
+      newSopVersion: "1.0.1",
       updatedAt: new Date("2026-01-03T00:00:00.000Z"),
     });
 
