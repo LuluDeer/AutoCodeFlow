@@ -1092,3 +1092,11 @@
   **顺带记录一个「没有采纳」的方案**：本想加「静态解析 `@Controller`+`@Get` 断言每条路由都在 openapi.json」的守卫。实测 `npm run swagger:export` 后 `paths` 仍 195、`git diff` **为空** ⇒ openapi 与代码同步；
   而我的静态扫描器**半小时内两个方向都翻车**：首版把注释里的 `@Get("picker")` 当路由（假报 3 条），去掉注释后 `/*...*/` 剥除又被**字符串内的 `/*`** 吞掉整段代码（反报 5 条）。
   定论：实现成本高于收益 ⇒ **不加**，并写明理由，避免下一轮有人再试一遍。
+- 2026-10-20 **★ R94-A1 done（commit 206d8940）**：**executor-python 执行面审计**。四轴过完，解压面**两处真缺口**，都是老毛病「同一道闸三份实现，一份没跟上」。
+  ① **上限松一倍**：2026-09-23 OOM 事故后 node（`zip-guard.ts:55-56`）与 admin（`zip-guard.util.ts:73-74`）已把 1 GiB/2 GiB 收紧到 **512 MiB/1 GiB**，
+  而 `zip_safety.py:117-118` **仍是旧值** ⇒ **同一个包在 python 跑得通、在 node 被拒**（NFR-04/AC-03b 明令等强度）。模块 docstring 的「镜像来源」表还把旧值当成 node 的值 —— 一张写着「我们与 node 一致」的表，内容是错的。
+  ② **`ZIP_MAX_*` 在 python 侧从未生效**：`get_zip_limits_from_env()` 存在、有测试、文档也写「接受同名变量」，**但没有任何生产调用方** ⇒ 部署方按 node 同一组变量收紧后 python **静默放行**。修：`_extract_package` 每次调用求值并显式传参，保持与 node 同形状。
+  **★ 最值得记的发现：测试曾是漂移的帮凶** —— `test_default_limits_mirror_executor_node_zip_guard` 把**漂移后的旧值**（1 GiB）钉死成契约，任何改回 512 MiB 的人都会被它拦住；一条把「当前行为」当「预期行为」断言的测试会把漂移固化成规范。
+  正解：新增 `test_zip_guard_parity.py`（6 条）**直接读另两个平面的源码常量**逐项比，而不是抄一份常量。
+  验证：pytest **1187 → 1193 passed**（+6）/ 0 failed / 3 skipped；**总控独立反证**：只还原两个常量 → 3 条立即红（含 600 MiB `DID NOT RAISE`），还原后全绿。
+  遗留 7 条如实：嵌套成员 >64 MiB python 跳过+warn vs admin fail-closed（需同步 CONTRACT.md，疑似）/ bwrap `--ro-bind / /` 可读其它 execution（裸机 .env 形态需部署验证，且已被 test_sandbox 钉住=有意设计）/ setrlimit 失败 fail-open / `timeout=0` 无 CPU 兜底且注释与行为不符 / tmpdir 回落宿主 / pusher 无字节上限 + final_flush 即发即弃 / ZIP_MAX_* 也允许放宽。
