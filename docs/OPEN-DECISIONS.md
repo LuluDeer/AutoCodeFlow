@@ -56,7 +56,7 @@
 
 - **D1**：`acf app create --json <body>` 这个 **DEPRECATED 旗标**要不要删？它污染了 `isJsonInvocation` 的探针判断（R196）。删 = 兼容性变更，收益是「按名字做的判断不再误命中」。
 - **D2**：`acf task kill` / `rollback` 要不要补 `--json`？它们现在只能人读，而 `task list` 可以机器读（R197）。`approval approve/reject` 不用补（输出就是一句确认）。
-- **D3**：`task kill` / `rollback` 的 `process.exit(0)` 要不要统一成 `process.exitCode`？只在大输出 + 管道时可能截断（R194）。
+- **D3**：`process.exit(0)` 要不要统一成 `process.exitCode`？—— **未能复现截断**（R202）：8 MB 单次 `console.log` 后立即 `process.exit(0)`，无论重定向到文件还是走真实管道，字节数都与期望完全一致。**不建议基于这个理由改动**；只剩「多写交错 + 中途 exit」这一未测形态。
 - **D4**：66 个未分类错误码要不要加第 7 类，或改成域级提示（R108）。
 
 ---
