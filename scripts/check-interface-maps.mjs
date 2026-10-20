@@ -138,4 +138,63 @@ let failures = 0;
   console.log(`✔ SDK 版本声明一致：sdks.md 与 mcp-server 均为 ${mcpVersion}。`);
 })();
 
+/** ④ 审计动作 → 前端标签与双语词条 */
+(function checkAuditActionLabels() {
+  const API_SRC = join(ROOT, "apps", "admin-api", "src");
+  const UI = join(ROOT, "apps", "admin-web", "src", "pages", "audit", "index.tsx");
+  const ZH = join(ROOT, "apps", "admin-web", "src", "locales", "zh.ts");
+  const EN = join(ROOT, "apps", "admin-web", "src", "locales", "en.ts");
+
+  const files = [];
+  (function walk(dir) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".ts") && !e.name.endsWith(".spec.ts")) files.push(p);
+    }
+  })(API_SRC);
+
+  const actions = new Set();
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/action:\s*"([a-z0-9_]+\.[a-z0-9_.]+)"/g)) actions.add(m[1]);
+  }
+  if (actions.size < 40) {
+    console.error(`✖ 只解析出 ${actions.size} 个审计动作 —— 扫描器失效了。`);
+    failures += 1;
+    return;
+  }
+
+  const ui = readFileSync(UI, "utf8");
+  const block = /const ACTION_LABEL_KEYS[^=]*=\s*\{([\s\S]*?)\n\};/.exec(ui);
+  if (!block) {
+    console.error("✖ 找不到 ACTION_LABEL_KEYS 字面量 —— 判据失配。");
+    failures += 1;
+    return;
+  }
+  const mapped = new Set([...block[1].matchAll(/'([a-z0-9_.]+)'\s*:/g)].map((m) => m[1]));
+  const labelKeys = new Set([...block[1].matchAll(/:\s*'(audit\.action\.[a-z0-9_]+)'/g)].map((m) => m[1]));
+
+  const unmapped = [...actions].filter((a) => !mapped.has(a)).sort();
+  const zh = readFileSync(ZH, "utf8");
+  const en = readFileSync(EN, "utf8");
+  const missingI18n = [...labelKeys].flatMap((k) => {
+    const out = [];
+    if (!zh.includes(`'${k}'`)) out.push(`${k} (zh)`);
+    if (!en.includes(`'${k}'`)) out.push(`${k} (en)`);
+    return out;
+  });
+
+  if (unmapped.length > 0 || missingI18n.length > 0) {
+    if (unmapped.length) console.error(`✖ ${unmapped.length} 个审计动作在前端没有标签映射（会显示原始码）：`);
+    for (const a of unmapped) console.error("  · " + a);
+    if (missingI18n.length) console.error(`✖ ${missingI18n.length} 个标签键缺少词条：`);
+    for (const k of missingI18n) console.error("  · " + k);
+    console.error("  修法：补 ACTION_LABEL_KEYS 与 zh/en 词条；不要改守卫。");
+    failures += 1;
+    return;
+  }
+  console.log(`✔ 审计动作标签一致：${actions.size} 个动作全部有标签，${labelKeys.size} 个键在 zh/en 都有词条。`);
+})();
+
 if (failures > 0) process.exit(1);

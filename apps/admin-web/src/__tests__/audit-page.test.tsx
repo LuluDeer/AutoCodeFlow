@@ -132,7 +132,7 @@ beforeEach(() => {
       makeLog({}),
       makeLog({
         id: 2,
-        action: 'config.update',
+        action: 'legacy.unknown_action',
         resource: 'config',
         username: 'dev',
         ip: '10.0.0.2',
@@ -153,7 +153,7 @@ describe('AuditLogPage 列表渲染（QA-03）', () => {
   it('渲染操作人/IP、结果 Tag 双态、资源ID 截断与分页 total', async () => {
     renderPage();
     expect(await screen.findByText('创建任务')).toBeTruthy();
-    expect(screen.getByText('config.update')).toBeTruthy();
+    expect(screen.getByText('legacy.unknown_action')).toBeTruthy();
     // 成功/失败 Tag
     expect(screen.getAllByText('成功').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('失败').length).toBeGreaterThanOrEqual(1);
@@ -168,7 +168,7 @@ describe('AuditLogPage 列表渲染（QA-03）', () => {
   it('detail 非空渲染「查看」按钮，空/缺省 detail 不渲染', async () => {
     renderPage();
     await screen.findByText('创建任务');
-    // 行2（config.update 有 detail）有查看；行1/3 无 detail 或空对象 → 无按钮
+    // 行2（legacy.unknown_action 有 detail）有查看；行1/3 无 detail 或空对象 → 无按钮
     const viewButtons = (Array.from(document.querySelectorAll('button')) as HTMLButtonElement[])
       .filter((b) => (b.textContent ?? '').replace(/\s/g, '') === '查看');
     expect(viewButtons.length).toBe(1);
@@ -176,7 +176,7 @@ describe('AuditLogPage 列表渲染（QA-03）', () => {
 
   it('点「查看」打开详情 Modal 并以 JSON 展示 detail', async () => {
     renderPage();
-    await screen.findByText('config.update');
+    await screen.findByText('legacy.unknown_action');
 
     const viewButtons = (Array.from(document.querySelectorAll('button')) as HTMLButtonElement[])
       .filter((b) => (b.textContent ?? '').replace(/\s/g, '') === '查看');
@@ -472,7 +472,7 @@ describe('R67-A1 动作下拉（可发现）', () => {
   }
 
   it('首屏拉取一次 /audit/actions，并渲染成可选下拉项（未知动作显示原始 code）', async () => {
-    mockBackend(['auth.login', 'sop.timeout.unclaimed', 'task.create']);
+    mockBackend(['auth.login', 'legacy.unknown_action_2', 'task.create']);
     renderPage();
     await screen.findByText('创建任务');
 
@@ -487,7 +487,7 @@ describe('R67-A1 动作下拉（可发现）', () => {
     expect(await option('创建任务 (task.create)')).toBeTruthy();
     expect(await option('登录 (auth.login)')).toBeTruthy();
     // 未知动作：原样露出 code，不抹成"未知操作"（AUDIT-01 同款口径）
-    expect(await option('sop.timeout.unclaimed')).toBeTruthy();
+    expect(await option('legacy.unknown_action_2')).toBeTruthy();
     // 清单只拉一次（不随筛选/翻页重复取）
     expect(
       mockedClient.get.mock.calls.filter(([url]) => String(url).startsWith('/audit/actions')),
@@ -550,3 +550,36 @@ describe('R67-A1 动作下拉（可发现）', () => {
     });
   });
 });
+
+  it('R104：新落地的审计动作（config / sop）也有本地化标签，不再回退原始 code', async () => {
+    mockedClient.get.mockImplementation(((url: string) => {
+      if (String(url).startsWith('/audit/actions')) {
+        return Promise.resolve({
+          data: {
+            actions: [
+              'config.create',
+              'config.update',
+              'config.delete',
+              'sop.clarification.escalated',
+              'sop.timeout.unclaimed',
+            ],
+          },
+        });
+      }
+      return Promise.resolve({
+        data: [
+          makeLog({ id: 1, action: 'config.update', resource: 'config', resourceId: 'executor.sharedToken' }),
+          makeLog({ id: 2, action: 'sop.clarification.escalated', resource: 'sop_clarification' }),
+        ],
+        total: 2,
+      });
+    }) as never);
+
+    renderPage();
+    // 列表侧：动作列显示本地化名，而不是原始 code
+    expect(await screen.findByText('更新配置项')).toBeTruthy();
+    expect(await screen.findByText('SOP 澄清升级')).toBeTruthy();
+
+    // 下拉侧已由上面的「未知动作显示原始 code」用例覆盖机制；这里只钉列表侧，
+    // 避免同一 fixture 里既开下拉又断言列表造成选择器互相干扰。
+  });
