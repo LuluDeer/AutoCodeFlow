@@ -322,6 +322,59 @@ const HEARTBEAT_OWNED_COLUMNS = [
 type HeartbeatOwnedColumn = (typeof HEARTBEAT_OWNED_COLUMNS)[number];
 
 /**
+ * R55-A1（ADR-026 规则 4）：register **真正拥有**的列 —— 正向白名单。
+ *
+ * 与 HEARTBEAT_OWNED_COLUMNS 同一套机制（正向白名单 ∩ 本次采纳集 → 列级
+ * patch），但主人的边界不同：
+ *  - register 是**身份/配置**的权威写者：appName / type / executorVersion /
+ *    capabilities / maxConcurrentTasks / groupName / tags / description /
+ *    dispatchMode / protocolVersion / deviceFingerprint / interpreters /
+ *    executorStartedAt / executorStartupId；
+ *  - 另有几条**双主人**列（register 与管理台/心跳各写一面）：address（地址漂移）、
+ *    status / offlineReason / lastHeartbeat（注册即在线）、runningTaskCount
+ *    （重启恢复清零）。
+ *
+ * **不在**本白名单里的列 = register 没有任何上报口径的列，最典型的是四个指标列
+ * cpuUsage / memUsage / diskUsage / networkLatency（register DTO 里根本没有它们，
+ * controller 的 F-7 白名单也不转发）——它们的主人是心跳。此前 register 尾巴上的
+ * `repo.save(e)` 整行回写会把快照里的旧读数按 diff 写回，覆盖窗口内刚上报的
+ * 真实指标（详见 register 尾部注释）。
+ *
+ * 逐列依据（行号为 R55-A1 落地时，改动时请同步核对）：
+ *   - address            : 地址漂移分支（仅当 e.address !== data.address）
+ *   - type / appName / executorVersion / capabilities / maxConcurrentTasks /
+ *     groupName / tags / description / dispatchMode / protocolVersion /
+ *     deviceFingerprint / interpreters : 「Update mutable fields」逐列守卫
+ *   - runningTaskCount   : didRestart / shouldRecoverMissingBaseline 两分支清零
+ *   - executorStartedAt / executorStartupId : 仅当上报
+ *   - status / offlineReason / lastHeartbeat : 无条件（注册即在线）
+ */
+const REGISTER_OWNED_COLUMNS = [
+  "address",
+  "status",
+  "offlineReason",
+  "lastHeartbeat",
+  "type",
+  "appName",
+  "executorVersion",
+  "capabilities",
+  "maxConcurrentTasks",
+  "groupName",
+  "tags",
+  "description",
+  "dispatchMode",
+  "protocolVersion",
+  "deviceFingerprint",
+  "interpreters",
+  "runningTaskCount",
+  "executorStartedAt",
+  "executorStartupId",
+] as const;
+
+/** register 白名单列名(见 REGISTER_OWNED_COLUMNS 的逐列依据)。 */
+type RegisterOwnedColumn = (typeof REGISTER_OWNED_COLUMNS)[number];
+
+/**
  * A-10（执行器域审计 P3）：PG 唯一约束冲突判定（SQLSTATE 23505）。
  * register 的「按地址 findOne → 无行则 insert」是 check-then-act——同地址并发
  * 首注册时败者的 save 会撞 uq_executors_address 抛 QueryFailedError（驱动把
@@ -1855,6 +1908,23 @@ export class ExecutorService implements OnModuleInit {
         e = winner;
       }
     }
+    // R55-A1（ADR-026 规则 4）：重注册的写面 = **register 拥有的列 ∩ 本次实际
+    // 采纳的列**（与心跳 R53-A1 同款判据、同款投影 `pickOwnedColumns`）。
+    //
+    // 此前本方法的尾巴是 `repo.save(e)` 整行回写：e 是方法开头 findOne 读到的
+    // 快照，而 save 的"读当前行 → 按列 diff → 只写差异列"会把**别人的列**按快照
+    // 写回。最明确的受害者是四个指标列（cpuUsage/memUsage/diskUsage/
+    // networkLatency）——它们的主人是心跳，register 连上报口径都没有（DTO 无这些
+    // 字段、controller 的 F-7 白名单也不转发），却会把注册那一刻的旧读数盖到窗口
+    // 内刚上报的真实读数上（评分公式 computeExecutorLoadScore 直接吃 cpuUsage/
+    // memUsage ⇒ 派发被错的负载读数带偏），且 register 不自纠正，会一直错到下一次
+    // 心跳。同一缺陷在"本次未上报"的拥有列上同样成立：register 没报 groupName/
+    // tags/description 时，管理台刚 PATCH 的值也会被快照回弹。
+    //
+    // `adopted` = 「本次真的采纳了这一列」的证据集：每个 `e.x = …` 都会同时
+    // `adopted.add("x")`，patch 由"白名单 ∩ adopted"投影，故"没上报"的列连键都
+    // 不会出现在 patch 里（不是"值恰好相同"，是**根本不写**）。
+    const adopted = new Set<RegisterOwnedColumn>();
     // ADR-017 阶段 3：地址漂移——同一安装从**新地址**上报（机器换网/换 IP）。
     // 复用行 + 更新 `address`（这正是"换 IP 不再产生幽灵行"的落点）。
     // push 模式不许抢占他人地址（新地址若被另一份安装占用 → 409）；pull 模式
@@ -1882,26 +1952,54 @@ export class ExecutorService implements OnModuleInit {
           `(address drift, same executor; not a new device)`,
       );
       e.address = data.address;
+      adopted.add("address");
     }
     // Update mutable fields on re-registration (whitelisted per-field only)
-    if (data.type) e.type = data.type as ExecutorType;
-    if (data.appName) e.appName = data.appName;
-    if (data.version) e.executorVersion = data.version;
-    if (capabilities) e.capabilities = capabilities;
-    if (maxConcurrentTasks !== undefined)
+    // 每个赋值都同步进 `adopted`：值写进 e（返回体要用），列名证明"本次采纳了
+    // 这一列"（patch 只会包含它）。
+    if (data.type) {
+      e.type = data.type as ExecutorType;
+      adopted.add("type");
+    }
+    if (data.appName) {
+      e.appName = data.appName;
+      adopted.add("appName");
+    }
+    if (data.version) {
+      e.executorVersion = data.version;
+      adopted.add("executorVersion");
+    }
+    if (capabilities) {
+      e.capabilities = capabilities;
+      adopted.add("capabilities");
+    }
+    if (maxConcurrentTasks !== undefined) {
       e.maxConcurrentTasks = maxConcurrentTasks;
-    if (data.groupName !== undefined) e.groupName = data.groupName;
-    if (data.tags !== undefined) e.tags = data.tags;
-    if (data.description !== undefined) e.description = data.description;
+      adopted.add("maxConcurrentTasks");
+    }
+    if (data.groupName !== undefined) {
+      e.groupName = data.groupName;
+      adopted.add("groupName");
+    }
+    if (data.tags !== undefined) {
+      e.tags = data.tags;
+      adopted.add("tags");
+    }
+    if (data.description !== undefined) {
+      e.description = data.description;
+      adopted.add("description");
+    }
     // ARCH-32: pull↔push 切换随重注册生效（执行器改 EXECUTOR_PULL_MODE 后
     // 重启即触发 didRestart 路径）。
     if (data.dispatchMode === "push" || data.dispatchMode === "pull") {
       e.dispatchMode = data.dispatchMode;
+      adopted.add("dispatchMode");
     }
     // python_task_multiversion：重注册采纳（仅在合法上报时覆盖；非法/缺省
     // 均不动 DB —— 非法情形上方已 warn）。
     if (normalizedInterpreters !== null) {
       e.interpreters = normalizedInterpreters;
+      adopted.add("interpreters");
     }
     // PROTOCOL-VER（B-3/U-2）：重注册采纳协议版本（仅整数合法值覆盖；
     // 缺省/非法不动 DB，保持未上报/NULL 语义）。
@@ -1910,12 +2008,14 @@ export class ExecutorService implements OnModuleInit {
       Number.isInteger(data.protocolVersion)
     ) {
       e.protocolVersion = data.protocolVersion;
+      adopted.add("protocolVersion");
     }
     // ARCH-36（ADR-017 阶段 2）：重注册采纳设备指纹（仅在规范化成功时覆盖；
     // 缺省/非法均不动 DB——旧执行器或采集失败的执行器不得把已存值擦成 NULL，
     // 与 interpreters 的「缺省即保留」纪律同款）。
     if (incomingFingerprint !== null) {
       e.deviceFingerprint = incomingFingerprint;
+      adopted.add("deviceFingerprint");
     }
     if (didRestart) {
       // NETOPT-E P2-1: 同步恢复也传重启基准时刻（只终态化旧行），与心跳
@@ -1938,6 +2038,7 @@ export class ExecutorService implements OnModuleInit {
       );
       // R-P0-008: Reset runningTaskCount to 0 after executor restart
       e.runningTaskCount = 0;
+      adopted.add("runningTaskCount");
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(
         recoveryAddress,
@@ -1946,18 +2047,50 @@ export class ExecutorService implements OnModuleInit {
       );
       // R-P0-008: Reset runningTaskCount to 0 after recovery
       e.runningTaskCount = 0;
+      adopted.add("runningTaskCount");
     }
-    if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
-    if (incomingStartupId) e.executorStartupId = incomingStartupId;
+    if (incomingStartedAt) {
+      e.executorStartedAt = incomingStartedAt;
+      adopted.add("executorStartedAt");
+    }
+    if (incomingStartupId) {
+      e.executorStartupId = incomingStartupId;
+      adopted.add("executorStartupId");
+    }
     e.status = ExecutorStatus.ONLINE;
     // 遗留 P1-24：恢复在线即清除离线原因标注。
     e.offlineReason = null;
     e.lastHeartbeat = new Date();
-    // agentCapabilities 是独立写面。即使调用方/测试给了带该字段的旧实体，
-    // register 的整实体 save 也不得用它覆盖并发到达的 Agent 能力上报。
+    // 这三列无条件写：注册成功 = 这一行此刻在线（与心跳的覆盖式上报同语义）。
+    adopted.add("status");
+    adopted.add("offlineReason");
+    adopted.add("lastHeartbeat");
+    // agentCapabilities 是**独立写面**（updateCapabilities 的覆盖写）：它不在
+    // REGISTER_OWNED_COLUMNS 里 ⇒ patch 天然不含它（写面已无风险）；这里的 delete
+    // 是给**返回体**用的——register 不得在回执里声称一个它没读过、可能已被并发
+    // Agent 上报刷新的能力快照（DTO 里这两列因此标注"save() 回程 hydrated"可选）。
     delete (e as Partial<Executor>).agentCapabilities;
     delete (e as Partial<Executor>).agentCapabilitiesUpdatedAt;
-    return this.repo.save(e);
+    // R55-A1（ADR-026 规则 4）：**整行 save → 列级 patch**，写面 = 白名单 ∩ 采纳集。
+    // 这就是本方法不再整行回写的落点：指标列（cpuUsage/memUsage/diskUsage/
+    // networkLatency）、Agent 能力列、以及任何不在 REGISTER_OWNED_COLUMNS 里的
+    // 列**根本没有进 patch 的路径**（不是"摘掉"，是"投影不出来"——比黑名单更难被
+    // 下一次改动绕过：新增一列默认不写，要写必须同时改白名单与 adopted）。
+    //
+    // 为什么这里**不该**加 CAS 谓词（status / version / lastHeartbeat）：
+    // register 是「整体刷新身份/配置」——与心跳同为**覆盖式上报**，last-writer-wins
+    // 即正确语义；本 patch 里每一列都由本次上报重新确定（白名单 ∩ 采纳集），没有
+    // 一列是"顺手带上的旧值"。若加"读取时刻的状态"谓词：注册被 stale sweep 恰好
+    // 置 OFFLINE 的瞬间会 affected=0 ⇒ 本次注册**静默丢失**（配置没刷新、status
+    // 没点亮），把"少写别人的列"换成"注册不可靠"，方向相反。
+    // adr-026-exempt: 覆盖式上报（身份/配置 + 在线标记），写面 = 白名单 ∩ 采纳集，
+    // 无「旧快照盖掉别人新状态」的可能；加 CAS 会变成注册静默丢失（理由见上五行）。
+    const patch = this.pickOwnedColumns(e, adopted, REGISTER_OWNED_COLUMNS);
+    await this.repo.update({ id: e.id }, patch);
+    // 返回值 = 内存实体（已是本次上报后的最终态）叠加 patch —— **不重新 findOne**
+    // （与 heartbeat 里 `const saved = { ...e, ...patch }` 同款：多一次往返，且
+    // 可能读到别人的并发写，返回体就会描述一个本次 register 没写的状态）。
+    return { ...e, ...patch } as Executor;
   }
 
   /**
@@ -2276,20 +2409,27 @@ export class ExecutorService implements OnModuleInit {
    * `address` 是**双主人**列（管理台 PATCH 也写）。单纯按白名单整批写，会在
    * "本次心跳没上报容量"时把管理台刚改的值按快照写回 —— 缺陷只是变窄，没有消失。
    *
-   * 返回类型刻意是 `Partial<Pick<Executor, HeartbeatOwnedColumn>>`：调用方
-   * 无法把白名单外的键塞进 patch，编译期即拦住（这是本条修复的**正向**约束，
-   * 比"删除 x 列"的黑名单更难被下一次改动绕过）。
+   * 返回类型刻意是 `Partial<Pick<Executor, T>>`（T = 调用方给的白名单字面量
+   * 联合）：调用方无法把白名单外的键塞进 patch，编译期即拦住（这是本条修复的
+   * **正向**约束，比"删除 x 列"的黑名单更难被下一次改动绕过）。
+   *
+   * R55-A1：白名单由调用方传入，同一实现服务两个写面——心跳
+   * （HEARTBEAT_OWNED_COLUMNS）与 register（REGISTER_OWNED_COLUMNS）。
+   * 两份白名单分开维护是刻意的：两个写面的主人边界不同（指标列归心跳、
+   * 身份/配置列归 register），共用一个白名单会让"谁拥有哪一列"重新变成
+   * 无人负责的隐含假设。
    */
-  private pickOwnedColumns(
+  private pickOwnedColumns<T extends keyof Executor & string>(
     e: Executor,
-    adopted: ReadonlySet<HeartbeatOwnedColumn>,
-  ): Partial<Pick<Executor, HeartbeatOwnedColumn>> {
+    adopted: ReadonlySet<T>,
+    columns: readonly T[],
+  ): Partial<Pick<Executor, T>> {
     const patch: Record<string, unknown> = {};
-    for (const column of HEARTBEAT_OWNED_COLUMNS) {
+    for (const column of columns) {
       if (!adopted.has(column)) continue;
       patch[column] = e[column];
     }
-    return patch as Partial<Pick<Executor, HeartbeatOwnedColumn>>;
+    return patch as Partial<Pick<Executor, T>>;
   }
 
   async heartbeat(
@@ -2759,7 +2899,7 @@ export class ExecutorService implements OnModuleInit {
     // 下一心跳（执行器如实上报 runningTaskCount）即自纠正。不加锁/版本校验
     // 是有意取舍（R-P0-006：心跳高频、乐观锁冲突会反噬吞吐）；偏差窗口内的
     // 闸门判满/判空是暂时的，不上报的旧版执行器才依赖该近似。
-    const patch = this.pickOwnedColumns(e, adopted);
+    const patch = this.pickOwnedColumns(e, adopted, HEARTBEAT_OWNED_COLUMNS);
     // 为什么这里**不该**加 CAS（status / version / lastHeartbeat 谓词）：心跳是
     // 覆盖式上报（ADR-017 §2），last-writer-wins 即正确语义；而心跳 30s 一次、
     // 机队规模下每秒都有心跳在写，任何「读取时刻的活跃证据」谓词都会在恰好有并发

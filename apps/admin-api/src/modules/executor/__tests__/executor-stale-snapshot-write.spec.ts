@@ -435,3 +435,162 @@ describe("R53-A1 · heartbeat：整行 save → 「实际采纳字段」的正�
   });
 });
 
+describe("R55-A1 · register：整行 save 不得把心跳拥有的指标列按快照写回（ADR-026 规则 4）", () => {
+  /**
+   * R53-A1 的判定：register 语义上**确实是**「整体刷新身份/配置」——它是
+   * appName/type/executorVersion/capabilities/maxConcurrentTasks/groupName/tags/
+   * description/dispatchMode/protocolVersion/deviceFingerprint/interpreters/
+   * executorStartedAt/executorStartupId/status/offlineReason/lastHeartbeat/address
+   * 这些列的权威写者，且每列都有 `!== undefined` 守卫。所以这一轮**没有**把
+   * 十余列守卫拆成十余次单列 update（那才是"硬拆"）。
+   *
+   * 但它的尾巴曾是 `repo.save(e)` **整行回写**，于是顺带把别人的列也写了：
+   *  - 四个指标列 cpuUsage/memUsage/diskUsage/networkLatency 的主人是**心跳**，
+   *    register 连上报口径都没有（DTO 无这些字段、controller 不转发）；
+   *  - 还有「本次没上报」的拥有列（groupName/tags/description/…）：没上报 =
+   *    本次没有意见，整行 save 却把快照值当成"改动"写回去，回弹管理台刚 PATCH 的值。
+   * 修法与心跳 R53-A1 同款：写面 = 正向白名单 ∩ 本次采纳集（列级 patch），
+   * 一次 update、`WHERE id`。
+   *
+   * 本组用例钉住三条性质：
+   *   ① 心跳拥有的指标列，窗口内被刷新后**不得**被 register 按快照回写；
+   *   ② register 采纳的列必须照常落库（不许把修复做成"什么都不写"）；
+   *   ③ 本次未上报的列根本不进 patch（"没意见" ≠ "写回旧值"）。
+   */
+  const FPR = "a".repeat(64);
+
+  /** 心跳在「register 读完快照之后、update 落库之前」刷新了四个指标列。 */
+  const heartbeatDuringRegister = (repo: DiffAwareExecutorRepo): void => {
+    repo.afterRead = () => {
+      repo.store.cpuUsage = 91;
+      repo.store.memUsage = 77;
+      repo.store.diskUsage = 66;
+      repo.store.networkLatency = 250;
+    };
+  };
+
+  const reRegister = (svc: ExecutorService): Promise<unknown> =>
+    svc.register({
+      appName: "node-a",
+      address: "10.0.0.9:3002",
+      deviceFingerprint: FPR,
+      version: "2.0.0",
+    });
+
+  const mkRowWithFingerprint = (over: Row = {}): Row =>
+    mkRow({ deviceFingerprint: FPR, networkLatency: 30, ...over });
+
+  it("窗口内心跳刷新的四个指标列不被 register 按快照回写", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRowWithFingerprint());
+    const svc = makeService(repo);
+    heartbeatDuringRegister(repo);
+
+    await reRegister(svc);
+
+    // 快照里是 cpu 5 / mem 10 / disk 20 / latency 30；心跳写的是 91/77/66/250。
+    // 整行 save 会把这四列 diff 成"改动"并按旧值写回 ⇒ 心跳的新值被覆盖。
+    expect(repo.store.cpuUsage).toBe(91);
+    expect(repo.store.memUsage).toBe(77);
+    expect(repo.store.diskUsage).toBe(66);
+    expect(repo.store.networkLatency).toBe(250);
+  });
+
+  it("register 自己的身份列照常落库，且写面只剩一次列级 update（不再整行 save）", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRowWithFingerprint());
+    const svc = makeService(repo);
+
+    await reRegister(svc);
+
+    expect(repo.updateCalls).toHaveLength(1);
+    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    expect(repo.store.executorVersion).toBe("2.0.0");
+    expect(repo.store.appName).toBe("node-a");
+    expect(repo.store.status).toBe("online");
+    expect(repo.store.offlineReason).toBeNull();
+    expect(repo.store.lastHeartbeat).not.toEqual(D0);
+    // 修复不许变成"什么都不写"，也不许退化成"逐列 update"：
+    // 一次 update、`WHERE id`（同一行）、载荷是列级 patch。
+    expect(repo.saveCalls).toHaveLength(0);
+  });
+
+  it("patch 的键集合 ⊆ register 白名单：指标列与「本次未上报」的列一个都不许出现", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRowWithFingerprint());
+    const svc = makeService(repo);
+    heartbeatDuringRegister(repo);
+
+    await reRegister(svc);
+
+    const patch = repo.updateCalls[0].patch;
+    // 正向白名单（与 REGISTER_OWNED_COLUMNS 逐项对应）——任何"顺手带上的旧值"
+    // 都写不进去。
+    const owned = new Set([
+      "address", "status", "offlineReason", "lastHeartbeat", "type", "appName",
+      "executorVersion", "capabilities", "maxConcurrentTasks", "groupName",
+      "tags", "description", "dispatchMode", "protocolVersion",
+      "deviceFingerprint", "interpreters", "runningTaskCount",
+      "executorStartedAt", "executorStartupId",
+    ]);
+    for (const key of Object.keys(patch)) {
+      expect(owned.has(key)).toBe(true);
+    }
+    // ① 心跳拥有的四个指标列：根本不进 patch（不是"值恰好相同"）。
+    for (const metric of [
+      "cpuUsage",
+      "memUsage",
+      "diskUsage",
+      "networkLatency",
+    ]) {
+      expect(patch).not.toHaveProperty(metric);
+    }
+    // ② 本次上报采纳的列必须进 patch（修复不许变成"什么都不写"）。
+    expect(patch).toHaveProperty("executorVersion", "2.0.0");
+    expect(patch).toHaveProperty("appName", "node-a");
+    expect(patch).toHaveProperty("status", "online");
+    expect(patch).toHaveProperty("offlineReason", null);
+    expect(patch).toHaveProperty("deviceFingerprint", FPR);
+    // ③ 本次未上报的拥有列不进 patch —— 这正是整行 save 的第二个缺陷面：
+    //    没上报 ≠ 把快照值写回去，而是本次对这一列没有意见。
+    for (const notReported of [
+      "type", "capabilities", "maxConcurrentTasks", "groupName", "tags",
+      "description", "dispatchMode", "protocolVersion",
+      "interpreters", "runningTaskCount", "executorStartedAt",
+      "executorStartupId", "address",
+    ]) {
+      expect(patch).not.toHaveProperty(notReported);
+    }
+  });
+
+  it("本次未上报的拥有列：窗口内管理台 PATCH 的新值不被快照回弹", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRowWithFingerprint());
+    const svc = makeService(repo);
+    // 交错点：register 读完快照之后，管理台改了三列（本次注册一个都没上报）。
+    repo.afterRead = () => {
+      repo.store.groupName = "staging";
+      repo.store.tags = ["b"];
+      repo.store.maxConcurrentTasks = 16;
+    };
+
+    await reRegister(svc);
+
+    expect(repo.store.groupName).toBe("staging");
+    expect(repo.store.tags).toEqual(["b"]);
+    expect(repo.store.maxConcurrentTasks).toBe(16);
+  });
+
+  it("返回体 = 读到的快照 + 本次 patch（不重新 findOne，也不崩）", async () => {
+    const repo = new DiffAwareExecutorRepo(mkRowWithFingerprint());
+    const svc = makeService(repo);
+    heartbeatDuringRegister(repo);
+
+    const saved = (await reRegister(svc)) as Row;
+
+    expect(saved.id).toBe("e1");
+    expect(saved.executorVersion).toBe("2.0.0");
+    expect(saved.status).toBe("online");
+    expect(saved.lastHeartbeat).toBeInstanceOf(Date);
+    // 本次没上报的列在返回体里仍是快照值：回执描述的是**本次 register 的写面**，
+    // 权威值以 DB 为准（第一条用例已钉住 DB 侧心跳值存活）。
+    expect(saved.groupName).toBe("prod");
+  });
+});
+

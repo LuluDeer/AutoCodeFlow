@@ -294,8 +294,17 @@ describe("ExecutorService (__tests__)", () => {
           address: "127.0.0.1:3105",
         });
 
-        expect(result).toBe(winnerRow);
-        expect(executorRepo.save).toHaveBeenCalledTimes(2);
+        // 败者并入赢家行：返回体是「赢家快照 + 本次 patch」（同一行、同一 id）。
+        expect(result.id).toBe(winnerRow.id);
+        expect(result.address).toBe(winnerRow.address);
+        expect(result.status).toBe(ExecutorStatus.ONLINE);
+        // 写面：insert（撞唯一约束失败）+ **一次列级 update**（不再是第二次整行 save）。
+        expect(executorRepo.save).toHaveBeenCalledTimes(1);
+        expect(executorRepo.update).toHaveBeenCalledTimes(1);
+        expect(executorRepo.update).toHaveBeenCalledWith(
+          { id: winnerRow.id },
+          expect.objectContaining({ status: ExecutorStatus.ONLINE }),
+        );
         // 败者路径不重复发首注册在线通知（赢家已发）。
         expect(
           service["notificationService"].notifyExecutorOnline,
@@ -491,9 +500,10 @@ describe("ExecutorService (__tests__)", () => {
 
       // 恢复不再触碰 executorRepo 计数（无 releaseExecutorSlotBatch）。
       expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
-      // 计数归零由 save 承担（R-P0-008 语义）。
-      const saved = (executorRepo.save as jest.Mock).mock.calls[0][0] as any;
-      expect(saved.runningTaskCount).toBe(0);
+      // 计数归零由列级 patch 承担（R-P0-008 语义；整行 save 已消除）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const patch = (executorRepo.update as jest.Mock).mock.calls[0][1] as any;
+      expect(patch.runningTaskCount).toBe(0);
     });
 
     it("NETOPT-E P2-1: recovery only fails rows started before the restart moment (new dispatches survive)", async () => {
@@ -689,6 +699,7 @@ describe("ExecutorService (__tests__)", () => {
 
     it("does not abort restart recovery when retry enqueue fails", async () => {
       const existing = {
+        id: "executor-1",
         appName: "e1",
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
@@ -737,7 +748,15 @@ describe("ExecutorService (__tests__)", () => {
       ).toBe(true);
       expect(execRepo.delete).toHaveBeenCalledWith("retry-exec");
       expect(existing.executorStartupId).toBe("startup-new");
-      expect(executorRepo.save).toHaveBeenCalledWith(existing);
+      // 写面：一次列级 patch（WHERE id = 同一行），含 startupId 与计数清零两列。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "executor-1" },
+        expect.objectContaining({
+          executorStartupId: "startup-new",
+          runningTaskCount: 0,
+        }),
+      );
     });
 
     // R-11（DEEP_REVIEW 0ef3bbe）：重启恢复流程中任何写失败不得击穿 register
@@ -957,6 +976,11 @@ describe("ExecutorService (__tests__)", () => {
         capabilities: ["python"],
         agentCapabilities: ["agent:sop", "gui"],
         agentCapabilitiesUpdatedAt: new Date(),
+        // R55-A1：四个指标列的主人是心跳，register 的快照里带着它们也只是"读到的旧值"。
+        cpuUsage: 42,
+        memUsage: 43,
+        diskUsage: 44,
+        networkLatency: 45,
       };
       executorRepo.findOne.mockResolvedValue(existing);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -968,12 +992,25 @@ describe("ExecutorService (__tests__)", () => {
       });
 
       expect(existing.capabilities).toEqual(["python", "node"]);
-      expect(executorRepo.save.mock.calls[0][0]).not.toHaveProperty(
-        "agentCapabilities",
-      );
-      expect(executorRepo.save.mock.calls[0][0]).not.toHaveProperty(
-        "agentCapabilitiesUpdatedAt",
-      );
+      // R55-A1：重注册的写面是列级 patch（整行 save 已消除）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const payload = (executorRepo.update as jest.Mock).mock.calls[0][1] as any;
+      expect(payload).not.toHaveProperty("agentCapabilities");
+      expect(payload).not.toHaveProperty("agentCapabilitiesUpdatedAt");
+      // R55-A1（ADR-026 规则 4）：独立的第三写面——心跳拥有的指标列。整行 save
+      // 会把快照值按 diff 写回，覆盖窗口内刚上报的真实指标；save 载荷上必须
+      // 根本不存在这四列（不是"值恰好相同"）。
+      for (const metric of [
+        "cpuUsage",
+        "memUsage",
+        "diskUsage",
+        "networkLatency",
+      ]) {
+        expect(payload).not.toHaveProperty(metric);
+      }
+      // register 自己的身份列仍在这个整行 save 里（摘列不是"什么都不写"）。
+      expect(payload).toHaveProperty("capabilities", ["python", "node"]);
+      expect(payload).toHaveProperty("status", ExecutorStatus.ONLINE);
     });
 
     it("Agent reports replace only Agent capabilities and [] revokes GUI without touching runtimes", async () => {
@@ -8097,7 +8134,12 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     });
 
     expect((row as any).deviceFingerprint).toBe(FP_A);
-    expect(executorRepo.save).toHaveBeenCalled();
+    // 写面：一次列级 update，指纹在 patch 里（整行 save 已消除）。
+    expect(executorRepo.save).not.toHaveBeenCalled();
+    expect(executorRepo.update).toHaveBeenCalledWith(
+      { id: "e1" },
+      expect.objectContaining({ deviceFingerprint: FP_A }),
+    );
   });
 
   /** 重注册携带非法指纹 → 绝不动 DB（不得把已存值擦成 NULL）。 */
