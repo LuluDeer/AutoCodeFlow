@@ -833,6 +833,10 @@ jobs:
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
       - name: CLI command map vs code guard
         run: node scripts/check-cli-doc.mjs
+      # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
+      # 且只在多副本时显形、单机开发永远看不到。22 处目前全有门禁，此闸防新增时漏写。
+      - name: Every @Cron has a leader gate
+        run: node scripts/check-cron-leader-gate.mjs
       # atlas 的「N 个 X」自述同样会腐烂：迁移数曾停在 60（实际 103）、模块索引漏了 agent。
       - name: Atlas self-declared counts vs code
         run: node scripts/check-atlas-counts.mjs
