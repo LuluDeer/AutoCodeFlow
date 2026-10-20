@@ -1116,3 +1116,9 @@
   新增 2 条（先断言不设 env 时同包合法，再断言设 env 后拒绝 —— 防「拒绝来自别的原因」的假绿；env 在 beforeEach/afterEach 还原）。
   验证 45 passed（原 43+2）、tsc 0；**反证**：两处换成内联默认常量 → **2 failed / 43 passed**（恰为新增两条），还原后 45 passed。
   **两侧现在对称**：python `_extract_package`（R94-A1）+ node `safeExtractZip`/`vetZip`（本轮）都有「不传参 → 读 env → 生效」的证据，而不只是「函数本身能算对」。
+- 2026-10-20 **R103 done（commit b76729dc）**：**SDK 文档版本停在 1.2.0、实际 1.12.1**（三个包 lockstep 全为 1.12.1）。这条声明的杀伤力比一般数字过期更具体 ——
+  它自己写着「与 mcp-server 同步、由 release.yml 强制」，读者会**相信**这个数字；**一个声称「有机器保证」的声明过期，比普通数字过期更容易被信**。
+  顺带核实了它的说法：`release.yml` 确有 `version-guard` job ⇒ **锁步机制是真的，只有文档里的数字是旧的**，正说明机器管住了包↔tag，管不住**文档↔包**。
+  修 sdks.md（1.2.0→1.12.1 + 日期 + 页头注明）+ 给 `check-interface-maps.mjs` 加**第三节**（文档「当前 X.Y.Z」== mcp-server version；提取不到也红）。验证三节全绿；反证：改回 1.2.0 → 红并指明差值。
+- 2026-10-20 **R102-A1 认领**：`executor-desktop` **渲染层 + preload 桥**安全审计。背景：主进程已加 IPC sender 白名单（R86-A1，只认自己页面的主 frame）
+  ⇒ **渲染层内部的代码执行（XSS/注入 HTML）仍能过那道闸**，渲染层自身成了主要剩余攻击面。四轴：XSS sink / CSP 与 webPreferences / preload 桥暴露面 / 外链与导航。
