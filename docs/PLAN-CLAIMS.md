@@ -904,3 +904,16 @@
 - 2026-10-20 **R74-A1 进行中**：executor-node 四轴审计已落到代码——`ssrf-guard.ts` +142、`download.ts` +67，
   新增 `download.dns-pin.spec.ts`（DNS 钉扎 + 逐跳钉扎），auth 补「缺失 vs 无效不可区分」、run-command 补输出上限、
   update-package 补 checksum 不匹配清理。5 个受影响 spec 已 80 例通过，正在跑全量。
+- 2026-10-20 **★ R74-A1 done（commit eb61eda8）——本轮是 59 轮来第一个真正的安全缺陷**：`executor-node` 的
+  `isRestrictedIpv6Address` 是**字符串前缀黑名单**，三处可绕过：① **`::ffff:` 点分分支被 WHATWG URL 规避**
+  （`new URL('http://[::ffff:127.0.0.1]/x')` 的 hostname 是 `[::ffff:7f00:1]`，旧分支按点分解析失败 ⇒
+  **整条回环地址放行**，SSRF 闸对一个能连回环的地址说了 OK）；② `fe80::/10` 只黑了 fe80/fe81/fe82，
+  fe90/feb0/febf 漏网；③ `ff00::/8` 组播完全未覆盖。改为**展开成 8 个 16-bit 分组后按位判**（含 ::1、
+  IPv4-mapped ::ffff:0:0/96、IPv4-compatible ::/96、NAT64 64:ff9b::/96、6to4 2002::/16、fe80::/10、
+  fc00::/7、ff00::/8），解析失败一律 fail-closed。同批另修三轴：**下载 DNS 钉扎**（校验地址=连接地址，
+  含逐跳，新增 `download.dns-pin.spec.ts`）、**鉴权**（缺失 vs 无效不可区分、shared/per-executor OR 优先级）、
+  **执行隔离**（子进程输出上限 + checksum 不匹配删半成品）。验证全量 **47 套件 / 1185 例全绿**、受影响 5 spec 80 例、
+  tsc 0。反证：把 `parseIpv6Groups` 强制返回 null → 2 failed / 16 passed（公网放行那条红），证明新判定不是「一律拒绝」的假绿。
+  **总控复核追加修正**：语法校验写成 `/^d{1,3}$/`（漏反斜杠）→ 合法段恒不匹配 ⇒ fail-closed 判受限；方向安全但会把
+  公网 `::ffff:8.8.8.8` 误判。实际不可达（URL 必规范化成十六进制），属**休眠缺陷**，仍按「解析器要自洽」修掉。
+  **过程**：执行者写完实现与用例后卡在全量测试（检查点 6+ 分钟未更新、diff 不增长），按协议 interrupt 后由总控接管验收。
