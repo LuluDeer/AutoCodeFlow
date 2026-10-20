@@ -1167,3 +1167,11 @@
 - 2026-10-20 **R109 done（commit 61d7adc8）**：**MCP 工具地图补「分域计数」判据**。R95 补地图时数字是**手改**的（40→56、Task 18→21），而守卫只校验名字 ⇒ **名字全对、数字全错照样绿**。
   新增：解析每个 `### <域> 域 — register<X>Tools（N 个…）` 的 N 与该函数实际注册数逐个比对；标题正则放宽到 `（(\d+) 个[^）]*）` —— Deployment 写的是「9 个，DEP-04 审批语义」，严格匹配会**漏掉整节**（第一版就漏了）。
   验证四节全绿；反证：Task 21→18 → 红并点名。**顺带 admin-web 全量：224 文件 / 1854 例全绿**（确认 R104 的标签补全未波及别处）。
+- 2026-10-20 **R110 done（commit d6a94401）**：**mcp-server 工具出参加一层凭据剥除**（R107-A1 遗留①）。上游对 `webhookSecret`/`tokenHash`/`env` 当前是干净的
+  （`select:false` + 响应 DTO 排除 + `maskReadSurface`，三处都有），但 MCP 侧此前 `JSON_CONTENT(data)` **逐字透传** ⇒ **干净的保证完全依赖上游，而那是三处彼此独立的约定**。
+  新增 `redact.ts`（`JSON_CONTENT` 与 `JSON_ERROR` 共用）：整键替换敏感键（**键保留、值打码**，便于排障）/ `env` **只掩键名像密钥的**（一刀切会让 agent 失去排障能力）/
+  `null` 保持原样（不把「没配」说成「配了」）/ 有界递归 12 + `[circular]` / **不改原对象**。
+  验证 mcp-server **183 → 192 passed**（+7 单元 + 2 接线）、tsc 0；接线用例**刻意模拟上游漏了一次**；**反证**：去掉 `redactSensitive` → **2 failed**，还原后 192 绿，
+  并**显式检查 `redactSensitive` 在 tools.ts 出现 4 次**（防 R107 那次静默还原失败重演）。
+  **已知残余风险（登记而非假装覆盖）**：`env` 判据是键名启发式 ⇒ `DATABASE_URL='postgres://user:pass@h/db'` 这种**值含凭据但键名不含关键词**的不会被掩；
+  按值形态猜（URL userinfo / base64 / JWT）会误伤正常配置且与上游判据不一致，故**不做**。
