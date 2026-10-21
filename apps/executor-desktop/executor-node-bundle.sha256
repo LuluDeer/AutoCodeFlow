@@ -561,5 +561,15 @@
 #   ⚠️ 这两处都是 **bundle 输入**：漏打即「修了源码却仍发布带洞的内嵌执行器」——正是本文件
 #   反复记载的 cc54aa2f / NETOPT-8③ / f3e340df 同型事故。本次按 ADR-005 同 commit 重打回填 ①②。
 #   回填环境：本机(Windows) node 24 / ncc 0.45.0，bundle 4191kB（重打 26s）。
+#
+# 2026-10-21（依赖审计 SEC-06：follow-redirects 1.16.0 → 1.16.1 / uv 0.13.4）：
+#   · 修 CVE-2026-111755 / CVE-2026-111756（high，GHSA-8r9p-f939-6h3c /
+#     GHSA-q3jh-wrc6-jgq8）——axios 的传递依赖 follow-redirects 1.16.0 存在
+#     sensitiveHeaders 正则转义与数组式 header 绕过，两者都会泄露跨域凭据头。
+#   · `apps/executor-node/src` 一个字节没动（source-digest 不变 a038509b…），
+#     但 ncc 把 node_modules 内联进产物，故②字节哈希必变——与本文件 2026-10-19
+#     「DEP-AUDIT」同型，属依赖变更而非源码漂移。
+#   · ②取 **CI Ubuntu runner** 的实测产物：actual=8ce6c201…（run 39573130581
+#     desktop-bundle-drift），按既定分工（「只换构建器/依赖不动 src」→ ②按 CI 回填）。
 source-digest: a038509b9e99c6213c272379585e19230ee19c91d97c7ad9fb9a8cedef4e7d25
-5a2a0c50b10545f8c78fe67750e32b121a83860eb4f6b758b404a902eef6b4bf  index.js
+8ce6c2011417ff28f46da06a20fa1c74f3124015be948157640b04c228880cd1  index.js
