@@ -571,5 +571,14 @@
 #     「DEP-AUDIT」同型，属依赖变更而非源码漂移。
 #   · ②取 **CI Ubuntu runner** 的实测产物：actual=8ce6c201…（run 39573130581
 #     desktop-bundle-drift），按既定分工（「只换构建器/依赖不动 src」→ ②按 CI 回填）。
-source-digest: a038509b9e99c6213c272379585e19230ee19c91d97c7ad9fb9a8cedef4e7d25
-8ce6c2011417ff28f46da06a20fa1c74f3124015be948157640b04c228880cd1  index.js
+#
+# 2026-10-21（桌面端内置 uv 0.8.17 → 0.13.4，PYSEC-2026-4321 critical）：
+#   · `interpreters.ts` 的 `ONLINE_DOWNLOAD_MIN` 注释补充了 0.13.4 的复测结论
+#     （下界仍是 3.8、对 3.7 的拒绝文案逐字节一致、上界扩到 3.16）。**只改注释**，
+#     但注释会原样内联进 ncc 产物 → source-digest 与字节哈希都变。
+#   · 这是纪律要求的正确处置，不是漂移：ADR-005 要求源码改动与产物同 commit。
+#   · 本次**不发版**（用户明确：先只升 uv、不重打包安装包），故 desktop-v1.9.2
+#     的安装包仍内置 0.8.17；下次打 tag 时会带上 0.13.4。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），bundle 4200kB。
+source-digest: 27442704032d5e5943bd1383174a78b3c056482e0f8412fc04b46cc0ca36da99
+873fda10dc8e6fae8d93d90a725d404201afd1361ac5211009009773d3018c7d  index.js

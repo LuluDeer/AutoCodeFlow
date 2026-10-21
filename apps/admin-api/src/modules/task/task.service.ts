@@ -465,11 +465,13 @@ function uniqueConstraintName(err: unknown): string | null {
  * - `uv pip install failed: ...` → 不匹配，仍归依赖/包类。
  * - 真实任务超时 `execution timed out after 300s` → 不匹配，仍归 TIMEOUT。
  *
- * 覆盖的实测文案（T01 / uv 0.8.17）：
- *   `No interpreter found for Python 3.7 in managed installations, search
- *    path, or registry`（`uv venv --python 3.7`，exit 2）
+ * 覆盖的实测文案（T01；桌面端内置 uv 由 0.8.17 升到 0.13.4 后**逐条复测**）：
+ *   `No interpreter found for Python 3.7 in managed installations or search
+ *    path`（`uv venv --python 3.7`，exit 2）
+ *     ⚠️ 0.8.17 原文案尾部还有 `, or registry`，0.13.4 去掉了。判据只匹配
+ *     前缀 `no interpreter found`，故版本差异不影响分类；此处按**当前**文案记录。
  *   `No download found for request: cpython-3.7-<platform>`（`uv python
- *    install 3.7`，exit 2）
+ *    install 3.7`，exit 2）——0.8.17 与 0.13.4 逐字节一致
  *   `python downloads are set to 'manual'`（`UV_PYTHON_DOWNLOADS=manual`
  *    阻断隐式下载时的提示——本特性刻意设置该 env，故必然出现）
  *
