@@ -33,65 +33,59 @@ AutoCodeFlow turns "cron scripts scattered across machines" into **schedulable, 
 
 ## 🖼️ Screenshots
 
-### Admin console (admin-web)
+### Admin console
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>Dashboard</b><br/><sub>Task totals, success rate, execution trend, scheduler latency, executor resources</sub></td>
-    <td width="50%" align="center"><b>Task scheduling</b><br/><sub>Cron / fixed-rate / manual with status, next run and runtime</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/dashboard.png" alt="Dashboard"></td>
-    <td><img src="docs/assets/screenshots/en/tasks.png" alt="Task scheduling"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Execution history</b><br/><sub>Full run history, filterable by status, executor and time</sub></td>
-    <td align="center"><b>Execution detail</b><br/><sub>Logs, timeline, retry chain, params and artifacts</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executions.png" alt="Execution history"></td>
-    <td><img src="docs/assets/screenshots/en/execution-detail.png" alt="Execution detail"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Executors</b><br/><sub>Online state, CPU / memory / disk, heartbeat, task concurrency</sub></td>
-    <td align="center"><b>Executor detail</b><br/><sub>Resource trend, success rate, interpreter pool, token rotation</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executors.png" alt="Executors"></td>
-    <td><img src="docs/assets/screenshots/en/executor-detail.png" alt="Executor detail"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Task detail</b><br/><sub>Glue script, dependency DAG, runs, version history and rollback</sub></td>
-    <td align="center"><b>Applications</b><br/><sub>App versions, deployment state, bulk upgrade and canary rollout</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/task-detail.png" alt="Task detail"></td>
-    <td><img src="docs/assets/screenshots/en/applications.png" alt="Applications"></td>
-  </tr>
-</table>
+**Dashboard** — task totals, success rate, execution trend, scheduler latency and executor resources.
 
-### Desktop executor (executor-desktop)
+![Dashboard](docs/assets/screenshots/en/dashboard.png)
+
+**Task scheduling** — cron / fixed-rate / manual tasks with status, next run and runtime.
+
+![Task scheduling](docs/assets/screenshots/en/tasks.png)
+
+**Execution history** — every run, filterable by status, executor and time window.
+
+![Execution history](docs/assets/screenshots/en/executions.png)
+
+**Execution detail** — logs, timeline, retry chain, parameters and artifacts.
+
+![Execution detail](docs/assets/screenshots/en/execution-detail.png)
+
+**Executors** — online state, CPU / memory / disk, heartbeat and task concurrency.
+
+![Executors](docs/assets/screenshots/en/executors.png)
+
+**Executor detail** — resource trend, success rate, interpreter pool and token rotation.
+
+![Executor detail](docs/assets/screenshots/en/executor-detail.png)
+
+**Task detail** — glue script, dependency DAG, runs, version history and rollback.
+
+![Task detail](docs/assets/screenshots/en/task-detail.png)
+
+**Applications** — app versions, deployment state, bulk upgrade and canary rollout.
+
+![Applications](docs/assets/screenshots/en/applications.png)
+
+### Desktop executor
 
 An Electron executor that installs on any machine, stays in the system tray, registers itself and receives scheduled work.
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>Setup wizard</b><br/><sub>Five steps: connection, machine info, download source, confirmation</sub></td>
-    <td width="50%" align="center"><b>Status</b><br/><sub>Online state, heartbeat, live run logs, recent failures</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/wizard.png" alt="Desktop executor setup wizard"></td>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/status-live.png" alt="Desktop executor status"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Run history</b><br/><sub>Runs grouped by task with failure reasons inline</sub></td>
-    <td align="center"><b>Local apps</b><br/><sub>Deployed apps, side-by-side versions, uninstall and rollback</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/history.png" alt="Desktop executor history"></td>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/apps-detail.png" alt="Desktop executor local apps"></td>
-  </tr>
-</table>
+**Setup wizard** — five steps: connection, machine info, download source, confirmation.
+
+![Desktop executor setup wizard](docs/assets/screenshots/en/executor-desktop/wizard.png)
+
+**Status** — online state, heartbeat, live run logs and recent failures.
+
+![Desktop executor status](docs/assets/screenshots/en/executor-desktop/status-live.png)
+
+**Run history** — runs grouped by task with failure reasons inline.
+
+![Desktop executor history](docs/assets/screenshots/en/executor-desktop/history.png)
+
+**Local apps** — deployed apps, side-by-side versions, uninstall and rollback.
+
+![Desktop executor local apps](docs/assets/screenshots/en/executor-desktop/apps-detail.png)
 
 > Chinese UI screenshots live in `docs/assets/screenshots/zh/`.
 

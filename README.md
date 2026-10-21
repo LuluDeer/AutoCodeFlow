@@ -60,65 +60,59 @@ AutoCodeFlow turns "cron scripts scattered across machines" into **schedulable, 
 
 ## 🖼️ Screenshots
 
-### Admin console (admin-web)
+### Admin console
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>Dashboard</b><br/><sub>Task totals, success rate, execution trend, scheduler latency, executor resources</sub></td>
-    <td width="50%" align="center"><b>Task scheduling</b><br/><sub>Cron / fixed-rate / manual with status, next run and runtime</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/dashboard.png" alt="Dashboard"></td>
-    <td><img src="docs/assets/screenshots/en/tasks.png" alt="Task scheduling"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Execution history</b><br/><sub>Full run history, filterable by status, executor and time</sub></td>
-    <td align="center"><b>Execution detail</b><br/><sub>Logs, timeline, retry chain, params and artifacts</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executions.png" alt="Execution history"></td>
-    <td><img src="docs/assets/screenshots/en/execution-detail.png" alt="Execution detail"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Executors</b><br/><sub>Online state, CPU / memory / disk, heartbeat, task concurrency</sub></td>
-    <td align="center"><b>Executor detail</b><br/><sub>Resource trend, success rate, interpreter pool, token rotation</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executors.png" alt="Executors"></td>
-    <td><img src="docs/assets/screenshots/en/executor-detail.png" alt="Executor detail"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Task detail</b><br/><sub>Glue script, dependency DAG, runs, version history and rollback</sub></td>
-    <td align="center"><b>Applications</b><br/><sub>App versions, deployment state, bulk upgrade and canary rollout</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/task-detail.png" alt="Task detail"></td>
-    <td><img src="docs/assets/screenshots/en/applications.png" alt="Applications"></td>
-  </tr>
-</table>
+**Dashboard** — task totals, success rate, execution trend, scheduler latency and executor resources.
 
-### Desktop executor (executor-desktop)
+![Dashboard](docs/assets/screenshots/en/dashboard.png)
+
+**Task scheduling** — cron / fixed-rate / manual tasks with status, next run and runtime.
+
+![Task scheduling](docs/assets/screenshots/en/tasks.png)
+
+**Execution history** — every run, filterable by status, executor and time window.
+
+![Execution history](docs/assets/screenshots/en/executions.png)
+
+**Execution detail** — logs, timeline, retry chain, parameters and artifacts.
+
+![Execution detail](docs/assets/screenshots/en/execution-detail.png)
+
+**Executors** — online state, CPU / memory / disk, heartbeat and task concurrency.
+
+![Executors](docs/assets/screenshots/en/executors.png)
+
+**Executor detail** — resource trend, success rate, interpreter pool and token rotation.
+
+![Executor detail](docs/assets/screenshots/en/executor-detail.png)
+
+**Task detail** — glue script, dependency DAG, runs, version history and rollback.
+
+![Task detail](docs/assets/screenshots/en/task-detail.png)
+
+**Applications** — app versions, deployment state, bulk upgrade and canary rollout.
+
+![Applications](docs/assets/screenshots/en/applications.png)
+
+### Desktop executor
 
 An Electron executor that installs on any machine, stays in the system tray, registers itself and receives scheduled work.
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>Setup wizard</b><br/><sub>Five steps: connection, machine info, download source, confirmation</sub></td>
-    <td width="50%" align="center"><b>Status</b><br/><sub>Online state, heartbeat, live run logs, recent failures</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/wizard.png" alt="Desktop executor setup wizard"></td>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/status-live.png" alt="Desktop executor status"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Run history</b><br/><sub>Runs grouped by task with failure reasons inline</sub></td>
-    <td align="center"><b>Local apps</b><br/><sub>Deployed apps, side-by-side versions, uninstall and rollback</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/history.png" alt="Desktop executor history"></td>
-    <td><img src="docs/assets/screenshots/en/executor-desktop/apps-detail.png" alt="Desktop executor local apps"></td>
-  </tr>
-</table>
+**Setup wizard** — five steps: connection, machine info, download source, confirmation.
+
+![Desktop executor setup wizard](docs/assets/screenshots/en/executor-desktop/wizard.png)
+
+**Status** — online state, heartbeat, live run logs and recent failures.
+
+![Desktop executor status](docs/assets/screenshots/en/executor-desktop/status-live.png)
+
+**Run history** — runs grouped by task with failure reasons inline.
+
+![Desktop executor history](docs/assets/screenshots/en/executor-desktop/history.png)
+
+**Local apps** — deployed apps, side-by-side versions, uninstall and rollback.
+
+![Desktop executor local apps](docs/assets/screenshots/en/executor-desktop/apps-detail.png)
 
 > Chinese UI screenshots live in `docs/assets/screenshots/zh/`.
 
@@ -438,63 +432,57 @@ AutoCodeFlow 把「散落在各台机器上的定时脚本」变成**可调度�
 
 ### 中台（admin-web）
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>控制台</b><br/><sub>任务总量、成功率、执行趋势、调度延迟、执行器资源</sub></td>
-    <td width="50%" align="center"><b>任务调度</b><br/><sub>Cron / 固定频率 / 手动，状态、下次执行与运行时一目了然</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/dashboard.png" alt="控制台"></td>
-    <td><img src="docs/assets/screenshots/zh/tasks.png" alt="任务调度"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>执行记录</b><br/><sub>全量执行历史，按状态、执行器、时间过滤，实时刷新</sub></td>
-    <td align="center"><b>执行详情</b><br/><sub>执行日志、时间线、重试链、参数与产物</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executions.png" alt="执行记录"></td>
-    <td><img src="docs/assets/screenshots/zh/execution-detail.png" alt="执行详情"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>执行器</b><br/><sub>在线状态、CPU / 内存 / 磁盘、心跳、任务并发</sub></td>
-    <td align="center"><b>执行器详情</b><br/><sub>资源趋势、成功率、解释器池、令牌轮换</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executors.png" alt="执行器列表"></td>
-    <td><img src="docs/assets/screenshots/zh/executor-detail.png" alt="执行器详情"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>任务详情</b><br/><sub>Glue 脚本、依赖 DAG、执行记录、版本历史与回滚</sub></td>
-    <td align="center"><b>应用管理</b><br/><sub>应用版本、部署状态、批量升级与灰度</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/task-detail.png" alt="任务详情"></td>
-    <td><img src="docs/assets/screenshots/zh/applications.png" alt="应用管理"></td>
-  </tr>
-</table>
+**控制台** — 任务总量、成功率、执行趋势、调度延迟与执行器资源。
+
+![控制台](docs/assets/screenshots/zh/dashboard.png)
+
+**任务调度** — Cron / 固定频率 / 手动任务，状态、下次执行与运行时一目了然。
+
+![任务调度](docs/assets/screenshots/zh/tasks.png)
+
+**执行记录** — 全量执行历史，可按状态、执行器与时间窗口过滤。
+
+![执行记录](docs/assets/screenshots/zh/executions.png)
+
+**执行详情** — 执行日志、时间线、重试链、参数与产物。
+
+![执行详情](docs/assets/screenshots/zh/execution-detail.png)
+
+**执行器** — 在线状态、CPU / 内存 / 磁盘、心跳与任务并发。
+
+![执行器](docs/assets/screenshots/zh/executors.png)
+
+**执行器详情** — 资源趋势、成功率、解释器池与令牌轮换。
+
+![执行器详情](docs/assets/screenshots/zh/executor-detail.png)
+
+**任务详情** — Glue 脚本、依赖 DAG、执行记录、版本历史与回滚。
+
+![任务详情](docs/assets/screenshots/zh/task-detail.png)
+
+**应用管理** — 应用版本、部署状态、批量升级与灰度。
+
+![应用管理](docs/assets/screenshots/zh/applications.png)
 
 ### 执行器（executor-desktop）
 
 Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，自动注册上线并接收调度任务。
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>连接向导</b><br/><sub>5 步完成连接、本机信息、下载源与确认</sub></td>
-    <td width="50%" align="center"><b>状态监控</b><br/><sub>在线状态、心跳、实时运行日志、最近失败</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/wizard.png" alt="桌面执行器连接向导"></td>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/status-live.png" alt="桌面执行器状态监控"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>执行历史</b><br/><sub>按任务分组的运行记录，失败原因直接可见</sub></td>
-    <td align="center"><b>本地应用</b><br/><sub>已部署应用、多版本并存、卸载与版本回退</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/history.png" alt="桌面执行器执行历史"></td>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/apps-detail.png" alt="桌面执行器本地应用"></td>
-  </tr>
-</table>
+**连接向导** — 5 步完成连接、本机信息、下载源与确认。
+
+![桌面执行器连接向导](docs/assets/screenshots/zh/executor-desktop/wizard.png)
+
+**状态监控** — 在线状态、心跳、实时运行日志与最近失败。
+
+![桌面执行器状态监控](docs/assets/screenshots/zh/executor-desktop/status-live.png)
+
+**执行历史** — 按任务分组的运行记录，失败原因直接可见。
+
+![桌面执行器执行历史](docs/assets/screenshots/zh/executor-desktop/history.png)
+
+**本地应用** — 已部署应用、多版本并存、卸载与版本回退。
+
+![桌面执行器本地应用](docs/assets/screenshots/zh/executor-desktop/apps-detail.png)
 
 > 英文界面截图见 [English](#english) 章节（`docs/assets/screenshots/en/`）。
 
