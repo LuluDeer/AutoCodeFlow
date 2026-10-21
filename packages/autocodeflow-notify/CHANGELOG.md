@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-notify-v0.2.3...autocodeflow-notify-v0.3.0) (2026-10-21)
+
+
+### Bug Fixes
+
+* **autocodeflow-notify:** 渠道参数可分类报错并保留失败原因（R134-A1） ([16c2894](https://github.com/LuluDeer/AutoCodeFlow/commit/16c2894e5c82048c88c400dcbd09ef4111e975c1))
+
 ## [0.2.3](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-notify-v0.2.2...autocodeflow-notify-v0.2.3) (2026-10-09)
 
 
