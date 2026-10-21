@@ -9,6 +9,8 @@ const path = require('path');
 const APP_ENTRY = path.join(__dirname, '..', 'dist', 'main', 'index.js');
 const ELECTRON_BIN = require('electron');
 const OUT = path.join(__dirname, '.screenshots');
+// EN=1 → 英文界面（README 双语截图用）；其余断言按中文。
+const EN = process.env.EN === '1';
 
 function mkWorkDir() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-shots-work-'));
@@ -142,10 +144,14 @@ function mkWorkDir() {
     fs.writeFileSync(path.join(logDir, logName), lines.join('\r\n') + '\r\n');
   }
 
+  // EN=1 → 英文界面（写 uiLanguage 到 config.json 后启动，用于 README 双语截图）
+  if (EN) {
+    fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({ uiLanguage: 'en' }, null, 2));
+  }
   const app = await electron.launch({
     executablePath: ELECTRON_BIN,
-    args: [APP_ENTRY],
-    env: { ...process.env, ELECTRON_USER_DATA_DIR: userData },
+    args: ['--lang=' + (EN ? 'en-US' : 'zh-CN'), APP_ENTRY],
+    env: { ...process.env, ELECTRON_USER_DATA_DIR: userData, LANG: EN ? 'en_US.UTF-8' : 'zh_CN.UTF-8' },
   });
   const shot = async (win, name) => {
     await win.waitForTimeout(400);
@@ -155,11 +161,11 @@ function mkWorkDir() {
   try {
     const wizard = await app.firstWindow();
     await wizard.waitForLoadState('domcontentloaded');
-    await wizard.getByText('欢迎使用').first().waitFor({ timeout: 20000 });
+    await wizard.getByText(EN ? 'Welcome' : '欢迎使用').first().waitFor({ timeout: 20000 });
     await shot(wizard, '01-wizard');
     // 第 2 步（连接服务端）：验证步骤进度指引「第 X / 4 步」与表单态
-    await wizard.getByRole('button', { name: /开始配置/ }).click();
-    await wizard.getByText('连接服务端').first().waitFor({ timeout: 10000 });
+    await wizard.getByRole('button', { name: EN ? 'Start setup' : /开始配置/ }).click();
+    await wizard.getByText(EN ? 'Connect to the server' : '连接服务端').first().waitFor({ timeout: 10000 });
     await shot(wizard, '01b-wizard-connect');
 
     const cfg = await wizard.evaluate(() => window.electronAPI.getConfig());
@@ -169,7 +175,7 @@ function mkWorkDir() {
     }, [cfg, workDir]);
     const status = await statusReady;
     await status.waitForLoadState('domcontentloaded');
-    await status.getByText('运行日志').first().waitFor({ timeout: 20000 });
+    await status.getByText(EN ? 'Run logs' : '运行日志').first().waitFor({ timeout: 20000 });
     await shot(status, '02-status');
 
     // 全屏日志查看器
@@ -200,8 +206,8 @@ function mkWorkDir() {
     await status.getByRole('button', { name: '关闭', exact: true }).click();
 
     // 应用页
-    await status.getByRole('tab', { name: '应用' }).click();
-    await status.getByText('本地应用').first().waitFor({ timeout: 15000 });
+    await status.getByRole('tab', { name: EN ? 'Apps' : '应用' }).click();
+    await status.getByText(EN ? 'Local apps' : '本地应用').first().waitFor({ timeout: 15000 });
     await shot(status, '12-apps');
     // 展开第一个应用
     await status.getByRole('button', { name: /数据同步机器人/ }).first().click();

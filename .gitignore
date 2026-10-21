@@ -99,6 +99,9 @@ e2e/.screenshots/
 *.jpeg
 # 但打包资源图标必须入库（W-16：electron-builder 图标源 + 托盘图标，缺失则 Windows 打包回退默认 Electron 图标）
 !apps/executor-desktop/assets/*.png
+# README / 文档展示图必须入库：架构图与中台、执行器截图画廊（docs/assets/）
+# 无这些反白规则，GitHub 上的 README 图片会全部 404。
+!docs/assets/**/*.png
 
 # 上传目录
 apps/admin-api/uploads/
