@@ -34,63 +34,57 @@ AutoCodeFlow 把「散落在各台机器上的定时脚本」变成**可调度�
 
 ### 中台（admin-web）
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>控制台</b><br/><sub>任务总量、成功率、执行趋势、调度延迟、执行器资源</sub></td>
-    <td width="50%" align="center"><b>任务调度</b><br/><sub>Cron / 固定频率 / 手动，状态、下次执行与运行时一目了然</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/dashboard.png" alt="控制台"></td>
-    <td><img src="docs/assets/screenshots/zh/tasks.png" alt="任务调度"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>执行记录</b><br/><sub>全量执行历史，按状态、执行器、时间过滤，实时刷新</sub></td>
-    <td align="center"><b>执行详情</b><br/><sub>执行日志、时间线、重试链、参数与产物</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executions.png" alt="执行记录"></td>
-    <td><img src="docs/assets/screenshots/zh/execution-detail.png" alt="执行详情"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>执行器</b><br/><sub>在线状态、CPU / 内存 / 磁盘、心跳、任务并发</sub></td>
-    <td align="center"><b>执行器详情</b><br/><sub>资源趋势、成功率、解释器池、令牌轮换</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executors.png" alt="执行器列表"></td>
-    <td><img src="docs/assets/screenshots/zh/executor-detail.png" alt="执行器详情"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>任务详情</b><br/><sub>Glue 脚本、依赖 DAG、执行记录、版本历史与回滚</sub></td>
-    <td align="center"><b>应用管理</b><br/><sub>应用版本、部署状态、批量升级与灰度</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/task-detail.png" alt="任务详情"></td>
-    <td><img src="docs/assets/screenshots/zh/applications.png" alt="应用管理"></td>
-  </tr>
-</table>
+**控制台** — 任务总量、成功率、执行趋势、调度延迟与执行器资源。
+
+![控制台](docs/assets/screenshots/zh/dashboard.png)
+
+**任务调度** — Cron / 固定频率 / 手动任务，状态、下次执行与运行时一目了然。
+
+![任务调度](docs/assets/screenshots/zh/tasks.png)
+
+**执行记录** — 全量执行历史，可按状态、执行器与时间窗口过滤。
+
+![执行记录](docs/assets/screenshots/zh/executions.png)
+
+**执行详情** — 执行日志、时间线、重试链、参数与产物。
+
+![执行详情](docs/assets/screenshots/zh/execution-detail.png)
+
+**执行器** — 在线状态、CPU / 内存 / 磁盘、心跳与任务并发。
+
+![执行器](docs/assets/screenshots/zh/executors.png)
+
+**执行器详情** — 资源趋势、成功率、解释器池与令牌轮换。
+
+![执行器详情](docs/assets/screenshots/zh/executor-detail.png)
+
+**任务详情** — Glue 脚本、依赖 DAG、执行记录、版本历史与回滚。
+
+![任务详情](docs/assets/screenshots/zh/task-detail.png)
+
+**应用管理** — 应用版本、部署状态、批量升级与灰度。
+
+![应用管理](docs/assets/screenshots/zh/applications.png)
 
 ### 执行器（executor-desktop）
 
 Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，自动注册上线并接收调度任务。
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>连接向导</b><br/><sub>5 步完成连接、本机信息、下载源与确认</sub></td>
-    <td width="50%" align="center"><b>状态监控</b><br/><sub>在线状态、心跳、实时运行日志、最近失败</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/wizard.png" alt="桌面执行器连接向导"></td>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/status-live.png" alt="桌面执行器状态监控"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>执行历史</b><br/><sub>按任务分组的运行记录，失败原因直接可见</sub></td>
-    <td align="center"><b>本地应用</b><br/><sub>已部署应用、多版本并存、卸载与版本回退</sub></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/history.png" alt="桌面执行器执行历史"></td>
-    <td><img src="docs/assets/screenshots/zh/executor-desktop/apps-detail.png" alt="桌面执行器本地应用"></td>
-  </tr>
-</table>
+**连接向导** — 5 步完成连接、本机信息、下载源与确认。
+
+![桌面执行器连接向导](docs/assets/screenshots/zh/executor-desktop/wizard.png)
+
+**状态监控** — 在线状态、心跳、实时运行日志与最近失败。
+
+![桌面执行器状态监控](docs/assets/screenshots/zh/executor-desktop/status-live.png)
+
+**执行历史** — 按任务分组的运行记录，失败原因直接可见。
+
+![桌面执行器执行历史](docs/assets/screenshots/zh/executor-desktop/history.png)
+
+**本地应用** — 已部署应用、多版本并存、卸载与版本回退。
+
+![桌面执行器本地应用](docs/assets/screenshots/zh/executor-desktop/apps-detail.png)
 
 > 英文界面截图见 [English](#english) 章节（`docs/assets/screenshots/en/`）。
 
