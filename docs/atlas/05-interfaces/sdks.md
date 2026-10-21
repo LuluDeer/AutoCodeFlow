@@ -5,7 +5,7 @@
 
 ## 定位
 
-两个 SDK 都跑在**执行器的任务子进程**里：注入环境变量 → `TaskContext` 读取上下文 → 任务代码可选地主动回调 Admin API（`POST /api/executions/callback`）。回调契约完全对齐（第九轮），双端共用 `CallbackItemDto` 字段；平台侧总说明见 `docs/sdk-guide.md`。版本走 lockstep 单版本线（当前 **1.12.1**，与 mcp-server 同步，`release.yml` version-guard 强制）。
+两个 SDK 都跑在**执行器的任务子进程**里：注入环境变量 → `TaskContext` 读取上下文 → 任务代码可选地主动回调 Admin API（`POST /api/executions/callback`）。回调契约完全对齐（第九轮），双端共用 `CallbackItemDto` 字段；平台侧总说明见 `docs/sdk-guide.md`。版本走 lockstep 单版本线（当前 **1.12.1**，与 mcp-server 同步，`release.yml` version-guard 强制）。<!-- x-release-please-version -->
 
 ## 能力对照表
 

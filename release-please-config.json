@@ -114,6 +114,14 @@
         {
           "type": "generic",
           "path": "/docs/sdk-guide.md"
+        },
+        {
+          "type": "generic",
+          "path": "/docs/atlas/05-interfaces/sdks.md"
+        },
+        {
+          "type": "generic",
+          "path": "/docs/atlas/02-packages/README.md"
         }
       ]
     },
