@@ -89,7 +89,6 @@ try {
 
   const h1 = (await page.locator('h1').first().textContent())?.trim() ?? '';
   check('status page rendered', ['状态', 'Status'].includes(h1), h1);
-
   const data = await page.evaluate(async () => {
     try {
       const [cfg, status, history] = await Promise.all([
@@ -240,7 +239,7 @@ try {
   const bulkBar = await page.locator('main').innerText();
   check('bulk selection shows bar', /已选 1 个|1 selected/.test(bulkBar));
   await page.getByRole('button', { name: /批量卸载|Uninstall selected/ }).click();
-  await page.waitForTimeout(1800);
+  await page.waitForTimeout(5200);
   const remainingAppDir = path.join(userData, 'work', 'apps', 'app_inventory_sync');
   check('bulk uninstall deletes remaining app', !fs.existsSync(remainingAppDir));
   const rowsAfterBulk = await page.locator('main [data-app-row]').count();
@@ -409,10 +408,26 @@ try {
   // 走完五步：开始 → 连接 → 执行器 → 解释器源 → 完成
   await page.getByRole('button', { name: /^(开始配置|Get started)$/ }).click();
   await page.waitForTimeout(300);
-  for (let step = 0; step < 3; step += 1) {
-    await page.getByRole('button', { name: /^(下一步|Next)$/ }).click();
-    await page.waitForTimeout(300);
-  }
+  // 连接 → 执行器：本机网卡建议
+  await page.getByRole('button', { name: /^(下一步|Next)$/ }).click();
+  await page.waitForTimeout(400);
+  const localIps = await page.locator('[data-local-ips]').count();
+  check('wizard shows local IP suggestions', localIps === 1);
+
+  // 执行器 → 解释器源：自动探测官方源/镜像
+  await page.getByRole('button', { name: /^(下一步|Next)$/ }).click();
+  await page.waitForTimeout(5200);
+  const probeText = await page.locator('[data-source-probe]').innerText();
+  const probeState = await page.locator('[data-source-probe]').getAttribute('data-probe-state');
+  check(
+    'wizard probes interpreter sources',
+    /官方源|Official/.test(probeText),
+    `${probeState}: ${probeText.replace(/\s+/g, ' ').slice(0, 60)}`,
+  );
+
+  // 解释器源 → 完成
+  await page.getByRole('button', { name: /^(下一步|Next)$/ }).click();
+  await page.waitForTimeout(300);
 
   // 关掉「保存后立即启动」，避免验收过程拉起 sidecar。
   const startSwitch = page.getByRole('switch', {

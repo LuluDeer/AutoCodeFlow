@@ -4,6 +4,8 @@ import { toast } from 'sonner';
 import {
   AlertTriangle,
   Boxes,
+  ChevronDown,
+  ChevronRight,
   FolderOpen,
   Loader2,
   RefreshCw,
@@ -79,6 +81,7 @@ export function AppsScreen() {
   const [uninstalling, setUninstalling] = React.useState(false);
   const [logExpanded, setLogExpanded] = React.useState(false);
   const [activeReleaseKey, setActiveReleaseKey] = React.useState<string | null>(null);
+  const [versionsOpen, setVersionsOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = React.useState(false);
   const selectAllRef = React.useRef<HTMLInputElement>(null);
@@ -445,6 +448,7 @@ export function AppsScreen() {
                           type="button"
                           onClick={() => {
                           setActiveReleaseKey(null);
+                          setVersionsOpen(app.releases.length <= 3);
                           setLogApp(app);
                         }}
                           className="flex min-w-0 items-center gap-2.5 rounded-sm text-left focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
@@ -518,6 +522,7 @@ export function AppsScreen() {
                           title={t('apps.action.logs')}
                           onClick={() => {
                           setActiveReleaseKey(null);
+                          setVersionsOpen(app.releases.length <= 3);
                           setLogApp(app);
                         }}
                         >
@@ -601,12 +606,27 @@ export function AppsScreen() {
               </div>
 
               <div className="border-b border-border">
-                <div className="flex items-center gap-2 px-5 py-2 text-[11px] text-muted-foreground">
+                <button
+                  type="button"
+                  aria-expanded={versionsOpen}
+                  onClick={() => setVersionsOpen((open) => !open)}
+                  className="flex w-full items-center gap-2 px-5 py-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent/40"
+                >
+                  {versionsOpen ? (
+                    <ChevronDown className="size-3.5" />
+                  ) : (
+                    <ChevronRight className="size-3.5" />
+                  )}
                   <span>
                     {t('apps.versions')} · {logApp.releases.length}
                   </span>
-                </div>
-                <ul className="max-h-36 overflow-auto">
+                  {logApp.releases.find((release) => release.isCurrent) ? (
+                    <Badge variant="outline" className="ml-auto">
+                      v{logApp.releases.find((release) => release.isCurrent)?.version ?? '—'}
+                    </Badge>
+                  ) : null}
+                </button>
+                <ul className={cn('max-h-56 overflow-auto', !versionsOpen && 'hidden')}>
                   {logApp.releases.map((release) => (
                     <li
                       key={release.releaseKey}

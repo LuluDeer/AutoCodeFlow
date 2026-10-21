@@ -350,7 +350,7 @@ export function StatusScreen({
       </div>
 
       <div className="grid min-h-0 grid-cols-1 gap-3 xl:flex-1 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <Card className="flex min-h-[320px] flex-col gap-0 py-0 xl:min-h-0">
+        <Card className="flex h-[min(60vh,560px)] min-h-[320px] flex-col gap-0 py-0 xl:h-auto xl:min-h-0">
           <CardHeader className="items-center px-4 py-3">
             <div className="flex items-center gap-2">
               <SquareTerminal className="size-3.5 text-muted-foreground" />

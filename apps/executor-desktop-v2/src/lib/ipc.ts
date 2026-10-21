@@ -38,6 +38,12 @@ export interface AppConfig {
   pypiRegistryUrl: string;
 }
 
+export interface SourceProbeResult {
+  ok: boolean;
+  ms?: number;
+  detail?: string;
+}
+
 export interface Ok {
   ok: boolean;
   message?: string;
@@ -194,6 +200,11 @@ export interface DesktopBridge {
   testConnection(url: string): Promise<ConnectionProbe>;
   checkPort(port: number, host?: string): Promise<PortProbe>;
   getPythonEnvStatus(): Promise<PythonEnvStatus>;
+  getLocalIPs(): Promise<string[]>;
+  testInterpreterSource(): Promise<{
+    official: SourceProbeResult;
+    mirror: SourceProbeResult;
+  }>;
   getAutoLaunch(): Promise<boolean>;
   setAutoLaunch(enable: boolean): Promise<Ok>;
   openWizard(): Promise<Ok>;
@@ -739,6 +750,19 @@ const mockBridge: DesktopBridge = {
     return { available: true };
   },
 
+  async getLocalIPs() {
+    await delay(120);
+    return ['192.168.1.20', '10.0.0.8'];
+  },
+
+  async testInterpreterSource() {
+    await delay(900);
+    return {
+      official: { ok: true, ms: 180 },
+      mirror: { ok: true, ms: 42 },
+    };
+  },
+
   async getPythonEnvStatus() {
     await delay(180);
     return {
@@ -992,6 +1016,9 @@ function createElectronBridge(api: RawBridge): DesktopBridge {
     checkPort: (port, host) =>
       call<PortProbe>('checkPort', port as never, host as never),
     getPythonEnvStatus: () => call<PythonEnvStatus>('getPythonEnvStatus'),
+    getLocalIPs: () => call<string[]>('getLocalIPs'),
+    testInterpreterSource: () =>
+      call<{ official: SourceProbeResult; mirror: SourceProbeResult }>('testInterpreterSource'),
     getAutoLaunch: () => call<boolean>('getAutoLaunch'),
     setAutoLaunch: (enable) => call<Ok>('setAutoLaunch', enable as never),
     openWizard: () => call<Ok>('openWizard'),

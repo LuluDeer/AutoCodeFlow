@@ -25,12 +25,13 @@
     "postinstall": "electron-builder install-app-deps",
     "dev:v2": "bash scripts/dev-v2.sh",
     "build:renderer-v2": "node scripts/copy-v2-renderer.mjs",
-    "verify:v2": "node scripts/verify-v2-shell.mjs",
+    "verify:v2": "npm run test:log-parse && node scripts/verify-v2-shell.mjs",
     "visual:v2": "node scripts/visual-v2.mjs",
     "visual:v2:update": "node scripts/visual-v2.mjs --update",
     "a11y:v2": "node scripts/a11y-v2.mjs",
     "verify:v2:packaged": "node scripts/verify-packaged-v2.mjs",
-    "build:with-v2": "npm run build && npm run build:renderer-v2"
+    "build:with-v2": "npm run build && npm run build:renderer-v2",
+    "test:log-parse": "node --experimental-strip-types scripts/log-parse.selftest.mjs"
   },
   "dependencies": {
     "auto-launch": "5.0.6",

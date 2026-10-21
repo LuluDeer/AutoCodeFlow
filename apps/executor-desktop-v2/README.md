@@ -182,6 +182,8 @@ PASS  config save persists to disk — maxConcurrentTasks=5
 PASS  restart brings a new executor process online — 971474 -> 971601
 PASS  language switch reloads UI — Status
 PASS  wizard follows english locale — Setup wizard
+PASS  wizard shows local IP suggestions
+PASS  wizard probes interpreter sources
 PASS  english locale renders status — Status
 PASS  english locale covers all pages — History / Settings
 PASS  config form shows real config — ws://127.0.0.1:9123
@@ -269,7 +271,7 @@ cd apps/executor-desktop && npm run a11y:v2
 本机用同一套命令模拟过 CI（xvfb + dbus，无 WM）：
 
 ```
-verify:v2   48/48 PASS
+verify:v2   50/50 PASS
 a11y:v2     13/13 PASS
 visual:v2   5/5 PASS (0.000% diff, threshold 0.20%)
 ```
@@ -515,7 +517,9 @@ seed 配置也补了共享令牌，否则 `/api/*` 会 fail-closed 503。
 - 暂停/清空通过 `toolbarEnd` 插槽注入，暂停时关闭自动跟随；
 - 搜索、跳到末尾、复制（复制的是**当前过滤结果**）由面板统一提供；
 - 行号在状态页关闭（流式日志没有文件行语义），在应用/执行日志开启；
-- 日志解析统一收口到 `lib/log-parse.ts`，同时支持 executor 与主进程两种行格式。
+- 日志解析统一收口到 `lib/log-parse.ts`：支持 `HH:mm:ss LEVEL`、executor 的
+  `YYYY-MM-DD HH:mm:ss.SSS [LEVEL]`、主进程的 `[timestamp] [level]` 以及 JSON 行；
+  `npm run test:log-parse` 覆盖 7 种真实格式（verify:v2 会先跑它）。
 
 视觉回归脚本的遮罩选择器同步改成 `[data-log-viewport]`，避免把流动的日志内容算进像素基线。
 
@@ -527,3 +531,21 @@ seed 配置也补了共享令牌，否则 `/api/*` 会 fail-closed 503。
 - 普通导航（侧栏 / 托盘 / Ctrl+2）到历史会清空上次的筛选意图，避免筛选条件粘住。
 
 ![状态页失败任务 → 历史筛选](screenshots/history-from-attention.png)
+
+## 向导补齐（相对 V1）
+
+- **执行器步**：新增「对外地址」，并列出本机网卡地址；进入该步时自动填 `<ip>:<port>`，可点选切换。
+- **解释器源步**：进入即并行探测官方源与 TUNA 镜像，显示可达性与耗时；官方不可达且镜像可达时自动改选镜像，仍可手动改。
+- **完成步**：新增「开机自动启动」，并把「保存后立即启动」落到 `autoStartExecutor`；保存时同步写入系统自启项。
+- 校验：`verify:v2` 增加本机网卡、源探测两项断言。
+
+## 应用多版本
+
+版本数 > 3 时默认折叠为「版本 · N」+ 当前版本徽章，点开后在面板内滚动（`max-h-56`），
+日志区保持固定高度；版本少时仍默认展开。避免几十个历史版本把日志挤没。
+
+## 状态页日志高度
+
+窗口宽度不足 `xl` 时，日志卡高度固定为 `min(60vh, 560px)`，日志在卡内滚动；
+此前文档流会把日志撑到 1700px+，最后一屏压到状态栏下面，看起来像“INFO 溢出”。
+`xl` 及以上仍是右侧 340px + 日志占满剩余高度。

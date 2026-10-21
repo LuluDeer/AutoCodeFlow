@@ -44,9 +44,11 @@ interface WizardForm {
   executorName: string;
   executorHost: string;
   executorPort: number;
+  executorAddressPublic: string;
   maxConcurrentTasks: number;
   uvPythonInstallMirror: string;
   startAfterSave: boolean;
+  autoStart: boolean;
 }
 
 const STEPS = [
@@ -63,9 +65,11 @@ const DEFAULT_VALUES: WizardForm = {
   executorName: 'executor-local',
   executorHost: '0.0.0.0',
   executorPort: 8001,
+  executorAddressPublic: '',
   maxConcurrentTasks: 4,
   uvPythonInstallMirror: '',
   startAfterSave: true,
+  autoStart: false,
 };
 
 const MIRRORS = [
@@ -154,10 +158,65 @@ export function Wizard({
   } | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [mirrorPreset, setMirrorPreset] = React.useState<string>('official');
+  const [localIPs, setLocalIPs] = React.useState<string[]>([]);
+  const [probe, setProbe] = React.useState<{
+    official: { ok: boolean; ms?: number; detail?: string };
+    mirror: { ok: boolean; ms?: number; detail?: string };
+  } | null>(null);
+  const [probing, setProbing] = React.useState(false);
+  const probedRef = React.useRef(false);
 
   const form = useForm<WizardForm>({ defaultValues: DEFAULT_VALUES, mode: 'onBlur' });
   const { register, handleSubmit, trigger, getValues, setValue, reset, watch, formState } = form;
   const values = watch();
+
+  React.useEffect(() => {
+    let cancelled = false;
+    bridge
+      .getLocalIPs()
+      .then((ips) => {
+        if (cancelled) return;
+        setLocalIPs(ips);
+        if (!getValues('executorAddressPublic') && ips.length > 0) {
+          setValue('executorAddressPublic', `${ips[0]}:${getValues('executorPort')}`);
+        }
+      })
+      .catch(() => setLocalIPs([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [getValues, setValue]);
+
+  async function runProbe() {
+    setProbing(true);
+    try {
+      const res = await bridge.testInterpreterSource();
+      setProbe(res);
+      const mirrorUrl = MIRRORS.find((item) => item.id === 'tuna')?.url ?? '';
+      if (res.official.ok === false && res.mirror.ok && !getValues('uvPythonInstallMirror')) {
+        setValue('uvPythonInstallMirror', mirrorUrl, { shouldDirty: true });
+        setMirrorPreset('tuna');
+      }
+    } catch {
+      setProbe(null);
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  // 进入「执行器」步时补一次对外地址：挂载时字段尚未注册，setValue 不落表单。
+  React.useEffect(() => {
+    if (step === 2 && localIPs.length > 0 && !getValues('executorAddressPublic')) {
+      setValue('executorAddressPublic', `${localIPs[0]}:${getValues('executorPort')}`);
+    }
+  }, [step, localIPs, getValues, setValue]);
+
+  React.useEffect(() => {
+    if (step === 3 && !probedRef.current) {
+      probedRef.current = true;
+      void runProbe();
+    }
+  }, [step]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -227,7 +286,10 @@ export function Wizard({
         executorName: data.executorName,
         executorHost: data.executorHost,
         executorPort: data.executorPort,
+        executorAddressPublic: data.executorAddressPublic,
         maxConcurrentTasks: data.maxConcurrentTasks,
+        autoStartExecutor: data.startAfterSave,
+        autoStart: data.autoStart,
         uvPythonInstallMirror: data.uvPythonInstallMirror,
         configured: true,
       };
@@ -238,6 +300,7 @@ export function Wizard({
         toast.error(t('wizard.saveFailed'), { description: res.message });
         return;
       }
+      await bridge.setAutoLaunch(data.autoStart);
       if (data.startAfterSave) {
         await bridge.startExecutor();
       }
@@ -479,6 +542,39 @@ export function Wizard({
                   </div>
                 </Field>
               </div>
+              <Field
+                label={t('config.net.public')}
+                htmlFor="wizard-public"
+                hint={t('wizard.executor.publicHint')}
+              >
+                <Input
+                  id="wizard-public"
+                  placeholder={t('config.net.publicPlaceholder')}
+                  className="font-mono text-[12px]"
+                  {...register('executorAddressPublic')}
+                />
+                {localIPs.length > 0 ? (
+                  <div data-local-ips className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] text-muted-foreground">
+                      {t('wizard.executor.localIps')}
+                    </span>
+                    {localIPs.map((ip) => (
+                      <button
+                        key={ip}
+                        type="button"
+                        className="rounded-md border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] hover:bg-accent"
+                        onClick={() =>
+                          setValue('executorAddressPublic', `${ip}:${getValues('executorPort')}`, {
+                            shouldDirty: true,
+                          })
+                        }
+                      >
+                        {ip}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </Field>
             </div>
           ) : null}
 
@@ -524,6 +620,37 @@ export function Wizard({
                   {...register('uvPythonInstallMirror')}
                 />
               </Field>
+              <div data-source-probe data-probe-state={probing ? 'loading' : probe ? 'done' : 'idle'} className="flex flex-col gap-2 rounded-lg border border-border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium">{t('wizard.python.probe')}</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void runProbe()}
+                    disabled={probing}
+                  >
+                    {probing ? <Loader2 className="animate-spin" /> : null}
+                    {t('wizard.python.probeButton')}
+                  </Button>
+                </div>
+                {probe ? (
+                  <div className="flex flex-wrap gap-2 text-[11px]">
+                    <Badge variant={probe.official.ok ? 'success' : 'danger'}>
+                      {t('wizard.python.official')} ·{' '}
+                      {probe.official.ok
+                        ? `${t('wizard.python.reachable')} ${probe.official.ms ?? ''}ms`
+                        : `${t('wizard.python.unreachable')} ${probe.official.detail ?? ''}`}
+                    </Badge>
+                    <Badge variant={probe.mirror.ok ? 'success' : 'danger'}>
+                      {t('wizard.python.tuna')} ·{' '}
+                      {probe.mirror.ok
+                        ? `${t('wizard.python.reachable')} ${probe.mirror.ms ?? ''}ms`
+                        : `${t('wizard.python.unreachable')} ${probe.mirror.detail ?? ''}`}
+                    </Badge>
+                  </div>
+                ) : null}
+              </div>
               <div className="flex items-start gap-2.5 rounded-lg border border-border bg-secondary/40 p-3">
                 <TerminalSquare className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -566,6 +693,19 @@ export function Wizard({
                   checked={values.startAfterSave}
                   onCheckedChange={(checked) => setValue('startAfterSave', checked)}
                   aria-label={t('wizard.done.startNow')}
+                />
+              </label>
+              <label className="flex items-center justify-between gap-4 rounded-lg border border-border px-4 py-3">
+                <span>
+                  <span className="text-sm">{t('wizard.done.autoLaunch')}</span>
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    {t('wizard.done.autoLaunchHint')}
+                  </span>
+                </span>
+                <Switch
+                  checked={values.autoStart}
+                  onCheckedChange={(checked) => setValue('autoStart', checked)}
+                  aria-label={t('wizard.done.autoLaunch')}
                 />
               </label>
             </div>
