@@ -2,7 +2,7 @@
  * R105：破坏性 IPC 通道的主进程二次确认。
  *
  * 钉三件事：
- *  ① **策略表**：需要确认的通道恰好是那 4 个（不可逆/外发型），可恢复的 `executor:start|stop` 不在内；
+ *  ① **策略表**：需要确认的通道恰好是那 5 个（不可逆/外发型），可恢复的 `executor:start|stop` 不在内；
  *  ② **fail-closed**：确认函数返回 false / 抛错 / 缺失 / 通道未登记 ⇒ 一律不执行；
  *  ③ **接线钉子**：`ipc-handlers.ts` 里每个登记通道的 handler 体内必须出现 `confirmDestructive('<通道>'`。
  *     没有这条，策略表写得再对也可能**没有一个调用点**（本仓已踩过：`get_zip_limits_from_env` 存在、
@@ -20,6 +20,7 @@ import {
 const EXPECTED = [
   'apps:delete-release',
   'apps:uninstall',
+  'apps:uninstall-many',
   'history:clear',
   'updater:install',
 ] as const;
@@ -29,7 +30,7 @@ async function main(): Promise<void> {
   assert.deepEqual(
     Object.keys(DESTRUCTIVE_CHANNELS).sort(),
     [...EXPECTED].sort(),
-    '策略表必须恰好覆盖这 4 个不可逆通道（新增通道时同时更新本断言）',
+    '策略表必须恰好覆盖这 5 个不可逆通道（新增通道时同时更新本断言）',
   );
   for (const channel of EXPECTED) {
     const policy = DESTRUCTIVE_CHANNELS[channel];
