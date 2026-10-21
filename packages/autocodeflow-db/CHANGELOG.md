@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-db-v0.2.3...autocodeflow-db-v0.3.0) (2026-10-21)
+
+
+### Bug Fixes
+
+* **autocodeflow-db:** rollback/close 不再掩盖原始异常，build() 并发只建一个 engine（R134-A1） ([a107ed9](https://github.com/LuluDeer/AutoCodeFlow/commit/a107ed9540f178eb8fcc471eb31bd212ee1db098))
+
 ## [0.2.3](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-db-v0.2.2...autocodeflow-db-v0.2.3) (2026-10-09)
 
 

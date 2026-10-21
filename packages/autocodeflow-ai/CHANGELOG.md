@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-ai-v0.2.3...autocodeflow-ai-v0.3.0) (2026-10-21)
+
+
+### Bug Fixes
+
+* **autocodeflow-ai:** 保留 fallback 前的原始错误，坏载荷归为 invalid_response（R134-A1） ([6f52bfe](https://github.com/LuluDeer/AutoCodeFlow/commit/6f52bfe845d46719898d60726e690c3d72590225))
+
 ## [0.2.3](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-ai-v0.2.2...autocodeflow-ai-v0.2.3) (2026-10-09)
 
 

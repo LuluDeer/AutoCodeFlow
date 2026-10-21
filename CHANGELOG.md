@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.13.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.12.1...v1.13.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **desktop:** remove V2 renderer and restore V1 (1.9.2)
+* **desktop:** ship V2 renderer as the default UI (2.0.0)
+
+### Features
+
+* **adr-026:** 守卫新增 `--report-saves` —— 盲区①的可见化（60 处候选） ([0bb940b](https://github.com/LuluDeer/AutoCodeFlow/commit/0bb940b6b545208ce27d671e1f453799c1545169))
+* **ci:** ADR-026 静态守卫——无条件状态写「只减不增」棘轮 ([4bb9959](https://github.com/LuluDeer/AutoCodeFlow/commit/4bb99599142a1327fcd14d8ab6e50dd209027951))
+* **ci:** 新增错误码化回退守卫 —— admin-api 裸内置异常 throw 恒为 0 ([500c8bc](https://github.com/LuluDeer/AutoCodeFlow/commit/500c8bcc03076e8f93c68b617d1aba06df06a9c3))
+* **desktop:** ship V2 renderer as the default UI (2.0.0) ([43ec4b2](https://github.com/LuluDeer/AutoCodeFlow/commit/43ec4b23447d53922118255b94dc49ce390c3cb9))
+* **errors:** 三端透出 admin-api errorCode/params（python http / python sdk / MCP） ([e6513f9](https://github.com/LuluDeer/AutoCodeFlow/commit/e6513f95b88cce5bc7b1f48f6d9839bc347199c8))
+* **executor-desktop:** 多尺寸 UX 打磨与视觉巡检脚本 ([5ec4a88](https://github.com/LuluDeer/AutoCodeFlow/commit/5ec4a8814a6b48b4deceba95488bbaadf78389b7))
+* **sdk,cli:** 透传 admin-api 稳定错误码并按 6 类给处置提示 ([1382253](https://github.com/LuluDeer/AutoCodeFlow/commit/138225378550e4e4ecc84b649edea7784d9ee8b0))
+
+
+### Bug Fixes
+
+* **cli:** 破坏性动作的确认门补全 + 本地数值参数不再静默兜底（R192-A1） ([8ad61fd](https://github.com/LuluDeer/AutoCodeFlow/commit/8ad61fdcfbddca1ad06bb15be0bd25968dae6109))
+* **deps:** bump follow-redirects to 1.16.1 and uv to 0.13.4 ([758f35b](https://github.com/LuluDeer/AutoCodeFlow/commit/758f35b960e75044ab9aa82919f9496be401c8da))
+* **deps:** mcp-server 锁文件升级 hono 4.13.7 -&gt; 4.13.13（修 GHSA-5r4p-p66f-jhc7） ([d31a0d4](https://github.com/LuluDeer/AutoCodeFlow/commit/d31a0d4872832a141dd4ceceb8642d92403ec910))
+* **executor-desktop:** 主进程安全面审计——IPC sender 闸 + check-port 参数闸（R86-A1）+ 两个从未执行的 selftest 接线（R88） ([55ac29e](https://github.com/LuluDeer/AutoCodeFlow/commit/55ac29e7949a113d85e4eaca2f5cad2b725722b4))
+* **mcp-server:** env 与 params 补**字节**口径上限——和 R111 的「码点」是两件事（R115） ([a8a9a02](https://github.com/LuluDeer/AutoCodeFlow/commit/a8a9a02f8696ca632255294dfbbe17b00a53adce))
+* **mcp-server:** 入参字符串补长度上限，逐字段对齐后端 DTO（R111-A1） ([ba16215](https://github.com/LuluDeer/AutoCodeFlow/commit/ba16215e7efd603e945dfdc5ea5eb451e4f43f48))
+* **mcp-server:** 工具出参加一层凭据剥除——上游干净，但只有一层（R110） ([fa5f8fa](https://github.com/LuluDeer/AutoCodeFlow/commit/fa5f8facd1e7e345fd0731cbd97c2b9ba16a8fa3))
+* **mcp-server:** 形状漂移不再伪装成「全清」——list_dead_letters 补 isError（R114） ([5ccd81e](https://github.com/LuluDeer/AutoCodeFlow/commit/5ccd81ef29598bb62b503f9582c6dbc1c6da4173))
+* **mcp-server:** 收紧 8 个枚举入参并为 params:{} 恢复「无覆盖」语义（R107-A1） ([58a551e](https://github.com/LuluDeer/AutoCodeFlow/commit/58a551e486f26a75be7b676249eef4d04bb9df07))
+* **mcp-server:** 空载荷不再伪装成成功——get_execution / timeline 补 isError（R112） ([5c42f74](https://github.com/LuluDeer/AutoCodeFlow/commit/5c42f74e321559a84e4c8771a3c03abbf5bd03ba))
+* **notification:** 出站面审计——未注册渠道静默丢告警、渠道开关失效、读面 ?key= 明文（R150-A1） ([ce67bc7](https://github.com/LuluDeer/AutoCodeFlow/commit/ce67bc7ededcfd5587a9c0fa29c15374ce1a84b5))
+* **release:** atlas 的两处 lockstep 版本声明纳入 release-please 广播 ([fbdc812](https://github.com/LuluDeer/AutoCodeFlow/commit/fbdc8120c49db8acc0512c818341ab9f13fefd54))
+* **release:** 把 atlas 的两处 lockstep 版本声明纳入 release-please 广播 ([53f0f22](https://github.com/LuluDeer/AutoCodeFlow/commit/53f0f222974cc93d10131ceba8239219ca19ea34))
+* **sdk:** 对外 SDK 健壮性审计——错误面统一 / 尊重 Retry-After / 回调路径判定修正（R177-A1） ([103cff3](https://github.com/LuluDeer/AutoCodeFlow/commit/103cff341f0cfd8fc1cc902fae85e70d8d157996))
+* **sdk:** 终态回调的单次重试等待封顶 5s——别让「为可靠性做的重试」把终态丢掉（R191） ([135f4b3](https://github.com/LuluDeer/AutoCodeFlow/commit/135f4b332838e632a76643870b2b183de80ed7fb))
+
+
+### Reverts
+
+* **desktop:** remove V2 renderer and restore V1 (1.9.2) ([7492dda](https://github.com/LuluDeer/AutoCodeFlow/commit/7492dda76ad51115a6a509a20a42019c64362572))
+
+
+### Miscellaneous Chores
+
+* **release:** 下一版按 minor 走（1.13.0），并校正 SDK README 的版本标注 ([175494e](https://github.com/LuluDeer/AutoCodeFlow/commit/175494efb361542c2fa2fd1ee738e11ce0af4032))
+
 ## [1.12.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.12.0...v1.12.1) (2026-10-19)
 
 

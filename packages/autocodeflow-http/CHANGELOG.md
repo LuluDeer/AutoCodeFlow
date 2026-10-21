@@ -2,6 +2,18 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.2.3...autocodeflow-http-v0.3.0) (2026-10-21)
+
+
+### Features
+
+* **errors:** 三端透出 admin-api errorCode/params（python http / python sdk / MCP） ([e6513f9](https://github.com/LuluDeer/AutoCodeFlow/commit/e6513f95b88cce5bc7b1f48f6d9839bc347199c8))
+
+
+### Bug Fixes
+
+* **autocodeflow-http:** Retry-After 支持可选上限，README 示例修正（R134-A1） ([c194619](https://github.com/LuluDeer/AutoCodeFlow/commit/c194619947240184c36797df3eab4ff837223877))
+
 ## [0.2.3](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.2.2...autocodeflow-http-v0.2.3) (2026-10-09)
 
 
