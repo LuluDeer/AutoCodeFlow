@@ -13,6 +13,10 @@ const cases = [
   ['[2026-10-21 15:29:01.123] [info]  main', '15:29:01', 'INFO', 'main'],
   ['{"timestamp":"2026-10-21T15:29:01.123Z","level":"warn","message":"json"}', '15:29:01', 'WARN', 'json'],
   ['untouched text', '', 'INFO', 'untouched text'],
+  // 日志套日志：桌面包装 + 子进程原始行
+  ['[2026-10-21 15:29:01.123] [info]  [executor] 2026-10-21T07:29:01.123Z [INFO] child', '15:29:01', 'INFO', 'child'],
+  ['16:17:36 INFO  16:17:36 INFO  batch #000', '16:17:36', 'INFO', 'batch #000'],
+  ['15:29:01 INFO  [executor:err] [auth] failed', '15:29:01', 'INFO', '[auth] failed'],
 ];
 
 for (const [line, time, level, body] of cases) {

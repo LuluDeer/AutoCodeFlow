@@ -19,7 +19,7 @@ function normalizeLevel(raw: string): LogLevel {
   return 'INFO';
 }
 
-export function parseLogLine(line: string): ParsedLogLine {
+function parseLogLineRaw(line: string): ParsedLogLine {
   // executor-node（winston）：`2026-10-21 15:29:01.123 [INFO] message`
   const dated = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?\s+\[([A-Z]+)\]\s*(.*)$/i.exec(
     line,
@@ -66,4 +66,36 @@ export function parseLogLine(line: string): ParsedLogLine {
     return { time: clock ? clock[0] : '', level, body: bracketed[3] };
   }
   return { time: '', level: 'INFO', body: line };
+}
+
+
+const SOURCE_TAG = /^\[(executor(?::err|:out)?|worker|stdout|stderr)\]\s*/i;
+const NESTED_PREFIX =
+  /^(?:\d{4}-\d{2}-\d{2}[T ])?\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s+(?:\[[A-Z]+\]|INFO|WARN|WARNING|ERROR|DEBUG|TRACE)\s*(.*)$/i;
+
+/**
+ * 去掉“日志套日志”的前缀：桌面主进程会把子进程 stdout 包成
+ * `[executor] 2026-… [INFO] message`，右侧正文不该再重复时间/级别。
+ */
+function cleanupBody(body: string): string {
+  let out = body.trimStart();
+  for (let round = 0; round < 3; round += 1) {
+    const source = SOURCE_TAG.exec(out);
+    if (source) {
+      out = out.slice(source[0].length);
+      continue;
+    }
+    const nested = NESTED_PREFIX.exec(out);
+    if (nested) {
+      out = nested[1];
+      continue;
+    }
+    break;
+  }
+  return out;
+}
+
+export function parseLogLine(line: string): ParsedLogLine {
+  const parsed = parseLogLineRaw(line);
+  return { ...parsed, body: cleanupBody(parsed.body) };
 }

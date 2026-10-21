@@ -520,7 +520,8 @@ seed 配置也补了共享令牌，否则 `/api/*` 会 fail-closed 503。
 - 搜索、跳到末尾、复制（复制的是**当前过滤结果**）由面板统一提供；
 - 行号在状态页关闭（流式日志没有文件行语义），在应用/执行日志开启；
 - 日志解析统一收口到 `lib/log-parse.ts`：支持 `HH:mm:ss LEVEL`、executor 的
-  `YYYY-MM-DD HH:mm:ss.SSS [LEVEL]`、主进程的 `[timestamp] [level]` 以及 JSON 行；
+  `YYYY-MM-DD HH:mm:ss.SSS [LEVEL]`、主进程的 `[timestamp] [level]`、JSON 行，以及
+  `[executor] 2026-… [INFO] …` 这类“日志套日志”的嵌套前缀；
   `npm run test:log-parse` 覆盖 7 种真实格式（verify:v2 会先跑它）。
 
 视觉回归脚本的遮罩选择器同步改成 `[data-log-viewport]`，避免把流动的日志内容算进像素基线。
