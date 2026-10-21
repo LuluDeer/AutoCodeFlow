@@ -143,6 +143,12 @@ jobs:
         working-directory: apps/admin-api
       - run: npm run typecheck
         working-directory: apps/admin-api
+      # R117：根 tsconfig 排除了 `**/*.spec.ts` 与 `__tests__/**` ⇒ spec 里的类型错误对 `npm run typecheck`
+      # 不可见，只在 ts-jest 运行时炸成「Test suite failed to run」（没有断言失败、没有用例名，
+      # 看起来像环境问题）。leader-gate.service.spec.ts 就是这样自 R32-A4 起一直没运行过，直到 R113。
+      #   —— 一个套件「没运行」和「通过了」，在 CI 日志里长得几乎一样。
+      - run: npm run typecheck:specs
+        working-directory: apps/admin-api
       - run: npm run lint
         working-directory: apps/admin-api
       # U-2：jest 按文件哈希分片，4 片并行。覆盖率门不在此（见 admin-api-coverage）。
@@ -812,6 +818,59 @@ jobs:
         run: |
           node scripts/docs/check-docs.selftest.mjs
           node scripts/docs/check-docs.mjs
+      # 审计动作清单漂移：audit.md 的「谁在写审计」曾是手写清单，于是自然落后于代码
+      # （SOP 加了 10 个动作、文档里一个字都没有，头部还写着「task 模块（下一批次）」）。
+      # 这类文档的危害是**看起来像权威清单**，读的人会以为「审计只覆盖这几个域」。
+      # 现在清单由代码生成 + 本守卫校验：代码新增 action 而文档没同步即红灯。
+      - name: Audit action list vs doc drift guard
+        run: node scripts/check-audit-actions-doc.mjs
+      # api-reference.md 的端点表同样是手写清单：实测 openapi 有 194 个路径、文档缺 47 个
+      # （整个 SOP 面、agent-collab、agent sessions、通知静默…）。API 参考缺端点比缺形容词严重——
+      # 读的人会以为「这个能力没有接口」。附录由 openapi 生成，本守卫要求逐字节一致。
+      - name: API reference endpoints vs OpenAPI guard
+        run: node scripts/gen-api-reference-appendix.mjs --check
+      # CLI 命令地图：每节标题带手写计数、标题里再写死总数，没有任何东西校验 → 必然漂。
+      # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
+      - name: CLI command map vs code guard
+        run: node scripts/check-cli-doc.mjs
+      # 「文件存在 ≠ 在链路里」的第四个载体：packages 下有 pyproject/package.json 却没接进 release.yml
+      # 的包，版本守卫与发布矩阵都覆盖不到（实测四个 Python 库版本冻结在 0.2.3、仓内零消费者）。
+      - name: Publishable packages are wired into release.yml
+        run: node scripts/check-publishable-wiring.mjs
+      # 枚举扩了、手抄清单没跟（NF-05 加 feishu 后白名单与 swagger enum 各漏一处）。
+      # 两类判据：数组清单必须含枚举全集；同名声明（enum / 字符串联合）值集合必须一致。
+      - name: Enum consumers stay in sync with the enum
+        run: node scripts/check-enum-consumers.mjs
+      # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
+      # 且只在多副本时显形、单机开发永远看不到。22 处目前全有门禁，此闸防新增时漏写。
+      - name: Every @Cron has a leader gate
+        run: npm run check:cron-leader-gate
+      # atlas 的「N 个 X」自述同样会腐烂：迁移数曾停在 60（实际 103）、模块索引漏了 agent。
+      - name: Atlas self-declared counts vs code
+        run: node scripts/check-atlas-counts.mjs
+      # 「手写枚举单向腐烂」的两个剩余面：MCP 工具地图曾停在 40 个（实际 56，漏 16）；
+      # REST 地图曾写「24 controller / 21 前缀」（实际 30 / 28），且 7 个路由前缀整域缺失。
+      - name: Interface maps (MCP tool names + REST route prefixes) vs code
+        run: node scripts/check-interface-maps.mjs
+      # 同一道 SSRF 闸在两个 app 各有一份实现：admin-api 是表驱动 + 18 条矩阵，
+      # executor-node 长期是弱版本（R74-A1 实测 ::ffff:127.0.0.1 整条放行）。
+      # 镜像矩阵必须跟着长，否则「加了危险段、只在一侧生效」永远不会被发现。
+      - name: SSRF deny matrix parity (admin-api vs executor-node)
+        run: node scripts/check-ssrf-deny-parity.mjs
+      # 凭据类值不得用 ===/== 比较。这条纪律被实现了 4 遍（4 app / 12 文件），
+      # 但没有任何东西阻止某处退化成 === —— 那种退化功能上完全等价，只有时序不同，
+      # 测试不会红、review 也难看出。R81 起把它变成静态判据。
+      - name: Constant-time credential comparison guard
+        run: node scripts/check-constant-time-compare.mjs
+      # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
+      # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
+      # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
+      - name: Guards are actually executed by CI
+        run: node scripts/check-guards-wired.mjs
+      # desktop 的 selftest 必须被 test:main 执行：48 个文件里曾有 2 个（browser / package-candidate）
+      # 从未在 CI 跑过，而它们的头注都写着「Run via: npm run test:main」——文档说它跑，实际不跑。
+      - name: Desktop selftests are wired into test:main
+        run: node scripts/check-desktop-selftests-wired.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
@@ -867,6 +926,22 @@ jobs:
           node scripts/check-error-i18n.mjs --selftest
           node scripts/gen-error-i18n.mjs --check
           node scripts/check-error-i18n.mjs
+      # LANG-ERR-01 的**回退守卫**：上一步只验「码表 ↔ 前端词条 ↔ 生成物」一致，
+      # **不扫描调用点**——新写一处 throw new BadRequestException("中文…") 它照样绿，
+      # 而响应体因此少掉 errorCode，英文用户看到「英文外壳 + 中文报错」。
+      # 本闸把 admin-api 生产代码的裸内置异常 throw 钉在 0（AppError 是唯一允许形态）。
+      - name: Error-code migration regression guard (LANG-ERR-01)
+        run: |
+          node scripts/check-error-migration.mjs --selftest
+          node scripts/check-error-migration.mjs
+      # ADR-026 静态守卫：**状态写必须条件化**的「只减不增」棘轮。
+      # 这类缺陷在测试里永远绿（单线程无并发时「无条件写」与「条件写」行为相同），
+      # 只能靠静态判据 + 基线拦。判据刻意保守：只抓 `.update({ id }, …)` 这种
+      # where 顶层键只有 id 的形态；带 status/version/attempt 的自动通过。
+      - name: Conditional state-write guard (ADR-026)
+        run: |
+          node scripts/check-conditional-writes.mjs --selftest
+          node scripts/check-conditional-writes.mjs
       # API-I18N（用户决策「openapi/文档站 API 文档双语」）：**API 文档中英齐备**守卫。
       # openapi.json 是入库生成物，其 description/summary 只写中文（产品默认），
       # 英文走 `x-i18n-en` 扩展键，由 `scripts/api-i18n/inject-openapi-en.mjs`

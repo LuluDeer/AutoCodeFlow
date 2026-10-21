@@ -426,7 +426,9 @@
 | 1790000000054 | AddExecutorDeviceFingerprintIdentity | ADR-017 阶段 3（执行器身份键定位切换的数据面）：deviceFingerprint 加宽 VARCHAR(80) + 回填 NULL→legacy 身份键（legacyExecutorIdentity，与 register 创建路径同形）+ SET NOT NULL + address 唯一收窄为 push 模式行（partial unique index WHERE dispatchMode='push'，pull 允许同地址各自成行）；down 逆序回收（并存 pull 行未收敛时全局唯一重建会如实失败） |
 | 1790000000055 | AddTaskExecutionsExecutorId | ADR-017 阶段 3 配套：task_executions 增可空 `executorId`（执行行**行身份**，迁移前存量行为 NULL 且**刻意不回填**——地址→行映射在 pull 同址多行下有歧义，猜错比留 NULL 更糟）；部分索引 idx_task_executions_executor_id_running (executorId,startTime) WHERE status='running'（CONCURRENTLY，transaction=false）；修「A 机器重启误杀 B 机器健康执行」等按 address 匹配的串台面；不加 FK（执行器行可删、执行历史必须留痕） |
 | 1790000000056 | AddTasksStatusIdIndex | PERF-3 调度扫描复合索引：tasks 增 `(status, id)`（`idx_tasks_status_id`）——调度器三条热查询同为「status 等值 + id keyset 翻页 + ORDER BY id」形态，既有 `idx_tasks_status`（单列，命中后仍需排序）与 `idx_tasks_status_trigger_type`（第二列 triggerType 与 ORDER BY 不对齐）都吃不满；复合索引让等值前缀定界、id 天然有序，排序步骤整个消失。CREATE INDEX CONCURRENTLY + transaction=false（tasks 上万行且调度器持续在读，普通建索引的写锁会阻塞任务创建/更新，同 0049/0053/0055 大表纪律）；IF NOT EXISTS 可重入。**刻意不删**冗余的 `idx_tasks_status`（严格左前缀）——删索引不可逆且需实测依据，收敛留后续轮 |
+| 1790000000058 | FillTaskTemplateOwnerKeys | R39-A1 后续（**data-only，不改 schema**）：把「属主仍存在」的历史 task_templates 行的 `createdBy` 从裸 username 回填为 `user:<id>|<username>`（幂等谓词 `!~ '^user:[0-9]+\|'`；`left(...,100)` 只裁 username 尾部、id 段绝不截断；属主已删的行保持 legacy——猜一个 id 才是数据污染）。目的：消除「硬删除释放 username ⇒ 同名新号继承历史模板删除权」的残余路径 |
 | 1790000000057 | AuditLogsNoTruncateGuard | SEC-10 审计日志防 TRUNCATE 守卫：audit_logs 补语句级 BEFORE TRUNCATE 触发器（既有 trg_audit_logs_append_only 是行级 UPDATE/DELETE 守卫，对语句级 TRUNCATE 不生效）——一条 TRUNCATE 即可清空全部审计记录的缺口。触发器无条件 RAISE EXCEPTION 拒绝（无逃生门：全仓检索 TRUNCATE audit_logs 零命中，保留期删除走分批 DELETE 不需要 TRUNCATE）；down 逆序 DROP TRIGGER IF EXISTS |
+| 1790000000059 | （预留·**未落盘**）SopAuditDetailSopIdBackfill | R72-A1（R70-A1 遗留①）：历史 SOP 审计行 `detail.sopId` 回填——**结论：阻塞，本号不落盘任何迁移、零写入**。计划中的 data-only `UPDATE audit_logs SET detail = detail \|\| jsonb_build_object('sopId', ...)` 在本安全模型下**不可能执行**：审计行被 1790000000006 的行级 `trg_audit_logs_append_only` **无条件**拒绝（BEFORE UPDATE → RAISE P0001 'audit_logs is append-only: UPDATE denied'）。该守卫的 `app.bypass_audit_guard='on'` 逃生门**只写在 `IF TG_OP='DELETE'` 分支内**（为 retentionDelete 的分批 DELETE 而开），UPDATE 侧没有任何 `current_setting` 放行判断；用 `session_replication_role`/`DISABLE TRIGGER`/改守卫函数绕过 = 拆掉审计防篡改，一律不做。历史行继续不可深链 → 改走**读面解析**（澄清三类 resourceId=澄清行 id → sop_clarifications.assignmentId → sop_assignments.sopId；sop.complete resourceId=指派行 id → 直接取 sopId），不动历史行。回归守卫：`migrations/__tests__/audit-logs-update-forbidden.migration.spec.ts` 钉死「UPDATE 分支无逃生门 + 全目录禁止 UPDATE audit_logs / 禁关触发器」。**本号未使用（无迁移文件）→ `check-migrations` 报告的下一可用时间戳仍是 1790000000059**，下一个真要落盘的迁移可直接取它；本行只记录「试过、结论是做不了」，不占号 |
 
 ## 变更日志
 
@@ -669,3 +671,2178 @@
 - 2026-09-13 **WIKI-LOG-S3GC done（orch-wiki-6 子代理，`6f251c6`）：S3 日志对象保留期回收——过期终态执行的 MinIO/S3 日志对象随每日 cron 回收（接手两次失联代理的半成品收尾）**——wiki page-47 风险 6 与 log-retention-cleanup.service 头注自标"后续专门任务"落地：LOG_STORAGE_DRIVER=s3 时完整日志外置 gzip 对象（execution-logs/*.log.gz）且成功路径不写 execution_log_lines 行，DB 行清理空转、对象存储随历史执行无限累积；新 S3LogObjectRetentionService 每日 03:35（与 03:30 DB 行清理 / 03:45 产物清理错峰）按 task_executions 过期 s3 指针（logStorage='s3' + logObjectKey 非空 + 终态 5 态 + COALESCE(endTime, createdAt) 早于截止，保留期与 DB 行清理同源 logRetention.days）keyset 分页（批 200 × 至多 50 轮）批量 S3LogStorage.remove，成功后守卫清空 logObjectKey（WHERE id AND logObjectKey 防并发误清）；单行失败 fail-open warn 跳过等下轮 cron、对象不存在幂等（MinIO DELETE 204 语义）、非 s3 驱动整段 no-op、整段 pass 异常不抛出（与 handleDailyCleanup 同姿态）；零迁移。前任两次失联运行已落三文件 WIP（服务/装配/头注），逐 diff 核实语义与认领稿一致，实现零改动；本接手补全 spec 13 例 + atlas 四页同步（task.md 目录树+S3 对象回收机制段、execution-log-line.md 配套工具+删除段、task-execution.md logObjectKey 行、admin-api-testing.md 守护表）。**验证**：admin-api 全量 jest 151 套件 2413/2413 绿（基线 2400 只增）、tsc --noEmit 0 错。**如实**：本会话中途主工作区被并行会话 git pull（远端 b3d4d03）卡在合并冲突（user.entity.ts/AGENT_HANDOFF.md/PLAN-CLAIMS.md UU×3，且远端迁移 1790000000016-AddUsersOidcSub 与本地 AddConfigHistoryMetadata 时间戳撞号，解合并需重排迁移号、远超本任务授权）——按「他人 WIP 勿动」纪律未代解，验证与两提交在本任务 worktree 分支 wiki-log-s3gc（764decf 直接后代）完成，主树解合并后 fast-forward/cherry-pick 即收编。
 
 - 2026-09-13 **Wiki 优化批次 II + 远端收敛（orchestrator）**：①遗留大件三件 done——WIKI-AUTH-REVOC（b0ceb56：users.sessionVersion 迁移 1790000000017 + ver claim + jwt.strategy 校验，logout/改密即时撤销在途 access token）、WIKI-LOG-S3GC（6f251c6：S3 日志对象保留期回收姊妹服务，接手两次失联代理半成品补全测试）、WIKI-PKG-GUARD（072c022：push-result 内联校验提升 ExecutorSharedTokenGuard）；②**远端收敛**：远端 develop 领先 13 commit（第十六~二十一轮 OIDC SSO 等），共享树中断 pull 的三文件冲突由主控解合并（0aad82e）；**迁移撞号**：远端 AddUsersOidcSub 1790000000016 与 WIKI-OPT-2 撞号 → 重编号 **1790000000018**（内容零变化，未随 release 发布）；S3GC 分支 worktree 验证后收编（3dee66c）；③基线：admin-api 2458/2458（153 套件）+ tsc 绿、admin-web 659/659 + tsc -b 绿、check-migrations 63 个唯一（下一可用 1790000000019）。
+
+## 第 31 轮编排批次（5 agent 并行 · 2026-10-20）
+
+> 用户指令：「作为项目总负责人，编排 agent 开发，时刻始终保持 5 个 agent 在推进，自主探寻目标，永不停止」。
+> 本段登记本轮 5 条并行工作流，足迹互不重叠（并发安全）；执行者为主会话派发的 5 个子 agent，
+> 主会话负责验收、提交与认领板回填。子 agent **禁止** git commit/push/checkout/stash——提交权只在主会话。
+
+| 任务 | 优先级 | 状态 | Owner | 认领时间 | 文件足迹 | commit | 备注 |
+|---|---|---|---|---|---|---|---|
+| R31-A | P1 | claimed | main（总编排）+ agent-r31a | 2026-10-20 | `apps/admin-api/src/modules/{sop,agent,notification,registry}/**/__tests__/`（仅新增/扩写 spec）+ `apps/admin-api/package.json`（仅 jest coverageThreshold） | 待提交 | **覆盖率棘轮续期（N-03 同型）**：sop-collab/agent.processor/tool-binder/clamd-scan 等洼地定向补测后抬地板。验收：报告 before/after 四档数字 + 全量绿 + 反证（临时抬到 99 必红）。禁凑数弱断言。 |
+| R31-B | P1 | claimed | main（总编排）+ agent-r31b | 2026-10-20 | `apps/admin-api/src/modules/{task,scheduler,executor}/**`（含 `__tests__/`） | 待提交 | **调度/派发/回调链缺陷审计 + 修复**：按「执行态机 / 并发 / 重试 / 回收」四轴逐条核，找出 ≥1 个可复现真实缺陷并修 + 回归测试。验收：反证转红→还原绿；不引入契约破坏。 |
+| R31-C | P1 | claimed | main（总编排）+ agent-r31c | 2026-10-20 | `apps/admin-web/**` | 待提交 | **前端错误码/i18n 收尾**：errorCode 兜底链（无码回落文案）、i18n 扫描零新增、未翻译面清点。验收：vitest + tsc + build + lint:i18n 全绿。 |
+| R31-D | P2 | claimed | main（总编排）+ agent-r31d | 2026-10-20 | `scripts/**`、`data/openapi-en-map.json`、`apps/admin-api/openapi.json`、`docs/api-reference.md` | 待提交 | **API 文档双语覆盖缺口 + 守卫加固**：统计缺失 x-i18n-en 的节点并补齐；守卫自检有牙。验收：check:api-i18n / check:docs 全绿 + 覆盖率数字前后对比。 |
+| R31-E | P1 | claimed | main（总编排）+ agent-r31e | 2026-10-20 | `packages/acf-cli/**`、`packages/mcp-server/**`、`packages/autocodeflow-node-sdk/**`、`packages/autoflow-sdk/**` | 待提交 | **非浏览器消费端 errorCode 消费**：CLI/MCP/双 SDK 目前只透传后端文案，需消费 `errorCode`+`params`（分类/可翻译/可编程判别）。验收：各包测试绿 + 新增行为有反证。 |
+
+
+- 2026-10-20 **编排变更（用户拍板「并发 2 个」）**：并发上限 5 → **2**（5 路并行时 4 个子 agent 被平台中断且零产出）。改为**串行队列 + 2 路常满**：R31-B 中止后重启为 **R31-B2**（收窄到「回调写终态的幂等性与竞争」单条链路）、R31-D 收窄为 **R31-D2**（先量化再补一批）；**R31-A / R31-C / R31-E 排队待补位**。
+- 2026-10-20 **done（commit 99ed999e）LANG-ERR-01 最后 1 处裸 throw 收口**：WriteGuardEnforcementInterceptor 的「缺省拒绝」500 改用 AppError(WRITE_GUARD_ASSERTION_MISSING)（码表早已存在但零使用），状态码与文案逐字不变、仅新增 errorCode 字段；反证：退回裸 Error → errorCode=undefined，断言转红。至此 admin-api 生产代码裸 `throw new *Exception` = **0**（另 4 处均为注释）。守卫复核：check:error-i18n（381 码中英齐备/生成物无漂移）与 check:user-facing-language（英文 0 处）双绿。
+- 2026-10-20 **新发现待办（R32-A）**：错误码化**缺回退守卫**——`check-error-i18n.mjs` 只验「码表↔生成物一致」，不拦**新增的裸 `throw new XException("中文…")`**；本轮清理成果随时可能被下一次改动侵蚀。应仿 coverage / response-schema 的「只增不减」棘轮，加「admin-api 生产代码裸 throw 基线 0，新增即红」守卫（含 --selftest 有牙自检）。
+
+- 2026-10-20 **并发再降（用户第二次拍板「算了并发1个agent，2个还是太吃力了」）**：子 agent 并发上限 **2 → 1**。执行形态改为「1 路子 agent 串行 + 总控自己作为第二个执行者补位」，避免空转。目标已同步更新。
+- 2026-10-20 **R31-D2 done（commit cf227de8）**：API 文档双语的缺口不在译文而在**注入面**——`collectTargets` 只扫 `components.schemas.<n>.properties.*.description` 一层与 operation 子容器，**内联对象属性**与 requestBody 内联 schema 根本不进收集面（4 个节点有中文、映射表里也有英文，却永远中文单语）。新增 `collectInlineProps()` 递归（显式不进 example/examples/default/enum，depth≤8），openapi.json 由正式管线重生成。总控复跑验收：`check:api-i18n` exit 0「1614 个可翻译节点全部有英文」、selftest 21/21、x-i18n-en 键 1396→1400、`src/common/i18n` 2 套件 13 例绿；反证（关掉递归 → selftest exit 1）由执行者实测、总控复核 diff 仅 4 个节点。**遗留**：`--check` 的 total 把 99 个空串 description 计入「可翻译节点」（循环里被 skip），报数口径误导；映射表 65 条疑似死条目未核实。
+- 2026-10-20 **R32-A done（commit 90362727）**：错误码化**回退守卫** `scripts/check-error-migration.mjs`——既有 `check-error-i18n.mjs` 只验「码表↔词条↔生成物」三者一致、**不扫描调用点**，新写一处裸 `throw new BadRequestException("中文…")` 它照样绿而响应体少 `errorCode`。判据用状态机抹掉注释/字符串后匹配 `throw new <XxxException>(`（AppError 唯一允许），目标态恒 0；selftest 6/6（含「混写场景只命中第 4 行」反证）；全仓 445 个生产文件裸 throw = 0；反证注入探针 → exit 1 点名行号。已接入 CI check-migrations job。
+
+- 2026-10-20 **R31-B2 done（commit 845dca0b）**：审计「回调写终态」单链路的四条聚焦点（重复回调 / 乱序 / 与 sweep 竞争 / task↔execution 双写）——**逐条核实均已有正确守卫**，故无实现改动，交付 2 条钉住不变量的回归用例（乱序后到者零副作用；sweep 先终态化后迟到回调为 no-op loser）。守卫证据：写终态唯一入口 `execution-terminal.ts:156-169` 条件 UPDATE（gate=OPEN_EXECUTION_STATUSES）、重复回调短路 `task.service.ts:5111`、sweep 与回调共用同一 SQL `scheduler.service.ts:915-923` 由 PG 行锁串行化、tasks 表无执行结果列故结构上不存在双写分叉。**反证**：去掉 `if (!updated.affected)` 短路 → 两例同时转红（二次 emit + 槽位二次释放），还原后 task.service 303/303、execution-terminal+scheduler+processor 216/216、tsc 0。**遗留**：广播执行同一执行器回调重投会二次 -1 槽位（`GREATEST` 只防负不防少计），彻底修需持久 occurrence 标记（迁移）或 Redis SETNX；当前由心跳自报 runningTaskCount 自纠正，窗口 ≤1 心跳。
+- 2026-10-20 **R31-C done（commit d2afdaa9，总控自干）**：**前端最高频失败出口一直在绕过错误码**——`api/client.ts` 响应拦截器把服务端单语言 message 排在 i18n 之前，且弹完就打 `__toastedByClient` 标抑制页面里**会**按码翻译的 `showApiError` ⇒ 英文界面用户的 403/404/409/429/5xx 全是中文 toast，整条码化在这条路径上等于没做。修法：先 `translateByErrorCode`，再回落业务 message，最后 `http.error.<status>`（无码路径行为逐位不变）。验证：client.test 52/52（+4 例，含「字典无该码时回落服务端 message 且绝不渲染裸码」）、定向错误路径 6 套件 85/85、tsc -b 0、lint:i18n 双守卫绿；反证：两行对调 → 2 例转红。**如实登记**：全量 vitest 本机未跑完（机器同时跑 admin-api jest + 1 个子 agent，forks worker 回收超时，日志 test-results/r31c-web.log），全量门禁以 CI 为准。
+
+- 2026-10-20 **R31-E1 done（commit c4ffb2fa）**：**两个一等消费端都在丢码**——node SDK 响应拦截器只读 data.message（`http-client.ts:414-427`），acf-cli 的 `formatApiError` 只按 HTTP 状态分派（全包 grep errorCode 命中 0 处）。node-sdk 改为把 errorCode/params 以只读属性挂到被 reject 的原错误上（引用不变、无码不挂键），导出 HttpClientError/getErrorCode/getErrorParams/attachErrorCode；acf-cli 新增 `src/error-code.ts`（抽取 + 6 类分类 + 每类一句话处置，按命名约定模式匹配不枚举 381 码），已知码追加「[CODE] — 建议」，--json 时向 stderr 打结构化 JSON。验证：sdk jest **133/133**、cli vitest **367 passed + 1 skipped**（基线 321）；总控独立反证：还原 attachErrorCode → **1 failed / 132 passed**。顺带修掉一处分类误判（EXECUTOR_MAX_CONCURRENT_INVALID 曾因 CONCURRENT 落到 conflict，加 `(?<!MAX_)` 环视）。**遗留**：--json 检测走 argv 使已废弃的 `acf app create --json '<body>'` 失败时 stderr 也变 JSON；python 双 SDK 与 mcp-server 仍只透传 message（→ R31-E2）。
+- 2026-10-20 **R31-A 部分 done（commit 91a18a68）**：`agent.processor` 契约测试 6 例（队列独立/并发固定 2 / 只传 sessionId / 成功记 status+steps / **未预期异常不重抛**（重抛会让 BullMQ 重试并重复执行已发生副作用））。**反证（总控独立实测）**：catch 末尾加 `throw err` → 2 例转红。说明：该任务原由子 agent 起草，其中途在 `apps/` 下留了两份 coverage 转储（r31a-baseline.txt / r31a-cov-base.txt，共 575KB），已删除未入库；**覆盖率地板抬升仍未做**，留待专门一轮（需独占机器跑全量 coverage）。
+
+- 2026-10-20 **R31-D3 done（commit 9507d3e8，总控自干）**：API 文档双语闸的两处**判据缺陷**。① **报数口径夸大**：`inject()` 的 total 用收集节点数，循环里却跳过空串 —— 输出「1614 个可翻译节点全部有英文」，其中 **99 个根本没有文本可翻**；现拆成「中文可翻译 / 纯英文 / 空描述」三类分列。② **缺收集面守卫**：本闸唯一判据是「收集到的中文是否都有英文」，而**收集不到 = 永远绿**（D2 实测：内联对象嵌套 properties 与 requestBody 内联 schema 从未进收集面，4 个节点永久单语而门禁一路绿）。新增 `MIN_TRANSLATABLE_NODES = 1500` 地板：收缩即 exit 1，把「悄悄少收一批节点」从静默单语化变成 CI 红（扩展后应同步上探，与 coverage / response-schema 同型棘轮）。③ 附带 `--report` 列出映射表中未在文档出现的条目（当前 **37 条**疑似死条目），只报告不失败。验证：--check 输出「1515 中文可翻译 / 纯英文 0 / 空描述 99 不计入 / 映射表 1308」exit 0；selftest 21/21；反证地板改 99999 → exit 1，还原 → exit 0。
+- 2026-10-20 **仓库守卫全量复查（14 道）全绿**：no-hoisting（8 子项目自持 lockfile）· response-schema 228/228 · consumer-routes（mcp 53 + cli 60 条 vs openapi 228 组合全命中）· docs（死链/孤儿/根目录洁癖）· dependency-review（GHSA-hp3w-g68c-fv3c 距复查 72 天）· throttler-whitelist（10 条机器面）· password-policy-sync（103 字符 + 517 探针）· user-facing-language（英文 0 处）· failure-reasons（node 12 类 === protocol.executorReportable）· lint-gates · desktop-bundle-drift（executor-node 46 文件 / agent-worker 37 文件摘要一致）· env-drift（210 键全覆盖，豁免 39）· error-i18n（381 码）· api-i18n（1515 节点）。期间我自己踩到一次坑：`check-response-schema.mjs` / `check-docs.mjs` 两个路径写错（真实路径是 `scripts/check-openapi-response-schema.mjs` 与 `scripts/docs/check-docs.mjs`），误报为红——**记一笔防后人重走**。
+- 2026-10-20 **新发现待办（R32-D）**：`apps/executor-desktop` 全仓 **errorCode 引用 = 0**——桌面端仍把 admin-api 的单语言 message 原样展示（与 web 那个已修缺陷同类）。这是错误码化战役**最后一个未覆盖的消费端**；改动面在 `src/main`（不在 agent-worker 打包输入面，不触 bundle 摘要），但需双 tsconfig + test:main 全绿。
+
+- 2026-10-20 **R31-E2 done（commit 9fe84aa3）**：错误码化的**最后三个非浏览器消费端**补齐——`autocodeflow-http` 新增 `ApiHttpStatusError(httpx.HTTPStatusError)` 子类（message/request/response 逐字节不变，PK-32 契约不动；继承关系使 tenacity 重试与熔断判定仍命中），`_do` 改抛它并附带只读 `error_code`/`params`；`autoflow-sdk` 的 `HttpClientError` 对等透出 `error_body/error_code/params`（复用同一 response 对象）；`mcp-server` 把 errorCode/params 只读挂到 Error，并在**注册边界**用 `withStructuredToolErrors`（Proxy 包 `server.tool`）放进 `structuredContent`，`content[0].text` 仍是 `err.message`（既有约 20 处 `rejects.toThrow` 钉子不动）。验证：42 / 157 / 172 三包全绿，tsc 0；总控独立反证：`_do` 换回裸 `HTTPStatusError` → **5 failed / 37 passed**。**遗留**：非 retryable 4xx 仍按 PK-32 返回 Response（无异常可挂码）；两个 python 包各存一份解析函数需成对改；structuredContent 只含 errorCode/params，将来声明 outputSchema 需纳入。
+- 2026-10-20 **artifacts 死守卫修复（commit 700119df，总控自干，本轮审计新发现）**：`resolveArtifactPath` 的「纵深防御」判定 `if (full !== path.join(base, name) || !full.startsWith(base + path.sep))` 中**第一个合取项恒为假**（两个表达式逐字相同、纯函数）——注释宣称的「基名+拼接双保险」实际只有 startsWith 一层。实测该场景：名字 `a/b.png` 时 `full=<base>\\a\\b.png`，startsWith 为 true ⇒ 旧代码放行、文件落进子目录（当前正则挡住 `/`，故非可利用漏洞，而是**防御层与注释不符**：将来放宽正则会不报错、不红测试地静默失去保护）。改法：抽纯函数 `isArtifactPathWithin(baseDir,name)`（①裸文件名 ②拼接后父目录必须正好是 base ③目录前缀而非字符串前缀），service 改调用它；新增 5 例纯函数判定（`..`/`.`/`a/b.png`/绝对路径/空名/前缀相近兄弟目录）。artifacts 三套件全绿（service 18/18），admin-api tsc 0。
+
+- 2026-10-20 **R31-A2 done（commit 6a597ec3）**：覆盖率洼地定向补测第二笔（**未抬地板、生产代码零改动**）。**任务书数字过期**：sop-collab.controller 实测已 100/99.13/100/100、tool-binder 未覆盖 18 行全是 register 回调体（逐个调一遍=凑数）⇒ 均否掉，改选真洼地 `agent/tools/agent-api.client.ts` **23.52→100/100/100/100**（+10 例，钉住「未实现工具必须返回 isError 而非抛异常」——抛异常会让推理循环把「没实现」误判成链路故障）与 `sop/sop-media.service.ts` **32.72→98.18/93.33/100/98.03**（+30 例，钉文件名封闭字符集/0 字节与 >100MB 写盘前拒绝/assignmentId uuid 二次校验/落盘布局/openStream 越界与真值/根目录 env 归一；仅剩 1 行不可达防御代码不凑测）。域级：sop 73.35/63.85/69.49/74.28 → 76.43/68.14/74.57/77.41；agent 90.87/86.85/80.33/91.01 → 92.07/87.85/82.58/92.31。**反证**（总控独立实测）：invoke 的「如实失败」分支改成 throw → 3 failed / 7 passed；执行者另删 save 的 uuid 校验 → 4 例转红（其中含穿越片段那例落到 STORAGE_PATH_ESCAPED 才红，证明双保险有效）。
+- 2026-10-20 **R31-A3 claimed（agent 运行中）**：第二梯队洼地——agent-media-retention（35.59/16.12/40/36.53）+ notification-digest/silence + sanitize-notification-text.util；要求开工前重测（本轮已证明任务书数字会过期）。
+
+- 2026-10-20 **R32-A2 done（commit 94f81cd8）**：notification + config 四轴缺陷审计，**4 个真缺口全部先红后绿**。① **config '***' 哨兵判定只看 `dto.isSecret ?? false`、不看库里该行是不是密钥**——isSecret 在 DTO 里 optional（默认 false），任何省略它的 PUT（`PUT /config` 只带 key/value、`POST /config/batch` 无 DTO 校验）会把读面回显的 `***` 当真值写库**并把 isSecret 降级为 false** ⇒ 读面随即明文回显密钥 = 一次无痕解密（S3 当年只修了「带 isSecret:true」那一半）；改为 `dto.isSecret ?? (existing?.isSecret === true)`。② **NOTIFICATION_FAILED 兜底对生产场景永不触发**——条件 `failures.length === entries.length` 而 failures 只在 promise rejected 时 push，同文件自己写明真实渠道把异常吞成返回值 `'failed'` ⇒ 全部渠道 status=failed（生产常态）时一条审计都不落；改按逐渠道投递结果判定。③ **sendTest 的 fake OK**——'skipped'（已启用但未配置、零次投递）被记成 success:true，与 DTO 自己的契约冲突；并入失败集合。④ **凭据入日志**——webhook 是唯一打整条 URL 的渠道，而渠道 URL 常带 `?access_token=`/`?key=`/`/services/T/B/XXX`；新增 `channels/log-safe-url.util.ts`（掩码 userinfo + secret 类 query，保留 host/path），六渠道同源。**否决**：SSRF（全走 assertAndPinHttpUrl 逐 DNS 答案过 deny 表 + 钉 IP + maxRedirects:0 + agent.lookup 关闭二次解析，私有网段豁免默认 false）、config 回滚四路径、executor-shared-token 明文端点（R4 F-1 文档化设计）。验证 21 套件/409 例全绿 + tsc 0；反证：执行者逐条还原 4 处 → 7 条断言全红，总控独立复验 'skipped' 移出失败集合 → 2 failed / 40 passed。**遗留（需产品决策）**：读面不掩码 URL 路径段与 `?key=`（既有两个 spec 钉为设计决定，收口须同步扩展 MASKED_URL_QUERY_RE）；`notification.service.ts:417` 把 status='failed'/'blocked' 计为 success（看板低估投递失败）；迁移 1790000000018 前历史行 isSecret=NULL 且键已删时键级推断失效。
+- 2026-10-20 **R32-A3 claimed（agent 运行中）**：executor + executor-package 四轴审计（令牌生命周期 / 包下载授权 / 推送扇出幂等 / 注册与心跳容量对称）。守卫复查：error-migration 446 文件裸 throw = 0（新代码仍守纪律）。
+- 2026-10-20 **R32-A3 done（commit 34755a76）**：executor + executor-package 四轴审计，**2 个真缺口**。
+  **G1 自动清理漏跨实例广播**：cleanupOfflineExecutors 删除 7 天离线行后只做「本地逐出」（executor.service.ts:5136-5143），而 removeById / rotateToken 都是「逐出 + 广播」两件套 ⇒ 多实例下被清理执行器的令牌在其他实例正缓存里还能再活 60s，「删除即撤销」在集群范围退化成「删除后 60s 撤销」；补 broadcastTokenEviction。
+  **G3 心跳按地址取回调密钥**：executor.controller.ts:425 原 getCallbackSecretByAddress(address)，而 pull 同址多行下 resolveExecutorRow 对裸地址 fail-closed 返回 null ⇒ 心跳 tokenHash 恒 null ⇒ 执行器永远学不到轮换后的 N26 回调密钥，per-execution 回调在下次重注册前全部 401；register 早已按 id 取（注释写明「按 id 取无歧义」），heartbeat 漏改；改 getCallbackSecretById(saved.id)。
+  **否决 5 个怀疑**（rotate 无宽限窗口 / 共享 token 语义 / 包路径穿越 / 重复 push 不去重是刻意 / 容量钳制对称）。验证 28 套件 885 例全绿 + tsc 0；总控独立反证 G3 → **6 failed / 45 passed**。
+  **登记未修**：R1 download 只校验 type==='access'（文档写管理员，任何登录用户可下载包；access JWT 无 role，收紧须改 auth 模块）；R2 downloadCount 实体无此列而前端在展示；R5 push-result 回调无 DTO 校验（可向任意包 pushHistory 写脏数据）；R3 update-package 无去重键。
+- 2026-10-20 **工具链坑（记一笔）**：git add <目录A> <目录B> 在本机会**静默不生效**（exit=0 但暂存区空），必须**逐文件** git add。本轮两次踩到，已改逐文件暂存。
+- 2026-10-20 **R32-A4 done（commit 805eae17）**：auth + api-keys 四轴审计，**4 个真缺口**。
+  **① refresh 重放不级联吊销**：原子消费只保证并发只有一个赢家，输掉的那个只是被拒——而轮换的威胁模型是「同一枚 refresh 出现两次 ⇒ 至少一次来自窃取者」，窃取者通常就是赢家，他手里新签发的链毫发无损。现在 affected=0 时按 jti 查行，命中即吊销该行 userId 的全部活跃 refresh + bump sessionVersion（在途 access 立刻 401），目标取库中 userId 而非 payload.sub，未知 jti 不误伤，级联失败只 warn 仍 401。
+  **② TOTP/OIDC 写 users 走整行实体回写**：TypeORM save 无脏检查 ⇒ 并发 logout/改密/禁用刚落库的 sessionVersion+1 / password / isActive 被静默回滚（令牌复活、禁用失效、改密被撤销）。改列级 UPDATE。
+  **③ API Key 活性不看属主**：只看自身 revokedAt/expiresAt ⇒「禁用用户」「删除用户」对已签发 key 完全无效（remove 只回收 refresh_tokens），长效旁路。改为每次认证复核属主 isActive（现读无缓存），与 JWT 面 TOKEN_USER_NOT_FOUND/ACCOUNT_INACTIVE 对齐；失败原因只落审计、线上统一 401 防枚举。
+  **④ 失败审计只有 8 字符前缀**（acf_+4hex=16bit，不唯一不可反查）：命中行时 resourceId=行 id + userId + name。
+  另补 3 条钉子（jwt.strategy 每请求现读库 → 多实例撤销天然收敛，不需要 executor 那套 evict+broadcast；API Key 吊销下一请求即生效；查找只按全哈希）。验证 16 套件 259 例全绿（基线 246）+ tsc 0；总控独立反证属主闸 → **3 failed / 66 passed**。**遗留**：refresh_tokens 无 familyId 只能全量吊销（DoS 面）；TOTP 备份码全仓不存在（丢设备=锁死）；单会话 revoke 的在途 access 仍活 ≤15min；users.service.remove 不回收 api_keys（属主闸已兜住）。
+- 2026-10-20 **流程教训（记一笔）**：逐文件 git add 的循环里仍有文件被漏加（auth.service.ts 未进 commit，是 12 文件里只提交了 11 个），靠 `git status` 收尾检查才发现并用 --amend 修正。**提交前必须比对 `git diff --cached --stat` 的文件数与预期一致**。
+- 2026-10-20 **R32-A5 claimed（agent 运行中）**：users + project 权限与生命周期审计（删/禁用用户的级联孤儿、三档项目角色在每个写端点的一致性、成员管理提权链、用户更新面唯一性竞态与 sessionVersion）。
+- 2026-10-20 **R32-A5 done（commit fd9d3241）**：users + project 四轴审计，**3 个真缺口**。
+  **① users.update 遇 PG 23505 只能落笼统 409**：唯一性预检只覆盖「非 admin 自改」且与 save 非原子，admin 改他人**零预检** ⇒ 竞态一律退化成「资源已存在」，前端无法定位是 username 还是 email 撞了；改按 23505 重读 dto 出现的字段归因到 USERNAME_TAKEN / EMAIL_TAKEN（不依赖约束名；命不中/命中自己/重读失败回落 USER_EXISTS）。
+  **② users.remove 不回收 api_keys**（只清 refresh_tokens + project_members，api_keys 留孤儿）：认证面已由 R32-A4 属主闸兜住，本条只清孤儿行（与 refresh_tokens 同事务同口径）。
+  **③ project.addMember 不校验目标用户存在** → 幽灵成员行（project_members.userId 无 FK，A-8 只补了删除方向）：授予前校验，不存在 → 404 USER_ID_NOT_FOUND；@Optional 缺席跳过、查询抖动 warn 放行（既定姿态）。
+  **补 3 组钉子**：project 模块 7 个写端点的 @Roles 元数据 == [admin]（文件头注承诺过但从未断言）、非 admin 连 role:'user' 也拒、ProjectsModule imports UsersModule + design:paramtypes[1] === UsersService（防 @Optional 静默退化成永不校验）。核实无提权链、无跨项目 id 注入面。验证 108→129 例全绿 + tsc 0；总控独立反证幽灵成员闸 → 1 failed / 67 passed。**遗留**：task_templates.createdBy 按 username 键（删号/改名后属主悬空、同名新号可继承）；resolveRole 失败 fail-open 使 viewer 门禁在 DB 抖动窗口放行；addMember 不校验项目存在 → 23503 → 422 语义错位；**「禁用用户」在 API 上根本没有写面**（DTO 无 isActive + forbidNonWhitelisted → 400），靠 jwt.strategy 与 api-keys 逐请求兜底。
+- 2026-10-20 **R32-B1 claimed（agent 运行中）**：把「权限判定失败」从 fail-open 改为 fail-closed——resolveRole 查询失败按非成员返回，导致 task.service 的 viewer 门禁在 DB 抖动窗口不触发、写操作按宽松语义放行。要求三态化（有角色/无角色/判定不可用），仅执行类写面在「不可用」时 503，读面保持宽容，正常路径行为逐字节不变。
+- 2026-10-20 **R32-B1 done（commit b9a74a67）**：**权限判定失败从 fail-open 改成 fail-closed（仅执行类写面）**。实测把缺陷窗口精确化：`assertCanOperate` 有两条互斥路径——`TASK_OPERATE_SCOPE=any`（显式 opt-out）取到 null 时 `role==="viewer"` 不成立 ⇒ **函数自然返回 = 放行**（真 fail-open，DB 抖动窗口里权限检查退化成「谁都能做」）；默认 owner 档 null → false → 403（方向 closed 但**码错**：真实原因是「查不到」）。修法关键在**类型上分开两种语义**：新增 `ProjectRoleResolution = {status:'role'|'none'|'unavailable'}`，`resolveRoleState()` 不再把 catch 折成「非成员」，`resolveRole()` 退化为二态折叠（签名/返回值/warn 文案逐字节不变 ⇒ 读面 fail-open 契约不破）；task 两个判定仅 unavailable 分支抛 **503 PROJECT_ROLE_UNAVAILABLE**（经总控批准的唯一越界：catalog/project.ts + 2 个生成物）。为什么 503：403 会让前端引导「找管理员申请权限」——权限其实一直都在、只是这一秒查不到；500 会污染错误预算。验证 **65 套件 / 1474 例全绿** + tsc 0 + 三守卫绿（382 码）；总控独立反证（any 档 503 改成 return）→ **2 failed / 8 passed**。**遗留**：`assertCanAssignProject` 仍二态（DB 抖动→403 码不准）；api-keys/common-guards 的 spec 铸的是二态替身，兼容垫片待其补 resolveRoleState 后删（已加装配钉子防静默降级）；读面对同一故障仍 fail-open（列表可能不完整）。
+- 2026-10-20 **R32-C1 claimed（agent 运行中）**：**同型漏改扫描（元审计）**——把「同一个修复只落一半」当作一类缺陷系统扫：按 address vs 按 id 取、整行 save vs 列级 update、本地逐出 vs 跨实例广播、fail-open vs fail-closed 四个形态全仓列清单（先出判定表，只修证据最硬的），而不是继续按模块随机巡。
+- 2026-10-20 **R32-C1 done（commit aa7e5235）**：**同型漏改元审计**（改按形态横扫，不按模块顺查）。四类形态全仓清单：① 按 address vs 按 id 取 **23 点 → 真漏 2**；② 整行 save vs 列级 update **13 点 → 真漏 3**；③ 本地逐出 vs 跨实例广播 **8 面 → 0 漏**；④ catch 折成否定答案 **52 处 → 筛出 11 组授权/凭据语义 → 真 fail-open 1**。本轮修两处证据最硬的：
+  **A. 应用删除扇出**——部署行本就带 executorId 却只 select 地址、按地址分组、按地址解析传输 ⇒ pull 同址多行下 ① 清理命令被投进**另一台**执行器队列 ② 同址两台被折叠、第二台**永不清理**；改按行身份分组并传 executorId（无 executorId 的存量行仍按地址回落）。
+  **B. api-keys.revoke 整行 save**——同文件 touchLastUsed 本就刻意列级写，两处口径相反 ⇒ 整行写把 lastUsedAt 打回快照值 ⇒ 下次 authenticate 又判「首次使用」、重复落 firstUse 审计，把 R32-A4 刚做的「哪把 key / 属于谁」证据污染；改列级 update。
+  验证 175 例全绿 + tsc 0；总控独立反证 revoke（改回 save）→ 1 failed / 22 passed。**类别3 的 0 漏结论本身有价值**：说明前几轮那处广播漏改是孤例而非系统性缺失。
+  **遗留（已登记）**：L1 heartbeat 地址兜底 findOne 首行获胜；L2 users.update 整行回写回滚 sessionVersion/isActive/password（需改 10+ spec）；L3 saveUser 已无生产调用点应删；**L4 heartbeat save(e) 可回滚 tokenHash（轮换被回滚、旧凭据复活，风险最高）**；L5 两处写面仍二态折叠（建议复用 PROJECT_ROLE_UNAVAILABLE）；L6 assertTargetUserExists catch 放行（真 fail-open，仍可造无主成员行）。
+- 2026-10-20 **R32-C2 claimed（agent 运行中）**：收口 L4（heartbeat 整行回写可回滚 tokenHash）+ L6（用户查询失败放行 → fail-closed 503）。总控批准在 catalog/common.ts 新增通用码 **DEPENDENCY_UNAVAILABLE(503)**——现有 16 条 503 全是域专用码，缺一条通用码本身就是缺口；L6 仅改「查询失败」分支，404 与 @Optional 缺席两条行为须逐字节不变。
+- 2026-10-20 **R32-C2 done（commit f9792fb0 + 1fca8f32）**：收口 L6 与 L4。
+  **L6 fail-closed 落地**：assertTargetUserExists 的 catch 从「warn 后放行」改为 **503 DEPENDENCY_UNAVAILABLE**——判定没做完 ≠ 用户不存在，前者 503（可重试）、后者 404；放行等于在 DB 抖动窗口写出无 FK 的幽灵成员行。「查不到→404」与「@Optional 缺席→跳过」两条逐字节未变。顺带补了**通用 503 码**（原 16 条 503 全是域专用码，每次遇到「依赖暂不可用」只能往域码里硬塞错文案）。反证：只改 spec 先红（旧代码真的写出成员行）→ 改绿 → throw 改回 return 再红；总控独立复验 → 1 failed / 23 passed。
+  **L4 实测不可复现，按纪律停止**（未改 executor.service.ts）：TypeORM save 不是盲写整行——先由 SubjectDatabaseEntityLoader 现取 DB 行 diff，且 entityValue===undefined 的列直接跳过；而 `executor.entity.ts:234` 是 `@Column({ nullable: true, select: false }) tokenHash`，heartbeat 的普通 findOne 拿不到它 ⇒ 快照 undefined ⇒ 不进 SET。**真 TypeORM + 真 PostgreSQL 双探针**：A 快照 undefined → 并发轮换 → save → DB 仍新哈希（不回滚）；B 反证（改成 addSelect 装载）→ save 把 DB 写回旧哈希（**机理真实，护栏只有 select:false 这一层**）。
+  **总控补的钉子（commit 1fca8f32）**：既然唯一护栏是那行 `select:false` 且**没有任何测试盯着它**（去掉它既有测试全绿、线上却悄悄打开「轮换被心跳回滚」通道），用 `getMetadataArgsStorage` 直接断言 tokenHash / agentCapabilities / agentCapabilitiesUpdatedAt 三列的 select===false（零 DB 依赖、秒级）。反证：去掉 tokenHash 的 select:false → 1 failed / 12 passed。
+  **遗留**：L4 的加固（save→列级 update，防御「将来有人改掉 select:false」）建议单独立项（需动 ~129 处 heartbeat spec 的 save 断言）；新 503 改变 addMember 抖动时的对外表现（201 假成功 → 503），属批准的行为变更。
+- 2026-10-20 **R32-C3 claimed（agent 运行中）**：L2 —— users.service.update 的整行回写可回滚并发 sessionVersion/isActive/password（与 R32-A4 修的 TOTP 三处同型），要求先实测复现，不复现就停止；改列级写并逐列说明取舍。
+- 2026-10-20 **R32-C3 done（commit c02d6092 + a40c8e03）**：**users.service.update 的整行回写可复现且已修**。实测纠正了机理措辞：TypeORM 1.1.2 的 save **不是**「无脏检查」——它按 id 重读库中行、逐列 diff 只写差异列；但比的是「内存陈旧快照 vs 写入时刻库中行」，陈旧值 ≠ 新值 ⇒ 被判脏列并**按旧值写回**。窗口 = [快照读, save 内部 SELECT]，中间夹 bcrypt(12)，**不是亚毫秒窄窗**。三个安全列受害：并发的 sessionVersion+1 被回退（**令牌复活**）、isActive=false 被撤销（**禁用失效**）、新密码哈希被旧哈希覆盖（**改密被撤销**）。改法：UpdatableUserColumn 编译期钉死可写面 + buildUpdatePatch（只挑 !== undefined 的列）+ 两条路径都走 repository.update；响应改**写后重读**（旧实现把陈旧快照当响应，UserResponseDto 暴露 isActive/sessionVersion/loginFailCount）；行若在 update 与读之间被并发删除则 404——比旧行为诚实（**旧 save 会把已删行 INSERT 复活**）。逐列取舍：写 username/email/password/role（DTO 全部业务列），不写 isActive/loginFailCount/lockedUntil/totp 三列/oidcSub/sessionVersion，updatedAt 交给 CURRENT_TIMESTAMP。验证 11 套件 255 例全绿 + tsc 0；总控独立反证（整文件口径）→ **13 failed / 31 passed**，还原后 44 例全绿。
+  **顺带（a40c8e03）**：saveUser 已无生产调用方，但它是**下一次误用整行回写的入口**——只改注释（零行为变更）写清机理、列出受害列、指明局部更新走 update，并记录「真正删除需先改 auth.totp-sessions.spec 的 mock 形态」。
+- 2026-10-20 **R32-C4 claimed（agent 运行中）**：L1 —— heartbeat 地址兜底 findOne 首行获胜（同址多行下心跳可能把状态写到**另一台机器的行**）。要求先复现「落到哪一行」，复现不了就停止；单行行为须逐字节不变。
+- 2026-10-20 **R32-C4 done（commit 5a1a490f）**：L1 确证并修复——**heartbeat 会把状态写进别人那一行**。认证面对「同址多行 + 无指纹」早已 fail-closed，但**共享令牌兜底**让请求照样认证通过；heartbeat 随后自己重做身份解析，指纹未命中就退回 `findOne({address})`（**无 ORDER BY**）⇒ 首行获胜。实测：同址两行（已 OFFLINE 的 legacy 行 + 活着的 v3 行）发一次「共享令牌 + 无指纹」心跳，落库的是 **legacy 旧行**（被点亮成 ONLINE、cpu 3→87、running 0→3），活着那行零写入；**把数组顺序反转后落点随之改变** ⇒ 受害者由 DB 堆序决定、与身份无关。修法：与认证面同策 fail-closed——地址兜底追加 bounded 唯一性探针（`take:2` + `select:{id:true}`，心跳 30s 高频面不拉重列），存在别的同址行 ⇒ warn + **409 EXECUTOR_ADDRESS_TAKEN**（复用 register 面同条件同码，不新增 catalog）。三个取舍：不静默跳过（executor-node 会记心跳成功、/health 显示 ok 而中台判离线，诊断自相矛盾且指标被静默丢弃）、不用 503（重试不会自愈，须升级 v3 带指纹或配唯一地址）、单行地址行为逐字节不变。验证 **29 套件 / 889 例全绿** + tsc 0 + eslint 0；反证：还原成原 4 行 → 双向行序两例转红、指纹/单行两例仍绿（证明用例钉的是修复点），总控独立复验 → **2 failed / 2 passed**。**遗留**：register 的地址兜底 :1528 同为 `findOne({address})`，同族下一处风险（→ R32-C5）；heartbeat 漂移分支 :2213 的 owner=findOne 是存在性判据，首行语义可接受。
+- 2026-10-20 **R32-C5 claimed（agent 运行中）**：register 地址兜底首行获胜（C4 同族下一处），要求先复现「复用了哪一行/是否改写别人的指纹与能力字段」，复现不了即停止；允许调整既有 register 断言但须逐条说明不降低强度。
+- 2026-10-20 **R32-C5 done（commit 5ab72798）**：register 同族下一处，**比 C4 更严重**——同址多行 + 无指纹 + 共享令牌时，`findOne({address})` 首行获胜会把**别人的行当成自己**：改写 appName / executorVersion / capabilities / interpreters / maxConcurrentTasks / executorStartupId、点亮 ONLINE，并经 **rotateToken 替换对方的 tokenHash（吊销别人的 per-executor 令牌）**，调用方拿到绑在别人行上的新令牌。实测：行序 [别人 v3 行(FP_B), legacy 墓碑行] + push → 200 且返回 `victim-v3`（saves=2）；翻转行序 + pull → 接管已下线的 legacy 墓碑行并点亮 ONLINE。`foreignInstall` 挡不住（要求 incomingFingerprint !== null，无指纹恒 false）。修法：无指纹时先 `find({address, take:2, select:{id:true}})` 探「是否不止一行」，是 ⇒ warn + **409 EXECUTOR_ADDRESS_TAKEN**（复用 C4 同码、未动 catalog/schema/openapi），发生在**任何写库与令牌签发之前**（零写入）。**pull 也 409 而非「照常新建行」**：无指纹时兜底键恒为 `legacy:{address}` 且 deviceFingerprint 列不唯一（地址唯一索引是 partial：WHERE dispatchMode='push'），建出的那行**永远无法心跳**（C4 恒 409），且每次重注册再造一行 ⇒「注册成功、随后永久 409」的死行比显式失败更隐蔽。验证 **30 套件 / 897 例全绿**（基线 889 + 8）+ tsc 0；**未改动任何既有断言**（既有 register 用例的 repo.find mock 默认返回 []，守卫在其上是 benign no-op ⇒ 恰好说明它们本就不覆盖该组合）；总控独立反证 → **4 failed / 4 passed**。**遗留**：带真实指纹但未命中 + 首行是 legacy 行的 takeover 分支仍按行序（升级接管语义要先定）；执行器侧收到 409 的启动表现未验证（发布说明需写清「升级 v3 或配唯一 EXECUTOR_ADDRESS_PUBLIC」）；A-10 竞态合并分支触发面收窄，无证据不动。
+- 2026-10-20 **R32-C6 done（commit d3ae6b6f，总控自干）**：C5 遗留① 收口——**「升级接管 legacy 行」只在地址无歧义时成立**。C5 只堵了「同址多行 + 无指纹」，同根因的另一半是：带真实指纹而**首行是 legacy/NULL 行**时，foreignInstall 刻意把 legacy 判为「不算占用」（那是同机升级接管路径），于是落到 else 直接 `e = byAddress`；同址还有别的行时 byAddress 只是首行，若它是另一份安装的墓碑行，接管就是改写别人的行（appName/version/capabilities/startupId 全覆盖 + 点亮 ONLINE + 随后 rotateToken **吊销对方令牌**）。修法：加歧义判据（有真实指纹 + 首行 legacy/NULL + 地址上还有别的行）⇒ push **409**（与 C5 同策）、pull **不接管而新建独立行**（指纹真实 ⇒ 新行可正常心跳，不像 C5 那个 legacy 键死行）；新增 `hasOtherAddressRow`（bounded take:2 + select id）。单行地址的升级接管逐字节不变（对照组钉住）。验证 **30 套件 / 900 例全绿** + tsc 0；反证：把新判据短路 → **2 failed / 9 passed**（恰是 push 409 与 pull 新建行两条），对照组仍绿。**至此「地址不是身份」在 register / heartbeat / 认证面三处口径一致**：能消歧才写，不能消歧就显式失败或建独立行，不再由 DB 行序决定受害者。
+- 2026-10-20 **R33-B1 done（commit 474980dd，总控自干）**：钉住「每个工具族都注册在结构化错误包装器上」。R31-E2 的 structuredContent 只在**注册边界**生效——新增工具族若写成 `registerXxxTools(server, …)`（忘了用 `registering`），那一族错误会静默退回纯文本而**任何既有测试都不红**（各族 handler 单测直接调 handler，不经过注册边界）。判据放源码层：读 index.ts 断言包装器由 `withStructuredToolErrors(server)` 得到、且每个 `register*Tools` 第一个实参是 `registering`；刻意不做函数名白名单（新增工具族不该改测试），并加**匹配数下界 ≥9** 防正则写错导致的永真断言。验证 126/126（+2）；反证：把 `registerAuditTools` 改回裸 `server` → 新用例转红、其余 125 例仍绿。
+- 2026-10-20 **本轮编排记录**：① 批准 R33-A1 把范围扩到 `metrics/runtime-metrics.ts` 的 label 值域登记（未登记的 label 组合在首次命中前没有 0 值基线 ⇒ rate()/increase() 呈现「无数据」而非 0，告警在首次拦截前是黑的）；同时禁止改 `alerts.yml` 既有表达式、要求算清 series 基数（6 渠道 × 4 值 = 24）。② **自己起的全量回归被我 kill**：admin-api 全量 jest 占满机器、把并行 agent 的测试拖到超时，且日志 2 分钟不增长；本机单并发跑全量不现实，全量门禁以 CI 为准（每笔改动都有定向套件 + 独立反证）。③ 顺带核了 audit 模块的两个静默漏洞形态：`log(...).catch(...)` 吞错 **0 处**、空 `catch {}` **0 处**，`log()` 本身不吞错（由调用方决定 fail-open/closed）——这条「查过没问题」的结论留档。
+- 2026-10-20 **R33-A1 done（commit 6d99d440 + 7e3d75ab）**：**通知投递指标把「没投出去」记成 success**。判据是 `result.status === "rejected" ? "failure" : "success"`——只看 promise 是否 reject，完全绕过渠道自报的 ChannelDeliveryStatus，而生产常态恰恰是渠道把传输失败吞成返回值 'failed'。实测（修复前）：渠道 `mockResolvedValue('failed')` 时指标收到 `{channel:'slack',result:'success'}`，而同一次调用的返回值是 `{slack:'failed'}`、同函数下方 A-1 审计兜底也按 'failed' 判未投递——**同一个函数里三套口径互相矛盾**。修法：先算 status，指标/返回值/日志/审计读同一个值（单一事实来源），新增 mapDeliveryResultLabel 四值映射。metrics 侧登记四值并铺满 0 值基线（6×4=24 series，原 12）——**必须登记**而不只靠「快照出现才画」：未登记的新值在首次命中前是「无数据」而非 0，对告警语义完全不同。被点名的旧用例（原 :362「blocked/skipped 计入 success」= 把缺陷固化成断言）改写为三值互异，断言 3 条 → 7 条（强度提高）。验证 **17 套件 / 399 例全绿** + tsc 0；总控独立反证（整文件口径）→ **3 failed / 73 passed**。**影响面**：alerts.yml 的 `result="failure"` 表达式无需改但**行为变严**（以前渠道自报 failed 永不进 failure series，那两条告警在「渠道一直失败」时是哑的，上线初期可能补爆历史静默故障）；grafana dashboard 无面板消费该指标；README 值域已由总控同步为四值（7e3d75ab）。**遗留**：全仓同类折叠仅此一处；docs/observability/alerting-rules.yml 通知规则 0 条而 alerts.yml 有 2 条（既有漂移）；建议新增 SSRF_BLOCK_SPIKE 告警（只给表达式）。
+- 2026-10-20 **R33-A2 claimed（agent 运行中）**：sop 模块四轴审计（状态机 / 身份归属 / 并发 / 失败面）——sop 是此前未被系统审计过的核心模块，重点看跨工单答复与跨指派媒体读取的越权面、终态后能否再改写、媒体目录整删与单文件读并发。
+- 2026-10-20 **总控核实：R33-A1 报告的「alerting-rules.yml 缺通知段」是**误报**（否掉）**。查证：`docs/observability/alerting-rules.yml` 只有两处提到 notification，且都是**注释**（"建议：执行器离线检测走现有 notification 渠道"）；`config/monitoring/alerts.yml` 有 2 条真实规则（AUTOFLOW_NOTIFICATION_FAILURE_RATE_HIGH / _STORM）。但该文件**头部自述**明确写着「本文件是 README §3 的教学/阅读载体 …… 规则集**允许子集，不要求全等**」，且 `node scripts/check-alerts-rules.mjs` 实跑**全绿**（结构+指标名+对 30 条接线规则的语义级对账）。故不是漂移，是文档化的设计。**记一笔：子集语义容易被误读成缺漏，后续不要重复报。**
+- 2026-10-20 **新发现待办（R34-A，未修，证据已足）**：`app-deployment.service.ts` 的**写纪律两套口径**——模块里有 7 处走 `saveWithOptimisticLock`（`upgrade` :1344、行复用 :985、:1423、:2815 等），但 `pushDeployToExecutor` 内部**5 处 plain `this.repo.save(deployment)`**（:1690 / :1742 / :1763 / :1787 / :1810）直接写 deployment 状态，而该函数跨越 await（投递控制命令、HTTP 重试）。与 R32-C3（users.update 整行回写）同型：陈旧快照 + 无 CAS ⇒ 可回滚并发写（例如执行器心跳刚落库的终态被翻回 DEPLOYING、statusMessage 被覆盖）。需先证明可复现再改，并评估把 push 链改走 lock 的失败语义（推送途中版本变化应视为「有并发动作，放弃本次状态写」而非 500）。
+- 2026-10-20 **R33-B2 done（commit 2c865d72，总控自干）**：把 R34-A 候选里**语义最确定**的那一处先修了——`pushDeployToExecutor` 的重试耗尽分支此前无条件 `save(deployment)` 写 FAILED，而该分支窗口**最长约 93 秒**（3×30s 超时 + 1s/2s 退避）。「HTTP 请求被对端接受、响应超时」是常见形态 ⇒ 执行器其实**已成功部署**、心跳已把行推进到 RUNNING，旧实现此刻写 FAILED 就把**成功回滚成失败**（并整份陈旧快照覆盖 deployedCommit/deployedVersion/statusMessage）⇒ 运维看到「部署失败」去重试，线上其实是好的。改法：条件 UPDATE（`WHERE id AND status IN (DEPLOYING, UPGRADING)`），命中为 0 就一个字都不写，只留 warn（并发收敛而非错误）。验证 **16 套件 / 327 例全绿**（+2）+ tsc 0；反证：退回无条件 save → 新增用例转红（两条断言同时失败），其余 83 例仍绿。**遗留**：同函数另有 4 处 plain save（:1690 初始 DEPLOYING / :1742 pull 入队 / :1787 推送成功 / :1761 SSRF 失败），其中 :1742/:1787 的窗口含 `deliverControlCommand`/HTTP 调用，理论上可把已推进的 RUNNING 盖回 DEPLOYING——改它们要先定义「推送成功但行已被心跳推进」的期望语义，且波及大量断言，单独一轮。
+- 2026-10-20 **R33-A2 进行中（agent）**：sop 模块四轴审计已出**首批判定表**，状态机轴发现一整族「无条件 UPDATE（WHERE 仅 id）」：`replyClarification` blocked→in_progress（:803）、`sweepStuckClarifications`（:1037）、`recordProgress`（:853）、`completeAssignment`（:898，且 `failed` 不在排除集 ⇒ failed↔completed 可互改）、sweep unclaimed→failed（:957）、stalled（:973）——与 R32-C3 / R33-B2 同一根因（缺前置状态条件 ⇒ 终态可被覆写）。已有 CAS 的点：poll 首领（:356）、ingestClarification 轮次（:639）。它正在补 collab controller 鉴权与 media service 的判定，之后再挑最硬的 1-2 处修。
+- 2026-10-20 **ADR-026 落地（commit abe7c71e，总控自干）**：把这一轮在**四个互不相关模块**里连续挖出的同一类缺陷固化成架构决策——users.update / api-keys.revoke / deploy 推送失败分支 / sop 状态机，形态都是「状态写入没带前置状态条件」。立六条可验收规则：①状态/凭据/会话版本字段必须条件写；②条件集合取「本次动作的合法起始状态」而非「当前看到的状态」（read-then-write 只是把窗口挪个位置）；③命中为 0 是并发收敛（跳过 + warn），不是 500；④不用陈旧快照整行回写，updatedAt 用库时钟；⑤状态写必须可观测；⑥新增迁移点必须同时给 WHERE 谓词 + 并发后到者用例 + 反证。**特别写明「它在测试里永远绿」**——单线程无并发时两种写法行为相同，只会被并发/超时/重试暴露。被否的三案：全局 @VersionColumn（拦不住先读后长窗口再写，R32-C3 实测）、应用层锁（多实例无效）、repository 层统一加条件（条件语义各迁移点不同，会退化成「所有列条件化」）。docs 守卫三项全绿。
+- 2026-10-20 **R33-A2 done（commit d8f93647）**：sop 状态机**一整族「读-改-写缺前置条件」**落地修复。六个迁移点全部按 ADR-026 把「读取时刻的状态」从 if 条件挪进 **WHERE 谓词**：sweep unclaimed→failed（`status='assigned'`）、sweep stalled（`status='in_progress'`）、replyClarification 与兜底解除 blocked（`status='blocked'`）、recordProgress（`status IN 非终态集合`）、澄清兜底（`resolution IS NULL`）、**completeAssignment（attempt CAS + 终态排除）**。实测后果原本是：已完成的工单被超时扫描改成 failed/stalled（终止态被改写 + **假超时通知**）、被解除 blocked 改回 in_progress 后又被失联扫描判 stalled（**一次交付被改写成两次错误状态**）、已答复的澄清被覆写成 escalated（**执行器永远拿不到被问的答案**）。
+  **最有价值的副产品是测试基建**：fake repo 的 `update` 原本只比 id ⇒「无条件覆写」与「带前置条件」在测试里**看起来完全一样**，状态守卫永远测不出来（这正是这一族缺口能长期存在的原因）。现在 fake 按真实 FindOperator 语义求值（in / isNull / not，未知操作符直接抛错防假绿），并在求值 where 之前先跑一次「并发写者」，对齐真实 DB 的行锁顺序。
+  验证 **10 套件 / 180 例全绿**（基线 178 + 2）+ tsc 0；反证两处均实测转红。**过程**：agent 起草判定表 + 前六处修复 + 测试基建后被平台中断，我复核发现它**漏了 completeAssignment**（判定表里列了但没修），遂补 attempt CAS + 2 条用例并做反证，再提交。
+- 2026-10-20 **R34-A2 done（commit b3a1464d，总控自干）**：把 R33-B2 的同族第二处也收口——**SSRF 校验失败分支**同样是无条件 `save(FAILED)`，而它的窗口常被低估：`assertAndPinExecutorUrl` 要**做 DNS 解析**（秒级，解析失败还要等超时），期间执行器可能已成功部署、心跳把行推进到 RUNNING ⇒ 写 FAILED 就是把成功回滚成失败。抽出 `failDeploymentIfInFlight()`（`WHERE id AND status IN (DEPLOYING, UPGRADING)`，命中 0 则一个字不写 + warn），两个失败分支共用。验证 **16 套件 / 329 例全绿**（+2）+ tsc 0；反证：WHERE 退回 `{id}` → **2 failed / 84 passed**（两个分支共用实现 ⇒ 两条用例同时红，这正是共用的价值）。**遗留**：成功路径两处 plain save（:1742 pull 入队、:1787 推送成功）仍未条件化——它们的正确语义更复杂（推送成功后行可能已被心跳推进到 RUNNING，此时应「只补 deployedCommit/Version/At 元数据、不回退状态」还是「整条跳过」，需产品语义确认；元数据仍是真实事实，丢弃会丢部署记录）。
+- 2026-10-20 **R34-A1 claimed（agent 运行中）**：sop 审计的后三轴——轴2 身份与归属（collab 鉴权在同址多行/已删除执行器下是否 fail-closed、跨工单答复、跨指派媒体越权）、轴3 媒体与澄清并发、轴4 owner 字段键型（username vs user id）在改名/删号后是否悬空。任务书明确要求遵守 ADR-026，且**每完成一小步就落盘**（上一个 agent 因长时间不落盘被中断）。
+- 2026-10-20 **R34-A3 done（commit 546fedd6，总控自干）**：把部署推送的**成功路径**也条件化，收口 R34-A2 的自登记遗留。pull 模式尤其危险——「入队后立刻被取走并跑完」时心跳已把行推进到 RUNNING，而这次 save 把状态**回退**成 DEPLOYING（随后又被卡死扫描判 stalled ⇒ 一次部署被写成两次错误状态）。**没有照搬失败分支的「整条跳过」**：deployedCommit / deployedVersion / deployedAt 是真实事实，丢掉会丢部署记录。故「状态不回退、元数据照记」——仍在飞则一次条件写；已被推进则**只补元数据**（patch 不含 status）+ warn。抽成 `persistDeployProgress()` 两处共用。验证 **16 套件 / 331 例全绿**（+2）+ tsc 0；反证：WHERE 退回 `{id}` → 1 failed / 87 passed。**至此 app-deployment 三个状态写分支全部符合 ADR-026**，仅剩 :1690 初始 DEPLOYING（本次动作首个写入、无并发写者）保留 plain save。
+- 2026-10-20 **R34-B1 done（commit 77a5b92c，总控自干）**：`structuredContent` 的**端到端**验证。R31-E2 那层 Proxy 只在「注册边界」生效，而当时全部用例都是「拿假 server 直接调 handler」——证明的是 handler 被人手调用时的返回值，**证不到协议往返里字段是否还在**。而「注册边界」正是这层存在的全部意义：若 SDK 序列化时丢掉未知字段，这层就白做，而单测照样绿。本用例用 SDK 自带 `InMemoryTransport.createLinkedPair()` 建**真 McpServer + 真 Client** 走 `tools/call`：① 带码错误 → `isError:true` + `structuredContent` 逐字段相等 + `content[0]` 文本与 SDK 默认转换逐字节一致；② 无码错误 → `structuredContent` **缺省**（不伪造机读面）。验证 mcp-server **4 文件 / 176 例全绿**（+2）；反证：把注册改成直接 `server.tool(...)` 绕过包装器 → 第一条转红、第二条仍绿。
+- 2026-10-20 **过程教训**：mcp-server 的 vitest include 是 `src/**/*.test.ts`，初版把文件写成 `.spec.ts` ⇒ `no test files found`，白花一轮。**新建测试前先看目标包的 include 规则**。
+- 2026-10-20 **R34-C1 done（commit 28894002，总控自干）**：落地 R33-A1 只给表达式的建议——新增 **AUTOFLOW_NOTIFICATION_BLOCKED_SPIKE**（`sum by (channel)(increase(...{result="blocked"}[15m])) > 0`，for 1m，warning）。`blocked` = 被 `assertSafeHttpUrl` 拒绝（**策略决定**，非传输故障），正常应恒为 0：非零要么是渠道 URL 被配成内网/回环/云元数据（含 `NOTIF_ALLOW_PRIVATE_NETWORK` 误开），要么是有人拿通知配置探测内网（安全事件）。阈值取 `>0` 而非容忍值——它不该出现；且**依赖 R33-A1 的登记**：blocked 已有 0 值基线，首次拦截前是 0 而不是「无数据」，否则这条告警在首次拦截前是黑的。同时把接线版已有的两条 failure 告警与这条一起同步进 `docs/observability/alerting-rules.yml`（该文件此前只有注释提到通知渠道，读者看不到真实生效的三条规则）。验证：`check-alerts-rules.mjs` 全绿（31 条规则 + 指标名 + 对 31 条接线规则的语义级对账 + 看板指标全在清单内）、`check-docs` 三项全绿。
+- 2026-10-20 **ADR-027 落地（commit 014b5041，总控自干）**：**测试替身必须保真**。同一条教训今天在三个独立场景重复出现，且都不是代码写错而是替身语义比真实依赖宽松：① sop 状态机 fake 的 `update` 只比 `id` ⇒「无条件覆写」与「带前置条件」在测试里完全一样，一整族缺口长期存活；② sop 澄清 fake 只处理 `pulledAt: IsNull()`，`Or(IsNull(), LessThan(...))` 被忽略 ⇒ 条件写退化成无条件写；③ users.update 的 `save` 桩若直接整对象覆盖就测不出「陈旧快照回写」。共同点：**替身越宽松，守卫越测不出来**，且给出的是**假绿**（测试全绿、覆盖率也涨，而守卫根本没被执行到断言）——比没有测试更坏。五条规则：实现被测代码实际依赖的语义（FindOperator 求值 / 快照读 / save 逐列 diff / update 列级写）、**未知操作符必须抛错**、测并发守卫必须能交错（求值 where 之前跑并发写者）、替身不够用时升级到**真依赖一次性探针**（R32-C2 先例）、反证必须能红。被否：单元层连真库（慢 + flaky）、内存实现如 pg-mem（不支持 FindOperator 正是成因）、只在集成层测（竞态不可稳定复现）。docs 三项全绿。
+- 2026-10-20 **R34-D1 done（commit 11a7a69c，总控自干）**：把 ADR-026 从「纪律」变成 **CI 静态守卫**。动机是 ADR-026 记的那类缺陷**在测试里永远绿**（单线程无并发时两种写法行为相同），只能靠静态判据拦。判据刻意保守：只抓 `.update({ id: … }, …)`（where 顶层键只有 `id`），带 `status`/`version`/`attempt` 的自动通过，注释/字符串/嵌套 `{where:{id}}` 不算；7 项 selftest（含多行形态、shorthand、注释/字符串、嵌套不误判）。**基线 18 只减不增**（扫 271 文件）——不要求一次清零，因为存量里仍有合法调用（表无并发写者、或写的是非状态列），一次清零只会逼出「把一个 update 拆成两个」的假修；确有安全理由的须在调用前 3 行写 `adr-026-exempt: <理由>`（不提供静默豁免）。**这 18 处本身即待办清单**（`--report` 可列）：agent-session 2 / api-keys 1 / app-deployment 1 / artifacts-retention 1 / auth 3 / oidc 1 / event-subscriptions 2 / executor 2 / sop 4 / task 1。反证：塞探针文件 → 19 > 18 exit 1，删除后 exit 0；ci.yml 经 `yaml.safe_load` 校验。
+- 2026-10-20 **R34-D2 done（commit 97ceb9f4，总控自干）**：ADR-026 守卫首跑抓到 18 处，逐条核对后给**我自己刚加的那处**加豁免并**把基线 18 → 17**。那处是 `persistDeployProgress()` 里条件写未命中后的 `update({ id }, metadata)`：patch 里**不含 status**，只补 deployedCommit / deployedVersion / deployedAt / statusMessage（「部署确实发生过」这一事实），状态由前面那次条件写决定 ⇒ 它的「无条件」是刻意的，元数据与并发无关。按守卫约定写 `adr-026-exempt: <理由>`（三行说明）。**顺带修了守卫自身缺陷**：豁免标记查找窗口原本是前 3 行，而「标记 + 两行理由」恰好落在窗口外 ⇒ 加了注释却不生效（实测踩到），改为前 5 行并在脚本里写明为什么是 5。验证：selftest 7/7、17 处 = 基线、app-deployment 88 例全绿（确认加注释时误删的那行 update 已正确还原）、tsc 0。
+- 2026-10-20 **总控自身失误记录**：加豁免注释时第一次 edit 把 `await this.repo.update(...)` 整行**替换掉了**（只留下注释），tsc 立刻报错才发现并还原。教训：`edit` 的 old_string 若只匹配「单独一行代码」，替换文本必须包含该行本身。
+- 2026-10-20 **R34-A1 done（commit cda09152）**：sop 后三轴（10 文件 / +1076 行 / 13 套件 203 例）。**轴 2 最有价值**：协作面 `authenticate` 的「凭据反查兜底」挂在校验**通过之后**——而 `validateTokenByAddress` 对「同址多行+无指纹」是 fail-closed 拒绝 ⇒ 这段兜底对**唯一需要它的场景永远走不到**（死代码），桌面 Agent（agent-worker 子进程产不出指纹）整片 401。改为在「校验失败且无指纹」分支凭据反查（per-executor 令牌**行绑定**，bcrypt 命中即行证明；命中行还须 address 与声明一致防错行顶替），**不放宽任何既有判定**（共享令牌不绑行 ⇒ 恒 null，仍 fail-closed 404；指纹路径不变）。**轴 3**：replyClarification 改「先条件认领再产生副作用」+ 失败条件回滚 + 版本锚单列写；ACK 游标改 `Or(IsNull(), LessThan(stamp))`（注释早写「只前进不后退」而代码没有谓词）；半成品 sop_amended 不投递；openStream 单次 stat（ENOENT/ENOTDIR→404，EACCES 原样抛）。**轴 4**：PATCH 曾把 createdBy 二次加前缀（user:user:<uuid>），落库没被污染**只因** draft() 不写该列 = 层间契约失真。验证 203 例 + tsc 0 + ADR-026 守卫 17=基线；反证：执行者还原 4 处守卫 → 4 红 3 绿 / 3 红 1 绿，总控独立复验协作面兜底 → **2 failed / 26 passed**。**遗留**：`/api/agent-collab/media/<id>` 路由全仓不存在（mediaRefs 唯一合法形态指向 404）；sop **无审计落库**；publish() 仍整行 save；凭据反查无正向缓存。
+- 2026-10-20 **R35-A2 done（commit cad11477，总控自干）**：按 ADR-026 清单把 `auth` 的三处 TOTP 写入条件化，**守卫基线 17 → 14**。三处看着都只写一列、无害，但交错后果很重：① **setup 会把已启用账号的密钥换掉**——读到 `totpEnabled=false` 后、落库前用户可能在另一标签页完成启用，此时写 `totpSecret` 就换成一把**用户从未验证过**的新密钥 ⇒ 下次登录旧验证码全失效而 `totpEnabled` 仍 true = **账号被锁死在 2FA 之外**；改 `WHERE id AND totpEnabled=false`，未命中抛 ALREADY_ENABLED。② **enable 可能启用在被换掉的密钥上**——验证码对旧密钥有效、另一处重新 setup 换了密钥；改 `WHERE id AND totpEnabled=false AND totpSecret=刚验证的那把`，未命中再读一次区分「已启用」与「密钥被换」。③ **disable 会谎报「是我关的」**——改 `WHERE id AND totpEnabled=true`，未命中按幂等返回 `disabled:false`。既有断言同步升级（`{id:1}` → 带前置键），钉的从「写了哪一列」变成「守卫本身」。验证 auth **9 套件 / 193 例全绿** + tsc 0；反证：setup 的 WHERE 退回 `{id}` → **2 failed / 35 passed**。
+- 2026-10-20 **R35-A1 claimed（agent 运行中）**：`mediaPath` 契约承诺了不存在的端点（`/api/agent-collab/media/<id>` 全仓无此 GET 路由，实际下载端点是 `/api/sop/media/:id` ADMIN-only）。要求先查清消费方（浏览器 vs 执行器）再决定「改契约指向现有端点」还是「补机器面端点」，后者允许改 openapi 但须实跑导出 + 回填 api-types。
+- 2026-10-20 **R35-A3 done（commit bde4183e，总控自干）**：逐个判定 ADR-026 清单剩余项，把 **4 处「非状态字段」写入豁免**，基线 **14 → 10**。四处的共同点是「写的是可重建的事实或计数器，不是谁赢的判定」：① `task.service.ts` 依赖别名重写（只改 `dependencies` 一列，并发最坏重复写同一别名）；② `executor.service.ts` 执行器能力上报（**上报语义**，并发 last-writer-wins 即正确）；③ `event-subscription` 失败计数（**DB 内原子自增**，非读-改-写）；④ 同文件清零计数器（快照为 0 已提前 return）。**豁免不是免检**：守卫要求标记在前 5 行内且必须带理由，四处理由都写进代码注释、可逐条质疑。剩 10 处才是真状态写（agent-session 2 / api-keys 1 / artifacts-retention 1 / oidc 1 / executor 1 / sop 4）。验证：10 = 基线、tsc 0。
+- 2026-10-20 **R35-A1 风险拦截（进行中）**：并行 agent 为修 `mediaPath` 契约改了 `apps/executor-desktop/src/main/agent/collab-client.ts` —— 而 `src/main/agent/**` 是 **agent-worker bundle 输入面**（ADR-005）。我跑 `check-desktop-bundle-drift` → **EXIT=1 漂移**。已发消息要求二选一：① 重新打包并回填 `agent-worker-bundle.sha256`（摘要 + 字节行），或 ② **撤销桌面端改动**（根因在后端契约承诺了不存在的端点，改后端即可）。我倾向 ②。**记一笔：跨 bundle 输入面的改动必须同批复核 drift 守卫，不能等 CI 发现。**
+- 2026-10-20 **R35-A1 done（commit fe67d754）**：`mediaPath` 契约修到真实端点。缺陷：`SopMediaService.save()` 返回 `/api/agent-collab/media/<id>`，而**全仓无此 GET 路由**（agent-collab 只有 @Post），真实端点是 `SopController` 的 `@Get("media/:mediaId")`（`/api/sop/media/<id>`，类级 JwtAuthGuard + Roles(ADMIN)）。**消费方只有浏览器**——admin-web 的 `viewClarificationMedia` 用 `/media\/([^/]+)$/` **只取尾部 id** 再打正确路径，所以 `mediaPath` 的前缀从未被验证过，假路径因此存活；执行器侧只把它当不透明字符串透传进 mediaRefs、**从不回读** ⇒ 不新增机器面端点（选了「改契约指向现有端点」）。桌面端按我的判断**未改**（原改动已逐处改回，`check-desktop-bundle-drift` EXIT=0）。新增**真 HTTP** 契约用例（挂双控制器 + `setGlobalPrefix("api")` + 真写临时媒体目录）：修前 404、修后 200 + 原字节；反证旧路径在同一应用上 404。openapi 重导出**两次逐字节幂等** + api-types 重生成 + i18n 映射回填（顺带回填 notification deliveryChannels 的既有漂移）。验证 207 例 + tsc 0 + api-i18n/response-schema/docs/typecheck:web/ADR-026(8)/bundle-drift 全绿。
+- 2026-10-20 **★ 发现一个 CI 红闸（我们自己弄红的）**：`npm run test:sop`（ci.yml:1098 已接线）当前 **3 项失败**——「complete 幂等」「ACK 后游标推进」「游标单调推进」。原因不是新缺陷，而是我们近几轮把生产代码改成条件写后，**脚本内的 fake 不实现 FindOperator**（`Not(In(...))`、`Or(IsNull(), LessThan(...))`、`attempt = …` 恒未命中 ⇒ affected=0 ⇒ 代码走让位分支）**且一条正则仍在找旧写法** `a.lastReplyDeliveredAt < stamp`。这是 ADR-027「替身不保真 ⇒ 整类缺陷隐形」在**脚本级门禁**上的镜像形态：这次不是假绿，而是 fake 跟不上代码导致门禁变红。→ R37-A1 认领修复。
+- 2026-10-20 **工具链坑（第二次踩）**：`git add` 对**写错的路径**会静默失败（我连续两次用 `__tests__/sop.service.read-and-guards.spec.ts`，而该文件实际直接在 `sop/` 下），`git add -f` 才 exit=128 暴露出来。教训：**暂存后必须核对 `git diff --cached --name-only` 的数量与预期一致**，别只看 `git add` 的退出码。
+- 2026-10-20 **R37-B done（commit c8c59b89，总控自干）**：豁免 `api-keys.revoke`（只写 `revokedAt` 一列，**吊销是幂等语义**——并发重复吊销写同一语义值，不存在「谁赢」；真正的状态闸在 `authenticate()` 按该列判），基线 **8 → 7**。**刻意没有豁免 `executor.markOffline`**：它是真状态写（status→OFFLINE），与注册并发时「管理员显式下线」vs「执行器刚重新上线」谁该赢是需要明确语义的决定，不该用豁免绕过，留作待判定项。**同轮把全仓 16 道零依赖守卫跑了一遍**（今天累计 ~60 笔提交后的健康复查）：no-hoisting / consumer-routes / dependency-review / throttler-whitelist / password-policy-sync / failure-reasons / error-i18n / error-migration / conditional-writes / api-i18n / response-schema / docs / lint-gates / env-drift / alerts / bundle-drift —— **全部 exit 0**；唯一红的是 `npm run test:sop`（3 项，R37-A1 在修）。
+- 2026-10-20 **R38 done（commit 6e077e3f，总控自干）**：**OIDC 首登绑定改条件写**。缺陷：`resolveAndBindUser()` 用 `!byUsername.oidcSub` 判「还没绑」再 `update({id})` —— 读时判断覆盖不了并发，**两个不同 sub 同时声明同一 username 时都能通过**，各自写自己的 sub ⇒ 后到者**静默换掉**先到者，而该分支注释明确写着「声明冲突，拒绝而非静默换绑」：**并发下它做的恰好是自己声称不做的事**，且换绑后先绑定的 IdP 身份再也登不进来。改 `WHERE id AND oidcSub IS NULL`，命中 0 再读一次区分「同一 sub → 幂等重入」与「别的 sub → OIDC_SUB_ALREADY_BOUND」。验证 auth **9 套件 / 195 例全绿** + tsc 0；**ADR-026 守卫 7 → 6**；反证：WHERE 退回 `{id}` → **2 failed / 33 passed**。
+- 2026-10-20 **R37-A1 done（commit ee7e10e1）**：修好被我们自己弄红的 `npm run test:sop`（修前 3 项失败）。根因是**脚本级 fake 只认 `isNull`/`in`，其余算子恒 `return false`** ⇒ 正确的条件写被判定「没抢到」⇒ 走让位分支 ⇒ 断言红——ADR-027 的**反向形态**（同一根因，症状从假绿变成门禁红）。修法：`valueMatches`/`whereMatches` 按 typeorm FindOperator getter 真实语义实现 in/isNull/not/or/and/lessThan，**未实现算子抛错**（不再静默 false）；新增 **meta 断言**（不认识的操作符必须抛，用 `between` 探针）——门禁的门禁；把「乱序 ACK 不回退」从**文本正则**升级为**行为断言**（含 `cursorBefore>0` 防 0===0 假绿）；旧的 `a.lastReplyDeliveredAt < stamp` 换成「WHERE 谓词 + SET 同源 + 无条件写回归闸」三条更强断言——**比较运算符证明不了并发单调性，WHERE 谓词才能**。变异测试验证可判别性（退化/漏 IsNull/换 MoreThan/SET 换值各自转红）。验证：`test:sop` **156 项 / 0 失败**、`test:agent` **254 项 / 0 失败**。
+- 2026-10-20 **R39 done（commit 66a34a8c，总控自干）**：**ADR-026 收口到 1 处**。① **修**：`pollPending` 的 resend 分支 `update({id},{pulledAt:null})` —— `pulledAt` 正是**领取 CAS 的判据列**（poll 的 `WHERE pulledAt IS NULL`），无条件清零等于抹掉「谁领了这张单」的凭据：resend 与普通领取并发时后到者会清掉对方**刚拿到**的领取态 ⇒ 同一张单被两个实例同时认为归自己；改为按读取值 CAS（`pulledAt: a.pulledAt ?? IsNull()`）。② **豁免 3 处**（理由写进代码）：`reviewSessionId`（指针列，上一段 CAS 已定唯一胜者）、`newSopVersion`（结果列，状态迁移由「先条件认领」独占 + 失败条件回滚）、`targetAgentSessionId`（指针列）；另豁免 artifacts-retention 的 `artifacts=null`（清单清理，只作用于已过保留期且删目录的 90 天前终态执行，上传要求执行在跑 ⇒ 无竞争窗口）。③ **刻意不豁免** `executor.markOffline`：真状态写，与注册并发时「管理员下线」vs「执行器刚上线」谁赢属**产品语义决定**，基线保留 **1** 并在脚本注释写明。新增源码形状断言（resend 的 WHERE 必须同时含 id 与 pulledAt）。验证 17 套件 240 例全绿 + tsc 0；反证：退回 `{id}` → 1 failed / 11 passed。
+- 2026-10-20 **R39-A1 claimed（agent 运行中）**：`task_templates.createdBy` 按 username 键的归属漂移（删号后同名新号可继承他人模板）。要求先证缺陷、给出三候选（新增 id 列 / 联合判定 / 复合键）对「同名新号继承」的**实际拦截力**对比表，再实施成本最低且真正堵住该路径的方案，并保留历史行兼容。
+- 2026-10-20 **★ ADR-026 清零（commit 80bc150d）**：最后一项 `executor.markOffline` 改 **lastHeartbeat CAS**。语义拍板：置 OFFLINE 的条件是「**我们观察到的活跃证据还没变**」——真正的竞争不是「谁后写」，而是「管理员点下线」与「执行器重新注册/心跳」撞在一起；若注册/心跳先落库说明有**更新的活跃证据**，简单加 `status != OFFLINE` 挡不住「拿旧观察覆盖新事实」，故按读取到的 `lastHeartbeat` 做 CAS（NULL 用 `IS NULL`）。命中 0 就 warn 让位且**不发布 executor.offline 事件**（否则下游会按「已离线」处置一个活着的执行器）。验证 30 套件 901 例全绿 + tsc 0；**守卫基线 1 → 0**——清单清空，今后任何新增无条件状态写直接变红。反证：WHERE 退回 `{id}` → 1 failed / 353 passed。
+- 2026-10-20 **R39-A1 done（commit 9467da71）**：`task_templates.createdBy` 属主改按 **user id** 判定。**缺陷可达**（不只理论）：`users.service.remove()` 是**硬删除** ⇒ username 唯一索引释放 ⇒ 同名新号可注册 ⇒「A 建模板 → A 删号 → 同名新号 B → B 能删 A 的模板」service 层实测 resolves；附带「改名即失属主」。三候选拦截力对比：**b（username 命中且用户仍存在）拦截力 0**（判定看请求方是否存在，B 存在即放行，还拆掉了「createdBy 为空 ⇒ 仅 ADMIN」保护）、a 需迁移+回填+双写期、**c（`user:<id>|<username>` 复合键）完全拦截且零 schema 变更** ⇒ 采用 c。实现含 `parseTemplateOwnerKey` 只认 `^user:(\d+)\|`（裸 `user:42`/纯 username 归 legacy，防「名字像键」误判）、请求方缺 id 时 fail-closed 绝不回退比名字。验证 6 套件 66 例全绿 + tsc 0；反证：执行者还原两处 → 4 failed / 14 passed，**总控独立复验另一侧**（去掉 legacy 兼容路径）→ **4 failed / 62 passed**，证明兼容路径也被钉住。**遗留**：历史行（裸 username）残余风险零回填不可消除，已用 2 条 characterization 用例**显式锁定**（不假装修好），建议下轮 data-only 迁移（需批准）。
+- 2026-10-20 **R41-M done（commit bff5a182，总控自干）**：**历史 task_templates 属主键回填迁移**（1790000000058，**data-only 不改 schema**）。R39-A1 只把新写入改成 `user:<id>|<username>`，历史行仍裸 username ⇒ 兼容路径保留「硬删除释放 username ⇒ 同名新号继承历史模板删除权」的残余路径。迁移把「属主仍存在」的行一次性升级成键（JOIN users ON username），**属主已删的行保持 legacy**（猜一个 id 才是数据污染）。三条刻意的取舍：① 只 UPDATE 不建/改列 ⇒ 可逆、无需双写期；② `left('user:'||id||'|'||username, 100)` —— **截断只作用于 username 尾部**，若先截再拼或位置写错会把 id 段切断 ⇒ 该行从「按 id 判定」**悄悄退回 legacy**（迁移白做且更难发现），spec 把 `left(...)` 整段钉住；③ 幂等谓词 `!~ '^user:[0-9]+\|'`（`\|` 是字面量竖线，写成 alternation 会让谓词失效）。down 用 `regexp_replace` 剥前缀还原，**刻意不按 id 反查当前 username**（那是另一次数据推断）。验证 migrations **45 套件 / 260 例全绿**（+6 结构断言）+ tsc 0；已登记 PLAN-CLAIMS 迁移分配表。**如实**：本机无 PG/docker ⇒ **未实跑该 UPDATE**，风险面集中在 SQL 语义（由三条断言覆盖），上线前建议 staging 真库跑一次核对行数。
+- 2026-10-20 **R41-A1 claimed（agent 运行中）**：SOP 关键动作缺审计落库（发布/指派/答复/完成只有 logger）。要求先盘点动作清单，再按既有模块形态接 AuditService（`@Optional`、失败不阻断业务但必须 `logger.error` 留痕、**detail 不放澄清/答复正文**只记长度与 id），并逐条用例钉住。
+- 2026-10-20 **R42 done（commit 1e0d264e，总控自干）**：在 ADR-026 守卫头部写明**已知盲区**。起因是复查 R34-A1 遗留时发现 `sop.service.ts` 的 `publish()`（:303）与澄清自主修订（:1005）用的是 **`sops.save(sop)` 整行回写**——与 R32-C3 的 `users.update` 同族，**但守卫完全看不到**（判据只匹配 `.update({id})`）。差点因此得出错误结论「基线 0 ⇒ 状态写没问题」：这正是我们一直在防的「绿 = 安全」错觉，只不过这次发生在**守卫自己身上**。头部现在显式写明两类盲区（① 整行回写 `repo.save(entity)`；② 多键无状态谓词的 update），并说明**为什么不做成「一律抓 save」**——`save` 同时是创建路径的写法，语法上无法区分「插入」与「陈旧快照回写」，硬抓会产出大量假红反而训练人忽略守卫。结论一句话：**绿不等于没有这类缺陷，只等于这一类没有新增。**
+- 2026-10-20 **新发现待办（R43）**：`sop.service.ts` 的 `publish()`（:303）与澄清修订（:1005）两处 `sops.save(sop)` 整行回写需按 ADR-026 规则 4 改成「只写真正改变的列」（`currentVersion`/`status`/`frontMatterJson`/`bodyMarkdown`），并评估与 `(sopId, version)` 唯一索引的关系——并发发布目前靠该唯一索引兜住版本号，但整行回写仍可能覆盖并发 draft 编辑。（agent 正在同一文件作业，本轮未动以免冲突。）
+- 2026-10-20 **R44 done（commit d46c1a4d，总控自干）**：守卫新增 **`--report-saves`**（盲区①的可见化）。上一轮只把「整行回写」写成「已知盲区」不够——**看不见的清单等于没有清单**。判据 `.save(<裸标识符>)`（参数是变量，多半是早期读到的快照；构造函数调用/对象字面量属创建路径，跳过）。刻意**不做门禁**：`save` 也是 create 之后的正常写法，硬抓会大量假红、**反而训练人忽略守卫**。**首跑 60 处候选**（扫 271 文件），头部六个文件：task.service 10 / sop.service 8 / app-deployment 7 / executor 7 / application 6 / agent-session 3。扫描器自身补 5 条 selftest（**报告模式永不失败 ⇒ 写错会「一条都不报」而无声失效**，那正是最该钉住的地方）。验证 selftest **12/12**；门禁 0 = 基线 0；report-saves exit 0。
+- 2026-10-20 **R45 done（commit 9c637337，总控自干）**：**`--report-saves` 上线一轮内就抓到真缺陷**。`setOfflineById()` 是 `markOffline()` 的**兄弟方法**（管理台按 id 置离线），同样「findOne → 改三字段 → **整行 save**」——R40 只修了按地址那条，这条漏了，而静态守卫看不到它（盲区①：只匹配 `update`）。后果：① 整行回写把并发心跳/注册刚落库的 `status`/`lastHeartbeat`/`runningTaskCount` 按旧快照覆盖；② 无「活跃证据是否已变」前置断言。改法与 markOffline 同口径（按 `lastHeartbeat` CAS；命中 0 只重读真实行返回、**不**发布 `executor.offline`）。验证 30 套件 **902 例全绿** + tsc 0；**`--report-saves` 60 → 59**；门禁 0 = 基线。反证：WHERE 退回 `{id}` → 新用例转红。**方法论注记**：盲区可见化在一轮内产生回报；也再次印证「同一个修复往往只落一半」（R40 修「按地址」、漏「按 id」）。
+- 2026-10-20 **R41-A1 done（commit 6c3dca2c）**：**SOP 关键写动作落审计行**（产品级可观测性缺口，R34-A1 遗留②）。做法上最有价值的是**先盘点再决定记什么**：12 个候选只落 7 条（draft/update/publish/assign/clarify/reply/complete），排除的三类各有理由——进度心跳与澄清 ACK 是**高频幂等游标**不是操作记录、媒体回传「行本身即记录」、cron 兜底是**系统动作无操作人**（需 actor=system + 去重，另开一轮）。`safeAudit()` 沿用 api-keys/notification 的 fail-open 纪律：**审计失败不阻断业务但必须 logger.error 留痕**。**detail 只记长度与 id**——澄清问题/答复/交付结果/changelog 正文一律不入账（审计行长期保留且可 CSV 导出，正文进去等于给不可信输入开一条持久外带通道）。`sop.update` 刻意不记 `actor=createdBy`（属主≠编辑者，R34-A1 轴 4 的老坑）。验证 **15 套件 / 227 例全绿**（+19）+ tsc 0 + 守卫 0。**总控反证**：把真实 `answer` 正文塞进 `sop.reply` 的 detail → 「detail 不含正文」用例转红（1 failed / 18 passed），还原后全绿。
+- 2026-10-20 **R47 done（commit fa980ef4，总控自干）**：`--report-saves` 清单里的两处真缺陷（R43）——`publish()` 与澄清自主修订的 `sops.save(sop)` **整行回写**。后果：写回的是进入方法时的快照，若期间有人 draft/编辑工作副本（frontMatterJson/bodyMarkdown/slug/name），**新内容被静默回滚**而版本快照里存的是新内容 ⇒ **主表与最新版本不一致**（执行器拉到新的、控制台看到旧的）。改法：publish 只写 `currentVersion`/`status` 两列并加 **currentVersion CAS**（首发布用 `IS NULL`）——并发发布虽已被 `(sopId, version)` 唯一索引挡住，但「从哪个版本前移」也该由 DB 判定，否则两个不同 bump 的并发发布可能各自插成功、主表被后写者覆盖成与最新版本行不一致；命中 0（行被并发删）如实报 404。澄清修订只写两列内容并按 `adr-026-exempt` 豁免状态谓词（**只写内容列**，状态推进交给紧随的 publish CAS；并发编辑工作副本本就是后写者赢）。验证 **15 套件 / 227 例全绿** + tsc 0 + 守卫 0；**`--report-saves` 59 → 57**；反证：publish 退回 save → 断言转红（1 failed / 18 passed）。**顺带修测试基建（ADR-027 第三次）**：8 个 sop spec 的 `sops` 假仓储**没有 `update`** ⇒ 「列级写」这条路径在测试里根本不存在（一调用就炸），补上假实现，owner-fields 那个按真实语义应用 patch（否则重读拿不到新版本号）。
+- 2026-10-20 **R46-A1 done（commit f5bd84b4 + b5fa360a）**：**task 模块四轴审计**（全仓最大 service），修两处证据最硬的：① **pause/resume** 旧实现是「内存判 status → 整行 save」，新增 `transitionTaskStatus`（`WHERE id AND status=<合法起始态> AND deletedAt IS NULL`，只写 status + **库时钟 updatedAt**——QB 的 UPDATE 不会自动刷 `@UpdateDateColumn`，漏了会让 PATCH 的 `expectedUpdatedAt` 读到旧值，实测踩到）；命中 0 与顺序执行**同解 400**。② **analyzeExecution** 原本整行 `save(exec)`：AI 窗口数秒内回调/kill 可能已落终态，整行回写会把它**盖回 RUNNING** ⇒ stale sweep **二次派发**。改为只 `UPDATE aiAnalysis` 并**重取返回**。验证 **64 套件 / 1426 例全绿** + tsc 0 + 两处 `new TaskService` 装配 16 例绿；`--report-saves` 该文件 **10 → 7**；反证：修复前新 spec **5 红 1 绿**（name 被盖回旧名 / pause 不 reject / status Expected success Received running）。
+  **守卫在这一轮又体现了价值**：`analyzeExecution` 的单列写恰好命中 ADR-026 判据（where 只有 id）⇒ 门禁红了。核对后按约定豁免（只写纯展示列、不含状态列），commit b5fa360a。**新写的代码也没被放过**。
+  **遗留（如实）**：S1 `remove` 无前置状态条件且 save+softDelete 非原子；S2 `update`/`updateGlue` 整行 save 会盖回并发 status；S3 `rollback`/`rollbackToVersion` 整行 save；F1 批量端点 `err.message` 直出 8 处（非 AppError 会泄露 SQL 片段）；O1 pause/resume 的 affected=0 只 warn 无审计。
+- 2026-10-20 **总控自干未果并回滚**：我本想把 `app-deployment` 的 `markRolloutState` + 租约刷新两处整行 save 改列级写，改完 tsc 通过但 **6 个 rollout 用例转红**——它们的 fake `repo.update` 是 `mockResolvedValue({affected:1})`（不落 store），而这些用例靠 `save` 就地改对象读断言。**修 fake 的保真度需要同时改 6 处断言**，成本高于本轮收益，故 `git checkout` 回滚（仅回滚我自己的未提交改动），application 套件复绿 331 例。**登记为待办**：这两处需与 fake 保真度一起改（ADR-027 同型：`update` 假实现必须落 store）。
+- 2026-10-20 **R50 done（commit d6671eed，总控自干）**：`app-deployment` 的 `markRolloutState` 与租约刷新两处整行 save 改**列级写**。上一轮我改完 6 个用例转红就回滚了，**本轮找到了真正的原因并补上**：列级写不会回灌已取出的实体，所以必须**同步内存视图**（`row.rolloutState = ...`）——否则同一批次流程后续判断读到旧值。另 `rolloutMeta` 是 jsonb，`_QueryDeepPartialEntity` 深度收窄报 TS2322，用一次窄化断言解决（**编译期问题，退回 save 会重新引入真实缺陷**）。两处都按 `adr-026-exempt` 写明「patch 不含状态列」。**测试替身（ADR-027 第四次）**：两个 rollout spec 的 `update` 假实现要么不存在、要么不落 store ⇒「谁被持久化成什么」只能从 save 实参读，改列级写后全部失明；补 `persisted(repo)` 助手合并 save 实参与 update patch，并给 multi-instance spec 补 `update`。验证 **16 套件 / 331 例全绿** + tsc 0 + 守卫 0；`--report-saves` **54 → 52**；反证：退回 save → 新增的「不许整行写」断言转红。
+- 2026-10-20 **R49-A1 claimed（agent 运行中）**：task 模块 S1/S2 —— `remove` 无前置状态条件且 save+softDelete 非原子、`update`/`updateGlue` 整行 save 会盖回并发 status；S3（rollback）留给产品语义。
+- 2026-10-20 **R49-A1 done（commit 0fcf0811）**：task 模块 S1/S2。**S2**：`update`/`updateGlue` 整行 save 会把快照 status 带回 ⇒ 窗口内并发 pause/remove 被静默盖掉（暂停「自己恢复」、软删行「复活」）；改列级条件写（patch 键 = DTO **真出现**的键，undefined 跳过 / null 照写；谓词 `id AND deletedAt IS NULL`；**显式写 `updatedAt=CURRENT_TIMESTAMP`**——QueryBuilder UPDATE 不刷 `@UpdateDateColumn`，上轮踩过），写后回读返回、为空即 404。顺带把改名撞唯一索引归因到 `TASK_NAME_TAKEN`（该唯一索引**含软删行**，旧实现只给笼统「资源已存在」），且 `secrets` 只有 DTO 真带才进 patch ⇒ R-01 掩码回写在结构上消失。**S1**：`remove` 状态迁移改条件写 + 软删独立第二步 + 失败**条件回滚补偿**（`from=deleted AND deletedAt IS NULL`，天然不覆盖并发赢家）；判定「可删状态 = {active, paused}」且**不凭空收严**（TaskStatus 无「运行中」态，执行态在 task_executions），顺序必须「先状态后软删」（第一步谓词要求 deletedAt IS NULL）。验证 **64 套件 / 1433 例全绿** + tsc 0 + 守卫 0；`--report-saves` **52 → 49**。反证：执行者还原三处 → 7 failed / 6 passed；**总控独立复验另一处**（去掉补偿）→ 补偿用例转红。
+  **遗留**：S3 `rollback`/`rollbackToVersion` 仍整行 save（需先定 status 是否从覆盖集合摘出）；S4 `expectedUpdatedAt` 读后比对 TOCTOU（下沉需 `date_trunc(ms)`，PG 微秒 vs hydration 毫秒）；S5 补偿二次失败仅日志可观测，根治需事务。
+- 2026-10-20 **18 道守卫全绿**（今日 ~30 笔提交后复查）：no-hoisting / consumer-routes / dependency-review / throttler / password-policy / failure-reasons / error-i18n / error-migration / conditional-writes(0) / api-i18n / response-schema / docs / lint-gates / env-drift / alerts / bundle-drift / sop-check / agent-check —— 全部 exit 0。
+- 2026-10-20 **R52 done（commit 1cd348fd，总控自干）**：**乐观锁下沉到写谓词**，关掉 `expectedUpdatedAt` 的 TOCTOU。旧实现「读后比对 → 无条件写」，两次之间的窗口仍可被另一个标签页的写插入（检查通过但覆盖别人的更新）。改把期望版本作为**行谓词**下发：`"updatedAt" >= :tsFrom AND "updatedAt" < :tsTo`。**为什么是半开区间而不是等值**：PG `timestamptz` 存**微秒**、hydration 到 JS Date 截到毫秒，直接等值（哪怕 `date_trunc`）容易「差 1μs 永不命中」；区间精确对应「同一个毫秒桶」，不依赖 PG 函数也不破坏索引可用性。读时预判**保留但降级为预检**（省掉一次注定失败的写），判据解释权在写谓词；落空时按有无期望值分流 409 / 无变化成功。验证 task+executor **95 套件 / 2344 例全绿** + tsc 0；新增并发交错用例（读时一致、窗口内被推进 ⇒ **写发出去了但一行没改**、返回 409）+ 给守卫 spec 的假仓储补这条谓词的真实求值（区间比较），unknown 谓词仍抛错。
+- 2026-10-20 **R51-A1 done（commit 85c32ae4）**：executor 6 处 save **先分类再动手**（2 处 create→save 插入无害、4 处整行回写），只改证据最硬的 2 处。① **`rotateToken`**：`bcrypt.hash(…,12)` 的 await 是**数百毫秒**窗口，整行 save 会把窗口内 sweep 落的 `status=OFFLINE` 改回 ONLINE（**把任务派给一台死机**）、回滚 `runningTaskCount`/`lastHeartbeat`/`cpuUsage`；轮换只拥有 `tokenHash` 一列 ⇒ 列级写。**豁免理由写进代码**：末次写入即正确语义，反过来加 CAS 会让轮换在恰好有心跳时**凭空失败**（可用性回归）。② **`update`**：管理台 PATCH 只拥有 4 列却整行回写 ⇒ 显式 patch。两条假线索（回滚 tokenHash/agentCapabilities）按 R32-C2 结论**明确排除**，两处改动都没以此为理由。验证 **31 套件 / 910 例全绿** + tsc 0 + 守卫 0；`--report-saves` executor **6 → 4**；新增**差分保真**假仓库的并发交错 spec（改前 6 红，红的正是 status 回滚 / 计数 7→0 / cpu 91→5）；总控反证：退回 save → 2 failed。
+  **★ 该 agent 的一个新判断（有价值）**：`heartbeat:2631` 的整行 save 现有注释只为 `runningTaskCount` 的 ±1 偏差辩护，**没辩护** `address`/`appName`/`capabilities`/`groupName`/`tags`/`maximumConcurrentTasks` 等**由 register/管理台拥有、心跳永不自纠正**的列——即「配置值看似随机回弹一次」。建议下一步改成「实际采纳字段的正向白名单」。
+- 2026-10-20 **R54 done（commit 630b9f73，总控自干）**：`deployFromGit` 的窗口是**分钟级**（clone+构建+部署），却一直拿着进入方法时的 `app` 快照在结尾整行 `save` ⇒ 期间管理台改的 name/description/env/manifest 被按旧值写回。改列级条件写：**部署头** `WHERE id AND status NOT IN (DEPLOYING)` —— `DEPLOYING` 就是「已有人占位」的唯一含义，等于**同一应用同时只允许一次部署**（命中 0 则 warn 让位并 return，不再往下 clone）；顺带把 R-01（掩码副本落库）从「靠先取 RAW 行规避」变成**结构上不可能**（patch 里没有 env）。**成功收尾** `WHERE status = DEPLOYING`；**失败收尾**用「未落终态」谓词（失败路径上状态可能是别的中间态，但没终结就该如实记）。**过程中修掉一个我自己引入的回归**：`gitCommit`/`manifest`/`runtime`/`entrypoint` 是窗口中间就地赋值的，旧实现靠收尾整行 save 顺带落库，改列级写后会**静默丢失**（测试 `lastSave.gitCommit` 先转红才发现），故收尾 patch 显式带上。验证 **16 套件 / 331 例全绿** + tsc 0 + 守卫 0；`--report-saves` **47 → 43**。反证：部署头 WHERE 退回 `{id}` → 新钉住的断言转红。
+- 2026-10-20 **R53-A1 done（commit c2a1fc5a）**：**heartbeat 整行 save → 实际采纳字段的正向白名单**。上一轮遗留里那条观察被证实：**现有注释只为 `runningTaskCount` 的 ±1 偏差辩护（会自愈），却从未辩护 `groupName`/`tags`/`description`/`maxConcurrentTasks`/`capabilities` 这些由 register/管理台拥有、心跳永不自纠正的列** —— 管理台改一次被弹一次，一直错到下次 register。做法值得记：写的是「**白名单 ∩ 本轮采纳集**」而不是整批白名单，因为 `maxConcurrentTasks`/`address` 是**双主人列**，整批写仍会回弹（缺陷只是变窄）；四列（status/offlineReason/misses/lastHeartbeat）**无条件**进 patch（否则并发 sweep 置的 OFFLINE 纠正不回来）。验证 **31 套件 / 916 例全绿** + tsc 0 + 守卫 0；`--report-saves` 该文件 4→3、全仓 **47→43**。反证：总控退回 `save(e)` → 6 failed / 8 passed。
+  **遗留**：心跳不再走 save ⇒ `version` 不再每心跳 +1、`updatedAt` 不再被心跳刷新（TypeORM update 的既有限制）；全仓无读 `executor.version` 做 CAS 的路径，无功能影响。
+- 2026-10-20 **R56 done（commit 5a1d1418，总控自干）**：**系统动作（cron 扫描）也留痕**——R41-A1 当时把 cron 三类扫描**整体排除**，理由是「系统动作无操作人 + 5 分钟一次会刷量」。这个理由只对了一半：**刷量只存在于「每次扫描都记」**。本实现只记**真正发生了状态迁移**的那几次（`affected===1` 之后）⇒ 量级由**业务事件**决定而非 cron 频率 ⇒ **不需要去重、也不需要「系统动作专用审计表」这类设计**。三条落账点：`sop.timeout.unclaimed`（assigned→failed）、`sop.timeout.stalled`（in_progress→stalled）、`sop.clarification.escalated`（resolution null→escalated_to_human）；形态与管理面一致（`userId:null`、`ip:null`、`detail.actor:"system:sweep"`）。意义：**超时判死是最需要事后复核的动作**（误判会把任务派给死执行器或让工单无声结束），此前这条信息只在会轮转的应用日志里。验证 **15 套件 / 229 例全绿**（+2）+ tsc 0 + 守卫 0 + test:sop 通过；反证：去掉 `sop.timeout.unclaimed` 的 safeAudit → 用例转红。新增两条用例钉住**分界**：真迁移 ⇒ 恰好一条；条件写未命中 ⇒ **零条**（否则每 5 分钟刷一条假记录）。
+- 2026-10-20 **R57 done（commit 0b9b17f6，总控自干）**：`draft()` 编辑分支的整行 save ⇒ 列级写。缺陷：整行回写会把进入方法时读到的 `status`/`currentVersion` 一并写回 —— 若期间有人 `publish()`（版本锚前移到新版本），这次「保存草稿」会把**版本锚回滚**成旧值：版本行已落库、主表却指回上一版，**执行器与控制台从此各看一个版本**。窗口虽短（读写之间没有 await），但 save 本身异步落库，与并发 publish 可以交错。改只写 `title`/`frontMatterJson`/`bodyMarkdown`，并按 `adr-026-exempt` 写明「patch 不含状态列正是本改动的目的」。验证 **15 套件 / 230 例全绿** + tsc 0 + 守卫 0；`--report-saves` **43 → 42**；反证：退回 `save(existing)` → 新用例转红（1 failed / 4 passed）。
+- 2026-10-20 **R58 done（commit 1555abcb，总控自干）**：**成员授权改条件 UPDATE**。`addMember`/`updateMember` 都是 `findOne → 改 role → 整行 save`，有一个真实的**复活窗口**：并发 `removeMember` 在 findOne 与 save 之间删掉行时，`save` 会把「已不存在的成员」按旧快照写回去 —— **授权行复活，而审计表记的是「已移除」**（授权被悄悄恢复，且没有任何一条记录说它回来过）。改：`updateMember` 条件 UPDATE，`affected===0` ⇒ 404（与 removeMember 同口径）；`addMember` 先 UPDATE，0 才插入，插入撞唯一索引 ⇒ 退化成更新（upsert 语义不变，但不再是 read-modify-write）。验证 **3 套件 / 74 例全绿** + tsc 0 + 守卫 0；`--report-saves` **42 → 39**；反证：退回 `findOne→save` → 新用例转红。**替身（ADR-027 第五次）**：该 spec 假仓储无 `update`，补了**按真实语义求值**的版本（affected 由「(projectId,userId) 是否存在」决定），并把「已存在则改角色」的断言从「save 被调用」升级为「update 被调用 + **save 零调用**」。
+- 2026-10-20 **R59 done（commit b294783a，总控自干）**：`pushDeployToExecutor` 改走本模块自己的 `saveWithOptimisticLock`。同文件那个 helper 的头注写明 `@VersionColumn` 让 save 自动追加 `AND version = :expected`，撞版本抛 `OptimisticLockVersionMismatchError`，helper 负责翻成 **409**；而这里用**裸 save** ⇒ 数据**确实**被版本列保护（不静默覆盖），但撞版本时抛**未映射**异常 ⇒ 调用方拿 **500** 而不是「请重载重试」。**同一模块两条写路径对同一类竞争给出不同答案，是缺陷而非风格。** 验证 16 套件 331 例 + tsc 0 + 守卫 0；helper 的映射行为有既有用例覆盖（spec 里 5 处构造真异常断言 409），本次只是补上一个漏掉的调用点。
+- 2026-10-20 **R55-A1 done（commit ae79460c）**：**register 重注册写面收敛为列级 patch**。整行 `save(e)` 会把**心跳拥有、register 连上报口径都没有**的 4 个指标列（cpu/mem/disk/networkLatency）按注册那一刻的旧读数写回 —— 而**评分与派发直接吃 cpu/mem**，register 又不自纠正 ⇒ 一次重注册就能让调度器按一台假忙/假闲的机器做决定。做法上有个值得记的判断：执行者先实现了「save 前 delete 这 4 列」（也验证过绿），但**放弃了**——黑名单只能做到 4 列，同族还有 total/failed/deadLetter/consecutiveMisses/reservedSlots/runningExecutionIds，且「本次未上报的拥有列」依旧回弹；**patch 是正向约束：新增一列默认不写**。19 列仍由**一次** patch 写完，没有退化成逐列 update。验证 **31 套件 / 921 例全绿** + tsc 0 + 守卫 0；`--report-saves` 该文件 3→2（余下为创建路径 INSERT），全仓 **39 → 38**。反证：执行者还原 → 9 例转红；**总控独立复验**退回 `save(e)` → 4 failed / 15 passed。
+- 2026-10-20 **R61 done（commit 86f13ca5，总控自干）**：**应用 PATCH 改列级写**。`update()` 是 `Object.assign(app, dto) → 整行 save(app)`，`app` 是快照 ⇒ 会把 `status`/`manifest`/`gitRepo` 一并写回；窗口内若有一次部署刚把 status 推到 DEPLOYING/RUNNING，这次「改描述」就把它按旧值盖回去 —— 而 `deployFromGit` 的收尾谓词要求 `status = DEPLOYING`，**一旦被盖掉，那次部署就永远收不了尾（卡在 DEPLOYING）**。改只写 dto 显式带来的列。**顺带把 R-01 从「靠先取 RAW 行规避」变成结构上不可能**：不带 env 的 update，patch 里根本没有 env 列。按 `adr-026-exempt` 写明为何**不加**状态谓词（status 只在调用方显式给出时进 patch；加谓词会让管理员显式设状态在并发部署时凭空失败）。验证 **16 套件 / 331 例全绿** + tsc 0；`--report-saves` **38 → 36**；反证：退回整行 save → 新断言转红。两条 R1 用例按更强性质重写（从「save 收到的实体里 env 是 RAW」改为「patch 里**根本没有** env 列，且不漏 status/manifest，save 零调用」）。
+- 2026-10-20 **R60-A1 claimed（agent 运行中）**：executor-package 的 3 处 `.save(pkg)` 分类 + 修真正有缺陷的。**注意**：它当前在工作树里引入了一处 ADR-026 守卫红（`executor-package.service.ts:635` `.update({id})` 无谓词也无豁免），验收时必须确认它补了豁免或加了谓词。
+- 2026-10-20 **R62 done（commit ef711836，总控自干）**：`projects.update` 改列级写。**为什么值得改一处「当前等价」的代码**：`projects` 现在只有 name/description 可写，所以列级写与整行写此刻等价 —— 但整行 save 是**定时炸弹**：实体以后加一列、而那列有别的写者（归属/归档/统计/软删标记），这里就会静默变成「顺手把旧值写回去」。**现在就收紧成本是一行；等它变成缺陷时成本是一次线上事故。** 同批把唯一索引冲突分流改到 update 上。验证 3 套件 74 例 + tsc 0 + 守卫 0；`--report-saves` **36 → 35**。
+- 2026-10-20 **R60-A1 done（commit 812d973b）**：executor-package **先分类再动手**（三处 save：插入路径 / 悲观锁内写回 / 陈旧快照）——两处无害各补分类注释，一处真缺陷修掉。缺陷面：PATCH 会把并发 push-result 回调（FOR UPDATE 事务）刚追加的 `pushHistory`、以及并发 `deprecate()` 刚落的 `status` 按旧快照盖回去 ⇒ **一个被弃用的包会重新变成可安装**，推送历史也丢。修法用正向白名单（刻意不含 pushHistory 等），空 patch 不发写请求。`adr-026-exempt` 写明为何不加 CAS：status 是**绝对目标值**不是「读到的旧值」，加 CAS 会让两个管理员并发开关包凭空 409。验证 **7 套件 / 131 例全绿** + tsc 0 + 守卫 0；`--report-saves` 该文件 3 → 2。反证：执行者 5/5 红；**总控独立复验**退回 save → 4 failed / 1 passed。
+- 2026-10-20 **R64 done（commit d134b5da）**：**改订阅一次 PATCH 会把并发投递失败的计数清零**。`update()` 是 `findOne → 改 dto 字段 → 整行 save`，整行回写会把 `consecutiveFailures`/`lastFailureAt`/`lastFailureError` 按**快照**写回，而这三列的主人是 `recordDeliveryFailure`（DB 内**原子自增**）。后果不是「少记一次失败」，而是**一个正在持续失败的订阅重新看起来健康** —— 管理员改一次 URL 就把攒的计数打回快照值，**自动禁用阈值永远攒不满**。改只写 dto 四列。验证 **4 套件 / 96 例全绿** + tsc 0 + 守卫 0；`--report-saves` **35 → 32**；反证：退回整行 save → 新用例转红。
+- 2026-10-20 **R64-B done（commit 8e5f92f3）**：ADR-026 补**「整行回写普查」附录**。盲区可见化只是第一步，剩下「每条都要重新判断一遍」——附录把判断固定成**三问口径**（① create 还是快照？② 有行锁/版本列吗？③ 拥有的列 vs 全部列的差集里有没有别的写者？），并给出 **26 处无害的分类依据**、**20 处本轮之前已修**的追溯清单、**3 处待判定**（版本快照/互斥组配置，与 R62 同型「定时炸弹」）及处理顺序（等各自模块有改动时顺带收紧，不单独开轮）。价值不在数字，而在**把「这条为什么无害」从记忆变成可复查的记录** —— 今天 `executor-package:707` 的悲观锁判定如果不是写进代码注释，下一个人还会重新怀疑一遍。
+- 2026-10-20 **R65 done（commit 0cf9374e，总控自干）**：**审计页支持 SOP 三类深链**。R41-A1 给 SOP 加了 7 类审计动作、R56 又加 3 类系统动作 —— 但审计页对它们**只显示一个孤零零的 id**：能查到、**点不进去**，等于把「可追溯」做成了「可搜索」。SOP 无独立详情路由（只有 `/sops` + 抽屉），故用查询参数当深链：`resourceIdHref()` 补 `sop`→`/sops?sop=<id>`、`sop_assignment`/`sop_clarification` 从 `detail.sopId` 取（**拿不到就返回 null：宁可不可点，也不跳到查不到东西的页面**）；`SopsPage` 读 `?sop=` 自动开抽屉，且**不在当前页也能打开**（走 `sopsApi.get(id)` 单取，否则深链一半时候静默失效，**比没有深链更糟**），并用 `deepLinkApplied` 防 15s 轮询反复重开打断用户。验证 web tsc 0 + `sops-page-b14` **5/5 绿**（测试把 5 处 render 包进 MemoryRouter，与真实路由上下文一致）。
+- 2026-10-20 **R63-A1 done（commit b3816449）**：task 模块 4 处整行 save **先分类**（2 处是本方法 `create()` 的新实体、无 id ⇒ INSERT，无害），修 2 处真缺陷。**`rollback()`**：`manager.save(Task)` → `manager.update(Task, { id, deletedAt: IsNull() }, { gitCommit })`，谓词落 0 = 并发 remove → 404 让位且**事务整体回滚、连 PENDING 执行行都不落**；R-01 变结构上不可能。**`rollbackToVersion()`**：`Object.assign(snapshot)+save` → 正向白名单 `VERSION_ROLLBACK_COLUMNS`（= `saveVersion` 快照键 − id，43 列）∩ 采纳集。**关键论证**：「回滚本来就要整行覆盖」不成立 —— 边界是**快照里带的列**；`status`/`secrets`/`webhookSecret`/`ownerUserId`/`deletedAt` 从来不是回滚要恢复的，旧实现写它们只是**整行 save 的副作用**。验证 **64 套件 / 1439 例全绿** + tsc 0 + 守卫 0；`--report-saves` **35 → 32**。新增一条**漂移钉子**：`saveVersion` 快照每个键都必须可被回滚写入（否则白名单漏列 ⇒ 回滚**静默少恢复一列**，功能测试几乎看不出来）。
+  **遗留**：① rollback 后的**调度重排**仍按早期快照 status 判定（并发 pause 窗口内多排一次定时器，非落库/非覆盖）；② `saveVersion` 快照取自内存对象（版本快照本就是「意图记录」）；③ 两个并发 rollback 仍是 last-write-wins（`gitCommit` 无乐观锁，既有语义）。
+- 2026-10-20 **R66 done（commit 54fbe7a1，总控自干）**：**换质量轴——文档与代码的漂移**。`docs/atlas/…/modules/audit.md` 的「谁在写审计」长期是**手写清单**，于是自然落后：SOP 加了 10 个动作、订阅/项目/成员各加几个，文档**一个字都没有**；头部还写着「task 模块（下一批次）」，实际早已落地 16 个。**这类文档的危害不是「不准确」，而是「看起来像权威清单」** —— 读的人会以为「审计只覆盖这几个域」，于是排查时跳过 SOP 与系统动作那些最需要复核的行。做法：清单改为**由代码生成 + 守卫**——该节重写成 61 个 action / 19 个域的表格；新增 `scripts/check-audit-actions-doc.mjs` 从 449 个 `.ts` 抽 `action: "<域>.<动作>"`，**每个都必须出现在文档里**（缺则报 file:line），**反向不校验**（可保留已下线动作的历史）；接入 CI + npm script。顺带补上两条前几轮定下但没进文档的约定（机器面 `detail.actor`：`executor:<id>` / `system:sweep`；`detail` 只放事实不放正文）。反证：把文档里 `sop.timeout.stalled` 改坏 → 守卫立刻指出 `sop.service.ts:1383`。
+- 2026-10-20 **R67-A1 claimed（agent 运行中）**：审计页 action 过滤从**自由文本**改成**可发现的下拉**（后端加 `GET /audit/actions` 去重列表）。61 个动作靠自由输入 = 「能筛、筛不到」。
+- 2026-10-20 **R68 done（commit a2a7684c，总控自干）**：**`api-reference.md` 端点清单改为 openapi 生成 + 守卫**。实测漂移很大：OpenAPI **194** 个路径、文档**缺 47 个** —— 整个 SOP 面（`/sop`、`/sop/{id}/publish`、`/sop/assignments/{id}/...`）、`agent-collab` 全套、`agent/sessions`、通知静默、若干 `removal-impact`/机器面端点全无。**API 参考缺端点比缺形容词严重**：读的人会以为「这个能力没有接口」，于是自己另造一条路。做法同 R66：把易腐化的枚举交给代码——新增 `scripts/gen-api-reference-appendix.mjs` 从 openapi 生成「补充端点」附录（241 行 / 194 路径），`--check` 要求①每个路径都出现在文档里 ②**附录与生成结果逐字节一致**（「少一行」也能抓到）；正文仍手写（职责/约定/鉴权是**描述**不是清单）。接入 CI + npm scripts。反证：从附录删掉 `POST /users` 一行 → 守卫立刻报不一致。
+
+## 里程碑快照 · 第 100 轮（2026-10-20）
+
+第 50 轮快照之后又推进了 50 轮。本节同样**只放可复核的数字**，每条都给得出命令。
+
+| 维度 | 第 50 轮 | 第 100 轮 | 复核命令 |
+|---|---|---|---|
+| 零依赖守卫 | 20 | **32**（+1 报告型豁免） | `node scripts/check-guards-wired.mjs` |
+| ADR | 27 | **28**（+028 配置密钥静态加密边界） | `ls docs/adr/adr-*.md` |
+| ADR-026 无条件状态写 | 0 | **0**（保持） | `node scripts/check-conditional-writes.mjs` |
+| 整行回写候选 | 32 | **31** | `node scripts/check-conditional-writes.mjs --report-saves` |
+| 审计动作 | 61 / 19 域 | **64 / 16 域**（并入 config 三件套） | `node scripts/check-audit-actions-doc.mjs` |
+| REST 端点（附录） | 194 | **195**，逐字节一致 | `node scripts/gen-api-reference-appendix.mjs --check` |
+| 迁移 | 60 → 103 | **103**（文档自述已对齐） | `node scripts/check-migrations.mjs` |
+| 全仓用例 | — | **约 10,878 例全绿** | 逐组件跑（见 R118） |
+
+### 这 50 轮新增的 12 道守卫（及它们各自抓到的东西）
+
+| 守卫 | 建立时的发现 |
+|---|---|
+| `check-audit-actions-doc` | 审计动作表落后 40+ 个 action |
+| `gen-api-reference-appendix --check` | 端点附录落后 47 个端点 |
+| `check-cli-doc` | CLI 命令地图漏了整个 `mutex` 域 |
+| `check-ssrf-deny-parity` | **首跑就抓到** `198.18.0.0/15` 缺失 |
+| `check-constant-time-compare` | 5 处命中**全是误报**（逐条写豁免，未放宽判据） |
+| `check-guards-wired` | **首次运行抓到自己**（新守卫未接线） |
+| `check-interface-maps` | MCP 工具地图停在 40（实际 56，漏 16）；REST 地图缺 7 个整域 |
+| `check-atlas-counts` | 迁移数停 60（实际 103）、模块索引漏 `agent` |
+| `check-desktop-selftests-wired` | `browser` / `package-candidate` 两个**安全 selftest 从未在 CI 跑过** |
+| `check-cron-leader-gate` | 22 处 `@Cron` 目前全有门禁（防新增漏写） |
+| `tsconfig.spec.json` + `typecheck:specs` | 一个套件因 **ts-jest 类型错误**从 R32-A4 起就没运行过 |
+| `check-pending-batch-markers`（并入 atlas-counts） | 20 处「（下一批次）」挂在**已写完**的文档上 |
+
+### 这 50 轮找到的**真缺陷**（安全面为主）
+
+1. **`executor-node` SSRF 可绕过**：`isRestrictedIpv6Address` 是字符串前缀黑名单，`[::ffff:127.0.0.1]` 经 WHATWG 规范化成 `[::ffff:7f00:1]` 后**整条放行**；`fe80::/10` 只黑 3 段；`ff00::/8` 未覆盖。
+2. **三个平面的 zip 上限不一致**：python 停在事故前的 1 GiB / 2 GiB，node 与 admin 早已收紧到 512 MiB / 1 GiB ⇒ 同一个包在 python 通过、在 node 被拒。
+   **而钉住旧值的正是测试本身**（`test_default_limits_mirror_executor_node_zip_guard` 把漂移当契约）。
+3. **`ZIP_MAX_*` 在 python 侧从未生效**：`get_zip_limits_from_env()` 有定义、有测试、文档也说支持，**却没有任何生产调用方**。
+4. **executor-desktop IPC：43 个 handler / 0 个校验 sender**；`config:check-port` 把渲染层参数原样喂 `net.listen`（`listen(null)` 会绑 0 号端口并回报「可用」）。
+5. **渲染层 CSP 含裸 `ws:`**（= 允许 WebSocket 连任意 host，CSP 本职就是堵外带）；破坏性 IPC 通道**确认只在 UI**，注入脚本可跳过。
+6. **registry-pypi**：上传**零日志**（审计只由 admin-api 代理写，而 twine 直连 8003）、别人上传中的 `.upload` 半成品**可被下载**、413 后留幻影包目录。
+7. **mcp-server**：`params: {}` 被当成「覆盖成空」⇒ **参数被整组清空而响应是成功**；三个「假成功」（空载荷 ×2 + 形状漂移给出 `totalDeadLetters: 0`）。
+8. **`config` 模块此前完全没有审计**（最敏感的 `executor.sharedToken` 没有不可篡改的留痕）。
+
+### 第 50 轮之后学到的三句话
+
+1. **「长度」有三套口径**：UTF-16 码元（zod `.max`）/ 码点（validator.js `isLength`）/ UTF-8 字节（`Buffer.byteLength`）。
+   用错要么放过后端必拒的载荷，要么拒掉后端接受的载荷。
+2. **一条守卫的「通过」，只有在反证失败之后才有意义** —— `check-cron-leader-gate` 被反证打回两次：
+   第一次在数**注释**，第二次在数**邻居**。
+3. **同一个检查器的「不做」和「做」一样要留证据** —— 已否决四次：openapi 路由覆盖、死导出扫描、`secret` 列 `select:false`、
+   「跳过 desktop 的 test:unit 包装」。它们的共同点：**静态看代码 ≠ 执行代码**。
+
+### 已知未收口（如实）
+
+- `executor-desktop` 本机无法跑 `test:main`（Electron 二进制缺失）；已逐个手跑 6 个 selftest。
+- `executor-node` `auth.spec.ts` 曾出现「1 failed / 106.9s」，重跑全绿 ⇒ **负载抖动，未定位到具体用例**。
+- `config` 类密钥**静态明文**（ADR-028 明确接受 + 四条重开条件）。
+- python 侧嵌套 zip >64 MiB 仍是 warn（admin 是 fail-closed），修需同步契约文档。
+- `mcp-server` 的错误面口径（`errorCode` 三套键形状）未统一，需动 4 个既有断言。
+
+## 里程碑快照 · 第 50 轮（2026-10-20）
+
+本节是**可复核的状态快照**，不是总结陈词：每条都给得出命令，随时可重跑。
+
+| 维度 | 数字 | 复核命令 |
+|---|---|---|
+| 零依赖守卫 | **20/20 绿** | 见下「防线」清单，逐个 `node scripts/…` |
+| 核心模块用例 | **141 套件 / 3223 例全绿** | `npx --node-options=--experimental-vm-modules jest src/modules/{sop,task,executor,application,project,event-subscriptions,executor-package,audit} --silent` |
+| ADR-026 无条件状态写 | 基线 **0**（曾 18） | `node scripts/check-conditional-writes.mjs` |
+| 整行回写候选 | **60 → 32**（普查见 ADR-026 附录） | `node scripts/check-conditional-writes.mjs --report-saves` |
+| 审计动作 | **61 个 / 19 域**，清单由代码生成 | `node scripts/check-audit-actions-doc.mjs` |
+| API 参考端点 | **194/194 覆盖**，附录由 openapi 生成 | `node scripts/gen-api-reference-appendix.mjs --check` |
+
+### 防线（20 道零依赖守卫）
+
+`no-hoisting` / `consumer-routes` / `dependency-review` / `throttler-whitelist` / `password-policy-sync` /
+`failure-reasons` / `error-i18n` / `error-migration` / `conditional-writes` / `api-i18n` /
+`response-schema` / `docs` / `lint-gates` / `env-drift` / `alerts` / `bundle-drift` / `agent-sop-check` /
+`agent-runtime-check` / `audit-actions-doc` / `api-reference`。
+
+### 这一阶段真正沉淀下来的三样东西
+
+1. **ADR-026（条件写）**：从「一处 bug」长成「静态守卫 + 盲区扫描 + 判定口径 + 普查附录」。
+   守卫基线 18 → 0；盲区（整行回写）由 `--report-saves` 可见化，60 → 32。
+2. **ADR-027（替身保真）**：同一条教训**五次**以不同形态出现（缺算子 / 缺方法 / 不落 store /
+   永远返回 affected=1 …）。它的价值不在规则本身，而在每次写测试时被迫问一句：
+   **「我这个替身，能表达被测代码依赖的那个语义吗？」**
+3. **「手写枚举清单必然腐化」**：audit 动作表与 api-reference 端点表都是「看起来像权威清单」的
+   手写表，实测分别落后 47 个端点 / 40 多个 action。处方相同：**枚举交给代码生成 + 逐项/逐字节守卫，
+   描述性内容继续手写**。
+
+### 已知未收口（如实）
+
+- 整行回写剩 32 处：按 ADR-026 附录，26 处已判定无害（插入 / 锁内），3 处待判定（版本快照类），
+  其余为「定时炸弹」型（现在等价，实体加列且出现新写者才成缺陷）。
+- `task` 模块 `rollback` 之后的**调度重排**仍按早期快照 status 判定（并发 pause 窗口内多排一次定时器，
+  非落库/非覆盖）。
+- 心跳不再走 `save()` ⇒ `version` 不再每心跳 +1、`updatedAt` 不被心跳刷新（全仓无基于该列的 CAS，
+  无功能影响，但属于 TypeORM `update()` 的既有限制）。
+- 历史 `task_templates` 行的裸 username 属主（R39-A1 遗留）已由迁移 1790000000058 回填，
+  但**未在真 PG 上实跑过**（本机无 PG/docker），上线前需 staging 验证。
+- 2026-10-20 **R69 done（commit d9da0569，总控自干）**：CLUS 命令地图补上**完全缺失**的 `acf mutex`。`mutexCommand` 自注册起（`index.ts` 的 `program.addCommand(mutexCommand())`）就一直存在，但 `docs/atlas/05-interfaces/cli.md` 的**命令地图里没有这一节** —— 读者会以为「没有互斥组的管理入口」，而互斥组恰是部署/升级流程里最容易踩的（挂载中的组删不掉、`--force` 语义）。补 `list`/`create`/`update`/`delete` 四节，头部计数 **63 → 67**。计数依据可复核：`commands/` 下 `.command(` **64** 处 + `login.ts` 里 `new Command('login'/'whoami'/'logout')` **3** 个根命令 = **67**；原来那个 63 恰好就是「漏掉 mutex 的 4 个」。
+  **遗留**：该文档的分节计数（`### task（23）`）仍是手写的，下一步应改成生成 + 守卫 —— 与 R66（audit 动作表）、R68（api-reference 端点表）同一处方。本轮只补「缺失」，不把两件事混在一起。
+- 2026-10-20 **R67-A1 done（commit 39b4ab6e）**：**审计页动作过滤改成可发现下拉**。61 个动作靠**自由文本**过滤 = 「能筛、筛不到」（与上一轮「能查到、点不进去」同一类半成品可用性）。后端 `GET /audit/actions`（ADMIN）把 `SELECT DISTINCT action ... ORDER BY action` **下推到 DB**（不是拉全表到 JS 去重）；索引已就位（`idx_audit_logs_action_created_at` 复合 + 单列 `idx_audit_logs_action`），**无需新迁移**。前端 `Select mode="tags"`（允许自由输入，`onChange` 只留最后一个 tag ⇒ 保持单选语义），清单请求失败**静默回落成自由输入**不阻断页面。**契约同步（本机无 PG，但导出脚本设计上不需要 DB/Redis）**：openapi 重导出（195 路径、只增 48 行）+ 补 3 条中英映射 + api-types 重生成 + api-reference 附录重生成。验证 audit **7 套件 127 例**、vitest 审计两文件 **34 例**（含 4 条新用例）、web tsc 0、7 道契约守卫全绿。**过程**：执行者写完实现与用例后卡在慢速 vitest（检查点 20 分钟未更新、diff 不再增长），按既定协议 interrupt 后由总控接管验收。
+- 2026-10-20 **R70 done（commit 436a06e9，总控自干）**：**CLI 命令地图计数守卫**。该文档每节标题带手写计数、标题里再写死总数，**没有任何东西校验** —— R69 实测它整节漏掉 `acf mutex`，而标题里的「63」**恰好就是漏掉那 4 个的数**：数字跟着一起错，反而显得自洽。新增 `scripts/check-cli-doc.mjs` 两条判据：① 每个含 `.command(` 的 commands/*.ts，父名在文档里必须有节且**计数与代码一致**；② 标题总数 = 全部 `.command(`（含 index.ts 的 config 3 个）+ `login.ts` 的 3 个根命令。**刻意不判**：`login.ts` 不按节判（与 config 合写在 `login / config（6）`，1:1 映射不成立）、子命令的选项/描述不做机械比对（那是**描述**不是清单）。验证：13 节计数相符、总数 **67 = 64 + 3**；接入 CI + npm script。**反证两条**：`task（23）`→24 报计数不符；删掉 mutex 节报「缺少『mutex』一节」。
+- 2026-10-20 **R70-A1 claimed（agent 运行中）**：给**澄清类**审计行补 `detail.sopId`，让它们的深链不再静默失效（R65 遗留）。已改 `sop.service.ts`。
+- 2026-10-20 **R71 done（commit 4518bdc1，总控自干）**：**把 R57 的并发用例改成真交错**。原来的用例在调用 `draft()` **之前**就把 `currentVersion` 设成 1.0.1 —— 于是 draft 读到的快照本来就是 1.0.1，**无论实现是整行 save 还是列级写，「结果是 1.0.1」都成立**；真正让它红的只有「save 未被调用」那条旁证。也就是说：**如果哪天有人把列级写改回整行 save、同时调整了调用方式，这条用例不会说话。** 改成 `findOne` 先返回旧快照（1.0.0）、返回之后再让并发 publish 把库里的锚推到 1.0.1 —— 这才是要被覆盖的那个瞬间。验证该 spec 5/5；**反证**：写回整行 `save(existing)` → 新用例立刻红（`Expected "1.0.1" / Received "1.0.0"`），说明它真的能判出缺陷而不是靠旁证。实现细节：必须取 `getMockImplementation()` 而非 mock 本身，否则 mock 内部再调自己会栈溢出（第一版踩了，`Maximum call stack size exceeded`）。
+- 2026-10-20 **R70-A1 done（commit e7d1c9d6）**：**澄清/交付类审计行补 `detail.sopId`**，恢复审计页深链。R65 的深链对 `sop_assignment`/`sop_clarification` 只读 `detail.sopId`，而 R41 落账的 `sop.clarify`/`sop.reply`/`sop.complete` **只记 assignmentId** ⇒ 澄清行**不可点**（深链静默失效）。佐证它是漏记而非设计：`sop.timeout.*` 早就带 sopId。**关键判断**：四个落账点作用域里都已持有 assignment 行 `a` ⇒ **一条都不需要多打库**。四处补齐 + 顺带补 `sop.clarification.escalated`；未新增 action（仍 61）、未改 resourceId 语义。验证 **15 套件 / 235 例全绿** + tsc 0。反证两侧：执行者注释掉 4 处 → 4 例转红；**总控独立复验**只去掉 `sop.complete` 那一处 → 2 failed / 24 passed。两条新用例值得记：「**带 sopId 后 detail 仍不含正文**」（防「为补一个字段顺手把正文带进去」）、「**零额外查库**」（assignments.findOne 恰好 1 次）。
+  **遗留**：① 历史审计行不可回填（改代码只影响新行）→ **R72-A1 认领**（data-only 迁移）；② `sop.timeout.*` 有 sopId 但无测试断言；③ 深链依赖「assignment 必有 sopId」不变量。
+- 2026-10-20 **R72-A1 claimed（agent 运行中）**：回填历史 SOP 审计行的 `detail.sopId`。**已明确要求先判 `audit_logs` 的 append-only 触发器**（BEFORE UPDATE 会 RAISE）—— 若结论是「触发器不允许这条 UPDATE」，必须停下如实报告，**不许绕过安全机制**。
+- 2026-10-20 **R72-A1 done（commit 4fc5a9de）**：**历史审计行回填「做不了」——把它变成一条钉死的结论**。任务书里我划了硬线「先判 append-only 触发器；做不了就停下如实报告，不许绕过安全机制」，结论正是做不了，且理由精确：迁移 `1790000000006` 的行级守卫对 `BEFORE UPDATE OR DELETE` **无条件** `RAISE P0001`；它的 GUC 逃生门 `app.bypass_audit_guard` **只写在 `IF TG_OP='DELETE'` 分支内**（为 `retentionDelete` 开），走出 `END IF;` 后 UPDATE 是裸的 `RAISE` —— 所以「迁移里先 `SET LOCAL` 再 UPDATE」是**看着像有门、实际必然失败**的写法；绕过成功也等于把 append-only 从「不可改」降级成「不可改除非…」。**总控独立复核**：直接读触发器 SQL 确认上述结构。产物不是迁移而是回归守卫 `audit-logs-update-forbidden.migration.spec.ts`（10 例）：钉死①UPDATE 分支无逃生门 ②全目录无迁移对 audit_logs 发 UPDATE ③四类 action 的 resource/resourceId 语义不变。**不占号**（`check-migrations` 报告的下一可用仍是 0059，已同步修正 PLAN-CLAIMS 里原先「取 0060」的说法）。验证 migrations **46 套件 / 270 例全绿** + tsc 0 + 守卫绿。
+- 2026-10-20 **R73 done（commit b03df932，总控自干）**：**校准 `notFoundContent` 的注释**。R67-A1 留了一段很自信的注释，说去掉 `notFoundContent={null}` 会让「选项为空时自由输入按不了回车、兜底静默失效」。我做反证：**删掉这一行重跑 19 条用例 —— 全绿**。即该机制**在 jsdom 下分辨不出来**，它是**推断**而非被证明的事实；而注释的口气让人以为它已验证过，下一个人删掉后会看到「测试全绿」然后放心提交。改法：保留属性（防御性、无害），把注释校准成「基于 rc-select 源码的推断 + jsdom 无法验证 + 谁要删请去真实浏览器试」。同轮做了一次**判别力抽查**：删 `mode="tags"` → audit-page **9 failed / 10 passed**，说明 R67-A1 那批用例本身有牙。
+- 2026-10-20 **决策（不做）**：历史审计行的**读面解析**方案（列表渲染时按 resource+resourceId 反解 sopId）暂不实施。理由：① 受益面只有 R41~R69 之间的历史行；② 需要在审计列表上为这些行增加 join 或批量反解，给最热的读面加成本；③ 依赖「assignment 必有 sopId」不变量，SOP 若引入删除路径会跳到已删对象。**接受历史行不可点**，等有真实排查需求时再评估。
+- 2026-10-20 **R75 done（commit b6e50f04，总控自干）**：**互斥组 update 改列级写**。与 `projects.update`（R62）同型：`MutexGroup` 现在只有四列可写，整行 save 与列级写**此刻等价**，但整行 save 是**定时炸弹** —— 实体以后加一列（当前占用者/最后派发时间/软删标记）且那列有别的写者，这里就会静默回写。而互斥组正是**部署并发控制**的载体：这类列被回写后的失败模式是「两个应用被同时放行到同一台机器」，**表面完全看不出根因**。验证 application **16 套件 / 331 例全绿** + tsc 0 + 守卫 0；`--report-saves` **32 → 31**；反证：退回 `save(group)` → 新断言转红。**过程记录**：豁免标记第一版写在调用前 9 行（守卫要求 5 行内）→ 守卫直接红，说明那条约束有牙；测试替身 `makeRepo` 从对象字面量改成函数才能自引用 `repo`。
+- 2026-10-20 **R74-A1 claimed（agent 运行中，新战场）**：**executor-node 安全敏感面四轴审计**（download / ssrf-guard / auth / execute 路由）—— 此前 57 轮几乎全在 admin-api 与 admin-web。工作树已见 `download.ts`、`ssrf-guard.ts`、`auth.spec.ts` 改动 + 新增 `download.dns-pin.spec.ts`，疑似 DNS pinning / SSRF 相关。
+- 2026-10-20 **R76 · 两个「负结果」（总控自干，无提交，已全部回滚）**：
+  ① **「断言式注释」守卫：量完决定不做。** 想给「去掉它就坏了」这类注释加检查（R73 的教训），先量了规模：
+     1298 个文件里，宽口径命中 **260 条**、窄口径（要求在 spec 里声称「删掉某调用 → 用例红」）**72 条**。
+     但绝大多数是**正常说理**（如「否则用户只会看到一句拒绝而无从下手」），而且**根本无法机械验证**——
+     要判一句话真假，只能真的把代码删掉再跑测试（等于一个变异测试框架，远超本轮范围）。
+     **结论：不做守卫**。若要做，正确形态是「约定」——注释声称某测试会红时，把测试文件::用例名写进注释，
+     让人能在 10 秒内核对，而不是让机器去猜。
+  ② **最后两处「待判定」的版本快照写：试了，回滚。** 想把 `app-deployment:2019`（version.status）与
+     `application:489`（version.snapshot.packageUrl）也改列级写，让 ADR-026 普查的「待判定」清零。
+     结果：**5 个用例转红**（两个 spec 的 fake 没有 `update`，又是 ADR-027 那一族）+ 豁免标记又写到窗口外
+     （守卫红）。修改面（2 文件 + 2 spec 的假仓储与断言）远超收益（这两处**当前等价**、且我在 ADR 附录里
+     **本来就写过「不为它们单独开一轮」**）。→ `git checkout` 回滚，application 套件复绿 331 例，守卫 0。
+     **记一笔**：这次是我违反了自己写下的决策。附录里的那句话是对的——「等各自模块有其他改动时顺带收紧」。
+     **不做，也是执行决策。**
+- 2026-10-20 **R74-A1 进行中**：executor-node 四轴审计已落到代码——`ssrf-guard.ts` +142、`download.ts` +67，
+  新增 `download.dns-pin.spec.ts`（DNS 钉扎 + 逐跳钉扎），auth 补「缺失 vs 无效不可区分」、run-command 补输出上限、
+  update-package 补 checksum 不匹配清理。5 个受影响 spec 已 80 例通过，正在跑全量。
+- 2026-10-20 **★ R74-A1 done（commit eb61eda8）——本轮是 59 轮来第一个真正的安全缺陷**：`executor-node` 的
+  `isRestrictedIpv6Address` 是**字符串前缀黑名单**，三处可绕过：① **`::ffff:` 点分分支被 WHATWG URL 规避**
+  （`new URL('http://[::ffff:127.0.0.1]/x')` 的 hostname 是 `[::ffff:7f00:1]`，旧分支按点分解析失败 ⇒
+  **整条回环地址放行**，SSRF 闸对一个能连回环的地址说了 OK）；② `fe80::/10` 只黑了 fe80/fe81/fe82，
+  fe90/feb0/febf 漏网；③ `ff00::/8` 组播完全未覆盖。改为**展开成 8 个 16-bit 分组后按位判**（含 ::1、
+  IPv4-mapped ::ffff:0:0/96、IPv4-compatible ::/96、NAT64 64:ff9b::/96、6to4 2002::/16、fe80::/10、
+  fc00::/7、ff00::/8），解析失败一律 fail-closed。同批另修三轴：**下载 DNS 钉扎**（校验地址=连接地址，
+  含逐跳，新增 `download.dns-pin.spec.ts`）、**鉴权**（缺失 vs 无效不可区分、shared/per-executor OR 优先级）、
+  **执行隔离**（子进程输出上限 + checksum 不匹配删半成品）。验证全量 **47 套件 / 1185 例全绿**、受影响 5 spec 80 例、
+  tsc 0。反证：把 `parseIpv6Groups` 强制返回 null → 2 failed / 16 passed（公网放行那条红），证明新判定不是「一律拒绝」的假绿。
+  **总控复核追加修正**：语法校验写成 `/^d{1,3}$/`（漏反斜杠）→ 合法段恒不匹配 ⇒ fail-closed 判受限；方向安全但会把
+  公网 `::ffff:8.8.8.8` 误判。实际不可达（URL 必规范化成十六进制），属**休眠缺陷**，仍按「解析器要自洽」修掉。
+  **过程**：执行者写完实现与用例后卡在全量测试（检查点 6+ 分钟未更新、diff 不增长），按协议 interrupt 后由总控接管验收。
+- 2026-10-20 **R77 done（commit 29b7c408）**：**跨 app 的 SSRF 拒绝矩阵对齐**。R74-A1 修完 executor-node 的 IPv6 绕过之后，我问了一句「同一个判据在别的 app 是不是也有一份」—— 答案是**有，而且 admin-api 那份更硬**（SEC-04 早已表驱动 + 18 条危险地址矩阵）。这是 **「同一道闸两处实现、其中一处没跟上」**，即「同一修法只落一半」家族换成 app 维度的形态。产物：① `ssrf-deny-parity.spec.ts` 把 admin-api 的 18 条镜像过来逐条断言默认拒绝；② `check-ssrf-deny-parity.mjs` 守卫（admin-api 有而镜像无 ⇒ 红；反向不校验，更严不算漂移；扫描器带规模下界防「正则失效→0 条→永真」）；接入 CI。**首跑就抓到真实缺口**：`::ffff:198.18.0.1`（benchmark 段 `198.18.0.0/15`）在 admin-api 是 `restricted`，executor-node 的 `isRestrictedIpv4` 没有这一段 ⇒ 整条放行。已补并注明出处。验证 executor-node 全量 **48 套件 / 1203 例全绿** + tsc 0 + 守卫绿；反证：删掉镜像里那一行 → 守卫立刻报出。
+- 2026-10-20 **R78 done（commit bb24625d）——我自己踩了 ADR-005 的坑并补账**：R74-A1/R77 改的
+  `apps/executor-node/src/lib/{ssrf-guard,download}.ts` 是**桌面端内嵌 bundle 的输入**，而两次提交都
+  **没重打 bundle** ⇒ `check-desktop-bundle-drift` 如实报红（`source-digest 178388c6…` vs 实际 `73a6d814…`）。
+  这与该清单文件里反复记载的 cc54aa2f / NETOPT-8③ / f3e340df 是**同一型事故**，也正是我两轮前提醒过
+  某个 agent 的那个陷阱。补账：`npm run build:executor` 重打（ncc 0.45，26s，4191kB）+ 回填 ①② + 按惯例补变更记录。
+  验证 drift **EXIT=0**。**教训**：改 `apps/executor-node/src` 后必须**固定跑一次** `check-desktop-bundle-drift`
+  （本地即可判定、无需等 CI）；前几轮收尾只跑了 jest/tsc/若干守卫，漏了它。
+- 2026-10-20 **R77 后续（同轮完成）· 全仓「第四份 SSRF 实现」排查**：`executor-python` 的
+  `_host_is_restricted` 是第三份实现，但**比 node 侧更硬**——它用 Python `ipaddress` 的
+  `is_loopback/private/link_local/unspecified/multicast/reserved` **外加 `not is_global` 兜底**。实测探针：
+  18 条危险地址 + `::ffff:127.0.0.1` / `::ffff:7f00:1` / `::ffff:6440:5` **全部判受限**，而
+  `::ffff:808:808`（公网映射）判**放行** —— 即三份实现里 python 那份是最强的。**结论：无需改动**，
+  但把它纳入 `check-ssrf-deny-parity` 的后续覆盖范围（当前只镜像到 node 侧）已登记。
+- 2026-10-20 **R79 done（commit 7df07bee）**：**executor-python 的 SSRF 闸首次有直测，并纳入跨 app 矩阵**。
+  python 那份实现其实**最强**（`ipaddress` 的 `is_*` + `not is_global` 兜底，实测 22 探针全对，含
+  `::ffff:7f00:1`），但**此前没有任何用例直接钉它** —— 一份「恰好写对了」的实现，没有任何东西阻止
+  它将来被改坏。新增 `tests/test_ssrf_guard.py`（25 例）：18 条危险地址**由脚本从 admin-api 矩阵生成**
+  （避免手抄漂移）+ `::ffff:` 映射形态 + **必须放行**的公网对照（防「一律拒绝」假绿）+ 方括号/zone 归一化。
+  `check-ssrf-deny-parity.mjs` 从「只校验 node」扩到**两侧都校验**，缺哪侧报哪侧。
+  验证：pytest 25 passed、parity 绿（18×2）、lint-gates 绿；反证：删掉 python 里 `fd00::1234` → 守卫报「缺在
+  executor-python」。**意义**：三份实现里两份被同一张矩阵钉住，将来「只改一侧」会立刻红，而不是等下次偶然发现。
+- 2026-10-20 **R80 done（commit f0627ac8）**：新增**「同族实现」雷达** `scripts/report-sibling-implementations.mjs`（只报告、永不失败）。
+  由来：R74 修 executor-node 的 SSRF、R77 偶然发现 admin-api 有更硬的一份、python 还有第三份 —— **三次发现全是撞上的，不是查过的**。
+  monorepo 里同一安全概念被多个 app 各实现一遍是**结构性**的，所以把「记得去搜」变成「跑一下」：按 8 个安全概念列出实现点并按 app 归组，只回答
+  「这个概念除了我刚改的那处，还有几处？」。**首跑 978 个源文件，8 个概念全部跨 ≥2 个 app**（SSRF 4/10、恒定时间比较 4/12、zip-slip 3/15、
+  密钥脱敏 5/40、原子写 5/14、凭据哈希 3/36、HMAC 3/8、路径包含 2/14）。
+  **顺手抽查 zip-slip**：`executor-python/zip_safety.py` 文件头已写明镜像 node 的 `ZIP_GUARD_DEFAULT_LIMITS` 并接受同名 `ZIP_MAX_*` 环境变量、默认值逐项对齐 ⇒ **这一族已有人维护，无需动作**（雷达第一个候选是干净的，本身是有用结论）。
+  脚本刻意不做门禁（正则宽松、只报告）：真正的处置不是合并成包，而是像 R77/R79 那样「共享矩阵 + parity 守卫」——雷达负责告诉你**该钉哪一对**。
+- 2026-10-20 **R81 done（commit c531c9a0）**：**恒定时间比较守卫**。R80 雷达显示这一族跨 4 app / 12 文件；**抽查结论是「当前没有真实缺陷」**
+  （python `hmac.compare_digest`/`secrets.compare_digest` 在位、`auth.py:339` 还专门改 bytes 比较避免非 ASCII 抛 500；node `timingSafeEqual` 在位）。
+  但**没有任何东西阻止将来退化成 `===`** —— 这种退化**功能完全等价**、所有测试都不会红、只有时序不同、review 极难看出来。
+  新增 `check-constant-time-compare.mjs`（978 文件）：`===`/`==` 任一侧标识符名含 token/secret/password/hash/signature/apikey/credential 且另一侧非字面量 ⇒ 红。
+  **首跑 5 处全是误报**，逐条按纪律写豁免（不放宽判据）：sop 的 contentHash（发布判重的自算哈希）、app-name-recovery 的 cachedSignature（缓存键）、
+  export-flows 的 EXPORT_TOKEN_MASK（与 `'***'` 掩码常量比）、updater-runcheck ×2（`{}` 对象身份哨兵，并发去重）。豁免窗口 3 行（比 ADR-026 的 5 行更紧）。
+  验证 978 文件绿 + lint-gates/docs 绿，接入 CI；反证：删掉任一条豁免 → 守卫点名 `updater-runcheck.ts:72`。**结论：实现是对的，缺的是防止退化的机器。**
+- 2026-10-20 **R82 done（commit 182df21b）**：**「守卫必须被 CI 真正执行」自检**。仓库现有 30 个 `check-*.mjs`，加守卫很便宜、**接进 CI 才是生效那一步**，而漏接**完全静默**（脚本在、本地能跑、README 可能还写着它，CI 从不执行）——与本仓踩过的「`.spec.ts` 放错目录不被收集」同型。判据两条：① 文件名出现在任一 workflow；② 或出现在 package.json 某 script 且**该 script 名**出现在 workflow（不解析这层间接会误报——我手查时就把 `check-throttler-whitelist.mjs` 误判成未接线，它其实在 ci.yml:1162 以 `npm run` 形式接线；`check-release-hygiene.mjs` 则在**另一个** workflow）。**它第一次跑，抓到的唯一一个是它自己**（新脚本尚未接线），已自接。验证：29 个全部被 CI 执行 + 1 个显式豁免（只报告的雷达）。反证：删掉自身 CI step → 立刻点名。
+- 2026-10-20 **R83 done（commit 23396f78）**：**配置写动作落审计**。查「密钥脱敏」族时顺着数据流走到持久化面，发现 `config` 模块**完全没有审计** ——
+  改一次 `executor.sharedToken`/`smtp.password`/webhook 签名密钥，能回答「谁改的」只有 `config_history` 那行（**有保留期清理、可删**，不是审计证据）；
+  而 `audit_logs` 才是 append-only（触发器拒绝 UPDATE/DELETE）。**最敏感的配置恰恰没有不可篡改的留痕。**
+  落地：`@Optional() AuditService` 注入 + 三动作（config.create/update/delete）；**detail 只放元数据不放值**（valueType/isSecret/valueLength/previousValueLength/maskSentinelResolved）——
+  配置项的价值往往就在值里，审计行长期保留且可 CSV 导出。验证 **11 套件 / 113 例全绿**（+4）+ tsc 0 + 4 道守卫绿。
+  **顺带修守卫盲区**：config.create/update 起初写成三元表达式 ⇒ 对 `check-audit-actions-doc`（只认字面量）**完全隐形**（它当时只看到 config.delete）；改字面量后守卫立刻报「2 个 action 文档里没有」，表从 61 涨到 64。已在守卫头注写明盲区与处置。
+  **另修位置参数错位**：AuditService 起初插在 cacheSync **之前**，而既有 spec 按位置构造（cacheSync 恒为第 5 参）⇒ 会把 CacheSync 误传成 AuditService；移到末尾后 10 个既有套件全绿。
+- 2026-10-20 **R84 done（commit 2c2b15fa）**：**ADR-028 配置类密钥的静态加密边界**。R83 的数据流审查确认落差：任务级密钥有 SEC-02 加密，而**平台级配置密钥**
+  （`isSecret` 的 system_config 行，如 `executor.sharedToken`——决定集群内所有执行器鉴权）**明文落库**，且 `config_history` 每键保留 50 条 ⇒ 同一份明文最多 50 份拷贝。
+  **决策：接受现状，并明确拒绝「只加密历史表」** —— 那是**安全剧场**：现值仍明文，攻击者读 system_config 一行就拿到全部，多出来的只有错觉与一致性负担。
+  真正修复是加密**现值**，阻塞点具体（所有读点含启动期读 sharedToken / rollback 需同格式 / 存量明文升级 / 降级模式必须逐字节不变 / 密钥轮换共存），合起来是**一次数据结构变更**。
+  写明四条重开条件（多租户共库 / 合规条款 / SEC_SECRETS_KEY 变必配 / 历史表被单独导出）+ 现状下真实补偿（读面掩码、R83 审计、保留期、DB 最小权限）。
+  **顺带事实核查**：`config` 模块 11 处 logger 逐一检查，无一处把值写进日志（与 ADR 说法一致，不是假设）；并把 R83 测试从「detail 不含这个值」**加强**为「**detail 键集合**就是那五个元数据字段」。
+- 2026-10-20 **R85 done（commit 0279aa10）**：**钉住历史读面的行级保密**。ADR-028 把「读面掩码」列为补偿控制；这轮核实它靠什么成立，发现关键一半**没有测试**。
+  掩码条件是 `h.isSecret === true || secretKeys.has(key)`：前半看**写入时**的行级快照，后半看**当前**键状态，取并集。差别只在一种情形显现 ——
+  **某键曾是 secret 后被显式取消标记（或配置行被删）**：此时 `secretKeys` 里没有它，只有行级条件拦得住旧密钥值。既有用例全在「`secretKeys` 命中」前提下断言，
+  **从没覆盖过空集合分支**。即：谁把条件「简化」成只看 `secretKeys`（看起来等价、注释也写着「按当前配置推断」），所有测试都会绿，而历史旧口令**直接可读**。
+  新增两条用例（list + by-key，`getSecretKeys` 返回空集、行 `isSecret: true` ⇒ 必须掩码；null 仍为 null）。验证 **11 套件 / 115 例全绿**（+2）。
+  **反证两侧各做一次**：去掉 list 的行级条件 → 1 failed；去掉 by-key 的同名条件 → 1 failed；**各自只有对应那条新用例转红**，说明两条路径独立钉住、不互相兜底。
+  **结论**：这条补偿控制**成立**（proven-present），但此前只是「写对了」而非「被守住了」——ADR-028 里那句「读面掩码」现在有测试背书。
+- 2026-10-20 **R87 done（commit fa427265）**：**雷达不再把自己的豁免标记当成实现**。R81 给 `executor-desktop` 三处加 `constant-time-exempt:` 注释后，雷达立刻把该 app
+  报成「恒定时间比较」的新增实现（**4 app/12 文件 → 5 app/16 文件**）—— 而那里**一行实现都没有**，只有三行注释。原因：概念正则 `/constant[-_ ]?time/i` 命中的是注释文本。
+  **守卫用来豁免的标记，被另一个工具当成了「这里实现了该概念」的证据** —— 典型测量工具污染自己的测量结果，而雷达的全部价值就在那个数字上（它决定下一族查哪个）。
+  修法：扫描前剔除含 `-exempt` 的行；修后回到 **4 app / 12 文件**（admin-api 6 / executor-node 2 / executor-python 3 / registry-pypi 1），与加注释前逐项一致。
+  **教训**：任何带豁免机制的守卫，都要检查豁免标记会不会被**别的**扫描器当成正文。
+- 2026-10-20 **顺带核查（无提交）**：`verifyExecutorToken` 的凭据比较实现正确（先比长度、再 `timingSafeEqual`），无需改动；`getExecutorSharedToken` 每次请求读 `SystemConfigService.findOne`，由 PERF-2 的 TTL 缓存兜底。
+- 2026-10-20 **R86-A1 进行中**：executor-desktop **主进程**安全面审计（IPC 面 / 凭据存储 / 更新链 / 子进程）——此前从未被系统审计。agent 已列出主进程文件清单并建立检查点（含 test:main 串联 ~50 个 selftest 的事实）。
+- 2026-10-20 **R88 · 发现：两个 selftest 从来没在 CI 跑过（工作树已修，**待与 R86-A1 一并提交**）**：`src/main` 下有 48 个 `*.selftest.ts`，
+  而 `test:main` 只列了 46 —— 漏掉的是 `agent/browser.selftest.ts`（P7b **浏览器工具的动作枚举 + 域名白名单**闸）与
+  `agent/package-candidate.selftest.ts`（P7d 的 ZIP 写入器 + **穿越载荷在写入层被拒**）。两个都是**安全相关**的闸，却从未在 CI 执行。
+  更刺眼：这两个文件的头注都写着 `Run via: npm run test:main` —— **文档说它跑，实际不跑**。与 R82「守卫没接 CI」同一类失败。
+  实测两者单独跑均 **exit 0**（browser 在无 playwright 二进制时**显式打印跳过**，不是假绿）。已把它们加进 `test:main`（46 → 48 项），
+  并新增守卫 `scripts/check-desktop-selftests-wired.mjs`（**双向**：每个 selftest 必须在清单里 / 清单每项必须有源文件）。
+  **未提交原因（如实）**：`apps/executor-desktop/package.json` 同时被 R86-A1 改动（它新增了 `ipc-sender-guard.selftest` / `port-check.selftest` 并已接线，
+  当前清单 50 项）—— 若此刻只提交我这个文件的改动，会把**尚未提交的 agent 源文件**一起带进清单，CI 的 `test:main` 将 ENOENT。
+  故本轮只登记，下一轮与 R86-A1 一并提交。
+- 2026-10-20 **R86-A1 进展（agent 运行中，已出四轴判定表）**：**IPC 轴 43 个 handler、0 个校验 `senderFrame`**（全部 `(_event, …)`）；
+  路径类 handler 有守卫（`log:open-file` / `apps:log:read` / `apps:open-folder` / delete-release 白名单 + containment）；
+  **`config:check-port` 无类型/边界校验**（已产出修复 `port-check.ts` + `ipc-sender-guard.ts` 两个新 selftest）。
+  凭据轴：`safeStorage` 信封 `enc:ss:` + IPC 只发掩码（`config-store.ts:321`）+ 文件级原子写；**跨键非事务**（save 逐键 set，崩溃可留半套配置，非安全关键）。
+  更新链：generic feed **只收 https、无主机白名单**；完整性依赖 electron-updater 的 sha512（同源 yml）+ Windows Authenticode；**Linux 无签名（遗留）**。
+  子进程：`spawn(process.execPath,[entry])` 数组参数无 shell；win32 `taskkill /T /F` 树杀；**POSIX 强杀不是树杀**；worker 单杀无树杀；输出上限 1MB。
+- 2026-10-20 **R88 续（工作树，仍未提交）**：把新守卫**接进 CI**（`check:desktop-selftests-wired` + ci.yml step），并确认 `check-guards-wired` 绿
+  （30 个 check-*.mjs 全部被 CI 执行 + 1 个豁免）。**仍未提交的原因不变**：`apps/executor-desktop/package.json` 与 R86-A1 的改动混在同一文件
+  （它新增 `ipc-sender-guard.selftest` / `port-check.selftest` 并已接线，清单 50 项）；此刻若只提交桌面 package.json，会把**未提交的 agent 源文件**带进清单 ⇒
+  `tsc -p tsconfig.selftest.json` 不产出对应 js ⇒ `test:main` 在 CI 里 ENOENT。故等 R86-A1 收尾后一并提交。
+- 2026-10-20 **R86-A1 代码审阅（只读，未改动）**：质量高于预期，两处值得记 ——
+  ① `ipc-sender-guard.ts` **单一注册入口**：`electronIpcMain` 只作别名导入，本地 `ipcMain` 由 `createGuardedIpcMain` 产出 ⇒ 43 个 handler 想绕过必须
+    显式再 import 一个 ipcMain（TS 直接报重复声明）；还有一条 **源码钉子 selftest** 禁止按原名导入。文件头自己写明**边界**：「本闸判 URL 与 frame 身份，
+    不是进程身份 —— 同 frame 内被注入的脚本仍拦不住，那需要按 channel 做能力分级」。
+  ② `port-check.ts` 的缺陷是**实证**而非推测：Node 的 `listen` 对字符串走 IPC 管道分支 ⇒ 渲染层能让主进程建管道；`listen(null,…)` 会绑 0 号临时端口并**成功**
+    ⇒ 用户清空端口输入框后预检**永远显示可用**。修法把参数收成「整数 + IP 字面量/localhost」。
+  ③ 已核对装配：`ipcMain.handle` 43 处、`ipcMain.on` 0 处、`electronIpcMain` 仅 2 处引用（别名 + 包装），**无旁路**。
+- 2026-10-20 **★ R86-A1 + R88 done（commit c2bbca21）**：**executor-desktop 主进程安全面审计**（此前从未被系统审计）+ 两个从未在 CI 执行的 selftest 接线。
+  ① **IPC 面：43 个 handler、0 个校验 sender**（签名一律 `(_event,…)`）—— 任何拿到 webContents 的执行上下文都能驱动 `executor:stop`/`apps:uninstall`/`updater:install`。
+     新增 `ipc-sender-guard.ts`（生产只认 renderer 目录 `file:` 页 / dev 只认 `VITE_DEV_SERVER_URL` **origin 全等** / 必须主 frame；`senderFrame` 为 null **不回退** `getURL()`），
+     并把 electron 的 ipcMain 改别名导入、本地 `ipcMain` 由 `createGuardedIpcMain` 产出 ⇒ **单一注册入口，43 个注册点零改动即整体过闸**（想绕过必须显式再 import，TS 报重复声明）+ 源码钉子 selftest。
+     文件头自陈边界：「判 URL 与 frame 身份，不是进程身份 —— 同 frame 内注入的脚本仍拦不住」。
+  ② **`config:check-port` 把渲染层参数原样喂 `net.listen`**，实测三条：`listen('abc')` 走**管道路径**（主进程建管道）；`listen(null)` **绑 0 号端口并成功** ⇒ 清空端口输入框后**预检永远显示可用**；`listen(8002,'a b')` 触发主进程 `getaddrinfo`。
+     修法 `port-check.ts`：端口只认 **number 类型** 1..65535（字符串 `'8002'` 也拒——收字符串就把「端口」与「管道名」混成一件事）、host 只认 IP 字面量/localhost，**进 net 之前** fail-closed。
+  ③ **R88**：48 个 selftest 只有 46 个在 `test:main` 里，漏掉 `browser`（P7b 动作枚举+域名白名单）与 `package-candidate`（P7d ZIP 写入器+穿越载荷拒绝），**而两者头注都写着 Run via: npm run test:main**。已接线（50/50）+ 新增双向守卫 `check-desktop-selftests-wired.mjs` 接入 CI。
+  验证：tsc 0 / selftest-tsc 0；4 个相关 selftest 全绿；**总控独立反证**：`checkSender` 恒真 → `ipc-sender-guard` exit 1；守卫 4 道绿（含 bundle-drift，`resources/**` 与 `apps/executor-node/**` 零改动）。
+  注：本机 `npm run test:main` 会在 `token-crypto` 中断（缺 Electron 二进制，`logger.ts:42 require('electron')` 抛错）——**修前修后一致**（44 PASS/2 FAIL → 48 PASS/2 FAIL），环境性非回归。
+  **遗留 5 条如实登记**：POSIX 强杀非树杀（需真机验证）/ `config:test-connection` SSRF-lite（需产品事实确认）/ Linux 更新链无签名 / config-store 跨键非事务 / IPC 未做按 channel 能力分级。
+- 2026-10-20 **R89 done（commit fc467649）**：**连接测试只回错误码文案，不回显解析后的地址**（R86-A1 遗留②收口）。
+  **先定产品事实**：桌面端连的就是用户自己的 admin-api，`192.168.x.x` / `localhost` 是**主要部署形态** ⇒ 照 admin-api 的 SSRF 姿态禁私网会**废掉功能**。
+  所以问题不是「该不该禁」，而是「该不该回显」—— 而回显的正是浏览器沙箱里拿不到的那部分：`connect ECONNREFUSED 192.168.1.5:3105`（**解析后内网地址**）、
+  `getaddrinfo ENOTFOUND internal.corp.example`（域名存在性）⇒ 被注入的渲染层可拿它当 **DNS/内网端口探测器**（浏览器因 CORS 做不到）。
+  修法：保留发起能力、去掉回显。新增 `describeConnectionError(code)`：只取 `err.code`（不读 `message`），映射稳定中文文案；未知码回 `连接失败（<码>）`。
+  **写测试时抓到自己一个洞**：函数最初对「非码形状输入」落到 default 并**原样回显** ⇒ 把 `err.message` 误传进来就把整条消息带出去，函数自己成了泄漏点。
+  已加形状闸 `ERRNO_CODE_RE`（只认大写码），**结构上不可能回显任意文本**。验证：tsc 0；新增 `network-util.selftest`（已接 test:main）全绿，
+  覆盖 8 种 errno + 8 组敌意输入，逐一断言不含地址/域名/`getaddrinfo`；反证：去掉形状闸 → selftest **exit 1**。
+  **遗留②由「疑似缺口」降级为「已收口的残余风险」**：发起能力仍在（功能需要），回显已切断。
+- 2026-10-20 **R91 · 健康复查（无提交，全部只读）**：今日累计 ~95 笔提交后跑了一遍全量门禁 ——
+  **26 道零依赖守卫全绿**（no-hoisting / consumer-routes / dependency-review / throttler / password-policy / failure-reasons / error-i18n /
+  error-migration / conditional-writes / constant-time / api-i18n / response-schema / docs / lint-gates / env-drift / alerts / bundle-drift /
+  sop-check / agent-check / audit-doc / api-reference / cli-doc / ssrf-parity / guards-wired / desktop-selftests / migrations）；
+  今日动过的 6 个模块 **56 套件 / 978 例全绿**（config / audit / sop / event-subscriptions / application / project）；
+  三处 typecheck 全 0（admin-api 隐式由 jest 覆盖、executor-desktop、admin-web）。
+  **另核查两条「以为有问题、实际已被前人做好」的**：① `acf-cli` 的配置/凭据文件已硬化到 `0o600`（`CONFIG_FILE_MODE` + `hardenConfigPermissions()` 修复路径，
+  注释明确「Windows chmod 语义不支持时回落 mode-less store 并在平台允许时单独修复」）；② 桌面端 `assignment-journal.ts` 已是 `tmp + rename` 原子写。
+  这两条说明 **「同族雷达列出的族」不等于「有缺陷」** —— 与 R80/R81 的结论一致：多数族被前人认真做过，真正缺的是**防止退化的机器**。
+- 2026-10-20 **R92 · 审计归属分析（为验收 R90-A1 做准备，无提交）**：`registry.pypi.upload` 这个 action **不是** `apps/registry-pypi`（python）写的，
+  而是 **admin-api 的 `registry.controller.ts::recordUploadAudit`** 写的（成功与失败都写，含 userId/username/ip，resourceId=`name==version`）。
+  三条事实决定了「独立 registry-pypi 该不该有 audit_logs 行」：① python 服务**没有 DB、也没有 admin-api 连接**；② 它的鉴权是
+  **单一共享凭据**（`REGISTRY_USER`/`REGISTRY_PASS` 来自 env），**没有 per-user 身份可记**；③ 但它确实在部署拓扑里（docker-compose `127.0.0.1:8003`，
+  执行器以 `PYPI_REGISTRY_URL` 作 `--index-url` 使用，无上游代理）。
+  因此正确形态是：**admin-api 侧可审计（已有）**，独立服务侧只能做到**结构化日志**（谁=共享账号、什么=`name==version`、来源 IP），
+  而不是往 audit_logs 写行。若 R90-A1 的「补审计」实现成调用 admin-api 或断言 audit 行，我会在验收时打回。
+- 2026-10-20 **R90-A1 进展**：基线 **126 passed**（并发现「从仓库根跑 pytest 会 ModuleNotFoundError: main」是既有问题，仅在 `cd apps/registry-pypi` 下成立）。
+  它先写红用例再改：新增 24 例 → **21 failed / 135 passed** 确认红，随后改 `main.py`（审计面 + filename 闸 + 下载面 meta 闸 + 失败清理空包目录）。
+  探查期已确认的行为：长文件名→500、Windows 下 `?` 文件名→500、`.sha256`/`.upload` 可下载、413 后留**幻影空包目录**、非 ASCII 凭据 401（无崩溃）、
+  name/version 与文件名不符仍 200。
+- 2026-10-20 **★ R90-A1 done（commit b1cb9f65）**：**registry-pypi（私有 PyPI 上传面）安全审计** —— 第三个从没被系统看过的 app，**四处真缺口**：
+  ① **上传零痕迹**（最硬）：`main.py` 改动前**一条日志都没有**，而 `registry.pypi.upload` 只由 admin-api 代理写，**twine 默认直连 8003** ⇒ 完全不可追溯。
+     补 `audit.registry.pypi` JSON 行（成功/幂等/400/409/413/存储故障全路径 + 稳定 reason 码），不记口令与 Authorization、不记绝对路径、filename 截断 120；
+     **ip 取 TCP 对端，XFF 只作独立字段绝不回填**（防审计伪造）；另配 `_setup_audit_logging`（实测 uvicorn 下 root 无 handler 时 INFO 被 lastResort 吞掉）。
+  ② **别人上传中的 `.upload` 半成品能被下载**（跨请求数据泄露）+ `.sha256` sidecar 可读 ⇒ 下载面与索引面同判据过滤。
+  ③ **413 后留「幻影包」**：`pkg_dir` 在流式闸**之前** mkdir ⇒ 空目录永久留下并进索引（脏数据 + 枚举面）。
+  ④ **文件名闸**：300 字节 → 500、`bad?.whl`(Windows) → 500、`?`/`#`/`%` 破坏索引 href ⇒ 确定性跨平台判据（单分量/≤200 字节/拒控制字符与 `<>:"|?*\/%#`），统一 400。
+  验证 **126 → 156 passed**（+30 例），顺带修好**基线就有**的「仓库根跑 pytest 会 ModuleNotFoundError」（加 `tests/conftest.py`）。
+  执行者逐项反证 6/11/2/1 failed；**总控独立复验**：`audit_upload` 提前 return → **6 failed / 150 passed**，还原 156 passed。
+  遗留 5 条如实：name/version 与文件名不符仍 200（低危，硬闸会破 twine 兼容，建议在 admin-api 代理侧校验）/ chunked 上传需 nginx 兜底 / HEAD 405 / 单一共享凭据无 per-user / href 未 quote。
+  **验收要点**：上轮我预判「若它把审计实现成调用 admin-api 或断言 audit 行就打回」——它选了**结构化日志**这条路（与我 R92 的分析一致），故通过。
+- 2026-10-20 **R93 done（commit 7996e0fe）**：**给两道守卫补规模下界**。自查今天新守卫时发现两处**永真断言**：`check-audit-actions-doc` 正则失效 → 0 条 action → 「0 条缺失」变绿；
+  `gen-api-reference-appendix --check` 结构变 → 0 个路径 → 同样变绿。补 下界（action ≥50 现 64 / 路径 ≥100 现 195），低于下界判**扫描器失效**。
+  另自查确认其余新守卫已有该防线（`check-guards-wired` 的 `guards.length === 0`、`check-desktop-selftests-wired` 的 `files.length === 0`、`check-cli-doc` 在文档变形时是**红**的安全方向）。
+- 2026-10-20 **R95 done（commit 309692c1）**：**MCP 工具地图补 16 个工具 + 加守卫**。`docs/atlas/05-interfaces/mcp-tools.md` 写着「40 个」而 `tools.ts` 实际注册 **56 个**，
+  且是**有序地漏**：越新的域越不在表里 —— Task 域漏 3（export/import/模板清单）、**Mutex / Project / SOP 三节整节缺失**（4+3+6=13）。
+  这是本仓踩过三次的「手写枚举单向腐烂」的**第四个面**（CLI 命令表 R69 / REST 附录 / 审计动作表各已有守卫，MCP 是最后一个没人守的对外接口）。
+  腐烂方式也最能说明问题：**只增不减、只漏新增**。修：文首 40→56、Task 18→21、新增三节、日期回填；新增 `check-mcp-tools-doc.mjs`（源码→文档逐项 + **下界 40** 防「0 个缺失」永真；反向不做，文档可记叙已废弃工具）；接 CI + npm。
+  验证：56/56 一致、docs / cli-doc / guards-wired 全绿（`check-guards-wired` 现报 **31 个全部接线**）；反证：删掉 `list_task_templates` 一行 → 守卫报「文档缺 1 个」并给出修法。
+  四道文档守卫合计 <300 行，共同教训：**手写清单一定单向腐烂——加东西的人不会回头改清单，删东西的人才会**；正确姿势是从代码生成 + 逐项比对。
+- 2026-10-20 **R94-A1 认领**：`executor-python` **执行面**安全审计（沙箱隔离 / 解压面与 node 侧逐项等价 / 回调令牌 / 日志上限），已派发，明确「不要重复审 SSRF」。
+- 2026-10-20 **R96 done（commit bdfb4643）**：**REST 地图补 7 个整域 + 合并出「接口地图」守卫**。`docs/atlas/05-interfaces/rest-api.md` 自述「24 controller / 21 前缀」，
+  实际 **30 / 28**；更重的是 **7 个路由前缀整域缺失**（agent / agent-collab / auth-oidc / mutex-groups / sop / task-templates / webhooks-tasks），
+  连同其下 **41 条路由**在「REST 接口地图」里一条都查不到 —— 读图的人会以为这些能力不存在。补齐七节 + 头部计数 + 日期；
+  并把上轮 MCP 守卫合并为 `check-interface-maps.mjs`（两节：工具名 / 路由前缀，同一个病不必两个脚本），删 `check-mcp-tools-doc.mjs`。
+  **★ 反证逼出的坑**：第一版 REST 判据是 `doc.includes(prefix)`，反证时**没能红** —— 删掉整个「## SOP」一节，守卫仍通过，
+  因为别处 `/sop/assignments/...` 文本含 `sop` 字样。改成「必须作为**反引号包住的路由路径**出现」后同样的反证立刻报 `/sop`。
+  **教训：宽松子串匹配会让守卫看起来在工作，实际只是在匹配自己的回声**；是「删掉再跑」这一步把它逼出来的。
+  验证：MCP 56/56、REST 27/27（30 controller）、docs / cli-doc / guards-wired（31 个全接线）/ lint-gates 全绿；两处反证各红一次。
+  **现在有守卫的「文档↔代码」面**：CLI 命令表 / REST 全量附录 / 审计动作表 / MCP 工具地图 + REST 域地图（本轮）。
+- 2026-10-20 **R97 done（commit 5f5986ca）**：**atlas 自述计数补全 + 守卫**。三处「N 个 X」自述里**两处是错的**：① `01-apps/admin-api/README.md` 写「60 个迁移」
+  且末尾停在 `1790000000015-CreateProjectMembers`，实际 **103 个**、末尾 `1790000000058-FillTaskTemplateOwnerKeys`；② 模块索引表只列 **21** 行，`src/modules` 下 **22** 个真实模块
+  ——**漏的是 `agent`**（ADR-019 中心 agent，还带 `/agent` 与 `/agent-collab` 两个前缀，正是上轮发现 REST 地图整域缺的那块 ⇒ **同一能力在两处同时缺席**，
+  说明它落地时文档跟进被整体跳过）；③ `atlas/README.md` 的「7 个应用」是对的。新增 `check-atlas-counts.mjs`（三项，均带下界）：迁移数+**首尾文件名**、
+  **模块索引集合覆盖**（不是数行数 —— 数行数会在「漏一个多写一个」时抵消而假绿）、apps 数（显式排除 `.pytest-tmp`/`test-results` 两个测试产物目录）。
+  验证三项全绿 + docs 绿 + guards-wired 绿（**32 个全部接线**）；反证：改回 60 且删 agent 行 → 同时报两处，还原后绿。
+  **总账**：「文档承诺 vs 代码事实」面现有**五道**守卫（CLI 命令表 / REST 全量附录 / 审计动作表 / MCP 工具名+REST 域地图 / atlas 自述计数），合计 <500 行，
+  抓到的都是同一件事 —— 说 40 实际 56、说 60 实际 103、说 24 实际 30、说 21 个前缀实际 28、漏 7 个整域 / 16 个工具 / 1 个模块。**没有一道靠「写得更仔细」，全靠从代码里数出来再比。**
+- 2026-10-20 **R98 done（commit f288817c）**：**20 处「（下一批次）」占位标记挂在已写完的文档上**。上一轮补 `agent` 行时照抄样式，写完才发现 `modules/agent.md` 已存在且 **297 行**；
+  顺着查：索引表 **12** 处 + 各模块文档交叉引用 **8** 处（api-keys/application/config/health/metrics/project）。这些标记语义是「还没写，排下一批」，而目标文件**全部存在** ——
+  **读者被明确告知「这里有东西但还没写」**，它劝退的正是最想知道那块内容的人（比数字过期更糟：数字过期是「少了」，占位标记是**主动误导**）。
+  清掉 20 处 + 给 `check-atlas-counts.mjs` 加**第四条判据**（`](x.md)（下一批次）` 且 x.md 存在 ⇒ 红；文件真没写时标记合法，双向自洽）。验证四条全绿 + docs 绿；反证：给已存在链接重挂标记 → 立刻红。
+  **顺带记录一个「没有采纳」的方案**：本想加「静态解析 `@Controller`+`@Get` 断言每条路由都在 openapi.json」的守卫。实测 `npm run swagger:export` 后 `paths` 仍 195、`git diff` **为空** ⇒ openapi 与代码同步；
+  而我的静态扫描器**半小时内两个方向都翻车**：首版把注释里的 `@Get("picker")` 当路由（假报 3 条），去掉注释后 `/*...*/` 剥除又被**字符串内的 `/*`** 吞掉整段代码（反报 5 条）。
+  定论：实现成本高于收益 ⇒ **不加**，并写明理由，避免下一轮有人再试一遍。
+- 2026-10-20 **★ R94-A1 done（commit 206d8940）**：**executor-python 执行面审计**。四轴过完，解压面**两处真缺口**，都是老毛病「同一道闸三份实现，一份没跟上」。
+  ① **上限松一倍**：2026-09-23 OOM 事故后 node（`zip-guard.ts:55-56`）与 admin（`zip-guard.util.ts:73-74`）已把 1 GiB/2 GiB 收紧到 **512 MiB/1 GiB**，
+  而 `zip_safety.py:117-118` **仍是旧值** ⇒ **同一个包在 python 跑得通、在 node 被拒**（NFR-04/AC-03b 明令等强度）。模块 docstring 的「镜像来源」表还把旧值当成 node 的值 —— 一张写着「我们与 node 一致」的表，内容是错的。
+  ② **`ZIP_MAX_*` 在 python 侧从未生效**：`get_zip_limits_from_env()` 存在、有测试、文档也写「接受同名变量」，**但没有任何生产调用方** ⇒ 部署方按 node 同一组变量收紧后 python **静默放行**。修：`_extract_package` 每次调用求值并显式传参，保持与 node 同形状。
+  **★ 最值得记的发现：测试曾是漂移的帮凶** —— `test_default_limits_mirror_executor_node_zip_guard` 把**漂移后的旧值**（1 GiB）钉死成契约，任何改回 512 MiB 的人都会被它拦住；一条把「当前行为」当「预期行为」断言的测试会把漂移固化成规范。
+  正解：新增 `test_zip_guard_parity.py`（6 条）**直接读另两个平面的源码常量**逐项比，而不是抄一份常量。
+  验证：pytest **1187 → 1193 passed**（+6）/ 0 failed / 3 skipped；**总控独立反证**：只还原两个常量 → 3 条立即红（含 600 MiB `DID NOT RAISE`），还原后全绿。
+  遗留 7 条如实：嵌套成员 >64 MiB python 跳过+warn vs admin fail-closed（需同步 CONTRACT.md，疑似）/ bwrap `--ro-bind / /` 可读其它 execution（裸机 .env 形态需部署验证，且已被 test_sandbox 钉住=有意设计）/ setrlimit 失败 fail-open / `timeout=0` 无 CPU 兜底且注释与行为不符 / tmpdir 回落宿主 / pusher 无字节上限 + final_flush 即发即弃 / ZIP_MAX_* 也允许放宽。
+- 2026-10-20 **R100 done（commit e581f28a）**：**放弃「死导出」静态扫描，改做定向执行判据**。目标是把 R94-A1 那类缺口（函数存在/有测试/文档写会生效，但生产路径从不调用）变成机器可查。
+  静态方案三次迭代后放弃：无跨文件引用 **506**（多为同文件内部使用）→ 仅被测试引用 **265** → 补上同文件引用后仍 **114**，且抽查的「最像真问题」两个
+  （`invalidateUvResolution`、`setDeadLetterReconcileIntervalMs`）注释都写明是**测试钩子**；`listAuditActions` 看似无人用，实际在 `.tsx` 里被引用（我漏扫了 `.tsx`）。
+  **假阳性率接近 100%** —— 静态「没人调用」无法区分「测试钩子」「框架按名字调用」「跨扩展名引用」与「真漏接线」。与 R98 否掉的 openapi 路由守卫同类：实现成本高于收益。
+  改做定向判据 `test_every_declared_env_var_is_actually_honored`：枚举 `ZIP_LIMIT_ENV_VARS` **全部键**、逐个设非默认值、断言 `get_zip_limits_from_env()` 对应字段确实改变；
+  并断言**探针键集合 == 映射表键集合**（新增上限字段忘了同步即红）。刻意不做成脚本：证明「读进去了」必须**执行**，静态只能证明「有个分支看起来读了」。
+  验证：7 passed；反证：把 `max_ratio=_num(...)` 改成 `max_ratio=defaults.max_ratio` → 该条红（`ZIP_MAX_RATIO 未生效`），还原后绿。
+  **方法论（连续两轮否定两个静态守卫的总结）**：静态检查擅长「文本与清单是否一致」，不擅长「这段代码有没有被执行到」；后者要用**执行**的判据（定向用例 / 端到端探针），而不是更聪明的正则。
+- 2026-10-20 **R101 done（commit 0a43a080）**：**node 侧 `ZIP_MAX_*` 接线对称验证**。上轮给 python 补了「每个声明的 env 必须真被读进去」的定向判据，这轮对称查 node：
+  用 CodeGraph 一次看清 `getZipGuardLimitsFromEnv()` 在 `zip-safety.ts` 有 **4 个调用方**（`safeExtractZip` 的 `opts.limits ?? …`、`vetZip` 的 `assertZipFileSafe(zipPath, limits ?? …)`）
+  ⇒ **node 侧一直是对的，缺的只是 python 那侧**（假设被证伪，3 分钟内）。
+  但发现真问题：**没有任何用例钉住这条接线** —— `zip-safety.spec.ts` 所有 limits 用例都**显式传 limits**（只证明「参数生效」），`zip-guard.spec.ts` 的 env 用例又是**传 env 对象进去**的单测（绕开 process.env 与生产入口）。
+  即：谁把两处 `?? getZipGuardLimitsFromEnv()` 改成默认常量，**测试全绿**而部署方按 `ZIP_MAX_*` 收紧后静默失效 —— node 眼下没病，**离病只有一次重构**。
+  新增 2 条（先断言不设 env 时同包合法，再断言设 env 后拒绝 —— 防「拒绝来自别的原因」的假绿；env 在 beforeEach/afterEach 还原）。
+  验证 45 passed（原 43+2）、tsc 0；**反证**：两处换成内联默认常量 → **2 failed / 43 passed**（恰为新增两条），还原后 45 passed。
+  **两侧现在对称**：python `_extract_package`（R94-A1）+ node `safeExtractZip`/`vetZip`（本轮）都有「不传参 → 读 env → 生效」的证据，而不只是「函数本身能算对」。
+- 2026-10-20 **R103 done（commit b76729dc）**：**SDK 文档版本停在 1.2.0、实际 1.12.1**（三个包 lockstep 全为 1.12.1）。这条声明的杀伤力比一般数字过期更具体 ——
+  它自己写着「与 mcp-server 同步、由 release.yml 强制」，读者会**相信**这个数字；**一个声称「有机器保证」的声明过期，比普通数字过期更容易被信**。
+  顺带核实了它的说法：`release.yml` 确有 `version-guard` job ⇒ **锁步机制是真的，只有文档里的数字是旧的**，正说明机器管住了包↔tag，管不住**文档↔包**。
+  修 sdks.md（1.2.0→1.12.1 + 日期 + 页头注明）+ 给 `check-interface-maps.mjs` 加**第三节**（文档「当前 X.Y.Z」== mcp-server version；提取不到也红）。验证三节全绿；反证：改回 1.2.0 → 红并指明差值。
+- 2026-10-20 **R102-A1 认领**：`executor-desktop` **渲染层 + preload 桥**安全审计。背景：主进程已加 IPC sender 白名单（R86-A1，只认自己页面的主 frame）
+  ⇒ **渲染层内部的代码执行（XSS/注入 HTML）仍能过那道闸**，渲染层自身成了主要剩余攻击面。四轴：XSS sink / CSP 与 webPreferences / preload 桥暴露面 / 外链与导航。
+- 2026-10-20 **★ R102-A1 done（commit 3c48bcb1）**：**executor-desktop 渲染层 + preload 桥安全审计**。承接 R86-A1：IPC sender 闸只认自己页面的主 frame ⇒ **渲染层内的代码执行仍能过闸**，渲染层成了主要剩余攻击面。
+  ① **`connect-src` 含裸 `ws:`**（= 允许 WebSocket 连任意 host）—— 对 CSP 而言自相矛盾：本职是堵外带，却留了一条现成外带通道（`new WebSocket('ws://attacker')`）。改为显式 loopback，dev HMR 仍可用。
+  ② **preload 桥形参只是 TS 声明**（运行时无清洗）：桥形态本身干净（单一 exposeInMainWorld、52 具名方法、**无** ipcRenderer 透传、**无** invoke/send 通用入口、channel 全字面量），新增 `bridge-args.ts` 归一 12 个方法；`asString` 非法/超长返回**空串而非截断**（截断会把非法路径「修」成另一个合法路径）。
+  另两轴**干净且有证据**：XSS sink **0 处**（不可信数据全走 React 文本节点，唯一 DOM 写入是 `textContent`）；外链 **0 处**（所有「打开」走 IPC → shell.openPath + path-domain 白名单）。webPreferences 只读核对：contextIsolation/nodeIntegration:false/sandbox/webviewTag:false 均在位。
+  验证：`test:renderer` 绿（新增四轴判据块）+ tsc 0；执行者 4 条反证均还原即红；**总控独立复验**：meta 改回裸 `ws:` → selftest 红并点名「构成 XSS 外带通道」。
+  遗留 5 条：`will-navigate` 用 `startsWith('file://')` 放行任意本地文件（不可直接利用，建议钉 pathToFileURL + 补 will-redirect）/ frame-ancestors 在 meta 无效 / connect-src 仍留 dev localhost / **破坏性 channel 无 IPC 层二次确认（确认只在 UI ⇒ XSS 可直接调）** / 源码树有过期 `src/renderer/dist/**` 建议清理。
+- 2026-10-20 **★ R104 done（commit 9447366c）**：**19 个审计动作在前端显示原始码**。代码 64 个 action vs `ACTION_LABEL_KEYS` 只映射 **48** —— 缺的恰好是最近新加的（config 三件套、SOP 十件套、task.import 等），又是「只漏新增」。
+  反向漂移 3 个（deployment.delete/reject/rollback）**保留**是对的：历史审计行里还有它们。修：补 19 个映射 + zh/en 各 17 条词条（另 2 条是「词条在、映射忘」的孤儿）+ 给 `check-interface-maps.mjs` 加**第四节**（每个 action 必须映射、每个键双语齐全、下界 40、反向不校验）。
+  **顺手发现两条测试在钉住这个缺陷**：它们把 `config.update`/`sop.timeout.unclaimed` 当作「未知动作」fixture 断言「回退原始码」—— 正是 R94-A1 那条教训的第二次出现：**把「当前行为」当「预期行为」的 fixture 会把缺陷固化成契约**。改 fixture 为 `legacy.unknown_action`，让用例继续测回退语义。
+  验证：vitest 20 passed（+1 新用例钉标签渲染）、tsc 0、守卫四节全绿；反证：删一条映射 → 守卫点名该动作。
+- 2026-10-20 **★ R105 done（commit 31b4a796）**：**破坏性 IPC 通道加主进程原生二次确认**。R102-A1 遗留里最高危的一条：`apps:uninstall` / `apps:delete-release` /
+  `updater:install` / `history:clear` 的确认**只做在 React ConfirmBar 上**，IPC 层没有 ⇒ 注入的渲染层脚本可直接 `electronAPI.uninstallApp(id)` **跳过确认**。
+  **关键判断**：sender 闸拦住了「外面的人」，拦不住「**里面已跑起来的代码**」（它就在主 frame 里）；要让确认无法被绕过，它必须发生在**渲染层碰不到的地方** —— 原生模态框。
+  这不是「再加一层 UI 确认」，是**把确认搬出攻击面**。新增纯模块 `destructive-actions.ts`：策略表（**只放不可逆/外发型 4 个**，`executor:start|stop` 可恢复刻意不纳入以免「确认疲劳」）+ `confirmDestructive` **fail-closed**
+  （未登记/缺失/抛错/非严格 true 一律不执行）+ `CONFIRM_CANCELED` 回执形态；`ipc-handlers` 加 `confirmViaNativeDialog` 适配器，4 个 handler 各一行守卫。
+  验证：tsc 0（两套 tsconfig）、5 个相关 selftest 全绿、新 selftest 接进 test:main（守卫 52/52），含**接线钉子**；反证：删 `apps:uninstall` 的确认调用 → exit 1，还原后 0。
+  **反证暴露我自己一个 bug（重要）**：接线钉子初版用 `path.join(__dirname,'..','ipc-handlers.ts')` + `if (existsSync)`，而编译产物在 `dist-selftest/` 下该路径**不存在** ⇒ 整段检查被**静默跳过**，撤掉调用后仍全绿。
+  **一条会静默跳过的接线钉子，比没有更糟 —— 它给出「已检查」的错觉。** 改成逐个候选 + 全都找不到即失败后，反证才生效。
+- 2026-10-20 **R106 done（commit 248a6ef9）**：**导航白名单钉到入口页本身 + 补 will-redirect**。原判据 `url.startsWith('file://')` 在生产形态下等于**放行任意本地文件**，
+  而导航后 **preload 桥仍挂在同一 webContents 上** ⇒ 「导航到一个本地 HTML」= 「那个页面拿到整套 electronAPI」。渲染层目前无设置 location 的能力（D 轴守卫也拦新增），
+  故**不是可直接利用的洞**，但那是「靠没人用」而非「用不了」—— 本轮把判据从**前缀**改成**归一后全等**（只认 `pathToFileURL(RENDERER_INDEX)`，忽略 hash/query）。
+  抽出纯函数 `navigation-policy.ts::isAllowedNavigation`（不 import electron）+ 补 `will-redirect`（与 will-navigate 是**独立事件**，只挂前者等于给服务端 3xx 留后门）。
+  验证：tsc 0（两套）、6 个相关 selftest 全绿、接线守卫 **53/53**；**两条反证**（均还原即绿）：① 回退成 `startsWith('file://')` → exit 1；② 删掉 `will-redirect` 一行 → exit 1。
+  **取舍**：判据改全等后，将来「渲染层打开本地帮助文档」会被挡 —— 那是**有意的**：该类需求应走 `shell.openExternal`/`openPath` 既有 IPC（带 path-domain 白名单），
+  而不是让应用自己的窗口导航过去、把 preload 桥一起带过去。
+- 2026-10-20 **R108 done（commit 02a52f2e）**：**18% 的错误码给不出处置建议**。admin-api 错误码目录 **383** 个，CLI 的 `error-code.ts` 刻意不逐码写建议（「三百多个码逐条写必然腐化」）
+  而用 6 类规则归类、**未归类不追加提示** —— 设计对，但有静默缺口：**新码撞不上规则时用户永远拿不到建议，且无任何东西提醒**。实测 **66/383（17%）**。
+  这些不是「忘了归类」：`TASK_SECRET_DECRYPT_FAILED`（部署期密钥）、`EXECUTOR_HOST_DNS_LOOKUP_FAILED`（网络配置）、`APP_UPLOAD_MALWARE_DETECTED`（安全策略拒）、
+  `INTERNAL_ERROR`（6 类无「服务端错误」）、`ARTIFACT_COUNT_LIMIT_REACHED`（有 LIMIT 但撞不上 capacity 的 `RATE_LIMIT`/`QUOTA` 一族）—— **硬塞会给出误导性建议，比不给更糟**。
+  落地：`packages/acf-cli/src/__tests__/error-code-coverage.test.ts`（4 条）——未归类必须逐一在基线（带分组理由）/ 基线里已能归类的要删 / 基线里不存在的要删 / 扫描下界。
+  **方法自我纠正（试错三次）**：先写 `scripts/` 守卫用**正则解析 TS 里的正则字面量**，撞多行元组、撞转义、撞块内 `];` 边界各一次；改成 vitest 直接 `import { classifyErrorCode }` 后一次通过。
+  **判据要用被检查的实物本身，不要用它的文本投影** —— 与本仓已否掉的 openapi 路由守卫、死导出扫描是同一条教训的第三次出现。
+  验证 4 passed；反证：插一个 `R108_PROBE_UNCLASSIFIED_CODE` → 红，删后绿；过程中第 3 条判据真实抓到我把 3 个**本可归类**的码放进了基线。
+  **待产品裁量**：① 是否把 6 类扩成 7 类（加 `server`/`config`，其中 ≥35 个码的处置建议是稳定的）？② 或对 66 个码做**域级兜底建议**（与原设计取舍相反）。
+- 2026-10-20 **★ R107-A1 done（commit 56cfb502）**：**mcp-server 56 个工具的输入/输出面审计**（agent 直接调用的面，入参来自 LLM）。修 **2 个真问题**：
+  ① **8 个枚举字段是裸 `z.string()`**（list_tasks/list_executions.status、update_task.status/triggerType/runtime/executeMode、agent_session_list.kind/status）—— 值域只写在 describe 里；
+  入参来自 LLM，`"Active"`/`"running "`/`"both"` 是常态 ⇒ 要跑一趟网络才吃后端 400，而 NestJS 的 400 **不告诉合法值**。改为与后端 DTO 逐字对齐的 `z.enum`（**不增不减**，收窄过头会拒合法值）；
+  刻意不收紧 `sop_list.status`（后端是裸 `@Query string`）与 `update_application.status`（PUT 透传已被测试钉死）。
+  ② **`params: {}` 不是「无覆盖」而是「覆盖成空」**：后端 `dto.params ?? task.params`，`{}` 不是 nullish ⇒ 把任务默认参数/原执行参数**整组清空**，响应却是成功，agent 在假数据上继续动作。
+  修法 `hasParams = params !== undefined && Object.keys(params).length > 0`；**保留 faithful replay**（原执行行上真实存在的 `{}` 仍逐字回放 —— 那是「当时确实以空参数运行」，与「没给覆盖」是两件事）。
+  三个「看似缺口」用后端源码证据**排除**（env 掩码 / webhookSecret select:false / body id 的 @IsUUID），没写成结论。验证：vitest **176→183**、tsc 0；**总控独立反证**：换回 HEAD → **3 failed / 180 passed**，还原后 183 绿。
+  **★ 总控自己的操作事故**：反证后用 `Copy-Item` 还原**静默失败**，`git status` 显示文件与 HEAD 一致、`hasParams` 计数为 0 才发现——**一次静默失败的还原，会让你以为修复还在**（与 R105 的「静默跳过的接线钉子」同族：没有报错的失败比报错的失败更危险）。改法：还原后**显式验证**（行数 + 关键符号计数 + git status）再跑测试。
+- 2026-10-20 **R109 done（commit 61d7adc8）**：**MCP 工具地图补「分域计数」判据**。R95 补地图时数字是**手改**的（40→56、Task 18→21），而守卫只校验名字 ⇒ **名字全对、数字全错照样绿**。
+  新增：解析每个 `### <域> 域 — register<X>Tools（N 个…）` 的 N 与该函数实际注册数逐个比对；标题正则放宽到 `（(\d+) 个[^）]*）` —— Deployment 写的是「9 个，DEP-04 审批语义」，严格匹配会**漏掉整节**（第一版就漏了）。
+  验证四节全绿；反证：Task 21→18 → 红并点名。**顺带 admin-web 全量：224 文件 / 1854 例全绿**（确认 R104 的标签补全未波及别处）。
+- 2026-10-20 **R110 done（commit d6a94401）**：**mcp-server 工具出参加一层凭据剥除**（R107-A1 遗留①）。上游对 `webhookSecret`/`tokenHash`/`env` 当前是干净的
+  （`select:false` + 响应 DTO 排除 + `maskReadSurface`，三处都有），但 MCP 侧此前 `JSON_CONTENT(data)` **逐字透传** ⇒ **干净的保证完全依赖上游，而那是三处彼此独立的约定**。
+  新增 `redact.ts`（`JSON_CONTENT` 与 `JSON_ERROR` 共用）：整键替换敏感键（**键保留、值打码**，便于排障）/ `env` **只掩键名像密钥的**（一刀切会让 agent 失去排障能力）/
+  `null` 保持原样（不把「没配」说成「配了」）/ 有界递归 12 + `[circular]` / **不改原对象**。
+  验证 mcp-server **183 → 192 passed**（+7 单元 + 2 接线）、tsc 0；接线用例**刻意模拟上游漏了一次**；**反证**：去掉 `redactSensitive` → **2 failed**，还原后 192 绿，
+  并**显式检查 `redactSensitive` 在 tools.ts 出现 4 次**（防 R107 那次静默还原失败重演）。
+  **已知残余风险（登记而非假装覆盖）**：`env` 判据是键名启发式 ⇒ `DATABASE_URL='postgres://user:pass@h/db'` 这种**值含凭据但键名不含关键词**的不会被掩；
+  按值形态猜（URL userinfo / base64 / JWT）会误伤正常配置且与上游判据不一致，故**不做**。
+- 2026-10-20 **R112 done（commit 31e14c10）**：**空载荷不再伪装成成功**（R107-A1 遗留④前两项）。`get_execution` 的 `JSON_CONTENT(null)` 让 agent **无法区分「执行不存在」与「执行存在但字段全空」**；
+  `get_execution_timeline` 的 `buildExecutionTimeline(data ?? {})` 会拼出 `executionId:""` 的**成功载荷**（看起来像「查到了但没 ID」，真相是没查到）。两处补 `JSON_ERROR(EXECUTION_NOT_FOUND)` 并**带上 executionId**（agent 要知道是哪个 ID 没查到）。
+  验证 mcp-server **192 → 195 passed**（+3，含一条「正常载荷不回归」）、tsc 0；反证：去掉 timeline 闸块 → **1 failed**，还原 195 绿。
+  **我自己的两次失误**：① 第一次反证只改 `return` 行、**闸块还在**，测试仍全绿 —— 差一点得出「用例没鉴别力」的错误结论，第二次替换**整块**才红；
+  ② 把 39 行测试块误 append 到 `tools.ts`（不是 `tools.test.ts`），被 **tsc 立刻抓出**（`Cannot find name 'describe'`）—— 若这是 `.js` 项目，那 39 行会静静躺到运行时。
+  **并发协调**：R111-A1 的 agent 正在改同一文件，它**主动上报**了并发冲突并改为「局部 edit + 冲突重试」，且指出改动点不相交。R112 先落地，已发消息告知它「基线更新为 195 passed、以当前内容为准重新定位行号、我不再动该目录」。
+- 2026-10-20 **R111-A1 done（commit 1b1632f1）**：**mcp-server 入参字符串长度上限**。33 个自由文本入参**完全无上限**，本轮只给**有后端锚点**的 9 个字段加，其余 17 个显式待定。
+  **★ 一个事先没想到的坑：码点 vs 码元** —— 最自然的 `z.string().max(255)` **比后端更严**：zod 数 **UTF-16 码元**，后端 `@MaxLength` 走 validator.js `isLength` 数**码点**；
+  128 个 emoji = 128 码点 = **256 码元** ⇒ 后端接受而 `.max(255)` 会拒。**上限比后端更严 = 拒掉合法值**，与初衷相反。新增 `codePointLength()`/`textWithin(max)`，并有专项用例（255 emoji 通过 / 256 码点拒）。
+  **刻意不动**：`audit action/username`（后端是 `slice(0,100)` **截断而非拒绝**，设 100 会把后端接受的请求变成 400）/ cronExpression·timezone（只有格式约束）/ 时间字段（`@IsISO8601`）/ **17 个后端仅 `@IsString` 且仓内无先例的字段**（拍数字即无出处臆断）。
+  验证 vitest **195→253**（+58）、tsc 0；反证 3 例 before=true→after=false 且合法值不变（未过度收紧）。
+  **提交实情**：agent 与我（R112）并发改同一文件，它主动上报并改局部 edit；但**我的 R112 提交顺带把它已落盘的 task 域改动吸了进去** ⇒ 本提交只含 application/deployment 域。已如实写进 commit message。
+- 2026-10-20 **R113 done（commit c7c50f81）**：**全量跑 admin-api（319 套件）抓到两处红，都不是本轮引入**：
+  ① `leader-gate.service.spec.ts` **整套件无法运行** —— `AuthService` 在 R32-A4 插入了 `userRepo`（第 5 位），spec 仍按旧 5 参构造 ⇒ `leaderGate` 落进 `Repository<User>` 槽位，**ts-jest 报 TS2345 判成「failed to run」而非断言失败**，
+  即「长期跑不到」被当成「这次没跑到」。修后 11 passed。② `executor-deployment-entity-registration.spec.ts` **单独跑绿、全量跑红** —— `beforeAll` 构建 TypeORM 元数据在并发下 ~5.9s 顶到 jest 默认 5s ⇒ 6 用例一起红，看似六个缺陷实则一个超时。加 `jest.setTimeout(30_000)`（放宽等待非断言）。
+  **共同点：测试基础设施的两种静默失真** —— 套件没运行与套件通过，在 CI 日志里长得很像。
+  **待查**：executor-node 全量里 `middleware/auth.spec.ts` **1 failed / 106.9s**，异常慢，疑同类负载超时，**尚未定位到用例**，留下一轮。
+- 2026-10-20 **R114 done（commit ce05b7b1）**：**形状漂移不再伪装成「全清」**（R107-A1 遗留④最后一个假成功）。`list_dead_letters` 的 `data?.data ?? []` 在响应形状变化时得到空数组 ⇒
+  `totalDeadLetters: 0` ⇒ **agent 以为「所有执行器的死信都清空了」**。这是三个假成功里最危险的一个：前两个至少看得出「没有内容」，这个直接给出一个**乐观的数字** —— **把「读不懂」说成「没问题」**。
+  修：形状不认识就 `JSON_ERROR(UNEXPECTED_RESPONSE_SHAPE)` 且**不产出 `totalDeadLetters`**。验证 vitest **253→257**（+4）、tsc 0；反证退回旧写法 → **2 failed / 140 passed**，还原后 257 绿。
+  **至此 R107-A1 遗留④的三个假成功全部收口**（空载荷 ×2 + 形状漂移）。
+- 2026-10-20 **executor-node「1 failed / 106.9s」定性为抖动（无提交）**：上一轮全量跑 `middleware/auth.spec.ts` 报 1 failed 且耗时 106.9s；本轮**原样重跑全量**得
+  `48 passed / 1205 passed / 7 skipped / 0 failed`，单独跑该 spec 也是 34 passed ⇒ **负载下超时抖动**，与 R113 修的 `beforeAll` 超时同类。
+  但**未修**：我**没定位到具体哪个用例超时**（只看到套件级失败）⇒ 登记为**已知抖动，不假装已解决**。106.9s 对一个鉴权中间件套件仍异常慢，值得后续单独看它在等什么。
+- 2026-10-20 **R115 done（commit 7c1a78ff）**：**env 与 params 补「字节」口径上限**（R111-A1 的两条遗留）。后端两处约束按 **UTF-8 字节**算：env ≤50 键、键与值各 ≤4096 字节（app-deployment.dto.ts:24-25/:39-40）；
+  params 序列化 ≤65536 字节（task/params-size.util.ts:15，量法 :21-27）。**不能照抄 R111 的码点实现** —— 中文 1 字符 = 3 字节：22000 个中文的 params ≈66000 字节**超后端上限**，但按字符只 22000 ⇒ **字符口径会放过后端必拒的载荷**。
+  新增 `utf8ByteLength` / `jsonByteLength`（不可序列化返回 null = 按超限，与后端同语义）+ 两个 refine；接线 9 处（env×4 / params×3 / overrides×1）。
+  验证 vitest **257→266**、tsc 0；用例**全部用中文**构造（ASCII 测不出两种口径差异）：env 1365 中文=4095B 通过、1366=4098B 拒；env **键**同样按字节；params 22000 中文≈66000B 拒（按字符会误放）；边界 65536 通过 / 65537 拒。
+  反证：退回无字节约束 → **5 failed / 4 passed**，还原 266 绿（并确认两个 helper 共出现 10 次，防静默还原失败）。
+  **「长度」在本仓至少三套口径**：码元（zod `.max`）/ 码点（validator.js `isLength`）/ 字节（`Buffer.byteLength`）—— 混用即缺陷，每次都要回后端看它到底怎么算。
+- 2026-10-20 **★ R117 done（commit 30e5182d）**：**spec 纳入类型检查**。查 R113 那个套件**何时开始红**：`git show 805eae17^` 与 `805eae17:` 对比证明 ——
+  R32-A4（插入 `userRepo` 参数）那一刻起，该 spec 的 `leaderGate` 就一直落在 `Repository<User>` 槽位。
+  **为什么能红 60+ 轮没人发现**：根 tsconfig `exclude` 了 `**/*.spec.ts` 与 `src/**/__tests__/**`（生产构建不需要它们，决定本身对），于是 spec 类型错误对 `tsc` **完全不可见**，只在 ts-jest 运行时报 `● Test suite failed to run` ——
+  **没有断言失败、没有用例名** ⇒ **一个套件「从没运行」和「全部通过」在 CI 日志里长得几乎一样**。
+  加 `tsconfig.spec.json`（extends 根配置、include `src/**/*.ts`、noEmit）+ `npm run typecheck:specs` + CI 一步（在 `npm run typecheck` 之后）。
+  验证：当前全仓 **0 错**（无历史包袱）；**反证**撤掉修复 → 立刻给出 `leader-gate.service.spec.ts(216,9): TS2345`（**类型检查阶段点名 file:line**），还原 0 错。
+  同时：**admin-api 全量 319 套件 / 5543 例全绿**（R113 两处修复之后）。价值：把「spec 能否编译」从 8 分钟的分片跑提前到 20 秒的静态检查，失败信息从 `suite failed to run` 变成 `file:line: TS2345`。
+- 2026-10-20 **R116-A1 认领**：`log_stream_pusher.py` 的**字节级背压**（R94-A1 遗留「只有条数上限、无字节上限，理论峰值 ≈1GB/执行，需压测」）。任务里明确要求：**先量化算式 → 再判断是否真问题 → 才决定改不改**；若判定不是真问题，如实说明并给证据，不许为产出而改代码。
+- 2026-10-20 **R118 · 全仓测试基线（无提交，逐个实跑）**：今天累计 ~125 笔提交后，把每个有测试的组件都跑了一遍：
+
+| 组件 | 结果 |
+|---|---|
+| apps/admin-api | 319 套件 / 5543 例 全绿 |
+| apps/admin-web | 224 文件 / 1854 例 全绿 |
+| apps/executor-node | 48 套件 / 1205 例 全绿（1 套件 / 7 例 skip） |
+| apps/executor-python | 1193 例 全绿（3 skip） |
+| packages/mcp-server | 266 例 全绿（6 文件） |
+| packages/acf-cli | 371 例 全绿（11 文件，1 skip） |
+| packages/autocodeflow-node-sdk | 4 套件 / 133 例 全绿 |
+| packages/autoflow-sdk（py） | 157 例 全绿 |
+| apps/registry-pypi | 156 例 全绿 |
+| apps/registry-npm | 配置自检通过 |
+| apps/executor-desktop | **本机跑不了**：node_modules/electron/dist 缺失 ⇒ logger.ts:42 require('electron') 抛错，test:main 在 token-crypto 处中断（**修前修后一致，环境性**）。已逐个手跑其中 6 个（navigation-policy / destructive-actions / ipc-sender-guard / port-check / network-util / path-index）全绿；接线守卫报 **53/53** |
+
+**合计约 10,878 例全绿**（除 desktop 的环境性中断）。另外 R117 新增的 spec 类型检查在 admin-api 上 **0 错**。
+
+**方法论**：根 package.json 的 test:unit 串起全部 14 步，但本机必然在 desktop 那步中断（Electron 二进制缺失），
+所以用「逐组件实跑」替代「一键跑」—— 两者对**已有结果**等价，但前者能拿到每项的真实数字。
+**不做的事**：不为这个环境缺口写「跳过 desktop」的包装脚本 —— 那会让「test:unit 绿了」变成一句在 CI 上成立、在本机不成立的话。
+- 2026-10-20 **R119 done（commit 61b7a642）**：**每个 @Cron 必须有 leader 门禁**。`@Cron` 是多副本高危面：忘门禁 = N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），**只在多副本时显形**，单机开发永远看不到。
+  现状 22 个 @Cron 全有门禁，但有**三种 idiom**（`this.leaderGate.isLeader` / `this.isLeader` getter / `this.isLeader()`·`isSchedulerLeader()` 包装）。
+  **★ 这条守卫被反证打回两次**：① 初版「25 行窗口 + 只认 `leaderGate` 字面量」→ **假报 7 处**（全是包装形态）；改成三种 idiom 并集后归零。
+  ② 反证「把门禁注释掉」→ **仍然绿**（正则匹配到了注释里的 `isLeader`）→ 加「先剥 `//` 与 `/* */`」。
+  ③ 再反证 → **还是绿**（固定 40 行窗口**越过方法边界**，把下一个方法的门禁算到当前方法头上）→ 窗口改为**止于方法体**。
+  第三次后反证才生效：注释掉 → 红（点名 `agent-trigger.service.ts:277`）/ 整行删除 → 红 / 还原 → 绿。
+  **教训：一条守卫的「通过」，只有在反证失败之后才有意义。** 前两次「绿」不是代码没问题，而是检查在数**注释**、数**邻居** —— 两者都会给出漂亮 ✔。
+  落地：下界 15、`ALLOWLIST` 空但保留（须写理由）、接 CI + npm；`check-guards-wired` 报 **33 个全部接线**；头注写明已知边界（文本判据，挡「忘了写」不挡「写错了」）。
+- 2026-10-20 **R120 · 一次被否决的守卫 + 一份核实过的清单（无提交）**。想法：给实体里「名字像密钥」的列加守卫
+  （要求 `select: false`），因为这正是 R107-A1/R110 反复担心的泄漏面。
+
+**实测否决。** 扫描 35 个 entity、15 个 secret-ish 列，其中 14 个没有 `select: false` —— 但逐个核对后，
+**保护机制在本仓有三套并存**：
+
+| 机制 | 覆盖 |
+|---|---|
+| `select: false` | `application.webhookSecret`、`executor.tokenHash` |
+| `@Exclude` + 全局 ClassSerializerInterceptor | `user.password` / `user.totpSecret` / `user.oidcSub`（见 user-response.dto.ts 头注：契约=实际响应） |
+| 手动 mask / 加密 + DTO 投影 | `task.secrets`（SEC-02 加密 + `maskForResponse` 叶子永不回传）、`task.webhookSecret`（`enc:v1:` 信封）、`event_subscription.secret`（响应恒为 `'******'`，明文只在 create 的 `generatedSecret` 一次性回显）、`application.env`（`maskReadSurface`） |
+
+其余命中全是误报：`maxTokens` / `totalTokensIn/Out` / `tokensIn/Out` 是 **LLM 用量计数**，
+`keyHash` / `contentHash` 是**不可逆哈希**，`isSecret` 是**布尔开关**，`leaseToken` 是**锁租约标识**。
+
+**结论：不加这道守卫。** 一个只认 `select: false` 的判据会对 14 处**假报**、同时对真正在用另外两套机制的列
+**视而不见** —— 它测的不是「有没有保护」，而是「有没有用我认识的那一种保护」。
+
+这类「看起来在测安全、实际在测代码风格」的守卫，比没有更糟：它会让人以为这个面被守住了。
+（同族已否决三次：openapi 路由覆盖、死导出扫描、现在的 secret 列。）
+
+**顺带确认的正面事实**：三套机制各自都有文档化的出处（实体注释 / DTO 头注 / 服务层注释），不是口口相传。
+- 2026-10-20 **R122 done（commit 76c9be5b）**：**给 cron 门禁守卫补 `--selftest`**。它是唯一被反证打回两次的守卫（数注释 / 数邻居），而那两次失败当时**只写在注释里** ——
+  **注释不会失败**，下一个人改正则时同样的坑会重踩。把判定抽成纯函数 `findUngatedCrons(source, opts)` + 5 条内联 fixture：正常门禁通过 / **注释掉的门禁 → 红** / **邻居方法的门禁 → 红** / 块注释门禁 → 红 / allowlist 放行。
+  第 2、3 条就是两次事故的**可执行复现**，且 fixture 内联 ⇒ 测的是**判据本身**，不是「今天的 22 个 @Cron 恰好都对」。
+  接线：`npm run check:cron-leader-gate` = `--selftest && <guard>`（与 conditional-writes 同款约定），CI 改为调用 npm 脚本。
+  验证 selftest **5/5**、guard 22/22、guards-wired 33 全接线；反证：去掉注释剥离两行 → selftest **3/5**（失败的正是两条注释用例），还原 5/5。
+  **方法论**：一个判据的历史失败如果只活在注释里，它就还没被修好 —— 只是被描述了；**把失败变成会红的用例，它才算被修好**。
+- 2026-10-20 **★ R123 done（commit cd1b9ecd）**：**executor-python 日志推送补字节级背压**（R94-A1 遗留）。先量化再修：条数上限 1000 行 × 单行 1 MB（execute.py:753）⇒ **内存 ≈1 GB/执行、单次 POST body ≈100 MB**，
+  **条数上限不构成字节安全边界**。触发需两条件同时成立（单行接近 1 MB + admin 一轮 flush 内持续慢，一轮最多 片数×5s=50s）；否则稳态 20 MB 无害，故新上限取「远高于稳态、远低于病态」。
+  加两道字节闸：`MAX_BUFFERED_BYTES=10_000_000`（超预算丢**最旧**切片 = 保留尾部，失败原因几乎总在最后几行）/ `MAX_BYTES_PER_CHUNK=1_000_000`（条数远未到也按字节切）；先记账再判、同一次 add_line 内收口 ⇒「单行本身超预算」也收得住。
+  验证：executor-python 全量 **1195 passed / 3 skipped**、0 failed；新增 4 条（缓冲预算且保留尾部 / 单片按字节切 / flush 后记账归零 / `_utf8_len` 按字节）；反证放大两个上限 100 倍 → 前两条红。
+  **两次自伤**：① 替换文本把 warn 段落带进了 `if _buffered_bytes < 0:` 分支 ⇒ **丢行发生了、告警没发生**，被既有用例 `test_backpressure_warns_once_per_episode…` 当场抓住（`assert 0 == 1`）——**是那条老用例救的**；② 测试里凭印象写了不存在的 `_install` 辅助函数，跑出 `NameError` 才改用仓库既有的 `pusher_env` fixture。
+  **★ 本轮 agent 的教训**：它分析质量很高（算式、触发推演、「按断号切片否则 admin `appendLogChunk` 的 `fromLine+i` 会写错行号」都是它给的），但检查点写「步骤 3/4 已完成」时**磁盘上什么都没写**（`grep MAX_BUFFERED_BYTES` 为 0、文件仍 170 行、git 干净）⇒ 按协议 interrupt 后总控从零实现。
+  **检查点可以描述「我以为我做的」，磁盘只描述「我做的」。验收要查磁盘，不查检查点。** 它设计的 deque + 头/尾/marker 结构未采纳（会改丢弃语义），留作后续单子。
+- 2026-10-20 **R124 done（commit 8f40a996）**：**钉住「片内行号必须连续」**。洞察来自 R116 分析（我上轮没做的那条）：admin 的 `appendLogChunk` 用 **`fromLine + i`** 落库，
+  ⇒ 片内只要出现缺口，后面所有行会被写到**错位**位置且**无任何报错**。当前实现天然满足（片是 append-only 连续块），但**这条不变式没有任何用例钉住** ——
+  将来改成「扁平 (lineNo,text) 列表 + 按需切片」（R116 设计方案的一部分，很自然的优化方向）时，丢行会在扁平列表留缺口、朴素切片立刻产出带缺口的片。
+  加两条：① 丢行后存活片 `nxt.fromLine == prev.fromLine + len(prev.lines)` 且每行真实行号 == `chunk.fromLine + offset`；② **从出站请求体**验证 `text == f'line-{fromLine+offset}'`（直接测 admin 会看到的形状，不只测内存）。
+  验证 15 passed；**反证**：把片创建时 `fromLine` 改成 `line_num - 1` → **5 条红**（含 3 条既有用例 `empty_lines_are_preserved` / `crlf_and_missing_trailing_newline` / `backpressure_drops_oldest`）⇒ 这条不变式不是只靠新用例守着。还原后 15 绿。
+  **为什么单独一轮**：修的不是「现在的 bug」而是「将来很容易引入的 bug」—— **现在的实现是对的，但对的理由只存在于当前数据结构里，不在任何一条断言里**；下一个改成扁平缓冲的人不会被任何红挡住。
+- 2026-10-20 **R125 done（commit 00f52fb8）**：**背压丢行必须在流里留一行可见说明**。上轮做了「保留尾部」，但没有 marker ⇒ 实时视图里行号**从 1 直接跳到 900**，没有任何一行说明中间丢了 900 行 ——
+  **一个静默的缺口，看起来就像一段正常的日志**。改法：丢行时记下**第一条被丢行**的行号与累计数；下次 flush **先推一行 marker 成片**（`fromLine` = 那条行号）再推真实切片。
+  单行成片安全的前提正是 **R124 钉住的「每片自带 fromLine」不变式** —— 插入这一行不会让后续切片行号错位。同一轮多次丢行**合并成一条**。
+  **刻意的避让**：marker 文案**不复用** admin 的 `LOG_TRUNCATION_MARKER`（`/\[\s*(?:logs\s+)?truncated\b/i`），因为那条正则在 admin 侧参与「终态回调是否覆盖实时流」的判定（task.service.ts:5105/5122）——
+  **执行器本地背压不该影响那个决策**；用只对人说话的文案 `... [N log lines dropped by local backpressure] ...`。
+  验证：pusher **17 passed**、全量 **1199 passed / 3 skipped**；新增两条（marker 落在缺口行号且后续行号不受影响 / 一轮只出一条 marker）；**既有用例也改了**（`test_backpressure_drops_oldest` 原本假设首发布即真实片 ⇒ 改为「首发布是 marker + 排除后首片 fromLine=100 且总数 901」，**断言未放松**）；
+  反证：marker 发射条件改 `if False` → **3 条红**（含那条既有用例），还原 1199 绿 —— 说明改的是**预期**而非把测试改绿。
+- 2026-10-20 **R125 的落库侧复核（无提交，但重要）**：上轮我把 marker 行插进实时流，前提是「admin 按 fromLine+i 落库、每片自带起点」——
+  本轮去读了实现而不是停在假设：`task.service.ts:4724-4765` 的 `appendLogChunk` 做的是
+  **按范围先删后插**：`delete where lineNumber Between(fromLine, fromLine+len-1)`，再 `save(entities)`（`lineNumber = fromLine + i`），
+  **没有任何单调性校验**。
+  三重结论：① marker 成片（单行、`fromLine = 第一条被丢行`）与该语义**兼容**；② 重发同一片是**幂等**的（先删后插）；
+  ③ 被丢的行从未发送过 ⇒ marker 占用的行号不会与后续真实切片冲突。
+  另外 `levelOfLine(content)` 会把 marker 判成 info（文案里没有 error 关键字）—— 不会在 UI 里被染成红色错误行。
+  **这条复核的价值**：它把上轮那个 marker 从「我认为安全」变成「读过落库实现后安全」。**假设与事实之间隔着一次阅读。**
+- 2026-10-20 **★ R127 done（commit 9c6f76c1）—— 我发现**自己五个回合前就把一个 selftest 弄红了**。清掉过期构建产物 `src/renderer/dist/**`（2026-09-24、未入库、无引用）后跑 `test:renderer` → 红：`SEC-DSK-01: will-navigate 守卫必须调用 event.preventDefault()`。
+  根因是我的 **R106** 改动：那次把 will-navigate 的内联守卫抽成 `blockNavigation(...)`，而判据只认「will-navigate 之后 400 字符内出现 event.preventDefault()」。R106 之后我只跑了 tsc 与 navigation-policy selftest，**没回头跑 test:renderer** ⇒ 一直红着。
+  **更糟**：把判据放宽成「也接受委托 helper」后**反证仍然绿** —— 因为 `hardenWindow` 里 will-redirect 与 will-attach-webview 的 handler **也各有** preventDefault，都在 400 字符窗口内 ⇒ **把 will-navigate 的阻止逻辑整段删掉，这条 SEC 判据还是绿**。
+  **这条判据从来就没验证过它声称的事**。改法：① 判据改到**结构级**（截出 will-navigate 自己的 handler 切片，要求 preventDefault 在切片内，兄弟顶替不了）；② window-manager 两个 handler 各自内联，去掉 helper —— **这里可检查性优先于 DRY**。
+  验证：test:renderer 0（此前 1）、tsc 0；**反证**：删掉 will-navigate 的 preventDefault → **exit 1** 并点名「不能被兄弟 handler 顶替」，还原 0。
+  **教训**：① 改完必须跑「我改的那个模块的测试」，而不是只跑类型检查与相邻 selftest；② 一条判据的「通过」可能只是「函数里恰好有那段文本」—— 这次是**别人写的判据**，而我一直在它假绿的状态下干活。
+- 2026-10-20 **R128 · executor-desktop selftest 全量普查（无提交）**：R127 之后需要确认「桌面端到底哪些 selftest 能跑、哪些不能」。逐个实跑结果：
+
+| 类别 | 结果 |
+|---|---|
+| 与 R86/R102/R105/R106 相关的 8 个 | **全部 0**（`navigation-policy` / `destructive-actions` / `ipc-sender-guard` / `port-check` / `network-util` / `path-domain` / `main-index` / `agent/agent-host`） |
+| `token-crypto` / `heartbeat` | **1（环境性）**：`Downloading Electron binary... → TypeError: fetch failed` ⇒ `node_modules/electron/index.js` 抛错。**本机无网络安装 Electron 二进制**，与代码无关 |
+| 接线 | `check-desktop-selftests-wired` 报 **53/53** |
+
+**独立复核了 R102-A1 的「48 PASS / 2 FAIL（环境性）」**：同样的两个套件红，同样的原因（Electron 二进制缺失）。
+这条以前只是它报告里的一句话，现在是我自己跑出来的两个 exit code。
+
+**顺带纠正我自己的一个误判**：第一遍我把 `agent-host` 写成 `dist-selftest/agent-host.selftest.js`（实际在 `dist-selftest/agent/`），
+报 `Cannot find module` —— 我差点把它记成「第三个红的 selftest」。**路径错不是失败**，但如果不看错误内容就会记错。
+
+**R127 的改动范围复核**（`git show 9c6f76c1 -- window-manager.ts`）：只改了守卫的**形态**（helper → 两个 handler 各自内联），
+判据 `isAllowedNavigation(url, policy)` 与 `will-navigate` / `will-redirect` 两个事件都原样保留 ⇒ **行为等价**，只是变得可被静态检查。
+- 2026-10-20 **R129 · 试图独立复核 agent 的 DST 结论，失败了（如实记）**：`R126-A1` 声称用 node-cron 4.6.0 实测过：
+  回拨日（2026-11-01 America/New_York）第二个 01:30 **被跳过**（不重复），前拨日（2026-03-08）**02:30 不存在 ⇒ 当天整天不跑**（漏一拍），且 misfire 阈值(2×周期)兜不住。
+  我去写探针想独立复现，**没能复现**：
+  ```
+  cron.schedule('30 1 * * *', () => {}, { timezone: 'America/New_York', scheduled: false }).getNextRun(date)
+  ```
+  对连续递增的 `date` **重复返回同一个时刻**（2026-10-21T05:30:00.000Z ×3）——说明 `getNextRun` 的入参语义与我的假设不符（可能需要 `{ date }` 形态或走 `getNextMatch`）。
+  **我没有继续猜 API**：这是它报告级结论里的一个细节，不是我要改的代码；把它当成「agent 的实测声明」记录下来，
+  并在交付时要求它**把探针脚本一并给出**（可复现性比结论本身更重要）。
+
+  **方法论**：一条「我实测过」的结论，如果拿不出可重跑的脚本，它与「我认为」在可信度上是同一档。
+  这不是否定那条发现 —— 是给它标注正确的证据等级。
+- 2026-10-20 **★ R126-A1 done（commit 54a0dd5b）—— 两个确认的重复派发缺陷（scheduler 首次被系统审计）**：
+  ① **部分 Redis 故障 → 同窗口派两次**：A 实例 acquireLock 超时走 DB claim 并推进 lastTriggerTime；B 实例 Redis 正常拿到 `task:trigger:*`（A **从未持有该 key**）⇒ 再派一次。
+  根因是**去重有两个互不知情的权威**（Redis 锁 / DB 条件 UPDATE），两个赢家可同时存在。修：**DB claim 成为唯一判决**，Redis 锁降级为快筛；删掉入队后那次无条件 UPDATE。claim 放在 blockStrategy 闸门**之前**（闸门有 kill 副作用，先过闸门再输 claim 会「杀了人家却没派新的」）。
+  ② **FIRE_ONCE 补偿用陈旧快照**：判定读扫描**开始**时的快照、入队在**末尾**，cron 去重窗口恒 1s ⇒ 滞后 >1s 时同一落点「正常触发 + 补偿」各执行一次。修：兑现前按主键**复核** lastTriggerTime（毫秒级单行读），陈旧不兑现。
+  ③ **四个 @Cron 扫描体无重入闸**：并发全表扫描×N、reloadTickCount 漂移、两份 reload 抢注册致 node-cron 相位重置丢一拍。修：inFlightTicks 重入闸，重叠轮丢弃+warn 且**不计 tick 指标**。
+  验证：**168 → 173 全绿**、typecheck 0、typecheck:specs 0；**总控独立反证 ×2**：绕过重入闸 → 1 failed；退回陈旧快照 → 1 failed；均还原后 173 绿。
+  **遗留**：需真多副本+真 Redis/PG 才能确认收敛与行锁争用；**DST 那条我没能独立复现**（getNextRun/getNextMatch 入参语义与假设不符，连续返回同一时刻）⇒ 按「agent 实测声明」记录、**未升级为已复核**，已要求交付探针脚本；手动触发/resume 不重锚 lastTriggerTime 属 task.service，报告不改。
+  （顺带清掉我自己遗留的 apps/admin-api/.dstprobe.js 探针文件。）
+- 2026-10-20 **R130 · 追 R126-A1 遗留「手动触发/resume 不重锚 lastTriggerTime」，判定为**设计取舍、不改**（无提交）**。
+  先把事实钉清（读代码，不是推断）：
+  · `lastTriggerTime` 的**唯一写者**是 `claimDependencyTrigger`（依赖扇出）+ 调度 enqueue 里的 DB 条件 claim；
+  · 手动触发走 `task:trigger-gate:<id>:<hash>`，**不写该列**；`resume` 只 `scheduleOne`，也不写；
+  · 补偿前的第二道判据 `cronHasMissedFirePoint`（`scheduler.service.ts:603-617`）是
+    `lastFire > lastTriggerTime` —— 即「最近一次计划触达点晚于锚点」。
+
+  于是三种「计划外触发」的后果不同：
+
+| 场景 | 现在的后果 | 判断 |
+|---|---|---|
+| **依赖扇出 claim** | **会**推进 lastTriggerTime ⇒ 补偿被正确抑制 | 已由 B-1 判据处理（该判据的注释就是为它写的） |
+| **pause 后 resume** | 锚点冻结 ⇒ resume 后首轮扫描立刻补偿一次 | **可辩护**：恢复后立刻跑一次是「追赶」，符合直觉 |
+| **手动触发** | 锚点不动 ⇒ 若手动跑发生在某个已错失的计划点**之后**，补偿仍会再派一次 | **语义存疑，但不改** |
+
+  为什么第三格不改：它取决于「手动跑一次算不算替计划点服务了」。
+  · 严格 cron 语义：计划点是 S，手动跑在 M≠S，**不算** ⇒ 补偿正确；
+  · 运维语义：人已经手动跑过了，再自动补一次是**重复劳动** ⇒ 补偿多余。
+  两种读法都成立，而改动会触碰「调度语义」本身（要不要把「任意执行」都当成覆盖）。
+  这不是我该在一次审计里顺手定的事 —— 它需要**你拍板**：
+  **要不要让 FIRE_ONCE 补偿把「窗口内存在任何执行」也当作已覆盖？**（代价：每次候选多一条索引查询；收益：消掉手动跑之后的那次多余补跑）
+
+  已确认**不是**缺陷的部分：依赖扇出那条本来就推锚点，B-1 判据正是为它而存在；resume 的追赶行为可辩护。
+- 2026-10-20 **R131 · 追 R126-A1 遗留「6 字段 cron 会静默降级」，结论：**写边界已拦住，不可达**（无提交）**。
+
+agent 的说法是：落点解析/周期估算只认 5 字段 ⇒ 6 字段 cron 会静默降级（补偿变死代码、阈值回落 2min），
+而写面有 `@IsCron5Field` 拦，**只有非 DTO 写路径可达**。去查「非 DTO 写路径到底存不存在」：
+
+| 写入口 | 是否过 `normalizeTaskDto` |
+|---|---|
+| `create()` | ✅ `task.service.ts:1364` |
+| `update()` | ✅ `:2250` |
+| `importDefinition()`（导入/`import_task`） | ✅ 走 `this.create(...)`（`:1486`） |
+| 模板 instantiate | ✅ 同样走 `create()` |
+
+而 `normalizeTaskDto` 对 `cronExpression` 调 `assertNormalizableCron` ⇒ `normalizeCron5Field` 失败即抛
+`TASK_CRON_FIELD_INVALID`（`:923-929`）。**也就是说：非 5 字段的 cron 在落库前就被拒了。**
+
+更有意思的是那段代码的注释本来就是为这个担心写的：
+
+> 「结构不可解析时 fail-closed 400（**DTO 放行的输入到不了这里，属于对非 DTO 调用方的纵深防御**）」
+
+所以这条遗留的正确结论不是「待修」，而是 **proven-not-reachable**：
+6 字段 cron 只能通过**绕过服务层的直接 SQL / 迁移**写进库 —— 那是 DBA 的显式动作，不是产品路径。
+
+**这也修正了 agent 的分类**：它把这条报成「报告级、仅非 DTO 写路径可达」，措辞暗示存在那样一条路；
+实测四条写入口全部收口在同一个 normalize 边界上。**一个「报告级」的判定，也应该被验证。**
+- 2026-10-20 **R132 · 33 道守卫的**运行耗时**普查（无提交）**。动机：这三轮我加了 12 道守卫，但从没量过代价 ——
+  如果某道慢到几十秒，CI 墙钟会被它拖长，人们就会开始想跳过它，**那是守卫退化的第一步**。
+
+实测（逐个 `node scripts/check-*.mjs`，含 node 启动 ~0.9s）：
+
+| 慢的头部 | 耗时 | 其余 30 道 |
+|---|---|---|
+| `check-release-config` | 2.84s | 全部 **0.93–2.42s**，中位数约 **0.96s** |
+| `check-constant-time-compare` | 2.42s | |
+| `check-shell-multibyte-var` | 1.56s | |
+| `check-user-facing-language` | 1.39s | |
+
+**总计 ≈ 35 秒 / 33 道**（其中约 30 秒是 33 次 node 进程冷启动）。
+⇒ **「守卫太慢」这个担心不成立**。这也意味着：再加一道静态守卫的边际成本约 **1 秒**，
+门槛足够低，应当继续用守卫而不是靠记性。
+
+**顺带的一处非失败**：`check-release-hygiene.mjs` 退出码 **2**，输出是
+「需要 `GITHUB_REPOSITORY`（CI 自动注入；本地运行请 `GITHUB_REPOSITORY=owner/repo`）」——
+**这是「本机跑不了」的正确表达，不是红**。它的 workflow 是独立的 `release-hygiene.yml`，在 CI 里有环境变量。
+记录在此，免得下一个人（包括下一轮的我）把它当成「一道红着的守卫」。
+
+**方法论**：一条「守卫很多所以 CI 慢了」的直觉，值 35 秒就能证伪；而如果不量，它会在某个时刻变成
+「把这道先注释掉，本地跑快点」的借口。
+- 2026-10-20 **R133 · 复核 R126-A1 的地基，并回答「能不能加 DB 唯一约束」（无提交）**。
+
+## ① 去重的地基是不是原子的？—— **是**
+
+`scheduler.service.ts:1920-1939`：
+
+```sql
+UPDATE tasks SET lastTriggerTime = now()
+ WHERE id = :id AND status = 'ACTIVE'
+   AND (lastTriggerTime IS NULL OR lastTriggerTime < :windowStart)
+```
+
+单条**条件 UPDATE** + 判 `affected > 0`。两个并发 claimer 抢同一行，**行锁保证只有一个拿到 affected=1**。
+附带确认：`status = ACTIVE` 让 PAUSED 任务赢不了 claim ⇒ 暂停期间不会派发。
+**所以「DB claim 作为唯一判决」这条设计是成立的**，不是「看起来原子」。
+
+## ② 能不能给 `task_executions` 加唯一约束？—— **现状不能，缺一列**
+
+读了实体（`task-execution.entity.ts:154-194`）：9 个索引**全部非唯一**，且**没有任何「计划触达点」列**。
+要表达「同一个触发落点至多一条执行」，需要 `(taskId, scheduledFor)` 或一个 `dedupKey` —— **都不存在**。
+也就是说：DB 层兜底**买不到**，除非新增列。
+
+新增列的代价是整套的：迁移 + 列语义（哪个时间戳算落点？cron 计划点还是 claim 时刻？）+ **所有写入点**
+（调度 / 手动 / 依赖 / webhook / 导入 / 模板实例化）都要能算出一个稳定的 dedupKey，还要处理存量行回填。
+**这不是一次修补，是一次 schema 设计。**
+
+## 结论
+
+- 现状的「DB 条件 claim + 补偿前复核」已经是**在既有 schema 内能做到的**最强防线；
+- 若将来重复派发再次出现（真多副本环境下复现），正确的下一步是 **`dedupKey` 列 + 唯一索引**，
+  而不是再加一层内存/Redis 判据 —— 本仓已经证明过「两个互不知情的权威 = 两个赢家」。
+- 已把这条写进遗留的**升级路径**，而不是留在「以后再说」。
+
+**顺带**：`claimDependencyTrigger` 的注释里早就写了「副作用 2：依赖触发会推进 lastTriggerTime，使 misfire 缺口从
+最近一次依赖触发起算——方向安全」。这正是我 R130 推了半天的那个结论 —— **它一直在代码里写着，只是没人读**。
+- 2026-10-20 **R135 · 发现四个 Python 库**存在但从未接线**（无提交）**。审计 `packages/autocodeflow-{ai,http,notify,db}` 时的第一个发现不是代码缺陷，而是**它们的处境**：
+
+| 事实 | 证据 |
+|---|---|
+| 四个包都有源码 + 测试 + pyproject + CHANGELOG + README | `packages/autocodeflow-*/{<mod>/*.py, tests/, pyproject.toml}` |
+| **版本冻结在 0.2.3** | 四个 `pyproject.toml` 与 `__init__.py` 一致（无漂移），但平台其余包已在 **1.12.1** |
+| **不在 `release.yml` 的 version-guard 里** | 守卫只列 node-sdk / acf-cli / mcp-server / autoflow-sdk |
+| **不在任何 publish 矩阵里** | npm publish 3 个；`publish-pypi` 只 `working-directory: packages/autoflow-sdk` |
+| **仓内无消费者** | 全仓 grep 这四包名，命中只有它们自己的源码/测试/README —— `admin-api` 里那两处是**注释**（描述「与之同语义」），不是 import |
+| **现行文档里没有它们** | 只出现在 `docs/archive/**`（审计与进度归档） |
+
+**它们是什么**：`ai-analysis.service.ts:18` 的注释给了答案 —— 「packages/autocodeflow-ai 同语义能力的 TS 消费面」。
+即它们是**给用户任务代码用的库**（任务脚本里 `import autocodeflow_ai` 就能用同语义的 AI 分析 / HTTP / 通知 / DB 助手）。
+
+**问题**：如果它们是给用户用的，那**用户装不到** —— 没发布；如果不是给用户用的，那**没人用** —— 仓内零消费者。
+两条都成立不了，它们就只是一直在被测试维护的死重。
+
+**这不是我该单方面决定的事**（删四个包 / 或把它们接进发布线，都会改变对外承诺）。两个选项：
+
+| 选 | 代价 | 收益 |
+|---|---|---|
+| **接进发布线** | 写 PyPI 发布矩阵 + 补文档 + 版本线归位（并入 1.12.x 或明确独立线） | 承诺兑现：任务代码里真的能 `pip install autocodeflow-ai` |
+| **删掉** | 删 4 个包及其测试 | 少 ~1100 行无人调用的维护面；`autocodeflow-http` 里那个 `ApiHttpStatusError` 是四包中唯一的自定义异常，也一并消失 |
+
+**无论选哪个，先加一道守卫**：让「有 pyproject 但不在发布矩阵」这种状态**不能安静地存在**。
+（这与本 session 反复修的那族同型：**文件存在 ≠ 在链路里**。）
+
+**顺带**：这四包的公开面里，只有 `autocodeflow-http` 导出了一个可捕获的异常类型（`ApiHttpStatusError`），
+其余三个的调用方只能 catch 内建/第三方异常 —— 这件事在「它们是否该存在」定下来之后再谈才有意义。
+- 2026-10-20 **R136 done（commit bbbdf2ff）**：**「有发布清单的包必须接进 release.yml」守卫**。R135 发现四个 Python 库有源码+测试+pyproject+CHANGELOG，却不在 version-guard、不在 publish 矩阵、版本冻结 0.2.3、仓内零消费者。
+  这是本 session 第四次遇到「**文件存在 ≠ 在链路里**」：守卫脚本没接 CI（R82 首跑抓到自己）/ selftest 没进 test:main（R88 browser·package-candidate 从未跑过）/ `ZIP_MAX_*` 无生产调用方（R94）/ **包没接发布线**（本轮）。
+  守卫判据：`packages/*` 下有 `pyproject.toml` 或非 private `package.json` 的必须出现在 release.yml；四个已知包进基线并写明「待产品决策：接发布线 or 删除」；**反向也判**（基线里的包若接线或消失 ⇒ 红，防豁免腐烂）。
+  **守卫不替人做决定**：那四个包留还是删是产品决策；守卫只让这个状态**不能安静地待着** —— 加第五个立刻红。
+  验证：8 个可发布包 / 4 已接线 / 4 基线豁免；**两条反证**：① 新建 `packages/probe-new-pkg/pyproject.toml` → exit 1 并点名（第一次建成 `.probe-pkg` 被 `.` 前缀跳过 ⇒ **假绿：探针本身也要符合判据的输入形态**）；② 把 autocodeflow-ai 塞进 publish 矩阵 → exit 1「基线该瘦身」。守卫数 **33 → 34**。
+  **与 R134-A1 协调**：已把事实同步给它，要求重心放在「保留/删除两种结局下都成立」的发现上（真错误吞没/资源泄漏/重试非幂等），**不要**为「补导出异常类」这类只有包保留才有意义的改动动代码 —— **如果一批代码可能被删，让它更规范的投入是没有回报的；这个判断应在动手前做。**
+- 2026-10-20 **R137 · 把 R136 守卫里「不适用」那一格也核实了（无提交）**。守卫对「无发布清单」的包直接跳过；
+  那是个**假定的安全区** —— 跳过的包到底是「不需要发布」还是「漏了清单」，守卫看不见。逐个查了：
+
+| 包 | 清单 | 消费者 | 结论 |
+|---|---|---|---|
+| `packages/contract-fixtures` | 无（只有 `contract.json` + LICENSE + README） | **8+ 处引用**：admin-api 的 `response-envelope-contract.spec` / `channel-list-contract.spec`、executor-node 的 `executor-protocol-contract.spec` / `param-env.ts`、executor-python 的 `routers/execute.py` / `test_logs.py` 等 | **合法装置包**，不需要清单 |
+| `packages/executor-protocol` | 无（`protocol.json` + `device-identity.vectors.json`） | **8+ 处**：`protocol-compat.util.ts`、`dispatch-task-payload.util.ts`、`executor.entity.ts`、迁移 1790000000028、`protocol-version-consistency.spec` 等 | **合法装置包**，不需要清单 |
+| `autocodeflow-{ai,http,notify,db}` | **有** pyproject | **0** | 已入基线，待产品决策 |
+
+⇒ 守卫那个「无清单则不适用」的分支是**正确的**，不是偷懒：两个装置包都被真实消费，而四个有清单的包一个消费者都没有。
+**「有没有清单」和「有没有人用」是两个正交的问题**，守卫现在按前者分流、由人看后者。
+
+**四个包当前测试数**（含 R134-A1 正在写的新用例）：`ai 63` / `http 45` / `notify 31` / `db 24`，全绿。
+
+**方法论**：给守卫留一个「跳过」分支时，要把**跳过的那一格也核实一遍** —— 否则它就是一个永久盲区，
+而且因为守卫是绿的，没人会再去看它。
+- 2026-10-20 **★ R134-A1 done（4 commits：4e667e3b / 6ffbe61e / f8b0cf01 / 44c4dc56）**：**四个 Python 库的错误处理与资源生命周期审计**。总控前一轮已同步「四包可能被删」的上下文，agent 据此把重心放在**两种结局下都成立**的缺陷上，并按包分别提交（release-please 友好）。
+  四数字：**ai 58→63 / http 42→45 / notify 24→31 / db 19→24**，全绿；四条真缺陷：
+  ① **ai**：两个 `except Exception` 把异常**对象+文本一起丢掉**（无 `exc_info`）⇒ traceback 消失、`AnalysisResult` 只剩 error_kind；且「200 + 载荷结构不对」落到 `unknown` 而非 `invalid_response`。
+  ② **http**：`Retry-After` 取 max **无上限**（`max_wait_sec` 只管自身退避）⇒ 代理回 `Retry-After: 3600` 就把任务停一小时、执行预算被单次退避吃穿。加 `max_retry_after_sec`（默认 None = **不改旧契约**）。
+  ③ **notify**：`channels` 传等价普通字符串 → `AttributeError`，且发生在 try 块**之外** ⇒ **「永不抛异常」被一个拼写错误击穿**；失败只回 False 丢掉异常对象。
+  ④ **db**：`except Exception: rollback(); raise` —— rollback 自身失败时**次生异常替换真因**；`build()` 无锁 check-then-set ⇒ 并发首建两个 engine（输的永不 dispose = 池泄漏）。
+  **README 全是照抄即崩的**（agent 实测、总控独立复核）：`RetryConfig(max_attempts=5)` → **实测 TypeError**（字段真名 `max_retries`）；`sess.execute("SELECT ...")` → 实测 `ArgumentError: ... text(...)`。
+  验证：四包 63/45/31/24 全绿；**总控独立反证**：恢复 db「rollback 失败重新抛出」→ **2 failed**，还原后 24 passed；并独立复核 `RetryConfig(max_attempts=5)` 确实抛 TypeError、新字段默认 None。
+  **按指示不动的**（纯 API 美化）：http 熔断裸 RuntimeError / http·notify 无 `__del__` 兜底 / db `DatabaseSession` 所有权语义 / ai 计费 POST 超时重试 / notify `level` 客户端不校验。
+  **需真环境**：真网络（TLS/代理/真 Retry-After）、真 PG（pool_pre_ping/连接失效下的 rollback）、admin-api 真实错误体契约 —— 均如实标注，未用单测冒充。
+  **遗留 A（依赖「包保留」前提）**：这些修复 + 20 个新用例 + 4 份 README 的价值，全部取决于 R135/R136 那个待决策项（四包接发布线 or 删除）。
+- 2026-10-20 **R139 · 复核 R134-A1 的两处可机验结论（部分成功，如实记）**：
+
+**✅ 复核成立**：`RetryConfig` 的字段表实测为
+`['max_retries', 'min_wait_sec', 'max_wait_sec', 'retryable_statuses', 'safe_methods_only', 'max_retry_after_sec']` ——
+新字段**追加在末尾且带默认值** ⇒ 既有按位置构造的调用不受影响；`max_retry_after_sec` 默认 `None` ⇒
+「无条件尊重服务端 Retry-After」的旧契约**逐字保留**（这正是 agent 声称的、也是不该悄悄改的东西）。
+
+**⚠️ 复核未成立（我的探针问题，不是代码问题）**：想直接验证 clamp 行为，用鸭子类型伪造 `RetryCallState` 调
+`_WaitWithRetryAfter.__call__`，结果 `clamp=None` 与 `clamp=5` 都返回 `0.5`（基础退避）——说明我伪造的状态对象
+没被识别（它对真实 `RetryCallState` 的取值路径与我猜的不同），**Retry-After 根本没被读到**。
+所以这次探针**既没证实也没证伪** clamp，我不把它写成结论。
+
+这已是本 session 第二次「想独立复核却卡在 API 形状」上（上次是 node-cron 的 DST）。两次的共同点：
+**被验证的代码依赖一个第三方类型，而我按记忆伪造了它**。下次应先读该类型的真实定义，或直接用它的构造器。
+
+**这条留在账上**：`_WaitWithRetryAfter` 的 clamp 目前只有 agent 的用例覆盖，**没有总控独立复核**。
+- 2026-10-20 **R140 · 把上一轮没做成的复核**做成了**（clamp 行为已独立验证）**。
+
+上一轮我用鸭子类型伪造 `RetryCallState` 失败（clamp 读不到 Retry-After，两次都返回基础退避 0.5）。
+这轮换方法：**先读第三方类型的真实构造签名，再用它的构造器**：
+
+```python
+inspect.signature(tenacity.Future.__init__)  # → (self, attempt_number: int)
+```
+
+按真实签名重建状态（`Future(1)` 而不是 `Future()`），得到**决定性结果**：
+
+```
+Retry-After 3600.0s exceeds RetryConfig.max_retry_after_sec 5.0s - clamped
+Retry-After=3600 clamp=None => wait 3600.0
+Retry-After=3600 clamp=5    => wait 5
+```
+
+三件事同时成立：
+1. **默认 `None` 时行为逐字不变**（3600 秒仍然无条件尊重服务端）⇒ agent 声称的「不改旧契约」**成立**；
+2. **`clamp=5` 真的截断到 5**（不是只加了个字段）；
+3. **截断时有 warning**（可观测，不是静默改行为）。
+
+**方法论（这条值得记）**：两次复核失败（node-cron 的 DST、上一轮的 clamp）根因相同 ——
+**被验证的代码依赖一个第三方类型，而我按记忆伪造了它**。
+这次的差别只有一个动作：**先 `inspect.signature` 再伪造**。
+
+> 复核别人的结论时，「我大概知道这个 API」是最危险的一种确定性。
+> 一个 `inspect.signature` 的成本是 1 行代码，收益是「这次复核算不算数」。
+
+**账上那条已销**：`_WaitWithRetryAfter` 的 clamp 不再只有 agent 的用例覆盖。
+（`node-cron` 的 DST 那条**仍未复核**，同样的方法可以试，但那条没有代码要改，优先级更低。）
+- 2026-10-20 **R141 · 独立复现了 R138-A1 的候选 A（真缺陷）**：`pages/settings/SecuritySettings.tsx:101/114` 在 TOTP
+  **启用/停用成功后**调用 `qc.invalidateQueries({ queryKey: ['auth-profile'] })`。
+
+**我用一条 grep 独立确认**：全 admin-web 源里 `auth-profile` 只出现在两个 `invalidateQueries` 调用点和 agent 的测试注释里 ——
+**从来没有一个 `queryKey: ['auth-profile']` 的查询被注册过**。
+
+⇒ 那两次失效是**静默空操作**：TOTP 启用成功、toast 弹出、`setStage('idle')` 复位，但卡片依赖的状态源没有被刷新，
+用户看到的是「启用成功」+「仍然显示『开始绑定』」并存 —— **两个互相矛盾的信号同时出现在屏幕上**。
+
+这类缺陷的形状值得单独指出：**「失效了一个不存在的 key」不会报错、不会警告、不会进日志**。
+React Query 把 `invalidateQueries` 当成一次「匹配 0 条」的正常查询，控制台一片安静。
+它比「忘了 invalidate」更难发现 —— 因为代码**看起来**做了正确的事。
+
+（agent 正在写 `totp-state-sync.r138.test.tsx` 与 `task-toggle-concurrency.r138.test.tsx`；本条只记录我的独立复现，等它交付后一并验收。）
+- 2026-10-20 **R142 · 放弃独立复核 node-cron 的 DST 语义（三次尝试后止损，如实记）**。
+
+`R126-A1` 声称实测过：回拨日第二个 01:30 被跳过、前拨日 02:30 不存在的当天整天不跑。这是**报告级**结论（没有代码要改）。
+我为了把它从「agent 的声明」升级为「已复核事实」，试了三条路，全部卡在**读不懂这个库的 API**：
+
+| 尝试 | 结果 |
+|---|---|
+| `cron.schedule(...).getNextRun(date)` | 对递增的 `date` **返回同一时刻**（参数被忽略） |
+| `createTask(...).getNextRun(new Date(...))` | 返回 **null** |
+| `createTask(...).getNextRuns(3, base)` | 未及验证（前一步已抛） |
+
+两条路径（`schedule` 与 `createTask`）语义不同，而库的 README 级文档不足以判定 `getNextRun` 的入参究竟接受什么。
+
+**止损的理由**（不是偷懒，是算账）：
+1. 这条结论**没有代码要改** —— 即使证实，动作也只是「写进文档」；
+2. 它是**第三方库的边缘行为**，验证成本高且与业务实现无关；
+3. **可替代的验证路径是「要脚本」** —— 我已经向 agent 提过「一条『我实测过』拿不出可重跑脚本，与『我认为』同档」；
+   正确的下一步是**让它把探针脚本交出来**，而不是我从零重建它的实验环境。
+
+**方法论（这是本 session 第三次踩同一个坑）**：前两次（`tenacity.Future`、现在的 node-cron）我都以为「我知道这个 API」，
+而**唯一有效的动作是先读签名**（`inspect.signature` 那次立刻成功）。所以对 node-cron 我应该先读它的 `.d.ts`，
+而不是继续试参数 —— 但我选择**止损**，因为收益不匹配成本。
+
+**账上保留**：DST 语义仍是「agent 的实测声明，未独立复核」。**不写成已复核，也不删掉这条发现。**
+- 2026-10-20 **R142 done（commit 4e10cdd6）**：**止损放弃独立复核 node-cron 的 DST 语义**。三次尝试全卡在读不懂该库 API：`schedule().getNextRun(date)` 对小递增 date 返回同一时刻（参数被忽略）、
+  `createTask().getNextRun(new Date(...))` 返回 **null**、`getNextRuns(3, base)` 未及验证（前一步已抛）。两条创建路径语义不同，官方文档不足以判定入参。
+  **止损理由（算账，不是偷懒）**：① 该结论**没有代码要改**（即使证实也只写进文档）；② 是第三方库边缘行为，验证成本高且与业务实现无关；③ **可替代路径是「要脚本」** —— 我已提过「一条『我实测过』拿不出可重跑脚本，与『我认为』同档」，正解是**让 agent 交出探针**，不是我从零重建它的实验环境。
+  **方法论（本 session 第三次踩同一坑）**：两次（`tenacity.Future`、node-cron）我都以为「我知道这个 API」；唯一有效的动作是**先读签名**（`inspect.signature` 那次立刻成功）。
+  **账上保留**：DST 仍记作「agent 的实测声明，未独立复核」——**不写成已复核，也不删掉这条发现**。
+  （顺带清掉我自己遗留的 4 个探针文件。）
+- 2026-10-20 **R143 · 审阅 R138-A1 的 TOTP 修法（结论：修对了方向）**。我上一轮给验收定的关键问题是：
+  「它到底是改 key，还是同步真实数据源？如果卡片读的是 zustand store，改 key 只是换个地方做空操作。」
+
+读 diff 的结论：**修的是数据源，不是 key**。
+
+```ts
+const syncTotpEnabled = (enabled: boolean) => {
+  if (!user || user.totpEnabled === enabled) return;
+  useAuthStore.getState().setUser({ ...user, totpEnabled: enabled });
+};
+```
+
+三个细节值得记：
+1. **删掉**了那条失效空操作（不是留着「以防万一」）—— 留着会继续误导下一个读代码的人；
+2. **不引入二次 GET**：服务端 2xx 已确认该布尔字段的终态，直接用确认值回写。这条注释写得很准 ——
+   再 GET 一次会引入「刷新失败 → 页面比操作前更旧」的**新故障面**；
+3. 顺手把 `(user as { totpEnabled?: boolean } | null)?.totpEnabled` 的**类型逃逸**去掉，字段在 `AuthUser` 上显式声明。
+   原写法意味着「类型系统不认识这个字段，我保证它有」—— 而它确实有，只是没声明。
+
+它还给了这段的完整来龙去脉（`['auth-profile']` 全仓不存在、profile 真实来源是 store、`authMe` 只在 role 缺失时才跑），
+**这正是我 R141 独立 grep 出来的同一结论** —— 两边独立得到，互相印证。
+
+（agent 仍在跑，等它的全量基线；三个新用例文件已落盘。）
+- 2026-10-20 **R144 · 预读 R138-A1 的 `cache-key-consistency` 判据（质量超预期，两个坑都自己踩过了）**。
+
+我上轮预判它可能「只比对字面量前缀、漏掉动态拼接的 key」。读了实现：**它把局限写在文件头，而且两个我踩过的坑它都自己处理了**：
+
+1. **扫前剥注释**，并注明「不剥的话，注释里那句 `queryKey: ['auth-profile']` 会被当成消费者，正好把这个键的孤立性掩盖掉 —— **已实测**」。
+   这正是我 `R127` 遇到的坑（判据在数注释里的文本），它是**独立踩到并写进注释的**。
+2. **`keyOccurrences` 规模下界**（防扫描器坏掉后「永远绿」）—— 与我在 `R93` 给两道守卫加下界是同一手法。
+
+另外两处做得比我预期细：
+- 行注释只剥 `//` 前面不是 `:` 的（**保住 `https://` 这类字符串**）—— 这个细节我上次做注释剥离时没想到；
+- 工厂命名空间用 `FACTORY_ROOTS` 映射到真实键根（`queryKeys.tasks` → `tasks`），未知命名空间跳过并注明「另由类型检查兜住」。
+
+**它自陈的局限**（写在文件头，不是藏在实现里）：只覆盖**字面量**根，不覆盖工厂的深层子键，也不覆盖「失效了但漏了详情/统计」这种**覆盖面缺口**
+（后者由另一个文件 `queries-invalidate.test.tsx` 按面逐条钉）。
+
+**这是判据该有的样子**：能挡什么、挡不住什么，都写在与实现同层的注释里。
+
+（另：工作区里还有两个临时探针 `apps/admin-web/__probe_r138.mjs` / `src/__scratch_orphan_r138.ts`，交付前必须删 —— 我会在验收时查。）
+- 2026-10-20 **R145 · 审阅 R138-A1 的「外科手术式回滚」（这是本轮最有价值的一处）**。
+
+我上一轮说「最后那个 CAS 条件是关键」，读 diff 确认它做了，而且**把失败场景写成了可复现的叙事**：
+
+> · 用户在 1 秒内先后暂停 A、B（同一条分页缓存）：
+>   A 的快照 = `{A:active, B:active}`，B 的快照 = `{A:paused, B:paused}`；
+>   A 的请求先失败 → A 回滚**整条**写回 → **B 还在飞的乐观值被抹掉**，B 的开关在用户眼前弹回 active（而 B 大概率会成功）；
+> · 同一窗口内由 refetch/SSE 写进同一条缓存的**无关数据**也会被一起倒回旧值 —— **回滚语义越界**。
+
+现在的回滚只做两件事：**只还原这一个任务的 status**；且**仅当它当前仍等于我写入的目标值**才还原。
+后半句是关键 —— 它把回滚从「恢复旧世界」改成「撤销我这一笔」，于是：
+
+| 情形 | 旧行为 | 新行为 |
+|---|---|---|
+| B 已写入、A 失败 | A 把 B 也倒回去 | A 只撤销 A |
+| 别人已改成第三个值 | A 覆盖成更旧的值 | A **不覆盖**（当前 ≠ 目标 ⇒ 放手，交给 onSettled 的失效取真相） |
+| refetch 写进无关字段 | 一起倒回 | 不动 |
+
+另外两处实现细节也对：`readTaskStatusInEntry` / `patchTaskStatusInEntry` **同时认分页信封 `{items}` 与单实体**两种缓存形态；
+「未命中或已是目标值 → **返回原引用**」避免制造无谓的缓存写（React Query 靠引用比较，乱造新对象会引发多余重渲染）。
+
+**这条缺陷的形态值得记**：它不是「忘了回滚」，而是「**回滚得太多**」——错误的修法比不修更隐蔽，
+因为它只在**并发**下显形，而单操作的手工测试永远绿。
+- 2026-10-20 **R146 · 审阅 R138-A1 的 AuthUser 字段声明（最小必要面）**：`store/auth.ts` 只加了 10 行，把 `totpEnabled?: boolean`
+  **显式声明**在 `AuthUser` 上，并写清它是**服务端状态**而非本地 UI 开关、以及此前为什么坏（页面用 `as` 绕过类型 + 失效指向不存在的 key ⇒ store 永远旧值）。
+
+这条小得几乎不值得记，但它示范了一件事：**类型逃逸（`as`）往往是缺陷的藏身处**。
+`(user as { totpEnabled?: boolean } | null)?.totpEnabled` 读起来像「稳妥地兼容可选字段」，
+实际效果是：**类型系统从此不再回答「这个字段是否存在」这个问题** —— 于是没人去问「那它到底由谁写入」。
+
+## 当前状态（交付前要盯的两件事）
+1. 工作区里有 `apps/admin-web/src/__tests__/zz-debug-r138.test.ts` —— 调试文件，**必须在提交前删掉**
+   （它会被 `npx vitest run` 收集，等于把调试断言留在回归网里）；
+2. `SecuritySettings.tsx` / `queries.ts` / `store/auth.ts` / `UserManagementPage.tsx` 四处已改，三个新用例文件已落盘，agent 仍在跑全量基线。
+
+**下一轮**：验收 + **我自己做一次反证**（把回滚改回整条快照，看它那条并发用例是否真的红）。
+这一条不验，本轮的「外科手术式回滚」就只是**读起来很对**。
+- 2026-10-20 **R147 · 本轮「刻意不动手」（不动也需要理由）**：
+
+`R138-A1` 已交中期结论：两个真缺陷（TOTP 静默空失效 / 乐观回滚互踩）都「先红后修」，3 个测试文件 14 条用例（4 条改动前实测为红），
+`tsc -b` 0 错，正在跑最终全量 vitest。
+
+**我原计划这轮做反证**（把回滚改回整条快照，看并发用例是否真的红）。**但我没有做**，理由是：
+
+> 它此刻正在跑全量套件。我若在那期间改 `queries.ts`，它那轮会因为我制造的红而失败 ——
+> **我会亲手毁掉一次别人正在进行的验证**，然后把它误判成「它没跑通」。
+
+这与本日早些时候的两条教训同源（`R142` 止损、`R127` 数注释）：**动作本身没错，时机错了就会产出一个假结论**。
+
+**已确认的两件小事**：
+1. 它的临时文件已自行清理干净 —— `zz-debug-r138.test.ts` 已删，工作区只剩 **4 改 + 3 新测试**，与它报告一致；
+2. 「反证为什么要等」写进了本板，以免下一轮的我忘了当时为什么没验。
+
+**下一轮**：它交付后立刻做反证（回滚改回整条快照 → 并发用例应变红），然后一次性提交。
+- 2026-10-20 **R148 · 只读评估并发用例的鉴别力（等它全量跑完，不动文件）**：
+
+读 `task-toggle-concurrency.r138.test.tsx` 前 70 行就已能判断它有没有牙齿：
+
+```ts
+const rollbackA = optimisticallySetTaskStatus(client, 'a', 'paused');
+const rollbackB = optimisticallySetTaskStatus(client, 'b', 'paused');
+rollbackA();
+expect(items(client)[0].status).toBe('active');
+// B 的请求还在飞：它的乐观值必须存活（此前被 A 的整条快照抹成 active）
+```
+
+这段**直接编码了交错时序**，不是「两次 mutate 各自成功/失败」的伪并发。用旧的整条快照回滚时，
+`rollbackA()` 会把 B 也写成 `active` ⇒ 断言必红。**所以它有鉴别力，不是形式上的镜像。**
+
+它的文件头也自陈了反证方式（把回滚改回 `setQueryData(key, prev)` → 前两条用例变红）——
+**但那是它的声称，我仍要自己跑一遍**（今天已吃过一次「agent 说验证过、其实没落盘」的教训）。
+
+**当前**：机器上 14 个 node 进程在跑（vitest worker 启于 20:44:5x），它的全量套件正在进行 ⇒ 继续不动文件。
+- 2026-10-20 **R149 · 第三轮等待（并借机做了一次只读巡检）**。
+
+**为什么继续等**（用证据判断，不是凭感觉）：
+- 检查点在 **20:48:26** 有更新 ⇒ agent **活着**，不是卡死；
+- 机器上仍有 **11 个 node 进程**（vitest worker）⇒ 它的全量套件确实在跑；
+- 我此前自己跑过 admin-web 全量：**224 文件 / 1854 例**，本机约 6 分钟 —— 它这轮已经 8+ 分钟，**偏慢但在合理范围**（它可能重跑一次）。
+
+⇒ **不 interrupt**。判断依据是「活着 + 在干活」，不是「等了多久」。
+
+**借这段不碰 admin-web 的时间做了只读巡检**（7 道守卫全绿）：
+`check-guards-wired` / `check-publishable-wiring` / `check-interface-maps` / `check-atlas-counts` /
+`check-cron-leader-gate` / `check-ssrf-deny-parity` / `check-constant-time-compare` —— 全部 exit 0。
+
+其中 `check-guards-wired` 报 **34 个 check-*.mjs 全部被 CI 执行**；`check-publishable-wiring` 仍为
+「8 个可发布包 / 4 已接线 / 4 基线豁免」—— 说明 `R135` 那个待决策项**没有被任何人顺手改掉**（守卫在盯着）。
+
+**下一轮**：若它仍未交付，我按协议 interrupt 并接管验收（跑三个新用例 + tsc + 反证，再跑一次全量）。
+**继续等的边界**：检查点不再更新（>10 分钟）或进程数掉到 2 以下 —— 任一发生，立刻接管。
+- 2026-10-20 **★ R138-A1 done（commit 1508adf8）**：**admin-web 数据层两轴审计**（此前只审过渲染与 a11y）。**2 个真缺陷，均先红后修**：
+  ① **TOTP 写后失效是静默空操作**：`invalidateQueries({queryKey:['auth-profile']})` 而全仓没有该 key 的查询 ⇒ 开启两步验证后卡片仍显示「开始绑定」，与成功 toast **自相矛盾**，须整页刷新。修：`AuthUser` 声明 `totpEnabled?` + 写后回写 store（不引二次 GET，避免「刷新失败→页面更旧」的新故障面）+ 去掉 `as` 类型逃逸。
+  ② **乐观回滚越界**：`setQueryData(key, prev)` 整条倒带 ⇒ 同页 A 失败抹掉 B 在飞的乐观值、并把 refetch/SSE 写的无关字段一起倒回。修：快照改 `key→该任务原 status`，只还原本次写入且**当前值仍等于目标值**才还原。
+  新增 3 文件 / 14 用例（4 条改动前实测为红）；`cache-key-consistency` 是**空失效类缺陷的哨兵**（全 src 扫「字面量失效键根 ⊆ 真实消费者」），且**先剥注释**（注释里的调用文本会把孤立键伪装成有消费者）+ `keyOccurrences` 规模下界。
+  验证：全量 **227 文件 / 1868 用例全绿**（551s）、tsc 0、三个新文件 14 passed；**总控独立反证**：把外科手术式回滚改成「不动」→ 并发用例 **4 failed / 1 passed**，还原后 14 passed ⇒ **该用例不是镜像，有鉴别力**。
+  **执行者主动披露两点（我认可）**：① 改动前全量基线**没取到数字**（后台任务 20+ 分钟无输出被终止），给了替代证据链而非编一个数；② 自陈**它有一条用例期望写反了**（实现对、测试错），已修正并标注。
+  **边界如实**：全部是 jsdom + mock 后端结论；真浏览器观感、kill 后列表滞后是否肉眼可见 —— 未冒充。
+  判定为**有意为之**（只加注释未改）：重置密码不失效 users 列表；`invalidateExecutionData` 不联动 `tasks.lastStatus`/统计（与 SSE 终态同口径）。
+- 2026-10-20 **R151 · 对 notification 域做了一次只读交叉探底（给 R150-A1 的验收预先备好基线）**。
+
+不读实现、只看**结构性痕迹**，四条读数：
+
+1. **出站全部走 DNS 钉扎**：`dingtalk` / `feishu` 等 channel 里是 `pinnedAxiosConfig(pinned)` + `axios.post`，
+   而不是裸 `axios.post(url)` ⇒ SSRF 这道闸**至少被接上了**（`R94` 修的那类「守卫写了没调用」在这里不成立）；
+2. **存在 `channels/log-safe-url.util.ts`** —— 说明「URL 里的 token 不能进日志」这件事**有人想过并落了文件**；
+3. 六个 channel（base/dingtalk/feishu/slack/webhook/wecom）+ config service/controller，规模适中；
+4. `notification-config.controller.ts` 在 R104 改过审计，读面掩码那部分此前有覆盖。
+
+**这条记录的作用**：等 agent 报告回来时，我能立刻分辨哪些是**新发现**、哪些是**它把已知的再报一遍**。
+以及：如果它报「SSRF 未接」或「日志泄漏 token」，我会先怀疑它的判据 —— 因为结构性痕迹显示这两点都处理过。
+
+**注意**：这只是「痕迹」，不是「已验证」。`R94` 的教训正是「文件存在 ≠ 在链路里」——
+`pinnedAxiosConfig` 存在且被调用，但它返回的配置**是否真的被 axios 用来连接钉扎的 IP**，要读实现才能定。
+这一步留给 agent，我只把「该问什么」先钉住。
+- 2026-10-20 **R152 · 独立确认「同一个规则的两份实现漂移了」（本轮最强发现）**。
+
+`R150-A1` 报了一条候选：WeCom 机器人 webhook 的形态是
+`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<SECRET>` —— 凭据在 **`key` 查询参数**里。
+仓库里有**两份**「哪些查询参数算 secret」的实现，我用 grep 独立对比了它们：
+
+| 位置 | 正则 | 含 `key` / `sign`？ |
+|---|---|---|
+| `notification-config.service.ts:260`（**读面掩码**） | `/([?&][^=&#]*(?:pass|secret|token)[^=&#]*=)[^&#]+/gi` | ❌ **没有** |
+| `channels/log-safe-url.util.ts:18`（**日志脱敏**） | `/([?&][^=&#]*(?:pass|secret|token|key|sign)[^=&#]*=)[^&#]+/gi` | ✅ 有 |
+
+⇒ **同一条规则，两份实现，一份加了 `key|sign`，另一份没加。**
+
+后果（方向明确）：**日志里掩码，API 读面明文回显**。用户打开「通知渠道」配置页，
+WeCom webhook 的机器人 key 就以明文出现在响应里 —— 而同一个值在日志里是 `***`。
+
+**这是本 session 第 N 次遇到同一个形态**，而且这次它披上了最容易被忽略的外衣：
+
+> 不是「有人忘了写」，而是「**有人写了两遍，只改了其中一遍**」。
+>
+> 两份实现各自都**看起来正确**：它们都只有一个正则、都有注释、都被各自的调用方使用。
+> 编译通过、测试通过（各自测各自的）、代码评审时没人会把两个文件放在一起看。
+
+同族前例：`Redis 锁 vs DB claim`（R126，两个去重权威）、`markOffline vs setOfflineById`、`heartbeat vs register`、
+`publish vs draft`。**共同点：同一个语义有多个实现，而它们之间没有任何机制强制一致。**
+
+**正确的收口方式不是「把 key 补进第一个正则」**（那只是这一次对齐），而是**让第二个实现消失** ——
+两处都引用同一个常量。这条我会在验收时盯着：如果它只补了正则没消除重复，那下一次还会漂。
+- 2026-10-20 **R153 · 扩大扫描：同一个文件里就有三份「secret 查询参数」正则**。
+
+上轮我确认两份实现漂移（service 缺 key/sign、log util 有）。这轮全仓扫「名字像 secret 的匹配器」，结果更糟（六份）：
+
+1. `notification-config.service.ts:257` — 字段名 `|pass|secret|token|`（SECRET_FIELD_RE）
+2. `notification-config.service.ts:261` — **URL 查询参数掩码** `|pass|secret|token|`
+3. `notification-config.service.ts:265` — **「已掩码」探测** `|pass|secret|token|`
+4. `channels/log-safe-url.util.ts:18` — 日志脱敏 `|pass|secret|token|key|sign|`
+5. `application/application.service.ts:285` — 应用配置字段 `|pass|secret|token|api[_-]?key|`
+6. `mcp-server/src/redact.ts:43` — MCP 出站脱敏 `|SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|CREDENTIAL|PRIVATE|`
+
+**六份匹配器，六套词表。其中三份在同一个文件里，而且这三份都缺 `key`。**
+
+要注意区分：这六份**并不完全是同一条规则**（有的是 env 键名、有的是 JSON 字段名、有的是 URL 查询参数），混为一谈也不对。
+但同在 `notification-config.service.ts` 里的那三份**是同一条规则** ——「URL 里哪些查询参数算 secret」，它们理应是**一个常量**，现在是三个字面量。
+
+**这就是「多份实现、零机制强制一致」的完整形态**：不是谁忘了改，而是**根本没有「该改哪里」的单一位置**。
+补 `key` 要补三处（以后新增一处还得记得补）—— 这正是漂移会再次发生的原因。
+
+**因此验收标准更硬了**：不是「把 key 补进第一个正则」，而是**这个文件里只应剩一份正则**，另两处引用它。
+跨文件那三份（application / log-safe / mcp redact）语义不同，**不强求统一**，但要各自写明它管哪一类名字。
+- 2026-10-20 **R154 · 独立确认缺陷 B，并把「枚举扩了、硬编码清单没跟」做成了可复用的检测器**。
+
+**确认**：`AlertChannel`（`notification.service.ts:59-67`）有 **6** 个值，含 `FEISHU = "feishu"`（NF-05 新增）。
+而两处硬编码清单只有 **5** 个：
+
+- `notification-silence.service.ts:86` 的白名单 `["email","slack","dingtalk","wecom","webhook"]` ⇒ **建 feishu 静默直接 400**；
+- `notification-response.dto.ts:10` 的 swagger enum ⇒ **API 文档不承认 feishu 可以静默**。
+
+**这是「枚举扩了、枚举的消费者没跟」的教科书形态** —— 与我这几轮反复修的「同一修法只落一半」同族，
+但载体变了：不是函数调用点，而是**枚举值在别处被重新手抄了一遍**。
+
+**做了一个原型检测器**（不扫注释、只找「数组字面量里出现了该枚举 ≥2 个值但不是全部」）：对 `apps/admin-api/src` 全量扫，结果：
+
+```
+可疑数组 = 2
+  notification/dto/notification-response.dto.ts:10   有[email,dingtalk,wecom,slack,webhook] 缺[feishu]
+  notification/notification-silence.service.ts:86    有[email,dingtalk,wecom,slack,webhook] 缺[feishu]
+```
+
+**两个命中，全是真的；零假报。** 判据之所以干净：它不猜「这个数组是干嘛的」，只问「它是不是在枚举这个枚举」。
+一个随机数组命中 ≥2 个枚举值的概率极低，而真清单必然命中 ≥2。
+
+**计划**：等 agent 修完，把检测器正式化为 `scripts/check-enum-consumers.mjs` 并**与修复同一提交** ——
+这样守卫的首次运行就是绿的，同时它的鉴别力已由「修之前它红」证明。
+（若反过来先提交守卫，CI 会红一轮；若先提交修复，守卫就失去了「曾抓到过」的证据。）
+
+**注**：`check-enum-drift.mjs` 已存在，但它管的是 **TS 枚举 ⊆ PG 枚举**（`AlertChannel` 是 varchar 列，不在其覆盖面），
+两条判据正交，不重复。
+- 2026-10-20 **R155 · 读懂了那条被钉住的反向契约（`?key=` 被判定为「非密」）**。
+
+`notification-config.service.spec.ts:547` 的用例名就是结论：
+
+```
+it("non-secret query params (e.g. ?key=…) are left intact", ...)
+```
+
+⇒ 当初是**有人明确决定**把 `key` 归为「非密查询参数」并写了钉子。所以缺陷 C 不是「漏了」，而是**「判断标准本身与 WeCom 的实际语义冲突」**：
+
+| 场景 | `?key=` 是什么 | 结论 |
+|---|---|---|
+| 通用 webhook | 可能只是个非密路由键 | 不掩码是**对的** |
+| **WeCom 群机器人** | **全部认证材料都在 `key` 里** | 不掩码是**泄密** |
+
+**所以正确修法不是「把 key 加进全局正则」那么简单** —— 那会推翻通用 webhook 的合理行为（也正是那条钉子要保护的东西）。
+
+agent 的做法是**对齐日志面口径（宁可多掩）**，并依赖既有的 `isMaskedEcho` 拦下「掩码值被回传」以免覆盖真凭据。
+这条路能成立，但它**必须同时更新那条钉子**，而且更新时要说清「旧钉子错在哪」—— 否则下一个人看到 diff 只会以为「有人把测试改绿了」。
+
+**我此刻检查了它改的文件**：config service 的两个正则（掩码 + isMaskedEcho 探测）**都已加 `key|sign`**，但
+`notification-config.service.spec.ts` **还没有任何改动** ⇒ 那条钉子现在应该是红的（它跑起来就会遇到）。
+
+**这正是本 session 反复出现的第三种失败**（前两种是「数注释」「数邻居」）：
+> **测试把当时的判断钉成了契约**。zip 上限钉 1 GiB、审计标签钉裸码兜底、现在这条钉「key 非密」。
+> 三条都同一个形状：**测试忠实地保护了一个错误的判断，于是它比没有测试更难改。**
+
+**验收时会盯**：那条钉子是「被改写并说明理由」还是「被删掉」。前者是修复，后者是掩盖。
+- 2026-10-20 **R156 · 把枚举检测器正式化（已在工作区，**故意先不提交**）**。
+
+`scripts/check-enum-consumers.mjs` 已写好并双反证通过：
+
+| 状态 | 结果 |
+|---|---|
+| 现状（feishu 已在清单里） | **绿**（exit 0） |
+| 反证：从白名单里去掉 feishu | **红**（exit 1），精确点名 `notification-silence.service.ts:94 缺：feishu` |
+| 还原 | 绿 |
+
+判据与可靠性设计：
+- 枚举值**从源码正则提取**（不手抄），提取失败或只提取到 <2 个值就**报错**而不是静默跳过；
+- 扫描的数组字面量数 < 50 也报错（扫描器失效不能当成「没有问题」）；
+- 阈值 ≥2 且 ≠ 全集才算命中 —— 实测对 `apps/admin-api/src` 全量扫**假报 0**；
+- 头注写明三条已知边界（只认字符串数组字面量 / 不判断数组语义 / 非字面量枚举会提取失败）。
+
+**为什么先不提交**：它现在绿，是因为 agent 的修复**还没提交**（feishu 是它刚加进工作区的）。
+若我把守卫单独提交，CI 在 HEAD 上跑会**红**（HEAD 的白名单仍是 5 个）。所以守卫必须与修复**同一提交**：
+这样首次运行即绿，而鉴别力已由「修之前它红」证明 —— 两个条件同时满足。
+
+**顺带确认 agent 的修复方向**：`notification-silence.service.ts:94` 已是六值；
+`notification-response.dto.ts` 的头注也写明了「NF-05 加 feishu 后没人同步 ⇒ openapi/api-types 少一个渠道」，**它把成因也记录了**。
+- 2026-10-20 **R157 · 审 agent 对轴 2（失败语义）的处理：改了可观测性、没动契约**。
+
+它的判断值得记，因为这是一个**正确的「不改」**：
+
+> `ChannelDeliveryStatus` 只有 4 值（sent/blocked/failed/skipped），网络故障/4xx/5xx/超时全折叠成 `failed`。
+> **这是刻意的**（DTO / 指标 / 前端契约稳定），**不该为了排障改契约**；但**日志**没有理由同样折叠。
+
+于是它加了 `DeliveryFailureKind`（http_3xx_redirect / http_4xx / http_5xx / timeout / network / unknown），
+**只进日志**，不进存储、指标、DTO。运维能从一行日志区分「配置问题 / 对端故障 / 链路问题」，
+而不是看到六个渠道都写 `failed` 再去翻堆栈。
+
+而且它明确写了**为什么用一个共享纯函数**：
+
+> 六个渠道共用一份判定（**避免「这个渠道分了、那个没分」**）
+
+**它是在主动防自己制造我这几轮一直在修的那种缺陷。** 这比「实现正确」更少见。
+
+结构化失败原因（进指标/审计）需要给枚举加维度，跨 DTO、指标注册表、admin-web 契约 —— 它列进遗留，**没有顺手改**。
+
+## 方法论：三种「不做」都留下了文字
+
+这轮与前面几轮形成一个闭环：
+
+- **契约该稳、排障不够** ⇒ 加旁路（日志/内部枚举），不加契约 ← 本轮
+- **契约该改** ⇒ 改 + 说清旧契约错在哪（`R155` 那条 `?key=` 钉子被改写并说明理由）
+- **判断不该改** ⇒ **写下「为什么不改」**（`R130` 的 lastTriggerTime 三场景）
+
+三种都不是「什么都不做」：**每一种都留下了可复核的文字。**
+- 2026-10-20 **R158 · 逐渠道核对「共享判定是否真的六处都用了」（本轮最该查的一条）**。
+
+本 session 里我抓到的缺陷有一大半是「同一修法只落一半」，所以对 `classifyDeliveryFailure` 这个新加的共享纯函数，
+我做的第一件事不是读它的实现，而是**数调用点**：
+
+```
+base.channel.ts     => x1   （定义处）
+dingtalk.channel.ts => x2
+email.channel.ts    => x2
+feishu.channel.ts   => x2
+slack.channel.ts    => x2
+webhook.channel.ts  => x2
+wecom.channel.ts    => x2
+```
+
+**六个渠道全部 ×2（import + 调用），一个都没漏。**
+
+特别值得指出 **`email.channel.ts` 也在里面** —— 它是 SMTP 而不是 axios，错误形状完全不同（没有 `response.status`）。
+它仍然走同一个判定，说明这个函数的判定顺序（先看 HTTP status、再看 `code`、最后 `unknown`）对两类错误都成立，
+而不是「为 axios 写的，SMTP 那个凑合用」。
+
+**这条核对的价值**：如果它只接进了 5 个渠道，整套测试仍然会绿（没接的那个不会有断言失败），
+而缺陷会以「某个渠道的失败日志依然只有 failed」的形式**静默存在**。
+这与我 `R94` 抓到的「`ZIP_MAX_*` 定义了没有调用方」是同一类：**机制存在 ≠ 机制在链路上**。
+- 2026-10-20 **R159 · 把 agent 归类为「报告不改」的一条，用 UI 证据升级为「真缺陷」**。
+
+它报的遗留里有一条：`enabled=false` **只对 webhook 渠道生效**，另 5 个渠道仍用已保存配置投递 —— 归为「行为变更需产品确认」。
+
+我独立查了两侧：
+
+**投递侧**（`grep` 全模块）：`isEnabled()` 只在 **`webhook.channel.ts:60`** 被调用一次。
+`channel-config.store.ts:70` 的 `isEnabled` 默认返回 `true`，注释还写着「disabled channel's config must [not take effect]」—— **意图明确，只实现了一处**。
+
+**UI 侧**（决定性）：`admin-web/__tests__/notification-settings-page.test.tsx:109` 有用例名
+
+```
+it('关闭邮件渠道开关 → PATCH /notification/channels/email {enabled:false} + 禁用 toast', ...)
+```
+
+⇒ **管理台对每个渠道都提供了开关**，用户点了「关闭邮件通知」、后端也存了 `enabled:false`、toast 还告诉他成功了 ——
+**然后邮件照发**。
+
+**所以这不是「行为变更需产品确认」，而是产品已经承诺了、实现只落了一半。** 判据不在产品侧，在这条 UI 用例里。
+
+这也修正了 agent 的分类标准：它把「会改变现有投递行为」等同于「需产品确认」，
+但**如果现有行为本身就是 bug，修好它不叫改需求**。区分两者的方法就是找一个**产品已经写下来的承诺** ——
+这里就是那条开关用例 + 存储层注释里的 “must not take effect”。
+
+**验收时我会把它当缺陷处理**：给 5 个渠道补上 `isEnabled` 闸，并确认既有用例（尤其是不设 enabled 的 fixture 默认 true）不破。
+- 2026-10-20 **R160 · 在 agent 收尾前把新证据推给它（而不是等交付后回炉）**。
+
+`R159` 我用 UI 用例把「`enabled=false` 只落 webhook」从「报告不改」升级成真缺陷。这条判断如果等到它交付后再补，
+代价是它要**重新起一轮**（读上下文、跑全量、写报告），而我已经知道要改什么。
+
+所以我在它**还在跑时**把三条证据发过去：
+1. `isEnabled()` 只在 `webhook.channel.ts:60` 被调用一次；
+2. 存储层注释 `channel-config.store.ts:27` 已写明 must not take effect；
+3. `notification-settings-page.test.tsx:109` 的用例名就是产品承诺。
+
+并明确了做法与边界：给其余 5 个渠道补闸、**`?? true` 的默认语义不许改**（未设 `enabled` 的 fixture 必须继续视为开启）、
+补两条用例（关闭后不投递 / 未设视为开启），**其余遗留维持它的判断**。
+
+**为什么值得记**：这是本 session 第一次在 agent **运行中**改变它的范围，而不是在验收时打回。
+判断依据是：**证据已充分到能确定结论，且返工代价高于打断成本** 时才这么做 ——
+上一轮 `R147` 我刻意**不**打断它，因为那时我手里只有怀疑、没有证据；这次我手里有三条可复核的证据。
+
+**同一条纪律的两面**：
+- 只有怀疑、没有证据 ⇒ **不打断**（`R147`）
+- 已有证据、且返工更贵 ⇒ **立刻推过去**（本轮）
+- 2026-10-20 **R161 · 给守卫加了第二类判据（同名声明值集合漂移），反证**推迟到验收轮**。**
+-
+扫的时候发现 `ChannelDeliveryStatus` **在两处各写了一遍**同一组四个值：
+`channels/base.channel.ts:26` 与 `dto/notification-response.dto.ts:38`（都是 `export type X = "sent" | "blocked" | "failed" | "skipped"`）。
+
+两份**当前一致**，但没有任何机制强制一致 —— 谁加一个值、另一处没跟，**编译期未必报**（两处未必在类型上相遇）。
+这就是「同一条规则多份实现」在**类型层**的形态，和 `R152` 那条正则漂移同族。
+
+于是给 `check-enum-consumers.mjs` 加了第二类判据：
+
+> 同名声明（`export enum X` 或 `export type X = "a" | "b"`）出现在 ≥2 个文件且**值集合不同** ⇒ 红；
+> 集合相同则放行（**重复本身是重构议题，不是缺陷** —— 我不想让守卫去催一次纯重构）。
+
+当前结果：**绿**（两份值集合一致）。
+
+## 反证为什么推迟
+
+要证明这条判据有鉴别力，得把其中一份的值改掉再跑。但那两个文件**正是 agent 此刻在改、在跑测试的文件**。
+我若现在动手，它那轮全量会因为我制造的红而失败 —— 与 `R147`/`R148` 完全相同的错误，我这轮不重复犯。
+
+**推迟到验收轮**（它交付、没有人在跑测试时）做，并记录在此：
+- 反证 A：把 `dto` 那份加一个值 ⇒ 应红，点名两个文件；
+- 反证 B：把 `base` 那份删一个值 ⇒ 应红；
+- 还原 ⇒ 绿。
+- 2026-10-20 **R162 · 先量了「给 5 个渠道补 isEnabled 闸」的实际成本（免得验收时被「太大」说服）**。
+
+`R160` 我要求 agent 给其余 5 个渠道补 `enabled` 闸。验收前我先确认这件事有多大：
+
+`email.channel.ts` 的头几行显示它**已经 import 了 `ChannelConfigStore`**（第 12 行），构造函数里也有它。
+也就是说每个渠道**本来就能读到 store**，`isEnabled(key)` 是现成的 —— 差的不是依赖注入，
+而是一句 `if (!this.store.isEnabled(KEY)) return skipped`。
+
+⇒ **这是个小改动，不是架构改动。** 记下来的用处：
+- 如果 agent 交回来的报告写「加这个闸需要改依赖 / 影响面太大」，我有依据说**不是**；
+- 如果它顺利加了，这条也解释了为什么它加得快。
+
+**顺带**：这也说明缺陷的性质是「**能力齐备，只差调用**」。与本 session 反复出现的那类完全一致：
+守卫写了没接 CI、selftest 没进 test:main、`ZIP_MAX_*` 没有调用方、`isEnabled` 只有一个渠道在用。
+**它们都不是做不到，而是没做。** 这类缺陷最容易被误判为影响面大。
+- 2026-10-20 **R163 · 核实了 agent 提的迁移风险，并把它升级为「必须有迁移，不能只写文档」**。
+
+agent 报：`loadFromEnv` 把渠道 `enabled` 默认发布成 false，历史 DB 行若「从未拨过开关」`enabled` 也是 false ⇒ 加闸后这些渠道的**已保存配置不再生效**、上线可能静默停发。
+我核了三个默认值，**它说的是对的**：
+
+| 位置 | 默认 |
+|---|---|
+| `notification-config.service.ts:26/33…` 种子映射 | 六个渠道全部 `enabled: false` |
+| `notification-channel-config.entity.ts:31` | boolean 列 `default: false` |
+| `loadFromEnv`（`:116-169`） | **只在** `notification.<ch>.enabled` 为真时才置 true |
+
+⇒ 一个用管理台配好 webhook、但**从没拨过那个开关**的部署：DB 里 `enabled=false`，而现在**照发**（没有闸），
+加闸之后**立刻停发** —— 用户看到的是「我什么都没改，告警没了」。
+
+**所以这条修复必须带迁移，不能只在报告里写一句「部署前请 UPDATE」。** 我的验收要求：
+
+> 迁移（或启动时一次性校准）= 把「配置非空但 enabled=false」的行置为 true。
+> 语义：**你已经配了它，就说明你想用它** —— 这是把「现在的实际行为」冻结下来，再让开关开始真正生效。
+
+**但它不是精确的**：如果某用户是**主动**关掉某渠道的，他的 config 也在，这条校准会把它误开。
+历史行没有「是否被显式关过」的信息，所以**迁移里必须写明这个近似及其代价**，不能假装它精确。
+
+（本轮只做核定；迁移实现留到验收轮或另开一轮。）
+- 2026-10-20 **★ R150-A1 done（commit 6f5e43a4）—— 出站面审计，五个缺陷 + 一道守卫 + 一条迁移**：
+  ① **未注册渠道名 ⇒ 告警无声消失**：`Task.alarmChannels` 自由字符串（只有 `@IsArray`），`as AlertChannel[]` 强转；一个都不匹配 ⇒ entries 空 ⇒ **零投递/零日志/零指标**，而「全部失败落审计」判据是 `entries.length>0`，**空扇出恰好绕过**。
+  ② **`enabled` 开关只有 webhook 认**：`git grep isEnabled HEAD` 生产仅一处；管理台对每个渠道都给了开关（UI 用例名就是「关闭邮件渠道开关」）⇒ 用户关了、toast 说成功、**邮件照发**。修：5 渠道补闸，**只闸已保存配置层、env 兜底不动**。
+  ③ **读面 `?key=` 明文**：WeCom 机器人凭据就在 `key`；日志面掩、读面不掩 ⇒ 同一值两种口径。**推翻了一条既有钉子并改写说明理由**（不是删除）。
+  ④ **静默白名单漏 feishu**（枚举 6 值、手抄清单 5 值）⇒ 建 feishu 静默 400。
+  ⑤ **失败日志折叠成单个 failed**：契约 4 值保持不动（跨 DTO/指标/admin-web），**只给日志加分类**，六渠道共用一份判定。
+  ⑥ 新守卫 `check-enum-consumers.mjs`（守卫数 **34 → 35**）：数组清单须含枚举全集 + 同名声明值集合须一致。
+  ⑦ **新增迁移 `1790000000059`**（我补的）：把「配置非空但 enabled=false」的存量行置 true —— 不补则**上线那刻正在收告警的人不再收到**。判据是近似，注释写明代价；`down` 刻意不做反向。
+  验证：notification **11 suites/303 → 12/335 全绿**、两个 typecheck 0、migrations 46/270 全绿；全仓 320/5580（唯一失败 `agent-media-retention` 单跑 15/15 通过，与本轮无关）。
+  **总控独立反证 ×3** + **反证逼出守卫自身一个 bug**：第二类判据写在 `const problems = []` 之前（TDZ），有漂移时**直接崩**而不是报红 —— 已修。
+  **如实标注**：全部 mock axios/nodemailer + IP 字面量绕 DNS，未对真 Slack/SMTP/Feishu 做端到端投递。
+- 2026-10-20 **R165 · 派 agent 审 node 侧日志链路的同时，先做了一次结构探底（已能判定两侧契约不同步）**。
+
+`apps/executor-node/src/log-stream-pusher.ts`（178 行）里数关键词出现次数：
+
+| 关键词 | 次数 | 含义 |
+|---|---|---|
+| `fromLine` | 4 | 有行号语义 ✅ |
+| `MAX_` | 4 | 有上限常量 |
+| `dropped` | 3 | 有丢行处理 |
+| **`bytes`** | **0** | **无字节记账** |
+| **`truncat`** | **0** | **无截断 marker 行** |
+
+而 python 侧这轮刚补齐了 `MAX_BUFFERED_BYTES=10MB` / `MAX_BYTES_PER_CHUNK=1MB` 与
+`... [N log lines dropped by local backpressure] ...` marker。
+
+⇒ **两侧写的是同一张 `ExecutionLogLine` 表、同一个 `fromLine + i` 契约，但字节背压与丢行可见性只有一半有。**
+这比「同文件两份正则」更深一层：**同一个契约由两种语言、两个进程、两套测试各自维护，没有任何机制强制对齐。**
+
+所以给 agent 的任务里我特意要求出一张**与 python 侧的对照表**，并写明「**任何与 python 不一致的地方都是发现（哪怕各自都合理）**」。
+因为这种漂移最典型的辩护就是「我们这边这样也没错」—— 而**两侧都自洽，合起来就是不一致**。
+
+（本轮不做修复，等它交付后一并验收；探底的作用是**我事先就知道该看什么**。）
+- 2026-10-20 **R166 · 独立备好「与 python 侧对照表」的**事实底稿**（等 agent 的对照表回来比对）**。
+
+读了 `apps/executor-node/src/log-stream-pusher.ts` 的正文，确认它是 **python 侧旧实现的逐行镜像**：
+
+| 维度 | python（本轮之前已修） | node（现状） |
+|---|---|---|
+| 片大小 | 100 行 **或 1 MB 字节**（两者任一先到） | **100 行**（无字节维度） |
+| 缓冲上限 | 1000 行 **+ 10 MB** | **1000 行**（无字节维度） |
+| 字节记账 | `_utf8_len`（ASCII 零拷贝） | **无** |
+| 丢行可见性 | **marker 行**（`... [N log lines dropped by local backpressure] ...`） | 只有本地 `warn`/`debug` |
+| 片起点 | `fromLine = 第一条行号` | 同（`chunk = { fromLine: lineNum, lines: [] }`） |
+| 上限常量 | 同名同值 | `MAX_LINES_PER_CHUNK = 100` / `MAX_CHUNKS_IN_MEMORY = 10` |
+
+**连常量名和 warn 文案都一模一样** —— 这不是「各自演化出的相似实现」，而是**当初一份实现被抄成了两份**。
+于是 python 侧这一周修的四件事（字节预算 / 保留尾部 / marker / 行号连续）**一件都没跟到 node 侧**。
+
+**这比「同文件两份正则」严重的原因**：正则漂移最多漏掩一个参数；而这里是**同一张日志表的两条写入路径**，
+一侧有字节闸、另一侧没有 ⇒ **同一个部署下，python 任务不会打爆内存，node 任务会**。
+用户看到的却是「同一个产品」。(`R94` 记录过：node 侧纯条数上限在 1 MB 级单行下同样能到 ~1 GB。)
+
+**这份底稿的用法**：agent 的对照表如果与它不一致，先怀疑 agent 读漏；如果一致但我上面某格填错，**以代码为准**。
+两边独立得到同一张表，才算这张表可信。
+- 2026-10-20 **R167 · 对照表补两行：node 侧没有 flush 串行化（python 侧有）**。
+
+读 `log-stream-pusher.ts` 的 `scheduleFlush` / `flush` / `finalFlush`：
+
+- `scheduleFlush`：`setTimeout` 回调里**先**把 `this.timer = null` **再**调 `flush()` ⇒ **不存在 python 那个「flush 取消自己」的 bug**
+  （python 用 `asyncio.create_task`，node 用 `setTimeout`，机制不同天然避开）。
+- **但 `flush()` 没有锁**：`finalFlush()` 直接 `await this.flush()`；若此刻有一次 timer flush 正卡在 `await post(...)`，
+  两者会**并发推不同切片**。
+
+| 维度 | python | node |
+|---|---|---|
+| flush 串行化 | `_flush_lock`（asyncio.Lock） | **无** |
+| final flush 是否等待在飞 flush | 是（锁 + await） | **否**（各自 splice 自己那批） |
+
+**后果推演**（不写成「已确认缺陷」，因为要真 admin 才能定）：两批切片行号不重叠 ⇒ admin 的「按范围先删后插」**不会写坏数据**；
+但 `finalFlush()` 只等自己那批 ⇒ **在飞那批还没回来，收尾就继续往下走了**。若进程此时销毁或回调已发出，
+那批日志的失败只会被 timer 回调里的 `.catch` 记一条 debug ⇒ **尾部落日志静默丢失**。
+这正是 python 侧加 `_flush_lock` 要防的形状（那边更严重：`chunks.clear()` 后一条没发出去）。
+
+**验证难度**：需要「一次 flush 卡在网络上 + 收尾同时发生」的时序，mock 里可构造，真机需慢 admin。**判定留给 agent**；
+我只把这一行写进底稿 —— 若它报「并发/顺序轴 ✅ 已正确」，我会拿这两行去对。
+- 2026-10-20 **R168 · 独立复现了 agent 报的「node 独有」缺陷，并给它的严重性降了半档**。
+
+它报：**node 侧 stdout/stderr 共用一个 partial 缓冲**（python 侧 stderr 在 OS 层合并成单流）⇒ 交错错位。
+
+我去读了调用点，**确认结构就是这样**（`execute.ts:3019-3026`）：
+
+```ts
+proc.stdout.on('data', d => processOutput(stdoutDecoder.write(d)));
+proc.stderr.on('data', d => processOutput(stderrDecoder.write(d)));
+// processOutput → logBuffer.append / appendLog / logStreamPusher.addOutput
+```
+
+→ stdout 与 stderr **进同一个 `processOutput`**，而 `addOutput` 只有**一个** `this.partial`。
+于是「stdout 的半行」+「stderr 的半行」会被拼成**一行**（例：stdout 出 `abc` 无换行，stderr 出 `XYZ\n` ⇒ `abcXYZ`）。
+
+**但我把它的严重性降了半档**，因为顺着同一段代码看下去：
+`processOutput` 里三处消费（`logBuffer.append` / `appendLog` / `logStreamPusher.addOutput`）**吃的是同一份合并流**。
+
+> ⇒ 行**内容**会被粘连，但**三个 sink 粘得一模一样** ⇒ **行号仍对齐**，回调日志与实时流仍然逐行一致。
+
+所以这不是「行号错位」级的缺陷（那会像 `R124` 钉的那条一样导致**静默数据错位**），
+而是**可读性/忠实性**缺陷：用户会看到两行被拼成一行，且**没有任何标记说明这里拼过**。
+
+**这条校准很重要**：如果我照抄 agent 的定级，就会把「日志看起来怪」当成「数据可能错位」，
+从而低估真正的行号错位风险，或高估这条的修复优先级。**同一个根因，不同的观测面，严重性不同。**
+- 2026-10-20 **R169 · 修正我自己在 R125 对 marker 严重性的判断**。
+
+`R125` 我给 python 侧补 marker 时的理由是「**一个静默的缺口，看起来就像一段正常的日志**」。当时我把它当成必要修复。
+这轮为了判断 node 侧缺 marker 的优先级，我去核了**缺口会不会被补上**：
+
+admin 的终态回调路径（`task.service.ts:5105-5125`）是：
+```
+if (LOG_TRUNCATION_MARKER.test(cb.logs)) { ...backfill... }
+const keepStreamed = LOG_TRUNCATION_MARKER.test(cb.logs) && await hasStreamedLogLines(id);
+if (!keepStreamed) await this.storeLogLines(cb.executionId, cb.logs);   // ← 用回调日志覆盖
+```
+
+⇒ **正常情况下（回调日志未被截断），终态会用 `cb.logs` 覆盖实时流写下的内容。**
+所以实时流的缺口是**临时的**：执行结束后会被完整回调日志覆盖。
+
+**这意味着**：
+| 结论 | 影响 |
+|---|---|
+| python 侧的 marker（`R125`） | 仍然值得做，但它是**实时视图的诚实性**，不是「数据永久缺失」的修复 |
+| node 侧缺 marker | 优先级 = **中**，不是高 —— 与 python 对齐有价值，但不是「会丢日志」 |
+| 我 `R125` 的措辞「静默缺口」 | **没错但过重**：缺口只在执行进行中可见，终态会自愈 |
+
+**这条自我修正值得记**，因为它说明一个陷阱：**我在一个观测面上发现的正确问题，容易被我按最严重的那个面去描述**。
+`R125` 当时我没有去查「终态会不会覆盖」，直接按「永久缺失」写。事实是「临时缺失」。
+修复本身依然正确（实时视图不该有静默缺口），**但它的定级被我抬高了**。
+
+（顺带：这也是给 node 侧 marker 的定级依据 —— **对齐 python 是对的，但别用「会丢日志」去说服人**。）
+- 2026-10-20 **R170 · 把 agent 判为「两侧一致」的一条往下追了一层：`finalFlush` 是 fire-and-forget，而且正好在 kill 路径上**。
+
+它报「finalFlush 全部 fire-and-forget（两侧一致）」。**「一致」不等于「没问题」** —— 我去看了调用点：
+
+```ts
+// execute.ts:3044  RT-LOG: Fire-and-forget final flush ... before timeout
+logStreamPusher.finalFlush().catch(...)
+// execute.ts:3082  ... before memory limit kill
+logStreamPusher.finalFlush().catch(...)
+```
+
+两处都是**超时 / 内存超限 kill 之前**的收尾，且都**不 await**。于是：
+
+> `finalFlush()` 发出去的 POST 与随后的 `proc.kill()` **在赛跑**。
+
+**这正好落在最需要日志的时刻**：任务是「为什么超时」「为什么 OOM」—— 而这两条路径上的尾部日志，
+恰恰是最可能没发出去的那几行。
+
+**但要按 `R169` 的校准来定级**：终态回调会用 `cb.logs` 覆盖实时流，所以**只要回调发出去了，数据仍会补齐**。
+真正的风险是**回调也没发出**（进程被强杀 / admin 不可达）—— 那时实时流是唯一副本，而它漏了尾。
+
+| 情形 | 后果 |
+|---|---|
+| 回调正常发出 | 实时流尾部临时缺失，终态自愈 |
+| 回调未发出（强杀 / admin 不可达） | **尾部日志永久缺失** |
+
+所以这条的正确说法不是「两侧一致所以免检」，而是「**两侧都在这条路径上赌回调会成功**」。
+要我改的话，最小改动是 kill 前 `await` 一个**有超时上限**的 finalFlush（例如 2s），而不是无限等。**留给验收轮决定做不做。**
+- 2026-10-20 **R171 · 全量守卫体检（35 道）**：逐个实跑，**34 绿 / 1 环境门控**。
+
+唯一非 0 的是 `check-release-hygiene.mjs`（exit 2）—— 已在 `R132` 记录过：它需要 `GITHUB_REPOSITORY`
+（CI 自动注入；本地跑需手动给），属于「本机跑不了」的正确表达，跑在独立 workflow 里。
+
+**这轮体检的意义不在发现什么，而在确认「这一整天的改动没有让任何一道守卫失效」。**
+今天新增了 3 道（`check-cron-leader-gate` / `check-publishable-wiring` / `check-enum-consumers`），
+守卫数 32 → **35**，而它们要守的东西每天都在变（新增迁移、改枚举、改渠道）——
+**守卫绿一次不代表明天还绿**，所以隔一段时间全量跑一遍是有意义的。
+
+**顺带一条观察**：今天每次加守卫都同时问过「它会失败吗」（反证），但没有问过「**所有守卫一起还是绿的么**」。
+后者是另一种失效：单道守卫各自正确，但它们**依赖的输入**（文档计数、枚举值、迁移号）可能被别的改动同时改坏。
+这次全绿说明没有这种交叉破坏。
+- 2026-10-20 **R172 · agent 的修复计划与我 9 行底稿逐条对上，且它独立复现了 P5**。
+
+它报的复现例子很具体：`stdout 残行` + `stderr 整行` 被拼成 `out-partialerr-line`。修复计划六条，与我底稿的对应关系：
+
+| 我底稿的行 | 它的修法 |
+|---|---|
+| 无字节记账 | `MAX_BYTES_PER_CHUNK=1MB` / `MAX_BUFFERED_BYTES=10MB`（**与 python 同值同名**） |
+| 片大小只有条数 | 按条数 **OR** 字节切片 |
+| 缓冲上限只有条数 | 按条数 OR 字节丢最旧片（保留尾部） |
+| 无 marker | flush 时发一行 marker，`fromLine=第一条被丢行`（**文案与 python 逐字相同**） |
+| 无 flush 串行化（`R167`） | Promise 链串行 + `finalFlush` 排队 ⇒ 结束路径**等完在飞请求** |
+| stdout/stderr 共用 partial（`R168`） | partial 按流隔离（`Map<'stdout'|'stderr'>`），两个 handler 传流身份 |
+
+**六条里有两条是我先独立发现、它随后也报出来的**（flush 无锁、混流），另四条它直接对齐了 python 侧的同名同值 —— 这正是我要求「任何不一致都是发现」的用意。
+
+## 一个接受度提示（写给验收轮的我）
+
+`partial` 按流隔离能**防止把两条不同的行粘在一起**，但**不能保证行序与真实交错一致**：
+若 stdout 与 stderr 各自都停在半行，谁先补齐谁先出行 —— 而真实交错顺序可能相反。
+这在没有 OS 层合并的前提下**无解**（除非改 `spawn` 的 stdio 配置，那是更大的改动）。
+
+⇒ 验收时不要把「行序可能与真实交错不符」当成它的缺陷；**它的目标只是「不粘行」**，这个目标是对的。
+- 2026-10-20 **R173 · 独立核对两侧常量与 marker 文案：逐字节相同**。
+
+| 项 | node（`log-stream-pusher.ts`） | python（`log_stream_pusher.py`） |
+|---|---|---|
+| 单片字节上限 | `MAX_BYTES_PER_CHUNK = 1_000_000`（:25） | `MAX_BYTES_PER_CHUNK = 1_000_000`（:26） |
+| 缓冲字节预算 | `MAX_BUFFERED_BYTES = 10_000_000`（:26） | `MAX_BUFFERED_BYTES = 10_000_000`（:24） |
+| marker 文案 | `... [${n} log lines dropped by local backpressure] ...`（:39） | 同文案（:36） |
+
+**这是本轮验收最该核的一条** —— 它决定「两侧契约一致」这句话是真的，还是「数值碰巧相近」。
+现在可以确认是真的：**同名、同值、同文案，连省略号的位置都一样。**
+
+**为什么必须逐字节而不是看起来差不多**：`1_000_000` 与 `1024*1024` 差 4.8%；`10_000_000` 与 `10*1024*1024` 差 4.9%。
+两侧若各写各的「10MB」，**行为在边界上就会分叉**（同一批日志，python 收住、node 丢行），
+而两者的测试都会绿 —— 因为它们各自测自己的实现。**只有把两边的字面量并排打出来，才看得见。**
+
+（这也是今天反复用的动作：**不要问「它们一致吗」，去把两个值并排打出来**。）
+- 2026-10-20 **★ R164-A1 done（commit 3f5209cf）—— node 侧日志链路与 python 对齐，四个缺陷**：
+  ① **无字节闸**：只有 10 片×100 行，单行无上限 ⇒ 实测 200×64KB=**12.8MB 全驻留**（python 已是 1MB/片 + 10MB 缓冲）⇒ 同一部署 python 任务不炸、node 任务炸。
+  ② **丢行无 marker**：1001 行丢 100 行，出站体 **0 条 marker**，行号 99→1100 静默跳跃。
+  ③ **flush 并发**：第一片卡网络时 finalFlush 立刻发第二片，到达顺序可与行号相反且不等在飞请求（我 `R167` 独立发现的同一条）。
+  ④ **stdout/stderr 共用一个 partial（node 独有）**：`'out-partial'+'err-line\n'` ⇒ `out-partialerr-line`（我 `R168` 独立复现）。**校准**：三个 sink 吃同一合并流 ⇒ 行号仍对齐，属**可读性**而非行号错位。
+  改法：`MAX_BYTES_PER_CHUNK=1_000_000` / `MAX_BUFFERED_BYTES=10_000_000`（**与 python 同值同名**）+ 条数 OR 字节切片/丢最旧 + marker（**文案逐字同 python**）+ flush Promise 链串行 + partial 按流隔离。
+  验证：**48 suites / 1205 → 1217 passed**、tsc 0；探针 5 例先全红再全绿后删除；**总控独立反证 ×2**：放开字节闸 → 3 failed、marker 模板改 `x` → 4 failed，均还原 23/23。
+  **总控独立核对常量逐字节相同**（`1_000_000` vs `1024*1024` 差 4.8%，各写各的「1MB」会让边界分叉而两侧测试都绿）。
+  **遗留如实**：需真 admin 才能定的三条；**跨侧共享弱点**（失败片不重发 / 非 2xx 算成功 / marker 被推迟 / 单行 >512KB 被拒整片）—— 单改一侧会破 parity，未动；**node 独有已证明未改**：decoder tail 只进 logBuffer 不进 pusher，末行多字节字符缺 1-3 字节；**超时/重试差异**（20s×3 vs 5s×1）非缺陷但建议 pusher 传 5s。
+- 2026-10-20 **R175 done（commit c924604c）**：**日志推送显式传 5s 超时，与 python 对齐**。`admin-client.post` 默认 20s，而 flush 串行化后单片超时直接决定「慢 admin 阻塞后续多久」：
+  python **5s/无重试** ≈ 5s 窗口；node 改前 **20s × 3 次 + 500ms 退避 ≈ 61s** —— 这 61 秒里正常产出的日志会被背压丢弃，**而丢的正是排障最需要的那段**。
+  改法：`post` 增加**可选**第 4 参 `timeoutMs`（不传即沿用默认，行为逐字不变；实现上把已有的 `request(..., timeoutMs)` 透出，`postLong` 早就这么用）；pusher 新增 `PUSH_TIMEOUT_MS = 5_000` 并显式传入。
+  验证：spec **24 passed**（+1 例，钉住「真的传了超时」且「值等于 5s」）、tsc 0；**反证**：删掉调用处实参 → **1 failed**，还原 24 passed。
+  **一次自伤**：加导入时写成 `BACKPRESSURE_MARKER,, PUSH_TIMEOUT_MS`（双逗号）⇒ 套件 `TS1003` 起不来、**0 个用例运行**。
+  这恰好区分了两种红：**「套件失败」与「用例失败」** —— 前者一个用例都没跑，后者至少跑了。我第一眼只看 `Test Suites: 1 failed` 差点当成断言挂了。
+  **连带**：改了 executor-node 源码 ⇒ `check-desktop-bundle-drift` 又红（内嵌 bundle 语义摘要变了）⇒ 重打 + 回填 `.sha256`，现已双段一致。
+  （**这条教训今天第三次出现**：改完一个应用，要跑的不只是它的测试 —— 还有它会连带影响的下游守卫。）
+- 2026-10-20 **R176 done（commit f2e242ad + fc97b56a）**：**decoder 尾巴必须同时喂实时流 pusher**。
+  `runProcess` 的 `close` 回调里，`StringDecoder.end()` 的残字节此前只喂**两个** sink（`logBuffer` 终态回调 / `appendLog` 落盘），
+  **漏了第三个**（`logStreamPusher`）—— 而正常数据路径 `processOutput` 是喂三个的。
+  ⇒ 进程在多字节字符中间被切断时，末行末尾 1-3 字节只出现在终态回调里，**实时视图那一行残缺且无标记**。
+  **这是结构性证明**：三个 sink 的输入集必须相同，这是 `processOutput` 已确立的契约，`close` 路径违反它 —— 不需要构造真实进程就能判定。
+  改法 2 行：`logStreamPusher?.addOutput(tail, 'stdout'/'stderr')`（带流身份，正好用上 `R164-A1` 刚加的按流隔离）；顺序在 `finalFlush()` 之前且 `addOutput` 同步 ⇒ 无时序问题。
+  验证：executor-node **48 suites / 1218 passed**、tsc 0、`jest src/routes` 15/424 全绿。**如实标注：这条没新增用例** —— 钉它需要真实子进程在多字节处断流；
+  我接受「结构性证明 + 全量不回归」，而不用 mock 冒充（**用 mock 模拟「decoder 有残字节」等于把实现抄一遍，那不是验证**）。
+  **这一类今天第四次**：`R94` 无调用方 / `R150-A1` isEnabled 只一处 / `R164-A1` node 没跟 python / 本轮三 sink 只喂两个 —— **「同一份数据多个消费者时新增分支只喂其中几个」**。
+  连带又重打了一次内嵌 bundle（`fc97b56a`）。
+- 2026-10-20 **R178 · 排除了两个「看起来是应用/子系统、实际没有代码」的目录，改派 SDK 审计**。
+
+想找新战线时先探了两个候选，结果都不成立 —— **如实记下来，免得以后又去挖一遍**：
+
+| 目录 | 实际内容 | 结论 |
+|---|---|---|
+| `apps/registry-npm` | **只有 `config.yaml` + `README.md`**，零代码 | 它是**第三方 registry（Verdaccio）的配置**，不是本仓实现的注册中心 |
+| `interpreters/` | **只有一个空的 `.cache/`** | 解释器产物不进库（由 CI 构建），源码不在此 |
+
+这两条都属于「**目录名暗示了一种存在，而实际内容说明另一种**」。`R135` 的四个 Python 库是「有代码但没接线」，
+这两个是「**连代码都没有**」—— 更彻底，也更不该被当成待优化项。
+
+于是改派：**两个对外 SDK**（`autoflow-sdk` Python ~1100 行 / `autocodeflow-node-sdk` TS ~1500 行）。
+选它们的理由很硬：它们**在 `release.yml` 的 version-guard 与 publish 矩阵里** —— 是用户直接 `pip/npm install` 的东西，
+**它们的行为就是产品契约**。而这两个包此前只跑过测试，**实现从未被读过**（与 `R134-A1` 那四个包同一个盲区，但那四个没接线、这两个是发布件）。
+
+给 agent 的三轴：错误面（异常可分类 / 可导出）· 重试与幂等（**别重试非幂等操作**、429 是否尊重 `Retry-After` 且有上限）· 资源与并发（**两包行为是否一致，不一致也是发现**）。
+- 2026-10-20 **R179 · SDK 审计的底稿：这两个包**比那四个未接线的库好得多**（防止我照抄 R134 的结论）**。
+
+先扫公开面与重试逻辑，两条都是**正面**结果：
+
+| 轴 | `autoflow-sdk`（Python） | `autocodeflow-node-sdk`（TS） |
+|---|---|---|
+| 导出异常类型 | `HttpClientError`、`CallbackDisabledError` ✅ | `HttpClientError`（type）+ `getErrorCode` / `getErrorParams` / `attachErrorCode` ✅ |
+| 重试与幂等 | 有 | `isRetryableError` / `parseRetryAfterHeader` / 熔断；测试明写「**幂等 GET** 才重试」「retries a safe GET」 ✅ |
+
+**这条底稿的用处**：`R134-A1` 那四个库的结论是「三个不导出异常类型」——如果我照抄那个印象来看 SDK，
+会**误判**它们也有同样问题。事实相反：这两个是发布件，维护水平明显更高。
+
+⇒ 若 agent 报「SDK 不导出异常类型」或「SDK 无重试」，我会先怀疑它没读到（或读到的是别的文件）。
+
+**这也修正了我自己的一个默认假设**：我这几轮见到的缺陷密度高，容易形成「这个仓到处是坑」的印象。
+而这两个包说明：**同一仓库里，发布出去的包和不发布的包，质量是两个档位** —— 发布线（守卫 + changelog + 版本锁）是真的在起作用。
+
+（顺带：`R135` 那四个库的问题**恰恰是没接线**，而接线的这两个反而没那些问题。**接线本身就是一种质量机制。**）
+- 2026-10-20 **R180 · 两条 SDK 的重试语义**根本不同**（一边有一边没有，且都没有错）**。
+
+| 包 | 重试 | 依据 |
+|---|---|---|
+| `autocodeflow-node-sdk` | **有**：`isRetryableError` + `parseRetryAfterHeader` + 熔断 + 有界退避；只重试**幂等 GET** | `http-client.test.ts:449-475` 的契约注释 |
+| `autoflow-sdk`（Python） | **没有，而且是刻意的** | `http.py:68-71` 的类文档 |
+
+Python 那段文档值得原文抄下来，因为它同时记录了**一次「文档撒谎」的修复**：
+
+> No automatic retry (**BUG-15 复审: 原文档串声称 "basic retry logic" 但实现从未有过——照写即错**)。
+> 非幂等方法（post/put/delete）永不被隐式重试；幂等重试由任务代码自行决定。
+
+⇒ **文档曾经承诺过一个不存在的功能**，后来被改成「如实说不重试」。这比留着那句谎好得多。
+
+## 但这构成一个真实的产品面不一致
+
+同一平台的两个发布 SDK：node 任务遇到瞬时 503 会**自动重试 3 次**；python 任务**立刻失败**。
+两边的文档各自都是诚实的，**但用户跨语言迁移时会得到不同的可靠性** —— 而没人会去读另一个语言的 SDK 文档。
+
+**这不是 bug**（两侧都自洽、都有意为之），所以我**不单方面改**。要决定的是：
+| 选 | 代价 |
+|---|---|
+| python 对齐 node（加重试） | 改变既有任务的失败时机；要处理「非幂等永不全自动重试」的边界；port 熔断/Retry-After |
+| 在两边文档里互相指认 | 成本极低，但用户仍会踩 |
+| 明确「python 侧不重试是设计」并在 README 显著位置写 | 诚实的现状 + 期望管理 |
+
+**留给 agent 报告 + 你拍板**，我不在这次审计里顺手改 python 的重试语义。
+- 2026-10-20 **R181 · agent 纠正了我任务书里的一条错误指令（我的错）**。
+
+我给 `R177-A1` 的任务书写的是：「node 包 `cd packages/autocodeflow-node-sdk` 后 `npx vitest run`」。
+它实测发现**该包根本没有 vitest**：
+
+```
+npx vitest run → 4 failed "describe is not defined" / "jest is not defined"
+```
+
+我核实了 `package.json`：`scripts.test = jest`，devDeps 有 `jest` + `ts-jest`、**没有 vitest**。
+**正确入口是 `npx jest`（= `npm test`）。**
+
+## 这是我的错，且是一个可复发的错
+
+我这几轮跑过 admin-web / mcp-server / acf-cli 的 `npx vitest run`（那几个确实是 vitest），
+于是**把「本仓的 node 包用 vitest」当成了通例**，套到了这个包上。
+
+> 而 vitest 面对 jest 写的测试不会报「找不到 runner」，它会**报一堆 `describe is not defined`** ——
+> 一个看起来像「测试文件写错了」的错误，而不是「你跑错 runner 了」。
+
+**如果 agent 不较真，它会得出「这个包的测试本来就坏」的结论，然后绕开测试直接改代码** ——
+那会是最坏的结果：改完没有基线可比。它没有，它去看了 `package.json`。
+
+**教训写给我自己**：给子任务写跑测命令时，**要么先读一眼 `package.json` 的 `scripts.test`，要么写「按本包自身约定」**，
+不要把上一个包的入口当默认值。今天我已经在「改完要跑哪些测试」上错过一次（`R127`），这是同一族的第二次。
+- 2026-10-20 **R184 · 独立确认了 agent 的 3xx 缺陷，并定位到**具体那一行**。
+
+`http.py:117-130` 的 `_raise`：
+
+```python
+if resp.is_error:                      # ← 只对 4xx/5xx 成立
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HttpClientError(...) from exc
+resp.raise_for_status()                # ← 3xx 从这里漏出去，抛的是**裸** HTTPStatusError
+```
+
+**机制**：httpx 的 `resp.is_error` 只覆盖 4xx/5xx；3xx 会走到最后那行 `raise_for_status()`，
+而它**对 3xx 也抛**（重定向响应在不 follow 时被视为错误）⇒ 调用方拿到的是 `httpx.HTTPStatusError`，
+**不是 `HttpClientError`** ⇒ `except HttpClientError` 捕获不到。
+
+**这不是理论问题**：httpx 默认 `follow_redirects=False`（对本包是**正确**选择 —— 内部通道不该跟外部重定向），
+所以任何一次 301/302/307（admin 换域名、反代配置错、`http→https` 跳转）都会以「**不可捕获的类型**」炸到任务代码里。
+
+**修法极小**（4 行变 3 行）：把 `raise_for_status` 无条件包进 try —— 它对 2xx 是 no-op，所以不需要 `is_error` 这个前置判断。
+那个前置判断**本身就是 bug 的来源**：它想「只包装错误状态」，但把「3xx 也算错误」这件事漏了。
+
+**agent 已独立发现同一处**（它的 `test_http.py` 有 302/301/307 三条红），所以我**不动手**，只把机制记下来供它参考/供验收核对。
+- 2026-10-20 **R185 · 3xx 的两侧行为又不同：python 拦下（但抛裸异常），node 静默跟随**。
+
+查 node SDK 的 `http-client.ts`：**没有 `maxRedirects` / `validateStatus` 配置** ⇒ axios 默认**自动跟随重定向**（上限 21 跳），
+所以 3xx 在 node 侧**根本不会作为错误出现**。
+
+| 侧 | 重定向行为 | 3xx 的可观测性 |
+|---|---|---|
+| `autoflow-sdk`（Python） | `follow_redirects=False`（httpx 默认） | **会抛** —— 且当前抛的是裸 `httpx.HTTPStatusError` |
+| `autocodeflow-node-sdk` | axios 默认跟随 | **不可见**（悄悄跟随，最终返回 200） |
+
+**这条对修复方向很重要**：python 侧的正确修法是「**保持 `follow_redirects=False`，但把异常类型修正为 `HttpClientError`**」，
+**不是**「打开 follow_redirects 让两边一致」。理由：
+1. 这是**内部通道**（admin-api），重定向几乎总意味着配置错/域名迁移，**静默跟随会把凭据发到未预期的 host**；
+2. httpx 关掉 follow 是本包**已经在做的事**，改它属于行为变更，超出修 bug 的范围；
+3. node 侧真正的问题是「**静默**」，而不是「跟随」—— 若要统一，应当是 node 去**记一条 warn**，不是 python 去跟随。
+
+**这条的价值**：它挡住了一个很自然的错误修法（「两边不一样，那就都跟随」）。
+**一致不一定等于正确** —— 与 `R170`（两侧都 fire-and-forget，所以免检）是同一个陷阱的反面。
+- 2026-10-20 **R186 · 验收预检：`R185` 那条「别为了让两边一致去打开 follow_redirects」——它守住了**。
+
+读 `http.py` 的修复：
+
+```python
+def _raise(resp):
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HttpClientError(str(exc), request=exc.request, response=exc.response) from exc
+```
+
+**单一路径**，没有任何 `is_error` 前置判断 —— 与我在 `R184` 独立定位的机制完全一致（它给的注释甚至连
+「302 登录跳转 / 网关反代」这个触发场景都写到了）。
+
+**关键确认**：全包 `follow_redirects` 出现次数 = **0** ⇒ 它**没有**为了让 3xx 变绿而打开跟随，
+仍是 httpx 默认的「不跟随、把重定向当错误」—— 正是内部通道该有的姿态。
+
+⇒ 两件事同时成立：**异常类型被修正**（可捕获、带 `error_code`），**安全语义没被顺手改掉**。
+
+这是本轮我最想确认的一点，因为「让测试变绿的最小改动」有两个候选（改类型 / 打开跟随），
+**后者更省事且看起来也合理** —— 而它选了前者。
+- 2026-10-20 **R187 · 独立确认：发布包里有个错误类型**从入口不可达**（第三个「存在但不在链路上」的变体）**。
+
+`R177-A1` 报：`CircuitBreakerOpenError` 只在 `http-client.ts` 里 `export`，而 `index.ts` **没有转出** ⇒
+消费方 `import { CircuitBreakerOpenError } from '@autocodeflow/sdk'` **编译失败**，catch 端只能靠 `err.name` 字符串猜，
+`instanceof` 永远为 false。
+
+**我用 `git show HEAD:` 独立核了两处**：
+
+```
+index.ts (HEAD)        mentions CircuitBreaker = 0
+http-client.ts (HEAD)  exports class          = 1
+```
+
+⇒ 确认成立。而且是**发布件**（`release.yml` 的 publish 矩阵里有它），所以这不是内部瑕疵，
+**是用户装到的包里那个类摸不到**。
+
+## 这是「文件存在 ≠ 在链路里」的第三个变体
+
+| 变体 | 载体 | 表现 |
+|---|---|---|
+| 进程/模块级 | 守卫脚本、selftest、`ZIP_MAX_*` | 写了没被调用 |
+| 模块**入口**级 | `index.ts` 没转出 | **写了、被使用了、但对外不可见** |
+| 契约级 | node/python 两侧实现 | 一份改了另一份没跟 |
+
+**入口级这个变体特别隐蔽**：类在文件里 `export` 了、内部测试也 `import` 它、类型检查也过 ——
+因为它**在自己的模块里是可见的**。只有从包外用**包名**去导入才会失败，而仓内没有人那样写过测试。
+
+这解释了一个常见现象：**单仓内的测试全绿，用户第一次 `import` 就崩**。
+- 2026-10-20 **R188 · agent 顺手抓到的一条：终态回调 URL 判定是**前缀匹配**，比它该有的宽**。
+
+改前（`HEAD`）：
+
+```ts
+export function isTerminalCallbackUrl(url, method) {
+  return method.toUpperCase() === 'POST' &&
+         /^\/api\/executions\/callback(?:\/|\?|$)/.test(url);
+}
+```
+
+这条正则允许 `callback` 后面跟**任意路径段**：`/api/executions/callback/anything` 也算「终态回调」。
+而它的语义是「**唯一豁免重试的非幂等通道**」—— 豁免理由很强：admin 侧对该通道有自己的重试与服务端语义。
+
+⇒ 后果是**策略越界**而非数据损坏：任何以 `/api/executions/callback/` 开头的 POST 都会拿到回调的豁免语义
+（不进重试、熔断记账不同），而它其实是一条普通的业务 POST。
+
+**判定为「前缀匹配冒充精确匹配」**，与本 session 反复出现的形状同族：
+`R119` 的门禁正则数到注释/邻居、`R134-A1` 的 `?key=` 漏判、`R164-A1` 的 marker 缺失 ——
+**共同点都是「判据覆盖的范围，比它声称的范围宽或窄」**。
+
+它的修法正确：改成 `^/api/executions/callback/?$`，**并对 URL 做归一化**（否则 `callback?x=1` 会失配 ——
+那会把一条**真正的**终态回调判成普通 POST，方向反过来也错）。
+
+**这条我核了原实现，确认成立**；具体归一化细节留给它交付时看代码。
+- 2026-10-20 **R189 · 独立确认「同一条 URL 判定被两个谓词各写一遍，两个都错」**。
+
+`R188` 我记的是 `isTerminalCallbackUrl`（前缀匹配过宽）。读文档时发现它的注释提到**第二个谓词**，去看了：
+
+```ts
+private withExecutorAddress(url, data) {
+  if (!/\/executions\/callback\/?$/.test(requestPath(url))) return data;   // ← 现在已归一化
+...
+}
+```
+
+改前它是直接对**调用方传进来的 url** 套正则，于是 `POST /api/executions/callback?batch=2` **静默失配**，
+**`executorAddress` / `deviceFingerprint` 盖章被跳过** ⇒ admin 侧那一行无法归属到执行器（N27 失效）。
+
+**同一个正则语义、两个调用点、两种后果**：
+
+| 谓词 | 带查询串时的后果 |
+|---|---|
+| `isTerminalCallbackUrl` | 重试豁免失效 ⇒ 终态回调退回「单发即抛」，**一次抖动就丢终态** |
+| `withExecutorAddress` | 盖章失效 ⇒ **行归属丢失**（数据面） |
+
+而两个谓词原本各写了一遍「是不是回调端点」的判据 —— **又是「同一条规则多份实现」**，
+这次的两份都在**同一个文件**里，相隔 500 行。
+
+**它现在用同一个 `requestPath()` 归一化两者**，并且注释里写清了「两种完全合法的写法静默失配」——
+**这比只修其中一个更有价值**，因为第三个谓词将来会照抄 `requestPath`，而不是再写一个裸正则。
+- 2026-10-20 **R190 · 验收预检：`Retry-After` 不但补上了，还带了**硬上限**，且理由写在代码里**。
+
+`callback.py` 现在有：
+
+```python
+CALLBACK_RETRY_MAX_WAIT_S = 5.0      # 单次重试等待的硬上限，对指数退避与 Retry-After 一体适用
+def _parse_retry_after(raw): ...      # delta-seconds 或 HTTP-date
+```
+
+注释说明了**为什么必须有上限**：
+
+> Retry-After 是**服务端可控**的输入。没有上限时一句 `Retry-After: 3600` 就能把任务进程钉住一小时
+> ——本客户端是**同步阻塞 API**。
+
+**这条正是 `R134-A1` 在 `autocodeflow-http` 修过的同一个问题**（当时我在 `R140` 独立复现过 clamp：
+`clamp=None => wait 3600.0` / `clamp=5 => wait 5`）。现在在 SDK 侧以**默认就设上限**的方式落实 ——
+比当时那边「默认 None 保持旧契约」更进一步，因为这里是新加的行为，没有旧契约要保。
+
+`HTTP-date` 也要支持（不只是 delta-seconds），这点与 node 的 `parseRetryAfterHeader` 一致 —— **跨侧语义对齐**。
+
+## 一条值得记的差异
+
+| 面 | `autocodeflow-http`（R134-A1） | `autoflow-sdk`（本轮） |
+|---|---|---|
+| Retry-After 上限 | **可选**，默认 `None`（保旧契约） | **固定 5.0s**（新行为，无旧契约） |
+
+**同一个问题，两处不同的取舍，而两处都对**：有没有旧契约要保，决定了默认值该松还是该紧。
+- 2026-10-20 **★ R177-A1 done（commit 0bba3bcf）—— 两个**发布件** SDK 审计，六处缺陷**：
+  **PY**：① 回调通道抛裸 `httpx.HTTPStatusError` 而通用通道抛 `HttpClientError` ⇒ `except HttpClientError` **接不住 401**、拿不到 `error_code`；② `_raise` 的 `if resp.is_error` 前置判断让 **3xx 漏出 SDK 类型**（反代 302 场景）；③ **429/5xx 完全忽略 `Retry-After`**（固定 0.5/1.0s ⇒ 必然再吃 429 烧光预算）。
+  **NODE**：④ `CircuitBreakerOpenError` **从包入口不可达**（`index.ts` 没转出 ⇒ 用户 `import` 编译失败）；⑤ 禁用态抛裸 `Error`（配置错不可分类）；⑥ `isTerminalCallbackUrl`/`withExecutorAddress` 用裸正则 ⇒ **带查询串或绝对 URL 时静默失配**（丢重试豁免 + 丢 `executorAddress` 盖章），且两谓词对 `/callback/sub` **互相矛盾**。
+  改法要点：`Retry-After` 解析（delta + HTTP-date）+ `CALLBACK_RETRY_MAX_WAIT_S=5.0` **硬上限**（同步阻塞 API 不能被服务端一句话钉住）；`_raise` 收敛单一路径；新增 `requestPath()` 归一化并让两个谓词共用；`HttpClientDisabledError` 导出。
+  验证：**PY 157→169**、**NODE 133→139**、tsc 0；执行者先红后绿（8F/3F/5F → 全绿）；**总控独立反证 ×2**：`_raise` 退回 `is_error` 前置 → **3 failed**、`index.ts` 退回只转 `HttpClient` → **2 failed**，均还原全绿。
+  **判「干净」的三轴都有证据**（重试非幂等：admin 三道闸逐个读并给 file:line / 错误未吞：9 处 except 逐处说明 / 资源关闭：含异常路径）。
+  **★ 更正执行者的一条遗留**：它把「CI/文档用 `vitest run` 跑 jest ⇒ 必然全红」列为遗留 7 —— 我核了 `ci.yml:637` 是 `npm test -- --coverage`（= jest），**CI 没问题**；那条 vitest 命令的出处是**我自己的任务书**（`R181` 已记）。
+  **遗留（需决策）**：配置错语义两包相反（`from_env` 不抛 / `fromEnv` 抛）/ Python 缺异步回调客户端 / **Node 回调重试最坏 ≈130s vs PY ≈41s**（临近 `timeoutSeconds` 可能被杀反而丢终态）/ `isNetworkLevelError` 可能漏 `EPIPE`（未实测）/ 熔断能力不对等。
+  **如实标注**：幂等性来自读 admin 源码，未真起 admin-api 发重复回调；Retry-After/429 全 mock 验证。
+- 2026-10-20 **R193 · 独立发现：`acf apikey revoke` 是全 CLI 唯一**没有确认**的破坏性命令**。
+
+先夸一下这套设计：`confirmDestructive(question, { yes })`（`ui.ts:176-204`）做得很好 ——
+`--yes` 直通；**非 TTY 且没有 `--yes` 时 `emitUsageError` 直接拒（不是静默执行）**；接住 SIGINT 走 130；默认 `[y/N]` 只认 `y|yes`。
+这正是 CI/agent 场景需要的 **fail-closed**。
+
+然后我按文件数了「破坏性子命令数 vs `confirmDestructive` 调用数」：
+
+| 文件 | 破坏性子命令 | confirmDestructive |
+|---|---|---|
+| `tasks.ts` | 3 | 3 ✅ |
+| `apps.ts` | 1 | 3 ✅ |
+| `mutex.ts` | 1 | 3 ✅ |
+| `deploy.ts` | 1 | 2 ✅ |
+| `executors.ts` | 1 | 2 ✅ |
+| **`apikeys.ts`** | **1** | **0** ❌ |
+
+那一条是 `acf apikey revoke <id>`，它的 description 自己写着：
+
+> Revoke an API key (soft-delete — takes effect on its next request, **cannot be undone**)
+
+⇒ **不可撤销、立即生效、零确认**。一次手滑或一个错误的 id 就把生产集成打断，而且没有 `--yes` 也没有回滚。
+
+**这是今天第 N 次「同一修法只落一半」**：五个文件都接了统一确认，第六个漏了 —— 而漏的那个恰好是
+**唯一一个 description 里明写 cannot be undone 的**。
+
+（agent 正在审 `acf-cli`，可能也会发现；我不动手以免冲突，验收时若它没报，我自己补。）
+- 2026-10-20 **R194 · 退出方式两套并存：`process.exitCode =`（11 处）与 `process.exit(`（20 处）**。
+
+`R192-A1` 的初判里有一条「`process.exit(0)` 紧接 `console.log` 大量 JSON → 管道截断」。我去数了全 CLI 的两种写法：
+
+| 写法 | 处数 | 语义 |
+|---|---|---|
+| `process.exitCode = N` | **11** | 设退出码后**让事件循环自然收尾** ⇒ stdout 被完整刷出 |
+| `process.exit(N)` | **20** | **立即**终止 ⇒ 管道上尚未刷出的写可能被丢 |
+
+**两套并存本身就是问题**：说明没有统一约定，谁写代码时想到哪套就用哪套。
+而 `process.exit()` 在**管道**（`acf ... --json | jq`）上是真实风险 —— 终端上通常看不出来，因为 TTY 写是同步的，
+**只有被管道/CI 消费时才可能截断**。这与 `R132` 那条「`$LASTEXITCODE` 与管道」是同一类环境差异。
+
+**我核了其中一处**（`tasks.ts:1027-1030`）：`console.log(green(...))` 紧跟 `process.exit(0)` —— 消息很短，
+实际截断概率低，但**形状是错的**：正确写法是 `process.exitCode = 0` 然后 `return`。
+
+**严重性校准**：
+- 短消息 + 管道 ⇒ 概率低（libuv 对小写入常能同步完成）；
+- **大 JSON 输出 + 管道** ⇒ 概率显著上升（`--json` 列全量任务/执行时正是这种）；
+⇒ 真正该改的是**输出体积大的那些路径**，不是把所有 `process.exit` 一律替换。
+
+**这条我给 agent 的验收判据**：如果它报「全部换成 exitCode」但没区分输出体积，那是**过度统一**；
+正确的收法是**统一到 exitCode，但先证明大输出路径确实会截断**（写一个 `acf ... --json | wc -c` 的复现）。
+- 2026-10-20 **R195 · 我 `R193` 的计数方法太粗（按文件），agent 按命令枚举后发现 7 处缺口而不是 1 处**。
+
+我的方法：**按文件**数「破坏性子命令数」与「`confirmDestructive` 调用数」，两者相等就认为齐。
+`tasks.ts` 是 **3 : 3** —— 看起来齐。
+
+但 agent 按**命令**逐个枚举的结果是：
+
+**有确认门**：app delete / task delete / deploy remove / task batch delete / app upgrade-all(all) / executor rotate / mutex delete。
+
+**无确认门（候选）**：task kill / task rollback / task webhook rotate·disable / apikey revoke / executor offline / deploy stop。
+
+⇒ `tasks.ts` 那 3 个确认门盖的是 **delete / batch delete** 等，**没盖 kill 和 rollback**。
+
+**我的方法错在哪**：文件级的「数量相等」**无法证明集合相等**。3 个门 + 3 个破坏性命令，可以是「每个都有门」，
+也可以是「三个门都给了别的命令」。**这是把「计数相关」当成了「逐项覆盖」。**
+
+**正确方法是按命令枚举**（agent 做的）：列出每个破坏性子命令，逐个问「它自己被门盖住了吗」。
+
+这与今天早些时候那条同族（`R119`）：`@Cron` 门禁守卫最初用 **40 行窗口**判 —— 那也是「位置相关」冒充「逐项覆盖」，
+最后改成**按方法体边界**才可靠。**两次都是「近似判据」被「精确枚举」取代。**
+
+**结果**：缺口不是 1 处而是 **7 处候选**，需要按严重性分级（不可逆的 `apikey revoke` 最重，`task kill` 可重跑最轻）。
+- 2026-10-20 **R196 · 独立确认 `isJsonInvocation` 的误判来源：一个 deprecated 的 `--json <body>` 旗标**。
+
+`ui.ts:73-77`：
+
+```ts
+export function isJsonInvocation(argv = process.argv): boolean {
+  return argv.slice(2).includes('--json');
+}
+```
+
+它是**全局 argv 探针**（不是读已解析的 options）。而 `apps.ts:160` 有：
+
+```
+.option('--json <body>', 'DEPRECATED (renamed to --body): Application body as JSON string.')
+```
+
+⇒ `acf app create --json '{"name":"x"}'`（用旧旗标传 body）会让 `argv` 里出现 `--json`，
+于是**错误输出被判成 JSON 模式**（`emitError` 走 `JSON.stringify(apiErrorToJson(...))`），而用户要的是人读输出。
+
+**严重性校准（低）**：它只影响**错误输出格式**，不影响业务行为、不影响退出码。而既有写法 `opts.json ?? isJsonInvocation()`
+说明主路径是读 options 的，探针只是兜底。
+
+## 但根因值得指出
+
+> 一个**已废弃**的旗标，污染了一个**正在使用**的判据。
+
+废弃旗标的问题不只是「还有人用」，而是**它仍占用同一个名字**，于是任何按名字做的判断都会误命中。
+
+**我的建议（比修探针更彻底）**：直接**删掉 `--json <body>`**（它已标 DEPRECATED 且已改名为 `--body`），
+探针的误判来源就消失了 —— 不需要给 `isJsonInvocation` 加更多条件，**那只会让一个兜底逻辑越来越聪明**。
+
+（具体删不删要看过是否有用户在用 —— 这是发布件的兼容性决策，我不单方面删。）
+- 2026-10-20 **R197 · 独立确认：`task kill` / `task rollback` 没有 `--json`，写命令的机器可读面不齐**。
+
+核了 `tasks.ts` 两处：
+
+| 命令 | 选项 | 输出 |
+|---|---|---|
+| `task rollback <id>`（:487-497） | 只有 `--version`，**无 `--json`** | `spinner.succeed(...)` + 一行 gray 文本 |
+| `task kill <taskId> <execId>`（:845-855） | **无任何选项** | `spinner.succeed(r.message)` |
+
+而读命令那侧是齐的（`task list` / `exec` / `apikey list` / `approval list` 都有 `--json`）。
+
+⇒ **「读命令可机器解析、写命令只能人读」** —— 对 CI 消费者很别扭：
+一个脚本 `acf task kill 12 345` 之后拿不到结构化结果（成功/失败只能靠退出码），而 `acf task list --json` 又能拿到。
+
+**严重性（中）**：不影响正确性，但**影响「CLI 能否被编排」** —— 而这正是 CLI 相对 UI 的主要价值。
+
+**注意不要过度统一**：`approval approve/reject/cancel` 也缺 `--json`，但它们的输出就是一句确认，
+加 `--json` 收益低；**`kill` / `rollback` 收益高**，因为脚本通常要继续判断「真的取消了没有 / 回滚到了哪个版本」。
+
+这与我 `R194` 那条判据同型：**「统一」不是目标，「按用途分级」才是**。
+- 2026-10-20 **R198 · 确认 `acf-cli` 的退出码契约是**设计过**的（正面结论，值得记以免重复审）**。
+
+`ui.ts:26-33`：
+
+```ts
+export const EXIT_CODES = { OK: 0, GENERIC: 1, USAGE: 2, AUTH: 3, NETWORK: 4, INTERRUPTED: 130 } as const;
+```
+
+且 `exitCodeFor(e)` 的分派是**按错误类型**而不是按消息文本：`UsageError → USAGE(2)`，其余走 `classifyApiError(e)`
+分成 `auth(3)` / `network(4)` / 默认 `GENERIC(1)`。130 走 SIGINT 出口。
+
+⇒ 这满足脚本化最需要的三件事：
+1. **码可判**（不是 0/1 二值），`if acf ...; then` 之外还能区分「参数错(2) / 鉴权错(3) / 网络错(4)」；
+2. **按类型分派**而非匹配文案 —— 文案改了不影响退出码；
+3. **非交互危险操作 fail-closed**：`confirmDestructive` 在非 TTY 缺 `--yes` 时抛 `UsageError` ⇒ **码 2**，
+   既不是 0（静默执行）也不是 1（笼统失败），**脚本能明确知道「我没给 --yes」**。
+
+**记这条的用处**：`R193/R195/R197` 那几条都是「**个别命令**没跟上这套设计」，
+而**设计本身没问题** —— 修的时候应当**复用 `confirmDestructive` / `EXIT_CODES`**，
+不要另发明一套。**先确认基线是好的，才能说清楚偏差在哪。**
+- 2026-10-20 **R199 · 结构确认：`acf-cli` 的 `--json` 输出为什么是干净的**。
+
+agent 报「9 个 `--json` 命令的 stdout 可整体 `JSON.parse`，失败时 stdout 空 + stderr 单行 JSON」。
+我去核了它为什么成立 —— 三个机制叠加：
+
+1. **spinner 走 stderr**：全仓 `ora(...)` 调用**没有一个传 `stream:`**，而 ora 默认 `stream = process.stderr` ⇒
+   进度帧永远不进 stdout；
+2. **spinner 在非 TTY 下自我禁用**：ora 的 `isEnabled` 会在流非 TTY / CI 环境下返回 false ⇒
+   **管道里连 stderr 的帧都没有**，不会污染「单行 JSON」；
+3. **错误走 `console.error`**（`emitError` 里 `console.error(JSON.stringify(apiErrorToJson(...)))`），
+   而人读行与 JSON 是**二选一分支**（`if (json) {...} else {...}`），不会混出。
+
+⇒ 这三条**缺一不可**：如果 ora 默认写 stdout、或非 TTY 仍打印帧、或错误混用 `console.log`，
+`--json` 契约就破了。**而三条都在**，所以这条契约是**成立且有结构性依据**的，不只是「测试碰巧过了」。
+
+**记这条的用处**：它把「`--json` 是干净的」从一个**观测结果**变成了一个**可复核的机制说明** ——
+将来有人改 `ora(...)` 加 `stream: process.stdout`，或者把某处 `console.error` 写成 `console.log`，
+**这次的记录会告诉他为什么不能那样改**。
+- 2026-10-20 **R200 · 核了它给 `task webhook enable` 加确认门的理由，成立**。
+
+它把 `enable` 也纳入破坏性动作，理由写在新测试的注释里：**「enable 对已启用任务等价轮换 → 归入破坏性动作」**。
+
+我去核了 `tasks.ts:894-920` 的契约注释：
+
+> `acf task webhook <enable|rotate|disable|status> <taskId>`（FEAT-21 任务级入站 webhook）。
+> **契约：`enable`/`rotate` 响应 `{ url, secret }`——secret 明文仅在…**
+
+⇒ `enable` 会**返回一个新 secret**，也就是说对「已经启用」的任务再 `enable` 一次 = **轮换密钥**，
+旧签名立刻失效、外部集成挂掉。**确认门是对的，理由也是对的。**
+
+**这条值得单独记**，因为它区分了两种「让测试变绿」：
+
+| 做法 | 本质 |
+|---|---|
+| 看到测试挂在「需要确认」上，补 `--yes` | **只是让测试通过** —— 下一次有人问「为什么这里要 --yes」没有答案 |
+| **先判定该命令是否真的破坏性，再补 `--yes` 并写清判据** | **契约变更 + 它的理由** |
+
+它做的是后者，而且顺带发现了一条我 `R193/R195` 都没列出来的：`enable` 本身**不在我列的破坏性命令词表里**
+（我的 grep 只找 `delete|kill|rotate|rollback|revoke|remove`），所以**靠名字筛永远会漏** ——
+这也是「按名字找破坏性命令」这个方法的天花板。
+- 2026-10-20 **R201 · 它的 README 更新是今天见过最好的一次文档改动（把清单换成了分类）**。
+
+改前是一句不完整的枚举：
+
+> `app delete` / `task delete` / `deploy remove` 有交互确认。
+
+改后是**按效果分类的表格**：
+
+| 类别 | 命令 |
+|---|---|
+| 删除 | `app delete` / `task delete` / `task batch delete` / `deploy remove` / `mutex delete` |
+| **一次性密钥轮换（旧值立即失效）** | `executor rotate` / `task webhook enable`·`rotate`·`disable` |
+| **强制终止（KILLED 是终态，无法恢复）** | `task kill` |
+| 全量滚动升级（`--strategy canary` **不加门**） | `app upgrade-all` |
+| 撤销凭据（影响仍在用它的外部系统） | `apikey revoke` |
+
+三个细节值得单独指出：
+
+1. **分类的依据是「后果」而不是「动词」** —— `enable` 出现在「密钥轮换」那一行，因为它的后果是轮换；
+   这正是我 `R200` 说的「按名字筛永远会漏」的反面：**按效果归类，`enable` 就不会被漏掉**。
+2. **`--strategy canary` 不加门** 被显式写明 —— 同一个命令，**全量升级加门、金丝雀不加**。
+   这是**按比例**而不是按命令名一刀切；不写出来，下一个人会以为漏了。
+3. **`status` 是只读面，不加门**也被写明 —— 「什么都不做的那个子命令」同样需要一句解释。
+
+**这条是本 session 里我想推广的那种文档**：它不描述代码怎么写，而描述**为什么这样分类**，
+于是以后新增一个破坏性命令时，**作者知道该问「它属于哪一类后果」而不是「它名字里有没有 delete」**。
+- 2026-10-20 **★ R192-A1 done（commit 03a15c1f）—— `acf-cli` 命令实现审计，两处缺陷**：
+  ① **四个破坏性命令零确认**：`task kill` / `task webhook enable·rotate·disable` / `apikey revoke` —— 非 TTY（CI/agent/管道）下**直接执行不可逆动作**（KILLED 是终态 / 旧 secret 永不回传 / 撤销无取消面）。补 `-y/--yes` + `confirmDestructive`，缺 `--yes` ⇒ **码 2 且请求不发出**。
+  ② **本地数值参数静默兜底**（它自己发现，不在我给的三轴里）：`task logs` 的 `--from-line`/`--limit`/`--tail` 用 `parseInt(x) || 默认` ⇒ `--tail 5o`、`--from-line 1O0` **不报错、被截断后照原样发请求**。改严格整数解析，非法值 commander 层报用法错误（码 2）。
+  **README 从清单改成按后果分类的表**（删除 / 一次性密钥轮换 / 强制终止 / 全量滚动升级 / 撤销凭据）—— `enable` 按后果归入「密钥轮换」、`--strategy canary` 不加门 与 `status` 只读不加门 都显式写明。
+  验证：**371 → 394 passed**（+23）、tsc 0、`check-cli-doc` 绿；执行者先红后绿（12 failed → 全绿）；**总控独立反证**：`{ yes: opts.yes }` → `{ yes: true }` ⇒ **1 failed**，还原全绿。
+  **判定不改并给理由**：`task rollback` 不加门（每次写入都落版本快照、当前状态可再回滚）；`isJsonInvocation` 与废弃 `--json <body>` 撞名（我 `R196` 独立发现同一条）；`exec tail` 的 `process.exit(0)` 截断风险**未证实不下结论**（我 `R194` 的观察，与它独立一致）。
+  **如实标注**：`kill` 的 `200+success:false` 分支、属主与终态语义、webhook secret 只存密文 —— 均读源码确认，未跑真实服务。
+  **三条我独立发现的事，它都独立命中了**（`R193` apikey revoke / `R196` 废弃旗标 / `R194` 退出方式）—— 且有两条它给出了比我更准的判据（`R195` 我按文件计数太粗、`R200` 我按名字筛破坏性命令会漏 `enable`）。
+- 2026-10-20 **R202 · 用真实探针试了「`process.exit(0)` 会不会截断管道输出」——**没复现**。
+
+`R194` 我观察到 `acf-cli` 里有 20 处 `process.exit(`、11 处 `process.exitCode =`，并推测前者可能在管道上截断。
+这轮做实证（Node v24 / Windows）：
+
+| 形态 | 字节数 |
+|---|---|
+| `console.log(8MB)` 后 `process.exit(0)` → **重定向到文件** | **8388609** |
+| 同上但 `process.exitCode = 0` → 重定向到文件 | 8388609 |
+| `console.log(8MB)` 后 `process.exit(0)` → **真实管道**（另一个 node 进程读 stdin 计数） | **8388609** |
+| 同上但 `exitCode` → 真实管道 | 8388609 |
+| 期望值 | 8388609 |
+
+**四种形态全部完整，零截断。**
+
+## 结论与它意味着什么
+
+`R194` 那条**不具备实证支持**，因此**不应成为修改 `process.exit` 的理由**。
+`R192-A1` 对同一问题写的是「截断风险**未证实，不做结论**」——**那是对的**，我这条实证把「未证实」往「倾向于不存在」推了一步。
+
+**仍未被覆盖的形态**：**多次写入交错 + 中途 exit**（例如循环里逐条 `console.log` 然后在第 N 条后 exit）。
+那与「单次大写入」不同 —— 但要用探针区分它需要模拟真实命令的输出时序，成本高于收益，且 CLI 里没有这样的路径（退出都发生在一条成功/错误消息之后）。
+
+## 已同步到决策清单
+
+`docs/OPEN-DECISIONS.md` 的 **D3** 从「要不要统一（可能截断）」改成「**未能复现截断，不建议基于这个理由改动**」，并写明剩下的未测形态。
+**一条待决策项因为一次实证而缩小了范围，这是这轮的实际产出。**

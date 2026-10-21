@@ -23,6 +23,8 @@ import {
 } from './config-sanitize';
 // i18n-DESK-01：uiLanguage 的判定层（纯模块，无 electron 依赖）
 import { UI_LANGUAGE_DEFAULT, UI_LANGUAGE_VALUES, resolveUiLanguage } from './ui-language';
+// 保存影响判据（渲染层与主进程共用同一份字段清单）
+import { restartRequiredFieldsDiffer } from './config-restart';
 
 /** 最小化复刻 config-store.ts 的 defaults（只留被测字段，语义逐条一致）。 */
 const DEFAULTS = {
@@ -54,6 +56,53 @@ function applyPatch(store: any, patch: Record<string, unknown>): void {
 }
 
 function main(): void {
+  // ── 0. 保存影响：只有真正进子进程的字段才需要"会重启执行器"提示 ─────
+  {
+    const base: Record<string, unknown> = {
+      adminApiUrl: 'http://127.0.0.1:3001',
+      executorName: 'host',
+      executorHost: '0.0.0.0',
+      executorPort: 8002,
+      executorAddressPublic: '',
+      executorToken: '******',
+      workDir: '',
+      maxConcurrentTasks: 10,
+      uvPath: '',
+      uvPythonInstallDir: '',
+      uvPythonInstallMirror: '',
+      interpreterDownloadTimeoutMs: 0,
+      pypiRegistryUrl: '',
+      pullMode: false,
+      logLevel: 'info',
+      notifyEnabled: true,
+      uiLanguage: 'zh',
+      agentEnabled: false,
+    };
+    assert.strictEqual(
+      restartRequiredFieldsDiffer(base, { ...base, uiLanguage: 'en' }),
+      false,
+      '仅改界面语言不得提示重启执行器',
+    );
+    assert.strictEqual(
+      restartRequiredFieldsDiffer(base, { ...base, logLevel: 'debug', notifyEnabled: false }),
+      false,
+      '仅改日志级别/通知开关不得提示重启执行器',
+    );
+    for (const [key, value] of [
+      ['maxConcurrentTasks', 11],
+      ['executorPort', 8003],
+      ['adminApiUrl', 'http://127.0.0.1:3002'],
+      ['executorToken', 'new-secret'],
+      ['pullMode', true],
+    ] as const) {
+      assert.strictEqual(
+        restartRequiredFieldsDiffer(base, { ...base, [key]: value }),
+        true,
+        `改 ${key} 必须提示重启执行器`,
+      );
+    }
+  }
+
   const tmp = fs.mkdtempSync(
     path.join(fs.realpathSync(os.tmpdir()), 'acf-config-sanitize-'),
   );

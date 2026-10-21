@@ -1,4 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
+// R102-A1：桥形参归一（fail-closed）。签名只是类型声明，运行时可以是任何形状
+// ——主进程的 sender 闸只校验 frame，不校验参数，所以这里先收成
+// string / number / boolean 再投递（理由见 bridge-args.ts 文件头）。
+import { asBool, asLineNumber, asString, MAX_CLIPBOARD_ARG } from './bridge-args';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // 配置
@@ -6,7 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveConfig: (cfg: Record<string, unknown>) => ipcRenderer.invoke('config:save', cfg),
   saveAndCloseWizard: (cfg: Record<string, unknown>) =>
     ipcRenderer.invoke('config:save-and-close-wizard', cfg),
-  testConnection: (url: string) => ipcRenderer.invoke('config:test-connection', url),
+  testConnection: (url: string) =>
+    ipcRenderer.invoke('config:test-connection', asString(url)),
   // 首启向导「解释器下载源」步：并行探测官方源与国内镜像的连通性（收到任一
   // HTTP 应答即算可达），供页内展示与自动推荐。探测语义见 ipc-handlers。
   testInterpreterSource: () => ipcRenderer.invoke('config:test-interpreter-source'),
@@ -47,7 +52,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 开机自启
   getAutoLaunch: () => ipcRenderer.invoke('autolaunch:get'),
-  setAutoLaunch: (enable: boolean) => ipcRenderer.invoke('autolaunch:set', enable),
+  // R102-A1：布尔只认严格 true——'false' 这类真值串不得把"开机自启"打开。
+  setAutoLaunch: (enable: boolean) => ipcRenderer.invoke('autolaunch:set', asBool(enable)),
 
   // 系统通知开关（DSK-04：随 config:get/config:save 走，notifyEnabled 是
   // AppConfig 常规布尔字段，无独立通道——preload 仅透传，不加新 IPC 面）
@@ -77,16 +83,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   readLog: (executionId: string, fromLine?: number) =>
-    ipcRenderer.invoke('log:read', executionId, fromLine ?? 0),
+    ipcRenderer.invoke('log:read', asString(executionId), asLineNumber(fromLine)),
   // 用户报障：历史执行记录体验差——此前只能看/复制 executionId，日志落在哪个
   // 文件、能不能直接拿到手都无从得知。
   revealExecLog: (executionId: string) =>
-    ipcRenderer.invoke('history:reveal-log', executionId),
+    ipcRenderer.invoke('history:reveal-log', asString(executionId)),
   openTaskLogFolder: () => ipcRenderer.invoke('history:open-log-folder'),
   // 拓展包：导出某次执行的日志文件（主进程 copyFile 到用户选择的路径；
   // 大文件返回 tooLarge，由 UI 引导走「打开日志文件夹」手动复制）。
   exportExecLog: (executionId: string) =>
-    ipcRenderer.invoke('history:export-log', executionId),
+    ipcRenderer.invoke('history:export-log', asString(executionId)),
 
   // 当天日志（主进程日志，用于主窗口启动时加载历史）——此前 StatusWindow
   // 误用 window.electronAPI.invoke('logs:getToday')，而 preload 从未暴露 invoke，
@@ -95,26 +101,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 日志文件列表 & 打开
   listLogFiles: () => ipcRenderer.invoke('log:list-files'),
-  openLogFile: (filePath: string) => ipcRenderer.invoke('log:open-file', filePath),
+  // R102-A1：路径是渲染层可控入参——过桥前归一成字符串（空串/超长一律拒绝，
+  // 主进程的 path-domain 再做真正的路径域校验，这里只是不让"任意形状"过桥）。
+  openLogFile: (filePath: string) =>
+    ipcRenderer.invoke('log:open-file', asString(filePath)),
 
   // 已部署应用
   listApps: () => ipcRenderer.invoke('apps:list'),
   readAppLog: (logPath: string, fromLine?: number) =>
-    ipcRenderer.invoke('apps:log:read', logPath, fromLine ?? 0),
+    ipcRenderer.invoke('apps:log:read', asString(logPath), asLineNumber(fromLine)),
   // 用户报障：客户端本地无法查看部署的应用文件夹 / 无法撤销部署(删除)。
   // 打开目录走主进程 shell（渲染层拿不到 Electron API），删除走主进程的
   // 白名单+containment 校验——渲染层只传 apps:list 给的 appId/releaseKey。
-  openAppFolder: (appId: string) => ipcRenderer.invoke('apps:open-folder', appId),
+  openAppFolder: (appId: string) => ipcRenderer.invoke('apps:open-folder', asString(appId)),
   openReleaseFolder: (appId: string, releaseKey: string) =>
-    ipcRenderer.invoke('apps:open-release-folder', appId, releaseKey),
-  uninstallApp: (appId: string) => ipcRenderer.invoke('apps:uninstall', appId),
+    ipcRenderer.invoke('apps:open-release-folder', asString(appId), asString(releaseKey)),
+  uninstallApp: (appId: string) => ipcRenderer.invoke('apps:uninstall', asString(appId)),
   deleteAppRelease: (appId: string, releaseKey: string, deploymentId: string) =>
-    ipcRenderer.invoke('apps:delete-release', appId, releaseKey, deploymentId),
+    ipcRenderer.invoke('apps:delete-release', asString(appId), asString(releaseKey), asString(deploymentId)),
   getRunningApps: () => ipcRenderer.invoke('apps:running'),
 
   // 写剪贴板（走主进程 Electron clipboard，不受安全上下文/权限限制）
+  // 正文上限放宽到 1MiB：复制日志行可能很长，但仍是**有界**的（否则一次
+  // 过桥就能把任意大的载荷塞进主进程）。
   writeClipboardText: (text: string) =>
-    ipcRenderer.invoke('clipboard:write-text', text),
+    ipcRenderer.invoke('clipboard:write-text', asString(text, MAX_CLIPBOARD_ARG)),
 
   // 日志流（主进程 → 渲染进程，单向推送）
   onLogLine: (cb: (line: string) => void) => {

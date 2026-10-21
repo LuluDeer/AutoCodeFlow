@@ -12,6 +12,37 @@ from auth import get_current_token, request_with_self_heal
 
 logger = logging.getLogger(__name__)
 
+# R123（R94-A1 遗留）：**字节**级背压上限。
+#
+# 背景算式（改前的实测推导，见 R116 检查点）：条数上限 10 片 × 100 行 = 1000 行，
+# 而单行上限是 execute.py:753 的 1 MB ⇒ 内存上界 1000 × 1 MB ≈ **1 GB/执行**，
+# 单次 POST body 上界也是 100 × 1 MB ≈ **100 MB**。条数上限**不构成字节安全边界**。
+#
+# 触发条件（两个同时成立才算真问题）：①单行接近 1 MB（base64 / 单行 JSON dump 常见）；
+# ②admin 侧一轮 flush 内持续慢（`_push_chunk` timeout=5s，一轮最多 片数×5s = 50s）。
+# 条件不成立时缓冲在 20 MB 量级，无害 —— 所以这两个值取「远高于稳态、远低于病态」。
+MAX_BUFFERED_BYTES = 10_000_000
+# 单次 push 的字节上限：按 admin `appendLogChunk` 的体量取 1 MB/片。
+MAX_BYTES_PER_CHUNK = 1_000_000
+
+# R125：丢行必须在**流里留下可见的一行**。
+#
+# 此前丢行只在执行器本地日志里 warn 一次，而**实时视图里行号会直接从 1 跳到 900** ——
+# 没有任何一行说明「中间丢了 900 行」。**一个静默的缺口，看起来就像一段正常的日志。**
+#
+# 刻意**不**复用 admin 的 `LOG_TRUNCATION_MARKER`（`/[\s*(?:logs\s+)?truncated\b/i`）：
+# 那条正则在 admin 侧参与「终态回调是否用回调日志覆盖实时流」的判定（task.service.ts:5105/5122），
+# 我们不想让执行器本地背压去影响那个决策。这里用一个只对人说话、不参与任何判定的文案。
+MARKER_TEMPLATE = '... [{n} log lines dropped by local backpressure] ...'
+
+
+def _utf8_len(text: str) -> int:
+    """`text` 的 UTF-8 字节数。ASCII 走 `len()`（零拷贝），非 ASCII 才 encode。"""
+    try:
+        return len(text) if text.isascii() else len(text.encode('utf-8'))
+    except Exception:
+        return len(text)
+
 
 class LogStreamPusher:
     """Async log stream pusher for real-time log streaming."""
@@ -37,6 +68,11 @@ class LogStreamPusher:
         # 状态，逐行 warn 反而淹没日志），进入背压状态置位，成功清空缓冲后
         # 复位，允许后续再次丢行时再次告警一次。
         self._backpressure_warned = False
+        # R123：在飞缓冲的字节记账（与条数上限并存）。
+        self._buffered_bytes = 0
+        # R125：自上次 flush 起被丢掉的行数，以及**第一条被丢行**的行号（marker 占用它）。
+        self._dropped_since_flush = 0
+        self._first_dropped_line = None
 
     async def add_line(self, content: str) -> int:
         """Add a line to the buffer. Returns the line number assigned to this line."""
@@ -44,33 +80,57 @@ class LogStreamPusher:
             line_num = self.current_line
             self.current_line += 1
 
-            # Find the most recent chunk or create a new one
-            if not self.chunks or len(self.chunks[-1]['lines']) >= self.max_lines_per_chunk:
-                chunk = {'fromLine': line_num, 'lines': []}
-                self.chunks.append(chunk)
+            line_bytes = _utf8_len(content)
 
-                # Backpressure: drop oldest chunks if we exceed memory limit
-                if len(self.chunks) > self.max_chunks_in_memory:
-                    dropped = self.chunks.pop(0)
-                    # P3（A8 对齐 node）: 丢行从 debug 升级为 warn（每执行限
-                    # 1 条）。被丢弃的行不会再出现在实时流里（执行结束的回调
-                    # 日志不受影响，那走另一条持久化路径），属于「实时视图
-                    # 缺口」级别的信号，运维需要从日志里看到它发生。
-                    if not self._backpressure_warned:
-                        self._backpressure_warned = True
-                        logger.warning(
-                            f"[LogStreamPusher] Backpressure: dropping buffered log lines for execution "
-                            f"{self.execution_id} (admin API slower than producer; subsequent drops "
-                            f"will not be logged again)"
-                        )
-                    logger.debug(
-                        f"[LogStreamPusher] Dropped {len(dropped['lines'])} lines due to backpressure "
-                        f"for execution {self.execution_id}"
-                    )
+            # Find the most recent chunk or create a new one.
+            # R123：除条数外**还按字节**切片 —— 100 行 × 1 MB = 100 MB 的单个 POST 体，
+            # 既超出 admin 合理载荷，也把「一次失败重试」的成本放大两个数量级。
+            need_new_chunk = (
+                not self.chunks
+                or len(self.chunks[-1]['lines']) >= self.max_lines_per_chunk
+                or self.chunks[-1].get('bytes', 0) + line_bytes > MAX_BYTES_PER_CHUNK
+            )
+            if need_new_chunk:
+                chunk = {'fromLine': line_num, 'lines': [], 'bytes': 0}
+                self.chunks.append(chunk)
             else:
                 chunk = self.chunks[-1]
 
             chunk['lines'].append(content)
+            chunk['bytes'] = chunk.get('bytes', 0) + line_bytes
+            self._buffered_bytes += line_bytes
+
+            # Backpressure: 条数 + 字节两个维度任一超限即丢最旧的切片（=**保留尾部**：
+            # 执行失败的原因几乎总在最后几行）。先记账再判，才能让「单行就超预算」
+            # 这种病态输入也被收住（否则它会绕过检查）。
+            while self.chunks and (
+                len(self.chunks) > self.max_chunks_in_memory
+                or self._buffered_bytes > MAX_BUFFERED_BYTES
+            ):
+                dropped = self.chunks.pop(0)
+                self._buffered_bytes -= dropped.get('bytes', 0)
+                # R125：记下丢弃窗口的起点（marker 行占用「第一条被丢行」的行号，
+                # 这样它落在缺口所在的位置，而不是堆到流末尾）。
+                if self._first_dropped_line is None:
+                    self._first_dropped_line = dropped.get('fromLine', 0)
+                self._dropped_since_flush += len(dropped.get('lines', []))
+                if self._buffered_bytes < 0:  # 记账保守兜底，绝不为负
+                    self._buffered_bytes = 0
+                # P3（A8 对齐 node）: 丢行从 debug 升级为 warn（每执行限
+                # 1 条）。被丢弃的行不会再出现在实时流里（执行结束的回调
+                # 日志不受影响，那走另一条持久化路径），属于「实时视图
+                # 缺口」级别的信号，运维需要从日志里看到它发生。
+                if not self._backpressure_warned:
+                    self._backpressure_warned = True
+                    logger.warning(
+                        f"[LogStreamPusher] Backpressure: dropping buffered log lines for execution "
+                        f"{self.execution_id} (admin API slower than producer; subsequent drops "
+                        f"will not be logged again)"
+                    )
+                logger.debug(
+                    f"[LogStreamPusher] Dropped {len(dropped['lines'])} lines due to backpressure "
+                    f"for execution {self.execution_id}"
+                )
             self._schedule_flush()
 
         return line_num
@@ -121,6 +181,21 @@ class LogStreamPusher:
                     return
                 chunks_to_flush = self.chunks[:]
                 self.chunks.clear()
+                # R123：切片被取走，记账同步归零（失败重试不会重复计入）。
+                self._buffered_bytes = 0
+
+            # R125：先推**一行 marker**（占用第一条被丢行的行号），再推真实切片。
+            # 单行成片是安全的：每片自带 fromLine，admin 按 fromLine+i 落库，
+            # 所以插入这一行**不会**让后续切片的行号错位。
+            if self._first_dropped_line is not None:
+                marker = {
+                    'fromLine': self._first_dropped_line,
+                    'lines': [MARKER_TEMPLATE.format(n=self._dropped_since_flush)],
+                    'bytes': len(MARKER_TEMPLATE) + 8,
+                }
+                self._dropped_since_flush = 0
+                self._first_dropped_line = None
+                chunks_to_flush.insert(0, marker)
 
             all_pushed = True
             for chunk in chunks_to_flush:

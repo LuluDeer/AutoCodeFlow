@@ -3,6 +3,23 @@ from typing import Any, Dict, Optional
 import httpx
 
 
+def _extract_error_body(response: Any) -> Optional[Dict[str, Any]]:
+    """R31-E2: 取出 admin-api 错误体（{ code, message, errorCode, params }）。
+
+    防御式解析：空体 / 非 JSON / 已流式消费（ResponseNotRead）一律返回 None。
+    吞掉所有解析异常——透出错误码绝不能让「本来能抛出的 HTTP 错误」变成
+    解析异常。与 packages/autocodeflow-http 的 _extract_error_body 同构
+    （两包无依赖关系，故各自保留一份同语义实现，改动请成对修改）。
+    """
+    if response is None:
+        return None
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 - 非 JSON 体是常态，不是错误
+        return None
+    return body if isinstance(body, dict) else None
+
+
 class HttpClientError(httpx.HTTPStatusError):
     """HTTPStatusError subclass raised by HttpClient / AsyncHttpClient.
 
@@ -13,7 +30,35 @@ class HttpClientError(httpx.HTTPStatusError):
     ``raise_for_status()`` calls made elsewhere on raw responses, without any
     behavioral divergence: catching ``httpx.HTTPStatusError`` still works
     unchanged (subclass), so existing task code is unaffected.
+
+    R31-E2 error-code surface (与 packages/autocodeflow-http 的
+    ApiHttpStatusError 对齐): 由 _raise 保留的同一个 response 对象惰性解析
+    admin-api 错误体，额外提供 error_code / params。message / request /
+    response 三个既有面逐字节/逐引用不变，链路无断点。
     """
+
+    @property
+    def error_body(self) -> Optional[Dict[str, Any]]:
+        """解析出的错误体（无则 None）；每次访问重新解析。"""
+        return _extract_error_body(getattr(self, "response", None))
+
+    @property
+    def error_code(self) -> Optional[str]:
+        """admin-api 稳定码（如 TASK_NOT_FOUND）；无码/非字符串/空串 → None。"""
+        body = self.error_body
+        if not body:
+            return None
+        code = body.get("errorCode")
+        return code if isinstance(code, str) and code else None
+
+    @property
+    def params(self) -> Dict[str, Any]:
+        """同一错误体的插值参数；缺失或非对象 → {}（恒为 dict）。"""
+        body = self.error_body
+        if not body:
+            return {}
+        params = body.get("params")
+        return params if isinstance(params, dict) else {}
 
 
 class HttpClient:
@@ -74,15 +119,21 @@ def _raise(resp: httpx.Response) -> None:
 
     Kept behavior-compatible: same exception base, same message, same
     ``request``/``response`` attributes — just an SDK-identifiable type.
+
+    R177-A1（轴 1 错误面）：单一路径。此前实现先 `if resp.is_error` 包 4xx/5xx，
+    再在函数末尾无条件 `resp.raise_for_status()`——而 httpx 的 `is_error` 只覆盖
+    4xx/5xx，`raise_for_status()` 对 3xx 同样抛。于是 3xx 从末尾那条**裸路径**
+    逃出 SDK 类型：前面挂一层做 302（登录跳转 / 网关）的反代时，任务代码
+    `except HttpClientError` 会漏接，也拿不到 error_code。现在只留一条路径：
+    任何非 2xx 都被包成 HttpClientError（str(exc) 逐字节保留 httpx 的原始消息，
+    含 3xx 的 Redirect location 提示）。2xx 时 raise_for_status() 直接返回。
     """
-    if resp.is_error:
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise HttpClientError(
-                str(exc), request=exc.request, response=exc.response
-            ) from exc
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HttpClientError(
+            str(exc), request=exc.request, response=exc.response
+        ) from exc
 
 
 class AsyncHttpClient:

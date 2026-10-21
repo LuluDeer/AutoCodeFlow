@@ -391,8 +391,10 @@ export async function invalidateTaskData(client: QueryClient): Promise<void> {
 //
 // 所以顺序必须是：onMutate 先 `cancelQueries(tasks.all)` 掐掉在途 GET
 // （否则一个更早发出、更晚返回的 GET 会把乐观值盖回旧 status，用户看到开关
-// 弹回去）→ 写乐观值 → onError 用快照回滚 → onSettled 无条件 invalidate
-// 让服务端校正（**成功也失效**：服务端可能顺带改了 updatedAt/调度器状态）。
+// 弹回去）→ 写乐观值 → onError **按快照精确回滚**（R138-A1：只还原本次写入的
+// 那一个任务的 status，不整条缓存倒带——否则会踩掉同页其它任务的在飞乐观值，
+// 见 optimisticallySetTaskStatus 的注释）→ onSettled 无条件 invalidate 让服务端
+// 校正（**成功也失效**：服务端可能顺带改了 updatedAt/调度器状态）。
 //
 // ## 只改 status，不动其它字段
 //
@@ -435,6 +437,43 @@ export function patchTaskInPage<T extends { id: string; status: string }>(
 }
 
 /**
+ * 从任意任务缓存形态里读出某个任务的 status（分页信封 `{items}` / 单实体 Task）。
+ * 读不到（该行不在这个条目里、形状不认识）→ `undefined`。
+ */
+function readTaskStatusInEntry(entry: unknown, taskId: string): string | undefined {
+  if (!entry || typeof entry !== 'object') return undefined;
+  const items = (entry as { items?: unknown }).items;
+  if (Array.isArray(items)) {
+    for (const row of items as { id?: string; status?: string }[]) {
+      if (row && row.id === taskId) return row.status;
+    }
+    return undefined;
+  }
+  const single = entry as { id?: string; status?: string };
+  return single.id === taskId ? single.status : undefined;
+}
+
+/**
+ * 把某个任务的 status 改成 `status`（分页信封 / 单实体两种形态都认）。
+ * 未命中或已是目标值 → 返回**原引用**（不制造无谓的缓存写）。
+ */
+function patchTaskStatusInEntry<T>(entry: T, taskId: string, status: string): T {
+  if (!entry || typeof entry !== 'object') return entry;
+  if (Array.isArray((entry as { items?: unknown }).items)) {
+    return patchTaskInPage(
+      entry as unknown as PageResult<{ id: string; status: string }>,
+      taskId,
+      status as TaskToggleStatus,
+    ) as unknown as T;
+  }
+  if ((entry as { id?: string }).id !== taskId) return entry;
+  return applyTaskStatusPatch(
+    entry as unknown as { status: string },
+    status as TaskToggleStatus,
+  ) as unknown as T;
+}
+
+/**
  * 乐观写入：把 taskId 的 status 改成 `status`，覆盖 tasks 面的**全部**缓存形态。
  *
  * 覆盖面（缺一个就会出现"列表变了但详情没变"这类割裂）：
@@ -443,15 +482,32 @@ export function patchTaskInPage<T extends { id: string; status: string }>(
  *  · `tasks.detail(id)` —— 任务详情页/编辑页读的是它；
  *  · `tasks.allForDag` —— DAG 图节点状态。
  *
- * 返回撤销函数：调用即把上述缓存恢复为写入前的快照（onError 回滚用）。
- * 快照只存**被改过的 key 及其原值**，未命中的缓存不占内存。
+ * 返回撤销函数（onError 回滚用）：**只还原本次写入的那一个任务的 status**，
+ * 且仅当它当前仍等于我写入的目标值时才还原（见函数内 R138-A1 注释）。
+ * 快照只存**被改过的 key 及其原 status**，未命中的缓存不占内存。
  */
 export function optimisticallySetTaskStatus(
   client: QueryClient,
   taskId: string,
   status: TaskToggleStatus,
 ): () => void {
-  const snapshots: [readonly unknown[], unknown][] = [];
+  /**
+   * 快照 = `key → 本次写入前该任务的 status`（**不是**整条缓存的原值）。
+   *
+   * R138-A1（数据层审计）：此前快照存的是整条缓存条目，回滚即
+   * `setQueryData(key, prev)` 整条倒回去——在任务列表页这是可复现的互相踩：
+   *   · 用户在 1 秒内先后暂停 A、B（同一条分页缓存）：
+   *     A 的快照 = {A:active, B:active}，B 的快照 = {A:paused, B:paused}；
+   *     A 的请求先失败 → A 回滚整条写回 → **B 还在飞的乐观值被抹掉**，
+   *     B 的开关在用户眼前弹回 active（而 B 的请求大概率会成功）；
+   *   · 同一窗口内由 refetch/SSE 写进同一条缓存的**无关数据**（别的任务、
+   *     同一任务的 updatedAt 等）也会被一起倒回旧值——回滚语义越界。
+   *
+   * 现在回滚只做两件事：还原**这一个任务**的 status；且只在该任务当前仍等于
+   * 我写入的目标值时才还原（有人已经改过 → 新写入优先，交给 onSettled 的
+   * 失效去取服务端真相，不做陈旧覆盖）。
+   */
+  const snapshots = new Map<string, { key: readonly unknown[]; prevStatus: string }>();
 
   /**
    * 快照去重的键。
@@ -464,16 +520,15 @@ export function optimisticallySetTaskStatus(
    */
   const snapshotId = (key: readonly unknown[]) => JSON.stringify(key);
 
-  /** 记录快照后写入（同一 key 只记一次，重复调用时以**最早**的原值为准） */
-  const patch = <T,>(key: readonly unknown[], patchFn: (prev: T | undefined) => T | undefined) => {
-    const prev = client.getQueryData<T>(key);
-    const next = patchFn(prev);
-    if (next === prev) return;
+  /** 给某个 key 打乐观补丁；只有**真正改到东西**的条目才记快照 */
+  const patchKey = (key: readonly unknown[]): void => {
+    const prev = client.getQueryData(key);
+    // 没有缓存 / 该任务不在此条目里 / 已经是目标态 → 不写、也不记快照
+    const prevStatus = readTaskStatusInEntry(prev, taskId);
+    if (prevStatus === undefined || prevStatus === status) return;
     const id = snapshotId(key);
-    if (!snapshots.some(([k]) => snapshotId(k) === id)) {
-      snapshots.push([key, prev]);
-    }
-    client.setQueryData<T>(key, next);
+    if (!snapshots.has(id)) snapshots.set(id, { key, prevStatus });
+    client.setQueryData(key, patchTaskStatusInEntry(prev, taskId, status));
   };
 
   // 1) 任务列表：遍历已缓存的 list 条目（不做 key 结构假设）
@@ -481,32 +536,25 @@ export function optimisticallySetTaskStatus(
     queryKey: ['tasks', 'list'],
     exact: false,
   });
-  for (const query of listEntries) {
-    const key = query.queryKey;
-    patch<PageResult<Task>>(key, (prev) => patchTaskInPage(prev, taskId, status));
-  }
+  for (const query of listEntries) patchKey(query.queryKey);
 
   // 2) 任务详情（单实体）
-  patch<Task>(queryKeys.tasks.detail(taskId), (prev) =>
-    prev ? applyTaskStatusPatch(prev, status) : prev,
-  );
+  patchKey(queryKeys.tasks.detail(taskId));
 
-  // 3) DAG 全量表（分页聚合形态，与列表同构）
-  patch<PageResult<Task>>(queryKeys.tasks.allForDag, (prev) =>
-    patchTaskInPage(prev, taskId, status),
-  );
+  // 3) DAG 全量表（分页聚合形态，与列表同构；与 1) 的扫描重叠时天然幂等）
+  patchKey(queryKeys.tasks.allForDag);
 
-  // 撤销：逆序恢复（后写的先还原，避免嵌套写入时被中间态覆盖）
+  // 撤销：只还原本次写入的任务 status；期间被别人改过的不覆盖
   return () => {
-    for (let i = snapshots.length - 1; i >= 0; i -= 1) {
-      const [key, prev] = snapshots[i];
-      if (prev === undefined) {
-        // 原本没有该缓存 → 直接移除（写回 undefined 会留下一个空条目）
-        client.removeQueries({ queryKey: key, exact: true });
-      } else {
-        client.setQueryData(key, prev);
-      }
+    for (const { key, prevStatus } of [...snapshots.values()].reverse()) {
+      const current = client.getQueryData(key);
+      if (current === undefined) continue;
+      // 当前值已不是我的乐观值 → 期间有更新的写入（并发 mutation / 重取），
+      // 以新写入为准，不由陈旧快照覆盖（服务端真相由 onSettled 失效兜底）。
+      if (readTaskStatusInEntry(current, taskId) !== status) continue;
+      client.setQueryData(key, patchTaskStatusInEntry(current, taskId, prevStatus));
     }
+    snapshots.clear();
   };
 }
 

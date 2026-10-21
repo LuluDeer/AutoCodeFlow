@@ -99,6 +99,6 @@ version 快照在发版/部署链路写入 application_versions，rollback 由�
 
 ## 相关文档
 
-- 执行器：[executor.md](executor.md)（下一批次）；项目归属：[project.md](project.md)；审计：[audit.md](audit.md)
+- 执行器：[executor.md](executor.md)；项目归属：[project.md](project.md)；审计：[audit.md](audit.md)
 - 部署审批流：[../../04-flows/approval-flow.md](../../../04-flows/approval-flow.md)（规划中）
 - 执行回调链路：[../../04-flows/execution-callback.md](../../../04-flows/execution-callback.md)

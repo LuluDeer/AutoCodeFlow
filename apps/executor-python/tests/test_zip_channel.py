@@ -373,6 +373,12 @@ def test_zip_safety_violation_maps_to_a_clear_failure(monkeypatch, tmp_path):
                 super().__init__(f'[{violation}] {detail}')
 
         @staticmethod
+        def get_zip_limits_from_env():
+            # R94-A1：`_extract_package` 现在每次调用按部署配置求上限
+            # （`ZIP_MAX_*`）；替身同样暴露该入口，None = 用模块默认常量。
+            return None
+
+        @staticmethod
         def vet_zip(path, *, limits=None):
             raise FakeZipSafety.ZipSafetyError('zip_slip', 'entry escapes the destination')
 
@@ -431,6 +437,10 @@ def test_zip_safety_violation_reaches_the_callback_with_a_named_reason(monkeypat
                 self.violation = violation
                 self.detail = detail
                 super().__init__(f'[{violation}] {detail}')
+
+        @staticmethod
+        def get_zip_limits_from_env():  # R94-A1：见上一条替身注释
+            return None
 
         @staticmethod
         def vet_zip(path, *, limits=None):

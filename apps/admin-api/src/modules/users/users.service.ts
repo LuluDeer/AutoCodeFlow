@@ -3,6 +3,8 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
+// R32-A5：唯一性竞态兜底按码归因（USERNAME_TAKEN / EMAIL_TAKEN / USER_EXISTS）。
+import { ErrorCode } from "../../common/errors/error-codes";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -11,6 +13,8 @@ import { User, UserRole } from "./entities/user.entity";
 import { RefreshToken } from "../auth/entities/refresh-token.entity";
 // A-8: 删除用户时同事务清理其 project_members 行（该列无 FK，残留即幽灵成员）。
 import { ProjectMember } from "../project/entities/project-member.entity";
+// R32-A5: 删除用户时同事务回收其 api_keys 行（同样无 FK，残留即孤儿凭据）。
+import { ApiKey } from "../api-keys/entities/api-key.entity";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { ListUsersDto } from "./dto/list-users.dto";
@@ -21,11 +25,24 @@ import { ILike } from "typeorm";
 import { escapeLikePattern } from "../audit/audit.service";
 
 /**
+ * R32-C3: update() 允许落库的列——UpdateUserDto（PartialType(CreateUserDto)）的
+ * 全部业务列。单独拎成类型别名的用意：**编译期**就把可写面钉死在这四列上，
+ * 将来谁想在 patch 里多加一列，tsc 先红（不必等线上问题复现）。
+ */
+type UpdatableUserColumn = "username" | "email" | "password" | "role";
+
+/**
  * ARCH-31: PG 唯一约束冲突（23505）判定——种子竞态里「输家」据此降级为跳过。
  * 只认 driver 层的 code，不做错误消息匹配（防 PG 文案/版本漂移）。
  */
 function isUniqueViolation(e: unknown): boolean {
-  const code = (e as { code?: unknown } | null)?.code;
+  // TypeORM 把 PG 原始错误挂在 driverError 上，不同驱动/版本也会直接放顶层
+  // （与 projects.service.isUniqueViolationOn / executor.service 同款两处都看）。
+  const err = e as
+    | { code?: unknown; driverError?: { code?: unknown } }
+    | null
+    | undefined;
+  const code = err?.code ?? err?.driverError?.code;
   return code === "23505";
 }
 
@@ -225,6 +242,89 @@ export class UsersService implements OnModuleInit {
       updateUserDto.role !== undefined &&
       updateUserDto.role !== UserRole.ADMIN;
 
+    try {
+      return await this.applyUpdate(id, updateUserDto, demotingAdmin);
+    } catch (e: unknown) {
+      // R32-A5（轴4）：唯一性竞态兜底。
+      //
+      // 缺陷现场：唯一性预检只在 controller 侧、只覆盖「非 admin 自改」
+      // （users.controller.ts:143-159）——预检与落库（R32-C3 起是列级 UPDATE）
+      // 之间是 TOCTOU 窗口。两个请求同时改成同一个 username/email 时两者都过
+      // 预检，输家的写入撞唯一索引 → PG 23505 一路穿到全局 filter
+      // （http-exception.filter.ts:114）
+      // 落成笼统的 RESOURCE_EXISTS「资源已存在」：状态码还是 409、不 500，但
+      // **不知道撞的是哪个字段**，而同一语义的另一条路径（预检命中）给的是点名
+      // 409 USERNAME_TAKEN / EMAIL_TAKEN。admin 改他人账号更是零预检，本兜底
+      // 就是那条路径的唯一归因点。
+      //
+      // 归因方式：事务已随异常回滚，改在池连接上按 dto 里出现的字段重读一次
+      // （不依赖约束名——TypeORM 的 UQ_<hash> 名不稳定，PG 侧也可能漂移）。
+      // 重读失败/无命中/命中自己 → 回落 USER_EXISTS（仍是 409，绝不冒充成功）。
+      if (isUniqueViolation(e)) {
+        throw await this.classifyUniqueConflict(id, updateUserDto);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * R32-C3: update 的写入列集合——**只**包含本次真正要改的列。
+   *
+   * 缺陷现场（L2 / 与 R32-A4 在 auth.service 修掉的 TOTP 三处同形态）：此前是
+   * 「findById 读整行快照 → bcrypt + 唯一性/降级判定 → save(user) 整行回写」。
+   * TypeORM 的 save 会按 id 重读库中行逐列 diff
+   * （persistence/SubjectChangedColumnsComputer.computeDiffColumns），于是内存
+   * 实体里的**陈旧快照值**与并发写入后的新值不同 → 被判成"脏列" → 按旧值写回。
+   * 触发窗口是 [快照读, save 内部那次 SELECT]，中间夹着 bcrypt(12) 与预检，
+   * 完全不是理论窄窗。同一行上的三种并发写因此被静默回滚：
+   *   · 并发 logout / 改密 bump 的 sessionVersion 被回退 ⇒ 已吊销 access token
+   *     的 ver 又匹配上（令牌复活，WIKI-AUTH-REVOC 失效）；
+   *   · 管理员刚落库的 isActive=false 被撤销 ⇒ 禁用失效（账号逃逸隔离）；
+   *   · 并发写入的新密码哈希被旧哈希覆盖 ⇒ 改密被静默撤销。
+   *
+   * 逐列取舍（其余列宁可不动）：
+   *   · username / email / password / role = `UpdateUserDto`
+   *     （PartialType(CreateUserDto)）的全部业务列，也是旧实现整行回写下**唯一**
+   *     可能被 PATCH 改到的列：main.ts 的 ValidationPipe 是 whitelist +
+   *     forbidNonWhitelisted（main.ts:370-375），契约外的键到不了这里。故对
+   *     **可达**列而言，列级写入与旧行为逐字节等价，不是语义收敛。
+   *   · isActive / loginFailCount / lockedUntil / totpEnabled / totpSecret /
+   *     lastTotpCounter / oidcSub 各自有自己的原子写点（禁用面、登录失败计数、
+   *     TOTP 状态、OIDC 绑定），本路径绝不能带着快照值重写它们。
+   *   · sessionVersion 的唯一写入点是 bumpSessionVersion（原子自增）与降级事务
+   *     内的 increment——把快照值写回正是"令牌复活"的根因。
+   *   · id / createdAt 不可变；updatedAt 交给 UpdateQueryBuilder 自动追加的
+   *     `"updatedAt" = CURRENT_TIMESTAMP`（query-builder/UpdateQueryBuilder.js
+   *     的 updateDateColumn 分支），与 save 的修改时间语义一致且用库时钟，
+   *     故不手写。
+   *
+   * 用 `!== undefined` 而非真值判断：false / 0 / 空串等有意义的取值也必须照写。
+   */
+  private buildUpdatePatch(
+    updateUserDto: UpdateUserDto,
+  ): Partial<Pick<User, UpdatableUserColumn>> {
+    const patch: Partial<Pick<User, UpdatableUserColumn>> = {};
+    if (updateUserDto.username !== undefined)
+      patch.username = updateUserDto.username;
+    if (updateUserDto.email !== undefined) patch.email = updateUserDto.email;
+    if (updateUserDto.password !== undefined)
+      patch.password = updateUserDto.password;
+    if (updateUserDto.role !== undefined) patch.role = updateUserDto.role;
+    return patch;
+  }
+
+  /**
+   * R32-A5：update 的实际写入路径（拆出仅为让 23505 兜底只包一层 try）。
+   * 失败面（23505 / AppError）与拆分前一致；R32-C3 起写入本身改为**列级
+   * UPDATE**（逐列取舍见 buildUpdatePatch 的头注）。
+   */
+  private async applyUpdate(
+    id: number,
+    updateUserDto: UpdateUserDto,
+    demotingAdmin: boolean,
+  ) {
+    const patch = this.buildUpdatePatch(updateUserDto);
+
     if (demotingAdmin) {
       return this.usersRepository.manager.transaction(async (manager) => {
         const users = manager.getRepository(User);
@@ -238,8 +338,12 @@ export class UsersService implements OnModuleInit {
         if (admins.length <= 1) {
           throw new AppError("USER_LAST_ADMIN_CANNOT_DEMOTE");
         }
-        Object.assign(target, updateUserDto);
-        const savedInTx = await users.save(target);
+        // R32-C3: 与事务外路径同款列级 UPDATE。事务内 findOne 到这条 UPDATE
+        // 之间仍可能夹着已提交的并发写（行锁要等下面 FOR UPDATE 才拿到），整行
+        // 回写在这里同样会按旧快照把并发结果盖回去。
+        await users.update({ id }, patch);
+        const savedInTx = await users.findOne({ where: { id } });
+        if (!savedInTx) throw new AppError("USER_ID_NOT_FOUND", { id });
         if (updateUserDto.password) {
           // DEADLOCK-01（审计 P2，2026-10-17）：**必须**用事务内的 manager，
           // 不能用 this.bumpSessionVersion（它走 this.usersRepository，即
@@ -258,17 +362,58 @@ export class UsersService implements OnModuleInit {
       });
     }
 
-    Object.assign(user, updateUserDto);
-    const saved = await this.usersRepository.save(user);
+    // R32-C3: 列级 UPDATE——只写 patch 里出现的列，快照里的并发安全列
+    // （sessionVersion / isActive / password 等）一个字都不进 SQL。
+    await this.usersRepository.update({ id }, patch);
+    // 响应实体改为写后重读（不再把陈旧快照当响应）：UserResponseDto 暴露
+    // isActive / sessionVersion / loginFailCount，拿快照会把这些列报成旧值。
+    // 查询次数不增——TypeORM 的 save 本来就会按 id 先 SELECT 一次做 diff。
+    // 行若在 update 与本次读之间被并发删除：findById 抛 USER_ID_NOT_FOUND，
+    // 比旧行为诚实（save 在行已不存在时会把实体 INSERT 回来 = 删除被复活）。
+    const saved = await this.findById(id);
     // WIKI-AUTH-REVOC: 改密成功后原子 bump 会话版本——该用户所有在途
     // access token 的 ver 快照失配即 401（含管理员重置他人密码的场景）。
-    // 放在 save 成功之后：改密失败（校验/落库异常）不误伤在途会话。
+    // 放在写入成功之后：改密失败（校验/落库异常）不误伤在途会话。
     // 返回实体中的 sessionVersion 为 bump 前快照（响应展示无消费方，语义
     // 以签发时重新读取的库中值为准）。
     if (updateUserDto.password) {
       await this.bumpSessionVersion(id);
     }
     return saved;
+  }
+
+  /**
+   * R32-A5：把 PG 23505 归因到具体字段（update 的唯一性竞态兜底）。
+   *
+   * 只看 dto 里**实际出现**的字段：未改的列不可能被这次写入撞到，为它多查
+   * 一次只会带来「把别人的冲突算到你头上」的误报。命中他人 → 点名 409；否则
+   * 回落 USER_EXISTS（笼统但仍是 409）。重读本身失败也不改写失败语义。
+   */
+  private async classifyUniqueConflict(
+    id: number,
+    updateUserDto: UpdateUserDto,
+  ): Promise<AppError> {
+    try {
+      if (updateUserDto.username) {
+        const holder = await this.usersRepository.findOne({
+          where: { username: updateUserDto.username },
+        });
+        if (holder && holder.id !== id) {
+          return new AppError(ErrorCode.USERNAME_TAKEN);
+        }
+      }
+      if (updateUserDto.email) {
+        const holder = await this.usersRepository.findOne({
+          where: { email: updateUserDto.email },
+        });
+        if (holder && holder.id !== id) {
+          return new AppError(ErrorCode.EMAIL_TAKEN);
+        }
+      }
+    } catch {
+      // 归因重读失败：保持 409 的失败面，不让排障查询把原错误改写成 500。
+    }
+    return new AppError(ErrorCode.USER_EXISTS);
   }
 
   /**
@@ -311,6 +456,14 @@ export class UsersService implements OnModuleInit {
         }
       }
       await manager.getRepository(RefreshToken).delete({ userId: id });
+      // R32-A5（轴1）: api_keys.userId 同样无 FK——用户删除后残留的是**长期有效
+      // 的凭据行**（永不过期的 key 也在其中）。认证面已由 R32-A4 的属主闸兜住
+      // （api-keys.service.ts:215-218：属主不存在或已禁用 → owner_inactive → 401），
+      // 所以这里不是堵"删了还能用"，而是补齐凭据回收：与 refresh_tokens 同一
+      // 卫生口径（"不把孤儿令牌/凭据留在库里"），也避免会话/审计面扫到悬空 userId。
+      // 同事务、行在用户行之前删——api_keys 无 FK，删除顺序只影响半清理状态，
+      // 放前面可保证「用户行没了但凭据还在」这个窗口不存在。
+      await manager.getRepository(ApiKey).delete({ userId: id });
       // A-8（R3-A 审计）: project_members.userId 无 FK——用户删除后残留成员行
       // 会造成「幽灵成员」：成员面板显示已删用户、resolveRole 仍命中已删 id
       // 参与项目角色判定。同事务清理（与 refresh_tokens 回收同点），删除失败
@@ -322,9 +475,20 @@ export class UsersService implements OnModuleInit {
   }
 
   /**
-   * SEC-03: persist a fully-loaded user entity (TOTP staging / enable /
-   * disable paths). Caller must have fetched the entity via findById /
-   * findByIdRaw — this is a plain save, no partial-update semantics.
+   * SEC-03: persist a fully-loaded user entity.
+   *
+   * ⚠️ **已无生产调用方（R32-C3 后）—— 新代码不要用它。**
+   *
+   * 它是**整行回写**：TypeORM 的 save 会按 id 重读库中行做逐列 diff，但比的是
+   * 「内存里的陈旧快照 vs 写入时刻库中行」，陈旧值 ≠ 新值 ⇒ 被判成脏列并**按旧值
+   * 写回**。users 表上恰好有四个「各自有原子写点」的安全列（sessionVersion 由
+   * bumpSessionVersion / 事务内 increment、isActive / password / totpSecret 各有
+   * 独立写点），一旦经由本方法回写，并发的登出（令牌复活）、禁用（失效）、改密
+   * （被撤销）会被静默回滚——R32-C3 已实测复现（窗口含 bcrypt(12)，不是窄窗）。
+   *
+   * 局部更新请走 `update({id}, patch)`（见本文件 buildUpdatePatch：编译期钉死
+   * 可写面）。保留本方法只为兼容既有装配与测试替身；真正删除需要同时改
+   * auth.totp-sessions.spec 的 mock 形态，留作单独一轮。
    */
   async saveUser(user: import("./entities/user.entity").User) {
     return this.usersRepository.save(user);

@@ -35,6 +35,8 @@ import {
   SOP_PENDING_STATUSES,
   buildExecutionTimeline,
   ANALYZE_TIMEOUT_MS,
+  withStructuredToolErrors,
+  extractToolErrorInfo,
 } from "../tools";
 
 const registerFns = [
@@ -1881,5 +1883,382 @@ describe("D1-P2-2 path id UUID validation", () => {
     const taskIdFilter = (tools.get("list_executions")!.schema as Record<string, ZodLike>).taskId;
     expect(() => taskIdFilter.parse(undefined)).not.toThrow();
     expect(() => taskIdFilter.parse(VALID_UUID)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R31-E2: 工具错误的结构化面（structuredContent 带 errorCode / params）
+// ---------------------------------------------------------------------------
+describe("R31-E2 structuredContent on tool errors", () => {
+  const UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+  /** 与 setup() 同形的假 server，但注册走 withStructuredToolErrors 包装。 */
+  function setupWrapped() {
+    const registered = new Map<
+      string,
+      { handler: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }
+    >();
+    const call = vi.fn();
+    const fakeServer = {
+      tool: (
+        name: string,
+        _description: string,
+        _schema: Record<string, z.ZodTypeAny>,
+        fourth: unknown,
+        fifth?: unknown,
+      ) => {
+        registered.set(name, {
+          handler: (fifth ?? fourth) as (
+            args: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>,
+        });
+      },
+    };
+    const wrapped = withStructuredToolErrors(fakeServer as never);
+    registerTaskTools(wrapped as never, call as never);
+    return { registered, call };
+  }
+
+  const httpError = (message: string, extra: Record<string, unknown> = {}) =>
+    Object.assign(new Error(message), extra);
+
+  it("带 errorCode/params 的 HTTP 错误 → isError + structuredContent，text 逐字节不变", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockRejectedValueOnce(
+      httpError("API error (404): Task not found — confirm the resource exists", {
+        errorCode: "TASK_NOT_FOUND",
+        params: { taskId: "t-1" },
+      }),
+    );
+    const r = await registered.get("get_task")!.handler({ taskId: UUID });
+    expect(r.isError).toBe(true);
+    // 既有文本输出不变：仍是 err.message（与 MCP SDK 默认转换同款）
+    expect(r.content).toEqual([
+      {
+        type: "text",
+        text: "API error (404): Task not found — confirm the resource exists",
+      },
+    ]);
+    expect(r.structuredContent).toEqual({
+      errorCode: "TASK_NOT_FOUND",
+      params: { taskId: "t-1" },
+    });
+  });
+
+  it("只有 errorCode 时只带该键（不写 undefined 的 params）", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockRejectedValueOnce(
+      httpError("Forbidden (403): nope", { errorCode: "FORBIDDEN" }),
+    );
+    const r = await registered
+      .get("list_tasks")!
+      .handler({ page: 1, pageSize: 20 });
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toEqual({ errorCode: "FORBIDDEN" });
+    expect("params" in (r.structuredContent as Record<string, unknown>)).toBe(
+      false,
+    );
+  });
+
+  it("无码错误原样抛出（MCP SDK 既有路径，行为零变化）", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockRejectedValueOnce(httpError("API error (500): boom"));
+    await expect(
+      registered.get("get_task")!.handler({ taskId: UUID }),
+    ).rejects.toThrow("API error (500): boom");
+  });
+
+  it("用法错误（handler 内 return 的 JSON_ERROR）不受包装器影响", async () => {
+    const { registered, call } = setupWrapped();
+    call.mockResolvedValueOnce([{ id: "tpl-1", key: "scheduled_backup" }]);
+    const r = await registered
+      .get("create_task_from_template")!
+      .handler({ template: "nope", name: "x" });
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toBeUndefined();
+  });
+
+  it("extractToolErrorInfo 是可单测的纯函数（非对象 / 空字段 → null）", () => {
+    expect(extractToolErrorInfo("boom")).toBeNull();
+    expect(extractToolErrorInfo(null)).toBeNull();
+    expect(extractToolErrorInfo(new Error("x"))).toBeNull();
+    expect(extractToolErrorInfo({ errorCode: "" })).toBeNull();
+    expect(extractToolErrorInfo({ params: [1] })).toBeNull();
+    expect(extractToolErrorInfo({ errorCode: "X", params: { a: 1 } })).toEqual({
+      errorCode: "X",
+      params: { a: 1 },
+    });
+  });
+});
+
+/**
+ * R33-B1（总控补的护栏）：**每个工具族都必须注册在「结构化错误」包装器上**。
+ *
+ * R31-E2 用 Proxy 在注册边界给工具错误补 structuredContent（text 逐字节不变）。
+ * 它只对**经过包装器**注册的工具生效——若以后新增一个工具族时写成
+ * `registerXxxTools(server, apiRequest)`（忘了换成 `registering`），那一族
+ * 的错误就会静默退回"纯文本"，而**任何既有测试都不会红**（各族的 handler 单测
+ * 直接调 handler，根本不经过注册边界）。这正是本仓反复踩到的"同一修法只落一半"。
+ *
+ * 判据放在源码层：读 index.ts，断言每个 register*Tools 调用的第一个实参都是
+ * `registering`，且包装器确实由 `withStructuredToolErrors(server)` 得到。
+ * 刻意不做"函数名白名单"（新增工具族不该需要改测试），只断言形状。
+ */
+describe("R33-B1: index.ts 的每个工具族都注册在结构化错误包装器上", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(__dirname, "..", "index.ts"), "utf8");
+
+  it("包装器由 withStructuredToolErrors(server) 得到，且注册用的是它", () => {
+    expect(src).toMatch(
+      /const\s+registering\s*=\s*withStructuredToolErrors\(server\)/,
+    );
+  });
+
+  it("不存在「把裸 server 传给 register*Tools」的调用（新增工具族不得漏包装）", () => {
+    const registrations = src.match(/register\w+Tools\s*\(\s*([A-Za-z_$][\w$]*)/g);
+    expect(registrations).not.toBeNull();
+    // 断言规模下界：防「一个都没匹配到」的永真（正则写错时最容易发生）。
+    expect(registrations!.length).toBeGreaterThanOrEqual(9);
+    const offenders = registrations!.filter((c) => !/register\w+Tools\s*\(\s*registering/.test(c));
+    expect(offenders).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R107-A1（MCP 输入面审计）：agent 传参天然来自 LLM —— 值域必须在**入站**
+// 拦住，而不是跑一趟网络拿 NestJS 的 400。值域逐字对齐后端 DTO：
+//   - TaskStatus        apps/admin-api/src/modules/task/entities/task.entity.ts:14
+//   - ExecutionStatus   .../task/entities/task-execution.entity.ts:13
+//   - TaskTriggerType   .../task/entities/task.entity.ts:84
+//   - TaskRuntime       .../task/entities/task.entity.ts:90
+//   - ExecuteMode       .../task/entities/task.entity.ts:76
+//   - AGENT_SESSION_*   .../agent/entities/agent-session.entity.ts:31,54
+// 校验侧出处：list-tasks-query.dto.ts:120/135/143 + create-task.dto.ts:71/72/114/269
+// （UpdateTaskDto = PartialType(CreateTaskDto)，继承同一批 @IsEnum）。
+//
+// 反例（**不要**收紧的）：sop_list.status 在后端是裸 @Query("status") string
+// （sop.controller.ts:224）——收紧反而会拒掉后端接受的值。
+// ---------------------------------------------------------------------------
+describe("R107-A1: 枚举型过滤/更新字段在入站即拒（对齐后端 @IsEnum）", () => {
+  type EnumLike = {
+    parse: (v: unknown) => unknown;
+    safeParse: (v: unknown) => { success: boolean };
+  };
+  const enumField = (tool: string, field: string): EnumLike =>
+    (tools.get(tool)!.schema as Record<string, EnumLike>)[field];
+
+  /** 值域表：每个 [tool, field, 合法值全量] 三元组。 */
+  const enums: Array<[string, string, readonly string[]]> = [
+    ["list_tasks", "status", ["active", "paused", "deleted"]],
+    ["list_executions", "status", [
+      "pending", "running", "waiting", "success",
+      "failed", "timeout", "killed", "cancelled",
+    ]],
+    ["update_task", "status", ["active", "paused", "deleted"]],
+    ["update_task", "triggerType", ["cron", "fixed_rate", "api", "manual"]],
+    ["update_task", "runtime", ["python", "node", "shell"]],
+    ["update_task", "executeMode", ["single", "broadcast"]],
+    ["agent_session_list", "kind", [
+      "ops_watch", "incident", "sop_authoring", "sop_review", "app_scaffold", "chat",
+    ]],
+    ["agent_session_list", "status", [
+      "pending", "running", "waiting_input", "succeeded",
+      "failed", "aborted", "budget_exceeded",
+    ]],
+  ];
+
+  it("不丢任何后端合法值（收紧不得越过 @IsEnum 值域）", () => {
+    for (const [tool, field, values] of enums) {
+      for (const v of values) {
+        expect(
+          enumField(tool, field).safeParse(v).success,
+          `${tool}.${field} 应接受合法值 ${v}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("大小写漂移 / 拼写漂移 / 空串在入站被拒（不到网络层）", () => {
+    const drift = ["Active", "ACTIVE", "running", "", "active ", "queued", "both"];
+    for (const [tool, field, values] of enums) {
+      const illegal = drift.filter((d) => !values.includes(d));
+      expect(illegal.length, `${tool}.${field} 需要至少一个非法样值`).toBeGreaterThan(0);
+      for (const bad of illegal) {
+        expect(
+          enumField(tool, field).safeParse(bad).success,
+          `${tool}.${field} 应拒绝 ${JSON.stringify(bad)}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("可选枚举仍然接受 undefined（省略 = 不过滤）", () => {
+    for (const [tool, field] of enums) {
+      expect(
+        enumField(tool, field).safeParse(undefined).success,
+        `${tool}.${field} 应接受 undefined`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R107-A1（工具语义陷阱）：空 params 对象 ≠ 「覆盖成空」
+//
+// 后端 task.service.ts:2730 `const effectiveParams = dto.params ?? task.params`
+// —— `{}` 不是 nullish，所以传 `params: {}` 会把任务的默认参数**整组丢掉**。
+// agent 说「不加参数重跑一次」时最容易发出 `{}`，而响应是成功，
+// 于是它在"参数被清空"的假数据上继续动作。契约：空对象 = 无覆盖。
+// ---------------------------------------------------------------------------
+describe("R107-A1: 空 params 对象视为「无覆盖」（不得清空任务默认参数）", () => {
+  it("trigger_task 对 params:{} 不带 body（= 用任务默认 params）", async () => {
+    await tools.get("trigger_task")!.handler({ taskId: "t1", params: {} });
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/trigger", {});
+  });
+
+  it("trigger_task 对非空 params 仍然原样覆盖（不回归）", async () => {
+    await tools.get("trigger_task")!.handler({ taskId: "t1", params: { a: 1 } });
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/trigger", {
+      params: { a: 1 },
+    });
+  });
+
+  it("retry_execution 对 params:{} 仍回放原执行参数", async () => {
+    call.mockResolvedValueOnce({
+      id: "e1",
+      taskId: "t1",
+      status: "failed",
+      params: { url: "http://x" },
+    });
+    call.mockResolvedValueOnce({ id: "e9", status: "pending" });
+    await tools
+      .get("retry_execution")!
+      .handler({ taskId: "t1", executionId: "e1", params: {} });
+    expect(call).toHaveBeenNthCalledWith(1, "GET", "/tasks/executions/e1");
+    expect(call).toHaveBeenNthCalledWith(2, "POST", "/tasks/t1/trigger", {
+      params: { url: "http://x" },
+    });
+  });
+
+  it("retry_execution 对非空 params 仍然跳过 GET 直接覆盖（不回归）", async () => {
+    call.mockResolvedValueOnce({ id: "e10", status: "pending" });
+    await tools
+      .get("retry_execution")!
+      .handler({ taskId: "t1", executionId: "e2", params: { a: 1 } });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/t1/trigger", {
+      params: { a: 1 },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R110：出参凭据剥除（防御纵深）
+// ---------------------------------------------------------------------------
+describe('R110 工具出参的凭据剥除', () => {
+  it('get_application 的响应里即使带了 webhookSecret，也不会进 LLM 上下文', async () => {
+    call.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'demo',
+      // 上游本该 select:false 掉 —— 这里刻意模拟「上游漏了一次」
+      webhookSecret: 'whsec_should_never_leave',
+      env: { PLAIN_SETTING: 'on', API_TOKEN: 'tok_leak' },
+    });
+    const res = await tools.get('get_application')!.handler({
+      applicationId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(res.content[0].text).not.toContain('whsec_should_never_leave');
+    expect(res.content[0].text).not.toContain('tok_leak');
+    const parsed = parse(res);
+    expect(parsed.webhookSecret).toBe('[redacted]');
+    expect(parsed.env.API_TOKEN).toBe('[redacted]');
+    // 非密配置原样保留（剥得太狠会让 agent 失去排障能力）
+    expect(parsed.env.PLAIN_SETTING).toBe('on');
+  });
+
+  it('错误载荷同样过剥除（JSON_ERROR 与 JSON_CONTENT 共用同一条路径）', async () => {
+    call.mockResolvedValue({ secrets: { a: 'b' }, tokenHash: 'h' });
+    const res = await tools.get('get_executor')!.handler({
+      executorId: '22222222-2222-4222-8222-222222222222',
+    });
+    // 键保留、值打码（保留键名便于排障；原文绝不能出现）
+    expect(res.content[0].text).not.toContain('"tokenHash": "h"');
+    expect(parse(res).tokenHash).toBe('[redacted]');
+    expect(parse(res).secrets).toBe('[redacted]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R112：假成功三例（空载荷 / 形状漂移 都被当成「查到了」）
+// ---------------------------------------------------------------------------
+describe('R112 空载荷与形状漂移不能伪装成成功', () => {
+  it('get_execution 收到 null 载荷 → isError:true 且点名 executionId', async () => {
+    call.mockResolvedValue(null);
+    const res = await tools.get('get_execution')!.handler({
+      executionId: '33333333-3333-4333-8333-333333333333',
+    });
+    expect(res.isError).toBe(true);
+    const parsed = parse(res);
+    expect(parsed.errorCode).toBe('EXECUTION_NOT_FOUND');
+    expect(parsed.executionId).toBe('33333333-3333-4333-8333-333333333333');
+  });
+
+  it('get_execution_timeline 收到 null 载荷 → isError:true（不再拼 executionId:"" 的成功载荷）', async () => {
+    call.mockResolvedValue(undefined);
+    const res = await tools.get('get_execution_timeline')!.handler({
+      executionId: '44444444-4444-4444-8444-444444444444',
+    });
+    expect(res.isError).toBe(true);
+    expect(parse(res).errorCode).toBe('EXECUTION_NOT_FOUND');
+  });
+
+  it('正常载荷仍走成功分支（不回归）', async () => {
+    call.mockResolvedValue({
+      id: '55555555-5555-4555-8555-555555555555',
+      status: 'success',
+      duration: 12,
+    });
+    const res = await tools.get('get_execution_timeline')!.handler({
+      executionId: '55555555-5555-4555-8555-555555555555',
+    });
+    expect(res.isError).toBeUndefined();
+    expect(parse(res).executionId).toBe('55555555-5555-4555-8555-555555555555');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R114：形状漂移不能伪装成「全清」
+// ---------------------------------------------------------------------------
+describe('R114 list_dead_letters 对响应形状漂移的处理', () => {
+  it('裸数组形态仍正常汇总（不回归）', async () => {
+    call.mockResolvedValue([{ id: 'e1', appName: 'a', deadLetterCount: 3 }]);
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBeUndefined();
+    expect(parse(res).totalDeadLetters).toBe(3);
+  });
+
+  it('{ data: [...] } 形态仍正常汇总（不回归）', async () => {
+    call.mockResolvedValue({ data: [{ id: 'e1', appName: 'a', deadLetterCount: 5 }] });
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBeUndefined();
+    expect(parse(res).totalDeadLetters).toBe(5);
+  });
+
+  it('形状漂移（既不是数组也没有 data 数组）→ isError，而不是 totalDeadLetters:0', async () => {
+    call.mockResolvedValue({ items: [{ id: 'e1', deadLetterCount: 9 }] });
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBe(true);
+    const parsed = parse(res);
+    expect(parsed.errorCode).toBe('UNEXPECTED_RESPONSE_SHAPE');
+    // 关键：不能给出「全清」的假象
+    expect(parsed.totalDeadLetters).toBeUndefined();
+  });
+
+  it('data 存在但不是数组 → 同样 isError（不是空列表）', async () => {
+    call.mockResolvedValue({ data: { items: [] } });
+    const res = await tools.get('list_dead_letters')!.handler({});
+    expect(res.isError).toBe(true);
+    expect(parse(res).errorCode).toBe('UNEXPECTED_RESPONSE_SHAPE');
   });
 });

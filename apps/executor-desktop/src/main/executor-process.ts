@@ -149,8 +149,20 @@ export class ExecutorProcess {
     if (app.isPackaged) {
       return path.join(process.resourcesPath, 'executor-node', 'index.js');
     }
-    // 开发时指向编译产物（resources/ 与 dist/ 同级，在 app root 下）
-    return path.join(app.getAppPath(), 'resources', 'executor-node', 'index.js');
+    /*
+     * 开发态指向编译产物（resources/ 与 dist/ 同级，在 app root 下）。
+     *
+     * 不能只用 app.getAppPath()：它返回的是**入口脚本所在目录**。用
+     * `electron .` 启动时是包根，路径成立；但 Playwright `_electron.launch`
+     * / 直接 `electron dist/main/index.js` 启动时它是 `dist/main`，拼出来
+     * 变成 `dist/main/resources/executor-node/index.js`（不存在）——子进程
+     * 秒退 `MODULE_NOT_FOUND`，向导只看到 8 秒健康检查超时，错误信息完全
+     * 指不到真正原因。以 __dirname（dist/main）向上两级取包根，两种启动形态
+     * 都成立；若部署布局意外变化，再回退到 app.getAppPath()。
+     */
+    const fromDist = path.resolve(__dirname, '..', '..', 'resources', 'executor-node', 'index.js');
+    const fromAppPath = path.join(app.getAppPath(), 'resources', 'executor-node', 'index.js');
+    return fs.existsSync(fromDist) ? fromDist : fromAppPath;
   }
 
   async start(config: AppConfig): Promise<void> {

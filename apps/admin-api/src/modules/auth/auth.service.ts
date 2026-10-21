@@ -1,4 +1,4 @@
-import { Injectable, Optional } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
@@ -15,6 +15,10 @@ import { LoginDto } from "./dto/login.dto";
 import { JwtPayload, SSE_TICKET_TTL_SECONDS } from "./strategies/jwt.strategy";
 import { SseTicketResponseDto } from "./dto/sse-ticket.dto";
 import { RefreshToken } from "./entities/refresh-token.entity";
+// R32-A4: TOTP 状态写入走列级 UPDATE（详见 totpSetup/totpEnable/totpDisable
+// 头注）——AuthModule 的 TypeOrmModule.forFeature 早已注册 User（OidcService
+// 同款注入），此处零新增模块接线。
+import { User } from "../users/entities/user.entity";
 import { generateTotpSecret, totpVerify, buildOtpauthUrl } from "./totp.util";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
@@ -32,12 +36,17 @@ const DUMMY_BCRYPT_HASH =
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
     @InjectRepository(RefreshToken)
     private refreshTokenRepo: Repository<RefreshToken>,
+    // R32-A4: TOTP 状态是 users 表上的三列；写入必须列级（不得整行回写）。
+    @InjectRepository(User)
+    private userRepo: Repository<User>,
     // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
     @Optional()
     private readonly leaderGate: LeaderGateService | null = null,
@@ -237,8 +246,24 @@ export class AuthService {
       throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
     }
     const secret = generateTotpSecret();
-    user.totpSecret = secret;
-    await this.usersService.saveUser(user);
+    // R32-A4: 只写 totpSecret 一列。此前是 usersService.saveUser(user)——把
+    // 方法开头读到的**整行快照**回写（TypeORM save 无脏检查，user 实体上
+    // password / isActive / sessionVersion / loginFailCount / lockedUntil 全带
+    // 值），于是「读快照 → 并发改密/禁用/登出落库 → 本行整行回写」会把那些
+    // 变更静默回滚（会话版本回退=被吊销的令牌重新可用；isActive 回退=禁用
+    // 失效；password 回退=改密失效）。列级 UPDATE 只触碰 totpSecret。
+    // R35（ADR-026）：条件写——只在该账号**仍未启用**时才落 staged 密钥。
+    // 高危窗口：上面读到 totpEnabled=false 之后、这一行落库之前，用户可能在另一个
+    // 标签页完成了启用（totpEnable）。此时无条件覆盖 totpSecret 会把**已启用账号**
+    // 的密钥换成一把用户从未验证过的新密钥 ⇒ 下一次登录用旧验证码全部失败，等于
+    // 把账号锁死在 2FA 之外，而库里 totpEnabled 仍是 true。
+    const staged = await this.userRepo.update(
+      { id: userId, totpEnabled: false },
+      { totpSecret: secret },
+    );
+    if (!staged.affected) {
+      throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
+    }
     return {
       secret,
       otpauthUrl: buildOtpauthUrl(secret, "AutoCodeFlow", user.username),
@@ -264,8 +289,20 @@ export class AuthService {
     if (!check.valid) {
       throw new AppError("TOTP_ENABLE_CODE_INVALID");
     }
-    user.totpEnabled = true;
-    await this.usersService.saveUser(user);
+    // R32-A4: 列级 UPDATE（同 totpSetup 头注）——只翻 totpEnabled 一位。
+    // R35（ADR-026）：条件写——必须**仍然**是刚才验证的那把 staged 密钥。否则
+    // 「验证码对旧密钥有效 → 另一个标签页重新 setup 换了密钥 → 本行启用」会把账号
+    // 启用在一个用户没验证过的密钥上（且那次 setup 的成功提示与实际不符）。
+    const enabled = await this.userRepo.update(
+      { id: userId, totpEnabled: false, totpSecret: user.totpSecret },
+      { totpEnabled: true },
+    );
+    if (!enabled.affected) {
+      const now = await this.usersService.findById(userId);
+      if (now.totpEnabled) throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
+      // 密钥已在本轮被重新 staging（或已被并发 disable 清空）——刚才验证的码失效。
+      throw new AppError("TOTP_ENABLE_CODE_INVALID");
+    }
     return { enabled: true };
   }
 
@@ -299,10 +336,15 @@ export class AuthService {
       throw new AppError("TOTP_DISABLE_CONFIRMATION_REQUIRED");
     }
 
-    user.totpEnabled = false;
-    user.totpSecret = null;
-    await this.usersService.saveUser(user);
-    return { disabled: true };
+    // R32-A4: 列级 UPDATE（同 totpSetup 头注）——只清这两列，绝不整行回写。
+    // R35（ADR-026）：条件写——只有**仍处于启用态**才算本次真正关闭。命中 0 说明
+    // 另一个请求已经关掉了（或行被删），按既有幂等语义返回 disabled:false，
+    // 不谎报「是我关的」。
+    const disabled = await this.userRepo.update(
+      { id: userId, totpEnabled: true },
+      { totpEnabled: false, totpSecret: null },
+    );
+    return { disabled: Boolean(disabled.affected) };
   }
 
   async refreshToken(
@@ -340,6 +382,43 @@ export class AuthService {
       { revoked: true },
     );
     if (!result.affected) {
+      // REFRESH-REUSE（R32-A4 审计）：轮换重放检出 + 级联吊销。
+      //
+      // 缺陷现场：原子消费（上一行）保证了并发的两个请求只有一个能换到新
+      // 令牌——但**输掉的那一个只是被拒**。轮换的威胁模型是「同一枚 refresh
+      // 出现两次 ⇒ 至少有一次来自窃取者」：窃取者通常就是**赢家**，他手里
+      // 那条由本次轮换新签发的链（refresh + access）完全不受影响，被拒绝的
+      // 第二次重放对已失窃的链没有任何作用。审计轴问的「失效后是否级联吊销
+      // 该会话链」此前答案是否。
+      //
+      // 现在：affected=0 时先分辨「这枚 jti 是什么」——
+      //   · 行仍存在（revoked=true）⇒ 它**确实被消费过**，这是重放；
+      //   · 行不存在 ⇒ 未知 jti（已被清理/伪造），无受害者可保护。
+      // 命中重放即 fail-closed：吊销该行所属用户的全部活跃 refresh 行（含
+      // 窃取者刚换到的那条后继链）并 bump sessionVersion（在途 access 立刻
+      // 401，不必等 15min 自然过期）。吊销目标取**库中行的 userId**，不取
+      // payload.sub——claim 只用于定位，破坏面必须由库中事实决定。
+      //
+      // 残差（如实登记）：refresh_tokens 无 familyId 列，无法只吊销「这一条
+      // 链」，退化实现只能全量吊销该用户所有会话——合法设备也被登出，且
+      // 持一枚旧 token 的人可借此让该用户下线（DoS 面）。精确链吊销需要新增
+      // familyId 列（DB schema），本任务禁改 schema，故只登记不实施。
+      // 级联失败不改变拒绝结果（仍是 401）：只记 warn，避免把 DB 故障放大成
+      // 500，也避免重放者从错误码差异里看出「级联有没有生效」。
+      const consumed = await this.refreshTokenRepo.findOne({
+        where: { jti: payload.jti },
+      });
+      if (consumed) {
+        try {
+          await this.revokeAllForUser(consumed.userId);
+        } catch (err: unknown) {
+          this.logger.warn(
+            `refresh-reuse 级联吊销失败（user=${consumed.userId}）：${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
       throw new AppError("REFRESH_TOKEN_REVOKED");
     }
     // DR-07: consume once before issuing; deliberately fail closed if user

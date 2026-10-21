@@ -132,6 +132,7 @@ export function parseImportedConfig(raw: unknown): ImportParseResult {
   // 掩码/空 token 剥离（语义见文件头注）。非字符串同理——sanitize 层也会
   // 丢弃它，这里提前剥掉是为了让"导入不触碰存量 token"的契约不依赖下游。
   const token = out.executorToken;
+  // constant-time-exempt: 与掩码常量（'***'）比较，判断是不是被掩码过的值，不是验凭据。
   if (typeof token !== 'string' || token.trim() === '' || token === EXPORT_TOKEN_MASK) {
     delete out.executorToken;
   }

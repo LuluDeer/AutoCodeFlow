@@ -16,7 +16,9 @@ describe("TaskTemplateController — D3-B-P2-2 删除审计落证", () => {
       svc as never,
       audit as unknown as AuditService,
     );
+    // R39-A1：属主判定按 user id，请求方必须带 id。
     const user = {
+      id: 7,
       username: "admin",
       role: UserRole.ADMIN,
     } as never;
@@ -24,6 +26,7 @@ describe("TaskTemplateController — D3-B-P2-2 删除审计落证", () => {
     await controller.remove("tpl-1", user);
 
     expect(svc.remove).toHaveBeenCalledWith("tpl-1", {
+      id: 7,
       username: "admin",
       role: UserRole.ADMIN,
     });

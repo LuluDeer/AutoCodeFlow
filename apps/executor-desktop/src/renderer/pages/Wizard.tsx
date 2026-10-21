@@ -129,7 +129,13 @@ export default function Wizard() {
           executorAddressPublic: typeof cfg.executorAddressPublic === 'string' ? cfg.executorAddressPublic : f.executorAddressPublic,
           executorToken: typeof cfg.executorToken === 'string' ? cfg.executorToken : f.executorToken,
           uvPythonInstallMirror: typeof cfg.uvPythonInstallMirror === 'string' ? cfg.uvPythonInstallMirror : f.uvPythonInstallMirror,
-          pullMode: typeof cfg.pullMode === 'boolean' ? cfg.pullMode : f.pullMode,
+          // 首次安装保留表单默认（回连模式开）——config-store 的 pullMode
+          // 默认值是 false（为存量 push 部署保持升级零行为变化），若在首装
+          // 向导里原样套用，界面会出现「回连模式（推荐）」却默认关闭的自相
+          // 矛盾。只有已配置过的机器（重跑向导）才尊重已落盘值。
+          pullMode: cfg.configured === false
+            ? f.pullMode
+            : (typeof cfg.pullMode === 'boolean' ? cfg.pullMode : f.pullMode),
         }));
       })
       .catch(() => { /* 读取失败保持空表单（首次安装语义），不炸向导 */ });
@@ -183,7 +189,7 @@ export default function Wizard() {
             title={t('wizard.closeAria')}
             aria-label={t('wizard.closeAria')}
           >
-            <Icon name="close" className="icon-xs" />
+            <Icon name="close" />
           </button>
           <div className="wizard-progress-row">
             <div className="wizard-progress">

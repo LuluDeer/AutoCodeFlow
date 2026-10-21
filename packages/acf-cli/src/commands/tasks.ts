@@ -131,6 +131,27 @@ function statusColor(s: string): string {
   return chalk.gray(s);
 }
 
+/**
+ * R192-A1：数值旗标的**严格**解析器。
+ *
+ * 旧实现用 `parseInt(v, 10) || 默认值`（--tail/--from-line）与裸字符串直传
+ * （--limit）：写错单位/打错字（`--tail 5o`、`--from-line 1O0`）会被静默吞成
+ * 默认值或 NaN，请求照发、用户拿到**另一页日志**却以为是自己要的那页。与本文件
+ * `trigger --wait-timeout` 的既有纪律一致：非法值在 commander 层报用法错误
+ * （退出码 2），请求不发出。
+ */
+function intOption(flag: string, min: number, max?: number): (v: string) => number {
+  return (v: string): number => {
+    const raw = String(v).trim();
+    const n = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+    if (!Number.isInteger(n) || n < min || (max !== undefined && n > max)) {
+      const range = max === undefined ? `>= ${min}` : `between ${min} and ${max}`;
+      throw new InvalidArgumentError(`${flag} must be an integer ${range} (got "${v}")`);
+    }
+    return n;
+  };
+}
+
 export function tasksCommand(): Command {
   const cmd = new Command('task').description('Manage tasks');
 
@@ -330,16 +351,18 @@ export function tasksCommand(): Command {
   // acf task logs <execId>
   cmd.command('logs <execId>')
     .description('Fetch execution logs (line-paginated)')
-    .option('-f, --from-line <n>', 'Start line (0-based)', '0')
-    .option('-n, --limit <n>', 'Max lines to fetch (max 2000)', '200')
-    .option('--tail <n>', 'Show last N lines (overrides --from-line)')
+    .option('-f, --from-line <n>', 'Start line (0-based)', intOption('--from-line', 0), 0)
+    .option('-n, --limit <n>', 'Max lines to fetch (max 2000)', intOption('--limit', 1, 2000), 200)
+    .option('--tail <n>', 'Show last N lines (overrides --from-line)', intOption('--tail', 1))
     // 第四轮审计（--json 补面）：行页对象（lines/totalLines/hasMore）直出 JSON
     .option('--json', 'Emit raw JSON (CI-consumable, no table)')
-    .action(async (execId, opts: { fromLine: string; limit: string; tail?: string; json?: boolean }) => {
+    .action(async (execId, opts: { fromLine: number; limit: number; tail?: number; json?: boolean }) => {
       const spinner = ora('Fetching logs…').start();
       try {
-        if (opts.tail) {
-          const tail = Math.max(1, parseInt(opts.tail, 10) || 50);
+        if (opts.tail !== undefined) {
+          // 数值已在 commander 层校验（intOption）：这里不再做 parseInt 兜底——
+          // 曾经的 `Math.max(1, parseInt(x) || 50)` 会把 --tail 5o 静默变成 50。
+          const tail = opts.tail;
           const head = await get<{ totalLines: number }>(`/tasks/executions/${execId}/logs`, {
             fromLine: 0,
             limit: 1,
@@ -358,7 +381,7 @@ export function tasksCommand(): Command {
           for (const l of data.lines ?? []) console.log(l);
           console.log(chalk.gray(`\n(${data.lines?.length ?? 0}/${data.totalLines} lines — last ${tail})`));
         } else {
-          const fromLine = parseInt(opts.fromLine, 10) || 0;
+          const fromLine = opts.fromLine;
           const data = await get<{ lines: string[]; totalLines: number; hasMore: boolean }>(
             `/tasks/executions/${execId}/logs`,
             { fromLine, limit: opts.limit },
@@ -843,8 +866,20 @@ export function tasksCommand(): Command {
 
   // acf task kill <taskId> <execId>
   cmd.command('kill <taskId> <execId>')
-    .description('Force-cancel a running or pending execution')
-    .action(async (taskId, execId) => {
+    .description('Force-cancel a running or pending execution (irreversible: the executor terminates the process)')
+    .option('-y, --yes', 'Skip confirmation prompt', false)
+    .action(async (taskId, execId, opts: { yes?: boolean }) => {
+      // R192-A1：KILLED 是终态，没有「反 kill」——被杀掉的执行无法恢复。与
+      // delete / rotate 同属不可逆动作，必须共用同一套确认语义（非 TTY 且缺
+      // --yes 时以退出码 2 拒绝，既不静默执行也不静默取消）。
+      if (
+        !(await confirmDestructive(
+          `Force-cancel execution ${execId} of task ${taskId}? The running process is terminated and cannot be resumed.`,
+          { yes: opts.yes },
+        ))
+      ) {
+        return;
+      }
       const spinner = ora('Cancelling execution…').start();
       try {
         const r = await post<{ success: boolean; message: string }>(
@@ -867,10 +902,26 @@ export function tasksCommand(): Command {
       'Manage the task inbound webhook (HMAC-signed). enable/rotate print the secret exactly once; status shows the URL without touching the secret; disable makes signed calls answer 401 immediately',
     )
     .option('--json', 'Emit raw JSON (CI-consumable; includes the one-time secret for enable/rotate)')
-    .action(async (action: string, taskId: string, opts: { json?: boolean }) => {
+    .option('-y, --yes', 'Skip the confirmation prompt for enable / rotate / disable', false)
+    .action(async (action: string, taskId: string, opts: { json?: boolean; yes?: boolean }) => {
       const ACTIONS = ['enable', 'rotate', 'disable', 'status'] as const;
       if (!(ACTIONS as readonly string[]).includes(action)) {
         emitUsageError(`Unknown webhook action "${action}" — expected one of: ${ACTIONS.join(' | ')}`);
+      }
+      // R192-A1：三个写面都会**不可逆地让旧 secret 失效**——
+      // · enable 对已启用任务等价轮换（服务端同一把密钥，旧 secret 立即失效）；
+      // · rotate 更直接，且新 secret 只在本命令输出里出现一次；
+      // · disable 清空密钥，重新 enable 发的是**另一把**（旧值永不回传）。
+      // 与 executor rotate 同类（同一轮审计里给它补了确认门），此前这三个却零确认：
+      // agent / CI 里一次手滑就把线上 webhook 打断且拿不回旧密钥。status 只读，不加门。
+      if (action !== 'status') {
+        const question =
+          action === 'disable'
+            ? `Disable the task webhook for ${taskId}? Signed calls answer 401 immediately and the current secret is destroyed (re-enable issues a NEW one).`
+            : action === 'rotate'
+              ? `Rotate the webhook secret for ${taskId}? The old secret stops working immediately and the new one is shown only once.`
+              : `Enable the task webhook for ${taskId}? If a secret already exists this rotates it — the old one stops working immediately and the new one is shown only once.`;
+        if (!(await confirmDestructive(question, { yes: opts.yes }))) return;
       }
       const spinner = ora(`Task webhook ${action}…`).start();
       try {

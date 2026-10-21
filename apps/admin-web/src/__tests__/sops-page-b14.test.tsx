@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import '../i18n';
 import SopsPage from '../pages/SopsPage';
 import { sopsApi } from '../api/sops';
@@ -142,7 +143,11 @@ describe('B-14 SopsPage 15s 轮询', () => {
       return realSetInterval(fn as never, delay as never) as never;
     }) as never);
 
-    render(<SopsPage />);
+    render(
+      <MemoryRouter>
+        <SopsPage />
+      </MemoryRouter>,
+    );
     await waitFor(() => expect(sopsApi.list).toHaveBeenCalledTimes(1));
 
     // 可见：本拍触发一次静默刷新（不闪 loading，仅多一次请求）
@@ -162,7 +167,11 @@ describe('B-14 SopsPage 15s 轮询', () => {
 
 describe('B-14 SopsPage 回复表单 bodyMarkdown', () => {
   it('sop_amended 时载荷携带 amendedBodyMarkdown（与 YAML 至少其一）', async () => {
-    render(<SopsPage />);
+    render(
+      <MemoryRouter>
+        <SopsPage />
+      </MemoryRouter>,
+    );
 
     // 打开详情抽屉 → 指派与澄清 tab（antd 两字按钮插空格：「详 情」）
     await screen.findByText('Demo SOP');
@@ -199,7 +208,11 @@ describe('B-14 SopsPage 回复表单 bodyMarkdown', () => {
   });
 
   it('answered 时不携带修订字段（正文本域不出现）', async () => {
-    render(<SopsPage />);
+    render(
+      <MemoryRouter>
+        <SopsPage />
+      </MemoryRouter>,
+    );
     await screen.findByText('Demo SOP');
     fireEvent.click(screen.getByText('详 情'));
     await screen.findByText('指派与澄清');
@@ -230,7 +243,11 @@ describe('SopsPage UX 边界（首载失败态 / 草稿标题必填）', () => {
       .mockRejectedValueOnce(new Error('network down'))
       .mockResolvedValue({ items: [sop], total: 1 } as never);
 
-    render(<SopsPage />);
+    render(
+      <MemoryRouter>
+        <SopsPage />
+      </MemoryRouter>,
+    );
 
     // 失败如实呈现（StateError），而非空表把失败谎报成「没有 SOP」
     expect(await screen.findByTestId('state-error')).toBeTruthy();
@@ -242,7 +259,11 @@ describe('SopsPage UX 边界（首载失败态 / 草稿标题必填）', () => {
   });
 
   it('新建草稿：标题为空时先行拦截，不发 draft 请求（后端 title 无 @IsNotEmpty）', async () => {
-    render(<SopsPage />);
+    render(
+      <MemoryRouter>
+        <SopsPage />
+      </MemoryRouter>,
+    );
     await screen.findByText('Demo SOP');
 
     // 打开新建草稿弹窗

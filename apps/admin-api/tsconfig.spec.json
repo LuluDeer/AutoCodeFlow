@@ -1,0 +1,20 @@
+{
+  // R117：**spec 也要被类型检查**。
+  //
+  // 根 tsconfig.json 把 `**/*.spec.ts` 与 `src/**/__tests__/**` 排除在外（生产构建不需要它们），
+  // 于是 spec 里的**类型错误对 `tsc --noEmit` 完全不可见**，只在 ts-jest 运行时才炸，
+  // 而且炸成的是「Test suite failed to run」——没有断言失败、没有文件名里那个用例，
+  // 看起来像环境问题而不是「这个套件是红的」。
+  //
+  // 实证：`leader-gate.service.spec.ts` 自 R32-A4（AuthService 加 `userRepo` 参数）起就带着
+  // `TS2345`，于是那个套件**一直没运行过**，直到 R113 才发现并修好。
+  //   —— 一个套件「没运行」和「通过了」，在 CI 日志里长得几乎一样。
+  //
+  // 本文件只做类型检查（noEmit），不改任何构建产物；由 `npm run typecheck:specs` 与 CI 调用。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test"]
+}

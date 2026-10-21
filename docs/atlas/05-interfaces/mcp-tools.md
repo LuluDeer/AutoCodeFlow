@@ -1,5 +1,7 @@
-# MCP 工具地图（40 个）
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-09-13 · 对应代码: packages/mcp-server/src（tools.ts 注册 40 个 server.tool；index.ts 入口）
+# MCP 工具地图（56 个）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-20 · 对应代码: packages/mcp-server/src（tools.ts 注册 **56** 个 server.tool，9 个 register*Tools；index.ts 入口）
+>
+> 数量由 `scripts/check-mcp-tools-doc.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 56 个，漏了 16 个）。
 
 ## 怎么连
 
@@ -33,9 +35,9 @@
 
 请求侧：30s 超时预算（`REQUEST_TIMEOUT_MS`）；工具调用即对应 REST 端点，因此同样受 RBAC/限流约束——建议给 Agent 建独立低权用户而非共用 ADMIN。
 
-## 工具地图（按注册域分组，共 40 个）
+## 工具地图（按注册域分组，共 56 个）
 
-### Task 域 — registerTaskTools（18 个）
+### Task 域 — registerTaskTools（21 个）
 
 | 工具 | 参数概要 | 语义（→ REST 端点） |
 |---|---|---|
@@ -56,6 +58,9 @@
 | retry_execution | executionId | 经手动触发路径**新建**一次执行（无原生 retry 端点，非续跑） |
 | pause_task / resume_task | taskId | 暂停/恢复调度（不影响进行中执行） |
 | create_task_from_template | name, template, overrides? | 内置模板建任务：`scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping`（tools.ts `TASK_TEMPLATES`） |
+| list_task_templates | — | 列出内置模板清单（本地常量，不落 REST） |
+| export_task | taskId | 导出任务定义为可回灌 JSON（不含凭据） |
+| import_task | 导出体 | 从导出体建任务；**幂等按名**，同名冲突走 409 |
 
 ### Application 域 — registerApplicationTools（6 个）
 
@@ -102,6 +107,34 @@
 | 工具 | 参数概要 | 语义 |
 |---|---|---|
 | list_audit_logs | 分页 + AuditQueryDto 白名单过滤 | 审计日志查询；越权查询字段 400 |
+
+### Mutex 域 — registerMutexTools（4 个）
+
+| 工具 | 参数概要 | 语义 |
+|---|---|---|
+| list_mutex_groups | — | 互斥组列表（同组任务不并发跑） |
+| create_mutex_group | name, taskIds? | 建互斥组 |
+| update_mutex_group | groupId + 字段 | 改组（成员/名称）；列级补丁写（ADR-026） |
+| delete_mutex_group | groupId | 删除组（不删任务） |
+
+### Project 域 — registerProjectTools（3 个）
+
+| 工具 | 参数概要 | 语义 |
+|---|---|---|
+| list_projects | — | 当前用户可见的项目 |
+| get_project_members | projectId | 项目成员与角色 |
+| get_my_project_roles | — | 我在各项目里的角色（前端菜单/权限推导同源） |
+
+### SOP 域 — registerSopTools（6 个）
+
+| 工具 | 参数概要 | 语义 |
+|---|---|---|
+| sop_list | 分页/状态 | SOP 列表 |
+| sop_get | sopId | SOP 详情（含版本与当前指派） |
+| sop_assignments_pending | — | 待我处理的 SOP 指派 |
+| sop_clarification_reply | assignmentId, body | 回复澄清提问（写入审计 `sop.reply`） |
+| agent_session_list | 分页 | 中心 agent 会话列表（ADR-019） |
+| agent_session_get | sessionId | 单会话详情 |
 
 ## 与 REST 的对应关系要点
 

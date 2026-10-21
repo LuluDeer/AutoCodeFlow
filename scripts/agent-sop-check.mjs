@@ -224,16 +224,82 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
   );
   const { SopService } = require(svcJs);
 
-  // typeorm 算子（pollPending 的 CAS 用 IsNull、状态过滤用 In）——替身按同语义匹配
+  // ── typeorm 算子：替身按**真实 FindOperator 语义**求值 ─────────────
+  //
+  // 服务侧的条件写（ADR-026）把守卫放进 WHERE，算子就是断言的真身：
+  //   · poll 领取 CAS        { pulledAt: IsNull() }
+  //   · 状态过滤             { status: In([...]) }
+  //   · 完成回报 CAS（R33）  { attempt, status: Not(In(["completed","cancelled"])) }
+  //   · ACK 游标条件写（R34） { lastReplyDeliveredAt: Or(IsNull(), LessThan(stamp)) }
+  //
+  // ⚠ ADR-027（替身不保真 ⇒ 整类缺陷隐形）在**脚本级门禁**上的同一形态：
+  // 这里此前只认 isNull / in，其余算子一律 "return false"（恒不命中）。于是
+  // 正确的条件写在替身里永远「没抢到」，服务改走「让位」分支，三条断言
+  // （complete 幂等 / ACK 后游标推进 / 游标单调）必然变红。红而不是绿是安全
+  // 的那一侧，但根因一样：**认不出的算子被静默当成 false**。因此这里改成
+  // 「认识的按语义求值，不认识的**抛错**」——将来新增算子必须先教会替身，
+  // 门禁会当场炸，不会静默放行造出下一次假绿。
   const typeorm = require("typeorm");
-  function matchCond(rowVal, cond) {
-    if (cond instanceof typeorm.FindOperator) {
-      if (cond.type === "isNull") return rowVal === null || rowVal === undefined;
-      if (cond.type === "in") return (cond.value ?? []).includes(rowVal);
-      return false;
+  function valueMatches(rowVal, cond) {
+    if (!(cond instanceof typeorm.FindOperator)) return rowVal === cond;
+    switch (cond.type) {
+      case "isNull":
+        return rowVal === null || rowVal === undefined;
+      case "in":
+        // SQL 三值逻辑：NULL IN (...) 求值为 NULL（不命中），不是 true
+        return (
+          rowVal !== null &&
+          rowVal !== undefined &&
+          (cond.value ?? []).includes(rowVal)
+        );
+      case "not": {
+        // Not(x) 的 x 可以是字面值，也可以是嵌套算子（Not(In([...]))）；
+        // child 只在嵌套算子时存在（typeorm FindOperator 的 getter 语义）
+        const inner = cond.child !== undefined ? cond.child : cond.value;
+        return !valueMatches(rowVal, inner);
+      }
+      case "or":
+        // Or(...) 的 value 就是操作符数组（type="or"），逐个求值取或
+        return (cond.value ?? []).some((v) => valueMatches(rowVal, v));
+      case "and":
+        return (cond.value ?? []).every((v) => valueMatches(rowVal, v));
+      case "lessThan": {
+        // SQL：NULL < x ⇒ NULL（不命中）；日期按时刻比较
+        if (rowVal === null || rowVal === undefined) return false;
+        const l = rowVal instanceof Date ? rowVal.getTime() : new Date(rowVal).getTime();
+        const r =
+          cond.value instanceof Date ? cond.value.getTime() : new Date(cond.value).getTime();
+        if (!Number.isFinite(l) || !Number.isFinite(r)) {
+          throw new Error(
+            `fake 的 lessThan 无法比较: ${String(rowVal)} < ${String(cond.value)}`,
+          );
+        }
+        return l < r;
+      }
+      default:
+        throw new Error(
+          `fake 不支持的操作符: ${String(cond.type)}（先教会替身，别静默放行）`,
+        );
     }
-    return rowVal === cond;
   }
+  function whereMatches(row, where) {
+    return Object.entries(where ?? {}).every(([k, v]) => valueMatches(row[k], v));
+  }
+
+  // 门禁的门禁：替身必须对**不认识的算子**抛错，而不是静默判成 false/true。
+  // 这条断言保护的是上面那张 switch 本身——将来新增算子时它会当场变红，
+  // 逼人回来教会替身（把 between 换成届时仍未实现的算子即可）。
+  check(
+    "替身对不认识的 FindOperator 抛错（不静默放行 ⇒ 不会造出下一次假绿）",
+    (() => {
+      try {
+        valueMatches(1, new typeorm.FindOperator("between", [1, 2]));
+        return false;
+      } catch {
+        return true;
+      }
+    })(),
+  );
 
   /**
    * 内存仓库替身：findOne/find/create/save/update（service 实际用到的面）。
@@ -266,20 +332,26 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
         return o;
       },
       async findOne({ where }) {
-        return rows.find((r) => Object.entries(where).every(([k, v]) => matchCond(r[k], v))) ?? null;
+        return rows.find((r) => whereMatches(r, where)) ?? null;
       },
       async find({ where, order }) {
-        let out = rows.filter((r) => Object.entries(where).every(([k, v]) => matchCond(r[k], v)));
+        let out = rows.filter((r) => whereMatches(r, where));
         if (order?.round === "ASC") out = [...out].sort((a, b) => a.round - b.round);
         if (order?.publishedAt === "DESC") {
           out = [...out].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         }
         return out;
       },
+      /**
+       * 条件写（ADR-026）：WHERE 里可以带 FindOperator，**按 whereMatches 的
+       * 真实语义**求值，命中 0 行就如实返回 affected=0——服务正是靠这个返回值
+       * 判断「CAS 抢没抢到 / 该不该让位」。替身在这里但凡放宽一点（比如把
+       * 认不出的谓词当成恒真），「让位」分支就再也不会被触发，断言照样绿。
+       */
       async update(where, patch) {
         let affected = 0;
         for (const r of rows) {
-          if (Object.entries(where).every(([k, v]) => matchCond(r[k], v))) {
+          if (whereMatches(r, where)) {
             Object.assign(r, patch, { updatedAt: nextTime() });
             affected++;
           }
@@ -605,6 +677,30 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
       amended?.newSop?.version === "1.0.1" && typeof amended?.newSop?.contentHash === "string" &&
       amended?.newSop?.bodyMarkdown === "# body");
     await svc.ackClarificationReply({ assignmentId: a.id, executorId: UUID_A, clarificationId: c2.clarification.id });
+
+    // 乱序 ACK 的**行为**验证（配套第 4 节的形状断言）：游标已被 c2 推到更晚，
+    // 此时再 ACK 更早的 c1。条件写 Or(IsNull(), LessThan(stamp)) 应当让位——
+    // 不抛错（重复/迟到 ACK 是幂等重试，不是失败），也不把游标写回旧值，
+    // 否则 c1 的回复会重新变成待投递（已消费的回复被再投一次）。
+    const cursorBefore = new Date(
+      asgRepo.rows.find((r) => r.id === a.id).lastReplyDeliveredAt,
+    ).getTime();
+    const reAck = await svc.ackClarificationReply({
+      assignmentId: a.id,
+      executorId: UUID_A,
+      clarificationId: c1.clarification.id,
+    });
+    const cursorAfter = new Date(
+      asgRepo.rows.find((r) => r.id === a.id).lastReplyDeliveredAt,
+    ).getTime();
+    // cursorBefore > 0 是「第一条 ACK 确实推进了游标」的前提——否则两个
+    // NaN/0 相等会让这条断言在「ACK 根本没生效」时假绿。
+    check("乱序 ACK 不回退游标（后到者让位、且仍返回 ok:true）",
+      cursorBefore > 0 && reAck.ok === true && cursorAfter === cursorBefore,
+      `before=${cursorBefore} after=${cursorAfter}`);
+    const afterReAck = await svc.pollPending({ executorId: UUID_A });
+    check("乱序 ACK 后不重投已消费的回复",
+      afterReAck.filter((x) => x.kind === "clarification_reply").length === 0);
 
     const c3 = await svc.ingestClarification({ executorId: UUID_A, assignmentId: a.id, clientClarificationId: "clr-d3", question: "q3" });
     let unresolvable = false;
@@ -932,7 +1028,10 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("媒体名封闭字符集（不承担路径语义）", /SAFE_MEDIA_NAME_RE/.test(mediaSrc));
   check("媒体 100MB 上限（对齐 artifacts）", /MAX_AGENT_MEDIA_BYTES = 100 \* 1024 \* 1024/.test(mediaSrc));
   check("存储路径终检越界防御", /startsWith\(path\.resolve\(getAgentMediaRootDir\(\)\) \+ path\.sep\)/.test(mediaSrc));
-  check("mediaRefs 放行 agent-collab/media 平台路径", /agent-collab\\\/media/.test(svcSrc));
+  check("mediaPath 指向真实下载端点 /api/sop/media/<id>（R35-A1）", mediaSrc.includes("mediaPath: `/api/sop/media/${row.id}`"));
+  check("mediaPath 不再指向那条不存在的 agent-collab/media 路由（R35-A1 回归闸）", !mediaSrc.includes("mediaPath: `/api/agent-collab"));
+  check("mediaRefs 放行 sop/media 平台路径", svcSrc.includes("|sop"));
+  check("mediaRefs 存量宽容：旧形态 agent-collab/media 仍被接受（新代码不再产生）", /agent-collab\\\/media/.test(svcSrc));
   const appMod = readFileSync(join(apiDir, "src/app.module.ts"), "utf8");
   void appMod;
   check("迁移 1790000000042 登记（agent_media）", readFileSync(join(apiDir, "src/migrations/1790000000042-AddAgentMediaTable.ts"), "utf8").includes("agent_media"));
@@ -954,7 +1053,31 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("poll DTO 放宽 resendAssignments 为 boolean | string[]（按单定向重发）", /resendAssignments\?: boolean \| string\[\]/.test(relaySrc));
   check("pollPending 投递 clarification_reply 条目（P6 保留游标 → P7d 启用）", /kind: "clarification_reply"/.test(svcSrc));
   check("投递不推游标、ACK 才推（至少一次投递语义）", /pendingReplyItems/.test(svcSrc) && /ackClarificationReply/.test(svcSrc));
-  check("游标单调推进（乱序 ACK 不回退）", /a\.lastReplyDeliveredAt < stamp/.test(svcSrc));
+  // ── 游标单调推进：断言**谓词**而不是比较运算符（R37-A1）──────────────
+  // 旧断言匹配 `a.lastReplyDeliveredAt < stamp`——那是「读快照 + JS 里比较 +
+  // update({id}) 无条件写」时代的写法：那个 `<` 只存在于 JS，落库的 WHERE 里
+  // 根本没有前置条件。ADR-026 把守卫改成条件写之后，单调性由 **WHERE 里的
+  // FindOperator** 表达（Or(IsNull(), LessThan(stamp))），代码里不再有那个
+  // 比较运算符，旧的文本断言于是既证明不了单调性、又随重构一起失真（这正是
+  // 本脚本变红的三条之一）。
+  // 为什么改成 FindOperator：并发/乱序 ACK 下「不回退」的**唯一**保证是写库时
+  // 的前置谓词——比较运算符是内存里的判断，两个 ACK 并发时都读到旧游标（或
+  // 都读到 null），后到者照样能把游标写回更旧的值。所以断言直接钉谓词：
+  // WHERE = 「游标缺省 或 严格早于本次时间戳」，SET = 同一个 stamp。
+  const ackStart = svcSrc.indexOf("async ackClarificationReply(");
+  const ackEnd = svcSrc.indexOf("private async amendedSopPayload(", ackStart);
+  const ackSrc =
+    ackStart >= 0 && ackEnd > ackStart ? svcSrc.slice(ackStart, ackEnd) : "";
+  check(
+    "游标单调推进：ACK 的条件写带 Or(IsNull(), LessThan(stamp)) 谓词（乱序 ACK 不回退）",
+    /assignments\.update\(\s*\{\s*id:\s*a\.id,\s*lastReplyDeliveredAt:\s*Or\(\s*IsNull\(\),\s*LessThan\(\s*stamp\s*\)\s*\)\s*[,}]/.test(ackSrc),
+    ackSrc ? "ackClarificationReply 里没找到带单调谓词的 update" : "找不到 ackClarificationReply 方法体（源码结构变了？）",
+  );
+  check("游标写入值与谓词同源（SET 的是同一个 stamp，谓词与写入不会自相矛盾）",
+    /const stamp = new Date\(row\.updatedAt\);/.test(ackSrc) &&
+      /lastReplyDeliveredAt:\s*stamp\s*\}/.test(ackSrc));
+  check("游标更新不得退化为无条件 update({ id })（ADR-026 回归闸）",
+    ackStart >= 0 && !/assignments\.update\(\s*\{\s*id:\s*a\.id\s*,?\s*\}/.test(ackSrc));
   // 指派面：列表投影刻意剥离短效租约字段，指派对话框走独立端点按租约过滤
   check("assignable-executors 端点存在（指派对话框的数据源）", /@Get\("assignable-executors"\)/.test(readFileSync(join(apiDir, "src/modules/sop/sop.controller.ts"), "utf8")));
   check("可指派执行器复用 getAgentCapabilities 租约判定（不另造 TTL 语义）", /listSopCapableExecutors[\s\S]{0,600}getAgentCapabilities\(e\.id\)/.test(readFileSync(join(apiDir, "src/modules/executor/executor.service.ts"), "utf8")));

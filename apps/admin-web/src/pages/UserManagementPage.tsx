@@ -167,6 +167,18 @@ export default function UserManagementPage() {
     },
   });
 
+  /**
+   * R138-A1（数据层审计）：重置密码**故意不失效** ['users']。
+   *
+   * 判定依据（不是漏写）：本表展示的列是 username / email / role / isActive /
+   * createdAt —— 后端改密码不会改动其中任何一个，失效只会白白触发一次列表
+   * 重取（且会把用户正在看的第 N 页翻新）。同源判定见 queries.ts
+   * invalidateExecutorData 的"删除执行器不联动任务面"。
+   *
+   * 前提条件（若日后改这里，先看这条）：一旦表格新增 updatedAt /
+   * mustChangePassword / lastPasswordChangeAt 之类的列，本 mutation 必须补
+   * `queryClient.invalidateQueries({ queryKey: ['users'] })`，否则该列会静默滞后。
+   */
   const resetPwdMutation = useMutation({
     mutationFn: ({ id, password }: { id: number; password: string }) =>
       usersApi.update(id, { password }),

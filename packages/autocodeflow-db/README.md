@@ -24,11 +24,17 @@ pip install autocodeflow-db
 ## 最小示例
 
 ```python
+from sqlalchemy import text
+
 from autocodeflow_db import get_session
 
 with get_session().session() as sess:
-    rows = sess.execute("SELECT id, name FROM projects LIMIT 10").fetchall()
+    rows = sess.execute(text("SELECT id, name FROM projects LIMIT 10")).fetchall()
 ```
+
+> R134-A1：SQLAlchemy 2.0 不再接受裸字符串 SQL——`sess.execute("SELECT ...")`
+> 会抛 `ArgumentError: Textual SQL expression ... should be explicitly
+> declared as text(...)`。示例已改为 `text(...)`。
 
 经环境变量配置（推荐）：
 
@@ -51,9 +57,17 @@ dispose_engine()  # 任务进程退出前释放连接池
 from autocodeflow_db import DatabaseConfig, DatabaseSession
 
 config = DatabaseConfig(url="postgresql://...", pool_size=5, pool_overflow=2)
-with DatabaseSession(config).session() as sess:
-    ...
+try:
+    with DatabaseSession(config).session() as sess:
+        ...
+finally:
+    config.dispose()   # 显式释放该 config 的连接池（任务进程退出前）
 ```
+
+> R134-A1：`DatabaseSession` **不持有** `config`，所以 `DatabaseSession(config)`
+> 一旦丢掉 `config` 引用，连接池就没有任何释放出口（只能等进程退出）。
+> 上面的 `try/finally` 是必须的；沿用 `get_session()` 的环境变量形态时，
+> 出口是同等的 `dispose_engine()`。
 
 ## 开发
 

@@ -11,6 +11,9 @@ import {
 } from "./entities/api-key.entity";
 import { generateApiKey, hashApiKey } from "./api-key.util";
 import { AuditService } from "../audit/audit.service";
+// R32-A4: 属主账号状态（存在 / 未禁用）是 API Key 凭据的活性条件——
+// 见 authenticate() 头注。
+import { UsersService } from "../users/users.service";
 
 export interface CreateApiKeyInput {
   userId: number;
@@ -23,6 +26,13 @@ export interface CreateApiKeyInput {
   expiresInDays?: number | null;
   ip?: string | null;
 }
+
+/**
+ * R32-A4: 认证失败原因（仅落审计，线上统一 401 防枚举）。
+ * `owner_inactive` = 凭据本身未过期未吊销，但**属主账号**已被禁用或删除。
+ */
+export type ApiKeyFailure =
+  "unknown" | "expired" | "revoked" | "owner_inactive";
 
 export interface ApiKeyView {
   id: number;
@@ -64,6 +74,8 @@ export class ApiKeysService {
     @InjectRepository(ApiKey)
     private readonly repo: Repository<ApiKey>,
     private readonly auditService: AuditService,
+    // R32-A4: 每次认证都要复核 key 属主的账号状态（禁用/删除即失效）。
+    private readonly usersService: UsersService,
     // A-9: @Optional —— 既有单测直接 new/Test 装配只给 repo+audit，ConfigService
     // 缺席时 maxActiveKeysPerUser() 回落常量（先例同 auth.service 的 LeaderGate）。
     @Optional()
@@ -152,8 +164,28 @@ export class ApiKeysService {
     const row = await this.repo.findOne({ where: { id } });
     if (!row || row.userId !== userId) return null;
     if (!row.revokedAt) {
-      row.revokedAt = new Date();
-      await this.repo.save(row);
+      const revokedAt = new Date();
+      // R32-C1（类别 2，同型漏改）：**列级 UPDATE，只写 revokedAt**。
+      //
+      // 此前是 `row.revokedAt = new Date(); await this.repo.save(row)`——整行
+      // 回写（TypeORM save 无脏检查，row 是 findOne 读到的**快照**，其
+      // lastUsedAt/keyHash/expiresAt 全带值）。而同一个文件的另一半
+      // （touchLastUsed:234）**刻意**用列级 update 只写 lastUsedAt，两处口径
+      // 相反，于是整行写会把 touchLastUsed 刚落的 lastUsedAt 覆盖回快照值
+      // （null 或旧时间）→ 下一次 authenticate 又判「首次使用」，重复落
+      // `apikey.used` firstUse 审计行——凭据卫生审计的证据被污染（R32-A4 刚
+      // 把「哪一把 key / 属于谁」做成可追溯，这里会把该证据打回旧值）。
+      //
+      // 更根本的口径：api_keys 是**凭据实体**，写面只应触碰自己要改的列。
+      // 与 R32-A4 把 totp 三处（auth.service:255/282/317）从 saveUser 改成
+      // 列级 UPDATE 是同一纪律——那次只修了 auth 域，本处属同型漏改。
+      // adr-026-exempt: 只写 revokedAt 一列，且「吊销」是幂等语义——并发重复吊销写的是
+      // 同一语义值（先后相差毫秒），不存在「谁赢」的判定；真正的状态闸在 authenticate()
+      // 里按 revokedAt 判（R32-A4 的属主闸 + 本列共同构成活性条件）。
+      await this.repo.update({ id }, { revokedAt });
+      // 返回值仍是「吊销后的视图」：显式回填刚写入的值（不是重新查库——
+      // 与改动前 save() 返回同一对象语义一致，且少一次往返）。
+      row.revokedAt = revokedAt;
       await this.safeAudit({
         userId,
         username: username ?? undefined,
@@ -175,18 +207,37 @@ export class ApiKeysService {
    */
   async authenticate(plaintext: string): Promise<{
     apiKey: ApiKey | null;
-    failure?: "unknown" | "expired" | "revoked";
+    failure?: ApiKeyFailure;
+    /** 命中的行（含过期/吊销/属主失活）——审计要指向**具体** key 而不是前缀。 */
+    row?: ApiKey | null;
   }> {
     const row = await this.repo.findOne({
       where: { keyHash: hashApiKey(plaintext) },
     });
     if (!row) return { apiKey: null, failure: "unknown" };
-    if (row.revokedAt) return { apiKey: null, failure: "revoked" };
+    if (row.revokedAt) return { apiKey: null, failure: "revoked", row };
     if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) {
-      return { apiKey: null, failure: "expired" };
+      return { apiKey: null, failure: "expired", row };
+    }
+    // R32-A4: 属主账号状态闸。
+    //
+    // 缺陷现场：key 的活性此前只看**自身**两列（revokedAt / expiresAt），
+    // 完全不看属主。于是「禁用用户」与「删除用户」这两个最常用的收敛动作对
+    // API Key 完全无效：被禁用账号的 key 仍能继续认证，直到 30 天/永不过期
+    // 的 expiresAt 或手工吊销为止（users.service.remove 只回收 refresh_tokens，
+    // 不回收 api_keys）——禁用账号本该是「立即止血」，却留下一条长效旁路。
+    // JWT 面早已有同款闸（jwt.strategy.validate：用户不存在 → TOKEN_USER_NOT_FOUND，
+    // isActive=false → ACCOUNT_INACTIVE），凭据面必须对齐。
+    //
+    // 每次请求都现读（无缓存）——禁用/删除在**下一个请求**即生效，与
+    // revokedAt/expiresAt 的即时性同档。失败原因只落审计，线上仍是统一 401，
+    // 不给「key 有效但账号被禁用」留枚举口。
+    const owner = await this.usersService.findByIdOrNull(row.userId);
+    if (!owner || !owner.isActive) {
+      return { apiKey: null, failure: "owner_inactive", row };
     }
     await this.touchLastUsed(row);
-    return { apiKey: row };
+    return { apiKey: row, row };
   }
 
   /** Throttled lastUsedAt refresh (≤1 write/min/key) to avoid write amplification. */
@@ -216,17 +267,34 @@ export class ApiKeysService {
     }
   }
 
-  /** Failed-authentication audit (unknown / expired / revoked). Fail-open. */
+  /**
+   * Failed-authentication audit (unknown / expired / revoked / owner_inactive).
+   * Fail-open.
+   *
+   * R32-A4: 命中的行（`hit`）存在时必须落到**具体 key**：旧实现只记
+   * `credential.slice(0, 8)`（`acf_` + 4 位 hex = 16 bit，既不唯一也不
+   * 可反查属主）。安全排查的第一个问题恰恰是「哪一把 key / 属于谁」——
+   * 例如吊销后仍有人在用的那把，现在是 resourceId=行 id + userId + name，
+   * 只有**未命中**（unknown，库里没有这一行）才退化为前缀。
+   */
   async auditAuthFailure(
     keyPrefix: string,
-    failure: "unknown" | "expired" | "revoked",
+    failure: ApiKeyFailure,
     ip?: string | null,
+    hit?: ApiKey | null,
   ): Promise<void> {
     await this.safeAudit({
+      userId: hit?.userId,
       action: "apikey.auth_failure",
       resource: "api_key",
-      resourceId: keyPrefix,
-      detail: { keyPrefix, failure },
+      resourceId: hit ? String(hit.id) : keyPrefix,
+      detail: {
+        keyPrefix,
+        failure,
+        apiKeyId: hit?.id ?? null,
+        name: hit?.name ?? null,
+        ownerId: hit?.userId ?? null,
+      },
       result: "failure",
       ip: ip ?? undefined,
     });

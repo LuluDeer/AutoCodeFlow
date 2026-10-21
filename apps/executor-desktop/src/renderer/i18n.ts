@@ -36,6 +36,16 @@ import { resolveUiLanguage } from '../main/ui-language';
 export type RendererLocale = 'en' | 'zh';
 
 /**
+ * 英文单复数（仅 en 表使用；zh 不需要复数）。
+ *
+ * 文案表里相当一部分计数是「N 行 / N 个任务 / N 次执行」这类量词结构，英文
+ * 直译成 `${n} runs` 会在 n=1 时输出 "1 runs"——这类低级错位最容易让英文
+ * 界面显得"没打磨"。统一走本函数：n 为 1 取单数形，其余取复数形。
+ */
+const enPlural = (n: unknown, one: string, many: string): string =>
+  `${n} ${Number(n) === 1 ? one : many}`;
+
+/**
  * i18n-DESK-01：本窗口加载时读到的界面语言设置（config 键 uiLanguage）。
  * 只由 main.tsx 的启动流程写入一次（求值渲染层模块之前）；undefined = 没读到
  * （旧调用点 / 配置读取失败），此时 resolveRendererLocale 保持既有自动判定。
@@ -69,6 +79,33 @@ export function resolveRendererLocale(
     getLanguage,
     setting !== undefined ? setting : persistedLanguageSetting,
   );
+}
+
+/** 当前渲染层 locale（读启动期灌入的设置；未设置时看 navigator.language）。 */
+export function getRendererLocale(): RendererLocale {
+  return resolveRendererLocale(() =>
+    typeof navigator !== 'undefined' ? navigator.language : 'en',
+  );
+}
+
+/**
+ * 按**当前界面语言**格式化日期/时间。
+ *
+ * 渲染层此前多处写死 `toLocaleString('zh-CN')`：英文界面里日期仍是
+ * 「2026/10/21 01:20」，与整页英文文案割裂。语言判定只走 getRendererLocale()，
+ * 不在各调用点复制第二套规则；hour12 默认 24 小时制（监控工具里更省宽、也
+ * 与日志时间戳一致），调用方可用 options 覆盖。
+ */
+export function formatLocaleDateTime(
+  value: number | Date,
+  options: Intl.DateTimeFormatOptions = {},
+): string {
+  const d = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(d.getTime())) return '—';
+  return d.toLocaleString(getRendererLocale() === 'en' ? 'en-US' : 'zh-CN', {
+    hour12: false,
+    ...options,
+  });
 }
 
 /** 文案条目：字符串直出；函数做插值（参数按声明顺序传入）。 */
@@ -218,18 +255,18 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.py.bannerD': '则自动下载；',
     'cfg.py.bannerStrongIntranet': '纯内网',
     'cfg.py.bannerE': '必须配置下方「解释器镜像源」，或由运维预先填充解释器池目录。',
-    'cfg.py.uvPathLabel': 'uv 可执行文件路径（uvPath）',
+    'cfg.py.uvPathLabel': 'uv 可执行文件路径',
     'cfg.py.uvPathPlaceholder': '留空 = 用自带 uv，其次回退系统 PATH',
-    'cfg.py.uvPathHint': '仅在需要指定自建分发的 uv 时填写。留空时使用安装包自带的 uv。',
-    'cfg.py.mirrorLabel': '解释器镜像源（uvPythonInstallMirror）',
+    'cfg.py.uvPathHint': '配置键 uvPath · 仅在需要指定自建分发的 uv 时填写。留空时使用安装包自带的 uv。',
+    'cfg.py.mirrorLabel': '解释器镜像源',
     'cfg.py.mirrorPlaceholder': '留空 = 用 uv 官方源（需要外网）',
-    'cfg.py.mirrorHint': '纯内网部署时填内网镜像地址（如 python-build-standalone 镜像）。留空则访问官方源，内网会下载失败。',
-    'cfg.py.poolDirLabel': '解释器池目录（uvPythonInstallDir）',
+    'cfg.py.mirrorHint': '配置键 uvPythonInstallMirror · 纯内网部署时填内网镜像地址（如 python-build-standalone 镜像）。留空则访问官方源，内网会下载失败。',
+    'cfg.py.poolDirLabel': '解释器池目录',
     'cfg.py.poolDirPlaceholder': '留空 = 用户数据目录下的 interpreters',
-    'cfg.py.poolDirHint': '下载/预填的 Python 存放位置。离线预填时，把解释器按约定命名放进这里即可被识别。不要指向任务工作目录（会被 TTL 清扫删除）。',
-    'cfg.py.pypiLabel': '私有 PyPI 源（pypiRegistryUrl）',
+    'cfg.py.poolDirHint': '配置键 uvPythonInstallDir · 下载/预填的 Python 存放位置。离线预填时，把解释器按约定命名放进这里即可被识别。不要指向任务工作目录（会被 TTL 清扫删除）。',
+    'cfg.py.pypiLabel': '私有 PyPI 源',
     'cfg.py.pypiPlaceholder': '留空 = 用官方 PyPI',
-    'cfg.py.pypiHint': '任务依赖安装使用的源（如内网 Nexus/Artifactory）。仅影响 pip 装包，不影响解释器下载。',
+    'cfg.py.pypiHint': '配置键 pypiRegistryUrl · 任务依赖安装使用的源（如内网 Nexus/Artifactory）。仅影响 pip 装包，不影响解释器下载。',
     'cfg.py.timeoutLabel': '解释器下载超时（毫秒）',
     'cfg.py.timeoutHint': '单个解释器下载的最长等待时间。0 = 使用执行器默认值。',
     'cfg.py.py37Strong': 'Python 3.7 无法在线获取',
@@ -491,7 +528,6 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.todayExecSuffix': '次执行',
     'status.todayOk': '成功',
     'status.todayFail': '失败',
-    'status.todayRunning': '运行中',
     'status.todayLastFail': (t2) => `最近失败 ${t2}`,
     'status.runningFor': (d) => `已运行 ${d}`,
     // ── 2.1 并发进度条（在既有「今日汇总」条上补 running/max）──
@@ -503,6 +539,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.concurrencyFull': '已打满',
     'status.concurrencyOver': '已超额',
     'status.logCount': (n, p) => (p > 0 ? `${n} 行 · 预览最近 ${p} 行` : `${n} 行`),
+    'status.logWaitingHint': '启动执行器后，运行输出会实时出现在这里',
+    'status.logWaitingRunning': '执行器已启动，等待第一条输出…',
     'status.viewLogs': '查看日志',
     'status.newLogs': (n) => `${n} 条新日志`,
     'status.bottom': '底部',
@@ -510,7 +548,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.platformLabel': '平台地址',
     'status.publicLabel': '对外地址',
     'status.agentHeading': 'Agent 托管',
-    'status.agentEntryHint': (label) => `${label} — 可在「配置 → Agent（实验性）」中开启；开启后由 Agent 自动承接中台指派`,
+    'status.agentEntryHint': (label) => `${label} — 可在「配置 → Agent」中开启；开启后自动承接中台指派`,
     'status.agentEntryTitle': '到配置页 Agent 分区开启',
     'status.agentOpen': '去开启',
     'status.readingAgent': '正在读取...',
@@ -930,18 +968,18 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.py.bannerD': ' it downloads automatically; ',
     'cfg.py.bannerStrongIntranet': 'on a purely intranet setup',
     'cfg.py.bannerE': ' you must configure the interpreter mirror below, or have ops pre-fill the interpreter pool directory.',
-    'cfg.py.uvPathLabel': 'uv executable path (uvPath)',
+    'cfg.py.uvPathLabel': 'uv executable path',
     'cfg.py.uvPathPlaceholder': 'Leave empty to use the bundled uv, falling back to the system PATH',
-    'cfg.py.uvPathHint': 'Only fill in to point at a self-built uv distribution. When empty, the bundled uv is used.',
-    'cfg.py.mirrorLabel': 'Interpreter mirror (uvPythonInstallMirror)',
+    'cfg.py.uvPathHint': 'Config key uvPath · Only fill in to point at a self-built uv distribution. When empty, the bundled uv is used.',
+    'cfg.py.mirrorLabel': 'Interpreter mirror',
     'cfg.py.mirrorPlaceholder': 'Leave empty for the official uv registry (internet required)',
-    'cfg.py.mirrorHint': 'On purely intranet deployments enter an intranet mirror (e.g. a python-build-standalone mirror). When empty the official source is used and intranet downloads fail.',
-    'cfg.py.poolDirLabel': 'Interpreter pool directory (uvPythonInstallDir)',
+    'cfg.py.mirrorHint': 'Config key uvPythonInstallMirror · On purely intranet deployments enter an intranet mirror (e.g. a python-build-standalone mirror). When empty the official source is used and intranet downloads fail.',
+    'cfg.py.poolDirLabel': 'Interpreter pool directory',
     'cfg.py.poolDirPlaceholder': 'Leave empty for "interpreters" under the user data directory',
-    'cfg.py.poolDirHint': 'Where downloaded/pre-filled Pythons are stored. For offline pre-filling, drop interpreters in with the conventional naming and they are recognized. Do not point at task working directories (the TTL sweep deletes them).',
-    'cfg.py.pypiLabel': 'Private PyPI registry (pypiRegistryUrl)',
+    'cfg.py.poolDirHint': 'Config key uvPythonInstallDir · Where downloaded/pre-filled Pythons are stored. For offline pre-filling, drop interpreters in with the conventional naming and they are recognized. Do not point at task working directories (the TTL sweep deletes them).',
+    'cfg.py.pypiLabel': 'Private PyPI registry',
     'cfg.py.pypiPlaceholder': 'Leave empty for official PyPI',
-    'cfg.py.pypiHint': 'Registry used for task dependency installs (e.g. intranet Nexus/Artifactory). Affects pip installs only, not interpreter downloads.',
+    'cfg.py.pypiHint': 'Config key pypiRegistryUrl · Registry used for task dependency installs (e.g. intranet Nexus/Artifactory). Affects pip installs only, not interpreter downloads.',
     'cfg.py.timeoutLabel': 'Interpreter download timeout (ms)',
     'cfg.py.timeoutHint': 'Maximum wait for a single interpreter download. 0 = use the executor default.',
     'cfg.py.py37Strong': 'Python 3.7 cannot be fetched online',
@@ -1135,19 +1173,19 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'logviewer.levelIssues': 'Issues',
     'logviewer.levelWarn': 'Warnings',
     'logviewer.levelError': 'Errors',
-    'logviewer.matchSummary': (n) => `${n} matching lines`,
-    'logviewer.matchSummaryRanged': (n, a, b) => `${n} matching lines · showing ${a}–${b}`,
-    'logviewer.showSummary': (a, b) => `Showing ${a} / ${b} lines`,
+    'logviewer.matchSummary': (n) => enPlural(n, 'matching line', 'matching lines'),
+    'logviewer.matchSummaryRanged': (n, a, b) => `${enPlural(n, 'matching line', 'matching lines')} · showing ${a}–${b}`,
+    'logviewer.showSummary': (a, b) => `Showing ${a} / ${b} ${Number(b) === 1 ? 'line' : 'lines'}`,
     'logviewer.wrap': 'Wrap',
     'logviewer.unwrap': 'Unwrap',
     'logviewer.following': 'Following latest',
     'logviewer.jumpLatest': 'Jump to latest',
-    'logviewer.loadOlder': (n) => `Load earlier logs (${n} more lines)`,
+    'logviewer.loadOlder': (n) => `Load earlier logs (${n} more ${Number(n) === 1 ? 'line' : 'lines'})`,
     'logviewer.loadingLogs': 'Loading logs...',
     'logviewer.waiting': 'Waiting for log output...',
     'logviewer.noMatch': 'No matches',
     'logviewer.levelEmpty': 'No logs at this level',
-    'logviewer.newPill': (n) => `${n} new lines ↓`,
+    'logviewer.newPill': (n) => `${enPlural(n, 'new line', 'new lines')} ↓`,
     'logviewer.copyLine': 'Copy line',
     'logviewer.copyFail': 'Copy failed',
     'logviewer.openFile': 'Open log file',
@@ -1177,9 +1215,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.heroAria': 'Executor status',
     'status.trayTip': 'The executor stays in the system tray — closing the window will not quit it. Right-click the tray icon to come back here or quit the app.',
     'status.logTitle': 'Run logs',
-    'status.logRows': (n) => `${n} lines`,
+    'status.logRows': (n) => enPlural(n, 'line', 'lines'),
     'status.bufferNote': 'Open the log file for earlier records',
-    'status.olderLogs': (n) => `View earlier logs (${n} lines in total)`,
+    'status.olderLogs': (n) => `View earlier logs (${enPlural(n, 'line', 'lines')} in total)`,
     'status.clearDisplayTitle': 'Clears the current display only; log files are kept',
     'status.clearDisplay': 'Clear display',
     // Routine-heartbeat preview filter toggle (status page only).
@@ -1199,7 +1237,6 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.todayExecSuffix': 'runs',
     'status.todayOk': 'OK',
     'status.todayFail': 'Failed',
-    'status.todayRunning': 'Running',
     'status.todayLastFail': (t2) => `Last failure ${t2}`,
     'status.runningFor': (d) => `running ${d}`,
     // ── 2.1 concurrency gauge (running/max on the existing today-summary bar) ──
@@ -1210,15 +1247,17 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.concurrencyAriaUnknown': (r) => `${r} task(s) running, concurrency limit unknown`,
     'status.concurrencyFull': 'at capacity',
     'status.concurrencyOver': 'over capacity',
-    'status.logCount': (n, p) => (p > 0 ? `${n} lines · previewing latest ${p}` : `${n} lines`),
+    'status.logCount': (n, p) => (p > 0 ? `${enPlural(n, 'line', 'lines')} · previewing latest ${p}` : enPlural(n, 'line', 'lines')),
+    'status.logWaitingHint': 'Start the executor and its output will stream here in real time',
+    'status.logWaitingRunning': 'Executor started — waiting for the first line…',
     'status.viewLogs': 'View logs',
-    'status.newLogs': (n) => `${n} new lines`,
+    'status.newLogs': (n) => enPlural(n, 'new line', 'new lines'),
     'status.bottom': 'Bottom',
     'status.connHeading': 'Connection',
     'status.platformLabel': 'Platform URL',
     'status.publicLabel': 'Public address',
     'status.agentHeading': 'Agent hosting',
-    'status.agentEntryHint': (label) => `${label} — enable it under Settings → Agent (experimental); once enabled the Agent picks up platform assignments automatically`,
+    'status.agentEntryHint': (label) => `${label} — enable it in Settings → Agent; once enabled it picks up platform assignments automatically`,
     'status.agentEntryTitle': 'Enable in the Agent section of Settings',
     'status.agentOpen': 'Enable',
     'status.readingAgent': 'Reading...',
@@ -1252,12 +1291,12 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.overlay.loadFail': (msg) => `Failed to read the log: ${msg} (polling stopped)`,
     'history.overlay.prevRun': 'Previous run',
     'history.overlay.nextRun': 'Next run',
-    'history.overlay.bufferNote': (a, b) => `${a} lines loaded · ${b} lines in file`,
+    'history.overlay.bufferNote': (a, b) => `${enPlural(a, 'line', 'lines')} loaded · ${enPlural(b, 'line', 'lines')} in file`,
     'history.overlay.empty': 'No logs yet (the log file may not exist yet)',
     'history.overlay.emptyFiltered': 'No matching content in this log',
     'history.title': 'Run history',
-    'history.metaFiltered': (f, tot, g) => `Showing ${f} / ${tot} runs · ${g} tasks`,
-    'history.meta': (tot, g) => `${tot} runs · ${g} tasks`,
+    'history.metaFiltered': (f, tot, g) => `Showing ${f} / ${enPlural(tot, 'run', 'runs')} · ${enPlural(g, 'task', 'tasks')}`,
+    'history.meta': (tot, g) => `${enPlural(tot, 'run', 'runs')} · ${enPlural(g, 'task', 'tasks')}`,
     'history.logFolderTitle': 'Open the task log folder in the file manager',
     'history.logFolder': 'Log folder',
     'history.clearAll': 'Clear all',
@@ -1282,9 +1321,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.empty.goStatus': 'Start the executor on the Status page',
     'history.empty.clearFilters': 'Clear filters',
     'history.group.latest': 'Latest',
-    'history.group.successCount': (n) => `${n} OK`,
+    'history.group.successCount': (n) => `${n} passed`,
     'history.group.failCount': (n) => `${n} failed`,
-    'history.group.totalCount': (n) => `${n} runs`,
+    'history.group.totalCount': (n) => enPlural(n, 'run', 'runs'),
     'history.run.runningFor': (d) => `running ${d}`,
     'history.run.staleTitle': 'No final state for over 6 hours; possibly stuck (check the log to confirm)',
     'history.run.revealTitle': "Locate this run's log file in the file manager",
@@ -1304,7 +1343,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.exportLogFail': (err) => `Failed to export the log: ${err}`,
     // ── Apps page (i18n phase 2) ──
     'apps.title': 'Local apps',
-    'apps.meta': (a, r) => `${a} apps · ${r} versions`,
+    'apps.meta': (a, r) => `${enPlural(a, 'app', 'apps')} · ${enPlural(r, 'version', 'versions')}`,
     'apps.metaRunning': (n) => ` · ${n} running`,
     'apps.searchPlaceholder': 'Search apps, versions or deployment IDs',
     'apps.searchAria': 'Search apps, versions or deployment IDs',
@@ -1323,7 +1362,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.empty.noMatchTitle': 'No matching apps',
     'apps.empty.noRunningBody': 'No running apps detected; run status may also be unavailable while the executor is disconnected.',
     'apps.empty.noMatchBody': 'Try part of an app name, version or deployment ID.',
-    'apps.summary.found': (n) => `Found ${n} apps`,
+    'apps.summary.found': (n) => `Found ${enPlural(n, 'app', 'apps')}`,
     'apps.summary.recent': 'Sorted by latest deployment',
     'apps.summary.name': 'Sorted by name',
     'apps.summary.shown': (n) => ` · showing first ${n}`,
@@ -1337,7 +1376,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.scheduledTitle': 'Scheduled/triggered app: no resident process or app.log; run logs are on the History page',
     'apps.scheduled': 'Scheduled',
     'apps.runningCount': (n) => `${n} running`,
-    'apps.versionCount': (n) => `${n} versions`,
+    'apps.versionCount': (n) => enPlural(n, 'version', 'versions'),
     'apps.openFolderTitle': "Open this app's deployment folder in Explorer",
     'apps.openFolder': 'Open app folder',
     'apps.uninstallTitle': 'Stop local processes and delete all local deployment files of this app',

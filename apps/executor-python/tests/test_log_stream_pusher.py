@@ -207,5 +207,171 @@ def test_backpressure_drops_oldest(pusher_env):
     _run(scenario())
 
     bodies = [c['json'] for c in pusher_env.calls]
-    assert bodies[0]['fromLine'] == 100
-    assert sum(len(b['lines']) for b in bodies) == 901
+    # R125：首发是**一行 marker**（占用第一条被丢行的行号 0），其后才是真实切片。
+    assert bodies[0]['fromLine'] == 0
+    assert 'dropped by local backpressure' in bodies[0]['lines'][0]
+    real = [b for b in bodies if 'dropped by local backpressure' not in b['lines'][0]]
+    assert real[0]['fromLine'] == 100
+    assert sum(len(b['lines']) for b in real) == 901
+
+
+# ---------------------------------------------------------------------------
+# R123：**字节**级背压（R94-A1 遗留：只有条数上限、无字节上限）
+#
+# 改前的算式：条数上限 10 片 × 100 行 = 1000 行；单行上限 1 MB（execute.py:753）
+# ⇒ 内存上界 ≈ **1 GB/执行**，单次 POST body 上界 ≈ **100 MB**。
+# 条数上限**不构成字节安全边界**，这两个用例钉住新加的两道字节闸。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buffer_bytes_are_bounded_by_byte_budget() -> None:
+    """200 行 × 64 KB = 12.8 MB 全塞进缓冲 → 必须被字节预算截住（改前 12.8 MB 全驻留）。"""
+    pusher = LogStreamPusher('exec-bytes')
+    line = 'x' * (64 * 1024)
+    for _ in range(200):
+        await pusher.add_line(line)
+
+    assert pusher._buffered_bytes <= lsp.MAX_BUFFERED_BYTES, (
+        f'缓冲字节 {pusher._buffered_bytes} 超过预算 {lsp.MAX_BUFFERED_BYTES}',
+    )
+    # 预算生效的直接后果：切片被丢，行数不再等于全部输入
+    buffered_lines = sum(len(c['lines']) for c in pusher.chunks)
+    assert buffered_lines < 200, '字节预算未生效：200 行全部驻留'
+    # 且**保留的是尾部**（失败原因几乎总在最后几行）
+    last = pusher.chunks[-1]['lines'][-1]
+    assert last == line
+
+
+@pytest.mark.asyncio
+async def test_single_chunk_is_bounded_by_bytes_not_just_line_count() -> None:
+    """每行 300 KB × 5 行（条数远未到 100）→ 仍须按字节切成多片。"""
+    pusher = LogStreamPusher('exec-chunk')
+    line = 'y' * (300 * 1024)
+    for _ in range(5):
+        await pusher.add_line(line)
+
+    assert len(pusher.chunks) > 1, '只在条数上切片：5×300KB 全挤进同一片（150 KB→1.5 MB 超 MAX_BYTES_PER_CHUNK）'
+    for chunk in pusher.chunks:
+        assert chunk['bytes'] <= lsp.MAX_BYTES_PER_CHUNK, (
+            f'单片字节 {chunk["bytes"]} 超过 {lsp.MAX_BYTES_PER_CHUNK}',
+        )
+
+
+def test_byte_accounting_resets_on_flush(pusher_env) -> None:
+    """flush 把切片取走后，字节记账必须归零（否则失败重试会重复计入、提前触发丢弃）。"""
+    pusher = LogStreamPusher('exec-reset')
+
+    _run(pusher.add_line('a' * 1024))
+    assert pusher._buffered_bytes == 1024
+    _run(pusher.flush())
+    assert pusher._buffered_bytes == 0, 'flush 后字节记账未归零'
+
+
+def test_utf8_len_counts_bytes_not_chars() -> None:
+    """中文 1 字符 = 3 字节 —— 记账必须是**字节**，否则 3 倍低估（同 R115 的教训）。"""
+    assert lsp._utf8_len('abc') == 3
+    assert lsp._utf8_len('中') == 3
+    assert lsp._utf8_len('中文') == 6
+
+
+# ---------------------------------------------------------------------------
+# R124：**片内行号必须连续**（admin 按 `fromLine + i` 落库）
+#
+# 来自 R116 分析里的一条洞察：admin 的 `appendLogChunk` 用 `fromLine + i` 决定每行落哪个
+# 行号。所以**一个片里的 lines 必须是连续行号**——只要片内出现缺口，后面所有行都会被写到
+# 错位的位置上，而且**没有任何报错**（admin 只会照它算出来的行号写）。
+#
+# 当前实现天然满足（片是 append-only 的连续块），但这条不变式**没有被任何用例钉住**：
+# 将来若把缓冲改成「扁平 (lineNo, text) 列表 + 按需切片」，丢行就会在扁平列表里留下缺口，
+# 朴素切片会立刻产出带缺口的片 —— 这类重写很容易做，而后果是静默的数据错位。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chunks_are_contiguous_so_admin_line_numbers_stay_correct() -> None:
+    """丢行发生之后，**存活片的 fromLine 仍与内容严格连续**。"""
+    pusher = LogStreamPusher('exec-contig')
+    pusher._schedule_flush = lambda: None
+
+    # 1100 行 ⇒ 跨过 1000 行上限 ⇒ 头部的片会被丢弃
+    for i in range(1100):
+        await pusher.add_line(f'line-{i}')
+
+    assert len(pusher.chunks) == pusher.max_chunks_in_memory
+    for prev, nxt in zip(pusher.chunks, pusher.chunks[1:]):
+        assert nxt['fromLine'] == prev['fromLine'] + len(prev['lines']), (
+            f'片间缺口：{prev["fromLine"]}+{len(prev["lines"])} != {nxt["fromLine"]}',
+        )
+
+    # 更强的一条：每片的 (fromLine + i) 必须等于该行**真实的行号**（内容里编码了行号）
+    for chunk in pusher.chunks:
+        for offset, text in enumerate(chunk['lines']):
+            assert text == f'line-{chunk["fromLine"] + offset}', (
+                f'行号错位：片 fromLine={chunk["fromLine"]} offset={offset} 期望 line-{chunk["fromLine"] + offset}，实际 {text}',
+            )
+
+
+@pytest.mark.asyncio
+async def test_pushed_payload_preserves_true_line_numbers_after_drops(pusher_env) -> None:
+    """从**出站请求体**验证：丢行之后推给 admin 的 (fromLine, lines) 仍然自洽。"""
+    pusher = LogStreamPusher('exec-wire')
+
+    for i in range(1100):
+        await pusher.add_line(f'line-{i}')
+    await pusher.flush()
+
+    assert pusher_env.calls, '没有发出任何请求'
+    for call in pusher_env.calls:
+        body = call['json']
+        from_line = body['fromLine']
+        # R125：marker 行不是真实日志行，跳过（它有自己的断言，见下一条用例）
+        if 'dropped by local backpressure' in body['lines'][0]:
+            continue
+        for offset, text in enumerate(body['lines']):
+            # admin 会把它写到 fromLine + offset —— 必须与内容里的真实行号一致
+            assert text == f'line-{from_line + offset}', (
+                f'出站体行号错位：fromLine={from_line} offset={offset} 期望 line-{from_line + offset}，实际 {text}',
+            )
+
+
+@pytest.mark.asyncio
+async def test_drops_emit_a_visible_marker_line_at_the_gap(pusher_env) -> None:
+    """丢行必须在流里**留下一行可见说明**，且落在缺口所在的行号上。"""
+    pusher = LogStreamPusher('exec-marker')
+
+    for i in range(1001):  # 第 11 片挤掉第 1 片（行 0..99）
+        await pusher.add_line(f'l{i}')
+    await pusher.flush()
+
+    bodies = [c['json'] for c in pusher_env.calls]
+    markers = [b for b in bodies if 'dropped by local backpressure' in b['lines'][0]]
+    assert len(markers) == 1, '丢行没有产生 marker 行 —— 实时视图里会是一个静默缺口'
+    m = markers[0]
+    # 一行成片；行号 = 第一条被丢行（0），这样它正好落在缺口位置
+    assert len(m['lines']) == 1
+    assert m['fromLine'] == 0
+    assert '100 log lines dropped' in m['lines'][0], m['lines'][0]
+
+    # marker 之后的真实切片行号**不受影响**（每片自带 fromLine）
+    real = [b for b in bodies if b is not m]
+    assert real[0]['fromLine'] == 100
+    for body in real:
+        for off, text in enumerate(body['lines']):
+            assert text == f'l{body["fromLine"] + off}'
+
+
+@pytest.mark.asyncio
+async def test_marker_is_emitted_once_per_flush_episode(pusher_env) -> None:
+    """同一轮里的多次丢行合并成**一条** marker（不是每次丢都加一行）。"""
+    pusher = LogStreamPusher('exec-marker2')
+
+    for i in range(1300):  # 丢 300 行，跨 3 个片
+        await pusher.add_line(f'l{i}')
+    await pusher.flush()
+
+    bodies = [c['json'] for c in pusher_env.calls]
+    markers = [b for b in bodies if 'dropped by local backpressure' in b['lines'][0]]
+    assert len(markers) == 1
+    assert '300 log lines dropped' in markers[0]['lines'][0], markers[0]['lines'][0]
+

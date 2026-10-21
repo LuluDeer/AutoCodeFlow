@@ -176,6 +176,25 @@ function installFakeBackend() {
   }) as never);
 }
 
+/**
+ * R67-A1：往 action 过滤器里自由输入关键词。
+ *
+ * 该过滤器已从 Input 换成 tags 模式 Select（选项来自 GET /audit/actions）：键入的
+ * 文字要**回车**才成为一个 tag（= 一个过滤值）。本套件里 /audit/actions 与 /audit
+ * 共用一个 {data,total} 桩，故清单为空 → 下拉不展开 → 回车走"提交自由文本"路径，
+ * 与改造前的行为等价（这也是"下拉失败仍能筛"的兜底路径）。
+ */
+function typeActionKeyword(value: string) {
+  // antd 6 的 Select 不再把 placeholder 放到 input 的 placeholder 属性上
+  // （渲染成 .ant-select-placeholder 浮层，选中值后还会消失），故用「本页唯一的
+  // 多选控件」做锚点：.ant-select-multiple 只属于 action 过滤器。
+  const root = document.querySelector('.ant-select-multiple') as HTMLElement | null;
+  expect(root, '未找到 action 过滤器（tags 模式 Select）').toBeTruthy();
+  const input = root!.querySelector('input') as HTMLInputElement;
+  fireEvent.change(input, { target: { value } });
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 13 });
+}
+
 /** antd 双汉字按钮自动插空格，textContent 归一化后再匹配（既有先例） */
 const findBtn = (root: ParentNode, text: string): HTMLButtonElement | null =>
   (Array.from(root.querySelectorAll('button')) as HTMLButtonElement[]).find(
@@ -384,7 +403,7 @@ describe('AuditLogPage keyset 分页：游标必须在结果集变化时重置',
   it('应用关键词筛选（点搜索）→ 游标重置（下一次请求带空串而非旧游标）', async () => {
     await gotoPageTwo();
 
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    typeActionKeyword('task');
     fireEvent.click(findBtn(document.body, '搜索')!);
 
     await waitFor(() => {
@@ -468,7 +487,7 @@ describe('AuditLogPage keyset 分页：游标必须在结果集变化时重置',
     await gotoPageTwo();
 
     // 先应用一个筛选，让「重置」按钮出现
-    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    typeActionKeyword('task');
     fireEvent.click(findBtn(document.body, '搜索')!);
     await waitFor(() => expect(findBtn(document.body, '重置')).toBeTruthy());
     // 重新翻到第 2 页（搜索已把栈重置，需要重新造出非空游标）

@@ -23,15 +23,20 @@ import {
   ForbiddenException,
   ValidationPipe,
   BadRequestException,
+  NotFoundException,
 } from "@nestjs/common";
 
 import { SopController, DraftSopDto, UpdateSopDto } from "../sop.controller";
+import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
+import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
+import { UserRole } from "../../users/entities/user.entity";
 
 type Any = Record<string, any>;
 
 function harness() {
   const calls: Any = {};
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     list: jest.fn(async (o: Any) => {
       calls.list = o;
       return { items: [], total: 0 };
@@ -260,8 +265,20 @@ describe("SopController —— 编辑走工作副本语义", () => {
       slug: "daily-report",
       title: "日报", // 沿用，不是 undefined
       bodyMarkdown: "新正文",
-      createdBy: "user:user:owner-9", // 既有实现形态：createdBy 前缀 + 原 createdBy
+      // R34-A1（轴 4）：归属字段**不得二次加前缀**。旧实现把实体里已带
+      // `user:` 的 createdBy 再套一层（user:user:<uuid>）——当前仅因 draft()
+      // 对已存在的 slug 不写 createdBy 才没污染落库值，属层间契约失真：
+      // 任何让 draft 沿用入参的改动都会把属主改成这种不可解析的形态。
+      createdBy: "user:owner-9",
     });
+  });
+
+  it("PATCH 不改写属主：createdBy 传的是库里原值（不重新烙成编辑器）", async () => {
+    const h = harness();
+    await h.controller.update("sop-1", { bodyMarkdown: "x" } as never);
+    // 编辑权 ≠ 归属权：createdBy 必须仍是原属主，而不是当前操作者
+    expect(h.calls.draft.createdBy).not.toContain("user:user:");
+    expect(h.calls.draft.createdBy).toBe("user:owner-9");
   });
 
   it("PATCH 显式给 title → 采用新值", async () => {
@@ -297,13 +314,16 @@ describe("SopController —— 起草/发布/只读面透传", () => {
     await h.controller.publish(
       "sop-1",
       { bump: "minor", changelog: "c" } as never,
-      { id: "admin-7" },
+      { id: 7 },
+      "10.0.0.9",
     );
     expect(h.calls.publish).toEqual({
       sopId: "sop-1",
       bump: "minor",
       changelog: "c",
-      publishedBy: "user:admin-7",
+      publishedBy: "user:7",
+      // R41-A1：审计上下文随调用一起进 service（谁 + 从哪来）
+      audit: { userId: 7, ip: "10.0.0.9" },
     });
   });
 
@@ -319,6 +339,36 @@ describe("SopController —— 起草/发布/只读面透传", () => {
     });
     await expect(h.controller.mediaList("a-1")).resolves.toHaveLength(1);
     await expect(h.controller.assignableExecutors()).resolves.toHaveLength(1);
+  });
+});
+
+describe("R34-A1 轴2 · 媒体面的鉴权边界（blob 不得匿名可猜）", () => {
+  it("媒体下载/清单挂在 ADMIN-only 控制器上：类级 Roles=ADMIN 且未被 @Public 放行", () => {
+    // 清单端点（GET /sop/assignments/:id/media）本身不做归属断言——它靠的是
+    // **整个控制器的角色门**：无 JWT 不可达、非 ADMIN 不可达。这条钉子钉的是
+    // 那个前提本身（有人给某个 handler 加 @Public 或摘掉类级 @Roles 时会红）。
+    expect(Reflect.getMetadata(IS_PUBLIC_KEY, SopController)).toBeUndefined();
+    expect(Reflect.getMetadata(ROLES_KEY, SopController)).toEqual([
+      UserRole.ADMIN,
+    ]);
+    // 下载 handler 不得单独悬挂任何「公开」元数据
+    expect(
+      Reflect.getMetadata(IS_PUBLIC_KEY, SopController.prototype.downloadMedia),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(ROLES_KEY, SopController.prototype.downloadMedia),
+    ).toBeUndefined();
+  });
+
+  it("未知 mediaId → 404（不泄露「存在性」，也不回落到任何默认路径）", async () => {
+    const h = harness();
+    h.media.requireById.mockRejectedValueOnce(
+      new NotFoundException("media not found"),
+    );
+    await expect(
+      h.controller.downloadMedia("missing-id", fakeRes() as never),
+    ).rejects.toThrow(NotFoundException);
+    expect(h.media.openStream).not.toHaveBeenCalled();
   });
 });
 

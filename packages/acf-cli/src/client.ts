@@ -2,6 +2,7 @@
  * Thin HTTP client wrapper for the AutoCodeFlow Admin API.
  */
 import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from "axios";
+import { appendErrorCodeHint, messageFromData } from "./error-code.js";
 import {
   getApiUrl,
   getToken,
@@ -250,16 +251,15 @@ export async function del<T>(
 // string[]. Axios itself only surfaces "Request failed with status code 400",
 // so without this helper the actual cause never reaches the terminal.
 
+/**
+ * 错误体的人读文案（message / message[] / error 兜底）。
+ *
+ * R31-E1: 实现挪到 `error-code.ts` 的 `messageFromData`（与 `--json` 结构化
+ * 错误输出共用同一份抽取逻辑，避免两处漂移）；这里保留原函数名，调用点与
+ * 既有语义（含 QA-07 的空串 message 契约）逐字节不变。
+ */
 function detailFromData(data: unknown): string {
-  if (!data || typeof data !== "object") return "";
-  const d = data as Record<string, unknown>;
-  const m = d.message;
-  // QA-07 契约：空串 message 视为「未提供」，继续走 message[]/error 兜底
-  //（与 mcp-server extractDetail 对齐；此前空串 message 会遮蔽 error 字段）。
-  if (typeof m === "string" && m) return m;
-  if (Array.isArray(m) && m.length) return m.map(String).join("; ");
-  if (typeof d.error === "string" && d.error) return d.error;
-  return "";
+  return messageFromData(data);
 }
 
 /**
@@ -297,6 +297,13 @@ export function classifyApiError(e: unknown): ApiErrorClass {
  * surfacing the backend message instead of axios' generic text.
  */
 export function formatApiError(e: unknown): string {
+  // R31-E1: 有稳定码且归类得出来时，在既有文案后追加「[码] — 一句话处置」；
+  // 未知码 / 无码逐字节保持原输出（appendErrorCodeHint 原样返回 base）。
+  return appendErrorCodeHint(formatApiErrorBase(e), e);
+}
+
+/** 既有的人读文案（按 HTTP 状态分派）。错误码提示由 formatApiError 追加。 */
+function formatApiErrorBase(e: unknown): string {
   if (axios.isAxiosError(e)) {
     const err = e as AxiosError;
     const status = err.response?.status;

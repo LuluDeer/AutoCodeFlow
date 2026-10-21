@@ -556,7 +556,8 @@ describe('acf apikey', () => {
 
   it('revoke：DELETE /api-keys/:id（数字主键）', async () => {
     mockedDel.mockResolvedValueOnce({ success: true });
-    await run(apikeysCommand(), 'apikey revoke 3');
+    // R192-A1：撤销补了确认门（不可逆 + 影响外部系统），非交互下需显式 --yes。
+    await run(apikeysCommand(), 'apikey revoke 3 --yes');
     expect(mockedDel).toHaveBeenCalledWith('/api-keys/3');
     expect(lastSpinner().succeed).toHaveBeenCalledWith('API key 3 revoked');
   });
@@ -919,7 +920,8 @@ describe('acf task webhook', () => {
   it('enable → POST /tasks/:id/webhook/enable，url+secret 输出 + only-once 告警', async () => {
     const logs = captureStdout();
     mockedPost.mockResolvedValueOnce({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_abc' });
-    await run(tasksCommand(), 'task webhook enable t1');
+    // R192-A1：enable 对已启用任务等价轮换 → 归入破坏性动作，需 --yes。
+    await run(tasksCommand(), 'task webhook enable t1 --yes');
     expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/webhook/enable');
     expect(lastSpinner().succeed).toHaveBeenCalledWith('Task webhook enabled');
     const out = logs.join('\n');
@@ -933,7 +935,7 @@ describe('acf task webhook', () => {
   it('rotate → /rotate 端点，文案明示旧密钥立即失效', async () => {
     const logs = captureStdout();
     mockedPost.mockResolvedValueOnce({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_new' });
-    await run(tasksCommand(), 'task webhook rotate t1');
+    await run(tasksCommand(), 'task webhook rotate t1 --yes');
     expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/webhook/rotate');
     expect(lastSpinner().succeed).toHaveBeenCalledWith(
       expect.stringContaining('old secret stopped working immediately'),
@@ -945,7 +947,7 @@ describe('acf task webhook', () => {
   it('disable → /disable；status → GET /tasks/:id/webhook（{enabled,url}，无 secret 概念）', async () => {
     captureStdout();
     mockedPost.mockResolvedValueOnce({ enabled: false });
-    await run(tasksCommand(), 'task webhook disable t1');
+    await run(tasksCommand(), 'task webhook disable t1 --yes');
     expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/webhook/disable');
     expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('disabled'));
     expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('401'));
@@ -963,7 +965,7 @@ describe('acf task webhook', () => {
   it('--json 直出（enable 含一次性 secret）', async () => {
     mockedPost.mockResolvedValueOnce({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_json' });
     const logs = captureStdout();
-    await run(tasksCommand(), 'task webhook enable t1 --json');
+    await run(tasksCommand(), 'task webhook enable t1 --json --yes');
     const line = logs.find((l) => l.startsWith('{'));
     expect(JSON.parse(line as string)).toEqual({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_json' });
   });

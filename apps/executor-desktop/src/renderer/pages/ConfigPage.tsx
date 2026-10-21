@@ -24,6 +24,10 @@ import { UI_LANGUAGE_DEFAULT, UI_LANGUAGE_VALUES } from '../../main/ui-language'
 // 与状态页共用 main/agent-status-view 的查表映射——已知值出双语标签、表外
 // 未知值原样透出。不在设置页再写一份裸枚举直出。
 import { agentOutcomeLabel } from '../../main/agent-status-view';
+// 保存前判断"本次改动是否真的要求重启执行器"——与主进程共用同一份字段
+// 清单（main/config-restart.ts），否则改界面语言/日志级别也会被提示
+// "会立即重启执行器"，把无副作用保存说成高风险操作。
+import { restartRequiredFieldsDiffer } from '../../main/config-restart';
 
 declare const window: Window & {
   electronAPI: {
@@ -413,8 +417,16 @@ export default function ConfigPage() {
 
   async function requestSave() {
     if (!isDirty || saving || checkingSaveImpact) return;
-    setCheckingSaveImpact(true);
+    // 仅重载渲染层/热同步主进程的字段（语言、日志级别、通知、Agent 档位等）
+    // 不需要动执行器。此前只要执行器在跑就一律弹"保存会立即重启执行器"，
+    // 与本进程真实的 finalizeConfigSave 判据不一致，属于虚惊。
+    const needsRestart = restartRequiredFieldsDiffer(savedForm, form);
     setSaveImpact(null);
+    if (!needsRestart) {
+      await save();
+      return;
+    }
+    setCheckingSaveImpact(true);
     try {
       const getStatus = window.electronAPI.getStatus;
       if (typeof getStatus !== 'function') {
@@ -1370,6 +1382,7 @@ export default function ConfigPage() {
 
         {/* 底部保存栏 */}
         <div className="cfg-footer">
+          <div className="cfg-footer-inner">
           {saveError && (
             <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> {saveError}</div>
           )}
@@ -1399,6 +1412,7 @@ export default function ConfigPage() {
           <button className="btn btn-primary btn-lg" onClick={requestSave} disabled={saving || checkingSaveImpact || !isDirty || saveImpact !== null}>
             {saving ? <><Icon name="refresh" className="icon-spin" /> {t('cfg.footer.saving')}</> : checkingSaveImpact ? t('cfg.footer.checkingStatus') : t('cfg.footer.save')}
           </button>
+          </div>
         </div>
       </div>
     </div>

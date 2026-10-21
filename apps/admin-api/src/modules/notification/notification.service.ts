@@ -108,6 +108,54 @@ export interface AlertSilence {
  */
 export type ChannelDeliveryResults = Record<string, ChannelDeliveryStatus>;
 
+/**
+ * R33-A1: `autoflow_notification_delivery_total` 的 result 标签值域。
+ *
+ * 为什么不是 {success, failure} 二值：渠道有四种**语义不同**的投递结局，
+ * 把它们折叠成二值会让看板/告警说出错误的话——
+ *  - success  — 渠道真的投出去了（"sent"；以及 mock/legacy 渠道返回 undefined
+ *               的历史契约，见下方 sendToChannels 的 `?? "sent"`）；
+ *  - failure  — 传输/API 故障（渠道自报 "failed"，或 promise rejected）；
+ *  - blocked  — 被 SSRF 策略拦截（assertSafeHttpUrl 拒绝）：一种**策略决定**，
+ *               不是传输故障，也不代表目标不可达；
+ *  - skipped  — 渠道未配置（无 URL/凭据，零次尝试）：既不是投递成功，也不是
+ *               投递失败，把它计入 failure 会伪造出一条渠道故障。
+ *
+ * 加性变更：success / failure 两个老值语义不变（仅口径变严——self-reported
+ * 'failed' 从 success 迁出，见 R33-A1 报告），blocked / skipped 是新增 series，
+ * 老看板与告警规则里的 `result="failure"` 表达式无需改动即可继续工作。
+ */
+export type DeliveryMetricResult =
+  | "success"
+  | "failure"
+  | "blocked"
+  | "skipped";
+
+/**
+ * R33-A1: 把一次逐渠道投递结局映射成指标 result label。
+ *
+ * 这曾是缺陷所在：旧实现用 `result.status === "rejected" ? "failure" : "success"`
+ * 直接判 promise 状态，完全绕过了渠道自报的 ChannelDeliveryStatus。生产常态恰恰
+ * 是渠道把传输失败吞成返回值 'failed'（重试耗尽，见各 channel.send 的 catch），
+ * 于是「没投出去」被 100% 记成 success，看板与告警系统性低估投递失败。
+ * 单一事实来源必须是 delivery status 本身（与同函数 A-1 审计兜底、DTO 口径一致）。
+ */
+export function mapDeliveryResultLabel(
+  status: ChannelDeliveryStatus,
+): DeliveryMetricResult {
+  switch (status) {
+    case "failed":
+      return "failure";
+    case "blocked":
+      return "blocked";
+    case "skipped":
+      return "skipped";
+    case "sent":
+    default:
+      return "success";
+  }
+}
+
 @Injectable()
 export class NotificationService implements OnModuleInit, OnModuleDestroy {
   private logger = new Logger(NotificationService.name);
@@ -402,6 +450,27 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         promise: this.feishu.send(rendered.feishu ?? base),
       });
 
+    // R150-A1（出站面审计 · 轴2）：未注册渠道名 = 告警静默消失。
+    //
+    // 现场：`Task.alarmChannels` 是**自由字符串数组**（task DTO 只挂 @IsArray，
+    // 没有 @IsIn(Object.values(AlertChannel))），到这里的两个入口
+    // （notifyFailureWithConfig / notifyTimeout）把它小写后直接 `as AlertChannel[]`
+    // 强转，然后靠上面六条 `if` 逐个匹配。一个名字都匹配不上时 entries 为空：
+    // 零投递（对）、零日志（错）、零指标（错），而且下方「全部渠道失败落审计」
+    // 的判据是 `entries.length > 0 && ...`——空扇出恰好绕过它。结果是该任务的
+    // 每一次失败告警都不留任何痕迹地消失：看板没有 failure series、审计没有
+    // NOTIFICATION_FAILED 行、日志一行 warn 都没有，运维无从知道告警没发出去。
+    //
+    // 处置：路由错配必须在日志与审计上留证。部分名字无效不发审计（有渠道真的
+    // 投出去了，fail-open 语义与"不放大审计噪声"不变）。
+    const knownChannels = new Set<string>(Object.values(AlertChannel));
+    const unknownChannels = channels.filter((c) => !knownChannels.has(c));
+    if (unknownChannels.length > 0) {
+      this.logger.warn(
+        `[sendToChannels] ignoring unregistered channel name(s): ${unknownChannels.join(", ")} (known: ${[...knownChannels].join(", ")}) — ${entries.length} channel(s) actually attempted`,
+      );
+    }
+
     const results = await Promise.allSettled(entries.map((e) => e.promise));
     // V2 (round-7): surface the per-channel outcome to the caller. Rejected
     // promises stay "failed"; fulfilled ones carry the channel's own status
@@ -410,14 +479,22 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     const failures: string[] = [];
     results.forEach((result, i) => {
       const name = entries[i].name;
-      // 可观测性补齐：per-channel 投递结果计数（success/failure）。判定口径：
-      // promise rejected（渠道异常）计 failure，其余（含 mocked/blocked——
-      // SSRF 拦截是策略结果而非投递故障）计 success。fail-open 语义不变：
+      // R33-A1: 先把「这次投递的真实结局」算成一个 ChannelDeliveryStatus，
+      // 再让指标、日志、返回值、审计全部读同一个值——单一事实来源。
+      // 旧实现反过来：指标直接看 promise 状态（非 rejected 即 success），
+      // 于是渠道自报的 'failed'/'blocked'/'skipped' 全被记成 success，
+      // 与下方返回值和 A-1 审计兜底（按 'failed' 判未投递）自相矛盾。
+      const status: ChannelDeliveryStatus =
+        result.status === "rejected"
+          ? "failed"
+          : ((result.value ?? "sent") as ChannelDeliveryStatus);
+      // 可观测性补齐：per-channel 投递结果计数。fail-open 语义不变：
       // 只记计数，不影响返回值与控制流。
       recordRuntime("autoflow_notification_delivery_total", {
         channel: name,
-        result: result.status === "rejected" ? "failure" : "success",
+        result: mapDeliveryResultLabel(status),
       });
+      delivery[name] = status;
       if (result.status === "rejected") {
         const msg =
           result.reason instanceof Error
@@ -428,15 +505,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
           result.reason instanceof Error ? result.reason.stack : undefined,
         );
         failures.push(`${name}: ${msg}`);
-        delivery[name] = "failed";
-      } else {
-        const status = (result.value ?? "sent") as ChannelDeliveryStatus;
-        delivery[name] = status;
-        if (status === "blocked") {
-          this.logger.warn(
-            `${name} notification blocked by SSRF guard — see channel log for the URL`,
-          );
-        }
+      } else if (status === "blocked") {
+        this.logger.warn(
+          `${name} notification blocked by SSRF guard — see channel log for the URL`,
+        );
       }
     });
 
@@ -453,7 +525,23 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // 在审计面零痕迹可查。部分失败仍只走日志+指标（既有 fail-open 语义不变，
     // 不放大审计噪声）。审计写失败自身 try/catch——兜底路径绝不允许二次炸
     // 主链。不做死信表：重放依赖审计行 + 人工/上游重触发（记录在本注释）。
-    if (entries.length > 0 && failures.length === entries.length) {
+    // R32-A2: 判据必须是**逐渠道投递结果**，不是 promise 有没有 reject。
+    // 真实渠道把传输失败吞成 status='failed'（见上方 failures.push 只在
+    // rejected 分支——即本兜底此前只在"渠道实现违反了 fail-open 契约、真的
+    // 抛错"时才触发），于是 A-1 声称消灭的盲区在生产原样存在：全部渠道
+    // status='failed' 时一条审计都没有。这里按结果判定：
+    //   · 全部请求渠道都是 'failed' → 落审计（无论它来自 reject 还是返回值）；
+    //   · 'blocked' 是策略结果、'skipped' 是未配置，均不算投递故障（既有
+    //     spec 已钉住 blocked/skipped 不落审计），部分失败仍只走日志+指标，
+    //     不放大审计噪声。
+    const failedEverywhere =
+      entries.length > 0 &&
+      entries.every((e) => delivery[e.name] === "failed");
+    // R150-A1：`entries.length === 0 && channels.length > 0` = 请求了渠道但一个
+    // 都没路由上（名字未注册）。它不是"没有渠道要发"（channels 为空），而是
+    // "以为发了、其实一条都没发"——与 failedEverywhere 同等严重，必须落审计。
+    const routedNothing = entries.length === 0 && channels.length > 0;
+    if (failedEverywhere || routedNothing) {
       try {
         await this.auditService?.log({
           action: "NOTIFICATION_FAILED",
@@ -462,8 +550,24 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
             title: base.title,
             level: base.level,
             channels: entries.map((e) => e.name),
+            // R150-A1: 请求侧原样留证——路由错配时 channels 为空、只有这里能
+            // 看出"调用方到底要求发给谁"。
+            requestedChannels: channels,
+            ...(unknownChannels.length > 0 ? { unknownChannels } : {}),
             results: delivery,
-            failures,
+            // rejection 的异常文本更具体；纯 status='failed' 的渠道没有异常
+            // 可摘，据实写明"渠道自报 failed"，不让审计里出现空数组。
+            // 零路由时 entries 为空，改按请求的渠道名逐条写明原因。
+            failures:
+              failures.length > 0
+                ? failures
+                : entries.length > 0
+                  ? entries.map(
+                      (e) => `${e.name}: delivery failed (channel reported 'failed')`,
+                    )
+                  : channels.map(
+                      (c) => `${c}: unregistered channel name — not routed`,
+                    ),
           },
         });
       } catch {

@@ -75,6 +75,9 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       findOne: jest.fn().mockResolvedValue(null),
       create: jest.fn((x: unknown) => x),
       save: jest.fn(async (x: unknown) => x),
+      // R53-A1：heartbeat 的写面已从整行 save 改为列级 update（ADR-026 规则 4）。
+      // 替身必须提供 update，否则 heartbeat 直接 TypeError（替身缺面 = 假绿的红点）。
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       createQueryBuilder: jest.fn(() => ({
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
@@ -228,6 +231,13 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       executorRepo.findOne.mockResolvedValue(e);
       const saved = await service.heartbeat(e.address, { cpuUsage: 10 });
       expect(saved.interpreters).toEqual([{ version: "3.7.9" }]);
+      // R53-A1：interpreters **未上报** ⇒ 根本不进 patch（不是"写回旧值"）。
+      // 这把「缺省保留」从返回值口径钉到写面口径：整行 save 时代语义恰好成立，
+      // 但机制是「按快照写回」，一次并发写者就能把它覆盖成脏值。
+      const [, patch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(patch).not.toHaveProperty("interpreters");
+      expect(patch).toHaveProperty("cpuUsage", 10);
+      expect(executorRepo.save).not.toHaveBeenCalled();
     });
 
     it("合法上报（含 []）→ 覆盖", async () => {
@@ -235,6 +245,10 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
       executorRepo.findOne.mockResolvedValue(e);
       const saved = await service.heartbeat(e.address, { interpreters: [] });
       expect(saved.interpreters).toEqual([]);
+      // 合法（含空数组）⇒ 必须进 patch；否则「已上报且池空」落不了库。
+      const [, patch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(patch).toHaveProperty("interpreters");
+      expect(patch.interpreters).toEqual([]);
     });
 
     it("非法结构 → 整字段拒绝采纳 + warn，DB 保留旧值", async () => {

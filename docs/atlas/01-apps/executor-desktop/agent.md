@@ -71,7 +71,7 @@ src/main/agent/
 - **全新临时 profile**：不携带用户 cookie/登录态——browser 能力因此**不**触碰 `hostAccess`（那是「操作已登录软件」的档位，09 §2.3）；两道闸独立，不互相冒充。
 - 截图落 `workspace/screenshots/`，录屏落 `workspace/browser-recordings/`（`recordVideo`，close 时落盘）。
 
-**媒体回传**：截图/录屏经 `uploadMedia`（multipart）挂到指派 → 中台 `agent_media` 表登记（迁移 1790000000042）+ 落盘 `uploads/agent-media/<assignmentId>/` → 返回 `mediaPath`（`/api/agent-collab/media/<id>`）——这是澄清 `mediaRefs` 的**唯一合法引用形态**（外网 URL 在 SopService.validateMediaRefs 封死，SSRF 转嫁面）。中台 Admin 经 `GET /api/sop/media/:id`（ADMIN-only）取回，供 Qwen 视频理解与人工复核。
+**媒体回传**：截图/录屏经 `uploadMedia`（multipart）挂到指派 → 中台 `agent_media` 表登记（迁移 1790000000042）+ 落盘 `uploads/agent-media/<assignmentId>/` → 返回 `mediaPath`（`/api/sop/media/<id>`，R35-A1 更正：旧记的 `agent-collab/media` 形态从不是路由）——这是澄清 `mediaRefs` 的**唯一合法引用形态**（外网 URL 在 SopService.validateMediaRefs 封死，SSRF 转嫁面）。中台 Admin 经 `GET /api/sop/media/:id`（ADMIN-only）取回，供 Qwen 视频理解与人工复核。
 
 **LLM 协议扩展**：plan/diagnose 响应可带 `"browser":[actions]`（≤40 步）——先看页面再写代码；每步结果（页面文本/截图 mediaPath/录屏 mediaPath）进下一轮上下文。能力闸：SOP `capabilities` 含 `browser` **且**本机 playwright 可用，缺一即回拒绝原因给模型（不静默丢弃）。
 

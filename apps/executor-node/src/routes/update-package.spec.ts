@@ -379,6 +379,60 @@ describe('POST /api/update-package — download behaviour', () => {
     }
   }, 20_000);
 
+  // R74-A1（安全面四轴审计·轴 2 完整性）：checksum 校验是「下载链唯一的
+  // 内容完整性闸」——download.ts 只保证字节上限与半成品清理，篡改检测全靠这里
+  // （update-package.ts:148-155）。此用例此前缺失：只有 "缺 checksum → 400"
+  // 和 "正确 checksum → downloaded"，**不匹配**这条最关键的路径零覆盖。
+  it('rejects a checksum mismatch, reports failed and removes the downloaded file', async () => {
+    const payload = 'tampered-executor-package-body';
+    const server = actualHttp.createServer((_req, res) => {
+      res.writeHead(200);
+      res.end(payload);
+    });
+    const port = await listen(server);
+    const tmpDir = actualFs.mkdtempSync(path.join(require('os').tmpdir(), 'acf-up-sum-'));
+    const spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    const wrongChecksum = 'f'.repeat(64); // 与 payload 的真实 sha256 必然不同
+    const tmpFile = path.join(tmpDir, '.pkg-updates', 'pkg-sum-test.zip');
+    try {
+      post.mockResolvedValue({ data: {} });
+      const res = await request(app)
+        .post('/api/update-package')
+        .send({
+          packageId: 'pkg-sum-test',
+          name: 'executor',
+          version: '9.9.7',
+          downloadUrl: `http://127.0.0.1:${port}/executor.zip`,
+          checksum: wrongChecksum,
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toBe(true);
+
+      // 等到失败回执真正推出（推回执发生在 catch 里、unlink 之后）
+      let pushed: unknown[] | undefined;
+      for (let i = 0; i < 200; i++) {
+        pushed = post.mock.calls.find((c: unknown[]) => c[0] === '/api/executor-packages/push-result');
+        const settled = await request(app).get('/api/update-package/status');
+        if (pushed && settled.body.inProgress === false) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(pushed).toBeDefined();
+      expect((pushed as unknown[])[1]).toEqual(
+        expect.objectContaining({
+          packageId: 'pkg-sum-test',
+          status: 'failed',
+          error: expect.stringMatching(/校验和不匹配/),
+        }),
+      );
+      // 完整性校验失败的包**不得留在磁盘上**（半成品清理）
+      expect(actualFs.existsSync(tmpFile)).toBe(false);
+    } finally {
+      spyCwd.mockRestore();
+      await closeServer(server);
+      actualFs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('releases updateInProgress when the download fails (no permanent 409)', async () => {
     const server = actualHttp.createServer((_req, res) => {
       res.writeHead(500);

@@ -97,10 +97,12 @@ describe("NF-01 ApiKeyAuth — task:trigger 扩展域分流", () => {
         "acf_deadbeef",
       ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+    // R32-A4: 第 4 参为命中的行（本例 mock 未给 row → undefined）
     expect(svc.auditAuthFailure).toHaveBeenCalledWith(
       "acf_dead",
       "revoked",
       "10.0.0.9",
+      undefined,
     );
   });
 

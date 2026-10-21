@@ -5,6 +5,8 @@ import { UsersService } from "../users.service";
 import { User, UserRole } from "../entities/user.entity";
 import { RefreshToken } from "../../auth/entities/refresh-token.entity";
 import { ProjectMember } from "../../project/entities/project-member.entity";
+// R32-A5: 删用户同事务回收 api_keys 行（凭据卫生）。
+import { ApiKey } from "../../api-keys/entities/api-key.entity";
 import bcrypt from "bcrypt";
 
 jest.mock("bcrypt");
@@ -44,6 +46,8 @@ describe("UsersService", () => {
   let refreshRepo: ReturnType<typeof makeRepo>;
   // A-8: 删用户事务内的 project_members 清理桩。
   let memberRepo: ReturnType<typeof makeRepo>;
+  // R32-A5: 删用户事务内的 api_keys 清理桩。
+  let apiKeyRepo: ReturnType<typeof makeRepo>;
   // ARCH-27: initialAdmin 配置经 ConfigService 读取 —— spec 注入桩实现。
   let configService: { get: jest.Mock };
 
@@ -51,8 +55,9 @@ describe("UsersService", () => {
     repo = makeRepo();
     refreshRepo = makeRepo();
     memberRepo = makeRepo();
-    // R-14/A-8: 事务桩——把事务内 getRepository 映射到 User/RefreshToken/
-    // ProjectMember 三个 mock。
+    apiKeyRepo = makeRepo();
+    // R-14/A-8/R32-A5: 事务桩——把事务内 getRepository 映射到 User/RefreshToken/
+    // ProjectMember/ApiKey 四个 mock。
     repo.manager.transaction.mockImplementation(async (cb: any) =>
       cb({
         getRepository: (entity: unknown) =>
@@ -60,7 +65,9 @@ describe("UsersService", () => {
             ? refreshRepo
             : entity === ProjectMember
               ? memberRepo
-              : repo,
+              : entity === ApiKey
+                ? apiKeyRepo
+                : repo,
       }),
     );
     configService = { get: jest.fn().mockReturnValue(undefined) };
@@ -247,21 +254,30 @@ describe("UsersService", () => {
         service.update(1, { role: UserRole.USER } as any),
       ).rejects.toThrow("不能降级最后一个管理员");
       expect(qb.setLock).toHaveBeenCalledWith("pessimistic_write");
-      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
     });
 
     it("allows demoting an admin when another admin remains", async () => {
-      repo.findOne.mockResolvedValue({
-        id: 1,
-        username: "admin",
-        role: UserRole.ADMIN,
+      // R32-C3: 写面改为列级 UPDATE + 写后重读。用「行对象」当库：findOne 返回
+      // 行副本、update 把 patch 合并进行里——于是断言的是「只写了 role 这一列」
+      // 与「响应取自写后的行」，比旧断言「save 被调用过」更强（旧断言连"写了哪
+      // 些列"都不管，正是本缺陷能溜过去的原因）。
+      const row: any = { id: 1, username: "admin", role: UserRole.ADMIN };
+      repo.findOne.mockImplementation(async () => ({ ...row }));
+      repo.update.mockImplementation(async (_c: any, patch: any) => {
+        Object.assign(row, patch);
+        return { affected: 1 };
       });
       const qb = adminQb([{ id: 1 }, { id: 2 }]);
       repo.createQueryBuilder.mockReturnValue(qb);
 
       const result = await service.update(1, { role: UserRole.USER } as any);
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 1 },
+        { role: UserRole.USER },
+      );
       expect((result as any).role).toBe(UserRole.USER);
-      expect(repo.save).toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it("does not take the lock path for non-role updates", async () => {
@@ -272,7 +288,9 @@ describe("UsersService", () => {
       });
       await service.update(1, { email: "a@b.c" } as any);
       expect(repo.createQueryBuilder).not.toHaveBeenCalled();
-      expect(repo.save).toHaveBeenCalled();
+      // R32-C3: 写入面是列级 patch（只含 email），不是整行 save
+      expect(repo.update).toHaveBeenCalledWith({ id: 1 }, { email: "a@b.c" });
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it("does not take the lock path when re-setting role to ADMIN (no-op demotion)", async () => {
@@ -283,7 +301,11 @@ describe("UsersService", () => {
       });
       await service.update(1, { role: UserRole.ADMIN } as any);
       expect(repo.createQueryBuilder).not.toHaveBeenCalled();
-      expect(repo.save).toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 1 },
+        { role: UserRole.ADMIN },
+      );
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     /**
@@ -346,7 +368,11 @@ describe("UsersService", () => {
       });
       await service.update(5, { role: UserRole.ADMIN } as any);
       expect(repo.createQueryBuilder).not.toHaveBeenCalled();
-      expect(repo.save).toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 5 },
+        { role: UserRole.ADMIN },
+      );
+      expect(repo.save).not.toHaveBeenCalled();
     });
   });
 
@@ -365,18 +391,108 @@ describe("UsersService", () => {
       const result = await service.update(1, dto);
 
       expect(dto.currentPassword).toBeUndefined();
-      const saved = repo.save.mock.calls[0][0];
-      expect(saved.currentPassword).toBeUndefined();
+      // R32-C3: 写面是列级 patch——toEqual 证明「只写 email 一列、且
+      // currentPassword 不在 patch 里」，比旧断言在整行实体上看单个字段更强。
+      const [, patch] = repo.update.mock.calls[0];
+      expect(patch).toEqual({ email: "new@example.com" });
       expect((result as any).currentPassword).toBeUndefined();
-      expect(saved.email).toBe("new@example.com");
     });
 
     it("still hashes a supplied password", async () => {
       repo.findOne.mockResolvedValue({ id: 1, username: "u", password: "old" });
       await service.update(1, { password: "PlainPass1!" } as any);
       expect(bcrypt.hash).toHaveBeenCalledWith("PlainPass1!", 12);
-      const saved = repo.save.mock.calls[0][0];
-      expect(saved.password).toBe("hashed-password");
+      // R32-C3: 哈希结果只进 password 列（列级 patch 的逐键断言）
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: 1 },
+        { password: "hashed-password" },
+      );
+    });
+  });
+
+  // R32-A5（轴4）：username/email 唯一性**竞态**（预检与 save 非原子）。
+  //
+  // 缺陷现场：controller 的唯一性预检（users.controller.ts:143-159）只覆盖
+  // 「非 admin 自改」，且预检与 save 之间存在 TOCTOU 窗口——两个请求同时把
+  // 名字改成同一个值时两者都通过预检，输家的写入（R32-C3 起是列级 UPDATE）撞
+  // user.username / user.email 唯一索引抛 PG 23505。此前该错误一路穿到全局 filter
+  // （http-exception.filter.ts:114-118）落成笼统的 RESOURCE_EXISTS「资源已存在」：
+  // 状态码仍是 409、不 500，但**用户不知道撞的是哪个字段**，而同一字段的另一条
+  // 路径（预检命中）给的是点名 409 USERNAME_TAKEN / EMAIL_TAKEN。同一个失败
+  // 语义有两种码 = 缺陷。admin 改他人账号更是完全没有预检，唯一兜底就是这里。
+  describe("update — 唯一性竞态 23505 兜底（R32-A5）", () => {
+    const uniqueViolation = () =>
+      Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+      });
+
+    it("UPDATE 撞 username 唯一索引 → 409 USERNAME_TAKEN（不落成笼统 RESOURCE_EXISTS）", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        // 归因重读：该 username 已被**他人**占用（并发赢家已落库）
+        .mockResolvedValueOnce({ id: 9, username: "racer", email: "other@x.io" });
+      // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
+      repo.update.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { username: "racer" } as any),
+      ).rejects.toMatchObject({ errorCode: "USERNAME_TAKEN" });
+    });
+
+    it("UPDATE 撞 email 唯一索引 → 409 EMAIL_TAKEN", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        .mockResolvedValueOnce({ id: 9, username: "racer", email: "taken@x.io" });
+      // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
+      repo.update.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { email: "taken@x.io" } as any),
+      ).rejects.toMatchObject({ errorCode: "EMAIL_TAKEN" });
+    });
+
+    it("重读无法归因（对手已删/已回滚）→ 回落 USER_EXISTS，绝不冒充成功", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        .mockResolvedValueOnce(null);
+      // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
+      repo.update.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { username: "racer" } as any),
+      ).rejects.toMatchObject({ errorCode: "USER_EXISTS" });
+    });
+
+    it("重读命中的是自己（同一行）→ 不误报占用，回落 USER_EXISTS", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({
+          id: 5,
+          username: "old",
+          password: "hashed",
+          role: UserRole.USER,
+        })
+        .mockResolvedValueOnce({ id: 5, username: "racer" });
+      // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
+      repo.update.mockRejectedValueOnce(uniqueViolation());
+
+      await expect(
+        service.update(5, { username: "racer" } as any),
+      ).rejects.toMatchObject({ errorCode: "USER_EXISTS" });
     });
   });
 
@@ -409,13 +525,121 @@ describe("UsersService", () => {
       expect(repo.increment).not.toHaveBeenCalled();
     });
 
-    it("save 失败（改密未生效）不 bump，不误伤在途会话", async () => {
+    it("写入失败（改密未生效）不 bump，不误伤在途会话", async () => {
       repo.findOne.mockResolvedValue({ id: 1, username: "u", password: "old" });
-      repo.save.mockRejectedValueOnce(new Error("db down"));
+      repo.update.mockRejectedValueOnce(new Error("db down"));
       await expect(
         service.update(1, { password: "PlainPass1!" } as any),
       ).rejects.toThrow("db down");
       expect(repo.increment).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── R32-C3: update 的列级写入语义（整行回写 → 并发安全列被静默回滚）──────
+  /**
+   * 缺陷现场（R32-C3 / L2）：update() 先 findById 读**整行快照**，随后做 bcrypt
+   * （12 轮，毫秒级窗口）与唯一性/降级判定，最后 `save(user)`。TypeORM 的 save
+   * 会按 id 重读库中行逐列 diff（persistence/SubjectChangedColumnsComputer），
+   * 内存实体里的**陈旧快照值**与并发写入后的新值不同 → 被判成"脏列" → 按旧值
+   * 写回。于是并发发生的
+   *   · sessionVersion +1（logout / 改密）→ 回滚 ⇒ 已吊销 access token 复活；
+   *   · isActive=false（管理员禁用）→ 回滚 ⇒ 禁用失效；
+   *   · password 轮换 → 回滚 ⇒ 改密被撤销。
+   * 修复：只写本次 dto 真正要改的列（列级 UPDATE），并发列不进 SQL。
+   */
+  describe("update — 列级写入不回滚并发安全列（R32-C3）", () => {
+    let dbRow: Record<string, any>;
+    let concurrentApplied: boolean;
+
+    beforeEach(() => {
+      dbRow = {
+        id: 1,
+        username: "alice",
+        email: "alice@example.com",
+        password: "hash-original",
+        role: "user",
+        isActive: true,
+        loginFailCount: 0,
+        lockedUntil: null,
+        totpSecret: null,
+        totpEnabled: false,
+        sessionVersion: 4,
+        lastTotpCounter: null,
+        oidcSub: null,
+      };
+      concurrentApplied = false;
+      // 快照读：返回整行副本，并在**第一次**读之后立刻插入并发写入——等价于
+      // 另一条路径在「本请求读快照」与「本请求落库」之间提交。
+      repo.findOne.mockImplementation(async () => {
+        const snapshot = { ...dbRow };
+        if (!concurrentApplied) {
+          concurrentApplied = true;
+          dbRow.sessionVersion += 1; // logout / 改密 bump
+          dbRow.isActive = false; // 管理员禁用
+          dbRow.password = "hash-rotated"; // 并发改密
+        }
+        return snapshot;
+      });
+      // TypeORM save 的等价物：按 id 重读库中行 → 逐列 diff → 写回有差异的列。
+      repo.save.mockImplementation(async (entity: any) => {
+        for (const col of Object.keys(entity)) {
+          if (!(col in dbRow)) continue;
+          if (dbRow[col] !== entity[col]) dbRow[col] = entity[col];
+        }
+        return entity;
+      });
+      // 列级 UPDATE 的等价物：只合并 patch 里出现的列。
+      repo.update.mockImplementation(async (_criteria: any, patch: any) => {
+        Object.assign(dbRow, patch);
+        return { affected: 1 };
+      });
+      repo.increment.mockImplementation(
+        async (_criteria: any, col: string, amount: number) => {
+          dbRow[col] += amount;
+          return { affected: 1, generatedMaps: [] };
+        },
+      );
+    });
+
+    it("改名不得回滚并发的 sessionVersion / 禁用状态 / 密码", async () => {
+      await service.update(1, { username: "alice2" } as any);
+
+      expect(dbRow.username).toBe("alice2"); // 目标列生效
+      expect(dbRow.sessionVersion).toBe(5); // 并发 bump 未被回滚（令牌不复活）
+      expect(dbRow.isActive).toBe(false); // 并发禁用未被撤销
+      expect(dbRow.password).toBe("hash-rotated"); // 并发改密未被撤销
+    });
+
+    it("只写 dto 里出现的列（没有整行回写）", async () => {
+      await service.update(1, { username: "alice2" } as any);
+
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalledTimes(1);
+      expect(Object.keys(repo.update.mock.calls[0][1])).toEqual(["username"]);
+    });
+
+    it("改密：只写 password 一列，sessionVersion 在并发 bump 之上继续 +1", async () => {
+      await service.update(1, { password: "PlainPass1!" } as any);
+
+      expect(Object.keys(repo.update.mock.calls[0][1])).toEqual(["password"]);
+      expect(dbRow.password).toBe("hashed-password");
+      expect(dbRow.sessionVersion).toBe(6); // 并发 bump 到 5，本请求再 +1
+      expect(dbRow.isActive).toBe(false);
+    });
+  });
+
+  // R32-C3: 列级 UPDATE 的自然产物——写面不再"找不到行就 INSERT"（旧 save 会把
+  // 已被并发删除的行复活）。行在写入与写后重读之间消失 → 诚实 404。
+  describe("update — 行在写入前后被并发删除（R32-C3）", () => {
+    it("写入后重读不到行 → 404 USER_ID_NOT_FOUND，不冒充成功", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({ id: 1, username: "u", role: "user" })
+        .mockResolvedValueOnce(null);
+
+      await expect(
+        service.update(1, { username: "u2" } as any),
+      ).rejects.toThrow("用户 #1 不存在");
+      expect(repo.update).toHaveBeenCalledWith({ id: 1 }, { username: "u2" });
     });
   });
 
@@ -541,6 +765,46 @@ describe("UsersService", () => {
       // 三段写都在同一事务回调里完成；用户行删除收尾
       expect(order).toEqual(["refresh", "members", "user"]);
       expect(memberRepo.delete).toHaveBeenCalledTimes(1);
+    });
+
+    // R32-A5（轴1）：被删用户的 API Key 行是**孤儿**——api_keys.userId 无 FK，
+    // 而 remove() 此前只回收 refresh_tokens（:313）与 project_members（:318）。
+    // 认证面已被 R32-A4 的属主闸兜住（api-keys.service.ts:215-218：
+    // findByIdOrNull + isActive → owner_inactive → 401），所以这不构成"删了还能用"，
+    // 但残留的**长期有效凭据行**没有回收点：审计面看不到"哪些 key 属于已删账号"，
+    // 且与 refresh_tokens「不把孤儿令牌留在库里」的既定卫生口径不一致。
+    // 与 A-8 同姿：清行与删用户同一事务，失败一并回滚，不留半清理状态。
+    it("R32-A5: api_key rows are reclaimed inside the same transaction as the user row", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 5,
+        username: "bob",
+        role: UserRole.USER,
+      });
+
+      await expect(service.remove(5, 1)).resolves.toEqual({ deleted: true });
+
+      expect(apiKeyRepo.delete).toHaveBeenCalledWith({ userId: 5 });
+    });
+
+    it("R32-A5: api_key cleanup happens before the user row is removed (FK-free table, order matters)", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 5,
+        username: "bob",
+        role: UserRole.USER,
+      });
+      const order: string[] = [];
+      apiKeyRepo.delete.mockImplementation(async () => {
+        order.push("apikeys");
+        return { affected: 2 };
+      });
+      repo.remove.mockImplementation(async () => {
+        order.push("user");
+        return { id: 5 };
+      });
+
+      await service.remove(5, 1);
+
+      expect(order).toEqual(["apikeys", "user"]);
     });
 
     it("refuses to delete the last administrator (locked count)", async () => {

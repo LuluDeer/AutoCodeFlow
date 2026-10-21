@@ -2,19 +2,38 @@ import { BrowserWindow, app, screen } from 'electron';
 import * as path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import log from './logger';
+// R106：导航白名单判定（纯函数，selftest 直接驱动）。
+import { isAllowedNavigation } from './navigation-policy';
+import { pathToFileURL } from 'url';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 
 // QA-12：裸 electron 跑 e2e 时 getAppPath()===__dirname（dist/main），
 //   dist/renderer 是上一级 sibling；打包形态才是 <app>/dist/renderer。
 // 双路径探测取存在者——两种形态同一语义，无行为差异。
-function resolveRendererIndex(): string {
-  const preferred = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
-  const adjacent = path.join(__dirname, '..', 'renderer', 'index.html');
-  return existsSync(preferred) ? preferred : adjacent;
+//
+// SEC-IPC-SENDER（R86-A1 轴 1）：**导出**给 ipc-handlers 做 sender 白名单锚点。
+// 必须复用这一份而不是另算一遍：loadFile 加载的入口页与 IPC 允许的页一旦漂移，
+// 要么闸门误杀（应用直接不可用），要么白名单形同虚设。
+let rendererIndexCache: string | null = null;
+function resolveRendererV1Index(): string {
+  // 进程内只判定一次（存在性探测有 I/O）：IPC 闸每次调用都要取锚点，
+  // 热路径（log:read 1.5s 轮询等）不该反复 stat 磁盘。
+  if (rendererIndexCache === null) {
+    const preferred = path.join(app.getAppPath(), 'dist', 'renderer', 'index.html');
+    const adjacent = path.join(__dirname, '..', 'renderer', 'index.html');
+    rendererIndexCache = existsSync(preferred) ? preferred : adjacent;
+  }
+  return rendererIndexCache;
 }
 
-const RENDERER_INDEX = resolveRendererIndex();
+/**
+ * 当前进程该加载的渲染层入口 —— loadPage / 导航守卫 / IPC sender 闸共用这一份。
+ * 2026-10 起回退到 V1 渲染层（V2 已撤销）。
+ */
+export function resolveRendererIndex(): string {
+  return resolveRendererV1Index();
+}
 
 type SavedWindowSize = { width: number; height: number; maximized: boolean };
 
@@ -90,13 +109,24 @@ function showWhenReady(win: BrowserWindow, maximize = false): void {
   win.once('closed', () => clearTimeout(timer));
 }
 
+/**
+ * 渲染层基址覆盖（Vite dev server）。导航守卫必须与这里用同一个基址，
+ * 否则加载成功但导航被拦。
+ */
+function rendererBaseUrl(): string | null {
+  const raw = process.env.VITE_DEV_SERVER_URL;
+  if (!raw) return null;
+  return raw.replace(/\/+$/, '');
+}
+
 function loadPage(win: BrowserWindow, page: string): void {
-  if (process.env.VITE_DEV_SERVER_URL) {
-    // Dev mode: use Vite dev server with hash routing
-    win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#${page}`);
+  const base = rendererBaseUrl();
+  if (base) {
+    // Dev / V2 联调：远程 URL + hash 路由（V2 忽略 hash，等价于首页）
+    win.loadURL(`${base}#${page}`);
   } else {
     // Production: use loadFile (handles Windows paths correctly, avoids file:// CSP issues)
-    win.loadFile(RENDERER_INDEX, { hash: page });
+    win.loadFile(resolveRendererIndex(), { hash: page });
   }
 }
 
@@ -114,13 +144,35 @@ function loadPage(win: BrowserWindow, page: string): void {
  *    任何弹出请求都不该被满足（返回 deny 比 allow 更安全，避免遗漏）。
  */
 function hardenWindow(win: BrowserWindow): void {
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  const devUrl = rendererBaseUrl();
+  // R106：生产只允许**入口页本身**（忽略 hash/query），不再放行任意 file://。
+  // 之前那条前缀判据等于「任何本地 HTML 都能接管这个 webContents」——而导航后
+  // preload 桥仍挂着，等于把整套 electronAPI 交给那个页面。
+  const policy = {
+    devUrl: devUrl ?? null,
+    rendererFileUrl: devUrl ? null : pathToFileURL(resolveRendererIndex()).toString(),
+  };
 
+  // R127：**两个 handler 各自内联 preventDefault**，不再抽 helper。
+  //
+  // 抽 helper 更 DRY，但会让「守卫必须真的阻止」这条静态判据失去锚点：
+  // 判据只能在 will-navigate 附近找 preventDefault，而 helper 写在上面 —— 于是它
+  // 会去**同一个函数里 will-attach-webview 那一处**找，把「删掉 will-navigate 的阻止逻辑」
+  // 也判成绿（本轮反证实测）。
+  //
+  // 在这里**可检查性优先于 DRY**：多写三行，换一条判据真的能红。
   win.webContents.on('will-navigate', (event, url) => {
-    const allowed = devUrl ? url.startsWith(devUrl) : url.startsWith('file://');
-    if (!allowed) {
+    if (!isAllowedNavigation(url, policy)) {
       event.preventDefault();
       log.warn(`Blocked navigation to ${url}`);
+    }
+  });
+  // R106：`will-redirect` 与 `will-navigate` 是**两条独立事件**，只挂前者等于给服务端 3xx 留了后门
+  // （dev 形态下尤其明显）。同一条判据同时挂上去。
+  win.webContents.on('will-redirect', (event, url) => {
+    if (!isAllowedNavigation(url, policy)) {
+      event.preventDefault();
+      log.warn(`Blocked redirect to ${url}`);
     }
   });
 

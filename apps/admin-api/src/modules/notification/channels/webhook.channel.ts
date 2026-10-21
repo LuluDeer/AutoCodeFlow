@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import {
   BaseChannel,
+  // R150-A1（轴2）：失败原因分类（仅进日志，不改状态契约）
+  classifyDeliveryFailure,
   ChannelConfigOverride,
   ChannelDeliveryStatus,
   NotificationPayload,
@@ -13,6 +15,7 @@ import {
   pinnedAxiosConfig,
 } from "../../../common/utils/safe-http.util";
 import { ChannelConfigStore } from "../channel-config.store";
+import { redactUrlForLog } from "./log-safe-url.util";
 
 @Injectable()
 export class WebhookChannel extends BaseChannel {
@@ -77,7 +80,7 @@ export class WebhookChannel extends BaseChannel {
       });
     } catch (err: unknown) {
       this.logger.warn(
-        `[Webhook] SSRF-blocked URL ${url_}: ${err instanceof Error ? err.message : String(err)}`,
+        `[Webhook] SSRF-blocked URL ${redactUrlForLog(url_)}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return "blocked";
     }
@@ -106,7 +109,10 @@ export class WebhookChannel extends BaseChannel {
           ...pinCfg,
         });
       });
-      this.logger.log(`[Webhook] sent: ${p.title} → ${url_}`);
+      // R32-A2: 成功路径此前打**整条 URL**——dingtalk/wecom 形态的
+      // `?access_token=`、企业微信 `?key=` 会逐条落进日志（其余渠道只打
+      // title，本渠道是唯一的例外）。保留 host/path 供排障，凭据掩码。
+      this.logger.log(`[Webhook] sent: ${p.title} → ${redactUrlForLog(url_)}`);
       return "sent";
     } catch (error) {
       // QA5: with maxRedirects:0 a 3xx lands here as a deterministic reject —
@@ -120,7 +126,11 @@ export class WebhookChannel extends BaseChannel {
           : error instanceof Error
             ? error.message
             : String(error);
-      this.logger.error(`[Webhook] send failed after retries: ${reason}`);
+      // R150-A1（轴2）：括号里是原因分类——3xx 已在上面的 reason 里说清，
+      // 这里把 4xx/5xx/timeout/network 也标出来（状态仍是 "failed"，契约不变）。
+      this.logger.error(
+        `[Webhook] send failed after retries (${classifyDeliveryFailure(error)}): ${reason}`,
+      );
       return "failed";
     }
   }

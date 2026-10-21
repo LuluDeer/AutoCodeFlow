@@ -1687,7 +1687,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deployment.statusMessage = upgrade
       ? "Pulling latest commit..."
       : "Cloning repository...";
-    await this.repo.save(deployment);
+    // R59：走本模块**自己的**乐观锁收口，而不是裸 save。
+    //
+    // 同文件 saveWithOptimisticLock 的头注写得很清楚：@VersionColumn 会让 save 自动追加
+    // 「AND version = :expected」，并发后写撞版本时 TypeORM 抛 OptimisticLockVersionMismatchError
+    // —— 那个 helper 负责把它翻成 409 APP_DEPLOYMENT_CONCURRENT_MODIFICATION。这里裸 save 意味着：
+    // 数据**确实**被版本列保护着（不会静默覆盖），但撞版本时抛的是**未映射的** TypeORM 异常 ⇒
+    // 调用方拿到 500，而不是「请重载重试」的 409。同一模块里两条写路径对同一类竞争给出不同
+    // 答案，是缺陷而非风格。
+    await this.saveWithOptimisticLock(deployment);
 
     // SSRF guard: validate address format before making any outbound request.
     // R8: format-only validation was not enough — the address is
@@ -1730,16 +1738,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       payload,
     });
     if (routed.delivered === "pull") {
-      deployment.status = upgrade
-        ? DeploymentStatus.UPGRADING
-        : DeploymentStatus.DEPLOYING;
       // A-2①：statusMessage 记下 commandId（前缀常量供卡死扫描识别「命令
       // 未决」行——见 PULL_QUEUED_MESSAGE_PREFIX 注释）。
-      deployment.statusMessage = `${PULL_QUEUED_MESSAGE_PREFIX} (commandId=${routed.commandId})`;
-      deployment.deployedCommit = app.gitCommit || null;
-      deployment.deployedVersion = app.version || null;
-      deployment.deployedAt = new Date();
-      await this.repo.save(deployment);
+      // R34-A2：状态写条件化（见 persistDeployProgress 头注）。
+      await this.persistDeployProgress(
+        deployment,
+        upgrade ? DeploymentStatus.UPGRADING : DeploymentStatus.DEPLOYING,
+        `${PULL_QUEUED_MESSAGE_PREFIX} (commandId=${routed.commandId})`,
+        app,
+      );
       await this.saveVersionSnapshot(deployment, app, "deploying");
       this.logger.log(
         `Deploy ${deployment.id} queued for pull executor ${deployment.executorAddress} (commandId=${routed.commandId})`,
@@ -1758,9 +1765,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       pinned = await assertAndPinExecutorUrl(url);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      deployment.status = DeploymentStatus.FAILED;
-      deployment.statusMessage = msg;
-      await this.repo.save(deployment);
+      await this.failDeploymentIfInFlight(deployment, msg);
       return;
     }
 
@@ -1776,15 +1781,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           maxRedirects: 0, // R3 parity: 首跳是唯一经 SSRF 校验的地址
           ...pinCfg,
         });
-        // Success
-        deployment.status = upgrade
-          ? DeploymentStatus.UPGRADING
-          : DeploymentStatus.DEPLOYING;
-        deployment.statusMessage = "Deploy command sent to executor";
-        deployment.deployedCommit = app.gitCommit || null;
-        deployment.deployedVersion = app.version || null;
-        deployment.deployedAt = new Date();
-        await this.repo.save(deployment);
+        // Success（R34-A2：条件写，见 persistDeployProgress 头注）
+        await this.persistDeployProgress(
+          deployment,
+          upgrade ? DeploymentStatus.UPGRADING : DeploymentStatus.DEPLOYING,
+          "Deploy command sent to executor",
+          app,
+        );
         await this.saveVersionSnapshot(deployment, app, "deploying");
         return;
       } catch (err: unknown) {
@@ -1802,14 +1805,119 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
 
     // All attempts exhausted
-    deployment.status = DeploymentStatus.FAILED;
-    deployment.statusMessage = `Failed to reach executor after ${MAX_ATTEMPTS} attempts: ${lastError}`;
+    const exhaustedMsg = `Failed to reach executor after ${MAX_ATTEMPTS} attempts: ${lastError}`;
     this.logger.error(
       `Deploy push failed for ${deployment.id} after ${MAX_ATTEMPTS} attempts: ${lastError}`,
     );
-    await this.repo.save(deployment);
+    // R33-B2: **条件写**，不是无条件 save。
+    //
+    // 本分支的窗口很长：3 次尝试 × 30s 超时 + 1s/2s 退避 ⇒ 最长约 93 秒。而
+    // 「HTTP 请求被对端接受、响应超时」是完全常见的形态——执行器其实**已经**
+    // 收到命令并成功部署，随后心跳把行推进到 RUNNING。旧实现此刻无条件
+    // save(FAILED) 会把这个成功**回滚成失败**（并把整份陈旧快照写回，连
+    // deployedCommit/deployedVersion/statusMessage 一起盖掉）——运维看到
+    // 「部署失败」而去重试，实际线上是好的。
+    //
+    // 判据用「行是否仍在飞」：只有仍在 PENDING/DEPLOYING/UPGRADING 时才写
+    // FAILED；已被心跳推进（RUNNING/FAILED/STOPPED…）就一个字都不动，只留
+    // 一条 warn（这是并发收敛，不是错误）。与 upgrade/stop 的
+    // saveWithOptimisticLock 同方向：**让后来的写者看见别人已经写完**。
+    // R33-B2 / R34-A2: 条件写在 failDeploymentIfInFlight 里（与 SSRF 分支同一实现）。
+    await this.failDeploymentIfInFlight(deployment, exhaustedMsg);
   }
 
+
+
+  /**
+   * R34-A2（ADR-026）：推送**成功**路径的状态写也必须条件化。
+   *
+   * 两处（pull 已入队 / push 已送达）都在一次 await 之后写 `DEPLOYING|UPGRADING`。
+   * 若执行器极快（pull 模式尤其：「入队后立刻被取走并跑完」），心跳可能已把行推进到
+   * RUNNING —— 无条件 save 会把状态**回退**成 DEPLOYING（随后又被卡死扫描判 stalled）。
+   *
+   * 但这里不能像失败分支那样「整条跳过」：本次推送的 deployedCommit / deployedVersion /
+   * deployedAt 是**真实事实**（部署确实发生了），丢掉会丢部署记录。故采取：
+   *   · 行仍在飞 → 一次条件写，状态 + 元数据一起落；
+   *   · 行已被推进 → **只补元数据，不回退状态**（并 warn 说明让位）。
+   */
+  private async persistDeployProgress(
+    deployment: AppDeployment,
+    status: DeploymentStatus,
+    statusMessage: string,
+    app: Application,
+  ): Promise<void> {
+    const metadata = {
+      statusMessage,
+      deployedCommit: app.gitCommit || null,
+      deployedVersion: app.version || null,
+      deployedAt: new Date(),
+    };
+    const applied = await this.repo.update(
+      {
+        id: deployment.id,
+        status: In([
+          DeploymentStatus.PENDING,
+          DeploymentStatus.DEPLOYING,
+          DeploymentStatus.UPGRADING,
+        ]),
+      },
+      { status, ...metadata },
+    );
+    if (applied.affected) {
+      Object.assign(deployment, { status, ...metadata });
+      return;
+    }
+    // adr-026-exempt: 只写部署元数据（deployedCommit / deployedVersion / deployedAt /
+    // statusMessage），**patch 里不含 status** —— 无条件写是刻意的：状态由上面的条件写
+    // 决定，这里补的是「部署确实发生过」这一事实，与并发无关。
+    await this.repo.update({ id: deployment.id }, metadata);
+    Object.assign(deployment, metadata);
+    this.logger.warn(
+      "Deploy push to " +
+        deployment.id +
+        " succeeded but the row was already advanced by its heartbeat — status kept, " +
+        "deploy metadata recorded.",
+    );
+  }
+  /**
+   * R34-A2（ADR-026）：把「本次推送失败」写成终态时，必须是**条件写**。
+   *
+   * 两个调用点的窗口都不短：SSRF 校验要**做 DNS 解析**（秒级），重试耗尽要
+   * 3 次 30s 超时 + 退避（约 93 秒）。期间执行器完全可能已经收到命令并成功
+   * 部署、心跳把行推进到 RUNNING —— 此时无条件写 FAILED 会把**成功回滚成
+   * 失败**（并整份陈旧快照覆盖 deployedCommit/deployedVersion/statusMessage）。
+   *
+   * 判据用「行是否仍在飞」：只有仍在 DEPLOYING/UPGRADING 时才落 FAILED；
+   * 已被推进就一个字都不写，只留 warn（并发收敛，不是错误）。
+   *
+   * @returns 是否真的写了 FAILED（false = 让位给了并发写者）
+   */
+  private async failDeploymentIfInFlight(
+    deployment: AppDeployment,
+    message: string,
+  ): Promise<boolean> {
+    const marked = await this.repo.update(
+      {
+        id: deployment.id,
+        status: In([DeploymentStatus.DEPLOYING, DeploymentStatus.UPGRADING]),
+      },
+      { status: DeploymentStatus.FAILED, statusMessage: message },
+    );
+    if (!marked.affected) {
+      this.logger.warn(
+        "Deploy push to " +
+          deployment.id +
+          " failed, but the row is no longer in-flight (the executor may already have " +
+          "succeeded and been advanced by its heartbeat) — not overwriting it with FAILED. " +
+          "Reason: " +
+          message,
+      );
+      return false;
+    }
+    deployment.status = DeploymentStatus.FAILED;
+    deployment.statusMessage = message;
+    return true;
+  }
   private buildSnapshot(app: Application): Record<string, any> {
     return {
       id: app.id,
@@ -2394,9 +2502,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     try {
       const row = await this.repo.findOne({ where: { id: deploymentId } });
       if (!row) return;
+      // R50（ADR-026 规则 4）：只写这两列，**不整行 save**。整行回写会用本方法读到
+      // 的快照覆盖并发的 status / statusMessage / rollout 进度（心跳推进终态、管理员
+      // 停止等），而这里要改的只是「批次痕迹」两列——多写一列就是在替别人做决定。
+      // adr-026-exempt: 只写 rolloutState / rolloutMeta 两个**批次痕迹列**（patch 里不含
+      // status/statusMessage 等状态列）；状态迁移由 handleHeartbeat / 升级链的条件 UPDATE 独占。
+      await this.repo.update(
+        { id: deploymentId },
+        { rolloutState: state, rolloutMeta: meta },
+      );
+      // 同步内存视图：调用方随后还会读 row 的这两列；列级写不会回灌到已取出的实体。
       row.rolloutState = state;
       row.rolloutMeta = meta;
-      await this.repo.save(row);
     } catch (err: unknown) {
       // 批次痕迹写失败不阻断升级主链（fail-open，仅日志）。
       this.logger.warn(
@@ -2552,13 +2669,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // 的 set() 会撞 TypeORM 的类型收窄，且本路径不需要原子性。
       const row = await this.repo.findOne({ where: { id } });
       if (!row) return;
-      row.rolloutMeta = {
+      const nextMeta = {
         ...((row.rolloutMeta as Record<string, any>) ?? {}),
         ...this.lastRolloutMeta(batch),
         leasedAt: new Date().toISOString(),
         leasedBy: ROLLOUT_INSTANCE_ID,
       };
-      await this.repo.save(row);
+      // R50：同 markRolloutState——只写 rolloutMeta 一列。jsonb 会被
+      // _QueryDeepPartialEntity 深度收窄（字面量报 TS2322），故用一次窄化断言；
+      // 这只是编译期问题，退回 save() 会重新引入「覆盖并发列」的真实缺陷。
+      // adr-026-exempt: 只写 rolloutMeta 一列（租约心跳，advisory）；不碰任何状态列。
+      await this.repo.update(
+        { id },
+        { rolloutMeta: nextMeta } as unknown as Parameters<typeof this.repo.update>[1],
+      );
+      row.rolloutMeta = nextMeta;
     } catch {
       // 租约刷新是尽力而为（失败仅影响滚动重启时的 sweep 判据）
     }

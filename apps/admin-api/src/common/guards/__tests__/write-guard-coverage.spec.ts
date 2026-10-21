@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { RequestMethod } from "@nestjs/common";
-import { METHOD_METADATA } from "@nestjs/common/constants";
+import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { ROLES_KEY } from "../../decorators/roles.decorator";
 import { IS_PUBLIC_KEY } from "../../decorators/public.decorator";
 import {
@@ -11,32 +11,12 @@ import {
 } from "../../decorators/write-guard.decorator";
 import { UserRole } from "../../../modules/users/entities/user.entity";
 
-import { AiController } from "../../../modules/ai/ai.controller";
-import { ApiKeysController } from "../../../modules/api-keys/api-keys.controller";
-import { AppDeploymentController } from "../../../modules/application/app-deployment.controller";
-import { ApplicationController } from "../../../modules/application/application.controller";
-import { ArtifactsController } from "../../../modules/artifacts/artifacts.controller";
-import { AuditController } from "../../../modules/audit/audit.controller";
-import { AuthController } from "../../../modules/auth/auth.controller";
-import { OidcController } from "../../../modules/auth/oidc.controller";
-import { ConfigController } from "../../../modules/config/config.controller";
-import { EventSubscriptionController } from "../../../modules/event-subscriptions/event-subscription.controller";
-import { ExecutorPackageController } from "../../../modules/executor-package/executor-package.controller";
-import { ExecutorController } from "../../../modules/executor/executor.controller";
-import { HealthController } from "../../../modules/health/health.controller";
-import { ExecutionsStreamController } from "../../../modules/metrics/executions-stream.controller";
-import { MetricsStreamController } from "../../../modules/metrics/metrics-stream.controller";
-import { MetricsController } from "../../../modules/metrics/metrics.controller";
-import { AlertsController } from "../../../modules/notification/alerts.controller";
-import { NotificationConfigController } from "../../../modules/notification/notification-config.controller";
-import { ProjectsController } from "../../../modules/project/projects.controller";
-import { RegistryController } from "../../../modules/registry/registry.controller";
-import { TaskTemplateController } from "../../../modules/task-template/task-template.controller";
-import { ExecutionCallbackController } from "../../../modules/task/execution-callback.controller";
-import { TaskBatchController } from "../../../modules/task/task-batch.controller";
-import { TaskController } from "../../../modules/task/task.controller";
-import { TaskWebhookController } from "../../../modules/task/task-webhook.controller";
-import { UsersController } from "../../../modules/users/users.controller";
+// R203-A1：控制器清单**不再手写**。此前这里是一份 26 项的硬编码 import +
+// 数组，而仓库实际有 30 个 *.controller.ts——AgentController /
+// MutexGroupController / SopController / SopCollabController 从未进入扫描面，
+// 于是 SopCollabController 的 9 条「@Public 且无 @WriteGuard」写路由整整一批
+// 逃过了本 spec 的穷举断言（少扫 = 更少断言 = 更容易绿，且完全静默）。
+// 现在改为从文件系统发现控制器：新控制器自动进入扫描面，清单不可能过期。
 
 /**
  * A2（DEEP_REVIEW 0ef3bbe §七）：写面守卫**穷举**扫描。
@@ -57,34 +37,41 @@ import { UsersController } from "../../../modules/users/users.controller";
  *  （`Function` 触发 @typescript-eslint/no-unsafe-function-type）。 */
 type ControllerCtor = object;
 
-const CONTROLLERS: ReadonlyArray<readonly [string, ControllerCtor]> = [
-  ["AiController", AiController],
-  ["ApiKeysController", ApiKeysController],
-  ["AppDeploymentController", AppDeploymentController],
-  ["ApplicationController", ApplicationController],
-  ["ArtifactsController", ArtifactsController],
-  ["AuditController", AuditController],
-  ["AuthController", AuthController],
-  ["OidcController", OidcController],
-  ["ConfigController", ConfigController],
-  ["EventSubscriptionController", EventSubscriptionController],
-  ["ExecutorPackageController", ExecutorPackageController],
-  ["ExecutorController", ExecutorController],
-  ["HealthController", HealthController],
-  ["ExecutionsStreamController", ExecutionsStreamController],
-  ["MetricsStreamController", MetricsStreamController],
-  ["MetricsController", MetricsController],
-  ["AlertsController", AlertsController],
-  ["NotificationConfigController", NotificationConfigController],
-  ["ProjectsController", ProjectsController],
-  ["RegistryController", RegistryController],
-  ["TaskTemplateController", TaskTemplateController],
-  ["ExecutionCallbackController", ExecutionCallbackController],
-  ["TaskBatchController", TaskBatchController],
-  ["TaskController", TaskController],
-  ["TaskWebhookController", TaskWebhookController],
-  ["UsersController", UsersController],
-];
+const SRC_ROOT_FOR_CONTROLLERS = path.resolve(__dirname, "../../..");
+
+function collectControllerFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+      collectControllerFiles(full, out);
+    } else if (entry.name.endsWith(".controller.ts")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+const CONTROLLER_FILES = collectControllerFiles(SRC_ROOT_FOR_CONTROLLERS);
+
+/**
+ * 从磁盘发现控制器：带 PATH_METADATA（@Controller 装饰器）的导出类即是。
+ * 与全路由矩阵 spec（route-authz-matrix.spec.ts）用同一发现逻辑——两处都
+ * 「扫不到东西就红」，而不是各自维护一份手写清单。
+ */
+const CONTROLLERS: ReadonlyArray<readonly [string, ControllerCtor]> =
+  CONTROLLER_FILES.flatMap((file) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require(file) as Record<string, unknown>;
+    const found: Array<readonly [string, ControllerCtor]> = [];
+    for (const key of Object.keys(mod)) {
+      const candidate = mod[key];
+      if (typeof candidate !== "function") continue;
+      if (Reflect.getMetadata(PATH_METADATA, candidate) === undefined) continue;
+      found.push([key, candidate as ControllerCtor] as const);
+    }
+    return found;
+  });
 
 const WRITE_METHODS: ReadonlySet<RequestMethod> = new Set([
   RequestMethod.POST,
@@ -210,7 +197,11 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
   it("扫描面非空——控制器清单与装饰器常量键正确接线（防扫描器静默失效）", () => {
     // 扫描器一旦因为元数据键写错/控制器漏登记而「扫不到东西」，本 spec 会
     // 变成永真断言——先钉住规模下界。
-    expect(endpoints.length).toBeGreaterThanOrEqual(90);
+    // R203-A1：控制器改为磁盘发现后，同步钉住「发现到的控制器数」与
+    // 「磁盘上的控制器文件数」相等——发现逻辑失效时立刻红，而不是静默少扫。
+    expect(CONTROLLER_FILES.length).toBeGreaterThanOrEqual(30);
+    expect(CONTROLLERS.length).toBe(CONTROLLER_FILES.length);
+    expect(endpoints.length).toBeGreaterThanOrEqual(120);
     // 抽样确认元数据键确实能读出（POST /tasks/:id/kill 为已知写端点）
     const kill = endpoints.find((e) => e.id === "TaskController.killExecution");
     expect(kill).toBeDefined();
@@ -301,6 +292,18 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
     // 声明来「修」红灯。
     expect(openIds).toEqual(
       [
+        // R203-A1：SopCollabController 的 9 条 agent-collab 机器面写路由。
+        // 它们一直 @Public 却没有任何 @WriteGuard 声明——本 spec 的旧清单漏了
+        // 这个控制器，所以从未报警。补声明后按纪律登记在此（禁止 scope 漂移）。
+        "SopCollabController.ackClarificationReply",
+        "SopCollabController.capability",
+        "SopCollabController.clarify",
+        "SopCollabController.complete",
+        "SopCollabController.poll",
+        "SopCollabController.progress",
+        "SopCollabController.uploadCandidatePackage",
+        "SopCollabController.uploadMedia",
+        "SopCollabController.llmRelay",
         "AlertsController.webhook",
         "AppDeploymentController.heartbeat",
         "ApplicationController.webhook",

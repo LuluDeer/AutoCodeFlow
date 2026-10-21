@@ -4,6 +4,7 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  Ip,
   Param,
   Post,
   UploadedFile,
@@ -21,7 +22,9 @@ import {
 } from "@nestjs/swagger";
 
 import { Public } from "../../common/decorators/public.decorator";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { ExecutorService } from "../executor/executor.service";
+import type { Executor } from "../executor/entities/executor.entity";
 import { ExecutorPackageService } from "../executor-package/executor-package.service";
 import { PACKAGE_UPLOAD_TMP_DIR } from "../executor-package/executor-package.service";
 import { AiService, type MultimodalMessage } from "../ai/ai.service";
@@ -75,6 +78,18 @@ const POLL_TICK_MS = 500;
  * 进内存再被拒。与候选包端点的 500MB limits 同款先例。
  */
 export const MEDIA_UPLOAD_LIMITS = { fileSize: MAX_AGENT_MEDIA_BYTES } as const;
+
+/**
+ * R203-A1：本控制器 9 条写路由的授权形态声明文本（@WriteGuard scope='token'）。
+ *
+ * 此前这 9 条只有类级 @Public()——**免 JWT 写端点却没有任何声明**。A2 的纪律
+ * （write-guard-coverage：每个写端点必须显式声明 @Roles 或 @WriteGuard）之所以
+ * 没拦住它们，是因为那份 spec 的控制器清单是手写的且漏了本控制器（26/30）。
+ * 清单改为文件系统发现后这 9 条立刻变红，补上本条即恢复绿：声明不是文档，
+ * 是「这个免 JWT 的写面凭什么可以不鉴权」的必须答案。
+ */
+const AGENT_TOKEN_AUTH_REASON =
+  "执行器机器面：per-executor 令牌（validateTokenByAddress + resolveCredentialExecutorId 凭据反查），不进 JWT/API-Key 体系；令牌缺失或无效即 SOP_COLLAB_EXECUTOR_TOKEN_INVALID，协作写面另需 agent:sop 能力闸";
 
 function bearer(auth: string | undefined): string {
   return auth?.startsWith("Bearer ") ? auth.slice(7) : (auth ?? "");
@@ -191,6 +206,10 @@ export class SopCollabController {
    * 载荷随 poll 附带 `sopPolicy`（11 §3.1）——企业策略每轮下发，
    * 执行器本地配置突破不了（P7 执行器侧实现「min(本地, 中台上限)」合并）。
    */
+  @WriteGuard("agent-collab-poll", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("poll")
   @HttpCode(HttpStatus.OK)
   // N-12: items 是 assignment 与 clarification_reply 的混合数组（oneOf）。
@@ -233,6 +252,10 @@ export class SopCollabController {
   }
 
   /** 上报能力清单（覆盖式）。接 SOP 派发的机器在此声明 `agent:sop`。 */
+  @WriteGuard("agent-collab-capability", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("capability")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({
@@ -263,12 +286,19 @@ export class SopCollabController {
   }
 
   /** 发起澄清（P6 核心：执行器 Agent 回问）。 */
+  @WriteGuard("agent-collab-clarification", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("clarifications")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: CollabClarifyResponseDto })
   async clarify(
     @Body() body: AgentCollabClarificationDto,
     @Headers("authorization") auth: string,
+    // R41-A1：审计来源 ip（本面是机器身份，没有登录用户——操作者由服务层
+    // 记作 executor:<id>）。
+    @Ip() ip?: string,
   ) {
     // 鉴权 + 能力闸（结果本体不入账——澄清归属由 assignmentId 决定，
     // 但归属断言需要 executor.id，B-1）
@@ -293,6 +323,7 @@ export class SopCollabController {
       context: body.context ?? null,
       mediaRefs: body.mediaRefs ?? [],
       targetAgentSessionId: body.targetAgentSessionId ?? null,
+      audit: { ip: ip ?? null },
     });
     return {
       clarificationId: clarification.clientClarificationId ?? clarification.id,
@@ -303,6 +334,10 @@ export class SopCollabController {
   }
 
   /** 进度心跳（存活信号，卡死判定依据）。 */
+  @WriteGuard("agent-collab-progress", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/progress")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({
@@ -332,6 +367,10 @@ export class SopCollabController {
   }
 
   /** 回报完成（幂等键 attempt）。验收判定是中台 Agent 的职责，这里只落账。 */
+  @WriteGuard("agent-collab-completion", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/complete")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: CollabCompleteResponseDto })
@@ -339,6 +378,8 @@ export class SopCollabController {
     @Param("id") assignmentId: string,
     @Body() body: AgentCollabCompleteDto,
     @Headers("authorization") auth: string,
+    // R41-A1：审计来源 ip（执行器面，无登录用户）。
+    @Ip() ip?: string,
   ) {
     const executor = await this.authenticateAgent(
       body?.address,
@@ -354,6 +395,7 @@ export class SopCollabController {
       status: body.status,
       result: body.result ?? null,
       attempt: body.attempt,
+      audit: { ip: ip ?? null },
     });
     return { accepted };
   }
@@ -363,6 +405,10 @@ export class SopCollabController {
    * （续跑循环）之后才确认；确认前该回复随每次 poll 重发（至少一次投递），
    * 执行器侧按 clarificationId 幂等去重——重复投递不产生重复消费。
    */
+  @WriteGuard("agent-collab-clarification", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/clarifications/ack")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({
@@ -408,6 +454,10 @@ export class SopCollabController {
    * 返回空 content——**原样透传**，执行器按「模型不可用」降级（不掩盖、
    * 不造成功假象）。
    */
+  @WriteGuard("agent-collab-llm", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("llm")
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: CollabLlmRelayResponseDto })
@@ -467,13 +517,19 @@ export class SopCollabController {
    * 媒体回传（P7b）：执行器把截图/录屏挂到指派上。
    *
    * 返回的 `mediaPath` 是 mediaRefs 的**唯一合法引用形态**
-   * （/api/agent-collab/media/<id>）——澄清提问引用外网 URL 的门在
-   * SopService.validateMediaRefs 早已关死（SSRF 转嫁面），这里给出的是
-   * 平台内路径，中心侧（Qwen 视频理解）经下载端点取字节。
+   * （`/api/sop/media/<id>`，R35-A1 更正——此前写的
+   * `/api/agent-collab/media/<id>` 从不是一条路由，取回 404）——澄清提问
+   * 引用外网 URL 的门在 SopService.validateMediaRefs 早已关死（SSRF 转嫁面），
+   * 这里给出的是平台内路径，中心侧（Qwen 视频理解）与 admin-web 复核都经
+   * `SopController.downloadMedia`（@Get("media/:mediaId")，ADMIN）取字节。
    *
    * 归属校验：指派必须属于该执行器（防 A 机器给 B 的工单塞证据）；
    * 状态不设限——澄清期间（blocked）正是要发截图的场景。
    */
+  @WriteGuard("agent-collab-media", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/media")
   @HttpCode(HttpStatus.CREATED)
   @ApiCreatedResponse({ type: CollabMediaUploadResponseDto })
@@ -522,6 +578,10 @@ export class SopCollabController {
    * 部署本身仍走既有 deploy_application（DEP-04 审批，方案 C）——本端点
    * 只负责"包进系统"，不触部署。
    */
+  @WriteGuard("agent-collab-package", {
+    scope: "token",
+    reason: AGENT_TOKEN_AUTH_REASON,
+  })
   @Post("assignments/:id/candidate-package")
   @HttpCode(HttpStatus.CREATED)
   @ApiCreatedResponse({ type: CollabCandidatePackageResponseDto })
@@ -599,7 +659,28 @@ export class SopCollabController {
       presented,
       deviceFingerprint,
     );
-    if (!ok) throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_TOKEN_INVALID);
+    if (!ok) {
+      // R34-A1（轴 2）：**per-executor 令牌 + 同址多行 + 无指纹**曾被整片 401。
+      // 原因：validateTokenByAddress 对「同地址多行且本次未带指纹」按 ADR-017 §5
+      // fail-closed 拒绝（resolveExecutorRow 返回 null ⇒ 只有共享令牌能通过），
+      // 而下面的凭据反查挂在「校验通过之后」——对唯一需要它的场景永远走不到。
+      // 桌面 Agent（agent-worker 子进程）恰恰产不出指纹，这正是当初「复查补口」
+      // 要解决的那台机器。
+      //
+      // 凭据反查为什么安全且等价：per-executor 令牌是**行绑定**的（bcrypt 比对
+      // 该行 tokenHash），「令牌匹配到哪一行」本身就是行证明——匿名调用方伪造
+      // 不出别人的令牌让本方法解析到别人的行。共享令牌不绑定任何行，反查必空，
+      // 所以这条兜底不会把共享令牌路径放宽（那条仍是 fail-closed 的 404）。
+      // 指纹在场时**不进兜底**：指纹路径的 fail-closed 语义保持原样。
+      if (!normalizeDeviceFingerprint(deviceFingerprint)) {
+        const byCredential = await this.executorByCredential(
+          address,
+          presented,
+        );
+        if (byCredential) return byCredential;
+      }
+      throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_TOKEN_INVALID);
+    }
     // ADR-017 阶段 3（复查补口）：指纹缺省时**用所持凭据反查行身份**，而不是
     // 直接 fail-closed 拒绝。
     //
@@ -622,16 +703,31 @@ export class SopCollabController {
     );
     if (!executor && !normalizeDeviceFingerprint(deviceFingerprint)) {
       // 指纹未上报时用凭据反查（同址多行也能唯一定位）。
-      const credentialRowId = await this.executors.resolveCredentialExecutorId(
-        address,
-        presented,
-      );
-      if (credentialRowId) {
-        executor = await this.executors.findOne(credentialRowId);
-      }
+      executor = await this.executorByCredential(address, presented);
     }
     if (!executor) throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_NOT_FOUND);
     return executor;
+  }
+
+  /**
+   * 凭据反查行身份（R34-A1 轴 2）。per-executor 令牌是行绑定的：bcrypt 命中
+   * 哪一行的 tokenHash，就证明调用方持有那一行的凭据。反查命中的行还必须真的
+   * 落在本次声明的 address 上——防 resolve 实现漂移时把一个错行的身份静默顶替
+   * 进来（那是跨机器的身份冒用）。共享令牌对任何行都不命中 ⇒ 恒 null。
+   */
+  private async executorByCredential(
+    address: string,
+    presented: string,
+  ): Promise<Executor | null> {
+    if (!presented) return null;
+    const rowId = await this.executors.resolveCredentialExecutorId(
+      address,
+      presented,
+    );
+    if (!rowId) return null;
+    const row = await this.executors.findOne(rowId);
+    if (!row || row.address !== address) return null;
+    return row;
   }
 
   /** 协作面鉴权 = 机器鉴权 + 显式 `agent:sop` 能力闸（11 §5.1）。 */

@@ -33,32 +33,44 @@ import { SecretsCryptoService } from "../../../common/utils/secret-crypto.util.s
 import { Application } from "../../application/entities/application.entity";
 import { ExecuteMode } from "../entities/task.entity";
 
-const makeRepo = () => ({
-  create: jest.fn((d) => d),
-  save: jest.fn((e) => Promise.resolve(e)),
-  findOne: jest.fn().mockResolvedValue(null),
-  find: jest.fn().mockResolvedValue([]),
-  count: jest.fn().mockResolvedValue(0),
-  findAndCount: jest.fn().mockResolvedValue([[], 0]),
-  delete: jest.fn().mockResolvedValue({ affected: 1 }),
-  update: jest.fn().mockResolvedValue({ affected: 1 }),
-  createQueryBuilder: jest.fn(() => ({
-    where: jest.fn().mockReturnThis(),
-    andWhere: jest.fn().mockReturnThis(),
-    orderBy: jest.fn().mockReturnThis(),
-    addOrderBy: jest.fn().mockReturnThis(),
-    select: jest.fn().mockReturnThis(),
-    take: jest.fn().mockReturnThis(),
-    getRawMany: jest.fn().mockResolvedValue([]),
-    getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
-    getMany: jest.fn().mockResolvedValue([]),
-    getOne: jest.fn().mockResolvedValue(null),
-    update: jest.fn().mockReturnThis(),
-    set: jest.fn().mockReturnThis(),
-    returning: jest.fn().mockReturnThis(),
-    execute: jest.fn().mockResolvedValue({ affected: 1 }),
-  })),
-});
+const makeRepo = () => {
+  const repo: Record<string, any> = {
+    create: jest.fn((d) => d),
+    save: jest.fn((e) => Promise.resolve(e)),
+    // R49-A1：列级写（queryBuilder().update().set(patch)）的落点断言入口——
+    // update 之后写面不再是整行 save，断言对象换成"到底写了哪几列"。
+    updatePatches: [] as Array<Record<string, unknown>>,
+    findOne: jest.fn().mockResolvedValue(null),
+    find: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+    findAndCount: jest.fn().mockResolvedValue([[], 0]),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+  repo.createQueryBuilder = jest.fn(() => {
+    const qb: Record<string, any> = {
+      where: jest.fn(() => qb),
+      andWhere: jest.fn(() => qb),
+      orderBy: jest.fn(() => qb),
+      addOrderBy: jest.fn(() => qb),
+      select: jest.fn(() => qb),
+      take: jest.fn(() => qb),
+      getRawMany: jest.fn(async () => []),
+      getRawOne: jest.fn(async () => ({ maxNum: 0 })),
+      getMany: jest.fn(async () => []),
+      getOne: jest.fn(async () => null),
+      update: jest.fn(() => qb),
+      returning: jest.fn(() => qb),
+      execute: jest.fn(async () => ({ affected: 1 })),
+    };
+    qb.set = jest.fn((p: Record<string, unknown>) => {
+      repo.updatePatches.push(p);
+      return qb;
+    });
+    return qb;
+  });
+  return repo;
+};
 
 describe("TaskService — A-1 broadcast × mutex group 写面互斥闸", () => {
   let service: TaskService;
@@ -239,7 +251,12 @@ describe("TaskService — A-1 broadcast × mutex group 写面互斥闸", () => {
       } as any);
       expect(result.timeout).toBe(120);
       expect(appRepo.findOne).not.toHaveBeenCalled();
-      expect(taskRepo.save).toHaveBeenCalled();
+      // R49-A1：只写 timeout 一列（DTO 别名归一）+ 库时钟
+      expect(Object.keys(taskRepo.updatePatches[0]).sort()).toEqual([
+        "timeout",
+        "updatedAt",
+      ]);
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
     it("作用域门：PATCH applicationId 切到未挂组的 app → 放行", async () => {
@@ -256,7 +273,10 @@ describe("TaskService — A-1 broadcast × mutex group 写面互斥闸", () => {
         applicationId: "app-2",
       } as any);
       expect(result.applicationId).toBe("app-2");
-      expect(taskRepo.save).toHaveBeenCalled();
+      expect(taskRepo.updatePatches[0]).toMatchObject({
+        applicationId: "app-2",
+      });
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
   });
 });

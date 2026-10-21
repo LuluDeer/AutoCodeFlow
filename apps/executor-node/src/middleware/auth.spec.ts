@@ -526,6 +526,56 @@ describe('verifyToken — Bearer authentication (migrated)', () => {
     // reintroducing a non-constant-time equality on the bearer token.
     expect(src).not.toMatch(/token\s*!==?\s*(secret|STATIC_TOKEN)/);
   });
+
+  // R74-A1（安全面四轴审计·轴 3 鉴权）：信息泄露面。
+  // 逐个错误分支都已覆盖，但"这些分支彼此**不可区分**"这个性质本身此前没有
+  // 断言——而它才是防止枚举/指纹（哪个执行器配了什么凭据、token 是否存在）
+  // 的那条线。断言方式：把 status/json 的全部调用参数快照下来逐字段相等。
+  it('缺失 token 与无效 token 的响应完全一致（不区分「不存在」与「无效」）', async () => {
+    const { verifyToken } = await loadVerify({
+      staticToken: 'shared-1',
+      adminResponse: dynEnvelope('per-exec-1'),
+    });
+    const missingRes = makeRes();
+    await verifyToken({ headers: {} } as any, missingRes, jest.fn());
+    const invalidRes = makeRes();
+    await verifyToken(
+      { headers: { authorization: 'Bearer wrong-token' } } as any,
+      invalidRes,
+      jest.fn(),
+    );
+    const snapshot = (res: any) => ({ status: res.status.mock.calls, json: res.json.mock.calls });
+    expect(snapshot(missingRes)).toEqual(snapshot(invalidRes));
+    // 且两条分支都必须是 401（不是 403/400 这类能区分"存在但无权"的码）
+    expect(missingRes.status).toHaveBeenCalledWith(401);
+    expect(invalidRes.status).toHaveBeenCalledWith(401);
+    expect(missingRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: '执行器令牌无效或缺失' }),
+    );
+  });
+
+  // R74-A1 轴 3：shared token 与 per-executor token 的**优先级**必须是明确的
+  // OR（任一匹配即放行），不是覆盖/遮蔽——既有用例只钉了"dynamic 在 static
+  // 存在时仍被接受"，反向（static 不被 dynamic 遮蔽）与"两者都不匹配则拒绝"
+  // 没有一起钉住，优先级就没被完整表达。
+  it('shared 与 per-executor token 并存时互不遮蔽（优先级 = OR，非覆盖）', async () => {
+    const { verifyToken } = await loadVerify({
+      staticToken: 'shared-1',
+      adminResponse: dynEnvelope('per-exec-1'),
+    });
+    for (const accepted of ['shared-1', 'per-exec-1']) {
+      const next = jest.fn();
+      const res = makeRes();
+      await verifyToken({ headers: { authorization: `Bearer ${accepted}` } } as any, res, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toHaveBeenCalled();
+    }
+    const next = jest.fn();
+    const res = makeRes();
+    await verifyToken({ headers: { authorization: 'Bearer neither-one' } } as any, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
 });
 
 // N41: fetchToken 成功后触发 onTokenAcquired 钩子——main.ts 用它在启动期

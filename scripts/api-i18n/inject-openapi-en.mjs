@@ -73,6 +73,41 @@ export function readMap() {
   return m;
 }
 
+/**
+ * 递归下钻**内联对象**的属性描述。
+ *
+ * `components.schemas.<name>.properties.*.description` 只覆盖一层；实测存在
+ * 「属性本身还是个内联对象」的写法（如 `ExecutorMetricsDto.current.reservedSlots`），
+ * 以及 `requestBody.content.*.schema` 里的内联对象（如
+ * `/executor-packages/{id}/push` 的 `executorIds`）。这些节点以前**根本不进收集面**，
+ * 于是「有中文、映射表里也有英文，却永远是中文单语」——差集实测 4 个（第 5 个在
+ * `example` 载荷里，见下）。
+ *
+ * ⚠️ 只顺着 schema 的**结构**键下钻（properties / items / allOf|oneOf|anyOf /
+ * additionalProperties），**绝不**进 `example` / `examples` / `default` / `enum`：
+ * 那些是样例**载荷数据**，往里面塞 `x-i18n-en` 会污染示例本身。
+ */
+function collectInlineProps(schema, push, depth = 0) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return;
+  if (depth > 8) return; // 防递归爆炸（本仓实测最深 3 层）
+  for (const key of ["properties", "patternProperties"]) {
+    const props = schema[key];
+    if (!props || typeof props !== "object" || Array.isArray(props)) continue;
+    for (const prop of Object.values(props)) {
+      if (!prop || typeof prop !== "object" || Array.isArray(prop)) continue;
+      if (typeof prop.description === "string") push(prop, "value", "description");
+      collectInlineProps(prop, push, depth + 1);
+    }
+  }
+  if (schema.items && typeof schema.items === "object") collectInlineProps(schema.items, push, depth + 1);
+  for (const key of ["allOf", "oneOf", "anyOf"]) {
+    const arr = schema[key];
+    if (Array.isArray(arr)) for (const sub of arr) collectInlineProps(sub, push, depth + 1);
+  }
+  const ap = schema.additionalProperties;
+  if (ap && typeof ap === "object") collectInlineProps(ap, push, depth + 1);
+}
+
 /** 遍历一个 OpenAPI 文档，收集所有"需要英文"的节点与其装载方式。 */
 export function collectTargets(doc) {
   const targets = [];
@@ -81,9 +116,8 @@ export function collectTargets(doc) {
 
   const schemas = doc?.components?.schemas ?? {};
   for (const schema of Object.values(schemas)) {
-    for (const prop of Object.values(schema?.properties ?? {})) {
-      if (typeof prop?.description === "string") push(prop, "value", "description");
-    }
+    // 顶层 properties 由此函数的首层循环覆盖，内联对象由递归覆盖（顺序与旧版一致）
+    collectInlineProps(schema, push);
   }
 
   /**
@@ -101,6 +135,10 @@ export function collectTargets(doc) {
     }
     const rb = obj?.requestBody;
     if (typeof rb?.description === "string") push(rb, "value", "description");
+    // requestBody 的内联 JSON schema 也带属性描述（以前漏收）
+    for (const media of Object.values(rb?.content ?? {})) {
+      if (media && typeof media === "object") collectInlineProps(media.schema, push);
+    }
     for (const r of Object.values(obj?.responses ?? {})) {
       if (typeof r?.description === "string") push(r, "value", "description");
     }
@@ -146,11 +184,24 @@ export function inject(doc, map, { apply = true } = {}) {
   const missing = new Map();
   let injected = 0;
   let already = 0;
+  // 三类计数分开记（R31-D2 复查发现的口径缺陷）：total 把「空描述」也算成
+  // 「可翻译节点」，于是输出「1614 个可翻译节点全部有英文」——其中 99 个根本没有
+  // 文本可翻。报数口径夸大 = 让读者以为覆盖面比实际更大，是门禁最不该有的形态。
+  let empty = 0;
+  let alreadyEnglish = 0;
+  let translatable = 0;
   for (const t of targets) {
     const text = t.text;
-    if (typeof text !== "string" || !text.trim()) continue;
+    if (typeof text !== "string" || !text.trim()) {
+      empty++;
+      continue;
+    }
     // 已经是英文（无 CJK）→ 无需双语：它就是英文读者的那份
-    if (!CJK.test(text)) continue;
+    if (!CJK.test(text)) {
+      alreadyEnglish++;
+      continue;
+    }
+    translatable++;
     const en = map[text];
     if (typeof en !== "string" || !en.trim()) {
       if (!missing.has(text)) missing.set(text, []);
@@ -169,11 +220,45 @@ export function inject(doc, map, { apply = true } = {}) {
       injected++;
     }
   }
-  return { injected, already, missing, total: targets.length };
+  return {
+    injected,
+    already,
+    missing,
+    total: targets.length,
+    translatable,
+    empty,
+    alreadyEnglish,
+  };
 }
 
 function node_has(node, key) {
   return Object.prototype.hasOwnProperty.call(node, key);
+}
+
+/**
+ * **收集面下界（只增不减的地板）**。
+ *
+ * 为什么需要它：本闸此前唯一的判据是「收集到的中文节点是否都有英文」，而
+ * **收集不到 = 永远绿**。R31-D2 就此实测到真实缺口——内联对象的嵌套 properties
+ * 与 requestBody 内联 schema 从未进收集面，4 个节点有中文、映射表里也有英文，
+ * 却始终是中文单语，而门禁一路绿。换句话说：这道闸只能防「有中文没英文」，
+ * 防不住「压根没被看见」。
+ *
+ * 地板把「悄悄少收一批节点」从**静默单语化**变成**CI 红**：任何重构如果让收集面
+ * 收缩到 1500 个以下，先红再谈。上探方式：收集面扩大后把本常量一起调高（棘轮）。
+ */
+const MIN_TRANSLATABLE_NODES = 1500;
+
+/**
+ * 映射表里**在文档中找不到**的条目（疑似死条目）。只报告、不失败：
+ * 同一条文可能被 docs-site 或历史版本消费，贸然删除会让别人的构建缺英文。
+ */
+function deadMapEntries(doc, map) {
+  const seen = new Set();
+  for (const t of collectTargets(doc)) {
+    if (typeof t.text === "string" && t.text.trim()) seen.add(t.text);
+  }
+  return Object.keys(map).filter((zh) => !seen.has(zh));
 }
 
 // ───────────────────────── CLI ─────────────────────────
@@ -204,15 +289,41 @@ function run() {
     return 1;
   }
 
+  // 收集面棘轮：先于「注入成功」输出——收集面收缩时这里必须比任何"✔"更早红。
+  if (res.translatable < MIN_TRANSLATABLE_NODES) {
+    console.error(
+      `✘ API-I18N 收集面收缩：只收集到 ${res.translatable} 个中文可翻译节点，` +
+        `低于地板 ${MIN_TRANSLATABLE_NODES}。`,
+    );
+    console.error(
+      `  历史上这类收缩不会报错，只会让相应文档**静默变回中文单语**（R31-D2 实测：` +
+        `内联对象的嵌套 properties 与 requestBody 内联 schema 从未进收集面，4 个节点因此永久单语）。`,
+    );
+    console.error(
+      `  处置：检查 collectTargets / collectInlineProps 是否漏掉某个子树；确属合理收缩才调低该常量，并在提交信息里写清理由。`,
+    );
+    return 1;
+  }
+
+  const dead = argv.includes("--report") ? deadMapEntries(doc, map) : [];
+
   if (!check) {
     fs.writeFileSync(OPENAPI, JSON.stringify(doc, null, 2) + "\n", "utf8");
     console.log(
-      `✔ API-I18N 已注入 ${res.injected} 处 x-i18n-en（覆盖 ${res.total} 个可翻译节点）。`,
+      `✔ API-I18N 已注入 ${res.injected} 处 x-i18n-en（覆盖 ${res.translatable} 个中文可翻译节点；` +
+        `另有 ${res.alreadyEnglish} 个纯英文、${res.empty} 个空描述不计入）。`,
     );
   } else {
     console.log(
-      `✔ API-I18N 检查通过：${res.total} 个可翻译节点全部有英文（映射表 ${Object.keys(map).length} 条）。`,
+      `✔ API-I18N 检查通过：${res.translatable} 个中文可翻译节点全部有英文` +
+        `（纯英文 ${res.alreadyEnglish} 个、空描述 ${res.empty} 个不计入；映射表 ${Object.keys(map).length} 条` +
+        `${dead.length ? `，其中 ${dead.length} 条在本文档中未出现（疑似死条目，见 --report）` : ""}）。`,
     );
+  }
+  if (dead.length) {
+    console.log("\n映射表中未在本文档出现的条目（仅供参考，不据此删除）：");
+    for (const zh of dead.slice(0, 30)) console.log(`  · ${zh.slice(0, 80)}`);
+    if (dead.length > 30) console.log(`  … 其余 ${dead.length - 30} 条`);
   }
   return 0;
 }
@@ -257,6 +368,45 @@ function selftest() {
   t("收集到 operation description", targets.some((x) => x.kind === "description" && x.text === "返回全部执行器"));
   t("收集到 parameter", targets.some((x) => x.text === "关键字"));
   t("收集到 response", targets.some((x) => x.text === "成功"));
+
+  // 内联对象：嵌套 properties 与 requestBody 内联 schema 必须进收集面（否则永远中文单语）；
+  // example 是**样例载荷**，里面的 description 是数据不是散文，必须**不**进收集面。
+  const mkNested = () => ({
+    components: {
+      schemas: {
+        B: {
+          properties: {
+            cur: { type: "object", properties: { nested: { description: "嵌套字段" } } },
+            ex: { type: "object", example: { description: "样例值" } },
+          },
+        },
+      },
+    },
+    paths: {
+      "/y": {
+        post: {
+          requestBody: {
+            description: "请求体",
+            content: {
+              "application/json": { schema: { properties: { ids: { description: "目标 ID" } } } },
+            },
+          },
+          responses: { "200": { description: "成功" } },
+        },
+      },
+    },
+  });
+  const tNested = collectTargets(mkNested());
+  t("收集到嵌套内联属性", tNested.some((x) => x.text === "嵌套字段"));
+  t("收集到 requestBody 内联 schema 属性", tNested.some((x) => x.text === "目标 ID"));
+  t("不收集 example 载荷里的字段（它是数据不是散文）", !tNested.some((x) => x.text === "样例值"));
+  const docNested = mkNested();
+  const rNested = inject(docNested, { 嵌套字段: "Nested field", "目标 ID": "Target IDs", 请求体: "Request body", 成功: "OK" });
+  t("嵌套面无缺失", rNested.missing.size === 0);
+  t(
+    "嵌套内联属性注入裸字符串",
+    docNested.components.schemas.B.properties.cur.properties.nested["x-i18n-en"] === "Nested field",
+  );
 
   // 注入形态：value 面是裸字符串，operation 面是对象
   const doc = mk();

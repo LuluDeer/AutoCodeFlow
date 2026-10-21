@@ -2,19 +2,30 @@
 
 两侧执行器强度对齐（NFR-04/AC-03b）：上限常量**镜像**
 `apps/executor-node/src/zip-guard.ts` 的 `ZIP_GUARD_DEFAULT_LIMITS`，并额外接受
-该模块读取的环境变量名（`ZIP_MAX_*`），使同一份部署配置在两个执行器上等价。
+同名环境变量（`ZIP_MAX_*`，与 node 的 `getZipGuardLimitsFromEnv` 完全同名）
+由 :func:`get_zip_limits_from_env` 求值，生产解压路径（`routers/execute.py` 的
+`_extract_package`）与 node 的 `assertZipFileSafe` 同姿态——**每次调用**读环境，
+使同一份部署配置在两个执行器上等价。注意"默认常量"与"显式配置"是两件事：
+默认值永远不会被宿主环境悄悄放宽（见 `ZIP_LIMIT_ENV_VARS` 注释），只有部署方
+显式设置 `ZIP_MAX_*` 才会改变上限（与 node 逐字同义）。
 
-镜像来源（zip-guard.ts:19-31,49-55,80-85）
------------------------------------------
-===========================  ==========================  ====================
-本模块                        zip-guard.ts                值
-===========================  ==========================  ====================
-`max_ratio`                   `maxRatio`                  100
-`max_entries`                 `maxEntries`                10 000
-`max_file_bytes`              `maxFileBytes`              1 GiB
-`max_total_uncompressed_bytes` `maxTotalUncompressedBytes` 2 GiB
-`max_nesting_depth`           `maxNestingDepth`           1
-===========================  ==========================  ====================
+镜像来源（zip-guard.ts:49-58；admin-api zip-guard.util.ts:70-77 同值）
+----------------------------------------------------------------------
+===========================  ==============================  ====================
+本模块                        zip-guard.ts                    值
+===========================  ==============================  ====================
+`max_ratio`                   `maxRatio`                      100
+`max_entries`                 `maxEntries`                    10 000
+`max_file_bytes`              `maxFileBytes`                  512 MiB
+`max_total_uncompressed_bytes` `maxTotalUncompressedBytes`     1 GiB
+`max_nesting_depth`           `maxNestingDepth`               1
+===========================  ==============================  ====================
+
+R94-A1（执行面安全审计）：这两条上限曾在 2026-09-23 的 OOM 事故后于 node /
+admin-api 侧从 1 GiB / 2 GiB 下调为 512 MiB / 1 GiB，而本模块**没跟上**——
+同一份包在 python 执行器通过、在 node 执行器被拒（NFR-04/AC-03b 明令两侧等
+强度）。现已对齐；`tests/test_zip_guard_parity.py` 直接读另两个平面的源码常量
+做逐项比对，任何一侧再次单独漂移都会红。
 
 违规名映射（本模块 → node）：`too_many_entries`→`too_many_entries`、
 `entry_too_large`→`single_file_too_large`、
@@ -100,17 +111,23 @@ class ZipLimits:
 
     max_ratio: float = 100
     max_entries: int = 10_000
-    max_file_bytes: int = 1 * _GIB
-    max_total_uncompressed_bytes: int = 2 * _GIB
+    # R94-A1：与 node zip-guard.ts:55-56 / admin-api zip-guard.util.ts:73-74 同值
+    # （2026-09-23 OOM 事故后的收紧值 512 MiB / 1 GiB。此前这里是 1 GiB / 2 GiB
+    # ——python 侧没跟上，同一个包在 python 执行器通过、在 node 执行器被拒。）
+    max_file_bytes: int = 512 * _MIB
+    max_total_uncompressed_bytes: int = 1 * _GIB
     max_nesting_depth: int = 1
 
 
 ZIP_GUARD_DEFAULT_LIMITS = ZipLimits()
 
 # 与 zip-guard.ts `getZipGuardLimitsFromEnv` 同名的环境变量（可选用；未设置时
-# 用默认值）。python 执行器不从 env 读这些值构造默认 ZipLimits —— 默认必须是
-# 常量，避免"宿主环境悄悄放宽安全上限"；该映射表供部署方与 node 侧对齐配置时
-# 显式构造 ZipLimits（见 tests/test_zip_safety.py）。
+# 用默认值）。**默认 ZipLimits 不从 env 构造** —— 默认必须是常量，避免"宿主
+# 环境悄悄放宽安全上限"；显式配置是另一条通道：生产解压路径
+# （`routers/execute.py::_extract_package`）每次调用都走
+# `get_zip_limits_from_env()`，与 node `assertZipFileSafe` 的
+# "disk 路径读 env / 内存路径用常量"分工逐字一致（R94-A1 补齐：此前该函数
+# 无人调用，部署方按 `ZIP_MAX_*` 收紧后 python 执行器**静默不生效**）。
 ZIP_LIMIT_ENV_VARS = {
     'max_ratio': 'ZIP_MAX_RATIO',
     'max_entries': 'ZIP_MAX_ENTRIES',

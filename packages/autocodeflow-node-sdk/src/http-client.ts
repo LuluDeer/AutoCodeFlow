@@ -101,21 +101,79 @@ export const SAFE_METHODS: ReadonlySet<string> = new Set([
  *  契约拒绝仍单发）。任务代码同步通道没有 executor 侧落盘重放兜底，一次
  *  瞬时抖动即丢终态、admin 侧该行滞留 RUNNING 直到 stale sweep 回收
  *  （真实 failureReason 丢失）。
- *  NETOPT-G P3: 路径判定用段界正则（`/api/executions/callback` 后必须是
- *  `/`、`?` 或串尾）而非裸 startsWith——兄弟路由 /api/executions/callback-extra
- *  不应被误判为回调端点而豁免重试。注意与 withExecutorAddress 的精确尾正则
- *  （/\/executions\/callback\/?$/）语义差异：前者是"是否回调通道"（豁免
- *  重试），后者是"是否 stamp executorAddress"（数据改写），两谓词对
- *  /api/executions/callback 系路径收敛一致即可，兄弟路由下各自收紧不互扰。 */
+ *  NETOPT-G P3: 路径判定用段界正则而非裸 startsWith——兄弟路由
+ *  /api/executions/callback-extra 不应被误判为回调端点而豁免重试。
+ *  R177-A1: 判定前先经 requestPath 归一化（查询串 / 绝对 URL 不再失配），并
+ *  **收紧到端点本身**：admin-api 只在 @Post('callback') 挂了这一个端点
+ *  （apps/admin-api/src/modules/task/execution-callback.controller.ts:100），
+ *  /api/executions/callback/xxx 这样的子路径并不存在，把它也算作「可豁免重试
+ *  的回调通道」只会让一个 404 被无谓重试 4 次。收紧后与 withExecutorAddress
+ *  的尾锚语义一致——两个谓词不再互相矛盾（此前 /callback/sub 对前者为真、
+ *  对后者为假）。 */
 export function isTerminalCallbackUrl(url: string, method: Method): boolean {
   return (
     method.toUpperCase() === 'POST' &&
-    /^\/api\/executions\/callback(?:\/|\?|$)/.test(url)
+    /^\/api\/executions\/callback\/?$/.test(requestPath(url))
   );
 }
 
 /** 与 python `_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}` 对齐。 */
 export const RETRYABLE_HTTP_STATUSES: readonly number[] = [429, 500, 502, 503, 504];
+
+/**
+ * R191：**终态回调通道**的单次重试等待上限（毫秒）。
+ *
+ * 与 `maxWaitMs = 30s` 的默认值不同：回调通道的重试预算是**有 deadline 压力**的 ——
+ * 执行器在 `timeoutSeconds` 到点时会 kill 进程，而终态回调恰恰是在「任务刚好结束」时报的，
+ * 最可能撞上那个窗口。按默认预算算最坏 ≈ 4×10s(超时) + 3×30s(等待) ≈ **130s**，
+ * 一旦超过剩余预算，**重试反而导致终态丢失**（回调没发出去就被杀）—— 那是「为可靠性做的重试，
+ * 把可靠性搞坏了」。
+ *
+ * 取 5s 与 python SDK 的 `CALLBACK_RETRY_MAX_WAIT_S = 5.0` 对齐；此时最坏 ≈ 4×10 + 3×5 = **55s**，
+ * 仍比 python(≈41s) 宽（node 默认多一次尝试，见下方 NETOPT-G P3 注），但已远离 130s 的量级。
+ */
+export const CALLBACK_MAX_WAIT_MS = 5_000;
+
+/**
+ * R191：本次请求的**单次重试等待上限**。纯函数（导出可测）。
+ *
+ * 终态回调通道有 deadline 压力（执行器 `timeoutSeconds` 到点 kill），故封顶更小；
+ * 其余路径沿用 `retry.maxWaitMs`。**只影响等待，不改尝试次数**。
+ */
+export function effectiveRetryMaxWaitMs(
+  url: string,
+  method: Method,
+  retry: Pick<HttpRetryConfig, 'maxWaitMs'>,
+): number {
+  return isTerminalCallbackUrl(url, method)
+    ? Math.min(retry.maxWaitMs, CALLBACK_MAX_WAIT_MS)
+    : retry.maxWaitMs;
+}
+
+/**
+ * R177-A1: 把请求 URL 收敛成「纯路径」形态，供回调端点谓词判定。
+ *
+ * 缺陷现场：两个谓词（isTerminalCallbackUrl / withExecutorAddress）都直接拿
+ * 调用方传进来的 url 套裸正则，于是两种完全合法的写法静默失配：
+ * - 带查询串（/api/executions/callback?batch=2）：重试豁免失效，终态回调退回
+ *   「单发即抛」，一次抖动就丢终态；executorAddress 盖章失效，admin 侧该行
+ *   无法归属到执行器（N27 失效）。
+ * - 绝对 URL（http://admin-api:3105/api/executions/callback）：^/api 锚点
+ *   直接失配，同上。
+ *
+ * 只做三件事：剥 scheme://host、去 ?query、去 #fragment。不做 ../ 归一化
+ * （调用方传的就是路径，归一化反而会掩盖可疑输入）。
+ */
+export function requestPath(url: string): string {
+  let path = String(url ?? '');
+  const schemeHost = /^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^/?#]*/.exec(path);
+  if (schemeHost) {
+    path = path.slice(schemeHost[0].length);
+    if (!path.startsWith('/')) path = '/' + path;
+  }
+  const cut = path.search(/[?#]/);
+  return cut >= 0 ? path.slice(0, cut) : path;
+}
 
 export interface HttpRetryConfig {
   /** 最大重试次数（不含首次请求；默认 3 → 至多 4 次尝试）。
@@ -150,6 +208,24 @@ export class CircuitBreakerOpenError extends Error {
         'requests are blocked until the reset timeout elapses',
     );
     this.name = 'CircuitBreakerOpenError';
+  }
+}
+
+/**
+ * R177-A1（轴 1 错误面 + 轴 3 两包一致性）：凭据缺失时抛出的**有类型**错误。
+ *
+ * 缺陷现场：requireEnabled() 抛的是 new Error(disabledReason)——消费方无法
+ * 用 instanceof 判断「这是配置错，不是网络错、不是服务端 4xx」，只能匹配英文
+ * 文案。python SDK 早在 CallbackDisabledError 上做了这件事，本包缺。
+ *
+ * 兼容性：继承 Error，name 改为 'HttpClientDisabledError'，message 逐字节
+ * 保留原文案——既有的 toThrow(/HttpClient is disabled/) 断言与
+ * instanceof Error 判断全部照旧成立。
+ */
+export class HttpClientDisabledError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'HttpClientDisabledError';
   }
 }
 
@@ -275,6 +351,96 @@ export function isNetworkLevelError(error: unknown): boolean {
     'EHOSTUNREACH',
     'ERR_NETWORK',
   ].includes(code);
+}
+
+// ---------------------------------------------------------------------------
+// R31-E1: 稳定错误码透传（消费 admin-api 全量错误码化的错误体）
+// ---------------------------------------------------------------------------
+// admin-api 的错误响应体形如
+//   { code: <数字 HTTP 状态>, message: <中文兜底>, errorCode: '<稳定码>', params: {...} }
+// 此前响应拦截器只把 `message` 拼进 `err.message`，`errorCode` / `params`
+// 被直接丢弃——任务脚本只能字符串匹配中文兜底文案来分支（文案改一个字就
+// 静默断掉），也拿不到插值参数。这里把两者**原样挂到被 reject 的 Error 上**：
+//
+// - 只**新增**只读属性：`err.message` 的拼接语义逐字节不变（既有调用方零影响）；
+// - 无码时（老后端 / 非本机制的错误体）**不添加**任何属性——不制造
+//   `errorCode: undefined` 这种"有键无值"的形态，`'errorCode' in err` 仍可靠；
+// - 挂载失败（异常对象被冻结 / 不可扩展）绝不吞掉原始错误，只是不带码。
+
+/**
+ * 带稳定错误码的 HTTP 错误。
+ *
+ * axios 的 `AxiosError` 在运行时被**就地标记**为本类型（不新建类，故
+ * `instanceof Error` / `instanceof AxiosError` / 既有的 `rejects.toBe(err)`
+ * 断言全部保持）。用法：`catch (e) { if (getErrorCode(e) === 'TASK_NOT_FOUND') … }`
+ * 或 `const err = e as HttpClientError`。
+ */
+export interface HttpClientError extends Error {
+  /** 服务端稳定错误码（如 `TASK_NOT_FOUND`）；无码时该键不存在。 */
+  readonly errorCode?: string;
+  /** 错误码的插值参数（模板里的 `{{name}}` ← `params.name`）；无参时该键不存在。 */
+  readonly params?: Record<string, unknown>;
+}
+
+/** 从任意错误上读稳定码；无码 / 非字符串 → `undefined`（永不抛）。 */
+export function getErrorCode(error: unknown): string | undefined {
+  const value = (error as { errorCode?: unknown } | null | undefined)?.errorCode;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** 从任意错误上读插值参数；无参 / 非普通对象 → `undefined`（永不抛）。 */
+export function getErrorParams(
+  error: unknown,
+): Record<string, unknown> | undefined {
+  const value = (error as { params?: unknown } | null | undefined)?.params;
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** 只读定义（可枚举，便于日志 / `JSON.stringify` 落到 meta 里）。 */
+function defineErrorField(
+  target: object,
+  key: 'errorCode' | 'params',
+  value: unknown,
+): void {
+  try {
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: false,
+    });
+  } catch {
+    // 冻结 / 不可扩展的异常对象：宁可不带码，也绝不吞掉原始错误。
+  }
+}
+
+/**
+ * 把错误响应体里的 `errorCode` / `params` 挂到错误对象上，返回同一个对象
+ * （拦截器 `Promise.reject(attachErrorCode(error))` 即可，保持引用不变）。
+ *
+ * 只做「有值才挂」：既有的错误体（只有 `message`）对象形状完全不变。
+ */
+export function attachErrorCode(error: unknown): unknown {
+  if (error === null || typeof error !== 'object') return error;
+  const data = (error as { response?: { data?: unknown } }).response?.data;
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return error;
+  }
+  const payload = data as { errorCode?: unknown; params?: unknown };
+  const errorCode =
+    typeof payload.errorCode === 'string' && payload.errorCode.length > 0
+      ? payload.errorCode
+      : undefined;
+  if (errorCode !== undefined) {
+    defineErrorField(error, 'errorCode', errorCode);
+  }
+  const params = payload.params;
+  if (params !== null && typeof params === 'object' && !Array.isArray(params)) {
+    defineErrorField(error, 'params', params);
+  }
+  return error;
 }
 
 /** 是否可重试错误（状态码在可重试集，或网络层错误）——与 python 可重试异常集对齐。 */
@@ -411,6 +577,11 @@ export class HttpClient {
     // same `{ code, message, data }` envelope (HttpExceptionFilter); surface
     // the server-side reason in the rejected Error instead of axios's bare
     // "Request failed with status code 401".
+    //
+    // R31-E1: 同一个拦截器顺带把 `errorCode` / `params` 挂到被 reject 的错误上
+    // ——此前这两个字段在这里被丢弃，脚本无法按码分支（见上方 attachErrorCode）。
+    // 顺序刻意放在 message 拼接**之后**：即使某个字段的挂载抛错（已在
+    // attachErrorCode 内部吞掉），message 的既有语义也已经落地。
     this.client.interceptors.response.use(undefined, (error: unknown) => {
       const data = (error as { response?: { data?: unknown } })?.response?.data;
       const message =
@@ -423,7 +594,7 @@ export class HttpClient {
           err.message = `${err.message}: ${message}`;
         }
       }
-      return Promise.reject(error);
+      return Promise.reject(attachErrorCode(error));
     });
   }
 
@@ -461,7 +632,10 @@ export class HttpClient {
    * either one is left untouched when the item already carries it.
    */
   private withExecutorAddress(url: string, data?: unknown): unknown {
-    if (!/\/executions\/callback\/?$/.test(url)) {
+    // R177-A1: 与 isTerminalCallbackUrl 共用 requestPath 归一化——查询串 /
+    // 绝对 URL 不再让盖章静默失效（此前带 ?batch=2 的回调 POST 会漏 stamp，
+    // admin 侧该行无法归属到执行器，N27 失效）。
+    if (!/\/executions\/callback\/?$/.test(requestPath(url))) {
       return data;
     }
     if (!this.executorAddress && !this.deviceFingerprint) {
@@ -488,7 +662,10 @@ export class HttpClient {
   /** Throws a descriptive error when the client lacks Admin API credentials. */
   private requireEnabled(): AxiosInstance {
     if (!this.client || !this.enabled) {
-      throw new Error(this.disabledReason ?? 'HttpClient is disabled');
+      // R177-A1: 有类型的配置错，而不是裸 Error（对齐 python CallbackDisabledError）
+      throw new HttpClientDisabledError(
+        this.disabledReason ?? 'HttpClient is disabled',
+      );
     }
     return this.client;
   }
@@ -552,6 +729,7 @@ export class HttpClient {
       // NETOPT-F P2-4: callback 直报通道豁免（对齐 autoflow-sdk）。
       isTerminalCallbackUrl(url, method);
     const maxAttempts = this.retry.maxRetries + 1;
+    const effectiveMaxWaitMs = effectiveRetryMaxWaitMs(url, method, this.retry);
     // BREAKER-MASK（审计 P3，2026-10-17）：重试途中熔断器打开时，保留真实错误。
     //
     // 缺陷现场：一次 503/超时失败会 `onFailure()` 计熔断；若这次失败恰好把熔断
@@ -599,12 +777,12 @@ export class HttpClient {
         lastTransportError = error;
         // 指数退避（封顶 maxWaitMs），并与 Retry-After 头取大（同样封顶）
         const backoff = Math.min(
-          this.retry.maxWaitMs,
+          effectiveMaxWaitMs,
           this.retry.minWaitMs * 2 ** attempt,
         );
         const retryAfter = parseRetryAfterHeader(error);
         const waitMs = Math.min(
-          this.retry.maxWaitMs,
+          effectiveMaxWaitMs,
           retryAfter === null ? backoff : Math.max(backoff, retryAfter),
         );
         await sleep(waitMs);

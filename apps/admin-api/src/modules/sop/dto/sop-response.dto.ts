@@ -498,7 +498,7 @@ export class CollabMediaUploadResponseDto {
 
   @ApiProperty({
     description:
-      "平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式",
+      "平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式",
   })
   mediaPath: string;
 }

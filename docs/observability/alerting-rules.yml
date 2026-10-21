@@ -188,6 +188,39 @@ groups:
   #   annotations:
   #     summary: "执行器离线数量超阈值"
 
+  # ── 通知投递（R34-C1 起：接线版有 3 条，本阅读版同步）──────────────
+  # result label 自 R33-A1 起是四值：success / failure / blocked / skipped。
+  # 旧版把「除 promise rejected 外一律 success」——渠道自报 failed 也计 success，
+  # 于是下面两条 failure 告警在「渠道一直失败」时是哑的。
+  - alert: AUTOFLOW_NOTIFICATION_FAILURE_RATE_HIGH
+    expr: sum by (channel) (increase(autoflow_notification_delivery_total{result="failure"}[15m])) > 3
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "通知投递失败增多（channel={{ $labels.channel }}）"
+      runbook: "docs/observability/README.md#autoflow_notification_delivery_total"
+
+  - alert: AUTOFLOW_NOTIFICATION_FAILURE_STORM
+    expr: sum(increase(autoflow_notification_delivery_total{result="failure"}[15m])) > 10
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "通知投递风暴：全渠道失败过多"
+      runbook: "docs/observability/README.md#autoflow_notification_delivery_total"
+
+  # blocked = 被 SSRF 策略拦截（不是传输故障）。正常应恒为 0：非零要么是渠道 URL
+  # 被配成内网/回环（配置错误），要么有人在拿通知配置探测内网（安全事件）。
+  - alert: AUTOFLOW_NOTIFICATION_BLOCKED_SPIKE
+    expr: sum by (channel) (increase(autoflow_notification_delivery_total{result="blocked"}[15m])) > 0
+    for: 1m
+    labels:
+      severity: warning
+    annotations:
+      summary: "通知渠道被 SSRF 规则拦截（channel={{ $labels.channel }}）"
+      runbook: "docs/observability/README.md#autoflow_notification_delivery_total"
+
   # ── HTTP RED（本轮新增）────────────────────────────────────────────────
   # 数据源：autoflow_http_requests_total / autoflow_http_request_duration_ms_*
   # （HttpMetricsInterceptor 埋点，声明在 prometheus-metrics.service.ts）。

@@ -6,7 +6,7 @@ import EmptyState from '../components/EmptyState';
 import LogViewer, { ViewerLine, ViewerLogLevel } from '../components/LogViewer';
 import { requestTabSwitch } from '../tab-switch';
 // V4 后续优化（6）i18n 二期：应用页文案入双语表（zh 值与原硬编码逐字一致）。
-import { createCfgTexts, resolveRendererLocale } from '../i18n';
+import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -523,6 +523,9 @@ export default function AppsPage() {
         }
       />
 
+      {/* 空列表（且未在搜索/过滤）时不渲染搜索与排序：0 个应用时它们既无对象
+          也无结果，只会把空态往下挤，还让空态页多出一排"看起来能用"的控件。 */}
+      {(apps.length > 0 || Boolean(query) || filter !== 'all' || Boolean(error)) && (
       <div className="apps-controls">
         <div className="apps-search">
           <span className="apps-search-icon" aria-hidden="true"><Icon name="search" /></span>
@@ -550,6 +553,7 @@ export default function AppsPage() {
           <option value="name">{t('apps.sortName')}</option>
         </select>
       </div>
+      )}
 
       {error && (
         <div className="apps-error" role="alert">
@@ -602,9 +606,11 @@ export default function AppsPage() {
         </EmptyState>
       )}
 
-      {filteredGroups.length > 0 && (
+      {/* 结果摘要只在**搜索/过滤生效**时出现：默认状态下"按最近部署排序"
+          与右侧排序下拉重复，却多占一行、把列表往下挤 20px。 */}
+      {filteredGroups.length > 0 && (query || filter !== 'all') && (
         <div className="apps-results-summary">
-          {query || filter !== 'all' ? t('apps.summary.found', filteredGroups.length) : sortOrder === 'recent' ? t('apps.summary.recent') : t('apps.summary.name')}
+          {t('apps.summary.found', filteredGroups.length)}
           {filteredGroups.length > visibleAppCount && t('apps.summary.shown', visibleAppCount)}
         </div>
       )}
@@ -683,7 +689,7 @@ export default function AppsPage() {
                 <div className="collapsible-inner" inert={!expanded}>
                 <div className="app-group-details">
                   <div className="app-group-tools">
-                    <span className="app-group-path" title={entries[0]?.appRoot ?? ''}>{entries[0]?.appRoot}</span>
+                    <span className="app-group-path" title={entries[0]?.appRoot ?? ''}><span>{entries[0]?.appRoot}</span></span>
                     <div className="app-group-actions">
                       <button type="button" className="btn btn-sm" onClick={() => void handleOpenFolder(entries[0], false)} title={t('apps.openFolderTitle')}><Icon name="folder" /> {t('apps.openFolder')}</button>
                       <button
@@ -733,7 +739,7 @@ export default function AppsPage() {
                     return (
                       <div key={entry.releaseKey || entry.deploymentId} className="app-deployment-row">
                         <div className="app-deployment-info" title={entry.releaseKey
-                          ? t('apps.deploymentTitle', entry.releaseKey, entry.deploymentId, entry.deployedAt ? new Date(entry.deployedAt).toLocaleString('zh-CN', { hour12: false }) : t('apps.deployTimeUnknown'))
+                          ? t('apps.deploymentTitle', entry.releaseKey, entry.deploymentId, entry.deployedAt ? formatLocaleDateTime(entry.deployedAt) : t('apps.deployTimeUnknown'))
                           : t('apps.deploymentPendingTitle')}>
                           <div className="app-deployment-top">
                             <span className="app-deployment-version">{label}</span>

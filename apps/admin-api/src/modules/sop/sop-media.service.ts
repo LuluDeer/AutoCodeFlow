@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { createReadStream, existsSync, mkdirSync, statSync } from "fs";
+import { createReadStream, mkdirSync, statSync } from "fs";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -45,7 +45,15 @@ export interface StoredMedia {
   name: string;
   mime: string | null;
   sizeBytes: number;
-  /** 对客户端暴露的平台路径（mediaRefs 引用它——绝不接受其它形态）。 */
+  /**
+   * 对客户端暴露的平台路径（mediaRefs 引用它——绝不接受其它形态）。
+   *
+   * R35-A1：这里必须写成**真实存在**的下载端点
+   * `GET /api/sop/media/<id>`（sop.controller.ts 的 `@Get("media/:mediaId")`，
+   * 类级 JwtAuthGuard + Roles(ADMIN)）。历史上的
+   * `/api/agent-collab/media/<id>` 从不是一条路由（agent-collab 面只有 POST），
+   * 按它取只会 404——契约里出现的路径必须由某个 @Get 兑现，别再手写想象中的端点。
+   */
   mediaPath: string;
 }
 
@@ -116,7 +124,9 @@ export class SopMediaService {
       name,
       mime: input.mime ?? null,
       sizeBytes: input.buf.length,
-      mediaPath: `/api/agent-collab/media/${row.id}`,
+      // 指向真实存在的下载端点（见 StoredMedia.mediaPath 注释；R35-A1）：
+      // SOP 管理面的 @Get("media/:mediaId")，全局前缀 api ⇒ /api/sop/media/<id>。
+      mediaPath: `/api/sop/media/${row.id}`,
     };
   }
 
@@ -139,15 +149,31 @@ export class SopMediaService {
     if (!abs.startsWith(root + path.sep)) {
       throw new AppError(ErrorCode.SOP_MEDIA_STORAGE_PATH_ESCAPED);
     }
-    if (!existsSync(abs) || !statSync(abs).isFile()) {
+    // R34-A1（轴 3 媒体并发）：保留期清理（agent-media-retention 的
+    // `fs.promises.rm(dir, { recursive: true })` 按 assignmentId 整目录删）与
+    // 单文件下载并发时，「existsSync 判定为真 → statSync」之间文件就没了：
+    // 裸 ENOENT 会冒泡成 HTTP 500，而此刻语义是 404（文件已按保留期回收）。
+    // 只 stat 一次并兜住 ENOENT/ENOTDIR，同时消掉「判 isFile 用一次 stat、
+    // 取 size 又用一次 stat」的第二个竞态窗口（size 取同一次 stat）。
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(abs);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        throw new AppError(ErrorCode.SOP_MEDIA_FILE_MISSING);
+      }
+      throw err;
+    }
+    if (!st.isFile()) {
       throw new AppError(ErrorCode.SOP_MEDIA_FILE_MISSING);
     }
     return {
-      // P1-2（ARCH-008）：existsSync/statSync 之后、流 open 之前文件被删的
-      // 竞态下，ENOENT 降级为该次下载失败（warn + destroy），不再无监听
-      // error 冒泡为 uncaughtException。
+      // P1-2（ARCH-008）：stat 之后、流 open 之前文件被删的竞态下，ENOENT
+      // 降级为该次下载失败（warn + destroy），不再无监听 error 冒泡为
+      // uncaughtException。
       stream: createResponseReadStream(abs, this.logger),
-      size: statSync(abs).size,
+      size: st.size,
       mime: row.mime,
       name: row.name,
     };

@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import { config } from '../config';
 import { assertSafeHttpUrl, assertSafeDnsResolution } from './ssrf-guard';
+import type { SsrfResolvedAddress } from './ssrf-guard';
 
 export interface DownloadFileOptions {
   maxRedirects?: number;
@@ -75,6 +76,52 @@ function removePartialFile(file: fs.WriteStream | undefined, dest: string, expec
   retry(left);
 }
 
+/**
+ * R74-A1（安全面四轴审计·轴 1）：把 ssrf-guard 校验过的地址表变成
+ * `http.request` 的 `lookup` 实现。
+ *
+ * 背景：`assertSafeDnsResolution` 只证明「校验那一刻」解析出的地址安全；而
+ * `http.get` 在真正建连时会**再解析一次**。攻击者控制的域名把 TTL 压到 0，
+ * 第一次返回公网 IP 过闸、第二次返回 127.0.0.1 / 169.254.169.254，就是教科书
+ * 的 DNS rebinding；两个"安全"检查之间那条缝正是缺口。
+ *
+ * 修法：建连时只从这张已校验的表里取地址，**绝不触发第二次 DNS 查询**。表里
+ * 的每个地址在建连前都过了 assertSafeDnsResolution 的逐地址受限判定，所以
+ * "校验的目标"与"连接的目标"是同一张表，缝隙消失。
+ *
+ * Node 的 lookup 契约：`(hostname, options, callback)`，`options.all === true`
+ * 时回调 `(null, [{address, family}])`，否则 `(null, address, family)`。
+ * 这里忽略 hostname——表本来就是按 URL 主机名解析并校验的。
+ */
+type PinnedLookupCallback = (err: unknown, address: unknown, family?: unknown) => void;
+
+function createPinnedLookup(pinned: SsrfResolvedAddress[]): (
+  hostname: string,
+  options: unknown,
+  callback: PinnedLookupCallback,
+) => void {
+  const familyOf = (entry: SsrfResolvedAddress): number =>
+    entry.address.includes(':') ? 6 : entry.family || 4;
+  return (hostname, options, callback) => {
+    const opts = (typeof options === 'function' ? {} : options ?? {}) as {
+      family?: number;
+      all?: boolean;
+    };
+    const cb = (typeof options === 'function' ? options : callback) as PinnedLookupCallback;
+    // family 只是提示（0/4/6）：优先给同族，取不到就回退到整张表——
+    // 宁可连一个已校验的地址，也不要因为族不匹配去解析第二次。
+    const wanted = opts.family === 4 ? 4 : opts.family === 6 ? 6 : 0;
+    const sameFamily = wanted ? pinned.filter((entry) => familyOf(entry) === wanted) : pinned;
+    const chosen = sameFamily.length > 0 ? sameFamily : pinned;
+    if (opts.all) {
+      cb(null, chosen.map((entry) => ({ address: entry.address, family: familyOf(entry) })));
+      return;
+    }
+    const first = chosen[0];
+    cb(null, first.address, familyOf(first));
+  };
+}
+
 export function downloadFile(url: string, dest: string, options: DownloadFileOptions = {}): Promise<number> {
   const {
     maxRedirects = 5,
@@ -99,15 +146,19 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     // 即 fail-closed；解析失败同样拒绝（无法证明目标安全就不连）。残余 TOCTOU
     // 窗口（resolve-then-connect 之间）已在 ssrf-guard 注释中文档化，生产建议
     // 叠加容器/网络层 egress 策略。
+    //
+    // R74-A1：闸把**已校验的地址表**交回来，startDownload 用它做连接期钉扎
+    // （http.request 的 lookup），把上面注释里残留的 resolve-then-connect
+    // TOCTOU 窗口真正关掉——否则 rebinding 只需要把 TTL 压到 0 就能二段解析。
     assertSafeDnsResolution(url)
-      .then(() => {
-        startDownload();
+      .then((pinned) => {
+        startDownload(pinned);
       })
       .catch((err: unknown) => {
         reject(err instanceof Error ? err : new Error(String(err)));
       });
 
-    function startDownload(): void {
+    function startDownload(pinned: SsrfResolvedAddress[]): void {
     // Overall deadline: req.setTimeout is a socket-idle timeout and a
     // slow-drip server resets it forever, so run an absolute timer too.
     const deadline = setTimeout(() => {
@@ -156,6 +207,14 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
       headers['Authorization'] = `Bearer ${config.token}`;
     }
 
+    // R74-A1：钉扎表非空时给请求挂上自定义 lookup——建连只从闸校验过的地址里
+    // 取，**连接期不再解析 DNS**。字面 IP / localhost / 逃生阀路径的表是空的，
+    // 挂与不挂等价（那几条路径本来就没有可被 rebinding 的域名解析）。
+    const requestOptions: Record<string, unknown> = { headers };
+    if (pinned.length > 0) {
+      requestOptions.lookup = createPinnedLookup(pinned);
+    }
+
     try {
       if (options.signal) {
         if (options.signal.aborted) {
@@ -164,7 +223,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
         }
         options.signal.addEventListener('abort', onAbort, { once: true });
       }
-      req = proto.get(url, { headers }, (res: import('http').IncomingMessage) => {
+      req = proto.get(url, requestOptions, (res: import('http').IncomingMessage) => {
         if (settled) { res.resume(); return; }
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           cleanup();

@@ -91,3 +91,23 @@ export class PaginatedAuditLogsDto {
   })
   nextCursor?: string | null;
 }
+
+/**
+ * GET /audit/actions —— R67-A1：审计页 action 过滤器的**可发现**数据源。
+ *
+ * 背景：动作已 61 个（19 个域），而过滤框此前是自由文本——用户不背下动作名就筛不到。
+ * 本契约只回一份「库里真实出现过的动作」清单（DB 侧 DISTINCT + ORDER BY，见
+ * AuditService#listDistinctActions），**不新增任何审计 action**，也不改 GET /audit 的响应。
+ *
+ * 形状刻意是最素的 `{ actions: string[] }`（而不是分页信封）：它是一份用于渲染下拉的
+ * 小集合，没有翻页语义；空库返回 `{ actions: [] }`（不是 404、不是 null），前端据此
+ * 保留"自由输入"这条兜底路径。
+ */
+export class AuditActionsDto {
+  @ApiProperty({
+    type: [String],
+    description:
+      "库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。",
+  })
+  actions: string[];
+}

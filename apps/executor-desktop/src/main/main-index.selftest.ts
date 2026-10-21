@@ -26,6 +26,7 @@ function main(): void {
   // 去注释版：结构性顺序断言统一用它——否则解释缺陷的中文注释会自我触发。
   const indexCode = indexSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
   const execSrc = read('executor-process.ts');
+  const ipcSrc = read('ipc-handlers.ts');
   const preloadSrc = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'preload', 'index.ts'),
     'utf-8',
@@ -166,6 +167,53 @@ function main(): void {
           execSrc.replace(/\/\*[\s\S]*?\*\//g, ''),
         ),
       'B-2: ExecutorProcess.resetHysteresisForResume 必须重置 admin+liveness 两份迟滞',
+    );
+  }
+
+  // ── E2E-ENTRY：开发态执行器入口必须按 __dirname 解析 ────────────────
+  // 2026-10 真机 E2E 抓到：Playwright 直接以 `electron dist/main/index.js`
+  // 启动时，app.getAppPath() 是 dist/main 而不是包根，拼出的
+  // resources/executor-node/index.js 不存在 → 子进程 MODULE_NOT_FOUND →
+  // 向导只报 8 秒健康检查超时。这里把「按 __dirname 回退」钉死。
+  {
+    const entryIdx = execSrc.indexOf('private getEntryPath(');
+    assert.ok(entryIdx >= 0, 'E2E-ENTRY: ExecutorProcess.getEntryPath 必须存在');
+    const entryBlock = execSrc.slice(entryIdx, execSrc.indexOf('async start(', entryIdx));
+    assert.ok(
+      entryBlock.includes("path.resolve(__dirname, '..', '..', 'resources', 'executor-node', 'index.js')"),
+      'E2E-ENTRY: 开发态入口必须以 __dirname 为基准解析（app.getAppPath() 在直接传入口文件时是 dist/main）',
+    );
+    assert.ok(
+      entryBlock.includes('const fromDist') && entryBlock.includes('fs.existsSync(fromDist)'),
+      'E2E-ENTRY: 必须先用 __dirname 路径并用 existsSync 守卫，再回退 app.getAppPath()',
+    );
+  }
+
+  // ── CFG-SAVE：渲染层已确认的重启不得再弹原生确认 ─────────────────
+  // 2026-10 真机 E2E 抓到：ConfigPage 的 ConfirmBar 点「确认保存并重启」后，
+  // 主进程 finalizeConfigSave 又弹 dialog.showMessageBox，同一个问题问两遍，
+  // 且原生框阻塞保存、自动化无法继续。
+  {
+    const saveIdx = ipcSrc.indexOf("ipcMain.handle('config:save'");
+    assert.ok(saveIdx >= 0, 'CFG-SAVE: config:save handler 必须存在');
+    const saveBlock = ipcSrc.slice(
+      saveIdx,
+      ipcSrc.indexOf("ipcMain.handle('config:save-and-close-wizard'", saveIdx),
+    );
+    assert.ok(
+      saveBlock.includes('finalizeConfigSave(configBefore, { restartConfirmed: true })'),
+      'CFG-SAVE: config:save 必须把渲染层确认传下去（否则重复弹原生重启确认框）',
+    );
+    const importIdx = ipcSrc.indexOf("ipcMain.handle('config:import'");
+    const importBlock = ipcSrc.slice(importIdx, ipcSrc.indexOf("ipcMain.handle('config:test-connection'", importIdx));
+    assert.ok(
+      importBlock.includes('finalizeConfigSave(configBefore);') && !importBlock.includes('restartConfirmed'),
+      'CFG-SAVE: config:import 无渲染层确认面，必须保留原生重启征询',
+    );
+    assert.ok(
+      ipcSrc.includes("from './config-restart'") &&
+        !ipcSrc.includes('const EXECUTOR_RESTART_REQUIRED_FIELDS'),
+      'CFG-SAVE: 重启必需字段清单必须来自 config-restart.ts（不得在 ipc-handlers 再抄一份）',
     );
   }
 

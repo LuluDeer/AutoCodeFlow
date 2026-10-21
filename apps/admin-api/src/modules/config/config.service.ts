@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, Optional } from "@nestjs/common";
+import { Inject, Injectable, Logger, OnModuleInit, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -9,6 +9,7 @@ import { UpsertConfigDto } from "./dto/upsert-config.dto";
 // B-10: config_history 只增不删——retention 复用 outbox 每日 retention 的
 // 公共设施（cappedBatchedDelete 分批 + LeaderGate 门禁，ARCH-31 §5 铁律）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+import { AuditService } from "../audit/audit.service";
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
@@ -108,6 +109,15 @@ export class SystemConfigService implements OnModuleInit {
     // config.module.ts 在真实应用里提供）。
     @Optional()
     private readonly cacheSync: ConfigCacheSyncService | null = null,
+    // R83：配置写动作的审计落库（此前 config 模块**完全没有审计**——改一次
+    // executor.sharedToken 只能靠 config_history 那条会被保留期清理的行回答「谁改的」，
+    // 而 audit_logs 是 append-only、不可改删。@Optional 与 sop/notification 同姿态：
+    // 缺席时审计整体旁路，业务语义零变化。
+    // **放在最后**：既有 spec 按位置构造（cacheSync 恒为第 5 参），插在它前面会让那些
+    // 调用把 CacheSync 误传成 AuditService —— 静默错位，只在运行期炸。
+    @Optional()
+    @Inject(AuditService)
+    private readonly auditService?: AuditService,
   ) {
     const raw = this.configService?.get<number>("systemConfig.cacheTtlMs");
     const parsed = typeof raw === "string" ? parseInt(raw, 10) : raw;
@@ -117,6 +127,40 @@ export class SystemConfigService implements OnModuleInit {
         : parsed === 0
           ? 0
           : SYSTEM_CONFIG_CACHE_TTL_DEFAULT_MS;
+  }
+
+  /**
+   * R83：配置写动作落审计（fail-open——审计失败只 error，绝不阻断配置生效）。
+   *
+   * **detail 只放元数据，不放值**：配置项的价值往往就在那个值里（sharedToken /
+   * SMTP 口令 / Webhook 签名密钥）。审计行是长期保留、可 CSV 导出的面，把值写进去
+   * 等于给它开一条持久外带通道——而"谁在什么时候改了哪个键、是不是密钥、值多长"
+   * 已经足够回答审计问题。
+   */
+  private async safeAudit(payload: {
+    action: string;
+    resourceId: string;
+    detail: Record<string, unknown>;
+  }): Promise<void> {
+    if (!this.auditService) return;
+    try {
+      await this.auditService.log({
+        userId: null,
+        action: payload.action,
+        resource: "config",
+        resourceId: payload.resourceId,
+        detail: payload.detail,
+      });
+    } catch (err) {
+      this.logger.error(
+        "config audit write failed: action=" +
+          payload.action +
+          " key=" +
+          payload.resourceId +
+          " err=" +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
   }
 
   // P3-1：SystemConfig 是极小配置表（个位数行），全表 find 无需分页——刻意保持现状。
@@ -234,7 +278,15 @@ export class SystemConfigService implements OnModuleInit {
     // Same sentinel semantics as the notification ChannelConfigStore write
     // path: a value of '***' on an isSecret item means "unchanged" — keep the
     // stored value instead of persisting the mask.
-    const isSecret = dto.isSecret ?? false;
+    // R32-A2: 两个判据都必须能看见「库里这行是不是密钥」
+    //   · isSecret 省略 ≠ 取消密钥标记。DTO 的 default:false 是**新建**语义；
+    //     对已存在的行沿用库里的分类，否则一次「只改描述/只改值」的 PUT
+    //     （脚本/API 直调，isSecret 是 optional）会把密钥静默降级成普通配置
+    //     项——读面随即将它明文回显，等于一次无痕解密。
+    //   · '***' 哨兵同理：只有「本次显式 isSecret:false」才意味着"提交的字面量
+    //     就是真值"（显式取消密钥标记）；省略时按库里分类判定，把读面回显的
+    //     掩码解析回真值，绝不把 '***' 写进库（S3 的同一类数据破坏）。
+    const isSecret = dto.isSecret ?? (existing?.isSecret === true);
     let value = dto.value;
     if (isSecret && value === "***" && existing) {
       value = existing.value;
@@ -268,6 +320,34 @@ export class SystemConfigService implements OnModuleInit {
       ...options,
     });
 
+    // 两个分支各写一个字面量 action（而不是三元拼串）：
+    // `scripts/check-audit-actions-doc.mjs` 靠 `action:\s*"<域>.<动作>"` 字面量收集清单，
+    // 三元表达式会让这两个动作**对守卫隐形**——文档表里也不会有它们，而它们确实在写。
+    const auditDetail = {
+      valueType: dto.valueType ?? "string",
+      isSecret,
+      // 只记长度：值本身可能就是凭据（见 safeAudit 头注）。
+      valueLength: typeof value === "string" ? value.length : 0,
+      previousValueLength:
+        typeof existing?.value === "string" ? existing.value.length : 0,
+      // "掩码哨兵命中"是可审计的事实：它说明本次提交的 *** 被解析回了库中真值，
+      // 而不是把 *** 写进库（S3 那类数据破坏的反面证据）。
+      maskSentinelResolved: isSecret && dto.value === "***" && !!existing,
+    };
+    if (action === "create") {
+      await this.safeAudit({
+        action: "config.create",
+        resourceId: dto.key,
+        detail: auditDetail,
+      });
+    } else {
+      await this.safeAudit({
+        action: "config.update",
+        resourceId: dto.key,
+        detail: auditDetail,
+      });
+    }
+
     return repo.findOneBy({ key: dto.key });
   }
 
@@ -281,6 +361,16 @@ export class SystemConfigService implements OnModuleInit {
       const config = await this.repo.findOneBy({ key });
       if (!config) throw new AppError(ErrorCode.CONFIG_ITEM_NOT_FOUND, { key });
 
+      await this.safeAudit({
+        action: "config.delete",
+        resourceId: key,
+        detail: {
+          valueType: config.valueType,
+          isSecret: config.isSecret === true,
+          valueLength:
+            typeof config.value === "string" ? config.value.length : 0,
+        },
+      });
       await this.recordHistory(this.historyRepo, {
         configKey: key,
         oldValue: config.value,

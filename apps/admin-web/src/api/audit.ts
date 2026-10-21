@@ -99,6 +99,31 @@ export function buildAuditListQuery(params: AuditListParams): string {
 }
 
 /**
+ * `GET /audit/actions` 的响应：**去重后的动作清单**（后端 DB 侧 DISTINCT + 字母序）。
+ *
+ * 形状刻意最素：一份用于渲染下拉的小集合，没有分页信封、没有 total。
+ */
+export interface AuditActionListResult {
+  actions: string[];
+}
+
+/**
+ * R67-A1：拉取审计动作清单，供 action 过滤器渲染**可发现**的下拉。
+ *
+ * 这是「能筛 → 筛得到」缺的那一半：动作已有 61 个（19 个域），只给自由文本输入框，
+ * 等于要求用户先把动作名背下来。
+ *
+ * **本函数不做兜底**：失败就抛。页面侧的契约是「失败不阻断页面、回落成自由输入」，
+ * 那是渲染决策，写在页面里（见 pages/audit 的 actionsQuery）。在这里把错误吞成
+ * 空数组，会让「后端确实没有动作」与「请求挂了」变成同一件事，排障时无从分辨。
+ */
+export function listAuditActions(
+  signal?: AbortSignal,
+): Promise<AuditActionListResult> {
+  return client.get<AuditActionListResult>('/audit/actions', { signal });
+}
+
+/**
  * 拉取审计日志列表（`GET /audit`，ADMIN-only）。
  *
  * 默认（`cursor` 缺省）= 既有 OFFSET 分页：查询串与加 keyset 之前**逐字节相同**，

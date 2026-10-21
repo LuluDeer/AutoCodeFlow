@@ -37,6 +37,13 @@ describe("ProjectsService（AUTH-01）", () => {
       find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn(),
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
+      // R62：update 改列级写 —— 假仓储需要 update，且按真实语义把 patch 落到 findOne 返回的行上。
+      update: jest.fn(async (where: any, patch: any) => {
+        const row = await (repo as any).findOne({ where });
+        if (!row) return { affected: 0 };
+        Object.assign(row, patch);
+        return { affected: 1 };
+      }),
     };
     taskRepo = { count: jest.fn().mockResolvedValue(0) };
     memberRepo = { count: jest.fn().mockResolvedValue(0) };
@@ -96,7 +103,10 @@ describe("ProjectsService（AUTH-01）", () => {
       repo.findOne.mockResolvedValue(row);
       const saved = await service.update(row.id, { name: "Renamed" });
       expect(saved.name).toBe("Renamed");
-      expect(repo.save).toHaveBeenCalled();
+      // R62：只写 dto 带来的列（不再整行 save —— 实体将来多出别的写者时，
+      // 整行 save 会变成「顺手把旧值写回去」）
+      expect(repo.update).toHaveBeenCalledWith({ id: row.id }, { name: "Renamed" });
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     it("默认项目拒绝改名（404 拦截，与 remove 同文案）", async () => {
@@ -188,7 +198,8 @@ describe("ProjectsService（AUTH-01）", () => {
     it("update 改名撞同一索引 → 同样给可读文案", async () => {
       const row = makeRow();
       repo.findOne.mockResolvedValue(row);
-      repo.save.mockRejectedValue(uniqueViolation("UQ_projects_name"));
+      // R62：update 走列级 update，唯一索引冲突由它抛出（不再是 save）
+      repo.update.mockRejectedValue(uniqueViolation("UQ_projects_name"));
       await expect(
         service.update(row.id, { name: "已被占用的名字" }),
       ).rejects.toThrow("已被占用的名字");

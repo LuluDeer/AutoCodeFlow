@@ -60,10 +60,14 @@ def patch_declared_uncompressed_size(raw: bytes, size: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 def test_default_limits_mirror_executor_node_zip_guard():
+    # R94-A1：本测试此前把**漂移后的旧值**（1 GiB / 2 GiB）钉死，反而成了漂移的
+    # 帮凶——node zip-guard.ts:55-56 与 admin-api zip-guard.util.ts:73-74 在
+    # 2026-09-23 OOM 事故后已收紧为 512 MiB / 1 GiB。真正的防漂移闸门是
+    # `tests/test_zip_guard_parity.py`（直接读另两个平面的源码常量比对）。
     assert ZIP_GUARD_DEFAULT_LIMITS.max_ratio == 100
     assert ZIP_GUARD_DEFAULT_LIMITS.max_entries == 10_000
-    assert ZIP_GUARD_DEFAULT_LIMITS.max_file_bytes == 1024 * 1024 * 1024
-    assert ZIP_GUARD_DEFAULT_LIMITS.max_total_uncompressed_bytes == 2 * 1024 * 1024 * 1024
+    assert ZIP_GUARD_DEFAULT_LIMITS.max_file_bytes == 512 * 1024 * 1024
+    assert ZIP_GUARD_DEFAULT_LIMITS.max_total_uncompressed_bytes == 1024 * 1024 * 1024
     assert ZIP_GUARD_DEFAULT_LIMITS.max_nesting_depth == 1
 
 

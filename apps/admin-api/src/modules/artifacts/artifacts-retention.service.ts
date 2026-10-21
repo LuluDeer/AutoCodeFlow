@@ -126,6 +126,9 @@ export class ArtifactsRetentionService {
           i + ArtifactsRetentionService.ARTIFACTS_DB_SWEEP_CHUNK,
         );
         try {
+          // adr-026-exempt: 只清 artifacts 这一个**清单列**（磁盘已回收后的登记清理），
+          // 且只作用于「已被保留期判定过期并删目录」的执行行——90 天前的终态执行不再有新产物
+          // 上传（上传要求执行仍在跑），故不存在与写者竞争的现实窗口。
           await this.execRepo.update({ id: In(chunk) }, { artifacts: null });
         } catch (err) {
           this.logger.warn(

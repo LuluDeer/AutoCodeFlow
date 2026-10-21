@@ -294,8 +294,17 @@ describe("ExecutorService (__tests__)", () => {
           address: "127.0.0.1:3105",
         });
 
-        expect(result).toBe(winnerRow);
-        expect(executorRepo.save).toHaveBeenCalledTimes(2);
+        // 败者并入赢家行：返回体是「赢家快照 + 本次 patch」（同一行、同一 id）。
+        expect(result.id).toBe(winnerRow.id);
+        expect(result.address).toBe(winnerRow.address);
+        expect(result.status).toBe(ExecutorStatus.ONLINE);
+        // 写面：insert（撞唯一约束失败）+ **一次列级 update**（不再是第二次整行 save）。
+        expect(executorRepo.save).toHaveBeenCalledTimes(1);
+        expect(executorRepo.update).toHaveBeenCalledTimes(1);
+        expect(executorRepo.update).toHaveBeenCalledWith(
+          { id: winnerRow.id },
+          expect.objectContaining({ status: ExecutorStatus.ONLINE }),
+        );
         // 败者路径不重复发首注册在线通知（赢家已发）。
         expect(
           service["notificationService"].notifyExecutorOnline,
@@ -491,9 +500,10 @@ describe("ExecutorService (__tests__)", () => {
 
       // 恢复不再触碰 executorRepo 计数（无 releaseExecutorSlotBatch）。
       expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
-      // 计数归零由 save 承担（R-P0-008 语义）。
-      const saved = (executorRepo.save as jest.Mock).mock.calls[0][0] as any;
-      expect(saved.runningTaskCount).toBe(0);
+      // 计数归零由列级 patch 承担（R-P0-008 语义；整行 save 已消除）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const patch = (executorRepo.update as jest.Mock).mock.calls[0][1] as any;
+      expect(patch.runningTaskCount).toBe(0);
     });
 
     it("NETOPT-E P2-1: recovery only fails rows started before the restart moment (new dispatches survive)", async () => {
@@ -689,6 +699,7 @@ describe("ExecutorService (__tests__)", () => {
 
     it("does not abort restart recovery when retry enqueue fails", async () => {
       const existing = {
+        id: "executor-1",
         appName: "e1",
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
@@ -737,7 +748,15 @@ describe("ExecutorService (__tests__)", () => {
       ).toBe(true);
       expect(execRepo.delete).toHaveBeenCalledWith("retry-exec");
       expect(existing.executorStartupId).toBe("startup-new");
-      expect(executorRepo.save).toHaveBeenCalledWith(existing);
+      // 写面：一次列级 patch（WHERE id = 同一行），含 startupId 与计数清零两列。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "executor-1" },
+        expect.objectContaining({
+          executorStartupId: "startup-new",
+          runningTaskCount: 0,
+        }),
+      );
     });
 
     // R-11（DEEP_REVIEW 0ef3bbe）：重启恢复流程中任何写失败不得击穿 register
@@ -957,6 +976,11 @@ describe("ExecutorService (__tests__)", () => {
         capabilities: ["python"],
         agentCapabilities: ["agent:sop", "gui"],
         agentCapabilitiesUpdatedAt: new Date(),
+        // R55-A1：四个指标列的主人是心跳，register 的快照里带着它们也只是"读到的旧值"。
+        cpuUsage: 42,
+        memUsage: 43,
+        diskUsage: 44,
+        networkLatency: 45,
       };
       executorRepo.findOne.mockResolvedValue(existing);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -968,12 +992,25 @@ describe("ExecutorService (__tests__)", () => {
       });
 
       expect(existing.capabilities).toEqual(["python", "node"]);
-      expect(executorRepo.save.mock.calls[0][0]).not.toHaveProperty(
-        "agentCapabilities",
-      );
-      expect(executorRepo.save.mock.calls[0][0]).not.toHaveProperty(
-        "agentCapabilitiesUpdatedAt",
-      );
+      // R55-A1：重注册的写面是列级 patch（整行 save 已消除）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const payload = (executorRepo.update as jest.Mock).mock.calls[0][1] as any;
+      expect(payload).not.toHaveProperty("agentCapabilities");
+      expect(payload).not.toHaveProperty("agentCapabilitiesUpdatedAt");
+      // R55-A1（ADR-026 规则 4）：独立的第三写面——心跳拥有的指标列。整行 save
+      // 会把快照值按 diff 写回，覆盖窗口内刚上报的真实指标；save 载荷上必须
+      // 根本不存在这四列（不是"值恰好相同"）。
+      for (const metric of [
+        "cpuUsage",
+        "memUsage",
+        "diskUsage",
+        "networkLatency",
+      ]) {
+        expect(payload).not.toHaveProperty(metric);
+      }
+      // register 自己的身份列仍在这个整行 save 里（摘列不是"什么都不写"）。
+      expect(payload).toHaveProperty("capabilities", ["python", "node"]);
+      expect(payload).toHaveProperty("status", ExecutorStatus.ONLINE);
     });
 
     it("Agent reports replace only Agent capabilities and [] revokes GUI without touching runtimes", async () => {
@@ -1643,9 +1680,19 @@ describe("ExecutorService (__tests__)", () => {
 
   describe("heartbeat", () => {
     it("updates lastHeartbeat and metrics on heartbeat", async () => {
+      // R53-A1：写面已从 `repo.save(e)`（整行回写）改为「实际采纳字段」的列级
+      // patch。用例同时钉住两件事：① 该写的列都写了；② 管理台拥有的列
+      // （groupName / tags / description / appName / capabilities …）**一个都不写**
+      // —— 后者正是整行 save 的老缺陷（按快照 diff 把管理台刚改的值回弹）。
       const executor = {
+        id: "e-1",
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
+        appName: "node-a",
+        groupName: "prod",
+        tags: ["t1"],
+        description: "d",
+        capabilities: ["python"],
       };
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -1657,7 +1704,50 @@ describe("ExecutorService (__tests__)", () => {
         totalTaskCount: 10,
         failedTaskCount: 2,
       });
-      expect(executorRepo.save).toHaveBeenCalled();
+      // 整行 save 已消除；写面只有一次列级 update，WHERE 只有 id。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.update).toHaveBeenCalledTimes(1);
+      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(hbCriteria).toEqual({ id: "e-1" });
+      expect(Object.keys(hbPatch).sort()).toEqual([
+        "consecutiveHeartbeatMisses",
+        "cpuUsage",
+        "diskUsage",
+        "failedTaskCount",
+        "lastHeartbeat",
+        "memUsage",
+        "offlineReason",
+        "runningTaskCount",
+        "status",
+        "totalTaskCount",
+      ]);
+      expect(hbPatch).toMatchObject({
+        cpuUsage: 30,
+        memUsage: 50,
+        diskUsage: 70,
+        runningTaskCount: 1,
+        totalTaskCount: 10,
+        failedTaskCount: 2,
+        status: ExecutorStatus.ONLINE,
+        offlineReason: null,
+        consecutiveHeartbeatMisses: 0,
+      });
+      expect(hbPatch.lastHeartbeat).toBeInstanceOf(Date);
+      // 管理台 / register 拥有的列：不进 patch（= 不会按旧快照回弹）。
+      for (const notOwned of [
+        "appName",
+        "groupName",
+        "tags",
+        "description",
+        "capabilities",
+        "dispatchMode",
+        "protocolVersion",
+        "executorVersion",
+        "tokenHash",
+        "version",
+      ]) {
+        expect(hbPatch).not.toHaveProperty(notOwned);
+      }
       expect(metricsHistoryRepo.create).toHaveBeenCalledWith({
         executorAddress: "127.0.0.1:3105",
         cpuUsage: 30,
@@ -2098,13 +2188,17 @@ describe("ExecutorService (__tests__)", () => {
       expect(idsWhere?.[1].ids).toEqual(["exec-old"]);
       // ② 恢复不再触碰 executorRepo 计数（无 releaseExecutorSlotBatch）。
       expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
-      // ③ 计数归零由 save 承担（本次心跳未上报 runningTaskCount → 写 0）。
-      const saved = (executorRepo.save as jest.Mock).mock.calls[0][0] as any;
-      expect(saved.runningTaskCount).toBe(0);
+      // ③ 计数归零由列级 patch 承担（本次心跳未上报 runningTaskCount → 仍写 0，
+      //    因为重启分支**主动采纳**了这个清零值；R53-A1 后写面是 update 的 patch）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const [, restartPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(restartPatch.runningTaskCount).toBe(0);
+      expect(restartPatch.reservedSlots).toBe(0);
     });
 
     it("continues heartbeat restart recovery when one retry enqueue fails", async () => {
       const executor = {
+        id: "exec-hb-1",
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
         executorStartupId: "startup-old",
@@ -2188,7 +2282,17 @@ describe("ExecutorService (__tests__)", () => {
       expect(execRepo.delete).toHaveBeenCalledWith("retry-1");
       expect(taskQueue.add).toHaveBeenCalledTimes(2);
       expect(executor.executorStartupId).toBe("startup-new");
-      expect(executorRepo.save).toHaveBeenCalledWith(executor);
+      // R53-A1：写面是列级 patch；本次采纳的 executorStartupId / 重启清零的
+      // runningTaskCount 必须在 patch 里（不得因为"改成 update"而漏写）。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      expect(hbCriteria).toEqual({ id: executor.id });
+      expect(hbPatch).toMatchObject({
+        executorStartupId: "startup-new",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        reservedSlots: 0,
+      });
     });
 
     it("does not block the heartbeat on restart recovery (NETOPT-D P2-3)", async () => {
@@ -2929,7 +3033,7 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("update", () => {
-    it("merges data into executor and saves", async () => {
+    it("merges data into executor and writes ONLY those columns", async () => {
       const executor = { id: "e1", groupName: "old", tags: [] };
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
@@ -2939,6 +3043,13 @@ describe("ExecutorService (__tests__)", () => {
       });
       expect(result.groupName).toBe("production");
       expect(result.tags).toEqual(["nodejs"]);
+      // R51-A1（ADR-026 规则 4）：列级写——patch 只含调用方给的列，
+      // 且不再整行 save（整行 save 的 diff 会回写过期列，见 stale-snapshot spec）。
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "e1" },
+        { groupName: "production", tags: ["nodejs"] },
+      );
+      expect(executorRepo.save).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException when executor not found", async () => {
@@ -2957,8 +3068,14 @@ describe("ExecutorService (__tests__)", () => {
           const executor = { id: "e1", maxConcurrentTasks: 4 };
           executorRepo.findOne.mockResolvedValue(executor);
           executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+          executorRepo.update.mockClear();
           await service.update("e1", { maxConcurrentTasks: valid });
           expect(executor.maxConcurrentTasks).toBe(valid);
+          // 落库面的强度：断言真正发出的 patch（而不是内存对象被 mutate）。
+          expect(executorRepo.update).toHaveBeenCalledWith(
+            { id: "e1" },
+            { maxConcurrentTasks: valid },
+          );
         }
       });
 
@@ -2974,6 +3091,7 @@ describe("ExecutorService (__tests__)", () => {
             }),
           ).rejects.toThrow(BadRequestException);
           expect(executor.maxConcurrentTasks).toBe(4);
+          expect(executorRepo.update).not.toHaveBeenCalled();
           expect(executorRepo.save).not.toHaveBeenCalled();
         },
       );
@@ -2984,7 +3102,12 @@ describe("ExecutorService (__tests__)", () => {
         executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
         await service.update("e1", { maxConcurrentTasks: null });
         expect(executor.maxConcurrentTasks).toBeNull();
-        expect(executorRepo.save).toHaveBeenCalled();
+        // null 必须进 patch（不能被当成"未提供"而丢掉清空语义）。
+        expect(executorRepo.update).toHaveBeenCalledWith(
+          { id: "e1" },
+          { maxConcurrentTasks: null },
+        );
+        expect(executorRepo.save).not.toHaveBeenCalled();
       });
     });
   });
@@ -3419,14 +3542,34 @@ describe("ExecutorService (__tests__)", () => {
 
       await service.markOffline("127.0.0.1:3105");
 
+      // R40：WHERE 里额外带 lastHeartbeat 的 CAS（读取时为 undefined ⇒ IsNull 算子），
+      // 防「拿旧观察覆盖新事实」——注册/心跳若先落库，这里必须让位。
       expect(executorRepo.update).toHaveBeenCalledWith(
-        { id: "e-graceful" },
+        expect.objectContaining({ id: "e-graceful", lastHeartbeat: expect.anything() }),
         expect.objectContaining({
           status: ExecutorStatus.OFFLINE,
           // 遗留 P1-24：优雅下线落 manual。
           offlineReason: ExecutorOfflineReason.MANUAL,
         }),
       );
+    });
+
+    it("R40: 并发收敛——条件写未命中（执行器刚有新活动）→ 不置离线、不发布事件", async () => {
+      executorRepo.update.mockResolvedValue({ affected: 0 });
+      const qb = executorRepo.createQueryBuilder();
+      qb.getMany.mockResolvedValue([
+        { id: "e-live", address: "127.0.0.1:3106", lastHeartbeat: new Date(0) },
+      ]);
+      executorRepo.createQueryBuilder.mockReturnValue(qb);
+      const emitSpy = jest.spyOn(service as never as {
+        emitExecutorOffline: (p: unknown) => void;
+      }, "emitExecutorOffline").mockImplementation(() => undefined);
+
+      await service.markOffline("127.0.0.1:3106");
+
+      // 命中 0 ⇒ 让位：不发 executor.offline 事件（否则下游会按「已离线」做处置）
+      expect(emitSpy).not.toHaveBeenCalled();
+      emitSpy.mockRestore();
     });
 
     it("ADR-017: 同址多行且无指纹 → 不置任何行离线（不误伤别人）", async () => {
@@ -3473,15 +3616,28 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("rotateToken", () => {
-    it("generates a new token, hashes and saves it", async () => {
+    it("generates a new token and writes ONLY the tokenHash column", async () => {
       const executor = { id: "e1", address: "127.0.0.1", tokenHash: null };
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      executorRepo.update.mockClear();
       const result = await service.rotateToken("e1");
       expect(result).toHaveProperty("token");
       expect(typeof result.token).toBe("string");
       expect(result.token.length).toBeGreaterThan(0);
       expect(executor.tokenHash).toBeTruthy();
+      // R51-A1（ADR-026 规则 4）：落库面断言改成读 update 的 patch——只写 tokenHash
+      // 一列，且不再整行 save（save 的 diff 会把 bcrypt 那几百毫秒窗口内并发落库的
+      // status / runningTaskCount / lastHeartbeat 按旧快照写回）。
+      expect(executorRepo.update).toHaveBeenCalledTimes(1);
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "e1" },
+        { tokenHash: executor.tokenHash },
+      );
+      expect(Object.keys(executorRepo.update.mock.calls[0][1])).toEqual([
+        "tokenHash",
+      ]);
+      expect(executorRepo.save).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException when executor not found", async () => {
@@ -4711,9 +4867,14 @@ describe("ExecutorService (__tests__)", () => {
 
         await service.heartbeat("h:1", {});
 
-        expect(executorRepo.save).toHaveBeenCalled();
-        const saved = executorRepo.save.mock.calls[0][0];
-        expect(saved.consecutiveHeartbeatMisses).toBe(0);
+        // R53-A1：写面是列级 patch（整行 save 已消除）。
+        expect(executorRepo.save).not.toHaveBeenCalled();
+        const [, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+        expect(hbPatch.consecutiveHeartbeatMisses).toBe(0);
+        // 迟滞自愈的三件套必须一起落库（少写任一列 = 判死状态不会真正解除）。
+        expect(hbPatch.status).toBe(ExecutorStatus.ONLINE);
+        expect(hbPatch.offlineReason).toBeNull();
+        expect(hbPatch.lastHeartbeat).toBeInstanceOf(Date);
       });
     });
 
@@ -4785,15 +4946,44 @@ describe("ExecutorService (__tests__)", () => {
         status: ExecutorStatus.ONLINE,
       };
       executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.update.mockResolvedValue({ affected: 1 });
       const saved = await service.setOfflineById("exec-9");
       expect(executorRepo.findOne).toHaveBeenCalledWith({
         where: { id: "exec-9" },
       });
-      expect(executorRepo.save).toHaveBeenCalledWith(executor);
+      // R45（ADR-026 规则 4）：不再整行 save，改条件写——WHERE 带读取时的
+      // lastHeartbeat（此处为 undefined ⇒ IsNull 算子），SET 只含三个要改的列。
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "exec-9", lastHeartbeat: expect.anything() }),
+        expect.objectContaining({ status: ExecutorStatus.OFFLINE }),
+      );
       expect(saved.status).toBe(ExecutorStatus.OFFLINE);
       // 遗留 P1-24：管理员手动下线落 manual。
       expect(saved.offlineReason).toBe(ExecutorOfflineReason.MANUAL);
       expect(saved.lastHeartbeat).toBeInstanceOf(Date);
+    });
+
+    it("R45: 条件写未命中（执行器刚有新活动）→ 不置离线、不发布事件、返回真实行", async () => {
+      const stale: any = {
+        id: "exec-9",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        lastHeartbeat: new Date(0),
+      };
+      executorRepo.findOne
+        .mockResolvedValueOnce(stale) // 第一次读：快照
+        .mockResolvedValueOnce({ ...stale, status: ExecutorStatus.ONLINE, lastHeartbeat: new Date() }); // 让位后重读
+      executorRepo.update.mockResolvedValue({ affected: 0 });
+      const emitSpy = jest
+        .spyOn(service as never as { emitExecutorOffline: (p: unknown) => void }, "emitExecutorOffline")
+        .mockImplementation(() => undefined);
+
+      const returned = await service.setOfflineById("exec-9");
+
+      expect(emitSpy).not.toHaveBeenCalled();
+      expect(returned.status).toBe(ExecutorStatus.ONLINE); // 返回真实行，不是陈旧快照
+      emitSpy.mockRestore();
     });
 
     it("throws NotFoundException when executor does not exist", async () => {
@@ -6079,6 +6269,26 @@ describe("ExecutorService (__tests__)", () => {
       const anySvc = svc as any;
       expect(anySvc.callbackSecretCache.has(ADDR)).toBe(false);
       expect(anySvc.issuedTokenCache.has(ADDR)).toBe(false);
+    });
+
+    // G1（R32-A3）：Cron 自动清理（7 天离线）与手动删除是同一强度的撤销，但
+    // 此前只做了本地逐出、漏了广播——多实例部署下被删执行器的 per-executor
+    // 令牌/回调密钥在其他实例的正缓存里还能再活一个 TTL（60s）。
+    it("cleanupOfflineExecutors 同样广播（自动清理也是撤销）", async () => {
+      const { svc, row, fakeSync } = await makeFixture();
+      const repo = (svc as any).repo;
+      repo.find = jest
+        .fn()
+        .mockResolvedValue([{ id: row.id, address: ADDR, appName: "node" }]);
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+      populateCaches(svc);
+
+      await svc.cleanupOfflineExecutors();
+
+      expect(repo.delete).toHaveBeenCalled();
+      expect(fakeSync.publishTokenEviction).toHaveBeenCalledWith(ADDR);
+      // 本地半边同样生效（两条路径都不能只做一半）
+      expect((svc as any).callbackSecretCache.has(ADDR)).toBe(false);
     });
 
     it("远端广播 onEvict：逐出该地址的全部三条目，不动其他地址", async () => {
@@ -7924,7 +8134,12 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     });
 
     expect((row as any).deviceFingerprint).toBe(FP_A);
-    expect(executorRepo.save).toHaveBeenCalled();
+    // 写面：一次列级 update，指纹在 patch 里（整行 save 已消除）。
+    expect(executorRepo.save).not.toHaveBeenCalled();
+    expect(executorRepo.update).toHaveBeenCalledWith(
+      { id: "e1" },
+      expect.objectContaining({ deviceFingerprint: FP_A }),
+    );
   });
 
   /** 重注册携带非法指纹 → 绝不动 DB（不得把已存值擦成 NULL）。 */

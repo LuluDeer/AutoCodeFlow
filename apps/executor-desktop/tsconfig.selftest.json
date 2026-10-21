@@ -10,6 +10,10 @@
   "include": [
     "src/main/path-domain.ts",
     "src/main/path-domain.selftest.ts",
+    "src/main/ipc-sender-guard.ts",
+    "src/main/ipc-sender-guard.selftest.ts",
+    "src/main/port-check.ts",
+    "src/main/port-check.selftest.ts",
     "src/main/agent-status-view.selftest.ts",
     "src/main/agent-host-lifecycle.selftest.ts",
     "src/main/token-crypto.ts",
@@ -95,7 +99,13 @@
     "src/main/agent-worker-protocol.ts",
     "src/main/agent-worker-protocol.selftest.ts",
     "src/main/agent-worker-process.ts",
-    "src/main/agent-worker-process.selftest.ts"
+    "src/main/agent-worker-process.selftest.ts",
+    "src/main/network-util.ts",
+    "src/main/network-util.selftest.ts",
+    "src/main/destructive-actions.ts",
+    "src/main/destructive-actions.selftest.ts",
+    "src/main/navigation-policy.ts",
+    "src/main/navigation-policy.selftest.ts"
   ],
   "exclude": []
 }

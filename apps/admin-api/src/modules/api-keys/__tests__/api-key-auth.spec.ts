@@ -69,10 +69,12 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
     await expect(
       auth.authenticate(makeContext("GET", "tasks"), "acf_deadbeef"),
     ).rejects.toThrow("API Key 无效或已过期");
+    // 第 4 个参数是命中的行（unknown 时不存在 → undefined）
     expect(svc.auditAuthFailure).toHaveBeenCalledWith(
       "acf_dead",
       "unknown",
       "10.0.0.9",
+      undefined,
     );
   });
 
@@ -85,6 +87,7 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
       "acf_dead",
       "revoked",
       "10.0.0.9",
+      undefined,
     );
   });
 
@@ -93,6 +96,25 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
     await expect(
       auth.authenticate(makeContext("GET", "tasks"), "acf_deadbeef"),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  // R32-A4: 属主被禁用/删除 → 凭据面同样立即失效（统一 401，原因只落审计）。
+  it("属主账号失活 → 立即 401，且审计带上命中的具体 key 行", async () => {
+    const hit = keyRow({ revokedAt: null });
+    svc.authenticate.mockResolvedValue({
+      apiKey: null,
+      failure: "owner_inactive",
+      row: hit,
+    });
+    await expect(
+      auth.authenticate(makeContext("GET", "tasks"), "acf_deadbeef"),
+    ).rejects.toThrow("API Key 无效或已过期");
+    expect(svc.auditAuthFailure).toHaveBeenCalledWith(
+      "acf_dead",
+      "owner_inactive",
+      "10.0.0.9",
+      hit,
+    );
   });
 
   it("有效 readonly key + GET → 放行并挂 { type:'apiKey', userId, scope }", async () => {

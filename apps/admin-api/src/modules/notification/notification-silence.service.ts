@@ -81,9 +81,17 @@ export class NotificationSilenceService {
         durationMinutes: String(input.durationMinutes),
       });
     }
+    // R150-A1（出站面审计 · 轴3）：白名单此前是**手写第四份**渠道清单，且停在
+    // NF-05 之前的五值——feishu 已进 AlertChannel / 渠道实现 / 管理台，但它作为
+    // channelType 建静默会被这里直接 400（"已注册渠道无法被静默"，前后端都
+    // 选不出来源）。渠道 id 的单一事实源是 AlertChannel；本文件不 import 它是为了
+    // 避免 notification.service ⇄ notification-silence.service 的运行时环，故
+    // 保持字面量，并由此处的漂移钉子兜底：
+    // __tests__/outbound-audit-r150.spec.ts 逐枚举行断言
+    // `Object.values(AlertChannel)` 全部可建 → 新增渠道漏加即红。
     if (
       input.channelType != null &&
-      !["email", "slack", "dingtalk", "wecom", "webhook"].includes(
+      !["email", "slack", "dingtalk", "wecom", "webhook", "feishu"].includes(
         input.channelType,
       )
     ) {

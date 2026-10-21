@@ -7,7 +7,7 @@ import ConfirmBar from '../components/ConfirmBar';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from '../../main/agent-status-view';
 import { requestTabSwitch } from '../tab-switch';
 // V4 后续优化（6）i18n 二期：状态页文案入双语表（zh 值与原硬编码逐字一致）。
-import { createCfgTexts, resolveRendererLocale } from '../i18n';
+import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 // PLAN-EXECUTOR-DESKTOP-UX 2.1：并发饱和度是纯算术（除零/NaN/超额/阈值配色
 // 都只在一处），抽到 concurrency-gauge.ts 由 test:renderer 真执行断言。
 import { concurrencyGauge } from '../concurrency-gauge';
@@ -53,13 +53,6 @@ const STATUS_LABEL: Record<Status, string> = {
   offline: t('status.label.offline'),
   pending: t('status.label.pending'),
   stopped: t('status.label.stopped'),
-};
-
-const STATUS_BADGE: Record<Status, string> = {
-  online: 'badge-success',
-  offline: 'badge-error',
-  pending: 'badge-pending',
-  stopped: 'badge-stopped',
 };
 
 const STATUS_DESC: Record<Status, string> = {
@@ -772,7 +765,9 @@ export default function StatusWindow({ active }: { active: boolean }) {
               {/* M-03：状态翻转 crossfade——key 触发重挂 + 120ms fadeIn，
                   大字/描述不再硬替换（颜色过渡由 hero 边框/图块既有 transition 承担） */}
               <h1 className="hero-name" aria-live="polite" key={statusLabel}>{statusLabel}</h1>
-              {running && <span className={`badge ${STATUS_BADGE[status] ?? 'badge-stopped'}`}>{statusLabel}</span>}
+              {/* 状态大字本身就是结论；此前旁边还叠了一枚同文案徽章
+                  （在线运行中 + 在线运行中），既重复又占宽。状态色已由
+                  hero 边框/图块与下方描述承担，徽章整体移除。 */}
             </div>
             <p className="hero-status-text" key={statusDescription}>{statusDescription}</p>
             {actionError && <div className="hero-error" role="alert">{actionError}</div>}
@@ -832,6 +827,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
             onClick={() => requestTabSwitch('history')}
             title={t('status.viewHistory')}
           >
+            <span className="today-summary-main">
             {todaySummary.total === 0 ? (
               <span>{t('status.todayNone')}</span>
             ) : (
@@ -841,8 +837,13 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 <span>{t('status.todayOk')} <b className="today-summary-num is-ok">{todaySummary.success}</b></span>
                 <span className="today-summary-sep" aria-hidden="true">·</span>
                 <span>{t('status.todayFail')} <b className="today-summary-num is-fail">{todaySummary.failed}</b></span>
+                {/* 「运行中 N」原本按"今日"口径计数，而右侧并发条按全量（现在）
+                    计数——同一行里出现「运行中 0 / 并发 1/10」的自相矛盾。
+                    运行中状态本就有两处更准确的表达（并发条 + 任务明细），
+                    这里去掉重复且口径混乱的那一段。 */}
+                {/* 去掉「今日运行中」后，失败计数与并发条之间必须保留分隔，
+                    否则「失败 0 并发 0/10」会被读成同一段。 */}
                 <span className="today-summary-sep" aria-hidden="true">·</span>
-                <span>{t('status.todayRunning')} <b className="today-summary-num is-run">{todaySummary.running}</b></span>
                 {/* 2.1：并发饱和度（running/max + 零依赖进度条）。数字就在
                     这一行里，不再新开卡片——计划原文是"在既有「今日汇总」块上补"。
                     <progress> 是原生元素（自带 role=progressbar），零组件库；
@@ -897,6 +898,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 )}
               </>
             )}
+            </span>
             <Icon name="chevron-right" className="today-summary-arrow icon-xs" />
           </button>
         )}
@@ -940,7 +942,16 @@ export default function StatusWindow({ active }: { active: boolean }) {
                 }}
               >
                 {logs.length === 0
-                  ? <span className="log-empty"><Icon name="terminal" className="icon-xs" />{t('logviewer.waiting')}</span>
+                  /* 空日志不再只留一句"等待输出"：按执行器当前状态给一句
+                     "为什么还没有日志 / 下一步做什么"（引导闭环） */
+                  ? (
+                    <div className="log-empty-block">
+                      <span className="log-empty"><Icon name="terminal" className="icon-xs" />{t('logviewer.waiting')}</span>
+                      <span className="log-empty-hint">
+                        {running ? t('status.logWaitingRunning') : t('status.logWaitingHint')}
+                      </span>
+                    </div>
+                  )
                   : <LogLineList
                       lines={logs}
                       displayed={previewEntries}
@@ -1037,7 +1048,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                         onClick={() => requestTabSwitch('history', 'failed')}
                       >
                         <span className="rail-failure-time">
-                          {record.startTime ? new Date(record.startTime).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '—'}
+                          {record.startTime ? formatLocaleDateTime(record.startTime, { hour: '2-digit', minute: '2-digit' }) : '—'}
                         </span>
                         <span className="rail-failure-name">{record.taskName || t('status.unnamedTask')}</span>
                       </button>

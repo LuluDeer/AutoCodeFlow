@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Not, Repository } from "typeorm";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
@@ -244,7 +244,19 @@ export class AgentSessionService {
    * **不设 finishedAt**——它不是终态，只是等外部输入。
    */
   async markWaiting(id: string, waitingFor: string): Promise<void> {
-    await this.sessions.update({ id }, { status: "waiting_input", waitingFor });
+    // R36（ADR-026）：进入 waiting_input 同样是状态迁移——若此刻会话已被 finish
+    // 收敛到终态（runtime 判定失败与「等输入」几乎同时），无条件写会**把终态翻回
+    // waiting_input**：会话永远不再收敛，其后的恢复路径全部按「还在等输入」处理。
+    // 条件写命中 0 就什么都不做（让位给已经写出终态的那一方）。
+    const marked = await this.sessions.update(
+      { id, status: Not(In(AGENT_TERMINAL_STATUSES)) },
+      { status: "waiting_input", waitingFor },
+    );
+    if (!marked.affected) {
+      this.logger.debug(
+        `markWaiting(${id}) skipped — the session is already terminal`,
+      );
+    }
   }
 
   /**
@@ -272,8 +284,17 @@ export class AgentSessionService {
       return;
     }
 
-    await this.sessions.update(
-      { id },
+    // R36（ADR-026）：把上面的「已是终态则返回」从**读时判断**升级为**条件写**。
+    //
+    // 旧实现是先 findOne 看快照、再 update({id})——两个并发的 finish（runtime 的
+    // succeeded 与 controller 的 abort 撞在一起）都能通过快照判断，于是：
+    //   ① 后到者覆盖先到者的 status/resultJson/summary（终态结论被改写）；
+    //   ② 两次都走到下面的 notify.sessionFinished ⇒ **用户收到两条终态通知**
+    //      （注释里明确写着「上面的守卫同时防住了重复通知」，而那条守卫并不成立）；
+    //   ③ 指标 autoflow_agent_sessions_total 被计两次，看板会话数偏高。
+    // 改成条件写后，命中 0 说明别人先收敛了这个会话——让位即可，这才是真的幂等。
+    const finished = await this.sessions.update(
+      { id, status: Not(In(AGENT_TERMINAL_STATUSES)) },
       {
         status,
         finishedAt: new Date(),
@@ -283,6 +304,12 @@ export class AgentSessionService {
         errorMessage: options.errorMessage ?? null,
       },
     );
+    if (!finished.affected) {
+      this.logger.debug(
+        `finish(${id}) lost the race — another writer already terminalized it`,
+      );
+      return;
+    }
 
     recordRuntime("autoflow_agent_sessions_total", {
       kind: session.kind,

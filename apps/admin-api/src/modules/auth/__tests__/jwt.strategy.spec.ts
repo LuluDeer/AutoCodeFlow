@@ -221,6 +221,34 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     ).rejects.toThrow(new UnauthorizedException("会话已被吊销"));
   });
 
+  // R32-A4（审计轴 2「撤销传播 / 多实例」）：会话撤销的传播**不依赖广播**，
+  // 因为 validate 每次都现读 users 行（无进程内用户/版本缓存，也没有本地
+  // 撤销名单）——A 实例 logout 或改密 bump sessionVersion 后，B 实例上的
+  // 下一次请求立刻失配。对照 executor 令牌那套「进程内缓存 + evict + Redis
+  // broadcast」两件套：那套是缓存逼出来的，凭据面不该为了性能把它引进来。
+  // 本例钉住两个属性：① 同一 strategy 实例连续两次 validate 不复用上一次的
+  // 用户行；② 唯一失效信号来自库中值（加缓存即为红）。
+  it("多实例撤销传播：同一实例第二次 validate 现读库，见到 bump 后的版本 → 401（无缓存）", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findByIdOrNull
+      .mockResolvedValueOnce(activeUser(3) as never)
+      .mockResolvedValueOnce(activeUser(4) as never);
+    const payload = {
+      sub: 1,
+      username: "alice",
+      type: "access",
+      ver: 3,
+    };
+
+    await expect(strategy.validate(REQ, payload)).resolves.toMatchObject({
+      id: 1,
+    });
+    await expect(strategy.validate(REQ, payload)).rejects.toThrow(
+      new UnauthorizedException("会话已被吊销"),
+    );
+    expect(usersService.findByIdOrNull).toHaveBeenCalledTimes(2);
+  });
+
   it("无 ver claim 的存量旧令牌 → 兼容放行（到期自然失效，不被新逻辑立即打死）", async () => {
     const { strategy, usersService } = buildStrategy();
     usersService.findByIdOrNull.mockResolvedValue(activeUser(0) as never);

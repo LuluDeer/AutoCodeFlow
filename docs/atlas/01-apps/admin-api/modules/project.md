@@ -76,5 +76,5 @@ PATCH /api/tasks/:id（下一批次，示意）
 ## 相关文档
 
 - 用户与全局角色：[users.md](users.md)；应用归属：[application.md](application.md)
-- 任务模块（主要消费方）：[task.md](task.md)（下一批次）
+- 任务模块（主要消费方）：[task.md](task.md)
 - 核心概念：[../../00-overview/05-core-concepts.md](../../../00-overview/05-core-concepts.md)

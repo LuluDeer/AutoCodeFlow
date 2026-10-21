@@ -153,6 +153,19 @@ async function main(): Promise<void> {
     assert.strictEqual(await fetchAdminRegistration(hbFailed.port, 1_000), 'failed', 'heartbeatStatus=failed → 明确失败');
     await hbFailed.close();
 
+    // 混合态：admin 可达（heartbeat ok）但注册被拒（地址/设备指纹冲突）。
+    // 旧实现先判 ok，会把它读成 registered——必须仍判 failed。
+    const regRejected = await startServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ registration: 'failed', heartbeatStatus: 'ok' }));
+    });
+    assert.strictEqual(
+      await fetchAdminRegistration(regRejected.port, 1_000),
+      'failed',
+      'registration=failed 必须压过 heartbeatStatus=ok（否则注册被拒仍显示在线）',
+    );
+    await regRejected.close();
+
     const notFound = await startServer((_req, res) => {
       res.writeHead(404);
       res.end();

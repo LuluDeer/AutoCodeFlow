@@ -210,3 +210,146 @@ class TestHttpClientErrorSubclass:
         import autoflow_sdk
 
         assert autoflow_sdk.HttpClientError is HttpClientError
+
+# ---------------------------------------------------------------------------
+# R31-E2: 稳定错误码透出（与 autocodeflow-http 的 ApiHttpStatusError 对等）
+# ---------------------------------------------------------------------------
+class TestR31E2ErrorCodePassthrough:
+    """SDK 抛出的 HttpClientError 必须带 error_code / params，且三个既有面不变。
+
+    反证：删掉 HttpClientError 的 error_code / params 两个 property（或让
+    _raise 丢掉 response）后，本类全部用例转红。
+    """
+
+    BODY = {
+        "code": 404,
+        "message": "任务不存在",
+        "errorCode": "TASK_NOT_FOUND",
+        "params": {"taskId": "t-1"},
+    }
+
+    @respx.mock
+    def test_sync_error_exposes_code_and_params(self):
+        respx.get("http://api.test/tasks/t-1").mock(
+            return_value=httpx.Response(404, json=self.BODY)
+        )
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/tasks/t-1")
+        err = excinfo.value
+        assert err.error_code == "TASK_NOT_FOUND"
+        assert err.params == {"taskId": "t-1"}
+        # 既有面不变：仍是 HTTPStatusError、仍有 request/response、message 不变
+        assert isinstance(err, httpx.HTTPStatusError)
+        assert err.response.status_code == 404
+        assert err.request is not None
+        assert str(err).startswith("Client error '404 Not Found'")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_async_error_exposes_code_and_params(self):
+        respx.post("http://async.test/tasks").mock(
+            return_value=httpx.Response(409, json={
+                "code": 409,
+                "message": "任务名已存在",
+                "errorCode": "TASK_NAME_CONFLICT",
+                "params": {"name": "nightly"},
+            })
+        )
+        async with AsyncHttpClient(base_url="http://async.test") as c:
+            with pytest.raises(HttpClientError) as excinfo:
+                await c.post("/tasks", json={"name": "nightly"})
+        err = excinfo.value
+        assert err.error_code == "TASK_NAME_CONFLICT"
+        assert err.params == {"name": "nightly"}
+
+    @respx.mock
+    def test_response_body_still_readable_after_code_access(self):
+        """透出是只读附加面：读 error_code 不得消费掉 response 的 body。"""
+        respx.get("http://api.test/x").mock(
+            return_value=httpx.Response(500, json=self.BODY)
+        )
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/x")
+        err = excinfo.value
+        message_before = str(err)
+        assert err.error_code == "TASK_NOT_FOUND"
+        assert err.params == {"taskId": "t-1"}
+        # body 仍可读，message 逐字节未变
+        assert err.response.json()["errorCode"] == "TASK_NOT_FOUND"
+        assert str(err) == message_before
+
+    @respx.mock
+    def test_missing_code_and_params_degrade_quietly(self):
+        respx.get("http://api.test/x").mock(
+            return_value=httpx.Response(500, json={"code": 500, "message": "内部错误"})
+        )
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/x")
+        assert excinfo.value.error_code is None
+        assert excinfo.value.params == {}
+
+    @respx.mock
+    def test_non_json_error_body_does_not_mask_the_http_error(self):
+        respx.get("http://api.test/x").mock(
+            return_value=httpx.Response(
+                502, content=b"<html>bad gateway</html>", headers={"content-type": "text/html"}
+            )
+        )
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/x")
+        assert excinfo.value.error_code is None
+        assert excinfo.value.params == {}
+        assert excinfo.value.response.status_code == 502
+
+# ---------------------------------------------------------------------------
+# R177-A1（对外 SDK 健壮性审计）——轴 1：3xx 也必须落在 SDK 类型里
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectStatusIsSdkError:
+    """缺陷现场（R177-A1 反证）：``_raise`` 先用 ``if resp.is_error`` 判 4xx/5xx，
+    再在函数末尾无条件 ``resp.raise_for_status()``——httpx 的 ``is_error`` 只覆盖
+    4xx/5xx，而 ``raise_for_status()`` 对 3xx 也抛。于是 3xx 从**末尾那条路径**
+    裸抛 ``httpx.HTTPStatusError``，绕过 ``HttpClientError``：环境前面挂一层反代
+    做 302（登录页 / 网关跳转）时，任务代码 ``except HttpClientError`` 会漏接，
+    也拿不到 error_code。两端口径必须一致：SDK 抛出的状态错误只有一种类型。
+    """
+
+    @respx.mock
+    def test_sync_3xx_raises_http_client_error(self):
+        respx.get("http://api.test/moved").mock(return_value=httpx.Response(
+            302, headers={"Location": "http://api.test/elsewhere"},
+        ))
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/moved")
+        # 既有面不变：仍是 HTTPStatusError 子类，仍带 request/response
+        assert isinstance(excinfo.value, httpx.HTTPStatusError)
+        assert excinfo.value.response.status_code == 302
+        assert excinfo.value.request is not None
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_async_3xx_raises_http_client_error(self):
+        respx.get("http://async.test/moved").mock(return_value=httpx.Response(
+            301, headers={"Location": "http://async.test/elsewhere"},
+        ))
+        async with AsyncHttpClient(base_url="http://async.test") as c:
+            with pytest.raises(HttpClientError):
+                await c.get("/moved")
+
+    @respx.mock
+    def test_3xx_error_code_degrades_quietly(self):
+        respx.get("http://api.test/moved").mock(return_value=httpx.Response(
+            307, headers={"Location": "http://api.test/elsewhere"},
+        ))
+        c = HttpClient(base_url="http://api.test")
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/moved")
+        assert excinfo.value.error_code is None
+        assert excinfo.value.params == {}
+

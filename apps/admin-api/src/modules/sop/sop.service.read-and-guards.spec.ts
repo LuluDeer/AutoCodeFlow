@@ -44,6 +44,7 @@ function harness() {
     );
 
   const sops = {
+    update: jest.fn(async () => ({ affected: 1 })),
     findOne: jest.fn(
       async ({ where }: Any) => matchWhere(sopRows, where)[0] ?? null,
     ),
@@ -273,7 +274,7 @@ describe("SopService 校验面（安全边界：mediaRefs / 载荷大小）", ()
   it("mediaRefs 只认平台内 /api/ 路径——外链、协议相对、相对路径全拒（SSRF 转嫁面）", () => {
     const h = harness();
     const ok = call(h.service, "validateMediaRefs", [
-      { kind: "video", url: "/api/agent-collab/media/abc" },
+      { kind: "video", url: "/api/sop/media/abc" },
       { kind: "screenshot", url: "/api/artifacts/1" },
       { kind: "other", url: "/api/executions/9/x" },
       { kind: "other", url: "/api/executor-package/y" },
@@ -293,6 +294,18 @@ describe("SopService 校验面（安全边界：mediaRefs / 载荷大小）", ()
         call(h.service, "validateMediaRefs", [{ kind: "video", url: bad }]),
       ).toThrow(BadRequestException);
     }
+  });
+
+  it("R35-A1：旧形态 /api/agent-collab/media/<id> 仍被宽容接受（灰度/存量）", () => {
+    // 它从不是一条路由（取回 404），故新代码不再产生它；但灰度期老执行器
+    // 发来的存量 refs 不能因为「路径前缀换了」整片被拒——放行不产生任何
+    // 安全损失（仍然是平台内 /api/ 路径，SSRF 门不变）。
+    const h = harness();
+    const ok = call(h.service, "validateMediaRefs", [
+      { kind: "video", url: "/api/agent-collab/media/abc" },
+    ]);
+    expect(ok).toHaveLength(1);
+    expect(ok[0].url).toBe("/api/agent-collab/media/abc");
   });
 
   it("mediaRefs 上限 4 条、kind 封闭枚举、URL 长度上限", () => {

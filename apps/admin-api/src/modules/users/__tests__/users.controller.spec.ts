@@ -225,6 +225,22 @@ describe("UsersController", () => {
       ).rejects.toThrow(ForbiddenException);
     });
 
+    // R32-A5（轴3）钉子：守卫是「dto.role 出现即拒」，不是「按档位比较」。
+    // 这条区别是提权链的关键：若改成「只在 role 高于自己时拒」，那么
+    // role='user' 可以通过，任何后续把 rank 比较写错（或新增第四档角色）的
+    // 改动都会把「改自己角色」这个入口重新打开。出现即拒没有这个面。
+    it("non-admin 连 role='user'（自己当前档位）都不许带（出现即拒，不比较档位）", async () => {
+      await expect(
+        controller.update(
+          2,
+          { role: UserRole.USER } as any,
+          normalUser,
+          mockReq,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(usersSvc.update).not.toHaveBeenCalled();
+    });
+
     it("non-admin must supply currentPassword when changing password", async () => {
       await expect(
         controller.update(

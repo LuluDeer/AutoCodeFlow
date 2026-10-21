@@ -14,7 +14,7 @@ import {
 } from "node:crypto";
 import axios from "axios";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { IsNull, Repository } from "typeorm";
 import {
   assertAndPinHttpUrl,
   pinnedAxiosConfig,
@@ -497,8 +497,40 @@ export class OidcService {
           );
           throw new AppError("OIDC_AUTOBIND_DENIED");
         }
-        byUsername.oidcSub = profile.sub;
-        await this.usersRepo.save(byUsername);
+        // R32-A4: 列级 UPDATE——绑定只碰 oidcSub 一列。此前是
+        // usersRepo.save(byUsername)：把进入方法时读到的**整行快照**回写
+        // （TypeORM save 无脏检查），若此刻另一条路径（登出 bump sessionVersion
+        // / 管理员改密 / 禁用账号）刚落了库，这次 SSO 登录会把那些变更静默
+        // 回滚——与 auth.service 的 TOTP 写入同款缺陷，只是入口不同。
+        // R38（ADR-026）：上面的 `!byUsername.oidcSub` 是**读时判断**，覆盖不了并发。
+        //
+        // 两个不同的 IdP 身份同时声明同一个 username（各自 sub 不同）时，两个请求都能
+        // 通过那只 if，于是各自写自己的 sub —— 后到者把先到者的绑定**静默换掉**，
+        // 而这个分支下面那句注释明确写着"声明冲突，拒绝而非静默换绑"。也就是说：
+        // 并发下它做的恰好是自己声称不做的事，且换绑后先绑定的那个 IdP 身份再也登不进来。
+        //
+        // 条件写把判据挪进 WHERE：只有**仍未绑定**时才写。命中 0 时再读一次区分两种情形：
+        // 已绑定成同一个 sub（幂等重入，正常返回）还是被绑成了别的 sub（真冲突，拒绝）。
+        const bound = await this.usersRepo.update(
+          { id: byUsername.id, oidcSub: IsNull() },
+          { oidcSub: profile.sub },
+        );
+        if (!bound.affected) {
+          const now = await this.usersRepo.findOne({
+            where: { id: byUsername.id },
+          });
+          if (!now || now.oidcSub !== profile.sub) {
+            this.logger.warn(
+              `OIDC auto-bind lost the race: platform account '${byUsername.username}' ` +
+                `was bound to another sub concurrently; refusing to silently rebind`,
+            );
+            throw new AppError("OIDC_SUB_ALREADY_BOUND");
+          }
+          // 已经绑成同一个 sub —— 幂等重入，继续正常流程。
+          byUsername.oidcSub = profile.sub;
+        } else {
+          byUsername.oidcSub = profile.sub;
+        }
       } else {
         // 同 username 已绑定其他 sub：声明冲突，拒绝而非静默换绑
         throw new AppError("OIDC_SUB_ALREADY_BOUND");

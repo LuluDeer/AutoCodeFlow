@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname);
@@ -260,18 +260,22 @@ for (const guard of eventGuards) {
   }
 }
 // 守卫必须真的阻止导航（preventDefault）与拒绝弹窗（action: 'deny'）
-if (!/will-navigate[\s\S]{0,400}?event\.preventDefault\(\)/.test(winMgr)) {
-  throw new Error('SEC-DSK-01: will-navigate 守卫必须调用 event.preventDefault()');
-}
-if (!/setWindowOpenHandler[\s\S]{0,400}?action:\s*'deny'/.test(winMgr)) {
-  throw new Error("SEC-DSK-01: setWindowOpenHandler 必须返回 { action: 'deny' }");
-}
-// hardenWindow 必须在每个窗口创建处调用（status + wizard）
-const hardenCalls = (winMgr.match(/hardenWindow\(this\./g) ?? []).length;
-if (hardenCalls < 2) {
-  throw new Error(`SEC-DSK-01: hardenWindow 应挂在每个窗口上（当前 ${hardenCalls} 处）`);
-}
-if (!winMgr.includes('sandbox: true')) {
+// R127：判定必须**结构级**——只看 will-navigate 自己的 handler 体。
+//
+// 历史：这里原本是 `/will-navigate[\s\S]{0,400}?event\.preventDefault\(\)/`，
+// 即「will-navigate 之后 400 字符内出现 preventDefault」。它**一直假通过**：
+// 同一个 hardenWindow 里 `will-redirect` 与 `will-attach-webview` 的 handler 也各有
+// `event.preventDefault()`，都落在 400 字符窗口内 —— 实测把 will-navigate 的阻止逻辑
+// 整段删掉，这条检查仍然绿。
+//
+// 现在改成：截出 will-navigate 那个 handler 的**函数体切片**（从 `will-navigate` 到该
+// handler 的 `});`），要求 preventDefault 出现在**切片内部**。兄弟 handler 再多也顶替不了。
+const navigateBlock = /will-navigate[\s\S]{0,600}?\n  \}\);/.exec(winMgr);
+if (!navigateBlock || !/event\.preventDefault\(\)/.test(navigateBlock[0])) {
+  throw new Error(
+    'SEC-DSK-01: will-navigate 自己的 handler 体内必须调用 event.preventDefault()（不能被兄弟 handler 顶替）'
+  );
+}if (!winMgr.includes('sandbox: true')) {
   throw new Error('SEC-DSK-01: webPreferences 必须显式开启 sandbox');
 }
 const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
@@ -1373,13 +1377,14 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   const statusPage = pages[3];
 
   // ① 未知 status 不得渲染成空白：主进程 executor:status 以裸字符串下发，
-  //    STATUS_LABEL/STATUS_BADGE 是封闭表——已知值查表、未知值原样透出
+  //    STATUS_LABEL 是封闭表——已知值查表、未知值原样透出
   //    （对齐 HistoryPage.statusBadge 的「未知」回退与 agentOutcomeLabel 透传）。
   if (!statusPage.includes('STATUS_LABEL[status] ?? status')) {
     throw new Error('UX走查①: StatusWindow 状态大字缺少未知值回退（新状态枚举会渲染成空白）');
   }
-  if (!statusPage.includes("STATUS_BADGE[status] ?? 'badge-stopped'")) {
-    throw new Error('UX走查①: 状态徽章缺少未知值回退（className 会出现字面 undefined）');
+  // 状态大字旁边不再叠同文案徽章：2026-10 真机截图里「在线运行中」出现两次。
+  if (statusPage.includes('STATUS_BADGE')) {
+    throw new Error('UX走查①: 状态大字与徽章重复展示同一状态（应只保留 hero-name）');
   }
 
   // ② Agent 卡片读取失败时不得谎报「已处理 0 个指派」——未知显示 —。
@@ -1728,4 +1733,248 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel passed');
+// ── R102-A1：渲染层 + preload 桥安全审计（四轴判据）────────────────────────
+// 背景（必读）：R86-A1 给主进程加了 IPC sender 白名单闸——只接受**本应用
+// 页面**的**主 frame**。推论很关键：渲染层**内部**的代码执行（XSS、注入的
+// HTML、恶意链接）恰好落在闸的允许集合里，那道闸不拦它。于是渲染层自身
+// （HTML sink / CSP / 桥暴露面 / 外链）成了主要剩余攻击面，本节把四轴钉成
+// 可回归的判据。
+//
+// 判据形态：源码扫描 + 纯函数行为。全部在裸 node 下可跑（不需要 Electron /
+// 浏览器），与既有 SEC-DSK-01、4.2 反 XSS 守卫同一哲学：接线守卫看源码形态，
+// 行为闸看纯函数。
+//
+// 四轴：
+//  A. XSS sink：全 renderer 源**零** HTML 注入 / 零字符串求值（增量回归防线——
+//     此前只有 UpdateBanner 一处被钉，其余 20+ 文件裸奔）；
+//  B. CSP：connect-src 不得放开任意 host（裸 scheme），只留 loopback 供 dev HMR；
+//  C. 桥：单一 exposeInMainWorld、无 ipcRenderer 透传、channel 必须是字面量、
+//     字符串参数一律过 preload/bridge-args 归一（fail-closed）；
+//  D. 外链：渲染层零 href / window.open / 用户可控 URL 点击（打开动作只经
+//     IPC → 主进程白名单校验后 shell.openPath）。
+{
+  /** 递归收集目录下的 TS/TSX 源码（跳过 node_modules / 构建产物 dist）。 */
+  const collectSources = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      return entry.name === 'node_modules' || entry.name === 'dist' ? [] : collectSources(full);
+    }
+    return /\.(ts|tsx)$/.test(entry.name) ? [full] : [];
+  });
+  /** 去注释：本仓库解释缺陷的中文注释会引用被禁的 API 名（自我触发教训，
+   *  与 split(':')[0] / uvMissing 同一处置）。 */
+  const stripComments = (src) => src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const lineOf = (text, index) => text.slice(0, index).split('\n').length;
+  const rel = (file) => file.slice(root.length + 1).replace(/\\/g, '/');
+
+  const rendererSources = collectSources(root).map((file) => ({
+    file,
+    code: stripComments(readFileSync(file, 'utf8')),
+  }));
+  if (rendererSources.length < 10) {
+    throw new Error('R102-A1: 渲染层源码扫描面异常（文件数 ' + rendererSources.length + '），判据已失效');
+  }
+
+  // ── A 轴：XSS sink 零清单 ──────────────────────────────────────────
+  // 判据不看"谁在渲染什么"，只看**能力是否存在**：只要源码里没有这些 API，
+  // 后端数据 / 任务输出 / 更新日志里带什么 HTML 都只能是文本。
+  //  (name, 正则, 说明：输入通常来自哪里)
+  const SINK_RULES = [
+    ['dangerouslySetInnerHTML', /dangerouslySetInnerHTML/, 'React HTML 注入（任务输出/更新日志/后端数据）'],
+    ['.innerHTML 赋值', /\.innerHTML\s*=(?!=)/, '原生 DOM 注入'],
+    ['.outerHTML 赋值', /\.outerHTML\s*=(?!=)/, '原生 DOM 注入'],
+    ['insertAdjacentHTML', /insertAdjacentHTML\s*\(/, '原生 DOM 注入'],
+    ['document.write', /document\.write(?:ln)?\s*\(/, '文档级注入'],
+    ['iframe srcdoc', /\bsrcdoc\s*=/, '内联文档'],
+    ['eval()', /(?:^|[^.\w$])eval\s*\(/, '字符串求值'],
+    ['new Function()', /new\s+Function\s*\(/, '字符串求值'],
+  ];
+  for (const { file, code } of rendererSources) {
+    for (const [name, pattern, why] of SINK_RULES) {
+      const hit = pattern.exec(code);
+      if (hit) {
+        throw new Error(
+          'R102-A1/A: 渲染层出现 XSS sink ' + name + '（' + rel(file) + ':' + lineOf(code, hit.index) +
+          '）——' + why + '；渲染层必须只走 React 文本节点/属性',
+        );
+      }
+    }
+  }
+
+  // ── B 轴：CSP connect-src 不得放开任意 host ────────────────────────
+  // 渲染层**不直接发网络请求**（一律 IPC），connect-src 只需要覆盖 dev 模式
+  // 的 Vite HMR。裸 scheme（只写 ws: / http: / https: / *）等于"任意 host"，
+  // 一旦渲染层有代码执行，它就是现成的**外带通道**（new WebSocket 到任意域）。
+  // 收紧后只保留 loopback：dev 能连 HMR，生产 file:// 页面连不出去。
+  {
+    const directive = (name) => {
+      const m = csp.match(new RegExp('(?:^|;)\\s*' + name + '((?:\\s+[^;]+)?)'));
+      return m ? m[1].trim() : null;
+    };
+    const connectSrc = directive('connect-src');
+    if (connectSrc === null) {
+      throw new Error('R102-A1/B: CSP 必须显式声明 connect-src（缺省回落 default-src，收紧意图不可见）');
+    }
+    const sources = connectSrc.split(/\s+/).filter(Boolean);
+    if (sources.length === 0) {
+      throw new Error('R102-A1/B: connect-src 为空策略');
+    }
+    const LOOPBACK = ['localhost', '127.0.0.1', '[::1]'];
+    for (const source of sources) {
+      // 裸 scheme / 通配源 = 任意 host
+      if (/^(?:ws|wss|http|https|file|ftp):$/i.test(source) || source === '*') {
+        throw new Error(
+          'R102-A1/B: CSP connect-src 出现裸 scheme "' + source + '"（等于放开任意 host，' +
+          '构成 XSS 外带通道）——必须写成 ' + source.replace(/:$/, '') + '://localhost:* 形态',
+        );
+      }
+      if (!/^(?:ws|wss|http|https):\/\//i.test(source)) continue;
+      const host = (/^[a-z]+:\/\/(\[[^\]]+\]|[^/:*]+)/i.exec(source) ?? [])[1] ?? '';
+      if (!LOOPBACK.includes(host.toLowerCase())) {
+        throw new Error(
+          'R102-A1/B: CSP connect-src 的 "' + source + '" 不是 loopback（渲染层不发网络请求，' +
+          '只保留 ' + LOOPBACK.join(' / ') + ' 供 dev HMR）',
+        );
+      }
+    }
+  }
+
+  // ── C 轴：preload 桥暴露面 ────────────────────────────────────────
+  const preloadSrc = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+  const preloadCode = stripComments(preloadSrc);
+
+  // C1 单一、具名的 exposeInMainWorld：不允许多开命名空间（多一个入口 = 多一份
+  // 无人审计的暴露面）。
+  const exposeCalls = preloadCode.match(/exposeInMainWorld\s*\(/g) ?? [];
+  if (exposeCalls.length !== 1) {
+    throw new Error('R102-A1/C: preload 必须只调用一次 exposeInMainWorld（当前 ' + exposeCalls.length + ' 次）');
+  }
+  if (!/exposeInMainWorld\s*\(\s*'electronAPI'\s*,/.test(preloadCode)) {
+    throw new Error('R102-A1/C: 桥必须暴露在 electronAPI 命名空间下（渲染层与类型声明都按这个键找）');
+  }
+  // C2 暴露面键名白名单化：不得出现"通用 IPC 入口"——那是把整条 IPC 面交给页面。
+  const exposedBody = preloadCode.slice(preloadCode.indexOf("exposeInMainWorld('electronAPI'"));
+  const exposedKeys = [...exposedBody.matchAll(/^ {2}([A-Za-z_$][\w$]*)\s*:/gm)].map((m) => m[1]);
+  const FORBIDDEN_KEYS = ['invoke', 'send', 'sendSync', 'postMessage', 'on', 'once', 'removeListener',
+    'removeAllListeners', 'ipcRenderer', 'webContents', 'require', 'eval'];
+  if (exposedKeys.length < 20) {
+    throw new Error('R102-A1/C: 解析到的暴露键过少（' + exposedKeys.length + '），判据已失效');
+  }
+  for (const key of exposedKeys) {
+    if (FORBIDDEN_KEYS.includes(key)) {
+      throw new Error(
+        'R102-A1/C: 桥暴露了通用入口 "' + key + '"——页面将能调用任意 IPC channel，' +
+        '必须逐个具名方法化（主进程 sender 闸只校验 frame，不校验 channel 语义）',
+      );
+    }
+    if (!/^[a-z][A-Za-z0-9]*$/.test(key)) {
+      throw new Error('R102-A1/C: 桥暴露键 "' + key + '" 不符合具名方法约定');
+    }
+  }
+  // C3 channel 必须是**字面量**：把 channel 写成变量就是一个任意 channel 透传。
+  for (const method of ['invoke', 'on', 'removeListener']) {
+    const total = (preloadCode.match(new RegExp('ipcRenderer\\.' + method + '\\(', 'g')) ?? []).length;
+    const literal = (preloadCode.match(new RegExp('ipcRenderer\\.' + method + '\\(\\s*[\\x27"]', 'g')) ?? []).length;
+    if (total !== literal) {
+      throw new Error(
+        'R102-A1/C: preload 的 ipcRenderer.' + method + ' 用了变量 channel（' + total + ' 处中 ' +
+        literal + ' 处为字面量）——等于把 channel 选择权交给页面',
+      );
+    }
+  }
+  if (/ipcRenderer\.(?:send|sendSync)\s*\(/.test(preloadCode)) {
+    throw new Error('R102-A1/C: preload 不得使用 ipcRenderer.send/sendSync（单向通道由主进程按需反向推送）');
+  }
+  // C4 每个 channel 都必须在主进程源码里真实存在（防桥变成"死面/幻面"：
+  // 页面能调、主进程无 handler 的通道既误导审计又掩盖改名回归）。
+  {
+    const channels = [...new Set(
+      [...preloadCode.matchAll(/ipcRenderer\.(?:invoke|on|removeListener)\(\s*'([^']+)'/g)].map((m) => m[1]),
+    )];
+    const mainSources = collectSources(resolve(root, '..', 'main'))
+      .filter((file) => !file.endsWith('.selftest.ts'))
+      .map((file) => readFileSync(file, 'utf8'))
+      .join('\n');
+    for (const channel of channels) {
+      if (!mainSources.includes("'" + channel + "'")) {
+        throw new Error('R102-A1/C: 桥暴露的 channel "' + channel + '" 在主进程不存在（死面）');
+      }
+    }
+  }
+  // C5 字符串参数 + 布尔参数的类型归一（fail-closed）。
+  // 主进程侧有各自的校验（path-domain / EXECUTION_ID_PATTERN / port-check），
+  // 这里是**第二道**：桥不把"任何形状"的对象原样投递给主进程，非法/超长值
+  // 在过桥前就降级为空串——主进程的校验器拿到的永远是 string。
+  {
+    const { asString, asLineNumber, asBool, MAX_STRING_ARG, MAX_CLIPBOARD_ARG } =
+      await import('../preload/bridge-args.ts');
+    const eq = (got, want, msg) => {
+      if (got !== want) throw new Error('R102-A1/C: ' + msg + '（得到 ' + JSON.stringify(got) + '，期望 ' + JSON.stringify(want) + '）');
+    };
+    // 非字符串一律判空：对象、数组、null、数字都不能"变成"路径
+    for (const hostile of [undefined, null, 42, true, {}, [], { toString: () => 'C:/x.log' }, Symbol('x')]) {
+      eq(asString(hostile), '', 'asString 必须拒绝非字符串入参');
+    }
+    eq(asString('C:/logs/a.log'), 'C:/logs/a.log', '合法字符串必须原样通过');
+    eq(asString('a'.repeat(MAX_STRING_ARG)), 'a'.repeat(MAX_STRING_ARG), '边界长度必须通过');
+    eq(asString('a'.repeat(MAX_STRING_ARG + 1)), '', '超长入参必须判空（不截断——截断会把非法路径修成另一个合法路径）');
+    eq(asString('0123456789', 4), '', '自定义上限必须生效');
+    // 行号：只接受非负有限数，其余归 0（主进程 fromLine 默认 0）
+    eq(asLineNumber(undefined), 0, '缺省行号必须归 0');
+    eq(asLineNumber('42'), 0, '字符串行号必须归 0（不做隐式转换）');
+    eq(asLineNumber(-5), 0, '负行号必须归 0');
+    eq(asLineNumber(NaN), 0, 'NaN 行号必须归 0');
+    eq(asLineNumber(Infinity), 0, 'Infinity 行号必须归 0');
+    eq(asLineNumber(12.9), 12, '行号必须取整');
+    // 布尔：只接受严格 true（"false" 这类真值串不得把开关打开）
+    eq(asBool(true), true, 'asBool(true) 必须为 true');
+    for (const falsy of ['true', 'false', 1, 0, {}, null, undefined]) {
+      eq(asBool(falsy), false, 'asBool 必须只认严格 true');
+    }
+    if (!(MAX_CLIPBOARD_ARG > MAX_STRING_ARG)) {
+      throw new Error('R102-A1/C: 剪贴板上限必须大于路径/ID 上限（否则复制长日志会被判空）');
+    }
+    // 静态接线：字符串形参必须经 asString，布尔形参必须经 asBool
+    for (const param of ['url', 'filePath', 'logPath', 'executionId', 'appId', 'releaseKey', 'deploymentId', 'text']) {
+      if (!preloadCode.includes('asString(' + param)) {
+        throw new Error('R102-A1/C: preload 形参 ' + param + ' 未过 asString 归一（页面可把任意形状投递给主进程）');
+      }
+    }
+    if (!preloadCode.includes('asBool(enable')) {
+      throw new Error('R102-A1/C: preload 的 setAutoLaunch 形参未过 asBool 归一（"false" 真值串会打开自启）');
+    }
+    if (!preloadCode.includes('asLineNumber(fromLine')) {
+      throw new Error('R102-A1/C: preload 形参 fromLine 未过 asLineNumber 归一');
+    }
+  }
+
+  // ── D 轴：外链与导航 ──────────────────────────────────────────────
+  // 渲染层刻意**没有任何**链接/新窗口入口：所有"打开"动作（打开日志文件夹、
+  // 打开应用目录、导出日志）都走 IPC → 主进程 shell.openPath + 路径域白名单。
+  // 这条判据保证将来有人加 a href / window.open 时立刻被拦下——那会把
+  // 用户可控 URL（任务输出里的链接、后端下发字段）变成 file:// 或
+  // javascript: 的执行入口。
+  const LINK_RULES = [
+    ['href 属性', /(?:^|[^A-Za-z])href\s*=/, '链接意味着可控 URL 进入导航栈'],
+    ['<a> 元素', /<a\s/, '同 href：渲染层不使用原生链接'],
+    ['window.open', /window\.open\s*\(/, '新窗口路径必须留在主进程 setWindowOpenHandler'],
+    ['target=_blank', /target\s*=\s*['"]_blank/, 'target=_blank 绕过应用内导航策略'],
+    ['location.href 赋值', /location\.href\s*=(?!=)/, '导航到外部 URL'],
+    ['location.replace', /location\.replace\s*\(/, '导航到外部 URL'],
+  ];
+  for (const { file, code } of rendererSources) {
+    for (const [name, pattern, why] of LINK_RULES) {
+      const hit = pattern.exec(code);
+      if (hit) {
+        throw new Error(
+          'R102-A1/D: 渲染层出现 ' + name + '（' + rel(file) + ':' + lineOf(code, hit.index) + '）——' +
+          why + '；打开动作应经 IPC 交主进程白名单处理',
+        );
+      }
+    }
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit passed');

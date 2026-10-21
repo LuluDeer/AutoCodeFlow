@@ -125,6 +125,42 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
     expect(result.data[2].newValue).toBeNull();
   });
 
+  // R85：**行级**保密（WIKI-OPT-2）——历史行自己记着写入时的 isSecret。
+  //
+  // 这条路径此前没有任何用例：它只在「该键**当前**已不是 secret（或配置行已被删）」时才显现。
+  // 若有人把上面的条件简化成「只看 secretKeys」，下面两条会立刻变红——这正是它们存在的意义：
+  // 没有它们，把 `h.isSecret === true ||` 删掉不会有任何测试说话，而历史里的旧密钥值会**直接可读**。
+  it("history：键已取消 secret 标记，但历史行 isSecret=true → 仍然掩码（行级保密优先）", async () => {
+    const { controller, service } = makeDeps();
+    service.getHistory.mockResolvedValue({
+      data: [
+        { configKey: "was-secret", isSecret: true, oldValue: "old-secret", newValue: "new-secret" },
+      ],
+      total: 1,
+    });
+    // 该键**当前**已不在 secret 集合里（被显式取消标记，或配置行已被删除）
+    service.getSecretKeys.mockResolvedValue(new Set());
+
+    const result = (await controller.getHistory({} as any)) as any;
+    expect(result.data[0].oldValue).toBe("***");
+    expect(result.data[0].newValue).toBe("***");
+  });
+
+  it("history/:key：同上——行级 isSecret=true 独立于该键当前状态", async () => {
+    const { controller, service } = makeDeps();
+    service.getHistory.mockResolvedValue({
+      data: [
+        { configKey: "was-secret", isSecret: true, oldValue: "old-secret", newValue: null },
+      ],
+      total: 1,
+    });
+    service.getSecretKeys.mockResolvedValue(new Set());
+
+    const result = (await controller.getHistoryByKey("was-secret", {} as any)) as any;
+    expect(result.data[0].oldValue).toBe("***");
+    // null 仍为 null（与掩码哨兵区分）
+    expect(result.data[0].newValue).toBeNull();
+  });
   it("history by key masks everything when that key is a secret", async () => {
     const { controller, service } = makeDeps();
     service.getHistory.mockResolvedValue({

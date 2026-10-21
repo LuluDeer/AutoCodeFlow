@@ -1,12 +1,27 @@
-import { Injectable, Logger, Inject, forwardRef } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Inject,
+  forwardRef,
+  Optional,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import { Repository, In, IsNull } from "typeorm";
+import {
+  Repository,
+  In,
+  IsNull,
+  LessThan,
+  Not,
+  Or,
+} from "typeorm";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { ExecutorService } from "../executor/executor.service";
+// R41-A1（R34-A1 遗留②）：关键写动作的审计落库（唯一可事后追溯的操作记录）。
+import { AuditService } from "../audit/audit.service";
 import {
   evaluateAssignmentTimeouts,
   evaluateStuckClarifications,
@@ -78,11 +93,30 @@ const POLL_ASSIGNMENTS_MAX = 3;
 
 /**
  * mediaRefs 只接受平台内路径——外网 URL 一律拒绝（11 §5.2 SSRF 转嫁）。
- * `agent-collab/media`（P7b）：执行器经媒体回传端点上传的截图/录屏，
- * 返回的 mediaPath 即此形态。
+ * `sop/media`（P7b / R35-A1）：执行器经媒体回传端点上传的截图/录屏，返回的
+ * mediaPath 即此形态——它由 `SopController` 的 `@Get("media/:mediaId")` 真实
+ * 提供字节（`/api/sop/media/<id>`，ADMIN JWT）。
+ * `agent-collab/media`：**仅为灰度/存量宽容**保留——R35-A1 之前的旧形态，
+ * 它从不是一条路由（取回 404）；新代码不再产生它，等存量澄清行随媒体保留期
+ * （7 天）过期后即可删掉这一支。
  */
 const PLATFORM_MEDIA_PATH_RE =
-  /^\/api\/(artifacts|executions|executor-package|agent-collab\/media)\//;
+  /^\/api\/(artifacts|executions|executor-package|sop\/media|agent-collab\/media)\//;
+
+/**
+ * R41-A1：审计上下文（**谁、从哪来**）。
+ *
+ * 管理面动作由控制器从 @CurrentUser() 与 @Ip() 取；执行器面动作没有登录
+ * 用户（userId 缺省），操作者身份由 `detail.actor` 里的 executor:<id> /
+ * agent:<session> 表达——两类主体都必须能落进同一张审计表，否则
+ * 「谁把这个版本发出去了」仍然答不上来。
+ */
+export interface SopAuditContext {
+  /** 登录用户 id（AuthUser.id，整数）；执行器/系统动作缺省为 null。 */
+  userId?: number | null;
+  /** 请求来源 ip（req.ip）；cron/内部调用缺省为 null。 */
+  ip?: string | null;
+}
 
 export interface DraftSopInput {
   slug: string;
@@ -91,6 +125,8 @@ export interface DraftSopInput {
   bodyMarkdown?: string;
   applicationId?: string | null;
   createdBy: string;
+  /** R41-A1：审计上下文（可选——内部/工具调用不传即只记 actor）。 */
+  audit?: SopAuditContext;
 }
 
 export interface PublishSopInput {
@@ -98,6 +134,8 @@ export interface PublishSopInput {
   bump?: "patch" | "minor" | "major";
   changelog?: string;
   publishedBy: string;
+  /** R41-A1：审计上下文。 */
+  audit?: SopAuditContext;
 }
 
 @Injectable()
@@ -121,6 +159,14 @@ export class SopService {
     private readonly executors: ExecutorService,
     // ARCH-27：TTL 等运行时配置经 ConfigService（app.module Joi 注册）
     private readonly config: ConfigService,
+    // R41-A1（R34-A1 遗留②）：SOP 关键动作的审计落库。
+    // @Optional 先例同 notification.service 的 auditService / api-keys 的
+    // configService——存量单测模块（Object.create / 直接 new）与
+    // AuditModule 缺席时审计整体旁路，业务语义逐字节不变；生产装配由
+    // SopModule imports AuditModule 提供。
+    @Optional()
+    @Inject(AuditService)
+    private readonly auditService?: AuditService,
   ) {}
 
   // ── 起草与发布（P5）────────────────────────────────────────────
@@ -155,7 +201,45 @@ export class SopService {
       if (input.bodyMarkdown !== undefined) {
         existing.bodyMarkdown = input.bodyMarkdown;
       }
-      return this.sops.save(existing);
+      // R57（ADR-026 规则 4）：只写本次编辑真正改变的列，**不整行 save**。
+      // 整行回写会把进入方法时读到的 status / currentVersion 一并写回：若这期间
+      // 有人发布（publish 刚把 currentVersion 前移到新版本），这次「保存草稿」
+      // 会把主表的版本锚**回滚**成旧值——版本行已经落库、主表却指回上一版，
+      // 执行器与控制台从此各看一个版本。窗口虽短（读与写之间没有 await），
+      // 但 save 本身是异步落库，与并发的 publish 完全可以交错。
+      const draftPatch: Record<string, unknown> = {};
+      if (input.title !== undefined) draftPatch.title = existing.title;
+      if (frontMatter) draftPatch.frontMatterJson = existing.frontMatterJson;
+      if (input.bodyMarkdown !== undefined)
+        draftPatch.bodyMarkdown = existing.bodyMarkdown;
+      // adr-026-exempt: 只写**内容列**（title / frontMatterJson / bodyMarkdown），
+      // patch 里不含 status / currentVersion 等状态列——这正是本改动的目的（不把版本锚
+      // 按旧快照写回）。并发编辑工作副本本就是「后写者赢」（draft 语义），无终态需保护。
+      if (Object.keys(draftPatch).length > 0) {
+        await this.sops.update({ id: existing.id }, draftPatch);
+      }
+      const savedExisting = { ...existing, ...draftPatch } as Sop;
+      // R41-A1：编辑工作副本是**内容写入**（发布的版本正文就取自这里）——
+      // 留痕，但只记「改了哪些字段」，正文 / front-matter 内容一律不进审计。
+      // 刻意**不**记 actor=createdBy：那一列是**归属**不是本次操作者（见
+      // R34-A1 轴 4），把它当操作人写进审计会指错人；操作者靠 userId/ip。
+      await this.safeAudit({
+        userId: input.audit?.userId ?? null,
+        ip: input.audit?.ip ?? null,
+        action: "sop.update",
+        resource: "sop",
+        resourceId: savedExisting.id,
+        detail: {
+          slug,
+          // 只记「内容面」改了什么：title 是展示名（PATCH 恒传原值，记了
+          // 只会变成噪声），正文与 front-matter 才是会随版本发布出去的东西。
+          fields: [
+            input.bodyMarkdown !== undefined ? "bodyMarkdown" : null,
+            input.frontMatterYaml !== undefined ? "frontMatterYaml" : null,
+          ].filter((x): x is string => x !== null),
+        },
+      });
+      return savedExisting;
     }
 
     const sop = this.sops.create({
@@ -169,7 +253,23 @@ export class SopService {
       bodyMarkdown: input.bodyMarkdown ?? null,
       createdBy: input.createdBy,
     });
-    return this.sops.save(sop);
+    const savedSop = await this.sops.save(sop);
+    // R41-A1：起草落审计（正文只记长度——SOP 正文可能含业务数据）。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.draft",
+      resource: "sop",
+      resourceId: savedSop.id,
+      detail: {
+        slug,
+        bodyLength: input.bodyMarkdown?.length ?? 0,
+        frontMatterLength: input.frontMatterYaml?.length ?? 0,
+        // 创建路径上 createdBy 就是真实创建者（归属即本次操作），可作 actor
+        actor: input.createdBy,
+      },
+    });
+    return savedSop;
   }
 
   /**
@@ -193,6 +293,8 @@ export class SopService {
       const current = await this.versions.findOne({
         where: { sopId: sop.id, version: sop.currentVersion },
       });
+      // constant-time-exempt: 两侧都是本服务刚算出的内容哈希（发布判重），不是凭据；
+      // 且能走到这里的发布者本就能读到该内容，时序不泄露额外信息。
       if (current && current.contentHash === nextHash) {
         throw new AppError(ErrorCode.SOP_CONTENT_UNCHANGED);
       }
@@ -216,10 +318,52 @@ export class SopService {
     });
     const saved = await this.versions.save(version);
 
+    // R47（ADR-026 规则 4）：**列级写**，不是整行 save。
+    //
+    // 本次动作真正改变的只有两列：currentVersion / status。整行 save 会把进入方法时
+    // 读到的**快照**写回——若这期间有人 draft/编辑了工作副本（frontMatterJson /
+    // bodyMarkdown / slug / name），那份新内容会被静默回滚，而版本快照里存的却是
+    // 新内容 ⇒ 主表与最新版本不一致（执行器拉到的是新内容、控制台看到的却是旧的）。
+    // 并发发布的版本号由 versions 的 (sopId, version) 唯一索引兜住，与本列级写不冲突。
+    // 条件写：以读到的 currentVersion 为 CAS 基准（首发布时为 NULL）。
+    // 并发发布虽然已被 versions 的 (sopId, version) 唯一索引挡住，但「从哪个版本前移」
+    // 这件事也应该由 DB 判定——否则两个不同 bump 的并发发布可能各自算出不同的下一版号、
+    // 都插入成功，最后主表被后写者覆盖成与最新版本行不一致的值。
+    const published = await this.sops.update(
+      {
+        id: sop.id,
+        currentVersion: sop.currentVersion ?? IsNull(),
+      },
+      { currentVersion: nextVersion, status: "published" },
+    );
+    if (!published.affected) {
+      // 行在「读快照 → 落版本 → 写主表」之间被并发删除：版本行已插入，但主表没了。
+      // 如实报 404，而不是让调用方以为发布成功。
+      throw new AppError(ErrorCode.SOP_NOT_FOUND, { id: sop.id });
+    }
     sop.currentVersion = nextVersion;
     sop.status = "published";
-    await this.sops.save(sop);
 
+    // R41-A1：发布是**指令注入面**的关键动作（04 §4.3）——「谁在什么时候
+    // 发布了哪个版本」必须能从审计表单表回答，而不是靠会轮转的应用日志。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.publish",
+      resource: "sop",
+      resourceId: sop.id,
+      detail: {
+        slug: sop.slug,
+        version: nextVersion,
+        bump: input.bump ?? "patch",
+        // hash 前 12 位即可对账（完整值在不可变版本快照上）
+        contentHash: contentHash.slice(0, 12),
+        versionId: saved.id,
+        // changelog 是自由文本：只记长度
+        changelogLength: (input.changelog ?? "").length,
+        actor: input.publishedBy,
+      },
+    });
     this.logger.log(
       `SOP published: slug=${sop.slug} version=${nextVersion} hash=${contentHash.slice(0, 12)} by=${input.publishedBy}`,
     );
@@ -255,6 +399,8 @@ export class SopService {
     executorId: string;
     parentSessionId?: string | null;
     assignedBy: string;
+    /** R41-A1：审计上下文。 */
+    audit?: SopAuditContext;
   }): Promise<SopAssignment> {
     const sop = await this.requireSop(input.sopId);
     const version = input.version ?? sop.currentVersion;
@@ -282,7 +428,25 @@ export class SopService {
       parentSessionId: input.parentSessionId ?? null,
       assignedBy: input.assignedBy,
     });
-    return this.assignments.save(assignment);
+    const savedAssignment = await this.assignments.save(assignment);
+    // R41-A1：指派 / 重派（重派 = 再建一张指派行）留痕——「把哪张单指派给
+    // 了谁」是 SOP 流程的核心追责点。resource 用 sop_assignment：resourceId
+    // 可直接在审计页反查这张工单（sop 行只有资源 id，答不出目标机器）。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.assign",
+      resource: "sop_assignment",
+      resourceId: savedAssignment.id,
+      detail: {
+        sopId: sop.id,
+        slug: sop.slug,
+        version,
+        executorId: input.executorId,
+        actor: input.assignedBy,
+      },
+    });
+    return savedAssignment;
   }
 
   // ── 协作通道（P6，11 §3）───────────────────────────────────────
@@ -373,7 +537,16 @@ export class SopService {
       // 失败）重新排队，由后续普通 poll 逐个送出；否则 Host 侧这些已领取单
       // 会永久丢失。按 id 重发（崩溃恢复）是定向动作，不触碰其它单的排队状态。
       if (resendAll && !firstPull) {
-        await this.assignments.update({ id: a.id }, { pulledAt: null });
+        // R39（ADR-026）：`pulledAt` 是**领取 CAS 的判据列**（见 :356 的
+        // `WHERE pulledAt IS NULL`）。无条件清零等于把「谁领了这张单」的凭据抹掉：
+        // 若两个 poll 并发（resend 与普通领取交错），后到者会把对方**刚拿到**的
+        // 领取状态清掉 ⇒ 同一张单被两个执行器实例同时认为「归自己」。
+        // 条件写按**读取时的值**做 CAS：只有这一行仍是本循环读到的那份领取状态时，
+        // 才把它退回队列；否则说明别人已经动过它，让位。
+        await this.assignments.update(
+          { id: a.id, pulledAt: a.pulledAt ?? IsNull() },
+          { pulledAt: null },
+        );
       }
     }
 
@@ -416,6 +589,11 @@ export class SopService {
         (r) =>
           r.resolution !== null && new Date(r.updatedAt).getTime() > cursor,
       )
+      // R34-A1：sop_amended 的**投递载荷**是「修订版本身」（newSopVersion +
+      // 版本快照）。答复路径改成「先认领再发版」后，行会短暂停在
+      // resolution=sop_amended 而 newSopVersion 尚未落库——这个半成品绝不能
+      // 投递：执行器按修订版续跑与对账，投出去等于让它拿一个不存在的版本号。
+      .filter((r) => r.resolution !== "sop_amended" || !!r.newSopVersion)
       .sort((x, y) => x.round - y.round);
     const out: unknown[] = [];
     for (const r of pending) {
@@ -468,10 +646,24 @@ export class SopService {
       throw new AppError(ErrorCode.SOP_CLARIFICATION_NOT_REPLIED);
     }
     const stamp = new Date(row.updatedAt);
-    if (!a.lastReplyDeliveredAt || a.lastReplyDeliveredAt < stamp) {
-      await this.assignments.update(
-        { id: a.id },
-        { lastReplyDeliveredAt: stamp },
+    // R34-A1（ADR-026 规则 1/3）：游标是**投递生命周期**字段，必须条件写。
+    // 旧实现是「读快照 if 一下再 update({id})」——两个 ACK 并发时都读到旧游标
+    // （或都读到 null），后到者把游标写回更旧的值：已消费的回复重新变成待
+    // 投递（与上面「游标单调推进」的注释相反，注释是对的、代码没有那条谓词）。
+    // WHERE 谓词 = 「本次推进的合法起始状态」= 游标缺省 或 严格早于本次时间戳。
+    const advance = await this.assignments.update(
+      {
+        id: a.id,
+        lastReplyDeliveredAt: Or(IsNull(), LessThan(stamp)),
+      },
+      { lastReplyDeliveredAt: stamp },
+    );
+    if (advance.affected !== 1) {
+      // 并发收敛：别人已把游标推到更晚（或同一）时间点。乱序 ACK 让位，
+      // 不抛错——执行器重复 ACK 是幂等重试，不是失败。
+      this.logger.warn(
+        `SOP clarification ack did not advance cursor: assignment=${a.id} ` +
+          `clarification=${row.id} stamp=${stamp.toISOString()} (cursor already later)`,
       );
     }
     return { ok: true };
@@ -560,6 +752,8 @@ export class SopService {
     context?: Record<string, unknown> | null;
     mediaRefs?: SopClarificationMediaRef[];
     targetAgentSessionId?: string | null;
+    /** R41-A1：审计上下文（执行器面无 userId，通常只带 ip）。 */
+    audit?: SopAuditContext;
   }): Promise<{ clarification: SopClarification; escalated: boolean }> {
     const a = await this.assignments.findOne({
       where: { id: input.assignmentId },
@@ -585,6 +779,8 @@ export class SopService {
         },
       });
       if (dupe)
+        // R41-A1：**不落审计**——这条路径没有产生任何写动作（幂等重放），
+        // 落审计会把「澄清被发起次数」放大成轮询次数。
         return {
           clarification: dupe,
           escalated: dupe.resolution === "escalated_to_human",
@@ -623,8 +819,11 @@ export class SopService {
           answer: null,
         });
         const saved = await this.clarifications.save(row);
+        // R33-A2 前置状态条件：`snapshot` 是循环重读的快照，与这次落库之间
+        // 执行器可能已回报完成/失败。无条件 update({id}) 会把终态改成 blocked
+        // （交付已完成却被记成"等人工"，随后失联扫描也不会再覆盖它）。
         await this.assignments.update(
-          { id: a.id },
+          { id: a.id, status: In(["assigned", "in_progress", "blocked"]) },
           {
             status: "blocked",
             targetAgentSessionId:
@@ -632,6 +831,20 @@ export class SopService {
           },
         );
         await this.notifyEscalation(a, saved, "maxRounds 触顶");
+        // R41-A1：触顶升级也是一次澄清落库（escalated=true），同样留痕。
+        await this.auditClarificationIngested({
+          audit: input.audit,
+          clarificationId: saved.id,
+          sopId: a.sopId,
+          assignmentId: a.id,
+          round: saved.round,
+          escalated: true,
+          questionLength: question.length,
+          hasContext: !!input.context,
+          mediaRefs: mediaRefs.length,
+          clientClarificationId: input.clientClarificationId ?? null,
+          executorId: input.executorId,
+        });
         return { clarification: saved, escalated: true };
       }
 
@@ -699,6 +912,9 @@ export class SopService {
       // ——澄清来自执行器（不可信），会话权限必须最小化。
       scope: { sops: [a.sopId] },
     });
+    // adr-026-exempt: 只写 reviewSessionId 这一个**指针列**（会话关联），且上一段 CAS
+    // 已经确立了唯一胜者（并发 ingest 只有一个能推进轮次）。指针列没有「状态机」语义：
+    // 并发覆盖最坏是关联到另一场同样合法的复核会话，不影响归属/终态判定。
     await this.clarifications.update(
       { id: saved.id },
       { reviewSessionId: session.id },
@@ -712,6 +928,20 @@ export class SopService {
       { jobId: session.id, attempts: 1 },
     );
 
+    // R41-A1：澄清上报同样留痕（谁在哪张单第几轮问了什么**长度**的澄清）。
+    await this.auditClarificationIngested({
+      audit: input.audit,
+      clarificationId: saved.id,
+      sopId: a.sopId,
+      assignmentId: a.id,
+      round,
+      escalated: false,
+      questionLength: question.length,
+      hasContext: !!input.context,
+      mediaRefs: mediaRefs.length,
+      clientClarificationId: input.clientClarificationId ?? null,
+      executorId: input.executorId,
+    });
     this.logger.log(
       `SOP clarification ingested: assignment=${a.id} round=${round}/${a.maxRounds} session=${session.id}`,
     );
@@ -731,6 +961,8 @@ export class SopService {
     amendedBodyMarkdown?: string;
     changelog?: string;
     replyBy: string;
+    /** R41-A1：审计上下文（人工答复带 userId+ip；Agent 回复只带 actor）。 */
+    audit?: SopAuditContext;
   }): Promise<{ ok: true; newSopVersion?: string }> {
     const row = await this.clarifications.findOne({
       where: { id: input.clarificationId },
@@ -765,47 +997,145 @@ export class SopService {
     if (!a)
       throw new AppError(ErrorCode.SOP_ASSIGNMENT_NOT_FOUND_FOR_CLARIFICATION);
 
+    // R34-A1（ADR-026 规则 1/3）：**先认领，再产生副作用**。
+    // 澄清行会被两个复核会话 / 人工接管路径同时写：旧实现是「末尾
+    // save(row) 整行回写」，于是并发答复两侧都通过了上面的幂等闸（都读到
+    // resolution 尚未落定），后到者覆盖先到者的 answer；resolution=sop_amended
+    // 时两侧还各自发一个 patch 版本（同一次澄清产生两个版本，执行器拿到的
+    // 修订锚取决于谁最后落库）。
+    // 条件写的 WHERE 取「本次动作的合法起始状态」= 读取时的前置值
+    // （null 或 escalated_to_human），只有胜者继续做修订 / 发版 / 投递。
+    const answeredBy =
+      input.resolution as NonNullable<SopClarification["resolution"]>;
+    const answer = this.sanitizeUntrusted(input.answer);
+    const claim = await this.clarifications.update(
+      {
+        id: row.id,
+        resolution:
+          row.resolution === null ? IsNull() : (row.resolution as never),
+      },
+      { answer, resolution: answeredBy as never, newSopVersion: null },
+    );
+    if (claim.affected !== 1) {
+      // 并发收敛（ADR-026 规则 3）：另一会话先答复了这一行。让位——不修订、
+      // 不覆盖、不抛 500；返回该行现在的版本锚（与上面「已答复快速返回」同语义）。
+      const fresh = await this.clarifications.findOne({
+        where: { id: row.id },
+      });
+      this.logger.warn(
+        `SOP clarification reply lost the race: id=${row.id} requested=${input.resolution} ` +
+          `current=${fresh?.resolution ?? "-"} (later writer does not overwrite)`,
+      );
+      return { ok: true, newSopVersion: fresh?.newSopVersion ?? undefined };
+    }
+
     let newSopVersion: string | undefined;
     if (input.resolution === "sop_amended") {
-      const sop = await this.requireSop(a.sopId);
-      if (!input.amendedFrontMatterYaml && !input.amendedBodyMarkdown) {
-        throw new AppError(ErrorCode.SOP_CLARIFICATION_AMENDMENT_MISSING);
-      }
-      // 修订内容先落到主表（draft 语义），再走与 publish 相同的严格校验 +
-      // 快照路径——澄清自主修订与人工发布共享同一道版本闸门
-      if (input.amendedFrontMatterYaml) {
-        const raw = parseFrontMatterYaml(input.amendedFrontMatterYaml);
-        sop.frontMatterJson = validateFrontMatter(raw, {
-          strict: true,
-        }) as unknown as Record<string, unknown>;
-      }
-      if (input.amendedBodyMarkdown)
-        sop.bodyMarkdown = input.amendedBodyMarkdown;
-      await this.sops.save(sop);
+      try {
+        const sop = await this.requireSop(a.sopId);
+        if (!input.amendedFrontMatterYaml && !input.amendedBodyMarkdown) {
+          throw new AppError(ErrorCode.SOP_CLARIFICATION_AMENDMENT_MISSING);
+        }
+        // 修订内容先落到主表（draft 语义），再走与 publish 相同的严格校验 +
+        // 快照路径——澄清自主修订与人工发布共享同一道版本闸门
+        if (input.amendedFrontMatterYaml) {
+          const raw = parseFrontMatterYaml(input.amendedFrontMatterYaml);
+          sop.frontMatterJson = validateFrontMatter(raw, {
+            strict: true,
+          }) as unknown as Record<string, unknown>;
+        }
+        if (input.amendedBodyMarkdown)
+          sop.bodyMarkdown = input.amendedBodyMarkdown;
+        // R47（ADR-026 规则 4）：只写本次修订真正改动的两列，**不整行 save**。
+        // 整行回写会把「读 SOP 快照 → 修订 → 落库」之间的并发编辑（例如管理员同时
+        // 改了 slug/name）按旧值盖回去。这里只可能改 frontMatterJson 与 bodyMarkdown
+        // （两个 if 各自决定），故按改动集合下发。
+        const amendmentPatch: { frontMatterJson?: Record<string, unknown>; bodyMarkdown?: string } = {};
+        if (input.amendedFrontMatterYaml)
+          amendmentPatch.frontMatterJson = sop.frontMatterJson as unknown as Record<string, unknown>;
+        if (input.amendedBodyMarkdown)
+          amendmentPatch.bodyMarkdown = sop.bodyMarkdown;
+        // adr-026-exempt: 只写**内容列**（frontMatterJson / bodyMarkdown），不碰状态；
+        // 该行的状态推进由紧随其后的 publish() 用 currentVersion CAS 完成。并发编辑
+        // 工作副本本就是「后写者赢」（draft 语义），没有需要保护的终态。
+        await this.sops.update({ id: sop.id }, amendmentPatch);
 
-      const { version } = await this.publish({
-        sopId: sop.id,
-        bump: "patch",
-        changelog:
-          input.changelog ??
-          `澄清修订（assignment ${a.id} 第 ${row.round} 轮）`,
-        publishedBy: input.replyBy,
-      });
-      newSopVersion = version.version;
+        const { version } = await this.publish({
+          sopId: sop.id,
+          bump: "patch",
+          changelog:
+            input.changelog ??
+            `澄清修订（assignment ${a.id} 第 ${row.round} 轮）`,
+          publishedBy: input.replyBy,
+          // R41-A1：澄清修订自主发版同样产生一条 sop.publish——把本次答复的
+          // 主体带下去，否则「这个版本是谁发的」只剩 actor 字符串、没有 userId。
+          audit: input.audit,
+        });
+        newSopVersion = version.version;
+      } catch (err) {
+        // 修订/发版失败必须把认领回滚到读到的前置值（仍是条件写），否则这一行
+        // 会永久停在「已修订但没有版本锚」的半成品态——既不再投递，也不在
+        // 待复核集合里（sweep 只扫 resolution IS NULL）。
+        await this.clarifications.update(
+          {
+            id: row.id,
+            resolution: answeredBy as never,
+            newSopVersion: IsNull(),
+          },
+          {
+            answer: row.answer,
+            resolution: (row.resolution ?? null) as never,
+            newSopVersion: null,
+          },
+        );
+        throw err;
+      }
+      // 版本锚是本次动作真正改变的列——认领已确立唯一胜者，这里按 id 只写这一列
+      // （写多列才需要状态谓词；ADR-026 规则 4：不整行回写）。
+      // adr-026-exempt: 只写 newSopVersion 一个**结果列**；该行的状态迁移已由上方
+      // 「先条件认领」独占（WHERE resolution = 读取值），失败时还有条件回滚。
+      await this.clarifications.update(
+        { id: row.id },
+        { newSopVersion: newSopVersion ?? null },
+      );
     }
 
-    row.answer = this.sanitizeUntrusted(input.answer);
-    row.resolution = input.resolution as SopClarification["resolution"];
-    row.newSopVersion = newSopVersion ?? null;
-    await this.clarifications.save(row);
-
-    // 复核完毕 → 解除 blocked，执行器经 poll 拿到回复后继续
+    // 复核完毕 → 解除 blocked，执行器经 poll 拿到回复后继续。
+    // R33-A2：解除也必须带前置状态——`a.status` 是读取时刻的快照，它与这次
+    // 落库之间执行器可能已经回报完成/失败。无条件的 update({id}) 会把终态
+    // 改回 in_progress（completed → in_progress → 再被失联扫描判 stalled：
+    // 一次交付被改写成两次错误状态，复核会话也失去对账锚）。
     if (a.status === "blocked") {
-      await this.assignments.update({ id: a.id }, { status: "in_progress" });
+      await this.assignments.update(
+        { id: a.id, status: "blocked" },
+        { status: "in_progress" },
+      );
     }
 
+    // R41-A1：答复留痕——「谁答复了哪条澄清、是直接答复还是修订发版」。
+    // **answer 正文不进审计**：它是复核 Agent / 人工的输出，审计行长期保留
+    // 且可 CSV 导出，正文落进去等于开一条持久外带通道；只记长度。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.reply",
+      resource: "sop_clarification",
+      resourceId: row.id,
+      detail: {
+        // R70-A1：澄清行本身不是 SOP 行，审计页深链要的是 SOP id（R65 的
+        // `sop_clarification` 分支读 detail.sopId）。assignment 已在上面读出来，
+        // 复用 a.sopId——零额外查库。
+        sopId: a.sopId,
+        assignmentId: a.id,
+        round: row.round,
+        resolution: answeredBy,
+        answerLength: answer.length,
+        newSopVersion: newSopVersion ?? null,
+        actor: input.replyBy,
+      },
+    });
     this.logger.log(
-      `SOP clarification replied: id=${row.id} resolution=${row.resolution} newVersion=${newSopVersion ?? "-"}`,
+      `SOP clarification replied: id=${row.id} resolution=${answeredBy} by=${input.replyBy} newVersion=${newSopVersion ?? "-"}`,
     );
     return { ok: true, newSopVersion };
   }
@@ -850,8 +1180,12 @@ export class SopService {
     if (input.progressJson) {
       this.checkJsonSize(input.progressJson, RESULT_MAX_BYTES, "progress");
     }
+    // R33-A2：心跳也是「读-改-写」——requireOpenAssignment 的判定在读取时刻，
+    // 与这次落库之间执行器可能已回报完成/失败。update({id}) 无条件写会把终态
+    // 改回 in_progress（进而被失联扫描判 stalled：一次交付被改写成两次错误
+    // 状态）。前置状态集合 = 读取时允许的全部活跃态，等价于「非终态」。
     await this.assignments.update(
-      { id: a.id },
+      { id: a.id, status: In(["assigned", "in_progress", "blocked", "stalled"]) },
       {
         lastProgressAt: new Date(),
         progressJson: input.progressJson ?? a.progressJson,
@@ -880,6 +1214,8 @@ export class SopService {
     status: "completed" | "failed";
     result?: Record<string, unknown> | null;
     attempt?: number;
+    /** R41-A1：审计上下文（执行器面无 userId，通常只带 ip）。 */
+    audit?: SopAuditContext;
   }): Promise<{ accepted: boolean }> {
     const a = await this.assignments.findOne({
       where: { id: input.assignmentId },
@@ -901,14 +1237,56 @@ export class SopService {
     if (input.result)
       this.checkJsonSize(input.result, RESULT_MAX_BYTES, "result");
 
-    await this.assignments.update(
-      { id: a.id },
+    // R33-A2（总控收尾）：上面的 a.attempt / a.status 都是**读取时刻的快照**，与这次
+    // 落库之间可能已有并发的 complete 落库（执行器重试、双回调）。无条件
+    // update({id}) 会让后到者覆盖先到者的结果——包括把 completed 改回 failed、
+    // 或把 attempt 回退。改为以 **attempt CAS** 为准：
+    //   · WHERE attempt = 读到的 attempt ⇒ 同一轮次的重复提交只有一个胜者；
+    //   · 把「终态不可改写」放进 WHERE，而不是只在上面用陈旧快照判一次。
+    // `failed` 刻意**不**排除：失败后允许以更大的 attempt 重试（既有语义）。
+    const applied = await this.assignments.update(
+      {
+        id: a.id,
+        attempt: a.attempt,
+        status: Not(In(["completed", "cancelled"])),
+      },
       {
         status: input.status,
         resultJson: input.result ?? a.resultJson,
         attempt,
       },
     );
+    if (applied.affected !== 1) {
+      // 并发收敛：别人先推进了这一行（或它已是终态）。与 ADR-026 规则 3 一致——
+      // 让位而不是抛 500，调用方拿到 accepted:false（幂等忽略，不是失败）。
+      this.logger.warn(
+        "SOP assignment complete lost the race: id=" +
+          a.id +
+          " attempt=" +
+          a.attempt +
+          " -> " +
+          attempt,
+      );
+      return { accepted: false };
+    }
+    // R41-A1：交付回报留痕（**只在 CAS 胜出后**——让位/幂等重放没有写动作，
+    // 落审计会把「交付次数」放大成重试次数）。result 是执行器自述，
+    // 只记字节量，内容不进审计。
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.complete",
+      resource: "sop_assignment",
+      resourceId: a.id,
+      detail: {
+        // R70-A1：同 sop.reply——深链需要 sopId，assignment 行（a）已在作用域内。
+        sopId: a.sopId,
+        status: input.status,
+        attempt,
+        resultLength: input.result ? JSON.stringify(input.result).length : 0,
+        actor: `executor:${input.executorId}`,
+      },
+    });
     this.logger.log(
       `SOP assignment complete: id=${a.id} status=${input.status} attempt=${attempt}`,
     );
@@ -955,8 +1333,12 @@ export class SopService {
     );
 
     for (const a of unclaimed) {
-      await this.assignments.update(
-        { id: a.id },
+      // R33-A2 前置状态条件：扫描读到的 assigned 是**快照**——它与落库之间，
+      // 执行器可能已回报完成（或并发 poll 已领取）。无条件的 update({id})
+      // 会把 completed 覆写成 failed（终止态被改写）并发出假超时通知。
+      // 条件 UPDATE 只有一个胜者：affected!==1 说明别人先推进了 → 让位。
+      const markedFailed = await this.assignments.update(
+        { id: a.id, status: "assigned" },
         {
           status: "failed",
           resultJson: {
@@ -965,14 +1347,36 @@ export class SopService {
           },
         },
       );
+      if (markedFailed.affected !== 1) continue;
       this.logger.warn(
         `SOP assignment unclaimed timeout: id=${a.id} sopVersion=${a.sopVersion}`,
       );
+      // R56：**系统动作也留痕**。R41-A1 当时把 cron 三类扫描整体排除，理由是「系统动作无操作人
+      // + 5 分钟一次会刷量」。刷量问题只存在于「每次扫描都记」；这里只记**真正发生了状态迁移**
+      // 的那几次（affected===1 之后），量级由业务事件决定而不是由 cron 频率决定 ⇒ 无需去重。
+      // 操作人记 null，主体用 detail.actor（与执行器面的 actor 同一约定）。
+      await this.safeAudit({
+        userId: null,
+        ip: null,
+        action: "sop.timeout.unclaimed",
+        resource: "sop_assignment",
+        resourceId: a.id,
+        detail: {
+          sopId: a.sopId,
+          sopVersion: a.sopVersion,
+          from: "assigned",
+          to: "failed",
+          outcome: "unclaimed_timeout",
+          actor: "system:sweep",
+        },
+      });
       this.notifyTimeout(a, "无人领取（领取超时）").catch(() => undefined);
     }
     for (const a of stalled) {
-      await this.assignments.update(
-        { id: a.id },
+      // R33-A2 同上：只有仍处于 in_progress 的行才置 stalled。已完成/已失败的
+      // 行被并发推进后，这里必须让位（否则 stalled 会把 completed 盖掉）。
+      const markedStalled = await this.assignments.update(
+        { id: a.id, status: "in_progress" },
         {
           status: "stalled",
           resultJson: {
@@ -981,7 +1385,23 @@ export class SopService {
           },
         },
       );
+      if (markedStalled.affected !== 1) continue;
       this.logger.warn(`SOP assignment progress stalled: id=${a.id}`);
+      await this.safeAudit({
+        userId: null,
+        ip: null,
+        action: "sop.timeout.stalled",
+        resource: "sop_assignment",
+        resourceId: a.id,
+        detail: {
+          sopId: a.sopId,
+          sopVersion: a.sopVersion,
+          from: "in_progress",
+          to: "stalled",
+          outcome: "progress_stalled",
+          actor: "system:sweep",
+        },
+      });
       this.notifyTimeout(a, "进度心跳停滞（卡死嫌疑）").catch(() => undefined);
     }
 
@@ -1027,15 +1447,47 @@ export class SopService {
         where: { id: row.assignmentId },
       });
       if (!a) continue;
-      await this.clarifications.update(
-        { id: row.id },
+      // R33-A2：兜底与「人工/复核 Agent 答复」会同时打在这一行上——上面
+      // `find({ resolution: IsNull() })` 读到的是快照，答复可能已在此期间落库。
+      // 无条件 update({id}) 会把真答案覆写成 escalated_to_human：执行器经 poll
+      // 拿到的是升级答复而不是被问的答案，问题永远没被回答。条件 UPDATE 让
+      // 「已经有 resolution 的行」只由答复路径负责。
+      const escalated = await this.clarifications.update(
+        { id: row.id, resolution: IsNull() },
         { resolution: "escalated_to_human" },
       );
+      if (escalated.affected !== 1) continue;
+      // R56：兜底升级同样只记**真的发生了**的那一次（affected!==1 已在上面 continue）。
+      await this.safeAudit({
+        userId: null,
+        ip: null,
+        action: "sop.clarification.escalated",
+        resource: "sop_clarification",
+        resourceId: row.id,
+        detail: {
+          // R70-A1：与 sop.reply / sop.clarify 同一类——resource=sop_clarification，
+          // 审计页深链读 detail.sopId（a 已在上面读出，零额外查库）。
+          sopId: a.sopId,
+          assignmentId: row.assignmentId,
+          round: row.round,
+          from: null,
+          to: "escalated_to_human",
+          // 兜底判据本身在 sop-timeout 里（会话缺失/终态/超 TTL），这里只记录
+          // 「扫描时看到的复核会话状态」这一事实，不臆测原因。
+          reviewSessionStatus: s.reviewSessionStatus,
+          actor: "system:sweep",
+        },
+      });
       // blocked → in_progress：升级即复核完毕（与 replyClarification 同一
       // 落库后态）；若执行器已失联，in_progress 会被失联扫描接住，不会再
       // 被 blocked 的豁免挡住
+      // R33-A2：解除 blocked 同样带前置状态（快照里的 blocked 可能已过期，
+      // 执行器在此期间回报完成 → 终态不得被兜底改回 in_progress）。
       if (a.status === "blocked") {
-        await this.assignments.update({ id: a.id }, { status: "in_progress" });
+        await this.assignments.update(
+          { id: a.id, status: "blocked" },
+          { status: "in_progress" },
+        );
       }
       this.logger.warn(
         `SOP clarification review stuck → escalated: clarification=${row.id} assignment=${a.id} session=${row.reviewSessionId ?? "none"}`,
@@ -1282,6 +1734,9 @@ export class SopService {
     assignmentId: string,
     sessionId: string,
   ): Promise<void> {
+    // adr-026-exempt: 只写 targetAgentSessionId 一个**指针列**（透传执行器 Agent 会话 id）。
+    // 同一指派只有一个执行器在用，重复上报是「同一会话覆盖同一值」；即使并发，
+    // 最坏是记录到另一场合法会话 id，不影响状态机/归属/终态。
     await this.assignments.update(
       { id: assignmentId },
       { targetAgentSessionId: sessionId.slice(0, 128) },
@@ -1365,6 +1820,83 @@ export class SopService {
     if (size > max) {
       throw new AppError(ErrorCode.SOP_JSON_FIELD_TOO_LARGE, { label, max });
     }
+  }
+
+  // ── 审计（R41-A1）────────────────────────────────────────────────
+
+  /**
+   * 审计落库的统一出口。
+   *
+   * **永不阻断业务**：审计是旁证，不是业务的前置条件（与 api-keys 的
+   * safeAudit、notification 的 NOTIFICATION_FAILED 兜底同一条 fail-open
+   * 纪律）。但失败**必须** `logger.error` 留痕——静默吞掉等于审计形同虚设：
+   * 出事时既没有行可查、也没有日志能定位「审计本身坏了」。
+   *
+   * `auditService` 缺席（@Optional：存量测试装配 / AuditModule 未装配）时
+   * 整体旁路——业务语义不变，不抛错也不刷日志。
+   */
+  private async safeAudit(
+    payload: Parameters<AuditService["log"]>[0],
+  ): Promise<void> {
+    if (!this.auditService) return;
+    try {
+      await this.auditService.log(payload);
+    } catch (err) {
+      this.logger.error(
+        "sop audit write failed: action=" +
+          payload.action +
+          " resource=" +
+          (payload.resource ?? "-") +
+          " resourceId=" +
+          (payload.resourceId ?? "-") +
+          " err=" +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  /**
+   * 澄清上报的审计载荷（两个落库出口共用：正常入队 / maxRounds 触顶升级）。
+   *
+   * **question 正文绝不入账**：它是执行器的不可信输入（11 §5.3），审计行是
+   * 长期保留、ADMIN 可导出 CSV 的面，正文进去等于给不可信文本开一条持久
+   * 存储 + 外带的通道。只记长度 / 轮次 / 媒体条数（这些足够回答「谁在何时
+   * 对哪张单发起过澄清」）。
+   */
+  private async auditClarificationIngested(input: {
+    audit?: SopAuditContext;
+    clarificationId: string;
+    /** R70-A1：所属 SOP id（两个调用点的 `a` 都有，零额外查库），供审计页深链。 */
+    sopId: string;
+    assignmentId: string;
+    round: number;
+    escalated: boolean;
+    questionLength: number;
+    hasContext: boolean;
+    mediaRefs: number;
+    clientClarificationId: string | null;
+    executorId: string;
+  }): Promise<void> {
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.clarify",
+      resource: "sop_clarification",
+      resourceId: input.clarificationId,
+      detail: {
+        // R70-A1：`sop_clarification` 的 resourceId 是澄清行 id，审计页拿不到
+        // SOP 就无法深链；sopId 是指派行的外键，调用点已持有。
+        sopId: input.sopId,
+        assignmentId: input.assignmentId,
+        round: input.round,
+        escalated: input.escalated,
+        questionLength: input.questionLength,
+        hasContext: input.hasContext,
+        mediaRefs: input.mediaRefs,
+        clientClarificationId: input.clientClarificationId,
+        actor: `executor:${input.executorId}`,
+      },
+    });
   }
 
   /** 升级人工通知（fail-open——通知失败不影响澄清落库）。 */

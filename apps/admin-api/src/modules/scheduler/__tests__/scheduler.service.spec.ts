@@ -46,7 +46,9 @@ const mockRepo = () => ({
   create: jest.fn(),
   findBy: jest.fn(),
   update: jest.fn().mockResolvedValue({ affected: 1 }),
-  createQueryBuilder: jest.fn(),
+  // R126-A1: 触发去重的**权威**是 DB 条件 claim（claimTaskTrigger），每条入队路径
+  // 都会走一次条件 UPDATE。默认「领取成功」，需要竞争语义的用例自行 override。
+  createQueryBuilder: jest.fn(() => makeUpdateQb({ affected: 1 })),
 });
 
 const mockQueue = () => ({
@@ -456,6 +458,9 @@ describe("SchedulerService", () => {
       await makeLeader();
       const task = makeTask();
       redisLockService.acquireLock.mockRejectedValue(new Error("redis down"));
+      // R126-A1: claim 现固定发生在「回读 ACTIVE 行」之后（唯一权威，与 Redis
+      // 是否可用无关），因此本用例需要先让回读命中。
+      taskRepo.findOne.mockResolvedValue(task);
       taskRepo.createQueryBuilder.mockImplementation(() =>
         makeUpdateQb({ affected: 0 }),
       );
@@ -476,7 +481,10 @@ describe("SchedulerService", () => {
       );
     });
 
-    it("keeps using the redis trigger lock (no db claim) when redis is healthy", async () => {
+    // R126-A1: 旧契约是「redis 健康时不做 db claim」——正是缺陷本身（两条路径
+    // 互不相认，部分 Redis 故障时同一窗口派两次）。新契约：Redis 锁只是先手
+    // 快筛，DB 条件 claim 是**与 Redis 可用性无关的唯一判决**。
+    it("R126-A1: redis 健康时同样以 db claim 判决（Redis 锁只是快筛）", async () => {
       await makeLeader();
       const task = makeTask();
       redisLockService.acquireLock.mockResolvedValueOnce({
@@ -495,7 +503,11 @@ describe("SchedulerService", () => {
       execRepo.save.mockResolvedValue(exec);
 
       await service.enqueue(task, "manual");
-      expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
+      const claimQb = taskRepo.createQueryBuilder.mock.results[0]?.value;
+      expect(claimQb).toBeDefined();
+      expect(claimQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ lastTriggerTime: expect.any(Date) }),
+      );
       expect(queue.add).toHaveBeenCalled();
       // R4-P0: the trigger dedup lock must NOT be renewed by a watchdog —
       // it is never released and its TTL is the dedup window, so renewal
@@ -510,6 +522,140 @@ describe("SchedulerService", () => {
         "scheduler:leader",
         expect.any(Number),
       );
+    });
+
+    /**
+     * R126-A1（轴1 头号缺陷）：Redis 快路径与 DB claim 快路径此前**互不知情**。
+     *
+     * 缺陷现场：只有 acquireLock **抛错**时才走 claimTaskTrigger；Redis 正常时
+     * 入队完全不读 lastTriggerTime。于是「部分 Redis 故障」（连接池耗尽 / 单次
+     * 超时 / 网络抖动——不是整个 Redis 挂掉）会同时激活两条互不相认的权威：
+     *   · 实例 A：acquireLock 超时 → DB 条件 claim 推进 lastTriggerTime → 入队；
+     *   · 实例 B：Redis 正常 → 拿到 task:trigger:<id> 锁（A 从未持有过它）→
+     *     同一去重窗口内**再入队一次**。
+     * 结果：同一 tick 两次执行。也就是说跨实例去重实际由「谁先拿到 Redis 锁」
+     * 单点决定，DB 侧那条条件 UPDATE 只在 Redis 全挂时才生效——两条路径不同源，
+     * 等于没有单一权威（多副本下各自为政）。
+     *
+     * 本例用内存替身复现 tasks.lastTriggerTime 的条件 UPDATE 语义，让「第二次
+     * claim 必然落空」由**状态**而非硬编码 affected=0 决定。
+     */
+    const installTaskCasDb = (task: Task) => {
+      const state = { lastTriggerTime: task.lastTriggerTime ?? null } as {
+        lastTriggerTime: Date | null;
+      };
+      taskRepo.createQueryBuilder.mockImplementation(() => {
+        const qb = makeUpdateQb({ affected: 1 });
+        let next: Date | null = null;
+        let windowStart: Date | null = null;
+        qb.set.mockImplementation((values: { lastTriggerTime?: Date }) => {
+          next = values?.lastTriggerTime ?? null;
+          return qb;
+        });
+        qb.where.mockImplementation(
+          (
+            _sql: string,
+            params?: { windowStart?: Date },
+          ) => {
+            if (params?.windowStart) windowStart = params.windowStart;
+            return qb;
+          },
+        );
+        qb.execute.mockImplementation(async () => {
+          const available =
+            state.lastTriggerTime == null ||
+            (windowStart != null &&
+              state.lastTriggerTime.getTime() < windowStart.getTime());
+          if (available && next) state.lastTriggerTime = next;
+          return { affected: available ? 1 : 0 };
+        });
+        return qb;
+      });
+      return state;
+    };
+
+    it("R126-A1: 部分 Redis 故障下同一去重窗口内只派发一次（DB claim 是唯一权威）", async () => {
+      await makeLeader();
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 60,
+        cronExpression: null,
+        timeout: 300,
+      });
+      const db = installTaskCasDb(task);
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-1",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      // 实例 A：Redis 超时 → 降级到 DB 条件 claim → 领取成功 → 入队 + 推进 lastTriggerTime
+      redisLockService.acquireLock.mockRejectedValueOnce(
+        new Error("redis command timed out"),
+      );
+      const first = await service.enqueue(task, "fixed_rate");
+      expect(first).toEqual(exec);
+      expect(db.lastTriggerTime).not.toBeNull();
+
+      // 实例 B：同一去重窗口内、Redis 健康（A 从未占用该 key）→ 拿到锁
+      redisLockService.acquireLock.mockResolvedValueOnce({
+        key: `task:trigger:${task.id}`,
+        lockId: "l-b",
+        ttlMs: 59_500,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+      const second = await service.enqueue({ ...task }, "fixed_rate");
+
+      // 去重窗口内第二次触发必须被 DB claim 拦住（当前实现会再派一次 → 红）
+      expect(second).toBeNull();
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      expect(execRepo.create).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * R126-A1 钉子：**已有**的跨路径去重守卫——checkMisfires 的 5 分钟 tick 与
+     * Leader 晋升钩子（tryAcquireLeadership 里的 fire-and-forget 补跑）会重叠，
+     * 两份扫描同时命中同一个 FIRE_ONCE 任务。这里用 NX 语义的内存锁守住
+     * 「同一任务在去重窗口内至多一次补偿入队」——即 checkMisfires 注释
+     * line 613-620 声称的「tick 与晋升钩子重叠是安全的」，此前没有用例覆盖。
+     */
+    it("R126-A1 钉子: 晋升钩子与 cron tick 重叠扫描同一 FIRE_ONCE 任务 → 只补偿一次", async () => {
+      await makeLeader();
+      const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      const task = makeTask({
+        cronExpression: "0 * * * *",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: old,
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-m",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+      // NX 语义：同一 key 在 TTL 窗口内只放行一次
+      const held = new Set<string>();
+      redisLockService.acquireLock.mockImplementation(async (key: string) => {
+        if (held.has(key)) return null;
+        held.add(key);
+        return {
+          key,
+          lockId: "l1",
+          ttlMs: 1000,
+          released: false,
+          release: jest.fn().mockResolvedValue(true),
+        };
+      });
+
+      await Promise.all([service.checkMisfires(), service.checkMisfires()]);
+
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      expect(execRepo.save).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -553,6 +699,32 @@ describe("SchedulerService", () => {
   });
 
   describe("checkMisfires", () => {
+    /**
+     * R126-A1（轴2 钉子）：落点校验 / 周期估算必须按**任务声明的 timezone**
+     * 评估壁钟，而不是进程 TZ。守的是 B-1 的时区传播：`cronHasMissedFirePoint`
+     * → `lastWindowCronFireBefore(expr, now, lookback, task.timezone)` 这一跳。
+     * 若有人删掉末尾的 timezone 实参，本用例会在 UTC 进程下立刻变红——此时
+     * 任务把「09:00（上海）」当成「09:00（UTC）」，misfire 判定整体错 8 小时。
+     *
+     * 夹具：lastTriggerTime=2026-01-01T00:00:00Z，now=02:00:00Z。
+     *  - Asia/Shanghai：最近落点 09:00 CST = 01:00Z ∈ (00:00Z, 02:00Z] → 有漏
+     *  - UTC：          最近落点 = 2025-12-31T09:00Z（早于 lastTriggerTime）→ 无漏
+     */
+    it("R126-A1 钉子: 漏点判定按任务 timezone 的壁钟评估（@Cron 注册同一时区语义）", () => {
+      const lastTriggerTime = new Date("2026-01-01T00:00:00Z");
+      const now = new Date("2026-01-01T02:00:00Z");
+      const missed = (task: Task) =>
+        (service as any).cronHasMissedFirePoint(task, lastTriggerTime, now);
+
+      expect(
+        missed(makeTask({ cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" })),
+      ).toBe(true);
+      // 同一表达式、同一时刻，只换时区 → 结论必须相反
+      expect(
+        missed(makeTask({ cronExpression: "0 9 * * *", timezone: "UTC" })),
+      ).toBe(false);
+    });
+
     it("should skip tasks without lastTriggerTime", async () => {
       await makeLeader();
       const task = makeTask({ lastTriggerTime: null });
@@ -721,6 +893,55 @@ describe("SchedulerService", () => {
     });
 
     // ── B-6：misfire 补偿对依赖任务补依赖闸 ──
+    /**
+     * R126-A1（轴1 第二处重复源）：补偿决策基于**分页扫描开始时的快照**。
+     *
+     * checkMisfiresBody 先把 active 任务整页读进内存（keyset 分页，页大小
+     * 1000），再在扫描末尾 Promise.allSettled 入队。判定用的 lastTriggerTime
+     * 是快照值；而 cron 任务的去重窗口恒为 TRIGGER_DEDUP_MIN_TTL_MS=1s（与真实
+     * 周期解耦，见 computeTriggerDedupTtlMs）。于是「读快照 → 补偿入队」的滞后
+     * 一旦超过 1s（万级 active 表的分页扫描远超 1s），一个**其实已经按点正常
+     * 触发过**的落点会被再补偿一次：同一落点两次执行，跨实例去重锁也挡不住
+     * （锁窗口只有 1s，早已过期）。
+     *
+     * 修法：补偿决策必须基于**决策时刻**的最新状态——入队前按主键复核一次
+     * lastTriggerTime（毫秒级单行读，远小于去重窗口），陈旧快照不得直接兑现。
+     */
+    it("R126-A1: 快照已陈旧（落点其实已正常触发）时不得再补偿一次", async () => {
+      await makeLeader();
+      const stale = new Date(Date.now() - 65 * 60 * 1000); // 扫描开始时的快照
+      const task = makeTask({
+        cronExpression: "*/5 * * * *",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: stale,
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      // 决策时刻的最新行：该任务 10s 前刚被定时器正常触发过
+      taskRepo.findOne.mockResolvedValue({
+        ...task,
+        lastTriggerTime: new Date(Date.now() - 10 * 1000),
+      });
+      // Redis 正常（去重锁能拿到）——否则会因锁不可用而误判为"没派发"
+      redisLockService.acquireLock.mockResolvedValue({
+        key: `task:trigger:${task.id}`,
+        lockId: "l1",
+        ttlMs: 1000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+      const exec = {
+        id: "exec-x",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      await service.checkMisfires();
+
+      expect(queue.add).not.toHaveBeenCalled();
+      expect(execRepo.save).not.toHaveBeenCalled();
+    });
+
     it("B-6: dependency-gated task whose deps are unsatisfied is NOT compensated via misfire", async () => {
       await makeLeader();
       taskRepo.find.mockClear();
@@ -1636,6 +1857,37 @@ describe("SchedulerService", () => {
       await service.recoverStaleExecutions();
       await service.reload();
       expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+
+    /**
+     * R126-A1（轴2）：四个 @Cron 扫描体都没有**重入闸**。
+     *
+     * @nestjs/schedule 的 cron 回调不 await 返回的 Promise（本 describe 的
+     * CRON-GUARD 注释已确认这一点——正因如此才需要异常闸门），因此「上一轮
+     * 还没跑完就到了下一个周期点」必然导致两轮扫描并发。guardTick 只 catch
+     * 异常，完全不防重叠。后果不是重复**派发**（入队下游有 claim），而是：
+     *   · 对万级 active 表并发跑 2 份 keyset 全表扫描（DB 压力 ×2）；
+     *   · 并发推进 reloadTickCount → F-1 对账轮次漂移；
+     *   · 两份 reload 都判定「该任务未注册」→ 后一份 scheduleOne 先 stop 再
+     *     重排刚注册的定时器，相位被重置（短周期 cron 丢一拍）。
+     */
+    it("R126-A1: 上一轮未结束时重叠触发被丢弃（扫描体不并发跑两份）", async () => {
+      await makeLeader();
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const findSpy = jest.fn(() => gate.then(() => [] as Task[]));
+      taskRepo.find.mockImplementation(findSpy);
+
+      const first = service.reload();
+      const second = service.reload(); // 重叠的第二轮：必须被丢弃
+      await Promise.resolve(); // 让第一轮进入扫描体（挂在 taskRepo.find 上）
+
+      expect(findSpy).toHaveBeenCalledTimes(1);
+
+      release();
+      await Promise.all([first, second]);
     });
   });
 
@@ -2794,6 +3046,12 @@ describe("SchedulerService", () => {
       );
       await service.enqueue(discardTask, "cron");
       expect(metrics.snapshot.triggersSkippedDbClaim).toBe(1);
+
+      // R126-A1: DB claim 现是每条路径的判决，上一步的 affected:0 要显式还给
+      // 默认的「领取成功」，否则后两步会被 claim 拦在入队之前。
+      taskRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({ affected: 1 }),
+      );
 
       // 6) queue.add throws → triggersFailed (with PENDING compensation)
       redisLockService.acquireLock.mockResolvedValue(lock);

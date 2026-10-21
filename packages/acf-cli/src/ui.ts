@@ -10,6 +10,7 @@
  */
 import chalk from 'chalk';
 import { classifyApiError, formatApiError } from './client.js';
+import { classifyErrorCode, extractApiErrorInfo } from './error-code.js';
 
 /**
  * CLI 退出码表（README.md「Exit codes」为同一张表的人读版，两处必须同步改）：
@@ -40,7 +41,9 @@ export class UsageError extends Error {}
 
 /** spinner 的最小结构面（ora 实例天然满足），避免 ui 层反向依赖 ora。 */
 interface Failable {
-  fail(message?: string): unknown;
+  fail?(message?: string): unknown;
+  /** `--json` 失败时用它收尾：不能把 "✗ scope" 这行人读文本写进 JSON stderr。 */
+  stop?(): unknown;
 }
 
 /**
@@ -60,21 +63,71 @@ export function exitCodeFor(e: unknown): number {
 }
 
 /**
+ * 当前进程是不是 `--json` 调用（决定失败时给人读文案还是结构化 JSON）。
+ *
+ * 为什么读 argv 而不是让 70 多个 `emitError` 调用点各自传 opts.json：那些
+ * 调用点分布在 10 个命令文件里、且多数 catch 块拿不到 opts（action 形参各不
+ * 相同），逐个补参既是一次大 diff，也必然漏掉几处（漏一处就是"某个命令的
+ * --json 错误不是 JSON"）。argv 是**唯一**能覆盖全部出口的位置。
+ */
+export function isJsonInvocation(
+  argv: readonly string[] = process.argv,
+): boolean {
+  return argv.slice(2).includes('--json');
+}
+
+/**
+ * `--json` 失败时的结构化错误体（字段名与 admin-api 错误响应体对齐：
+ * `code` = HTTP 状态、`errorCode` = 稳定码、`params` = 插值参数）。
+ *
+ * 只写入**存在**的键（无码时不出现 `errorCode`），脚本用 `!== undefined`
+ * 或 `in` 都能可靠判断；`exitCode` 与进程真实退出码同源（exitCodeFor）。
+ */
+export function apiErrorToJson(
+  scope: string,
+  e: unknown,
+): Record<string, unknown> {
+  const info = extractApiErrorInfo(e);
+  const category = classifyErrorCode(info.errorCode);
+  const payload: Record<string, unknown> = { ok: false, scope };
+  if (info.status !== undefined) payload['code'] = info.status;
+  if (info.errorCode !== undefined) payload['errorCode'] = info.errorCode;
+  if (category !== null) payload['category'] = category;
+  if (info.params !== undefined) payload['params'] = info.params;
+  payload['message'] =
+    info.message ?? (e instanceof Error ? e.message : String(e));
+  payload['exitCode'] = exitCodeFor(e);
+  return payload;
+}
+
+/**
  * 统一错误出口。有 spinner 时 `spinner.fail(scope)`（失败行与进行中的转圈
  * 原位收尾）；无 spinner 时打 `✗ scope`。错误详情一律走 formatApiError，
  * 保证 401/网络/后端 message 的呈现全 CLI 一致。
+ *
+ * R31-E1: `--json` 调用（或显式 `opts.json`）改为往 **stderr** 打一行结构化
+ * JSON（含 `errorCode` / `params` / `code` / `exitCode`），stdout 仍只留
+ * 成功载荷（CI 的 `| jq` 不被污染）；无码时该键不出现，其余语义（退出码、
+ * 人类可读输出的文案）完全不变。
  */
 export function emitError(
   scope: string,
   e: unknown,
-  opts: { spinner?: Failable } = {},
+  opts: { spinner?: Failable; json?: boolean } = {},
 ): never {
-  if (opts.spinner) {
-    opts.spinner.fail(scope);
+  const json = opts.json ?? isJsonInvocation();
+  if (json) {
+    // 不调 fail(scope)：那会把 "✗ scope" 这人读行混进 JSON stderr。
+    if (opts.spinner) opts.spinner.stop?.();
+    console.error(JSON.stringify(apiErrorToJson(scope, e)));
   } else {
-    console.error(chalk.red(`✗ ${scope}`));
+    if (opts.spinner) {
+      opts.spinner.fail?.(scope);
+    } else {
+      console.error(chalk.red(`✗ ${scope}`));
+    }
+    console.error(chalk.red(formatApiError(e)));
   }
-  console.error(chalk.red(formatApiError(e)));
   process.exit(exitCodeFor(e));
 }
 

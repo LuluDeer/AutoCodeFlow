@@ -12,12 +12,17 @@
  * 版式原则：监控工具的主对象是日志——页面全幅铺满窗口，不设居中限宽；
  * 侧栏是整高面板（发丝线分区），不出现"浮卡 + 下方空洞"。
  * ========================================================================== */
+/* 页面水平内边距是**唯一事实源** --page-pad-x：
+   吸顶筛选行要用负边距拉成通栏，一旦横向内边距在某个断点变化而负边距没跟上，
+   筛选行就会比页面宽出几个像素（实测高度 ≤640px 时页面内边距变 18px、负边距
+   仍是 24px → 两侧各出血 6px）。两边都读同一个变量即不可能再漂移。 */
 .status-page {
+  --page-pad-x: 24px;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 20px 26px 18px;
+  padding: 20px var(--page-pad-x) 18px;
   gap: var(--space-3);
   width: 100%;
 }
@@ -94,11 +99,12 @@
 .hero-eyebrow span { opacity: 0.45; }
 .hero-status-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .hero-name {
-  /* R3：24px→20px（--fs-xl）——状态大字降档，页面的主视觉让位给日志工作区。
+  /* 状态大字回到 --fs-2xl(24px)：这是整页唯一的"当前结论"，比页标题更重
+     才符合监控工具的信息层级（此前与页标题同为 20px，主角感不足）。
      V4-5（M-03）：key 重挂触发 120ms crossfade，状态翻转不再硬替换 */
   margin: 2px 0;
   color: var(--text);
-  font-size: var(--fs-xl);
+  font-size: var(--fs-2xl);
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: -0.02em;
@@ -107,7 +113,7 @@
 .hero-status-text { color: var(--text3); font-size: var(--fs-base); line-height: 1.5; animation: fadeIn 120ms var(--ease-standard); }
 
 .hero-controls { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
-.hero-controls .btn { min-width: 120px; }
+.hero-controls .btn { min-width: 116px; }
 
 .hero-error {
   margin-top: 10px;
@@ -123,14 +129,17 @@
 /* 今日概览条（B-02，§2.4 新增）：hero 与日志工作区之间的全宽一行。
    语义是 <button>（整条可点进历史页），视觉克制：白卡 + 发丝边，不加徽章底；
    计数用 tabular-nums 防跳动，成功/失败/运行中按语义着色（绿/红/蓝文字） */
+/* 今日概览条：外层只负责"整条一个按钮"的点击与定位，换行全部发生在
+   .today-summary-main 内部——箭头因此永远钉在右侧中部，不会在窄窗里
+   单独掉到第二行最右边（此前 flex-wrap 写在按钮本身，箭头被 margin-left:auto
+   推到下一行的末位，看起来像一个孤立的符号）。 */
 .today-summary {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: var(--space-2);
   flex-shrink: 0;
   min-height: 40px;
-  padding: 8px 14px;
+  padding: 8px 10px 8px 14px;
   background: var(--surface-0);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -140,9 +149,18 @@
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
-  transition: border-color var(--transition-normal), background var(--transition-normal);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
 }
-.today-summary:hover { background: var(--surface-2); }
+.today-summary:hover { background: var(--surface-2); border-color: var(--border-strong); }
+.today-summary:focus-visible { outline-offset: -2px; border-radius: var(--radius-lg); }
+.today-summary-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
 .today-summary-num {
   color: var(--text);
   font-weight: 700;
@@ -152,7 +170,7 @@
 .today-summary-num.is-fail { color: var(--red-text); }
 .today-summary-num.is-run { color: var(--blue-text); }
 .today-summary-sep { color: var(--text4); }
-.today-summary-arrow { margin-left: auto; color: var(--text4); }
+.today-summary-arrow { flex: none; color: var(--text4); }
 /* V4-3（I-01）运行中任务明细段：与计数行同条可点，任务名一行截断 */
 .today-summary-running {
   display: inline-flex;
@@ -238,7 +256,7 @@
    （R3：右栏 356→320px，日志工作区相应加宽） */
 .status-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) var(--rail-w);
   gap: var(--space-3);
   flex: 1;
   min-height: 0;
@@ -276,7 +294,6 @@
   gap: 8px;
   min-width: 0;
   padding: 6px 8px;
-  margin: 0 -8px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -323,13 +340,14 @@
   box-shadow: var(--shadow-xs);
   flex-shrink: 0;
 }
+/* 眉题：中文标题里夹着 "Agent" 时 text-transform:uppercase 只会把拉丁词
+   变成 "AGENT"（与全中文的「连接信息」不成体系），故只保留字距与字重。 */
 .overview-heading {
   margin-bottom: var(--space-2);
   color: var(--text3);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-micro);
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.06em;
 }
 .overview-row {
   display: grid;
@@ -399,7 +417,7 @@
 .log-section {
   display: flex;
   flex-direction: column;
-  min-height: 160px;
+  min-height: 180px;
   background: var(--surface-0);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -447,7 +465,18 @@
   background: var(--surface-1);
   border-bottom: 1px solid var(--border);
 }
-.log-fs-title { flex-shrink: 0; font-size: 13px; font-weight: 650; color: var(--text); }
+/* 标题可能很长（任务名 + 执行 ID + 状态徽章）：允许收缩并整体省略，
+   否则窄窗下会把搜索框与右侧动作挤出视口。 */
+.log-fs-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-base);
+  font-weight: 650;
+  color: var(--text);
+}
 .log-fs-title small { color: var(--text3); font-size: 11px; font-weight: 400; margin-left: 4px; }
 .log-fs-deployment-id { font-family: var(--font-mono); font-size: 11px; color: var(--text3); }
 /* 顶栏导航工具位（V4-2：历史查看器「上一次/下一次执行」切换） */
@@ -526,7 +555,9 @@
 }
 .log-level-chip:hover { background: var(--surface-2); }
 .log-level-chip.active { color: var(--accent); border-color: var(--accent-border); background: var(--accent-muted); font-weight: 600; }
-.log-fs-summary { flex: 1; min-width: 150px; text-align: right; color: var(--text3); font-size: 11px; }
+/* 汇总作为筛选 chips 的附注（左对齐紧跟其后），不再撑满中间把按钮挤到换行 */
+.log-fs-summary { flex: none; min-width: 0; color: var(--text3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.log-fs-tools-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 
 /* 工具行下方轻量通知（V4 后续优化 3：应用查看器「打开目录失败」等瞬时反馈） */
 .log-fs-notice {
@@ -604,9 +635,13 @@
 
 @media (max-width: 860px) {
   .log-fs-bar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  /* 窄窗先丢完整执行 ID（36 字符）：它顶掉的是"关闭"按钮的位置，
+     而 ID 仍可从 title 悬停/复制行获得。 */
+  .log-fs-deployment-id { display: none; }
   .log-fs-search { order: 3; flex-basis: 100%; max-width: none; }
   .log-fs-tools { padding: 8px 12px; }
-  .log-fs-summary { order: 4; flex-basis: 100%; text-align: left; }
+  .log-fs-tools-actions { margin-left: 0; }
+  .log-fs-summary { flex-basis: 100%; }
   .log-fs-files { width: 220px; }
 }
 
@@ -621,8 +656,10 @@
   box-sizing: border-box;
   /* 与状态/应用页同一版式基准：全幅铺满 + 统一页边距，不做居中限宽
      （居中限宽在 maximized 窗口下两侧出现大面积死白，2026-10 审计项） */
-  padding: 20px 26px 18px;
+  --page-pad-x: 24px;
+  padding: 20px var(--page-pad-x) 18px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   width: 100%;
 }
 /* 历史页不再用 flex:1 强制拉伸列表区——组数少时会造成视觉上的"空荡感"。
@@ -633,11 +670,21 @@
    否则会挤进第一列与组卡片并排；flex 布局下该属性无效，无需分档写两遍。 */
 .history-date-header {
   grid-column: 1 / -1;
-  margin: 4px 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 2px;
   color: var(--text3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+/* 分组头右侧接一条发丝线：时间分组从"孤零零一行小字"变成明确的分区标题 */
+.history-date-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 /* 吸顶筛选行（历史/应用共用）：多应用/多任务场景下滚远之后，搜索与筛选
    必须仍在手边。吸的是控制行而非标题行——标题是装饰，筛选才是操作；
@@ -648,10 +695,10 @@
   position: sticky;
   top: 0;
   z-index: 20;
-  margin-left: -26px;
-  margin-right: -26px;
-  padding-left: 26px;
-  padding-right: 26px;
+  margin-left: calc(-1 * var(--page-pad-x, 24px));
+  margin-right: calc(-1 * var(--page-pad-x, 24px));
+  padding-left: var(--page-pad-x, 24px);
+  padding-right: var(--page-pad-x, 24px);
   margin-top: -10px;
   padding-top: 10px;
   padding-bottom: 10px;
@@ -734,7 +781,8 @@
 .history-group-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   width: 100%;
   padding: 10px 14px;
   border: 0;
@@ -748,7 +796,7 @@
 }
 .history-group-header:hover { background: var(--surface-2); }
 .history-group-header.open { background: var(--surface-2); }
-.history-group-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.history-group-left { display: flex; flex: 1 1 220px; align-items: center; gap: 10px; min-width: 0; }
 .history-group-arrow { display: inline-flex; color: var(--text3); flex-shrink: 0; transition: transform var(--transition-normal); }
 .history-group-arrow.open { transform: rotate(90deg); }
 .history-group-arrow .icon { width: 13px; height: 13px; }
@@ -761,7 +809,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.history-group-meta { display: flex; align-items: center; gap: 14px; flex-shrink: 0; flex-wrap: wrap; }
+.history-group-meta { display: flex; align-items: center; gap: 10px 14px; flex-shrink: 0; flex-wrap: wrap; }
 .history-group-latest { display: inline-flex; align-items: center; gap: 6px; color: var(--text3); font-size: 11px; }
 .history-stat { font-size: 11px; color: var(--text3); white-space: nowrap; }
 /* V4-1（V-07 层级压缩）：统计不再嵌套胶囊（边框+底色的胶囊里再装彩色文字，
@@ -820,7 +868,7 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text3);
-  min-height: 24px;
+  min-height: 26px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -864,40 +912,44 @@
 .history-more:hover { background: var(--surface-2); color: var(--text); }
 .history-more-groups { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); }
 
-/* 空态家族（V4-5 V-09：EmptyState 组件 page 档，历史/应用共用一套） */
+/* 空态家族（V4-5 V-09：EmptyState 组件 page 档，历史/应用共用一套）
+   2026-10 二次打磨：去掉"占满整页的虚线大框"——空态本身内容只有 4 行，
+   却撑出一张 1388×760 的虚线卡片（1440 窗口），观感像未完成的线框稿；
+   改为无容器居中排版：图标底板 + 标题 + 说明 + 提示 + 行动，垂直居中于
+   剩余空间，窄窗下也不会被裁切。 */
 .empty-state {
   display: flex;
   flex: 1;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 220px;
-  padding: 28px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-xl);
-  background: var(--surface-0);
+  gap: 2px;
+  min-height: 0;
+  padding: var(--space-8) var(--space-6);
   color: var(--text3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: center;
+  animation: fadeIn var(--anim-in);
 }
-.empty-state strong { color: var(--text); font-size: 15px; font-weight: 650; }
-.empty-state-text { max-width: 360px; line-height: 1.65; }
-.empty-hint { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.empty-state strong { margin-top: var(--space-3); color: var(--text); font-size: var(--fs-lg); font-weight: 650; letter-spacing: -0.01em; }
+.empty-state-text { max-width: 420px; margin-top: 2px; line-height: 1.7; }
+.empty-hint { font-size: var(--fs-xs); color: var(--text3); margin-top: 2px; line-height: 1.6; }
+.empty-state .btn { margin-top: var(--space-4); }
 .empty-state-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
-  margin-bottom: 6px;
-  /* 空态是中性状态而非正向状态：图标底板去绿色、回中性灰 */
-  border: 1px solid var(--border-strong);
+  width: 52px;
+  height: 52px;
+  flex: none;
+  /* 空态是中性状态而非正向状态：白底 + 发丝边 + 中性图标（不用绿） */
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--surface-2);
-  color: var(--text3);
+  background: var(--surface-0);
+  box-shadow: var(--shadow-xs);
+  color: var(--text4);
 }
-.empty-state-icon svg, .empty-state-icon .icon { width: 23px; height: 23px; }
+.empty-state-icon svg, .empty-state-icon .icon { width: 22px; height: 22px; }
 
 /* 宽屏：折叠分组 2 列扫描，展开组整行；超宽 3 列。
    但组数少时强制单列——否则"1 个展开组 + 3 个折叠组"会在 2 列网格里
@@ -990,7 +1042,13 @@
   white-space: nowrap;
 }
 .apps-filters button {
-  padding: 5px 11px;
+  /* 与搜索框/排序下拉同为 34px 步进：此前 5px 纵向 padding 只有 23px，
+     英文窄窗被视觉巡检判成过小触控目标，且整簇比右侧下拉矮 3px。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 11px;
   border: 0;
   border-radius: calc(var(--radius) - 3px);
   background: transparent;
@@ -1003,17 +1061,27 @@
 .apps-filters button:hover { color: var(--text); }
 .apps-filters button.active { background: var(--surface-3); color: var(--text); font-weight: 600; }
 
+/* 排序下拉：与 .input 下拉同一套自绘箭头与高度（此前是原生箭头 + 11px 字，
+   与旁边的分段控件、搜索框的规格都不一致） */
 .apps-sort {
-  height: 34px;
-  min-width: 112px;
-  padding: 0 28px 0 11px;
-  border: 1px solid var(--border);
+  height: var(--control-h);
+  min-width: 118px;
+  padding: 0 30px 0 12px;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background-color: var(--surface-1);
+  background-color: var(--input-bg);
+  background-image: linear-gradient(45deg, transparent 50%, var(--text3) 50%),
+    linear-gradient(135deg, var(--text3) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  appearance: none;
   color: var(--text2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
+.apps-sort:hover { border-color: var(--border-light); background-color: var(--input-bg-hover); }
+.apps-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .apps-error {
   padding: 9px 14px;
@@ -1061,16 +1129,17 @@
   height: 30px;
   flex: none;
   border: 1px solid var(--accent-border);
-  border-radius: 9px;
-  background: linear-gradient(160deg, var(--accent-muted), rgb(34 197 94 / 0.04));
+  border-radius: var(--radius-sm);
+  /* 明亮风基线是不用渐变（层级只靠底色/描边/阴影），头像块同样走平涂 */
+  background: var(--accent-muted);
   color: var(--accent);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 700;
 }
 .app-avatar-unknown { border-color: var(--border-strong); background: var(--surface-2); color: var(--text3); }
 .app-group-name {
   display: block;
-  font-size: 13.5px;
+  font-size: var(--fs-md);
   font-weight: 650;
   color: var(--text);
   min-width: 0;
@@ -1110,22 +1179,32 @@
   padding: 8px 14px;
   background: var(--surface-2);
 }
+/* 路径芯片：宽度跟随内容（短路径不再撑成一条空荡的长条），内容过长时
+   **从左端裁掉**——应用根目录的最后一段（appId）才是区分点。
+   实现用 flex 的"起点溢出"而不是 direction:rtl + unicode-bidi：后者虽然能
+   修正开头斜杠被挪到行尾的问题，但省略号会跑到右端（实测把 appId 裁掉，
+   恰好丢掉最有信息量的部分）。justify-content:flex-end + 不可收缩的内层文本，
+   超宽时内层向左溢出、被容器裁切，LTR 渲染不受任何影响。 */
 .app-group-path {
-  flex: 1;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex: 0 1 auto;
   min-width: 0;
-  padding: 3px 10px;
+  max-width: 100%;
+  padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--surface-1);
+  background: var(--surface-0);
   font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text3);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text2);
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl;
-  text-align: left;
 }
+.app-group-path > span { flex: 0 0 auto; }
+.app-group-tools .app-group-actions { margin-left: auto; }
 .app-group-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 .app-releases-heading {
@@ -1201,14 +1280,19 @@
   border: 1px dashed var(--border-strong);
 }
 
+/* 「执行日志」是**跨页入口**（任务执行日志在历史页），不是异常态：
+   虚线描边会读成"拖放区/不可用"，改为 accent 文字的轻量按钮。 */
 .app-no-log-link {
-  font-size: 11px;
-  padding: 5px 10px;
-  border: 1px dashed var(--border-strong);
-  background: var(--surface-1);
-  color: var(--text2);
+  font-size: var(--fs-sm);
+  padding: 0 10px;
+  min-height: var(--control-h-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  font-weight: 500;
 }
-.app-no-log-link:hover { color: var(--text); border-style: solid; border-color: var(--border-light); }
+.app-no-log-link:hover { color: var(--accent-hover); background: var(--accent-muted); border-color: var(--accent-border); }
 
 .app-release-more { display: flex; align-items: center; gap: 16px; padding: 9px 14px; }
 .app-release-more button { border: 0; background: none; color: var(--accent); font-size: 11px; cursor: pointer; }
@@ -1220,7 +1304,10 @@
    应用卡信息比历史组卡重：≥2000px **保持两列**、不升三列（无需另写 2000px 档）。
    搜索态多卡自动展开时，多张 expanded 卡各占整行、折叠卡照常成对排列，
    grid 自动放置无错位，故不引入 History 的少组单列（sparse）特判。 */
-@media (min-width: 1500px) {
+/* 折叠卡两列：≥1200px 即生效（此前 1500px 才分两列，而 1280/1366/1440 是
+   桌面最常见的三档窗口宽度——单列 1388px 宽的卡片里，名称在左、版本数在右，
+   中间 1000px 全是空白）。1200–1499px 三档受益最大。 */
+@media (min-width: 1200px) {
   .apps-list {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1249,8 +1336,9 @@
 .log-empty-block {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: var(--space-md);
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-4);
   max-width: 600px;
 }
 .log-empty-hint { font-size: 12px; color: var(--text3); line-height: 1.7; }
@@ -1264,6 +1352,9 @@
 .cfg-nav {
   width: 196px;
   flex-shrink: 0;
+  /* 英文导航文案更长（"Connection & identity"），固定 196px 会把标签折成两行、
+     整个导航项被撑高到 4 行，与中文版观感完全不同。按 <html lang> 分档加宽。 */
+
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1271,6 +1362,7 @@
   background: var(--surface-1);
   border-right: 1px solid var(--border);
 }
+html[lang='en'] .cfg-nav { width: 228px; }
 .cfg-nav-heading {
   margin-bottom: 10px;
   padding: 0 11px;
@@ -1298,13 +1390,17 @@
 }
 .cfg-nav-item:hover { background: var(--surface-2); color: var(--text2); }
 .cfg-nav-item.active { background: var(--accent-muted); color: var(--accent); }
+/* 选中态左侧竖条：此前 left:-10px 抵消 nav 的 10px 内边距，于是竖条被画在
+   **窗口最左缘**（紧贴屏幕边、与胶囊底完全脱开）。改到条目内部左缘后，
+   竖条与浅绿胶囊共同构成一个完整的选中块。 */
 .cfg-nav-item.active::before {
   content: '';
   position: absolute;
-  left: -10px;
-  top: 8px;
-  bottom: 8px;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
   width: 3px;
+  height: 20px;
   border-radius: 0 3px 3px 0;
   background: var(--accent);
 }
@@ -1330,11 +1426,14 @@
 .cfg-scroll { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; scrollbar-width: thin; }
 .cfg-scroll-inner {
   width: 100%;
-  /* 表单列限宽并左对齐（GitHub/VS Code 设置页模式）：输入框的可读长度有上限。
-     V4-3（V-02）：宽屏限宽从 980 提到 1200——多出的宽度给右上下文栏
-     （cfg-aside），2000px 下右半不再整片空转。 */
-  max-width: 1200px;
-  padding: 26px 36px 26px;
+  /* 表单列限宽：输入框的可读长度有上限。
+     宽屏下**居中**（margin-inline:auto）——1536/1920/2560 窗口里左对齐会让
+     右侧留下 600–1300px 的死白区，整页像被钉在左上角；居中后表单与右上下文
+     栏成为画面中心的一组，与大窗口比例协调。
+     V4-3（V-02）：限宽 1200，多出的宽度留给右上下文栏（cfg-aside）。 */
+  max-width: var(--content-max);
+  margin-inline: auto;
+  padding: 26px 32px 26px;
 }
 .cfg-scroll::-webkit-scrollbar { width: 9px; }
 
@@ -1346,8 +1445,10 @@
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
-@media (min-width: 1400px) {
-  .cfg-section { grid-template-columns: minmax(0, 1fr) 300px; column-gap: 32px; }
+/* 1280 起即分双栏：1280/1366/1440 是桌面最常见三档，1400 的门槛让其中两档
+   的右上下文栏只能顺流到表单下方（宽屏反而更空）。 */
+@media (min-width: 1280px) {
+  .cfg-section { grid-template-columns: minmax(0, 1fr) var(--rail-w); column-gap: var(--space-8); }
   .cfg-section .page-header { grid-column: 1 / -1; }
   .cfg-main { grid-column: 1; grid-row: 2; min-width: 0; }
   .cfg-aside { grid-column: 2; grid-row: 2; min-width: 0; }
@@ -1355,7 +1456,7 @@
 .cfg-aside {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-3);
   margin-top: 0;
 }
 .cfg-aside .info-banner { margin-bottom: 0; }
@@ -1437,6 +1538,10 @@
 .cfg-group .cfg-two-col { margin-bottom: 0; }
 
 .cfg-field { margin-bottom: 24px; }
+/* 单行输入框宽度上限：name/path/url 这类字段在 868px 的表单列里铺满会显得
+   没有版式边界（745px 宽的"执行器名称"输入框）。多行 textarea 另给更宽上限。 */
+.cfg-field > .input { max-width: 560px; }
+.cfg-field > textarea.input { max-width: 640px; }
 .cfg-label { display: block; margin-bottom: 7px; font-size: 12px; font-weight: 600; color: var(--text2); letter-spacing: -0.01em; }
 .cfg-label-count { margin-left: 7px; font-size: 11px; font-weight: 500; color: var(--text3); }
 .cfg-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--text3); line-height: 1.6; }
@@ -1475,9 +1580,9 @@
 .cfg-hint-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 .cfg-hint-details[open] summary { margin-bottom: 2px; }
 
-.cfg-row { display: flex; gap: 8px; align-items: center; }
+.cfg-row { display: flex; gap: 8px; align-items: center; max-width: 620px; }
 .cfg-row .input { flex: 1; min-width: 0; }
-.cfg-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.cfg-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 620px; }
 .cfg-test-button { flex-shrink: 0; min-width: 88px; }
 .cfg-field-narrow { max-width: 200px; }
 .cfg-agent-select-field { max-width: 600px; }
@@ -1504,8 +1609,10 @@
 }
 .cfg-toggle-card:hover { border-color: var(--border-light); background: var(--surface-2); }
 .cfg-toggle-info { min-width: 0; }
-.cfg-toggle-info strong { display: block; margin-bottom: 3px; font-size: 13px; font-weight: 600; color: var(--text); }
-.cfg-toggle-info span { font-size: 11.5px; color: var(--text3); line-height: 1.5; }
+.cfg-toggle-info strong { display: block; margin-bottom: 3px; font-size: var(--fs-base); font-weight: 600; color: var(--text); }
+/* 说明段落按可读行长收口（≈62 字符）：开关卡在宽屏有 860px 宽，
+   不加约束会把一句话拉成一整行横贯卡片。 */
+.cfg-toggle-info span { display: block; max-width: 62ch; font-size: var(--fs-sm); color: var(--text3); line-height: 1.55; }
 
 /* 保存影响确认已统一为 components.css 的 .confirm-bar-impact（V4-4）。
    V4-4（X-02）：改动清单面板（footer 上方展开） */
@@ -1513,7 +1620,8 @@
   flex-shrink: 0;
   max-height: 200px;
   overflow-y: auto;
-  padding: 12px 36px;
+  /* 通栏抽屉，但内容与居中后的表单列左缘对齐（宽屏下不再贴窗边） */
+  padding: 12px max(32px, calc((100% - var(--content-max)) / 2 + 32px));
   border-top: 1px solid var(--border);
   background: var(--surface-1);
   animation: fadeIn var(--anim-in);
@@ -1528,10 +1636,11 @@
 }
 .cfg-diff-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 10px;
+  gap: 4px 10px;
   padding: 4px 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   min-width: 0;
 }
 .cfg-diff-key { flex: 0 0 200px; color: var(--text2); font-weight: 600; }
@@ -1545,15 +1654,34 @@
 .cfg-diff-arrow { flex: none; width: 12px; height: 12px; color: var(--text4); align-self: center; }
 
 /* 底部保存栏 */
+/* 底部保存栏：内容与表单列同宽同轴（cfg-footer-inner），主 CTA 右置。
+   此前按钮贴在最左边距上，视觉上像是表单的一部分而不是"提交"动作。 */
 .cfg-footer {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: center;
+  gap: var(--space-3);
   flex-shrink: 0;
-  padding: 12px 36px 14px;
+  padding: 12px 32px 14px;
   border-top: 1px solid var(--border);
   background: var(--surface-1);
 }
+.cfg-footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  width: 100%;
+  max-width: calc(var(--content-max) - 64px);
+  margin-inline: auto;
+}
+.cfg-footer-inner .cfg-save-error { flex: 1 1 auto; min-width: 0; }
+/* 左侧状态位占满剩余空间，动作按钮成组贴在右侧（此前主 CTA 单独 margin-left:auto
+   会把「查看更改 / 放弃修改」留在中间，三个按钮被拆成两组） */
+.cfg-footer-inner .cfg-unsaved,
+.cfg-footer-inner .saved-toast { margin-right: auto; }
+.cfg-footer-inner .btn-primary { flex: none; }
 .cfg-unsaved { display: flex; align-items: center; gap: 8px; margin-right: auto; color: var(--text3); font-size: 12px; white-space: nowrap; }
 .cfg-unsaved > span { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--yellow); }
 .cfg-save-error {
@@ -1746,13 +1874,13 @@
 
 .wizard-close-btn {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: 10px;
+  right: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 29px;
-  height: 29px;
+  width: 32px;
+  height: 32px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -1763,7 +1891,9 @@
 }
 .wizard-close-btn:hover { background: var(--red); color: #fff; }
 
-.wizard-progress-row { display: flex; align-items: flex-start; gap: 12px; }
+/* 进度行：段条 + 步骤名两行；「第 N / 5 步」与**步骤名**同一基线（此前
+   align-items:flex-start 让标签贴着段条顶端，与下方文字错位一格）。 */
+.wizard-progress-row { display: flex; align-items: flex-end; gap: 12px; }
 .wizard-progress { display: flex; gap: 8px; flex: 1; }
 .wizard-progress-label {
   flex: none;
@@ -1772,7 +1902,6 @@
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   line-height: 1;
-  padding-top: 0;
 }
 /* 步骤列：进度段 + 步骤名纵向组合（v2 指引升级） */
 .wizard-progress-col {
@@ -1793,7 +1922,7 @@
 .wizard-progress-col.done .wizard-progress-step { background: var(--green); opacity: 0.5; }
 .wizard-progress-col.active .wizard-progress-step { background: var(--green); }
 .wizard-progress-name {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   line-height: 1;
   /* A-09：10px 步骤名承载语义，--text4 为 tokens 声明的装饰级禁用值 */
   color: var(--text3);
@@ -1805,10 +1934,12 @@
 
 /* 标题 / 正文统一左右内边距 */
 .wizard-title, .wizard-subtitle { padding-left: 28px; padding-right: 28px; }
-.wizard-title { margin: 22px 0 5px; font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -0.02em; }
-.wizard-subtitle { margin-bottom: 18px; font-size: 12px; color: var(--text2); line-height: 1.6; }
+.wizard-title { margin: 22px 0 6px; font-size: var(--fs-2xl); font-weight: 700; color: var(--text); letter-spacing: -0.02em; line-height: 1.3; }
+.wizard-subtitle { margin-bottom: 18px; font-size: var(--fs-base); color: var(--text2); line-height: 1.6; }
 
-.wizard-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 28px 8px; }
+/* scrollbar-gutter:stable 预留 8px 槽（避免步骤间滚动条出现/消失导致表单左右跳），
+   右侧内边距相应减 8，使字段右缘与标题/底部按钮列保持同一条竖线。 */
+.wizard-body { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 4px 20px 8px 28px; }
 .wizard-actions {
   display: flex;
   align-items: center;
@@ -1845,8 +1976,8 @@
 }
 .wizard-hero-glyph .icon { width: 24px; height: 24px; }
 .wizard-hero-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.wizard-hero-text strong { font-size: 14px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
-.wizard-hero-text span { font-size: 11.5px; color: var(--text3); line-height: 1.5; }
+.wizard-hero-text strong { font-size: var(--fs-md); font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+.wizard-hero-text span { font-size: var(--fs-sm); color: var(--text3); line-height: 1.5; }
 .wizard-feature {
   display: flex;
   align-items: center;
@@ -1873,8 +2004,8 @@
 .wizard-feature-icon.icon-purple { background: var(--purple-bg); color: var(--purple-text); }
 .wizard-feature-icon.icon-green { background: var(--green-bg); color: var(--accent); }
 .wizard-feature-text { display: flex; flex-direction: column; gap: 2px; }
-.wizard-feature-text strong { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3; }
-.wizard-feature-text span { font-size: 11px; color: var(--text3); line-height: 1.4; }
+.wizard-feature-text strong { font-size: var(--fs-base); font-weight: 600; color: var(--text); line-height: 1.3; }
+.wizard-feature-text span { font-size: var(--fs-sm); color: var(--text3); line-height: 1.45; }
 
 .wizard-address-input.has-picker { margin-top: var(--space-xs); }
 .wizard-inline-button { flex-shrink: 0; }
@@ -1977,34 +2108,40 @@
 
 @media (max-width: 820px) {
   .cfg-nav { width: 168px; padding: 16px 8px; }
+  html[lang='en'] .cfg-nav { width: 194px; }
   .cfg-nav-heading { margin-bottom: 9px; }
   .cfg-nav-item { gap: 8px; padding: 9px 9px; }
   .cfg-nav-sub { display: none; }
   .cfg-scroll-inner { padding: 22px 20px; }
-  .cfg-footer { flex-wrap: wrap; gap: 9px; padding: 11px 20px 13px; }
-  .cfg-footer .cfg-save-error { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+  .cfg-footer { padding: 11px 20px 13px; }
+  .cfg-footer-inner { max-width: none; gap: 9px; }
+  .cfg-footer-inner .cfg-save-error { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+  .cfg-diff-panel { padding: 12px 20px; }
 
-  .status-page { padding: 14px 16px; gap: 12px; }
+  .status-page { --page-pad-x: 16px; padding: 14px var(--page-pad-x); gap: 12px; }
   .hero-card { flex-wrap: wrap; gap: 14px; padding: 15px 16px; }
   .hero-glyph { width: 44px; height: 44px; }
   .hero-controls { width: 100%; }
   .hero-controls .btn { flex: 1; min-width: 0; }
   .status-side { grid-template-columns: 1fr; }
 
-  .history-page { padding: 14px 16px; gap: 10px; }
-  .apps-controls,
-  .history-filters { margin-left: -16px; margin-right: -16px; padding-left: 16px; padding-right: 16px; }
+  .history-page { --page-pad-x: 16px; padding: 14px var(--page-pad-x); gap: 10px; }
   .history-group-header { gap: 8px; flex-wrap: wrap; }
   .history-group-meta { gap: 8px; }
+  /* 窄窗：两行——第一行「状态 + 执行 ID」，第二行「时间 + 时长」。
+     时长此前 justify-self:end 顶在 ID 列右缘，视觉上归属不清；改为紧跟
+     时间左对齐后，"什么时候跑 / 跑了多久"成为一组可读的元信息。 */
   .history-run-row {
-    grid-template-columns: 80px minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-areas:
-      "badge id    actions"
-      "time  dur   actions";
+      "badge id  actions"
+      "time  dur actions";
     gap: 4px 10px;
-    padding-left: 18px;
+    padding: 9px 12px 9px 16px;
   }
-  .history-run-dur { justify-self: end; }
+  .history-run-badge { justify-self: start; }
+  .history-run-time { white-space: nowrap; }
+  .history-run-dur { justify-self: start; text-align: left; }
   .history-filter-chips { flex-wrap: wrap; }
 
   .apps-controls { grid-template-columns: minmax(0, 1fr) auto; }
@@ -2022,7 +2159,8 @@
 }
 
 @media (max-height: 640px) {
-  .status-page { padding: 12px 18px; gap: 10px; }
+  /* 只压纵向节奏，横向内边距必须继续走 --page-pad-x（吸顶行靠它对齐） */
+  .status-page { padding-top: 12px; padding-bottom: 12px; gap: 10px; }
   .hero-card { padding: 12px 16px; }
   .overview-card { padding: 11px 14px; }
   .cfg-scroll-inner { padding-top: 18px; }
@@ -2078,6 +2216,13 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
+}
+.log-preview-wrap .log-viewer {
+  /* 预览区嵌在日志白卡内：卡片本身已有描边与圆角，内层再画一圈 1px 边框
+     会与卡边重叠成"双线"，且白白吃掉 2px 行宽。改为无边框直角，只由
+     log-header 的发丝线分隔。 */
+  border: none;
+  border-radius: 0;
 }
 .log-preview-fade {
   position: absolute;
@@ -2199,7 +2344,8 @@
   align-items: center;
   gap: 4px;
   flex: none;
-  font-size: 11px;
+  margin-left: auto;
+  font-size: var(--fs-xs);
 }
 .source-probe .icon { width: 12px; height: 12px; }
 .source-probe.ok { color: var(--accent); }
@@ -2216,7 +2362,8 @@
    入场复用 base.css 既有 fadeIn 关键帧；「知道了」复用 .btn .btn-sm .btn-primary。 */
 .close-tip {
   position: fixed;
-  top: 52px;
+  /* 顶栏高度是变量：窄窗顶栏折成两行（42+44），写死 52 会让气泡压在 tab 行上 */
+  top: calc(var(--topbar-h) + 4px);
   right: 12px;
   z-index: 999;
   max-width: 300px;
@@ -2234,6 +2381,10 @@
   color: var(--text2);
 }
 .close-tip .btn { margin-top: 10px; }
+
+@media (max-width: 899px) {
+  .close-tip { top: calc(var(--topbar-h-narrow) + 48px); }
+}
 
 /* ── 清扫记录（死样式零引用删除；一行一条：日期 + 类名 + 证据）──────────
  * 2026-10-05 .cfg-nav-dot —— 全量类名扫描（378 类 vs src/renderer + e2e 共

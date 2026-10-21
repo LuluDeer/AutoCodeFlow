@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ModuleRef } from "@nestjs/core";
-import { Repository, IsNull, Or, In } from "typeorm";
+import { Repository, IsNull, Or, In, Not } from "typeorm";
 import { Application, ApplicationStatus } from "./entities/application.entity";
 // NETOPT-8③: 删除应用时 best-effort 通知执行器清理 apps/<appId>
 import { AppDeployment } from "./entities/app-deployment.entity";
@@ -622,8 +622,20 @@ export class ApplicationService implements OnModuleInit {
           env: this.mergeEnvPreservingMaskedEcho(app.env, dto.env),
         }
       : dto;
-    Object.assign(app, next);
-    const saved = await this.repo.save(app);
+    // R61（ADR-026 规则 4）：只写本次 PATCH **真正带来的列**，不整行回写。
+    //
+    // `app` 是上面 findByIdRaw 的快照；整行 save 会把快照里的 status / manifest /
+    // gitRepo 等一并写回。窗口内若有一次部署刚把 status 推到 DEPLOYING/RUNNING，
+    // 这次「改描述」就会把它按旧值盖回去——而 deployFromGit 的收尾谓词要求
+    // status=DEPLOYING，一旦被盖掉，那次部署就永远收不了尾（卡在 DEPLOYING）。
+    // 注：env 已在上面按「保留掩码位」合并（R1），仍走 patch 原样落库。
+    // adr-026-exempt: patch 只含 dto 显式带来的键（无顺手带回的旧值）；status 仅在调用方
+    // 显式给出时进 patch，故不加状态谓词（加了会让管理员显式设状态在并发部署时凭空失败）。
+    const patch = next as unknown as Record<string, unknown>;
+    if (Object.keys(patch).length > 0) {
+      await this.repo.update({ id }, patch);
+    }
+    const saved = { ...app, ...patch } as Application;
     // D3-B-P1-2: 更新落证（systemBypass=CI webhook 无操作人，userId 留空）。
     if (!opts?.systemBypass) {
       await this.writeAudit({
@@ -810,17 +822,32 @@ export class ApplicationService implements OnModuleInit {
   }
 
   /**
-   * NETOPT-8③: 取该应用的部署行（id + executorAddress 两列）。deploymentRepo
-   * 缺席（既有单测装配）或查询失败时返回空集——扇出跳过但删除主链照常。
+   * NETOPT-8③: 取该应用的部署行（id + executorAddress + executorId 三列）。
+   * deploymentRepo 缺席（既有单测装配）或查询失败时返回空集——扇出跳过但删除
+   * 主链照常。
+   *
+   * R32-C1（类别 1，同型漏改）：**必须把 executorId 一起 select 出来**。部署行
+   * 自创建起就带行身份（deploy: `executorId: executor.id`，见 app-deployment.
+   * entity.ts 的 executorId 列），此前这里只取 executorAddress，于是扇出只能按
+   * 地址分组、传输解析也只能按地址（`repo.findOne({where:{address}})` = 首行
+   * 获胜）。ADR-017 §5 允许 pull 模式同址多行并存，此时那条链路会：
+   *   ① 把 app-stop/app-uninstall 投进**另一台执行器**的 pull 命令队列
+   *      （executor.service.ts 的 resolveExecutorTransport 支持 id 优先，但拿不到
+   *      id 就退化为地址 → 命中的是另一份安装的命令队列）；
+   *   ② 同址两台被合并成一个目标，第二台的部署行没人清理（残留进程/目录）。
+   * 取上行身份后同样的路径变成无歧义：按 executorId 分组、按 id 解析传输。
+   * 存量/异常行（executorId 为 NULL）仍按地址分组，行为与引入前逐字节一致。
    */
   private async findDeploymentsForRemovalFanout(
     appId: string,
-  ): Promise<{ id: string; executorAddress: string | null }[]> {
+  ): Promise<
+    { id: string; executorAddress: string | null; executorId: string | null }[]
+  > {
     if (!this.deploymentRepo) return [];
     try {
       return await this.deploymentRepo.find({
         where: { applicationId: appId },
-        select: { id: true, executorAddress: true },
+        select: { id: true, executorAddress: true, executorId: true },
       });
     } catch (err: unknown) {
       this.logger.warn(
@@ -833,7 +860,8 @@ export class ApplicationService implements OnModuleInit {
   }
 
   /**
-   * NETOPT-8③: 对每台有部署的执行器（按地址去重）并行扇出清理通知。
+   * NETOPT-8③: 对每台有部署的执行器（R32-C1 起按**行身份**去重，无行身份才
+   * 回落地址）并行扇出清理通知。
    * Promise.allSettled + 单台内部全兜底 ⇒ 整体绝不外抛。
    *
    * DEEP-AUDIT B·4.3: 扇出结果**可观测**——旧实现 allSettled 后把 per-台
@@ -844,34 +872,65 @@ export class ApplicationService implements OnModuleInit {
   private async fanOutAppRemovalToExecutors(
     appId: string,
     appName: string,
-    deployments: { id: string; executorAddress: string | null }[],
+    deployments: {
+      id: string;
+      executorAddress: string | null;
+      executorId?: string | null;
+    }[],
     userId?: number,
   ): Promise<void> {
-    const byAddress = new Map<string, string[]>();
+    // R32-C1（类别 1）：分组键优先用**行身份**（executorId），地址只是没有行
+    // 身份时的回落（存量迁移前派发的行、或部署行早于 executorId 列的历史）。
+    // 此前一律按地址分组：pull 同址多行时两台执行器会被折叠成一个目标，
+    // 后者的部署行从此无人清理，而前者的队列会被塞进别人的命令。
+    const targetsByKey = new Map<
+      string,
+      {
+        key: string;
+        executorId: string | null;
+        address: string;
+        deploymentIds: string[];
+      }
+    >();
     for (const d of deployments) {
-      if (!d.executorAddress) continue;
-      const ids = byAddress.get(d.executorAddress) ?? [];
-      ids.push(d.id);
-      byAddress.set(d.executorAddress, ids);
+      const executorId = d.executorId ?? null;
+      // 既无行身份也无地址的行无法作为扇出目标（旧行为同样跳过）。
+      if (!executorId && !d.executorAddress) continue;
+      const key = executorId ? `id:${executorId}` : `addr:${d.executorAddress}`;
+      const existing = targetsByKey.get(key);
+      if (existing) {
+        existing.deploymentIds.push(d.id);
+        continue;
+      }
+      targetsByKey.set(key, {
+        key,
+        executorId,
+        address: d.executorAddress ?? "",
+        deploymentIds: [d.id],
+      });
     }
-    if (byAddress.size === 0) return;
+    if (targetsByKey.size === 0) return;
     if (!this.executorService) {
       this.logger.warn(
         `NETOPT-8③: ExecutorService 缺席，跳过应用 ${appId} 的执行器清理通知`,
       );
       return;
     }
-    const targets = [...byAddress.entries()];
+    const targets = [...targetsByKey.values()];
     const settled = await Promise.allSettled(
-      targets.map(async ([address, deploymentIds]) => ({
-        address,
-        ...(await this.uninstallAppOnExecutor(appId, address, deploymentIds)),
+      targets.map(async (target) => ({
+        address: target.address,
+        ...(await this.uninstallAppOnExecutor(
+          appId,
+          { executorId: target.executorId, address: target.address },
+          target.deploymentIds,
+        )),
       })),
     );
     // allSettled 语义保持：单台 promise 本身 rejected（理论不可达，防御兜底）
     // 也计为该台失败，不让防御路径把结果统计打穿。
     const results = settled.map((r, i) => {
-      const address = targets[i][0];
+      const address = targets[i].address;
       if (r.status === "fulfilled") return r.value;
       return {
         address,
@@ -936,18 +995,29 @@ export class ApplicationService implements OnModuleInit {
    */
   private async uninstallAppOnExecutor(
     appId: string,
-    address: string,
+    target: { executorId: string | null; address: string },
     deploymentIds: string[],
   ): Promise<{ ok: boolean; error?: string }> {
     const executorService = this.executorService;
     if (!executorService)
       return { ok: false, error: "ExecutorService unavailable" };
+    // R32-C1（类别 1）：本台执行器的**地址**用于 push 的 URL 与日志；解析不到
+    // 行时它就等于部署行记下的地址（引入前语义）。
+    const address = target.address;
 
     // ARCH-33: 先判一次传输方式——整批命令要么全走 pull，要么全走 push，
     // 不允许一台执行器上两条路径混发（否则 stop 走队列、uninstall 走 HTTP，
     // 时序就乱了）。resolveExecutorTransport 是纯读判定，不会产生副作用。
+    //
+    // R32-C1（类别 1，同型漏改）：**传 executorId**（部署行自带，调用方已按行
+    // 身份分组）。resolveExecutorTransport 本就是 id 优先、地址只是回落；此前
+    // 调用点只给 address，于是 pull 同址多行时首行获胜 → 清理命令入错队列、
+    // 另一台永远收不到自己的 app-stop/app-uninstall。
     const transport = await executorService
-      .resolveExecutorTransport({ address })
+      .resolveExecutorTransport({
+        executorId: target.executorId,
+        address: target.address,
+      })
       .catch(() => ({ mode: "push" as const, executor: null }));
     if (transport.mode === "pull" && transport.executor) {
       const executorId = transport.executor.id;
@@ -1190,7 +1260,36 @@ export class ApplicationService implements OnModuleInit {
     app.gitRepo = gitRepo;
     app.gitBranch = gitBranch;
     if (gitCommit) app.gitCommit = gitCommit;
-    await this.repo.save(app);
+    const deployHeaderPatch: {
+      status: ApplicationStatus;
+      gitRepo: string;
+      gitBranch: string;
+      gitCommit?: string;
+    } = {
+      status: ApplicationStatus.DEPLOYING,
+      gitRepo,
+      gitBranch,
+      ...(gitCommit ? { gitCommit } : {}),
+    };
+    // R54（ADR-026 规则 4）：只写本次真正改变的 4 列，**不整行 save**。
+    // 这个方法的窗口是**分钟级**（clone + 构建 + 部署），跨窗口的整行回写会把期间管理台改的
+    // name / description / env / manifest 全部按进入方法时的快照写回。
+    // 顺带把 R-01（掩码副本落库）从「靠 RAW 取数规避」变成**结构上不可能**：patch 里没有 env，
+    // 就不存在把 '***' 写进 secrets 的路径。
+    // 条件写：**同一应用同一时刻只允许一次部署**（与 app-deployment 模块的 in-flight
+    // 唯一索引同一姿态）。DEPLOYING 是「已有人占位」的唯一含义，把它写进 WHERE：
+    // 命中 0 说明另一个部署正在进行，本次直接让位（不再往下 clone/构建/收尾，
+    // 否则两次部署会互相覆盖 status 与 manifest）。
+    const started = await this.repo.update(
+      { id, status: Not(In([ApplicationStatus.DEPLOYING])) },
+      deployHeaderPatch,
+    );
+    if (!started.affected) {
+      this.logger.warn(
+        `deployFromGit(${id}): 已有部署在进行中（status=DEPLOYING），本次让位`,
+      );
+      return;
+    }
     // D3-B-P1-2: git 部署触发落证（applicationId + git 元信息）。
     await this.writeAudit({
       action: "application.deploy",
@@ -1303,12 +1402,43 @@ export class ApplicationService implements OnModuleInit {
         }
       }
 
+      // R54：收尾同样只写 status 一列，且带前置状态——**只有在这次部署仍然持有
+      // DEPLOYING 时**才收尾。若窗口内已被取消/被另一次部署推进/被删，命中 0 就
+      // 不要按旧快照宣布「部署成功」（否则会覆盖别人刚写的状态）。
       app.status = ApplicationStatus.ACTIVE;
-      await this.repo.save(app);
+      // 收尾 patch 只包含**本次部署产生的结果列**：status + rev-parse 得到的 gitCommit
+      // + manifest 派生的 manifest/runtime/entrypoint（这三列在 1324/1330-1332 就地赋值，
+      // 旧实现靠收尾那次整行 save 顺带落库——改列级写后必须显式带上，否则会**静默丢失**）。
+      const resultPatch: Record<string, unknown> = {
+        status: ApplicationStatus.ACTIVE,
+        gitCommit: app.gitCommit ?? null,
+        manifest: app.manifest ?? null,
+        runtime: app.runtime ?? null,
+        entrypoint: app.entrypoint ?? null,
+      };
+      const settled = await this.repo.update(
+        { id, status: ApplicationStatus.DEPLOYING },
+        resultPatch,
+      );
+      if (!settled.affected) {
+        this.logger.warn(
+          `deployFromGit(${id}): 部署期间状态已被并发推进，跳过 ACTIVE 收尾以保留并发结果`,
+        );
+      }
       this.logger.log(`Application ${app.name} deployed successfully`);
     } catch (err: unknown) {
       app.status = ApplicationStatus.FAILED;
-      await this.repo.save(app);
+      // 失败收尾用「未终结」谓词而不是 =DEPLOYING：失败路径上状态可能已被别人改成别的
+      // 中间态，但**只要还没落到终态**，把这次失败如实记下来仍然是对的。
+      const failed = await this.repo.update(
+        { id, status: Not(In([ApplicationStatus.ACTIVE, ApplicationStatus.FAILED])) },
+        { status: ApplicationStatus.FAILED },
+      );
+      if (!failed.affected) {
+        this.logger.warn(
+          `deployFromGit(${id}): 失败收尾未命中（状态已是终态），保留并发结果`,
+        );
+      }
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Deployment failed for ${app.name}: ${msg}`);
       throw err;

@@ -422,7 +422,15 @@ export class ExecutorController {
     // executor-node adopts it in scheduler.sendHeartbeat so the N26
     // per-execution callback HMAC secret follows admin-side rotations
     // (admin-UI rotate-token, register-time issuance) without a re-register.
-    const tokenHash = await this.svc.getCallbackSecretByAddress(body.address);
+    //
+    // G3（R32-A3）：按 **id** 取，不按地址。pull 同址多行（ADR-017 §5）下
+    // resolveExecutorRow 对「裸地址」是 fail-closed 的（多行 → null），于是
+    // 按地址取必然得到 null：心跳响应 tokenHash 恒为 null，执行器永远学不到
+    // 轮换后的回调密钥，N26 的 per-execution 回调令牌在下次重注册前全部 401。
+    // register 路径早已是这个修法（见上方 register 的 getCallbackSecretById
+    // 与「按 id 取是无歧义的」注释），heartbeat 此前漏改。
+    // 代价是绕开 callbackSecretCache（每台每 30s 一次索引查），与 register 同量级。
+    const tokenHash = await this.svc.getCallbackSecretById(saved.id);
     // EXE-VER-1: 回显版本合规态。门禁关（EXECUTOR_MIN_VERSION 空）时
     // minVersion=null / versionCompliant=true（加法字段，旧消费方无感）；
     // 门禁开时执行器侧据此打版本漂移告警。version 不落库。

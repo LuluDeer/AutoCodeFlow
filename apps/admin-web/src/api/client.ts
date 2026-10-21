@@ -6,6 +6,10 @@ import type { AuthUser as AuthStateUser } from '../store/auth';
 // F-1：拦截器非 React 组件，直接引用 i18n 单例（与 utils/locale.ts 同模式），
 // 使 403/404/409/429/5xx/网络错误提示随当前语言切换，而非全站硬编码中文。
 import i18n from '../i18n';
+// LANG-ERR-01：拦截器是**最常见的用户可见失败出口**（403/404/409/429/5xx 的 toast
+// 都在这里弹，且弹完就打 __toastedByClient 标抑制页面兜底），因此它必须和
+// utils/error.getErrMsg 走同一条「码 → 当前语言」路径，否则整条码化在前端等于白做。
+import { translateByErrorCode } from '../utils/error';
 
 const API_URL_INTERNAL = import.meta.env.VITE_API_URL_INTERNAL || '/api';
 const API_URL_EXTERNAL = import.meta.env.VITE_API_URL_EXTERNAL || '';
@@ -375,8 +379,21 @@ client.interceptors.response.use(
         status === 500 ? 'http.error.500' :
         status === 503 ? 'http.error.503' :
         'http.error.unknown';
+      // LANG-ERR-01（本轮修复的真实缺陷）：**先按 errorCode 取当前语言文案**，
+      // 再回落到服务端 message。
+      //
+      // 为什么顺序不能反：服务端 message 是**单语言**的（在 throw 那一刻就写死，
+      // 后端并不知道请求者的语言偏好）。旧实现把它排在 i18n 之前，于是英文界面
+      // 的用户在所有 4xx/5xx 上都拿到中文文案；更糟的是这里弹完就打了
+      // __toastedByClient 标，页面 catch 里那条**会**按码翻译的 showApiError 被
+      // 直接跳过——即"错误码化"在前端使用率最高的这一条路径上被完全绕过。
+      // 无码时（老后端 / 非本机制抛出的异常）行为逐位不变。
+      const errBody = err.response?.data as
+        | { message?: unknown; error?: unknown; errorCode?: unknown; params?: unknown }
+        | undefined;
       const msg =
-        pickBusinessMessage(err.response?.data?.message, err.response?.data?.error) ||
+        translateByErrorCode(errBody) ||
+        pickBusinessMessage(errBody?.message, errBody?.error) ||
         i18n.t(httpKey, { status });
       // TOAST-DEDUPE：同一次并发扇出会同时到达多条相同失败，只弹第一条。
       // 无论弹没弹都要打标（否则页面 catch 兜底补弹，去重失效）。

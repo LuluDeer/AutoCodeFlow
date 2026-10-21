@@ -126,6 +126,11 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
     // 默认 affected=1（标记已落）；需模拟「标记缺失/失败」的用例自行 override。
     update: jest.fn().mockResolvedValue({ affected: 1 }),
   };
+  // R49-A1：列级写（queryBuilder().update().set(patch)）的落点断言入口。
+  // 生产代码改成条件列级写后，用例要看的是 **patch 里到底写了哪些列**，
+  // 而不是整行 save 的实体快照——后者正是本轮要消灭的对象。
+  (repo as unknown as { updatePatches: Array<Record<string, unknown>> })
+    .updatePatches = [];
   // PERF-03（本轮体验审查）：执行列表端点改为由 TypeORM 元数据派生读投影
   // （`executionListSelectColumns*` 读 `repo.metadata.columns`），故仓储替身
   // 必须像真实 Repository 一样带 metadata——此前替身缺这一项，一旦生产代码
@@ -188,6 +193,8 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
       update: jest.fn().mockReturnThis(),
       set: jest.fn((p: Record<string, unknown>) => {
         patch = p;
+        (repo as unknown as { updatePatches: Array<Record<string, unknown>> })
+          .updatePatches.push(p);
         return qb;
       }),
       // Mimic a conditional UPDATE: apply the patch onto the snapshot entity
@@ -708,12 +715,13 @@ describe("TaskService (__tests__)", () => {
         executorId: PIN_UUID,
         executeMode: "broadcast",
       });
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       const result: any = await service.update("1", {
         executorId: null,
       } as any);
       expect(result.executorId).toBeNull();
-      expect(taskRepo.save).toHaveBeenCalled();
+      // 显式 null = 清空该列（必须真的进 patch，而不是被"保留旧值"吞掉）
+      expect(taskWrites()[0]).toHaveProperty("executorId", null);
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
     it("accepts executorId with executeMode=single", async () => {
@@ -1148,16 +1156,76 @@ describe("TaskService (__tests__)", () => {
     });
   });
 
+  // --------------------------------------------------------------------------
+  // R49-A1（S2）：写面从"整行 save(快照)"改成"列级条件写"后，用例的观察点
+  // 也跟着从 **save 的实体快照** 换成 **patch 里到底写了哪些列**。下面三个
+  // 小工具是三组用例（update / updateGlue / R-01 secrets / R-03 守卫）共用
+  // 的装配面，避免每条用例各写一套 QB 替身。
+  // --------------------------------------------------------------------------
+  /** 本次用例里所有列级写的 patch（按发生顺序）。 */
+  const taskWrites = (): Array<Record<string, any>> =>
+    (taskRepo as unknown as { updatePatches: Array<Record<string, any>> })
+      .updatePatches;
+
+  /**
+   * 让**列级写**失败（撞唯一索引等）。旧用例把这层挂在 taskRepo.save 上；
+   * 写面不再是 save 之后，失败必须从 `queryBuilder().update()...execute()` 抛。
+   */
+  const failTaskWrite = (err: unknown): void => {
+    taskRepo.createQueryBuilder.mockImplementation((() => {
+      const qb: any = {
+        update: jest.fn(() => qb),
+        set: jest.fn(() => qb),
+        where: jest.fn(() => qb),
+        andWhere: jest.fn(() => qb),
+        execute: jest.fn(async () => {
+          throw err;
+        }),
+        getMany: jest.fn(async () => []),
+        getRawOne: jest.fn(async () => ({ maxNum: 0 })),
+      };
+      return qb;
+    }) as never);
+  };
+
+  /**
+   * 依赖别名刷新走 taskRepo 的**读侧** QB（createQueryBuilder("task")）。列级写
+   * 之后，同一个 createQueryBuilder 既服务写也服务这次读，故按别名参数分派：
+   * 带别名 → 读侧替身（返回给定行）；不带 → 默认（写）替身。
+   */
+  const givenAliasReadQb = (rows: unknown[]) => {
+    // 注意取的是**原实现**（不是 mock 本身）：mockImplementation 会替换同一个
+    // mock 的实现，若在这里再调用 taskRepo.createQueryBuilder() 会自递归
+    // （RangeError: Maximum call stack size exceeded）。
+    const writeQbFactory = taskRepo.createQueryBuilder.getMockImplementation();
+    const aliasQb = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(rows),
+    };
+    taskRepo.createQueryBuilder.mockImplementation(((alias?: string) =>
+      alias ? (aliasQb as never) : writeQbFactory!()) as never);
+    return aliasQb;
+  };
+
+  /** 同上，但读侧 QB 直接抛错（best-effort 用例）。 */
+  const givenAliasReadThrows = (err: Error): void => {
+    const writeQbFactory = taskRepo.createQueryBuilder.getMockImplementation();
+    taskRepo.createQueryBuilder.mockImplementation(((alias?: string) => {
+      if (alias) throw err;
+      return writeQbFactory!();
+    }) as never);
+  };
+
   describe("update", () => {
-    it("saves updated task and re-schedules active tasks", async () => {
+    it("writes only the DTO columns and re-schedules active tasks", async () => {
       const task = { id: "1", name: "old", status: TaskStatus.ACTIVE };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockResolvedValue({
-        ...task,
-        name: "new",
-        status: TaskStatus.ACTIVE,
-      });
       await service.update("1", { name: "new" } as any);
+      // R49-A1：写的是**列级 patch**（name + 库时钟 updatedAt），不是整行快照
+      expect(taskWrites()[0]).toMatchObject({ name: "new" });
+      expect(taskWrites()[0]).not.toHaveProperty("status");
+      expect(taskRepo.save).not.toHaveBeenCalled();
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(schedulerService.scheduleOne).toHaveBeenCalled();
     });
@@ -1169,10 +1237,12 @@ describe("TaskService (__tests__)", () => {
       it("改名成功时落库新名（后端本就支持，此前仅前端禁用）", async () => {
         const task = { id: "1", name: "旧名", status: TaskStatus.ACTIVE };
         taskRepo.findOne.mockResolvedValue(task);
-        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
         const saved = await service.update("1", { name: "新名" } as any);
         expect(saved.name).toBe("新名");
-        expect(taskRepo.save).toHaveBeenCalled();
+        // 只写 name 一列（+ 库时钟）——name 之外一律不碰
+        expect(taskWrites()[0]).toMatchObject({ name: "新名" });
+        expect(taskWrites()[0]).not.toHaveProperty("status");
+        expect(taskRepo.save).not.toHaveBeenCalled();
       });
 
       it("改名撞 idx_tasks_name_unique → 409，文案点明重名且提示回收站占用", async () => {
@@ -1181,7 +1251,7 @@ describe("TaskService (__tests__)", () => {
         const violation = new QueryFailedError("INSERT", [], new Error("dup"));
         (violation as any).code = "23505";
         (violation as any).constraint = "idx_tasks_name_unique";
-        taskRepo.save.mockRejectedValue(violation);
+        failTaskWrite(violation);
 
         await expect(
           service.update("1", { name: "已存在的名" } as any),
@@ -1197,7 +1267,7 @@ describe("TaskService (__tests__)", () => {
         const violation = new QueryFailedError("INSERT", [], new Error("pk"));
         (violation as any).code = "23505";
         (violation as any).constraint = "PK_ tasks_id";
-        taskRepo.save.mockRejectedValue(violation);
+        failTaskWrite(violation);
 
         await expect(
           service.update("1", { name: "新名" } as any),
@@ -1207,7 +1277,6 @@ describe("TaskService (__tests__)", () => {
       it("改名后刷新引用方 dependencies 的显示名 key（value=id 语义不变）", async () => {
         const task = { id: "up-1", name: "旧名", status: TaskStatus.ACTIVE };
         taskRepo.findOne.mockResolvedValue(task);
-        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
         (taskRepo as any).update = jest.fn().mockResolvedValue({ affected: 1 });
 
         const dependent = {
@@ -1216,12 +1285,8 @@ describe("TaskService (__tests__)", () => {
           status: TaskStatus.ACTIVE,
           dependencies: { 旧名: "up-1" },
         };
-        const qb = {
-          where: jest.fn().mockReturnThis(),
-          andWhere: jest.fn().mockReturnThis(),
-          getMany: jest.fn().mockResolvedValue([dependent]),
-        };
-        taskRepo.createQueryBuilder.mockReturnValue(qb);
+        // R49-A1：写侧也走 createQueryBuilder，读侧（带别名）单独分派
+        const qb = givenAliasReadQb([dependent]);
 
         await service.update("up-1", { name: "新名" } as any);
 
@@ -1242,15 +1307,14 @@ describe("TaskService (__tests__)", () => {
       it("名字未变时不做任何依赖别名刷新（零副作用）", async () => {
         const task = { id: "up-1", name: "同名", status: TaskStatus.ACTIVE };
         taskRepo.findOne.mockResolvedValue(task);
-        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
         await service.update("up-1", { timeout: 60 } as any);
-        expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
+        // 写侧 QB 无别名；带别名调用只可能来自依赖别名刷新
+        expect(taskRepo.createQueryBuilder).not.toHaveBeenCalledWith("task");
       });
 
       it("新名与既有别名 key 撞车时保留旧 key（宁可显示过时，不丢依赖关系）", async () => {
         const task = { id: "up-1", name: "旧名", status: TaskStatus.ACTIVE };
         taskRepo.findOne.mockResolvedValue(task);
-        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
         const updateSpy = jest.fn().mockResolvedValue({ affected: 1 });
         (taskRepo as any).update = updateSpy;
 
@@ -1261,12 +1325,7 @@ describe("TaskService (__tests__)", () => {
           // 新名已被另一个 key 占用（指向别的任务）
           dependencies: { 旧名: "up-1", 新名: "other-id" },
         };
-        const qb = {
-          where: jest.fn().mockReturnThis(),
-          andWhere: jest.fn().mockReturnThis(),
-          getMany: jest.fn().mockResolvedValue([dependent]),
-        };
-        taskRepo.createQueryBuilder.mockReturnValue(qb);
+        givenAliasReadQb([dependent]);
 
         await service.update("up-1", { name: "新名" } as any);
 
@@ -1281,10 +1340,8 @@ describe("TaskService (__tests__)", () => {
       it("依赖别名刷新失败不影响改名本身（best-effort）", async () => {
         const task = { id: "up-1", name: "旧名", status: TaskStatus.ACTIVE };
         taskRepo.findOne.mockResolvedValue(task);
-        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
-        taskRepo.createQueryBuilder.mockImplementation(() => {
-          throw new Error("qb boom");
-        });
+        // 只让**读侧**（别名刷新）失败：写侧的列级写必须照常落库
+        givenAliasReadThrows(new Error("qb boom"));
 
         await expect(
           service.update("up-1", { name: "新名" } as any),
@@ -1302,11 +1359,11 @@ describe("TaskService (__tests__)", () => {
         updatedAt: new Date("2026-10-01T08:00:00.000Z"),
       };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await expect(
         service.update("1", { name: "new" } as any),
       ).resolves.toBeDefined();
-      expect(taskRepo.save).toHaveBeenCalled();
+      expect(taskWrites()).toHaveLength(1);
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
     it("A4: succeeds when expectedUpdatedAt matches the row updatedAt", async () => {
@@ -1317,17 +1374,14 @@ describe("TaskService (__tests__)", () => {
         updatedAt: new Date("2026-10-01T08:00:00.000Z"),
       };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await expect(
         service.update("1", {
           name: "new",
           expectedUpdatedAt: "2026-10-01T08:00:00.000Z",
         } as any),
       ).resolves.toBeDefined();
-      // 检查字段消费即弃：不落实体、不进 save。
-      expect(taskRepo.save.mock.calls[0][0]).not.toHaveProperty(
-        "expectedUpdatedAt",
-      );
+      // 检查字段消费即弃：不落实体、不进 patch。
+      expect(taskWrites()[0]).not.toHaveProperty("expectedUpdatedAt");
     });
 
     it("A4: throws ConflictException (请刷新后重试) and writes nothing on a stale expectedUpdatedAt", async () => {
@@ -1351,6 +1405,7 @@ describe("TaskService (__tests__)", () => {
         } as any),
       ).rejects.toThrow(ConflictException);
       // 409 必须发生在任何写路径之前。
+      expect(taskWrites()).toHaveLength(0);
       expect(taskRepo.save).not.toHaveBeenCalled();
       expect(schedulerService.stop).not.toHaveBeenCalledWith("1");
     });
@@ -1358,7 +1413,6 @@ describe("TaskService (__tests__)", () => {
     it("stops scheduling for non-active tasks after update", async () => {
       const task = { id: "1", name: "old", status: TaskStatus.PAUSED };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockResolvedValue({ ...task, status: TaskStatus.PAUSED });
       await service.update("1", {} as any);
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
@@ -1372,14 +1426,11 @@ describe("TaskService (__tests__)", () => {
         timeout: 30,
       };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await service.update("1", { timeoutSeconds: 180 } as any);
-      expect(taskRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ timeout: 180 }),
-      );
-      expect(taskRepo.save.mock.calls[0][0]).not.toHaveProperty(
-        "timeoutSeconds",
-      );
+      // timeoutSeconds 是 DTO 别名：落库只出现 timeout 一列
+      expect(taskWrites()[0]).toMatchObject({ timeout: 180 });
+      expect(taskWrites()[0]).not.toHaveProperty("timeoutSeconds");
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
     it("persists DTO configuration fields, snapshots them, then reloads an active schedule", async () => {
@@ -1391,7 +1442,6 @@ describe("TaskService (__tests__)", () => {
         glueSource: "old-source",
       };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
 
       await service.update("1", {
         name: "new",
@@ -1399,13 +1449,11 @@ describe("TaskService (__tests__)", () => {
         glueSource: "new-source",
       } as any);
 
-      expect(taskRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: "new",
-          timeout: 180,
-          glueSource: "new-source",
-        }),
-      );
+      expect(taskWrites()[0]).toMatchObject({
+        name: "new",
+        timeout: 180,
+        glueSource: "new-source",
+      });
       expect(versionRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           taskId: "1",
@@ -1422,22 +1470,37 @@ describe("TaskService (__tests__)", () => {
   });
 
   describe("updateGlue", () => {
-    it("updates glueSource and saves", async () => {
-      const task = { id: "1", glueSource: "old", glueLanguage: "js" };
+    it("writes exactly the glue columns (R49-A1: 不再整行 save)", async () => {
+      const task = {
+        id: "1",
+        name: "t",
+        status: TaskStatus.ACTIVE,
+        glueSource: "old",
+        glueLanguage: "js",
+        secrets: null,
+      };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await service.updateGlue("1", "new-source", "python");
       expect(task.glueSource).toBe("new-source");
       expect(task.glueLanguage).toBe("python");
-      expect(taskRepo.save).toHaveBeenCalled();
+      // 只写这四列 + 库时钟；status/name 等快照列一律不参与
+      expect(Object.keys(taskWrites()[0]).sort()).toEqual([
+        "codeSource",
+        "gitRepo",
+        "glueLanguage",
+        "glueSource",
+        "updatedAt",
+      ]);
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
     it("skips language update when language is not provided", async () => {
       const task = { id: "1", glueSource: "old", glueLanguage: "js" };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
       await service.updateGlue("1", "new-source");
       expect(task.glueLanguage).toBe("js");
+      // 缺省 = 不写该列（而不是把快照里的旧值写回去）
+      expect(taskWrites()[0]).not.toHaveProperty("glueLanguage");
     });
 
     it("only changes GLUE fields, snapshots them, and does not reload scheduling", async () => {
@@ -1543,26 +1606,12 @@ describe("TaskService (__tests__)", () => {
     };
 
     /**
-     * save 落库参数快照。maskSecretsForResponse 在 save 之后**原地**改写
-     * 返回体的 secrets，而 jest.mock.calls 只保存引用——直接断言 calls 会
-     * 读到响应脱敏后的值。在 save 执行点拍 JSON 深拷贝才是「落库瞬间」的列值。
+     * R49-A1（S2）：写面改成**列级条件写**后，R-01 的问题从"整行回写时掩码
+     * 覆盖了真实凭据"变成更结构化的形态——**不带 secrets 的 PATCH 根本不会把
+     * secrets 列放进 patch**。于是这里盯的不再是 save 的入参实体，而是 patch
+     * 里有没有 secrets 这一列、有的话值是什么（"落库要写的列值"）。
      */
-    const captureTaskRepoSaves = () => {
-      const persisted: Array<Record<string, any>> = [];
-      taskRepo.save.mockImplementation((t: any) => {
-        persisted.push({
-          ...t,
-          secrets:
-            t.secrets && typeof t.secrets === "object"
-              ? JSON.parse(JSON.stringify(t.secrets))
-              : t.secrets,
-        });
-        return Promise.resolve(t);
-      });
-      return persisted;
-    };
-
-    it("update：PATCH 不带 secrets → 落库 secrets 与原值逐字节一致（非掩码），响应仍脱敏", async () => {
+    it("update：PATCH 不带 secrets → 该列不进 patch（掩码回写在结构上不复存在），响应仍脱敏", async () => {
       const task = {
         id: "1",
         name: "old",
@@ -1570,13 +1619,14 @@ describe("TaskService (__tests__)", () => {
         secrets: { ...RAW_SECRETS },
       };
       taskRepo.findOne.mockResolvedValue(task);
-      const persisted = captureTaskRepoSaves();
 
       const result: any = await service.update("1", { name: "new" } as any);
 
-      expect(persisted).toHaveLength(1);
-      expect(persisted[0].secrets).toEqual(RAW_SECRETS);
-      expect(persisted[0].secrets).not.toEqual(MASKED);
+      expect(taskWrites()).toHaveLength(1);
+      // 不带就不写：该列连"写回同一值"的机会都没有（比"写了但值对"更强）
+      expect(taskWrites()[0]).not.toHaveProperty("secrets");
+      expect(taskWrites()[0]).toMatchObject({ name: "new" });
+      expect(taskRepo.save).not.toHaveBeenCalled();
       // 响应面契约保持：HTTP 返回体仍是掩码形态（明文/密文不外泄）
       expect(result.secrets).toEqual(MASKED);
     });
@@ -1589,18 +1639,17 @@ describe("TaskService (__tests__)", () => {
         secrets: { ...RAW_SECRETS },
       };
       taskRepo.findOne.mockResolvedValue(task);
-      const persisted = captureTaskRepoSaves();
 
       const result: any = await service.update("1", {
         secrets: { API_KEY: "brand-new-value" },
       } as any);
 
-      expect(persisted[0].secrets).toEqual({ API_KEY: "brand-new-value" });
-      expect(persisted[0].secrets).not.toEqual(RAW_SECRETS);
+      expect(taskWrites()[0].secrets).toEqual({ API_KEY: "brand-new-value" });
+      expect(taskWrites()[0].secrets).not.toEqual(RAW_SECRETS);
       expect(result.secrets).toEqual(MASKED);
     });
 
-    it("updateGlue：只改 GLUE 字段 → 落库 secrets 保持 RAW 原值（非掩码）", async () => {
+    it("updateGlue：只改 GLUE 字段 → secrets 列不进 patch（非掩码）", async () => {
       const task = {
         id: "1",
         name: "t",
@@ -1608,18 +1657,20 @@ describe("TaskService (__tests__)", () => {
         secrets: { ...RAW_SECRETS },
       };
       taskRepo.findOne.mockResolvedValue(task);
-      const persisted = captureTaskRepoSaves();
 
       const result: any = await service.updateGlue("1", "new-source", "python");
 
-      expect(persisted).toHaveLength(1);
-      expect(persisted[0].glueSource).toBe("new-source");
-      expect(persisted[0].secrets).toEqual(RAW_SECRETS);
-      expect(persisted[0].secrets).not.toEqual(MASKED);
+      expect(taskWrites()).toHaveLength(1);
+      expect(taskWrites()[0].glueSource).toBe("new-source");
+      // 本方法不碰 secrets：不含该列 = 库里真实值原样保留（不可能是掩码）
+      expect(taskWrites()[0]).not.toHaveProperty("secrets");
       expect(result.secrets).toEqual(MASKED);
     });
 
-    it("rollback：事务内 manager.save(Task, task) → secrets 保持 RAW 原值（非掩码）", async () => {
+    // R63-A1（ADR-026 规则 4）：写面从 `manager.save(Task, task)`（整行回写）改成
+    // 单列条件写。R-01 的结论不变、且更彻底：写面不再消费实体，掩码副本**结构上**
+    // 无从落库（此前靠"取数是 RAW"这一个前提兜着）。
+    it("rollback：只写 gitCommit 一列（不再整行 save）→ secrets 列永不参与写入", async () => {
       const task = {
         id: "1",
         name: "test",
@@ -1628,12 +1679,22 @@ describe("TaskService (__tests__)", () => {
         secrets: { ...RAW_SECRETS },
       };
       taskRepo.findOne.mockResolvedValue(task);
+      const updates: Array<{
+        criteria: Record<string, any>;
+        patch: Record<string, any>;
+      }> = [];
       const persisted: Array<Record<string, any>> = [];
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          // manager.save(Task, task)（两参）与 manager.save(exec)（单参）共用此桩
+          // R63-A1: 任务行 = 列级条件写（update）；执行行 = save(create(...))
+          update: jest.fn(
+            async (_t: unknown, criteria: any, patch: any) => {
+              updates.push({ criteria, patch });
+              return { affected: 1 };
+            },
+          ),
           save: jest.fn(async (...args: any[]) => {
-            const row = args.length >= 2 ? args[1] : args[0];
+            const row = args[args.length - 1];
             if (row && typeof row === "object") {
               persisted.push(JSON.parse(JSON.stringify(row)));
             }
@@ -1645,10 +1706,14 @@ describe("TaskService (__tests__)", () => {
 
       await service.rollback("1", { gitCommit: "new-sha" });
 
-      expect(persisted).toHaveLength(2);
-      expect(persisted[0].gitCommit).toBe("new-sha");
-      expect(persisted[0].secrets).toEqual(RAW_SECRETS);
-      expect(persisted[0].secrets).not.toEqual(MASKED);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].patch).toEqual({ gitCommit: "new-sha" });
+      expect(updates[0].criteria).toMatchObject({ id: "1" });
+      // 事务里只有一次 save：插入执行行
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0].id).toBe("rb-exec");
+      // secrets 列（无论 RAW 还是掩码）都不在 patch 里
+      expect(updates[0].patch).not.toHaveProperty("secrets");
     });
 
     // ------------------------------------------------------------------------
@@ -1667,7 +1732,6 @@ describe("TaskService (__tests__)", () => {
         secrets: { FEISHU_APP_ID: "cli_real", FEISHU_APP_SECRET: "sec_real" },
       };
       taskRepo.findOne.mockResolvedValue(task);
-      const persisted = captureTaskRepoSaves();
 
       // 客户端把 GET 拿到的掩码对象一字不改地 PATCH 回来
       const result: any = await service.update("1", {
@@ -1675,11 +1739,11 @@ describe("TaskService (__tests__)", () => {
         secrets: { FEISHU_APP_ID: "******", FEISHU_APP_SECRET: "******" },
       } as any);
 
-      expect(persisted[0].secrets).toEqual({
+      expect(taskWrites()[0].secrets).toEqual({
         FEISHU_APP_ID: "cli_real",
         FEISHU_APP_SECRET: "sec_real",
       });
-      expect(Object.values(persisted[0].secrets)).not.toContain("******");
+      expect(Object.values(taskWrites()[0].secrets)).not.toContain("******");
       expect(result.secrets).toEqual(MASKED_FEISHU);
     });
 
@@ -1691,13 +1755,12 @@ describe("TaskService (__tests__)", () => {
         secrets: { FEISHU_APP_ID: "cli_real" },
       };
       taskRepo.findOne.mockResolvedValue(task);
-      const persisted = captureTaskRepoSaves();
 
       await service.update("1", {
         secrets: { NEW_TOKEN: "brand-new" },
       } as any);
 
-      expect(persisted[0].secrets).toEqual({
+      expect(taskWrites()[0].secrets).toEqual({
         FEISHU_APP_ID: "cli_real",
         NEW_TOKEN: "brand-new",
       });
@@ -1711,17 +1774,16 @@ describe("TaskService (__tests__)", () => {
         secrets: { A: "a", B: "b" },
       };
       taskRepo.findOne.mockResolvedValue(task);
-      const persisted = captureTaskRepoSaves();
 
       await service.update("1", { secrets: { A: null } } as any);
-      expect(persisted[0].secrets).toEqual({ B: "b" });
+      expect(taskWrites()[0].secrets).toEqual({ B: "b" });
 
       taskRepo.findOne.mockResolvedValue({
         ...task,
         secrets: { A: "a", B: "b" },
       });
       await service.update("1", { secrets: null } as any);
-      expect(persisted[1].secrets).toBeNull();
+      expect(taskWrites()[1].secrets).toBeNull();
     });
   });
 
@@ -1772,15 +1834,26 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("writes the TypeORM soft-delete column on removal (DB-001)", async () => {
-      const task = { id: "1", status: TaskStatus.ACTIVE };
+      const task = {
+        id: "1",
+        name: "t",
+        timeout: 30,
+        status: TaskStatus.ACTIVE,
+        deletedAt: null,
+      };
       taskRepo.findOne.mockResolvedValue(task);
-      taskRepo.save.mockResolvedValue({ ...task, status: TaskStatus.DELETED });
       await service.remove("1");
       // status='deleted'（业务标记）与 deletedAt（@DeleteDateColumn）并存：
       // raw query 依赖 status，TypeORM find 依赖 deletedAt
-      expect(taskRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ status: TaskStatus.DELETED }),
-      );
+      //
+      // R49-A1：第一步是**条件状态写**（只写 status 一列，不是整行 save），
+      // 第二步才是独立的 softDelete。
+      expect(Object.keys(taskWrites()[0]).sort()).toEqual([
+        "status",
+        "updatedAt",
+      ]);
+      expect(taskWrites()[0].status).toBe(TaskStatus.DELETED);
+      expect(taskRepo.save).not.toHaveBeenCalled();
       expect(taskRepo.softDelete).toHaveBeenCalledWith("1");
     });
   });
@@ -2739,10 +2812,9 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest
-            .fn()
-            .mockResolvedValueOnce(task) // first save: update task.gitCommit
-            .mockResolvedValueOnce(exec), // second save: persist execution
+          // R63-A1: 任务行改列级条件写；事务里只剩执行行的一次 save（插入）
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
+          save: jest.fn().mockResolvedValue(exec),
           create: jest.fn().mockReturnValue(exec),
         }),
       );
@@ -2780,10 +2852,8 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          save: jest
-            .fn()
-            .mockResolvedValueOnce(task)
-            .mockResolvedValueOnce(exec),
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
+          save: jest.fn().mockResolvedValue(exec),
           create: jest.fn().mockReturnValue(exec),
         }),
       );
@@ -5142,6 +5212,117 @@ describe("TaskService (__tests__)", () => {
         "10.0.0.9:8002",
       ]);
     });
+
+    // R31-B2（回调终态幂等性审计）：**乱序回调**——终态不可逆。
+    //
+    // 既有用例只覆盖「同状态重放」（duplicate 同一条回调再来一次），没有覆盖
+    // 「不同状态的后到者」：先到 failure 把行写成 FAILED，随后（执行器重试
+    // 乱序 / 两个来源各报一次）到达的 success 若被当作正常终态写，就会把
+    // FAILED 覆盖成 SUCCESS——执行历史与告警结论被静默改写。
+    //
+    // 守卫是 transitionToTerminal 的 status IN (OPEN_EXECUTION_STATUSES)
+    // 门槛（execution-terminal.ts:156-169）+ handleCallback 的
+    // if (!updated.affected) continue（task.service.ts:5111）。本用例钉住
+    // 三件事：① 终态不被翻转；② 输家零副作用（不二次 emit / 不二次释放槽位）；
+    // ③ 对执行器仍返回 success——否则 at-least-once 投递会被当成失败无限重试。
+    it("R31-B2: an out-of-order late success cannot overwrite an earlier FAILED terminal state", async () => {
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "job",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "host-a:1",
+        failureReason: null as ExecutionFailureReason | null,
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+
+      // 先到：失败 → winner，落 FAILED 并释放一次槽位 + emit 一次。
+      const first = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          errorMessage: "boom",
+          executorAddress: "host-a:1",
+        },
+      ]);
+      expect(first[0].success).toBe(true);
+      expect(exec.status).toBe(ExecutionStatus.FAILED);
+      const failureReasonAfterFirst = exec.failureReason;
+      const emitsAfterFirst = eventBus.emit.mock.calls.length;
+      expect(emitsAfterFirst).toBe(1);
+
+      // 后到：success（乱序）——必须被终态门挡下。
+      mockedReleaseSlot.mockClear();
+      const second = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          durationMs: 5,
+          executorAddress: "host-a:1",
+        },
+      ]);
+
+      // ① 终态未被覆盖：仍是 FAILED，失败分类原样保留。
+      expect(exec.status).toBe(ExecutionStatus.FAILED);
+      expect(exec.failureReason).toBe(failureReasonAfterFirst);
+      // ② 输家零副作用：不二次 emit、不二次释放槽位。
+      expect(eventBus.emit.mock.calls.length).toBe(emitsAfterFirst);
+      expect(mockedReleaseSlot).not.toHaveBeenCalled();
+      // ③ 仍回报 success（幂等确认，让执行器停止重试）。
+      expect(second[0].success).toBe(true);
+    });
+
+    // R31-B2（回调终态幂等性审计）：**与 sweep 竞争**——scheduler 的僵尸执行
+    // 回收（recoverStaleExecutionsBody）与回调同时终态同一行时，两路径写的是
+    // 同一条 UPDATE ... WHERE status IN (open)（execution-terminal.ts:161-169），
+    // PG 行锁把二者串行化，输家 affected=0 直接短路。没有 read-then-write 窗口，
+    // 因此也不存在「后到者把一个已收敛的判定覆盖掉」。
+    //
+    // 本用例钉住输家侧的完整零副作用契约：sweep 先赢（STALE_RECOVERED）后，
+    // 迟到的 timeout 回调**不得**释放槽位（会二次 -1）、不得兑现 kill_retry
+    // 重试（会二次入队）、不得 emit，且 sweep 的分类必须原样保留。
+    it("R31-B2: a callback arriving after the stale sweep already terminalized the row is a no-op loser", async () => {
+      const exec = {
+        id: "e1",
+        taskId: "t1",
+        taskName: "job",
+        // sweep 先赢：行已被 recoverStaleExecutionsBody 写成终态。
+        status: ExecutionStatus.FAILED,
+        failureReason: ExecutionFailureReason.STALE_RECOVERED,
+        executorAddress: "host-a:1",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "job",
+        // 若迟到的回调被误当 winner，下面两个副作用都会发生。
+        timeoutAction: "kill_retry",
+        maxRetry: 3,
+      });
+
+      const res = await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "failed",
+          failureReason: ExecutionFailureReason.TIMEOUT,
+          executorAddress: "host-a:1",
+        },
+      ]);
+
+      // sweep 的判定不被迟到的 timeout 分类覆盖。
+      expect(exec.status).toBe(ExecutionStatus.FAILED);
+      expect(exec.failureReason).toBe(ExecutionFailureReason.STALE_RECOVERED);
+      // 输家零副作用：不二次释放槽位、不二次入队重试、不二次 emit。
+      expect(mockedReleaseSlot).not.toHaveBeenCalled();
+      expect(
+        executorServiceMock.scheduleRetryAfterRecovery,
+      ).not.toHaveBeenCalled();
+      expect(eventBus.emit).not.toHaveBeenCalled();
+      // 仍回报 success（幂等确认）。
+      expect(res[0].success).toBe(true);
+    });
   });
 
   describe("saveVersion", () => {
@@ -5349,7 +5530,8 @@ describe("TaskService (__tests__)", () => {
         const violation = new QueryFailedError("UPDATE", [], new Error("dup"));
         (violation as any).code = "23505";
         (violation as any).constraint = "idx_tasks_name_unique";
-        taskRepo.save.mockRejectedValue(violation);
+        // R63-A1: 写面不再是 save —— 唯一索引冲突从列级写的 execute() 抛
+        failTaskWrite(violation);
 
         await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
           ConflictException,
@@ -5371,7 +5553,7 @@ describe("TaskService (__tests__)", () => {
         const violation = new QueryFailedError("UPDATE", [], new Error("pk"));
         (violation as any).code = "23505";
         (violation as any).constraint = "PK_ tasks_id";
-        taskRepo.save.mockRejectedValue(violation);
+        failTaskWrite(violation);
 
         await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
           QueryFailedError,
@@ -5395,12 +5577,9 @@ describe("TaskService (__tests__)", () => {
           id: "down-1",
           dependencies: { 当前名: "up-1" },
         };
-        const qb = {
-          where: jest.fn().mockReturnThis(),
-          andWhere: jest.fn().mockReturnThis(),
-          getMany: jest.fn().mockResolvedValue([dependent]),
-        };
-        taskRepo.createQueryBuilder.mockReturnValue(qb);
+        // R63-A1: 列级写也走同一个 createQueryBuilder —— 按别名参数分派：
+        // 带别名 → 依赖读侧替身；不带 → 默认（写）替身
+        givenAliasReadQb([dependent]);
 
         await service.rollbackToVersion("up-1", "v1");
 
@@ -5423,7 +5602,10 @@ describe("TaskService (__tests__)", () => {
 
         await service.rollbackToVersion("t1", "v1");
 
-        expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
+        // R63-A1: 列级写本身会走 createQueryBuilder —— "零副作用"的观察点
+        // 换成依赖别名刷新那条写路径（taskRepo.update）没被调用
+        expect(taskRepo.update).not.toHaveBeenCalled();
+        expect(taskWrites()).toHaveLength(1);
       });
     });
 
@@ -5878,21 +6060,33 @@ describe("TaskService (__tests__)", () => {
       await expect(
         service.analyzeExecution("exec-1", intruder),
       ).rejects.toThrow(ForbiddenException);
+      // R46-A1: 写面已从整行 save 改为单列 UPDATE——越权时两者都不得发生
       expect(execRepo.save).not.toHaveBeenCalled();
+      expect(execRepo.update).not.toHaveBeenCalled();
     });
 
     it("analyzeExecution：属主本人 → 放行并落 AI 分析", async () => {
       givenTask(7);
-      execRepo.findOne.mockResolvedValue({
+      const exec: Record<string, any> = {
         id: "exec-1",
         taskId: "t1",
         taskName: "job",
-        aiAnalysis: null as string | null,
+        aiAnalysis: null,
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      // R46-A1: 落库从「整行 save」改为「单列条件写」（ADR-026 规则 4），
+      // 替身按真实语义只回填被写的那一列。
+      execRepo.update.mockImplementation(async (_c: any, patch: any) => {
+        Object.assign(exec, patch);
+        return { affected: 1 };
       });
-      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       const r = await service.analyzeExecution("exec-1", ownerUser);
       // 落库即已走完 AI 分析（桩默认返回空串，不断言具体文案）
-      expect(execRepo.save).toHaveBeenCalled();
+      expect(execRepo.update).toHaveBeenCalledWith(
+        { id: "exec-1" },
+        { aiAnalysis: "" },
+      );
+      expect(execRepo.save).not.toHaveBeenCalled();
       expect(r.aiAnalysis).toBe("");
     });
 
@@ -6152,22 +6346,27 @@ describe("R-03: updateGlue/rollback/rollbackToVersion 归属守卫接线", () =>
     service = module.get(TaskService);
   });
 
-  it("updateGlue：ADMIN 全量放行 → 落库保存", async () => {
+  it("updateGlue：ADMIN 全量放行 → 列级写落库", async () => {
     taskRepo.findOne.mockResolvedValue(ownedRow({ glueSource: "old" }));
-    taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
     await expect(
       service.updateGlue("t1", "new-source", "python", admin),
     ).resolves.toMatchObject({ glueSource: "new-source" });
-    expect(taskRepo.save).toHaveBeenCalledTimes(1);
+    // R49-A1：落库 = 一次列级条件写（不是整行 save）
+    expect(
+      (taskRepo as unknown as { updatePatches: unknown[] }).updatePatches,
+    ).toHaveLength(1);
+    expect(taskRepo.save).not.toHaveBeenCalled();
   });
 
-  it("updateGlue：属主放行 → 落库保存", async () => {
+  it("updateGlue：属主放行 → 列级写落库", async () => {
     taskRepo.findOne.mockResolvedValue(ownedRow({ glueSource: "old" }));
-    taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
     await expect(
       service.updateGlue("t1", "new-source", undefined, owner),
     ).resolves.toBeDefined();
-    expect(taskRepo.save).toHaveBeenCalledTimes(1);
+    expect(
+      (taskRepo as unknown as { updatePatches: unknown[] }).updatePatches,
+    ).toHaveLength(1);
+    expect(taskRepo.save).not.toHaveBeenCalled();
   });
 
   it("updateGlue：其他用户 → 403，且不落库", async () => {
@@ -6175,6 +6374,9 @@ describe("R-03: updateGlue/rollback/rollbackToVersion 归属守卫接线", () =>
     await expect(
       service.updateGlue("t1", "evil-source", undefined, other),
     ).rejects.toThrow(ForbiddenException);
+    expect(
+      (taskRepo as unknown as { updatePatches: unknown[] }).updatePatches,
+    ).toHaveLength(0);
     expect(taskRepo.save).not.toHaveBeenCalled();
   });
 
@@ -6206,7 +6408,11 @@ describe("R-03: updateGlue/rollback/rollbackToVersion 归属守卫接线", () =>
     await expect(
       service.rollbackToVersion("t1", "v1", admin),
     ).resolves.toMatchObject({ name: "snapshot-name" });
-    expect(taskRepo.save).toHaveBeenCalledTimes(1);
+    // R63-A1: 落库 = 一次列级条件写（不是整行 save）
+    expect(
+      (taskRepo as unknown as { updatePatches: unknown[] }).updatePatches,
+    ).toHaveLength(1);
+    expect(taskRepo.save).not.toHaveBeenCalled();
   });
 
   it("rollback：属主兼任项目 viewer → 403（assertCanOperate 接线生效）", async () => {
@@ -7226,7 +7432,6 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
     it("maps timeoutSeconds → timeout and normalizes an explicit null timeoutAction", async () => {
       const existing = { id: "t1", name: "job", status: TaskStatus.PAUSED };
       taskRepo.findOne.mockResolvedValue(existing);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
 
       await service.update("t1", {
         timeoutSeconds: 42,
@@ -7234,26 +7439,31 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         timeoutWarnRatio: 120 as unknown as number, // 运行态防线：越界归 null
       } as any);
 
-      const saved = taskRepo.save.mock.calls[0][0];
-      expect(saved.timeout).toBe(42);
-      expect(saved.timeoutSeconds).toBeUndefined();
-      expect(saved.timeoutAction).toBeNull();
-      expect(saved.timeoutWarnRatio).toBeNull();
+      // 本 describe 不在主 harness 作用域内，直接读列级写的记录
+      const patch = (
+        taskRepo as unknown as { updatePatches: Array<Record<string, any>> }
+      ).updatePatches[0];
+      expect(patch.timeout).toBe(42);
+      expect(patch.timeoutSeconds).toBeUndefined();
+      expect(patch.timeoutAction).toBeNull();
+      expect(patch.timeoutWarnRatio).toBeNull();
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
     it("keeps a valid timeoutAction untouched and clamps warn ratio inside 0-90", async () => {
       const existing = { id: "t1", name: "job", status: TaskStatus.PAUSED };
       taskRepo.findOne.mockResolvedValue(existing);
-      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
 
       await service.update("t1", {
         timeoutAction: "kill_retry",
         timeoutWarnRatio: 75,
       } as any);
 
-      const saved = taskRepo.save.mock.calls[0][0];
-      expect(saved.timeoutAction).toBe("kill_retry");
-      expect(saved.timeoutWarnRatio).toBe(75);
+      const patch = (
+        taskRepo as unknown as { updatePatches: Array<Record<string, any>> }
+      ).updatePatches[0];
+      expect(patch.timeoutAction).toBe("kill_retry");
+      expect(patch.timeoutWarnRatio).toBe(75);
     });
   });
 
@@ -7359,6 +7569,8 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       // manager.save(create 结果) 返回执行行。
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          // R63-A1: 任务行改列级条件写
+          update: jest.fn().mockResolvedValue({ affected: 1 }),
           save: jest.fn(async (_t: unknown, e: unknown) =>
             (e as { id?: string })?.id
               ? e
@@ -7417,7 +7629,11 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       };
       givenOwnedExecution(exec);
       aiService.analyzeFailure.mockResolvedValue("AI: fix it");
-      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // R46-A1: 单列条件写（不再整行 save）；替身只回填 aiAnalysis
+      execRepo.update.mockImplementation(async (_c: any, patch: any) => {
+        Object.assign(exec, patch);
+        return { affected: 1 };
+      });
 
       const result = await service.analyzeExecution("exec-1", ADMIN_USER);
       // FIX-6.2: 第三参为结构化上下文（failureReason/exitCode/runbook）——
@@ -7443,6 +7659,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       );
     });
   });
+
 });
 
 // R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。

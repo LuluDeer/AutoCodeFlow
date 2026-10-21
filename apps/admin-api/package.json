@@ -19,13 +19,16 @@
     "test:cov": "npx --node-options=--experimental-vm-modules jest --coverage",
     "test:e2e": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json",
     "typecheck": "tsc --noEmit",
+    "check:route-authz": "node scripts/check-route-authz-matrix.mjs",
+    "check:route-authz:selftest": "node scripts/check-route-authz-matrix.mjs --selftest",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli",
     "swagger:export": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\" && node ../../scripts/api-i18n/inject-openapi-en.mjs",
     "migration:run": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts up",
     "migration:revert": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts down",
     "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts",
     "migration:run:prod": "node dist/migration-lock-cli.js up",
-    "migration:revert:prod": "node dist/migration-lock-cli.js down"
+    "migration:revert:prod": "node dist/migration-lock-cli.js down",
+    "typecheck:specs": "tsc -p tsconfig.spec.json --noEmit"
   },
   "dependencies": {
     "@nestjs/bullmq": "^12.0.0",

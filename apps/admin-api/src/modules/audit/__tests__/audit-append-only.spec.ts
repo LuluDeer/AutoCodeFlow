@@ -60,6 +60,11 @@ describe("AuditService — SEC-10 append-only 旁路封堵", () => {
     // 另 4 个在 findAll/exportCsv 里各抄一份——真实漂移源），合并进
     // `applyAuditFilters`。故它从白名单移除：proto 上不再有该方法，
     // 保留它会让"已删除的方法又被加回来"不被发现。
+    //
+    // R67-A1（GET /audit/actions 的数据源）新增 listDistinctActions，已核对为**纯读**：
+    // 只 createQueryBuilder().select().distinct(true).orderBy().getRawMany()，不写不删
+    // （下面第二个用例把这一点从注释承诺变成断言）。它是审计页 action 下拉的数据源，
+    // 与 findAll/exportCsv 同级，不属于"新的写删入口"。
     const allowed = [
       "log",
       "findAll",
@@ -68,6 +73,7 @@ describe("AuditService — SEC-10 append-only 旁路封堵", () => {
       "retentionDelete",
       "findAllByKeyset",
       "applyAuditFilters",
+      "listDistinctActions",
     ];
     const unexpected = publicMethods.filter((m) => !allowed.includes(m));
     expect(unexpected).toEqual([]);
@@ -89,6 +95,9 @@ describe("AuditService — SEC-10 append-only 旁路封堵", () => {
     for (const marker of [
       "private async findAllByKeyset",
       "private applyAuditFilters",
+      // R67-A1: 动作清单（GET /audit/actions）也必须是纯读面——它被审计页首屏
+      // 调用，一旦混进写删调用，等于把"只读清单"变成第二个写入口。
+      "async listDistinctActions",
     ]) {
       const body = sliceFrom(marker);
       expect(body).not.toMatch(

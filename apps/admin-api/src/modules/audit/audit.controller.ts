@@ -12,7 +12,10 @@ import { UserRole } from "../users/entities/user.entity";
 import { AuditService } from "./audit.service";
 import { AuditQueryDto } from "./dto/audit-query.dto";
 // ARCH-23 / N-12（2026-10-07 A1 批）：审计域响应契约。
-import { PaginatedAuditLogsDto } from "./dto/audit-response.dto";
+import {
+  AuditActionsDto,
+  PaginatedAuditLogsDto,
+} from "./dto/audit-response.dto";
 
 @ApiTags("audit")
 @ApiBearerAuth("JWT")
@@ -57,6 +60,33 @@ export class AuditController {
       // keyset 分支，直接破坏加性契约。
       cursor: query.cursor,
     });
+  }
+
+  /**
+   * R67-A1：审计页 action 过滤器的**可发现**清单（DB 侧 DISTINCT）。
+   *
+   * 为什么单开一个端点，而不是让前端从 GET /audit 的一页数据里自己收敛：
+   * 一页只有 20 行，看到的动作是"最近 20 条恰好用到的"，不是"系统有这些动作"——
+   * 那样筛选器会随翻页**变脸**：翻到第 5 页，下拉里少了一半选项。可发现性必须
+   * 来自全集，而不是当前页。
+   *
+   * 守卫与 GET /audit 完全一致（类级 JwtAuthGuard + 本方法 @Roles(ADMIN)）：
+   * 它虽然只回动作名字符串，但"系统里存在哪些操作"本身就是运维拓扑信息，
+   * 与列表/导出同级别，不给非管理员。
+   *
+   * 路由顺序安全：本控制器没有 @Get(":id")，故 /audit/actions 不会被参数路由
+   * 误捕；与 /audit/export 同为静态段。
+   */
+  @Get("actions")
+  @ApiOkResponse({ type: AuditActionsDto })
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    description:
+      "返回 audit_logs 中出现过的所有 action（去重、字母序），供审计页的 action 过滤器渲染可发现下拉。不新增动作、不改任何既有响应形状；空库返回空数组而非 404。",
+    summary: "审计动作清单（去重，仅管理员）",
+  })
+  async distinctActions(): Promise<{ actions: string[] }> {
+    return { actions: await this.svc.listDistinctActions() };
   }
 
   @Get("export")

@@ -7447,6 +7447,38 @@
         }
       }
     },
+    "/audit/actions": {
+      "get": {
+        "description": "返回 audit_logs 中出现过的所有 action（去重、字母序），供审计页的 action 过滤器渲染可发现下拉。不新增动作、不改任何既有响应形状；空库返回空数组而非 404。",
+        "operationId": "AuditController_distinctActions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditActionsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "审计动作清单（去重，仅管理员）",
+        "tags": [
+          "audit"
+        ],
+        "x-i18n-en": {
+          "summary": "Distinct audit action list (ADMIN only)",
+          "description": "Returns every action that has ever appeared in audit_logs (deduplicated, alphabetical) so the audit page can render a discoverable action filter. Adds no new actions and changes no existing response shape; an empty database returns an empty array rather than a 404."
+        }
+      }
+    },
     "/audit/export": {
       "get": {
         "description": "返回 CSV 文件附件。支持与列表接口相同的过滤条件。",
@@ -9829,7 +9861,8 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "目标执行器 ID 列表，为空 = 全部"
+                    "description": "目标执行器 ID 列表，为空 = 全部",
+                    "x-i18n-en": "List of target executor IDs; empty = all"
                   }
                 }
               }
@@ -15991,7 +16024,8 @@
               "reservedSlots": {
                 "type": "number",
                 "nullable": true,
-                "description": "null = 执行器未上报（旧版）→ 前端回落旧口径"
+                "description": "null = 执行器未上报（旧版）→ 前端回落旧口径",
+                "x-i18n-en": "null = executor did not report (legacy) -> frontend falls back to the old semantics"
               },
               "cpuUsage": {
                 "type": "number",
@@ -16003,7 +16037,8 @@
               },
               "pendingPullItems": {
                 "type": "number",
-                "description": "pull 队列深度；push 恒 0；Redis 故障按 0 呈现"
+                "description": "pull 队列深度；push 恒 0；Redis 故障按 0 呈现",
+                "x-i18n-en": "pull queue depth; always 0 for push; reported as 0 when Redis fails"
               }
             },
             "required": [
@@ -16054,10 +16089,11 @@
             "type": "string",
             "enum": [
               "email",
-              "slack",
               "dingtalk",
               "wecom",
-              "webhook"
+              "slack",
+              "webhook",
+              "feishu"
             ]
           },
           "name": {
@@ -16091,8 +16127,8 @@
         "properties": {
           "success": {
             "type": "boolean",
-            "description": "当所有目标通道都失败/跳过时为 false",
-            "x-i18n-en": "false when all target channels failed/were skipped"
+            "description": "仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results",
+            "x-i18n-en": "true only when every requested channel actually delivered ('sent'); any 'blocked'/'failed'/'skipped' makes it false - per-channel outcomes in results"
           },
           "message": {
             "type": "string"
@@ -18069,8 +18105,8 @@
           },
           "mediaPath": {
             "type": "string",
-            "description": "平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式",
-            "x-i18n-en": "Platform path /api/agent-collab/media/<id> - the only valid form for mediaRefs"
+            "description": "平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式",
+            "x-i18n-en": "Platform path /api/sop/media/<id> - the only valid form for mediaRefs"
           }
         },
         "required": [
@@ -18745,6 +18781,22 @@
         "required": [
           "data",
           "total"
+        ]
+      },
+      "AuditActionsDto": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "description": "库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "Distinct audit action values seen in the database (deduplicated, alphabetical). Sourced from historical writes to audit_logs.action, so it may include actions that are no longer emitted."
+          }
+        },
+        "required": [
+          "actions"
         ]
       },
       "PublicHealthDto": {
@@ -19581,7 +19633,8 @@
               },
               "blockedReason": {
                 "type": "string",
-                "description": "ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常）"
+                "description": "ARCH-31：同一应用上存在在途批次（跨实例互斥，不是异常）",
+                "x-i18n-en": "ARCH-31: an in-flight batch exists for the same application (cross-instance mutex, not an error)"
               }
             },
             "description": "在实际启动了金丝雀批次（或被阻塞）时出现",

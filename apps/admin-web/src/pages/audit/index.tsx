@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty, theme, Card, Switch } from 'antd';
 import type { TablePaginationConfig } from 'antd';
 import { SearchOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom';
 // A-12: 审计 CSV 导出（GET /audit/export，携带当前筛选，axios blob 下载）
 // AUDIT-KEYSET: 列表请求也挪进 api 层——游标三态（undefined / '' / 非空）由
 // buildAuditListQuery 一处把关，页面不再手拼 URLSearchParams。
-import { exportAuditCsv, listAuditLogs } from '../../api/audit';
+import { exportAuditCsv, listAuditActions, listAuditLogs } from '../../api/audit';
 import type { AuditLog } from '../../api/audit';
 // TOAST-01：走 utils/toast 出口（App 实例优先，暗色主题下 toast 样式正确）
 import { message } from '../../utils/toast';
@@ -34,6 +34,14 @@ const { Option } = Select;
  * 两处各写一个字面量 20，改一处忘另一处就是静默的切片错位。
  */
 const AUDIT_PAGE_SIZE = 20;
+
+/**
+ * R67-A1：action 下拉的选项形状。
+ *
+ * `keywords` 不是 antd 的字段，只喂给 `filterOption`——让「中文名」「code」「大小写」
+ * 都能搜到同一个动作（只按 value 搜的话，想按界面上的中文去筛的人会搜不到）。
+ */
+type ActionOption = { value: string; label: string; keywords: string };
 
 /**
  * §2.1 keyset 分页的前端状态：游标**栈** + 当前索引（照 ExecutionsPage 范式）。
@@ -138,14 +146,53 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'subscription.update': 'audit.action.subscription_update',
   'subscription.delete': 'audit.action.subscription_delete',
   'subscription.deadLetter.delete': 'audit.action.subscription_deadLetter_delete',
+  'application.remove.fanout': 'audit.action.application_remove_fanout',
+  'artifact.download': 'audit.action.artifact_download',
+  'config.create': 'audit.action.config_create',
+  'config.update': 'audit.action.config_update',
+  'config.delete': 'audit.action.config_delete',
+  'executor.cleanup_skipped': 'audit.action.executor_cleanup_skipped',
+  'sop.assign': 'audit.action.sop_assign',
+  'sop.clarification.escalated': 'audit.action.sop_clarification_escalated',
+  'sop.clarify': 'audit.action.sop_clarify',
+  'sop.complete': 'audit.action.sop_complete',
+  'sop.draft': 'audit.action.sop_draft',
+  'sop.publish': 'audit.action.sop_publish',
+  'sop.reply': 'audit.action.sop_reply',
+  'sop.timeout.stalled': 'audit.action.sop_timeout_stalled',
+  'sop.timeout.unclaimed': 'audit.action.sop_timeout_unclaimed',
+  'sop.update': 'audit.action.sop_update',
+  'task.import': 'audit.action.task_import',
+  'task.trigger_webhook': 'audit.action.task_trigger_webhook',
+  'task.webhook_disable': 'audit.action.task_webhook_disable',
 };
 
-/** 可跳转的资源类型 → 前端详情路由（其余类型无独立详情页，返回 null） */
-function resourceIdHref(resource: string | undefined, id: string): string | null {
+/**
+ * 可跳转的资源类型 → 前端详情路由（其余类型无独立详情页，返回 null）。
+ *
+ * R65：补上 SOP 三类。审计行此前对新加的 `sop.*` 动作只显示一个孤零零的 id —— **能查到、
+ * 点不进去**，等于把「可追溯」做成了「可搜索」。SOP 没有独立详情路由（只有 /sops 一页 +
+ * 详情抽屉），故统一用深链参数 `?sop=<sopId>`，由 SopsPage 读参数自动打开对应抽屉。
+ *
+ * 三类里 `sop` 的 resourceId 就是 sopId；`sop_assignment` / `sop_clarification` 的 resourceId
+ * 分别是指派行 / 澄清行，需要从 detail 里取 sopId（三类审计的 detail 都记了它）。拿不到时
+ * 返回 null —— **宁可不可点，也不要跳到一个查不到东西的页面**。
+ */
+function resourceIdHref(
+  resource: string | undefined,
+  id: string,
+  detail?: Record<string, unknown> | null,
+): string | null {
   if (!resource || !id) return null;
   if (resource === 'task') return `/tasks/${id}`;
   if (resource === 'application') return `/applications/${id}`;
   if (resource === 'executor') return `/executors/${id}`;
+  if (resource === 'sop') return `/sops?sop=${encodeURIComponent(id)}`;
+  if (resource === 'sop_assignment' || resource === 'sop_clarification') {
+    const sopId = detail?.sopId;
+    if (typeof sopId !== 'string' || !sopId) return null;
+    return `/sops?sop=${encodeURIComponent(sopId)}`;
+  }
   return null;
 }
 
@@ -207,6 +254,54 @@ export default function AuditLogPage() {
    * 请求参数里**不可能**出现 cursor，这是"旧路径零风险"的代码保证。
    */
   const activeCursor = stablePaging ? cursorState.stack[cursorState.index] ?? '' : undefined;
+
+  /**
+   * R67-A1：动作清单——**首屏一次**，只服务 action 下拉。
+   *
+   * 三条纪律：
+   *  1. 失败**不阻断页面**：不弹 toast、不落 StateError、不重试（`retry: false`）。
+   *     下拉是锦上添花，列表才是页面本体；选项拉不到时 tags 模式自动退化成
+   *     自由输入（见下方 Select 注释），用户仍筛得到——"降级"而不是"坏掉"。
+   *  2. 独立的 queryKey（['audit','actions']）：它不随页码/筛选变化，不该被翻页
+   *     和每次筛选重取一遍。
+   *  3. `staleTime` 5 分钟：动作集合变化极慢（只有新增审计写入点才会变），没必要
+   *     每次进页面都跑后端那趟 DISTINCT（它是一次全索引扫描，见 audit.service）。
+   */
+  const { data: actionList } = useQuery({
+    queryKey: ['audit', 'actions'],
+    queryFn: ({ signal }) => listAuditActions(signal),
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  /**
+   * 下拉选项：动作 code → 「本地化名 (code)」。
+   *
+   * 两处防御是刻意的：
+   *  · `Array.isArray(...)`——老后端、或测试里被整体 mock 的 client 可能给不出
+   *    `actions` 键（甚至回 `{data,total}`）。这里一旦抛，整个审计页白屏，而它
+   *    只是过滤器的装饰品。
+   *  · 客户端再 dedup + sort 一次——后端已 DISTINCT + ORDER BY，但"后端有序"是
+   *    最容易被后来者改坏的前提（换个实现就乱序），而这里只有几十个字符串的成本。
+   *
+   * label 里带 code：管理员是从文档/CSV/日志里认 code 的（task.updateGlue 这种
+   * 驼峰 code 与中文本地化名对不上），只显示中文会让"知道我该筛哪个 code"的人
+   * 反而找不到；`keywords` 让中文、code、大小写都能搜（见 filterOption）。
+   */
+  const actionOptions = useMemo<ActionOption[]>(() => {
+    const raw = Array.isArray(actionList?.actions) ? actionList.actions : [];
+    return [...new Set(raw)]
+      .sort()
+      .map((code) => {
+        const labelKey = ACTION_LABEL_KEYS[code];
+        const localized = labelKey ? t(labelKey) : '';
+        return {
+          value: code,
+          label: localized ? `${localized} (${code})` : code,
+          keywords: `${localized} ${code}`.trim().toLowerCase(),
+        };
+      });
+  }, [actionList, t]);
 
   const { data, isLoading, error, refetch } = useQuery({
     // AUDIT-KEYSET：`activeCursor` 必须进 queryKey——游标不同 = 不同的结果页，
@@ -390,7 +485,7 @@ export default function AuditLogPage() {
       // 一步到位（其余类型无详情路由，维持纯文本）
       render: (v: string, r: AuditLog) => {
         if (!v) return '-';
-        const href = resourceIdHref(r.resource, v);
+        const href = resourceIdHref(r.resource, v, r.detail);
         const content = (
           <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
             {v.length > 8 ? v.slice(0, 8) + '…' : v}
@@ -439,14 +534,55 @@ export default function AuditLogPage() {
       {/* UI-03/UI-08：页头标准化（原 Typography.Title 区块迁入 PageHeader） */}
       <PageHeader title={t('audit.title')} description={t('audit.description')} />
       <Space style={{ marginBottom: 16 }} wrap>
-        <Input
+        {/* R67-A1：action 过滤器 = **可发现**下拉（首屏拉一次 /audit/actions）。
+            此前是纯自由文本输入框：动作已有 61 个（19 个域），用户必须先把动作名
+            背下来才筛得到——"能筛、筛不到"。
+
+            为什么选 tags 模式而不是「单选 + 允许自由输入」：
+              · antd 的**单选** Select 无法把输入框里的自由文本变成值——用户只能从
+                列表里点，于是"自由输入"要么没有，要么得额外塞一个"使用 xxx"的合成
+                选项（多一次点击、且是自造控件语义）；
+              · 而后端的 action 过滤是 ILIKE 子串匹配（见 audit.service 的
+                applyAuditFilters），"输入任意片段"本来就是既有能力：敲 task 能命中
+                全部 task.*。换成下拉不该把这条能力弄丢；
+              · mode="tags" 同时给到二者：选得到（选项来自真实数据）+ 敲得进
+                （回车即成一个 tag）。
+            代价/取舍：tags 的值是 string[]，而过滤器只接受**单个**字符串，故用受控
+            截断（onChange 只保留最后一个）表达单选语义——视觉上永远只有一个标签，
+            改选 = 替换，不会出现"界面 2 个标签、实际只过滤 1 个"的撒谎 UI。 */}
+        <Select
+          mode="tags"
+          value={pending.action ? [pending.action] : []}
+          onChange={(vals) => {
+            // 取最后一个：既覆盖"从列表里选一个"，也覆盖"已有值时再选一个"
+            // （= 替换，而不是静默叠加成 2 个 tag 却只用第 1 个过滤）
+            const next = (vals as string[]).slice(-1)[0] ?? '';
+            setPending((prev) => ({ ...prev, action: next }));
+          }}
+          options={actionOptions}
+          filterOption={(input, option) => {
+            const kw =
+              (option as unknown as ActionOption | undefined)?.keywords ?? '';
+            return kw.includes(input.trim().toLowerCase());
+          }}
           placeholder={t('audit.filter.keyword')}
-          value={pending.action}
-          onChange={(e) => setPending((p) => ({ ...p, action: e.target.value }))}
-          onPressEnter={handleSearch}
-          style={{ width: 160 }}
+          aria-label={t('audit.filter.keyword')}
+          style={{ width: 260 }}
           allowClear
-          prefix={<SearchOutlined />}
+          notFoundContent={null}
+          // 选项可能为空（后端失败 / 空库 / 无历史动作）：不渲染"无数据"浮层。
+          // 空列表 = 纯自由输入，与改造前的输入框行为等价（失败兜底就在这里）。
+          //
+          // 这个 null 不只是"别显示空文案"的装饰：rc-select 在 notFoundContent=null 且
+          // 无匹配项时会**收起**浮层，回车因此走"提交输入框文本"的路径（浮层展开时回车是
+          // "选中高亮项"、无项时什么都不做）。
+          //
+          // ⚠️ **校准过的说法（R73 实测）**：上面这段在 **jsdom 下分辨不出来** —— 我把这一行
+          // 删掉重跑 audit-page 的 19 条用例，**全绿**（jsdom 里 rc-select 的浮层不会真的展开，
+          // Enter 无论如何都会提交）。所以：
+          //   · 保留它是**基于 rc-select 源码的防御性推断**，不是被测试证明的事实；
+          //   · 谁要删它，**别信单测** —— 去真实浏览器试一次「选项为空时打字 + 回车能否提交」
+          //     （本仓 apps/admin-web 有 playwright 配置，但本机未装浏览器）。
         />
         <Input
           placeholder={t('audit.filter.operator')}

@@ -76,10 +76,26 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   find: jest.fn(),
   create: jest.fn((d: any) => d),
   save: jest.fn((e: any) => Promise.resolve(e)),
+  // R54：deployFromGit 的部署头/收尾改为列级 update（ADR-026 规则 4）——假仓储必须
+  // 提供 update，否则这条路径在测试里等于不存在（ADR-027 的同一教训）。
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
   remove: jest.fn(),
   delete: jest.fn().mockResolvedValue({ affected: 0 }),
   ...overrides,
 });
+
+
+/**
+ * R54：deployFromGit 的部署头/收尾改用**列级 update**（ADR-026 规则 4），因此
+ * 「最后一次状态写入」要从 update 的 patch 读（save 的实参里已经没有它了）。
+ * 没有 update 记录时回落到 save 实参，兼容尚未改写的路径。
+ */
+const lastStatusPatch = (appRepo: ReturnType<typeof makeRepo>): Record<string, any> => {
+  const updates = (appRepo.update as jest.Mock).mock.calls;
+  if (updates.length > 0) return updates[updates.length - 1]?.[1] ?? {};
+  const saves = (appRepo.save as jest.Mock).mock.calls;
+  return saves[saves.length - 1]?.[0] ?? {};
+};
 
 describe("ApplicationService", () => {
   let service: ApplicationService;
@@ -231,7 +247,9 @@ describe("ApplicationService", () => {
     // R1: update() must load the RAW row. If it went through the masked
     // findById(), every env-less update (webhook version bump, upload
     // upsert) would persist '***' over the real secret values.
-    it("R1: persists the RAW env — a masked read surface is never written back", async () => {
+    // R1 的**结构解**（R61）：不带 env 的 update 现在根本不写 env 列 ——
+    // 掩码副本落库从「靠先取 RAW 行规避」变成**没有这条路径**。
+    it("R61: env-less update 的 patch 里根本没有 env（'***' 无路可走）", async () => {
       const row = {
         id: "1",
         name: "app1",
@@ -241,9 +259,13 @@ describe("ApplicationService", () => {
 
       await service.update("1", { description: "bumped by webhook" });
 
-      const saved = appRepo.save.mock.calls[0][0];
-      expect(saved.env.API_KEY).toBe("sk-real");
-      expect(saved.env.NODE_ENV).toBe("prod");
+      const patch = appRepo.update.mock.calls[0][1];
+      expect(patch).not.toHaveProperty("env");
+      expect(patch.description).toBe("bumped by webhook");
+      // 其余列也不许被「顺手带回」——整行回写才会带 status/manifest/gitRepo
+      expect(patch).not.toHaveProperty("status");
+      expect(patch).not.toHaveProperty("manifest");
+      expect(appRepo.save).not.toHaveBeenCalled();
     });
 
     it("R1: an admin form echoing '***' for a secret key keeps the saved raw value", async () => {
@@ -252,8 +274,9 @@ describe("ApplicationService", () => {
 
       await service.update("1", { env: { API_KEY: "***", NEW_VAR: "v" } });
 
-      const saved = appRepo.save.mock.calls[0][0];
-      expect(saved.env).toEqual({ API_KEY: "sk-real", NEW_VAR: "v" });
+      // dto 带 env 时，落库的是**合并后保留原值的** RAW env（掩码位被真实值替换）
+      const patch = appRepo.update.mock.calls[0][1];
+      expect(patch.env).toEqual({ API_KEY: "sk-real", NEW_VAR: "v" });
     });
 
     it("R1: the update RESPONSE is masked (public webhook route must never echo raw env)", async () => {
@@ -275,18 +298,16 @@ describe("ApplicationService", () => {
       mockedLookup.mockReset();
     });
 
-    it("persists the RAW env on the DEPLOYING save (not the masked row)", async () => {
+    it("R54: DEPLOYING 只写 4 列——env 根本不进 patch（R-01 从「靠 RAW 规避」变成结构上不可能）", async () => {
       const row = { id: "1", name: "app1", env: { API_KEY: "sk-real" } };
       appRepo.findOne.mockResolvedValue(row);
       mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
-      // Clone fails fast — we only care about the FIRST save (DEPLOYING).
-      // Snapshot each save arg: the service mutates the same entity object
-      // (status → FAILED) before saving again.
-      const saves: Array<Record<string, unknown>> = [];
-      appRepo.save.mockImplementation((e: any) => {
-        saves.push({ ...e });
-        return Promise.resolve(e);
+      const patches: Array<{ where: any; patch: any }> = [];
+      appRepo.update.mockImplementation((where: any, patch: any) => {
+        patches.push({ where, patch });
+        return Promise.resolve({ affected: 1 });
       });
+      // Clone fails fast — we only care about the FIRST write (DEPLOYING).
       mockedSpawn.mockImplementation(() =>
         fakeSpawn({ status: 128, stderr: "repository not found" }),
       );
@@ -295,8 +316,21 @@ describe("ApplicationService", () => {
         service.deployFromGit("1", "https://github.com/org/repo.git", "main"),
       ).rejects.toThrow("repository not found");
 
-      expect(saves[0].status).toBe(ApplicationStatus.DEPLOYING);
-      expect((saves[0].env as Record<string, string>).API_KEY).toBe("sk-real");
+      const first = patches[0];
+      // 部署头是**占位条件写**：WHERE 带 status 谓词（= 同一应用同时只允许一次部署）。
+      // 旧实现是 update/save 只带 id，两次并发部署会互相覆盖 status 与 manifest。
+      expect(first.where).toEqual(
+        expect.objectContaining({ id: "1", status: expect.anything() }),
+      );
+      expect(first.patch.status).toBe(ApplicationStatus.DEPLOYING);
+      expect(first.patch.gitRepo).toBe("https://github.com/org/repo.git");
+      expect(first.patch.gitBranch).toBe("main");
+      // 关键：env **不在 patch 里** —— 旧实现整行 save 必须靠「先取 RAW 行」来避免
+      // 把掩码 '***' 落库；现在这条风险从结构上消失，不再依赖调用顺序正确。
+      expect(first.patch).not.toHaveProperty("env");
+      expect(first.patch).not.toHaveProperty("name");
+      // 整行 save 彻底不再用于部署头写入
+      expect(appRepo.save).not.toHaveBeenCalled();
     });
 
     it("R4: refuses a repo whose host resolves to cloud metadata — git never spawns", async () => {
@@ -343,10 +377,19 @@ describe("ApplicationService", () => {
       );
 
       expect(mockedSpawn).toHaveBeenCalled();
-      const lastSave =
-        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
-      expect(lastSave.status).toBe(ApplicationStatus.ACTIVE);
-      expect(lastSave.gitCommit).toBe("deadbeef");
+      const updates = (appRepo.update as jest.Mock).mock.calls;
+      // 收尾只写 status（且带 DEPLOYING 前置），git 元信息在**部署头**那一次写里
+      const header = updates[0]?.[1] ?? {};
+      const settle = updates[updates.length - 1]?.[1] ?? {};
+      expect(header.status).toBe(ApplicationStatus.DEPLOYING);
+      expect(header.gitRepo).toBe("https://github.com/org/repo.git");
+      expect(settle.status).toBe(ApplicationStatus.ACTIVE);
+      expect(settle).not.toHaveProperty("gitRepo");
+      // rev-parse 得到的 commit 落库（在部署头之后、clone 成功时补写）
+      const withCommit = updates
+        .map(([, p]: any[]) => p)
+        .find((p: any) => p?.gitCommit != null);
+      expect(withCommit?.gitCommit).toBe("deadbeef");
     });
 
     it("R4: spawn stays async — no spawnSync import remains on the event loop", async () => {
@@ -411,7 +454,7 @@ describe("ApplicationService", () => {
 
         expect(mockedSpawn).toHaveBeenCalledTimes(2);
         const lastSave =
-          appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+          lastStatusPatch(appRepo);
         expect(lastSave.gitCommit).toBe("deadbeef");
       });
     });
@@ -824,8 +867,7 @@ describe("ApplicationService", () => {
       });
       expect(created[1].name).toBe("mt2");
       // already-exists 仅 warn 不中断（第二个任务仍被注册），终态 ACTIVE
-      const lastSave =
-        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+      const lastSave = lastStatusPatch(appRepo);
       expect(lastSave.status).toBe(ApplicationStatus.ACTIVE);
       expect(lastSave.gitCommit).toBe("deadbeef");
     });
@@ -845,8 +887,7 @@ describe("ApplicationService", () => {
       } finally {
         rmSpy.mockRestore();
       }
-      const lastSave =
-        appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+      const lastSave = lastStatusPatch(appRepo);
       expect(lastSave.status).toBe(ApplicationStatus.FAILED);
     });
 
@@ -890,7 +931,7 @@ describe("ApplicationService", () => {
           service.deployFromGit("1", "https://github.com/o/r.git", "main"),
         ).rejects.toThrow(/git clone failed/);
         const lastSave =
-          appRepo.save.mock.calls[appRepo.save.mock.calls.length - 1][0];
+          lastStatusPatch(appRepo);
         expect(lastSave.status).toBe(ApplicationStatus.FAILED);
       } finally {
         rmSpy.mockRestore();
@@ -1035,6 +1076,57 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
       expect.objectContaining({ where: { applicationId: "app-1" } }),
     );
     expect(appRepo.remove).toHaveBeenCalled();
+  });
+
+  // R32-C1（类别 1「按 address vs 按 id 取」）：部署行自带 executorId（deploy 时
+  // 写入），但扇出此前只 select executorAddress → 按地址分组 + 按地址解析传输。
+  // ADR-017 §5 允许 pull 同址多行并存，于是那两条退化成：
+  //   ① resolveExecutorTransport 只给 address → findOne({where:{address}}) 首行
+  //      获胜 → 清理命令进到**另一台**的队列；
+  //   ② 同址两台被折叠成一个目标 → 第二台永远收不到自己的 stop/uninstall。
+  // 反证：把 select 的 executorId 去掉、或把分组键改回 address，本用例即转红。
+  it("同址两台（executorId 不同）按行身份各自扇出：不合并、不串队", async () => {
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-a1", executorId: "exec-a", executorAddress: "shared:8100" },
+      { id: "dep-b1", executorId: "exec-b", executorAddress: "shared:8100" },
+    ]);
+    // pull 模式：每台都从自己的队列取件。
+    executorService.resolveExecutorTransport.mockImplementation(
+      async (opts: { executorId?: string | null; address?: string }) => ({
+        mode: "pull",
+        executor: { id: opts.executorId ?? `addr:${opts.address}` },
+      }),
+    );
+
+    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+
+    // ① 传输解析带上了行身份（不再只给 address）。
+    expect(
+      executorService.resolveExecutorTransport.mock.calls
+        .map((c: any[]) => c[0].executorId)
+        .sort(),
+    ).toEqual(["exec-a", "exec-b"]);
+    // ② 每台的命令只进自己的队列，两台都被清理。
+    const enq = executorService.enqueueExecutorCommand.mock.calls;
+    expect(enq).toContainEqual([
+      "exec-a",
+      "app-stop",
+      { deploymentId: "dep-a1" },
+    ]);
+    expect(enq).toContainEqual([
+      "exec-b",
+      "app-stop",
+      { deploymentId: "dep-b1" },
+    ]);
+    expect(enq).toContainEqual(["exec-a", "app-uninstall", { appId: "app-1" }]);
+    expect(enq).toContainEqual(["exec-b", "app-uninstall", { appId: "app-1" }]);
+    // ③ 不串队（修复前 B 的部署会被塞进 A 的队列）。
+    expect(enq).not.toContainEqual([
+      "exec-a",
+      "app-stop",
+      { deploymentId: "dep-b1" },
+    ]);
   });
 
   it("执行器全挂时应用仍被删且 remove() 不抛错", async () => {

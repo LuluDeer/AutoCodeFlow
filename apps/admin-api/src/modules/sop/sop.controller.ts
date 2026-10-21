@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Ip,
   Param,
   Patch,
   Post,
@@ -52,6 +53,17 @@ import {
   SopResponseDto,
   SopVersionDto,
 } from "./dto/sop-response.dto";
+
+/**
+ * R41-A1：审计行的 `userId` 列是**整数**（audit_logs.userId int），而控制器
+ * 这一侧的历史类型把主体 id 写成 string（模板拼 `user:<id>` 两种入参都吃）。
+ * 统一在此收敛：非有限数一律 null——宁可留空，也不把 NaN 写进可被
+ * 「按 userId 过滤」的列（NaN 会静默筛不到任何行）。
+ */
+function auditUserId(user?: { id: number | string }): number | null {
+  const id = Number(user?.id);
+  return Number.isFinite(id) ? id : null;
+}
 
 /**
  * P5：SOP 管理面（ADMIN-only）。
@@ -289,7 +301,8 @@ export class SopController {
     @Param("assignmentId") assignmentId: string,
     @Param("clarificationId") clarificationId: string,
     @Body() dto: HumanReplyDto,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: number | string } | undefined,
+    @Ip() ip?: string,
   ) {
     // 确认澄清确实属于该指派（防跨工单答复）
     const { clarifications } = await this.sops.getAssignment(assignmentId);
@@ -306,6 +319,9 @@ export class SopController {
       amendedBodyMarkdown: dto.amendedBodyMarkdown,
       changelog: dto.changelog,
       replyBy: `user:${user.id}`,
+      // R41-A1：人工答复的审计上下文（谁、从哪来）——答复正文由服务层
+      // 只记长度，不经控制器进入审计。
+      audit: { userId: auditUserId(user), ip: ip ?? null },
     });
   }
 
@@ -319,7 +335,11 @@ export class SopController {
   @Post()
   @ApiOperation({ summary: "起草 SOP（draft 态；slug 重复则覆盖草稿）" })
   @ApiCreatedResponse({ type: SopResponseDto })
-  async draft(@Body() dto: DraftSopDto, @CurrentUser() user: { id: string }) {
+  async draft(
+    @Body() dto: DraftSopDto,
+    @CurrentUser() user: { id: number | string } | undefined,
+    @Ip() ip?: string,
+  ) {
     return this.sops.draft({
       slug: dto.slug,
       title: dto.title,
@@ -327,6 +347,8 @@ export class SopController {
       bodyMarkdown: dto.bodyMarkdown,
       applicationId: dto.applicationId ?? null,
       createdBy: `user:${user.id}`,
+      // R41-A1：起草/编辑也留痕（发布的正文就取自工作副本）
+      audit: { userId: auditUserId(user), ip: ip ?? null },
     });
   }
 
@@ -338,14 +360,24 @@ export class SopController {
     type: SopResponseDto,
     description: "编辑后的工作副本（published 行的 currentVersion 不变）",
   })
-  async update(@Param("id") id: string, @Body() dto: UpdateSopDto) {
+  async update(
+    @Param("id") id: string,
+    @Body() dto: UpdateSopDto,
+    @CurrentUser() user?: { id: number | string },
+    @Ip() ip?: string,
+  ) {
     const sop = await this.sops.getSop(id);
     return this.sops.draft({
       slug: sop.slug,
       title: dto.title ?? sop.title,
       frontMatterYaml: dto.frontMatterYaml,
       bodyMarkdown: dto.bodyMarkdown,
-      createdBy: `user:${sop.createdBy}`,
+      // R34-A1（轴 4）：createdBy 是**归属**不是「本次操作者」——库里已是
+      // `user:<uuid>` 形态，再套一层前缀会得到 `user:user:<uuid>`（不可解析）。
+      // 编辑不改归属：原样透传（draft 对既有 slug 也不写这一列，双重保险）。
+      createdBy: sop.createdBy,
+      // R41-A1：编辑工作副本留痕（操作者是当前用户，不是 createdBy 属主）
+      audit: { userId: auditUserId(user), ip: ip ?? null },
     });
   }
 
@@ -358,13 +390,16 @@ export class SopController {
   async publish(
     @Param("id") id: string,
     @Body() dto: PublishSopDto,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: number | string } | undefined,
+    @Ip() ip?: string,
   ) {
     return this.sops.publish({
       sopId: id,
       bump: dto.bump,
       changelog: dto.changelog,
       publishedBy: `user:${user.id}`,
+      // R41-A1：发布是审计的首要动作（「谁发布了哪个版本」）
+      audit: { userId: auditUserId(user), ip: ip ?? null },
     });
   }
 
@@ -376,7 +411,8 @@ export class SopController {
   async assign(
     @Param("id") id: string,
     @Body() dto: AssignSopDto,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: number | string } | undefined,
+    @Ip() ip?: string,
   ) {
     let executorId = dto.executorId;
     if (!executorId && dto.executorAddress) {
@@ -395,6 +431,8 @@ export class SopController {
       version: dto.version,
       executorId,
       assignedBy: `user:${user.id}`,
+      // R41-A1：指派 / 重派留痕（「把哪张单指派给了谁」）
+      audit: { userId: auditUserId(user), ip: ip ?? null },
     });
   }
 

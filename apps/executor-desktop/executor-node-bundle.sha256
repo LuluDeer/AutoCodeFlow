@@ -551,5 +551,25 @@
 #   字节确定性实测：**同目录连续两次重打逐字节一致**（a32b60f5…）——与既有先例
 #   （本文件 §386 / §430）结论一致：ncc 0.45 的产物与 map 均无绝对路径，
 #   ② 可本地回填，CI 仍权威复验。source-digest 46 个输入文件。
-source-digest: 178388c62de8a70ec49d0f757da106b833f1b1dd86a6860691708f3ee19b3e1f
-6a34ed0af16440ce1a72378d399da0dc06a6485cd1ba7ff936b43a4dda002835  index.js
+#
+# 2026-10-20（R74-A1/R77：executor-node 的 SSRF 闸加固 + 拒��矩阵对齐）：
+#   · `lib/ssrf-guard.ts` 的 IPv6 判定从**字符串前缀黑名单**改为**展开成 8 个 16-bit 分组后按位判**
+#     ——旧实现可被 `[::ffff:127.0.0.1]` 绕过（WHATWG URL 规范化成 `[::ffff:7f00:1]`，点分分支
+#     解析失败 ⇒ **整条回环地址放行**），另 `fe80::/10` 只黑 3 段、`ff00::/8` 完全未覆盖；
+#     同时补 `198.18.0.0/15`（与 admin-api 的 deny 表对齐，由新的 parity 守卫 `--report` 揪出）。
+#   · `lib/download.ts` 增加 DNS 钉扎（校验地址与连接地址一致，含逐跳）。
+#   ⚠️ 这两处都是 **bundle 输入**：漏打即「修了源码却仍发布带洞的内嵌执行器」——正是本文件
+#   反复记载的 cc54aa2f / NETOPT-8③ / f3e340df 同型事故。本次按 ADR-005 同 commit 重打回填 ①②。
+#   回填环境：本机(Windows) node 24 / ncc 0.45.0，bundle 4191kB（重打 26s）。
+#
+# 2026-10-21（依赖审计 SEC-06：follow-redirects 1.16.0 → 1.16.1 / uv 0.13.4）：
+#   · 修 CVE-2026-111755 / CVE-2026-111756（high，GHSA-8r9p-f939-6h3c /
+#     GHSA-q3jh-wrc6-jgq8）——axios 的传递依赖 follow-redirects 1.16.0 存在
+#     sensitiveHeaders 正则转义与数组式 header 绕过，两者都会泄露跨域凭据头。
+#   · `apps/executor-node/src` 一个字节没动（source-digest 不变 a038509b…），
+#     但 ncc 把 node_modules 内联进产物，故②字节哈希必变——与本文件 2026-10-19
+#     「DEP-AUDIT」同型，属依赖变更而非源码漂移。
+#   · ②取 **CI Ubuntu runner** 的实测产物：actual=8ce6c201…（run 39573130581
+#     desktop-bundle-drift），按既定分工（「只换构建器/依赖不动 src」→ ②按 CI 回填）。
+source-digest: a038509b9e99c6213c272379585e19230ee19c91d97c7ad9fb9a8cedef4e7d25
+8ce6c2011417ff28f46da06a20fa1c74f3124015be948157640b04c228880cd1  index.js

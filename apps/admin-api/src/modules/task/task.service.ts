@@ -10,6 +10,8 @@ import {
 // LANG-ERR-01: 用户可见失败一律抛 AppError（稳定码 + 结构化参数），文案由前端
 // 按用户语言翻译；`zh` 仅作不翻译消费者（CLI/MCP/日志/落库）的兜底。
 import { AppError } from "../../common/errors/app-error";
+// R32-B1：执行类写面的「判定不可用」必须抛出稳定码（503），故按规范用取值形态。
+import { ErrorCode } from "../../common/errors/error-codes";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   assertAndPinExecutorUrl,
@@ -155,7 +157,10 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
 // 回填值共享同一常量出处 project.entity.ts）。
 import { DEFAULT_PROJECT_ID, Project } from "../project/project.entity";
 // AUTH-02: 项目级角色（写面/执行类写面归属判定）
-import { ProjectAccessService } from "../project/project-access.service";
+import {
+  ProjectAccessService,
+  type ProjectRoleResolution,
+} from "../project/project-access.service";
 // CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
 // FIX-3.1: timeoutWarnThresholdMs 首次接入运行期消费点（超时预警，见
 // maybeNotifyTimeoutWarning）。
@@ -522,6 +527,77 @@ export const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
  */
 export const EXECUTOR_OFFLINE_PATTERN =
   /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,120}?(?:离线|不可用|不可达)/i;
+
+/**
+ * R63-A1（ADR-026 规则 4）：`rollbackToVersion` 允许从版本快照恢复的**列白名单**。
+ *
+ * 为什么是正向白名单，而不是「snapshot 里有什么就写什么」或整行 `save(entity)`：
+ *
+ * 1. **整行回写**（旧实现 `Object.assign(task, snapshot); taskRepo.save(task)`）
+ *    写的是方法早期读到的快照——窗口内并发 PATCH 写下的 description /
+ *    cronExpression、并发 pause 写下的 status、并发 remove 写下的
+ *    status='deleted' + deletedAt 会被静默盖回（**软删行复活**）。回滚的语义是
+ *    「把这一版的配置恢复回来」，不是「把这一行的时间线倒回读取那一刻」。
+ * 2. 但快照恢复**确实**要覆盖一批列（不像 pause 只改 status），所以修法不是
+ *    「只写一列」，而是「只写快照真的带了的列」——采纳集 = 白名单 ∩ 快照键。
+ *    缺键保留现值的既有语义逐字不变（见 saveVersion 注释里的旧快照兼容说明），
+ *    只是写面从「整行」收窄到「这些列」。
+ * 3. **主键与框架列不在白名单里**：`version.snapshot` 带 `id` 只为可读性，
+ *    把它写进 UPDATE 等于允许一次回滚改主键；createdAt / updatedAt / deletedAt
+ *    是框架列，写它们会绕过乐观锁与软删语义。
+ * 4. secrets / webhookSecret / status / ownerUserId 刻意**不**入快照（见
+ *    saveVersion：版本端点会把 snapshot 原样回传，密文不能进版本历史），于是
+ *    也不在白名单里——回滚永远不碰凭据与生命周期列。
+ *
+ * 维护约定：`saveVersion` 的 snapshot 键集新增一项，就必须在这里同步加一列；
+ * `task.state-write-guards.spec.ts` 的「漂移钉子」会用真实 saveVersion 产出的
+ * 快照反查本白名单的覆盖率，漏加即红。
+ */
+const VERSION_ROLLBACK_COLUMNS: readonly (keyof Task)[] = [
+  "name",
+  "description",
+  "runtime",
+  "entrypoint",
+  "requirements",
+  "params",
+  "timeout",
+  "timeoutAction",
+  "timeoutWarnRatio",
+  "estimatedDurationSec",
+  "maxRetry",
+  "retryDelay",
+  "retryableErrors",
+  "triggerType",
+  "cronExpression",
+  "timezone",
+  "fixedRate",
+  "blockStrategy",
+  "misfireStrategy",
+  "priority",
+  "executeMode",
+  "currentVersion",
+  "gitRepo",
+  "gitBranch",
+  "gitCommit",
+  "glueSource",
+  "glueLanguage",
+  "runtimeVersion",
+  "codeSource",
+  "applicationId",
+  "maintenanceWindows",
+  "runbook",
+  "dependencies",
+  "deploymentPolicy",
+  "executorAffinityTags",
+  "executorAntiAffinityTags",
+  "executorId",
+  "executorAppName",
+  "executorGroup",
+  "executorTags",
+  "projectId",
+  "alarmEmail",
+  "alarmChannels",
+];
 
 @Injectable()
 export class TaskService {
@@ -1088,11 +1164,21 @@ export class TaskService {
 
     if (!this.projectAccess || principalId === undefined) return;
     if (user?.role === UserRole.ADMIN) return;
-    const role = await this.projectAccess.resolveRole(
+    // R32-B1（fail-closed）：判定是**三态**的，先回答「判定到底做完了没有」。
+    // 旧代码在这里直接拿二态 `resolveRole`：DB 抖动 → null → 与「非成员」同形 →
+    // 下面的 `role === "viewer"` 不成立 → 函数自然返回 = **放行**。也就是说权限
+    // 检查在故障窗口里不存在（R32-A5 登记的 fail-open）。
+    const resolution = await this.resolveOperateRoleState(
       principalId,
       row.projectId ?? null,
     );
-    if (role === "viewer") {
+    if (resolution.status === "unavailable") {
+      // 判定没做完 ≠ 没有权限关系。对执行类写面唯一安全的答案是拒绝，且必须是
+      // 503（依赖暂时不可用、重试即可）而不是 403——403 会把用户引向"找管理员
+      // 申请权限"，而他的权限其实一直都在，只是这一秒查不到。
+      throw new AppError(ErrorCode.PROJECT_ROLE_UNAVAILABLE);
+    }
+    if (resolution.status === "role" && resolution.role === "viewer") {
       throw new AppError("TASK_OPERATE_VIEWER_READONLY");
     }
   }
@@ -1174,12 +1260,51 @@ export class TaskService {
     if (user.role === UserRole.ADMIN) return true;
     if (row.ownerUserId !== null && row.ownerUserId === user.id) return true;
     if (!this.projectAccess) return false;
-    const role = await this.projectAccess.resolveRole(
+    // R32-B1：owner 档同样走三态。旧代码把「判定不可用」折成 null 后按非成员
+    // 拒绝——方向上已经是 fail-closed（不会放行），但给出的结论是错的：数据库
+    // 抖动窗口里用户会收到 403「你不是该任务的属主」，而真实原因与他的权限无关。
+    // 这里只把 unavailable 这一支从 403 改成 503，其余分支逐字节不变。
+    const resolution = await this.resolveOperateRoleState(
       user.id,
       row.projectId ?? null,
     );
-    // editor / admin 放行；viewer 与「非成员」（resolveRole 返回 null）拒绝。
-    return role === "editor" || role === "admin";
+    if (resolution.status === "unavailable") {
+      throw new AppError(ErrorCode.PROJECT_ROLE_UNAVAILABLE);
+    }
+    // editor / admin 放行；viewer 与「非成员」（status: "none"）拒绝。
+    return (
+      resolution.status === "role" &&
+      (resolution.role === "editor" || resolution.role === "admin")
+    );
+  }
+
+  /**
+   * R32-B1：执行类写面的三态判定入口（`assertCanOperate` 与其 owner 档分支共用）。
+   *
+   * 为什么不直接调 `this.projectAccess.resolveRoleState`：本仓三处既有单测把
+   * projectAccess 铸成 `{ hasProjectRole, resolveRole }` 这样的**二态替身**
+   * （`modules/api-keys/__tests__/api-key-owner-scope.spec.ts`、
+   * `common/guards/__tests__/ownership-assertion-recording.spec.ts` 等），
+   * 它们对「查询失败」没有表达能力。故对这类替身退化为二态折叠（与改动前逐字节
+   * 一致）；**生产装配注入的是真实的 ProjectAccessService**，永远命中三态分支。
+   * 这条不变量由 `__tests__/task-operate-role-unavailable.spec.ts` 用真服务钉住
+   * （它同时断言替身路径仍然可用，防止"垫片"变成新的静默降级点）。
+   */
+  private async resolveOperateRoleState(
+    userId: number,
+    projectId: string | null,
+  ): Promise<ProjectRoleResolution> {
+    const access: {
+      resolveRoleState?: ProjectAccessService["resolveRoleState"];
+      resolveRole: ProjectAccessService["resolveRole"];
+    } = this.projectAccess as never;
+    if (typeof access.resolveRoleState === "function") {
+      return access.resolveRoleState(userId, projectId);
+    }
+    const role = await access.resolveRole(userId, projectId);
+    return role === null || role === undefined
+      ? { status: "none" }
+      : { status: "role", role };
   }
 
   /**
@@ -1569,6 +1694,8 @@ export class TaskService {
         // `select: false` 的 webhookSecret 列：整行回写会把它清成 NULL
         // （本仓已有同型生产故障先例，见 update() 的 R-01 注释）。
         // 列级 update 既规避该风险，也不会无谓触碰 updatedAt 之外的列。
+        // adr-026-exempt: 只改 dependencies 一列（依赖别名重写），与状态机/生命周期无关；
+        // 值来自本次遍历读到的 deps 快照，并发改名属罕见且非破坏性（最坏是多写一次同一别名）。
         await this.taskRepo.update(
           { id: dependent.id },
           { dependencies: next },
@@ -2095,12 +2222,28 @@ export class TaskService {
     // 比较两侧同一 hydrated Date 的毫秒值（PG 微秒精度在 hydration 时截断，
     // API 序列化与本次比对读的是同一形态，毫秒比较稳定）；不可解析的时间串
     // 按「版本不符」处理（fail-closed，同样 409）。
+    // R52（ADR-026 规则 2）：**乐观锁下沉到写谓词**，不再「读后比对」。
+    //
+    // 旧实现在这里比一次、再在 patchTaskColumns 里无条件写——两次之间的窗口仍是
+    // TOCTOU：另一个标签页的写可以**正好**落在这段间隙里，于是「检查通过但覆盖了
+    // 别人的更新」，乐观锁形同虚设。现在把期望版本作为**行谓词**下发，判据的解释权
+    // 归数据库（与 pause/resume/remove 同一姿态）。
+    //
+    // 为什么用区间而不是等值：PG 的 timestamptz 存**微秒**，而 hydration 到 JS Date
+    // 会截到毫秒；直接等值（哪怕 date_trunc）在不同驱动/时区下都容易出现「差 1μs
+    // 永不命中」。区间 [expectedMs, expectedMs + 1ms) 精确对应「同一个毫秒桶」，
+    // 既覆盖微秒尾数，也不依赖任何 PG 函数。
+    // 不可解析的时间串仍按「版本不符」处理（fail-closed，同旧语义）。
+    let expectedVersionMs: number | null = null;
     if (dto.expectedUpdatedAt != null) {
-      const expectedMs = new Date(dto.expectedUpdatedAt).getTime();
-      if (
-        !Number.isFinite(expectedMs) ||
-        expectedMs !== t.updatedAt.getTime()
-      ) {
+      const ms = new Date(dto.expectedUpdatedAt).getTime();
+      if (!Number.isFinite(ms)) throw new AppError("TASK_UPDATE_STALE");
+      expectedVersionMs = ms;
+      // 读时**预判**只用于「省掉一次注定失败的写」，**不是**判据的最终解释权：
+      // 现在是快照与期望值不符就立刻 409（零写入）；而快照看起来一致的情况，
+      // 真正的裁决发生在写谓词上（见 patchTaskColumns）——那一段才是关掉 TOCTOU
+      // 的地方。两层是分工，不是重复。
+      if (expectedVersionMs !== t.updatedAt.getTime()) {
         throw new AppError("TASK_UPDATE_STALE");
       }
     }
@@ -2131,6 +2274,8 @@ export class TaskService {
     // 掩码；整体替换会把掩码当作真实值落库（真实凭据被不可逆覆盖，而 UI 上键还
     // 在——正是本次生产故障的形状）。合并规则与掩码/删除语义见
     // secret-crypto.util.ts 的 mergeSecretsOnUpdate。
+    /** R49-A1（S2）：本次请求是否**真的带了** secrets —— 带才写该列。 */
+    let secretsPatch: Record<string, unknown> | null | undefined;
     if (normalized.secrets !== undefined) {
       t.secrets =
         normalized.secrets === null
@@ -2139,6 +2284,7 @@ export class TaskService {
               t.secrets,
               normalized.secrets as Record<string, unknown>,
             ) as Record<string, unknown>);
+      secretsPatch = t.secrets ?? null;
     }
     delete normalized.secrets;
     // A4: expectedUpdatedAt 只服务并发检查（消费即弃，同 timeoutSeconds 模式）
@@ -2191,9 +2337,21 @@ export class TaskService {
       touchesRuntime: "runtime" in dto,
       context: `task ${id}`,
     });
-    let saved: Task;
+    // R49-A1（S2 · ADR-026 规则 4）：**列级条件写**取代整行 `save(updated)`。
+    //
+    // patch 的键 = normalizeTaskDto 之后 DTO 里真正出现的键（被 normalize 的
+    // timeoutSeconds→timeout 映射算"出现的键"；显式 null 照写以保留清除语义）。
+    // status **只有 DTO 显式带它时**才进 patch —— 这一点是本次修复的核心：
+    // 旧实现把方法早期快照里的 status 一并写回，窗口内并发的 pause/remove 会被
+    // 静默盖掉（暂停"自己恢复"、软删行"复活"）。secrets 同理：不带就不写。
+    const writePatch = this.taskPatchFromDto(
+      normalized as unknown as Record<string, unknown>,
+    );
+    if (secretsPatch !== undefined) writePatch.secrets = secretsPatch;
+
+    let applied: boolean;
     try {
-      saved = await this.taskRepo.save(updated);
+      applied = await this.patchTaskColumns(id, writePatch, expectedVersionMs);
     } catch (err) {
       // 改名撞唯一索引：tasks.name 上有全局唯一索引 idx_tasks_name_unique
       // （迁移 1790000000050，**含软删除行**）。create 早就有这条分流
@@ -2207,6 +2365,25 @@ export class TaskService {
         throw new AppError("TASK_NAME_TAKEN", { name: updated.name });
       }
       throw err;
+    }
+    // 返回体必须是**库里的当前行**，不是本次方法的早期快照：并发写赢家的列要
+    // 如实回给调用方（pause/resume 已是同款做法）。
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    if (!saved) {
+      // 规则 3：行谓词不成立的唯一现实来源是窗口内并发 remove 把它软删了。
+      // 对外与"先 remove 再 PATCH"的顺序执行同解（404），**绝不**把行写活。
+      throw new AppError("TASK_NOT_FOUND", { taskId: id });
+    }
+    if (!applied) {
+      // 写未命中行谓词，但行仍在（否则上面已 404）。两种来源，**语义不同**：
+      //   · 带了 expectedUpdatedAt ⇒ 版本已被别人推进 ⇒ 409（乐观锁成立的唯一含义）；
+      //   · 没带（旧调用方）⇒ PG 仅在"值完全相同"时报 0，属无变化的成功，按回读返回。
+      if (expectedVersionMs !== null) {
+        throw new AppError("TASK_UPDATE_STALE");
+      }
+      this.logger.warn(
+        `update ${id}: 列级写未命中行谓词（值未变），按回读结果返回`,
+      );
     }
     await this.saveVersion(saved.id, undefined, undefined, saved);
     // 改名后刷新所有引用方的依赖**显示名** key：dependencies 是
@@ -2258,21 +2435,64 @@ export class TaskService {
     if (typeof source !== "string" || source.trim().length === 0) {
       throw new AppError("TASK_GLUE_SOURCE_EMPTY");
     }
-    t.glueSource = source;
-    if (language) t.glueLanguage = language;
     // python_task_multiversion（FR-18 / AC-17b）：glue 写入必须同时**声明**
     // codeSource 并**清空** gitRepo，否则终态变成"gitRepo + glueSource 并存"
     // ——正是三选一互斥要禁止的歧义态（读面按 codeSource 判定会与实际来源
     // 漂移；执行器侧 git clone 分支先跑，glue 代码根本不会生效）。
     // 这里就地收敛而非调用 assertCodeSourceConsistent：本方法的**语义**就是
     // "把代码来源切到 glue"，收敛是确定的，无需把合法请求判成 400。
-    t.codeSource = TaskCodeSource.GLUE;
-    t.gitRepo = null;
-    const saved = await this.taskRepo.save(t);
+    //
+    // R49-A1（S2 · ADR-026 规则 4）：改成**列级条件写**——只写本方法真正改变的
+    // 四列，绝不把方法早期快照里的 status / name / secrets 整行回写（并发 pause
+    // 会在一次"只改脚本"的请求里被悄悄恢复）。
+    const gluePatch: Record<string, unknown> = {
+      glueSource: source,
+      codeSource: TaskCodeSource.GLUE,
+      gitRepo: null,
+    };
+    // 缺省 language = 保留旧值（不写该列，而不是写回快照里的旧值）
+    if (language) gluePatch.glueLanguage = language;
+    const applied = await this.patchTaskColumns(id, gluePatch);
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    if (!saved) {
+      // 同 update：窗口内并发 remove 已把行软删 —— 与顺序执行同解（404）
+      throw new AppError("TASK_NOT_FOUND", { taskId: id });
+    }
+    if (!applied) {
+      this.logger.warn(
+        `updateGlue ${id}: 列级写未命中行谓词（行已被并发推进或值未变），按回读结果返回`,
+      );
+    }
     await this.saveVersion(saved.id, undefined, undefined, saved);
     return this.maskSecretsForResponse(saved);
   }
 
+  /**
+   * R49-A1（S1 · ADR-026 规则 1/2/3/4）：删除 = **条件状态迁移 + 独立软删**。
+   *
+   * ## 判定一：哪些状态可删（按现有业务，不收严）
+   *
+   * `TaskStatus` 只有 active / paused / deleted 三态，**没有"运行中"的任务态**
+   * ——执行态在 task_executions 上。故可删起点 = `{active, paused}`：
+   *   · 此前 active/paused 都能删，删除也不 kill 在跑的执行（stop 只摘定时器），
+   *     本轮维持该业务口径，不凭空收严；
+   *   · deleted 不是可删起点：findByIdRaw 已把它当"不存在"（404），且行谓词里
+   *     还有 `deletedAt IS NULL`，已软删的行永远不可能被"再删一次"写成别的值。
+   *
+   * ## 判定二：两步之间第二步失败，要不要补偿
+   *
+   * 要。失败中间态是 `status='deleted' 且 deletedAt IS NULL`——TypeORM 读面
+   * 看得见这一行（deletedAt 为空）、而 status 说它已删除，是全仓最容易被误当成
+   * "脏数据已由运维清理"的形态。故第二步失败时**条件回滚** status 到进入本方法
+   * 时观察到的起点（`WHERE status='deleted' AND deletedAt IS NULL`）：
+   *   · 回滚谓词 from=deleted 保证不会覆盖并发推进（例如另一个 remove 已成功
+   *     软删 → deletedAt 非空 → 回滚命中 0，保留赢家结果）；
+   *   · 回滚本身失败只记 error（best-effort），行会停在上述中间态，日志里有
+   *     明确文案供人工核对——此时不再二次尝试，避免把并发结果踩回去。
+   *
+   * 顺序为什么是"先状态、后软删"：第一步的谓词要求 `deletedAt IS NULL`，
+   * 软删一旦先做，条件状态写就必然命中 0（永远写不进去）。
+   */
   async remove(id: string, user?: { id: number; role: UserRole } | null) {
     // R-01: RAW 取数——软删落库同样不得把掩码副本写进 secrets 列
     const t = await this.findByIdRaw(id);
@@ -2280,27 +2500,181 @@ export class TaskService {
     await this.assertCanWriteProjectAware(t, user);
     // Stop schedule immediately without waiting for reload
     this.schedulerService.stop(id);
-    t.status = TaskStatus.DELETED;
-    await this.taskRepo.save(t);
-    // DB-001: 同步写入 TypeORM 软删除列，此后 Repository find/findOne
-    // 自动排除该行；status='deleted' 保留以兼容 raw query 消费方。
-    await this.taskRepo.softDelete(id);
+    // 第一步：只写 status 一列；判据（可删起点集合 + 软删过滤）在数据库行谓词上。
+    const applied = await this.transitionTaskStatus(id, {
+      from: [TaskStatus.ACTIVE, TaskStatus.PAUSED],
+      to: TaskStatus.DELETED,
+    });
+    if (!applied) {
+      // 规则 3：命中 0 = 并发收敛（行已被别的 remove 软删，或状态已被移出可删
+      // 集合）。与"顺序执行时第二次 remove"同解：404，绝不再按旧快照写回。
+      this.logger.warn(
+        `remove ${id}: status 已被并发迁移或行已软删，跳过写入以保留并发结果`,
+      );
+      throw new AppError("TASK_NOT_FOUND", { taskId: id });
+    }
+    // 第二步：DB-001 —— 独立写入 TypeORM 软删除列，此后 Repository
+    // find/findOne 自动排除该行；status='deleted' 保留以兼容 raw query 消费方。
+    try {
+      await this.taskRepo.softDelete(id);
+    } catch (err) {
+      // 补偿：把 status 条件回滚到进入本方法时观察到的起点（判据见方法注释）
+      const rolledBack = await this.transitionTaskStatus(id, {
+        from: TaskStatus.DELETED,
+        to: t.status,
+      });
+      if (!rolledBack) {
+        this.logger.error(
+          `remove ${id}: softDelete 失败后 status 回滚未命中（行已被并发推进），该行可能停在 status=deleted 且 deletedAt 为空，需人工核对`,
+        );
+      } else {
+        this.logger.warn(
+          `remove ${id}: softDelete 失败，已把 status 条件回滚为 ${t.status} 以消除中间态`,
+        );
+      }
+      throw err;
+    }
     return { deleted: true };
   }
 
+  /**
+   * R46-A1（四轴审计 · ADR-026 规则 1/2/4）：`tasks` 行状态迁移的**唯一**写入口。
+   *
+   * 为什么不能「findByIdRaw 判一下 → 赋 status → save(t)」（本方法取代的旧实现）：
+   *
+   * 1. **read-then-write 不是条件写**（规则 2 点名的反例）：判与写之间是可乘之机，
+   *    两个并发 pause、或 pause 与 remove 并发时，双方都能在"自己看来合法"的
+   *    前提下走完，最后谁 save 谁赢；
+   * 2. `save(entity)` 的语义是**整行回写**（规则 4）：实体是方法早期读到的快照，
+   *    窗口内并发 PATCH 写下的 name / timeout / cronExpression / params / secrets
+   *    会被静默盖回旧值；并发的 remove 写入的 status='deleted' 也会被盖回
+   *    paused/active —— 即**软删行复活**（TypeORM 的 save 仍会写 status 列）；
+   * 3. 条件不命中必须是"跳过写"而不是"照写"（规则 3）。
+   *
+   * 故这里的证据全部交给数据库行谓词：`WHERE id AND status = :from AND "deletedAt"
+   * IS NULL`，且**只写 status 一列**（+ 库时钟 updatedAt）——本次动作真正改变的
+   * 列只有它。返回 false = 状态已被别人推进（并发收敛），调用方按各自业务语义
+   * 决定对外错误码，但**绝不能**再按旧快照回写。
+   *
+   * @returns true = 本次动作赢得迁移（affected > 0）
+   */
+  private async transitionTaskStatus(
+    id: string,
+    transition: {
+      /**
+       * 合法起始态。单一状态用等值谓词（最易读）；**集合**（例：remove 的可删
+       * 起点 {active, paused}）用 IN —— 两者都把判据放在数据库行谓词上。
+       */
+      from: TaskStatus | readonly TaskStatus[];
+      to: TaskStatus;
+    },
+  ): Promise<boolean> {
+    const rawFrom = transition.from;
+    const fromStatuses: TaskStatus[] =
+      typeof rawFrom === "string" ? [rawFrom] : [...rawFrom];
+    const qb = this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({
+        status: transition.to,
+        // 规则 4：时间戳用**库时钟**。QueryBuilder 的 UPDATE 不像 save() 那样
+        // 自动刷新 @UpdateDateColumn，漏了它会让 updatedAt 停在旧值——而
+        // PATCH 的乐观锁（expectedUpdatedAt）正是拿它比对的。
+        updatedAt: () => "CURRENT_TIMESTAMP",
+      })
+      .where('"id" = :id', { id });
+    if (fromStatuses.length === 1) {
+      qb.andWhere('"status" = :from', { from: fromStatuses[0] });
+    } else {
+      qb.andWhere('"status" IN (:...fromStatuses)', { fromStatuses });
+    }
+    const result = await qb.andWhere('"deletedAt" IS NULL').execute();
+    return (result?.affected ?? 0) > 0;
+  }
+
+  /**
+   * R49-A1（S2 · ADR-026 规则 1/2/4）：**列级条件写** —— 只写 patch 里给出的
+   * 列，且行谓词恒带 `deletedAt IS NULL`。
+   *
+   * 为什么不是 `repo.save(entity)`：save 的语义是**整行回写**（规则 4），entity
+   * 是方法早期读到的快照。窗口内并发 pause / remove / 另一个 PATCH 写下的
+   * status / name / timeout 会被静默盖回旧值（含"已软删行复活"）——PATCH 与
+   * updateGlue 真正改变的列只有有限几列，没有任何理由写全行。
+   *
+   * 为什么显式写 updatedAt：QueryBuilder 的 UPDATE **不会**像 save() 那样自动
+   * 刷新 `@UpdateDateColumn`（R46-A1 已踩过）。漏了它，PATCH 的乐观锁
+   * （expectedUpdatedAt）会读到恒定的 updatedAt，两个标签页可以无限互踩。
+   *
+   * @returns true = 行谓词成立且写落库（affected > 0）
+   */
+  private async patchTaskColumns(
+    id: string,
+    patch: Record<string, unknown>,
+    expectedVersionMs: number | null = null,
+  ): Promise<boolean> {
+    let qb = this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ ...patch, updatedAt: () => "CURRENT_TIMESTAMP" })
+      .where('"id" = :id', { id })
+      .andWhere('"deletedAt" IS NULL');
+    if (expectedVersionMs !== null) {
+      // 乐观锁的行谓词（R52）：锁在「同一个毫秒桶」——见 update() 头注里为什么是区间。
+      qb = qb.andWhere('"updatedAt" >= :tsFrom AND "updatedAt" < :tsTo', {
+        tsFrom: new Date(expectedVersionMs),
+        tsTo: new Date(expectedVersionMs + 1),
+      });
+    }
+    const result = await qb.execute();
+    return (result?.affected ?? 0) > 0;
+  }
+
+  /**
+   * R49-A1（S2）：把 normalizeTaskDto 的结果投影成**列级 patch**。
+   *
+   * 只取本次请求真的带来的键：`undefined` = 没带（保留旧值，不写，语义同
+   * "NOT NULL 列不可置空"）；`null` = 显式清空，照写（可空列的 PATCH 清除
+   * 语义）。这里不再"补全"任何键——补全就是把快照写回库。
+   */
+  private taskPatchFromDto(
+    dto: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const patch: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dto)) {
+      if (value === undefined) continue;
+      patch[key] = value;
+    }
+    return patch;
+  }
+
   async pause(id: string, user?: { id: number; role: UserRole } | null) {
-    // R-01: RAW 取数——暂停落库会把实体整体 UPDATE 回库，脱敏副本同样
-    // 会把 "******" 覆盖到真实 secrets（每次 pause/resume 必现）。
+    // R-01: RAW 取数——响应体要脱敏，而写面不得消费脱敏副本（"******" 落库）。
     const t = await this.findByIdRaw(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
+    // R46-A1: 这里的前置判定只为「顺序执行时给出稳定错误码」而保留；**判据的
+    // 最终解释权在数据库**（transitionTaskStatus 的行谓词），不再靠它决定写。
     if (t.status === TaskStatus.PAUSED) {
       throw new AppError("TASK_ALREADY_PAUSED");
     }
     this.schedulerService.stop(id);
-    t.status = TaskStatus.PAUSED;
-    const saved = await this.taskRepo.save(t);
-    return this.maskSecretsForResponse(saved);
+    const applied = await this.transitionTaskStatus(id, {
+      from: TaskStatus.ACTIVE,
+      to: TaskStatus.PAUSED,
+    });
+    if (!applied) {
+      // 规则 3：命中 0 = 并发收敛（行已被别的动作推进/软删），不是 500，
+      // 更不许按旧快照盖回去。对外与「顺序执行时第二次 pause」同解（同码同 400），
+      // 使"输了竞态"和"来晚了"对调用方不可区分——这正是幂等该有的样子。
+      this.logger.warn(
+        `pause ${id}: status 已被并发迁移（不再是 active），跳过写入以保留并发结果`,
+      );
+      throw new AppError("TASK_ALREADY_PAUSED");
+    }
+    // 返回读侧视图：重新取数（而非返回方法早期快照），避免把窗口内已被别人
+    // 改掉的列当成"本次写的结果"回给调用方。
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    return this.maskSecretsForResponse(saved ?? t);
   }
 
   async resume(id: string, user?: { id: number; role: UserRole } | null) {
@@ -2308,13 +2682,24 @@ export class TaskService {
     const t = await this.findByIdRaw(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(t, user);
+    // R46-A1: 同 pause——前置判定只为稳定错误码，写面的判据是行谓词。
     if (t.status !== TaskStatus.PAUSED) {
       throw new AppError("TASK_NOT_PAUSED");
     }
-    t.status = TaskStatus.ACTIVE;
-    await this.taskRepo.save(t);
-    await this.schedulerService.scheduleOne(t);
-    return this.maskSecretsForResponse(t);
+    const applied = await this.transitionTaskStatus(id, {
+      from: TaskStatus.PAUSED,
+      to: TaskStatus.ACTIVE,
+    });
+    if (!applied) {
+      this.logger.warn(
+        `resume ${id}: status 已被并发迁移（不再是 paused），跳过写入以保留并发结果`,
+      );
+      throw new AppError("TASK_NOT_PAUSED");
+    }
+    const saved = await this.taskRepo.findOne({ where: { id } });
+    const row = saved ?? t;
+    await this.schedulerService.scheduleOne(row);
+    return this.maskSecretsForResponse(row);
   }
 
   async trigger(
@@ -3365,7 +3750,7 @@ export class TaskService {
     };
     // ARCH-30: 走服务化封装（重试 1 次 + 指标 + 永不抛错）；空串结果原样
     // 落库（前端按"无分析"降级渲染），与此前直调 AiService 的空串语义一致。
-    exec.aiAnalysis = await this.aiAnalysisService.analyzeFailure(
+    const analysis = await this.aiAnalysisService.analyzeFailure(
       task,
       logContent,
       {
@@ -3374,8 +3759,24 @@ export class TaskService {
         runbook: taskRow?.runbook ?? null,
       },
     );
-    await this.execRepo.save(exec);
-    return exec;
+    // R46-A1（四轴审计 · ADR-026 规则 4）：**只写本次动作真正改变的列**。
+    //
+    // 旧实现是 `this.execRepo.save(exec)`——把方法早期读到的**执行行快照**整行
+    // 回写。AI 调用是秒级甚至更长的窗口，窗口内执行器回调 / 管理员 kill /
+    // 超时扫描完全可能已把该行推进到终态；整行 save 会把 status / endTime /
+    // exitCode / duration / failureReason 全部按旧值盖回去，于是：
+    //   · 终态 SUCCESS/KILLED 被"复活"成 RUNNING（**终态之后仍可改写**）；
+    //   · 随后 scheduler 的 stale sweep 把这条"RUNNING 但没心跳"的行当丢失
+    //     执行重新入队 → 同一个执行被**二次派发**；
+    //   · 本次真正要落库的其实只有 aiAnalysis 一列，且它是纯展示列、无并发写者。
+    // 故单列 UPDATE 足够，且天然无竞态（行级锁只作用于这一列）。
+    // adr-026-exempt: 只写 aiAnalysis 一个**纯展示列**，patch 里不含 status/endTime/
+    // exitCode 等状态列；状态迁移由 execution-terminal 的条件 UPDATE 独占。
+    await this.execRepo.update({ id: exec.id }, { aiAnalysis: analysis });
+    // 返回读侧视图：取库中当前行而不是方法早期快照，避免把窗口内已经变化的
+    // status/endTime 一并回给前端（会让详情页显示"已完成但仍 RUNNING"）。
+    const fresh = await this.execRepo.findOne({ where: { id: exec.id } });
+    return fresh ?? { ...exec, aiAnalysis: analysis };
   }
 
   /**
@@ -3751,9 +4152,26 @@ export class TaskService {
     const prevCommit = task.gitCommit;
 
     const exec = await this.dataSource.transaction(async (manager) => {
-      // Update task gitCommit
+      // R63-A1（ADR-026 规则 4）：这里此前是
+      //   `task.gitCommit = dto.gitCommit; await manager.save(Task, task);`
+      // ——把**方法早期读到的快照**整行写回：窗口内并发 PATCH 写的 name /
+      // cronExpression / params、并发 pause 写的 status、并发 remove 写的
+      // status='deleted' 与 deletedAt 都会被盖回旧值（save 连 deletedAt 一起写
+      // NULL ⇒ 软删行复活）。本动作真正改变的列只有 gitCommit 一列。
+      //
+      // 行谓词带 deletedAt IS NULL（规则 1/2）：命中 0 = 行已被并发软删 ——
+      // 按规则 3 让位（与"顺序执行时任务已不存在"同解：404），事务整体回滚，
+      // 执行行也不会落库——不给已删除的任务再派一次执行。
+      const applied = await manager.update(
+        Task,
+        { id: task.id, deletedAt: IsNull() },
+        { gitCommit: dto.gitCommit },
+      );
+      if ((applied?.affected ?? 0) === 0) {
+        throw new AppError("TASK_NOT_FOUND", { taskId: id });
+      }
+      // 内存视图同步（响应与版本快照取自该对象；写面已不再消费它）
       task.gitCommit = dto.gitCommit;
-      await manager.save(Task, task);
 
       // Create execution record
       return manager.save(
@@ -5481,12 +5899,33 @@ export class TaskService {
     //      什么；update() 已有可读文案，这里必须对齐。
     //   ② 引用方的依赖显示名 key 会残留旧名——update() 会刷新，回滚同样要刷。
     const previousName = task.name;
-    Object.assign(task, version.snapshot);
-    task.currentVersion = version.version;
 
-    let saved: Task;
+    // R63-A1（ADR-026 规则 4）：写面从「Object.assign(snapshot) + save(task)」
+    // 收窄成「正向白名单 ∩ 采纳集（快照真的带了的键）」的列级条件写。
+    //
+    // 旧实现的两种现形方式：
+    //   ① 窗口内并发 PATCH 写的 description / cronExpression 等**快照外**的列，
+    //      被整行 save 从旧快照盖回去（用户的并发编辑静默丢失）；
+    //   ② 窗口内并发 remove 把行软删，整行 save 把 deletedAt 写回 NULL
+    //      ——**软删行复活**（status 一起被写回 active）。
+    // 语义不变的部分：快照里带的列照常覆盖（版本恢复的本意）；快照缺键保留现值
+    // （旧快照向后兼容，理由见 saveVersion 的 11 键注释）。行谓词恒带
+    // `deletedAt IS NULL`——命中 0 = 行已被并发软删 → 规则 3 让位（404），
+    // 不按旧快照写回。
+    const snapshot = version.snapshot as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    for (const column of VERSION_ROLLBACK_COLUMNS) {
+      if (!(column in snapshot)) continue;
+      // undefined = 该版本没有这一列的取值 → 保留现值（null 是显式清空，照写）
+      if (snapshot[column] === undefined) continue;
+      patch[column] = snapshot[column];
+    }
+    // 当前版本号以本次应用的版本为准（快照里的 currentVersion 是"那一版当时"的值）
+    patch.currentVersion = version.version;
+
+    let applied: boolean;
     try {
-      saved = await this.taskRepo.save(task);
+      applied = await this.patchTaskColumns(taskId, patch);
     } catch (err) {
       if (
         isUniqueViolation(err) &&
@@ -5494,11 +5933,20 @@ export class TaskService {
       ) {
         throw new AppError("TASK_ROLLBACK_NAME_TAKEN", {
           version: version.version,
-          name: task.name,
+          name: String(patch.name ?? task.name),
         });
       }
       throw err;
     }
+    if (!applied) {
+      // 规则 3：行谓词落空 = 并发 remove 已软删该行。与"顺序执行时任务已不存在"
+      // 同解（404），绝不按旧快照写回（那正是软删行复活的入口）。
+      throw new AppError("TASK_NOT_FOUND", { taskId });
+    }
+    // 回读写面结果：不把方法早期读到的快照当"本次写的结果"返回（同 pause/resume）
+    const saved =
+      (await this.taskRepo.findOne({ where: { id: taskId } })) ??
+      (Object.assign(task, patch) as Task);
     await this.saveVersion(saved.id, undefined, undefined, saved);
     // 与 update() 同源：回滚若改变了任务名，同步刷新引用方的依赖别名
     if (previousName !== saved.name) {

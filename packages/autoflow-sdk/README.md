@@ -69,8 +69,14 @@ ctx.callback.report([
 ```
 
 凭证缺失时任何上报调用抛 `CallbackDisabledError` 并指明缺失变量
-（fail-closed，与 Node `HttpClient.disabledReason` 语义对齐）。回调客户端默认 10 秒超时，
-不做隐式重试；401/403/timeout 等错误会保留后端 message 或 httpx 原始异常并传播给任务代码。
+（fail-closed，与 Node `HttpClient.disabledReason` 语义对齐）。回调客户端默认 10 秒超时。
+
+**`report()` 有界重试**（NETOPT-10-1）：瞬态网络抖动按 `CALLBACK_MAX_ATTEMPTS = 3` 重试，
+退避 `0.5s → 1s`（封顶 2s）+ 最高 0.25s 抖动。重试**安全**是因为 admin 的终态迁移带门禁
+（`status IN (open gate)`），重复的终态回调影响 0 行。
+
+这与 `HttpClient` / `AsyncHttpClient` 不同 —— **那两个不做任何自动重试**；
+401/403/timeout 等错误会保留后端 message 或 httpx 原始异常并传播给任务代码。
 Python SDK 只读取 `AUTOFLOW_ADMIN_API_URL` / `AUTOFLOW_CALLBACK_TOKEN`，不会读取 Node SDK
 兼容的旧式 `ADMIN_API_URL` / `EXECUTOR_TOKEN`。
 
@@ -134,4 +140,4 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 - 发布流程与矩阵说明见
   [docs/sdk-guide.md「SDK 矩阵」](../../docs/sdk-guide.md)。
 
-> 版本随 autocodeflow lockstep 组同步发布(当前 1.6.0,与 mcp-server/acf-cli 同版)。
+> 版本随 autocodeflow lockstep 组同步发布(当前 1.13.0,与 mcp-server/acf-cli 同版)。

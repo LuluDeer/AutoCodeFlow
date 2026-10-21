@@ -1,6 +1,9 @@
 // F-37（DEEP_REVIEW 0ef3bbe）：fs/path/os/net/https 等模块统一在模块顶层 import，
 // 不再在各 handler 函数体内 require（main 进程无打包懒加载收益，纯历史遗留噪音）。
-import { app, dialog, ipcMain, shell, BrowserWindow, clipboard } from 'electron';
+// SEC-IPC-SENDER（R86-A1 轴 1）：electron 的 ipcMain 必须以**别名**导入，本文件里
+// 的 `ipcMain` 由下方 createGuardedIpcMain 产出（所有 handle/on 一律过 sender 闸）。
+// 直接按原名导入会让 43 个 handler 全部绕过闸——ipc-sender-guard.selftest.ts 有源码钉子。
+import { app, dialog, ipcMain as electronIpcMain, shell, BrowserWindow, clipboard } from 'electron';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
@@ -23,10 +26,10 @@ import {
   readCurrentReleaseKey,
   deleteReleaseDir,
 } from './app-uninstall';
-import * as net from 'net';
 import * as childProcess from 'child_process';
 import { configStore, executorProcess, getAgentHostStatus, heartbeat, syncAgentHostWithConfig, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import type { AppConfig } from './config-store';
+import { EXECUTOR_RESTART_REQUIRED_FIELDS } from './config-restart';
 import { decryptToken } from './token-crypto';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
 import { checkForUpdatesUserInitiated, downloadUpdate, quitAndInstall } from './updater';
@@ -41,7 +44,7 @@ import {
 // 已注入 Electron 上下文的包装函数，而不是直接调 uv-paths 的纯函数。
 import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process';
 import { classifyUvResolution } from './uv-paths';
-import { listLocalIPv4s, normalizeListenHost } from './network-util';
+import { listLocalIPv4s } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
 // 拓展包「配置导入/导出 + 执行日志导出」：纯函数层（文件名/导入解析/掩码
 // 契约/大小阈值）抽离自 ipc-handlers——本文件顶层 import electron，裸 node
@@ -68,6 +71,73 @@ import { normalizeHeartbeatPort } from './heartbeat';
 // B-13：releases 保留期自动清扫（纯 Node 模块，决策在 release-retention.ts）。
 import { sweepAppReleases } from './release-retention';
 import log, { applyLogLevel } from './logger';
+// SEC-IPC-SENDER（R86-A1 轴 1）：渲染层 → 主进程 IPC 的 sender 白名单闸。
+import { createGuardedIpcMain } from './ipc-sender-guard';
+// R89：连接失败文案归一（只回错误码，不回显解析后的地址）。
+import { describeConnectionError } from './network-util';
+// R105：破坏性通道的主进程二次确认（渲染层的 ConfirmBar 拦不住注入脚本）。
+import { CONFIRM_CANCELED, confirmDestructive } from './destructive-actions';
+// SEC-IPC-TYPE（R86-A1 轴 1）：config:check-port 的参数闸 + 探测实现（纯 Node）。
+import { checkPortAvailable } from './port-check';
+// sender 白名单的 file: 锚点必须与 loadFile 的入口页同源（window-manager 唯一真值源）。
+import { resolveRendererIndex } from './window-manager';
+
+/**
+ * SEC-IPC-SENDER（R86-A1 轴 1）：**本文件唯一的 ipcMain 注册入口**。
+ *
+ * 43 个 handler 的历史签名一律是 `(_event, ...args)`——事件对象被显式丢弃，
+ * 于是主进程对"谁在调我"零判断：任何跑在本应用 webContents 里的执行上下文
+ * （渲染层注入点、被 devtools 附加的会话、将来新增的窗口/子 frame）都能直接
+ * 驱动 `executor:stop` / `apps:uninstall` / `updater:install` / `config:save`
+ * 这类带主进程能力（shell / spawn / 文件读写 / 退出安装）的通道。
+ *
+ * 这里把 electron 的 ipcMain 换成本地 `ipcMain`（别名导入见文件头）：
+ * 所有 handle/on 注册都先过 ipc-sender-guard 的 sender 闸——
+ *  · 生产（packaged）：只接受 `<renderer 目录>/index.html` 这族的 file: 页；
+ *  · 开发：只接受与 `VITE_DEV_SERVER_URL` **同源**（origin 全等）的页；
+ *  · 且必须来自**主 frame**（iframe / 已销毁 frame 一律拒绝）；
+ *  · 不可信来源：handle 抛错（invoke 侧 rejected），on 静默丢弃 + 落 warn。
+ *
+ * 为什么不逐个 handler 加参数：43 处各写一遍必然漂移（本仓库已有"加了参数但
+ * 大部分调用点没跟上"的 F-3 教训）；收敛成单一注册入口后，**没有"忘了校验"
+ * 的可能**——想绕过必须显式再 import 一个 electron 的 ipcMain，TS 会因重复
+ * 声明直接报错，selftest 的源码锚点也会变红。
+ */
+/**
+ * R105：原生模态确认的适配器。modal 到发起窗口，渲染层无法自证「用户已同意」。
+ * 窗口取不到时仍弹（无父窗口），但绝不静默放行。
+ */
+async function confirmViaNativeDialog(policy: {
+  label: string;
+  detail: string;
+}): Promise<boolean> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const options = {
+    type: 'warning' as const,
+    buttons: ['取消', '继续'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: policy.label,
+    message: `确定要${policy.label}吗？`,
+    detail: policy.detail,
+  };
+  const result = win
+    ? await dialog.showMessageBox(win, options)
+    : await dialog.showMessageBox(options);
+  return result.response === 1;
+}
+
+const ipcMain = createGuardedIpcMain(electronIpcMain, {
+  // 每次调用重新取策略：dev/packaged 切换、窗口重建后仍然正确。
+  policy: () => ({
+    // 仅接受 Vite dev server 同源页面；生产为 null。
+    devServerUrl: process.env.VITE_DEV_SERVER_URL ?? null,
+    // 与 window-manager.loadFile 的入口页**同源**（单一真值源，避免两处漂移）。
+    rendererIndexPath: resolveRendererIndex(),
+  }),
+  log,
+});
 
 /**
  * R13: the only directories renderer-supplied log paths may live under.
@@ -141,35 +211,10 @@ export async function openTaskLogFolder(): Promise<{ ok: boolean; path?: string;
 }
 
 /**
- * 会真正进入 executor-node 子进程的配置字段——executor-process.start() 组装
- * 子进程 env 的全部输入（APP_NAME、PORT、BIND_ADDRESS、EXECUTOR_ADDRESS、
- * EXECUTOR_ADDRESS_PUBLIC、ADMIN_API_URL、WORK_DIR、MAX_CONCURRENT_TASKS、
- * EXECUTOR_SHARED_TOKEN、uv 组环境变量）+ spawn 参数。改动这些字段必须重启
- * 子进程才生效；其余字段（notifyEnabled / logLevel / autoStart / agent* 档位
- * 等）由桌面主进程热同步（syncNotifierWithConfig / syncAgentHostWithConfig /
- * applyLogLevel）或根本不进子进程，保存后不需要重启。
- */
-const EXECUTOR_RESTART_REQUIRED_FIELDS: ReadonlyArray<keyof AppConfig> = [
-  'adminApiUrl',
-  'executorName',
-  'executorHost',
-  'executorPort',
-  'executorAddressPublic',
-  'executorToken',
-  'workDir',
-  'maxConcurrentTasks',
-  // python_task_multiversion：uv / 解释器池 / 私有源（buildUvChildEnv 下发）。
-  'uvPath',
-  'uvPythonInstallDir',
-  'uvPythonInstallMirror',
-  'interpreterDownloadTimeoutMs',
-  'pypiRegistryUrl',
-  // ARCH-33：pull 回连模式（EXECUTOR_PULL_MODE 只在 true 时下发）。
-  'pullMode',
-];
-
-/**
  * 判断两次**已落盘**配置之间是否存在"必须重启执行器才生效"的字段变化。
+ *
+ * 字段清单见 config-restart.ts（渲染层同源 import，避免"改语言也提示会重启"
+ * 这类两套判据漂移）；本函数只额外处理 executorToken 的密文差异。
  *
  * 为什么需要：旧 config:save 只要执行器在跑就无条件 stop+start——改一个通知
  * 开关也会杀掉正在运行的任务。其余字段（notifyEnabled / logLevel / autoStart /
@@ -370,9 +415,16 @@ export function readLastLines(
  * 返回值供 UI 如实呈现（配置本身均已落盘成功）：
  *  · reloadError：执行器热重载失败——它已停留在停止态；
  *  · restartDeferred：用户选择暂不重启——下次启动执行器时生效。
+ *
+ * restartConfirmed：调用方（config:save 的渲染层）已经就"重启会中断任务"
+ * 征得用户同意。此时不能再弹一次原生确认框——2026-10 真机 E2E 实测：
+ * 渲染层 ConfirmBar 确认后主进程又弹 `dialog.showMessageBox`，同一个问题
+ * 问两遍，且原生框在自动化/远程桌面下会额外阻塞保存。config:import 没有
+ * 渲染层确认面，仍走原生征询。
  */
 async function finalizeConfigSave(
   configBefore: AppConfig,
+  options: { restartConfirmed?: boolean } = {},
 ): Promise<{ reloadError?: string; restartDeferred?: boolean }> {
   // P3-1：logLevel 不再是死字段——保存后立即作用于桌面端自身的文件日志。
   applyLogLevel(configStore.get('logLevel'));
@@ -397,7 +449,7 @@ async function finalizeConfigSave(
       log.info(
         'Config saved; no restart-required fields changed — executor left running',
       );
-    } else if (await confirmExecutorRestart()) {
+    } else if (options.restartConfirmed || (await confirmExecutorRestart())) {
       try {
         heartbeat.stop();
         await executorProcess.stop();
@@ -465,7 +517,9 @@ export function registerIpcHandlers(): void {
     configStore.save(sanitizeConfigInput(cfg));
     // 热同步 / 重启征询等收尾与 config:import 共用同一实现（见
     // finalizeConfigSave 注——两处各写一遍必然漂移）。
-    const outcome = await finalizeConfigSave(configBefore);
+    // 渲染层在调用本通道前已用 ConfirmBar 确认过「会重启执行器」；
+    // 不再二次弹原生对话框（见 finalizeConfigSave 的 options 注释）。
+    const outcome = await finalizeConfigSave(configBefore, { restartConfirmed: true });
     if (outcome.reloadError) return { ok: true, reloadError: outcome.reloadError };
     if (outcome.restartDeferred) return { ok: true, restartDeferred: true };
     return { ok: true };
@@ -771,12 +825,16 @@ export function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle('config:check-port', async (_event, port: number, host?: string) => {
+  ipcMain.handle('config:check-port', async (_event, port: unknown, host?: unknown) => {
     // B-8：检测监听 host 必须与执行器**实际 bind** 的 executorHost 同源
     // （此前固定 0.0.0.0，与可配 127.0.0.1 的真实 bind 判定相反的场景见
-    // normalizeListenHost 注释）。host 由渲染层按其表单值传入；缺省回落
-    // 0.0.0.0（与 config-store 的 executorHost 缺省一致）。
-    return checkPortAvailable(port, normalizeListenHost(host));
+    // normalizeListenHost 注释）。host 由渲染层按其表单值传入。
+    //
+    // SEC-IPC-TYPE（R86-A1 轴 1）：参数类型/边界校验收在 port-check.ts（唯一
+    // 真值源）。渲染层送来的值**不可信**：Node 的 net.Server.listen 对任意
+    // 字符串走「管道路径」分支、对 null 绑 0 号端口后回报"可用"（清空端口
+    // 输入框 → NaN → IPC 序列化成 null → 预检永远显示可用，实测复现）。
+    return checkPortAvailable(port, host);
   });
 
   // ── 执行器控制 ────────────────────────────────────────
@@ -795,6 +853,10 @@ export function registerIpcHandlers(): void {
 
   // SEC-NEW-1: status payload returns the masked config for the same reason
   // as config:get — the renderer must not receive the stored token.
+  // 载荷形状是**对渲染层的契约**，e2e/desktop-smoke.spec.js 用 toEqual 逐键钉住
+  // （「注册」用例）。V2 曾在此追加 pid/startedAt/version/lastHeartbeatAt 四个
+  // 增量字段，V2 回退后 V1 渲染层对这四键零消费，故随回退一并撤除——保留它们
+  // 会让契约闸恒红，而放宽断言等于拆掉「新增字段必须同步契约」的守卫。
   ipcMain.handle('executor:status', () => ({
     running: executorProcess.isRunning(),
     status: executorProcess.getStatus(),
@@ -834,7 +896,11 @@ export function registerIpcHandlers(): void {
 
   // 用户确认升级：下载完成后退出并安装（AppImage/deb 均由 electron-updater
   // 按 resources/package-type 分派对应安装器）
-  ipcMain.handle('updater:install', () => {
+  ipcMain.handle('updater:install', async () => {
+    // R105：安装更新会退出应用并中断在跑的任务 —— 必须主进程自己再问一次。
+    if (!(await confirmDestructive('updater:install', confirmViaNativeDialog))) {
+      return CONFIRM_CANCELED;
+    }
     quitAndInstall();
     return { ok: true };
   });
@@ -894,7 +960,11 @@ export function registerIpcHandlers(): void {
   // 已删除；需要该功能时连同 preload 通道与 UI 一起加回（git 历史可找回实现，
   // readFile 的路径遍历守卫需一并恢复）。
 
-  ipcMain.handle('history:clear', () => {
+  ipcMain.handle('history:clear', async () => {
+    // R105：删除本机历史条目，不可撤销。
+    if (!(await confirmDestructive('history:clear', confirmViaNativeDialog))) {
+      return CONFIRM_CANCELED;
+    }
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return { ok: false };
     const metaDir = path.join(workDir, 'meta');
@@ -1127,6 +1197,10 @@ export function registerIpcHandlers(): void {
 
   // 卸载整个应用（用户报障：无法撤销部署(删除)）
   ipcMain.handle('apps:uninstall', async (_event, appId: string) => {
+    // R105：删除本地发布目录与运行配置，不可撤销。
+    if (!(await confirmDestructive('apps:uninstall', confirmViaNativeDialog))) {
+      return CONFIRM_CANCELED;
+    }
     const workDir = configStore.get('workDir') as string | undefined;
     const outcome = await uninstallApp({
       workDir,
@@ -1148,6 +1222,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     'apps:delete-release',
     async (_event, appId: string, releaseKey: string, deploymentId: string) => {
+      // R105：从磁盘删除发布产物，不可撤销。
+      if (!(await confirmDestructive('apps:delete-release', confirmViaNativeDialog))) {
+        return CONFIRM_CANCELED;
+      }
       const workDir = configStore.get('workDir') as string | undefined;
       const resolved = resolveReleaseDir(workDir, appId, releaseKey);
       if (!resolved.ok) {
@@ -1248,25 +1326,6 @@ export function registerIpcHandlers(): void {
   // 与 executor-process 构造子进程 env 时的对外地址兜底同源（network-util），
   // 避免一处改了网卡筛选规则、另一处漂移。
   ipcMain.handle('network:local-ips', () => listLocalIPv4s());
-}
-
-function checkPortAvailable(port: number, host: string = '0.0.0.0'): Promise<{ available: boolean; message: string }> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', (err: any) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve({ available: false, message: `端口 ${port} 已被占用，请换一个端口` });
-      } else {
-        resolve({ available: false, message: `端口检测失败: ${err.message}` });
-      }
-    });
-    server.once('listening', () => {
-      server.close();
-      resolve({ available: true, message: `端口 ${port} 可用` });
-    });
-    // B-8：按调用方的表单 executorHost 监听检测（不再固定 0.0.0.0）。
-    server.listen(port, host);
-  });
 }
 
 /**
@@ -1624,7 +1683,11 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
           }
         },
       );
-      req.on('error', (err) => resolve({ ok: false, message: err.message }));
+      // R89：只回**稳定的错误码文案**，不回显 err.message —— Node 的消息里带解析后的地址
+      // （`connect ECONNREFUSED 192.168.1.5:3105`），等于把这条通道变成 DNS/内网探测器。
+      req.on('error', (err) =>
+        resolve({ ok: false, message: describeConnectionError((err as NodeJS.ErrnoException).code) }),
+      );
       req.on('timeout', () => {
         req.destroy();
         resolve({ ok: false, message: '连接超时 (5s)' });

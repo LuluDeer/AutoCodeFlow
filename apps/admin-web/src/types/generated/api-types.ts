@@ -2525,6 +2525,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/audit/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 审计动作清单（去重，仅管理员）
+         * @description 返回 audit_logs 中出现过的所有 action（去重、字母序），供审计页的 action 过滤器渲染可发现下拉。不新增动作、不改任何既有响应形状；空库返回空数组而非 404。
+         */
+        get: operations["AuditController_distinctActions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audit/export": {
         parameters: {
             query?: never;
@@ -5452,7 +5472,7 @@ export interface components {
         };
         NotificationChannelDto: {
             /** @enum {string} */
-            key: "email" | "slack" | "dingtalk" | "wecom" | "webhook";
+            key: "email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu";
             name: string;
             enabled: boolean;
             /** @description 通道专属配置；读取时凭据值会被掩码 */
@@ -5462,7 +5482,7 @@ export interface components {
             description: string;
         };
         ChannelTestResponseDto: {
-            /** @description 当所有目标通道都失败/跳过时为 false */
+            /** @description 仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results */
             success: boolean;
             message: string;
             /** @description 逐通道投递状态 */
@@ -6132,7 +6152,7 @@ export interface components {
             name: string;
             mime: string | null;
             sizeBytes: number;
-            /** @description 平台路径 /api/agent-collab/media/<id> —— mediaRefs 唯一合法形式 */
+            /** @description 平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式 */
             mediaPath: string;
         };
         CollabCandidatePackageResponseDto: {
@@ -6370,6 +6390,10 @@ export interface components {
             total: number;
             /** @description keyset 分页的下一页游标；null = 已到末页。仅当请求带 cursor 参数时出现（此时走 keyset 分支）；不带 cursor 的请求走 OFFSET 分支，响应中不含该键。游标绑定本端点固定排序（createdAt DESC, id DESC）。 */
             nextCursor?: string | null;
+        };
+        AuditActionsDto: {
+            /** @description 库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。 */
+            actions: string[];
         };
         PublicHealthDto: {
             /** @enum {string} */
@@ -11415,6 +11439,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedAuditLogsDto"];
+                };
+            };
+        };
+    };
+    AuditController_distinctActions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditActionsDto"];
                 };
             };
         };

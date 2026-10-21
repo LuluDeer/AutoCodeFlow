@@ -256,13 +256,26 @@ export class NotificationConfigService implements OnModuleInit {
 
   private static readonly SECRET_FIELD_RE = /pass|secret|token/i;
 
-  /** `?param=VALUE` / `&param=VALUE` where the param name is secret-class. */
+  /**
+   * `?param=VALUE` / `&param=VALUE` where the param name is secret-class.
+   *
+   * R150-A1（出站面审计 · 轴3）：参数名正则此前只有 `pass|secret|token`，漏了
+   * `key`/`sign`——而**同一模块**的日志脱敏 regex
+   * （channels/log-safe-url.util.ts 的 SECRET_QUERY_PARAM_RE）明确含 `key|sign`。
+   * 于是同一个值出现两种判断：WeCom 群机器人 URL
+   * `.../webhook/send?key=<凭据>`（key 就是全部认证材料）进日志是 `***`，
+   * 进 GET/PATCH /notification/channels 的响应体却是明文。
+   *
+   * 这里对齐日志面的口径（宁可多掩）：读面只做回显，store 与发送路径始终是
+   * 原值；被掩码回显回传时由 isMaskedEcho 拦下，不会覆盖真实凭据（见
+   * outbound-audit-r150.spec 的往返钉子）。
+   */
   private static readonly URL_SECRET_QUERY_RE =
-    /([?&][^=&#]*(?:pass|secret|token)[^=&#]*=)[^&#]+/gi;
+    /([?&][^=&#]*(?:pass|secret|token|key|sign)[^=&#]*=)[^&#]+/gi;
 
   /** A read-surface echo: secret-class query param already masked. */
   private static readonly MASKED_URL_QUERY_RE =
-    /[?&][^=&#]*(?:pass|secret|token)[^=&#]*=\*\*\*(&|#|$)/i;
+    /[?&][^=&#]*(?:pass|secret|token|key|sign)[^=&#]*=\*\*\*(&|#|$)/i;
 
   private maskUrlSecrets(value: string): string {
     return value.replace(
@@ -503,8 +516,16 @@ export class NotificationConfigService implements OnModuleInit {
         };
       }
 
+      // R32-A2: 'skipped' 同样是"没投出去"——渠道已启用但没解析到 URL/
+      // 凭据（零次投递尝试）。此前只把 blocked/failed 判失败，于是
+      // sendTest 对"一条都没发"的请求回 success:true + "sent"，与
+      // ChannelTestResponseDto 的契约（"当所有目标通道都失败/跳过时为 false"）
+      // 直接冲突，也是 testChannel（N29 起）已修好的同一类 "fake OK"。
+      // 语义与 blocked/failed 一致：任一路非 'sent' 即回 success:false（本方法
+      // 的 message 也照实列出每个未投递成功的渠道），不因为"另一路发了"就
+      // 把这条渠道的 skipped 记成成功。
       const bad = Object.entries(results).filter(
-        ([, s]) => s === "blocked" || s === "failed",
+        ([, s]) => s === "blocked" || s === "failed" || s === "skipped",
       );
       if (bad.length > 0) {
         const detail = bad.map(([c, s]) => `${c}=${s}`).join(", ");

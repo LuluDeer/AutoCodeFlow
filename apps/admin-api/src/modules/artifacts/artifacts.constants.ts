@@ -29,3 +29,28 @@ export const MAX_ARTIFACT_SIZE_BYTES = 100 * 1024 * 1024;
 
 /** 产物裸文件名字符集：以字母/数字开头，仅含 [A-Za-z0-9._-]，杜绝路径分隔符与 `..`。 */
 export const SAFE_ARTIFACT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
+
+/**
+ * R31（本轮审计）：产物路径的**纵深防御判定**——纯函数，便于直接钉住。
+ *
+ * 为什么单独抽出来：原实现在 `resolveArtifactPath` 里写成
+ * `if (full !== path.join(base, name) || !full.startsWith(base + path.sep))`，
+ * 其中**第一个合取项恒为假**（`full` 就是 `path.join(base, name)`，纯函数、
+ * 同一个表达式），是典型的「看起来很严、其实永远不触发」的死守卫：注释宣称
+ * 「基名与拼接双保险」，实际只有 startsWith 在起作用。一旦将来有人放宽
+ * `SAFE_ARTIFACT_NAME_RE`（例如允许子目录分组），这层纸会直接消失而无人察觉。
+ *
+ * 判据（三条，前两条是原先缺失的那层）：
+ *   ① 必须是**裸文件名**（不含分隔符；`basename(name) === name`）；
+ *   ② 拼接后的**父目录必须正好是** base —— 保证文件直接落在 `<root>/<execId>/`
+ *      下，不允许出现子路径，也不允许 `.` / `..` 这类把落点挪走的写法；
+ *   ③ 拼接结果仍在 base 之下（前缀 + 分隔符，防 `/root/abc` 被 `/root/abcdef`
+ *      前缀误判）。
+ */
+export function isArtifactPathWithin(baseDir: string, name: string): boolean {
+  if (!name || path.basename(name) !== name) return false;
+  const full = path.join(baseDir, name);
+  if (path.dirname(full) !== baseDir) return false;
+  const prefix = baseDir.endsWith(path.sep) ? baseDir : baseDir + path.sep;
+  return full.startsWith(prefix);
+}

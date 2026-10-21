@@ -1,5 +1,5 @@
-# CLI 命令地图（acf，63 个子命令）
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-08 · 对应代码: packages/acf-cli/src（index.ts + commands/ 12 个文件）
+# CLI 命令地图（acf，67 个子命令）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-20 · 对应代码: packages/acf-cli/src（index.ts + commands/ 12 个文件）
 
 ## 怎么连
 
@@ -17,7 +17,7 @@
 
 优先级：CLI 选项 > 环境变量 > conf 存储。CLI 不持有 executor token；执行器面操作不在命令范围内。
 
-## 命令地图（12 个域 + config，共 63 个子命令）
+## 命令地图（13 个域 + config，共 67 个子命令）
 
 ### login / config（6）
 
@@ -128,6 +128,17 @@
 | `audit list` | 审计日志（倒序） | `--action` `--resource` `--user-id` `--username` `--start-time/--end-time`(ISO) `-p/-n`(≤100) |
 | `exec tail <execId>` | **SSE 实时跟随日志**（终态执行则打印日志退出） | `--json` 输出原始行 JSON |
 
+### mutex（4）— commands/mutex.ts
+
+| 命令 | 作用 | 关键选项 |
+|---|---|---|
+| `mutex list` | 互斥组列表（控制台应用表单下拉同源） | `--json` |
+| `mutex create` | 建互斥组（ADMIN） | `--name`（唯一，≤64）`--max-concurrent` `--scope device\|global` `--description` |
+| `mutex update <id>` | 改互斥组（ADMIN） | 同 create 的四个可选项 |
+| `mutex delete <id>` | 删互斥组（ADMIN）；挂着的应用会变「未分组」，仍有应用挂载时 409，需 `--force` | `--force` |
+
+> **曾漏记**：`acf mutex` 自命令注册起（`index.ts` 的 `program.addCommand(mutexCommand())`）就一直存在于 CLI，
+> 但命令地图里**没有这一节** —— 文档读者会以为没有互斥组的管理入口。R69 补入。
 ## 常见坑
 
 1. `task trigger` 默认**不**等待（立即返回执行 id）；需要等终态并拿退出码时加 `--wait`（失败终态/超时退出码 1），超时上限 `--wait-timeout <s>`。

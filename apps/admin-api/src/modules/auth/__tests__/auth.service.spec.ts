@@ -6,6 +6,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { AuthService } from "../auth.service";
 import { UsersService } from "../../users/users.service";
 import { RefreshToken } from "../entities/refresh-token.entity";
+import { User } from "../../users/entities/user.entity";
 import bcrypt from "bcrypt";
 
 const mockUser = {
@@ -33,6 +34,8 @@ describe("AuthService (__tests__)", () => {
   let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
   let refreshTokenRepo: any;
+  // R32-A4: TOTP 状态写入改走 users 表的列级 UPDATE（auth.service 注入 User 仓储）
+  let userRepo: any;
 
   beforeEach(async () => {
     usersService = {
@@ -62,6 +65,9 @@ describe("AuthService (__tests__)", () => {
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
       create: jest.fn((d) => d),
     };
+    userRepo = {
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -73,6 +79,7 @@ describe("AuthService (__tests__)", () => {
           provide: getRepositoryToken(RefreshToken),
           useValue: refreshTokenRepo,
         },
+        { provide: getRepositoryToken(User), useValue: userRepo },
       ],
     }).compile();
     service = module.get(AuthService);
@@ -684,6 +691,61 @@ describe("AuthService (__tests__)", () => {
       await expect(
         service.refreshToken("legacy-refresh"),
       ).resolves.toHaveProperty("accessToken");
+    });
+  });
+
+  // ─── REFRESH-REUSE（R32-A4 审计）：轮换重放的级联吊销 ─────────────────────
+  // 现状测量：轮换消费是原子的（UPDATE ... WHERE revoked=false），并发重放
+  // 只有一个赢家——这一点已有 DR-07 用例钉住。但**重放被拒之后**没有任何
+  // 后续动作：被消费的 jti 是谁用过的、它换出的那条后继链还活着与否，代码
+  // 一律不管。轮换的威胁模型恰恰是「同一枚 refresh 出现两次 = 其中一次来自
+  // 窃取者」——此时窃取者往往已经换到了一对**全新的**有效令牌（那次请求
+  // 就是赢家），而「拒绝第二次」只挡住了重复使用的那一次，挡不住已经换到
+  // 手的新链。fail-closed 的做法是在检出重放时吊销该会话所属用户的全部活跃
+  // refresh（含后继链）并 bump sessionVersion（在途 access 一并即刻失效）。
+  describe("REFRESH-REUSE: 重放已消费的 refresh → 级联吊销", () => {
+    const replayed = {
+      sub: 1,
+      username: "admin",
+      type: "refresh",
+      jti: mockJti,
+    };
+
+    it("检出重放（jti 行仍在但已 revoked）→ 401 + 吊销该用户全部活跃 refresh + bump 会话版本", async () => {
+      jwtService.verify.mockReturnValue({ ...replayed } as any);
+      // 原子消费影响 0 行 = 这枚 jti 已被消费（重放）或从未存在
+      refreshTokenRepo.update.mockResolvedValue({ affected: 0 });
+      // 行仍存在且 revoked=true ⇒ 命中的是「已消费」分支，不是「未知 jti」
+      refreshTokenRepo.findOne.mockResolvedValue({
+        jti: mockJti,
+        userId: 3,
+        revoked: true,
+      });
+
+      await expect(service.refreshToken("replayed-token")).rejects.toThrow(
+        new UnauthorizedException("刷新令牌已被吊销"),
+      );
+
+      // 级联：吊销的是**行所属**用户（3），不是凭 JWT claim 的自报 sub（1）
+      expect(usersService.bumpSessionVersion).toHaveBeenCalledWith(3);
+      expect(refreshTokenRepo.update).toHaveBeenCalledWith(
+        { userId: 3, revoked: false },
+        { revoked: true },
+      );
+      // 绝不签发：重放请求本身拿不到任何新令牌
+      expect(jwtService.sign).not.toHaveBeenCalled();
+    });
+
+    it("未知 jti（库中无行，如已被清理）→ 只 401，不做全量吊销（不扩大破坏面）", async () => {
+      jwtService.verify.mockReturnValue({ ...replayed } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 0 });
+      refreshTokenRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.refreshToken("unknown-jti")).rejects.toThrow(
+        new UnauthorizedException("刷新令牌已被吊销"),
+      );
+      expect(usersService.bumpSessionVersion).not.toHaveBeenCalled();
+      expect(jwtService.sign).not.toHaveBeenCalled();
     });
   });
 

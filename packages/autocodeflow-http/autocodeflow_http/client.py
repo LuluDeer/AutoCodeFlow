@@ -65,6 +65,62 @@ _CIRCUIT_BREAKABLE_EXC = (
 )
 
 
+def _extract_error_body(response: Any) -> Optional[dict[str, Any]]:
+    """R31-E2: 从 httpx 响应里取出 admin-api 的错误体（非 JSON / 非对象 → None）。
+
+    防御式解析：响应体可能为空（204/网关错误页）、已流式消费（ResponseNotRead）
+    或根本不是 JSON。任何异常都吞掉——错误码透出绝不能让「本来能抛出的异常」
+    变成解析异常。
+    """
+    if response is None:
+        return None
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 - 非 JSON 体是常态，不是错误
+        return None
+    return body if isinstance(body, dict) else None
+
+
+class ApiHttpStatusError(httpx.HTTPStatusError):
+    """R31-E2: 带稳定错误码面的 httpx.HTTPStatusError 子类。
+
+    向后兼容的**子类**：str(exc) / exc.request / exc.response 与基类逐字节/
+    逐引用一致，except httpx.HTTPStatusError 与 tenacity 的
+    retry_if_exception_type 全部仍然命中（重试与熔断语义不变）。新增的只有
+    两个只读面：
+
+    - error_code: admin-api 错误体里的 errorCode（如 TASK_NOT_FOUND）；
+      无码 / 非字符串 / 空串 → None（不抛、不编造）。
+    - params: 同一错误体里的 params 插值参数；缺失或非对象 → {}（恒为 dict，
+      调用方可直接展开）。
+
+    错误体形如 { code: <数字HTTP状态>, message: <中文兜底>,
+    errorCode: '<稳定码>', params: {...} }；code 不重复透出——HTTP 状态已在
+    response.status_code 上。
+    """
+
+    @property
+    def error_body(self) -> Optional[dict[str, Any]]:
+        """解析出的错误体（无则 None）。每次访问重新解析，异常对象不持有状态。"""
+        return _extract_error_body(getattr(self, "response", None))
+
+    @property
+    def error_code(self) -> Optional[str]:
+        body = self.error_body
+        if not body:
+            return None
+        code = body.get("errorCode")
+        return code if isinstance(code, str) and code else None
+
+    @property
+    def params(self) -> dict[str, Any]:
+        body = self.error_body
+        if not body:
+            return {}
+        params = body.get("params")
+        return params if isinstance(params, dict) else {}
+
+
 @dataclass
 class RetryConfig:
     """Configuration for HTTP retry behavior."""
@@ -80,6 +136,15 @@ class RetryConfig:
     #: (only appropriate for endpoints whose payloads carry their own
     #: idempotency key).
     safe_methods_only: bool = True
+    #: R134-A1: optional ceiling for a **server-directed** wait (the
+    #: Retry-After header). None (default) keeps the historical behaviour --
+    #: the header is honoured verbatim even if it asks for hours;
+    #: max_wait_sec only caps our own exponential backoff, so a proxy
+    #: returning "Retry-After: 3600" used to park the task process for an
+    #: hour and blow through the execution budget. Set this when the caller
+    #: must stay inside its own scheduling budget; the server-directed wait
+    #: is then clamped and a warning is logged.
+    max_retry_after_sec: Optional[float] = None
 
 
 class _WaitWithRetryAfter:
@@ -89,10 +154,17 @@ class _WaitWithRetryAfter:
     a ``Retry-After`` header (either a delta-seconds integer or an HTTP-date),
     waits at least that long — taking the max of our backoff and the
     server-specified delay.
+
+    R134-A1: max_retry_after_sec 可选地对"服务端指定"的等待时间设上限
+    （None = 不设上限，即历史行为）。没有上限时一个 Retry-After: 3600 就能
+    把任务进程停一小时——max_wait_sec 从来不管这条路径。
     """
 
-    def __init__(self, base: wait_exponential):
+    def __init__(
+        self, base: wait_exponential, max_retry_after_sec: Optional[float] = None
+    ):
         self._base = base
+        self._max_retry_after = max_retry_after_sec
 
     def __call__(self, retry_state: RetryCallState) -> float:
         wait = self._base(retry_state)
@@ -102,6 +174,14 @@ class _WaitWithRetryAfter:
             if raw:
                 parsed = self._parse_retry_after(raw)
                 if parsed is not None:
+                    if self._max_retry_after is not None and parsed > self._max_retry_after:
+                        logger.warning(
+                            "Retry-After %.1fs exceeds RetryConfig.max_retry_after_sec "
+                            "%.1fs - clamped",
+                            parsed,
+                            self._max_retry_after,
+                        )
+                        parsed = self._max_retry_after
                     wait = max(wait, parsed)
         return wait
 
@@ -272,7 +352,9 @@ class AutoFlowHttpClient:
                 method, url, json=data, headers=self._build_headers(headers),
             )
             if resp.status_code in self._retry.retryable_statuses:
-                raise httpx.HTTPStatusError(
+                # R31-E2: 抛子类而非裸 HTTPStatusError——message/request/response
+                # 逐字节不变（PK-32 契约不动），额外提供 error_code / params。
+                raise ApiHttpStatusError(
                     f"{resp.status_code} {resp.reason_phrase}",
                     request=resp.request,
                     response=resp,
@@ -288,7 +370,9 @@ class AutoFlowHttpClient:
             _do = retry(
                 stop=stop_after_attempt(self._retry.max_retries + 1),
                 wait=_WaitWithRetryAfter(
-                    wait_exponential(multiplier=self._retry.min_wait_sec, max=self._retry.max_wait_sec)
+                    wait_exponential(multiplier=self._retry.min_wait_sec, max=self._retry.max_wait_sec),
+                    # R134-A1: 服务器指定的等待时间可选上限（None = 旧行为）。
+                    self._retry.max_retry_after_sec,
                 ),
                 retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError)),
                 reraise=True,

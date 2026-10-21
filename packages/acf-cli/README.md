@@ -48,9 +48,16 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
 
 ### 破坏性操作的 `--yes`（非交互必读）
 
-`app delete` / `task delete` / `deploy remove` 有交互确认。**stdin 非 TTY 时
-（CI、agent、`< NUL`、管道）它们不会静默放行也不会静默取消，而是以退出码 2
-拒绝**，要求显式传 `-y/--yes`：
+破坏性动作有交互确认。**stdin 非 TTY 时（CI、agent、`< NUL`、管道）它们不会
+静默放行也不会静默取消，而是以退出码 2 拒绝**，要求显式传 `-y/--yes`：
+
+| 类别 | 命令 |
+| --- | --- |
+| 删除 | `app delete` / `task delete` / `task batch delete` / `deploy remove` / `mutex delete` |
+| 一次性密钥轮换（旧值立即失效） | `executor rotate` / `task webhook enable` / `task webhook rotate` / `task webhook disable` |
+| 强制终止（KILLED 是终态，无法恢复） | `task kill` |
+| 全量滚动升级（`--strategy canary` 不加门） | `app upgrade-all` |
+| 撤销凭据（影响仍在用它的外部系统） | `apikey revoke` |
 
 ```bash
 acf task delete <id> -y     # 非交互下唯一被接受的确认方式
@@ -82,6 +89,23 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
 `--json` 不裁剪字段：后端返回什么就输出什么，消费方按 `--help` 示例里的
 形状断言即可。
 
+### 失败时的结构化错误（stderr）
+
+`--json` 调用的失败输出同样是机器可读的**一行 JSON**（写 stderr，stdout 保持
+纯净，`| jq` 不被污染）：
+
+```json
+{"ok":false,"scope":"Failed to fetch task","code":404,"errorCode":"TASK_NOT_FOUND","category":"not_found","params":{"taskId":"t1"},"message":"任务不存在","exitCode":1}
+```
+
+- `code` = HTTP 状态，`errorCode` = admin-api 的稳定码，`params` = 文案插值参数；
+- `errorCode` / `category` / `params` **只在有值时出现**（未知码或无码时该键缺失，
+  用 `'errorCode' in payload` 判断最可靠）；
+- `category` ∈ `auth | permission | not_found | conflict | capacity | validation`
+  —— 人类可读输出同样按这 6 类在原文案后追加一句话处置建议（`[CODE] — 建议`）；
+  未知码与无码**逐字节保持原输出**（透传后端文案）；
+- 退出码不因 JSON 化改变（仍见上面的 Exit codes 表）。
+
 ## 认证与配置
 
 凭据保存在用户配置目录（`acf config show` 查看实际路径），文件权限 0600；
@@ -97,7 +121,8 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
   且缺 `--code` 时会报可操作的用法错误，退出码 2）。
 - `acf apikey`（AUTH-03）：为 CI/CD 创建限权 API Key（`readonly` / `trigger` /
   `manage`）。明文（`acf_<64 hex>`）仅在 `acf apikey create` 时回显**一次**，
-  此后只能 `acf apikey list`（脱敏）/ `acf apikey revoke <id>`。
+  此后只能 `acf apikey list`（脱敏）/ `acf apikey revoke <id>`（撤销不可逆，
+  非交互场景加 `-y`）。
 - Access token 过期时自动用 refresh token 换发并重放一次；刷新失败才要求
   重新登录（此时退出码为 3）。
 
@@ -135,7 +160,8 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
   撤回自己的请求用 `cancel`；`--note`（≤200 字符）映射契约字段 `reason`。
 - `acf task webhook enable|rotate|disable|status <taskId>`：任务级入站 webhook
   （HMAC）。secret 仅在 enable/rotate 响应中回显**一次**；`status` 查看 URL
-  不动密钥；`disable` 后签名请求即刻 401。
+  不动密钥；`disable` 后签名请求即刻 401。三个写面都会让**旧 secret 不可逆失效**
+  （enable 对已启用任务等价轮换），非交互场景需 `-y`；`status` 是只读面，不加门。
 - `acf task glue <taskId> -f glue.js`（或 `--stdin`）：在线更新 GLUE 脚本。
   语言按扩展名推断（`.js/.mjs/.cjs` → `javascript`），或 `--language
   python|javascript|shell` 显式指定（执行器运行时白名单）；空脚本本地即拒。

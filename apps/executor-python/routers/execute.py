@@ -1735,9 +1735,16 @@ def _extract_package(zip_path: Path, work_dir: Path) -> None:
         raise RuntimeError(
             'zip 包渠道不可用：本执行器未安装 zip_safety 模块'
         )
+    # R94-A1：上限必须**每次调用**按部署配置求值（`ZIP_MAX_*`，与 node
+    # `assertZipFileSafe` 默认取 `getZipGuardLimitsFromEnv()` 逐字同义）。
+    # 此前两处调用都不传 limits → 永远用模块常量：部署方按 node 的同一组变量
+    # 收紧上限后，node 执行器拒绝的包在 python 执行器照样通过（静默不生效）。
+    # 显式传参而不是改 `vet_zip` 的默认值，是为了让"内存审查用常量、磁盘解压
+    # 读 env"的分工与 node 保持同一形状。
+    limits = _zip_safety.get_zip_limits_from_env()
     try:
-        _zip_safety.vet_zip(zip_path)
-        _zip_safety.safe_extract(zip_path, work_dir)
+        _zip_safety.vet_zip(zip_path, limits=limits)
+        _zip_safety.safe_extract(zip_path, work_dir, limits=limits)
     except Exception as exc:
         violation = getattr(exc, 'violation', None)
         if violation:

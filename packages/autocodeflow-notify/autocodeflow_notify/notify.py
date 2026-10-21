@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -43,6 +43,43 @@ def _body_digest(body: str, limit: int = 200) -> str:
     return plain or "[empty body]"
 
 
+def _normalise_channels(channels: Any) -> Optional[list[str]]:
+    """R134-A1: 把 channels 归一化成 admin-api 接受的字符串数组。
+
+    接受 NotifyChannel、等价的普通字符串（"email"）、单个值或它们的列表。
+    非法渠道名抛一条带合法值清单的 ValueError——此前会在 payload 组装时炸
+    AttributeError: 'str' object has no attribute 'value'：既不可分类，也没有
+    任何可操作信息，而且发生在 notify() "Never raises" 的 try 块之外（于是
+    "永不抛"的承诺被一个纯拼写错误击穿）。
+
+    空列表/None -> None（payload 里不出现 channels 键，与旧行为一致）。
+    """
+    if channels is None:
+        return None
+    if isinstance(channels, str):
+        # NotifyChannel 是 str 子类，这里一并覆盖；单个字符串不再被逐字符迭代。
+        channels = [channels]
+    values: list[str] = []
+    for channel in channels:
+        if isinstance(channel, NotifyChannel):
+            values.append(channel.value)
+            continue
+        if isinstance(channel, str):
+            try:
+                values.append(NotifyChannel(channel).value)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Unknown notification channel {channel!r}; expected one of "
+                    f"{[c.value for c in NotifyChannel]}"
+                ) from exc
+            continue
+        raise TypeError(
+            "channels entries must be NotifyChannel or str, got "
+            f"{type(channel).__name__}: {channel!r}"
+        )
+    return values or None
+
+
 class NotifyClient:
     """
     Notification client that sends alerts through the AutoCodeFlow admin API.
@@ -71,6 +108,11 @@ class NotifyClient:
         # notify_failure + notify_success 两次调用，此前每次新建 AsyncClient
         # = 两次完整 TLS 握手。check-then-set 在 asyncio 单线程内原子。
         self._client: Optional[httpx.AsyncClient] = None
+        # R134-A1: 排障面——notify() 的返回值契约仍是 bool，但"为什么是
+        # False"必须问得出来：最近一次传输失败的原始异常对象 + 最近一次响应
+        # 状态码（网络层失败时 last_status_code 保持 None）。每次 notify() 重置。
+        self.last_error: Optional[Exception] = None
+        self.last_status_code: Optional[int] = None
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -113,16 +155,27 @@ class NotifyClient:
         """Send a notification through the admin API.
 
         Returns True when the admin API accepted the request (2xx), False
-        otherwise. Never raises — check the return value to know whether the
-        alert was actually delivered.
+        otherwise. Never raises for delivery problems (transport errors,
+        non-2xx) — check the return value to know whether the alert was
+        actually delivered, and read last_error / last_status_code to find
+        out *why* it was not.
+
+        Invalid channels values raise ValueError **before** any I/O: a
+        misspelt channel name is a programmer error, and silently returning
+        False would send the caller looking at the network instead of its own
+        argument.
         """
+        # R134-A1: 参数校验在 I/O 之前（纯函数，失败即抛，不进 try）。
+        channel_values = _normalise_channels(channels)
+        self.last_error = None
+        self.last_status_code = None
         payload: dict = {
             "title": f"[{level.upper()}] {task_name}",
             "content": message,
             "level": level,
         }
-        if channels:
-            payload["channels"] = [c.value for c in channels]
+        if channel_values:
+            payload["channels"] = channel_values
         if task_id:
             payload["taskId"] = task_id
         # Per-request webhook: server DTO field is `webhookUrl`; the server
@@ -139,8 +192,12 @@ class NotifyClient:
                 headers=self._headers(),
             )
         except Exception as e:
-            logger.error(f"Failed to send notification: {e}")
+            # R134-A1: 原始异常必须留住——对象进 last_error，traceback 进日志
+            # （此前只有一行 str(e)，异常对象被丢弃，调用方拿到 False 后无从查起）。
+            self.last_error = e
+            logger.error(f"Failed to send notification: {e}", exc_info=True)
             return False
+        self.last_status_code = resp.status_code
         if resp.is_success:
             return True
         # R14: a non-2xx (401 invalid token, 400 invalid level/channels, ...)

@@ -126,8 +126,24 @@ export class MutexGroupService {
     if (dto.description !== undefined) {
       group.description = dto.description?.trim() || null;
     }
+    // R75（ADR-026 规则 4）：只写 dto 带来的列，**不整行回写**。
+    //
+    // 与 `projects.update`（R62）同型：`MutexGroup` 现在只有 name / maxConcurrentPerDevice /
+    // scope / description 四列可写，整行 save 与列级写**此刻等价** —— 但整行 save 是定时炸弹：
+    // 实体以后加一列（比如「当前占用者 / 最后派发时间 / 软删标记」），而那一列有别的写者，
+    // 这里就会静默变成「顺手把旧值写回去」。
+    const patch: Record<string, unknown> = {};
+    if (dto.name !== undefined) patch.name = group.name;
+    if (dto.maxConcurrentPerDevice !== undefined)
+      patch.maxConcurrentPerDevice = group.maxConcurrentPerDevice;
+    if (dto.scope !== undefined) patch.scope = group.scope;
+    if (dto.description !== undefined) patch.description = group.description;
     try {
-      return await this.repo.save(group);
+      // adr-026-exempt: patch 只含 dto 显式带来的列（无快照值）；并发改名冲突由唯一索引兜住。
+      if (Object.keys(patch).length > 0) {
+        await this.repo.update({ id }, patch);
+      }
+      return group;
     } catch (err) {
       // 更名并发 TOCTOU：预检查已排除自身 id（clash.id !== id），且同名落本行
       // 自身不构成唯一冲突——此处 23505 只可能来自与其他行的并发同名 → 409。

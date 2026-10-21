@@ -365,6 +365,52 @@ describe("NotificationConfigService", () => {
       expect(result.results).toEqual({ slack: "blocked" });
     });
 
+    // R32-A2: 契约写在 dto/notification-response.dto.ts:34——「当所有目标通道
+    // 都失败/跳过时为 false」。实现此前只把 blocked/failed 判失败：一个
+    // **已启用但没有配置**的渠道返回 'skipped'（零次投递尝试），sendTest 却
+    // 回 success:true + "Test notification sent"。这正是 testChannel 已经修好
+    // （N29）、sendTest 漏掉的同一类 "fake OK"。
+    it("R32-A2: 已启用但未配置（skipped）的渠道不得报 success", async () => {
+      service.updateChannel("slack", { enabled: true });
+      (notificationService as any)["slack"] = {
+        send: jest.fn().mockResolvedValue("skipped"),
+      };
+
+      const result = await service.sendTest({
+        channels: ["slack"],
+        title: "Test",
+        content: "content",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("slack=skipped");
+      expect(result.results).toEqual({ slack: "skipped" });
+    });
+
+    // 反向钉子：本方法的既有语义是「任一路非 sent 即失败」（blocked/failed
+    // 早已如此，见上一条 spec），skipped 必须与之一致——否则同一个回执里
+    // "一路没发出去"记 success 还是 failure，取决于它撞上哪个状态值。
+    it("R32-A2: 一路 sent + 一路 skipped 仍报失败（任一路非 sent 即失败）", async () => {
+      service.updateChannel("slack", { enabled: true });
+      service.updateChannel("wecom", { enabled: true });
+      (notificationService as any)["slack"] = {
+        send: jest.fn().mockResolvedValue("sent"),
+      };
+      (notificationService as any)["wecom"] = {
+        send: jest.fn().mockResolvedValue("skipped"),
+      };
+
+      const result = await service.sendTest({
+        channels: ["slack", "wecom"],
+        title: "Test",
+        content: "content",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("wecom=skipped");
+      expect(result.results).toEqual({ slack: "sent", wecom: "skipped" });
+    });
+
     it("reports successful sends with per-channel results", async () => {
       service.updateChannel("slack", { enabled: true });
       (notificationService as any)["slack"] = {
@@ -498,13 +544,37 @@ describe("NotificationConfigService", () => {
       );
     });
 
-    it("non-secret query params (e.g. ?key=…) are left intact", () => {
+    // R150-A1（出站面审计 · 轴3）：本用例原来钉的是「?key= 不是机密，读面
+    // 原样回显」。该判断与本模块**自己的**日志脱敏口径冲突——
+    // channels/log-safe-url.util.ts 的 SECRET_QUERY_PARAM_RE 含 key|sign，理由
+    // 就写在它的头注里（"dingtalk/wecom 的 ?access_token=、企业微信的 ?key="）。
+    // WeCom 群机器人 URL 的形态是 /cgi-bin/webhook/send?key=<凭据>，那个 key
+    // 就是全部认证材料：不进日志、却进 GET/PATCH 响应体，等于把同一个值按
+    // 两个口径分类。现口径统一为"宁可多掩"（掩码只作用于读面回显，store 与
+    // 发送路径恒为原值；掩码回传由 isMaskedEcho 拦下，不会覆盖真实凭据）。
+    it("?key= 按机密处理（WeCom 机器人凭据），而 format/x 类参数照旧保留", () => {
+      service.updateChannel("webhook", {
+        config: { url: "https://example.com/hook?key=plain&x=1&format=json" },
+      });
+      expect(service.getChannel("webhook")!.config.url).toBe(
+        "https://example.com/hook?key=***&x=1&format=json",
+      );
+      // store（发送路径）不受掩码影响
+      expect(store.get("webhook")).toEqual({
+        url: "https://example.com/hook?key=plain&x=1&format=json",
+      });
+    });
+
+    it("?key=*** 的掩码回传不覆盖真实凭据（往返安全）", () => {
       service.updateChannel("webhook", {
         config: { url: "https://example.com/hook?key=plain&x=1" },
       });
-      expect(service.getChannel("webhook")!.config.url).toBe(
-        "https://example.com/hook?key=plain&x=1",
-      );
+      service.updateChannel("webhook", {
+        config: { url: "https://example.com/hook?key=***&x=1" },
+      });
+      expect(store.get("webhook")).toEqual({
+        url: "https://example.com/hook?key=plain&x=1",
+      });
     });
 
     it("covers dingtalk webhookUrl values carrying access_token too", () => {

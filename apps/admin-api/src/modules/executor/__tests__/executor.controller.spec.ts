@@ -1065,10 +1065,14 @@ describe("ExecutorController", () => {
     it("echoes the current stored tokenHash alongside the heartbeat result", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
-        heartbeat: jest
-          .fn()
-          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
-        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+        heartbeat: jest.fn().mockResolvedValue({
+          id: "e1",
+          address: "10.0.0.9:3002",
+          status: "online",
+        }),
+        // R32-A3 G3: 心跳按**行 id** 取回调密钥——裸地址在「同址多行」(ADR-017 §5)
+        // 时被 resolveExecutorRow fail-closed 成 null，按地址取永远拿不到 hash。
+        getCallbackSecretById: jest.fn().mockResolvedValue("$2b$12$hash"),
       };
       const controller = new ExecutorController(
         svc as any,
@@ -1086,19 +1090,52 @@ describe("ExecutorController", () => {
         status: "online",
         tokenHash: "$2b$12$hash",
       });
-      expect(svc.getCallbackSecretByAddress).toHaveBeenCalledWith(
-        "10.0.0.9:3002",
+      expect(svc.getCallbackSecretById).toHaveBeenCalledWith("e1");
+    });
+
+    // G3（R32-A3）：pull 同址多行（ADR-017 §5）下按**地址**取回调密钥的路径必然
+    // 失败——resolveExecutorRow 对裸地址 fail-closed 返回 null，于是心跳响应
+    // tokenHash 恒为 null，执行器永远拿不到 N26 回调 HMAC 密钥的轮换值。
+    // register 路径早就改按 id 取（其注释写明「按 id 取是无歧义的」），heartbeat 漏改。
+    it("resolves tokenHash by the resolved row id (pull same-address multi-row stays unambiguous)", async () => {
+      const svc = {
+        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        heartbeat: jest.fn().mockResolvedValue({
+          id: "e-row-2",
+          address: "10.0.0.9:3002",
+          status: "online",
+        }),
+        // 同址多行：按地址解析无唯一行 → 服务层 fail-closed 返回 null
+        getCallbackSecretByAddress: jest.fn().mockResolvedValue(null),
+        getCallbackSecretById: jest.fn().mockResolvedValue("$2b$12$hash"),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        gateOffConfig as any,
+        {} as any,
       );
+
+      const result = await controller.heartbeat(
+        { address: "10.0.0.9:3002", deviceFingerprint: "fp-row-2" },
+        "Bearer per-executor-token",
+      );
+
+      expect(result).toMatchObject({ tokenHash: "$2b$12$hash" });
+      expect(svc.getCallbackSecretById).toHaveBeenCalledWith("e-row-2");
     });
 
     // E9: controller 只负责白名单转发，1..10000 校验在 service 侧完成
     it("forwards maxConcurrentTasks to the heartbeat service", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
-        heartbeat: jest
-          .fn()
-          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
-        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+        heartbeat: jest.fn().mockResolvedValue({
+          id: "e1",
+          address: "10.0.0.9:3002",
+          status: "online",
+        }),
+        // R32-A3 G3: 心跳按**行 id** 取回调密钥——裸地址在「同址多行」(ADR-017 §5)
+        // 时被 resolveExecutorRow fail-closed 成 null，按地址取永远拿不到 hash。
+        getCallbackSecretById: jest.fn().mockResolvedValue("$2b$12$hash"),
       };
       const controller = new ExecutorController(
         svc as any,
@@ -1121,10 +1158,14 @@ describe("ExecutorController", () => {
     it("echoes minVersion/versionCompliant=false when the reported version is below the gate", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
-        heartbeat: jest
-          .fn()
-          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
-        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+        heartbeat: jest.fn().mockResolvedValue({
+          id: "e1",
+          address: "10.0.0.9:3002",
+          status: "online",
+        }),
+        // R32-A3 G3: 心跳按**行 id** 取回调密钥——裸地址在「同址多行」(ADR-017 §5)
+        // 时被 resolveExecutorRow fail-closed 成 null，按地址取永远拿不到 hash。
+        getCallbackSecretById: jest.fn().mockResolvedValue("$2b$12$hash"),
       };
       const config = { get: jest.fn().mockReturnValue("1.3.0") };
       const controller = new ExecutorController(
@@ -1147,10 +1188,14 @@ describe("ExecutorController", () => {
     it("echoes minVersion=null/versionCompliant=true when the gate is off (additive, legacy consumers unaffected)", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
-        heartbeat: jest
-          .fn()
-          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
-        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+        heartbeat: jest.fn().mockResolvedValue({
+          id: "e1",
+          address: "10.0.0.9:3002",
+          status: "online",
+        }),
+        // R32-A3 G3: 心跳按**行 id** 取回调密钥——裸地址在「同址多行」(ADR-017 §5)
+        // 时被 resolveExecutorRow fail-closed 成 null，按地址取永远拿不到 hash。
+        getCallbackSecretById: jest.fn().mockResolvedValue("$2b$12$hash"),
       };
       const config = { get: jest.fn().mockReturnValue("") };
       const controller = new ExecutorController(
@@ -1387,10 +1432,14 @@ describe("ExecutorController", () => {
     it("does not forward version to the service (not persisted)", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
-        heartbeat: jest
-          .fn()
-          .mockResolvedValue({ address: "10.0.0.9:3002", status: "online" }),
-        getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+        heartbeat: jest.fn().mockResolvedValue({
+          id: "e1",
+          address: "10.0.0.9:3002",
+          status: "online",
+        }),
+        // R32-A3 G3: 心跳按**行 id** 取回调密钥——裸地址在「同址多行」(ADR-017 §5)
+        // 时被 resolveExecutorRow fail-closed 成 null，按地址取永远拿不到 hash。
+        getCallbackSecretById: jest.fn().mockResolvedValue("$2b$12$hash"),
       };
       const config = { get: jest.fn().mockReturnValue("1.3.0") };
       const controller = new ExecutorController(
