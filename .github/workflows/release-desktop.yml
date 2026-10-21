@@ -108,7 +108,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: |
             apps/executor-desktop/package-lock.json
-            apps/executor-desktop-v2/package-lock.json
 
       - name: Install desktop deps
         working-directory: apps/executor-desktop
@@ -119,12 +118,6 @@ jobs:
       - name: Install executor-node deps (ncc 类型检查前置)
         working-directory: apps/executor-node
         run: npm ci
-
-      - name: Build V2 renderer
-        working-directory: apps/executor-desktop-v2
-        run: |
-          npm ci
-          npm run build
 
       - name: Main-process selftests
         working-directory: apps/executor-desktop
@@ -150,22 +143,7 @@ jobs:
           # launch 点是 headless:true），离线构建可用 ACF_PLAYWRIGHT_SOURCE。
           ACF_BUNDLE_PLAYWRIGHT: '1'
           ACF_PLAYWRIGHT_REQUIRED: '1'
-        run: |
-          # V2 是默认渲染层：必须在打包前落到 dist/renderer-v2/
-          npm run build:renderer-v2
-          npm run ${{ matrix.script }} -- --publish never
-
-      - name: Verify V2 renderer embedded
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f apps/executor-desktop/dist/renderer-v2/index.html \
-            || { echo "::error::dist/renderer-v2 missing — 升级后会回退 V1 渲染层"; exit 1; }
-          asar=$(find apps/executor-desktop/dist-electron -name app.asar | head -1)
-          test -n "$asar" || { echo "::error::app.asar not found"; exit 1; }
-          npx --yes asar list "$asar" | grep -qE '^[\\/]dist[\\/]renderer-v2[\\/]index\.html$' \
-            || { echo "::error::renderer-v2 未进 asar"; exit 1; }
-          echo "renderer-v2 embedded: $(wc -c < apps/executor-desktop/dist/renderer-v2/index.html) bytes"
+        run: npm run ${{ matrix.script }} -- --publish never
 
       - name: Verify embedded executor bundle present
         shell: bash

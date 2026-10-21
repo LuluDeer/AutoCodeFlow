@@ -270,12 +270,7 @@ app.whenReady().then(async () => {
   void sweepReleasesWithCurrentConfig();
 
   const cfg = configStore.getAll();
-  // ACF_OPEN_STATUS（仅未打包时生效）：联调/验收时强制打开主状态窗，
-  // 让 V2 渲染层跑在**真实主窗**上，而不是借用首次启动的向导窗口。
-  // 打包产物忽略该变量，不会变成隐藏入口。
-  if (!app.isPackaged && process.env.ACF_OPEN_STATUS === '1') {
-    windowManager.openStatus();
-  } else if (!cfg.configured) {
+  if (!cfg.configured) {
     // 首次运行，打开配置向导
     windowManager.openWizard();
   } else if (cfg.autoStartExecutor) {

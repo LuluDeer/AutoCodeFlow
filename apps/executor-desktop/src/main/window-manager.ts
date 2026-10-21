@@ -28,33 +28,10 @@ function resolveRendererV1Index(): string {
 }
 
 /**
- * V2 渲染层入口（`dist/renderer-v2/index.html`）。
- *
- * 与 V1 同样双路径探测：打包态在 `<app>/dist/renderer-v2`，裸 electron 跑 e2e 时
- * 在 `__dirname/../renderer-v2`。是否启用由 `ACF_RENDERER=v2` 决定（见
- * resolveActiveRendererIndex），默认仍走 V1，切换是显式动作。
- */
-let rendererV2IndexCache: string | null = null;
-export function resolveRendererV2Index(): string {
-  if (rendererV2IndexCache === null) {
-    const preferred = path.join(app.getAppPath(), 'dist', 'renderer-v2', 'index.html');
-    const adjacent = path.join(__dirname, '..', 'renderer-v2', 'index.html');
-    rendererV2IndexCache = existsSync(preferred) ? preferred : adjacent;
-  }
-  return rendererV2IndexCache;
-}
-
-/**
- * 当前进程该加载的渲染层入口 —— **loadPage / 导航守卫 / IPC sender 闸共用这一份**。
- *
- * 2026-10 起 V2 是**默认**渲染层；`ACF_RENDERER=v1` 是显式逃生门（回退旧 UI）。
- * V2 产物缺失时同样回退 V1 并落 warn，绝不出现白屏。
+ * 当前进程该加载的渲染层入口 —— loadPage / 导航守卫 / IPC sender 闸共用这一份。
+ * 2026-10 起回退到 V1 渲染层（V2 已撤销）。
  */
 export function resolveRendererIndex(): string {
-  if (process.env.ACF_RENDERER === 'v1') return resolveRendererV1Index();
-  const v2 = resolveRendererV2Index();
-  if (existsSync(v2)) return v2;
-  log.warn('V2 renderer missing (dist/renderer-v2); falling back to V1 renderer');
   return resolveRendererV1Index();
 }
 
@@ -133,14 +110,11 @@ function showWhenReady(win: BrowserWindow, maximize = false): void {
 }
 
 /**
- * 渲染层基址覆盖。
- *
- * `ACF_RENDERER_URL` 是给 V2 渲染层联调/换壳验证用的显式入口；未设置时
- * 行为与之前完全一致（VITE_DEV_SERVER_URL → 打包入口）。导航守卫必须与
- * 这里用**同一个**基址，否则加载成功但导航被拦。
+ * 渲染层基址覆盖（Vite dev server）。导航守卫必须与这里用同一个基址，
+ * 否则加载成功但导航被拦。
  */
 function rendererBaseUrl(): string | null {
-  const raw = process.env.ACF_RENDERER_URL || process.env.VITE_DEV_SERVER_URL;
+  const raw = process.env.VITE_DEV_SERVER_URL;
   if (!raw) return null;
   return raw.replace(/\/+$/, '');
 }

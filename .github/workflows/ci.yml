@@ -1729,7 +1729,6 @@ jobs:
           # 不会使缓存失效。与本文件既有写法（807/880/1148）保持一致。
           cache-dependency-path: |
             apps/executor-desktop/package-lock.json
-            apps/executor-desktop-v2/package-lock.json
             apps/executor-node/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
@@ -1738,12 +1737,6 @@ jobs:
       # （desktop-linux-bundle 自 v1.3.0 起的「既有红」真实根因）。
       - run: npm ci
         working-directory: apps/executor-node
-      - name: Install V2 renderer deps
-        working-directory: apps/executor-desktop-v2
-        run: npm ci
-      - name: Build V2 renderer
-        working-directory: apps/executor-desktop-v2
-        run: npm run build
       - name: Main-process selftests (incl. updater)
         working-directory: apps/executor-desktop
         run: npm run test:main
@@ -1763,9 +1756,7 @@ jobs:
           # electron 二进制官方源被墙/慢时的镜像兜底；runner 上通常无需生效
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
         # 同 mac：CI 只产构件不发布（repository 字段触发的默认 publisher）
-        run: |
-          npm run build:renderer-v2
-          npm run dist:linux -- --publish never
+        run: npm run dist:linux -- --publish never
       - name: Upload Linux bundles
         uses: actions/upload-artifact@v7
         with:
@@ -1890,19 +1881,12 @@ jobs:
           # 不会使缓存失效。与本文件既有写法（807/880/1148）保持一致。
           cache-dependency-path: |
             apps/executor-desktop/package-lock.json
-            apps/executor-desktop-v2/package-lock.json
             apps/executor-node/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
       # 同 linux bundle：ncc 全项目类型检查需要 executor-node 依赖在位
       - run: npm ci
         working-directory: apps/executor-node
-      - name: Install V2 renderer deps
-        working-directory: apps/executor-desktop-v2
-        run: npm ci
-      - name: Build V2 renderer
-        working-directory: apps/executor-desktop-v2
-        run: npm run build
       - name: Main-process selftests
         working-directory: apps/executor-desktop
         run: npm run test:main
@@ -1913,9 +1897,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         # CI 只产构件不发布：electron-builder 检测到 package.json repository
         # 会默认走 GitHub publisher（缺 GH_TOKEN 即炸）——显式 never。
-        run: |
-          npm run build:renderer-v2
-          npm run dist:mac -- --publish never
+        run: npm run dist:mac -- --publish never
       - name: Upload macOS bundles
         uses: actions/upload-artifact@v7
         with:

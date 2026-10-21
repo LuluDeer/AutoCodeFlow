@@ -131,9 +131,8 @@ async function confirmViaNativeDialog(policy: {
 const ipcMain = createGuardedIpcMain(electronIpcMain, {
   // 每次调用重新取策略：dev/packaged 切换、窗口重建后仍然正确。
   policy: () => ({
-    // ACF_RENDERER_URL 与 window-manager.loadPage 同源（V2 联调/换壳验证）；
-    // 未设置时退回 VITE_DEV_SERVER_URL，默认行为不变。
-    devServerUrl: process.env.VITE_DEV_SERVER_URL ?? process.env.ACF_RENDERER_URL ?? null,
+    // 仅接受 Vite dev server 同源页面；生产为 null。
+    devServerUrl: process.env.VITE_DEV_SERVER_URL ?? null,
     // 与 window-manager.loadFile 的入口页**同源**（单一真值源，避免两处漂移）。
     rendererIndexPath: resolveRendererIndex(),
   }),
@@ -1219,28 +1218,6 @@ export function registerIpcHandlers(): void {
       log.warn(`apps:uninstall ${appId} failed (mode=${outcome.mode}): ${outcome.error}`);
     }
     return outcome;
-  });
-
-  // 批量卸载（应用页多选）：只弹一次原生确认，逐个复用 uninstallApp。
-  ipcMain.handle('apps:uninstall-many', async (_event, appIds: unknown) => {
-    if (!Array.isArray(appIds)) return { ok: false, error: '参数格式不正确' };
-    const ids = [...new Set(appIds.filter((id): id is string => typeof id === 'string'))].slice(0, 100);
-    if (ids.length === 0) return { ok: false, error: '没有可卸载的应用' };
-    if (!(await confirmDestructive('apps:uninstall-many', confirmViaNativeDialog))) {
-      return CONFIRM_CANCELED;
-    }
-    const workDir = configStore.get('workDir') as string | undefined;
-    const results: Array<{ appId: string; ok: boolean; error?: string }> = [];
-    for (const appId of ids) {
-      const outcome = await uninstallApp({
-        workDir,
-        appId,
-        post: (routePath, body, timeoutMs) => postToLocalExecutor(routePath, body, timeoutMs),
-      });
-      results.push({ appId, ok: outcome.ok, error: outcome.ok ? undefined : outcome.error });
-      log.info(`apps:uninstall-many ${appId} -> ${outcome.ok ? 'ok' : outcome.error}`);
-    }
-    return { ok: results.every((item) => item.ok), results };
   });
 
   // 删除单个历史版本（当前生效版本 / 运行中的版本会被拒绝）
