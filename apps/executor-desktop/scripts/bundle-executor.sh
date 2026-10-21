@@ -67,7 +67,9 @@ if [ "${ACF_BUNDLE_UV:-0}" = "1" ]; then
   # 先清掉可能存在的陈旧产物：否则上一次成功留下的 uv 会让"这次下载失败"
   # 被静默掩盖，打包出的是**旧版本 uv** 却报成功（比缺 uv 更难查）。
   rm -f "${UV_DEST}/uv" "${UV_DEST}/uv.exe" 2>/dev/null || true
-  UV_VER="${ACF_UV_VERSION:-0.8.17}"
+  # 默认值须与 release-desktop.yml / ci.yml 的 ACF_UV_VERSION 一致（三处同源）。
+  # 0.13.4 修 PYSEC-2026-4321（critical）：内置 CA 信任密钥已泄露的 emSign 根。
+  UV_VER="${ACF_UV_VERSION:-0.13.4}"
   case "$(uname -s)" in
     Darwin) UV_OS=apple-darwin ;;
     Linux)  UV_OS=unknown-linux-gnu ;;

@@ -1,185 +1,258 @@
 <a name="english"></a>
 
-## 🚀 Overview
+# AutoCodeFlow
 
-**AutoCodeFlow** is an enterprise-grade distributed task orchestration platform with built-in AI capabilities. Schedule, execute, and monitor JavaScript/Python tasks across multiple executors with real-time observability and intelligent failure analysis.
+<p align="center">
+  <img src="docs/assets/banner-en.png" alt="AutoCodeFlow — distributed task orchestration and execution platform" width="100%">
+</p>
 
-### ✨ Key Features
+<p align="center">
+  Write JavaScript / Python scripts in the browser, schedule them by cron or events,<br/>
+  dispatch them safely to a fleet of executors — and collect logs, artifacts, alerts, audit trails<br/>
+  and AI failure analysis in one place.
+</p>
 
-- **🎯 Smart Scheduling** — Cron expressions, fixed intervals, manual triggers, and dependency-based execution
-- **🧩 Glue Scripts** — Write JavaScript/Python scripts in the browser, dynamically distributed to executors at runtime
-- **⚡ Horizontal Scaling** — Auto-registering executors with health checks and load balancing
-- **🖥️ Desktop Executor** — Electron-based executor runs as a system tray app on any device
-- **📦 Private Registries** — Built-in npm (Verdaccio) and PyPI repositories for internal packages
-- **🤖 AI-Powered** — OpenAI/Ollama integration for script generation and failure root-cause analysis
-- **🔗 MCP Integration** — Model Context Protocol server for AI agent task management
-- **📊 Full Observability** — Prometheus metrics, distributed tracing (OpenTelemetry), real-time logs
-- **🔔 Multi-Channel Alerts** — WeCom, DingTalk, Slack webhooks, SMTP email
-- **🛡️ Enterprise Security** — RBAC, API keys with scoped permissions, audit logs
-- **🌐 Bilingual UI** — Chinese/English interface with i18n support
+## 🧭 What it is
 
----
+AutoCodeFlow turns "cron scripts scattered across machines" into **schedulable, observable, auditable and rollback-able** jobs:
+
+- **Author** — write Glue scripts (JS / Python / Shell) in the console, or ship code via Git repos and application bundles.
+- **Schedule** — cron, fixed rate, manual, inbound webhook and dependency DAGs, with retries, timeouts, concurrency gates and maintenance windows.
+- **Execute** — executors self-register, heartbeat and **pull** work (no inbound ports exposed), with load-aware dispatch across the fleet.
+- **Observe** — live logs over SSE, execution trends, Prometheus metrics, OpenTelemetry traces, failure classification and AI root-cause analysis.
+- **Govern** — RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs and two-person approval for deployments.
+
+| Scenario | What AutoCodeFlow runs |
+|---|---|
+| Data pipelines | Incremental sync, cleaning and warehousing with automatic retry and alerting |
+| Scheduled reports | Daily business reports rendered and pushed to WeCom / DingTalk / Slack |
+| Operations | Backup verification, log rotation and cold archiving, certificate renewal |
+| API integration | Third-party polling, webhooks, event-driven orchestration |
+| Desktop automation | RPA-style local UI tasks on the Electron desktop executor |
+| AI agents | Let Claude / Cursor create, trigger and debug tasks through the MCP server |
+
+## 🖼️ Screenshots
+
+### Admin console (admin-web)
+
+<table>
+  <tr>
+    <td width="50%" align="center"><b>Dashboard</b><br/><sub>Task totals, success rate, execution trend, scheduler latency, executor resources</sub></td>
+    <td width="50%" align="center"><b>Task scheduling</b><br/><sub>Cron / fixed-rate / manual with status, next run and runtime</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/en/dashboard.png" alt="Dashboard"></td>
+    <td><img src="docs/assets/screenshots/en/tasks.png" alt="Task scheduling"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Execution history</b><br/><sub>Full run history, filterable by status, executor and time</sub></td>
+    <td align="center"><b>Execution detail</b><br/><sub>Logs, timeline, retry chain, params and artifacts</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/en/executions.png" alt="Execution history"></td>
+    <td><img src="docs/assets/screenshots/en/execution-detail.png" alt="Execution detail"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Executors</b><br/><sub>Online state, CPU / memory / disk, heartbeat, task concurrency</sub></td>
+    <td align="center"><b>Executor detail</b><br/><sub>Resource trend, success rate, interpreter pool, token rotation</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/en/executors.png" alt="Executors"></td>
+    <td><img src="docs/assets/screenshots/en/executor-detail.png" alt="Executor detail"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Task detail</b><br/><sub>Glue script, dependency DAG, runs, version history and rollback</sub></td>
+    <td align="center"><b>Applications</b><br/><sub>App versions, deployment state, bulk upgrade and canary rollout</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/en/task-detail.png" alt="Task detail"></td>
+    <td><img src="docs/assets/screenshots/en/applications.png" alt="Applications"></td>
+  </tr>
+</table>
+
+### Desktop executor (executor-desktop)
+
+An Electron executor that installs on any machine, stays in the system tray, registers itself and receives scheduled work.
+
+<table>
+  <tr>
+    <td width="50%" align="center"><b>Setup wizard</b><br/><sub>Five steps: connection, machine info, download source, confirmation</sub></td>
+    <td width="50%" align="center"><b>Status</b><br/><sub>Online state, heartbeat, live run logs, recent failures</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/en/executor-desktop/wizard.png" alt="Desktop executor setup wizard"></td>
+    <td><img src="docs/assets/screenshots/en/executor-desktop/status-live.png" alt="Desktop executor status"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Run history</b><br/><sub>Runs grouped by task with failure reasons inline</sub></td>
+    <td align="center"><b>Local apps</b><br/><sub>Deployed apps, side-by-side versions, uninstall and rollback</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/en/executor-desktop/history.png" alt="Desktop executor history"></td>
+    <td><img src="docs/assets/screenshots/en/executor-desktop/apps-detail.png" alt="Desktop executor local apps"></td>
+  </tr>
+</table>
+
+> Chinese UI screenshots live in `docs/assets/screenshots/zh/`.
 
 ## 🏗️ Architecture
 
+<p align="center">
+  <img src="docs/assets/architecture-en.png" alt="AutoCodeFlow architecture" width="100%">
+</p>
+
+The **control plane** (admin-api + admin-web + PostgreSQL + Redis) owns every scheduling decision, state transition and audit record.
+The **execution plane** (executor-node / executor-python / executor-desktop) is stateless: it registers, heartbeats, claims work and reports back.
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Control Plane                            │
-│  ┌──────────────────┐          ┌─────────────────────┐         │
-│  │   Admin Web UI   │ ◄──────► │   Admin API         │         │
-│  │  (React + Vite)  │          │ (NestJS + TypeORM)  │         │
-│  └──────────────────┘          └──────────┬──────────┘         │
-│                                            │                     │
-│         ┌──────────────────────────────────┼──────────────┐    │
-│         │                                   │              │    │
-│         ▼                                   ▼              ▼    │
-│  ┌─────────────┐                  ┌─────────────┐  ┌──────────┐│
-│  │ PostgreSQL  │                  │   Redis     │  │ BullMQ   ││
-│  │  (Metadata) │                  │  (Cache)    │  │ (Queue)  ││
-│  └─────────────┘                  └─────────────┘  └──────────┘│
-└─────────────────────────────────────────────────────────────────┘
-                                     │
-                   ┌─────────────────┼─────────────────┐
-                   │                 │                 │
-                   ▼                 ▼                 ▼
-          ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-          │  Executor   │   │  Executor   │   │  Executor   │
-          │   (Node)    │   │  (Python)   │   │  (Desktop)  │
-          └─────────────┘   └─────────────┘   └─────────────┘
-                   │                 │                 │
-                   └─────────────────┼─────────────────┘
-                                     │
-                            ┌────────┴────────┐
-                            │                 │
-                     ┌──────▼──────┐   ┌──────▼──────┐
-                     │ npm Registry│   │PyPI Registry│
-                     │ (Verdaccio) │   │  (Private)  │
-                     └─────────────┘   └─────────────┘
+Browser / CLI / MCP / SDK
+        │  REST + SSE
+        ▼
+┌──────────────────────────────────────────────┐
+│ admin-api (NestJS, :3105)                    │
+│  · scheduler: cron / fixed-rate / DAG / manual│
+│  · callbacks → runs / log chunks / artifacts  │
+│  · RBAC / API keys / audit / notifications    │
+└───────┬──────────────────┬───────────────────┘
+        │                  │
+   PostgreSQL 16       Redis 7 + BullMQ
+   (metadata/audit)    (queues / cache / coordination)
+        ▲
+        │ register / heartbeat / claim / callback (pull)
+        │
+┌───────┴────────────┬───────────────────┬──────────────────┐
+│ executor-node      │ executor-python   │ executor-desktop │
+│ JS / Shell tasks   │ Python tasks      │ desktop automation│
+│ :8002              │ :8001 · uv        │ Electron tray app │
+└────────────────────┴───────────────────┴──────────────────┘
+        │ pull dependencies on demand
+        ▼
+ Private registries: npm (Verdaccio) · PyPI
 ```
 
----
+End-to-end path: **create task → scheduler enqueues → executor claims → pull script/deps → execute → report status/logs/artifacts → notify + AI analysis**.
+Per-module breakdowns live in the [Atlas](docs/atlas/README.md) and [ADRs](docs/adr/README.md).
 
-## 📦 Tech Stack
+## ✨ Features
 
-| Component | Technology |
-|-----------|-----------|
-| **Control Plane** | NestJS · TypeORM · PostgreSQL · Redis · BullMQ |
-| **Web UI** | React 18 · Vite · Ant Design · TypeScript |
-| **Executors** | Node.js (Express) · Python (FastAPI) · Electron |
-| **Registries** | Verdaccio (npm) · Custom PyPI Server |
-| **CLI** | TypeScript · Commander.js (`acf` command) |
-| **SDKs** | `@autocodeflow/sdk` (Node) · `autoflow-sdk` (Python) |
-| **MCP Server** | TypeScript · MCP SDK (AI agent integration) |
-| **Deployment** | Docker Compose · Source Mode for production |
+| Area | Highlights |
+|---|---|
+| **Scheduling** | Cron (5-field + timezone), fixed rate, manual, inbound webhook, dependency DAG, maintenance windows |
+| **Execution policy** | Timeout + warning ratio, max retries with retryable-error allowlist, concurrency gates / mutex groups, block & misfire strategies, executor affinity tags |
+| **Fleet** | Node.js / Python / Electron executors; self-registration, heartbeat liveness, load-aware dispatch, multi-instance consistency (outbox + claim) |
+| **Code delivery** | Inline Glue scripts (editor, lint, AI generation), Git repos, application zips; private npm/PyPI dependency install |
+| **Observability** | SSE live logs, execution trends, scheduler latency, Prometheus metrics, OpenTelemetry traces, Loki log aggregation |
+| **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
+| **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, bubblewrap sandbox for Python tasks |
+| **AI** | OpenAI / Ollama / Qwen for script generation, failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
+| **Tooling** | `acf` CLI (67 subcommands), Node/Python SDKs, MCP server (56 tools), VitePress docs site |
 
----
+## 🚀 Quick start
 
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Docker** ≥ 24 & **Docker Compose** ≥ 2.20
-- **(Local dev)** Node.js ≥ 20, Python ≥ 3.11
-
-### One-Command Deployment
-
-The `deploy.sh` script supports **dual-mode deployment**:
+### Option 1 — Docker Compose (recommended for a trial)
 
 ```bash
-# Production (source mode, requires root, recommended)
-sudo ./deploy.sh --mode source --env production --i-know-its-production
-
-# Staging (Docker mode)
-./deploy.sh --mode docker --env staging
-
-# Pre-deployment health check
-./deploy.sh doctor
-```
-
-**8-stage pipeline**: Pre-check → Config → Dependencies → Build → Infrastructure → Migration (with auto-backup) → Startup → Validation
-
-See [Deployment Guide](docs/deployment.md) for details.
-
-### Manual Docker Compose
-
-```bash
-# 1. Clone repository
 git clone https://github.com/LuluDeer/AutoCodeFlow.git
 cd AutoCodeFlow
 
-# 2. Configure environment
 cp .env.example .env
-# Edit .env: set POSTGRES_PASSWORD, JWT_SECRET, JWT_REFRESH_SECRET, EXECUTOR_SECRET
+# Required: INITIAL_ADMIN_PASSWORD (>= 8 chars; weak values are rejected at boot)
+#           POSTGRES_PASSWORD / JWT_SECRET / JWT_REFRESH_SECRET / EXECUTOR_SECRET
 vim .env
 
-# 3. Start all services
 docker compose up -d
-
-# 4. Check status
-docker compose ps
-docker compose logs -f admin-api
+docker compose ps          # every service should be healthy
 ```
 
-**Access Points:**
+Open **http://localhost** and sign in with the admin account from `.env`. Change the password right after the first login.
 
-| Service | URL |
-|---------|-----|
-| Admin Dashboard | http://localhost |
-| API Documentation | http://localhost:3105/api/docs |
-| Health Check | http://localhost:3105/api/health/live |
-| Prometheus Metrics | http://localhost:3105/metrics |
-| npm Registry | http://localhost/npm/ |
-| PyPI Registry | http://localhost/pypi/ |
+### Option 2 — One-command deployment (production)
 
-Default admin credentials are set via `INITIAL_ADMIN_PASSWORD` in `.env`.
-
----
-
-## 📚 Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Quick Start](docs/quickstart.md) | Get running in 5 minutes |
-| [Deployment Guide](docs/deployment.md) | System requirements, environment variables, upgrade guide |
-| [Operations Manual](docs/operations.md) | Daily operations, backup/restore, scaling, troubleshooting |
-| [Development Guide](docs/development.md) | Local setup, testing, code conventions |
-| [SDK Guide](docs/sdk-guide.md) | Python/Node.js SDK usage and examples |
-| [API Reference](docs/api-reference.md) | REST API endpoints, authentication, error codes |
-| [Knowledge Atlas](docs/atlas/README.md) | Comprehensive architecture documentation |
-| [**Documentation Hub**](docs/README.md) | **Start here** — every doc indexed by role |
-| [Tutorials](docs/tutorials/index.md) | Five step-by-step tutorials in production order |
-| [Architecture Decisions](docs/adr/README.md) | ADRs — read before changing architecture |
-| [Support](SUPPORT.md) · [Security](SECURITY.md) | Where to ask, how to report a vulnerability |
-
----
-
-## 🛠️ CLI Tool
+`deploy.sh` supports **source mode** and **Docker mode** with an 8-stage pipeline:
+preflight → config → dependencies → build → infrastructure → migration (auto backup) → start → verify.
 
 ```bash
-# Install globally
-npm install -g @autocodeflow/cli
-
-# Login
-acf login --url http://localhost:3105 --user admin
-
-# Manage tasks
-acf task list
-acf task trigger <taskId>
-
-# Manage executors
-acf executor list
-
-# Manage applications
-acf app list
+sudo ./deploy.sh --mode source --env production --i-know-its-production   # production, source mode
+./deploy.sh --mode docker --env staging --build                          # staging
+./deploy.sh doctor                                                       # pre-flight diagnosis
+./deploy.sh doctor --json                                                # machine-readable diagnosis
 ```
 
----
+### Option 3 — Local development
 
-## 🤖 AI Integration
+```bash
+make infra-up                                  # PostgreSQL + Redis
+make install                                   # install all dependencies
+cd apps/admin-api && npm run migration:run && cd ../..
+make dev                                       # admin-api + admin-web + both executors
+```
 
-### MCP Server
+### Seed demo data
 
-Integrate with Claude Desktop, Cursor, and other AI agents:
+```bash
+make demo-seed    # demo-* tasks, executions and SOPs (requires a running admin-api)
+```
+
+### Endpoints
+
+| Service | URL | Notes |
+|---|---|---|
+| Admin console | http://localhost | admin-web behind nginx in production |
+| API docs | http://localhost:3105/api/docs | Swagger / OpenAPI |
+| Health | http://localhost:3105/api/health/live · `/api/health/ready` | liveness / readiness |
+| Prometheus metrics | http://localhost:3105/api/metrics | JWT required; disable with `METRICS_PROMETHEUS_ENABLED=false` |
+| npm registry | http://localhost/npm/ | Verdaccio |
+| PyPI registry | http://localhost/pypi/ | self-hosted FastAPI registry |
+| Executors | :8001 (python) · :8002 (node) | bound to 127.0.0.1 by default |
+
+> Observability is opt-in via profiles: `docker compose --profile monitoring up -d`
+> (Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100), `--profile jaeger` (Jaeger UI :16686),
+> `--profile backup`, `--profile minio`, `--profile replica`.
+
+## 🛠️ Clients & integrations
+
+### CLI (`acf`)
+
+```bash
+npm install -g @autocodeflow/cli
+
+acf login --url http://localhost:3105 --user admin        # interactive login (TOTP supported)
+acf task list                                             # list tasks
+acf task trigger <taskId> --wait                          # trigger and wait for a terminal state
+acf task logs <execId> --tail 200                         # fetch execution logs
+acf executor list                                         # list executors
+acf app deploy <appId> --executor <id>                    # deploy an app to an executor
+```
+
+For CI, inject credentials through `ACF_API_URL` / `ACF_TOKEN` (nothing is persisted).
+Full command map: [CLI reference](docs/atlas/05-interfaces/cli.md).
+
+### SDKs
+
+```bash
+npm install @autocodeflow/sdk     # Node.js
+pip install autoflow-sdk          # Python
+```
+
+Inside a task you get `ctx` for parameters, HTTP calls, logging and result reporting.
+
+```js
+// Node.js — Glue script shipped with the task
+const res = await ctx.http.get('/api/tasks?pageSize=5');
+ctx.logger.info('tasks fetched', { meta: { count: res.list.length } });
+return ctx.success('done', { count: res.list.length });
+```
+
+```python
+# Python — Glue script shipped with the task
+rows = load_rows()                      # your business code
+ctx.log.info("rows=%d", len(rows))
+ctx.report_success(summary="etl done", duration_ms=412)
+```
+
+Capability matrix and known divergences: [SDK guide](docs/sdk-guide.md). Runnable examples: [examples/](examples/README.md).
+
+### MCP server (AI agents)
 
 ```json
 {
@@ -188,80 +261,117 @@ Integrate with Claude Desktop, Cursor, and other AI agents:
       "command": "npx",
       "args": ["-y", "autocodeflow-mcp-server"],
       "env": {
-        "ACF_API_URL": "http://localhost:3105",
-        "ACF_TOKEN": "your-jwt-token"
+        "AUTOCODEFLOW_API_URL": "http://localhost:3105",
+        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>"
       }
     }
   }
 }
 ```
 
-See [packages/mcp-server/README.md](packages/mcp-server/README.md) for details.
+56 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the JWT role.
+See [packages/mcp-server/README.md](packages/mcp-server/README.md).
 
----
+## 📦 Tech stack
+
+| Layer | Technology |
+|---|---|
+| **Control plane** | NestJS · TypeORM · PostgreSQL 16 · Redis 7 · BullMQ |
+| **Admin console** | React 19 · Vite · Ant Design · TypeScript · Recharts |
+| **Executors** | Node.js 24 (Express) · Python 3.12 (FastAPI) · Electron |
+| **Private registries** | Verdaccio (npm) · self-hosted FastAPI (PyPI) |
+| **CLI / SDK / MCP** | Commander.js · axios / httpx · MCP SDK |
+| **Observability** | Prometheus · Grafana · Loki · OpenTelemetry · Alertmanager |
+| **Deployment** | Docker Compose · source mode (systemd + nginx) · multi-instance HA |
+
+## 🗂️ Repository layout
+
+```
+AutoCodeFlow/
+├── apps/
+│   ├── admin-api/         control plane (REST + SSE + scheduler + audit)
+│   ├── admin-web/         admin console SPA
+│   ├── executor-node/     Node.js executor (:8002)
+│   ├── executor-python/   Python executor (:8001, uv multi-version)
+│   ├── executor-desktop/  Electron desktop executor (tray resident)
+│   ├── registry-npm/      private npm registry config (Verdaccio)
+│   └── registry-pypi/     private PyPI registry (FastAPI)
+├── packages/
+│   ├── acf-cli/           the acf command line tool
+│   ├── mcp-server/        MCP server for AI agents
+│   ├── autocodeflow-node-sdk/  Node.js SDK
+│   ├── autoflow-sdk/      Python SDK
+│   ├── executor-protocol/ executor protocol contract
+│   └── docs-site/         VitePress documentation site
+├── docs/                  documentation (entry: docs/README.md) · media: docs/assets/
+├── examples/              runnable official examples
+├── infra/                 reverse proxy, monitoring, infrastructure compose
+├── scripts/               build, verification, self-test and guard scripts
+└── deploy.sh              one-command deployment (source / docker)
+```
+
+Only repository-level files live at the root (README / LICENSE / CHANGELOG / CONTRIBUTING / SECURITY / deployment scripts and compose files).
+Everything else belongs under [`docs/`](docs/README.md), and one-off reports under [`docs/archive/`](docs/archive/README.md) —
+enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / orphan docs / root hygiene).
+
+## 📚 Documentation
+
+| Document | Description |
+|---|---|
+| [**Documentation hub**](docs/README.md) | **Start here** — every doc indexed by role |
+| [Quick start](docs/quickstart.md) | First scheduled task in five minutes |
+| [Deployment guide](docs/deployment.md) | Requirements, environment variables, upgrade and rollback |
+| [Operations manual](docs/operations.md) | Day-2 operations, backup/restore, scaling, troubleshooting |
+| [Development guide](docs/development.md) | Local setup, tests, conventions |
+| [SDK guide](docs/sdk-guide.md) | Node / Python SDK capability matrix and usage |
+| [API reference](docs/api-reference.md) | REST contracts, auth, error codes |
+| [Architecture atlas](docs/atlas/README.md) | Complete structural breakdown of the project |
+| [Tutorials](docs/tutorials/index.md) | Five tutorials in production order |
+| [ADRs](docs/adr/README.md) | Read before changing the architecture |
+| [Observability](docs/observability/README.md) | Metrics, logs, traces and alerting |
+| [Support](SUPPORT.md) · [Security](SECURITY.md) | Where to ask, how to report a vulnerability |
 
 ## 🔒 Security
 
-- **RBAC** — Project-level roles (owner/developer/viewer)
-- **API Keys** — Scoped tokens for CI/CD integration
-- **Sandbox Execution** — Python tasks run in bubblewrap containers (Linux)
-- **Audit Logs** — Complete operation history
-- **Secret Management** — Encrypted storage for sensitive data
+- **RBAC** — project-scoped roles (owner / developer / viewer), route-level guards enforced in CI (`check-route-authz-matrix`).
+- **Credentials** — scoped API keys, per-execution callback tokens, executor shared-token rotation, TOTP 2FA, OIDC SSO.
+- **Isolation** — optional bubblewrap sandbox for Python tasks (user namespaces, read-only root, private tmp) and a child-process env allowlist.
+- **Network** — all outbound requests go through an SSRF guard with DNS pinning (private ranges denied by default, opt-in per integration).
+- **Audit** — full operation audit trail, two-person approval for deployments, replayable configuration history.
+- **Supply chain** — dependency review log, secret scanning (gitleaks), multi-arch image build gate, release hygiene audit.
 
----
-
-## 📈 Monitoring
-
-- **Prometheus Metrics** — Task execution rates, durations, failure rates
-- **Distributed Tracing** — OpenTelemetry integration
-- **Real-time Logs** — WebSocket streaming
-- **Alertmanager** — Rule-based alerts with HMAC webhook security
-
----
-
-## 🌟 Use Cases
-
-- **Data Pipelines** — ETL jobs, data synchronization
-- **Scheduled Reports** — Daily/weekly report generation
-- **System Maintenance** — Database backups, log rotation
-- **API Polling** — Third-party service integration
-- **Desktop Automation** — RPA-style UI automation (see [examples/desktop-automation](examples/desktop-automation))
-
----
+Please report vulnerabilities privately per [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feat/your-feature`
-3. Commit your changes (follow [Conventional Commits](https://www.conventionalcommits.org/))
-4. Run tests: `npm run test`
-5. Submit a Pull Request
+1. Fork the repository and create a branch: `git checkout -b feat/your-feature`
+2. Commit using [Conventional Commits](https://www.conventionalcommits.org/)
+3. Run the relevant tests (`npm run test:api` / `test:web` / `test:python` …)
+4. Open a pull request and fill in the checklist (see [CONTRIBUTING.md](CONTRIBUTING.md))
 
----
+CI covers admin-api, admin-web, all executors, both SDKs, the CLI, the MCP server, deployment scripts and documentation guards.
 
 ## 📄 License
 
-AutoCodeFlow uses **component-based licensing** (since v1.4.0):
+Since v1.4.0 AutoCodeFlow uses **component-based licensing**:
 
 | Component | License |
-|-----------|---------|
-| **Platform Core** (apps/* + docs-site) | [AGPL-3.0-only](LICENSE) |
-| **Client SDKs & Tools** (CLI, SDKs, MCP server) | MIT |
-| **Executor Protocol** (for third-party integrations) | MIT |
+|---|---|
+| **Platform core** (`apps/*` + `packages/docs-site`) | [AGPL-3.0-only](LICENSE) |
+| **Client SDKs & tools** (CLI, Node/Python SDKs, MCP server) | MIT |
+| **Executor protocol** (third-party executor integration) | MIT |
 
-Versions ≤ v1.3.0 remain under MIT.
-
----
+Versions up to v1.3.0 remain MIT.
 
 ## 🙏 Acknowledgments
 
-Built with ❤️ using:
-- [NestJS](https://nestjs.com/) - Progressive Node.js framework
-- [React](https://react.dev/) - UI library
-- [Ant Design](https://ant.design/) - Component library
-- [TypeORM](https://typeorm.io/) - ORM for TypeScript
-- [BullMQ](https://docs.bullmq.io/) - Queue system
-- [Electron](https://www.electronjs.org/) - Desktop framework
+[NestJS](https://nestjs.com/) · [React](https://react.dev/) · [Ant Design](https://ant.design/) ·
+[TypeORM](https://typeorm.io/) · [BullMQ](https://docs.bullmq.io/) · [Electron](https://www.electronjs.org/) ·
+[Vite](https://vite.dev/) · [FastAPI](https://fastapi.tiangolo.com/) · [Verdaccio](https://verdaccio.org/)
+
+---
+
+<p align="center"><sub>© 2026 LuluDeer · built with ❤️ in TypeScript &amp; Python</sub></p>
 
 ---
 

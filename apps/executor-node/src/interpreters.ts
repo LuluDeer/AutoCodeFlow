@@ -57,6 +57,12 @@ function effectiveRuntimeVersionRange(): { min: string; max: string } {
  * 在线可下载下界。uv 0.8.17 实测只能下载 CPython 3.8~3.14（CONTRACT.md §0）：
  * `uv python install 3.7` → `error: No download found for request:
  * cpython-3.7-<platform>`（exit 2）。3.7 只能由部署方离线预填缓存池获得。
+ *
+ * 桌面端内置 uv 已由 0.8.17 升到 0.13.4（PYSEC-2026-4321，见
+ * release-desktop.yml 的 ACF_UV_VERSION）。**下界不变**：0.13.4 的
+ * `uv python list --all-versions` 同样不含 cpython-3.7，对 3.7 的拒绝文案
+ * 也逐字节相同（实测）。上界则从 3.14 扩到 3.16（3.16 仍是 alpha），
+ * 故本常量无需改动——它表达的是"下界"，不是"上界"。
  */
 export const ONLINE_DOWNLOAD_MIN = '3.8';
 

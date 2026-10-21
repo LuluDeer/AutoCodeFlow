@@ -804,6 +804,20 @@ describe("python_task_multiversion 写面契约", () => {
         ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
       ],
       [
+        // 桌面端内置 uv 由 0.8.17 升到 0.13.4 后，这句文案的尾部从
+        // `, search path, or registry` 变成 ` or search path`（实测）。
+        // 存量安装包仍是 0.8.17，新安装包是 0.13.4 —— **两种文案会同时存在**，
+        // 故两个版本各钉一条；判据只匹配前缀 `no interpreter found`，都能命中。
+        "uv venv --python 3.7 原始文案（uv 0.13.4 措辞，exit 2）",
+        {
+          status: "failed",
+          errorMessage:
+            "No interpreter found for Python 3.7 in managed installations or search path",
+          exitCode: 2,
+        },
+        ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
+      ],
+      [
         "uv venv failed 包装 + No interpreter found（3.9）",
         {
           status: "failed",

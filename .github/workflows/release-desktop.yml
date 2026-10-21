@@ -137,7 +137,14 @@ jobs:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
           ACF_BUNDLE_UV: '1'
           ACF_UV_REQUIRED: '1'
-          ACF_UV_VERSION: '0.8.17'
+          # 0.13.4 修 PYSEC-2026-4321 / GHSA-hq85-5cpj-mr62（critical）：uv 内置
+          # CA 库信任了密钥已泄露的 emSign 根，可被用于 MITM。uv 在桌面端专走
+          # HTTPS（下载解释器 + 装 PyPI 依赖），故这是真实暴露面而非纸面风险。
+          # 0.8.17 还同时受 GHSA-4gg8（moderate）/ GHSA-pqhf（moderate）/
+          # GHSA-pjjw（low）/ GHSA-w476（low）影响，0.13.4 一并覆盖。
+          # 下载区间实测 3.8~3.16（0.8.17 为 3.8~3.14），只增不减；
+          # `uv python install 3.7` 仍拒绝，ONLINE_DOWNLOAD_MIN='3.8' 不变。
+          ACF_UV_VERSION: '0.13.4'
           # N-06②：Agent 浏览器能力随包分发。同 uv 的 REQUIRED 硬闸（缺浏览器
           # 的包用户侧无任何可诊断信号）；只装 chromium-headless-shell（本仓唯一
           # launch 点是 headless:true），离线构建可用 ACF_PLAYWRIGHT_SOURCE。

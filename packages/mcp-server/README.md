@@ -4,7 +4,7 @@ MCP (Model Context Protocol) server for AutoCodeFlow. Lets AI agents like Claude
 
 ## Tools exposed
 
-The server registers **52 tools** (see `src/tools.ts`), grouped below.
+The server registers **56 tools** (see `src/tools.ts`), grouped below.
 
 ### Tasks
 
@@ -139,4 +139,4 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | `AUTOCODEFLOW_API_TOKEN` | — | JWT token (required). The server exits on startup if this is missing, because every tool call would be rejected. |
 | `AUTOCODEFLOW_API_REFRESH_TOKEN` | — | Optional refresh token. When set, a 401 from non-`/auth/*` API calls triggers one in-memory refresh and replays the original request once; rotated refresh tokens are kept only for the process lifetime. |
 
-> All 52 tools share these 3 variables — no tool requires additional environment configuration. Permission-sensitive tools (e.g. `approve_deployment` / `reject_deployment` / `list_pending_approvals`, ADMIN-only) are enforced server-side by the roles in the JWT passed via `AUTOCODEFLOW_API_TOKEN`.
+> All 56 tools share these 3 variables — no tool requires additional environment configuration. Permission-sensitive tools (e.g. `approve_deployment` / `reject_deployment` / `list_pending_approvals`, ADMIN-only) are enforced server-side by the roles in the JWT passed via `AUTOCODEFLOW_API_TOKEN`.

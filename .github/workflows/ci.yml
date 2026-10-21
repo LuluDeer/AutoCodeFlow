@@ -1811,7 +1811,10 @@ jobs:
         env:
           ACF_BUNDLE_UV: '1'
           ACF_UV_REQUIRED: '1'
-          ACF_UV_VERSION: '0.8.17'
+          # 与 release-desktop.yml 同值：0.13.4 修 PYSEC-2026-4321（critical，
+          # emSign 根 CA 密钥泄露可致 MITM）。两处必须同步，否则 CI 验的是一个
+          # 版本、发布打的是另一个（本 job 存在的意义就是"验的就是要发的"）。
+          ACF_UV_VERSION: '0.13.4'
         run: bash scripts/bundle-executor.sh
 
       # 落点断言：必须正好是 <resources>/uv/<bin>，因为 uv-paths.resolveBundledUvPath

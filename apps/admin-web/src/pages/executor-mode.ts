@@ -202,7 +202,10 @@ export interface RuntimeVersionConfig {
 /** 可声明区间（D10 实测后冻结，CONTRACT §1.1）：3.7 ~ 3.14。 */
 export const RUNTIME_VERSION_MIN = '3.7';
 export const RUNTIME_VERSION_MAX = '3.14';
-/** 可在线下载的下界：uv 0.8.17 与 0.11.14 均以 3.8 为地板，**3.7 无法在线下载**。 */
+/**
+ * 可在线下载的下界：uv 0.8.17 / 0.11.14 / 0.13.4 均以 3.8 为地板，
+ * **3.7 无法在线下载**（桌面端内置 uv 已升 0.13.4，下界未变，实测复验）。
+ */
 export const RUNTIME_VERSION_ONLINE_MIN = '3.8';
 /**
  * 旧执行器未上报 interpreters 时的兜底默认版本（与后端
