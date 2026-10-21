@@ -117,6 +117,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openReleaseFolder: (appId: string, releaseKey: string) =>
     ipcRenderer.invoke('apps:open-release-folder', asString(appId), asString(releaseKey)),
   uninstallApp: (appId: string) => ipcRenderer.invoke('apps:uninstall', asString(appId)),
+  // 批量卸载：数组在渲染层不可信，主进程逐个做 appId 白名单 + containment。
+  uninstallApps: (appIds: string[]) => ipcRenderer.invoke('apps:uninstall-many', appIds),
   deleteAppRelease: (appId: string, releaseKey: string, deploymentId: string) =>
     ipcRenderer.invoke('apps:delete-release', asString(appId), asString(releaseKey), asString(deploymentId)),
   getRunningApps: () => ipcRenderer.invoke('apps:running'),

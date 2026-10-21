@@ -25,6 +25,7 @@
 /** 需要主进程二次确认的通道。**只放不可逆/外发型的动作**，可恢复的（executor:start/stop）不在此列。 */
 export type DestructiveChannel =
   | 'apps:uninstall'
+  | 'apps:uninstall-many'
   | 'apps:delete-release'
   | 'updater:install'
   | 'history:clear';
@@ -40,6 +41,10 @@ export const DESTRUCTIVE_CHANNELS: Readonly<Record<DestructiveChannel, Destructi
   'apps:uninstall': {
     label: '卸载本地应用',
     detail: '会删除该应用的本地发布目录与运行配置，无法撤销。',
+  },
+  'apps:uninstall-many': {
+    label: '批量卸载本地应用',
+    detail: '会删除所选应用的本地发布目录与运行配置，无法撤销；中台记录不受影响。',
   },
   'apps:delete-release': {
     label: '删除发布版本',

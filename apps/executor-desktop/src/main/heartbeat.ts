@@ -84,6 +84,17 @@ export class HeartbeatMonitor {
   }
 
   /**
+   * 最近一次**成功**心跳的时刻（本地 /health/live 或中台探针，取较晚者）。
+   * 状态页用它显示「最近一次心跳」，从未成功时返回 null。
+   */
+  getLastSuccessAt(): number | null {
+    const candidates = [this.localHysteresis.lastSuccessAt, this.adminHysteresis.lastSuccessAt].filter(
+      (value): value is number => typeof value === 'number',
+    );
+    return candidates.length > 0 ? Math.max(...candidates) : null;
+  }
+
+  /**
    * F-3: 新增 adminApiUrl 参数——本地 /health/live 存活探针 + 中台 /api/health
    * 直达探针做 **AND 逻辑**：任一通道持续失败即判离线。此前 HeartbeatMonitor
    * 只探测本地端口，executor-node 子进程活着但其与中台的链路断开（如 VPN

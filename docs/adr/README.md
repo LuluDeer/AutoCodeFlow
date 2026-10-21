@@ -42,6 +42,7 @@
 | [ADR-026](adr-026-conditional-state-writes.md) | 状态迁移写必须条件化——四个模块的同一根因（整行回写 / 无前置状态 UPDATE）与六条可验收规则（R32-C3 / R32-C1 / R33-B2 / R33-A2） | Accepted |
 | [ADR-027](adr-027-test-double-fidelity.md) | 测试替身必须保真——替身不保真 ⇒ 整类缺陷隐形（FindOperator 求值 / 快照读 / save 逐列 diff / 并发交错钩子 / 未知操作符必须抛错） | Accepted |
 | [ADR-028](adr-028-config-secret-at-rest.md) | 配置类密钥的静态加密边界——**接受现状**（现值明文），明确**拒绝**「只加密历史表」的安全剧场，并给出四条重开条件（R83 顺着密钥脱敏数据流发现） |
+| [ADR-029](adr-029-executor-desktop-v2-renderer.md) | 执行器桌面端 V2 渲染层——独立渲染层 + Electron 外壳（V2 默认、`ACF_RENDERER=v1` 回退），Tauri 仅保留 POC 并给出重开条件 | Accepted |
 
 ## DOC-04 覆盖状态
 

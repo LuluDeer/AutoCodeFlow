@@ -16,7 +16,7 @@ const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
 // 必须复用这一份而不是另算一遍：loadFile 加载的入口页与 IPC 允许的页一旦漂移，
 // 要么闸门误杀（应用直接不可用），要么白名单形同虚设。
 let rendererIndexCache: string | null = null;
-export function resolveRendererIndex(): string {
+function resolveRendererV1Index(): string {
   // 进程内只判定一次（存在性探测有 I/O）：IPC 闸每次调用都要取锚点，
   // 热路径（log:read 1.5s 轮询等）不该反复 stat 磁盘。
   if (rendererIndexCache === null) {
@@ -27,7 +27,36 @@ export function resolveRendererIndex(): string {
   return rendererIndexCache;
 }
 
-const RENDERER_INDEX = resolveRendererIndex();
+/**
+ * V2 渲染层入口（`dist/renderer-v2/index.html`）。
+ *
+ * 与 V1 同样双路径探测：打包态在 `<app>/dist/renderer-v2`，裸 electron 跑 e2e 时
+ * 在 `__dirname/../renderer-v2`。是否启用由 `ACF_RENDERER=v2` 决定（见
+ * resolveActiveRendererIndex），默认仍走 V1，切换是显式动作。
+ */
+let rendererV2IndexCache: string | null = null;
+export function resolveRendererV2Index(): string {
+  if (rendererV2IndexCache === null) {
+    const preferred = path.join(app.getAppPath(), 'dist', 'renderer-v2', 'index.html');
+    const adjacent = path.join(__dirname, '..', 'renderer-v2', 'index.html');
+    rendererV2IndexCache = existsSync(preferred) ? preferred : adjacent;
+  }
+  return rendererV2IndexCache;
+}
+
+/**
+ * 当前进程该加载的渲染层入口 —— **loadPage / 导航守卫 / IPC sender 闸共用这一份**。
+ *
+ * 2026-10 起 V2 是**默认**渲染层；`ACF_RENDERER=v1` 是显式逃生门（回退旧 UI）。
+ * V2 产物缺失时同样回退 V1 并落 warn，绝不出现白屏。
+ */
+export function resolveRendererIndex(): string {
+  if (process.env.ACF_RENDERER === 'v1') return resolveRendererV1Index();
+  const v2 = resolveRendererV2Index();
+  if (existsSync(v2)) return v2;
+  log.warn('V2 renderer missing (dist/renderer-v2); falling back to V1 renderer');
+  return resolveRendererV1Index();
+}
 
 type SavedWindowSize = { width: number; height: number; maximized: boolean };
 
@@ -103,13 +132,27 @@ function showWhenReady(win: BrowserWindow, maximize = false): void {
   win.once('closed', () => clearTimeout(timer));
 }
 
+/**
+ * 渲染层基址覆盖。
+ *
+ * `ACF_RENDERER_URL` 是给 V2 渲染层联调/换壳验证用的显式入口；未设置时
+ * 行为与之前完全一致（VITE_DEV_SERVER_URL → 打包入口）。导航守卫必须与
+ * 这里用**同一个**基址，否则加载成功但导航被拦。
+ */
+function rendererBaseUrl(): string | null {
+  const raw = process.env.ACF_RENDERER_URL || process.env.VITE_DEV_SERVER_URL;
+  if (!raw) return null;
+  return raw.replace(/\/+$/, '');
+}
+
 function loadPage(win: BrowserWindow, page: string): void {
-  if (process.env.VITE_DEV_SERVER_URL) {
-    // Dev mode: use Vite dev server with hash routing
-    win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#${page}`);
+  const base = rendererBaseUrl();
+  if (base) {
+    // Dev / V2 联调：远程 URL + hash 路由（V2 忽略 hash，等价于首页）
+    win.loadURL(`${base}#${page}`);
   } else {
     // Production: use loadFile (handles Windows paths correctly, avoids file:// CSP issues)
-    win.loadFile(RENDERER_INDEX, { hash: page });
+    win.loadFile(resolveRendererIndex(), { hash: page });
   }
 }
 
@@ -127,13 +170,13 @@ function loadPage(win: BrowserWindow, page: string): void {
  *    任何弹出请求都不该被满足（返回 deny 比 allow 更安全，避免遗漏）。
  */
 function hardenWindow(win: BrowserWindow): void {
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  const devUrl = rendererBaseUrl();
   // R106：生产只允许**入口页本身**（忽略 hash/query），不再放行任意 file://。
   // 之前那条前缀判据等于「任何本地 HTML 都能接管这个 webContents」——而导航后
   // preload 桥仍挂着，等于把整套 electronAPI 交给那个页面。
   const policy = {
     devUrl: devUrl ?? null,
-    rendererFileUrl: devUrl ? null : pathToFileURL(RENDERER_INDEX).toString(),
+    rendererFileUrl: devUrl ? null : pathToFileURL(resolveRendererIndex()).toString(),
   };
 
   // R127：**两个 handler 各自内联 preventDefault**，不再抽 helper。

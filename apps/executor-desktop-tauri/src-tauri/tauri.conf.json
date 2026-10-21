@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AutoCodeFlow Executor",
+  "version": "0.1.0",
+  "identifier": "com.autocodeflow.executor.tauri",
+  "build": {
+    "frontendDist": "../../executor-desktop-v2/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AutoCodeFlow 执行器",
+        "width": 1280,
+        "height": 820,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

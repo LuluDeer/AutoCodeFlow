@@ -204,3 +204,7 @@ apps/executor-python/%SystemDrive%/
 # chaos drill 隔离栈专用配置（不进仓库，见 docs/CHAOS-DRILL-REPORT-2026-10.md）
 config/monitoring/prometheus.chaos.yml
 apps/executor-desktop/resources/playwright/
+
+# V2 视觉基线 / 文档截图：全局 *.png 之外显式放行（CI 的 visual:v2 需要基线）
+!apps/executor-desktop/e2e-v2/baseline/*.png
+!apps/executor-desktop-v2/screenshots/*.png

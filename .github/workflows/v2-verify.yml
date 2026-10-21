@@ -1,0 +1,104 @@
+# ── V2 渲染层验收（真壳）────────────────────────────────────────────
+# 三个脚本都驱动真实 Electron（Playwright _electron）：
+#   verify:v2  渲染层加载 / IPC / 托盘切页 / 执行器启停 / 独立向导
+#   a11y:v2    axe-core(wcag2a+aa) + Esc 焦点归还 + 命令面板
+#   visual:v2  5 个页面的像素基线比对
+#
+# 需要显示环境：xvfb + openbox（EWMH 语义）+ dbus（托盘/通知）。
+# 与 desktop-e2e.yml 的 Linux job 同一套系统依赖与软件渲染开关。
+name: v2-verify
+
+on:
+  pull_request:
+    paths:
+      - 'apps/executor-desktop/**'
+      - 'apps/executor-desktop-v2/**'
+      - '.github/workflows/v2-verify.yml'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'apps/executor-desktop/**'
+      - 'apps/executor-desktop-v2/**'
+      - '.github/workflows/v2-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ELECTRON_DISABLE_GPU: '1'
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      ACF_E2E_USER_DATA: /tmp/acf-v2-e2e
+      # 跨 runner 字体微差导致误报时可放宽（默认 0.002 = 0.2%）
+      VISUAL_THRESHOLD: '0.002'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/executor-desktop/package-lock.json
+            apps/executor-desktop-v2/package-lock.json
+
+      - name: Install display & electron runtime deps
+        run: |
+          sudo apt-get update
+          # 中文字体必须装：视觉基线里含中文，runner 缺 Noto CJK 会渲染成豆腐块。
+          sudo apt-get install -y --no-install-recommends xvfb dbus openbox fonts-noto-cjk
+          sudo apt-get install -y --no-install-recommends libgtk-3-0t64 libasound2t64 \
+            || sudo apt-get install -y --no-install-recommends libgtk-3-0 libasound2
+
+      - name: npm ci (executor-desktop)
+        working-directory: apps/executor-desktop
+        run: npm ci
+
+      - name: npm ci (executor-desktop-v2)
+        working-directory: apps/executor-desktop-v2
+        run: npm ci
+
+      - name: Build V2 renderer + copy into desktop dist
+        run: |
+          cd apps/executor-desktop-v2
+          npm run build
+          cd ../executor-desktop
+          npm run build:renderer-v2
+
+      - name: Build desktop main
+        working-directory: apps/executor-desktop
+        run: npm run build:main
+
+      - name: Seed isolated userData
+        working-directory: apps/executor-desktop
+        run: node scripts/seed-v2-harness.mjs "$ACF_E2E_USER_DATA"
+
+      - name: Verify / a11y / visual (xvfb)
+        working-directory: apps/executor-desktop
+        run: |
+          dbus-run-session -- xvfb-run -a --server-args="-screen 0 1600x1000x24" bash -c '
+            openbox &
+            sleep 2
+            npm run verify:v2
+            npm run a11y:v2
+            npm run visual:v2
+          '
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: v2-verify-failures
+          path: |
+            apps/executor-desktop-v2/screenshots/
+            apps/executor-desktop/e2e-v2/diffs/
+          if-no-files-found: ignore
+          retention-days: 14

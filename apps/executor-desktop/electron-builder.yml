@@ -10,6 +10,7 @@ files:
   - dist/main/**/*
   - dist/preload/**/*
   - dist/renderer/**/*
+  - dist/renderer-v2/**/*
   - "!**/*.ts"
   - "!**/*.map"
 
@@ -94,6 +95,8 @@ linux:
         - x64
   icon: assets/icon.png
   category: Utility
+  # 让 .desktop 的 StartupWMClass 与 Electron 实际 WM_CLASS 对齐（Linux 任务栏归组）
+  syncDesktopName: true
   # 同 win：连字符字面量名，与 latest-linux.yml 的 url 对齐。v26.15.3 本地
   # scheme.json 核实：LinuxConfiguration 顶层 artifactName 合法，非法的是
   # 嵌套 `AppImage:` 键（desktop-v1.5.1 首次 tag 实爆，三平台同校验全挂）。
