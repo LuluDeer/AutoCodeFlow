@@ -449,6 +449,8 @@ ACF_OPEN_STATUS=1 ELECTRON_USER_DATA_DIR=/tmp/acf-scale npx electron . --no-sand
 
 - 默认宽度 `min(1120px, 100vw - 64px)`，右上角「放大」可铺满窗口，再点还原；
 - 日志内搜索（实时过滤，显示 `匹配 / 总数`），**行号保持日志文件里的真实行号**；
+  超过 5000 行时只先渲染尾部 5000 行，可点「显示全部」放开；搜索走 `useDeferredValue`，
+  几十万行下输入不阻塞；
 - 「跳到末尾」「复制」、按需注入「导出 / 打开文件夹」；
 - 长行自动换行，虚拟列表改为 `measureElement` 动态行高，避免换行叠字；
 - 行号 + 级别着色 + 行内 hover，保留等宽字体。

@@ -43,14 +43,24 @@ export function LogPanel({
 }) {
   const [query, setQuery] = React.useState('');
   const [scrollSignal, setScrollSignal] = React.useState(0);
+  const [showAll, setShowAll] = React.useState(false);
+  const deferredQuery = React.useDeferredValue(query);
+  const MAX_PREVIEW = 5000;
 
-  // 过滤后保留原始行号：排障时「第几行」必须与文件一致。
+  // 大日志只先渲染尾部 5000 行（含原始行号偏移）；点「显示全部」再放开。
+  // 搜索走 useDeferredValue，避免在几十万行上每敲一个字都同步阻塞输入。
+  const preview = React.useMemo(() => {
+    if (showAll || lines.length <= MAX_PREVIEW) {
+      return lines.map((text, index) => ({ text, index }));
+    }
+    const start = lines.length - MAX_PREVIEW;
+    return lines.slice(start).map((text, index) => ({ text, index: start + index }));
+  }, [lines, showAll, MAX_PREVIEW]);
+
   const filtered = React.useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return lines
-      .map((text, index) => ({ text, index }))
-      .filter((entry) => !needle || entry.text.toLowerCase().includes(needle));
-  }, [lines, query]);
+    const needle = deferredQuery.trim().toLowerCase();
+    return preview.filter((entry) => !needle || entry.text.toLowerCase().includes(needle));
+  }, [preview, deferredQuery]);
 
   return (
     <>
@@ -68,8 +78,8 @@ export function LogPanel({
         </div>
         <span className="text-[11px] text-muted-foreground">
           {query.trim()
-            ? t('log.matches', { matched: filtered.length, total: lines.length })
-            : t('log.lineCount', { count: lines.length })}
+            ? t('log.matches', { matched: filtered.length, total: preview.length })
+            : t('log.lineCount', { count: preview.length })}
         </span>
 
         <div className="ml-auto flex items-center gap-0.5">
@@ -101,6 +111,19 @@ export function LogPanel({
           ) : null}
         </div>
       </div>
+
+      {lines.length > MAX_PREVIEW && !showAll ? (
+        <div className="flex items-center gap-2 px-5 pb-1 text-[11px] text-muted-foreground">
+          {t('log.preview', { shown: MAX_PREVIEW, total: lines.length })}
+          <button
+            type="button"
+            className="underline underline-offset-2 hover:text-foreground"
+            onClick={() => setShowAll(true)}
+          >
+            {t('log.showAll')}
+          </button>
+        </div>
+      ) : null}
 
       <div className={cn('min-h-0 flex-1 border-y border-border')}>
         {loading ? (
