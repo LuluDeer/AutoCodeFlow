@@ -71,8 +71,6 @@ export function resolveInterpretersDir(config: AppConfig): string {
 export class ExecutorProcess {
   private proc: ChildProcess | null = null;
   private stopping = false;
-  /** 本次 spawn 的启动时刻（ms epoch）；attach 模式未知，保持 null。 */
-  private startedAt: number | null = null;
   private onStatusChange: StatusChangeCallback | null = null;
   private currentStatus: ExecutorStatus = 'stopped';
   /**
@@ -328,7 +326,6 @@ export class ExecutorProcess {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    this.startedAt = Date.now();
 
     // 4-4（audit-r4）：桌面端任务进程不让抢占 UI——Windows 下调低子进程
     // 优先级为 BelowNormal（无 Linux niceness 等价物；POSIX 保持默认，避免
@@ -367,7 +364,6 @@ export class ExecutorProcess {
       this.stdoutSplitter.flush();
       this.stderrSplitter.flush();
       this.proc = null;
-      this.startedAt = null;
       this.stopHealthPoll();
       if (!this.stopping) {
         this.notifyStatus('offline');
@@ -379,7 +375,6 @@ export class ExecutorProcess {
     this.proc.on('error', (err) => {
       log.error(`Failed to start executor: ${err.message}`);
       this.proc = null;
-      this.startedAt = null;
       this.stopHealthPoll();
       this.notifyStatus('offline');
     });
@@ -418,7 +413,6 @@ export class ExecutorProcess {
         settled = true;
         clearTimeout(timer);
         this.proc = null;
-      this.startedAt = null;
         this.notifyStatus('stopped');
         resolve();
       };
@@ -497,16 +491,6 @@ export class ExecutorProcess {
         /* already dead */
       }
     }
-  }
-
-  /** 子进程 PID（attach 模式 / 未运行为 null）。 */
-  getPid(): number | null {
-    return this.proc?.pid ?? null;
-  }
-
-  /** 本次启动时刻（ms epoch）；状态页据此算运行时长。 */
-  getStartedAt(): number | null {
-    return this.startedAt;
   }
 
   isRunning(): boolean {

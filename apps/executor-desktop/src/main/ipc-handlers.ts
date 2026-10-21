@@ -853,16 +853,14 @@ export function registerIpcHandlers(): void {
 
   // SEC-NEW-1: status payload returns the masked config for the same reason
   // as config:get — the renderer must not receive the stored token.
+  // 载荷形状是**对渲染层的契约**，e2e/desktop-smoke.spec.js 用 toEqual 逐键钉住
+  // （「注册」用例）。V2 曾在此追加 pid/startedAt/version/lastHeartbeatAt 四个
+  // 增量字段，V2 回退后 V1 渲染层对这四键零消费，故随回退一并撤除——保留它们
+  // 会让契约闸恒红，而放宽断言等于拆掉「新增字段必须同步契约」的守卫。
   ipcMain.handle('executor:status', () => ({
     running: executorProcess.isRunning(),
     status: executorProcess.getStatus(),
     config: configStore.getAllMasked(),
-    // V2 状态页需要：进程号、启动时刻（算运行时长）、应用版本、最近成功心跳。
-    // 全部为**增量字段**，旧渲染层忽略即可。
-    pid: executorProcess.getPid(),
-    startedAt: executorProcess.getStartedAt(),
-    version: app.getVersion(),
-    lastHeartbeatAt: heartbeat.getLastSuccessAt(),
   }));
 
   // ── 开机自启 ──────────────────────────────────────────
