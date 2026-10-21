@@ -6,6 +6,7 @@ tenacity>=8.2.0
 pydantic-settings==2.15.0
 PyYAML==6.0.3
 # Runtime dependency installer. 0.11.15 修复 GHSA-pjjw-68hj-v9mw / GHSA-4gg8-gxpx-9rph
-#（pip-audit 门禁），0.12.x 延续该修复线（无新公告），仍支持 `uv venv --no-project`
-# 与在线下载区间 3.8~3.14（实测）。
-uv==0.12.18
+#（pip-audit 门禁），0.12.x 延续该修复线；0.13.4 修复 PYSEC-2026-4321（内置 CA 信任
+# 了密钥已泄露的 emSign 根，可被用于 MITM），故由 0.12.18 升到 0.13.4。
+# 仍支持 `uv venv --no-project` 与在线下载区间 3.8~3.14（实测）。
+uv==0.13.4
