@@ -256,6 +256,11 @@ try {
   await page.locator('#maxConcurrentTasks').fill('5');
   await page.getByRole('button', { name: /^(关于与更新|About & updates)$/ }).click();
   await page.waitForTimeout(300);
+  await page.getByRole('button', { name: /^(网络地址|Network)$/ }).click();
+  await page.waitForTimeout(300);
+  await page.getByRole('switch', { name: /回连模式|Pull mode/ }).click();
+  await page.getByRole('button', { name: /关于与更新|About & updates/ }).click();
+  await page.waitForTimeout(300);
   await page.getByRole('combobox', { name: /界面语言|Interface language/ }).click();
   await page.getByRole('option', { name: /^English$/ }).click();
   await page.waitForTimeout(300);
@@ -266,8 +271,10 @@ try {
   const savedConfig = JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8'));
   check(
     'config save persists to disk',
-    savedConfig.maxConcurrentTasks === 5 && savedConfig.uiLanguage === 'en',
-    `maxConcurrentTasks=${savedConfig.maxConcurrentTasks}, uiLanguage=${savedConfig.uiLanguage}`,
+    savedConfig.maxConcurrentTasks === 5 &&
+      savedConfig.uiLanguage === 'en' &&
+      savedConfig.pullMode === true,
+    `maxConcurrentTasks=${savedConfig.maxConcurrentTasks}, uiLanguage=${savedConfig.uiLanguage}, pullMode=${savedConfig.pullMode}`,
   );
   const headingAfterLang = (await page.locator('h1').first().textContent())?.trim() ?? '';
   check('language switch reloads UI', headingAfterLang === 'Status', headingAfterLang);

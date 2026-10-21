@@ -19,6 +19,8 @@ export interface AppConfig {
   executorHost: string;
   executorPort: number;
   executorAddressPublic: string;
+  /** 主动回连中台（NAT 后办公机），V1 同名配置。 */
+  pullMode: boolean;
   /** 已保存的令牌（不回传明文）；是否已设置由 hasSavedToken 表达。 */
   executorToken: string;
   hasSavedToken: boolean;
@@ -196,6 +198,8 @@ export interface DesktopBridge {
   setAutoLaunch(enable: boolean): Promise<Ok>;
   openWizard(): Promise<Ok>;
   exportDiagnostics(): Promise<{ ok: boolean; path?: string; message?: string }>;
+  exportConfig(): Promise<FileResult>;
+  importConfig(): Promise<FileResult & { reloadError?: string; restartDeferred?: boolean }>;
   checkForUpdate(): Promise<UpdateCheck>;
   downloadUpdate(): Promise<Ok>;
   installUpdate(): Promise<Ok>;
@@ -238,6 +242,7 @@ const DEFAULTS: AppConfig = {
   executorHost: '0.0.0.0',
   executorPort: 8001,
   executorAddressPublic: '',
+  pullMode: false,
   executorToken: '',
   hasSavedToken: true,
   workDir: '/home/yongsheng/.config/autocodeflow/executor/workspace',
@@ -764,6 +769,16 @@ const mockBridge: DesktopBridge = {
     return { ok: true };
   },
 
+  async exportConfig() {
+    await delay(500);
+    return { ok: true, path: '/tmp/config-backup.json' };
+  },
+
+  async importConfig() {
+    await delay(500);
+    return { ok: false, canceled: true };
+  },
+
   async exportDiagnostics() {
     await delay(600);
     return { ok: true, path: '/home/yongsheng/Downloads/acf-diagnostics.json' };
@@ -982,6 +997,9 @@ function createElectronBridge(api: RawBridge): DesktopBridge {
     openWizard: () => call<Ok>('openWizard'),
     exportDiagnostics: () =>
       call<{ ok: boolean; path?: string; message?: string }>('exportDiagnostics'),
+    exportConfig: () => call<FileResult>('exportConfig'),
+    importConfig: () =>
+      call<FileResult & { reloadError?: string; restartDeferred?: boolean }>('importConfig'),
     checkForUpdate: () => call<UpdateCheck>('checkForUpdate'),
     downloadUpdate: () => call<Ok>('downloadUpdate'),
     installUpdate: () => call<Ok>('installUpdate'),

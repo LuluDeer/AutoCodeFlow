@@ -14,6 +14,7 @@ import {
   RefreshCw,
   ShieldAlert,
   TerminalSquare,
+  Upload,
   XCircle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -52,6 +53,7 @@ interface ConfigForm {
   executorHost: string;
   executorPort: number;
   executorAddressPublic: string;
+  pullMode: boolean;
   uvPath: string;
   uvPythonInstallDir: string;
   uvPythonInstallMirror: string;
@@ -72,6 +74,7 @@ const EMPTY_FORM: ConfigForm = {
   executorHost: '0.0.0.0',
   executorPort: 8001,
   executorAddressPublic: '',
+  pullMode: false,
   uvPath: '',
   uvPythonInstallDir: '',
   uvPythonInstallMirror: '',
@@ -153,6 +156,7 @@ function toForm(cfg: AppConfig): ConfigForm {
     executorHost: cfg.executorHost,
     executorPort: cfg.executorPort,
     executorAddressPublic: cfg.executorAddressPublic,
+    pullMode: cfg.pullMode === true,
     uvPath: cfg.uvPath,
     uvPythonInstallDir: cfg.uvPythonInstallDir,
     uvPythonInstallMirror: cfg.uvPythonInstallMirror,
@@ -240,6 +244,7 @@ export function ConfigScreen({ onOpenWizard }: { onOpenWizard: () => void }) {
   const [section, setSection] = React.useState<SectionId>('connection');
   const [origin, setOrigin] = React.useState<AppConfig | null>(null);
   const [loaded, setLoaded] = React.useState(false);
+  const [ioBusy, setIoBusy] = React.useState<'export' | 'import' | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [baseline, setBaseline] = React.useState<ConfigForm>(EMPTY_FORM);
   const [autoLaunch, setAutoLaunch] = React.useState(false);
@@ -289,6 +294,41 @@ export function ConfigScreen({ onOpenWizard }: { onOpenWizard: () => void }) {
     const item = SECTIONS.find((s) => s.id === id);
     return item ? item.keys.some((key) => changedKeys.includes(key)) : false;
   };
+
+  async function exportConfig() {
+    setIoBusy('export');
+    try {
+      const res = await bridge.exportConfig();
+      if (res.canceled) return;
+      if (!res.ok) {
+        toast.error(t('config.io.failed'), { description: res.error ?? res.message });
+        return;
+      }
+      toast.success(t('config.io.exported'), { description: res.path });
+    } finally {
+      setIoBusy(null);
+    }
+  }
+
+  async function importConfig() {
+    setIoBusy('import');
+    try {
+      const res = await bridge.importConfig();
+      if (res.canceled) return;
+      if (!res.ok) {
+        toast.error(t('config.io.importFailed'), { description: res.error ?? res.message });
+        return;
+      }
+      const cfg = await bridge.getConfig();
+      const next = toForm(cfg);
+      setOrigin(cfg);
+      reset(next);
+      setBaseline(next);
+      toast.success(t('config.io.imported'));
+    } finally {
+      setIoBusy(null);
+    }
+  }
 
   async function onSubmit(data: ConfigForm) {
     if (!origin) return;
@@ -597,6 +637,26 @@ export function ConfigScreen({ onOpenWizard }: { onOpenWizard: () => void }) {
                     {...register('executorAddressPublic')}
                   />
                 </Field>
+
+                <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5">
+                  <div>
+                    <div className="text-sm">{t('config.net.pullTitle')}</div>
+                    <div className="text-[11px] leading-relaxed text-muted-foreground">
+                      {t('config.net.pullDesc')}
+                    </div>
+                  </div>
+                  <Controller
+                    control={control}
+                    name="pullMode"
+                    render={({ field }) => (
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        aria-label={t('config.net.pullLabel')}
+                      />
+                    )}
+                  />
+                </div>
               </CardContent>
             </Card>
           ) : null}
@@ -860,6 +920,33 @@ export function ConfigScreen({ onOpenWizard }: { onOpenWizard: () => void }) {
                         />
                       )}
                     />
+                  </div>
+                  <Separator />
+                  <div className="flex flex-wrap items-center justify-between gap-4 py-2.5">
+                    <div>
+                      <div className="text-sm">{t('config.io.title')}</div>
+                      <div className="text-[11px] text-muted-foreground">{t('config.io.desc')}</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={ioBusy !== null}
+                        onClick={() => void exportConfig()}
+                      >
+                        <Download />
+                        {t('config.io.export')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={ioBusy !== null}
+                        onClick={() => void importConfig()}
+                      >
+                        <Upload />
+                        {t('config.io.import')}
+                      </Button>
+                    </div>
                   </div>
                   <Separator />
                   <div className="flex items-center justify-between gap-4 py-2.5">
