@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.14.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.13.0...v1.14.0) (2026-10-22)
+
+
+### Features
+
+* **devx:** 激活 demo、真实模型桌面 Agent 与截图多模态诊断 ([4c32264](https://github.com/LuluDeer/AutoCodeFlow/commit/4c322643a75ff375848e96c3717dfa79bfc63bfd))
+
+
+### Bug Fixes
+
+* **deps:** py-libs 三包 certifi 升到 2026.10.19（清 3 条 critical）+ uv.lock 漂移校正 ([a091617](https://github.com/LuluDeer/AutoCodeFlow/commit/a091617c293233e3be8e6d8421c81dc58503db88))
+* **deps:** py-libs 四包 certifi 升到 2026.10.19，并修掉 uv.lock 的 editable 版本漂移 ([bbf3ad0](https://github.com/LuluDeer/AutoCodeFlow/commit/bbf3ad0d82fd8db6bc53e0fdbc301bb4cb9cae41))
+* **deps:** 清偿可修复的 Dependabot 告警 ([f17307e](https://github.com/LuluDeer/AutoCodeFlow/commit/f17307eb7cc6fbcef57dc2a7743b4f789af719ea))
+* **executor:** 地址告警误报 + 部署下发失败（生产报告 2026-10-22 全量修复） ([8ec47e8](https://github.com/LuluDeer/AutoCodeFlow/commit/8ec47e89d2c039db464669973d5d801d79e07ccc))
+* **install,compose:** 执行器地址采集加固 + compose 对外地址必填 ([2da0573](https://github.com/LuluDeer/AutoCodeFlow/commit/2da05734156a4e76cead219fd720c602ea50c74d))
+
 ## [1.13.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.12.1...v1.13.0) (2026-10-21)
 
 

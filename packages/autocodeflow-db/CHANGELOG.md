@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.1](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-db-v0.3.0...autocodeflow-db-v0.3.1) (2026-10-22)
+
+
+### Miscellaneous Chores
+
+* **autocodeflow-db:** Synchronize autocodeflow-py-libs versions
+
 ## [0.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-db-v0.2.3...autocodeflow-db-v0.3.0) (2026-10-21)
 
 
