@@ -313,7 +313,10 @@ services:
       # configured; admin-api holds the same EXECUTOR_SECRET below.
       REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-python:8001
-      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:-executor-python:8001}
+      # P1-1（生产报告 2026-10-22 §3.1）：同 executor-node，**必填**——旧缺省值
+      # 让「没设变量」的每个副本都上报同一个字面地址，多副本时即「多份安装
+      # 共享一个地址」。单副本 dev 栈在 .env 里填服务名即可。
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:?set EXECUTOR_PYTHON_PUBLIC_ADDRESS (per-replica public address, e.g. 192.168.1.51:8001)}
       # N-15：同 executor-node——包 URL 为内网 admin-api，放行拉取
       EXECUTOR_ALLOW_PRIVATE_NETWORK: "true"
       ADMIN_API_URL: http://admin-api:3105
@@ -431,7 +434,13 @@ services:
       # configured; admin-api holds the same EXECUTOR_SECRET below.
       REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-node:8002
-      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002}
+      # P1-1（生产报告 2026-10-22 §3.1）：**必填，不再给缺省字面量**。
+      # 旧写法 ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002} 会让「没设变量」
+      # 的每个 compose 副本都上报**同一个** address（executor-node:8002）——
+      # 多副本部署时那正是「多份安装共享一个地址」的制造机（与 install.sh 里
+      # hostname -I 取到 198.18.0.1 同型）。compose 语法 ${VAR:?msg} 在未设置时
+      # 直接报错退出，比「静默上报一个必然碰撞的字面量」诚实得多。
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:?set EXECUTOR_NODE_PUBLIC_ADDRESS (per-replica public address, e.g. 192.168.1.50:8002)}
       # N-15 实跑发现：应用包 packageUrl 缺省拼的就是内网 admin-api 地址（见
       # admin-api API_BASE_URL 注释），执行器拉包会被自己的 ssrf-guard 以私网
       # 地址拒掉 -> compose 形态应用包任务全军覆没。同网络内拉 admin-api 是设

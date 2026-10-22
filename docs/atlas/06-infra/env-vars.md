@@ -32,7 +32,7 @@
 | `EXECUTION_CALLBACK_SECRET` | 空=回落 `EXECUTOR_SECRET` | N23 per-execution token 的 HMAC 密钥（两侧必须同源） |
 | `REQUIRE_TOKEN` | `true` | S9：执行器无 token 时拒绝 `/api/*`（503 fail-closed） |
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | SSRF 守卫（F-3/S7）：`true` 放行 RFC1918 出站/内网 gitRepo；同机部署必须 true |
-| `EXECUTOR_PYTHON_PUBLIC_ADDRESS` / `EXECUTOR_NODE_PUBLIC_ADDRESS` | 空 | 多机部署时执行器公网注册地址 |
+| `EXECUTOR_PYTHON_PUBLIC_ADDRESS` / `EXECUTOR_NODE_PUBLIC_ADDRESS` | **必填（compose）**；裸机可为空 | 执行器**对外注册地址**。docker-compose 用 `${VAR:?}` 做必填校验（P1-1，生产报告 2026-10-22 §3.1）：旧缺省值让「没设变量」的每个副本都上报同一个字面地址（`executor-node:8002`），多副本时即「多份安装共享一个地址」——与 `install.sh` 取到 Clash 伪 IP `198.18.0.1` 同型的碰撞源。单副本 dev 栈填 compose 内服务名即可 |
 | `ADMIN_API_URL_INTERNAL` / `ADMIN_API_URL_EXTERNAL` | `http://admin-api:3105` / 空 | 执行器回调目标 |
 
 ## 限流（admin-api）
