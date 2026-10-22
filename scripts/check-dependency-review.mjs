@@ -118,30 +118,19 @@ export const EXEMPTIONS = [
     probe: 'extract-zip',
   },
   {
-    ghsa: 'GHSA-ch52-4w7c-c8xp',
-    package: 'http-cache-semantics',
-    severity: 'high',
-    chain: 'executor-desktop devDep electron-builder@26 → @electron/get → http-cache-semantics@4.2.0',
-    reason:
-      'max-stale 处理可跨用户泄露缓存响应。**上游无修复版**（vulnerable range = <=4.2.0，最新即 4.2.0）。该包仅在**构建期**由 electron-builder 下载 Electron 二进制时使用，运行时产物不含此依赖；且其缓存目录是本机构建机私有，不存在跨用户共享缓存的场景',
-    reviewBy: '2026-12-30',
-    expiredAction:
-      '复查 @electron/get 是否换掉该依赖或上游发新版；若 electron-builder 已升级到不含该链的版本则移除本条',
-    probe: 'http-cache-semantics',
-  },
-  {
     ghsa: 'GHSA-hp3w-g68c-fv3c',
     package: 'sprintf-js',
     severity: 'moderate',
     chain:
-      'admin-api / admin-web / executor-desktop / executor-node / node-sdk 的 @istanbuljs/load-nyc-config → js-yaml@3.15.2 → argparse@1.x → sprintf-js@1.0.3',
+      'executor-desktop devDep electron-builder → @electron/get → global-agent → roarr → sprintf-js@1.1.3（其余包的 js-yaml→argparse 链已用 argparse@2.0.1 override 消除）',
     reason:
       '无界精度说明符可导致 DoS。**上游无修复版**（vulnerable range = <=1.1.3，且 1.1.3 本身仍在范围内）。' +
-      '实测溯源：argparse 2.x 起已不再依赖 sprintf-js，但 js-yaml@3 钉 argparse ^1.0.7；而 js-yaml@3 由 jest 覆盖率工具 @istanbuljs/load-nyc-config 锁定（^3.13.1），' +
-      '升级需 jest 换代。**仅测试期可达**：sprintf-js 只被 argparse 的 CLI 格式化路径调用，本项目从不以不受信输入调用它',
+      '2026-10-22：admin-api / executor-node / node-sdk 已用 `argparse@2.0.1` override 消除 js-yaml@3→argparse@1→sprintf-js 链；' +
+      'executor-desktop 仍经 electron-builder→@electron/get→global-agent→roarr 解析到 sprintf-js@1.1.3（roarr 2.x 钉死），' +
+      '属构建期工具链，仅 electron-builder 下载 Electron 时可达。',
     reviewBy: '2026-12-30',
     expiredAction:
-      '复查 jest 是否换掉 @istanbuljs/load-nyc-config 的 js-yaml@3 依赖；若 jest 升级后可解析到 js-yaml@4+ 则移除本条。不得 override js-yaml（会破坏 load-nyc-config 的 API）',
+      '复查 global-agent/roarr 是否发布不再依赖 sprintf-js 的版本；若可升级则移除本条。不得直接 override sprintf-js（无修复版）',
     probe: 'sprintf-js',
   },
 ];
