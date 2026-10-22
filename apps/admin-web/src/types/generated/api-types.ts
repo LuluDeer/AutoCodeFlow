@@ -9471,6 +9471,7 @@ export interface operations {
             query: {
                 address: string;
                 deviceFingerprint: string;
+                executorId: string;
             };
             header: {
                 authorization: string;
@@ -9505,6 +9506,7 @@ export interface operations {
                 /** @description 每页条数（1..2000，默认 500）。hasMore=true 表示还有更多数据。 */
                 limit?: string;
                 deviceFingerprint: string;
+                executorId: string;
             };
             header: {
                 authorization: string;

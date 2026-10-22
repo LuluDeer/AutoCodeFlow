@@ -3798,6 +3798,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "executorId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3873,6 +3881,14 @@
           },
           {
             "name": "deviceFingerprint",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "executorId",
             "required": true,
             "in": "query",
             "schema": {
