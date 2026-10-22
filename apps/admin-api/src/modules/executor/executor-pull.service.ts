@@ -65,7 +65,11 @@ export class ExecutorPullService {
         port: this.configService.get<number>("redis.port"),
         password: this.configService.get("redis.password") || undefined,
         db: this.configService.get<number>("redis.db", 0),
-        commandTimeout: 3000,
+        // P1-3（生产实证 2026-10-22）：3000ms 与 25s 长轮询 + 事件循环阻塞的组合
+        // 不可靠——实测单日 84 次 `Command timed out`，同一秒内多台不同执行器
+        // 同时 500（典型的事件循环/Redis 阻塞特征，不是单台执行器的问题）。
+        // 抬到 8000ms：仍能挡住真正挂死的连接，但不再把"这一跳慢了"变成 500。
+        commandTimeout: 8000,
         retryStrategy: (times) => Math.min(times * 100, 3000),
         // 惰性连接：pull 端点在被调用前无需 Redis 连接
         lazyConnect: false,
@@ -81,6 +85,46 @@ export class ExecutorPullService {
       );
       return null;
     }
+  }
+
+  /**
+   * Redis 的**瞬时**故障（命令超时 / 连接被重置）判定。
+   *
+   * P1-3：这类错误对 pull 端点而言等价于「本轮没取到东西」——把它变成 500 会让
+   * 执行器这一轮彻底拿不到任务/命令，还会在 Nginx 访问日志里堆出成片的 500
+   * （用户侧看到的是"中台在报错"，实际只是 Redis 那一跳慢了一下）。真正的
+   * 逻辑错误仍然上抛，绝不被这段降级吞掉。
+   */
+  private isTransientRedisError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/command timed out/i.test(message)) return true;
+    if (
+      /connection is closed|stream isn't writeable|ECONNRESET|EPIPE/i.test(
+        message,
+      )
+    ) {
+      return true;
+    }
+    const code = (err as { code?: string } | null)?.code;
+    return (
+      code === "ETIMEDOUT" ||
+      code === "ECONNRESET" ||
+      code === "ECONNREFUSED" ||
+      code === "EPIPE" ||
+      code === "NR_CLOSED"
+    );
+  }
+
+  /** 瞬时故障的 warn 节流（10s）：心跳/长轮询是高频面，不节流会刷屏。 */
+  private lastTransientWarnAt = 0;
+  private warnTransient(throttleKey: string, err: unknown): void {
+    const now = Date.now();
+    if (now - this.lastTransientWarnAt < 10_000) return;
+    this.lastTransientWarnAt = now;
+    this.logger.warn(
+      `Pull ${throttleKey}: Redis transient failure treated as "nothing this round" — ` +
+        `${err instanceof Error ? err.message : String(err)} (the executor simply retries on its next poll)`,
+    );
   }
 
   private queueKey(executorId: string): string {
@@ -178,7 +222,74 @@ export class ExecutorPullService {
       issuedAt: Date.now(),
     });
     await client.lpush(this.commandQueueKey(executorId), body);
+    // P0-4：把「这条命令属于哪条部署行」记进旁路元数据。
+    //
+    // 为什么需要：执行器上报执行结果时只带 commandId（它不知道、也不该知道
+    // app_deployments 的行 id）。没有这层映射，中台就无法在命令失败时把部署行
+    // 收成 FAILED，只能等 30 分钟的命令未决豁免期（现场即「点部署没反应」的
+    // 直接成因）。best-effort：写失败只 warn——丢的只是"秒级收敛"，不是命令。
+    await this.rememberCommandMeta(client, commandId, type, payload);
     return commandId;
+  }
+
+  /** 命令元数据的 Redis 键（commandId → {type, deploymentId}）。 */
+  private commandMetaKey(commandId: string): string {
+    return `acf:cmdmeta:${commandId}`;
+  }
+
+  /**
+   * 记录命令元数据（best-effort，TTL 与命令载荷一致：命令过期后元数据也
+   * 没有意义，留着只会让排障读到幽灵数据）。
+   */
+  private async rememberCommandMeta(
+    client: Redis,
+    commandId: string,
+    type: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const deploymentId =
+        typeof payload.deploymentId === "string" ? payload.deploymentId : null;
+      const appId = typeof payload.appId === "string" ? payload.appId : null;
+      await client.set(
+        this.commandMetaKey(commandId),
+        JSON.stringify({ type, deploymentId, appId }),
+        "EX",
+        Math.max(1, Math.ceil(this.commandTtlMs / 1000)),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to record command meta for ${commandId} (deploy failures will fall back to the stuck sweep): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * 取回命令元数据（P0-4；不存在/Redis 不可用返回 null——调用方按"无关联
+   * 部署行"处理，语义与引入本机制前一致）。
+   */
+  async getCommandMeta(commandId: string): Promise<{
+    type: string;
+    deploymentId: string | null;
+    appId: string | null;
+  } | null> {
+    const client = this.ensureClient();
+    if (!client) return null;
+    try {
+      const raw = await client.get(this.commandMetaKey(commandId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed.type !== "string") return null;
+      return {
+        type: parsed.type,
+        deploymentId:
+          typeof parsed.deploymentId === "string" ? parsed.deploymentId : null,
+        appId: typeof parsed.appId === "string" ? parsed.appId : null,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /** 取回命令执行结果（排障读面；不存在返回 null）。 */
@@ -273,14 +384,29 @@ export class ExecutorPullService {
     // 至少尝试取件一次，再判窗口耗尽（waitMs=0 = 立即取一次即返回）。
     while (true) {
       while (commands.length < ExecutorPullService.MAX_COMMANDS_PER_PULL) {
-        const raw = await client.rpop(cmdKey);
+        // P1-3：Redis 瞬时故障（命令超时/连接重置）在本轮等价于"没有命令"，
+        // 不再让整个 pull 请求 500（那样这一轮连任务也拿不到）。
+        let raw: string | null;
+        try {
+          raw = await client.rpop(cmdKey);
+        } catch (err) {
+          if (!this.isTransientRedisError(err)) throw err;
+          this.warnTransient(`executor=${executorId} command pop`, err);
+          break;
+        }
         if (!raw) break;
         const parsed = this.parseCommand(raw, executorId);
         if (parsed) commands.push(parsed);
       }
 
       if (!task && opts.wantTask) {
-        task = await this.takeTask(client, taskKey, executorId);
+        try {
+          task = await this.takeTask(client, taskKey, executorId);
+        } catch (err) {
+          if (!this.isTransientRedisError(err)) throw err;
+          this.warnTransient(`executor=${executorId} task pop`, err);
+          task = null;
+        }
       }
 
       if (task || commands.length > 0) break;
