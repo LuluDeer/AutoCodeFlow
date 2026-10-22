@@ -5220,6 +5220,11 @@ export interface components {
              * @example ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
              */
             deviceFingerprint?: string;
+            /**
+             * @description 执行器自报的行 id（executors.id）。仅在地址歧义（同址多行且无指纹）时作为候选提示，须该行的 per-executor 令牌校验通过才采纳
+             * @example 3f2a1c9d-8b7e-6f50-a132-4b5c6d7e8f90
+             */
+            executorId?: string;
         };
         ExecutorPullResponseDto: {
             /** @description 派发载荷（由 pull 服务构建的 ExecuteRequest 形状），无排队内容时为 null */

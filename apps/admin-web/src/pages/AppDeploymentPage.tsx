@@ -28,6 +28,8 @@ import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import DeployModeFields from '../components/DeployModeFields';
 import { executorsApi, ExecutorPickerItem } from '../api/executors';
 import { useExecutorNames } from '../hooks/useExecutorNames';
+// §8.3 工单 10：行 id 是阶段 3 的稳定身份（同址多行时「名字+地址」不再唯一）。
+import { shortExecutorRowId } from '../utils/executorRowId';
 import { isStopNotDelivered } from '../utils/backend-contracts';
 import { isFormValidationError, showApiError } from '../utils/error';
 // D-P1-2（设计审计 2026-09-22）：失败详情复制改走统一剪贴板封装（非安全上下文
@@ -460,12 +462,31 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         // 「我给那台机器起的名字」。解析口径见 useExecutorNames（优先
         // executorId，回落 address，匹配不到则如实只显示地址）。
         const displayName = nameOf(r);
+        // §8.3 工单 10：名字旁标注**行 id 前 8 位**，tooltip 给地址与完整 id。
+        // 同址多行（pull 各自成行 / DHCP 复用同一 IP）时名字与地址都可能相同，
+        // 只有行 id 能把两台区分开——它也正是告警/审计里出现的那个标识。
+        const rowId = shortExecutorRowId(r.executorId);
+        const tooltip = [
+          r.executorAddress || null,
+          r.executorId ? `${t('execShared.rowId')}: ${r.executorId}` : null,
+        ]
+          .filter(Boolean)
+          .join('\n');
         return (
           // UI 打磨：弹性列内 minWidth:0 + display:block，长地址/状态信息单行省略
           <div style={{ minWidth: 0 }}>
-            <Text strong style={{ fontSize: 13, display: 'block' }} ellipsis={{ tooltip: r.executorAddress || r.executorId }}>
-              {displayName ?? (r.executorAddress || r.executorId)}
-            </Text>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+              <Text strong style={{ fontSize: 13, minWidth: 0 }} ellipsis={{ tooltip }}>
+                {displayName ?? (r.executorAddress || r.executorId)}
+              </Text>
+              {rowId && (
+                <Tooltip title={t('execShared.rowIdTooltip')}>
+                  <Text type="secondary" style={{ fontSize: 11, flex: '0 0 auto' }}>
+                    #{rowId}
+                  </Text>
+                </Tooltip>
+              )}
+            </div>
             {/* 名字与地址都给：名字用于识别，地址用于排查（且是执行器的唯一键）。
                 只显示名字会让人无法在别处（日志/防火墙）对上这台机器。 */}
             {displayName && (r.executorAddress || r.executorId) && (

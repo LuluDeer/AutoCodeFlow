@@ -59,6 +59,14 @@ function heartbeatLabel(
   return { color: token.colorError, text: formatDateTime(lastHeartbeat) };
 }
 
+/**
+ * ARCH-32：派发模式判定——缺省视为 push（与后端 selectLeastLoaded /
+ * resolveExecutorTransport 的「未知 → push」同口径，旧快照兼容）。
+ */
+function dispatchModeOf(ex: Executor): 'push' | 'pull' {
+  return ex.dispatchMode === 'pull' ? 'pull' : 'push';
+}
+
 export default function ExecutorListPage() {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：语义色/填充走 antd token，暗色主题自适应。
@@ -108,6 +116,10 @@ export default function ExecutorListPage() {
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [groupFilter, setGroupFilter] = useState<string | undefined>();
+  // P1-4：按派发模式筛选。此前 dispatchMode 只有一个紫色 Tag、**无筛选**——
+  // 用户「一屏全是 pull 设备」时无法一眼确认机队构成，也就无法判断
+  // 「地址冲突告警」与自己的拓扑是否矛盾。
+  const [modeFilter, setModeFilter] = useState<'push' | 'pull' | undefined>();
   const [installCmdModal, setInstallCmdModal] = useState(false);
   // UI-07 ①：卡片/表格双视图（localStorage 记忆，读失败回退表格）
   const [viewMode, setViewMode] = useState<ExecutorViewMode>(() => readViewMode(typeof localStorage !== 'undefined' ? localStorage : undefined));
@@ -165,16 +177,21 @@ export default function ExecutorListPage() {
   }), [executors]);
 
   const filtered = useMemo(() => executors.filter((ex) => {
+    const needle = searchText.toLowerCase();
     const matchSearch = !searchText ||
-      ex.appName.toLowerCase().includes(searchText.toLowerCase()) ||
-      ex.address.toLowerCase().includes(searchText.toLowerCase()) ||
-      (ex.groupName?.toLowerCase().includes(searchText.toLowerCase()) ?? false);
+      ex.appName.toLowerCase().includes(needle) ||
+      ex.address.toLowerCase().includes(needle) ||
+      (ex.groupName?.toLowerCase().includes(needle) ?? false) ||
+      // P1-4：指纹短 ID 可搜——运维收到的外部告警里给的就是指纹短 ID，
+      // 能在列表里直接粘上去定位是「告警 → 行」唯一的闭环入口。
+      (ex.deviceFingerprint?.toLowerCase().includes(needle) ?? false);
     return matchSearch &&
       (!statusFilter || ex.status === statusFilter) &&
-      (!groupFilter || ex.groupName === groupFilter);
-  }), [executors, searchText, statusFilter, groupFilter]);
+      (!groupFilter || ex.groupName === groupFilter) &&
+      (!modeFilter || dispatchModeOf(ex) === modeFilter);
+  }), [executors, searchText, statusFilter, groupFilter, modeFilter]);
 
-  const hasFilters = !!(searchText || statusFilter || groupFilter);
+  const hasFilters = !!(searchText || statusFilter || groupFilter || modeFilter);
   const onlineCount = executors.filter(e => e.status === 'online').length;
 
   // UI-07 ③：选中执行器实体（批量操作条需要 status/appName/address）
@@ -207,6 +224,18 @@ export default function ExecutorListPage() {
           </div>
           <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: r.address }}>
             {r.address}
+          </Typography.Text>
+          {/* P1-4（ADR-017 阶段 3 复查补口）：行身份显性化。
+              地址在 pull 模式下只是标签（会漂移、会撞），指纹才是稳定身份——
+              此前前端**零渲染**它，导致「告警里的指纹短 ID」在界面上无对应物。 */}
+          <Typography.Text
+            type="secondary"
+            style={{ fontSize: 11, display: 'block', opacity: 0.75 }}
+            ellipsis={{ tooltip: `${t('execList.fingerprintLabel')}: ${r.deviceFingerprint ?? t('execList.fingerprintMissing')}` }}
+          >
+            {r.deviceFingerprint
+              ? `${t('execList.fingerprintLabel')} ${r.deviceFingerprint.slice(0, 12)}`
+              : t('execList.fingerprintMissing')}
           </Typography.Text>
         </div>
       ),
@@ -443,6 +472,17 @@ export default function ExecutorListPage() {
             // 空列表，用户会以为"没有执行器在忙"而不是"这个筛选没有意义"。
           ]}
         />
+        <Select
+          placeholder={t('execList.dispatchAll')}
+          allowClear style={{ width: 170, maxWidth: '100%' }}
+          value={modeFilter}
+          onChange={(v) => setModeFilter(v)}
+          suffixIcon={<FilterOutlined />}
+          options={[
+            { value: 'push', label: t('execList.dispatchPush') },
+            { value: 'pull', label: t('execList.dispatchPull') },
+          ]}
+        />
         {/* P3-11（executor lifecycle audit）：分组拉取失败时筛选器不再静默
             消失——原位给出可重试的错误入口，避免用户误以为执行器都没有分组。 */}
         {groupsError ? (
@@ -470,7 +510,7 @@ export default function ExecutorListPage() {
           />
         )}
         {hasFilters && (
-          <Button size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); setGroupFilter(undefined); }}>{t('execList.clearFilters')}</Button>
+          <Button size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); setGroupFilter(undefined); setModeFilter(undefined); }}>{t('execList.clearFilters')}</Button>
         )}
         {hasFilters && (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>

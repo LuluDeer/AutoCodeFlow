@@ -436,6 +436,16 @@ export default {
   'execList.deadLetter': 'Dead-letters {{count}}',
   'execList.pullMode': 'Pull mode',
   'execList.pullModeTooltip': 'NAT-bound executor: pulls tasks from the center via long-polling, no inbound reachability required',
+  'execShared.rowId': 'Row id',
+  'execShared.rowIdTooltip':
+    'Executor row id (first 8 chars). With two rows on one address it is the only thing that tells the two machines apart; hover for the full value.',
+  'execList.dispatchAll': 'All dispatch modes',
+  'execList.dispatchPush': 'Push (center dials in)',
+  'execList.dispatchPull': 'Pull (executor dials out)',
+  'execList.fingerprintLabel': 'Fingerprint',
+  'execList.fingerprintTooltip':
+    'Device fingerprint (first 12 hex chars of sha256). It is the executor’s stable identity: IP/network changes do not alter it; only recreating WORK_DIR or deleting .device-identity salts does — that is when "one machine, two rows" appears.',
+  'execList.fingerprintMissing': 'No fingerprint reported (legacy executor)',
   'execList.versionDrift': 'Version drift',
   'execList.versionDriftTooltip': 'Executor version is below the admin-required minimum (EXECUTOR_MIN_VERSION); please upgrade the executor',
   'execList.hb.justNow': 'Just now',

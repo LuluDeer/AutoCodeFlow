@@ -412,4 +412,21 @@ describe('ExecutionsPage 筛选空态区分（UX 边界）', () => {
     });
     await screen.findByText('暂无执行记录');
   });
+
+  // §8.3 工单 10（ADR-017 决策 §7）：执行器列在名字旁标注**行 id 前 8 位**。
+  // 同址多行（pull 各自成行 / DHCP 复用同一 IP）时名字与地址会一模一样，
+  // 只有行 id 能区分两台——它也正是运维在告警/审计里看到的那个标识。
+  it('执行器列显示行 id 前 8 位（同址两行可区分）', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(
+      pageFixture([
+        exec({ id: 'x-1', executorId: 'aaaa1111-2222-3333-4444-555566667777' }),
+        exec({ id: 'x-2', executorId: 'bbbb8888-9999-0000-1111-222233334444' }),
+      ]),
+    );
+    renderPage();
+
+    // 两行同址（fixture 的 10.0.0.1:3002），靠短行 id 区分。
+    expect(await screen.findAllByText(/#aaaa1111/)).toBeTruthy();
+    expect(await screen.findAllByText(/#bbbb8888/)).toBeTruthy();
+  });
 });

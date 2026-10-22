@@ -159,6 +159,13 @@ export interface ExecutorCardProps {
       }
     >
       <Text type="secondary" style={{ fontSize: 12 }}>{r.address}</Text>
+      {/* P1-4（ADR-017 阶段 3 复查补口）：与表格视图同源——地址在 pull 模式下只是
+          标签（会漂移/会撞），指纹才是稳定身份，也是「冲突告警」唯一可关联的行标识。 */}
+      <Text type="secondary" style={{ fontSize: 11, opacity: 0.75 }} ellipsis>
+        {r.deviceFingerprint
+          ? `${t('execList.fingerprintLabel')} ${r.deviceFingerprint.slice(0, 12)}`
+          : t('execList.fingerprintMissing')}
+      </Text>
 
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <ResourceRow label={t('execCard.res.cpu')} value={r.cpuUsage} />

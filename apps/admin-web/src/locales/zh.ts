@@ -443,6 +443,20 @@ export default {
   'execList.deadLetter': '死信 {{count}}',
   'execList.pullMode': 'Pull 回连',
   'execList.pullModeTooltip': 'NAT 内执行器：经长轮询从中心端取任务，无需入站可达',
+  // ADR-017 阶段 3 复查补口（P1-4）：把「行身份」显性化到列表——此前前端**零渲染**
+  // deviceFingerprint，运维无法把「地址冲突告警里的指纹短 ID」关联到界面上任何一行。
+  // 工单 10：行 id 是 ADR-017 阶段 3 的稳定身份——同址多行（pull 各自成行）时
+  // 「名字 + 地址」不再唯一，只有行 id 能区分两台。
+  'execShared.rowId': '行 id',
+  'execShared.rowIdTooltip':
+    '执行器行 id（前 8 位）。同址多行时它是唯一能区分「同一个地址下的两台机器」的标识；悬停可见完整值。',
+  'execList.dispatchAll': '全部派发模式',
+  'execList.dispatchPush': 'Push（中台拨入）',
+  'execList.dispatchPull': 'Pull（执行器回连）',
+  'execList.fingerprintLabel': '指纹',
+  'execList.fingerprintTooltip':
+    '设备指纹（sha256 前 12 位）。它是执行器的稳定身份：换网/换 IP 不改变它，只有重建 WORK_DIR 或删除 .device-identity 盐才会变——那时会出现「同一台机器两行」，请据此排查。',
+  'execList.fingerprintMissing': '未上报指纹（旧版执行器）',
   'execList.versionDrift': '版本过低',
   'execList.versionDriftTooltip': '执行器版本低于中心端要求的最低版本（EXECUTOR_MIN_VERSION），请升级执行器',
   'execList.hb.justNow': '刚刚',
