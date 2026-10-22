@@ -581,4 +581,4 @@
 #     的安装包仍内置 0.8.17；下次打 tag 时会带上 0.13.4。
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），bundle 4200kB。
 source-digest: 27442704032d5e5943bd1383174a78b3c056482e0f8412fc04b46cc0ca36da99
-873fda10dc8e6fae8d93d90a725d404201afd1361ac5211009009773d3018c7d  index.js
+a7253f25d30375fb48682d5ef2446a1ffa1ed1ce772e815fbce1a4bbd3d5866a  index.js
