@@ -43,7 +43,7 @@ function tempDest(): string {
  *  stream destroy), so the rejection can surface before the unlink lands —
  *  wait for the file to actually disappear instead of racing the event loop. */
 async function expectFileGone(dest: string): Promise<void> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 5000;
   while (fs.existsSync(dest) && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 10));
   }

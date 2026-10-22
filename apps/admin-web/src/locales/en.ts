@@ -436,6 +436,16 @@ export default {
   'execList.deadLetter': 'Dead-letters {{count}}',
   'execList.pullMode': 'Pull mode',
   'execList.pullModeTooltip': 'NAT-bound executor: pulls tasks from the center via long-polling, no inbound reachability required',
+  'execShared.rowId': 'Row id',
+  'execShared.rowIdTooltip':
+    'Executor row id (first 8 chars). With two rows on one address it is the only thing that tells the two machines apart; hover for the full value.',
+  'execList.dispatchAll': 'All dispatch modes',
+  'execList.dispatchPush': 'Push (center dials in)',
+  'execList.dispatchPull': 'Pull (executor dials out)',
+  'execList.fingerprintLabel': 'Fingerprint',
+  'execList.fingerprintTooltip':
+    'Device fingerprint (first 12 hex chars of sha256). It is the executor’s stable identity: IP/network changes do not alter it; only recreating WORK_DIR or deleting .device-identity salts does — that is when "one machine, two rows" appears.',
+  'execList.fingerprintMissing': 'No fingerprint reported (legacy executor)',
   'execList.versionDrift': 'Version drift',
   'execList.versionDriftTooltip': 'Executor version is below the admin-required minimum (EXECUTOR_MIN_VERSION); please upgrade the executor',
   'execList.hb.justNow': 'Just now',
@@ -2044,7 +2054,7 @@ export default {
   'appDeploy.rollout.state.rolledBack': 'Rolled back',
 
   'templates.title': 'Task Templates',
-  'templates.description': 'Common task shapes are solidified into templates; one click copies the config to generate a runnable task draft.',
+  'templates.description': 'Common task shapes are solidified into templates; create a runnable task in one click, with the script bundled in the template.',
   'templates.error.title': 'Failed to load templates',
   'templates.empty': 'No templates yet',
   'templates.official': 'Official',
@@ -2073,6 +2083,20 @@ export default {
   'templates.config.fixedRate': '(every {{rate}}s)',
   'templates.config.timeout': 'Timeout {{seconds}}s',
   'templates.config.retry': 'Retry {{count}}',
+  // "Runnable out of the box" templates ship an inline script (glueSource) and no
+  // entrypoint: the summary shows `runtime · glue` instead of a bogus `runtime · -`.
+  'templates.config.glue': 'glue',
+  // "Use template" instantiates directly (POST /task-templates/:id/instantiate); the modal only collects the task name.
+  'templates.useDialog.title': 'Create task from template',
+  'templates.useDialog.template': 'Template: {{name}}',
+  'templates.useDialog.name': 'Task name',
+  'templates.useDialog.namePlaceholder': 'e.g. prod-backup-20260101-0200',
+  'templates.useDialog.nameRequired': 'Task name is required',
+  'templates.useDialog.hint': 'The task is created immediately. The template ships with a runnable script; you can adjust parameters, schedule and script from the task details afterwards.',
+  'templates.useDialog.ok': 'Create task',
+  'templates.useDialog.cancel': 'Cancel',
+  'templates.useDialog.created': 'Task "{{name}}" created',
+  'templates.useDialog.fail': 'Failed to create task',
 
   'execDetail.title': 'Execution Details',
   'execDetail.breadcrumb.executions': 'Executions',

@@ -151,6 +151,37 @@ async function main(): Promise<void> {
 
     await s.close();
   }
+  // ── 1c. admin 全局信封 {code,message,data}（真机联调缺陷）──
+  // 真 admin-api 的 ResponseInterceptor 把所有 JSON 包进 data；旧客户端直接读
+  // parsed.items/content，在真机上恒为空（SOP 指派拉不到、LLM relay content 空）。
+  console.log('-- 1c. admin envelope unwrap --');
+  {
+    const s = await makeServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const path = req.path;
+      if (path.includes('/poll')) {
+        res.end(JSON.stringify({ code: 200, message: 'success', data: { items: [{ kind: 'assignment', assignmentId: 'a-1' }], sopPolicy: { permissionPolicy: 'standard' } } }));
+      } else if (path.includes('/llm')) {
+        res.end(JSON.stringify({ code: 200, message: 'success', data: { content: '{"files":[]}', usage: { tokensIn: 3, tokensOut: 4 }, model: 'm' } }));
+      } else if (path.includes('/complete')) {
+        res.end(JSON.stringify({ code: 200, message: 'success', data: { accepted: true } }));
+      } else {
+        res.end(JSON.stringify({ code: 200, message: 'success', data: { mediaPath: '/api/sop/media/m-1' } }));
+      }
+    });
+    const client = new CollabClient({ baseUrl: s.url, token: 't' });
+
+    const poll = await client.poll('a:1');
+    check('信封 poll：items 从 data 解出（指派能真正下发）', poll.ok === true && poll.items.length === 1);
+    const relay = await client.llmRelay('a:1', { messages: [{ role: 'user', content: 'x' }] });
+    check('信封 relay：content/usage 从 data 解出', relay.ok === true && relay.content === '{"files":[]}' && relay.usage?.tokensOut === 4);
+    const done = await client.reportComplete('a:1', 'asg-1', { status: 'completed' });
+    check('信封 complete：accepted 从 data 解出', done.ok === true && done.accepted === true);
+    const media = await client.uploadMedia('a:1', 'asg-1', { name: 's.png', mime: 'image/png', buf: Buffer.from('PNG') });
+    check('信封 media：mediaPath 从 data 解出', media.ok === true && media.mediaPath === '/api/sop/media/m-1');
+    await s.close();
+  }
+
   console.log('-- 2. LLM relay --');
   {
     const s = await makeServer((_req, res) => {

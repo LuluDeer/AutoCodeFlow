@@ -238,6 +238,7 @@ describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.CORS_ALLOWED_ORIGINS;
     delete process.env.CORS_ORIGINS;
+    delete process.env.ALLOW_LOOPBACK_CORS;
   });
 
   afterEach(() => {
@@ -297,6 +298,19 @@ describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
     };
     expect(loadConfig().cors.allowedOrigins).toEqual([
       "https://admin.example.com",
+    ]);
+  });
+
+  it("allows localhost origins only with explicit ALLOW_LOOPBACK_CORS=true", () => {
+    process.env = {
+      ...ORIGINAL_ENV,
+      ...STRONG_PRODUCTION_ENV,
+      CORS_ALLOWED_ORIGINS: "http://localhost:8088,http://127.0.0.1:8088",
+      ALLOW_LOOPBACK_CORS: "true",
+    };
+    expect(loadConfig().cors.allowedOrigins).toEqual([
+      "http://localhost:8088",
+      "http://127.0.0.1:8088",
     ]);
   });
 

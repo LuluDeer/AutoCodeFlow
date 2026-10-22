@@ -1,0 +1,26 @@
+# Opt-in hardening overlay: enable bubblewrap task sandboxing for Python tasks.
+#
+# Why this is not the default:
+#   - bwrap needs unprivileged user namespaces. Docker's default seccomp profile
+#     and many host kernels block them; when they do, every Python task fails
+#     closed with `sandbox_unavailable`.
+#   - The base compose therefore runs tasks directly inside the already
+#     non-root / cap_drop / no-new-privileges / rlimit-constrained container.
+#
+# Use this overlay only after verifying the host prerequisite:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.secure.yml \
+#     exec executor-python bwrap --ro-bind / / --dev /dev --proc /proc \
+#     --unshare-all --share-net echo bwrap-ok
+#
+# If that prints `bwrap-ok`, start the stack with the same two -f flags.
+# If it fails, do not enable this overlay; see docs/deployment.md SEC-07.
+services:
+  executor-python:
+    environment:
+      TASK_SANDBOX: 'bwrap'
+    # Docker's default seccomp profile blocks the clone/unshare flags bwrap
+    # needs. Relaxing it is required for the sandbox to work; keep the other
+    # hardening (cap_drop, no-new-privileges, non-root) from the base file.
+    security_opt:
+      - seccomp:unconfined

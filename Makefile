@@ -1,4 +1,5 @@
 .PHONY: help dev install infra-up infra-down build start stop restart clean test lint typecheck db-migrate db-seed logs status \
+        demo demo-down demo-reset demo-desktop demo-desktop-agent demo-desktop-diagnose demo-headless-agent demo-ops-agent \
         deploy deploy-source deploy-dry-run doctor selftest-deploy
 
 # ── AutoFlow 开发命令入口 ──────────────────────────────────────
@@ -103,6 +104,30 @@ db-migrate: ## 运行数据库迁移
 
 db-migrate-revert: ## 回滚最后一次迁移
 	cd apps/admin-api && npm run migration:revert
+
+demo: ## 一键本地演示（隔离端口 + 自动 .env.demo + seed + 验证首跑）
+	./scripts/demo.sh
+
+demo-down: ## 停止演示栈（保留数据卷）
+	./scripts/demo.sh --down
+
+demo-reset: ## 停止演示栈并删除数据卷 + .env.demo
+	./scripts/demo.sh --reset
+
+demo-desktop: ## Linux X11 桌面 Agent GUI 驱动演示（Xvfb，无需 Docker）
+	./scripts/demo-desktop-gui.sh
+
+demo-desktop-agent: ## 桌面 Agent 端到端 mock-plan 演示（SOP → GUI → 试跑 → 验收）
+	./scripts/demo-desktop-agent.sh
+
+demo-desktop-diagnose: ## 截图诊断演示：错误输入 → 真实模型看截图 → 修正（需 ACF_LLM_*）
+	./scripts/demo-desktop-agent-diagnose.sh
+
+demo-headless-agent: ## Headless 执行器 Agent：真实 SOP 指派 → 执行 → 验收（需 AI provider）
+	node scripts/demo-headless-agent.mjs
+
+demo-ops-agent: ## 中台 ops Agent：真实模型调只读工具分析任务（需 AI provider）
+	node scripts/demo-ops-agent.mjs
 
 demo-seed: ## 造一套演示数据（demo- 前缀任务；需 admin-api 已启动）
 	node scripts/demo-seed.mjs

@@ -50,4 +50,19 @@ export class ExecutorPullDto {
       "稳定设备指纹 sha256(deviceId + ':' + installSalt)，64 位小写十六进制（协议 v3+）。pull 同址多行时用于唯一定位本行",
   })
   deviceFingerprint?: string | null;
+
+  /**
+   * 工单 11（ADR-017 决策 §3 补全）：执行器自报的**行 id**（注册响应下发、
+   * 执行器持久化后回传）。
+   *
+   * 只在「同址多行 + 无指纹」的**歧义态**下作为**候选行提示**使用，且必须
+   * 该行的 per-executor 令牌校验通过才采纳——共享令牌一律不采纳（否则任何
+   * 持共享令牌的机器都能声明别人的行、拉走别人的队列）。
+   */
+  @ApiPropertyOptional({
+    example: "3f2a1c9d-8b7e-6f50-a132-4b5c6d7e8f90",
+    description:
+      "执行器自报的行 id（executors.id）。仅在地址歧义（同址多行且无指纹）时作为候选提示，须该行的 per-executor 令牌校验通过才采纳",
+  })
+  executorId?: string | null;
 }

@@ -2,6 +2,8 @@
 .env
 .env.local
 .env.*.local
+# scripts/demo.sh 生成的本地演示配置（含随机口令，禁止入库）
+.env.demo
 !.env.example
 
 # Node.js - 依赖和构建产物

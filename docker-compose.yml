@@ -313,7 +313,10 @@ services:
       # configured; admin-api holds the same EXECUTOR_SECRET below.
       REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-python:8001
-      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:-executor-python:8001}
+      # P1-1（生产报告 2026-10-22 §3.1）：同 executor-node，**必填**——旧缺省值
+      # 让「没设变量」的每个副本都上报同一个字面地址，多副本时即「多份安装
+      # 共享一个地址」。单副本 dev 栈在 .env 里填服务名即可。
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:?set EXECUTOR_PYTHON_PUBLIC_ADDRESS (per-replica public address, e.g. 192.168.1.51:8001)}
       # N-15：同 executor-node——包 URL 为内网 admin-api，放行拉取
       EXECUTOR_ALLOW_PRIVATE_NETWORK: "true"
       ADMIN_API_URL: http://admin-api:3105
@@ -323,14 +326,15 @@ services:
       EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # DEEP-AUDIT D2-P1-1（2026-09-22）：任务沙箱显式启用 bwrap——bubblewrap
-      # 用户命名空间 + 只读根文件系统 + PrivateTmp 隔离任务进程（最强隔离层）。
-      # 此前 config.py 注释声称「生产容器由 compose 显式开启」而本文件实际未设置，
-      # 最强隔离层在生产路径默认关闭。前置：宿主/内核须允许容器内 unprivileged
-      # user namespaces；bwrap 二进制缺失或 userns 被禁时执行器 fail-closed
-      # （failureReason=sandbox_unavailable），绝不静默降级为无沙箱运行。
-      # 前置验证步骤见 docs/deployment.md「容器安全（SEC-07）」段。
-      TASK_SANDBOX: 'bwrap'
+      # DEEP-AUDIT D2-P1-1（2026-09-22，2026-10 修正）：任务沙箱默认**关闭**。
+      # 历史实现硬编码 TASK_SANDBOX=bwrap，但 executor-python 镜像不含
+      # bubblewrap，且 compose 的 cap_drop/no-new-privileges 与多数宿主的
+      # seccomp 策略不允许非特权 user namespaces——结果是开箱即用的默认部署里
+      # **每个 Python 任务都 fail-closed**（sandbox_unavailable）。
+      # 现在默认直跑（仍在 non-root + cap_drop + rlimit 的容器内），需要最强隔离
+      # 时显式叠加 docker-compose.secure.yml（TASK_SANDBOX=bwrap），并先按
+      # docs/deployment.md「容器安全（SEC-07）」验证 userns/bwrap 前置。
+      TASK_SANDBOX: ${TASK_SANDBOX:-}
       # DEEP-AUDIT B·2.2：PYPI_REGISTRY_URL 是 **--index-url 语义（替换默认
       # 索引）**，而非附加；registry-pypi 是纯文件仓、**无上游代理**——默认
       # 值下任何未手动上传到私有源的包（含 PyPI 官方包）安装都会失败。若需
@@ -430,7 +434,13 @@ services:
       # configured; admin-api holds the same EXECUTOR_SECRET below.
       REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-node:8002
-      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002}
+      # P1-1（生产报告 2026-10-22 §3.1）：**必填，不再给缺省字面量**。
+      # 旧写法 ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002} 会让「没设变量」
+      # 的每个 compose 副本都上报**同一个** address（executor-node:8002）——
+      # 多副本部署时那正是「多份安装共享一个地址」的制造机（与 install.sh 里
+      # hostname -I 取到 198.18.0.1 同型）。compose 语法 ${VAR:?msg} 在未设置时
+      # 直接报错退出，比「静默上报一个必然碰撞的字面量」诚实得多。
+      EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:?set EXECUTOR_NODE_PUBLIC_ADDRESS (per-replica public address, e.g. 192.168.1.50:8002)}
       # N-15 实跑发现：应用包 packageUrl 缺省拼的就是内网 admin-api 地址（见
       # admin-api API_BASE_URL 注释），执行器拉包会被自己的 ssrf-guard 以私网
       # 地址拒掉 -> compose 形态应用包任务全军覆没。同网络内拉 admin-api 是设

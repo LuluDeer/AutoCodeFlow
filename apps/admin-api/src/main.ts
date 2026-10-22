@@ -215,6 +215,11 @@ async function bootstrap() {
     }),
   );
 
+  // Agent LLM relay may carry inline screenshots (base64). Only authenticated
+  // executor tokens reach this route; cap at 16MB (4 images × 3MB base64 +
+  // prompt) so a full-screen PNG does not get rejected by the 1MB global cap.
+  app.use("/api/agent-collab/llm", express.json({ limit: "16mb" }));
+
   // S-11: cap JSON body size to 1 MB to prevent oversized-payload DoS
   app.use(
     express.json({

@@ -475,4 +475,149 @@ describe("ExecutorPullService — 控制面命令（ARCH-33）", () => {
       svc.recordCommandResult("cmd-1", { ok: true }),
     ).resolves.toBeUndefined();
   });
+
+  // ── P1-3（生产实证 2026-10-22）：Redis 瞬时故障不得变成 pull 端点的 500 ──
+  //
+  // 现场：单日 84 次 500，栈全是 ioredis 的 `Command timed out`（commandTimeout:
+  // 3000 与 25s 长轮询 + 事件循环阻塞的组合）；同一秒内多台不同执行器同时 500
+  // ⇒ 那一轮它们**什么都拿不到**（任务与控制面命令一起丢），而用户看到的是
+  // "中台在报错"。这里锁住降级语义：瞬时故障 = 本轮无内容，逻辑错误照旧上抛。
+  // ── P0-4（生产报告 2026-10-22 §4.4）：命令元数据 ─────────────────────
+  //
+  // 执行器上报执行结果时只带 commandId（它不知道、也不该知道 app_deployments
+  // 的行 id）。入队时把「这条命令属于哪条部署行」记进旁路元数据，中台才能在
+  // 命令失败时把行收成 FAILED，而不是等 30 分钟的命令未决豁免期。
+  describe("P0-4 命令元数据（commandId → deploymentId）", () => {
+    it("enqueueCommand 写入 `acf:cmdmeta:{id}`，TTL 与命令 TTL 一致", async () => {
+      // 注意本 describe 的 makeService 参数顺序是 (cmdTtlMs, pullTtlMs)。
+      const svc = await makeService("1800000", "900000");
+      const client = clientOf(svc);
+
+      const commandId = await svc.enqueueCommand("exec-1", "deploy", {
+        deploymentId: "deploy-1",
+      });
+
+      expect(typeof commandId).toBe("string");
+      const metaCall = client.set.mock.calls[0];
+      expect(metaCall[0]).toBe(`acf:cmdmeta:${commandId}`);
+      expect(JSON.parse(metaCall[1] as string)).toMatchObject({
+        type: "deploy",
+        deploymentId: "deploy-1",
+      });
+      expect(metaCall[2]).toBe("EX");
+      expect(metaCall[3]).toBe(1800);
+    });
+
+    it("非部署类命令的元数据 deploymentId 为 null（不误关联任何行）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+
+      await svc.enqueueCommand("exec-1", "app-stop", {
+        deploymentId: "deploy-9",
+      });
+      // 注意：app-stop 的载荷**确实**带 deploymentId（停止哪个部署），但只有
+      // deploy 类命令会据此收口部署行——类型判定在消费侧（controller）做。
+      expect(JSON.parse(client.set.mock.calls[0][1] as string).type).toBe(
+        "app-stop",
+      );
+    });
+
+    it("getCommandMeta 回读元数据", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.get.mockResolvedValueOnce(
+        JSON.stringify({
+          type: "deploy",
+          deploymentId: "deploy-1",
+          appId: "app-1",
+        }),
+      );
+
+      await expect(svc.getCommandMeta("cmd-1")).resolves.toEqual({
+        type: "deploy",
+        deploymentId: "deploy-1",
+        appId: "app-1",
+      });
+    });
+
+    it("元数据缺失/畸形 → null（消费侧退回卡死扫描）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.get.mockResolvedValueOnce(null);
+      await expect(svc.getCommandMeta("missing")).resolves.toBeNull();
+      client.get.mockResolvedValueOnce("not-json");
+      await expect(svc.getCommandMeta("corrupt")).resolves.toBeNull();
+    });
+
+    it("元数据写失败不影响入队（best-effort：丢的只是秒级收敛）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.set.mockRejectedValue(new Error("redis down"));
+      jest
+        .spyOn(
+          (svc as unknown as { logger: Record<string, jest.Mock> }).logger,
+          "warn",
+        )
+        .mockImplementation(() => {});
+
+      await expect(
+        svc.enqueueCommand("exec-1", "deploy", { deploymentId: "deploy-1" }),
+      ).resolves.toEqual(expect.any(String));
+      // 命令本身照样进了队列。
+      expect(client.lpush).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("P1-3 Redis 瞬时故障降级", () => {
+    const loggerOf = (svc: ExecutorPullService) =>
+      (svc as unknown as { logger: Record<string, jest.Mock> }).logger;
+
+    it("RPOP 抛 Command timed out → 本轮返回空，不抛出", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.rpop.mockRejectedValue(new Error("Command timed out"));
+      const warn = jest
+        .spyOn(loggerOf(svc), "warn")
+        .mockImplementation(() => {});
+
+      await expect(
+        svc.pullWork("exec-1", 0, { wantTask: true }),
+      ).resolves.toEqual({ task: null, commands: [] });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Redis transient failure"),
+      );
+    });
+
+    it("连接被重置（ECONNRESET）同样降级", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.rpop.mockImplementation(async (key: string) => {
+        if (key.startsWith("acf:cmd:")) {
+          throw Object.assign(new Error("read ECONNRESET"), {
+            code: "ECONNRESET",
+          });
+        }
+        return null;
+      });
+      jest.spyOn(loggerOf(svc), "warn").mockImplementation(() => {});
+
+      await expect(
+        svc.pullWork("exec-1", 0, { wantTask: true }),
+      ).resolves.toEqual({ task: null, commands: [] });
+    });
+
+    it("非瞬时错误照旧上抛（降级绝不吞掉真故障）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.rpop.mockRejectedValue(
+        new Error(
+          "WRONGTYPE Operation against a key holding the wrong kind of value",
+        ),
+      );
+
+      await expect(
+        svc.pullWork("exec-1", 0, { wantTask: true }),
+      ).rejects.toThrow("WRONGTYPE");
+    });
+  });
 });

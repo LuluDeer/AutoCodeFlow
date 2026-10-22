@@ -755,6 +755,50 @@ describe("P1: qwen provider (multimodal)", () => {
     expect(res.content).toBe("看懂了");
   });
 
+  it("接受 inline data:image base64（本地截图，不触发服务端抓取）", async () => {
+    withQwenConfig();
+    let capturedBody: any = null;
+    mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
+      capturedBody = body;
+      return Promise.resolve({
+        data: { choices: [{ message: { content: "gui-demo-ok" } }] },
+      });
+    });
+
+    await service.chatMultimodal({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "输入框里是什么？" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+          ],
+        },
+      ],
+    });
+
+    expect(capturedBody.messages[0].content[1].type).toBe("image_url");
+  });
+
+  it("拒绝超大 inline data:image（>3MB）", async () => {
+    withQwenConfig();
+    mockedAxios.post = jest.fn().mockResolvedValue({
+      data: { choices: [{ message: { content: "x" } }] },
+    });
+    const huge = `data:image/png;base64,${"A".repeat(3 * 1024 * 1024 + 1)}`;
+    await expect(
+      service.chatMultimodal({
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image_url", image_url: { url: huge } }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/非 http\(s\) 的媒体 URL/);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
   it("拒绝非 http(s) 媒体 URL（防 SSRF 转嫁）", async () => {
     withQwenConfig();
     mockedAxios.post = jest.fn().mockResolvedValue({

@@ -1,15 +1,19 @@
 /**
- * DEEP-AUDIT D2-P1-1（2026-09-22）回归守卫：compose 部署路径必须显式启用 bwrap。
+ * SEC-07 / DEEP-AUDIT D2-P1-1 回归守卫（2026-10 修订）。
  *
- * 为什么需要：apps/executor-python/config.py:258 注释声称「生产容器由
- * docker-compose 显式开启 bwrap」，而根 docker-compose.yml 的 executor-python
- * env 块此前从未设置 TASK_SANDBOX——最强隔离层在生产路径默认关闭，注释与
- * 实际安全姿态漂移。本守卫钉死两件事，任何一处回退即红：
+ * 背景：2026-09 曾把根 `docker-compose.yml` 的 executor-python 硬编码为
+ * `TASK_SANDBOX: 'bwrap'`，本守卫当时钉死该值。2026-10 的真机复现发现：
+ *   - 镜像不含 bubblewrap；
+ *   - 即便装上，compose 的 cap_drop/no-new-privileges 与多数宿主 seccomp
+ *     策略也不允许非特权 user namespaces；
+ *   ⇒ 默认部署里**每个 Python 任务**都 fail-closed（sandbox_unavailable）。
  *
- *   ① 根 docker-compose.yml 的 executor-python 服务 environment 必须含
- *      TASK_SANDBOX: 'bwrap'（结构性解析，不靠整文件文本搜索，避免命中注释）；
- *   ② docs/deployment.md「容器安全」段必须保留 unprivileged userns 前置验证
- *      与 fail-closed 说明（文档承诺不随改注释/改文案丢失）。
+ * 修订后的契约：
+ *   ① 基础 compose 默认 **不启用** bwrap：TASK_SANDBOX 必须是
+ *      `${TASK_SANDBOX:-}`（或空串），绝不硬编码 'bwrap'；
+ *   ② `docker-compose.secure.yml` 是显式 opt-in，必须设置 'bwrap'；
+ *   ③ docs/deployment.md 必须保留 secure overlay + unprivileged userns +
+ *      fail-closed 的前置/回退说明。
  *
  * 纯静态读取，不需要 docker / npm ci。
  *
@@ -28,8 +32,8 @@ const root = path.resolve(here, '..');
 
 /**
  * 从 compose 文本中抽取指定服务的 environment 映射。
- * 结构约定（与本仓 docker-compose.yml 一致）：services 下 `  <name>:` 为
- * 两空格缩进，其 environment 为四空格，env 条目为六空格 `KEY: value`。
+ * 结构约定（与本仓 compose 一致）：services 下 `  <name>:` 为两空格缩进，
+ * environment 为四空格，env 条目为六空格 `KEY: value`。
  * 返回 { [key]: rawValue }；找不到服务块返回 null。
  */
 export function extractServiceEnv(composeText, serviceName) {
@@ -37,7 +41,6 @@ export function extractServiceEnv(composeText, serviceName) {
   const serviceRe = new RegExp(`^  ${serviceName}:`);
   const start = lines.findIndex((l) => serviceRe.test(l));
   if (start === -1) return null;
-  // 服务块范围：从 start+1 到下一个同样两空格缩进的顶层服务键（^  \S）为止
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
     if (/^  \S/.test(lines[i])) {
@@ -50,12 +53,17 @@ export function extractServiceEnv(composeText, serviceName) {
   if (envIdx === -1) return {};
   const env = {};
   for (let i = envIdx + 1; i < block.length; i++) {
-    if (/^\s*#/.test(block[i]) || block[i].trim() === '') continue; // 注释/空行跳过
+    if (/^\s*#/.test(block[i]) || block[i].trim() === '') continue;
     const m = block[i].match(/^      ([A-Za-z_][A-Za-z0-9_]*):\s*(.*?)\s*$/);
-    if (!m) break; // env 块结束（下一段缩进/同级键）
+    if (!m) break;
     env[m[1]] = m[2];
   }
   return env;
+}
+
+/** 基础 compose 允许的默认值：显式空串，或由环境变量覆盖（默认空）。 */
+export function isOptInSandboxValue(value) {
+  return value === "''" || value === '""' || value === '${TASK_SANDBOX:-}';
 }
 
 const failures = [];
@@ -70,69 +78,92 @@ function runFormalChecks() {
   report(env !== null, 'executor-python 服务块存在于 docker-compose.yml');
   if (env !== null) {
     report(
-      env.TASK_SANDBOX === "'bwrap'",
-      "executor-python.environment.TASK_SANDBOX === 'bwrap'",
+      env.TASK_SANDBOX !== undefined && isOptInSandboxValue(env.TASK_SANDBOX),
+      "基础 compose 的 TASK_SANDBOX 默认关闭（'' 或 ${TASK_SANDBOX:-}）",
       `实际值: ${JSON.stringify(env.TASK_SANDBOX ?? '(未设置)')}`,
+    );
+    report(
+      env.TASK_SANDBOX !== "'bwrap'",
+      "基础 compose 不得硬编码 TASK_SANDBOX='bwrap'（会让默认部署所有 Python 任务 fail-closed）",
+    );
+  }
+
+  const securePath = path.join(root, 'docker-compose.secure.yml');
+  report(fs.existsSync(securePath), 'docker-compose.secure.yml 存在（显式 opt-in）');
+  if (fs.existsSync(securePath)) {
+    const secure = fs.readFileSync(securePath, 'utf8');
+    const secureEnv = extractServiceEnv(secure, 'executor-python');
+    report(
+      secureEnv !== null && secureEnv.TASK_SANDBOX === "'bwrap'",
+      "secure overlay 的 executor-python.TASK_SANDBOX === 'bwrap'",
+      `实际值: ${JSON.stringify(secureEnv?.TASK_SANDBOX ?? '(未设置)')}`,
     );
   }
 
   const deploy = fs.readFileSync(path.join(root, 'docs', 'deployment.md'), 'utf8');
-  const hasUsernsNote =
+  const hasOverlayNote =
+    deploy.includes('docker-compose.secure.yml') &&
     deploy.includes('unprivileged') &&
     deploy.includes('user namespaces') &&
     /bwrap/i.test(deploy) &&
     deploy.includes('fail-closed');
   report(
-    hasUsernsNote,
-    'deployment.md 保留 bwrap + unprivileged userns 前置验证 + fail-closed 说明',
+    hasOverlayNote,
+    'deployment.md 保留 secure overlay + bwrap + unprivileged userns + fail-closed 说明',
   );
 }
 
 function runSelftest() {
-  // 有齿：检测器对「缺 TASK_SANDBOX」的负例必须报缺失，对「值错误」也必须报错，
-  // 防止正式检查恒真（空洞通过）。
-  const noSandbox = [
+  const base = (value) =>
+    [
+      'services:',
+      '  executor-python:',
+      '    environment:',
+      `      TASK_SANDBOX: ${value}`,
+      '  executor-node:',
+      '    environment:',
+      "      LOG_LEVEL: 'info'",
+    ].join('\n');
+
+  report(
+    extractServiceEnv(base("''"), 'executor-python').TASK_SANDBOX === "''",
+    '有齿：显式空串被识别为默认关闭',
+  );
+  report(
+    extractServiceEnv(base('${TASK_SANDBOX:-}'), 'executor-python').TASK_SANDBOX ===
+      '${TASK_SANDBOX:-}',
+    '有齿：环境变量覆盖形态被识别',
+  );
+  report(!isOptInSandboxValue("'bwrap'"), '有齿：硬编码 bwrap 被判为非默认值');
+
+  const noKey = [
     'services:',
     '  executor-python:',
     '    environment:',
     "      LOG_LEVEL: 'info'",
-    '      PYPI_REGISTRY_URL: http://x',
-    '  executor-node:',
-    '    environment:',
-    "      TASK_SANDBOX: 'bwrap'",
   ].join('\n');
-  const env1 = extractServiceEnv(noSandbox, 'executor-python');
-  const missingOk = env1.TASK_SANDBOX === undefined;
-  report(missingOk, '有齿：缺 TASK_SANDBOX 的块能被检出未设置', `env=${JSON.stringify(env1)}`);
-
-  const wrongValue = [
-    'services:',
-    '  executor-python:',
-    '    environment:',
-    "      TASK_SANDBOX: ''",
-  ].join('\n');
-  const env2 = extractServiceEnv(wrongValue, 'executor-python');
   report(
-    env2.TASK_SANDBOX === "''" && env2.TASK_SANDBOX !== "'bwrap'",
-    '有齿：TASK_SANDBOX 为空值的块能被识别为非 bwrap',
-    `env=${JSON.stringify(env2)}`,
+    extractServiceEnv(noKey, 'executor-python').TASK_SANDBOX === undefined,
+    '有齿：缺 TASK_SANDBOX 能被检出',
   );
 
-  const good = [
+  const secure = [
     'services:',
     '  executor-python:',
     '    environment:',
     "      TASK_SANDBOX: 'bwrap'",
   ].join('\n');
-  const env3 = extractServiceEnv(good, 'executor-python');
-  report(env3.TASK_SANDBOX === "'bwrap'", '有齿：正确块被接受');
+  report(
+    extractServiceEnv(secure, 'executor-python').TASK_SANDBOX === "'bwrap'",
+    '有齿：secure overlay 的 bwrap 被接受',
+  );
 }
 
 if (process.argv.includes('--selftest')) {
   console.log('=== check-compose-sandbox selftest ===\n');
   runSelftest();
 } else {
-  console.log('=== DEEP-AUDIT D2-P1-1: compose bwrap 启用守卫 ===\n');
+  console.log('=== SEC-07: compose 任务沙箱默认/opt-in 守卫 ===\n');
   runFormalChecks();
 }
 

@@ -12,7 +12,12 @@
  *  ③ 未知识别为 `未知错误` 而不是把原文回显。
  */
 import * as assert from 'node:assert';
-import { describeConnectionError } from './network-util';
+import {
+  describeConnectionError,
+  ipv4Rank,
+  isUnusableIPv4,
+  listLocalIPv4s,
+} from './network-util';
 
 function main(): void {
   // ① 已知 errno 的稳定文案
@@ -47,7 +52,45 @@ function main(): void {
   assert.equal(describeConnectionError('ESOMETHINGNEW'), '连接失败（ESOMETHINGNEW）');
   assert.equal(describeConnectionError(undefined), '连接失败（未知错误）');
 
-  console.log('network-util selftest: all assertions passed (connection error matrix, no-address-echo)');
+  // ④ P1-1（生产实证 2026-10-22）：对外地址**排除段**与排序。
+  //
+  // 现场：执行器把「第一个非 internal IPv4」当对外地址上报，而装了 Clash 的机器
+  // 上第一项恒为 198.18.0.1（fake-ip），于是整个机队上报同一个地址，中台侧
+  // 反复告警「多份安装共享一个 address」。
+  const denied = [
+    '198.18.0.1', // Clash/Meta TUN fake-ip（跨机器相同 —— 本次事故的直接来源）
+    '198.19.255.254',
+    '169.254.1.1', // link-local
+    '127.0.0.1', // loopback
+    '0.0.0.0', // 监听地址，不是可路由地址
+    '172.17.0.1', // docker 默认桥
+    '224.0.0.1', // 多播
+    '255.255.255.255',
+    '192.0.2.10', // TEST-NET-1
+    'not-an-ip',
+  ];
+  for (const ip of denied) {
+    assert.ok(isUnusableIPv4(ip), `${ip} 不应作为对外地址`);
+  }
+  const allowed = ['192.168.1.40', '10.0.0.7', '172.20.5.5', '100.101.102.103', '8.8.8.8'];
+  for (const ip of allowed) {
+    assert.ok(!isUnusableIPv4(ip), `${ip} 应可作为对外地址`);
+  }
+
+  // 排序：局域网私网优先于 VPN/CGNAT 与公网（[0] 才是调用方的默认选择）。
+  assert.ok(ipv4Rank('192.168.1.40') < ipv4Rank('10.0.0.7'), '192.168/16 应优先');
+  assert.ok(ipv4Rank('10.0.0.7') < ipv4Rank('172.20.5.5'), '10/8 应优先于 172.16/12');
+  assert.ok(ipv4Rank('172.20.5.5') < ipv4Rank('100.101.102.103'), '私网应优先于 CGNAT/Tailscale');
+  assert.ok(ipv4Rank('100.101.102.103') < ipv4Rank('8.8.8.8'), 'CGNAT 仍优先于公网');
+
+  // 实机遍历也必须不含被排除段（宿主装了 Clash/WSL/Docker 时尤其明显）。
+  for (const ip of listLocalIPv4s()) {
+    assert.ok(!isUnusableIPv4(ip), `listLocalIPv4s 返回了不可用地址 ${ip}`);
+  }
+
+  console.log(
+    'network-util selftest: all assertions passed (connection error matrix, no-address-echo, address filtering/ranking)',
+  );
 }
 
 main();

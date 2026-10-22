@@ -857,6 +857,18 @@ export class ExecutorPackageService implements OnModuleInit {
               checksum: pkg.checksum,
             },
           });
+          if (routed.delivered === "unresolved") {
+            // 行在本次调用前已被删除（列表快照 → 推送之间的窗口）。按失败返回，
+            // 绝不对陈旧地址发 HTTP（与部署面同策，见 resolveExecutorTransport）。
+            return {
+              executorId: executor.id,
+              address: executor.address,
+              status: "error" as const,
+              success: false,
+              error:
+                "Executor record no longer exists (deleted or auto-cleaned) — package not pushed",
+            };
+          }
           if (routed.delivered === "pull") {
             this.logger.log(
               `Queued package ${pkg.name}@${pkg.version} for pull executor ${executor.address} (commandId=${routed.commandId})`,

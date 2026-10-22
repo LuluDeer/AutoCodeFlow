@@ -46,6 +46,8 @@ import { useIsMobile } from '../hooks/useIsMobile';
 // 与同列相邻的中文状态 Badge 中英混排。收敛到 utils/trigger-label 唯一事实源，
 // 与 TaskListPage/TaskDetailPage/ApplicationDetailPage 同一份映射。
 import { triggerLabel } from '../utils/trigger-label';
+// §8.3 工单 10：行 id 是阶段 3 的稳定身份（同址多行时「名字+地址」不再唯一）。
+import { shortExecutorRowId } from '../utils/executorRowId';
 // R5 角色门控：ADMIN-only 操作统一以此判断（本轮：全量导出端点 @Roles(ADMIN)）。
 import { useAuthStore, isAdminUser } from '../store/auth';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -577,9 +579,23 @@ export default function ExecutionsPage() {
         if (!name && !fallback) {
           return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
         }
+        // §8.3 工单 10：名字旁标注**行 id 前 8 位**（tooltip 给地址与完整 id）。
+        // 同址多行时（pull 各自成行 / DHCP 复用同一 IP）名字与地址都可能相同，
+        // 只有行 id 能区分「同一个地址下的两台机器」。
+        const rowId = shortExecutorRowId(r.executorId);
+        const tooltip = [fallback, r.executorId ? `${t('execShared.rowId')}: ${r.executorId}` : null]
+          .filter(Boolean)
+          .join('\n');
         return (
-          <Tooltip title={fallback ?? name ?? ''}>
-            <Text style={{ fontSize: 12 }}>{name ?? fallback}</Text>
+          <Tooltip title={tooltip}>
+            <span style={{ fontSize: 12 }}>
+              {name ?? fallback}
+              {rowId && (
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  {' '}#{rowId}
+                </Text>
+              )}
+            </span>
           </Tooltip>
         );
       },

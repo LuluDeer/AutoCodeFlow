@@ -56,7 +56,7 @@ const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
  * NOT retry (a retried unlink could delete the fresh recursion's partial
  * file). For that caller even the 'close' hook must not resurrect polling.
  */
-function removePartialFile(file: fs.WriteStream | undefined, dest: string, expectFile = true, left = 10): void {
+function removePartialFile(file: fs.WriteStream | undefined, dest: string, expectFile = true, left = 30): void {
   const unlinkOnce = (): boolean => {
     try {
       fs.unlinkSync(dest);
@@ -70,7 +70,11 @@ function removePartialFile(file: fs.WriteStream | undefined, dest: string, expec
   };
   const retry = (attemptsLeft: number): void => {
     if (unlinkOnce() || attemptsLeft <= 0) return;
-    setTimeout(() => retry(attemptsLeft - 1), 40);
+    // Windows 在 stream destroy 后可能延迟释放句柄（EBUSY/EPERM），
+    // 40ms×10 的预算在 CI 上实测不够；放宽到 100ms×30（最多 3s），
+    // 仅影响“清理失败”路径，正常 unlink 一次即返回。
+    const timer = setTimeout(() => retry(attemptsLeft - 1), 100);
+    timer.unref?.();
   };
   file?.once?.('close', () => retry(expectFile ? left : 0));
   retry(left);

@@ -132,3 +132,33 @@ SDK 实例，跑 `makeBucket → putObject → statObject → getObject+gunzip �
 - `GHSA-528h-pc64-c93x` 不再是唯一在册豁免；新一批的**判据日 2026-12-30**。
 - 到期动作：复查上游是否发布新版（extract-zip、`@lhci/cli`、`@electron/get`、jest 对 `@istanbuljs/load-nyc-config` 的 js-yaml@3 依赖）；已发布则升级并移除对应豁免，否则续期。
 - 到期时脚本会红并打印到期动作，无需依赖任何人记得。
+
+---
+
+## 依赖审计轮 #3 —— 2026-10-22（GitHub Dependabot 10 条告警）
+
+**触发**：推送 `develop` 时 GitHub 提示默认分支 10 条告警（3 high / 7 moderate）。
+本轮以 `gh api .../dependabot/alerts` 逐条核对，并与 `npm audit`（官方 registry）交叉验证。
+
+### 1. 已处理（4 条 Dependabot + 1 条 npm audit 附带 high）
+
+| 范围 | 处置 | 验证 |
+|---|---|---|
+| `http-cache-semantics@4.2.0` | executor-desktop `overrides` 升 **4.3.0**（> vulnerable range ≤4.2.0） | `npm ls` 4.3.0；`electron-builder --version` 26.15.3；desktop tsc + runtime/collab selftest |
+| `sprintf-js@1.0.3`（admin-api） | `overrides.argparse=2.0.1`，消除 js-yaml@3→argparse@1→sprintf-js | admin-api tsc + 432 tests；`npm ls` 无 sprintf-js |
+| `sprintf-js@1.0.3`（executor-node） | 同上 | executor-node 1216 tests；`npm ls` 无 sprintf-js |
+| `sprintf-js@1.0.3`（node-sdk） | 同上 | node-sdk 142 tests；`npm ls` 无 sprintf-js |
+| `basic-ftp@5.3.1`（npm audit 附带 high） | admin-web `overrides` 升 **6.2.3**（> vulnerable range ≤6.2.0） | `lhci --version` 0.15.1；`require('basic-ftp').Client` 可用；admin-web full audit high 10 → 6 |
+
+### 2. 保留（6 条 Dependabot）
+
+| GHSA | 包 | 原因 |
+|---|---|---|
+| `GHSA-7pqw-9j4j-h8q3` / `GHSA-jmr9-qjv8-65gv` | extract-zip@2.0.1 | 上游最新即 2.0.1（无修复版）；仅 admin-web `@lhci/cli` 的 Lighthouse CI 链可达。`@puppeteer/browsers@3` 可去依赖但跨 major，未验证 Lighthouse 兼容性，不做危险 override。 |
+| `GHSA-528h-pc64-c93x` / `GHSA-hqr4-qq8f-hg3x` / `GHSA-mjw6-4jj6-33hc` | stream-json@1.9.1 | 修复版在 v3，但 v3 是 ESM-only 且改了路径，minio@8.0.7 的 CJS `require('stream-json/jsonl/Parser.js')` 会直接失败；仅 admin 私服内部 MinIO 通知链可达，不得 override。 |
+| `GHSA-hp3w-g68c-fv3c` | sprintf-js@1.1.3（executor-desktop） | 剩余链路 electron-builder→@electron/get→global-agent→roarr@2→sprintf-js；无修复版，且仅构建期下载 Electron 时可达。argparse override 已覆盖其余三个包的测试链。 |
+
+### 3. 复查
+
+- 下次复查日仍为 **2026-12-30**（注册表 6 条）。
+- 关注：extract-zip 上游、`@lhci/cli`/puppeteer 链、global-agent/roarr、minio 是否改用 ESM stream-json 或换 S3 客户端。

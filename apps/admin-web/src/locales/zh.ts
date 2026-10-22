@@ -443,6 +443,20 @@ export default {
   'execList.deadLetter': '死信 {{count}}',
   'execList.pullMode': 'Pull 回连',
   'execList.pullModeTooltip': 'NAT 内执行器：经长轮询从中心端取任务，无需入站可达',
+  // ADR-017 阶段 3 复查补口（P1-4）：把「行身份」显性化到列表——此前前端**零渲染**
+  // deviceFingerprint，运维无法把「地址冲突告警里的指纹短 ID」关联到界面上任何一行。
+  // 工单 10：行 id 是 ADR-017 阶段 3 的稳定身份——同址多行（pull 各自成行）时
+  // 「名字 + 地址」不再唯一，只有行 id 能区分两台。
+  'execShared.rowId': '行 id',
+  'execShared.rowIdTooltip':
+    '执行器行 id（前 8 位）。同址多行时它是唯一能区分「同一个地址下的两台机器」的标识；悬停可见完整值。',
+  'execList.dispatchAll': '全部派发模式',
+  'execList.dispatchPush': 'Push（中台拨入）',
+  'execList.dispatchPull': 'Pull（执行器回连）',
+  'execList.fingerprintLabel': '指纹',
+  'execList.fingerprintTooltip':
+    '设备指纹（sha256 前 12 位）。它是执行器的稳定身份：换网/换 IP 不改变它，只有重建 WORK_DIR 或删除 .device-identity 盐才会变——那时会出现「同一台机器两行」，请据此排查。',
+  'execList.fingerprintMissing': '未上报指纹（旧版执行器）',
   'execList.versionDrift': '版本过低',
   'execList.versionDriftTooltip': '执行器版本低于中心端要求的最低版本（EXECUTOR_MIN_VERSION），请升级执行器',
   'execList.hb.justNow': '刚刚',
@@ -2061,7 +2075,7 @@ export default {
   'appDeploy.rollout.state.rolledBack': '已回滚',
 
   'templates.title': '任务模板',
-  'templates.description': '常用任务形态固化为模板，一键复制配置生成可运行任务草稿。',
+  'templates.description': '常用任务形态固化为模板，一键创建可直接运行的任务（脚本随模板内置）。',
   'templates.error.title': '加载模板失败',
   'templates.empty': '暂无模板',
   'templates.official': '官方',
@@ -2090,6 +2104,20 @@ export default {
   'templates.config.fixedRate': '（每 {{rate}}s）',
   'templates.config.timeout': '超时 {{seconds}}s',
   'templates.config.retry': '重试 {{count}}',
+  // 「开箱即跑」模板 config 带内联脚本（glueSource）而无 entrypoint：
+  // 摘要显示 `runtime · glue`，不再让用户误以为模板缺入口文件。
+  'templates.config.glue': 'glue',
+  // 「使用模板」= 直接实例化（POST /task-templates/:id/instantiate），弹窗只采集任务名。
+  'templates.useDialog.title': '使用模板创建任务',
+  'templates.useDialog.template': '模板：{{name}}',
+  'templates.useDialog.name': '任务名称',
+  'templates.useDialog.namePlaceholder': '例如 prod-backup-20260101-0200',
+  'templates.useDialog.nameRequired': '任务名称不能为空',
+  'templates.useDialog.hint': '任务会立即创建。模板已内置可执行脚本，创建后可在任务详情里调整参数、调度与脚本。',
+  'templates.useDialog.ok': '创建任务',
+  'templates.useDialog.cancel': '取消',
+  'templates.useDialog.created': '已创建任务「{{name}}」',
+  'templates.useDialog.fail': '创建任务失败',
 
   'execDetail.title': '执行详情',
   'execDetail.breadcrumb.executions': '执行记录',

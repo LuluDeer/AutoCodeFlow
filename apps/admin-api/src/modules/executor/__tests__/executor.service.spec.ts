@@ -994,7 +994,8 @@ describe("ExecutorService (__tests__)", () => {
       expect(existing.capabilities).toEqual(["python", "node"]);
       // R55-A1：重注册的写面是列级 patch（整行 save 已消除）。
       expect(executorRepo.save).not.toHaveBeenCalled();
-      const payload = (executorRepo.update as jest.Mock).mock.calls[0][1] as any;
+      const payload = (executorRepo.update as jest.Mock).mock
+        .calls[0][1] as any;
       expect(payload).not.toHaveProperty("agentCapabilities");
       expect(payload).not.toHaveProperty("agentCapabilitiesUpdatedAt");
       // R55-A1（ADR-026 规则 4）：独立的第三写面——心跳拥有的指标列。整行 save
@@ -1707,7 +1708,8 @@ describe("ExecutorService (__tests__)", () => {
       // 整行 save 已消除；写面只有一次列级 update，WHERE 只有 id。
       expect(executorRepo.save).not.toHaveBeenCalled();
       expect(executorRepo.update).toHaveBeenCalledTimes(1);
-      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock
+        .calls[0];
       expect(hbCriteria).toEqual({ id: "e-1" });
       expect(Object.keys(hbPatch).sort()).toEqual([
         "consecutiveHeartbeatMisses",
@@ -1750,6 +1752,9 @@ describe("ExecutorService (__tests__)", () => {
       }
       expect(metricsHistoryRepo.create).toHaveBeenCalledWith({
         executorAddress: "127.0.0.1:3105",
+        // ADR-017 阶段 3 复查补口（迁移 1790000000061）：趋势图按**行身份**落库，
+        // 否则同址多行（pull 各自成行）的曲线无法拆分。
+        executorId: "e-1",
         cpuUsage: 30,
         memUsage: 50,
         diskUsage: 70,
@@ -2285,7 +2290,8 @@ describe("ExecutorService (__tests__)", () => {
       // R53-A1：写面是列级 patch；本次采纳的 executorStartupId / 重启清零的
       // runningTaskCount 必须在 patch 里（不得因为"改成 update"而漏写）。
       expect(executorRepo.save).not.toHaveBeenCalled();
-      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+      const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock
+        .calls[0];
       expect(hbCriteria).toEqual({ id: executor.id });
       expect(hbPatch).toMatchObject({
         executorStartupId: "startup-new",
@@ -3545,7 +3551,10 @@ describe("ExecutorService (__tests__)", () => {
       // R40：WHERE 里额外带 lastHeartbeat 的 CAS（读取时为 undefined ⇒ IsNull 算子），
       // 防「拿旧观察覆盖新事实」——注册/心跳若先落库，这里必须让位。
       expect(executorRepo.update).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "e-graceful", lastHeartbeat: expect.anything() }),
+        expect.objectContaining({
+          id: "e-graceful",
+          lastHeartbeat: expect.anything(),
+        }),
         expect.objectContaining({
           status: ExecutorStatus.OFFLINE,
           // 遗留 P1-24：优雅下线落 manual。
@@ -3561,9 +3570,14 @@ describe("ExecutorService (__tests__)", () => {
         { id: "e-live", address: "127.0.0.1:3106", lastHeartbeat: new Date(0) },
       ]);
       executorRepo.createQueryBuilder.mockReturnValue(qb);
-      const emitSpy = jest.spyOn(service as never as {
-        emitExecutorOffline: (p: unknown) => void;
-      }, "emitExecutorOffline").mockImplementation(() => undefined);
+      const emitSpy = jest
+        .spyOn(
+          service as never as {
+            emitExecutorOffline: (p: unknown) => void;
+          },
+          "emitExecutorOffline",
+        )
+        .mockImplementation(() => undefined);
 
       await service.markOffline("127.0.0.1:3106");
 
@@ -4002,6 +4016,47 @@ describe("ExecutorService (__tests__)", () => {
       expect(result.history).toEqual([]);
     });
 
+    // P2-3（ADR-017「相关轨道」第 3 条，迁移 1790000000061）：
+    // executor_metrics_history 补了行身份列，趋势查询改为「行身份优先 +
+    // 历史行按地址回落」——同址多行（pull 各自成行）的曲线从此可拆分，
+    // 而迁移前写入的 executorId IS NULL 的存量行仍能画出来（曲线不断档）。
+    it("趋势查询按行身份优先、存量行按地址回落（迁移 1790000000061）", async () => {
+      const executor = {
+        id: "row-a",
+        address: "host:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        cpuUsage: 1,
+        memUsage: 1,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      const statsQb = execRepo.createQueryBuilder();
+      statsQb.getRawOne.mockResolvedValue({
+        total: "0",
+        successful: "0",
+        failed: "0",
+        avgDuration: null,
+      });
+      execRepo.createQueryBuilder.mockReturnValue(statsQb);
+      const hqb = metricsHistoryRepo.createQueryBuilder();
+      hqb.getRawMany.mockResolvedValue([]);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(hqb);
+
+      await service.getExecutorMetrics("row-a");
+
+      const whereCall = hqb.where.mock.calls.find((c) =>
+        String(c[0]).includes("executorId"),
+      );
+      expect(whereCall).toBeDefined();
+      // 行身份优先 + 「executorId IS NULL」守卫，缺任何一个都会把同址另一台
+      // 的新行卷进来（与 getExecutorExecutions 的并集口径同源）。
+      expect(String(whereCall![0])).toContain("h.executorId IS NULL");
+      expect(whereCall![1]).toEqual({
+        executorId: "row-a",
+        address: "host:3002",
+      });
+    });
+
     it("FEAT-04: returns history points aggregated into 15-min AVG buckets, ascending", async () => {
       const executor = {
         id: "e1",
@@ -4069,9 +4124,11 @@ describe("ExecutorService (__tests__)", () => {
         "bucket",
       );
       expect(hqb.addSelect).toHaveBeenCalledWith("AVG(h.cpuUsage)", "cpu");
-      expect(hqb.where).toHaveBeenCalledWith("h.executorAddress = :address", {
-        address: "host:3002",
-      });
+      // P2-3（迁移 1790000000061）：谓词是「行身份优先 + 存量行按地址回落」。
+      expect(hqb.where).toHaveBeenCalledWith(
+        expect.stringContaining("h.executorId IS NULL"),
+        { executorId: "e1", address: "host:3002" },
+      );
       expect(hqb.andWhere).toHaveBeenCalledWith("h.createdAt > :since", {
         since: expect.any(Date),
       });
@@ -4955,7 +5012,10 @@ describe("ExecutorService (__tests__)", () => {
       // lastHeartbeat（此处为 undefined ⇒ IsNull 算子），SET 只含三个要改的列。
       expect(executorRepo.save).not.toHaveBeenCalled();
       expect(executorRepo.update).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "exec-9", lastHeartbeat: expect.anything() }),
+        expect.objectContaining({
+          id: "exec-9",
+          lastHeartbeat: expect.anything(),
+        }),
         expect.objectContaining({ status: ExecutorStatus.OFFLINE }),
       );
       expect(saved.status).toBe(ExecutorStatus.OFFLINE);
@@ -4973,10 +5033,17 @@ describe("ExecutorService (__tests__)", () => {
       };
       executorRepo.findOne
         .mockResolvedValueOnce(stale) // 第一次读：快照
-        .mockResolvedValueOnce({ ...stale, status: ExecutorStatus.ONLINE, lastHeartbeat: new Date() }); // 让位后重读
+        .mockResolvedValueOnce({
+          ...stale,
+          status: ExecutorStatus.ONLINE,
+          lastHeartbeat: new Date(),
+        }); // 让位后重读
       executorRepo.update.mockResolvedValue({ affected: 0 });
       const emitSpy = jest
-        .spyOn(service as never as { emitExecutorOffline: (p: unknown) => void }, "emitExecutorOffline")
+        .spyOn(
+          service as never as { emitExecutorOffline: (p: unknown) => void },
+          "emitExecutorOffline",
+        )
         .mockImplementation(() => undefined);
 
       const returned = await service.setOfflineById("exec-9");
@@ -7992,10 +8059,54 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     // heartbeat 上报同一 address 的**另一个**安装 B → 直接证据成立。
     await svc.heartbeat(ADDR, { deviceFingerprint: FP_B });
     expect(sendAll).toHaveBeenCalledTimes(1);
+    // ADR-017 阶段 3 复查补口：两个指纹都解析到**同一行**（本用例的 findOne 恒
+    // 返回 e1），故判据给出的是更精确的那种形态——"一份安装的身份被另一份顶替"，
+    // 文案随之分叉。旧断言写的是"地址被多份安装共享"，那在阶段 3 之后只是
+    // pull 模式的正常拓扑，不能再用作告警标题。
+    expect(String(sendAll.mock.calls[0][0].title)).toContain(
+      "overwriting one executor row",
+    );
+    expect(String(sendAll.mock.calls[0][0].title)).toContain(ADDR);
+  });
+
+  /**
+   * ADR-017 阶段 3 复查补口（生产误报的直接回归闸）：同一地址上**两份安装各自
+   * 成行**且都是 pull 时，**不许**发告警；只有该地址上有 push 行（地址即路由面）
+   * 时才是硬冲突。
+   */
+  it("同址两行 pull → 不告警（只记 info）；同址 push 行参与 → 告警", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+
+    svcAny.observeDeviceFingerprint(ADDR, FP_A, "register", {
+      rowId: "row-a",
+      dispatchMode: "pull",
+    });
+    svcAny.observeDeviceFingerprint(ADDR, FP_B, "heartbeat", {
+      rowId: "row-b",
+      dispatchMode: "pull",
+    });
+
+    // 零告警，但可见性仍在：一条 info 说明"这是设计形态、无需处置"。
+    expect(sendAll).not.toHaveBeenCalled();
+    const infoLogged = logSpy.mock.calls.some((c) =>
+      String(c[0]).includes("designed shape for dispatchMode=pull"),
+    );
+    expect(infoLogged).toBe(true);
+
+    // 同一地址上出现 push 行 → 地址是路由面，真冲突。
+    svcAny.observeDeviceFingerprint(ADDR, "c3".repeat(32), "register", {
+      rowId: "row-c",
+      dispatchMode: "push",
+    });
+    expect(sendAll).toHaveBeenCalledTimes(1);
     expect(String(sendAll.mock.calls[0][0].title)).toContain(
       "shared by multiple installs",
     );
-    expect(String(sendAll.mock.calls[0][0].title)).toContain(ADDR);
+    expect(String(sendAll.mock.calls[0][0].content)).toContain("push");
   });
 
   /** 硬冲突必须外发 ERROR 级通知（数据正确性问题，不能只落 debug）。 */
@@ -9231,5 +9342,224 @@ describe("ExecutorService — ADR-017 阶段 3 指纹定位与冲突分叉", () 
     expect(ok).toBe(true);
     expect(compareSpy).toHaveBeenCalledWith("raw-token", "$2b$12$hashB");
     compareSpy.mockRestore();
+  });
+
+  // ── 工单 11（ADR-017 决策 §3 补全）：自报行 id 只在「按行令牌校验通过」时被采纳 ──
+  //
+  // 安全边界（改动前先读 service 的 authenticateMachineRequest 头注）：
+  //   ① 只在常规解析**歧义**（同址多行 + 无指纹）时采纳自报 id；
+  //   ② 该 id 必须指向**本地址**下的行；
+  //   ③ 必须该行的 per-executor 令牌 bcrypt 校验通过（共享令牌不算）。
+  // 现场（2026-10-22 §4.6）：36 次 fail-closed 里那台机器其实持有自己那行的
+  // 令牌，只是没指纹 → 过去只能 404。
+  // 行 id 的合法形态是 uuid 文本（service 的 normalizeReportedExecutorId 只认
+  // 十六进制与连字符）——用真实形态，别用 "row-b" 这种非 uuid 字面量。
+  const ROW_B_ID = "aabbccdd-1111-2222-3333-444455556666";
+  const hintRow = (over: Record<string, unknown> = {}) => ({
+    id: ROW_B_ID,
+    address: ADDR,
+    deviceFingerprint: FP_B,
+    tokenHash: "$2b$12$hashB",
+    dispatchMode: "pull",
+    ...over,
+  });
+
+  const stubHintRow = (row: Record<string, unknown> | null) => {
+    executorRepo.createQueryBuilder = jest.fn(() => ({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(row),
+      getMany: jest.fn().mockResolvedValue(row ? [row] : []),
+    })) as never;
+  };
+
+  it("工单 11：歧义态 + 自报行 id + 该行令牌 → 按行定位（不再 404）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    jest.spyOn(svcAny, "resolveExecutorRow").mockResolvedValue(null);
+    stubHintRow(hintRow());
+    svcAny.getSharedToken = jest.fn().mockResolvedValue("shared-secret");
+    const compareSpy = jest
+      .spyOn(bcrypt, "compare")
+      .mockResolvedValue(true as never);
+
+    const res = await svc.authenticateMachineRequest(ADDR, "row-b-token", {
+      reportedExecutorId: ROW_B_ID,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.via).toBe("per-executor");
+    expect(res.resolvedBy).toBe("reported-id");
+    expect(res.executor?.id).toBe(ROW_B_ID);
+    compareSpy.mockRestore();
+  });
+
+  it("工单 11：歧义态 + 自报行 id + **共享令牌** → 认证通过但不采纳行（executor=null）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    jest.spyOn(svcAny, "resolveExecutorRow").mockResolvedValue(null);
+    stubHintRow(hintRow());
+    svcAny.getSharedToken = jest.fn().mockResolvedValue("shared-secret");
+
+    const res = await svc.authenticateMachineRequest(ADDR, "shared-secret", {
+      reportedExecutorId: ROW_B_ID,
+    });
+
+    // 关键安全断言：共享令牌是机队级凭据，绝不能借它把行「认领」下来。
+    expect(res.ok).toBe(true);
+    expect(res.via).toBe("shared");
+    expect(res.executor).toBeNull();
+  });
+
+  it("工单 11：自报 id 指向**另一地址**的行 → 不采纳（即使持有那行的令牌）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    jest.spyOn(svcAny, "resolveExecutorRow").mockResolvedValue(null);
+    // 该 id 确实存在，但挂在别的地址上（地址错配 = 不能认领本地址的请求）。
+    stubHintRow(hintRow({ address: "10.9.9.9:8002" }));
+    svcAny.getSharedToken = jest.fn().mockResolvedValue("shared-secret");
+    const compareSpy = jest
+      .spyOn(bcrypt, "compare")
+      .mockResolvedValue(true as never);
+
+    const res = await svc.authenticateMachineRequest(ADDR, "row-b-token", {
+      reportedExecutorId: ROW_B_ID,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.executor).toBeNull();
+    compareSpy.mockRestore();
+  });
+
+  it("工单 11：自报 id 形态非法 → 视同未上报（连查询都不发）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    jest.spyOn(svcAny, "resolveExecutorRow").mockResolvedValue(null);
+    const qbSpy = jest.fn();
+    executorRepo.createQueryBuilder = qbSpy as never;
+    svcAny.getSharedToken = jest.fn().mockResolvedValue("shared-secret");
+
+    const res = await svc.authenticateMachineRequest(ADDR, "shared-secret", {
+      reportedExecutorId: "../../etc/passwd",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.via).toBe("shared");
+    expect(res.executor).toBeNull();
+    expect(qbSpy).not.toHaveBeenCalled();
+  });
+
+  // ── ADR-017 阶段 3 复查补口 · P0-3：悬空 executorId 不得静默回退 push ──
+  //
+  // 生产实证（2026-10-22）：app_deployments.executorId 指向的执行器行被删除
+  // （该列无外键），「全部升级」对这条悬空行回退 push，用**快照地址**
+  // 198.18.0.1:8002（Clash TUN 伪 IP / NAT 内网）打出站，3 × 30s 超时后
+  // FAILED；用户侧表现为「部署装不上」+ 后续 409 在途锁。
+
+  // ── P0-5（生产报告 2026-10-22 §4.7）：同一行的重复注册不得二次轮换令牌 ──
+  //
+  // 现场：1.5 秒内同一行 rotate 两次 → 紧接着该执行器连续 20 次 pull 401。
+  // 机理：N4 的无状态判据在并发窗口里读到的 prior 是改写前的快照 ⇒ 两次都轮换。
+  // 修法：与 POST /executors/token 同源的幂等（同 startupId + bcrypt 复核通过 ⇒
+  // 复用明文）。这里直接驱动该私有方法，把四种分支钉死。
+  it("P0-5：同 startupId 的重复注册 → 复用明文不轮换；真重启/哈希不符才轮换", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    // 定位身份键 = 指纹（status 3 起 tokenCacheIdentityKey 以指纹优先）。
+    svcAny.issuedTokenCache.set(FP_A, {
+      token: "tok-cached",
+      startupId: "startup-1",
+      issuedAt: Date.now(),
+      address: ADDR,
+    });
+    const rotateSpy = jest
+      .spyOn(svc, "rotateToken")
+      .mockResolvedValue({ token: "tok-rotated" } as never);
+    svcAny.getCallbackSecretById = jest.fn().mockResolvedValue("$2b$12$hash");
+    const compareSpy = jest
+      .spyOn(bcrypt, "compare")
+      .mockResolvedValue(true as never);
+    const row = {
+      id: "e1",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+      appName: "node",
+    } as never;
+
+    // ① 同 startupId + 明文与库中哈希匹配 ⇒ 复用（这就是并发窗口的第二次注册）
+    await expect(
+      svcAny.issueTokenForDuplicateRegister(row, "startup-1"),
+    ).resolves.toBe("tok-cached");
+    expect(rotateSpy).not.toHaveBeenCalled();
+
+    // ② 不同 startupId（真重启）⇒ 必须轮换
+    await expect(
+      svcAny.issueTokenForDuplicateRegister(row, "startup-2"),
+    ).resolves.toBe("tok-rotated");
+    expect(rotateSpy).toHaveBeenCalledTimes(1);
+
+    // ③ 管理员在 UI 上轮换过（缓存明文已不匹配库中哈希）⇒ 也必须轮换
+    compareSpy.mockResolvedValue(false as never);
+    await expect(
+      svcAny.issueTokenForDuplicateRegister(row, "startup-1"),
+    ).resolves.toBe("tok-rotated");
+    expect(rotateSpy).toHaveBeenCalledTimes(2);
+
+    // ④ 无 startupId（旧执行器）⇒ 无法证明同一次进程生命，一律轮换
+    compareSpy.mockResolvedValue(true as never);
+    await expect(
+      svcAny.issueTokenForDuplicateRegister(row, null),
+    ).resolves.toBe("tok-rotated");
+    expect(rotateSpy).toHaveBeenCalledTimes(3);
+    compareSpy.mockRestore();
+    rotateSpy.mockRestore();
+  });
+
+  it("resolveExecutorTransport：executorId 指向的行已不存在 → unresolved（不回退 push）", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(null);
+
+    const transport = await svc.resolveExecutorTransport({
+      executorId: "deleted-row-id",
+      // 快照地址看起来"可 push"，但它是陈旧的：不能作为回退依据。
+      address: "198.18.0.1:8002",
+    });
+
+    expect(transport.mode).toBe("unresolved");
+    if (transport.mode === "unresolved") {
+      expect(transport.reason).toBe("executor-row-missing");
+      expect(transport.executor).toBeNull();
+    }
+  });
+
+  it("resolveExecutorTransport：只给 address 且行不存在 → 保持 push 回落（存量行为不变）", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(null);
+
+    const transport = await svc.resolveExecutorTransport({
+      address: "10.1.2.3:8002",
+    });
+
+    expect(transport.mode).toBe("push");
+    expect(transport.executor).toBeNull();
+  });
+
+  it("deliverControlCommand：悬空 executorId 直通 unresolved（绝不入队、也不假装 push）", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(null);
+    const enqueueSpy = jest
+      .spyOn(svc, "enqueueExecutorCommand")
+      .mockResolvedValue("cmd-1");
+
+    const routed = await svc.deliverControlCommand({
+      executorId: "deleted-row-id",
+      address: "198.18.0.1:8002",
+      type: "deploy",
+      payload: { deploymentId: "d1" },
+    });
+
+    expect(routed.delivered).toBe("unresolved");
+    expect(routed.reason).toBe("executor-row-missing");
+    expect(enqueueSpy).not.toHaveBeenCalled();
   });
 });

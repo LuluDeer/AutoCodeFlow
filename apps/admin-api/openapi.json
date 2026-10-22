@@ -3798,6 +3798,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "executorId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3873,6 +3881,14 @@
           },
           {
             "name": "deviceFingerprint",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "executorId",
             "required": true,
             "in": "query",
             "schema": {
@@ -15289,6 +15305,12 @@
             "example": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             "description": "稳定设备指纹 sha256(deviceId + ':' + installSalt)，64 位小写十六进制（协议 v3+）。pull 同址多行时用于唯一定位本行",
             "x-i18n-en": "Stable device fingerprint sha256(deviceId + ':' + installSalt), 64 lowercase hex characters (protocol v3+). Used to uniquely locate this row when a pull matches multiple rows at the same address"
+          },
+          "executorId": {
+            "type": "string",
+            "example": "3f2a1c9d-8b7e-6f50-a132-4b5c6d7e8f90",
+            "description": "执行器自报的行 id（executors.id）。仅在地址歧义（同址多行且无指纹）时作为候选提示，须该行的 per-executor 令牌校验通过才采纳",
+            "x-i18n-en": "Executor-reported row id (executors.id). Used only as a candidate hint when the address is ambiguous (two rows at one address, no fingerprint); adopted only after that row's per-executor token verifies."
           }
         },
         "required": [

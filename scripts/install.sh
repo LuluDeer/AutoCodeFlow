@@ -276,7 +276,32 @@ fi
 
 # ── 写入配置文件 ───────────────────────────────────────────────────────────────
 echo "[5/6] 写入配置..."
-DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo '127.0.0.1')"
+# P1-1（生产实证 2026-10-22）：**不要**用 `hostname -I | awk '{print $1}'` 取对外地址。
+# 它只取"第一个"（顺序无语义、不保证），而在装了 Clash/Meta TUN 的机器上第一项恒为
+# 198.18.0.1（fake-ip 段，本仓 SECURITY-REDLINE-CHECKLIST 已列为 deny 段）——于是**每台**
+# 机器都上报同一个字面地址，中台侧就出现"多份安装共享一个 address"。同理 link-local
+# (169.254/16)、docker 默认桥 (172.17/16)、loopback 都必须跳过。
+# 取址顺序：① 默认路由所在接口的源地址（最接近"这台机器怎么出网"）② 过滤后的
+# 第一个非虚拟 IPv4 ③ 127.0.0.1（仅当上面全失败）。
+detect_public_ip() {
+  local cand=""
+  if command -v ip >/dev/null 2>&1; then
+    cand="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)"
+  fi
+  if [[ -z "$cand" ]] && command -v hostname >/dev/null 2>&1; then
+    local item
+    for item in $(hostname -I 2>/dev/null || true); do
+      case "$item" in
+        127.*|0.*|169.254.*|198.18.*|198.19.*|224.*|255.*|172.17.*) continue ;;
+      esac
+      cand="$item"
+      break
+    done
+  fi
+  [[ -n "$cand" ]] || cand="127.0.0.1"
+  printf '%s' "$cand"
+}
+DETECTED_IP="$(detect_public_ip)"
 # SEC-INSTALL-01：所有来自命令行的值一律走 dotenv_escape（转义 + 双引号包裹），
 # 绝不再裸插值——裸插值正是本文件此前 .env 注入的根因。
 cat > "${INSTALL_DIR}/.env" <<EOF

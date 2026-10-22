@@ -22,6 +22,10 @@ const MAX_TOOL_OUTPUT = 16 * 1024;
 const TOOL_TIMEOUT_MS = 15_000;
 /** Same as the Windows backend: refuse captures above 4096x4096-ish. */
 const MAX_CAPTURE_PIXELS = 16_777_216;
+/** PNG signature. ffmpeg/import infer the format from the extension; the
+ *  temp file keeps `.png` and we verify the bytes so a PostScript fallback can
+ *  never be reported as a successful screenshot. */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 /** Foreground is re-verified between typing chunks (Windows re-checks per char). */
 const TYPE_CHUNK_CHARS = 32;
 /** Search may return many windows; cap the pid walk. */
@@ -498,7 +502,11 @@ export class X11GuiDriver implements GuiDriver {
 
     // Write beside the destination, then rename — the fs rename keeps the
     // no-overwrite guarantee atomic against the gate's randomized path.
-    const tmpPath = `${targetPath}.tmp-${process.pid}`;
+    // Keep a `.png` suffix on the temp file: ffmpeg and ImageMagick both infer
+    // the output format from the extension. A bare `.tmp-<pid>` made ffmpeg
+    // fail ("Unable to choose an output format") and made `import` write
+    // PostScript, which was then renamed to `*.png` — a silent corrupt capture.
+    const tmpPath = `${targetPath}.tmp-${process.pid}.png`;
     try {
       let lastError = 'window_capture_failed';
       for (const attempt of attempts) {
@@ -512,8 +520,12 @@ export class X11GuiDriver implements GuiDriver {
           continue;
         }
         const stat = fs.statSync(tmpPath);
-        if (!stat.isFile() || stat.size === 0) {
+        if (!stat.isFile() || stat.size < PNG_SIGNATURE.length) {
           lastError = 'window_capture_failed';
+          continue;
+        }
+        if (!isPngFile(tmpPath)) {
+          lastError = 'window_capture_not_png';
           continue;
         }
         if (fs.existsSync(targetPath)) throw new Error('screenshot_path_exists');
@@ -525,6 +537,19 @@ export class X11GuiDriver implements GuiDriver {
       try { fs.unlinkSync(tmpPath); } catch { /* already gone */ }
       throw error;
     }
+  }
+}
+
+/** Verify the bytes, not just the extension (see screenshot tmpPath comment). */
+function isPngFile(file: string): boolean {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const head = Buffer.alloc(PNG_SIGNATURE.length);
+    const read = fs.readSync(fd, head, 0, head.length, 0);
+    fs.closeSync(fd);
+    return read === head.length && head.equals(PNG_SIGNATURE);
+  } catch {
+    return false;
   }
 }
 

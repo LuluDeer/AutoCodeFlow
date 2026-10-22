@@ -13,6 +13,7 @@ import {
   LessThan,
   In,
   IsNull,
+  Like,
   Raw,
   OptimisticLockVersionMismatchError,
 } from "typeorm";
@@ -30,6 +31,7 @@ import { ApplicationVersion } from "./entities/application-version.entity";
 import { Application } from "./entities/application.entity";
 import { ApplicationService } from "./application.service";
 import { ExecutorService } from "../executor/executor.service";
+import type { Executor } from "../executor/entities/executor.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus/audit 先例——
 // 既有单测直接 new 装配时 gate 缺席 → null → 门禁不生效）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
@@ -57,6 +59,8 @@ import { AppDeploymentStatsDto } from "./dto/app-deployment-response.dto";
 import {
   DOMAIN_EVENTS,
   DeploymentCompletedEventPayload,
+  ExecutorAddressDriftedEventPayload,
+  ExecutorCommandFailedEventPayload,
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 
@@ -871,10 +875,37 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       });
     }
 
-    // Auto-select the least-loaded executor when none is specified
-    const executor = dto.executorId
-      ? await this.executorService.findOne(dto.executorId)
-      : await this.executorService.selectLeastLoaded();
+    // Auto-select the least-loaded executor when none is specified.
+    //
+    // P0-3（生产实证 2026-10-22）：`dto.executorId` 可能是**悬空引用** —— 前端
+    // 「重新部署」会把上一条部署行的 executorId 原样回填，而那条执行器行可能
+    // 早已被删除/自动清理（app_deployments.executorId 无外键）。旧实现在这里
+    // 直接抛 EXECUTOR_NOT_FOUND：用户既装不上、也无从修复（界面上根本选不到
+    // 一条已删除的行），只能反复点「重新部署」。改为重新选机（与「未指定
+    // 执行器」同一条路径），并留下显式告警——新行会记录本次实际选中的
+    // executorId/executorAddress，归属仍可追溯。
+    let executor: Executor;
+    if (dto.executorId) {
+      try {
+        executor = await this.executorService.findOne(dto.executorId);
+      } catch (err) {
+        // 注意：**不要**用 `err instanceof AppError` 判型——AppError 在构造时把
+        // 原型链改挂到对应的 NestJS 内置异常类上（见 app-error.ts 的长注释），
+        // 因此 `instanceof AppError` 恒为 false。按 errorCode 鸭子类型判定。
+        const errorCode = (err as { errorCode?: string } | null)?.errorCode;
+        if (errorCode !== ErrorCode.EXECUTOR_NOT_FOUND) {
+          throw err;
+        }
+        this.logger.warn(
+          `Deploy requested for executor ${dto.executorId} which no longer exists — ` +
+            `re-selecting the least-loaded executor instead of failing (stale id from a ` +
+            `previous deployment row)`,
+        );
+        executor = await this.executorService.selectLeastLoaded();
+      }
+    } else {
+      executor = await this.executorService.selectLeastLoaded();
+    }
 
     // DEP-04: approval-gated application — freeze the request as a
     // pending-approval row (status=pending keeps holding the in-flight
@@ -1375,7 +1406,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         type: "app-stop",
         payload: { deploymentId: deployment.id },
       });
-      if (routed.delivered === "pull") {
+      if (routed.delivered === "unresolved") {
+        // 行已不存在 = 没有可通知的对象。stop 本就是 best-effort（下方 catch 只
+        // warn），此处直接跳过 HTTP：对陈旧快照地址打 10s 超时什么都没换来。
+        this.logger.warn(
+          `Stop signal skipped for deployment ${deployment.id}: executor row ` +
+            `${deployment.executorId ?? "(none)"} no longer exists`,
+        );
+      } else if (routed.delivered === "pull") {
         this.logger.log(
           `Stop signal queued for pull executor ${deployment.executorAddress} (deployment ${deployment.id}, commandId=${routed.commandId})`,
         );
@@ -1737,6 +1775,31 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       type: "deploy",
       payload,
     });
+    // §8.2 建议的排障闭环（一行 info）：把「本次下发到底走了哪条通道、打给谁」
+    // 记下来。此前升级链路的 push 失败只能靠 Nginx 日志 + 「无 API 调用」反推，
+    // dev 侧为此多花了一整轮往返。
+    this.logger.log(
+      `Deploy ${deployment.id} dispatch: executorId=${deployment.executorId ?? "(none)"} ` +
+        `address=${deployment.executorAddress} transport=${routed.delivered}` +
+        (routed.commandId ? ` commandId=${routed.commandId}` : ""),
+    );
+    if (routed.delivered === "unresolved") {
+      // P0-3（生产实证 2026-10-22）：`executorId` 指向的执行器行已被删除
+      // （app_deployments.executorId 无外键）⇒ 快照地址是陈旧的，且全 pull
+      // 机队下它落在 NAT 内 / Clash 伪 IP 上（198.18.0.1:8002），push 必然
+      // 3 × 30s 超时后 FAILED。这里改为**秒级失败**并给出可操作提示，同时
+      // 立刻释放该应用的在途槽位（否则后续每次 deploy 都 409）。
+      const msg =
+        "Deploy target executor record no longer exists (it may have been deleted or " +
+        "auto-cleaned). Re-select an executor and deploy again.";
+      this.logger.error(
+        `Deploy ${deployment.id} aborted: executorId ${deployment.executorId ?? "(none)"} no ` +
+          `longer exists (snapshot address ${deployment.executorAddress}) — failing fast ` +
+          `instead of pushing to a stale address`,
+      );
+      await this.failDeploymentIfInFlight(deployment, msg);
+      return;
+    }
     if (routed.delivered === "pull") {
       // A-2①：statusMessage 记下 commandId（前缀常量供卡死扫描识别「命令
       // 未决」行——见 PULL_QUEUED_MESSAGE_PREFIX 注释）。
@@ -3287,17 +3350,174 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /**
+   * P0-4 附带（生产报告 2026-10-22 §7 P0-3 末条）：地址漂移 → 部署行地址快照跟着滚。
+   *
+   * 为什么需要：`app_deployments.executorAddress` 是**快照**，此前从不随漂移更新。
+   * 执行器换网/换 IP（ADR-017 §2 的正常形态）之后，任何按快照地址出站的路径
+   * （push 回退、包推送、UI 展示「部署在哪台」）都停在**已失效的旧地址**上——
+   * 这正是 §4.2 「静默回退 push 打到 198.18.0.1:8002」那条链路能一直成立的一半原因
+   * （另一半是悬空 id，已由 unresolved 三态修掉）。
+   *
+   * 口径：
+   *  - 只滚**未终结**行（pending/deploying/running/upgrading）：终态行的地址是
+   *    历史事实，串改会让「当时部署在哪台」失真；
+   *  - 条件更新带 `executorAddress = previousAddress`：已被并发写过（比如又一次
+   *    漂移）的行不会被本事件的旧值覆盖回去；
+   *  - 按 executorId 匹配（不是 address）：同址多行时不会误伤别人那行。
+   */
+  private readonly handleExecutorAddressDrifted = (
+    payload: ExecutorAddressDriftedEventPayload,
+  ): void => {
+    void this.refreshExecutorAddressSnapshot(payload).catch((err: unknown) => {
+      this.logger.warn(
+        `Failed to roll deployment address snapshot for executor ${payload?.executorId}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+
+  /**
+   * 地址快照滚动的实现体（返回受影响行数，供单测断言）。
+   * 语义见 handleExecutorAddressDrifted 头注。
+   */
+  async refreshExecutorAddressSnapshot(
+    payload: ExecutorAddressDriftedEventPayload,
+  ): Promise<number> {
+    if (!payload?.executorId || !payload.address) return 0;
+    const previousAddress = payload.previousAddress;
+    if (!previousAddress || previousAddress === payload.address) return 0;
+    const applied = await this.repo.update(
+      {
+        executorId: payload.executorId,
+        executorAddress: previousAddress,
+        status: In([
+          DeploymentStatus.PENDING,
+          DeploymentStatus.DEPLOYING,
+          DeploymentStatus.RUNNING,
+          DeploymentStatus.UPGRADING,
+        ]),
+      },
+      { executorAddress: payload.address },
+    );
+    const affected = applied?.affected ?? 0;
+    if (affected > 0) {
+      this.logger.log(
+        `Rolled ${affected} deployment snapshot(s) of executor ${payload.executorId} ` +
+          `from ${previousAddress} to ${payload.address} (address drift adopted)`,
+      );
+    }
+    return affected;
+  }
+
+  /**
+   * P0-4（生产报告 2026-10-22 §4.4）：「pull 部署命令执行失败」→ 立刻收 FAILED。
+   *
+   * 旧链路的三处叠加造成用户体感「点部署没反应」：
+   *   ① 部署行入 pull 队列后只记 `commandId`，失败回执**不推进行**；
+   *   ② 卡死扫描对带 `Deploy command queued` 前缀的 pull 未决行豁免到**命令 TTL
+   *      30 分钟**；
+   *   ③ 期间同一应用的任何 deploy 都被在途锁拒成 409（现场 6 次）。
+   * 现在执行器上报 ok=false 时由本订阅方秒级收口，槽位立即释放。
+   *
+   * 为什么必须**条件写**（而不是无条件 update）：同一应用重新部署后，行的
+   * statusMessage 会换成新的 commandId，此时**旧命令**的迟到失败绝不能把新行
+   * 打成 FAILED（那会把一次成功的重部署回滚成失败）。判据就落在
+   * `statusMessage LIKE '%commandId=<本次 id>%'` 上——行还认这条命令，才动它。
+   */
+  private readonly handleExecutorCommandFailed = (
+    payload: ExecutorCommandFailedEventPayload,
+  ): void => {
+    // 总线本身 fail-open；这里再兜一层并 fire-and-forget——命令结果上报的
+    // HTTP 响应绝不等待这次 DB 写。
+    void this.failDeploymentForFailedCommand(payload).catch((err: unknown) => {
+      this.logger.warn(
+        `Failed to mark deployment for failed pull command ${payload?.commandId}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+
+  /**
+   * 条件写的实现体（返回是否真的收了口，供单测断言）。
+   *
+   * 与 `failDeploymentIfInFlight` 的差异：那条判据只看「行是否仍在飞」，这里
+   * 还要看「行是否仍属于这条命令」——pull 命令是**带 commandId 的异步调用**，
+   * 而 HTTP push 失败是同步窗口，两者需要不同强度的护栏。
+   */
+  async failDeploymentForFailedCommand(
+    payload: ExecutorCommandFailedEventPayload,
+  ): Promise<boolean> {
+    if (!payload || payload.type !== "deploy" || !payload.deploymentId) {
+      return false;
+    }
+    const commandId = payload.commandId;
+    if (!commandId) return false;
+    const message =
+      `[Executor] Deploy command failed on ${payload.address}: ` +
+      `${payload.error ?? "unknown error"}`;
+    const applied = await this.repo.update(
+      {
+        id: payload.deploymentId,
+        status: In([
+          DeploymentStatus.PENDING,
+          DeploymentStatus.DEPLOYING,
+          DeploymentStatus.UPGRADING,
+        ]),
+        statusMessage: Like(`%commandId=${commandId}%`),
+      },
+      { status: DeploymentStatus.FAILED, statusMessage: message },
+    );
+    if (!applied?.affected) {
+      // 正常竞态：行已被心跳推进到终态，或已被**新的**部署命令接管。
+      // 不写、只留 debug（这不是错误，是"让后来的写者看见别人已经写完"）。
+      this.logger.debug(
+        `Ignored failed pull command ${commandId}: deployment ${payload.deploymentId} is no ` +
+          `longer in flight for this command`,
+      );
+      return false;
+    }
+    this.logger.warn(
+      `Deploy ${payload.deploymentId} marked FAILED immediately: pull command ${commandId} ` +
+        `failed on ${payload.address} — ${payload.error ?? "unknown error"} ` +
+        `(previously this row waited for the 30-minute stuck sweep; its in-flight slot is free now)`,
+    );
+    return true;
+  }
+
   /** 优雅关闭：清全部批次 timer（进程内批次随之丢弃，行级 pending/probing
    *  痕迹由重启 sweep 标记 failed）。 */
   onModuleDestroy(): void {
     for (const t of this.rolloutTimers) clearTimeout(t);
     this.rolloutTimers.clear();
     this.rolloutBatches.clear();
+    // P0-4: 与 onModuleInit 的订阅成对（不 off 会让总线持有已销毁实例，
+    // 热重载/多实例测试里表现为重复处理）。
+    this.eventBus?.off(
+      DOMAIN_EVENTS.EXECUTOR_COMMAND_FAILED,
+      this.handleExecutorCommandFailed,
+    );
+    this.eventBus?.off(
+      DOMAIN_EVENTS.EXECUTOR_ADDRESS_DRIFTED,
+      this.handleExecutorAddressDrifted,
+    );
   }
 
   /** DEP-02：服务重启收尾——进程内批次不恢复（最低正确形态），把所有
    *  pending/probing 行标记 failed（文档写明：重启即暂停灰度，人工重发）。 */
   async onModuleInit(): Promise<void> {
+    // P0-4（生产报告 2026-10-22 §4.4）：订阅「pull 控制命令执行失败」，
+    // 把在飞行立刻收成 FAILED（详见 handleExecutorCommandFailed 头注）。
+    // eventBus 为 @Optional：未装配的存量单测/裁剪装配下静默跳过。
+    this.eventBus?.on(
+      DOMAIN_EVENTS.EXECUTOR_COMMAND_FAILED,
+      this.handleExecutorCommandFailed,
+    );
+    // P0-4 附带：地址漂移 → 把未终结部署行的地址快照滚到新地址（§7 P0-3 末条）。
+    this.eventBus?.on(
+      DOMAIN_EVENTS.EXECUTOR_ADDRESS_DRIFTED,
+      this.handleExecutorAddressDrifted,
+    );
     try {
       await this.markInterruptedRolloutsFailed();
     } catch (err: unknown) {

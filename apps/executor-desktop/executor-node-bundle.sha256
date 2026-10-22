@@ -580,5 +580,15 @@
 #   · 本次**不发版**（用户明确：先只升 uv、不重打包安装包），故 desktop-v1.9.2
 #     的安装包仍内置 0.8.17；下次打 tag 时会带上 0.13.4。
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），bundle 4200kB。
-source-digest: 27442704032d5e5943bd1383174a78b3c056482e0f8412fc04b46cc0ca36da99
-873fda10dc8e6fae8d93d90a725d404201afd1361ac5211009009773d3018c7d  index.js
+# 2026-10-22（工单 11 / ADR-017 决策 §3 补全：执行器持久化并回传行 id）：
+#   · 新增 `src/executor-instance-id.ts`：把注册响应里的 `id` 落到
+#     `<WORK_DIR>/.device-identity/<kind>.instance`（与盐同目录、同 kind 分域），
+#     拉取时缓存；形态非法 / 旧版中台无 id / 写盘失败 → 一律退回「指纹 + 地址」定位。
+#   · `main.ts` 注册成功后 `persistExecutorInstanceId(...)`；`pull.ts` 的长轮询请求体与
+#     `GET /executors/config` 查询参数带上自报行 id。
+#     中台只在「同址多行 + 无指纹」的歧义态下把它当候选提示，且必须该行的
+#     per-executor 令牌校验通过才采纳（共享令牌不采纳）——桌面端内嵌执行器若漏打，
+#     这类桌面机仍会被 fail-closed 拒成 404（拿不到任务与命令）。
+#   回填环境：本机 Linux（node 24 / ncc 0.45.0），bundle 4309796 bytes / 47 个输入文件。
+source-digest: a451e5bf2d7df7f617ba0df8f993d724ce68b272b0b7416ebca07b463bf2e2e6
+9a6f727e13e2c50d717667a3abbc41268c25af3c34ef7bad6531c52ca2048a99  index.js

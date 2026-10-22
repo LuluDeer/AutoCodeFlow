@@ -39,7 +39,8 @@ import {
   flushLogs,
 } from './file-logger';
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
-import { adoptExecutorTokenHash } from './admin-envelope';
+import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelope';
+import { persistExecutorInstanceId } from './executor-instance-id';
 import { recordRegistration } from './heartbeat-state';
 // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（register/heartbeat 同源，memo 一次）。
 import { getDeviceFingerprint } from './device-identity';
@@ -226,6 +227,12 @@ async function registerExecutor(): Promise<boolean> {
     // the admin ResponseInterceptor ({code,message,data}) — unwrapAdminResponseData
     // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
     adoptExecutorTokenHash(resp?.data);
+    // 工单 11（ADR-017 决策 §3 补全）：把注册响应里的**行 id** 持久化下来。
+    // 执行器从此知道自己对应哪一行——中台在「同址多行 + 无指纹」的歧义态下
+    // 可以按「该行的 per-executor 令牌 + 自报 id」定位，而不是 fail-closed
+    // 把合法机器拒成 404（生产实证 2026-10-22 §4.6）。best-effort：写失败只
+    // 退回指纹/地址定位，绝不阻断注册。
+    persistExecutorInstanceId(unwrapAdminResponseData(resp?.data)?.id);
     registerSucceeded = true;
     // F-2: 结构化注册判定（desktop /health/admin-status 据此显示「在线」，
     // 不再依赖 'Registered to admin-api' 日志文案匹配）。

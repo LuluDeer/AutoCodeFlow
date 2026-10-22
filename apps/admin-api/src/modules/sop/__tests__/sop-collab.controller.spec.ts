@@ -583,6 +583,75 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
     ).rejects.toThrow(/超过 100KB 上限/);
   });
 
+  it("多模态 content：公网 URL / inline data URL 透传；svg / 视频 / >4 图拒绝", async () => {
+    const h = harness();
+    const content = [
+      { type: "text", text: "看看这张截图" },
+      { type: "image_url", image_url: { url: "https://example.com/shot.png" } },
+    ];
+    await h.ctl.llmRelay(
+      { address: "x", messages: [{ role: "user", content }] } as never,
+      h.auth,
+    );
+    expect(h.ai.chatMultimodal).toHaveBeenLastCalledWith({
+      messages: [{ role: "user", content }],
+    });
+
+    const inline = [{
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,AAAA" },
+    }];
+    await h.ctl.llmRelay(
+      { address: "x", messages: [{ role: "user", content: inline }] } as never,
+      h.auth,
+    );
+    expect(h.ai.chatMultimodal).toHaveBeenLastCalledWith({
+      messages: [{ role: "user", content: inline }],
+    });
+
+    await expect(
+      h.ctl.llmRelay(
+        {
+          address: "x",
+          messages: [{
+            role: "user",
+            content: [{ type: "image_url", image_url: { url: "data:image/svg+xml;base64,AAAA" } }],
+          }],
+        } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    await expect(
+      h.ctl.llmRelay(
+        {
+          address: "x",
+          messages: [{
+            role: "user",
+            content: [{ type: "video_url", video_url: { url: "https://example.com/v.mp4" } }],
+          }],
+        } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow(BadRequestException);
+
+    await expect(
+      h.ctl.llmRelay(
+        {
+          address: "x",
+          messages: [{
+            role: "user",
+            content: Array.from({ length: 5 }, (_, i) => ({
+              type: "image_url",
+              image_url: { url: `https://example.com/${i}.png` },
+            })),
+          }],
+        } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+
   it("tools：非数组忽略、>32 拒绝、合法透传", async () => {
     const h = harness();
     await h.ctl.llmRelay(

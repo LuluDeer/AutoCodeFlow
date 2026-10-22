@@ -37,6 +37,7 @@
     "node": ">=20"
   },
   "overrides": {
+    "argparse": "2.0.1",
     "esbuild": "^0.28.2"
   }
 }

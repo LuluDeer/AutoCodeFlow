@@ -73,6 +73,33 @@ export const DOMAIN_EVENTS = {
    * 「终态才发」语义一致，部署失败经既有通知渠道外发。
    */
   DEPLOYMENT_COMPLETED: "deployment.completed",
+  /**
+   * P0-4（生产报告 2026-10-22 §4.4/§7）：pull 通道的控制面命令**执行失败**后
+   * 发布（执行器经 `POST /executors/command-result` 上报 ok=false 之后）。
+   *
+   * 为什么需要这件事事件：pull 部署命令「已入队」不等于「已执行」。旧实现的
+   * 失败只落一条日志 + 一个 600s 的 Redis 结果键，**不推进 app_deployments**，
+   * 于是那条行会一直停在 DEPLOYING，直到卡死扫描（带 `Deploy command queued`
+   * 前缀的 pull 未决行豁免到命令 TTL 30 分钟）才判 FAILED——期间同一应用的
+   * 任何后续部署都被在途锁拒成 409（现场 6 次）。订阅方（部署域）据此把窗口
+   * 从 30 分钟压到秒级。
+   *
+   * 只发**失败**：成功路径的终态由执行器 /app-deployments/heartbeat 收敛
+   * （deployment.completed 已覆盖），再发一条会制造双写竞争。
+   */
+  EXECUTOR_COMMAND_FAILED: "executor.command.failed",
+  /**
+   * P0-4 附带（生产报告 2026-10-22 §7 P0-3 末条）：执行器**地址漂移**已采纳后
+   * 发布（同一安装换网/换 IP，ADR-017 §2/§5 的正常形态）。
+   *
+   * 为什么需要事件：`app_deployments.executorAddress` 是**快照**，此前从不随
+   * 漂移更新——push 回退（或任何按快照地址出站的路径）会打到**已失效的旧地址**，
+   * 而管理台展示的"部署在哪台"也停在旧值。订阅方（部署域）据此把该执行器名下
+   * 的**未终结**部署行快照滚到新地址。
+   *
+   * 只在**真实跃迁**（漂移被采纳）时发：心跳 30s 一台，无脑 emit 会打爆 outbox。
+   */
+  EXECUTOR_ADDRESS_DRIFTED: "executor.address.drifted",
 } as const;
 
 export type DomainEventName =
@@ -104,6 +131,41 @@ export interface DeploymentCompletedEventPayload {
   status: string;
   deployedVersion: string | null;
   deployedCommit: string | null;
+  occurredAt: string;
+}
+
+/**
+ * P0-4: executor.command.failed 载荷（全原始类型，common 层不 import 实体）。
+ *
+ * `deploymentId` 在入队时随命令载荷一起存进 Redis 元数据（`acf:cmdmeta:{id}`），
+ * 执行器上报结果时回填——执行器自己不知道部署行 id，也不该知道。
+ */
+export interface ExecutorCommandFailedEventPayload {
+  /** 中台生成的命令 id（与 pull 响应里的 commandId 一致）。 */
+  commandId: string;
+  /** 命令类型（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）。 */
+  type: string;
+  /** 上报结果的执行器地址（排障用）。 */
+  address: string;
+  /** 部署行 id；非部署类命令为 null。 */
+  deploymentId: string | null;
+  /** 执行器回报的错误信息（可能为 null）。 */
+  error: string | null;
+  /** 事件产生时刻（ISO）。 */
+  occurredAt: string;
+}
+
+/**
+ * P0-4 附带: executor.address.drifted 载荷（全原始类型）。
+ *
+ * `previousAddress` 是**漂移前**的地址，订阅方用它做条件更新的旧值谓词
+ * （避免把已经被别的路径改过的行又覆盖回来）。
+ */
+export interface ExecutorAddressDriftedEventPayload {
+  executorId: string;
+  appName: string;
+  previousAddress: string;
+  address: string;
   occurredAt: string;
 }
 

@@ -32,9 +32,13 @@ export interface LlmRelayResponse {
   model?: string;
 }
 
+export type LlmRelayContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface LlmRelayMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | LlmRelayContentPart[];
 }
 
 export interface CollabClientOptions {
@@ -51,6 +55,31 @@ interface RawResult {
   status: number | null;
   error?: string;
   body: string;
+}
+
+/**
+ * admin-api 的全局响应拦截器把所有 JSON 包成 `{code,message,data}`；
+ * 而旧版 selftest/fake server 返回裸 body。这里同时兼容两种形态：
+ * 有 `data` 且带 `code`/`message` 即拆信封，否则按裸 body 处理。
+ *
+ * 真机联调教训：此前 poll 直接读 `parsed.items`，在真实 admin-api 上恒为空
+ * （items 在 data 下），SOP 指派永远拉不到；llmRelay 同理 content 恒空。
+ */
+function unwrapEnvelope<T>(raw: string): T | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "data" in parsed &&
+      ("code" in parsed || "message" in parsed)
+    ) {
+      return (parsed as { data: T }).data;
+    }
+    return parsed as T;
+  } catch {
+    return null;
+  }
 }
 
 export class CollabClient {
@@ -79,12 +108,11 @@ export class CollabClient {
       ...(opts.resendAssignments !== undefined ? { resendAssignments: opts.resendAssignments } : {}),
     }, Math.max(this.timeoutMs, (opts.waitMs ?? 0) + 10_000));
     if (!res.ok) return { ok: false, error: res.error ?? `poll failed (status=${res.status})`, items: [] };
-    try {
-      const parsed = JSON.parse(res.body) as { items?: unknown[]; sopPolicy?: unknown };
-      return { ok: true, items: Array.isArray(parsed.items) ? parsed.items : [], sopPolicy: parsed.sopPolicy };
-    } catch (err) {
-      return { ok: false, error: `poll 响应非法 JSON: ${err instanceof Error ? err.message : String(err)}`, items: [] };
+    const parsed = unwrapEnvelope<{ items?: unknown[]; sopPolicy?: unknown }>(res.body);
+    if (!parsed) {
+      return { ok: false, error: 'poll 响应非法 JSON', items: [] };
     }
+    return { ok: true, items: Array.isArray(parsed.items) ? parsed.items : [], sopPolicy: parsed.sopPolicy };
   }
 
   /** 能力上报（覆盖式）。接 SOP 的机器必须显式含 `agent:sop`。 */
@@ -119,12 +147,8 @@ export class CollabClient {
       ...(input.targetAgentSessionId ? { targetAgentSessionId: input.targetAgentSessionId } : {}),
     });
     if (!res.ok) return { ok: false, error: res.error ?? `clarification failed (status=${res.status})` };
-    try {
-      const parsed = JSON.parse(res.body) as { escalated?: boolean; round?: number };
-      return { ok: true, escalated: parsed.escalated === true, round: parsed.round };
-    } catch {
-      return { ok: true };
-    }
+    const parsed = unwrapEnvelope<{ escalated?: boolean; round?: number }>(res.body);
+    return { ok: true, escalated: parsed?.escalated === true, round: parsed?.round };
   }
 
   /** 进度心跳。 */
@@ -171,12 +195,8 @@ export class CollabClient {
       ...(input.attempt !== undefined ? { attempt: input.attempt } : {}),
     });
     if (!res.ok) return { ok: false, error: res.error ?? `complete failed (status=${res.status})` };
-    try {
-      const parsed = JSON.parse(res.body) as { accepted?: boolean };
-      return { ok: true, accepted: parsed.accepted !== false };
-    } catch {
-      return { ok: true };
-    }
+    const parsed = unwrapEnvelope<{ accepted?: boolean }>(res.body);
+    return { ok: true, accepted: parsed?.accepted !== false };
   }
 
   /**
@@ -191,25 +211,24 @@ export class CollabClient {
       ...(input.tools ? { tools: input.tools } : {}),
     }, 120_000); // LLM 调用天然慢，超时独立放宽
     if (!res.ok) return { ok: false, error: res.error ?? `llm relay failed (status=${res.status})`, content: '' };
-    try {
-      const parsed = JSON.parse(res.body) as {
-        content?: string;
-        toolCalls?: Array<Record<string, unknown>>;
-        usage?: { tokensIn: number; tokensOut: number };
-        model?: string;
-        error?: string;
-      };
-      return {
-        ok: true,
-        content: typeof parsed.content === 'string' ? parsed.content : '',
-        toolCalls: parsed.toolCalls,
-        usage: parsed.usage,
-        model: parsed.model,
-        error: parsed.error,
-      };
-    } catch (err) {
-      return { ok: false, error: `relay 响应非法 JSON: ${err instanceof Error ? err.message : String(err)}`, content: '' };
+    const parsed = unwrapEnvelope<{
+      content?: string;
+      toolCalls?: Array<Record<string, unknown>>;
+      usage?: { tokensIn: number; tokensOut: number };
+      model?: string;
+      error?: string;
+    }>(res.body);
+    if (!parsed) {
+      return { ok: false, error: 'relay 响应非法 JSON', content: '' };
     }
+    return {
+      ok: true,
+      content: typeof parsed.content === 'string' ? parsed.content : '',
+      toolCalls: parsed.toolCalls,
+      usage: parsed.usage,
+      model: parsed.model,
+      error: parsed.error,
+    };
   }
 
   /**
@@ -264,12 +283,9 @@ export class CollabClient {
       120_000, // 录屏可能上百 MB，放宽
     );
     if (!res.ok) return { ok: false, error: res.error ?? `media upload failed (status=${res.status})` };
-    try {
-      const parsed = JSON.parse(res.body) as { mediaPath?: string };
-      return { ok: true, mediaPath: parsed.mediaPath };
-    } catch {
-      return { ok: false, error: 'media upload 响应非法 JSON' };
-    }
+    const parsed = unwrapEnvelope<{ mediaPath?: string }>(res.body);
+    if (!parsed) return { ok: false, error: 'media upload 响应非法 JSON' };
+    return { ok: true, mediaPath: parsed.mediaPath };
   }
 
   /**
@@ -327,12 +343,9 @@ export class CollabClient {
       120_000,
     );
     if (!res.ok) return { ok: false, error: res.error ?? `candidate upload failed (status=${res.status})` };
-    try {
-      const parsed = JSON.parse(res.body) as { packageId?: string; name?: string; version?: string };
-      return { ok: true, packageId: parsed.packageId, packageName: parsed.name, packageVersion: parsed.version };
-    } catch {
-      return { ok: false, error: 'candidate upload 响应非法 JSON' };
-    }
+    const parsed = unwrapEnvelope<{ packageId?: string; name?: string; version?: string }>(res.body);
+    if (!parsed) return { ok: false, error: 'candidate upload 响应非法 JSON' };
+    return { ok: true, packageId: parsed.packageId, packageName: parsed.name, packageVersion: parsed.version };
   }
 
   /** 单发 POST（JSON）。所有错误收敛为 RawResult，不抛。 */

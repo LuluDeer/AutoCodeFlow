@@ -71,6 +71,8 @@ export interface AgentHostConfig {
   executorToken: string;
   /** 细粒度档位输入（preset + 覆盖轴），交给 permission-profile 解析。 */
   agent: LocalAgentConfigInput;
+  /** 中台媒体的公网 base URL（可选；设置后截图会作为 image_url 进 LLM）。 */
+  mediaBaseUrl?: string;
 }
 
 export interface AgentHostDeps {
@@ -507,6 +509,7 @@ export class AgentHost {
           environment,
           guiAvailable,
           guiDriver,
+          mediaBaseUrl: this.deps.getConfig().mediaBaseUrl,
           allowGuiAction: (app) => {
             const latest = this.deps.getConfig();
             if (!latest.agentEnabled) return false;

@@ -101,6 +101,15 @@ export interface Executor {
   /** 遗留 P1-24：离线原因——manual=优雅下线（主动 shutdown/管理员置离线）；
    *  stale_timeout=心跳超时被 stale sweep 判死；null=在线或旧版执行器未上报。 */
   offlineReason?: 'manual' | 'stale_timeout' | null;
+  /**
+   * ADR-017 阶段 2/3：稳定设备指纹（sha256 的 64 位小写十六进制）。
+   *
+   * 后端 `findAll()` 与 DTO 一直在返回它，但手写模型此前**没有声明**——
+   * 结果是列表页把它丢掉了：运维收到「Executor address shared by multiple
+   * installs（含指纹短 ID）」的外部告警后，在界面上找不到任何可以对应的
+   * 行标识（P1-4）。null = 旧版执行器未上报 / 迁移前存量行。
+   */
+  deviceFingerprint?: string | null;
   interpreters?: Array<{
     /** 完整补丁版本，如 "3.11.13"（不是任务声明的 X.Y）。 */
     version: string;

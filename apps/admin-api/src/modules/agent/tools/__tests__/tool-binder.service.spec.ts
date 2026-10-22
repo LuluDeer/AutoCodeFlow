@@ -1,5 +1,7 @@
 import { ToolBinderService } from "../tool-binder.service";
 
+type Any = Record<string, any>;
+
 /** AgentApiClient 假体：登记 handler 供直接调用，未登记走 invoke 语义。 */
 function fakeApi() {
   const handlers = new Map<
@@ -154,6 +156,115 @@ describe("ToolBinderService · 绑定完备性", () => {
       "e-1",
       expect.objectContaining({ fromLine: 0, limit: 500 }),
     );
+  });
+
+  it("list_tasks 输出紧凑投影（避免大实体被 2000 字符截断）", async () => {
+    const { api, tasks } = harness();
+    (tasks.findAll as jest.Mock).mockResolvedValueOnce({
+      list: [
+        {
+          id: "t-1",
+          name: "demo",
+          status: "active",
+          triggerType: "cron",
+          cronExpression: "0 * * * *",
+          glueSource: "x".repeat(5000),
+          params: { secret: "should-not-reach-the-model" },
+        },
+      ],
+      items: [{}],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      totalPages: 1,
+    });
+
+    const res = (await api.call("list_tasks", {})) as Any;
+    expect(res).toEqual({
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      totalPages: 1,
+      tasks: [
+        {
+          id: "t-1",
+          name: "demo",
+          status: "active",
+          triggerType: "cron",
+          cronExpression: "0 * * * *",
+        },
+      ],
+    });
+    expect(JSON.stringify(res)).not.toContain("glueSource");
+    expect(JSON.stringify(res)).not.toContain("should-not-reach-the-model");
+  });
+
+  it("list_executions 输出紧凑投影（去掉 logs/aiAnalysis 等大字段）", async () => {
+    const { api, tasks } = harness();
+    (tasks.getExecutions as jest.Mock).mockResolvedValueOnce({
+      list: [
+        {
+          id: "e-1",
+          taskId: "t-1",
+          status: "failed",
+          failureReason: "script_error",
+          errorMessage: "boom",
+          logs: "x".repeat(5000),
+          aiAnalysis: "long analysis",
+        },
+      ],
+      items: [{}],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      totalPages: 1,
+    });
+
+    const res = (await api.call("list_executions", { taskId: "t-1" })) as Any;
+    expect(res).toMatchObject({
+      total: 1,
+      executions: [
+        {
+          id: "e-1",
+          taskId: "t-1",
+          status: "failed",
+          failureReason: "script_error",
+          errorMessage: "boom",
+        },
+      ],
+    });
+    expect(JSON.stringify(res)).not.toContain("long analysis");
+    expect(JSON.stringify(res)).not.toContain("x".repeat(100));
+  });
+
+  it("list_executors 输出紧凑投影（去掉 interpreters/runningExecutionIds）", async () => {
+    const { api, executors } = harness();
+    (executors.findAll as jest.Mock).mockResolvedValueOnce([
+      {
+        id: "ex-1",
+        address: "10.0.0.5:8002",
+        appName: "executor-node-1",
+        status: "online",
+        maxConcurrentTasks: 10,
+        interpreters: [{ path: "/usr/bin/python3" }],
+        runningExecutionIds: ["e-1", "e-2"],
+      },
+    ]);
+
+    const res = (await api.call("list_executors", {})) as Any;
+    expect(res).toEqual({
+      executors: [
+        {
+          id: "ex-1",
+          address: "10.0.0.5:8002",
+          appName: "executor-node-1",
+          status: "online",
+          maxConcurrentTasks: 10,
+        },
+      ],
+    });
+    expect(JSON.stringify(res)).not.toContain("interpreters");
+    expect(JSON.stringify(res)).not.toContain("runningExecutionIds");
   });
 
   it("list_executions：带 taskId 走任务内查询，否则全量", async () => {

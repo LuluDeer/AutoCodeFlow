@@ -9,7 +9,7 @@
 
 | 你是谁 | 从这几篇开始 |
 |---|---|
-| **第一次接触项目** | [快速上手](quickstart.md) → [产品总览](atlas/00-overview/01-product-overview.md) → [核心概念](atlas/00-overview/05-core-concepts.md) |
+| **第一次接触项目** | 先跑 `./scripts/demo.sh`（隔离端口 + 自动 seed）→ [快速上手](quickstart.md) → [路线图](ROADMAP.md) → [产品总览](atlas/00-overview/01-product-overview.md) → [核心概念](atlas/00-overview/05-core-concepts.md) |
 | **要部署到生产** | [部署指南](deployment.md) → [运维手册](operations.md) → [发布检查清单](release-checklist.md) |
 | **要开发后端模块** | [开发指南](development.md) → [新增 API 模块](atlas/08-workflows/add-new-api-module.md) → [数据实体](atlas/03-data/README.md) |
 | **要开发前端页面** | [开发指南](development.md) → [新增 Web 页面](atlas/08-workflows/add-new-web-page.md) → [admin-web 拆解](atlas/01-apps/admin-web/README.md) |
@@ -25,7 +25,8 @@
 
 | 文档 | 内容 |
 |---|---|
-| [quickstart.md](quickstart.md) | 5 分钟跑起来 |
+| [quickstart.md](quickstart.md) | 60 秒 demo（一键隔离栈）+ 手动 Docker / 源码路径 |
+| [ROADMAP.md](ROADMAP.md) | 开源路线图：定位 / 当前阶段 / P0-P2 / 指标 / 不做清单 |
 | [deployment.md](deployment.md) | 部署形态、环境变量、升级与回滚 |
 | [operations.md](operations.md) | 日常运维、备份恢复、扩容、故障排查 |
 | [development.md](development.md) | 本地开发、测试、代码规范 |
