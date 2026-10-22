@@ -2061,7 +2061,7 @@ export default {
   'appDeploy.rollout.state.rolledBack': '已回滚',
 
   'templates.title': '任务模板',
-  'templates.description': '常用任务形态固化为模板，一键复制配置生成可运行任务草稿。',
+  'templates.description': '常用任务形态固化为模板，一键创建可直接运行的任务（脚本随模板内置）。',
   'templates.error.title': '加载模板失败',
   'templates.empty': '暂无模板',
   'templates.official': '官方',
@@ -2090,6 +2090,20 @@ export default {
   'templates.config.fixedRate': '（每 {{rate}}s）',
   'templates.config.timeout': '超时 {{seconds}}s',
   'templates.config.retry': '重试 {{count}}',
+  // 「开箱即跑」模板 config 带内联脚本（glueSource）而无 entrypoint：
+  // 摘要显示 `runtime · glue`，不再让用户误以为模板缺入口文件。
+  'templates.config.glue': 'glue',
+  // 「使用模板」= 直接实例化（POST /task-templates/:id/instantiate），弹窗只采集任务名。
+  'templates.useDialog.title': '使用模板创建任务',
+  'templates.useDialog.template': '模板：{{name}}',
+  'templates.useDialog.name': '任务名称',
+  'templates.useDialog.namePlaceholder': '例如 prod-backup-20260101-0200',
+  'templates.useDialog.nameRequired': '任务名称不能为空',
+  'templates.useDialog.hint': '任务会立即创建。模板已内置可执行脚本，创建后可在任务详情里调整参数、调度与脚本。',
+  'templates.useDialog.ok': '创建任务',
+  'templates.useDialog.cancel': '取消',
+  'templates.useDialog.created': '已创建任务「{{name}}」',
+  'templates.useDialog.fail': '创建任务失败',
 
   'execDetail.title': '执行详情',
   'execDetail.breadcrumb.executions': '执行记录',

@@ -287,6 +287,21 @@ X11/XWayland 后端承载（设计见
 sudo apt-get install -y xdotool ffmpeg
 ```
 
+只想在本机验证 GUI 驱动（不装桌面执行器、不接 LLM）：
+
+```bash
+sudo apt-get install -y xvfb xfwm4 xdotool xprop ffmpeg python3-tk
+./scripts/demo-desktop-gui.sh      # 只验证 GUI 驱动
+./scripts/demo-desktop-agent.sh    # SOP → plan → GUI → 试跑 → 验收（默认 mock；ACF_LLM_* 接真实 provider）
+./scripts/demo-desktop-agent-diagnose.sh  # 截图诊断：wrong-token → 模型看截图 → 修正 → delivered
+./scripts/demo-headless-agent.mjs   # 无 Electron：真实 SOP 指派 → AgentHost → 试跑 → 验收
+./scripts/demo-ops-agent.mjs        # 中台 ops Agent：真实模型调只读工具分析任务
+```
+
+两者都用同一个 `X11GuiDriver` 在 Xvfb 里跑 focus → type → screenshot → Enter，并校验
+目标应用收到文本；截图固定为 **PNG 字节**（驱动会校验 PNG 签名，非 PNG 捕获直接失败，
+不会把 PostScript 之类的内容改名成 `.png`）。
+
 | 依赖 | 用途 | 缺失时的表现 |
 | --- | --- | --- |
 | `xdotool` | 窗口枚举 / focus / 点击 / 键入（XWayland） | 能力上报不含 `gui`（probe 失败） |

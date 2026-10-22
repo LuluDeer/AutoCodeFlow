@@ -13,6 +13,13 @@ COPY --from=builder /install /usr/local
 
 COPY . .
 
+# SEC-07 / D2-P1-1: bubblewrap is opt-in (docker-compose.secure.yml), but the
+# binary must exist in the image for that overlay to work. Installing it here
+# does not enable the sandbox: TASK_SANDBOX stays empty by default.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
+
 # Q-08: run as non-root user to reduce container attack surface. uv is installed
 # by pip under /usr/local/bin (not root's home), which is on PATH for appuser.
 #

@@ -45,7 +45,7 @@ export function demoTaskDefs() {
       maxRetry: 1,
       glueSource: `const msg = 'hello from AutoCodeFlow at ' + new Date().toISOString();
 console.log(msg);
-ctx.log.info('demo run complete');
+console.log('demo run complete');
 return { ok: true, msg };`,
       glueLanguage: "javascript",
     },
@@ -67,11 +67,11 @@ print(json.dumps(result))
     },
     {
       name: `${DEMO_PREFIX}fragile`,
-      description: "[demo] 故意失败的任务——供失败分类/重试/告警演示",
+      description: "[demo] 故意失败的任务——供失败分类/告警演示（不重试，避免演示数据出现两条相同失败）",
       runtime: "node",
       triggerType: "manual",
       timeout: 30,
-      maxRetry: 1,
+      maxRetry: 0,
       glueSource: `console.log('about to fail on purpose');
 throw new Error('demo intentional failure: check failureReason & error message');
 `,
@@ -494,6 +494,29 @@ async function main() {
   }
   console.log("[demo-seed] logged in");
 
+  // The demo triggers a task right after seeding. If the executor has not sent
+  // its first heartbeat yet, that trigger fails with "no online executor" and
+  // the dashboard opens on a misleading 0% success rate. Wait for one online
+  // executor (max 60s) before creating/triggering anything.
+  let executorOnline = false;
+  for (let i = 0; i < 30; i += 1) {
+    const res = await apiFetch(baseUrl, "/api/executors", { token });
+    if (res.ok) {
+      const body = unwrap(res.data);
+      const rows = Array.isArray(body) ? body : (body?.list ?? body?.items ?? []);
+      if (rows.some((e) => e.status === "online")) {
+        executorOnline = true;
+        break;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  if (!executorOnline) {
+    console.warn(
+      "[demo-seed] no online executor after 60s — seeded triggers will fail; check executor-node logs",
+    );
+  }
+
   const existingTasks = await listAll(baseUrl, "/api/tasks", token);
 
   const created = [];
@@ -591,7 +614,7 @@ async function main() {
 
   const sopLines = sops.map(({ slug, id }) => `    - ${slug} (${id})`).join("\n");
   console.log(`
-[demo-seed] done. Open ${baseUrl.replace(":3105", "")} (admin web) and check:
+[demo-seed] done. Open the admin web URL printed by scripts/demo.sh (demo default http://localhost:8088) and check:
   - 执行记录（demo-fragile 应有一条 failed，含失败分类与错误信息）
   - demo-hello-fixed 将每 15s 产生一条成功执行
   - 任务详情页的「依赖 DAG」/ 配置历史 / 通知设置可继续演示

@@ -329,10 +329,11 @@ class Settings(BaseSettings):
         return value
 
     # ---- 任务沙箱与资源限制（SEC-NEW: F-1/B-1）----
-    # F-1: 任务代码沙箱。'' = 不启用（本地开发/测试保持既有行为）；
-    # 'bwrap' = 用 bubblewrap 用户命名空间 + 只读根文件系统 + PrivateTmp 隔离
-    # 任务进程（生产容器由 docker-compose 显式开启）。配置了 bwrap 但二进制
-    # 缺失时任务**直接失败**（fail-closed），绝不静默降级为无沙箱运行。
+    # F-1: 任务代码沙箱。'' = 不启用（基础 compose 默认；任务仍在 non-root +
+    # cap_drop + rlimit 容器内运行）；'bwrap' = 用 bubblewrap 用户命名空间 +
+    # 只读根文件系统 + PrivateTmp 隔离任务进程——需要时显式叠加
+    # docker-compose.secure.yml 开启（宿主须允许非特权 userns）。配置了 bwrap
+    # 但二进制缺失/不可用时任务**直接失败**（fail-closed），绝不静默降级。
     # bwrap 用户命名空间同时阻断任务读取执行器宿主进程的 /proc/<pid>/environ
     # （跨命名空间 uid 映射后 ptrace 访问被拒），这是 F-1 对
     # EXECUTOR_SECRET / EXECUTION_CALLBACK_SECRET 外泄的核心缓解。

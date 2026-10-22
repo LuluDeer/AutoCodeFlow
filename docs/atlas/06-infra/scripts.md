@@ -64,7 +64,7 @@
 | `check-lint-gates.mjs` / `check-no-hoisting.mjs`（+ `.selftest`） | E-41 lint 门禁覆盖守卫 / ARCH-28b 禁 hoisting 安装模型守卫（均 CI） |
 | `check-dependency-review.mjs`（+ `.selftest`） | SEC-06 豁免清单复查机制：到期 fail-closed + CI 豁免 ↔ 注册表双向对账 |
 | `check-desktop-bundle-drift.mjs` / `check-desktop-update-chain.mjs`（+ `.selftest`） | F-19 bundle 语义漂移闸 / N-11 桌面更新链元数据守卫 |
-| `check-compose-sandbox.mjs` | DEEP-AUDIT D2-P1-1：compose executor-python 必须显式 `TASK_SANDBOX: 'bwrap'`（CI） |
+| `check-compose-sandbox.mjs`（+ `--selftest`） | SEC-07：基础 compose 默认直跑（`TASK_SANDBOX` 空/可覆盖）、`docker-compose.secure.yml` 显式 opt-in bwrap、部署文档前置守卫（CI） |
 | `check-release-config.mjs` / `check-release-hygiene.mjs`（+ 同名 `.md` 手册） | 发版配置一致性（release-please ↔ release.yml）/ 发布卫生守卫 |
 | `check-shell-multibyte-var.mjs` | shell 变量名吞多字节字符守卫（macOS bash 3.2 实爆回归，CI） |
 | `generate-executor-protocol.mjs` | A3 协议双生成器：protocol.json → zod + pydantic（CI `gen:protocol` diff 闸） |

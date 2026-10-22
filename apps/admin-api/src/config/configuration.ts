@@ -928,11 +928,16 @@ if (process.env.NODE_ENV === "production") {
       "[AutoFlow] 生产环境必须显式设置 CORS_ALLOWED_ORIGINS 为生产来源",
     );
   }
+  // ALLOW_LOOPBACK_CORS（显式 opt-in）: 本地 demo / 纯 loopback 部署需要
+  // http://localhost:8088 这类来源，但生产守则默认禁止。只有显式设为 "true"
+  // 才放行；默认行为不变（仍 fail-fast）。远程/公网部署不要打开。
+  const allowLoopbackCors = process.env.ALLOW_LOOPBACK_CORS === "true";
   if (
+    !allowLoopbackCors &&
     corsAllowed.some((o) => o.includes("localhost") || o.includes("127.0.0.1"))
   ) {
     throw new Error(
-      "[AutoFlow] 生产环境的 CORS_ALLOWED_ORIGINS 不得包含 localhost/127.0.0.1",
+      "[AutoFlow] 生产环境的 CORS_ALLOWED_ORIGINS 不得包含 localhost/127.0.0.1（本地 demo 可显式设置 ALLOW_LOOPBACK_CORS=true）",
     );
   }
 

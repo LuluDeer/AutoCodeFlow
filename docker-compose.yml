@@ -323,14 +323,15 @@ services:
       EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # DEEP-AUDIT D2-P1-1（2026-09-22）：任务沙箱显式启用 bwrap——bubblewrap
-      # 用户命名空间 + 只读根文件系统 + PrivateTmp 隔离任务进程（最强隔离层）。
-      # 此前 config.py 注释声称「生产容器由 compose 显式开启」而本文件实际未设置，
-      # 最强隔离层在生产路径默认关闭。前置：宿主/内核须允许容器内 unprivileged
-      # user namespaces；bwrap 二进制缺失或 userns 被禁时执行器 fail-closed
-      # （failureReason=sandbox_unavailable），绝不静默降级为无沙箱运行。
-      # 前置验证步骤见 docs/deployment.md「容器安全（SEC-07）」段。
-      TASK_SANDBOX: 'bwrap'
+      # DEEP-AUDIT D2-P1-1（2026-09-22，2026-10 修正）：任务沙箱默认**关闭**。
+      # 历史实现硬编码 TASK_SANDBOX=bwrap，但 executor-python 镜像不含
+      # bubblewrap，且 compose 的 cap_drop/no-new-privileges 与多数宿主的
+      # seccomp 策略不允许非特权 user namespaces——结果是开箱即用的默认部署里
+      # **每个 Python 任务都 fail-closed**（sandbox_unavailable）。
+      # 现在默认直跑（仍在 non-root + cap_drop + rlimit 的容器内），需要最强隔离
+      # 时显式叠加 docker-compose.secure.yml（TASK_SANDBOX=bwrap），并先按
+      # docs/deployment.md「容器安全（SEC-07）」验证 userns/bwrap 前置。
+      TASK_SANDBOX: ${TASK_SANDBOX:-}
       # DEEP-AUDIT B·2.2：PYPI_REGISTRY_URL 是 **--index-url 语义（替换默认
       # 索引）**，而非附加；registry-pypi 是纯文件仓、**无上游代理**——默认
       # 值下任何未手动上传到私有源的包（含 PyPI 官方包）安装都会失败。若需

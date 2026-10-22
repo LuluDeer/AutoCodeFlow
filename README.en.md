@@ -3,33 +3,90 @@
 # AutoCodeFlow
 
 <p align="center">
-  <img src="docs/assets/banner-en.png" alt="AutoCodeFlow — distributed task orchestration and execution platform" width="100%">
+  <img src="docs/assets/banner-en.png" alt="AutoCodeFlow — the open-source automation runtime" width="100%">
 </p>
 
 <p align="center">
-  Write JavaScript / Python scripts in the browser, schedule them by cron or events,<br/>
-  dispatch them safely to a fleet of executors — and collect logs, artifacts, alerts, audit trails<br/>
-  and AI failure analysis in one place.
+  <b>The open-source automation runtime</b><br/>
+  <sub>Scripts, desktops and AI agents on one auditable scheduler</sub>
+</p>
+
+<p align="center">
+  Schedule scripts · Give AI agents hands on a real desktop ·<br/>
+  Keep every run observable, auditable and replayable.
 </p>
 
 ## 🧭 What it is
 
-AutoCodeFlow turns "cron scripts scattered across machines" into **schedulable, observable, auditable and rollback-able** jobs:
+AutoCodeFlow is a **self-hosted automation runtime** that puts scheduled scripts, desktop actions and AI agents on one auditable scheduler:
 
-- **Author** — write Glue scripts (JS / Python / Shell) in the console, or ship code via Git repos and application bundles.
-- **Schedule** — cron, fixed rate, manual, inbound webhook and dependency DAGs, with retries, timeouts, concurrency gates and maintenance windows.
-- **Execute** — executors self-register, heartbeat and **pull** work (no inbound ports exposed), with load-aware dispatch across the fleet.
-- **Observe** — live logs over SSE, execution trends, Prometheus metrics, OpenTelemetry traces, failure classification and AI root-cause analysis.
-- **Govern** — RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs and two-person approval for deployments.
+- **Scheduled scripts** — cron / fixed rate / webhook / DAG, JS / Python / Shell; logs, retries, timeouts, concurrency gates and alerts.
+- **Desktop automation** — Windows / Linux desktop executors with GUI + browser actions, for internal systems and employee PCs that have no API.
+- **Agent execution** — an MCP server lets Claude / Cursor create, trigger and debug jobs; SOPs let an agent execute a "goal + acceptance" contract on a real machine and leave evidence behind.
+- **Inside your network** — executors pull work (no inbound ports exposed), and private npm / PyPI dependencies install out of the box.
 
-| Scenario | What AutoCodeFlow runs |
-|---|---|
-| Data pipelines | Incremental sync, cleaning and warehousing with automatic retry and alerting |
-| Scheduled reports | Daily business reports rendered and pushed to WeCom / DingTalk / Slack |
-| Operations | Backup verification, log rotation and cold archiving, certificate renewal |
-| API integration | Third-party polling, webhooks, event-driven orchestration |
-| Desktop automation | RPA-style local UI tasks on the Electron desktop executor |
-| AI agents | Let Claude / Cursor create, trigger and debug tasks through the MCP server |
+> Stable work to scripts, long-tail work to agents, every action auditable.
+
+## ⚡ One-command demo
+
+```bash
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
+cd AutoCodeFlow
+./scripts/demo.sh
+```
+
+The script generates random secrets, starts an **isolated** local stack (it never touches your `.env`), seeds 3 demo tasks + 3 SOPs, triggers one run and waits for `SUCCESS`, then prints the UI URL and admin password. The first run builds images (~3–8 minutes depending on network); later starts take ~30 seconds:
+
+- UI: **http://localhost:8088**
+- API docs: http://127.0.0.1:3105/api/docs
+- Stop: `./scripts/demo.sh --down`; reset: `./scripts/demo.sh --reset`
+
+![demo dashboard](docs/assets/screenshots/zh/demo-dashboard.png)
+
+## 🖥️ Desktop Agent demo (Linux X11)
+
+```bash
+./scripts/demo-desktop-agent.sh   # no Docker, no LLM, no API key
+```
+
+It runs **SOP → plan → GUI actions → sandboxed trial → acceptance → delivered**: the control flow, gates, `X11GuiDriver`, workspace sandbox and acceptance path are production code. The plan is scripted by default (no key); set `ACF_LLM_API_KEY` / `ACF_LLM_BASE_URL` / `ACF_LLM_MODEL` to use a real OpenAI-compatible provider (verified with `deepseek-v4.1-flash-1017`). For a driver-only check, use `./scripts/demo-desktop-gui.sh`.
+
+Headless executor (no Electron): `./scripts/demo-headless-agent.mjs` registers an executor, assigns a real SOP, and runs `AgentHost` → center LLM relay → sandboxed trial → acceptance → `completed` (AI provider required).
+
+Multimodal: `/agent-collab/llm` accepts `text + image_url`. The executor attaches GUI screenshots as inline `data:image/png;base64` by default (verified: the provider reads real screenshots directly, no public media host needed); images over 1.5MB fall back to `ACF_MEDIA_BASE_URL`.
+
+Screenshot-diagnosis loop: `./scripts/demo-desktop-agent-diagnose.sh` intentionally types `wrong-token`; the real model reads the screenshot, clears it, types the correct token, and reaches `delivered` (`ACF_LLM_*` required).
+
+Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `get_execution_stats`/`list_executions`/`get_execution_logs` in an `ops_watch` session and returns a readable analysis (AI provider required).
+
+![desktop agent demo](docs/assets/screenshots/zh/desktop-agent-sop.png)
+
+## 🎯 Three ways to use it
+
+| What you want | What to use | Where to start |
+|---|---|---|
+| Turn scattered crontabs into observable jobs | Scheduled scripts + executors | Tasks → New (or Task templates) |
+| Automate an internal/desktop system with no API | Desktop executor + GUI/browser | Executors → Install wizard |
+| Let an AI agent actually do the work | MCP server + SOPs | `acf` CLI / MCP / SOP page |
+
+## 🆚 Why not…
+
+| Option | It is good at | It does not cover |
+|---|---|---|
+| crontab / systemd timer | Single-machine scheduling | Fleet, logs, retries, audit, desktop |
+| XXL-JOB / Kestra | Server-side script orchestration | Desktop GUI, browser, AI agents |
+| n8n / Dify | SaaS / API workflows | Self-hosted executors, desktop, private registries |
+| UiPath / Yingdao | Commercial RPA | Open source, self-hosting, code-first, script scheduling |
+| **AutoCodeFlow** | Scripts + desktop + agents on one scheduler | Not a big-data engine, not managed SaaS |
+
+## 🧑‍💻 Who it is for / not for
+
+**For**: developers and ops who can run Docker, have internal machines or employee desktops, and need logs / audit / self-hosting.
+**Not for**: teams that want a managed SaaS, need Spark/Flink-scale data orchestration, or refuse to touch a terminal.
+
+> Desktop GUI status: Linux X11/XWayland is verified on real machines; Windows GUI is beta (focus/click/type/screenshot + app allow-list); macOS is recon only. See the [executor agent roadmap](docs/design/agent-and-deployment/06-roadmap.md).
+
+> **Status**: early-stage / self-hosted first. APIs may still change before 2.0; pin a release tag for production.
 
 ## 🖼️ Screenshots
 
@@ -137,11 +194,13 @@ Per-module breakdowns live in the [Atlas](docs/atlas/README.md) and [ADRs](docs/
 | **Code delivery** | Inline Glue scripts (editor, lint, AI generation), Git repos, application zips; private npm/PyPI dependency install |
 | **Observability** | SSE live logs, execution trends, scheduler latency, Prometheus metrics, OpenTelemetry traces, Loki log aggregation |
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
-| **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, bubblewrap sandbox for Python tasks |
+| **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for script generation, failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
 | **Tooling** | `acf` CLI (67 subcommands), Node/Python SDKs, MCP server (56 tools), VitePress docs site |
 
 ## 🚀 Quick start
+
+> Want to see it first? `./scripts/demo.sh` starts an isolated, seeded stack on non-default ports (it never touches `.env`) in ~1–3 minutes. The options below are for custom deployments.
 
 ### Option 1 — Docker Compose (recommended for a trial)
 
@@ -228,17 +287,24 @@ npm install @autocodeflow/sdk     # Node.js
 pip install autoflow-sdk          # Python
 ```
 
-Inside a task you get `ctx` for parameters, HTTP calls, logging and result reporting.
+Inside an **SDK task**, import `ctx` explicitly (Glue scripts use the system runtime and do not install requirements; use an application package or a dependency channel when you need the SDK):
 
 ```js
-// Node.js — Glue script shipped with the task
-const res = await ctx.http.get('/api/tasks?pageSize=5');
-ctx.logger.info('tasks fetched', { meta: { count: res.list.length } });
-return ctx.success('done', { count: res.list.length });
+// Node.js — declare @autocodeflow/sdk in the task dependencies
+const { TaskContext } = require('@autocodeflow/sdk');
+const ctx = TaskContext.fromEnv();
+async function main() {
+  const res = await ctx.http.get('/api/tasks?pageSize=5');
+  ctx.logger.info('tasks fetched', { meta: { count: res.list.length } });
+  return ctx.success('done', { count: res.list.length });
+}
+main().catch((err) => { ctx.logger.error(err.message); process.exitCode = 1; });
 ```
 
 ```python
-# Python — Glue script shipped with the task
+# Python — install autoflow-sdk
+from autoflow_sdk import TaskContext
+ctx = TaskContext.from_env()
 rows = load_rows()                      # your business code
 ctx.log.info("rows=%d", len(rows))
 ctx.report_success(summary="etl done", duration_ms=412)
@@ -329,7 +395,7 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 
 - **RBAC** — project-scoped roles (owner / developer / viewer), route-level guards enforced in CI (`check-route-authz-matrix`).
 - **Credentials** — scoped API keys, per-execution callback tokens, executor shared-token rotation, TOTP 2FA, OIDC SSO.
-- **Isolation** — optional bubblewrap sandbox for Python tasks (user namespaces, read-only root, private tmp) and a child-process env allowlist.
+- **Isolation** — optional optional bubblewrap sandbox for Python tasks (secure overlay) (user namespaces, read-only root, private tmp) and a child-process env allowlist.
 - **Network** — all outbound requests go through an SSRF guard with DNS pinning (private ranges denied by default, opt-in per integration).
 - **Audit** — full operation audit trail, two-person approval for deployments, replayable configuration history.
 - **Supply chain** — dependency review log, secret scanning (gitleaks), multi-arch image build gate, release hygiene audit.

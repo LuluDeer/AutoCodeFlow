@@ -14,6 +14,18 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
 import { ConfigService } from "@nestjs/config";
 import {
+  IsArray,
+  IsIn,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from "class-validator";
+import {
   ApiProperty,
   ApiPropertyOptional,
   ApiOkResponse,
@@ -27,7 +39,11 @@ import { ExecutorService } from "../executor/executor.service";
 import type { Executor } from "../executor/entities/executor.entity";
 import { ExecutorPackageService } from "../executor-package/executor-package.service";
 import { PACKAGE_UPLOAD_TMP_DIR } from "../executor-package/executor-package.service";
-import { AiService, type MultimodalMessage } from "../ai/ai.service";
+import {
+  AiService,
+  type MultimodalMessage,
+  type MultimodalPart,
+} from "../ai/ai.service";
 import { SopService } from "./sop.service";
 import { SopMediaService, MAX_AGENT_MEDIA_BYTES } from "./sop-media.service";
 import type { SopClarificationMediaRef } from "./entities/sop-clarification.entity";
@@ -95,12 +111,21 @@ function bearer(auth: string | undefined): string {
   return auth?.startsWith("Bearer ") ? auth.slice(7) : (auth ?? "");
 }
 
-class AgentCollabPollDto {
+export class AgentCollabPollDto {
   @ApiProperty({ example: "office-pc-07:8002" })
+  @IsString()
+  @MaxLength(255)
   address!: string;
   /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   deviceFingerprint?: string | null;
   @ApiPropertyOptional({ description: "长轮询等待（服务端钳位 ≤25s）" })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(25_000)
   waitMs?: number;
   /**
    * 执行器丢了本地状态时强制重发指派载荷（含 SOP 全量）。
@@ -110,80 +135,211 @@ class AgentCollabPollDto {
   @ApiPropertyOptional({
     oneOf: [{ type: "boolean" }, { type: "array", items: { type: "string" } }],
   })
+  @IsOptional()
   resendAssignments?: boolean | string[];
   @ApiPropertyOptional({ isArray: true, type: "string" })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
   inflight?: string[];
 }
 
-class AgentCollabCapabilityDto {
+export class AgentCollabCapabilityDto {
   @ApiProperty()
+  @IsString()
+  @MaxLength(255)
   address!: string;
   /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   deviceFingerprint?: string | null;
   /** 能力域清单（覆盖式）。接 SOP 的机器必须显式含 `agent:sop`。 */
   @ApiProperty({ isArray: true, type: "string" })
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
   capabilities!: string[];
   /** 富结构能力报告（可选，P7 的可行性预检用）。 */
   @ApiPropertyOptional({ type: "object", additionalProperties: true })
+  @IsOptional()
+  @IsObject()
   report?: Record<string, unknown>;
 }
 
-class AgentCollabClarificationDto {
+export class AgentCollabClarificationDto {
   @ApiProperty()
+  @IsString()
+  @MaxLength(255)
   address!: string;
   /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   deviceFingerprint?: string | null;
   @ApiProperty({ format: "uuid" })
+  @IsUUID()
   assignmentId!: string;
   /** 客户端生成的幂等键（UUID）——重试重发不产生两条澄清。 */
   @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
   clientClarificationId?: string;
   @ApiProperty()
+  @IsString()
+  @MaxLength(10_000)
   question!: string;
   @ApiPropertyOptional({ type: "object", additionalProperties: true })
+  @IsOptional()
+  @IsObject()
   context?: Record<string, unknown>;
   @ApiPropertyOptional({
     type: "object",
     additionalProperties: true,
     isArray: true,
   })
+  @IsOptional()
+  @IsArray()
   mediaRefs?: SopClarificationMediaRef[];
   @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   targetAgentSessionId?: string;
 }
 
-class AgentCollabProgressDto {
+export class AgentCollabProgressDto {
   @ApiProperty()
+  @IsString()
+  @MaxLength(255)
   address!: string;
   /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   deviceFingerprint?: string | null;
   @ApiPropertyOptional({ type: "object", additionalProperties: true })
+  @IsOptional()
+  @IsObject()
   progressJson?: Record<string, unknown>;
   @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   targetAgentSessionId?: string;
 }
 
-class AgentCollabCompleteDto {
+export class AgentCollabCompleteDto {
   @ApiProperty()
+  @IsString()
+  @MaxLength(255)
   address!: string;
   /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   deviceFingerprint?: string | null;
   @ApiProperty({ enum: ["completed", "failed"] })
+  @IsIn(["completed", "failed"])
   status!: "completed" | "failed";
   @ApiPropertyOptional({ type: "object", additionalProperties: true })
+  @IsOptional()
+  @IsObject()
   result?: Record<string, unknown>;
   /** 幂等：同 attempt 重放无害。 */
   @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
   attempt?: number;
 }
 
-class AgentCollabAckReplyDto {
+export class AgentCollabAckReplyDto {
   @ApiProperty()
+  @IsString()
+  @MaxLength(255)
   address!: string;
   /** ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同址多行时唯一定位本行。 */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
   deviceFingerprint?: string | null;
   @ApiProperty({ format: "uuid" })
+  @IsUUID()
   clarificationId!: string;
+}
+
+/**
+ * 解析 LLM relay 的 message content：允许 string（历史形态）或 OpenAI
+ * 多模态 part 数组（text + image_url）。图片接受两类：
+ *   · http(s) URL（provider 自行抓取）；
+ *   · `data:image/(png|jpeg|webp);base64,...`（执行器本地截图直传，单图 ≤3MB）。
+ * 后者实测被 provider 接受，且不触发服务端出站抓取（SSRF 面为零）；视频
+ * 与未知 part 一律拒绝（当前 provider 无视频能力）。
+ */
+function parseRelayMessages(
+  raw: Array<{ role?: string; content?: unknown }>,
+): MultimodalMessage[] {
+  let imageCount = 0;
+  return raw.map((m, index) => {
+    const role = m?.role;
+    if (role !== "system" && role !== "user" && role !== "assistant") {
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, { index });
+    }
+    const content = m?.content;
+    if (typeof content === "string") {
+      if (content.length === 0) {
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      }
+      if (content.length > 100_000) {
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+      }
+      return { role, content } as MultimodalMessage;
+    }
+    if (!Array.isArray(content) || content.length === 0) {
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+    }
+    const parts: MultimodalPart[] = [];
+    for (const part of content) {
+      if (!part || typeof part !== "object") {
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      }
+      const rec = part as Record<string, unknown>;
+      if (rec.type === "text" && typeof rec.text === "string" && rec.text.length > 0) {
+        if (rec.text.length > 100_000) {
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+        }
+        parts.push({ type: "text", text: rec.text });
+        continue;
+      }
+      const image = rec.type === "image_url" ? (rec.image_url as { url?: unknown } | undefined) : undefined;
+      if (image && typeof image.url === "string") {
+        const url = image.url;
+        const isHttp = /^https?:\/\//i.test(url);
+        const isInlineImage =
+          /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(url) &&
+          url.length <= 3 * 1024 * 1024;
+        if (!isHttp && !isInlineImage) {
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+        }
+        if (isHttp && url.length > 2048) {
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+        }
+        imageCount += 1;
+        if (imageCount > 4) {
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+        }
+        parts.push({ type: "image_url", image_url: { url: image.url } });
+        continue;
+      }
+      // video_url / 未知 part：该 provider 无视频能力；拒绝比静默丢弃诚实。
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+    }
+    if (parts.length === 0) {
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+    }
+    return { role, content: parts } as MultimodalMessage;
+  });
 }
 
 // @Public() + 手工机器鉴权：执行器面（非用户 JWT 面）
@@ -477,25 +633,7 @@ export class SopCollabController {
     if (raw.length === 0 || raw.length > 64) {
       throw new AppError(ErrorCode.SOP_COLLAB_MESSAGES_COUNT_INVALID);
     }
-    const messages: MultimodalMessage[] = raw.map((m, i) => {
-      const role = m?.role;
-      if (role !== "system" && role !== "user" && role !== "assistant") {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_ROLE_INVALID, {
-          index: i,
-        });
-      }
-      if (typeof m?.content !== "string" || m.content.length === 0) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
-          index: i,
-        });
-      }
-      if (m.content.length > 100_000) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
-          index: i,
-        });
-      }
-      return { role, content: m.content } as MultimodalMessage;
-    });
+    const messages = parseRelayMessages(raw);
     const tools = Array.isArray(body?.tools) ? body.tools : undefined;
     if (tools && tools.length > 32) {
       throw new AppError(ErrorCode.SOP_COLLAB_TOOLS_TOO_MANY);

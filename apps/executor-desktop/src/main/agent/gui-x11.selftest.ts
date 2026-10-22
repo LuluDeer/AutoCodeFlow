@@ -219,6 +219,7 @@ async function main(): Promise<void> {
 
   // ── screenshot: size guard, tmp+rename, honest missing tool ──
   {
+    const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const h = harness({
       comms: { 4242: 'gedit' },
       respond: (call) => {
@@ -226,8 +227,9 @@ async function main(): Promise<void> {
         if (call.args[0] === 'getwindowpid') return 'PID=4242';
         if (call.args[0] === 'getwindowgeometry') return 'X=0\nY=0\nWIDTH=4096\nHEIGHT=4096\nSCREEN=0';
         if (call.binary.endsWith('ffmpeg')) {
-          // 输出路径是最后一个参数（-y 之后）
-          fs.writeFileSync(call.args[call.args.length - 1] as string, 'png');
+          // 输出路径是最后一个参数（-y 之后）。写真实 PNG 签名——驱动现在校验
+          // 的是字节而不是扩展名。
+          fs.writeFileSync(call.args[call.args.length - 1] as string, PNG);
           return '';
         }
         return '';
@@ -238,8 +240,8 @@ async function main(): Promise<void> {
       const target = path.join(dir, 'shot.png');
       const out = await h.driver.run({ action: 'screenshot', app: 'gedit', screenshotPath: target });
       assert.equal(out.ok, true, out.error ?? 'focus should succeed');
-      assert.equal(fs.readFileSync(target, 'utf8'), 'png', 'capture renamed into place');
-      assert.equal(fs.existsSync(`${target}.tmp-${process.pid}`), false, 'tmp cleaned up');
+      assert.deepEqual(fs.readFileSync(target), PNG, 'capture renamed into place');
+      assert.equal(fs.existsSync(`${target}.tmp-${process.pid}.png`), false, 'tmp cleaned up');
       // 捕获后端 = ffmpeg x11grab（区域抓取自活动窗口矩形；import 在本机栈
       // XGetImage EAGAIN 已降为后备）。断言区域与窗口几何一致。
       const grabCall = h.calls.find((c) => c.binary.endsWith('ffmpeg'));
@@ -247,6 +249,36 @@ async function main(): Promise<void> {
       assert.equal(grabCall?.args.includes('-f'), true);
       assert.equal(grabCall?.args[grabCall.args.indexOf('-i') + 1]?.startsWith(':0.0+'), true, 'grab region on configured display');
       assert.equal(grabCall?.args.includes('4096x4096'), true, 'video_size equals window rect');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  {
+    // 非 PNG 字节（ImageMagick 在输出扩展名不可识别时会写 PostScript）必须
+    // 失败，绝不能把损坏文件 rename 成 .png。
+    const h = harness({
+      comms: { 4242: 'gedit' },
+      respond: (call) => {
+        if (call.args[0] === 'getactivewindow') return '0x0a200002';
+        if (call.args[0] === 'getwindowpid') return 'PID=4242';
+        if (call.args[0] === 'getwindowgeometry') return 'X=0\nY=0\nWIDTH=100\nHEIGHT=100\nSCREEN=0';
+        if (call.binary.endsWith('ffmpeg') || call.binary.endsWith('import')) {
+          fs.writeFileSync(call.args[call.args.length - 1] as string, '%!PS-Adobe-3.0');
+          return '';
+        }
+        return '';
+      },
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-gui-x11-'));
+    try {
+      const out = await h.driver.run({
+        action: 'screenshot',
+        app: 'gedit',
+        screenshotPath: path.join(dir, 'shot.png'),
+      });
+      assert.equal(out.ok, false);
+      assert.equal(out.error, 'window_capture_not_png');
+      assert.equal(fs.existsSync(path.join(dir, 'shot.png')), false, 'no corrupt file left behind');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

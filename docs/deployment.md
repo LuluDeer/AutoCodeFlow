@@ -42,7 +42,22 @@ security_opt:
 - admin-api/admin-web/nginx 等基础设施服务**未**默认加 `cap_drop`（nginx 需绑定 80 端口、admin-api 镜像当前以 root 启动 node），后续可单独评估；执行器作为最高风险面先行收敛。
 - 回滚：若某任务确需特殊 capability（罕见），在受控的 compose override 中按能力白名单 `cap_add` 单项放开，不要整体恢复 `cap_drop` 缺省。
 
-**任务沙箱 bwrap（DEEP-AUDIT D2-P1-1，2026-09-22）**：根 `docker-compose.yml` 的 `executor-python` 已显式设置 `TASK_SANDBOX=bwrap`——任务进程经 bubblewrap 用户命名空间（`--unshare-all --share-net`）+ 只读根文件系统 + PrivateTmp 隔离。bwrap 依赖内核 **unprivileged user namespaces**：部署前须在目标宿主验证该前提（容器内可 `unshare -U true`，或确认 `kernel.unprivileged_userns_clone=1`、未被 seccomp/AppArmor 策略禁用）。前提不满足（bwrap 未安装，或 userns 被内核/容器策略禁用）时执行器 **fail-closed**：任务直接失败（`failureReason=sandbox_unavailable`，前端 runbook 有处置指引），绝不静默降级为无沙箱运行——此时需安装 bubblewrap / 在宿主放开 unprivileged userns 后重启执行器。
+**任务沙箱 bwrap（DEEP-AUDIT D2-P1-1，2026-09-22；2026-10 修订为 opt-in）**：基础 `docker-compose.yml` 的 `executor-python` 默认 `TASK_SANDBOX` 为空——任务直接在容器内以 non-root + `cap_drop: ALL` + `no-new-privileges` + rlimit 运行。需要最强隔离时叠加 `docker-compose.secure.yml`：它设置 `TASK_SANDBOX=bwrap` 并放开 seccomp，让任务进程经 bubblewrap 用户命名空间（`--unshare-all --share-net`）+ 只读根文件系统 + PrivateTmp 隔离。镜像已内置 bubblewrap，但 bwrap 还依赖宿主内核 **unprivileged user namespaces**：容器内可先执行
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.secure.yml \
+  exec executor-python bwrap --ro-bind / / --dev /dev --proc /proc \
+  --unshare-all --share-net echo bwrap-ok
+```
+
+或确认 `kernel.unprivileged_userns_clone=1`、未被 seccomp/AppArmor 策略禁用。前提不满足时执行器 **fail-closed**：任务直接失败（`failureReason=sandbox_unavailable`，前端 runbook 有处置指引），绝不静默降级为无沙箱运行——此时不要启用 secure overlay，或先修宿主前提。
+
+**为什么默认关闭**：2026-09 曾把基础 compose 硬编码为 `TASK_SANDBOX=bwrap`，但镜像不含 bwrap，且 `cap_drop: ALL` / `no-new-privileges` 与多数宿主 seccomp 不允许非特权 userns，导致默认部署里每个 Python 任务都失败（`sandbox_unavailable`）。默认直跑保证开箱可用；安全敏感部署请显式叠加 secure overlay 并完成上面的验证。
+
+```bash
+# 验证通过后再用 secure overlay 启动
+docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
+```
 
 **真机验收清单**（留真机轮执行，本轮本机无 docker 环境未实测）：
 
@@ -937,7 +952,7 @@ node dist\main.js
 
 - **影响面**：Windows 开发机上 `a=[0]*10**10` 类失控任务不会被 RLIMIT_AS 截断，内存失控时由 OS OOM 或人工干预兜底；CPU 超时仍由**执行器侧的 timeoutSeconds 树杀兜底**（`taskkill /T /F`，见 §5），故「任务永杀不死」不会发生——缺的只是**细粒度资源闸**，不是失控兜底。
 - **补齐方案（登记，未实施）**：Windows Job Object（`CreateJobObject` + `JOB_OBJECT_LIMIT_PROCESS_MEMORY` + `JOB_OBJECT_LIMIT_CPU_RATE_CONTROL`，经 `AssignProcessToJobObject` 绑定任务进程树；pywin32 或 ctypes 可达）。工作量 L 级：需处理 job 句柄生命周期（父进程崩溃时 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 联动——与桌面端 R5-B-1 crash-guard 同族语义）、嵌套 job 兼容（Win8+ 已支持）与 IO limit 语义取舍。
-- **运维取舍**：生产/资源隔离敏感部署请用 Linux 容器（bwrap 沙箱 + rlimit 全生效）；Windows 仅建议开发/冒烟用途——与 R14 章开头「Windows 上作为普通进程运行」的定位一致。
+- **运维取舍**：生产/资源隔离敏感部署请用 Linux 容器（secure overlay 下 bwrap 沙箱 + rlimit 全生效）；Windows 仅建议开发/冒烟用途——与 R14 章开头「Windows 上作为普通进程运行」的定位一致。
 
 ### 5. 停服与优雅退出（R-08，重要）
 

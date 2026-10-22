@@ -75,6 +75,13 @@ export interface RuntimeDeps {
   /** P7c: 按当前机器和权限探测后的可用性；测试可注入替身 driver。 */
   guiAvailable?: boolean;
   guiDriver?: GuiDriver;
+  /**
+   * 中台媒体对外可达的 base URL（例如 https://acf.example.com）。
+   * 设置后，GUI/浏览器截图会作为 image_url 附到下一轮 LLM 消息；
+   * 未设置则只发文本。图片 URL 必须能被模型 provider 访问——localhost
+   * 或内网地址对云端模型无效（实测该 provider 也不接受 data: base64）。
+   */
+  mediaBaseUrl?: string;
   /** 指派运行期间的权限热收紧闸门（每个 GUI 动作前重新读取）。 */
   allowGuiAction?: (app: string) => boolean;
   /**
@@ -98,8 +105,17 @@ export interface RuntimeDeps {
 }
 
 /** LLM 单轮对话的最小客户端面（CollabClient.llmRelay 已满足）。 */
+export type RelayContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface LlmClient {
-  chat(input: { messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> }): Promise<{
+  chat(input: {
+    messages: Array<{
+      role: 'system' | 'user' | 'assistant';
+      content: string | RelayContentPart[];
+    }>;
+  }): Promise<{
     ok: boolean;
     error?: string;
     content: string;
@@ -150,6 +166,67 @@ export function extractJsonObject(text: string): Record<string, unknown> | null 
     }
   }
   return null;
+}
+
+/**
+ * 结构化输出容错：LLM 第一次没给出合法 JSON 时，带上它的原始输出与一句
+ * 修复指令再问一次；**只重试一次**，仍不合法就如实失败。
+ *
+ * 参考：Vercel AI SDK 的 `generateObject` / `streamObject` 在 schema 失败时
+ * 走重试；OpenAI Agents SDK 把「模型输出不符合协议」作为可恢复错误处理。
+ * 这里不引入 schema 库：协议很小，`extractJsonObject` 之后仍由原有校验
+ * （entry/action）兜底；重试只解决「模型话多/包了 markdown」这类格式问题。
+ */
+const PLAN_REPAIR =
+  '上一次输出不是合法 JSON。只返回一个 JSON 对象，不要解释，不要 markdown 代码栅栏；' +
+  '必须包含 files 与 entry（interpreter 为 python/python3/node，path 为工作区相对路径）。';
+const DIAGNOSE_REPAIR =
+  '上一次输出不是合法 JSON。只返回一个 JSON 对象，不要解释；' +
+  '必须包含 action（retry|clarify|escalate|deliver）。';
+
+function withImageParts(
+  text: string,
+  urls: string[],
+): string | RelayContentPart[] {
+  if (urls.length === 0) return text;
+  return [
+    { type: 'text', text },
+    ...urls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+  ];
+}
+
+async function chatJson(
+  llm: LlmClient,
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant';
+    content: string | RelayContentPart[];
+  }>,
+  label: string,
+  repairInstruction: string,
+): Promise<Record<string, unknown>> {
+  let current = messages;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const res = await llm.chat({ messages: current });
+    if (!res.ok) {
+      // 瞬态 relay/网络失败：重试一次同样的请求（无工具副作用）；第二次仍
+      // 失败才如实上抛。参考 OpenAI SDK 的默认 retry 语义。
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
+      throw new Error(`LLM relay 不可用：${res.error ?? 'unknown'}`);
+    }
+    const parsed = extractJsonObject(res.content);
+    if (parsed) return parsed;
+    if (attempt === 0) {
+      current = [
+        ...messages,
+        { role: 'assistant' as const, content: (res.content || '').slice(0, 4000) },
+        { role: 'user' as const, content: repairInstruction },
+      ];
+    }
+  }
+  throw new Error(`${label} 输出不是合法 JSON（已重试 1 次）`);
 }
 
 interface EntrySpec {
@@ -211,6 +288,8 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         lastBrowserOutputs: lastBrowserOutputs || undefined,
         // P7c：最近一轮 GUI 观察（仅白名单应用的窗口截图）
         lastGuiOutputs: lastGuiOutputs || undefined,
+        // 截图的可访问 URL（仅 mediaBaseUrl 配置且上传成功时）
+        lastGuiImages: lastGuiImageUrls.length ? lastGuiImageUrls : undefined,
         // P7d：澄清问答历史（续跑后规划/诊断能看到中台补了什么）
         clarificationHistory: deps.clarificationHistory?.length
           ? deps.clarificationHistory
@@ -256,6 +335,8 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
   // 最近一轮浏览器观察（进 baseContext，让下一轮规划看得到页面）。
   let lastBrowserOutputs = '';
   let lastGuiOutputs = '';
+  /** 最近一轮 GUI 截图：优先 inline data URL，超大才用 mediaBaseUrl + mediaPath。 */
+  let lastGuiImageUrls: string[] = [];
 
   const browserAllowed = (): boolean =>
     // ① SOP 必须声明 browser 能力域（capabilities 是能力闸）；② 平台真的
@@ -321,7 +402,32 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
             mime: 'image/png',
             buf: fs.readFileSync(path.join(deps.workspaceRoot, result.screenshotPath)),
           });
-          if (up.ok && up.mediaPath) bits.push(`mediaPath=${up.mediaPath}`);
+          if (up.ok && up.mediaPath) {
+            bits.push(`mediaPath=${up.mediaPath}`);
+            // 优先 inline data URL：私有化部署不必把媒体目录暴露到公网，
+            // 且实测 provider 接受真实截图的 base64。单图原始 ≤1.5MB
+            //（base64 后 ~2MB，低于中台 3MB 上限）；更大才回退公网 URL。
+            try {
+              const abs = path.join(deps.workspaceRoot, result.screenshotPath);
+              const buf = fs.readFileSync(abs);
+              if (buf.length <= 1.5 * 1024 * 1024) {
+                lastGuiImageUrls = [
+                  ...lastGuiImageUrls,
+                  `data:image/png;base64,${buf.toString('base64')}`,
+                ].slice(-2);
+              } else {
+                const base = deps.mediaBaseUrl?.replace(/\/+$/, '');
+                if (base && /^https?:\/\//i.test(base)) {
+                  lastGuiImageUrls = [
+                    ...lastGuiImageUrls,
+                    `${base}${up.mediaPath}`,
+                  ].slice(-2);
+                }
+              }
+            } catch {
+              /* 读不到本地截图不阻塞上传结果 */
+            }
+          }
         } catch {
           /* 上传失败不抹掉本机截图位置，留给后续诊断 */
         }
@@ -367,7 +473,13 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
                 mime: mimeFor(r.screenshotPath),
                 buf: fs.readFileSync(abs),
               });
-              if (up.ok && up.mediaPath) bits.push(`mediaPath=${up.mediaPath}`);
+              if (up.ok && up.mediaPath) {
+            bits.push(`mediaPath=${up.mediaPath}`);
+            const base = deps.mediaBaseUrl?.replace(/\/+$/, '');
+            if (base && /^https?:\/\//i.test(base)) {
+              lastGuiImageUrls = [...lastGuiImageUrls, `${base}${up.mediaPath}`].slice(-2);
+            }
+          }
             } catch {
               /* 上传失败不阻塞动作序列——文件在工作区，后续可重传 */
             }
@@ -408,10 +520,15 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       ]
         .filter(Boolean)
         .join('\n\n');
-      const res = await llm.chat({ messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: user }] });
-      if (!res.ok) throw new Error(`LLM relay 不可用：${res.error ?? 'unknown'}`);
-      const parsed = extractJsonObject(res.content);
-      if (!parsed) throw new Error('LLM 输出不是合法 JSON（协议违规）');
+      const parsed = await chatJson(
+        llm,
+        [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: withImageParts(user, lastGuiImageUrls) },
+        ],
+        'plan',
+        PLAN_REPAIR,
+      );
       const mat = materializeFiles(deps.workspaceRoot, parsed.files);
       if (!mat.ok) throw new Error(`LLM 产出的文件不可落盘：${mat.error}`);
       // 浏览器动作（P7b）：可选 "browser":[actions]，先看页面再写代码
@@ -446,10 +563,15 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         '若你判断本轮已实际达成验收（试跑输出可证）→ action=deliver；',
         '否则修正文件后 action=retry。',
       ].join('\n\n');
-      const res = await llm.chat({ messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: user }] });
-      if (!res.ok) throw new Error(`LLM relay 不可用：${res.error ?? 'unknown'}`);
-      const parsed = extractJsonObject(res.content);
-      if (!parsed) throw new Error('LLM 诊断输出不是合法 JSON（协议违规）');
+      const parsed = await chatJson(
+        llm,
+        [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: withImageParts(user, lastGuiImageUrls) },
+        ],
+        'diagnose',
+        DIAGNOSE_REPAIR,
+      );
       const mat = materializeFiles(deps.workspaceRoot, parsed.files);
       if (!mat.ok) throw new Error(`LLM 修正文件不可落盘：${mat.error}`);
       // 浏览器动作（P7b）：诊断阶段同样可看页面（如确认按钮位置变化）

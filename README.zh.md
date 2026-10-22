@@ -3,32 +3,93 @@
 # AutoCodeFlow
 
 <p align="center">
-  <img src="docs/assets/banner-zh.png" alt="AutoCodeFlow — 分布式任务编排与执行平台" width="100%">
+  <img src="docs/assets/banner-zh.png" alt="AutoCodeFlow — 开源的自动化执行运行时" width="100%">
 </p>
 
 <p align="center">
-  在浏览器里写 JavaScript / Python 脚本，按 Cron 或事件调度，安全地分发到多台执行器运行，<br/>
-  并把日志、产物、告警、审计与 AI 失败分析一次性收齐。
+  <b>开源的自动化执行运行时</b><br/>
+  <sub>The open-source automation runtime for scripts, desktops and AI agents</sub>
+</p>
+
+<p align="center">
+  定时跑脚本 · 让 Agent 操作真实桌面 · 每一次运行可观测、可审计
 </p>
 
 ## 🧭 这是什么
 
-AutoCodeFlow 把「散落在各台机器上的定时脚本」变成**可调度、可观测、可审计、可回滚**的正式任务：
+AutoCodeFlow 是一个**自托管的自动化执行运行时**，把「散落在各台机器上的定时脚本、桌面操作和 AI Agent」收进同一张调度台：
 
-- **写代码** — 在管理后台直接写 Glue 脚本（JS / Python / Shell），或用 Git 仓库 / 应用包交付。
-- **定策略** — Cron、固定频率、手动、Webhook、任务依赖 DAG；重试、超时、并发闸、维护窗口。
-- **跑起来** — 执行器主动拉取任务（Pull 模型，不需要对公网暴露入站端口），自动注册、心跳保活、负载感知分发。
-- **看得见** — 实时日志（SSE）、执行趋势、Prometheus 指标、OpenTelemetry 追踪、失败分类与 AI 根因分析。
-- **管得住** — RBAC、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批。
+- **定时脚本** — Cron / 固定频率 / Webhook / DAG，JS / Python / Shell；日志、重试、超时、并发闸、告警。
+- **桌面自动化** — Windows / Linux 桌面执行器，GUI + 浏览器操作；适合没有 API 的内网系统与员工 PC。
+- **Agent 执行面** — MCP Server 让 Claude / Cursor 直接创建、触发、排查任务；SOP 把「目标 + 验收」交给真实机器上的 Agent 执行，并留下证据。
+- **跑在你的网里** — 执行器主动拉取任务（Pull），不需要对公网暴露入站端口；私有 npm / PyPI 依赖也能装。
 
-| 场景 | 用 AutoCodeFlow 做什么 |
-|---|---|
-| 数据管道 | 订单/客户数据增量同步、清洗、落仓，失败自动重试并告警 |
-| 定时报表 | 每日经营日报生成 → 渲染 → 企业微信/钉钉/Slack 推送 |
-| 系统运维 | 数据库备份校验、日志轮转与冷归档、证书续期 |
-| API 集成 | 轮询第三方接口、Webhook 回调、事件驱动编排 |
-| 桌面自动化 | 用 Electron 桌面执行器跑 RPA 风格的本地 UI 任务 |
-| AI Agent | 通过 MCP Server 让 Claude / Cursor 直接创建、触发、排查任务 |
+> 稳定的交给脚本，长尾的交给 Agent，所有动作可审计。
+
+## ⚡ 一条命令跑起来
+
+```bash
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
+cd AutoCodeFlow
+./scripts/demo.sh
+```
+
+脚本会生成随机口令、起一套**隔离的**本地栈（不碰你的 `.env`），seed 3 个 demo 任务 + 3 条 SOP，触发一次并等到 `SUCCESS`，最后打印 UI 地址与管理员口令。首次运行需要构建镜像（约 3–8 分钟，视网络），之后启动约 30 秒：
+
+- UI：**http://localhost:8088**
+- API 文档：http://127.0.0.1:3105/api/docs
+- 停止：`./scripts/demo.sh --down`；重置：`./scripts/demo.sh --reset`
+
+![demo dashboard](docs/assets/screenshots/zh/demo-dashboard.png)
+
+从模板创建 → 触发 → 产物（无需写代码）：
+
+![template run](docs/assets/screenshots/zh/demo-template-run.png)
+
+## 🖥️ 桌面 Agent 演示（Linux X11）
+
+```bash
+./scripts/demo-desktop-agent.sh   # 无需 Docker / LLM / API key
+```
+
+它跑通 **SOP → plan → GUI 动作 → 沙箱试跑 → acceptance → delivered**：控制流、闸门、`X11GuiDriver`、workspace 沙箱与验收都是生产代码。默认用脚本化 plan（无需 key）；设置 `ACF_LLM_API_KEY` / `ACF_LLM_BASE_URL` / `ACF_LLM_MODEL` 可换真实 OpenAI-compatible provider（已用 `deepseek-v4.1-flash-1017` 跑通）。只想过一遍 GUI 驱动可用 `./scripts/demo-desktop-gui.sh`。
+
+无 Electron 的 **headless 执行器**：`./scripts/demo-headless-agent.mjs` 会注册一个执行器、把真实 SOP 指派给它，走 `AgentHost` → 中台 LLM relay → 沙箱试跑 → 验收 → `completed`（需先配好 AI provider）。
+
+多模态：`/agent-collab/llm` 已支持 `text + image_url`。执行器默认把 GUI 截图作为 **inline `data:image/png;base64`** 附到下一轮（实测 provider 可直接识别真实截图，无需公网媒体 host）；超大图（>1.5MB）才回落到 `ACF_MEDIA_BASE_URL`。
+
+截图诊断闭环：`./scripts/demo-desktop-agent-diagnose.sh` 先故意输入 `wrong-token`，真实模型看截图后清空并改成正确 token，最终 `delivered`（需 `ACF_LLM_*`）。
+
+中台 ops Agent：`node scripts/demo-ops-agent.mjs`——真实模型在 `ops_watch` 会话里调 `get_execution_stats`/`list_executions`/`get_execution_logs`，对 demo 任务给出可读结论（需 AI provider）。
+
+![desktop agent demo](docs/assets/screenshots/zh/desktop-agent-sop.png)
+
+## 🎯 三种用法
+
+| 你想做的事 | 用什么 | 从哪里开始 |
+|---|---|---|
+| 把散落的 crontab 收成可观测的任务 | 定时脚本 + 执行器 | 任务 → 新建（或任务模板） |
+| 操作没有 API 的内网/桌面系统 | 桌面执行器 + GUI/浏览器 | 执行器 → 安装向导 |
+| 让 AI Agent 真正“动手” | MCP Server + SOP | `acf` CLI / MCP / SOP 页面 |
+
+## 🆚 为什么不是……
+
+| 方案 | 它擅长 | 它不覆盖 |
+|---|---|---|
+| crontab / systemd timer | 单机定时 | 多机、日志、重试、审计、桌面 |
+| XXL-JOB / Kestra | 服务端脚本编排 | 桌面 GUI、浏览器、AI Agent |
+| n8n / Dify | SaaS / API 工作流 | 自托管执行器、桌面、私服依赖 |
+| UiPath / 影刀 | 商业 RPA | 开源、自托管、代码优先、脚本调度 |
+| **AutoCodeFlow** | 脚本 + 桌面 + Agent 同一张调度台 | 不是大数据引擎，也不是托管 SaaS |
+
+## 🧑‍💻 适合谁 / 不适合谁
+
+**适合**：能自己跑 Docker、有内网机器或员工桌面、需要日志/审计/自托管的开发者与运维。
+**不适合**：想要开箱即用的托管 SaaS、需要 Spark/Flink 级数据编排、完全不想碰命令行的团队。
+
+> 桌面 GUI 能力现状：Linux X11/XWayland 已真机验收；Windows GUI 为 beta（focus/click/type/screenshot + 应用白名单）；macOS 仅侦察。详见 [执行器 Agent 路线图](docs/design/agent-and-deployment/06-roadmap.md)。
+
+> **Status**：early-stage / self-hosted first。2.0 之前 API 仍可能变化，生产使用请钉 release tag。
 
 ## 🖼️ 界面一览
 
@@ -136,11 +197,13 @@ Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，�
 | **脚本形态** | 内置 Glue 脚本（在线编辑、语法检查、AI 生成）、Git 仓库、应用 zip 包；私有 npm/PyPI 依赖安装 |
 | **可观测** | SSE 实时日志、执行趋势与成功率、调度延迟、Prometheus 指标、OpenTelemetry 追踪、Loki 日志聚合 |
 | **告警通知** | 企业微信、钉钉、Slack Webhook、SMTP 邮件；规则、静默期、HMAC 签名校验 |
-| **安全** | RBAC（项目级角色）、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批、Python 任务 bubblewrap 沙箱 |
+| **安全** | RBAC（项目级角色）、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批、Python 任务可选 bubblewrap 沙箱（secure overlay） |
 | **AI** | OpenAI / Ollama / Qwen：脚本生成、失败根因分析、调度建议、应用健康分析；MCP Server 让 Agent 直接管理任务 |
 | **交付** | `acf` CLI（67 个子命令）、Node/Python 双 SDK、MCP Server（56 个工具）、VitePress 文档站 |
 
 ## 🚀 快速开始
+
+> 想先看效果？`./scripts/demo.sh` 会在隔离端口起一套带 seed 的本地栈（不碰 `.env`），约 1–3 分钟；下面是自定义配置的路径。
 
 ### 方式一：Docker Compose（推荐试跑）
 
@@ -227,17 +290,24 @@ npm install @autocodeflow/sdk     # Node.js
 pip install autoflow-sdk          # Python
 ```
 
-任务内可直接使用 `ctx`：读参数、发 HTTP 请求、上报日志与结果。
+在 **SDK 任务**里显式引入 `ctx`（Glue 脚本走系统运行时、不安装 requirements；需要 SDK 时用应用包或依赖渠道）：
 
 ```js
-// Node.js —— 随任务下发的 Glue 脚本
-const res = await ctx.http.get('/api/tasks?pageSize=5');
-ctx.logger.info('tasks fetched', { meta: { count: res.list.length } });
-return ctx.success('done', { count: res.list.length });
+// Node.js —— 需在任务依赖里声明 @autocodeflow/sdk
+const { TaskContext } = require('@autocodeflow/sdk');
+const ctx = TaskContext.fromEnv();
+async function main() {
+  const res = await ctx.http.get('/api/tasks?pageSize=5');
+  ctx.logger.info('tasks fetched', { meta: { count: res.list.length } });
+  return ctx.success('done', { count: res.list.length });
+}
+main().catch((err) => { ctx.logger.error(err.message); process.exitCode = 1; });
 ```
 
 ```python
-# Python —— 随任务下发的 Glue 脚本
+# Python —— 需安装 autoflow-sdk
+from autoflow_sdk import TaskContext
+ctx = TaskContext.from_env()
 rows = load_rows()                      # 你的业务代码
 ctx.log.info("rows=%d", len(rows))
 ctx.report_success(summary="etl done", duration_ms=412)

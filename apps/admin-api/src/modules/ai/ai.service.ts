@@ -74,8 +74,18 @@ export interface MultimodalResponse {
   model: string;
 }
 
-/** 媒体 URL 的允许协议（拒绝 file:// / data: 之外的怪协议）。 */
+/** 媒体 URL 的允许协议（拒绝 file:// 等怪协议）。 */
 const MEDIA_URL_RE = /^https?:\/\//i;
+/**
+ * Inline data-image（执行器把本地截图直接 base64 附进 relay）。
+ *
+ * 为什么允许：实测该 provider 接受 `data:image/png;base64,...`（真实截图
+ * 720x320 可识别），这样私有化部署不必为了「模型看截图」把中台媒体目录
+ * 暴露到公网。data URL 不会触发服务端出站抓取，SSRF 面为零；风险只剩体积，
+ * 故按字节数硬上限（单图 3MB base64 串）。
+ */
+const DATA_IMAGE_RE = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i;
+const MAX_INLINE_IMAGE_CHARS = 3 * 1024 * 1024;
 
 /**
  * B-4：上游 usage 收敛——provider 返回的 prompt_tokens/completion_tokens
@@ -450,6 +460,10 @@ export class AiService {
               ? part.video_url?.url
               : undefined;
         if (url === undefined) continue;
+        // inline 图片：只允许 image/png|jpeg|webp 的 base64，且限长。
+        if (part.type === "image_url" && DATA_IMAGE_RE.test(url) && url.length <= MAX_INLINE_IMAGE_CHARS) {
+          continue;
+        }
         if (!MEDIA_URL_RE.test(url)) {
           // 原实现截断到 64 字符——URL 由执行器上报，整串进日志/响应的收益
           // 低于其体积与潜在敏感信息（签名 query）成本，故保持截断语义。

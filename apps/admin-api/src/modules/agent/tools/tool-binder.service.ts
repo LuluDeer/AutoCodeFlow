@@ -62,14 +62,20 @@ export class ToolBinderService implements OnModuleInit {
   // ── 任务组 ──────────────────────────────────────────────────────
 
   private bindTaskTools(): void {
-    this.api.register("list_tasks", async (args) =>
-      this.tasks.findAll({
+    this.api.register("list_tasks", async (args) => {
+      const res = await this.tasks.findAll({
         page: this.num(args.page, 1),
         pageSize: this.num(args.pageSize, 20),
         status: args.status as string | undefined,
         name: args.name as string | undefined,
-      } as never),
-    );
+      } as never);
+      // 紧凑投影：findAll 返回完整 Task 实体（glueSource/params/secrets 等
+      // 大字段），而 Agent 只需要 id/name/status/调度/最近执行。此前原样
+      // 回传会让单条记录 ~2KB，TOOL_RESULT_MAX_CHARS=2000 直接截断，模型
+      // 看不到完整列表 → 反复换分页重试（真模型实测 list_tasks 调了 7 次）。
+      // 这里只保留决策所需字段，既避免截断，也避免把脚本/凭据塞进 LLM 上下文。
+      return compactTaskList(res);
+    });
 
     this.api.register("get_task", async (args) =>
       this.tasks.findOne(this.str(args.taskId)),
@@ -82,9 +88,12 @@ export class ToolBinderService implements OnModuleInit {
         pageSize: this.num(args.pageSize, 20),
         status: args.status as string | undefined,
       };
-      return taskId
-        ? this.tasks.getExecutions(taskId, paging as never)
-        : this.tasks.getAllExecutions(paging as never);
+      const res = taskId
+        ? await this.tasks.getExecutions(taskId, paging as never)
+        : await this.tasks.getAllExecutions(paging as never);
+      // 同 list_tasks：完整执行行含 logs/aiAnalysis 等大字段，原样回传会被
+      // 2000 字符闸截断，模型只能看到前几条并反复翻页。
+      return compactExecutionList(res);
     });
 
     this.api.register("get_execution", async (args) =>
@@ -154,7 +163,12 @@ export class ToolBinderService implements OnModuleInit {
   // ── 执行器组 ────────────────────────────────────────────────────
 
   private bindExecutorTools(): void {
-    this.api.register("list_executors", async () => this.executors.findAll());
+    this.api.register("list_executors", async () => {
+      const rows = await this.executors.findAll();
+      // 完整 Executor 实体含 interpreters / runningExecutionIds 等大数组；
+      // Agent 只需要地址、状态、负载与能力，投影后再回传。
+      return compactExecutorList(rows);
+    });
 
     this.api.register("get_executor", async (args) =>
       this.executors.findOne(this.str(args.executorId)),
@@ -388,4 +402,129 @@ export class ToolBinderService implements OnModuleInit {
     const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
     return Number.isFinite(n) ? n : fallback;
   }
+}
+
+/** list_tasks 的紧凑投影：只保留 Agent 决策需要的字段。 */
+const TASK_LIST_FIELDS = [
+  "id",
+  "name",
+  "status",
+  "triggerType",
+  "cronExpression",
+  "fixedRate",
+  "timezone",
+  "lastTriggerTime",
+  "applicationId",
+  "runtime",
+  "enabled",
+] as const;
+
+function pickTask(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of TASK_LIST_FIELDS) {
+    if (row[key] !== undefined) out[key] = row[key];
+  }
+  return out;
+}
+
+export function compactTaskList(res: unknown): unknown {
+  if (Array.isArray(res)) {
+    return { tasks: res.map((row) => pickTask(row as Record<string, unknown>)) };
+  }
+  if (!res || typeof res !== "object") return res;
+  const rec = res as Record<string, unknown>;
+  const rows = Array.isArray(rec.list)
+    ? rec.list
+    : Array.isArray(rec.items)
+      ? rec.items
+      : null;
+  if (!rows) return res;
+  return {
+    total: rec.total,
+    page: rec.page,
+    pageSize: rec.pageSize,
+    totalPages: rec.totalPages,
+    tasks: rows.map((row) => pickTask(row as Record<string, unknown>)),
+  };
+}
+
+/** list_executions 的紧凑投影：去掉 logs/aiAnalysis/artifacts 等大字段。 */
+const EXECUTION_LIST_FIELDS = [
+  "id",
+  "taskId",
+  "taskName",
+  "status",
+  "triggerType",
+  "executorAddress",
+  "createdAt",
+  "startTime",
+  "endTime",
+  "duration",
+  "exitCode",
+  "failureReason",
+  "errorMessage",
+] as const;
+
+function pickExecution(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of EXECUTION_LIST_FIELDS) {
+    const value = row[key];
+    if (value === undefined) continue;
+    out[key] =
+      key === "errorMessage" && typeof value === "string"
+        ? value.slice(0, 500)
+        : value;
+  }
+  return out;
+}
+
+export function compactExecutionList(res: unknown): unknown {
+  const pickRows = (rows: unknown[]): Record<string, unknown>[] =>
+    rows.map((row) => pickExecution(row as Record<string, unknown>));
+  if (Array.isArray(res)) return { executions: pickRows(res) };
+  if (!res || typeof res !== "object") return res;
+  const rec = res as Record<string, unknown>;
+  const rows = Array.isArray(rec.list)
+    ? rec.list
+    : Array.isArray(rec.items)
+      ? rec.items
+      : null;
+  if (!rows) return res;
+  return {
+    total: rec.total,
+    page: rec.page,
+    pageSize: rec.pageSize,
+    totalPages: rec.totalPages,
+    executions: pickRows(rows),
+  };
+}
+
+/** list_executors 的紧凑投影：去掉 interpreters/runningExecutionIds 等大数组。 */
+const EXECUTOR_LIST_FIELDS = [
+  "id",
+  "address",
+  "appName",
+  "status",
+  "lastHeartbeat",
+  "groupName",
+  "tags",
+  "capabilities",
+  "maxConcurrentTasks",
+  "runningTaskCount",
+  "executorVersion",
+] as const;
+
+function pickExecutor(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of EXECUTOR_LIST_FIELDS) {
+    if (row[key] !== undefined) out[key] = row[key];
+  }
+  return out;
+}
+
+export function compactExecutorList(res: unknown): unknown {
+  if (Array.isArray(res)) {
+    return { executors: res.map((row) => pickExecutor(row as Record<string, unknown>)) };
+  }
+  return res;
 }

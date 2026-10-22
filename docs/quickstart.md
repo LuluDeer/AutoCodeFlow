@@ -1,21 +1,61 @@
 # 快速上手指南
 
-> 5 分钟跑起来，10 分钟完成第一个定时任务。
+> 三条路径：一键 demo（推荐先看效果）→ 手动 Docker → 源码开发。
 
-## 准备工作
+## 路径 A：一键 demo（首次约 3–8 分钟，之后 ~30 秒）
 
-只需要安装 **Docker Desktop**（Windows / macOS）或 **Docker + Docker Compose**（Linux）。
+要求：**Docker Desktop**（Windows / macOS）或 **Docker Engine + Compose v2**（Linux），外加 **Node.js 18+**（仅用于 demo 的 seed/校验脚本，不需要 `npm install` 项目依赖）。
 
-- 下载地址：https://docs.docker.com/get-docker/
-- 验证安装：`docker -v` 输出版本号即可
+```bash
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
+cd AutoCodeFlow
+./scripts/demo.sh          # 等价于 make demo
+```
+
+脚本会替你做完这些事：
+
+- 生成 `.env.demo`（强随机口令，**不会碰你的 `.env`**）
+- 用隔离的 compose 项目启动 PostgreSQL、Redis、admin-api、admin-web、executor-node 和两个私服
+- 只绑定 `127.0.0.1`，UI 在 **http://localhost:8088**（避开常见的 `:80` 占用）
+- 注入 3 个 demo 任务 + 3 条 demo SOP
+- 触发 `demo-hello-fixed` 并等到 `SUCCESS`，最后打印管理员口令
+
+停止与重置：
+
+```bash
+./scripts/demo.sh --down     # 停止，保留数据
+./scripts/demo.sh --reset    # 停止并删除数据 + .env.demo
+./scripts/demo.sh --logs     # 跟踪日志
+```
+
+> 换端口：`./scripts/demo.sh --port 8090`。
+> 端口被占用时脚本会直接报错并告诉你用哪个参数。
+
+> 可选真实模型：`ACF_LLM_API_KEY=... ACF_LLM_BASE_URL=... ACF_LLM_MODEL=... ./scripts/demo.sh`
+> 会在首次生成 `.env.demo` 时把 OpenAI-compatible provider 写进中台（不写入仓库）。
+>
+> 桌面 Agent（Linux X11）：`./scripts/demo-desktop-agent.sh`——无需 Docker / LLM / API key，
+> 跑通 SOP → plan → GUI 动作 → 沙箱试跑 → acceptance → delivered（默认脚本化 plan；
+> 设置 `ACF_LLM_API_KEY/BASE_URL/MODEL` 可换真实 provider）；只验证 GUI 驱动可用
+> `./scripts/demo-desktop-gui.sh`。依赖
+> `xvfb xfwm4 xdotool xprop ffmpeg python3-tk`。
+>
+> 截图诊断：`./scripts/demo-desktop-agent-diagnose.sh`——先输错、模型看截图后修正，需 `ACF_LLM_*`。
+>
+> 中台 ops Agent：`node scripts/demo-ops-agent.mjs`——真实模型调只读工具分析 demo 任务，需 AI provider。
+>
+> Headless 执行器（无 Electron）：`node scripts/demo-headless-agent.mjs`——注册执行器 →
+> 真实 SOP 指派 → 中台 LLM relay → 沙箱试跑 → 验收 → `completed`；需先配置 AI provider。
 
 ---
 
-## 第一步：启动服务
+## 路径 B：手动 Docker（自定义配置 / 生产试跑）
+
+### 第一步：启动服务
 
 ```bash
 # 下载代码
-git clone https://github.com/your-org/AutoCodeFlow.git
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
 cd AutoCodeFlow
 
 # 初始化配置
@@ -163,12 +203,19 @@ docker compose logs executor-node
 
 ### 忘记管理员密码？
 
+用仓库自带脚本重置（Postgres `pgcrypto` 的 bcrypt，重置后自动吊销该用户已有会话）：
+
 ```bash
-# 通过 API 重置（需要数据库直接操作）
-docker compose exec postgres psql -U autoflow -d autoflow \
-  -c "UPDATE users SET password_hash = '\$2b\$10\$placeholder' WHERE username = 'admin';"
-# 建议使用环境变量重新设置初始密码后重启服务
+./scripts/reset-admin-password.sh                 # 生产 .env，交互输入新口令
+./scripts/reset-admin-password.sh --demo          # 本地 demo 栈
+./scripts/reset-admin-password.sh --user alice --password 'NewPass123!'
+./scripts/reset-admin-password.sh --dry-run       # 只打印 SQL，不写库
 ```
+
+脚本要求 Docker 主机上能执行 `docker compose exec postgres`；非 Docker 部署用 `--dry-run` 拿到 SQL 后手动 `psql` 执行。
+
+> ⚠️ 不要再用旧文档里的 `UPDATE users SET password_hash = '$2b$10$placeholder'`：
+> 列名其实是 `"password"`，而且那个占位值不是合法 bcrypt 哈希——照做会把账号锁死。
 
 ### 如何查看所有执行日志？
 

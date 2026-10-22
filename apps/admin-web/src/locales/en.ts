@@ -2044,7 +2044,7 @@ export default {
   'appDeploy.rollout.state.rolledBack': 'Rolled back',
 
   'templates.title': 'Task Templates',
-  'templates.description': 'Common task shapes are solidified into templates; one click copies the config to generate a runnable task draft.',
+  'templates.description': 'Common task shapes are solidified into templates; create a runnable task in one click, with the script bundled in the template.',
   'templates.error.title': 'Failed to load templates',
   'templates.empty': 'No templates yet',
   'templates.official': 'Official',
@@ -2073,6 +2073,20 @@ export default {
   'templates.config.fixedRate': '(every {{rate}}s)',
   'templates.config.timeout': 'Timeout {{seconds}}s',
   'templates.config.retry': 'Retry {{count}}',
+  // "Runnable out of the box" templates ship an inline script (glueSource) and no
+  // entrypoint: the summary shows `runtime · glue` instead of a bogus `runtime · -`.
+  'templates.config.glue': 'glue',
+  // "Use template" instantiates directly (POST /task-templates/:id/instantiate); the modal only collects the task name.
+  'templates.useDialog.title': 'Create task from template',
+  'templates.useDialog.template': 'Template: {{name}}',
+  'templates.useDialog.name': 'Task name',
+  'templates.useDialog.namePlaceholder': 'e.g. prod-backup-20260101-0200',
+  'templates.useDialog.nameRequired': 'Task name is required',
+  'templates.useDialog.hint': 'The task is created immediately. The template ships with a runnable script; you can adjust parameters, schedule and script from the task details afterwards.',
+  'templates.useDialog.ok': 'Create task',
+  'templates.useDialog.cancel': 'Cancel',
+  'templates.useDialog.created': 'Task "{{name}}" created',
+  'templates.useDialog.fail': 'Failed to create task',
 
   'execDetail.title': 'Execution Details',
   'execDetail.breadcrumb.executions': 'Executions',

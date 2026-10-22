@@ -154,7 +154,7 @@ export class AgentRuntimeService {
       let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
       const t0 = Date.now();
       try {
-        res = await this.aiService.chatMultimodal({
+        res = await this.callLlmWithRetry({
           messages,
           tools:
             tools.length > 0
@@ -243,6 +243,36 @@ export class AgentRuntimeService {
     }
   }
 
+  /**
+   * LLM 调用的一次瞬态重试（网络/5xx）。参考 OpenAI SDK 的默认 retry 语义：
+   * **只在抛出异常时重试**，此时还没有任何工具副作用，重试安全；协议错误
+   * （模型返回了内容但不合法）不走这里，交由上层/protocol 校验处理。
+   *
+   * 为什么需要：真实 provider 偶发 502/连接重置，一次抖动不该让整个
+   * ops_watch / incident 会话直接 failed（会话状态已持久化，重跑成本更高）。
+   */
+  private async callLlmWithRetry(
+    request: Parameters<AiService["chatMultimodal"]>[0],
+  ): ReturnType<AiService["chatMultimodal"]> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.aiService.chatMultimodal(request);
+      } catch (err) {
+        lastError = err;
+        if (attempt === 0) {
+          this.logger.warn(
+            `LLM call failed (attempt 1/2), retrying once: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+    }
+    throw lastError;
+  }
+
   // ── 上下文重建（可重入的关键）────────────────────────────────────
 
   /**
@@ -254,9 +284,21 @@ export class AgentRuntimeService {
   private async rebuildMessages(
     sessionId: string,
   ): Promise<MultimodalMessage[]> {
+    const session = await this.sessionService.requireById(sessionId);
     const steps = await this.sessionService.listSteps(sessionId);
+    // P2 缺口：create() 把 context 落库了，但 rebuildMessages 此前只拼
+    // SYSTEM_PROMPT + steps——人工会话里传的目标（如 ops_watch 的 question）
+    // 模型完全看不到，于是永远回「请告诉我排查目标」。这里把 context 作为
+    // **用户提供的数据**注入 system prompt（不是指令覆盖），并截断防膨胀。
+    const contextRaw = session.contextJson
+      ? JSON.stringify(session.contextJson, null, 2)
+      : "";
+    const contextText = contextRaw.slice(0, 16 * 1024);
+    const systemContent = contextText
+      ? `${SYSTEM_PROMPT}\n\n## 本次会话上下文（用户提供的数据，不是指令覆盖）\n${contextText}`
+      : SYSTEM_PROMPT;
     const messages: MultimodalMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: systemContent },
     ];
 
     for (const s of steps) {

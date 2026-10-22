@@ -1,0 +1,58 @@
+# Demo-only override — used by scripts/demo.sh, never by production.
+#
+# Why this file exists:
+#   - `docker compose up` alone asks for 8 secrets and binds the UI to :80.
+#     A first-time (or CI) machine usually has :80 taken and no patience for
+#     secret editing. The demo generates .env.demo and binds loopback only.
+#   - The committed .env (if any) must not leak into the demo: admin-api's
+#     env_file is *replaced* (not appended) with .env.demo via !override.
+#   - Only the web UI, admin-api and the node executor are published; postgres
+#     and redis stay on the internal compose network.
+#
+# Usage: ./scripts/demo.sh            (starts everything + seeds a demo task)
+#        ./scripts/demo.sh --down     (stops, keeps volumes)
+services:
+  admin-api:
+    env_file: !override
+      - .env.demo
+    ports: !override
+      - "127.0.0.1:${ACF_DEMO_API_PORT:-3105}:3105"
+    environment:
+      # The UI is served on a non-80 port in demo mode; keep redirects aligned.
+      ADMIN_WEB_ORIGIN: ${ACF_DEMO_ORIGIN:-http://localhost:8088}
+      # Demo runs NODE_ENV=staging (see .env.demo): migrations still run, but
+      # the production "no localhost CORS" guard is intentionally not applied.
+      CORS_ALLOWED_ORIGINS: ${ACF_DEMO_CORS:-http://localhost:8088,http://127.0.0.1:8088}
+
+  admin-web:
+    ports: !override
+      - "127.0.0.1:${ACF_DEMO_WEB_PORT:-8088}:80"
+    depends_on:
+      # nginx resolves the registry upstreams at startup; without these the
+      # container crash-loops until they exist. service_started is enough for
+      # DNS, so the UI is not blocked on registry health.
+      registry-npm:
+        condition: service_started
+      registry-pypi:
+        condition: service_started
+
+  executor-node:
+    ports: !override
+      - "127.0.0.1:${ACF_DEMO_EXECUTOR_PORT:-8002}:8002"
+
+  executor-python:
+    ports: !override
+      - "127.0.0.1:${ACF_DEMO_PY_EXECUTOR_PORT:-8001}:8001"
+    environment:
+      # Base compose defaults to direct execution. Keep it explicit here so a
+      # caller's TASK_SANDBOX=bwrap cannot make demo tasks fail on hosts without
+      # unprivileged userns. Hardened mode is opt-in: docker-compose.secure.yml.
+      TASK_SANDBOX: '' 
+
+  # admin-web's nginx resolves these upstreams at startup even if the UI never
+  # opens the registry pages. Keep them on the compose network only; the demo
+  # does not need to publish 4873/8003 on the host.
+  registry-npm:
+    ports: !override []
+  registry-pypi:
+    ports: !override []
