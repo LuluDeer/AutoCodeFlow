@@ -11,6 +11,7 @@ import {
 } from './routes/execute';
 import { pushCallback } from './callback';
 import { getDeviceFingerprint } from './device-identity';
+import { getExecutorInstanceId } from './executor-instance-id';
 import {
   executeControlCommand,
   parseControlCommand,
@@ -226,11 +227,16 @@ async function maybePullConfig(adminConfigVersion: unknown): Promise<void> {  if
     const fingerprint = getDeviceFingerprint();
     // GET /api/executors/config 走 request()（自动鉴权 + failover + 401 自愈），
     // 与心跳同一认证通道。
+    // 工单 11：配置面同样带上自报行 id（歧义态下用于按行定位）。
+    const reportedExecutorId = getExecutorInstanceId();
     const resp = await request(
       'get',
       `/api/executors/config?address=${encodeURIComponent(address)}` +
         (fingerprint
           ? `&deviceFingerprint=${encodeURIComponent(fingerprint)}`
+          : '') +
+        (reportedExecutorId
+          ? `&executorId=${encodeURIComponent(reportedExecutorId)}`
           : ''),
     );
     const body = unwrapAdminResponseData(resp?.data);
@@ -314,6 +320,10 @@ export async function pullOnce(): Promise<void> {
         // ADR-017 阶段 3：指纹随长轮询上报 —— 服务端据此唯一定位本行
         // （pull 模式允许同地址多行并存，否则会拉到别人的队列）。
         deviceFingerprint: getDeviceFingerprint() ?? undefined,
+        // 工单 11：自报本机对应的**行 id**（注册响应下发、已持久化）。
+        // 中台只在「同址多行 + 无指纹」的歧义态下把它当候选提示，且必须该行的
+        // per-executor 令牌校验通过才采纳（共享令牌不采纳）。
+        executorId: getExecutorInstanceId() ?? undefined,
         waitMs: 25_000,
         // ARCH-33: 服务端据此决定是否出队任务（`freeSlots > 0` 才出队）。
         //
