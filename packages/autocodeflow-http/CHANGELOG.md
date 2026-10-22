@@ -2,6 +2,14 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.1](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.3.0...autocodeflow-http-v0.3.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* **deps:** py-libs 三包 certifi 升到 2026.10.19（清 3 条 critical）+ uv.lock 漂移校正 ([a091617](https://github.com/LuluDeer/AutoCodeFlow/commit/a091617c293233e3be8e6d8421c81dc58503db88))
+* **deps:** py-libs 四包 certifi 升到 2026.10.19，并修掉 uv.lock 的 editable 版本漂移 ([bbf3ad0](https://github.com/LuluDeer/AutoCodeFlow/commit/bbf3ad0d82fd8db6bc53e0fdbc301bb4cb9cae41))
+
 ## [0.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.2.3...autocodeflow-http-v0.3.0) (2026-10-21)
 
 
