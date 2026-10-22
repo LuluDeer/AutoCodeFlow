@@ -22,7 +22,14 @@ import { ExecutorService } from "../../executor/executor.service";
 import { AuditService } from "../../audit/audit.service";
 // ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
 import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
-import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
+import { AppError } from "../../../common/errors/app-error";
+import {
+  DOMAIN_EVENTS,
+  type ExecutorAddressDriftedEventPayload,
+  type ExecutorCommandFailedEventPayload,
+} from "../../../common/events/domain-events";
+import { DomainEventBus } from "../../../common/services/domain-event-bus.service";
+import { Logger } from "@nestjs/common";
 
 // Mock axios to avoid real HTTP calls
 jest.mock("axios", () => ({
@@ -369,8 +376,69 @@ describe("AppDeploymentService", () => {
       ).rejects.toThrow(ConflictException);
     });
 
-    // QA4: upgrade() leaves the row UPGRADING for the whole push (R5) and the
-    // partial unique index intentionally does not constrain UPGRADING rows
+    // P0-3（生产实证 2026-10-22）：`dto.executorId` 可能来自界面上**已被删除**的
+    // 执行器（`app_deployments.executorId` 无外键，「重新部署」会把旧 id 原样
+    // 回填）。旧实现直接抛 EXECUTOR_NOT_FOUND：用户既装不上也无从修复（界面上
+    // 根本选不到那条已删除的行）。改为重新选机，且新行记录实际选中的 executorId。
+    it("P0-3: 悬空 dto.executorId → 重新选机（不抛 EXECUTOR_NOT_FOUND）", async () => {
+      executorService.findOne.mockRejectedValue(
+        new AppError("EXECUTOR_NOT_FOUND"),
+      );
+      const saved = {
+        id: "deploy-reselect",
+        status: DeploymentStatus.PENDING,
+        executorAddress: mockExecutor.address,
+      };
+      repo.create.mockReturnValue(saved);
+      repo.save.mockResolvedValue(saved);
+
+      const result = await service.deploy("app-1", {
+        executorId: "deleted-executor",
+      });
+
+      expect(result.id).toBe("deploy-reselect");
+      expect(executorService.selectLeastLoaded).toHaveBeenCalledTimes(1);
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ executorId: "exec-1" }),
+      );
+    });
+
+    // P0-3：行在「选机」之后、「下发」之前被删除（极小窗口，但后果是 90 秒挂死）。
+    // 悬空行身份必须**秒级失败**，绝不能用陈旧快照地址打 HTTP。
+    it("P0-3: 下发时判定 unresolved → 立刻 FAILED，且不打任何 HTTP", async () => {
+      executorService.deliverControlCommand.mockResolvedValueOnce({
+        delivered: "unresolved",
+        reason: "executor-row-missing",
+      });
+      const deployment = {
+        id: "deploy-dangling",
+        applicationId: "app-1",
+        executorId: "deleted-executor",
+        // 现场那条快照地址：Clash TUN 伪 IP / NAT 内网，全 pull 机队下永不可达。
+        executorAddress: "198.18.0.1:8002",
+        status: DeploymentStatus.PENDING,
+      } as never;
+
+      await (
+        service as unknown as {
+          pushDeployToExecutor: (
+            d: unknown,
+            a: unknown,
+            u?: boolean,
+          ) => Promise<void>;
+        }
+      ).pushDeployToExecutor(deployment, mockApp, false);
+
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+      const calls = repo.update.mock.calls;
+      const patch = calls[calls.length - 1]?.[1] as
+        Record<string, unknown> | undefined;
+      expect(patch?.status).toBe(DeploymentStatus.FAILED);
+      expect(String(patch?.statusMessage)).toContain("no longer exists");
+    });
+
+    // QA4: upgrade() leaves the row UPGRADING for the whole push (R5) and
+    // the partial unique index intentionally does not constrain UPGRADING rows
     // (concurrent rolling upgrades must not collide on it). A deploy issued
     // while an upgrade is in flight would otherwise start a second real
     // process on the executor — the findOne guard must catch it.
@@ -2508,5 +2576,198 @@ describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
         NotFoundException,
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0-4（生产报告 2026-10-22 §4.4 / §7）：pull 命令失败 → 部署行**秒级**收口
+//
+// 旧链路：执行器上报 ok=false 后只落日志 + 600s 的 Redis 结果键，部署行停在
+// DEPLOYING 直到卡死扫描（带 `Deploy command queued` 前缀的 pull 未决行豁免到
+// 命令 TTL 30 分钟）才判 FAILED——期间同一应用的每次部署都被在途锁拒成 409
+// （现场 6 次），用户体感就是"点部署没反应"。
+//
+// 新链路：controller 收到失败回执 → 用入队时记的 `acf:cmdmeta:{commandId}` 补出
+// deploymentId → 发 executor.command.failed → 本服务在**条件写**里收 FAILED。
+// 条件（statusMessage 仍带该 commandId）是安全闸：旧命令的迟到失败绝不能把
+// 已被新命令接管 / 已被心跳推进的行打成 FAILED。
+// ---------------------------------------------------------------------------
+describe("AppDeploymentService — P0-4 pull 命令失败秒级收口", () => {
+  let repo: ReturnType<typeof makeRepo>;
+  let service: AppDeploymentService;
+  let bus: DomainEventBus;
+
+  const event = (
+    over: Partial<ExecutorCommandFailedEventPayload> = {},
+  ): ExecutorCommandFailedEventPayload => ({
+    commandId: "cmd-1",
+    type: "deploy",
+    address: "exec:8002",
+    deploymentId: "deploy-1",
+    error: "boom",
+    occurredAt: new Date().toISOString(),
+    ...over,
+  });
+
+  const buildModule = async (init = false) => {
+    bus = new DomainEventBus();
+    repo = makeRepo();
+    repo.find.mockResolvedValue([]);
+    const module = await Test.createTestingModule({
+      providers: [
+        AppDeploymentService,
+        { provide: getRepositoryToken(AppDeployment), useValue: repo },
+        {
+          provide: getRepositoryToken(ApplicationVersion),
+          useValue: makeRepo(),
+        },
+        {
+          provide: ApplicationService,
+          useValue: {
+            findByIdRaw: jest.fn(),
+            findById: jest.fn(),
+            maskEnvForRead: jest.fn((e: unknown) => e),
+            maskReadSurface: jest.fn((a: unknown) => a),
+          },
+        },
+        {
+          provide: ExecutorService,
+          useValue: {
+            ...controlPlaneMocks(),
+            findOne: jest.fn(),
+            selectLeastLoaded: jest.fn(),
+            getExecutorUrl: jest.fn(),
+            getSharedToken: jest.fn().mockResolvedValue(""),
+          },
+        },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: DomainEventBus, useValue: bus },
+      ],
+    }).compile();
+    service = module.get(AppDeploymentService);
+    if (init) await module.init();
+    return module;
+  };
+
+  it("行仍属于该 commandId → 条件写 FAILED（槽位立刻释放）", async () => {
+    await buildModule();
+    repo.update.mockResolvedValue({ affected: 1 });
+
+    await expect(service.failDeploymentForFailedCommand(event())).resolves.toBe(
+      true,
+    );
+
+    const [criteria, patch] = repo.update.mock.calls[0];
+    expect(criteria).toMatchObject({ id: "deploy-1" });
+    // 判据是 Like('%commandId=cmd-1%')——具体操作符类型不作断言，只锁"存在约束"。
+    expect(criteria.statusMessage).toBeDefined();
+    expect(patch.status).toBe(DeploymentStatus.FAILED);
+    expect(String(patch.statusMessage)).toContain("boom");
+  });
+
+  it("行已被新命令接管 / 已终态（affected=0）→ 不覆盖，返回 false", async () => {
+    await buildModule();
+    repo.update.mockResolvedValue({ affected: 0 });
+    jest.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
+
+    await expect(service.failDeploymentForFailedCommand(event())).resolves.toBe(
+      false,
+    );
+    // 只尝试了一次条件写，绝无无条件补写。
+    expect(repo.update).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["非 deploy 类型", { type: "app-stop" }],
+    ["缺 deploymentId", { deploymentId: null }],
+  ])("%s → 直接忽略（一次写都不发）", async (_label, over) => {
+    await buildModule();
+    await expect(
+      service.failDeploymentForFailedCommand(
+        event(over as Partial<ExecutorCommandFailedEventPayload>),
+      ),
+    ).resolves.toBe(false);
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  // ── P0-4 附带（§7 P0-3 末条）：地址漂移 → 部署行地址快照跟着滚 ──────────
+  //
+  // app_deployments.executorAddress 是快照，此前从不随漂移更新：执行器换网/换 IP
+  // 之后，任何按快照地址出站的路径（push 回退 / UI 展示）都停在**已失效的旧地址**
+  // 上。这里钉住三件事：只滚未终结行、带 previousAddress 条件、按 executorId 匹配。
+  const drift = (
+    over: Partial<ExecutorAddressDriftedEventPayload> = {},
+  ): ExecutorAddressDriftedEventPayload => ({
+    executorId: "exec-1",
+    appName: "node-a",
+    previousAddress: "192.168.1.40:8002",
+    address: "192.168.3.16:8002",
+    occurredAt: new Date().toISOString(),
+    ...over,
+  });
+
+  it("漂移采纳 → 条件更新未终结行的地址快照", async () => {
+    await buildModule();
+    repo.update.mockResolvedValue({ affected: 2 });
+
+    await expect(service.refreshExecutorAddressSnapshot(drift())).resolves.toBe(
+      2,
+    );
+
+    const [criteria, patch] = repo.update.mock.calls[0];
+    // 按**行身份**匹配（不是 address）：同址多行时不会误伤别人那行。
+    expect(criteria).toMatchObject({
+      executorId: "exec-1",
+      executorAddress: "192.168.1.40:8002",
+    });
+    // 只滚未终结状态（终态行的地址是历史事实）。
+    expect(criteria.status).toBeDefined();
+    expect(patch).toEqual({ executorAddress: "192.168.3.16:8002" });
+  });
+
+  it.each([
+    ["缺 executorId", { executorId: "" }],
+    ["地址没变", { address: "192.168.1.40:8002" }],
+    ["缺 previousAddress", { previousAddress: "" }],
+  ])("%s → 一次写都不发", async (_label, over) => {
+    await buildModule();
+    await expect(
+      service.refreshExecutorAddressSnapshot(
+        drift(over as Partial<ExecutorAddressDriftedEventPayload>),
+      ),
+    ).resolves.toBe(0);
+    expect(repo.update).not.toHaveBeenCalled();
+  });
+
+  it("路径：漂移被心跳/注册采纳（executor.address.drifted）→ 快照自动滚动", async () => {
+    const module = await buildModule(true);
+    repo.update.mockResolvedValue({ affected: 1 });
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+
+    bus.emit(DOMAIN_EVENTS.EXECUTOR_ADDRESS_DRIFTED, drift());
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(repo.update).toHaveBeenCalledWith(
+      expect.objectContaining({ executorId: "exec-1" }),
+      { executorAddress: "192.168.3.16:8002" },
+    );
+    await module.close();
+  });
+
+  it("事件总线接线：onModuleInit 订阅 → emit 即收口；close 后退订", async () => {
+    const module = await buildModule(true);
+    repo.update.mockResolvedValue({ affected: 1 });
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+
+    bus.emit(DOMAIN_EVENTS.EXECUTOR_COMMAND_FAILED, event());
+    // handler 是 fire-and-forget，让微任务跑完。
+    await new Promise((r) => setTimeout(r, 5));
+    expect(repo.update).toHaveBeenCalledTimes(1);
+
+    await module.close();
+    repo.update.mockClear();
+    bus.emit(DOMAIN_EVENTS.EXECUTOR_COMMAND_FAILED, event());
+    await new Promise((r) => setTimeout(r, 5));
+    expect(repo.update).not.toHaveBeenCalled();
   });
 });

@@ -1019,6 +1019,15 @@ export class ApplicationService implements OnModuleInit {
         address: target.address,
       })
       .catch(() => ({ mode: "push" as const, executor: null }));
+    if (transport.mode === "unresolved") {
+      // 行已不存在：没有可通知的对象。清理是 best-effort，如实回报失败而不去
+      // 打一个陈旧快照地址（同策见 executor.service.resolveExecutorTransport）。
+      const msg = `executor row ${target.executorId ?? "(none)"} no longer exists`;
+      this.logger.warn(
+        `NETOPT-8③: 清理命令跳过 appId=${appId}（地址 ${address}）：${msg}`,
+      );
+      return { ok: false, error: msg };
+    }
     if (transport.mode === "pull" && transport.executor) {
       const executorId = transport.executor.id;
       try {
