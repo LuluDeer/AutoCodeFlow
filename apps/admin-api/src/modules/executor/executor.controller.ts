@@ -490,26 +490,35 @@ export class ExecutorController {
       // **唯一定位本行**——pull 模式允许同地址多行并存（ADR-017 §5），不传
       // 就只能按地址取，会同到别人的行、去拉别人的 Redis 队列。
       deviceFingerprint?: string | null;
+      // 工单 11：执行器自报的**行 id**（注册响应下发、执行器持久化后回传）。
+      // 仅在「同址多行 + 无指纹」的歧义态下作为**候选行提示**使用，且必须
+      // 该行的 per-executor 令牌校验通过（共享令牌不采纳）。
+      executorId?: string | null;
     },
     @Headers("authorization") auth: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(
+    // 工单 11（ADR-017 决策 §3 补全）：认证与行定位一次成型。
+    // 差异之处只在「同址多行 + 无指纹」这一态：若执行器自报了**自己那行的 id**
+    // 且该行的 per-executor 令牌校验通过，就按行定位（而不是 fail-closed 404）；
+    // 共享令牌路径照旧不采纳自报 id（见 service 的安全边界注释）。
+    const authz = await this.svc.authenticateMachineRequest(
       body.address,
       token,
-      body.deviceFingerprint,
+      {
+        deviceFingerprint: body.deviceFingerprint,
+        reportedExecutorId: body.executorId,
+      },
     );
-    if (!isValid) {
+    if (!authz.ok) {
       throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     if (!this.pullService) {
       throw new AppError("EXECUTOR_PULL_UNAVAILABLE");
     }
-    const executor = await this.svc.findByAddress(
-      body.address,
-      body.deviceFingerprint,
-    );
+    const executor = authz.executor;
     if (!executor) {
+      // 保留既有语义：认证通过但行仍无法唯一判定 → 404（执行器据此重注册/升级）。
       throw new AppError("EXECUTOR_NOT_FOUND");
     }
     const maxWait =
@@ -625,6 +634,29 @@ export class ExecutorController {
       durationMs: body.durationMs ?? null,
       reportedAt: new Date().toISOString(),
     });
+    // P0-4（生产报告 2026-10-22 §4.4）：失败结果必须**推进业务行**，不能只写
+    // 日志 + 600s 的 Redis 结果键。执行器上报里只有 commandId，部署行 id 来自
+    // 入队时记的旁路元数据（acf:cmdmeta:{id}）。best-effort：元数据缺失/Redis
+    // 抖动时静默跳过，收敛退回到既有的卡死扫描（与引入本机制前一致）。
+    if (body.ok !== true) {
+      try {
+        const meta = await this.pullService?.getCommandMeta(body.commandId);
+        if (meta && meta.type === "deploy" && meta.deploymentId) {
+          this.svc.publishControlCommandFailure({
+            commandId: body.commandId,
+            type: meta.type,
+            address: body.address,
+            deploymentId: meta.deploymentId,
+            error: body.error ?? null,
+          });
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Failed to resolve command meta for ${body.commandId} (the deployment row will ` +
+            `converge through the stuck sweep): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     return { ok: true };
   }
 
@@ -648,21 +680,23 @@ export class ExecutorController {
     // ADR-017 阶段 3：稳定设备指纹（可选查询参数；旧执行器不传）——pull
     // 同地址多行并存时用于唯一定位本行（ADR-017 §5）。
     @Query("deviceFingerprint") deviceFingerprint?: string,
+    // 工单 11：执行器自报的行 id（歧义态下的候选行提示，见 pull 端点同款注释）。
+    @Query("executorId") executorId?: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(
-      address,
-      token,
+    // 工单 11：认证 + 行定位一次成型（自报 id 只在「同址多行 + 无指纹」时
+    // 作为候选提示，且必须该行的 per-executor 令牌校验通过）。
+    const authz = await this.svc.authenticateMachineRequest(address, token, {
       deviceFingerprint,
-    );
-    if (!isValid) {
+      reportedExecutorId: executorId,
+    });
+    if (!authz.ok) {
       throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
-    const executor = await this.svc.findByAddress(address, deviceFingerprint);
-    if (!executor) {
+    if (!authz.executor) {
       throw new AppError("EXECUTOR_NOT_FOUND");
     }
-    return buildExecutorConfigPayload(this.configService, executor);
+    return buildExecutorConfigPayload(this.configService, authz.executor);
   }
 
   @Public()
@@ -711,23 +745,23 @@ export class ExecutorController {
     // ADR-017 阶段 3：稳定设备指纹（可选查询参数；旧执行器不传）——pull
     // 同地址多行并存时用于唯一定位本行（ADR-017 §5）。
     @Query("deviceFingerprint") deviceFingerprint?: string,
+    // 工单 11：执行器自报的行 id（歧义态下的候选行提示）。
+    @Query("executorId") reportedExecutorId?: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(
-      address,
-      token,
+    const authz = await this.svc.authenticateMachineRequest(address, token, {
       deviceFingerprint,
-    );
-    if (!isValid) {
+      reportedExecutorId,
+    });
+    if (!authz.ok) {
       throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
-    // ADR-017 阶段 3（决策 §7 读面富化）：把**刚认证出的行身份**传给 service。
+    // ADR-017 阶段 3（决策 §7 读面富化）+ 工单 11：行身份直接取认证结果。
     // 阶段 3 起同址多行并存（ADR-017 §5），service 内无法从地址推出是哪一行；
-    // 而这里恰好有更硬的判据——`validateTokenByAddress` 刚刚用指纹/凭据认证过
-    // 调用方。解析沿用同一个入口（`findByAddress(address, deviceFingerprint)`：
-    // 指纹优先、地址多行且无指纹时 fail-closed 返回 null），故解析不到唯一行时
-    // 传 null，service 回落地址判据，行为与引入前逐字节一致（不会误拒合法对账）。
-    const resolved = await this.svc.findByAddress(address, deviceFingerprint);
+    // authenticateMachineRequest 已经把「令牌绑定的那行」算出来了（指纹 → 地址
+    // → 自报 id 三级，最后一级只在按行令牌校验通过时采纳），故不再二次解析。
+    // 解析不到唯一行时传 null，service 回落地址判据，行为与引入前逐字节一致。
+    const resolved = authz.executor;
     const parsedLimit = Number(limit);
     return this.svc.getTerminalStates(address, {
       since: this.parseTerminalSince(since),
@@ -1150,6 +1184,10 @@ export class ExecutorController {
       type: "config-reload",
       payload: body as Record<string, unknown>,
     });
+    if (routed.delivered === "unresolved") {
+      // 行在 findOne(id) 之后被删除（极小窗口）。不存在"推送回退"——直接报不可用。
+      throw new AppError("EXECUTOR_NOT_FOUND");
+    }
     if (routed.delivered === "pull") {
       return {
         queued: true,

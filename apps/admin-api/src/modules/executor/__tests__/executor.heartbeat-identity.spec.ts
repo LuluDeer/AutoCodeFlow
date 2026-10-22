@@ -3,7 +3,10 @@ import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConflictException, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { ExecutorService } from "../executor.service";
+import {
+  ExecutorService,
+  __resetMissingFingerprintWarnForTest,
+} from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
 import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.entity";
 import { Task } from "../../task/entities/task.entity";
@@ -307,13 +310,77 @@ describe("R32-C4 L1 — heartbeat 同址多行 + 无指纹：身份不可判定�
     // R53-A1：写面从整行 save 换成「实际采纳字段」的列级 patch。
     expect(executorRepo.save).not.toHaveBeenCalled();
     expect(executorRepo.update).toHaveBeenCalledTimes(1);
-    const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock.calls[0];
+    const [hbCriteria, hbPatch] = (executorRepo.update as jest.Mock).mock
+      .calls[0];
     expect(hbCriteria).toEqual({ id: "legacy-only" });
     // 本次上报的两列必须进 patch；管理台拥有的列一个都不许进。
     expect(hbPatch).toMatchObject({ cpuUsage: 42, runningTaskCount: 2 });
     expect(hbPatch).toHaveProperty("status", ExecutorStatus.ONLINE);
-    for (const notOwned of ["appName", "maxConcurrentTasks", "dispatchMode", "version"]) {
+    for (const notOwned of [
+      "appName",
+      "maxConcurrentTasks",
+      "dispatchMode",
+      "version",
+    ]) {
       expect(hbPatch).not.toHaveProperty(notOwned);
     }
+  });
+
+  // P1（生产报告 2026-10-22 §4.6 / 结论 H）：日志里要能回答「刚才那条
+  // fail-closed 是哪台机器发的」。现场 36 次 `Identity resolution … is ambiguous`
+  // 只证明了「有一台不带指纹」，却指不出是哪台（请求体不落日志）。
+  it("不带指纹的心跳 → 一条节流诊断 warn（含 appName/address/dispatchMode）", async () => {
+    __resetMissingFingerprintWarnForTest();
+    const onlyRow = row({
+      id: "no-fp",
+      appName: "legacy-node",
+      deviceFingerprint: null,
+    });
+    bindRows(executorRepo, [onlyRow]);
+    service = await buildService();
+    const warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+
+    await service.heartbeat(ADDR, { cpuUsage: 10 });
+    await service.heartbeat(ADDR, { cpuUsage: 11 });
+
+    const hits = warnSpy.mock.calls.filter((c) =>
+      String(c[0]).includes("without a parseable deviceFingerprint"),
+    );
+    // 第一跳记一条；第二跳被 1h 节流（心跳 30s 一台，不节流会刷屏）。
+    expect(hits).toHaveLength(1);
+    expect(String(hits[0][0])).toContain("legacy-node");
+    expect(String(hits[0][0])).toContain(ADDR);
+    expect(String(hits[0][0])).toContain("dispatchMode=");
+    warnSpy.mockRestore();
+  });
+
+  // P1-2（ADR-017 阶段 3 复查补口）：同一地址被**另一份安装**接手（DHCP 把同一
+  // IP 先后分给两台机器，现场 17:33/17:34 实证）时，心跳不得把别人的指纹写进
+  // 这一行。旧实现会如此：两台机器每 30s 互改同一行的指纹，行身份来回漂移，
+  // 注册面刚裁定的归属被心跳面悄悄推翻。
+  it("单行地址 + **不同**的真实指纹 → 不覆盖本行已存指纹（身份不互窃）", async () => {
+    const ownerRow = row({
+      id: "owner-row",
+      appName: "boss1",
+      deviceFingerprint: FP_B,
+      cpuUsage: 1,
+    });
+    bindRows(executorRepo, [ownerRow]);
+    service = await buildService();
+    const intrusiveFp = "c3".repeat(32);
+
+    const saved = (await service.heartbeat(ADDR, {
+      cpuUsage: 66,
+      deviceFingerprint: intrusiveFp,
+    })) as unknown as Row;
+
+    // 心跳本身仍然成功（状态/指标照常收敛——拒绝的是"改身份"，不是"拒绝心跳"）。
+    expect(saved.id).toBe("owner-row");
+    // 指纹这一列**不进** patch：行身份留在它自己的安装手里。
+    const [, patch] = (executorRepo.update as jest.Mock).mock.calls[0];
+    expect(patch).not.toHaveProperty("deviceFingerprint");
+    expect(ownerRow.deviceFingerprint).toBe(FP_B);
   });
 });

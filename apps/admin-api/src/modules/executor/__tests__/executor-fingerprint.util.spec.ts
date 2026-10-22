@@ -3,6 +3,7 @@ import {
   DEVICE_FINGERPRINT_COLUMN_LENGTH,
   FINGERPRINT_ALERT_THROTTLE_MS,
   FINGERPRINT_ENTRY_TTL_MS,
+  FINGERPRINT_LIVENESS_MS,
   MAX_FINGERPRINTS_PER_ADDRESS,
   MAX_TRACKED_ADDRESSES,
   createDeviceFingerprintTracker,
@@ -288,6 +289,150 @@ describe("ARCH-36 DeviceFingerprintTracker", () => {
   });
 });
 
+describe("ADR-017 阶段 3 复查补口：冲突判据跟随行语义（P0-1/P0-2）", () => {
+  const t0 = 1_700_000_000_000;
+
+  it("pull 模式同址两行（各自成行）**不是**冲突——这是生产误报的直接来源", () => {
+    // 现场（2026-10-22）：6 行全 pull、地址无重复，却每 10 分钟收到一条
+    // "shared by multiple installs"。根因是判据停在阶段 2 的「同址第二个指纹
+    // = 冲突」，而阶段 3 已把 pull 的 address 降级为标签。
+    const tracker = createDeviceFingerprintTracker();
+    tracker.observeWithContext(ADDR_1, FP_A, {
+      rowId: "row-a",
+      dispatchMode: "pull",
+    }, t0);
+    const second = tracker.observeWithContext(ADDR_1, FP_B, {
+      rowId: "row-b",
+      dispatchMode: "pull",
+    }, t0 + 30_000);
+
+    expect(second?.conflictKind).toBeNull();
+    expect(second?.addressSharedByMultipleInstalls).toBe(false);
+    // 但"确实并存了两份安装"这一事实仍要可见（只记 info，不告警）。
+    expect(second?.addressSharedByMultipleRows).toBe(true);
+    expect(second?.fingerprintsOnAddress).toBe(2);
+  });
+
+  it("push 行参与的同址碰撞仍是硬冲突（地址就是路由面）", () => {
+    const tracker = createDeviceFingerprintTracker();
+    tracker.observeWithContext(ADDR_1, FP_A, {
+      rowId: "row-a",
+      dispatchMode: "push",
+    }, t0);
+    const second = tracker.observeWithContext(ADDR_1, FP_B, {
+      rowId: "row-b",
+      dispatchMode: "pull",
+    }, t0 + 1);
+    expect(second?.conflictKind).toBe("push-address-collision");
+    expect(second?.addressSharedByMultipleInstalls).toBe(true);
+  });
+
+  it("未知 dispatchMode 按 push 处理（存量执行器不报该字段，宁可多报不漏报）", () => {
+    const tracker = createDeviceFingerprintTracker();
+    tracker.observeWithContext(ADDR_1, FP_A, {}, t0);
+    const second = tracker.observeWithContext(ADDR_1, FP_B, {}, t0 + 1);
+    expect(second?.conflictKind).toBe("push-address-collision");
+  });
+
+  it("两个指纹落在**同一行 id** → row-identity-overwrite（身份被顶替）", () => {
+    const tracker = createDeviceFingerprintTracker();
+    tracker.observeWithContext(ADDR_1, FP_A, {
+      rowId: "row-same",
+      dispatchMode: "pull",
+    }, t0);
+    const second = tracker.observeWithContext(ADDR_1, FP_B, {
+      rowId: "row-same",
+      dispatchMode: "pull",
+    }, t0 + 30_000);
+    // 行身份优先于地址语义：即使两行都是 pull，同一行被两份安装写也是故障。
+    expect(second?.conflictKind).toBe("row-identity-overwrite");
+  });
+
+  it("离场的第二个安装不再续期冲突（旧实现：永久误报）", () => {
+    const tracker = createDeviceFingerprintTracker();
+    // 两台机器先后在同一地址上报（DHCP 复用 / Clash 伪 IP）。
+    tracker.observeWithContext(ADDR_1, FP_A, { rowId: "a", dispatchMode: "push" }, t0);
+    tracker.observeWithContext(ADDR_1, FP_B, { rowId: "b", dispatchMode: "push" }, t0 + 1000);
+    // 之后只有 A 在心跳：B 已下线/被删。旧实现里 A 的心跳会不断给整条地址
+    // 条目续期，B 的指纹永远留在集合里 ⇒ 告警永不消失。
+    let last: ReturnType<typeof tracker.observeWithContext> = null;
+    for (let i = 1; i <= 3; i++) {
+      last = tracker.observeWithContext(
+        ADDR_1,
+        FP_A,
+        { rowId: "a", dispatchMode: "push" },
+        t0 + FINGERPRINT_LIVENESS_MS + i * 30_000,
+      );
+    }
+    expect(last?.fingerprintsOnAddress).toBe(1);
+    expect(last?.conflictKind).toBeNull();
+    expect(last?.distinctFingerprintsOnAddress).toEqual([FP_A]);
+  });
+
+  it("forget()：删除行即让该安装离场（不必等 liveness 窗口）", () => {
+    const tracker = createDeviceFingerprintTracker();
+    tracker.observeWithContext(ADDR_1, FP_A, { rowId: "a", dispatchMode: "push" }, t0);
+    const conflicted = tracker.observeWithContext(
+      ADDR_1,
+      FP_B,
+      { rowId: "b", dispatchMode: "push" },
+      t0 + 1000,
+    );
+    expect(conflicted?.conflictKind).toBe("push-address-collision");
+
+    // 运维删掉多余那行 → 跟踪器同步忘记它。
+    tracker.forget(ADDR_1, FP_B);
+    const after = tracker.observeWithContext(
+      ADDR_1,
+      FP_A,
+      { rowId: "a", dispatchMode: "push" },
+      t0 + 2000,
+    );
+    expect(after?.conflictKind).toBeNull();
+    expect(after?.fingerprintsOnAddress).toBe(1);
+  });
+
+  it("forget(address) 不带指纹＝清掉整条地址", () => {
+    const tracker = createDeviceFingerprintTracker();
+    tracker.observeWithContext(ADDR_1, FP_A, { rowId: "a" }, t0);
+    tracker.forget(ADDR_1);
+    expect(tracker.size).toBe(0);
+  });
+
+  it("pull 并存的 info 节流与冲突告警**互不影响**（info 不得吞掉真告警）", () => {
+    const tracker = createDeviceFingerprintTracker();
+    tracker.observeWithContext(ADDR_1, FP_A, { rowId: "a", dispatchMode: "pull" }, t0);
+    // 第一次 pull 并存 → 应记一条 info。
+    const info = tracker.observeWithContext(
+      ADDR_1,
+      FP_B,
+      { rowId: "b", dispatchMode: "pull" },
+      t0 + 1000,
+    );
+    expect(info?.addressSharedByMultipleRows).toBe(true);
+    expect(info?.infoThrottled).toBe(false);
+    // 窗口内重复 → info 节流。
+    expect(
+      tracker.observeWithContext(
+        ADDR_1,
+        FP_B,
+        { rowId: "b", dispatchMode: "pull" },
+        t0 + 2000,
+      )?.infoThrottled,
+    ).toBe(true);
+
+    // 同一地址上出现 push 行 → 真冲突必须照常外发（throttled=false），
+    // 即使这个 (address, fingerprint) 组合刚记过 info。
+    const real = tracker.observeWithContext(
+      ADDR_1,
+      FP_B,
+      { rowId: "b", dispatchMode: "push" },
+      t0 + 3000,
+    );
+    expect(real?.conflictKind).toBe("push-address-collision");
+    expect(real?.throttled).toBe(false);
+  });
+});
 describe("ADR-017 阶段 3 legacy 身份键（legacyExecutorIdentity / isLegacyExecutorIdentity）", () => {
   it("常规形态：`legacy:{address}`，且 ≤ 列宽（ip:port 恒走此形态）", () => {
     const key = legacyExecutorIdentity("192.168.1.100:8002");

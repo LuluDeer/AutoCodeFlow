@@ -1218,16 +1218,22 @@ describe("ExecutorController", () => {
     // ARCH-32（ADR-015）: POST /executors/pull 长轮询端点
     // ARCH-33（ADR-016）: 响应新增 commands（控制面命令）与 freeSlots 入参。
     describe("POST /executors/pull — 长轮询派发", () => {
+      // 工单 11：端点改为「认证 + 行定位一次成型」（authenticateMachineRequest）。
+      // 这里保留与真实 service 同形的返回：ok + 解析到的行 + 凭据来源。
       const makeSvc = (
         dispatchMode: string,
         protocolVersion: number | null = 2,
       ) => ({
-        validateTokenByAddress: jest.fn().mockResolvedValue(true),
-        findByAddress: jest.fn().mockResolvedValue({
-          id: "e-pull",
-          address: "nat:9999",
-          dispatchMode,
-          protocolVersion,
+        authenticateMachineRequest: jest.fn().mockResolvedValue({
+          ok: true,
+          executor: {
+            id: "e-pull",
+            address: "nat:9999",
+            dispatchMode,
+            protocolVersion,
+          },
+          via: "per-executor",
+          resolvedBy: "address",
         }),
       });
 
@@ -1401,7 +1407,12 @@ describe("ExecutorController", () => {
 
       it("无效令牌 401", async () => {
         const svc = makeSvc("pull");
-        svc.validateTokenByAddress.mockResolvedValue(false);
+        svc.authenticateMachineRequest.mockResolvedValue({
+          ok: false,
+          executor: null,
+          via: "none",
+          resolvedBy: "none",
+        } as never);
         const controller = new ExecutorController(
           svc as any,
           {} as any,
@@ -1499,5 +1510,141 @@ describe("ExecutorController", () => {
       metricsPayload,
     );
     expect(svc.getExecutorMetrics).toHaveBeenCalledWith("executor-1");
+  });
+
+  // ── P0-4（生产报告 2026-10-22 §4.4）：失败回执必须推进业务行 ──────────────
+  //
+  // 旧链路：pull 部署命令失败只落日志 + 600s 的 Redis 结果键，部署行停在
+  // DEPLOYING 直到卡死扫描（pull 未决行豁免到命令 TTL 30 分钟）才判 FAILED，
+  // 期间同一应用的后续部署全被在途锁拒成 409。现在由 controller 发事件、
+  // 部署域订阅收口（秒级）。执行器上报里只有 commandId，部署行 id 来自
+  // 入队时记的旁路元数据（acf:cmdmeta:{id}）。
+  describe("reportCommandResult — P0-4 失败回执推进部署行", () => {
+    const makeController = (over: { svc?: any; pull?: any } = {}) => {
+      const svc = {
+        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        publishControlCommandFailure: jest.fn(),
+        ...over.svc,
+      };
+      const pullService = {
+        recordCommandResult: jest.fn().mockResolvedValue(undefined),
+        getCommandMeta: jest.fn().mockResolvedValue(null),
+        ...over.pull,
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+        pullService as any,
+      );
+      return { controller, svc, pullService };
+    };
+
+    it("ok=false + deploy 元数据 → 发布失败的领域事件（带 deploymentId）", async () => {
+      const { controller, svc, pullService } = makeController({
+        pull: {
+          getCommandMeta: jest.fn().mockResolvedValue({
+            type: "deploy",
+            deploymentId: "deploy-1",
+            appId: "app-1",
+          }),
+        },
+      });
+
+      await expect(
+        controller.reportCommandResult(
+          {
+            commandId: "cmd-1",
+            address: "exec.local:8002",
+            type: "deploy",
+            ok: false,
+            error: "disk full",
+          },
+          "Bearer token-1",
+        ),
+      ).resolves.toEqual({ ok: true });
+
+      expect(pullService.recordCommandResult).toHaveBeenCalledTimes(1);
+      expect(svc.publishControlCommandFailure).toHaveBeenCalledWith({
+        commandId: "cmd-1",
+        type: "deploy",
+        address: "exec.local:8002",
+        deploymentId: "deploy-1",
+        error: "disk full",
+      });
+    });
+
+    it("ok=true 不发失败事件（成功终态由 /app-deployments/heartbeat 收敛）", async () => {
+      const { controller, svc, pullService } = makeController({
+        pull: {
+          getCommandMeta: jest.fn().mockResolvedValue({
+            type: "deploy",
+            deploymentId: "deploy-1",
+            appId: null,
+          }),
+        },
+      });
+
+      await controller.reportCommandResult(
+        {
+          commandId: "cmd-2",
+          address: "exec.local:8002",
+          type: "deploy",
+          ok: true,
+        },
+        "Bearer token-1",
+      );
+
+      // 成功路径连元数据都不需要查（省一次 Redis 往返）。
+      expect(pullService.getCommandMeta).not.toHaveBeenCalled();
+      expect(svc.publishControlCommandFailure).not.toHaveBeenCalled();
+    });
+
+    it("非 deploy 命令（app-stop）失败不发部署事件", async () => {
+      const { controller, svc } = makeController({
+        pull: {
+          getCommandMeta: jest.fn().mockResolvedValue({
+            type: "app-stop",
+            deploymentId: null,
+            appId: null,
+          }),
+        },
+      });
+
+      await controller.reportCommandResult(
+        {
+          commandId: "cmd-3",
+          address: "exec.local:8002",
+          type: "app-stop",
+          ok: false,
+          error: "nope",
+        },
+        "Bearer token-1",
+      );
+
+      expect(svc.publishControlCommandFailure).not.toHaveBeenCalled();
+    });
+
+    it("元数据缺失/Redis 抖动 → 安静跳过（收敛退回卡死扫描，不抛）", async () => {
+      const { controller, svc } = makeController({
+        pull: {
+          getCommandMeta: jest.fn().mockRejectedValue(new Error("redis down")),
+        },
+      });
+
+      await expect(
+        controller.reportCommandResult(
+          {
+            commandId: "cmd-4",
+            address: "exec.local:8002",
+            type: "deploy",
+            ok: false,
+            error: "boom",
+          },
+          "Bearer token-1",
+        ),
+      ).resolves.toEqual({ ok: true });
+      expect(svc.publishControlCommandFailure).not.toHaveBeenCalled();
+    });
   });
 });

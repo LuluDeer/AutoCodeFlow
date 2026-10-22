@@ -10,16 +10,30 @@
  *
  * `deviceFingerprint` 跨重启**不变**，于是判据从时序变成**直接比较**：
  *
- *   同一 address 上出现两个**不同** fingerprint
- *     → 两台不同机器/两份不同安装共用了同一行 = **硬冲突**（零误报：
- *       正常重启不换指纹；盐文件被删后重建才会换，而那本身也是要暴露的事）
+ *   两个**不同** fingerprint 落在**同一行**（同一 executors.id）
+ *     → 一份安装的身份被另一份顶替 = **硬冲突** `row-identity-overwrite`
+ *       （零误报：正常重启不换指纹；盐文件被删后重建才会换，而那本身也是要
+ *       暴露的事）
+ *
+ *   同一 address 上出现两个不同 fingerprint，且该地址上有 **push 行**
+ *     → 地址是 push 行的**路由面**（唯一索引 `uq_executors_address WHERE
+ *       dispatchMode='push'`），撞了就是真故障 `push-address-collision`
+ *       （HTTP 下发会打到错误的那台机器）
+ *
+ *   同一 address 上两个不同 fingerprint，全是 **pull 行**
+ *     → **不是冲突**（`addressSharedByMultipleRows`，只记 info）。ADR-017 §5
+ *       明确允许该形态：队列键是行 id、恢复按行身份，各自成行互不影响。
+ *       ⚠️ 这正是本模块 2026-10-22 的生产误报来源：判据曾停在"阶段 2"的
+ *       「同址第二个指纹即冲突」，于是全 pull 机队每 10 分钟收到一条无意义告警。
  *
  *   同一个 fingerprint 换成另一个 address
  *     → 同一份安装换了地址上报 = **地址漂移**（机器换网/换 IP），属正常，
  *       不是冲突。**必须与硬冲突分开**：把漂移报成冲突会让每次换网都告警。
  *
- * 两个方向各自零误报，这是本模块与 P0 跟踪器的分工——P0 管进程生命，本模块管
- * 安装身份。
+ * 三条方向各自零误报，这是本模块与 P0 跟踪器的分工——P0 管进程生命，本模块管
+ * 安装身份。判据与**行语义**对齐（阶段 3 复查补口）：调用方必须用
+ * `observeWithContext` 传入 `rowId` 与 `dispatchMode`，否则退回"未知模式 =
+ * 按 push 处理"的保守口径（与派发面同策，宁可多报不漏报）。
  *
  * ── 与 P0 的关系（刻意的重复而非替换）───────────────────────────────────
  * 两者**并存**、不互相替代：
@@ -139,6 +153,25 @@ export const FINGERPRINT_ENTRY_TTL_MS = 24 * 60 * 60 * 1000;
 export const FINGERPRINT_ALERT_THROTTLE_MS = 10 * 60 * 1000;
 
 /**
+ * 指纹「在场」窗口（ADR-017 阶段 3 复查补口 · 冲突观测层）。
+ *
+ * 语义：某指纹在该地址上最后一次被观测到的时刻距今超过本值，就不再参与冲突
+ * 判据（视为「这份安装已经不在这台地址上了」）。
+ *
+ * 为什么必须有这一层（生产实证，2026-10-22）：旧实现只给**地址条目**记
+ * updatedAt，而条目时间被「该地址上任何一台的心跳」不断续期，fingerprints
+ * 集合里的历史指纹因此**永不过期**——一台机器 7 小时前就被删了，告警仍在
+ * 每 10 分钟外发一次（现场：198.18.0.1:8002 / 192.168.1.40:8002）。改按
+ * **指纹各自**计在场后，第二个安装离场（≈ 本窗口）即自动收敛，不需要运维
+ * 去删行、也不需要重启进程。
+ *
+ * 30min = 60 个心跳周期（心跳 30s）：足够覆盖 GC 停顿、网络抖动、缓存重建，
+ * 又短到「DHCP 把同一 IP 先后分给两台机器」这类真冲突在有人处理之前不会
+ * 自行漂白。
+ */
+export const FINGERPRINT_LIVENESS_MS = 30 * 60 * 1000;
+
+/**
  * 规范化上报的指纹。
  *
  * 只接受 sha256 的十六进制形态，并统一小写——执行器两端都产出小写，但统一
@@ -151,6 +184,35 @@ export function normalizeDeviceFingerprint(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim().toLowerCase();
   return FINGERPRINT_RE.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * 冲突类型（ADR-017 阶段 3 复查补口）。
+ *
+ * 只有这两种形态是**真故障**；「pull 同址多行」不入此枚举——它是设计。
+ */
+export type FingerprintConflictKind =
+  /** 地址是 push 行的路由面，却被另一份安装占用（HTTP 下发会打到错的行）。 */
+  | "push-address-collision"
+  /** 两份安装的指纹落在**同一行 id** 上（一份安装的身份被另一份顶替）。 */
+  | "row-identity-overwrite";
+
+/**
+ * 观测上下文：行身份 + 派发模式。
+ *
+ * 阶段 3 把 `address` 从「身份键」降级为「可达性元数据」，但冲突观测层仍停留在
+ * 阶段 2 的「同址第二个指纹 = 冲突」。补上这两个字段后，判据才能与行语义一致：
+ * 有行身份时才谈得上「同一行被顶替」，有 push 行时地址才是路由面。
+ *
+ * 缺省语义（两字段都不传 / 传 null）= **未知**，按 push 处理——与派发面
+ * （`resolveExecutorTransport` 对未知 dispatchMode 走 push）同口径，也让
+ * 存量单测的「同址第二个指纹 = 冲突」语义逐字节不变。
+ */
+export interface FingerprintObserveContext {
+  /** 本次上报所属执行器行 id（解析得到时）。 */
+  rowId?: string | null;
+  /** 该行的 dispatchMode（`'pull'` 才把同址多行视为合法形态）。 */
+  dispatchMode?: string | null;
 }
 
 /** 触发观测时给出的完整结果（供调用方写日志/通知/审计）。 */
@@ -175,9 +237,32 @@ export interface FingerprintObservation {
   /** 该 fingerprint 出现过的不同地址数（含本次）。 */
   addressesForFingerprint: number;
   /**
-   * **硬冲突**：同一 address 上出现了第二个不同指纹。
+   * **硬冲突类型**（ADR-017 阶段 3 复查补口）；`null` = 无冲突。
    *
-   * 语义：两台不同机器（或两份不同安装）正在共用同一行 `executors` 记录。
+   * - `push-address-collision`：该地址上**有 push 行的指纹**（含未上报
+   *   dispatchMode 的未知/存量行），而 push 行的 `address` 是**路由面**
+   *   （唯一索引 `uq_executors_address WHERE dispatchMode='push'`），撞了就是
+   *   真故障：两台机器抢同一个 HTTP 入口，下发会打到错的那台。
+   * - `row-identity-overwrite`：两个**不同指纹映射到同一行 id** —— 一份安装的
+   *   身份被另一份顶替（阶段 2 判据原本想抓的形态）。
+   *
+   * 阶段 3 之后 **pull 模式的同址多行是设计允许的正常形态**（外键无唯一约束、
+   * 队列键是行 id、恢复按行身份），因此「同址两个指纹但全是 pull」**不再是**
+   * 冲突 —— 见 `addressSharedByMultipleRows`。
+   */
+  conflictKind: FingerprintConflictKind | null;
+  /**
+   * 该地址上**确实并存**了多份安装（≥2 个在场指纹）。
+   *
+   * 注意：本字段**不代表故障**。pull 模式下它是正常拓扑（同网段同 IP / Clash
+   * 伪 IP / DHCP 复用），调用方只应记 info。真正的故障判据是 `conflictKind`。
+   */
+  addressSharedByMultipleRows: boolean;
+  /**
+   * **硬冲突**：`conflictKind !== null` 的布尔投影（保留字段名以兼容既有
+   * 调用方/监控口径）。
+   *
+   * 语义：两台不同机器（或两份不同安装）正在共用同一**路由地址**或同一行。
    * 与 P0 的时序判据不同，这是**直接证据**——不依赖上报节奏。
    */
   addressSharedByMultipleInstalls: boolean;
@@ -195,6 +280,13 @@ export interface FingerprintObservation {
    * 但同一 (address, fingerprint) 组合刚告警过，调用方应跳过外发只记 debug。
    */
   throttled: boolean;
+  /**
+   * 「pull 同址并存」这条 **info** 是否因节流而未应记录。
+   *
+   * 心跳 30s 一次 × N 台，若无节流会把日志刷成瀑布；与 throttled 分开计，
+   * 互不影响。
+   */
+  infoThrottled: boolean;
 }
 
 /** 采集侧观测口径（回答"冲突率到底是多少"）。 */
@@ -221,12 +313,37 @@ export interface FingerprintStats {
   conflictRate: number;
 }
 
-interface AddressEntry {
-  /** 该地址上出现过的指纹 → 首次出现时刻（Map 保持插入序，用于 FIFO 淘汰）。 */
-  fingerprints: Map<string, number>;
+/** 一条 (address, fingerprint) 观测记录（各自计在场，见 FINGERPRINT_LIVENESS_MS）。 */
+interface AddressFingerprintEntry {
+  /** 首次出现时刻（FIFO 淘汰序 / 告警文案「何时起」）。 */
+  firstSeenAt: number;
+  /** 最近一次上报时刻：超过 FINGERPRINT_LIVENESS_MS 即视为该安装已离场。 */
+  lastSeenAt: number;
+  /** 该指纹最近一次被观测到时所属的执行器行 id（识别「同一行被另一份安装顶替」）。 */
+  rowId: string | null;
+  /** 该行的 dispatchMode；null = 未上报/未知（按 push 处理，与派发面同口径）。 */
+  dispatchMode: "push" | "pull" | null;
   /** 该 (address, fingerprint) 最近一次告警时刻，用于节流。 */
-  lastAlertAt: Map<string, number>;
-  /** 最近一次上报时刻（惰性 TTL 依据）。 */
+  lastAlertAt: number | null;
+  /**
+   * 该 (address, fingerprint) 最近一次「pull 同址并存」info 记录时刻。
+   *
+   * 与 lastAlertAt **分开**：info 节流绝不能吞掉后续真冲突的告警（同一地址
+   * 先全 pull、后来一台 push 进场的形态虽然罕见，但吞掉就是漏报）。
+   */
+  lastInfoAt: number | null;
+}
+
+interface AddressEntry {
+  /**
+   * 该地址上出现过的指纹 → 观测记录（Map 保持插入序，FIFO 淘汰最旧）。
+   *
+   * ADR-017 阶段 3 复查补口：值从「首次出现时刻」升级为完整记录——只有
+   * 记住 rowId / dispatchMode 才能按行语义判定冲突，只有各自记 lastSeenAt
+   * 才能让「离场的安装」自动退出判据（旧实现只按地址续期 ⇒ 永久误报）。
+   */
+  fingerprints: Map<string, AddressFingerprintEntry>;
+  /** 最近一次上报时刻（惰性 TTL 依据，仅用于整条地址条目的过期）。 */
   updatedAt: number;
 }
 
@@ -249,9 +366,30 @@ export class DeviceFingerprintTracker {
    * @param now         当前时刻（可注入，便于测试）。
    * @returns 观测结果；指纹缺省/非法时返回 null。
    */
+
   observe(
     address: string,
     fingerprint: string | null | undefined,
+    now: number = Date.now(),
+  ): FingerprintObservation | null {
+    // 兼容壳：不带行身份/派发模式 ⇒ 未知模式（按 push 处理），语义与引入
+    // 阶段 3 判据前逐字节一致。生产调用点应使用 observeWithContext。
+    return this.observeWithContext(address, fingerprint, {}, now);
+  }
+
+  /**
+   * 记录一次执行器上报并判定**按行语义**的冲突/漂移（ADR-017 阶段 3）。
+   *
+   * @param address     执行器自报地址（阶段 3 之后它只是标签/可达性元数据）。
+   * @param fingerprint 上报的指纹；非法/缺省 → 只计数 reports，返回 null。
+   * @param ctx         行身份 + dispatchMode（决定「同址多行」是故障还是设计）。
+   * @param now         当前时刻（可注入，便于测试）。
+   * @returns 观测结果；指纹缺省/非法时返回 null。
+   */
+  observeWithContext(
+    address: string,
+    fingerprint: string | null | undefined,
+    ctx: FingerprintObserveContext = {},
     now: number = Date.now(),
   ): FingerprintObservation | null {
     this.reports += 1;
@@ -265,23 +403,48 @@ export class DeviceFingerprintTracker {
     if (isNewAddress) this.evictIfFull(now);
 
     const addressEntry = this.byAddress.get(address) ?? {
-      fingerprints: new Map<string, number>(),
-      lastAlertAt: new Map<string, number>(),
+      fingerprints: new Map<string, AddressFingerprintEntry>(),
       updatedAt: now,
     };
     this.byAddress.set(address, addressEntry);
     addressEntry.updatedAt = now;
 
-    const isNewFingerprintOnAddress =
-      !addressEntry.fingerprints.has(normalized);
-    if (isNewFingerprintOnAddress) {
-      addressEntry.fingerprints.set(normalized, now);
+    // 在场判定：先把该地址上**已离场**的指纹清掉。旧实现让整条地址条目被
+    // 「同址任何一台的心跳」续期，历史指纹永不退出 ⇒ 误报永久化（见
+    // FINGERPRINT_LIVENESS_MS 注释）。
+    this.pruneDepartedFingerprints(addressEntry, now);
+
+    const normalizedMode: "push" | "pull" | null =
+      ctx.dispatchMode === "pull"
+        ? "pull"
+        : ctx.dispatchMode === "push"
+          ? "push"
+          : null;
+    const rowId =
+      typeof ctx.rowId === "string" && ctx.rowId.length > 0 ? ctx.rowId : null;
+
+    const existing = addressEntry.fingerprints.get(normalized);
+    if (existing) {
+      existing.lastSeenAt = now;
+      // 行身份/模式以**最新**上报为准：pull 行可能被重建（新 id）、也可能
+      // 从 push 改成 pull（协议 v3 升级）。只在本次给了值时才覆盖，避免
+      // 旧执行器（不带 dispatchMode）把已知模式擦回未知。
+      if (rowId) existing.rowId = rowId;
+      if (normalizedMode) existing.dispatchMode = normalizedMode;
+    } else {
+      addressEntry.fingerprints.set(normalized, {
+        firstSeenAt: now,
+        lastSeenAt: now,
+        rowId,
+        dispatchMode: normalizedMode,
+        lastAlertAt: null,
+        lastInfoAt: null,
+      });
       // 有界：FIFO 淘汰最旧的指纹（Map 保持插入序）。
       while (addressEntry.fingerprints.size > MAX_FINGERPRINTS_PER_ADDRESS) {
         const oldest = addressEntry.fingerprints.keys().next().value;
         if (oldest === undefined) break;
         addressEntry.fingerprints.delete(oldest);
-        addressEntry.lastAlertAt.delete(oldest);
       }
     }
 
@@ -298,33 +461,105 @@ export class DeviceFingerprintTracker {
       }
     }
 
-    // 硬冲突判据：该地址上**除本次之外**还有别的指纹。
-    // 注意用地址表（而非"是否是本次新增"）判——同一对冲突在被反复上报时
-    // 必须持续为 true（否则第二次心跳就"痊愈"了，与 P0 的持续可检出语义不一致）。
-    const fingerprintsOnAddress = addressEntry.fingerprints.size;
-    const addressSharedByMultipleInstalls = fingerprintsOnAddress > 1;
+    const liveFingerprints = [...addressEntry.fingerprints.keys()];
+    const fingerprintsOnAddress = liveFingerprints.length;
+    const addressSharedByMultipleRows = fingerprintsOnAddress > 1;
+    // 冲突判据**按行语义**（阶段 3）：只有「地址是路由面却被撞」或「两份安装
+    // 映射到同一行」才是故障；pull 的同址多行是设计允许的正常拓扑。
+    // 用地址表（而非「本次是否新增」）判——冲突在被反复上报时必须持续为真
+    // （否则第二次心跳就"痊愈"了，与 P0 的持续可检出语义不一致）。
+    const conflictKind = this.classifyConflict(addressEntry, liveFingerprints);
 
     let throttled = false;
-    if (addressSharedByMultipleInstalls) {
+    if (conflictKind !== null) {
       throttled = this.isAlertThrottled(addressEntry, normalized, now);
     }
+    // pull 同址并存（合法形态）只记一条 info —— 同样按窗口节流。
+    const infoThrottled =
+      conflictKind === null && addressSharedByMultipleRows
+        ? this.isInfoThrottled(addressEntry, normalized, now)
+        : false;
 
     return {
       fingerprint: normalized,
       address,
       fingerprintsOnAddress,
-      distinctFingerprintsOnAddress: [...addressEntry.fingerprints.keys()],
+      distinctFingerprintsOnAddress: liveFingerprints,
       addressesForFingerprint: fingerprintAddresses.size,
-      addressSharedByMultipleInstalls,
+      conflictKind,
+      addressSharedByMultipleRows,
+      addressSharedByMultipleInstalls: conflictKind !== null,
       // 漂移 = 本次给该指纹**新添**了一个地址（正是「机器换网/换 IP」那一刻）。
-      // 刻意不让 `isNewAddress` 参与判定：换网场景下**新地址本身就是新地址**，
+      // 刻意不让 isNewAddress 参与判定：换网场景下**新地址本身就是新地址**，
       // 若要求「该地址此前见过」才判漂移，恰好会把唯一的漂移时刻漏掉。
-      // 也不用 `addressesForFingerprint > 1`——那是「曾经漂移过」的稳定属性而非
+      // 也不用 addressesForFingerprint > 1——那是「曾经漂移过」的稳定属性而非
       // 本次事件，持续为真会让调用方每次心跳都记一条，日志没有信息量。
       addressDrifted:
         isNewAddressForFingerprint && fingerprintAddresses.size > 1,
       throttled,
+      infoThrottled,
     };
+  }
+
+  /**
+   * 冲突分类（阶段 3 行语义）。
+   *
+   * 顺序即优先级：**行身份优先于地址**——「两个指纹落在同一行」是身份被顶替，
+   * 比「两个指纹落在同一地址的两行」严重得多（前者会互相改写元数据/令牌）。
+   */
+  private classifyConflict(
+    entry: AddressEntry,
+    liveFingerprints: string[],
+  ): FingerprintConflictKind | null {
+    if (liveFingerprints.length < 2) return null;
+
+    const rowIdToFingerprint = new Map<string, string>();
+    for (const fp of liveFingerprints) {
+      const rowId = entry.fingerprints.get(fp)?.rowId ?? null;
+      if (!rowId) continue;
+      const owner = rowIdToFingerprint.get(rowId);
+      if (owner !== undefined && owner !== fp) return "row-identity-overwrite";
+      rowIdToFingerprint.set(rowId, fp);
+    }
+
+    // 地址是 push 行的**路由面**（唯一索引只约束 push 行）⇒ 撞了就是真故障。
+    // dispatchMode 未知（存量执行器不报该字段）按 push 处理：与派发面
+    // resolveExecutorTransport 的「未知 → push」同口径，宁可多报也不漏真故障。
+    const hasRoutingSurface = liveFingerprints.some(
+      (fp) => entry.fingerprints.get(fp)?.dispatchMode !== "pull",
+    );
+    if (hasRoutingSurface) return "push-address-collision";
+
+    return null;
+  }
+
+  /**
+   * info 节流（pull 同址并存的可见性提示）。
+   *
+   * 与 isAlertThrottled 同窗口、同键，但写**独立**的 lastInfoAt 字段——原因
+   * 见该字段注释。
+   */
+  private isInfoThrottled(
+    entry: AddressEntry,
+    fingerprint: string,
+    now: number,
+  ): boolean {
+    const rec = entry.fingerprints.get(fingerprint);
+    const last = rec?.lastInfoAt ?? null;
+    if (last !== null && now - last < FINGERPRINT_ALERT_THROTTLE_MS) {
+      return true;
+    }
+    if (rec) rec.lastInfoAt = now;
+    return false;
+  }
+
+  /** 清掉该地址上已离场的指纹（各自计时，不被同址其他安装续期）。 */
+  private pruneDepartedFingerprints(entry: AddressEntry, now: number): void {
+    for (const [fp, rec] of entry.fingerprints) {
+      if (now - rec.lastSeenAt > FINGERPRINT_LIVENESS_MS) {
+        entry.fingerprints.delete(fp);
+      }
+    }
   }
 
   /**
@@ -336,11 +571,12 @@ export class DeviceFingerprintTracker {
     fingerprint: string,
     now: number,
   ): boolean {
-    const last = entry.lastAlertAt.get(fingerprint);
-    if (last !== undefined && now - last < FINGERPRINT_ALERT_THROTTLE_MS) {
+    const rec = entry.fingerprints.get(fingerprint);
+    const last = rec?.lastAlertAt ?? null;
+    if (last !== null && now - last < FINGERPRINT_ALERT_THROTTLE_MS) {
       return true;
     }
-    entry.lastAlertAt.set(fingerprint, now);
+    if (rec) rec.lastAlertAt = now;
     return false;
   }
 
@@ -379,6 +615,41 @@ export class DeviceFingerprintTracker {
       for (const fingerprint of entry?.fingerprints.keys() ?? []) {
         this.byFingerprint.get(fingerprint)?.delete(oldestAddress);
       }
+    }
+  }
+
+  /**
+   * 忘记某地址上的某份安装（或整个地址）。
+   *
+   * 为什么需要（阶段 3 复查补口）：行被**删除/自动清理**后，该安装在内存里
+   * 仍是一条"在场指纹"，直到 FINGERPRINT_LIVENESS_MS 到期。真冲突一旦处理
+   * 完（运维删掉多余行），告警应当在**同一时刻**停，而不是再响半小时。
+   * 删除路径（removeById / cleanupOfflineExecutors）据此同步清条目。
+   *
+   * @param address     执行器地址。
+   * @param fingerprint 省略 = 清掉该地址的全部指纹条目。
+   */
+  forget(address: string, fingerprint?: string | null): void {
+    const entry = this.byAddress.get(address);
+    if (!entry) return;
+    const normalized = normalizeDeviceFingerprint(fingerprint);
+    if (normalized) {
+      entry.fingerprints.delete(normalized);
+      this.forgetDriftIndex(address, [normalized]);
+      if (entry.fingerprints.size === 0) this.byAddress.delete(address);
+      return;
+    }
+    this.forgetDriftIndex(address, [...entry.fingerprints.keys()]);
+    this.byAddress.delete(address);
+  }
+
+  /** 反向索引清理（地址 → 指纹的漂移历史）。 */
+  private forgetDriftIndex(address: string, fingerprints: string[]): void {
+    for (const fp of fingerprints) {
+      const addresses = this.byFingerprint.get(fp);
+      if (!addresses) continue;
+      addresses.delete(address);
+      if (addresses.size === 0) this.byFingerprint.delete(fp);
     }
   }
 

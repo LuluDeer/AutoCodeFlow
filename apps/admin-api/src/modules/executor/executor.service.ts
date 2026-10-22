@@ -149,12 +149,15 @@ import {
   normalizeDeviceFingerprint,
   legacyExecutorIdentity,
   type FingerprintObservation,
+  type FingerprintObserveContext,
 } from "./executor-fingerprint.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
 import {
   DOMAIN_EVENTS,
+  ExecutorAddressDriftedEventPayload,
+  ExecutorCommandFailedEventPayload,
   ExecutorOfflineEventPayload,
   ExecutorOnlineEventPayload,
 } from "../../common/events/domain-events";
@@ -259,6 +262,22 @@ export function __resetTruncationWarnStateForTest(): void {
   lastTruncationWarn.clear();
 }
 const TRUNCATION_WARN_THROTTLE_MS = 60_000;
+
+/**
+ * P1（生产报告 2026-10-22 §4.6 / 结论 H）：**「哪台执行器没带可解析指纹」的
+ * 诊断节流**（address → 上次 warn 时刻）。
+ *
+ * 为什么需要：现场 36 次 `Identity resolution … is ambiguous` 只能证明「有一台
+ * 不带指纹」，却无法回答**是哪一台**（应用日志不记录请求体，指纹又不进日志）。
+ * 加这一行后，运维在日志里按 address/appName 就能定位到机；1h/地址的节流把
+ * 存量 legacy 机队的噪音压到 ≤24 行/天/台。
+ */
+const lastMissingFingerprintWarn = new Map<string, number>();
+const MISSING_FINGERPRINT_WARN_THROTTLE_MS = 60 * 60 * 1000;
+/** 测试出口：清空上面那张节流表（模块级 Map 跨用例残留会形成隐性顺序依赖）。 */
+export function __resetMissingFingerprintWarnForTest(): void {
+  lastMissingFingerprintWarn.clear();
+}
 
 /**
  * R53-A1（ADR-026 规则 4）：心跳**真正拥有**的列 —— 正向白名单。
@@ -391,6 +410,47 @@ function isUniqueViolation(err: unknown): boolean {
     maybe instanceof QueryFailedError &&
     (maybe.code === "23505" || maybe.driverError?.code === "23505")
   );
+}
+
+/**
+ * 控制面调用的传输判定结果（ADR-016 分流 + ADR-017 阶段 3 复查补口）。
+ *
+ * 三态而非两态：**「解析不到」既不是 pull，也不是「可以安全 push」**。
+ * 旧实现把两者合并成 push，于是「部署行指向的执行器已被删除」这条确定性故障
+ * 变成了「打一个陈旧快照地址、等 90 秒超时」（生产实证 2026-10-22）。
+ */
+export type ExecutorTransport =
+  | { mode: "pull"; executor: Executor }
+  /** pull 行 + 协议支持 → 入队；否则走 HTTP（executor 可能为 null = 纯地址寻址）。 */
+  | { mode: "push"; executor: Executor | null }
+  /**
+   * 行身份无法解析（`executorId` 指向的行已被删除/自动清理）。
+   *
+   * 调用方**必须**按失败处理，不得再回退 push。
+   */
+  | {
+      mode: "unresolved";
+      executor: null;
+      /** 稳定原因码：落 statusMessage / 审计用。 */
+      reason: "executor-row-missing";
+    };
+
+/**
+ * 机器面认证 + 行解析的**一次成型**结果（ADR-017 决策 §3 补全，工单 11）。
+ *
+ * 为什么把「认证」与「定位行」合成一个入口：两者分开时，同址多行 + 无指纹的
+ * 请求会先被 fail-closed（解析不到行）→ 404，即使调用方持有**自己那行**的
+ * per-executor 令牌、也自报了行 id。合并后可以按「令牌绑定的行」来定位，
+ * 而不是靠地址猜。
+ */
+export interface MachineAuthResult {
+  ok: boolean;
+  /** 认证通过时定位到的行；共享令牌 + 同址多行歧义时为 null（维持既有 404 语义）。 */
+  executor: Executor | null;
+  /** 凭据来源：per-executor = 按行令牌；shared = 共享令牌；none = 未通过。 */
+  via: "per-executor" | "shared" | "none";
+  /** 行定位口径（排障用）。 */
+  resolvedBy: "fingerprint" | "address" | "reported-id" | "none";
 }
 
 @Injectable()
@@ -836,8 +896,17 @@ export class ExecutorService implements OnModuleInit {
    * ARCH-36（ADR-017 阶段 2）：`deviceFingerprint` 冲突/漂移的观测与告警。
    *
    * 判据与方向见 `executor-fingerprint.util.ts` 头注。此处只负责**可见性**：
-   * - 硬冲突（同一 address 两个不同指纹）→ ERROR 日志 + 既有通知渠道，
-   *   级别与 P0 冲突一致（会让任务与部署跑到错误的机器上，属数据正确性问题）。
+   * - **真冲突**（`conflictKind` 非空）→ ERROR 日志 + 既有通知渠道，级别与 P0
+   *   冲突一致（会让任务与部署跑到错误的机器上，属数据正确性问题）。两种形态：
+   *   · `push-address-collision`：该地址上有 push 行，而 push 行的 address 就是
+   *     路由面（唯一索引只约束 push 行）——撞了必然投错机。
+   *   · `row-identity-overwrite`：两个不同指纹落在**同一行 id** 上，一份安装的
+   *     身份被另一份顶替（阶段 2 判据本来想抓的形态）。
+   * - pull 模式的**同址多行**（`addressSharedByMultipleRows` 且无 conflictKind）
+   *   → **info 日志**，不告警。ADR-017 §5 明确允许该形态：队列键是行 id、重启
+   *   恢复按行身份，两台机器各自成行互不影响。生产实证（2026-10-22）：判据停在
+   *   阶段 2 的「同址第二个指纹即冲突」，一屏全 pull 的机队因此每 10 分钟收到
+   *   一条毫无意义的 ERROR 通知。
    * - 地址漂移（同一指纹换了 address）→ **info 日志**，不告警。这是刻意的：
    *   机器换网/换 IP 是正常运维动作，把它升级成告警会让告警面失去信噪比
    *   （P0 头注里说的"狼来了"）。
@@ -854,10 +923,18 @@ export class ExecutorService implements OnModuleInit {
     address: string,
     fingerprint: string | null | undefined,
     source: "register" | "heartbeat",
+    ctx: FingerprintObserveContext = {},
   ): FingerprintObservation | null {
     let obs: FingerprintObservation | null = null;
     try {
-      obs = this.deviceFingerprintTracker.observe(address, fingerprint);
+      // 阶段 3 复查补口：判据从「按地址」改为「按行」——ctx 带 rowId 与
+      // dispatchMode，跟踪器据此区分「地址是路由面被撞」（真故障）与
+      // 「pull 同址多行」（ADR-017 §5 的设计形态，不是故障）。
+      obs = this.deviceFingerprintTracker.observeWithContext(
+        address,
+        fingerprint,
+        ctx,
+      );
     } catch (err) {
       // 纯内存跟踪器不应抛错；真抛了也绝不阻断注册/心跳。
       this.logger.warn(
@@ -871,29 +948,27 @@ export class ExecutorService implements OnModuleInit {
     if (!obs) return obs;
 
     const shortFingerprint = `${obs.fingerprint.slice(0, 12)}…`;
+    const fingerprintList = obs.distinctFingerprintsOnAddress
+      .map((f) => `${f.slice(0, 12)}…`)
+      .join(", ");
 
-    if (obs.addressSharedByMultipleInstalls) {
+    if (obs.conflictKind !== null) {
       if (obs.throttled) {
         this.logger.debug(
-          `Address "${address}" still shared by multiple installs (fingerprint=${shortFingerprint}, ` +
-            `${obs.fingerprintsOnAddress} distinct deviceFingerprint values seen); alert throttled`,
+          `Address "${address}" still conflicts (${obs.conflictKind}, fingerprint=${shortFingerprint}, ` +
+            `${obs.fingerprintsOnAddress} concurrent installs); alert throttled`,
         );
         return obs;
       }
-      // 列出**全部**并存指纹（不只本次那个）：运维要按清单给每台机器分配唯一
-      // EXECUTOR_ADDRESS_PUBLIC，只报"有几个"而不报"是哪几个"等于没给出处置面。
-      // 与 P0 冲突告警同时给出被顶替者/顶替者两个 startupId 对称。
-      const fingerprintList = obs.distinctFingerprintsOnAddress
-        .map((f) => `${f.slice(0, 12)}…`)
-        .join(", ");
-      const detail =
-        `Executor address shared by multiple installs on "${address}" via ${source}: ` +
-        `${obs.fingerprintsOnAddress} distinct deviceFingerprint values have been reported for this address ` +
-        `(this report: ${shortFingerprint}; all: ${fingerprintList}). Two different machines/installations are sharing one executors row — ` +
-        `their registrations overwrite each other, they compete for the same pull queue (acf:pull:/acf:cmd:), ` +
-        `and each one's restart detection fails the other's running executions. Give each machine a distinct ` +
-        `EXECUTOR_ADDRESS_PUBLIC. (deviceFingerprint-based detection: a stable fingerprint cannot change across ` +
-        `a normal restart, so this is direct evidence rather than the startupId timing heuristic.)`;
+      // 文案按 conflictKind 分叉——旧文案照抄的是**阶段 2** 的叙述（「两台机器
+      // 共享一行 / 抢同一队列 / 重启互杀」），阶段 3 之后这三条在 pull 模式下
+      // 全部不成立，照抄出去就是把运维指向错误的处置面。
+      const detail = this.describeFingerprintConflict(
+        obs,
+        source,
+        shortFingerprint,
+        fingerprintList,
+      );
       this.logger.error(detail);
       // 通知是 best-effort：`notificationService` 在部分测试装配里可能缺席，
       // 且 sendAll 可能同步抛错——两者都绝不能影响注册/心跳主链（与
@@ -901,13 +976,15 @@ export class ExecutorService implements OnModuleInit {
       try {
         void Promise.resolve(
           this.notificationService?.sendAll({
-            title: `Executor address shared by multiple installs: ${address}`,
+            title: this.fingerprintConflictTitle(obs),
             content:
               `${detail}\n\n` +
               `Address: ${address}\n` +
-              `Distinct fingerprints on this address: ${obs.fingerprintsOnAddress}\n` +
+              `Conflict kind: ${obs.conflictKind}\n` +
+              `Concurrent installs on this address: ${obs.fingerprintsOnAddress}\n` +
               `Fingerprints: ${fingerprintList}\n` +
               `This report: ${shortFingerprint}\n` +
+              `Row id of this report: ${ctx.rowId ?? "(unknown)"}\n` +
               `Time: ${new Date().toLocaleString()}`,
             level: "error",
           }),
@@ -928,6 +1005,25 @@ export class ExecutorService implements OnModuleInit {
       return obs;
     }
 
+    // pull 模式的同址多行是 ADR-017 §5 的设计形态：不告警、不外发通知。
+    // 但也不能完全静音——它是「这份安装的 address 与别人撞了」的唯一可见面，
+    // 排障时要查得到。故记一条 info，并按 (address, fingerprint) 节流（心跳
+    // 30s 一次 × N 台，不节流会把日志刷成瀑布）。
+    if (obs.addressSharedByMultipleRows) {
+      if (obs.infoThrottled) return obs;
+      this.logger.log(
+        `Address "${address}" carries ${obs.fingerprintsOnAddress} concurrent pull-mode ` +
+          `installs via ${source} (this report: ${shortFingerprint}; all: ${fingerprintList}) — ` +
+          `same-address rows are the designed shape for dispatchMode=pull (ADR-017 §5): ` +
+          `each install keeps its own row, its own queue (acf:pull:{executorId}) and its own ` +
+          `restart detection. No conflict, no action needed. If you believe these are the ` +
+          `SAME machine, check whether WORK_DIR/.device-identity salts were rebuilt (a new ` +
+          `fingerprint creates a new row) — and do NOT try to fix that by changing ` +
+          `EXECUTOR_ADDRESS_PUBLIC.`,
+      );
+      return obs;
+    }
+
     if (obs.addressDrifted) {
       // 正常现象，只留一条 log（不告警）：这是阶段 3 把 address 降级为可达性
       // 元数据之后「执行器换网不再产生幽灵行」的行为预览，此处先让运维看得见。
@@ -938,6 +1034,150 @@ export class ExecutorService implements OnModuleInit {
       );
     }
     return obs;
+  }
+
+  /** 冲突告警标题：按 conflictKind 分叉（两种形态的处置面不同）。 */
+  private fingerprintConflictTitle(obs: FingerprintObservation): string {
+    return obs.conflictKind === "row-identity-overwrite"
+      ? `Two installations are overwriting one executor row: ${obs.address}`
+      : `Executor address shared by multiple installs: ${obs.address}`;
+  }
+
+  /**
+   * 冲突告警正文：按 conflictKind 分叉。
+   *
+   * 为什么必须分叉（复查发现）：旧正文描述的三条后果——共享同一 executors 行、
+   * 抢同一条 pull 队列（acf:pull:/acf:cmd:）、重启检测互杀——在**阶段 3 之后**
+   * 的 pull 行上全部不成立（队列键是行 id，恢复按行身份）；它给出的处置建议
+   * 「给每台机器唯一 EXECUTOR_ADDRESS_PUBLIC」对「同一台机器指纹变了」这一
+   * 形态也是无效的。文案照抄阶段 2 的叙述 ⇒ 运维被指向错误的处置面。
+   */
+  private describeFingerprintConflict(
+    obs: FingerprintObservation,
+    source: "register" | "heartbeat",
+    shortFingerprint: string,
+    fingerprintList: string,
+  ): string {
+    if (obs.conflictKind === "row-identity-overwrite") {
+      return (
+        `Two different installations are writing into the SAME executors row on "${obs.address}" ` +
+        `via ${source}: ${obs.fingerprintsOnAddress} distinct deviceFingerprint values map to ` +
+        `one row id (this report: ${shortFingerprint}; all: ${fingerprintList}). This is the ` +
+        `phase-2 failure shape: their registrations overwrite each other, their per-executor ` +
+        `tokens are rotated by each other, and each one's restart detection fails the other's ` +
+        `running executions. Make the identity unambiguous: upgrade the executors to protocol ` +
+        `v3 (reports deviceFingerprint) and give each machine a distinct ` +
+        `EXECUTOR_ADDRESS_PUBLIC.`
+      );
+    }
+    return (
+      `Executor address shared by multiple installs on "${obs.address}" via ${source}: ` +
+      `${obs.fingerprintsOnAddress} distinct deviceFingerprint values are concurrently present ` +
+      `on this address (this report: ${shortFingerprint}; all: ${fingerprintList}). This ` +
+      `address carries a PUSH-mode executor row, and for push rows the address IS the routing ` +
+      `surface (unique index uq_executors_address WHERE "dispatchMode" = 'push'): a second ` +
+      `install on it means HTTP control commands (deploy / kill / config-reload) can be ` +
+      `delivered to the wrong machine. Give each push-mode machine a distinct ` +
+      `EXECUTOR_ADDRESS_PUBLIC, or move the fleet to dispatchMode=pull, where the address is ` +
+      `only a label and same-address rows are legal. (deviceFingerprint-based detection: a ` +
+      `stable fingerprint cannot change across a normal restart, so this is direct evidence ` +
+      `rather than the startupId timing heuristic.)`
+    );
+  }
+  /**
+   * P0-4（生产报告 2026-10-22 §4.4）：pull 控制面命令**失败**结果的事件发布。
+   *
+   * 调用点：`POST /executors/command-result` 收到 `ok=false` 且该命令是部署类
+   * （旁路元数据里带 deploymentId）时。订阅方（部署域）据此把在飞行立刻收成
+   * FAILED——旧实现只写日志 + 600s 的 Redis 结果键，行会一直停在 DEPLOYING
+   * 直到卡死扫描（pull 未决行豁免到命令 TTL 30 分钟）才判失败，期间后续部署
+   * 全被在途锁拒成 409。
+   *
+   * fail-open：与本模块其余事件同纪律——emit 抛错绝不改变上报响应，
+   * eventBus 为 null（部分测试装配）时静默跳过。
+   */
+  publishControlCommandFailure(payload: {
+    commandId: string;
+    type: string;
+    address: string;
+    deploymentId: string | null;
+    error: string | null;
+  }): void {
+    if (!this.eventBus) return;
+    const event: ExecutorCommandFailedEventPayload = {
+      commandId: payload.commandId,
+      type: payload.type,
+      address: payload.address,
+      deploymentId: payload.deploymentId,
+      error: payload.error,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_COMMAND_FAILED, event);
+    } catch {
+      /* bus contract is fail-open; second fuse */
+    }
+  }
+
+  /**
+   * P1（生产报告 2026-10-22 §4.6 / 结论 H）：带指纹缺失诊断的节流 warn。
+   *
+   * 语义是**诊断可见性**，不是判定：判定仍由 resolveExecutorRow / register 的
+   * fail-closed 负责。这里只回答「刚才那条 409/404 是哪台机器发的」。
+   */
+  private warnMissingFingerprintOnce(
+    address: string,
+    executor: Executor,
+  ): void {
+    const now = Date.now();
+    const last = lastMissingFingerprintWarn.get(address);
+    if (
+      last !== undefined &&
+      now - last < MISSING_FINGERPRINT_WARN_THROTTLE_MS
+    ) {
+      return;
+    }
+    if (lastMissingFingerprintWarn.size > 5000)
+      lastMissingFingerprintWarn.clear();
+    lastMissingFingerprintWarn.set(address, now);
+    this.logger.warn(
+      `Heartbeat without a parseable deviceFingerprint: executor ${executor.id} ` +
+        `(${executor.appName}) at ${address}, dispatchMode=${executor.dispatchMode ?? "push"}. ` +
+        `ADR-017 phase 3 locates rows by fingerprint: with two rows on one address this ` +
+        `request is fail-closed (pull returns 404, so the machine gets no tasks or commands). ` +
+        `Fix: upgrade it to protocol v3 (reports deviceFingerprint) or give it a unique ` +
+        `EXECUTOR_ADDRESS_PUBLIC.`,
+    );
+  }
+
+  /**
+   * P0-4 附带（§7 P0-3 末条）：地址漂移采纳后发布 executor.address.drifted。
+   *
+   * 订阅方（部署域）据此把该执行器名下的未终结部署行快照滚到新地址——
+   * `app_deployments.executorAddress` 是**快照**，此前从不随漂移更新，于是
+   * 任何按快照地址出站的路径（push 回退、UI 展示）都停在旧地址上。
+   *
+   * fail-open：与其余事件同纪律（emit 抛错绝不改变注册/心跳主链；eventBus
+   * 为 null 时静默跳过）。只在**真实跃迁**时由调用方触发。
+   */
+  private emitExecutorAddressDrifted(
+    executor: Pick<Executor, "id" | "appName" | "address">,
+    previousAddress: string,
+  ): void {
+    if (!this.eventBus) return;
+    if (!previousAddress || previousAddress === executor.address) return;
+    const payload: ExecutorAddressDriftedEventPayload = {
+      executorId: executor.id,
+      appName: executor.appName,
+      previousAddress,
+      address: executor.address,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_ADDRESS_DRIFTED, payload);
+    } catch {
+      /* bus contract is fail-open; second fuse */
+    }
   }
 
   /**
@@ -1478,7 +1718,8 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
-   * ARCH-33（ADR-016）：解析一次「中台→执行器」控制面调用的传输方式。
+   * ARCH-33（ADR-016）+ ADR-017 阶段 3 复查补口：解析一次「中台→执行器」控制面
+   * 调用的传输方式。
    *
    * 这是所有控制面调用点（deploy / app-stop / app-uninstall / config-reload /
    * kill / update-package）的**唯一分流出口**。判定顺序：
@@ -1494,13 +1735,39 @@ export class ExecutorService implements OnModuleInit {
   async resolveExecutorTransport(opts: {
     executorId?: string | null;
     address?: string | null;
-  }): Promise<{ mode: "push" | "pull"; executor: Executor | null }> {
+  }): Promise<ExecutorTransport> {
     try {
-      const executor = opts.executorId
-        ? await this.repo.findOne({ where: { id: opts.executorId } })
-        : opts.address
-          ? await this.repo.findOne({ where: { address: opts.address } })
-          : null;
+      let executor: Executor | null = null;
+      if (opts.executorId) {
+        executor = await this.repo.findOne({ where: { id: opts.executorId } });
+        if (!executor) {
+          // P0-3（生产实证 2026-10-22）：**执行器行 id 悬空时绝不回退 push**。
+          //
+          // app_deployments.executorId 是普通可空列（无外键），执行器行被删除
+          // 后它就是悬空 id；旧实现在这里静默 return { mode: "push" }，调用方
+          // 于是拿**快照地址**打 HTTP 出站——现场是 198.18.0.1:8002（Clash TUN
+          // 伪 IP / NAT 内网，全 pull 机队下永不可达），3 × 30s 超时后 FAILED，
+          // 用户侧看到的就是「部署装不上」+ 后续 409 在途锁。
+          // 悬空 id 是**确定性的**不可达：应当秒级失败并给出可操作提示，而不是
+          // 打一个已知陈旧/不可达的地址等 90 秒。
+          this.logger.warn(
+            `Executor row ${opts.executorId} no longer exists — refusing to fall back to ` +
+              `push for this control-plane call (a dangling row id would target a stale, ` +
+              `possibly unreachable snapshot address). Re-select an executor and retry.`,
+          );
+          return {
+            mode: "unresolved",
+            executor: null,
+            reason: "executor-row-missing",
+          };
+        }
+      } else if (opts.address) {
+        executor = await this.repo.findOne({
+          where: { address: opts.address },
+        });
+      }
+      // 只有地址可用时定位不到行 = 存量行为（push 执行器从未注册过也能被
+      // 直接寻址），保持 push 回落；这**不是**悬空行身份。
       if (!executor) return { mode: "push", executor: null };
       if (executor.dispatchMode !== "pull") {
         return { mode: "push", executor };
@@ -1568,11 +1835,26 @@ export class ExecutorService implements OnModuleInit {
     address: string;
     type: string;
     payload: Record<string, unknown>;
-  }): Promise<{ delivered: "push" | "pull"; commandId?: string }> {
-    const { mode, executor } = await this.resolveExecutorTransport({
+  }): Promise<{
+    /**
+     * - `pull`：已入队（不等于已执行，终态由回调通道收敛）。
+     * - `push`：请调用方自行发 HTTP。
+     * - `unresolved`：**目标行已不存在**，调用方必须按失败处理（不得 push）。
+     */
+    delivered: "push" | "pull" | "unresolved";
+    commandId?: string;
+    /** `delivered === 'unresolved'` 时的稳定原因码。 */
+    reason?: "executor-row-missing";
+  }> {
+    const transport = await this.resolveExecutorTransport({
       executorId: opts.executorId,
       address: opts.address,
     });
+    if (transport.mode === "unresolved") {
+      // 直通「解析不到」——不回退 push（见 resolveExecutorTransport 的 P0-3 注释）。
+      return { delivered: "unresolved", reason: transport.reason };
+    }
+    const { mode, executor } = transport;
     if (mode !== "pull" || !executor) return { delivered: "push" };
     try {
       const commandId = await this.enqueueExecutorCommand(
@@ -1793,10 +2075,17 @@ export class ExecutorService implements OnModuleInit {
     // 过哪些安装）与会话内已写入的 deviceFingerprint 无关，但"本次上报是否新增
     // 了一个指纹"这个事件只在本次上报时可见。
     // 规范化已在身份解析处完成（上方 const incomingFingerprint），此处直接观测。
+    // 阶段 3 复查补口：同上，必须带上行身份与派发模式。register 是**新行**的
+    // 诞生处（e 可能为 null，此时用本次上报的 dispatchMode），也是 pull 模式
+    // 「同址建第二行」的裁决点——判据与裁决必须用同一套行语义。
     this.observeDeviceFingerprint(
       data.address,
       incomingFingerprint,
       "register",
+      {
+        rowId: e?.id ?? null,
+        dispatchMode: e?.dispatchMode ?? incomingDispatchMode,
+      },
     );
     const hasStartupBaseline = Boolean(
       e?.executorStartupId || e?.executorStartedAt,
@@ -1953,6 +2242,10 @@ export class ExecutorService implements OnModuleInit {
       );
       e.address = data.address;
       adopted.add("address");
+      // P0-4 附带：让部署域把该行名下的**未终结**部署快照滚到新地址
+      // （app_deployments.executorAddress 是快照，否则 push 回退/UI 都停在旧地址）。
+      // 落库之后再发（事件 = 已提交的既成事实）；本处与心跳分支同一口径。
+      this.emitExecutorAddressDrifted(e, recoveryAddress);
     }
     // Update mutable fields on re-registration (whitelisted per-field only)
     // 每个赋值都同步进 `adopted`：值写进 e（返回体要用），列名证明"本次采纳了
@@ -2201,13 +2494,67 @@ export class ExecutorService implements OnModuleInit {
     const perExecutorToken =
       prior?.tokenHash && sameProcess
         ? null
-        : (await this.rotateToken(executor.id)).token;
+        : await this.issueTokenForDuplicateRegister(
+            executor,
+            incomingStartupId,
+          );
     if (perExecutorToken === null) {
       this.logger.debug(
         `Idempotent re-register for executor ${executor.id} (${data.address}); keeping existing per-executor token`,
       );
     }
     return { executor, perExecutorToken };
+  }
+
+  /**
+   * P0-5（生产报告 2026-10-22 §4.7）：**同一行的重复注册不得二次轮换令牌**。
+   *
+   * 现场（10:26:51 / 10:26:53，同一行 c55615af）：1.5 秒内两次 `rotate_token`，
+   * 紧接着该执行器连续 20 次 `POST /executors/pull` → 401（每次间隔 1s），
+   * 直到之后一次重注册才恢复——20 秒的取件真空期，比地址告警更接近「部署
+   * 偶发装不上」的第二条真实成因。
+   *
+   * 机理：register 的 N4 幂等判据是**无状态**的
+   * （`prior.executorStartupId === incomingStartupId`），而同一进程生命内
+   * **并发两次 register**（启动 + 配置触发/重试）读到的 prior 是**改写前**的
+   * 快照 ⇒ 两次都判 sameProcess=false ⇒ 两次轮换。两次轮换的明文若乱序返回，
+   * 执行器最终保存的可能是**已作废**的那一份 → 401 直到重新注册。
+   *
+   * 修法与 `POST /executors/token`（issueToken）同源：缓存键 = 定位身份
+   * （指纹优先），命中「同 startupId + 明文仍与库中哈希匹配」时**复用明文、
+   * 不再轮换**。bcrypt 复核是必须的——它保证管理员在 UI 上轮换过的令牌
+   * **不会**被这条路径复活（R10 的既有语义）。
+   *
+   * 与 N4 的分工：N4 是「无状态判据」（能覆盖串行重注册），本方法是「有状态
+   * 兜底」（覆盖并发窗口里 N4 看不到的那一次轮换）。两者都不轮换时才真正轮换。
+   */
+  private async issueTokenForDuplicateRegister(
+    executor: Executor,
+    incomingStartupId: string | null,
+  ): Promise<string> {
+    if (incomingStartupId !== null) {
+      const identityKey = this.tokenCacheIdentityKey(
+        executor.address,
+        executor.deviceFingerprint,
+      );
+      const cached = this.issuedTokenCache.get(identityKey);
+      if (
+        cached &&
+        cached.startupId === incomingStartupId &&
+        Date.now() - cached.issuedAt < ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS
+      ) {
+        const stored = await this.getCallbackSecretById(executor.id);
+        if (stored && (await bcrypt.compare(cached.token, stored))) {
+          this.logger.log(
+            `Reused per-executor token for executor ${executor.id} (${executor.address}) — ` +
+              `duplicate registration for the same startupId; not rotating again (a second ` +
+              `rotation here would 401 the executor that just adopted the first one)`,
+          );
+          return cached.token;
+        }
+      }
+    }
+    return (await this.rotateToken(executor.id)).token;
   }
 
   /**
@@ -2532,6 +2879,8 @@ export class ExecutorService implements OnModuleInit {
       "lastHeartbeat",
     ]);
     if (e.address !== address) {
+      // 漂移前的地址（事件载荷 + 条件更新谓词用）；仅在本次真的采纳了漂移时赋值。
+      let previousAddress: string | null = null;
       // 地址漂移：同一安装换网/换 IP（正常现象，ADR-017 §2）。
       // push 不抢占他人地址：目标地址被另一份安装占用 → 保留原地址、仅 warn
       // （心跳是 30s 高频面，409 会打断心跳；注册面才是冲突裁决处）；
@@ -2545,13 +2894,18 @@ export class ExecutorService implements OnModuleInit {
               `by executor ${owner.id}; keeping ${e.address}`,
           );
         } else {
+          previousAddress = e.address;
           e.address = address;
           adopted.add("address");
         }
       } else {
+        previousAddress = e.address;
         e.address = address;
         adopted.add("address");
       }
+      // P0-4 附带：漂移被采纳 → 让部署域把该行名下的未终结部署快照滚到新地址。
+      // 与注册面同一口径（事件在落库之后发，订阅方按 previousAddress 做条件更新）。
+      if (previousAddress) this.emitExecutorAddressDrifted(e, previousAddress);
     }
     const incomingStartedAt = this.parseExecutorStartedAt(metrics.restartedAt);
     const incomingStartupId = metrics.startupId?.trim() || null;
@@ -2564,7 +2918,21 @@ export class ExecutorService implements OnModuleInit {
     // 心跳是**主要**的重复观测点（register 只在启动与补注册时发生），也是
     // 「同一 address 上两个指纹」最容易先暴露的地方——两台机器并存时它们各自
     // 30s 一次的心跳都会走到这里。
-    this.observeDeviceFingerprint(address, incomingFingerprint, "heartbeat");
+    // 阶段 3 复查补口：把**行身份 + 派发模式**一并交给判据。缺了它们，pull
+    // 模式里"同地址各自成行"（ADR-017 §5 明确允许）会被当成地址冲突外发
+    // ERROR/通知——生产实证：6 台全 pull 的机队每 10 分钟收到一条毫无意义的
+    // 告警。行已由指纹/地址解析（resolveExecutorRow 语义），其 dispatchMode
+    // 才是"该地址是不是路由面"的权威来源（心跳载荷不携带该字段）。
+    this.observeDeviceFingerprint(address, incomingFingerprint, "heartbeat", {
+      rowId: e.id,
+      dispatchMode: e.dispatchMode,
+    });
+    // 结论 H（§4.6）：这台机器**没带可解析指纹**——记一条节流 warn，回答
+    // 「刚才那条 fail-closed 是哪台发的」（判定逻辑本身不在这里，见
+    // resolveExecutorRow / register 的 fail-closed）。
+    if (incomingFingerprint === null) {
+      this.warnMissingFingerprintOnce(address, e);
+    }
     const hasStartupBaseline = Boolean(
       e.executorStartupId || e.executorStartedAt,
     );
@@ -2870,8 +3238,32 @@ export class ExecutorService implements OnModuleInit {
             `(expected 64 hex chars); keeping stored value`,
         );
       } else {
-        e.deviceFingerprint = incomingFingerprint;
-        adopted.add("deviceFingerprint");
+        // P1-2（ADR-017 阶段 3 复查补口）：**绝不覆盖别人那行的真实指纹**。
+        //
+        // 行是按地址回落的（按指纹查不到本行），而本行已存着**另一份**安装的
+        // 真实指纹 ⇒ 这是另一份安装在同址心跳。旧实现直接把本次指纹写进这一行：
+        // DHCP 把同一 IP 先后分给两台机器时（现场 17:33/17:34 实证），两台机器
+        // 会每 30s 互改同一行的指纹，行身份在两份安装之间来回漂移——注册面刚
+        // 裁定的归属被心跳面悄悄推翻，冲突观测也失去历史。
+        //
+        // 现在：不采纳（不写该列），身份留在自己的行上；真正的碰撞由
+        // observeDeviceFingerprint 的 row-identity-overwrite 判据以 ERROR +
+        // 通知外发（可见、可处置），而不是靠静默改字段"自愈"。
+        // 只 debug 不 warn：心跳 30s 一台，warn 会刷屏，而 ERROR 侧已覆盖可见性。
+        // 存量 legacy/NULL 行（storedReal === null）不受影响——升级接管仍照旧。
+        const storedReal = normalizeDeviceFingerprint(e.deviceFingerprint);
+        if (storedReal !== null && storedReal !== incomingFingerprint) {
+          this.logger.debug(
+            `Heartbeat from ${address} carried deviceFingerprint ` +
+              `${incomingFingerprint.slice(0, 12)}… but row ${e.id} belongs to ` +
+              `${storedReal.slice(0, 12)}… — not adopting: a different install is sharing this ` +
+              `address, so the fingerprint stays with its owner (the deviceFingerprint conflict ` +
+              `observer reports the collision)`,
+          );
+        } else {
+          e.deviceFingerprint = incomingFingerprint;
+          adopted.add("deviceFingerprint");
+        }
       }
     }
     if (
@@ -2923,6 +3315,8 @@ export class ExecutorService implements OnModuleInit {
       await this.metricsHistoryRepo.save(
         this.metricsHistoryRepo.create({
           executorAddress: saved.address,
+          // ADR-017 阶段 3 复查补口：行身份（趋势图按行拆分，见实体注释）。
+          executorId: saved.id,
           cpuUsage: saved.cpuUsage ?? null,
           memUsage: saved.memUsage ?? null,
           diskUsage: saved.diskUsage ?? null,
@@ -5470,7 +5864,15 @@ export class ExecutorService implements OnModuleInit {
         status: ExecutorStatus.OFFLINE,
         lastHeartbeat: LessThan(sevenDaysAgo),
       },
-      select: { id: true, address: true, appName: true },
+      // 阶段 3 复查补口：多取 deviceFingerprint —— 删除后要按指纹把这条安装
+      // 从冲突跟踪器里**同步**忘掉（否则删除只让它变成"幽灵历史指纹"，告警
+      // 还要再响一个 liveness 窗口）。
+      select: {
+        id: true,
+        address: true,
+        appName: true,
+        deviceFingerprint: true,
+      },
     });
     if (stale.length === 0) return;
 
@@ -5571,6 +5973,12 @@ export class ExecutorService implements OnModuleInit {
         // TOKEN_CACHE_TTL_MS（60s）——「删除即撤销」在集群范围变成「删除后 60s
         // 撤销」。广播失败仍走 TTL 兜底（见 broadcastTokenEviction 头注）。
         this.broadcastTokenEviction(exec.address);
+        // 阶段 3 复查补口：行没了 ⇒ 这份安装立刻不再"在场"。只忘自己的指纹
+        // （不是整个地址）——pull 同址多行时别的安装可能还活得好好的。
+        this.deviceFingerprintTracker.forget(
+          exec.address,
+          exec.deviceFingerprint,
+        );
       }
     }
   }
@@ -5775,6 +6183,13 @@ export class ExecutorService implements OnModuleInit {
     // 无人取件、也无人可见，只能等 TTL 静默过期；显式清掉让语义即时收敛。
     // best-effort：Redis 抖动不阻断删除主链（TTL 丢弃语义兜底）。
     await this.pullService?.clear(executor.id).catch(() => undefined);
+    // 阶段 3 复查补口：删除即视该安装离场 —— 冲突跟踪器同步忘记它，让
+    // 「运维删掉多余行」这个动作**当场**止住告警（旧实现要再等一个 liveness
+    // 窗口，现场观感就是"删了也没用"）。
+    this.deviceFingerprintTracker.forget(
+      executor.address,
+      executor.deviceFingerprint,
+    );
     this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
     // AUTH-05: executor deletion is destructive — audit it (with the
     // admin-supplied reason when present). Best-effort, after the mutation.
@@ -5917,7 +6332,7 @@ export class ExecutorService implements OnModuleInit {
   private async resolveExecutorRow(
     address: string,
     deviceFingerprint?: string | null,
-    opts: { withTokenHash?: boolean } = {},
+    opts: { withTokenHash?: boolean; reportedExecutorId?: string | null } = {},
   ): Promise<Executor | null> {
     const fp = normalizeDeviceFingerprint(deviceFingerprint);
     const build = () => {
@@ -5936,6 +6351,25 @@ export class ExecutorService implements OnModuleInit {
       .getMany();
     if (byAddress.length === 1) return byAddress[0];
     if (byAddress.length > 1) {
+      // ADR-017 决策 §3 补全（工单 11）：请求自报的**行 id** 若正好是候选之一，
+      // 说明调用方已经知道自己是哪一行（执行器侧持久化了注册响应里的 id）。
+      // 解析层**不采纳**它——行解析不验凭据，直接采信等于把「声明别人的行 id」
+      // 变成越权入口。真正的采纳在 authenticateMachineRequest：只有该行的
+      // per-executor 令牌校验通过才认（共享令牌一律不认）。
+      const reported = ExecutorService.normalizeReportedExecutorId(
+        opts.reportedExecutorId,
+      );
+      const hint = reported
+        ? byAddress.find((row) => row.id === reported)
+        : undefined;
+      if (hint) {
+        this.logger.debug(
+          `Identity for address "${address}" is ambiguous (${byAddress.length} rows); the ` +
+            `request reported row id ${reported}, which is one of them — deferring to the ` +
+            `per-executor token check instead of failing closed`,
+        );
+        return null;
+      }
       // 同地址多行并存且本次未带指纹：无法判定归属。
       this.logger.warn(
         `Identity resolution for address "${address}" is ambiguous: ` +
@@ -6066,59 +6500,158 @@ export class ExecutorService implements OnModuleInit {
    * 的行。legacy 执行器（不传指纹）行为与引入前逐字节一致；**唯一致命例外**是
    * 「同址多行 + 无指纹」——那时 fail-closed 拒绝（见 resolveExecutorRow）。
    */
-  async validateTokenByAddress(
+  /**
+   * 工单 11（ADR-017 决策 §3 补全）：机器面**认证 + 行定位**的统一入口。
+   *
+   * 与 validateTokenByAddress 的关系：后者退化为本方法的布尔投影（行为逐字节
+   * 不变）；需要**定位行**的面（pull / config / terminal-states）改调本方法，
+   * 避免「先按地址解析一次、再按同一个地址解析第二次」的重复查询与口径漂移。
+   *
+   * ## 为什么需要 `reportedExecutorId`（执行器自报的行 id）
+   *
+   * 现场（2026-10-22 §4.6）：36 次 `Identity resolution … is ambiguous` —— 同址
+   * 两行窗口里，**没有可解析指纹的那台**每次 pull/config 都被 fail-closed 拒掉
+   * （拿不到任务与命令），而它其实持有**自己那行**的 per-executor 令牌。
+   * 注册响应本来就把 `id` 返回给了执行器（控制器 `...executor`），只是执行器侧
+   * 从不持久化、也不回传——这是身份体系的最后一段空档。
+   *
+   * ## 采纳规则（安全边界，改动前先读这段）
+   *
+   * 自报的 id **只在同时满足以下三条**时才被采纳为行身份：
+   *   ① 按指纹/地址的常规解析**解析不出来**（resolution 返回 null，即歧义态）；
+   *   ② 该 id 指向的行**确实存在于该地址下**（`row.address === address`）；
+   *   ③ 呈现的令牌与该行的 `tokenHash` **bcrypt 校验通过**（**不看**正缓存，
+   *      必须现场比对——否则共享令牌路径的缓存命中会变成越权入口）。
+   *
+   * 也就是说：**共享令牌永远不能借自报 id 定位行**（共享令牌是机队级凭据，
+   * 若能借它声明别人的行 id，就能拉走别人那行的 `acf:pull:` 队列 = 跨行窃取
+   * 任务）。自报 id 只是「候选行的**提示**」，授权仍由该行自己的令牌给出。
+   */
+  async authenticateMachineRequest(
     address: string,
     presented: string,
-    deviceFingerprint?: string | null,
-  ): Promise<boolean> {
+    opts: {
+      deviceFingerprint?: string | null;
+      reportedExecutorId?: string | null;
+    } = {},
+  ): Promise<MachineAuthResult> {
     // 真机冒烟（round-16）：无 Authorization 头的心跳（presented=undefined）
-    // 曾在 Buffer.from 处抛 500——未携带凭据就是未通过，直接 false（fail-closed）
-    if (!presented) return false;
-    // F-5: positive-result cache — a repeated (address, token) pair within the
-    // TTL skips the bcrypt compare entirely. Negative results are never cached
-    // (a legitimate executor rotating its token must immediately succeed).
-    // ADR-017 阶段 3：缓存键取「定位身份」——指纹优先（pull 同地址多行时
-    // 地址键会把两台的成功结果混在一起，指错行）；驱逐仍按值里的 address
-    // 扫描，语义不变（多一行同地址的失效窗口可接受）。与 issuedTokenCache /
-    // callbackSecretCache 共用 tokenCacheIdentityKey，杜绝三张表口径漂移。
-    const identityKey = this.tokenCacheIdentityKey(address, deviceFingerprint);
+    // 曾在 Buffer.from 处抛 500——未携带凭据就是未通过，直接 fail-closed。
+    if (!presented || !address) {
+      return { ok: false, executor: null, via: "none", resolvedBy: "none" };
+    }
+    const fp = normalizeDeviceFingerprint(opts.deviceFingerprint);
+    // F-5: positive-result cache — 同一 (定位身份, token) 在 TTL 内跳过 bcrypt。
+    // 它只回答「这份凭据是否有效」，**不**参与行定位（见下方 hint 规则③）。
+    const identityKey = this.tokenCacheIdentityKey(address, fp);
     const cacheKey = createHash("sha256")
       .update(`${identityKey}|${presented}`)
       .digest("hex");
     const entry = this.tokenValidationCache.get(cacheKey);
     const now = Date.now();
-    if (
+    const cachedOk =
       entry !== undefined &&
-      now - entry.cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS
-    ) {
-      return true;
-    }
+      now - entry.cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS;
 
-    // First try to validate against per-executor token.
-    // ADR-017 阶段 3：统一走 resolveExecutorRow（指纹优先 + 同址多行 fail-closed）。
-    const executor = await this.resolveExecutorRow(address, deviceFingerprint, {
+    const executor = await this.resolveExecutorRow(address, fp, {
       withTokenHash: true,
+      reportedExecutorId: opts.reportedExecutorId,
     });
+    const resolvedBy: MachineAuthResult["resolvedBy"] = executor
+      ? fp
+        ? "fingerprint"
+        : "address"
+      : "none";
 
+    // ① 按行令牌（指纹/地址定位成功时）
     if (executor && executor.tokenHash) {
-      const isValid = await bcrypt.compare(presented, executor.tokenHash);
-      if (isValid) {
+      const ok =
+        cachedOk || (await bcrypt.compare(presented, executor.tokenHash));
+      if (ok) {
         this.rememberTokenValidation(cacheKey, address, now);
-        return true;
+        return { ok: true, executor, via: "per-executor", resolvedBy };
       }
     }
 
-    // Fall back to shared token — use timing-safe comparison to prevent timing attacks
+    // ② 共享令牌（与引入本方法前逐字节一致：timing-safe 比对，空配置即不可用）
+    const sharedOk = await this.compareSharedToken(presented);
+    if (sharedOk) {
+      this.rememberTokenValidation(cacheKey, address, now);
+      // 共享令牌**不**采纳自报 id（见头注安全边界）：歧义态仍是 null。
+      return { ok: true, executor, via: "shared", resolvedBy };
+    }
+
+    // ③ 自报行 id 提示（解析歧义 + 该 id 属于本地址 + **该行令牌**校验通过）
+    const reported = ExecutorService.normalizeReportedExecutorId(
+      opts.reportedExecutorId,
+    );
+    if (!executor && reported) {
+      const hint = await this.repo
+        .createQueryBuilder("e")
+        .addSelect("e.tokenHash")
+        .where("e.id = :id", { id: reported })
+        .getOne();
+      if (hint && hint.address === address && hint.tokenHash) {
+        // 现场比对（不查正缓存）：缓存只证明「这份 token 曾对某行有效」，
+        // 不能证明「它对**这一行**有效」。
+        if (await bcrypt.compare(presented, hint.tokenHash)) {
+          this.logger.log(
+            `Machine request from "${address}" resolved to executor ${hint.id} by its ` +
+              `reported row id after per-executor token verification (address-ambiguous, ` +
+              `no fingerprint)`,
+          );
+          this.rememberTokenValidation(cacheKey, address, now);
+          return {
+            ok: true,
+            executor: hint,
+            via: "per-executor",
+            resolvedBy: "reported-id",
+          };
+        }
+      }
+    }
+
+    return { ok: false, executor: null, via: "none", resolvedBy: "none" };
+  }
+
+  /**
+   * 自报行 id 的合法形态（uuid 文本；长度上限防病态输入）。
+   * 非法/缺省 → null（等同于未上报，行为与引入工单 11 前一致）。
+   */
+  private static normalizeReportedExecutorId(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 64) return null;
+    return /^[0-9a-fA-F-]+$/.test(trimmed) ? trimmed : null;
+  }
+
+  /** 共享令牌比对（timing-safe；未配置即不可用，与既有语义一致）。 */
+  private async compareSharedToken(presented: string): Promise<boolean> {
     const shared = await this.getSharedToken();
     if (shared.length === 0) return false;
     const sharedBuf = Buffer.from(shared, "utf8");
     const presentedBuf = Buffer.from(presented, "utf8");
+    // timingSafeEqual 对长度不等会抛错，故先比长度（长度本身不是秘密）。
     if (sharedBuf.length !== presentedBuf.length) return false;
-    const sharedOk = timingSafeEqual(sharedBuf, presentedBuf);
-    if (sharedOk) {
-      this.rememberTokenValidation(cacheKey, address, now);
-    }
-    return sharedOk;
+    return timingSafeEqual(sharedBuf, presentedBuf);
+  }
+
+  async validateTokenByAddress(
+    address: string,
+    presented: string,
+    deviceFingerprint?: string | null,
+  ): Promise<boolean> {
+    // ADR-017 决策 §3 补全（工单 11）：认证与行定位已合并到
+    // authenticateMachineRequest；本方法保留为它的**布尔投影**，
+    // 所有既有调用点（heartbeat / register / offline / command-result）
+    // 行为逐字节不变：按行令牌 OR 共享令牌，其余一律 false。
+    //
+    // 注意：本方法**不**接受 `reportedExecutorId`——它的语义是「这份凭据有效吗」，
+    // 不涉及「它属于哪一行」。需要按行定位的调用方请直接用 authenticateMachineRequest。
+    const result = await this.authenticateMachineRequest(address, presented, {
+      deviceFingerprint,
+    });
+    return result.ok;
   }
 
   /**
@@ -6682,7 +7215,12 @@ export class ExecutorService implements OnModuleInit {
           .catch(() => 0)
           .then((n) => n ?? 0),
       },
-      history: await this.getExecutorMetricsHistory(executor.address),
+      // ADR-017 阶段 3 复查补口：带上行身份——同址多行时趋势图按行拆分
+      // （历史行 executorId 为 NULL，方法内按地址回落，曲线不断档）。
+      history: await this.getExecutorMetricsHistory(
+        executor.address,
+        executor.id,
+      ),
     };
   }
 
@@ -6704,8 +7242,10 @@ export class ExecutorService implements OnModuleInit {
    * buckets (≤96 points), ascending by timestamp.
    *
    * Data source: executor_metrics_history (best-effort snapshots appended by
-   * heartbeat after the current executor row is saved; compound index
-   * executorAddress + createdAt). AVG
+   * heartbeat after the current executor row is saved; compound indexes
+   * (executorId, createdAt) and (executorAddress, createdAt) — the predicate
+   * prefers the row identity and falls back to the address for pre-1790000000061
+   * rows whose executorId is NULL). AVG
    * ignores NULLs: a bucket whose heartbeats never reported cpuUsage/memUsage
    * yields null — the frontend draws a gap for those points (connectNulls).
    * Returns an EMPTY array when the executor has no history rows (fresh
@@ -6717,7 +7257,10 @@ export class ExecutorService implements OnModuleInit {
    * AVG(CASE WHEN e.duration ...) aggregate in getExecutorMetrics); the
    * bucket divisor is a server-computed constant, never user input.
    */
-  private async getExecutorMetricsHistory(address: string): Promise<
+  private async getExecutorMetricsHistory(
+    address: string,
+    executorId?: string | null,
+  ): Promise<
     Array<{
       timestamp: string;
       cpuUsage: number | null;
@@ -6725,19 +7268,18 @@ export class ExecutorService implements OnModuleInit {
       runningTaskCount: number;
     }>
   > {
-    // ADR-017 阶段 3（决策 §7 读面富化）——**本面刻意不改，如实登记为已知歧义**：
-    // `executor_metrics_history` 表**只有** `executorAddress`，没有行身份列
-    // （见 executor-metrics-history.entity.ts：id/executorAddress/cpuUsage/…），
-    // 故同址多行并存时本时间序列在物理上无法拆分到行——不是本方法少写了一个
-    // 谓词，而是数据面缺一列。修复它需要一次迁移（加 `executorId` + 回填策略），
-    // 而回填同样面对「地址→行在多行下有歧义」的问题（与迁移 0055 不回填存量行
-    // 的理由同源）。
-    // 影响面评估（如实）：仅影响**趋势图**（CPU/内存/在跑数的 24h 曲线）在同址
-    // 多行时把两台的数据混画；不影响任何判定（派发闸门/恢复/槽位均不读本表），
-    // 也不影响 7 日统计与执行历史列表（两者已在 getExecutorMetrics /
-    // getExecutorExecutions 改为行身份优先）。
-    // 处置：登记进 ADR-017「相关轨道」，待机队全部上报指纹、同址并存收敛后再随
-    // metrics 表结构一并处理。
+    // ADR-017 阶段 3（决策 §7 读面富化）：本面**已收口**（迁移 1790000000061）。
+    //
+    // 历史缺口（2026-10-22 复查前）：本表当时**只有** `executorAddress`，同址多行
+    // 并存时 24h 曲线在物理上无法拆分到行——不是本方法少写一个谓词，而是数据面
+    // 缺一列（生产实证：6 台全 pull 机队里有 2 个地址发生过指纹变更 / DHCP 复用，
+    // 趋势图把两台的数据混画）。
+    //
+    // 现状：表已加 `executorId`（uuid, nullable），心跳写面逐行落该列；查询谓词为
+    // 「行身份优先 + 历史行按地址回落」（见下方 where）。存量行**不回填**——
+    // 同址多行下「地址→行」本就有歧义，猜一个 id 是数据污染（与迁移 0055 对
+    // task_executions 的结论同源）；OR 谓词让历史曲线不断档。
+    // 影响面不变：本表只服务趋势图，不参与任何判定（派发闸门/恢复/槽位均不读它）。
     const bucketSeconds = ExecutorService.METRICS_HISTORY_BUCKET_SECONDS;
     const since = new Date(
       Date.now() - ExecutorService.METRICS_HISTORY_WINDOW_MS,
@@ -6751,7 +7293,19 @@ export class ExecutorService implements OnModuleInit {
       .addSelect("AVG(h.cpuUsage)", "cpu")
       .addSelect("AVG(h.memUsage)", "mem")
       .addSelect("AVG(h.runningTaskCount)", "running")
-      .where("h.executorAddress = :address", { address })
+      // ADR-017 阶段 3 复查补口：**行身份优先，历史行按地址回落**。
+      //
+      // 迁移 1790000000061 给本表加了 executorId，但**不回填**存量行（同址多行
+      // 下「地址→行」本就有歧义，猜一个 id 就是数据污染——与迁移 0055 对
+      // task_executions 的结论同源）。故谓词用 OR 形态：新行按行身份拆，
+      // executorId IS NULL 的历史行仍按地址归集，24h 曲线不会因为升级而断档。
+      // 不带行身份（旧调用方）时退化为纯地址谓词，行为逐字节不变。
+      .where(
+        executorId
+          ? "(h.executorId = :executorId OR (h.executorId IS NULL AND h.executorAddress = :address))"
+          : "h.executorAddress = :address",
+        executorId ? { executorId, address } : { address },
+      )
       .andWhere("h.createdAt > :since", { since })
       .groupBy("bucket")
       .orderBy("bucket", "ASC")

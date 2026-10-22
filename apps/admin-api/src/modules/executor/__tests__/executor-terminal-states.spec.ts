@@ -228,13 +228,17 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
   });
 
   describe("controller: 鉴权与参数解析", () => {
+    // 工单 11：端点改为「认证 + 行定位一次成型」（authenticateMachineRequest）。
+    // 默认 = 认证通过、解析不到唯一行（executor=null）→ service 回落地址判据
+    // （既有用例的 2 参语义逐字节保留）。
     const makeSvc = (overrides: Record<string, jest.Mock> = {}) =>
       ({
-        validateTokenByAddress: jest.fn().mockResolvedValue(true),
-        // ADR-017 阶段 3（决策 §7）：控制器把**刚认证出的行身份**传给 service，
-        // 故它需要 findByAddress。默认 null = 解析不到唯一行 → service 回落地址
-        // 判据（既有用例的 2 参语义逐字节保留）。
-        findByAddress: jest.fn().mockResolvedValue(null),
+        authenticateMachineRequest: jest.fn().mockResolvedValue({
+          ok: true,
+          executor: null,
+          via: "shared",
+          resolvedBy: "none",
+        }),
         getTerminalStates: jest.fn().mockResolvedValue({
           items: [],
           hasMore: false,
@@ -248,7 +252,12 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
 
     it("令牌无效 → 401，且绝不触达 service（对账视图不得泄露执行清单）", async () => {
       const svc = makeSvc({
-        validateTokenByAddress: jest.fn().mockResolvedValue(false),
+        authenticateMachineRequest: jest.fn().mockResolvedValue({
+          ok: false,
+          executor: null,
+          via: "none",
+          resolvedBy: "none",
+        }),
       });
       await expect(
         build(svc).getTerminalStates(
@@ -269,11 +278,12 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
         undefined,
         undefined,
       );
-      // ADR-017 阶段 3：第 3 参是设备指纹（本用例未传 → undefined）。
-      expect(svc.validateTokenByAddress).toHaveBeenCalledWith(
+      // 工单 11：认证入口收到 (address, token, { deviceFingerprint, reportedExecutorId })。
+      // 令牌为 undefined 时 service 侧 fail-closed（既有语义，未变）。
+      expect(svc.authenticateMachineRequest).toHaveBeenCalledWith(
         "10.0.0.9:3002",
         undefined,
-        undefined,
+        { deviceFingerprint: undefined, reportedExecutorId: undefined },
       );
     });
 
@@ -285,7 +295,12 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
     // 反证：删掉控制器里的 `findByAddress` + `executorId` 透传 → 本用例转红。
     it("ADR-017 v6：把解析出的行身份（executorId）透传给 service", async () => {
       const svc = makeSvc({
-        findByAddress: jest.fn().mockResolvedValue({ id: "row-a" }),
+        authenticateMachineRequest: jest.fn().mockResolvedValue({
+          ok: true,
+          executor: { id: "row-a" },
+          via: "per-executor",
+          resolvedBy: "fingerprint",
+        }),
       });
       await build(svc).getTerminalStates(
         "10.0.0.9:3002",
@@ -294,10 +309,11 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
         "Bearer tok",
         "f".repeat(64),
       );
-      // 解析入口与鉴权同源（指纹优先）。
-      expect(svc.findByAddress).toHaveBeenCalledWith(
+      // 解析入口与鉴权同源（指纹优先）：一次调用同时完成认证与行定位。
+      expect(svc.authenticateMachineRequest).toHaveBeenCalledWith(
         "10.0.0.9:3002",
-        "f".repeat(64),
+        "tok",
+        expect.objectContaining({ deviceFingerprint: "f".repeat(64) }),
       );
       // 关键：service 收到行身份。
       expect(svc.getTerminalStates).toHaveBeenCalledWith(
@@ -307,9 +323,7 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
     });
 
     it("ADR-017 v6：解析不到唯一行时传 null（回落地址判据，不误拒合法对账）", async () => {
-      const svc = makeSvc({
-        findByAddress: jest.fn().mockResolvedValue(null),
-      });
+      const svc = makeSvc();
       await build(svc).getTerminalStates(
         "10.0.0.9:3002",
         undefined,
@@ -330,10 +344,10 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
         undefined,
         "Bearer tok-123",
       );
-      expect(svc.validateTokenByAddress).toHaveBeenCalledWith(
+      expect(svc.authenticateMachineRequest).toHaveBeenCalledWith(
         "10.0.0.9:3002",
         "tok-123",
-        undefined,
+        { deviceFingerprint: undefined, reportedExecutorId: undefined },
       );
     });
 
