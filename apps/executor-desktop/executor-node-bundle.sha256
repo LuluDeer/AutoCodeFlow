@@ -580,5 +580,5 @@
 #   · 本次**不发版**（用户明确：先只升 uv、不重打包安装包），故 desktop-v1.9.2
 #     的安装包仍内置 0.8.17；下次打 tag 时会带上 0.13.4。
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），bundle 4200kB。
-source-digest: 27442704032d5e5943bd1383174a78b3c056482e0f8412fc04b46cc0ca36da99
-a7253f25d30375fb48682d5ef2446a1ffa1ed1ce772e815fbce1a4bbd3d5866a  index.js
+source-digest: ddcf5a7c2a562bc724b19604659764668f552497377893001523e2171705f18a
+f220d10562e1ce3c6ba56ae88d8cfabc697927817a66c400c3bd3ccfda182701  index.js
