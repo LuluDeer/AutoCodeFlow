@@ -441,7 +441,7 @@ describe("官方模板行为：glueSource 真能跑", () => {
       params: { dir: work, dryRun: false },
     });
     expect(res.status).not.toBe(0);
-    expect(res.stdout + res.stderr).toContain("refusing to operate");
+    expect(res.stdout + res.stderr).toContain("拒绝操作受保护目录");
   });
 });
 

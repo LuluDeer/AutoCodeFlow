@@ -86,7 +86,7 @@ let names;
 try {
   names = fs.readdirSync(sourceDir);
 } catch (err) {
-  throw new Error('cannot read params.dir=' + sourceDir + ': ' + err.message);
+  throw new Error('无法读取 params.dir=' + sourceDir + ': ' + err.message);
 }
 
 const files = [];
@@ -157,7 +157,7 @@ const targetUrl = urlValue || 'https://example.com';
 
 async function main() {
   if (typeof fetch !== 'function') {
-    throw new Error('global fetch is unavailable; Node.js 18+ is required for health_check');
+    throw new Error('全局 fetch 不可用；health_check 需要 Node.js 18+');
   }
   const controller = new AbortController();
   const timer = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
@@ -168,12 +168,12 @@ async function main() {
     console.log('[health_check] url=' + targetUrl);
     console.log('[health_check] status=' + response.status + ' elapsedMs=' + elapsedMs);
     if (!response.ok) {
-      throw new Error('unhealthy status ' + response.status + ' from ' + targetUrl);
+      throw new Error('健康检查异常状态 ' + response.status + ' from ' + targetUrl);
     }
     console.log('[health_check] OK');
   } catch (err) {
     if (err && err.name === 'AbortError') {
-      throw new Error('request to ' + targetUrl + ' timed out after ' + TIMEOUT_MS + 'ms');
+      throw new Error('请求 ' + targetUrl + ' timed out after ' + TIMEOUT_MS + 'ms');
     }
     throw err instanceof Error ? err : new Error(String(err));
   } finally {
@@ -310,7 +310,7 @@ const protectedDirs = [
   path.resolve(process.cwd()),
 ];
 if (protectedDirs.indexOf(targetDir) !== -1) {
-  throw new Error('refusing to operate on a protected directory: ' + targetDir);
+  throw new Error('拒绝操作受保护目录：' + targetDir);
 }
 
 function seedDemoFiles() {
@@ -330,7 +330,7 @@ if (targetDir === demoRoot) {
   seedDemoFiles();
 } else if (!fs.existsSync(targetDir)) {
   if (!isInside(demoRoot, targetDir)) {
-    throw new Error('params.dir does not exist and is outside the demo directory: ' + targetDir);
+    throw new Error('params.dir 不存在且位于 demo 目录之外：' + targetDir);
   }
   fs.mkdirSync(targetDir, { recursive: true });
 }
@@ -352,7 +352,7 @@ let entries;
 try {
   entries = fs.readdirSync(targetDir);
 } catch (err) {
-  throw new Error('cannot read params.dir=' + targetDir + ': ' + err.message);
+  throw new Error('无法读取 params.dir=' + targetDir + ': ' + err.message);
 }
 
 const cutoff = Date.now() - maxAgeDays * DAY_MS;
@@ -437,10 +437,10 @@ async function main() {
     return;
   }
   if (!/^https?:\/\//i.test(urlValue)) {
-    throw new Error('params.url must start with http:// or https:// (got ' + urlValue + ')');
+    throw new Error('params.url 必须以 http:// 或 https:// 开头（收到 ' + urlValue + ')');
   }
   if (typeof fetch !== 'function') {
-    throw new Error('global fetch is unavailable; Node.js 18+ is required for webhook_ping');
+    throw new Error('全局 fetch 不可用；webhook_ping 需要 Node.js 18+');
   }
   const controller = new AbortController();
   const timer = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
@@ -456,12 +456,12 @@ async function main() {
     console.log('[webhook_ping] url=' + urlValue);
     console.log('[webhook_ping] status=' + response.status + ' elapsedMs=' + elapsedMs);
     if (!response.ok) {
-      throw new Error('webhook endpoint returned status ' + response.status);
+      throw new Error('Webhook 端点返回状态 ' + response.status);
     }
     console.log('[webhook_ping] OK');
   } catch (err) {
     if (err && err.name === 'AbortError') {
-      throw new Error('request to ' + urlValue + ' timed out after ' + TIMEOUT_MS + 'ms');
+      throw new Error('请求 ' + urlValue + ' timed out after ' + TIMEOUT_MS + 'ms');
     }
     throw err instanceof Error ? err : new Error(String(err));
   } finally {
