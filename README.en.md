@@ -7,11 +7,6 @@
 </p>
 
 <p align="center">
-  <b>The open-source automation runtime</b><br/>
-  <sub>Scripts, desktops and AI agents on one auditable scheduler</sub>
-</p>
-
-<p align="center">
   Schedule scripts · Give AI agents hands on a real desktop ·<br/>
   Keep every run observable, auditable and replayable.
 </p>
@@ -42,6 +37,10 @@ The script generates random secrets, starts an **isolated** local stack (it neve
 - Stop: `./scripts/demo.sh --down`; reset: `./scripts/demo.sh --reset`
 
 ![demo dashboard](docs/assets/screenshots/zh/demo-dashboard.png)
+
+从模板创建 → 触发 → 产物（无需写代码）：
+
+![template run](docs/assets/screenshots/zh/demo-template-run.png)
 
 ## 🖥️ Desktop Agent demo (Linux X11)
 
