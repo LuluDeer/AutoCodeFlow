@@ -34,9 +34,11 @@ export class AddExecutorIdToExecutorMetricsHistory1790000000061 implements Migra
     await queryRunner.query(
       `ALTER TABLE "executor_metrics_history" ADD COLUMN IF NOT EXISTS "executorId" uuid`,
     );
+    // 刻意写成**单个**模板字面量（不拆成字符串拼接）：check-index-drift 的
+    // 判据按「一条 CREATE INDEX … ON … (cols)」整体匹配迁移文本，拼接会让它
+    // 读不到（NETOPT-3 守卫，CI 会红）。
     await queryRunner.query(
-      `CREATE INDEX IF NOT EXISTS "IDX_executor_metrics_history_executor_created" ` +
-        `ON "executor_metrics_history" ("executorId", "createdAt")`,
+      `CREATE INDEX IF NOT EXISTS "IDX_executor_metrics_history_executor_created" ON "executor_metrics_history" ("executorId", "createdAt")`,
     );
   }
 
