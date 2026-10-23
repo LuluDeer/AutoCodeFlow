@@ -50,6 +50,7 @@ import {
   SopCapableExecutorDto,
   SopListResponseDto,
   SopPublishResponseDto,
+  SopCancelAssignmentsResponseDto,
   SopResponseDto,
   SopVersionDto,
 } from "./dto/sop-response.dto";
@@ -484,7 +485,7 @@ export class SopController {
    */
   @Post(":id/assignments/cancel")
   @ApiOperation({ summary: "取消该 SOP 下所有未结束的指派（归档前置动作）" })
-  @ApiOkResponse({ description: "{ cancelled: 实际取消的条数 }" })
+  @ApiOkResponse({ type: SopCancelAssignmentsResponseDto })
   async cancelAssignments(
     @Param("id") id: string,
     @CurrentUser() user: { id: number | string } | undefined,

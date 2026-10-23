@@ -1319,5 +1319,6 @@
   "归档 SOP（停止派新单，保留全部历史）": "Archive a SOP (stops new assignments, keeps the full history)",
   "恢复已归档的 SOP": "Restore an archived SOP",
   "取消该 SOP 下所有未结束的指派（归档前置动作）": "Cancel every unfinished assignment of this SOP (precondition for archiving)",
-  "{ cancelled: 实际取消的条数 }": "{ cancelled: number of assignments actually cancelled }"
+  "{ cancelled: 实际取消的条数 }": "{ cancelled: number of assignments actually cancelled }",
+  "实际取消的条数（0 = 本来就没有未结束指派）": "Number of assignments actually cancelled (0 = there were none)"
 }

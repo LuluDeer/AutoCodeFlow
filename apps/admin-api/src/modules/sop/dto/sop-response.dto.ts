@@ -316,6 +316,21 @@ export class SopAssignmentDetailResponseDto {
   clarifications: SopClarificationDto[];
 }
 
+/**
+ * POST /sop/:id/assignments/cancel —— 归档前置：取消未结束指派。
+ *
+ * 必须有具名 DTO 而不是内联 `{ description }`：响应 schema 覆盖率棘轮
+ * （`check-openapi-response-schema.mjs`）只认**有 schema 的响应**，内联描述
+ * 会让该端点计成"缺口"，进而让基线倒挂（实测 CI 上棘轮 step 因此变红）。
+ */
+export class SopCancelAssignmentsResponseDto {
+  @ApiProperty({
+    description: "实际取消的条数（0 = 本来就没有未结束指派）",
+    example: 2,
+  })
+  cancelled: number;
+}
+
 /** POST /sop/assignments/:id/clarifications/:cid/reply —— 人工与中台 Agent 同闸答复。 */
 export class ClarificationReplyResponseDto {
   @ApiProperty({ description: "成功时恒为 true（失败均为 4xx）" })

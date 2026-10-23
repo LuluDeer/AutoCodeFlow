@@ -6344,8 +6344,14 @@
         ],
         "responses": {
           "200": {
-            "description": "{ cancelled: 实际取消的条数 }",
-            "x-i18n-en": "{ cancelled: number of assignments actually cancelled }"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopCancelAssignmentsResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -18012,6 +18018,20 @@
             "x-i18n-en": "Assign by address (the alternative form when executorId is default)"
           }
         }
+      },
+      "SopCancelAssignmentsResponseDto": {
+        "type": "object",
+        "properties": {
+          "cancelled": {
+            "type": "number",
+            "description": "实际取消的条数（0 = 本来就没有未结束指派）",
+            "example": 2,
+            "x-i18n-en": "Number of assignments actually cancelled (0 = there were none)"
+          }
+        },
+        "required": [
+          "cancelled"
+        ]
       },
       "CollabAssignmentItemDto": {
         "type": "object",

@@ -358,7 +358,14 @@ describe('UI-09 R3 ApiKeysSettings 375px 产物', () => {
     renderPage(<ApiKeysSettings />);
     fireEvent.click(await screen.findByTestId('apikey-create'));
     fireEvent.change(screen.getByPlaceholderText('如 ci-deploy'), { target: { value: 'new-key' } });
-    fireEvent.click(screen.getByText(/创\s*建/));
+    // 2026-10-23：`/创\s*建/` 现在会同时匹配「创建」（Modal 确认键）与
+    // 「API Key 已创建」（成功弹窗标题）——后者是本轮新增的一次性明文回显。
+    // 用 Modal footer 内的按钮定位，避免多义匹配。
+    const createBtn = Array.from(
+      document.querySelectorAll('.ant-modal-footer button'),
+    ).find((b) => /创\s*建/.test(b.textContent ?? '')) as HTMLButtonElement | undefined;
+    expect(createBtn).toBeTruthy();
+    fireEvent.click(createBtn!);
     const copyBtn = await screen.findByRole('button', { name: /复制密钥/ });
     // 可访问名来自按钮文字（非图标 aria-label）
     expect((copyBtn.textContent ?? '').replace(/\s/g, '')).toBe('复制密钥');
@@ -385,7 +392,9 @@ describe('UI-09 R3 ApiKeysSettings 375px 产物', () => {
     renderPage(<ApiKeysSettings />);
     await screen.findByText('ci-deploy');
     expect(document.querySelector('.ant-table table')).not.toBeNull();
-    expect(screen.getAllByText(/acf_dead…/).length).toBeGreaterThanOrEqual(1);
+    // 2026-10-23：keyPrefix 是生成时固定截断的展示前缀（8 字符），
+    // 去掉了误导性的尾随省略号——按精确值断言（与 api-keys-settings 同口径）。
+    expect(screen.getAllByText('acf_dead').length).toBeGreaterThanOrEqual(1);
   });
 });
 
