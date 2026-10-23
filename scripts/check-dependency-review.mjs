@@ -117,22 +117,15 @@ export const EXEMPTIONS = [
     expiredAction: '随 GHSA-7pqw-9j4j-h8q3 同批复查',
     probe: 'extract-zip',
   },
-  {
-    ghsa: 'GHSA-hp3w-g68c-fv3c',
-    package: 'sprintf-js',
-    severity: 'moderate',
-    chain:
-      'executor-desktop devDep electron-builder → @electron/get → global-agent → roarr → sprintf-js@1.1.3（其余包的 js-yaml→argparse 链已用 argparse@2.0.1 override 消除）',
-    reason:
-      '无界精度说明符可导致 DoS。**上游无修复版**（vulnerable range = <=1.1.3，且 1.1.3 本身仍在范围内）。' +
-      '2026-10-22：admin-api / executor-node / node-sdk 已用 `argparse@2.0.1` override 消除 js-yaml@3→argparse@1→sprintf-js 链；' +
-      'executor-desktop 仍经 electron-builder→@electron/get→global-agent→roarr 解析到 sprintf-js@1.1.3（roarr 2.x 钉死），' +
-      '属构建期工具链，仅 electron-builder 下载 Electron 时可达。',
-    reviewBy: '2026-12-30',
-    expiredAction:
-      '复查 global-agent/roarr 是否发布不再依赖 sprintf-js 的版本；若可升级则移除本条。不得直接 override sprintf-js（无修复版）',
-    probe: 'sprintf-js',
-  },
+  // 2026-10-23（审计轮 #4）：`GHSA-hp3w-g68c-fv3c`（sprintf-js）**已从本注册表移除**。
+  // 理由：该 advisory 于 2026-10-22 19:21 UTC 被 GitHub **撤回**
+  // （`withdrawn_at` 已置，理由=格式串精度异常属应用侧职责），Dependabot 侧亦已
+  // dismiss。保留一条"已失效的豁免"会让注册表与真实告警面漂移——这正是本机制
+  // 要消灭的形态。
+  // 历史处置（仍有效）：admin-api / executor-node / node-sdk 用 `argparse@2.0.1`
+  // override 消除了 js-yaml@3→argparse@1→sprintf-js 链；executor-desktop 残留
+  // 的 sprintf-js@1.1.3 属构建期工具链（electron-builder 下载 Electron 时可达），
+  // 因 advisory 撤回已无需登记。
 ];
 
 /** 从 CI 的 npm-audit job 解析豁免 GHSA 与复查日期（单一事实源=CI 文件）。 */

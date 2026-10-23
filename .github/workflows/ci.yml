@@ -451,24 +451,18 @@ jobs:
           # GHSA-ch52-4w7c-c8xp  http-cache-semantics ≤4.2.0 —— 已清偿（2026-10-22）
           #   executor-desktop override http-cache-semantics@4.3.0；electron-builder --version
           #   与 desktop selftest 均通过；已从下方 known 与注册表移除。
-          # GHSA-hp3w-g68c-fv3c  sprintf-js ≤1.1.3 无界精度说明符 DoS
-          #   链：executor-desktop electron-builder → @electron/get → global-agent →
-          #       roarr@2 → sprintf-js@1.1.3
-          #   原因：上游无修复版；仅构建期下载 Electron 二进制时可达。
-          #         admin-api / executor-node / node-sdk 的 js-yaml@3→argparse@1 链
-          #         已用 argparse@2.0.1 override 消除，desktop 剩余链路随 roarr 2.x。
-          #   2026-10-22：argparse@2.0.1 override 已消除 admin-api/executor-node/node-sdk 的
-          #   js-yaml@3→argparse@1 链；desktop 仍经 electron-builder→@electron/get→
-          #   global-agent→roarr 解析到 sprintf-js，保留本条。
-          #   复查：2026-12-30（到期动作=复查 global-agent/roarr；不得直接 override）
+          # GHSA-hp3w-g68c-fv3c  sprintf-js —— 已移除（2026-10-23）
+          #   该 advisory 于 2026-10-22 19:21 UTC 被 GitHub **撤回**（withdrawn_at 已置，
+          #   理由=格式串精度异常属应用侧职责），Dependabot 告警亦已 dismiss。
+          #   历史处置仍有效：admin-api / executor-node / node-sdk 用 argparse@2.0.1
+          #   override 消除了 js-yaml@3→argparse@1→sprintf-js 链。
           #
           echo "Still failing after retries — matching against exemption list (SEC-06)..."
           known='GHSA-528h-pc64-c93x
           GHSA-hqr4-qq8f-hg3x
           GHSA-mjw6-4jj6-33hc
           GHSA-7pqw-9j4j-h8q3
-          GHSA-jmr9-qjv8-65gv
-          GHSA-hp3w-g68c-fv3c'
+          GHSA-jmr9-qjv8-65gv'
           # 提取 JSON 中所有 moderate 及以上 advisory 的 GHSA id（去重排序）
           found=$(node -e '
             const a = require("/tmp/audit.json");
