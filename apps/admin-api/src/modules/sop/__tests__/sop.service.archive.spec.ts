@@ -1,5 +1,3 @@
-import { Not, In } from "typeorm";
-
 import { SopService } from "../sop.service";
 
 /**
@@ -35,16 +33,16 @@ function valueMatches(actual: unknown, expected: unknown): boolean {
 }
 
 function whereMatches(row: Any, where: Any): boolean {
-  return Object.entries(where ?? {}).every(([k, v]) =>
-    valueMatches(row[k], v),
-  );
+  return Object.entries(where ?? {}).every(([k, v]) => valueMatches(row[k], v));
 }
 
-function harness(options: {
-  sop?: Any;
-  activeAssignments?: number;
-  auditThrows?: boolean;
-} = {}) {
+function harness(
+  options: {
+    sop?: Any;
+    activeAssignments?: number;
+    auditThrows?: boolean;
+  } = {},
+) {
   const sopRow: Any = {
     id: "sop-1",
     slug: "demo-sop",
@@ -105,11 +103,11 @@ describe("SOP 归档 deprecate（2026-10-23）", () => {
 
   it("有未结束指派 → 409，且不写库", async () => {
     const h = harness({ activeAssignments: 2 });
-    await expect(
-      h.service.deprecate({ sopId: "sop-1" }),
-    ).rejects.toMatchObject({
-      errorCode: "SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS",
-    });
+    await expect(h.service.deprecate({ sopId: "sop-1" })).rejects.toMatchObject(
+      {
+        errorCode: "SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS",
+      },
+    );
     expect(h.sops.update).not.toHaveBeenCalled();
     expect(h.sopRow.status).toBe("published");
   });
@@ -127,9 +125,9 @@ describe("SOP 归档 deprecate（2026-10-23）", () => {
 
   it("已归档再归档 → 409（不是静默成功的 200）", async () => {
     const h = harness({ sop: { status: "deprecated" } });
-    await expect(
-      h.service.deprecate({ sopId: "sop-1" }),
-    ).rejects.toMatchObject({ errorCode: "SOP_ALREADY_DEPRECATED" });
+    await expect(h.service.deprecate({ sopId: "sop-1" })).rejects.toMatchObject(
+      { errorCode: "SOP_ALREADY_DEPRECATED" },
+    );
     expect(h.sops.update).not.toHaveBeenCalled();
   });
 
@@ -137,9 +135,9 @@ describe("SOP 归档 deprecate（2026-10-23）", () => {
     const h = harness();
     // 模拟「读快照后被别人改了状态」：条件写求值时谓词不再匹配
     h.sops.update.mockResolvedValueOnce({ affected: 0 } as never);
-    await expect(
-      h.service.deprecate({ sopId: "sop-1" }),
-    ).rejects.toMatchObject({ errorCode: "SOP_ALREADY_DEPRECATED" });
+    await expect(h.service.deprecate({ sopId: "sop-1" })).rejects.toMatchObject(
+      { errorCode: "SOP_ALREADY_DEPRECATED" },
+    );
   });
 
   it("写审计 sop.deprecate（带 slug 与归档时的版本指针）", async () => {
@@ -179,7 +177,9 @@ describe("SOP 恢复 restore（2026-10-23）", () => {
     const out = await h.service.restore({ sopId: "sop-1", actor: "user:1" });
     expect(out.status).toBe("published");
     expect(h.sopRow.status).toBe("published");
-    expect(((h.audit.log.mock.calls[0] as Any[])[0] as Any).action).toBe("sop.restore");
+    expect(((h.audit.log.mock.calls[0] as Any[])[0] as Any).action).toBe(
+      "sop.restore",
+    );
   });
 
   it("已归档但从未发布过 → 回到 draft（不凭空变 published）", async () => {
@@ -191,18 +191,18 @@ describe("SOP 恢复 restore（2026-10-23）", () => {
 
   it("非归档态 → 409，且不写库", async () => {
     const h = harness({ sop: { status: "published" } });
-    await expect(
-      h.service.restore({ sopId: "sop-1" }),
-    ).rejects.toMatchObject({ errorCode: "SOP_NOT_DEPRECATED" });
+    await expect(h.service.restore({ sopId: "sop-1" })).rejects.toMatchObject({
+      errorCode: "SOP_NOT_DEPRECATED",
+    });
     expect(h.sops.update).not.toHaveBeenCalled();
   });
 
   it("并发恢复：条件 UPDATE 未命中 → 409", async () => {
     const h = harness({ sop: { status: "deprecated" } });
     h.sops.update.mockResolvedValueOnce({ affected: 0 } as never);
-    await expect(
-      h.service.restore({ sopId: "sop-1" }),
-    ).rejects.toMatchObject({ errorCode: "SOP_NOT_DEPRECATED" });
+    await expect(h.service.restore({ sopId: "sop-1" })).rejects.toMatchObject({
+      errorCode: "SOP_NOT_DEPRECATED",
+    });
   });
 });
 
@@ -241,7 +241,7 @@ describe("SOP 取消未结束指派（2026-10-23）", () => {
     (h.assignments as Any).update = jest.fn(async () => ({ affected: 1 }));
     await h.service.cancelOpenAssignments({ sopId: "sop-1", actor: "user:9" });
 
-    const payload = ((h.audit.log.mock.calls[0] as Any[])[0] as Any);
+    const payload = (h.audit.log.mock.calls[0] as Any[])[0] as Any;
     expect(payload.action).toBe("sop.assignment.cancel");
     expect(payload.detail).toMatchObject({
       slug: "demo-sop",
@@ -263,11 +263,11 @@ describe("SOP 取消未结束指派（2026-10-23）", () => {
   it("取消后归档得以通过（端到端语义）", async () => {
     const h = harness({ activeAssignments: 2 });
     // 取消前：归档被拒
-    await expect(
-      h.service.deprecate({ sopId: "sop-1" }),
-    ).rejects.toMatchObject({
-      errorCode: "SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS",
-    });
+    await expect(h.service.deprecate({ sopId: "sop-1" })).rejects.toMatchObject(
+      {
+        errorCode: "SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS",
+      },
+    );
 
     // 取消指派
     (h.assignments as Any).update = jest.fn(async () => ({ affected: 2 }));

@@ -190,10 +190,23 @@ describe('formatApiError：已知码按类给可操作提示，未知码/无码�
   });
 
   it('网络错误（无响应）形态完全不变', () => {
-    const e = Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, response: undefined });
-    expect(formatApiError(e)).toBe(
-      `Network error: connect ECONNREFUSED (is the API reachable at http://localhost:3105?)`,
-    );
+    // 2026-10-23：这条断言曾硬编码 `localhost:3105`，而文案里的地址来自
+    // `getApiUrl()`（ACF_API_URL env > **本机 ~/.config/acf-cli 配置** > 默认值）。
+    // 于是它在本机（配置里存过别的端口）恒红、在干净 CI 上恒绿——**测试依赖
+    // 开发者机器的用户配置**，是隔离缺陷而不是被测行为。
+    // 现改为把 `getApiUrl()` 钉成确定值（vi.stubEnv），只断言"形态不变"这件事。
+    vi.stubEnv('ACF_API_URL', 'http://localhost:3105');
+    try {
+      const e = Object.assign(new Error('connect ECONNREFUSED'), {
+        isAxiosError: true,
+        response: undefined,
+      });
+      expect(formatApiError(e)).toBe(
+        `Network error: connect ECONNREFUSED (is the API reachable at http://localhost:3105?)`,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('appendErrorCodeHint 对未知码/无码是恒等函数（反例哨兵）', () => {

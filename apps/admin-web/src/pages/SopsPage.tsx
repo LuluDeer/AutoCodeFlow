@@ -441,7 +441,14 @@ useEffect(() => {
         }
         // 其余 409 / 失败要把后端口径原样透出——这类失败有明确下一步，
         // 吞成「操作失败」等于让运维去翻日志。
-        showApiError(err, t(action === 'deprecate' ? 'sops.archive.fail' : 'sops.restore.fail'));
+        // 用 if 分支而不是三元表达式：i18n 缺键守卫（i18n-key-check）只认
+        // **静态字面量键**，`t(cond ? 'a' : 'b')` 会被判成「动态键」并拒绝。
+        // 两处都是编译期已知的键，写成两个 t() 调用即可静态校验。
+        if (action === 'deprecate') {
+          showApiError(err, t('sops.archive.fail'));
+        } else {
+          showApiError(err, t('sops.restore.fail'));
+        }
       } finally {
         setArchivingId(null);
       }
