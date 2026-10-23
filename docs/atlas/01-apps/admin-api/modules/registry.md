@@ -19,20 +19,23 @@ modules/registry/
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
-| GET | `/pypi/packages` | JWT | 拉 `<PYPI_REGISTRY_URL>/simple/`，正则解析 `<a>` 标签得到包名列表 |
-| GET | `/npm/packages` | JWT | 拉 `<NPM_REGISTRY_URL>/-/verdaccio/packages`，JSON 直出 `{name,latest,description}[]` |
-| POST | `/pypi/upload` | JWT | multipart `content`（上限 50MB），转发到 `<PYPI_REGISTRY_URL>/upload/` |
+| GET | `/pypi/packages` | JWT | 拉 `<ADMIN_PYPI_REGISTRY_URL>/simple/`（**基址，不带 `/simple/`**），正则解析 `<a>` 标签得到包名列表 |
+| GET | `/npm/packages` | JWT | 拉 `<NPM_REGISTRY_URL>/-/verdaccio/data/packages`（Verdaccio 5.x 的真实路由；旧写法 `/-/verdaccio/packages` 在 5.31.1 上恒 404，见下），映射成 `{name,latest,description}[]` |
+| POST | `/pypi/upload` | JWT | multipart `content`（上限 50MB），转发到 `<ADMIN_PYPI_REGISTRY_URL>/upload/` |
 
 ## 关键机制
 
 ### 凭据解析
 
 - PyPI：Basic 认证，`REGISTRY_USER`（默认 `admin`）/ `REGISTRY_PASS`。
-- npm（S5）：Verdaccio 的 `config.yaml` 把所有包 pattern 设为 `access: $authenticated`，匿名拉 `/-/verdaccio/packages` 必 401（清单恒空）。解决路径按优先级：
-  1. `NPM_REGISTRY_TOKEN` 直接作 Bearer；
-  2. `NPM_REGISTRY_USER`/`NPM_REGISTRY_PASS` → `PUT /-/user/login`（body 兼容 `name`/`username` 两种键）换 bearer token；
-  3. 均未配置 → 匿名（401 → 空列表，debug 日志可发现）。
-- 环境变量：`NPM_REGISTRY_URL`（默认 `http://localhost:4873`）、`PYPI_REGISTRY_URL`（默认 `http://localhost:8003`）、`REGISTRY_UPLOAD_TIMEOUT_MS`（默认 60000）。
+- npm（S5）：Verdaccio 的 `config.yaml` 把所有包 pattern 设为 `access: $authenticated`。**注意失败形态**：匿名拉 `/-/verdaccio/data/packages` 在 5.x 回的是 **200 + `[]`**（按权限过滤后空数组），不是 401——所以「凭据没配」表现为「仓库里一个包都没有」。解析链按优先级：
+  1. `NPM_REGISTRY_TOKEN` 直接作 Bearer（公网 npm 场景）；
+  2. `NPM_REGISTRY_USER`/`NPM_REGISTRY_PASS` → **直接 Basic**；
+  3. 均未配置 → 回落 `REGISTRY_USER`/`REGISTRY_PASS`（compose 两个私服共用同一套服务账号）；
+  4. 都没有 → 匿名（得到空列表，debug 日志可发现）。
+- ⚠️ **不要再用 `PUT /-/user/login` 换 token**：Verdaccio 5 该端点是「注册或登录」语义，账号已存在时回 **409 `username is already registered`**，会把列表永久打成 502（2026-10-23 真机缺陷）。而 `data/packages` 本来就接受 Basic，无需 token 往返。
+- 环境变量：`ADMIN_PYPI_REGISTRY_URL`（admin 视角基址，默认 `http://localhost:8003`）、`NPM_REGISTRY_URL`（默认 `http://localhost:4873`）、`REGISTRY_UPLOAD_TIMEOUT_MS`（默认 60000）。
+  - **`PYPI_REGISTRY_URL` 不能直接给本模块用**：它是执行器的 `pip --index-url` 语义（值带 `/simple/`），而本模块自己拼 `/simple/`，共用会拼出 `/simple//simple/`（实测上游 404）。
 
 ### 上传代理守卫
 
@@ -61,18 +64,24 @@ admin-web 包管理页 ──► /api/registry/*（JWT）──► 本模块（�
 
 | 变量 | 默认 | 用途 |
 |---|---|---|
-| `PYPI_REGISTRY_URL` | `http://localhost:8003` | 自建 PyPI 私服地址（清单 + 上传转发目标） |
-| `REGISTRY_USER` / `REGISTRY_PASS` | `admin` / 空 | PyPI Basic 凭据（清单 GET 与上传 POST 共用） |
+| `ADMIN_PYPI_REGISTRY_URL` | `http://localhost:8003` | **admin 视角的 PyPI 基址（不带 `/simple/`）** ——清单 + 上传转发目标。未设置时从 `PYPI_REGISTRY_URL` 剥掉尾部 `/simple` 派生 |
+| `PYPI_REGISTRY_URL` | — | **执行器**语义的 `--index-url`（带 `/simple/`）。本模块不直接用它（会双拼 `/simple/`） |
+| `REGISTRY_USER` / `REGISTRY_PASS` | `admin` / 空 | 私服 Basic 凭据（PyPI 清单/上传 + npm 未配专用账号时的回落） |
 | `NPM_REGISTRY_URL` | `http://localhost:4873` | Verdaccio 私服地址 |
 | `NPM_REGISTRY_TOKEN` | 空 | 直接使用的 Verdaccio bearer token（优先级最高） |
-| `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | 服务账号，运行时经 `PUT /-/user/login` 换 token |
+| `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | npm 服务账号，**直接 Basic**（不再换 token） |
+| `REGISTRY_ALLOW_PRIVATE_NETWORK` | `false`（compose 里 `true`） | 允许生产环境用 http 访问**内网服务名**（如 `registry-npm:4873`）。不设时只有 loopback 允许 http |
 | `REGISTRY_UPLOAD_TIMEOUT_MS` | 60000 | 上传代理整体 deadline（socket 超时同值） |
 
-清单请求（fetchText）固定 8s 超时，超时/失败一律返回空列表（HTTP 200 + `packages: []`），不向管理台抛错。
+清单请求（fetchText）固定 8s 超时；上游非 2xx/超时一律 502/504（**不再**吞成空列表——失败与空态语义分离）。
 
 ## 常见改动场景
 
-- npm 清单恒空排查：先看 `NPM_REGISTRY_TOKEN`/`NPM_REGISTRY_USER`+`PASS` 是否配置，admin 日志有 `login failed` / `did not contain a token` 警告。
+- **npm / PyPI 清单恒空或 502 排查顺序**：
+  1. `docker exec <admin-api> env | grep REGISTRY` —— 键在不在（compose 曾整块漏注，见 `scripts/check-compose-service-env.mjs`）；
+  2. 地址对不对（容器内 `localhost` 指向**自己**，不是 registry 容器）；
+  3. 凭据能不能过 —— 直接 `wget --header="Authorization: Basic <b64>" http://registry-npm:4873/-/verdaccio/data/packages` 验证；
+  4. npm 侧注意：匿名时 Verdaccio 回 **200 + `[]`**，不是 401。
 - 代理新仓库（如通用 Docker registry）：照 `fetchText` 模式加路由，凭据走 ConfigService；注意 8s/60s 两档超时语义。
 - 私服地址变更：只改 env，代码默认值仅兜底。
 

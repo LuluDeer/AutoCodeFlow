@@ -196,6 +196,32 @@ services:
       # 非法值静默回退契约缺省（3.7/3.14），不会让写面 500。
       PYTHON_RUNTIME_VERSION_MIN: ${PYTHON_RUNTIME_VERSION_MIN:-3.7}
       PYTHON_RUNTIME_VERSION_MAX: ${PYTHON_RUNTIME_VERSION_MAX:-3.14}
+      # 2026-10-23 真机缺陷：「包注册中心」页面的 PyPI/npm 列表**在所有 Docker
+      # 部署下必然 502**。两个根因，缺一不可：
+      #   ① 本服务块从未注入 registry 基址 → 容器内回落 localhost:8003/4873，
+      #      那是容器自己（registry-pypi / registry-npm 是**别的**容器）；
+      #   ② 从未注入 REGISTRY_USER/PASS → 私有仓要求 Basic 认证，匿名必 401
+      #      （列表代理把它透出为 502）。
+      # 单测一直绿，因为 spec 显式注入了 env（"mock 不等于能跑"）。
+      #
+      # ⚠️ 为什么 PyPI 侧走派生键而不是直接复用 PYPI_REGISTRY_URL：
+      # 执行器侧的 `PYPI_REGISTRY_URL` 是 pip --index-url 语义（值带 `/simple/`），
+      # 而 admin 的 controller 自己拼 `${base}/simple/` → 直接共用会拼出
+      # `/simple//simple/`（实测上游 404）。故这里显式给**基址**
+      # `ADMIN_PYPI_REGISTRY_URL`（不带 /simple/），与执行器变量并存不冲突。
+      ADMIN_PYPI_REGISTRY_URL: ${ADMIN_PYPI_REGISTRY_URL-http://registry-pypi:8003}
+      NPM_REGISTRY_URL: ${NPM_REGISTRY_URL-http://registry-npm:4873}
+      # 生产环境 registry 出站强制 https（B-3），但 compose 内网是 http 服务名。
+      # 显式 opt-in 声明「这些是桥接网内的服务名，流量不出宿主」——与
+      # NOTIF_ALLOW_PRIVATE_NETWORK / EXECUTOR_ALLOW_PRIVATE_NETWORK 同族先例。
+      # 不设或设 false ⇒ 容器外/公网部署的既有 fail-fast 姿态逐字节不变。
+      REGISTRY_ALLOW_PRIVATE_NETWORK: ${REGISTRY_ALLOW_PRIVATE_NETWORK:-true}
+      # registry 的 Basic 凭据（与 registry-pypi 服务同源；npm 侧匿名 401 时
+      # 也用它换 Verdaccio token，见 registry.controller.resolveNpmAuthHeader）。
+      REGISTRY_USER: ${REGISTRY_USER:-admin}
+      REGISTRY_PASS: ${REGISTRY_PASS:?set REGISTRY_PASS in .env}
+      NPM_REGISTRY_USER: ${NPM_REGISTRY_USER:-}
+      NPM_REGISTRY_PASS: ${NPM_REGISTRY_PASS:-}
     depends_on:
       postgres:
         condition: service_healthy

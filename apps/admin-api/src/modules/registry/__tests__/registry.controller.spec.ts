@@ -271,7 +271,7 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
 
   beforeAll(async () => {
     // A Verdaccio stand-in: /-/user/login issues a token for svc/svc-pass,
-    // /-/verdaccio/packages requires `Authorization: Bearer svc-token`.
+    // /-/verdaccio/data/packages requires `Authorization: Bearer svc-token`.
     // `Connection: close` keeps the client from holding a keep-alive socket
     // open after each response (that would hang server.close()).
     server = http.createServer((req, res) => {
@@ -300,11 +300,15 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
           }
           return;
         }
-        if (req.url === "/-/verdaccio/packages") {
-          if (req.headers.authorization === "Bearer svc-token") {
+        if (req.url === "/-/verdaccio/data/packages") {
+          // 2026-10-23：真机形态是 Basic（token 往返已删）；Bearer svc-token
+          // 仍放行，覆盖 NPM_REGISTRY_TOKEN 预签发路径。
+          const basic = `Basic ${Buffer.from("svc:svc-pass").toString("base64")}`;
+          const auth = req.headers.authorization;
+          if (auth === "Bearer svc-token" || auth === basic) {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(
-              JSON.stringify([{ name: "@autoflow/core", latest: "1.2.3" }]),
+              JSON.stringify([{ name: "@autoflow/core", version: "1.2.3", description: "core lib" }]),
             );
           } else {
             res.writeHead(401);
@@ -329,7 +333,9 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     seen.length = 0;
   });
 
-  it("S5: logs in with the configured service account and lists packages", async () => {
+  // 2026-10-23：语义由「先 login 换 token 再拉」改成「直接 Basic 拉」——
+  // Verdaccio 5 的 PUT /-/user/login 对已存在用户回 409，把列表永久打成 502。
+  it("S5: authenticates with the configured service account (Basic) and lists packages", async () => {
     const controller = makeController({
       registry: {
         npm: {
@@ -342,14 +348,65 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3" }],
+      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
     });
-    // login first, then the authenticated packages pull
     expect(seen).toEqual([
-      { method: "PUT", url: "/-/user/login", authorization: "" },
       {
         method: "GET",
-        url: "/-/verdaccio/packages",
+        url: "/-/verdaccio/data/packages",
+        authorization: `Basic ${Buffer.from("svc:svc-pass").toString("base64")}`,
+      },
+    ]);
+    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(0);
+  });
+
+  it("2026-10-23: NPM 凭据缺失时回落 REGISTRY_USER/PASS（否则列表恒空）", async () => {
+    const controller = makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "",
+          pass: "",
+          token: "",
+        },
+      },
+      REGISTRY_USER: "svc",
+      REGISTRY_PASS: "svc-pass",
+    });
+
+    await expect(controller.listNpmPackages()).resolves.toEqual({
+      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
+    });
+    // 回落后应当带上 Basic 凭据（而不是匿名直拉 → 恒空列表）
+    expect(seen).toEqual([
+      {
+        method: "GET",
+        url: "/-/verdaccio/data/packages",
+        authorization: `Basic ${Buffer.from("svc:svc-pass").toString("base64")}`,
+      },
+    ]);
+  });
+
+  it("2026-10-23: NPM 专用凭据优先于 REGISTRY_* 回落", async () => {
+    const controller = makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "npm-svc",
+          pass: "npm-pass",
+          token: "svc-token",
+        },
+      },
+      REGISTRY_USER: "admin",
+      REGISTRY_PASS: "svc-pass",
+    });
+
+    await controller.listNpmPackages();
+    // 有 NPM_REGISTRY_TOKEN 时直接用，不回落、不登录
+    expect(seen).toEqual([
+      {
+        method: "GET",
+        url: "/-/verdaccio/data/packages",
         authorization: "Bearer svc-token",
       },
     ]);
@@ -380,7 +437,7 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
     // anonymous 401 — and the miss is still explained at debug level
     expect(seen).toEqual([
-      { method: "GET", url: "/-/verdaccio/packages", authorization: "" },
+      { method: "GET", url: "/-/verdaccio/data/packages", authorization: "" },
     ]);
     expect(
       (controller as unknown as { logger: Record<string, jest.Mock> }).logger
@@ -401,12 +458,12 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3" }],
+      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
     });
     expect(seen).toEqual([
       {
         method: "GET",
-        url: "/-/verdaccio/packages",
+        url: "/-/verdaccio/data/packages",
         authorization: "Bearer svc-token",
       },
     ]);
@@ -428,10 +485,8 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
       status: HttpStatus.BAD_GATEWAY,
       message: expect.stringContaining("401"),
     });
-    expect(seen.map((r) => r.url)).toEqual([
-      "/-/user/login",
-      "/-/verdaccio/packages",
-    ]);
+    // 2026-10-23：不再有 login 往返——错了就是 Basic 被 401 拒，直接 502。
+    expect(seen.map((r) => r.url)).toEqual(["/-/verdaccio/data/packages"]);
   });
 });
 
@@ -626,47 +681,38 @@ describe("RegistryController upload status mapping (B-10)", () => {
   });
 });
 
-describe("RegistryController npm login token cache (B-11)", () => {
+describe("RegistryController npm 认证形态 (2026-10-23)", () => {
   let server: http.Server;
   let destroyAll: () => void;
   let port: number;
-  const seen: Array<{ method?: string; url?: string }> = [];
+  const seen: Array<{ method?: string; url?: string; authorization?: string }> = [];
 
   beforeAll(async () => {
-    // 独立的 Verdaccio 替身（与 S5 describe 同构）：svc2/svc2-pass 换
-    // svc2-token，包列表要求 Bearer。
+    // Verdaccio 替身：`/-/verdaccio/data/packages` **只认真实形态的请求**——
+    // 与线上一致，它接受 `Authorization: Basic <base64(user:pass)>`。
+    // 旧的 `PUT /-/user/login` 换 token 流程已删除（Verdaccio 5 对已存在
+    // 用户回 409，会把列表永久打成 502），故替身不再提供该端点。
     server = http.createServer((req, res) => {
-      let body = "";
-      req.on("data", (c) => (body += c));
+      req.on("data", () => undefined);
       req.on("end", () => {
-        seen.push({ method: req.method, url: req.url });
+        seen.push({
+          method: req.method,
+          url: req.url,
+          authorization: (req.headers.authorization as string) ?? "",
+        });
         res.setHeader("Connection", "close");
-        if (req.url === "/-/user/login") {
-          const creds = JSON.parse(body) as {
-            username?: string;
-            name?: string;
-            password?: string;
-          };
-          const user = creds.username ?? creds.name;
-          if (user === "svc2" && creds.password === "svc2-pass") {
+        if (req.url === "/-/verdaccio/data/packages") {
+          const expected = `Basic ${Buffer.from("svc2:svc2-pass").toString("base64")}`;
+          if (req.headers.authorization === expected) {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ token: "svc2-token" }));
-          } else {
-            res.writeHead(401);
-            res.end(JSON.stringify({ error: "bad credentials" }));
-          }
-          return;
-        }
-        if (req.url === "/-/verdaccio/packages") {
-          if (req.headers.authorization === "Bearer svc2-token") {
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify([{ name: "@autoflow/cached" }]));
+            res.end(JSON.stringify([{ name: "@autoflow/cached", version: "0.0.1" }]));
           } else {
             res.writeHead(401);
             res.end("unauthorized");
           }
           return;
         }
+        // 旧流程的登录端点已不存在：任何请求到这里都记为 404（用例断言零调用）
         res.writeHead(404);
         res.end();
       });
@@ -692,38 +738,30 @@ describe("RegistryController npm login token cache (B-11)", () => {
       },
     });
 
-  const clearTokenCache = () => {
-    const statics = RegistryController as unknown as {
-      npmTokenCache: Map<string, unknown>;
-      npmLoginInflight: Map<string, unknown>;
-    };
-    statics.npmTokenCache.clear();
-    statics.npmLoginInflight.clear();
-  };
-
   beforeEach(() => {
     seen.length = 0;
-    // B-11：token 缓存是模块级静态态——用例间必须清空保证确定性。
-    clearTokenCache();
   });
 
-  it("B-11: the second listing within the TTL does not hit /-/user/login again", async () => {
+  it("直接用 Basic Auth 拉列表——不再有 /-/user/login 往返（少一个失败模式）", async () => {
     const controller = makeCachedController();
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/cached" }],
-    });
-    await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/cached" }],
+      packages: [{ name: "@autoflow/cached", latest: "0.0.1" }],
     });
 
-    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(1);
-    expect(seen.filter((r) => r.url === "/-/verdaccio/packages")).toHaveLength(
-      2,
-    );
+    expect(seen).toEqual([
+      {
+        method: "GET",
+        url: "/-/verdaccio/data/packages",
+        authorization: `Basic ${Buffer.from("svc2:svc2-pass").toString("base64")}`,
+      },
+    ]);
+    // 回归锁：旧流程的登录端点一次都不该被调用（Verdaccio 5 对已存在用户
+    // 回 409，一旦调用就会把列表打成 502——2026-10-23 真机缺陷）。
+    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(0);
   });
 
-  it("B-11: concurrent listings share one in-flight login（单飞，不放大登录次数）", async () => {
+  it("并发列表：每次都带 Basic 头，互不干扰（无共享缓存态）", async () => {
     const controller = makeCachedController();
 
     await Promise.all([
@@ -731,19 +769,18 @@ describe("RegistryController npm login token cache (B-11)", () => {
       controller.listNpmPackages(),
     ]);
 
-    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(1);
-    expect(seen.filter((r) => r.url === "/-/verdaccio/packages")).toHaveLength(
-      2,
-    );
+    const packageCalls = seen.filter((r) => r.url === "/-/verdaccio/data/packages");
+    expect(packageCalls).toHaveLength(2);
+    for (const c of packageCalls) {
+      expect(c.authorization).toBe(
+        `Basic ${Buffer.from("svc2:svc2-pass").toString("base64")}`,
+      );
+    }
   });
 
-  it("B-11: a different pass gets its own cache key（凭据轮换立即生效）", async () => {
+  it("凭据轮换立即生效：换 pass 后同一请求即被 401 拒（无旧 token 残留）", async () => {
     const controller = makeCachedController();
     await controller.listNpmPackages();
-    const loginsAfterFirst = seen.filter(
-      (r) => r.url === "/-/user/login",
-    ).length;
-    expect(loginsAfterFirst).toBe(1);
 
     const rotated = makeController({
       registry: {
@@ -755,12 +792,13 @@ describe("RegistryController npm login token cache (B-11)", () => {
         },
       },
     });
-    // 轮换后的凭据登录会被 401 拒（替身只认 svc2-pass）→ B-3 语义 502。
-    // 关键断言：这次**必须**重新打 login（不读旧凭据的缓存项）——登录
-    // 计数从 1 涨到 2，而非复用旧 token 直接打包列表。
     await expect(rotated.listNpmPackages()).rejects.toMatchObject({
       status: HttpStatus.BAD_GATEWAY,
     });
-    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(2);
+    // 轮换后的请求确实带的是新凭据（不是复用上一轮的）
+    const last = seen[seen.length - 1];
+    expect(last.authorization).toBe(
+      `Basic ${Buffer.from("svc2:rotated-pass").toString("base64")}`,
+    );
   });
 });
