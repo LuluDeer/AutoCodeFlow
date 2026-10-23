@@ -236,6 +236,46 @@ def test_sandbox_failure_is_classified_as_sandbox_unavailable():
     )
 
 
+def test_runtime_bwrap_startup_failure_is_diagnosable(monkeypatch):
+    """SEC-NEW (F-1) 运行期补口：bwrap 在、但启动即失败时，不能只报「退出码 1」。
+
+    真机复现（Docker 默认 seccomp + 宿主 userns 受限）：任务输出里是
+    ``bwrap: setting up uid map: Permission denied``，而原来的 errorMessage 只有
+    「进程以退出码 1 结束」→ `_refine_failure_reason` 落 script_error，用户会去查
+    自己的脚本而不是宿主前置条件。本用例钉住「证据 → 可诊断文案 → 分类」这条链。
+    """
+    monkeypatch.setattr(execute_module.settings, 'task_sandbox', 'bwrap', raising=False)
+    hint = execute_module._sandbox_startup_failure_reason(
+        'bwrap: setting up uid map: Permission denied'
+    )
+    assert hint, '启动期 bwrap 失败必须给出可诊断文案'
+    assert 'bwrap' in hint, '文案要保留 bwrap 字样，供 _refine_failure_reason 归类'
+    assert 'fail-closed' in hint, '文案要说明没有降级为无沙箱运行'
+    assert execute_module._refine_failure_reason(hint) == 'sandbox_unavailable'
+
+
+def test_runtime_bwrap_hint_is_off_when_sandbox_disabled(monkeypatch):
+    """沙箱关闭时，任务自己打印 "bwrap" 不能被改判为沙箱故障。"""
+    monkeypatch.setattr(execute_module.settings, 'task_sandbox', '', raising=False)
+    assert (
+        execute_module._sandbox_startup_failure_reason(
+            'bwrap: setting up uid map: Permission denied'
+        )
+        is None
+    )
+
+
+def test_runtime_bwrap_hint_ignores_benign_logs(monkeypatch):
+    """沙箱开启，但输出与 bwrap 启动失败无关 → 不改判（避免误吞真实脚本错误）。"""
+    monkeypatch.setattr(execute_module.settings, 'task_sandbox', 'bwrap', raising=False)
+    assert (
+        execute_module._sandbox_startup_failure_reason(
+            'hello from my task; it mentions bwrap usage in passing'
+        )
+        is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # CallbackPayload（本轮协议 SSOT 补全）：执行器→admin 回调载荷的 schema 对账
 # ---------------------------------------------------------------------------

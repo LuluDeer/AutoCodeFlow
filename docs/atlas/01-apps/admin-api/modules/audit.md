@@ -67,11 +67,11 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽 `action: "<域>.<动作>"`
 字面量生成并校验：**代码里新增一个 action 而文档没同步，守卫会红**（反向不校验——文档可以记录历史动作）。
 
-共 **64** 个 action / **16** 个域。
+共 **68** 个 action / **16** 个域。
 
 | 域 | action |
 |---|---|
-| `apikey` | `apikey.auth_failure` · `apikey.create` · `apikey.revoke` · `apikey.used` |
+| `apikey` | `apikey.auth_failure` · `apikey.create` · `apikey.delete` · `apikey.revoke` · `apikey.used` |
 | `application` | `application.create` · `application.delete` · `application.deploy` · `application.remove.fanout` · `application.update` |
 | `artifact` | `artifact.download` |
 | `auth` | `auth.login` · `auth.logout` · `auth.session.revoke` · `auth.session.revoke_others` |
@@ -82,7 +82,7 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 | `notification` | `notification.channel.update` · `notification.silence.create` · `notification.silence.delete` |
 | `project` | `project.create` · `project.delete` · `project.update` |
 | `registry` | `registry.pypi.upload` |
-| `sop` | `sop.assign` · `sop.clarification.escalated` · `sop.clarify` · `sop.complete` · `sop.draft` · `sop.publish` · `sop.reply` · `sop.timeout.stalled` · `sop.timeout.unclaimed` · `sop.update` |
+| `sop` | `sop.assign` · `sop.assignment.cancel` · `sop.clarification.escalated` · `sop.clarify` · `sop.complete` · `sop.deprecate` · `sop.draft` · `sop.publish` · `sop.reply` · `sop.restore` · `sop.timeout.stalled` · `sop.timeout.unclaimed` · `sop.update` |
 | `subscription` | `subscription.create` · `subscription.delete` · `subscription.update` |
 | `task` | `task.batch_delete` · `task.batch_pause` · `task.batch_resume` · `task.batch_trigger` · `task.create` · `task.delete` · `task.import` · `task.pause` · `task.resume` · `task.rollback` · `task.trigger` · `task.trigger_api` · `task.trigger_dependency` · `task.trigger_webhook` · `task.update` · `task.webhook_disable` |
 | `task_template` | `task_template.delete` |

@@ -25,6 +25,9 @@ const svcMock = () => ({
   revoke: jest.fn(async (id, _userId) =>
     id === 404 ? null : { id, revokedAt: new Date() },
   ),
+  remove: jest.fn(async (id, _userId) =>
+    id === 404 ? null : { id, revokedAt: new Date() },
+  ),
 });
 
 const USER = { id: 42, username: "alice", role: "user" } as any;
@@ -83,5 +86,14 @@ describe("AUTH-03 ApiKeysController", () => {
   it("POST :id/revoke 别名等价且只操作本人 key", async () => {
     await controller.revokeAlias(9, USER, {} as any);
     expect(svc.revoke).toHaveBeenCalledWith(9, 42, "alice", undefined);
+  });
+
+  it("DELETE :id/permanent 硬删（仅已失效行由 service 判定）；不存在 → 404", async () => {
+    const ok = await controller.remove(9, USER, { ip: "1.1.1.1" } as any);
+    expect(ok.success).toBe(true);
+    expect(svc.remove).toHaveBeenCalledWith(9, 42, "alice", "1.1.1.1");
+    await expect(
+      controller.remove(404, USER, {} as any),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });

@@ -273,8 +273,9 @@ describe('UI-09 三页表格移动端产物', () => {
     await screen.findAllByText(/备份\s*任务/);
     const style = tableScrollStyle();
     expect(style).toBeTruthy();
-    // UI 打磨：scroll.x 与列宽合计校准（固定列 + 两个弹性列最小宽）
-    expect(Number.parseFloat(style!.width)).toBe(1040);
+    // UI 打磨：scroll.x 与列宽合计校准（固定列 + 两个弹性列最小宽）。
+    // 2026-10-23：操作列 135→210（「终止」曾被裁掉一半）后，合计从 1040 上调到 1080。
+    expect(Number.parseFloat(style!.width)).toBe(1080);
     const classes = cellClassSet();
     expect(classes.has('ui09-hide-mobile')).toBe(true);
   });

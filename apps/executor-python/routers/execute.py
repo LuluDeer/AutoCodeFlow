@@ -42,6 +42,7 @@ from js_json import js_json_dumps
 # SEC-02 续：secrets 按原名注入（含保留名闸门），与 node secret-env.ts 对等。
 from secret_env import inject_secret_env
 from sandbox import (
+    SANDBOX_BWRAP,
     SandboxUnavailable,
     build_rlimit_pre_exec,
     build_sandbox_cmd,
@@ -520,6 +521,43 @@ def _refine_failure_reason(message: str) -> Optional[str]:
     if re.search(r"task_sandbox|sandbox|bwrap", lowered):
         return "sandbox_unavailable"
     return None
+
+
+# SEC-NEW (F-1) 运行期补口：bwrap 二进制在、但**启动即失败**（宿主禁非特权
+# userns / Docker 默认 seccomp+apparmor 拦 mount）时，子进程 stderr 是唯一证据，
+# 而通用文案「进程以退出码 1 结束」让 `_refine_failure_reason` 无从分类，最终
+# 以 script_error 上报——用户会去查自己的脚本，而不是查宿主前置条件（真机实测：
+# `bwrap: setting up uid map: Permission denied`，证据见
+# docs/archive/verifies/verify-2026-10-23-sec07-sandbox-failclosed.md）。
+#
+# 只在 `TASK_SANDBOX=bwrap` 显式启用时兜底：logs 是**任务输出**，正常任务也可能
+# 打印 "bwrap"，沙箱关闭时不得据此改判。
+_SANDBOX_STARTUP_FAILURE_RE = re.compile(
+    r"bwrap:\s"
+    r"|failed to make / slave"
+    r"|setting up uid map"
+    r"|no permissions to create a new namespace"
+    r"|creating new namespace failed"
+    r"|bwrap: execvp",
+    re.IGNORECASE,
+)
+
+
+def _sandbox_startup_failure_reason(logs: str) -> Optional[str]:
+    """沙箱启用 + bwrap 启动失败 → 可诊断的用户文案；否则 None（不改判）。
+
+    文案保留 ``bwrap`` 字样，`_refine_failure_reason` 据此归 ``sandbox_unavailable``；
+    同时明确「已 fail-closed，未降级为无沙箱运行」，避免读者以为任务被静默放行。
+    """
+    if settings.task_sandbox != SANDBOX_BWRAP:
+        return None
+    if not _SANDBOX_STARTUP_FAILURE_RE.search(logs or ""):
+        return None
+    return (
+        "沙箱不可用：bwrap 无法创建命名空间（宿主需允许非特权用户命名空间，"
+        "Docker 默认 seccomp / apparmor 也会拦 mount；见 docs/deployment.md SEC-07）。"
+        "已 fail-closed，未降级为无沙箱运行。"
+    )
 
 
 def _executor_callback_address() -> str:
@@ -4204,11 +4242,16 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         logs = _build_callback_logs(log_chunks, captured_truncated, log_file)
         duration_ms = int((time.monotonic() - started_at) * 1000)
         if proc.returncode != 0:
+            # SEC-NEW (F-1) 运行期补口：沙箱启用且 bwrap 启动失败时，把
+            # stderr 证据翻成可诊断文案（否则用户只看到「退出码 1」→ 查错方向）。
+            error_message = _sandbox_startup_failure_reason(logs) or (
+                f'进程以退出码 {proc.returncode} 结束'
+            )
             return {
                 'success': False,
                 'logs': logs,
                 'exitCode': proc.returncode,
-                'errorMessage': f'进程以退出码 {proc.returncode} 结束',
+                'errorMessage': error_message,
                 'durationMs': duration_ms,
             }
 

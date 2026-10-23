@@ -69,6 +69,14 @@ export interface ProjectMemberRow {
   userId: number;
   role: ProjectRole;
   createdAt: string;
+  /**
+   * 身份补全三态（2026-10-23）：有值 = 该用户；`null` = 用户已被删除
+   * （`project_members.userId` 无 FK，成员行残留）；**键缺席** = 补全不可用
+   * （后端用户服务未接线或查询失败）。UI 必须分清这三态，绝不编造用户名。
+   */
+  username?: string | null;
+  email?: string | null;
+  userActive?: boolean | null;
 }
 
 export interface MyProjectRoles {

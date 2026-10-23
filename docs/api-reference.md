@@ -162,7 +162,7 @@ POST /api/auth/login
 
 **NF-01 任务级触发 token（`scopes` 词表，迁移 1790000000005）**：`api_keys` 表可空列 `scopes`（varchar(128)，空格分隔词表，存量行 null 零影响）。当前唯一扩展词 = `task:trigger`——持有该词的 readonly Key 可调 `POST /tasks/:id/trigger`（**仅单任务触发**；batch/其他写面/管理面照旧拒绝），guard 分流在既有 ApiKeyAuth 链上叠加窄域豁免（仅 POST + 触发路径 + 词表命中），触发响应契约与 JWT 面完全一致，审计落 `task.trigger_api`（username=`api-key:<keyPrefix>`，detail 含 apiKeyId/taskId）。创建 Key 时 body 增可选 `scopes`（白名单校验，仅接受 `task:trigger`）；403=无词表（scope 提示）、401=无效 Key。适用场景：CI/脚本免登录触发任务，无需发放完整 JWT 或 trigger scope 全量 Key。
 
-**敏感面例外（任何 scope 均拒绝，401）**：`/api-keys`、`/auth/*`、`/users` 仅接受用户 JWT——API Key 不能管理 API Key（防自我复制/提权）。角色语义不适用：API Key principal 为 `{type:"apiKey", userId, scope}`，`@Roles(ADMIN)` 端点对 API Key 一律 403。
+**敏感面例外（任何 scope 均拒绝，401）**：`/api-keys`、`/auth/*`、`/users`、`/config` 仅接受用户 JWT——API Key 不能管理 API Key（防自我复制/提权），也不能改写系统配置。角色语义不适用：API Key principal 为 `{type:"apiKey", userId, scope}`，`@Roles(ADMIN)` 端点对 API Key 一律 403。
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
@@ -170,6 +170,7 @@ POST /api/auth/login
 | POST | `/api-keys` | JWT | 创建 `{name, scope, expiresInDays?}`（有效期 1~3650 天，缺省永不过期）；响应一次性回显 `plaintext`；审计 `apikey.create` |
 | DELETE | `/api-keys/:id` | JWT | 吊销（软删，`revokedAt` 置位，不可恢复）；仅本人 Key（否则 404）；审计 `apikey.revoke` |
 | POST | `/api-keys/:id/revoke` | JWT | 吊销别名端点（幂等） |
+| DELETE | `/api-keys/:id/permanent` | JWT | **永久删除**（硬删，列表里彻底消失）；只允许删**已失效**的行——已吊销或已过期，活跃 Key 返回 409 `API_KEY_DELETE_ACTIVE_FORBIDDEN`（先吊销再删，保住 `apikey.revoke` 审计链）；仅本人 Key（否则 404）；审计 `apikey.delete`（detail 保留 name/keyPrefix 与删除时的失效依据） |
 
 **吊销/过期即时性**：每次请求实时校验 `revokedAt`/`expiresAt`，吊销或过期后**同 Key 下一次请求立即 401**（统一文案 `Invalid or expired API key`，不区分未知/吊销/过期防枚举；精确原因写入审计 `apikey.auth_failure`）。`lastUsedAt` 节流更新（每 Key 每分钟至多一次，防写放大），首次使用写审计 `apikey.used`。
 
@@ -1064,7 +1065,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/projects/me/roles` | 是 | 当前用户在各项目中的角色（`{userId, isAdmin, memberships[]}`，admin-web 据此渲染可用项目） |
-| GET | `/projects/:id/members` | 是 | 成员列表；ADMIN 任意项目可读，普通用户限**自己所属项目**，默认项目恒可读 |
+| GET | `/projects/:id/members` | 是 | 成员列表；ADMIN 任意项目可读，普通用户限**自己所属项目**，默认项目恒可读。每行含身份补全三态：`username`/`email`/`userActive` 有值 = 该用户；`null` = 用户已被删除（成员行无 FK 残留）；**键缺席** = 补全不可用（用户服务未接线或查询失败）——客户端应分别显示用户名 / 「用户 #N（已删除）」/ `#N`，不得编造名字 |
 | POST | `/projects/:id/members` | 是（ADMIN） | 新增或改角色（`{userId, role}`，(projectId,userId) 唯一，重复即改角色） |
 | PATCH | `/projects/:id/members/:userId` | 是（ADMIN） | 改角色（成员不存在 → 404） |
 | DELETE | `/projects/:id/members/:userId` | 是（ADMIN） | 移除成员（返回 `{deleted}`） |
@@ -1201,7 +1202,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 229 个操作，覆盖 195 个路径。
+共 233 个操作，覆盖 199 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1226,6 +1227,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/api-keys` | 列出我的 API Key（脱敏） |
 | POST | `/api-keys` | 创建 API Key |
 | DELETE | `/api-keys/{id}` | 撤销（软删除）我的 API Key |
+| DELETE | `/api-keys/{id}/permanent` | 永久删除我的 API Key（仅限已吊销/已过期） |
 | POST | `/api-keys/{id}/revoke` | 撤销我的 API Key（显式别名，幂等） |
 | GET | `/app-deployments` | 列出部署 |
 | DELETE | `/app-deployments/{id}` | 删除已结束的部署记录（failed/stopped） |
@@ -1373,7 +1375,10 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | PATCH | `/sop/{id}` | 编辑工作副本（published 态也可编辑——真身在不可变版本快照） |
 | POST | `/sop/{id}/assign` | 指派给执行器（executorId 或 executorAddress 二选一） |
 | GET | `/sop/{id}/assignments` | 指派记录 |
+| POST | `/sop/{id}/assignments/cancel` | 取消该 SOP 下所有未结束的指派（归档前置动作） |
+| POST | `/sop/{id}/deprecate` | 归档 SOP（停止派新单，保留全部历史） |
 | POST | `/sop/{id}/publish` | 发布（严格校验 + 不可变版本快照 + contentHash） |
+| POST | `/sop/{id}/restore` | 恢复已归档的 SOP |
 | GET | `/sop/{id}/versions` | 版本历史（不可变快照列表） |
 | GET | `/sop/assignable-executors` | 当前租约内可接 SOP 指派的执行器（agent:sop） |
 | GET | `/sop/assignments/{assignmentId}` | 指派详情（含澄清对话全量） |

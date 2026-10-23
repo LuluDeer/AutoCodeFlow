@@ -11,6 +11,8 @@ function harness(opts?: {
   statsThrows?: boolean;
   createError?: Error;
   aggregatorConfig?: Record<string, unknown>;
+  /** 熔断用例：伪造「最近若干条 ops_watch 会话」（按 createdAt DESC 传入） */
+  recentWatchSessions?: Array<{ status: string; errorMessage?: string | null }>;
 }) {
   const bus = {
     on: jest.fn(),
@@ -22,6 +24,9 @@ function harness(opts?: {
       if (opts?.createError) throw opts.createError;
       return { id: "s-new", ...v };
     }),
+    // 2026-10-23 熔断：scheduledWatch 现在先读最近 ops_watch 会话判定连续失败。
+    // 默认给空列表（= 从未跑过，放行），个别用例覆写。
+    list: jest.fn(async () => ({ items: opts?.recentWatchSessions ?? [], total: 0 })),
   };
   const scheduler = {
     getStats: jest.fn(() => {
@@ -202,6 +207,70 @@ describe("AgentTriggerService · 定时巡检（leader 门禁）", () => {
   it("scheduledWatch fail-open：会话创建抛错不冒泡", async () => {
     const h = harness({ isLeader: true, createError: new Error("boom") });
     await expect(h.svc.scheduledWatch()).resolves.toBeUndefined();
+  });
+
+  // 2026-10-23 实测缺陷：巡检失败发生在 LLM 调用阶段（job 内部），
+  // createWatchSession 永远成功，于是失败会话每小时落一行、无人叫停。
+  // 实测 demo 库 22 条同样的 `LLM call failed: ... 403`。
+  describe("巡检熔断（连续失败即停）", () => {
+    it("连续 3 条 failed → 跳过本轮，不再创建会话", async () => {
+      const h = harness({
+        isLeader: true,
+        recentWatchSessions: [
+          { status: "failed", errorMessage: "LLM call failed: 403" },
+          { status: "failed", errorMessage: "LLM call failed: 403" },
+          { status: "failed", errorMessage: "LLM call failed: 403" },
+        ],
+      });
+      await h.svc.scheduledWatch();
+      expect(h.sessions.create).not.toHaveBeenCalled();
+      expect(h.sessions.list).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "ops_watch" }),
+      );
+    });
+
+    it("连续 2 条 failed（未达阈值）→ 照常创建", async () => {
+      const h = harness({
+        isLeader: true,
+        recentWatchSessions: [
+          { status: "failed" },
+          { status: "failed" },
+          { status: "succeeded" },
+        ],
+      });
+      await h.svc.scheduledWatch();
+      expect(h.sessions.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("最新一条成功即解除熔断（看「连续」，不看历史计数）", async () => {
+      const h = harness({
+        isLeader: true,
+        recentWatchSessions: [
+          { status: "succeeded" },
+          { status: "failed" },
+          { status: "failed" },
+          { status: "failed" },
+        ],
+      });
+      await h.svc.scheduledWatch();
+      expect(h.sessions.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("运行中/等待输入不算失败（不误熔断）", async () => {
+      const h = harness({
+        isLeader: true,
+        recentWatchSessions: [{ status: "running" }, { status: "failed" }],
+      });
+      await h.svc.scheduledWatch();
+      expect(h.sessions.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("熔断判定查询失败 → fail-open 照常创建（熔断器坏了不该让巡检停摆）", async () => {
+      const h = harness({ isLeader: true });
+      h.sessions.list.mockRejectedValueOnce(new Error("db down"));
+      await h.svc.scheduledWatch();
+      expect(h.sessions.create).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("leader 状态读不到时保守跳过（不冒险多副本重复触发）", async () => {

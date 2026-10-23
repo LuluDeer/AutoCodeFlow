@@ -277,6 +277,15 @@ acf app deploy <appId> --executor <id>                    # deploy an app to an 
 ```
 
 For CI, inject credentials through `ACF_API_URL` / `ACF_TOKEN` (nothing is persisted).
+
+**API keys work with `acf` directly** — same `Bearer` channel, no login step:
+
+```bash
+ACF_API_URL=http://localhost:3105 ACF_TOKEN=acf_... acf task list
+```
+
+The key's scope decides which subcommands work (`readonly` reads / `trigger` adds single-task triggers / `manage` adds the remaining writes). Two limits: `/api-keys`, `auth`, `users` and `config` are **JWT-only**, so `acf login` and `acf apikey …` return 401 with an API key; and an API key has no refresh token, so a 401 makes the CLI clear its **locally saved** session (a `ACF_TOKEN` injected through the environment is unaffected).
+
 Full command map: [CLI reference](docs/atlas/05-interfaces/cli.md).
 
 ### SDKs
@@ -321,14 +330,19 @@ Capability matrix and known divergences: [SDK guide](docs/sdk-guide.md). Runnabl
       "args": ["-y", "autocodeflow-mcp-server"],
       "env": {
         "AUTOCODEFLOW_API_URL": "http://localhost:3105",
-        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>"
+        "AUTOCODEFLOW_API_TOKEN": "acf_<your-api-key>"
       }
     }
   }
 }
 ```
 
-56 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the JWT role.
+`AUTOCODEFLOW_API_TOKEN` accepts **either an API key or a user JWT**:
+
+- **API key (recommended for a long-lived server)** — admin web → **System → Settings → API Keys → New API Key**, pick `readonly` / `trigger` / `manage`, and copy the `acf_…` plaintext **once** (only its hash is stored). Keys never expire unless you set a validity; revocation applies on the next call. An API key is a strict subset of a JWT, but no MCP tool touches the credential/user/config endpoints, so it is enough here.
+- **User JWT (needed for ADMIN-only tools)** — there is no "copy my token" button in the web UI; run `acf login` and read `token` (15 min) from `~/.config/acf-cli/config.json`. Add `AUTOCODEFLOW_API_REFRESH_TOKEN` (the `refreshToken` field, 30 days) so the server refreshes on 401 instead of needing a restart.
+
+56 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the API-key scope or the JWT role.
 See [packages/mcp-server/README.md](packages/mcp-server/README.md).
 
 ## 📦 Tech stack

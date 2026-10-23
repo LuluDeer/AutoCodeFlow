@@ -31,6 +31,28 @@ grep -q 'env_file: !override' docker-compose.demo.yml || fail "demo compose does
 grep -q '.env.demo' .gitignore || fail ".env.demo is not gitignored"
 pass "demo compose isolates ports/env and .env.demo is ignored"
 
+# P1-1（生产报告 2026-10-22）：compose 把每个执行器的对外地址改成 ${VAR:?} 必填。
+# demo 生成的 .env.demo 必须带这两键，并且复用旧文件时要能就地补齐 —— 否则
+# 「10 分钟首个成功」的第一步就死在插值错误上（本守卫是那次回归的钉子）。
+grep -q 'EXECUTOR_NODE_PUBLIC_ADDRESS=executor-node:8002' scripts/demo.sh \
+  || fail "demo.sh does not emit EXECUTOR_NODE_PUBLIC_ADDRESS"
+grep -q 'EXECUTOR_PYTHON_PUBLIC_ADDRESS=executor-python:8001' scripts/demo.sh \
+  || fail "demo.sh does not emit EXECUTOR_PYTHON_PUBLIC_ADDRESS"
+grep -q 'ensure_env_key EXECUTOR_NODE_PUBLIC_ADDRESS' scripts/demo.sh \
+  || fail "demo.sh does not backfill EXECUTOR_NODE_PUBLIC_ADDRESS for old .env.demo"
+grep -q 'ensure_env_key EXECUTOR_PYTHON_PUBLIC_ADDRESS' scripts/demo.sh \
+  || fail "demo.sh does not backfill EXECUTOR_PYTHON_PUBLIC_ADDRESS for old .env.demo"
+pass "demo .env.demo covers the required per-executor public addresses"
+
+# 通用回归：compose 里每个 ${VAR:?} 必填项，demo 生成的 .env.demo 都必须给值。
+# 只钉两个变量名不如钉住这条规则——P1-1 就是这么把 demo 第一步弄挂的。
+REQUIRED_VARS="$(sed 's/#.*//' docker-compose.yml | grep -oE '\$\{[A-Z_]+:\?' | sed 's/\${//;s/:?//' | sort -u)"
+while read -r v; do
+  [[ -z "$v" ]] && continue
+  grep -qE "^$v=" scripts/demo.sh || fail "demo.sh does not provide required compose variable $v"
+done <<<"$REQUIRED_VARS"
+pass "demo .env.demo covers every required compose variable"
+
 bash scripts/reset-admin-password.selftest.sh
 
 echo "demo selftest: all checks passed"

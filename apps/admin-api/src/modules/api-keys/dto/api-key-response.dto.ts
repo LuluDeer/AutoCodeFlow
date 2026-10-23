@@ -54,7 +54,11 @@ export class ApiKeyCreateResponseDto extends ApiKeyViewDto {
   plaintext: string;
 }
 
-/** POST /api-keys/:id/revoke 与 DELETE /api-keys/:id 的回执。 */
+/**
+ * 撤销回执：`POST /api-keys/:id/revoke`、`DELETE /api-keys/:id`（软删）。
+ * `DELETE /api-keys/:id/permanent`（硬删）复用同一形状——success + 行快照
+ * （删除前），不为同一形状再造一个 schema。
+ */
 export class ApiKeyRevokeResponseDto {
   @ApiProperty({ enum: [true] })
   success: true;

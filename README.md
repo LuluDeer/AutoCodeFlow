@@ -305,6 +305,15 @@ acf app deploy <appId> --executor <id>                    # deploy an app to an 
 ```
 
 For CI, inject credentials through `ACF_API_URL` / `ACF_TOKEN` (nothing is persisted).
+
+**API keys work with `acf` directly** — same `Bearer` channel, no login step:
+
+```bash
+ACF_API_URL=http://localhost:3105 ACF_TOKEN=acf_... acf task list
+```
+
+The key's scope decides which subcommands work (`readonly` reads / `trigger` adds single-task triggers / `manage` adds the remaining writes). Two limits: `/api-keys`, `auth`, `users` and `config` are **JWT-only**, so `acf login` and `acf apikey …` return 401 with an API key; and an API key has no refresh token, so a 401 makes the CLI clear its **locally saved** session (a `ACF_TOKEN` injected through the environment is unaffected).
+
 Full command map: [CLI reference](docs/atlas/05-interfaces/cli.md).
 
 ### SDKs
@@ -349,14 +358,19 @@ Capability matrix and known divergences: [SDK guide](docs/sdk-guide.md). Runnabl
       "args": ["-y", "autocodeflow-mcp-server"],
       "env": {
         "AUTOCODEFLOW_API_URL": "http://localhost:3105",
-        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>"
+        "AUTOCODEFLOW_API_TOKEN": "acf_<your-api-key>"
       }
     }
   }
 }
 ```
 
-56 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the JWT role.
+`AUTOCODEFLOW_API_TOKEN` accepts **either an API key or a user JWT**:
+
+- **API key (recommended for a long-lived server)** — admin web → **System → Settings → API Keys → New API Key**, pick `readonly` / `trigger` / `manage`, and copy the `acf_…` plaintext **once** (only its hash is stored). Keys never expire unless you set a validity; revocation applies on the next call. An API key is a strict subset of a JWT, but no MCP tool touches the credential/user/config endpoints, so it is enough here.
+- **User JWT (needed for ADMIN-only tools)** — there is no "copy my token" button in the web UI; run `acf login` and read `token` (15 min) from `~/.config/acf-cli/config.json`. Add `AUTOCODEFLOW_API_REFRESH_TOKEN` (the `refreshToken` field, 30 days) so the server refreshes on 401 instead of needing a restart.
+
+56 tools cover tasks, executions, executors, app deployments, SOPs, audit and approvals; permissions are enforced server-side from the API-key scope or the JWT role.
 See [packages/mcp-server/README.md](packages/mcp-server/README.md).
 
 ## 📦 Tech stack
@@ -745,6 +759,15 @@ acf app deploy <appId> --executor <id>                    # 部署应用到执�
 ```
 
 CI 场景推荐用环境变量注入凭证（不落盘）：`ACF_API_URL` / `ACF_TOKEN`。
+
+**API Key 也能直接给 `acf` 用**——同一套 `Bearer` 通道，无需先登录：
+
+```bash
+ACF_API_URL=http://localhost:3105 ACF_TOKEN=acf_... acf task list
+```
+
+scope 决定能跑哪些子命令（`readonly` 只读 / `trigger` +单任务触发 / `manage` +其余写面）。两条边界：`/api-keys`、`auth`、`users`、`config` 是 **JWT-only 面**，所以 `acf login` / `acf apikey …` 用 API Key 会 401；且纯 API Key 没有 refresh token，401 时 CLI 会清掉**本地已保存**的登录态（env 注入的 `ACF_TOKEN` 不受影响）。
+
 完整命令地图见 [CLI 命令地图](docs/atlas/05-interfaces/cli.md)。
 
 ### SDK
@@ -789,15 +812,20 @@ ctx.report_success(summary="etl done", duration_ms=412)
       "args": ["-y", "autocodeflow-mcp-server"],
       "env": {
         "AUTOCODEFLOW_API_URL": "http://localhost:3105",
-        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>"
+        "AUTOCODEFLOW_API_TOKEN": "acf_<你的 API Key>"
       }
     }
   }
 }
 ```
 
-56 个工具覆盖任务、执行、执行器、应用部署、SOP、审计与审批；权限由 JWT 角色在服务端强制。
-详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)。
+`AUTOCODEFLOW_API_TOKEN` **既接受 API Key，也接受用户 JWT**：
+
+- **API Key（常驻 MCP 推荐）**——中台「系统 → 系统设置 → API Keys → 新建」，选 `readonly` / `trigger` / `manage`，弹窗里的 `acf_…` 明文**只显示一次**（服务端只存哈希）。可设有效期或永不过期，吊销下一次调用即生效。它是 JWT 的真子集，但 MCP 的 56 个工具都不碰凭证/用户/系统配置端点，所以够用。
+- **用户 JWT（只有它能用 ADMIN-only 工具）**——中台前端没有「复制我的 token」入口，用 `acf login` 后从 `~/.config/acf-cli/config.json` 取 `token`（15 分钟）；再配 `AUTOCODEFLOW_API_REFRESH_TOKEN`（同文件的 `refreshToken`，30 天）才能在 401 时自动续期，否则每 15 分钟要重启进程换新 token。
+
+56 个工具覆盖任务、执行、执行器、应用部署、SOP、审计与审批；权限由 **API Key scope 或 JWT 角色**在服务端强制。
+详见 [packages/mcp-server/README.md](packages/mcp-server/README.md) 与 [MCP 工具地图](docs/atlas/05-interfaces/mcp-tools.md)。
 
 ## 📦 技术栈
 

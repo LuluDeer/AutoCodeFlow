@@ -465,7 +465,7 @@ describe('UI-09 R3 ProjectsPage 375px 产物', () => {
   it('移动端：成员抽屉满宽（原 size=large 的 736px 在 375px 溢出）', async () => {
     renderPage(<ProjectsPage />, '/projects');
     fireEvent.click((await screen.findAllByRole('button', { name: /成员/ }))[0]);
-    await screen.findByText('7');
+    await screen.findByText('#7');
     const wrapper = document.querySelector('.ant-drawer-content-wrapper') as HTMLElement | null;
     expect(wrapper).not.toBeNull();
     expect(wrapper!.style.width).toBe('100%');
@@ -475,7 +475,7 @@ describe('UI-09 R3 ProjectsPage 375px 产物', () => {
     authState.user = { id: 1, role: 'admin' };
     renderPage(<ProjectsPage />, '/projects');
     fireEvent.click((await screen.findAllByRole('button', { name: /成员/ }))[0]);
-    await screen.findByText('7');
+    await screen.findByText('#7');
     const team = document.querySelector('.anticon-team') as HTMLElement | null;
     expect(team).not.toBeNull();
     expect(team!.getAttribute('aria-hidden')).toBe('true');
@@ -516,7 +516,7 @@ describe('UI-09 R3 ProjectsPage 375px 产物', () => {
     const flexibleShare = scrollX - declaredSum;
     expect(flexibleShare).toBeGreaterThanOrEqual(150);
     fireEvent.click((await screen.findAllByRole('button', { name: /成员/ }))[0]);
-    await screen.findByText('7');
+    await screen.findByText('#7');
     const wrapper = document.querySelector('.ant-drawer-content-wrapper') as HTMLElement | null;
     expect(wrapper).not.toBeNull();
     expect(Number.parseFloat(wrapper!.style.width)).toBe(736);

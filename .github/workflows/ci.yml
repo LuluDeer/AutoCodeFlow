@@ -817,6 +817,12 @@ jobs:
         run: |
           node scripts/docs/check-docs.selftest.mjs
           node scripts/docs/check-docs.mjs
+      # SDK 文档真实性（ROADMAP P0-2）：README 的 SDK 示例曾写成「任务里直接就有 ctx」，
+      # 而真实语义是**必须显式引入 SDK**、且 **Glue 脚本不安装 requirements**。
+      # 「照抄官方示例跑不通」是最伤首次成功的一类文档漂移，而且没有任何东西会读它。
+      # 判据 A/B/C + 负向夹具见 scripts/check-sdk-docs-truthfulness.mjs --selftest。
+      - name: SDK docs truthfulness guard (P0-2)
+        run: npm run check:sdk-docs-truthfulness
       # 审计动作清单漂移：audit.md 的「谁在写审计」曾是手写清单，于是自然落后于代码
       # （SOP 加了 10 个动作、文档里一个字都没有，头部还写着「task 模块（下一批次）」）。
       # 这类文档的危害是**看起来像权威清单**，读的人会以为「审计只覆盖这几个域」。

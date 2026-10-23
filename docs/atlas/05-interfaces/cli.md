@@ -146,7 +146,7 @@
 3. `executor rotate` 结果只显示一次，丢失只能再 rotate。
 4. `app deploy` 缺省 `scheduled`（仅部署、中台触发）；显式 `once`/`daemon` 会**立刻启动入口脚本**（CLI 发请求前打预警）——批处理脚本请用 scheduled，避免部署即跑与后续 trigger 双跑。
 5. `task create` 的 `body.params` 注入为 `AUTOFLOW_<KEY>` 环境变量：**字符串是裸值**（`"nightly"` → `AUTOFLOW_TARGET=nightly`，不加引号），数字/布尔/容器为 JSON 字面量（`3`/`true`/`["a",1]`）。需要精确类型时读 `AUTOFLOW_PARAMS_JSON`（协议 v5 起注入）。⚠️ 2026-10-02~10-14 的 A-11 执行器会给字符串加首尾引号，该行为已在 v5 修复。
-6. CI 中用 `ACF_TOKEN` 短期 access token 注入而非 `set-token` 落盘；机器账号建议改用 API Key 直调 REST（`acf_…`）。
+6. CI 中用 `ACF_TOKEN` 注入凭据而非 `set-token` 落盘。API Key（`acf_…`）**可以直接给 `acf` 用**：`ACF_API_URL=… ACF_TOKEN=acf_… acf task list`（scope 决定能跑哪些子命令：readonly=只读、trigger=+单任务触发、manage=+其余写面）。两条边界：① `/api-keys`、`auth`、`users`、`config` 是 **JWT-only 面**——`acf login`、`acf apikey …`、`acf config …` 用 API Key 会 401（`API_KEY_JWT_ONLY_SURFACE`）；② CLI 在 401 时会尝试用 refresh token 续期，纯 API Key 场景没有 refresh token，失败会清掉**本地已保存**的登录态（env 注入的 `ACF_TOKEN` 不受影响）。
 
 ## 相关文档
 

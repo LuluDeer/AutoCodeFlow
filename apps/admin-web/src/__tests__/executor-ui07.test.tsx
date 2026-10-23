@@ -330,6 +330,47 @@ describe('UI-07 ③ 批量操作条（页面内）', () => {
     expect(screen.queryByTestId('executor-batch-bar')).toBeNull();
   });
 
+  // 2026-10-23：离线执行器台账清理。此前 DELETE /executors/:id 只有详情页入口
+  // （一次一台），实测 demo 库积了 21 台历史残留，清理只能点 21 次。
+  it('批量删除：只作用于离线台，确认框逐台列出并明示在线台被跳过', async () => {
+    mockedExecutors.list.mockResolvedValue([
+      makeExecutor({ id: 'ex-1', appName: 'alpha' }),
+      makeExecutor({ id: 'ex-2', appName: 'beta', status: 'offline' }),
+      makeExecutor({ id: 'ex-3', appName: 'gamma', status: 'offline' }),
+    ]);
+    mockedExecutors.getGroups.mockResolvedValue([]);
+    (mockedExecutors as unknown as { remove: ReturnType<typeof vi.fn> }).remove =
+      vi.fn().mockResolvedValue(undefined);
+    renderPage();
+    await screen.findByText('alpha');
+    [0, 1, 2].forEach((i) => fireEvent.click(rowCheckbox(i)));
+    // 按钮上的数字 = 将被删除的台数（3 选中里有 2 台离线）
+    const removeBtn = await screen.findByTestId('executor-batch-remove');
+    expect(removeBtn.textContent).toContain('2');
+    fireEvent.click(removeBtn);
+    expect(await screen.findByText(/删除后不可恢复/)).toBeTruthy();
+    expect(screen.getByText(/1 台在线执行器已自动跳过/)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(findBtn(document.body, '确认删除')!);
+    });
+    await waitFor(() => {
+      expect((mockedExecutors as unknown as { remove: ReturnType<typeof vi.fn> }).remove)
+        .toHaveBeenCalledTimes(2);
+    });
+    const removeMock = (mockedExecutors as unknown as { remove: ReturnType<typeof vi.fn> }).remove;
+    expect(removeMock.mock.calls.map((c) => c[0]).sort()).toEqual(['ex-2', 'ex-3']);
+  });
+
+  it('批量删除：全选中在线台 → 按钮禁用（不会发出删除请求）', async () => {
+    mockedExecutors.list.mockResolvedValue([makeExecutor({ id: 'ex-1', appName: 'alpha' })]);
+    mockedExecutors.getGroups.mockResolvedValue([]);
+    renderPage();
+    await screen.findByText('alpha');
+    fireEvent.click(rowCheckbox(0));
+    const removeBtn = await screen.findByTestId('executor-batch-remove');
+    expect((removeBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('批量轮换：二次确认 Modal 列出受影响执行器并明示「短暂重新注册」，确认后逐台调用 rotate-token', async () => {
     mockedExecutors.list.mockResolvedValue([
       makeExecutor({ id: 'ex-1', appName: 'alpha' }),

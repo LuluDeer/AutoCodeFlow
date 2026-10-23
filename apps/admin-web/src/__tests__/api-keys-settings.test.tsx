@@ -78,7 +78,9 @@ describe('AUTH-03 ApiKeysSettings', () => {
   it('渲染列表：名称/前缀/scope/状态（有效 vs 已吊销）', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('ci-deploy')).toBeTruthy());
-    expect(screen.getAllByText(/acf_dead…/).length).toBeGreaterThanOrEqual(1);
+    // keyPrefix 是生成时固定截断的展示前缀（8 字符），2026-10-23 观感修正
+    // 去掉了误导性的尾随省略号——按精确值断言，防它被改回 `acf_dead…`。
+    expect(screen.getAllByText('acf_dead').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('只读 + 任务触发')).toBeTruthy();
     const statuses = screen.getAllByText(/有效|已吊销/);
     expect(statuses.length).toBe(2);

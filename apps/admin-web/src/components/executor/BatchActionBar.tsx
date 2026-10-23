@@ -17,12 +17,13 @@
  * 保留 isAdmin 入参防御（测试断言门控用）。
  */
 import { useState } from 'react';
-import { Button, Space, Typography, theme } from 'antd';
-import { ControlOutlined, KeyOutlined } from '@ant-design/icons';
+import { Button, Space, Tooltip, Typography, theme } from 'antd';
+import { ControlOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
 import {
   confirmBatchReloadConfig,
+  confirmBatchRemoveExecutors,
   confirmBatchRotateToken,
   type BatchSummary,
 } from './batchActions';
@@ -51,6 +52,9 @@ export default function BatchActionBar({ selected, isAdmin, onDone, onTokenSumma
   if (!isAdmin || selected.length === 0) return null;
 
   const online = selected.filter((ex) => ex.status === 'online');
+  // 2026-10-23：批量删除只作用于离线台（在线台的记录删了它还在跑，只会把
+  // 「谁在跑」的历史抹掉）。按钮上的数字即「将被删除的台数」。
+  const offline = selected.filter((ex) => ex.status !== 'online');
 
   const shared = {
     t,
@@ -89,6 +93,23 @@ export default function BatchActionBar({ selected, isAdmin, onDone, onTokenSumma
       >
         {t('batchAction.batchRotate')}
       </Button>
+      {/* 2026-10-23：离线台清理。此前 `DELETE /executors/:id` 只有详情页入口
+          （一次一台），实测 demo 库积了 21 台历史残留，清理只能点 21 次。
+          该按钮**只在选中集合里有离线台时**可用；确认框里逐台列出，
+          并明示「在线台已跳过」（删除在线台会抹掉「谁在跑」的历史）。 */}
+      <Tooltip title={offline.length === 0 ? t('batchAction.removeNoneOffline') : undefined}>
+        <Button
+          size="small"
+          danger
+          icon={<DeleteOutlined />}
+          loading={batchLoading}
+          disabled={batchLoading || offline.length === 0}
+          data-testid="executor-batch-remove"
+          onClick={() => confirmBatchRemoveExecutors({ executors: selected, ...shared })}
+        >
+          {t('batchAction.batchRemove', { count: offline.length })}
+        </Button>
+      </Tooltip>
       {online.length < selected.length && (
         <Text type="warning" style={{ fontSize: 12 }}>
           {t('batchAction.onlineHint', { count: online.length })}

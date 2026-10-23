@@ -728,6 +728,20 @@ export default function NotificationSettingsPage() {
         <StateError error={channelsError} title={t('notif.channel.loadFail')} onRetry={refresh} />
       ) : (
         <Card loading={loading}>
+          {/* 2026-10-23：**全部渠道禁用 = 平台不会发出任何告警**，这是最该被看见
+              的状态，而此前页面上只有一排灰色「已禁用」标签——运维很容易以为
+              "通知配好了"，直到出事才发现一条都没发出去。此处升为顶部告警条。
+              只在渠道已加载且**确实一个都没启用**时出现（加载中不闪）。 */}
+          {!loading && channels && channels.length > 0 && channels.every((c) => !c.enabled) && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="notif-all-disabled"
+              style={{ marginBottom: 16 }}
+              title={t('notif.allDisabled.title')}
+              description={t('notif.allDisabled.desc')}
+            />
+          )}
           {/* W1：ChannelConfigForm 自带渠道私有 form 与测试状态，切 Tab 无需 resetFields */}
           <Tabs
             activeKey={activeTab}

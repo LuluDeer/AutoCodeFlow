@@ -22,6 +22,18 @@ import type { ExecutionTerminalEventPayload } from "../../../common/events/domai
 import type { AgentSessionKind } from "../entities/agent-session.entity";
 
 /**
+ * 巡检熔断参数（2026-10-23）。
+ *
+ * 为什么是「连续 3 条失败」：默认巡检每小时一次，3 条即约 3 小时——足够区分
+ * 「LLM provider 真的挂了」与「偶发 5xx」，又不会让人盯着 20 多条红行才反应。
+ * 窗口取 10 是为了在连续失败少于 3 条时尽早退出循环（不必扫全表）。
+ */
+const AGENT_WATCH_BREAKER_THRESHOLD = 3;
+const AGENT_WATCH_BREAKER_WINDOW = 10;
+/** 被熔断期间每 N 次跳过一次 warn——防止一小时一条日志刷满运维面板。 */
+const AGENT_WATCH_BREAKER_LOG_INTERVAL = 6;
+
+/**
  * P4（agent-and-deployment）：触发器（设计文档 02 §5.1）。
  *
  * ## 四种触发源
@@ -51,6 +63,9 @@ import type { AgentSessionKind } from "../entities/agent-session.entity";
 @Injectable()
 export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AgentTriggerService.name);
+
+  /** 熔断期间累计跳过的轮数（只用于日志节流，不参与判定）。 */
+  private skippedWatches = 0;
 
   /** 事件监听器引用（退订用——总线是全局单例，不退订会留悬挂监听）。 */
   private readonly onExecutionFailed = async (
@@ -238,12 +253,77 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // ★ 熔断（2026-10-23 实测缺陷）：巡检的**失败发生在 LLM 调用阶段**
+    // （job 内部），不在下面这个 try 里——于是 `createWatchSession` 每次都成功，
+    // 失败会话照样每小时落一行。实测 demo 库 22 条一模一样的
+    // `LLM call failed: Request failed with status code 403`，把 Agent 会话页
+    // 刷成一片红，而没有任何机制叫停。
+    //
+    // 判据：最近 AGENT_WATCH_BREAKER_WINDOW 条 ops_watch 会话里**连续**失败数
+    // 达到阈值即跳过本轮，并按 LOG_INTERVAL 节流告警（不刷日志）。
+    // 用「连续」而非「窗口内计数」：一次成功即说明通道恢复，不应被更早的历史
+    // 失败继续压制。
+    const verdict = await this.watchBreakerVerdict();
+    if (verdict.blocked) {
+      this.skippedWatches += 1;
+      if (this.skippedWatches % AGENT_WATCH_BREAKER_LOG_INTERVAL === 1) {
+        this.logger.warn(
+          `scheduledWatch skipped by breaker: ${verdict.consecutiveFailures} consecutive failed ops_watch sessions ` +
+            `(last error: ${verdict.lastError ?? "unknown"}). ` +
+            `Fix the LLM provider, or disable agent.trigger.cronEnabled. ` +
+            `(${this.skippedWatches} skipped so far)`,
+        );
+      }
+      return;
+    }
+
     try {
       await this.createWatchSession();
+      this.skippedWatches = 0;
     } catch (err: unknown) {
       this.logger.warn(
         `scheduledWatch failed (fail-open): ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  }
+
+  /**
+   * 巡检熔断判定：数最近若干条 ops_watch 会话里**连续** failed 的条数。
+   *
+   * 失败姿态：查询出错时**放行**（blocked=false）——熔断器自己坏了不该让巡检
+   * 彻底停摆，最多回到修复前的行为（继续刷失败会话）。
+   */
+  private async watchBreakerVerdict(): Promise<{
+    blocked: boolean;
+    consecutiveFailures: number;
+    lastError: string | null;
+  }> {
+    try {
+      const { items } = await this.sessions.list({
+        kind: "ops_watch",
+        page: 1,
+        pageSize: AGENT_WATCH_BREAKER_WINDOW,
+      });
+      let consecutive = 0;
+      let lastError: string | null = null;
+      for (const s of items) {
+        // 只统计终态失败；仍在跑/等输入的不参与判定（它们不是失败）。
+        if (s.status !== "failed") break;
+        consecutive += 1;
+        lastError ??= s.errorMessage ?? null;
+      }
+      return {
+        blocked: consecutive >= AGENT_WATCH_BREAKER_THRESHOLD,
+        consecutiveFailures: consecutive,
+        lastError,
+      };
+    } catch (err: unknown) {
+      this.logger.warn(
+        `watch breaker check failed (fail-open, will still schedule): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return { blocked: false, consecutiveFailures: 0, lastError: null };
     }
   }
 

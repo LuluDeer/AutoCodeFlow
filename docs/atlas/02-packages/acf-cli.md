@@ -47,6 +47,7 @@ packages/acf-cli/
 - `acf login` → `POST /auth/login`，保存 `accessToken` + `refreshToken`（BUG-13：refresh 一并入库，供 401 自愈）。
 - **401 自愈**：client.ts 收到 401 且本地有 refresh token 时做**单飞**（并发 401 共享一次）`POST /auth/refresh`，成功换发双 token（DR-07 原子轮换，新 refreshToken 必须跟进）并重放原请求一次；彻底失败则 `clearAuth()` 清凭据回未登录态。
 - **凭据解析优先级**：`ACF_API_URL` / `ACF_TOKEN` / `ACF_REFRESH_TOKEN` 环境变量 > conf 存储；全局选项 `--api-url` / `--token` 会在 preAction 里转写为环境变量。CI/cron 推荐纯 env 注入（不落盘）。
+- **`ACF_TOKEN` 可填 API Key（`acf_…`）**：与 JWT 同一条 `Bearer` 通道，无需先 `acf login`；scope 决定可用子命令（readonly / trigger / manage）。两条边界：① `/api-keys`、`auth`、`users`、`config` 是 JWT-only 面——`acf login`、`acf apikey …` 用 API Key 会 401（`API_KEY_JWT_ONLY_SURFACE`）；② API Key 没有 refresh token，401 时自愈失败会 `clearAuth()` 清掉**本地已保存**的登录态（env 注入的 `ACF_TOKEN` 本身不受影响）。
 - **落盘安全**（SEC-NEW-4）：conf 存储 projectName `acf-cli`，文件 0600；加载时 `hardenConfigPermissions()` 尽力修复旧文件权限；`ACF_CONFIG_DIR` 可重定向目录（测试/气隙 CI 用）。
 - `executor rotate` / `executor offline` 要求 ADMIN 角色（403 时 client 会透出后端 message）。
 

@@ -36,13 +36,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { tasksApi, TaskExecution } from '../api/tasks';
 import type {
+  Task,
   TaskVersion,
   VersionDiff,
   TaskWebhookSecretIssued,
   TaskWebhookStatus,
 } from '../api/tasks';
 import {
-  useSchedulerStats,
   useTaskDetail,
   useTaskExecutions,
   useTaskStats,
@@ -57,6 +57,9 @@ import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
 import { runtimeLabel } from '../utils/runtime-label';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+// 2026-10-23：任务详情状态行改为**任务级**调度信息（此前误用全平台计数，
+// 见下方渲染处的注释）。复用列表页同一套纯函数，保证两处口径一致。
+import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 // CRON-DESC-01：Cron 表达式的人类可读描述（utils/cron-desc.ts）
 import { describeCron } from '../utils/cron-desc';
 // P3 审计：执行状态 → Badge status 映射收敛到单一事实源（原本地 STATUS_COLOR 迁出）
@@ -155,6 +158,46 @@ const TASK_STATUS_LABEL = (t: (k: string) => string): Record<string, string> => 
   inactive: t('taskList.status.inactive'),
   failed: t('taskList.status.failed'),
 });
+
+/**
+ * 任务级调度标签（2026-10-23 口径修正）。
+ *
+ * 这里回答的是「**这个任务**下次什么时候跑、上次什么时候跑的」，与列表页
+ * 「下次执行 / 上次执行」两列同源（`utils/trigger-preview` 的纯函数）。
+ * 全平台调度器计数（活跃定时器/Cron/运行中）不属于任务详情——它此前被放在
+ * 这里，导致 manual 任务也显示「活跃定时器 1」，见渲染处注释。
+ */
+function TaskScheduleTags({ task, isActive }: { task: Task; isActive: boolean }) {
+  const { t } = useTranslation();
+  const next = isActive ? nextRunAt(task) : null;
+  const tzUnresolved = previewNeedsTimezoneWarning(task.timezone);
+  return (
+    <>
+      {next ? (
+        <Tooltip
+          title={
+            tzUnresolved
+              ? `${t('taskDetail.stat.nextRunTooltip')}\n${t('triggerPreview.tzUnresolved')}`
+              : t('taskDetail.stat.nextRunTooltip')
+          }
+        >
+          <Tag color="processing" style={{ fontSize: 11 }}>
+            {t('taskDetail.stat.nextRun', { time: formatFireTime(next, task.timezone) })}
+          </Tag>
+        </Tooltip>
+      ) : (
+        <Tag style={{ fontSize: 11 }}>{t('taskDetail.stat.nextRunNone')}</Tag>
+      )}
+      {task.lastTriggerTime && (
+        <Tooltip title={formatDateTime(task.lastTriggerTime)}>
+          <Tag style={{ fontSize: 11 }}>
+            {t('taskDetail.stat.lastRun', { time: formatRelativeTime(task.lastTriggerTime, t) })}
+          </Tag>
+        </Tooltip>
+      )}
+    </>
+  );
+}
 
 export default function TaskDetailPage() {
   const { t } = useTranslation();
@@ -381,7 +424,11 @@ export default function TaskDetailPage() {
     }
   };
 
-  const { data: schedulerStats } = useSchedulerStats();
+  // 2026-10-23：本页**不再**消费 useSchedulerStats——它是全平台计数，放在
+  // 任务详情里会被读成"这个任务的调度器"（manual 任务也显示「活跃定时器 1」）。
+  // 任务级调度信息由 TaskScheduleTags 用 nextRunAt/lastTriggerTime 计算；
+  // 平台健康度在 Dashboard 的调度延迟卡上。若将来需要，请在页头明确标注
+  // 「全平台」后再引回。
 
   const { data: task, isLoading: taskLoading, error: taskError } = useTaskDetail(id);
 
@@ -689,13 +736,14 @@ export default function TaskDetailPage() {
             status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
             text={isActive ? t('taskDetail.state.running') : isPaused ? t('taskDetail.state.paused') : (taskStatusLabels[task.status] ?? task.status)}
           />
-          {schedulerStats && (
-            <>
-              <Tag style={{ fontSize: 11 }}>{t('taskDetail.stat.activeTimers', { count: schedulerStats.activeTimers })}</Tag>
-              <Tag style={{ fontSize: 11 }}>{t('taskDetail.stat.activeCron', { count: schedulerStats.activeCronTasks })}</Tag>
-              <Tag color="processing" style={{ fontSize: 11 }}>{t('taskDetail.stat.running', { count: schedulerStats.runningTaskCount })}</Tag>
-            </>
-          )}
+          {/* 2026-10-23 口径修正：这里此前渲染 `schedulerStats` 的三个计数，
+              而那是**全平台调度器**的内存态（timers.size / cronTasks.size /
+              runningTasks.size，见 scheduler.service.getStats）。后果是
+              `demo-fragile`（manual 任务，根本没有定时器）也显示「活跃定时器 1
+              · Cron 1」——用户会以为这个任务挂了两个调度器。
+              现在只显示**本任务**的调度事实：下次执行时刻 + 上次触发时刻；
+              全平台健康度归 Dashboard（那边有独立的「调度延迟/健康」卡）。 */}
+          {task && <TaskScheduleTags task={task} isActive={isActive} />}
         </Space>
       </div>
 

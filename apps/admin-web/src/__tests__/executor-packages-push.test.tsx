@@ -14,6 +14,7 @@ import ExecutorPackagesPage from '../pages/ExecutorPackagesPage';
 import {
   listPackages,
   pushPackage,
+  deletePackage,
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import type { ExecutorPackage } from '../api/executor-packages';
@@ -233,5 +234,78 @@ describe('遗留 P1-10：push 响应 per-executor 明细（status/commandId/erro
     // error 行：失败原因与失败执行器地址可见
     await waitFor(() => expect(screen.getAllByText(/package checksum mismatch/).length).toBeGreaterThanOrEqual(1));
     expect(screen.getByText('10.0.0.3:3002')).toBeTruthy();
+  });
+});
+
+// 2026-10-23：批量删除。此前只有逐行删除，6 个 agent 产出的 sop-candidate
+// 包要清 6 次；批量卸载/清理历史包是常态操作。
+describe('执行器包批量删除（2026-10-23）', () => {
+  const three = {
+    ...packageRow,
+    id: 'pkg-a',
+    name: 'sop-candidate',
+    version: '1.0.0+agent.x',
+  };
+
+  it('勾选 → 批量条出现并显示数量；确认后逐条调用 deletePackage', async () => {
+    vi.mocked(listPackages).mockResolvedValue({
+      items: [
+        three,
+        { ...three, id: 'pkg-b', version: '1.0.1+agent.x' },
+        { ...three, id: 'pkg-c', version: '1.0.2+agent.x' },
+      ],
+      total: 3,
+    });
+    vi.mocked(deletePackage).mockResolvedValue(undefined as never);
+    render(<ExecutorPackagesPage />);
+    await screen.findAllByText('sop-candidate');
+
+    // 表头全选框（第一行 checkbox 在 thead）
+    const headerCheckbox = document.querySelector('.ant-table-thead input[type=checkbox]') as HTMLInputElement;
+    expect(headerCheckbox).toBeTruthy();
+    fireEvent.click(headerCheckbox);
+
+    const bar = await screen.findByTestId('execPkg-batch-bar');
+    expect(bar.textContent).toContain('3');
+    fireEvent.click(screen.getByTestId('execPkg-batch-delete'));
+
+    // confirm 弹层
+    await waitFor(() => expect(document.body.textContent).toContain('删除 3 个执行器包'));
+    const okBtns = Array.from(document.querySelectorAll('.ant-modal-confirm-btns button')) as HTMLButtonElement[];
+    fireEvent.click(okBtns[okBtns.length - 1]);
+
+    await waitFor(() => expect(deletePackage).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(deletePackage).mock.calls.map((c) => c[0]).sort()).toEqual(
+      ['pkg-a', 'pkg-b', 'pkg-c'],
+    );
+  });
+
+  it('部分失败：失败项保留在选中集合（可直接重试），成功项清掉', async () => {
+    vi.mocked(listPackages).mockResolvedValue({
+      items: [three, { ...three, id: 'pkg-b', version: '1.0.1+agent.x' }],
+      total: 2,
+    });
+    vi.mocked(deletePackage)
+      .mockResolvedValueOnce(undefined as never)
+      .mockRejectedValueOnce(
+        Object.assign(new Error('boom'), { response: { data: { message: '包正在被部署' } } }),
+      );
+    render(<ExecutorPackagesPage />);
+    await screen.findAllByText('sop-candidate');
+
+    const headerCheckbox = document.querySelector('.ant-table-thead input[type=checkbox]') as HTMLInputElement;
+    fireEvent.click(headerCheckbox);
+    await screen.findByTestId('execPkg-batch-bar');
+    fireEvent.click(screen.getByTestId('execPkg-batch-delete'));
+    await waitFor(() => expect(document.body.textContent).toContain('删除 2 个执行器包'));
+    const okBtns = Array.from(document.querySelectorAll('.ant-modal-confirm-btns button')) as HTMLButtonElement[];
+    fireEvent.click(okBtns[okBtns.length - 1]);
+
+    await waitFor(() => expect(deletePackage).toHaveBeenCalledTimes(2));
+    // 失败项 pkg-b 仍在选中集合：批量条仍显示 1
+    await waitFor(() => {
+      const bar = screen.queryByTestId('execPkg-batch-bar');
+      expect(bar?.textContent).toContain('1');
+    });
   });
 });

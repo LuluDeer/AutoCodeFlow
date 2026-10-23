@@ -193,7 +193,9 @@ describe('ProjectsPage（AUTH-02 后续）', () => {
     const memberButtons = await screen.findAllByRole('button', { name: /成员/ });
     fireEvent.click(memberButtons[0]);
 
-    expect(await screen.findByText('7')).toBeTruthy();
+    // 2026-10-23：成员列主显 username；夹具里没有 username 字段（= 后端身份
+    // 补全不可用），此时如实退回 `#7`，绝不编造名字。
+    expect(await screen.findByText('#7')).toBeTruthy();
     // 图标 aria 会并入可访问名，用正则匹配「添加成员」提交按钮
     expect(screen.queryByRole('button', { name: /添加成员/ })).toBeNull();
   });
@@ -205,6 +207,74 @@ describe('ProjectsPage（AUTH-02 后续）', () => {
     fireEvent.click(memberButtons[0]);
 
     expect(await screen.findByRole('button', { name: /添加成员/ })).toBeTruthy();
+  });
+
+  // 2026-10-23 真实缺陷回归：成员面板曾只显示「用户 7」——端点只回裸主键，
+  // 管理员认不出是谁。现在服务端补 username，UI 按三态渲染。
+  describe('成员身份显示（三态）', () => {
+    const openDrawer = async () => {
+      const memberButtons = await screen.findAllByRole('button', { name: /成员/ });
+      fireEvent.click(memberButtons[0]);
+    };
+
+    it('有 username → 显示用户名（不是 #ID）', async () => {
+      vi.mocked(projectsApi.getMembers).mockReset().mockResolvedValue([
+        {
+          id: 'm1',
+          projectId: 'aaaa0000-0000-4000-8000-000000000002',
+          userId: 7,
+          role: 'editor',
+          createdAt: '2026-09-02T00:00:00.000Z',
+          username: 'alice',
+          email: 'a@x',
+          userActive: true,
+        },
+      ]);
+      renderPage();
+      await openDrawer();
+
+      expect(await screen.findByText('alice')).toBeTruthy();
+      expect(screen.queryByText('#7')).toBeNull();
+    });
+
+    it('账号已禁用 → 用户名旁有「已禁用」标记', async () => {
+      vi.mocked(projectsApi.getMembers).mockReset().mockResolvedValue([
+        {
+          id: 'm1',
+          projectId: 'aaaa0000-0000-4000-8000-000000000002',
+          userId: 7,
+          role: 'editor',
+          createdAt: '2026-09-02T00:00:00.000Z',
+          username: 'bob',
+          email: 'b@x',
+          userActive: false,
+        },
+      ]);
+      renderPage();
+      await openDrawer();
+
+      expect(await screen.findByText('bob')).toBeTruthy();
+      expect(screen.getByText('已禁用')).toBeTruthy();
+    });
+
+    it('username === null（用户已删除）→ 明确标注，不编造名字', async () => {
+      vi.mocked(projectsApi.getMembers).mockReset().mockResolvedValue([
+        {
+          id: 'm1',
+          projectId: 'aaaa0000-0000-4000-8000-000000000002',
+          userId: 99,
+          role: 'viewer',
+          createdAt: '2026-09-02T00:00:00.000Z',
+          username: null,
+          email: null,
+          userActive: null,
+        },
+      ]);
+      renderPage();
+      await openDrawer();
+
+      expect(await screen.findByText('用户 #99（已删除）')).toBeTruthy();
+    });
   });
 
   it('列表加载失败 → StateError 页内错误块（带重试）', async () => {
@@ -232,7 +302,7 @@ describe('ProjectsPage（AUTH-02 后续）', () => {
     );
     const memberButtons = await screen.findAllByRole('button', { name: /成员/ });
     fireEvent.click(memberButtons[0]);
-    await screen.findByText('7');
+    await screen.findByText('#7');
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
     fireEvent.click(await screen.findByRole('button', { name: /移除/ }));
     await waitFor(() => expect(projectsApi.removeMember).toHaveBeenCalledTimes(1));

@@ -454,6 +454,16 @@ export const AUTH_CODES = {
     zh: "API Key {{apiKeyId}} 不存在",
     en: "API Key {{apiKeyId}} not found",
   },
+  /**
+   * 永久删除只对**已失效**的 key 开放（已吊销 / 已过期）。活跃 key 必须先吊销：
+   * 吊销留下 `apikey.revoke` 审计行，删除只清理不再有活性的行——避免一次点击
+   * 静默抹掉在用凭据，也保住「谁在什么时候杀掉了哪把 key」的证据链。
+   */
+  API_KEY_DELETE_ACTIVE_FORBIDDEN: {
+    status: 409,
+    zh: "API Key {{apiKeyId}} 仍在生效，请先吊销再删除",
+    en: "API Key {{apiKeyId}} is still active; revoke it before deleting",
+  },
   API_KEY_JWT_ONLY_SURFACE: {
     status: 401,
     zh: "凭证管理端点不接受 API Key，请使用用户 JWT",

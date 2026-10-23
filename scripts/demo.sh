@@ -128,6 +128,16 @@ read_env() {
   sed -n "s/^$1=//p" "$ENV_FILE" | tail -1
 }
 
+# Backfill a key that was introduced after the file was generated (upgrade path),
+# so an existing .env.demo keeps working instead of failing compose interpolation.
+ensure_env_key() {
+  local key="$1" value="$2"
+  [[ -f "$ENV_FILE" ]] || return 0
+  [[ -n "$(read_env "$key")" ]] && return 0
+  printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
+  echo "✓ backfilled $key into $ENV_FILE"
+}
+
 # Linux uses ss; macOS has lsof; bash's /dev/tcp is the last resort.
 port_busy() {
   local port="$1"
@@ -175,6 +185,11 @@ ensure_env() {
       exit 1
     fi
     echo "✓ reusing $ENV_FILE (delete it or run --reset to regenerate)"
+    # 2026-10-22 起 compose 要求每副本对外地址必填（EXECUTOR_*_PUBLIC_ADDRESS，
+    # 见 docker-compose.yml 的 P1-1 注释）。旧 .env.demo 没有这两键，会直接
+    # 插值失败、demo 第一步就炸——就地补齐，别让用户重来一遍。
+    ensure_env_key EXECUTOR_NODE_PUBLIC_ADDRESS executor-node:8002
+    ensure_env_key EXECUTOR_PYTHON_PUBLIC_ADDRESS executor-python:8001
     return 0
   fi
 
@@ -203,6 +218,10 @@ REDIS_PASSWORD=$(gen_hex 24)
 JWT_SECRET=$jwt
 JWT_REFRESH_SECRET=$jwt_refresh
 EXECUTOR_SECRET=$exec
+# P1-1（生产报告 2026-10-22）：compose 要求每个执行器上报**各自的**对外地址，
+# 不再给会碰撞的字面缺省值。demo 每个执行器只有一个副本，服务名即可。
+EXECUTOR_NODE_PUBLIC_ADDRESS=executor-node:8002
+EXECUTOR_PYTHON_PUBLIC_ADDRESS=executor-python:8001
 # registry-pypi is part of the base compose graph even when not started;
 # compose still interpolates its required REGISTRY_PASS guard.
 REGISTRY_PASS=$(gen_hex 24)

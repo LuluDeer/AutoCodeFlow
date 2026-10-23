@@ -16,6 +16,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   projectsApi,
   type CreateProjectDto,
+  type ProjectMemberRow,
   type ProjectRemovalImpact,
   type ProjectRole,
   type ProjectViewRow,
@@ -882,7 +883,48 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
           pagination={false}
           locale={{ emptyText: t('projects.members.empty') }}
           columns={[
-            { title: t('projects.members.userId'), dataIndex: 'userId', key: 'userId' },
+            {
+              // 2026-10-23：此前这一列直接渲染 `userId`，面板上就是「用户 1」
+              // ——而旁边的候选下拉写着 `#1 admin`，同一块 UI 两种口径，
+              // 管理员根本认不出成员是谁。现在主显 username，ID 降为副信息
+              // （tooltip + 已删除场景的兜底），三态如实区分：
+              //   有 username → 名字（禁用账号加「已禁用」标记）
+              //   username === null → 用户已被删除（成员行残留，无 FK）
+              //   键缺席 → 后端身份补全不可用，退回 #N，绝不编造名字
+              title: t('projects.members.member'),
+              key: 'member',
+              render: (_: unknown, row: ProjectMemberRow) => {
+                const hasName = typeof row.username === 'string' && row.username.length > 0;
+                const deleted = row.username === null;
+                if (hasName) {
+                  return (
+                    <Space size={4} wrap={false}>
+                      <Tooltip title={`#${row.userId}${row.email ? ` · ${row.email}` : ''}`}>
+                        <Typography.Text strong>{row.username}</Typography.Text>
+                      </Tooltip>
+                      {row.userActive === false && (
+                        <Tag color="default">{t('projects.members.userDisabled')}</Tag>
+                      )}
+                    </Space>
+                  );
+                }
+                return (
+                  <Tooltip
+                    title={
+                      deleted
+                        ? t('projects.members.userDeletedHint', { id: row.userId })
+                        : t('projects.members.identityUnavailable', { id: row.userId })
+                    }
+                  >
+                    <Typography.Text type="secondary">
+                      {deleted
+                        ? t('projects.members.userDeleted', { id: row.userId })
+                        : `#${row.userId}`}
+                    </Typography.Text>
+                  </Tooltip>
+                );
+              },
+            },
             {
               title: t('projects.members.role'),
               dataIndex: 'role',

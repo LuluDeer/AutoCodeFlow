@@ -370,6 +370,126 @@ export class SopService {
     return { sop, version: saved };
   }
 
+  /**
+   * 归档（deprecate）：把 SOP 置为 `deprecated`。
+   *
+   * 为什么现在补（2026-10-23）：`deprecated` 此前是**死状态**——`SOP_STATUSES`
+   * 里有、DTO 里有，但全仓没有任何写入点。后果是 SOP 只增不减：实测 demo 库
+   * 19 条里 16 条是 `headless-smoke-*` 测试残留，界面上既不能删也不能下线，
+   * 只能永远留在列表里。
+   *
+   * 语义边界（刻意如此）：
+   * - **不删数据**：版本快照、指派、澄清记录全部保留——它们是「这张 SOP 曾经
+   *   怎么被执行的」证据，归档只表示「不要再派新单」；
+   * - **有未结束指派时拒绝**（409）：归档一个还在跑的工单会让执行器与中台的
+   *   状态机对不上（执行器手里还拿着指派，中台却认为该 SOP 已下线）；
+   * - **幂等边界**：已归档再归档 → 409（而不是 200）——与 removeMember 同口径，
+   *   让「以为归档了但其实没有」变成一次可见的失败；
+   * - 列级写（`status` 一列），不走整行 save（ADR-026 规则 4）。
+   */
+  async deprecate(input: {
+    sopId: string;
+    /** R41-A1：审计上下文。 */
+    audit?: SopAuditContext;
+    actor?: string;
+  }): Promise<Sop> {
+    const sop = await this.requireSop(input.sopId);
+    if (sop.status === "deprecated") {
+      throw new AppError(ErrorCode.SOP_ALREADY_DEPRECATED, { slug: sop.slug });
+    }
+    // 未结束的指派 = assigned / in_progress / blocked / stalled（completed /
+    // failed / cancelled 是终态）。用 COUNT 而不是取全量——指派可能很多。
+    const activeAssignments = await this.assignments.count({
+      where: {
+        sopId: sop.id,
+        status: In(["assigned", "in_progress", "blocked", "stalled"]),
+      },
+    });
+    if (activeAssignments > 0) {
+      throw new AppError(ErrorCode.SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS, {
+        slug: sop.slug,
+        count: activeAssignments,
+      });
+    }
+    // 条件写：以「当前不是 deprecated」为谓词，并发归档只有一个能成功
+    // （另一个 affected=0 → 如实 409，而不是两次都返回成功）。
+    const updated = await this.sops.update(
+      { id: sop.id, status: Not("deprecated") },
+      { status: "deprecated" },
+    );
+    if (!updated.affected) {
+      throw new AppError(ErrorCode.SOP_ALREADY_DEPRECATED, { slug: sop.slug });
+    }
+    sop.status = "deprecated";
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.deprecate",
+      resource: "sop",
+      resourceId: sop.id,
+      detail: {
+        slug: sop.slug,
+        // 归档时的版本指针（不删版本，但要知道停在哪一版）
+        currentVersion: sop.currentVersion ?? null,
+        actor: input.actor ?? null,
+      },
+    });
+    this.logger.log(`SOP deprecated: slug=${sop.slug} by=${input.actor ?? "?"}`);
+    return sop;
+  }
+
+  /**
+   * 恢复（un-deprecate）：把已归档的 SOP 重新置为 `published`。
+   *
+   * 为什么需要：归档是「不再派新单」，但运维常常先归档一批再发现其中一条还要用。
+   * 没有恢复路径就只能改库——那正是本轮要消灭的那类「只能改库」缺口。
+   * 只有 `deprecated` 的 SOP 可恢复；其余状态 409（避免把 draft 误升成 published）。
+   */
+  async restore(input: {
+    sopId: string;
+    audit?: SopAuditContext;
+    actor?: string;
+  }): Promise<Sop> {
+    const sop = await this.requireSop(input.sopId);
+    if (sop.status !== "deprecated") {
+      throw new AppError(ErrorCode.SOP_NOT_DEPRECATED, { slug: sop.slug });
+    }
+    if (!sop.currentVersion) {
+      // 从未发布过的 SOP 被归档（理论上不该发生）——恢复后应回到 draft，
+      // 不能凭空变成 published。
+      const revived = await this.sops.update(
+        { id: sop.id, status: "deprecated" },
+        { status: "draft" },
+      );
+      if (!revived.affected) {
+        throw new AppError(ErrorCode.SOP_NOT_DEPRECATED, { slug: sop.slug });
+      }
+      sop.status = "draft";
+    } else {
+      const revived = await this.sops.update(
+        { id: sop.id, status: "deprecated" },
+        { status: "published" },
+      );
+      if (!revived.affected) {
+        throw new AppError(ErrorCode.SOP_NOT_DEPRECATED, { slug: sop.slug });
+      }
+      sop.status = "published";
+    }
+    await this.safeAudit({
+      userId: input.audit?.userId ?? null,
+      ip: input.audit?.ip ?? null,
+      action: "sop.restore",
+      resource: "sop",
+      resourceId: sop.id,
+      detail: {
+        slug: sop.slug,
+        currentVersion: sop.currentVersion ?? null,
+        actor: input.actor ?? null,
+      },
+    });
+    return sop;
+  }
+
   /** 语义化版本递增。首个版本恒 1.0.0（不接受 0.x 起步——发布的 SOP 即可用态）。 */
   private bumpVersion(
     current: string | null,
@@ -1695,6 +1815,65 @@ export class SopService {
       order: { createdAt: "DESC" },
       take: 100,
     });
+  }
+
+  /**
+   * 取消该 SOP 下所有**未结束**的指派（2026-10-23）。
+   *
+   * ## 为什么需要
+   *
+   * `deprecate()` 在存在未结束指派时拒绝归档（这是对的：执行器手里还攥着单，
+   * 中台单方面下线会让状态机失配）。但此前**没有取消指派的入口**——
+   * `cancelled` 这个终态在 `SOP_ASSIGNMENT_STATUSES` 里存在了整整两个季度，
+   * 全仓却没有任何代码能写进去（grep 实证：零写入点）。于是运维遇到
+   * 「有 1 个未结束的指派」时，唯一出路是去改库——正是本轮要消灭的那类缺口。
+   *
+   * ## 语义边界（刻意如此）
+   *
+   * - **只取消未结束的**（assigned/in_progress/blocked/stalled）；终态原样不动，
+   *   不能把已完成的工单"改成取消"——那会抹掉真实执行结果。
+   * - **条件写**：`WHERE sopId AND status IN (...)`，affected 即实际取消数。
+   *   并发下两个调用者只有一个拿到非零 affected，另一个如实返回 0。
+   * - **不删数据**：指派行与它的澄清对话、结果 JSON、媒体引用全部保留——
+   *   取消是「这张单不用做了」，不是「这张单没发生过」。
+   * - 审计 `sop.assignment.cancel`（带实际取消条数）。
+   */
+  async cancelOpenAssignments(input: {
+    sopId: string;
+    audit?: SopAuditContext;
+    actor?: string;
+  }): Promise<{ cancelled: number }> {
+    const sop = await this.requireSop(input.sopId);
+    const openStatuses = [
+      "assigned",
+      "in_progress",
+      "blocked",
+      "stalled",
+    ] as const;
+    const result = await this.assignments.update(
+      { sopId: sop.id, status: In(openStatuses) },
+      { status: "cancelled" },
+    );
+    const cancelled = result.affected ?? 0;
+    if (cancelled > 0) {
+      await this.safeAudit({
+        userId: input.audit?.userId ?? null,
+        ip: input.audit?.ip ?? null,
+        action: "sop.assignment.cancel",
+        resource: "sop",
+        resourceId: sop.id,
+        detail: {
+          slug: sop.slug,
+          cancelled,
+          statuses: [...openStatuses],
+          actor: input.actor ?? null,
+        },
+      });
+      this.logger.log(
+        `SOP assignments cancelled: slug=${sop.slug} count=${cancelled} by=${input.actor ?? "?"}`,
+      );
+    }
+    return { cancelled };
   }
 
   async getAssignment(assignmentId: string): Promise<{

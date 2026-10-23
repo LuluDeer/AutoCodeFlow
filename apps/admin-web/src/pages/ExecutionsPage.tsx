@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Table,
   Typography,
   Badge,
@@ -11,7 +11,9 @@ import { Table,
   Popconfirm,
   DatePicker,
   Card,
-  Switch } from 'antd';
+  Switch,
+  Alert,
+  Tag } from 'antd';
 import type { TablePaginationConfig } from 'antd';
 import { message } from '../utils/toast';
 import {
@@ -46,6 +48,9 @@ import { useIsMobile } from '../hooks/useIsMobile';
 // 与同列相邻的中文状态 Badge 中英混排。收敛到 utils/trigger-label 唯一事实源，
 // 与 TaskListPage/TaskDetailPage/ApplicationDetailPage 同一份映射。
 import { triggerLabel } from '../utils/trigger-label';
+// 2026-10-23：失败原因聚合（本页已加载行，非全量——见 util 头注口径）
+import { aggregateFailureReasons } from '../utils/failure-reason-aggregate';
+import { failureReasonLabel } from '../utils/failure-reason-label';
 // §8.3 工单 10：行 id 是阶段 3 的稳定身份（同址多行时「名字+地址」不再唯一）。
 import { shortExecutorRowId } from '../utils/executorRowId';
 // R5 角色门控：ADMIN-only 操作统一以此判断（本轮：全量导出端点 @Roles(ADMIN)）。
@@ -411,6 +416,16 @@ export default function ExecutionsPage() {
   const hasFilters = !!(search || statusFilter || executorFilter || timeRange);
 
   /**
+   * 2026-10-23：本页失败原因分布。
+   *
+   * 只聚合**当前已加载的这一页**——列表本身就是分页的，把「这一页的分布」
+   * 说成「全量分布」会是第二个「子集当全量」缺陷（executor 列表截断提示
+   * P3-9 踩过同样的坑）。UI 文案里写明了「当前页」。
+   * 只有一条失败时不出条（没有"分布"可言，反而挤占首屏）。
+   */
+  const failureBuckets = useMemo(() => aggregateFailureReasons(executions), [executions]);
+
+  /**
    * 表格分页配置：keyset 模式 = `false`（页码器整体消失，改由下方自绘
    * 「上一页 / 下一页」承担），OFFSET 模式 = 原有配置（逐字节不变）。
    *
@@ -627,12 +642,17 @@ export default function ExecutionsPage() {
     {
       title: t('execs.col.action'),
       key: 'action',
-      // UI 打磨：详情 + 终止两个带文字链接实测 ~125px，100 宽在 running 行折行；
-      // fixed right 让操作列在横向滚动时常驻
-      width: 135,
+      // 2026-10-23 实测修正（此前「终止」被裁掉一半）：操作列放**两个带图标+文字的
+      // link 按钮**，宽度由内容决定而不是估一个数——
+      //   中文「详情」≈66px + 间距 4 + 「终止」≈66px + 单元格左右内边距 32 = 168；
+      //   英文「Details」≈82px + 4 + 「Terminate」≈90 + 32 = 208。
+      // 原 width:135 在 running/waiting 行必然溢出（实测 td 1281..1416，
+      // 终止按钮 1367..1433 → 右边缘被裁 17px，表现为只看得见半个字）。
+      // 取 210 覆盖英文最宽形态；fixed right 保证横向滚动时常驻。
+      width: 210,
       fixed: 'right' as const,
       render: (_: unknown, r: TaskExecution) => (
-        <Space size={4}>
+        <Space size={4} wrap={false}>
           <Button
             type="link" size="small" icon={<EyeOutlined />}
             onClick={() => nav(`/tasks/${r.taskId}/executions/${r.id}`)}
@@ -799,6 +819,31 @@ export default function ExecutionsPage() {
         />
       ) : null}
 
+      {/* 2026-10-23：失败原因分布。一次批量故障里，运维真正想知道的是
+          「这些失败是不是同一个原因」——是平台侧的 sandbox_unavailable，
+          还是几十个任务各自的脚本错误。此前只能一条条点进详情看。
+          只在失败 ≥2 条时出现（一条没有"分布"可言）。 */}
+      {failureBuckets.length > 0 && executions.filter((r) => ['failed', 'timeout', 'killed'].includes(r.status)).length > 1 && (
+        <Alert
+          type="warning"
+          showIcon
+          data-testid="execs-failure-buckets"
+          style={{ marginBottom: 12 }}
+          title={t('execs.failureBuckets.title', {
+            total: failureBuckets.reduce((n, b) => n + b.count, 0),
+          })}
+          description={
+            <Space size={8} wrap>
+              {failureBuckets.map((b) => (
+                <Tag key={b.reason} color={b.reason === 'unknown' ? 'default' : 'red'}>
+                  {failureReasonLabel(b.reason, t)} × {b.count}
+                </Tag>
+              ))}
+            </Space>
+          }
+        />
+      )}
+
       {isMobile ? (
         /* MOBILE-CARD-01：≤768px 卡片列表——此前 375px 下表格横向滚动，表头
            「任务名称」逐字竖排、操作列溢出。卡片按值班首查信息组织：状态 +
@@ -867,9 +912,12 @@ export default function ExecutionsPage() {
         dataSource={executions}
         loading={loading}
         // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
-        // UI 打磨：scroll.x 与列宽合计对齐（固定列 685 + 勾选 32 + 任务/错误两个弹性列
-        // 最小各 ~160），原 640 < 合计，两个弹性列被压到勉强可读
-        scroll={{ x: 1040 }}
+        // UI 打磨（2026-10-23）：scroll.x 与列宽合计对齐——固定列 775（状态 90 +
+        // 触发 90 + 执行器 160 + 开始 130 + 耗时 90 + 操作 210）+ 勾选 32 +
+        // 任务/错误两个弹性列各 ~160 ≈ 967，取 1080 留出弹性余量。
+        // 原 1040 是操作列 135 时代的数，操作列加宽后必须同步上调，否则
+        // 固定列会把弹性列挤到比 minWidth 还窄。
+        scroll={{ x: 1080 }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as string[]),

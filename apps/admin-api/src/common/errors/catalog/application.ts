@@ -461,6 +461,26 @@ export const APPLICATION_CODES = {
     zh: "SOP 尚未发布，无法指派（先 publish）",
     en: "The SOP is not published yet and cannot be assigned (publish it first)",
   },
+  /**
+   * 归档（2026-10-23）：`deprecated` 此前是**死状态**——枚举里有、DTO 里有，
+   * 但全仓没有任何代码能写进去，于是 SOP 只增不减（实测 19 条里 16 条是
+   * 测试残留，无法下线）。
+   */
+  SOP_ALREADY_DEPRECATED: {
+    status: 409,
+    zh: "SOP {{slug}} 已是归档状态",
+    en: "SOP {{slug}} is already archived",
+  },
+  SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS: {
+    status: 409,
+    zh: "SOP {{slug}} 还有 {{count}} 个未结束的指派，先处理完再归档",
+    en: "SOP {{slug}} still has {{count}} unfinished assignments; finish them before archiving",
+  },
+  SOP_NOT_DEPRECATED: {
+    status: 409,
+    zh: "SOP {{slug}} 不是归档状态，无需恢复",
+    en: "SOP {{slug}} is not archived, nothing to restore",
+  },
   SOP_VERSION_NOT_FOUND: {
     status: 404,
     zh: "SOP {{slug}} 无版本 {{version}}",

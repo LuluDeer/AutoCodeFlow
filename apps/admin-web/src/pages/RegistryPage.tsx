@@ -8,6 +8,10 @@ import { useQuery } from '@tanstack/react-query';
 import { registryApi } from '../api/registry';
 import { showApiError } from '../utils/error';
 import { normFileList } from '../utils/upload';
+// 2026-10-23：安装命令基址不能直接用 window.location.origin——开发模式
+// （前端 :5176 / 反代 :8088）与前后端分离部署下它会指向没有 /pypi 的主机。
+// 推导顺序与理由见 utils/registry-base.ts 头注。
+import { registryBaseUrl } from '../utils/registry-base';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代空白（ApplicationListPage 同款纪律）
@@ -25,6 +29,8 @@ const { Text, Paragraph } = Typography;
 // ─── PyPI tab ────────────────────────────────────────────────────────────────
 function PypiTab() {
   const { t } = useTranslation();
+  // 仓库命令基址（不带尾斜杠；空串 = 同源）
+  const registryBase = registryBaseUrl();
   const { token } = theme.useToken(); // F-15（DEEP_REVIEW 0ef3bbe）
   const [uploadOpen, setUploadOpen] = useState(false);
   const [form] = Form.useForm();
@@ -68,7 +74,7 @@ function PypiTab() {
         // UI-09 图标按钮 a11y：Typography copyable 的复制按钮是 icon-only——
         // 显式 tooltips 兼作可访问名（antd 以 tooltip 文本注入 aria-label，
         // 缺省回落 antd 内建 locale 不随页面语言保证一致）。
-        <Text copyable={{ text: `pip install ${record.name} --index-url ${window.location.origin}/pypi/simple/`, tooltips: [t('registry.copyCommand'), t('registry.copied')] }}>
+        <Text copyable={{ text: `pip install ${record.name} --index-url ${registryBase}/pypi/simple/`, tooltips: [t('registry.copyCommand'), t('registry.copied')] }}>
           {/* UI 打磨：安装命令不可收缩的 code 文本——窄列内断行防溢出 */}
           <code style={{ wordBreak: 'break-all' }}>pip install {record.name}</code>
         </Text>
@@ -94,7 +100,7 @@ function PypiTab() {
           <Text strong>{t('registry.pypiHint')}</Text>
         </Paragraph>
         <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>
-          {`pip config set global.index-url ${window.location.origin}/pypi/simple/`}
+          {`pip config set global.index-url ${registryBase}/pypi/simple/`}
         </Text>
         {/* B-1：/pypi/ 反代路由已补齐，但 registry-pypi 索引面 S9 起要求
             Basic 认证——命令可用性依赖部署下发的凭据，必须随命令说明。 */}
@@ -174,6 +180,8 @@ function PypiTab() {
 
 // ─── NPM tab ─────────────────────────────────────────────────────────────────
 function NpmTab() {
+  // 同 PypiTab：仓库命令基址走推导（见 utils/registry-base.ts）
+  const registryBase = registryBaseUrl();
   const { t } = useTranslation();
   const { token } = theme.useToken(); // F-15（DEEP_REVIEW 0ef3bbe）
   const [publishOpen, setPublishOpen] = useState(false);
@@ -228,7 +236,7 @@ function NpmTab() {
           <Text strong>{t('registry.npmHint')}</Text>
         </Paragraph>
         <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>
-          {`npm config set registry ${window.location.origin}/npm/`}
+          {`npm config set registry ${registryBase}/npm/`}
         </Text>
         {/* B-1：/npm/ 反代路由已补齐；registry-npm 对所有包要求 $authenticated
             （config.yaml），登录/安装都依赖部署下发的账号，必须随命令说明。 */}
@@ -274,7 +282,7 @@ function NpmTab() {
           <Text strong>{t('registry.npmStep1')}</Text>
           <br />
           <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>
-            {`npm config set registry ${window.location.origin}/npm/`}
+            {`npm config set registry ${registryBase}/npm/`}
           </Text>
         </Paragraph>
         <Paragraph>

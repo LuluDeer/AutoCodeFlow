@@ -25,10 +25,11 @@ packages/mcp-server/
 ## 传输与鉴权（以代码为准）
 
 - **传输：仅 stdio**（`StdioServerTransport`，JSON-RPC over stdin/stdout）。代码中无 HTTP/SSE transport——若需远程 MCP 需自行扩展。
-- **鉴权：JWT Bearer**（不是 API Key）。环境变量：
+- **鉴权：Bearer（API Key 或用户 JWT 二选一）**——服务端按 `acf_` 前缀把 API Key 分流到 scope 校验链，其余按 JWT。环境变量：
   - `AUTOCODEFLOW_API_URL`（默认 `http://localhost:3105`）；
-  - `AUTOCODEFLOW_API_TOKEN`（**必填**，缺失直接退出 exit 1，W-07）；
-  - `AUTOCODEFLOW_API_REFRESH_TOKEN`（可选）：401 时单飞 `POST /auth/refresh` 换发并重放一次，新 refreshToken 只存内存（BUG-14 自愈；进程重启重新注入）。
+  - `AUTOCODEFLOW_API_TOKEN`（**必填**，缺失直接退出 exit 1，W-07）：推荐填中台「系统设置 → API Keys」创建的 `acf_…`（可设有效期/永不过期，吊销即时生效；scope 决定可用工具，JWT-only 面 `/api-keys` `/auth` `/users` `/config` 对本包 56 个工具均不涉及）；ADMIN-only 工具（`approve_deployment` / `list_pending_approvals` 等）必须用用户 JWT；
+  - `AUTOCODEFLOW_API_REFRESH_TOKEN`（可选，**仅 JWT 有意义**）：401 时单飞 `POST /auth/refresh` 换发并重放一次，新 refreshToken 只存内存（BUG-14 自愈；进程重启重新注入）。API Key 无 refresh 语义，设了也不起作用。
+  - **没有账号密码登录、没有 `--token` 参数、不落盘**——凭据只能经环境变量注入。
 - 每次 API 调用 30s 超时（N12）；成功响应剥掉 admin-api 全局 `{code,message,data}` 信封。unwrap 判据（WIKI-OPT-4 收紧）：对象含 `data` 键且 `code` 为**数值**即视为信封（对齐 ResponseInterceptor 的 `code` 恒为 `statusCode ?? 200`）；`message` 不再作为判据——实体自带 data+message 而无数值 code 时原样透传，不再被误解包截断成 data 值。
 - bin 入口支持 `--help` / `--version`；无参即启动 stdio server。
 

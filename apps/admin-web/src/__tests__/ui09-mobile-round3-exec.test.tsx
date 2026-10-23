@@ -338,7 +338,9 @@ describe('UI-09 第三轮 ExecutorPackagesPage 375px 产物', () => {
   it('包列表：次要列（平台/大小/上传者）th/td 双端挂 ui09-hide-mobile，scroll.x 兜底保留', async () => {
     renderWithProviders(<ExecutorPackagesPage />);
     await screen.findByText('python-runner');
-    expect(tableScrollWidth()).toBe(1060);
+    // 2026-10-23：上传者列 100→130（`agent:sop:<uuid8>` 46 字符原值会折行），
+    // scroll.x 同步 1060→1090。
+    expect(tableScrollWidth()).toBe(1090);
     const ths = hideMobileCells('.ant-table-thead th');
     expect(ths.map((th) => th.textContent)).toEqual(['平台', '大小', '上传者']);
     const tds = hideMobileCells('.ant-table-tbody td');
