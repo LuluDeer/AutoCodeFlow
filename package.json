@@ -48,6 +48,7 @@
     "check:audit-doc": "node scripts/check-audit-actions-doc.mjs",
     "check:api-reference": "node scripts/gen-api-reference-appendix.mjs --check",
     "check:cli-doc": "node scripts/check-cli-doc.mjs",
+    "check:sdk-docs-truthfulness": "node scripts/check-sdk-docs-truthfulness.mjs --selftest && node scripts/check-sdk-docs-truthfulness.mjs",
     "check:ssrf-parity": "node scripts/check-ssrf-deny-parity.mjs",
     "check:constant-time": "node scripts/check-constant-time-compare.mjs",
     "check:guards-wired": "node scripts/check-guards-wired.mjs",

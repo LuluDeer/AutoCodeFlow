@@ -38,4 +38,11 @@ export const apiKeysApi = {
     client.post('/api-keys', data) as Promise<ApiKeyCreateResult>,
   revoke: (id: number) =>
     client.delete(`/api-keys/${id}`) as Promise<{ success: boolean; apiKey: ApiKeyView }>,
+  /**
+   * 永久删除（硬删）。只对**已失效**的行开放（已吊销 / 已过期）——活跃 key
+   * 后端会 409（`API_KEY_DELETE_ACTIVE_FORBIDDEN`），必须先吊销。
+   * 路径与软删 `DELETE /api-keys/:id` 显式区分，不破坏既有客户端语义。
+   */
+  remove: (id: number) =>
+    client.delete(`/api-keys/${id}/permanent`) as Promise<{ success: boolean; apiKey: ApiKeyView }>,
 };

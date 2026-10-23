@@ -123,20 +123,69 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "args": ["/path/to/packages/mcp-server/dist/index.js"],
       "env": {
         "AUTOCODEFLOW_API_URL": "http://localhost:3105",
-        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>",
-        "AUTOCODEFLOW_API_REFRESH_TOKEN": "<optional-refresh-token>"
+        "AUTOCODEFLOW_API_TOKEN": "acf_<your-api-key>"
       }
     }
   }
 }
 ```
 
+## Where to get the token
+
+`AUTOCODEFLOW_API_TOKEN` accepts **either an API key or a user JWT** — both are
+sent as `Authorization: Bearer …`, and the server routes `acf_`-prefixed
+credentials to the scoped API-key chain. Pick by how long the MCP server lives.
+
+### Option A — API key (recommended for an always-on MCP server)
+
+1. Sign in to the admin web → **System → Settings → API Keys** → **New API Key**.
+2. Choose the scope that covers the tools you need:
+
+   | Scope | What the MCP server can do |
+   |---|---|
+   | `readonly` | All read tools (`list_tasks`, `get_execution`, `get_execution_stats`, …) |
+   | `trigger` | Reads + triggering a single task (`trigger_task`) |
+   | `manage` | Reads + every write tool (create/update/pause tasks, deploy apps, …) |
+
+3. Copy the plaintext `acf_…` from the creation dialog — it is shown **once**
+   (the server keeps only its SHA-256 hash, so it can never be displayed again;
+   create a new key if you lose it) — and put it in `AUTOCODEFLOW_API_TOKEN`.
+
+API keys never expire unless you set a validity, and revoking one takes effect on
+the next call. They are a strict subset of a user JWT (credential / user /
+system-config endpoints refuse them) — but **none of the 56 MCP tools touch those
+endpoints**, so an API key is sufficient here. ADMIN-only tools (e.g.
+`approve_deployment`, `list_pending_approvals`) need option B.
+
+### Option B — user JWT (only way to use ADMIN-only tools)
+
+The admin web has no "copy my token" button; the supported way to obtain a JWT
+outside the browser is the CLI:
+
+```bash
+acf login --url http://localhost:3105 --user <you>   # password + TOTP prompt
+acf config show                                      # prints the config file path
+```
+
+- `AUTOCODEFLOW_API_TOKEN` = the `token` field of
+  `~/.config/acf-cli/config.json` (mode 0600) — a **15-minute** access token;
+- `AUTOCODEFLOW_API_REFRESH_TOKEN` = the `refreshToken` field of the same file
+  (30 days) — with it the server refreshes once on 401 and replays the request.
+  Without it you must restart the MCP server with a fresh access token every
+  ~15 minutes.
+
+> API-key users can ignore the refresh variable entirely: `/auth/*` is JWT-only,
+> so there is nothing to refresh.
+
 ## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUTOCODEFLOW_API_URL` | `http://localhost:3105` | Admin API base URL |
-| `AUTOCODEFLOW_API_TOKEN` | — | JWT token (required). The server exits on startup if this is missing, because every tool call would be rejected. |
-| `AUTOCODEFLOW_API_REFRESH_TOKEN` | — | Optional refresh token. When set, a 401 from non-`/auth/*` API calls triggers one in-memory refresh and replays the original request once; rotated refresh tokens are kept only for the process lifetime. |
+| `AUTOCODEFLOW_API_TOKEN` | — | **Required.** API key (`acf_…`, recommended) or user JWT. The server exits on startup when missing, because every tool call would be rejected. |
+| `AUTOCODEFLOW_API_REFRESH_TOKEN` | — | Optional, JWT only. When set, a 401 from non-`/auth/*` API calls triggers one in-memory refresh and replays the original request once; rotated refresh tokens live only for the process lifetime. |
 
-> All 56 tools share these 3 variables — no tool requires additional environment configuration. Permission-sensitive tools (e.g. `approve_deployment` / `reject_deployment` / `list_pending_approvals`, ADMIN-only) are enforced server-side by the roles in the JWT passed via `AUTOCODEFLOW_API_TOKEN`.
+> All 56 tools share these 3 variables — no tool requires additional environment
+> configuration. Permission-sensitive tools are enforced server-side: API-key
+> scopes for `acf_…` credentials, and roles for a JWT (ADMIN-only tools reject
+> API keys with 403 by design).

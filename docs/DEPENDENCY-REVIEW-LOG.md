@@ -162,3 +162,33 @@ SDK 实例，跑 `makeBucket → putObject → statObject → getObject+gunzip �
 
 - 下次复查日仍为 **2026-12-30**（注册表 6 条）。
 - 关注：extract-zip 上游、`@lhci/cli`/puppeteer 链、global-agent/roarr、minio 是否改用 ESM stream-json 或换 S3 客户端。
+
+---
+
+## 依赖审计轮 #4 —— 2026-10-23（复查轮 #3 的 6 条，0 条新增可修）
+
+**触发**：推送 `develop` 时 GitHub 仍提示默认分支 6 条告警（2 high / 4 moderate）。
+逐条复核「上游是否已发修复版」，结论：**没有任何一条变成可修的**。
+
+### 1. 已关闭（1 条，advisory 被上游撤回）
+
+| GHSA | 包 | 依据 |
+|---|---|---|
+| `GHSA-hp3w-g68c-fv3c` | sprintf-js@1.1.3 | advisory **已于 2026-10-22 19:21 UTC 撤回**（`withdrawn_at`，理由：格式串精度异常属应用侧职责）；且 sprintf-js 无 1.1.4+ 版本。已按误报 dismiss。 |
+
+### 2. 仍保留（5 条，全部 `first_patched_version: null`）
+
+| GHSA | 包 | 本轮复核结果 |
+|---|---|---|
+| `GHSA-7pqw-9j4j-h8q3` / `GHSA-jmr9-qjv8-65gv` | extract-zip@2.0.1 | `npm view extract-zip versions` 最高仍 **2.0.1**（2.0.1 即最新）。链路 `@lhci/cli → lighthouse → puppeteer-core → @puppeteer/browsers`，**devDependency**。本轮实测：`npm run build` 产物 `dist/` 中 **grep 不到 `extract-zip` 也不到 `lhci`** —— 不进运行时。 |
+| `GHSA-528h-pc64-c93x` / `GHSA-hqr4-qq8f-hg3x` / `GHSA-mjw6-4jj6-33hc` | stream-json@1.9.1 | 1.x 线止于 **1.9.1**（已装），修复仅在 v3；v3 会让 `require('minio')` 抛 `MODULE_NOT_FOUND`（机理见轮 #3 §2.1，含真实 MinIO 端到端反证）。维持不 override。 |
+
+### 3. 本轮净新增的验证证据
+
+- `apps/admin-web` 生产构建产物 grep：`extract-zip` / `lhci` 均**不在 `dist/`**（此前轮次只论证了「是 devDependency」，本轮补了产物级证据）。
+- sprintf-js 的撤回是**上游结论**（不是我们放宽），关闭有据。
+
+### 4. 复查
+
+- 下次复查日维持 **2026-12-30**（注册表 5 条）。
+- 触发重开的条件不变：extract-zip 上游发版 / minio 换 S3 客户端或改 ESM / roarr 线变化。

@@ -9,6 +9,9 @@ import { DEFAULT_LOG_RETENTION_DAYS } from "./log-retention-cleanup.service";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
+// 2026-10-23：与 LogRetentionCleanupService 同源的运行期保留期配置。
+import { SystemConfigService } from "../../config/config.service";
+import { LOG_RETENTION_CONFIG_KEY } from "./log-retention-cleanup.service";
 import { TERMINAL_EXECUTION_STATUSES } from "../execution-terminal";
 
 /** 每日 03:35 对象回收（6 段 cron；与 DB 日志行清理 03:30 / 产物清理 03:45
@@ -83,6 +86,9 @@ export class S3LogObjectRetentionService {
     // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
     @Optional()
     private readonly leaderGate: LeaderGateService | null = null,
+    // 与 DB 行清理同款：@Optional + 置尾，缺席时只读 env（旧行为不变）。
+    @Optional()
+    private readonly systemConfig?: SystemConfigService | null,
   ) {}
 
   /** 每日定时入口；回收失败只记日志，等下一轮 cron 重试，不影响主流程 */
@@ -115,7 +121,7 @@ export class S3LogObjectRetentionService {
     // 非 s3 驱动（driver=db，或 s3 但 endpoint 未配）：整段 no-op
     if (!s3) return 0;
 
-    const retentionDays = this.resolveRetentionDays();
+    const retentionDays = await this.resolveRetentionDays();
     const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
 
     let reclaimed = 0;
@@ -203,7 +209,19 @@ export class S3LogObjectRetentionService {
    * （logRetention.days，ARCH-27 收口；防御性回退默认值，默认常量直接复用
    * 该服务导出，避免第二份真值）。默认 30 天。
    */
-  private resolveRetentionDays(): number {
+  private async resolveRetentionDays(): Promise<number> {
+    // 运行期配置优先（中台可改、即时生效）——与 DB 行清理同一口径。
+    if (this.systemConfig) {
+      try {
+        const row = await this.systemConfig.findOne(LOG_RETENTION_CONFIG_KEY);
+        const parsedRuntime = Number.parseInt(row?.value ?? "", 10);
+        if (Number.isFinite(parsedRuntime) && parsedRuntime > 0) {
+          return parsedRuntime;
+        }
+      } catch {
+        // 键不存在 / 配置服务暂不可用：静默回落 env
+      }
+    }
     const parsed = this.configService.get<number>("logRetention.days");
     if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
       return parsed;

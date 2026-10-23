@@ -123,6 +123,29 @@ export class ProjectMemberViewDto {
 
   @ApiProperty({ description: "成员关系创建时间（ISO-8601）" })
   createdAt: Date;
+
+  /**
+   * 身份补全三态（2026-10-23）：有值 = 该用户；`null` = 用户已被删除（成员行
+   * 因无 FK 残留）；**键缺席** = 补全不可用（用户服务未接线或查询失败）。
+   * 前端据此分别显示「用户名」「用户 #N（已删除）」「#N」，绝不编造用户名。
+   */
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "用户名；null = 用户已被删除，缺席 = 身份补全不可用",
+  })
+  username?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "邮箱；与 username 同三态语义",
+  })
+  email?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "属主账号是否启用（禁用账号的成员行仍存在，但已无法登录）",
+  })
+  userActive?: boolean | null;
 }
 
 /**

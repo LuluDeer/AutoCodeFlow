@@ -275,7 +275,17 @@ export default function DashboardPage() {
                 styles={{ content: { color: CHART_COLORS.cpu, fontSize: 28 } }}
               />
               <KpiFootnote>
-                {schedulerStats ? t('dashboard.kpi.scheduled', { count: schedulerStats.totalScheduledTasks }) : ' '}
+                {/* 2026-10-23 口径修正：此前直接写「调度中 N」（N = 内存里的
+                    timers.size + cronTasks.size）。它与左边的「任务总数」是两个
+                    坐标系——前者是**运行期已注册的定时器**，后者是 DB 行数，
+                    暂停/失败补偿/启动窗口都会让两者不等（实测：任务 3、调度中 2）。
+                    同一张卡里并排两个数却没有一句解释，读起来就是矛盾。
+                    现改词为「已注册调度」并加 tooltip 说明差异来源。 */}
+                {schedulerStats ? (
+                  <Tooltip title={t('dashboard.kpi.scheduledHint')}>
+                    <span>{t('dashboard.kpi.scheduled', { count: schedulerStats.totalScheduledTasks })}</span>
+                  </Tooltip>
+                ) : ' '}
               </KpiFootnote>
             </Card>
           </Col>

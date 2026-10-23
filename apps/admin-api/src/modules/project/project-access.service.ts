@@ -62,6 +62,21 @@ export interface ProjectMemberView {
   userId: number;
   role: ProjectRole;
   createdAt: Date;
+  /**
+   * 成员身份补全（2026-10-23）：`project_members` 只存 userId，列表若只回主键，
+   * 管理台就只能显示「用户 1」。这里在服务端补上 username/email/isActive。
+   *
+   * 三态语义，别合并：
+   *   · 有值 → 该用户当前的身份；
+   *   · `null` → 查过了，用户已不存在（`project_members.userId` 无 FK，删用户
+   *     后可能残留）——界面应显示「用户 #N（已删除）」这类**如实**文案；
+   *   · 字段**缺席**（undefined）→ 身份补全不可用（usersService 未接线，或补全
+   *     查询失败），此时退回只显示 `#N`，绝不编造用户名。
+   */
+  username?: string | null;
+  email?: string | null;
+  /** 属主账号是否启用（禁用账号的成员行仍存在，但已无法登录）。 */
+  userActive?: boolean | null;
 }
 
 @Injectable()
@@ -163,7 +178,46 @@ export class ProjectAccessService {
       where: { projectId },
       order: { createdAt: "ASC" },
     });
-    return rows.map((r) => this.toView(r));
+    const views = rows.map((r) => this.toView(r));
+    return this.enrichIdentities(views);
+  }
+
+  /**
+   * 批量补全成员身份（username / email / isActive）。
+   *
+   * 失败姿态：**补全失败不能让成员列表整页 500**——它是展示增强，不是授权判定。
+   * 故 catch 后记 warn 并原样返回（字段缺席 = 前端退回显示 `#N`），与
+   * `listRolesForUser` 的读面 fail-open 同口径。
+   *
+   * usersService 缺席（既有极简单测装配）时直接返回，行为与改动前逐字节一致。
+   */
+  private async enrichIdentities(
+    views: ProjectMemberView[],
+  ): Promise<ProjectMemberView[]> {
+    if (!this.usersService || views.length === 0) return views;
+    let byId: Map<number, { username: string; email: string; isActive: boolean }>;
+    try {
+      byId = await this.usersService.findIdentitiesByIds(
+        views.map((v) => v.userId),
+      );
+    } catch (e: unknown) {
+      this.logger.warn(
+        `[project-access] member identity enrichment failed (showing ids only): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      return views;
+    }
+    return views.map((v) => {
+      const hit = byId.get(v.userId);
+      // 查不到 ≠ 补全失败：用户已被删除（无 FK 的残留成员行），如实回 null。
+      return {
+        ...v,
+        username: hit?.username ?? null,
+        email: hit?.email ?? null,
+        userActive: hit?.isActive ?? null,
+      };
+    });
   }
 
   async addMember(
@@ -182,19 +236,19 @@ export class ProjectAccessService {
     const updated = await this.repo.update({ projectId, userId }, { role });
     if (updated.affected) {
       const row = await this.repo.findOne({ where: { projectId, userId } });
-      if (row) return this.toView(row);
+      if (row) return this.toEnrichedView(row);
       throw new AppError(ErrorCode.PROJECT_NOT_MEMBER, { userId, projectId });
     }
     try {
       const row = this.repo.create({ projectId, userId, role });
-      return this.toView(await this.repo.save(row));
+      return this.toEnrichedView(await this.repo.save(row));
     } catch (err) {
       // 并发 addMember：另一个请求刚插入了同一 (projectId, userId) —— 退化成更新（幂等收敛）。
       const retried = await this.repo.update({ projectId, userId }, { role });
       if (!retried.affected) throw err;
       const row = await this.repo.findOne({ where: { projectId, userId } });
       if (!row) throw err;
-      return this.toView(row);
+      return this.toEnrichedView(row);
     }
   }
 
@@ -215,7 +269,7 @@ export class ProjectAccessService {
     if (!row) {
       throw new AppError(ErrorCode.PROJECT_NOT_MEMBER, { userId, projectId });
     }
-    return this.toView(row);
+    return this.toEnrichedView(row);
   }
 
   /**
@@ -303,5 +357,18 @@ export class ProjectAccessService {
       role: row.role,
       createdAt: row.createdAt,
     };
+  }
+
+  /**
+   * 单行视图 + 身份补全（addMember / updateMember 的回执用）。
+   *
+   * 与 `enrichIdentities` 同口径：补全失败只 warn、字段缺席——写面成功与否
+   * 不该被一个展示字段的查询连坐。
+   */
+  private async toEnrichedView(
+    row: ProjectMember,
+  ): Promise<ProjectMemberView> {
+    const [view] = await this.enrichIdentities([this.toView(row)]);
+    return view;
   }
 }

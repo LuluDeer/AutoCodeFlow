@@ -233,7 +233,10 @@ describe("ProjectAccessService（AUTH-02）", () => {
     // 授予对象必须在场（fail-closed），与 hasProjectRole 的判定侧姿态相反。
     describe("addMember 目标用户存在性（R32-A5）", () => {
       it("目标用户不存在 → 404 USER_ID_NOT_FOUND，且不落成员行", async () => {
-        const users = { findByIdOrNull: jest.fn().mockResolvedValue(null) };
+        const users = {
+          findByIdOrNull: jest.fn().mockResolvedValue(null),
+          findIdentitiesByIds: jest.fn().mockResolvedValue(new Map()),
+        };
         const { svc, repo } = makeService({}, users);
 
         await expect(
@@ -247,7 +250,10 @@ describe("ProjectAccessService（AUTH-02）", () => {
       });
 
       it("目标用户存在 → 照常落行（零行为变化）", async () => {
-        const users = { findByIdOrNull: jest.fn().mockResolvedValue({ id: 8 }) };
+        const users = {
+          findByIdOrNull: jest.fn().mockResolvedValue({ id: 8 }),
+          findIdentitiesByIds: jest.fn().mockResolvedValue(new Map()),
+        };
         const { svc, repo } = makeService({}, users);
 
         await svc.addMember("p1", 8, "viewer");
@@ -275,6 +281,7 @@ describe("ProjectAccessService（AUTH-02）", () => {
       it("存在性查询抖动 → 503 DEPENDENCY_UNAVAILABLE，且绝不落成员行（fail-closed）", async () => {
         const users = {
           findByIdOrNull: jest.fn().mockRejectedValue(new Error("connection reset")),
+          findIdentitiesByIds: jest.fn().mockResolvedValue(new Map()),
         };
         const { svc, repo } = makeService({}, users);
         const warnSpy = jest
@@ -408,6 +415,96 @@ describe("ProjectAccessService（AUTH-02）", () => {
           createdAt: new Date(1),
         },
       ]);
+    });
+
+    // 2026-10-23 真实缺陷：成员面板此前只显示「用户 1」——端点只回裸主键。
+    // 三态语义必须分清（有值 / 用户已删除 / 补全不可用），否则前端只能二选一：
+    // 要么编造用户名，要么永远显示 ID。
+    describe("成员身份补全（listMembers）", () => {
+      const row = (userId: number) => ({
+        id: `m${userId}`,
+        projectId: "p1",
+        userId,
+        role: "viewer",
+        createdAt: new Date(1),
+      });
+
+      it("补全成功：带上 username/email/userActive", async () => {
+        const users = {
+          findByIdOrNull: jest.fn(),
+          findIdentitiesByIds: jest.fn().mockResolvedValue(
+            new Map([
+              [7, { id: 7, username: "alice", email: "a@x", isActive: true }],
+              [8, { id: 8, username: "bob", email: "b@x", isActive: false }],
+            ]),
+          ),
+        };
+        const { svc, repo } = makeService({}, users);
+        repo.find.mockResolvedValue([row(7), row(8)]);
+
+        const rows = await svc.listMembers("p1");
+
+        expect(users.findIdentitiesByIds).toHaveBeenCalledWith([7, 8]);
+        expect(rows.map((r) => [r.userId, r.username, r.email, r.userActive])).toEqual([
+          [7, "alice", "a@x", true],
+          [8, "bob", "b@x", false],
+        ]);
+      });
+
+      it("查不到该用户 → username 为 null（用户已删除，如实降级不编造）", async () => {
+        const users = {
+          findByIdOrNull: jest.fn(),
+          findIdentitiesByIds: jest.fn().mockResolvedValue(new Map()),
+        };
+        const { svc, repo } = makeService({}, users);
+        repo.find.mockResolvedValue([row(99)]);
+
+        const [member] = await svc.listMembers("p1");
+
+        expect(member.username).toBeNull();
+        expect(member.email).toBeNull();
+        expect(member.userActive).toBeNull();
+        expect(member.userId).toBe(99);
+      });
+
+      it("补全查询抛错 → 不整页失败，字段缺席（前端退回 #N）", async () => {
+        const users = {
+          findByIdOrNull: jest.fn(),
+          findIdentitiesByIds: jest.fn().mockRejectedValue(new Error("db down")),
+        };
+        const { svc, repo } = makeService({}, users);
+        repo.find.mockResolvedValue([row(7)]);
+
+        const [member] = await svc.listMembers("p1");
+
+        expect(member.userId).toBe(7);
+        // 键缺席 ≠ null：前者是「没查成」，后者是「查过了，人没了」。
+        expect("username" in member).toBe(false);
+      });
+
+      it("usersService 未接线（极简装配）→ 保持改动前的形状", async () => {
+        const { svc, repo } = makeService();
+        repo.find.mockResolvedValue([row(7)]);
+
+        const [member] = await svc.listMembers("p1");
+
+        expect("username" in member).toBe(false);
+      });
+
+      it("addMember 回执也带身份（管理员加完立刻能看见是谁）", async () => {
+        const users = {
+          findByIdOrNull: jest.fn().mockResolvedValue({ id: 8 }),
+          findIdentitiesByIds: jest.fn().mockResolvedValue(
+            new Map([[8, { id: 8, username: "bob", email: "b@x", isActive: true }]]),
+          ),
+        };
+        const { svc } = makeService({}, users);
+
+        const added = await svc.addMember("p1", 8, "viewer");
+
+        expect(added.username).toBe("bob");
+        expect(added.userActive).toBe(true);
+      });
     });
   });
 });

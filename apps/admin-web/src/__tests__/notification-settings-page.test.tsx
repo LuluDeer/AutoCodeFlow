@@ -94,6 +94,32 @@ function renderPage() {
 }
 
 describe('渠道 Tab 渲染与启停（QA-03）', () => {
+  // 2026-10-23：全渠道禁用 = 平台不会发出任何告警。此前页面只有一排灰标签，
+  // 运维很容易以为"通知配好了"。这条用例钉住顶部告警条的两个边界。
+  describe('全渠道禁用告警（2026-10-23）', () => {
+    it('全部渠道禁用 → 顶部出现「没有任何可用的告警渠道」', async () => {
+      mockedClient.get.mockImplementation((url: string) => {
+        if (String(url) === '/notification/channels') {
+          return Promise.resolve([
+            { key: 'email', name: '邮件', enabled: false, config: {}, description: '' },
+            { key: 'slack', name: 'Slack', enabled: false, config: {}, description: '' },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+      renderPage();
+      expect(await screen.findByTestId('notif-all-disabled')).toBeTruthy();
+      expect(screen.getByText('当前没有任何可用的告警渠道')).toBeTruthy();
+    });
+
+    it('只要有一个渠道启用 → 不出现该告警', async () => {
+      renderPage();
+      // channelsFixture 里 email enabled=true
+      expect(await screen.findByText('启用此通知渠道：')).toBeTruthy();
+      expect(screen.queryByTestId('notif-all-disabled')).toBeNull();
+    });
+  });
+
   it('渲染渠道 Tab 与启用状态 Tag，禁用渠道面板显示 Alert 提示', async () => {
 renderPage();
     // 邮件 Tab 默认激活（activeTab 初始 'email'）

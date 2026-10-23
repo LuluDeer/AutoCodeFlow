@@ -281,6 +281,15 @@ acf app deploy <appId> --executor <id>                    # 部署应用到执�
 ```
 
 CI 场景推荐用环境变量注入凭证（不落盘）：`ACF_API_URL` / `ACF_TOKEN`。
+
+**API Key 也能直接给 `acf` 用**——同一套 `Bearer` 通道，无需先登录：
+
+```bash
+ACF_API_URL=http://localhost:3105 ACF_TOKEN=acf_... acf task list
+```
+
+scope 决定能跑哪些子命令（`readonly` 只读 / `trigger` +单任务触发 / `manage` +其余写面）。两条边界：`/api-keys`、`auth`、`users`、`config` 是 **JWT-only 面**，所以 `acf login` / `acf apikey …` 用 API Key 会 401；且纯 API Key 没有 refresh token，401 时 CLI 会清掉**本地已保存**的登录态（env 注入的 `ACF_TOKEN` 不受影响）。
+
 完整命令地图见 [CLI 命令地图](docs/atlas/05-interfaces/cli.md)。
 
 ### SDK
@@ -325,15 +334,20 @@ ctx.report_success(summary="etl done", duration_ms=412)
       "args": ["-y", "autocodeflow-mcp-server"],
       "env": {
         "AUTOCODEFLOW_API_URL": "http://localhost:3105",
-        "AUTOCODEFLOW_API_TOKEN": "<your-jwt-token>"
+        "AUTOCODEFLOW_API_TOKEN": "acf_<你的 API Key>"
       }
     }
   }
 }
 ```
 
-56 个工具覆盖任务、执行、执行器、应用部署、SOP、审计与审批；权限由 JWT 角色在服务端强制。
-详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)。
+`AUTOCODEFLOW_API_TOKEN` **既接受 API Key，也接受用户 JWT**：
+
+- **API Key（常驻 MCP 推荐）**——中台「系统 → 系统设置 → API Keys → 新建」，选 `readonly` / `trigger` / `manage`，弹窗里的 `acf_…` 明文**只显示一次**（服务端只存哈希）。可设有效期或永不过期，吊销下一次调用即生效。它是 JWT 的真子集，但 MCP 的 56 个工具都不碰凭证/用户/系统配置端点，所以够用。
+- **用户 JWT（只有它能用 ADMIN-only 工具）**——中台前端没有「复制我的 token」入口，用 `acf login` 后从 `~/.config/acf-cli/config.json` 取 `token`（15 分钟）；再配 `AUTOCODEFLOW_API_REFRESH_TOKEN`（同文件的 `refreshToken`，30 天）才能在 401 时自动续期，否则每 15 分钟要重启进程换新 token。
+
+56 个工具覆盖任务、执行、执行器、应用部署、SOP、审计与审批；权限由 **API Key scope 或 JWT 角色**在服务端强制。
+详见 [packages/mcp-server/README.md](packages/mcp-server/README.md) 与 [MCP 工具地图](docs/atlas/05-interfaces/mcp-tools.md)。
 
 ## 📦 技术栈
 

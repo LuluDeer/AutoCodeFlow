@@ -394,6 +394,9 @@ export default function ExecutorListPage() {
           type="warning"
           showIcon
           title={t('execList.online.alert')}
+          // 2026-10-23：告知**自动清理**策略，否则运维不知道这些离线行
+          // 会不会自己消失、还是需要手动清（保留天数可在系统配置里改）。
+          description={t('execList.online.alertDesc')}
           style={{ marginBottom: 16 }}
           closable
         />

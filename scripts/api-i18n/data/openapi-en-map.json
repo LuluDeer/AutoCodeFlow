@@ -847,6 +847,7 @@
   "撤销自己发起的待审批部署请求（仅发起人）": "Cancel a pending-approval deployment request you raised (requester only)",
   "撤销除当前会话外我的全部会话": "Revoke all my sessions except the current one",
   "撤销（软删除）我的 API Key": "Revoke (soft-delete) my API Key",
+  "永久删除我的 API Key（仅限已吊销/已过期）": "Permanently delete my API Key (revoked or expired keys only)",
   "操作人用户名的快照（用户被删除后仍保留）": "Snapshot of the operator username (retained after the user is deleted)",
   "操作客户端 IP": "Operating client IP",
   "操作者用户 ID（自迁移 1790000000023 起为整数）；操作者未知时为 null（例如在记录操作者上下文之前写入的行）": "Actor user ID (an integer since migration 1790000000023); null when the actor is unknown (for example rows written before the actor context was recorded)",
@@ -1311,5 +1312,13 @@
   "（过滤后）行集合的真实总数": "True total of the (filtered) row set",
   "库里出现过（去重、按字母序）的审计动作取值。来源于 audit_logs.action 的历史写入，故可能包含已下线的动作。": "Distinct audit action values seen in the database (deduplicated, alphabetical). Sourced from historical writes to audit_logs.action, so it may include actions that are no longer emitted.",
   "审计动作清单（去重，仅管理员）": "Distinct audit action list (ADMIN only)",
-  "返回 audit_logs 中出现过的所有 action（去重、字母序），供审计页的 action 过滤器渲染可发现下拉。不新增动作、不改任何既有响应形状；空库返回空数组而非 404。": "Returns every action that has ever appeared in audit_logs (deduplicated, alphabetical) so the audit page can render a discoverable action filter. Adds no new actions and changes no existing response shape; an empty database returns an empty array rather than a 404."
+  "返回 audit_logs 中出现过的所有 action（去重、字母序），供审计页的 action 过滤器渲染可发现下拉。不新增动作、不改任何既有响应形状；空库返回空数组而非 404。": "Returns every action that has ever appeared in audit_logs (deduplicated, alphabetical) so the audit page can render a discoverable action filter. Adds no new actions and changes no existing response shape; an empty database returns an empty array rather than a 404.",
+  "用户名；null = 用户已被删除，缺席 = 身份补全不可用": "Username; null = the user has been deleted, absent = identity enrichment unavailable",
+  "邮箱；与 username 同三态语义": "Email; same three-state semantics as username",
+  "属主账号是否启用（禁用账号的成员行仍存在，但已无法登录）": "Whether the owning account is enabled (a disabled account keeps its member row but can no longer sign in)",
+  "归档 SOP（停止派新单，保留全部历史）": "Archive a SOP (stops new assignments, keeps the full history)",
+  "恢复已归档的 SOP": "Restore an archived SOP",
+  "取消该 SOP 下所有未结束的指派（归档前置动作）": "Cancel every unfinished assignment of this SOP (precondition for archiving)",
+  "{ cancelled: 实际取消的条数 }": "{ cancelled: number of assignments actually cancelled }",
+  "实际取消的条数（0 = 本来就没有未结束指派）": "Number of assignments actually cancelled (0 = there were none)"
 }

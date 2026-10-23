@@ -142,7 +142,7 @@ export function confirmBatchReloadConfig(params: BatchConfirmParams): void {
 }
 
 /**
- * 批量/单台 Token 轮换 confirm——高危二次确认，列出受影响执行器并明示
+ * 批量 Token 轮换 confirm——高危二次确认，列出受影响执行器并明示
  * 「执行器将短暂重新注册」；确认后并行执行，成功台的明文 token 经
  * onTokenSummary 一次性展示（结果弹窗由调用方持有）。
  */
@@ -187,6 +187,79 @@ export function confirmBatchRotateToken(params: BatchConfirmParams): void {
         onDone?.();
       } catch (err) {
         showApiError(err, t('batchAction.rotateFail'));
+      } finally {
+        onSettle?.();
+      }
+    },
+  });
+}
+
+/**
+ * 批量删除执行器记录（2026-10-23 新增）。
+ *
+ * 为什么需要：离线执行器只增不减——`DELETE /executors/:id` 早就有，但入口只
+ * 在**详情页**（一次一台）。实测 demo 库积了 21 台历史残留，清理要么点 21 次，
+ * 要么直接改库。这里补上多选批量清理。
+ *
+ * 三条安全约束（与单台删除同口径，不因批量而放松）：
+ *  1. **只允许删离线台**：在线台的记录被删后仍在跑任务、会以同一 address 重新
+ *     注册成新行，删除只是把「谁在跑」的历史抹掉。调用方传 offline 集合，
+ *     本函数再过滤一次（防御，不信任调用点）。
+ *  2. 二次确认里**逐台列出**，并把「删除后需重新注册」写进正文。
+ *  3. 逐台结果汇总（runBatch allSettled）——部分失败不掩盖成功台。
+ */
+export function confirmBatchRemoveExecutors(params: BatchConfirmParams): void {
+  const { executors, t, onStart, onSettle, onDone } = params;
+  const offline = executors.filter((ex) => ex.status !== 'online');
+  if (offline.length === 0) {
+    message.warning(t('batchAction.removeNoneOffline'));
+    return;
+  }
+  const skippedOnline = executors.length - offline.length;
+  confirmModal.confirm({
+    title: t('batchAction.removeConfirmTitle', { count: offline.length }),
+    width: 560,
+    content: (
+      <div>
+        <Alert
+          type="warning"
+          showIcon
+          title={t('batchAction.removeHighrisk.title')}
+          description={
+            skippedOnline > 0
+              ? `${t('batchAction.removeHighrisk.desc')} ${t('batchAction.removeSkipOnline', { count: skippedOnline })}`
+              : t('batchAction.removeHighrisk.desc')
+          }
+          style={{ marginBottom: 12 }}
+        />
+        <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+          {offline.map((ex) => (
+            <div key={ex.id} style={{ padding: '2px 0' }}>
+              <Text strong>{ex.appName}</Text>{' '}
+              <Text type="secondary" style={{ fontSize: 12 }}>{ex.address}</Text>
+            </div>
+          ))}
+        </div>
+      </div>
+    ),
+    okText: t('batchAction.confirmRemove'),
+    okButtonProps: { danger: true },
+    cancelText: t('batchAction.cancel'),
+    onOk: async () => {
+      onStart?.();
+      try {
+        const summary = await runBatch(
+          offline,
+          async (ex) => {
+            await executorsApi.remove(ex.id);
+            return {};
+          },
+          t('batchAction.operateFail'),
+        );
+        reportBatchSummary(summary, t('batchAction.batchRemoveOk'), t);
+        onDone?.();
+      } catch (err) {
+        showApiError(err, t('batchAction.removeFail'));
       } finally {
         onSettle?.();
       }

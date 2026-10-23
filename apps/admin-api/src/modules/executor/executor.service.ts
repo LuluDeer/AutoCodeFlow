@@ -5716,6 +5716,33 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /** R-09: 解析保留期（复用 logRetention.days，对齐 artifacts-retention 口径） */
+  /** 离线执行器台账保留天数（默认 7；运行期配置优先，见 cleanupOfflineExecutors）。 */
+  private static readonly DEFAULT_EXECUTOR_RETENTION_DAYS = 7;
+  /** 运行期配置键（中台「系统设置 → 系统配置」可改）。 */
+  private static readonly EXECUTOR_RETENTION_CONFIG_KEY =
+    "executor.retentionDays";
+
+  /**
+   * 2026-10-23：离线执行器台账保留天数。
+   *
+   * 读取顺序：`system_configs.executor.retentionDays`（运行期可改、即时生效）
+   * → 常量 7。非法值（非数字 / ≤0 / NaN）一律回落常量——这是**不可逆删除**
+   * 的判定参数，宁可保守也不要因为一个脏配置把台账清空。
+   * 读配置失败（键不存在 / 服务暂不可用）静默回落，不让清理 cron 挂掉。
+   */
+  private async resolveExecutorRetentionDays(): Promise<number> {
+    try {
+      const row = await this.systemConfigService?.findOne(
+        ExecutorService.EXECUTOR_RETENTION_CONFIG_KEY,
+      );
+      const parsed = Number.parseInt(row?.value ?? "", 10);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    } catch {
+      // 未配置 / 读取失败：回落默认值
+    }
+    return ExecutorService.DEFAULT_EXECUTOR_RETENTION_DAYS;
+  }
+
   private resolveMetricsRetentionDays(): number {
     const parsed = this.configService.get<number>("logRetention.days");
     if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
@@ -5858,11 +5885,16 @@ export class ExecutorService implements OnModuleInit {
   @Cron("0 0 * * * *")
   async cleanupOfflineExecutors() {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // 2026-10-23：保留天数从硬编码 7 天提为**运行期可配**
+    // （system_configs 的 `executor.retentionDays`，回落常量 7）。
+    // 理由：7 天对演示/测试环境太长（实测积了 21 台离线残留，界面上要清理
+    // 也只能逐台点进详情），而对"半年后才复查"的合规部署又太短。
+    const retentionDays = await this.resolveExecutorRetentionDays();
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
     const stale = await this.repo.find({
       where: {
         status: ExecutorStatus.OFFLINE,
-        lastHeartbeat: LessThan(sevenDaysAgo),
+        lastHeartbeat: LessThan(cutoff),
       },
       // 阶段 3 复查补口：多取 deviceFingerprint —— 删除后要按指纹把这条安装
       // 从冲突跟踪器里**同步**忘掉（否则删除只让它变成"幽灵历史指纹"，告警
@@ -5958,7 +5990,7 @@ export class ExecutorService implements OnModuleInit {
     });
     if (result.affected && result.affected > 0) {
       this.logger.log(
-        `Cleaned up ${result.affected} offline executor(s) (>7 days)`,
+        `Cleaned up ${result.affected} offline executor(s) (idle > ${retentionDays} days)`,
       );
       // 与手动删除同款卫生：清 pull 队列与派生缓存（best-effort）。
       for (const exec of deletable) {

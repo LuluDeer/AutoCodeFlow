@@ -108,6 +108,23 @@ export const sopsApi = {
     client.patch(`/sop/${id}`, data) as Promise<Sop>,
   publish: (id: string, data?: { bump?: 'patch' | 'minor' | 'major'; changelog?: string }) =>
     client.post(`/sop/${id}/publish`, data ?? {}) as Promise<{ sop: Sop; version: SopVersion }>,
+  /**
+   * 归档（2026-10-23）：`deprecated` 此前是死状态——SOP 只增不减，测试残留
+   * 永远留在列表里。归档**不删数据**（版本/指派/澄清全保留），只停止派新单。
+   * 有未结束指派时后端 409（`SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS`）。
+   */
+  deprecate: (id: string) => client.post(`/sop/${id}/deprecate`, {}) as Promise<Sop>,
+  /** 恢复已归档的 SOP（发布过 → published，未发布过 → draft）。 */
+  restore: (id: string) => client.post(`/sop/${id}/restore`, {}) as Promise<Sop>,
+  /**
+   * 取消该 SOP 下所有未结束的指派（2026-10-23）。
+   *
+   * 归档前置动作：`deprecate` 遇到未结束指派会 409，而此前没有任何取消入口
+   * （`cancelled` 是零写入点的死状态）。只取消 assigned/in_progress/blocked/stalled，
+   * 终态与全部历史数据原样保留。
+   */
+  cancelAssignments: (id: string) =>
+    client.post(`/sop/${id}/assignments/cancel`, {}) as Promise<{ cancelled: number }>,
   assign: (
     id: string,
     data: { version?: string; executorId?: string; executorAddress?: string },

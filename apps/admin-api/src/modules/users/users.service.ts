@@ -19,7 +19,7 @@ import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { ListUsersDto } from "./dto/list-users.dto";
 import { paginate } from "../../common/dto/pagination.dto";
-import { ILike } from "typeorm";
+import { ILike, In } from "typeorm";
 // NETOPT-3⑤/API-09 同款先例（task.service getAllExecutions）：LIKE 元字符
 // 转义 util 第三处落点（同模块函数导入，不新增依赖）。
 import { escapeLikePattern } from "../audit/audit.service";
@@ -204,6 +204,51 @@ export class UsersService implements OnModuleInit {
     id: number,
   ): Promise<import("./entities/user.entity").User | null> {
     return this.usersRepository.findOne({ where: { id } });
+  }
+
+  /**
+   * 批量按 id 取「显示身份」（username / email / isActive），一次查询。
+   *
+   * 为什么需要（2026-10-23 真实缺陷）：`GET /projects/:id/members` 只返回
+   * `userId: 1` 这种裸主键，管理台成员面板上就显示「用户 1」——管理员无从知道
+   * 这是谁，而**候选下拉里明明写着 `#1 admin`**，同一块 UI 两种口径。
+   * 前端无法自救：`/users` 是 ADMIN-only 且分页，普通成员（viewer）连读都读不到，
+   * 让它自己去拼用户名必然在非管理员视角退化成 ID。
+   *
+   * 故身份补全放在服务端、由成员列表端点一次带上。返回 Map 而非数组，调用方
+   * 按 userId 直取；**查不到就是查不到**（用户可能已被删除，`project_members`
+   * 无 FK），由调用方如实降级，不编造占位名。
+   *
+   * 失败姿态：抛错由调用方决定——成员列表把它当「身份不可用」而非整页失败
+   * （见 projects.controller.listMembers 的 catch）。
+   */
+  async findIdentitiesByIds(
+    ids: readonly number[],
+  ): Promise<Map<number, { id: number; username: string; email: string; isActive: boolean }>> {
+    const unique = [...new Set(ids)].filter((id) => Number.isInteger(id));
+    const out = new Map<
+      number,
+      { id: number; username: string; email: string; isActive: boolean }
+    >();
+    if (unique.length === 0) return out;
+    const rows = await this.usersRepository.find({
+      where: { id: In(unique) },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        isActive: true,
+      },
+    });
+    for (const r of rows) {
+      out.set(r.id, {
+        id: r.id,
+        username: r.username,
+        email: r.email,
+        isActive: r.isActive,
+      });
+    }
+    return out;
   }
 
   async findByUsername(username: string) {

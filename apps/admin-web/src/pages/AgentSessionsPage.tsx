@@ -474,6 +474,11 @@ export default function AgentSessionsPage() {
           loading={loading}
           columns={sessionColumns}
           dataSource={items}
+          // 2026-10-23：此前无 scroll——固定列合计 770（kind 130 + trigger 180 +
+          // usage 200 + startedAt 170 + 操作 90）+ 标题弹性列最小 160 ≈ 930。
+          // 窄屏下 antd 会把固定列压到比内容窄（「运行中 · 1 步 · 0 令牌 · 0 工具调用」
+          // 首当其冲），补 scroll.x 让横向滚动接管。
+          scroll={{ x: 960 }}
           locale={{
             // 空态区分：筛选无匹配给「清除筛选」出口（避免用户以为会话真没了）；
             // 真空态如实提示（会话由运行时产生，无人工入口可引导）。

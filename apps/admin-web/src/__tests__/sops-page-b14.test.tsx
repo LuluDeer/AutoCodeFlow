@@ -20,6 +20,9 @@ vi.mock('../api/sops', () => ({
     draft: vi.fn(),
     updateDraft: vi.fn(),
     publish: vi.fn(),
+    deprecate: vi.fn(),
+    restore: vi.fn(),
+    cancelAssignments: vi.fn(),
     assign: vi.fn(),
     versions: vi.fn(),
     assignments: vi.fn(),
@@ -277,5 +280,147 @@ describe('SopsPage UX 边界（首载失败态 / 草稿标题必填）', () => {
     fireEvent.click(screen.getByText('保存草稿'));
     await waitFor(() => expect(screen.getByText('请填写标题')).toBeTruthy());
     expect(sopsApi.draft).not.toHaveBeenCalled();
+  });
+
+  // 2026-10-23：归档 / 恢复。此前 `deprecated` 是死状态——SOP 只增不减，
+  // 测试残留（实测 16 条 headless-smoke-*）永远留在列表里。
+  describe('归档 / 恢复（2026-10-23）', () => {
+    const renderPage = () =>
+      render(
+        <MemoryRouter>
+          <SopsPage />
+        </MemoryRouter>,
+      );
+
+    it('已发布行显示「归档」，确认后调 deprecate 并刷新列表', async () => {
+      vi.mocked(sopsApi.deprecate).mockReset().mockResolvedValue({
+        ...sop,
+        status: 'deprecated',
+      } as Sop);
+      renderPage();
+      await screen.findByText('Demo SOP');
+
+      fireEvent.click(await screen.findByTestId('sop-archive-demo'));
+      await waitFor(() => expect(screen.getByText(/归档 SOP「demo」/)).toBeTruthy());
+      // Popconfirm 的确认键是弹层里最后一个按钮
+      const layerBtns = Array.from(
+        document.querySelectorAll('.ant-popover button'),
+      ) as HTMLButtonElement[];
+      await act(async () => {
+        fireEvent.click(layerBtns[layerBtns.length - 1]);
+      });
+
+      await waitFor(() => expect(sopsApi.deprecate).toHaveBeenCalledWith('sop-1'));
+      // 成功后重新拉列表
+      await waitFor(() => expect(vi.mocked(sopsApi.list).mock.calls.length).toBeGreaterThan(1));
+    });
+
+    it('已归档行显示「恢复」（不再显示归档），确认后调 restore', async () => {
+      vi.mocked(sopsApi.list).mockResolvedValue({
+        items: [{ ...sop, status: 'deprecated' } as Sop],
+        total: 1,
+      });
+      vi.mocked(sopsApi.restore).mockReset().mockResolvedValue(sop);
+      renderPage();
+      await screen.findByText('Demo SOP');
+
+      expect(screen.queryByTestId('sop-archive-demo')).toBeNull();
+      fireEvent.click(await screen.findByTestId('sop-restore-demo'));
+      await waitFor(() => expect(screen.getByText(/恢复 SOP「demo」/)).toBeTruthy());
+      const layerBtns = Array.from(
+        document.querySelectorAll('.ant-popover button'),
+      ) as HTMLButtonElement[];
+      await act(async () => {
+        fireEvent.click(layerBtns[layerBtns.length - 1]);
+      });
+      await waitFor(() => expect(sopsApi.restore).toHaveBeenCalledWith('sop-1'));
+    });
+
+    it('归档被 409 拒绝（有未结束指派）→ 给出「取消指派并归档」二段确认', async () => {
+      // 2026-10-23：`cancelled` 曾是零写入点的死状态，遇到 409 只能改库。
+      // 现在 409 会转成可行动的二段确认：取消未结束指派 → 立即重试归档。
+      vi.mocked(sopsApi.deprecate)
+        .mockReset()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('conflict'), {
+            response: {
+              data: {
+                errorCode: 'SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS',
+                params: { slug: 'demo', count: 1 },
+                message: 'SOP demo 还有 1 个未结束的指派，先处理完再归档',
+              },
+            },
+          }),
+        )
+        .mockResolvedValueOnce({ ...sop, status: 'deprecated' } as Sop);
+      vi.mocked(sopsApi.cancelAssignments).mockReset().mockResolvedValue({ cancelled: 1 });
+
+      renderPage();
+      await screen.findByText('Demo SOP');
+
+      fireEvent.click(await screen.findByTestId('sop-archive-demo'));
+      await waitFor(() => expect(screen.getByText(/归档 SOP「demo」/)).toBeTruthy());
+      const popBtns = Array.from(
+        document.querySelectorAll('.ant-popover button'),
+      ) as HTMLButtonElement[];
+      await act(async () => {
+        fireEvent.click(popBtns[popBtns.length - 1]);
+      });
+
+      // 二段确认出现（Modal.confirm 的标题写明未结束指派）
+      await waitFor(() =>
+        expect(document.body.textContent).toContain('还有未结束的指派'),
+      );
+      const confirmBtns = Array.from(
+        document.querySelectorAll('.ant-modal-confirm-btns button'),
+      ) as HTMLButtonElement[];
+      await act(async () => {
+        fireEvent.click(confirmBtns[confirmBtns.length - 1]);
+      });
+
+      await waitFor(() =>
+        expect(sopsApi.cancelAssignments).toHaveBeenCalledWith('sop-1'),
+      );
+      // 取消后自动重试归档（用户上一步的意图不丢）
+      await waitFor(() => expect(sopsApi.deprecate).toHaveBeenCalledTimes(2));
+    });
+
+    it('409 确认框提供「先查看未结束指派」→ 关闭后抽屉落到「指派」Tab', async () => {
+      vi.mocked(sopsApi.deprecate)
+        .mockReset()
+        .mockRejectedValue(
+          Object.assign(new Error('conflict'), {
+            response: {
+              data: {
+                errorCode: 'SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS',
+                params: { slug: 'demo', count: 1 },
+                message: '还有 1 个未结束的指派',
+              },
+            },
+          }),
+        );
+      renderPage();
+      await screen.findByText('Demo SOP');
+
+      fireEvent.click(await screen.findByTestId('sop-archive-demo'));
+      await waitFor(() => expect(screen.getByText(/归档 SOP「demo」/)).toBeTruthy());
+      const popBtns = Array.from(document.querySelectorAll('.ant-popover button')) as HTMLButtonElement[];
+      await act(async () => {
+        fireEvent.click(popBtns[popBtns.length - 1]);
+      });
+
+      // 二段确认里出现「先查看未结束的指派」
+      const viewBtn = await screen.findByText('先查看未结束的指派');
+      await act(async () => {
+        fireEvent.click(viewBtn);
+      });
+
+      // 抽屉打开且停在「指派」Tab（该 Tab 的表格才会渲染指派 id）
+      await waitFor(() => expect(screen.getAllByText(/指派|工单/).length).toBeGreaterThan(0));
+      // 关键证据：assignments 接口被调用（只有打开详情才会拉）
+      expect(sopsApi.assignments).toHaveBeenCalledWith('sop-1');
+      // 且没有误触发取消
+      expect(sopsApi.cancelAssignments).not.toHaveBeenCalled();
+    });
   });
 });

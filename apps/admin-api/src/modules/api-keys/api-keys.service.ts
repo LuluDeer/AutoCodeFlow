@@ -199,6 +199,52 @@ export class ApiKeysService {
     return this.toView(row);
   }
 
+  /**
+   * Hard delete（永久删除）：只允许删**已失效**的行（已吊销 / 已过期）。
+   *
+   * 为什么不让活跃 key 一步删掉：吊销与删除是两种语义——吊销是「立即止血」，
+   * 会留下 `apikey.revoke` 审计行；删除是「清理不再有活性的行」。把两者合成
+   * 一次点击，会让在用凭据被静默抹掉，且审计链里只剩一条 delete，事后无法
+   * 区分「先吊销后清理」与「直接删掉一把在用的 key」。
+   *
+   * 属主校验与 revoke 同口径（非属主一律 null → 上层 404，不泄露存在性）。
+   * 审计 detail 里保留 name / keyPrefix / 删除时的状态，行虽删除但证据可追溯。
+   */
+  async remove(
+    id: number,
+    userId: number,
+    username?: string | null,
+    ip?: string | null,
+  ): Promise<ApiKeyView | null> {
+    const row = await this.repo.findOne({ where: { id } });
+    if (!row || row.userId !== userId) return null;
+    const expired =
+      !!row.expiresAt && row.expiresAt.getTime() <= Date.now();
+    if (!row.revokedAt && !expired) {
+      throw new AppError("API_KEY_DELETE_ACTIVE_FORBIDDEN", { apiKeyId: id });
+    }
+    // 按主键删除：属主与状态已在上面判定，where 只需 id（避免装配出的
+    // `{ id, userId }` 形态被 ADR-026 守卫误读成「多键但无状态谓词」）。
+    await this.repo.delete({ id });
+    await this.safeAudit({
+      userId,
+      username: username ?? undefined,
+      action: "apikey.delete",
+      resource: "api_key",
+      resourceId: String(id),
+      detail: {
+        name: row.name,
+        keyPrefix: row.keyPrefix,
+        scope: row.scope,
+        // 删除时的失效依据（二者其一非空），供凭据卫生审计回溯。
+        revokedAt: row.revokedAt,
+        expiresAt: row.expiresAt,
+      },
+      ip: ip ?? undefined,
+    });
+    return this.toView(row);
+  }
+
   // ─── Authentication (guard branch) ──────────────────────────────────────
 
   /**

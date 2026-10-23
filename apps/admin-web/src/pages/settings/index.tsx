@@ -492,6 +492,36 @@ function SystemConfigTab() {
           </Tooltip>
         </Space>
       </div>
+      {/* 2026-10-23：日志保留期现在**运行期可配**（后端先读 system_configs 的
+          `logRetention.days`，没有再回落 env）。这条提示给出键名，让人知道该建
+          哪个键——否则「能改」等于「不知道改什么」。只在没配过该键时出现。 */}
+      {!isLoading && !configError && !list.some((c) => c.key === 'logRetention.days') && (
+        <Alert
+          type="info"
+          showIcon
+          data-testid="log-retention-hint"
+          style={{ marginBottom: 12 }}
+          title={t('sysSettings.config.logRetentionHint')}
+          description={t('sysSettings.config.logRetentionHintDesc')}
+          action={
+            isAdmin ? (
+              <Button
+                size="small"
+                onClick={() =>
+                  setEditTarget({
+                    key: 'logRetention.days',
+                    value: '30',
+                    valueType: 'number',
+                    description: t('sysSettings.config.logRetentionDesc'),
+                  } as SystemConfig)
+                }
+              >
+                {t('sysSettings.config.logRetentionAdd')}
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
       {/* UI-16：配置列表请求失败 → 页内错误块（重试=refetch）；失败态不再落「暂无数据」空表 */}
       {configError ? (
         <StateError

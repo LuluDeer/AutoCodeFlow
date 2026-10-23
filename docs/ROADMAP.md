@@ -32,13 +32,26 @@
 - [x] 瞬态 LLM 失败重试：中台 Agent 与执行器 `chatJson` 各重试一次（仅 transport/`ok:false`，无工具副作用）；selftest 覆盖“失败一次→成功”和“连续失败→如实报错”。
 - [x] 中台 Agent 会话上下文注入 + `list_tasks` 紧凑投影：真模型实测 1 次工具调用完成 3 个任务统计（此前 context 被忽略、工具结果截断导致 7 次重复调用）。
 - [x] 修复 GUI 截图格式：临时文件保留 `.png` 并校验 PNG 签名，不再把 PostScript 当 PNG。
+- [x] **demo 启动回归修复**：compose P1-1 把执行器对外地址改为 `${VAR:?}` 必填后，
+  `scripts/demo.sh` 没同步生成这两键 —— 干净机器上第一步就死在插值错误。
+  现已补齐生成 + 旧 `.env.demo` 复用时就地回填，并加「compose 必填变量 ↔ demo 生成」
+  通用守卫（`scripts/demo.selftest.sh`，覆盖 `docker-compose.yml` 里全部 `${VAR:?}`）。
+- [x] **SDK 文档真实性守卫**（原 P0-2）：`scripts/check-sdk-docs-truthfulness.mjs` ——
+  README / `docs/sdk-guide.md` 里任何用到 `ctx.` 的示例必须显式引入 SDK
+  （`@autocodeflow/sdk` / `autoflow_sdk`），且必须写明「Glue 脚本不安装 requirements」；
+  带 5 组负向夹具（无引入 / 无口径 / 错误口径会被抓，纯 Glue 脚本不误伤），已接 CI。
+- [x] **SEC-07 沙箱真机验收（本机）**：默认 compose 的 Python glue 任务实测 `success`；
+  secure overlay 实测 `TASK_SANDBOX=bwrap` + `seccomp:unconfined` 下 **bwrap 起不来时任务
+  fail-closed（不降级）**。顺带补口运行期可诊断性：`executor-python` 现在把
+  `bwrap: setting up uid map: Permission denied` 翻成「沙箱不可用…已 fail-closed」并归
+  `sandbox_unavailable`（此前只报 `script_error` / 「退出码 1」，用户会去查脚本）。
+  证据：[verify-2026-10-23-sec07-sandbox-failclosed.md](archive/verifies/verify-2026-10-23-sec07-sandbox-failclosed.md)。
 
 ## P0（下一轮，正确性优先）
 
 | 任务 | 为什么 | 验收 |
 |---|---|---|
-| **bwrap 默认策略收口** | 基础 compose 默认直跑；`docker-compose.secure.yml` 显式 opt-in。镜像已安装 bwrap，宿主需允许非特权 userns | `npm run test:compose-sandbox` 全绿；默认 `docker compose up` 的 Python 任务成功；secure overlay 在满足前置的宿主机上 bwrap 可用，否则 fail-closed |
-| **Node / Python SDK 文档真实性** | README 曾暗示 Glue 脚本有全局 `ctx`，实际必须显式引入 SDK；Glue 任务不安装 requirements | README / SDK 指南 / 示例一致；新增一个「glue 无 SDK」反例测试或文档守卫 |
+| **bwrap「可用分支」复验 + 前置口径收窄** | 本机只验证了 fail-closed 一侧；且实测**放 seccomp:unconfined 不够**——默认、`+apparmor:unconfined`、`--privileged` 全都失败（`Failed to make / slave` / `setting up uid map`）。overlay 的文档前置条件目前是乐观口径 | 找一台允许容器内 userns/mount 的宿主跑通 `bwrap-ok` 探针 + 一条 Python 任务成功；否则在 `deployment.md` 改成「Docker 内可能根本不可用，需宿主直跑或每任务独立 sandbox」 |
 | **桌面 Agent 中台闭环** | 真实 provider 的 plan→GUI→trial→acceptance 已跑通；还缺中台 SOP 指派/审批与 Windows 真机 | 中台指派 → 澄清 → 审批 → 执行 → 中台验收全链；无 provider 时 mock-plan demo 仍可回归 |
 | **Windows GUI 真机清单** | Windows 是桌面主战场；当前为 beta | focus/click/type/screenshot + 应用白名单在真实交互桌面逐项通过；锁屏/RDP 断开的边界写清楚 |
 

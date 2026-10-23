@@ -10,6 +10,7 @@ import {
   Input,
   Modal,
   Pagination,
+  Popconfirm,
   Select,
   Space,
   Table,
@@ -21,6 +22,10 @@ import {
 // TOAST-01：与全站一致走 utils/toast 出口（App 实例优先，暗色主题下样式正确；
 // 此前直接用 antd message 是本文件的历史偏离）。
 import { message } from '../utils/toast';
+// 归档被 409 拒绝时的二段确认（取消指派 → 重试归档）
+import { Modal as confirmModal } from '../utils/modal';
+// 归档/恢复的 409（有未结束指派）要透出后端文案而非通用失败
+import { showApiError } from '../utils/error';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
@@ -92,8 +97,14 @@ export default function SopsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  // 2026-10-23：归档/恢复逐行 loading（同一时刻只允许一个动作在飞）。
+  const [archivingId, setArchivingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<Sop | null>(null);
+  // 2026-10-23：详情抽屉的 Tab 改为**受控**。原因：归档被 409 拒绝时，
+  // 「先看看这些未结束指派」需要直接把抽屉打开到「指派」Tab——非受控 Tab
+  // 只能停在默认的第一个 Tab，用户还得自己再点一次。
+  const [detailTab, setDetailTab] = useState('contract');
   const [versions, setVersions] = useState<SopVersion[]>([]);
   const [assignments, setAssignments] = useState<SopAssignment[]>([]);
   const [clarifications, setClarifications] = useState<Record<string, SopClarification[]>>({});
@@ -161,7 +172,11 @@ export default function SopsPage() {
   // 自增 fetchSeq，仅最后一次请求允许 setState（与 AppDeploymentPage 同款）。
   const detailSeq = useRef(0);
 
-  const openDetail = useCallback(async (sop: Sop) => {
+  const openDetail = useCallback(async (sop: Sop, tab = 'contract') => {
+    // tab 默认回到首个 Tab；归档 409 的「查看指派」传 'assignments'。
+    // 用参数而不是「先 openDetail 再 setDetailTab」：后者依赖 React 批处理
+    // 与 effect 顺序，改动一处 state 初始化就可能翻转，参数化不依赖时序。
+    setDetailTab(tab);
     const seq = ++detailSeq.current;
     setDetail(sop);
     try {
@@ -349,6 +364,98 @@ useEffect(() => {
     }
   }, [draft, creatingDraft, load, t]);
 
+  // 2026-10-23：归档 / 恢复。此前 `deprecated` 是死状态——SOP 只增不减，
+  // 测试残留（实测 16 条 headless-smoke-*）永远留在列表里。
+  // 语义：归档不删数据（版本/指派/澄清全保留），只停止派新单。
+  const mutateArchive = useCallback(
+    async (record: Sop, action: 'deprecate' | 'restore') => {
+      setArchivingId(record.id);
+      try {
+        if (action === 'deprecate') {
+          await sopsApi.deprecate(record.id);
+          message.success(t('sops.archive.ok', { slug: record.slug }));
+        } else {
+          await sopsApi.restore(record.id);
+          message.success(t('sops.restore.ok', { slug: record.slug }));
+        }
+        await load();
+        // 抽屉正开着同一张 SOP 时同步刷新（否则状态 Tag 停留在旧值）
+        if (detail?.id === record.id) void openDetail(record);
+      } catch (err: unknown) {
+        // 409「有未结束指派」是**可行动**的失败：此前只能去改库（cancelled 是
+        // 零写入点的死状态）。这里直接给出下一步——确认后取消全部未结束指派
+        // 并立即重试归档。
+        const code = (err as { response?: { data?: { errorCode?: string } } })
+          ?.response?.data?.errorCode;
+        if (code === 'SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS') {
+          // 2026-10-23：给两条路——**先看清楚再决定**（打开详情抽屉的指派 Tab），
+          // 或直接取消并归档。只有「取消」一条路等于逼用户盲签：他不知道
+          // 这些工单是谁的、跑到哪一步、取消会不会丢掉正在跑的结果。
+          let openDetailAfterClose = false;
+          confirmModal.confirm({
+            title: t('sops.archive.cancelAssignmentsTitle', { slug: record.slug }),
+            content: (
+              <>
+                <p style={{ marginBottom: 8 }}>{t('sops.archive.cancelAssignmentsDesc')}</p>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    openDetailAfterClose = true;
+                    // 直接打开详情（不赌 afterClose），再关掉确认框
+                    void openDetail(record, 'assignments');
+                    confirmModal.destroyAll?.();
+                  }}
+                >
+                  {t('sops.archive.viewAssignments')}
+                </Button>
+              </>
+            ),
+            okText: t('sops.archive.cancelAssignmentsOk'),
+            okButtonProps: { danger: true },
+            cancelText: t('sops.cancel'),
+            // 「先查看」不依赖 afterClose：antd 的关闭动画时机在 jsdom 下不可靠
+            // （实测 afterClose 未触发，抽屉不打开）。点击时直接 openDetail，
+            // 再让确认框自行关闭——打开抽屉与关闭弹窗互不依赖。
+            afterClose: () => {
+              if (openDetailAfterClose) {
+                void openDetail(record, 'assignments');
+              }
+            },
+            onOk: async () => {
+              try {
+                const r = await sopsApi.cancelAssignments(record.id);
+                message.success(
+                  t('sops.archive.cancelAssignmentsDone', { count: r.cancelled }),
+                );
+                // 取消后立即重试归档（用户上一步的意图不该丢）
+                await sopsApi.deprecate(record.id);
+                message.success(t('sops.archive.ok', { slug: record.slug }));
+                await load();
+                if (detail?.id === record.id) void openDetail(record);
+              } catch (e: unknown) {
+                showApiError(e, t('sops.archive.fail'));
+              }
+            },
+          });
+          return;
+        }
+        // 其余 409 / 失败要把后端口径原样透出——这类失败有明确下一步，
+        // 吞成「操作失败」等于让运维去翻日志。
+        // 用 if 分支而不是三元表达式：i18n 缺键守卫（i18n-key-check）只认
+        // **静态字面量键**，`t(cond ? 'a' : 'b')` 会被判成「动态键」并拒绝。
+        // 两处都是编译期已知的键，写成两个 t() 调用即可静态校验。
+        if (action === 'deprecate') {
+          showApiError(err, t('sops.archive.fail'));
+        } else {
+          showApiError(err, t('sops.restore.fail'));
+        }
+      } finally {
+        setArchivingId(null);
+      }
+    },
+    [detail?.id, load, openDetail, t],
+  );
+
   const sopColumns: ColumnsType<Sop> = [
     { title: t('sops.col.slug'), dataIndex: 'slug', width: 200 },
     { title: t('sops.col.title'), dataIndex: 'title', ellipsis: true },
@@ -357,11 +464,41 @@ useEffect(() => {
     { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
-      width: 100,
+      width: 190,
       render: (_, record) => (
-        <Button size="small" onClick={() => void openDetail(record)}>
-          {t('sops.view')}
-        </Button>
+        <Space size={4}>
+          <Button size="small" onClick={() => void openDetail(record)}>
+            {t('sops.view')}
+          </Button>
+          {record.status === 'deprecated' ? (
+            <Popconfirm
+              title={t('sops.restore.confirmTitle', { slug: record.slug })}
+              description={t('sops.restore.confirmDesc')}
+              okText={t('sops.restore.okBtn')}
+              cancelText={t('sops.cancel')}
+              onConfirm={() => void mutateArchive(record, 'restore')}
+            >
+              <Button size="small" data-testid={`sop-restore-${record.slug}`}
+                loading={archivingId === record.id}>
+                {t('sops.restore.btn')}
+              </Button>
+            </Popconfirm>
+          ) : (
+            <Popconfirm
+              title={t('sops.archive.confirmTitle', { slug: record.slug })}
+              description={t('sops.archive.confirmDesc')}
+              okText={t('sops.archive.okBtn')}
+              okButtonProps={{ danger: true }}
+              cancelText={t('sops.cancel')}
+              onConfirm={() => void mutateArchive(record, 'deprecate')}
+            >
+              <Button size="small" danger data-testid={`sop-archive-${record.slug}`}
+                loading={archivingId === record.id}>
+                {t('sops.archive.btn')}
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
       ),
     },
   ];
@@ -479,6 +616,10 @@ useEffect(() => {
           dataSource={items}
           pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
           size="middle"
+          // 2026-10-23：此前无 scroll——列宽合计 770（slug 200 + 状态 110 +
+          // 版本 100 + 更新时间 170 + 操作 190）+ 标题弹性列最小 160 ≈ 930。
+          // 抽屉/小窗下会把「操作」里的归档按钮挤到看不见，补横向滚动兜底。
+          scroll={{ x: 940 }}
           // UX-05：加载失败时不再渲染「暂无数据」空态（上方 StateError 已如实呈现
           // 失败原因与重试入口），避免把失败读成空列表（ExecutorPackagesPage 同款）
           // UI-08：首屏（无数据未出错）以骨架屏替代 Spin；翻页/刷新仍走表格 loading。
@@ -504,6 +645,8 @@ useEffect(() => {
         <div ref={drawerA11y.contentRef}>
         {detail && (
           <Tabs
+            activeKey={detailTab}
+            onChange={setDetailTab}
             items={[
               {
                 key: 'contract',

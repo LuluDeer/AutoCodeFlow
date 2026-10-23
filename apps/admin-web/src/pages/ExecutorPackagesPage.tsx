@@ -114,6 +114,21 @@ function fmtBytes(b?: number) {
 }
 
 /**
+ * 「上传者」列的可读化（导出供测试）。
+ *
+ * 该字段有两个来源，长度差一个数量级：
+ *   · 真人上传 → `admin`（用户名，短）；
+ *   · 执行器 Agent 自动产包 → `agent:sop:<executorUuid>`（46 字符）。
+ * 后者在 100px 列里会被折成 4 行，把行高撑开。这里保留**可辨认的前缀**
+ * （`agent:sop:` + uuid 前 8 位），完整值由调用方放进 tooltip。
+ */
+export function shortUploader(v: string): string {
+  const m = /^agent:sop:([0-9a-f-]{8})/i.exec(v);
+  if (m) return `agent:sop:${m[1]}`;
+  return v;
+}
+
+/**
  * §2.1 keyset 分页的前端状态：游标**栈** + 当前索引。
  *
  * 照抄 ExecutionsPage 的同一套范式（那边已被 14 条用例钉死，不另造一套）：
@@ -218,6 +233,10 @@ export default function ExecutorPackagesPage() {
   // UI-16 竞态守卫：筛选、分页、刷新或重试快速重入时，仅最新请求允许更新列表状态。
   const loadSeq = useRef(0);
 
+  // 2026-10-23：多选批量删除。此前只有逐行删除，6 个 agent 产出的
+  // `sop-candidate` 包要清 6 次；批量卸载/清理历史包是常态操作。
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchDeleting, setBatchDeleting] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
   const [uploading, setUploading] = useState(false);
@@ -473,6 +492,49 @@ export default function ExecutorPackagesPage() {
     });
   };
 
+  /**
+   * 批量删除（2026-10-23）：逐台异步 + 逐条结果汇总。
+   *
+   * 与单条删除的差别只在**确认文案**：批量不可撤销、列出数量，且部分失败时
+   * 必须逐条报错（只报"失败 2 条"等于让用户自己翻是哪个）。
+   * 失败台**保留在选中集合里**，方便直接重试；成功台清掉。
+   */
+  const handleBatchDelete = () => {
+    const targets = rows.filter((r) => selectedIds.includes(r.id));
+    if (targets.length === 0) return;
+    confirmModal.confirm({
+      title: t('execPkg.batchDeleteConfirm', { count: targets.length }),
+      content: t('execPkg.batchDeleteConfirmDesc'),
+      okText: t('execPkg.delete'), okType: 'danger', cancelText: t('execPkg.cancel'),
+      onOk: async () => {
+        setBatchDeleting(true);
+        const failed: string[] = [];
+        for (const pkg of targets) {
+          try {
+            await deletePackage(pkg.id);
+          } catch (err: unknown) {
+            failed.push(pkg.id);
+            // 逐条报错（成功台不打扰）——批量里"静默跳过"比单条失败更危险
+            showApiError(err, t('execPkg.deleteFailItem', { name: `${pkg.name}@${pkg.version}` }));
+          }
+        }
+        setBatchDeleting(false);
+        setSelectedIds(failed);
+        const okCount = targets.length - failed.length;
+        if (failed.length === 0) {
+          message.success(t('execPkg.batchDeleteOk', { count: okCount }));
+        } else if (okCount > 0) {
+          message.warning(t('execPkg.batchDeletePartial', { ok: okCount, fail: failed.length }));
+        }
+        // 失败台留在选中集合里（重试入口 = 再点一次批量删除），成功台已不在列表。
+        // 刻意**不 rethrow**：单条删除 rethrow 是为了让确认框保持打开可直接重试，
+        // 而批量场景的重试入口是「保留的选中集合 + 批量条」，再弹一个未处理
+        // rejection 只会污染控制台（测试里实测为 unhandled rejection）。
+        void load();
+      },
+    });
+  };
+
   const handleStatusToggle = async (pkg: PkgRow) => {
     // B-3：行级 pending 防双击竞态——已有切换在途时忽略重复触发
     if (togglingId) return;
@@ -542,10 +604,25 @@ export default function ExecutorPackagesPage() {
       render: (v: string) => formatDateTime(v),
     },
     {
-      title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 100,
+      // 2026-10-23 实测修正：`uploadedBy` 不是用户名——agent 自动产包写的是
+      // `agent:sop:<executorUuid>`（46 字符），而这一列只有 100px 且**没有
+      // ellipsis**，于是整行被折成 4 行、把行高撑成别人的三倍（截图实证）。
+      // 现在：主显可读前缀（`agent:sop:98c5a61a`），完整值进 tooltip；
+      // 用户上传的普通用户名（短）原样显示。
+      title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 130, ellipsis: true,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
-      render: (v?: string) => v ?? '-',
+      render: (v?: string) => {
+        if (!v) return '-';
+        const short = shortUploader(v);
+        return short === v ? (
+          <Text style={{ fontSize: 12 }}>{v}</Text>
+        ) : (
+          <Tooltip title={v}>
+            <Text style={{ fontSize: 12 }}>{short}</Text>
+          </Tooltip>
+        );
+      },
     },
     {
       title: t('execPkg.col.actions'), key: 'actions', width: 160, align: 'center' as const, fixed: 'right' as const,
@@ -643,6 +720,33 @@ export default function ExecutorPackagesPage() {
         </Space>
       </Space>
 
+      {/* 2026-10-23：批量删除条。只在有选中时出现，避免常驻占位。
+          按钮上带数量，点击后二次确认列出条数；部分失败时失败台留在选中集合。 */}
+      {selectedIds.length > 0 && (
+        <Space
+          data-testid="execPkg-batch-bar"
+          size={8}
+          style={{ marginBottom: 12, padding: '6px 12px', background: token.colorFillQuaternary, borderRadius: 6 }}
+        >
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('execPkg.selected', { count: selectedIds.length })}
+          </Text>
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined aria-hidden />}
+            loading={batchDeleting}
+            data-testid="execPkg-batch-delete"
+            onClick={handleBatchDelete}
+          >
+            {t('execPkg.batchDelete', { count: selectedIds.length })}
+          </Button>
+          <Button size="small" type="text" onClick={() => setSelectedIds([])}>
+            {t('execPkg.clearSelection')}
+          </Button>
+        </Space>
+      )}
+
       {/* 补充 P2：机队执行器版本分布摘要——多版本并存即漂移，橙色 Tag 提示。 */}
       {fleetVersionKeys.length > 0 && (
         <Space style={{ marginBottom: 12 }} size={4} wrap>
@@ -660,10 +764,16 @@ export default function ExecutorPackagesPage() {
 
       <Table<PkgRow>
         rowKey="id" columns={columns} dataSource={rows} size="small"
+        rowSelection={{
+          selectedRowKeys: selectedIds,
+          onChange: (keys) => setSelectedIds(keys as string[]),
+        }}
         // UI 打磨：loading 直传——此前恒 false，翻页/刷新期间无任何反馈；
         // 首屏 emptyText 骨架（UI-08）原样保留
         loading={loading}
-        scroll={{ x: 1060 }}
+        // 2026-10-23：上传者列 100→130（`agent:sop:<uuid8>` 要放得下），
+        // scroll.x 同步 1060→1090，保持「列宽合计 = 横向滚动阈值」这条口径。
+        scroll={{ x: 1090 }}
         // §2.1：两种分页形态**互斥**——这是本页最关键的一处语义切换。
         //
         // keyset 模式（开关打开）下 `pagination={false}`：游标分页没有"第 N 页"

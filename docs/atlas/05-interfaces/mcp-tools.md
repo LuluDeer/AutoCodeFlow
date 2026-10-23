@@ -1,5 +1,5 @@
 # MCP 工具地图（56 个）
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-20 · 对应代码: packages/mcp-server/src（tools.ts 注册 **56** 个 server.tool，9 个 register*Tools；index.ts 入口）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-23 · 对应代码: packages/mcp-server/src（tools.ts 注册 **56** 个 server.tool，9 个 register*Tools；index.ts 入口）
 >
 > 数量由 `scripts/check-mcp-tools-doc.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 56 个，漏了 16 个）。
 
@@ -7,7 +7,7 @@
 
 - 包名 `autocodeflow-mcp-server`（npm），bin 名 **`autocodeflow-mcp`**；stdio 传输（JSON-RPC on stdin/stdout），服务器名 `autocodeflow`。
 - 启动：`node dist/index.js`（无参数即跑）；`--help` / `--version` 直接退出。未设置 token 时进程直接 exit 1（fail-closed，W-07）。
-- 客户端配置（Claude Desktop / Cursor 等）示例：
+- 客户端配置（Claude Desktop / Cursor 等）示例——**推荐用 API Key**（见下节「Token 从哪来」）：
 
 ```json
 {
@@ -17,23 +17,57 @@
       "args": ["-y", "autocodeflow-mcp-server"],
       "env": {
         "AUTOCODEFLOW_API_URL": "http://localhost:3105",
-        "AUTOCODEFLOW_API_TOKEN": "<JWT access token>",
-        "AUTOCODEFLOW_API_REFRESH_TOKEN": "<可选，启用 401 自愈>"
+        "AUTOCODEFLOW_API_TOKEN": "acf_<你的 API Key>"
       }
     }
   }
 }
 ```
 
-## 鉴权（JWT env，非 OAuth）
+> 本进程**没有账号密码登录**、**没有 `--token` 参数**、**不落盘**——凭据只能经环境变量注入，进程重启要重新注入。
+
+## Token 从哪来（两条路，按 MCP 常驻时长选）
+
+`AUTOCODEFLOW_API_TOKEN` **既接受 API Key 也接受用户 JWT**（都走 `Authorization: Bearer …`，服务端按 `acf_` 前缀分流到 API Key 校验链）。
+
+### 路线 A：API Key（常驻 MCP 推荐）
+
+1. 登录中台 → **系统 → 系统设置 → API Keys → 新建 API Key**；
+2. 按要用的工具选 scope：
+
+   | scope | MCP 能做什么 |
+   |---|---|
+   | `readonly` | 全部只读工具（`list_tasks` / `get_execution` / `get_execution_stats` …） |
+   | `trigger` | 只读 + 单任务触发（`trigger_task`） |
+   | `manage` | 只读 + 全部写工具（建/改/暂停任务、部署应用 …） |
+
+3. 创建弹窗里的明文 `acf_…` **只显示这一次**（服务端只存 SHA-256），复制后填进 `AUTOCODEFLOW_API_TOKEN`。
+
+API Key 可设有效期或永不过期，吊销下一次调用即生效；它是用户 JWT 的**真子集**（`/api-keys`、`/auth/*`、`/users`、`/config` 一律拒绝），但**本仓 56 个 MCP 工具都不碰这四个前缀**，所以对 MCP 够用。ADMIN-only 工具（如 `approve_deployment`、`list_pending_approvals`）需要走路线 B。
+
+### 路线 B：用户 JWT（只有它能用 ADMIN-only 工具）
+
+中台前端**没有「复制我的 token」入口**；浏览器之外的正规获取方式是 CLI：
+
+```bash
+acf login --url http://localhost:3105 --user <你>   # 密码 + TOTP
+acf config show                                    # 打印配置文件路径
+```
+
+- `AUTOCODEFLOW_API_TOKEN` = `~/.config/acf-cli/config.json`（0600）里的 `token` 字段——**只有 15 分钟**；
+- `AUTOCODEFLOW_API_REFRESH_TOKEN` = 同文件的 `refreshToken` 字段（30 天）——配上它，401 时才会自动续期并重放；不配就得每 ~15 分钟重启一次 MCP 进程换新 token。
+
+> 用 API Key 时**不需要** refresh 变量：`/auth/*` 是 JWT-only 面，无票可续。
+
+## 鉴权（env 注入，非 OAuth）
 
 | 环境变量 | 必填 | 说明 |
 |---|---|---|
 | `AUTOCODEFLOW_API_URL` | 否 | 默认 `http://localhost:3105` |
-| `AUTOCODEFLOW_API_TOKEN` | **是** | 用户 JWT Bearer token；缺失则启动即退出 |
-| `AUTOCODEFLOW_API_REFRESH_TOKEN` | 否 | 设置后 401 自动单飞 `POST /auth/refresh` 并重放原请求；token 只存内存（BUG-14） |
+| `AUTOCODEFLOW_API_TOKEN` | **是** | API Key（`acf_…`，推荐）或用户 JWT；缺失则启动即退出 |
+| `AUTOCODEFLOW_API_REFRESH_TOKEN` | 否 | **仅 JWT 有意义**：设置后 401 自动单飞 `POST /auth/refresh` 并重放原请求；token 只存内存（BUG-14） |
 
-请求侧：30s 超时预算（`REQUEST_TIMEOUT_MS`）；工具调用即对应 REST 端点，因此同样受 RBAC/限流约束——建议给 Agent 建独立低权用户而非共用 ADMIN。
+请求侧：30s 超时预算（`REQUEST_TIMEOUT_MS`）；工具调用即对应 REST 端点，因此同样受 scope / RBAC / 限流约束——建议给 Agent 建**独立低权用户或 readonly API Key**，而非共用 ADMIN。
 
 ## 工具地图（按注册域分组，共 56 个）
 

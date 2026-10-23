@@ -1,6 +1,31 @@
 import { parseAllowedOrigins } from "../common/utils/cors-origin.util";
 
 /**
+ * admin-api 视角的 PyPI registry **基址**（不含 `/simple/`）。
+ *
+ * 为什么需要这个函数而不是直接读一个 env：同一个上游在两侧的 URL 语义不同——
+ *   · 执行器：`PYPI_REGISTRY_URL` 是 `pip --index-url` 语义，**带** `/simple/`；
+ *   · admin：registry.controller 自己拼 `${base}/simple/`，**不能**带。
+ * 直接复用会拼成 `/simple//simple/`（实测上游 404）。故：
+ *   1. `ADMIN_PYPI_REGISTRY_URL` 显式给出基址时优先（部署方完全控制）；
+ *   2. 否则从 `PYPI_REGISTRY_URL` 剥掉尾部 `/simple`（含 `/simple/`）派生；
+ *   3. 都没有 → compose 内网服务名；容器外部署需显式设键。
+ *
+ * 空串视为「未设置」：`.env.example` 用 `PYPI_REGISTRY_URL=` 表达「回落官方源」，
+ * 那是**执行器**的语义；admin 的列表代理没有「官方源」概念（它是私有仓管理面），
+ * 空串时保持既有回退，避免把空 URL 拼成 `/simple/`。
+ */
+function resolveAdminPypiUrl(): string {
+  const explicit = (process.env.ADMIN_PYPI_REGISTRY_URL || "").trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const shared = (process.env.PYPI_REGISTRY_URL || "").trim();
+  if (shared) {
+    return shared.replace(/\/+$/, "").replace(/\/simple$/, "");
+  }
+  return "http://localhost:8003";
+}
+
+/**
  * 配置读取规约（ARCH-27 配置中心收口）
  *
  * 1. 新增配置必须先在 app.module.ts 的 ConfigModule validationSchema（Joi）
@@ -495,6 +520,23 @@ export default () => ({
       user: process.env.NPM_REGISTRY_USER || "",
       pass: process.env.NPM_REGISTRY_PASS || "",
     },
+    pypi: {
+      // 2026-10-23（真机缺陷）：`PYPI_REGISTRY_URL` 此前**只被 registry
+      // controller 裸读**，而 compose 的 admin-api 服务块从没注入过它 →
+      // 容器内恒回落 `http://localhost:8003`（指向容器自己）→
+      // 「包注册中心」页面的 PyPI 列表**在所有 Docker 部署下必然 502**。
+      // 单测显式注入了 env，所以一直是绿的（"mock 不等于能跑"又一次）。
+      //
+      // ⚠️ 语义冲突（别图省事让 admin 直接复用 PYPI_REGISTRY_URL）：
+      // 执行器侧的 `PYPI_REGISTRY_URL` 是 **pip --index-url 语义**，值里带
+      // `/simple/`（见 docker-compose.yml executor 段注释）；而 admin 的
+      // controller 自己会拼 `${pypiUrl}/simple/`。共用同一变量会拼出
+      // `/simple//simple/`（实测上游 404）。
+      // 故 admin 侧优先读**独立键** `ADMIN_PYPI_REGISTRY_URL`（基址，不带
+      // /simple/）；未设置时从 `PYPI_REGISTRY_URL` 剥掉尾部 `/simple` 派生，
+      // 这样 compose 只维护一个变量也不会双拼。
+      url: resolveAdminPypiUrl(),
+    },
   },
   notification: {
     // ARCH-31/R17（2026-09-13）: 通知出站私网豁免——企业内网自建网关（内网
@@ -838,9 +880,24 @@ if (process.env.NODE_ENV === "production") {
   // registry-pypi 默认 8003 即 http 回环）。URL 内嵌凭据同样拒绝——凭据应
   // 走 NPM_REGISTRY_TOKEN / NPM_REGISTRY_USER / NPM_REGISTRY_PASS / REGISTRY_PASS
   // 独立键，避免经日志/错误回显泄漏。
+  //
+  // 2026-10-23（真机缺陷，本守卫把 compose 部署**整个打死**）：
+  // compose 形态的 registry 地址是**服务名**（http://registry-npm:4873），
+  // 既不 https 也不是 loopback → 本校验直接 throw，admin-api 启动即崩溃重启。
+  // 也就是说：修好「键没注入」之后，部署反而彻底起不来——两个缺陷叠加。
+  //
+  // 语义澄清（这才是 B-3 真正要防的）：威胁是**凭据经公网明文传输**。
+  // Docker 桥接网内的服务名流量不出宿主，与 loopback 同档。故补一个显式
+  // opt-in `REGISTRY_ALLOW_PRIVATE_NETWORK=true`（与 NOTIF_ALLOW_PRIVATE_NETWORK /
+  // EXECUTOR_ALLOW_PRIVATE_NETWORK 同族先例），由 compose 注入；
+  // 默认 false ⇒ 容器外/公网部署的既有姿态逐字节不变。
+  const allowPrivateRegistry =
+    process.env.REGISTRY_ALLOW_PRIVATE_NETWORK === "true";
   const registryUrls: ReadonlyArray<readonly [string, string]> = [
     ["NPM_REGISTRY_URL", process.env.NPM_REGISTRY_URL ?? ""],
     ["PYPI_REGISTRY_URL", process.env.PYPI_REGISTRY_URL ?? ""],
+    // admin 侧的 PyPI 基址同属 registry 出站面，凭据同样走 Basic
+    ["ADMIN_PYPI_REGISTRY_URL", process.env.ADMIN_PYPI_REGISTRY_URL ?? ""],
   ];
   for (const [name, raw] of registryUrls) {
     if (!raw) continue;
@@ -853,9 +910,14 @@ if (process.env.NODE_ENV === "production") {
     const host = u.hostname.replace(/^\[|\]$/g, "");
     const isLoopback =
       host === "localhost" || host === "127.0.0.1" || host === "::1";
-    if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopback)) {
+    // 单标签主机名（无点）= Docker/compose 服务名或内网短名，公网不可解析。
+    const isServiceName = !host.includes(".") && !host.includes(":");
+    const httpAllowed =
+      isLoopback || (allowPrivateRegistry && isServiceName);
+    if (u.protocol !== "https:" && !(u.protocol === "http:" && httpAllowed)) {
       throw new Error(
-        `[AutoFlow] 生产环境 ${name} 必须使用 https://（仅 localhost/127.0.0.1 允许 http）；实际为 '${u.protocol}//${host}'`,
+        `[AutoFlow] 生产环境 ${name} 必须使用 https://（仅 localhost/127.0.0.1 允许 http；` +
+          `内网服务名需显式设置 REGISTRY_ALLOW_PRIVATE_NETWORK=true）；实际为 '${u.protocol}//${host}'`,
       );
     }
     if (u.username || u.password) {

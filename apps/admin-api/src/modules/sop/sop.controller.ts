@@ -50,6 +50,7 @@ import {
   SopCapableExecutorDto,
   SopListResponseDto,
   SopPublishResponseDto,
+  SopCancelAssignmentsResponseDto,
   SopResponseDto,
   SopVersionDto,
 } from "./dto/sop-response.dto";
@@ -451,5 +452,65 @@ export class SopController {
   })
   async assignments(@Param("id") id: string) {
     return this.sops.listAssignments(id);
+  }
+
+  /**
+   * 归档（2026-10-23）：`deprecated` 此前是死状态，SOP 只增不减。
+   *
+   * 为什么用 POST 而不是 DELETE：归档**不删数据**——版本快照、指派、澄清记录
+   * 全部保留（它们是「这张 SOP 怎么被执行过」的证据）。DELETE 语义会让人以为
+   * 数据没了。恢复走 `POST /:id/restore`。
+   */
+  @Post(":id/deprecate")
+  @ApiOperation({ summary: "归档 SOP（停止派新单，保留全部历史）" })
+  @ApiOkResponse({ type: SopResponseDto })
+  async deprecate(
+    @Param("id") id: string,
+    @CurrentUser() user: { id: number | string } | undefined,
+    @Ip() ip?: string,
+  ) {
+    return this.sops.deprecate({
+      sopId: id,
+      actor: user ? `user:${user.id}` : undefined,
+      audit: { userId: auditUserId(user), ip: ip ?? null },
+    });
+  }
+
+  /**
+   * 取消该 SOP 下所有未结束的指派（归档前置动作）。
+   *
+   * 为什么单独成一个端点而不是让 deprecate 隐式取消：取消指派是**会影响执行器
+   * 现场**的动作（那边可能正在跑），必须让操作者显式确认；而归档是纯中台状态。
+   * 两步分开，审计上也能区分「谁取消了单」与「谁把 SOP 下线」。
+   */
+  @Post(":id/assignments/cancel")
+  @ApiOperation({ summary: "取消该 SOP 下所有未结束的指派（归档前置动作）" })
+  @ApiOkResponse({ type: SopCancelAssignmentsResponseDto })
+  async cancelAssignments(
+    @Param("id") id: string,
+    @CurrentUser() user: { id: number | string } | undefined,
+    @Ip() ip?: string,
+  ) {
+    return this.sops.cancelOpenAssignments({
+      sopId: id,
+      actor: user ? `user:${user.id}` : undefined,
+      audit: { userId: auditUserId(user), ip: ip ?? null },
+    });
+  }
+
+  /** 恢复已归档的 SOP（回到 published；从未发布过的回到 draft）。 */
+  @Post(":id/restore")
+  @ApiOperation({ summary: "恢复已归档的 SOP" })
+  @ApiOkResponse({ type: SopResponseDto })
+  async restore(
+    @Param("id") id: string,
+    @CurrentUser() user: { id: number | string } | undefined,
+    @Ip() ip?: string,
+  ) {
+    return this.sops.restore({
+      sopId: id,
+      actor: user ? `user:${user.id}` : undefined,
+      audit: { userId: auditUserId(user), ip: ip ?? null },
+    });
   }
 }

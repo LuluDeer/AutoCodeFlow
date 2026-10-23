@@ -24,6 +24,7 @@ vi.mock('../api/api-keys', () => ({
     list: vi.fn(),
     create: vi.fn(),
     revoke: vi.fn(),
+    remove: vi.fn(),
   },
 }));
 
@@ -225,7 +226,7 @@ describe('ApiKeysSettings 吊销链路（QA-03 第二阶段）', () => {
     expect(await screen.findByText('network down')).toBeTruthy();
   });
 
-  it('已吊销行渲染「已吊销」Tag 与操作列占位；过期行渲染「已过期」', async () => {
+  it('已吊销行渲染「已吊销」Tag 与删除入口；过期行渲染「已过期」与删除入口', async () => {
     mocked.list.mockResolvedValue([
       keyRow({ id: 3, name: 'revoked-one', revokedAt: '2026-09-01T00:00:00Z' }),
       keyRow({ id: 4, name: 'expired-one', expiresAt: '2020-01-01T00:00:00Z' }),
@@ -234,8 +235,63 @@ describe('ApiKeysSettings 吊销链路（QA-03 第二阶段）', () => {
     await waitFor(() => expect(screen.getByText('revoked-one')).toBeTruthy());
     expect(screen.getByText('已吊销')).toBeTruthy();
     expect(screen.getByText('已过期')).toBeTruthy();
-    // 吊销行无吊销按钮（占位 —），过期行仍可吊销
+    // 已失效行（吊销/过期）给出「删除」入口；不再给「吊销」（对失效行无意义）。
+    expect(screen.getByTestId('apikey-delete-3')).toBeTruthy();
+    expect(screen.getByTestId('apikey-delete-4')).toBeTruthy();
     expect(screen.queryByTestId('apikey-revoke-3')).toBeNull();
-    expect(screen.getByTestId('apikey-revoke-4')).toBeTruthy();
+    expect(screen.queryByTestId('apikey-revoke-4')).toBeNull();
+  });
+});
+
+describe('ApiKeysSettings 永久删除链路', () => {
+  /** Popconfirm 确认键：按标题文本定位弹层，点最后一个按钮（既有先例的泛化）。 */
+  async function confirmByTitle(text: RegExp) {
+    const el = await screen.findByText(text);
+    const layer = el.closest('.ant-popover') as HTMLElement;
+    const btns = Array.from(layer.querySelectorAll('button')) as HTMLButtonElement[];
+    await act(async () => {
+      fireEvent.click(btns[btns.length - 1]);
+    });
+  }
+
+  it('活跃行只有吊销、没有删除（删除只对已失效行开放）', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('apikey-revoke-1')).toBeTruthy());
+    expect(screen.queryByTestId('apikey-delete-1')).toBeNull();
+  });
+
+  it('已吊销行删除：Popconfirm 确认 → remove(id) 精确调用 + 成功 toast', async () => {
+    mocked.list.mockResolvedValue([
+      keyRow({ id: 3, name: 'revoked-one', revokedAt: '2026-09-01T00:00:00Z' }),
+    ]);
+    mocked.remove.mockResolvedValue({
+      success: true,
+      apiKey: keyRow({ id: 3, revokedAt: '2026-09-01T00:00:00Z' }),
+    });
+    renderPage();
+    fireEvent.click(await screen.findByTestId('apikey-delete-3'));
+    await confirmByTitle(/删除后该 Key 会从列表移除/);
+    await waitFor(() => {
+      expect(mocked.remove).toHaveBeenCalledWith(3);
+    });
+    expect(await screen.findByText('API Key 已删除')).toBeTruthy();
+  });
+
+  it('删除失败 → 错误 toast（UI-15：不静默，文案取后端 message）', async () => {
+    mocked.list.mockResolvedValue([
+      keyRow({ id: 3, name: 'revoked-one', revokedAt: '2026-09-01T00:00:00Z' }),
+    ]);
+    mocked.remove.mockRejectedValue(
+      Object.assign(new Error('bad'), {
+        response: { data: { message: '仅已吊销或已过期的 Key 可删除' } },
+      }),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByTestId('apikey-delete-3'));
+    await confirmByTitle(/删除后该 Key 会从列表移除/);
+    await waitFor(() => {
+      expect(mocked.remove).toHaveBeenCalledWith(3);
+    });
+    expect(await screen.findByText('仅已吊销或已过期的 Key 可删除')).toBeTruthy();
   });
 });

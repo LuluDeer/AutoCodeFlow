@@ -8857,6 +8857,62 @@ describe("ExecutorService removal impact (B·1.1)", () => {
     expect(pullService.clear).toHaveBeenCalledWith("exec-9");
   });
 
+  // 2026-10-23：保留天数从硬编码 7 天提为运行期可配（system_configs 的
+  // `executor.retentionDays`）。此前 7 天对演示/测试环境太长（实测积了 21 台
+  // 离线残留），对长周期复查的部署又太短。
+  describe("cleanupOfflineExecutors 保留天数（运行期可配）", () => {
+    const runCleanupWithRetention = async (configValue: string | null) => {
+      executorRepo.find.mockResolvedValue([]);
+      (service as unknown as { systemConfigService: { findOne: jest.Mock } })
+        .systemConfigService.findOne = jest
+        .fn()
+        .mockResolvedValue(configValue === null ? null : { value: configValue });
+      await service.cleanupOfflineExecutors();
+      // 断言交给 repo.find 的 cutoff 谓词（LessThan 的 _value 是 Date）
+      const calls = (executorRepo.find as jest.Mock).mock.calls as unknown[][];
+      const findArg = calls[calls.length - 1]?.[0] as {
+        where: { lastHeartbeat: { _value: Date } };
+      };
+      const cutoff = findArg.where.lastHeartbeat._value;
+      return Math.round((Date.now() - cutoff.getTime()) / 86_400_000);
+    };
+
+    it("默认 7 天（未配置该键）", async () => {
+      expect(await runCleanupWithRetention(null)).toBe(7);
+    });
+
+    it("运行期配置 1 天 → 只清 1 天前的离线行", async () => {
+      expect(await runCleanupWithRetention("1")).toBe(1);
+    });
+
+    it("运行期配置 30 天 → 30 天", async () => {
+      expect(await runCleanupWithRetention("30")).toBe(30);
+    });
+
+    it("非法值（0 / 负数 / 非数字）一律回落 7 天——这是不可逆删除的参数", async () => {
+      for (const bad of ["0", "-3", "abc", ""]) {
+        expect(await runCleanupWithRetention(bad)).toBe(7);
+      }
+    });
+
+    it("读配置抛错 → 静默回落 7 天，清理不挂", async () => {
+      executorRepo.find.mockResolvedValue([]);
+      (service as unknown as { systemConfigService: { findOne: jest.Mock } })
+        .systemConfigService.findOne = jest
+        .fn()
+        .mockRejectedValue(new Error("config db down"));
+      await expect(service.cleanupOfflineExecutors()).resolves.toBeUndefined();
+      const calls = (executorRepo.find as jest.Mock).mock.calls as unknown[][];
+      const findArg = calls[calls.length - 1]?.[0] as {
+        where: { lastHeartbeat: { _value: Date } };
+      };
+      const days = Math.round(
+        (Date.now() - findArg.where.lastHeartbeat._value.getTime()) / 86_400_000,
+      );
+      expect(days).toBe(7);
+    });
+  });
+
   it("cleanupOfflineExecutors skips executors that still have pinned tasks and audits the skip", async () => {
     const staleNoPin = { id: "exec-free", address: "a:1", appName: "free" };
     const stalePinned = {

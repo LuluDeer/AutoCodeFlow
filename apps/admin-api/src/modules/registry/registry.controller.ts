@@ -47,8 +47,18 @@ export class RegistryController {
   ) {}
 
   private get pypiUrl(): string {
+    // 2026-10-23（真机缺陷）：此前裸读 `PYPI_REGISTRY_URL`，而 compose 的
+    // admin-api 服务块从未注入该键 → 容器内恒回落 `localhost:8003`（指向
+    // 容器自身）→「包注册中心」的 PyPI 列表在所有 Docker 部署下必然 502，
+    // 而单测因为显式注入 env 一直是绿的。
+    //
+    // 现改读映射节 `registry.pypi.url`（configuration.ts 收口，含
+    // `ADMIN_PYPI_REGISTRY_URL` 优先 + 从 `PYPI_REGISTRY_URL` 剥 `/simple`
+    // 派生的语义消歧）。保留裸键回退，兼容未注册该节的极简装配（spec）。
     return (
-      this.config.get<string>("PYPI_REGISTRY_URL") || "http://localhost:8003"
+      this.config.get<string>("registry.pypi.url") ||
+      this.config.get<string>("PYPI_REGISTRY_URL") ||
+      "http://localhost:8003"
     );
   }
 
@@ -76,9 +86,18 @@ export class RegistryController {
   // proxy authenticates before pulling the package list; when unset the previous
   // anonymous behavior is kept.
   private get npmUser(): string {
+    // 2026-10-23（真机缺陷）：Verdaccio 的 `packages.'**'.access = $authenticated`，
+    // 匿名拉 `/-/verdaccio/data/packages` 回的是 **200 + `[]`**（按权限过滤后
+    // 空数组），不是 401——于是「凭据没配」表现为「仓库里一个包都没有」，
+    // 比报错更难查。compose 只注入了 `REGISTRY_USER/PASS`（PyPI 那套），
+    // NPM_REGISTRY_* 默认空 → 列表恒空。
+    // 故补一条回落：NPM 专用凭据未配置时用 `REGISTRY_USER/PASS`——两者本来
+    // 就指向同一套私有仓服务账号（compose 里两个 registry 由同一组键驱动），
+    // 分开配置只是为了「公网 npm + 私有 PyPI」这种混合场景。
     return (
       this.config.get<string>("registry.npm.user") ||
       this.config.get<string>("NPM_REGISTRY_USER") ||
+      this.config.get<string>("REGISTRY_USER") ||
       ""
     );
   }
@@ -87,6 +106,7 @@ export class RegistryController {
     return (
       this.config.get<string>("registry.npm.pass") ||
       this.config.get<string>("NPM_REGISTRY_PASS") ||
+      this.config.get<string>("REGISTRY_PASS") ||
       ""
     );
   }
@@ -190,95 +210,30 @@ export class RegistryController {
       return undefined;
     }
 
-    return this.loginForToken(user, pass);
+    // 2026-10-23（真机缺陷）：**不再走 PUT /-/user/login 换 token**。
+    // 那个端点在 Verdaccio 5 上是「注册或登录」语义：用户已存在时回
+    // 409 `username is already registered`，而 performNpmLogin 把非 2xx
+    // 一律当失败 → 只要服务账号建过一次，npm 列表就永远 502。
+    // （首轮实测日志：`NPM registry login failed with 409`。）
+    //
+    // 正确形态：Verdaccio 的 `/-/verdaccio/data/packages` 与 `/` 元数据面
+    // **直接接受 Basic Auth**（实测 200），根本不需要 token 往返。故这里
+    // 直接返回 Basic 头——少一次网络往返、少一个缓存、少一个失败模式。
+    // NPM_REGISTRY_TOKEN（预签发 Bearer）仍然优先，公网 npm 场景不受影响。
+    const b64 = Buffer.from(`${user}:${pass}`).toString("base64");
+    return `Basic ${b64}`;
   }
 
-  // B-11：Verdaccio 登录换 token 的模块级缓存。此前每次列表请求都打一次
-  // PUT /-/user/login——前端 TanStack Query 轮询 × 多副本实例 = 持续的登录
-  // 风暴（每次都算一次密码校验/htpasswd 哈希）。缓存 token 5 分钟（TTL 内
-  // 直接复用），并发请求共享同一 in-flight 登录（单飞，不放大）。
-  // 缓存键含 URL+凭据：不同凭据天然隔离，凭据轮换立即生效（换 key）；
-  // 登录失败**不**缓存（失败后下一次列表照旧重试，与旧行为一致）。
-  private static readonly NPM_TOKEN_TTL_MS = 5 * 60 * 1000;
-  private static readonly npmTokenCache = new Map<
-    string,
-    { token: string; expiresAt: number }
-  >();
-  private static readonly npmLoginInflight = new Map<
-    string,
-    Promise<string | undefined>
-  >();
-
-  /** S5 登录换 token（B-11 起带 TTL 缓存 + 并发单飞），返回完整 Bearer 头。 */
-  private async loginForToken(
-    user: string,
-    pass: string,
-  ): Promise<string | undefined> {
-    // pass 进缓存键（凭据轮换立即换 key，不读旧 token）；内存态与
-    // ConfigService 持有凭据同级别，无新增暴露面。
-    const cacheKey = `${this.npmUrl}|${user}|${pass}`;
-
-    const cached = RegistryController.npmTokenCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      return `Bearer ${cached.token}`;
-    }
-
-    // 并发单飞：同 key 的并发调用共享同一次登录（否则缓存未落定前 N 个
-    // 并发列表仍会打出 N 次 login，单飞后只打 1 次）。
-    const existing = RegistryController.npmLoginInflight.get(cacheKey);
-    if (existing) return existing;
-
-    const inflight = this.performNpmLogin(user, pass);
-    RegistryController.npmLoginInflight.set(cacheKey, inflight);
-    try {
-      return await inflight;
-    } finally {
-      // 仅当仍指向本次飞行时清理（防御：避免误删后来者的 in-flight）。
-      if (RegistryController.npmLoginInflight.get(cacheKey) === inflight) {
-        RegistryController.npmLoginInflight.delete(cacheKey);
-      }
-    }
-  }
-
-  /** 实际的 PUT /-/user/login 往返（无缓存逻辑，供 loginForToken 单飞使用）。 */
-  private async performNpmLogin(
-    user: string,
-    pass: string,
-  ): Promise<string | undefined> {
-    const loginResp = await this.fetchText(
-      `${this.npmUrl}/-/user/login`,
-      undefined,
-      {
-        method: "PUT",
-        // Both key spellings are accepted so either Verdaccio's /-/user/login
-        // handler or the npm couch-user handler understands the payload.
-        body: JSON.stringify({ name: user, username: user, password: pass }),
-      },
-    );
-    if (!loginResp.ok) {
-      this.logger.warn(
-        `NPM registry login failed with ${loginResp.status}: ${loginResp.text.slice(0, 200)}`,
-      );
-      return undefined;
-    }
-    let parsed: { token?: string } | null = null;
-    try {
-      parsed = JSON.parse(loginResp.text) as { token?: string };
-    } catch {
-      parsed = null;
-    }
-    if (!parsed?.token) {
-      this.logger.warn(
-        "NPM registry login response did not contain a token; listing packages anonymously",
-      );
-      return undefined;
-    }
-    RegistryController.npmTokenCache.set(`${this.npmUrl}|${user}|${pass}`, {
-      token: parsed.token,
-      expiresAt: Date.now() + RegistryController.NPM_TOKEN_TTL_MS,
-    });
-    return `Bearer ${parsed.token}`;
-  }
+  // 2026-10-23：B-11 的「登录换 token + 5 分钟缓存 + 并发单飞」整块删除。
+  //
+  // 它解决的是一个**不存在的问题**：`/-/verdaccio/data/packages` 本来就接受
+  // Basic Auth（实测 200），不需要 token 往返。而它引入了一个**真实缺陷**：
+  // Verdaccio 5 的 `PUT /-/user/login` 是「注册或登录」语义，账号已存在时回
+  // 409 `username is already registered`，被 `!loginResp.ok` 判成失败 →
+  // 只要服务账号建过一次，npm 包列表就永远 502（首轮实测日志可见）。
+  //
+  // 删除后收益：少一次网络往返、少一个跨实例不一致的进程内缓存、少一个
+  // 失败模式。NPM_REGISTRY_TOKEN（预签发 Bearer）路径保持不变。
 
   /**
    * B-9：解码索引页锚点文本里的 HTML 实体。registry-pypi 渲染索引时对包名
@@ -358,7 +313,17 @@ export class RegistryController {
   async listNpmPackages(): Promise<{
     packages: Array<{ name: string; latest?: string; description?: string }>;
   }> {
-    const url = `${this.npmUrl}/-/verdaccio/packages`;
+    // 2026-10-23（真机缺陷）：此前请求 `/-/verdaccio/packages`——该路由在
+    // Verdaccio 5.x **不存在**（实测 5.31.1 返回 404「File not found」），
+    // 真实路由是 `/-/verdaccio/data/packages`（verdaccio/build/api/web/api/package.js）。
+    // 单测用一个自造的 http 桩「假装」这个路径存在，于是绿了整整两个版本。
+    // 症状：npm 包列表恒 502，与 PyPI 那个「键没注入」是两个独立缺陷叠加。
+    //
+    // 返回形状也随之纠正：`/-/verdaccio/data/packages` 回的是**包版本对象数组**
+    // （`{name, version, description, dist, ...}`），不是 `{name, latest}`。
+    // 映射成前端契约 `{name, latest, description}`（latest 取 `version`），
+    // 并对形状漂移如实降级：不是数组 → 502（不伪装成空列表）。
+    const url = `${this.npmUrl}/-/verdaccio/data/packages`;
     // S5: authenticate first when a service account is configured — the
     // registry requires $authenticated access for every package pattern.
     const authHeader = await this.resolveNpmAuthHeader();
@@ -385,7 +350,30 @@ export class RegistryController {
         detail: `返回了非 JSON 响应体：${resp.text.slice(0, 200)}`,
       });
     }
-    return { packages: Array.isArray(data) ? data : [] };
+    if (!Array.isArray(data)) {
+      throw new AppError("REGISTRY_UPSTREAM_FAILED", {
+        upstream: "npm registry",
+        detail: `期望包数组，实际是 ${typeof data}（Verdaccio 路由/形状漂移）`,
+      });
+    }
+    const packages = data
+      .map((row: unknown) => {
+        if (!row || typeof row !== "object") return null;
+        const rec = row as Record<string, unknown>;
+        const name = typeof rec.name === "string" ? rec.name : null;
+        if (!name) return null;
+        const latest =
+          typeof rec.version === "string"
+            ? rec.version
+            : typeof rec.latest === "string"
+              ? rec.latest
+              : undefined;
+        const description =
+          typeof rec.description === "string" ? rec.description : undefined;
+        return { name, ...(latest ? { latest } : {}), ...(description ? { description } : {}) };
+      })
+      .filter((p): p is { name: string; latest?: string; description?: string } => p !== null);
+    return { packages };
   }
 
   /** Allowed PyPI package extensions */

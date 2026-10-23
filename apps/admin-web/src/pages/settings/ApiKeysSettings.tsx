@@ -35,7 +35,9 @@ const { Text, Paragraph } = Typography;
  * AUTH-03: 设置区「API Keys」Tab——限权 API Key 管理（CI/CD 机器认证）。
  * 列表（name/prefix/scope/过期/最后使用/状态）+ 创建 Modal（创建成功弹
  * 一次性明文 key + 复制按钮 + 「仅显示一次」警示）+ 吊销（Popconfirm）。
- * 全部操作走 JWT（/api-keys 是 JWT-only 面，API Key 不能自管）。
+ * 操作列按行状态二选一：活跃 key → 吊销；已吊销/已过期 → 永久删除（清理，
+ * 后端对活跃 key 的删除请求返回 409）。全部操作走 JWT（/api-keys 是
+ * JWT-only 面，API Key 不能自管）。
  */
 
 const SCOPE_LABELS = (t: (k: string) => string): Record<ApiKeyScope, string> => ({
@@ -60,6 +62,17 @@ export function apiKeyStatus(
     return { label: t('apiKeys.status.expired'), color: 'default' };
   }
   return { label: t('apiKeys.status.active'), color: 'green' };
+}
+
+/**
+ * 是否可**永久删除**：只有已失效的行（已吊销 / 已过期）可删。
+ * 活跃 key 必须先吊销——吊销留下 `apikey.revoke` 审计行，删除只做清理；
+ * 后端对活跃 key 返回 409（`API_KEY_DELETE_ACTIVE_FORBIDDEN`），前端不给出
+ * 这条路径的按钮，避免用户点出一个必然失败的请求。导出供测试。
+ */
+export function apiKeyDeletable(key: ApiKeyView, now: number = Date.now()): boolean {
+  if (key.revokedAt) return true;
+  return !!key.expiresAt && new Date(key.expiresAt).getTime() <= now;
 }
 
 
@@ -179,27 +192,48 @@ export default function ApiKeysSettings() {
     },
   });
 
+  // 永久删除（清理已失效行）。活跃 key 不会渲染该按钮，后端也有 409 兜底；
+  // 失败同样必须有可见反馈（同 UI-15 纪律）。
+  const removeMut = useMutation({
+    mutationFn: (id: number) => apiKeysApi.remove(id),
+    onSuccess: () => {
+      message.success(t('apiKeys.deletedMsg'));
+      qc.invalidateQueries({ queryKey: ['api-keys'] });
+    },
+    onError: (err: unknown) => {
+      showApiError(err, t('apiKeys.deleteFail'));
+    },
+  });
+
   const columns: ColumnsType<ApiKeyView> = [
-    { title: t('apiKeys.col.name'), dataIndex: 'name', key: 'name', ellipsis: true, minWidth: 160 },
+    // 列宽口径（2026-10-23 观感修正）：**每一列都给确定宽度**，不再让「名称」
+    // 用 minWidth 吸收全部剩余宽度——宽屏下名称列会被撑成几百像素的空白，
+    // 而 Scope 列（中文标签「完全（除凭证管理）」有 9 个字）只有 100px 被挤到
+    // 溢出。现在按内容定宽，容器更宽时各列按比例伸展，观感均匀。
+    { title: t('apiKeys.col.name'), dataIndex: 'name', key: 'name', width: 220, ellipsis: true },
     {
       // UI-09 第三轮：前缀/最后使用是次要列——窄屏（≤768px）由媒体查询隐藏
       // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
       // index.css ui09 媒体查询同值）。名称/Scope/过期/状态/操作保留，scroll.x 兜底。
-      title: t('apiKeys.col.keyPrefix'), dataIndex: 'keyPrefix', key: 'keyPrefix', width: 120, ellipsis: true,
+      title: t('apiKeys.col.keyPrefix'), dataIndex: 'keyPrefix', key: 'keyPrefix', width: 130, ellipsis: true,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
-      render: (v: string) => <Text code>{v}…</Text>,
+      // keyPrefix 是生成时就固定截断的展示前缀（API_KEY_DISPLAY_PREFIX_LEN），
+      // 不是被 CSS 截断的——再补一个 `…` 反而让人以为还能展开，去掉。
+      render: (v: string) => <Text code>{v}</Text>,
     },
     {
-      title: 'Scope', dataIndex: 'scope', key: 'scope', width: 100,
+      // 中文标签最长 9 个字（「完全（除凭证管理）」）→ 150 才放得下 Tag 内边距；
+      // 表头也走 i18n（此前硬编码英文 'Scope'，与同表其余中文表头不一致）。
+      title: t('apiKeys.col.scope'), dataIndex: 'scope', key: 'scope', width: 150,
       render: (v: ApiKeyScope) => <Tag color={SCOPE_COLOR[v]}>{SCOPE_LABELS(t)[v]}</Tag>,
     },
     {
-      title: t('apiKeys.col.expiresAt'), dataIndex: 'expiresAt', key: 'expiresAt', width: 170, ellipsis: true,
+      title: t('apiKeys.col.expiresAt'), dataIndex: 'expiresAt', key: 'expiresAt', width: 165, ellipsis: true,
       render: (v: string | null) => (v ? formatDateTime(v) : t('apiKeys.neverExpires')),
     },
     {
-      title: t('apiKeys.col.lastUsed'), dataIndex: 'lastUsedAt', key: 'lastUsedAt', width: 170, ellipsis: true,
+      title: t('apiKeys.col.lastUsed'), dataIndex: 'lastUsedAt', key: 'lastUsedAt', width: 165, ellipsis: true,
       onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
       onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string | null) => formatDateTime(v),
@@ -212,12 +246,23 @@ export default function ApiKeysSettings() {
       },
     },
     {
-      // UI 打磨：定宽列合计 730（120+100+170+170+90+90）+ 名称弹性列最小宽 160 → 890；
-      // 操作列 fixed right 与 scroll.x 成对出现，窄屏横向滚动时吊销入口常驻可见
-      title: t('apiKeys.col.actions'), key: 'action', width: 90, fixed: 'right',
+      // 定宽列合计 1016（220+130+150+165+165+90+96）= scroll.x；操作列 fixed right
+      // 与 scroll.x 成对出现，窄屏横向滚动时「吊销/删除」入口常驻可见。
+      // 两种动作按行状态二选一：活跃 → 吊销；已吊销/已过期 → 删除（清理）。
+      title: t('apiKeys.col.actions'), key: 'action', width: 96, fixed: 'right',
       render: (_: unknown, record: ApiKeyView) =>
-        record.revokedAt ? (
-          <Text type="secondary">—</Text>
+        apiKeyDeletable(record) ? (
+          <Popconfirm
+            title={t('apiKeys.deleteConfirm')}
+            okText={t('apiKeys.delete')}
+            okButtonProps={{ danger: true }}
+            onConfirm={() => removeMut.mutate(record.id)}
+          >
+            <Button size="small" type="text" danger data-testid={`apikey-delete-${record.id}`}
+              loading={removeMut.isPending && removeMut.variables === record.id}>
+              {t('apiKeys.delete')}
+            </Button>
+          </Popconfirm>
         ) : (
           <Popconfirm
             title={t('apiKeys.revokeConfirm')}
@@ -261,9 +306,17 @@ export default function ApiKeysSettings() {
         style={{ marginBottom: 16 }}
         title={t('apiKeys.alertMessage')}
         description={
-          <Text type="secondary">
-            {t('apiKeys.alertDescPrefix')}<code>Authorization: Bearer acf_…</code>{t('apiKeys.alertDescSuffix')}
-          </Text>
+          <>
+            <Text type="secondary">
+              {t('apiKeys.alertDescPrefix')}<code>Authorization: Bearer acf_…</code>{t('apiKeys.alertDescSuffix')}
+            </Text>
+            {/* 用户最常问的「这串 Key 到底填到哪」——直接把两个变量名写在页面上，
+                省掉去翻文档的一步。刻意不放链接：文档站在 SPA 里没有对应路由，
+                放一个 404 链接比不放更糟。 */}
+            <div style={{ marginTop: 4 }}>
+              <Text type="secondary">{t('apiKeys.usageHint')}</Text>
+            </div>
+          </>
         }
       />
       {keysError ? (
@@ -279,8 +332,10 @@ export default function ApiKeysSettings() {
           columns={columns}
           dataSource={keys}
           loading={isLoading}
-          // UI 打磨：与列宽合计一致（定宽 730 + 名称弹性列最小宽 160）
-          scroll={{ x: 890 }}
+          // 与列表宽合计一致（220+130+150+165+165+90+96）；tableLayout=fixed 让
+          // 上面写死的列宽成为权威，宽屏下不再由某一列吞掉全部剩余宽度。
+          tableLayout="fixed"
+          scroll={{ x: 1016 }}
           pagination={false}
           data-testid="apikey-table"
         />

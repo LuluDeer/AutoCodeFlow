@@ -98,6 +98,71 @@ describe("configuration production secret validation", () => {
       });
     }).not.toThrow();
   });
+
+  // 2026-10-23（真机缺陷）：B-3 的 registry https 校验只认 loopback，而
+  // compose 形态用的是**内网服务名**（http://registry-npm:4873）——补上
+  // registry 键之后 admin-api 反而启动即崩（校验 throw → 容器重启循环）。
+  // 语义澄清：威胁是「凭据经公网明文传输」，桥接网内服务名流量不出宿主。
+  // 故补 REGISTRY_ALLOW_PRIVATE_NETWORK 显式 opt-in；默认姿态不变。
+  describe("B-3 registry https 校验 + 内网服务名 opt-in", () => {
+    const loadWithRegistry = (env: Record<string, string | undefined>) => {
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      jest.isolateModules(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("./configuration");
+      });
+    };
+
+    afterEach(() => {
+      delete process.env.ADMIN_PYPI_REGISTRY_URL;
+      delete process.env.NPM_REGISTRY_URL;
+      delete process.env.PYPI_REGISTRY_URL;
+      delete process.env.REGISTRY_ALLOW_PRIVATE_NETWORK;
+    });
+
+    it("公网 http 地址仍然拒绝（默认姿态不变）", () => {
+      expect(() =>
+        loadWithRegistry({ NPM_REGISTRY_URL: "http://npm.example.com:4873" }),
+      ).toThrow(/NPM_REGISTRY_URL/);
+    });
+
+    it("内网服务名 + 未开 opt-in → 仍然拒绝", () => {
+      expect(() =>
+        loadWithRegistry({
+          NPM_REGISTRY_URL: "http://registry-npm:4873",
+          REGISTRY_ALLOW_PRIVATE_NETWORK: undefined,
+        }),
+      ).toThrow(/REGISTRY_ALLOW_PRIVATE_NETWORK/);
+    });
+
+    it("内网服务名 + REGISTRY_ALLOW_PRIVATE_NETWORK=true → 放行", () => {
+      expect(() =>
+        loadWithRegistry({
+          NPM_REGISTRY_URL: "http://registry-npm:4873",
+          ADMIN_PYPI_REGISTRY_URL: "http://registry-pypi:8003",
+          REGISTRY_ALLOW_PRIVATE_NETWORK: "true",
+        }),
+      ).not.toThrow();
+    });
+
+    it("opt-in 也不放行带点的主机名（那是公网地址，不是服务名）", () => {
+      expect(() =>
+        loadWithRegistry({
+          NPM_REGISTRY_URL: "http://npm.internal.example.com:4873",
+          REGISTRY_ALLOW_PRIVATE_NETWORK: "true",
+        }),
+      ).toThrow(/NPM_REGISTRY_URL/);
+    });
+
+    it("loopback 无需 opt-in（本地 Verdaccio 既有行为不变）", () => {
+      expect(() =>
+        loadWithRegistry({ NPM_REGISTRY_URL: "http://127.0.0.1:4873" }),
+      ).not.toThrow();
+    });
+  });
 });
 
 describe("configuration (ARCH-004/005/006) throttle, redis tls, db synchronize", () => {

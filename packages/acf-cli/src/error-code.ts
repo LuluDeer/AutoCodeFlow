@@ -80,7 +80,12 @@ const CATEGORY_RULES: ReadonlyArray<readonly [ApiErrorCategory, RegExp]> = [
     // （validation），而 `TASK_TRIGGER_CONCURRENT` / `_CONCURRENT_MODIFICATION`
     // 才是并发冲突。少了这个环视，前者会被误判成冲突、给出"重新读一次"的
     // 无效建议（实测红过一条）。
-    /(EXISTS|_TAKEN|ALREADY_|CONFLICT|STILL_|IN_FLIGHT|(?<!MAX_)CONCURRENT|STALE|IMMUTABLE|_TERMINAL|_PAUSED|LAST_ADMIN|SELF_DELETE|AWAITING_|_NOT_PENDING)/,
+    // 2026-10-23：补两条 SOP 归档语义——
+    //   · `SOP_ARCHIVE_HAS_ACTIVE_ASSIGNMENTS`：还有未结束的指派（先处理再归档）
+    //   · `SOP_NOT_DEPRECATED`：不是归档态（无可恢复）
+    // 两者都是**状态冲突**（"重新读一次再决定"），不是入参错误。不加这两条
+    // 时它们会落到「未知」分支：用户拿到码却没有任何下一步。
+    /(EXISTS|_TAKEN|ALREADY_|CONFLICT|STILL_|IN_FLIGHT|(?<!MAX_)CONCURRENT|STALE|IMMUTABLE|_TERMINAL|_PAUSED|LAST_ADMIN|SELF_DELETE|AWAITING_|_NOT_PENDING|_HAS_ACTIVE_|_NOT_DEPRECATED)/,
   ],
   [
     'validation',

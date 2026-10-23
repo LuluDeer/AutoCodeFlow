@@ -210,6 +210,67 @@ describe("LogRetentionCleanupService", () => {
       expect(cutoff.getTime()).toBe(now.getTime() - 7 * 86_400_000);
     });
 
+    // 2026-10-23：运行期配置（中台可改、即时生效）优先于 env。
+    describe("运行期配置优先（system_configs: logRetention.days）", () => {
+      it("库里配了 7 天 → cutoff = now - 7d（不论 env 是多少）", async () => {
+        const systemConfig = {
+          findOne: jest.fn().mockResolvedValue({ key: "logRetention.days", value: "7" }),
+        };
+        const svc = new LogRetentionCleanupService(
+          repo as unknown as import("typeorm").Repository<ExecutionLogLine>,
+          configService as unknown as ConfigService,
+          null,
+          systemConfig as never,
+        );
+        const now = new Date("2026-09-02T03:30:00.000Z");
+        await svc.cleanupExpiredLines(now);
+        expect(systemConfig.findOne).toHaveBeenCalledWith("logRetention.days");
+        const { cutoff } = getBatchCall(0);
+        expect(cutoff.getTime()).toBe(now.getTime() - 7 * 86_400_000);
+      });
+
+      it("库里没这个键（404 抛错）→ 静默回落 env，不让清理 job 挂掉", async () => {
+        const systemConfig = {
+          findOne: jest.fn().mockRejectedValue(new Error("CONFIG_ITEM_NOT_FOUND")),
+        };
+        configService.get.mockImplementation((key: string) =>
+          key === "logRetention.days" ? 14 : undefined,
+        );
+        const svc = new LogRetentionCleanupService(
+          repo as unknown as import("typeorm").Repository<ExecutionLogLine>,
+          configService as unknown as ConfigService,
+          null,
+          systemConfig as never,
+        );
+        const now = new Date("2026-09-02T03:30:00.000Z");
+        await svc.cleanupExpiredLines(now);
+        const { cutoff } = getBatchCall(0);
+        expect(cutoff.getTime()).toBe(now.getTime() - 14 * 86_400_000);
+      });
+
+      it("库里的值非法（非数字/0/负）→ 回落 env", async () => {
+        for (const bad of ["abc", "0", "-3"]) {
+          repo.createQueryBuilder.mockClear();
+          configService.get.mockImplementation((key: string) =>
+            key === "logRetention.days" ? 9 : undefined,
+          );
+          const systemConfig = {
+            findOne: jest.fn().mockResolvedValue({ key: "logRetention.days", value: bad }),
+          };
+          const svc = new LogRetentionCleanupService(
+            repo as unknown as import("typeorm").Repository<ExecutionLogLine>,
+            configService as unknown as ConfigService,
+            null,
+            systemConfig as never,
+          );
+          const now = new Date("2026-09-02T03:30:00.000Z");
+          await svc.cleanupExpiredLines(now);
+          const { cutoff } = getBatchCall(0);
+          expect(cutoff.getTime()).toBe(now.getTime() - 9 * 86_400_000);
+        }
+      });
+    });
+
     it("非法配置（NaN / 0 / 负数）回退默认 30 天", async () => {
       const now = new Date("2026-09-02T03:30:00.000Z");
       const warnSpy = jest

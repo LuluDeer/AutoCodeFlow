@@ -474,6 +474,9 @@ if __name__ == "__main__":
 上报或自定义字段）时，可直接使用底层客户端：
 
 ```python
+from autoflow_sdk import TaskContext
+
+ctx = TaskContext.from_env()  # 与上一段示例同一个 ctx；片段里显式给出，避免「ctx 从哪来」的歧义
 ctx.callback.report([
     {"status": "success", "durationMs": 800},
 ])  # executionId / executorAddress 自动补齐，显式书写的值不会被覆盖

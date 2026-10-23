@@ -13,9 +13,17 @@ import {
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
+// 2026-10-23：保留期支持**运行期配置**（中台「系统设置 → 系统配置」可改），
+// 环境变量降级为默认值。此前只能改 env + 重启，运维在界面上看不到也改不了。
+import { SystemConfigService } from "../../config/config.service";
 
 /** 默认日志保留天数（可经 LOG_RETENTION_DAYS 覆盖） */
 export const DEFAULT_LOG_RETENTION_DAYS = 30;
+/**
+ * 运行期配置键（2026-10-23）：中台「系统设置 → 系统配置」写入该键即可
+ * **即时**改变保留期，优先于 env `LOG_RETENTION_DAYS`。
+ */
+export const LOG_RETENTION_CONFIG_KEY = "logRetention.days";
 /** 单批最大删除行数：限制单条 DELETE 的锁持有范围，防止长事务锁表 */
 export const LOG_RETENTION_BATCH_SIZE = 5000;
 /** 每日 03:30 清理（6 段 cron，与 scheduler 模块风格一致） */
@@ -88,6 +96,10 @@ export class LogRetentionCleanupService {
     // ARCH-31 §5: 多实例下 @Cron 维护任务仅 cron Leader 执行（@Global 恒提供）。
     @Optional()
     private readonly leaderGate: LeaderGateService | null = null,
+    // @Optional + 置尾：既有单测直接 new 装配时缺席 → null → 只用 env
+    // （与改造前逐字节一致），不让「配置服务没接线」把清理 job 弄挂。
+    @Optional()
+    private readonly systemConfig?: SystemConfigService | null,
   ) {}
 
   /** 每日定时入口；清理失败只记日志，等下一轮 cron 重试，不影响主流程 */
@@ -147,7 +159,7 @@ export class LogRetentionCleanupService {
    *   多实例同时运行，按同一条件删除幂等无副作用。
    */
   async cleanupExpiredLines(now: Date = new Date()): Promise<number> {
-    const retentionDays = this.resolveRetentionDays();
+    const retentionDays = await this.resolveRetentionDays();
     const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
 
     if (await this.isPartitionedTable()) {
@@ -363,7 +375,21 @@ export class LogRetentionCleanupService {
    * Joi 保证 LOG_RETENTION_DAYS 是 >=1 的整数，正常路径不会走回退；
    * 保留防御性回退（非数字 / <= 0）以兼容跳过 Joi 校验的测试场景。
    */
-  private resolveRetentionDays(): number {
+  private async resolveRetentionDays(): Promise<number> {
+    // 运行期配置优先（中台可改、即时生效，无需重启）：`logRetention.days`
+    // 若在 system_configs 里存在且是正整数，就用它。读失败/非法一律回落到
+    // env——清理 job 不该因为一个可选配置读取失败而停摆。
+    if (this.systemConfig) {
+      try {
+        const row = await this.systemConfig.findOne(LOG_RETENTION_CONFIG_KEY);
+        const parsedRuntime = Number.parseInt(row?.value ?? "", 10);
+        if (Number.isFinite(parsedRuntime) && parsedRuntime > 0) {
+          return parsedRuntime;
+        }
+      } catch {
+        // 键不存在（404）或配置服务短暂不可用：静默回落 env
+      }
+    }
     const parsed = this.configService.get<number>("logRetention.days");
     if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
       return parsed;

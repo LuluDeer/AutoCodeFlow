@@ -19,6 +19,8 @@ const repoMock = () => ({
   find: jest.fn(async () => []),
   findOne: jest.fn(),
   update: jest.fn(async () => undefined),
+  // 硬删（remove）：TypeORM 的 delete 按条件删除，返回 DeleteResult。
+  delete: jest.fn(async () => ({ affected: 1 })),
   // A-9: 配额闸按属主统计活跃 key（默认 0 = 未达上限）
   count: jest.fn(async () => 0),
 });
@@ -264,6 +266,68 @@ describe("AUTH-03 ApiKeysService", () => {
         { id: 9 },
         { revokedAt: expect.any(Date) },
       );
+    });
+  });
+
+  // 永久删除（清理已失效行）。与 revoke 的分工：吊销=立即止血 + 留 revoke 审计行；
+  // 删除=清理不再有活性的行。故活跃行必须拒绝（否则一次点击就能静默抹掉在用凭据，
+  // 且审计链里只剩 delete、事后无法区分「先吊销后清理」与「直接删了在用的 key」）。
+  describe("remove（硬删）", () => {
+    const inertRow = (over: Record<string, any> = {}) => ({
+      id: 9,
+      userId: 42,
+      name: "k",
+      keyPrefix: "acf_aa",
+      scope: "readonly",
+      expiresAt: null,
+      revokedAt: new Date("2026-09-01T00:00:00Z"),
+      lastUsedAt: null,
+      createdAt: new Date(0),
+      ...over,
+    });
+
+    it("已吊销行：真删（repo.delete({id})）+ apikey.delete 审计带前缀与失效依据", async () => {
+      repo.findOne.mockResolvedValueOnce(inertRow());
+      const row = await svc.remove(9, 42, "alice", "1.1.1.1");
+      expect(row!.id).toBe(9);
+      expect(repo.delete).toHaveBeenCalledWith({ id: 9 });
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "apikey.delete",
+          resourceId: "9",
+          detail: expect.objectContaining({
+            keyPrefix: "acf_aa",
+            revokedAt: expect.any(Date),
+          }),
+        }),
+      );
+    });
+
+    it("已过期（未吊销）行同样可删", async () => {
+      repo.findOne.mockResolvedValueOnce(
+        inertRow({ revokedAt: null, expiresAt: new Date(Date.now() - 60_000) }),
+      );
+      await svc.remove(9, 42);
+      expect(repo.delete).toHaveBeenCalledWith({ id: 9 });
+    });
+
+    it("活跃行拒绝（409 API_KEY_DELETE_ACTIVE_FORBIDDEN），不写库不审计", async () => {
+      repo.findOne.mockResolvedValueOnce(
+        inertRow({ revokedAt: null, expiresAt: null }),
+      );
+      await expect(svc.remove(9, 42)).rejects.toMatchObject({
+        errorCode: "API_KEY_DELETE_ACTIVE_FORBIDDEN",
+      });
+      expect(repo.delete).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+
+    it("非属主 / 不存在 → null（控制器 404），绝不删别人的行", async () => {
+      repo.findOne.mockResolvedValueOnce(inertRow({ userId: 99 }));
+      expect(await svc.remove(9, 42)).toBeNull();
+      repo.findOne.mockResolvedValueOnce(null);
+      expect(await svc.remove(404, 42)).toBeNull();
+      expect(repo.delete).not.toHaveBeenCalled();
     });
   });
 

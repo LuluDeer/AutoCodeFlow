@@ -1,6 +1,197 @@
 {
   "openapi": "3.0.0",
   "paths": {
+    "/api-keys": {
+      "get": {
+        "operationId": "ApiKeysController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApiKeyViewDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "列出我的 API Key（脱敏）",
+        "tags": [
+          "API Keys"
+        ],
+        "x-i18n-en": {
+          "summary": "List my API keys (masked)"
+        }
+      },
+      "post": {
+        "description": "明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。",
+        "operationId": "ApiKeysController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "明文 key 一次性回显",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreateResponseDto"
+                }
+              }
+            },
+            "x-i18n-en": "One-time echo of the plaintext key"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "创建 API Key",
+        "tags": [
+          "API Keys"
+        ],
+        "x-i18n-en": {
+          "summary": "Create API Key",
+          "description": "The plaintext key is returned only once (`acf_<64 hex>`); the server stores only the sha256 hash, so it cannot be retrieved afterwards."
+        }
+      }
+    },
+    "/api-keys/{id}": {
+      "delete": {
+        "operationId": "ApiKeysController_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "撤销（软删除）我的 API Key",
+        "tags": [
+          "API Keys"
+        ],
+        "x-i18n-en": {
+          "summary": "Revoke (soft-delete) my API Key"
+        }
+      }
+    },
+    "/api-keys/{id}/revoke": {
+      "post": {
+        "operationId": "ApiKeysController_revokeAlias",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "撤销我的 API Key（显式别名，幂等）",
+        "tags": [
+          "API Keys"
+        ],
+        "x-i18n-en": {
+          "summary": "Revoke my API key (explicit alias, idempotent)"
+        }
+      }
+    },
+    "/api-keys/{id}/permanent": {
+      "delete": {
+        "operationId": "ApiKeysController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "永久删除我的 API Key（仅限已吊销/已过期）",
+        "tags": [
+          "API Keys"
+        ],
+        "x-i18n-en": {
+          "summary": "Permanently delete my API Key (revoked or expired keys only)"
+        }
+      }
+    },
     "/auth/login": {
       "post": {
         "description": "使用用户名和密码登录，返回 Access Token 与 Refresh Token。每分钟最多 20 次尝试。",
@@ -6099,6 +6290,123 @@
         }
       }
     },
+    "/sop/{id}/deprecate": {
+      "post": {
+        "operationId": "SopController_deprecate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "归档 SOP（停止派新单，保留全部历史）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "Archive a SOP (stops new assignments, keeps the full history)"
+        }
+      }
+    },
+    "/sop/{id}/assignments/cancel": {
+      "post": {
+        "operationId": "SopController_cancelAssignments",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopCancelAssignmentsResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "取消该 SOP 下所有未结束的指派（归档前置动作）",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "Cancel every unfinished assignment of this SOP (precondition for archiving)"
+        }
+      }
+    },
+    "/sop/{id}/restore": {
+      "post": {
+        "operationId": "SopController_restore",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "恢复已归档的 SOP",
+        "tags": [
+          "sop"
+        ],
+        "x-i18n-en": {
+          "summary": "Restore an archived SOP"
+        }
+      }
+    },
     "/agent-collab/poll": {
       "post": {
         "operationId": "SopCollabController_poll",
@@ -10731,158 +11039,6 @@
         }
       }
     },
-    "/api-keys": {
-      "get": {
-        "operationId": "ApiKeysController_list",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ApiKeyViewDto"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "列出我的 API Key（脱敏）",
-        "tags": [
-          "API Keys"
-        ],
-        "x-i18n-en": {
-          "summary": "List my API keys (masked)"
-        }
-      },
-      "post": {
-        "description": "明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。",
-        "operationId": "ApiKeysController_create",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateApiKeyDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "明文 key 一次性回显",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiKeyCreateResponseDto"
-                }
-              }
-            },
-            "x-i18n-en": "One-time echo of the plaintext key"
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "创建 API Key",
-        "tags": [
-          "API Keys"
-        ],
-        "x-i18n-en": {
-          "summary": "Create API Key",
-          "description": "The plaintext key is returned only once (`acf_<64 hex>`); the server stores only the sha256 hash, so it cannot be retrieved afterwards."
-        }
-      }
-    },
-    "/api-keys/{id}": {
-      "delete": {
-        "operationId": "ApiKeysController_revoke",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "撤销（软删除）我的 API Key",
-        "tags": [
-          "API Keys"
-        ],
-        "x-i18n-en": {
-          "summary": "Revoke (soft-delete) my API Key"
-        }
-      }
-    },
-    "/api-keys/{id}/revoke": {
-      "post": {
-        "operationId": "ApiKeysController_revokeAlias",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "撤销我的 API Key（显式别名，幂等）",
-        "tags": [
-          "API Keys"
-        ],
-        "x-i18n-en": {
-          "summary": "Revoke my API key (explicit alias, idempotent)"
-        }
-      }
-    },
     "/projects": {
       "get": {
         "operationId": "ProjectsController_findAll",
@@ -11319,6 +11475,160 @@
       }
     },
     "schemas": {
+      "ApiKeyViewDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "keyPrefix": {
+            "type": "string",
+            "description": "'acf_' + 前缀若干字符——创建之后不再返回完整 key",
+            "x-i18n-en": "'acf_' + a few prefix characters - the full key is never returned again after creation"
+          },
+          "scope": {
+            "type": "string",
+            "description": "粗粒度范围桶",
+            "x-i18n-en": "Coarse-grained range bucket"
+          },
+          "scopes": {
+            "description": "额外的细粒度范围（词表，例如 'task:trigger'）",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "Extra fine-grained scopes (vocabulary, e.g. 'task:trigger')"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "revokedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true,
+            "description": "有值 = 已吊销（软删除）",
+            "x-i18n-en": "Non-null = revoked (soft delete)"
+          },
+          "lastUsedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true,
+            "description": "刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）",
+            "x-i18n-en": "Refresh is throttled to 60 seconds (LAST_USED_THROTTLE_MS)"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "keyPrefix",
+          "scope",
+          "scopes",
+          "expiresAt",
+          "revokedAt",
+          "lastUsedAt",
+          "createdAt"
+        ]
+      },
+      "CreateApiKeyDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "ApiKeyCreateResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "keyPrefix": {
+            "type": "string",
+            "description": "'acf_' + 前缀若干字符——创建之后不再返回完整 key",
+            "x-i18n-en": "'acf_' + a few prefix characters - the full key is never returned again after creation"
+          },
+          "scope": {
+            "type": "string",
+            "description": "粗粒度范围桶",
+            "x-i18n-en": "Coarse-grained range bucket"
+          },
+          "scopes": {
+            "description": "额外的细粒度范围（词表，例如 'task:trigger'）",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "Extra fine-grained scopes (vocabulary, e.g. 'task:trigger')"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "revokedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true,
+            "description": "有值 = 已吊销（软删除）",
+            "x-i18n-en": "Non-null = revoked (soft delete)"
+          },
+          "lastUsedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true,
+            "description": "刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）",
+            "x-i18n-en": "Refresh is throttled to 60 seconds (LAST_USED_THROTTLE_MS)"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "plaintext": {
+            "type": "string",
+            "description": "明文 key（'acf_<64 hex>'）仅展示一次——请立即保存",
+            "x-i18n-en": "Plaintext key ('acf_<64 hex>') is shown only once - save it immediately"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "keyPrefix",
+          "scope",
+          "scopes",
+          "expiresAt",
+          "revokedAt",
+          "lastUsedAt",
+          "createdAt",
+          "plaintext"
+        ]
+      },
+      "ApiKeyRevokeResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "apiKey": {
+            "$ref": "#/components/schemas/ApiKeyViewDto"
+          }
+        },
+        "required": [
+          "success",
+          "apiKey"
+        ]
+      },
       "LoginDto": {
         "type": "object",
         "properties": {
@@ -17709,6 +18019,20 @@
           }
         }
       },
+      "SopCancelAssignmentsResponseDto": {
+        "type": "object",
+        "properties": {
+          "cancelled": {
+            "type": "number",
+            "description": "实际取消的条数（0 = 本来就没有未结束指派）",
+            "example": 2,
+            "x-i18n-en": "Number of assignments actually cancelled (0 = there were none)"
+          }
+        },
+        "required": [
+          "cancelled"
+        ]
+      },
       "CollabAssignmentItemDto": {
         "type": "object",
         "properties": {
@@ -21136,160 +21460,6 @@
           "ok"
         ]
       },
-      "ApiKeyViewDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "keyPrefix": {
-            "type": "string",
-            "description": "'acf_' + 前缀若干字符——创建之后不再返回完整 key",
-            "x-i18n-en": "'acf_' + a few prefix characters - the full key is never returned again after creation"
-          },
-          "scope": {
-            "type": "string",
-            "description": "粗粒度范围桶",
-            "x-i18n-en": "Coarse-grained range bucket"
-          },
-          "scopes": {
-            "description": "额外的细粒度范围（词表，例如 'task:trigger'）",
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "x-i18n-en": "Extra fine-grained scopes (vocabulary, e.g. 'task:trigger')"
-          },
-          "expiresAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true
-          },
-          "revokedAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true,
-            "description": "有值 = 已吊销（软删除）",
-            "x-i18n-en": "Non-null = revoked (soft delete)"
-          },
-          "lastUsedAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true,
-            "description": "刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）",
-            "x-i18n-en": "Refresh is throttled to 60 seconds (LAST_USED_THROTTLE_MS)"
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "keyPrefix",
-          "scope",
-          "scopes",
-          "expiresAt",
-          "revokedAt",
-          "lastUsedAt",
-          "createdAt"
-        ]
-      },
-      "CreateApiKeyDto": {
-        "type": "object",
-        "properties": {}
-      },
-      "ApiKeyCreateResponseDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "keyPrefix": {
-            "type": "string",
-            "description": "'acf_' + 前缀若干字符——创建之后不再返回完整 key",
-            "x-i18n-en": "'acf_' + a few prefix characters - the full key is never returned again after creation"
-          },
-          "scope": {
-            "type": "string",
-            "description": "粗粒度范围桶",
-            "x-i18n-en": "Coarse-grained range bucket"
-          },
-          "scopes": {
-            "description": "额外的细粒度范围（词表，例如 'task:trigger'）",
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "x-i18n-en": "Extra fine-grained scopes (vocabulary, e.g. 'task:trigger')"
-          },
-          "expiresAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true
-          },
-          "revokedAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true,
-            "description": "有值 = 已吊销（软删除）",
-            "x-i18n-en": "Non-null = revoked (soft delete)"
-          },
-          "lastUsedAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true,
-            "description": "刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）",
-            "x-i18n-en": "Refresh is throttled to 60 seconds (LAST_USED_THROTTLE_MS)"
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "plaintext": {
-            "type": "string",
-            "description": "明文 key（'acf_<64 hex>'）仅展示一次——请立即保存",
-            "x-i18n-en": "Plaintext key ('acf_<64 hex>') is shown only once - save it immediately"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "keyPrefix",
-          "scope",
-          "scopes",
-          "expiresAt",
-          "revokedAt",
-          "lastUsedAt",
-          "createdAt",
-          "plaintext"
-        ]
-      },
-      "ApiKeyRevokeResponseDto": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "enum": [
-              true
-            ]
-          },
-          "apiKey": {
-            "$ref": "#/components/schemas/ApiKeyViewDto"
-          }
-        },
-        "required": [
-          "success",
-          "apiKey"
-        ]
-      },
       "ProjectViewDto": {
         "type": "object",
         "properties": {
@@ -21550,6 +21720,24 @@
             "type": "string",
             "description": "成员关系创建时间（ISO-8601）",
             "x-i18n-en": "Membership creation time (ISO-8601)"
+          },
+          "username": {
+            "type": "string",
+            "nullable": true,
+            "description": "用户名；null = 用户已被删除，缺席 = 身份补全不可用",
+            "x-i18n-en": "Username; null = the user has been deleted, absent = identity enrichment unavailable"
+          },
+          "email": {
+            "type": "string",
+            "nullable": true,
+            "description": "邮箱；与 username 同三态语义",
+            "x-i18n-en": "Email; same three-state semantics as username"
+          },
+          "userActive": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "属主账号是否启用（禁用账号的成员行仍存在，但已无法登录）",
+            "x-i18n-en": "Whether the owning account is enabled (a disabled account keeps its member row but can no longer sign in)"
           }
         },
         "required": [

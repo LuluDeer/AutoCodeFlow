@@ -171,4 +171,31 @@ export class ApiKeysController {
     if (!row) throw new AppError("API_KEY_NOT_FOUND", { apiKeyId: id });
     return { success: true, apiKey: row };
   }
+
+  /**
+   * Permanent delete — cleanup only.
+   *
+   * The path is explicit (`/permanent`) so the existing `DELETE /api-keys/:id`
+   * soft-revoke contract stays byte-compatible for existing clients. Only
+   * inert rows (already revoked, or expired) may be deleted; an active key
+   * must be revoked first so its lifecycle keeps a `apikey.revoke` audit row.
+   */
+  @WriteGuard("api-key", { scope: "authenticated" })
+  @Delete(":id/permanent")
+  @ApiOkResponse({ type: ApiKeyRevokeResponseDto })
+  @ApiOperation({ summary: "永久删除我的 API Key（仅限已吊销/已过期）" })
+  async remove(
+    @Param("id", ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    const row = await this.apiKeysService.remove(
+      id,
+      user.id,
+      user.username,
+      req?.ip,
+    );
+    if (!row) throw new AppError("API_KEY_NOT_FOUND", { apiKeyId: id });
+    return { success: true, apiKey: row };
+  }
 }
