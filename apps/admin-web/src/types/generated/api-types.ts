@@ -6160,6 +6160,13 @@ export interface components {
             /** @description 按地址指派（executorId 缺省时的替代形态） */
             executorAddress?: string;
         };
+        SopCancelAssignmentsResponseDto: {
+            /**
+             * @description 实际取消的条数（0 = 本来就没有未结束指派）
+             * @example 2
+             */
+            cancelled: number;
+        };
         CollabAssignmentItemDto: {
             /** @enum {string} */
             kind: "assignment";
@@ -10967,12 +10974,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description { cancelled: 实际取消的条数 } */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopCancelAssignmentsResponseDto"];
+                };
             };
         };
     };
