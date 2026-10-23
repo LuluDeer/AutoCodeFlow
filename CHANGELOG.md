@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.15.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.14.0...v1.15.0) (2026-10-23)
+
+
+### Features
+
+* **admin:** 中台九轮巡检收口——API Key 生命周期、SOP 归档、批量清理与失败归因 ([92a93f8](https://github.com/LuluDeer/AutoCodeFlow/commit/92a93f8c9dc8435a3d8f0c1cc81ab048cb03819a))
+
+
+### Bug Fixes
+
+* **ci:** 二轮红灯——响应 schema 缺口、ip-address ReDoS、多义测试匹配 ([ef5a50f](https://github.com/LuluDeer/AutoCodeFlow/commit/ef5a50fc567fccd44e215067635ed17cd2e73cf0))
+* **ci:** 修首推 CI 三处红灯——动态 i18n 键、CLI 错误码归类、测试隔离 ([7e747b0](https://github.com/LuluDeer/AutoCodeFlow/commit/7e747b01ba1149d7708df8aad22ecb7554ad496f))
+* **registry:** 包注册中心在 Docker 部署下必然 502——注入缺失 + Verdaccio 登录死循环 ([f8806be](https://github.com/LuluDeer/AutoCodeFlow/commit/f8806be253c441820e7567421011fdfa47ff5a2b))
+
 ## [1.14.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.13.0...v1.14.0) (2026-10-22)
 
 
