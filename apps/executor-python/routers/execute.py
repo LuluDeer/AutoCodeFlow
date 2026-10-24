@@ -1287,8 +1287,12 @@ _task_locks_guard = threading.Lock()
 # 合法声明值——匹配语义是前缀匹配，声明粒度就是主.次。
 RUNTIME_VERSION_PATTERN = re.compile(r'^\d+\.\d+$')
 
-# AC-03a / NFR-04：zip 下载体积上限（与 admin 上传侧 200MB 限制同值，CON-03）。
-ZIP_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024
+# AC-03a / NFR-04：zip 下载体积上限（与 admin 上传侧 200MB 限制同值，CON-03）
+# 已收口为 Settings.package_download_max_bytes（env PACKAGE_DOWNLOAD_MAX_BYTES
+# 与 node executor 同名同源；默认 200MB 不变，无效值回落默认并 warn——解析
+# 与钳制规则见 config.py 该字段注释）。_download_package 按次读取 settings，
+# 测试注入面从模块常量 monkeypatch 迁移为 settings 属性 monkeypatch
+# （与 test_pkg_cache.py 对 pkg_cache_max_bytes 的注入同款）。
 # NFR-09：下载/解压属任务准备阶段。整体超时预算独立于任务超时（任务超时在
 # 运行阶段才生效，准备阶段不能不受控挂起）。
 # NETOPT-6③：这个数字的**真实语义是整个下载流的总预算**（asyncio.timeout 包住
@@ -1691,6 +1695,9 @@ async def _download_package(url: str, dest: Path, *,
     A-5（P2）：`should_cancel` 非空时逐 chunk 检查，命中抛 _PrepareCancelled
     （kill 不再把整个下载预算跑完才收敛）；半成品照常清理。"""
     headers = _package_download_headers(url)
+    # 体积上限按次读取（env 可配，见 Settings.package_download_max_bytes）；
+    # 错误消息同值回显，运维看到的上限与实际生效值一致。
+    max_bytes = settings.package_download_max_bytes
     received = 0
     try:
         # 总预算（执行器镜像为 python:3.12-slim，asyncio.timeout 3.11+ 可用）。
@@ -1744,9 +1751,9 @@ async def _download_package(url: str, dest: Path, *,
                                 if should_cancel is not None and should_cancel():
                                     raise _PrepareCancelled()
                                 received += len(chunk)
-                                if received > ZIP_DOWNLOAD_MAX_BYTES:
+                                if received > max_bytes:
                                     raise RuntimeError(
-                                        f'包体积超过 {ZIP_DOWNLOAD_MAX_BYTES} 字节上限'
+                                        f'包体积超过 {max_bytes} 字节上限'
                                     )
                                 handle.write(chunk)
                         break

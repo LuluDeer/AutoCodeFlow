@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from urllib.parse import urlsplit
@@ -122,6 +123,15 @@ def _version_key(value: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
+logger = logging.getLogger(__name__)
+
+# AC-03a / NFR-04（CON-03）：zip 整包渠道单包下载体积上限的**默认值**（字节）。
+# 与 node executor（executor-node/src/config.ts 的 packageDownloadMaxBytes）的
+# 200MB 默认同源同值；env 名与无效值处置规则见
+# Settings.package_download_max_bytes 的字段注释。
+PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT = 200 * 1024 * 1024
+
+
 class Settings(BaseSettings):
     # Do not echo rejected environment values: registry credentials must not
     # appear in startup errors or logs either.
@@ -233,6 +243,45 @@ class Settings(BaseSettings):
     # 行为与无缓存时代一致）；负数按 0 处理（手滑防御，静默钳制而不是启动失败
     # ——缓存是性能优化，不是红线配置；与 node `Math.max(raw, 0)` 同语义）。
     pkg_cache_max_bytes: int = 4 * 1024 * 1024 * 1024
+
+    # zip 整包渠道的**单包下载体积上限**（字节）。此前是 routers/execute.py 的
+    # 硬编码常量 ZIP_DOWNLOAD_MAX_BYTES；部署模型评审 2026-10-23 §9（commit
+    # 3f3f56c0 提交信息）登记过它与 node 侧的不对称：node 的同语义配置
+    # PACKAGE_DOWNLOAD_MAX_BYTES（executor-node config.ts 的
+    # packageDownloadMaxBytes）可经 env 覆盖，python 侧不可。本字段收口该
+    # 遗留项：
+    #   - env 名：pydantic snake_case → 大写的默认映射恰好产出与 node 完全
+    #     同名的 PACKAGE_DOWNLOAD_MAX_BYTES，运维只需记一个变量名——与
+    #     PKG_CACHE_MAX_BYTES / MAX_CONCURRENT_TASKS / TASK_TIMEOUT_SECONDS
+    #     等「两侧同名」既有惯例一致；
+    #   - 默认 200MB 不变（行为零漂移，与 admin 上传侧同值 CON-03）；
+    #   - 无效值（非数字/非正数）回落默认并 warn：对齐本文件「env 是运维
+    #     启动参数，救回比拒启更符合可用性」的既有裁定（见
+    #     max_concurrent_tasks 的钳制注释；node 侧 envInt 对空串/NaN 同样是
+    #     回退默认）。**不复制 node 的缺陷**：node 侧 `parseInt` 对垃圾值产出
+    #     NaN，`bytes > NaN` 恒 False，等于静默解除上限；0/负数 node 放行
+    #     原值会让一切下载立即超限——python 侧两者都视为手滑，回落默认并告警。
+    package_download_max_bytes: int = PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT
+
+    @field_validator('package_download_max_bytes', mode='before')
+    @classmethod
+    def _validate_package_download_max_bytes(cls, value: object) -> int:
+        raw = value
+        if isinstance(value, str):
+            try:
+                value = int(value.strip())
+            except ValueError:
+                value = None
+        # bool 是 int 子类（True 会被当 1 字节上限），显式排除。
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            logger.warning(
+                'PACKAGE_DOWNLOAD_MAX_BYTES=%r 无效（须为正整数），'
+                '回落默认 %d 字节',
+                raw,
+                PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT,
+            )
+            return PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT
+        return value
 
     @field_validator('pkg_cache_max_bytes')
     @classmethod

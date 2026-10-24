@@ -11,12 +11,14 @@
 """
 import asyncio
 import io
+import logging
 import time
 import zipfile
 from types import SimpleNamespace
 
 import pytest
 
+from config import Settings
 from routers import execute as execute_module
 from routers.execute import ExecuteRequest
 
@@ -698,7 +700,7 @@ def test_public_host_is_accepted(monkeypatch):
 
 def test_oversize_download_is_aborted_and_leaves_no_partial_file(monkeypatch, tmp_path):
     """NFR-04：边下边计数，超限立即中止并删除半成品。"""
-    monkeypatch.setattr(execute_module, 'ZIP_DOWNLOAD_MAX_BYTES', 10)
+    monkeypatch.setattr(execute_module.settings, 'package_download_max_bytes', 10)
     record = []
     monkeypatch.setattr(
         execute_module.httpx, 'AsyncClient',
@@ -710,6 +712,39 @@ def test_oversize_download_is_aborted_and_leaves_no_partial_file(monkeypatch, tm
         asyncio.run(execute_module._download_package('https://cdn.example.com/app.zip', dest))
 
     assert not dest.exists(), 'a partial download must not survive'
+
+
+def test_package_download_max_bytes_default_unchanged(monkeypatch):
+    """收口 3f3f56c0 遗留的不对称后，默认仍为 200MB（行为零漂移）。"""
+    monkeypatch.delenv('PACKAGE_DOWNLOAD_MAX_BYTES', raising=False)
+    fresh = Settings(_env_file=None)
+    assert fresh.package_download_max_bytes == 200 * 1024 * 1024
+    # 执行器运行时读的就是 settings 对象上的这个字段（_download_package）。
+    assert execute_module.settings.package_download_max_bytes == 200 * 1024 * 1024
+
+
+def test_package_download_max_bytes_env_override(monkeypatch):
+    """PACKAGE_DOWNLOAD_MAX_BYTES 覆盖生效（与 node executor 同名 env）。"""
+    monkeypatch.setenv('PACKAGE_DOWNLOAD_MAX_BYTES', '1024')
+    parsed = Settings(_env_file=None).package_download_max_bytes
+    assert parsed == 1024
+
+
+def test_package_download_max_bytes_invalid_falls_back_with_warning(
+        monkeypatch, caplog):
+    """非数字/非正数 → 回落默认 200MB 并 warn。
+
+    不复制 node 侧缺陷：node `parseInt` 对垃圾值产出 NaN，`bytes > NaN` 恒
+    False 等于静默解除上限；0/负数放行会让一切下载立即超限。"""
+    for bad in ('abc', '1.5', '0', '-5', '  '):
+        monkeypatch.setenv('PACKAGE_DOWNLOAD_MAX_BYTES', bad)
+        with caplog.at_level(logging.WARNING, logger='config'):
+            parsed = Settings(_env_file=None).package_download_max_bytes
+        assert parsed == 200 * 1024 * 1024, bad
+    assert any(
+        'PACKAGE_DOWNLOAD_MAX_BYTES' in record.message
+        for record in caplog.records
+    )
 
 
 def test_non_200_download_fails_without_echoing_the_url(monkeypatch, tmp_path):
