@@ -339,6 +339,7 @@
 | 自主推进 R7（2026-10-25 清晨）：node-sdk README 登记进 release-please 广播（generic+行内注解锁位，模拟 bump 验证恰好改写 2 注解行——版本声明漂移根治，①d 守卫自动锁链路）；router.tsx react-refresh warnings 24→0（lazy 页面拆 router-pages.tsx 纯挪动零 disable，全 src 66→42） | ✅ | 5c3bf581/3bcd2963 |
 | 自主推进 R8（2026-10-25 清晨）：eslint warnings 42→29 第二弹——色阶纯函数三组挪 color-tokens.ts 共享模块（-7）/CODE_SOURCE_OPTIONS 大写误判重命名（-3，零 disable）/MainLayout 高消费面 disable+注释（-3，8 文件消费搬迁不划算）。flake 实证纪律：glue-backfill 并行负载红用 stash 干净树复现同败排除归因。剩余 29 分散 17 文件登记 | ✅ | be345db8 |
 | 自主推进 R9（2026-10-25 上午）：warnings 29→14 第三弹——**exhaustive-deps 5/5 全清零**（revision-bump 文档化设计 G-1/G-2 + 缺-t 伪问题引用 i18next 实证）；高密度 refresh 四文件 disable（消费面证据：3 契约测试锚定/页面连锁/入口消费）；顺带删兼容 re-export。预算数学：≤8 文件下挪动组合最多清 12 个，disable 是达 <15 唯一路径。三弹累计 66→42→29→14 | ✅ | 687773be |
+| 自主推进 R10（2026-10-25 上午）：**warnings 14→0 收官**——copyErrorText 与 F-18 copyText 等价去重；其余 13 处全是测试锚定纯函数（非组件共享不破坏 refresh 边界），eslint-plugin-react-refresh 0.5.7 原生 allowExportNames 集中登记 12 名字（名单外照样告警，比散落 disable 更严格可审计）。**admin-web 全 src eslint 0 error/0 warning 达成**；系列 66→42→29→14→0 | ✅ | 4fb6b822 |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
