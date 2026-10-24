@@ -310,3 +310,17 @@
 3. P10 并入 4.3 心跳（同上）。
 4. **撤销**（前提不成立，见 9.2）。
 5. 允许对 scheduled 行下发升级且不启动进程——执行器现行为即如此（`deploy.ts:1422-1427`，scheduled 部署完成即报 running「已按定时模式完成部署」）；stopped 行按 4.4 细化 opt-in。
+
+### 9.6 实施进展（2026-10-24 当日落盘，develop 分支）
+
+| 项 | 状态 | commit |
+|---|---|---|
+| R1/4.2 回滚拆分：set-current-version + deploy-version 双端点（admin-api/web/CLI/文档，旧 rollback 留 deprecated alias） | ✅ | 182e9e7d |
+| R5a/4.5-5a 上传内容寻址 `uploads/packages/<appId>/<sha256>/<name>.zip`（同字节去重、清理/引用计数适配、旧文件兼容） | ✅ | 182e9e7d |
+| R5b/4.5-5b executor-node zip 字节缓存 `.pkg-cache/`（URL sha256 键控、审查不跳过、4GiB 预算 mtime 淘汰、workDir 清扫保护） | ✅ | 29b8bd17 |
+| R2/4.4 upgrade-all 覆盖面显式化（coverage 分组回显 + skipped 明细 + includeStopped opt-in；canary 口径不变） | ✅ | 2bddc708 |
+| R4/4.1A+4.7 `app_deployment_events` 不可变事件表（10 写入点）+ deployCount 切事件聚合（legacy 回退）+ getReleases `truncated` 标记 + events 分页读面 | ✅ | 903fbc0e |
+
+**第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
+
+**下轮候选（本轮未做，按建议优先级）**：R3/4.3 设备版本上报（心跳 `deployedApps` + `resolveVersionFollowPackage` 判据切换到设备上报事实源 + P10 执行器包版本收敛同心跳）；5c `releases/<version>` 目录两段化（与 R3 联动）；4.6 执行产物目录分层/元数据索引；事件表前端消费面（事件流页面、truncated 告警 UI）；executor-python zip 缓存对等实现；deployCount 存量回填迁移（混合窗口期计数从 0 重新累计，语义见 buildDeployCountMap 注释）。
