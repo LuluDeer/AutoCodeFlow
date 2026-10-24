@@ -37,7 +37,45 @@ class _Settings:
             setattr(self, name, value)
 
 
+def _rlimit_restore_unsupported() -> bool:
+    """本进程能否对测试涉及的 rlimit 资源「降后升」恢复（root/受容器
+    seccomp 限制时不行——恢复到保存值抛 ValueError: not allowed to raise
+    maximum limit，硬限降下不可回抬是内核语义，非代码缺陷）。
+
+    **必须在子进程里探**（2026-10-24 教训）：本进程探针若把 RLIMIT_AS 等
+    降到有限值而恢复失败，限制会留在本进程毒化后续全部测试（实测 LZMA
+    压缩用例因 AS 被留在 512MB 而内存不足假红）。子进程崩溃/失败即代表
+    受限，父进程不受任何影响。
+    """
+    import subprocess
+    import sys
+    probe_code = (
+        'import resource; '
+        'probes=[(resource.RLIMIT_AS,512*1024*1024),'
+        '(resource.RLIMIT_FSIZE,64*1024*1024),'
+        '(resource.RLIMIT_NOFILE,1024),'
+        '(resource.RLIMIT_CPU,180)]; '
+        'ok=True; '
+        'exec("for r,v in probes:\n'
+        ' s,h=resource.getrlimit(r)\n'
+        ' try:\n'
+        '  resource.setrlimit(r,(v,v))\n'
+        '  resource.setrlimit(r,(s,h))\n'
+        ' except Exception:\n'
+        '  ok=False\n'
+        '  break"); '
+        'sys.exit(0 if ok else 1)'
+    )
+    try:
+        return subprocess.call([sys.executable, '-c', probe_code]) != 0
+    except OSError:
+        return False  # 探针自身跑不了——不拦测试，让真实断言说话
+
+
 @pytest.mark.skipif(sys.platform == 'win32', reason='RLIMIT_* 仅 POSIX 语义')
+@pytest.mark.skipif(_rlimit_restore_unsupported(),
+                    reason='本环境 rlimit 硬限不可降后升（root/容器 seccomp），'
+                           '恢复保存值必然 ValueError——内核语义，非代码缺陷')
 def test_rlimit_pre_exec_builds_expected_limits():
     settings = _Settings()
     fn = build_rlimit_pre_exec(settings, timeout_seconds=120)
@@ -62,6 +100,9 @@ def test_rlimit_pre_exec_builds_expected_limits():
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='RLIMIT_* 仅 POSIX 语义')
+@pytest.mark.skipif(_rlimit_restore_unsupported(),
+                    reason='本环境 rlimit 硬限不可降后升（root/容器 seccomp），'
+                           '恢复保存值必然 ValueError——内核语义，非代码缺陷')
 def test_rlimit_cpu_falls_back_to_timeout_plus_grace():
     settings = _Settings(task_cpu_limit_seconds=0)
     fn = build_rlimit_pre_exec(settings, timeout_seconds=30)
