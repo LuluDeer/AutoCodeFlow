@@ -348,6 +348,13 @@ const PROTECTED_WORKDIR_NAMES = new Set([
   // 为定位键时更会把同一台机器当成新设备。python 侧
   // `maintenance._PROTECTED_WORKDIR_NAMES` 同名同源。
   '.device-identity',
+  // R5b（部署模型评审 2026-10-23 §九 9.4-5b）：`.pkg-cache` 是 zip 任务包的
+  // **字节缓存**（pkg-cache.ts，按 URL 键控）。第 1 段清扫按顶层条目 mtime 删
+  // 除一切非基础设施目录——不保护就会在 TTL 后被整棵删掉，P2 的 N×M 重复下载
+  // 原地复发。它**不走 TTL 清扫**（缓存条目的价值与"最近是否用过"而非"存在
+  // 多久"挂钩）：回收由 pkg-cache 自身的字节预算（PKG_CACHE_MAX_BYTES，超限
+  // 按 mtime 淘汰最旧）负责，与 .venvs 走分片 TTL 是刻意不同的策略。
+  '.pkg-cache',
 ]);
 
 // E-08: active-execution guard for the workdir sweep. The set of live

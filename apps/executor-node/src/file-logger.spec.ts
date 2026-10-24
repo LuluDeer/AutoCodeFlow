@@ -193,18 +193,25 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fs.mkdirSync(freshExec, { recursive: true });
 
     // Infrastructure dirs must never be treated as task workdirs.
-    for (const name of ['logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps']) {
+    for (const name of ['logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps', '.pkg-cache']) {
       fs.mkdirSync(path.join(dir, name), { recursive: true });
       fs.utimesSync(path.join(dir, name), oldDate, oldDate);
     }
+    // R5b：.pkg-cache 的**条目**也不受 TTL 清扫——它的回收由 pkg-cache 自身
+    // 的字节预算负责（PKG_CACHE_MAX_BYTES，超限按 mtime 淘汰），TTL 按龄删除
+    // 会让"未再派发的包缓存"与"任务工作目录"同寿，缓存命中率无意义。
+    const cachedEntry = path.join(dir, '.pkg-cache', 'deadbeef.zip');
+    fs.writeFileSync(cachedEntry, 'zip-bytes');
+    fs.utimesSync(cachedEntry, oldDate, oldDate);
 
     const result = await fl.cleanupWorkDir(7);
     expect(result.workDirs).toBe(1);
     expect(fs.existsSync(oldExec)).toBe(false);
     expect(fs.existsSync(freshExec)).toBe(true);
-    for (const name of ['logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps']) {
+    for (const name of ['logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps', '.pkg-cache']) {
       expect(fs.existsSync(path.join(dir, name))).toBe(true);
     }
+    expect(fs.existsSync(cachedEntry)).toBe(true);
   });
 
   it('removes stale .git_cache and .node_modules entries past the TTL', async () => {

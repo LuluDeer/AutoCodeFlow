@@ -66,7 +66,10 @@ import {
 } from '../interpreters';
 import { DEFAULT_PYTHON_VERSION } from '../python-defaults';
 import { ZipSafetyError, safeExtractZip } from '../zip-safety';
-import { downloadFile } from '../lib/download';
+// R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存——同 URL 的包
+// 第二次执行零下载（审查/解压照常每次执行，缓存只省下载）。downloadFile 由
+// pkg-cache 内部调用（未命中时逐字节沿用既有下载链）。
+import { downloadZipWithCache, purgePkgCacheEntry } from '../pkg-cache';
 // 桌面自包含改造（生产故障）：运行时工具链的**单一真值源**（见 toolchain.ts
 // 模块头注释）。任务执行侧此前各自硬编码裸命令名（`node.exe` / `python3`），
 // 与能力上报（runtime-detection.ts）是两套代码、两个真值源——于是"上报的"与
@@ -1685,7 +1688,12 @@ async function prepareExecution(
       // NETOPT-E P3-2: 透传 abort signal——停机/杀端点时 stalled 的包下载
       // 立即断连，prepare 槽位即刻释放（否则要等 ZIP_DOWNLOAD_TIMEOUT_MS
       // 自身超时，跨过停机 5s 硬杀窗口）。
-      await downloadFile(packageUrl, zipPath, {
+      //
+      // R5b（部署模型评审 §九 9.4-5b）：外层换成带字节缓存的取件入口。
+      // 未命中路径对 downloadFile 的调用参数与无缓存时代**逐字节一致**
+      // （上述 SSRF/Bearer/超时/体积/abort 语义全保留）；命中路径零网络
+      // 往返。缓存侧一切故障 fail-open 回网络，绝不 fail 任务。
+      await downloadZipWithCache(packageUrl, zipPath, {
         timeoutMs: ZIP_DOWNLOAD_TIMEOUT_MS,
         maxBytes: config.packageDownloadMaxBytes,
         signal: entry.abortController.signal,
@@ -1700,11 +1708,17 @@ async function prepareExecution(
 
     // zip-guard 炸弹审查 + zip-slip/绝对路径/符号链接拒绝，逐条目断言落盘
     // 目标仍在 workDir 之内。失败会自行清理本次写出的内容。
+    //
+    // 红线（评审 §六 4）：**缓存命中路径也每次执行照常执行本审查**——缓存
+    // 只省下载，不做任何安全决策。审查拒绝时顺带清除缓存条目（首次下载的
+    // 恶意包与缓存条目被事后替换两种来源一并覆盖），否则坏字节会被反复
+    // 命中、反复在这里失败。
     logPrepare('Extracting package (zip-safety vetting enabled)');
     try {
       safeExtractZip(zipPath, workDir, { removeArchive: true });
     } catch (err) {
       if (err instanceof ZipSafetyError) {
+        purgePkgCacheEntry(packageUrl);
         throw new Error(`压缩包不安全或不合法：${err.message}`);
       }
       throw err;

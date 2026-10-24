@@ -319,6 +319,17 @@ export const config = {
   // zip 整包下载体积上限（字节）。与 SSRF/下载链既有 200MB 语义对齐
   // （CONTRACT.md §3.2 zip 渠道 size cap 200MB）。
   packageDownloadMaxBytes: parseInt(process.env.PACKAGE_DOWNLOAD_MAX_BYTES || String(200 * 1024 * 1024), 10),
+  // R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存（<workDir>/
+  // .pkg-cache）的体积预算，超限按 mtime 淘汰最旧（pkg-cache.ts）。默认 4GiB
+  // 与解释器池总预算（INTERPRETER_TOTAL_GB）同量级：单包上限 200MB 下可容纳
+  // ~20 个不同包。getter 惰性读 env（热重载一致）；**0 = 显式关闭缓存**
+  // （不读不写，行为与无缓存时代一致）；负数按 0 处理（手滑防御，静默钳制
+  // 而不是启动失败——缓存是性能优化，不是红线配置）。
+  get pkgCacheMaxBytes(): number {
+    const raw = parseInt(process.env.PKG_CACHE_MAX_BYTES || '', 10);
+    if (!Number.isFinite(raw)) return 4 * 1024 * 1024 * 1024;
+    return Math.max(raw, 0);
+  },
   token: process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || (() => { const i = process.argv.indexOf('--token'); return i !== -1 ? process.argv[i + 1] || '' : ''; })(),
   // N23: dedicated HMAC secret for per-execution callback tokens; when unset
   // the shared token above is used as the HMAC source secret (admin-api
