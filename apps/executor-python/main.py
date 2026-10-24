@@ -350,6 +350,12 @@ def _register_payload() -> dict:
         'maxConcurrentTasks': settings.max_concurrent_tasks,
         'restartedAt': executor_started_at,
         'startupId': executor_startup_id,
+        # R3-B/P10（协议 v7）：`deployedApps` / `installedPackages` 在注册载荷
+        # 同样**恒省略**（=「未上报」，admin 不动既有行）——本执行器没有
+        # /api/deploy、/api/update-package 路由（node-only，见 protocol.json
+        # executorNodeOnly 段），两键的事实源（<workDir>/apps/ 与
+        # .pkg-updates/manifests/）在本侧不存在，完整裁定见 config.py
+        # PROTOCOL_VERSION 注释。心跳侧同款省略（scheduler._heartbeat_payload）。
     }
     # ARCH-36（ADR-017 阶段 2）：稳定设备指纹（sha256(deviceId:installSalt)）。
     # 采集失败/不可用 → **整个键缺席**（而非送 null）——与 node 侧

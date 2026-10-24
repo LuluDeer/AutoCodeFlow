@@ -578,11 +578,34 @@ EXECUTOR_VERSION = '2.0.0'
 # R3-B（2026-10-24，部署模型评审 §4.3/P5）：6 → 7。register/heartbeat 新增
 # **可选**键 `deployedApps`（设备级应用版本事实）与 `installedPackages`（已
 # 安装执行器包清单），方向为**执行器→中台**（中台只采信落库：executor_app_
-# versions 整替语义 / executors.installedPackages jsonb）。本侧**只同步版本
-# 常量、不落地上报**——两键对执行器是可选省略（缺省 = 未上报，中台不动既有
-# 数据），python 的 apps/ 扫描上报为后续工作；协议版本声明的是「讲 v7 语言」
-# （与 v2 的 commands python 仅实现两型本地路由仍列实现方同款口径）。
-# PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，
-# 不改变任何既有分支。同值闸同上（node === python === protocol.json）。
+# versions 整替语义 / executors.installedPackages jsonb）。协议版本声明的是
+# 「讲 v7 语言」（与 v2 的 commands python 仅实现两型本地路由仍列实现方同款
+# 口径）。PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍
+# 为 1，不改变任何既有分支。同值闸同上（node === python === protocol.json）。
+#
+# python 侧两键**恒省略**的裁定（2026-10-24 落地核查，fail-honest：不硬造）。
+# node 蓝本的事实源在本执行器**均不存在**，缺省即「未上报」（admin 三态收口
+# normalizeDeployedApps/normalizeInstalledPackages 对省略=不动 DB），没有可
+# 扫描的对象就没有可上报的事实——补空数组会把「不知道」伪装成「没有」：
+#
+# · deployedApps：事实源是 deploy 路由落盘的 `<workDir>/apps/<appId>/`
+#   （current 软链 + app.json + releases/）。python 执行器**没有 /api/deploy
+#   路由**（commands.py 能力缺口表 + protocol.json executorNodeOnly 段均登记
+#   deploy/app-stop/app-uninstall/update-package 为 node-only），故本侧从不
+#   创建该目录树——node 形态的目录只可能出现在与 node 执行器共用的 workDir
+#   里，那是**另一台执行器的事实**，本侧上报等于替别人代报（且无从区分
+#   归属），恒省略是唯一诚实姿态。
+# · installedPackages：事实源是 update-package 路由在 checksum 验证通过后
+#   落盘的 `.pkg-updates/manifests/<packageId>.json`。python 同样**没有
+#   /api/update-package 路由**（同上 node-only），从不写 manifests——省略
+#   即如实声明「本执行器无包安装事实」。注意 `.pkg-updates` 名字仍留在
+#   maintenance._PROTECTED_WORKDIR_NAMES（workDir 若与 node 共用，清扫不得
+#   误删别人的制品；保护名 ≠ 事实源）。
+#
+# 将来 python 补齐这两条路由（并按 protocol.json 要求把 executorNodeOnly
+# 条目提升进 schemas 段）时，在此两键落地 node 同款扫描 + TTL 缓存 + 心跳
+# 接入（蓝本：node 侧 deployed-apps.ts / installed-packages.ts），本注释
+# 与 scheduler._heartbeat_payload / main._register_payload 处的省略注释
+# 一并移除。
 PROTOCOL_VERSION = 7
 

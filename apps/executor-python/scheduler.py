@@ -448,6 +448,13 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
         # 中台可据此在心跳路径做兼容性分支（见 config.py PROTOCOL_VERSION）。
         'protocolVersion': PROTOCOL_VERSION,
+        # R3-B/P10（协议 v7）：`deployedApps` / `installedPackages` 两键在本侧
+        # **恒省略**（不带进 payload = JSON 里无此键 =「未上报」，admin 保留
+        # 既有数据）。事实源裁定与完整理由见 config.py PROTOCOL_VERSION 注释
+        # ——node 蓝本扫描的 `<workDir>/apps/` 与 `.pkg-updates/manifests/`
+        # 分别由 /api/deploy、/api/update-package 落盘，两条路由均为 node-only
+        # （protocol.json executorNodeOnly 段），python 从不创建这些事实，
+        # 不硬造空数组（[] = 「明确没有」，与「不知道」不可混）。
     }
     # ARCH-36（ADR-017 阶段 2）：设备指纹随心跳**幂等重传**（register 已落库）。
     # 价值：①「注册期数据目录恰好只读、之后恢复」可自愈；② admin 可比对注册期
