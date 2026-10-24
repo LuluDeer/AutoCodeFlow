@@ -25,9 +25,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 逆序删列（IF EXISTS 幂等）。删列会丢 lastReportedAt 之外的创建/更新
  * 时间线——down 本就只用于迁移链演练，不做数据回填。
  */
-export class AddExecutorAppVersionTimestamps1790000000066
-  implements MigrationInterface
-{
+export class AddExecutorAppVersionTimestamps1790000000066 implements MigrationInterface {
   name = "AddExecutorAppVersionTimestamps1790000000066";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

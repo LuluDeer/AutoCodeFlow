@@ -18,7 +18,7 @@ function loadConfigWith(envValue: string | undefined): { packageDownloadMaxBytes
   else process.env.PACKAGE_DOWNLOAD_MAX_BYTES = envValue;
   let cfg: { packageDownloadMaxBytes: number } | undefined;
   jest.isolateModules(() => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires -- config 是加载期求值对象，必须重建模块
+     
     cfg = require('./config').config;
   });
   if (prev === undefined) delete process.env.PACKAGE_DOWNLOAD_MAX_BYTES;
