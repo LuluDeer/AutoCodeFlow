@@ -61,6 +61,7 @@
     "src/main/app-inventory.selftest.ts",
     "src/main/app-uninstall.ts",
     "src/main/app-uninstall.selftest.ts",
+    "src/main/mixed-layout.selftest.ts",
     "src/main/app-name-recovery.ts",
     "src/main/agent/assignment-journal.ts",
     "src/main/agent/assignment-journal.selftest.ts",

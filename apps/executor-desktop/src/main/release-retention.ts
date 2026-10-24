@@ -128,9 +128,13 @@ function sweepOneApp(
   if (keys.length <= keep) return outcome; // 未超保留数，无事可做
 
   // current 指向的组豁免：currentKey 是相对 releases/ 的 releaseKey（两段时
-  // '<version>/<deploymentId>'，单段时目录名本身）——候选若是 current 所在的
-  // 版本组（首段相同）或 current 本身，闸门拒绝。
+  // '<version>/<deploymentId>'，单段时目录名本身）。候选（releases/ 直接子
+  // 目录）与之同组时必须豁免——注意**不能只比整键**：两段 currentKey 的首段
+  // 才是候选组目录名，整键相等永不成立，回滚到旧组后一轮清扫就会删掉正在
+  // 生效的版本组（current 悬空、应用直接不可用）。executor 侧
+  // pruneOldReleases 的 currentGroup 豁免同款语义（deploy.ts）。
   const currentKey = readCurrentReleaseKey(appRoot);
+  const currentGroup = currentKey !== null ? currentKey.split('/')[0] : null;
   // mtime 新→旧排序后的 keep 个之外是候选；每个候选仍过 canDeleteRelease 闸门
   // （current/运行中绝不删——与手动删除完全同一语义）。
   for (const releaseKey of keys.slice(keep)) {
@@ -145,6 +149,10 @@ function sweepOneApp(
       );
     if (runningInGroup) {
       outcome.skipped.push(`${releaseKey}（组内有部署正在运行）`);
+      continue;
+    }
+    if (currentGroup !== null && releaseKey === currentGroup) {
+      outcome.skipped.push(`${releaseKey}（current 所在版本组，豁免）`);
       continue;
     }
     const gate = canDeleteRelease({
