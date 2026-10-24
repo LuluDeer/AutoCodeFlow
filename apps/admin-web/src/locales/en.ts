@@ -1961,6 +1961,7 @@ export default {
   // out that the end date itself is excluded — picking Oct 24 means "through
   // Oct 23 23:59:59.999" under [since, until).
   'appDetail.events.filter.timeHint': 'Filter by event time: the start date is fully included; the end date itself is excluded (picking 10-24 means through 10-23 23:59:59.999)',
+  'audit.range.timeHint': 'Filter by audit time: the start date is fully included; the end date itself is excluded (picking 10-24 means through 10-23 23:59:59.999)',
   'appDetail.events.filter.last1d': 'Last 1 day',
   'appDetail.events.filter.last7d': 'Last 7 days',
   'appDetail.events.filter.last30d': 'Last 30 days',

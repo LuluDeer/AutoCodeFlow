@@ -641,23 +641,27 @@ export default function AuditLogPage() {
             「最近 1 天」在 events 页给 24h 整天窗、这里却几乎空窗。
             注：events 页另有口径披露 Tooltip（timeHint），本页如需同款需
             动 locales（zh/en）两个文件，超出本轮 3 文件预算，未加。 */}
-        <DatePicker.RangePicker
-          presets={rangePresets}
-          allowClear
-          onChange={(dates) => {
-            // range 两端齐全才算时间筛选生效；clear 后 dates=null → 两个
-            // undefined（buildAuditListQuery 不装该键，请求形状与未筛一致）。
-            const hasTime = !!(dates && dates[0] && dates[1]);
-            const { since, until } = hasTime
-              ? eventsRangeToSinceUntil(dates as [Dayjs, Dayjs])
-              : { since: undefined, until: undefined };
-            setPending((p) => ({
-              ...p,
-              startTime: since,
-              endTime: until,
-            }));
-          }}
-        />
+        {/* 口径披露（与 events 页同款，统一轮遗留收口）：「结束日当天
+            不计入」是反直觉口径，Tooltip 明示不靠用户猜。 */}
+        <Tooltip title={t('audit.range.timeHint')}>
+          <DatePicker.RangePicker
+            presets={rangePresets}
+            allowClear
+            onChange={(dates) => {
+              // range 两端齐全才算时间筛选生效；clear 后 dates=null → 两个
+              // undefined（buildAuditListQuery 不装该键，请求形状与未筛一致）。
+              const hasTime = !!(dates && dates[0] && dates[1]);
+              const { since, until } = hasTime
+                ? eventsRangeToSinceUntil(dates as [Dayjs, Dayjs])
+                : { since: undefined, until: undefined };
+              setPending((p) => ({
+                ...p,
+                startTime: since,
+                endTime: until,
+              }));
+            }}
+          />
+        </Tooltip>
         <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>{t('audit.action.search')}</Button>
         {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>{t('audit.action.reset')}</Button>}
         {/* A-12: 导出 CSV（后端 GET /audit/export 同滤，ADMIN-only） */}
