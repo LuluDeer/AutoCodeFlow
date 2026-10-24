@@ -40,6 +40,8 @@ import { copyText } from '../utils/clipboard';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import StateError from '../components/StateError';
+// UI-08：首屏数据未达时以骨架形态替代裸 spinner（见下方列表分支）
+import PageSkeleton from '../components/PageSkeleton';
 import { useAuthStore } from '../store/auth';
 
 const { Text } = Typography;
@@ -858,7 +860,13 @@ export default function AppDeploymentPage({
         />
       ) : null}
 
-      {deployments.length === 0 && !loading && !loadError ? (
+      {/* UI-08：首屏（数据未达、未出错、加载中）以骨架替代空态/表格——此前首帧
+          列表区无任何反馈（仅 Table 内建 spinner 或空白），与全站列表页骨架形态
+          不一致。数据到达后（含 3s 轮询拍，后台拍不置 loading）不再进此分支，
+          空态/错误态语义不变。 */}
+      {loading && loadError === null && deployments.length === 0 ? (
+        <PageSkeleton variant="table" rows={6} />
+      ) : deployments.length === 0 && !loading && !loadError ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={t('appDeploy.empty')}

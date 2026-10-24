@@ -22,6 +22,8 @@ import { formatDateTime } from '../utils/timeFormat';
 import { useAuthStore } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// UI-08：首屏数据未达时以骨架形态替代裸 spinner / 误报空态（见下方视图分支）
+import PageSkeleton from '../components/PageSkeleton';
 // UI-07：视图切换 / 分组聚合条 / 卡片视图 / 批量操作条 / 实时状态
 import ViewToggle, { readViewMode, writeViewMode, type ExecutorViewMode } from '../components/executor/ViewToggle';
 import GroupFilterBar from '../components/executor/GroupFilterBar';
@@ -545,7 +547,13 @@ export default function ExecutorListPage() {
         />
       ) : null}
 
-      {effectiveViewMode === 'card' ? (
+      {/* UI-08：首屏（数据未达且未出错）以骨架替代两视图——此前卡片分支在
+          executors=[] 时直接渲染 Empty「无匹配执行器」，把「加载中」误报成
+          「没有数据」；表格分支只有 antd 内建 spinner，与全站列表页形态不一致。
+          数据到达后（含轮询拍）不再进此分支，筛选/空态语义不变。 */}
+      {loading && !error && executors.length === 0 ? (
+        <PageSkeleton variant="table" rows={6} />
+      ) : effectiveViewMode === 'card' ? (
         <ExecutorCardGrid
           executors={filtered}
           selectedIds={selectedRowKeys}

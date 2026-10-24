@@ -241,7 +241,13 @@ describe('B-14 列表补 sorter', () => {
       makeExecutor({ id: 'ex-2', appName: 'beta', runningTaskCount: 1 }),
     ]);
     renderPage();
-    await screen.findByText('alpha');
+    // UI-08 骨架分支后，「alpha」文本不再是表格就绪的可靠信号——前序 B-13
+    // 用例的静态 Modal（token 结果弹窗）残留 body，findByText('alpha') 可能
+    // 误命中其中文本而在表格渲染前继续执行。改为等待表格行真渲染（骨架态
+    // tbody 行数为 0，数据到达后恰为 mock 的 2 行）。
+    await waitFor(() => {
+      expect(document.querySelectorAll('.ant-table-tbody tr.ant-table-row').length).toBe(2);
+    });
 
     for (const label of ['状态', '任务', '心跳']) {
       const th = headerCells().find((c) => (c.textContent ?? '').includes(label));
