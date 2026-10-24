@@ -84,6 +84,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from config import ONLINE_DOWNLOAD_MIN, RUNTIME_VERSION_PATTERN, settings
 
@@ -205,6 +206,80 @@ _UV_ENV_DENYLIST = {
 }
 
 
+def write_pypi_netrc(dest: Path, *, username: str, password: str, hosts: list[str]) -> Path:
+    """P1 凭据通道：把 registry-pypi Basic 凭据写成 per-host netrc 文件。
+
+    纪律（docs/archive/reports/pypi-credential-channel-design.md §2.2）：
+      * 0o600，O_CREAT|O_TRUNC 原子建文件（不 delete+rename——并发 install
+        各自持有同路径 fd，删除会让对方的 NETRC 指向已注销 inode，凭据静默
+        失效成 401）；内容幂等，直接覆写。
+      * 只写 executor 属主的受控目录（调用方保证，通常在 uv cache 旁）。
+      * 凭据只存在于本文件与 install 子进程 env（NETRC 键），不进
+        argv/日志/主进程 os.environ。
+    """
+    lines: list[str] = []
+    for host in hosts:
+        if not host:
+            continue
+        lines.append(f'machine {host}')
+        lines.append(f'login {username}')
+        lines.append(f'password {password}')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, ('\n'.join(lines) + '\n').encode('utf-8'))
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(dest, 0o600)  # 已存在文件（O_CREAT 不改权限）也要收敛
+    except OSError:  # pragma: no cover - chmod 失败不阻断（下次覆写再试）
+        pass
+    return dest
+
+
+def _pypi_netrc_hosts() -> list[str]:
+    """凭据应覆盖的 host 列表：主索引 + 附加索引（去重、保序）。"""
+    hosts: list[str] = []
+    for url in (
+        getattr(settings, 'pypi_registry_url', '') or '',
+        getattr(settings, 'pypi_extra_index_url', '') or '',
+    ):
+        url = url.strip()
+        if not url:
+            continue
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            host = None
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def maybe_inject_pypi_netrc(env: dict[str, str], netrc_dir: Path | str) -> None:
+    """P1：配置了凭据对时生成 netrc 并把 NETRC 键注入 uv 子进程 env。
+
+    未配置（任一字段为空）→ 什么都不做（行为逐字节不变）。写文件失败 →
+    warning + 不注入（安装照旧 401，不引入新失败模式，见设计稿 §2.3）。
+    NETRC 从 _UV_ENV_KEYS 白名单外显式注入：宿主环境的 NETRC 不可能穿透
+    （白名单不含它），只有这里生成的文件才生效。
+    """
+    username = (getattr(settings, 'pypi_registry_username', '') or '').strip()
+    password = getattr(settings, 'pypi_registry_password', '') or ''
+    if not username or not password:
+        return
+    hosts = _pypi_netrc_hosts()
+    if not hosts:
+        return
+    dest = Path(netrc_dir) / '.uv-netrc'
+    try:
+        write_pypi_netrc(dest, username=username, password=password, hosts=hosts)
+    except OSError as exc:
+        logger.warning('pypi netrc write failed (%s); install 将无凭据（可能 401）', exc)
+        return
+    env['NETRC'] = str(dest)
+
+
 def build_uv_env(*, cache_dir: Path | str | None = None) -> dict[str, str]:
     """返回 uv 子进程的最小环境（公开给 WS4 复用：venv / pip install 同款）。
 
@@ -242,6 +317,8 @@ def build_uv_env(*, cache_dir: Path | str | None = None) -> dict[str, str]:
     mirror = (settings.uv_python_install_mirror or '').strip()
     if mirror:
         env['UV_PYTHON_INSTALL_MIRROR'] = mirror
+    # P1 凭据通道：netrc 放 cache 同目录（executor 属主、与 .uv-cache 同卷）。
+    maybe_inject_pypi_netrc(env, cache_dir if cache_dir is not None else Path(settings.uv_python_install_dir))
     return env
 
 

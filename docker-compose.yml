@@ -377,6 +377,13 @@ services:
       # 可选：追加官方索引（--extra-index-url 语义），缓解「私有源无上游、
       # 公共包必失败」；不设则行为不变。
       PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
+      # P1（契约断裂修复，2026-10-25）：registry-pypi Basic 凭据对。与
+      # REGISTRY_USER/REGISTRY_PASS 同值即可——执行器把它写成 0600 netrc
+      # （uv cache 旁 .uv-netrc），仅以 NETRC env 键注入 uv install 子进程；
+      # 凭据不进 argv/日志/URL，也不进执行器主进程环境。留空（默认）= 无凭据
+      # 通道，私有源匿名 401 姿态与历史一致。
+      PYPI_REGISTRY_USERNAME: ${PYPI_REGISTRY_USERNAME:-}
+      PYPI_REGISTRY_PASSWORD: ${PYPI_REGISTRY_PASSWORD:-}
       # ── python_task_multiversion：解释器缓存池与多版本 ──────────────
       # 任务可声明 runtimeVersion（Python 主.次版本）按需获取解释器；不声明
       # 则沿用宿主解释器（存量语义逐字节不变）。
@@ -491,6 +498,10 @@ services:
       # 索引、registry-pypi 无上游代理；可用 PYPI_EXTRA_INDEX_URL 追加官方索引。
       PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL-http://registry-pypi:8003/simple/}
       PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
+      # P1（契约断裂修复，2026-10-25）：与上方 executor-python 块同族——netrc
+      # 注入 uv/pip install 子进程（node 侧 defaultUvEnv，池目录下 .uv-netrc）。
+      PYPI_REGISTRY_USERNAME: ${PYPI_REGISTRY_USERNAME:-}
+      PYPI_REGISTRY_PASSWORD: ${PYPI_REGISTRY_PASSWORD:-}
       # ── python_task_multiversion：解释器缓存池（node 侧同构） ────────
       # executor-node 的 python 分支与 executor-python 对等（声明版本按需
       # 获取解释器）。uv 定位顺序：UV_BIN → PATH → desktop 内置（Electron

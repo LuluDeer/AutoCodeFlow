@@ -262,6 +262,29 @@ export const config = {
       'PYPI_EXTRA_INDEX_URL',
     );
   },
+  // P1（契约断裂修复，2026-10-25）：registry-pypi Basic 凭据对（与 python 侧
+  // config.py 的 pypi_registry_username/password 对等）。凭据经 0600 netrc
+  // 文件注入 uv/pip install 子进程（NETRC env 键），不进 argv/日志/URL
+  // userinfo，不写主进程环境。空 = 无凭据通道，行为与历史逐字节一致。
+  get pypiRegistryUsername(): string {
+    return (process.env.PYPI_REGISTRY_USERNAME || '').trim();
+  },
+  get pypiRegistryPassword(): string {
+    return process.env.PYPI_REGISTRY_PASSWORD || '';
+  },
+  /** P1：凭据对非空但索引全空时的配置错误消息（空串 = 配置合法）。 */
+  get pypiCredentialsConfigError(): string {
+    const user = this.pypiRegistryUsername;
+    const pass = this.pypiRegistryPassword;
+    if (!user && !pass) return '';
+    if (!user || !pass) {
+      return 'PYPI_REGISTRY_USERNAME 与 PYPI_REGISTRY_PASSWORD 必须同时配置（当前只配置了其一）';
+    }
+    if (!this.pypiRegistryUrl && !this.pypiExtraIndexUrl) {
+      return '配置了 PYPI_REGISTRY_USERNAME/PASSWORD 但未配置任何索引（PYPI_REGISTRY_URL / PYPI_EXTRA_INDEX_URL 至少其一）';
+    }
+    return '';
+  },
   // 任务 Python 版本区间（CONTRACT.md §1.1；审计二轮 B-3）：默认 3.7~3.14 与
   // executor-python config.py 逐字对齐，可用 PYTHON_RUNTIME_VERSION_MIN/MAX
   // 覆盖（admin 已支持同名键）。getter 而非常量：惰性读 env，与热重载一致。

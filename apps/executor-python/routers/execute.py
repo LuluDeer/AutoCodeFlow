@@ -167,6 +167,13 @@ def _build_uv_env(cache_dir: Path) -> dict[str, str]:
             logger.warning('interpreters.build_uv_env failed (%s); falling back to local whitelist', exc)
     env = _build_install_env(cache_dir)
     env['UV_PYTHON_DOWNLOADS'] = 'manual'
+    # P1 凭据通道（本地兜底分支）：builder 缺席时同样注入 netrc，防两分支漂移。
+    inject = getattr(_interpreters, 'maybe_inject_pypi_netrc', None) if _interpreters is not None else None
+    if callable(inject):
+        try:
+            inject(env, cache_dir)
+        except Exception as exc:  # noqa: BLE001 - 凭据文件失败不阻断安装路径
+            logger.warning('maybe_inject_pypi_netrc failed (%s); install 将无凭据', exc)
     return env
 
 

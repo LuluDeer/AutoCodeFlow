@@ -46,6 +46,7 @@ curl http://localhost:4873/-/ping          # 期望 200 + {}
 | 变量 | 缺省 | 用途 |
 |------|------|------|
 | `REGISTRY_USER` / `REGISTRY_PASS` | `admin` / `change_me` | registry-pypi 的 Basic Auth（简单索引 `/simple/` 也要求鉴权，S9） |
+| `PYPI_REGISTRY_USERNAME` / `PYPI_REGISTRY_PASSWORD` | 空 | **执行器侧**安装凭据（P1 通道，2026-10-25）：与 `REGISTRY_USER/PASS` 同值——执行器写成 0600 netrc，仅注入 uv install 子进程（`NETRC` env 键），凭据不进 argv/日志/URL |
 | `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | verdaccio 用户 |
 
 > 端口仅绑定 `127.0.0.1`：执行器走 compose 内部网络（`http://registry-pypi:8003`
@@ -125,7 +126,7 @@ requirements 填你的私有 npm 包名，完整说明见
 
 | 现象 | 原因与解法 |
 |------|-----------|
-| 安装 401 | registry-pypi 简单索引与上传都要求 Basic Auth（S9）；确认 `REGISTRY_PASS` 与执行器侧 `PYPI_REGISTRY_URL` 可达。**注意**：执行器侧 `PYPI_REGISTRY_URL` 强制无凭据（config.py 校验拒绝 userinfo，uv 子进程环境剥离 `PIP_*`/`UV_*`），且不存在 `PYPI_REGISTRY_USER/PASS` 之类的凭据注入通道——executor-python 的 `uv pip install` 对 registry-pypi 默认必 401。要让任务装到私有包，需将 `PYPI_REGISTRY_URL` 显式置空回落官方源并叠加 `PYPI_EXTRA_INDEX_URL` 指向带凭据可达的镜像，或放宽 registry-pypi 的 S9 认证（安全取舍）。npm 侧 access=`$authenticated`，匿名安装必 401，需 `NPM_REGISTRY_TOKEN` |
+| 安装 401 | registry-pypi 简单索引与上传都要求 Basic Auth（S9）；确认 `REGISTRY_PASS` 与执行器侧 `PYPI_REGISTRY_URL` 可达。**P1 修复（2026-10-25）**：执行器侧 `PYPI_REGISTRY_URL` 仍强制无凭据（config 校验拒绝 userinfo，uv 子进程环境剥离宿主 `PIP_*`/`UV_*`），但已补受控凭据通道——在执行器环境设 `PYPI_REGISTRY_USERNAME/PASSWORD`（与 `REGISTRY_USER/PASS` 同值），执行器写成 0600 netrc 仅注入 uv install 子进程，安装即通过；两键留空则维持无凭据姿态（默认仍 401）。官方包需求可叠加 `PYPI_EXTRA_INDEX_URL`。npm 侧 access=`$authenticated`，匿名安装必 401，需 `NPM_REGISTRY_TOKEN` |
 | requirements 填了 `--index-url …` 被拒 | 设计如此（防索引劫持）；索引由执行器侧 env 统一指定，requirements 只写包规格 |
 | glue 脚本任务没走安装 | requirements 仅对 entrypoint（打包）任务生效 |
 | 自己的 npm scope 装不到 | `.npmrc` 的 scope 行只覆盖 `@autoflow`/`@autocodeflow` 两个平台 scope；自有 scope 依赖私服回源兜底，或让 `NPM_REGISTRY_URL` 指向能解析该 scope 的私服 |

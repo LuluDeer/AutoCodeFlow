@@ -50,6 +50,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { config } from './config';
 import { logger } from './logger';
@@ -164,6 +165,41 @@ function readConfigString(key: string): string {
   return typeof value === 'string' ? value : '';
 }
 
+/** P1（契约断裂修复，2026-10-25）：把 registry-pypi Basic 凭据写成 0600 netrc。
+ * 与 python 侧 interpreters.write_pypi_netrc 同纪律：幂等覆写（不 delete+rename，
+ * 防并发部署各持 fd 时对侧 NETRC 指向已注销 inode）；凭据只落本文件与 install
+ * 子进程 env（NETRC 键），不进 argv/日志/主进程环境。 */
+function writePypiNetrc(dest: string, username: string, password: string, hosts: string[]): void {
+  const lines: string[] = [];
+  for (const host of hosts) {
+    if (!host) continue;
+    lines.push(`machine ${host}`, `login ${username}`, `password ${password}`);
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, lines.join('\n') + '\n', { mode: 0o600 });
+  try {
+    fs.chmodSync(dest, 0o600); // 已存在文件（创建不改权限）也收敛
+  } catch {
+    /* best effort：下次覆写再试 */
+  }
+}
+
+/** P1：凭据应覆盖的 host（主索引 + 附加索引，去重保序）。 */
+function pypiNetrcHosts(): string[] {
+  const hosts: string[] = [];
+  for (const url of [readConfigString('pypiRegistryUrl'), readConfigString('pypiExtraIndexUrl')]) {
+    const trimmed = url.trim();
+    if (!trimmed) continue;
+    try {
+      const host = new URL(trimmed).hostname;
+      if (host && !hosts.includes(host)) hosts.push(host);
+    } catch {
+      /* 索引校验已在上游 validateOptionalUrlSetting 拦截；此处防御性跳过 */
+    }
+  }
+  return hosts;
+}
+
 function defaultUvEnv(): NodeJS.ProcessEnv {
   const installDir = readConfigString('uvPythonInstallDir');
   const extra: Record<string, string | undefined> = {
@@ -175,6 +211,20 @@ function defaultUvEnv(): NodeJS.ProcessEnv {
   if (installDir) {
     extra.UV_PYTHON_INSTALL_DIR = installDir;
     extra.UV_CACHE_DIR = path.join(installDir, '.cache');
+  }
+  // P1 凭据通道：netrc 放池目录（executor 属主、与 uv cache 同卷）。未配置
+  // 凭据对时零行为变化；写失败 warn 后不注入（安装照旧，不新增失败模式）。
+  const user = readConfigString('pypiRegistryUsername');
+  const pass = readConfigString('pypiRegistryPassword');
+  const hosts = user && pass ? pypiNetrcHosts() : [];
+  if (user && pass && hosts.length > 0) {
+    const dest = path.join(installDir || os.tmpdir(), '.uv-netrc');
+    try {
+      writePypiNetrc(dest, user, pass, hosts);
+      extra.NETRC = dest;
+    } catch (err) {
+      logger.warn(`[python-venv] pypi netrc write failed (${errText(err)}); install 将无凭据（可能 401）`);
+    }
   }
   return buildChildEnv(extra);
 }

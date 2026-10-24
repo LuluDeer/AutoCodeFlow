@@ -198,6 +198,35 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_pypi_extra_index_url(cls, value: str) -> str:
         return validate_pypi_registry_url(value)
+
+    # P1（契约断裂修复，2026-10-25）：registry-pypi Basic 凭据对。设计稿见
+    # docs/archive/reports/pypi-credential-channel-design.md——凭据经 per-host
+    # netrc 文件（0600）注入 uv install 子进程（NETRC env 键），绝不进
+    # argv/日志/URL userinfo，也绝不写进执行器主进程 os.environ。
+    # 空（默认）= 无凭据通道，安装行为与历史逐字节一致。
+    pypi_registry_username: str = ''
+    pypi_registry_password: str = ''
+
+    @model_validator(mode='after')
+    def _validate_pypi_credentials_pair(self) -> 'Settings':
+        """凭据对非空时必须至少配置一个索引（fail-fast，不回显凭据值）。
+
+        防两类配错：① 凭据配了但索引未配置——凭据永远用不上，运维误以为
+        私有源认证已生效；② 将来误把凭据指向非私有源 host。消息只提键名，
+        绝不含 username/password 的值（config 红线：凭据不入日志）。
+        """
+        has_user = bool(self.pypi_registry_username.strip())
+        has_pass = bool(self.pypi_registry_password)
+        if has_user != has_pass:
+            raise ValueError(
+                'PYPI_REGISTRY_USERNAME 与 PYPI_REGISTRY_PASSWORD 必须同时配置（当前只配置了其一）'
+            )
+        if has_user and not (self.pypi_registry_url or self.pypi_extra_index_url):
+            raise ValueError(
+                '配置了 PYPI_REGISTRY_USERNAME/PASSWORD 但未配置任何索引'
+                '（PYPI_REGISTRY_URL / PYPI_EXTRA_INDEX_URL 至少其一）'
+            )
+        return self
     # R4-C P2: when true, an executor without a configured token refuses
     # /api/* requests (503) instead of the dev-mode allow-all behavior.
     require_token: bool = False
