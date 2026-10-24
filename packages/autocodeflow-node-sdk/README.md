@@ -148,7 +148,7 @@ try {
 ## 版本与发布
 
 - 版本策略：与 `autoflow-sdk`（PyPI）、`autocodeflow-mcp-server` 走
-  **lockstep** 单版本线，当前 `1.14.0`。
+  **lockstep** 单版本线，当前 `1.14.0`。<!-- x-release-please-version -->
 - 发布管道：[.github/workflows/release.yml](../../.github/workflows/release.yml)。
   push tag `vX.Y.Z` 触发：版本一致性守卫（tag 必须等于本包
   `package.json` version，不一致直接 fail）→ `publish-npm` job
@@ -168,4 +168,4 @@ try {
 - 发布流程与矩阵说明见
   [docs/sdk-guide.md「SDK 矩阵」](../../docs/sdk-guide.md)。
 
-> 版本随 autocodeflow lockstep 组同步发布(当前 1.14.0,与 mcp-server/acf-cli 同版)。
+> 版本随 autocodeflow lockstep 组同步发布(当前 1.14.0,与 mcp-server/acf-cli 同版)。<!-- x-release-please-version -->
