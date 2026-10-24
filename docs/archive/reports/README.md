@@ -12,6 +12,7 @@
 | [ci-optimization-2026.md](ci-optimization-2026.md) |  |
 | [ci-optimization-summary.md](ci-optimization-summary.md) |  |
 | [ci-test-fixes-2026-10.md](ci-test-fixes-2026-10.md) |  |
+| [deployment-model-review-2026-10-23.md](deployment-model-review-2026-10-23.md) | 应用/任务部署模型排查报告：同一版本重复部署、仅部署语义、版本按设备走、回滚与一键升级的成因与调整方案 |
 | [dependabot-enhancements.md](dependabot-enhancements.md) |  |
 | [final-summary-2026-10-17.md](final-summary-2026-10-17.md) |  |
 | [implementation-report-2026-10-17.md](implementation-report-2026-10-17.md) |  |
