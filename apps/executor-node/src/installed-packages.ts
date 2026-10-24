@@ -149,7 +149,22 @@ export function scanInstalledPackages(
   try {
     dirents = fs.readdirSync(manifestsDir, { withFileTypes: true });
   } catch (err: any) {
-    if (err?.code === 'ENOENT') return [];
+    // ENOENT 的两种形态必须区分（2026-10-24 windows-node-tests 实测：Windows
+    // 对「父路径是普通文件」的 readdir 也报 ENOENT，而非 Linux 的 ENOTDIR）：
+    //  · 根目录存在且是目录、manifests/ 尚未创建 → 合法空清单（update-package
+    //    首次成功下载前没有任何 manifest）；
+    //  · 根路径不存在（全新环境）→ 同为合法空清单；
+    //  · 根路径被普通文件占位 → 扫描失败，上抛由收集器兜成省略键——
+    //    绝不能把「读不了」伪装成「没装过任何包」。
+    if (err?.code === 'ENOENT') {
+      try {
+        if (!fs.existsSync(baseDir) || fs.statSync(baseDir).isDirectory()) {
+          return [];
+        }
+      } catch {
+        // stat 自身失败（权限等）——归入扫描失败路径
+      }
+    }
     throw err;
   }
 

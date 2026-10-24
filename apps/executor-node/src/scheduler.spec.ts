@@ -518,8 +518,18 @@ describe('scheduler', () => {
     const { startHeartbeat } = require('./scheduler');
     const { resetInstalledPackagesCacheForTest } = require('./installed-packages');
 
+    // 跨平台注入目录级失败（原「文件占位」手法在 Windows 的 readdir 行为不同
+    // ——CI windows-node-tests 实测返回空数组而非 ENOTDIR，2026-10-24）：
+    // 直接 mock readdirSync 对 manifests 路径抛非 ENOENT 错误。
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-p10-hb-fail-'));
-    fs.writeFileSync(path.join(root, '.pkg-updates'), 'not a directory');
+    const notDir = new Error('not a directory (injected)') as Error & { code?: string };
+    notDir.code = 'ENOTDIR';
+    const readdirSpy = jest.spyOn(fs, 'readdirSync').mockImplementation(
+      ((...args: unknown[]) => {
+        if (String(args[0]).includes('manifests')) throw notDir;
+        return undefined as never;
+      }) as never,
+    );
     const realCwd = process.cwd();
     resetInstalledPackagesCacheForTest();
     try {
@@ -534,6 +544,7 @@ describe('scheduler', () => {
       expect(body.installedPackages).toBeUndefined();
       clearInterval(timer);
     } finally {
+      readdirSpy.mockRestore();
       process.chdir(realCwd);
       resetInstalledPackagesCacheForTest();
       fs.rmSync(root, { recursive: true, force: true });

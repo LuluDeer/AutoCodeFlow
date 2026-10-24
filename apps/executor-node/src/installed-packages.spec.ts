@@ -267,6 +267,10 @@ describe('collectInstalledPackages（缓存 + 失败语义）', () => {
 
   it('目录级扫描失败 → undefined（心跳省略整键）、warn、且失败结果不缓存', () => {
     const root = chdirToFreshRoot();
+    // 「文件占住 .pkg-updates」注入目录级失败：Linux readdir 报 ENOTDIR 直抛；
+    // Windows 报 ENOENT——由实现侧三态判定（根不是目录 → 上抛，见
+    // scanInstalledPackages 的 ENOENT 注释，2026-10-24 windows-node-tests
+    // 实测后收口）兜成省略键。两平台同一语义。
     fs.writeFileSync(path.join(root, '.pkg-updates'), 'not a directory');
 
     expect(collectInstalledPackages()).toBeUndefined();
