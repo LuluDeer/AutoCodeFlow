@@ -21,8 +21,8 @@ docker compose up -d registry-npm
 curl http://localhost:4873/-/ping     # 期望 200 + {}
 ```
 
-配置：`apps/registry-npm/config.yaml`（以单文件只读挂载进容器）。
-要点：
+配置：`apps/registry-npm/config.yaml`（以单文件只读挂载进容器）；compose 镜像
+pin 在 `verdaccio/verdaccio:5.31.1`（O-3，升级走显式改 tag）。要点：
 
 | 项 | 值 | 说明 |
 |---|---|---|

@@ -28,13 +28,16 @@
 ## 开发
 
 ```bash
-# 启动（需先设置 REGISTRY_PASS）
-REGISTRY_PASS=your-secret python main.py
+# 启动（需先设置 REGISTRY_PASS；生产形态见 docker-compose.yml 的 registry-pypi 服务）
+REGISTRY_PASS=your-secret uvicorn main:app --host 127.0.0.1 --port 8003
 
 # 上传包
-twine upload --repository-url http://localhost:8003/ dist/*
+twine upload --repository-url http://localhost:8003/ -u autoflow -p your-secret dist/*
 
 # 安装包
+# ⚠️ 索引/下载面 S9 起要求 Basic 认证——URL 内嵌凭据（user:pass@host）只适用于
+# 一次性手动命令；执行器侧 PYPI_REGISTRY_URL 必须无凭据（见 .env.example
+# 与 docs/tutorials/02-private-registry-deps.md「常见坑」）。
 pip install --index-url http://autoflow:your-secret@localhost:8003/simple/ your-package
 ```
 
