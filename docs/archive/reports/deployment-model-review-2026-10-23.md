@@ -342,6 +342,7 @@
 | 自主推进 R10（2026-10-25 上午）：**warnings 14→0 收官**——copyErrorText 与 F-18 copyText 等价去重；其余 13 处全是测试锚定纯函数（非组件共享不破坏 refresh 边界），eslint-plugin-react-refresh 0.5.7 原生 allowExportNames 集中登记 12 名字（名单外照样告警，比散落 disable 更严格可审计）。**admin-web 全 src eslint 0 error/0 warning 达成**；系列 66→42→29→14→0 | ✅ | 4fb6b822 |
 | 自主推进 R11-R12（2026-10-25 上午）：三包 lint 全净（admin-api 迁移 66 换行/executor-node 两多余 disable 注释 autofix——三包 0/0）；**registry 巡查**（历轮未覆盖角落）：防御纵深整体良好、f8806be2 已有回归钉住，但发现 **P1 契约断裂——executor-python→registry-pypi 无凭据通道默认必 401**（S9 全端点 Basic vs config 凭据禁入 argv 红线 + 白名单剥净一切通道 + 全仓无凭据键；node python 分支同病；tutorials 原文失实已改述）；README 死命令等四漂移修正 | ✅ | 44e0c394/188abaca |
 | 自主推进 R13（2026-10-25 上午）：**P1 修复——私有 PyPI 凭据通道**（netrc 子进程注入）：uv 0.13.4 真实实测三方案择优（UV_INDEX_*_USERNAME 实测对 --index-url 无效/部署绕行不解决根因）；PYPI_REGISTRY_USERNAME/PASSWORD 凭据对 → install 子进程独享 NETRC 键 + 0600 netrc（幂等保 inode），凭据零入 argv/日志/URL/主进程；宿主 NETRC 不穿透钉住；不配=行为逐字节不变；双侧对等；**E2E 实证 401→Installed**；协议零影响；per-task 一次性凭据列演进 | ✅ | 4624e4e0 |
+| 自主推进 R14（2026-10-25 上午）：P1 改 executor-node 源码未重打 bundle（子 agent 门禁遗漏）补打时**暴露守卫 bug**——清单追加式历史下 digest 判据取第一条（应与字节闸同取最后一条），多记录首次出现暴露、单记录时代碰巧掩盖；修守卫双闸语义对齐 + selftest 绿。R15：REG 登记的「.whl 产物入库建议清理」经查为**误判**——v1.0.0 起刻意入库的 bug18 selftest fixture（CI 消费 + atlas 登记），不可删，记录修正 | ✅ | d691fd62 |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
