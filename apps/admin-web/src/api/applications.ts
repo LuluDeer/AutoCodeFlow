@@ -168,6 +168,48 @@ export interface AppReleasesPage {
   total: number;
   page: number;
   pageSize: number;
+  /**
+   * P8：版本行超 RELEASES_MAX_PAGE_SIZE 被静默截断时为 true（响应字段只增，
+   * 旧后端不带该键——可选以兼容过渡期）。消费方应显式告警，否则「看到的
+   * 不是全量」会被当成「就这么多」。
+   */
+  truncated?: boolean;
+}
+
+/**
+ * R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流行
+ * （GET /app-deployments/applications/:appId/events，实体原样序列化——
+ * 与后端 dto/app-deployment-response.dto.ts 的 AppDeploymentEventRowDto 逐字段对齐）。
+ *
+ * 事件行只含短事实快照（写入侧保证 detail 不带 env），无需掩码；
+ * deploymentId 无外键——remove 事件比部署行活得久。
+ */
+export interface AppDeploymentEventRow {
+  id: string;
+  applicationId: string;
+  /** 触发本事件的部署行 id；行可能已被 remove 删除 */
+  deploymentId: string | null;
+  executorId: string | null;
+  executorAddress: string | null;
+  /** AppDeploymentEventType（varchar 裸 token；展示层负责人类可读映射） */
+  eventType: string;
+  /** 动作发生时的版本事实；动作时未知为 null */
+  deployedVersion: string | null;
+  /** 动作语义（manual/upgrade/rollback/approval）；机器路径为 null */
+  triggerType: string | null;
+  /** 操作人（JWT 用户名）；机器路径（如卡死扫描）为 null */
+  operator: string | null;
+  /** 短事实快照（reason/runMode/previousStatus/deletedStatus 等标量） */
+  detail?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** R4 §4.1A：事件流分页信封（裸四键，同 /releases 形态）。 */
+export interface AppDeploymentEventsPage {
+  data: AppDeploymentEventRow[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export const applicationsApi = {
@@ -246,6 +288,15 @@ export const applicationsApi = {
   // DEP-01：统一发布追溯视图（版本 × 最近一次部署），分页（pageSize 默认 50、上限 200）
   getReleases: (id: string, page = 1, pageSize = 50) =>
     client.get<AppReleasesPage>(`/applications/${id}/releases`, {
+      params: { page, pageSize },
+    }),
+  /**
+   * R4（§4.1A）：应用的不可变部署事件流（append-only 动作追溯）。分页默认
+   * 50、上限 200（对齐 /releases）；按 createdAt 倒序（同秒多事件 id 兜底）。
+   * 注意路由挂在 /app-deployments 控制器下（非 /applications/:id/...）。
+   */
+  getDeploymentEvents: (id: string, page = 1, pageSize = 50) =>
+    client.get<AppDeploymentEventsPage>(`/app-deployments/applications/${id}/events`, {
       params: { page, pageSize },
     }),
   /**

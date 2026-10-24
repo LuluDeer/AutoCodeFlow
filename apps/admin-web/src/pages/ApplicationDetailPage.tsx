@@ -39,6 +39,7 @@ import {
   Application,
   VersionHistoryEntry,
   AppReleaseRow,
+  AppDeploymentEventRow,
   AppDeployment,
   DeployVersionResult,
 } from '../api/applications';
@@ -843,12 +844,207 @@ const RELEASE_TRIGGER_LABELS = (t: (k: string) => string): Record<string, string
   upgrade: t('appDetail.releases.trigger.upgrade'), manual: t('appDetail.releases.trigger.manual'), unknown: t('appDetail.releases.trigger.unknown'),
 });
 
+// R4（§4.1A）：部署事件类型 → 人类可读标签（后端 AppDeploymentEventType 九值，
+// varchar 裸 token——枚举扩值时未知 token 原样展示，与 triggerLabel 同策：
+// 宁可露出可搜索的 token 也不抹掉可诊断信息）。
+const EVENT_TYPE_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  deploy_created: t('appDetail.events.type.deploy_created'),
+  redeploy_reused: t('appDetail.events.type.redeploy_reused'),
+  approval_approved: t('appDetail.events.type.approval_approved'),
+  approval_rejected: t('appDetail.events.type.approval_rejected'),
+  approval_cancelled: t('appDetail.events.type.approval_cancelled'),
+  upgrade: t('appDetail.events.type.upgrade'),
+  stop: t('appDetail.events.type.stop'),
+  remove: t('appDetail.events.type.remove'),
+  stuck_failed: t('appDetail.events.type.stuck_failed'),
+});
+// Tag 配色按「动作性质」分组：创建/复用=蓝、审批=橙、升级=青、停止=默认、
+// 删除=红、扫死=火山红。未知 token 回退 default（后端新增枚举时中性展示）。
+const EVENT_TYPE_COLOR: Record<string, string> = {
+  deploy_created: 'blue',
+  redeploy_reused: 'geekblue',
+  approval_approved: 'orange',
+  approval_rejected: 'volcano',
+  approval_cancelled: 'orange',
+  upgrade: 'cyan',
+  stop: 'default',
+  remove: 'red',
+  stuck_failed: 'magenta',
+};
+
+/**
+ * R4（§4.1A）：应用部署事件流表（不可变动作追溯）。独立加载/独立分页，
+ * 挂在 ReleasesTab 版本表下方——版本表回答「现在有哪些版本」，事件流回答
+ * 「谁在什么时候对哪台设备做了什么」，两张表数据源与生命周期互不耦合。
+ *
+ * 分页沿用 RACE-PAGE 同款序号守卫（翻页请求乱序时旧页数据不覆盖新页）。
+ */
+function DeploymentEventsTable({ app }: { app: Application }) {
+  const [events, setEvents] = useState<AppDeploymentEventRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+  const { t } = useTranslation();
+  // 同 ReleasesTab：执行器可读名解析（事件行 executorAddress 是写入时的地址
+  // 快照，executorId 优先、address 回落；解析不到如实回落地址，绝不编造）。
+  const { nameOf } = useExecutorNames();
+  const raceGuard = useRaceGuard();
+
+  const fetchEvents = useCallback(async (p: number) => {
+    const seq = raceGuard.next();
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await applicationsApi.getDeploymentEvents(app.id, p, 20);
+      if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（RACE-PAGE 同款）
+      setEvents(res.data ?? []);
+      setTotal(res.total ?? 0);
+      setPage(res.page ?? p);
+    } catch (err: unknown) {
+      if (!raceGuard.isLatest(seq)) return;
+      setError(err);
+    } finally {
+      if (raceGuard.isLatest(seq)) setLoading(false);
+    }
+  }, [app.id, raceGuard]);
+
+  useEffect(() => { fetchEvents(1); }, [fetchEvents]);
+
+  if (error) {
+    // 事件流加载失败不拖垮版本表：区块内降级 StateError（重试 + 复制）
+    return (
+      <Card variant="borderless" style={{ marginTop: 16 }} data-testid="events-card">
+        <StateError
+          error={error}
+          onRetry={() => fetchEvents(1)}
+          title={t('appDetail.events.loadFail')}
+        />
+      </Card>
+    );
+  }
+
+  const eventColumns = [
+    {
+      title: t('appDetail.events.col.time'),
+      dataIndex: 'createdAt',
+      width: 170,
+      render: (v: string) => formatDateTime(v),
+    },
+    {
+      title: t('appDetail.events.col.type'),
+      dataIndex: 'eventType',
+      width: 130,
+      render: (v: string) => (
+        <Tag color={EVENT_TYPE_COLOR[v] || 'default'} data-testid="event-type-tag">
+          {EVENT_TYPE_LABELS(t)[v] || v}
+        </Tag>
+      ),
+    },
+    {
+      title: t('appDetail.events.col.executor'),
+      dataIndex: 'executorAddress',
+      width: 180,
+      ellipsis: true,
+      render: (v: string | null, r: AppDeploymentEventRow) => {
+        const name = nameOf({ executorId: r.executorId, executorAddress: v });
+        if (!name) return v || '-';
+        return (
+          <Tooltip title={v ?? undefined}>
+            <span>{name}</span>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: t('appDetail.events.col.version'),
+      dataIndex: 'deployedVersion',
+      width: 110,
+      render: (v: string | null) => (v ? <Tag color="blue">{v}</Tag> : '-'),
+    },
+    {
+      title: t('appDetail.events.col.operator'),
+      dataIndex: 'operator',
+      width: 120,
+      render: (v: string | null) =>
+        v ? v : (
+          <Tooltip title={t('appDetail.events.operatorSystem')}>
+            <Text type="secondary">{t('appDetail.events.operatorSystemShort')}</Text>
+          </Tooltip>
+        ),
+    },
+    {
+      title: t('appDetail.events.col.summary'),
+      dataIndex: 'detail',
+      ellipsis: true,
+      render: (detail: Record<string, unknown> | null | undefined, r: AppDeploymentEventRow) => {
+        const parts: string[] = [];
+        // 已知键逐个如实翻译；detail 是 jsonb 开放结构，未知键原样 k=v
+        if (detail) {
+          for (const [k, val] of Object.entries(detail)) {
+            if (val === null || val === undefined || val === '') continue;
+            if (k === 'reason') parts.push(`${t('appDetail.events.detail.reason')}: ${String(val)}`);
+            else if (k === 'runMode') parts.push(`${t('appDetail.events.detail.runMode')}: ${String(val)}`);
+            else if (k === 'previousStatus') parts.push(`${t('appDetail.events.detail.previousStatus')}: ${RELEASE_DEPLOY_STATUS_LABELS(t)[String(val)] || String(val)}`);
+            else if (k === 'deletedStatus') parts.push(`${t('appDetail.events.detail.deletedStatus')}: ${RELEASE_DEPLOY_STATUS_LABELS(t)[String(val)] || String(val)}`);
+            else if (k === 'stopSignalDelivered') parts.push(
+              val
+                ? t('appDetail.events.detail.stopDelivered')
+                : t('appDetail.events.detail.stopNotDelivered'),
+            );
+            else if (k === 'approvalRequired') {
+              if (val) parts.push(t('appDetail.events.detail.approvalRequired'));
+            } else {
+              parts.push(`${k}=${String(val)}`);
+            }
+          }
+        }
+        // triggerType 是动作语义的补充（manual/upgrade/rollback/approval），
+        // 放摘要末尾；机器路径（null）不展示——与 operator 的系统标注呼应。
+        if (r.triggerType) parts.push(triggerLabel(r.triggerType, t) || r.triggerType);
+        if (parts.length === 0) return <Text type="secondary">-</Text>;
+        return parts.join(' · ');
+      },
+    },
+  ];
+
+  return (
+    <Card
+      variant="borderless"
+      style={{ marginTop: 16 }}
+      title={t('appDetail.events.title')}
+      extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchEvents(page)}>{t('appDetail.refresh')}</Button>}
+      data-testid="events-card"
+    >
+      <Table<AppDeploymentEventRow>
+        rowKey={(e) => e.id}
+        columns={eventColumns}
+        dataSource={events}
+        loading={loading}
+        size="small"
+        scroll={{ x: 920 }}
+        data-testid="deployment-events-table"
+        pagination={{
+          current: page,
+          pageSize: 20,
+          total,
+          showTotal: (n) => t('appDetail.count', { count: n }),
+          onChange: (p) => fetchEvents(p),
+        }}
+        locale={{ emptyText: t('appDetail.events.empty') }}
+      />
+    </Card>
+  );
+}
+
 function ReleasesTab({ app }: { app: Application }) {
   const [rows, setRows] = useState<AppReleaseRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  // P8：版本行超上限静默截断标志——true 时在版本表上方渲染显式告警条。
+  const [truncated, setTruncated] = useState(false);
   const { t } = useTranslation();
   // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
   const { nameOf } = useExecutorNames();
@@ -876,6 +1072,8 @@ function ReleasesTab({ app }: { app: Application }) {
       setRows(res.data ?? []);
       setTotal(res.total ?? 0);
       setPage(res.page ?? p);
+      // P8：截断标志随页落地（旧后端不带该键 → undefined → 如实按未截断）
+      setTruncated(res.truncated ?? false);
     } catch (err: unknown) {
       if (!raceGuard.isLatest(seq)) return; // 过期失败同样不覆盖当前视图
       setError(err);
@@ -1031,8 +1229,29 @@ function ReleasesTab({ app }: { app: Application }) {
   }
 
   return (
-    <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchReleases(page)}>{t('appDetail.refresh')}</Button>}>
-      <Table<AppReleaseRow>
+    <div>
+      {/* P8：版本行超 RELEASES_MAX_PAGE_SIZE 被静默截断——显式告知而非让用户
+          把「看到的」当「全量」；完整动作史走事件流（不可变、分页无截断）。 */}
+      {truncated && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('appDetail.releases.truncated.title')}
+          description={t('appDetail.releases.truncated.desc')}
+          action={(
+            <Button
+              size="small"
+              data-testid="truncated-goto-events"
+              onClick={() => document.getElementById('app-deployment-events')?.scrollIntoView({ behavior: 'smooth' })}
+            >
+              {t('appDetail.releases.truncated.gotoEvents')}
+            </Button>
+          )}
+        />
+      )}
+      <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchReleases(page)}>{t('appDetail.refresh')}</Button>}>
+        <Table<AppReleaseRow>
         rowKey={(r) => r.id ?? r.latestDeploymentId ?? `${r.version ?? 'unknown'}-${r.createdAt ?? 'none'}`}
         columns={columns}
         dataSource={rows}
@@ -1048,9 +1267,14 @@ function ReleasesTab({ app }: { app: Application }) {
           showTotal: (n) => t('appDetail.count', { count: n }),
           onChange: (p) => fetchReleases(p),
         }}
-        locale={{ emptyText: t('appDetail.releases.empty') }}
-      />
-    </Card>
+          locale={{ emptyText: t('appDetail.releases.empty') }}
+        />
+      </Card>
+      {/* R4（§4.1A）：事件流区块（不可变动作追溯）——锚点 id 供截断告警条跳转 */}
+      <div id="app-deployment-events">
+        <DeploymentEventsTable app={app} />
+      </div>
+    </div>
   );
 }
 
