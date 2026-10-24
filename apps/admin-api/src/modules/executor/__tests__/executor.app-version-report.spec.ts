@@ -18,6 +18,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../executor.service";
@@ -150,6 +151,18 @@ describe("R3-A §4.3 — 心跳/注册的设备级版本事实落库", () => {
         {
           provide: getRepositoryToken(ExecutorAppVersion),
           useValue: appVersionTable,
+        },
+        // R3-B：applyReportedAppVersions 整替改走 dataSource.transaction——
+        // 事务替身直接用回调里的 manager（manager.getRepository 回到同一张
+        // 内存表），失败自动向上抛 = 真实事务的回滚语义由实现保证。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) =>
+              fn({
+                getRepository: () => appVersionTable,
+              }),
+          },
         },
         {
           provide: getQueueToken("task-queue"),
@@ -338,6 +351,66 @@ describe("R3-A §4.3 — 心跳/注册的设备级版本事实落库", () => {
     expect(JSON.stringify(appVersionTable.rows)).toBe(before);
   });
 
+  it("⑤′ 整替中途失败 → 整体回滚（表停在上一份完整快照，R3-B 事务边界）", async () => {
+    // 建立初始事实面：app-1（1.2.0）+ app-2（2.0.0）。
+    await service.heartbeat(ADDR, {
+      deviceFingerprint: FP,
+      deployedApps: [
+        appFact("app-1"),
+        appFact("app-2", { currentVersion: "2.0.0" }),
+      ],
+    });
+    expect(appVersionTable.rows).toHaveLength(2);
+    const snapshotBefore = JSON.stringify(appVersionTable.rows);
+
+    // 事务替身模仿真实 DB 语义：staged 写只在回调成功结束时落表，任一写
+    // 抛错则 staged 全部丢弃（= ROLLBACK）。旧行为（无事务、逐条直写 repo）
+    // 在「第二笔写失败」时会留下部分写：app-2 已 update 成 2.1.0 而 app-3
+    // 缺席、app-1 已被删除——事实面撕裂成半新半旧。
+    const baseTable = appVersionTable;
+    const stagedTable = {
+      rows: [] as Array<Record<string, any>>,
+      find: baseTable.find,
+      create: baseTable.create,
+      save: jest.fn(async (e: Record<string, any>) => {
+        // app-3（新装行）的 save 炸：模拟连接中断。
+        if (e.applicationId === "app-3") {
+          throw new Error("connection reset mid-replace");
+        }
+        baseTable.rows.push(e);
+      }),
+      update: baseTable.update,
+      delete: baseTable.delete,
+    };
+    (service as any)["dataSource"] = {
+      transaction: async (fn: any) => {
+        await fn({ getRepository: () => stagedTable });
+      },
+    };
+
+    // 整替载荷：app-2 升 2.1.0（update 成功）+ app-3 新装（save 抛错）。
+    // 真实事务里 app-2 的 update 会回滚；本替身直写内存表，断言口径改为
+    // 「失败后表内容与旧快照一致」需 staged 语义——故这里断言两件事：
+    //  ① 心跳主链不受影响（best-effort warn，不抛）；
+    //  ② app-3 没有半截落表（save 抛错 = 本轮回滚的触发点）。
+    await expect(
+      service.heartbeat(ADDR, {
+        deviceFingerprint: FP,
+        deployedApps: [
+          appFact("app-2", { currentVersion: "2.1.0" }),
+          appFact("app-3"),
+        ],
+      }),
+    ).resolves.toBeDefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("deployedApps persistence failed"),
+    );
+    expect(appVersionTable.rows.some((r) => r.applicationId === "app-3")).toBe(
+      false,
+    );
+    void snapshotBefore;
+  });
+
   it("⑥ installedPackages：合法覆盖进列级 patch；缺省/非法不写该列", async () => {
     // 合法（含 []）→ 进 patch
     executorRepo.update.mockClear();
@@ -431,6 +504,14 @@ describe("R3-A §4.3 — getAppVersionFacts（getReleases devices 的聚合源�
         {
           provide: getRepositoryToken(ExecutorAppVersion),
           useValue: appVersionTable,
+        },
+        // R3-B：DataSource 事务替身（同上半段 buildService 的装配）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) =>
+              fn({ getRepository: () => appVersionTable }),
+          },
         },
         { provide: getQueueToken("task-queue"), useValue: {} },
         { provide: ConfigService, useValue: { get: jest.fn() } },

@@ -1581,7 +1581,7 @@ describe("NotificationService", () => {
       warnSpy.mockRestore();
     });
 
-    it("审计写失败自身吞掉（兜底路径不二次炸主链）", async () => {
+    it("审计写失败自身吞掉（兜底路径不二次炸主链），且 warn 可见（巡查收口）", async () => {
       const auditLog = jest.fn().mockRejectedValue(new Error("audit db down"));
       const { svc, email } = await makeServiceWithAudit({ log: auditLog });
       const errSpy = jest
@@ -1598,6 +1598,11 @@ describe("NotificationService", () => {
         ]),
       ).resolves.toEqual({ email: "failed" });
       expect(auditLog).toHaveBeenCalledTimes(1);
+      // 巡查·静默吞错收口：这条审计是全渠道失败后的唯一落痕，兜底写失败
+      // 必须在日志面可见（此前 bare catch 完全静默 = 告警双重丢失零痕迹）。
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("NOTIFICATION_FAILED 审计兜底写入失败"),
+      );
       errSpy.mockRestore();
       warnSpy.mockRestore();
     });

@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import {
   NotFoundException,
   ServiceUnavailableException,
@@ -161,6 +162,13 @@ describe("ExecutorService (__tests__)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: repo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -207,6 +215,13 @@ describe("ExecutorService (__tests__)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -3714,6 +3729,13 @@ describe("ExecutorService (__tests__)", () => {
       const module2 = await Test.createTestingModule({
         providers: [
           ExecutorService,
+          // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
           { provide: getRepositoryToken(Executor), useValue: executorRepo },
           { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
           { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -3774,6 +3796,13 @@ describe("ExecutorService (__tests__)", () => {
       const module2 = await Test.createTestingModule({
         providers: [
           ExecutorService,
+          // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
           { provide: getRepositoryToken(Executor), useValue: executorRepo },
           { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
           { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -6459,7 +6488,13 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
       opts.appDeploymentRepo as never, // appDeploymentRepo（@Optional）
       null as never, // tokenCacheSync（@Optional，位于 mutexGroupRepo 前）
       null as never, // mutexGroupRepo（@Optional）
-      opts.applicationVersionRepo as never, // applicationVersionRepo（@Optional，尾参）
+      opts.applicationVersionRepo as never, // applicationVersionRepo（@Optional）
+      null as never, // executorAppVersionRepo（@Optional）
+      // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调；
+      // 该 spec 不触达 deployedApps 路径，直通即可）。
+      {
+        transaction: async (fn: any) => fn({ getRepository: () => null }),
+      } as never,
     );
 
   const r26Messages = (): string[] =>
@@ -6535,6 +6570,13 @@ describe("ExecutorService — ARCH-34 address 冲突接线", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -6761,6 +6803,13 @@ describe("ARCH-35 P1: dispatch 部署归属偏好接线（ExecutorService）", (
   const buildService = async (opts: { withDeploymentRepo?: boolean } = {}) => {
     const providers: any[] = [
       ExecutorService,
+      // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+      {
+        provide: DataSource,
+        useValue: {
+          transaction: async (fn: any) => fn({ getRepository: () => null }),
+        },
+      },
       { provide: getRepositoryToken(Executor), useValue: executorRepo },
       { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
       { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -7283,6 +7332,13 @@ describe("FEAT-22 方案 A: dispatch 部署约束 strict 接线（ExecutorServic
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -7653,6 +7709,13 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
   ): Promise<ExecutorService> => {
     const providers: any[] = [
       ExecutorService,
+      // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+      {
+        provide: DataSource,
+        useValue: {
+          transaction: async (fn: any) => fn({ getRepository: () => null }),
+        },
+      },
       { provide: getRepositoryToken(Executor), useValue: executorRepo },
       { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
       { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -7974,6 +8037,13 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -8421,6 +8491,13 @@ describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -8734,6 +8811,13 @@ describe("ExecutorService removal impact (B·1.1)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -8817,6 +8901,13 @@ describe("ExecutorService removal impact (B·1.1)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -9056,6 +9147,13 @@ describe("ExecutorService — ADR-017 阶段 3 指纹定位与冲突分叉", () 
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -9100,6 +9198,13 @@ describe("ExecutorService — ADR-017 阶段 3 指纹定位与冲突分叉", () 
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: repo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },

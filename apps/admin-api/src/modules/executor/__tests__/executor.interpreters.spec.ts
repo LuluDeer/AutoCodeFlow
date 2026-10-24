@@ -12,6 +12,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
@@ -106,6 +107,13 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
     const moduleRef = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },

@@ -140,6 +140,21 @@ const makeService = (repo: DiffAwareExecutorRepo): ExecutorService => {
     } as never,
     {} as never,
     { decryptForDispatch: jest.fn(() => null) } as never,
+    {} as never, // eventBus（@Optional）
+    {} as never, // tracing（@Optional）
+    {} as never, // audit（@Optional）
+    {} as never, // leaderGate（@Optional）
+    {} as never, // pullService（@Optional）
+    {} as never, // applicationRepo（@Optional）
+    {} as never, // appDeploymentRepo（@Optional）
+    null as never, // tokenCacheSync（@Optional，缺席走 TTL 兜底）
+    {} as never, // mutexGroupRepo（@Optional）
+    {} as never, // applicationVersionRepo（@Optional）
+    null as never, // executorAppVersionRepo（@Optional）
+    // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+    {
+      transaction: async (fn: any) => fn({ getRepository: () => null }),
+    } as never,
   );
   jest.spyOn(svc["logger"], "log").mockImplementation(() => undefined);
   jest.spyOn(svc["logger"], "warn").mockImplementation(() => undefined);

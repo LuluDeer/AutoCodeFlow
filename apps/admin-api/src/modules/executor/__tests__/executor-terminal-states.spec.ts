@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { UnauthorizedException } from "@nestjs/common";
 import { ExecutorController } from "../executor.controller";
 import { ExecutorService } from "../executor.service";
@@ -71,6 +72,13 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
       const module = await Test.createTestingModule({
         providers: [
           ExecutorService,
+          // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
           { provide: getRepositoryToken(Executor), useValue: {} },
           { provide: getRepositoryToken(TaskExecution), useValue: repo },
           { provide: getRepositoryToken(Task), useValue: {} },

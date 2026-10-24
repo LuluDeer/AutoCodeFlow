@@ -25,6 +25,8 @@ import {
   // ADR-017 阶段 3：存量执行行没有 executorId，回落地址匹配时需限定
   // `executorId IS NULL`，避免把新派发（已有行身份）的行也按地址卷进来。
   IsNull,
+  // R3-B：applyReportedAppVersions 整替事务用（dataSource.transaction）。
+  DataSource,
 } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
@@ -701,6 +703,9 @@ export class ExecutorService implements OnModuleInit {
     @Optional()
     @InjectRepository(ExecutorAppVersion)
     private readonly executorAppVersionRepo: Repository<ExecutorAppVersion> | null = null,
+    // R3-B（服务层质量巡查）：applyReportedAppVersions 的整替事务
+    // （dataSource.transaction；同 task.service storeLogLines 先例）。
+    private readonly dataSource: DataSource,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -3517,71 +3522,83 @@ export class ExecutorService implements OnModuleInit {
     apps: DeployedAppReport[],
   ): Promise<void> {
     if (!this.executorAppVersionRepo) return;
-    const existing = await this.executorAppVersionRepo.find({
-      where: { executorId },
+    // R3-B（服务层质量巡查·事务边界）：整替的读-判-写必须在**同一事务**内。
+    // 心跳串行（方法头注）保证了同执行器不并发，但没有保护**中途失败**：
+    // upsert 循环里任一写失败时，方法抛错被调用点 warn 吞掉，本轮已写下的
+    // 部分 upsert 留在库里——事实面停在「半新半旧」的撕裂快照；更糟的是
+    // 「设备已卸载全部应用、只新装一个」的整替：新行写失败 + 旧行删除
+    // （或反向交错）后，getReleases devices 读到的是既不含新应用、又残留
+    // 已卸载应用的错位状态，且**没有自愈通道**——卸载的应用从此不再上报，
+    // 「下一次心跳重报」修的是新应用，修不回被误删/误留的旧行。包进事务：
+    // 任一步失败全部回滚，表停在上一份完整快照（30s 后整份重报）。
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(ExecutorAppVersion);
+      const existing = await repo.find({
+        where: { executorId },
+      });
+      const existingByAppId = new Map(
+        existing.map((row) => [row.applicationId, row]),
+      );
+      const reportedAppIds = new Set(apps.map((a) => a.appId));
+      const sameRetained = (a: string[], b: string[] | null): boolean =>
+        Array.isArray(b) &&
+        a.length === b.length &&
+        a.every((v, i) => v === b[i]);
+      for (const app of apps) {
+        const lastDeployedAt = app.lastDeployedAt
+          ? new Date(app.lastDeployedAt)
+          : null;
+        const row = existingByAppId.get(app.appId);
+        // 幂等短路：行已存在且内容逐字段一致 → 本轮不写（见方法注释的写放大
+        // 论证；retainedVersions 是数组，比对必须逐元素而非引用相等）。
+        if (
+          row &&
+          row.currentVersion === app.currentVersion &&
+          row.currentReleaseKey === app.currentReleaseKey &&
+          row.runMode === app.runMode &&
+          row.lastDeployedAt?.getTime() === lastDeployedAt?.getTime() &&
+          sameRetained(app.retainedVersions, row.retainedVersions)
+        ) {
+          continue;
+        }
+        if (row) {
+          // adr-026-exempt: R3/§4.3 设备版本整替——写者唯一（同一 executorId
+          // 的上报面），整替语义本就以最后一次上报为准，无跨写者覆盖风险
+          // （完整理由见上方块注释）。
+          await repo.update(
+            { id: row.id },
+            {
+              currentVersion: app.currentVersion,
+              currentReleaseKey: app.currentReleaseKey,
+              retainedVersions: app.retainedVersions,
+              runMode: app.runMode,
+              lastDeployedAt,
+              lastReportedAt: new Date(),
+            },
+          );
+        } else {
+          await repo.save(
+            repo.create({
+              executorId,
+              applicationId: app.appId,
+              currentVersion: app.currentVersion,
+              currentReleaseKey: app.currentReleaseKey,
+              retainedVersions: app.retainedVersions,
+              runMode: app.runMode,
+              lastDeployedAt,
+              lastReportedAt: new Date(),
+            }),
+          );
+        }
+      }
+      // 整替的删除半边：数组外的应用 = 设备已卸载。
+      const staleIds = existing
+        .filter((row) => !reportedAppIds.has(row.applicationId))
+        .map((row) => row.id);
+      if (staleIds.length > 0) {
+        await repo.delete(staleIds);
+      }
     });
-    const existingByAppId = new Map(
-      existing.map((row) => [row.applicationId, row]),
-    );
-    const reportedAppIds = new Set(apps.map((a) => a.appId));
-    const sameRetained = (a: string[], b: string[] | null): boolean =>
-      Array.isArray(b) &&
-      a.length === b.length &&
-      a.every((v, i) => v === b[i]);
-    for (const app of apps) {
-      const lastDeployedAt = app.lastDeployedAt
-        ? new Date(app.lastDeployedAt)
-        : null;
-      const row = existingByAppId.get(app.appId);
-      // 幂等短路：行已存在且内容逐字段一致 → 本轮不写（见方法注释的写放大
-      // 论证；retainedVersions 是数组，比对必须逐元素而非引用相等）。
-      if (
-        row &&
-        row.currentVersion === app.currentVersion &&
-        row.currentReleaseKey === app.currentReleaseKey &&
-        row.runMode === app.runMode &&
-        row.lastDeployedAt?.getTime() === lastDeployedAt?.getTime() &&
-        sameRetained(app.retainedVersions, row.retainedVersions)
-      ) {
-        continue;
-      }
-      if (row) {
-        // adr-026-exempt: R3/§4.3 设备版本整替——写者唯一（同一 executorId
-        // 的上报面），整替语义本就以最后一次上报为准，无跨写者覆盖风险
-        // （完整理由见上方块注释）。
-        await this.executorAppVersionRepo.update(
-          { id: row.id },
-          {
-            currentVersion: app.currentVersion,
-            currentReleaseKey: app.currentReleaseKey,
-            retainedVersions: app.retainedVersions,
-            runMode: app.runMode,
-            lastDeployedAt,
-            lastReportedAt: new Date(),
-          },
-        );
-      } else {
-        await this.executorAppVersionRepo.save(
-          this.executorAppVersionRepo.create({
-            executorId,
-            applicationId: app.appId,
-            currentVersion: app.currentVersion,
-            currentReleaseKey: app.currentReleaseKey,
-            retainedVersions: app.retainedVersions,
-            runMode: app.runMode,
-            lastDeployedAt,
-            lastReportedAt: new Date(),
-          }),
-        );
-      }
-    }
-    // 整替的删除半边：数组外的应用 = 设备已卸载。
-    const staleIds = existing
-      .filter((row) => !reportedAppIds.has(row.applicationId))
-      .map((row) => row.id);
-    if (staleIds.length > 0) {
-      await this.executorAppVersionRepo.delete(staleIds);
-    }
   }
 
   /**

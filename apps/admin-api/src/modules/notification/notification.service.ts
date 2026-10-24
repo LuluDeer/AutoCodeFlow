@@ -567,8 +567,13 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
                     ),
           },
         });
-      } catch {
-        /* audit is best-effort */
+      } catch (err: unknown) {
+        // 巡查·静默吞错收口：这条审计是「全部渠道失败」后的**唯一落痕**
+        // （A-1/R150-A1 的设计目标就是消灭告警静默丢失零痕迹），兜底写失败
+        // 若再静默吞掉，目标即落空。保留 best-effort（不炸主链），warn 可见。
+        this.logger.warn(
+          `NOTIFICATION_FAILED 审计兜底写入失败（告警已在渠道面全败，此为唯一落痕）: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     return delivery;

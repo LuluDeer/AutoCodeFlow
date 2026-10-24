@@ -10,6 +10,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../executor.service";
@@ -89,6 +90,13 @@ describe("R3-A §九 9.3-1 — resolveVersionFollowPackage 判据切换到设备
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: makeRepo() },
         { provide: getRepositoryToken(TaskExecution), useValue: makeRepo() },
         { provide: getRepositoryToken(Task), useValue: makeRepo() },

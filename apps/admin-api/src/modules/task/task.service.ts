@@ -4786,7 +4786,16 @@ export class TaskService {
   ): Promise<string | null> {
     try {
       return await s3.get(s3.objectKey(executionId));
-    } catch {
+    } catch (err: unknown) {
+      // 巡查·静默吞错收口：这里同时承接「对象不存在（首页 append，正常）」
+      // 与「S3 故障 / 超过 MAX_LOG_BYTES（异常）」两类结局，此前 bare catch
+      // 一律 null——后者会把 BUG-06 内容并集的 existing 静默置空，fallback
+      // 落库的日志从此缺前几页且日志面零痕迹。best-effort 保留 null 语义
+      // （不炸主链），但异常必须可见：warn 一次（外层 put 失败时还会再 warn
+      // 一次回退原因，两行日志共同定位存储侧故障）。
+      this.logger.warn(
+        `S3 existing log read failed for execution ${executionId} (${err instanceof Error ? err.message : String(err)}) — append fallback may lose prior pages`,
+      );
       return null;
     }
   }
@@ -5202,6 +5211,15 @@ export class TaskService {
    * NULL 保留历史行（见迁移 1790000000065 头注）。任务查不到（已删的极端
    * 竞态）→ null——按应用查不到它，但按任务/执行维度仍完整。
    *
+   * ARTIFACTS-INDEX-47（服务层质量巡查·事务边界）：delete+insert 必须在
+   * **同一事务**内。winner 语义（transitionToTerminal affected=1 才走到这里）
+   * 保证同一执行**至多整替一次**——重复回调 affected=0 直接 continue，执行
+   * 已终态化后不会有「下一次上报」补写。若两步写无事务：delete 成功、insert
+   * 失败（连接抖动/约束冲突）时该执行的索引行被清空且**永久丢失**（jsonb
+   * 主轨仍在，GET /artifacts 对该执行从此恒空，直到 90d retention 级联删）。
+   * 包进事务后 best-effort 的前提才真正成立：失败 = 整体没写（原子），
+   * 调用点 warn 不炸主链的语义不变。
+   *
    * @private 仅由 handleCallback winner 分支调用（调用点已做 best-effort 包裹）。
    */
   private async syncArtifactIndexRows(
@@ -5219,19 +5237,21 @@ export class TaskService {
       });
       applicationId = taskRow?.applicationId ?? null;
     }
-    await this.artifactIndexRepo.delete({ executionId });
-    if (artifacts.length === 0) return;
-    const rows = artifacts.map((a) =>
-      this.artifactIndexRepo!.create({
-        executionId,
-        taskId,
-        applicationId,
-        name: a.name,
-        size: a.size,
-        sha256: a.sha256,
-      }),
-    );
-    await this.artifactIndexRepo.insert(rows);
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(ExecutionArtifactRow, { executionId });
+      if (artifacts.length === 0) return;
+      const rows = artifacts.map((a) =>
+        this.artifactIndexRepo!.create({
+          executionId,
+          taskId,
+          applicationId,
+          name: a.name,
+          size: a.size,
+          sha256: a.sha256,
+        }),
+      );
+      await manager.insert(ExecutionArtifactRow, rows);
+    });
   }
 
   async handleCallback(

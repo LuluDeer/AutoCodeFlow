@@ -294,12 +294,26 @@ describe("TaskService (__tests__)", () => {
       // tests that need rollback semantics override transaction entirely.
       transaction: jest.fn(async (fn: any) =>
         fn({
-          delete: jest.fn(async (_target: unknown, criteria: unknown) =>
-            logLineRepo.delete(criteria as any),
-          ),
+          delete: jest.fn(async (target: unknown, criteria: unknown) => {
+            // ARTIFACTS-INDEX-47: 索引整替（ExecutionArtifactRow）同经事务
+            // manager——委托到 artifactRepo 桩，legacy 断言口径不变。
+            if ((target as any)?.name === "ExecutionArtifactRow") {
+              const repo = (service as any)["artifactIndexRepo"];
+              return repo?.delete(criteria);
+            }
+            return logLineRepo.delete(criteria as any);
+          }),
           save: jest.fn(async (_target: unknown, rows: unknown) =>
             logLineRepo.save(rows as any),
           ),
+          // ARTIFACTS-INDEX-47: manager.insert 委托到 artifactRepo.insert。
+          insert: jest.fn(async (target: unknown, rows: unknown) => {
+            if ((target as any)?.name === "ExecutionArtifactRow") {
+              const repo = (service as any)["artifactIndexRepo"];
+              return repo?.insert(rows);
+            }
+            return undefined;
+          }),
         }),
       ),
       createQueryBuilder: jest.fn(() => ({
@@ -4350,6 +4364,29 @@ describe("TaskService (__tests__)", () => {
         expect(committed).toEqual(["old-0", "old-1"]);
       });
 
+      // 巡查·静默吞错收口：s3GetExistingLog 的 catch 必须可见（warn）——
+      // 它承接「对象不存在（正常）」与「S3 故障/超量（异常）」两类结局，
+      // bare catch 会把 BUG-06 内容并集的 existing 静默置空，fallback 落库
+      // 的日志缺前几页且零痕迹。
+      it("s3GetExistingLog: S3 读异常 → warn 一次且返回 null（best-effort 语义不变）", async () => {
+        const warnSpy = jest
+          .spyOn((service as any).logger, "warn")
+          .mockImplementation(() => undefined);
+        const failingS3 = {
+          objectKey: (id: string) => `execution-logs/${id}.log.gz`,
+          get: jest.fn().mockRejectedValue(new Error("S3 read timeout")),
+        } as never;
+        const out = await (service as any)["s3GetExistingLog"](
+          failingS3,
+          "e-s3",
+        );
+        expect(out).toBeNull();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("S3 existing log read failed"),
+        );
+        warnSpy.mockRestore();
+      });
+
       it("append mode (backfill page 2+) skips the delete but still commits atomically", async () => {
         const exec = {
           id: "e1",
@@ -5469,6 +5506,62 @@ describe("TaskService (__tests__)", () => {
         ]);
         const rows = artifactRepo.insert.mock.calls[0][0];
         expect(rows[0].applicationId).toBeNull();
+      });
+
+      // ARTIFACTS-INDEX-47（服务层质量巡查·事务边界）：整替的 delete+insert
+      // 必须同事务。winner 语义保证同一执行至多整替一次——insert 失败时
+      // 不存在「下次上报补写」，旧行为（先 delete 后 insert、无事务）会把
+      // 索引行清空且永久丢失（jsonb 主轨在、GET /artifacts 对该执行恒空）。
+      it("ARTIFACTS-INDEX-47: 索引整替走同一事务；insert 失败 = 整体没写（原子）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue({
+          id: "task-art-1",
+          applicationId: "app-1",
+        });
+        // 事务替身：manager 委托到 artifactRepo 桩；insert 抛错时事务
+        // 回滚——用「staged 只在成功路径落账」模拟真实 ROLLBACK 语义。
+        const committedDeletes: unknown[] = [];
+        const committedInserts: unknown[] = [];
+        const realTransaction = dataSource.transaction;
+        dataSource.transaction.mockImplementationOnce(async (fn: any) => {
+          const staged = { deletes: [] as unknown[], inserts: [] as unknown[] };
+          const manager = {
+            delete: async (_t: unknown, criteria: unknown) => {
+              staged.deletes.push(criteria);
+            },
+            insert: async (_t: unknown, _rows: unknown) => {
+              throw new Error("connection reset mid-insert");
+            },
+          };
+          try {
+            await fn(manager);
+            committedDeletes.push(...staged.deletes);
+            committedInserts.push(...staged.inserts);
+          } catch (err) {
+            // ROLLBACK：staged 丢弃，任何一面都不落账。
+            throw err;
+          }
+        });
+
+        const res = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 10, sha256: "0".repeat(64) }],
+          },
+        ]);
+
+        // best-effort：主链照常成功（jsonb 不受影响），只 warn。
+        expect(res[0].success).toBe(true);
+        // 原子性：delete 已进入事务但回滚——最终没有任何一面落账。
+        expect(committedDeletes).toHaveLength(0);
+        expect(committedInserts).toHaveLength(0);
+        // repo 桩（事务外路径）不再被触碰：整替完全收进事务。
+        expect(artifactRepo.delete).not.toHaveBeenCalled();
+        expect(artifactRepo.insert).not.toHaveBeenCalled();
+        void realTransaction;
       });
     });
   });
