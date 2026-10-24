@@ -3546,6 +3546,9 @@ export class ExecutorService implements OnModuleInit {
         continue;
       }
       if (row) {
+        // adr-026-exempt: R3/§4.3 设备版本整替——写者唯一（同一 executorId
+        // 的上报面），整替语义本就以最后一次上报为准，无跨写者覆盖风险
+        // （完整理由见上方块注释）。
         await this.executorAppVersionRepo.update(
           { id: row.id },
           {
