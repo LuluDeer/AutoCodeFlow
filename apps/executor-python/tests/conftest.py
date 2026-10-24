@@ -9,7 +9,14 @@ from fastapi.testclient import TestClient
 
 # Override settings before importing main so the lifespan registration
 # does not attempt a real HTTP call to admin-api during tests.
+# 2026-10-24 修复：get_admin_api_base_url 的优先级是 external > internal >
+# default——本机 .env 若带 ADMIN_API_URL_INTERNAL=http://localhost:3105（真
+# admin-api），仅覆盖 default 档（ADMIN_API_URL）拦不住，测试外呼会真连
+# 本机生产 admin-api（实测泄漏 socket raddr=127.0.0.1:3105）。三档全指向
+# 不可达的 9999，从源头消灭「测试打真服务」。
 os.environ.setdefault('ADMIN_API_URL', 'http://localhost:9999')
+os.environ.setdefault('ADMIN_API_URL_INTERNAL', 'http://localhost:9999')
+os.environ.setdefault('ADMIN_API_URL_EXTERNAL', 'http://localhost:9999')
 os.environ.setdefault('EXECUTOR_ADDRESS', 'localhost:8001')
 os.environ.setdefault('EXECUTOR_TOKEN', 'testsecret')
 os.environ.setdefault('EXECUTOR_SHARED_TOKEN', 'testsecret')
@@ -49,6 +56,15 @@ def _close_asyncio_loops():
         except Exception:  # pragma: no cover - loop already torn down
             pass
         asyncio.set_event_loop(None)
+    # O-24 共享池收尾（2026-10-24 顺序耦合 flaky 根因修复）：生产代码的回调
+    # drain 走 sched.get_http_client() 的 per-loop 共享池，而 test_callback_
+    # persistence 等 15 处 mock 拦的是旧入口 httpx.AsyncClient（O-24 切池后
+    # mock 失效——真 transport 在测试 loop 上被创建且无人 aclose，loop 关闭后
+    # 残留 socket 在后续任意 GC 时 __del__ 抛 ResourceWarning，被 pytest 归罪
+    # 到下一个无关套件）。测试收尾统一清池：每个测试结束即弃共享池引用，
+    # 让 transport 与 loop 同生命周期被确定性回收，而不是跨测试滞留。
+    import scheduler as _sched
+    _sched._http_client_by_loop.clear()
     # Flush pending __del__ ResourceWarnings NOW (inside the owning test)
     # instead of letting them land on whichever test runs next.
     gc.collect()

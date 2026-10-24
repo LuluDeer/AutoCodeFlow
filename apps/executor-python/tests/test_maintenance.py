@@ -464,6 +464,32 @@ def test_lifespan_starts_and_stops_disk_cleanup(monkeypatch, work_root):
     # neutralize the E2 wiring (covered in test_callback_persistence.py)
     monkeypatch.setattr(execute_module, 'start_callback_retry_task', lambda: None)
     monkeypatch.setattr(execute_module, 'stop_callback_retry_task', AsyncMock())
+    # 顺序耦合泄漏收口（2026-10-24，CI 全量反复红根因）：真 lifespan 的关闭
+    # 序列会跑 await_background_tasks_after_kill / fail_prepare_stage…_on_shutdown，
+    # 其回调 drain 走 get_http_client() 在测试 loop 上建真 httpx transport 并向
+    # 不可达的 admin 地址发起连接——lifespan 退出后 loop 关闭，残留 transport
+    # 在后续任意 GC 时 __del__ 抛 unraisable，pytest 归罪到**下一个套件**
+    # （实测：test_scheduler trust_env 用例 ERROR / config_reload 后本用例自身
+    # 爆 21 个 unclosed socket）。本用例验证 disk_cleanup provider 接线，把
+    # 两条 shutdown drain 路径一并替换为 no-op（回调行为另有
+    # test_callback_persistence 专测），从源头消灭 transport。
+    monkeypatch.setattr(
+        execute_module, 'await_background_tasks_after_kill',
+        AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        execute_module, 'fail_prepare_stage_executions_on_shutdown',
+        AsyncMock(return_value=0))
+    # 顺序耦合泄漏修复（2026-10-24 全量反复红）：本用例跑**真** main.lifespan，
+    # 不拦 heartbeat/pull 时 _heartbeat_task 会启动真心跳循环，其
+    # get_http_client() 在测试 loop 上建真 httpx.AsyncClient——lifespan 退出
+    # 只 cancel 任务不 aclose client，asyncio.run 关 loop 后残留 transport 在
+    # 后续 GC __del__ 抛 unraisable，pytest 归罪到**下一套件**的 teardown
+    # （实测 test_scheduler trust_env 用例 ERROR）。本用例验证 disk_cleanup
+    # provider 接线，拦掉心跳/pull 零覆盖损失（心跳另有 test_scheduler 专测）。
+    async def _park_forever():
+        await asyncio.sleep(3600)
+    monkeypatch.setattr(main_module, 'heartbeat_task', _park_forever)
+    monkeypatch.setattr(main_module, 'pull_task', _park_forever)
 
     started = {}
 
