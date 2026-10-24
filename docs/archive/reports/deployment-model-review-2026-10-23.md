@@ -330,6 +330,7 @@
 | 升级 startCommand 重置的 UI 披露（§9.3-2 收口）：升级 Modal 点名将被重置的自定义启动命令行（appEntrypoint 基准对比，无基准不披露） | ✅ | 8ec54c07 |
 | 第三轮（2026-10-24 下午）：node 下载上限 NaN 静默解除修复（parsePositiveIntEnv，parseInt("1.5")=1 截断缺陷一并抓出）；P10 Windows ENOENT 三态判定（文件占位不再伪装空清单）；python v7 两键恒省略裁定（无事实源不硬造，node 形态目录在场不代报）；events 时间范围筛选 UI（RangePicker 半开区间换算+口径披露）；CI 守卫三连修（bundle digest 漂移/CLI 地图 67→69/迁移登记） | ✅ | 2f2b503a/ae7ae8d4/d7ca5b9f/9ff94ce3/196271a2+7b7e669b |
 | 第四轮（2026-10-24 傍晚）：python 测试顺序耦合 flaky 根治——**真根因是测试真连本机生产 admin-api**（get_admin_api_base_url 的 internal 档优先级压过 conftest 的 default 档 override，泄漏 socket raddr=127.0.0.1:3105 实证）+ O-24 切池后 15 处旧 mock 失效 + lifespan 测试漏拦回调 drain；三层收口后全量 4F+3E → 2F（仅剩 sandbox×2 环境限制）；atlas 迁移自述 106→109；时间筛选断言时区无关化（CI 是 UTC）；R4 装配错误文案中文化 | ✅ | a264cf8a/fc7a19e7/4056dcf8 |
+| 第五轮（2026-10-24 深夜）：sandbox rlimit 环境探针（**子进程隔离**——进程内探针会把 RLIMIT_AS 留在低位毒化后续测试，zip_safety LZMA 假红三轮全量二分定位），python 全量 **0 failed 历史首次**；§4.6 产物元数据索引落地（execution_artifacts 迁移 65 + 双轨写 + GET /artifacts 查询）；时间筛选口径统一（audit 预设区间对齐 events 整天语义，ExecutionsPage 时刻粒度判定自洽不动）；§9.7 5c 目录化设计稿落盘；CI 三次红逐一收口（lint 30 处/api-reference 附录/时区） | ✅ | 0a139575/60c20a94/c9ca1665/f5050a62/13bfb1c3/063bc116 |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
