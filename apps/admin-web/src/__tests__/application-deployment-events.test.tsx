@@ -390,12 +390,20 @@ describe('ApplicationDetailPage 部署事件流时间范围筛选（since/until 
     // 选 10-20 ~ 10-24：since=10-20T00:00（含），until=10-24T00:00（不含）——
     // 半开区间下恰好等于「到 10-23 23:59:59.999 止」。带时间成分的入参也被
     // startOf('day') 归一到当日 0 点（UI 是日期粒度，归一化是口径的一部分）。
+    // 期望值用同源 dayjs 计算（时区无关断言——CI runner 是 UTC，本地可能是
+    // +08:00，硬编码 Z 偏移会在其中一侧红，2026-10-24 CI 实测）。
     const r = eventsRangeToSinceUntil([
       dayjs('2026-10-20T15:30:00'),
       dayjs('2026-10-24T09:00:00'),
     ]);
-    expect(r.since).toBe('2026-10-19T16:00:00.000Z'); // 北京时间 10-20 00:00
-    expect(r.until).toBe('2026-10-23T16:00:00.000Z'); // 北京时间 10-24 00:00
+    expect(r.since).toBe(
+      dayjs('2026-10-20T15:30:00').startOf('day').toISOString(),
+    );
+    expect(r.until).toBe(
+      dayjs('2026-10-24T09:00:00').startOf('day').toISOString(),
+    );
+    // 口径语义钉死：结束日当天不计入（until 恰为结束日 0 点）。
+    expect(dayjs(r.until).diff(dayjs(r.since), 'day')).toBe(4);
   });
 
   it('初始不带时间筛选：第 4 参 undefined（请求形状与旧后端一致）', async () => {

@@ -709,7 +709,9 @@ describe("AppDeploymentService 部署事件（R4 §4.1A）", () => {
       }).compile();
       const bare = moduleRef.get(AppDeploymentService);
 
-      await expect(bare.getEventsByApp("app-1")).rejects.toThrow(/not wired/);
+      await expect(bare.getEventsByApp("app-1")).rejects.toThrow(
+        /仓储未接线/,
+      );
     });
   });
 });

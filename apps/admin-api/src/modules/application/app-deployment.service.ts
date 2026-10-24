@@ -408,9 +408,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // fail-honest：生产装配恒有该 repo（application.module forFeature）；
     // 缺席是装配错误——静默回空页会把「没接线」伪装成「无事件」。
     if (!this.deploymentEventRepo) {
+      // LANG-ZH-01：装配错误是面向运维的报错文案——中文（技术标识
+      // AppDeploymentEvent/TypeOrmModule.forFeature 保留原文）。
       throw new Error(
-        "AppDeploymentEvent repository is not wired " +
-          "(expected application.module TypeOrmModule.forFeature registration)",
+        "AppDeploymentEvent 仓储未接线（应为 application.module 的 " +
+          "TypeOrmModule.forFeature 注册；缺席属装配错误，静默回空页会把「没接线」" +
+          "伪装成「无事件」，fail-honest 直接抛出）",
       );
     }
     const safePageSize = Math.min(
