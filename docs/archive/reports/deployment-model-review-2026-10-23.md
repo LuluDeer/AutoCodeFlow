@@ -333,4 +333,27 @@
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
-**下轮候选（本轮未做，按建议优先级）**：~~R3/4.3 设备版本上报~~（已落地，见上表 2b5da7c5）；5c `releases/<version>` 目录两段化（与 R3 联动）；4.6 执行产物目录分层/元数据索引；~~事件表前端消费面~~（已落地 284986b6，遗留：/events 无 eventType/时间过滤参数——表已有 application_type 索引可支持；truncated 截断会连带吞掉被截版本的 devices retained 徽标）；~~executor-python zip 缓存对等实现~~（已落地 3f3f56c0，遗留不对称：python ZIP_DOWNLOAD_MAX_BYTES 硬编码常量 vs node PACKAGE_DOWNLOAD_MAX_BYTES 可配）；~~deployCount 存量回填迁移~~（已落地 105b42f4，已知取舍：迁移 62→64 窗口期已产生真实事件的存量应用不回填——防双计的应用级判定边界）；~~P10 executor_packages 版本收敛收口~~（已落地 03e6e3f6：executor-node 侧；executor-python 两键上报留后续）；~~升级重置 startCommand 快照的 UI 披露~~（已落地 8ec54c07）。新增遗留：node 侧 PACKAGE_DOWNLOAD_MAX_BYTES 非法值 NaN 静默解除上限（85b0e989 登记）；/events 时间过滤暂未上前端 UI（后端 since/until 已就绪）。
+**下轮候选（本轮未做，按建议优先级）**：~~R3/4.3 设备版本上报~~（已落地，见上表 2b5da7c5）；5c `releases/<version>` 目录两段化（与 R3 联动）；4.6 执行产物目录分层/元数据索引；~~事件表前端消费面~~（已落地 284986b6，遗留：/events 无 eventType/时间过滤参数——表已有 application_type 索引可支持；truncated 截断会连带吞掉被截版本的 devices retained 徽标）；~~executor-python zip 缓存对等实现~~（已落地 3f3f56c0，遗留不对称：python ZIP_DOWNLOAD_MAX_BYTES 硬编码常量 vs node PACKAGE_DOWNLOAD_MAX_BYTES 可配）；~~deployCount 存量回填迁移~~（已落地 105b42f4，已知取舍：迁移 62→64 窗口期已产生真实事件的存量应用不回填——防双计的应用级判定边界）；~~P10 executor_packages 版本收敛收口~~（已落地 03e6e3f6：executor-node 侧；executor-python 两键上报留后续）；~~升级重置 startCommand 快照的 UI 披露~~（已落地 8ec54c07）。新增遗留：node 侧 PACKAGE_DOWNLOAD_MAX_BYTES 非法值 NaN 静默解除上限（85b0e989 登记，已于 2f2b503a 收口）；/events 时间过滤暂未上前端 UI（后端 since/until 已就绪，已于 9ff94ce3 收口）。
+
+### 9.7 5c 设计稿：`releases/<version>` 目录两段化（2026-10-24 落盘，第二阶段实施蓝图）
+
+> 现状：`apps/<appId>/releases/<releaseKey>/`，releaseKey = `${version}-`${deploymentId}`（buildDeploymentPaths，deploy.ts:791-819）。
+> 目标：`releases/<version>/<deploymentId>/` 两段——目录名即版本（deployed-apps.ts:23 注释已预留此演进）。
+
+**为什么做**：① 同版本多部署行不再共享前缀歧义，retained 语义按版本归组；② deployed-apps 扫描的版本归一直接取目录名（去掉 `-${deploymentId}` 后缀反解的脆弱性）；③ uninstall/name-recovery 的按版本清理有真目录边界。
+
+**触点清单（CodeGraph 取证，52 处消费引用）**：
+| 触点 | 位置 | 改动 |
+|---|---|---|
+| 路径构造 | deploy.ts buildDeploymentPaths（:791） | releaseKey 拼接改 path.join(version, deploymentId)；normalizeReleasePart 语义不变（version 含非法字符仍拒） |
+| 保留策略 | pruneOldReleases（:983，KEEP_RELEASES=5） | 改两层：先按版本组裁剪到 KEEP_VERSIONS（建议 3），组内保全部；current 指向的组豁免 |
+| 活链接 | currentLink → releases/<version>/<deploymentId> | readCurrentTarget 归一逻辑同步（路径深度 +1） |
+| 事实扫描 | deployed-apps.ts（releases 目录归一） | 目录名即版本，去掉后缀反解；兼容期同时认旧单段布局（迁移窗口） |
+| 桌面端 | app-uninstall.ts / app-name-recovery.ts | 卸载按 appRoot 整删不受影响；name-recovery 若解析 releaseKey 需同步 |
+| 迁移兼容 | 部署时增量迁移 | 新部署落新布局；旧目录**不搬**（搬运活目录有删改竞态），deployed-apps 双布局识别，prune 自然淘汰旧目录 |
+
+**风险与红线**：① 活目录搬运 = 高风险区（评审 §9.4 已裁定「不搬」），增量迁移避开；② `current` 软链切换的原子性（rename 语义）必须保留——两段化不改切换机制只改指向深度；③ 协议面零变化（目录是执行器本地实现细节，R3 的 currentReleaseKey 字段值形态变化需评估 admin 侧归一容错——resolveVersionFollowPackage 对 releaseKey 只做等值比对，值形态变化不破坏判定，但设备版本表的 currentReleaseKey 历史值会混两种形态，读面展示需截断容错）。
+
+**验收口径**：deployed-apps 扫描在混合布局（旧单段+新两段）下版本归一无重复；prune 在版本组语义下不误删 current 目标；卸载/重装全链路绿；KEEP_RELEASES→KEEP_VERSIONS 的容量语义变化（5 个 release → 3 个版本×每版 N 部署）写入 .env.example 若做成可配。
+
+**工作量评估**：deploy.ts 核心 ~200 行改动 + deployed-apps 兼容 ~60 行 + 桌面端 ~40 行 + 测试三面（部署/扫描/卸载）；独立成一个 PR，不与其它混。
