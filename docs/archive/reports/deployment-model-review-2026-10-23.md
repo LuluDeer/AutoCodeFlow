@@ -337,6 +337,7 @@
 | 自主推进 R5（2026-10-25 凌晨）：**executor-python 三缺陷**——lifespan 池收口（notify_offline 重建共享池后永远无人关，产品侧遗留）+ pkg_cache 缓存 IO 下线程（200MB 阻塞 loop 秒级）+ maintenance 悬空循环变量；**executor-node/sdk 五处**——日志脱敏三漏网（downloadUrl 原文/Cloning 未脱敏/重复实现合并单一事实源）+ node-sdk README 版本双错与注入表缺行 + sdk-guide 缺 fingerprint 行。全量 1232/0（python 新基线）；四包测试全绿 | ✅ | 5b5c2bc1/9c9710e4 |
 | 自主推进 R6（2026-10-25 清晨）：**MCP update_task 参数面对齐**（15 新字段+2 修复——secrets 键名规则/维护窗口/priority 双形态实测复刻/乐观锁 409 语义；登记 2 个价值判断未做）；**R4/R5 提交引入的 CI 红自查自纠**——9c9710e4 把工作区外部会话的 puppeteer devDeps 经 npm install 同步进根 lock（33 非根条目违反 ARCH-28b，从干净基重建+重放版本同步）；dispatch-secrets spec 漏 DataSource 替身（R4 事务化新依赖，子 agent 修 12 个 spec 漏了 common/utils 这个）。教训：共享工作区 git add 前必审 lock/package.json diff 归属 | ✅ | a953e807/f8943eea |
 | 自主推进 R7（2026-10-25 清晨）：node-sdk README 登记进 release-please 广播（generic+行内注解锁位，模拟 bump 验证恰好改写 2 注解行——版本声明漂移根治，①d 守卫自动锁链路）；router.tsx react-refresh warnings 24→0（lazy 页面拆 router-pages.tsx 纯挪动零 disable，全 src 66→42） | ✅ | 5c3bf581/3bcd2963 |
+| 自主推进 R8（2026-10-25 清晨）：eslint warnings 42→29 第二弹——色阶纯函数三组挪 color-tokens.ts 共享模块（-7）/CODE_SOURCE_OPTIONS 大写误判重命名（-3，零 disable）/MainLayout 高消费面 disable+注释（-3，8 文件消费搬迁不划算）。flake 实证纪律：glue-backfill 并行负载红用 stash 干净树复现同败排除归因。剩余 29 分散 17 文件登记 | ✅ | be345db8 |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
