@@ -630,3 +630,40 @@ def test_cleanup_uv_cache_skipped_while_live_venv_task(work_root, monkeypatch):
     # 活跃任务结束后，下一轮清扫正常回收
     maintenance.cleanup_work_dir(ttl_days=7)
     assert not stale.exists()
+
+
+def test_cleanup_invalidates_venv_deps_cache_after_venv_removal(work_root):
+    """巡查 2026-10-25（方向2 异常吞掉/悬空引用）：cleanup_work_dir 的
+    venv 依赖映射缓存失效判定原本引用 for 循环外的循环变量
+    ``count_key``——恰因残留 ``'venvs'`` 值才碰巧成立，重构循环即断。
+    现改为按计数账本判定：删过 venv 就必须失效缓存（指纹机制的双保险），
+    一枚 venv 都没删时不得乱失效（保住指纹缓存命中路径）。"""
+    import maintenance
+
+    venv_old = work_root / '.venvs' / 'task-old'
+    venv_old.mkdir(parents=True)
+    _age(venv_old)
+
+    maintenance._venv_deps_cache = {'/some/home': ['task-old']}
+    maintenance._venv_deps_fingerprint = ('stale',)
+    counts = maintenance.cleanup_work_dir(ttl_days=7)
+    assert counts['venvs'] == 1
+    assert maintenance._venv_deps_cache is None, '删除 venv 后依赖映射缓存必须失效'
+    assert maintenance._venv_deps_fingerprint is None
+
+
+def test_cleanup_keeps_venv_deps_cache_when_no_venv_removed(work_root):
+    """没删任何 venv 时不得误伤依赖映射缓存（指纹缓存命中路径保住）。"""
+    import maintenance
+
+    fresh = work_root / 'exec-fresh'
+    fresh.mkdir()  # 新鲜目录：不会被清扫
+
+    maintenance._venv_deps_cache = {'/some/home': ['task-live']}
+    maintenance._venv_deps_fingerprint = ('fresh',)
+    counts = maintenance.cleanup_work_dir(ttl_days=7)
+    assert counts['venvs'] == 0
+    assert maintenance._venv_deps_cache == {'/some/home': ['task-live']}
+    assert maintenance._venv_deps_fingerprint == ('fresh',)
+
+    maintenance._invalidate_venv_deps_cache()  # 收尾：不泄漏给后续用例

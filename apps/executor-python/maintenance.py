@@ -781,8 +781,11 @@ def cleanup_work_dir(ttl_days: int = None) -> dict:
                 counts[count_key] += 1
 
     # 9-3（audit-r4）：本轮回可能删除了 venv——显式失效依赖映射缓存
-    # （指纹机制下删除会自然改变指纹，这里是双保险）。
-    if count_key == 'venvs' and counts['venvs'] > 0:
+    # （指纹机制下删除会自然改变指纹，这里是双保险）。巡查 2026-10-25：
+    # 原判定 `count_key == 'venvs'` 引用的是上方 for 循环的循环变量（循环
+    # 外悬空——恰因残留 'venvs' 值才碰巧成立，重构循环即断），改为按计数
+    # 账本直接判定，语义即本意：删过 venv 才失效。
+    if counts['venvs'] > 0:
         _invalidate_venv_deps_cache()
 
     # A5（第四轮审计）：共享 uv 下载缓存治理（`<work_dir>/.venvs/.uv-cache`，

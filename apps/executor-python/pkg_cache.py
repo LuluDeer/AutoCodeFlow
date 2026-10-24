@@ -288,16 +288,23 @@ async def download_with_cache(
     if max_bytes <= 0:
         # 缓存被显式关闭（PKG_CACHE_MAX_BYTES=0）：行为与无缓存时代完全一致。
         return await download(url, dest, should_cancel=should_cancel)
-    # 快路径：命中直接复制，不进锁。
-    if _try_copy_from_cache(key, dest):
-        return dest.stat().st_size
+    # 快路径：命中直接复制，不进锁。缓存侧的全套文件 I/O（stat/meta 读/
+    # copyfile/rename/evict 扫描）都在 to_thread 里跑：单包上限 200MB，同步
+    # copyfile 在冷页缓存下可阻塞事件循环数百 ms~秒级，会掐断同期的心跳/
+    # 长轮询（与调用方对 _extract_package 的 to_thread 纪律一致，巡查
+    # 2026-10-25）。锁语义不变：to_thread 只搬执行线程，同 key 串行仍由
+    # 下方的 per-key asyncio.Lock 保证。
+    if await asyncio.to_thread(_try_copy_from_cache, key, dest):
+        st = await asyncio.to_thread(dest.stat)
+        return st.st_size
     lock = _get_pkg_fetch_lock(key)
     async with lock:
         # 复查：排队期间队首可能刚把同 URL 的条目写好，直接复用。
-        if _try_copy_from_cache(key, dest):
-            return dest.stat().st_size
+        if await asyncio.to_thread(_try_copy_from_cache, key, dest):
+            st = await asyncio.to_thread(dest.stat)
+            return st.st_size
         size = await download(url, dest, should_cancel=should_cancel)
-        _store_in_cache(key, url, dest)
+        await asyncio.to_thread(_store_in_cache, key, url, dest)
         return size
 
 

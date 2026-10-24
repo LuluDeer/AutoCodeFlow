@@ -613,3 +613,86 @@ class TestWorkdirProtection:
 
         assert cache_dir.exists()
         assert cached_entry.exists()
+
+
+class TestCacheFileIOOffEventLoop:
+    """巡查 2026-10-25（方向1 资源泄漏/事件循环阻塞）：缓存侧文件 I/O
+    （copyfile/stat/meta 读写）必须经 ``asyncio.to_thread`` 执行——单包
+    上限 200MB，同步 copyfile 冷页缓存下可阻塞事件循环数百 ms~秒级，
+    掐断同期心跳/长轮询。锁语义不变：同 key 串行仍由 per-key 锁保证。"""
+
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pkg_cache.settings, 'work_dir', str(tmp_path))
+        monkeypatch.setattr(pkg_cache.settings, 'pkg_cache_max_bytes',
+                            pkg_cache.DEFAULT_PKG_CACHE_MAX_BYTES)
+
+    def test_hit_and_store_run_in_worker_thread(self, monkeypatch, tmp_path):
+        """命中复制与写入缓存都不得占用事件循环线程。"""
+        import threading
+        self._setup(monkeypatch, tmp_path)
+        loop_thread = threading.current_thread()
+        seen_threads = []
+
+        real_copy = pkg_cache._try_copy_from_cache
+        real_store = pkg_cache._store_in_cache
+
+        def spy_copy(key, dest):
+            seen_threads.append(('copy', threading.current_thread() is not loop_thread))
+            return real_copy(key, dest)
+
+        def spy_store(key, url, src):
+            seen_threads.append(('store', threading.current_thread() is not loop_thread))
+            return real_store(key, url, src)
+
+        monkeypatch.setattr(pkg_cache, '_try_copy_from_cache', spy_copy)
+        monkeypatch.setattr(pkg_cache, '_store_in_cache', spy_store)
+
+        async def scenario():
+            loop_thread_ref = threading.current_thread()
+            assert threading.current_thread() is loop_thread_ref
+            async def fake_download(url, dest, *, should_cancel=None):
+                dest.write_bytes(b'X' * 16)
+                return 16
+            # miss → store
+            size = await pkg_cache.download_with_cache(
+                fake_download, 'https://cdn.example.com/a.zip', tmp_path / 'd1.zip')
+            assert size == 16
+            # hit → copy
+            size2 = await pkg_cache.download_with_cache(
+                fake_download, 'https://cdn.example.com/a.zip', tmp_path / 'd2.zip')
+            assert size2 == 16
+            return seen_threads
+
+        calls = asyncio.run(scenario())
+        # store（miss 路径）+ copy（第二次命中）都必须发生在非循环线程
+        assert calls, '至少应观察到一次 store 与一次 copy'
+        for name, off_loop in calls:
+            assert off_loop, f'{name} 必须在 worker 线程执行，不得阻塞事件循环'
+        assert (tmp_path / 'd2.zip').read_bytes() == b'X' * 16
+
+    def test_offload_does_not_break_double_fetch_dedup(self, monkeypatch, tmp_path):
+        """回归：to_thread 化后同 key 串行 + 队内复查语义不变（并发同 URL
+        仍只下载一次，双方都拿到字节）。"""
+        self._setup(monkeypatch, tmp_path)
+        downloads = []
+
+        async def fake_download(url, dest, *, should_cancel=None):
+            downloads.append(url)
+            await asyncio.sleep(0.02)  # 拉长窗口，让 follower 真正排队
+            dest.write_bytes(b'Y' * 8)
+            return 8
+
+        async def scenario():
+            pkg_cache.reset_pkg_cache_locks_for_tests()
+            return await asyncio.gather(*[
+                pkg_cache.download_with_cache(
+                    fake_download, 'https://cdn.example.com/b.zip',
+                    tmp_path / f'g{i}.zip')
+                for i in range(3)
+            ])
+
+        sizes = asyncio.run(scenario())
+        assert sizes == [8, 8, 8]
+        assert len(downloads) == 1, '并发同 URL 必须仍只下载一次'
+        for i in range(3):
+            assert (tmp_path / f'g{i}.zip').read_bytes() == b'Y' * 8

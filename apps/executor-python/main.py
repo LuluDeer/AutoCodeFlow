@@ -22,6 +22,7 @@ from scheduler import (
     pull_task,
     register_interpreters_provider,
     get_http_client,
+    aclose_http_clients,
 )
 from auth import (
     get_current_token,
@@ -240,6 +241,20 @@ async def lifespan(app: FastAPI):
     # E8: stop the disk sweep before exiting.
     maintenance.stop_disk_cleanup_task()
     await notify_offline()
+    # O-24 收口（executor-python 质量巡查 2026-10-25）：关停序列的最后一次
+    # aclose_http_clients 之后不得再有任何 get_http_client() 调用——但
+    # notify_offline() 本身依赖共享池发停机通知，而 execute.stop_callback_
+    # retry_task() 里的那次 aclose 发生在它之前，等于 notify_offline 又重建
+    # 了一个此后无人关闭的池。产品侧 lifespan 一直没有最终收口（测试侧
+    # conftest._close_asyncio_loops 已在 2026-10-24 为顺序耦合 flake 单独兜
+    # 过同一问题）。现在把最终 aclose 放在 notify_offline 之后：正常关机后
+    # loop 里不再挂未关闭的 httpx transport（ResourceWarning 噪音消除），
+    # lifespan 复用（reload/测试）也不会在 per-loop 表里留下死 client。
+    # best-effort：关停路径上的收尾失败只记日志，绝不阻断后续步骤。
+    try:
+        await aclose_http_clients()
+    except Exception as e:
+        logger.warning(f'Shutdown HTTP client pool close failed: {e}')
     logger.info(f'Executor shutdown complete')
     # SEC-NEW-3: drop the hook with the lifespan so a re-run (tests) never
     # resurrect tasks on a dead loop.
