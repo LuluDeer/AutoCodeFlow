@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
 import type { ReactNode } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
@@ -6,33 +6,34 @@ import RequireAdmin from './components/RequireAdmin';
 import PrivateRoute from './components/PrivateRoute';
 import PageFallback from './components/PageFallback';
 import RouteErrorBoundary from './components/RouteErrorBoundary';
-
-const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
-const LoginPage = lazy(() => import('./pages/LoginPage'));
-const SsoCompletePage = lazy(() => import('./pages/SsoCompletePage'));
-const TaskListPage = lazy(() => import('./pages/TaskListPage'));
-const TaskTemplatesPage = lazy(() => import('./pages/TaskTemplatesPage'));
-const TaskDetailPage = lazy(() => import('./pages/TaskDetailPage'));
-const TaskFormPage = lazy(() => import('./pages/TaskFormPage'));
-const ExecutionDetailPage = lazy(() => import('./pages/ExecutionDetailPage'));
-const UserManagementPage = lazy(() => import('./pages/UserManagementPage'));
-const ExecutorListPage = lazy(() => import('./pages/ExecutorListPage'));
-const ExecutorInstallWizardPage = lazy(() => import('./pages/ExecutorInstallWizardPage'));
-const ExecutorDetailPage = lazy(() => import('./pages/ExecutorDetailPage'));
-const ExecutorPackagesPage = lazy(() => import('./pages/ExecutorPackagesPage'));
-const DashboardPage = lazy(() => import('./pages/DashboardPage'));
-const RegistryPage = lazy(() => import('./pages/RegistryPage'));
-const SettingsPage = lazy(() => import('./pages/settings/index'));
-const NotificationSettingsPage = lazy(() => import('./pages/NotificationSettingsPage'));
-const AuditLogPage = lazy(() => import('./pages/audit/index'));
-const ApplicationListPage = lazy(() => import('./pages/ApplicationListPage'));
-const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage'));
-const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
-const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
-// P5/P6: SOP 管理（全 ADMIN-only——发布权 = 间接指令注入权）
-const SopsPage = lazy(() => import('./pages/SopsPage'));
-// P2 遗留补齐: Agent 会话查看面（全 ADMIN-only——会话能改系统状态）
-const AgentSessionsPage = lazy(() => import('./pages/AgentSessionsPage'));
+// react-refresh/only-export-components：本文件唯一导出是非组件的路由配置，
+// 懒加载页面组件全部收在 router-pages.tsx（仅组件导出），保住各自 HMR 边界。
+import {
+  NotFoundPage,
+  LoginPage,
+  SsoCompletePage,
+  TaskListPage,
+  TaskTemplatesPage,
+  TaskDetailPage,
+  TaskFormPage,
+  ExecutionDetailPage,
+  UserManagementPage,
+  ExecutorListPage,
+  ExecutorInstallWizardPage,
+  ExecutorDetailPage,
+  ExecutorPackagesPage,
+  DashboardPage,
+  RegistryPage,
+  SettingsPage,
+  NotificationSettingsPage,
+  AuditLogPage,
+  ApplicationListPage,
+  ApplicationDetailPage,
+  ExecutionsPage,
+  ProjectsPage,
+  SopsPage,
+  AgentSessionsPage,
+} from './router-pages';
 
 const withSuspense = (children: ReactNode) => (
   <Suspense fallback={<PageFallback />}>{children}</Suspense>
