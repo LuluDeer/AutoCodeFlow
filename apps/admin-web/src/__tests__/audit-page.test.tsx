@@ -19,6 +19,8 @@ import { MemoryRouter } from 'react-router-dom';
 import AuditLogPage from '../pages/audit';
 import { client } from '../api/client';
 import { message } from '../utils/toast';
+import dayjs from 'dayjs';
+import { eventsRangeToSinceUntil } from '../utils/timeRange';
 
 vi.mock('../api/client', () => ({
   client: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -549,7 +551,6 @@ describe('R67-A1 动作下拉（可发现）', () => {
       expect(lastAuditQuery()).toContain('action=task');
     });
   });
-});
 
   it('R104：新落地的审计动作（config / sop）也有本地化标签，不再回退原始 code', async () => {
     mockedClient.get.mockImplementation(((url: string) => {
@@ -583,3 +584,93 @@ describe('R67-A1 动作下拉（可发现）', () => {
     // 下拉侧已由上面的「未知动作显示原始 code」用例覆盖机制；这里只钉列表侧，
     // 避免同一 fixture 里既开下拉又断言列表造成选择器互相干扰。
   });
+});
+
+describe('AuditLogPage 时间范围筛选（2026-10-24 与 events 统一口径）', () => {
+  /**
+   * 交互边界（先例：executions-keyset-paging / audit-keyset-paging /
+   * application-deployment-events 三处均已记录）：antd 6.6.x RangePicker 的
+   * **日期格子**在 jsdom 下无法被 fireEvent 驱动到 onChange（rc-picker 需要
+   * 真实指针/布局事件序列）；**presets 预设区间**可以（渲染为真实可点击
+   * li）。故交互用例走预设，换算正确性由既有纯函数用例（application-
+   * deployment-events.test.tsx 直接断言 eventsRangeToSinceUntil）钉死。
+   */
+
+  // 期望值与页面同源 dayjs 现算（时区无关断言——CI 是 UTC、本地是 +08:00，
+  // 硬编码 Z 偏移会在一侧红）。
+  function expectedPresetParams(days: number) {
+    return {
+      startTime: dayjs().subtract(days, 'day').startOf('day').toISOString(),
+      endTime: dayjs().startOf('day').toISOString(),
+    };
+  }
+
+  /** 解码 /audit 列表查询的查询串为键值对。 */
+  function lastAuditParams(): URLSearchParams {
+    const calls = mockedClient.get.mock.calls.filter(([url]) => String(url).startsWith('/audit?'));
+    const qs = String(calls[calls.length - 1]?.[0] ?? '').split('?')[1] ?? '';
+    return new URLSearchParams(qs);
+  }
+
+  /** 打开 RangePicker 面板（click 外层 .ant-picker）。 */
+  async function openTimePanel() {
+    const picker = document.querySelector('.ant-picker') as HTMLElement | null;
+    expect(picker, '未找到时间范围 RangePicker').toBeTruthy();
+    fireEvent.click(picker!);
+    await waitFor(() => {
+      expect(document.querySelector('.ant-picker-dropdown')).toBeTruthy();
+    });
+  }
+
+  /** 点击面板里的预设区间（antd presets 渲染为 .ant-picker-presets li）。 */
+  async function clickPreset(label: string) {
+    await openTimePanel();
+    const items = [...document.querySelectorAll<HTMLElement>('.ant-picker-presets li')];
+    const target = items.find((li) => (li.textContent ?? '') === label);
+    if (!target) throw new Error(`未找到预设区间 ${label}（现有：${items.map((i) => i.textContent).join(',')}）`);
+    fireEvent.click(target);
+  }
+
+  it('预设「最近 7 天」→ startTime/endTime 按整天语义换算（endTime=今天 00:00，今天不计入）', async () => {
+    renderPage();
+    await screen.findByText('创建任务');
+
+    await clickPreset('最近 7 天');
+    // 审计页筛选是「草稿 → 点搜索才应用」两段式：预设只写 pending，
+    // 必须点「搜索」才进 filters/请求。
+    fireEvent.click(findBtn(document.body, '搜索')!);
+
+    const expected = expectedPresetParams(7);
+    await waitFor(() => {
+      const p = lastAuditParams();
+      expect(p.get('startTime')).toBe(expected.startTime);
+      expect(p.get('endTime')).toBe(expected.endTime);
+    });
+    // 口径钉死：endTime 恰为今天本地 00:00（「最近 7 天」不含今天）——这是
+    // 2026-10-24 统一前的缺陷点：旧实现直接 toISOString() 预设的 dayjs()，
+    // endTime=当下时刻，与 events 页的整天语义不一致。
+    expect(dayjs(lastAuditParams().get('endTime')).isSame(dayjs().startOf('day'))).toBe(true);
+  });
+
+  it('换算语义等价于 events 的 since/until：startTime=since、endTime=until（开始日整天计入）', async () => {
+    renderPage();
+    await screen.findByText('创建任务');
+
+    await clickPreset('最近 1 天');
+    fireEvent.click(findBtn(document.body, '搜索')!);
+
+    // eventsRangeToSinceUntil 是 events 页已定口径（半开区间，结束日当天不
+    // 计入）。audit 后端虽是闭区间（<= endTime），但 endTime 已归一到结束日
+    // 00:00，闭区间多含的只是「恰好 00:00:00.000 整」的一条，用户不可感知
+    // （详见页面内注释）。这里直接用共享函数对照，钉死两页换算同源。
+    const expected = eventsRangeToSinceUntil([
+      dayjs().subtract(1, 'day'),
+      dayjs(),
+    ]);
+    await waitFor(() => {
+      const p = lastAuditParams();
+      expect(p.get('startTime')).toBe(expected.since);
+      expect(p.get('endTime')).toBe(expected.until);
+    });
+  });
+});

@@ -57,6 +57,10 @@ import { triggerLabel, releaseStatusLabel, TRIGGER_COLOR } from '../utils/trigge
 // （与筛选下拉同源；未知值回退原始 token）。
 import { runtimeLabel } from '../utils/runtime-label';
 import { useRaceGuard } from '../utils/raceGuard';
+// 时间范围筛选换算的唯一事实源挪到 utils/timeRange（2026-10-24：audit 页
+// 也要消费同一口径，跨页从页面文件导入会拉进整个页面模块图；文件底部
+// re-export 保住既有 `from './ApplicationDetailPage'` 导入方）。
+import { eventsRangeToSinceUntil } from '../utils/timeRange';
 // D-P2-09：时间格式化统一走共享 formatDateTime（与全站同源）。
 import { formatDateTime } from '../utils/timeFormat';
 // P3 审计：应用/发布部署状态 → Tag color 映射收敛到单一事实源
@@ -874,28 +878,10 @@ const EVENT_TYPE_COLOR: Record<string, string> = {
   stuck_failed: 'magenta',
 };
 
-/**
- * 时间范围筛选的 UI → API 换算（口径唯一事实源，测试直接对它断言）。
- *
- * 后端 since/until 是 ISO 8601 **半开区间 [since, until)**：since 含头、
- * until 不含尾。UI 用日期粒度 RangePicker（不带 showTime），换算规则：
- *   · since = 开始日 00:00:00.000（本地时区）——开始日**整天计入**；
- *   · until = 结束日 00:00:00.000（本地时区）——结束日**当天不计入**：
- *     半开区间下它恰好等价于「到前一天 23:59:59.999 止」，即选 10-24 =
- *     到 10-23 23:59:59.999 止。此口径在筛选器 Tooltip 文案里同步披露
- *     （appDetail.events.filter.timeHint），不靠用户猜。
- * toISOString() 输出绝对时刻（UTC，带 Z），后端按绝对时刻解析，与浏览器
- * 时区无关。ExecutionsPage/audit 的 startTime/endTime 同此 toISOString 惯例。
- */
-export function eventsRangeToSinceUntil(range: [Dayjs, Dayjs]): {
-  since: string;
-  until: string;
-} {
-  return {
-    since: range[0].startOf('day').toISOString(),
-    until: range[1].startOf('day').toISOString(),
-  };
-}
+// eventsRangeToSinceUntil 已挪至 utils/timeRange（见顶部 import 注释）。这里
+// re-export：既有导入方（__tests__/application-deployment-events.test.tsx 从
+// 本文件导入该函数）不必跟着改；新消费方应直接 import utils/timeRange。
+export { eventsRangeToSinceUntil };
 
 /**
  * R4（§4.1A）：应用部署事件流表（不可变动作追溯）。独立加载/独立分页，

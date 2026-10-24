@@ -13,6 +13,9 @@ import type { AuditLog } from '../../api/audit';
 import { message } from '../../utils/toast';
 // 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
 import { formatDateTime } from '../../utils/timeFormat';
+// 时间范围换算的唯一事实源（与 ApplicationDetailPage events 筛选同口径，
+// 2026-10-24 统一：此前本页直接 toISOString，见 RangePicker onChange 注释）。
+import { eventsRangeToSinceUntil } from '../../utils/timeRange';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
@@ -629,13 +632,29 @@ export default function AuditLogPage() {
           <Option value="success">{resultLabels.success}</Option>
           <Option value="failure">{resultLabels.failure}</Option>
         </Select>
+        {/* 时间范围（2026-10-24 与 events 统一口径）：换算走共享
+            eventsRangeToSinceUntil——since=开始日本地 00:00（整天计入）、
+            until=结束日本地 00:00（结束日当天不计入，半开区间等价于「到前一
+            日 23:59:59.999 止」）。此前这里直接 dates?.[n]?.toISOString()：
+            手选日期恰好等价（日期粒度 picker 给的就是当日 00:00），但预设
+            区间（dayjs() 带当前时分秒）会漏掉「今天」整天的记录——同页的
+            「最近 1 天」在 events 页给 24h 整天窗、这里却几乎空窗。
+            注：events 页另有口径披露 Tooltip（timeHint），本页如需同款需
+            动 locales（zh/en）两个文件，超出本轮 3 文件预算，未加。 */}
         <DatePicker.RangePicker
           presets={rangePresets}
+          allowClear
           onChange={(dates) => {
+            // range 两端齐全才算时间筛选生效；clear 后 dates=null → 两个
+            // undefined（buildAuditListQuery 不装该键，请求形状与未筛一致）。
+            const hasTime = !!(dates && dates[0] && dates[1]);
+            const { since, until } = hasTime
+              ? eventsRangeToSinceUntil(dates as [Dayjs, Dayjs])
+              : { since: undefined, until: undefined };
             setPending((p) => ({
               ...p,
-              startTime: dates?.[0]?.toISOString() ?? undefined,
-              endTime: dates?.[1]?.toISOString() ?? undefined,
+              startTime: since,
+              endTime: until,
             }));
           }}
         />
