@@ -1291,7 +1291,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 236 个操作，覆盖 202 个路径。
+共 237 个操作，覆盖 203 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1347,6 +1347,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/applications/{id}/versions` | 获取应用版本历史 |
 | POST | `/applications/upload` | 上传应用包（zip） |
 | POST | `/applications/webhook` | 版本发布 Webhook |
+| GET | `/artifacts` | 按应用/任务查询产物索引（仅管理员） |
 | GET | `/audit` | 分页查询审计日志（仅管理员） |
 | GET | `/audit/actions` | 审计动作清单（去重，仅管理员） |
 | GET | `/audit/export` | 导出审计日志为 CSV（最多 10 000 行，仅管理员） |
