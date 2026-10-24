@@ -95,10 +95,8 @@ function repoDirName(repoUrl: string): string {
   return `${cleaned}-${hash}`;
 }
 
-/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
-function redactUrl(u: string): string {
-  return u.replace(/\/\/[^/@]+@/, '//***@');
-}
+// redactUrl 已收敛到 src/redact-url.ts（单一事实源；update-package.ts 同批接入）。
+import { redactUrl } from '../redact-url';
 
 /**
  * E-26（DEEP_REVIEW 0ef3bbe）：cmd.exe 下的参数引号。

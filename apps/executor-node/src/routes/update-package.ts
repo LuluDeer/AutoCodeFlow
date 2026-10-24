@@ -38,6 +38,8 @@ import { config } from '../config';
 import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
+// URL 脱敏（log-safe-url 先例，与 deploy.ts/execute.ts 的 redactUrl 同一正则）。
+import { redactUrl } from '../redact-url';
 // P10（executor 包版本收敛）：checksum 验证通过后落 manifest，供心跳
 // installedPackages 扫描（installed-packages.ts 是本文件落盘事实的读面）。
 import {
@@ -119,7 +121,9 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
   }
 
   updateInProgress = true;
-  logger.info(`[update-package] Received update request: ${body.name}@${body.version} from ${body.downloadUrl}`);
+  // 与 deploy.ts/execute.ts 的 redactUrl 同款：downloadUrl 可携带 user:token@
+  // 形式的内嵌凭据（私服下载地址），原文落日志即泄漏。
+  logger.info(`[update-package] Received update request: ${body.name}@${body.version} from ${redactUrl(body.downloadUrl)}`);
 
   // Respond immediately — the actual update runs async. E-43: `mode` states
   // the real capability (download-only, no in-place apply) so an operator or

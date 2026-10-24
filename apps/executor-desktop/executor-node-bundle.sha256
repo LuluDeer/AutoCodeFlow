@@ -600,5 +600,9 @@
 #     '/' 直接拼 tmp 路径 ENOENT）/rename 前补建版本组父目录/（admin 侧
 #     迁移 63 缺 createdAt/updatedAt 由迁移 66 补列）。
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），50 个输入文件。
-source-digest: 437d9faeb9c83192d06a1477ec503b56b3be0fd11e8d8c0c4e2f960fa5b28211
-9e4d0684124f3c1bca611aa915099cb8ad96cb4f42c3aeae971ac26c4f5ea03d  index.js
+# 2026-10-25（联合小巡查·日志脱敏）：update-package.ts 的 downloadUrl 日志脱敏
+#   （私服地址可携带 user:token@ 内嵌凭据）；deploy.ts 的 Cloning gitRepo 日志对齐
+#   execute.ts 的脱敏纪律；三处 redactUrl 收敛为新模块 src/redact-url.ts（单一事实源）。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: 601ca625be7237b5e830b4cfe58a7bb5d31375a1c1667e6e1615f46404ef4cb2
+2a877e9148c97150ac8efe2810ca280ada2245e1e2cc0af6dbbe720c40aba242  index.js

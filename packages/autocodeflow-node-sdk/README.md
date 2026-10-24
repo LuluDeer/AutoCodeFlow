@@ -135,7 +135,8 @@ try {
 | `TASK_ID` | 当前任务的唯一标识 | `task_abc123` |
 | `TASK_NAME` | 当前任务名称 | `fetch_data` |
 | `EXECUTION_ID` | 本次执行记录的唯一标识 | `exec_xyz789` |
-| `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+| `AUTOFLOW_<KEY>` | 触发参数，按参数名转大写后注入。**字符串是裸值**（不加引号），数字/布尔/数组/对象是对应 JSON 字面量 | `AUTOFLOW_SOURCE_URL=https://api.example.com` |
+| `AUTOFLOW_PARAMS_JSON` | 整个参数的 JSON 对象（A-11R 起，协议 v5）。需要精确类型时读它：逐键通道的值恒为字符串（`ctx.getParam(key, fallback?)` 会自动优先本通道并还原真实类型） | `AUTOFLOW_PARAMS_JSON={"limit":100}` |
 | `AUTOFLOW_ADMIN_API_URL` | Admin API 基地址（非机密路由信息，N23 起注入） | `AUTOFLOW_ADMIN_API_URL=http://admin-api:3105` |
 | `AUTOFLOW_CALLBACK_TOKEN` | 本次执行的一次性回调 token（`v1.` HMAC，绑定 executionId、随 TTL 过期，N23 起注入） | `AUTOFLOW_CALLBACK_TOKEN=v1.<uuid>.<exp>.<hmac>` |
 | `AUTOFLOW_EXECUTOR_ADDRESS` | 当前执行器注册地址（非机密路由信息，N27 起注入；SDK 经 `ctx.executorAddress`（Node）/ `ctx.executor_address`（Python）暴露并自动填入回调请求） | `AUTOFLOW_EXECUTOR_ADDRESS=executor-node:8002` |
@@ -147,7 +148,7 @@ try {
 ## 版本与发布
 
 - 版本策略：与 `autoflow-sdk`（PyPI）、`autocodeflow-mcp-server` 走
-  **lockstep** 单版本线，当前 `1.0.0`。
+  **lockstep** 单版本线，当前 `1.14.0`。
 - 发布管道：[.github/workflows/release.yml](../../.github/workflows/release.yml)。
   push tag `vX.Y.Z` 触发：版本一致性守卫（tag 必须等于本包
   `package.json` version，不一致直接 fail）→ `publish-npm` job
@@ -167,4 +168,4 @@ try {
 - 发布流程与矩阵说明见
   [docs/sdk-guide.md「SDK 矩阵」](../../docs/sdk-guide.md)。
 
-> 版本随 autocodeflow lockstep 组同步发布(当前 1.13.0,与 mcp-server/acf-cli 同版)。
+> 版本随 autocodeflow lockstep 组同步发布(当前 1.14.0,与 mcp-server/acf-cli 同版)。

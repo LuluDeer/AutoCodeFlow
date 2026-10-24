@@ -736,10 +736,8 @@ function startApp(
   });
 }
 
-/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
-function redactUrl(u: string): string {
-  return u.replace(/\/\/[^/@]+@/, '//***@');
-}
+// redactUrl 已收敛到 src/redact-url.ts（单一事实源；update-package.ts 同批接入）。
+import { redactUrl } from '../redact-url';
 
 /** Download a package over HTTP/HTTPS to a local path. Delegates to the
  *  shared downloader (Bearer token + cross-host redirect stripping + absolute
@@ -1415,7 +1413,9 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         const cloneArgs = ['clone', '--depth', '1'];
         if (gitBranch) cloneArgs.push('--branch', gitBranch);
         cloneArgs.push(gitRepo, '.');
-        logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch || '<default>'}`);
+        // execute.ts 的 git checkout 路径（logPrepare）早已对 gitRepo 脱敏；
+        // https 形态的 gitRepo 同样可携带 user:token@ 内嵌凭据，这里对齐同一纪律。
+        logger.info(`[deploy] Cloning ${redactUrl(gitRepo)}@${gitBranch || '<default>'}`);
         const cloneR = await runCommand(
           'git', cloneArgs,
           { cwd: paths.extractDir, timeout: 120_000, signal: deployAbort.signal },
