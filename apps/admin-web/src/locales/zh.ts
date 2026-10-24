@@ -1966,6 +1966,12 @@ export default {
   // R4（部署模型评审 §4.1A）：部署事件流（不可变动作追溯）。
   'appDetail.events.title': '部署事件流',
   'appDetail.events.filter.typeAll': '全部类型',
+  // 时间范围筛选（since/until 半开区间）：Tooltip 必须把「结束日当天不计入」
+  // 讲明白——半开区间下选 10-24 = 到 10-23 23:59:59.999 止，不靠用户猜。
+  'appDetail.events.filter.timeHint': '按事件时间筛选：开始日整天计入；结束日当天不计入（选 10-24 即到 10-23 23:59:59.999 止）',
+  'appDetail.events.filter.last1d': '最近 1 天',
+  'appDetail.events.filter.last7d': '最近 7 天',
+  'appDetail.events.filter.last30d': '最近 30 天',
   'appDetail.events.loadFail': '加载部署事件流失败',
   'appDetail.events.empty': '暂无部署事件（该应用还没有任何部署域写动作）',
   'appDetail.events.col.time': '时间',

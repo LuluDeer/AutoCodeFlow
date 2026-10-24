@@ -23,6 +23,7 @@ import { Modal as AntdModal,
   Form,
   Input,
   Select,
+  DatePicker,
   Statistic,
   Alert,
   theme } from 'antd';
@@ -32,6 +33,7 @@ import {
   SaveOutlined, HistoryOutlined,
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import {
   applicationsApi,
@@ -873,6 +875,29 @@ const EVENT_TYPE_COLOR: Record<string, string> = {
 };
 
 /**
+ * 时间范围筛选的 UI → API 换算（口径唯一事实源，测试直接对它断言）。
+ *
+ * 后端 since/until 是 ISO 8601 **半开区间 [since, until)**：since 含头、
+ * until 不含尾。UI 用日期粒度 RangePicker（不带 showTime），换算规则：
+ *   · since = 开始日 00:00:00.000（本地时区）——开始日**整天计入**；
+ *   · until = 结束日 00:00:00.000（本地时区）——结束日**当天不计入**：
+ *     半开区间下它恰好等价于「到前一天 23:59:59.999 止」，即选 10-24 =
+ *     到 10-23 23:59:59.999 止。此口径在筛选器 Tooltip 文案里同步披露
+ *     （appDetail.events.filter.timeHint），不靠用户猜。
+ * toISOString() 输出绝对时刻（UTC，带 Z），后端按绝对时刻解析，与浏览器
+ * 时区无关。ExecutionsPage/audit 的 startTime/endTime 同此 toISOString 惯例。
+ */
+export function eventsRangeToSinceUntil(range: [Dayjs, Dayjs]): {
+  since: string;
+  until: string;
+} {
+  return {
+    since: range[0].startOf('day').toISOString(),
+    until: range[1].startOf('day').toISOString(),
+  };
+}
+
+/**
  * R4（§4.1A）：应用部署事件流表（不可变动作追溯）。独立加载/独立分页，
  * 挂在 ReleasesTab 版本表下方——版本表回答「现在有哪些版本」，事件流回答
  * 「谁在什么时候对哪台设备做了什么」，两张表数据源与生命周期互不耦合。
@@ -888,18 +913,33 @@ function DeploymentEventsTable({ app }: { app: Application }) {
   // 服务端过滤（上轮遗留：事件量极大时深翻页代价高）——eventType 单选；
   // undefined = 全部（不带参数，请求形状与旧后端逐字节一致）。
   const [eventTypeFilter, setEventTypeFilter] = useState<string | undefined>(undefined);
+  // 时间范围（同 eventType 服务端过滤）：null = 不筛。日期粒度 → 换算口径见
+  // eventsRangeToSinceUntil（结束日当天不计入）。引用变化即触发 useEffect 重拉，
+  // 与 eventTypeFilter 同一条依赖驱动链（不手动触发，双触发会发两个请求）。
+  const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(null);
   const { t } = useTranslation();
   // 同 ReleasesTab：执行器可读名解析（事件行 executorAddress 是写入时的地址
   // 快照，executorId 优先、address 回落；解析不到如实回落地址，绝不编造）。
   const { nameOf } = useExecutorNames();
   const raceGuard = useRaceGuard();
 
-  const fetchEvents = useCallback(async (p: number, eventType?: string) => {
+  const fetchEvents = useCallback(async (p: number, eventType?: string, range?: [Dayjs, Dayjs] | null) => {
     const seq = raceGuard.next();
     setLoading(true);
     setError(null);
     try {
-      const res = await applicationsApi.getDeploymentEvents(app.id, p, 20, eventType ? { eventType } : undefined);
+      // 筛选对象按值装配（无值不进对象；全空 = undefined 第 4 参，请求形状与
+      // 旧后端逐字节一致——既有测试断言的就是这个形状）。range 两端齐全才
+      // 算时间筛选生效（RangePicker 不开 allowEmpty，防御式判空以防未来改动）。
+      const hasTime = !!(range && range[0] && range[1]);
+      const filters =
+        eventType || hasTime
+          ? {
+              ...(eventType ? { eventType } : {}),
+              ...(hasTime ? eventsRangeToSinceUntil(range as [Dayjs, Dayjs]) : {}),
+            }
+          : undefined;
+      const res = await applicationsApi.getDeploymentEvents(app.id, p, 20, filters);
       if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（RACE-PAGE 同款）
       setEvents(res.data ?? []);
       setTotal(res.total ?? 0);
@@ -916,7 +956,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
   // 会发两个请求，raceGuard 只保序不保去重）。回第 1 页是因为旧页码对新
   // 结果集大概率越界（空页误导），且即便未越界「第 N 页的某类型事件」语义
   // 也已漂移。
-  useEffect(() => { fetchEvents(1, eventTypeFilter); }, [fetchEvents, eventTypeFilter]);
+  useEffect(() => { fetchEvents(1, eventTypeFilter, timeRange); }, [fetchEvents, eventTypeFilter, timeRange]);
 
   if (error) {
     // 事件流加载失败不拖垮版本表：区块内降级 StateError（重试 + 复制）。
@@ -926,7 +966,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
       <Card variant="borderless" style={{ marginTop: 16 }} data-testid="events-card">
         <StateError
           error={error}
-          onRetry={() => fetchEvents(1, eventTypeFilter)}
+          onRetry={() => fetchEvents(1, eventTypeFilter, timeRange)}
           title={t('appDetail.events.loadFail')}
         />
       </Card>
@@ -1024,13 +1064,22 @@ function DeploymentEventsTable({ app }: { app: Application }) {
     label: EVENT_TYPE_LABELS(t)[v],
   }));
 
+  // 快捷区间（audit 页先例形态）：事件流的常见问法是「最近 24 小时/7 天
+  // 出过什么事」。预设区间作为**整天**语义给（[7 天前的 0 点, 今天 0 点]），
+  // 换算仍走 eventsRangeToSinceUntil，与手选日期同一口径。
+  const timePresets = [
+    { label: t('appDetail.events.filter.last1d'), value: [dayjs().subtract(1, 'day'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('appDetail.events.filter.last7d'), value: [dayjs().subtract(7, 'day'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('appDetail.events.filter.last30d'), value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
+  ];
+
   return (
     <Card
       variant="borderless"
       style={{ marginTop: 16 }}
       title={t('appDetail.events.title')}
       extra={(
-        <Space>
+        <Space wrap>
           <Select
             allowClear
             placeholder={t('appDetail.events.filter.typeAll')}
@@ -1040,7 +1089,25 @@ function DeploymentEventsTable({ app }: { app: Application }) {
             options={eventTypeOptions}
             data-testid="event-type-filter"
           />
-          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchEvents(page, eventTypeFilter)}>{t('appDetail.refresh')}</Button>
+          {/* 时间范围：日期粒度 RangePicker（结束日当天不计入——Tooltip 与
+              eventsRangeToSinceUntil 注释披露同一口径）。预设区间在 jsdom
+              测试里是唯一可真实点到 onChange 的入口（antd 6.6.x 的日期格子
+              需要 rc-picker 指针/布局事件，jsdom 无——executions/audit 两处
+              测试已记录该限制），故预设必须真实可用，不能是纯装饰。 */}
+          {/* data-testid 放包裹 span：antd 会把多余 props 透传到内部 input 上
+              （RangePicker 两个输入框都会带上 → 查询歧义），span 上恰好唯一。 */}
+          <span data-testid="event-time-filter">
+            <Tooltip title={t('appDetail.events.filter.timeHint')}>
+              <DatePicker.RangePicker
+                value={timeRange}
+                onChange={(val) => setTimeRange(val as [Dayjs, Dayjs] | null)}
+                presets={timePresets}
+                allowClear
+                style={{ width: 260 }}
+              />
+            </Tooltip>
+          </span>
+          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchEvents(page, eventTypeFilter, timeRange)}>{t('appDetail.refresh')}</Button>
         </Space>
       )}
       data-testid="events-card"
@@ -1058,7 +1125,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
           pageSize: 20,
           total,
           showTotal: (n) => t('appDetail.count', { count: n }),
-          onChange: (p) => fetchEvents(p, eventTypeFilter),
+          onChange: (p) => fetchEvents(p, eventTypeFilter, timeRange),
         }}
         locale={{ emptyText: t('appDetail.events.empty') }}
       />

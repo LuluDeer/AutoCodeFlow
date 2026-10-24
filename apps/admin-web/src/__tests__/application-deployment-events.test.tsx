@@ -4,14 +4,16 @@
  *
  * 覆盖：事件表渲染（类型中文标签/操作者系统标注/摘要 detail 已知键翻译）/
  * 分页（以新页码重新请求）/ 事件流加载失败区块降级不拖垮版本表 /
- * truncated=true 渲染告警条与跳转按钮 / truncated 缺省不渲染告警。
+ * truncated=true 渲染告警条与跳转按钮 / truncated 缺省不渲染告警 /
+ * 时间范围筛选（since/until 半开区间换算 + 与 eventType 组合 + 清除恢复）。
  * mock api 层（application-releases-devices.test 先例形态）；设备名解析
  * 不依赖 useExecutorNames 的清单请求（executors.list mock 拒绝）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import ApplicationDetailPage from '../pages/ApplicationDetailPage';
+import dayjs from 'dayjs';
+import ApplicationDetailPage, { eventsRangeToSinceUntil } from '../pages/ApplicationDetailPage';
 import { applicationsApi, type Application, type AppReleaseRow, type AppDeploymentEventRow } from '../api/applications';
 import { tasksApi } from '../api/tasks';
 import { useAuthStore } from '../store/auth';
@@ -342,6 +344,159 @@ describe('ApplicationDetailPage 部署事件流 eventType 筛选（服务端过�
     expect(opts.map((o) => o.textContent)).toEqual([
       '新建部署', '复用重部署', '审批通过', '审批拒绝', '审批撤回', '升级', '停止', '删除', '卡死判失败',
     ]);
+  });
+});
+
+describe('ApplicationDetailPage 部署事件流时间范围筛选（since/until 半开区间）', () => {
+  /**
+   * 交互方式的边界（先例：executions-keyset-paging / audit-keyset-paging 两处
+   * 测试均已记录）：antd 6.6.x 的 RangePicker **日期格子**在 jsdom 下无法被
+   * fireEvent/user-event 驱动到 onChange（rc-picker 的区间落定依赖真实指针/
+   * 布局事件序列，click / mouseDown+mouseUp / mouseenter / 双面板格子 /
+   * 键入+Enter 均试过，均不触发）。**presets 预设区间**可以：antd 把它渲染
+   * 成真实可点击的 li，点击即 onChange（本文件开发时已 probe 验证）。故交互
+   * 用例走预设，而「选任意日期的换算是否正确」由纯函数 eventsRangeToSinceUntil
+   * 直接断言——两者合起来覆盖「UI 选择 → since/until 参数」的完整链路，
+   * 不需要编一个点了不发请求的假交互断言。
+   */
+
+  // 预设区间以「现在」为锚（antd 不做 startOf 归一，带时分秒），换算函数会
+  // startOf('day') 归一；断言同样以 dayjs() 现算，避免硬编码日期跨日红。
+  function expectedPresetParams(days: number) {
+    return {
+      since: dayjs().subtract(days, 'day').startOf('day').toISOString(),
+      until: dayjs().startOf('day').toISOString(),
+    };
+  }
+
+  /** 打开 RangePicker 面板（click 外层 .ant-picker —— probe 验证 jsdom 可开）。 */
+  async function openTimePanel() {
+    fireEvent.click(screen.getByTestId('event-time-filter').querySelector('.ant-picker') as HTMLElement);
+    await waitFor(() => {
+      expect(document.querySelector('.ant-picker-dropdown')).toBeTruthy();
+    });
+  }
+
+  /** 点击面板里的预设区间标签（antd presets 渲染为 .ant-picker-presets li）。 */
+  async function clickPreset(label: string) {
+    await openTimePanel();
+    const items = [...document.querySelectorAll<HTMLElement>('.ant-picker-presets li')];
+    const target = items.find((li) => (li.textContent ?? '') === label);
+    if (!target) throw new Error(`未找到预设区间 ${label}（现有：${items.map((i) => i.textContent).join(',')}）`);
+    fireEvent.click(target);
+  }
+
+  it('eventsRangeToSinceUntil：日期粒度 → 半开区间绝对时刻（结束日当天不计入）', () => {
+    // 选 10-20 ~ 10-24：since=10-20T00:00（含），until=10-24T00:00（不含）——
+    // 半开区间下恰好等于「到 10-23 23:59:59.999 止」。带时间成分的入参也被
+    // startOf('day') 归一到当日 0 点（UI 是日期粒度，归一化是口径的一部分）。
+    const r = eventsRangeToSinceUntil([
+      dayjs('2026-10-20T15:30:00'),
+      dayjs('2026-10-24T09:00:00'),
+    ]);
+    expect(r.since).toBe('2026-10-19T16:00:00.000Z'); // 北京时间 10-20 00:00
+    expect(r.until).toBe('2026-10-23T16:00:00.000Z'); // 北京时间 10-24 00:00
+  });
+
+  it('初始不带时间筛选：第 4 参 undefined（请求形状与旧后端一致）', async () => {
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, undefined);
+  });
+
+  it('选预设区间（最近 7 天）：请求带 since/until 且换算正确、回第 1 页', async () => {
+    mockedApps.getDeploymentEvents.mockResolvedValue({
+      data: [eventRow()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    await clickPreset('最近 7 天');
+    const exp = expectedPresetParams(7);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, exp),
+    );
+  });
+
+  it('时间范围与 eventType 组合：三个参数同发', async () => {
+    mockedApps.getDeploymentEvents.mockResolvedValue({
+      data: [eventRow({ eventType: 'upgrade' })],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    // 先选类型
+    fireEvent.mouseDown(screen.getByTestId('event-type-filter'));
+    const opt = await waitFor(() => {
+      const opts = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
+      expect(opts.length).toBe(9);
+      return opts;
+    });
+    fireEvent.click(opt.find((o) => o.textContent === '升级') as HTMLElement);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, { eventType: 'upgrade' }),
+    );
+    // 再加时间范围：组合后 eventType 与 since/until 同时在
+    await clickPreset('最近 1 天');
+    const exp = expectedPresetParams(1);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, {
+        eventType: 'upgrade',
+        ...exp,
+      }),
+    );
+  });
+
+  it('时间筛选下翻页：页码变化、since/until 随行', async () => {
+    mockedApps.getDeploymentEvents.mockResolvedValue({
+      data: Array.from({ length: 20 }, (_, i) => eventRow({ id: 'evt-' + i })),
+      total: 45,
+      page: 1,
+      pageSize: 20,
+    });
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    await clickPreset('最近 30 天');
+    const exp = expectedPresetParams(30);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, exp),
+    );
+    const table = screen.getByTestId('deployment-events-table');
+    const pager = table.closest('.ant-card')?.querySelectorAll('.ant-pagination li');
+    const page2 = Array.from(pager ?? []).find((el) => (el.textContent ?? '') === '2');
+    fireEvent.click(page2 as HTMLElement);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 2, 20, exp),
+    );
+  });
+
+  it('清除时间范围（allowClear ×）：恢复不带 since/until 的请求', async () => {
+    mockedApps.getDeploymentEvents.mockResolvedValue({
+      data: [eventRow()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    await clickPreset('最近 7 天');
+    const exp = expectedPresetParams(7);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, exp),
+    );
+    // antd allowClear 的 ×（hover 显示，jsdom 下直接对节点发事件即可，Select
+    // 清除按钮同款先例）
+    const clear = screen.getByTestId('event-time-filter').querySelector('.ant-picker-clear');
+    expect(clear).toBeTruthy();
+    fireEvent.mouseEnter(screen.getByTestId('event-time-filter').querySelector('.ant-picker') as HTMLElement);
+    fireEvent.click(clear as HTMLElement);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, undefined),
+    );
   });
 });
 
