@@ -1383,7 +1383,7 @@ export default function ApplicationDetailPage() {
           {
             key: 'deployments',
             label: <span><RocketOutlined /> {t('appDetail.tab.deployments')}</span>,
-            children: <AppDeploymentPage applicationId={app.id} />,
+            children: <AppDeploymentPage applicationId={app.id} appEntrypoint={app.entrypoint} />,
           },
           {
             key: 'tasks',

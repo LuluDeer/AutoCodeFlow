@@ -2164,6 +2164,9 @@ export default {
   'appDeploy.rollout.canaryDesc': '先升级约 20% 实例，观察无误后自动全量；首批异常自动回滚',
   // R2 §4.4：弹窗内覆盖面如实前置（运行 X + 仅部署 Y + 勾选后的已停止 Z）。
   'appDeploy.rollout.coverageLead': '将覆盖 {{count}} 台已部署设备：',
+  // A-4 披露（部署模型评审 §9.3-2）：升级会重置部署时自定义的启动命令。
+  'appDeploy.rollout.startCommandReset.title': '{{count}} 台设备部署时自定义的启动命令将被重置',
+  'appDeploy.rollout.startCommandReset.desc': '升级推送的启动命令取应用当前入口（{{entrypoint}}），以下行的自定义命令会被覆盖：{{detail}}',
   'appDeploy.rollout.coverageRunning': '运行 {{count}} 台',
   'appDeploy.rollout.coverageScheduled': '仅部署 {{count}} 台',
   'appDeploy.rollout.coverageStopped': '已停止 {{count}} 台',

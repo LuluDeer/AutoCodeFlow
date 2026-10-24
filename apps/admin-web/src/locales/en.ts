@@ -2146,6 +2146,9 @@ export default {
   'appDeploy.rollout.canaryDesc': 'Upgrade ~20% first; auto-promote after observation, auto-rollback on failure',
   // R2 §4.4: explicit coverage preview in the dialog (running X + deploy-only Y + stopped Z when opted in).
   'appDeploy.rollout.coverageLead': 'Will cover {{count}} deployed device(s): ',
+  // A-4 disclosure: upgrade resets deploy-time custom start commands.
+  'appDeploy.rollout.startCommandReset.title': 'Custom start commands on {{count}} deployment(s) will be reset',
+  'appDeploy.rollout.startCommandReset.desc': "Upgrade pushes the app's current entrypoint ({{entrypoint}}); custom commands on these rows will be overwritten: {{detail}}",
   'appDeploy.rollout.coverageRunning': '{{count}} running',
   'appDeploy.rollout.coverageScheduled': '{{count}} deploy-only',
   'appDeploy.rollout.coverageStopped': '{{count}} stopped',

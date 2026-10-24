@@ -149,7 +149,14 @@ function DeployStatusMessage({ text }: { text: string }) {
     </div>
   );
 }
-export default function AppDeploymentPage({ applicationId }: { applicationId: string }) {
+export default function AppDeploymentPage({
+  applicationId,
+  appEntrypoint,
+}: {
+  applicationId: string;
+  /** A-4 披露：应用当前 entrypoint（升级会把它推给设备并重置行上 startCommand 快照） */
+  appEntrypoint?: string;
+}) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：分隔线/浅填充走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
@@ -420,6 +427,11 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   }, [deployments]);
 
   // 弹窗内「将覆盖 M 台设备（运行 X + 仅部署 Y…）」的分组文案素材。
+  // A-4 披露口径：升级推送的 entrypoint = 当前 app.entrypoint，行上与它不同的
+  // startCommand（部署时自定义的启动命令）会被重置——这些行必须被点名。
+  const customStartCommandRows = deployments.filter(
+    (d) => !!d.startCommand && appEntrypoint !== undefined && d.startCommand !== appEntrypoint,
+  );
   const rolloutWillIncludeStopped = rolloutStrategy === 'full' && rolloutIncludeStopped;
   const rolloutCovered =
     coverageStats.running +
@@ -1004,6 +1016,23 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
           {t('appDeploy.rollout.coverageLead', { count: rolloutCovered })}
           {rolloutCoverageParts.join(' + ')}
         </Text>
+        {/* A-4 披露（部署模型评审 §9.3-2 收口）：升级推送的 entrypoint 即当前
+            app.entrypoint，部署时自定义过启动命令的行会被重置为新 entrypoint
+            ——不披露则用户以为自定义命令仍在生效。 */}
+        {customStartCommandRows.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={t('appDeploy.rollout.startCommandReset.title', { count: customStartCommandRows.length })}
+            description={t('appDeploy.rollout.startCommandReset.desc', {
+              entrypoint: appEntrypoint ?? '—',
+              detail: customStartCommandRows
+                .map((r) => shortExecutorRowId(r.id) + ': ' + r.startCommand)
+                .join('；'),
+            })}
+          />
+        )}
         <Radio.Group
           value={rolloutStrategy}
           onChange={(e) => setRolloutStrategy(e.target.value)}
