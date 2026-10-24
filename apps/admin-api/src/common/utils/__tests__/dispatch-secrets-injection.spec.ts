@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
 import { ConfigService } from "@nestjs/config";
 import { Executor } from "../../../modules/executor/entities/executor.entity";
@@ -116,6 +117,15 @@ describe("ExecutorService.dispatch — secrets 注入合并 (SEC-02)", () => {
           useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
         },
         { provide: SecretsCryptoService, useValue: cryptoWithKey },
+        // R4 服务层事务化：applyReportedAppVersions 新增的 DataSource 依赖
+        // （index 20）——本 spec 装配真实 ExecutorService，直通替身对齐
+        // executor.service.spec 同款接线（transaction 直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
       ],
     }).compile();
     service = module.get(ExecutorService);
