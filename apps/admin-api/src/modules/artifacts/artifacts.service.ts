@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -10,6 +15,10 @@ import {
   TaskExecution,
   ExecutionArtifact,
 } from "../task/entities/task-execution.entity";
+// ARTIFACTS-INDEX-46: 产物元数据索引表（GET /artifacts 查询面）。
+import { ExecutionArtifactRow } from "./entities/execution-artifact.entity";
+// 分页信封（仓库惯例：paginate + PageQueryDto，见 pagination.dto 头注）。
+import { paginate } from "../../common/dto/pagination.dto";
 import { SystemConfigService } from "../config/config.service";
 import { ExecutorService } from "../executor/executor.service";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
@@ -52,6 +61,11 @@ export class ArtifactsService {
   constructor(
     @InjectRepository(TaskExecution)
     private readonly execRepo: Repository<TaskExecution>,
+    // ARTIFACTS-INDEX-46: 索引表读侧（GET /artifacts）。@Optional——既有单测
+    // 装配未提供时回退 null，listArtifactRows 抛 501 风格降级（见方法注释）。
+    @Optional()
+    @InjectRepository(ExecutionArtifactRow)
+    private readonly artifactIndexRepo: Repository<ExecutionArtifactRow> | null,
     private readonly configService: ConfigService,
     private readonly systemConfigService: SystemConfigService,
     private readonly executorService: ExecutorService,
@@ -182,6 +196,60 @@ export class ArtifactsService {
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new AppError(ErrorCode.TASK_EXECUTION_NOT_FOUND);
     return exec.artifacts ?? [];
+  }
+
+  /**
+   * ARTIFACTS-INDEX-46（部署模型评审 §4.6）：按应用/任务维度索引查询产物
+   * （GET /artifacts?applicationId=&taskId=&page=），读 execution_artifacts
+   * 新表——jsonb 清单「全表扫执行行再解数组」不可查询的痛点由本面承接。
+   *
+   * ## 过渡期语义（如实返回空，刻意不回落）
+   *
+   * 本表自迁移 1790000000065 起、随终态回调双轨写积累；**存量执行**（迁移前
+   * 终态化、清单只在 jsonb 里）没有新表行——本端点对它们**如实返回空**，不做
+   * jsonb 回落（回落=全表扫解数组，正是本索引要消灭的形态；且存量行的
+   * applicationId 需按任务快照回溯猜测，与 1790000000055/0061「不猜映射」
+   * 先例冲突）。按执行的既有清单端点 GET /tasks/executions/:execId/artifacts
+   * 继续读 jsonb，存量执行在该面完整可见——两面各答各的问题，不重叠。
+   *
+   * @param query 过滤：applicationId / taskId（均可选，都不传=全量分页）+ 分页。
+   * @returns paginate() 信封（仓库惯例 6 键：list/items/total/page/pageSize/totalPages）。
+   */
+  async listArtifactRows(query: {
+    applicationId?: string;
+    taskId?: string;
+    page: number;
+    pageSize: number;
+  }) {
+    // 参数校验与仓库惯例对齐：非 UUID 形状的过滤值 400（VALIDATION_FAILED，
+    // 与 keyset-cursor invalidKeysetCursor 同款判据强度——宁可 400 也不带病查询）。
+    if (query.applicationId !== undefined && !isUUID(query.applicationId)) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "applicationId 必须是 UUID",
+      });
+    }
+    if (query.taskId !== undefined && !isUUID(query.taskId)) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail: "taskId 必须是 UUID",
+      });
+    }
+    if (!this.artifactIndexRepo) {
+      // 单测装配降级（生产 ArtifactsModule 恒提供）——诚实报错优于静默空列表。
+      throw new AppError(ErrorCode.INTERNAL_ERROR, {
+        detail: "execution_artifacts repository not available",
+      });
+    }
+    const where: { applicationId?: string; taskId?: string } = {};
+    if (query.applicationId) where.applicationId = query.applicationId;
+    if (query.taskId) where.taskId = query.taskId;
+
+    const [rows, total] = await this.artifactIndexRepo.findAndCount({
+      where,
+      order: { createdAt: "DESC", id: "DESC" },
+      skip: (query.page - 1) * query.pageSize,
+      take: query.pageSize,
+    });
+    return paginate(rows, total, query.page, query.pageSize);
   }
 
   /**

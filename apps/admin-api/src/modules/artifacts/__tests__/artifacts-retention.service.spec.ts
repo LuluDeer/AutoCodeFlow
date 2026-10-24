@@ -207,4 +207,63 @@ describe("ArtifactsRetentionService (NETOPT-8⑦)", () => {
       );
     });
   });
+
+  // ARTIFACTS-INDEX-46: TTL 清理双轨——jsonb 置空的同批 execId，索引表行
+  //（execution_artifacts）同步 delete（两侧恒同宽，否则 GET /artifacts 列幽灵产物）。
+  describe("ARTIFACTS-INDEX-46 索引表同批回收", () => {
+    const makeIndexRepo = () => ({
+      delete: jest.fn().mockResolvedValue({ affected: 0 }),
+    });
+
+    it("清盘后同批 execId 的索引行同步 delete（分批 IN 与 jsonb 同宽）", async () => {
+      seedTwoDirs();
+      const execRepo = makeExecRepo();
+      const indexRepo = makeIndexRepo();
+      const service = new ArtifactsRetentionService(
+        makeConfig(),
+        null,
+        execRepo as unknown as import("typeorm").Repository<TaskExecution>,
+        indexRepo as unknown as import("typeorm").Repository<never>,
+      );
+
+      const removed = await service.cleanupExpiredArtifacts(NOW);
+
+      expect(removed).toBe(1);
+      expect(indexRepo.delete).toHaveBeenCalledTimes(1);
+      const where = indexRepo.delete.mock.calls[0][0] as {
+        executionId: { value: string[] };
+      };
+      expect(where.executionId.value).toEqual(["exec-old"]);
+    });
+
+    it("索引 delete 失败 → best-effort 只 warn，jsonb 置空与磁盘清理照旧", async () => {
+      seedTwoDirs();
+      const execRepo = makeExecRepo();
+      const indexRepo = makeIndexRepo();
+      indexRepo.delete.mockRejectedValue(new Error("db down"));
+      const service = new ArtifactsRetentionService(
+        makeConfig(),
+        null,
+        execRepo as unknown as import("typeorm").Repository<TaskExecution>,
+        indexRepo as unknown as import("typeorm").Repository<never>,
+      );
+
+      await expect(service.cleanupExpiredArtifacts(NOW)).resolves.toBe(1);
+      expect(execRepo.update).toHaveBeenCalledTimes(1);
+      expect(mockFs.promises.rm).toHaveBeenCalledTimes(1);
+    });
+
+    it("索引 repo 缺席（@Optional 降级）→ 仅 jsonb 置空（旧行为）", async () => {
+      seedTwoDirs();
+      const execRepo = makeExecRepo();
+      const service = new ArtifactsRetentionService(
+        makeConfig(),
+        null,
+        execRepo as unknown as import("typeorm").Repository<TaskExecution>,
+      );
+
+      await expect(service.cleanupExpiredArtifacts(NOW)).resolves.toBe(1);
+      expect(execRepo.update).toHaveBeenCalledTimes(1);
+    });
+  });
 });

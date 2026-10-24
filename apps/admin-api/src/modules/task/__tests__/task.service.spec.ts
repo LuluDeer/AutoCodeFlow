@@ -5323,6 +5323,147 @@ describe("TaskService (__tests__)", () => {
       // 仍回报 success（幂等确认）。
       expect(res[0].success).toBe(true);
     });
+
+    // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：产物清单双轨写——jsonb 列与
+    // execution_artifacts 索引表在终态回调 winner 分支同写。repo 桩直接替换
+    // 可选注入位（生产由 TaskModule forFeature 提供）。
+    describe("ARTIFACTS-INDEX-46 产物索引双轨写", () => {
+      let artifactRepo: {
+        delete: jest.Mock;
+        create: jest.Mock;
+        insert: jest.Mock;
+      };
+
+      beforeEach(() => {
+        artifactRepo = {
+          delete: jest.fn().mockResolvedValue({ affected: 0 }),
+          create: jest.fn((x: unknown) => x),
+          insert: jest.fn().mockResolvedValue(undefined),
+        };
+        // @ts-expect-error: 测试直接替换可选注入位（生产由 TaskModule 提供）
+        service["artifactIndexRepo"] = artifactRepo;
+      });
+
+      const mkExec = () => ({
+        id: "exec-art-1",
+        taskId: "task-art-1",
+        taskName: "artifact-job",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "host-a:1",
+        logs: "",
+      });
+
+      it("winner 回调带非空清单 → jsonb patch 与索引表整替同步写（先 delete 后 insert）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue({
+          id: "task-art-1",
+          applicationId: "app-1",
+        });
+        const manifest = [
+          { name: "a.csv", size: 10, sha256: "0".repeat(64) },
+          { name: "b.log", size: 20, sha256: "1".repeat(64) },
+        ];
+        const res = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: manifest,
+          },
+        ]);
+        expect(res[0].success).toBe(true);
+        // jsonb 侧：终态 patch 携带整列清单（既有行为，双轨之一）。
+        const patches = (execRepo as unknown as {
+          updatePatches: Array<Record<string, unknown>>;
+        }).updatePatches;
+        expect(patches.some((p) => p.artifacts === manifest)).toBe(true);
+        // 索引表侧：按执行整替（delete + insert），行带 taskId/appId 快照。
+        expect(artifactRepo.delete).toHaveBeenCalledWith({
+          executionId: "exec-art-1",
+        });
+        expect(artifactRepo.insert).toHaveBeenCalledTimes(1);
+        const rows = artifactRepo.insert.mock.calls[0][0];
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toMatchObject({
+          executionId: "exec-art-1",
+          taskId: "task-art-1",
+          applicationId: "app-1",
+          name: "a.csv",
+          size: 10,
+        });
+      });
+
+      it("缺省/空清单 → 双侧都不写（jsonb 不覆盖旧值，索引表不动）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        const res1 = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+          },
+        ]);
+        expect(res1[0].success).toBe(true);
+        expect(artifactRepo.delete).not.toHaveBeenCalled();
+        expect(artifactRepo.insert).not.toHaveBeenCalled();
+        const patches = (execRepo as unknown as {
+          updatePatches: Array<Record<string, unknown>>;
+        }).updatePatches;
+        expect(patches.some((p) => "artifacts" in p)).toBe(false);
+      });
+
+      it("重复回调（已终态，affected=0）→ 不重放索引写（winner 语义）", async () => {
+        const exec = { ...mkExec(), status: ExecutionStatus.SUCCESS };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 1, sha256: "f" }],
+          },
+        ]);
+        expect(artifactRepo.delete).not.toHaveBeenCalled();
+        expect(artifactRepo.insert).not.toHaveBeenCalled();
+      });
+
+      it("索引写失败 → best-effort 只 warn，主链照常成功（jsonb 不受影响）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        artifactRepo.delete.mockRejectedValue(new Error("db down"));
+        const warnSpy = jest
+          .spyOn((service as unknown as { logger: { warn: jest.Mock } }).logger, "warn")
+          .mockImplementation(() => undefined);
+        const res = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 1, sha256: "f" }],
+          },
+        ]);
+        expect(res[0].success).toBe(true);
+        expect(warnSpy).toHaveBeenCalled();
+        warnSpy.mockRestore();
+      });
+
+      it("任务行已删 → applicationId 快照 null（按任务/执行维度仍完整）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue(null);
+        await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 1, sha256: "f" }],
+          },
+        ]);
+        const rows = artifactRepo.insert.mock.calls[0][0];
+        expect(rows[0].applicationId).toBeNull();
+      });
+    });
   });
 
   describe("saveVersion", () => {

@@ -7,6 +7,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { getArtifactRootDir } from "./artifacts.constants";
 import { TaskExecution } from "../task/entities/task-execution.entity";
+// ARTIFACTS-INDEX-46: 产物索引表（TTL 清理与 jsonb 清单列同批回收）。
+import { ExecutionArtifactRow } from "./entities/execution-artifact.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
@@ -43,6 +45,12 @@ export class ArtifactsRetentionService {
     @Optional()
     @InjectRepository(TaskExecution)
     private readonly execRepo: Repository<TaskExecution> | null = null,
+    // ARTIFACTS-INDEX-46: 同批删除 execution_artifacts 索引行（与 jsonb 清单列
+    // 双轨恒同宽）。@Optional 同上先例——缺失时仅清 jsonb（降级为旧行为）。
+    @Optional()
+    @InjectRepository(ExecutionArtifactRow)
+    private readonly artifactIndexRepo: Repository<ExecutionArtifactRow> | null =
+      null,
   ) {}
 
   private resolveRetentionDays(): number {
@@ -136,6 +144,23 @@ export class ArtifactsRetentionService {
               err instanceof Error ? err.message : String(err)
             }`,
           );
+        }
+        // ARTIFACTS-INDEX-46: 索引表同批回收（双轨恒同宽——jsonb 置空的同一批
+        // execId 的关系化行一并删除，否则 GET /artifacts 会列出已无文件的幽灵
+        // 产物）。best-effort 同上：失败只 warn，残留行由执行行 90d retention
+        // 级联兜底（executionId FK ON DELETE CASCADE）。
+        if (this.artifactIndexRepo) {
+          try {
+            await this.artifactIndexRepo.delete({
+              executionId: In(chunk) as never,
+            });
+          } catch (err) {
+            this.logger.warn(
+              `ARTIFACTS-INDEX-46: 删除 ${chunk.length} 个执行的产物索引行失败（best-effort，由执行行 90d retention 级联兜底）: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
       }
     }

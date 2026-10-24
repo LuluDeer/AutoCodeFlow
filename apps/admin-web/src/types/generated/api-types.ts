@@ -3523,6 +3523,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按应用/任务查询产物索引（仅管理员）
+         * @description 按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。
+         */
+        get: operations["ArtifactsController_listArtifactRows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tasks/executions/{execId}/artifacts": {
         parameters: {
             query?: never;
@@ -7446,6 +7466,33 @@ export interface components {
             /** @description 字节 */
             size: number;
             sha256: string;
+        };
+        ExecutionArtifactRowDto: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description 所属执行 ID
+             */
+            executionId: string;
+            /**
+             * Format: uuid
+             * @description 所属任务 ID（冗余快照）
+             */
+            taskId: string;
+            /** @description 所属应用 ID（冗余快照；null = 任务未挂应用或应用已删除——SET NULL 语义） */
+            applicationId?: string | null;
+            /** @description 产物裸文件名 */
+            name: string;
+            /** @description 字节数 */
+            size: number;
+            /** @description 存储字节的 sha256 */
+            sha256: string;
+            /**
+             * Format: date-time
+             * @description 索引行创建时间（ISO-8601，随终态回调写入）
+             */
+            createdAt: string;
         };
         ExecutionArtifactDto: {
             name: string;
@@ -13383,6 +13430,39 @@ export interface operations {
             };
             /** @description 执行记录不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ArtifactsController_listArtifactRows: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+                /** @description 按应用过滤（冗余自任务行 tasks.applicationId 的写时快照；任务未挂应用/应用已删的产物行不命中） */
+                applicationId?: string;
+                /** @description 按任务过滤（冗余自执行行 task_executions.taskId） */
+                taskId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionArtifactRowDto"][];
+                };
+            };
+            /** @description 调用者不是管理员 */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

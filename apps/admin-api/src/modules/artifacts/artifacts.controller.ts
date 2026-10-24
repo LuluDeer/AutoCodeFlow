@@ -45,6 +45,11 @@ import {
   ArtifactUploadResponseDto,
   ExecutionArtifactDto,
 } from "../executor-package/dto/executor-package-response.dto";
+// ARTIFACTS-INDEX-46: 产物元数据索引查询面（GET /artifacts）。
+import {
+  ListArtifactRowsDto,
+  ExecutionArtifactRowDto,
+} from "./dto/artifact-index.dto";
 
 /**
  * FEAT-05：执行产物通道。
@@ -124,6 +129,29 @@ export class ArtifactsController {
       sha256 || undefined,
     );
     return { ok: true, ...stored };
+  }
+
+  // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：按应用/任务维度索引查询产物。
+  // 走 execution_artifacts 新表（jsonb 清单无索引不可查询的痛点由本面承接），
+  // 与上方按执行的清单端点（读 jsonb）并存——读面分工见
+  // ArtifactsService.listArtifactRows 头注（过渡期：存量执行无新表行 → 如实
+  // 返回空，不回落 jsonb）。权限与产物下载/清单同档 ADMIN-only（A-2 口径）。
+  @Get("artifacts")
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth("JWT")
+  @ApiOperation({
+    description:
+      "按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。",
+    summary: "按应用/任务查询产物索引（仅管理员）",
+  })
+  @ApiQuery({ name: "applicationId", required: false, format: "uuid" })
+  @ApiQuery({ name: "taskId", required: false, format: "uuid" })
+  @ApiQuery({ name: "page", required: false, type: Number })
+  @ApiQuery({ name: "pageSize", required: false, type: Number })
+  @ApiOkResponse({ type: [ExecutionArtifactRowDto] })
+  @ApiResponse({ status: 403, description: "调用者不是管理员" })
+  listArtifactRows(@Query() query: ListArtifactRowsDto) {
+    return this.svc.listArtifactRows(query);
   }
 
   // A-2: 产物是任务执行的工作产物（可能含日志/截图/导出数据等运维敏感面），

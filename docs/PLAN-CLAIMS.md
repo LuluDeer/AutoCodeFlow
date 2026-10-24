@@ -433,7 +433,8 @@
 | 1790000000061 | AddExecutorIdToExecutorMetricsHistory | ADR-017 阶段 3「相关轨道」第 3 条（生产报告 2026-10-22 P2）：executor_metrics_history 增可空 `executorId` uuid + `(executorId, createdAt)` 索引——该表此前只有 executorAddress，pull 同址多行的 24h 趋势曲线**物理上**无法拆分（不是查询缺谓词，是数据面缺列）。存量行**刻意不回填**（地址→行在多行下有歧义，与 1790000000055 同源结论），读面用「行身份优先 + executorId IS NULL 时按地址回落」的 OR 谓词保证曲线不断档；ADD COLUMN / CREATE INDEX 均 IF NOT EXISTS（幂等），down 逆序回收 |
 | 1790000000062 | AddAppDeploymentEvents | R4/4.1A（部署模型评审 2026-10-23）：不可变部署事件表 app_deployment_events（append-only 动作事实，10 写入点）+ 应用/时间索引；deployCount 读面切事件聚合的数据底座 | 已落盘（commit 903fbc0e） |
 | 1790000000063 | AddExecutorAppVersions | R3/4.3+P5（部署模型评审 2026-10-23）：设备级应用版本事实表 executor_app_versions（唯一 (executorId,applicationId)，心跳整替语义、键缺失 fail-honest 不动）+ executors.installedPackages jsonb | 已落盘（commit 2b5da7c5） |
-| 1790000000064 | BackfillAppDeploymentEvents | R4 补位（部署模型评审 2026-10-23）：deployCount 存量回填——无事件应用从现存部署行合成 deploy_created 下界事件（detail.backfill 标注、NOT EXISTS 应用级防双计、keyset 分批），消除事件聚合切换的混合窗口期 | 已落盘（commit 105b42f4） |
+| 1790000000064 | BackfillAppDeploymentEvents | R4 补位（部署模型评审 2026-10-23）：deployCount 孔回填——无事件应用从现存部署行合成 deploy_created 下界事件（detail.backfill 标注、NOT EXISTS 应用级防双计、keyset 分批），消除事件聚合切换的混合窗口期 | 已落盘（commit 105b42f4） |
+| 1790000000065 | ExecutionArtifactsIndex | ARTIFACTS-INDEX-46（部署模型评审 §4.6 执行产物元数据索引） | 已落盘（本批）：新表 execution_artifacts（id/executionId/taskId/applicationId/name/size/sha256/createdAt；唯一 (executionId,name)；taskId/applicationId 索引；applicationId FK SET NULL）——task_executions.artifacts jsonb 关系化，终态回调写点双轨同步 upsert；存量不回填（与 1790000000055/0061 不猜映射先例一致），读面回落 jsonb；新索引查询端点 GET /artifacts |
 
 ## 变更日志
 

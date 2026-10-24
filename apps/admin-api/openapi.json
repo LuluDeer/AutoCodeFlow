@@ -10570,6 +10570,88 @@
         }
       }
     },
+    "/artifacts": {
+      "get": {
+        "description": "按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。",
+        "operationId": "ArtifactsController_listArtifactRows",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 10000,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "type": "number"
+            }
+          },
+          {
+            "name": "applicationId",
+            "required": false,
+            "in": "query",
+            "description": "按应用过滤（冗余自任务行 tasks.applicationId 的写时快照；任务未挂应用/应用已删的产物行不命中）",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by application (a write-time snapshot of tasks.applicationId; artifact rows whose task has no application, or whose application was deleted, do not match)"
+          },
+          {
+            "name": "taskId",
+            "required": false,
+            "in": "query",
+            "description": "按任务过滤（冗余自执行行 task_executions.taskId）",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by task (snapshotted from task_executions.taskId)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutionArtifactRowDto"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "调用者不是管理员",
+            "x-i18n-en": "Caller is not an administrator"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "按应用/任务查询产物索引（仅管理员）",
+        "tags": [
+          "Execution Artifacts"
+        ],
+        "x-i18n-en": {
+          "summary": "Query the artifact index by application/task (admin only)",
+          "description": "Page through the execution artifact index (execution_artifacts table; a cross-execution aggregate view) filtered by application/task. Executions that reached a terminal state before this index existed have no rows here and honestly return empty -- for a per-execution manifest use GET /tasks/executions/:execId/artifacts. Requires an admin JWT."
+        }
+      }
+    },
     "/tasks/executions/{execId}/artifacts": {
       "get": {
         "description": "返回执行器终态回调上报并已落库的产物 manifest。需要管理员 JWT（全局 JwtAuthGuard + RolesGuard）。",
@@ -21730,6 +21812,63 @@
           "name",
           "size",
           "sha256"
+        ]
+      },
+      "ExecutionArtifactRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "executionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "所属执行 ID",
+            "x-i18n-en": "Owning execution ID"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "所属任务 ID（冗余快照）",
+            "x-i18n-en": "Owning task ID (snapshotted)"
+          },
+          "applicationId": {
+            "type": "string",
+            "nullable": true,
+            "description": "所属应用 ID（冗余快照；null = 任务未挂应用或应用已删除——SET NULL 语义）",
+            "x-i18n-en": "Owning application ID (snapshotted; null = the task has no application or the application was deleted -- SET NULL semantics)"
+          },
+          "name": {
+            "type": "string",
+            "description": "产物裸文件名",
+            "x-i18n-en": "Bare artifact file name"
+          },
+          "size": {
+            "type": "number",
+            "description": "字节数",
+            "x-i18n-en": "Size in bytes"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "存储字节的 sha256",
+            "x-i18n-en": "sha256 of the stored bytes"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "索引行创建时间（ISO-8601，随终态回调写入）",
+            "x-i18n-en": "Index row creation time (ISO-8601, written with the terminal-state callback)"
+          }
+        },
+        "required": [
+          "id",
+          "executionId",
+          "taskId",
+          "name",
+          "size",
+          "sha256",
+          "createdAt"
         ]
       },
       "ExecutionArtifactDto": {

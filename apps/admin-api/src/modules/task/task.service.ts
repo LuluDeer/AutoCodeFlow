@@ -71,6 +71,9 @@ import {
 import { toBullPriority } from "../../common/utils/task-priority.util";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
+// ARTIFACTS-INDEX-46: 产物元数据索引行（跨模块 forFeature 同款纪律——只
+// import 实体类，TypeORM 元数据无运行时依赖环，注册在 task.module.ts）。
+import { ExecutionArtifactRow } from "../artifacts/entities/execution-artifact.entity";
 // python_task_multiversion（FR-19 / AC-19a）：zip 来源的 runtime 一致性校验
 // 需读 applications 行。**刻意经 dataSource.getRepository(Application)** 而非
 // @InjectRepository：ApplicationModule imports forwardRef(() => TaskModule)，
@@ -1051,6 +1054,12 @@ export class TaskService {
     // 纯退避轮询，行为与引入前等价）。
     @Optional()
     private readonly executionWakeService?: ExecutionWakeService | null,
+    // ARTIFACTS-INDEX-46: 产物元数据索引表写侧（终态回调 jsonb 清单与新表
+    // 双轨写）。@Optional 同 reportRepo/projectRepo 先例——既有单测装配未提供
+    // 该仓储时回退 null，此时新表不写、jsonb 主链逐字节不变（读面回落 jsonb）。
+    @Optional()
+    @InjectRepository(ExecutionArtifactRow)
+    private readonly artifactIndexRepo?: Repository<ExecutionArtifactRow> | null,
   ) {
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional 依赖缺失时降级不可观测——
     // 事件总线/审计静默缺失会让终态事件不发、依赖触发审计不写。生产装配下这些
@@ -5174,6 +5183,57 @@ export class TaskService {
     }
   }
 
+  /**
+   * ARTIFACTS-INDEX-46（部署模型评审 §4.6）：终态回调产物清单的关系化同步
+   * （execution_artifacts 表写侧，与 task_executions.artifacts jsonb 双轨）。
+   *
+   * ## 整替语义（幂等 upsert）
+   *
+   * 回调可能重报清单（执行器重试整批、清单随后补齐），唯一键 (executionId,
+   * name) 下「逐条 upsert」会让**上次有、这次没有**的产物残留成幽灵行——与
+   * jsonb 侧「整列覆盖」语义不一致。故这里按执行整替：先 delete 该执行全部
+   * 索引行、再 insert 本批清单。winner 语义（transitionToTerminal affected=1
+   * 才走到这里）保证同一执行至多整替一次；重复回调走 affected=0 分支不会重放。
+   *
+   * ## applicationId 快照
+   *
+   * 冗余自任务行 tasks.applicationId（**写时快照**，非 FK 联动）：任务删除后
+   * 执行行级联消失（taskId CASCADE），索引行随执行行走；应用删除后 FK SET
+   * NULL 保留历史行（见迁移 1790000000065 头注）。任务查不到（已删的极端
+   * 竞态）→ null——按应用查不到它，但按任务/执行维度仍完整。
+   *
+   * @private 仅由 handleCallback winner 分支调用（调用点已做 best-effort 包裹）。
+   */
+  private async syncArtifactIndexRows(
+    executionId: string,
+    taskId: string,
+    artifacts: Array<{ name: string; size: number; sha256: string }>,
+  ): Promise<void> {
+    if (!this.artifactIndexRepo) return;
+    // applicationId 快照：任务行可能已删（执行行尚在的窗口极窄，但仍要防御）。
+    let applicationId: string | null = null;
+    if (taskId) {
+      const taskRow = await this.taskRepo.findOne({
+        where: { id: taskId },
+        select: ["applicationId"] as never,
+      });
+      applicationId = taskRow?.applicationId ?? null;
+    }
+    await this.artifactIndexRepo.delete({ executionId });
+    if (artifacts.length === 0) return;
+    const rows = artifacts.map((a) =>
+      this.artifactIndexRepo!.create({
+        executionId,
+        taskId,
+        applicationId,
+        name: a.name,
+        size: a.size,
+        sha256: a.sha256,
+      }),
+    );
+    await this.artifactIndexRepo.insert(rows);
+  }
+
   async handleCallback(
     callbacks: Array<{
       executionId: string;
@@ -5569,6 +5629,39 @@ export class TaskService {
           }
           results.push({ executionId: cb.executionId, success: true });
           continue;
+        }
+
+        // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：产物元数据索引双轨写——
+        // jsonb 清单已随上方 transitionToTerminal patch 落库，这里在**同一
+        // 写点**同步 upsert 关系化新表（execution_artifacts），供
+        // GET /artifacts?applicationId=&taskId= 索引查询。三要点：
+        //  ① 仅 winner 分支执行（重复回调 affected=0 已 continue，天然幂等
+        //    不会重放扇出）；
+        //  ② 整替语义（先 delete 后 insert）：回调重报清单时以最新上报为准
+        //    （与 jsonb 整列覆盖同款语义），唯一 (executionId,name) 不会撞；
+        //  ③ best-effort：新表写失败只 warn 不抛——产物清单本身是 best-effort
+        //    （FEAT-05 头注），索引表缺失行只影响新查询端点的完备性，绝不能
+        //    反过来阻塞终态主链；两侧短暂不一致由下一次上报/TTL 清理收敛。
+        //  ④ 触发条件与 jsonb 写点逐字节同款（非空数组才写）——空清单/缺省
+        //    上报在 jsonb 侧不覆盖旧值，索引侧同样不动，两侧恒同宽。
+        if (
+          this.artifactIndexRepo &&
+          Array.isArray(cb.artifacts) &&
+          cb.artifacts.length > 0
+        ) {
+          try {
+            await this.syncArtifactIndexRows(
+              cb.executionId,
+              execution.taskId,
+              cb.artifacts,
+            );
+          } catch (err: unknown) {
+            this.logger.warn(
+              `ARTIFACTS-INDEX-46: execution ${cb.executionId} 产物索引行同步失败（best-effort，jsonb 主链不受影响）: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
 
         // 可观测性补齐：终态条件 UPDATE 命中（winner）——业务受理计数。
