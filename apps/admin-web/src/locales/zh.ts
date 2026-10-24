@@ -1963,6 +1963,9 @@ export default {
   'appDetail.releases.truncated.title': '版本列表已被截断',
   'appDetail.releases.truncated.desc': '该应用版本行数超出单次查询上限，较早的版本未在下方列表中显示；完整部署动作历史请查看下方「部署事件流」。',
   'appDetail.releases.truncated.gotoEvents': '查看事件流',
+  // P8-R：被截版本里「仍有设备保留」的版本号清单（徽标行不在页内，事实靠告警条带回）。
+  'appDetail.releases.truncated.retained': '以下被截断的版本仍有设备保留（运行中或本地留有该版本），但未在下方列表中显示：',
+  'appDetail.releases.truncated.retainedMore': '还有 {{count}} 个版本',
   // R4（部署模型评审 §4.1A）：部署事件流（不可变动作追溯）。
   'appDetail.events.title': '部署事件流',
   'appDetail.events.filter.typeAll': '全部类型',

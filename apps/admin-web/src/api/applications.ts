@@ -174,6 +174,12 @@ export interface AppReleasesPage {
    * 不是全量」会被当成「就这么多」。
    */
   truncated?: boolean;
+  /**
+   * P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，
+   * 后端用全量设备事实求差集带回的「有设备保留但不在本页行中」的版本号
+   * 列表（字母序；truncated=false 恒空）。旧后端不带该键——可选以兼容过渡期。
+   */
+  retainedButTruncated?: string[];
 }
 
 /**

@@ -1954,6 +1954,10 @@ export default {
   'appDetail.releases.truncated.title': 'Release list truncated',
   'appDetail.releases.truncated.desc': 'This application has more release rows than the single-query limit; older versions are not shown in the list below. See the full action history in the deployment event stream below.',
   'appDetail.releases.truncated.gotoEvents': 'View events',
+  // P8-R: versions dropped by truncation that devices still keep (badge rows are
+  // not in this page; the fact rides on the alert banner instead).
+  'appDetail.releases.truncated.retained': 'The truncated versions below are still kept by devices (running or retained locally) but are not shown in the list:',
+  'appDetail.releases.truncated.retainedMore': '{{count}} more version(s)',
   // R4 (deployment-model review §4.1A): immutable deployment event stream.
   'appDetail.events.title': 'Deployment Events',
   'appDetail.events.filter.typeAll': 'All Types',

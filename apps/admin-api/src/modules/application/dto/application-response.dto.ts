@@ -349,6 +349,13 @@ export class AppReleasesResponseDto {
       "R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改",
   })
   truncated: boolean;
+
+  @ApiProperty({
+    type: [String],
+    description:
+      "P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在本页返回行中」的版本号（字母序）；truncated=false 恒空数组。响应字段只增不改",
+  })
+  retainedButTruncated: string[];
 }
 
 /** POST /applications/:id/sync-tasks —— manifest.json 任务注册回执。 */

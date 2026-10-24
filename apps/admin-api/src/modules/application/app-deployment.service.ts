@@ -621,6 +621,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     /** R4（§4.7）：synthetic 扫描到达 RELEASES_SYNTHETIC_SCAN_MAX_ROWS 上限
      *  （聚合以已扫描部分为准）时 true——去静默截断。只增不改的响应字段。 */
     truncated: boolean;
+    /** P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，
+     *  列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在
+     *  本页返回行中」的版本号——「设备还留着这版」的事实不因分页截断而消失。
+     *  恒为数组和 truncated=false 时空数组；版本号按本页版本行同序（createdAt
+     *  DESC）回退字母序。只增不改的响应字段。 */
+    retainedButTruncated: string[];
   }> {
     const safePageSize = Math.min(
       Math.max(1, Math.trunc(Number(pageSize)) || RELEASES_DEFAULT_PAGE_SIZE),
@@ -824,6 +830,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       page: safePage,
       pageSize: safePageSize,
       truncated,
+      // P8-R：truncated=true 时被截版本的 devices 徽标整行不可见——用同一份
+      // 全应用设备事实（getAppVersionFacts 本就与页无关地全量拉回）求差集，
+      // 把「有设备保留但不在本页行中」的版本号显式带回，零额外查询。
+      retainedButTruncated: truncated
+        ? this.buildRetainedButTruncated(data, deviceFacts)
+        : [],
     };
   }
 
@@ -854,6 +866,33 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         online: f.online,
         lastHeartbeat: f.lastHeartbeat,
       }));
+  }
+
+  /**
+   * P8-R（部署模型评审遗留）：「有设备保留但被 truncated 吞掉」的版本号差集。
+   *  口径与 buildReleaseDevices 完全一致：currentVersion 命中或 ∈ retainedVersions
+   *  即「设备还留着这版」；与本页已返回行的版本集合（含 synthetic 行）求差，
+   *  剩下的就是只在被截部分出现的事实版本号。纯内存计算（facts 本就全量在
+   *  手），字母序排序保证响应确定性。
+   */
+  private buildRetainedButTruncated(
+    rows: AppReleaseRow[],
+    facts: Awaited<ReturnType<ExecutorService["getAppVersionFacts"]>>,
+  ): string[] {
+    const present = new Set<string>();
+    for (const r of rows) {
+      if (r.version) present.add(r.version);
+    }
+    const missing = new Set<string>();
+    for (const f of facts) {
+      if (f.currentVersion && !present.has(f.currentVersion)) {
+        missing.add(f.currentVersion);
+      }
+      for (const v of f.retainedVersions) {
+        if (!present.has(v)) missing.add(v);
+      }
+    }
+    return [...missing].sort();
   }
 
   /** DEP-01：从部署行的持久化信号推导触发方式（无 trigger 列，零 schema 变更）。

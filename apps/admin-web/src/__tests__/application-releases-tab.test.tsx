@@ -217,4 +217,65 @@ describe('ApplicationDetailPage 版本追溯 Tab（FEAT-14 / DEP-01）', () => {
     fireEvent.click(Array.from(card.querySelectorAll('button')).find((b) => (b.textContent ?? '').includes('刷新')) as HTMLButtonElement);
     await waitFor(() => expect(mockedApps.getReleases).toHaveBeenCalledTimes(2));
   });
+
+  // ------------------------------------------------------------------
+  // P8-R（部署模型评审遗留）：truncated 吞掉被截版本的 devices 徽标 →
+  // 告警条升级为列出「有设备保留但不在本页」的版本号（事实不消失）。
+  // ------------------------------------------------------------------
+  it('truncated=true：告警条列出被截但仍有设备保留的版本号', async () => {
+    mockedApps.getReleases.mockResolvedValue({
+      data: [releaseRow()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      truncated: true,
+      retainedButTruncated: ['0.9.0', '1.0.0'],
+    });
+    await openReleasesTab();
+    await screen.findByTestId('releases-table');
+    expect(screen.getByTestId('releases-truncated-alert')).toBeTruthy();
+    const retained = screen.getByTestId('releases-retained-but-truncated');
+    expect(retained.textContent).toContain('仍有设备保留');
+    // 每个被截版本号一枚 Tag（版本表里看不到这些行，事实靠告警条带回）
+    const tags = screen.getAllByTestId('retained-but-truncated-tag');
+    expect(tags.map((t) => t.textContent)).toEqual(['0.9.0', '1.0.0']);
+  });
+
+  it('truncated=true 但 retainedButTruncated 为空 → 只显示通用告警，不渲染版本号区块', async () => {
+    mockedApps.getReleases.mockResolvedValue({
+      data: [releaseRow()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      truncated: true,
+      retainedButTruncated: [],
+    });
+    await openReleasesTab();
+    await screen.findByTestId('releases-table');
+    expect(screen.getByTestId('releases-truncated-alert')).toBeTruthy();
+    expect(screen.queryByTestId('releases-retained-but-truncated')).toBeNull();
+  });
+
+  it('retained 版本极多：超过 10 个折叠为「还有 N 个版本」计数 Tag', async () => {
+    mockedApps.getReleases.mockResolvedValue({
+      data: [releaseRow()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      truncated: true,
+      retainedButTruncated: Array.from({ length: 13 }, (_, i) => `0.9.${i}`),
+    });
+    await openReleasesTab();
+    await screen.findByTestId('releases-table');
+    const tags = screen.getAllByTestId('retained-but-truncated-tag');
+    expect(tags).toHaveLength(10); // 上限 10 枚，其余折叠
+    expect(screen.getByText('还有 3 个版本')).toBeTruthy();
+  });
+
+  it('truncated=false（默认/旧后端）→ 无告警条、无版本号区块', async () => {
+    await openReleasesTab();
+    await screen.findByTestId('releases-table');
+    expect(screen.queryByTestId('releases-truncated-alert')).toBeNull();
+    expect(screen.queryByTestId('releases-retained-but-truncated')).toBeNull();
+  });
 });

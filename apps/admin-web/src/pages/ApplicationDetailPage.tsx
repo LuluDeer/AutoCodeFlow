@@ -843,6 +843,10 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 }
 
 // ─── Releases（DEP-01 统一发布追溯）───────────────────────────────────────────
+/** P8-R：截断告警条里「有设备保留但被截」的版本号 Tag 上限——超出部分折叠为
+ *  「+N more」计数 Tag（版本号可能极多，告警条不能变成无限长清单）。 */
+const RETAINED_BUT_TRUNCATED_MAX_TAGS = 10;
+
 const RELEASE_DEPLOY_STATUS_LABELS = (t: (k: string) => string): Record<string, string> => ({
   pending: t('appDetail.releases.status.pending'), deploying: t('appDetail.releases.status.deploying'), running: t('appDetail.releases.status.running'), stopped: t('appDetail.releases.status.stopped'), failed: t('appDetail.releases.status.failed'), upgrading: t('appDetail.releases.status.upgrading'),
 });
@@ -1127,6 +1131,9 @@ function ReleasesTab({ app }: { app: Application }) {
   const [error, setError] = useState<unknown>(null);
   // P8：版本行超上限静默截断标志——true 时在版本表上方渲染显式告警条。
   const [truncated, setTruncated] = useState(false);
+  // P8-R：truncated 吞掉的版本里「仍有设备保留」的版本号列表——徽标行
+  // 不在页内，事实只能靠告警条文案显式带回（后端差集计算，见 AppReleasesPage）。
+  const [retainedButTruncated, setRetainedButTruncated] = useState<string[]>([]);
   const { t } = useTranslation();
   // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
   const { nameOf } = useExecutorNames();
@@ -1156,6 +1163,8 @@ function ReleasesTab({ app }: { app: Application }) {
       setPage(res.page ?? p);
       // P8：截断标志随页落地（旧后端不带该键 → undefined → 如实按未截断）
       setTruncated(res.truncated ?? false);
+      // P8-R：被截版本中仍有设备保留的版本号随页落地（旧后端不带该键 → 空数组）
+      setRetainedButTruncated(res.retainedButTruncated ?? []);
     } catch (err: unknown) {
       if (!raceGuard.isLatest(seq)) return; // 过期失败同样不覆盖当前视图
       setError(err);
@@ -1314,13 +1323,39 @@ function ReleasesTab({ app }: { app: Application }) {
     <div>
       {/* P8：版本行超 RELEASES_MAX_PAGE_SIZE 被静默截断——显式告知而非让用户
           把「看到的」当「全量」；完整动作史走事件流（不可变、分页无截断）。 */}
+      {/* P8-R：被截版本里「仍有设备保留」的版本号显式列出——徽标行不在页内，
+          不列出的话「设备还留着这版」的事实就从版本表消失（部署模型评审遗留）。 */}
       {truncated && (
         <Alert
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
+          data-testid="releases-truncated-alert"
           message={t('appDetail.releases.truncated.title')}
-          description={t('appDetail.releases.truncated.desc')}
+          description={(
+            <div>
+              <div>{t('appDetail.releases.truncated.desc')}</div>
+              {retainedButTruncated.length > 0 && (
+                <div data-testid="releases-retained-but-truncated" style={{ marginTop: 8 }}>
+                  {t('appDetail.releases.truncated.retained')}
+                  <div style={{ marginTop: 4 }}>
+                    <Space size={4} wrap>
+                      {retainedButTruncated.slice(0, RETAINED_BUT_TRUNCATED_MAX_TAGS).map((v) => (
+                        <Tag key={v} data-testid="retained-but-truncated-tag" style={{ fontSize: 11 }}>{v}</Tag>
+                      ))}
+                      {retainedButTruncated.length > RETAINED_BUT_TRUNCATED_MAX_TAGS && (
+                        <Tag style={{ fontSize: 11 }}>
+                          {t('appDetail.releases.truncated.retainedMore', {
+                            count: retainedButTruncated.length - RETAINED_BUT_TRUNCATED_MAX_TAGS,
+                          })}
+                        </Tag>
+                      )}
+                    </Space>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           action={(
             <Button
               size="small"

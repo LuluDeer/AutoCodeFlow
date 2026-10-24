@@ -10,7 +10,10 @@
  */
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { AppDeploymentService } from "../app-deployment.service";
+import {
+  AppDeploymentService,
+  RELEASES_SYNTHETIC_SCAN_PAGE_SIZE,
+} from "../app-deployment.service";
 import {
   AppDeployment,
   DeploymentStatus,
@@ -222,5 +225,98 @@ describe("AppDeploymentService.getReleases devices 聚合（R3-A §4.3）", () =
     // __unknown__（deployedVersion 为空的合成行）无版本可比对 → 恒空
     const unknown = res.data.find((r) => r.version === null)!;
     expect(unknown.devices).toEqual([]);
+    // 未截断 → retainedButTruncated 恒空数组（字段只增不改）
+    expect(res.retainedButTruncated).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // P8-R（部署模型评审遗留）：truncated 截断吞掉被截版本的 devices 徽标 →
+  // retainedButTruncated 用同一份全应用设备事实求差集，把「有设备保留但
+  // 不在本页行中」的版本号显式带回（事实不因分页截断而消失）。
+  // ------------------------------------------------------------------
+  it("truncated=true：设备保留的版本不在本页行中 → retainedButTruncated 列出该版本号", async () => {
+    // 无快照行 → 第 1 页跑 synthetic 扫描；页页扫满到 5000 上限触发 truncated
+    versionRepo.findAndCount.mockResolvedValue([[], 0]);
+    const fullPage = Array.from(
+      { length: RELEASES_SYNTHETIC_SCAN_PAGE_SIZE },
+      (_, i) => deploymentRow(`d-${i}`, { deployedVersion: "5.0.0" }),
+    );
+    deploymentRepo.find.mockResolvedValue(fullPage);
+    // 设备事实：一台正跑 5.0.0（页内 synthetic 行可见），另一台保留 0.9.0
+    // 与 1.0.0（被截部分——不在任何返回行中，只能靠差集带回）
+    executorService.getAppVersionFacts.mockResolvedValue([
+      {
+        executorId: "exec-a",
+        executorName: "node-a",
+        currentVersion: "5.0.0",
+        retainedVersions: [],
+        online: true,
+        lastHeartbeat: "2026-10-24T08:00:00.000Z",
+      },
+      {
+        executorId: "exec-b",
+        executorName: "node-b",
+        currentVersion: "1.0.0",
+        retainedVersions: ["0.9.0"],
+        online: false,
+        lastHeartbeat: null,
+      },
+    ]);
+
+    const res = await service.getReleases("app-1", 1, 50);
+
+    expect(res.truncated).toBe(true);
+    // currentVersion(1.0.0) 命中 + retainedVersions(0.9.0) 命中，且都不在
+    // 本页行中；5.0.0 在页内（synthetic 行）不计入；字母序确定性输出
+    expect(res.retainedButTruncated).toEqual(["0.9.0", "1.0.0"]);
+  });
+
+  it("truncated=true 但被截版本无任何设备保留 → retainedButTruncated 空数组", async () => {
+    versionRepo.findAndCount.mockResolvedValue([[], 0]);
+    const fullPage = Array.from(
+      { length: RELEASES_SYNTHETIC_SCAN_PAGE_SIZE },
+      (_, i) => deploymentRow(`d-${i}`, { deployedVersion: "5.0.0" }),
+    );
+    deploymentRepo.find.mockResolvedValue(fullPage);
+    // 设备保留的恰是页内版本 5.0.0 → 差集为空
+    executorService.getAppVersionFacts.mockResolvedValue([
+      {
+        executorId: "exec-a",
+        executorName: "node-a",
+        currentVersion: "5.0.0",
+        retainedVersions: ["5.0.0"],
+        online: true,
+        lastHeartbeat: "2026-10-24T08:00:00.000Z",
+      },
+    ]);
+
+    const res = await service.getReleases("app-1", 1, 50);
+
+    expect(res.truncated).toBe(true);
+    expect(res.retainedButTruncated).toEqual([]);
+  });
+
+  it("truncated=false → 不做差集计算，retainedButTruncated 恒空数组", async () => {
+    versionRepo.findAndCount.mockResolvedValue([
+      [versionRow("v-1", "1.2.0")],
+      1,
+    ]);
+    // 设备保留的是不在本页的 0.9.0——但未截断（版本表分页完整，0.9.0 在
+    // 后续页可见），差集不适用，恒空
+    executorService.getAppVersionFacts.mockResolvedValue([
+      {
+        executorId: "exec-b",
+        executorName: "node-b",
+        currentVersion: "0.9.0",
+        retainedVersions: [],
+        online: true,
+        lastHeartbeat: null,
+      },
+    ]);
+
+    const res = await service.getReleases("app-1", 1, 50);
+
+    expect(res.truncated).toBe(false);
+    expect(res.retainedButTruncated).toEqual([]);
   });
 });

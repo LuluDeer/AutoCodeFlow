@@ -20359,6 +20359,14 @@
             "type": "boolean",
             "description": "R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改",
             "x-i18n-en": "R4 (4.7): true when the synthetic aggregation scan hits the 5000-row cap (aggregation reflects only the scanned portion and may be incomplete); false when under the cap or on pages other than page 1. Response fields are additive-only"
+          },
+          "retainedButTruncated": {
+            "description": "P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在本页返回行中」的版本号（字母序）；truncated=false 恒空数组。响应字段只增不改",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "P8-R (deployment-model review leftover): when truncated=true swallows the devices badge of truncated versions, lists the versions that have devices keeping them (currentVersion match or in retainedVersions) but are not among the rows returned on this page (alphabetical); always an empty array when truncated=false. Response fields are additive-only"
           }
         },
         "required": [
@@ -20366,7 +20374,8 @@
           "total",
           "page",
           "pageSize",
-          "truncated"
+          "truncated",
+          "retainedButTruncated"
         ]
       },
       "RolloutStrategyDto": {
