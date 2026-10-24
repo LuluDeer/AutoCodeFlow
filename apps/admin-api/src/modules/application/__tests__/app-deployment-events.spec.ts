@@ -709,9 +709,7 @@ describe("AppDeploymentService 部署事件（R4 §4.1A）", () => {
       }).compile();
       const bare = moduleRef.get(AppDeploymentService);
 
-      await expect(bare.getEventsByApp("app-1")).rejects.toThrow(
-        /仓储未接线/,
-      );
+      await expect(bare.getEventsByApp("app-1")).rejects.toThrow(/仓储未接线/);
     });
   });
 });
@@ -844,7 +842,9 @@ describe("ListDeploymentEventsQueryDto 校验（R4）", () => {
     const values = Object.values(AppDeploymentEventType);
     expect(values).toHaveLength(9);
     for (const v of values) {
-      const dto = plainToInstance(ListDeploymentEventsQueryDto, { eventType: v });
+      const dto = plainToInstance(ListDeploymentEventsQueryDto, {
+        eventType: v,
+      });
       const errors = await validate(dto);
       expect(errors).toHaveLength(0);
       expect(dto.eventType).toBe(v);

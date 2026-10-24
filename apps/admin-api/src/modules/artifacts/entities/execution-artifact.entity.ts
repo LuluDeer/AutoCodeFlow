@@ -8,7 +8,6 @@ import {
   Index,
 } from "typeorm";
 import { TaskExecution } from "../../task/entities/task-execution.entity";
-import { Application } from "../../application/entities/application.entity";
 
 /**
  * ARTIFACTS-INDEX-46（部署模型评审 §4.6）：执行产物元数据索引行。

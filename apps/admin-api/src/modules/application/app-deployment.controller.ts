@@ -155,11 +155,16 @@ export class AppDeploymentController {
   ) {
     // 过滤参数（eventType/since/until）透传 service；DTO 已校验枚举值与
     // ISO 8601 形态，这里不做二次解析。
-    return this.svc.getEventsByApp(appId, query.page ?? 1, query.pageSize ?? 50, {
-      eventType: query.eventType,
-      since: query.since,
-      until: query.until,
-    });
+    return this.svc.getEventsByApp(
+      appId,
+      query.page ?? 1,
+      query.pageSize ?? 50,
+      {
+        eventType: query.eventType,
+        since: query.since,
+        until: query.until,
+      },
+    );
   }
 
   @Get(":id")

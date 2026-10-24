@@ -119,7 +119,7 @@ describe("BackfillAppDeploymentEvents1790000000064（R4 存量回填）", () => 
 
   it("up：合成行 eventType=deploy_created（计数下界：一行折算一次创建动作）", () => {
     const upPart = sql.split("public async down")[0];
-    expect(upPart).toContain("INSERT INTO \"app_deployment_events\"");
+    expect(upPart).toContain('INSERT INTO "app_deployment_events"');
     expect(upPart).toContain("'deploy_created'");
   });
 
@@ -129,31 +129,33 @@ describe("BackfillAppDeploymentEvents1790000000064（R4 存量回填）", () => 
       /NOT EXISTS\s*\(\s*[\s\S]*?e\."applicationId" = d\."applicationId"/,
     );
     // 应用级判定不含 eventType 过滤——与 buildDeployCountMap legacy 判定同口径
-    expect(upPart).not.toMatch(
-      /NOT EXISTS\s*\(\s*[\s\S]*?e\."eventType"/,
-    );
+    expect(upPart).not.toMatch(/NOT EXISTS\s*\(\s*[\s\S]*?e\."eventType"/);
   });
 
   it("up：合成行 detail 标注 backfill（down 精确定位的锚点，不加列）", () => {
     // 代码段断言（类头注释不参与），jsonb 字面量按源文件原文逐字匹配。
     // 迁移源码里是 SQL 单引号字符串，内部 JSON 双引号已转义（源码层 \"）。
-    const upCode = sql.split("public async up")[1].split("public async down")[0];
+    const upCode = sql
+      .split("public async up")[1]
+      .split("public async down")[0];
     expect(upCode).toContain(
       `'{\"backfill\": true, \"source\": \"app_deployments\"}'::jsonb`,
     );
   });
   it("up：列还原口径——行上列原样 / createdAt 用行 createdAt（不虚构）", () => {
     const upPart = sql.split("public async down")[0];
-    expect(upPart).toContain("d.\"deployedVersion\"");
-    expect(upPart).toContain("d.\"triggerType\"");
-    expect(upPart).toContain("d.\"operator\"");
-    expect(upPart).toContain("d.\"createdAt\"");
+    expect(upPart).toContain('d."deployedVersion"');
+    expect(upPart).toContain('d."triggerType"');
+    expect(upPart).toContain('d."operator"');
+    expect(upPart).toContain('d."createdAt"');
     // operator 不虚构常量：直接还原行值（旧行 NULL 即 NULL，列 nullable）
     expect(upPart).not.toMatch(/'system-backfill'/);
   });
 
   it("up：id 游标分批（keyset，LIMIT 参数化批大小，无 OFFSET 深翻页）", () => {
-    const upCode = sql.split("public async up")[1].split("public async down")[0];
+    const upCode = sql
+      .split("public async up")[1]
+      .split("public async down")[0];
     expect(upCode).toMatch(/d\."id" > \$1/);
     expect(upCode).toMatch(/LIMIT \$2/);
     expect(upCode).not.toMatch(/OFFSET/i);
@@ -161,8 +163,8 @@ describe("BackfillAppDeploymentEvents1790000000064（R4 存量回填）", () => 
 
   it("down：只删 detail 标注的合成行（不误删真实事件）", () => {
     const downPart = sql.split("public async down")[1];
-    expect(downPart).toContain("DELETE FROM \"app_deployment_events\"");
-    expect(downPart).toContain('"detail"->>\'backfill\' = \'true\'');
+    expect(downPart).toContain('DELETE FROM "app_deployment_events"');
+    expect(downPart).toContain("\"detail\"->>'backfill' = 'true'");
     // 不按 eventType 删（真实 deploy_created 事件必须存活）
     expect(downPart).not.toMatch(/eventType/);
   });

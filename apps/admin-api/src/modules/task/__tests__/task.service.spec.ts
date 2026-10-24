@@ -5374,9 +5374,11 @@ describe("TaskService (__tests__)", () => {
         ]);
         expect(res[0].success).toBe(true);
         // jsonb 侧：终态 patch 携带整列清单（既有行为，双轨之一）。
-        const patches = (execRepo as unknown as {
-          updatePatches: Array<Record<string, unknown>>;
-        }).updatePatches;
+        const patches = (
+          execRepo as unknown as {
+            updatePatches: Array<Record<string, unknown>>;
+          }
+        ).updatePatches;
         expect(patches.some((p) => p.artifacts === manifest)).toBe(true);
         // 索引表侧：按执行整替（delete + insert），行带 taskId/appId 快照。
         expect(artifactRepo.delete).toHaveBeenCalledWith({
@@ -5407,9 +5409,11 @@ describe("TaskService (__tests__)", () => {
         expect(res1[0].success).toBe(true);
         expect(artifactRepo.delete).not.toHaveBeenCalled();
         expect(artifactRepo.insert).not.toHaveBeenCalled();
-        const patches = (execRepo as unknown as {
-          updatePatches: Array<Record<string, unknown>>;
-        }).updatePatches;
+        const patches = (
+          execRepo as unknown as {
+            updatePatches: Array<Record<string, unknown>>;
+          }
+        ).updatePatches;
         expect(patches.some((p) => "artifacts" in p)).toBe(false);
       });
 
@@ -5433,7 +5437,10 @@ describe("TaskService (__tests__)", () => {
         execRepo.findOne.mockResolvedValue(exec);
         artifactRepo.delete.mockRejectedValue(new Error("db down"));
         const warnSpy = jest
-          .spyOn((service as unknown as { logger: { warn: jest.Mock } }).logger, "warn")
+          .spyOn(
+            (service as unknown as { logger: { warn: jest.Mock } }).logger,
+            "warn",
+          )
           .mockImplementation(() => undefined);
         const res = await service.handleCallback([
           {

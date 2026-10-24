@@ -49,8 +49,7 @@ export class ArtifactsRetentionService {
     // 双轨恒同宽）。@Optional 同上先例——缺失时仅清 jsonb（降级为旧行为）。
     @Optional()
     @InjectRepository(ExecutionArtifactRow)
-    private readonly artifactIndexRepo: Repository<ExecutionArtifactRow> | null =
-      null,
+    private readonly artifactIndexRepo: Repository<ExecutionArtifactRow> | null = null,
   ) {}
 
   private resolveRetentionDays(): number {

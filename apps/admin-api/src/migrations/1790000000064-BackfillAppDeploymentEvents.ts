@@ -123,7 +123,8 @@ export class BackfillAppDeploymentEvents1790000000064 implements MigrationInterf
       );
 
       cursor = batch[batch.length - 1].id;
-      if (batch.length < BackfillAppDeploymentEvents1790000000064.BATCH_SIZE) break;
+      if (batch.length < BackfillAppDeploymentEvents1790000000064.BATCH_SIZE)
+        break;
     }
   }
 

@@ -40,7 +40,10 @@ describe("ARTIFACTS-INDEX-46 迁移结构（1790000000065）", () => {
 
   beforeAll(() => {
     src = fs.readFileSync(MIGRATION_FILE, "utf8");
-    up = src.slice(src.indexOf("public async up"), src.indexOf("public async down"));
+    up = src.slice(
+      src.indexOf("public async up"),
+      src.indexOf("public async down"),
+    );
     down = src.slice(src.indexOf("public async down"));
   });
 
@@ -142,10 +145,18 @@ describe("ArtifactsService.listArtifactRows（GET /artifacts 读面）", () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArtifactsService,
-        { provide: getRepositoryToken(TaskExecution), useValue: { findOne: jest.fn() } },
+        {
+          provide: getRepositoryToken(TaskExecution),
+          useValue: { findOne: jest.fn() },
+        },
         {
           provide: getRepositoryToken(ExecutionArtifactRow),
-          useValue: { findAndCount, create: jest.fn(), insert: jest.fn(), delete: jest.fn() },
+          useValue: {
+            findAndCount,
+            create: jest.fn(),
+            insert: jest.fn(),
+            delete: jest.fn(),
+          },
         },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: SystemConfigService, useValue: { findOne: jest.fn() } },
@@ -186,10 +197,7 @@ describe("ArtifactsService.listArtifactRows（GET /artifacts 读面）", () => {
   });
 
   it("场景③分页信封：skip/take 由 page/pageSize 推导，6 键齐全（paginate 惯例）", async () => {
-    findAndCount.mockResolvedValue([
-      [mkRow({}), mkRow({ id: "row-2" })],
-      45,
-    ]);
+    findAndCount.mockResolvedValue([[mkRow({}), mkRow({ id: "row-2" })], 45]);
     const res = await svc.listArtifactRows({ page: 3, pageSize: 20 });
     expect(findAndCount).toHaveBeenCalledWith(
       expect.objectContaining({
