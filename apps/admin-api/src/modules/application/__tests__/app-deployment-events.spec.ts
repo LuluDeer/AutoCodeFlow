@@ -619,6 +619,76 @@ describe("AppDeploymentService 部署事件（R4 §4.1A）", () => {
       );
     });
 
+    it("eventType 直等过滤：where 带 eventType（命中复合索引前缀）", async () => {
+      eventRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getEventsByApp("app-1", 1, 50, {
+        eventType: AppDeploymentEventType.UPGRADE,
+      });
+
+      expect(eventRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { applicationId: "app-1", eventType: "upgrade" },
+        }),
+      );
+    });
+
+    it("since/until 半开区间：since 含头（>=）、until 不含尾（<）", async () => {
+      eventRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getEventsByApp("app-1", 1, 50, {
+        since: "2026-10-01T00:00:00Z",
+        until: "2026-10-24T00:00:00Z",
+      });
+
+      const where = eventRepo.findAndCount.mock.calls[0][0].where;
+      const range = where.createdAt; // And(MoreThanOrEqual, LessThan)
+      expect(range.constructor.name).toBe("FindOperator");
+      expect(range.type).toBe("and");
+      const [gte, lt] = range.value;
+      expect(gte.type).toBe("moreThanOrEqual");
+      expect(new Date(gte.value).toISOString()).toBe(
+        "2026-10-01T00:00:00.000Z",
+      ); // 含头
+      expect(lt.type).toBe("lessThan");
+      expect(new Date(lt.value).toISOString()).toBe("2026-10-24T00:00:00.000Z"); // 不含尾
+    });
+
+    it("边界：only since / only until / 组合 eventType+区间", async () => {
+      eventRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getEventsByApp("app-1", 1, 50, {
+        since: "2026-10-01T00:00:00Z",
+      });
+      let w = eventRepo.findAndCount.mock.calls[0][0].where;
+      expect(w.createdAt.type).toBe("moreThanOrEqual"); // 无 until → 不包 And
+      expect(w).not.toHaveProperty("eventType");
+
+      await service.getEventsByApp("app-1", 1, 50, {
+        until: "2026-10-24T00:00:00Z",
+      });
+      w = eventRepo.findAndCount.mock.calls[1][0].where;
+      expect(w.createdAt.type).toBe("lessThan"); // 无 since → 单边 <
+
+      await service.getEventsByApp("app-1", 1, 50, {
+        eventType: AppDeploymentEventType.DEPLOY_CREATED,
+        since: "2026-10-01T00:00:00Z",
+        until: "2026-10-24T00:00:00Z",
+      });
+      w = eventRepo.findAndCount.mock.calls[2][0].where;
+      expect(w.eventType).toBe("deploy_created");
+      expect(w.createdAt.type).toBe("and");
+    });
+
+    it("无过滤参数 → where 与旧版逐字节一致（加性变更回归锚）", async () => {
+      eventRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getEventsByApp("app-1", 1, 50, undefined);
+
+      const arg = eventRepo.findAndCount.mock.calls[0][0];
+      expect(arg.where).toEqual({ applicationId: "app-1" });
+    });
+
     it("repo 未接线（装配错误）→ fail-honest 抛错而非伪装空页", async () => {
       const moduleRef = await Test.createTestingModule({
         providers: [
@@ -698,7 +768,11 @@ describe("AppDeploymentController applications/:appId/events（R4）", () => {
       pageSize: 100,
     } as ListDeploymentEventsQueryDto);
 
-    expect(svc.getEventsByApp).toHaveBeenCalledWith("app-1", 2, 100);
+    expect(svc.getEventsByApp).toHaveBeenCalledWith("app-1", 2, 100, {
+      eventType: undefined,
+      since: undefined,
+      until: undefined,
+    });
   });
 
   it("查询参数缺省：page=1、pageSize=50", async () => {
@@ -710,7 +784,30 @@ describe("AppDeploymentController applications/:appId/events（R4）", () => {
       pageSize: 50,
     } as ListDeploymentEventsQueryDto);
 
-    expect(svc.getEventsByApp).toHaveBeenCalledWith("app-1", 1, 50);
+    expect(svc.getEventsByApp).toHaveBeenCalledWith("app-1", 1, 50, {
+      eventType: undefined,
+      since: undefined,
+      until: undefined,
+    });
+  });
+
+  it("handler 透传过滤参数（eventType/since/until）给 service", async () => {
+    const svc = makeSvc();
+    const controller = new AppDeploymentController(svc, makeExec());
+
+    await controller.listApplicationEvents("app-1", {
+      page: 1,
+      pageSize: 50,
+      eventType: "upgrade",
+      since: "2026-10-01T00:00:00Z",
+      until: "2026-10-24T00:00:00Z",
+    } as ListDeploymentEventsQueryDto);
+
+    expect(svc.getEventsByApp).toHaveBeenCalledWith("app-1", 1, 50, {
+      eventType: "upgrade",
+      since: "2026-10-01T00:00:00Z",
+      until: "2026-10-24T00:00:00Z",
+    });
   });
 });
 
@@ -739,5 +836,59 @@ describe("ListDeploymentEventsQueryDto 校验（R4）", () => {
     const dto = new ListDeploymentEventsQueryDto();
     expect(dto.page).toBe(1);
     expect(dto.pageSize).toBe(50);
+  });
+
+  it("eventType：九值白名单全放行（实测自 AppDeploymentEventType 取值域）", async () => {
+    const values = Object.values(AppDeploymentEventType);
+    expect(values).toHaveLength(9);
+    for (const v of values) {
+      const dto = plainToInstance(ListDeploymentEventsQueryDto, { eventType: v });
+      const errors = await validate(dto);
+      expect(errors).toHaveLength(0);
+      expect(dto.eventType).toBe(v);
+    }
+  });
+
+  it("eventType：白名单外单值拒绝（如 'approval'——静默 400 好过静默不过滤）", async () => {
+    const dto = plainToInstance(ListDeploymentEventsQueryDto, {
+      eventType: "approval",
+    });
+    const errors = await validate(dto);
+    expect(errors.map((e) => e.property)).toEqual(["eventType"]);
+  });
+
+  it("since/until：ISO 8601 放行（带毫秒/不带/带偏移）", async () => {
+    const dto = plainToInstance(ListDeploymentEventsQueryDto, {
+      since: "2026-10-01T00:00:00Z",
+      until: "2026-10-24T00:00:00.000+08:00",
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  /**
+   * 非 ISO 形态拒绝。注：class-validator@0.15 的 isISO8601 宽松档接受
+   * 'YYYYMMDD'（基本格式）与空格分隔（'2026-10-01 00:00'）——这两类串
+   * new Date() 也能解析，进 service 后语义仍正确，故不加 strict 收紧
+   * （收紧会无谓拒绝合法客户端）；本用例只钉「明显非日期串必拒」。
+   */
+  it("since/until：明显非日期串拒绝（'yesterday' / '10-01' / 'abc'）", async () => {
+    for (const bad of ["yesterday", "10-01", "abc"]) {
+      const dto = plainToInstance(ListDeploymentEventsQueryDto, {
+        since: bad,
+        until: bad,
+      });
+      const errors = await validate(dto);
+      expect(errors.map((e) => e.property).sort()).toEqual(["since", "until"]);
+    }
+  });
+
+  it("since > until 的倒挂区间：DTO 层不拦（返回空页如实表达「区间内无事件」）", async () => {
+    const dto = plainToInstance(ListDeploymentEventsQueryDto, {
+      since: "2026-10-24T00:00:00Z",
+      until: "2026-10-01T00:00:00Z",
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
   });
 });

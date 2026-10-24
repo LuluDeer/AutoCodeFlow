@@ -1965,6 +1965,7 @@ export default {
   'appDetail.releases.truncated.gotoEvents': '查看事件流',
   // R4（部署模型评审 §4.1A）：部署事件流（不可变动作追溯）。
   'appDetail.events.title': '部署事件流',
+  'appDetail.events.filter.typeAll': '全部类型',
   'appDetail.events.loadFail': '加载部署事件流失败',
   'appDetail.events.empty': '暂无部署事件（该应用还没有任何部署域写动作）',
   'appDetail.events.col.time': '时间',

@@ -12579,6 +12579,12 @@ export interface operations {
             query?: {
                 page?: number;
                 pageSize?: number;
+                /** @description 按事件类型过滤（AppDeploymentEventType 九值单值；直等命中 (applicationId, eventType) 复合索引） */
+                eventType?: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
+                /** @description 起始时间（ISO 8601）；半开区间含头：createdAt >= since */
+                since?: string;
+                /** @description 结束时间（ISO 8601）；半开区间不含尾：createdAt < until */
+                until?: string;
             };
             header?: never;
             path: {

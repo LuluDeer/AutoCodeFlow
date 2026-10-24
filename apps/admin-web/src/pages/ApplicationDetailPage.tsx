@@ -885,18 +885,21 @@ function DeploymentEventsTable({ app }: { app: Application }) {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  // 服务端过滤（上轮遗留：事件量极大时深翻页代价高）——eventType 单选；
+  // undefined = 全部（不带参数，请求形状与旧后端逐字节一致）。
+  const [eventTypeFilter, setEventTypeFilter] = useState<string | undefined>(undefined);
   const { t } = useTranslation();
   // 同 ReleasesTab：执行器可读名解析（事件行 executorAddress 是写入时的地址
   // 快照，executorId 优先、address 回落；解析不到如实回落地址，绝不编造）。
   const { nameOf } = useExecutorNames();
   const raceGuard = useRaceGuard();
 
-  const fetchEvents = useCallback(async (p: number) => {
+  const fetchEvents = useCallback(async (p: number, eventType?: string) => {
     const seq = raceGuard.next();
     setLoading(true);
     setError(null);
     try {
-      const res = await applicationsApi.getDeploymentEvents(app.id, p, 20);
+      const res = await applicationsApi.getDeploymentEvents(app.id, p, 20, eventType ? { eventType } : undefined);
       if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（RACE-PAGE 同款）
       setEvents(res.data ?? []);
       setTotal(res.total ?? 0);
@@ -909,15 +912,21 @@ function DeploymentEventsTable({ app }: { app: Application }) {
     }
   }, [app.id, raceGuard]);
 
-  useEffect(() => { fetchEvents(1); }, [fetchEvents]);
+  // eventTypeFilter 进依赖：筛选变化 → 回第 1 页重拉（不再手动触发，双触发
+  // 会发两个请求，raceGuard 只保序不保去重）。回第 1 页是因为旧页码对新
+  // 结果集大概率越界（空页误导），且即便未越界「第 N 页的某类型事件」语义
+  // 也已漂移。
+  useEffect(() => { fetchEvents(1, eventTypeFilter); }, [fetchEvents, eventTypeFilter]);
 
   if (error) {
-    // 事件流加载失败不拖垮版本表：区块内降级 StateError（重试 + 复制）
+    // 事件流加载失败不拖垮版本表：区块内降级 StateError（重试 + 复制）。
+    // 重试带当前筛选——失败的就是那次过滤请求，重试丢筛选会让「重试成功」
+    // 显示未过滤数据，用户误以为过滤已生效。
     return (
       <Card variant="borderless" style={{ marginTop: 16 }} data-testid="events-card">
         <StateError
           error={error}
-          onRetry={() => fetchEvents(1)}
+          onRetry={() => fetchEvents(1, eventTypeFilter)}
           title={t('appDetail.events.loadFail')}
         />
       </Card>
@@ -1008,12 +1017,32 @@ function DeploymentEventsTable({ app }: { app: Application }) {
     },
   ];
 
+  // 九值下拉选项复用 EVENT_TYPE_LABELS（标签唯一事实源——表格 Tag 与筛选
+  // 下拉同一映射，不会出现「筛选里叫 A、表格里叫 B」）。
+  const eventTypeOptions = Object.keys(EVENT_TYPE_LABELS(t)).map((v) => ({
+    value: v,
+    label: EVENT_TYPE_LABELS(t)[v],
+  }));
+
   return (
     <Card
       variant="borderless"
       style={{ marginTop: 16 }}
       title={t('appDetail.events.title')}
-      extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchEvents(page)}>{t('appDetail.refresh')}</Button>}
+      extra={(
+        <Space>
+          <Select
+            allowClear
+            placeholder={t('appDetail.events.filter.typeAll')}
+            style={{ width: 150 }}
+            value={eventTypeFilter}
+            onChange={(v) => setEventTypeFilter(v)}
+            options={eventTypeOptions}
+            data-testid="event-type-filter"
+          />
+          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchEvents(page, eventTypeFilter)}>{t('appDetail.refresh')}</Button>
+        </Space>
+      )}
       data-testid="events-card"
     >
       <Table<AppDeploymentEventRow>
@@ -1029,7 +1058,7 @@ function DeploymentEventsTable({ app }: { app: Application }) {
           pageSize: 20,
           total,
           showTotal: (n) => t('appDetail.count', { count: n }),
-          onChange: (p) => fetchEvents(p),
+          onChange: (p) => fetchEvents(p, eventTypeFilter),
         }}
         locale={{ emptyText: t('appDetail.events.empty') }}
       />

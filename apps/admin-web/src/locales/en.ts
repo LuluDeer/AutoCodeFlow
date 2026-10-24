@@ -1956,6 +1956,7 @@ export default {
   'appDetail.releases.truncated.gotoEvents': 'View events',
   // R4 (deployment-model review §4.1A): immutable deployment event stream.
   'appDetail.events.title': 'Deployment Events',
+  'appDetail.events.filter.typeAll': 'All Types',
   'appDetail.events.loadFail': 'Failed to load deployment events',
   'appDetail.events.empty': 'No deployment events yet (no write actions in the deployment domain)',
   'appDetail.events.col.time': 'Time',

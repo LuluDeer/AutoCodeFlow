@@ -11,11 +11,14 @@ import { InjectRepository } from "@nestjs/typeorm";
 import {
   Repository,
   LessThan,
+  MoreThanOrEqual,
+  And,
   In,
   IsNull,
   Like,
   Raw,
   OptimisticLockVersionMismatchError,
+  FindOptionsWhere,
 } from "typeorm";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
@@ -376,11 +379,26 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * :appId/events）——不可变动作追溯，分页默认 50、上限 200（对齐 /releases）。
    * 裸四键信封 {data,total,page,pageSize}。事件行只含短事实（写入侧已保证
    * detail 不带 env），无需掩码。
+   *
+   * 过滤参数（上轮遗留：事件量极大时深翻页代价高——把结果集缩到调用方关心
+   * 的切片再分页，深 OFFSET 不再作用于全量）：
+   *   · eventType 直等——完整命中 idx_app_deployment_events_application_type
+   *     的 (applicationId, eventType) 前缀；
+   *   · since/until 为**半开区间 [since, until)**：since 含头（createdAt >=
+   *     since）、until 不含尾（createdAt < until）。两侧同为闭区间的「按天
+   *     滚窗」会让边界时刻的事件在相邻两窗各出现一次；同为开区间则会漏。
+   *     时间列过滤叠加在 idx_app_deployment_events_application_created
+   *     (applicationId, createdAt) 上。
    */
   async getEventsByApp(
     applicationId: string,
     page = 1,
     pageSize = DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE,
+    filters?: {
+      eventType?: AppDeploymentEventType;
+      since?: string;
+      until?: string;
+    },
   ): Promise<{
     data: AppDeploymentEvent[];
     total: number;
@@ -403,8 +421,28 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       DEPLOYMENT_EVENTS_MAX_PAGE_SIZE,
     );
     const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
+    // 过滤键只在「有值」时进 where：缺省（不带参数）走与此前逐字节相同的
+    // where: { applicationId }——加性变更，既有调用方行为不变。
+    const where: FindOptionsWhere<AppDeploymentEvent> = { applicationId };
+    if (filters?.eventType) {
+      where.eventType = filters.eventType;
+    }
+    // since/until 解析成 Date 一次：非法串在 DTO 层已被 @IsISO8601 拦下，
+    // 这里的新 Date(since) 对已验证的 ISO 串是确定性的；即便绕过 DTO 直调
+    // service（内部调用方），Invalid Date 会让 TypeORM 查询抛错——fail-fast
+    // 优于静默忽略。
+    if (filters?.since && filters.until) {
+      where.createdAt = And(
+        MoreThanOrEqual(new Date(filters.since)),
+        LessThan(new Date(filters.until)),
+      );
+    } else if (filters?.since) {
+      where.createdAt = MoreThanOrEqual(new Date(filters.since));
+    } else if (filters?.until) {
+      where.createdAt = LessThan(new Date(filters.until));
+    }
     const [data, total] = await this.deploymentEventRepo.findAndCount({
-      where: { applicationId },
+      where,
       // id 兜底排序：同秒多事件（如批量扫死）下保证翻页顺序稳定。
       order: { createdAt: "DESC", id: "DESC" },
       skip: (safePage - 1) * safePageSize,

@@ -294,10 +294,25 @@ export const applicationsApi = {
    * R4（§4.1A）：应用的不可变部署事件流（append-only 动作追溯）。分页默认
    * 50、上限 200（对齐 /releases）；按 createdAt 倒序（同秒多事件 id 兜底）。
    * 注意路由挂在 /app-deployments 控制器下（非 /applications/:id/...）。
+   *
+   * eventType/since/until：服务端过滤（上轮遗留——事件量极大时深翻页代价
+   * 高）。eventType 单值（九枚举之一）；since/until 为 ISO 8601 半开区间
+   * [since, until)（含头不含尾）。
    */
-  getDeploymentEvents: (id: string, page = 1, pageSize = 50) =>
+  getDeploymentEvents: (
+    id: string,
+    page = 1,
+    pageSize = 50,
+    filters?: { eventType?: string; since?: string; until?: string },
+  ) =>
     client.get<AppDeploymentEventsPage>(`/app-deployments/applications/${id}/events`, {
-      params: { page, pageSize },
+      params: {
+        page,
+        pageSize,
+        ...(filters?.eventType ? { eventType: filters.eventType } : {}),
+        ...(filters?.since ? { since: filters.since } : {}),
+        ...(filters?.until ? { until: filters.until } : {}),
+      },
     }),
   /**
    * R1（部署模型评审 2026-10-23 §4.2）：旧 rollback 端点（恢复应用字段 + 全量

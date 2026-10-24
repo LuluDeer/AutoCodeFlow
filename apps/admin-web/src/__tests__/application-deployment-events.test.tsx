@@ -158,7 +158,7 @@ describe('ApplicationDetailPage 版本追溯 Tab 部署事件流（R4 §4.1A）'
     });
     await openReleasesTab();
     await screen.findByTestId('deployment-events-table');
-    expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20);
+    expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, undefined);
     // 版本表与事件表同屏共存
     expect(screen.getByTestId('releases-table')).toBeTruthy();
   });
@@ -218,7 +218,7 @@ describe('ApplicationDetailPage 版本追溯 Tab 部署事件流（R4 §4.1A）'
     const page2 = Array.from(pager ?? []).find((el) => (el.textContent ?? '') === '2');
     expect(page2).toBeTruthy();
     fireEvent.click(page2 as HTMLElement);
-    await waitFor(() => expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 2, 20));
+    await waitFor(() => expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 2, 20, undefined));
   });
 
   it('事件流加载失败降级为区块内 StateError，版本表不受拖垮', async () => {
@@ -244,6 +244,104 @@ describe('ApplicationDetailPage 版本追溯 Tab 部署事件流（R4 §4.1A）'
       expect(mockedApps.getDeploymentEvents).toHaveBeenCalledTimes(2);
       expect(screen.getByTestId('deployment-events-table')).toBeTruthy();
     });
+  });
+});
+
+describe('ApplicationDetailPage 部署事件流 eventType 筛选（服务端过滤）', () => {
+  /** 打开事件卡右上角的类型筛选下拉（antd v6 虚拟列表：可见选项按类名定位，
+   *  先例见 execution-detail-log-level.test.tsx 的 openLevelDropdown）。 */
+  async function openTypeDropdown(): Promise<HTMLElement[]> {
+    fireEvent.mouseDown(screen.getByTestId('event-type-filter'));
+    return waitFor(() => {
+      const opts = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
+      expect(opts.length).toBe(9);
+      return opts;
+    });
+  }
+
+  function clickOption(opts: HTMLElement[], label: string) {
+    const target = opts.find((o) => o.textContent === label);
+    if (!target) throw new Error(`未找到选项 ${label}`);
+    fireEvent.click(target);
+  }
+
+  it('初始不筛选：请求不带 eventType（第 4 参 undefined，请求形状与旧后端一致）', async () => {
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, undefined);
+  });
+
+  it('选择类型后：请求带 eventType 且重置回第 1 页', async () => {
+    mockedApps.getDeploymentEvents.mockResolvedValue({
+      data: [eventRow({ eventType: 'upgrade' })],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    const opts = await openTypeDropdown();
+    clickOption(opts, '升级');
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, { eventType: 'upgrade' }),
+    );
+  });
+
+  it('筛选状态下翻页：页码变化、eventType 仍随行', async () => {
+    mockedApps.getDeploymentEvents.mockResolvedValue({
+      data: Array.from({ length: 20 }, (_, i) => eventRow({ id: 'evt-' + i, eventType: 'upgrade' })),
+      total: 45,
+      page: 1,
+      pageSize: 20,
+    });
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    const opts = await openTypeDropdown();
+    clickOption(opts, '升级');
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, { eventType: 'upgrade' }),
+    );
+    // 翻第 2 页：eventType 保持
+    const table = screen.getByTestId('deployment-events-table');
+    const pager = table.closest('.ant-card')?.querySelectorAll('.ant-pagination li');
+    const page2 = Array.from(pager ?? []).find((el) => (el.textContent ?? '') === '2');
+    fireEvent.click(page2 as HTMLElement);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 2, 20, { eventType: 'upgrade' }),
+    );
+  });
+
+  it('清除筛选（allowClear ×）：恢复不带 eventType 的请求', async () => {
+    mockedApps.getDeploymentEvents.mockResolvedValue({
+      data: [eventRow()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    const opts = await openTypeDropdown();
+    clickOption(opts, '停止');
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, { eventType: 'stop' }),
+    );
+    // antd v6 清除按钮（allowClear 渲染的 ×）
+    const clear = screen.getByTestId('event-type-filter').querySelector('.ant-select-clear');
+    expect(clear).toBeTruthy();
+    fireEvent.mouseDown(clear as HTMLElement);
+    fireEvent.click(clear as HTMLElement);
+    await waitFor(() =>
+      expect(mockedApps.getDeploymentEvents).toHaveBeenCalledWith('app-1', 1, 20, undefined),
+    );
+  });
+
+  it('下拉选项与 EVENT_TYPE_LABELS 同源：九个中文标签全呈现', async () => {
+    await openReleasesTab();
+    await screen.findByTestId('deployment-events-table');
+    const opts = await openTypeDropdown();
+    expect(opts.map((o) => o.textContent)).toEqual([
+      '新建部署', '复用重部署', '审批通过', '审批拒绝', '审批撤回', '升级', '停止', '删除', '卡死判失败',
+    ]);
   });
 });
 

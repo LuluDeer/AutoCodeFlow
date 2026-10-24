@@ -9047,6 +9047,47 @@
               "default": 50,
               "type": "number"
             }
+          },
+          {
+            "name": "eventType",
+            "required": false,
+            "in": "query",
+            "description": "按事件类型过滤（AppDeploymentEventType 九值单值；直等命中 (applicationId, eventType) 复合索引）",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "deploy_created",
+                "redeploy_reused",
+                "approval_approved",
+                "approval_rejected",
+                "approval_cancelled",
+                "upgrade",
+                "stop",
+                "remove",
+                "stuck_failed"
+              ]
+            },
+            "x-i18n-en": "Filter by event type (a single value of the nine AppDeploymentEventType values; equality matches the (applicationId, eventType) composite index prefix)"
+          },
+          {
+            "name": "since",
+            "required": false,
+            "in": "query",
+            "description": "起始时间（ISO 8601）；半开区间含头：createdAt >= since",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Start time (ISO 8601); half-open interval, inclusive lower bound: createdAt >= since"
+          },
+          {
+            "name": "until",
+            "required": false,
+            "in": "query",
+            "description": "结束时间（ISO 8601）；半开区间不含尾：createdAt < until",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "End time (ISO 8601); half-open interval, exclusive upper bound: createdAt < until"
           }
         ],
         "responses": {
