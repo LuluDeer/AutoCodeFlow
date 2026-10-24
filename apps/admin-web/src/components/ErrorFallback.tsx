@@ -2,42 +2,15 @@ import { useState } from 'react';
 import type { FallbackProps } from 'react-error-boundary';
 import { Button, Result, Space, Typography } from 'antd';
 import { message } from '../utils/toast';
+// react-refresh 收官：复制降级逻辑曾以 copyErrorText 名义在本文件重复实现
+// （与 utils/clipboard.copyText 功能等价），为消除 only-export-components
+// 告警统一并到 F-18 封装——本文件回归纯组件导出，fast-refresh 边界恢复。
+import { copyText } from '../utils/clipboard';
 import { ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 
 const { Text } = Typography;
-
-/**
- * 复制错误信息到剪贴板（UI-08 错误态标准动作之二）。
- * 优先 navigator.clipboard（需 secure context），失败降级到
- * document.execCommand('copy') 的隐藏 textarea 方案（http 内网部署场景），
- * 两路都失败时返回 false 由调用方提示。
- */
-export async function copyErrorText(text: string): Promise<boolean> {
-  try {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // fall through to legacy path
-  }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.left = '-9999px';
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * FE-02 全局渲染错误兜底（react-error-boundary FallbackComponent，main.tsx 挂载）。
@@ -57,7 +30,7 @@ export default function ErrorFallback({ error, resetErrorBoundary }: FallbackPro
     .join('\n');
 
   const handleCopy = async () => {
-    const ok = await copyErrorText(errorText);
+    const ok = await copyText(errorText);
     if (ok) {
       setCopied(true);
       message.success(t('errorFallback.copySuccess'));

@@ -4,7 +4,7 @@ import { Button, Result, Space, Typography } from 'antd';
 import { message } from '../utils/toast';
 import { ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { copyErrorText } from './ErrorFallback';
+import { copyText } from '../utils/clipboard';
 import '../i18n';
 
 const { Text } = Typography;
@@ -75,7 +75,7 @@ export default function RouteErrorBoundary() {
     .join('\n');
 
   const handleCopy = async () => {
-    const ok = await copyErrorText(errorText);
+    const ok = await copyText(errorText);
     if (ok) {
       setCopied(true);
       message.success(t('errorFallback.copySuccess'));

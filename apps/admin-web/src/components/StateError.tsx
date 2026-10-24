@@ -4,7 +4,7 @@ import { CopyOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { LIGHT_TOKENS, DARK_TOKENS } from '../theme/tokens';
-import { copyErrorText } from './ErrorFallback';
+import { copyText } from '../utils/clipboard';
 import '../i18n';
 
 const { Text } = Typography;
@@ -48,7 +48,7 @@ export default function StateError({
         : t('stateError.requestFailed');
 
   const handleCopy = async () => {
-    const ok = await copyErrorText(msg);
+    const ok = await copyText(msg);
     if (ok) message.success(t('stateError.copySuccess'));
     else message.error(t('stateError.copyFailed'));
   };
