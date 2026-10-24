@@ -357,6 +357,12 @@ export default {
   'execs.executorPlaceholder': '执行器地址',
   'execs.timeStart': '开始时间',
   'execs.timeEnd': '结束时间',
+  // 时间快捷区间（2026-10-25）：时刻粒度预设，[now-N, now] 保留时分秒，
+  // 与 events/audit 页的日期粒度预设（整天语义）刻意不同——本页筛选器是
+  // showTime 形态，预设语义必须与手选同一口径。
+  'execs.range.1h': '最近 1 小时',
+  'execs.range.24h': '最近 24 小时',
+  'execs.range.7d': '最近 7 天',
   'execs.clearFilters': '清除筛选',
   'execs.error.title': '执行记录加载失败',
   'execs.empty': '暂无执行记录',

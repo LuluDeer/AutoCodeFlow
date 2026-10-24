@@ -351,6 +351,13 @@ export default {
   'execs.executorPlaceholder': 'Executor address',
   'execs.timeStart': 'Start time',
   'execs.timeEnd': 'End time',
+  // Time quick ranges (2026-10-25): time-granularity presets, [now-N, now]
+  // keeping h/m/s — deliberately different from the day-granularity presets on
+  // events/audit pages; this page's filter is a showTime picker and presets
+  // must share the same semantics as manual selection.
+  'execs.range.1h': 'Last 1 hour',
+  'execs.range.24h': 'Last 24 hours',
+  'execs.range.7d': 'Last 7 days',
   'execs.clearFilters': 'Clear filters',
   'execs.error.title': 'Failed to load execution history',
   'execs.empty': 'No executions yet',

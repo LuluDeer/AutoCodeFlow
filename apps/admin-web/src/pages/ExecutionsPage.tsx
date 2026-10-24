@@ -20,7 +20,7 @@ import {
   SearchOutlined, FilterOutlined, ReloadOutlined, EyeOutlined, StopOutlined,
   SwapOutlined, DownloadOutlined, LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
-import type { Dayjs } from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
@@ -685,6 +685,19 @@ export default function ExecutionsPage() {
     },
   ];
 
+  // 快捷区间（events/audit 页先例形态，2026-10-25 补齐）：执行记录的高频问法是
+  // 「最近 1/24 小时出过什么执行」——此前只有手调时刻一途。预设按**时刻粒度**
+  // 语义给（[now-N, now]，保留时分秒），onChange 后仍走下方 timeRange →
+  // toISOString() 直传，后端闭区间语义与手选完全一致。rc-picker 预设点击走
+  // triggerSubmitChange 直接提交、不经 showTime 的确认按钮（源码验证：
+  // PresetPanel li onClick → onPresetSubmit → triggerSubmitChange，rc-picker
+  // @rc-component/picker），jsdom 测试可真实点到 onChange。
+  const timePresets = [
+    { label: t('execs.range.1h'), value: [dayjs().subtract(1, 'hour'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('execs.range.24h'), value: [dayjs().subtract(24, 'hour'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('execs.range.7d'), value: [dayjs().subtract(7, 'day'), dayjs()] as [Dayjs, Dayjs] },
+  ];
+
   return (
     <div>
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，刷新进 extra） */}
@@ -779,9 +792,11 @@ export default function ExecutionsPage() {
           allowClear
           style={{ width: 180, maxWidth: '100%' }}
         />
+        {/* 快捷区间定义见上方 timePresets：时刻粒度与手选一致，预设只是少点几下。 */}
         <RangePicker
           showTime
           format="MM-DD HH:mm"
+          presets={timePresets}
           placeholder={[t('execs.timeStart'), t('execs.timeEnd')]}
           value={timeRange}
           onChange={val => { setTimeRange(val as [Dayjs, Dayjs] | null); setPage(1); resetCursorStack(stablePaging); }}

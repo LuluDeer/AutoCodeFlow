@@ -14,6 +14,7 @@
  * mock api 模块而非 axios 拦截器）；antd 浏览器 API shim 对齐既有先例。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import dayjs from 'dayjs';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -428,5 +429,57 @@ describe('ExecutionsPage 筛选空态区分（UX 边界）', () => {
     // 两行同址（fixture 的 10.0.0.1:3002），靠短行 id 区分。
     expect(await screen.findAllByText(/#aaaa1111/)).toBeTruthy();
     expect(await screen.findAllByText(/#bbbb8888/)).toBeTruthy();
+  });
+});
+
+describe('ExecutionsPage 时间快捷区间（2026-10-25 时刻粒度 presets）', () => {
+  /**
+   * 交互边界（先例：application-deployment-events.test.tsx 已记录）：antd 6.6.x
+   * RangePicker 的**日期格子/时刻面板**在 jsdom 下无法被驱动到 onChange，但
+   * **presets 预设区间**可以——rc-picker 把它渲染成真实可点击的 li，点击走
+   * triggerSubmitChange 直接提交（不经 showTime 的确认按钮，源码验证：
+   * PresetPanel li onClick → onPresetSubmit → triggerSubmitChange）。故本页
+   * showTime 形态下的时间筛选链路用预设驱动；「选任意时刻的换算」由既有
+   * toISOString 直传语义保证（无中间换算函数，无漂移空间）。
+   */
+  /** 打开时间 RangePicker 面板（click 外层 .ant-picker）。 */
+  async function openTimePanel() {
+    const picker = document.querySelector('.ant-picker') as HTMLElement;
+    expect(picker).toBeTruthy();
+    fireEvent.click(picker);
+    await waitFor(() => {
+      expect(document.querySelector('.ant-picker-dropdown')).toBeTruthy();
+    });
+  }
+
+  it('点「最近 24 小时」：请求带 startTime/endTime（时刻粒度 toISOString）并回到第 1 页', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
+    renderPage();
+    await screen.findByText('暂无执行记录');
+    mockedTasks.allExecutions.mockClear();
+
+    await openTimePanel();
+    const items = [...document.querySelectorAll<HTMLElement>('.ant-picker-presets li')];
+    const target = items.find((li) => (li.textContent ?? '') === '最近 24 小时');
+    if (!target) throw new Error(`未找到预设区间（现有：${items.map((i) => i.textContent).join(',')}）`);
+    fireEvent.click(target);
+
+    await waitFor(() => {
+      expect(mockedTasks.allExecutions.mock.calls.length).toBeGreaterThan(0);
+    });
+    const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0] as {
+      startTime?: string;
+      endTime?: string;
+      page?: number;
+    };
+    // 预设锚定「现在」，期望值同源 dayjs 现算（时区无关，避免 CI/本地时区红）。
+    // 时刻粒度：不做 startOf 归一，直接 toISOString（与手选时刻同一出口）。
+    // 预设值在渲染时求值、断言在其后运行，毫秒会自然漂移——绝对相等改用
+    // 「差值 ≤2s」窗口断言，跨度仍精确钉死 24h（预设两端同一时刻求值，
+    // 漂移互相抵消，diff 不受影响）。
+    const startDrift = Math.abs(dayjs().subtract(24, 'hour').diff(dayjs(lastCall?.startTime), 'millisecond'));
+    expect(startDrift).toBeLessThanOrEqual(2000);
+    expect(lastCall?.endTime).toBeTruthy();
+    expect(dayjs(lastCall?.endTime).diff(dayjs(lastCall?.startTime), 'hour')).toBe(24);
   });
 });
