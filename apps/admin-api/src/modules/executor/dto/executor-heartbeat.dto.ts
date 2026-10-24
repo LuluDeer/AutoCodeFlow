@@ -35,6 +35,72 @@ export class ExecutorInterpreterDto {
 }
 
 /**
+ * R3-A（部署模型评审 2026-10-23 §4.3）：心跳上报的单条**设备级应用版本事实**
+ * （apps/<appId>/ 目录扫描所得，executor-node 侧 app-inventory 同源）。
+ *
+ * 与 ExecutorInterpreterDto 同款式：只作 Swagger 文档用（内联 @Body() 仍是
+ * Object），结构校验在 service 侧（deployed-apps.util.ts）。
+ */
+export class DeployedAppDto {
+  @ApiProperty({
+    example: "5f8a3c2e-9b41-4d6a-a1b2-c3d4e5f6a7b8",
+    description: "部署时的 applicationId",
+  })
+  appId: string;
+
+  @ApiPropertyOptional({
+    example: "1.2.0",
+    nullable: true,
+    description: "设备 current 软链指向的版本；无 current（未部署成功）为 null",
+  })
+  currentVersion?: string | null;
+
+  @ApiPropertyOptional({
+    example: "1.2.0-3f9d2b7a-deploy-8t4",
+    nullable: true,
+    description: "current 软链指向的 release 目录名",
+  })
+  currentReleaseKey?: string | null;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ["1.2.0", "1.1.0"],
+    description: "设备 releases/ 下仍保留的版本集合（prune 后快照）",
+  })
+  retainedVersions?: string[];
+
+  @ApiPropertyOptional({
+    example: "daemon",
+    nullable: true,
+    enum: ["once", "daemon", "scheduled"],
+    description: "部署/升级时选择的运行模式；设备侧无记录为 null",
+  })
+  runMode?: "once" | "daemon" | "scheduled" | null;
+
+  @ApiPropertyOptional({
+    example: "2026-10-24T08:00:00.000Z",
+    nullable: true,
+    description: "最近一次部署完成时刻（ISO 8601）；无记录为 null",
+  })
+  lastDeployedAt?: string | null;
+}
+
+/**
+ * R3-A（§4.3 / P10 收敛）：心跳上报的单条已安装执行器包
+ * （executor_packages 的设备侧事实）。
+ */
+export class InstalledPackageDto {
+  @ApiProperty({ example: "python-runtime" })
+  name: string;
+
+  @ApiProperty({ example: "uv" })
+  type: string;
+
+  @ApiProperty({ example: "0.7.12" })
+  version: string;
+}
+
+/**
  * PK-03（DEEP_REVIEW 0ef3bbe）: POST /executors/heartbeat 的请求体 Swagger 文档 DTO。
  *
  * 注意：本类**仅用于 openapi schema 生成**——控制器 @Body() 仍用内联类型
@@ -152,4 +218,18 @@ export class ExecutorHeartbeatDto {
       "ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：register/heartbeat 先按指纹解析行，因此换了 IP 的机器会复用既有行，而不是新建幽灵行。缺省/非法 → 保留已存值（legacy 或采集失败的执行器绝不能把已存指纹清空），并回退到按地址查找。",
   })
   deviceFingerprint?: string | null;
+
+  @ApiPropertyOptional({
+    type: () => [DeployedAppDto],
+    description:
+      "R3-A（§4.3）：设备级应用版本事实（apps/ 目录扫描）。缺省 → 中台完全不动既有事实行（旧执行器）；[] → 设备上没有任何已部署应用（整替 = 全部既有行删除）；结构非法/超 50 项/同一 appId 重复 → 整字段拒绝采纳。落库语义：整替该执行器全部 executor_app_versions 行（数组外的应用 = 设备已卸载）。",
+  })
+  deployedApps?: DeployedAppDto[];
+
+  @ApiPropertyOptional({
+    type: () => [InstalledPackageDto],
+    description:
+      "R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。",
+  })
+  installedPackages?: InstalledPackageDto[];
 }

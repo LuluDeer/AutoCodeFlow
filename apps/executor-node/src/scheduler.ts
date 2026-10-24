@@ -10,6 +10,8 @@ import { getDeviceFingerprint } from './device-identity';
 import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelope';
 // A7（第四轮审计）：磁盘水位随心跳透出（admin 既有 diskUsage 列，免迁移）。
 import { diskUsagePercentOrNull } from './file-logger';
+// R3-B（部署模型评审 2026-10-23 §4.3/§P5）：设备级应用版本事实随心跳上报。
+import { collectDeployedAppsForHeartbeat } from './deployed-apps';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
@@ -300,6 +302,12 @@ async function sendHeartbeat() {
       // 池里根本没有 3.12 的执行器上。provider 走 WS3 的 TTL 探测缓存，
       // 心跳路径零 uv 进程开销（NFR-10）。
       interpreters: await collectInterpreters(),
+      // R3-B（部署模型评审 2026-10-23 §4.3/§P5）：设备级应用版本事实（本机
+      // apps/ 的 current/保留版本清单）。纯附加可选键——扫描失败 → undefined
+      // （JSON 序列化丢键 =「未上报」，admin 保留旧值），绝不阻塞或弄挂心跳
+      // 本体；与 interpreters 的「失败收敛空数组」刻意不同：apps/ 不可读时
+      // 我们不知道有没有应用，空数组会把「未知」伪装成「无应用」。
+      deployedApps: collectDeployedAppsForHeartbeat(),
       // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
       // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
       maxConcurrentTasks: config.maxConcurrentTasks,

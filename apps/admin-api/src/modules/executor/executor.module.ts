@@ -9,6 +9,9 @@ import { ExecutorPullService } from "./executor-pull.service";
 import { Executor } from "./entities/executor.entity";
 // FEAT-04: metrics history read side for GET /executors/:id/metrics `history`
 import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
+// R3-A（部署模型评审 §4.3）：设备级应用版本事实（心跳 deployedApps 落库 +
+// getReleases devices 读面 + 派发版本跟随的事实源）。
+import { ExecutorAppVersion } from "./entities/executor-app-version.entity";
 import { Task } from "../task/entities/task.entity";
 import { TaskExecution } from "../task/entities/task-execution.entity";
 // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：派发时解析 zip 渠道
@@ -49,6 +52,8 @@ import { ProjectsModule } from "../project/projects.module";
       Task,
       TaskExecution,
       ExecutorMetricsHistory,
+      // R3-A（§4.3）：executor_app_versions（心跳落库 + 读面/派发消费）。
+      ExecutorAppVersion,
       // python_task_multiversion（WS2）：packageUrl 解析（只读）。
       Application,
       // ARCH-35 P1：部署归属偏好（只读 app_deployments，见上方 import 注）。

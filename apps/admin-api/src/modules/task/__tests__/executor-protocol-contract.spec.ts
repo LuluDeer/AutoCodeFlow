@@ -117,14 +117,17 @@ describe("A3 执行器协议契约（admin-api 侧）", () => {
     expect(dto.deviceFingerprint).toBe("a".repeat(64));
   });
 
-  it("ADR-017 v6：协议版本矩阵含 6，且 currentProtocolVersion === 6", () => {
-    // 版本矩阵必须为 v6 登记条目——缺条目会让本方案的「中台可区分 v6/v5」
-    // 前提落空（evolutionRules 第 1 条要求新增可选字段也 bump）。
-    expect(protocol.versioning.currentProtocolVersion).toBe(6);
+  it("ADR-017 v6 + R3-B v7：矩阵含 6/7，且 currentProtocolVersion === 7", () => {
+    // 版本矩阵必须为每个 bump 过的版本登记条目——缺条目会让「中台可区分
+    // 相邻版本」的前提落空（evolutionRules 第 1 条要求新增可选字段也 bump）。
+    // v6 = ADR-017 回调 deviceFingerprint；v7 = R3-B（部署模型评审 §4.3）
+    // register/heartbeat 可选 deployedApps/installedPackages。
+    expect(protocol.versioning.currentProtocolVersion).toBe(7);
     const versions = protocol.versioning.compatibilityMatrix.map(
       (m: { protocolVersion: number }) => m.protocolVersion,
     );
     expect(versions).toContain(6);
+    expect(versions).toContain(7);
     // 既有版本条目不得被删（已发布端按旧条目断言）。
     for (const v of [1, 2, 3, 4, 5]) expect(versions).toContain(v);
   });

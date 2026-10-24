@@ -103,6 +103,25 @@ export interface VersionHistoryEntry {
 }
 
 /**
+ * R3-A（部署模型评审 2026-10-23 §4.3）：版本行上的设备徽标——正在运行或
+ * 本地保留该版本的设备（设备心跳上报的事实，非部署行推断）。
+ */
+export interface AppReleaseDevice {
+  /** 执行器行 id */
+  executorId: string;
+  /** 执行器可读名（executors.appName）；行已删/未上报名时 null */
+  executorName: string | null;
+  /** 该设备该应用 current 指向的版本（保留场景下可能与本行版本不同） */
+  currentVersion: string | null;
+  /** 本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本） */
+  retained: boolean;
+  /** executors.status === ONLINE（离线设备的版本事实可能已过期） */
+  online: boolean;
+  /** executors.lastHeartbeat（设备最后上报时刻，ISO） */
+  lastHeartbeat: string | null;
+}
+
+/**
  * DEP-01：统一发布追溯行（GET /applications/:id/releases）。
  * 一行 = 一次版本发布：版本快照（application_versions）+ 该版本最近一次部署
  * （app_deployments）两语义面合并。与后端 dto/app-release.dto.ts 逐字段对齐。
@@ -137,6 +156,11 @@ export interface AppReleaseRow {
   createdAt: string | null;
   /** 部署记录合成行（从未保存版本快照的历史数据，deployedVersion=null 归一 version=null） */
   synthetic: boolean;
+  /**
+   * R3-A（§4.3）：正在运行或本地保留该版本的设备（设备上报事实聚合）。
+   * 旧后端（R3-A 前）不带该键——可选以兼容过渡期；无设备上报时为空数组。
+   */
+  devices?: AppReleaseDevice[];
 }
 
 export interface AppReleasesPage {

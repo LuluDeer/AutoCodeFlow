@@ -51,6 +51,7 @@ import {
 } from "./dto/app-deployment.dto";
 import {
   AppReleaseRow,
+  AppReleaseDevice,
   ReleaseTriggerType,
   RELEASE_OPERATOR_MISSING_REASON,
 } from "./dto/app-release.dto";
@@ -631,6 +632,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       : [];
     const sourceById = new Map(sourceDeployments.map((d) => [d.id, d]));
 
+    // R3-A（§4.3）：设备级版本事实（心跳上报，executor_app_versions）——
+    // 每版本行聚合 devices 徽标（正在运行/本地保留该版本的设备）。一次取全
+    // 应用事实、行内内存匹配；无任何设备上报（旧执行器混合窗口期）时为
+    // 空数组，行上 devices 恒存在（只增不改），部署行推断字段原样保留。
+    const deviceFacts =
+      await this.executorService.getAppVersionFacts(applicationId);
+
     const data: AppReleaseRow[] = versions.map((v) => {
       const latest = latestByDeployment.get(v.version) ?? null;
       const snapshot =
@@ -668,6 +676,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         status: v.status,
         createdAt: v.createdAt ? new Date(v.createdAt).toISOString() : null,
         synthetic: false,
+        devices: this.buildReleaseDevices(v.version, deviceFacts),
       };
     });
 
@@ -745,6 +754,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           status: latest.status,
           createdAt: deployedAt ? new Date(deployedAt).toISOString() : null,
           synthetic: true,
+          // R3-A：synthetic 行同享设备徽标（key 是真实版本串时；__unknown__
+          // 无版本可比对 → devices 恒空）。
+          devices: this.buildReleaseDevices(
+            key === "__unknown__" ? null : key,
+            deviceFacts,
+          ),
         });
       }
     }
@@ -769,6 +784,35 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       pageSize: safePageSize,
       truncated,
     };
+  }
+
+  /**
+   * R3-A（§4.3）：版本行的设备徽标聚合——只列「currentVersion === 该版本
+   * （正在运行）或 该版本 ∈ retainedVersions（本地保留）」的设备。
+   *
+   * `retained` 如实表达「本行版本 ∈ 设备 retainedVersions」（设备磁盘上仍
+   * 持有该版本，可本地切回）；「运行中/保留」的展示区分由消费方按
+   * `currentVersion === 行版本` 判定（设备 current 正指向该版本时通常
+   * 同时 retained=true，两者不互斥）。
+   */
+  private buildReleaseDevices(
+    version: string | null,
+    facts: Awaited<ReturnType<ExecutorService["getAppVersionFacts"]>>,
+  ): AppReleaseDevice[] {
+    if (!version) return [];
+    return facts
+      .filter(
+        (f) =>
+          f.currentVersion === version || f.retainedVersions.includes(version),
+      )
+      .map((f) => ({
+        executorId: f.executorId,
+        executorName: f.executorName,
+        currentVersion: f.currentVersion,
+        retained: f.retainedVersions.includes(version),
+        online: f.online,
+        lastHeartbeat: f.lastHeartbeat,
+      }));
   }
 
   /** DEP-01：从部署行的持久化信号推导触发方式（无 trigger 列，零 schema 变更）。

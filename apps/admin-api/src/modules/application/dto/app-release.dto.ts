@@ -19,6 +19,28 @@ export const RELEASE_OPERATOR_MISSING_REASON =
   "存量部署行无 operator（迁移 1790000000004 前的写入路径未记录），且回退源 application_versions.createdBy 未由历史路径填充";
 
 /**
+ * R3-A（部署模型评审 2026-10-23 §4.3）：版本行上的**设备徽标**——只列
+ * 「currentVersion === 该版本 或 该版本 ∈ 设备 retainedVersions」的设备
+ * （正在跑该版 / 本地仍保留该版）。数据来自执行器心跳上报的设备级事实
+ * （executor_app_versions），不是部署行推断。
+ */
+export interface AppReleaseDevice {
+  /** 执行器行 id（事实行的 executorId）。 */
+  executorId: string;
+  /** 执行器可读名（executors.appName，useExecutorNames.nameOf 同口径）；
+   *  行已删/未上报名时 null。 */
+  executorName: string | null;
+  /** 该设备该应用 current 指向的版本（保留场景下可能与本行版本不同）。 */
+  currentVersion: string | null;
+  /** 本行版本 ∈ 设备 retainedVersions（仍在 releases/ 磁盘上，可本地切回）。 */
+  retained: boolean;
+  /** executors.status === ONLINE（离线设备的版本事实可能已过期，前端置灰）。 */
+  online: boolean;
+  /** executors.lastHeartbeat（设备最后上报时刻，ISO；离线标注用）。 */
+  lastHeartbeat: string | null;
+}
+
+/**
  * DEP-01：一行 = 一次「版本发布」在部署语义下的统一追溯视图。
  * 数据源 = application_versions（版本号/包地址/gitCommit/操作人）
  *        + app_deployments 按 deployedVersion 聚合（部署时间/状态/触发方式）。
@@ -62,6 +84,13 @@ export interface AppReleaseRow {
   createdAt: string | null;
   /** 是否由部署记录合成（应用从未为本次部署保存版本快照，如心跳先到的竞态） */
   synthetic: boolean;
+  /**
+   * R3-A（§4.3）：正在运行或本地保留该版本的设备清单（设备心跳上报的
+   * 事实聚合；无任何设备上报时为空数组）。**只增不改**：其余部署推断字段
+   * （deploymentStatus/executorAddress/deploymentCount）保留原语义不动——
+   * 渐进迁移，推断性质见 docs/api-reference.md 的标注。
+   */
+  devices: AppReleaseDevice[];
 }
 
 /** DEP-01：/applications/:id/releases 查询参数（默认 50，上限 200，防全表）。 */

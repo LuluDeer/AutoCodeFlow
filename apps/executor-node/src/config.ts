@@ -166,6 +166,11 @@ export const config = {
   // NETOPT-F P3-2: 改用 envInt（`|| 30` 会把 env=0 吞成默认 30——语义应为
   // 钳到下界 5；与 maxConcurrentTasks 已改 envInt 的语义对齐）。
   heartbeatIntervalSeconds: Math.min(Math.max(envInt('HEARTBEAT_INTERVAL_SECONDS', 30), 5), 60),
+  // R3-B（部署模型评审 2026-10-23 §4.3）：deployedApps 心跳清单的扫描 TTL
+  // （秒）。默认 60 = 心跳 30s 一拍时每两拍扫一次盘；部署成功会主动失效缓存
+  // （deploy.ts 调 invalidateDeployedAppsCache），上报时效不受 TTL 拖延。env 钳
+  // 5..600（同 envInt/上下界钳制的家族语义）。
+  deployedAppsScanTtlSeconds: Math.min(Math.max(envInt('DEPLOYED_APPS_SCAN_TTL_SECONDS', 60), 5), 600),
   logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
   // ---------------------------------------------------------------------
   // P2/L-2：磁盘水位红线（对齐 executor-python config.disk_warn_percent /
@@ -511,8 +516,22 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 从而对前者做真实行身份判定、对后者保持既有地址判据，并观测机队覆盖率。
  * 仅新增**可选**字段：PROTOCOL_CONTROL_PLANE_MIN 仍为 2、
  * supportedMinProtocolVersion 仍为 1，不改变任何既有分支。
+ *
+ * R3-B（2026-10-24，部署模型评审 §4.3/P5）：6 → 7。register/heartbeat 新增
+ * **可选**键 `deployedApps`（deployed-apps.ts 扫描的设备级应用版本事实）与
+ * `installedPackages`（已安装执行器包清单；executor-node 暂无可得事实源，
+ * 按 fail-honest 省略键——契约三态语义里「缺省 = 未上报」，合法）。
+ *
+ * bump 的目的与 v2~v6 同款（evolutionRules 第 1 条）：让中台能区分「v7 执行
+ * 器应上报设备事实」与「旧执行器无此事实可报」，为 R3-A 读面/派发面（版本跟
+ * 随的设备事实优先回退链）提供混合窗口期判据。执行器侧扫描失败 → 省略键，
+ * 绝不因扫描阻塞或弄挂心跳本体。仅新增**可选**字段：
+ * PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，
+ * 不改变任何既有分支。三端同值由 admin protocol-version-consistency.spec
+ * 钉住（node === python === protocol.json currentProtocolVersion；python 本
+ * 轮仅同步常量、不落地上报，v7 键对它是可选省略，协议合法）。
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /**
  * A-6（P2）：express.json() 请求体上限。express 默认 100KB，而 admin 派发载荷

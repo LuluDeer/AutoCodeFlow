@@ -949,6 +949,64 @@ function ReleasesTab({ app }: { app: Application }) {
       },
     },
     {
+      // R3-A（部署模型评审 §4.3）：设备徽标——设备心跳上报的「谁在跑/保留这一版」。
+      // 与「执行器」列（最近一次部署行的地址快照，推断）不同源：本列是设备事实。
+      title: t('appDetail.releases.col.devices'),
+      dataIndex: 'devices',
+      width: 210,
+      render: (_: unknown, r: AppReleaseRow) => {
+        const devices = r.devices ?? [];
+        // 旧后端（R3-A 前）/无任何设备上报：无徽标。与「未部署」区分——
+        // 部署推断字段仍在（执行器列/部署状态列），此处如实显示占位。
+        if (devices.length === 0) return <Text type="secondary">-</Text>;
+        return (
+          <Space size={4} wrap>
+            {devices.map((d) => {
+              // 名字以响应内嵌的 executorName 为准（后端聚合），缺失时回落
+              // 本页清单索引，再回落 id 前缀——绝不显示「未知设备」编造。
+              const name =
+                d.executorName ||
+                nameOf({ executorId: d.executorId }) ||
+                d.executorId.slice(0, 8);
+              const running = d.currentVersion === r.version;
+              const label = running
+                ? t('appDetail.releases.deviceRunning')
+                : t('appDetail.releases.deviceRetained');
+              return (
+                <Tooltip
+                  key={d.executorId}
+                  title={
+                    d.online
+                      ? name
+                      : t('appDetail.releases.deviceOfflineAt', {
+                          time: d.lastHeartbeat
+                            ? formatDateTime(d.lastHeartbeat)
+                            : t('appDetail.releases.deviceOfflineUnknown'),
+                        })
+                  }
+                >
+                  {/* 离线置灰：设备不再上报后版本事实可能已过期（卸载/切换）， */}
+                  {/* 不能继续与在线设备同权重展示 */}
+                  <Tag
+                    data-testid="release-device-badge"
+                    color={d.online ? (running ? 'green' : 'blue') : 'default'}
+                    style={
+                      d.online
+                        ? undefined
+                        : { color: '#9ca3af', background: '#fafafa' }
+                    }
+                  >
+                    {name} · {label}
+                    {!d.online ? ` · ${t('appDetail.releases.deviceOffline')}` : ''}
+                  </Tag>
+                </Tooltip>
+              );
+            })}
+          </Space>
+        );
+      },
+    },
+    {
       title: t('appDetail.releases.col.operator'), dataIndex: 'operator', width: 110,
       render: (v: string | null) =>
         v ? v : (
@@ -980,8 +1038,8 @@ function ReleasesTab({ app }: { app: Application }) {
         dataSource={rows}
         loading={loading}
         size="small"
-        // UI 打磨：固定列合计 740 + executor 弹性列最小宽，补 scroll.x
-        scroll={{ x: 920 }}
+        // UI 打磨：固定列合计 740 + devices 210 + executor 弹性列最小宽，补 scroll.x
+        scroll={{ x: 1130 }}
         data-testid="releases-table"
         pagination={{
           current: page,

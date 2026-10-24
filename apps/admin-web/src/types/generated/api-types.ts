@@ -5017,6 +5017,50 @@ export interface components {
              */
             discoveredAt?: string;
         };
+        DeployedAppDto: {
+            /**
+             * @description 部署时的 applicationId
+             * @example 5f8a3c2e-9b41-4d6a-a1b2-c3d4e5f6a7b8
+             */
+            appId: string;
+            /**
+             * @description 设备 current 软链指向的版本；无 current（未部署成功）为 null
+             * @example 1.2.0
+             */
+            currentVersion?: string | null;
+            /**
+             * @description current 软链指向的 release 目录名
+             * @example 1.2.0-3f9d2b7a-deploy-8t4
+             */
+            currentReleaseKey?: string | null;
+            /**
+             * @description 设备 releases/ 下仍保留的版本集合（prune 后快照）
+             * @example [
+             *       "1.2.0",
+             *       "1.1.0"
+             *     ]
+             */
+            retainedVersions?: string[];
+            /**
+             * @description 部署/升级时选择的运行模式；设备侧无记录为 null
+             * @example daemon
+             * @enum {string|null}
+             */
+            runMode?: "once" | "daemon" | "scheduled" | null;
+            /**
+             * @description 最近一次部署完成时刻（ISO 8601）；无记录为 null
+             * @example 2026-10-24T08:00:00.000Z
+             */
+            lastDeployedAt?: string | null;
+        };
+        InstalledPackageDto: {
+            /** @example python-runtime */
+            name: string;
+            /** @example uv */
+            type: string;
+            /** @example 0.7.12 */
+            version: string;
+        };
         ExecutorRegisterDto: {
             /**
              * @description 执行器应用名称
@@ -5110,6 +5154,10 @@ export interface components {
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string | null;
+            /** @description R3-A（§4.3）：设备级应用版本事实（执行器启动时随注册上报一份，语义与心跳 deployedApps 完全一致：缺省 → 不动；[] → 设备无已部署应用；非法 → 整字段拒绝）。 */
+            deployedApps?: components["schemas"]["DeployedAppDto"][];
+            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单（语义与心跳 installedPackages 完全一致）。 */
+            installedPackages?: components["schemas"]["InstalledPackageDto"][];
         };
         ExecutorRegisterResponseDto: {
             /** Format: uuid */
@@ -5291,6 +5339,10 @@ export interface components {
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string | null;
+            /** @description R3-A（§4.3）：设备级应用版本事实（apps/ 目录扫描）。缺省 → 中台完全不动既有事实行（旧执行器）；[] → 设备上没有任何已部署应用（整替 = 全部既有行删除）；结构非法/超 50 项/同一 appId 重复 → 整字段拒绝采纳。落库语义：整替该执行器全部 executor_app_versions 行（数组外的应用 = 设备已卸载）。 */
+            deployedApps?: components["schemas"]["DeployedAppDto"][];
+            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。 */
+            installedPackages?: components["schemas"]["InstalledPackageDto"][];
         };
         ExecutorHeartbeatResponseDto: {
             /** Format: uuid */
@@ -6824,6 +6876,20 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        AppReleaseDeviceDto: {
+            /** @description 执行器行 id */
+            executorId: string;
+            /** @description 执行器可读名（executors.appName）；行已删/未上报名时 null */
+            executorName: string | null;
+            /** @description 该设备该应用 current 指向的版本（保留场景下可能与本行版本不同） */
+            currentVersion: string | null;
+            /** @description 本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本） */
+            retained: boolean;
+            /** @description executors.status === ONLINE（离线设备的版本事实可能已过期） */
+            online: boolean;
+            /** @description executors.lastHeartbeat（设备最后上报时刻，ISO） */
+            lastHeartbeat: string | null;
+        };
         AppReleaseRowDto: {
             /**
              * Format: uuid
@@ -6856,6 +6922,8 @@ export interface components {
             operatorSource: "deployments.operator" | "application_versions.createdBy";
             /** @description operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON） */
             operatorMissingReason: string;
+            /** @description R3-A（§4.3）：正在运行或本地保留该版本的设备（设备心跳上报事实；无设备上报时为空数组）。deploymentStatus/executorAddress 等字段仍是部署行推断（渐进迁移），设备真实状态以本字段为准。响应字段只增不改 */
+            devices: components["schemas"]["AppReleaseDeviceDto"][];
         };
         AppReleasesResponseDto: {
             data: components["schemas"]["AppReleaseRowDto"][];

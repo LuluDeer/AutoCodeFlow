@@ -1943,6 +1943,13 @@ export default {
   'appDetail.releases.trigger.upgrade': 'Rolling Upgrade',
   'appDetail.releases.trigger.manual': 'Manual Deploy',
   'appDetail.releases.trigger.unknown': 'Unknown',
+  // R3-A (deployment-model review §4.3): per-device badges on release rows.
+  'appDetail.releases.col.devices': 'Devices',
+  'appDetail.releases.deviceRunning': 'Running',
+  'appDetail.releases.deviceRetained': 'Retained',
+  'appDetail.releases.deviceOffline': 'Offline',
+  'appDetail.releases.deviceOfflineAt': 'Offline, last reported {{time}}',
+  'appDetail.releases.deviceOfflineUnknown': 'time unknown',
   // UX-06: the release-history Status column used to render raw enums.
   'appDetail.history.status.released': 'Released',
   'appDetail.history.status.running': 'Running',

@@ -117,7 +117,12 @@ describe("AppDeploymentService.getReleases (DEP-01)", () => {
         },
         {
           provide: ExecutorService,
-          useValue: { getSharedToken: async () => null },
+          // R3-A（§4.3）：getReleases 的设备徽标聚合源（默认无设备事实，
+          // devices 断言见 app-releases.devices.spec）
+          useValue: {
+            getSharedToken: async () => null,
+            getAppVersionFacts: async () => [],
+          },
         },
         {
           provide: ConfigService,

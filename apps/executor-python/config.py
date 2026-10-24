@@ -509,5 +509,15 @@ EXECUTOR_VERSION = '2.0.0'
 # 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。与 node 侧
 # config.ts PROTOCOL_VERSION 必须同值（强一致性闸 = admin-api
 # protocol-version-consistency.spec.ts）。
-PROTOCOL_VERSION = 6
+#
+# R3-B（2026-10-24，部署模型评审 §4.3/P5）：6 → 7。register/heartbeat 新增
+# **可选**键 `deployedApps`（设备级应用版本事实）与 `installedPackages`（已
+# 安装执行器包清单），方向为**执行器→中台**（中台只采信落库：executor_app_
+# versions 整替语义 / executors.installedPackages jsonb）。本侧**只同步版本
+# 常量、不落地上报**——两键对执行器是可选省略（缺省 = 未上报，中台不动既有
+# 数据），python 的 apps/ 扫描上报为后续工作；协议版本声明的是「讲 v7 语言」
+# （与 v2 的 commands python 仅实现两型本地路由仍列实现方同款口径）。
+# PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，
+# 不改变任何既有分支。同值闸同上（node === python === protocol.json）。
+PROTOCOL_VERSION = 7
 

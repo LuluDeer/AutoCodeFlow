@@ -18,6 +18,7 @@ import type { ResolvedTool } from '../toolchain';
 import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
+import { invalidateDeployedAppsCache } from '../deployed-apps';
 import { ZipSafetyError, safeExtractZip } from '../zip-safety';
 import { isExecutorShuttingDown } from '../shutdown-state';
 
@@ -1412,6 +1413,11 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       if (pruned.length > 0) {
         logger.info(`[deploy] retention: pruned ${pruned.length} old release(s) for ${appName}`);
       }
+
+      // R3-B（部署模型评审 §4.3）：current/retained 事实已变——失效心跳清单
+      // 缓存，下一次心跳即上报新版本（不受扫描 TTL 拖延）。只清缓存，不影响
+      // 部署主链（对齐上方 app.json 的 best-effort 姿态）。
+      invalidateDeployedAppsCache();
 
       // Start app if runMode is daemon or once
       // Pick a sensible default entrypoint based on runtime when none was specified

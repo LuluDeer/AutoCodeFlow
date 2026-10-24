@@ -2,6 +2,9 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 // python_task_multiversion（WS2）：解释器清单条目 DTO 与心跳共用一份定义
 // （两处上报同一形状，分开定义必然漂移）。
 import { ExecutorInterpreterDto } from "./executor-heartbeat.dto";
+// R3-A（部署模型评审 §4.3）：设备级应用版本事实/已安装包清单同样与心跳共用
+// 一份定义（同一上报形状，分开定义必然漂移）。
+import { DeployedAppDto, InstalledPackageDto } from "./executor-heartbeat.dto";
 
 /**
  * PK-03（DEEP_REVIEW 0ef3bbe）: POST /executors/register 的请求体 Swagger 文档 DTO。
@@ -126,4 +129,18 @@ export class ExecutorRegisterDto {
       "ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：注册时先按指纹解析行（地址退化为可达性元数据）。缺省/非法 → 保留已存值并回退到按地址查找；从未上报过指纹的行会带上服务端生成的 `legacy:{address}` 兜底键。",
   })
   deviceFingerprint?: string | null;
+
+  @ApiPropertyOptional({
+    type: () => [DeployedAppDto],
+    description:
+      "R3-A（§4.3）：设备级应用版本事实（执行器启动时随注册上报一份，语义与心跳 deployedApps 完全一致：缺省 → 不动；[] → 设备无已部署应用；非法 → 整字段拒绝）。",
+  })
+  deployedApps?: DeployedAppDto[];
+
+  @ApiPropertyOptional({
+    type: () => [InstalledPackageDto],
+    description:
+      "R3-A（§4.3/P10）：设备已安装的执行器包清单（语义与心跳 installedPackages 完全一致）。",
+  })
+  installedPackages?: InstalledPackageDto[];
 }

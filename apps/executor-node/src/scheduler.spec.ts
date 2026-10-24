@@ -5,6 +5,10 @@ jest.mock('./config', () => ({
     maxConcurrentTasks: 10,
     executorAddress: 'localhost:8002',
     executorAddressPublic: '',
+    // R3-B：默认指向不存在的目录 → deployedApps 稳定为 []（apps/ ENOENT =
+    // 「本机无部署应用」的真事实），既有用例互不干扰。
+    workDir: '/nonexistent-deployed-apps-r3b',
+    deployedAppsScanTtlSeconds: 60,
   },
 }));
 jest.mock('./logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
@@ -321,5 +325,110 @@ describe('scheduler', () => {
     expect(body.interpreters[0].version).toBe('3.12.1');
     clearInterval(timer);
     registerInterpretersProvider(async () => []);
+  });
+
+  // R3-B（部署模型评审 2026-10-23 §4.3/§P5）：心跳携带设备级应用版本事实。
+  // 纯附加可选键——旧字段必须原样在场（不因新增键改既有字段与失败语义）。
+  it('R3-B: reports deployedApps in the heartbeat body alongside intact legacy fields', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { config } = require('./config');
+    const { resetDeployedAppsCacheForTest } = require('./deployed-apps');
+
+    // deploy.ts 落盘形态的最小事实：apps/<appId>/current → releases/<releaseKey>
+    // + app.json（见 deployed-apps.spec 的完整解析矩阵，此处只证心跳接线）。
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-r3b-hb-'));
+    const appId = '11111111-1111-4111-8111-111111111111';
+    const releaseKey = '1.2.3-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    fs.mkdirSync(path.join(workDir, 'apps', appId, 'releases', releaseKey), { recursive: true });
+    fs.symlinkSync(
+      path.join(workDir, 'apps', appId, 'releases', releaseKey),
+      path.join(workDir, 'apps', appId, 'current'),
+      'dir',
+    );
+    fs.writeFileSync(
+      path.join(workDir, 'apps', appId, 'app.json'),
+      JSON.stringify({
+        runMode: 'daemon',
+        lastVersion: '1.2.3',
+        lastDeployedAt: '2026-10-23T10:00:00.000Z',
+      }),
+    );
+
+    const originalWorkDir = config.workDir;
+    resetDeployedAppsCacheForTest();
+    try {
+      config.workDir = workDir;
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      expect(body.deployedApps).toEqual([
+        {
+          appId,
+          currentVersion: '1.2.3',
+          currentReleaseKey: releaseKey,
+          retainedVersions: ['1.2.3'],
+          runMode: 'daemon',
+          lastDeployedAt: '2026-10-23T10:00:00.000Z',
+        },
+      ]);
+      // 旧字段不因新增键而缺席（粘性 provider/热更过的 config 值只断类型——
+      // 它们由各自的既有用例钉死，这里只守「附加键不破坏既有 body」红线）。
+      expect(body.address).toBe('localhost:8002');
+      expect(body.version).toBe('1.0.0');
+      expect(typeof body.cpuUsage).toBe('number');
+      expect(typeof body.memUsage).toBe('number');
+      expect(typeof body.runningTaskCount).toBe('number');
+      expect(typeof body.reservedSlots).toBe('number');
+      expect(typeof body.deadLetterCount).toBe('number');
+      expect(typeof body.maxConcurrentTasks).toBe('number');
+      expect(Array.isArray(body.runningExecutionIds)).toBe(true);
+      expect(Array.isArray(body.interpreters)).toBe(true);
+      expect(typeof body.restartedAt).toBe('string');
+      expect(typeof body.startupId).toBe('string');
+      clearInterval(timer);
+    } finally {
+      config.workDir = originalWorkDir;
+      resetDeployedAppsCacheForTest();
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  // fail-honest 红线（§4.3）：扫描失败 → 省略整键（JSON 序列化丢键 =「未上报」，
+  // admin 保留旧值），绝不阻塞或弄挂心跳本体（对齐 A7 diskUsage 的失败语义）。
+  it('R3-B: scan failure omits deployedApps but the heartbeat still goes out', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { config } = require('./config');
+    const { resetDeployedAppsCacheForTest } = require('./deployed-apps');
+
+    // apps/ 目录级不可读（普通文件占位 → ENOTDIR ≠ ENOENT → 扫描抛错）
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-r3b-hb-fail-'));
+    fs.writeFileSync(path.join(workDir, 'apps'), 'not a directory');
+
+    const originalWorkDir = config.workDir;
+    resetDeployedAppsCacheForTest();
+    try {
+      config.workDir = workDir;
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      // 心跳本体照发，其余字段完好
+      expect(body.address).toBe('localhost:8002');
+      expect(typeof body.runningTaskCount).toBe('number');
+      // deployedApps 为 undefined → JSON.stringify 丢键（A7 diskUsage 同款断言）
+      expect(body.deployedApps).toBeUndefined();
+      clearInterval(timer);
+    } finally {
+      config.workDir = originalWorkDir;
+      resetDeployedAppsCacheForTest();
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
   });
 });

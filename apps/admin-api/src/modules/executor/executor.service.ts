@@ -35,6 +35,16 @@ import {
   ExecutorType,
 } from "./entities/executor.entity";
 import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
+// R3-A（部署模型评审 2026-10-23 §4.3 / §九 9.3-1）：设备级应用版本事实表 +
+// 心跳上报契约（结构校验 deployed-apps.util.ts）。
+import { ExecutorAppVersion } from "./entities/executor-app-version.entity";
+import {
+  MAX_DEPLOYED_APPS,
+  normalizeDeployedApps,
+  normalizeInstalledPackages,
+  type DeployedAppReport,
+  type InstalledPackageReport,
+} from "./deployed-apps.util";
 import { ExecutorTokenCacheSyncService } from "./token-cache-sync.service";
 import {
   TaskExecution,
@@ -335,6 +345,10 @@ const HEARTBEAT_OWNED_COLUMNS = [
   "deadLetterCount",
   "interpreters",
   "deviceFingerprint",
+  // R3-A（§4.3/P10）：已安装执行器包清单（三态采纳同 interpreters；deployedApps
+  // 落的是独立表 executor_app_versions，不走 executors 列白名单——见
+  // applyReportedAppVersions）。
+  "installedPackages",
 ] as const;
 
 /** 心跳白名单列名(见 HEARTBEAT_OWNED_COLUMNS 的逐列依据)。 */
@@ -388,6 +402,8 @@ const REGISTER_OWNED_COLUMNS = [
   "runningTaskCount",
   "executorStartedAt",
   "executorStartupId",
+  // R3-A（§4.3/P10）：已安装执行器包清单（注册面同心跳三态采纳）。
+  "installedPackages",
 ] as const;
 
 /** register 白名单列名(见 REGISTER_OWNED_COLUMNS 的逐列依据)。 */
@@ -676,6 +692,15 @@ export class ExecutorService implements OnModuleInit {
     @Optional()
     @InjectRepository(ApplicationVersion)
     private readonly applicationVersionRepo: Repository<ApplicationVersion> | null = null,
+    // R3-A（§4.3）：`executor_app_versions` 读写仓库——心跳 deployedApps 落库
+    // （applyReportedAppVersions）、getReleases devices 读面
+    // （getAppVersionFacts）、派发版本跟随的事实源（resolveVersionFollowPackage）。
+    // @Optional 同先例——存量单测装配未提供时为 null：落库静默跳过（warn）、
+    // 读面返回空（调用方回退部署行推断），主链（注册/心跳/派发）不受影响。
+    // 同样**必须是最后一个位置参数**（位置参数装配兼容性约束同上）。
+    @Optional()
+    @InjectRepository(ExecutorAppVersion)
+    private readonly executorAppVersionRepo: Repository<ExecutorAppVersion> | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -1897,6 +1922,13 @@ export class ExecutorService implements OnModuleInit {
     // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单。
     // 缺省 → 不动 DB；结构非法 → 拒绝采纳 + warn；合法（含 []）→ 覆盖。
     interpreters?: ExecutorInterpreter[] | null;
+    // R3-A（部署模型评审 §4.3）：设备级应用版本事实。缺省 → 完全不动
+    // executor_app_versions 既有行（旧执行器零影响）；结构非法 → 整字段拒绝
+    // + warn；合法（含 [] = 设备无已部署应用）→ 整替该执行器全部行
+    // （applyReportedAppVersions）。
+    deployedApps?: DeployedAppReport[] | null;
+    // R3-A（§4.3/P10）：已安装执行器包清单（三态语义同 interpreters）。
+    installedPackages?: InstalledPackageReport[] | null;
   }) {
     // ADR-017 阶段 3：身份解析——**指纹优先**（跨重启稳定的安装身份），
     // `address` 兜底（legacy 执行器/采集失败）。命中指纹行即**复用原行**并
@@ -2111,6 +2143,31 @@ export class ExecutorService implements OnModuleInit {
           `(expected an array of { version: "X.Y" | "X.Y.Z" }); keeping stored value`,
       );
     }
+    // R3-A（§4.3）：deployedApps / installedPackages 三态校验（deployed-apps.util.ts）。
+    // 与 interpreters 同一纪律：缺省 → 不动 DB（旧执行器重注册不得把已上报的
+    // 事实擦掉）；结构非法 → 整字段拒绝采纳 + warn（deployedApps 是全量快照，
+    // 半采纳会让「整替」语义失真——宁可不采纳也不写错事实）。
+    const installedPackagesReported = data.installedPackages !== undefined;
+    const normalizedInstalledPackages = installedPackagesReported
+      ? normalizeInstalledPackages(data.installedPackages)
+      : null;
+    if (installedPackagesReported && normalizedInstalledPackages === null) {
+      this.logger.warn(
+        `Executor ${data.address} reported an invalid installedPackages payload ` +
+          `(expected an array of { name, type, version }); keeping stored value`,
+      );
+    }
+    const deployedAppsReported = data.deployedApps !== undefined;
+    const normalizedDeployedApps = deployedAppsReported
+      ? normalizeDeployedApps(data.deployedApps)
+      : null;
+    if (deployedAppsReported && normalizedDeployedApps === null) {
+      this.logger.warn(
+        `Executor ${data.address} reported an invalid deployedApps payload ` +
+          `(expected an array of { appId, currentVersion, retainedVersions, ... }, ` +
+          `<=${MAX_DEPLOYED_APPS} items); keeping stored executor_app_versions rows`,
+      );
+    }
     if (!e) {
       // F-7: create the entity from an explicit field whitelist — never pass
       // caller-controlled data through repo.create(). A raw spread would let
@@ -2150,6 +2207,9 @@ export class ExecutorService implements OnModuleInit {
         // python_task_multiversion：首注册即上报则落列；缺省/非法 → undefined
         // → 列保持 NULL（= 未上报，调度按 ["3.12"] 兜底）。
         interpreters: normalizedInterpreters ?? undefined,
+        // R3-A（§4.3/P10）：已安装包清单首注册即上报则落列；缺省/非法 →
+        // undefined → 列保持 NULL（= 未上报，与 interpreters 同款三态）。
+        installedPackages: normalizedInstalledPackages ?? undefined,
         status: ExecutorStatus.ONLINE,
         lastHeartbeat: new Date(),
       } as Partial<Executor>);
@@ -2163,6 +2223,19 @@ export class ExecutorService implements OnModuleInit {
       // 非 23505、或重读仍无行（赢家刚被删除等罕见竞态）→ 按原错误失败。
       try {
         const saved = await this.repo.save(e);
+        // R3-A（§4.3）：首注册携带 deployedApps → 落事实行（best-effort，
+        // 失败不阻断注册主链——下一次心跳会重新上报同一份事实）。
+        if (normalizedDeployedApps !== null) {
+          await this.applyReportedAppVersions(
+            saved.id,
+            normalizedDeployedApps,
+          ).catch((err: unknown) => {
+            this.logger.warn(
+              `deployedApps persistence failed for new executor ${data.address}: ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+        }
         // E-03: send notification on first registration
         if (isFirstTime) {
           this.notificationService
@@ -2294,6 +2367,12 @@ export class ExecutorService implements OnModuleInit {
       e.interpreters = normalizedInterpreters;
       adopted.add("interpreters");
     }
+    // R3-A（§4.3/P10）：重注册采纳已安装包清单（仅在合法上报时覆盖；含 []
+    // =「已上报且没装任何执行器包」；非法/缺省均不动 DB）。
+    if (normalizedInstalledPackages !== null) {
+      e.installedPackages = normalizedInstalledPackages;
+      adopted.add("installedPackages");
+    }
     // PROTOCOL-VER（B-3/U-2）：重注册采纳协议版本（仅整数合法值覆盖；
     // 缺省/非法不动 DB，保持未上报/NULL 语义）。
     if (
@@ -2380,6 +2459,19 @@ export class ExecutorService implements OnModuleInit {
     // 无「旧快照盖掉别人新状态」的可能；加 CAS 会变成注册静默丢失（理由见上五行）。
     const patch = this.pickOwnedColumns(e, adopted, REGISTER_OWNED_COLUMNS);
     await this.repo.update({ id: e.id }, patch);
+    // R3-A（§4.3）：重注册携带 deployedApps → 落事实行（best-effort 同首注册
+    // 分支；键缺失（normalizedDeployedApps === null 含「未上报」与「非法」两态，
+    // 后者上方已 warn）→ 完全不动既有行）。
+    if (normalizedDeployedApps !== null) {
+      await this.applyReportedAppVersions(e.id, normalizedDeployedApps).catch(
+        (err: unknown) => {
+          this.logger.warn(
+            `deployedApps persistence failed for executor ${data.address}: ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      );
+    }
     // 返回值 = 内存实体（已是本次上报后的最终态）叠加 patch —— **不重新 findOne**
     // （与 heartbeat 里 `const saved = { ...e, ...patch }` 同款：多一次往返，且
     // 可能读到别人的并发写，返回体就会描述一个本次 register 没写的状态）。
@@ -2422,6 +2514,10 @@ export class ExecutorService implements OnModuleInit {
     // 非法即按 legacy/address 定位。controller 已在 F-7 白名单转发）。
     deviceFingerprint?: string | null;
     interpreters?: ExecutorInterpreter[] | null;
+    // R3-A（§4.3）：设备级应用版本事实/已安装包清单（透传 register() 采纳，
+    // 语义与心跳完全一致）。
+    deployedApps?: DeployedAppReport[] | null;
+    installedPackages?: InstalledPackageReport[] | null;
   }): Promise<{ executor: Executor; perExecutorToken: string | null }> {
     // EXE-VER-1: 最低版本门禁。EXECUTOR_MIN_VERSION 非空时，执行器上报的
     // version 低于下限 → 403（报文含下限与升级指引），且发生在任何落库/
@@ -2804,6 +2900,13 @@ export class ExecutorService implements OnModuleInit {
       interpreters?: ExecutorInterpreter[] | null;
       // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；缺省/非法 → 保留 DB 旧值）。
       deviceFingerprint?: string | null;
+      // R3-A（部署模型评审 §4.3）：设备级应用版本事实。缺省 → 完全不动
+      // executor_app_versions 既有行（旧执行器零影响，这是兼容性红线）；
+      // 结构非法 → 整字段拒绝采纳 + warn；合法（含 []）→ 整替该执行器
+      // 全部行（数组外的应用 = 设备已卸载，行删除）。
+      deployedApps?: DeployedAppReport[] | null;
+      // R3-A（§4.3/P10）：已安装执行器包清单（三态语义同 interpreters）。
+      installedPackages?: InstalledPackageReport[] | null;
     },
   ) {
     // ADR-017 阶段 3：身份解析——**指纹优先**（稳定安装身份），`address` 兜底。
@@ -2958,6 +3061,11 @@ export class ExecutorService implements OnModuleInit {
       // ARCH-36（ADR-017 阶段 2）：deviceFingerprint 不是数值指标列，同样摘出
       // （上方已单独观测过，此处只为不让它落进数值白名单写入环）。
       deviceFingerprint: _f,
+      // R3-A（§4.3）：deployedApps/installedPackages 不是数值指标列——
+      // deployedApps 落独立表（executor_app_versions，不走 executors 列白名单），
+      // installedPackages 走 interpreters 同款的三态列采纳。
+      deployedApps,
+      installedPackages,
       ...metricValues
     } = metrics;
     if (didRestart) {
@@ -3224,6 +3332,23 @@ export class ExecutorService implements OnModuleInit {
         adopted.add("interpreters");
       }
     }
+    // R3-A（§4.3/P10）：心跳采纳 `installedPackages`——三态与 interpreters
+    // 完全同款（缺省 → 保留 DB 旧值；结构非法 → 整字段拒绝 + warn；
+    // 合法含 [] → 覆盖「已上报且无安装包」）。executors 列白名单已登记
+    // （HEARTBEAT_OWNED_COLUMNS），patch 投影由 adopted 集合把关。
+    if (installedPackages !== undefined) {
+      const normalizedInstalledPackages =
+        normalizeInstalledPackages(installedPackages);
+      if (normalizedInstalledPackages === null) {
+        this.logger.warn(
+          `Executor ${address} reported an invalid installedPackages payload ` +
+            `(expected an array of { name, type, version }); keeping stored value`,
+        );
+      } else {
+        e.installedPackages = normalizedInstalledPackages;
+        adopted.add("installedPackages");
+      }
+    }
     // ARCH-36（ADR-017 阶段 2）：心跳采纳 `deviceFingerprint`。
     // 三态与 interpreters 同款，但**非法时只留 debug 不 warn**：指纹是机器
     // 自报的十六进制串，形态非法说明执行器侧采集/序列化有 bug，而这条路径
@@ -3302,6 +3427,32 @@ export class ExecutorService implements OnModuleInit {
     // adr-026-exempt: 心跳=覆盖式上报，last-writer-wins 即正确语义；加 CAS 会把
     // 「少写列」的修复变成可用性回归（理由见上五行）。
     await this.repo.update({ id: e.id }, patch);
+    // R3-A（§4.3）：心跳携带 deployedApps → **整替**该执行器的
+    // executor_app_versions 行（applyReportedAppVersions；键缺失 = 旧执行器
+    // → 上面的 destructure 保持 undefined → 本分支整体跳过，行为与引入前
+    // 逐字节一致）。best-effort（catch → warn）：事实落库失败不阻断心跳主链
+    // （心跳响应携带 tokenHash/合规读数，30s 后同一份事实会重报），与下方
+    // metrics history 写入同姿态——可观测降级，不是静默吞错。
+    if (deployedApps !== undefined) {
+      const normalizedDeployedApps = normalizeDeployedApps(deployedApps);
+      if (normalizedDeployedApps === null) {
+        this.logger.warn(
+          `Executor ${address} reported an invalid deployedApps payload ` +
+            `(expected an array of { appId, currentVersion, retainedVersions, ... }, ` +
+            `<=${MAX_DEPLOYED_APPS} items); keeping stored executor_app_versions rows`,
+        );
+      } else {
+        await this.applyReportedAppVersions(e.id, normalizedDeployedApps).catch(
+          (err: unknown) => {
+            this.logger.warn(
+              `deployedApps persistence failed for executor ${address}: ` +
+                `${err instanceof Error ? err.message : String(err)} ` +
+                `(next heartbeat will re-report the same facts)`,
+            );
+          },
+        );
+      }
+    }
     // 返回值 = 内存实体（已是本次上报后的最终态）叠加 patch —— **不重新 findOne**：
     // 多一次往返且可能读到别人的并发写（返回体与事件会描述一个本次心跳没写的状态）。
     const saved = { ...e, ...patch } as Executor;
@@ -3333,6 +3484,173 @@ export class ExecutorService implements OnModuleInit {
       );
     }
     return saved;
+  }
+
+  // -------------------------------------------------------------------------
+  // R3-A（部署模型评审 2026-10-23 §4.3）：设备级应用版本事实的写面与读面
+  // -------------------------------------------------------------------------
+
+  /**
+   * R3-A（§4.3）：把执行器上报的 deployedApps 全量快照**整替**进
+   * executor_app_versions（心跳/注册共用同一实现，语义必须逐字节一致）。
+   *
+   * 整替语义（评审 §4.3 的核心约定）：
+   * - 上报数组里的应用 → upsert（无行则建，有行且内容有变则改写）；
+   * - **不在数组里的既有行 → 删除**（设备已卸载该应用——executor-node 的
+   *   apps/ 目录扫描是事实源，应用消失就是卸载了，留着旧行只会让
+   *   getReleases devices / 版本跟随读到幽灵事实）；
+   * - 调用方保证「键缺失不调本方法」（旧执行器完全不动 = fail-honest
+   *   「无数据」，而不是把表清空）。
+   *
+   * 幂等：同一载荷重复上报不产生重复行（唯一键 executorId+applicationId
+   * 兜底）、也不改写内容未变化的行（逐行 diff，含 retainedVersions 的
+   * JSON 逐元素比对）——30s 心跳高频面不为无变化的行付写放大。
+   * lastReportedAt 因此只在**行内容真的变化**时刷新；设备活性看
+   * executors.lastHeartbeat（本列语义见实体注释）。
+   *
+   * 并发：同一执行器的心跳天然串行（executor-node 单循环发送）；跨进程
+   * 并发（两份安装同址心跳）已被上游 R32-C4 fail-closed 拒绝，到达这里的
+   * 都是已解析出行身份 e.id 的上报。
+   */
+  private async applyReportedAppVersions(
+    executorId: string,
+    apps: DeployedAppReport[],
+  ): Promise<void> {
+    if (!this.executorAppVersionRepo) return;
+    const existing = await this.executorAppVersionRepo.find({
+      where: { executorId },
+    });
+    const existingByAppId = new Map(
+      existing.map((row) => [row.applicationId, row]),
+    );
+    const reportedAppIds = new Set(apps.map((a) => a.appId));
+    const sameRetained = (a: string[], b: string[] | null): boolean =>
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, i) => v === b[i]);
+    for (const app of apps) {
+      const lastDeployedAt = app.lastDeployedAt
+        ? new Date(app.lastDeployedAt)
+        : null;
+      const row = existingByAppId.get(app.appId);
+      // 幂等短路：行已存在且内容逐字段一致 → 本轮不写（见方法注释的写放大
+      // 论证；retainedVersions 是数组，比对必须逐元素而非引用相等）。
+      if (
+        row &&
+        row.currentVersion === app.currentVersion &&
+        row.currentReleaseKey === app.currentReleaseKey &&
+        row.runMode === app.runMode &&
+        row.lastDeployedAt?.getTime() === lastDeployedAt?.getTime() &&
+        sameRetained(app.retainedVersions, row.retainedVersions)
+      ) {
+        continue;
+      }
+      if (row) {
+        await this.executorAppVersionRepo.update(
+          { id: row.id },
+          {
+            currentVersion: app.currentVersion,
+            currentReleaseKey: app.currentReleaseKey,
+            retainedVersions: app.retainedVersions,
+            runMode: app.runMode,
+            lastDeployedAt,
+            lastReportedAt: new Date(),
+          },
+        );
+      } else {
+        await this.executorAppVersionRepo.save(
+          this.executorAppVersionRepo.create({
+            executorId,
+            applicationId: app.appId,
+            currentVersion: app.currentVersion,
+            currentReleaseKey: app.currentReleaseKey,
+            retainedVersions: app.retainedVersions,
+            runMode: app.runMode,
+            lastDeployedAt,
+            lastReportedAt: new Date(),
+          }),
+        );
+      }
+    }
+    // 整替的删除半边：数组外的应用 = 设备已卸载。
+    const staleIds = existing
+      .filter((row) => !reportedAppIds.has(row.applicationId))
+      .map((row) => row.id);
+    if (staleIds.length > 0) {
+      await this.executorAppVersionRepo.delete(staleIds);
+    }
+  }
+
+  /**
+   * R3-A（§4.3）：getReleases devices 聚合的读面——按应用取全部设备版本事实，
+   * 携带执行器可读名（executors.appName，useExecutorNames.nameOf 同口径）与
+   * 在线状态（executors.status / lastHeartbeat；离线设备的事实可能已过期，
+   * 由前端置灰标注「最后上报」时刻）。
+   *
+   * 行数上界：每执行器 deployedApps ≤ 50，按 applicationId 过滤后 =
+   * 部署了该应用的设备数，量级与部署行同源（findAllByApp 同一面）。
+   *
+   * 降级：仓库未装配（存量单测）/读失败 → 抛给调用方？**不**——读面是
+   * getReleases 的增量字段（devices），失败不应击穿整个版本追溯响应；返回
+   * 空数组并 warn（devices 聚合缺席时前端按「无设备上报」渲染，部署行推断
+   * 字段仍在，信息不缺失）。
+   */
+  async getAppVersionFacts(applicationId: string): Promise<
+    Array<{
+      executorId: string;
+      executorName: string | null;
+      currentVersion: string | null;
+      retainedVersions: string[];
+      lastHeartbeat: string | null;
+      online: boolean;
+    }>
+  > {
+    if (!this.executorAppVersionRepo) return [];
+    try {
+      const facts = await this.executorAppVersionRepo.find({
+        where: { applicationId },
+      });
+      if (facts.length === 0) return [];
+      const executorIds = [
+        ...new Set(facts.map((f) => f.executorId).filter(Boolean)),
+      ];
+      const executors = executorIds.length
+        ? await this.repo.find({
+            where: { id: In(executorIds) },
+            select: {
+              id: true,
+              appName: true,
+              status: true,
+              lastHeartbeat: true,
+            } as never,
+          })
+        : [];
+      const executorById = new Map(executors.map((e) => [e.id, e]));
+      return facts.map((f) => {
+        const executor = executorById.get(f.executorId);
+        return {
+          executorId: f.executorId,
+          // 执行器行可能已被删除而事实行仍在（理论上 FK 级联会同步删，这里
+          // 仍防御性给 null——名字缺席如实显示，不编造）。
+          executorName: executor?.appName ?? null,
+          currentVersion: f.currentVersion,
+          retainedVersions: Array.isArray(f.retainedVersions)
+            ? f.retainedVersions
+            : [],
+          lastHeartbeat: executor?.lastHeartbeat
+            ? new Date(executor.lastHeartbeat).toISOString()
+            : null,
+          online: executor?.status === ExecutorStatus.ONLINE,
+        };
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `executor_app_versions read failed for application ${applicationId}: ` +
+          `${err instanceof Error ? err.message : String(err)} ` +
+          `(releases devices aggregation will be empty; deployment-inferred fields remain)`,
+      );
+      return [];
+    }
   }
 
   findAll() {
@@ -5077,25 +5395,38 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
-   * FEAT-22 方案 B（版本跟随部署）：解析「命中部署设备应跑的版本包」。
+   * FEAT-22 方案 B（版本跟随部署）+ R3-A（§九 9.3-1 硬要求）：解析「命中
+   * 部署设备应跑的版本包」。
    *
-   * 语义：派发命中的执行器在该应用的部署集合内时，用部署行记录的
-   * deployedVersion 查 `application_versions.snapshot.packageUrl`，任务改跑
-   * **当版包**（设备上是什么版本就跑什么版本）——升级/回滚 = 对部署行操作，
-   * 之后该设备上的执行随之切换。未命中（prefer 降级到非部署设备）返回 null
-   * = 跑应用当前版本（现状不变）。「应用当前版本」自此只影响：未部署设备的
-   * 执行、新部署、显式升级动作。
+   * 版本来源的优先级（R3-A 起）：
+   *  1. **设备上报事实**：executor_app_versions 中 (applicationId, 执行器行)
+   *     的 currentVersion——设备 current 软链真正指向哪版就跑哪版。中台从此
+   *     持有事实而不是从部署行推断；且设备侧的本地版本切换（切 current/
+   *     prune 后仍保留的旧版）能被派发面如实跟随。只按 executorId 匹配
+   *     （事实行由心跳按行身份落库，恒有 id；不存在部署行那样的 legacy
+   *     无-id 行需要 address 兜底）。
+   *  2. **部署行推断**（pickDeploymentVersionForExecutor，引入前唯一来源）：
+   *     无上报行（旧执行器——executor-node 未升级，混合窗口期）或上报
+   *     currentVersion 为 null（设备自报「无 current」）时回退。切到「无
+   *     current 仍回退推断」是刻意的：null 是设备自身状态，不是「请中台
+   *     自行猜测」的信号，但该应用确实有部署行时按推断跑好过跑应用当前版
+   *     （部署行至少记录过该设备跑过哪版）。
    *
-   * 兜底（回退当前版 + warn，绝不因版本跟随阻断派发）：部署行无版本痕迹
+   * ⚠️ 为什么必须切（评审 9.3-1）：两套「设备当前版本」并存会打架——升级/
+   * 回滚后部署行与设备事实短暂不一致时，读部署行 = 派发面在窗口期跑错版本。
+   * 事实源（心跳整替）永远比部署行（写入路径多、更新滞后）新鲜。
+   *
+   * 兜底（回退当前版 + warn，绝不因版本跟随阻断派发）：两层来源都无版本痕迹
    * （legacy 行）/ 版本行已被删 / snapshot 无 packageUrl（远程 URL 或脏数据）
    * / 查询抛错 / 版本仓库未装配。数据基础已核实：旧版本 zip 仅随**应用删除**
-   * 清理（application.service.ts remove），版本升级不删包，且 rollback 链
+   * 清理（application.service.ts remove），版本升级不删包，且回滚链
    * （upgradeWithSnapshot）本就依赖 snapshot.packageUrl 存活——方案 B 与回滚
    * 共享同一保留语义。
    *
    * 为什么不加缓存：`application_versions` 有 (applicationId, version) 唯一
    * 索引，单次索引查找（ARCH-35 对部署行查询的同款论证——TTL 缓存会让
-   * 「刚回滚完立刻派发」看到旧结论）。快照对给定版本不可变，查询结果恒定。
+   * 「刚回滚完立刻派发」看到旧结论）。executor_app_versions 同理是
+   * (executorId, applicationId) 唯一索引查找。快照对给定版本不可变。
    *
    * 仅在 dispatch 单发路径调用；pin / appName / broadcast 路径不参与（显式
    * 单台或扇出语义独立，版本语义保持当前版）。
@@ -5107,10 +5438,37 @@ export class ExecutorService implements OnModuleInit {
   ): Promise<{ version: string; packageUrl: string } | null> {
     if (!task.applicationId) return null;
     if (!this.applicationVersionRepo) return null;
-    const version = pickDeploymentVersionForExecutor(rows, {
-      id: matched.id,
-      address: matched.address,
-    });
+    // R3-A：优先读设备上报事实（来源 1）；读失败回退来源 2（同「绝不因版本
+    // 跟随阻断派发」的既有兜底姿态）。
+    let version: string | null = null;
+    if (this.executorAppVersionRepo) {
+      try {
+        const fact = await this.executorAppVersionRepo.findOne({
+          where: {
+            applicationId: task.applicationId,
+            executorId: matched.id,
+          },
+          select: { currentVersion: true } as never,
+        });
+        if (fact && typeof fact.currentVersion === "string") {
+          const trimmed = fact.currentVersion.trim();
+          if (trimmed) version = trimmed;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `R3-A: 读取设备版本事实失败（应用 ${task.applicationId} / 执行器 ` +
+            `${matched.id}），回退部署行推断：` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // 来源 2：部署行推断（旧执行器混合窗口期的回退，语义见方法注释）。
+    if (!version) {
+      version = pickDeploymentVersionForExecutor(rows, {
+        id: matched.id,
+        address: matched.address,
+      });
+    }
     if (!version) return null;
     try {
       const versionRow = await this.applicationVersionRepo.findOne({

@@ -3,7 +3,7 @@
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
   "versioning": {
     "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
-    "currentProtocolVersion": 6,
+    "currentProtocolVersion": 7,
     "supportedMinProtocolVersion": 1,
     "compatibilityMatrix": [
       {
@@ -41,6 +41,12 @@
         "adminSupported": true,
         "executorImplementedBy": ["executor-node", "executor-python"],
         "$comment": "ADR-017 阶段 3（2026-10-15，回调面行身份补口）：执行器→admin 的**回调载荷**新增**可选** `deviceFingerprint`（= 与 register/heartbeat 上报的同一稳定安装身份 `sha256(deviceId + ':' + installSalt)`，64 位小写十六进制）。**为什么必须新增该字段**：回调鉴权的三条路径里，per-executor 令牌可精确解析到「哪一行」，而 shared/legacy 令牌是**全机队单一密钥、不绑定任何行**；同时 pull 模式允许同址多行并存（ADR-017 §5），使 `executorAddress` 不再能指代一行。于是「共享令牌 + 同址碰撞」这一组合下，admin 无法把回调归到 dispatcher 实际派发的那一行（判据 = task_executions.executorId）——本字段把行身份直接送上回调面，使该判定重新可做。方向为执行器→中台（中台从不下发该字段），故中台只需采信。兼容性红线：字段**可选**、缺省时 admin 逐级回落（凭据归属行 → 地址相等），**绝不因缺该字段拒绝合法回调**（旧执行器、采集失败、以及经 SDK 直接回调的任务代码都可能不带它）；bump 到 6 的目的与 v2~v5 同款（evolutionRules 第 1 条）——让中台能区分「v6 执行器的回调**应**带行身份」与「旧执行器的回调无此行身份可判」，从而对前者做真实行身份判定、对后者保持既有地址判据，并为机队覆盖率做观测。仅新增回调可选字段：PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。"
+      },
+      {
+        "protocolVersion": 7,
+        "adminSupported": true,
+        "executorImplementedBy": ["executor-node", "executor-python"],
+        "$comment": "R3-B（2026-10-24，部署模型评审 2026-10-23 §4.3/§P5）：register 与 heartbeat 载荷新增**可选**键 `deployedApps`（设备级应用版本事实）与 `installedPackages`（已安装执行器包清单）。方向为执行器→中台（中台从不下发），形状与三态语义见 admin 侧收口（deployed-apps.util.ts / executor_app_versions 迁移 1790000000063）：deployedApps = Array<{appId, currentVersion|null, currentReleaseKey|null, retainedVersions[], runMode('once'|'daemon'|'scheduled'|null), lastDeployedAt|null}>，落库为**整替**语义（数组里没有的应用行删除 = 设备已卸载）；installedPackages = Array<{name, type, version}>。兼容性红线：两键**可选**，缺省 = 旧执行器未上报 → admin 完全不动既有数据（绝不把「未知」伪装成「无应用/无安装包」）；结构非法 → 整字段拒绝采纳 + warn，既有行保留；执行器侧扫描失败/不可判定 → 省略键，**绝不因扫描阻塞或弄挂心跳本体**。bump 到 7 的目的与 v2~v6 同款（evolutionRules 第 1 条）：让中台能区分「v7 执行器应上报设备事实」与「旧执行器无此事实可报」，为混合窗口期读面/派发面（resolveVersionFollowPackage 的设备事实优先回退链）提供判据。executorImplementedBy 列双端的口径与 v2 相同（v2 的 python 只实现 config-reload/kill-execution 两个本地路由仍列实现方）：版本声明的是「讲 v7 语言」——认识该版本的字段语义、上报面合法——不要求实现方必须上报全部可选键；本轮 executor-node 落地 deployedApps 扫描上报（installedPackages 暂无可得事实源、按 fail-honest 省略），executor-python 的上报为后续工作（省略即协议合法）。PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。"
       }
     ],
     "evolutionRules": [

@@ -81,6 +81,8 @@ describe("AppDeploymentService — FEAT-20 triggerType/operator 落库", () => {
       selectLeastLoaded: jest.fn().mockResolvedValue(mockExecutor),
       // ARCH-33（ADR-016）：默认 push（本 spec 验证 push 路径语义）
       ...controlPlaneMocks(),
+      // R3-A（§4.3）：getReleases 的设备徽标聚合源（本 spec 无设备事实用例）
+      getAppVersionFacts: jest.fn().mockResolvedValue([]),
     } as unknown as typeof executorService;
 
     const module = await Test.createTestingModule({

@@ -357,6 +357,7 @@ Content-Type: application/json
 | `triggerType` | `app_deployments.triggerType` 列（FEAT-20，迁移 1790000000004）：`manual` / `upgrade` / `rollback` / `approval`（approve 动作产生的部署行）；存量行回退推导（升级指纹→`upgrade`、`deployedAt` 已置位→`manual`、否则 `unknown`、无部署 null） | 列值优先，推导仅兜底 |
 | `operator` / `operatorSource` / `operatorMissingReason` | 部署行 `operator` 列（FEAT-20，写入=JWT 用户名；deploy/upgrade/rollback/approve 各写面均落）优先；存量行回退 `application_versions.createdBy` | `operatorSource` 标注命中面：`deployments.operator` / `application_versions.createdBy`；两处皆 null 时 `operatorMissingReason` 说明 |
 | `synthetic` | — | 有部署记录但从未保存版本快照的历史数据（心跳竞态等）合成行，`deployedVersion=null` 的部署归一为一条 `version=null` 行；对齐 `/versions` 的 legacy fallback 语义，仅第 1 页参与 |
+| `devices` | `executor_app_versions`（设备心跳上报的**设备级版本事实**，R3-A/迁移 1790000000063）× `executors`（名称/在线状态） | **R3-A（部署模型评审 §4.3，2026-10-24）新增，只增不改**：正在运行（`currentVersion === 行版本`）或本地保留（`行版本 ∈ retainedVersions`）该版本的设备清单，每项 `{executorId, executorName, currentVersion, retained, online, lastHeartbeat}`。无任何设备上报（旧执行器混合窗口期）恒为 `[]`。**注意**：`deploymentStatus`/`executorAddress`/`deploymentCount` 仍是**部署行推断**（渐进迁移保留），设备真实状态以 `devices` 为准；`lastHeartbeat` 即设备最后上报时刻，`online=false` 的事实可能已过期 |
 
 > **旧端点过渡期保留（不删除、不重定向）**：`GET /applications/:id/versions`（版本快照/回滚消费面，携带 snapshot 与 deployCount）与 `GET /app-deployments`（逐部署行列表）与本端点数据同源；新前端一律消费 `/releases`，旧端点收口另立任务。admin-web `ApplicationDetailPage` 接入为后续轮工作（本任务只落 API 契约）。
 
@@ -679,8 +680,8 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| POST | `/executors/register` | 否* | 执行器注册（返回/绑定执行器专属 Token）。可选字段：`protocolVersion`（整数，协议版本）/ `dispatchMode`（`push`/`pull`）/ `interpreters`（解释器缓存池清单）/ `deviceFingerprint`（**协议 v3 起**，见心跳行说明） |
-| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛）。可选指标字段：`cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` / `runningTaskCount`（**已占槽位**，含 E-01 取件预留）/ `totalTaskCount` / `failedTaskCount` / `runningExecutionIds`（≤10000，`null`=旧版未上报；**在跑执行**的 id 清单，与 `runningTaskCount` 是两个账本）/ `reservedSlots`（**E-01-RPT，协议 v4 起**：pull 长轮询「已预留但尚未认领」的槽位数，非负整数且必须 `≤ runningTaskCount`（预留是已占槽位的子集，越界即拒绝采纳、库内原值不动）；**始终发送含 `0`**，`null`=旧版执行器未上报。**只用于展示与告警换算**：详情页据此显示「实际运行 = runningTaskCount − reservedSlots」并与 `runningExecutionIds.length` 比对，派发闸门仍只读 `runningTaskCount`——否则会重开 E-01 要关闭的超卖竞态）/ `deadLetterCount`（回调死信积压数，**0..100000** 非负整数，`null`=旧版执行器未上报该字段（区别于 `0`：已上报且无积压），`>0` 表示回调持续失败、载荷已落盘执行器本地 dead-letter）/ `maxConcurrentTasks`（1..10000 容量热更新）/ `deviceFingerprint`（**ARCH-36 / ADR-017 阶段 2/3，协议 v3 起**：稳定安装身份 `sha256(deviceId + ":" + installSalt)` 的 **64 位小写十六进制**。**阶段 3 起是 register/heartbeat 的行定位键**——命中即复用原行并更新 `address`（换 IP 不再产生幽灵行），`address` 降级为可达性元数据；未上报指纹的存量执行器由中台落 `legacy:{address}` 兜底键、仍按地址定位。缺省或形态非法一律**保留库内原值**——旧执行器或采集失败的执行器绝不会把已存指纹擦成 `null`）。服务端对白名单外字段静默丢弃（防 mass-assignment），非法取值不落库 |
+| POST | `/executors/register` | 否* | 执行器注册（返回/绑定执行器专属 Token）。可选字段：`protocolVersion`（整数，协议版本）/ `dispatchMode`（`push`/`pull`）/ `interpreters`（解释器缓存池清单）/ `deviceFingerprint`（**协议 v3 起**，见心跳行说明）/ `deployedApps` 与 `installedPackages`（**R3-A，协议 v7 起**，设备级版本事实，语义与心跳完全一致——执行器重启后随注册先报一份，见下节「设备级版本事实」） |
+| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛）。可选指标字段：`cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` / `runningTaskCount`（**已占槽位**，含 E-01 取件预留）/ `totalTaskCount` / `failedTaskCount` / `runningExecutionIds`（≤10000，`null`=旧版未上报；**在跑执行**的 id 清单，与 `runningTaskCount` 是两个账本）/ `reservedSlots`（**E-01-RPT，协议 v4 起**：pull 长轮询「已预留但尚未认领」的槽位数，非负整数且必须 `≤ runningTaskCount`（预留是已占槽位的子集，越界即拒绝采纳、库内原值不动）；**始终发送含 `0`**，`null`=旧版执行器未上报。**只用于展示与告警换算**：详情页据此显示「实际运行 = runningTaskCount − reservedSlots」并与 `runningExecutionIds.length` 比对，派发闸门仍只读 `runningTaskCount`——否则会重开 E-01 要关闭的超卖竞态）/ `deadLetterCount`（回调死信积压数，**0..100000** 非负整数，`null`=旧版执行器未上报该字段（区别于 `0`：已上报且无积压），`>0` 表示回调持续失败、载荷已落盘执行器本地 dead-letter）/ `maxConcurrentTasks`（1..10000 容量热更新）/ `deviceFingerprint`（**ARCH-36 / ADR-017 阶段 2/3，协议 v3 起**：稳定安装身份 `sha256(deviceId + ":" + installSalt)` 的 **64 位小写十六进制**。**阶段 3 起是 register/heartbeat 的行定位键**——命中即复用原行并更新 `address`（换 IP 不再产生幽灵行），`address` 降级为可达性元数据；未上报指纹的存量执行器由中台落 `legacy:{address}` 兜底键、仍按地址定位。缺省或形态非法一律**保留库内原值**——旧执行器或采集失败的执行器绝不会把已存指纹擦成 `null`）/ `deployedApps`（**R3-A，部署模型评审 §4.3 / 协议 v7 起**：设备级应用版本事实，见下节「设备级版本事实」）/ `installedPackages`（**R3-A/P10**：设备已安装的执行器包清单 `[{name,type,version}]`，≤100 项；三态语义与 `interpreters` 同款——缺省 → 保留 DB 旧值，`[]` → 已上报且无安装包，结构非法 → 整字段拒绝采纳；落 `executors.installedPackages` jsonb 列）。服务端对白名单外字段静默丢弃（防 mass-assignment），非法取值不落库 |
 | POST | `/executors/token` | 否* | 执行器以注册凭证换取专属 Token。**副作用（register-on-token）**：若该 `address` 尚无执行器行（典型场景：compose 启动竞态下 register 失败——register 不会自动重试，heartbeat 对未知地址返回 404 也不建行），本端点会补建仅含 `address`/`appName` 的瘦行：`type`/`capabilities`/`maxConcurrentTasks`/`executorVersion` 等富元数据缺失（runtime 过滤对空 capabilities 全放行，故竞态窗口内该执行器可能被选中执行任意 runtime 任务），直到执行器进程重启重新 register 才补齐 |
 | POST | `/executors/offline` | 否* | 执行器主动下线 |
 | GET | `/executors/:address/terminal-states` | 否* | **A6 死信对账（只读）**：返回该执行器上**已终态**的执行清单（`items[].{executionId,status,endedAt}` + `hasMore` + `serverTime`），按终态时间升序，供执行器核对本地回调死信目录。query：`since`（ISO-8601 水印，只回终态时间 `COALESCE(endTime, createdAt) >= since` 的行；缺省/非法回退 24h，最老钳到 30 天）、`limit`（1..2000，默认 500）。执行器据此分三层处置：命中清单→删死信；未命中且死信原因是重发预算耗尽→重新入队重发；未命中且是毒丸（超大/坏 JSON）或救回次数用尽→保留待人工。**严格只读**：不改执行行、不释放槽位、不写审计 |
@@ -701,6 +702,34 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/executors/:id/metrics` | 是 | 执行器运行指标 |
 
 > *执行器接口使用执行器专属 Token / 安装凭证认证，非用户 JWT。
+
+#### 设备级版本事实（R3-A，心跳/注册可选键 `deployedApps`，2026-10-24 部署模型评审 §4.3）
+
+上表 register/heartbeat 行 `deployedApps` / `installedPackages` 键的载荷与落库语义展开：
+
+```jsonc
+{
+  "deployedApps": [
+    {
+      "appId": "5f8a3c2e-9b41-4d6a-a1b2-c3d4e5f6a7b8",   // 部署时的 applicationId
+      "currentVersion": "1.2.0",        // 设备 current 软链指向的版本；无 current → null
+      "currentReleaseKey": "1.2.0-3f9d2b7a-deploy-8t4",  // current 指向的 release 目录名
+      "retainedVersions": ["1.2.0", "1.1.0"],  // releases/ 下仍保留的版本集合（prune 后）
+      "runMode": "daemon",              // once | daemon | scheduled | null
+      "lastDeployedAt": "2026-10-24T08:00:00.000Z"      // ISO；无记录 → null
+    }
+  ]
+}
+```
+
+**落库与语义**（全部可选键，旧执行器不带则行为逐字节不变）：
+
+- 落新表 `executor_app_versions`（迁移 1790000000063；`(executorId, applicationId)` 唯一，行 = 一份最新设备事实，非历史流水）；执行器行删除/应用删除时 FK 级联清理。
+- **整替**：心跳带 `deployedApps` → 该执行器全部事实行按数组整体替换（**不在数组中的应用行删除 = 设备已卸载**）；`[]` = 设备上无任何已部署应用（清空）。
+- **键缺失 → 完全不动**（fail-honest「无数据」而非清空——旧执行器与新执行器共存窗口期的兼容性红线）。
+- **校验闸**（结构非法 → **整字段拒绝采纳** + warn，既有行保留）：≤50 项；`retainedVersions` 每项 ≤20；字符串长度上限（版本 ≤128 / releaseKey ≤255 / appId ≤64）；同一 appId 重复上报拒绝（全量快照无法裁决先后）；`lastDeployedAt` 非 ISO 可解析拒绝。超限**拒绝而非截断**——`deployedApps` 是全量快照，截断会让整替语义删错行。
+- 幂等：同一载荷重复心跳不重写未变化的行（`lastReportedAt` 只在行内容变化时刷新；设备活性看 `executors.lastHeartbeat`）。
+- **消费面**：`GET /applications/:id/releases` 的 `devices` 字段（设备徽标）；派发面版本跟随 `resolveVersionFollowPackage` 切换为「设备上报 `currentVersion` 优先、无上报行/null 回退部署行推断」（评审 §九 9.3-1——两套设备当前版本并存会打架，事实源永远比部署行新鲜）。
 
 ---
 

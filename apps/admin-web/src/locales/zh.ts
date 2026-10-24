@@ -1952,6 +1952,13 @@ export default {
   'appDetail.releases.trigger.upgrade': '滚动升级',
   'appDetail.releases.trigger.manual': '手动部署',
   'appDetail.releases.trigger.unknown': '未知',
+  // R3-A（部署模型评审 §4.3）：版本行设备徽标（设备上报事实：运行中/保留/离线）。
+  'appDetail.releases.col.devices': '设备',
+  'appDetail.releases.deviceRunning': '运行中',
+  'appDetail.releases.deviceRetained': '保留',
+  'appDetail.releases.deviceOffline': '离线',
+  'appDetail.releases.deviceOfflineAt': '离线，最后上报 {{time}}',
+  'appDetail.releases.deviceOfflineUnknown': '时间未知',
   // UX-06：版本历史「状态」列此前渲染裸枚举（released/deploying/failed…），
   // 而同一张表相邻列已翻译——中英混排且对非英语用户不可读。
   'appDetail.history.status.released': '已发布',

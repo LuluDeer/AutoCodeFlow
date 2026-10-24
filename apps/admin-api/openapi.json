@@ -14907,6 +14907,87 @@
           "version"
         ]
       },
+      "DeployedAppDto": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "example": "5f8a3c2e-9b41-4d6a-a1b2-c3d4e5f6a7b8",
+            "description": "部署时的 applicationId",
+            "x-i18n-en": "applicationId at deploy time"
+          },
+          "currentVersion": {
+            "type": "string",
+            "example": "1.2.0",
+            "nullable": true,
+            "description": "设备 current 软链指向的版本；无 current（未部署成功）为 null",
+            "x-i18n-en": "version the device's current symlink points to; null when there is no current (never deployed successfully)"
+          },
+          "currentReleaseKey": {
+            "type": "string",
+            "example": "1.2.0-3f9d2b7a-deploy-8t4",
+            "nullable": true,
+            "description": "current 软链指向的 release 目录名",
+            "x-i18n-en": "release directory name the current symlink points to"
+          },
+          "retainedVersions": {
+            "example": [
+              "1.2.0",
+              "1.1.0"
+            ],
+            "description": "设备 releases/ 下仍保留的版本集合（prune 后快照）",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "versions still kept under the device's releases/ (post-prune snapshot)"
+          },
+          "runMode": {
+            "type": "string",
+            "example": "daemon",
+            "nullable": true,
+            "enum": [
+              "once",
+              "daemon",
+              "scheduled"
+            ],
+            "description": "部署/升级时选择的运行模式；设备侧无记录为 null",
+            "x-i18n-en": "run mode chosen at deploy/upgrade time; null when the device has no record"
+          },
+          "lastDeployedAt": {
+            "type": "string",
+            "example": "2026-10-24T08:00:00.000Z",
+            "nullable": true,
+            "description": "最近一次部署完成时刻（ISO 8601）；无记录为 null",
+            "x-i18n-en": "last deployment completion time (ISO 8601); null when there is no record"
+          }
+        },
+        "required": [
+          "appId"
+        ]
+      },
+      "InstalledPackageDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "python-runtime"
+          },
+          "type": {
+            "type": "string",
+            "example": "uv"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.7.12"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "version"
+        ]
+      },
       "ExecutorRegisterDto": {
         "type": "object",
         "properties": {
@@ -15041,6 +15122,22 @@
             "nullable": true,
             "description": "ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：注册时先按指纹解析行（地址退化为可达性元数据）。缺省/非法 → 保留已存值并回退到按地址查找；从未上报过指纹的行会带上服务端生成的 `legacy:{address}` 兜底键。",
             "x-i18n-en": "ARCH-36 (ADR-017 phases two/three): stable installation identity - sha256(deviceId + ':' + installSalt), 64 lowercase hex characters. ADR-017 phase three makes it the row lookup key: registration resolves the row by fingerprint first (address degrades to reachability metadata). Default/invalid -> the stored value is kept and lookup falls back to address; rows that have never reported a fingerprint carry a server-generated `legacy:{address}` fallback key."
+          },
+          "deployedApps": {
+            "description": "R3-A（§4.3）：设备级应用版本事实（执行器启动时随注册上报一份，语义与心跳 deployedApps 完全一致：缺省 → 不动；[] → 设备无已部署应用；非法 → 整字段拒绝）。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeployedAppDto"
+            },
+            "x-i18n-en": "R3-A (§4.3): device-level application version facts (reported once at executor startup along with registration; semantics identical to heartbeat deployedApps: omitted -> untouched; [] -> no deployed applications on the device; invalid -> the whole field is rejected)."
+          },
+          "installedPackages": {
+            "description": "R3-A（§4.3/P10）：设备已安装的执行器包清单（语义与心跳 installedPackages 完全一致）。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstalledPackageDto"
+            },
+            "x-i18n-en": "R3-A (§4.3/P10): executor packages installed on the device (semantics identical to heartbeat installedPackages)."
           }
         },
         "required": [
@@ -15458,6 +15555,22 @@
             "nullable": true,
             "description": "ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：register/heartbeat 先按指纹解析行，因此换了 IP 的机器会复用既有行，而不是新建幽灵行。缺省/非法 → 保留已存值（legacy 或采集失败的执行器绝不能把已存指纹清空），并回退到按地址查找。",
             "x-i18n-en": "ARCH-36 (ADR-017 phase 2/3): stable installation identity - sha256(deviceId + ':' + installSalt), 64 lowercase hexadecimal characters. ADR-017 phase 3 makes it the row lookup key: register/heartbeat first resolve the row by fingerprint, so a machine that changed IP reuses the existing row instead of creating a ghost row. Default/invalid -> the stored value is preserved (legacy executors or ones whose collection failed must never clear the stored fingerprint), and lookup falls back to by address."
+          },
+          "deployedApps": {
+            "description": "R3-A（§4.3）：设备级应用版本事实（apps/ 目录扫描）。缺省 → 中台完全不动既有事实行（旧执行器）；[] → 设备上没有任何已部署应用（整替 = 全部既有行删除）；结构非法/超 50 项/同一 appId 重复 → 整字段拒绝采纳。落库语义：整替该执行器全部 executor_app_versions 行（数组外的应用 = 设备已卸载）。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeployedAppDto"
+            },
+            "x-i18n-en": "R3-A (§4.3): device-level application version facts (scan of the apps/ directory). Omitted -> the platform leaves existing fact rows completely untouched (legacy executors); [] -> the device has no deployed applications (full replacement = all existing rows deleted); structurally invalid, more than 50 items, or a duplicate appId -> the whole field is rejected. Persistence semantics: full replacement of all executor_app_versions rows for this executor (applications absent from the array = uninstalled on the device)."
+          },
+          "installedPackages": {
+            "description": "R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstalledPackageDto"
+            },
+            "x-i18n-en": "R3-A (§4.3/P10): executor packages installed on the device. Same three-state semantics as interpreters: omitted -> keep the stored DB value; [] -> reported with nothing installed; structurally invalid or more than 100 items -> the whole field is rejected."
           }
         },
         "required": [
@@ -19930,6 +20043,52 @@
           "snapshot"
         ]
       },
+      "AppReleaseDeviceDto": {
+        "type": "object",
+        "properties": {
+          "executorId": {
+            "type": "string",
+            "description": "执行器行 id",
+            "x-i18n-en": "executor row id"
+          },
+          "executorName": {
+            "type": "string",
+            "nullable": true,
+            "description": "执行器可读名（executors.appName）；行已删/未上报名时 null",
+            "x-i18n-en": "human-readable executor name (executors.appName); null when the row is deleted or no name was reported"
+          },
+          "currentVersion": {
+            "type": "string",
+            "nullable": true,
+            "description": "该设备该应用 current 指向的版本（保留场景下可能与本行版本不同）",
+            "x-i18n-en": "version the device's current points to for this application (may differ from this row's version in the retained case)"
+          },
+          "retained": {
+            "type": "boolean",
+            "description": "本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本）",
+            "x-i18n-en": "this row's version is in the device's retainedVersions (the device still holds this version on disk)"
+          },
+          "online": {
+            "type": "boolean",
+            "description": "executors.status === ONLINE（离线设备的版本事实可能已过期）",
+            "x-i18n-en": "executors.status === ONLINE (version facts of an offline device may be stale)"
+          },
+          "lastHeartbeat": {
+            "type": "string",
+            "nullable": true,
+            "description": "executors.lastHeartbeat（设备最后上报时刻，ISO）",
+            "x-i18n-en": "executors.lastHeartbeat (the device's last report time, ISO)"
+          }
+        },
+        "required": [
+          "executorId",
+          "executorName",
+          "currentVersion",
+          "retained",
+          "online",
+          "lastHeartbeat"
+        ]
+      },
       "AppReleaseRowDto": {
         "type": "object",
         "properties": {
@@ -20025,6 +20184,14 @@
             "type": "string",
             "description": "operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON）",
             "x-i18n-en": "Reason why operator is null (RELEASE_OPERATOR_MISSING_REASON)"
+          },
+          "devices": {
+            "description": "R3-A（§4.3）：正在运行或本地保留该版本的设备（设备心跳上报事实；无设备上报时为空数组）。deploymentStatus/executorAddress 等字段仍是部署行推断（渐进迁移），设备真实状态以本字段为准。响应字段只增不改",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppReleaseDeviceDto"
+            },
+            "x-i18n-en": "R3-A (§4.3): devices currently running or locally retaining this version (facts reported by device heartbeats; empty array when no device has reported). deploymentStatus/executorAddress and similar fields are still deployment-row inferences (gradual migration); the real device state is this field. Response fields are add-only"
           }
         },
         "required": [
@@ -20041,7 +20208,8 @@
           "triggerType",
           "operator",
           "operatorSource",
-          "operatorMissingReason"
+          "operatorMissingReason",
+          "devices"
         ]
       },
       "AppReleasesResponseDto": {

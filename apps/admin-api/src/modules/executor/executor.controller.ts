@@ -107,6 +107,12 @@ import {
 // python_task_multiversion（WS2 · CONTRACT §2.2）：上报面解释器清单条目的
 // 结构类型（与 service / 实体同一份定义，避免内联字面量漂移）。
 import type { ExecutorInterpreter } from "./interpreter-match.util";
+// R3-A（部署模型评审 §4.3）：设备级应用版本事实/已安装包清单（结构校验在
+// service 侧 deployed-apps.util.ts，controller 只做 F-7 白名单转发）。
+import type {
+  DeployedAppReport,
+  InstalledPackageReport,
+} from "./deployed-apps.util";
 import {
   ExecutorGroupsDto,
   ExecutorInstallCmdDto,
@@ -243,6 +249,10 @@ export class ExecutorController {
       // service 侧——缺省/非法一律不动 DB 值）。阶段 3 起它是 register 的**行
       // 定位键**（指纹优先、address 兜底），见 executor.service.register 注释。
       deviceFingerprint?: string | null;
+      // R3-A（部署模型评审 §4.3）：设备级应用版本事实/已安装包清单（可选；
+      // 语义与心跳完全一致——执行器重启后随注册先报一份，缺省 → 不动 DB）。
+      deployedApps?: DeployedAppReport[];
+      installedPackages?: InstalledPackageReport[];
     },
     @Headers("authorization") auth: string,
   ) {
@@ -280,6 +290,10 @@ export class ExecutorController {
       // ARCH-36（ADR-017 阶段 2）：转发设备指纹（同一 F-7 白名单纪律——
       // 漏这行 = 上报被静默丢弃，冲突观测拿不到数据）。
       deviceFingerprint: body.deviceFingerprint,
+      // R3-A（§4.3）：转发设备级应用版本事实与已安装包清单（同一 F-7 白名单
+      // 纪律；落库语义与心跳共用同一实现）。
+      deployedApps: body.deployedApps,
+      installedPackages: body.installedPackages,
     };
     // N4: register + token issuance is idempotent per (address, startupId) —
     // a duplicate register from the SAME process life (same startupId, no
@@ -371,6 +385,11 @@ export class ExecutorController {
       // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；缺省/非法即保留 DB
       // 旧值，规范化在 service 侧）。
       deviceFingerprint?: string | null;
+      // R3-A（部署模型评审 §4.3）：设备级应用版本事实（可选；缺省 → 中台
+      // 完全不动 executor_app_versions 既有行——旧执行器零影响）。
+      deployedApps?: DeployedAppReport[];
+      // R3-A（§4.3/P10）：已安装执行器包清单（可选；三态语义同 interpreters）。
+      installedPackages?: InstalledPackageReport[];
     },
     @Headers("authorization") auth: string,
   ) {
@@ -414,6 +433,11 @@ export class ExecutorController {
       // ARCH-36（ADR-017 阶段 2）：转发设备指纹（心跳是主要重复观测点——
       // 两台机器并存时各自 30s 一次的心跳都会走到 service 的观测器）。
       deviceFingerprint: body.deviceFingerprint,
+      // R3-A（§4.3）：转发设备级应用版本事实与已安装包清单（F-7 显式白名单，
+      // 漏转发 = 上报被静默丢弃，中台事实源从此缺数据）。落库语义/结构校验
+      // 在 service 侧（applyReportedAppVersions / deployed-apps.util.ts）。
+      deployedApps: body.deployedApps,
+      installedPackages: body.installedPackages,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with

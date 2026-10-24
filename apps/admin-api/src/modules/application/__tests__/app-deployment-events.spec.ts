@@ -163,6 +163,8 @@ describe("AppDeploymentService 部署事件（R4 §4.1A）", () => {
           `${addr.startsWith("http://") || addr.startsWith("https://") ? "" : "http://"}${addr}/${p}`,
       ),
       deliverControlCommand: jest.fn().mockResolvedValue({ delivered: "push" }),
+      // R3-A（§4.3）：getReleases 的设备徽标聚合源（本 spec 无设备事实用例）
+      getAppVersionFacts: jest.fn().mockResolvedValue([]),
     };
 
     const moduleRef = await Test.createTestingModule({
