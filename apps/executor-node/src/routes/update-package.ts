@@ -21,6 +21,12 @@
  *     只有 downloaded/failed 两个状态，本身也未表达「已应用」。
  *  真实升级仍走既有部署流水线：重新安装 artifact / 重跑 install-cmd。
  *  响应新增 `mode: 'download-only'` 让调用方（运维脚本/UI）可机器判定。
+ *
+ * P10：download-only 并非「无事实」——checksum 验证通过后写
+ * .pkg-updates/manifests/<packageId>.json（原子 tmp+rename），重启后执行器
+ * 仍知道自己装过什么，并经心跳 installedPackages 键上报中台。下载/校验失败
+ * **不写**（manifest 是「校验通过的已安装事实」，半成品不算）；文件被删则
+ * 事实消失，扫描时如实缺省。
  */
 import { Router, Request, Response } from 'express';
 import * as path from 'path';
@@ -32,6 +38,12 @@ import { config } from '../config';
 import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
+// P10（executor 包版本收敛）：checksum 验证通过后落 manifest，供心跳
+// installedPackages 扫描（installed-packages.ts 是本文件落盘事实的读面）。
+import {
+  invalidateInstalledPackagesCache,
+  writePackageManifest,
+} from '../installed-packages';
 
 export const updatePackageRouter = Router();
 
@@ -152,6 +164,34 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
           throw new Error(`校验和不匹配：期望 ${body.checksum}，实际 ${actual}`);
         }
         logger.info(`[update-package] Checksum verified OK`);
+      }
+
+      // 2.5 P10: persist the verified-install fact as a manifest (atomic
+      // tmp+rename in installed-packages.ts). Must happen strictly AFTER the
+      // checksum gate: a mismatch throws above and this block never runs, so a
+      // failed/tampered download never becomes an "installed" fact. Write
+      // failure must not eat the verified download: log + continue (the zip is
+      // still on disk for the deployment pipeline; only the heartbeat fact for
+      // this one package is deferred to a future push).
+      try {
+        const manifestPath = writePackageManifest(tmpDir, {
+          packageId: body.packageId,
+          name: body.name,
+          type: body.type,
+          version: body.version,
+          checksum: body.checksum,
+          downloadedAt: new Date().toISOString(),
+        });
+        // 事实已变：下次心跳立即重扫（不受 TTL 拖延），与 deploy.ts 对
+        // invalidateDeployedAppsCache 的接入模式一致。
+        invalidateInstalledPackagesCache();
+        logger.info(`[update-package] Manifest written: ${manifestPath}`);
+      } catch (manifestErr: unknown) {
+        logger.warn(
+          `[update-package] Failed to write package manifest (heartbeat will not report this package this time): ${
+            manifestErr instanceof Error ? manifestErr.message : String(manifestErr)
+          }`,
+        );
       }
 
       // 3. Report success back to admin-api

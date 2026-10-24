@@ -519,8 +519,11 @@ export const EXECUTOR_VERSION = readPackageVersion();
  *
  * R3-B（2026-10-24，部署模型评审 §4.3/P5）：6 → 7。register/heartbeat 新增
  * **可选**键 `deployedApps`（deployed-apps.ts 扫描的设备级应用版本事实）与
- * `installedPackages`（已安装执行器包清单；executor-node 暂无可得事实源，
- * 按 fail-honest 省略键——契约三态语义里「缺省 = 未上报」，合法）。
+ * `installedPackages`（已安装执行器包清单。P10 收敛后 executor-node 侧事实源
+ * 已落地：update-package.ts 在 checksum 验证通过后写
+ * .pkg-updates/manifests/<packageId>.json，installed-packages.ts 扫描该目录
+ * 产出心跳清单；扫描失败仍按 fail-honest 省略键——契约三态语义里
+ * 「缺省 = 未上报」，合法）。
  *
  * bump 的目的与 v2~v6 同款（evolutionRules 第 1 条）：让中台能区分「v7 执行
  * 器应上报设备事实」与「旧执行器无此事实可报」，为 R3-A 读面/派发面（版本跟

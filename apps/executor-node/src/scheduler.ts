@@ -12,6 +12,9 @@ import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelop
 import { diskUsagePercentOrNull } from './file-logger';
 // R3-B（部署模型评审 2026-10-23 §4.3/§P5）：设备级应用版本事实随心跳上报。
 import { collectDeployedAppsForHeartbeat } from './deployed-apps';
+// P10（executor 包版本收敛）：已安装执行器包清单随心跳上报（失败语义与
+// deployedApps 一致：扫描失败省略整键）。
+import { collectInstalledPackages } from './installed-packages';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
@@ -308,6 +311,12 @@ async function sendHeartbeat() {
       // 本体；与 interpreters 的「失败收敛空数组」刻意不同：apps/ 不可读时
       // 我们不知道有没有应用，空数组会把「未知」伪装成「无应用」。
       deployedApps: collectDeployedAppsForHeartbeat(),
+      // P10（executor 包版本收敛）：已安装执行器包清单（本机
+      // .pkg-updates/manifests/*.json 扫描，事实源是 update-package.ts 在
+      // checksum 验证通过后落盘的 manifest）。键省略语义与 deployedApps 一致：
+      // 扫描失败 → undefined（JSON 序列化丢键 =「未上报」，admin 保留旧值），
+      // 绝不阻塞或弄挂心跳本体；[] 则是「已上报且无安装包」的真事实。
+      installedPackages: collectInstalledPackages(),
       // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
       // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
       maxConcurrentTasks: config.maxConcurrentTasks,

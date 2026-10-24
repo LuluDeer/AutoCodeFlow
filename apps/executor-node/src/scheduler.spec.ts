@@ -431,4 +431,112 @@ describe('scheduler', () => {
       fs.rmSync(workDir, { recursive: true, force: true });
     }
   });
+
+  // P10（executor 包版本收敛）：心跳携带已安装执行器包清单。键语义与
+  // deployedApps 一致——[] 是「已上报且无安装包」的真事实；扫描失败省略整键。
+  // 收集器扫 <cwd>/.pkg-updates/manifests，须重定向 cwd（真实 fs，非 mock）。
+  it('P10: reports installedPackages in the heartbeat body (manifest fact source)', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { resetInstalledPackagesCacheForTest } = require('./installed-packages');
+
+    // update-package.ts 落盘形态的最小事实：一个校验通过的 manifest
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-p10-hb-'));
+    fs.mkdirSync(path.join(root, '.pkg-updates', 'manifests'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.pkg-updates', 'manifests', '11111111-1111-4111-8111-111111111111.json'),
+      JSON.stringify({
+        packageId: '11111111-1111-4111-8111-111111111111',
+        name: 'node-runtime',
+        type: 'node',
+        version: '22.0.0',
+        checksum: 'a'.repeat(64),
+        downloadedAt: '2026-10-24T10:00:00.000Z',
+      }),
+    );
+
+    const realCwd = process.cwd();
+    resetInstalledPackagesCacheForTest();
+    try {
+      process.chdir(root);
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      expect(body.installedPackages).toEqual([
+        { name: 'node-runtime', type: 'node', version: '22.0.0' },
+      ]);
+      // 附加键不破坏既有 body（R3-B 用例同款红线）
+      expect(body.address).toBe('localhost:8002');
+      expect(typeof body.runningTaskCount).toBe('number');
+      expect(Array.isArray(body.deployedApps)).toBe(true);
+      clearInterval(timer);
+    } finally {
+      process.chdir(realCwd);
+      resetInstalledPackagesCacheForTest();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // 空目录（无 manifests/）→ [] 是真事实：设备从未成功下载过执行器包。
+  // 这个三态区分是 admin 侧「缺省 = 保留旧值」语义的前提，绝不能静默丢键。
+  it('P10: empty manifests dir reports [] (reported-and-empty, not omitted)', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { resetInstalledPackagesCacheForTest } = require('./installed-packages');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-p10-hb-empty-'));
+    const realCwd = process.cwd();
+    resetInstalledPackagesCacheForTest();
+    try {
+      process.chdir(root);
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      expect(body).toHaveProperty('installedPackages');
+      expect(body.installedPackages).toEqual([]);
+      clearInterval(timer);
+    } finally {
+      process.chdir(realCwd);
+      resetInstalledPackagesCacheForTest();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // fail-honest 红线（§4.3，与 deployedApps 同款）：目录级扫描失败 → 省略整键
+  // （manifests 父路径被普通文件占位 → ENOTDIR ≠ ENOENT → 扫描抛错），心跳照发。
+  it('P10: scan failure omits installedPackages but the heartbeat still goes out', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { resetInstalledPackagesCacheForTest } = require('./installed-packages');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-p10-hb-fail-'));
+    fs.writeFileSync(path.join(root, '.pkg-updates'), 'not a directory');
+    const realCwd = process.cwd();
+    resetInstalledPackagesCacheForTest();
+    try {
+      process.chdir(root);
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      // 心跳本体照发，其余字段完好
+      expect(body.address).toBe('localhost:8002');
+      expect(typeof body.runningTaskCount).toBe('number');
+      // installedPackages 为 undefined → JSON.stringify 丢键（admin 保留旧值）
+      expect(body.installedPackages).toBeUndefined();
+      clearInterval(timer);
+    } finally {
+      process.chdir(realCwd);
+      resetInstalledPackagesCacheForTest();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
