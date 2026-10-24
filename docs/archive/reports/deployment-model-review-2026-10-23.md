@@ -320,7 +320,11 @@
 | R5b/4.5-5b executor-node zip 字节缓存 `.pkg-cache/`（URL sha256 键控、审查不跳过、4GiB 预算 mtime 淘汰、workDir 清扫保护） | ✅ | 29b8bd17 |
 | R2/4.4 upgrade-all 覆盖面显式化（coverage 分组回显 + skipped 明细 + includeStopped opt-in；canary 口径不变） | ✅ | 2bddc708 |
 | R4/4.1A+4.7 `app_deployment_events` 不可变事件表（10 写入点）+ deployCount 切事件聚合（legacy 回退）+ getReleases `truncated` 标记 + events 分页读面 | ✅ | 903fbc0e |
+| R3/4.3+P5 设备级版本事实上报与消费：心跳 `deployedApps` 三态契约（协议 v7）+ executor_app_versions 表（迁移 63）+ getReleases devices 读面 + `resolveVersionFollowPackage` 切「设备上报优先、部署行回退」+ 前端设备徽标；收口时补齐注册白名单断言（deployedApps/installedPackages 两键）与 3 个 spec 的 getAppVersionFacts mock | ✅ | 2b5da7c5 |
+| R4 补位：deployCount 存量回填迁移 1790000000064（无事件应用从现存部署行合成 deploy_created 下界事件，detail.backfill 标注，NOT EXISTS 应用级防双计，keyset 分批）——混合窗口期消除；buildDeployCountMap legacy 分支保留理由重写 | ✅ | 105b42f4 |
+| R4 前端消费面：版本追溯 Tab 新增部署事件流 Card（九值类型映射/执行器可读名/detail 摘要翻译/分页 raceGuard，端点实测为 /app-deployments/applications/:appId/events）+ releases truncated 显式告警条与锚点跳转；zh/en 各 +32 词条 | ✅ | 284986b6 |
+| R5b python 对等：executor-python zip 包字节缓存 `.pkg-cache/`（URL sha256 键控、meta 命中校验 fail-open、两段原子写、4GiB 预算 mtime 淘汰+part 回收、审查每执行照跑且 violation purge、清扫保护、事件循环分实例锁）；遗留不对称：python 下载上限硬编码 vs node 可配 | ✅ | 3f3f56c0 |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
-**下轮候选（本轮未做，按建议优先级）**：R3/4.3 设备版本上报（心跳 `deployedApps` + `resolveVersionFollowPackage` 判据切换到设备上报事实源 + P10 执行器包版本收敛同心跳）；5c `releases/<version>` 目录两段化（与 R3 联动）；4.6 执行产物目录分层/元数据索引；事件表前端消费面（事件流页面、truncated 告警 UI）；executor-python zip 缓存对等实现；deployCount 存量回填迁移（混合窗口期计数从 0 重新累计，语义见 buildDeployCountMap 注释）。
+**下轮候选（本轮未做，按建议优先级）**：~~R3/4.3 设备版本上报~~（已落地，见上表 2b5da7c5）；5c `releases/<version>` 目录两段化（与 R3 联动）；4.6 执行产物目录分层/元数据索引；~~事件表前端消费面~~（已落地 284986b6，遗留：/events 无 eventType/时间过滤参数——表已有 application_type 索引可支持；truncated 截断会连带吞掉被截版本的 devices retained 徽标）；~~executor-python zip 缓存对等实现~~（已落地 3f3f56c0，遗留不对称：python ZIP_DOWNLOAD_MAX_BYTES 硬编码常量 vs node PACKAGE_DOWNLOAD_MAX_BYTES 可配）；~~deployCount 存量回填迁移~~（已落地 105b42f4，已知取舍：迁移 62→64 窗口期已产生真实事件的存量应用不回填——防双计的应用级判定边界）；P10 executor_packages 版本收敛收口（心跳 `installedPackages` 事实源——update-package 落 manifest 清单 + 心跳扫描上报，中台侧契约 v7 已就绪）；升级重置 startCommand 快照的 UI 披露（A-4 决策已落注释：升级时快照有意重置为当前 app.entrypoint 以修复陈旧快照压住新 entrypoint 的缺陷，但「部署时自定义启动命令会在升级时被重置」尚未在升级确认 UI 披露）。
