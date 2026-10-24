@@ -361,7 +361,14 @@ export default function ExecutionsPage() {
     return () => clearInterval(timer);
   }, [refetch]);
 
-  const executions: TaskExecution[] = data?.items ?? [];
+  // 引用稳定化（已登记性能缺陷）：原裸表达式 data?.items ?? [] 在 data 未就绪
+  // （首载/切筛选换 queryKey/出错）期间每次渲染都分配新数组，下游
+  // failureBuckets 的 useMemo 依赖随之每渲染变化，memo 退化成每渲染重算。
+  // 包进 useMemo 后依赖 data?.items：就绪时 TanStack Query 的
+  // structural sharing 保证内容不变则引用不变；未就绪时依赖恒为
+  // undefined——两种形态下 executions 引用都稳定，下游（failureBuckets /
+  // Table dataSource / ExecutionCompareModal）不再被无谓打穿。
+  const executions: TaskExecution[] = useMemo(() => data?.items ?? [], [data?.items]);
   const total: number = data?.total ?? 0;
 
   // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析。
