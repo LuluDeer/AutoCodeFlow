@@ -871,6 +871,7 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
     setCurrentVersion: jest.Mock;
     deployVersion: jest.Mock;
     rollbackApplication: jest.Mock;
+    upgradeAllWithRollout: jest.Mock;
   };
   let controller: ApplicationController;
 
@@ -900,6 +901,20 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
         updatedApp: { id: "app-1" },
       }),
       rollbackApplication: jest.fn().mockResolvedValue({ ok: true }),
+      upgradeAllWithRollout: jest.fn().mockResolvedValue({
+        ok: true,
+        total: 0,
+        succeeded: 0,
+        failed: 0,
+        coverage: {
+          running: 0,
+          scheduled: 0,
+          stopped: 0,
+          failed: 0,
+          inFlight: 0,
+        },
+        skipped: [],
+      }),
     };
     controller = new ApplicationController(
       svc as any,
@@ -917,6 +932,32 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
       "ver-1",
     );
     expect(result.dispatched).toBe(false);
+  });
+
+  // R2（部署模型评审 §4.4）：includeStopped 透传——缺省必须显式落 false
+  // （服务层第 5 参缺省值只对 undefined 生效，控制器这里收口缺省语义）。
+  it("upgradeAll 缺省 includeStopped=false；=true 时透传（R2 §4.4）", async () => {
+    await controller.upgradeAll("app-1", {}, { id: 7, username: "alice" });
+    expect(deploymentSvc.upgradeAllWithRollout).toHaveBeenCalledWith(
+      "app-1",
+      null,
+      { operator: "alice", triggerType: "upgrade" },
+      undefined,
+      false,
+    );
+
+    await controller.upgradeAll(
+      "app-1",
+      { rollout: { strategy: "canary", percentage: 30 }, includeStopped: true },
+      { id: 7, username: "alice" },
+    );
+    expect(deploymentSvc.upgradeAllWithRollout).toHaveBeenLastCalledWith(
+      "app-1",
+      { strategy: "canary", percentage: 30 },
+      { operator: "alice", triggerType: "upgrade" },
+      undefined,
+      true,
+    );
   });
 
   it("deployVersion 透传 executorIds 与 JWT 用户名（rollback 语义）", async () => {

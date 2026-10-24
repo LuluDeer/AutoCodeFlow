@@ -33,12 +33,29 @@ interface Deployment {
  * .upgradeAllWithRollout）。all 模式恒 ok:true + succeeded/failed 计数；
  * canary 额外带 rollout 批次信息；ARCH-31 同应用在途批次互斥时
  * ok:false + rollout.blockedReason（业务拒绝，HTTP 仍是 2xx）。
+ * R2（部署模型评审 §4.4）：新增 coverage 按状态分组计数与 skipped 在途
+ * 跳过明细——只增不改，旧字段语义不变。
  */
 interface UpgradeAllResult {
   ok: boolean;
   total: number;
   succeeded: number;
   failed: number;
+  /** R2 §4.4：覆盖面分组计数（running+scheduled 为默认覆盖面）。 */
+  coverage?: {
+    running: number;
+    scheduled: number;
+    stopped: number;
+    failed: number;
+    inFlight: number;
+  };
+  /** R2 §4.4：在途行（pending/deploying/upgrading）跳过明细。 */
+  skipped?: Array<{
+    deploymentId: string;
+    executorId: string | null;
+    status: string;
+    reason: string;
+  }>;
   rollout?: {
     batchId: string;
     strategy: string;
@@ -448,10 +465,14 @@ export function appsCommand(): Command {
   // 保持；canary 传 { rollout: { strategy: 'canary', percentage? } }。
   // 2026-10-07：UpgradeAllDto 增可选 version（版本定向灰度/渐进回滚）——
   // --version <v> 时 body 带顶层 version；缺省不带（升级目标恒为应用当前版本）。
+  // R2（部署模型评审 §4.4，2026-10-24）：覆盖面显式化——默认覆盖 = 全部
+  // RUNNING 行（scheduled「仅部署」行实证稳态即 RUNNING，同属默认覆盖）；
+  // --include-stopped 把 stopped 行显式纳入（仅 all 策略）；在途行由服务端
+  // 跳过并在响应 skipped 明细回显（黄字透出，不当作失败）。
   // 批次由服务端异步推进（心跳确认 → 健康探测 → 提升），受理 ≠ 完成。
   cmd.command('upgrade-all <appId>')
     .description(
-      "Trigger a rolling upgrade of all RUNNING deployments to the application's current version (or --version). Default = full upgrade (pre-DEP-02 semantics, no body). Canary batches advance asynchronously on the server — acceptance is not completion",
+      "Trigger a rolling upgrade of the application's deployed devices to its current version (or --version). Default coverage = all RUNNING rows (deploy-only/scheduled rows report running on completion, so they are covered too); --include-stopped additionally dispatches STOPPED rows (all strategy only). Canary batches advance asynchronously on the server — acceptance is not completion",
     )
     .option('--strategy <strategy>', 'Rollout strategy: all (default) | canary (first batch → heartbeat confirm → health probe → auto-promote the rest, DEP-02)')
     .option(
@@ -467,11 +488,16 @@ export function appsCommand(): Command {
     )
     .option(
       '--version <version>',
-      'Target a historical released version (version string, not uuid) — enables gradual rollback. Default: the application\'s current version. The app record is restored from that version snapshot before the rollout starts',
+      'Target a historical released version (version string, not uuid) — enables gradual rollback. Default: the application\'s current version. The app record is restored from that version snapshot before the rollout starts. Equivalent to the R1 set-current-version + deploy-version split endpoints; prefer those',
+    )
+    .option(
+      '--include-stopped',
+      'Also dispatch STOPPED deployment rows under the all strategy (default: only RUNNING rows — daemon and deploy-only alike). The canary strategy rejects this flag (health probing needs live processes)',
+      false,
     )
     .option('--json', 'Emit raw JSON (CI-consumable)')
     .option('-y, --yes', 'Skip the confirmation prompt for a FULL upgrade (all strategy)', false)
-    .action(async (appId: string, opts: { strategy?: string; percentage?: number; version?: string; json?: boolean; yes?: boolean }) => {
+    .action(async (appId: string, opts: { strategy?: string; percentage?: number; version?: string; includeStopped?: boolean; json?: boolean; yes?: boolean }) => {
       const strategy = opts.strategy ?? 'all';
       if (strategy !== 'all' && strategy !== 'canary') {
         emitUsageError(`Unknown rollout strategy "${strategy}" — expected one of: all | canary`);
@@ -479,13 +505,18 @@ export function appsCommand(): Command {
       if (opts.percentage !== undefined && strategy !== 'canary') {
         emitUsageError('--percentage only applies to --strategy canary (the full-upgrade path never reads it)');
       }
+      // R2 §4.4：includeStopped 只作用于 all——canary 的健康探测需要活进程，
+      // 扩覆盖只会造出必失败的灰度首批；客户端先拒（与 --percentage 同口径）。
+      if (opts.includeStopped && strategy !== 'all') {
+        emitUsageError('--include-stopped only applies to the all strategy (canary batches probe live processes)');
+      }
       // P1（CLI-AGENT-UX-AUDIT）：全量滚动升级会重启该应用**所有 RUNNING 部署**，
       // 此前零确认。canary 天然是低风险首步（且服务端会自动提升/回滚），不设门；
       // all 是「一次性动全量」，需要显式表态——与三处 delete 共用同一套非交互语义。
       if (strategy === 'all') {
         if (
           !(await confirmDestructive(
-            `Roll out the upgrade to ALL running deployments of ${appId}?`,
+            `Roll out the upgrade to ALL running deployments of ${appId}${opts.includeStopped ? ' (including stopped rows)' : ''}?`,
             { yes: opts.yes },
           ))
         ) {
@@ -494,8 +525,16 @@ export function appsCommand(): Command {
       }
       const spinner = ora('Triggering upgrade…').start();
       try {
-        // all：不传 body —— 与既有全量升级语义逐字节一致；canary：rollout
-        // 白名单体，percentage 仅在给出时携带（服务端缺省 50）。
+        // all：缺省（无 version/include-stopped）不传 body —— 与既有全量升级
+        // 语义逐字节一致；canary：rollout 白名单体，percentage 仅在给出时携带
+        // （服务端缺省 50）。R2：all + --include-stopped 带 {includeStopped:true}。
+        const allExtras =
+          opts.version !== undefined || opts.includeStopped
+            ? {
+                ...(opts.version !== undefined ? { version: opts.version } : {}),
+                ...(opts.includeStopped ? { includeStopped: true } : {}),
+              }
+            : undefined;
         const body =
           strategy === 'canary'
             ? {
@@ -505,9 +544,7 @@ export function appsCommand(): Command {
                   ...(opts.percentage !== undefined ? { percentage: opts.percentage } : {}),
                 },
               }
-            : opts.version !== undefined
-              ? { version: opts.version }
-              : undefined;
+            : allExtras;
         const r = await post<UpgradeAllResult>(`/applications/${appId}/upgrade-all`, body);
         spinner.stop();
         if (opts.json) {
@@ -528,6 +565,24 @@ export function appsCommand(): Command {
           );
           process.exitCode = 1;
           return;
+        }
+        // R2 §4.4：覆盖面分组如实回显（旧输出只报 succeeded/total，用户无从知道
+        // 「仅部署」行也在覆盖内、stopped 有多少台被留下）。
+        const cov = r.coverage;
+        if (cov) {
+          console.log(
+            chalk.gray(
+              `  coverage: running ${cov.running}, deploy-only ${cov.scheduled}, stopped ${cov.stopped}${opts.includeStopped ? ' (included)' : ''}, failed ${cov.failed}, in-flight ${cov.inFlight}`,
+            ),
+          );
+        }
+        // 在途跳过明细：黄字逐行列出（不是失败——exit code 不受影响）。
+        for (const s of r.skipped ?? []) {
+          console.log(
+            chalk.yellow(
+              `  skipped: ${s.deploymentId.slice(0, 12)} executor=${s.executorId ?? '-'} status=${s.status} reason=${s.reason}`,
+            ),
+          );
         }
         if (strategy === 'canary') {
           spinner.succeed(`Canary batch accepted: first batch ${r.succeeded}/${r.total} deployment(s)`);
@@ -552,6 +607,14 @@ export function appsCommand(): Command {
               ),
             );
             process.exitCode = 1;
+          }
+          // 存在 stopped 行且本次未纳入——显式指路（如实提示，不留「以为全升了」的误会）。
+          if (!opts.includeStopped && (cov?.stopped ?? 0) > 0) {
+            console.log(
+              chalk.yellow(
+                `  ⚠ ${cov!.stopped} stopped deployment(s) not covered — pass --include-stopped to include them`,
+              ),
+            );
           }
         }
       } catch (e: unknown) {

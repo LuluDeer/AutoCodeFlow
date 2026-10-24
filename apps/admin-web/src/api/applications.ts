@@ -179,10 +179,14 @@ export const applicationsApi = {
    * P1-9：后端 upgrade-all 早已支持 body.rollout（灰度策略），前端此前 POST 时
    * 不带 body——灰度发布在 UI 上没有任何入口。现在把策略透传：
    *   strategy='canary' 时按 percentage% 灰度首批，后端自动观察/转正/回滚。
+   * R2（部署模型评审 §4.4）：includeStopped 仅 all 策略生效（stopped 显式
+   * opt-in）；响应新增 coverage 分组计数与 skipped 在途跳过明细——只增不改，
+   * 旧调用方按需消费。
    */
   upgradeAll: (
     id: string,
     rollout?: { strategy: 'full' | 'canary'; percentage?: number },
+    includeStopped?: boolean,
   ) =>
     // A-8：canary 被互斥拒绝时后端返回 200 + ok:false + rollout.blockedReason
     // （非 HTTP 错误），前端必须读这两个字段才不会把「未启动」当成「已成功」。
@@ -191,10 +195,27 @@ export const applicationsApi = {
       total: number;
       succeeded: number;
       failed: number;
+      /** R2 §4.4：按状态分组的覆盖面计数（后端恒回显）。 */
+      coverage?: {
+        running: number;
+        scheduled: number;
+        stopped: number;
+        failed: number;
+        inFlight: number;
+      };
+      /** R2 §4.4：在途行（pending/deploying/upgrading）跳过明细。 */
+      skipped?: Array<{
+        deploymentId: string;
+        executorId: string | null;
+        status: string;
+        reason: string;
+      }>;
       rollout?: { batchId: string; blockedReason?: string };
     }>(
       `/applications/${id}/upgrade-all`,
-      rollout ? { rollout } : {},
+      rollout || includeStopped
+        ? { ...(rollout ? { rollout } : {}), ...(includeStopped ? { includeStopped: true } : {}) }
+        : {},
     ),
   getVersionHistory: (id: string) =>
     client.get<VersionHistoryEntry[]>(`/applications/${id}/versions`),

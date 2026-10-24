@@ -210,7 +210,7 @@ curl -i http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
 | POST | `/applications/upload` | 是 | 上传应用包（multipart/form-data，按名称 upsert） |
 | GET | `/applications/:id/versions` | 是 | 版本历史快照（无快照的历史数据回退展示部署记录）——DEP-01 后作为过渡期 alias 保留，统一追溯请用 `/applications/:id/releases` |
 | GET | `/applications/:id/releases` | 是 | **统一发布追溯视图（DEP-01 新增）**：按版本聚合包地址与最近一次部署的状态/时间/触发方式，见下节 |
-| POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级；**DEP-02 新增可选请求体** `rollout` 灰度策略（缺省=all 保持既有全量语义零破坏），契约见「Rollout 灰度发布与健康检查（DEP-02/03）」节 |
+| POST | `/applications/:id/upgrade-all` | 是 | 对该应用**全部 RUNNING 部署行**（含 scheduled「仅部署」行——实证稳态即 RUNNING）触发滚动升级；**R2（部署模型评审 §4.4）** 新增 `includeStopped`（stopped 显式 opt-in，仅 all 策略）与按状态分组的 `coverage`/`skipped` 响应（在途行跳过明细）；`rollout` 灰度策略（DEP-02，缺省=all）不变，契约见「Rollout 灰度发布与健康检查（DEP-02/03）」节 |
 | POST | `/applications/:id/sync-tasks` | 是 | 解析应用 manifest.json 自动注册任务 |
 | POST | `/applications/:id/analyze` | 是 | AI 应用健康分析（聚合全部任务执行统计） |
 | POST | `/applications/:id/set-current-version` | 是 | **R1（部署模型评审 §4.2）**：只按版本快照恢复应用当前字段，**不动部署行/设备**（响应 `dispatched:false`），契约见「应用版本动作（R1 §4.2）」节 |
@@ -397,13 +397,33 @@ Content-Type: application/json
 **`POST /api/applications/:id/upgrade-all`**（ADMIN）：请求体全可选，**缺省（不传 body 或不传 `rollout`）= `all` 全量升级，既有语义逐字节保持**。批次本体是 admin-api 进程内状态（最低正确形态）：**服务重启即暂停灰度**——启动 sweep 把遗留 `pending/probing` 行标记 `failed`（`rolloutMeta.failureReason = "admin-api restarted — rollout batch not resumed"`），需人工重发；批次硬超时 15 分钟兜底收尾，canary 首批心跳确认宽限窗 120 秒。
 
 ```json
-{ "rollout": { "strategy": "canary", "percentage": 34 } }
+{ "rollout": { "strategy": "canary", "percentage": 34 }, "includeStopped": false }
 ```
 
 | 字段 | 类型 | 缺省 | 说明 |
 |------|------|------|------|
 | `rollout.strategy` | `"canary" \| "all"` | `all` | canary=分批灰度；all=既有全量（同一 Promise.allSettled 路径） |
 | `rollout.percentage` | int 1-100 | 50 | canary 首批台数 = `ceil(N × percentage%)`，**至少 1 台**、至多 N |
+| `version` | string ≤64 | — | 版本定向（渐进回滚）。**等价于 `set-current-version` + `deploy-version` 的组合**（先按快照恢复应用当前字段再下发，会改写中台当前版本）——R1（§4.2）拆分出的两个端点是更明确的表达，建议改用新端点 |
+| `includeStopped` | boolean | `false` | **R2（§4.4）**：all 策略下把 `stopped` 部署行一并纳入升级（stopped 可能是人为停用，故显式 opt-in）。canary 策略忽略该参数 |
+
+**覆盖面（R2 §4.4，实证口径）**：默认升级目标 = 该应用**全部 RUNNING 部署行**。`scheduled`（仅部署待触发）行在执行器侧部署完成时即上报 `running`（`deploy.ts` scheduled 分支），行稳态就是 `RUNNING`，且卡死扫描（`detectStuckDeployments`）只扫 `pending/deploying/upgrading`、永不触碰 RUNNING 行——因此 scheduled 设备**默认就在覆盖内**（升级 = 拉新包切 current，不启动进程）。真正掉出默认覆盖的：`stopped`（opt-in 后纳入）、`failed`（恒排除——失败多与环境相关，应走显式重新部署）、在途行 `pending/deploying/upgrading`（不可重入，**跳过并进 `skipped` 明细，不抛错**）。
+
+**响应**：`all` 模式返回既有 `{ok, total, succeeded, failed}` **只增不改**——R2 起恒新增两个键：
+
+```json
+{
+  "ok": true, "total": 3, "succeeded": 2, "failed": 1,
+  "coverage": { "running": 1, "scheduled": 1, "stopped": 2, "failed": 0, "inFlight": 1 },
+  "skipped": [
+    { "deploymentId": "…", "executorId": "…", "status": "upgrading", "reason": "in_flight" }
+  ]
+}
+```
+
+- `coverage`：该应用部署行按状态分组计数（`running`=RUNNING 且非常驻定时模式；`scheduled`=RUNNING 且 runMode=scheduled；计数恒回显，与是否纳入升级无关）；
+- `skipped`：在途行明细，`reason`：`in_flight`（在途部署/升级不可重入）/ `awaiting_approval`（待审批行，DEP-04 复用 pending 占坑）；
+- canary 模式额外携带 `rollout: {batchId, strategy, canaryIds, promotedIds}`（首批失败时 `ok=false, failed=1`）；灰度集合维持「全部 RUNNING 行」口径，`includeStopped` 不扩（健康探测需要活进程）。
 
 **canary 状态机（`app_deployments.rolloutState`，迁移 1790000000001，NULL=非批次路径）**：
 
@@ -414,8 +434,6 @@ pending（升级指令已受理，等待心跳确认 RUNNING）
 pending/probing 任意环节失败 → failed（未回滚，含重启 sweep）
 probing 探测通过前的已升级台，批次失败时 → rolled_back（自动回滚完成）
 ```
-
-**响应**：`all` 模式返回既有 `{ok, total, succeeded, failed}`；canary 模式额外携带 `rollout: {batchId, strategy, canaryIds, promotedIds}`（首批失败时 `ok=false, failed=1`）。
 
 **批次失败判定与自动回滚（DEP-03）**——任一命中即暂停批次（无暂停队列，直接终态）：
 1. 首批/提升轮 `upgrade` 触发抛错；
@@ -1292,7 +1310,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/applications/{id}/set-current-version` | 将应用当前字段设为指定版本快照（不动部署/设备，R1 §4.2） |
 | POST | `/applications/{id}/deploy-version` | 按版本快照恢复应用字段后下发到设备（可按执行器点名，R1 §4.2） |
 | POST | `/applications/{id}/sync-tasks` | 从 manifest.json 同步任务注册 |
-| POST | `/applications/{id}/upgrade-all` | 触发所有运行中实例升级到最新版本 |
+| POST | `/applications/{id}/upgrade-all` | 触发该应用全部已部署设备升级到最新版本（覆盖面分组回显，R2 §4.4） |
 | GET | `/applications/{id}/versions` | 获取应用版本历史 |
 | POST | `/applications/upload` | 上传应用包（zip） |
 | POST | `/applications/webhook` | 版本发布 Webhook |

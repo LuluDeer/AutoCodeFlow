@@ -2949,8 +2949,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 触发所有运行中实例升级到最新版本
-         * @description DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。
+         * 触发该应用全部已部署设备升级到最新版本
+         * @description DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。R2（部署模型评审 §4.4）：覆盖面显式化——默认 = 全部 RUNNING 部署行（含 scheduled「仅部署」行：实证口径为 scheduled 部署完成即上报 running，稳态就是 RUNNING）；includeStopped=true 时 all 策略把 stopped 行一并纳入（canary 忽略该参数——健康探测需要活进程）；pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细（不抛错）；failed 行恒排除。响应新增 coverage 按状态分组计数。version 定向参数等价于 set-current-version + deploy-version 组合（会改写中台当前版本），建议改用 R1 拆分端点
          */
         post: operations["ApplicationController_upgradeAll"];
         delete?: never;
@@ -6847,8 +6847,35 @@ export interface components {
         RolloutStrategyDto: Record<string, never>;
         UpgradeAllDto: {
             rollout?: components["schemas"]["RolloutStrategyDto"];
-            /** @description 本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本 */
+            /** @description 本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本。注意：该参数等价于 set-current-version + deploy-version 的组合（先按快照恢复应用当前字段，再下发），且会改写中台当前版本——R1（§4.2）拆分出的这两个端点是更明确的表达，建议改用新端点 */
             version?: string;
+            /** @description all 策略下把 stopped 部署行一并纳入升级（缺省 false——stopped 可能是人为停用）。pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细；failed 行恒排除（应走显式重新部署）。canary 策略忽略本参数 */
+            includeStopped?: boolean;
+        };
+        UpgradeAllCoverageDto: {
+            /** @description RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once） */
+            running: number;
+            /** @description RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖） */
+            scheduled: number;
+            /** @description STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显） */
+            stopped: number;
+            /** @description FAILED 行数（恒排除，应走显式重新部署） */
+            failed: number;
+            /** @description pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细） */
+            inFlight: number;
+        };
+        UpgradeAllSkippedItemDto: {
+            /** Format: uuid */
+            deploymentId: string;
+            /** Format: uuid */
+            executorId: string | null;
+            /** @enum {string} */
+            status: "pending" | "deploying" | "upgrading";
+            /**
+             * @description in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）
+             * @enum {string}
+             */
+            reason: "in_flight" | "awaiting_approval";
         };
         UpgradeAllResponseDto: {
             /** @description false = 金丝雀批次被拒绝（ARCH-31 在途互斥）或全部失败 */
@@ -6859,6 +6886,10 @@ export interface components {
             total: number;
             succeeded: number;
             failed: number;
+            /** @description 该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过 */
+            coverage?: components["schemas"]["UpgradeAllCoverageDto"];
+            /** @description 在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4） */
+            skipped?: components["schemas"]["UpgradeAllSkippedItemDto"][];
             /** @description 在实际启动了金丝雀批次（或被阻塞）时出现 */
             rollout?: {
                 batchId?: string;

@@ -177,7 +177,22 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
       const result = await service.upgradeAllWithRollout("app-1", null);
 
-      expect(result).toEqual({ ok: true, total: 2, succeeded: 2, failed: 0 });
+      // R2 §4.4：既有四键形状不变，只**增** coverage/skipped（daemon 行全
+      // 落 running 组）。
+      expect(result).toEqual({
+        ok: true,
+        total: 2,
+        succeeded: 2,
+        failed: 0,
+        coverage: {
+          running: 2,
+          scheduled: 0,
+          stopped: 0,
+          failed: 0,
+          inFlight: 0,
+        },
+        skipped: [],
+      });
       expect(result.rollout).toBeUndefined();
       expect(upSpy).toHaveBeenCalledTimes(2);
       // FEAT-20: 无触发上下文时 upgrade 以 ("d1", undefined) 调用（零破坏）
@@ -207,7 +222,176 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       const result = await service.upgradeAllWithRollout("app-1", {
         strategy: "canary",
       });
-      expect(result).toEqual({ ok: true, total: 0, succeeded: 0, failed: 0 });
+      expect(result).toEqual({
+        ok: true,
+        total: 0,
+        succeeded: 0,
+        failed: 0,
+        coverage: {
+          running: 0,
+          scheduled: 0,
+          stopped: 0,
+          failed: 0,
+          inFlight: 0,
+        },
+        skipped: [],
+      });
+    });
+  });
+
+  // R2（部署模型评审 §4.4/§9.4，2026-10-24）：upgrade-all 覆盖面显式化——
+  // 默认 = 全部 RUNNING 行（scheduled「仅部署」行实证稳态即 RUNNING，见
+  // service 方法头注释）；stopped 显式 opt-in；在途行跳过进 skipped 明细。
+  describe("upgradeAllWithRollout：R2 覆盖面分组（§4.4）", () => {
+    const mixedRows = (): AppDeployment[] => [
+      row("d-daemon", { executorId: "exec-a" }),
+      row("d-sched", {
+        executorId: "exec-b",
+        runMode: RunMode.SCHEDULED,
+      }),
+      row("d-stopped", {
+        executorId: "exec-c",
+        status: DeploymentStatus.STOPPED,
+      }),
+      row("d-failed", {
+        executorId: "exec-d",
+        status: DeploymentStatus.FAILED,
+      }),
+      row("d-deploying", {
+        executorId: "exec-e",
+        status: DeploymentStatus.DEPLOYING,
+      }),
+      row("d-upgrading", {
+        executorId: "exec-f",
+        status: DeploymentStatus.UPGRADING,
+      }),
+      row("d-approval", {
+        executorId: "exec-g",
+        status: DeploymentStatus.PENDING,
+        approvalStatus: "pending_approval" as any,
+      }),
+    ];
+
+    it("缺省：只升级 RUNNING（daemon+scheduled），stopped/failed 排除，在途行进 skipped 明细（待审批单独归因）", async () => {
+      repo.find.mockResolvedValue(mixedRows());
+      const upSpy = jest
+        .spyOn(service, "upgrade")
+        .mockImplementation(async (id: string) => row(id));
+
+      const result = await service.upgradeAllWithRollout("app-1", null);
+
+      expect(result.coverage).toEqual({
+        running: 1,
+        scheduled: 1,
+        stopped: 1,
+        failed: 1,
+        inFlight: 3,
+      });
+      // 默认覆盖 = running + scheduled = 2 台
+      expect(upSpy).toHaveBeenCalledTimes(2);
+      expect(upSpy).toHaveBeenCalledWith("d-daemon", undefined);
+      expect(upSpy).toHaveBeenCalledWith("d-sched", undefined);
+      // stopped/failed 不触发 upgrade
+      expect(upSpy).not.toHaveBeenCalledWith("d-stopped", expect.anything());
+      expect(upSpy).not.toHaveBeenCalledWith("d-failed", expect.anything());
+      // 在途 3 行全部进 skipped；待审批行单独归因
+      expect(result.skipped).toEqual([
+        {
+          deploymentId: "d-deploying",
+          executorId: "exec-e",
+          status: "deploying",
+          reason: "in_flight",
+        },
+        {
+          deploymentId: "d-upgrading",
+          executorId: "exec-f",
+          status: "upgrading",
+          reason: "in_flight",
+        },
+        {
+          deploymentId: "d-approval",
+          executorId: "exec-g",
+          status: "pending",
+          reason: "awaiting_approval",
+        },
+      ]);
+      expect(result.total).toBe(2);
+    });
+
+    it("includeStopped=true：stopped 行纳入升级（total 相应扩大），failed 仍排除", async () => {
+      repo.find.mockResolvedValue(mixedRows());
+      const upSpy = jest
+        .spyOn(service, "upgrade")
+        .mockImplementation(async (id: string) => row(id));
+
+      const result = await service.upgradeAllWithRollout(
+        "app-1",
+        null,
+        undefined,
+        undefined,
+        true,
+      );
+
+      expect(upSpy).toHaveBeenCalledWith("d-stopped", undefined);
+      expect(upSpy).not.toHaveBeenCalledWith("d-failed", expect.anything());
+      expect(result.total).toBe(3);
+      expect(result.coverage.stopped).toBe(1);
+    });
+
+    it("canary + includeStopped=true：灰度集合维持全部 RUNNING 口径（stopped 不进批次），形状不变", async () => {
+      repo.find.mockResolvedValue(mixedRows());
+      // markRolloutState 走 repo.findOne；upgrade 用 spy 截停
+      repo.findOne.mockImplementation(async ({ where }: any) => {
+        const rows = mixedRows();
+        return rows.find((d) => d.id === where.id) ?? null;
+      });
+      const upSpy = jest
+        .spyOn(service, "upgrade")
+        .mockImplementation(async (id: string) => row(id));
+
+      const result = await service.upgradeAllWithRollout(
+        "app-1",
+        { strategy: "canary", percentage: 100 },
+        undefined,
+        undefined,
+        true,
+      );
+
+      // canary 批次集合 = 2 台 RUNNING（daemon+scheduled），stopped 不扩入
+      expect(result.rollout).toMatchObject({
+        strategy: "canary",
+        canaryIds: ["d-daemon", "d-sched"],
+        promotedIds: [],
+      });
+      expect(upSpy).not.toHaveBeenCalledWith("d-stopped", expect.anything());
+      // 分组回显仍如实携带 stopped 计数与 skipped 明细
+      expect(result.coverage.stopped).toBe(1);
+      expect(result.skipped).toHaveLength(3);
+    });
+
+    it("canary 空集回退 + includeStopped=true：仍空升级（canary 忽略该参数零例外，不偷扩覆盖）", async () => {
+      const rows = [
+        row("d-stopped", {
+          executorId: "exec-c",
+          status: DeploymentStatus.STOPPED,
+        }),
+      ];
+      repo.find.mockResolvedValue(rows);
+      const upSpy = jest
+        .spyOn(service, "upgrade")
+        .mockImplementation(async (id: string) => row(id));
+
+      const result = await service.upgradeAllWithRollout(
+        "app-1",
+        { strategy: "canary" },
+        undefined,
+        undefined,
+        true,
+      );
+
+      expect(upSpy).not.toHaveBeenCalled();
+      expect(result.total).toBe(0);
+      expect(result.coverage.stopped).toBe(1);
     });
   });
 
@@ -235,8 +419,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(upSpy).toHaveBeenCalledTimes(2); // 仅首批
       expect(upSpy).not.toHaveBeenCalledWith("d3");
       // 首批两行 pending
-      const pendingRows = persisted(repo)
-        .filter((e: any) => e.rolloutState === RolloutState.PENDING);
+      const pendingRows = persisted(repo).filter(
+        (e: any) => e.rolloutState === RolloutState.PENDING,
+      );
       expect(pendingRows.map((r: any) => r.id)).toEqual(["d1", "d2"]);
       // R50：批次痕迹必须走**列级写**——整行 save 会用本方法读到的快照覆盖并发的
       // status/statusMessage（心跳推进终态、管理员停止）。这条断言把「不许整行写」钉住。
@@ -280,8 +465,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
       expect(result.ok).toBe(false);
       expect(result.failed).toBe(1);
-      const failedRows = persisted(repo)
-        .filter((e: any) => e.rolloutState === RolloutState.FAILED);
+      const failedRows = persisted(repo).filter(
+        (e: any) => e.rolloutState === RolloutState.FAILED,
+      );
       expect(failedRows.length).toBeGreaterThanOrEqual(1);
       expect(failedRows.some((r: any) => r.id === "d1")).toBe(true);
       expect(failedRows[0].rolloutMeta.failureReason).toContain(
@@ -433,10 +619,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(mockAxiosGet).not.toHaveBeenCalled();
       // fail-closed：canary 台判失败，不提升其余台
       expect(upSpy).not.toHaveBeenCalledWith("d2");
-      const failedRows = persisted(repo)
-        .filter(
-          (e: any) => e.id === "d1" && e.rolloutState === RolloutState.FAILED,
-        );
+      const failedRows = persisted(repo).filter(
+        (e: any) => e.id === "d1" && e.rolloutState === RolloutState.FAILED,
+      );
       // save 收到的是同一被就地改写的行对象，故按 ≥1 断言（存在即已落 FAILED）。
       expect(failedRows.length).toBeGreaterThanOrEqual(1);
       expect(failedRows[0].rolloutMeta?.failureReason).toContain(
@@ -516,8 +701,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
       // 回滚 push 被触发（d2 为已升级台）——axios.post 走 upgrade 链
       expect(mockAxiosPost).toHaveBeenCalled();
-      const rolledBack = persisted(repo)
-        .filter((e: any) => e.rolloutState === RolloutState.ROLLED_BACK);
+      const rolledBack = persisted(repo).filter(
+        (e: any) => e.rolloutState === RolloutState.ROLLED_BACK,
+      );
       expect(rolledBack.map((r: any) => r.id)).toContain("d2");
       // 回滚载荷携带快照版本
       const postPayloads = mockAxiosPost.mock.calls.map(
@@ -552,8 +738,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         status: "failed",
       } as any);
       await new Promise((r) => setTimeout(r, 10));
-      const failedRows = persisted(repo)
-        .filter((e: any) => e.rolloutState === RolloutState.FAILED);
+      const failedRows = persisted(repo).filter(
+        (e: any) => e.rolloutState === RolloutState.FAILED,
+      );
       expect(failedRows.some((r: any) => r.id === "d1")).toBe(true);
     }, 15000);
 
@@ -565,8 +752,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         deploymentId: "d9",
         status: "running",
       } as any);
-      const rolloutSaves = persisted(repo)
-        .filter((e: any) => e.rolloutState != null);
+      const rolloutSaves = persisted(repo).filter(
+        (e: any) => e.rolloutState != null,
+      );
       expect(rolloutSaves).toHaveLength(0);
     });
   });

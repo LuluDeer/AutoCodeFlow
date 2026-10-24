@@ -188,6 +188,55 @@ export class DeploymentRemoveResponseDto {
   deletedId: string;
 }
 
+/** R2（§4.4）：upgrade-all 响应的覆盖面分组计数（按部署行状态）。 */
+export class UpgradeAllCoverageDto {
+  @ApiProperty({
+    description:
+      "RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once）",
+  })
+  running: number;
+
+  @ApiProperty({
+    description:
+      "RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖）",
+  })
+  scheduled: number;
+
+  @ApiProperty({
+    description:
+      "STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显）",
+  })
+  stopped: number;
+
+  @ApiProperty({ description: "FAILED 行数（恒排除，应走显式重新部署）" })
+  failed: number;
+
+  @ApiProperty({
+    description:
+      "pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细）",
+  })
+  inFlight: number;
+}
+
+/** R2（§4.4）：upgrade-all 跳过明细——在途行不抛错，逐行给出原因。 */
+export class UpgradeAllSkippedItemDto {
+  @ApiProperty({ format: "uuid" })
+  deploymentId: string;
+
+  @ApiProperty({ nullable: true, format: "uuid" })
+  executorId: string | null;
+
+  @ApiProperty({ enum: ["pending", "deploying", "upgrading"] })
+  status: string;
+
+  @ApiProperty({
+    enum: ["in_flight", "awaiting_approval"],
+    description:
+      "in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）",
+  })
+  reason: string;
+}
+
 /** POST /applications/:id/upgrade-all（DEP-02 灰度/全量升级的批次回执）。 */
 export class UpgradeAllResponseDto {
   @ApiProperty({
@@ -209,6 +258,25 @@ export class UpgradeAllResponseDto {
 
   @ApiProperty()
   failed: number;
+
+  /**
+   * R2（§4.4）：覆盖面分组计数——upgrade-all 本体恒返回；optional 仅因
+   * ApplicationRollbackResponseDto.rollout 复用本类型（deprecated rollback 走
+   * upgradeRunningDeployments，不带该字段——「只增不改」约束下不能给它加形状）。
+   */
+  @ApiPropertyOptional({
+    type: UpgradeAllCoverageDto,
+    description:
+      "该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过",
+  })
+  coverage?: UpgradeAllCoverageDto;
+
+  @ApiPropertyOptional({
+    type: [UpgradeAllSkippedItemDto],
+    description:
+      "在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4）",
+  })
+  skipped?: UpgradeAllSkippedItemDto[];
 
   @ApiPropertyOptional({
     type: "object",

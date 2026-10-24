@@ -8622,7 +8622,7 @@
     },
     "/applications/{id}/upgrade-all": {
       "post": {
-        "description": "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。",
+        "description": "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。R2（部署模型评审 §4.4）：覆盖面显式化——默认 = 全部 RUNNING 部署行（含 scheduled「仅部署」行：实证口径为 scheduled 部署完成即上报 running，稳态就是 RUNNING）；includeStopped=true 时 all 策略把 stopped 行一并纳入（canary 忽略该参数——健康探测需要活进程）；pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细（不抛错）；failed 行恒排除。响应新增 coverage 按状态分组计数。version 定向参数等价于 set-current-version + deploy-version 组合（会改写中台当前版本），建议改用 R1 拆分端点",
         "operationId": "ApplicationController_upgradeAll",
         "parameters": [
           {
@@ -8661,13 +8661,13 @@
             "bearer": []
           }
         ],
-        "summary": "触发所有运行中实例升级到最新版本",
+        "summary": "触发该应用全部已部署设备升级到最新版本",
         "tags": [
           "Application Management"
         ],
         "x-i18n-en": {
-          "summary": "Trigger upgrade of all running instances to the latest version",
-          "description": "DEP-02: body absent (or rollout.strategy=all) = existing full upgrade;"
+          "summary": "Trigger an upgrade of every deployed device of this application to the latest version",
+          "description": "DEP-02: an absent body (or rollout.strategy=all) keeps the existing full upgrade; rollout.strategy=canary first upgrades percentage of rows (at least 1) -> health probing (manifest.healthCheck, DEP-03) -> auto-promotes the rest on success; any failure pauses the batch and auto-rolls back upgraded rows. The batch is in-process state: an admin-api restart pauses it (row-level rolloutState=failed). R2 (deployment model review §4.4): coverage made explicit - default = all RUNNING deployment rows (including scheduled deploy-only rows: empirically a scheduled deploy reports running on completion, so their steady state is RUNNING); includeStopped=true additionally includes stopped rows under the all strategy (canary ignores the flag - health probing needs live processes); pending/deploying/upgrading in-flight rows are always skipped and listed in the response skipped detail (no error thrown); failed rows are always excluded. The response adds coverage with per-status counts. The version targeting parameter is equivalent to the set-current-version + deploy-version combination (it rewrites the platform's current version); prefer the R1 split endpoints"
         }
       }
     },
@@ -20024,10 +20024,89 @@
           "version": {
             "type": "string",
             "maxLength": 64,
-            "description": "本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本",
-            "x-i18n-en": "This rollout targets a historical released version (version **string**, not uuid) - used for progressive rollback. Default: the application's current version"
+            "description": "本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本。注意：该参数等价于 set-current-version + deploy-version 的组合（先按快照恢复应用当前字段，再下发），且会改写中台当前版本——R1（§4.2）拆分出的这两个端点是更明确的表达，建议改用新端点",
+            "x-i18n-en": "This rollout targets a historical released version (version **string**, not uuid) - used for progressive rollback. Default: the application's current version. Note: this parameter is equivalent to the set-current-version + deploy-version combination (it first restores the application fields from the snapshot, then dispatches) and rewrites the platform's current version - the two R1 (§4.2) split endpoints express this more explicitly; prefer them"
+          },
+          "includeStopped": {
+            "type": "boolean",
+            "description": "all 策略下把 stopped 部署行一并纳入升级（缺省 false——stopped 可能是人为停用）。pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细；failed 行恒排除（应走显式重新部署）。canary 策略忽略本参数",
+            "x-i18n-en": "Include STOPPED deployment rows in the upgrade under the all strategy (default false - stopped may be a deliberate shutdown). pending/deploying/upgrading in-flight rows are always skipped and listed in the response skipped detail; failed rows are always excluded (redeploy explicitly instead). The canary strategy ignores this flag"
           }
         }
+      },
+      "UpgradeAllCoverageDto": {
+        "type": "object",
+        "properties": {
+          "running": {
+            "type": "number",
+            "description": "RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once）",
+            "x-i18n-en": "Number of RUNNING rows with runMode != scheduled (live-process semantics: daemon/once)"
+          },
+          "scheduled": {
+            "type": "number",
+            "description": "RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖）",
+            "x-i18n-en": "Number of RUNNING rows with runMode = scheduled (deploy-only, awaiting task trigger - empirically a scheduled deploy reports running on completion, so the row's steady state is RUNNING and it is covered together with running by default)"
+          },
+          "stopped": {
+            "type": "number",
+            "description": "STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显）",
+            "x-i18n-en": "Number of STOPPED rows (upgraded only when includeStopped=true; the count is always reported)"
+          },
+          "failed": {
+            "type": "number",
+            "description": "FAILED 行数（恒排除，应走显式重新部署）",
+            "x-i18n-en": "Number of FAILED rows (always excluded; redeploy explicitly instead)"
+          },
+          "inFlight": {
+            "type": "number",
+            "description": "pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细）",
+            "x-i18n-en": "Number of in-flight rows (pending/deploying/upgrading; always skipped, each listed in the skipped detail)"
+          }
+        },
+        "required": [
+          "running",
+          "scheduled",
+          "stopped",
+          "failed",
+          "inFlight"
+        ]
+      },
+      "UpgradeAllSkippedItemDto": {
+        "type": "object",
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "executorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "deploying",
+              "upgrading"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "in_flight",
+              "awaiting_approval"
+            ],
+            "description": "in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）",
+            "x-i18n-en": "in_flight = an in-flight deploy/upgrade cannot be re-entered; awaiting_approval = row awaiting approval (DEP-04, reuses the pending slot)"
+          }
+        },
+        "required": [
+          "deploymentId",
+          "executorId",
+          "status",
+          "reason"
+        ]
       },
       "UpgradeAllResponseDto": {
         "type": "object",
@@ -20052,6 +20131,23 @@
           },
           "failed": {
             "type": "number"
+          },
+          "coverage": {
+            "description": "该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UpgradeAllCoverageDto"
+              }
+            ],
+            "x-i18n-en": "Per-status counts of the application's deployment rows (R2 §4.4). running+scheduled is the default coverage; stopped is upgraded only when includeStopped=true; failed is always excluded; inFlight is always skipped"
+          },
+          "skipped": {
+            "description": "在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpgradeAllSkippedItemDto"
+            },
+            "x-i18n-en": "Skip detail for in-flight rows (pending/deploying/upgrading) - not an error; each row carries its reason (R2 §4.4)"
           },
           "rollout": {
             "type": "object",

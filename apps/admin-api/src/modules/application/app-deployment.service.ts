@@ -2556,12 +2556,26 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *    批次并对已升级台自动回滚（复用「重新部署上一版本」链）。
    *    manifest 无 healthCheck 声明时跳过探测直接提升（行为可预期：无验收
    *    依据时阻塞灰度毫无意义）。
+   *
+   * R2（部署模型评审 §4.4/§9.4，2026-10-24）：覆盖面显式化——「该应用已部署
+   * 的设备」默认 = 全部 RUNNING 行。scheduled 实证口径（与 §P7 的原始推断
+   * 不同）：executor deploy.ts scheduled 分支部署完成即一次性
+   * reportStatus(deploymentId,'running')，行经 handleHeartbeat 状态守卫落
+   * RUNNING；此后无进程、无持续心跳，但 detectStuckDeployments 只扫
+   * PENDING(5min)/DEPLOYING(10min)/UPGRADING(10min)，**永不触碰 RUNNING 行**
+   * ——scheduled 行稳态就是 RUNNING，findRunningByApp 天然覆盖，不存在
+   * 「拿不到新版本」。真正掉出覆盖面的只有「完成上报丢失 → 滞留 DEPLOYING →
+   * 10min 后被扫成 FAILED」的行，而那是 failed 口径（默认排除，走显式重新
+   * 部署）。因此默认覆盖集合与改造前逐字节一致；本方法新增的只是把覆盖面
+   * **显式分组回显**（coverage）+ 在途行跳过明细（skipped，不抛错）+ stopped
+   * 显式 opt-in（includeStopped，默认 false——stopped 可能是人为停用）。
    */
   async upgradeAllWithRollout(
     appId: string,
     rollout?: { strategy?: "canary" | "all"; percentage?: number } | null,
     trigger?: DeploymentTriggerContext,
     version?: string,
+    includeStopped = false,
   ): Promise<{
     ok: boolean;
     total: number;
@@ -2569,6 +2583,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     failed: number;
     /** version 定向灰度时回显实际目标版本（快照恢复后 app 的 version）。 */
     version?: string;
+    /** R2 §4.4：覆盖面分组计数（本方法所有返回路径恒携带）。 */
+    coverage: {
+      running: number;
+      scheduled: number;
+      stopped: number;
+      failed: number;
+      inFlight: number;
+    };
+    /** R2 §4.4：在途行跳过明细（pending/deploying/upgrading 不抛错）。 */
+    skipped: Array<{
+      deploymentId: string;
+      executorId: string | null;
+      status: string;
+      reason: string;
+    }>;
     rollout?: {
       batchId: string;
       strategy: "canary" | "all";
@@ -2606,7 +2635,49 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       }
       targetVersion = row.version;
     }
-    const deployments = await this.findRunningByApp(appId);
+    // R2 §4.4：覆盖面分组——一次拉全量行（不加 application relation，分组只
+    // 需状态/模式标量列），JS 侧按状态分组。RUNNING 内再按 runMode 拆出
+    // scheduled（仅部署待触发）单独计数；「已部署设备」默认覆盖两者之和，
+    // 与改造前 findRunningByApp 的集合逐字节一致（见方法头实证注释）。
+    const allRows = await this.repo.find({
+      where: { applicationId: appId },
+      order: { createdAt: "DESC" },
+    });
+    const runningRows = allRows.filter(
+      (d) => d.status === DeploymentStatus.RUNNING,
+    );
+    const stoppedRows = allRows.filter(
+      (d) => d.status === DeploymentStatus.STOPPED,
+    );
+    const inFlightRows = allRows.filter(
+      (d) =>
+        d.status === DeploymentStatus.PENDING ||
+        d.status === DeploymentStatus.DEPLOYING ||
+        d.status === DeploymentStatus.UPGRADING,
+    );
+    const coverage = {
+      running: runningRows.filter((d) => d.runMode !== RunMode.SCHEDULED)
+        .length,
+      scheduled: runningRows.filter((d) => d.runMode === RunMode.SCHEDULED)
+        .length,
+      stopped: stoppedRows.length,
+      failed: allRows.filter((d) => d.status === DeploymentStatus.FAILED)
+        .length,
+      inFlight: inFlightRows.length,
+    };
+    // 在途行跳过明细：不抛错（一次 upgrade-all 不应被单台在途行打断），但必须
+    // 如实回显。待审批行复用 status=pending 占坑（DEP-04），单独给出原因。
+    const skipped = inFlightRows.map((d) => ({
+      deploymentId: d.id,
+      executorId: d.executorId ?? null,
+      status: d.status,
+      reason:
+        d.status === DeploymentStatus.PENDING &&
+        d.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
+          ? "awaiting_approval"
+          : "in_flight",
+    }));
+    const deployments = runningRows;
     const strategy = rollout?.strategy ?? "all";
 
     // ARCH-31: 同应用并发批次守卫（跨实例）——DB 里若已有在途（pending/
@@ -2622,6 +2693,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           total: deployments.length,
           succeeded: 0,
           failed: 0,
+          coverage,
+          skipped,
           ...(targetVersion ? { version: targetVersion } : {}),
           rollout: {
             batchId: String(
@@ -2637,17 +2710,28 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       }
     }
 
-    // all 模式：逐字节保持既有 controller 内联实现（QA-02 spec 消费该形状）。
+    // all 模式：既有四键形状（ok/total/succeeded/failed）逐字节保持，只**增**
+    // coverage/skipped。includeStopped 仅作用于 all 策略——canary 的健康探测
+    // 需要活进程，把 stopped 设备扩进灰度只会制造必失败的探测；canary 集合
+    // 维持既有「全部 RUNNING 行」口径（scheduled 实证口径已在其中，见上）。
+    // canary 空集回退（deployments.length===0）也进本分支：effective 收口保证
+    // 「canary 忽略 includeStopped」零例外（回退路径不偷偷扩覆盖）。
     if (strategy !== "canary" || deployments.length === 0) {
+      const effectiveIncludeStopped = includeStopped && strategy !== "canary";
+      const targets = effectiveIncludeStopped
+        ? [...runningRows, ...stoppedRows]
+        : runningRows;
       const results = await Promise.allSettled(
-        deployments.map((d) => this.upgrade(d.id, trigger)),
+        targets.map((d) => this.upgrade(d.id, trigger)),
       );
       const succeeded = results.filter((r) => r.status === "fulfilled").length;
       return {
         ok: true,
-        total: deployments.length,
+        total: targets.length,
         succeeded,
-        failed: deployments.length - succeeded,
+        failed: targets.length - succeeded,
+        coverage,
+        skipped,
         ...(targetVersion ? { version: targetVersion } : {}),
       };
     }
@@ -2700,6 +2784,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           total: deployments.length,
           succeeded: 0,
           failed: 1,
+          coverage,
+          skipped,
           ...(targetVersion ? { version: targetVersion } : {}),
           rollout: {
             batchId,
@@ -2723,6 +2809,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       total: deployments.length,
       succeeded: batch.upgradedIds.length,
       failed: 0,
+      coverage,
+      skipped,
       ...(targetVersion ? { version: targetVersion } : {}),
       rollout: {
         batchId,

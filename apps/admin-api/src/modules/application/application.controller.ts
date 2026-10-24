@@ -719,8 +719,8 @@ export class ApplicationController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({
     description:
-      "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。",
-    summary: "触发所有运行中实例升级到最新版本",
+      "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。R2（部署模型评审 §4.4）：覆盖面显式化——默认 = 全部 RUNNING 部署行（含 scheduled「仅部署」行：实证口径为 scheduled 部署完成即上报 running，稳态就是 RUNNING）；includeStopped=true 时 all 策略把 stopped 行一并纳入（canary 忽略该参数——健康探测需要活进程）；pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细（不抛错）；failed 行恒排除。响应新增 coverage 按状态分组计数。version 定向参数等价于 set-current-version + deploy-version 组合（会改写中台当前版本），建议改用 R1 拆分端点",
+    summary: "触发该应用全部已部署设备升级到最新版本",
   })
   // POST 无 @HttpCode → 实际 201（历史直觉 200 是漂移，按实际落契约）。
   @ApiCreatedResponse({ type: UpgradeAllResponseDto })
@@ -740,6 +740,8 @@ export class ApplicationController {
           }
         : undefined,
       dto?.version,
+      // R2 §4.4：stopped 显式 opt-in（仅 all 策略生效，缺省 false）。
+      dto?.includeStopped ?? false,
     );
   }
 
