@@ -590,5 +590,5 @@
 #     per-executor 令牌校验通过才采纳（共享令牌不采纳）——桌面端内嵌执行器若漏打，
 #     这类桌面机仍会被 fail-closed 拒成 404（拿不到任务与命令）。
 #   回填环境：本机 Linux（node 24 / ncc 0.45.0），bundle 4309796 bytes / 47 个输入文件。
-source-digest: ba31e5456e34b4a8a4e4b6ae0c545a96fa7591eb65d9610a20802c3b9f41c06e
-c9c729e30cc294e033caeeef48951691e941c40d17fb3107096c8e39e23939a6  index.js
+source-digest: de391139398d9df48128e68445318ec7ab7467748ff469a234d7a171b073faef
+4f1dcedd45ff9bdd1c94182782cfc131392ca52afc65dac22d2c0a662e4bdbed  index.js
