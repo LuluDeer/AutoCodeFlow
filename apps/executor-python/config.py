@@ -225,6 +225,22 @@ class Settings(BaseSettings):
     uv_cache_ttl_days: int = 30
     uv_cache_max_mb: int = 0
 
+    # R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存
+    # （`<work_dir>/.pkg-cache`）的体积预算，超限按 mtime 淘汰最旧
+    # （pkg_cache.py）。默认 4GiB 与 node config.pkgCacheMaxBytes 同源：与解释
+    # 器池总预算（INTERPRETER_TOTAL_GB）同量级，单包上限 200MB 下可容纳 ~20 个
+    # 不同包。每次使用时读取（热重载一致）；**0 = 显式关闭缓存**（不读不写，
+    # 行为与无缓存时代一致）；负数按 0 处理（手滑防御，静默钳制而不是启动失败
+    # ——缓存是性能优化，不是红线配置；与 node `Math.max(raw, 0)` 同语义）。
+    pkg_cache_max_bytes: int = 4 * 1024 * 1024 * 1024
+
+    @field_validator('pkg_cache_max_bytes')
+    @classmethod
+    def _validate_pkg_cache_max_bytes(cls, value: int) -> int:
+        if value < 0:
+            return 0
+        return value
+
     @field_validator('disk_warn_percent', 'disk_critical_percent')
     @classmethod
     def _validate_disk_percent(cls, value: int) -> int:

@@ -36,6 +36,10 @@ from device_identity import get_device_fingerprint
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 from artifacts import gather_artifacts_for_callback, artifacts_dir_for
+# R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存——同 URL 的包
+# 第二次执行零下载（审查/解压照常每次执行，缓存只省下载）。_download_package
+# 经参数传入 pkg_cache.download_with_cache（未命中时逐字节沿用既有下载链）。
+import pkg_cache
 # A-11R：与 node `JSON.stringify` 逐字节一致的序列化器（浮点指数排版 + JS
 # 整数键排序），供 params→env 的非字符串值与类型化通道使用。
 from js_json import js_json_dumps
@@ -1764,7 +1768,8 @@ def _remove_quietly(path: Path) -> None:
         pass
 
 
-def _extract_package(zip_path: Path, work_dir: Path) -> None:
+def _extract_package(zip_path: Path, work_dir: Path, *,
+                      package_url: Optional[str] = None) -> None:
     """`vet_zip` + `safe_extract`（AC-03a）。WS3 模块缺席时**明确失败**。
 
     绝不退化成 `zipfile.extractall` 之类的兜底——那正是 zip-slip 的入口。
@@ -1786,6 +1791,11 @@ def _extract_package(zip_path: Path, work_dir: Path) -> None:
     except Exception as exc:
         violation = getattr(exc, 'violation', None)
         if violation:
+            # R5b（评审 §六 4）：审查拒绝时顺带清除缓存条目（首次下载的恶意
+            # 包与缓存条目被事后替换两种来源一并覆盖），否则坏字节会被反复
+            # 命中、反复在这里失败。best-effort：purge 失败不掩盖原始异常。
+            if package_url:
+                pkg_cache.purge_pkg_cache_entry(package_url)
             raise RuntimeError(
                 f'zip 包未通过安全检查（{violation}）：{exc}'
             ) from exc
@@ -3766,7 +3776,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if _prepare_cancelled(entry):
             return _killed_prepare_result(started_at)
         try:
-            size = await _download_package(
+            # R5b（部署模型评审 §九 9.4-5b）：外层换成带字节缓存的取件入口。
+            # 未命中路径对 _download_package 的调用参数与无缓存时代**逐字节
+            # 一致**（上述 SSRF/Bearer/超时/体积/取消检查语义全保留）；命中
+            # 路径零网络往返。缓存侧一切故障 fail-open 回网络，绝不 fail 任务。
+            size = await pkg_cache.download_with_cache(
+                _download_package,
                 safe_url,
                 zip_path,
                 should_cancel=lambda: _prepare_cancelled(entry),
@@ -3776,7 +3791,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             )
             if _prepare_cancelled(entry):
                 return _killed_prepare_result(started_at)
-            await asyncio.to_thread(_extract_package, zip_path, work_dir)
+            # 红线（评审 §六 4）：缓存命中路径也每次执行照常执行 zip 安全审查
+            # （_extract_package 内 vet_zip + safe_extract）——缓存只省下载，
+            # 不做任何安全决策；审查拒绝时由其内部清除缓存条目。
+            await asyncio.to_thread(
+                _extract_package, zip_path, work_dir, package_url=safe_url,
+            )
             if _prepare_cancelled(entry):
                 return _killed_prepare_result(started_at)
         except _PrepareCancelled:
