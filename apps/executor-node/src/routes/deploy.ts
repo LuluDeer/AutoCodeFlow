@@ -1354,7 +1354,14 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       if (packageUrl) {
         // Package-based deployment: download zip and extract into a temporary release dir.
         logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
-        const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
+        // 5c：releaseKey 含 '/'（两段形态），zip 临时文件名必须平铺拍扁——
+        // path.join(tmpDir, "1.0.0/<id>.zip") 是两段路径，tmp/<version>/ 目录
+        // 从未创建，downloadFile 的 open 直接 ENOENT（E2E selftest 实测第三处
+        // 漏改；extractDir 同款拍扁见 buildDeploymentPaths/resolveReleasePaths）。
+        const zipPath = path.join(
+          paths.tmpDir,
+          `${paths.releaseKey.split('/').join('-')}.zip`,
+        );
         await downloadPackage(packageUrl, zipPath, 5, true, deployAbort.signal);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
         // 解压走 `safeExtractZip`（与 execute.ts 的包任务同一条路径）。
@@ -1440,6 +1447,12 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       }
 
       removePathIfExists(paths.finalReleaseDir);
+      // 5c：finalReleaseDir 是两段路径（releases/<version>/<deploymentId>），
+      // rename 的目标父目录必须先建——fs.renameSync 不会自动创建中间目录，
+      // 版本组目录（releases/<version>/）缺席时直接 ENOENT（E2E selftest 实测
+      // 首次部署必炸：单测 mock 了 fs/路径存在性检查，掩盖了这一层）。
+      // recursive: true 对已存在目录是 no-op，旧单段布局同批兼容。
+      fs.mkdirSync(path.dirname(paths.finalReleaseDir), { recursive: true });
       fs.renameSync(paths.extractDir, paths.finalReleaseDir);
       switchCurrentRelease(paths.currentLink, paths.finalReleaseDir);
       switchedCurrent = true;

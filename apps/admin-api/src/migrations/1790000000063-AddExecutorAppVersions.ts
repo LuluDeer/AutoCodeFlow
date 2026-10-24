@@ -52,6 +52,10 @@ export class AddExecutorAppVersions1790000000063 implements MigrationInterface {
         "runMode" VARCHAR,
         "lastDeployedAt" TIMESTAMPTZ,
         "lastReportedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+        -- 2026-10-25 补：实体的 @CreateDate/@UpdateDateColumn（91-93 行）从
+        -- 首版建表就缺席（缺口成因与本表 ALTER 收口见 1790000000066 迁移）。
+        "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+        "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
         CONSTRAINT "UQ_executor_app_versions_executor_application"
           UNIQUE ("executorId", "applicationId"),
         CONSTRAINT "FK_executor_app_versions_executorId"

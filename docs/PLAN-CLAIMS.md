@@ -435,6 +435,7 @@
 | 1790000000063 | AddExecutorAppVersions | R3/4.3+P5（部署模型评审 2026-10-23）：设备级应用版本事实表 executor_app_versions（唯一 (executorId,applicationId)，心跳整替语义、键缺失 fail-honest 不动）+ executors.installedPackages jsonb | 已落盘（commit 2b5da7c5） |
 | 1790000000064 | BackfillAppDeploymentEvents | R4 补位（部署模型评审 2026-10-23）：deployCount 孔回填——无事件应用从现存部署行合成 deploy_created 下界事件（detail.backfill 标注、NOT EXISTS 应用级防双计、keyset 分批），消除事件聚合切换的混合窗口期 | 已落盘（commit 105b42f4） |
 | 1790000000065 | ExecutionArtifactsIndex | ARTIFACTS-INDEX-46（部署模型评审 §4.6 执行产物元数据索引） | 已落盘（本批）：新表 execution_artifacts（id/executionId/taskId/applicationId/name/size/sha256/createdAt；唯一 (executionId,name)；taskId/applicationId 索引；applicationId FK SET NULL）——task_executions.artifacts jsonb 关系化，终态回调写点双轨同步 upsert；存量不回填（与 1790000000055/0061 不猜映射先例一致），读面回落 jsonb；新索引查询端点 GET /artifacts |
+| 1790000000066 | AddExecutorAppVersionTimestamps | 5c E2E selftest 发现的 R3 迁移缺口收口：executor_app_versions 补 createdAt/updatedAt 列（实体 91-93 行的 @CreateDate/@UpdateDateColumn 从建表起就缺席——jest 用映射替身测不到，真 PG 迁移链首跑暴露：column does not exist，心跳落库全败） | 已落盘（本批）：ALTER TABLE ADD COLUMN IF NOT EXISTS 双列 + 同步修 63 建表语句（空库一次到位，66 幂等兜住已执行过 63 的库） |
 
 ## 变更日志
 
