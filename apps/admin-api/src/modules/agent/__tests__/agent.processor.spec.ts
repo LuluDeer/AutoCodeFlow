@@ -18,8 +18,7 @@ import {
  */
 function harness(runImpl?: (sessionId: string) => Promise<unknown>) {
   const run = jest.fn(
-    runImpl ??
-      (async () => ({ status: "succeeded", steps: 3 }) as unknown),
+    runImpl ?? (async () => ({ status: "succeeded", steps: 3 }) as unknown),
   );
   const runtime = { run };
   const proc = new AgentProcessor(runtime as never);
@@ -27,7 +26,9 @@ function harness(runImpl?: (sessionId: string) => Promise<unknown>) {
 }
 
 function job(data: Partial<AgentJobData> = {}): Job<AgentJobData> {
-  return { data: { sessionId: "sess-1", ...data } } as unknown as Job<AgentJobData>;
+  return {
+    data: { sessionId: "sess-1", ...data },
+  } as unknown as Job<AgentJobData>;
 }
 
 describe("AgentProcessor · 队列装配契约", () => {
@@ -44,7 +45,9 @@ describe("AgentProcessor · 队列装配契约", () => {
 describe("AgentProcessor · process（委托 + 兜底）", () => {
   it("只把 sessionId 交给 runtime.run——reason 不进参数（start/resume 同一条路径）", async () => {
     const h = harness();
-    await h.proc.process(job({ sessionId: "sess-42", reason: "resume:approval" }));
+    await h.proc.process(
+      job({ sessionId: "sess-42", reason: "resume:approval" }),
+    );
     expect(h.run).toHaveBeenCalledTimes(1);
     expect(h.run).toHaveBeenCalledWith("sess-42");
     // reason 仅用于可观测：参数面里不能出现，否则 run 会因「不同原因走不同分支」
@@ -53,10 +56,16 @@ describe("AgentProcessor · process（委托 + 兜底）", () => {
   });
 
   it("成功路径记 status/steps，且 job 正常结束（不抛）", async () => {
-    const h = harness(async () => ({ status: "succeeded", steps: 3 }) as unknown);
-    const log = jest.spyOn((h.proc as any).logger, "log").mockImplementation(() => undefined);
+    const h = harness(
+      async () => ({ status: "succeeded", steps: 3 }) as unknown,
+    );
+    const log = jest
+      .spyOn((h.proc as any).logger, "log")
+      .mockImplementation(() => undefined);
     await expect(h.proc.process(job())).resolves.toBeUndefined();
-    const done = log.mock.calls.map((c) => String(c[0])).find((m) => m.includes("job done"));
+    const done = log.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes("job done"));
     expect(done).toBeDefined();
     expect(done).toContain("status=succeeded");
     expect(done).toContain("steps=3");
@@ -67,7 +76,9 @@ describe("AgentProcessor · process（委托 + 兜底）", () => {
     const h = harness(async () => {
       throw new Error("db down");
     });
-    const err = jest.spyOn((h.proc as any).logger, "error").mockImplementation(() => undefined);
+    const err = jest
+      .spyOn((h.proc as any).logger, "error")
+      .mockImplementation(() => undefined);
     // 关键断言：resolve 而不是 reject。若有人加上 `throw err`，这条立刻转红。
     await expect(h.proc.process(job())).resolves.toBeUndefined();
     expect(h.run).toHaveBeenCalledTimes(1); // 自身也不做内部重试
@@ -83,8 +94,12 @@ describe("AgentProcessor · process（委托 + 兜底）", () => {
     const h = harness(async () => {
       throw "boom-string";
     });
-    const err = jest.spyOn((h.proc as any).logger, "error").mockImplementation(() => undefined);
-    await expect(h.proc.process(job({ reason: "trigger:cron" }))).resolves.toBeUndefined();
+    const err = jest
+      .spyOn((h.proc as any).logger, "error")
+      .mockImplementation(() => undefined);
+    await expect(
+      h.proc.process(job({ reason: "trigger:cron" })),
+    ).resolves.toBeUndefined();
     const msg = String(err.mock.calls[0]?.[0] ?? "");
     expect(msg).toContain("boom-string");
     expect(err.mock.calls[0]?.[1]).toBeUndefined();
@@ -93,9 +108,13 @@ describe("AgentProcessor · process（委托 + 兜底）", () => {
 
   it("reason 缺省时日志不带 reason 段（避免 'undefined' 噪声）", async () => {
     const h = harness();
-    const log = jest.spyOn((h.proc as any).logger, "log").mockImplementation(() => undefined);
+    const log = jest
+      .spyOn((h.proc as any).logger, "log")
+      .mockImplementation(() => undefined);
     await h.proc.process(job());
-    const start = log.mock.calls.map((c) => String(c[0])).find((m) => m.includes("job start"));
+    const start = log.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes("job start"));
     expect(start).toBeDefined();
     expect(start).not.toContain("reason=");
     log.mockRestore();

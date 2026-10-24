@@ -533,7 +533,9 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         address: "host:3002",
         tokenHash: "$2b$12$old",
       });
-      executorRepo.update.mockImplementation(() => Promise.resolve({ affected: 1 }));
+      executorRepo.update.mockImplementation(() =>
+        Promise.resolve({ affected: 1 }),
+      );
       await service.rotateToken("e1");
 
       // 未被轮换的 host:3003 仍是缓存命中，不再消耗 bcrypt

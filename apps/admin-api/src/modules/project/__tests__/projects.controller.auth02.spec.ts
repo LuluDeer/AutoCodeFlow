@@ -499,10 +499,9 @@ describe("ProjectsController ADMIN-only 边界（R32-A5）", () => {
   it("写端点集合本身非空（防止路由改名后本文件静默假绿）", async () => {
     const writeHandlers = ADMIN_ONLY_HANDLERS.filter(
       (h) =>
-        typeof (ProjectsController.prototype as unknown as Record<
-          string,
-          unknown
-        >)[h] === "function",
+        typeof (
+          ProjectsController.prototype as unknown as Record<string, unknown>
+        )[h] === "function",
     );
     expect(writeHandlers).toHaveLength(ADMIN_ONLY_HANDLERS.length);
   });

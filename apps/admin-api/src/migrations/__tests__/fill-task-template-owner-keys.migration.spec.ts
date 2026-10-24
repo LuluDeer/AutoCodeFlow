@@ -11,7 +11,11 @@ import { FillTaskTemplateOwnerKeys1790000000058 } from "../1790000000058-FillTas
  * 幂等谓词写错 ⇒ 重放时二次改写。所以下面把三条关键子句都钉住。
  */
 
-const FILE = path.join(__dirname, "..", "1790000000058-FillTaskTemplateOwnerKeys.ts");
+const FILE = path.join(
+  __dirname,
+  "..",
+  "1790000000058-FillTaskTemplateOwnerKeys.ts",
+);
 
 describe("FillTaskTemplateOwnerKeys1790000000058（R39-A1 后续）", () => {
   let sql: string;
@@ -33,7 +37,9 @@ describe("FillTaskTemplateOwnerKeys1790000000058（R39-A1 后续）", () => {
     expect(upPart).toContain('UPDATE "task_templates"');
     expect(upPart).toContain('SET "createdBy"');
     // data-only：不许出现任何 DDL
-    expect(upPart).not.toMatch(/ALTER TABLE|CREATE (INDEX|TABLE)|DROP (INDEX|TABLE)/);
+    expect(upPart).not.toMatch(
+      /ALTER TABLE|CREATE (INDEX|TABLE)|DROP (INDEX|TABLE)/,
+    );
   });
 
   it("up：只升级「属主仍存在」的行（JOIN users ON username）", () => {
@@ -46,7 +52,9 @@ describe("FillTaskTemplateOwnerKeys1790000000058（R39-A1 后续）", () => {
     const upPart = sql.split("public async down")[0];
     expect(upPart).toContain("'user:' || u.id::text || '|' || u.username");
     // left(...,100) 必须包住整个拼接串：先拼后截 ⇒ 只会裁 username 尾巴。
-    expect(upPart).toMatch(/left\(\s*'user:' \|\| u\.id::text \|\| '\|' \|\| u\.username\s*,\s*100\s*\)/);
+    expect(upPart).toMatch(
+      /left\(\s*'user:' \|\| u\.id::text \|\| '\|' \|\| u\.username\s*,\s*100\s*\)/,
+    );
   });
 
   it("up：幂等——已升级的行（^user:<digits>|）不被二次处理", () => {

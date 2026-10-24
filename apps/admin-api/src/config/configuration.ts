@@ -912,8 +912,7 @@ if (process.env.NODE_ENV === "production") {
       host === "localhost" || host === "127.0.0.1" || host === "::1";
     // 单标签主机名（无点）= Docker/compose 服务名或内网短名，公网不可解析。
     const isServiceName = !host.includes(".") && !host.includes(":");
-    const httpAllowed =
-      isLoopback || (allowPrivateRegistry && isServiceName);
+    const httpAllowed = isLoopback || (allowPrivateRegistry && isServiceName);
     if (u.protocol !== "https:" && !(u.protocol === "http:" && httpAllowed)) {
       throw new Error(
         `[AutoFlow] 生产环境 ${name} 必须使用 https://（仅 localhost/127.0.0.1 允许 http；` +

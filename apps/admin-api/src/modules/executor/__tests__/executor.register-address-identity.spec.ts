@@ -65,7 +65,9 @@ const makeQb = (rows: Row[]) => {
         resolveOne = () =>
           clone(rows.find((r) => r.deviceFingerprint === params.fp) ?? null);
         resolveMany = () =>
-          rows.filter((r) => r.deviceFingerprint === params.fp).map(clone) as Row[];
+          rows
+            .filter((r) => r.deviceFingerprint === params.fp)
+            .map(clone) as Row[];
       } else if (sql.includes("address")) {
         resolveOne = () =>
           clone(rows.find((r) => r.address === params.address) ?? null);
@@ -73,7 +75,8 @@ const makeQb = (rows: Row[]) => {
           rows.filter((r) => r.address === params.address).map(clone) as Row[];
       } else if (sql.includes("id")) {
         resolveOne = () => clone(rows.find((r) => r.id === params.id) ?? null);
-        resolveMany = () => rows.filter((r) => r.id === params.id).map(clone) as Row[];
+        resolveMany = () =>
+          rows.filter((r) => r.id === params.id).map(clone) as Row[];
       }
       return qb;
     },
@@ -96,7 +99,8 @@ const makeRepo = (rows: Row[], ledger: Row[] = []) => {
   const repo: any = {
     findOne: jest.fn(async (opts: any) => {
       const w = opts?.where ?? {};
-      if (w.id !== undefined) return clone(rows.find((r) => r.id === w.id) ?? null);
+      if (w.id !== undefined)
+        return clone(rows.find((r) => r.id === w.id) ?? null);
       if (w.deviceFingerprint !== undefined)
         return clone(
           rows.find((r) => r.deviceFingerprint === w.deviceFingerprint) ?? null,
@@ -108,7 +112,9 @@ const makeRepo = (rows: Row[], ledger: Row[] = []) => {
     find: jest.fn(async (opts: any) => {
       const w = opts?.where ?? {};
       const all =
-        w.address !== undefined ? rows.filter((r) => r.address === w.address) : rows;
+        w.address !== undefined
+          ? rows.filter((r) => r.address === w.address)
+          : rows;
       return (opts?.take ? all.slice(0, opts.take) : all).map(clone);
     }),
     findBy: jest.fn().mockResolvedValue([]),
@@ -261,7 +267,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
     service = await buildService();
   };
 
-  const registerPayload = (overrides: Row = {}) => ({ ...INTRUDER, ...overrides });
+  const registerPayload = (overrides: Row = {}) => ({
+    ...INTRUDER,
+    ...overrides,
+  });
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
@@ -332,7 +341,11 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
 
   it("同址两行 + 上报了自己的指纹（v3 执行器常态）→ 按指纹命中自己的行，不碰别人", async () => {
     const foreign = foreignRow();
-    const mine = legacyRow({ id: "mine-v3", deviceFingerprint: FP_A, appName: "mine-node" });
+    const mine = legacyRow({
+      id: "mine-v3",
+      deviceFingerprint: FP_A,
+      appName: "mine-node",
+    });
     await setup([foreign, mine]);
 
     const { executor, perExecutorToken } = await service.registerExecutor(
@@ -341,7 +354,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
 
     expect(executor.id).toBe("mine-v3");
     // 自己那行照常采纳上报（修复不得把 v3 执行器一起挡死）。
-    expect(mine).toMatchObject({ executorVersion: "9.9.9", capabilities: ["hijacked"] });
+    expect(mine).toMatchObject({
+      executorVersion: "9.9.9",
+      capabilities: ["hijacked"],
+    });
     expect(perExecutorToken).not.toBeNull();
     // 别人那行一个字都不动。
     expect(foreign).toMatchObject({
@@ -397,7 +413,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
   });
 
   it("单行地址 + 无指纹（存量 legacy 执行器）→ 行为逐字节不变：复用自己的行", async () => {
-    const onlyRow = legacyRow({ appName: "legacy-node", status: ExecutorStatus.OFFLINE });
+    const onlyRow = legacyRow({
+      appName: "legacy-node",
+      status: ExecutorStatus.OFFLINE,
+    });
     await setup([onlyRow]);
 
     await expect(
@@ -433,8 +452,16 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
     await setup([legacy, foreign]);
 
     const err = await service
-      .registerExecutor(registerPayload({ dispatchMode: "push", deviceFingerprint: FP_A }) as any)
-      .then(() => null, (e: unknown) => e);
+      .registerExecutor(
+        registerPayload({
+          dispatchMode: "push",
+          deviceFingerprint: FP_A,
+        }) as any,
+      )
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
 
     expect(err).toBeInstanceOf(ConflictException);
     expect((err as AppError).errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
@@ -445,7 +472,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
       status: ExecutorStatus.OFFLINE,
       tokenHash: "$2b$12$legacyhash",
     });
-    expect(foreign).toMatchObject({ appName: "victim-node", tokenHash: "$2b$12$victimhash" });
+    expect(foreign).toMatchObject({
+      appName: "victim-node",
+      tokenHash: "$2b$12$victimhash",
+    });
   });
 
   it("同形态 / pull → 不接管、新建独立行；legacy 行与别人那行都原样不动", async () => {
@@ -471,7 +501,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
       tokenHash: "$2b$12$legacyhash",
     });
     expect(legacy.executorStartupId).toBeUndefined();
-    expect(foreign).toMatchObject({ appName: "victim-node", tokenHash: "$2b$12$victimhash" });
+    expect(foreign).toMatchObject({
+      appName: "victim-node",
+      tokenHash: "$2b$12$victimhash",
+    });
   });
 
   it("对照组：地址只有一行 legacy + 上报真实指纹 → 仍按「升级接管」复用该行（不加严）", async () => {
@@ -479,7 +512,11 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
     await setup([onlyRow]);
 
     const { executor } = await service.registerExecutor(
-      registerPayload({ dispatchMode: "push", deviceFingerprint: FP_A, appName: "legacy-node" }) as any,
+      registerPayload({
+        dispatchMode: "push",
+        deviceFingerprint: FP_A,
+        appName: "legacy-node",
+      }) as any,
     );
 
     expect(executor.id).toBe("old-legacy");

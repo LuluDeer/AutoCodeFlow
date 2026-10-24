@@ -221,7 +221,10 @@ describe("R60-A1 · executor-package.update()：元数据 PATCH 不得拿陈旧�
     expect(repo.store.pushHistory).toHaveLength(1);
     // 写面只有 status：不是整行 save，也不是"白名单照抄一遍"。
     expect(repo.updateCalls).toEqual([
-      { criteria: { id: "pkg-1" }, patch: { status: ExecutorPackageStatus.DEPRECATED } },
+      {
+        criteria: { id: "pkg-1" },
+        patch: { status: ExecutorPackageStatus.DEPRECATED },
+      },
     ]);
     expect(repo.saveCalls).toHaveLength(0);
   });

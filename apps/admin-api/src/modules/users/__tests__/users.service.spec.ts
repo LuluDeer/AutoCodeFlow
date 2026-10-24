@@ -422,9 +422,12 @@ describe("UsersService", () => {
   // 语义有两种码 = 缺陷。admin 改他人账号更是完全没有预检，唯一兜底就是这里。
   describe("update — 唯一性竞态 23505 兜底（R32-A5）", () => {
     const uniqueViolation = () =>
-      Object.assign(new Error("duplicate key value violates unique constraint"), {
-        code: "23505",
-      });
+      Object.assign(
+        new Error("duplicate key value violates unique constraint"),
+        {
+          code: "23505",
+        },
+      );
 
     it("UPDATE 撞 username 唯一索引 → 409 USERNAME_TAKEN（不落成笼统 RESOURCE_EXISTS）", async () => {
       repo.findOne
@@ -435,7 +438,11 @@ describe("UsersService", () => {
           role: UserRole.USER,
         })
         // 归因重读：该 username 已被**他人**占用（并发赢家已落库）
-        .mockResolvedValueOnce({ id: 9, username: "racer", email: "other@x.io" });
+        .mockResolvedValueOnce({
+          id: 9,
+          username: "racer",
+          email: "other@x.io",
+        });
       // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
       repo.update.mockRejectedValueOnce(uniqueViolation());
 
@@ -452,7 +459,11 @@ describe("UsersService", () => {
           password: "hashed",
           role: UserRole.USER,
         })
-        .mockResolvedValueOnce({ id: 9, username: "racer", email: "taken@x.io" });
+        .mockResolvedValueOnce({
+          id: 9,
+          username: "racer",
+          email: "taken@x.io",
+        });
       // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
       repo.update.mockRejectedValueOnce(uniqueViolation());
 

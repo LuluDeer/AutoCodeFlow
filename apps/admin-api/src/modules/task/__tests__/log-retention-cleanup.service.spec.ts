@@ -214,7 +214,9 @@ describe("LogRetentionCleanupService", () => {
     describe("运行期配置优先（system_configs: logRetention.days）", () => {
       it("库里配了 7 天 → cutoff = now - 7d（不论 env 是多少）", async () => {
         const systemConfig = {
-          findOne: jest.fn().mockResolvedValue({ key: "logRetention.days", value: "7" }),
+          findOne: jest
+            .fn()
+            .mockResolvedValue({ key: "logRetention.days", value: "7" }),
         };
         const svc = new LogRetentionCleanupService(
           repo as unknown as import("typeorm").Repository<ExecutionLogLine>,
@@ -231,7 +233,9 @@ describe("LogRetentionCleanupService", () => {
 
       it("库里没这个键（404 抛错）→ 静默回落 env，不让清理 job 挂掉", async () => {
         const systemConfig = {
-          findOne: jest.fn().mockRejectedValue(new Error("CONFIG_ITEM_NOT_FOUND")),
+          findOne: jest
+            .fn()
+            .mockRejectedValue(new Error("CONFIG_ITEM_NOT_FOUND")),
         };
         configService.get.mockImplementation((key: string) =>
           key === "logRetention.days" ? 14 : undefined,
@@ -255,7 +259,9 @@ describe("LogRetentionCleanupService", () => {
             key === "logRetention.days" ? 9 : undefined,
           );
           const systemConfig = {
-            findOne: jest.fn().mockResolvedValue({ key: "logRetention.days", value: bad }),
+            findOne: jest
+              .fn()
+              .mockResolvedValue({ key: "logRetention.days", value: bad }),
           };
           const svc = new LogRetentionCleanupService(
             repo as unknown as import("typeorm").Repository<ExecutionLogLine>,

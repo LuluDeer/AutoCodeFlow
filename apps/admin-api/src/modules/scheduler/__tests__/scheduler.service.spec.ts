@@ -553,10 +553,7 @@ describe("SchedulerService", () => {
           return qb;
         });
         qb.where.mockImplementation(
-          (
-            _sql: string,
-            params?: { windowStart?: Date },
-          ) => {
+          (_sql: string, params?: { windowStart?: Date }) => {
             if (params?.windowStart) windowStart = params.windowStart;
             return qb;
           },
@@ -717,7 +714,9 @@ describe("SchedulerService", () => {
         (service as any).cronHasMissedFirePoint(task, lastTriggerTime, now);
 
       expect(
-        missed(makeTask({ cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" })),
+        missed(
+          makeTask({ cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" }),
+        ),
       ).toBe(true);
       // 同一表达式、同一时刻，只换时区 → 结论必须相反
       expect(

@@ -134,7 +134,12 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
     const { controller, service } = makeDeps();
     service.getHistory.mockResolvedValue({
       data: [
-        { configKey: "was-secret", isSecret: true, oldValue: "old-secret", newValue: "new-secret" },
+        {
+          configKey: "was-secret",
+          isSecret: true,
+          oldValue: "old-secret",
+          newValue: "new-secret",
+        },
       ],
       total: 1,
     });
@@ -150,13 +155,21 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
     const { controller, service } = makeDeps();
     service.getHistory.mockResolvedValue({
       data: [
-        { configKey: "was-secret", isSecret: true, oldValue: "old-secret", newValue: null },
+        {
+          configKey: "was-secret",
+          isSecret: true,
+          oldValue: "old-secret",
+          newValue: null,
+        },
       ],
       total: 1,
     });
     service.getSecretKeys.mockResolvedValue(new Set());
 
-    const result = (await controller.getHistoryByKey("was-secret", {} as any)) as any;
+    const result = (await controller.getHistoryByKey(
+      "was-secret",
+      {} as any,
+    )) as any;
     expect(result.data[0].oldValue).toBe("***");
     // null 仍为 null（与掩码哨兵区分）
     expect(result.data[0].newValue).toBeNull();

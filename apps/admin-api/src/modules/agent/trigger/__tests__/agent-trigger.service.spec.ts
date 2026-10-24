@@ -26,7 +26,10 @@ function harness(opts?: {
     }),
     // 2026-10-23 熔断：scheduledWatch 现在先读最近 ops_watch 会话判定连续失败。
     // 默认给空列表（= 从未跑过，放行），个别用例覆写。
-    list: jest.fn(async () => ({ items: opts?.recentWatchSessions ?? [], total: 0 })),
+    list: jest.fn(async () => ({
+      items: opts?.recentWatchSessions ?? [],
+      total: 0,
+    })),
   };
   const scheduler = {
     getStats: jest.fn(() => {

@@ -230,10 +230,9 @@ describe("SopCollabController · 轴2 同址多行的身份解析（凭据反查
       "tok-1",
     );
     // 能力闸必须落在**反查出来的那一行**上（不是别人的行）
-    expect(h.executors.updateCapabilities).toHaveBeenCalledWith(
-      "exec-2",
-      ["agent:sop"],
-    );
+    expect(h.executors.updateCapabilities).toHaveBeenCalledWith("exec-2", [
+      "agent:sop",
+    ]);
   });
 
   it("反查命中的行不在该地址上 → 401（不得用一个错行的身份静默顶替）", async () => {
@@ -597,10 +596,12 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
       messages: [{ role: "user", content }],
     });
 
-    const inline = [{
-      type: "image_url",
-      image_url: { url: "data:image/png;base64,AAAA" },
-    }];
+    const inline = [
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,AAAA" },
+      },
+    ];
     await h.ctl.llmRelay(
       { address: "x", messages: [{ role: "user", content: inline }] } as never,
       h.auth,
@@ -613,10 +614,17 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
       h.ctl.llmRelay(
         {
           address: "x",
-          messages: [{
-            role: "user",
-            content: [{ type: "image_url", image_url: { url: "data:image/svg+xml;base64,AAAA" } }],
-          }],
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: { url: "data:image/svg+xml;base64,AAAA" },
+                },
+              ],
+            },
+          ],
         } as never,
         h.auth,
       ),
@@ -626,10 +634,17 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
       h.ctl.llmRelay(
         {
           address: "x",
-          messages: [{
-            role: "user",
-            content: [{ type: "video_url", video_url: { url: "https://example.com/v.mp4" } }],
-          }],
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "video_url",
+                  video_url: { url: "https://example.com/v.mp4" },
+                },
+              ],
+            },
+          ],
         } as never,
         h.auth,
       ),
@@ -639,13 +654,15 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
       h.ctl.llmRelay(
         {
           address: "x",
-          messages: [{
-            role: "user",
-            content: Array.from({ length: 5 }, (_, i) => ({
-              type: "image_url",
-              image_url: { url: `https://example.com/${i}.png` },
-            })),
-          }],
+          messages: [
+            {
+              role: "user",
+              content: Array.from({ length: 5 }, (_, i) => ({
+                type: "image_url",
+                image_url: { url: `https://example.com/${i}.png` },
+              })),
+            },
+          ],
         } as never,
         h.auth,
       ),

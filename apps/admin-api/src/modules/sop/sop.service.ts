@@ -10,14 +10,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import {
-  Repository,
-  In,
-  IsNull,
-  LessThan,
-  Not,
-  Or,
-} from "typeorm";
+import { Repository, In, IsNull, LessThan, Not, Or } from "typeorm";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { ExecutorService } from "../executor/executor.service";
 // R41-A1（R34-A1 遗留②）：关键写动作的审计落库（唯一可事后追溯的操作记录）。
@@ -434,7 +427,9 @@ export class SopService {
         actor: input.actor ?? null,
       },
     });
-    this.logger.log(`SOP deprecated: slug=${sop.slug} by=${input.actor ?? "?"}`);
+    this.logger.log(
+      `SOP deprecated: slug=${sop.slug} by=${input.actor ?? "?"}`,
+    );
     return sop;
   }
 
@@ -1125,8 +1120,9 @@ export class SopService {
     // 修订锚取决于谁最后落库）。
     // 条件写的 WHERE 取「本次动作的合法起始状态」= 读取时的前置值
     // （null 或 escalated_to_human），只有胜者继续做修订 / 发版 / 投递。
-    const answeredBy =
-      input.resolution as NonNullable<SopClarification["resolution"]>;
+    const answeredBy = input.resolution as NonNullable<
+      SopClarification["resolution"]
+    >;
     const answer = this.sanitizeUntrusted(input.answer);
     const claim = await this.clarifications.update(
       {
@@ -1170,9 +1166,13 @@ export class SopService {
         // 整行回写会把「读 SOP 快照 → 修订 → 落库」之间的并发编辑（例如管理员同时
         // 改了 slug/name）按旧值盖回去。这里只可能改 frontMatterJson 与 bodyMarkdown
         // （两个 if 各自决定），故按改动集合下发。
-        const amendmentPatch: { frontMatterJson?: Record<string, unknown>; bodyMarkdown?: string } = {};
+        const amendmentPatch: {
+          frontMatterJson?: Record<string, unknown>;
+          bodyMarkdown?: string;
+        } = {};
         if (input.amendedFrontMatterYaml)
-          amendmentPatch.frontMatterJson = sop.frontMatterJson as unknown as Record<string, unknown>;
+          amendmentPatch.frontMatterJson =
+            sop.frontMatterJson as unknown as Record<string, unknown>;
         if (input.amendedBodyMarkdown)
           amendmentPatch.bodyMarkdown = sop.bodyMarkdown;
         // adr-026-exempt: 只写**内容列**（frontMatterJson / bodyMarkdown），不碰状态；
@@ -1305,7 +1305,10 @@ export class SopService {
     // 改回 in_progress（进而被失联扫描判 stalled：一次交付被改写成两次错误
     // 状态）。前置状态集合 = 读取时允许的全部活跃态，等价于「非终态」。
     await this.assignments.update(
-      { id: a.id, status: In(["assigned", "in_progress", "blocked", "stalled"]) },
+      {
+        id: a.id,
+        status: In(["assigned", "in_progress", "blocked", "stalled"]),
+      },
       {
         lastProgressAt: new Date(),
         progressJson: input.progressJson ?? a.progressJson,

@@ -308,7 +308,13 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
           if (auth === "Bearer svc-token" || auth === basic) {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(
-              JSON.stringify([{ name: "@autoflow/core", version: "1.2.3", description: "core lib" }]),
+              JSON.stringify([
+                {
+                  name: "@autoflow/core",
+                  version: "1.2.3",
+                  description: "core lib",
+                },
+              ]),
             );
           } else {
             res.writeHead(401);
@@ -348,7 +354,9 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
+      packages: [
+        { name: "@autoflow/core", latest: "1.2.3", description: "core lib" },
+      ],
     });
     expect(seen).toEqual([
       {
@@ -375,7 +383,9 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
+      packages: [
+        { name: "@autoflow/core", latest: "1.2.3", description: "core lib" },
+      ],
     });
     // 回落后应当带上 Basic 凭据（而不是匿名直拉 → 恒空列表）
     expect(seen).toEqual([
@@ -458,7 +468,9 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
+      packages: [
+        { name: "@autoflow/core", latest: "1.2.3", description: "core lib" },
+      ],
     });
     expect(seen).toEqual([
       {
@@ -685,7 +697,8 @@ describe("RegistryController npm 认证形态 (2026-10-23)", () => {
   let server: http.Server;
   let destroyAll: () => void;
   let port: number;
-  const seen: Array<{ method?: string; url?: string; authorization?: string }> = [];
+  const seen: Array<{ method?: string; url?: string; authorization?: string }> =
+    [];
 
   beforeAll(async () => {
     // Verdaccio 替身：`/-/verdaccio/data/packages` **只认真实形态的请求**——
@@ -705,7 +718,9 @@ describe("RegistryController npm 认证形态 (2026-10-23)", () => {
           const expected = `Basic ${Buffer.from("svc2:svc2-pass").toString("base64")}`;
           if (req.headers.authorization === expected) {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify([{ name: "@autoflow/cached", version: "0.0.1" }]));
+            res.end(
+              JSON.stringify([{ name: "@autoflow/cached", version: "0.0.1" }]),
+            );
           } else {
             res.writeHead(401);
             res.end("unauthorized");
@@ -769,7 +784,9 @@ describe("RegistryController npm 认证形态 (2026-10-23)", () => {
       controller.listNpmPackages(),
     ]);
 
-    const packageCalls = seen.filter((r) => r.url === "/-/verdaccio/data/packages");
+    const packageCalls = seen.filter(
+      (r) => r.url === "/-/verdaccio/data/packages",
+    );
     expect(packageCalls).toHaveLength(2);
     for (const c of packageCalls) {
       expect(c.authorization).toBe(

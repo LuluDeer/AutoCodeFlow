@@ -397,7 +397,9 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
     });
     expect(r.newSopVersion).toBe("1.0.0");
     expect(h.auditService.log).toHaveBeenCalledTimes(2);
-    const actions = h.auditService.log.mock.calls.map((c: Any[]) => c[0].action);
+    const actions = h.auditService.log.mock.calls.map(
+      (c: Any[]) => c[0].action,
+    );
     expect(actions).toEqual(["sop.publish", "sop.reply"]);
     // 版本行也带上了本次答复的主体（「这个版本是谁发的」不只靠 actor 字符串）
     expect(h.auditService.log.mock.calls[0][0]).toMatchObject({
@@ -528,7 +530,10 @@ describe("R41-A1 · 审计失败策略（不阻断业务，但必须 error 留�
     expect(h.sops.save).not.toHaveBeenCalled();
     // R47：列级写 + currentVersion CAS（首发布时 WHERE 用 IS NULL 表达「还没有版本」）
     expect(h.sops.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "sop-1", currentVersion: expect.anything() }),
+      expect.objectContaining({
+        id: "sop-1",
+        currentVersion: expect.anything(),
+      }),
       { currentVersion: "1.0.0", status: "published" },
     );
     // 不阻断 ≠ 静默：必须 error 级别留痕（含动作与错误原因）
@@ -629,7 +634,7 @@ describe("R41-A1 · 没有写动作的路径一条都不落（不放大计量）
 describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
   function controllerHarness() {
     const sops = {
-    update: jest.fn(async () => ({ affected: 1 })),
+      update: jest.fn(async () => ({ affected: 1 })),
       getAssignment: jest.fn(async (id: string) => ({
         assignment: { id },
         clarifications: [{ id: "cl-1" }],
@@ -678,7 +683,7 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
       updateCapabilities: jest.fn(async () => undefined),
     };
     const sops = {
-    update: jest.fn(async () => ({ affected: 1 })),
+      update: jest.fn(async () => ({ affected: 1 })),
       ingestClarification: jest.fn(async () => ({
         clarification: { id: "cl-1", clientClarificationId: "cc-1", round: 1 },
         escalated: false,
@@ -971,4 +976,3 @@ describe("R70-A1 · 澄清/交付审计行的 detail 带 sopId（审计页深链
     );
   });
 });
-

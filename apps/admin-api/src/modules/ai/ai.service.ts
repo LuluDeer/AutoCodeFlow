@@ -461,7 +461,11 @@ export class AiService {
               : undefined;
         if (url === undefined) continue;
         // inline 图片：只允许 image/png|jpeg|webp 的 base64，且限长。
-        if (part.type === "image_url" && DATA_IMAGE_RE.test(url) && url.length <= MAX_INLINE_IMAGE_CHARS) {
+        if (
+          part.type === "image_url" &&
+          DATA_IMAGE_RE.test(url) &&
+          url.length <= MAX_INLINE_IMAGE_CHARS
+        ) {
           continue;
         }
         if (!MEDIA_URL_RE.test(url)) {

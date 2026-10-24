@@ -180,7 +180,9 @@ describe("R150-A1 轴2: 未注册渠道名不得静默吞掉告警", () => {
 describe("R150-A1 轴3: 静默 channelType 白名单必须覆盖全部已注册渠道", () => {
   const makeRepo = () => ({
     create: jest.fn((d: unknown) => ({ ...(d as object), id: "sil-1" })),
-    save: jest.fn((e: unknown) => Promise.resolve({ ...(e as object), id: "sil-1" })),
+    save: jest.fn((e: unknown) =>
+      Promise.resolve({ ...(e as object), id: "sil-1" }),
+    ),
     count: jest.fn().mockResolvedValue(0),
     find: jest.fn().mockResolvedValue([]),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -191,7 +193,10 @@ describe("R150-A1 轴3: 静默 channelType 白名单必须覆盖全部已注册�
     const module = await Test.createTestingModule({
       providers: [
         NotificationSilenceService,
-        { provide: getRepositoryToken(NotificationSilence), useValue: makeRepo() },
+        {
+          provide: getRepositoryToken(NotificationSilence),
+          useValue: makeRepo(),
+        },
       ],
     }).compile();
     return module.get(NotificationSilenceService);
@@ -273,8 +278,7 @@ describe("R150-A1 轴3: 读面 URL 凭据掩码覆盖 WeCom ?key=", () => {
     svc.updateChannel("wecom", { config: { webhookUrl: WECOM_URL } });
     svc.updateChannel("wecom", {
       config: {
-        webhookUrl:
-          "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=***",
+        webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=***",
       },
     });
     expect(store.get("wecom")).toEqual({ webhookUrl: WECOM_URL });
@@ -428,9 +432,9 @@ describe("R150-A1 轴3: enabled=false 的已保存配置不得生效", () => {
       store.set(key, { webhookUrl: PUBLIC_URL }, false);
       const channel = new ChannelClass(makeConfig(), store);
 
-      await expect(
-        channel.send({ title: "t", content: "c" }),
-      ).resolves.toBe("skipped");
+      await expect(channel.send({ title: "t", content: "c" })).resolves.toBe(
+        "skipped",
+      );
       expect(axios.post).not.toHaveBeenCalled();
     });
 
@@ -439,9 +443,9 @@ describe("R150-A1 轴3: enabled=false 的已保存配置不得生效", () => {
       store.set(key, { webhookUrl: PUBLIC_URL }, true);
       const channel = new ChannelClass(makeConfig(), store);
 
-      await expect(
-        channel.send({ title: "t", content: "c" }),
-      ).resolves.toBe("sent");
+      await expect(channel.send({ title: "t", content: "c" })).resolves.toBe(
+        "sent",
+      );
       expect(axios.post).toHaveBeenCalledTimes(1);
     });
 
@@ -451,9 +455,9 @@ describe("R150-A1 轴3: enabled=false 的已保存配置不得生效", () => {
       expect(store.isEnabled(key)).toBe(true);
       const channel = new ChannelClass(makeConfig(), store);
 
-      await expect(
-        channel.send({ title: "t", content: "c" }),
-      ).resolves.toBe("sent");
+      await expect(channel.send({ title: "t", content: "c" })).resolves.toBe(
+        "sent",
+      );
     });
   }
 
@@ -466,10 +470,10 @@ describe("R150-A1 轴3: enabled=false 的已保存配置不得生效", () => {
     );
     const channel = new EmailChannel(makeConfig(), store);
 
-    await expect(
-      channel.send({ title: "t", content: "c" }),
-    ).resolves.toBe("skipped");
-    expect((nodemailer.createTransport as jest.Mock)).not.toHaveBeenCalled();
+    await expect(channel.send({ title: "t", content: "c" })).resolves.toBe(
+      "skipped",
+    );
+    expect(nodemailer.createTransport as jest.Mock).not.toHaveBeenCalled();
   });
 
   it("email: enabled=true → 正常走 SMTP", async () => {
@@ -485,9 +489,9 @@ describe("R150-A1 轴3: enabled=false 的已保存配置不得生效", () => {
     );
     const channel = new EmailChannel(makeConfig(), store);
 
-    await expect(
-      channel.send({ title: "t", content: "c" }),
-    ).resolves.toBe("sent");
+    await expect(channel.send({ title: "t", content: "c" })).resolves.toBe(
+      "sent",
+    );
     expect(sendMail).toHaveBeenCalledTimes(1);
   });
 
@@ -499,8 +503,8 @@ describe("R150-A1 轴3: enabled=false 的已保存配置不得生效", () => {
       store,
     );
 
-    await expect(
-      channel.send({ title: "t", content: "c" }),
-    ).resolves.toBe("sent");
+    await expect(channel.send({ title: "t", content: "c" })).resolves.toBe(
+      "sent",
+    );
   });
 });

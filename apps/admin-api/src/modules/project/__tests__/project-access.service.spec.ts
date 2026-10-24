@@ -33,10 +33,14 @@ describe("ProjectAccessService（AUTH-02）", () => {
     // 一个永远返回 affected=1（或干脆没有 update）的替身会让「不复活已删行」这条路径
     // 在测试里根本不存在。
     (repo as Record<string, unknown>).update = jest.fn(
-      async (where: Record<string, unknown>, patch: Record<string, unknown>) => {
-        const row = (await (repo.findOne as jest.Mock)({ where })) as
-          | Record<string, unknown>
-          | null;
+      async (
+        where: Record<string, unknown>,
+        patch: Record<string, unknown>,
+      ) => {
+        const row = (await (repo.findOne as jest.Mock)({ where })) as Record<
+          string,
+          unknown
+        > | null;
         if (!row) return { affected: 0 };
         Object.assign(row, patch);
         return { affected: 1 };
@@ -280,7 +284,9 @@ describe("ProjectAccessService（AUTH-02）", () => {
       // 明确可重试的通用码 DEPENDENCY_UNAVAILABLE。
       it("存在性查询抖动 → 503 DEPENDENCY_UNAVAILABLE，且绝不落成员行（fail-closed）", async () => {
         const users = {
-          findByIdOrNull: jest.fn().mockRejectedValue(new Error("connection reset")),
+          findByIdOrNull: jest
+            .fn()
+            .mockRejectedValue(new Error("connection reset")),
           findIdentitiesByIds: jest.fn().mockResolvedValue(new Map()),
         };
         const { svc, repo } = makeService({}, users);
@@ -291,9 +297,7 @@ describe("ProjectAccessService（AUTH-02）", () => {
           )
           .mockImplementation(() => {});
 
-        await expect(
-          svc.addMember("p1", 8, "viewer"),
-        ).rejects.toMatchObject({
+        await expect(svc.addMember("p1", 8, "viewer")).rejects.toMatchObject({
           errorCode: "DEPENDENCY_UNAVAILABLE",
           status: 503,
         });
@@ -445,7 +449,9 @@ describe("ProjectAccessService（AUTH-02）", () => {
         const rows = await svc.listMembers("p1");
 
         expect(users.findIdentitiesByIds).toHaveBeenCalledWith([7, 8]);
-        expect(rows.map((r) => [r.userId, r.username, r.email, r.userActive])).toEqual([
+        expect(
+          rows.map((r) => [r.userId, r.username, r.email, r.userActive]),
+        ).toEqual([
           [7, "alice", "a@x", true],
           [8, "bob", "b@x", false],
         ]);
@@ -470,7 +476,9 @@ describe("ProjectAccessService（AUTH-02）", () => {
       it("补全查询抛错 → 不整页失败，字段缺席（前端退回 #N）", async () => {
         const users = {
           findByIdOrNull: jest.fn(),
-          findIdentitiesByIds: jest.fn().mockRejectedValue(new Error("db down")),
+          findIdentitiesByIds: jest
+            .fn()
+            .mockRejectedValue(new Error("db down")),
         };
         const { svc, repo } = makeService({}, users);
         repo.find.mockResolvedValue([row(7)]);
@@ -494,9 +502,13 @@ describe("ProjectAccessService（AUTH-02）", () => {
       it("addMember 回执也带身份（管理员加完立刻能看见是谁）", async () => {
         const users = {
           findByIdOrNull: jest.fn().mockResolvedValue({ id: 8 }),
-          findIdentitiesByIds: jest.fn().mockResolvedValue(
-            new Map([[8, { id: 8, username: "bob", email: "b@x", isActive: true }]]),
-          ),
+          findIdentitiesByIds: jest
+            .fn()
+            .mockResolvedValue(
+              new Map([
+                [8, { id: 8, username: "bob", email: "b@x", isActive: true }],
+              ]),
+            ),
         };
         const { svc } = makeService({}, users);
 

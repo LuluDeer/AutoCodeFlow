@@ -129,8 +129,9 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
   // R49-A1：列级写（queryBuilder().update().set(patch)）的落点断言入口。
   // 生产代码改成条件列级写后，用例要看的是 **patch 里到底写了哪些列**，
   // 而不是整行 save 的实体快照——后者正是本轮要消灭的对象。
-  (repo as unknown as { updatePatches: Array<Record<string, unknown>> })
-    .updatePatches = [];
+  (
+    repo as unknown as { updatePatches: Array<Record<string, unknown>> }
+  ).updatePatches = [];
   // PERF-03（本轮体验审查）：执行列表端点改为由 TypeORM 元数据派生读投影
   // （`executionListSelectColumns*` 读 `repo.metadata.columns`），故仓储替身
   // 必须像真实 Repository 一样带 metadata——此前替身缺这一项，一旦生产代码
@@ -193,8 +194,9 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
       update: jest.fn().mockReturnThis(),
       set: jest.fn((p: Record<string, unknown>) => {
         patch = p;
-        (repo as unknown as { updatePatches: Array<Record<string, unknown>> })
-          .updatePatches.push(p);
+        (
+          repo as unknown as { updatePatches: Array<Record<string, unknown>> }
+        ).updatePatches.push(p);
         return qb;
       }),
       // Mimic a conditional UPDATE: apply the patch onto the snapshot entity
@@ -1687,12 +1689,10 @@ describe("TaskService (__tests__)", () => {
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
           // R63-A1: 任务行 = 列级条件写（update）；执行行 = save(create(...))
-          update: jest.fn(
-            async (_t: unknown, criteria: any, patch: any) => {
-              updates.push({ criteria, patch });
-              return { affected: 1 };
-            },
-          ),
+          update: jest.fn(async (_t: unknown, criteria: any, patch: any) => {
+            updates.push({ criteria, patch });
+            return { affected: 1 };
+          }),
           save: jest.fn(async (...args: any[]) => {
             const row = args[args.length - 1];
             if (row && typeof row === "object") {
@@ -7659,7 +7659,6 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       );
     });
   });
-
 });
 
 // R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。

@@ -448,8 +448,11 @@ describe("NotificationService", () => {
       expect(results).toEqual({ slack: "failed" });
 
       // 打印实际落地的 label，让「被记成什么」可肉眼核验
-      // eslint-disable-next-line no-console
-      console.log("R33-A1 actual delivery labels:", JSON.stringify(deliveryLabels()));
+
+      console.log(
+        "R33-A1 actual delivery labels:",
+        JSON.stringify(deliveryLabels()),
+      );
 
       expect(deliveryCount("slack", "success")).toBe(0);
       expect(deliveryCount("slack", "failure")).toBe(1);
@@ -1621,7 +1624,9 @@ describe("NotificationService", () => {
     // "状态级故障"。判据应是逐渠道**投递结果**，不是 promise 有没有 reject。
     it("R32-A2: 全部渠道 status=failed（不抛错）同样落一条 NOTIFICATION_FAILED 审计", async () => {
       const auditLog = jest.fn().mockResolvedValue(undefined);
-      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
@@ -1652,7 +1657,9 @@ describe("NotificationService", () => {
     // fail-open 语义与"不放大审计噪声"不变。
     it("R32-A2: 部分渠道 status=failed（有渠道成功）时不落审计", async () => {
       const auditLog = jest.fn().mockResolvedValue(undefined);
-      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});

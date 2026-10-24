@@ -289,30 +289,47 @@ function parseRelayMessages(
     const content = m?.content;
     if (typeof content === "string") {
       if (content.length === 0) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+          index,
+        });
       }
       if (content.length > 100_000) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+          index,
+        });
       }
       return { role, content } as MultimodalMessage;
     }
     if (!Array.isArray(content) || content.length === 0) {
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     const parts: MultimodalPart[] = [];
     for (const part of content) {
       if (!part || typeof part !== "object") {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+          index,
+        });
       }
       const rec = part as Record<string, unknown>;
-      if (rec.type === "text" && typeof rec.text === "string" && rec.text.length > 0) {
+      if (
+        rec.type === "text" &&
+        typeof rec.text === "string" &&
+        rec.text.length > 0
+      ) {
         if (rec.text.length > 100_000) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+            index,
+          });
         }
         parts.push({ type: "text", text: rec.text });
         continue;
       }
-      const image = rec.type === "image_url" ? (rec.image_url as { url?: unknown } | undefined) : undefined;
+      const image =
+        rec.type === "image_url"
+          ? (rec.image_url as { url?: unknown } | undefined)
+          : undefined;
       if (image && typeof image.url === "string") {
         const url = image.url;
         const isHttp = /^https?:\/\//i.test(url);
@@ -320,23 +337,33 @@ function parseRelayMessages(
           /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(url) &&
           url.length <= 3 * 1024 * 1024;
         if (!isHttp && !isInlineImage) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+            index,
+          });
         }
         if (isHttp && url.length > 2048) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+            index,
+          });
         }
         imageCount += 1;
         if (imageCount > 4) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+            index,
+          });
         }
         parts.push({ type: "image_url", image_url: { url: image.url } });
         continue;
       }
       // video_url / 未知 part：该 provider 无视频能力；拒绝比静默丢弃诚实。
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     if (parts.length === 0) {
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     return { role, content: parts } as MultimodalMessage;
   });

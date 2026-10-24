@@ -142,7 +142,11 @@ describe("AgentMediaRetentionService.cleanupExpiredMedia（目录粒度 TTL 回�
     fs.utimesSync(dirC, cutoff, cutoff);
     // B：早 1 秒 → 越界，删
     const dirB = makeDir(B, 7);
-    fs.utimesSync(dirB, new Date(cutoff.getTime() - 1000), new Date(cutoff.getTime() - 1000));
+    fs.utimesSync(
+      dirB,
+      new Date(cutoff.getTime() - 1000),
+      new Date(cutoff.getTime() - 1000),
+    );
 
     const removed = await service.cleanupExpiredMedia(now);
 
@@ -167,7 +171,11 @@ describe("AgentMediaRetentionService.cleanupExpiredMedia（目录粒度 TTL 回�
   it("③ 根下的游离文件（非目录）被跳过：不删、也不触发 DB 删除", async () => {
     const stray = path.join(root, "stray.log");
     fs.writeFileSync(stray, "x");
-    fs.utimesSync(stray, new Date(Date.now() - 30 * DAY), new Date(Date.now() - 30 * DAY));
+    fs.utimesSync(
+      stray,
+      new Date(Date.now() - 30 * DAY),
+      new Date(Date.now() - 30 * DAY),
+    );
 
     const removed = await service.cleanupExpiredMedia(new Date());
 
@@ -201,10 +209,12 @@ describe("AgentMediaRetentionService.cleanupExpiredMedia（目录粒度 TTL 回�
   it("④ best-effort：单个目录的 DB 同步删失败不阻断其余目录，也不抛出", async () => {
     writeMedia(A, "old.png", 30);
     writeMedia(C, "old.png", 30);
-    mediaRepo.delete.mockImplementation(async (where: { assignmentId: string }) => {
-      if (where.assignmentId === A) throw new Error("db down");
-      return { affected: 1 };
-    });
+    mediaRepo.delete.mockImplementation(
+      async (where: { assignmentId: string }) => {
+        if (where.assignmentId === A) throw new Error("db down");
+        return { affected: 1 };
+      },
+    );
 
     const removed = await service.cleanupExpiredMedia(new Date());
 
@@ -217,7 +227,9 @@ describe("AgentMediaRetentionService.cleanupExpiredMedia（目录粒度 TTL 回�
 
   it("Leader 门禁：非 leader 的 cron 直接返回，一个目录都不动（多实例不重复删）", async () => {
     writeMedia(A, "old.png", 30);
-    const logSpy = jest.spyOn(Logger.prototype, "log").mockImplementation(() => {});
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => {});
 
     await build({ isLeader: false }).handleDailyCleanup();
 
@@ -228,7 +240,9 @@ describe("AgentMediaRetentionService.cleanupExpiredMedia（目录粒度 TTL 回�
 
   it("Leader cron：leader 执行清理并按删除目录数记一条 log", async () => {
     writeMedia(A, "old.png", 30);
-    const logSpy = jest.spyOn(Logger.prototype, "log").mockImplementation(() => {});
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => {});
 
     await build({ isLeader: true }).handleDailyCleanup();
 
@@ -287,10 +301,12 @@ describe("AgentMediaRetentionService.cleanupExpiredMedia（目录粒度 TTL 回�
     const errorSpy = jest
       .spyOn(Logger.prototype, "error")
       .mockImplementation(() => {});
-    mediaRepo.delete.mockImplementation(async (where: { assignmentId: string }) => {
-      if (where.assignmentId === A) throw "plain-string-db-error";
-      return { affected: 1 };
-    });
+    mediaRepo.delete.mockImplementation(
+      async (where: { assignmentId: string }) => {
+        if (where.assignmentId === A) throw "plain-string-db-error";
+        return { affected: 1 };
+      },
+    );
 
     expect(await service.cleanupExpiredMedia(new Date())).toBe(1);
     expect(debugSpy).toHaveBeenCalledWith(

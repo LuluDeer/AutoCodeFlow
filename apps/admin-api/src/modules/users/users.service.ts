@@ -39,9 +39,7 @@ function isUniqueViolation(e: unknown): boolean {
   // TypeORM 把 PG 原始错误挂在 driverError 上，不同驱动/版本也会直接放顶层
   // （与 projects.service.isUniqueViolationOn / executor.service 同款两处都看）。
   const err = e as
-    | { code?: unknown; driverError?: { code?: unknown } }
-    | null
-    | undefined;
+    { code?: unknown; driverError?: { code?: unknown } } | null | undefined;
   const code = err?.code ?? err?.driverError?.code;
   return code === "23505";
 }
@@ -224,7 +222,12 @@ export class UsersService implements OnModuleInit {
    */
   async findIdentitiesByIds(
     ids: readonly number[],
-  ): Promise<Map<number, { id: number; username: string; email: string; isActive: boolean }>> {
+  ): Promise<
+    Map<
+      number,
+      { id: number; username: string; email: string; isActive: boolean }
+    >
+  > {
     const unique = [...new Set(ids)].filter((id) => Number.isInteger(id));
     const out = new Map<
       number,

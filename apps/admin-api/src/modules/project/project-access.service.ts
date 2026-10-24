@@ -195,7 +195,10 @@ export class ProjectAccessService {
     views: ProjectMemberView[],
   ): Promise<ProjectMemberView[]> {
     if (!this.usersService || views.length === 0) return views;
-    let byId: Map<number, { username: string; email: string; isActive: boolean }>;
+    let byId: Map<
+      number,
+      { username: string; email: string; isActive: boolean }
+    >;
     try {
       byId = await this.usersService.findIdentitiesByIds(
         views.map((v) => v.userId),
@@ -365,9 +368,7 @@ export class ProjectAccessService {
    * 与 `enrichIdentities` 同口径：补全失败只 warn、字段缺席——写面成功与否
    * 不该被一个展示字段的查询连坐。
    */
-  private async toEnrichedView(
-    row: ProjectMember,
-  ): Promise<ProjectMemberView> {
+  private async toEnrichedView(row: ProjectMember): Promise<ProjectMemberView> {
     const [view] = await this.enrichIdentities([this.toView(row)]);
     return view;
   }

@@ -571,9 +571,7 @@ describe("NotificationDigestService 生命周期与 fail-open（R31-A3）", () =
 
     await svc.onModuleDestroy();
     expect(inst.quit).toHaveBeenCalledTimes(1);
-    expect(
-      (svc as unknown as { client: unknown }).client,
-    ).toBeNull();
+    expect((svc as unknown as { client: unknown }).client).toBeNull();
 
     await expect(svc.onModuleDestroy()).resolves.toBeUndefined();
     expect(inst.quit).toHaveBeenCalledTimes(1);
@@ -592,9 +590,7 @@ describe("NotificationDigestService 生命周期与 fail-open（R31-A3）", () =
 
     await svc.onModuleDestroy();
     expect(timersOf(svc).size).toBe(0);
-    expect(
-      (svc as unknown as { testClient?: unknown }).testClient,
-    ).toBeNull();
+    expect((svc as unknown as { testClient?: unknown }).testClient).toBeNull();
   });
 
   it("窗到期由定时器自己 flush（不依赖调用方）：只发一条汇总，定时器先摘表，窗不再重复发", async () => {
@@ -606,7 +602,9 @@ describe("NotificationDigestService 生命周期与 fail-open（R31-A3）", () =
       await svc.recordFailure(rec());
       expect(timersOf(svc).has("t1")).toBe(true);
       // 窗内不发：聚合的全部意义
-      expect(notificationService.notifyFailureWithConfig).not.toHaveBeenCalled();
+      expect(
+        notificationService.notifyFailureWithConfig,
+      ).not.toHaveBeenCalled();
 
       await jest.advanceTimersByTimeAsync(WINDOW_MINUTES * 60_000 + 1);
 

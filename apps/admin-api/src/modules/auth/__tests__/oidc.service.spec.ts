@@ -560,7 +560,9 @@ describe("OidcService — 自动绑定收紧（A-3）", () => {
     mockCollision(usersRepo, hitByUsername());
     usersRepo.update.mockResolvedValueOnce({ affected: 0 });
     // 第三次 findOne 是「未命中后重读」，看到别人刚绑上的 sub
-    usersRepo.findOne.mockResolvedValueOnce(hitByUsername({ oidcSub: "sub-other" }));
+    usersRepo.findOne.mockResolvedValueOnce(
+      hitByUsername({ oidcSub: "sub-other" }),
+    );
 
     const err = await service.resolveAndBindUser(baseProfile).then(
       () => null,

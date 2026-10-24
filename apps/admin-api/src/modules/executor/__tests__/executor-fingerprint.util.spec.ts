@@ -297,14 +297,24 @@ describe("ADR-017 阶段 3 复查补口：冲突判据跟随行语义（P0-1/P0-
     // "shared by multiple installs"。根因是判据停在阶段 2 的「同址第二个指纹
     // = 冲突」，而阶段 3 已把 pull 的 address 降级为标签。
     const tracker = createDeviceFingerprintTracker();
-    tracker.observeWithContext(ADDR_1, FP_A, {
-      rowId: "row-a",
-      dispatchMode: "pull",
-    }, t0);
-    const second = tracker.observeWithContext(ADDR_1, FP_B, {
-      rowId: "row-b",
-      dispatchMode: "pull",
-    }, t0 + 30_000);
+    tracker.observeWithContext(
+      ADDR_1,
+      FP_A,
+      {
+        rowId: "row-a",
+        dispatchMode: "pull",
+      },
+      t0,
+    );
+    const second = tracker.observeWithContext(
+      ADDR_1,
+      FP_B,
+      {
+        rowId: "row-b",
+        dispatchMode: "pull",
+      },
+      t0 + 30_000,
+    );
 
     expect(second?.conflictKind).toBeNull();
     expect(second?.addressSharedByMultipleInstalls).toBe(false);
@@ -315,14 +325,24 @@ describe("ADR-017 阶段 3 复查补口：冲突判据跟随行语义（P0-1/P0-
 
   it("push 行参与的同址碰撞仍是硬冲突（地址就是路由面）", () => {
     const tracker = createDeviceFingerprintTracker();
-    tracker.observeWithContext(ADDR_1, FP_A, {
-      rowId: "row-a",
-      dispatchMode: "push",
-    }, t0);
-    const second = tracker.observeWithContext(ADDR_1, FP_B, {
-      rowId: "row-b",
-      dispatchMode: "pull",
-    }, t0 + 1);
+    tracker.observeWithContext(
+      ADDR_1,
+      FP_A,
+      {
+        rowId: "row-a",
+        dispatchMode: "push",
+      },
+      t0,
+    );
+    const second = tracker.observeWithContext(
+      ADDR_1,
+      FP_B,
+      {
+        rowId: "row-b",
+        dispatchMode: "pull",
+      },
+      t0 + 1,
+    );
     expect(second?.conflictKind).toBe("push-address-collision");
     expect(second?.addressSharedByMultipleInstalls).toBe(true);
   });
@@ -336,14 +356,24 @@ describe("ADR-017 阶段 3 复查补口：冲突判据跟随行语义（P0-1/P0-
 
   it("两个指纹落在**同一行 id** → row-identity-overwrite（身份被顶替）", () => {
     const tracker = createDeviceFingerprintTracker();
-    tracker.observeWithContext(ADDR_1, FP_A, {
-      rowId: "row-same",
-      dispatchMode: "pull",
-    }, t0);
-    const second = tracker.observeWithContext(ADDR_1, FP_B, {
-      rowId: "row-same",
-      dispatchMode: "pull",
-    }, t0 + 30_000);
+    tracker.observeWithContext(
+      ADDR_1,
+      FP_A,
+      {
+        rowId: "row-same",
+        dispatchMode: "pull",
+      },
+      t0,
+    );
+    const second = tracker.observeWithContext(
+      ADDR_1,
+      FP_B,
+      {
+        rowId: "row-same",
+        dispatchMode: "pull",
+      },
+      t0 + 30_000,
+    );
     // 行身份优先于地址语义：即使两行都是 pull，同一行被两份安装写也是故障。
     expect(second?.conflictKind).toBe("row-identity-overwrite");
   });
@@ -351,8 +381,18 @@ describe("ADR-017 阶段 3 复查补口：冲突判据跟随行语义（P0-1/P0-
   it("离场的第二个安装不再续期冲突（旧实现：永久误报）", () => {
     const tracker = createDeviceFingerprintTracker();
     // 两台机器先后在同一地址上报（DHCP 复用 / Clash 伪 IP）。
-    tracker.observeWithContext(ADDR_1, FP_A, { rowId: "a", dispatchMode: "push" }, t0);
-    tracker.observeWithContext(ADDR_1, FP_B, { rowId: "b", dispatchMode: "push" }, t0 + 1000);
+    tracker.observeWithContext(
+      ADDR_1,
+      FP_A,
+      { rowId: "a", dispatchMode: "push" },
+      t0,
+    );
+    tracker.observeWithContext(
+      ADDR_1,
+      FP_B,
+      { rowId: "b", dispatchMode: "push" },
+      t0 + 1000,
+    );
     // 之后只有 A 在心跳：B 已下线/被删。旧实现里 A 的心跳会不断给整条地址
     // 条目续期，B 的指纹永远留在集合里 ⇒ 告警永不消失。
     let last: ReturnType<typeof tracker.observeWithContext> = null;
@@ -371,7 +411,12 @@ describe("ADR-017 阶段 3 复查补口：冲突判据跟随行语义（P0-1/P0-
 
   it("forget()：删除行即让该安装离场（不必等 liveness 窗口）", () => {
     const tracker = createDeviceFingerprintTracker();
-    tracker.observeWithContext(ADDR_1, FP_A, { rowId: "a", dispatchMode: "push" }, t0);
+    tracker.observeWithContext(
+      ADDR_1,
+      FP_A,
+      { rowId: "a", dispatchMode: "push" },
+      t0,
+    );
     const conflicted = tracker.observeWithContext(
       ADDR_1,
       FP_B,
@@ -401,7 +446,12 @@ describe("ADR-017 阶段 3 复查补口：冲突判据跟随行语义（P0-1/P0-
 
   it("pull 并存的 info 节流与冲突告警**互不影响**（info 不得吞掉真告警）", () => {
     const tracker = createDeviceFingerprintTracker();
-    tracker.observeWithContext(ADDR_1, FP_A, { rowId: "a", dispatchMode: "pull" }, t0);
+    tracker.observeWithContext(
+      ADDR_1,
+      FP_A,
+      { rowId: "a", dispatchMode: "pull" },
+      t0,
+    );
     // 第一次 pull 并存 → 应记一条 info。
     const info = tracker.observeWithContext(
       ADDR_1,

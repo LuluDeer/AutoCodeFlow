@@ -4,18 +4,18 @@ import {
   buildAdminUser,
   buildLockedUser,
   buildTotpUser,
-} from '../user.factory';
-import { UserRole } from '../../../src/modules/users/entities/user.entity';
+} from "../user.factory";
+import { UserRole } from "../../../src/modules/users/entities/user.entity";
 
-describe('User Factory', () => {
-  describe('buildUser', () => {
-    it('应该生成具有默认值的 User 对象', () => {
+describe("User Factory", () => {
+  describe("buildUser", () => {
+    it("应该生成具有默认值的 User 对象", () => {
       const user = buildUser();
 
       expect(user).toBeDefined();
       expect(user.id).toBeGreaterThan(0);
       expect(user.username).toBeTruthy();
-      expect(user.email).toContain('@');
+      expect(user.email).toContain("@");
       expect(user.password).toBeTruthy();
       expect(user.role).toBe(UserRole.USER);
       expect(user.isActive).toBe(true);
@@ -26,21 +26,21 @@ describe('User Factory', () => {
       expect(user.updatedAt).toBeInstanceOf(Date);
     });
 
-    it('应该支持覆盖默认值', () => {
+    it("应该支持覆盖默认值", () => {
       const user = buildUser({
-        username: 'testuser',
-        email: 'test@example.com',
+        username: "testuser",
+        email: "test@example.com",
         role: UserRole.ADMIN,
         isActive: false,
       });
 
-      expect(user.username).toBe('testuser');
-      expect(user.email).toBe('test@example.com');
+      expect(user.username).toBe("testuser");
+      expect(user.email).toBe("test@example.com");
       expect(user.role).toBe(UserRole.ADMIN);
       expect(user.isActive).toBe(false);
     });
 
-    it('应该正确处理 null 值', () => {
+    it("应该正确处理 null 值", () => {
       const user = buildUser({
         lockedUntil: null,
         totpSecret: null,
@@ -52,7 +52,7 @@ describe('User Factory', () => {
       expect(user.oidcSub).toBeNull();
     });
 
-    it('生成的密码应该有足够的复杂度', () => {
+    it("生成的密码应该有足够的复杂度", () => {
       const user = buildUser();
 
       expect(user.password.length).toBeGreaterThanOrEqual(8);
@@ -62,52 +62,52 @@ describe('User Factory', () => {
     });
   });
 
-  describe('buildUsers', () => {
-    it('应该生成指定数量的用户', () => {
+  describe("buildUsers", () => {
+    it("应该生成指定数量的用户", () => {
       const users = buildUsers(5);
 
       expect(users).toHaveLength(5);
-      users.forEach(user => {
+      users.forEach((user) => {
         expect(user.id).toBeGreaterThan(0);
         expect(user.username).toBeTruthy();
       });
     });
 
-    it('应该为所有用户应用覆盖值', () => {
+    it("应该为所有用户应用覆盖值", () => {
       const users = buildUsers(3, { role: UserRole.ADMIN });
 
       expect(users).toHaveLength(3);
-      users.forEach(user => {
+      users.forEach((user) => {
         expect(user.role).toBe(UserRole.ADMIN);
       });
     });
 
-    it('每个用户应该有唯一的生成值', () => {
+    it("每个用户应该有唯一的生成值", () => {
       const users = buildUsers(3);
 
-      const usernames = users.map(u => u.username);
+      const usernames = users.map((u) => u.username);
       const uniqueUsernames = new Set(usernames);
       expect(uniqueUsernames.size).toBe(3);
     });
   });
 
-  describe('buildAdminUser', () => {
-    it('应该生成管理员用户', () => {
+  describe("buildAdminUser", () => {
+    it("应该生成管理员用户", () => {
       const admin = buildAdminUser();
 
       expect(admin.role).toBe(UserRole.ADMIN);
     });
 
-    it('应该支持覆盖其他属性', () => {
-      const admin = buildAdminUser({ username: 'superadmin' });
+    it("应该支持覆盖其他属性", () => {
+      const admin = buildAdminUser({ username: "superadmin" });
 
       expect(admin.role).toBe(UserRole.ADMIN);
-      expect(admin.username).toBe('superadmin');
+      expect(admin.username).toBe("superadmin");
     });
   });
 
-  describe('buildLockedUser', () => {
-    it('应该生成已锁定的用户', () => {
+  describe("buildLockedUser", () => {
+    it("应该生成已锁定的用户", () => {
       const lockedUser = buildLockedUser();
 
       expect(lockedUser.loginFailCount).toBeGreaterThan(0);
@@ -115,7 +115,7 @@ describe('User Factory', () => {
       expect(lockedUser.isActive).toBe(false);
     });
 
-    it('lockedUntil 应该是未来时间', () => {
+    it("lockedUntil 应该是未来时间", () => {
       const lockedUser = buildLockedUser();
 
       expect(lockedUser.lockedUntil).not.toBeNull();
@@ -123,8 +123,8 @@ describe('User Factory', () => {
     });
   });
 
-  describe('buildTotpUser', () => {
-    it('应该生成启用了 TOTP 的用户', () => {
+  describe("buildTotpUser", () => {
+    it("应该生成启用了 TOTP 的用户", () => {
       const totpUser = buildTotpUser();
 
       expect(totpUser.totpEnabled).toBe(true);
@@ -132,7 +132,7 @@ describe('User Factory', () => {
       expect(totpUser.lastTotpCounter).toBeGreaterThan(0);
     });
 
-    it('TOTP secret 应该有合适的格式', () => {
+    it("TOTP secret 应该有合适的格式", () => {
       const totpUser = buildTotpUser();
 
       expect(totpUser.totpSecret).toBeTruthy();

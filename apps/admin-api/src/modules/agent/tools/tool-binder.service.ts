@@ -429,7 +429,9 @@ function pickTask(row: Record<string, unknown>): Record<string, unknown> {
 
 export function compactTaskList(res: unknown): unknown {
   if (Array.isArray(res)) {
-    return { tasks: res.map((row) => pickTask(row as Record<string, unknown>)) };
+    return {
+      tasks: res.map((row) => pickTask(row as Record<string, unknown>)),
+    };
   }
   if (!res || typeof res !== "object") return res;
   const rec = res as Record<string, unknown>;
@@ -524,7 +526,9 @@ function pickExecutor(row: Record<string, unknown>): Record<string, unknown> {
 
 export function compactExecutorList(res: unknown): unknown {
   if (Array.isArray(res)) {
-    return { executors: res.map((row) => pickExecutor(row as Record<string, unknown>)) };
+    return {
+      executors: res.map((row) => pickExecutor(row as Record<string, unknown>)),
+    };
   }
   return res;
 }

@@ -370,9 +370,16 @@ export class RegistryController {
               : undefined;
         const description =
           typeof rec.description === "string" ? rec.description : undefined;
-        return { name, ...(latest ? { latest } : {}), ...(description ? { description } : {}) };
+        return {
+          name,
+          ...(latest ? { latest } : {}),
+          ...(description ? { description } : {}),
+        };
       })
-      .filter((p): p is { name: string; latest?: string; description?: string } => p !== null);
+      .filter(
+        (p): p is { name: string; latest?: string; description?: string } =>
+          p !== null,
+      );
     return { packages };
   }
 

@@ -127,7 +127,10 @@ const makeService = (repo: DiffAwareExecutorRepo): ExecutorService => {
     repo as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
-    { create: jest.fn((x: unknown) => x), save: jest.fn(async (x: unknown) => x) } as never,
+    {
+      create: jest.fn((x: unknown) => x),
+      save: jest.fn(async (x: unknown) => x),
+    } as never,
     {} as never,
     { get: jest.fn() } as never,
     {
@@ -248,9 +251,7 @@ describe("R51-A1 · update：PATCH 只许写 4 个元数据列（ADR-026 规则 
     const repo = new DiffAwareExecutorRepo(mkRow());
     const svc = makeService(repo);
 
-    await expect(
-      svc.update("e1", { maxConcurrentTasks: 0 }),
-    ).rejects.toThrow();
+    await expect(svc.update("e1", { maxConcurrentTasks: 0 })).rejects.toThrow();
 
     expect(repo.updateCalls).toHaveLength(0);
     expect(repo.saveCalls).toHaveLength(0);
@@ -308,7 +309,11 @@ describe("R53-A1 · heartbeat：整行 save → 「实际采纳字段」的正�
 
   it("register 拥有的列（appName/capabilities/dispatchMode/版本）同样不被回弹", async () => {
     const repo = new DiffAwareExecutorRepo(
-      mkRow({ capabilities: ["python"], dispatchMode: "push", executorVersion: "1.0.0" }),
+      mkRow({
+        capabilities: ["python"],
+        dispatchMode: "push",
+        executorVersion: "1.0.0",
+      }),
     );
     const svc = makeService(repo);
     repo.afterRead = () => {
@@ -355,31 +360,66 @@ describe("R53-A1 · heartbeat：整行 save → 「实际采纳字段」的正�
 
     const patch = repo.updateCalls[0].patch;
     const owned = new Set([
-      "address", "status", "offlineReason", "consecutiveHeartbeatMisses",
-      "lastHeartbeat", "executorStartedAt", "executorStartupId",
-      "runningTaskCount", "reservedSlots", "runningExecutionIds",
-      "cpuUsage", "memUsage", "diskUsage", "networkLatency",
-      "totalTaskCount", "failedTaskCount", "maxConcurrentTasks",
-      "deadLetterCount", "interpreters", "deviceFingerprint",
+      "address",
+      "status",
+      "offlineReason",
+      "consecutiveHeartbeatMisses",
+      "lastHeartbeat",
+      "executorStartedAt",
+      "executorStartupId",
+      "runningTaskCount",
+      "reservedSlots",
+      "runningExecutionIds",
+      "cpuUsage",
+      "memUsage",
+      "diskUsage",
+      "networkLatency",
+      "totalTaskCount",
+      "failedTaskCount",
+      "maxConcurrentTasks",
+      "deadLetterCount",
+      "interpreters",
+      "deviceFingerprint",
     ]);
     for (const key of Object.keys(patch)) {
       expect(owned.has(key)).toBe(true);
     }
     // 「从不被心跳修改」的列一个都不许出现（这正是整行 save 的缺陷来源）。
     for (const notOwned of [
-      "id", "appName", "type", "executorVersion", "protocolVersion",
-      "dispatchMode", "capabilities", "agentCapabilities", "groupName",
-      "tags", "description", "projectId", "tokenHash", "version",
-      "createdAt", "updatedAt",
+      "id",
+      "appName",
+      "type",
+      "executorVersion",
+      "protocolVersion",
+      "dispatchMode",
+      "capabilities",
+      "agentCapabilities",
+      "groupName",
+      "tags",
+      "description",
+      "projectId",
+      "tokenHash",
+      "version",
+      "createdAt",
+      "updatedAt",
     ]) {
       expect(patch).not.toHaveProperty(notOwned);
     }
     // 本次全部上报 ⇒ 白名单里的「可上报列」应悉数在 patch 里。
     for (const reported of [
-      "cpuUsage", "memUsage", "diskUsage", "networkLatency",
-      "runningTaskCount", "totalTaskCount", "failedTaskCount",
-      "maxConcurrentTasks", "deadLetterCount", "runningExecutionIds",
-      "interpreters", "deviceFingerprint", "executorStartupId",
+      "cpuUsage",
+      "memUsage",
+      "diskUsage",
+      "networkLatency",
+      "runningTaskCount",
+      "totalTaskCount",
+      "failedTaskCount",
+      "maxConcurrentTasks",
+      "deadLetterCount",
+      "runningExecutionIds",
+      "interpreters",
+      "deviceFingerprint",
+      "executorStartupId",
     ]) {
       expect(patch).toHaveProperty(reported);
     }
@@ -524,11 +564,25 @@ describe("R55-A1 · register：整行 save 不得把心跳拥有的指标列按�
     // 正向白名单（与 REGISTER_OWNED_COLUMNS 逐项对应）——任何"顺手带上的旧值"
     // 都写不进去。
     const owned = new Set([
-      "address", "status", "offlineReason", "lastHeartbeat", "type", "appName",
-      "executorVersion", "capabilities", "maxConcurrentTasks", "groupName",
-      "tags", "description", "dispatchMode", "protocolVersion",
-      "deviceFingerprint", "interpreters", "runningTaskCount",
-      "executorStartedAt", "executorStartupId",
+      "address",
+      "status",
+      "offlineReason",
+      "lastHeartbeat",
+      "type",
+      "appName",
+      "executorVersion",
+      "capabilities",
+      "maxConcurrentTasks",
+      "groupName",
+      "tags",
+      "description",
+      "dispatchMode",
+      "protocolVersion",
+      "deviceFingerprint",
+      "interpreters",
+      "runningTaskCount",
+      "executorStartedAt",
+      "executorStartupId",
     ]);
     for (const key of Object.keys(patch)) {
       expect(owned.has(key)).toBe(true);
@@ -551,10 +605,19 @@ describe("R55-A1 · register：整行 save 不得把心跳拥有的指标列按�
     // ③ 本次未上报的拥有列不进 patch —— 这正是整行 save 的第二个缺陷面：
     //    没上报 ≠ 把快照值写回去，而是本次对这一列没有意见。
     for (const notReported of [
-      "type", "capabilities", "maxConcurrentTasks", "groupName", "tags",
-      "description", "dispatchMode", "protocolVersion",
-      "interpreters", "runningTaskCount", "executorStartedAt",
-      "executorStartupId", "address",
+      "type",
+      "capabilities",
+      "maxConcurrentTasks",
+      "groupName",
+      "tags",
+      "description",
+      "dispatchMode",
+      "protocolVersion",
+      "interpreters",
+      "runningTaskCount",
+      "executorStartedAt",
+      "executorStartupId",
+      "address",
     ]) {
       expect(patch).not.toHaveProperty(notReported);
     }
@@ -593,4 +656,3 @@ describe("R55-A1 · register：整行 save 不得把心跳拥有的指标列按�
     expect(saved.groupName).toBe("prod");
   });
 });
-

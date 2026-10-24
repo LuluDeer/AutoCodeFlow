@@ -5,7 +5,7 @@ import type { AgentToolSpec } from "../tool-registry";
  * 只用到 name——description/parameters/tier 与 invoke 的分发无关。
  * 用真实类型（而非 as never）是为了将来 schema 改名时这里跟着编译红。
  */
-const spec = (name: string): AgentToolSpec => ({ name } as AgentToolSpec);
+const spec = (name: string): AgentToolSpec => ({ name }) as AgentToolSpec;
 
 /**
  * AgentApiClient 是「工具名 → 执行体」的路由表，也是推理循环里**唯一**
@@ -84,11 +84,9 @@ describe("AgentApiClient · 失败归因（异常转数据）", () => {
   it("执行体抛非 Error（字符串 / undefined）→ String(err) 归因，自身不崩", async () => {
     const client = new AgentApiClient();
     client.register("throw_string", async () => {
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw "boom-string";
     });
     client.register("throw_undefined", async () => {
-      // eslint-disable-next-line @typescript-eslint/only-throw-error
       throw undefined;
     });
 

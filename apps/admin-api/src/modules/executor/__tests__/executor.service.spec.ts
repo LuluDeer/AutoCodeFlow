@@ -8863,10 +8863,13 @@ describe("ExecutorService removal impact (B·1.1)", () => {
   describe("cleanupOfflineExecutors 保留天数（运行期可配）", () => {
     const runCleanupWithRetention = async (configValue: string | null) => {
       executorRepo.find.mockResolvedValue([]);
-      (service as unknown as { systemConfigService: { findOne: jest.Mock } })
-        .systemConfigService.findOne = jest
+      (
+        service as unknown as { systemConfigService: { findOne: jest.Mock } }
+      ).systemConfigService.findOne = jest
         .fn()
-        .mockResolvedValue(configValue === null ? null : { value: configValue });
+        .mockResolvedValue(
+          configValue === null ? null : { value: configValue },
+        );
       await service.cleanupOfflineExecutors();
       // 断言交给 repo.find 的 cutoff 谓词（LessThan 的 _value 是 Date）
       const calls = (executorRepo.find as jest.Mock).mock.calls as unknown[][];
@@ -8897,8 +8900,9 @@ describe("ExecutorService removal impact (B·1.1)", () => {
 
     it("读配置抛错 → 静默回落 7 天，清理不挂", async () => {
       executorRepo.find.mockResolvedValue([]);
-      (service as unknown as { systemConfigService: { findOne: jest.Mock } })
-        .systemConfigService.findOne = jest
+      (
+        service as unknown as { systemConfigService: { findOne: jest.Mock } }
+      ).systemConfigService.findOne = jest
         .fn()
         .mockRejectedValue(new Error("config db down"));
       await expect(service.cleanupOfflineExecutors()).resolves.toBeUndefined();
@@ -8907,7 +8911,8 @@ describe("ExecutorService removal impact (B·1.1)", () => {
         where: { lastHeartbeat: { _value: Date } };
       };
       const days = Math.round(
-        (Date.now() - findArg.where.lastHeartbeat._value.getTime()) / 86_400_000,
+        (Date.now() - findArg.where.lastHeartbeat._value.getTime()) /
+          86_400_000,
       );
       expect(days).toBe(7);
     });
