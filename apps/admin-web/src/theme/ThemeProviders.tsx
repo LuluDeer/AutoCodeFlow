@@ -1,3 +1,11 @@
+/* eslint-disable react-refresh/only-export-components --
+ * 理由：本文件默认导出 ThemedProviders 组件，同时导出 2 个非组件成员
+ * （buildAntdTheme / wireThemeSync）。
+ * 它们是全局主题接线的稳定导入面：main.tsx（渲染入口）消费 wireThemeSync，
+ * theme.store.test.tsx 消费 buildAntdTheme（tokens.ts 亦在注释中引用其名）。挪独立文件
+ * 会把「token 映射 / store 接线」与 ThemedProviders 割裂成三处；本文件非
+ * 热更迭代热点，disable 换最小改动面。（eslint warning 收敛第三弹决策：
+ * 高消费面 + 入口文件连锁 → disable 优先，同 MainLayout 先例） */
 import React, { useEffect, useMemo } from 'react';
 import { ConfigProvider, App, theme as antdTheme } from 'antd';
 import type { ThemeConfig } from 'antd';

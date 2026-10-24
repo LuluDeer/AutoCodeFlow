@@ -1,3 +1,13 @@
+/* eslint-disable react-refresh/only-export-components --
+ * 理由：本文件默认导出向导页组件，同时导出 3 个非组件成员
+ * （INSTALL_ENV_KEYS / findNewlyOnlineExecutor / classifyOneClickPlatform）。
+ * 它们是 3 个契约测试的直接导入面：install-wizard-env-vars.test.ts 与
+ * install-wizard-platform-branch.test.ts 从本文件导入做纯函数断言，
+ * install-wizard-network-mode.test.ts 还对本文件**源码文本**做契约断言
+ * （read(WIZARD) 匹配 INSTALL_ENV_KEYS.filter(...) 等）。挪独立文件需同步
+ * 改 3 个测试，且「键表 ↔ 执行器源码交叉校验」的上下文会被割裂；本文件
+ * 非热更迭代热点，disable 换最小改动面。（eslint warning 收敛第三弹决策：
+ * 测试锚定 + 源码契约断言 → disable 优先，同 MainLayout 先例） */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Steps,
   Card,

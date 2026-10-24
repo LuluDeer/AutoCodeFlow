@@ -199,6 +199,10 @@ export default function ApplicationListPage() {
     } finally {
       setLoading(false);
     }
+    // 「缺 t」是伪问题：i18next 的 t() 在调用期经模块级 i18n 实例动态解析
+    // 当前语言（R8 轮已实证语言切换无需重建回调），把 t 加进依赖只会无谓
+    // 重建 fetchApps 并触发整页重拉；本回调无真实外部依赖。刻意不列，勿补。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { fetchApps(); }, [fetchApps]);

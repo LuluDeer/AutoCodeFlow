@@ -893,7 +893,12 @@ export default function TaskFormPage() {
    */
   const interpreterFleet = useMemo(
     () => interpreterFleetAdvisory(executors, runtimeVersion),
-    // G-1：契约注入后需重算（内部 legacyDefault 兜底读的是可注入配置）
+    // G-1：契约注入后需重算（内部 legacyDefault 兜底读的是可注入配置）。
+    // lint 判 runtimeVersionRevision「多余」是误报：回调不直接读它的值，但
+    // interpreterFleetAdvisory 内部读的是 configureRuntimeVersionConfig 注入的
+    // 模块级可变配置（见上方 G-1 块注释）——revision bump 是触发重算的唯一
+    // 信号，删掉它契约注入后咨询结果会静默停留旧值。刻意保留，勿删。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [executors, runtimeVersion, runtimeVersionRevision],
   );
 
@@ -908,7 +913,12 @@ export default function TaskFormPage() {
       runtimeWatch === 'python' &&
       interpreterFleet === 'unsatisfied' &&
       runtimeVersionIsOfflineTier(runtimeVersion),
-    // G-1：同上——离线层判定读的是可注入配置的 onlineMin
+    // G-1：同上——离线层判定读的是可注入配置的 onlineMin。
+    // lint 判 runtimeVersionRevision「多余」是误报：runtimeVersionIsOfflineTier
+    // 内部读的是 configureRuntimeVersionConfig 注入的模块级可变配置（见上方
+    // G-1/G-2 块注释）——revision bump 是触发重算的唯一信号，删掉它契约注入
+    // 后离线层判定会静默停留旧值。刻意保留，勿删。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [runtimeWatch, interpreterFleet, runtimeVersion, runtimeVersionRevision],
   );
 

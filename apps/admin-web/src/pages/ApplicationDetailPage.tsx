@@ -101,6 +101,10 @@ function AiAnalysisTab({ appId }: { appId: string }) {
     } finally {
       setLoading(false);
     }
+    // 「缺 t」是伪问题：i18next 的 t() 在调用期经模块级 i18n 实例动态解析
+    // 当前语言（R8 轮已实证语言切换无需重建回调），把 t 加进依赖只会无谓
+    // 重建 runAnalysis；appId 才是真正的数据依赖。刻意不列，勿补。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId]);
 
   return (
@@ -882,10 +886,9 @@ const EVENT_TYPE_COLOR: Record<string, string> = {
   stuck_failed: 'magenta',
 };
 
-// eventsRangeToSinceUntil 已挪至 utils/timeRange（见顶部 import 注释）。这里
-// re-export：既有导入方（__tests__/application-deployment-events.test.tsx 从
-// 本文件导入该函数）不必跟着改；新消费方应直接 import utils/timeRange。
-export { eventsRangeToSinceUntil };
+// eventsRangeToSinceUntil 已挪至 utils/timeRange：页面内自用走顶部 import，
+// 旧的兼容 re-export 已删（原消费方仅 __tests__/application-deployment-events
+// .test.tsx，已改为直接 import utils/timeRange）。新消费方同样直接 import。
 
 /**
  * R4（§4.1A）：应用部署事件流表（不可变动作追溯）。独立加载/独立分页，

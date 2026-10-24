@@ -109,6 +109,11 @@ export default function ExecutorListPage() {
       }
       prevStatusMap.current[ex.id] = ex.status;
     });
+    // 「缺 t」是伪问题：i18next 的 t() 在调用期经模块级 i18n 实例动态解析
+    // 当前语言（R8 轮已实证语言切换无需重建回调），把 t 加进依赖会让每次
+    // 语言切换都重建 effect 并重放首轮基线（isFirstLoad 已翻 false 后的
+    // 重复通知风险）。刻意不列，勿补。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, notifApi]);
 
   const navigate = useNavigate();

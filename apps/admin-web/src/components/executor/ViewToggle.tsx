@@ -6,6 +6,14 @@
  *   autoflow-* 前缀同风格），读写失败静默降级为默认表格视图；
  * - Segmented 形态与 antd5 既有控件语言一致；size="small" 适配工具条行高。
  */
+/* eslint-disable react-refresh/only-export-components --
+ * 理由：本文件默认导出 ViewToggle 组件，同时导出 3 个非组件成员
+ * （ExecutorViewMode / readViewMode / writeViewMode）。
+ * readViewMode/writeViewMode 的消费方为 ExecutorListPage（页面组件）与
+ * executor-ui07.test.tsx（直接导入断言 localStorage 记忆语义）。挪独立
+ * 文件需同步改两处，并把「视图记忆键」与使用它的组件割裂；本文件非热更
+ * 迭代热点，disable 换最小改动面。（eslint warning 收敛第三弹决策：
+ * 消费方少但含页面连锁 → disable，同 MainLayout 先例） */
 import { Segmented } from 'antd';
 import { AppstoreOutlined, BarsOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
