@@ -49,6 +49,7 @@ export default {
   'err.APP_UPLOAD_PAYLOAD_MISSING': 'Missing the uploaded file payload (expected a multer diskStorage upload)',
   'err.APP_UPLOAD_SCANNER_UNAVAILABLE': 'Package rejected: the virus scanner is unavailable (fail-closed)',
   'err.APP_UPLOAD_ZIP_GUARD_REJECTED': 'The package was rejected by the zip-bomb guard ({{violation}})',
+  'err.APP_VERSION_NOT_FOUND': 'The specified version snapshot was not found',
   'err.APP_WEBHOOK_AUTH_FAILED': 'Webhook authentication failed',
   'err.APPLICATION_HAS_IN_FLIGHT_DEPLOYMENT': 'Application {{name}} still has an in-flight deployment{{detail}}. Cancel it or wait for a terminal state before deleting the application.',
   'err.APPLICATION_HAS_NO_OWNER': 'This application has no owner (legacy row); only administrators can modify it',

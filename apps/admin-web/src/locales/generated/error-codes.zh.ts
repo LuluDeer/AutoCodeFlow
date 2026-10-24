@@ -49,6 +49,7 @@ export default {
   'err.APP_UPLOAD_PAYLOAD_MISSING': '缺少上传文件载荷（应为 multer diskStorage 上传）',
   'err.APP_UPLOAD_SCANNER_UNAVAILABLE': '包被拒绝：病毒扫描不可用（故障关闭）',
   'err.APP_UPLOAD_ZIP_GUARD_REJECTED': '包被 zip-bomb 防护拒绝（{{violation}}）',
+  'err.APP_VERSION_NOT_FOUND': '指定的版本快照不存在',
   'err.APP_WEBHOOK_AUTH_FAILED': 'Webhook 鉴权失败',
   'err.APPLICATION_HAS_IN_FLIGHT_DEPLOYMENT': '应用 {{name}} 仍有进行中的部署{{detail}}。请先取消该部署或等待其进入终态，再删除应用。',
   'err.APPLICATION_HAS_NO_OWNER': '该应用没有归属人（历史数据行），只有管理员可以修改',
