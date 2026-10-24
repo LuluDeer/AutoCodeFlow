@@ -820,6 +820,9 @@ export function appsCommand(): Command {
     createdAt: string | null;
     synthetic?: boolean;
   }
+  // P8-R：被截版本「仍有设备保留」清单的展示上限——超出折叠为计数，与
+  // admin-web ApplicationDetailPage 的 RETAINED_BUT_TRUNCATED_MAX_TAGS（10）同口径。
+  const RETAINED_BUT_TRUNCATED_MAX = 10;
   cmd.command('releases <appId>')
     .description('List unified release history (version × latest deployment) for an application — the modern DEP-01 view; `app versions` is the legacy alias')
     .option('-p, --page <n>', 'Page number', '1')
@@ -829,13 +832,22 @@ export function appsCommand(): Command {
     .action(async (appId: string, opts: { page?: string; pageSize?: string; json?: boolean }) => {
       const spinner = ora('Fetching releases…').start();
       try {
-        // getReleases returns `{ data, total, page, pageSize }`
-        const data = await get<{ data?: AppRelease[]; list?: AppRelease[]; total?: number }>(
+        // getReleases returns `{ data, total, page, pageSize, truncated, retainedButTruncated }`
+        // （0a278da6：truncated=synthetic 聚合扫描到 5000 行上限被截；
+        // retainedButTruncated=被截但仍有设备保留的版本号，字母序。）
+        const data = await get<{
+          data?: AppRelease[];
+          list?: AppRelease[];
+          total?: number;
+          truncated?: boolean;
+          retainedButTruncated?: string[];
+        }>(
           `/applications/${appId}/releases`,
           { page: opts.page, pageSize: opts.pageSize },
         );
         spinner.stop();
         if (opts.json) {
+          // 信封原样透传（truncated / retainedButTruncated 一并直出，CI 自行判断）
           console.log(JSON.stringify(data));
           return;
         }
@@ -862,6 +874,27 @@ export function appsCommand(): Command {
         }
         console.log(table.toString());
         console.log(chalk.gray(`Total: ${data.total ?? list.length}  page ${opts.page}`));
+        // P8（对齐 admin-web Releases 截断告警条）：truncated=true = synthetic
+        // 聚合扫描到 5000 行上限被截——表格用户必须看到「被截」事实，否则会把
+        // 「看到的」当「全量」。--json 形态已在上方原样透传两字段，不走这里。
+        if (data.truncated) {
+          console.log(
+            chalk.yellow(
+              `⚠ 版本行数超上限被截断，仅显示前 ${list.length} 条；完整动作史见事件流（acf app releases --json 可拿 truncated/retainedButTruncated 原始字段）`,
+            ),
+          );
+          // P8-R：被截版本里「仍有设备保留」的版本号显式列出——徽标行不在
+          // 本页，不列出的话「设备还留着这版」的事实就从表格消失。超 10 个
+          // 折叠计数，与前端 RETAINED_BUT_TRUNCATED_MAX_TAGS 口径一致。
+          const retained = data.retainedButTruncated ?? [];
+          if (retained.length > 0) {
+            const shown = retained.slice(0, RETAINED_BUT_TRUNCATED_MAX).join(', ');
+            const more = retained.length > RETAINED_BUT_TRUNCATED_MAX
+              ? `（还有 ${retained.length - RETAINED_BUT_TRUNCATED_MAX} 个版本）`
+              : '';
+            console.log(chalk.yellow(`  被截断但仍有设备保留的版本: ${shown}${more}`));
+          }
+        }
       } catch (e: unknown) {
         emitError('Failed to list releases', e, { spinner });
       }

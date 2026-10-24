@@ -73,7 +73,7 @@
 | `app deploy <id>` | 部署到执行器（`--executor` 缺省=自动选最低负载）。**缺省 `-m scheduled`（仅部署、中台/定时触发）**；显式 `once`/`daemon` 会立刻启动入口脚本（CLI 发请求前黄色预警）；`deploy-only` 是 scheduled 的自解释别名 | `-e/--executor` `-m/--run-mode once\|daemon\|scheduled\|deploy-only` `--env '{"K":"v"}'` `--start-command <cmd>` |
 | `app deployments [appId]` | 部署列表 | `-p/-n` `--json` |
 | `app versions <id>` | 应用版本历史（过渡期 legacy alias） | `--json` |
-| `app releases <appId>` | **DEP-01 统一发布追溯**：版本 × 最近部署（状态/次数/执行器/runMode/触发方式） | `-p/-n`（上限 200）`--json` |
+| `app releases <appId>` | **DEP-01 统一发布追溯**：版本 × 最近部署（状态/次数/执行器/runMode/触发方式）；后端信封的 `truncated=true`（synthetic 聚合到 5000 行上限被截）时表格后打截断 warn，并列出「被截但仍有设备保留」的版本号（超 10 个折叠计数，与前端同口径） | `-p/-n`（上限 200）`--json`（信封原样透传 `truncated`/`retainedButTruncated`） |
 | `app upload <zip>` | multipart 上传应用包（按名称 upsert；`.zip` 校验在服务端） | `--name`（必填）`--runtime` `--version <v>`（**不被根 --version 劫持**）`--json` |
 | `app upgrade-all <appId>` | 全量/灰度滚动升级（受理≠完成，异步推进） | `--strategy all\|canary` `--percentage <n>` `--version <v>`（定向灰度/渐进回滚）；**`all`（缺省）需 `-y/--yes`**（动全量，非交互缺则码 2），canary 无门 |
 | `app set-current-version <appId> <versionId>` | **R1/4.2 回滚拆分·动作一**：只切中台当前版本指针，不碰任何设备（可对 stopped/离线版本执行；幂等） | `--json` |
