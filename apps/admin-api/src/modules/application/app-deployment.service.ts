@@ -28,6 +28,11 @@ import {
   RunMode,
 } from "./entities/app-deployment.entity";
 import { ApplicationVersion } from "./entities/application-version.entity";
+// R4（§4.1A）：不可变部署事件表（部署域动作追溯，纯旁路记录）。
+import {
+  AppDeploymentEvent,
+  AppDeploymentEventType,
+} from "./entities/app-deployment-event.entity";
 import { Application } from "./entities/application.entity";
 import { ApplicationService } from "./application.service";
 import { ExecutorService } from "../executor/executor.service";
@@ -135,6 +140,22 @@ export const RELEASES_SYNTHETIC_SCAN_PAGE_SIZE = 1000;
 export const RELEASES_SYNTHETIC_SCAN_MAX_ROWS = 5000;
 
 /**
+ * R4（§4.1A）：计入「该版本累计部署次数」的事件类型——deploy 新建行、复用行
+ * 重推、叠加升级各是一次真实下发动作。approval_approved **不**计入：审批 gated
+ * 应用的 deploy_created 已计一次，审批只是让那次动作真正发生（再计即双计）。
+ * stop/remove/stuck_failed 不是部署动作，不参与计数。
+ */
+const DEPLOY_COUNTED_EVENT_TYPES: string[] = [
+  AppDeploymentEventType.DEPLOY_CREATED,
+  AppDeploymentEventType.REDEPLOY_REUSED,
+  AppDeploymentEventType.UPGRADE,
+];
+
+/** R4（§4.1A）：/events 分页参数（默认 50、上限 200，对齐 /releases 口径）。 */
+export const DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE = 50;
+export const DEPLOYMENT_EVENTS_MAX_PAGE_SIZE = 200;
+
+/**
  * stop() 未能把停机信号送达执行器时，写进 statusMessage 的前缀。
  *
  * **跨端契约**：admin-web 按这个前缀判断该用 warning 还是 success 提示
@@ -229,6 +250,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // @Optional 仅为既有单测装配兼容，先例 eventBus/audit）。
     @Optional()
     private readonly leaderGate: LeaderGateService | null = null,
+    // R4（§4.1A）：部署事件写入面（@Optional 同上——存量 spec 未 provide 该
+    // token 时 → null → 事件静默不写、读面走 legacy 回退，主动作不受影响；
+    // 生产装配恒有：application.module forFeature 已注册）。
+    @Optional()
+    @InjectRepository(AppDeploymentEvent)
+    private readonly deploymentEventRepo: Repository<AppDeploymentEvent> | null = null,
   ) {}
 
   /** Build auth headers for executor requests. Must resolve through
@@ -341,6 +368,48 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // of deployment rows; bounds memory on internal list consumers.
       take: 5000,
     });
+  }
+
+  /**
+   * R4（§4.1A）：应用的部署事件流读面（GET /app-deployments/applications/
+   * :appId/events）——不可变动作追溯，分页默认 50、上限 200（对齐 /releases）。
+   * 裸四键信封 {data,total,page,pageSize}。事件行只含短事实（写入侧已保证
+   * detail 不带 env），无需掩码。
+   */
+  async getEventsByApp(
+    applicationId: string,
+    page = 1,
+    pageSize = DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE,
+  ): Promise<{
+    data: AppDeploymentEvent[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    // fail-honest：生产装配恒有该 repo（application.module forFeature）；
+    // 缺席是装配错误——静默回空页会把「没接线」伪装成「无事件」。
+    if (!this.deploymentEventRepo) {
+      throw new Error(
+        "AppDeploymentEvent repository is not wired " +
+          "(expected application.module TypeOrmModule.forFeature registration)",
+      );
+    }
+    const safePageSize = Math.min(
+      Math.max(
+        1,
+        Math.trunc(Number(pageSize)) || DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE,
+      ),
+      DEPLOYMENT_EVENTS_MAX_PAGE_SIZE,
+    );
+    const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
+    const [data, total] = await this.deploymentEventRepo.findAndCount({
+      where: { applicationId },
+      // id 兜底排序：同秒多事件（如批量扫死）下保证翻页顺序稳定。
+      order: { createdAt: "DESC", id: "DESC" },
+      skip: (safePage - 1) * safePageSize,
+      take: safePageSize,
+    });
+    return { data, total, page: safePage, pageSize: safePageSize };
   }
 
   /** Internal: raw lookup (unmasked env) for deploy/upgrade send paths —
@@ -507,12 +576,17 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     total: number;
     page: number;
     pageSize: number;
+    /** R4（§4.7）：synthetic 扫描到达 RELEASES_SYNTHETIC_SCAN_MAX_ROWS 上限
+     *  （聚合以已扫描部分为准）时 true——去静默截断。只增不改的响应字段。 */
+    truncated: boolean;
   }> {
     const safePageSize = Math.min(
       Math.max(1, Math.trunc(Number(pageSize)) || RELEASES_DEFAULT_PAGE_SIZE),
       RELEASES_MAX_PAGE_SIZE,
     );
     const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
+    // R4（§4.7）：synthetic 扫描只在第 1 页跑——第 2+ 页无扫描即无截断，false。
+    let truncated = false;
 
     const [versions, total] = await this.versionRepo.findAndCount({
       where: { applicationId },
@@ -623,6 +697,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           else seen.set(key, { latest: d, count: 1 });
         }
         if (rows.length < RELEASES_SYNTHETIC_SCAN_PAGE_SIZE) break;
+        // R4（§4.7）：本页扫满且已到总扫描上限——此前这里静默截断（§P8），
+        // 现在显式上报 truncated=true（响应字段只增）。
+        if (
+          skip + RELEASES_SYNTHETIC_SCAN_PAGE_SIZE >=
+          RELEASES_SYNTHETIC_SCAN_MAX_ROWS
+        ) {
+          truncated = true;
+        }
       }
       const snapshotVersions = new Set(
         versions.length === 0
@@ -680,7 +762,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         }),
     );
 
-    return { data, total, page: safePage, pageSize: safePageSize };
+    return {
+      data,
+      total,
+      page: safePage,
+      pageSize: safePageSize,
+      truncated,
+    };
   }
 
   /** DEP-01：从部署行的持久化信号推导触发方式（无 trigger 列，零 schema 变更）。
@@ -1144,6 +1232,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         }
         throw err;
       }
+      // R4（§4.1A）：审批请求行也是一次「部署动作的发起」——此刻落 deploy_created
+      // 事件（approvalRequired=true 进 detail）；approve 时不另计部署事件（避免
+      // 双计，见 DEPLOY_COUNTED_EVENT_TYPES）。版本事实 = 动作时的 app.version。
+      await this.recordDeploymentEvent({
+        applicationId,
+        deploymentId: savedRequest.id,
+        eventType: AppDeploymentEventType.DEPLOY_CREATED,
+        executorId: executor.id,
+        executorAddress: executor.address,
+        deployedVersion: app.version ?? null,
+        triggerType: trigger?.triggerType ?? null,
+        operator: trigger?.operator ?? null,
+        detail: { approvalRequired: true, runMode: savedRequest.runMode },
+      });
       // QA1: HTTP response is a read surface — return masked.
       return this.maskDeploymentForRead(savedRequest);
     }
@@ -1219,6 +1321,19 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       this.logger.log(
         `Redeploy reuses existing deployment ${reused.id} for ${app.name} on ${executor.address}`,
       );
+      // R4（§4.1A）：行复用重推不产生新部署行——事件表是这次动作的唯一痕迹，
+      // deployCount 聚合（redeploy_reused 计入）依赖它。
+      await this.recordDeploymentEvent({
+        applicationId,
+        deploymentId: reused.id,
+        eventType: AppDeploymentEventType.REDEPLOY_REUSED,
+        executorId: reused.executorId,
+        executorAddress: reused.executorAddress,
+        deployedVersion: app.version ?? null,
+        triggerType: trigger?.triggerType ?? null,
+        operator: trigger?.operator ?? null,
+        detail: { runMode: reused.runMode },
+      });
       this.pushDeployToExecutor(reused, app).catch((err) => {
         this.logger.error(`Failed to push deploy to executor: ${err.message}`);
       });
@@ -1263,6 +1378,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // Asynchronously push deploy command to executor
     this.pushDeployToExecutor(saved, app).catch((err) => {
       this.logger.error(`Failed to push deploy to executor: ${err.message}`);
+    });
+
+    // R4（§4.1A）：新建行落 deploy_created 事件（版本事实 = 动作时的
+    // app.version；行上的 deployedVersion 要等推送/心跳推进才置位）。
+    await this.recordDeploymentEvent({
+      applicationId,
+      deploymentId: saved.id,
+      eventType: AppDeploymentEventType.DEPLOY_CREATED,
+      executorId: saved.executorId,
+      executorAddress: saved.executorAddress,
+      deployedVersion: app.version ?? null,
+      triggerType: trigger?.triggerType ?? null,
+      operator: trigger?.operator ?? null,
+      detail: { runMode: saved.runMode },
     });
 
     // QA1: HTTP response is a read surface — return masked.
@@ -1325,6 +1454,19 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       this.logger.error(`Approved deploy push failed: ${err.message}`);
     });
     await this.writeApprovalAudit("deployment.approve", deployment, actor);
+    // R4（§4.1A）：审批决策进事件流（不计入 deployCount——请求行的
+    // deploy_created 已计，见 DEPLOY_COUNTED_EVENT_TYPES）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.APPROVAL_APPROVED,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: app.version ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: deployment.operator ?? null,
+      detail: { reason: reason ?? null },
+    });
     return this.maskDeploymentForRead(deployment);
   }
 
@@ -1379,6 +1521,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       actor,
       reason,
     );
+    // R4（§4.1A）：审批拒绝进事件流（reason 是决策的短事实）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.APPROVAL_REJECTED,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: deployment.deployedVersion ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: actor.name ?? null,
+      detail: { reason: reason ?? null },
+    });
     return this.maskDeploymentForRead(deployment);
   }
 
@@ -1429,6 +1583,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deployment.statusMessage = `Deployment request cancelled by ${actor.name ?? "unknown"}`;
     deployment.approvalMeta = nextMeta;
     await this.writeApprovalAudit("deployment.cancel", deployment, actor);
+    // R4（§4.1A）：提交者撤回进事件流。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.APPROVAL_CANCELLED,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: deployment.deployedVersion ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: actor.name ?? null,
+      detail: null,
+    });
     return this.maskDeploymentForRead(deployment);
   }
 
@@ -1526,6 +1692,51 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   }
 
   /**
+   * R4（§4.1A）：部署事件落库（append-only 不可变事件表，纯旁路记录）。
+   *
+   * 事务策略：与部署行同库但**不共事务**（best-effort + warn）。部署域主链
+   * （deploy/approve/upgrade/stop…）本身大多无显式事务边界，事件 insert 与
+   * 主链写操作分属独立语句——事件表抖动绝不能拖挂主动作（部署推送已在执行器
+   * 侧生效，因事件失败回滚主链反而制造「执行器有进程、中台无记录」的分裂）。
+   * fail-open 口径与 writeApprovalAudit 相同。
+   *
+   * detail 只放标量短事实（reason/runMode/deletedStatus 等），**绝不放 env**：
+   * 事件表没有掩码读面，密钥进事件即泄漏（QA1 同源约束）。
+   */
+  private async recordDeploymentEvent(input: {
+    applicationId: string;
+    deploymentId: string | null;
+    eventType: AppDeploymentEventType;
+    executorId?: string | null;
+    executorAddress?: string | null;
+    deployedVersion?: string | null;
+    triggerType?: string | null;
+    operator?: string | null;
+    detail?: Record<string, unknown> | null;
+  }): Promise<void> {
+    if (!this.deploymentEventRepo) return; // @Optional 装配缺席（存量单测）
+    try {
+      await this.deploymentEventRepo.insert({
+        applicationId: input.applicationId,
+        deploymentId: input.deploymentId,
+        executorId: input.executorId ?? null,
+        executorAddress: input.executorAddress ?? null,
+        eventType: input.eventType,
+        deployedVersion: input.deployedVersion ?? null,
+        triggerType: input.triggerType ?? null,
+        operator: input.operator ?? null,
+        detail: input.detail ?? null,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Deployment event write failed (${input.eventType}, deployment=` +
+          `${input.deploymentId ?? "n/a"}): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  /**
    * Trigger upgrade on an existing deployment (git pull + restart).
    */
   async upgrade(
@@ -1565,6 +1776,22 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
     // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
     await this.saveWithOptimisticLock(deployment);
+
+    // R4（§4.1A）：叠加升级是行原位覆盖（无新行）——事件表是这次动作的唯一
+    // 痕迹；R1 deploy-version / 旧 rollback alias / upgrade-all 全部经本方法，
+    // 单写入点全覆盖。版本事实 = 本次推送目标 app.version（行上 deployedVersion
+    // 要等心跳确认才推进）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.UPGRADE,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: app.version ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: deployment.operator ?? null,
+      detail: null,
+    });
 
     this.pushDeployToExecutor(deployment, app, true).catch((err) => {
       this.logger.error(`Upgrade push failed: ${err.message}`);
@@ -1653,6 +1880,23 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const saved = await this.saveWithOptimisticLock(deployment);
     // D3-B-P2-1: stop 执行门落证（审批门已有痕，执行门此前无痕）。
     await this.writeTransitionAudit("deployment.stop", saved);
+    // R4（§4.1A）：停机动作进事件流；送达与否从 STOP_NOT_DELIVERED_PREFIX
+    // 推导（与前端同一条跨端契约），失败保留「信号没送到」的事实。
+    await this.recordDeploymentEvent({
+      applicationId: saved.applicationId,
+      deploymentId: saved.id,
+      eventType: AppDeploymentEventType.STOP,
+      executorId: saved.executorId,
+      executorAddress: saved.executorAddress,
+      deployedVersion: saved.deployedVersion ?? null,
+      triggerType: saved.triggerType ?? null,
+      operator: saved.operator ?? null,
+      detail: {
+        stopSignalDelivered: !(saved.statusMessage ?? "").startsWith(
+          STOP_NOT_DELIVERED_PREFIX,
+        ),
+      },
+    });
     // QA1: mask the HTTP return; the raw entity was already persisted.
     return this.maskDeploymentForRead(saved);
   }
@@ -1717,6 +1961,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deletedStatus: deployment.status,
       deployedVersion: deployment.deployedVersion,
       deletedBy: actor?.username ?? null,
+    });
+
+    // R4（§4.1A）：事件无外键、比行活得久——删除前的最后一条事实，同样必须
+    // 在 delete 之前落（事件表是「这台设备曾部署过」的唯一幸存痕迹）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.REMOVE,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: deployment.deployedVersion ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: actor?.username ?? null,
+      detail: { deletedStatus: deployment.status },
     });
 
     await this.repo.delete({ id: deploymentId });
@@ -2272,9 +2530,54 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     await this.versionRepo.save(version);
   }
 
+  /**
+   * R4（§4.7 / §4.1A）：版本 deployCount 改为事件表 DB 侧 GROUP BY 聚合。
+   *
+   * 切换依据：行复用模型下「同一版本部署过几次」在 app_deployments 上不可
+   * 数（原地覆盖只留现状）——事件表（deploy_created/redeploy_reused/upgrade）
+   * 才是动作的持久载体；DB 侧 GROUP BY 也让该读面摆脱 findAllByApp 的
+   * take:5000 内存闸（超限静默失真是 §P8 的问题本体）。
+   *
+   * legacy 回退：该应用**一条事件都没有**（迁移 1790000000062 之前的历史
+   * 应用）时，事件聚合恒为空——回退旧的 findAllByApp 行计数保住历史数字。
+   * 一旦应用产生过任一事件即切事件聚合：此后新动作用事件计数，旧动作不在
+   * 事件表里（混合窗口期计数 = 迁移后的动作数），这是有意的切换语义——
+   * 「半事件半行数」的混加无法自洽（行数随行复用漂移），一刀切换可预期。
+   *
+   * deploymentEventRepo 为 null（@Optional 存量单测装配）同走回退。
+   */
   private async buildDeployCountMap(
     applicationId: string,
   ): Promise<Map<string, number>> {
+    if (this.deploymentEventRepo) {
+      const eventCount = await this.deploymentEventRepo.count({
+        where: { applicationId },
+      });
+      if (eventCount > 0) {
+        const rows: Array<Record<string, unknown>> =
+          await this.deploymentEventRepo
+            .createQueryBuilder("e")
+            .select("e.deployedVersion", "version")
+            .addSelect("COUNT(*)", "count")
+            .where("e.applicationId = :applicationId", { applicationId })
+            .andWhere("e.eventType IN (:...types)", {
+              types: DEPLOY_COUNTED_EVENT_TYPES,
+            })
+            .andWhere("e.deployedVersion IS NOT NULL")
+            .groupBy("e.deployedVersion")
+            .getRawMany();
+        const countMap = new Map<string, number>();
+        for (const row of rows) {
+          // pg 驱动下 COUNT(*) 回 bigint 字符串（findStats 同款收口）。
+          const n = Number(row.count);
+          if (typeof row.version === "string" && Number.isFinite(n) && n > 0) {
+            countMap.set(row.version, n);
+          }
+        }
+        return countMap;
+      }
+    }
+    // legacy 回退：事件表空（或测试装配缺席）→ 既有行计数语义。
     const deployments = await this.findAllByApp(applicationId);
     const countMap = new Map<string, number>();
     for (const d of deployments) {
@@ -2532,8 +2835,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     for (const d of sweepable) {
       if (!affectedIds.has(d.id)) continue; // A-9: 未被本次 UPDATE 命中（并发已推进）→ 不动快照
+      const previousStatus = d.status; // R4：扫死前的在途状态进事件 detail
       d.status = DeploymentStatus.FAILED;
       await this.markVersionSnapshotStatus(d, "failed");
+      // R4（§4.1A）：系统侧转 FAILED 也进事件流（operator=null——机器路径）。
+      await this.recordDeploymentEvent({
+        applicationId: d.applicationId,
+        deploymentId: d.id,
+        eventType: AppDeploymentEventType.STUCK_FAILED,
+        executorId: d.executorId,
+        executorAddress: d.executorAddress,
+        deployedVersion: d.deployedVersion ?? null,
+        triggerType: d.triggerType ?? null,
+        operator: null,
+        detail: { previousStatus },
+      });
       this.logger.warn(
         `Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}, status=${d.status}`,
       );

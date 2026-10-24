@@ -3097,6 +3097,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/app-deployments/applications/{appId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出应用的部署事件流（不可变动作追溯）
+         * @description R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥
+         */
+        get: operations["AppDeploymentController_listApplicationEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/app-deployments/{id}": {
         parameters: {
             query?: never;
@@ -6843,6 +6863,8 @@ export interface components {
             page: number;
             /** @description 默认 50，上限 200 */
             pageSize: number;
+            /** @description R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改 */
+            truncated: boolean;
         };
         RolloutStrategyDto: Record<string, never>;
         UpgradeAllDto: {
@@ -7097,6 +7119,43 @@ export interface components {
             failed: number;
             /** @description 最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null */
             lastDeployedAt: string | null;
+        };
+        AppDeploymentEventRowDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            applicationId: string;
+            /**
+             * Format: uuid
+             * @description 触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）
+             */
+            deploymentId: string | null;
+            /** Format: uuid */
+            executorId: string | null;
+            executorAddress: string | null;
+            /** @enum {string} */
+            eventType: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
+            /** @description 动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion） */
+            deployedVersion: string | null;
+            /**
+             * @description 动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null
+             * @enum {string|null}
+             */
+            triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
+            /** @description 操作人（JWT 用户名）；系统路径为 null */
+            operator: string | null;
+            /** @description 短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥） */
+            detail?: {
+                [key: string]: unknown;
+            } | null;
+            createdAt: string;
+        };
+        AppDeploymentEventsPageDto: {
+            data: components["schemas"]["AppDeploymentEventRowDto"][];
+            total: number;
+            page: number;
+            /** @description 默认 50，上限 200 */
+            pageSize: number;
         };
         CreateDeploymentDto: {
             /** @description 执行器 ID（留空则自动选择负载最低的在线执行器） */
@@ -12443,6 +12502,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppDeploymentStatsDto"][];
+                };
+            };
+        };
+    };
+    AppDeploymentController_listApplicationEvents: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+            };
+            header?: never;
+            path: {
+                appId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 裸四键信封（data/total/page/pageSize），同 /releases 形态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentEventsPageDto"];
                 };
             };
         };

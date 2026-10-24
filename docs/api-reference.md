@@ -305,6 +305,7 @@ Content-Type: application/json
 |------|------|:--------:|------|
 | GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 与 `approvalStatus`（DEP-04：pending_approval/approved/rejected/cancelled）过滤（`page` 默认 1，`pageSize` 默认 20、最大 100）——DEP-01 后作为过渡期 alias 保留，「按版本聚合部署信息」的统一视图用 `/applications/:id/releases` |
 | GET | `/app-deployments/:id` | 是 | 获取部署详情 |
+| GET | `/app-deployments/applications/:appId/events` | 是 | R4（部署模型评审 §4.1A）：应用的不可变部署事件流（append-only）。每个部署域写动作（deploy 新建/复用、审批三动作、upgrade、stop、remove、卡死扫死）一行短事实快照；分页 `page` 默认 1，`pageSize` 默认 50、上限 200，按 `createdAt` 倒序。事件无外键、比部署行活得久（删除部署行后事件保留）。读面登录即可（与部署列表一致） |
 | POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器。**DEP-04：应用开启 `approvalRequired` 时本端点不派发**——冻结为 `approvalStatus=pending_approval` 的行（响应即带该状态），待审批通过后才推送执行器；待审批行占用 in-flight 名额（同应用至多一个待审批/在途部署，冲突 409） |
 | POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade）。DEP-04：待审批行返回 409（未派发，出口仅审批三动作） |
 | POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署。DEP-04：待审批行返回 409 |
@@ -344,7 +345,9 @@ Content-Type: application/json
 
 **目标**：合并 `application_versions`（版本号/包地址/快照）与 `app_deployments`（部署时间/状态/执行器）两个语义面，**一行 = 一次版本发布**，「这次部署用了哪个包」一屏完成。纯只读聚合视图，**零 schema 变更**（不占迁移时间戳）。
 
-**响应** `{ data: AppReleaseRow[], total, page, pageSize }`——`total` 为版本快照表行数（synthetic 部署聚合行不并入，属过渡期语义），`pageSize` 默认 50、**上限 200**（超出部分截断，防全表）。排序键 = 该版本最近一次部署完成时刻（无部署则为版本行创建时刻），降序。
+**响应** `{ data: AppReleaseRow[], total, page, pageSize, truncated }`——`total` 为版本快照表行数（synthetic 部署聚合行不并入，属过渡期语义），`pageSize` 默认 50、**上限 200**（超出部分截断，防全表）。排序键 = 该版本最近一次部署完成时刻（无部署则为版本行创建时刻），降序。
+
+- `truncated`（R4，部署模型评审 §4.7，2026-10-24）：**只增不改**的新字段。第 1 页 synthetic 聚合扫描到达 5000 行上限（`RELEASES_SYNTHETIC_SCAN_MAX_ROWS`）时 `true`——聚合以已扫描部分为准，可能不完整（此前静默截断，§P8）；未到上限或第 2 页起恒 `false`（synthetic 扫描只在第 1 页运行）。
 
 | 字段 | 来源 | 说明 |
 |------|------|------|
@@ -1259,7 +1262,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 233 个操作，覆盖 199 个路径。
+共 236 个操作，覆盖 202 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1295,6 +1298,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/app-deployments/{id}/stop` | 停止运行中的部署 |
 | POST | `/app-deployments/{id}/upgrade` | 触发叠加升级 |
 | POST | `/app-deployments/applications/{appId}/deploy` | 将应用分配到执行器 |
+| GET | `/app-deployments/applications/{appId}/events` | 列出应用的部署事件流（不可变动作追溯） |
 | GET | `/app-deployments/approvals/pending` | 列出待审批的部署 |
 | POST | `/app-deployments/heartbeat` | 执行器上报应用运行状态（需要 X-Executor-Token） |
 | GET | `/app-deployments/stats` | 各应用的部署统计（聚合） |
@@ -1304,13 +1308,13 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/applications/{id}` | 获取应用详情 |
 | PUT | `/applications/{id}` | 更新应用 |
 | POST | `/applications/{id}/analyze` | 应用健康度 AI 分析 |
+| POST | `/applications/{id}/deploy-version` | 按版本快照恢复应用字段后下发到设备（可按执行器点名） |
 | GET | `/applications/{id}/releases` | 列出应用的统一发布记录（版本 × 最新部署） |
 | GET | `/applications/{id}/removal-impact` | 预览删除该应用会破坏什么 |
-| POST | `/applications/{id}/rollback/{deploymentId}` | 将应用回滚到历史版本（deprecated alias，下一版本删除） |
-| POST | `/applications/{id}/set-current-version` | 将应用当前字段设为指定版本快照（不动部署/设备，R1 §4.2） |
-| POST | `/applications/{id}/deploy-version` | 按版本快照恢复应用字段后下发到设备（可按执行器点名，R1 §4.2） |
+| POST | `/applications/{id}/rollback/{deploymentId}` | 将应用回滚到历史版本（deprecated alias） |
+| POST | `/applications/{id}/set-current-version` | 将应用当前字段设为指定版本快照（不动部署/设备） |
 | POST | `/applications/{id}/sync-tasks` | 从 manifest.json 同步任务注册 |
-| POST | `/applications/{id}/upgrade-all` | 触发该应用全部已部署设备升级到最新版本（覆盖面分组回显，R2 §4.4） |
+| POST | `/applications/{id}/upgrade-all` | 触发该应用全部已部署设备升级到最新版本 |
 | GET | `/applications/{id}/versions` | 获取应用版本历史 |
 | POST | `/applications/upload` | 上传应用包（zip） |
 | POST | `/applications/webhook` | 版本发布 Webhook |

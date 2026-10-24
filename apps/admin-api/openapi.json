@@ -9016,6 +9016,67 @@
         }
       }
     },
+    "/app-deployments/applications/{appId}/events": {
+      "get": {
+        "description": "R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥",
+        "operationId": "AppDeploymentController_listApplicationEvents",
+        "parameters": [
+          {
+            "name": "appId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 200,
+              "default": 50,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "裸四键信封（data/total/page/pageSize），同 /releases 形态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentEventsPageDto"
+                }
+              }
+            },
+            "x-i18n-en": "Bare four-key envelope (data/total/page/pageSize), same shape as /releases"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "列出应用的部署事件流（不可变动作追溯）",
+        "tags": [
+          "App Deployment"
+        ],
+        "x-i18n-en": {
+          "summary": "List an application's deployment event stream (immutable action trail)",
+          "description": "R4 (deployment model review 2026-10-23 4.1A): immutable deployment event stream (append-only). Each deployment-domain write action produces one short fact snapshot row (event type / version fact / operator); events have no UPDATE/DELETE path, and remove events outlive the deployment row (the event table has no foreign key to it). Paginated, default 50 / max 200, ordered by createdAt descending. The write side guarantees event detail never contains env secrets"
+        }
+      }
+    },
     "/app-deployments/{id}": {
       "get": {
         "operationId": "AppDeploymentController_findById",
@@ -20002,13 +20063,19 @@
             "type": "number",
             "description": "默认 50，上限 200",
             "x-i18n-en": "Default 50, maximum 200"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改",
+            "x-i18n-en": "R4 (4.7): true when the synthetic aggregation scan hits the 5000-row cap (aggregation reflects only the scanned portion and may be incomplete); false when under the cap or on pages other than page 1. Response fields are additive-only"
           }
         },
         "required": [
           "data",
           "total",
           "page",
-          "pageSize"
+          "pageSize",
+          "truncated"
         ]
       },
       "RolloutStrategyDto": {
@@ -20767,6 +20834,123 @@
           "running",
           "failed",
           "lastDeployedAt"
+        ]
+      },
+      "AppDeploymentEventRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "applicationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deploymentId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）",
+            "x-i18n-en": "Deployment row id that triggered this event; the row may already have been deleted (events carry no foreign key and outlive the row)"
+          },
+          "executorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "executorAddress": {
+            "type": "string",
+            "nullable": true
+          },
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "deploy_created",
+              "redeploy_reused",
+              "approval_approved",
+              "approval_rejected",
+              "approval_cancelled",
+              "upgrade",
+              "stop",
+              "remove",
+              "stuck_failed"
+            ]
+          },
+          "deployedVersion": {
+            "type": "string",
+            "nullable": true,
+            "description": "动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion）",
+            "x-i18n-en": "Version fact at the time of the action (deploy/upgrade records app.version at action time; stop/remove/stuck records the row's deployedVersion)"
+          },
+          "triggerType": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "upgrade",
+              "rollback",
+              "approval"
+            ],
+            "description": "动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null",
+            "x-i18n-en": "Action semantics (DeploymentTriggerType); null for machine-driven paths (e.g. the stuck sweep)"
+          },
+          "operator": {
+            "type": "string",
+            "nullable": true,
+            "description": "操作人（JWT 用户名）；系统路径为 null",
+            "x-i18n-en": "Operator (JWT username); null for system-driven paths"
+          },
+          "detail": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥）",
+            "x-i18n-en": "Short fact snapshot (scalars such as reason/runMode/deletedStatus; the write side guarantees it never contains env secrets)"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "applicationId",
+          "deploymentId",
+          "executorId",
+          "executorAddress",
+          "eventType",
+          "deployedVersion",
+          "triggerType",
+          "operator",
+          "createdAt"
+        ]
+      },
+      "AppDeploymentEventsPageDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppDeploymentEventRowDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "pageSize": {
+            "type": "number",
+            "description": "默认 50，上限 200",
+            "x-i18n-en": "Default 50, maximum 200"
+          }
+        },
+        "required": [
+          "data",
+          "total",
+          "page",
+          "pageSize"
         ]
       },
       "CreateDeploymentDto": {

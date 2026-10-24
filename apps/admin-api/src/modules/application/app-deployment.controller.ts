@@ -31,12 +31,14 @@ import {
   AppDeploymentStatsDto,
   DeploymentRemoveResponseDto,
   PaginatedAppDeploymentsDto,
+  AppDeploymentEventsPageDto,
 } from "./dto/app-deployment-response.dto";
 import { ApiHeader } from "@nestjs/swagger";
 import {
   CreateDeploymentDto,
   DeploymentHeartbeatDto,
   ApprovalActionDto,
+  ListDeploymentEventsQueryDto,
 } from "./dto/app-deployment.dto";
 import { DeploymentApprovalStatus } from "./entities/app-deployment.entity";
 import { IsOptional, IsUUID, IsInt, Min, Max, IsEnum } from "class-validator";
@@ -125,6 +127,37 @@ export class AppDeploymentController {
   @ApiOkResponse({ type: [AppDeploymentStatsDto] })
   findStats() {
     return this.svc.findStats();
+  }
+
+  /**
+   * R4（部署模型评审 §4.1A）：应用的不可变部署事件流（append-only 动作
+   * 追溯——deploy 新建/复用、审批三动作、upgrade、stop、remove、卡死扫死）。
+   *
+   * 路由顺序约束：同 stats——必须声明在 `@Get(":id")` 之前，否则
+   * "applications" 会被 `:id` 捕获 → ParseUUIDPipe 400。
+   *
+   * 读面、无 @Roles（与 findAll/stats 一致，登录即可）；分页默认 50、上限 200
+   * （对齐 /applications/:id/releases），不额外挂 @Throttle（走全局档）。
+   */
+  @Get("applications/:appId/events")
+  @ApiOperation({
+    description:
+      "R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥",
+    summary: "列出应用的部署事件流（不可变动作追溯）",
+  })
+  @ApiOkResponse({
+    type: AppDeploymentEventsPageDto,
+    description: "裸四键信封（data/total/page/pageSize），同 /releases 形态",
+  })
+  listApplicationEvents(
+    @Param("appId") appId: string,
+    @Query() query: ListDeploymentEventsQueryDto,
+  ) {
+    return this.svc.getEventsByApp(
+      appId,
+      query.page ?? 1,
+      query.pageSize ?? 50,
+    );
   }
 
   @Get(":id")

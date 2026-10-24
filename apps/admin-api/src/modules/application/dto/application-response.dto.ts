@@ -288,7 +288,7 @@ export class AppReleaseRowDto {
   operatorMissingReason: string;
 }
 
-/** GET /applications/:id/releases 信封（裸四键，非 paginate() 双键形态）。 */
+/** GET /applications/:id/releases 信封（裸四键 + truncated，非 paginate() 双键形态）。 */
 export class AppReleasesResponseDto {
   @ApiProperty({ type: [AppReleaseRowDto] })
   data: AppReleaseRowDto[];
@@ -301,6 +301,12 @@ export class AppReleasesResponseDto {
 
   @ApiProperty({ description: "默认 50，上限 200" })
   pageSize: number;
+
+  @ApiProperty({
+    description:
+      "R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改",
+  })
+  truncated: boolean;
 }
 
 /** POST /applications/:id/sync-tasks —— manifest.json 任务注册回执。 */

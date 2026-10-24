@@ -458,3 +458,92 @@ export class DeployVersionResponseDto {
   })
   updatedApp: ApplicationResponseDto;
 }
+
+/**
+ * R4（2026-10-24 部署模型评审 §4.1A）：GET /app-deployments/applications/
+ * :appId/events —— 不可变部署事件流（append-only，动作追溯）。事件行由
+ * 写入侧保证只含短事实（detail 不带 env），读面无需掩码。
+ */
+export class AppDeploymentEventRowDto {
+  @ApiProperty({ format: "uuid" })
+  id: string;
+
+  @ApiProperty({ format: "uuid" })
+  applicationId: string;
+
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description:
+      "触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）",
+  })
+  deploymentId: string | null;
+
+  @ApiProperty({ nullable: true, format: "uuid" })
+  executorId: string | null;
+
+  @ApiProperty({ nullable: true })
+  executorAddress: string | null;
+
+  @ApiProperty({
+    enum: [
+      "deploy_created",
+      "redeploy_reused",
+      "approval_approved",
+      "approval_rejected",
+      "approval_cancelled",
+      "upgrade",
+      "stop",
+      "remove",
+      "stuck_failed",
+    ],
+  })
+  eventType: string;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      "动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion）",
+  })
+  deployedVersion: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    enum: ["manual", "upgrade", "rollback", "approval"],
+    description:
+      "动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null",
+  })
+  triggerType: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: "操作人（JWT 用户名）；系统路径为 null",
+  })
+  operator: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    additionalProperties: true,
+    description:
+      "短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥）",
+  })
+  detail?: Record<string, unknown> | null;
+
+  @ApiProperty()
+  createdAt: string;
+}
+
+/** GET /app-deployments/applications/:appId/events 信封（裸四键，同 /releases）。 */
+export class AppDeploymentEventsPageDto {
+  @ApiProperty({ type: [AppDeploymentEventRowDto] })
+  data: AppDeploymentEventRowDto[];
+
+  @ApiProperty()
+  total: number;
+
+  @ApiProperty()
+  page: number;
+
+  @ApiProperty({ description: "默认 50，上限 200" })
+  pageSize: number;
+}

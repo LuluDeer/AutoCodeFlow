@@ -6,11 +6,14 @@ import {
   IsUUID,
   IsInt,
   MaxLength,
+  Min,
+  Max,
   Validate,
   ValidatorConstraint,
   ValidatorConstraintInterface,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { Type } from "class-transformer";
 import { RunMode } from "../entities/app-deployment.entity";
 
 /**
@@ -134,4 +137,25 @@ export class DeploymentHeartbeatDto {
   @MaxLength(2000)
   @IsOptional()
   message?: string;
+}
+
+/**
+ * R4（部署模型评审 §4.1A）：GET /app-deployments/applications/:appId/events
+ * 查询参数（默认 50，上限 200，口径与 ListReleasesQueryDto 一致）。
+ */
+export class ListDeploymentEventsQueryDto {
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 50, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  pageSize?: number = 50;
 }
