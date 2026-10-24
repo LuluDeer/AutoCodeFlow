@@ -590,5 +590,14 @@
 #     per-executor 令牌校验通过才采纳（共享令牌不采纳）——桌面端内嵌执行器若漏打，
 #     这类桌面机仍会被 fail-closed 拒成 404（拿不到任务与命令）。
 #   回填环境：本机 Linux（node 24 / ncc 0.45.0），bundle 4309796 bytes / 47 个输入文件。
-source-digest: de391139398d9df48128e68445318ec7ab7467748ff469a234d7a171b073faef
-4f1dcedd45ff9bdd1c94182782cfc131392ca52afc65dac22d2c0a662e4bdbed  index.js
+# 2026-10-24（5c / 部署模型评审 §9.7：releases 两段化 releases/<version>/<deploymentId>/）：
+#   · deploy.ts：buildReleaseKey 两段形态（'/' 分隔）；finalReleaseDir/extractDir 同步；
+#     readCurrentTarget 归一到相对 releases/ 的 releaseKey（深度 +1 兼容旧单段）；
+#     resolveReleasePaths 唯一后缀追加在尾段；restoreCurrentRelease 解析相对键为绝对目标。
+#   · pruneOldReleases 改版本组语义：KEEP_RELEASES=5 → KEEP_VERSIONS=3（env
+#     EXECUTOR_KEEP_VERSIONS 可配，钳 [1,50]），current 组豁免，旧单段目录同批淘汰（不搬）。
+#   · deployed-apps.ts 双布局识别（组目录名即版本；旧单段后缀反解），版本归一无重复；
+#     interpreters.ts 部署 venv 扫描下钻一层覆盖两段布局。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），bundle 8127kB / 50 个输入文件。
+source-digest: d83f7c0fcaae2d76661bbf479b2f878d9035a215c2722c1bccfa120c1ee75145
+ac9e4cd2ccf8400d12c9f22c0b4afd5b03b32a13b032db81ef858f66d2337524  index.js

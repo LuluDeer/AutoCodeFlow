@@ -133,6 +133,18 @@ const LOOSE_TAIL_RE = /^(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)-([0-9a-f]{8,})$/i;
  */
 const RELEASE_SUFFIX_RE = /-[0-9a-z]+-[0-9a-z]+-[0-9a-z]+$/;
 
+/**
+ * 5c 两段 releaseKey 尾段的唯一后缀（**严格形状**）：
+ * `-<ts36>-<pid36>-<seq36>`，ts36（Date.now 的 base36，当前纪元 8 位）≥6，
+ * pid36 ≤5，seq36 ≤4。比 RELEASE_SUFFIX_RE 宽松形状收得紧的原因：两段键的
+ * 尾段是**裸 deploymentId**，UUID 本身就以「三个短组」结尾
+ * （`-4ccc-8ccc-cccccccccccc`），宽松形状会把它当后缀误剥。严格形状对
+ * UUID 组（4/4/4/12 位）不匹配（首组 4 位 < 6），对真后缀（8/2-4/1-3 位）
+ * 匹配。旧单段路径不受影响：那边先 parseReleaseKey（UUID 形状定位成功即
+ * 返回），只有解析失败才剥宽松后缀重试，误剥无从发生。
+ */
+const TWO_SEG_SUFFIX_RE = /-[0-9a-z]{6,}-[0-9a-z]{1,5}-[0-9a-z]{1,4}$/;
+
 function parseReleaseKey(key: string): {
   version: string | null;
   deploymentId: string;
@@ -154,6 +166,15 @@ export function splitReleaseKey(releaseKey: string): {
   version: string | null;
   deploymentId: string;
 } {
+  // 5c 两段布局（'<version>/<deploymentId>[-suffix]'）：首段即版本（deploy.ts
+  // normalizeReleasePart 的白名单产物，无分隔符），尾段即 deploymentId（唯一
+  // 后缀剥除与旧布局同规则）。不再走 UUID/短 hash 反解。
+  const slash = releaseKey.indexOf('/');
+  if (slash > 0) {
+    const version = releaseKey.slice(0, slash);
+    const tail = releaseKey.slice(slash + 1).replace(TWO_SEG_SUFFIX_RE, '');
+    return { version, deploymentId: tail };
+  }
   const direct = parseReleaseKey(releaseKey);
   if (direct) return direct;
 
@@ -173,12 +194,22 @@ export function splitReleaseKey(releaseKey: string): {
   return { version: null, deploymentId: releaseKey };
 }
 
-/** current 是指向 releases/<releaseKey> 的软链/junction；读出它的 basename。 */
-async function readCurrentReleaseKey(currentLink: string): Promise<string | null> {
+/**
+ * current 是指向 releases/<releaseKey> 的软链/junction；读出相对 releases/ 的
+ * releaseKey（POSIX 分隔）。5c 后新两段布局的 basename 只剩 deploymentId（版本
+ * 段丢失），必须取相对 releases/ 的整段；旧单段的相对路径无 '/'，原样即 key。
+ * 悬空/指向 releases 之外 → null（不归一）。isCurrent 比对与 listDeployedApps
+ * 产出的 releaseKey 形态一致（collectReleaseLeaves 两边同源）。
+ */
+async function readCurrentReleaseKey(appRoot: string): Promise<string | null> {
+  const currentLink = path.join(appRoot, 'current');
   try {
     await fsp.access(currentLink);
     const target = await fsp.realpath(currentLink);
-    return path.basename(target);
+    const releasesDir = path.join(appRoot, 'releases');
+    const rel = path.relative(releasesDir, target);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    return rel.split(path.sep).join('/');
   } catch {
     // 悬空链（目标已被删）/不可读——不作数，其余 release 照常列出。
     return null;
@@ -211,6 +242,71 @@ async function resolveAppLogPath(deployDir: string): Promise<string> {
 }
 
 /**
+ * 展开 releases/ 为 release 行（5c 双布局）：直接子目录是旧单段 release
+ * （'<version>-<deploymentId>'，原样一行）或新两段的 <version> 版本组（每个
+ * <deploymentId> 子目录一行，releaseKey 记 '<version>/<deploymentId>'，POSIX
+ * 分隔——与 executor 侧 buildReleaseKey 的字符串形态一致）。
+ *
+ * 组目录判定：含**目录**子项即视为版本组下钻；空目录/无目录子项按旧单段
+ * 处理（旧 release 目录的子项全是文件 + node_modules 之外的目录？不——旧
+ * release 目录里本就有 node_modules/.venv 等**目录**子项，会误判！）。见下方
+ * 的实际判据注释。
+ *
+ * 按 mtime 新→旧排序（与 executor 侧 pruneOldReleases 同一判据）。
+ */
+async function collectReleaseLeaves(
+  releasesDir: string,
+): Promise<Array<{ name: string; mtime: number }>> {
+  const dirents = await fsp.readdir(releasesDir, { withFileTypes: true });
+  const leaves: Array<{ name: string; mtime: number }> = [];
+  for (const d of dirents) {
+    if (!d.isDirectory()) continue;
+    const dir = path.join(releasesDir, d.name);
+    // 新旧布局的判据：新两段的组目录**名即版本号**（normalizeReleasePart 的
+    // 白名单产物，形如 1.2.3 / 2.0.0-alpha.1），且其子目录名是 deploymentId/
+    // deploymentId-suffix 形态。旧单段 release 目录名是
+    // '<version>-<deploymentId>'——**必然含 UUID 或 8+hex 尾**（deploy.ts 的
+    // deploymentId 来源），而版本组目录名从不满足该形状。用 executor 侧同源
+    // 的形状规则区分：parseReleaseKey(d.name) 能解析出 deploymentId 的必是旧
+    // 单段；解析不出的是版本组（或异常名——下钻后发现没有目录子项就按原样
+    // 一行，与旧版「无法解析 → deploymentId=原名」的展示兜底一致）。
+    const parsed = parseReleaseKey(d.name);
+    if (!parsed) {
+      // 疑似版本组：下钻一层取部署目录。无目录子项（空/异常目录）时按原样
+      // 一行兜底（splitReleaseKey 会走 version=null 的如实展示分支）。
+      let children: fs.Dirent[];
+      try {
+        children = await fsp.readdir(dir, { withFileTypes: true });
+      } catch {
+        children = [];
+      }
+      const childDirs = children.filter((c) => c.isDirectory());
+      if (childDirs.length === 0) {
+        leaves.push({ name: d.name, mtime: await mtimeOf(dir) });
+        continue;
+      }
+      for (const c of childDirs) {
+        const leaf = `${d.name}/${c.name}`;
+        leaves.push({ name: leaf, mtime: await mtimeOf(path.join(dir, c.name)) });
+      }
+      continue;
+    }
+    // 旧单段：原样一行。
+    leaves.push({ name: d.name, mtime: await mtimeOf(dir) });
+  }
+  return leaves.sort((a, b) => b.mtime - a.mtime);
+}
+
+async function mtimeOf(target: string): Promise<number> {
+  try {
+    const st = await fsp.stat(target);
+    return st.mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * 列出本地所有已部署应用（每个 release 一行）。
  *
  * V4 后续优化（1）：全异步（fs/promises）——调用方（apps:list IPC）每 10s 被
@@ -237,7 +333,7 @@ export async function listDeployedApps(workDir: string | undefined): Promise<App
     // app.json 由 executor-node 在部署成功时落盘（跨 release 稳定）。
     // 旧部署没有该文件 → appName 为 null，由调用方（日志回溯 + UI 回落）处理。
     const [currentKey, meta] = await Promise.all([
-      readCurrentReleaseKey(path.join(appRoot, 'current')),
+      readCurrentReleaseKey(appRoot),
       readAppMeta(appRoot),
     ]);
     const appName =
@@ -251,24 +347,14 @@ export async function listDeployedApps(workDir: string | undefined): Promise<App
 
     // releases/ 尚不存在（部署进行中/从未成功发布）也要列出应用——
     // 否则「刚点部署、正在解压」这段时间应用在整个页面里凭空消失。
+    // 5c 双布局：releases/ 直接子目录既可能是旧单段 release，也可能是新两段
+    // 的 <version> 版本组——统一经 collectReleaseLeaves 展开（组目录下钻一层，
+    // 每个部署子目录一行；旧单段原样一行）。releaseKey 形态：旧
+    // '<version>-<deploymentId>'，新 '<version>/<deploymentId>'（POSIX 分隔）。
     let releaseKeys: Array<{ name: string; mtime: number }> = [];
     if (fs.existsSync(releasesDir)) {
       try {
-        const dirents = await fsp.readdir(releasesDir, { withFileTypes: true });
-        // 最近发布的排前面（releaseKey 前缀是版本号，字典序不可靠——
-        // 用目录 mtime 倒序，与 executor 侧 pruneOldReleases 同一判据）。
-        releaseKeys = (await Promise.all(
-          dirents
-            .filter((d) => d.isDirectory())
-            .map(async (d) => {
-              try {
-                const st = await fsp.stat(path.join(releasesDir, d.name));
-                return { name: d.name, mtime: st.mtimeMs };
-              } catch {
-                return { name: d.name, mtime: 0 };
-              }
-            }),
-        )).sort((a, b) => b.mtime - a.mtime);
+        releaseKeys = await collectReleaseLeaves(releasesDir);
       } catch {
         continue; // 单应用 releases 读失败：跳过该应用，不影响其余
       }
@@ -294,7 +380,8 @@ export async function listDeployedApps(workDir: string | undefined): Promise<App
     }
 
     for (const { name: releaseKey, mtime } of releaseKeys) {
-      const deployDir = path.join(releasesDir, releaseKey);
+      // 两段 releaseKey（'v/d'）经 path.join 自然落两层；单段原样。
+      const deployDir = path.join(releasesDir, ...releaseKey.split('/'));
       const logPath = await resolveAppLogPath(deployDir);
       const { version, deploymentId } = splitReleaseKey(releaseKey);
       // mtime 即部署完成时间（executor 侧 pruneOldReleases 同一判据）——

@@ -50,7 +50,12 @@ export interface SweepOutcome {
   errors: string[];
 }
 
-/** 列出 releases/ 下的 release 目录名（按 mtime 新→旧；读失败返回 null）。 */
+/**
+ * 列出 releases/ 下的 release/版本组目录名（按 mtime 新→旧；读失败返回 null）。
+ * 5c 双布局：直接子目录既可能是旧单段 release，也可能是新两段的 <version>
+ * 版本组——本清扫以「releases/ 直接子目录」为保留单位（与 executor 侧
+ * pruneOldReleases 的版本组语义一致：组内全保或整组淘汰），不下钻到部署层。
+ */
 function listReleaseKeysNewestFirst(releasesDir: string): string[] | null {
   try {
     return fs
@@ -78,6 +83,30 @@ function listReleaseKeysNewestFirst(releasesDir: string): string[] | null {
 }
 
 /**
+ * 判定某个 release 候选目录（旧单段或新版本组）内是否包含指定 deploymentId
+ * 的部署目录。旧单段：deploymentId 从目录名反解（splitReleaseKey）；新版本
+ * 组：列组内子目录名比对（deploymentId 或 deploymentId-suffix 形态）。
+ * 任何读失败 → false 由调用方的保守分支兜住（组内有 running 才跳过，读不
+ * 到就交给 canDeleteRelease 的 runningDeploymentId 比对——那里 deploymentId
+ * 已从目录名反解，形态对得上）。纯 Node，无 electron 依赖。
+ */
+function groupHasDeployment(
+  releasesDir: string,
+  releaseKey: string,
+  deploymentId: string,
+): boolean {
+  const dir = path.join(releasesDir, ...releaseKey.split('/'));
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return false;
+  }
+  // 组内子目录名 = deploymentId（精确）或 deploymentId-<suffix>（前缀精确 + '-'）。
+  return names.some((n) => n === deploymentId || n.startsWith(`${deploymentId}-`));
+}
+
+/**
  * 对单个应用执行保留期清扫。`runningDeploymentIds === null` 表示执行器状态
  * 未知（不可达/超时）——**保守跳过整个应用**（宁可不清，不冒险误删）。
  */
@@ -98,11 +127,26 @@ function sweepOneApp(
   }
   if (keys.length <= keep) return outcome; // 未超保留数，无事可做
 
+  // current 指向的组豁免：currentKey 是相对 releases/ 的 releaseKey（两段时
+  // '<version>/<deploymentId>'，单段时目录名本身）——候选若是 current 所在的
+  // 版本组（首段相同）或 current 本身，闸门拒绝。
   const currentKey = readCurrentReleaseKey(appRoot);
   // mtime 新→旧排序后的 keep 个之外是候选；每个候选仍过 canDeleteRelease 闸门
   // （current/运行中绝不删——与手动删除完全同一语义）。
   for (const releaseKey of keys.slice(keep)) {
+    // 5c：候选可能是版本组目录（不含 deploymentId 信息）。组内有任何部署在跑
+    // → 整组跳过（保守：拿不到逐部署判定时不冒删）；current 在组内 → 闸门拒。
+    const groupCandidates = [releaseKey];
     const { deploymentId } = splitReleaseKey(releaseKey);
+    const runningInGroup =
+      runningDeploymentIds !== null &&
+      [...runningDeploymentIds].some((id) =>
+        groupHasDeployment(releasesDir, releaseKey, id),
+      );
+    if (runningInGroup) {
+      outcome.skipped.push(`${releaseKey}（组内有部署正在运行）`);
+      continue;
+    }
     const gate = canDeleteRelease({
       releaseKey,
       currentKey,

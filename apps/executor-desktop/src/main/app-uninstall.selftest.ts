@@ -85,14 +85,27 @@ async function main(): Promise<void> {
       assert.strictEqual(r.ok, false, `越界 appId ${evil} 必须被拒`);
     }
     // releaseKey 同样受约束，且必须落在 <appsRoot>/<appId>/releases 内。
+    // 5c：两段 '<version>/<deploymentId>' 是合法形态（一段或两段、逐段白名单）。
     assert.strictEqual(resolveReleaseDir(workDir, APP_A, '../..').ok, false);
-    assert.strictEqual(resolveReleaseDir(workDir, APP_A, 'a/b').ok, false);
+    assert.strictEqual(resolveReleaseDir(workDir, APP_A, 'a/../../b').ok, false);
+    assert.strictEqual(resolveReleaseDir(workDir, APP_A, 'a/b/c').ok, false, '三段以上必须被拒（深度限 2）');
+    assert.strictEqual(resolveReleaseDir(workDir, APP_A, '1.0.0/b<').ok, false, '尾段含非法字符必须被拒');
+    assert.strictEqual(resolveReleaseDir(workDir, APP_A, '1.0.0/').ok, false, '空尾段必须被拒');
     const okRel = resolveReleaseDir(workDir, APP_A, `1.0.0-${DEP_A1}`);
     assert.strictEqual(okRel.ok, true);
     if (okRel.ok) {
       assert.strictEqual(
         okRel.releaseDir,
         path.join(workDir, 'apps', APP_A, 'releases', `1.0.0-${DEP_A1}`),
+      );
+    }
+    // 5c 两段：解析到 releases/<version>/<deploymentId> 两层深度。
+    const okTwoSeg = resolveReleaseDir(workDir, APP_A, `1.0.0/${DEP_A1}`);
+    assert.strictEqual(okTwoSeg.ok, true, '两段 releaseKey（5c 布局）必须可解析');
+    if (okTwoSeg.ok) {
+      assert.strictEqual(
+        okTwoSeg.releaseDir,
+        path.join(workDir, 'apps', APP_A, 'releases', '1.0.0', DEP_A1),
       );
     }
 

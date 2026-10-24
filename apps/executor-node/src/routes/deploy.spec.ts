@@ -327,9 +327,15 @@ describe('versioned deployment paths', () => {
     const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '1.2.0');
 
     expect(paths.appRoot).toBe(path.join('/tmp/work', 'apps', 'app-1'));
-    expect(paths.releaseKey).toBe('1.2.0-deploy-1');
-    expect(paths.finalReleaseDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'releases', '1.2.0-deploy-1'));
-    expect(paths.extractDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'tmp', '1.2.0-deploy-1-extracting'));
+    // 5c（§9.7）：releaseKey 两段 '<version>/<deploymentId>'，落盘两层。
+    expect(paths.releaseKey).toBe('1.2.0/deploy-1');
+    expect(paths.finalReleaseDir).toBe(
+      path.join('/tmp/work', 'apps', 'app-1', 'releases', '1.2.0', 'deploy-1'),
+    );
+    // 暂存目录在 tmp/ 平铺（'/' 拍平成 '-'——同值不撞即可）。
+    expect(paths.extractDir).toBe(
+      path.join('/tmp/work', 'apps', 'app-1', 'tmp', '1.2.0-deploy-1-extracting'),
+    );
     expect(paths.currentLink).toBe(path.join('/tmp/work', 'apps', 'app-1', 'current'));
   });
 
@@ -343,8 +349,12 @@ describe('versioned deployment paths', () => {
   it('sanitizes version text before using it in a path', () => {
     const paths = buildDeploymentPaths('/tmp/work', 'app-1', 'deploy-1', '../v1+build');
 
-    expect(paths.releaseKey).toBe('v1-build-deploy-1');
-    expect(paths.finalReleaseDir).toBe(path.join('/tmp/work', 'apps', 'app-1', 'releases', 'v1-build-deploy-1'));
+    // normalizeReleasePart 语义不变（5c 只改目录形态，不改清洗规则）：
+    // 非法字符压成 '-'、去首尾标点、限长 80——清洗后作为首段目录名。
+    expect(paths.releaseKey).toBe('v1-build/deploy-1');
+    expect(paths.finalReleaseDir).toBe(
+      path.join('/tmp/work', 'apps', 'app-1', 'releases', 'v1-build', 'deploy-1'),
+    );
   });
 });
 
@@ -1360,7 +1370,19 @@ describe('SEC-DEPLOY-01: shell entrypoint validation', () => {
   });
 });
 
-describe('E-12 retention: pruneOldReleases', () => {
+/**
+ * 5c（§9.7）：retention 第二代语义——按**版本组**裁剪。
+ *
+ * · 组 = releases/ 直接子目录：新两段布局是 <version>（组内部署全保），
+ *   旧单段布局每个目录自成一组（同批参与淘汰——自然迁移，旧目录不搬）；
+ * · current 指向的组豁免（回滚保活，与第一代「current 指向项不删」一致）；
+ * · 保留 current 组 + 最新 keepVersions-1 个其他组。
+ *
+ * mock 形态：readlinkSync 返回绝对路径（与生产 switchCurrentRelease 写入的
+ * 形态一致），readCurrentTarget 归一为相对 releases/ 的 releaseKey 后取首段
+ * 为组名。
+ */
+describe('E-12 retention: pruneOldReleases（5c 版本组语义）', () => {
   const releasesDir = '/tmp/work/apps/app-1/releases';
   const currentLink = '/tmp/work/apps/app-1/current';
 
@@ -1368,16 +1390,7 @@ describe('E-12 retention: pruneOldReleases', () => {
     return { name, isDirectory: () => true } as fs.Dirent;
   }
 
-  it('keeps current + newest N-1 and deletes the oldest releases', () => {
-    // 6 releases; current = rel-3 (newest, just deployed). mtime 越晚越新。
-    const mtimes: Record<string, number> = {
-      'rel-1': 100,
-      'rel-2': 200,
-      'rel-4': 300,
-      'rel-5': 400,
-      'rel-6': 500,
-      'rel-3': 900, // current
-    };
+  function seedRetentionMocks(mtimes: Record<string, number>, currentRel: string) {
     (mockFs.existsSync as jest.Mock).mockImplementation((p: string) => {
       if (p === releasesDir) return true;
       if (p === currentLink) return true;
@@ -1387,7 +1400,7 @@ describe('E-12 retention: pruneOldReleases', () => {
       isSymbolicLink: () => true,
     } as any);
     (mockFs.readlinkSync as jest.Mock).mockReturnValue(
-      path.join(releasesDir, 'rel-3'),
+      path.join(releasesDir, ...currentRel.split('/')),
     );
     (mockFs.readdirSync as jest.Mock).mockReturnValue(
       Object.keys(mtimes).map(dirent),
@@ -1396,48 +1409,94 @@ describe('E-12 retention: pruneOldReleases', () => {
       mtimeMs: mtimes[path.basename(p as string)] ?? 0,
     }));
     (mockFs.rmSync as jest.Mock).mockReturnValue(undefined);
+  }
+
+  it('keeps current group + newest N-1 groups and deletes the oldest', () => {
+    // 6 个组（旧单段目录名，5c 下各自成组）；current = rel-3（最新，刚部署）。
+    // mtime 越晚越新。
+    const mtimes: Record<string, number> = {
+      'rel-1': 100,
+      'rel-2': 200,
+      'rel-4': 300,
+      'rel-5': 400,
+      'rel-6': 500,
+      'rel-3': 900, // current group
+    };
+    seedRetentionMocks(mtimes, 'rel-3');
 
     const removed = pruneOldReleases(releasesDir, currentLink, 5);
 
-    // keepCount=5 → 保留 current(rel-3) + 最新 4 个其他（rel-6/rel-5/rel-4/rel-2）
-    // 共 5 个；最旧的 rel-1 被删。
+    // keepVersions=5 → 保留 current 组(rel-3) + 最新 4 个其他组
+    // （rel-6/rel-5/rel-4/rel-2）；最旧的 rel-1 组被删。
     expect(removed).toEqual([path.join(releasesDir, 'rel-1')]);
     expect(mockFs.rmSync).toHaveBeenCalledTimes(1);
   });
 
-  it('never deletes the current release even if it is not the newest', () => {
-    // current 指向 rel-1（回滚到旧版本），即便 rel-1 mtime 最旧也必须保留。
+  it('never deletes the current group even if it is not the newest', () => {
+    // current 指向 rel-1（回滚到旧版本组），即便 rel-1 mtime 最旧也必须保留。
     const mtimes: Record<string, number> = {
-      'rel-1': 100, // current (oldest)
+      'rel-1': 100, // current group (oldest)
       'rel-2': 200,
       'rel-3': 300,
       'rel-4': 400,
       'rel-5': 500,
     };
-    (mockFs.existsSync as jest.Mock).mockImplementation((p: string) =>
-      p === releasesDir || p === currentLink ? true : false,
-    );
-    (mockFs.lstatSync as jest.Mock).mockReturnValue({
-      isSymbolicLink: () => true,
-    } as any);
-    (mockFs.readlinkSync as jest.Mock).mockReturnValue(
-      path.join(releasesDir, 'rel-1'),
-    );
-    (mockFs.readdirSync as jest.Mock).mockReturnValue(
-      Object.keys(mtimes).map(dirent),
-    );
-    (mockFs.statSync as jest.Mock).mockImplementation((p: string) => ({
-      mtimeMs: mtimes[path.basename(p as string)] ?? 0,
-    }));
-    (mockFs.rmSync as jest.Mock).mockReturnValue(undefined);
+    seedRetentionMocks(mtimes, 'rel-1');
 
     const removed = pruneOldReleases(releasesDir, currentLink, 3);
 
-    // keepCount=3 → 保留 current(rel-1) + 最新 2 个（rel-5/rel-4）；删 rel-3/rel-2。
+    // keepVersions=3 → 保留 current 组(rel-1) + 最新 2 个组（rel-5/rel-4）；
+    // 删 rel-3/rel-2 组。
     expect(removed.sort()).toEqual(
       [path.join(releasesDir, 'rel-2'), path.join(releasesDir, 'rel-3')].sort(),
     );
     expect(removed).not.toContain(path.join(releasesDir, 'rel-1'));
+  });
+
+  it('新两段布局：组内多部署全保——豁免粒度是组不是部署目录', () => {
+    // releases/1.0.0/{dep-a,dep-b}（一组两部署）+ 2.0.0/dep-c + 3.0.0/dep-d。
+    // readdir 只返回组层（prune 只看组），mtime 挂在组目录上。
+    const mtimes: Record<string, number> = {
+      '1.0.0': 100,
+      '2.0.0': 200,
+      '3.0.0': 300, // current（readlink 指向 3.0.0/dep-d）
+    };
+    seedRetentionMocks(mtimes, '3.0.0/dep-d');
+
+    const removed = pruneOldReleases(releasesDir, currentLink, 2);
+
+    // keepVersions=2 → 保留 current 组(3.0.0) + 最新 1 个其他组(2.0.0)；
+    // 1.0.0 组整组删除（组内 dep-a/dep-b 一起走——组内全保或整组淘汰）。
+    expect(removed).toEqual([path.join(releasesDir, '1.0.0')]);
+    expect(mockFs.rmSync).toHaveBeenCalledTimes(1);
+    expect(mockFs.rmSync).toHaveBeenCalledWith(
+      path.join(releasesDir, '1.0.0'),
+      expect.objectContaining({ recursive: true }),
+    );
+  });
+
+  it('混合布局：旧单段目录与新版组同批参与淘汰（自然迁移）', () => {
+    // 旧：1.1.0-<dep>；新：2.0.0/ 组（两部署）。current 指向旧单段（升级前
+    // 部署的活版本，尚未被淘汰）。
+    const mtimes: Record<string, number> = {
+      '1.0.0-old': 100,
+      '1.1.0-old': 200,
+      '2.0.0': 300,
+      '3.0.0': 400, // 最新组
+      '1.2.0-old': 900, // current（旧单段形态，mtime 被回滚刷新过）
+    };
+    seedRetentionMocks(mtimes, '1.2.0-old');
+
+    const removed = pruneOldReleases(releasesDir, currentLink, 3);
+
+    // keepVersions=3 → 保留 current 组(1.2.0-old) + 最新 2 个（3.0.0/2.0.0）；
+    // 旧单段 1.0.0-old 与 1.1.0-old 同批淘汰。
+    expect(removed.sort()).toEqual(
+      [
+        path.join(releasesDir, '1.0.0-old'),
+        path.join(releasesDir, '1.1.0-old'),
+      ].sort(),
+    );
   });
 
   it('is a no-op when releases dir does not exist', () => {

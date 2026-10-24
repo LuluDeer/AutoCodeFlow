@@ -2,26 +2,41 @@
  * R3-B（部署模型评审 2026-10-23 §4.3 / §P5，executor-node 侧）：设备级应用版本
  * 事实扫描 —— 心跳可选键 `deployedApps` 的数据源。
  *
- * 扫描对象是 deploy.ts 的落盘布局（同一事实的写面/读面，本模块只读不写）：
+ * 扫描对象是 deploy.ts 的落盘布局（同一事实的写面/读面，本模块只读不写）。
+ * 5c（评审 2026-10-23 §9.7）后**双布局并存**（迁移窗口：旧目录不搬，靠 prune
+ * 自然淘汰；新部署落两段）：
  *
  *   <workDir>/apps/<appId>/
  *     ├─ app.json    ← deploy 成功时写（deploy.ts「app.json 元数据」段）：
  *                      appName / runMode / lastVersion / lastDeployedAt …
  *                      （commit 20a0b841 之前的旧部署没有这份文件）
- *     ├─ current     ← 软链/junction → releases/<releaseKey>（活 release）
- *     └─ releases/<releaseKey>/  ← releaseKey = `${version}-${deploymentId}`
- *                                  （重名时带 resolveReleasePaths 的唯一后缀）
+ *     ├─ current     ← 软链/junction → releases/ 下的活 release
+ *     └─ releases/
+ *          ├─ <version>/<deploymentId>[-suffix]/   ← 新两段（2026-10-24 起）：
+ *          │    目录名即版本，组内多部署共享同一版本
+ *          └─ <version>-<deploymentId>[-suffix]/   ← 旧单段（迁移窗口兼容）：
+ *               版本从目录名后缀反解（UUID/短 hash 定位）
  *
  * ## 与桌面端清单（executor-desktop/src/main/app-inventory.ts）的口径关系
  *
  * 同一磁盘布局的两份**独立**读面：桌面端面向本地 UI（每 release 一行，含日志
  * 名回溯）；本模块面向中台心跳（每应用一行）。releaseKey → 版本的归一规则
  * （UUID 形状定位 → 短 hash 尾回退 → 唯一后缀剥除重试）与桌面端 splitReleaseKey
- * 逐条对齐（见下方三个正则）。不做共享收敛：executor-desktop 不依赖
- * executor-node 的源码（各自独立构建，桌面端只把 executor-node 当子进程管理），
- * 跨 app 引入会让桌面端打包长出对执行器模块图的依赖，成本高于两份小函数保持
- * 对齐；评审 §9.4 的 5c（releases/<version> 两段目录化）落地后目录名即版本，
- * 两边归一层可一并删除。
+ * 逐条对齐（见下方三个正则）；5c 两段布局两边都改为「目录名/首段即版本」，
+ * 旧反解链只服务旧目录（迁移窗口结束后可一并删除）。不做共享收敛：
+ * executor-desktop 不依赖 executor-node 的源码（各自独立构建，桌面端只把
+ * executor-node 当子进程管理），跨 app 引入会让桌面端打包长出对执行器模块图
+ * 的依赖，成本高于两份小函数保持对齐。
+ *
+ * ## R3 联动：currentReleaseKey 值形态变化（admin 零改动）
+ *
+ * 5c 后新部署的 currentReleaseKey 形如 `<version>/<deploymentId>`（含唯一后缀
+ * 时为 `<version>/<deploymentId>-<suffix>`），旧值形如 `<version>-<deploymentId>`。
+ * admin 侧对 releaseKey 只做**等值比对**（executor.service.ts 幂等短路 + entity
+ * varchar 存储），不解析其结构；版本判定走 currentVersion（本模块归一产物），
+ * resolveVersionFollowPackage 只读 currentVersion。executor_app_versions 表的
+ * currentReleaseKey 历史值因此混两种形态——不影响任何判定路径，读面展示按
+ * 原样字符串处理（本处注释即 admin 侧零改动的依据）。
  *
  * ## fail-honest 纪律（评审 §4.3：不造假数据）
  *
@@ -88,6 +103,21 @@ export function parseReleaseVersion(releaseKey: string): string | null {
   return null;
 }
 
+/**
+ * 5c 双布局的 releaseKey → 版本：`<version>/<deploymentId>[-suffix]` 取首段；
+ * 旧单段 `<version>-<deploymentId>[-suffix]` 走 parseReleaseVersion 反解。
+ * 两段键的首段是 deploy.ts normalizeReleasePart 的产物（白名单字符、无分隔符），
+ * 无需再过形态闸；解析不出（异常键）→ null，不猜。
+ */
+function versionFromReleaseKey(releaseKey: string): string | null {
+  const slash = releaseKey.indexOf('/');
+  if (slash > 0) {
+    const head = releaseKey.slice(0, slash);
+    return head !== '' ? head : null;
+  }
+  return parseReleaseVersion(releaseKey);
+}
+
 /** deploy.ts 落盘的 <appRoot>/app.json 里本模块关心的字段（缺失/损坏 → 全 null）。 */
 interface AppMetaFacts {
   runMode: 'once' | 'daemon' | 'scheduled' | null;
@@ -127,13 +157,24 @@ function readAppMeta(appRoot: string): AppMetaFacts {
 }
 
 /**
- * current 软链/junction → 指向的 releaseKey（basename）。悬空/缺失/不可读 →
- * null。走 realpathSync（与桌面端 readCurrentReleaseKey 同判据）：Windows
- * junction 与 POSIX dir 软链都能解析，断链在 resolve 阶段抛 ENOENT。
+ * current 软链/junction → 指向的 releaseKey（相对 releases/，POSIX 形态）。
+ * 悬空/缺失/不可读 → null。走 realpathSync（与桌面端 readCurrentReleaseKey
+ * 同判据）：Windows junction 与 POSIX dir 软链都能解析，断链在 resolve 阶段
+ * 抛 ENOENT。
+ *
+ * 5c（§9.7）双布局：新两段 releases/<version>/<deploymentId> 的 basename 只剩
+ * deploymentId（版本段丢失），必须取**相对 releases/ 的整段**；旧单段布局的
+ * 相对路径无 '/'，原样即 releaseKey。realpath 已把软链解析到真实绝对路径，
+ * relative(releasesDir, …) 对两种布局统一产出 '<version>/<deploymentId>' 或
+ * '<version>-<deploymentId>'。
  */
 function readCurrentReleaseKey(currentLink: string): string | null {
   try {
-    return path.basename(fs.realpathSync(currentLink));
+    const real = fs.realpathSync(currentLink);
+    const releasesDir = path.join(path.dirname(currentLink), 'releases');
+    const rel = path.relative(releasesDir, real);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return null; // 指向 releases/ 之外：不归一
+    return rel.split(path.sep).join('/');
   } catch {
     return null;
   }
@@ -158,11 +199,28 @@ function scanOneApp(appId: string, appRoot: string): DeployedAppFact | null {
 
   const retained = new Set<string>();
   try {
-    const entries = fs.readdirSync(path.join(appRoot, 'releases'), {
+    const releasesDir = path.join(appRoot, 'releases');
+    const entries = fs.readdirSync(releasesDir, {
       withFileTypes: true,
     });
     for (const e of entries) {
       if (!e.isDirectory()) continue;
+      // 5c 双布局识别：releases/<version>/（组目录）——目录名即版本，不再
+      // 反解；组内 <deploymentId>/ 子目录共享同一版本（retained 去重即得）。
+      // 版本目录名仍过 parseReleaseVersion 的形态闸（strip 唯一后缀后需能
+      // 解析出版本语义——目录名本身就是版本号，直接解析必过；异常名不进
+      // 清单，与旧布局同一 fail-honest 姿态）。
+      const nested = fs.readdirSync(path.join(releasesDir, e.name), {
+        withFileTypes: true,
+      });
+      const hasReleaseChild = nested.some((c) => c.isDirectory());
+      if (hasReleaseChild) {
+        // 新两段：组目录（含至少一个部署子目录）——目录名即版本。
+        retained.add(e.name);
+        continue;
+      }
+      // 旧单段：releases/<version>-<deploymentId>/（组目录里没有部署子目录
+      // 的两段空壳也落进这条兜底——按旧规则反解，解析不出就不进清单）。
       const version = parseReleaseVersion(e.name);
       // 解析不出的目录名（异常/外部产物）不进清单——不用原名冒充版本。
       if (version !== null) retained.add(version);
@@ -180,9 +238,10 @@ function scanOneApp(appId: string, appRoot: string): DeployedAppFact | null {
   // currentVersion 描述 current 指向的**活**版本：软链缺失/悬空 → null（app.json
   // 的 lastVersion 只是「最后一次部署」的事实，不代表当前活版本）；软链在 →
   // 优先 app.json.lastVersion（部署侧切 current 与写 app.json 相邻，正常恒等于
-  // 活 release 的版本），缺失时由 releaseKey 剥后缀归一兜底。
+  // 活 release 的版本），缺失时由 releaseKey 归一兜底：两段取首段（目录名即
+  // 版本），旧单段走后缀反解。
   const currentVersion = currentReleaseKey
-    ? (meta.lastVersion ?? parseReleaseVersion(currentReleaseKey))
+    ? (meta.lastVersion ?? versionFromReleaseKey(currentReleaseKey))
     : null;
 
   return {

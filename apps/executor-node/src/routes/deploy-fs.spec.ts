@@ -26,6 +26,7 @@ import * as path from 'path';
  */
 import {
   buildDeploymentPaths,
+  pruneOldReleases,
   resolveReleasePaths,
   restoreCurrentRelease,
   switchCurrentRelease,
@@ -265,7 +266,8 @@ describe('deploy 真实文件系统行为（生产故障回归）', () => {
       const resolved = resolveReleasePaths(paths);
 
       expect(resolved).toBe(paths); // 同一对象：未做任何改动
-      expect(resolved.releaseKey).toBe('1.0.0-deploy-1');
+      // 5c：两段形态 '<version>/<deploymentId>'。
+      expect(resolved.releaseKey).toBe('1.0.0/deploy-1');
       expect(resolved.finalReleaseDir).toBe(paths.finalReleaseDir);
     });
 
@@ -279,14 +281,19 @@ describe('deploy 真实文件系统行为（生产故障回归）', () => {
 
       expect(resolved.finalReleaseDir).not.toBe(paths.finalReleaseDir);
       expect(resolved.releaseKey).not.toBe(paths.releaseKey);
-      expect(resolved.releaseKey.startsWith('1.0.0-deploy-1-')).toBe(true);
+      // 5c：唯一后缀追加在尾段（deploymentId 之后），版本段保持干净。
+      expect(resolved.releaseKey.startsWith('1.0.0/deploy-1-')).toBe(true);
+      expect(resolved.releaseKey.split('/')[0]).toBe('1.0.0');
       // 关键：活目录仍在（没被本次部署"让路"逻辑删掉）
       expect(fs.existsSync(path.join(paths.finalReleaseDir, 'live.txt'))).toBe(
         true,
       );
       // extractDir 也要跟着换，否则会复用上一次的残留解压目录
       expect(resolved.extractDir).not.toBe(paths.extractDir);
-      expect(resolved.extractDir).toContain(resolved.releaseKey);
+      // tmp/ 平铺：releaseKey 的 '/' 拍平成 '-'（同值不撞即可）。
+      expect(resolved.extractDir).toContain(
+        resolved.releaseKey.split('/').join('-'),
+      );
       // 其余字段保持不变
       expect(resolved.appRoot).toBe(paths.appRoot);
       expect(resolved.currentLink).toBe(paths.currentLink);
@@ -416,6 +423,120 @@ describe('deploy 真实文件系统行为（生产故障回归）', () => {
       // 此后失败路径的 restoreCurrentRelease 会把 current 指向这个已不存在的
       // 目录 → 应用彻底不可用。这正是本缺陷最严重的后果。
       expect(fs.existsSync(paths.finalReleaseDir)).toBe(false);
+    });
+  });
+
+  /**
+   * 5c（§9.7）：pruneOldReleases 版本组语义的**真实文件系统**验证。
+   *
+   * deploy.spec.ts 的 mock 版只钉排序/豁免逻辑；这里用真目录 + 真 current
+   * 软链（switchCurrentRelease 形态）验证三层：组内全保、current 组豁免、
+   * 旧单段目录同批淘汰（自然迁移）。
+   */
+  describe('pruneOldReleases：5c 版本组语义（真实 fs）', () => {
+    function seedGroup(
+      releasesDir: string,
+      group: string,
+      deployments: string[],
+      mtime: number,
+    ): void {
+      for (const dep of deployments) {
+        const dir = path.join(releasesDir, group, dep);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'app.log'), `log ${group}/${dep}\n`);
+      }
+      const t = new Date(mtime);
+      fs.utimesSync(path.join(releasesDir, group), t, t);
+    }
+
+    function seedLegacy(
+      releasesDir: string,
+      releaseKey: string,
+      mtime: number,
+    ): void {
+      const dir = path.join(releasesDir, releaseKey);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'app.log'), `log ${releaseKey}\n`);
+      const t = new Date(mtime);
+      fs.utimesSync(dir, t, t);
+    }
+
+    it('组内全保：keepVersions 豁免粒度是版本组，组内部署目录不单独淘汰', () => {
+      const appRoot = path.join(root, 'apps', 'app-1');
+      const releasesDir = path.join(appRoot, 'releases');
+      fs.mkdirSync(releasesDir, { recursive: true });
+      // 1.0.0 组 3 个部署；2.0.0 组 1 个；3.0.0 组 1 个（current）。
+      seedGroup(releasesDir, '1.0.0', ['dep-a', 'dep-b', 'dep-c'], 100);
+      seedGroup(releasesDir, '2.0.0', ['dep-a'], 200);
+      seedGroup(releasesDir, '3.0.0', ['dep-a'], 300);
+      fs.symlinkSync(
+        path.join(releasesDir, '3.0.0', 'dep-a'),
+        path.join(appRoot, 'current'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+
+      const removed = pruneOldReleases(releasesDir, path.join(appRoot, 'current'), 2);
+
+      // keepVersions=2 → 保留 current 组(3.0.0) + 最新 1 个组(2.0.0)；
+      // 1.0.0 组整组删（3 个部署一起走）。
+      expect(removed).toEqual([path.join(releasesDir, '1.0.0')]);
+      expect(fs.existsSync(path.join(releasesDir, '1.0.0'))).toBe(false);
+      expect(fs.existsSync(path.join(releasesDir, '2.0.0', 'dep-a'))).toBe(true);
+      expect(fs.existsSync(path.join(releasesDir, '3.0.0', 'dep-a'))).toBe(true);
+      // current 仍有效（readlink 可解析）。
+      expect(fs.existsSync(fs.readlinkSync(path.join(appRoot, 'current'))!)).toBe(true);
+    });
+
+    it('混合布局：旧单段与新两段同批淘汰，current 组（无论新旧形态）豁免', () => {
+      const appRoot = path.join(root, 'apps', 'app-2');
+      const releasesDir = path.join(appRoot, 'releases');
+      fs.mkdirSync(releasesDir, { recursive: true });
+      // 旧单段两个 + 新组两个；current 指向旧单段（回滚态）。
+      seedLegacy(releasesDir, '1.0.0-dep-old', 100);
+      seedLegacy(releasesDir, '1.1.0-dep-old', 200);
+      seedGroup(releasesDir, '2.0.0', ['dep-a'], 300);
+      seedGroup(releasesDir, '3.0.0', ['dep-a'], 400);
+      seedLegacy(releasesDir, '0.9.0-dep-live', 900); // current（旧单段形态）
+      fs.symlinkSync(
+        path.join(releasesDir, '0.9.0-dep-live'),
+        path.join(appRoot, 'current'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+
+      const removed = pruneOldReleases(releasesDir, path.join(appRoot, 'current'), 3);
+
+      // keepVersions=3 → 保留 current 组(0.9.0-dep-live) + 最新 2 个组
+      // （3.0.0、2.0.0）；旧单段 1.0.0/1.1.0 同批淘汰。
+      expect(removed.sort()).toEqual(
+        [
+          path.join(releasesDir, '1.0.0-dep-old'),
+          path.join(releasesDir, '1.1.0-dep-old'),
+        ].sort(),
+      );
+      expect(fs.existsSync(path.join(releasesDir, '0.9.0-dep-live'))).toBe(true);
+    });
+
+    it('current 组最旧也不删（回滚保活，两段形态）', () => {
+      const appRoot = path.join(root, 'apps', 'app-3');
+      const releasesDir = path.join(appRoot, 'releases');
+      fs.mkdirSync(releasesDir, { recursive: true });
+      seedGroup(releasesDir, '1.0.0', ['dep-a'], 100); // current（最旧组）
+      seedGroup(releasesDir, '2.0.0', ['dep-a'], 200);
+      seedGroup(releasesDir, '3.0.0', ['dep-a'], 300);
+      seedGroup(releasesDir, '4.0.0', ['dep-a'], 400);
+      fs.symlinkSync(
+        path.join(releasesDir, '1.0.0', 'dep-a'),
+        path.join(appRoot, 'current'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+
+      const removed = pruneOldReleases(releasesDir, path.join(appRoot, 'current'), 2);
+
+      // 保留 current 组(1.0.0) + 最新 1 个组(4.0.0)；2.0.0/3.0.0 组删。
+      expect(removed.sort()).toEqual(
+        [path.join(releasesDir, '2.0.0'), path.join(releasesDir, '3.0.0')].sort(),
+      );
+      expect(fs.existsSync(path.join(releasesDir, '1.0.0', 'dep-a'))).toBe(true);
     });
   });
 

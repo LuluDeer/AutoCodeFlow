@@ -201,6 +201,57 @@ async function main(): Promise<void> {
     assert.ok((a2.deployedAt as number) > 0);
     assert.strictEqual(bEntries[0].deployedAt, null, '无 release 占位行 deployedAt 为 null');
 
+    // ── 5c（§9.7）：双布局识别 ─────────────────────────────────────────
+    // 新两段 releases/<version>/<deploymentId>/：每个部署一行，releaseKey 形如
+    // '<version>/<deploymentId>'（POSIX 分隔，与 executor 侧 buildReleaseKey 一致）；
+    // 旧单段照旧。混合布局（应用 C 同时有两种）必须都列出且互不干扰。
+    const APP_C = '33333333-3333-4333-8333-333333333333';
+    const DEP_C1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const cRoot = path.join(appsDir, APP_C);
+    const cReleases = path.join(cRoot, 'releases');
+    fs.mkdirSync(cReleases, { recursive: true });
+    // 旧单段：1.0.0-<dep>（升级执行器前部署的）。
+    fs.mkdirSync(path.join(cReleases, `1.0.0-${DEP_C1}`), { recursive: true });
+    // 新两段：2.0.0/<dep> + 2.0.0/<dep>-<suffix>（同版本重复部署组）。
+    fs.mkdirSync(path.join(cReleases, '2.0.0', DEP_C1), { recursive: true });
+    fs.mkdirSync(path.join(cReleases, '2.0.0', `${DEP_C1}-m4c1h8-8t4-1x`), { recursive: true });
+    fs.writeFileSync(path.join(cReleases, '2.0.0', DEP_C1, 'app.log'), 'two-seg live\n');
+    // current 指向新两段——isCurrent 比对必须用同一相对形态。
+    fs.symlinkSync(
+      path.join(cReleases, '2.0.0', DEP_C1),
+      path.join(cRoot, 'current'),
+      'junction',
+    );
+
+    const cEntries = (await listDeployedApps(workDir)).filter((e) => e.appId === APP_C);
+    // 旧 1 行 + 新组 2 行 = 3 行。
+    assert.strictEqual(cEntries.length, 3, `应用 C 应有 3 个 release（旧 1 + 新组 2），实际 ${cEntries.length}`);
+    const cNew = cEntries.find((e) => e.releaseKey === `2.0.0/${DEP_C1}`)!;
+    assert.ok(cNew, "新两段 releaseKey 形如 '<version>/<deploymentId>' 必须被列出");
+    assert.strictEqual(cNew.version, '2.0.0', '两段 releaseKey 的 version 取首段');
+    assert.strictEqual(cNew.deploymentId, DEP_C1, '两段 releaseKey 的 deploymentId 取尾段');
+    assert.strictEqual(cNew.isCurrent, true, 'current 指向新两段时该行必须标记 isCurrent');
+    assert.strictEqual(cNew.hasLog, true);
+    assert.strictEqual(
+      cNew.logPath,
+      path.join(cReleases, '2.0.0', DEP_C1, 'app.log'),
+      '两段 releaseKey 的 deployDir/logPath 必须落两层',
+    );
+    // 唯一后缀剥除同样适用于两段尾段。
+    const cSuffixed = cEntries.find((e) => e.releaseKey === `2.0.0/${DEP_C1}-m4c1h8-8t4-1x`)!;
+    assert.strictEqual(cSuffixed.version, '2.0.0');
+    assert.strictEqual(cSuffixed.deploymentId, DEP_C1, '尾段的唯一后缀不属于部署身份');
+    // 旧单段行照旧（混合布局互不干扰）。
+    const cLegacy = cEntries.find((e) => e.releaseKey === `1.0.0-${DEP_C1}`)!;
+    assert.strictEqual(cLegacy.version, '1.0.0');
+    assert.strictEqual(cLegacy.isCurrent, false);
+
+    // splitReleaseKey 的两段形态（纯函数面）：预发布标签含 '/'？不会——
+    // normalizeReleasePart 白名单不含 '/'，首段必是干净版本号。
+    const twoSeg = splitReleaseKey(`1.0.0-beta.1/${DEP_C1}`);
+    assert.strictEqual(twoSeg.version, '1.0.0-beta.1');
+    assert.strictEqual(twoSeg.deploymentId, DEP_C1);
+
     // ── 边界：无 workDir / 无 apps 目录 → 空列表（不是异常） ───────────
     assert.deepStrictEqual(await listDeployedApps(undefined), []);
     assert.deepStrictEqual(

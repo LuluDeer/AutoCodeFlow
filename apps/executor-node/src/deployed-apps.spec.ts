@@ -204,6 +204,68 @@ describe('scanDeployedApps', () => {
     expect(scanDeployedApps(workDir)[0].retainedVersions).toEqual(['1.2.3']);
   });
 
+  // ── 5c（§9.7）：双布局识别 ─────────────────────────────────────────────
+  // 新两段 releases/<version>/<deploymentId>/ 目录名即版本；旧单段后缀反解。
+  // 验收口径：混合布局下版本归一无重复。
+  it('5c 新两段布局：组目录名即版本，组内多部署去重', () => {
+    const workDir = makeWorkDir();
+    // 新布局：2.0.0 组内两个部署（其一带唯一后缀——resolveReleasePaths 形态）。
+    seedRelease(workDir, APP_A, '2.0.0/' + DEP_200);
+    seedRelease(workDir, APP_A, `2.0.0/${DEP_200}-m4c1h8-8t4-1x`);
+    seedRelease(workDir, APP_A, '2.1.0/' + DEP_300);
+    setCurrent(workDir, APP_A, '2.1.0/' + DEP_300);
+    writeAppJson(workDir, APP_A, {
+      runMode: 'daemon',
+      lastVersion: '2.1.0',
+      lastDeployedAt: '2026-10-24T10:00:00.000Z',
+    });
+
+    expect(scanDeployedApps(workDir)).toEqual([
+      {
+        appId: APP_A,
+        currentVersion: '2.1.0',
+        currentReleaseKey: '2.1.0/' + DEP_300,
+        retainedVersions: ['2.0.0', '2.1.0'], // 组内两部署归一成一个版本
+        runMode: 'daemon',
+        lastDeployedAt: '2026-10-24T10:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('5c 混合布局：旧单段 + 新两段并存，版本归一无重复（验收口径）', () => {
+    const workDir = makeWorkDir();
+    // 同一版本 1.2.3 的旧单段目录与新两段组并存（迁移窗口的真实形态：
+    // 升级执行器前部署的 1.2.3 是单段，升级后重装同版本落到两段组）。
+    seedRelease(workDir, APP_A, `1.0.0-${DEP_100}`);
+    seedRelease(workDir, APP_A, `1.2.3-${DEP_123}`);
+    seedRelease(workDir, APP_A, '1.2.3/' + DEP_123);
+    seedRelease(workDir, APP_A, `1.2.3/${DEP_123}-m4c1h8-8t4-1x`);
+    setCurrent(workDir, APP_A, '1.2.3/' + DEP_123);
+
+    const fact = scanDeployedApps(workDir)[0];
+    expect(fact.retainedVersions).toEqual(['1.0.0', '1.2.3']); // 无重复
+    expect(fact.currentVersion).toBe('1.2.3');
+    expect(fact.currentReleaseKey).toBe('1.2.3/' + DEP_123);
+  });
+
+  it('5c 两段 current 悬空/缺 app.json：versionFromReleaseKey 首段兜底', () => {
+    const workDir = makeWorkDir();
+    seedRelease(workDir, APP_B, '2.0.0/' + DEP_200);
+    setCurrent(workDir, APP_B, '2.0.0/' + DEP_200);
+    // 无 app.json → currentVersion 由 releaseKey 首段归一兜底。
+
+    expect(scanDeployedApps(workDir)).toEqual([
+      {
+        appId: APP_B,
+        currentVersion: '2.0.0',
+        currentReleaseKey: '2.0.0/' + DEP_200,
+        retainedVersions: ['2.0.0'],
+        runMode: null,
+        lastDeployedAt: null,
+      },
+    ]);
+  });
+
   it('apps/ 不存在 → 空数组（从未部署过：真事实，非失败）', () => {
     expect(scanDeployedApps(path.join(os.tmpdir(), 'acf-no-such-workdir-r3b'))).toEqual([]);
   });
