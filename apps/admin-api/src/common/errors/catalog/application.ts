@@ -227,6 +227,13 @@ export const APPLICATION_CODES = {
     zh: "指定的部署没有已部署版本",
     en: "The specified deployment has no deployed version",
   },
+  // R1（2026-10-24 部署模型评审 §4.2）：set-current-version / deploy-version
+  // 只收版本快照主键，查无即 404（不象旧 rollback 那样隐式落到 legacy 部署行）。
+  APP_VERSION_NOT_FOUND: {
+    status: 404,
+    zh: "指定的版本快照不存在",
+    en: "The specified version snapshot was not found",
+  },
   APP_ROLLOUT_VERSION_NOT_FOUND: {
     status: 400,
     zh: '该应用下未找到版本 "{{version}}"',

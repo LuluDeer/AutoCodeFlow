@@ -419,12 +419,107 @@ export class ApplicationService implements OnModuleInit {
         .getCount();
       if (referenced > 0) return;
       await fs.promises.unlink(filePath);
+      // R5a：内容寻址嵌套路径删除后回收空 <sha>/<appId> 目录（best-effort，
+      // 见 reclaimEmptyPackageDirs 头注；旧扁平文件无嵌套父目录，helper 自判跳过）。
+      await this.reclaimEmptyPackageDirs(filePath);
       this.logger.log(`Removed superseded package file: ${filePath}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(
         `Failed to clean superseded package file ${filePath}: ${msg}`,
       );
+    }
+  }
+
+  /**
+   * R5a：内容寻址落盘（uploads/packages/<appId>/<sha256>/<name>.zip）删除文件
+   * 后 best-effort 回收空目录——先试 `<sha256>/`，空则再试其父 `<appId>/`。
+   * rmdir 只在目录为空时成功：非空（同应用还有其他 sha 目录 / 并发上传刚落了
+   * 新文件）或已不存在时静默放弃即正确语义，绝不用 recursive rm（那会把并发
+   * 上传者刚落下的文件一起删掉）。旧扁平文件直接躺在 uploads/packages 根下，
+   * 没有可回收的嵌套父目录——遇到上传根即停，uploads/packages 本身永不删除。
+   */
+  private async reclaimEmptyPackageDirs(filePath: string): Promise<void> {
+    let dir = path.dirname(filePath);
+    for (let depth = 0; depth < 2; depth++) {
+      if (dir === ApplicationService.PACKAGE_UPLOAD_ROOT) return;
+      try {
+        await fs.promises.rmdir(dir);
+      } catch {
+        // ENOTEMPTY / ENOENT / 并发竞争——目录不空或已回收，到此为止。
+        return;
+      }
+      dir = path.dirname(dir);
+    }
+  }
+
+  /**
+   * R5a：枚举应用当前行 + 全部版本快照引用的 packageUrl（去重）。必须在
+   * repo.remove(app) 之前调用（版本行 CASCADE）。versionRepo 缺席（@Optional
+   * 未装配）或查询失败时降级为只返回当前行 URL——清理是 best-effort，绝不因
+   * 枚举失败阻断删除主链。
+   */
+  private async collectLocalPackageUrls(app: Application): Promise<string[]> {
+    const urls = new Set<string>();
+    if (app.packageUrl) urls.add(app.packageUrl);
+    const versionRepo = this.versionRepo;
+    if (!versionRepo) return [...urls];
+    try {
+      const versions = await versionRepo.find({
+        where: { applicationId: app.id },
+        select: { snapshot: true },
+      });
+      for (const v of versions) {
+        const url = v.snapshot?.packageUrl;
+        if (typeof url === "string" && url) urls.add(url);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `R5a: failed to enumerate version snapshots of ${app.id}: ${msg}`,
+      );
+    }
+    return [...urls];
+  }
+
+  /**
+   * R5a：全局引用检查——某 packageUrl 是否仍被**其他**行引用
+   * （applications.packageUrl 实列 + application_versions 快照）。调用点在
+   * repo.remove(app) 之后：被删应用自身及其级联版本行已不存在，命中即意味着
+   * 别的应用（通常是用户手填 packageUrl 指进本应用的内容寻址子树，或共用旧
+   * 扁平文件名）仍在使用该文件。任一查询失败按「有引用」处理——宁留孤儿
+   * 文件，不误删可能被引用的包。
+   */
+  private async isPackageUrlReferencedElsewhere(
+    packageUrl: string,
+  ): Promise<boolean> {
+    try {
+      const appRefs = await this.repo
+        .createQueryBuilder("a")
+        .where("a.packageUrl = :url", { url: packageUrl })
+        .getCount();
+      if (appRefs > 0) return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `R5a: package refcount (applications) failed for ${packageUrl}: ${msg}`,
+      );
+      return true;
+    }
+    const versionRepo = this.versionRepo;
+    if (!versionRepo) return false;
+    try {
+      const versionRefs = await versionRepo
+        .createQueryBuilder("v")
+        .where("v.snapshot ->> 'packageUrl' = :url", { url: packageUrl })
+        .getCount();
+      return versionRefs > 0;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `R5a: package refcount (application_versions) failed for ${packageUrl}: ${msg}`,
+      );
+      return true;
     }
   }
 
@@ -732,25 +827,34 @@ export class ApplicationService implements OnModuleInit {
     // @ManyToOne(onDelete: CASCADE)，应用行一删部署行静默级联消失，此后
     // 既查不到执行器集合，/app-stop 通路也不可达。
     const deployments = await this.findDeploymentsForRemovalFanout(id);
+    // R5a：先枚举本应用引用的全部本地包 URL（当前行 + 版本快照）。必须赶在
+    // repo.remove 之前——版本行随应用行 CASCADE 消失，之后快照里的 URL 不可
+    // 再枚举，钉住的历史包会退化为孤儿文件。
+    const packageUrls = await this.collectLocalPackageUrls(app);
     await this.repo.remove(app);
     // R18/R9c: the application row may point at a locally served package
-    // (uploads/packages/<file>.zip). The old remove() left that file behind,
-    // accumulating orphan zips. Best-effort unlink AFTER the DB row is gone
+    // (uploads/packages/...). Best-effort unlink AFTER the DB row is gone
     // (an unlink failure then only leaves a harmless orphan file; deleting
     // first would leave a live row pointing at a missing file) — but ONLY
     // for paths that resolve inside this service's own upload root (the
     // packageUrl host can be remote or user-supplied, so an unvalidated
     // unlink would allow deleting arbitrary absolute paths).
-    if (app.packageUrl) {
-      const toDelete = this.resolveLocalPackagePath(app.packageUrl);
-      if (toDelete) {
-        try {
-          await fs.promises.unlink(toDelete);
-          this.logger.log(`Deleted package file: ${toDelete}`);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`Failed to delete package file ${toDelete}: ${msg}`);
-        }
+    // R5a：内容寻址后同一路径可能被多条版本快照钉住（同字节不同版本号），它们
+    // 已随上面的级联一起消失；但其他应用行（用户手填 packageUrl 指进本应用
+    // 子树/共用旧扁平文件名）仍可能引用同一文件——逐 URL 全局查引用，无其他
+    // 引用才删（查询失败按有引用处理：宁留孤儿，不误删，同
+    // unlinkSupersededPackage 哲学）。
+    for (const url of packageUrls) {
+      const toDelete = this.resolveLocalPackagePath(url);
+      if (!toDelete) continue;
+      try {
+        if (await this.isPackageUrlReferencedElsewhere(url)) continue;
+        await fs.promises.unlink(toDelete);
+        await this.reclaimEmptyPackageDirs(toDelete);
+        this.logger.log(`Deleted package file: ${toDelete}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Failed to delete package file ${toDelete}: ${msg}`);
       }
     }
     this.logger.log(`Application removed: ${app.name}`);
@@ -1125,6 +1229,9 @@ export class ApplicationService implements OnModuleInit {
    * R18/R9c: map a stored packageUrl to a local file path under
    * uploads/packages, or return null when the URL is remote, malformed, or
    * escapes the upload root (path-traversal / arbitrary-delete guard).
+   * R5a：两种并存形态——旧扁平 `uploads/packages/<name>_<ts>.zip`（单段，
+   * 存量数据原地保留）与新内容寻址 `uploads/packages/<appId>/<sha256>/<name>.zip`
+   * （三段）。其余段数（含更深层嵌套）一律拒绝，路径穿越守卫逐段生效。
    */
   private resolveLocalPackagePath(packageUrl: string): string | null {
     try {
@@ -1134,13 +1241,20 @@ export class ApplicationService implements OnModuleInit {
       const marker = "/uploads/packages/";
       const idx = decoded.indexOf(marker);
       if (idx === -1) return null;
-      const filename = decoded.slice(idx + marker.length);
-      if (!filename || filename.includes("/") || filename.includes("\\")) {
+      const segments = decoded.slice(idx + marker.length).split("/");
+      // 只认两种合法段数：旧扁平（1 段）与新内容寻址（3 段）。两段或更深
+      //（含构造性的半嵌套形态）都不属于任何一版上传写入过的布局，拒绝。
+      if (segments.length !== 1 && segments.length !== 3) return null;
+      if (
+        segments.some(
+          (segment) =>
+            !segment || segment.includes("..") || segment.includes("\\"),
+        )
+      ) {
         return null;
       }
-      if (filename.includes("..")) return null;
       const resolved = path.normalize(
-        path.join(ApplicationService.PACKAGE_UPLOAD_ROOT, filename),
+        path.join(ApplicationService.PACKAGE_UPLOAD_ROOT, ...segments),
       );
       // Containment check: the resolved path must stay inside the upload root.
       if (
@@ -1440,7 +1554,10 @@ export class ApplicationService implements OnModuleInit {
       // 失败收尾用「未终结」谓词而不是 =DEPLOYING：失败路径上状态可能已被别人改成别的
       // 中间态，但**只要还没落到终态**，把这次失败如实记下来仍然是对的。
       const failed = await this.repo.update(
-        { id, status: Not(In([ApplicationStatus.ACTIVE, ApplicationStatus.FAILED])) },
+        {
+          id,
+          status: Not(In([ApplicationStatus.ACTIVE, ApplicationStatus.FAILED])),
+        },
         { status: ApplicationStatus.FAILED },
       );
       if (!failed.affected) {

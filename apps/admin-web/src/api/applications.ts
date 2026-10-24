@@ -203,23 +203,54 @@ export const applicationsApi = {
     client.get<AppReleasesPage>(`/applications/${id}/releases`, {
       params: { page, pageSize },
     }),
-  rollback: (appId: string, targetId: string) =>
-    client.post<{
-      ok: boolean;
-      rolledBackTo: string | null;
-      total: number;
-      succeeded: number;
-      failed: number;
-      /**
-       * P1-14：后端 R16——legacy（无版本快照）行的回滚只恢复 version/commit，
-       * 无法恢复 packageUrl（legacy 行不存历史 packageUrl）。前端必须如实提示，
-       * 否则用户以为连包也回退了。
-       */
-      packageUrlRestored?: boolean;
-    }>(
-      `/applications/${appId}/rollback/${targetId}`,
+  /**
+   * R1（部署模型评审 2026-10-23 §4.2）：旧 rollback 端点（恢复应用字段 + 全量
+   * 下发捆绑）已标 deprecated，UI 拆成两个显式动作——
+   *   · setCurrentVersion 只按版本快照恢复应用当前字段（dispatched 恒 false，
+   *     绝不动部署行/设备）；
+   *   · deployVersion 恢复字段后下发（缺省全部 RUNNING 行；可按执行器点名，
+   *     无部署行/不可下发的执行器进 skipped 明细而非报错）。
+   */
+  setCurrentVersion: (id: string, versionId: string) =>
+    client.post<SetCurrentVersionResult>(`/applications/${id}/set-current-version`, {
+      versionId,
+    }),
+  deployVersion: (id: string, versionId: string, executorIds?: string[]) =>
+    client.post<DeployVersionResult>(
+      `/applications/${id}/deploy-version`,
+      executorIds ? { versionId, executorIds } : { versionId },
     ),
 };
+
+/** R1 §4.2：POST /applications/:id/set-current-version 响应。 */
+export interface SetCurrentVersionResult {
+  ok: boolean;
+  /** 恒 false——本端点不下发任何设备 */
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+}
+
+/** R1 §4.2：POST /applications/:id/deploy-version 响应。 */
+export interface DeployVersionResult {
+  ok: boolean;
+  /** 恒 true——本端点就是下发动作 */
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+  upgraded: Array<{
+    deploymentId: string;
+    executorId: string | null;
+    executorAddress: string | null;
+  }>;
+  /** no_deployment / not_running / upgrade_rejected（detail 带补充信息） */
+  skipped: Array<{
+    executorId: string | null;
+    deploymentId: string | null;
+    reason: 'no_deployment' | 'not_running' | 'upgrade_rejected';
+    detail?: string | null;
+  }>;
+}
 
 /** MUTEX-01：互斥组配置管理（读面全登录用户，写面 ADMIN）。 */
 export const mutexGroupsApi = {

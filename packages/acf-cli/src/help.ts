@@ -123,6 +123,13 @@ export const EXAMPLES: Record<string, string[]> = {
     'acf app upgrade-all <appId>   # full rolling upgrade (default, no body)',
     'acf app upgrade-all <appId> --strategy canary --percentage 20   # canary first, auto-promote after probe',
   ],
+  'app set-current-version': [
+    'acf app set-current-version <appId> <versionId>   # R1 §4.2: restore app fields from a released snapshot ONLY — no devices touched (versionId from: acf app releases <appId>)',
+  ],
+  'app deploy-version': [
+    'acf app deploy-version <appId> <versionId>   # R1 §4.2: restore fields, then upgrade ALL running deployments (same as the deprecated rollback)',
+    'acf app deploy-version <appId> <versionId> --executors <id1,id2> -y   # targeted dispatch; executors without a dispatchable row are skipped, not errors',
+  ],
   'executor list': ['acf executor list', 'acf executor list --json'],
   'executor get': ['acf executor get <executorId> --json'],
   'executor rotate': [

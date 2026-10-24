@@ -1545,3 +1545,108 @@ describe('acf mutex（互斥组命令组）', () => {
     expect(names).toEqual(['create', 'delete', 'list', 'update']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1（2026-10-24 部署模型评审 §4.2）：应用回滚拆分出的两个显式动作。
+// set-current-version 只恢复应用字段（安全半边）；deploy-version 恢复后下发
+// （危险半边，带确认门，skipped 明细分级置退出码）。
+// ---------------------------------------------------------------------------
+describe('acf app set-current-version（R1 §4.2）', () => {
+  it('POSTs /applications/:id/set-current-version with { versionId }', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: false, version: '1.1.0', versionId: 'ver-2',
+    });
+    await run(appsCommand(), 'app set-current-version a1 ver-2');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/a1/set-current-version', { versionId: 'ver-2' });
+  });
+
+  it('--json 直出响应对象', async () => {
+    const result = { ok: true, dispatched: false, version: '1.1.0', versionId: 'ver-2' };
+    mockedPost.mockResolvedValueOnce(result);
+    const out = await jsonOut(() => run(appsCommand(), 'app set-current-version a1 ver-2 --json'));
+    expect(JSON.parse(out)).toEqual(result);
+  });
+});
+
+describe('acf app deploy-version（R1 §4.2）', () => {
+  beforeEach(() => {
+    process.exitCode = undefined;
+    // mockReset（非 clearAllMocks）：一旦某用例在 action 前被 commander 拒绝，
+    // 其 mockResolvedValueOnce 残留会污染后续用例的响应队列。
+    mockedPost.mockReset();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it('缺省 --executors：POST 体只带 versionId（= 全部 RUNNING 行，旧 rollback 语义）', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [{ deploymentId: 'dep-1', executorId: 'exec-1', executorAddress: 'n1:8002' }],
+      skipped: [],
+    });
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --yes');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/a1/deploy-version', { versionId: 'ver-2' });
+  });
+
+  it('--executors <id1,id2>：POST 体带 executorIds 数组（空白段剔除）', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [{ deploymentId: 'dep-1', executorId: 'exec-1', executorAddress: 'n1:8002' }],
+      skipped: [],
+    });
+    // run() 助手按空白切分参数——值里不能带空格；空段（,,）验证 filter(Boolean)
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --executors exec-1,,exec-2 --yes');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/a1/deploy-version', {
+      versionId: 'ver-2',
+      executorIds: ['exec-1', 'exec-2'],
+    });
+  });
+
+  it('全部跳过（upgraded=0）→ 退出码 1（CI 看得见「没下发任何设备」）', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [],
+      skipped: [{ executorId: 'exec-9', deploymentId: null, reason: 'no_deployment' }],
+    });
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --executors exec-9 --yes');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('upgrade_rejected 跳过项 → 退出码 1；纯 no_deployment/not_running 跳过不打红', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [{ deploymentId: 'dep-1', executorId: 'exec-1', executorAddress: 'n1:8002' }],
+      skipped: [
+        { executorId: 'exec-2', deploymentId: 'dep-2', reason: 'not_running', detail: 'status=stopped' },
+        { executorId: 'exec-3', deploymentId: 'dep-3', reason: 'upgrade_rejected', detail: 'conflict' },
+      ],
+    });
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --executors exec-1,exec-2,exec-3 --yes');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('非交互且无 -y 时以用法错误拒绝（不静默假绿）', async () => {
+    const origIsTTY = process.stdin.isTTY;
+    try {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      await expect(run(appsCommand(), 'app deploy-version a1 ver-2')).rejects.toThrow(
+        /process\.exit\(2\)/,
+      );
+      expect(mockedPost).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', {
+        value: origIsTTY,
+        configurable: true,
+      });
+    }
+  });
+
+  it('变异检测：两个子命令必须挂在 app 命令树上（防「写了没接」）', async () => {
+    const names = appsCommand().commands.map((c) => c.name());
+    expect(names).toContain('set-current-version');
+    expect(names).toContain('deploy-version');
+  });
+});

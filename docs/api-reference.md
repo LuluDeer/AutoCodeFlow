@@ -213,7 +213,9 @@ curl -i http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
 | POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级；**DEP-02 新增可选请求体** `rollout` 灰度策略（缺省=all 保持既有全量语义零破坏），契约见「Rollout 灰度发布与健康检查（DEP-02/03）」节 |
 | POST | `/applications/:id/sync-tasks` | 是 | 解析应用 manifest.json 自动注册任务 |
 | POST | `/applications/:id/analyze` | 是 | AI 应用健康分析（聚合全部任务执行统计） |
-| POST | `/applications/:id/rollback/:deploymentId` | 是 | 回滚到指定版本快照/部署记录 |
+| POST | `/applications/:id/set-current-version` | 是 | **R1（部署模型评审 §4.2）**：只按版本快照恢复应用当前字段，**不动部署行/设备**（响应 `dispatched:false`），契约见「应用版本动作（R1 §4.2）」节 |
+| POST | `/applications/:id/deploy-version` | 是 | **R1（部署模型评审 §4.2）**：先做与 set-current-version 相同的字段恢复，再对部署行下发升级（缺省=全部 RUNNING 行；可按 `executorIds` 点名），契约见「应用版本动作（R1 §4.2）」节 |
+| POST | `/applications/:id/rollback/:deploymentId` | 是 | **【deprecated alias】**下一版本删除；等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用上面两个端点 |
 | POST | `/applications/webhook` | 否（HMAC 签名） | CI/CD 触发发版部署；目标应用必须配置 `webhookSecret` 并使用 HMAC 签名 |
 
 **上传应用包（POST /applications/upload）：**
@@ -228,7 +230,11 @@ multipart/form-data 字段：
 
 - 请求经全局 ValidationPipe 校验（whitelist + forbidNonWhitelisted），携带未声明字段会返回 400
 - 按名称 upsert：应用已存在则只更新 `packageUrl`（可选更新 runtime），不存在则创建（初始版本 `1.0.0`）
-- `packageUrl` 由 `API_BASE_URL` 拼接生成：`{API_BASE_URL}/uploads/packages/{filename}`
+- **R5a 内容寻址存储（2026-10-24 起）**：`packageUrl` 由 `API_BASE_URL` 拼接生成，形如 `{API_BASE_URL}/uploads/packages/{appId}/{sha256}/{origName}.zip`——sha256 对上传字节流式计算，落盘路径即 `uploads/packages/<appId>/<sha256>/<origName>.zip`
+  - **同字节天然去重**：同一字节重复上传解析到同一路径与同一 URL——已存在时直接复用既有文件（不重写，mtime 稳定），执行器侧按 URL 键控的 zip 字节缓存（executor-node `.pkg-cache`）跨版本重复执行全部命中缓存，不再重复下载
+  - **首传原子落盘**：暂存文件经 tmp+rename 原子发布；原始文件名收敛为单段安全文件名（剥目录分量、非 `[A-Za-z0-9._-]` 字符替换为 `_`、上限 120 字符），表单 `name` 不再进入文件名
+  - **清理语义**：版本快照仍按 URL 钉住包；内容寻址后同字节不同版本号共享同一路径，同版本重传/删除应用的清理按引用计数判定（无其他快照/应用行引用才删），并 best-effort 回收空 `<sha256>/`、`<appId>/` 目录
+  - **旧数据兼容**：升级前上传的扁平文件 `uploads/packages/<name>_<ts>.zip` 原地保留，其旧 `packageUrl` 继续可访问/可清理，读路径不受影响
 - **`API_BASE_URL` 未配置时直接返回 500（fail-fast）**，不再静默回退 `http://localhost:PORT` 生成不可达 URL
 - **SEC-05 zip bomb 防护（400 拒绝）**：包落库前过中央目录结构守卫——解压比 / 条目数 / 单文件与总量声明上限（env `ZIP_MAX_*` 可调，默认 100 / 10000 / 512 MiB / 1 GiB / 嵌套成员 64 MiB）+ 嵌套 zip 探测 1 层；结构损坏（截断 / CD 尺寸篡改 / zip64 哨兵）同样 400（`Package rejected by zip-bomb guard (<violation>)`）
 - **SEC-05 可选 clamd 扫描（`CLAMD_ENABLED=true` 时）**：上传包流式 INSTREAM 送 ClamAV；**fail-closed**——检出 400，扫描不可达/超时/异常 503（`antivirus scan is unavailable (fail-closed)`）；默认关闭零影响。行为细节见 docs/deployment.md「上传面 zip bomb 防护与病毒扫描」
@@ -353,6 +359,39 @@ Content-Type: application/json
 
 ---
 
+## 应用版本动作：设为当前版本 / 下发到设备（R1，2026-10-24 部署模型评审 §4.2）
+
+旧 `POST /applications/:id/rollback/:id` 把「按版本快照恢复应用当前字段」与「对全部 RUNNING 部署行下发升级」**捆绑为一个动作**——用户只想改回记录面时也被迫重启全部实例（评审 P6）。R1 将其拆为两个显式动作；旧端点保留一版作为 deprecated alias（内部仍是原 `rollbackApplication` 路径，行为逐字节不变），下一版本删除。语义对照另见 `docs/rollback-semantics.md`。
+
+**`POST /api/applications/:id/set-current-version`**（ADMIN）——安全半边：
+
+```json
+{ "versionId": "<application_versions.id（uuid，非 version 号字符串）>" }
+```
+
+- 只按版本快照恢复应用当前字段（`version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime`，与 rollback 快照路径**同一映射与校验**）；**绝不读写部署行、绝不下发任何设备**，响应 `dispatched:false`。
+- 校验与错误码与 rollback 快照路径一致：版本不存在 404（`APP_VERSION_NOT_FOUND`，不走 legacy 部署行回退）；属他应用 400（`APP_ROLLBACK_VERSION_OTHER_APP`）、无版本号 400、非 `released` 400。
+- legacy 部署行（无版本快照的合成行）不支持本端点——只收版本快照主键。
+
+**`POST /api/applications/:id/deploy-version`**（ADMIN）——下发半边：
+
+```json
+{ "versionId": "<uuid>", "executorIds": ["<uuid>", "..."] }
+```
+
+| 字段 | 必填 | 说明 |
+|------|:----:|------|
+| `versionId` | 是 | `application_versions.id`（uuid），须为 `released`——下发前先做与 set-current-version **完全相同**的字段恢复 |
+| `executorIds` | 否 | 缺省 = 该应用**全部 RUNNING 部署行**（与旧 rollback 行为一致）；显式点名 = 仅对这些执行器对应的 RUNNING 部署行逐台下发（重复 id 幂等去重，上限 100） |
+
+- 响应 `{ok, dispatched:true, version, versionId, upgraded:[{deploymentId, executorId, executorAddress}], skipped:[{executorId, deploymentId, reason, detail?}], updatedApp}`。
+- 点名的执行器**无部署行**（`no_deployment`）、**行状态不可下发**（`not_running`，detail 带 `status=<行状态>`）或 **upgrade 链被拒**（`upgrade_rejected`，detail 带原因）时不抛错，进 `skipped` 明细；只有「版本快照校验失败」（不存在/他应用/未发布）才整单 4xx。
+- 下发逐行走既有 `upgrade` 链（`Promise.allSettled` 容错），部署行触发痕迹落 `triggerType=rollback` + 操作人（JWT 用户名；缺省 `operator=null`，与旧 rollback 相同）。
+- **既有 upgrade 语义披露（A-4）**：upgrade 会把部署行的 `startCommand` **覆写为恢复后的 `app.entrypoint`**——部署时自定义过的启动命令在升级后丢失，行上记录的是本次实际推送值。本端点不改此语义，只做披露。
+- CLI：`acf app set-current-version <appId> <versionId>` / `acf app deploy-version <appId> <versionId> [--executors <id1,id2>] [-y]`。
+
+---
+
 ## Rollout 灰度发布与健康检查（DEP-02/03，本轮新增）
 
 **`POST /api/applications/:id/upgrade-all`**（ADMIN）：请求体全可选，**缺省（不传 body 或不传 `rollout`）= `all` 全量升级，既有语义逐字节保持**。批次本体是 admin-api 进程内状态（最低正确形态）：**服务重启即暂停灰度**——启动 sweep 把遗留 `pending/probing` 行标记 `failed`（`rolloutMeta.failureReason = "admin-api restarted — rollout batch not resumed"`），需人工重发；批次硬超时 15 分钟兜底收尾，canary 首批心跳确认宽限窗 120 秒。
@@ -385,7 +424,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 4. 健康探测窗耗尽（`failThreshold` 次 × `interval` 间隔全失败）；
 5. 批次硬超时（15min）。
 
-失败时对**已触发升级且未失败**的部署行自动执行「重新部署上一版本」：取 `application_versions` 中该应用最近一个 `released` 且版本号 ≠ 该行当前 `deployedVersion` 的快照，恢复 snapshot 内 `version/gitCommit/packageUrl/gitBranch/env/entrypoint` 后走既有 `pushDeployToExecutor(upgrade)` 链；行落 `rolled_back`（`rolloutMeta.failureReason` 记录原因）。**无上一版本可回退时 fail-safe**：保持新版本运行并仅标记 `failed`（不人为打红可用部署）。注意：自动回滚只恢复单台 push 载荷，**不回写 applications 表当前版本**——全量回退请走既有 `POST /applications/:id/rollback/:deploymentId`。
+失败时对**已触发升级且未失败**的部署行自动执行「重新部署上一版本」：取 `application_versions` 中该应用最近一个 `released` 且版本号 ≠ 该行当前 `deployedVersion` 的快照，恢复 snapshot 内 `version/gitCommit/packageUrl/gitBranch/env/entrypoint` 后走既有 `pushDeployToExecutor(upgrade)` 链；行落 `rolled_back`（`rolloutMeta.failureReason` 记录原因）。**无上一版本可回退时 fail-safe**：保持新版本运行并仅标记 `failed`（不人为打红可用部署）。注意：自动回滚只恢复单台 push 载荷，**不回写 applications 表当前版本**——全量回退请走 `POST /applications/:id/deploy-version`（先 set-current-version 恢复全局字段，再下发；R1 §4.2 拆分后的新口径）。
 
 **健康检查声明（应用 `manifest.healthCheck`，落 applications.manifest jsonb，零新列）**：
 
@@ -1249,7 +1288,9 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/applications/{id}/analyze` | 应用健康度 AI 分析 |
 | GET | `/applications/{id}/releases` | 列出应用的统一发布记录（版本 × 最新部署） |
 | GET | `/applications/{id}/removal-impact` | 预览删除该应用会破坏什么 |
-| POST | `/applications/{id}/rollback/{deploymentId}` | 将应用回滚到历史版本 |
+| POST | `/applications/{id}/rollback/{deploymentId}` | 将应用回滚到历史版本（deprecated alias，下一版本删除） |
+| POST | `/applications/{id}/set-current-version` | 将应用当前字段设为指定版本快照（不动部署/设备，R1 §4.2） |
+| POST | `/applications/{id}/deploy-version` | 按版本快照恢复应用字段后下发到设备（可按执行器点名，R1 §4.2） |
 | POST | `/applications/{id}/sync-tasks` | 从 manifest.json 同步任务注册 |
 | POST | `/applications/{id}/upgrade-all` | 触发所有运行中实例升级到最新版本 |
 | GET | `/applications/{id}/versions` | 获取应用版本历史 |

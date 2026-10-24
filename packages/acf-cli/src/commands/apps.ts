@@ -48,6 +48,40 @@ interface UpgradeAllResult {
   };
 }
 
+/**
+ * R1（部署模型评审 §4.2）：POST /applications/:id/set-current-version 响应——
+ * 只按版本快照恢复应用当前字段，dispatched 恒 false（不下发任何设备）。
+ */
+interface SetCurrentVersionResult {
+  ok: boolean;
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+}
+
+/**
+ * R1（部署模型评审 §4.2）：POST /applications/:id/deploy-version 响应——
+ * 字段恢复 + 下发。skipped.reason：no_deployment（执行器无部署行）/
+ * not_running（行状态不可下发）/ upgrade_rejected（upgrade 链被拒，真失败）。
+ */
+interface DeployVersionResult {
+  ok: boolean;
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+  upgraded: Array<{
+    deploymentId: string;
+    executorId: string | null;
+    executorAddress: string | null;
+  }>;
+  skipped: Array<{
+    executorId: string | null;
+    deploymentId: string | null;
+    reason: string;
+    detail?: string | null;
+  }>;
+}
+
 function statusColor(s: string): string {
   if (s === 'running') return chalk.green(s);
   if (s === 'stopped') return chalk.gray(s);
@@ -522,6 +556,105 @@ export function appsCommand(): Command {
         }
       } catch (e: unknown) {
         emitError('Failed to trigger upgrade-all', e, { spinner });
+      }
+    });
+
+  // ── R1（2026-10-24 部署模型评审 §4.2）：应用回滚拆出的两个显式动作 ──────
+  // 「设为当前版本」只按版本快照恢复应用当前字段（绝不触碰部署行/设备）；
+  // 「下发到设备」先做同一份字段恢复，再对部署行逐台走 upgrade 链。旧 POST
+  // /applications/:id/rollback/:id 已标 deprecated alias（admin-web 已切双动作），
+  // CLI 不再暴露旧端点——此前 CLI 本就没有 app rollback 子命令，保持不补。
+
+  // acf app set-current-version <appId> <versionId>
+  cmd.command('set-current-version <appId> <versionId>')
+    .description(
+      "Restore the application's current fields from a released version snapshot (version/commit/packageUrl/entrypoint/env/manifest — same mapping as the deprecated rollback). NEVER touches deployment rows or devices; to dispatch use: acf app deploy-version",
+    )
+    .option('--json', 'Emit raw JSON (CI-consumable)')
+    .action(async (appId: string, versionId: string, opts: { json?: boolean }) => {
+      // 安全半边（只改记录面）不设确认门——与 upgrade-all 的 canary 首步同口径。
+      const spinner = ora('Setting current version…').start();
+      try {
+        const r = await post<SetCurrentVersionResult>(
+          `/applications/${appId}/set-current-version`,
+          { versionId },
+        );
+        spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(r, null, 2));
+          return;
+        }
+        spinner.succeed(`Current version set to ${r.version}`);
+        console.log(chalk.gray(`  versionId: ${r.versionId}  dispatched: ${r.dispatched} (no devices touched)`));
+      } catch (e: unknown) {
+        emitError('Failed to set current version', e, { spinner });
+      }
+    });
+
+  // acf app deploy-version <appId> <versionId> [--executors <id1,id2>]
+  cmd.command('deploy-version <appId> <versionId>')
+    .description(
+      'Restore the app fields from the version snapshot, then dispatch an upgrade to its deployment rows (default: ALL running rows, same as the deprecated rollback). Executors without a dispatchable row are reported as skipped, not errors',
+    )
+    .option('--executors <ids>', 'Comma-separated executor ids to dispatch to (default: all running deployment rows of the application)')
+    .option('--json', 'Emit raw JSON (CI-consumable)')
+    .option('-y, --yes', 'Skip the confirmation prompt (the dispatch restarts the selected deployments)', false)
+    .action(async (appId: string, versionId: string, opts: { executors?: string; json?: boolean; yes?: boolean }) => {
+      let executorIds: string[] | undefined;
+      if (opts.executors !== undefined) {
+        executorIds = opts.executors.split(',').map((s) => s.trim()).filter(Boolean);
+        if (executorIds.length === 0) {
+          emitUsageError('--executors must list at least one executor id (comma-separated)');
+        }
+      }
+      // 下发半边会重启所选部署——与 upgrade-all 全量路径同款确认门。
+      const scope = executorIds
+        ? `${executorIds.length} named executor(s)`
+        : 'ALL running deployments';
+      if (
+        !(await confirmDestructive(
+          `Deploy version to ${scope} of ${appId}? (this restarts those deployments)`,
+          { yes: opts.yes },
+        ))
+      ) {
+        return;
+      }
+      const spinner = ora('Dispatching version…').start();
+      try {
+        const r = await post<DeployVersionResult>(`/applications/${appId}/deploy-version`, {
+          versionId,
+          ...(executorIds ? { executorIds } : {}),
+        });
+        spinner.stop();
+        // upgrade_rejected = 有行在 upgrade 链被拒（真失败）；no_deployment /
+        // not_running 是显式点名的预期跳过——CI 只对前者红。
+        const rejected = r.skipped.filter((s) => s.reason === 'upgrade_rejected');
+        if (opts.json) {
+          console.log(JSON.stringify(r, null, 2));
+          if (r.upgraded.length === 0 || rejected.length > 0) process.exitCode = 1;
+          return;
+        }
+        if (r.upgraded.length === 0) {
+          spinner.fail('No deployment was dispatched (all targets skipped)');
+          for (const s of r.skipped) {
+            console.error(chalk.red(`  ${s.executorId ?? s.deploymentId ?? '?'}: ${s.reason}${s.detail ? ` (${s.detail})` : ''}`));
+          }
+          process.exitCode = 1;
+          return;
+        }
+        spinner.succeed(`Version ${r.version} dispatched: ${r.upgraded.length} deployment(s) upgrading`);
+        for (const u of r.upgraded) {
+          console.log(chalk.gray(`  ${u.deploymentId.slice(0, 12)}  executor: ${u.executorId ?? '-'}  ${u.executorAddress ?? ''}`));
+        }
+        if (r.skipped.length > 0) {
+          console.error(chalk.yellow(`  ⚠ ${r.skipped.length} skipped:`));
+          for (const s of r.skipped) {
+            console.error(chalk.yellow(`  ${s.executorId ?? s.deploymentId ?? '?'}: ${s.reason}${s.detail ? ` (${s.detail})` : ''}`));
+          }
+          if (rejected.length > 0) process.exitCode = 1;
+        }
+      } catch (e: unknown) {
+        emitError('Failed to deploy version', e, { spinner });
       }
     });
 

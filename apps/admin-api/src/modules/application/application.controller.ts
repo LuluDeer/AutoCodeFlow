@@ -50,6 +50,8 @@ import {
 } from "./dto/application-response.dto";
 import {
   ApplicationRollbackResponseDto,
+  DeployVersionResponseDto,
+  SetCurrentVersionResponseDto,
   UpgradeAllResponseDto,
 } from "./dto/app-deployment-response.dto";
 import { DeploymentTriggerType } from "./entities/app-deployment.entity";
@@ -58,11 +60,18 @@ import {
   UpdateApplicationDto,
   UploadApplicationDto,
 } from "./dto/application.dto";
+// R1（2026-10-24 部署模型评审 §4.2）：应用回滚拆分出的两个显式动作请求体。
+import {
+  DeployVersionDto,
+  SetCurrentVersionDto,
+} from "./dto/version-actions.dto";
 import { AppReleaseWebhookDto } from "./dto/app-release-webhook.dto";
 import { ListReleasesQueryDto } from "./dto/app-release.dto";
 import { UpgradeAllDto } from "./dto/rollout.dto";
 import * as fs from "fs";
 import * as path from "path";
+// R5a：上传包内容寻址——对暂存字节流式计算 sha256，作为落盘路径成分。
+import { createHash } from "crypto";
 // FEAT-21: HMAC 校验收敛到共享纯函数（与 alerts / 任务 webhook 同源）
 import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
 import type { Request } from "express";
@@ -146,6 +155,45 @@ export class ApplicationController {
     } finally {
       await handle.close();
     }
+  }
+
+  /**
+   * R5a: streaming SHA-256 of the staged package（内容寻址键）。与
+   * readHeadBytes 同款句柄分块读——最大 200 MB 的包逐 1 MB 喂给哈希，
+   * 从不整段进 Node 堆。
+   */
+  private async sha256File(filePath: string): Promise<string> {
+    const hash = createHash("sha256");
+    const handle = await fs.promises.open(filePath, "r");
+    try {
+      const chunk = Buffer.alloc(1024 * 1024);
+      for (;;) {
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+        if (bytesRead === 0) break;
+        hash.update(chunk.subarray(0, bytesRead));
+      }
+    } finally {
+      await handle.close();
+    }
+    return hash.digest("hex");
+  }
+
+  /**
+   * R5a: 把用户提供的原始文件名收敛成单个安全路径段：剥目录分量（两种分隔符
+   * 都剥——旧版浏览器会上报完整 Windows 路径），只保留 [A-Za-z0-9._-]
+   * （与旧扁平命名对表单 name 的清洗同一字符类），拆掉 `..` 连写，去掉前导
+   * 点（express.static 默认 ignore dotfiles，点文件名会 404），超长截断且保住
+   * 已通过上游校验的 `.zip` 后缀。产物直接进 URL 与磁盘路径。
+   */
+  private sanitizePackageFilename(originalname: string): string {
+    const base = path.basename(originalname.replace(/\\/g, "/"));
+    let cleaned = base.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.\.+/g, ".");
+    cleaned = cleaned.replace(/^\.+/, "");
+    if (!cleaned.toLowerCase().endsWith(".zip")) {
+      cleaned = `${cleaned || "package"}.zip`;
+    }
+    if (cleaned.length > 120) cleaned = `${cleaned.slice(0, 116)}.zip`;
+    return cleaned;
   }
 
   @Get()
@@ -389,35 +437,24 @@ export class ApplicationController {
         throw new AppError(ErrorCode.APP_UPLOAD_BASE_URL_NOT_CONFIGURED);
       }
 
-      // Land the staged package in the persistent uploads directory (served as
-      // static files). The file already lives on disk — move it into place with
-      // an atomic rename (staging dir is on the same volume as uploads/packages),
-      // falling back to copy+unlink for cross-volume mounts.
-      const uploadsDir = path.join(process.cwd(), "uploads", "packages");
-      if (!fs.existsSync(uploadsDir))
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "_");
-      const filename = `${safeName}_${Date.now()}.zip`;
-      const zipPath = path.join(uploadsDir, filename);
-      try {
-        await fs.promises.rename(tmpPath, zipPath);
-      } catch {
-        await fs.promises.copyFile(tmpPath, zipPath);
-      }
-      const packageUrl = `${apiBase}/uploads/packages/${filename}`;
+      // R5a（内容寻址，评审 §4.5/§九 5a）：对暂存字节流式计算 sha256——同字节
+      // 重复上传得到同一路径/同一 URL（执行器按 URL 键控的 zip 字节缓存天然
+      // 去重命中），URL 与字节内容绑定，天然可校验。
+      const sha = await this.sha256File(tmpPath);
 
       // P1-11：解析 zip 内 manifest.json，回填 manifest/entrypoint/runtime。
       // 与 git 部署路径（application.service.deployFromGit）对齐——此前 zip 上传
       // 完全不解析 manifest，entrypoint 只能靠人手填，填错就部署失败。
+      // R5a：解析提前到建行/落盘之前——内容寻址路径嵌 <appId>，应用行必须先于
+      // 文件存在，而 create 的回填字段需要 manifest 值，故 manifest 必须最先解
+      // 析（此刻暂存文件必然存在，不存在历史上「rename 之后读 tmpPath」的时序）。
       // 容错：找不到/损坏/非法 JSON 只 warn，不阻断上传（manifest 是增强不是闸门）。
       // 优先级：用户在表单显式选的 runtime > manifest.runtime > 既有值。
       let manifestParsed: Record<string, unknown> | undefined;
       let manifestEntrypoint: string | undefined;
       let manifestRuntime: string | undefined;
       try {
-        // BUGFIX：rename/copy 之后 tmpPath 已不存在，必须读落地后的 zipPath；
-        // 此前读 tmpPath 恒 ENOENT → manifest 解析静默失败，entrypoint 永不回填。
-        const manifestText = readManifestFromZip(zipPath);
+        const manifestText = readManifestFromZip(tmpPath);
         if (manifestText) {
           const parsed: unknown = JSON.parse(manifestText);
           if (parsed && typeof parsed === "object") {
@@ -445,48 +482,87 @@ export class ApplicationController {
         );
       }
 
-      // Upsert the application record: create if not exists, update packageUrl if exists.
-      // This makes upload idempotent and supports iterative releases.
+      // R5a：内容寻址路径嵌 <appId>，应用行必须先于文件落地存在。已有应用直接
+      // 用其 id；新应用先建行（暂不带 packageUrl——URL 由 appId+sha 唯一决定，
+      // 下方 update 对两条分支统一写入，最终行仍带完整 packageUrl）。
+      const existing = await this.svc.findByName(name);
       let app;
-      try {
-        const existing = await this.svc.findByName(name);
-        if (existing) {
-          app = await this.svc.update(
-            existing.id,
-            {
-              packageUrl,
-              ...(runtime ? { runtime } : {}),
-              ...(!runtime && manifestRuntime
-                ? { runtime: manifestRuntime }
-                : {}),
-              // 上传即产生版本（方案 A）：表单显式提供的 version 覆盖既有值，
-              // 使本次上传在 application_versions 里成为可回滚的新版本。
-              ...(version ? { version } : {}),
-              ...(manifestParsed ? { manifest: manifestParsed } : {}),
-              ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
-            },
-            user,
-          );
-        } else {
-          app = await this.svc.create(
-            {
-              name,
-              packageUrl,
-              runtime: runtime || manifestRuntime || "python",
-              version: version || "1.0.0",
-              ...(manifestParsed ? { manifest: manifestParsed } : {}),
-              ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
-            },
-            user,
-          );
-        }
-      } catch (err: unknown) {
-        // R9b: DB upsert failed after the file landed — best-effort unlink so
-        // the failed upload does not leave an orphan file behind.
+      if (existing) {
+        app = existing;
+      } else {
+        app = await this.svc.create(
+          {
+            name,
+            runtime: runtime || manifestRuntime || "python",
+            version: version || "1.0.0",
+            ...(manifestParsed ? { manifest: manifestParsed } : {}),
+            ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
+          },
+          user,
+        );
+      }
+
+      // Land the staged package at the content-addressed location
+      // uploads/packages/<appId>/<sha256>/<origName>.zip (served as static
+      // files; <appId>/<sha256> 目录按需创建). The file already lives on
+      // disk — move it into place with an atomic rename (staging dir is on
+      // the same volume as uploads/packages), falling back to copy+unlink
+      // for cross-volume mounts. Same bytes re-uploaded resolve to the exact
+      // same path: reuse the existing file verbatim instead of rewriting it
+      // (stable mtime, no partial-overwrite window for concurrent uploads
+      // of the same package); the staged temp file is then simply discarded
+      // by the finally block below.
+      const uploadsDir = path.join(process.cwd(), "uploads", "packages");
+      const targetDir = path.join(uploadsDir, app.id, sha);
+      if (!fs.existsSync(targetDir))
+        fs.mkdirSync(targetDir, { recursive: true });
+      const origName = this.sanitizePackageFilename(file.originalname);
+      const zipPath = path.join(targetDir, origName);
+      let landedFresh = false;
+      if (!fs.existsSync(zipPath)) {
         try {
-          await fs.promises.unlink(zipPath);
+          await fs.promises.rename(tmpPath, zipPath);
         } catch {
-          // best-effort
+          await fs.promises.copyFile(tmpPath, zipPath);
+        }
+        landedFresh = true;
+      }
+      const packageUrl = `${apiBase}/uploads/packages/${app.id}/${sha}/${origName}`;
+
+      // Upsert the application fields (create-if-not-exists already happened
+      // above to pin the appId): a single update pins the freshly computed
+      // packageUrl plus the form/manifest overrides. This keeps upload
+      // idempotent and supports iterative releases.
+      try {
+        app = await this.svc.update(
+          app.id,
+          {
+            packageUrl,
+            ...(runtime ? { runtime } : {}),
+            ...(!runtime && manifestRuntime
+              ? { runtime: manifestRuntime }
+              : {}),
+            // 上传即产生版本（方案 A）：表单显式提供的 version 覆盖既有值，
+            // 使本次上传在 application_versions 里成为可回滚的新版本。
+            ...(version ? { version } : {}),
+            ...(manifestParsed ? { manifest: manifestParsed } : {}),
+            ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
+          },
+          user,
+        );
+      } catch (err: unknown) {
+        // R9b: DB update failed after the file landed — best-effort unlink so
+        // the failed upload does not leave an orphan file behind.
+        // R5a: only a file THIS request landed may be cleaned — a reused
+        // content-addressed file can still be pinned by other version
+        // snapshots (same bytes previously uploaded under another version
+        // number), deleting it would break those rollback targets.
+        if (landedFresh) {
+          try {
+            await fs.promises.unlink(zipPath);
+          } catch {
+            // best-effort
+          }
         }
         throw err;
       }
@@ -690,13 +766,67 @@ export class ApplicationController {
     return this.svc.analyzeHealth(id);
   }
 
+  // ── R1（2026-10-24 部署模型评审 §4.2）：应用回滚拆分为两个显式动作 ──────
+  // 旧 /rollback 把「按版本快照恢复应用当前字段」与「全量下发到 RUNNING 部署」
+  // 捆绑：只想改回记录面也被迫重启全部实例。下面两个端点把动作拆开；旧端点
+  // 保留为 deprecated alias（见下）。权限/限流对齐旧 rollback 写面（ADMIN +
+  // OPS_THROTTLE；旧端点本无独立审计落证，新端点同样不新增）。
+
+  // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
+  @Post(":id/set-current-version")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "将应用当前字段设为指定版本快照（不动部署/设备）",
+    description:
+      "R1（部署模型评审 §4.2）：只按 application_versions 快照恢复应用当前字段（version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime，与 rollback 同一映射），绝不触碰部署行与设备。响应 dispatched:false。校验与错误码与 rollback 快照路径一致（版本存在 404、属本应用/已发布 400）",
+  })
+  @ApiCreatedResponse({ type: SetCurrentVersionResponseDto })
+  async setCurrentVersion(
+    @Param("id") appId: string,
+    @Body() dto: SetCurrentVersionDto,
+  ) {
+    return this.deploymentSvc.setCurrentVersion(appId, dto.versionId);
+  }
+
+  // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
+  @Post(":id/deploy-version")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "按版本快照恢复应用字段后下发到设备（可按执行器点名）",
+    description:
+      "R1（部署模型评审 §4.2）：先执行与 set-current-version 完全相同的字段恢复，再下发。executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有 upgrade 链（部署行 startCommand 会被覆写为恢复后的 app.entrypoint——既有 upgrade 语义）。执行器无部署行/行状态不可下发的进响应 skipped 明细（no_deployment/not_running/upgrade_rejected），不报错。部署行触发痕迹落 triggerType=rollback + 操作人（该端点为旧「应用回滚」拆出的下发半边）",
+  })
+  @ApiCreatedResponse({ type: DeployVersionResponseDto })
+  async deployVersion(
+    @Param("id") appId: string,
+    @Body() dto: DeployVersionDto,
+    // FEAT-20: 下发链逐行落 rollback 语义 + 操作人用户名。
+    @CurrentUser() user: { id: number; username: string },
+  ) {
+    return this.deploymentSvc.deployVersion(
+      appId,
+      dto.versionId,
+      dto.executorIds,
+      user
+        ? {
+            operator: user.username,
+            triggerType: DeploymentTriggerType.ROLLBACK,
+          }
+        : undefined,
+    );
+  }
+
   // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/rollback/:deploymentId")
   @Roles(UserRole.ADMIN)
   @ApiOperation({
-    description: "从版本快照或历史部署记录恢复应用字段，然后触发运行中实例升级",
-    summary: "将应用回滚到历史版本",
+    deprecated: true,
+    description:
+      "【deprecated】下一版本删除。等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用 POST /applications/:id/set-current-version 与 POST /applications/:id/deploy-version",
+    summary: "将应用回滚到历史版本（deprecated alias）",
   })
   @ApiCreatedResponse({ type: ApplicationRollbackResponseDto })
   async rollback(

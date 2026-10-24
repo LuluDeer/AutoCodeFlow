@@ -755,6 +755,30 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return updateDto;
   }
 
+  /**
+   * R1（2026-10-24 部署模型评审 §4.2）：rollbackApplication 快照路径的三重守卫
+   * 抽段——setCurrentVersion / deployVersion 与 rollbackApplication 共用同一份
+   * 校验与错误码（属本应用 → 有版本号 → released），三个写面口径永不漂移。
+   */
+  private assertVersionRestorable(
+    appId: string,
+    version: {
+      applicationId: string;
+      version: string | null;
+      status: string | null;
+    },
+  ): void {
+    if (version.applicationId !== appId) {
+      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_OTHER_APP);
+    }
+    if (!version.version) {
+      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NO_NUMBER);
+    }
+    if (version.status !== "released") {
+      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NOT_RELEASED);
+    }
+  }
+
   async rollbackApplication(
     appId: string,
     targetId: string,
@@ -766,15 +790,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const app = await this.appService.findByIdRaw(appId);
     const version = await this.versionRepo.findOne({ where: { id: targetId } });
     if (version) {
-      if (version.applicationId !== appId) {
-        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_OTHER_APP);
-      }
-      if (!version.version) {
-        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NO_NUMBER);
-      }
-      if (version.status !== "released") {
-        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NOT_RELEASED);
-      }
+      this.assertVersionRestorable(appId, version);
 
       const updatedApp = await this.appService.update(
         appId,
@@ -831,6 +847,182 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       packageUrlRestored: false,
       updatedApp,
     };
+  }
+
+  /**
+   * R1（2026-10-24 部署模型评审 §4.2）：「设为当前版本」——只按版本快照恢复
+   * 应用当前字段（与 rollbackApplication 前半段同一映射/校验/错误码），**绝不
+   * 触碰部署行/设备**。旧 rollback 把「恢复字段」与「全量下发」捆绑成一个动作，
+   * 用户只想改回记录面时也被迫重启全部实例；本端点是拆出的安全半边。
+   */
+  async setCurrentVersion(appId: string, versionId: string) {
+    // R1: 与 rollbackApplication 同源——快照恢复写回的 env 必须是原始值，
+    // 绕过 appService.findById 的读面掩码。
+    const app = await this.appService.findByIdRaw(appId);
+    const version = await this.versionRepo.findOne({
+      where: { id: versionId },
+    });
+    if (!version) {
+      // 旧 rollback 对查无版本走 legacy 部署行回退；本端点只收 versionId
+      // （版本快照主键），查无即 404，不再隐式落到部署行语义。
+      throw new AppError(ErrorCode.APP_VERSION_NOT_FOUND, { versionId });
+    }
+    this.assertVersionRestorable(appId, version);
+
+    const updatedApp = await this.appService.update(
+      appId,
+      this.buildVersionRestoreDto(app, version)!,
+    );
+    return {
+      ok: true,
+      dispatched: false,
+      version: version.version,
+      versionId: version.id,
+      updatedApp,
+    };
+  }
+
+  /**
+   * R1（2026-10-24 部署模型评审 §4.2）：「下发到设备」——先执行与
+   * setCurrentVersion 完全相同的字段恢复，再下发：
+   *   · executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；
+   *   · 显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有
+   *     upgrade 链；无部署行/行状态不可下发的执行器不抛错，进 skipped 明细。
+   */
+  async deployVersion(
+    appId: string,
+    versionId: string,
+    executorIds?: string[],
+    trigger?: DeploymentTriggerContext,
+  ) {
+    const app = await this.appService.findByIdRaw(appId);
+    const version = await this.versionRepo.findOne({
+      where: { id: versionId },
+    });
+    if (!version) {
+      throw new AppError(ErrorCode.APP_VERSION_NOT_FOUND, { versionId });
+    }
+    this.assertVersionRestorable(appId, version);
+
+    const updatedApp = await this.appService.update(
+      appId,
+      this.buildVersionRestoreDto(app, version)!,
+    );
+    // 沿用旧 rollback 的触发痕迹语义（本端点即其拆出的下发半边）。
+    const effectiveTrigger = trigger ?? {
+      operator: null,
+      triggerType: DeploymentTriggerType.ROLLBACK,
+    };
+
+    const upgraded: Array<{
+      deploymentId: string;
+      executorId: string | null;
+      executorAddress: string | null;
+    }> = [];
+    const skipped: Array<{
+      executorId: string | null;
+      deploymentId: string | null;
+      reason: string;
+      detail?: string;
+    }> = [];
+
+    if (!executorIds || executorIds.length === 0) {
+      // 缺省 = 旧 rollback 语义：全部 RUNNING 行逐台 upgrade（allSettled 容错）。
+      const running = await this.findRunningByApp(appId);
+      await this.collectVersionDispatch(running, effectiveTrigger, {
+        upgraded,
+        skipped,
+      });
+    } else {
+      // 显式点名：按执行器分组核对部署行，无行/不可下发的进 skipped 而非报错。
+      const rows = await this.findAllByApp(appId);
+      const seen = new Set<string>();
+      for (const executorId of executorIds) {
+        if (seen.has(executorId)) continue; // 重复 id 幂等去重
+        seen.add(executorId);
+        const matching = rows.filter((d) => d.executorId === executorId);
+        if (matching.length === 0) {
+          skipped.push({
+            executorId,
+            deploymentId: null,
+            reason: "no_deployment",
+          });
+          continue;
+        }
+        const runnable = matching.filter(
+          (d) => d.status === DeploymentStatus.RUNNING,
+        );
+        if (runnable.length === 0) {
+          // findAllByApp 按 createdAt DESC——用最新一行说明不可下发的原因。
+          const latest = matching[0];
+          skipped.push({
+            executorId,
+            deploymentId: latest.id,
+            reason: "not_running",
+            detail: `status=${latest.status}`,
+          });
+          continue;
+        }
+        await this.collectVersionDispatch(runnable, effectiveTrigger, {
+          upgraded,
+          skipped,
+        });
+      }
+    }
+
+    return {
+      ok: true,
+      dispatched: true,
+      version: version.version,
+      versionId: version.id,
+      upgraded,
+      skipped,
+      updatedApp,
+    };
+  }
+
+  /** deployVersion 的逐台下发收集器：fulfilled → upgraded；rejected → skipped
+   *  （reason=upgrade_rejected，detail 带原始 message）。缺省/显式两路径共用，
+   *  保证两路径的 upgrade 链语义逐字节一致。 */
+  private async collectVersionDispatch(
+    rows: AppDeployment[],
+    trigger: DeploymentTriggerContext,
+    out: {
+      upgraded: Array<{
+        deploymentId: string;
+        executorId: string | null;
+        executorAddress: string | null;
+      }>;
+      skipped: Array<{
+        executorId: string | null;
+        deploymentId: string | null;
+        reason: string;
+        detail?: string;
+      }>;
+    },
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      rows.map((d) => this.upgrade(d.id, trigger)),
+    );
+    results.forEach((r, i) => {
+      const d = rows[i];
+      if (r.status === "fulfilled") {
+        out.upgraded.push({
+          deploymentId: d.id,
+          executorId: d.executorId ?? null,
+          executorAddress: d.executorAddress ?? null,
+        });
+      } else {
+        const msg =
+          r.reason instanceof Error ? r.reason.message : String(r.reason);
+        out.skipped.push({
+          executorId: d.executorId ?? null,
+          deploymentId: d.id,
+          reason: "upgrade_rejected",
+          detail: msg,
+        });
+      }
+    });
   }
 
   /**
@@ -1889,8 +2081,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     await this.failDeploymentIfInFlight(deployment, exhaustedMsg);
   }
 
-
-
   /**
    * R34-A2（ADR-026）：推送**成功**路径的状态写也必须条件化。
    *
@@ -2742,10 +2932,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // _QueryDeepPartialEntity 深度收窄（字面量报 TS2322），故用一次窄化断言；
       // 这只是编译期问题，退回 save() 会重新引入「覆盖并发列」的真实缺陷。
       // adr-026-exempt: 只写 rolloutMeta 一列（租约心跳，advisory）；不碰任何状态列。
-      await this.repo.update(
-        { id },
-        { rolloutMeta: nextMeta } as unknown as Parameters<typeof this.repo.update>[1],
-      );
+      await this.repo.update({ id }, {
+        rolloutMeta: nextMeta,
+      } as unknown as Parameters<typeof this.repo.update>[1]);
       row.rolloutMeta = nextMeta;
     } catch {
       // 租约刷新是尽力而为（失败仅影响滚动重启时的 sweep 判据）

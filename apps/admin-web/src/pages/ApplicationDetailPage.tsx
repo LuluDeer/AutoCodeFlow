@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 // MODAL-01：命令式 Modal 从 utils/modal 取（吃暗色主题 + i18n locale）；
-// 本文件只用命令式 Modal.*，无 <Modal> JSX 组件，故整块从 antd 导入中移除。
+// R1（部署模型评审 §4.2）的下发弹窗是带勾选状态的受控 <Modal> 组件（在 React
+// 树内，本就消费主题/locale），按 utils/modal 头注从 antd 导入为 AntdModal。
 import { Modal } from '../utils/modal';
-import { Descriptions,
+import { Modal as AntdModal,
+  Checkbox,
+  Descriptions,
   Badge,
   Card,
   Table,
@@ -30,7 +33,15 @@ import {
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { applicationsApi, Application, VersionHistoryEntry, AppReleaseRow } from '../api/applications';
+import {
+  applicationsApi,
+  deploymentsApi,
+  Application,
+  VersionHistoryEntry,
+  AppReleaseRow,
+  AppDeployment,
+  DeployVersionResult,
+} from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
@@ -499,7 +510,9 @@ type VersionRecord = VersionHistoryEntry;
 function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload: () => Promise<void> }) {
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [rollingBack, setRollingBack] = useState<string | null>(null);
+  // R1（部署模型评审 §4.2）：旧单一「回滚」拆为「设为当前版本」+「下发到设备」，
+  // 行级 loading 各自独立。
+  const [settingKey, setSettingKey] = useState<string | null>(null);
   // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
   const { nameOf } = useExecutorNames();
   // UX-05：同 TasksTab——失败只弹 message，records 保持 []，表格 emptyText 显示
@@ -507,6 +520,20 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const [loadError, setLoadError] = useState<unknown>(null);
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
+
+  // ── R1 §4.2「下发到设备」弹窗状态 ─────────────────────────────────
+  const [deployTarget, setDeployTarget] = useState<{
+    key: string;
+    versionId: string;
+    version: string | null;
+  } | null>(null);
+  // null=清单读取中（弹窗内 Spin）
+  const [deployRows, setDeployRows] = useState<AppDeployment[] | null>(null);
+  // undefined=未知（读取中/读取失败不误导）；null=快照无 packageUrl；string=有。
+  const [deployPkgUrl, setDeployPkgUrl] = useState<string | null | undefined>(undefined);
+  // 勾选缺省 = 全部 RUNNING 行的执行器（与旧 rollback 缺省行为一致）
+  const [checkedExecutors, setCheckedExecutors] = useState<string[]>([]);
+  const [deploying, setDeploying] = useState(false);
 
   const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
 
@@ -519,31 +546,95 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 
   useEffect(() => { fetchVersions(); }, [fetchVersions]);
 
-  const handleRollback = async (targetId: string, version: string | null) => {
+  /** R1 §4.2：「设为当前版本」——安全半边，只按快照恢复应用字段，不动任何设备。 */
+  const handleSetCurrent = (key: string, record: VersionRecord) => {
     Modal.confirm({
-      title: t('appDetail.history.rollbackConfirm'),
-      content: t('appDetail.history.rollbackContent', { version: version ?? t('appDetail.unknown') }),
-      okText: t('appDetail.history.rollbackOk'),
-      okType: 'danger',
+      title: t('appDetail.history.setCurrentConfirm'),
+      content: t('appDetail.history.setCurrentContent', { version: record.version ?? t('appDetail.unknown') }),
+      okText: t('appDetail.history.setCurrentOk'),
       cancelText: t('appDetail.cancel'),
       onOk: async () => {
-        setRollingBack(targetId);
+        setSettingKey(key);
         try {
-          const res = await applicationsApi.rollback(app.id, targetId);
-          message.success(t('appDetail.history.rolledBack', { version: res.rolledBackTo ?? version ?? t('appDetail.unknown'), count: res.total ?? 0 }));
-          // P1-14：R16——legacy 行回滚不恢复 packageUrl。旧实现无任何提示，用户以为
-          // 连包也回退了；这里显式 warning 暴露后端的 packageUrlRestored=false。
-          if (res.packageUrlRestored === false) {
-            message.warning(t('appDetail.history.rollbackPkgNotRestored'));
-          }
+          const res = await applicationsApi.setCurrentVersion(app.id, record.id!);
+          message.success(t('appDetail.history.setCurrentDone', { version: res.version }));
           await Promise.all([fetchVersions(), onAppReload()]);
         } catch (err: unknown) {
-          showApiError(err, t('appDetail.history.rollbackFail'));
+          showApiError(err, t('appDetail.history.setCurrentFail'));
         } finally {
-          setRollingBack(null);
+          setSettingKey(null);
         }
       },
     });
+  };
+
+  /** R1 §4.2：「下发到设备」——打开弹窗：拉部署行勾选面 + /releases 的
+   * packageUrl 前置展示（P1-14 前置版：取代事后 packageUrlRestored warning，
+   * getReleases 每版本行本就带 packageUrl，无需新读面）。 */
+  const openDeployModal = async (record: VersionRecord) => {
+    if (!record.id) return;
+    setDeployTarget({ key: getVersionKey(record), versionId: record.id, version: record.version });
+    setDeployRows(null);
+    setDeployPkgUrl(undefined);
+    setCheckedExecutors([]);
+    try {
+      const [deps, releases] = await Promise.all([
+        deploymentsApi.list(app.id, 1, 100),
+        // packageUrl 是确认前的提示信息，读取失败不阻断下发面（保持 undefined）
+        applicationsApi.getReleases(app.id, 1, 200).catch(() => null),
+      ]);
+      const rows = deps.data ?? [];
+      setDeployRows(rows);
+      setCheckedExecutors([
+        ...new Set(
+          rows
+            .filter((d) => d.status === 'running')
+            .map((d) => d.executorId)
+            .filter((x): x is string => !!x),
+        ),
+      ]);
+      const release = releases ? (releases.data.find((r) => r.id === record.id) ?? null) : null;
+      setDeployPkgUrl(release ? release.packageUrl : undefined);
+    } catch (err: unknown) {
+      // 部署行拉不到 = 无从安全勾选，如实报错并关闭弹窗（不静默空列表假装没设备）
+      showApiError(err, t('appDetail.history.deployFail'));
+      setDeployTarget(null);
+    }
+  };
+
+  const closeDeployModal = () => {
+    setDeployTarget(null);
+    setDeployRows(null);
+    setCheckedExecutors([]);
+  };
+
+  /** skipped 明细本地化（reason 稳定码 → 文案；detail 带状态/原因补充）。 */
+  const skipReasonText = (s: DeployVersionResult['skipped'][number]): string =>
+    s.reason === 'no_deployment'
+      ? t('appDetail.history.skip.noDeployment')
+      : s.reason === 'not_running'
+        ? t('appDetail.history.skip.notRunning', { detail: s.detail ?? '' })
+        : t('appDetail.history.skip.upgradeRejected', { detail: s.detail ?? '' });
+
+  const confirmDeploy = async () => {
+    if (!deployTarget || checkedExecutors.length === 0) return;
+    setDeploying(true);
+    try {
+      const res = await applicationsApi.deployVersion(app.id, deployTarget.versionId, checkedExecutors);
+      message.success(t('appDetail.history.deployDone', { version: res.version, count: res.upgraded.length }));
+      if (res.skipped.length > 0) {
+        message.warning(
+          t('appDetail.history.deploySkipped', { count: res.skipped.length }) +
+            res.skipped.map((s) => `${s.executorId ?? s.deploymentId ?? '?'}: ${skipReasonText(s)}`).join('；'),
+        );
+      }
+      closeDeployModal();
+      await Promise.all([fetchVersions(), onAppReload()]);
+    } catch (err: unknown) {
+      showApiError(err, t('appDetail.history.deployFail'));
+    } finally {
+      setDeploying(false);
+    }
   };
 
   return (
@@ -606,7 +697,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
             },
           },
           {
-            title: t('appDetail.col.actions'), width: 90, align: 'center' as const,
+            title: t('appDetail.col.actions'), width: 176, align: 'center' as const,
             render: (_: unknown, record: VersionRecord) => {
               const currentRecord =
                 records.find(r => r.version === app.version && (!app.gitCommit || !r.commit || r.commit === app.gitCommit)) ??
@@ -616,37 +707,130 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
               // P1-14：旧判据 `!!record.id && record.status !== 'released'` 对 legacy
               // 行（id 恒为 null）永远 false——即使该行 failed/deploying 也能点回滚，
               // 与后端 legacy 路径的守卫（无 deployedVersion 则 400）脱节。
-              // 对齐后端两条路径：
-              //   · 有快照 id：后端只允许 released 版本回滚；
-              //   · legacy 行：后端要求有 version，且失败/进行中行不应回滚。
-              const rollbackDisabled = record.id
+              // 对齐后端：仅已发布版本可操作；legacy 行无版本快照 id，两个新动作
+              // 均不支持（旧 rollback alias 仍可在服务端处理，UI 不再暴露）。
+              const notReleased = record.id
                 ? record.status !== 'released'
                 : !record.version || ['failed', 'deploying', 'upgrading', 'pending'].includes(record.status);
+              const hasSnapshot = !!record.id;
+              const disabled = !hasSnapshot || notReleased || !isAdmin;
+              const tooltip = !hasSnapshot
+                ? t('appDetail.history.noSnapshot')
+                : notReleased
+                  ? t('appDetail.history.actionReleasedOnly')
+                  : !isAdmin
+                    ? t('appDetail.history.actionAdminOnly')
+                    : undefined;
               if (isCurrent) return <Tag color="green">{t('appDetail.history.currentVersion')}</Tag>;
+              // R1 §4.2：安全动作（设为当前版本，默认色）+ 危险动作（下发到设备，
+              // danger 色）分立，恢复记录面不再隐式重启全部实例。
               return (
-                <Tooltip title={rollbackDisabled ? t('appDetail.history.rollbackReleasedOnly') : !isAdmin ? t('appDetail.history.rollbackAdminOnly') : undefined}>
-                  <Button
-                    size="small"
-                    danger
-                    disabled={rollbackDisabled || !isAdmin}
-                    loading={rollingBack === key}
-                    onClick={() => handleRollback(key, record.version)}
-                  >
-                    {t('appDetail.history.rollback')}
-                  </Button>
-                </Tooltip>
+                <Space size={4}>
+                  <Tooltip title={tooltip}>
+                    <Button
+                      size="small"
+                      disabled={disabled}
+                      loading={settingKey === key}
+                      onClick={() => hasSnapshot && handleSetCurrent(key, record)}
+                    >
+                      {t('appDetail.history.setCurrent')}
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title={tooltip}>
+                    <Button
+                      size="small"
+                      danger
+                      disabled={disabled}
+                      onClick={() => hasSnapshot && openDeployModal(record)}
+                    >
+                      {t('appDetail.history.deploy')}
+                    </Button>
+                  </Tooltip>
+                </Space>
               );
             },
           },
         ]}
         dataSource={records}
         loading={loading} size="small"
-        // UI 打磨：固定列合计 590 + executor 弹性列最小宽，补 scroll.x 防窄屏挤压
-        scroll={{ x: 780 }}
+        // UI 打磨：固定列合计 590 + 双动作列 176 + executor 弹性列最小宽，补 scroll.x 防窄屏挤压
+        scroll={{ x: 880 }}
         pagination={{ pageSize: 20, showTotal: (n) => t('appDetail.count', { count: n }) }}
         locale={{ emptyText: t('appDetail.history.empty') }}
       />
       )}
+
+      {/* R1 §4.2：下发到设备弹窗——按执行器勾选部署行（仅 RUNNING 可下发），
+          packageUrl 前置展示取代事后 packageUrlRestored warning。 */}
+      <AntdModal
+        open={!!deployTarget}
+        title={t('appDetail.history.deployTitle', { version: deployTarget?.version ?? '' })}
+        okText={t('appDetail.history.deployOk')}
+        okButtonProps={{ danger: true, disabled: checkedExecutors.length === 0 }}
+        confirmLoading={deploying}
+        cancelText={t('appDetail.cancel')}
+        onCancel={closeDeployModal}
+        onOk={confirmDeploy}
+        destroyOnHidden
+      >
+        {deployPkgUrl !== undefined &&
+          (deployPkgUrl === null ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t('appDetail.history.deployPkgMissing')}
+            />
+          ) : (
+            <Alert
+              type="success"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t('appDetail.history.deployPkgPresent', { url: deployPkgUrl })}
+            />
+          ))}
+        {deployRows === null ? (
+          <Spin style={{ display: 'block', margin: '16px auto' }} />
+        ) : deployRows.length === 0 ? (
+          <Empty description={t('appDetail.history.deployEmpty')} />
+        ) : (
+          <>
+            {deployRows.map((d) => {
+              const name = nameOf(d);
+              const label = name ? `${name} (${d.executorAddress})` : (d.executorAddress ?? d.id);
+              // 仅 RUNNING 且带执行器 id 的行可勾选；其余行如实展示状态（不可下发）
+              const canDispatch = d.status === 'running' && !!d.executorId;
+              return (
+                <div
+                  key={d.id}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}
+                >
+                  <Checkbox
+                    checked={!!d.executorId && checkedExecutors.includes(d.executorId)}
+                    disabled={!canDispatch}
+                    onChange={(e) => {
+                      if (!d.executorId) return;
+                      setCheckedExecutors((prev) =>
+                        e.target.checked
+                          ? [...new Set([...prev, d.executorId!])]
+                          : prev.filter((x) => x !== d.executorId),
+                      );
+                    }}
+                  >
+                    {label}
+                  </Checkbox>
+                  <Tag color={RELEASE_DEPLOY_STATUS_COLOR[d.status] ?? 'default'}>
+                    {releaseStatusLabel(d.status, t) ?? d.status}
+                  </Tag>
+                </div>
+              );
+            })}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('appDetail.history.deployHint')}
+            </Typography.Text>
+          </>
+        )}
+      </AntdModal>
     </Card>
   );
 }

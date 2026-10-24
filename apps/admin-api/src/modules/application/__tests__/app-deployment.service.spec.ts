@@ -1025,6 +1025,216 @@ describe("AppDeploymentService", () => {
     });
   });
 
+  // R1（2026-10-24 部署模型评审 §4.2）：回滚拆分出的两个显式动作。
+  describe("setCurrentVersion / deployVersion（R1 §4.2 拆分）", () => {
+    const releasedVersion = {
+      id: "version-1",
+      applicationId: "app-1",
+      version: "1.0.0",
+      gitCommit: "abc123",
+      status: "released",
+      snapshot: {
+        version: "1.0.0",
+        runtime: "node",
+        gitBranch: "release",
+        packageUrl: "http://packages/app.zip",
+        env: { NODE_ENV: "production" },
+        entrypoint: "node app.js",
+        manifest: { tasks: [] },
+      },
+    };
+
+    it("setCurrentVersion：恢复应用字段且绝不触碰部署行（dispatched:false）", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+
+      const result = await service.setCurrentVersion("app-1", "version-1");
+
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        expect.objectContaining({
+          version: "1.0.0",
+          gitCommit: "abc123",
+          gitBranch: "release",
+          packageUrl: "http://packages/app.zip",
+          runtime: "node",
+        }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: true,
+          dispatched: false,
+          version: "1.0.0",
+          versionId: "version-1",
+        }),
+      );
+      // 安全半边：不读、不写任何部署行
+      expect(repo.find).not.toHaveBeenCalled();
+      expect(repo.findOne).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it("setCurrentVersion：版本不存在 → 404（不走 legacy 部署行回退）", async () => {
+      versionRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.setCurrentVersion("app-1", "missing"),
+      ).rejects.toThrow(NotFoundException);
+      expect(appService.update).not.toHaveBeenCalled();
+      expect(repo.find).not.toHaveBeenCalled();
+    });
+
+    it("setCurrentVersion：复用 rollback 校验——他应用版本 400、未发布 400", async () => {
+      versionRepo.findOne.mockResolvedValueOnce({
+        ...releasedVersion,
+        applicationId: "other-app",
+      });
+      await expect(
+        service.setCurrentVersion("app-1", "version-1"),
+      ).rejects.toThrow(BadRequestException);
+
+      versionRepo.findOne.mockResolvedValueOnce({
+        ...releasedVersion,
+        status: "deploying",
+      });
+      await expect(
+        service.setCurrentVersion("app-1", "version-1"),
+      ).rejects.toThrow(BadRequestException);
+      expect(appService.update).not.toHaveBeenCalled();
+    });
+
+    it("deployVersion 缺省 executorIds：恢复字段 + 对全部 RUNNING 行下发（旧 rollback 语义）", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        approvalStatus: null,
+        executorAddress: "executor:3001",
+      });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.deployVersion("app-1", "version-1");
+
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        expect.objectContaining({ version: "1.0.0" }),
+      );
+      expect(result.dispatched).toBe(true);
+      expect(result.upgraded).toEqual([
+        {
+          deploymentId: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+        },
+      ]);
+      expect(result.skipped).toEqual([]);
+      // findRunningByApp 查的是 RUNNING 行（与旧 rollback 相同谓词）
+      expect(repo.find).toHaveBeenCalledWith({
+        where: { applicationId: "app-1", status: DeploymentStatus.RUNNING },
+        order: { createdAt: "DESC" },
+      });
+    });
+
+    it("deployVersion 缺省：无 trigger 时逐行落 rollback 语义 + operator=null（对齐旧 rollback）", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-1",
+          applicationId: "app-1",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        approvalStatus: null,
+        executorAddress: "executor:3001",
+      });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.deployVersion("app-1", "version-1");
+
+      const saved = repo.save.mock.calls
+        .map(([e]: any[]) => e)
+        .find((e: any) => e.triggerType === "rollback");
+      expect(saved).toBeDefined();
+      expect(saved.operator).toBeNull();
+    });
+
+    it("deployVersion 显式 executorIds：无部署行/非 RUNNING 行进 skipped，不抛错", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+      // findAllByApp：exec-1 有 RUNNING 行；exec-2 只有 stopped 行；exec-3 无行
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-2",
+          executorId: "exec-2",
+          executorAddress: "executor:3002",
+          status: DeploymentStatus.STOPPED,
+        },
+        {
+          id: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        approvalStatus: null,
+        executorAddress: "executor:3001",
+      });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.deployVersion("app-1", "version-1", [
+        "exec-3",
+        "exec-2",
+        "exec-1",
+      ]);
+
+      expect(result.dispatched).toBe(true);
+      expect(result.upgraded).toEqual([
+        {
+          deploymentId: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+        },
+      ]);
+      expect(result.skipped).toEqual([
+        { executorId: "exec-3", deploymentId: null, reason: "no_deployment" },
+        {
+          executorId: "exec-2",
+          deploymentId: "deploy-2",
+          reason: "not_running",
+          detail: `status=${DeploymentStatus.STOPPED}`,
+        },
+      ]);
+    });
+
+    it("deployVersion：恢复校验失败 → 抛错且不触碰任何部署行", async () => {
+      versionRepo.findOne.mockResolvedValue({
+        ...releasedVersion,
+        status: "deploying",
+      });
+
+      await expect(service.deployVersion("app-1", "version-1")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(repo.find).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+  });
+
   describe("version snapshots", () => {
     it("saves a deploying application version snapshot after deploy command is accepted", async () => {
       const deployment: any = {

@@ -2999,6 +2999,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/applications/{id}/set-current-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 将应用当前字段设为指定版本快照（不动部署/设备）
+         * @description R1（部署模型评审 §4.2）：只按 application_versions 快照恢复应用当前字段（version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime，与 rollback 同一映射），绝不触碰部署行与设备。响应 dispatched:false。校验与错误码与 rollback 快照路径一致（版本存在 404、属本应用/已发布 400）
+         */
+        post: operations["ApplicationController_setCurrentVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/deploy-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 按版本快照恢复应用字段后下发到设备（可按执行器点名）
+         * @description R1（部署模型评审 §4.2）：先执行与 set-current-version 完全相同的字段恢复，再下发。executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有 upgrade 链（部署行 startCommand 会被覆写为恢复后的 app.entrypoint——既有 upgrade 语义）。执行器无部署行/行状态不可下发的进响应 skipped 明细（no_deployment/not_running/upgrade_rejected），不报错。部署行触发痕迹落 triggerType=rollback + 操作人（该端点为旧「应用回滚」拆出的下发半边）
+         */
+        post: operations["ApplicationController_deployVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/applications/{id}/rollback/{deploymentId}": {
         parameters: {
             query?: never;
@@ -3009,8 +3049,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 将应用回滚到历史版本
-         * @description 从版本快照或历史部署记录恢复应用字段，然后触发运行中实例升级
+         * 将应用回滚到历史版本（deprecated alias）
+         * @deprecated
+         * @description 【deprecated】下一版本删除。等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用 POST /applications/:id/set-current-version 与 POST /applications/:id/deploy-version
          */
         post: operations["ApplicationController_rollback"];
         delete?: never;
@@ -6847,6 +6888,78 @@ export interface components {
                 avgDuration: number;
                 criticalTasks: string[];
             };
+        };
+        SetCurrentVersionDto: {
+            /**
+             * Format: uuid
+             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released
+             */
+            versionId: string;
+        };
+        SetCurrentVersionResponseDto: {
+            ok: boolean;
+            /** @description 恒 false——本端点不下发任何设备（下发走 deploy-version） */
+            dispatched: boolean;
+            /** @description 恢复后的应用 version（= 快照 version） */
+            version: string;
+            /**
+             * Format: uuid
+             * @description 命中的 application_versions.id
+             */
+            versionId: string;
+            /** @description 恢复后的应用行（已掩码） */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+        };
+        DeployVersionDto: {
+            /**
+             * Format: uuid
+             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released；下发前先按该快照恢复应用当前字段
+             */
+            versionId: string;
+            /** @description 仅对这些执行器对应的 RUNNING 部署行下发（重复 id 幂等去重）。缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 一致）。执行器无部署行/行状态不可下发的进响应 skipped 明细，不报错 */
+            executorIds?: string[];
+        };
+        DeployVersionUpgradedEntryDto: {
+            /** Format: uuid */
+            deploymentId: string;
+            /**
+             * Format: uuid
+             * @description 部署行所在执行器（行无执行器时 null）
+             */
+            executorId: string | null;
+            executorAddress: string | null;
+        };
+        DeployVersionSkippedEntryDto: {
+            /**
+             * Format: uuid
+             * @description 显式点名路径下恒有值；缺省（全 RUNNING）路径下取部署行值
+             */
+            executorId: string | null;
+            /** Format: uuid */
+            deploymentId: string | null;
+            /**
+             * @description no_deployment=该执行器在本应用下没有部署行；not_running=最新部署行状态非 running（detail 带实际 status）；upgrade_rejected=upgrade 链拒绝（detail 带原因）
+             * @enum {string}
+             */
+            reason: "no_deployment" | "not_running" | "upgrade_rejected";
+            /** @description 跳过原因的机器可读补充（状态值 / 原始错误消息） */
+            detail?: string | null;
+        };
+        DeployVersionResponseDto: {
+            ok: boolean;
+            /** @description 恒 true——本端点就是下发动作（恢复+下发） */
+            dispatched: boolean;
+            /** @description 本次下发的目标版本（= 快照 version） */
+            version: string;
+            /**
+             * Format: uuid
+             * @description 命中的 application_versions.id
+             */
+            versionId: string;
+            upgraded: components["schemas"]["DeployVersionUpgradedEntryDto"][];
+            skipped: components["schemas"]["DeployVersionSkippedEntryDto"][];
+            /** @description 恢复后的应用行（已掩码） */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
         };
         ApplicationRollbackResponseDto: {
             ok: boolean;
@@ -12182,6 +12295,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppHealthAnalysisResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_setCurrentVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetCurrentVersionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetCurrentVersionResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_deployVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployVersionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployVersionResponseDto"];
                 };
             };
         };

@@ -283,3 +283,110 @@ export class ApplicationRollbackResponseDto {
   })
   updatedApp: ApplicationResponseDto;
 }
+
+/**
+ * R1（2026-10-24 部署模型评审 §4.2）：POST /applications/:id/set-current-version
+ * ——只按版本快照恢复应用当前字段，绝不触碰部署行/设备。
+ */
+export class SetCurrentVersionResponseDto {
+  @ApiProperty()
+  ok: boolean;
+
+  @ApiProperty({
+    description: "恒 false——本端点不下发任何设备（下发走 deploy-version）",
+  })
+  dispatched: boolean;
+
+  @ApiProperty({ description: "恢复后的应用 version（= 快照 version）" })
+  version: string;
+
+  @ApiProperty({
+    format: "uuid",
+    description: "命中的 application_versions.id",
+  })
+  versionId: string;
+
+  @ApiProperty({
+    type: ApplicationResponseDto,
+    description: "恢复后的应用行（已掩码）",
+  })
+  updatedApp: ApplicationResponseDto;
+}
+
+/** deploy-version 响应：成功进入下发链的部署行。 */
+export class DeployVersionUpgradedEntryDto {
+  @ApiProperty({ format: "uuid" })
+  deploymentId: string;
+
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description: "部署行所在执行器（行无执行器时 null）",
+  })
+  executorId: string | null;
+
+  @ApiProperty({ nullable: true })
+  executorAddress: string | null;
+}
+
+/** deploy-version 响应：被跳过的执行器/部署行（业务明细，非错误）。 */
+export class DeployVersionSkippedEntryDto {
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description: "显式点名路径下恒有值；缺省（全 RUNNING）路径下取部署行值",
+  })
+  executorId: string | null;
+
+  @ApiProperty({ nullable: true, format: "uuid" })
+  deploymentId: string | null;
+
+  @ApiProperty({
+    enum: ["no_deployment", "not_running", "upgrade_rejected"],
+    description:
+      "no_deployment=该执行器在本应用下没有部署行；not_running=最新部署行状态非 running（detail 带实际 status）；upgrade_rejected=upgrade 链拒绝（detail 带原因）",
+  })
+  reason: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "跳过原因的机器可读补充（状态值 / 原始错误消息）",
+  })
+  detail?: string | null;
+}
+
+/**
+ * R1（2026-10-24 部署模型评审 §4.2）：POST /applications/:id/deploy-version
+ * ——字段恢复 + 下发（缺省全部 RUNNING 行；显式 executorIds 按执行器点名，
+ * 无行/不可下发的进 skipped，不报错）。
+ */
+export class DeployVersionResponseDto {
+  @ApiProperty()
+  ok: boolean;
+
+  @ApiProperty({
+    description: "恒 true——本端点就是下发动作（恢复+下发）",
+  })
+  dispatched: boolean;
+
+  @ApiProperty({ description: "本次下发的目标版本（= 快照 version）" })
+  version: string;
+
+  @ApiProperty({
+    format: "uuid",
+    description: "命中的 application_versions.id",
+  })
+  versionId: string;
+
+  @ApiProperty({ type: [DeployVersionUpgradedEntryDto] })
+  upgraded: DeployVersionUpgradedEntryDto[];
+
+  @ApiProperty({ type: [DeployVersionSkippedEntryDto] })
+  skipped: DeployVersionSkippedEntryDto[];
+
+  @ApiProperty({
+    type: ApplicationResponseDto,
+    description: "恢复后的应用行（已掩码）",
+  })
+  updatedApp: ApplicationResponseDto;
+}
