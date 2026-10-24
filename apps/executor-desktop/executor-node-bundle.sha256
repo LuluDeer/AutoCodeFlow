@@ -606,3 +606,7 @@
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
 source-digest: 601ca625be7237b5e830b4cfe58a7bb5d31375a1c1667e6e1615f46404ef4cb2
 2a877e9148c97150ac8efe2810ca280ada2245e1e2cc0af6dbbe720c40aba242  index.js
+#   - 99796e33…（2026-10-25）：P1 凭据通道——python-venv.ts（writePypiNetrc/pypiNetrcHosts 挂进 defaultUvEnv）+ config.ts（pypi 凭据 getter 三件）。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），50 个输入文件。
+source-digest: 99796e33e2290f16913f89b8ce617bb355fc85f80b7d2514f29d28fd8980dd0f
+309b3d4e3c5b9639fb072f43f49728d07931025cb50db328aa471008234cf0f5  index.js

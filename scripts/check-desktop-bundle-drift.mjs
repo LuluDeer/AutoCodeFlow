@@ -104,14 +104,18 @@ export function computeSourceDigest(files, read = (f) => readFileSync(f, "utf8")
   return h.digest("hex");
 }
 
-/** 从清单文本里取 `source-digest: <hex>`（# 注释行忽略）。 */
+/** 从清单文本里取**最后一条** `source-digest: <hex>`（# 注释行忽略）。
+ * 2026-10-25 修复：清单是追加式历史（当前权威值在文件末尾，与字节哈希
+ * 判据同语义）——首条匹配会在多记录清单上永远卡在最老值（P1 轮首次
+ * 出现两条记录时暴露：本地闸红 actual=新值 expected=最老值）。 */
 export function parseManifestDigest(manifestText) {
+  let found = null;
   for (const line of manifestText.split(/\r?\n/)) {
     if (line.trimStart().startsWith("#")) continue;
     const m = line.match(/source-digest:\s*([0-9a-f]{64})/i);
-    if (m) return m[1].toLowerCase();
+    if (m) found = m[1].toLowerCase();
   }
-  return null;
+  return found;
 }
 
 /** 从清单文本里取末行字节哈希（既有判据，保留供提示用）。 */
