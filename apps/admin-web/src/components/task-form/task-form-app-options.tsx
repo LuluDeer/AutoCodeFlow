@@ -110,7 +110,9 @@ export const appSelectFilterOption = (input: string, opt?: { search?: string } |
 // python_task_multiversion（FR-18/AC-17b）：代码来源三选一 → 表单控件。
 // 与 executor-mode.CodeSource 一一对应；desc 说明「该来源下代码从哪来」，
 // 因为这三个选项对用户而言差别只在"执行器去哪拿代码"。
-export const CODE_SOURCE_OPTIONS = (
+// 命名用小驼峰：本文件不导出任何组件，大写开头会被 react-refresh 误判成
+// 组件导出（only-export-components 对全文件告警），小写后规则不再命中。
+export const codeSourceOptions = (
   t: (k: string) => string,
 ): { value: CodeSource; label: string; desc: string }[] => [
   {

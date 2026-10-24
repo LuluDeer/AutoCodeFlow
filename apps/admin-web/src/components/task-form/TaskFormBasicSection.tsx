@@ -29,7 +29,7 @@ import RuntimeVersionField from './RuntimeVersionField';
 import {
   appSelectFilterOption,
   buildAppSelectOption,
-  CODE_SOURCE_OPTIONS,
+  codeSourceOptions,
   RUNTIME_OPTIONS,
 } from './task-form-app-options';
 import {
@@ -292,7 +292,7 @@ export default function TaskFormBasicSection({
             data-testid="code-source-select"
           >
             <Space orientation="vertical" style={{ width: '100%' }}>
-              {CODE_SOURCE_OPTIONS(t).map((o) => (
+              {codeSourceOptions(t).map((o) => (
                 <Radio key={o.value} value={o.value} data-testid={`code-source-${o.value}`}>
                   <Space>
                     <span style={{ fontWeight: 500 }}>{o.label}</span>

@@ -29,9 +29,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { heatColor, HEAT_THRESHOLDS } from '../components/dashboard/ExecutorHeatBars';
-import { latencyColor, LATENCY_THRESHOLDS } from '../components/dashboard/SchedulerLatencyCard';
-import { failureCountColor } from '../components/dashboard/FailureTopList';
+import {
+  heatColor,
+  HEAT_THRESHOLDS,
+  latencyColor,
+  LATENCY_THRESHOLDS,
+  failureCountColor,
+} from '../components/dashboard/color-tokens';
 
 const SRC = join(__dirname, '..');
 const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');

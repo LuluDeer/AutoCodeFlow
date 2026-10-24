@@ -14,6 +14,9 @@ import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '../../utils/timeFormat';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
+// UX-03：failureCountColor 挪至 ./color-tokens（react-refresh 收敛：组件文件
+// 仅保留组件导出；色阶纯函数零 React 依赖，外部消费方仅色阶测试）。
+import { failureCountColor } from './color-tokens';
 
 const { Text } = Typography;
 
@@ -29,10 +32,11 @@ export interface FailureTopItem {
   lastError: string;
 }
 
-/** 按任务聚合失败记录：次数降序 → 最近失败时间降序；纯函数导出供测试。
+/** 按任务聚合失败记录：次数降序 → 最近失败时间降序；仅本文件使用，不再导出
+ *  （src 内无导入方；行为经由 FailureTopList 渲染结果被测试覆盖）。
  *  unknownError 为无错误原文时的兜底文案（N-04 收尾：改为必传——唯一调用方
  *  传 t('failureTop.unknown')，缺省中文兜底会绕过语言切换）。 */
-export function aggregateFailureTop(
+function aggregateFailureTop(
   failures: { id: string; taskId: string; taskName: string; errorMessage: string; createdAt: string }[] | undefined,
   topN: number,
   unknownError: string,
@@ -59,17 +63,6 @@ export function aggregateFailureTop(
   return Array.from(byTask.values())
     .sort((a, b) => b.failCount - a.failCount || new Date(b.lastFailedAt).getTime() - new Date(a.lastFailedAt).getTime())
     .slice(0, topN);
-}
-
-/** 阈值色阶：≥3 次红 / 2 次黄 / 1 次灰（语义色与图表共源）。
- *
- *  UX-03（本轮体验审查）：2 次档此前取 `var(--color-ring)`——双主题都是
- *  #22C55E（品牌绿），于是「失败 2 次」比「失败 1 次」（灰）看起来更健康，
- *  告警语义完全颠倒。改取 `--color-warning`（亮 #D97706 / 暗 #F59E0B）。 */
-export function failureCountColor(count: number): string {
-  if (count >= 3) return 'var(--color-destructive)';
-  if (count === 2) return 'var(--color-warning)';
-  return 'var(--chart-axis-text)';
 }
 
 interface FailureTopListProps {

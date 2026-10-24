@@ -1,3 +1,10 @@
+/* eslint-disable react-refresh/only-export-components --
+ * 理由：本文件默认导出 MainLayout 组件，同时导出 3 个纯函数
+ * （readCollapsedPreference / readMenuOpenKeys / pageSelfRendersBreadcrumb）。
+ * 它们是 8 个消费文件（router.tsx + 7 个测试）依赖的稳定导入面，搬迁需
+ * 同步改 8 处且割裂「布局持久化键/面包屑判定」与使用它们的组件上下文，
+ * 改动面远超收益；本文件非热更迭代热点，牺牲该文件的 fast refresh 边界
+ * 换最小改动面。（eslint warning 收敛轮决策：消费方多 → disable 优先） */
 import { useState, useEffect, useRef, useCallback, memo, type ReactNode } from 'react';
 import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import { message } from '../utils/toast';
