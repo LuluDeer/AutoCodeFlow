@@ -322,6 +322,263 @@ describe("update_task", () => {
 });
 
 // ---------------------------------------------------------------------------
+// MCP-DTO-ALIGN（2026-10-25）：update_task 参数面 → UpdateTaskDto（=
+// PartialType(CreateTaskDto)）对齐。上轮登记 17 个落后字段，本批 15 个：
+// secrets / maintenanceWindows / priority / timeout / timeoutSeconds 上界修复 /
+// timeoutAction / timeoutWarnRatio / estimatedDurationSec / requirements /
+// dependencies / blockStrategy / misfireStrategy / executorAffinityTags /
+// executorAntiAffinityTags / deploymentPolicy / expectedUpdatedAt。
+// 值域出处：apps/admin-api/src/modules/task/dto/create-task.dto.ts、
+// entities/task.entity.ts、timeout-policy.util.ts、update-task.dto.ts。
+// 登记未做：runtimeVersion、codeSource（见任务报告的理由）。
+// ---------------------------------------------------------------------------
+describe("MCP-DTO-ALIGN: update_task 参数面声明（15 字段 + timeoutSeconds 上界）", () => {
+  const NEW_FIELDS = [
+    "secrets", "maintenanceWindows", "priority", "timeout", "timeoutAction",
+    "timeoutWarnRatio", "estimatedDurationSec", "requirements",
+    "dependencies", "blockStrategy", "misfireStrategy",
+    "executorAffinityTags", "executorAntiAffinityTags", "deploymentPolicy",
+    "expectedUpdatedAt",
+  ] as const;
+
+  it("每个新字段都在 inputSchema 里声明", () => {
+    const schema = tools.get("update_task")!.schema as Record<string, unknown>;
+    for (const f of NEW_FIELDS) {
+      expect(schema, `update_task.${f} 应已声明`).toHaveProperty(f);
+    }
+  });
+});
+
+describe("MCP-DTO-ALIGN: update_task happy path 透传（zod 校验值原样到 PATCH body）", () => {
+  const T = "11111111-1111-4111-8111-111111111111";
+
+  it("secrets：合法键名映射逐字节透传（合并语义留给后端，不在客户端改写）", async () => {
+    await tools.get("update_task")!.handler({
+      taskId: T,
+      secrets: { API_TOKEN: "sk-live-1", DB_PASSWORD: "hunter2", LEGACY: "******", OLD_KEY: null },
+    });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, {
+      secrets: { API_TOKEN: "sk-live-1", DB_PASSWORD: "hunter2", LEGACY: "******", OLD_KEY: null },
+    });
+  });
+
+  it("maintenanceWindows：数组逐项透传（start/end 5 字段 cron + description）", async () => {
+    const windows = [
+      { start: "30 2 * * *", end: "0 4 * * *", description: "夜间备份窗口" },
+      { start: "0 22 * * 5", end: "30 23 * * 5" },
+    ];
+    await tools.get("update_task")!.handler({ taskId: T, maintenanceWindows: windows });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, { maintenanceWindows: windows });
+  });
+
+  it("requirements / dependencies 透传", async () => {
+    const req = ["requests>=2.31", "rich==13.7.1"];
+    const deps = { "upstream-backup": "22222222-2222-4222-8222-222222222222" };
+    await tools.get("update_task")!.handler({ taskId: T, requirements: req, dependencies: deps });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, {
+      requirements: req,
+      dependencies: deps,
+    });
+  });
+
+  it("timeout 系（timeout/timeoutSeconds/timeoutAction/timeoutWarnRatio/estimatedDurationSec）透传", async () => {
+    await tools.get("update_task")!.handler({
+      taskId: T,
+      timeout: 900,
+      timeoutSeconds: 900,
+      timeoutAction: "kill_retry",
+      timeoutWarnRatio: 80,
+      estimatedDurationSec: 3600,
+    });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, {
+      timeout: 900,
+      timeoutSeconds: 900,
+      timeoutAction: "kill_retry",
+      timeoutWarnRatio: 80,
+      estimatedDurationSec: 3600,
+    });
+  });
+
+  it("priority 接受数字 1-4（实体 transformer 负责转 PG label）", async () => {
+    await tools.get("update_task")!.handler({ taskId: T, priority: 3 });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, { priority: 3 });
+  });
+
+  it("blockStrategy / misfireStrategy / deploymentPolicy 透传", async () => {
+    await tools.get("update_task")!.handler({
+      taskId: T,
+      blockStrategy: "cover_early",
+      misfireStrategy: "fire_once",
+      deploymentPolicy: "strict",
+    });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, {
+      blockStrategy: "cover_early",
+      misfireStrategy: "fire_once",
+      deploymentPolicy: "strict",
+    });
+  });
+
+  it("亲和/反亲和标签透传", async () => {
+    await tools.get("update_task")!.handler({
+      taskId: T,
+      executorAffinityTags: ["gpu", "edge"],
+      executorAntiAffinityTags: ["canary"],
+    });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, {
+      executorAffinityTags: ["gpu", "edge"],
+      executorAntiAffinityTags: ["canary"],
+    });
+  });
+
+  it("expectedUpdatedAt 透传（乐观锁在后端消费，409 语义不本地截获）", async () => {
+    await tools
+      .get("update_task")!
+      .handler({ taskId: T, name: "x", expectedUpdatedAt: "2026-10-01T08:00:00.000Z" });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, {
+      name: "x",
+      expectedUpdatedAt: "2026-10-01T08:00:00.000Z",
+    });
+  });
+
+  it("全部新字段同一次 PATCH 组合透传", async () => {
+    const body = {
+      secrets: { API_TOKEN: "t" },
+      maintenanceWindows: [{ start: "30 2 * * *", end: "0 4 * * *" }],
+      priority: 4,
+      timeout: 60,
+      timeoutAction: "notify_only" as const,
+      timeoutWarnRatio: 50,
+      estimatedDurationSec: 120,
+      requirements: ["requests>=2.31"],
+      dependencies: { upstream: "22222222-2222-4222-8222-222222222222" },
+      blockStrategy: "discard" as const,
+      misfireStrategy: "ignore" as const,
+      executorAffinityTags: ["gpu"],
+      executorAntiAffinityTags: ["canary"],
+      deploymentPolicy: "prefer" as const,
+      expectedUpdatedAt: "2026-10-01T08:00:00.000Z",
+    };
+    await tools.get("update_task")!.handler({ taskId: T, ...body });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, body);
+  });
+});
+
+describe("MCP-DTO-ALIGN: 显式 null 透传（可空列的清除/重置语义照抄 DTO）", () => {
+  const T = "11111111-1111-4111-8111-111111111111";
+  const NULLABLE_FIELDS = [
+    "secrets", "maintenanceWindows", "timeoutAction", "timeoutWarnRatio",
+    "estimatedDurationSec", "requirements", "dependencies",
+    "blockStrategy", "misfireStrategy", "executorAffinityTags",
+    "executorAntiAffinityTags", "deploymentPolicy", "expectedUpdatedAt",
+  ] as const;
+
+  it.each(NULLABLE_FIELDS)("%s:null 原样上送（不被 undefined 过滤吃掉）", async (field) => {
+    await tools.get("update_task")!.handler({ taskId: T, [field]: null });
+    expect(call).toHaveBeenCalledWith("PATCH", `/tasks/${T}`, { [field]: null });
+  });
+});
+
+describe("MCP-DTO-ALIGN: 值域/上限拒绝面（对齐后端 @IsEnum/@Max/@Matches，入站即拒）", () => {
+  const T = "11111111-1111-4111-8111-111111111111";
+  const upd = (args: Record<string, unknown>) => tools.get("update_task")!.handler(args);
+  const fieldOf = (field: string) =>
+    (tools.get("update_task")!.schema as Record<string, { safeParse: (v: unknown) => { success: boolean } }>)[field];
+
+  it("priority 只接受 1-4 或大写 label；小写/数字串/越界被拒（@IsEnum 经验事实）", () => {
+    const f = fieldOf("priority");
+    for (const good of [1, 2, 3, 4, "LOW", "NORMAL", "HIGH", "CRITICAL"]) {
+      expect(f.safeParse(good).success, `priority 应接受 ${JSON.stringify(good)}`).toBe(true);
+    }
+    for (const bad of [0, 5, "1", "2", "low", "normal", "critical", "", "urgent", 2.5]) {
+      expect(f.safeParse(bad).success, `priority 应拒绝 ${JSON.stringify(bad)}`).toBe(false);
+    }
+  });
+
+  it("timeout / timeoutSeconds 超 86400 在入站被拒（对齐 @Max(86400)）", () => {
+    const timeout = fieldOf("timeout");
+    const timeoutSeconds = fieldOf("timeoutSeconds");
+    expect(timeout.safeParse(86400).success).toBe(true);
+    expect(timeout.safeParse(86401).success).toBe(false);
+    expect(timeoutSeconds.safeParse(86400).success).toBe(true);
+    expect(timeoutSeconds.safeParse(86401).success).toBe(false);
+  });
+
+  it("timeoutAction / blockStrategy / misfireStrategy / deploymentPolicy 拒绝域外值", () => {
+    const cases: Array<[string, unknown, boolean]> = [
+      ["timeoutAction", "kill", true],
+      ["timeoutAction", "KILL_RETRY", false],
+      ["timeoutAction", "terminate", false],
+      ["blockStrategy", "serial", true],
+      ["blockStrategy", "cover-early", false],
+      ["blockStrategy", "queue", false],
+      ["misfireStrategy", "fire_once", true],
+      ["misfireStrategy", "fire_all", false],
+      ["deploymentPolicy", "strict", true],
+      ["deploymentPolicy", "loose", false],
+    ];
+    for (const [field, value, ok] of cases) {
+      expect(fieldOf(field).safeParse(value).success).toBe(ok);
+    }
+  });
+
+  it("timeoutWarnRatio 拒绝 91/负数/小数（@Min(0) @Max(90) @IsInt）", () => {
+    const f = fieldOf("timeoutWarnRatio");
+    for (const good of [0, 45, 90]) expect(f.safeParse(good).success).toBe(true);
+    for (const bad of [91, -1, 50.5]) expect(f.safeParse(bad).success).toBe(false);
+  });
+
+  it("estimatedDurationSec 拒绝 604801/负数（@Min(0) @Max(604800)）", () => {
+    const f = fieldOf("estimatedDurationSec");
+    expect(f.safeParse(604800).success).toBe(true);
+    expect(f.safeParse(604801).success).toBe(false);
+    expect(f.safeParse(-1).success).toBe(false);
+  });
+
+  it("requirements 拒绝 >50 条、空串元素（@ArrayMaxSize(50) @IsNotEmpty each）", () => {
+    const f = fieldOf("requirements");
+    expect(f.safeParse(["a"]).success).toBe(true);
+    expect(f.safeParse(Array(51).fill("dep")).success).toBe(false);
+    expect(f.safeParse([""]).success).toBe(false);
+  });
+
+  it("maintenanceWindows 拒绝 >10 条（@ArrayMaxSize(10)）", () => {
+    const f = fieldOf("maintenanceWindows");
+    const one = { start: "30 2 * * *", end: "0 4 * * *" };
+    expect(f.safeParse(Array(10).fill(one)).success).toBe(true);
+    expect(f.safeParse(Array(11).fill(one)).success).toBe(false);
+  });
+
+  it("maintenanceWindows 拒绝 start/end 非 5 字段 cron", () => {
+    const f = fieldOf("maintenanceWindows");
+    expect(f.safeParse([{ start: "30 2 * * *", end: "0 4 * * *" }]).success).toBe(true);
+    expect(f.safeParse([{ start: "30 2 * *", end: "0 4 * * *" }]).success).toBe(false);
+    expect(f.safeParse([{ start: "", end: "0 4 * * *" }]).success).toBe(false);
+    expect(f.safeParse([{ start: "30 2 * * *", end: "@daily" }]).success).toBe(false);
+  });
+
+  it("secrets 键名规则拒绝（复述后端 IsSecretKeyMap：保留名/AUTOFLOW_/PYTHON/非法名）", () => {
+    const f = fieldOf("secrets");
+    expect(f.safeParse({ API_TOKEN: "v" }).success).toBe(true);
+    for (const bad of [
+      { PATH: "x" },              // 保留名（宿主变量透传）
+      { TASK_ID: "x" },           // 保留名（执行器注入）
+      { AUTOFLOW_FOO: "x" },      // params 命名空间
+      { PYTHONIOENCODING: "x" },  // 解释器行为开关
+      { "bad-key": "x" },         // 非法环境变量名
+      { "1BAD": "x" },
+    ]) {
+      expect(f.safeParse(bad).success, `secrets 应拒绝 ${JSON.stringify(bad)}`).toBe(false);
+    }
+  });
+
+  it("secrets 拒绝整个字段传非对象（@IsObject）", async () => {
+    const f = fieldOf("secrets");
+    expect(f.safeParse(["A=1"]).success).toBe(false);
+    expect(f.safeParse("API_TOKEN=x").success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // task versions / rollback / compare (new P1 tools)
 // ---------------------------------------------------------------------------
 describe("list_task_versions", () => {
@@ -2059,6 +2316,16 @@ describe("R107-A1: 枚举型过滤/更新字段在入站即拒（对齐后端 @I
     ["update_task", "triggerType", ["cron", "fixed_rate", "api", "manual"]],
     ["update_task", "runtime", ["python", "node", "shell"]],
     ["update_task", "executeMode", ["single", "broadcast"]],
+    // MCP-DTO-ALIGN（2026-10-25）：新增枚举面与既有 R107-A1 同一张表同一条
+    // 判据——合法值全过、大小写/拼写漂移入站即拒。值域出处：
+    // timeout-policy.util.ts TIMEOUT_ACTIONS；task.entity.ts BlockStrategy/
+    // MisfireStrategy；create-task.dto.ts deploymentPolicy 的 @IsIn。
+    // priority 是数字∪大写 label 的 union（@IsEnum 数字枚举的经验接受面），
+    // 不进本表（字符串漂移用例语义不符），由上方专用 describe 覆盖。
+    ["update_task", "timeoutAction", ["kill", "kill_retry", "notify_only"]],
+    ["update_task", "blockStrategy", ["serial", "discard", "cover_early"]],
+    ["update_task", "misfireStrategy", ["ignore", "fire_once"]],
+    ["update_task", "deploymentPolicy", ["strict", "prefer"]],
     ["agent_session_list", "kind", [
       "ops_watch", "incident", "sop_authoring", "sop_review", "app_scaffold", "chat",
     ]],
