@@ -55,6 +55,25 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(v) ? v : fallback;
 }
 
+/** 2026-10-24 安全审计轮收口：正整数 env 解析——NaN/0/负数一律回落默认。
+ * 与 envInt 的差异：envInt 把 0/负值保留给调用方钳制（各语义不同），而
+ * 体积上限这类配置的 0/负数没有合法语义（0 = 解除上限、负数 = 全部拒绝），
+ * 必须在解析层就救回，不让畸形值改变安全闸行为方向。 */
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? '').trim();
+  if (raw === '') return fallback;
+  // Number 全量解析而非 parseInt 截断：parseInt("1.5")=1 会把上限设成
+  // 1 字节（一切下载失败），必须把小数形态整体判非法。
+  const v = Number(raw);
+  if (!Number.isInteger(v) || v <= 0) {
+    logger.warn(
+      `[${name}] 非法值 "${raw}"（需正整数）——回落默认 ${fallback}`,
+    );
+    return fallback;
+  }
+  return v;
+}
+
 function validateOptionalUrlSetting(value: string, settingName: string): string {
   try {
     return validateCredentialFreeHttpUrl(value, settingName);
@@ -323,7 +342,16 @@ export const config = {
   },
   // zip 整包下载体积上限（字节）。与 SSRF/下载链既有 200MB 语义对齐
   // （CONTRACT.md §3.2 zip 渠道 size cap 200MB）。
-  packageDownloadMaxBytes: parseInt(process.env.PACKAGE_DOWNLOAD_MAX_BYTES || String(200 * 1024 * 1024), 10),
+  //
+  // 非法值救回（对齐下方 pkgCacheMaxBytes 与 python 侧 Settings 的「救回
+  // 而非拒启」裁定，2026-10-24 安全审计轮登记的缺陷收口）：裸 parseInt 把
+  // 非数字 env（"abc"/"1.5" 等）解析成 NaN，而下载链体积闸是
+  // bytes > maxBytes —— NaN 比较恒 false = **静默解除上限**（最危险方向）；
+  // 0/负数反之（恒 true = 一切下载立即失败）。非正整数一律回落 200MB 默认。
+  packageDownloadMaxBytes: parsePositiveIntEnv(
+    'PACKAGE_DOWNLOAD_MAX_BYTES',
+    200 * 1024 * 1024,
+  ),
   // R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存（<workDir>/
   // .pkg-cache）的体积预算，超限按 mtime 淘汰最旧（pkg-cache.ts）。默认 4GiB
   // 与解释器池总预算（INTERPRETER_TOTAL_GB）同量级：单包上限 200MB 下可容纳
