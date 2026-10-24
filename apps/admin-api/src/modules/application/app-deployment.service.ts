@@ -2582,13 +2582,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 才是动作的持久载体；DB 侧 GROUP BY 也让该读面摆脱 findAllByApp 的
    * take:5000 内存闸（超限静默失真是 §P8 的问题本体）。
    *
-   * legacy 回退：该应用**一条事件都没有**（迁移 1790000000062 之前的历史
-   * 应用）时，事件聚合恒为空——回退旧的 findAllByApp 行计数保住历史数字。
-   * 一旦应用产生过任一事件即切事件聚合：此后新动作用事件计数，旧动作不在
-   * 事件表里（混合窗口期计数 = 迁移后的动作数），这是有意的切换语义——
-   * 「半事件半行数」的混加无法自洽（行数随行复用漂移），一刀切换可预期。
-   *
-   * deploymentEventRepo 为 null（@Optional 存量单测装配）同走回退。
+   * legacy 回退：该应用**一条事件都没有**时，事件聚合恒为空——回退旧的
+   * findAllByApp 行计数。迁移 1790000000064 已把「迁移 1790000000062 之前
+   * 历史动作数凭空消失」的混合窗口期消除（对无事件应用从现存部署行合成
+   * deploy_created 下界事件，折算语义见该迁移注释），但本分支仍需保留，
+   * 服务两类残余场景：
+   *  1. **回填后仍无行可折算的应用**：部署行已全被 remove（行删除不落
+   *     remove 事件之外的历史）或从未有过部署行——回填无米下炊，事件表对其
+   *     恒空，行计数仍是唯一可用口径（findAllByApp 也空时得空 map，自洽）；
+   *  2. **测试装配缺席**：deploymentEventRepo 为 null（@Optional 存量单测
+   *     装配）同走回退。
+   * 有事件即切事件聚合的语义不变（混加行数与事件数无法自洽，行数随行复用
+   * 漂移）。
    */
   private async buildDeployCountMap(
     applicationId: string,
