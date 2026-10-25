@@ -509,7 +509,13 @@ export default function StatusWindow({ active }: { active: boolean }) {
         .finally(() => { inFlight = false; });
     };
     refresh();
-    const timer = setInterval(refresh, 2_000);
+    // F-31（UIUX 审计）：窗口最小化/隐藏时 2s 轮询纯空转（HistoryPage/AppsPage
+    // 均有 document.hidden 门控，唯独本页漏了）——隐藏期跳过快照拉取，窗口
+    // 重新可见后下一轮（≤2s）自动恢复，无需 visibilitychange 监听。
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      refresh();
+    }, 2_000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [active]);
 
@@ -557,7 +563,13 @@ export default function StatusWindow({ active }: { active: boolean }) {
       typeof electronAPI?.onHistoryChanged === 'function'
         ? electronAPI.onHistoryChanged(() => refresh())
         : null;
-    const timer = setInterval(refresh, 60_000);
+    // F-31（UIUX 审计）：60s 兜底轮询加 document.hidden 门控（对齐 HistoryPage
+    // 同款兜底的既有做法）——窗口隐藏时 fs.watch 推送订阅仍在，兜底轮询不再
+    // 为看不见的窗口空转；重新可见后下一轮自动补上。
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      refresh();
+    }, 60_000);
     return () => { cancelled = true; clearInterval(timer); offChanged?.(); };
   }, [active]);
 

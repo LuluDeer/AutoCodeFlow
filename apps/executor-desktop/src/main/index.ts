@@ -293,12 +293,33 @@ app.whenReady().then(async () => {
   }
 
   // P7b：Agent 托管（agentEnabled=true 且配置齐全时开始轮询 agent-collab）
-  syncAgentHostWithConfig();
+  // F-31（UIUX 审计）：托盘 Agent 快照的 2s 轮询改为**随托管启停**（见
+  // setTrayAgentStatusPolling）——Agent 功能关闭时常驻空转纯耗电；快照刷新
+  // 的其余驱动（配置保存 / worker onStats 回调）均不走该定时器。
   // P7c：Agent 处理一单可能持续数分钟，托盘需要在工作态变化时及时更新。
   // 状态快照是本地内存读取；未变化时 TrayManager 不重建菜单。
-  const agentStatusTimer = setInterval(refreshTrayAgentStatus, 2_000);
-  agentStatusTimer.unref?.();
+  syncAgentHostWithConfig();
 });
+
+/**
+ * F-31（UIUX 审计）：托盘 Agent 快照 2s 轮询的惰性启停。
+ *
+ * 只在 Agent 托管**活跃**（agentEnabled 且配置齐全、agentTimer 在转）时运转：
+ * syncAgentHostWithConfig 的启用分支拉起、停用分支掐掉。快照在 Agent 关闭时
+ * 不会自行变化——配置保存 / worker 状态回调（onStats）两条路径都会直接调
+ * refreshTrayAgentStatus()，不走本定时器；托盘侧展示由这两条保证新鲜。
+ */
+let trayAgentStatusTimer: NodeJS.Timeout | null = null;
+
+function setTrayAgentStatusPolling(active: boolean): void {
+  if (active && trayAgentStatusTimer === null) {
+    trayAgentStatusTimer = setInterval(refreshTrayAgentStatus, 2_000);
+    trayAgentStatusTimer.unref?.();
+  } else if (!active && trayAgentStatusTimer !== null) {
+    clearInterval(trayAgentStatusTimer);
+    trayAgentStatusTimer = null;
+  }
+}
 
 // DSK-04：配置保存后热同步通知开关与 meta 轮询目录（workDir 可能被改）。
 // 由 ipc-handlers 的 config:save 面调用，避免 ipc-handlers 反向 import index
@@ -421,12 +442,17 @@ export function syncAgentHostWithConfig(): void {
         }, AGENT_POLL_INTERVAL_MS);
         agentTimer.unref?.();
       }
+      // F-31：托管活跃——托盘快照 2s 轮询随 agentTimer 一起运转。
+      setTrayAgentStatusPolling(true);
     } else {
       // 关闭开关 / 配置不全：停轮询。host 可在配置补全后按 identity 复用。
       if (agentTimer) {
         clearInterval(agentTimer);
         agentTimer = null;
       }
+      // F-31：托管停转——托盘快照轮询一并停掉（快照仍由 finally 的即时刷新
+      // 与配置保存路径保证新鲜）。
+      setTrayAgentStatusPolling(false);
       // 当前指派仍在处理时由 host 延后到 finally 撤销；新指派立即停收。
       if (agentHost) queueAgentWithdrawal(agentHost);
     }
