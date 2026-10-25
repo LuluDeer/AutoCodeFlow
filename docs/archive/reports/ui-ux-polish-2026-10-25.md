@@ -110,6 +110,17 @@ R1-A 覆盖：28 路由全遍历（含 7 坏深链）、表单边界（空/空�
 
 R2'-C 基线：test:renderer / test:main（61 组）/ test:e2e（11 条）/ audit:ui（0 issues）/ audit:visual 全绿。安全红线复检未发现 UI 侧绕过（navigation-policy、ipc-sender-guard fail-closed、token 恒掩码不过桥真机验证、preload↔renderer↔main IPC 三面对齐）。详情：/tmp/uiaudit/desktop/desktop-findings.md
 
+### R5（二轮深挖轮，主会话直落完成——subagent 双限流不可用）
+- R5-A admin-web 二轮（主会话切片）：修复密集区回归抽查 9/9 全过（F-1 错密码无 reload+文案正确 / F-41 深链错误态+10s 5 请求封顶 / F-42 无裸 key / F-43 连点 ≤1 POST / 0 pageerror）；TaskForm 校验面（cron 非法拦+合法过、F-7 三类非法键名文案精确、F-10 64KB 预检键值齐全时正确拦截 0 POST——此前「创建成功」为测试伪影：空键名行不构成参数）
+- R5-B 桌面三轮：基线五条全绿（新构建，D1/D2 再回归 PASS）；**优雅重启持久化验证通过**（config.json 保真 logLevel/notifyEnabled/executorName、token enc:ss: 加密落盘、重启后执行器自动拉起+控制面 online 心跳新鲜）；「重启不开窗」确认为托盘常驻设计（index.ts:276 configured 分支只拉执行器+心跳）
+- 环境注记：两个 subagent 均被 model concurrency limit 打断（与配额耗尽不同的限流形态），按降级纪律主会话接管
+
+### R7（demo 栈重建 + 构建态验收，全绿）
+- `./scripts/demo.sh --build`：镜像含全部 ~60 commit 修复，seed 幂等复用、demo-hello-fixed 跑通 SUCCESS、双执行器重新注册
+- API 收敛确认：原 live 500 深链 7 条全部 → 400 INVALID_VALUE_FORMAT 统一封套；users/sessions 非法 id → 400；CORS 恶意 Origin → 403 CORS_ORIGIN_NOT_ALLOWED
+- 8088 构建态 UI 全链：登录/Dashboard/任务列表/草稿恢复→创建任务（F-39 构建态）/非法深链错误态（文案+CTA）/模板预填（5 卡片+名称回填）/EN 切换（侧边栏全英 html lang=en；内容区中文为失败任务日志数据非 UI）/暗色主题（data-theme=dark）/0 pageerror
+- 验收中三疑点均判非缺陷：创建后 URL 停留（时序断言过严，任务实际创建）；模板页空（URL 应为 /task-templates，误入 :id 路由反而验证了错误态）；语言入口（在 header 图标钮 data-testid=lang-toggle，非用户菜单）
+
 ## 总结（2026-10-25）
 
 发现 **57 条**（P0×1 / P1×8 / P2×14 / P3×34），处置：**修复 54 条**、未复现 1（F-49）、非缺陷 1（F-50）、wontfix 1（F-51）。桌面端 F-22~F-38 全清；admin-web F-1~21/F-39~48 全清；admin-api F-52~57 全清。累计提交 ~60 commit（develop，未 push）。
