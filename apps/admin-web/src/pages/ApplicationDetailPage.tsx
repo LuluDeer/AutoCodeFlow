@@ -1402,6 +1402,20 @@ function ReleasesTab({ app }: { app: Application }) {
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
+// P3-③（审计）：?tab= 深链健壮化——此前 `searchParams.get('tab') || 'overview'`
+// 对**无效值**（如 ?tab=history，实际 key 是 versions）不设防：antd Tabs 的
+// activeKey 落在空档，内容区一片空白、连第一个 Tab 都不高亮。对齐
+// ExecutionDetailPage.normalizeTabKey 同名先例：白名单命中才采用，否则回退
+// 默认 Tab。其余 ?tab= 消费方（ExecutionDetailPage / NotificationSettingsPage /
+// settings）本轮已核验，均有白名单归一化，无需改动。
+const TAB_KEY_DEFAULT = 'overview';
+const TAB_KEYS = ['overview', 'deployments', 'tasks', 'versions', 'releases', 'settings', 'ai'] as const;
+type AppDetailTabKey = (typeof TAB_KEYS)[number];
+
+function normalizeTabKey(raw: string | null): AppDetailTabKey {
+  return (TAB_KEYS as readonly string[]).includes(raw || '') ? (raw as AppDetailTabKey) : TAB_KEY_DEFAULT;
+}
+
 export default function ApplicationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
@@ -1418,7 +1432,8 @@ export default function ApplicationDetailPage() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [notFound, setNotFound] = useState(false);
 
-  const activeTab = searchParams.get('tab') || 'overview';
+  // P3-③：无效 tab 深链（?tab=history 等）归一化到默认 Tab，不再渲染空白内容区
+  const activeTab = normalizeTabKey(searchParams.get('tab'));
 
   // NETOPT-7④（2026-09-20）：两个应用详情间导航（同路由 :id 组件不重挂）时新旧
   // fetchApp 并发——旧 id 的响应晚到会 setApp(旧应用)；旧 id 的 404 晚到会

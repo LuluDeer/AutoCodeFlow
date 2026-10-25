@@ -536,6 +536,7 @@ export default {
   'appList.field.name': 'Name',
   'appList.field.nameRequired': 'Please enter the application name',
   'appList.field.namePattern': 'Only letters, digits, underscore and hyphen are allowed',
+  'appList.field.nameMax': 'Application name must be at most 100 characters',
   'appList.field.nameTooltip': 'Globally unique identifier, e.g. order-service. Only letters, digits, underscore and hyphen allowed. Cannot be changed after creation.',
   'appList.field.desc': 'Description',
   'appList.field.descTooltip': 'Briefly describe what this application does to help teammates understand.',
@@ -660,6 +661,20 @@ export default {
   'users.role.user': 'Standard user',
   'users.status.disabled': 'Disabled',
   'users.status.active': 'Active',
+  // P1-1 (parity with backend ad5bdef4): enable/disable switch strings. The
+  // disable confirmation spells out both immediate revocation surfaces
+  // (in-flight sessions + API keys) and that the action is reversible; the
+  // backend guard codes USER_ACTIVE_ADMIN_ONLY / USER_SELF_DISABLE_FORBIDDEN
+  // are covered by the generated err.* entries.
+  'users.action.enable': 'Enable',
+  'users.action.disable': 'Disable',
+  'users.enableSuccess': 'User enabled',
+  'users.disableSuccess': 'User disabled',
+  'users.enableFail': 'Enable failed',
+  'users.disableFail': 'Disable failed',
+  'users.disableConfirm': 'Confirm disable',
+  'users.disableConfirmDesc': '"{{name}}" will no longer be able to sign in. All their login sessions and API keys will be revoked immediately; you can re-enable at any time.',
+  'users.selfDisableForbidden': 'You cannot disable your own account',
   'users.created': 'User created',
   'users.createFail': 'Create failed',
   'users.updated': 'Updated',
@@ -934,6 +949,7 @@ export default {
   'notif.test.sent': 'Test notification sent to the selected channels',
   'notif.test.error': 'Send failed: {{msg}}',
   'notif.test.fail': 'Failed to send test notification',
+  'notif.test.noEnabledChannels': 'All selected channels are disabled — nothing was sent. Enable at least one configured channel above before testing.',
 
   'sysSettings.title': 'System Settings',
   'sysSettings.description': 'Core parameters and runtime options for the scheduler',
@@ -3261,6 +3277,18 @@ export default {
   'sops.draftCreated': 'Draft saved',
   'sops.draftFailed': 'Failed to save draft (check slug and YAML syntax)',
   'sops.create': 'Save draft',
+  'sops.publish.btn': 'Publish',
+  'sops.publish.title': 'Publish SOP "{{slug}}"',
+  'sops.publish.confirmBtn': 'Publish',
+  'sops.publish.bump.patch': 'patch · revision (last digit +1, e.g. 1.0.0 → 1.0.1)',
+  'sops.publish.bump.minor': 'minor · feature (middle digit +1, e.g. 1.0.0 → 1.1.0)',
+  'sops.publish.bump.major': 'major · breaking (first digit +1, e.g. 1.0.0 → 2.0.0)',
+  'sops.publish.changelogPlaceholder': 'Changelog (optional, stored in version history, max 2000 chars)',
+  'sops.publish.note': 'Publishing strictly validates the working copy and writes an immutable version snapshot. Publishing is rejected when the content is identical to the current version.',
+  'sops.publish.ok': 'Published new version {{version}}',
+  'sops.publish.fail': 'Publish failed',
+  'sops.publish.noContent': 'Working copy is missing front-matter or body; cannot publish',
+  'sops.publishedBy.admin': 'Admin',
   // 2026-10-23: SOP archive / restore (deprecated used to be a dead status)
   'sops.cancel': 'Cancel',
   'sops.archive.viewAssignments': 'Review the unfinished assignments first',

@@ -85,6 +85,29 @@ export function formatDurationShort(ms: number | null | undefined): string {
 }
 
 /**
+ * 调度延迟（毫秒）→ 直方图派生值专用格式化（P3-② 审计）。
+ *
+ * 为什么不直接用 formatDuration：derived.avgTriggerLatencyMs / p99TriggerLatencyMs
+ * 是**桶插值浮点**（实测「平均 6.716883116883117ms」），而 formatDuration 的亚秒
+ * 档原样输出 `${ms}ms`，17 位小数直接糊在卡面上。执行时长（另一消费者）来自
+ * Date.now 差值恒为整数，不受影响——故只给延迟卡换专用档位，不动共享出口：
+ *   · <10ms   保留 1 位小数（6.7168… → 6.7ms；整值不带尾零，3 → 3ms）
+ *   · <1000ms 取整（10~999ms 整数已可读，无千分位需求）
+ *   · ≥1s     复用 formatDuration 人类可读档（1.2s / 1分3秒），不输出 12,345ms
+ * 与 formatDuration 同口径：非有限值回落 '—'、负值 clamp 到 0、0 → '0ms'。
+ */
+export function formatLatencyMs(ms: number | null | undefined, t?: TFunc): string {
+  if (ms == null || !Number.isFinite(ms)) return FALLBACK;
+  if (ms <= 0) return '0ms';
+  if (ms < 10) {
+    const rounded = Math.round(ms * 10) / 10;
+    return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}ms`;
+  }
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return formatDuration(ms, t);
+}
+
+/**
  * 绝对时间（原始时区按 ISO 语义解析，输出本地时区）→ 完整日期时间，
  * locale 跟随**应用语言**（currentLocale()：zh→zh-CN，en→en-US），不跟随浏览器
  * locale——裸调 toLocaleString() 在英文浏览器跑中文界面时会渲染成 MM/DD/YYYY，

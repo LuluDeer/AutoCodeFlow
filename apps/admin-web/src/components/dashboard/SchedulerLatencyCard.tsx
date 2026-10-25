@@ -11,7 +11,7 @@
 import { Typography, Tooltip } from 'antd';
 import { FieldTimeOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { formatDuration } from '../../utils/timeFormat';
+import { formatLatencyMs } from '../../utils/timeFormat';
 import type { SchedulerMetricsResponse } from '../../api/metrics';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
@@ -25,7 +25,8 @@ interface SchedulerLatencyCardProps {
   metrics: SchedulerMetricsResponse | undefined;
 }
 
-/** 三指标行：标签 + 值（formatDuration 复用既有工具） */
+/** 三指标行：标签 + 值（formatLatencyMs 专用档：直方图派生浮点不裸奔，
+ *  P3-② 审计——此前「平均 6.716883116883117ms」17 位小数直接糊在卡面上） */
 function LatencyStat({ label, value, color, t }: { label: React.ReactNode; value: number | null | undefined; color?: string; t?: (k: string, o?: Record<string, unknown>) => string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -33,7 +34,7 @@ function LatencyStat({ label, value, color, t }: { label: React.ReactNode; value
         {label}
       </Text>
       <Text style={{ fontSize: 13, fontWeight: 600, color: color ?? 'var(--color-foreground)' }}>
-        {value == null ? '—' : formatDuration(value, t)}
+        {value == null ? '—' : formatLatencyMs(value, t)}
       </Text>
     </div>
   );

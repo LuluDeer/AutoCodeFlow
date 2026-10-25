@@ -128,6 +128,17 @@ export default function SopsPage() {
   const [assignForm, setAssignForm] = useState<{ version: string; executorId: string }>({ version: '', executorId: '' });
   const [assignable, setAssignable] = useState<AssignableExecutor[]>([]);
   const [assigning, setAssigning] = useState(false);
+  // SOP-PUBLISH-UI-01（P1 审计）：发布对话框。后端 `POST /sop/:id/publish` 早已
+  // 存在，但 sopsApi.publish 在本仓**零调用方**——UI 创建的 SOP 永远无法发布
+  // （只能 curl）。契约（PublishSopDto）：bump ∈ patch/minor/major（缺省 patch）、
+  // changelog ≤2000 字；成功返回 { sop, version }。发布是重要动作，弹窗即确认：
+  // 明确选定版本档位并点「确认发布」后才发请求。
+  const [publishTarget, setPublishTarget] = useState<Sop | null>(null);
+  const [publishForm, setPublishForm] = useState<{ bump: 'patch' | 'minor' | 'major'; changelog: string }>({
+    bump: 'patch',
+    changelog: '',
+  });
+  const [publishing, setPublishing] = useState(false);
   // 指派媒体（截图/录屏——执行器回传的证据，此前在 UI 不可见）
   const [media, setMedia] = useState<Record<string, SopMedia[]>>({});
 
@@ -281,6 +292,31 @@ useEffect(() => {
       setAssigning(false);
     }
   }, [assignTarget, assignForm, detail, openDetail, load, t]);
+
+  // SOP-PUBLISH-UI-01：提交发布。成功后列表与抽屉同步刷新——与 mutateArchive
+  // 同款口径：抽屉正开着同一张时用发布返回的**最新 sop** 重开（状态 Tag、
+  // 版本号、版本历史立即反映，不必等 15s 轮询）。
+  const submitPublish = useCallback(async () => {
+    if (!publishTarget) return;
+    setPublishing(true);
+    try {
+      const res = await sopsApi.publish(publishTarget.id, {
+        bump: publishForm.bump,
+        // 空白 changelog 不发字段（后端落 null），与「可选」语义一致
+        changelog: publishForm.changelog.trim() || undefined,
+      });
+      message.success(t('sops.publish.ok', { version: res.version.version }));
+      setPublishTarget(null);
+      await load();
+      if (detail?.id === res.sop.id) void openDetail(res.sop);
+    } catch (err: unknown) {
+      // 内容缺失 / 内容未变更（400）等后端口径经 showApiError 透出（有
+      // errorCode 走本地化字典，没有回落后端 message），不吞成通用失败。
+      showApiError(err, t('sops.publish.fail'));
+    } finally {
+      setPublishing(false);
+    }
+  }, [publishTarget, publishForm, detail?.id, load, openDetail, t]);
 
   /**
    * 查看澄清附件：平台路径 /api/sop/media/<id>（R35-A1 更正——旧记的
@@ -517,7 +553,20 @@ useEffect(() => {
   const versionColumns: ColumnsType<SopVersion> = [
     { title: t('sops.col.version'), dataIndex: 'version', width: 90 },
     { title: t('sops.col.contentHash'), dataIndex: 'contentHash', width: 130, render: (h: string) => <Text copyable={{ text: h }}>{h.slice(0, 12)}…</Text> },
-    { title: t('sops.col.publishedBy'), dataIndex: 'publishedBy', width: 160 },
+    {
+      title: t('sops.col.publishedBy'),
+      dataIndex: 'publishedBy',
+      width: 160,
+      // P3-⑤（审计）：后端 publishedBy 存的是**主体标识**（人工 = `user:<id>`，
+      // 代理工具 = `agent:tool-call`），响应不带用户名——裸渲染内部 ID「user:1」
+      // 对运维零信息量。人工发布者恒为 ADMIN（控制器 @Roles(ADMIN)），
+      // `user:<id>` 统一显示中性文案「管理员」；代理标识本身可读，原样保留。
+      render: (v: string | null) => {
+        if (!v) return '—';
+        if (/^user:\d+$/.test(v)) return t('sops.publishedBy.admin');
+        return v;
+      },
+    },
     { title: t('sops.col.publishedAt'), dataIndex: 'publishedAt', width: 170, render: (v: string) => formatDateTime(v) },
     { title: t('sops.col.changelog'), dataIndex: 'changelog', ellipsis: true },
   ];
@@ -552,6 +601,14 @@ useEffect(() => {
       },
     },
   ];
+
+  // SOP-PUBLISH-UI-01：发布入口门控——已归档的 SOP 走「恢复」路径（恢复已
+  // 发布过的直接回 published），不再提供发布入口；工作副本缺 front-matter 或
+  // 正文时后端必 400（SOP_CONTENT_MISSING），按钮前置禁用并给原因。
+  const publishable = !!detail
+    && detail.status !== 'deprecated'
+    && !!detail.frontMatterJson
+    && !!detail.bodyMarkdown;
 
   return (
     <div>
@@ -644,6 +701,27 @@ useEffect(() => {
 
       <Drawer
         title={detail ? `${detail.slug} ${detail.currentVersion ?? ''}` : ''}
+        // SOP-PUBLISH-UI-01：发布入口放抽屉 extra——三个 Tab 都可达（契约 Tab
+        // 正是「要发布的工作副本」的上下文）；已归档/缺内容的行禁用并给原因。
+        extra={
+          detail && detail.status !== 'deprecated' && (
+            <Tooltip title={publishable ? undefined : t('sops.publish.noContent')}>
+              <Button
+                type="primary"
+                size="small"
+                disabled={!publishable}
+                data-testid={`sop-publish-${detail.slug}`}
+                onClick={() => {
+                  // 每次打开重置表单（上次输入的 changelog 不残留到别的 SOP）
+                  setPublishForm({ bump: 'patch', changelog: '' });
+                  setPublishTarget(detail);
+                }}
+              >
+                {t('sops.publish.btn')}
+              </Button>
+            </Tooltip>
+          )
+        }
         // antd 6：width 已并入 size（number|string|'large'|'default'）——
         // 窄屏 '100%' 满宽，桌面 860px 固定宽
         size={isMobile ? '100%' : 860}
@@ -922,6 +1000,40 @@ useEffect(() => {
             }))}
           />
           <Text type="secondary">{t('sops.assignNote')}</Text>
+        </Space>
+      </Modal>
+      {/* SOP-PUBLISH-UI-01：发布确认弹窗——弹窗即确认（选定版本档位 + 点
+          「确认发布」才发请求），changelog 选填、≤2000 字对齐 PublishSopDto。 */}
+      <Modal
+        title={t('sops.publish.title', { slug: publishTarget?.slug ?? '' })}
+        open={publishTarget !== null}
+        onOk={() => void submitPublish()}
+        onCancel={() => setPublishTarget(null)}
+        confirmLoading={publishing}
+        width={560}
+        okText={t('sops.publish.confirmBtn')}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Select
+            style={{ width: '100%' }}
+            value={publishForm.bump}
+            onChange={(v) => setPublishForm({ ...publishForm, bump: v })}
+            options={[
+              { value: 'patch', label: t('sops.publish.bump.patch') },
+              { value: 'minor', label: t('sops.publish.bump.minor') },
+              { value: 'major', label: t('sops.publish.bump.major') },
+            ]}
+          />
+          <Input.TextArea
+            rows={3}
+            placeholder={t('sops.publish.changelogPlaceholder')}
+            value={publishForm.changelog}
+            // maxLength 对齐 PublishSopDto @MaxLength(2000)：超长提交只剩一条
+            // 泛化失败 toast，用户长文当场丢失（与回复正文 maxLength 同款纪律）
+            maxLength={2000}
+            onChange={(e) => setPublishForm({ ...publishForm, changelog: e.target.value })}
+          />
+          <Text type="secondary">{t('sops.publish.note')}</Text>
         </Space>
       </Modal>
     </div>

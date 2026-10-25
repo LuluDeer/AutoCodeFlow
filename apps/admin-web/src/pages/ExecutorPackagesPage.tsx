@@ -552,9 +552,12 @@ export default function ExecutorPackagesPage() {
     setTogglingId(pkg.id);
     const deprecating = pkg.status === 'active';
     confirmModal.confirm({
-      title: t(deprecating ? 'execPkg.action.deprecateConfirm' : 'execPkg.action.activateConfirm'),
-      content: t(deprecating ? 'execPkg.action.deprecateConfirmDesc' : 'execPkg.action.activateConfirmDesc'),
-      okText: t(deprecating ? 'execPkg.action.deprecate' : 'execPkg.action.activate'),
+      // 三元在 t() 外做分支——t() 入参保持字面量，i18n 动态键守卫静态可判
+      title: deprecating ? t('execPkg.action.deprecateConfirm') : t('execPkg.action.activateConfirm'),
+      content: deprecating
+        ? t('execPkg.action.deprecateConfirmDesc')
+        : t('execPkg.action.activateConfirmDesc'),
+      okText: deprecating ? t('execPkg.action.deprecate') : t('execPkg.action.activate'),
       cancelText: t('execPkg.cancel'),
       onOk: async () => {
         try {
