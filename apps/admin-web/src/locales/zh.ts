@@ -2404,6 +2404,8 @@ export default {
   'execDetail.log.noLevelLogs': '无 {{level}} 级别日志',
   'execDetail.log.noLevelLogsDesc': '当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。',
   'execDetail.log.noSearchHit': '未找到匹配「{{keyword}}」的日志内容',
+  // F-4（UIUX 审计 P2-3）：stick-to-bottom 上翻后的「回到底部」浮钮
+  'execDetail.log.backToBottom': '回到底部',
   // LOG-JSON-01：日志行内 JSON 载荷的「展开看美化」浮层文案
   'execDetail.log.json.prettyTitle': '格式化后的 JSON',
   'execDetail.log.json.prettyTruncated': '格式化后的 JSON（内容过长，已截断）',

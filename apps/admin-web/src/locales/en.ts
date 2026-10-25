@@ -2391,6 +2391,8 @@ export default {
   'execDetail.log.noLevelLogs': 'No {{level}} logs',
   'execDetail.log.noLevelLogsDesc': 'The current execution has no log lines at this level; switch to All levels to view the full logs.',
   'execDetail.log.noSearchHit': 'No log content matching "{{keyword}}"',
+  // F-4 (UIUX audit P2-3): "back to bottom" floating button after scrolling up
+  'execDetail.log.backToBottom': 'Back to bottom',
   // LOG-JSON-01: "expand to view pretty JSON" popover copy for JSON log payloads
   'execDetail.log.json.prettyTitle': 'Formatted JSON',
   'execDetail.log.json.prettyTruncated': 'Formatted JSON (truncated; payload too long)',
