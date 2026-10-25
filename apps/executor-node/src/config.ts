@@ -621,8 +621,21 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 不改变任何既有分支。三端同值由 admin protocol-version-consistency.spec
  * 钉住（node === python === protocol.json currentProtocolVersion；python 本
  * 轮仅同步常量、不落地上报，v7 键对它是可选省略，协议合法）。
+ *
+ * 方案 b（2026-10-26，接管自愈死锁修复）：7 → 8。heartbeat 新增**可选**键
+ * `registrationConflict: boolean`（心跳体**恒发送**，含 false）——把本执行器
+ * 的 /token 409 慢性冲突态（heartbeat-state.isRegistrationConflictActive，
+ * b876498a 已有）送上心跳线缆，语义「自最近一次 409 起持续至成功取回 token」。
+ * 中台消费判据：该键为 true 且心跳指纹与行已存真实指纹错位 → 活性四列不
+ * 登记（心跳不再把冲突行保持 ONLINE）→ sweep 判死 → 既有接管窗（5min）→
+ * E-1 CAS 收敛——修复「新指纹安装拿不到 token 后以静态 token 心跳、把冲突行
+ * 保持 ONLINE、接管窗（要求 OFFLINE）永不打开」的死锁。仅新增**可选**字段
+ * （缺席 = 未上报，旧执行器/python 行为不变）：PROTOCOL_CONTROL_PLANE_MIN
+ * 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。同一次
+ * bump 合并登记顶层 params 键名运行时语义段（protocol.json params——键名闸
+ * 三端对账，实现见 param-env.ts isInjectableParamEnvKey）。
  */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /**
  * A-6（P2）：express.json() 请求体上限。express 默认 100KB，而 admin 派发载荷

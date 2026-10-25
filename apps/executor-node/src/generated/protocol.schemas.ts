@@ -44,6 +44,11 @@ export const ExecuteRequestSchema = z.looseObject({
 });
 export type ExecuteRequest = z.infer<typeof ExecuteRequestSchema>;
 
+export const HeartbeatPayloadSchema = z.looseObject({
+  "registrationConflict": z.boolean().optional(),
+});
+export type HeartbeatPayload = z.infer<typeof HeartbeatPayloadSchema>;
+
 export const ConfigReloadRequestSchema = z.looseObject({
   "maxConcurrentTasks": z.number().int().min(1).optional(),
   "taskTimeoutSeconds": z.number().int().min(1).optional(),

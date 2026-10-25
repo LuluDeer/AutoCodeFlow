@@ -550,4 +550,36 @@ describe('scheduler', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突态随心跳自报。
+  // 中台据此对「指纹错位的冲突心跳」停止供活性（活性四列不登记），让 sweep
+  // 判死 → 接管窗打开 → E-1 CAS 收敛。两拍断言：置位 → true、复位 → false。
+  it('方案 b: reports registrationConflict in the heartbeat body (set and reset both observable)', async () => {
+    jest.useFakeTimers();
+    const { startHeartbeat } = require('./scheduler');
+    const {
+      setRegistrationConflict,
+      resetAdminStatusForTest,
+    } = require('./heartbeat-state');
+
+    resetAdminStatusForTest();
+    const timer = startHeartbeat();
+    try {
+      // 第一拍：冲突激活（fetchToken 拒绝 409 的置位路径）→ 心跳体携带 true
+      setRegistrationConflict(true);
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.length).toBeGreaterThan(0);
+      expect(post.mock.calls.at(-1)![1].registrationConflict).toBe(true);
+
+      // 第二拍：冲突复位（成功取回 token / 非 409 结果的清除路径）→ 下拍 false
+      setRegistrationConflict(false);
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.at(-1)![1].registrationConflict).toBe(false);
+    } finally {
+      // heartbeat-state 是真模块（非 mock），状态跨用例残留会污染同文件其余
+      // 心跳用例——与 resetInstalledPackagesCacheForTest 同款清理纪律。
+      resetAdminStatusForTest();
+      clearInterval(timer);
+    }
+  });
 });

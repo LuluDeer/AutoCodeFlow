@@ -441,3 +441,40 @@ def test_secrets_contract_vectors_match_runtime():
             f"secrets 向量「{vec['name']}」（key={vec['key']!r}）期望 "
             f"injectable={vec['injectable']}，实际 {actual}——python 侧键名闸与协议漂移"
         )
+
+
+# ---------------------------------------------------------------------------
+# params（P2-2，2026-10-26 执行器域审计）：逐键通道键名闸的运行时语义向量
+# ---------------------------------------------------------------------------
+
+
+def test_params_contract_vectors_match_runtime():
+    """顶层 params 段的向量逐条对真实实现断言（routers.execute._is_injectable_param_key）。
+
+    与 secrets 段同策：键名规则**不在** schemas.ExecuteRequest 里闸（非法键的
+    线上语义是 skip-and-warn 而非 400——params 的 additionalProperties:true 刻意
+    保留），本段是唯一共享闸。与 secrets 键名规则的两点刻意差异由向量逐条钉住：
+    无首字符限制（1ST_RETRY 放行——AUTOFLOW_ 前缀保证 env 名首字符合法）与
+    64 上界（越界拒）；A=B / MY-KEY / 空键 / unicode 与 secrets 段同判必拒。
+
+    三端同款：admin 源头主闸 dispatch-params-keys.util.ts、node 防御纵深
+    param-env.ts isInjectableParamEnvKey（两侧契约测试加载同一份向量）。
+    """
+    from routers.execute import _is_injectable_param_key
+
+    section = PROTOCOL['params']
+    assert section['onInvalidKey'] == 'skip-and-warn'
+    assert section['injection'] == 'AUTOFLOW_<KEY-uppercase>'
+
+    vectors = section['vectors']
+    # 反永真：向量面非空，且合法/非法两侧都有样本
+    assert len(vectors) >= 8
+    assert any(v['injectable'] for v in vectors)
+    assert any(not v['injectable'] for v in vectors)
+
+    for vec in vectors:
+        actual = _is_injectable_param_key(vec['key'])
+        assert actual is vec['injectable'], (
+            f"params 向量「{vec['name']}」（key={vec['key']!r}）期望 "
+            f"injectable={vec['injectable']}，实际 {actual}——python 侧键名闸与协议漂移"
+        )

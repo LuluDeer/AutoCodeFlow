@@ -672,5 +672,19 @@ EXECUTOR_VERSION = '2.0.0'
 # 接入（蓝本：node 侧 deployed-apps.ts / installed-packages.ts），本注释
 # 与 scheduler._heartbeat_payload / main._register_payload 处的省略注释
 # 一并移除。
-PROTOCOL_VERSION = 7
+#
+# 方案 b（2026-10-26，接管自愈死锁修复）：7 → 8。heartbeat 新增**可选**键
+# `registrationConflict: boolean`（方向为**执行器→中台**，语义「自最近一次
+# /token 409 起至成功取回 token」，键缺席 = 未上报）。本执行器**两处缺席**
+# 的裁定（同上方 deployedApps/installedPackages 的 fail-honest 同款）：
+# ① 载荷缺键——auth.py 现无 /token 409 识别（缺口登记见 auth.py 头注），
+#   没有 409 观测就没有可上报的冲突态；中台对「键缺席」按 v7 语义完全不动
+#   活性判定（protocol.json v8 条目明示），本执行器心跳行为与引入前逐字节
+#   一致。后续批补齐时：auth.py 记录 409 态（写方 409 置位 / 成功清除）+
+#   scheduler._heartbeat_payload 加 `registrationConflict: _conflict_active()`，
+#   蓝本 node 侧 heartbeat-state.ts + middleware/auth.ts。
+# ② 同一次 bump 合并登记 protocol.json 顶层 params 键名运行时语义段——
+#   本侧对等实现 routers/execute.py `_is_injectable_param_key`（注入循环
+#   skip+warn，admin/node 同款常量互指），已随本批落地。
+PROTOCOL_VERSION = 8
 

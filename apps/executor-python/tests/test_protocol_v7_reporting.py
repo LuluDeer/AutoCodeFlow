@@ -96,7 +96,14 @@ class TestProtocolV7KeysAlwaysOmitted:
 
     @pytest.mark.asyncio
     async def test_heartbeat_payload_still_carries_core_fields(self):
-        """两键缺席不影响心跳本体：核心字段照报、协议版本仍是 v7。"""
+        """两键缺席不影响心跳本体：核心字段照报、协议版本跟随 config 常量。
+
+        （v7 时为 `== 7`；方案 b 一次 bump 合并到 v8，v7 两键在 v8 下仍缺席，
+        断言从钉字面量改为与 config.PROTOCOL_VERSION 同源——版本常量的三端
+        一致性由 admin protocol-version-consistency.spec 钉住，这里不重复抄。）
+        """
+        from config import PROTOCOL_VERSION
+
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=_create_mock_response(200))
         body = await _capture_heartbeat_body(mock_client)
@@ -104,7 +111,10 @@ class TestProtocolV7KeysAlwaysOmitted:
         for field in ('address', 'cpuUsage', 'memUsage', 'runningTaskCount',
                       'runningExecutionIds', 'protocolVersion'):
             assert field in body, f'心跳核心字段 {field} 不应因 v7 两键缺席而丢失'
-        assert body['protocolVersion'] == 7
+        assert body['protocolVersion'] == PROTOCOL_VERSION
+        # 方案 b（v8）：registrationConflict 在本侧也恒缺席（auth.py 无 409
+        # 观测——缺口登记见 auth.py._fetch_token 头注）。
+        assert 'registrationConflict' not in body
 
     @pytest.mark.asyncio
     async def test_heartbeat_never_reports_node_shaped_tree(self, monkeypatch, tmp_path):
@@ -125,7 +135,7 @@ class TestProtocolV7KeysAlwaysOmitted:
 
     def test_register_payload_omits_both_keys_by_default(self, monkeypatch, tmp_path):
         """注册载荷同样恒省略两键（register 与 heartbeat 同批可选键）。"""
-        from config import settings
+        from config import settings, PROTOCOL_VERSION
 
         monkeypatch.setattr(settings, 'app_name', 'py-executor')
         monkeypatch.setattr(settings, 'executor_address', 'localhost:8001')
@@ -136,4 +146,6 @@ class TestProtocolV7KeysAlwaysOmitted:
         payload = _register_payload()
         assert 'deployedApps' not in payload
         assert 'installedPackages' not in payload
-        assert payload['protocolVersion'] == 7
+        # 协议版本跟随 config 常量（v7 → 方案 b 一次 bump 合并到 v8，两键在
+        # v8 下仍缺席；版本三端一致性由 admin protocol-version-consistency 钉）。
+        assert payload['protocolVersion'] == PROTOCOL_VERSION

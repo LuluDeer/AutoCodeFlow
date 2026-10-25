@@ -48,6 +48,11 @@ class ExecuteRequest(BaseModel):
     secrets: dict[str, Any] | None = Field(default=None)
 
 
+class HeartbeatPayload(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    registrationConflict: bool | None = Field(default=None)
+
+
 class ConfigReloadRequest(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
     maxConcurrentTasks: int | None = Field(ge=1, default=None)

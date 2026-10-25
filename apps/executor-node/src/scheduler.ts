@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { config, EXECUTOR_VERSION, PROTOCOL_VERSION } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
-import { recordHeartbeat } from './heartbeat-state';
+import { recordHeartbeat, isRegistrationConflictActive } from './heartbeat-state';
 import { executorStartedAt, executorStartupId } from './startup-identity';
 // ARCH-36（ADR-017 阶段 2）：设备指纹与 register 同源（同一 memo）。
 import { getDeviceFingerprint } from './device-identity';
@@ -333,6 +333,16 @@ async function sendHeartbeat() {
       // PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
       // 中台可据此在心跳路径同样做兼容性分支。
       protocolVersion: PROTOCOL_VERSION,
+      // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突自报。
+      // 语义「自最近一次 409 起持续至成功取回 token」（写方 auth.ts 的
+      // recordTokenConflict / clearTokenConflict，读方
+      // isRegistrationConflictActive——/health 同源，纯内存读取零开销）。
+      // 三态纪律：**恒发送**（含 false——false = 「当前无冲突」的真事实，
+      // 与 deployedApps 的 [] 同口径；键缺席 = 未上报，是旧执行器 / python
+      // 的合法形态）。中台消费判据：true 且心跳指纹与行已存真实指纹错位
+      // → 活性四列不登记（心跳不再把冲突行保持 ONLINE，接管窗得以打开）。
+      // 详见 protocol.json compatibilityMatrix v8 条目。
+      registrationConflict: isRegistrationConflictActive(),
     });
     // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
     // stored tokenHash (same adoption as register/POST /token), so the

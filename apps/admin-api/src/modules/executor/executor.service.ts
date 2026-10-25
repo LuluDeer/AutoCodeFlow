@@ -72,6 +72,13 @@ import {
   buildDispatchTaskPayload,
   DispatchTaskPayload,
 } from "./dispatch-task-payload.util";
+// P2-2（2026-10-26 执行器域审计）：params 键名闸（源头主闸）——规则 SSOT 与
+// 三端互指见 util 头注；消费点 buildDispatchParams。
+import {
+  DISPATCH_PARAM_KEY_PATTERN,
+  filterDispatchParamKeys,
+  summarizeRejectedParamKeys,
+} from "./dispatch-params-keys.util";
 // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：zip 渠道任务的
 // `packageUrl` 由 admin 在派发时解析后附加到下发 task 上（任务实体只有
 // `applicationId` 弱引用，执行器无法自行查库）。只加列/只读，不建关系，
@@ -315,9 +322,13 @@ const TRUNCATION_WARN_THROTTLE_MS = 60_000;
  */
 const lastMissingFingerprintWarn = new Map<string, number>();
 const MISSING_FINGERPRINT_WARN_THROTTLE_MS = 60 * 60 * 1000;
-/** 测试出口：清空上面那张节流表（模块级 Map 跨用例残留会形成隐性顺序依赖）。 */
+// 方案 b：冲突自报抑制活性的节流表（与上面那张同策略、**分开**——两张表的
+// 触发条件不同，共用会让一张表的告警吞掉另一张的）。
+const lastConflictSelfReportSuppressedWarn = new Map<string, number>();
+/** 测试出口：清空上面两张节流表（模块级 Map 跨用例残留会形成隐性顺序依赖）。 */
 export function __resetMissingFingerprintWarnForTest(): void {
   lastMissingFingerprintWarn.clear();
+  lastConflictSelfReportSuppressedWarn.clear();
 }
 
 /**
@@ -1213,6 +1224,59 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
+   * 方案 b（协议 v8，接管自愈死锁修复 2026-10-26）：冲突自报心跳抑制活性的
+   * 节流 warn —— 语义是**修复主线索**，不是判定（判定在 heartbeat() 的
+   * suppressLivenessAdoption 判据；本方法只回答「哪台执行器在替别人续命」）。
+   *
+   * 运维视角的因果链：看到本条 warn → 该地址上有一份拿不到 token 的新安装
+   * （/token 409）正以静态 token 心跳顶着旧安装的行 → 中台已停止为该行供活性
+   * → sweep 将按既有超时把行判 OFFLINE → 接管窗打开后新安装可自行收敛
+   * （E-1 CAS）。**无需人工干预即自愈**；warn 持续出现说明冲突未收敛
+   * （典型：两份安装长期并存），按地址/指纹排查。
+   *
+   * 节流策略与 warnMissingFingerprintOnce 先例同款（模块级 Map 按 address
+   * 1h 一条），但**独立一张表**：两张表的触发条件不同，共用会互相吞告警。
+   */
+  private warnConflictSelfReportLivenessSuppressed(
+    address: string,
+    executor: Executor,
+  ): void {
+    const now = Date.now();
+    const last = lastConflictSelfReportSuppressedWarn.get(address);
+    if (
+      last !== undefined &&
+      now - last < MISSING_FINGERPRINT_WARN_THROTTLE_MS
+    ) {
+      return;
+    }
+    if (lastConflictSelfReportSuppressedWarn.size > 5000)
+      lastConflictSelfReportSuppressedWarn.clear();
+    lastConflictSelfReportSuppressedWarn.set(address, now);
+    this.logger.warn(
+      `Heartbeat from ${address} self-reports a registration conflict ` +
+        `(/token 409) while carrying deviceFingerprint that does not match ` +
+        `executor ${executor.id} (${executor.appName}); liveness columns are ` +
+        `NOT refreshed for this row (protocol v8 takeover deadlock fix) — the ` +
+        `stale sweep will mark it OFFLINE and the takeover window will open. ` +
+        `No action needed unless this warning persists (two installs sharing ` +
+        `one address).`,
+    );
+  }
+
+  /**
+   * 方案 b 回滚开关：executor.honorHeartbeatConflictSelfReport（默认 true）。
+   * 置 false 恢复 v7 语义（任何心跳都刷新活性四列）——接管死锁会随之复现，
+   * 仅作应急回滚用（config 门读取模式与 staleOfflineConfirmations 同款）。
+   */
+  private honorHeartbeatConflictSelfReport(): boolean {
+    return (
+      this.configService.get<boolean>(
+        "executor.honorHeartbeatConflictSelfReport",
+      ) !== false
+    );
+  }
+
+  /**
    * P0-4 附带（§7 P0-3 末条）：地址漂移采纳后发布 executor.address.drifted。
    *
    * 订阅方（部署域）据此把该执行器名下的未终结部署行快照滚到新地址——
@@ -1350,7 +1414,24 @@ export class ExecutorService implements OnModuleInit {
         detail: message,
       });
     }
-    return { ...(params ?? {}), ...(decrypted ?? {}) };
+    // P2-2（2026-10-26 执行器域审计）：params 键名闸（源头主闸）。非法键
+    // skip + warn（不 400——params 来自用户配置面，跳过坏键保留好键；与
+    // secrets 的 skip-and-warn 同策），规则 SSOT 见
+    // dispatch-params-keys.util.ts 头注（protocol.json params 段；执行器
+    // node/python 两侧还有同款纵深闸）。任务面可观测：warn 带 taskId/
+    // executionId，坏键清单截断防刷屏。secrets 合并在**其后**且不受影响
+    // （secrets 键名有自己的更严规则，由执行器侧 secret-env 闸负责）。
+    const { kept, rejected } = filterDispatchParamKeys(params);
+    if (rejected.length > 0) {
+      this.logger.warn(
+        `Dispatch params key gate (P2-2): dropped ${rejected.length} param ` +
+          `key(s) that cannot become AUTOFLOW_<KEY> env names (pattern ` +
+          `${DISPATCH_PARAM_KEY_PATTERN}): ` +
+          `${summarizeRejectedParamKeys(rejected)} ` +
+          `[task ${task.id} execution ${execution.id}]`,
+      );
+    }
+    return { ...kept, ...(decrypted ?? {}) };
   }
 
   /**
@@ -3110,6 +3191,10 @@ export class ExecutorService implements OnModuleInit {
       deployedApps?: DeployedAppReport[] | null;
       // R3-A（§4.3/P10）：已安装执行器包清单（三态语义同 interpreters）。
       installedPackages?: InstalledPackageReport[] | null;
+      // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突自报（可选；
+      // 缺席 = 未上报，语义「自最近一次 409 起至成功取回 token」）。controller
+      // F-7 白名单已转发；消费判据见下方 suppressLivenessAdoption。
+      registrationConflict?: boolean;
     },
   ) {
     // ADR-017 阶段 3：身份解析——**指纹优先**（稳定安装身份），`address` 兜底。
@@ -3172,18 +3257,70 @@ export class ExecutorService implements OnModuleInit {
     // ADR 要修的「换 IP 后历史断裂」在重启恢复面上的复现）。常态下
     // e.address === address，取值与引入前逐字节一致。
     const recoveryAddress = e.address;
+    // ── 方案 b（协议 v8，接管自愈死锁修复 2026-10-26）────────────────────
+    //
+    // 死锁形态：新指纹安装拿不到 per-executor token（/token 409——地址被旧
+    // 安装的行占用），退化为**静态 token 心跳**照常上报。旧语义下这条心跳照旧
+    // 刷新活性四列，把「指纹错位的冲突行」保持 ONLINE——而接管窗
+    // （canTakeOverAbandonedAddressRow，register 的 foreignInstall 分支）要求
+    // 目标行 **OFFLINE 且静默超窗**，于是窗口永不打开：冲突自愈被心跳本体锁死。
+    //
+    // 修法（执行器自报 + 中台停供活性）：执行器在心跳体自报冲突态
+    // （`registrationConflict`，node 侧 isRegistrationConflictActive，恒发送；
+    // 本批 python 缺席 = 合法「未上报」）。中台判据（四条同时成立才抑制）：
+    //   1. 自报为 true（`=== true` 才采信——布尔语义，其余值按未上报）；
+    //   2. 心跳带可解析指纹（无指纹的心跳在 R32-C4 已 fail-closed，到这里
+    //      必然是单行地址兜底，无从谈起「错位」）；
+    //   3. 行已存**真实**指纹（normalize 后非空——legacy 键/NULL 是存量行被
+    //      同机指纹接管的升级路径，不是冲突，与 register 的 foreignInstall
+    //      判据同源）；
+    //   4. 两者错位（存储指纹 ≠ 来报指纹——该心跳是「别人」在替这行续命）。
+    // 满足 → 活性四列不进 adopted（见下），指标列照写、回包仍 201——心跳
+    // 通道本身不断（断了执行器就收不到 tokenHash 轮换/versionCompliant 回显），
+    // 只是**不再替这行续命**：DB 的 lastHeartbeat 停留原值，sweep 的
+    // 「lastHeartbeat < cutoff」谓词照常命中 → 判死 → 接管窗打开 → E-1 CAS。
+    // 谎报面：心跳认证已过（持有效令牌才能到这里），错位判据本身即「上报者
+    // 不是这行的主人」——健康行主人的心跳指纹必与行匹配（判据 4 不成立），
+    // 不受骚扰者谎报影响（executor.heartbeat-conflict-selfreport.spec 反例钉住）。
+    //
+    // 回滚开关：executor.honorHeartbeatConflictSelfReport（默认 true）。
+    const conflictSelfReported = metrics.registrationConflict === true;
+    const storedRealFingerprint = normalizeDeviceFingerprint(
+      e.deviceFingerprint,
+    );
+    const suppressLivenessAdoption =
+      this.honorHeartbeatConflictSelfReport() &&
+      conflictSelfReported &&
+      incomingFingerprint !== null &&
+      storedRealFingerprint !== null &&
+      storedRealFingerprint !== incomingFingerprint;
+    if (suppressLivenessAdoption) {
+      // 可观测性（对齐 warnMissingFingerprintOnce 先例：模块级 Map 按地址节流
+      // 1h——心跳 30s 一台，无节流会刷屏；这里的 warn 是运维修复死锁的主线索）。
+      this.warnConflictSelfReportLivenessSuppressed(address, e);
+    }
     // R53-A1：本轮**实际采纳**的列集合。只有登记在这里的列才会进最终 patch ——
     // 未登记的白名单列（更不用说白名单外的列）一个字都不写，因此快照里过期的
     // 旧值不会被 diff 判成"改动"写回。status / offlineReason /
     // consecutiveHeartbeatMisses / lastHeartbeat 是"心跳永远拥有"的四列：
     // 它们每次心跳都必须落库（哪怕值没变），否则并发写者刚落库的
     // status=OFFLINE 不会被本次心跳的 last-writer-wins 语义纠正回来。
-    const adopted = new Set<HeartbeatOwnedColumn>([
-      "status",
-      "offlineReason",
-      "consecutiveHeartbeatMisses",
-      "lastHeartbeat",
-    ]);
+    //
+    // 方案 b 例外（suppressLivenessAdoption，见上方判据）：**活性四列不登记**
+    // ——指纹错位的冲突自报心跳不得替这行续命，DB 的 status/lastHeartbeat
+    // 停留在心跳前状态，sweep 判死与接管窗照常工作。指标列照写（下方白名单环
+    // 只看 metricValues），心跳通道本身不断（回包仍 201，tokenHash 轮换/
+    // versionCompliant 回显不受影响）。
+    const adopted = new Set<HeartbeatOwnedColumn>(
+      suppressLivenessAdoption
+        ? []
+        : [
+            "status",
+            "offlineReason",
+            "consecutiveHeartbeatMisses",
+            "lastHeartbeat",
+          ],
+    );
     if (e.address !== address) {
       // 漂移前的地址（事件载荷 + 条件更新谓词用）；仅在本次真的采纳了漂移时赋值。
       let previousAddress: string | null = null;
@@ -3269,6 +3406,9 @@ export class ExecutorService implements OnModuleInit {
       // installedPackages 走 interpreters 同款的三态列采纳。
       deployedApps,
       installedPackages,
+      // 方案 b：registrationConflict 是布尔信号列（消费点在上方
+      // suppressLivenessAdoption），不是数值指标列——摘出，不落白名单环。
+      registrationConflict: _rc,
       ...metricValues
     } = metrics;
     if (didRestart) {
@@ -3449,10 +3589,18 @@ export class ExecutorService implements OnModuleInit {
     // NETOPT-G P1-6：记录跃迁前的状态——executor.online 只在**真实恢复**
     // （非 ONLINE → ONLINE）时发布，避免每次 30s 心跳都刷一条事件。
     const wasOnline = e.status === ExecutorStatus.ONLINE;
+    // ⚠️ 方案 b：下面四行的内存赋值**无条件执行**（最小 diff），但抑制路径
+    // （suppressLivenessAdoption）下这四列不在 adopted 里 → 不进 patch →
+    // **不落库**。因此返回体 saved = {...e, ...patch} 的 status/lastHeartbeat
+    // 是内存态（ONLINE/now），与 DB 的权威状态（保持心跳前值）表面不一致
+    // ——以 **DB 为准**：消费者（sweep/接管窗/派发闸门）全部读库；响应体只
+    // 回给执行器（仅消费 tokenHash/versionCompliant，不读状态列）。
+    // emitExecutorOnline 同步抑制（下方）——DB 没有点亮 ONLINE，事件绝不外发。
     e.status = ExecutorStatus.ONLINE;
     // NETOPT-G P1-7：心跳到达即清零"连续超时"计数——这是迟滞判死能自愈的
     // 关键：一次成功心跳就把"疑似失联"状态彻底解除，下一轮 sweep 必须重新
     // 从 0 累计，因此"偶发失败 + 恢复"永远不会累积到判死阈值。
+    // （方案 b 抑制路径不落库：冲突自报心跳同样不清零计数器。）
     e.consecutiveHeartbeatMisses = 0;
     // 遗留 P1-24：恢复在线即清除离线原因标注。
     e.offlineReason = null;
@@ -3662,7 +3810,10 @@ export class ExecutorService implements OnModuleInit {
     // NETOPT-G P1-6（状态机对称性）：恢复在线的事件在**落库之后**发布，与
     // emitExecutorOffline 的三处调用点同口径（状态先落库，事件后发）。
     // 只在真实跃迁时发——心跳 30s 一次，无条件 emit 会把 outbox 打爆。
-    if (!wasOnline) {
+    // 方案 b：抑制路径追加否定——DB 侧没有点亮 ONLINE（活性四列未采纳），
+    // executor.online 事件同样不得外发（否则订阅方会按一个并不存在的恢复
+    // 行事；被 sweep 判死的冲突行每 30s 都会命中本分支，不抑制会事件刷屏）。
+    if (!wasOnline && !suppressLivenessAdoption) {
       this.emitExecutorOnline(saved);
     }
     try {

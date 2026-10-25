@@ -1701,6 +1701,38 @@ def _serialize_param_value(v: Any) -> str:
     return js_json_dumps(v)
 
 
+# P2-2（2026-10-26 执行器域审计）：params 逐键通道的**键名闸**。
+#
+# params 注入形态是 `AUTOFLOW_<KEY 大写>`，键名**直接成为子进程环境变量名**：
+# 含 `=` 的键（`A=B` → `AUTOFLOW_A=B`）会坏掉 env 块（node 侧 spawn 构造 env
+# 直接抛错——secrets 向量 illegal-equals 自证同形；python dict 虽不校验 env 名，
+# 子进程拿到的名字已无法被 shell/脚本按常规方式引用）；短横线在 shell 引用
+# （`$AUTOFLOW_MY-KEY`）里必然错位；unicode 键在 Windows env 块不保证可移植。
+# 单一事实源：packages/executor-protocol/protocol.json 顶层 `params` 段
+# （keyPattern `^[A-Za-z0-9_]{1,64}$`、onInvalidKey skip-and-warn）——与
+# secrets 键名规则（`^[A-Za-z_][A-Za-z0-9_]*$`，secret_env.py）的两点刻意差异：
+# ① 无首字符限制（AUTOFLOW_ 前缀保证 env 名首字符合法，数字开头的原始键
+# 1ST_RETRY 不构成风险）；② 长度 ≤64（含前缀后仍有界）。**不挂保留名/前缀
+# 拒绝**：params 走 AUTOFLOW_ 命名空间，用户参数触碰不到平台变量（同名参数
+# 被平台键按注入顺序覆盖是既有语义，非漏洞）。
+#
+# 三端同款规则（常量注释互指）：admin 源头主闸
+# apps/admin-api/src/modules/executor/dispatch-params-keys.util.ts
+# （派发时已 skip 坏键并 warn 带 taskId/executionId）；node 防御纵深
+# apps/executor-node/src/param-env.ts isInjectableParamEnvKey（注入循环同款
+# skip+warn）；本函数是 python 侧对等兜底——admin/node 校验过也照拦，
+# 执行器不能假设上游一定校验过（与 secret_env.py 头注同一立场）。
+#
+# 向量断言：tests/test_executor_protocol_contract.py 的 params 段（对真实
+# 实现逐条断言 protocol.json params.vectors）。
+_PARAM_KEY_RE = re.compile(r'^[A-Za-z0-9_]{1,64}$')
+
+
+def _is_injectable_param_key(key: str) -> bool:
+    """该 params 键能否经 `AUTOFLOW_<KEY 大写>` 通道注入子进程 env。"""
+    return bool(isinstance(key, str) and _PARAM_KEY_RE.match(key))
+
+
 def _serialize_params_json(params: Optional[Dict[str, Any]]) -> Optional[str]:
     """A-11R ②：类型化通道——整个 params 一份紧凑 JSON（与 node 同形）。
 
@@ -4183,12 +4215,31 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     env['TASK_ID'] = str(task.get('id') or '')
     env['TASK_NAME'] = str(task.get('name') or '')
     if req.params:
+        # P2-2（2026-10-26 执行器域审计）：键名闸（防御纵深）——admin 源头主闸
+        # （dispatch-params-keys.util.ts，同规则常量注释互指）已先行丢弃非法键，
+        # 此处兜底的理由见 _is_injectable_param_key 头注：pull 载荷/直连 execute
+        # 都是入口，执行器不能假设上游一定校验过。非法键 skip + warn（键名不是
+        # 密值，可安全记日志），绝不因此让整次执行失败——跳过坏键、保留好键。
+        _skipped_params = []
         for k, v in req.params.items():
             # A-11R：字符串回归裸值、非字符串走与 JSON.stringify 逐字节一致的
             # JS 序列化。A-11 曾把字符串也 JSON 化（多一对引号），导致所有经
             # 中台 UI 配置的参数与官方文档教的裸读方式冲突（生产实证：
             # tk-ship-notify 静默停摆 12 天）——详见 _serialize_param_value。
+            if not _is_injectable_param_key(k):
+                _skipped_params.append(k)
+                continue
             env[f'AUTOFLOW_{k.upper()}'] = _serialize_param_value(v)
+        if _skipped_params:
+            # 与 secrets 的 skip-warn 同款口径：静默丢弃是最难排查的失败形态。
+            logger.warning(
+                'Ignored %d task param(s) whose names cannot become '
+                'AUTOFLOW_<KEY> env names (must match [A-Za-z0-9_]{1,64}; '
+                'equals/space/dash keys would corrupt the child env): %s',
+                len(_skipped_params),
+                ', '.join(_skipped_params[:10])
+                + (f' … (+{len(_skipped_params) - 10} more)' if len(_skipped_params) > 10 else ''),
+            )
 
         # A-11R ②：类型化通道——整个 params 一份 JSON，供需要精确类型的消费方
         # （SDK 的 from_env/fromEnv）做类型还原。逐键通道的字符串形态原理上

@@ -2180,6 +2180,56 @@ def test_run_task_callback_env_not_overridable_by_params(tmp_path, monkeypatch):
     assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
 
 
+def test_run_task_params_key_gate_skips_illegal_keys_and_warns(tmp_path, monkeypatch, caplog):
+    """P2-2（2026-10-26 执行器域审计）：params 逐键通道的键名闸。
+
+    非法键（含 =/空格/短横线/点/空串/unicode/超 64 字符）跳过并留一条 warn，
+    合法键照常注入——绝不让一个手滑键名弄挂整次执行。此前零校验：含 = 的键
+    落到 env[f'AUTOFLOW_{k.upper()}'] 会产出坏 env 名（node 侧 spawn 构造 env
+    直接抛错，secrets 向量 illegal-equals 同形），两端失败方式还不一致。
+
+    规则 SSOT：protocol.json 顶层 params 段（keyPattern [A-Za-z0-9_]{1,64}）。
+    三端同款（常量注释互指）：admin dispatch-params-keys.util.ts（源头主闸）、
+    node param-env.ts isInjectableParamEnvKey；向量对账在
+    test_executor_protocol_contract.py 的 params 段。
+    """
+    import logging
+    boundary_ok = 'a' * 64
+    too_long = 'b' * 65
+
+    with caplog.at_level(logging.WARNING, logger='routers.execute'):
+        env = _run_task_capture_env(tmp_path, monkeypatch, params={
+            'LIMIT': '3',
+            'region': 'eu',
+            boundary_ok: 'ok',
+            'A=B': 'evil',
+            'MY-KEY': 'evil',
+            'MY SPACE': 'evil',
+            '': 'evil',
+            'bad.dot': 'evil',
+            '区域': 'evil',
+            too_long: 'evil',
+        })
+
+    # 合法键（含数字前缀形态、64 上界）照常注入
+    assert env['AUTOFLOW_LIMIT'] == '3'
+    assert env['AUTOFLOW_REGION'] == 'eu'
+    assert env[f'AUTOFLOW_{boundary_ok.upper()}'] == 'ok'
+    # 非法键全部缺席（= / 空格 / 短横线 / 点 / 空键 / unicode / 越界长度）
+    assert 'AUTOFLOW_A=B' not in env
+    assert 'AUTOFLOW_MY-KEY' not in env
+    assert 'AUTOFLOW_MY SPACE' not in env
+    assert 'AUTOFLOW_' not in env or env.get('AUTOFLOW_') != 'evil'
+    assert 'AUTOFLOW_BAD.DOT' not in env
+    assert 'AUTOFLOW_区域' not in env
+    assert f'AUTOFLOW_{too_long.upper()}' not in env
+
+    gate_warns = [r for r in caplog.records if 'Ignored' in r.getMessage()
+                  and 'task param' in r.getMessage()]
+    assert len(gate_warns) == 1
+    assert 'A=B' in gate_warns[0].getMessage()
+
+
 def test_injected_env_round_trips_into_the_sdk_callback_row_identity(tmp_path, monkeypatch):
     """端到端：执行器产出的 env → 真实 SDK TaskContext → 回调载荷带行身份。
 

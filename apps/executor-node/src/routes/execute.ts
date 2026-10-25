@@ -34,6 +34,8 @@ import {
   serializeParamEnvValue,
   serializeParamsJson,
   PARAMS_JSON_ENV_KEY,
+  // P2-2：params 键名闸（防御纵深，规则常量与 admin/python 三端互指）。
+  isInjectableParamEnvKey,
 } from '../param-env';
 // SEC-02 续：secrets 按原名注入（含保留名闸门），见 secret-env.ts 的模块头注释。
 import { injectSecretEnv } from '../secret-env';
@@ -2200,6 +2202,15 @@ async function prepareExecution(
   env['TASK_NAME'] = String(task.name || '');
 
   if (params) {
+    // P2-2（2026-10-26 执行器域审计）：键名闸（防御纵深）——admin 源头主闸
+    // （dispatch-params-keys.util.ts，同规则常量互指）已先行丢弃非法键，此处
+    // 兜底的原因与 secret-env.ts 头注同一立场：pull 载荷 / 直连 /api/execute
+    // 都是入口，执行器不能假设上游一定校验过。含 `=` 的键会让下方
+    // `env[paramEnvKey(k)]` 产出 `AUTOFLOW_A=B` 形态 → spawn 构造 env 直接
+    // 抛错（secrets 向量 illegal-equals 同根因），空格/短横线/点键在 shell
+    // 引用里必然错位。非法键 skip + warn（键名不是敏感值，可安全记日志），
+    // 绝不因此让整次执行失败——跳过坏键、保留好键。
+    const skippedParamKeys: string[] = [];
     for (const [k, v] of Object.entries(params)) {
       // A-11R（生产回归修复）：字符串回归**裸值**，非字符串保持 JSON。
       //
@@ -2216,7 +2227,23 @@ async function prepareExecution(
       // apps/executor-node/src/param-env.ts + apps/executor-python/js_json.py
       // 保证（后者实现了 JSON.stringify 的浮点排版与 JS 键序——A-11 自称的
       // "两端字节一致" 此前并未做到：1e-7 node 给 "1e-7"、python 给 "1e-07"）。
+      if (!isInjectableParamEnvKey(k)) {
+        skippedParamKeys.push(k);
+        continue;
+      }
       env[paramEnvKey(k)] = serializeParamEnvValue(v);
+    }
+    if (skippedParamKeys.length > 0) {
+      logger.warn(
+        `Ignored ${skippedParamKeys.length} task param(s) whose names are not ` +
+          `injectable (must match ^[A-Za-z0-9_]{1,64}$ to become AUTOFLOW_<KEY> ` +
+          `env names; equals/space/dash keys would break the child env): ` +
+          `${skippedParamKeys.slice(0, 10).join(', ')}` +
+          (skippedParamKeys.length > 10
+            ? ` … (+${skippedParamKeys.length - 10} more)`
+            : '') +
+          ` [execution ${executionId}]`,
+      );
     }
   }
 

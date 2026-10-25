@@ -434,6 +434,10 @@ export class ExecutorController {
       deployedApps?: DeployedAppReport[];
       // R3-A（§4.3/P10）：已安装执行器包清单（可选；三态语义同 interpreters）。
       installedPackages?: InstalledPackageReport[];
+      // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突自报（可选；
+      // 缺席 = 未上报，node 恒发含 false）。中台消费判据在 service 侧：
+      // true 且心跳指纹与行已存真实指纹错位 → 活性四列不登记。
+      registrationConflict?: boolean;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -482,6 +486,10 @@ export class ExecutorController {
       // 在 service 侧（applyReportedAppVersions / deployed-apps.util.ts）。
       deployedApps: body.deployedApps,
       installedPackages: body.installedPackages,
+      // 方案 b（协议 v8）：转发 /token 409 冲突自报（F-7 显式白名单，漏转发
+      // = 执行器侧的自报永远到不了 service 的活性判据，死锁修复失效）。
+      // 布尔语义（=== true 才采信）在 service 侧判定。
+      registrationConflict: body.registrationConflict,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with

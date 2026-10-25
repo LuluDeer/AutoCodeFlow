@@ -4,6 +4,7 @@ import { isSafeExecutionIdSegment } from "./routes/execute";
 import {
   TaskConfigSchema,
   ExecuteRequestSchema,
+  HeartbeatPayloadSchema,
   ConfigReloadRequestSchema,
   ConfigReloadResponseSchema,
   HealthReadyResponseSchema,
@@ -57,6 +58,8 @@ const protocol = JSON.parse(
 const SCHEMAS: Record<string, { safeParse: (v: unknown) => { success: boolean; error?: { issues: { path: (string | number | symbol)[] }[] } } }> = {
   TaskConfig: TaskConfigSchema,
   ExecuteRequest: ExecuteRequestSchema,
+  // 协议 v8（方案 b）：心跳载荷的 v8 增量键闸（registrationConflict）
+  HeartbeatPayload: HeartbeatPayloadSchema,
   ConfigReloadRequest: ConfigReloadRequestSchema,
   ConfigReloadResponse: ConfigReloadResponseSchema,
   HealthReadyResponse: HealthReadyResponseSchema,
