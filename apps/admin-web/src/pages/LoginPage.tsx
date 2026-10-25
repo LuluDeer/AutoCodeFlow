@@ -200,13 +200,27 @@ export default function LoginPage() {
               size="large"
               aria-labelledby="login-form-title-totp"
             >
-              <Form.Item name="code" label={t('login.totpCode')} rules={[{ required: true, message: t('login.totpCode.required') }]}>
+              {/* F-11（UIAUDIT P3-4）：TOTP 输入仅数字——后端 totp.dto @Matches(/^\d{6}$/)，
+                  此前可输入 abc123 等非数字串直接提交吃裸 400。双保险：
+                  ① getValueFromEvent 过滤非数字（输入法/粘贴面）；② pattern 规则
+                  对齐 ^\d{6}$（程序化 setFieldValue 绕过 UI 时的最后闸门）。 */}
+              <Form.Item
+                name="code"
+                label={t('login.totpCode')}
+                rules={[
+                  { required: true, message: t('login.totpCode.required') },
+                  { pattern: /^\d{6}$/, message: t('login.totpCode.digits') },
+                ]}
+                getValueFromEvent={(e: { target: { value: string } }) =>
+                  e.target.value.replace(/\D/g, '').slice(0, 6)}
+              >
                 <Input
                   prefix={<SafetyOutlined style={{ color: '#ccc' }} />}
                   placeholder={t('login.totpCode.placeholder')}
                   autoFocus
                   maxLength={6}
                   inputMode="numeric"
+                  autoComplete="one-time-code"
                   aria-label={t('login.totpCode.aria')}
                 />
               </Form.Item>

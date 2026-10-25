@@ -46,6 +46,7 @@ export default {
   'login.totpCode': '动态验证码',
   'login.totpCode.required': '请输入 6 位动态验证码',
   'login.totpCode.placeholder': '6 位动态码',
+  'login.totpCode.digits': '验证码须为 6 位数字',
   'login.totpCode.aria': '动态验证码',
   'login.totpCode.invalid': '动态验证码错误',
   'login.totpHint': '请打开验证器应用获取动态码',

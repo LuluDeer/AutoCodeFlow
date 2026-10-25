@@ -41,6 +41,7 @@ export default {
   'login.totpCode': 'Verification code',
   'login.totpCode.required': 'Please enter the 6-digit verification code',
   'login.totpCode.placeholder': '6-digit code',
+  'login.totpCode.digits': 'The code must be exactly 6 digits',
   'login.totpCode.aria': 'Verification code',
   'login.totpCode.invalid': 'Incorrect verification code',
   'login.totpHint': 'Open your authenticator app for the code',
