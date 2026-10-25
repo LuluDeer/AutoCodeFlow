@@ -153,6 +153,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdate: () => ipcRenderer.invoke('updater:check'),
   // DSK-05：autoDownload=false 下的显式下载入口（用户点「下载」后调用）
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
+  // F-37（UIUX 审计）：取消在途下载（downloading 态的「取消下载」钮）。
+  cancelUpdateDownload: () => ipcRenderer.invoke('updater:cancel-download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
   // B-3②：previouslyDownloaded——main 侧 update-available 实发（同一版本此前
   // 已下载过、待装缓存应复用），渲染层 UpdateBanner 据此切换展示形态；此前

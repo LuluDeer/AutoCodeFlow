@@ -32,7 +32,7 @@ import type { AppConfig } from './config-store';
 import { EXECUTOR_RESTART_REQUIRED_FIELDS } from './config-restart';
 import { decryptToken } from './token-crypto';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
-import { checkForUpdatesUserInitiated, downloadUpdate, quitAndInstall } from './updater';
+import { checkForUpdatesUserInitiated, cancelDownload, downloadUpdate, quitAndInstall } from './updater';
 import {
   checkPathWithinDomains,
   hasAllowedLogExtension,
@@ -933,6 +933,13 @@ export function registerIpcHandlers(): void {
     return { ok: true };
   });
 
+  // F-37（UIUX 审计）：取消在途下载（渲染层 downloading 态的「取消下载」钮）。
+  // electron-updater 原生 CancellationToken 实现；无在途下载时 canceled:false
+  // （竞态安全，渲染层无需处理）。
+  ipcMain.handle('updater:cancel-download', async () => {
+    return cancelDownload();
+  });
+
   // 用户确认升级：下载完成后退出并安装（AppImage/deb 均由 electron-updater
   // 按 resources/package-type 分派对应安装器）
   ipcMain.handle('updater:install', async () => {
@@ -940,8 +947,10 @@ export function registerIpcHandlers(): void {
     if (!(await confirmDestructive('updater:install', confirmViaNativeDialog))) {
       return CONFIRM_CANCELED;
     }
-    quitAndInstall();
-    return { ok: true };
+    // F-37（UIUX 审计）：无可安装更新时旧实现仍返回 ok:true（quitAndInstall
+    // 对该情形是 no-op）——语义不实。现在如实回传，error 为稳定哨兵字符串，
+    // 渲染层映射双语提示。
+    return quitAndInstall();
   });
 
   // ── 历史记录 & 日志 ────────────────────────────────────

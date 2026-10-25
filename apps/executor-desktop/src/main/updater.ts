@@ -1,5 +1,9 @@
 import { app, BrowserWindow } from 'electron';
-import { autoUpdater } from 'electron-updater';
+// F-37（UIUX 审计）：下载取消——electron-updater 6.x 原生支持在途下载中断：
+// `downloadUpdate(cancellationToken)` + `CancellationToken.cancel()`（安装包
+// 下载被 abort，downloadUpdate 的 Promise 以取消错误 reject）。调研结论：
+// 原生取消可行，无需降级到「关闭弹窗 + 不自动安装」方案。
+import { autoUpdater, CancellationToken } from 'electron-updater';
 import log from './logger';
 import { createRunCheck, createPeriodicCheck } from './updater-runcheck';
 // B-3②：已下载版本的持久化标记（纯 Node 模块，见该文件头注）。
@@ -260,6 +264,14 @@ let updateAvailableNotifier: ((version: string, previouslyDownloaded: boolean) =
 /** 同版本去重：6h 周期检查会对同一远端版本反复触发 update-available，
  *  系统通知不该每 6h 重复轰炸（渲染层横幅仍每次广播、状态自恢复）。 */
 let lastNotifiedUpdateVersion: string | null = null;
+// F-37：最近一次 update-available 的完整广播载荷。取消下载后重发它，让
+// 渲染层横幅从 downloading 原路回到 available（版本号/releaseNotes 不丢），
+// 不必新增事件通道（e2e 的 preload 通道白名单钉子也不动）。
+let lastAvailableBroadcast: Record<string, unknown> | null = null;
+// F-37：在途下载的取消令牌与「用户已请求取消」标志。标志用于把取消引发的
+// error 事件（CancellationError）从「下载失败」中区分出来。
+let downloadToken: CancellationToken | null = null;
+let cancelRequested = false;
 
 /** index.ts 接线：注入「更新可用 → 系统通知」回调（notifier.notifyUpdate）。 */
 export function setUpdateAvailableNotifier(
@@ -340,12 +352,13 @@ export function initUpdater(): void {
     // 空串（无日志/全被过滤）照常带上：字段恒存在让渲染层不必猜"是没日志还是
     // 旧版主进程"，展示侧按空串隐藏即可。
     const releaseNotes = normalizeReleaseNotes((info as { releaseNotes?: unknown }).releaseNotes);
-    broadcast(UPDATE_EVENTS.available, {
+    lastAvailableBroadcast = {
       version: remote,
       current: local,
       previouslyDownloaded,
       releaseNotes,
-    });
+    };
+    broadcast(UPDATE_EVENTS.available, lastAvailableBroadcast);
     // V4 审计 P2：广播之外补一条系统通知（状态窗关闭时横幅无人看见）。
     // 同版本只通知一次（6h 周期检查会重复触发 update-available）；新版本号
     // 到达即再通知。remote 已过 isNewerVersion（semver 字符集），进通知安全。
@@ -385,6 +398,17 @@ export function initUpdater(): void {
   });
 
   autoUpdater.on('error', (err) => {
+    // F-37：用户取消下载（cancelDownload）也会以 error 事件到达（CancellationError）
+    // ——这是用户主动选择的路径，不是失败：不发 error（渲染层不进错误态），
+    // 改为重发最近一次 update-available 广播让横幅回到 available 态。
+    if (cancelRequested) {
+      cancelRequested = false;
+      log.info('updater: download cancelled by user');
+      if (lastAvailableBroadcast) {
+        broadcast(UPDATE_EVENTS.available, lastAvailableBroadcast);
+      }
+      return;
+    }
     // NETOPT-C P3: 后台定时检查（启动 30s）离线/私服 404 是常态噪音，只落
     // 日志不打扰用户；仅用户主动检查（updater:check）或正在下载（DSK-03
     // 用户确认后的显性流程）时才广播 error 让渲染层显性化。
@@ -435,30 +459,60 @@ function runCheck(userInitiated: boolean): Promise<void> {
   return userInitiated ? runCheckState.user() : runCheckState.background();
 }
 
-/** 用户确认后执行：下载新版本（autoDownload=false 时的显式下载入口）。 */
+/** 用户确认后执行：下载新版本（autoDownload=false 时的显式下载入口）。
+ *  F-37：下载挂 CancellationToken——cancelDownload() 可中断在途下载。 */
 export async function downloadUpdate(): Promise<void> {
   downloading = true;
+  downloadToken = new CancellationToken();
   try {
-    await autoUpdater.downloadUpdate();
+    await autoUpdater.downloadUpdate(downloadToken);
   } catch (err: any) {
-    // 下载失败经 autoUpdater 'error' 事件广播（downloading 标记在位），
-    // 此处仍落日志兜底
+    // 下载失败经 autoUpdater 'error' 事件广播（downloading 标记在位）；
+    // 用户取消（cancelRequested）不按失败归因——error 处理器已改为重发
+    // update-available，这里只落日志兜底
     log.warn(`updater: downloadUpdate failed: ${err?.message ?? err}`);
   } finally {
     downloading = false;
+    downloadToken = null;
   }
 }
 
-/** 用户确认后执行：下载完成的前提下退出并安装。 */
-export function quitAndInstall(): void {
+/**
+ * F-37：取消在途下载（ipc updater:cancel-download）。electron-updater 6.x 原生
+ * 支持：`downloadUpdate(cancellationToken)` 的令牌 `cancel()` 后安装包下载被
+ * abort、downloadUpdate 以取消错误 reject——autoUpdater 随即发 error 事件，
+ * 该事件在 cancelRequested 置位时被归因为「用户取消」而非失败（见 error
+ * 处理器：重发 update-available，横幅回到 available 态）。
+ *
+ * 返回 canceled:false 表示当前没有可取消的在途下载（竞态：下载刚完成/已结束
+ * ——此时 'update-downloaded' 事件已在路上，渲染层无需任何处理）。
+ */
+export function cancelDownload(): { ok: boolean; canceled: boolean } {
+  if (!downloading || downloadToken === null || downloadToken.cancelled) {
+    return { ok: true, canceled: false };
+  }
+  cancelRequested = true;
+  downloadToken.cancel();
+  return { ok: true, canceled: true };
+}
+
+/**
+ * 用户确认后执行：下载完成的前提下退出并安装。
+ * F-37（UIUX 审计）：无可安装更新时 electron-updater 的 quitAndInstall 是
+ * no-op，旧实现却让 IPC 仍返回 ok:true——语义不实且渲染层无感。改为把
+ * 「没有已下载更新」如实回传（error 为稳定哨兵字符串，渲染层映射双语提示；
+ * 未识别的 error 原样展示）。
+ */
+export function quitAndInstall(): { ok: boolean; error?: string } {
   // electron-updater 6.x：isUpdaterActive() 为 false 时 quitAndInstall 直接 no-op
   if (!autoUpdater.isUpdaterActive()) {
     log.warn('updater: quitAndInstall called but no update downloaded, ignored');
-    return;
+    return { ok: false, error: 'UPDATER_NO_DOWNLOADED_UPDATE' };
   }
   setImmediate(() => {
     autoUpdater.quitAndInstall();
   });
+  return { ok: true };
 }
 
 /** 给所有存活窗口广播事件（无边框窗口可能一个都没开）。 */

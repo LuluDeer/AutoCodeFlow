@@ -845,6 +845,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'update.availableHint': '当前版本已可升级',
     'update.downloading': '下载中…',
     'update.download': '下载更新',
+    // F-37（UIUX 审计）：下载取消入口 + 无可安装更新的如实提示。
+    'update.cancelDownload': '取消下载',
+    'update.noDownloadedUpdate': '当前没有已下载完成的更新，请先下载再安装。',
     // ── 4.2：更新日志（默认折叠，纯文本渲染；见 UpdateBanner 的 update-notes）──
     'update.notesShow': '查看更新内容',
     'update.notesHide': '收起更新内容',
@@ -1559,6 +1562,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'update.availableHint': 'The current version can be upgraded',
     'update.downloading': 'Downloading...',
     'update.download': 'Download update',
+    // F-37（UIUX 审计）：见 zh 块同键注释。
+    'update.cancelDownload': 'Cancel download',
+    'update.noDownloadedUpdate': 'No downloaded update is ready — download it first.',
     // ── 4.2: release notes (collapsed by default, rendered as plain text) ──
     'update.notesShow': "What's new",
     'update.notesHide': 'Hide release notes',
