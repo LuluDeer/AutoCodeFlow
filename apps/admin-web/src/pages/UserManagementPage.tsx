@@ -13,8 +13,12 @@ import { Table,
   Col,
   Empty,
   Typography,
+  Switch,
+  Tooltip,
   theme } from 'antd';
 import { message } from '../utils/toast';
+// MODAL-01：命令式确认弹窗走主题化出口（暗色主题/locale 语境，与 toast 同源动机）
+import { Modal as confirmModal } from '../utils/modal';
 import {
   PlusOutlined,
   SearchOutlined,
@@ -25,6 +29,8 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
 import { isFormValidationError, showApiError } from '../utils/error';
+// P1-1：读当前登录用户——自己那行的启用开关置灰（后端 400 兜底）
+import { useAuthStore } from '../store/auth';
 // 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
 import { formatDateTime } from '../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
@@ -64,6 +70,48 @@ interface UserWithActive extends User {
   isActive?: boolean;
 }
 
+/**
+ * P1-1（对齐后端 ad5bdef4 isActive 写面）：行内启用/禁用开关（桌面状态列与
+ * 移动端卡片共用）。交互口径对齐 TaskListPage 行内启停 Switch：
+ *   · 禁用是影响性动作——onToggle(next=false) 由调用方弹二次确认后再落库；
+ *   · 启用可逆——直接生效，不设确认；
+ *   · 自己那行永久置灰 + Tooltip（后端 USER_SELF_DISABLE_FORBIDDEN 400 兜底）：
+ *     禁用自己会让当前会话即刻失效，极易把唯一管理主体关在门外；
+ *   · checked 以 `isActive !== false` 判定——字段缺省（旧后端/旧数据）按启用
+ *     呈现，与状态列 Tag 的既有口径一致。
+ */
+function UserActiveSwitch(props: {
+  user: UserWithActive;
+  /** 该行请求在途（开关 loading，防重复提交；口径同删除按钮 mutation.variables 精确到行） */
+  busy: boolean;
+  isSelf: boolean;
+  onToggle: (user: UserWithActive, next: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const { user, busy, isSelf, onToggle } = props;
+  const sw = (
+    <Switch
+      size="small"
+      checked={user.isActive !== false}
+      loading={busy}
+      disabled={isSelf}
+      aria-label={
+        user.isActive === false
+          ? t('users.action.enable')
+          : t('users.action.disable')
+      }
+      onChange={(checked) => onToggle(user, checked)}
+    />
+  );
+  if (!isSelf) return sw;
+  // disabled 按钮不派发鼠标事件——Tooltip 需包一层可悬浮元素（antd 官方口径）
+  return (
+    <Tooltip title={t('users.selfDisableForbidden')}>
+      <span style={{ display: 'inline-flex' }}>{sw}</span>
+    </Tooltip>
+  );
+}
+
 export default function UserManagementPage() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
@@ -99,6 +147,9 @@ export default function UserManagementPage() {
     | undefined;
 
   const roleLabels = ROLE_LABELS(t);
+
+  // P1-1：自己那行的启用开关置灰（后端 400 USER_SELF_DISABLE_FORBIDDEN 兜底）
+  const currentUserId = useAuthStore((s) => s.user)?.id;
 
   // USER-SEARCH-01：搜索走**后端** search 参数（username/email ILIKE 模糊匹配）
   // ——原先在前端 filter 当页数据，用户数超过一页时搜索结果不完整且误导
@@ -151,6 +202,58 @@ export default function UserManagementPage() {
       showApiError(err, t('users.updateFail'));
     },
   });
+
+  // P1-1 前端配套：启用/禁用落库（PATCH /users/:id { isActive }）。
+  // 后端禁用即 bump sessionVersion——在途 JWT 即刻 401；API-Key 由 per-request
+  // 属主闸（owner_inactive）拒绝。两个即时失效面都写进了禁用确认文案。
+  // 成功后失效 ['users']：状态列 Tag 与开关即时回正（口径同 create/update）。
+  const setActiveMutation = useMutation({
+    mutationFn: ({ id, isActive }: { id: number; isActive: boolean }) =>
+      usersApi.update(id, { isActive }),
+    // i18n-key-check：t() 只收静态字面量键（动态键须登记 baseline）——
+    // 按方向拆成静态调用而不是三元串键。
+    onSuccess: (_data, vars) => {
+      if (vars.isActive) message.success(t('users.enableSuccess'));
+      else message.success(t('users.disableSuccess'));
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (err: unknown, vars) => {
+      if (vars.isActive) showApiError(err, t('users.enableFail'));
+      else showApiError(err, t('users.disableFail'));
+    },
+  });
+
+  /**
+   * 开关翻转入口：禁用弹二次确认（影响性动作：该用户所有登录会话与 API-Key
+   * 立即失效，可随时重新启用），启用直接生效。
+   *
+   * UI-15 同款（EventSubscriptionsSettings.handleReplay）：onOk 返回的 Promise
+   * 会被确认弹层 await，rejection 需有终点——onError 已 toast，这里吞掉防
+   * unhandled rejection。
+   */
+  const toggleActive = useCallback(
+    (user: UserWithActive, next: boolean) => {
+      if (next) {
+        setActiveMutation.mutate({ id: user.id, isActive: true });
+        return;
+      }
+      confirmModal.confirm({
+        title: t('users.disableConfirm'),
+        content: t('users.disableConfirmDesc', { name: user.username }),
+        okText: t('users.action.disable'),
+        okButtonProps: { danger: true },
+        cancelText: t('users.cancel'),
+        onOk: async () => {
+          try {
+            await setActiveMutation.mutateAsync({ id: user.id, isActive: false });
+          } catch {
+            /* toast 已由 onError 呈现 */
+          }
+        },
+      });
+    },
+    [setActiveMutation, t],
+  );
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => usersApi.remove(id),
@@ -293,16 +396,31 @@ export default function UserManagementPage() {
       ),
     },
     {
+      // P1-1：状态列补行内启用/禁用开关（对齐 TaskListPage 行内启停形态）。
+      // 开关与 Tag 并排：Tag 是状态展示（口径不变），Switch 是操作入口——
+      // 两者读同一字段，状态天然一致；成功后统一失效 ['users'] 回正。
       title: t('users.col.status'),
       dataIndex: 'isActive',
       key: 'isActive',
-      width: 80,
-      render: (isActive: boolean | undefined) =>
-        isActive === false ? (
-          <Tag color="orange">{t('users.status.disabled')}</Tag>
-        ) : (
-          <Tag color="green">{t('users.status.active')}</Tag>
-        ),
+      width: 130,
+      render: (isActive: boolean | undefined, record: UserWithActive) => (
+        <Space size={6}>
+          <UserActiveSwitch
+            user={record}
+            busy={
+              setActiveMutation.isPending &&
+              setActiveMutation.variables?.id === record.id
+            }
+            isSelf={record.id === currentUserId}
+            onToggle={toggleActive}
+          />
+          {isActive === false ? (
+            <Tag color="orange">{t('users.status.disabled')}</Tag>
+          ) : (
+            <Tag color="green">{t('users.status.active')}</Tag>
+          )}
+        </Space>
+      ),
     },
     {
       title: t('users.col.createdAt'),
@@ -428,7 +546,18 @@ export default function UserManagementPage() {
                     <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
                       {t('users.col.createdAt')}：{formatDateTime(record.createdAt)}
                     </div>
-                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                      {/* P1-1：卡片同款启用/禁用开关——MOBILE-CARD-01 功能对等口径，
+                          与桌面共用 UserActiveSwitch（确认弹窗/自禁置灰逻辑单源） */}
+                      <UserActiveSwitch
+                        user={record}
+                        busy={
+                          setActiveMutation.isPending &&
+                          setActiveMutation.variables?.id === record.id
+                        }
+                        isSelf={record.id === currentUserId}
+                        onToggle={toggleActive}
+                      />
                       <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
                         {t('users.action.edit')}
                       </Button>
@@ -462,7 +591,8 @@ export default function UserManagementPage() {
             // UI 打磨：loading 直传——此前恒 false，refetch 期间无任何反馈；
             // emptyText 首屏骨架保留（UI-08 语义不变）
             loading={isLoading}
-            scroll={{ x: 1010 }}
+            // P1-1：状态列 80→130（Switch+Tag 并排），scroll.x 成对 +50
+            scroll={{ x: 1060 }}
             pagination={{
               current: page,
               pageSize,
