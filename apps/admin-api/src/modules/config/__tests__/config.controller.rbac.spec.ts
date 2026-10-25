@@ -5,6 +5,7 @@ import {
 } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import request from "supertest";
 import { ConfigController } from "../config.controller";
 import { SystemConfigService } from "../config.service";
@@ -106,6 +107,8 @@ describe("ConfigController — FEAT-08 rollback RBAC matrix", () => {
       const module = await Test.createTestingModule({
         controllers: [ConfigController],
         providers: [
+          // P1-1（UIAUDIT4）：controller 注入了 NestConfigService，默认 env 未配置
+          { provide: ConfigService, useValue: { get: () => undefined } },
           {
             provide: SystemConfigService,
             useValue: {

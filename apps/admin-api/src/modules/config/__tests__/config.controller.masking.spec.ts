@@ -47,8 +47,12 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
       remove: jest.fn().mockResolvedValue(undefined),
       rollback: jest.fn().mockResolvedValue({ key: "k" }),
     };
-    const controller = new ConfigController(service as any);
-    return { controller, service };
+    // P1-1（UIAUDIT4）：controller 新增 NestConfigService 注入（env 兜底
+    // 读 executor.sharedToken）。默认 get 返回 undefined = 「env 未配置」，
+    // 既有用例语义不变；需要 env 兜底断言的用例自行 mockResolvedValue。
+    const nestConfig = { get: jest.fn().mockReturnValue(undefined) };
+    const controller = new ConfigController(service as any, nestConfig as any);
+    return { controller, service, nestConfig };
   };
 
   it("list masks secret values but keeps plain ones readable", async () => {
@@ -199,11 +203,32 @@ describe("ConfigController — masking & delegation (QA-02)", () => {
       hasToken: true,
     });
 
-    // missing row → no crash, no token
+    // missing row + env 也未配置 → no crash, no token
     service.findOne.mockRejectedValueOnce(new NotFoundException("nf"));
     expect(await controller.getExecutorSharedToken()).toEqual({
       token: null,
       hasToken: false,
+    });
+
+    // P1-1（UIAUDIT4）：DB 无值时回落 env——与 verifyExecutorToken 同一解析
+    // 顺序。env 形态（demo/compose：EXECUTOR_SECRET）下执行器认证一直走这条
+    // 兜底，读端点此前只看 DB，向导便谎报「尚未配置」。
+    service.findOne.mockRejectedValueOnce(new NotFoundException("nf"));
+    const { controller: c2, service: s2, nestConfig } = makeDeps();
+    s2.findOne.mockRejectedValueOnce(new NotFoundException("nf"));
+    nestConfig.get.mockReturnValue("env-secret");
+    expect(await c2.getExecutorSharedToken()).toEqual({
+      token: "env-secret",
+      hasToken: true,
+    });
+    // DB 值优先于 env（与校验侧一致的顺序）
+    s2.findOne.mockResolvedValueOnce({
+      key: "executor.sharedToken",
+      value: "db-secret",
+    });
+    expect(await c2.getExecutorSharedToken()).toEqual({
+      token: "db-secret",
+      hasToken: true,
     });
   });
 

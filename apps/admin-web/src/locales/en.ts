@@ -432,6 +432,7 @@ export default {
   'execList.notify.offlineDesc': '{{address}} went offline, please check its service status',
   'execList.installCmdFail.title': 'Failed to fetch install command',
   'execList.installCmdFail.content': 'Check that the admin-api service is running',
+  'execList.installCmdFail.notConfigured': 'ADMIN_API_URL is not configured on the server, so no install command can be generated. Set it in the admin-api environment and restart (this is a missing setting, not a service failure).',
   'execList.col.executor': 'Executor',
   'execList.col.status': 'Status',
   'execList.col.groupTags': 'Group / Tags',

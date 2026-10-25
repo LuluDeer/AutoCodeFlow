@@ -438,6 +438,7 @@ export default {
   'execList.notify.offlineDesc': '{{address}} 已离线，请检查服务状态',
   'execList.installCmdFail.title': '获取安装命令失败',
   'execList.installCmdFail.content': '请检查 admin-api 服务是否正常运行',
+  'execList.installCmdFail.notConfigured': '服务端未配置 ADMIN_API_URL，无法生成安装命令——请在 admin-api 的环境变量中设置后重启（这是配置缺失，服务本身在正常运行）',
   'execList.col.executor': '执行器',
   'execList.col.status': '状态',
   'execList.col.groupTags': '分组 / 标签',

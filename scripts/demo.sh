@@ -339,6 +339,12 @@ if (( DO_SEED )); then
     --password "$ADMIN_PW"
 fi
 
+# ── executor shared token：env 形态由 GET 端点兜底透出（P1-1 修正）──────
+# 不在此生成 DB token：verifyExecutorToken 的解析顺序是 DB 优先、env 兜底，
+# demo 执行器全部持 env EXECUTOR_SECRET 认证——一旦写入 DB token，校验基准
+# 切换，执行器全体 401（实测踩中）。GET /config/executor-shared-token 已与
+# 校验同序（DB→env），向导 Token 卡片直接展示 env 真值，无需任何种子步。
+
 # ── verify: trigger one task end-to-end ──────────────────────────────────
 echo "→ triggering demo-hello-fixed and waiting for a terminal state"
 ACF_DEMO_BASE="http://127.0.0.1:$API_PORT" \

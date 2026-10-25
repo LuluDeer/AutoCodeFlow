@@ -20,6 +20,11 @@ services:
     environment:
       # The UI is served on a non-80 port in demo mode; keep redirects aligned.
       ADMIN_WEB_ORIGIN: ${ACF_DEMO_ORIGIN:-http://localhost:8088}
+      # P1-1（UIAUDIT4）：执行器安装向导的 install-cmd 依赖它，缺失时整条
+      # 安装链 503 EXECUTOR_INSTALL_CMD_NOT_CONFIGURED（开箱死路）。demo 栈
+      # API 只发布到回环，安装命令默认面向同机；跨机场景用
+      # ACF_DEMO_API_PUBLIC_URL 覆盖（填局域网可达地址）。
+      ADMIN_API_URL: ${ACF_DEMO_API_PUBLIC_URL:-http://localhost:3105}
       # Demo runs NODE_ENV=staging (see .env.demo): migrations still run, but
       # the production "no localhost CORS" guard is intentionally not applied.
       CORS_ALLOWED_ORIGINS: ${ACF_DEMO_CORS:-http://localhost:8088,http://127.0.0.1:8088}

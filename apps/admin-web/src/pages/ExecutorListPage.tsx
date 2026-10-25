@@ -151,8 +151,20 @@ export default function ExecutorListPage() {
       const res = await client.get<{ cmd: string }>('/executors/install-cmd');
       setInstallCmd(res);
       setInstallCmdModal(true);
-    } catch {
-      confirmModal.error({ title: t('execList.installCmdFail.title'), content: t('execList.installCmdFail.content') });
+    } catch (err: unknown) {
+      // P1-1（UIAUDIT4）：503 EXECUTOR_INSTALL_CMD_NOT_CONFIGURED 是服务端
+      // **配置缺失**（ADMIN_API_URL 环境变量），不是 admin-api 故障——统一
+      // 「请检查服务是否正常运行」会把排障方向带偏。按错误码分流文案；
+      // 其余错误（网络/5xx）维持原服务检查指引。
+      const errorCode = (err as { response?: { data?: { errorCode?: string } } })
+        ?.response?.data?.errorCode;
+      confirmModal.error({
+        title: t('execList.installCmdFail.title'),
+        content:
+          errorCode === 'EXECUTOR_INSTALL_CMD_NOT_CONFIGURED'
+            ? t('execList.installCmdFail.notConfigured')
+            : t('execList.installCmdFail.content'),
+      });
     }
   };
 
