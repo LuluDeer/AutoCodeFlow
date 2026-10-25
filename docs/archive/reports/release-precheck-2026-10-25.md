@@ -162,3 +162,129 @@
 ---
 
 *生成方式：git log/show 实证分析（基线 c217e0c4 → 457d854f），无任何 merge/push 操作。*
+
+---
+
+# v2 增补（R4-R21，+38 提交）
+
+> **增补范围**：v1 预检（基线 `c217e0c4` → `457d854f`，51 提交）之后的新增量 `92d414c2..origin/develop`（HEAD `d032c620`），共 **38 个提交**——其中 1 个是 v1 报告自身落盘（`92d414c2`，非代码），**实质提交 37 个**（「自主推进 R4-R21」全部产出）。`origin/main..origin/develop` 全量计数 51 → **89**。
+> 性质不变：纯评估材料，无 merge/push/commit；全部结论基于 git log/show 实证（关键实现辅以 CodeGraph 调用面核验），逐条附提交号。
+
+## 一、增量分组摘要（37 个实质提交）
+
+### A. 真缺陷修复（fix ×5）
+
+| 提交 | 面 | 内容 |
+|---|---|---|
+| `985e56b9` | admin-web | UI-08 首屏骨架补齐三页——两处「加载中误报空态」真 bug（AgentSessions/AppDeployment/ExecutorList） |
+| `53e52fc4` | admin-api | 服务层巡查四缺陷——双轨写事务化 ×2（executor 侧轨写、events 产物写入入事务）+ 静默吞错补 warn ×3 |
+| `5b5c2bc1` | executor-python | 三缺陷——lifespan 池收口 / 缓存 IO 下线程 / 悬空引用 |
+| `9c9710e4` | executor-node + SDK | 日志脱敏三漏网收敛（deploy/execute/update-package 路由）+ SDK 文档漂移两处；连带 bundle 清单重打 |
+| `4624e4e0` | executor 双侧 | **P1 凭据通道**（本增量唯一新风险面，见 §二.2） |
+
+### B. 新能力（feat ×2）
+
+- `a953e807`：MCP `update_task` 参数面对齐 UpdateTaskDto——15 新字段（secrets/维护窗口/priority/timeout 系/依赖/block·misfire 策略/亲和×2/deploymentPolicy/乐观锁透传等）+ 2 修复（timeout 补缺、timeoutSeconds 补 max(86400)）。全部 `optional()`、值域逐字对齐后端事实源；handler 零改动（undefined 过滤透传天然正确）。
+- `ef20de4f`：MCP `create_task_from_template` 描述层对齐——create 侧必填集与 14 字段全集（tools.ts 仅 4 行描述变更）。
+
+### C. 性能（perf ×1）
+
+- `4865a598`：ExecutionsPage executions 引用稳定化——failureBuckets memo 恢复生效。
+
+### D. warnings 治理（refactor ×4，行为保持的生产重构）
+
+`3bcd2963`（router lazy 页面拆独立文件，24→0，路由表逐字未动、消费方 main.tsx 零改动）→ `be345db8`（42→29，色阶纯函数挪共享模块）→ `687773be`（29→14，deps 全清零）→ `4fb6b822`（14→**0 收官**，allowExportNames 集中登记 + copyErrorText 去重）。admin-web eslint 达 0/0。
+
+### E. 测试基建 / CI 守卫（×5）
+
+- `5812f225`：glue-backfill flake 根治——双层根因（模块加载进等待预算 + 全局超时从未生效）。
+- `9cdb030b`：**TINFRA-1 治本**——setup 改从 @testing-library/react 入口 configure（forks 池双实例陷阱），永久守卫用例钉死 asyncUtilTimeout===10000。
+- `85d13088`：netrc 0600 断言 Windows 平台感知（NTFS 权限位映射差异；实现侧 writeFile mode 参数不变）。
+- `d691fd62`：bundle 清单 digest 判据 bug 修复（首条→**最后一条**，与字节闸同语义；P1 源码变更后 bundle 重打回填）。
+- `f8943eea`：R4/R5 两处 CI 红收口（根 lock puppeteer 污染 + 漏改 spec 的 DataSource 替身）。
+
+### F. style / chore（×2）
+
+- `44e0c394`：lint 尾巴三处清零——**迁移 66 文件仅 class 声明换行**（零语义，diff 逐行核实）。
+- `5c3bf581`：node-sdk README 登记进 release-please 广播（config +4 行）。
+
+### G. 文档（×18，零代码影响）
+
+- §9.6 进展 16 个（R4→R21 全轮次：`7079091c`/`fb3d5c89`/`3b6b021a`/`303df050`/`ae41f42e`/`af0cb0a8`/`bccee553`/`e4bf5252`/`bc2998c9`/`6628cd0a`/`f9ceae8c`/`2c472789`/`c462d68e`/`b564ee08`/`c53e0507`/`d032c620`）。
+- `188abaca`：registry 巡查四漂移修正 + **P1 契约断裂如实登记**（修复前的文档先行，含 .env.example ⚠️ 警示）。
+- `5ffc3875`：atlas 五处内容漂移修正（协议 v7 两键/5c 布局/P1 netrc/MCP 15 字段/产物索引面）。
+
+## 二、风险面增量评估
+
+### 2.1 迁移链：零变化（确认）
+
+- **迁移 66 已含于 v1**：v1 §风险面 1 表格已覆盖 62→66 全部 5 个迁移（66 在 `457d854f` 之前入库，即已属 51 提交范围）。
+- **增量区间零新迁移**：`git diff --name-status 92d414c2..origin/develop` 对迁移目录仅 1 条——迁移 66 被 `44e0c394` 触碰，diff 逐行核实为 **class 声明换行**，up/down 方法零改动。
+- **结论**：v1 迁移链评估（双向幂等闭合、双路径升级）**原样有效，无需修订**。
+
+### 2.2 P1 凭据通道（`4624e4e0`）——本增量唯一新风险面
+
+**背景**：`188abaca` registry 巡查发现的 P1 契约断裂——registry-pypi S9 全端点 Basic Auth，而执行器侧凭据禁入 argv 红线 + uv 子进程环境白名单剥净一切凭据通道，默认部署带私有依赖的任务安装必 401。
+
+**机制**（diff 逐行 + CodeGraph 调用面核验）：
+
+- 部署级凭据对 `PYPI_REGISTRY_USERNAME/PASSWORD`（与 REGISTRY_USER/PASS 同值即可）→ 写 **0600 netrc 文件**（`O_TRUNC` 幂等覆写保 inode，不 delete+rename）→ 仅以 `NETRC` env 键注入 uv install 子进程，uv 原生 netrc 客户端消费。
+- 双侧对等：executor-python（`interpreters.py` `write_pypi_netrc`/`maybe_inject_pypi_netrc`，`build_uv_env` 调用 + `execute.py` 本地兜底分支同注入防漂移）与 executor-node（`python-venv.ts`，netrc 挂 uv 池目录）。CodeGraph 证实调用面闭合（2 callers + 专属测试 `test_pypi_netrc.py`，宿主 NETRC 不穿透由白名单钉住）。
+- **凭据红线保持**：零入 argv / 日志 / URL userinfo / 主进程 os.environ。
+
+**默认行为不变（升级零风险的核心依据）**：
+
+- config 两键默认空串；`maybe_inject_pypi_netrc` 任一为空即 return（什么都不做）——**不配 = 安装行为逐字节不变**（匿名 401 姿态与历史一致）。
+- compose 注入 `${PYPI_REGISTRY_USERNAME:-}` 空默认（executor-python 与 executor-node 两块都已注入）；不设置时子进程拿到空串，等价未配。
+- .env.example 已登记：P1 注释块**替换**了 `188abaca` 的 ⚠️ 断裂警示（断裂已修复，文档同步，区间净 diff 证实）。
+
+**升级注意事项（配置方必知）**：
+
+1. **fail-fast 校验**（config.py `model_validator`）：只配其一 → 启动即 ValueError；配了凭据但 `PYPI_REGISTRY_URL`/`PYPI_EXTRA_INDEX_URL` 全空 → 同样拒绝启动。报错只提键名不回显值。**误配半对会拒绝启动**——运维通告需明示。
+2. netrc 写文件失败 = warning + 不注入（不新增失败模式，回退匿名 401 姿态）。
+3. 凭据文件落盘于 uv cache 旁 `.uv-netrc`（0600）——宿主安全审计多一个属主受限文件。
+4. per-task 一次性凭据未做（登记为演进，注入点可直接复用）。
+5. Windows：0600 断言平台感知（`85d13088`），实现侧 mode 参数不变（实质防线仍在，断言仅放宽到 0o700 位）。
+
+**回滚**：不配两键即回到旧行为——纯 opt-in 增量，**无回滚陷阱**。
+
+### 2.3 TINFRA-1 / flake / CI 守卫：纯测试基建确认；warnings 治理如实区分
+
+- **纯测试基建（生产面零影响，确认）**：`5812f225`、`9cdb030b`（test-setup.ts 仅被 vite.config.ts `setupFiles` 消费，不进产物）、`85d13088`、`f8943eea`（lock + spec 替身）——均不进生产构建。
+- **warnings 治理（D 组 4 个 refactor）不是纯测试基建**：触碰 admin-web 生产源码约 20 文件。但为**行为保持的等价重构**——路由表逐字未动（消费方零改动）、色阶纯函数逐字挪动、其余为 deps 修正与 lint 登记；vitest 全量绿 + eslint 0/0 钉住。风险定性：**低（等价重构 + 全量回归背书），但非零**，如实登记。
+- `d691fd62` 是 CI 守卫真 bug 修复（digest 判据）：单记录清单时代两闸碰巧同值掩盖，P1 轮首次出现两条记录暴露——守卫面修复，无生产行为。
+
+### 2.4 retention 组豁免修复（`457d854f`）归属澄清与观察点
+
+- **归属**：`457d854f` 是 **v1 评估范围的最后一个提交（v1 基线 HEAD），不是 v2 增量**——v1 §一.A 与 §风险面 3 已覆盖其论证；桌面构建必做 #3 在 v1 即以其为依据。
+- **v2 补充观察点**（基于增量区间新证据）：① 修复引入的 `mixed-layout.selftest`（374 行真 fs、四形态混布 60 断言，R2b 缺陷回归红绿双向确认）已入桌面 selftest 门；② P1/脱敏改了 executor-node 源码，**桌面 bundle 已两次重打回填**（`9c9710e4`、`d691fd62` 更新 executor-node-bundle.sha256）。升级后观察：桌面端首个 retention 裁剪周期在混合布局下 current 组不再被误删。
+
+### 2.5 atlas / 文档大批量 + 协议面：零影响（确认）
+
+- 18 个文档提交：16 个仅动评审底稿；`5ffc3875` 仅动 `docs/atlas/**`；`188abaca` 动 README/tutorial + `.env.example` **仅注释行**。半代码面仅 `5c3bf581`（release-please 配置）与 `44e0c394`（lint 格式），零运行时行为。
+- **协议 / openapi / api-types 零触碰**：增量区间无任何提交动 protocol.json / openapi.json / api-types.ts——v1 风险面 2（协议 v7 双向兼容）与「web 不得早于 api 部署」结论**原样有效**。
+
+## 三、必做清单更新（🔴 3 → 4 项）
+
+v1 三项必做**仍充分**（其依据面——迁移链/协议/5c——在增量区间零变化）：
+
+| # | 验证项 | 优先级 | v2 增补说明 |
+|---|---|---|---|
+| 1 | staging 真跑迁移链 62→66 双路径 | 🔴 必做 | 不变（增量零新迁移） |
+| 2 | 双端版本联测（v7 可选键三态） | 🔴 必做 | 不变（协议零触碰） |
+| 3 | 桌面端安装包构建 + selftest | 🔴 必做 | **口径增强**：确认 bundle 清单已含 P1/脱敏后的重打 digest（`d691fd62` 回填）；mixed-layout.selftest（current 组豁免回归）随 selftest 门跑 |
+| **4** | **staging 验证 P1 netrc 凭据通道 E2E（新增）** | 🔴 必做 | 配 `PYPI_REGISTRY_USERNAME/PASSWORD`（与 REGISTRY_USER/PASS 同值）跑一个带私有依赖的 requirements 任务：401 → Installed；同时验证**不配键时行为不变**（匿名 401 姿态）与误配半对的 fail-fast 拒启形态 |
+| 5-7 | npm audit / 5c 混合布局 E2E / .env 巡检 | 🟡/🟢 | .env 巡检追加两新键的运维通告（含 fail-fast 语义与「与 REGISTRY_USER/PASS 同值」指引） |
+
+## 四、go/no-go 判定更新
+
+- **判定：维持 conditional go（可发布，条件后置），放行条件由三项 🔴 扩为四项 🔴**（新增 staging netrc 通道验证）。
+- 依据：
+  1. v1 三大风险面（迁移链 / 协议 v7 / 5c 布局）在增量区间**零变化**——原论证原样有效。
+  2. 增量唯一新风险面（P1 凭据通道）为 **opt-in 纯增量**：默认不配 = 行为逐字节不变（代码路径逐行核实）；配置 = 新能力，有真 uv 0.13.4 + 401 stub → Installed 的 E2E 实证；无回滚陷阱（不配即回退）。
+  3. 生产代码增量（fix ×5 + feat ×2 + perf ×1 + 等价 refactor ×4）由 R21 全包大回归快照背书：admin-api 5881 / admin-web 1957 / executor-node 1285 / executor-python 1241（0 failed）/ acf-cli 410 / mcp 302 用例全绿，十守卫全绿（§9.6 R21，`d032c620`）。
+  4. MCP 面对齐（`a953e807`/`ef20de4f`）为参数面增量（全部 optional + handler 零改动），对既有 agent 调用零破坏。
+
+---
+
+*v2 增补生成方式：git log/show 实证分析（增量 `92d414c2..d032c620`：37 实质提交 + v1 报告提交 1 个；全量 51→89），关键实现辅以 CodeGraph 调用面核验；无任何 merge/push/commit 操作。*
