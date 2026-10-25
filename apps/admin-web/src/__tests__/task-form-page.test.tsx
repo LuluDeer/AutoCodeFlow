@@ -839,3 +839,42 @@ describe('TASK-PROJ-01 归属项目选择器', () => {
     expect(document.querySelector('#name')).toBeTruthy();
   }, 15_000);
 });
+
+// UIUX-F-46（审计 P2-4）：编辑不存在任务（/tasks/999999/edit）此前渲染 33% 完成
+// 度的空白新建表单，无任何加载失败提示。分流口径对齐 TaskDetailPage 的 W1 修复
+// （U7/F-41）：404 → 「任务不存在」空态 + 返回列表；其它错误 → 错误态 + 重试 +
+// 返回列表；两种形态都不再渲染新建表单。
+describe('UIUX-F-46 编辑态详情加载失败', () => {
+  it('404（__status=404）→ 「任务不存在」空态 + 返回列表，不渲染新建表单', async () => {
+    vi.mocked(tasksApi.get).mockReset().mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 404'), { __status: 404 }) as never,
+    );
+
+    renderPage();
+
+    expect(await screen.findByText('任务不存在')).toBeTruthy();
+    expect(screen.getByText('返回任务列表')).toBeTruthy();
+    // 表单主体不渲染（name 字段不存在 = 不是空白新建表单）
+    expect(document.querySelector('#name')).toBeNull();
+    expect(screen.queryByRole('button', { name: /保存修改/ })).toBeNull();
+  }, 15_000);
+
+  it('5xx → 错误态（任务详情加载失败 + 重试 + 返回列表），点重试重新拉取详情', async () => {
+    vi.mocked(tasksApi.get)
+      .mockReset()
+      .mockRejectedValueOnce(new Error('Request failed with status code 500') as never)
+      .mockResolvedValue({ id: 'task-1', name: 'ok-task', runtime: 'python', entrypoint: 'main.py', updatedAt: '2026-01-01T00:00:00Z' } as never);
+
+    renderPage();
+
+    expect(await screen.findByText('任务详情加载失败')).toBeTruthy();
+    expect(screen.getByText('返回任务列表')).toBeTruthy();
+    expect(document.querySelector('#name')).toBeNull();
+
+    // 重试：详情请求重新发起，成功后表单回填
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+    await vi.waitFor(() => expect(tasksApi.get).toHaveBeenCalledTimes(2));
+    expect(await screen.findByDisplayValue('ok-task')).toBeTruthy();
+    expect(screen.queryByText('任务详情加载失败')).toBeNull();
+  }, 15_000);
+});

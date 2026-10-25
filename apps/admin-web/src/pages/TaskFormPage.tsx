@@ -25,12 +25,14 @@ import { Form,
   Tooltip,
   theme,
   Alert,
+  Empty,
+  Result,
   Modal } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
 import {
-  ThunderboltOutlined, ArrowLeftOutlined, SaveOutlined,
+  ThunderboltOutlined, ArrowLeftOutlined, SaveOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 // （APP-SELECT-01 的 Link/空态引导随应用选择器一起迁入 TaskFormBasicSection。）
 import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
@@ -42,7 +44,7 @@ import { tasksApi } from '../api/tasks';
 // 内跳转不再读旧数据；NETOPT-10-8 同型）。
 import { invalidateTaskData, queryKeys } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
-import { getErrMsg, isFormValidationError, showApiError } from '../utils/error';
+import { getErrMsg, isFormValidationError, isNotFoundError, showApiError } from '../utils/error';
 import {
   templateConfigToFormValues,
   templateDependencySnapshot,
@@ -157,6 +159,12 @@ export default function TaskFormPage() {
   const [executorMode, setExecutorMode] = useState<'auto' | 'group' | 'pinned' | 'broadcast'>('auto');
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
+  // F-46（UIUX 审计 P2-4）：编辑态详情加载失败——此前只弹一条一闪而过的 toast，
+  // 页面继续渲染空白新建表单（完成度 33%、必填未填），用户对着「/tasks/999999/edit」
+  // 的空表单无从判断发生了什么。失败状态在此持有，渲染层按 404/其它错误分流
+  // （对齐 W1 TaskDetailPage 的 U7/F-41 口径），attempt 作为手动重试的触发键。
+  const [taskLoadError, setTaskLoadError] = useState<unknown>(null);
+  const [taskLoadAttempt, setTaskLoadAttempt] = useState(0);
   // A4（第三轮审计·中）：乐观锁——编辑态加载时的任务 updatedAt。提交时随
   // expectedUpdatedAt 回传，服务端比对不符返回 409（另一标签页已抢先修改）。
   // 仅编辑路径参与；null（加载失败/未加载）= 不带该字段 = 服务端跳过检查。
@@ -213,7 +221,9 @@ export default function TaskFormPage() {
     // 回填完成 + 未在提交中 + **用户真的输入过**才落盘（见上方注释）。
     // `draftValues === null` 表示 onValuesChange 从未触发——程序化回填不经过
     // 该回调，因此这个判据天然把"服务端值"排除在草稿之外。
-    enabled: !loadingTask && templatePrefilled && !saving && draftValues !== null,
+    // F-46：编辑态详情加载失败时同样禁写——失败的 edit 作用域下没有任务可回填，
+    // 此时的输入落成草稿会在任务真正可编辑前制造一份语义不明的残留。
+    enabled: !loadingTask && templatePrefilled && !saving && draftValues !== null && !taskLoadError,
     delay: 800,
   });
   // 用户点过"丢弃草稿"或成功提交后，不再提示"已恢复草稿"
@@ -363,6 +373,7 @@ export default function TaskFormPage() {
     let active = true;
     const controller = new AbortController();
     setLoadingTask(true);
+    setTaskLoadError(null);
     tasksApi.get(editId, controller.signal)
       .then((task) => {
         if (!active || controller.signal.aborted) return;
@@ -400,8 +411,10 @@ export default function TaskFormPage() {
         form.setFieldValue('upstreamDependencies', dep.selected);
         depNameSnapshotRef.current = dep.nameSnapshot;
       })
-      .catch(() => {
-        if (active && !controller.signal.aborted) message.error(tRef.current('taskForm.load.taskFailed'));
+      .catch((err: unknown) => {
+        // F-46：失败状态交给渲染层分流（404 → 「任务不存在」空态；其它 → 错误态
+        // + 重试），不再只弹一闪而过的 toast 后继续渲染空白新建表单。
+        if (active && !controller.signal.aborted) setTaskLoadError(err);
       })
       .finally(() => {
         if (active && !controller.signal.aborted) { setLoadingTask(false); setDirty(false); }
@@ -416,7 +429,8 @@ export default function TaskFormPage() {
     // 也被重复拉取）。失败文案经 tRef 取当前语言，不构成依赖。
     // depNameSnapshotRef 来自 useTaskFormReferenceData（useRef，恒稳定）——
     // 列入依赖仅为 lint 自证，不构成额外触发源。
-  }, [editId, form, depNameSnapshotRef]);
+    // F-46：taskLoadAttempt 是错误态「重试」按钮的触发键（自增重跑本 effect）。
+  }, [editId, form, depNameSnapshotRef, taskLoadAttempt]);
 
   // CORE-03：创建态带 ?templateId= 时拉取模板，config 预填表单（显式字段仍可改；
   // name 一律由用户填写——模板 name 常含中文，不满足任务名 [a-z0-9_-] 约束）。
@@ -996,6 +1010,55 @@ export default function TaskFormPage() {
   if (loadingTask) {
     // UI-08：首屏骨架屏替代裸 Spin（仅此加载区块；表单结构不动）
     return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
+  }
+
+  // F-46（UIUX 审计 P2-4）：编辑态详情加载失败——不再渲染 33% 完成度的空白
+  // 新建表单。分流口径对齐 TaskDetailPage 的 W1 修复（U7/F-41）：确定性 404
+  // （id 不存在/已删除）走「任务不存在」空态（重试不可能成功，不渲染「加载
+  // 失败 + 重试」）；5xx/网络错误维持错误态 + 重试 + 返回列表。i18n 复用
+  // taskDetail.* 词条（同一平台同一事实的表述不应有两套文案）。
+  if (isEdit && taskLoadError) {
+    const loadFailedHeader = (
+      <PageHeader
+        title={t('taskForm.title.edit')}
+        breadcrumb={[
+          { title: t('taskForm.breadcrumb.tasks'), to: '/tasks' },
+          { title: t('taskForm.breadcrumb.edit') },
+        ]}
+      />
+    );
+    if (isNotFoundError(taskLoadError)) {
+      return (
+        <div>
+          {loadFailedHeader}
+          <Empty description={t('taskDetail.notFound')} style={{ padding: 80 }}>
+            <Button onClick={() => nav('/tasks')}>{t('taskDetail.backToList')}</Button>
+          </Empty>
+        </div>
+      );
+    }
+    return (
+      <div>
+        {loadFailedHeader}
+        <Result
+          status="error"
+          title={t('taskDetail.loadErrorTitle')}
+          subTitle={getErrMsg(taskLoadError, t('taskDetail.loadErrorDesc'))}
+          extra={
+            <Space>
+              <Button onClick={() => nav('/tasks')}>{t('taskDetail.backToList')}</Button>
+              <Button
+                type="primary"
+                icon={<ReloadOutlined />}
+                onClick={() => setTaskLoadAttempt((a) => a + 1)}
+              >
+                {t('taskDetail.retry')}
+              </Button>
+            </Space>
+          }
+        />
+      </div>
+    );
   }
 
   return (
