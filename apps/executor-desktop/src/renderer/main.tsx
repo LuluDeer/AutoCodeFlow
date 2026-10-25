@@ -31,7 +31,10 @@ declare const window: Window & {
  * 未重载时界面语言保持不变（不会出现半页中文半页英文）。
  *
  * 读配置失败（文件损坏 / IPC 异常 / 旧版 preload 没有 getConfig）：按产品默认
- * 中文渲染，而不是回落自动判定——默认即中文（见 ui-language.ts）。
+ * **英文**渲染，而不是回落自动判定——UI_LANGUAGE_DEFAULT='en'（见
+ * ui-language.ts；F-36 修正：本注释此前写「默认即中文」，与实现相反，系
+ * 首版"非 en 即中文"判定方向的陈旧残留）。默认值取 zh 还是 en 属待拍板项
+ * （docs/OPEN-DECISIONS.md D5），拍板前不改行为。
  */
 async function bootstrap(): Promise<void> {
   const container = document.getElementById('root')!;

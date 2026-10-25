@@ -58,6 +58,11 @@
 - **D2**：`acf task kill` / `rollback` 要不要补 `--json`？它们现在只能人读，而 `task list` 可以机器读（R197）。`approval approve/reject` 不用补（输出就是一句确认）。
 - **D3**：`process.exit(0)` 要不要统一成 `process.exitCode`？—— **未能复现截断**（R202）：8 MB 单次 `console.log` 后立即 `process.exit(0)`，无论重定向到文件还是走真实管道，字节数都与期望完全一致。**不建议基于这个理由改动**；只剩「多写交错 + 中途 exit」这一未测形态。
 - **D4**：66 个未分类错误码要不要加第 7 类，或改成域级提示（R108）。
+- **D5**：桌面客户端「配置读取失败」时 UI 语言的兜底默认值应是 zh 还是 en？（UIUX 审计 F-36）
+  - **现状**：`UI_LANGUAGE_DEFAULT = 'en'`（`apps/executor-desktop/src/main/ui-language.ts:50`），配置读取失败时整窗按英文渲染（renderer `main.tsx` 启动兜底）；正常路径的默认是 `uiLanguage: 'auto'`（跟随系统语言，zh* → 中文），本常量**只在** config.json 损坏 / IPC 异常 / 旧 preload 缺 getConfig 时生效。
+  - **历史纠葛**：语言判定层首版方向是「非 en 即中文」（当时注释与产品早期口径都写「默认中文」），后按产品要求「默认英文、但优先跟随系统语言」反转，代码随之改为 en 兜底，但 `main.tsx` 的注释没跟上（F-36 已把注释改到与实现一致，**行为未动**）。
+  - **选项**：① 维持 en（与现实现、渲染层/主进程两侧既有行为一致）；② 改 zh（中文系统上配置损坏瞬间界面不突变，代价是英文/其他语言系统用户在故障瞬间看到中文）。
+  - **代价**：①不动代码，接受「中文用户配置损坏 → 瞬间整窗英文」；②改一个常量 + 两侧注释，但属**行为变更**，需回归语言兜底相关 selftest（tray-texts / renderer parity 的「非法值=默认英文」用例组）。
 
 ---
 
