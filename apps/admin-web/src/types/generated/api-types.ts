@@ -6797,12 +6797,12 @@ export interface components {
             /** @description 应用描述 */
             description?: string;
             /**
-             * @description 应用版本号
+             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
              * @example 1.0.0
              */
             version: string;
             /**
-             * @description 运行时类型
+             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
              * @example node
              */
             runtime: string;
@@ -6827,12 +6827,12 @@ export interface components {
             /** @description 应用描述 */
             description?: string;
             /**
-             * @description 应用版本号
+             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
              * @example 1.0.0
              */
             version?: string;
             /**
-             * @description 运行时类型
+             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
              * @example node
              */
             runtime?: string;
@@ -7482,8 +7482,20 @@ export interface components {
             error?: string;
         };
         RegistryPackagesResponseDto: {
-            /** @description Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状) */
+            /** @description Package names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离) */
             packages: string[];
+        };
+        RegistryNpmPackageDto: {
+            /** @description 包名 */
+            name: string;
+            /** @description 最新版本（上游 version/latest，缺失时省略） */
+            latest?: string;
+            /** @description 包描述（上游未提供时省略） */
+            description?: string;
+        };
+        RegistryNpmPackagesResponseDto: {
+            /** @description Verdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504） */
+            packages: components["schemas"]["RegistryNpmPackageDto"][];
         };
         RegistryUploadResponseDto: {
             success: boolean;
@@ -13400,7 +13412,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RegistryPackagesResponseDto"];
+                    "application/json": components["schemas"]["RegistryNpmPackagesResponseDto"];
                 };
             };
         };
