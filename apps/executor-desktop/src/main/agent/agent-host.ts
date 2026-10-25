@@ -31,7 +31,7 @@
  * 绝不能并发跑两个指派：沙箱工作区、闸门计数、报告归属都会互相污染。
  */
 
-import { ensureWorkspace } from './workspace';
+import { ensureWorkspace, isValidAssignmentId } from './workspace';
 import { collectEnvironmentReport } from './perception';
 import { probePlaywright } from './browser';
 import { WindowsGuiDriver } from './gui-windows';
@@ -205,13 +205,21 @@ export class AgentHost {
       }
 
       // ── 分拣：指派（≤1）+ 澄清回复（P7d）────────────────────────────
+      // P3-2：指派载荷**首跑前先验形**——缺字段的载荷此前会一路漏到
+      // runWithJournal（journal.sop.frontMatter.capabilities 上炸 TypeError）
+      // 或 ensureWorkspace（assignmentId 拼路径），被兜底 catch 收敛成一句
+      // 「Cannot read properties of null」的 host_error，排查全靠猜；换行
+      // slug 更会进候选包 manifest（注入面）。malformed 在此收敛为可判定的
+      // 失败回报，绝不进循环。
       let assignment: PollAssignmentItem | null = null;
       const replies: ReplyItem[] = [];
+      const malformedAssignments: unknown[] = [];
       for (const raw of poll.items) {
         if (!raw || typeof raw !== 'object') continue;
         const kind = (raw as { kind?: unknown }).kind;
         if (kind === 'assignment' && assignment === null) {
-          assignment = raw as PollAssignmentItem;
+          if (isValidPollAssignment(raw)) assignment = raw;
+          else malformedAssignments.push(raw);
         } else if (kind === 'clarification_reply') {
           replies.push(raw as ReplyItem);
         }
@@ -221,6 +229,10 @@ export class AgentHost {
       // 续跑已代表最新状态，旧载荷跳过防双重运行。
       const continued = new Set<string>();
       let worked = false;
+      for (const bad of malformedAssignments) {
+        await this.reportMalformedAssignment(bad);
+        worked = true;
+      }
       for (const reply of replies) {
         if (await this.processReply(reply, continued)) worked = true;
       }
@@ -761,6 +773,26 @@ export class AgentHost {
     }
   }
 
+  /**
+   * P3-2：畸形指派的可判定收敛——不进循环（那会以 TypeError 落成一句
+   * 难排查的 host_error），改为如实回报 failed。assignmentId 本身不可信
+   * （可能缺/换行），截断后进 path（encodeURIComponent 由 client 处理）；
+   * 回报失败不重试（载荷来自中台，重试同一载荷没有意义——中台重发即重试）。
+   */
+  private async reportMalformedAssignment(raw: unknown): Promise<void> {
+    const id = (raw as { assignmentId?: unknown } | null)?.assignmentId;
+    const idLabel = typeof id === 'string' && id.trim() !== '' ? id.slice(0, 64) : '(missing)';
+    this.stats.lastOutcome = 'poll_payload_invalid';
+    await this.deps.client.reportComplete(this.deps.address, typeof id === 'string' ? id.slice(0, 128) : 'unknown-assignment', {
+      status: 'failed',
+      attempt: 1,
+      result: {
+        outcome: 'poll_payload_invalid',
+        stopMessage: `poll 指派载荷缺字段/形态非法（assignmentId=${idLabel}）——未进入执行`,
+      },
+    }).catch(() => undefined);
+  }
+
   /** 未获得回复的最近一次提问（重试只针对它；无则返回 null）。 */
   private outstandingAsk(journal: AssignmentJournal): JournalAsked | null {
     for (let i = journal.asked.length - 1; i >= 0; i--) {
@@ -810,4 +842,33 @@ function sanitizeAmendedSop(raw: unknown, fallback: SopPayload): SopPayload | nu
     frontMatter: r.frontMatter as SopPayload['frontMatter'],
     bodyMarkdown: r.bodyMarkdown,
   };
+}
+
+/**
+ * P3-2：poll 指派载荷的**首跑前**形态校验（分拣时执行，绝不进循环）。
+ *
+ * 字段面对齐 sanitizeAmendedSop（version/contentHash/bodyMarkdown/frontMatter），
+ * 另加两道它没有的闸：
+ *  - assignmentId 过 isValidAssignmentId（直接拼工作区路径——字符集是唯一防线）；
+ *  - slug 过 admin 发布同款字符集（sop.service.ts:177 `/^[a-z0-9][a-z0-9-]{0,127}$/`）
+ *    ——slug 进候选包文件名与 manifest.yaml，换行/斜杠/点 = manifest 注入面。
+ */
+function isValidPollAssignment(raw: unknown): raw is PollAssignmentItem {
+  if (!raw || typeof raw !== 'object') return false;
+  const r = raw as Record<string, unknown>;
+  if (r.kind !== 'assignment') return false;
+  if (!isValidAssignmentId(r.assignmentId)) return false;
+  const sop = r.sop as Record<string, unknown> | null | undefined;
+  if (!sop || typeof sop !== 'object' || Array.isArray(sop)) return false;
+  if (typeof sop.slug !== 'string' || !/^[a-z0-9][a-z0-9-]{0,127}$/.test(sop.slug)) return false;
+  if (typeof sop.title !== 'string' || sop.title === '') return false;
+  if (
+    typeof sop.version !== 'string' ||
+    typeof sop.contentHash !== 'string' ||
+    typeof sop.bodyMarkdown !== 'string' ||
+    !sop.frontMatter || typeof sop.frontMatter !== 'object' || Array.isArray(sop.frontMatter)
+  ) {
+    return false;
+  }
+  return true;
 }

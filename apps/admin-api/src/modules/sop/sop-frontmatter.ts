@@ -290,10 +290,17 @@ export function validateFrontMatter(
         fail("sop.constraints.allowedDomains 必须是数组");
       out.constraints.allowedDomains = c.allowedDomains.map((d, i) => {
         const s = str(d, `sop.constraints.allowedDomains[${i}]`);
-        // 域名白名单是浏览器工具的导航闸——不接受协议/路径/通配符混入
-        if (!/^[a-z0-9.-]+$/i.test(s) || s.includes("..")) {
+        // 域名白名单是浏览器工具的导航闸——不接受协议/路径/通配符混入。
+        // P2-2 收紧：必须至少含一个点（单标签如 "com" 会在执行器侧被
+        // host.endsWith('.com') 匹配放大成放行一切 *.com），且标签不以 - /
+        // 空段开头结尾——与执行器侧 domain-allowlist.ts 的字形语义对齐。
+        // 既有合法 SOP 均为含点域名（fixtures/seed 未见单标签），不破坏。
+        if (
+          !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(s) ||
+          s.length > 253
+        ) {
           fail(
-            `sop.constraints.allowedDomains[${i}] = ${s} 不是裸域名（不含协议/路径/通配符）`,
+            `sop.constraints.allowedDomains[${i}] = ${s} 不是裸域名（需含点的合法域名，不含协议/路径/通配符）`,
           );
         }
         return s.toLowerCase();

@@ -28,6 +28,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveWithinWorkspace, toWorkspaceRelative } from './workspace';
+import { isValidAllowlistDomain } from './domain-allowlist';
 
 /** 动作封闭枚举。 */
 export const BROWSER_ACTIONS = [
@@ -65,6 +66,11 @@ export interface BrowserActionResult {
   /** screenshot 的产物（工作区相对路径）。 */
   screenshotPath?: string;
   detail?: string;
+  /**
+   * P2-3：true = 会话因「动作后页面落在白名单外」已被强制终止——调用方
+   * （runtime 的动作循环）见到此标记应立即停止后续动作，不再白耗尝试。
+   */
+  sessionClosed?: boolean;
 }
 
 /** Playwright 可用性探测（同步、缓存——perception 与 browser 共用判定）。 */
@@ -85,9 +91,13 @@ export function probePlaywright(): { available: boolean; error?: string } {
 /**
  * 导航目标校验：裸域名白名单（SOP constraints ∪ 权限档位），空 = 全禁。
  * 白名单条目在 admin-api 侧已强校验为裸域名（无协议/路径/通配符）。
+ * P2-2：匹配层自防御——先按 isValidAllowlistDomain 过滤入参条目，单标签
+ * （如 "com"，会被 endsWith 放大成一切 *.com）等非法条目在此处即失效；
+ * 上游（config 消毒 / runtime 并集）已各自过滤，这里兜同一道闸防漂移。
  */
 export function isNavigationAllowed(url: string, allowedDomains: readonly string[]): boolean {
-  if (allowedDomains.length === 0) return false;
+  const domains = allowedDomains.filter(isValidAllowlistDomain);
+  if (domains.length === 0) return false;
   let host: string;
   try {
     const u = new URL(url);
@@ -96,10 +106,25 @@ export function isNavigationAllowed(url: string, allowedDomains: readonly string
   } catch {
     return false;
   }
-  return allowedDomains.some((d) => {
+  return domains.some((d) => {
     const domain = d.toLowerCase();
     return host === domain || host.endsWith(`.${domain}`);
   });
+}
+
+/**
+ * P2-3：动作后的落点复核（纯函数便于 selftest 锚定）。
+ * click/press 触发的表单提交、navigate 的 302、页面的 meta refresh 都能把
+ * 页面带到白名单外——此前只有 navigate 动作**发起前**校验，落点无人复看。
+ * 这里复核 page.url() 的实际落点；越界即违例（会话将被终止）。
+ */
+export function checkPostActionUrl(
+  pageUrl: string,
+  allowedDomains: readonly string[],
+): { ok: true } | { ok: false; url: string } {
+  return isNavigationAllowed(pageUrl, allowedDomains)
+    ? { ok: true }
+    : { ok: false, url: pageUrl };
 }
 
 /** 浏览器会话：一次指派一个，用完必须 close（回收 Chromium + 落录屏）。 */
@@ -120,10 +145,21 @@ export class AgentBrowserSession {
     url: () => string;
   } | null = null;
 
+  private readonly workspaceRoot: string;
+  /** P2-2：构造即过滤后的白名单（单标签/非法条目在入口剔除，见 domain-allowlist）。 */
+  private readonly allowedDomains: readonly string[];
+  /** P2-3：越界终止后置位——后续动作快速失败，绝不续用已违例的会话。 */
+  private closedByPolicy = false;
+
   constructor(
-    private readonly workspaceRoot: string,
-    private readonly allowedDomains: readonly string[],
-  ) {}
+    workspaceRoot: string,
+    allowedDomains: readonly string[],
+  ) {
+    this.workspaceRoot = workspaceRoot;
+    // P2-2：单标签（"com" 会被 endsWith 匹配放大成放行一切 *.com）、首尾点、
+    // 非法字形在这里剔除；全非法 = 空白名单 → start() 拒绝启动。
+    this.allowedDomains = allowedDomains.filter(isValidAllowlistDomain);
+  }
 
   /**
    * 启动会话（Playwright Chromium，全新临时 profile）+ 录屏上下文。
@@ -162,6 +198,9 @@ export class AgentBrowserSession {
     if (!(BROWSER_ACTIONS as readonly string[]).includes(input?.action)) {
       return { ok: false, refusal: `动作 ${String(input?.action).slice(0, 40)} 不在封闭枚举内（${BROWSER_ACTIONS.join('/')})` };
     }
+    if (this.closedByPolicy) {
+      return { ok: false, refusal: '会话已因「页面落在白名单外」被终止——不接受后续动作' };
+    }
     if (!this.page) {
       return { ok: false, refusal: '会话未启动（先 start）' };
     }
@@ -173,12 +212,16 @@ export class AgentBrowserSession {
             return { ok: false, refusal: `导航被拒：${url.slice(0, 120)} 不在域名白名单内（每次导航都校验）` };
           }
           const resp = await this.page.goto(url, { timeout: BROWSER_ACTION_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+          // P2-3：goto 的落点复核——302 / meta refresh 可能把页面带到白名单外
+          const landed = checkPostActionUrl(this.page.url(), this.allowedDomains);
+          if (!landed.ok) return await this.terminateForBoundary(landed.url);
           return { ok: true, detail: `status=${resp ? resp.status() : 'null'} url=${this.page.url().slice(0, 200)}` };
         }
         case 'click': {
           if (typeof input.selector !== 'string' || !input.selector) return { ok: false, refusal: 'click 需要 selector' };
           await this.page.click(input.selector, { timeout: BROWSER_ACTION_TIMEOUT_MS });
-          return { ok: true };
+          // P2-3：click 可触发表单提交/跳转——落点复核（越界即终止会话）
+          return await this.recheckAfterAction();
         }
         case 'type': {
           if (typeof input.selector !== 'string' || typeof input.text !== 'string') return { ok: false, refusal: 'type 需要 selector + text' };
@@ -188,7 +231,8 @@ export class AgentBrowserSession {
         case 'press': {
           if (typeof input.selector !== 'string' || typeof input.key !== 'string') return { ok: false, refusal: 'press 需要 selector + key' };
           await this.page.press(input.selector, input.key.slice(0, 32), { timeout: BROWSER_ACTION_TIMEOUT_MS });
-          return { ok: true };
+          // P2-3：press（如输入框里的 Enter）同样可触发提交/跳转——落点复核
+          return await this.recheckAfterAction();
         }
         case 'screenshot': {
           const rel = `screenshots/shot-${Date.now()}-${Math.floor(Math.random() * 1e6)}.png`;
@@ -213,6 +257,28 @@ export class AgentBrowserSession {
     } catch (err) {
       return { ok: false, detail: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  /**
+   * P2-3：click/press 之后的落点复核。越界 = 终止会话（录屏照常落盘）
+   * 并返回带 sessionClosed 标记的失败结果；在界 = 透传成功。
+   */
+  private async recheckAfterAction(): Promise<BrowserActionResult> {
+    if (!this.page) return { ok: true };
+    const landed = checkPostActionUrl(this.page.url(), this.allowedDomains);
+    if (!landed.ok) return await this.terminateForBoundary(landed.url);
+    return { ok: true };
+  }
+
+  /** P2-3：越界处置——置位闸 + 与既有 close() 路径合流（录屏落盘、句柄回收）。 */
+  private async terminateForBoundary(url: string): Promise<BrowserActionResult> {
+    this.closedByPolicy = true;
+    await this.close();
+    return {
+      ok: false,
+      sessionClosed: true,
+      refusal: `会话已终止：动作后页面落在白名单外（${url.slice(0, 200)}）——越界落点不允许继续操作`,
+    };
   }
 
   /**

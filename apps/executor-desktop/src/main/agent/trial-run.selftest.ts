@@ -139,6 +139,23 @@ async function main(): Promise<void> {
     fs.rmSync(ws, { recursive: true, force: true });
   }
 
+  // ── 6b. P3-5：多字节字符跨 chunk 撕裂 → 不得出现 U+FFFD ──
+  console.log('-- 6b. 多字节撕裂（StringDecoder）--');
+  {
+    const ws = makeWorkspace();
+    // 「中」= 3 字节 UTF-8；64KB 管道块长不整除 3 → 旧实现（按块 toString）
+    // 在每个块边界必现 U+FFFD。输出 ~200KB 保证至少 2-3 个块边界。
+    const lines = Math.ceil((TRIAL_OUTPUT_CAP * 3) / 10 / 8); // 每行 8 个「中」≈24B
+    fs.writeFileSync(path.join(ws, 'cn.js'), `const s = '中中中中中中中中';\nfor (let i = 0; i < ${lines * 10}; i++) console.log(s);\n`, 'utf8');
+    const r = await runTrialInSandbox({
+      workspaceRoot: ws, interpreter: 'node', entryPath: 'cn.js', codeExecution: 'sandbox',
+    });
+    check('多字节输出执行成功', r.ok === true && r.exitCode === 0, `refusal=${r.refusal ?? '-'} stderr=${r.stderr.slice(0, 80)}`);
+    check('中文按 UTF-8 完整解码（无 U+FFFD 撕裂）', !r.stdout.includes('\uFFFD'), `stdout 前 80 字符=${JSON.stringify(r.stdout.slice(0, 80))}`);
+    check('中文如实保留（不是被静默吞掉）', r.stdout.includes('中中中中'), '解码后的中文必须可读');
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+
   // ── 7. acceptance 命令解析 ──
   console.log('-- 7. acceptance 命令解析 --');
   {

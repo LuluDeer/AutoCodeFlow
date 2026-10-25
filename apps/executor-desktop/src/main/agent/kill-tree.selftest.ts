@@ -12,7 +12,15 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { killTree, spawnWithTreeTimeout } from './kill-tree';
+import {
+  inFlightTreeCount,
+  killInFlightTreesSync,
+  killTree,
+  spawnDetached,
+  spawnWithTreeTimeout,
+  sweepStaleTrialTrees,
+  TRIAL_RECORD_FILENAME,
+} from './kill-tree';
 import { runTrialInSandbox, buildTrialEnv } from './trial-run';
 
 let failures = 0;
@@ -84,6 +92,8 @@ async function main(): Promise<void> {
     await sleep(500); // 给终止信号传播留时间
     check('孙进程也死了（树杀而非单杀——P7a 残差修复）', !alive(pids.grand), `grand=${pids.grand} stillAlive=${alive(pids.grand)}`);
     check('直接子进程死了', !alive(pids.self));
+    // P2-4：在飞登记文件在试跑正常收敛后必须被清掉（不留垃圾、不进候选包）
+    check('试跑结束后登记文件已删除', !fs.existsSync(path.join(ws, TRIAL_RECORD_FILENAME)), TRIAL_RECORD_FILENAME);
     fs.rmSync(ws, { recursive: true, force: true });
   }
 
@@ -104,6 +114,78 @@ async function main(): Promise<void> {
       3000,
     );
     check('解释器不存在 → errorMessage 透传、exitCode null', missing.exitCode === null && missing.errorMessage !== null && missing.timedOut === false);
+  }
+
+  console.log('-- 5. P2-4：在飞登记 + 退出路径整组补杀 --');
+  {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-orphan-'));
+    const recordFile = path.join(ws, TRIAL_RECORD_FILENAME);
+    // 候选树：spawn 孙进程 + 落盘 pid；30s 超时 —— 走「worker 死亡」的同款形态
+    fs.writeFileSync(
+      path.join(ws, 'spawner.js'),
+      [
+        "const { spawn } = require('child_process');",
+        "const fs = require('fs');",
+        "const g = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)']);",
+        "fs.writeFileSync('pids.txt', JSON.stringify({ self: process.pid, grand: g.pid }));",
+        'setInterval(()=>{}, 1000);',
+      ].join('\n'),
+      'utf8',
+    );
+    const pending = spawnWithTreeTimeout(
+      process.execPath,
+      [path.join(ws, 'spawner.js')],
+      { cwd: ws, env: buildTrialEnv('node'), recordFile: recordFile },
+      30_000,
+    );
+    // 等树真正起来（pids.txt 出现 = 父子都已 spawn）
+    for (let i = 0; i < 50 && !fs.existsSync(path.join(ws, 'pids.txt')); i++) await sleep(100);
+    const pids = JSON.parse(fs.readFileSync(path.join(ws, 'pids.txt'), 'utf8')) as { self: number; grand: number };
+    check('在飞登记计数 = 1', inFlightTreeCount() === 1, `count=${inFlightTreeCount()}`);
+    check('登记文件已落盘（worker 死亡后清扫的输入）', fs.existsSync(recordFile));
+    const killed = killInFlightTreesSync();
+    check('killInFlightTreesSync 报告击杀 1 棵树', killed === 1, `killed=${killed}`);
+    check('击杀后登记清空', inFlightTreeCount() === 0);
+    await sleep(500);
+    check('worker「死亡」后孤儿树被补杀（父进程）', !alive(pids.self), `self=${pids.self} stillAlive=${alive(pids.self)}`);
+    check('孤儿树被补杀（孙进程——树杀非单杀）', !alive(pids.grand), `grand=${pids.grand} stillAlive=${alive(pids.grand)}`);
+    const res = await pending;
+    check('被补杀的 spawn 以收敛语义结算（不悬挂）', res.exitCode !== undefined, JSON.stringify(res));
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+
+  console.log('-- 6. P2-4：启动清扫（Linux only——/proc 归属校验）--');
+  if (process.platform === 'linux') {
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'agent-sweep-'));
+    const asgDir = path.join(root, 'asg-1');
+    fs.mkdirSync(asgDir, { recursive: true });
+
+    // 6a：真实孤儿——detached node 死循环 + 记录文件 → 清扫击杀
+    const orphan = spawnDetached(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { cwd: root, env: { ...process.env } });
+    await sleep(200); // 等 detached 组建立
+    const orphanPgid = orphan.pid ?? 0;
+    const recordPath = path.join(asgDir, TRIAL_RECORD_FILENAME);
+    fs.writeFileSync(recordPath, JSON.stringify({ pgid: orphanPgid, interpreter: path.basename(process.execPath), recordedAt: new Date().toISOString() }), 'utf8');
+    const killed = sweepStaleTrialTrees(root, (line) => console.log(`    [sweep] ${line}`));
+    await sleep(300);
+    check('启动清扫击杀孤儿试跑树', killed === 1 && !alive(orphanPgid), `killed=${killed} alive=${alive(orphanPgid)}`);
+    check('清扫后登记文件已删', !fs.existsSync(recordPath));
+
+    // 6b：pid 复用防护——记录指向存活进程（本进程）但解释器不符 → 绝不误杀
+    const fakeRecord = path.join(asgDir, TRIAL_RECORD_FILENAME);
+    fs.writeFileSync(fakeRecord, JSON.stringify({ pgid: process.pid, interpreter: 'definitely-not-a-real-interpreter', recordedAt: new Date().toISOString() }), 'utf8');
+    const killed2 = sweepStaleTrialTrees(root);
+    check('解释器归属不符 → 跳过击杀（防 pid 复用误杀）', killed2 === 0, `killed=${killed2}`);
+    check('本进程仍存活', alive(process.pid));
+    check('可疑记录被清除（不反复判定）', !fs.existsSync(fakeRecord));
+
+    // 6c：已死树的陈旧记录 → 静默清理
+    fs.writeFileSync(recordPath, JSON.stringify({ pgid: 99999999, interpreter: 'node' }), 'utf8');
+    const killed3 = sweepStaleTrialTrees(root);
+    check('陈旧记录（树已死）→ 0 击杀且记录清理', killed3 === 0 && !fs.existsSync(recordPath));
+    fs.rmSync(root, { recursive: true, force: true });
+  } else {
+    console.log('  (跳过：非 Linux 平台无 /proc 归属校验——sweep 登记为 best-effort Linux only)');
   }
 
   assert.ok(true);

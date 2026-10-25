@@ -38,6 +38,10 @@
  * 消毒只覆盖"渲染层可能送错"的形状，语义校验（端口是否可用等）仍在调用方。
  */
 
+// P2-2：agentAllowedDomains 的条目字形闸。domain-allowlist 是零依赖纯模块，
+// 保住本文件「裸 node 可测（不拉 electron / conf）」的纪律。
+import { filterAllowlistDomains } from './agent/domain-allowlist';
+
 /** 数值字段的区间与默认值（与 config-store.ts 的 defaults 对齐）。 */
 export interface NumberFieldRule {
   key: string;
@@ -261,10 +265,16 @@ export function sanitizeConfigInput(
       out[rule.key] = [];
       continue;
     }
-    out[rule.key] = v
+    const cleaned = v
       .filter((s): s is string => typeof s === 'string' && s.trim() !== '')
       .map((s) => s.trim())
       .slice(0, rule.max);
+    // P2-2：域名清单逐条过字形闸——单标签（"com"）会在执行器侧被
+    // endsWith 匹配放大成放行一切 *.com；非法条目落盘前剔除（与 admin
+    // 发布校验、runtime 白名单并集共用 domain-allowlist 的同一份语义）。
+    out[rule.key] = rule.key === 'agentAllowedDomains'
+      ? filterAllowlistDomains(cleaned).valid
+      : cleaned;
   }
 
   // 密钥字段：非字符串时**丢弃**（ConfigStore.save 里 executorToken 走独立的

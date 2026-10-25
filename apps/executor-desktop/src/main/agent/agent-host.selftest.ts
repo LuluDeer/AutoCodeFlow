@@ -640,6 +640,59 @@ async function main(): Promise<void> {
     await center.close();
   }
 
+  console.log('-- 12. P3-2 畸形指派载荷：首跑前拦截，可判定失败回报 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [],
+      pollScript: [
+        {
+          // slug 带换行（manifest 注入面）——字符集闸必须拦
+          items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: { ...SOP_PAYLOAD, slug: 'bad\nslug' } }],
+        },
+        {
+          // frontMatter 缺失——此前会在 runWithJournal 里炸 TypeError
+          items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: { ...SOP_PAYLOAD, frontMatter: null } }],
+        },
+        {
+          // assignmentId 带路径穿越字符——直接拼工作区路径的闸必须拦
+          items: [{ kind: 'assignment', assignmentId: '../../escape', sop: SOP_PAYLOAD }],
+        },
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    for (let i = 0; i < 4; i++) await host.tick(); // 三个畸形指派 + 一轮收尾
+    const completes = center.requests.filter((q) => q.path.includes('/complete'));
+    check('每个畸形载荷各收敛为一次失败回报（3 个）', completes.length === 3, `completes=${completes.length}`);
+    check('回报 status=failed', completes.every((q) => q.body.status === 'failed'));
+    check(
+      '回报 outcome=poll_payload_invalid（可判定，而非裸 host_error/TypeError）',
+      completes.every((q) => (q.body.result as { outcome?: string } | undefined)?.outcome === 'poll_payload_invalid'),
+    );
+    check('畸形载荷绝不进 LLM 循环', !center.requests.some((q) => q.path === '/api/agent-collab/llm'));
+    check('首跑前拦截：工作区从未创建', !fs.existsSync(path.join(workDir, 'agent-workspace')));
+    check('首跑前拦截：本地日志从未写出', !fs.existsSync(path.join(workDir, 'agent-journal')));
+    check('stats 记录最后结局', host.stats.lastOutcome === 'poll_payload_invalid');
+
+    // 对照：合法载荷照常进循环（字符集闸不误伤既有链路）
+    const center2 = makeCenter({
+      llmScript: [PLAN_OK, '{"action":"escalate"}'],
+      pollScript: [{ items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] }, { items: [] }],
+    });
+    const baseUrl2 = await center2.listen();
+    const workDir2 = newWorkDir();
+    const host2 = new AgentHost({ address: 'a:1', workDir: workDir2, getConfig: () => makeConfig(baseUrl2), client: new CollabClient({ baseUrl: baseUrl2, token: 't', timeoutMs: 5000 }) });
+    await host2.tick();
+    const okComplete = center2.requests.find((q) => q.path.includes('/complete'));
+    check('合法载荷（e2e-sop）不误伤：进入循环并终态回报', okComplete?.body.status === 'completed' || okComplete?.body.status === 'failed');
+    check('合法载荷的工作区被创建', fs.existsSync(path.join(workDir2, 'agent-workspace', ASSIGNMENT_ID)));
+    await center2.close();
+    await center.close();
+  }
+
   for (const d of workDirs) fs.rmSync(d, { recursive: true, force: true });
   assert.ok(true);
   console.log(failures ? `\n=== ${failures} 项失败 ===\n` : '\n=== agent-host selftest 全部通过 ===\n');

@@ -341,11 +341,14 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.agent.profileDeveloper': 'developer —— 容器沙箱（后续版本）',
     'cfg.agent.profileOps': 'ops-assist —— 操作内网系统（后续版本）',
     'cfg.agent.profileFull': 'full-trust —— 完全信任（需书面确认）',
-    'cfg.agent.profileHint': 'standard = 在受限工作区内试跑生成的代码（process 沙箱：env 白名单 + 路径域 + 超时）',
+    // P2-5：档位边界如实声明——process 后端是「平台闸门」（env 白名单 + 路径域
+    // + 超时），不是 OS 级隔离；HOME/PATH 会传入、网络不受限。部署方按合规
+    // 要求选档时必须看得到这条边界。
+    'cfg.agent.profileHint': 'standard = 在受限工作区内试跑生成的代码（process 沙箱=平台闸门：env 白名单 + 路径域 + 超时；非 OS 级完整隔离，网络不受限）',
     'cfg.agent.codeExecLabel': '代码执行（细粒度覆盖，留空跟随预设）',
     'cfg.agent.followPreset': '（跟随预设）',
     'cfg.agent.codeExecOff': 'off —— 只产出代码文本，不执行',
-    'cfg.agent.codeExecSandbox': 'sandbox —— 受限工作区内试跑',
+    'cfg.agent.codeExecSandbox': 'sandbox —— 受限工作区内试跑（process 后端=平台闸门，非完整隔离）',
     'cfg.agent.codeExecHost': 'host —— 本机运行（后续版本）',
     'cfg.agent.codeExecHint': 'off 档：Agent 产出代码供人工审阅，交付变成“给人看”',
     'cfg.agent.hostAccessLabel': '本机应用访问（细粒度覆盖，留空跟随预设）',
@@ -1080,11 +1083,14 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.agent.profileDeveloper': 'developer — container sandbox (future version)',
     'cfg.agent.profileOps': 'ops-assist — operate intranet systems (future version)',
     'cfg.agent.profileFull': 'full-trust — full trust (requires written approval)',
-    'cfg.agent.profileHint': 'standard = trial-run generated code in a restricted workspace (process sandbox: env allowlist + path domains + timeout)',
+    // P2-5 (en mirror): the process backend is platform gating (env allowlist +
+    // path domains + timeout), NOT OS-level isolation — HOME/PATH pass through,
+    // network is unrestricted.
+    'cfg.agent.profileHint': 'standard = trial-run generated code in a restricted workspace (process sandbox = platform gating: env allowlist + path domains + timeout; not full OS isolation, network unrestricted)',
     'cfg.agent.codeExecLabel': 'Code execution (fine-grained override; empty follows the preset)',
     'cfg.agent.followPreset': '(follow preset)',
     'cfg.agent.codeExecOff': 'off — produce code text only, no execution',
-    'cfg.agent.codeExecSandbox': 'sandbox — trial run in a restricted workspace',
+    'cfg.agent.codeExecSandbox': 'sandbox — trial run in a restricted workspace (process backend = platform gating, not full isolation)',
     'cfg.agent.codeExecHost': 'host — run on this machine (future version)',
     'cfg.agent.codeExecHint': 'off: the Agent produces code for human review; delivery becomes "for humans to read"',
     'cfg.agent.hostAccessLabel': 'Local app access (fine-grained override; empty follows the preset)',

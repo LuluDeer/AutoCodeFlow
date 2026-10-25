@@ -30,6 +30,7 @@ import {
   readWorkspaceFile,
   resolveWithinWorkspace,
   toWorkspaceRelative,
+  WORKSPACE_TOTAL_BUDGET_BYTES,
   writeWorkspaceFile,
 } from './workspace';
 
@@ -326,7 +327,31 @@ function main(): void {
       assert.strictEqual(readWorkspaceFile(ws, '../asg-other/other.txt').ok, false);
     }
 
-    console.log('agent/workspace selftest: all assertions passed (containment, symlink escape, size caps)');
+    // ── 11. P3-3：工作区总量预算（超限拒绝写入，拒绝先行）────────────────
+    {
+      const budgetWs = ensureWorkspace(tmp, 'asg-budget');
+      const budget = 10 * 1024; // 测试注入 10KB 预算
+      // 预算内写入照常
+      const first = writeWorkspaceFile(budgetWs, 'a.txt', 'x'.repeat(4 * 1024), budget);
+      assert.strictEqual(first.ok, true, '预算内写入必须成功');
+      // 嵌套目录里的既有文件同样计入占用（walk 不是只看根层）
+      const nested = writeWorkspaceFile(budgetWs, 'pkg/b.txt', 'y'.repeat(4 * 1024), budget);
+      assert.strictEqual(nested.ok, true, '嵌套写入在预算内必须成功');
+      // 8KB 已用 + 4KB 新写 > 10KB → 拒绝
+      const over = writeWorkspaceFile(budgetWs, 'c.txt', 'z'.repeat(4 * 1024), budget);
+      assert.strictEqual(over.ok, false, '超总量预算必须被拒');
+      assert.match(over.ok ? '' : over.error, /budget/, '拒绝原因必须写明预算');
+      assert.strictEqual(fs.existsSync(path.join(budgetWs, 'c.txt')), false, '被拒写入不得落盘（拒绝先行）');
+      // 预算内的小写入仍可通过
+      const within = writeWorkspaceFile(budgetWs, 'd.txt', 'w'.repeat(1024), budget);
+      assert.strictEqual(within.ok, true, '预算内的后续写入不受影响');
+      // 默认预算常量存在且为 200MB（行为不变式——防误改成 0 关闸）
+      assert.strictEqual(WORKSPACE_TOTAL_BUDGET_BYTES, 200 * 1024 * 1024);
+      // budget=0 / 非有限数 = 不设总闸（向后兼容的显式关闭形态）
+      assert.strictEqual(writeWorkspaceFile(budgetWs, 'e.txt', 'q'.repeat(1024), 0).ok, true);
+    }
+
+    console.log('agent/workspace selftest: all assertions passed (containment, symlink escape, size caps, total budget)');
   } finally {
     for (const dir of [tmp, outside]) {
       try {

@@ -372,6 +372,23 @@ function main(): void {
       }
     }
 
+    // ── 4d. P2-2：agentAllowedDomains 逐条字形闸（单标签不落盘）────────────
+    {
+      // "com" 会在执行器侧被 host.endsWith('.com') 匹配放大成放行一切 *.com
+      // ——白名单条目在落盘前就必须被剔除（与 admin 发布校验、runtime 并集同源）。
+      assert.deepStrictEqual(
+        sanitizeConfigInput({ agentAllowedDomains: ['com', 'ok.example.com', 'Example.COM', 'a..b', '-x.com', 'localhost'] }),
+        { agentAllowedDomains: ['ok.example.com', 'example.com'] },
+        '单标签/非法字形条目必须在消毒层剔除（保留合法条目并归一小写）',
+      );
+      // 对照组：agentAllowedApps 不做域名校验（进程名清单，语义不同）
+      assert.deepStrictEqual(
+        sanitizeConfigInput({ agentAllowedApps: ['notepad', 'excel'] }),
+        { agentAllowedApps: ['notepad', 'excel'] },
+        'agentAllowedApps 不受域名字形闸影响',
+      );
+    }
+
     // ── 5. P2-4：不认识的配置项必须**丢弃**（不再原样透传）─────────────
     // 旧策略"透传"有两个被审计确认的滥用面：点号键（'a.b'）会被 electron-store
     // 的 dot-prop setter 变成嵌套写；白名单外的键形状完全不受控。

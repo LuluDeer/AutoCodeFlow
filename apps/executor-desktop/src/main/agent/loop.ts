@@ -209,8 +209,15 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       const next = await input.handlers.diagnose({ iteration, candidate, trial });
 
       if (next === 'deliver') {
+        // P2-1（验收旁路修复）：能走到诊断阶段的轮次必然**验收未通过**——
+        // passed=true 已在 ④ 直接返回 delivered。此前这里把 LLM 自评的
+        // deliver 直接判成交付，「交付必须以 verify 通过为锚」被模型的一句话
+        // 旁路（runtime 旧提示词甚至主动教了这条路）。现在如实降级为转人工：
+        // 验收未通过的候选绝不允许以 delivered 终态上报中台。
         return {
-          outcome: 'delivered',
+          outcome: 'escalated',
+          stopMessage:
+            'LLM 自评 deliver 被平台拒绝：验收（verify）未通过——按「交付以验收通过为锚」降级转人工，候选实现需人工复核',
           iterations: counters.iterations,
           trialRuns: counters.trialRuns,
           clarifications: counters.clarifications,
