@@ -262,6 +262,48 @@ export default function ConfigPage() {
   const diagSupported = typeof window.electronAPI.exportDiagnosticReport === 'function';
   // V4-4（X-02）：改动清单显隐。清单内容由 form/savedForm 派生（useMemo）。
   const [showDiff, setShowDiff] = useState(false);
+  // F-34（UIUX 审计）：数值输入的「输入中草稿」。controlled-clamp 的标准毛刺：
+  // onChange 立即 parseBoundedInt 会把清空/中间态立刻回填成默认值——用户想
+  // 输入新值得先全选再打字。输入过程只把**原样字符串**存进草稿（显示权归
+  // 草稿，含空串），form 只在得到合法整数时更新（越界先钳，保证 form 恒为
+  // 合法值）；blur 才走完整 parseBoundedInt（空串=回落默认、越界钳制）并清
+  // 草稿——「所见即所存」的保存语义不变，输入过程中不再被回填打断。
+  const [numDrafts, setNumDrafts] = useState<Record<string, string>>({});
+
+  /** 数值输入的受控 value：键入中显示草稿原样串，其余显示安全取值（脏值回落默认）。 */
+  function numValue(key: string, value: unknown, fallback: number): string {
+    return numDrafts[key] ?? String(displayNumber(value, fallback));
+  }
+
+  /** 数值输入 onChange：草稿原样保留 + 合法整数即时入表单（越界先钳）。 */
+  function numChange(
+    key: string,
+    rule: { readonly fallback: number; readonly min: number; readonly max: number },
+    raw: string,
+  ): void {
+    setNumDrafts((d) => ({ ...d, [key]: raw }));
+    const trimmed = raw.trim();
+    // 空串/number input 非法半态：form 保持原值，显示权在草稿；blur 收口。
+    if (trimmed === '') return;
+    const n = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(n)) return;
+    set(key, Math.min(Math.max(n, rule.min), rule.max));
+  }
+
+  /** 数值输入 onBlur：完整 parseBoundedInt 收口（空串=默认/越界钳制）+ 清草稿。 */
+  function numBlur(
+    key: string,
+    rule: { readonly fallback: number; readonly min: number; readonly max: number },
+    raw: string,
+  ): void {
+    setNumDrafts((d) => {
+      if (!(key in d)) return d;
+      const next = { ...d };
+      delete next[key];
+      return next;
+    });
+    set(key, parseBoundedInt(raw, rule.fallback, rule.min, rule.max));
+  }
   const changedEntries = useMemo(
     () => FIELD_LABEL_KEYS
       .filter(([key]) => !sameConfigValue(form[key], savedForm[key]))
@@ -460,11 +502,13 @@ export default function ConfigPage() {
   }
 
   // V4-4（X-02）：放弃修改——回滚到最近一次保存的值。allowedApps/Domains 的
-  // textarea 草稿是独立 state，必须一并回滚；连接测试结果随 URL 回滚失效。
+  // textarea 草稿是独立 state，必须一并回滚；数值输入的键入草稿（F-34）与
+  // 连接测试结果随 URL 回滚失效。
   function discardChanges() {
     setForm(savedForm);
     setAllowedAppsText(listText(savedForm.agentAllowedApps));
     setAllowedDomainsText(listText(savedForm.agentAllowedDomains));
+    setNumDrafts({});
     setTestResult(null);
     setShowDiff(false);
     setSaveError(null);
@@ -685,16 +729,14 @@ export default function ConfigPage() {
                   {/* UX-DSK-NUM：原实现 `parseInt(e.target.value, 10)` 无兜底——
                       清空输入框得到 NaN，显示层 `Number(form.x || 10)` 仍渲染 10，
                       于是"界面显示 10、实际保存 NaN"。NaN 经 IPC 序列化为 null，
-                      主进程写入时撞 electron-store 的 schema 校验整次抛错。
-                      这里与保存路径同源：留空 = 回落默认 10，越界钳到 1–100。 */}
+                      主进程写入时撞 electron-store 的 schema 校验整次抛出。
+                      这里与保存路径同源：留空 = 回落默认 10，越界钳到 1–100。
+                      F-34：夹紧时机后移到 blur——键入过程显示草稿原样串
+                      （含空串），不再清空即回填默认。 */}
                   <input aria-label={t('cfg.gen.maxTasksLabel')} className="input" type="number" min={1} max={100}
-                    value={displayNumber(form.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}
-                    onChange={(e) => set('maxConcurrentTasks',
-                      parseBoundedInt(e.target.value, MAX_CONCURRENT_TASKS.fallback,
-                        MAX_CONCURRENT_TASKS.min, MAX_CONCURRENT_TASKS.max))}
-                    onBlur={(e) => set('maxConcurrentTasks',
-                      parseBoundedInt(e.target.value, MAX_CONCURRENT_TASKS.fallback,
-                        MAX_CONCURRENT_TASKS.min, MAX_CONCURRENT_TASKS.max))} />
+                    value={numValue('maxConcurrentTasks', form.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}
+                    onChange={(e) => numChange('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)}
+                    onBlur={(e) => numBlur('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)} />
                   <span className="cfg-hint">{t('cfg.gen.maxTasksHint')}</span>
                 </div>
               </div>
@@ -759,15 +801,13 @@ export default function ConfigPage() {
                 <div className="cfg-field">
                   <label className="cfg-label">{t('cfg.net.portLabel')}</label>
                   {/* 与「最大并发任务数」同源缺陷：清空输入框 → NaN → 显示 8002
-                      却保存 null。留空回落默认端口；失焦时把越界的 1–65535
-                      之外的值钳回（HTML min/max 不阻止手输/粘贴）。 */}
-                  <input aria-label={t('cfg.net.portLabel')} className="input" type="number" min={1} max={65535} value={port}
-                    onChange={(e) => set('executorPort',
-                      parseBoundedInt(e.target.value, EXECUTOR_PORT.fallback,
-                        EXECUTOR_PORT.min, EXECUTOR_PORT.max))}
-                    onBlur={(e) => set('executorPort',
-                      parseBoundedInt(e.target.value, EXECUTOR_PORT.fallback,
-                        EXECUTOR_PORT.min, EXECUTOR_PORT.max))} />
+                      却保存 null。留空回落默认端口；失焦时把 1–65535 之外的值
+                      钳回（HTML min/max 不阻止手输/粘贴）。F-34：夹紧时机后移
+                      到 blur——键入过程显示草稿原样串（含空串），不再清空即
+                      回填默认；显示层仍走 numValue（脏值回落默认）。 */}
+                  <input aria-label={t('cfg.net.portLabel')} className="input" type="number" min={1} max={65535} value={numValue('executorPort', form.executorPort, EXECUTOR_PORT.fallback)}
+                    onChange={(e) => numChange('executorPort', EXECUTOR_PORT, e.target.value)}
+                    onBlur={(e) => numBlur('executorPort', EXECUTOR_PORT, e.target.value)} />
                   </div>
                 </div>
               </div>
@@ -968,13 +1008,9 @@ export default function ConfigPage() {
                 <div className="cfg-field cfg-field-narrow">
                   <label className="cfg-label">{t('cfg.py.timeoutLabel')}</label>
                   <input aria-label={t('cfg.py.timeoutLabel')} className="input" type="number" min={0}
-                    value={displayNumber(form.interpreterDownloadTimeoutMs, DOWNLOAD_TIMEOUT_MS.fallback)}
-                    onChange={(e) => set('interpreterDownloadTimeoutMs',
-                      parseBoundedInt(e.target.value, DOWNLOAD_TIMEOUT_MS.fallback,
-                        DOWNLOAD_TIMEOUT_MS.min, DOWNLOAD_TIMEOUT_MS.max))}
-                    onBlur={(e) => set('interpreterDownloadTimeoutMs',
-                      parseBoundedInt(e.target.value, DOWNLOAD_TIMEOUT_MS.fallback,
-                        DOWNLOAD_TIMEOUT_MS.min, DOWNLOAD_TIMEOUT_MS.max))} />
+                    value={numValue('interpreterDownloadTimeoutMs', form.interpreterDownloadTimeoutMs, DOWNLOAD_TIMEOUT_MS.fallback)}
+                    onChange={(e) => numChange('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)}
+                    onBlur={(e) => numBlur('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)} />
                   <span className="cfg-hint">{t('cfg.py.timeoutHint')}</span>
                 </div>
               </div>
