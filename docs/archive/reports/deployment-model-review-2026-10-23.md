@@ -346,6 +346,7 @@
 | 自主推进 R16-R17（2026-10-25 上午）：**glue-backfill flake 根治**（三层近全量间歇红的真根因双层实证：①真实动态 import 使模块图进 waitFor 预算，并行争抢无上界→vi.mock 替换；②**test-setup 全局 asyncUtilTimeout 从未生效**——forks 池 setup/测试两份 dom 实例，全仓默认 waitFor 实际 1s）；随即 TINFRA-1 治本（deps.inline 实测无效已回滚；setup 改 @testing-library/react 入口 configure 实证 1000→10000）+ 永久守卫钉住防漂移。并行全量两遍 236/1957 全绿 | ✅ | 5812f225/9cdb030b |
 | 自主推进 R18（2026-10-25 上午）：**atlas 内容漂移巡查**（守卫只钉计数不查内容）——五失实修正全带代码证据：协议 v7 两键在 executor-contract 注册/心跳表全缺席（最高危）+ python 恒省略裁定 + 新红线 2c；executor-node README 目录树补 20+ 文件与 5c 布局 + P1 netrc 四键；artifacts 行「MinIO/S3」失实改实 + 索引面路由；mcp-tools 补 15 字段 + 幽灵守卫脚本名改实。五守卫全保持一致 | ✅ | 5ffc3875 |
 | 自主推进 R19（2026-10-25 上午）：P1 netrc 0600 断言 Windows 平台感知（NTFS 权限位映射 0o666 实证，win 侧放宽属主位断言、防线在实现侧 mode 参数）；CI 全绿恢复 | ✅ | 85d13088 |
+| 自主推进 R20（2026-10-25 上午）：MCP create 面对照（前提修正：无 create_task 工具，创建面=create_task_from_template 的 overrides 自由 overlay）——14 字段全可用零 schema 缺口、expectedUpdatedAt 为 update-only；**正确形态判断：客户端 zod 重述会拒掉后端白名单键，描述层对齐而非收紧**；get_task 返回面核查干净（15 字段全在、secrets 双层脱敏是设计） | ✅ | ef20de4f |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
