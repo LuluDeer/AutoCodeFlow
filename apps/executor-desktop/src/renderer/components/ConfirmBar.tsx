@@ -60,16 +60,27 @@ export default function ConfirmBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Esc=取消：文档级监听（页内条不是模态，无需圈闭）；stopPropagation 防止
-  // 同页其他 Esc 语义（如全屏查看器关闭）串联触发。
+  // Esc=取消：文档级监听（页内条不是模态，无需圈闭）。
+  //
+  // F-35（UIUX 审计）：stopPropagation 隔离不了**同一个 document** 上的其他
+  // keydown 监听——stopPropagation 只阻止事件跨越节点边界，同节点（document）
+  // 上的其余监听器照常执行；stopImmediatePropagation 才拦得住。且单纯把
+  // stopPropagation 换成 stopImmediatePropagation 还不够：本 effect 依赖
+  // [onCancel]（父组件每次渲染传新箭头函数），监听器会随父渲染反复
+  // 「先卸后挂」挪到监听列表末尾——而全屏查看器（LogViewer）的 Esc 监听同样
+  // 挂在 document、注册顺序因此不确定，bubble 阶段的先后不可依赖。
+  // 故挂到**捕获阶段**（第三个参数 true）：document 捕获确定性地先于
+  // document 冒泡执行，与注册顺序无关；stopImmediatePropagation 在捕获期
+  // 拦截后，后续路径（含查看器的 document 冒泡监听）整段不再触发——确认条
+  // 打开期间 Esc 只语义为「取消确认」，不再同时关掉全屏查看器。
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       onCancel();
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
   }, [onCancel]);
 
   return (

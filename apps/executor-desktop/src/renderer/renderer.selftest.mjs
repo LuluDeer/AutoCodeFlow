@@ -418,11 +418,17 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   eq(displayNumber(null, 10), 10, 'null 状态必须显示默认 10');
   eq(displayNumber(4, 10), 4, '正常值原样显示');
 
-  // 设置页必须真的调用该解析通道（改成裸 parseInt 立即红）
+  // 设置页必须真的调用该解析通道（改成裸 parseInt 立即红）。
+  // F-34（UIUX 审计）更新：夹紧时机后移到 blur——三个数值字段改为
+  // numChange（键入：合法整数即时入表单、越界先钳）+ numBlur（完整
+  // parseBoundedInt 收口：空串=默认、越界钳制）+ numValue（显示层草稿/脏值
+  // 兜底）。锚点改为钉「blur 收口走 parseBoundedInt + 显示层走 numValue」，
+  // NaN 仍进不了保存链路。
   for (const field of ['maxConcurrentTasks', 'executorPort', 'interpreterDownloadTimeoutMs']) {
-    const re = new RegExp(`set\\('${field}',\\s*\\n?\\s*parseBoundedInt\\(`);
-    if (!re.test(config)) {
-      throw new Error(`UX-DSK-NUM: ConfigPage 的 ${field} 未走 parseBoundedInt（会重新引入 NaN）`);
+    const blurRe = new RegExp(`numBlur\\('${field}',\\s*[A-Z_]+,\\s*e\\.target\\.value\\)`);
+    const valueRe = new RegExp(`numValue\\('${field}'`);
+    if (!blurRe.test(config) || !valueRe.test(config)) {
+      throw new Error(`UX-DSK-NUM: ConfigPage 的 ${field} 未走 numBlur(parseBoundedInt 收口) + numValue（会重新引入 NaN 或回填毛刺）`);
     }
   }
   // 不得再出现无兜底的 parseInt（允许注释里出现该形态，故先去注释）
@@ -902,6 +908,21 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
   if (!readFileSync(resolve(root, 'components', 'ConfirmBar.tsx'), 'utf8').includes('role="alertdialog"')) {
     throw new Error('报障回归：共享 ConfirmBar 缺少 role="alertdialog" 语义');
+  }
+  // F-35（UIUX 审计）：ConfirmBar 的 Esc 必须以「捕获阶段 + stopImmediatePropagation」
+  // 隔离同页其他 Esc 语义（全屏查看器关闭等）。背景：确认条与查看器的 Esc 监听
+  // 都挂 document——① stopPropagation 拦不住**同一节点**上的其他监听器（两个
+  // 都会触发，「取消确认 + 关查看器」同时发生）；② 单改 stopImmediatePropagation
+  // 也不够——确认条 effect 依赖 [onCancel]（父组件每渲染新箭头函数）会反复
+  // 重注册、监听顺序漂移到查看器之后，bubble 阶段的先后不可依赖。捕获阶段
+  // （addEventListener 第三参 true）确定性地先于 document 冒泡执行，行为锚点
+  // 同时钉住这两个要素。
+  {
+    const confirmBarSrc = readFileSync(resolve(root, 'components', 'ConfirmBar.tsx'), 'utf8');
+    if (!/addEventListener\('keydown', handler, true\)/.test(confirmBarSrc)
+      || !confirmBarSrc.includes('stopImmediatePropagation')) {
+      throw new Error('F-35：ConfirmBar 的 Esc 必须挂捕获阶段（addEventListener 第三参 true）并以 stopImmediatePropagation 隔离同页其他 Esc 语义');
+    }
   }
   if (/window\.confirm\(/.test(appsPage)) {
     throw new Error('UI 回归：应用页仍在使用原生 confirm 弹窗（无边框窗口下不可靠，须走页内确认条）');
