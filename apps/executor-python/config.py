@@ -181,6 +181,42 @@ class Settings(BaseSettings):
     executor_pull_mode: bool = False
     task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
     heartbeat_interval_seconds: int = 30  # Heartbeat interval
+
+    @field_validator('heartbeat_interval_seconds')
+    @classmethod
+    def _validate_heartbeat_interval_seconds(cls, value: int) -> int:
+        """钳到 5..60 秒（P2-5，对齐 executor-node config.ts 的同款钳制）。
+
+        node 侧口径（config.ts heartbeatIntervalSeconds 注释逐字互指）：
+        - 上界 60：与 /config/reload 的热更闸同界。一个配错的
+          HEARTBEAT_INTERVAL_SECONDS（如 300）会落在 admin 自身 30s×3 的
+          stale 判死窗之外——两拍之间执行器被判 OFFLINE，dispatch 静默停止
+          直到下一拍，运维看到的只是「任务不派了」。
+        - 下界 5：env=0 / 负值不能变成每秒一次的心跳风暴（node 侧
+          NETOPT-C P3 的下界语义同源）。
+
+        与 node 一致取**钳制**而非报错：env 是运维启动参数，钳到边界比让
+        执行器起不来更符合「活性优先」。
+        """
+        if value < 5:
+            logger.warning(
+                'HEARTBEAT_INTERVAL_SECONDS=%s is outside the supported '
+                'range [5, 60] — clamped to 5 (parity with executor-node '
+                'config.ts heartbeatIntervalSeconds)',
+                value,
+            )
+            return 5
+        if value > 60:
+            logger.warning(
+                'HEARTBEAT_INTERVAL_SECONDS=%s is outside the supported '
+                'range [5, 60] — clamped to 60 (a slower beat would sit '
+                "outside admin's 30s*3 stale-detection window and get the "
+                'executor marked OFFLINE between heartbeats)',
+                value,
+            )
+            return 60
+        return value
+
     pypi_registry_url: str = ''  # Optional credential-free private PyPI index URL
 
     @field_validator('pypi_registry_url')

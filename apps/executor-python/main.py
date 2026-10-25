@@ -490,6 +490,14 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+# P2-10（执行器服务审计，2026-10-26）：请求体 2MB 上限——对齐 executor-node
+# 的 express.json({ limit: '2mb' })（A-6 同一决策：2MB 覆盖 admin 现有合法
+# 载荷，含超长 glueSource 派发）。uvicorn 默认不限长，持有令牌的调用方可发
+# 任意大 JSON 打爆执行器内存。Content-Length 预检在读 body 前 413；chunked
+# 请求逐 chunk 计数短路。
+from request_size_limit import MAX_BODY_BYTES, RequestSizeLimitMiddleware  # noqa: E402
+
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
 app.include_router(health.router)
 app.include_router(execute.router, prefix='/api')
 app.include_router(logs.router, prefix='/api')

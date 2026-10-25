@@ -428,7 +428,12 @@ def _patch_http_transport(monkeypatch, handler):
 
 
 def _setup_download_auth(monkeypatch):
-    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    # P2-7 后 _download_package 的**每一跳**都重跑真实 SSRF 复检
+    # （_host_is_restricted 做真实 DNS 且 fail-closed）——本组用例测的是
+    # 重定向/Bearer 语义而非 SSRF，故 admin 地址用公网 IP 字面量
+    # （不依赖外网 DNS，复检必过）。
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url',
+                        'http://93.184.216.34')
     monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
     monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
     monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok-a9')
@@ -451,14 +456,14 @@ def test_download_package_follows_same_host_redirect_keeping_bearer(tmp_path, mo
     dest = tmp_path / '.package.zip'
 
     size = asyncio.run(execute_module._download_package(
-        'http://admin.local/packages/first', dest,
+        'http://93.184.216.34/packages/first', dest,
     ))
 
     assert size == len(b'payload-bytes')
     assert dest.read_bytes() == b'payload-bytes'
     assert [u for u, _ in seen] == [
-        'http://admin.local/packages/first',
-        'http://admin.local/packages/second.zip',
+        'http://93.184.216.34/packages/first',
+        'http://93.184.216.34/packages/second.zip',
     ]
     assert seen[0][1] == 'Bearer tok-a9'
     assert seen[1][1] == 'Bearer tok-a9', 'same-host redirect must keep the Bearer'
@@ -471,21 +476,21 @@ def test_download_package_strips_bearer_on_cross_host_redirect(tmp_path, monkeyp
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((str(request.url), request.headers.get('authorization')))
-        if request.url.host == 'admin.local':
+        if request.url.host == '93.184.216.34':
             return httpx.Response(
-                301, headers={'Location': 'http://mirror.example/payload.zip'})
+                301, headers={'Location': 'http://93.184.216.35/payload.zip'})
         return httpx.Response(200, content=b'cdn-bytes')
 
     _patch_http_transport(monkeypatch, handler)
     dest = tmp_path / '.package.zip'
 
     size = asyncio.run(execute_module._download_package(
-        'http://admin.local/packages/p.zip', dest,
+        'http://93.184.216.34/packages/p.zip', dest,
     ))
 
     assert size == len(b'cdn-bytes')
-    assert seen[0] == ('http://admin.local/packages/p.zip', 'Bearer tok-a9')
-    assert seen[1][0] == 'http://mirror.example/payload.zip'
+    assert seen[0] == ('http://93.184.216.34/packages/p.zip', 'Bearer tok-a9')
+    assert seen[1][0] == 'http://93.184.216.35/payload.zip'
     assert seen[1][1] is None, 'cross-host redirect must strip the Bearer'
 
 
@@ -504,7 +509,7 @@ def test_download_package_too_many_redirects(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match='重定向次数过多'):
         asyncio.run(execute_module._download_package(
-            'http://admin.local/packages/loop', dest,
+            'http://93.184.216.34/packages/loop', dest,
         ))
     assert count['n'] == 6  # 初始请求 + 5 跳，第 6 个重定向响应即失败
     assert not dest.exists()
@@ -522,7 +527,7 @@ def test_download_package_plain_404_still_reports_status(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match='HTTP 状态码 404'):
         asyncio.run(execute_module._download_package(
-            'http://admin.local/packages/missing.zip', dest,
+            'http://93.184.216.34/packages/missing.zip', dest,
         ))
     assert not dest.exists()
 

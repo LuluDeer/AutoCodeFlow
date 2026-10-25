@@ -448,6 +448,14 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
         # 中台可据此在心跳路径做兼容性分支（见 config.py PROTOCOL_VERSION）。
         'protocolVersion': PROTOCOL_VERSION,
+        # P2-4（执行器服务审计，2026-10-26）：并发上限随心跳上报——对齐
+        # executor-node scheduler.ts sendHeartbeat（E9：admin 容量核算不再依赖
+        # 注册期快照，读 config 对象属性，/config/reload 热更 max_concurrent_tasks
+        # 后下一个心跳即回传新值）。此前只有注册载荷带该键（main.py
+        # _register_payload），热更后 admin 继续按旧值派发（过派 → 本地排队 /
+        # 欠派 → 空转），容量核算永久失真。admin 心跳 DTO（executor-heartbeat.
+        # dto.ts maxConcurrentTasks）既有采纳面，字段始终发送（int）。
+        'maxConcurrentTasks': settings.max_concurrent_tasks,
         # R3-B/P10（协议 v7）：`deployedApps` / `installedPackages` 两键在本侧
         # **恒省略**（不带进 payload = JSON 里无此键 =「未上报」，admin 保留
         # 既有数据）。事实源裁定与完整理由见 config.py PROTOCOL_VERSION 注释

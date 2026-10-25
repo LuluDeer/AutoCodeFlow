@@ -371,7 +371,9 @@
         },
         "timeout_seconds": {
           "type": ["integer", "null"],
-          "description": "deprecated：snake_case 别名"
+          "minimum": 0,
+          "maximum": 86400,
+          "description": "deprecated：snake_case 别名。边界与 timeoutSeconds 同（0 = 显式不限时，其余 1..86400）——P2-9（2026-10-26 审计）：本键此前无边界，而 node accept 对三键解析后的值统一手检 1..86400（400）、python 却漏到 _resolve_task_timeout 静默 clamp（-5 被钳成 1 秒即杀），同一载荷双端结论相反。补边界后协议如实描述两端的 accept 闸；admin 发出的值本就在界内（create-task.dto @Min(0) @Max(86400) 前置拦截），存量派发不受影响。"
         },
         "requirements": {
           "type": ["array", "null"],
@@ -754,6 +756,18 @@
           "payload": { "timeout_seconds": "3600" },
           "expectErrorPath": ["timeout_seconds"],
           "$comment": "snake_case 别名是**数值**字段，字符串形态必须拒绝：它是 timeout 的别名，若容忍字符串就会被下游当秒数静默解析，而驼峰同名字段不收字符串——两侧形态不一致。"
+        },
+        {
+          "name": "timeout_seconds-below-min",
+          "payload": { "timeout_seconds": -5 },
+          "expectErrorPath": ["timeout_seconds"],
+          "$comment": "P2-9（2026-10-26 审计）：别名此前无边界，负值在 node 被 accept 400、在 python 被 _clamp_timeout_seconds 静默钳成 1 秒（任务秒杀）。补边界后负值在协议闸即拒，与 node accept 的 1..86400 手检同判。"
+        },
+        {
+          "name": "timeout_seconds-above-max",
+          "payload": { "timeout_seconds": 86401 },
+          "expectErrorPath": ["timeout_seconds"],
+          "$comment": "P2-9：与 below-min 同族——别名必须与正名 timeout/timeoutSeconds 同界（0..86400）。"
         },
         {
           "name": "requirements-item-not-string",

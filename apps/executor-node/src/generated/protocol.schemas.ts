@@ -16,7 +16,7 @@ export const TaskConfigSchema = z.looseObject({
   "entrypoint": z.string().nullable().optional(),
   "timeout": z.number().int().min(0).max(86400).nullable().optional(),
   "timeoutSeconds": z.number().int().min(0).max(86400).nullable().optional(),
-  "timeout_seconds": z.number().int().nullable().optional(),
+  "timeout_seconds": z.number().int().min(0).max(86400).nullable().optional(),
   "requirements": z.array(z.string()).nullable().default([]),
   "gitRepo": z.string().nullable().optional(),
   "gitBranch": z.string().nullable().optional(),

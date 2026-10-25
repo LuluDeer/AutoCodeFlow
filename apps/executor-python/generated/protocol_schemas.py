@@ -21,7 +21,7 @@ class TaskConfig(BaseModel):
     entrypoint: str | None = Field(default=None)
     timeout: int | None = Field(ge=0, le=86400, default=None)
     timeoutSeconds: int | None = Field(ge=0, le=86400, default=None)
-    timeout_seconds: int | None = Field(default=None)
+    timeout_seconds: int | None = Field(ge=0, le=86400, default=None)
     requirements: list[str] | None = Field(default_factory=list)
     gitRepo: str | None = Field(default=None)
     gitBranch: str | None = Field(default=None)

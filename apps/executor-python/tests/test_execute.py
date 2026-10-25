@@ -2019,6 +2019,10 @@ def test_ensure_venv_install_failure_message_truncated(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_node_runtime_with_requirements_logs_warning(tmp_path, monkeypatch, caplog):
+    """P3-18（执行器服务审计 2026-10-26）：node 依赖在本侧从「warn 后照跑，
+    运行期 MODULE_NOT_FOUND」改为 prepare 期**显式失败**（旧文案
+    'runtime=node ignores requirements' 已随行为一起退役）。本用例由
+    "只记日志" 升级为 "warn + 快速失败"，失败文案命中 runtime_missing 分类。"""
     import logging
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
@@ -2037,7 +2041,12 @@ def test_node_runtime_with_requirements_logs_warning(tmp_path, monkeypatch, capl
     with caplog.at_level(logging.WARNING, logger='routers.execute'):
         result = asyncio.run(run_task(req))
     assert result['success'] is False
-    assert 'runtime=node ignores requirements' in caplog.text
+    # prepare 期拒绝，绝不进入 spawn（fail_spawn 若被调用，run_task 会走
+    # "意外异常" 分支而不是本分类文案）。
+    assert '不支持 runtime=node 的依赖安装' in (result.get('errorMessage') or '')
+    assert 'runtime "node" 不可用' in (result.get('errorMessage') or '')
+    # warn 面仍保留（运维可见），且文案携带新语义
+    assert 'runtime=node with requirements' in caplog.text
 
 
 # ---------------------------------------------------------------------------
