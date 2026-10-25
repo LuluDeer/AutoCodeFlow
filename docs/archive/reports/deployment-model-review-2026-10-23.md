@@ -344,6 +344,7 @@
 | 自主推进 R13（2026-10-25 上午）：**P1 修复——私有 PyPI 凭据通道**（netrc 子进程注入）：uv 0.13.4 真实实测三方案择优（UV_INDEX_*_USERNAME 实测对 --index-url 无效/部署绕行不解决根因）；PYPI_REGISTRY_USERNAME/PASSWORD 凭据对 → install 子进程独享 NETRC 键 + 0600 netrc（幂等保 inode），凭据零入 argv/日志/URL/主进程；宿主 NETRC 不穿透钉住；不配=行为逐字节不变；双侧对等；**E2E 实证 401→Installed**；协议零影响；per-task 一次性凭据列演进 | ✅ | 4624e4e0 |
 | 自主推进 R14（2026-10-25 上午）：P1 改 executor-node 源码未重打 bundle（子 agent 门禁遗漏）补打时**暴露守卫 bug**——清单追加式历史下 digest 判据取第一条（应与字节闸同取最后一条），多记录首次出现暴露、单记录时代碰巧掩盖；修守卫双闸语义对齐 + selftest 绿。R15：REG 登记的「.whl 产物入库建议清理」经查为**误判**——v1.0.0 起刻意入库的 bug18 selftest fixture（CI 消费 + atlas 登记），不可删，记录修正 | ✅ | d691fd62 |
 | 自主推进 R16-R17（2026-10-25 上午）：**glue-backfill flake 根治**（三层近全量间歇红的真根因双层实证：①真实动态 import 使模块图进 waitFor 预算，并行争抢无上界→vi.mock 替换；②**test-setup 全局 asyncUtilTimeout 从未生效**——forks 池 setup/测试两份 dom 实例，全仓默认 waitFor 实际 1s）；随即 TINFRA-1 治本（deps.inline 实测无效已回滚；setup 改 @testing-library/react 入口 configure 实证 1000→10000）+ 永久守卫钉住防漂移。并行全量两遍 236/1957 全绿 | ✅ | 5812f225/9cdb030b |
+| 自主推进 R18（2026-10-25 上午）：**atlas 内容漂移巡查**（守卫只钉计数不查内容）——五失实修正全带代码证据：协议 v7 两键在 executor-contract 注册/心跳表全缺席（最高危）+ python 恒省略裁定 + 新红线 2c；executor-node README 目录树补 20+ 文件与 5c 布局 + P1 netrc 四键；artifacts 行「MinIO/S3」失实改实 + 索引面路由；mcp-tools 补 15 字段 + 幽灵守卫脚本名改实。五守卫全保持一致 | ✅ | 5ffc3875 |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
