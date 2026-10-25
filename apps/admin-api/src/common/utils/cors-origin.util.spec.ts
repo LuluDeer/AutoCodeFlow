@@ -1,4 +1,5 @@
-import { isOriginAllowed, parseAllowedOrigins } from "./cors-origin.util";
+import { HttpException } from "@nestjs/common";
+import { isOriginAllowed, parseAllowedOrigins, corsOriginValidator } from "./cors-origin.util";
 
 describe("cors-origin.util (ARCH-001)", () => {
   describe("parseAllowedOrigins", () => {
@@ -90,6 +91,87 @@ describe("cors-origin.util (ARCH-001)", () => {
           true,
         ),
       ).toBe(true);
+    });
+  });
+
+  // F-40（UIUX 审计 P1-1）：拒绝从裸 Error（冒泡成 500 errorCode:null）改为
+  // 带稳定码的 AppError（规范 403 错误封套）。回调形态与 enableCors 的
+  // origin 选项一致，这里直接钉回调行为。
+  describe("corsOriginValidator (F-40)", () => {
+    // cors 包的 OriginCallback：error 即 next(err)，第二参无实际语义
+    type OriginCallback = (err: Error | null, allow?: boolean) => void;
+
+    function run(
+      validator: ReturnType<typeof corsOriginValidator>,
+      origin: string | undefined,
+    ): { err: Error | null; allow?: boolean } {
+      let captured: { err: Error | null; allow?: boolean } = {
+        err: null,
+        allow: undefined,
+      };
+      const cb: OriginCallback = (err, allow) => {
+        captured = { err, allow };
+      };
+      validator(origin, cb);
+      return captured;
+    }
+
+    it("无 Origin 头（server-to-server）放行", () => {
+      const validator = corsOriginValidator(["https://admin.example.com"], false);
+      const { err, allow } = run(validator, undefined);
+      expect(err).toBeNull();
+      expect(allow).toBe(true);
+    });
+
+    it("白名单内 origin 放行", () => {
+      const validator = corsOriginValidator(["http://127.0.0.1:8088"], false);
+      const { err, allow } = run(validator, "http://127.0.0.1:8088");
+      expect(err).toBeNull();
+      expect(allow).toBe(true);
+    });
+
+    it("dev 无白名单时默认放行本机来源", () => {
+      const validator = corsOriginValidator([], true);
+      const { err, allow } = run(validator, "http://localhost:5176");
+      expect(err).toBeNull();
+      expect(allow).toBe(true);
+    });
+
+    it("白名单外 origin → 403 HttpException（errorCode=CORS_ORIGIN_NOT_ALLOWED，params.origin 透出）", () => {
+      const validator = corsOriginValidator(
+        ["http://localhost:8088", "http://127.0.0.1:8088"],
+        false,
+      );
+      const { err } = run(validator, "http://127.0.0.1:5176");
+      // AppError 按 status 挂对应内置异常原型（403 → ForbiddenException，
+      // app-error.ts 的 instanceof 设计），故断言落在 HttpException 面上；
+      // HttpExceptionFilter 据此渲染统一封套（errorCode/params 透出）。
+      expect(err).toBeInstanceOf(HttpException);
+      const httpErr = err as HttpException;
+      expect(httpErr.getStatus()).toBe(403);
+      const resp = httpErr.getResponse() as Record<string, unknown>;
+      expect(resp["errorCode"]).toBe("CORS_ORIGIN_NOT_ALLOWED");
+      expect(resp["params"]).toEqual({ origin: "http://127.0.0.1:5176" });
+      // 文案不插值请求方可控的 origin（前端按码翻译，origin 只走 params）
+      expect(httpErr.message).not.toContain("5176");
+    });
+
+    it("生产环境白名单外 origin（含 localhost）同样 403 拒绝", () => {
+      const validator = corsOriginValidator(["https://admin.example.com"], false);
+      for (const origin of [
+        "http://localhost:5176",
+        "http://127.0.0.1:5176",
+        "https://evil.example.com",
+      ]) {
+        const { err } = run(validator, origin);
+        expect(err).toBeInstanceOf(HttpException);
+        expect((err as HttpException).getStatus()).toBe(403);
+        expect(
+          ((err as HttpException).getResponse() as Record<string, unknown>)[
+            "errorCode"
+          ],
+        ).toBe("CORS_ORIGIN_NOT_ALLOWED");
+      }
     });
   });
 });

@@ -73,6 +73,7 @@ export default {
   'err.CONFIG_JSON_VALUE_INVALID': 'Invalid JSON value',
   'err.CONFIG_NUMBER_VALUE_INVALID': 'Invalid number value',
   'err.CONFIG_VALUE_TYPE_INVALID': 'Invalid valueType: {{valueType}}. Allowed types: {{allowedTypes}}',
+  'err.CORS_ORIGIN_NOT_ALLOWED': 'Request origin is not allowed by the API CORS whitelist (CORS_ALLOWED_ORIGINS)',
   'err.CURRENT_PASSWORD_INCORRECT': 'currentPassword is incorrect',
   'err.CURRENT_PASSWORD_REQUIRED': 'currentPassword is required when changing the password',
   'err.DEPENDENCY_UNAVAILABLE': 'A dependency is temporarily unavailable. Please retry later.',

@@ -33,7 +33,7 @@ import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";
 import { ResponseInterceptor } from "./common/interceptors/response.interceptor";
 import { TimeoutInterceptor } from "./common/interceptors/timeout.interceptor";
-import { isOriginAllowed } from "./common/utils/cors-origin.util";
+import { corsOriginValidator } from "./common/utils/cors-origin.util";
 import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.util";
 import { buildHelmetOptions } from "./common/utils/security-headers.util";
 import { sseAwareCompressionFilter } from "./common/utils/sse-compression.util";
@@ -284,23 +284,14 @@ async function bootstrap() {
   // '*' + credentials is rejected by browsers so we use a callback instead.
   // ARCH-27: 白名单取自 configuration.ts cors.allowedOrigins（同一份
   // fail-fast 校验结果），生产 URL 合法性校验也在配置层完成。
+  // F-40（UIUX 审计 P1-1）：拒绝从裸 Error（冒泡成 500「服务器内部错误」）改为
+  // corsOriginValidator 里的 AppError——规范 403 + CORS_ORIGIN_NOT_ALLOWED 封套。
   const allowedOrigins = configService.get<string[]>("cors.allowedOrigins");
   const isDevelopment =
     configService.get<string>("app.nodeEnv") !== "production";
 
   app.enableCors({
-    origin: (origin, callback) => {
-      // Allow server-to-server calls (no Origin header)
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
-      if (isOriginAllowed(origin, allowedOrigins, isDevelopment)) {
-        callback(null, true);
-      } else {
-        callback(new Error(`Origin ${origin} not allowed by CORS`));
-      }
-    },
+    origin: corsOriginValidator(allowedOrigins, isDevelopment),
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
     credentials: true,
   });

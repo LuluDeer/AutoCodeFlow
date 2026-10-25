@@ -73,6 +73,7 @@ export default {
   'err.CONFIG_JSON_VALUE_INVALID': 'JSON 值非法',
   'err.CONFIG_NUMBER_VALUE_INVALID': '数字值非法',
   'err.CONFIG_VALUE_TYPE_INVALID': 'valueType 非法：{{valueType}}。允许的类型：{{allowedTypes}}',
+  'err.CORS_ORIGIN_NOT_ALLOWED': '请求来源未被 API 跨域白名单放行（CORS_ALLOWED_ORIGINS）',
   'err.CURRENT_PASSWORD_INCORRECT': 'currentPassword 不正确',
   'err.CURRENT_PASSWORD_REQUIRED': '修改密码时必须提供 currentPassword',
   'err.DEPENDENCY_UNAVAILABLE': '依赖服务暂不可用，请稍后重试',
