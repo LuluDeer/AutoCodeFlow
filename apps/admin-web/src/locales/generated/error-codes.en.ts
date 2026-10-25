@@ -154,6 +154,7 @@ export default {
   'err.INVALID_EXECUTOR_TOKEN': 'Invalid executor token',
   'err.INVALID_TOTP_CODE': 'Invalid TOTP code',
   'err.INVALID_USERNAME_OR_PASSWORD': 'Incorrect username or password',
+  'err.INVALID_VALUE_FORMAT': 'Invalid request value format for the target field type',
   'err.LOGIN_LOCKED': 'Account locked. Try again in {{minutes}} minute(s).',
   'err.METRICS_ENDPOINT_DISABLED': 'The Prometheus metrics endpoint is disabled (METRICS_PROMETHEUS_ENABLED=false)',
   'err.METRICS_STREAM_LIMIT_REACHED': 'Too many concurrent metrics streams (limit {{max}})',

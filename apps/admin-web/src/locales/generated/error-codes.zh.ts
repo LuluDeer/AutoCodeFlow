@@ -154,6 +154,7 @@ export default {
   'err.INVALID_EXECUTOR_TOKEN': '执行器令牌无效',
   'err.INVALID_TOTP_CODE': 'TOTP 验证码错误',
   'err.INVALID_USERNAME_OR_PASSWORD': '用户名或密码错误',
+  'err.INVALID_VALUE_FORMAT': '请求值格式非法（与目标字段类型不匹配）',
   'err.LOGIN_LOCKED': '账号已锁定，请在 {{minutes}} 分钟后重试。',
   'err.METRICS_ENDPOINT_DISABLED': 'Prometheus 指标端点已禁用（METRICS_PROMETHEUS_ENABLED=false）',
   'err.METRICS_STREAM_LIMIT_REACHED': '并发指标流过多（上限 {{max}}）',

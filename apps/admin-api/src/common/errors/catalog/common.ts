@@ -55,6 +55,24 @@ export const COMMON_CODES = {
     zh: "请求来源未被 API 跨域白名单放行（CORS_ALLOWED_ORIGINS）",
     en: "Request origin is not allowed by the API CORS whitelist (CORS_ALLOWED_ORIGINS)",
   },
+  /**
+   * F-41（UIUX 审计 P1-2）：请求值形态与目标列类型不匹配（PG 22P02
+   * invalid_text_representation——主流场景是 UUID 主键列收到非 UUID 值，
+   * 如深链 `/tasks/999999`；整数/布尔列收到非数字串同理）。
+   *
+   * 这是**请求方**的输入错误而非服务器故障：旧实现从 QueryFailedError 冒泡成
+   * 500「服务器内部错误」（errorCode:null），深链打错 id 的第一现场与真实故障
+   * 完全不可区分，还诱发前端重试。第一道防线是路由参数管道
+   * （ParseUuidShapePipe，projects.controller 先例），本码兜住一切绕过管道
+   * 直达 DB 的形态错误（写路径 body 携带的关联 id、未来新增路由漏挂管道等），
+   * 全局兜底映射为 400。值内容不进文案/params（请求方可控，且 DB 原始报错
+   * 只落服务端日志）。
+   */
+  INVALID_VALUE_FORMAT: {
+    status: 400,
+    zh: "请求值格式非法（与目标字段类型不匹配）",
+    en: "Invalid request value format for the target field type",
+  },
   // PG 23505 / 23503 的全局兜底（原先散落在 filter 里的硬编码英文）
   RESOURCE_EXISTS: {
     status: 409,

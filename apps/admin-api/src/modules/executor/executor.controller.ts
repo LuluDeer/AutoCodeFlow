@@ -99,6 +99,8 @@ import {
 import { recordRuntime } from "../metrics/runtime-metrics-entry";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 // A6（DEEP_REVIEW §七）: 死信对账端点的响应契约 + 窗口上界常量。
+// F-41（UIUX 审计 P1-2）：详情路由参数 ID 形态校验（/executors/not-exist 旧实现 500）。
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import { TerminalStatesResponseDto } from "./dto/executor-terminal-states.dto";
 import {
   TERMINAL_STATES_MAX_LOOKBACK_MS,
@@ -1015,7 +1017,7 @@ export class ExecutorController {
   @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiOkResponse({ type: ExecutorResponseDto })
   @ApiResponse({ status: 404, description: "执行器不存在" })
-  findOne(@Param("id") id: string) {
+  findOne(@Param("id", ParseUuidShapePipe) id: string) {
     return this.svc.findOne(id);
   }
 

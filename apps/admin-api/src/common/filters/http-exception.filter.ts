@@ -121,6 +121,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
         status = HttpStatus.UNPROCESSABLE_ENTITY;
         errorCode = "RELATED_RESOURCE_NOT_FOUND";
         message = renderZh("RELATED_RESOURCE_NOT_FOUND");
+      } else if (pgError.code === "22P02") {
+        // F-41（UIUX 审计 P1-2）：值形态与列类型不匹配（invalid_text_representation
+        // ——主流场景：UUID 主键列收到非 UUID 值，如深链 /tasks/999999）。这是
+        // 请求方输入错误而非服务器故障：旧实现冒泡 500（errorCode:null），第
+        // 一现场与真实故障不可区分。路由参数管道（ParseUuidShapePipe）是第一道
+        // 防线，这里兜住绕过管道直达 DB 的路径，统一 400（见 catalog 注释）。
+        // 原始报错（含值）只落服务端日志，不回传客户端。
+        status = HttpStatus.BAD_REQUEST;
+        errorCode = "INVALID_VALUE_FORMAT";
+        message = renderZh("INVALID_VALUE_FORMAT");
+        this.logger.warn(
+          `DB query failed [22P02]: ${exception.message}`,
+          exception.stack,
+        );
       } else {
         this.logger.error(
           `DB query failed [${pgError.code ?? "unknown"}]: ${exception.message}`,

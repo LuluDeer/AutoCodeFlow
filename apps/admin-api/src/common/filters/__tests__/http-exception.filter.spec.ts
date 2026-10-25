@@ -1,4 +1,5 @@
 import { ArgumentsHost, BadRequestException, HttpStatus } from "@nestjs/common";
+import { QueryFailedError } from "typeorm";
 import { HttpExceptionFilter } from "../http-exception.filter";
 
 /**
@@ -128,5 +129,53 @@ describe("HttpExceptionFilter — 校验错误可达性（体验审查）", () =
     // LANG-ERR-01：前缀是中文兜底「参数校验失败：」——同样钉住"前缀存在"，
     // 否则实现回退成无前缀常量时这条会假绿。
     expect(body.message.startsWith("参数校验失败：")).toBe(true);
+  });
+});
+
+// F-41（UIUX 审计 P1-2）：PG 22P02（值形态与列类型不匹配——主流场景是 UUID
+// 主键列收到非 UUID 深链值）必须映射为 400 INVALID_VALUE_FORMAT，不得冒泡 500。
+describe("HttpExceptionFilter — PG 22P02 兜底映射（F-41）", () => {
+  function makeHost() {
+    const json = jest.fn();
+    const status = jest.fn().mockReturnValue({ json });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status }),
+        getRequest: () => ({ url: "/api/tasks/999999" }),
+      }),
+    } as unknown as ArgumentsHost;
+    return { host, status, json };
+  }
+
+  function pg22P02(value: string): QueryFailedError {
+    return new QueryFailedError(
+      'SELECT * FROM tasks WHERE id = $1',
+      [value],
+      Object.assign(
+        new Error(`invalid input syntax for type uuid: "${value}"`),
+        { code: "22P02" },
+      ) as Error,
+    );
+  }
+
+  it("22P02 → 400 INVALID_VALUE_FORMAT（请求方输入错误，非服务器故障）", () => {
+    const { host, status, json } = makeHost();
+    new HttpExceptionFilter().catch(pg22P02("999999"), host);
+
+    expect(status).toHaveBeenCalledWith(400);
+    const body = json.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["code"]).toBe(400);
+    expect(body["errorCode"]).toBe("INVALID_VALUE_FORMAT");
+    expect(body["message"]).toContain("格式非法");
+  });
+
+  it("非 22P02 的其它 DB 错误仍保持 500 兜底（不扩大映射面）", () => {
+    const { host, status, json } = makeHost();
+    const err = new QueryFailedError("SELECT 1", [], Object.assign(new Error("relation missing"), { code: "42P01" }) as Error);
+    new HttpExceptionFilter().catch(err, host);
+
+    expect(status).toHaveBeenCalledWith(500);
+    const body = json.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBeNull();
   });
 });

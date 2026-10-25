@@ -95,6 +95,8 @@ import {
   scanStreamWithClamd,
 } from "../../common/utils/clamd-scan.util";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+// F-41（UIUX 审计 P1-2）：详情路由参数 ID 形态校验（/applications/abc 旧实现 500）。
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
@@ -215,7 +217,10 @@ export class ApplicationController {
     description: "应用详情",
     type: ApplicationResponseDto,
   })
-  findById(@Param("id") id: string) {
+  // F-41（UIUX 审计 P1-2）：应用详情是审计在列的深链之一（/applications/abc
+  // 旧实现 500）——非 UUID 在进 service/DB 前先 400（第一道防线；全局 22P02
+  // 兜底映射见 http-exception.filter）。
+  findById(@Param("id", ParseUuidShapePipe) id: string) {
     return this.svc.findById(id);
   }
 
