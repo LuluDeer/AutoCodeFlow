@@ -53,7 +53,9 @@ describe('DR-06 safe-method retries', () => {
   });
 
   it.each(['get', 'head', 'options'].flatMap(method =>
-    [undefined, 500, 502, 504].map(status => ({ method, status })),
+    // F-41：500 从重试面移除（应用层确定性故障不重试）——只保留网络失败与
+    // 网关类暂态 5xx（502/503/504）。
+    [undefined, 502, 503, 504].map(status => ({ method, status })),
   ))('$method retries $status / network failure once after 1s', async ({ method, status }) => {
     adapter.mockImplementationOnce(failure(status));
     const request = (client as unknown as (config: { url: string; method: string; adapter: typeof adapter }) => Promise<unknown>)({ url: '/tasks', method, adapter });
@@ -67,7 +69,9 @@ describe('DR-06 safe-method retries', () => {
     expect(message.error).not.toHaveBeenCalled();
   });
 
-  it.each([400, 403, 404, 409, 429])('GET does not retry HTTP %i', async (status) => {
+  // F-41：500 是应用层确定性故障（如深链坏 id 的 DB cast），重试零收益纯翻倍
+  // 请求与 toast——移出重试面；429 是限流信号，尊重之。两者都不重试。
+  it.each([400, 403, 404, 409, 429, 500])('GET does not retry HTTP %i', async (status) => {
     adapter.mockImplementation(failure(status));
     // DUP-TOAST：拦截器对这些状态码弹过 toast，reject 值带 __toastedByClient
     // 标——页面 catch 的 showApiError 兜底据此去重，不再二次弹错。

@@ -343,10 +343,18 @@ client.interceptors.response.use(
     // TanStack Query 侧已显式 retry:false（见 api/queryClient.ts），避免"axios 1 次 ×
     // Query 2 次"叠加成一次失败 6 发请求 + 多条重复 toast。
     // Retry only safe methods: a failed response may still have caused side effects.
+    //
+    // F-41（UIUX 审计 P1-2）：重试面收窄——只有**暂时性**故障值得自动重试：
+    // 网络层失败（无响应）与网关类 5xx（502/503/504）。500 是应用层确定性故障
+    // （真机实测：深链坏 id 时详情页 5 个并发 GET 全 500，旧实现 1s 后整组重放
+    // ——10 秒窗口 10 发；重试一次同样的 bug 零收益、纯翻倍请求与 toast）。
+    // 429 是服务端限流信号，尊重之（本层 1s 固定退避对限流过猛，交由上层决策）。
+    // 4xx 一律不重试（不变，确定性失败）。
     if (!originalRequest._retryCount) originalRequest._retryCount = 0;
     const status = err.response?.status;
     const isSafeMethod = ['get', 'head', 'options'].includes((originalRequest.method || 'get').toLowerCase());
-    if (isSafeMethod && originalRequest._retryCount < 1 && (!err.response || (status >= 500 && status < 600))) {
+    const isTransient = !err.response || status === 502 || status === 503 || status === 504;
+    if (isSafeMethod && originalRequest._retryCount < 1 && isTransient) {
       originalRequest._retryCount++;
       await new Promise<void>(resolve => setTimeout(resolve, 1000));
       return _client(originalRequest);

@@ -51,7 +51,7 @@ import {
 } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
-import { getErrMsg, showApiError } from '../utils/error';
+import { getErrMsg, isNotFoundError, showApiError } from '../utils/error';
 // UX-06：触发方式展示标签唯一事实源（此前直接渲染裸枚举）。
 import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
@@ -519,6 +519,16 @@ export default function TaskDetailPage() {
   if (taskLoading && !task) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   // U7: 请求失败 ≠ 任务不存在——错误态给重试入口，数据确空才显示 Empty
   if (!task && taskError) {
+    // F-41（UIUX 审计 P1-2）：确定性 404（id 不存在/已删除）与 5xx 分流——
+    // 404 走「任务不存在」空态（复用下方 notFound 组件与出口；重试不可能
+    // 成功，不该渲染「加载失败 + 重试」）；5xx/网络错误维持错误态 + 重试。
+    if (isNotFoundError(taskError)) {
+      return (
+        <Empty description={t('taskDetail.notFound')} style={{ padding: 80 }}>
+          <Button onClick={() => nav('/tasks')}>{t('taskDetail.backToList')}</Button>
+        </Empty>
+      );
+    }
     return (
       <Result
         status="error"
