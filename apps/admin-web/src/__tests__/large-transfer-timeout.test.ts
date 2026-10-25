@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { client } from '../api/client';
 import { executorPackagesApi } from '../api/executor-packages';
 import { registryApi } from '../api/registry';
+import { applicationsApi } from '../api/applications';
 
 vi.mock('../api/client', () => ({
   client: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -53,6 +54,14 @@ describe('F-5: 大文件传输显式 timeout:0', () => {
 
   it('registryApi.uploadPypiPackage → timeout 0', async () => {
     await registryApi.uploadPypiPackage(new FormData());
+    const config = mockedClient.post.mock.calls[0]![2] as { timeout?: number };
+    expect(config.timeout).toBe(0);
+  });
+
+  it('applicationsApi.upload（应用包，F-5b 同型遗留）→ timeout 0', async () => {
+    // 后端 FileInterceptor 上限 200MB（application.controller.ts），与执行器包
+    // 同为「弱网 30s 必掐断」的大传输路径。
+    await applicationsApi.upload(new FormData());
     const config = mockedClient.post.mock.calls[0]![2] as { timeout?: number };
     expect(config.timeout).toBe(0);
   });

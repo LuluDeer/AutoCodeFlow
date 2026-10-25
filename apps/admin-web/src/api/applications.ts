@@ -243,7 +243,11 @@ export const applicationsApi = {
       packageFileWillBeDeleted: boolean;
     }>(`/applications/${id}/removal-impact`),
   upload: (formData: FormData) =>
-    client.post<Application>('/applications/upload', formData),
+    // F-5b（UIUX 审计 P2-4 同型遗留，对齐 F-5 的 executor-packages/registry 处置）：
+    // 应用包上传上限 200MB（后端 FileInterceptor），弱网下远超全局 30s——axios
+    // 掐断报「网络错误」而服务端可能仍在接收，用户重传会产生重复/僵尸包。
+    // 显式 timeout:0 不限时，由上传中的 loading 态 + 用户手动取消兜底。
+    client.post<Application>('/applications/upload', formData, { timeout: 0 }),
   webhook: (payload: unknown) => client.post<{ ok: boolean }>('/applications/webhook', payload),
   syncTasks: (id: string) =>
     client.post<{ ok: boolean; registeredCount: number }>(`/applications/${id}/sync-tasks`),
