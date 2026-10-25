@@ -115,6 +115,22 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:3105',
         changeOrigin: true,
+        // F-40（UIUX 审计 P1-1）：demo 栈 admin-api 的 CORS 白名单钉死在
+        // 8088（docker-compose.demo.yml：CORS_ALLOWED_ORIGINS=
+        // http://localhost:8088,http://127.0.0.1:8088）。浏览器对**同源**
+        // POST/PUT/PATCH/DELETE 也会携带 Origin 头（此处即 http://127.0.0.1:5176），
+        // 该头被代理原样透传 → 命中白名单外的 origin → 后端整链 500
+        // （连登录 POST 都失败，dev 端口下全站写链路不可用）。
+        // 改写为白名单值后，同源请求对后端而言与 8088 部署形态一致；
+        // 不带 Origin 的请求（同源 GET / curl）原样透传，不受影响。
+        // 仅 dev server 生效（server.proxy 不参与构建产物）。
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            if (proxyReq.getHeader('origin')) {
+              proxyReq.setHeader('Origin', 'http://127.0.0.1:8088');
+            }
+          });
+        },
       },
     },
   },
