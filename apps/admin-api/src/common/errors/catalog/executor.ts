@@ -116,6 +116,19 @@ export const EXECUTOR_CODES = {
     zh: "commandId 与 type 为必填",
     en: "commandId and type are required",
   },
+  /**
+   * P2-4（2026-10-26 第三轮审计）：命令结果上报的**归属不匹配**——acf:cmdmeta
+   * 记录的命令目标行（executorId）与本次上报的定位行不一致（或同址多行歧义态
+   * 下无法定位到行）。任意执行器可对任意 commandId 回报是纵深缺口：一条伪造的
+   * ok=false 会把别人的部署行收成 FAILED。状态码 403（permission 档）：
+   * 凭据有效但「这条命令不是你的」——与 INVALID_EXECUTOR_TOKEN（凭据本身错，
+   * 401）区分开。
+   */
+  EXECUTOR_COMMAND_RESULT_NOT_OWNED: {
+    status: 403,
+    zh: "命令「{{commandId}}」不属于该执行器，拒绝其结果上报",
+    en: 'Command "{{commandId}}" is not owned by this executor; result report rejected',
+  },
   EXECUTOR_ARTIFACT_MISSING: {
     status: 404,
     zh: "未找到 executor-node.tar.gz；请运行 scripts/bundle-executor-artifact.sh 并把产物放到 EXECUTOR_ARTIFACT_DIR（默认 <cwd>/artifacts）下",

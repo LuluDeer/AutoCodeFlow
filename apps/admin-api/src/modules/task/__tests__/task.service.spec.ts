@@ -6103,6 +6103,32 @@ describe("TaskService (__tests__)", () => {
       expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
         "e1",
         "10.0.0.9:8002",
+        // P2-3：本夹具的行没有 executorId（存量行形态）——第三参 undefined，
+        // 上层回落 address 寻路并 warn。
+        undefined,
+      );
+    });
+
+    // P2-3（2026-10-26 第三轮审计）：kill 透传执行行的 executorId（行身份）——
+    // pull 同址多行时 kill 必须按行寻路，仅按 address 会进别行命令队列而静默
+    // miss（stale sweep 防双跑的关键防线）。存量行（无 executorId）走上一条
+    // 用例的形态：第三参 undefined，上层回落 address 寻路 + warn。
+    it("P2-3: kill notification passes the execution's executorId through (改动5 + P2-3)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        executorId: "row-b",
+        startTime: new Date(Date.now() - 1000),
+      };
+      givenOwnedExecution(exec);
+
+      await service.killExecution("e1", ADMIN_USER);
+
+      expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
+        "e1",
+        "10.0.0.9:8002",
+        "row-b",
       );
     });
 

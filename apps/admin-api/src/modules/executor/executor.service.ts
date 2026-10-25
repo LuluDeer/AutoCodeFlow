@@ -1564,16 +1564,35 @@ export class ExecutorService implements OnModuleInit {
    *
    * ARCH-33（ADR-016）：pull 执行器（NAT 内）改走命令队列入队——此前本方法
    * 对 NAT 地址必然超时，而它是 stale sweep 的「防双跑」关键路径。
+   *
+   * P2-3（2026-10-26 第三轮审计）：新增可选 `executorId`（执行行快照的行身份）。
+   * pull 模式允许同址多行并存（ADR-017 §5），仅按 address 寻路时
+   * resolveExecutorTransport 无 ORDER BY、任一行获胜——kill 会进**别行**的命令
+   * 队列，错误机器查无此执行且不留任何痕迹，而这是 stale sweep 防双跑的关键
+   * 防线。透传 executorId 后走既有按行解析分支（executorId 命中即精确定位）；
+   * executorId 为空（迁移 0055 前的存量行）回落 address 寻路并 warn（可能与
+   * 同址兄弟行错配——legacy 行本就无法更精确）。
    */
   async notifyExecutorKill(
     executionId: string,
     executorAddress?: string | null,
+    executorId?: string | null,
   ): Promise<void> {
     if (!executorAddress) return;
     try {
       // ARCH-33: pull 执行器入队即返回（best-effort 语义不变——入队失败回退
       // push，下方 catch 仍把任何异常收敛为 warn）。
+      if (!executorId) {
+        // P2-3：历史行没有行身份——寻路只能按 address（多行同址时可能进错行
+        // 的队列）。warn 让「kill 静默 miss」这类排查有起点，而不是无声失败。
+        this.logger.warn(
+          `Kill notification for execution ${executionId} carries no executorId — ` +
+            `routing by address "${executorAddress}" only (legacy pre-ADR-017 row); ` +
+            `with multiple rows sharing this address the command may land on a sibling row`,
+        );
+      }
       const routed = await this.deliverControlCommand({
+        executorId,
         address: executorAddress,
         type: "kill-execution",
         payload: { executionId },
@@ -1609,6 +1628,32 @@ export class ExecutorService implements OnModuleInit {
       this.logger.warn(
         `Failed to notify executor ${executorAddress} to kill execution ${executionId}: ${message}`,
       );
+    }
+  }
+
+  /**
+   * P2-2（2026-10-26 第三轮审计）：撤销某部署的全部在途 pull 命令（stuck
+   * sweep 判 FAILED 时的收口动作，见 ExecutorPullService.cancelCommandsForDeployment）。
+   *
+   * 本包装的职责只有两条：① pullService 未装配（部分单测环境）时静默跳过；
+   * ② 把任何 Redis 故障收敛为 warn——**撤销失败绝不影响判败主链**（部署行
+   * 已 FAILED，撤销只是收掉「≤30min 内命令被迟到的执行器执行」的尾巴；TTL
+   * 过后执行器侧按 issuedAt 丢弃，是既有兜底）。
+   *
+   * 返回打标记的命令数（0 = 无在途命令 / pullService 缺席 / 失败），排障用。
+   */
+  async recallDeploymentCommands(deploymentId: string): Promise<number> {
+    if (!deploymentId) return 0;
+    if (!this.pullService) return 0;
+    try {
+      return await this.pullService.cancelCommandsForDeployment(deploymentId);
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Failed to recall in-flight pull commands for deployment ${deploymentId} ` +
+          `(the command will be discarded by the executor once its TTL lapses): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
     }
   }
 

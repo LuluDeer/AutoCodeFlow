@@ -163,6 +163,8 @@ describe("AppDeploymentService 部署事件（R4 §4.1A）", () => {
           `${addr.startsWith("http://") || addr.startsWith("https://") ? "" : "http://"}${addr}/${p}`,
       ),
       deliverControlCommand: jest.fn().mockResolvedValue({ delivered: "push" }),
+      // P2-2：判败 sweep 的撤令包装（detectStuckDeployments 调用；默认 0 = 无在途命令）
+      recallDeploymentCommands: jest.fn().mockResolvedValue(0),
       // R3-A（§4.3）：getReleases 的设备徽标聚合源（本 spec 无设备事实用例）
       getAppVersionFacts: jest.fn().mockResolvedValue([]),
     };
@@ -417,6 +419,8 @@ describe("AppDeploymentService 部署事件（R4 §4.1A）", () => {
     await service.detectStuckDeployments();
 
     expect(eventRepo.insert).not.toHaveBeenCalled();
+    // P2-2：未命中（并发已推进/快照后消失）→ 无行被判败，撤令同样不发生。
+    expect(executorService.recallDeploymentCommands).not.toHaveBeenCalled();
   });
 
   // ----------------------------------------------------------------

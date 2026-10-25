@@ -7,11 +7,14 @@ import {
   Ip,
   Param,
   Post,
+  Res,
   UploadedFile,
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
+// P3-1（2026-10-26 第三轮审计）：长轮询断连探针需要 passthrough Response。
+import type { Response } from "express";
 import { ConfigService } from "@nestjs/config";
 import {
   IsArray,
@@ -400,6 +403,10 @@ export class SopCollabController {
   async poll(
     @Body() body: AgentCollabPollDto,
     @Headers("authorization") auth: string,
+    // P3-1（2026-10-26 第三轮审计）：passthrough Res——只挂 close 监听做断连
+    // 探针，响应仍由框架序列化。此前断连后循环仍每 500ms 查一次 DB 直到 25s
+    // 窗口耗尽（纯浪费的查询洪泛；弹性扩容期的 DB 压力放大器）。
+    @Res({ passthrough: true }) res?: Response,
   ) {
     const executor = await this.authenticate(
       body?.address,
@@ -412,8 +419,21 @@ export class SopCollabController {
         ? Math.min(requested, POLL_MAX_WAIT_MS)
         : 0;
     const start = Date.now();
+    // P3-1：断连探针。'close' 在执行器提前断开时触发；destroyed/writableEnded
+    // 兜住「监听挂上前已断」与「响应已写出」两态。res 缺省（不经 HTTP 的单测）
+    // → 恒 false = 不感知断连，行为与引入前一致。
+    let clientGone = false;
+    res?.on("close", () => {
+      clientGone = true;
+    });
+    const isClientGone = () =>
+      clientGone || (res ? res.destroyed || res.writableEnded : false);
 
     for (;;) {
+      // P3-1：断连即停——不再发起下一轮 DB 查询（结果也送不出去了）。
+      if (isClientGone()) {
+        return { items: [], sopPolicy: this.sopPolicy() };
+      }
       const items = await this.sops.pollPending({
         executorId: executor.id,
         // B-5：按 id 重发的数组形态必须透传（DTO 声明支持、service 支持）——

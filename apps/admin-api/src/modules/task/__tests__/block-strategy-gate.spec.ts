@@ -191,7 +191,13 @@ describe("applyBlockStrategyGate", () => {
       }),
     );
     expect(hooks.releaseSlot).toHaveBeenCalledWith(row.executorAddress);
-    expect(hooks.notifyKill).toHaveBeenCalledWith(row.id, row.executorAddress);
+    // P2-3：gate 透传被覆盖行的 executorId（本 harness 的行未设该字段 → null，
+    // 上层按 address 回落寻路）。
+    expect(hooks.notifyKill).toHaveBeenCalledWith(
+      row.id,
+      row.executorAddress,
+      null,
+    );
   });
 
   it("cover_early：同参 WAITING（无 executorAddress）→ 只取消不 kill", async () => {
@@ -217,6 +223,32 @@ describe("applyBlockStrategyGate", () => {
     expect(mockedTransition).toHaveBeenCalled();
     expect(hooks.releaseSlot).not.toHaveBeenCalled();
     expect(hooks.notifyKill).not.toHaveBeenCalled();
+  });
+
+  // P2-3（2026-10-26 第三轮审计）：gate 透传被覆盖行的 executorId（行身份）——
+  // pull 同址多行时 kill 必须按行寻路进正确的命令队列。
+  it("P2-3：COVER_EARLY kill 下发透传被覆盖行的 executorId", async () => {
+    const row = activeRow({ executorId: "row-b" });
+    const repo = makeRepo([row]);
+    const hooks = makeHooks();
+    mockedTransition.mockResolvedValue({
+      rows: [{ id: row.id, executorAddress: row.executorAddress }],
+      affected: 1,
+      transitioned: true,
+    });
+    await expect(
+      applyBlockStrategyGate(
+        baseTask(BlockStrategy.COVER_EARLY),
+        { orderId: "A" },
+        repo,
+        hooks,
+      ),
+    ).resolves.toBe("proceed");
+    expect(hooks.notifyKill).toHaveBeenCalledWith(
+      row.id,
+      row.executorAddress,
+      "row-b",
+    );
   });
 
   it("cover_early：竞态下终态门命中 0 行 → warn 不 kill，仍放行", async () => {

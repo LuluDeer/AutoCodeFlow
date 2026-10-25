@@ -76,6 +76,10 @@ import { ExecutorPullDto } from "./dto/executor-pull.dto";
 // 运行时 @Body() 仍为内联类型——避免 forbidNonWhitelisted 误杀 executor 协议字段）。
 import { ExecutorRegisterDto } from "./dto/executor-register.dto";
 import { ExecutorHeartbeatDto } from "./dto/executor-heartbeat.dto";
+// P2-4（2026-10-26 第三轮审计）：command-result 请求体 class DTO——这个端点
+// **运行时**也换 class（白名单校验生效），与 register/heartbeat 的文档型豁免
+// 不同（本端点字段集合是执行器上报面的闭集，见 DTO 头注）。
+import { ExecutorCommandResultDto } from "./dto/executor-command-result.dto";
 // F-53（UIAUDIT P2-2）：rotate-token / DELETE 的人操作面可选 reason class DTO
 // （机器协议内联体仍是 PK-19 有意豁免，见各端点头注）。
 import { ExecutorActionReasonDto } from "./dto/executor-action-reason.dto";
@@ -95,6 +99,14 @@ import {
 } from "./protocol-compat.util";
 // ARCH-32: pull 派发长轮询端点（ADR-015）
 import { ExecutorPullService } from "./executor-pull.service";
+
+/**
+ * P2-4：命令元数据形态（acf:cmdmeta 读面）——直接复用 ExecutorPullService
+ * 的返回类型（单一事实源，meta 形状演进时本文件零改动）。
+ */
+type ExecutorCommandMeta = Awaited<
+  ReturnType<ExecutorPullService["getCommandMeta"]>
+>;
 // E-1（中台↔执行器深度审查）：pull 配置热更新——configVersion 指纹 + 配置拉取端点。
 import {
   buildExecutorConfigPayload,
@@ -132,6 +144,17 @@ import {
   ExecutorRuntimeConfigDto,
   ExecutorTagsDto,
 } from "../../common/dto/misc-2xx-response.dto";
+
+/**
+ * P3-2（2026-10-26 第三轮审计）：pull 长轮询等待窗口的**硬帽**（55s）。
+ *
+ * `executor.pullWaitMs` 是运维可调配置，此前只按它钳位——一个 >60s 的配置会
+ * 让长轮询打穿反代通用 60s 读超时（请求被 504/断流，执行器侧表现为随机失败）。
+ * 55s 与 dto/executor-pull.dto.ts `waitMs` 的 Swagger 承诺（「上限 55s」）及
+ * sop-collab 控制器的 POLL_MAX_WAIT_MS=25s 同一纪律：服务端阻塞窗口必须 <
+ * 反代读超时。Math.min 三钳：min(请求值, 配置值, 55s)。
+ */
+const PULL_WAIT_HARD_CAP_MS = 55_000;
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -520,8 +543,8 @@ export class ExecutorController {
     @Body()
     body: {
       address: string;
-      // 客户端期望的等待窗口；服务端按 EXECUTOR_PULL_WAIT_MS 钳位
-      // （上限 55s，低于反代通用 60s 读超时）。
+      // 客户端期望的等待窗口；服务端按 EXECUTOR_PULL_WAIT_MS 钳位，并有
+      // 55s 硬帽（P3-2，见 PULL_WAIT_HARD_CAP_MS）。
       waitMs?: number;
       // ARCH-33（ADR-016）：执行器当前空闲槽位数。缺省 = 未上报（旧执行器）
       // → 按「有空槽」处理，任务照常出队，行为与今日逐字节一致。
@@ -541,6 +564,11 @@ export class ExecutorController {
       executorId?: string | null;
     },
     @Headers("authorization") auth: string,
+    // P3-1（2026-10-26 第三轮审计）：passthrough Res——只挂 close 监听做断连
+    // 探针，响应仍由框架按返回值序列化（passthrough 语义）。此前长轮询不感知
+    // 断连：执行器断开后服务端仍每 500ms RPOP 到 waitMs 耗尽，窗口末端弹出的
+    // 任务投给死 socket 必然丢失，还把队列里本可活到下一轮的载荷提前吞掉。
+    @Res({ passthrough: true }) res?: Response,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
     // 工单 11（ADR-017 决策 §3 补全）：认证与行定位一次成型。
@@ -566,6 +594,16 @@ export class ExecutorController {
       // 保留既有语义：认证通过但行仍无法唯一判定 → 404（执行器据此重注册/升级）。
       throw new AppError("EXECUTOR_NOT_FOUND");
     }
+    // P3-1：断连探针。'close' 在连接提前断开（执行器超时放弃/网络抖动）时触发；
+    // destroyed/writableEnded 兜住「监听挂上前就已断」与「框架已写完响应」两态。
+    // res 缺省（直接 new Controller 的单测不经 HTTP）→ 探针恒 false = 不感知
+    // 断连，行为与引入前一致。
+    let clientGone = false;
+    res?.on("close", () => {
+      clientGone = true;
+    });
+    const isClientGone = () =>
+      clientGone || (res ? res.destroyed || res.writableEnded : false);
     const maxWait =
       this.configService.get<number>("executor.pullWaitMs") ?? 25000;
     // SEC-PULL-01：原实现是 Math.max(0, Math.min(Number(body.waitMs ?? maxWait), maxWait))。
@@ -575,10 +613,15 @@ export class ExecutorController {
     // `deadline = Date.now() + NaN`，而 `Date.now() >= NaN` 恒为 false，
     // while(true) 永不 break —— 请求被永久挂住（每次还占一个 Redis 往返），
     // 属可远程触发的资源耗尽。此处显式做有限性校验，非法值回落到 maxWait。
+    //
+    // P3-2：55s **硬帽**（PULL_WAIT_HARD_CAP_MS）——executor.pullWaitMs 是运维
+    // 可调配置，仅按它钳位时一个 >60s 的配置会打穿反代 60s 读超时（长轮询被
+    // 反代 504/断流）。硬帽与 dto/executor-pull.dto.ts 的 Swagger 承诺
+    // （「上限 55s」）对齐，Math.min 双钳：min(请求值, 配置值, 55s)。
     const requestedWait = Number(body.waitMs ?? maxWait);
     const waitMs = Number.isFinite(requestedWait)
-      ? Math.max(0, Math.min(requestedWait, maxWait))
-      : maxWait;
+      ? Math.max(0, Math.min(requestedWait, maxWait, PULL_WAIT_HARD_CAP_MS))
+      : Math.min(maxWait, PULL_WAIT_HARD_CAP_MS);
     // ARCH-33: 任务出队门禁。缺省（未上报）按「有槽位」放行——存量旧执行器
     // 不发该字段，行为必须与今日一致。显式上报 0/负数 = 满载：只发命令。
     const wantTask =
@@ -592,7 +635,11 @@ export class ExecutorController {
     const wantCommands =
       isPull && supportsControlPlane(executor.protocolVersion);
     const { task: payload, commands } = isPull
-      ? await this.pullService.pullWork(executor.id, waitMs, { wantTask })
+      ? await this.pullService.pullWork(executor.id, waitMs, {
+          wantTask,
+          // P3-1：断连探针下沉到取件循环（弹出任务前检查，断连即停）。
+          isConnected: isClientGone,
+        })
       : { task: null, commands: [] };
     return {
       task: payload ?? null,
@@ -617,6 +664,8 @@ export class ExecutorController {
   // 鉴权同款（per-executor 令牌 + address 身份键）。best-effort 语义：中台侧
   // 只记日志 + 写短期结果键（排障读面），**不是**业务终态的事实源——deploy 由
   // /app-deployments/heartbeat 收敛，update-package 由 push-result 收敛。
+  // P2-4（2026-10-26 第三轮审计）：内联 body 换 class DTO（ExecutorCommandResultDto
+  // ——error ≤2000 / commandId UUID 形态，恢复全局管道白名单）+ cmdmeta 归属绑定。
   @WriteGuard("executor", {
     scope: "token",
     reason: "执行器上报 pull 控制命令的执行结果（ARCH-33，机器面非用户会话）",
@@ -628,35 +677,65 @@ export class ExecutorController {
       "ARCH-33：pull 模式执行器上报其从 pull 响应中领取的控制命令（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）的执行结果。属尽力而为——业务的终态仍通过各自的回调收敛。",
     summary: "上报 pull 控制命令的执行结果",
   })
+  @ApiBody({ type: ExecutorCommandResultDto })
   @ApiOkResponse({ type: ExecutorCommandResultResponseDto })
+  @ApiResponse({ status: 400, description: "载荷形态非法（DTO 白名单校验）" })
   @ApiResponse({ status: 401, description: "执行器令牌无效" })
+  @ApiResponse({ status: 403, description: "命令不属于该执行器（跨行回报）" })
   async reportCommandResult(
     @Body()
-    body: {
-      commandId: string;
-      address: string;
-      type: string;
-      ok: boolean;
-      status?: number;
-      error?: string | null;
-      durationMs?: number;
-      // ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同地址
-      // 多行并存时用于唯一定位本行（ADR-017 §5）。
-      deviceFingerprint?: string | null;
-    },
+    body: ExecutorCommandResultDto,
     @Headers("authorization") auth: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(
+    // P2-4：认证与行定位一次成型——authenticateMachineRequest 是
+    // validateTokenByAddress 的超集（auth 判定语义逐字节一致，额外返回按
+    // 指纹/地址定位到的行），归属比对需要「回报行」的身份。
+    // 共享令牌 + 同址多行歧义时 executor 为 null（ok 仍可为 true）——该形态
+    // 在下方归属比对里 fail-closed。
+    const authz = await this.svc.authenticateMachineRequest(
       body.address,
       token,
-      body.deviceFingerprint,
+      { deviceFingerprint: body.deviceFingerprint },
     );
-    if (!isValid) {
+    if (!authz.ok) {
       throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     if (!body.commandId || !body.type) {
       throw new AppError("EXECUTOR_COMMAND_RESULT_INVALID");
+    }
+    // P2-4（纵深缺口收口）：归属比对——cmdmeta 记录了命令的目标行（P2-4 起
+    // 入队时增记 executorId）。任意执行器可对任意 commandId 回报的旧缺口在
+    // 此关上：一条伪造的 ok=false 能把别人的部署行收成 FAILED。
+    // 兼容：meta 缺失（存量命令 / Redis 抖动）→ 放行 + warn（升级窗口内
+    // 30min TTL 的存量 meta 无 executorId，同走放行分支——语义一致）。
+    let meta: ExecutorCommandMeta | null = null;
+    try {
+      meta = (await this.pullService?.getCommandMeta(body.commandId)) ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to resolve command meta for ${body.commandId} (ownership check skipped; the deployment row will ` +
+          `converge through the stuck sweep): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (meta && meta.executorId) {
+      const reporter = authz.executor;
+      if (!reporter || reporter.id !== meta.executorId) {
+        this.logger.warn(
+          `Command result for ${body.commandId} (${body.type}) reported by ` +
+            `${reporter?.id ?? "<unresolved row>"} @ ${body.address} but targeted at executor ` +
+            `${meta.executorId} — rejecting cross-row report`,
+        );
+        throw new AppError("EXECUTOR_COMMAND_RESULT_NOT_OWNED", {
+          commandId: body.commandId,
+        });
+      }
+    } else if (!meta) {
+      this.logger.warn(
+        `Command result for ${body.commandId} (${body.type}) has no command meta ` +
+          `(legacy command issued before ownership binding, or Redis hiccup) — ` +
+          `accepting without ownership check`,
+      );
     }
     if (body.ok) {
       this.logger.log(
@@ -681,25 +760,18 @@ export class ExecutorController {
     });
     // P0-4（生产报告 2026-10-22 §4.4）：失败结果必须**推进业务行**，不能只写
     // 日志 + 600s 的 Redis 结果键。执行器上报里只有 commandId，部署行 id 来自
-    // 入队时记的旁路元数据（acf:cmdmeta:{id}）。best-effort：元数据缺失/Redis
-    // 抖动时静默跳过，收敛退回到既有的卡死扫描（与引入本机制前一致）。
+    // 入队时记的旁路元数据（acf:cmdmeta:{id}）——上方归属比对已取回，此处
+    // 直接复用（省一次 Redis GET）。best-effort：元数据缺失时静默跳过，收敛
+    // 退回到既有的卡死扫描（与引入本机制前一致）。
     if (body.ok !== true) {
-      try {
-        const meta = await this.pullService?.getCommandMeta(body.commandId);
-        if (meta && meta.type === "deploy" && meta.deploymentId) {
-          this.svc.publishControlCommandFailure({
-            commandId: body.commandId,
-            type: meta.type,
-            address: body.address,
-            deploymentId: meta.deploymentId,
-            error: body.error ?? null,
-          });
-        }
-      } catch (err) {
-        this.logger.warn(
-          `Failed to resolve command meta for ${body.commandId} (the deployment row will ` +
-            `converge through the stuck sweep): ${err instanceof Error ? err.message : String(err)}`,
-        );
+      if (meta && meta.type === "deploy" && meta.deploymentId) {
+        this.svc.publishControlCommandFailure({
+          commandId: body.commandId,
+          type: meta.type,
+          address: body.address,
+          deploymentId: meta.deploymentId,
+          error: body.error ?? null,
+        });
       }
     }
     return { ok: true };

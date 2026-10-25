@@ -1050,10 +1050,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           batch.map(async ({ exec, task }) => {
             // kill 必须在 re-enqueue 之前：防"执行器谎报/进程僵死但仍存活"场景下
             // 原进程与新执行双跑。best-effort——离线/404/超时不阻塞重试。
+            // P2-3（2026-10-26 第三轮审计）：透传行身份 exec.executorId——这是
+            // stale sweep 防双跑的关键防线，pull 同址多行时按 address 寻路会进
+            // 别行的命令队列（任一行获胜），错误机器查无此执行且无任何痕迹。
+            // 存量行 executorId 为空 → 上层回落 address 寻路并 warn。
             try {
               await this.executorService.notifyExecutorKill(
                 exec.id,
                 exec.executorAddress,
+                exec.executorId,
               );
             } catch (err: unknown) {
               this.logger.warn(
@@ -1832,8 +1837,13 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         {
           warn: (message) => this.logger.warn(message),
           releaseSlot: (address) => this.releaseExecutorSlot(address),
-          notifyKill: (executionId, address) =>
-            this.executorService.notifyExecutorKill(executionId, address),
+          notifyKill: (executionId, address, executorId) =>
+            // P2-3: 透传被覆盖行的行身份（pull 同址多行时按行寻路 kill）。
+            this.executorService.notifyExecutorKill(
+              executionId,
+              address,
+              executorId,
+            ),
           onDiscardSkip: () =>
             this.schedulerMetrics.recordTriggerSkippedBlockStrategy(),
         },

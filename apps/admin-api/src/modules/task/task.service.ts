@@ -2803,8 +2803,13 @@ export class TaskService {
           warn: (message) => this.logger.warn(message),
           releaseSlot: (address) =>
             releaseExecutorSlotByAddress(this.dataSource, address),
-          notifyKill: (executionId, address) =>
-            this.executorService.notifyExecutorKill(executionId, address),
+          notifyKill: (executionId, address, executorId) =>
+            // P2-3: 透传被覆盖行的行身份（pull 同址多行时按行寻路 kill）。
+            this.executorService.notifyExecutorKill(
+              executionId,
+              address,
+              executorId,
+            ),
         },
       );
       if (gateOutcome === "skip") {
@@ -5220,16 +5225,23 @@ export class TaskService {
    * P2: HTTP 实现收敛至 ExecutorService.notifyExecutorKill（scheduler stale
    * sweep re-enqueue 前的 kill 通知共用，避免两份逻辑）。本包装保留调用点
    * 契约：空地址跳过、异常兜底吞掉。
+   *
+   * P2-3（2026-10-26 第三轮审计）：透传执行行的 executorId（行身份）——pull
+   * 同址多行时 kill 必须按行寻路（进别行命令队列 = 静默 miss，而这是 stale
+   * sweep 防双跑的关键防线）。存量行（迁移 0055 前派发）executorId 为空，
+   * 上层回落 address 寻路 + warn，行为与引入前一致。
    */
   private async notifyExecutorKill(
     executionId: string,
     executorAddress?: string | null,
+    executorId?: string | null,
   ): Promise<void> {
     if (!executorAddress) return;
     try {
       await this.executorService.notifyExecutorKill(
         executionId,
         executorAddress,
+        executorId,
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -6267,7 +6279,13 @@ export class TaskService {
     await this.releaseExecutorSlot(executorAddress);
     // 改动5: 通知执行器真正终止进程（best-effort；地址为空则跳过，
     // 任何失败都在 notifyExecutorKill 内被吞掉）。
-    await this.notifyExecutorKill(execId, executorAddress);
+    // P2-3: 透传行身份 execution.executorId（findOne 快照；存量行为 null →
+    // 上层回落 address 寻路）——pull 同址多行时 kill 必须送达正确行。
+    await this.notifyExecutorKill(
+      execId,
+      executorAddress,
+      execution.executorId,
+    );
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };
   }

@@ -375,6 +375,44 @@ describe("SopCollabController · poll（拉模式 + sopPolicy 下发）", () => 
     expect(out.sopPolicy.allowedProfiles).toEqual(["minimal", "standard"]);
     expect(out.sopPolicy.permissionPolicy).toBe("standard");
   });
+
+  // P3-1（2026-10-26 第三轮审计）：长轮询断连感知——断连后循环立即退出，
+  // 不再每 500ms 查一次 DB 直到 25s 窗口耗尽（结果也送不出去了）。
+  it("P3-1：mock res close（destroyed）→ 循环提前退出，不再发起下一轮 DB 查询", async () => {
+    const h = harness();
+    h.sops.pollPending.mockResolvedValue([]);
+    // destroyed=true 等价于 close 已触发后的连接状态（探针的另一条真值源）。
+    const destroyedRes = {
+      on: jest.fn(),
+      destroyed: true,
+      writableEnded: false,
+    };
+
+    const out = await h.ctl.poll(
+      { address: "x", waitMs: 25_000 } as never,
+      h.auth,
+      destroyedRes as never,
+    );
+
+    // 提前退出：首轮取件前探活即失败 → 一次 DB 查询都不发起
+    // （若无断连感知会每 500ms 查满 25s = 50 次），返回空 items。
+    expect(h.sops.pollPending).not.toHaveBeenCalled();
+    expect(out.items).toEqual([]);
+    expect(out.sopPolicy).toEqual({
+      permissionPolicy: "standard",
+      allowedProfiles: ["minimal", "standard"],
+    });
+  });
+
+  it("P3-1：res 未提供（不经 HTTP 的单测）→ 行为与引入前一致", async () => {
+    const h = harness();
+    h.sops.pollPending.mockResolvedValueOnce([{ id: "asg-9" }]);
+    const out = await h.ctl.poll(
+      { address: "x", waitMs: 25_000 } as never,
+      h.auth,
+    );
+    expect(out.items).toEqual([{ id: "asg-9" }]);
+  });
 });
 
 describe("SopCollabController · capability（覆盖式上报入口）", () => {

@@ -3050,6 +3050,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       if (!affectedIds.has(d.id)) continue; // A-9: 未被本次 UPDATE 命中（并发已推进）→ 不动快照
       const previousStatus = d.status; // R4：扫死前的在途状态进事件 detail
       d.status = DeploymentStatus.FAILED;
+      // P2-2（2026-10-26 第三轮审计）：判败即撤令——行进 FAILED 后 in-flight
+      // 槽位释放、新部署放行，而该部署的 pull deploy 命令在命令 TTL（默认
+      // 30min）内仍滞留在执行器队列里：回归 pull 的执行器会照常执行它，给
+      // 设备装上无人跟踪的应用（终态行心跳守卫拒绝推进），还可能与新部署
+      // 叠成双进程。按 acf:cmdbydep:{deploymentId} 反向集合撤销在途命令
+      // （ExecutorService 包装层收敛 Redis 故障，best-effort 不影响判败主链；
+      // 撤销失败退回既有兜底：命令 TTL 过后执行器侧按 issuedAt 丢弃）。
+      await this.executorService.recallDeploymentCommands(d.id);
       await this.markVersionSnapshotStatus(d, "failed");
       // R4（§4.1A）：系统侧转 FAILED 也进事件流（operator=null——机器路径）。
       await this.recordDeploymentEvent({

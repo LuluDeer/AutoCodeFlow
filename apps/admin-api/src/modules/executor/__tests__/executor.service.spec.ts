@@ -2933,6 +2933,59 @@ describe("ExecutorService (__tests__)", () => {
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+
+    // P2-3（2026-10-26 第三轮审计）：pull 同址多行并存（ADR-017 §5）时，仅按
+    // address 寻路的 kill 会进别行的命令队列（resolveExecutorTransport 无
+    // ORDER BY、任一行获胜），错误机器查无此执行且无任何痕迹——而这是 stale
+    // sweep 防双跑的关键防线。透传 executorId 后走既有按行解析分支。
+    it("P2-3: executorId 在 → 按行定位 pull 命令队列（不 POST 快照地址）", async () => {
+      executorRepo.findOne.mockResolvedValueOnce({
+        id: "row-b",
+        address: "10.0.0.9:8002",
+        dispatchMode: "pull",
+        protocolVersion: 3,
+      });
+      const enqueue = jest.fn().mockResolvedValue("cmd-1");
+      // deliverControlCommand 走 enqueueExecutorCommand(executor.id, ...)，
+      // 它委托 pullService.enqueueCommand——本替身按同名方法对齐。
+      (service as unknown as { pullService: unknown }).pullService = {
+        enqueueCommand: enqueue,
+      };
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      try {
+        await service.notifyExecutorKill("e1", "10.0.0.9:8002", "row-b");
+        expect(enqueue).toHaveBeenCalledWith(
+          "row-b",
+          "kill-execution",
+          expect.objectContaining({ executionId: "e1" }),
+        );
+        // 绝不回退 push：目标行已按 id 唯一定位，快照地址是冗余出站面。
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      } finally {
+        (service as unknown as { pullService: unknown }).pullService = null;
+      }
+    });
+
+    it("P2-3: executorId 缺（存量行）→ 回落 address 寻路并 warn", async () => {
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      try {
+        await service.notifyExecutorKill("e1", "10.0.0.9:8002");
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("no executorId"),
+        );
+        // 回落路径保持既有 push 语义（地址直连）。
+        expect(mockedAxios.post).toHaveBeenCalledWith(
+          "http://10.0.0.9:8002/api/executions/e1/kill",
+          {},
+          expect.objectContaining({ timeout: 3000 }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   // SEC-SSRF-02 守卫语义：用真实实现，证明被守卫的地址确实会被拒绝、

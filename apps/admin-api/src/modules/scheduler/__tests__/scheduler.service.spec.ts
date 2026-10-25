@@ -1266,6 +1266,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "running-1",
         "host:3002",
+        // P2-3：gate 透传行身份；本夹具行未设 executorId → null（回落 address）。
+        null,
       );
       // 终态照常落库、新触发照常入队——kill 只是补充动作。
       const coverQb = execRepo.createQueryBuilder.mock.results[0].value;
@@ -1309,6 +1311,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "running-1",
         "host:3002",
+        // P2-3：gate 透传行身份；本夹具行未设 executorId → null（回落 address）。
+        null,
       );
       expect(queue.add).toHaveBeenCalled();
     });
@@ -2753,6 +2757,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "exec-crash",
         "host:3002",
+        // P2-3：stale sweep 透传行身份；存量夹具行无 executorId → undefined。
+        undefined,
       );
       expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledWith(
         task,
@@ -2885,6 +2891,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "exec-crash",
         "host:3002",
+        // P2-3：stale sweep 透传行身份；存量夹具行无 executorId → undefined。
+        undefined,
       );
       // 重试编排失败被吞掉，恢复事务仍已完成
       expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalled();
@@ -2935,6 +2943,8 @@ describe("SchedulerService", () => {
         expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
           e.id,
           e.executorAddress,
+          // P2-3：第三参为行身份（存量夹具行无 executorId → undefined）。
+          undefined,
         );
       }
     });

@@ -134,6 +134,8 @@ describe("AppDeploymentService", () => {
       | "resolveExecutorTransport"
       | "deliverControlCommand"
       | "enqueueExecutorCommand"
+      // P2-2：判败 sweep 的「撤令」包装（detectStuckDeployments 调用）
+      | "recallDeploymentCommands"
     >
   >;
 
@@ -164,6 +166,8 @@ describe("AppDeploymentService", () => {
       // ARCH-33: 默认 push——本 spec 验证的是 push 路径语义，pull 通道的
       // 行为由 control-plane 专项用例覆盖。
       ...controlPlaneMocks(),
+      // P2-2：判败 sweep 的撤令包装（默认无在途命令）。
+      recallDeploymentCommands: jest.fn().mockResolvedValue(0),
     } as unknown as typeof executorService;
 
     const module = await Test.createTestingModule({
@@ -2008,6 +2012,46 @@ describe("AppDeploymentService", () => {
       // 版本快照标记仍逐行（composite key 各异，无法并入批量 UPDATE）
       expect(versionSnapshot.status).toBe("failed");
       expect(versionRepo.save).toHaveBeenCalledWith(versionSnapshot);
+    });
+
+    // P2-2（2026-10-26 第三轮审计）：判败即撤令——行进 FAILED 后 in-flight 槽位
+    // 释放，而该部署的 pull deploy 命令在命令 TTL（≤30min）内仍会被回归 pull
+    // 的执行器执行（设备装上无人跟踪的应用 + 可能与新部署叠成双进程）。
+    it("P2-2：判败 sweep 对实际命中的行撤销在途 pull 命令（未命中行不撤）", async () => {
+      const stuckDeployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        statusMessage: null,
+        deployedVersion: "1.0.0",
+      };
+      repo.find.mockResolvedValue([stuckDeployment]);
+      repo.createQueryBuilder.mockImplementationOnce(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: 1, raw: [{ id: "deploy-1" }] }),
+      }));
+
+      await service.detectStuckDeployments();
+
+      // 只有被本次 UPDATE **实际命中**的行才撤令（A-9 同口径：并发已推进的
+      // 行不在 affectedIds 里，它的命令仍有效）。
+      expect(executorService.recallDeploymentCommands).toHaveBeenCalledWith(
+        "deploy-1",
+      );
+    });
+
+    it("P2-2：sweep 未命中任何行（无在途部署）→ 不撤令", async () => {
+      repo.find.mockResolvedValue([]);
+
+      await service.detectStuckDeployments();
+
+      expect(executorService.recallDeploymentCommands).not.toHaveBeenCalled();
     });
 
     // R6: the stuck predicate must key on updatedAt (refreshed when the row
