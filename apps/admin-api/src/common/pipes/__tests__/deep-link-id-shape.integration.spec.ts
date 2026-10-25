@@ -77,6 +77,16 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
       getExecutionLogs: jest
         .fn()
         .mockResolvedValue({ lines: [], totalLines: 0 }),
+      // F-9：写端点 :id 管道统一回归——断言「管道 400 时 service 不被触达」，
+      // 这些 jest.fn 只需存在（写入路径若被触达即为本用例要抓的回归）。
+      update: jest.fn(),
+      remove: jest.fn(),
+      trigger: jest.fn(),
+      suggestSchedule: jest.fn(),
+      updateGlue: jest.fn(),
+      pause: jest.fn(),
+      rollback: jest.fn(),
+      rollbackToVersion: jest.fn(),
     } as unknown as Record<string, jest.Mock>;
     applicationService = {
       findById: jest.fn(),
@@ -106,7 +116,16 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
         { provide: ExecutorService, useValue: executorService },
         { provide: UsersService, useValue: usersService },
         { provide: TaskTemplateService, useValue: taskTemplateService },
-        { provide: TaskWebhookService, useValue: {} },
+        // F-9：webhook 写端点（enable/rotate/disable）的 service 替身——
+        // 断言「管道 400 时不被触达」。
+        {
+          provide: TaskWebhookService,
+          useValue: {
+            enable: jest.fn(),
+            rotate: jest.fn(),
+            disable: jest.fn(),
+          },
+        },
         { provide: AuditService, useValue: { log: jest.fn() } },
         { provide: AppDeploymentService, useValue: {} },
         { provide: ConfigService, useValue: {} },
@@ -223,5 +242,94 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
     expect(res.status).toBe(400);
     expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");
     expect(res.body.message).toContain("格式非法");
+  });
+
+  // ── F-9：任务域**写端点** :id 参数统一 ParseUuidShapePipe ─────────────────
+  // 此前 update/updateGlue/remove/trigger/pause/suggest-schedule/webhook×3/
+  // rollback×2 的 :id 无管道——形态非法值直达 service → TypeORM 查 uuid 列
+  // 触发 PG 22P02（由 filter 兜底 400，但错误发生在 DB 边界）。统一管道后
+  // 在路由边界即 400，service 永不被触达。每组断言 service mock 零调用。
+  describe("F-9: 写端点 :id 形态非法 → 400 且不打 service", () => {
+    it("PATCH /tasks/999999 → 400", async () => {
+      const res = await request(app.getHttpServer())
+        .patch("/tasks/999999")
+        .send({ name: "x" });
+      expect(res.status).toBe(400);
+      expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");
+      expect(taskService.update).not.toHaveBeenCalled();
+    });
+
+    it("DELETE /tasks/999999 → 400", async () => {
+      const res = await request(app.getHttpServer()).delete("/tasks/999999");
+      expect(res.status).toBe(400);
+      expect(taskService.remove).not.toHaveBeenCalled();
+    });
+
+    it("POST /tasks/999999/trigger → 400", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/tasks/999999/trigger")
+        .send({ params: {} });
+      expect(res.status).toBe(400);
+      expect(taskService.trigger).not.toHaveBeenCalled();
+    });
+
+    it("POST /tasks/999999/suggest-schedule → 400", async () => {
+      const res = await request(app.getHttpServer()).post(
+        "/tasks/999999/suggest-schedule",
+      );
+      expect(res.status).toBe(400);
+      expect(taskService.suggestSchedule).not.toHaveBeenCalled();
+    });
+
+    it("PUT /tasks/999999/glue → 400", async () => {
+      const res = await request(app.getHttpServer())
+        .put("/tasks/999999/glue")
+        .send({ source: "print(1)" });
+      expect(res.status).toBe(400);
+      expect(taskService.updateGlue).not.toHaveBeenCalled();
+    });
+
+    it("POST /tasks/999999/pause → 400", async () => {
+      const res = await request(app.getHttpServer()).post(
+        "/tasks/999999/pause",
+      );
+      expect(res.status).toBe(400);
+      expect(taskService.pause).not.toHaveBeenCalled();
+    });
+
+    it.each(["enable", "rotate", "disable"])(
+      "POST /tasks/999999/webhook/%s → 400",
+      async (action) => {
+        const res = await request(app.getHttpServer()).post(
+          `/tasks/999999/webhook/${action}`,
+        );
+        expect(res.status).toBe(400);
+      },
+    );
+
+    it("POST /tasks/999999/rollback → 400", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/tasks/999999/rollback")
+        .send({ gitCommit: "abc" });
+      expect(res.status).toBe(400);
+      expect(taskService.rollback).not.toHaveBeenCalled();
+    });
+
+    it("POST /tasks/999999/versions/:versionId/rollback → 400", async () => {
+      const res = await request(app.getHttpServer()).post(
+        "/tasks/999999/versions/abc/rollback",
+      );
+      expect(res.status).toBe(400);
+      expect(taskService.rollbackToVersion).not.toHaveBeenCalled();
+    });
+
+    it("写端点形态合法时照常进入 service（400 只拦形态）", async () => {
+      taskService.pause.mockResolvedValueOnce({ id: TASK_UUID });
+      const res = await request(app.getHttpServer()).post(
+        `/tasks/${TASK_UUID}/pause`,
+      );
+      expect(res.status).toBe(201);
+      expect(taskService.pause).toHaveBeenCalledWith(TASK_UUID, undefined);
+    });
   });
 });

@@ -741,7 +741,8 @@ export class TaskController {
     description: "AI 推荐结果；fallback=true 表示走了启发式降级路径",
   })
   async suggestSchedule(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
   ) {
     return this.taskService.suggestSchedule(id, user);
@@ -799,7 +800,8 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async update(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: UpdateTaskDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -832,7 +834,8 @@ export class TaskController {
     },
   })
   async updateGlue(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() body: { source: string; language?: string },
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -868,7 +871,8 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async remove(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -912,7 +916,8 @@ export class TaskController {
       "触发被拒绝：已存在参数相同的活跃执行（blockStrategy=discard）",
   })
   async trigger(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: TriggerTaskDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -981,7 +986,8 @@ export class TaskController {
     description: "Webhook URL + 一次性密钥",
   })
   webhookEnable(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 webhookStatus 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1004,7 +1010,8 @@ export class TaskController {
     description: "Webhook URL + 一次性密钥",
   })
   webhookRotate(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 webhookStatus 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1027,7 +1034,8 @@ export class TaskController {
     description: "停用后的响应：`{ enabled: false }`",
   })
   webhookDisable(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 webhookStatus 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1255,7 +1263,8 @@ export class TaskController {
     description: "非 Git 任务不支持回滚",
   })
   async rollback(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: RollbackTaskDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -1302,7 +1311,8 @@ export class TaskController {
     description: "无请求体——回滚目标即 :versionId 路径参数",
   })
   async rollbackToVersion(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 getVersions 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("versionId") versionId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -1380,7 +1390,8 @@ export class TaskController {
   @ApiResponse({ status: 400, description: "任务已处于暂停状态" })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async pause(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1413,7 +1424,8 @@ export class TaskController {
   @ApiResponse({ status: 400, description: "任务已在运行中" })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async resume(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1442,7 +1454,8 @@ export class TaskController {
     description: "已更新执行记录并持久化 aiAnalysis（POST 默认 201）",
   })
   async analyzeExecution(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -1481,7 +1494,8 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "执行记录不存在" })
   async killExecution(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,

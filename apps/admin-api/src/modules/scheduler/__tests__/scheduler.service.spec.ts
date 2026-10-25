@@ -3425,6 +3425,24 @@ describe("SchedulerService", () => {
         expect(computeTriggerDedupTtlMs(makeTask({ triggerType }))).toBe(5_000);
       },
     );
+
+    it("F-3/F-6: 超长 period（存量行）→ TTL 被 clamp 到 2^31-1 ms（PEXPIRE 上限）", () => {
+      // fixedRate=3000000s（DTO @Max(2147483) 封顶前的存量形态）→ periodMs
+      // 3e9 超过 int4 毫秒上限；clamp 保证 TTL 恒可安全下发 PEXPIRE / Redis 锁。
+      const ttl = computeTriggerDedupTtlMs(
+        makeTask({
+          triggerType: TaskTriggerType.FIXED_RATE,
+          fixedRate: 3_000_000,
+        }),
+      );
+      expect(ttl).toBe(2 ** 31 - 1);
+      // 正常周期不受 clamp 影响
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 15 }),
+        ),
+      ).toBe(14_500);
+    });
   });
 
   describe("scheduleOne", () => {

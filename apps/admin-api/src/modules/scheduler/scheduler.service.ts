@@ -115,6 +115,16 @@ export const TRIGGER_DEDUP_JITTER_BUFFER_MS = 500;
 export const TRIGGER_DEDUP_SHORT_PERIOD_MAX_MS = 1_500;
 
 /**
+ * F-3/F-6（调度域审计）：Node 定时器与 Redis PEXPIRE 的毫秒上限（2^31-1）。
+ * setInterval/setTimeout 的 delay 经 int32 强转——超过 2^31-1 ms 的值会
+ * **回绕成负数 = 立即触发**（1ms 定时器风暴）；Redis PEXPIRE 同样只接受
+ * int4 毫秒。DTO 的 fixedRate 已用 @Max(2147483) 秒双重封顶（int4 列 +
+ * 本上限，见 create-task.dto.ts 的 TASK_FIXED_RATE_MAX_SECONDS），这里是
+ * 对**存量行**（封顶前写入）与未来其他调用方的纵深防御。
+ */
+export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+
+/**
  * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
  */
 export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
@@ -223,9 +233,16 @@ export function computeTriggerDedupTtlMs(task: Task): number {
         TRIGGER_DEDUP_MIN_TTL_MS,
       );
     }
-    return Math.max(
-      periodMs - TRIGGER_DEDUP_JITTER_BUFFER_MS,
-      TRIGGER_DEDUP_MIN_TTL_MS,
+    // F-3/F-6 防御性 clamp：对超长 period（DTO @Max(2147483) 封顶前写入的
+    // 存量行）返回的 TTL 可能超过 PEXPIRE 的 int4 上限——部分 Redis 客户端
+    // 会静默取整/拒绝。DTO 封顶后本分支正常不可达越界值，这里钳到
+    // MAX_TIMER_DELAY_MS（2^31-1 ms）兜底其他调用方。
+    return Math.min(
+      Math.max(
+        periodMs - TRIGGER_DEDUP_JITTER_BUFFER_MS,
+        TRIGGER_DEDUP_MIN_TTL_MS,
+      ),
+      MAX_TIMER_DELAY_MS,
     );
   }
   if (task.triggerType === TaskTriggerType.CRON) {
@@ -2012,27 +2029,30 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
       if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
         const taskId = task.id;
-        const timer = setInterval(async () => {
-          // B-04: Prevent re-entry
-          if (this.runningTasks.get(taskId)) {
-            this.logger.warn(
-              `Fixed_rate task "${task.name}" still running, skipping trigger`,
-            );
-            return;
-          }
-          // CORE-06：计划触发时刻——回调第一行取样，延迟含事件循环滞后 +
-          // findOne + 去重锁 + 入队全链
-          const fireTime = Date.now();
-          this.runningTasks.set(taskId, true);
-          try {
-            const latest = await this.taskRepo.findOne({
-              where: { id: taskId, status: TaskStatus.ACTIVE },
-            });
-            if (latest) await this.enqueue(latest, "fixed_rate", fireTime);
-          } finally {
-            this.runningTasks.delete(taskId);
-          }
-        }, task.fixedRate * 1000);
+        const timer = setInterval(
+          async () => {
+            // B-04: Prevent re-entry
+            if (this.runningTasks.get(taskId)) {
+              this.logger.warn(
+                `Fixed_rate task "${task.name}" still running, skipping trigger`,
+              );
+              return;
+            }
+            // CORE-06：计划触发时刻——回调第一行取样，延迟含事件循环滞后 +
+            // findOne + 去重锁 + 入队全链
+            const fireTime = Date.now();
+            this.runningTasks.set(taskId, true);
+            try {
+              const latest = await this.taskRepo.findOne({
+                where: { id: taskId, status: TaskStatus.ACTIVE },
+              });
+              if (latest) await this.enqueue(latest, "fixed_rate", fireTime);
+            } finally {
+              this.runningTasks.delete(taskId);
+            }
+          },
+          Math.min(task.fixedRate * 1000, MAX_TIMER_DELAY_MS),
+        );
         this.timers.set(task.id, timer);
         this.logger.log(
           `Re-scheduled fixed_rate task "${task.name}" every ${task.fixedRate}s`,

@@ -1435,7 +1435,13 @@ export class TaskService {
     try {
       const saved = await this.taskRepo.save(this.taskRepo.create(normalized));
       await this.saveVersion(saved.id, undefined, undefined, saved);
-      return saved;
+      // F-4（SEC-02 安全红线）：create 是写路径唯一漏脱敏的返回点——
+      // update/pause/resume/updateGlue/findOne 全部经 maskSecretsForResponse，
+      // 契约是「API 读取永久脱敏（叶子值回 ******）」。save 返回的是含
+      // 明文/密文的原始行，控制器原样回传会把真实凭据带给调用方（并随审计
+      // 日志/代理日志落盘）。importDefinition 复用本方法，其响应只取
+      // taskId/name，一并覆盖。
+      return this.maskSecretsForResponse(saved);
     } catch (err) {
       if (isUniqueViolation(err)) {
         // 技术债 A 组（2026-10-01）：迁移 1790000000050 起 tasks.name 有唯一
@@ -1544,6 +1550,20 @@ export class TaskService {
   private async assertDependencyValuesExist(
     dependencies: Record<string, string>,
   ): Promise<void> {
+    // F-5（服务层纵深防御）：DTO 边界的 IsDependencyValueMapConstraint 已把
+    // value 收口为字符串，但本方法还有**编程式直连调用方**（MCP/脚本/自动
+    // 注册，不经全局 ValidationPipe）——value=123/true 之类的非字符串进
+    // In([...]) 查 uuid 列会触发 PG 42883（function uuid_eq_integer does
+    // not exist）裸 500。这里前置 typeof 收口为可读 400 VALIDATION_FAILED
+    // （复用通用校验码，不新增目录条目）。
+    const nonStringKeys = Object.entries(dependencies)
+      .filter(([, v]) => typeof v !== "string")
+      .map(([k]) => k);
+    if (nonStringKeys.length > 0) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail: `dependencies 的依赖值必须是任务 id（字符串），以下键的值类型非法：${nonStringKeys.join(", ")}`,
+      });
+    }
     const values = [...new Set(Object.values(dependencies))];
     if (values.length === 0) return;
     const found = await this.taskRepo.find({
@@ -2259,6 +2279,15 @@ export class TaskService {
       }
     }
     const normalized = this.normalizeTaskDto(dto);
+    // F-1（安全红线）：PATCH 请求体不允许重写主键 id。UpdateTaskDto 经
+    // PartialType 继承了 CreateTaskDto 的可选 @IsUUID id——不剔除的话，
+    // 下方 Object.assign 会把内存实体的主键改掉，taskPatchFromDto 还会把
+    // id 写进列级 patch（UPDATE ... SET "id" = ...，改写主键）。
+    // 刻意放在 update 路径而非 normalizeTaskDto：create 的 R6 契约（客户端
+    // 自带 id + 查重/TASK_ID_EXISTS）合法消费 normalized.id（见 create 内
+    // 预检），而 normalizeTaskDto 是 create/update 共享的。形态与同函数既有
+    // `delete normalized.secrets` / expectedUpdatedAt 的消费即弃一致。
+    delete normalized.id;
     // 同 create：PATCH 显式带 gitRepo 时即校验（缺省 = 保留旧值，不重复校验既有列）
     if (normalized.gitRepo) {
       await assertSafeGitRepoUrl(normalized.gitRepo);
@@ -2272,6 +2301,12 @@ export class TaskService {
       Object.keys(normalized.dependencies).length > 0
     ) {
       await this.assertDependencyValuesExist(normalized.dependencies);
+      // F-2: update 路径此前缺环/自依赖检测（checkCircularDependency 只有
+      // create 一个调用点）——PATCH 一个自依赖或 A↔B 双环映射会落库成
+      // triggerDependentTasks 的永动死链。整体替换语义下显式提供即终态，
+      // 按 create 同一契约检测；自身 id 传入使自环也被拒。缺省（不带
+      // dependencies）= 保留旧值，存量映射不重复检测。
+      await this.checkCircularDependency(id, normalized.dependencies);
     }
     // TASK-PROJ-01: 改变归属项目同样需要授权（缺省 = 保留旧归属，不重复校验）
     if (normalized.projectId !== undefined) {
@@ -2653,6 +2688,10 @@ export class TaskService {
     const patch: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(dto)) {
       if (value === undefined) continue;
+      // F-1 防御性兜底：主键 id 永不进列级 patch——本方法的所有调用方里只有
+      // update 携带 DTO 原键，上游漏删时这里拦下，避免 UPDATE 改写主键。
+      // updateGlue 等手工 patch 不含该键，不受影响。
+      if (key === "id") continue;
       patch[key] = value;
     }
     return patch;
@@ -2723,6 +2762,14 @@ export class TaskService {
     // 依赖触发方传入 "dependency"。
     triggerTypeOverride?: string,
   ) {
+    // F-10（语义钉死，2026-10-25 审计）：trigger 刻意**只排除 DELETED**——
+    // findOne 的行谓词是 Not(DELETED)，PAUSED 任务手动/API/依赖触发照常
+    // **成功**。这是与维护窗口同一款设计哲学（见 scheduler.enqueue 头注：
+    // 「手动/API 触发不受窗口约束——发布窗口内人工补跑是预期操作」）：
+    // 暂停只停**调度**（schedulerService.stop 移除定时器），不拦人工显式
+    // 触发。若将来要改成「PAUSED 拒绝手动触发」，必须显式产品决策——
+    // 回归 spec（task.service.spec「trigger PAUSED 任务手动触发成功」）
+    // 会转红，防止无意识收紧。
     const task = await this.findOne(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(task, user);

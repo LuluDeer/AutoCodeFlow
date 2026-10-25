@@ -42,6 +42,21 @@ import {
 } from "../entities/task.entity";
 import { TIMEOUT_ACTIONS, TimeoutAction } from "../timeout-policy.util";
 import { RUNTIME_VERSION_PATTERN } from "../runtime-version.util";
+// F-5（依赖链契约收口）：dependencies 每个 value 必须是任务 id（非空字符串）
+import { IsDependencyValueMapConstraint } from "./dependency-map.constraint";
+
+/**
+ * F-3/F-6（调度域审计）：fixed_rate 周期上限（秒）。**双重约束取最小**：
+ *   ① `tasks.fixedRate` 是 int4 列（F-6：超界值插入即 PG 22003 裸 500）；
+ *   ② 调度侧把周期 ×1000 喂给 setInterval 与触发去重锁 TTL——Node 定时器
+ *      delay 经 int32 强转，超过 2^31-1 ms 会回绕成负数 = 立即触发（1ms
+ *      定时器风暴）；Redis PEXPIRE 同样只接受 int4 毫秒。
+ * 2147483s × 1000 = 2_147_483_000 ms < 2^31-1 = 2_147_483_647 ms，同时
+ * 远低于 int4 秒数上限（约 68 年），两个面都收口。PartialType 令
+ * UpdateTaskDto（PATCH）继承同一约束；调度侧另有同款毫秒 clamp 兜底存量行
+ * （scheduler.service.ts 的 MAX_TIMER_DELAY_MS）。
+ */
+export const TASK_FIXED_RATE_MAX_SECONDS = 2_147_483;
 
 export class CreateTaskDto {
   // R6: id 是 UUID 主键——客户端自带任意字符串会在插入时触发 PG 22P02/23505
@@ -90,7 +105,13 @@ export class CreateTaskDto {
   @IsIanaTimezone()
   @IsOptional()
   timezone?: string;
-  @ApiPropertyOptional() @IsInt() @Min(1) @IsOptional() fixedRate?: number;
+  // F-3/F-6：上限见 TASK_FIXED_RATE_MAX_SECONDS 的双重约束注释。
+  @ApiPropertyOptional()
+  @IsInt()
+  @Min(1)
+  @Max(TASK_FIXED_RATE_MAX_SECONDS)
+  @IsOptional()
+  fixedRate?: number;
   /**
    * FEAT-06: 任务级维护窗口。每条 { start, end, description? }，start/end
    * 均为 5 字段 cron——start 最近触达开窗、end 最近触达关窗（半开区间，
@@ -174,6 +195,11 @@ export class CreateTaskDto {
       "上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。",
   })
   @IsObject()
+  // F-5（依赖值类型收口）：@IsObject 只拦「不是对象」，拦不住 value=123/true
+  // 这类非字符串——它们会一路穿到 assertDependencyValuesExist 的 In([...])
+  // 查 uuid 列，PG 42883 → 裸 500。自定义约束器在 DTO 边界把每个 value 收口
+  // 为非空字符串，文案说明「依赖值必须是任务 id」。
+  @Validate(IsDependencyValueMapConstraint)
   @IsOptional()
   dependencies?: Record<string, string>;
   @ApiPropertyOptional() @IsString() @IsOptional() entrypoint?: string;
@@ -235,7 +261,17 @@ export class CreateTaskDto {
   @Min(0)
   @Max(10)
   maxRetry?: number;
-  @ApiPropertyOptional() @IsInt() @Min(0) @IsOptional() retryDelay?: number;
+  /**
+   * F-3：重试延迟上限对齐 timeout 的 1..86400 语义——此前仅 @Min(0)，一个
+   * 2^31 量级的值会把指数退避 delay 顶到 BullMQ/Node 定时器的 int32 毫秒
+   * 溢出线（约 68 年重试延迟）。PartialType 令 PATCH 继承同一约束。
+   */
+  @ApiPropertyOptional()
+  @IsInt()
+  @Min(0)
+  @Max(86400)
+  @IsOptional()
+  retryDelay?: number;
   /**
    * CORE-05: 预估执行时长（秒，可选整数 0..604800=7 天上限；0/缺省 = 未知）。
    * 任务侧属性——调度侧把它作为执行器 loadScore 的加权输入（长任务给
@@ -252,7 +288,17 @@ export class CreateTaskDto {
   @Max(604800)
   @IsOptional()
   estimatedDurationSec?: number | null;
-  @ApiPropertyOptional() @IsArray() @IsOptional() retryableErrors?: string[];
+  /**
+   * F-7（simple-array 落库形态）：retryableErrors 是 simple-array 列——
+   * TypeORM 以逗号 join 落库，元素含逗号会在读回时被静默劈裂成两条。
+   * DTO 边界禁逗号（@IsString each 收紧此前的无元素类型校验）。
+   */
+  @ApiPropertyOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^[^,]*$/, { each: true })
+  @IsOptional()
+  retryableErrors?: string[];
   @ApiPropertyOptional()
   @IsEnum(TaskPriority)
   @IsOptional()
@@ -278,7 +324,16 @@ export class CreateTaskDto {
   @IsOptional()
   misfireStrategy?: MisfireStrategy;
   @ApiPropertyOptional() @IsEmail() @IsOptional() alarmEmail?: string;
-  @ApiPropertyOptional() @IsArray() @IsOptional() alarmChannels?: string[];
+  /**
+   * F-7（simple-array 落库形态）：同 retryableErrors——simple-array 以逗号
+   * join 落库，元素含逗号读回即被劈裂。
+   */
+  @ApiPropertyOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^[^,]*$/, { each: true })
+  @IsOptional()
+  alarmChannels?: string[];
   @ApiPropertyOptional({
     description:
       "任务默认参数；序列化后体积不得超过 65536 字节（与 trigger/webhook 面同一上限）。",
@@ -330,7 +385,17 @@ export class CreateTaskDto {
   deploymentPolicy?: "strict" | "prefer" | null;
   @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() executorGroup?: string;
-  @ApiPropertyOptional() @IsArray() @IsOptional() executorTags?: string[];
+  /**
+   * F-7（simple-array 落库形态）：executorTags 是 simple-array 列——元素含
+   * 逗号会在读回时被静默劈裂（"gpu,a100" → ["gpu","a100"]），调度侧按标签
+   * AND 子集匹配时永远匹配不到。DTO 边界禁逗号。
+   */
+  @ApiPropertyOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^[^,]*$/, { each: true })
+  @IsOptional()
+  executorTags?: string[];
   /**
    * NF-04: 标签亲和（可空字符串数组，OR 语义——执行器持有任一标签即命中
    * 候选）。调度侧先按亲和/反亲和过滤候选、再按 CORE-05 loadScore 择优；
@@ -346,6 +411,8 @@ export class CreateTaskDto {
   })
   @IsArray()
   @IsString({ each: true })
+  // F-7：simple-array 列禁逗号（劈裂形态见 executorTags 注释）。
+  @Matches(/^[^,]*$/, { each: true })
   @IsOptional()
   executorAffinityTags?: string[] | null;
   /**
@@ -362,6 +429,8 @@ export class CreateTaskDto {
   })
   @IsArray()
   @IsString({ each: true })
+  // F-7：simple-array 列禁逗号（劈裂形态见 executorTags 注释）。
+  @Matches(/^[^,]*$/, { each: true })
   @IsOptional()
   executorAntiAffinityTags?: string[] | null;
   @ApiPropertyOptional({

@@ -7900,6 +7900,203 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       );
     });
   });
+
+  // ── 2026-10-25 后端审计修复轮（F-1/F-2/F-4/F-10）────────────────────────
+  describe("F-4: create 响应脱敏（SEC-02 红线，写路径最后一个漏点）", () => {
+    it("create 带 secrets → 响应叶子值全 ******，落库值保持真实", async () => {
+      taskRepo.findOne.mockResolvedValue(null); // R6 预检：id 未占用
+      taskRepo.save.mockImplementation((t: any) =>
+        Promise.resolve({ id: "1", ...t }),
+      );
+
+      const result: any = await service.create({
+        name: "with-secrets",
+        triggerType: "api",
+        secrets: { API_TOKEN: "sk-live-abc", DB_PASSWORD: "hunter2" },
+      } as any);
+
+      // 响应面：每个叶子都是掩码（与 findOne/update/pause/resume/updateGlue 同契约）
+      expect(result.secrets).toEqual({
+        API_TOKEN: "******",
+        DB_PASSWORD: "******",
+      });
+      expect(JSON.stringify(result)).not.toContain("sk-live-abc");
+      // 落库面：save 收到的仍是真实值（降级桩明文透传）
+      const savedRow = taskRepo.save.mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(savedRow["secrets"]).toEqual({
+        API_TOKEN: "sk-live-abc",
+        DB_PASSWORD: "hunter2",
+      });
+    });
+
+    it("create 不带 secrets → 响应无 secrets 键（掩码函数透传 undefined）", async () => {
+      taskRepo.findOne.mockResolvedValue(null);
+      taskRepo.save.mockImplementation((t: any) =>
+        Promise.resolve({ id: "2", ...t }),
+      );
+
+      const result: any = await service.create({
+        name: "no-secrets",
+        triggerType: "api",
+      } as any);
+      expect(result.secrets).toBeUndefined();
+    });
+  });
+
+  describe("F-1: PATCH 请求体不可重写任务主键 id", () => {
+    // makeRepo 的列级写落点（update describe 内的 taskWrites 同款，本 describe
+    // 在外层作用域，故就地定义）。
+    const taskWritePatches = (): Array<Record<string, any>> =>
+      (taskRepo as unknown as { updatePatches: Array<Record<string, any>> })
+        .updatePatches;
+
+    it("PATCH body 带 id → 列级 patch 不含 id，响应与库内主键不变", async () => {
+      const task = {
+        id: "real-id",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executorId: null,
+        executeMode: "single",
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+
+      const result: any = await service.update("real-id", {
+        id: "attacker-chosen-id",
+        name: "new",
+      } as any);
+
+      // 列级写不含主键（UPDATE ... SET 里没有 id）
+      expect(taskWritePatches()).toHaveLength(1);
+      expect(taskWritePatches()[0]).not.toHaveProperty("id");
+      expect(taskWritePatches()[0]).toMatchObject({ name: "new" });
+      // 内存实体与响应的主键都未被改写
+      expect(task.id).toBe("real-id");
+      expect(result.id).toBe("real-id");
+    });
+  });
+
+  describe("F-2: update 补环/自依赖检测（dependencies 整体替换语义）", () => {
+    const UUID_A = "2509e892-cb1c-4746-9505-2dfe932ebf33";
+    const UUID_B = "fe2b2e65-56aa-4fb1-8f11-34e1ff902335";
+    const taskWritePatches = (): Array<Record<string, any>> =>
+      (taskRepo as unknown as { updatePatches: Array<Record<string, any>> })
+        .updatePatches;
+
+    it("自依赖 PATCH（value=自身 id）→ 400 检测到循环依赖", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: UUID_A,
+        name: "A",
+        status: TaskStatus.ACTIVE,
+        executorId: null,
+        executeMode: "single",
+      });
+      taskRepo.find.mockResolvedValue([{ id: UUID_A }]); // value 存在
+
+      await expect(
+        service.update(UUID_A, { dependencies: { self: UUID_A } } as any),
+      ).rejects.toThrow("检测到循环依赖");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("A↔B 双环 PATCH → 400（沿 DB 里的现存映射检出环）", async () => {
+      // findByIdRaw → A；环检测沿 value 走 → B（B 仍依赖 A）
+      taskRepo.findOne
+        .mockResolvedValueOnce({
+          id: UUID_A,
+          name: "A",
+          status: TaskStatus.ACTIVE,
+          executorId: null,
+          executeMode: "single",
+        })
+        .mockResolvedValueOnce({
+          id: UUID_B,
+          name: "B",
+          dependencies: { a: UUID_A },
+        });
+      taskRepo.find.mockResolvedValue([{ id: UUID_B }]); // value 存在
+
+      await expect(
+        service.update(UUID_A, { dependencies: { b: UUID_B } } as any),
+      ).rejects.toThrow("检测到循环依赖");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("无环的正常 PATCH → 照常落库（dependencies 进列级 patch）", async () => {
+      // 按查询条件分派：findByIdRaw / 回读 → A（含新映射）；环检测沿 value
+      // 查 UUID_B → B 行（不依赖任何任务，无环）。
+      taskRepo.findOne.mockImplementation(async (crit: any) => {
+        if (crit?.where?.id === UUID_B) {
+          return { id: UUID_B, name: "B", dependencies: {} };
+        }
+        return {
+          id: UUID_A,
+          name: "A",
+          status: TaskStatus.ACTIVE,
+          executorId: null,
+          executeMode: "single",
+          dependencies: { b: UUID_B },
+        };
+      });
+      taskRepo.find.mockResolvedValue([{ id: UUID_B }]);
+
+      const result: any = await service.update(UUID_A, {
+        dependencies: { b: UUID_B },
+      } as any);
+      expect(taskWritePatches()[0].dependencies).toEqual({ b: UUID_B });
+      expect(result.dependencies).toEqual({ b: UUID_B });
+    });
+
+    it("F-5 服务层兜底：非字符串 value（编程式调用方）→ 400 VALIDATION，不触 In([...]) 查询", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: UUID_A,
+        name: "A",
+        status: TaskStatus.ACTIVE,
+        executorId: null,
+        executeMode: "single",
+      });
+
+      await expect(
+        service.update(UUID_A, {
+          dependencies: { bad: 123 } as unknown as Record<string, string>,
+        } as any),
+      ).rejects.toThrow(/依赖值必须是任务 id/);
+      // 关键：非字符串值绝不进 uuid 列查询（否则 PG 42883 裸 500）
+      expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("F-10: PAUSED 任务手动触发成功（语义钉死：暂停只停调度）", () => {
+    it("trigger on a PAUSED task creates the execution and enqueues", async () => {
+      const task = {
+        id: "1",
+        name: "paused-task",
+        params: {},
+        maxRetry: 1,
+        retryDelay: 0,
+        currentVersion: "v1",
+        status: TaskStatus.PAUSED, // 关键：暂停态
+      };
+      const exec = { id: "exec-paused-1", status: ExecutionStatus.PENDING };
+      taskRepo.findOne.mockResolvedValue(task);
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({
+          create: jest.fn().mockReturnValue(exec),
+          save: jest.fn().mockResolvedValue(exec),
+        }),
+      );
+
+      const result = await service.trigger("1", {});
+      expect(result).toEqual(exec);
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-paused-1" },
+        expect.anything(),
+      );
+    });
+  });
 });
 
 // R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。
