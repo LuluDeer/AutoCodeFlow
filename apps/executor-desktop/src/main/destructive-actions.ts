@@ -30,28 +30,42 @@ export type DestructiveChannel =
   | 'history:clear';
 
 export interface DestructivePolicy {
-  /** 对话框标题里的一句话动作名（中文，与 UI 文案同源）。 */
+  /** 对话框标题里的一句话动作名（zh，与 UI 文案同源）。 */
   readonly label: string;
-  /** 对话框正文里补充的后果说明。 */
+  /** 对话框正文里补充的后果说明（zh）。 */
   readonly detail: string;
+  // F-27（UIUX 审计 2026-10-25）：英文界面的同义文案——R105 原生确认此前
+  // 无论界面语言恒为中文。文案保持与 zh 字段**同源同处**（本表即 R105 文案
+  // 唯一事实源），不另开第二张表造成漂移；判定走 ipc-handlers 的
+  // currentUiLocale()（ui-language.ts 同一规则）。
+  readonly labelEn: string;
+  readonly detailEn: string;
 }
 
 export const DESTRUCTIVE_CHANNELS: Readonly<Record<DestructiveChannel, DestructivePolicy>> = {
   'apps:uninstall': {
     label: '卸载本地应用',
     detail: '会删除该应用的本地发布目录与运行配置，无法撤销。',
+    labelEn: 'Uninstall local app',
+    detailEn: "This deletes the app's local release directory and run configuration. This cannot be undone.",
   },
   'apps:delete-release': {
     label: '删除发布版本',
     detail: '会从本地磁盘删除该版本的产物，无法撤销。',
+    labelEn: 'Delete release',
+    detailEn: 'This deletes the release artifacts from local disk. This cannot be undone.',
   },
   'updater:install': {
     label: '立即安装更新',
     detail: '应用将退出并重启以完成安装，正在运行的任务会被中断。',
+    labelEn: 'Install update now',
+    detailEn: 'The app will quit and restart to install the update. Running tasks will be interrupted.',
   },
   'history:clear': {
     label: '清空执行历史',
     detail: '会删除本机记录的历史执行条目，无法撤销。',
+    labelEn: 'Clear execution history',
+    detailEn: 'This deletes the locally recorded execution history entries. This cannot be undone.',
   },
 };
 

@@ -26,6 +26,8 @@
     "src/main/tray-texts.ts",
     "src/main/tray-texts.selftest.ts",
     "src/main/ui-language.ts",
+    "src/main/ui-texts.ts",
+    "src/main/ui-texts.selftest.ts",
     "src/main/notifier-rules.ts",
     "src/main/notifier-rules.selftest.ts",
     "src/main/crash-guard.ts",

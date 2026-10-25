@@ -223,6 +223,9 @@ app.whenReady().then(async () => {
   // 任务终态（executor-node writeExecMeta 落盘）。
   notifier.onOpenStatusCallback = () => windowManager.focusOrOpenStatus();
   notifier.onOpenHistoryCallback = () => windowManager.openHistory();
+  // F-27（UIUX 审计 2026-10-25）：通知文案随设置页 uiLanguage 走（同托盘
+  // getUiLanguage 的注入先例——每次构造通知实时读，保存语言后无需重启）。
+  notifier.getUiLanguage = () => savedUiLanguage();
   // V4 审计 P2：更新可用 → 系统通知。updater 的 update-available 广播只达
   // 已打开的窗口，状态窗关着时用户永远看不到；经回调注入补一条系统通知
   // （同版本去重在 updater 侧，见 updater.ts lastNotifiedUpdateVersion）。

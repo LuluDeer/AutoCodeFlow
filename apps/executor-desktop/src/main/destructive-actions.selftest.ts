@@ -35,6 +35,10 @@ async function main(): Promise<void> {
     const policy = DESTRUCTIVE_CHANNELS[channel];
     assert.ok(policy.label.length > 0, `${channel} 缺 label`);
     assert.ok(policy.detail.length > 0, `${channel} 缺 detail（用户要知道后果）`);
+    // F-27（UIUX 审计 2026-10-25）：R105 原生确认双语——en 文案与 zh 同源
+    // 同处（本表即唯一事实源），缺 en 字段会让英文界面看到中文确认框。
+    assert.ok(policy.labelEn.length > 0, `${channel} 缺 labelEn`);
+    assert.ok(policy.detailEn.length > 0, `${channel} 缺 detailEn`);
   }
   // 可恢复动作不该在这里 —— 多问一次会变成「确认疲劳」，反而降低真实确认的注意力。
   assert.ok(!('executor:stop' in DESTRUCTIVE_CHANNELS), 'executor:stop 可恢复，不应要求原生确认');

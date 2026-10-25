@@ -249,10 +249,12 @@ function main(): void {
   {
     // V4-P2：updater available → 系统通知（广播只达已开窗口，状态窗关闭时
     // 用户永远看不到「有新版本」——必须补 notifier.notifyUpdate 注入链）。
+    // F-27（2026-10-25 审计）跟进：notifyUpdate 文案迁入 ui-texts 双语表，
+    // 锚点从硬编码「发现新版本」改为「notifyUpdate 复用 notify + uiText 取键」。
     const notifierSrc = read('notifier.ts');
     const updaterSrc = read('updater.ts');
     assert.ok(
-      notifierSrc.includes('notifyUpdate(') && notifierSrc.includes("this.notify('发现新版本'"),
+      notifierSrc.includes('notifyUpdate(') && notifierSrc.includes('this.notify('),
       'V4-P2: notifier 必须提供 notifyUpdate()（复用 notify()，点击路由 status）',
     );
     assert.ok(
@@ -263,6 +265,40 @@ function main(): void {
     assert.ok(
       indexCode.includes('setUpdateAvailableNotifier('),
       'V4-P2: index.ts 必须把 notifier.notifyUpdate 注入 updater',
+    );
+
+    // ── UIUX F-27（2026-10-25 审计）：系统通知与主进程原生对话框双语化 ──
+    // 审计实证：notifier 与 ipc-handlers 的原生对话框硬编码中文，英文界面
+    // 混排中文；托盘已有 getUiLanguage 注入先例但未接入通知器。钉住三处：
+    // 文案表覆盖消费面、notifier 走 uiText + 暴露注入口、index.ts 完成接线。
+    const uiTextsSrc = read('ui-texts.ts');
+    assert.ok(
+      uiTextsSrc.includes("'notify.executorOffline.title'") &&
+        uiTextsSrc.includes("'notify.task.durationSuffix'") &&
+        uiTextsSrc.includes("'dialog.confirm.cancel'") &&
+        uiTextsSrc.includes("'dialog.restart.defer'"),
+      'F-27: ui-texts 双语文案表必须覆盖通知与对话框消费面（键位对齐由 ui-texts.selftest 钉住）',
+    );
+    assert.ok(
+      notifierSrc.includes("uiText(locale, 'notify.updateAvailable.title'") &&
+        notifierSrc.includes('getUiLanguage'),
+      'F-27: notifier 通知文案必须走 ui-texts 双语表，并暴露 getUiLanguage 注入口',
+    );
+    assert.ok(
+      indexCode.includes('notifier.getUiLanguage = () => savedUiLanguage()'),
+      'F-27: index.ts 必须把 uiLanguage 读取回调注入 notifier（同托盘先例）',
+    );
+    const ipcNoComments = ipcSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    assert.ok(
+      ipcNoComments.includes("uiText(currentUiLocale(), 'dialog.exportConfig.title')") &&
+        ipcNoComments.includes('function currentUiLocale()') &&
+        ipcNoComments.includes('resolveUiLanguage'),
+      'F-27: ipc-handlers 原生对话框标题/按钮必须经 currentUiLocale() + uiText 取双语（不得回退硬编码中文）',
+    );
+    assert.ok(
+      !ipcNoComments.includes("buttons: ['取消', '继续']") &&
+        !ipcNoComments.includes("buttons: ['重启执行器', '暂不重启']"),
+      'F-27: 原生对话框按钮不得残留硬编码中文',
     );
 
     // V4-P2：托盘「检查更新 / 打开日志文件夹」——回调注入面 + index.ts 接线

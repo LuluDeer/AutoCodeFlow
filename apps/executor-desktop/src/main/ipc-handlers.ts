@@ -80,7 +80,15 @@ import { createGuardedIpcMain } from './ipc-sender-guard';
 // R89：连接失败文案归一（只回错误码，不回显解析后的地址）。
 import { describeConnectionError } from './network-util';
 // R105：破坏性通道的主进程二次确认（渲染层的 ConfirmBar 拦不住注入脚本）。
+// F-27：确认文案双语——zh/en 同源存放在 destructive-actions 的 policy 上。
 import { CONFIRM_CANCELED, confirmDestructive } from './destructive-actions';
+import type { DestructiveChannel, DestructivePolicy } from './destructive-actions';
+// F-27（UIUX 审计 2026-10-25）：主进程原生对话框（R105 确认 / 重启征询 /
+// 导出导入标题）文案随界面语言走——判定与托盘/渲染层同一来源（ui-language.ts），
+// 文案表在 ui-texts.ts（zh/en 键位对齐由 ui-texts.selftest 钉住）。
+import { resolveUiLanguage } from './ui-language';
+import type { UiLocale } from './ui-language';
+import { uiText } from './ui-texts';
 // SEC-IPC-TYPE（R86-A1 轴 1）：config:check-port 的参数闸 + 探测实现（纯 Node）。
 import { checkPortAvailable } from './port-check';
 // sender 白名单的 file: 锚点必须与 loadFile 的入口页同源（window-manager 唯一真值源）。
@@ -110,26 +118,42 @@ import { resolveRendererIndex } from './window-manager';
 /**
  * R105：原生模态确认的适配器。modal 到发起窗口，渲染层无法自证「用户已同意」。
  * 窗口取不到时仍弹（无父窗口），但绝不静默放行。
+ *
+ * F-27（UIUX 审计 2026-10-25）：按钮/标题/正文随界面语言走——动作名与后果
+ * 说明的 en 文案同源存放在 destructive-actions 的 policy（labelEn/detailEn，
+ * 本表即 R105 文案唯一事实源），按钮与问句模板在 ui-texts 表。
  */
-async function confirmViaNativeDialog(policy: {
-  label: string;
-  detail: string;
-}): Promise<boolean> {
+async function confirmViaNativeDialog(
+  policy: DestructivePolicy & { channel: DestructiveChannel },
+): Promise<boolean> {
+  const locale = currentUiLocale();
+  const action = locale === 'en' ? policy.labelEn : policy.label;
+  const detail = locale === 'en' ? policy.detailEn : policy.detail;
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
   const options = {
     type: 'warning' as const,
-    buttons: ['取消', '继续'],
+    buttons: [uiText(locale, 'dialog.confirm.cancel'), uiText(locale, 'dialog.confirm.continue')],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
-    title: policy.label,
-    message: `确定要${policy.label}吗？`,
-    detail: policy.detail,
+    title: action,
+    message: uiText(locale, 'dialog.confirm.message', { action }),
+    detail,
   };
   const result = win
     ? await dialog.showMessageBox(win, options)
     : await dialog.showMessageBox(options);
   return result.response === 1;
+}
+
+/**
+ * F-27：主进程原生对话框的界面语言判定——与托盘（tray-texts）/渲染层
+ * （renderer i18n）共用 ui-language.ts 的同一份规则：显式设置 'zh'/'en'
+ * 优先、'auto'/未设置跟随 app.getLocale()、非法值默认英文。每次弹框实时
+ * 判定（与托盘 rebuildMenu 同口径），保存语言设置后无需重启应用。
+ */
+function currentUiLocale(): UiLocale {
+  return resolveUiLanguage(() => app.getLocale(), configStore.get('uiLanguage'));
 }
 
 const ipcMain = createGuardedIpcMain(electronIpcMain, {
@@ -245,18 +269,18 @@ export function restartRequiredFieldsChanged(before: AppConfig, after: AppConfig
  * 确需重启且执行器正在运行时，先征得用户同意——重启会中断正在运行的任务。
  * 取消只意味着"暂不重启"：配置本身已落盘成功，下次手动启动执行器 / 应用
  * 重启时自然生效。
+ * F-27：按钮/标题/正文随界面语言走（文案在 ui-texts 表，zh 值与原硬编码逐字一致）。
  */
 async function confirmExecutorRestart(): Promise<boolean> {
+  const locale = currentUiLocale();
   const { response } = await dialog.showMessageBox({
     type: 'question',
-    buttons: ['重启执行器', '暂不重启'],
+    buttons: [uiText(locale, 'dialog.restart.accept'), uiText(locale, 'dialog.restart.defer')],
     defaultId: 0,
     cancelId: 1,
     noLink: true,
-    message: '配置已保存，需要重启执行器才能生效',
-    detail:
-      '重启执行器会中断正在运行的任务。要现在重启吗？\n' +
-      '（选择「暂不重启」后，新配置将在下次启动执行器时生效）',
+    message: uiText(locale, 'dialog.restart.message'),
+    detail: uiText(locale, 'dialog.restart.detail'),
   });
   return response === 0;
 }
@@ -700,7 +724,8 @@ export function registerIpcHandlers(): void {
   // 再走与「保存配置」完全同一条 sanitizeConfigInput → save 链路。
   ipcMain.handle('config:export', async () => {
     const result = await dialog.showSaveDialog({
-      title: '导出配置（执行器密钥以掩码导出）',
+      // F-27：标题随界面语言走（下同——导入/诊断/执行日志导出对话框）。
+      title: uiText(currentUiLocale(), 'dialog.exportConfig.title'),
       defaultPath: path.join(app.getPath('downloads'), configExportFileName(new Date())),
       filters: [{ name: 'JSON', extensions: ['json'] }],
     });
@@ -718,7 +743,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('config:import', async () => {
     const result = await dialog.showOpenDialog({
-      title: '导入配置',
+      title: uiText(currentUiLocale(), 'dialog.importConfig.title'),
       filters: [{ name: 'JSON', extensions: ['json'] }],
       properties: ['openFile'],
     });
@@ -770,7 +795,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('diagnostics:export', async () => {
     const now = new Date();
     const result = await dialog.showSaveDialog({
-      title: '导出诊断报告（执行器密钥已脱敏）',
+      title: uiText(currentUiLocale(), 'dialog.exportDiagnostics.title'),
       defaultPath: path.join(app.getPath('downloads'), diagnosticReportFileName(now)),
       filters: [{ name: 'JSON', extensions: ['json'] }],
     });
@@ -1141,7 +1166,7 @@ export function registerIpcHandlers(): void {
       };
     }
     const result = await dialog.showSaveDialog({
-      title: '导出执行日志',
+      title: uiText(currentUiLocale(), 'dialog.exportExecLog.title'),
       defaultPath: path.join(app.getPath('downloads'), execLogExportFileName(executionId, new Date())),
       filters: [
         { name: '日志文件', extensions: ['log', 'txt'] },
