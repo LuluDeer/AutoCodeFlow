@@ -25,9 +25,9 @@ function sopListHarness() {
   const sops = {
     createQueryBuilder: jest.fn(() => listQb),
   };
-  const svc = new (SopService as unknown as new (
-    ...args: unknown[]
-  ) => SopService)(
+  const svc = new (
+    SopService as unknown as new (...args: unknown[]) => SopService
+  )(
     sops,
     undefined,
     undefined,

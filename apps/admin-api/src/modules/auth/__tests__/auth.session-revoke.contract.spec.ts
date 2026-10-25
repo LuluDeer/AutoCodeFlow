@@ -44,9 +44,8 @@ describe("DELETE /auth/sessions/:id 错误封套（F-56）", () => {
       .compile();
 
     app = moduleRef.createNestApplication();
-    const { HttpExceptionFilter } = await import(
-      "../../../common/filters/http-exception.filter"
-    );
+    const { HttpExceptionFilter } =
+      await import("../../../common/filters/http-exception.filter");
     app.useGlobalFilters(new HttpExceptionFilter());
     app.use((req: unknown, _res: unknown, next: () => void) => {
       (req as { user?: unknown }).user = { id: 1, username: "u" };
@@ -74,9 +73,7 @@ describe("DELETE /auth/sessions/:id 错误封套（F-56）", () => {
     authService.revokeSession.mockRejectedValueOnce(
       new AppError("SESSION_NOT_FOUND"),
     );
-    const res = await request(app.getHttpServer()).delete(
-      "/auth/sessions/999",
-    );
+    const res = await request(app.getHttpServer()).delete("/auth/sessions/999");
     expect(res.status).toBe(404);
     expect(res.body.errorCode).toBe("SESSION_NOT_FOUND");
     expect(res.body.message).toContain("会话不存在");

@@ -23,9 +23,10 @@ import { BadRequestException, type PipeTransform } from "@nestjs/common";
  * 错误形态与全局 ValidationPipe 对齐：BadRequestException + message 数组，
  * 经 HttpExceptionFilter 落成 400 VALIDATION_FAILED（detail 进 message）。
  */
-export class ChannelConfigOverridePipe
-  implements PipeTransform<unknown, Record<string, string>>
-{
+export class ChannelConfigOverridePipe implements PipeTransform<
+  unknown,
+  Record<string, string>
+> {
   /** 键数量/长度/值长度的护栏上界（现实渠道配置远用不到）。 */
   private static readonly MAX_KEYS = 32;
   private static readonly MAX_KEY_LENGTH = 64;

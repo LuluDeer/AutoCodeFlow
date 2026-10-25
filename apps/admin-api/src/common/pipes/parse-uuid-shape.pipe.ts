@@ -75,7 +75,7 @@ export class ParseUuidShapePipe implements PipeTransform<
       //
       // F-52（UIAUDIT P2-1）：形状也非法时换封套为带码异常——400 状态不变，
       // message 从 NestJS 原生英文（"Validation failed (uuid is expected)"，
-      // 经 filter 时 errorCode 只能是 null）换成错误目录中文兜底 + 
+      // 经 filter 时 errorCode 只能是 null）换成错误目录中文兜底 +
       // errorCode=INVALID_VALUE_FORMAT，与 users 侧的 ParseIntShapePipe、
       // http-exception.filter 的 22P02 兜底（绕过管道直达 DB 的形态错误）
       // 三方同语言。此前「原样抛回框架异常」的写法连同其「不吞不改」论证

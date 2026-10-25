@@ -47,9 +47,8 @@ describe("NotificationConfigController body 纪律（F-53）", () => {
 
     app = moduleRef.createNestApplication();
     const { ValidationPipe } = await import("@nestjs/common");
-    const { HttpExceptionFilter } = await import(
-      "../../../common/filters/http-exception.filter"
-    );
+    const { HttpExceptionFilter } =
+      await import("../../../common/filters/http-exception.filter");
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,

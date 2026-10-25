@@ -1361,10 +1361,7 @@ export class ExecutorController {
   // F-53（UIAUDIT P2-2）：body 换 class DTO——此前内联 { reason?: string } 使
   // 全局 whitelist+forbidNonWhitelisted 对本面失效；reason 现有 ≤200 上限
   // （对齐 AUTH-05 前端契约与 DEP-04 ApprovalActionDto 先例）。
-  rotateToken(
-    @Param("id") id: string,
-    @Body() body?: ExecutorActionReasonDto,
-  ) {
+  rotateToken(@Param("id") id: string, @Body() body?: ExecutorActionReasonDto) {
     return this.svc.rotateToken(id, body?.reason);
   }
 

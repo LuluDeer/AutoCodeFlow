@@ -35,14 +35,19 @@ describe("ParseIntShapePipe（路由参数整数形态校验）", () => {
     ["十六进制前缀", "0x10"],
     ["SQL 注入串", "1 OR 1=1"],
     ["加号前缀", "+12"],
-  ])("%s 仍然 400（形态校验委托 ParseIntPipe 的严格正则）", async (_label, value) => {
-    await expect(pipe().transform(value, META)).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
-  });
+  ])(
+    "%s 仍然 400（形态校验委托 ParseIntPipe 的严格正则）",
+    async (_label, value) => {
+      await expect(pipe().transform(value, META)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    },
+  );
 
   it("拒绝封套：INVALID_VALUE_FORMAT（F-52 全站统一码，中文目录文案）", async () => {
-    const err = await pipe().transform("abc", META).catch((e: unknown) => e);
+    const err = await pipe()
+      .transform("abc", META)
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BadRequestException);
     expect((err as { errorCode?: string }).errorCode).toBe(
       "INVALID_VALUE_FORMAT",

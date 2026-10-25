@@ -68,7 +68,9 @@ describe("ParseUuidShapePipe（路由参数 UUID 形状校验）", () => {
   });
 
   it("拒绝封套：INVALID_VALUE_FORMAT（F-52 全站统一码，中文目录文案）", async () => {
-    const err = await pipe().transform("abc", META).catch((e: unknown) => e);
+    const err = await pipe()
+      .transform("abc", META)
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BadRequestException);
     expect((err as { errorCode?: string }).errorCode).toBe(
       "INVALID_VALUE_FORMAT",

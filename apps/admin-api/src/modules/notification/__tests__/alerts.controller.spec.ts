@@ -315,9 +315,8 @@ describe("AlertsController webhook body validation (F-53, supertest 真实管道
     }).compile();
     app = moduleRef.createNestApplication({ rawBody: true });
     // 控制器注册的全局 filter 在 main.ts——测试里补挂，断言 errorCode 封套。
-    const { HttpExceptionFilter } = await import(
-      "../../../common/filters/http-exception.filter"
-    );
+    const { HttpExceptionFilter } =
+      await import("../../../common/filters/http-exception.filter");
     app.useGlobalFilters(new HttpExceptionFilter());
     await app.init();
   });

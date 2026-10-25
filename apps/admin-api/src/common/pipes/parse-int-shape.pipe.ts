@@ -29,16 +29,14 @@ import { AppError } from "../errors/app-error";
  * 机制抛出的异常不编造码」——让本机制自己抛码，filter 的兜底推断就只服务
  * 漏挂管道的遗留路由（见 http-exception.filter 的管道 400 兜底分支）。
  */
-export class ParseIntShapePipe
-  implements PipeTransform<string, Promise<number>>
-{
+export class ParseIntShapePipe implements PipeTransform<
+  string,
+  Promise<number>
+> {
   /** 内层 NestJS 管道：保住整数形态判定（严格数字串正则 + isFinite）。 */
   private readonly delegate = new ParseIntPipe();
 
-  async transform(
-    value: string,
-    metadata: ArgumentMetadata,
-  ): Promise<number> {
+  async transform(value: string, metadata: ArgumentMetadata): Promise<number> {
     try {
       return await this.delegate.transform(value, metadata);
     } catch {

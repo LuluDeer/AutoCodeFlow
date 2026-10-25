@@ -181,7 +181,9 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
 
   // ── F-52 残留收编 2：/task-templates/999999（UUID 主键收到非 UUID 形态）──
   it("GET /task-templates/999999 → 400 INVALID_VALUE_FORMAT（ParseUuidShapePipe 拦截，不打 DB）", async () => {
-    const res = await request(app.getHttpServer()).get("/task-templates/999999");
+    const res = await request(app.getHttpServer()).get(
+      "/task-templates/999999",
+    );
     expect(res.status).toBe(400);
     expect(res.body.code).toBe(400);
     expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");

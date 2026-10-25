@@ -269,6 +269,8 @@ describe("HttpExceptionFilter — 管道类 400 兜底赋码（F-52 自查）", 
     expect(statusFn).toHaveBeenCalledWith(422);
     const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
     expect(body["errorCode"]).toBeNull();
-    expect(body["message"]).toBe("Validation failed (numeric string is expected)");
+    expect(body["message"]).toBe(
+      "Validation failed (numeric string is expected)",
+    );
   });
 });

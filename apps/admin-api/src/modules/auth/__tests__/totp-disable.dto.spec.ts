@@ -38,9 +38,8 @@ describe("AuthController totpDisable body 纪律（F-53）", () => {
     app = moduleRef.createNestApplication();
     // 与 main.ts 全局管道同参（本套件不走完整 bootstrap）。
     const { ValidationPipe } = await import("@nestjs/common");
-    const { HttpExceptionFilter } = await import(
-      "../../../common/filters/http-exception.filter"
-    );
+    const { HttpExceptionFilter } =
+      await import("../../../common/filters/http-exception.filter");
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,

@@ -1,9 +1,4 @@
-import {
-  IsArray,
-  IsIn,
-  IsOptional,
-  IsString,
-} from "class-validator";
+import { IsArray, IsIn, IsOptional, IsString } from "class-validator";
 import { ApiProperty } from "@nestjs/swagger";
 import { AlertChannel, AlertLevel } from "../notification.service";
 import { ChannelDeliveryStatus } from "../channels/base.channel";

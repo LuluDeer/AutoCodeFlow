@@ -321,10 +321,7 @@ export class AuthController {
   @ApiResponse({ status: 401, description: "确认失败" })
   // F-53（UIAUDIT P2-2）：body 换 class DTO——此前内联类型使全局
   // whitelist+forbidNonWhitelisted 对本面失效（多余字段静默收下）。
-  totpDisable(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: TotpDisableDto,
-  ) {
+  totpDisable(@CurrentUser() user: AuthUser, @Body() dto: TotpDisableDto) {
     return this.authService.totpDisable(user.id, {
       password: dto?.password,
       code: dto?.code,
