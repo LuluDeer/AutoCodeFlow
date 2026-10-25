@@ -283,4 +283,42 @@ describe('A-4 storage 事件同步（跨标签页）', () => {
       refreshToken: 'tab-b-refresh',
     });
   });
+
+  // ── F-12（UIAUDIT P3-5）：storage 同步的「user 没变不写」判据 ─────────────
+  // 旧判据 `user !== persisted.user` 恒真（persisted.user 每次重新 JSON.parse，
+  // 引用永不相等）→ 每次跨 tab 写入都多打一发 setUser。序列化串比较后：
+  // 同一账号（同 id 同字段）不再 setUser，字段真变才写。
+  it('F-12：另一 tab 写入的 user 与内存相同（串相等）→ 不再触发 setUser', () => {
+    const setUserSpy = vi.spyOn(useAuthStore.getState(), 'setUser');
+    writePersisted({
+      token: 'tab-b-access',
+      refreshToken: 'tab-b-refresh',
+      user: { id: 1, username: 'alice' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    expect(setUserSpy).not.toHaveBeenCalled();
+    setUserSpy.mockRestore();
+  });
+
+  it('F-12：user 字段真变（同 id 换 username）→ 仍同步 setUser（幂等语义保留）', () => {
+    const setUserSpy = vi.spyOn(useAuthStore.getState(), 'setUser');
+    writePersisted({
+      token: 'tab-b-access',
+      refreshToken: 'tab-b-refresh',
+      user: { id: 1, username: 'alice-renamed' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    expect(setUserSpy).toHaveBeenCalledTimes(1);
+    setUserSpy.mockRestore();
+  });
 });

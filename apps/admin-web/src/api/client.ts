@@ -240,7 +240,16 @@ if (typeof window !== 'undefined') {
     ) {
       setRefreshToken(persisted.refreshToken);
     }
-    if (persisted.user && useAuthStore.getState().user !== persisted.user) {
+    // F-12（UIAUDIT P3-5）：旧判据 `user !== persisted.user` 恒为 true——
+    // persisted.user 每次 storage 事件都重新 JSON.parse，对象引用永不可能与
+    // 内存 user 相等，短路失效 → 每次跨 tab 认证写入都多一次 setUser（幂等但
+    // 多一次重渲染）。改为序列化串比较：同一份 persist 载荷的 user 写入/读回
+    // 键序一致，串相等即「没变」，真正变化（如 profile 回写 totpEnabled）才写。
+    if (
+      persisted.user &&
+      JSON.stringify(useAuthStore.getState().user) !==
+        JSON.stringify(persisted.user)
+    ) {
       setUser(persisted.user as AuthStateUser);
     }
   });
