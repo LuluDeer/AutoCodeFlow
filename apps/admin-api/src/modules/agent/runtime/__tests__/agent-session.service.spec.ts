@@ -185,6 +185,20 @@ describe("AgentSessionService · 创建与查询", () => {
     expect(h.listQb.take).toHaveBeenCalledWith(50);
   });
 
+  it("list：page 超上限 10000 钳到 10000（F-54，对齐 NETOPT-3④ 口径，不 400）", async () => {
+    // ?page=99999999 此前生成 OFFSET ~2e9 的深 OFFSET + 全量 COUNT。超限值
+    // 钳到上限（安全回落语义，与 NaN 回落同一契约：不 400），skip =
+    // (10000-1)*pageSize。
+    const h = harness();
+    await h.svc.list({ page: 99999999, pageSize: 20 });
+    expect(h.listQb.skip).toHaveBeenCalledWith(9999 * 20);
+    expect(h.listQb.take).toHaveBeenCalledWith(20);
+    // 边界内不钳：10000 本身原样。
+    const h2 = harness();
+    await h2.svc.list({ page: 10000, pageSize: 20 });
+    expect(h2.listQb.skip).toHaveBeenCalledWith(9999 * 20);
+  });
+
   it("findChildren / listSteps / listToolCalls 透传排序读取", async () => {
     const h = harness();
     await expect(h.svc.findChildren("p-1")).resolves.toEqual([

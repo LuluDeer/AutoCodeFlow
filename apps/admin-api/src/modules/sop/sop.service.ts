@@ -1767,11 +1767,18 @@ export class SopService {
     // NaN 守卫（与 agent-session list 同款，R3 后端遗留）：controller 的
     // Number("abc")=NaN 会穿透 Math.max/Math.min 钳制直达 skip/take 炸 500。
     // 非有限数视同未传、回落 1/20（对齐「非法深链安全回落」契约，不 400）。
+    // F-54（UIAUDIT 后端轮 P3-1）：page 补上限 10000——对齐 NETOPT-3④ 的
+    // PageQueryDto 口径（与 agent-session.service 同批、events 先例 2ea869fc
+    // 一致），封住 `?page=99999999` 深 OFFSET + 全量 COUNT。仍在 clamp 内做
+    // （不引 DTO）以保持「非法值安全回落、绝不 400」的既有契约。
     const rawPage = options.page;
     const rawPageSize = options.pageSize;
-    const page = Math.max(
-      1,
-      typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+    const page = Math.min(
+      10000,
+      Math.max(
+        1,
+        typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+      ),
     );
     const pageSize = Math.min(
       100,
