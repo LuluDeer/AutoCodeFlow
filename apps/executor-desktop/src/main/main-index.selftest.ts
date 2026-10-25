@@ -341,9 +341,32 @@ function main(): void {
         wizardSaveBody.includes('await setAutoLaunchEnabled(false)'),
       'F-23: 向导保存路径必须对 autoStart 对称——false 分支也必须 await setAutoLaunchEnabled(false)（否则托盘与设置页状态矛盾、OS 自启项残留）',
     );
+
+    // ── UIUX F-28（2026-10-25 审计）：向导窗口随工作区钳制 + 可 resize ──
+    // window-manager.ts 顶层 import electron，裸 node 加载即崩（同 index.ts
+    // 处置）——按本文件惯例钉源码锚点。审计实证：660×780 固定尺寸在
+    // ≤768p 矮屏下底部「完成/上一步」被任务栏裁切且 resizable:false。
+    const wmCode = read('window-manager.ts').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const wmSlice = (startMarker: string, endMarker: string): string => {
+      const s = wmCode.indexOf(startMarker);
+      assert.ok(s >= 0, `F-28/F-29: window-manager.ts 找不到 ${startMarker}`);
+      const e = wmCode.indexOf(endMarker, s + startMarker.length);
+      return e > s ? wmCode.slice(s, e) : wmCode.slice(s);
+    };
+    const openWizardBody = wmSlice('openWizard(): void', 'focusOrOpenStatus(): void');
+    assert.ok(
+      openWizardBody.includes('Math.min(660, workArea.width)') &&
+        openWizardBody.includes('Math.min(780, workArea.height)') &&
+        openWizardBody.includes('workArea'),
+      'F-28: 向导窗口尺寸必须随 workArea 钳制（对齐 openStatus 的做法，矮屏不裁底部按钮）',
+    );
+    assert.ok(
+      /resizable:\s*true/.test(openWizardBody),
+      'F-28: 向导窗口必须可 resize（此前 false，矮屏既不能缩也不能拖）',
+    );
   }
 
-  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry)');
+  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp)');
 }
 
 main();

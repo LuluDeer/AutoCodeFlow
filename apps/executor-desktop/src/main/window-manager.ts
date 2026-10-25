@@ -210,11 +210,22 @@ export class WindowManager {
       this.statusWindow.hide();
     }
 
+    // F-28（UIUX 审计 2026-10-25）：向导固定 660×780 不随工作区钳制——矮屏
+    // （≤768p，workArea ≈ 728px）下底部「完成/上一步」被任务栏裁切，且窗口
+    // resizable:false 无法缩小或拖入。对齐下方 openStatus 的做法：取光标所在
+    // 显示器的 workArea 收敛尺寸并在工作区内居中（普通屏行为不变：660×780
+    // 完整保留），并放开 resize（.wizard 是 100% 高 + .wizard-body 内滚，
+    // 任意尺寸下操作行都在窗口内，缩小不会裁按钮）。
+    const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    const winW = Math.min(660, workArea.width);
+    const winH = Math.min(780, workArea.height);
+
     this.wizardWindow = new BrowserWindow({
-      width: 660,
-      height: 780,
-      resizable: false,
-      center: true,
+      width: winW,
+      height: winH,
+      x: Math.round(workArea.x + (workArea.width - winW) / 2),
+      y: Math.round(workArea.y + (workArea.height - winH) / 2),
+      resizable: true,
       show: false,
       frame: false,
       // WIN-DISPLAY (1.4.3 Hotfix / N47): transparent+frameless 窗口在部分
