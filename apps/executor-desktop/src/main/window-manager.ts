@@ -196,12 +196,19 @@ export class WindowManager {
   // 取消）都在 wizardWindow 的 closed 钩子里唤回主窗；finish 路径的
   // focusOrOpenStatus 与此幂等（已 show 的窗口只聚焦，不新建）。
   private statusHiddenByWizard = false;
+  // F-29 收尾让路：向导完成路径是 closeWizard()（异步 close）→ 紧接
+  // focusOrOpenStatus() 开/聚焦状态窗。close() 返回时窗口对象尚在（'closed'
+  // 事件还没发），若 F-29 的「向导在开」守卫照常命中，完成路径的状态窗就
+  // 永远不会创建（e2e n10 用例1 / 冒烟「按工作区放大」实证）。closeWizard
+  // 置位本标志，focusOrOpenStatus 对「正在关闭的向导」不再聚焦让路。
+  private wizardClosing = false;
 
   openWizard(): void {
     if (this.wizardWindow && !this.wizardWindow.isDestroyed()) {
       this.wizardWindow.focus();
       return;
     }
+    this.wizardClosing = false;
 
     // 重跑向导：主窗可见时为向导让位（首次启动无主窗，此分支不触发）——
     // 与首次启动行为一致：向导是唯一窗口，而不是叠在旧窗上的对话框。
@@ -242,6 +249,7 @@ export class WindowManager {
     loadPage(this.wizardWindow, 'wizard');
     this.wizardWindow.on('closed', () => {
       this.wizardWindow = null;
+      this.wizardClosing = false;
       // 重跑向导流收尾：无论向导是完成（save-and-close-wizard）还是用户
       // 直接点关闭取消，都把为主窗让位时隐藏的窗口唤回——否则取消路径下
       // 桌面上什么都不剩（配置未动，只是界面消失了）。
@@ -260,7 +268,9 @@ export class WindowManager {
     // 会以挂载时的旧配置快照**整包覆盖**设置页里未保存的修改（部分键因不在
     // 载荷幸存，形成混合态）。改为聚焦向导本身：向导是唯一应处的前台；
     // 向导关闭后的唤回由 wizardWindow 的 closed 钩子照常完成（幂等）。
-    if (this.wizardWindow && !this.wizardWindow.isDestroyed()) {
+    // 例外：完成路径（closeWizard 已置 wizardClosing）——此刻向导窗口对象
+    // 还在但正在关闭，这里必须放行去开状态窗（见 wizardClosing 注释）。
+    if (!this.wizardClosing && this.wizardWindow && !this.wizardWindow.isDestroyed()) {
       this.wizardWindow.show();
       this.wizardWindow.focus();
       return;
@@ -354,6 +364,9 @@ export class WindowManager {
 
   closeWizard(): void {
     if (this.wizardWindow && !this.wizardWindow.isDestroyed()) {
+      // F-29 收尾让路：置位后 focusOrOpenStatus 对正在关闭的向导不再聚焦，
+      // 完成路径紧随其后的 focusOrOpenStatus 才能照常开出状态窗。
+      this.wizardClosing = true;
       this.wizardWindow.close();
     }
   }

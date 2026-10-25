@@ -376,6 +376,14 @@ function main(): void {
       wizardGuardIdx >= 0 && statusShowIdx > wizardGuardIdx,
       'F-29: focusOrOpenStatus 必须在 show 主窗之前判「向导在开」并聚焦向导（双窗并发编辑会被向导旧快照整包覆盖）',
     );
+    // F-29 收尾让路（e2e n10 用例1 实证回归）：完成路径 closeWizard()（异步
+    // close）→ focusOrOpenStatus() 必须仍能开出状态窗——wizardClosing 标志
+    // 是这条让路通道的锚点，缺失则向导「完成」后桌面无窗（守卫吞掉状态窗）。
+    const closeWizardBody = wmSlice('closeWizard(): void', '\n}');
+    assert.ok(
+      focusBody.includes('!this.wizardClosing') && closeWizardBody.includes('this.wizardClosing = true'),
+      'F-29: closeWizard 必须置 wizardClosing、focusOrOpenStatus 必须对 closing 向导让路（否则完成路径开不出状态窗）',
+    );
   }
 
   console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp, F-29 focus wizard guard)');
