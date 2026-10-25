@@ -6,7 +6,6 @@ import {
   Patch,
   Param,
   Delete,
-  ParseIntPipe,
   Query,
   UseGuards,
   Req,
@@ -34,6 +33,9 @@ import {
   UserResponseDto,
 } from "./dto/user-response.dto";
 import { ListUsersDto } from "./dto/list-users.dto";
+// F-52（UIAUDIT P2-1）：整数主键形态管道——形态非法 400 + INVALID_VALUE_FORMAT
+// 封套（此前原生 ParseIntPipe 抛裸英文、errorCode:null，与 UUID 侧漂移）。
+import { ParseIntShapePipe } from "../../common/pipes/parse-int-shape.pipe";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -102,7 +104,7 @@ export class UsersController {
   // for missing users so callers never leak existence via 404 (H-3).
   @ApiOperation({ summary: "获取用户详情" })
   async findOne(
-    @Param("id", ParseIntPipe) id: number,
+    @Param("id", ParseIntShapePipe) id: number,
     @CurrentUser() user: AuthUser,
   ) {
     const isAdmin = user?.role === UserRole.ADMIN;
@@ -121,7 +123,7 @@ export class UsersController {
   @ApiOkResponse({ type: UserResponseDto })
   @ApiOperation({ summary: "更新用户" })
   async update(
-    @Param("id", ParseIntPipe) id: number,
+    @Param("id", ParseIntShapePipe) id: number,
     @Body() dto: UpdateUserDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -195,7 +197,7 @@ export class UsersController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "删除用户" })
   async remove(
-    @Param("id", ParseIntPipe) id: number,
+    @Param("id", ParseIntShapePipe) id: number,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {

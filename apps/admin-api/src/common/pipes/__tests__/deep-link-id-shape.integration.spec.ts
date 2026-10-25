@@ -8,13 +8,20 @@
  *
  * 修复（两层，本 spec 走真实路由栈钉住）：
  *   1. 参数管道：读面 `:id`/`:execId` 挂 ParseUuidShapePipe（projects.controller
- *      同款先例）——形态非法 400 "Validation failed (uuid is expected)"，不打 DB；
+ *      同款先例）——形态非法 400 打 400 封套，不打 DB；
  *   2. 全局兜底：HttpExceptionFilter 把 PG 22P02 映射为 400 INVALID_VALUE_FORMAT
  *      （见 http-exception.filter，任何绕过管道的路径不再 500）。
  *   形态合法但不存在 → 404（service 抛 AppError TASK_NOT_FOUND，本 spec 经
  *   mock service 透传该形态，钉住「400 形态错 / 404 不存在」的分界）。
  *
- * 不依赖 DB：三个控制器的 service 全部 mock，JwtAuthGuard 以 useValue 放行。
+ * F-52（UIAUDIT 后端轮 P2-1，2026-10-25）：形态非法的封套统一为
+ * `400 + errorCode=INVALID_VALUE_FORMAT + 中文目录文案`——此前路由管道拒绝时
+ * 原样透传 NestJS 英文（errorCode:null），与 22P02 兜底两套形态漂移。同轮把
+ * users（ParseIntShapePipe）与 task-templates（ParseUuidShapePipe）两个残留
+ * 控制器收编进同一契约，本 spec 一并钉住（不再各写一份只能证明管道元数据的
+ * 单测）。
+ *
+ * 不依赖 DB：五个控制器的 service 全部 mock，JwtAuthGuard 以 useValue 放行。
  */
 import { INestApplication } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -30,6 +37,10 @@ import { ApplicationService } from "../../../modules/application/application.ser
 import { AppDeploymentService } from "../../../modules/application/app-deployment.service";
 import { ExecutorController } from "../../../modules/executor/executor.controller";
 import { ExecutorService } from "../../../modules/executor/executor.service";
+import { UsersController } from "../../../modules/users/users.controller";
+import { UsersService } from "../../../modules/users/users.service";
+import { TaskTemplateController } from "../../../modules/task-template/task-template.controller";
+import { TaskTemplateService } from "../../../modules/task-template/task-template.service";
 import { SystemConfigService } from "../../../modules/config/config.service";
 import { AuditService } from "../../../modules/audit/audit.service";
 import { JwtAuthGuard } from "../../guards/jwt-auth.guard";
@@ -54,6 +65,8 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
   let taskService: Record<string, jest.Mock>;
   let applicationService: Record<string, jest.Mock>;
   let executorService: Record<string, jest.Mock>;
+  let usersService: Record<string, jest.Mock>;
+  let taskTemplateService: Record<string, jest.Mock>;
 
   beforeAll(async () => {
     taskService = {
@@ -71,13 +84,28 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
     executorService = {
       findOne: jest.fn(),
     } as unknown as Record<string, jest.Mock>;
+    usersService = {
+      findByIdOrNull: jest.fn(),
+    } as unknown as Record<string, jest.Mock>;
+    taskTemplateService = {
+      findOne: jest.fn(),
+    } as unknown as Record<string, jest.Mock>;
 
     const moduleRef = await Test.createTestingModule({
-      controllers: [TaskController, ApplicationController, ExecutorController],
+      controllers: [
+        TaskController,
+        ApplicationController,
+        ExecutorController,
+        // F-52：两个管道漂移残留控制器收编进同一契约。
+        UsersController,
+        TaskTemplateController,
+      ],
       providers: [
         { provide: TaskService, useValue: taskService },
         { provide: ApplicationService, useValue: applicationService },
         { provide: ExecutorService, useValue: executorService },
+        { provide: UsersService, useValue: usersService },
+        { provide: TaskTemplateService, useValue: taskTemplateService },
         { provide: TaskWebhookService, useValue: {} },
         { provide: AuditService, useValue: { log: jest.fn() } },
         { provide: AppDeploymentService, useValue: {} },
@@ -101,11 +129,13 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
   });
 
   // ── 深链 1：/tasks/999999（形态非法）────────────────────────────────────
-  it("GET /tasks/999999 → 400（ParseUuidShapePipe 拦截，不打 DB）", async () => {
+  it("GET /tasks/999999 → 400 INVALID_VALUE_FORMAT（ParseUuidShapePipe 拦截，不打 DB）", async () => {
     const res = await request(app.getHttpServer()).get("/tasks/999999");
     expect(res.status).toBe(400);
     expect(res.body.code).toBe(400);
-    expect(res.body.message).toContain("uuid");
+    // F-52：管道拒绝统一封套（此前 errorCode:null + 裸英文 NestJS 文案）。
+    expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");
+    expect(res.body.message).toContain("格式非法");
     expect(taskService.findOne).not.toHaveBeenCalled();
   });
 
@@ -114,6 +144,7 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
     const res = await request(app.getHttpServer()).get("/applications/abc");
     expect(res.status).toBe(400);
     expect(res.body.code).toBe(400);
+    expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");
     expect(applicationService.findById).not.toHaveBeenCalled();
   });
 
@@ -124,6 +155,7 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
     );
     expect(res.status).toBe(400);
     expect(res.body.code).toBe(400);
+    expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");
     expect(executorService.findOne).not.toHaveBeenCalled();
   });
 
@@ -135,6 +167,26 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
     expect(res.status).toBe(400);
     expect(res.body.code).toBe(400);
     expect(taskService.getExecution).not.toHaveBeenCalled();
+  });
+
+  // ── F-52 残留收编 1：/users/abc（整数主键收到非数字形态）────────────────
+  it("GET /users/not-a-number → 400 INVALID_VALUE_FORMAT（ParseIntShapePipe 拦截，不打 DB）", async () => {
+    const res = await request(app.getHttpServer()).get("/users/not-a-number");
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe(400);
+    expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");
+    expect(res.body.message).toContain("格式非法");
+    expect(usersService.findByIdOrNull).not.toHaveBeenCalled();
+  });
+
+  // ── F-52 残留收编 2：/task-templates/999999（UUID 主键收到非 UUID 形态）──
+  it("GET /task-templates/999999 → 400 INVALID_VALUE_FORMAT（ParseUuidShapePipe 拦截，不打 DB）", async () => {
+    const res = await request(app.getHttpServer()).get("/task-templates/999999");
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe(400);
+    expect(res.body.errorCode).toBe("INVALID_VALUE_FORMAT");
+    expect(res.body.message).toContain("格式非法");
+    expect(taskTemplateService.findOne).not.toHaveBeenCalled();
   });
 
   // ── 形态合法但不存在 → 404（TASK_NOT_FOUND），与 400 分界 ────────────────

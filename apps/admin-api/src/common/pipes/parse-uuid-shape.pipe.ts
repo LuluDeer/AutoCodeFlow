@@ -4,6 +4,7 @@ import {
   type PipeTransform,
 } from "@nestjs/common";
 import { isUuidShape } from "../decorators/is-uuid-shape.decorator";
+import { AppError } from "../errors/app-error";
 
 /**
  * PROJECT-UUID-01（生产故障）：路由参数用的 `ParseUUIDPipe` 会 400 掉**默认项目
@@ -42,15 +43,18 @@ import { isUuidShape } from "../decorators/is-uuid-shape.decorator";
  * 的标识符」，不是「一个 RFC 4122 版本 1–8 的 UUID」**。
  *
  * 实现取「复用 + 收窄」而非「重写正则」：先交给 NestJS 自带的 `ParseUUIDPipe`
- * （保住它对 nil/max UUID、大小写、非字符串输入的既有行为与错误文案），仅在它
+ * （保住它对 nil/max UUID、大小写、非字符串输入的既有判定行为），仅在它
  * 拒绝时**追加**一次形状校验放行。这样：
  *
  *   · 默认项目 id、variant 位非 [89ab] 的 v4、v7 等 → 放行（与 `@IsUuidShape`
  *     的接受面逐字一致，两处不漂移）；
  *   · `urn:uuid:…` / `{…}` / 空串 / `abc` / 注入串 / 超长串 → 仍然拒绝
  *     （`isUuidShape` 是锚定的 8-4-4-4-12 十六进制正则，不放松任何语法面）；
- *   · 错误文案与状态码保持 NestJS 原样（400 + `Validation failed (uuid is
- *     expected)`），既有按此断言的 spec 不受影响。
+ *   · 拒绝时状态码保持 400，但封套换为 `AppError("INVALID_VALUE_FORMAT")`
+ *     （F-52，UIAUDIT 后端轮 P2-1——见 transform 内注释。**修订**：df08597c
+ *     时的承诺是「错误文案保持 NestJS 原样」，那之后 UIAUDIT 审计把全站 ID
+ *     形态错误的统一契约钉为 `400 + errorCode=INVALID_VALUE_FORMAT + 中文
+ *     目录文案`，裸英文 + errorCode:null 的形态反而成了漂移源）。
  *
  * 安全性：放宽的只是版本位/variant 位两个「形状内的自由位」，值最终仍走
  * TypeORM 参数化查询，不做字符串拼接（与 `is-uuid-shape.decorator.ts` 同论证）。
@@ -59,23 +63,26 @@ export class ParseUuidShapePipe implements PipeTransform<
   string,
   Promise<string>
 > {
-  /** 内层 NestJS 管道：保住框架原有的错误文案/状态码与 nil/max 特例。 */
+  /** 内层 NestJS 管道：保住框架原有的形态判定与 nil/max 特例。 */
   private readonly delegate = new ParseUUIDPipe();
 
   async transform(value: string, metadata: ArgumentMetadata): Promise<string> {
     try {
       return await this.delegate.transform(value, metadata);
-    } catch (err) {
-      // 内层拒绝：只有「形状是 UUID」才放行，否则**原样抛回框架异常**
-      // （不吞不改——nil/max 走不到这里，它们内层就通过了）。
+    } catch {
+      // 内层拒绝：只有「形状是 UUID」才放行（nil/max 走不到这里，它们内层
+      // 就通过了）。
       //
-      // 这里不再补 `if (err instanceof Error)` 的兜底分支：`ParseUUIDPipe`
-      // 抛的一定是 `HttpException`（`Error` 的子类），那个分支恒不可达；
-      // 更糟的是它会把内层原始的 message 换成硬编码常量——若未来有人给
-      // 内层传 `exceptionFactory`，自定义文案会被这里静默吃掉。直接抛原
-      // 异常，错误文案/状态码就与 NestJS 逐字一致（本文件头注的承诺）。
+      // F-52（UIAUDIT P2-1）：形状也非法时换封套为带码异常——400 状态不变，
+      // message 从 NestJS 原生英文（"Validation failed (uuid is expected)"，
+      // 经 filter 时 errorCode 只能是 null）换成错误目录中文兜底 + 
+      // errorCode=INVALID_VALUE_FORMAT，与 users 侧的 ParseIntShapePipe、
+      // http-exception.filter 的 22P02 兜底（绕过管道直达 DB 的形态错误）
+      // 三方同语言。此前「原样抛回框架异常」的写法连同其「不吞不改」论证
+      // 一并被本契约收编：丢掉的只是那句裸英文类型提示（不含请求值，无排障
+      // 价值），换来的是全站 ID 形态错误一个码。
       if (isUuidShape(value)) return value;
-      throw err;
+      throw new AppError("INVALID_VALUE_FORMAT");
     }
   }
 }

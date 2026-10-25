@@ -4,7 +4,6 @@ import {
   Delete,
   Get,
   Param,
-  ParseUUIDPipe,
   Post,
 } from "@nestjs/common";
 import {
@@ -33,6 +32,11 @@ import { AuthUser } from "../../common/interfaces/auth-user.interface";
 // D3-B-P2-2: 模板删除审计落证。
 import { AuditService } from "../audit/audit.service";
 import { SimpleOkResponseDto } from "../auth/dto/misc-response.dto";
+// F-52（UIAUDIT P2-1）：换 ParseUuidShapePipe（F-41 先例）——原生 ParseUUIDPipe
+// 一是 400 裸英文（errorCode:null，与全站 INVALID_VALUE_FORMAT 封套漂移），
+// 二是只认 RFC 9562 版本位（PROJECT-UUID-01 同款陷阱：任何版本位为 0 的合法
+// 形态 id 都会被拒）。
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 
 /**
  * CORE-03：任务模板端点（管理台，全部走全局 JwtAuthGuard）。
@@ -84,7 +88,7 @@ export class TaskTemplateController {
     type: TaskTemplateResponseDto,
   })
   @ApiResponse({ status: 404, description: "模板不存在" })
-  one(@Param("id", ParseUUIDPipe) id: string): Promise<TaskTemplate> {
+  one(@Param("id", ParseUuidShapePipe) id: string): Promise<TaskTemplate> {
     return this.svc.findOne(id);
   }
 
@@ -139,7 +143,7 @@ export class TaskTemplateController {
     description: "模板覆盖体（自由字段，合并后校验 CreateTaskDto）",
   })
   instantiate(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() body: Record<string, unknown>,
     // 第二轮审计（A1）：实例化此前不注入请求方，TaskService.create 拿不到
     // user → 落库 ownerUserId 恒 null，非 ADMIN 创建者对自己建的任务写面 403
@@ -163,7 +167,7 @@ export class TaskTemplateController {
   @ApiResponse({ status: 404, description: "模板不存在" })
   @ApiOkResponse({ type: SimpleOkResponseDto })
   async remove(
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
   ): Promise<{ ok: true }> {
     // 属主或 ADMIN 才可删；NULL 历史行仅 ADMIN。
