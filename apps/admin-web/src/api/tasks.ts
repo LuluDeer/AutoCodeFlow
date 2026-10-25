@@ -159,6 +159,12 @@ export interface Task {
   timeoutAction?: TimeoutAction | null;
   /** CORE-04: 超时预警阈值（timeout 的百分数 0-90；null = 未启用） */
   timeoutWarnRatio?: number | null;
+  /**
+   * CORE-05（F-9）：预估执行时长（秒，0/缺省 = 未知）。仅作调度侧执行器
+   * loadScore 的加权输入（预估越长，繁忙执行器被惩罚越大），执行链路不消费。
+   * 声明它是编辑态回填的前提（类型层不声明 = 该字段在读面不存在）。
+   */
+  estimatedDurationSec?: number | null;
   applicationId?: string | null;
   executeMode?: string | null;
   executorAppName?: string | null;

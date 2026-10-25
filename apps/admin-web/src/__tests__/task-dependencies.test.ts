@@ -9,6 +9,7 @@ import {
   applyDependenciesPayload,
   buildDependenciesPayload,
   dependenciesFormValues,
+  humanizeDependencyTaskIds,
 } from '../pages/task-dependencies';
 
 describe('applyDependenciesPayload（提交序列化 + 载体字段剥离）', () => {
@@ -124,3 +125,44 @@ describe('dependenciesFormValues（编辑态回填，读 value=id 契约）', ()
     expect(buildDependenciesPayload(back.selected, back.nameSnapshot)).toEqual(payload);
   });
 });
+
+// F-8（本轮审计）：后端依赖类校验错误（循环依赖等）把 taskId（UUID）裸拼进
+// message；表单持有 id→显示名快照，toast 前替换为任务名，映射不到保持原文。
+describe('humanizeDependencyTaskIds（F-8：错误消息 UUID→任务名）', () => {
+  const snapshot = {
+    '11111111-2222-3333-4444-555555555555': '每日备份',
+    'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee': 'UPPER-TASK',
+  };
+
+  it('消息中的 UUID 替换为快照中的任务名（其余文本原样）', () => {
+    expect(
+      humanizeDependencyTaskIds('循环依赖: 11111111-2222-3333-4444-555555555555', snapshot),
+    ).toBe('循环依赖: 每日备份');
+    expect(
+      humanizeDependencyTaskIds(
+        '检测到循环依赖 task 11111111-2222-3333-4444-555555555555 → aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        snapshot,
+      ),
+    ).toBe('检测到循环依赖 task 每日备份 → UPPER-TASK');
+  });
+
+  it('大小写不同的 UUID 也能命中（快照键大小写三态兜底）', () => {
+    expect(
+      humanizeDependencyTaskIds('dep AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE', snapshot),
+    ).toBe('dep UPPER-TASK');
+  });
+
+  it('映射不到（任务已删除/快照未含）保持原文，绝不编造', () => {
+    expect(
+      humanizeDependencyTaskIds('missing 99999999-8888-7777-6666-555555555555', snapshot),
+    ).toBe('missing 99999999-8888-7777-6666-555555555555');
+  });
+
+  it('无快照/空消息原样返回', () => {
+    expect(humanizeDependencyTaskIds('some message', undefined)).toBe('some message');
+    expect(humanizeDependencyTaskIds('some message', null)).toBe('some message');
+    expect(humanizeDependencyTaskIds('', snapshot)).toBe('');
+    expect(humanizeDependencyTaskIds('plain', {})).toBe('plain');
+  });
+});
+

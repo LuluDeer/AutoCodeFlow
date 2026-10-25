@@ -2661,6 +2661,9 @@ export default {
   'taskForm.field.fixedRate.minutes': '{{n}} minutes',
   'taskForm.field.fixedRate.minuteUnit': 'minutes',
   'taskForm.field.fixedRate.placeholder': '60 (seconds)',
+  // F-7/F-2: negative sign + frontend mirror of TASK_FIXED_RATE_MAX_SECONDS=2147483 (35791 minutes).
+  'taskForm.field.fixedRate.negative': 'Fixed interval cannot be negative',
+  'taskForm.field.fixedRate.maxExceeded': 'Fixed interval cannot exceed {{max}} minutes',
   'taskForm.window.title': 'Maintenance Window (optional)',
   'taskForm.window.tooltip': 'Release/downtime protection: scheduled triggers within the window (Cron, fixed rate, missed-run compensation) are skipped and counted in scheduling metrics; manual triggers are unaffected. The window opens when the Start Cron hits and closes when the End Cron hits (half-open interval); window Crons are evaluated in server local time. Up to 10 windows.',
   'taskForm.window.startRequired': 'Start Cron is required',
@@ -2714,10 +2717,17 @@ export default {
   'taskForm.field.timeoutWarnRatio.hint': '(percentage of the timeout, 0-90; empty disables the warning)',
   'taskForm.field.timeoutWarnRatio.tooltip': 'e.g., 600s timeout with threshold 80: a warning notification fires at 480s so you can intervene before the hard timeout.',
   'taskForm.field.timeoutWarnRatio.placeholder': 'e.g., 80, empty disables the warning',
+  // CORE-05 (F-9): estimated duration — weighted input for executor load scoring.
+  'taskForm.field.estimatedDurationSec': 'Estimated Duration',
+  'taskForm.field.estimatedDurationSec.hint': '(seconds, 0/empty = unknown; feeds executor load scoring only)',
+  'taskForm.field.estimatedDurationSec.tooltip': 'Used only by the scheduler for executor load scoring: longer estimates penalize busy executors more, which balances mixed short/long workloads. The execution path (heartbeat/timeout/stats) never consumes it. 0 or empty = unknown.',
+  'taskForm.field.estimatedDurationSec.placeholder': 'Used for executor load scoring; optional',
   'taskForm.field.maxRetry': 'Max Attempts',
   'taskForm.field.maxRetry.hint': 'Retries cover dispatch/environment failures; script-stage failures need a manual re-run (1 = no retry)',
   'taskForm.field.retryDelay': 'Retry Delay',
   'taskForm.field.retryDelay.hint': '(seconds; 0 = no delay; actual delay includes ±20% jitter to spread retry bursts)',
+  // F-3: frontend mirror of the backend @Max(86400) validation message.
+  'taskForm.field.retryDelay.maxExceeded': 'Retry delay cannot exceed 86400 seconds',
   'taskForm.field.retryableErrors': 'Retryable Error Types',
   'taskForm.field.retryableErrors.hint': '(empty = all retryable)',
   'taskForm.field.retryableErrors.tooltip': 'Only selected error types are auto-retried (matching error message or failure category). e.g., if only "Executor offline" is selected, script errors go terminal after the first failure without exhausting the retry budget.',
@@ -3095,6 +3105,8 @@ export default {
   'triggerPreview.empty': 'Waiting for input…',
   'triggerPreview.tzFallbackLabel': 'Server default timezone (browser local)',
   'triggerPreview.tzUnresolved': 'No timezone set: actual firing uses the server process timezone; this preview uses the browser local timezone and may be off.',
+  // F-5: invalid timezone gets its own actionable message (distinct from "unset").
+  'triggerPreview.tzInvalid': 'Invalid timezone: enter a valid IANA timezone (e.g. Asia/Shanghai); otherwise the server process timezone applies.',
 
   'time.relative.justNow': 'just now',
   'time.relative.minsAgo': '{{n}} min ago',

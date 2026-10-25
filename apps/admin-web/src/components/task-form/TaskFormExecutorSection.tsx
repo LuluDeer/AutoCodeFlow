@@ -13,15 +13,28 @@
  */
 import { Alert, Card, Divider, Form, InputNumber, Radio, Select, Space, Tag, theme, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined, LockOutlined } from '@ant-design/icons';
+import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
-import { TIMEOUT_WARN_RATIO_MAX, TIMEOUT_ACTION_OPTIONS } from '../../pages/timeout-policy';
-import { RETRYABLE_ERROR_OPTIONS } from '../../pages/retry-policy';
+import { TIMEOUT_WARN_RATIO_MAX, ESTIMATED_DURATION_SEC_MAX, TIMEOUT_ACTION_OPTIONS } from '../../pages/timeout-policy';
+import { RETRYABLE_ERROR_OPTIONS, RETRY_DELAY_MAX_SECONDS } from '../../pages/retry-policy';
 import { TASK_PRIORITY_OPTIONS } from '../../utils/priority';
 import type { TaskFormExecutorOption } from '../../hooks/useTaskFormReferenceData';
 import { LAYOUT_TOKENS } from '../../theme/tokens';
 
 const { Text } = Typography;
+
+// F-11：上游依赖下拉选项的 ellipsis 形态（对照表格侧既有形态：maxWidth +
+// overflow hidden + nowrap + textOverflow；inline-block 让 span 在选项内容
+// 容器内可收缩截断，超长任务名不再撑破下拉面板）。
+const DEPENDENCY_OPTION_ELLIPSIS: CSSProperties = {
+  maxWidth: 320,
+  display: 'inline-block',
+  verticalAlign: 'bottom',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
 
 // Executor dispatch modes exposed to the user
 const EXECUTOR_MODE_OPTIONS = (t: (k: string) => string) => [
@@ -314,12 +327,40 @@ export default function TaskFormExecutorSection({
           <InputNumber min={0} max={TIMEOUT_WARN_RATIO_MAX} style={{ width: 160 }} placeholder={t('taskForm.field.timeoutWarnRatio.placeholder')} />
         </Form.Item>
 
+        {/* CORE-05（F-9 本轮审计）：预估执行时长——调度侧执行器 loadScore 的
+            加权输入（预估越长，繁忙执行器被惩罚越大）；执行链路（心跳/超时/
+            统计）不消费。可选：0/留空 = 未知。清空提交归显式 null（PATCH
+            缺省 = 保留旧值，null = 重置为未知），归一在
+            applyTimeoutPolicyPayload（与 timeoutWarnRatio 的 null 透传同型）。 */}
+        <Form.Item
+          name="estimatedDurationSec"
+          label={<>{t('taskForm.field.estimatedDurationSec')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.estimatedDurationSec.hint')}</Text></>}
+          tooltip={{ title: t('taskForm.field.estimatedDurationSec.tooltip'), icon: <InfoCircleOutlined /> }}
+        >
+          <InputNumber min={0} max={ESTIMATED_DURATION_SEC_MAX} style={{ width: 160 }} placeholder={t('taskForm.field.estimatedDurationSec.placeholder')} />
+        </Form.Item>
+
         <Form.Item name="maxRetry" label={<>{t('taskForm.field.maxRetry')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.maxRetry.hint')}</Text></>}>
           <InputNumber min={0} max={10} style={{ width: 120 }} />
         </Form.Item>
 
-        <Form.Item name="retryDelay" label={<>{t('taskForm.field.retryDelay')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.retryDelay.hint')}</Text></>}>
-          <InputNumber min={0} style={{ width: 160 }} />
+        <Form.Item
+          name="retryDelay"
+          label={<>{t('taskForm.field.retryDelay')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.retryDelay.hint')}</Text></>}
+          rules={[
+            {
+              // F-3（本轮审计）：后端 retryDelay @Max(86400)（DTO 注释：2^31
+              // 量级的延迟会顶到 BullMQ/Node 定时器 int32 毫秒溢出线）的前端
+              // 镜像——与同组 timeout(max=86400)/maxRetry(max=10)/
+              // timeoutWarnRatio(max=90) 的既有镜像形态一致，超限即时提示。
+              validator: (_rule, value: unknown) =>
+                typeof value === 'number' && value > RETRY_DELAY_MAX_SECONDS
+                  ? Promise.reject(new Error(t('taskForm.field.retryDelay.maxExceeded')))
+                  : Promise.resolve(),
+            },
+          ]}
+        >
+          <InputNumber min={0} max={RETRY_DELAY_MAX_SECONDS} style={{ width: 160 }} />
         </Form.Item>
 
         {/* CORE-02: 可重试错误类型白名单——留空 = 全部可重试（既有语义）；
@@ -367,9 +408,19 @@ export default function TaskFormExecutorSection({
             placeholder={t('taskForm.field.upstreamDependencies.placeholder')}
             options={taskOptions
               .filter((t) => t.id !== editId)
-              .map((t) => ({ value: t.id, label: t.name }))}
+              .map((t) => ({
+                value: t.id,
+                // F-11（本轮审计）：超长任务名在下拉面板溢出——label 用与表格
+                // 侧既有形态同款的 ellipsis 截断（maxWidth + nowrap +
+                // textOverflow）。content 容器（.ant-select-item-option-content）
+                // 仍由 rc-select 默认渲染，span 只是其内层；依赖选项文本的
+                // 测试选择器相应带 span 层级。
+                label: <span style={DEPENDENCY_OPTION_ELLIPSIS}>{t.name}</span>,
+                // 过滤数据源：label 现在是元素，filterOption 改读纯文本字段。
+                name: t.name,
+              }))}
             filterOption={(input, opt) =>
-              (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
+              String(opt?.name ?? '').toLowerCase().includes(input.toLowerCase())
             }
           />
         </Form.Item>

@@ -13,7 +13,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, afterEach } from 'vitest';
 import { failedRunCount } from '../pages/task-stats';
-import { fixedRateToMinutesLabel, parseFixedRateSeconds } from '../pages/fixed-rate';
+import {
+  fixedRateToMinutesLabel,
+  parseFixedRateSeconds,
+  TASK_FIXED_RATE_MAX_MINUTES,
+  TASK_FIXED_RATE_MAX_SECONDS,
+} from '../pages/fixed-rate';
 import { tasksApi } from '../api/tasks';
 import { TIMEOUT_ACTION_OPTIONS } from '../pages/timeout-policy';
 import { THEME_INIT_SCRIPT } from '../theme/tokens';
@@ -94,31 +99,69 @@ describe('F-28 fixed_rate 换算不依赖 i18n 文案', () => {
     expect(parseFixedRateSeconds('abc')).toBe(60);
   });
 
-  it('展示侧分钟数向下取整（与旧 formatter 一致）', () => {
+  // F-6（本轮审计）：formatter 从「无条件向下取整」改为「整分钟保持整数、
+  // 有余秒向下取到一位小数」——floor 语义保留（展示值永不夸大间隔），但
+  // 5.5 分钟不再显示成「5 分钟」。
+  it('F-6：展示侧整分钟保持整数、有余秒向下取到一位小数', () => {
     expect(fixedRateToMinutesLabel(300)).toBe(5);
-    expect(fixedRateToMinutesLabel(359)).toBe(5);
+    expect(fixedRateToMinutesLabel(330)).toBe(5.5); // 旧实现显示「5 分钟」吞小数
+    expect(fixedRateToMinutesLabel(359)).toBe(5.9); // 旧实现显示「5 分钟」
+    expect(fixedRateToMinutesLabel(90)).toBe(1.5);
   });
 
-  // 本轮审计修复：表单值单位是秒、输入框以分钟呈现（formatter 向下取整）。
-  // 秒不是 60 整数倍时（90s/45s/100s），仅按展示文本回读会把 90s 悄悄改成
-  // 60s——用户只是聚焦后失焦（未改一个字符）就丢掉真实间隔。传当前表单值后
-  // parser 能判定"是否跨分钟"：未跨分钟=用户没改，原样保留精确秒值。
-  it('同一展示分钟内未改动：不把 90s 静默改写成 60s', () => {
-    // 90s 展示为「1 分钟」；回读文本「1 分钟」时当前值仍是 90 → 保留 90
-    expect(parseFixedRateSeconds('1 分钟', 90)).toBe(90);
-    expect(parseFixedRateSeconds('1 minutes', 119)).toBe(119);
-    expect(parseFixedRateSeconds('1', 100)).toBe(100);
+  // 本轮审计修复：表单值单位是秒、输入框以分钟呈现。秒不是 60 整数倍时
+  // （90s/45s/100s），仅按展示文本回读会把 90s 悄悄改成 60s——用户只是聚焦
+  // 后失焦（未改一个字符）就丢掉真实间隔。传当前表单值后 parser 按**展示
+  // 分钟档**（F-6 的一位小数口径）判定"是否真的改动"：同档=没改，保留精确
+  // 秒值。展示位固化到一位小数后，100s 显示「1.6 分钟」、回读解析出
+  // 1.6×60=96s≠100s——只有按展示档比对才拦得住失焦回读的静默改写。
+  it('同一展示分钟档内未改动：不把 90s 静默改写成 60s', () => {
+    // 90s 展示为「1.5 分钟」；回读文本「1.5 分钟」解析值与当前值同档 → 保留 90
+    expect(parseFixedRateSeconds('1.5 分钟', 90)).toBe(90);
+    // 119s 展示「1.9 分钟」（floor(119/60×10)/10）；回读同档保留精确值
+    expect(parseFixedRateSeconds('1.9 minutes', 119)).toBe(119);
+    // 100s 展示「1.6 分钟」，回读解析出 96s≠100s——展示档相同 → 保留 100
+    expect(parseFixedRateSeconds('1.6', 100)).toBe(100);
     // 60 整数倍的值：解析结果与当前值一致，保留同样成立
     expect(parseFixedRateSeconds('5 分钟', 300)).toBe(300);
   });
 
-  it('跨分钟（用户真改了）才采纳解析结果', () => {
-    // 当前 90s（显示 1 分钟）→ 用户改为 3 分钟：跨分钟，采纳 180
+  it('跨分钟档（用户真改了）才采纳解析结果', () => {
+    // 当前 90s（显示 1.5 分钟）→ 用户改为 3 分钟：跨档，采纳 180
     expect(parseFixedRateSeconds('3 分钟', 90)).toBe(180);
     // 当前 300s（5 分钟）→ 改为 7 分钟
     expect(parseFixedRateSeconds('7', 300)).toBe(420);
-    // 小数（5.5 分钟）与当前 300s 跨分钟 → 采纳 330
+    // 小数（5.5 分钟）与当前 300s 跨档 → 采纳 330
     expect(parseFixedRateSeconds('5.5 分钟', 300)).toBe(330);
+  });
+
+  // F-7（本轮审计）：旧实现 `[^\d.]` 把负号静默剥掉，「-5 分钟」变成 +300s。
+  // 现识别前导负号**保留符号**返回负值，由表单校验层（fixedRate.negative 词条）
+  // 拦截提示——不静默取正；负值不走「保留当前值」守卫（那是针对未改动的判定）。
+  it('F-7：负数间隔解析保号，交由校验层拦截', () => {
+    expect(parseFixedRateSeconds('-5 分钟')).toBe(-300);
+    expect(parseFixedRateSeconds('-5')).toBe(-300);
+    expect(parseFixedRateSeconds('-5 分钟', 300)).toBe(-300);
+    // 无有效数字的负向输入：回落最小档的**负值**（校验层照样拦截）
+    expect(parseFixedRateSeconds('-abc')).toBe(-60);
+    expect(parseFixedRateSeconds('-')).toBe(-60);
+    // 无负号不受影响
+    expect(parseFixedRateSeconds('5 分钟')).toBe(300);
+  });
+
+  // F-2（本轮审计）：后端 TASK_FIXED_RATE_MAX_SECONDS=2147483（int32 毫秒
+  // 约束，见 admin-api create-task.dto.ts 同名常量）的前端镜像；分钟口径为
+  // 2147483/60 向下取整 = 35791 分钟，InputNumber max 用其整分钟边界。
+  it('F-2：上限镜像常量与后端一致，分钟口径向下取整', () => {
+    expect(TASK_FIXED_RATE_MAX_SECONDS).toBe(2_147_483);
+    expect(TASK_FIXED_RATE_MAX_MINUTES).toBe(35_791);
+    expect(TASK_FIXED_RATE_MAX_MINUTES * 60).toBeLessThanOrEqual(TASK_FIXED_RATE_MAX_SECONDS);
+  });
+
+  // 小数分钟四舍五入到最近秒（后端 fixedRate 是 @IsInt int4 列，非整数 400）。
+  it('小数分钟解析取整到最近秒（后端 @IsInt）', () => {
+    expect(parseFixedRateSeconds('5.55 分钟')).toBe(333);
+    expect(parseFixedRateSeconds('0.5 分钟')).toBe(30);
   });
 
   it('第二参缺省/非法时行为与修复前逐字节一致（纯文本 → 秒）', () => {

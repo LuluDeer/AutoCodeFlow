@@ -23,6 +23,15 @@
  * 根因修复后没有中文兜底可漏；retry-policy.test.ts 逐值钉死 labelKey 在
  * zh/en 两套词条里都存在。
  */
+
+/**
+ * F-3（本轮审计）：retryDelay 上限（秒）——后端 CreateTaskDto/UpdateTaskDto
+ * `@Max(86400)`（1 天）的前端镜像。DTO 注释：2^31 量级的延迟会把指数退避
+ * delay 顶到 BullMQ/Node 定时器的 int32 毫秒溢出线（约 68 年）。表单
+ * InputNumber 的 max 钳制与超限校验提示共用该口径。
+ */
+export const RETRY_DELAY_MAX_SECONDS = 86_400;
+
 export const RETRYABLE_ERROR_OPTIONS: { value: string; labelKey: string }[] = [
   { value: 'package_fetch_failed', labelKey: 'taskForm.retryable.packageFetch' },
   { value: 'dependency_install_failed', labelKey: 'taskForm.retryable.dependencyInstall' },

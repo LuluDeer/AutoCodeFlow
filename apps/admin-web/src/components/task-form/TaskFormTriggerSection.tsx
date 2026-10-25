@@ -16,8 +16,14 @@ import type { FormInstance } from 'antd';
 import { InfoCircleOutlined, ToolOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
-// F-28（DEEP_REVIEW 0ef3bbe）：fixed_rate 输入框的分钟/秒换算纯逻辑层
-import { fixedRateToMinutesLabel, parseFixedRateSeconds } from '../../pages/fixed-rate';
+// F-28（DEEP_REVIEW 0ef3bbe）：fixed_rate 输入框的分钟/秒换算纯逻辑层。
+// F-2（本轮审计）：TASK_FIXED_RATE_MAX_* 为后端 fixedRate 上限的前端镜像。
+import {
+  fixedRateToMinutesLabel,
+  parseFixedRateSeconds,
+  TASK_FIXED_RATE_MAX_MINUTES,
+  TASK_FIXED_RATE_MAX_SECONDS,
+} from '../../pages/fixed-rate';
 import { parseCronExpression } from '../../utils/trigger-preview';
 import { MAINTENANCE_WINDOWS_MAX } from '../../pages/maintenance-windows';
 import AlarmConfig from '../AlarmConfig';
@@ -144,11 +150,38 @@ export default function TaskFormTriggerSection({
           <Form.Item
             name="fixedRate"
             label={t('taskForm.field.fixedRate')}
-            rules={[{ required: true, message: t('taskForm.field.fixedRate.required') }]}
+            rules={[
+              { required: true, message: t('taskForm.field.fixedRate.required') },
+              {
+                // F-7（本轮审计）：parser 保留负号（不再静默取正），负值在此
+                // 拦截——InputNumber 的 min 钳制只在失焦生效，粘贴/手输链路
+                // 需要校验层给出明确文案。
+                validator: (_rule, value: unknown) =>
+                  typeof value === 'number' && value < 0
+                    ? Promise.reject(new Error(t('taskForm.field.fixedRate.negative')))
+                    : Promise.resolve(),
+              },
+              {
+                // F-2（本轮审计）：后端 TASK_FIXED_RATE_MAX_SECONDS=2147483 的
+                // 前端镜像。InputNumber 的 max（分钟口径 35791×60s，见下方注释）
+                // 在失焦时静默钳制，这里在输入期即时给出超限文案；阈值用后端
+                // 秒口径——存量行回填的 2147461..2147483 区间值不因分钟钳制
+                // 口径被误判超限。
+                validator: (_rule, value: unknown) =>
+                  typeof value === 'number' && value > TASK_FIXED_RATE_MAX_SECONDS
+                    ? Promise.reject(new Error(t('taskForm.field.fixedRate.maxExceeded', { max: TASK_FIXED_RATE_MAX_MINUTES })))
+                    : Promise.resolve(),
+              },
+            ]}
           >
             <InputNumber<number>
               min={60}
               step={60}
+              // F-2：后端 TASK_FIXED_RATE_MAX_SECONDS=2147483 的分钟口径钳制
+              // （2147483/60 向下取整 = 35791 分钟，见 fixed-rate.ts 常量注释）。
+              // 表单值单位是秒，max 用 35791×60 = 2147460s 的整分钟边界——
+              // 失焦钳到「35791 分钟」的整值，而非 2147483s 的 35791.38 分钟。
+              max={TASK_FIXED_RATE_MAX_MINUTES * 60}
               style={{ width: 200 }}
               formatter={v => v ? t('taskForm.field.fixedRate.minutes', { n: fixedRateToMinutesLabel(Number(v)) }) : ''}
               // F-28（DEEP_REVIEW 0ef3bbe）：原 parser 用 t('taskForm.field.fixedRate.minuteUnit')

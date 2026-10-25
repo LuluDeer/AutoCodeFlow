@@ -709,6 +709,25 @@ describe('applyTimeoutPolicyPayload（CORE-04）', () => {
     expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: 12.5 }).timeoutWarnRatio).toBeNull();
   });
 
+  // CORE-05（F-9，本轮审计）：estimatedDurationSec 与 timeoutWarnRatio 同型的
+  // null 透传——合法整数（0..604800）原样；小数四舍五入到最近秒（后端 @IsInt）；
+  // 空串/undefined/负值/超界 → 显式 null（PATCH null = 重置为未知；缺省 = 保留
+  // 旧值，"清空输入框"必须发 null 才能真正重置）。
+  it('F-9：estimatedDurationSec 合法整数原样、小数取整、空/负/超界 → 显式 null', () => {
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 3600 }).estimatedDurationSec).toBe(3600);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 0 }).estimatedDurationSec).toBe(0);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 604800 }).estimatedDurationSec).toBe(604800);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 12.4 }).estimatedDurationSec).toBe(12);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 12.6 }).estimatedDurationSec).toBe(13);
+    // 超界钳到上限（后端 @Max(604800) = 7 天）
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 700_000 }).estimatedDurationSec).toBe(604_800);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: '' }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: undefined }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: null }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: -5 }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({}).estimatedDurationSec).toBeNull();
+  });
+
   it('保留其它字段不变（仅接管超时策略两字段）', () => {
     const payload = applyTimeoutPolicyPayload({ name: 't', timeout: 600, executorId: 'e1' });
     expect(payload.name).toBe('t');
@@ -730,6 +749,16 @@ describe('timeoutPolicyFormValues（CORE-04 编辑态加载映射）', () => {
     expect(timeoutPolicyFormValues({ timeoutAction: null }).timeoutAction).toBe('kill');
     expect(timeoutPolicyFormValues({}).timeoutAction).toBe('kill');
     expect(timeoutPolicyFormValues({ timeoutWarnRatio: null }).timeoutWarnRatio).toBeUndefined();
+  });
+
+  // CORE-05（F-9）：estimatedDurationSec 编辑态回填——数值原样，null/缺省 →
+  // undefined（InputNumber 空态）。
+  it('F-9：estimatedDurationSec 数值回填、null/缺省 → undefined（空态）', () => {
+    expect(
+      timeoutPolicyFormValues({ timeoutAction: 'kill', estimatedDurationSec: 1800 }).estimatedDurationSec,
+    ).toBe(1800);
+    expect(timeoutPolicyFormValues({ estimatedDurationSec: null }).estimatedDurationSec).toBeUndefined();
+    expect(timeoutPolicyFormValues({}).estimatedDurationSec).toBeUndefined();
   });
 });
 

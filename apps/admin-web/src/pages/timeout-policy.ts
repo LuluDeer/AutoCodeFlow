@@ -4,12 +4,16 @@
  * 只导出组件的限制并便于单测）。
  *
  * 后端 PATCH 语义（N28 同源）：字段缺省 = 保留旧值；显式 null = 清空/
- * 回缺省。超时策略两字段的提交约定：
+ * 回缺省。超时策略字段的提交约定：
  *  - timeoutAction：Radio 恒有值（默认 kill）。缺省值 kill 仍显式提交
  *    （语义与"树杀"现状一致，覆盖旧配置）；undefined（未挂载）归 null。
  *  - timeoutWarnRatio：InputNumber 可留空。空串/undefined/null 一律归
  *    null（未启用预警）——PATCH 缺省=保留旧值，所以"清空输入框"必须发
  *    null 才能真正关闭预警。
+ *  - estimatedDurationSec（CORE-05，F-9）：InputNumber 可留空。合法整数
+ *    （0..604800）原样；小数四舍五入到最近秒（后端 @IsInt）；空串/
+ *    undefined/负值/非法 → 显式 null（PATCH 语义「null = 重置为未知」，
+ *    缺省 = 保留旧值，"清空输入框"必须发 null 才能真正重置）。
  */
 
 import type { TimeoutAction } from '../api/tasks';
@@ -17,6 +21,12 @@ import type { TimeoutAction } from '../api/tasks';
 /** 后端 @Max(90) 对齐；timeout 缺省 300s 时 90% = 270s 预警点 */
 export const TIMEOUT_WARN_RATIO_MAX = 90;
 export const TIMEOUT_WARN_RATIO_MIN = 0;
+
+/**
+ * CORE-05（F-9）：预估执行时长上限（秒）——后端 `@Max(604800)`（7 天）的
+ * 前端镜像。仅作调度侧执行器 loadScore 的加权输入，执行链路不消费。
+ */
+export const ESTIMATED_DURATION_SEC_MAX = 604_800;
 
 /** 缺省动作：与后端 normalizeTimeoutAction 的回退一致 */
 export const DEFAULT_TIMEOUT_ACTION: TimeoutAction = 'kill';
@@ -53,14 +63,25 @@ export function applyTimeoutPolicyPayload(
     payload.timeoutWarnRatio = null;
   }
 
+  // CORE-05（F-9）：estimatedDurationSec。合法整数（0..604800）原样；小数
+  // 四舍五入到最近秒（后端 @IsInt int 列）；''/undefined/负值/超界 → 显式
+  // null——PATCH 缺省=保留旧值，"清空输入框"必须发 null 才能重置为未知。
+  const est = payload.estimatedDurationSec;
+  if (typeof est === 'number' && Number.isFinite(est) && est >= 0) {
+    payload.estimatedDurationSec = Math.min(Math.round(est), ESTIMATED_DURATION_SEC_MAX);
+  } else {
+    payload.estimatedDurationSec = null;
+  }
+
   return payload;
 }
 
-/** 编辑态加载：任务读回字段 → 表单初值（timeoutAction 缺省 kill，预警空态为 undefined） */
+/** 编辑态加载：任务读回字段 → 表单初值（timeoutAction 缺省 kill，预警/预估空态为 undefined） */
 export function timeoutPolicyFormValues(task: {
   timeoutAction?: string | null;
   timeoutWarnRatio?: number | null;
-}): { timeoutAction: TimeoutAction; timeoutWarnRatio?: number } {
+  estimatedDurationSec?: number | null;
+}): { timeoutAction: TimeoutAction; timeoutWarnRatio?: number; estimatedDurationSec?: number } {
   const action =
     task.timeoutAction === 'kill_retry' || task.timeoutAction === 'notify_only'
       ? task.timeoutAction
@@ -70,6 +91,10 @@ export function timeoutPolicyFormValues(task: {
     timeoutWarnRatio:
       typeof task.timeoutWarnRatio === 'number'
         ? task.timeoutWarnRatio
+        : undefined,
+    estimatedDurationSec:
+      typeof task.estimatedDurationSec === 'number'
+        ? task.estimatedDurationSec
         : undefined,
   };
 }

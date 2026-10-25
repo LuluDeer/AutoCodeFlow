@@ -240,6 +240,27 @@ export function nextCronFireTimes(
 }
 
 /**
+ * F-5（本轮审计）：timezone 警示的**两态**判别——空串与非法 IANA 不再同态。
+ *
+ *  - 'unspecified'：未填/空白。用户没表达意图，调度回落服务端进程时区，
+ *    文案安抚「按服务端时区执行，预览可能不准」即可；
+ *  - 'invalid'：填了但不是合法 IANA（手滑/格式错）。用户**有**意图但解析
+ *    失败，应给出可操作的修正指引（「请填写有效 IANA 时区」），而非笼统的
+ *    "未指定"。
+ *
+ * previewNeedsTimezoneWarning 保持既有布尔语义（二者都需降级警示——列表/
+ * 详情 tooltip 消费面不动）；TriggerPreview（表单内可就地修正的场景）按
+ * kind 选词。
+ */
+export type TimezoneWarningKind = 'none' | 'unspecified' | 'invalid';
+
+export function timezoneWarningKind(timezone?: string | null): TimezoneWarningKind {
+  const trimmed = timezone?.trim();
+  if (!trimmed) return 'unspecified';
+  return validateTimezone(trimmed) !== null ? 'none' : 'invalid';
+}
+
+/**
  * P1-3（UX-AUDIT-2026-09-21）：cron 预览在「时区未指定/非法」时是否必须降级为警示态。
  *
  * 证据链：本文件 `nextCronFireTimes` 在 tz 为空时用**浏览器本地时区**推算
@@ -253,10 +274,11 @@ export function nextCronFireTimes(
  * 渲染 5 个时刻——用户无从察觉这不是调度器真正使用的时区。
  *
  * 故：本函数为 true 时，组件**不得**自信渲染时刻，而改显「由服务端时区决定，
- * 可能不准」的警示 Alert。空串与非法 IANA 都算"未解析"（二者都拿不到确定时区）。
+ * 可能不准」的警示 Alert。空串与非法 IANA 都算"未解析"（二者都拿不到确定时区；
+ * 两态的文案区分见 timezoneWarningKind）。
  */
 export function previewNeedsTimezoneWarning(timezone?: string | null): boolean {
-  return validateTimezone(timezone) === null;
+  return timezoneWarningKind(timezone) !== 'none';
 }
 
 /**

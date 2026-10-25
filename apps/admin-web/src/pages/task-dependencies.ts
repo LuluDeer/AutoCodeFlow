@@ -94,3 +94,30 @@ export function dependenciesFormValues(
   }
   return { selected, nameSnapshot };
 }
+
+/** UUID v4 形态（大小写不敏感）——后端依赖类错误消息里裸拼的 taskId 形态。 */
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * F-8（本轮审计）：把错误消息里裸拼的 taskId（UUID）替换为任务名。
+ *
+ * 后端依赖类校验（循环依赖/依赖不存在等，task.service 循环依赖分支）把
+ * taskId 原样拼进 message——用户看到一串 UUID 无从对上是哪个任务。表单持有
+ * id→显示名快照（depNameSnapshotRef：依赖候选列表 + 编辑态回填两路播种），
+ * 提交失败 toast 前做一次替换；映射不到（任务刚被删除/快照未含）保持原文，
+ * 绝不编造。
+ */
+export function humanizeDependencyTaskIds(
+  msg: string,
+  nameSnapshot: Record<string, string> | null | undefined,
+): string {
+  if (!msg || !nameSnapshot) return msg;
+  return msg.replace(UUID_RE, (uuid) => {
+    // 快照键与消息中 UUID 的大小写可能不同（后端小写、展示源原样），三态兜底。
+    const hit =
+      nameSnapshot[uuid] ??
+      nameSnapshot[uuid.toLowerCase()] ??
+      nameSnapshot[uuid.toUpperCase()];
+    return hit ?? uuid;
+  });
+}

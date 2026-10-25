@@ -2670,6 +2670,10 @@ export default {
   'taskForm.field.fixedRate.minutes': '{{n}} 分钟',
   'taskForm.field.fixedRate.minuteUnit': '分钟',
   'taskForm.field.fixedRate.placeholder': '60（秒）',
+  // F-7/F-2（本轮审计）：负号与后端 TASK_FIXED_RATE_MAX_SECONDS=2147483
+  // （分钟口径 35791 分钟）的前端镜像校验文案。
+  'taskForm.field.fixedRate.negative': '固定间隔不能为负数',
+  'taskForm.field.fixedRate.maxExceeded': '固定间隔不能超过 {{max}} 分钟',
   'taskForm.window.title': '维护窗口（可选）',
   'taskForm.window.tooltip': '发布/停机时段保护：窗口内的计划触发（Cron、固定间隔、错失补偿）会被跳过并计入调度指标；手动触发不受影响。窗口在『开始 Cron』触达时刻开启、『结束 Cron』触达时刻关闭（半开区间）；窗口 Cron 按服务端本地时间评估。最多 10 条。',
   'taskForm.window.startRequired': '开始 Cron 必填',
@@ -2722,10 +2726,17 @@ export default {
   'taskForm.field.timeoutWarnRatio.hint': '（占超时时间的百分比，0-90；留空不预警）',
   'taskForm.field.timeoutWarnRatio.tooltip': '例如超时 600 秒、阈值 80：运行到 480 秒时发送一次超时预警通知，便于在硬超时前介入。',
   'taskForm.field.timeoutWarnRatio.placeholder': '如 80，留空不预警',
+  // CORE-05（F-9，本轮审计）：预估执行时长——执行器负载评分的加权输入。
+  'taskForm.field.estimatedDurationSec': '预估执行时长',
+  'taskForm.field.estimatedDurationSec.hint': '（秒，0/留空 = 未知；仅用于执行器负载评分）',
+  'taskForm.field.estimatedDurationSec.tooltip': '仅用于调度侧的执行器负载评分：预估越长，繁忙执行器被惩罚越大，长短任务混布时调度更均衡。执行链路（心跳/超时/统计）不消费该字段。0 或留空 = 未知。',
+  'taskForm.field.estimatedDurationSec.placeholder': '用于执行器负载评分，可留空',
   'taskForm.field.maxRetry': '最大尝试次数',
   'taskForm.field.maxRetry.hint': '重试覆盖派发/环境类失败；脚本阶段失败需手动重跑（1 = 不重试）',
   'taskForm.field.retryDelay': '重试延迟',
   'taskForm.field.retryDelay.hint': '（秒，0 = 不延迟；实际延迟带 ±20% 抖动以摊开重试洪峰）',
+  // F-3（本轮审计）：后端 @Max(86400) 的前端镜像校验文案。
+  'taskForm.field.retryDelay.maxExceeded': '重试延迟不能超过 86400 秒',
   'taskForm.field.retryableErrors': '可重试错误类型',
   'taskForm.field.retryableErrors.hint': '（留空 = 全部可重试）',
   'taskForm.field.retryableErrors.tooltip': '仅勾选的错误类型会被自动重试（匹配错误消息或失败分类）。例如只勾选"执行器离线"，脚本错误将在第一次失败后直接终态，不再烧尽重试预算。',
@@ -3099,6 +3110,8 @@ export default {
   'triggerPreview.empty': '等待输入…',
   'triggerPreview.tzFallbackLabel': '服务器默认时区（浏览器本地）',
   'triggerPreview.tzUnresolved': '未指定时区：实际触发由服务端进程时区决定，此处按浏览器本地推算，可能不准。',
+  // F-5（本轮审计）：非法时区与「未指定」分词——给出可操作的修正指引。
+  'triggerPreview.tzInvalid': '时区无效：请填写有效 IANA 时区（如 Asia/Shanghai），否则将按服务端进程时区执行。',
 
   'time.relative.justNow': '刚刚',
   'time.relative.minsAgo': '{{n}}分钟前',

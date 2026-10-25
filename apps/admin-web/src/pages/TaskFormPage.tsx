@@ -68,6 +68,7 @@ import {
 import {
   applyDependenciesPayload,
   dependenciesFormValues,
+  humanizeDependencyTaskIds,
 } from './task-dependencies';
 // REFACTOR-TASKFORM-08/09/10：编辑态回填载荷、代码来源切换守卫、存模板 config
 // 组装——均为原样迁出的纯函数/hook（语义见各自头注释，提交链路不变）。
@@ -182,7 +183,30 @@ export default function TaskFormPage() {
   // GLUE-DIRTY-01：Glue 脚本编辑器的未保存改动同样要拦——原先 dirty 只覆盖
   // 表单字段，脚本改完不保存直接关页/跳转是无声丢失。
   const [glueDirty, setGlueDirty] = useState(false);
-  const navigationBlocker = useBlocker(dirty || glueDirty);
+  // P1（F-1，本轮审计）：useBlocker 判定走 **ref** 而非闭包 state。保存成功
+  // 分支「清脏 → nav(...)」同步连续执行，React 尚未重渲，闭包/布尔形态的
+  // useBlocker 在导航判定时仍读到 dirty=true——把保存成功后自己的导航拦下来，
+  // 「任务更新成功」与「有未保存的更改」同屏（每次编辑保存必现）。
+  // ref 在渲染期与 state 同步、在 clearFormDirty 里**先于 nav 同步翻转**，
+  // 导航判定（router 内同步调用）读到的永远是调用时刻的最新值。
+  const dirtyRef = useRef(dirty);
+  const glueDirtyRef = useRef(glueDirty);
+  dirtyRef.current = dirty;
+  glueDirtyRef.current = glueDirty;
+  const navigationBlocker = useBlocker(
+    useCallback(() => dirtyRef.current || glueDirtyRef.current, []),
+  );
+  /**
+   * P1（F-1）：保存成功后清脏——先同步翻转 ref（导航判定立即读到 false），
+   * 再 setDirty(false) 驱动重渲（beforeunload 守卫随之解除）。
+   * 对照创建分支的既有 setDirty(false) 完整对齐；glueDirty 刻意**不**在此清：
+   * 表单保存不落 Glue 脚本（唯一写方是 GlueEditor 自己的保存按钮），
+   * 未保存的脚本改动在跳转时仍应被拦截（GLUE-DIRTY-01 语义保持）。
+   */
+  const clearFormDirty = useCallback(() => {
+    dirtyRef.current = false;
+    setDirty(false);
+  }, []);
   // P1-4：浏览器关闭/刷新未保存守卫（站内跳转由 navigationBlocker + 确认弹窗兜底）。
   useEffect(() => {
     if (!dirty && !glueDirty) return;
@@ -803,6 +827,10 @@ export default function TaskFormPage() {
         setDraftNoticeDismissed(true);
         message.success(t('taskForm.submit.updated'));
         if (cronNormalizeNote) message.info(cronNormalizeNote);
+        // P1（F-1）：nav 前清脏——否则 useBlocker(dirty||glueDirty) 把保存成功
+        // 后自己的跳转拦下来，成功 toast 与「有未保存的更改」同屏。ref 先于
+        // nav 同步翻转（见 clearFormDirty 注释），glueDirty 语义保持。
+        clearFormDirty();
         nav(`/tasks/${editId}`);
       } else {
         const created = await tasksApi.create(
@@ -819,8 +847,18 @@ export default function TaskFormPage() {
           typeof payload.runtime === 'string' ? payload.runtime : 'python',
         );
         setCreatedTaskId(created.id);
-        setDirty(false);
+        // P1（F-1）：与编辑分支同款清脏（原为 setDirty(false)）。
+        clearFormDirty();
+        // P2（F-4，本轮审计）：创建成功后跳到新任务的**编辑页**（replace 导航，
+        // 不把已失效的 /tasks/new 留在历史里）。此前停留 /tasks/new：刷新丢全部
+        // 上下文、再次点击提交撞任务名唯一约束 409。编辑页重新拉取刚创建的
+        // 任务并回填，Glue 分区照常可编（编辑态 taskId 已存在），「完成，前往
+        // 任务详情」按钮（taskForm.glue.done）同样在位——产品流最平滑的落点。
+        // createdTaskId/setSavedRuntime 保留：若导航被守卫拦下（当前不可达，
+        // 防御），既有「停留本页编 Glue」回退路径仍完整。
+        nav(`/tasks/${created.id}/edit`, { replace: true });
         // 创建成功后滚到 Glue 区块（原 step3 语义：创建后进入 Glue 编排）。
+        // F-4 后主路径是跳编辑页；滚动作为守卫拦截时的回退语义保留。
         // BUGFIX（P3，commit 7d66a9b0 清单）：原 setTimeout(50) 是「赌渲染在
         // 50ms 内完成」的魔法延时——改为 rAF 两连等渲染提交 + 目标存在性轮询
         // （有界），见 utils/scroll-when-ready。
@@ -846,10 +884,18 @@ export default function TaskFormPage() {
       // assertCodeSourceConsistent / assertRuntimeVersionValid 返回的可操作
       // 文案被泛化的「创建失败」吞掉。getErrMsg 同时覆盖两种形状（与本文件
       // 模板保存等兄弟 catch 同策）。
+      //
+      // P3（F-8，本轮审计）：依赖类校验错误（循环依赖/依赖不存在等）的消息里
+      // 裸拼 taskId（UUID，后端侧不改）——用表单已知的 id→任务名快照
+      // （depNameSnapshotRef：依赖候选 + 编辑态回填两路播种）替换为任务名；
+      // 映射不到保持原文，绝不编造。
       message.error(
-        getErrMsg(
-          err,
-          isEdit ? t('taskForm.submit.updateFail') : t('taskForm.submit.createFail'),
+        humanizeDependencyTaskIds(
+          getErrMsg(
+            err,
+            isEdit ? t('taskForm.submit.updateFail') : t('taskForm.submit.createFail'),
+          ),
+          depNameSnapshotRef.current,
         ),
       );
     } finally {

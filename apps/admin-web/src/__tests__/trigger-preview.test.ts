@@ -11,6 +11,8 @@ import {
   nextFixedRateFireTimes,
   formatFireTime,
   validateTimezone,
+  timezoneWarningKind,
+  previewNeedsTimezoneWarning,
 } from '../utils/trigger-preview';
 
 describe('parseCronExpression（DTO 子集解析）', () => {
@@ -250,6 +252,29 @@ describe('validateTimezone / formatFireTime（展示层）', () => {
     expect(validateTimezone('')).toBeNull();
     expect(validateTimezone(undefined)).toBeNull();
     expect(validateTimezone('Not/AZone')).toBeNull();
+  });
+
+  // F-5（本轮审计）：时区警示两态判别——空串（未填）与非法 IANA（填了但
+  // 解析失败）不再同态，后者给可操作的修正指引词条。
+  describe('timezoneWarningKind（F-5 两态）', () => {
+    it('未填/空白 = unspecified；合法 = none；非法 = invalid', () => {
+      expect(timezoneWarningKind(undefined)).toBe('unspecified');
+      expect(timezoneWarningKind(null)).toBe('unspecified');
+      expect(timezoneWarningKind('')).toBe('unspecified');
+      expect(timezoneWarningKind('   ')).toBe('unspecified');
+      expect(timezoneWarningKind('Asia/Shanghai')).toBe('none');
+      expect(timezoneWarningKind('Asia/Shanghai ')).toBe('none');
+      expect(timezoneWarningKind('Not/AZone')).toBe('invalid');
+      expect(timezoneWarningKind('Not/AZone ')).toBe('invalid');
+    });
+
+    it('previewNeedsTimezoneWarning 保持既有布尔语义（空/非法都要警示）', () => {
+      expect(previewNeedsTimezoneWarning('')).toBe(true);
+      expect(previewNeedsTimezoneWarning(undefined)).toBe(true);
+      expect(previewNeedsTimezoneWarning('Not/AZone')).toBe(true);
+      expect(previewNeedsTimezoneWarning('UTC')).toBe(false);
+      expect(previewNeedsTimezoneWarning('Asia/Shanghai')).toBe(false);
+    });
   });
 
   it('formatFireTime 按 timezone 渲染（Asia/Shanghai 固定文本含月日时分）', () => {
