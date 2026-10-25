@@ -205,3 +205,48 @@ describe('SecretsEditor 外发语义（与后端逐键合并契约对齐）', ()
     expect(emitted.FEISHU_APP_ID_V2).toBe('cli_v2');
   });
 });
+
+// F-7（UIUX 审计 P2-6）：键名镜像校验——行内即时红字。此前 key 输入零校验，
+// `my-key`/`PATH`/`AUTOFLOW_TOKEN` 照常收值，保存时整批 400 且难以定位是哪一行。
+describe('SecretsEditor 键名行内校验（F-7，镜像后端 IsSecretKeyMapConstraint）', () => {
+  it.each([
+    ['my-key', '不是合法的环境变量名'],
+    ['PATH', '平台保留的环境变量名'],
+    ['AUTOFLOW_TOKEN', 'AUTOFLOW_ 前缀'],
+    ['PYTHON_TOKEN', 'PYTHON 前缀'],
+  ])('非法键名 %s 当场显示对应红字', (badKey, expectedFragment) => {
+    render(<Harness onEmit={() => undefined} />);
+    fireEvent.click(screen.getByText(/添加凭据|Add credential/));
+    const keys = keyInputs();
+    fireEvent.change(keys[keys.length - 1], { target: { value: badKey } });
+
+    expect(screen.getByText(new RegExp(expectedFragment))).toBeTruthy();
+    // 输入框同步挂 error 状态（antd status）
+    expect(keys[keys.length - 1].className).toContain('ant-input-status-error');
+  });
+
+  it('合法键名不显示红字、输入框不带 error 状态', () => {
+    render(<Harness onEmit={() => undefined} />);
+    fireEvent.click(screen.getByText(/添加凭据|Add credential/));
+    const keys = keyInputs();
+    fireEvent.change(keys[keys.length - 1], { target: { value: 'FEISHU_APP_ID' } });
+
+    expect(screen.queryByText(/不是合法的环境变量名|平台保留|前缀/)).toBeNull();
+    expect(keys[keys.length - 1].className).not.toContain('ant-input-status-error');
+  });
+
+  it('非法键仍外发（不静默丢用户输入），提交拦截在 TaskFormPage 的载荷闸门', () => {
+    const onEmit = vi.fn();
+    render(<Harness onEmit={onEmit} />);
+    fireEvent.click(screen.getByText(/添加凭据|Add credential/));
+    const keys = keyInputs();
+    fireEvent.change(keys[keys.length - 1], { target: { value: 'bad-key' } });
+    const emitted = onEmit.mock.calls[onEmit.mock.calls.length - 1][0] as Record<
+      string,
+      string | null
+    >;
+    // 编辑器只负责「看得见问题」；丢不丢数据由提交闸门显式拦截并提示，
+    // 这里钉住编辑器不静默改写用户输入。
+    expect(emitted['bad-key']).toBe('');
+  });
+});

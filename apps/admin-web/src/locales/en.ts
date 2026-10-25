@@ -2714,6 +2714,10 @@ export default {
     'Injected into the task process under their ORIGINAL env var names — scripts can read os.environ["FEISHU_APP_ID"], and third-party SDKs get their canonical names (boto3 reads AWS_ACCESS_KEY_ID). Unlike "Default Params", which are prefixed with AUTOFLOW_. Values are stored encrypted and can never be read back after saving.',
   'taskForm.field.secretsMaskRemaining':
     '{{count}} credential(s) are still shown as masked (not re-entered). Saving now would overwrite the real credentials with the mask literal — re-enter their values, or delete those rows, before saving.',
+  // F-7 (UIUX audit P2-6): submit-side gate for the key-name mirror validation
+  // (inline errors live in SecretsEditor; this catches payloads that bypass them)
+  'taskForm.secrets.invalidKeys': 'Invalid credential key name(s): {{list}} — fix them and retry (see inline hints in the credentials section)',
+  'taskForm.secrets.invalidKeysShort': 'Invalid credential key name(s): {{list}}',
   'taskForm.glue.createdTitle': 'Task created successfully!',
   'taskForm.glue.createdDesc': 'You can write a Glue script below (optional). A Glue script is code that runs directly on the executor node without needing a linked code repository.',
   'taskForm.glue.done': 'Done, go to task detail',
@@ -3040,6 +3044,12 @@ export default {
   'secretsEditor.clearAll': 'Clear all credentials',
   'secretsEditor.tooltip': 'Names must match [A-Za-z_][A-Za-z0-9_]* and must not shadow platform-reserved names (PATH / PYTHON* / AUTOFLOW_*). Leaving a saved row blank keeps its stored value.',
   'secretsEditor.touchedWarning': 'On save: values you entered are applied, saved credentials you did not re-enter keep their stored value, and deleted rows are removed.',
+  // F-7 (UIUX audit P2-6): inline errors for the key-name mirror validation
+  // (same rules as the backend IsSecretKeyMapConstraint)
+  'secretsEditor.keyError.invalidName': '"{{key}}" is not a valid environment variable name (must match [A-Za-z_][A-Za-z0-9_]*)',
+  'secretsEditor.keyError.reserved': '"{{key}}" is a platform-reserved environment variable name and cannot be used as a credential key',
+  'secretsEditor.keyError.autoflowPrefix': '"{{key}}" uses the AUTOFLOW_ prefix (reserved for task params) — pick a different name',
+  'secretsEditor.keyError.pythonPrefix': '"{{key}}" uses the PYTHON prefix (interpreter behavior switches) — pick a different name',
 
   'triggerPreview.title': 'Trigger preview',
   'triggerPreview.nextCount': 'Next {{count}} times',

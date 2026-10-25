@@ -2723,6 +2723,10 @@ export default {
   // 掩码回写防护：编辑态已存在的凭据只显示掩码，必须重新输入才能保存。
   'taskForm.field.secretsMaskRemaining':
     '还有 {{count}} 项凭据显示为掩码（未重新输入）。直接保存会用掩码字符覆盖真实凭据——请重新输入这些凭据的值，或删除对应行后再保存。',
+  // F-7（UIUX 审计 P2-6）：secrets 键名镜像校验的提交拦截（行内红字在 SecretsEditor，
+  // 这里拦的是绕过行内校验的载荷，如既有合法键被改名成非法键）
+  'taskForm.secrets.invalidKeys': '凭据键名不可用：{{list}}——请修正后重试（规则见凭据分区的行内提示）',
+  'taskForm.secrets.invalidKeysShort': '凭据键名不可用：{{list}}',
   'taskForm.glue.createdTitle': '任务已创建成功！',
   'taskForm.glue.createdDesc': '你可以在下方编写 Glue 脚本（可选）。Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。',
   'taskForm.glue.done': '完成，前往任务详情',
@@ -3046,6 +3050,11 @@ export default {
   'secretsEditor.clearAll': '清空全部凭据',
   'secretsEditor.tooltip': '键名须匹配 [A-Za-z_][A-Za-z0-9_]*，且不得占用平台保留名（PATH / PYTHON* / AUTOFLOW_* 等）。留空的已保存项 = 保留原值。',
   'secretsEditor.touchedWarning': '保存后将按你填写的值更新：未重新输入的已保存凭据保持原值，被删掉的行会被移除。',
+  // F-7（UIUX 审计 P2-6）：键名镜像校验（后端 IsSecretKeyMapConstraint 同规则）的行内红字
+  'secretsEditor.keyError.invalidName': '「{{key}}」不是合法的环境变量名（需匹配 [A-Za-z_][A-Za-z0-9_]*）',
+  'secretsEditor.keyError.reserved': '「{{key}}」是平台保留的环境变量名，不能作为凭据键',
+  'secretsEditor.keyError.autoflowPrefix': '「{{key}}」使用了 AUTOFLOW_ 前缀（平台参数命名空间），请改用别的键名',
+  'secretsEditor.keyError.pythonPrefix': '「{{key}}」使用了 PYTHON 前缀（解释器行为开关），请改用别的键名',
 
   'triggerPreview.title': '触发预览',
   'triggerPreview.nextCount': '未来 {{count}} 次',

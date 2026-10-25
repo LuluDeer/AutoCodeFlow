@@ -356,6 +356,85 @@ describe('UIUX-F-43 提交互斥锁', () => {
   }, 15_000);
 });
 
+// UIUX-F-7（审计 P2-6）：secrets 键名镜像校验的提交闸门。行内红字在
+// SecretsEditor；此处钉住：载荷里出现非法键（绕过行内校验/改名路径）时
+// 提交被拦下且给出可读提示，而不是整批 400 到后端。
+describe('UIUX-F-7 secrets 键名提交闸门', () => {
+  it('新增行填非法键名 → 提交被拦（不发 POST），错误提示与行内红字在场', async () => {
+    mockRouteParams = {}; // 创建态
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'f7-secrets-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    // 凭据分区添加一行并填入非法键（连字符形状）
+    fireEvent.click(screen.getByText(/添加凭据|Add credential/));
+    const keyInputsAll = () =>
+      Array.from(document.querySelectorAll('input.ant-input')).filter(
+        (i) => !(i as HTMLInputElement).type || (i as HTMLInputElement).type === 'text',
+      ) as HTMLInputElement[];
+    fireEvent.change(keyInputsAll()[keyInputsAll().length - 1], {
+      target: { value: 'my-key' },
+    });
+    const passwords = Array.from(
+      document.querySelectorAll('input[type="password"]'),
+    ) as HTMLInputElement[];
+    fireEvent.change(passwords[passwords.length - 1], { target: { value: 'tok' } });
+
+    // 行内红字即时可见（不需要点提交才知道）
+    expect(screen.getByText(/不是合法的环境变量名/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+
+    // 闸门：POST 不发生，错误 toast 与 aria-live 播报双路在场（同一文案两处渲染）
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(tasksApi.create).not.toHaveBeenCalled();
+    expect(screen.getAllByText(/凭据键名不可用/).length).toBeGreaterThanOrEqual(1);
+    expect(
+      document.querySelector('[data-testid="task-form-validation-announcement"]')?.textContent,
+    ).toContain('凭据键名不可用');
+  }, 15_000);
+
+  it('合法键名的凭据行不拦截（POST 正常发出且带 secrets）', async () => {
+    mockRouteParams = {}; // 创建态
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'f7-ok-secrets-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    fireEvent.click(screen.getByText(/添加凭据|Add credential/));
+    const keyInputsAll = () =>
+      Array.from(document.querySelectorAll('input.ant-input')).filter(
+        (i) => !(i as HTMLInputElement).type || (i as HTMLInputElement).type === 'text',
+      ) as HTMLInputElement[];
+    fireEvent.change(keyInputsAll()[keyInputsAll().length - 1], {
+      target: { value: 'FEISHU_APP_ID' },
+    });
+    const passwords = Array.from(
+      document.querySelectorAll('input[type="password"]'),
+    ) as HTMLInputElement[];
+    fireEvent.change(passwords[passwords.length - 1], { target: { value: 'tok' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(payload.secrets).toEqual({ FEISHU_APP_ID: 'tok' });
+  }, 15_000);
+});
+
 describe('TaskFormPage 请求生命周期', () => {
   it('页面 GET 请求共享 AbortSignal，编辑请求卸载后不写入表单，也不提示旧请求错误', async () => {
     let resolveTask: ((task: unknown) => void) | undefined;

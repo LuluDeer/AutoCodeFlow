@@ -96,6 +96,9 @@ import { computeFormCompletion } from '../utils/formCompletion';
 import { useTaskFormReferenceData } from '../hooks/useTaskFormReferenceData';
 // DRAFT-01：表单草稿的 localStorage 持久化（崩溃/误关标签页/会话过期后的恢复）
 import { useDraft, draftKey, DRAFT_SCHEMA_VERSION } from '../hooks/useDraft';
+// F-7（UIUX 审计 P2-6）：secrets 键名镜像校验（后端 IsSecretKeyMapConstraint 三条
+// 规则的前端真值源，行内即时红字在 SecretsEditor，提交前在此统一拦截）
+import { findInvalidSecretKeys } from '../utils/secretKeyPolicy';
 // BUGFIX（P3，commit 7d66a9b0 清单）：创建成功滚 Glue 的等待渲染就绪工具
 // （rAF 两连 + 存在性轮询，替代 setTimeout(50) 魔法延时）。
 import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
@@ -640,6 +643,21 @@ export default function TaskFormPage() {
       setValidationAnnouncement(t('taskForm.missingShort', { list: missingList }));
       scrollToSection(missing[0].anchor);
       return;
+    }
+    // F-7（UIUX 审计 P2-6）：secrets 键名镜像校验。后端 IsSecretKeyMapConstraint
+    // 对载荷里**每个键**（含 null=删除叶子的键）做规则判定，任一不合法整批 400
+    // ——此处用同一套规则（utils/secretKeyPolicy.ts，源码守卫钉住两侧一致）
+    // 在提交前拦下并滚到凭据分区，避免「既有合法键的修改被一并拒收」的体验。
+    // 行内即时红字在 SecretsEditor；这里是绕过 UI（粘贴/程序化）时的最后闸门。
+    if (values.secrets && typeof values.secrets === 'object') {
+      const badSecretKeys = findInvalidSecretKeys(values.secrets as Record<string, unknown>);
+      if (badSecretKeys.length > 0) {
+        const badList = badSecretKeys.map((b) => `"${b.key}"`).join('、');
+        message.error(t('taskForm.secrets.invalidKeys', { list: badList }));
+        setValidationAnnouncement(t('taskForm.secrets.invalidKeysShort', { list: badList }));
+        scrollToSection(SECTION_IDS[3]);
+        return;
+      }
     }
     setValidationAnnouncement('');
     // cron UX 统一：裸 n/step 写法（如 `12/20 6-23 * * *`）在提交前做等价
