@@ -856,7 +856,10 @@ export default function TaskListPage() {
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，操作按钮进 extra） */}
       <PageHeader
         title={t('taskList.title')}
-        description={t('taskList.total', { count: total })}
+        // F-44（UIUX 审计 P2-2）：请求失败 ≠ 空结果——错误态下「共 {{count}} 个任务」
+        // 会把 total=0（data 为 undefined 的兜底值）当成事实渲染成「共 0 个任务」，
+        // 用户误判数据丢失。失败时不再显示计数（错误详情与重试入口见下方 StateError）。
+        description={error ? undefined : t('taskList.total', { count: total })}
         extra={
           <>
             {/* CORE-03: 任务模板入口——从预置/自定义模板一键克隆 config */}

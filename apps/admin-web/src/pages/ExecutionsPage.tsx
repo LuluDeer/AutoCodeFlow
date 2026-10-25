@@ -454,7 +454,10 @@ export default function ExecutionsPage() {
           setPageSize(ps ?? 20);
           resetCursorStack(stablePaging);
         },
-        showTotal: (t2) => t('execs.count', { count: t2 }),
+        // F-44（UIUX 审计 P2-2）：请求失败 ≠ 空结果——total=0（data undefined 兜底）
+        // 会被渲染成「共 0 条」，用户误判执行记录丢失。错误态下不显示计数
+        // （错误详情与重试入口见上方 StateError）。
+        showTotal: (t2) => (error ? '' : t('execs.count', { count: t2 })),
         showSizeChanger: true,
       };
 
@@ -985,7 +988,10 @@ export default function ExecutionsPage() {
             gap: 12,
           }}
         >
-          <Text type="secondary" style={{ fontSize: 12 }}>{t('execs.count', { count: total })}</Text>
+          {/* F-44（UIUX 审计 P2-2）：错误态不显示「共 0 条」计数（同上方 StateError 分流） */}
+          {!error && (
+            <Text type="secondary" style={{ fontSize: 12 }}>{t('execs.count', { count: total })}</Text>
+          )}
           <Button
             size="small"
             icon={<LeftOutlined />}
