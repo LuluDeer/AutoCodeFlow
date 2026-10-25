@@ -9034,6 +9034,7 @@
             "required": false,
             "in": "query",
             "schema": {
+              "maximum": 10000,
               "default": 1,
               "type": "number"
             }

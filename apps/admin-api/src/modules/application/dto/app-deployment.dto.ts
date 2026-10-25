@@ -147,11 +147,16 @@ export class DeploymentHeartbeatDto {
  * 查询参数（默认 50，上限 200，口径与 ListReleasesQueryDto 一致）。
  */
 export class ListDeploymentEventsQueryDto {
-  @ApiPropertyOptional({ default: 1 })
+  // @Max(10000)：对齐通用 PageQueryDto 的 NETOPT-3④ 口径——无封顶的 page
+  // 可被 ?page=99999999 打深 OFFSET + 全量 COUNT 打满连接池（游标化调研
+  // 2026-10-25 发现的漏网之口；本表规模下游标化暂不做，封顶是便宜几个
+  // 量级的防御）。
+  @ApiPropertyOptional({ default: 1, maximum: 10000 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(10000)
   page?: number = 1;
 
   @ApiPropertyOptional({ default: 50, maximum: 200 })
