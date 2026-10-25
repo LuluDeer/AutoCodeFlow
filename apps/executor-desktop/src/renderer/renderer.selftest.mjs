@@ -1404,8 +1404,11 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 
   // 视觉优化：窗口放大 + 去掉四周底边（卡片边框/阴影/圆角 + wrap padding）
-  if (!wm.includes('width: 660,') || !wm.includes('height: 780,')) {
-    throw new Error('向导视觉: 窗口尺寸未放大（仍偏小）');
+  // F-28（2026-10-25 审计）：660×780 固定尺寸改为「名义尺寸随 workArea 钳制」
+  // ——普通屏仍取满 660×780（锚点钉在 Math.min 上限字面量上），矮屏收敛到
+  // 工作区内（openStatus 同款做法）。
+  if (!wm.includes('Math.min(660, workArea.width)') || !wm.includes('Math.min(780, workArea.height)')) {
+    throw new Error('向导视觉: 窗口名义尺寸未保持 660×780 或缺少 workArea 钳制');
   }
   if (!/\.wizard-wrap \{[\s\S]*?padding: 0;/.test(css)) {
     throw new Error('向导视觉: .wizard-wrap 仍有 padding（四周底边来源）');
