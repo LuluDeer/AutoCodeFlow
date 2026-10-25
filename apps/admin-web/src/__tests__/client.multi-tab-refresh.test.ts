@@ -321,4 +321,49 @@ describe('A-4 storage 事件同步（跨标签页）', () => {
     expect(setUserSpy).toHaveBeenCalledTimes(1);
     setUserSpy.mockRestore();
   });
+
+  // ── F-13（UIAUDIT P3-6）：跨 tab 换账号 → 整页 reload ────────────────────
+  // 已挂载页面的缓存/视图是前账号读面，只换 token 会残留前账号数据；识别
+  // user.id 变化即整页 reload（与 redirectToLogin 的整页语义对齐）。
+  // 断言口径：jsdom 的 location.reload 是 non-configurable own property，
+  // 无法 spy——改用 reload 分支的**早退副作用**区分：换账号事件不做任何局部
+  // 同步（token/user 保持旧值，页面随后由 reload 归零）；同账号轮换则正常同步。
+  it('F-13：另一 tab 登录了另一个账号（user.id 变化）→ reload 早退，不做局部同步', () => {
+    writePersisted({
+      token: 'tab-c-access',
+      refreshToken: 'tab-c-refresh',
+      user: { id: 2, username: 'bob' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    // 早退副作用：换账号后 token/user 保持旧值（若误走局部同步分支，
+    // token 会变成 tab-c-access）——jsdom 的 reload 本体只产生无害 stderr。
+    expect(useAuthStore.getState()).toMatchObject({
+      token: 'tab-b-access',
+      refreshToken: 'tab-b-refresh',
+    });
+    expect(useAuthStore.getState().user).toMatchObject({ id: 1, username: 'alice' });
+  });
+
+  it('F-13：同账号 token 轮换（id 不变）→ 正常局部同步（回归）', () => {
+    writePersisted({
+      token: 'tab-a-access',
+      refreshToken: 'tab-a-refresh',
+      user: { id: 1, username: 'alice' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    expect(useAuthStore.getState()).toMatchObject({
+      token: 'tab-a-access',
+      refreshToken: 'tab-a-refresh',
+    });
+  });
 });

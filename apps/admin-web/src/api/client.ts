@@ -230,6 +230,23 @@ if (typeof window !== 'undefined') {
       useAuthStore.getState().logout();
       return;
     }
+    // F-13（UIAUDIT P3-6）：另一 tab 登录了**另一个账号**（user.id 变化）→
+    // 本 tab 整页 reload。已挂载页面的 TanStack 缓存/视图状态都是前账号的读面
+    // （有的页面还有本地 state 副本），只换 token 不清缓存会残留前账号数据
+    // 直到下一次 refetch/导航。整页 reload 一次性归还干净初始态——与
+    // redirectToLogin 的整页语义对齐（logout 分支同理）。
+    // 登出（persisted.user 为空）不走这里：上方分支已按登出处理；本 tab 从
+    // 未登录（内存 user 为 null）→ id 不存在「变化」，也不 reload。
+    const currentUserId = useAuthStore.getState().user?.id;
+    const persistedUserId = (persisted.user as { id?: unknown } | null)?.id;
+    if (
+      currentUserId != null &&
+      persistedUserId != null &&
+      persistedUserId !== currentUserId
+    ) {
+      window.location.reload();
+      return;
+    }
     const { setToken, setRefreshToken, setUser } = useAuthStore.getState();
     if (persisted.token && useAuthStore.getState().token !== persisted.token) {
       setToken(persisted.token);
