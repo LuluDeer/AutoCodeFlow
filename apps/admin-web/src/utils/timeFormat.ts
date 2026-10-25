@@ -41,9 +41,12 @@ export function formatRelativeTime(value: TimeInput, t?: TFunc): string {
  * 时长（毫秒）→ 可读文案，带 i18n（分/秒为最小档，≥1 小时进小时档）。
  * F-35（DEEP_REVIEW 0ef3bbe）：补 ≥3600s 的小时档——此前 3725000ms 会渲染成
  * "62分5秒"，超长任务可读性差。
+ * F-14（UIAUDIT P3-7）：负值 clamp 到 0（数据异常/时钟偏移时不再渲染 "-123ms"）；
+ * NaN/Infinity 等非有限值回落占位符（同 FALLBACK 口径）。0ms 保持既有输出不变。
  */
 export function formatDuration(ms: number | null | undefined, t?: TFunc): string {
-  if (ms == null) return FALLBACK;
+  if (ms == null || !Number.isFinite(ms)) return FALLBACK;
+  if (ms <= 0) return '0ms';
   if (ms < 1000) return `${ms}ms`;
 
   const T = t ?? fallbackT;
@@ -66,9 +69,11 @@ export function formatDuration(ms: number | null | undefined, t?: TFunc): string
  * F-35（DEEP_REVIEW 0ef3bbe）：收敛原先散落的两处逐字节重复实现
  * （ExecutionCompare.tsx / ExecutorDetailPage.tsx 历史列），并补小时档。
  * <1 小时输出与旧实现逐字一致（不回归），≥1 小时由 "3725.0s" 变为 "1h2m"。
+ * F-14：负值 clamp 到 0、非有限值回落占位符（与 formatDuration 同口径）。
  */
 export function formatDurationShort(ms: number | null | undefined): string {
-  if (ms == null) return FALLBACK;
+  if (ms == null || !Number.isFinite(ms)) return FALLBACK;
+  if (ms <= 0) return '0ms';
   if (ms < 1000) return `${ms}ms`;
 
   const seconds = ms / 1000;

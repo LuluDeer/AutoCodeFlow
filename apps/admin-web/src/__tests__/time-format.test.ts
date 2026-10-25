@@ -100,6 +100,18 @@ describe('F-35 formatDuration（i18n 版 + 小时档）', () => {
   it('null → 占位符', () => {
     expect(formatDuration(null)).toBe('—');
   });
+
+  // ── F-14（UIAUDIT P3-7）：负值 clamp / 非有限值兜底 ────────────────────────
+  it('F-14：负值 clamp 到 0ms（数据异常/时钟偏移不再渲染 -123ms），0ms 输出不变', () => {
+    expect(formatDuration(-123)).toBe('0ms');
+    expect(formatDuration(0)).toBe('0ms');
+  });
+
+  it('F-14：NaN/Infinity 等非有限值回落占位符', () => {
+    expect(formatDuration(Number.NaN)).toBe('—');
+    expect(formatDuration(Infinity)).toBe('—');
+    expect(formatDuration(-Infinity)).toBe('—');
+  });
 });
 
 describe('F-35 formatDurationShort（收敛重复的内联实现 + 小时档）', () => {
@@ -115,5 +127,12 @@ describe('F-35 formatDurationShort（收敛重复的内联实现 + 小时档）'
 
   it('null → 占位符', () => {
     expect(formatDurationShort(undefined)).toBe('—');
+  });
+
+  it('F-14：负值 clamp 到 0ms，非有限值回落占位符（与 formatDuration 同口径）', () => {
+    expect(formatDurationShort(-5)).toBe('0ms');
+    expect(formatDurationShort(0)).toBe('0ms');
+    expect(formatDurationShort(Number.NaN)).toBe('—');
+    expect(formatDurationShort(Infinity)).toBe('—');
   });
 });
