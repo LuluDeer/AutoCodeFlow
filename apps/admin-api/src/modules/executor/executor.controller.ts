@@ -821,8 +821,21 @@ export class ExecutorController {
   // 列表既挡不住信息（可经 executions 侧信道获得）又会打断 TaskFormPage 的
   // 执行器下拉。凭证类面（notification/ai config）仍为 ADMIN。
   @ApiOperation({
-    description: "获取全部执行器列表，包含在线状态、分组与标签。",
-    summary: "列出执行器",
+    // F-55（UIAUDIT 后端轮 P3-2）：契约如实化——本端点**不支持分页**，此前
+    // live 实测 `?page=99999999&pageSize=50` 被**静默忽略**（收下参数不生效，
+    // API-07 同型「参数收下不生效」缺陷）：调用方以为在翻页，执行器数超过
+    // 截断上限时第 2 页返回与第 1 页完全相同的前缀行。真分页（PageQueryDto
+    // 下推 DB + 分页元数据）会改响应形状（数组 → {items,total,…} 信封），
+    // 打断 admin-web / acf-cli / mcp-server 四端消费方——登记 fix-b1 报告
+    // 「待拍板」，本轮只把截断行为写进契约（OpenAPI 如实描述）。
+    description:
+      "获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。" +
+      "**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；" +
+      "服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。" +
+      "截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，" +
+      "调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，" +
+      "不得把截断结果当作全量。",
+    summary: "列出执行器（截断上限见描述；不支持分页）",
   })
   @ApiOkResponse({ type: [ExecutorResponseDto] })
   findAll() {
