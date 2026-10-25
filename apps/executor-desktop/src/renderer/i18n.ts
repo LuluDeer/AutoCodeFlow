@@ -492,6 +492,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     // F-30（UIUX 审计）：主进程未来新增状态 / 异常值到达时，hero 大字有
     // `?? status` 兜底而描述行此前渲染为空白——补与 label 同风格的默认描述。
     'status.desc.unknown': '执行器状态未知。可尝试重启应用；若仍未恢复，请在下方日志中排查。',
+    // F-32（UIUX 审计）：当日日志 / 日志文件列表读取失败——如实呈现，不冒充空态。
+    'status.logsLoadFailed': '今日日志读取失败，请重试；若持续失败请检查日志文件权限。',
+    'status.filesLoadFailed': '日志文件列表读取失败。',
     'status.copied': '已复制',
     'status.copyFailed': '复制失败',
     'status.copy': '复制',
@@ -1209,6 +1212,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.desc.stopping': 'Safely stopping the executor process',
     // F-30（UIUX 审计）：见 zh 块同键注释——未知状态时描述行不再留白。
     'status.desc.unknown': 'Executor status is unknown. Try restarting the app; if it persists, check the logs below.',
+    // F-32（UIUX 审计）：见 zh 块同键注释——读取失败不再冒充空态。
+    'status.logsLoadFailed': 'Failed to load today\'s logs. Retry; if it keeps failing, check the log file permissions.',
+    'status.filesLoadFailed': 'Failed to load the log file list.',
     'status.copied': 'Copied',
     'status.copyFailed': 'Copy failed',
     'status.copy': 'Copy',

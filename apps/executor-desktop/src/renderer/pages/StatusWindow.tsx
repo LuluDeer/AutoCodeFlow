@@ -231,29 +231,34 @@ function LogFilesPanel() {
   const [fileQuery, setFileQuery] = useState('');
   const [logFiles, setLogFiles] = useState<Array<{ label: string; path: string; date: string }>>([]);
   const [fileError, setFileError] = useState<string | null>(null);
+  // F-32（UIUX 审计）：列表读取失败态——此前失败静默置空列表、面板顶着
+  // 「暂无日志文件」冒充正常。错误如实呈现 + 重试入口（对齐 History/Apps）。
+  const [filesLoadError, setFilesLoadError] = useState<string | null>(null);
 
   // 加载日志文件列表
-  useEffect(() => {
+  const loadFiles = useCallback(() => {
     // EXP-09（本轮体验审查）：此前是 `listLogFiles().then(setLogFiles)`——
     // 既无 .catch 也无 `typeof === 'function'` 守卫。旧版 preload 未暴露该方法
     // 时这里会**同步抛 TypeError** → React 卸载整棵树 → 窗口只剩背景色（正是
     // preload/index.ts:40-42 记录过的那次事故形态）。同仓 ConfigPage.tsx:93 已
     // 为同类情形写了 typeof 守卫，此处对齐。
     if (typeof window.electronAPI.listLogFiles !== 'function') return;
-    let cancelled = false;
+    setFilesLoadError(null);
     window.electronAPI
       .listLogFiles()
       .then((files) => {
-        if (!cancelled) setLogFiles(files);
+        setLogFiles(files);
       })
       .catch(() => {
-        // 读取失败时保持空列表（面板显示「暂无日志文件」），不炸整棵渲染树。
-        if (!cancelled) setLogFiles([]);
+        // 读取失败：不再冒充「暂无日志文件」空态——错误态 + 重试入口。
+        setLogFiles([]);
+        setFilesLoadError(t('status.filesLoadFailed'));
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
+
+  useEffect(() => {
+    loadFiles();
+  }, [loadFiles]);
 
   // 打开日志文件失败（关联程序缺失/路径被拒）时给出反馈，而不是点击无反应
   function openFile(p: string) {
@@ -271,7 +276,14 @@ function LogFilesPanel() {
       <div className="log-fs-files-title">{t('status.filesHistoryHeading', logFiles.length)}</div>
       <input className="log-file-search" type="search" aria-label={t('status.filesSearchAria')} placeholder={t('status.filesSearchPlaceholder')} value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} />
       {fileError && <div className="log-files-error" role="alert">{fileError}</div>}
-      {visibleLogFiles.length === 0
+      {/* F-32：列表读取失败——错误 + 重试，替代冒充性的空态文案 */}
+      {filesLoadError && (
+        <div className="log-files-error" role="alert">
+          <span>{filesLoadError}</span>
+          <button type="button" className="btn btn-sm" onClick={loadFiles}>{t('ui.retry')}</button>
+        </div>
+      )}
+      {!filesLoadError && (visibleLogFiles.length === 0
         ? <div className="log-files-empty">{fileQuery ? t('status.filesNoMatch') : t('status.filesEmpty')}</div>
         : visibleLogFiles.map((f) => (
             <button
@@ -283,7 +295,7 @@ function LogFilesPanel() {
               <span className="log-file-label">{f.label}</span>
               <span className="log-file-open"><Icon name="external" className="icon-xs" /> {t('ui.open')}</span>
             </button>
-          ))
+          )))
       }
     </div>
   );
@@ -362,6 +374,11 @@ export default function StatusWindow({ active }: { active: boolean }) {
   // 右栏「日志文件」快捷区（与全屏查看器共用 listLogFiles IPC）
   const [logFiles, setLogFiles] = useState<Array<{ label: string; path: string; date: string }>>([]);
   const [railFileError, setRailFileError] = useState<string | null>(null);
+  // F-32（UIUX 审计）：当日历史日志 / 右栏日志文件列表的读取失败态——失败
+  // 不再被「等待输出 / 暂无文件」的空态冒充（错误 + 重试入口，口径对齐
+  // History/Apps 页的错误条）。
+  const [logsLoadError, setLogsLoadError] = useState<string | null>(null);
+  const [railFilesLoadError, setRailFilesLoadError] = useState<string | null>(null);
   // B-02：今日概览条（hero 与日志工作区之间）的原始历史记录（R4 state 化）。
   // null = 尚未读到 / 读取失败（概览整条不渲染）。概览从它派生（useMemo），
   // C-01 停止确认的「运行中」计数也取自同一份——不为确认条二次发 getHistory。
@@ -454,21 +471,32 @@ export default function StatusWindow({ active }: { active: boolean }) {
     return () => { cancelled = true; };
   }, [active]);
 
-  useEffect(() => {
-    // 启动时先加载当天的历史日志（经 preload 暴露的方法；禁止用
-    // window.electronAPI.invoke —— preload 不暴露 invoke，会同步抛异常
-    // → React 卸载整棵树 → 主窗口只有背景色黑屏，见 preload/index.ts 注释）
+  // F-32（UIUX 审计）：当日历史日志加载。此前 `.catch(() => {})` 静默吞掉
+  // IPC 失败——日志区顶着「等待日志输出…」的空态冒充一切正常。改为如实
+  // 呈现错误态 + 重试入口（口径对齐 History/Apps 的错误条）。提取成稳定
+  // 回调供挂载 effect 与空态里的重试按钮共用。
+  const loadTodayLogs = useCallback(() => {
+    setLogsLoadError(null);
     window.electronAPI.getTodayLogs().then((result: any) => {
       if (result?.lines && result.lines.length > 0) {
         // 过滤掉空行；落盘行是 electron-log+winston 双时间戳形态，
-        // 统一经 normalizeLogLine 收敛为单时间戳展示（见上方注释）。
+        // 统一经 normalizeLogLine 收敛为单时间戳展示。
         const validLines = (result.lines as string[]).filter((l) => l.trim().length > 0);
         if (!clearedRef.current) {
           const historical = validLines.slice(-500).map(normalizeLogLine);
           setLogs((live) => mergeHistoryWithLive(historical, live));
         }
       }
-    }).catch(() => {});
+    }).catch(() => {
+      setLogsLoadError(t('status.logsLoadFailed'));
+    });
+  }, []);
+
+  useEffect(() => {
+    // 启动时先加载当天的历史日志（经 preload 暴露的方法；禁止用
+    // window.electronAPI.invoke —— preload 不暴露 invoke，会同步抛异常
+    // → React 卸载整棵树 → 主窗口只有背景色黑屏，见 preload/index.ts 注释）
+    loadTodayLogs();
 
     const offLog = window.electronAPI.onLogLine((line) => {
       setLogs((prev) => retainRecentLogs([...prev, normalizeLogLine(line)]));
@@ -479,7 +507,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
       setRunning(s !== 'stopped');
     });
     return () => { offLog(); offStatus(); };
-  }, []);
+  }, [loadTodayLogs]);
 
   useEffect(() => {
     // 状态窗常驻时也要反映分钟级 Agent 指派的开始/完成。沿用设置页的
@@ -519,18 +547,22 @@ export default function StatusWindow({ active }: { active: boolean }) {
     return () => { cancelled = true; clearInterval(timer); };
   }, [active]);
 
-  // 右栏日志文件列表：旧版 preload 缺通道时直接跳过（分区显示空态，不影响其余面板）；
-  // 读取失败静默为空列表，与全屏查看器同一口径，不炸渲染树。
-  useEffect(() => {
-    if (!active) return;
+  // F-32（UIUX 审计）：右栏日志文件列表加载。读取失败不再静默为空列表
+  // （空态会谎报「暂无日志文件」）——错误态 + 重试。
+  const loadRailFiles = useCallback(() => {
     const listLogFiles = window.electronAPI.listLogFiles;
     if (typeof listLogFiles !== 'function') return;
-    let cancelled = false;
+    setRailFilesLoadError(null);
     listLogFiles()
-      .then((files) => { if (!cancelled) setLogFiles(files); })
-      .catch(() => { if (!cancelled) setLogFiles([]); });
-    return () => { cancelled = true; };
-  }, [active]);
+      .then((files) => setLogFiles(files))
+      .catch(() => setRailFilesLoadError(t('status.filesLoadFailed')));
+  }, []);
+
+  // 右栏日志文件列表：旧版 preload 缺通道时直接跳过（分区显示空态，不影响其余面板）
+  useEffect(() => {
+    if (!active) return;
+    loadRailFiles();
+  }, [active, loadRailFiles]);
 
   useEffect(() => {
     if (autoScroll.current && logRef.current) {
@@ -958,15 +990,23 @@ export default function StatusWindow({ active }: { active: boolean }) {
               >
                 {logs.length === 0
                   /* 空日志不再只留一句"等待输出"：按执行器当前状态给一句
-                     "为什么还没有日志 / 下一步做什么"（引导闭环） */
-                  ? (
+                     "为什么还没有日志 / 下一步做什么"（引导闭环）。
+                     F-32（UIUX 审计）：当日历史日志读取失败时如实呈现错误态 +
+                     重试入口——失败不得冒充「等待日志输出…」的空态。 */
+                  ? (logsLoadError ? (
+                    <div className="log-empty-block">
+                      <span className="log-empty" role="alert"><Icon name="warning" className="icon-xs" />{logsLoadError}</span>
+                      <button type="button" className="btn btn-sm" onClick={loadTodayLogs}>{t('ui.retry')}</button>
+                    </div>
+                  )
+                  : (
                     <div className="log-empty-block">
                       <span className="log-empty"><Icon name="terminal" className="icon-xs" />{t('logviewer.waiting')}</span>
                       <span className="log-empty-hint">
                         {running ? t('status.logWaitingRunning') : t('status.logWaitingHint')}
                       </span>
                     </div>
-                  )
+                  ))
                   : <LogLineList
                       lines={logs}
                       displayed={previewEntries}
@@ -1075,7 +1115,14 @@ export default function StatusWindow({ active }: { active: boolean }) {
             <section className="overview-card" aria-label={t('status.filesHeading')}>
               <div className="overview-heading">{t('status.filesHeading')}</div>
               {railFileError && <div className="log-files-error" role="alert">{railFileError}</div>}
-              {logFiles.length === 0
+              {/* F-32（UIUX 审计）：列表读取失败——错误 + 重试，不再冒充「暂无日志文件」 */}
+              {railFilesLoadError && (
+                <div className="log-files-error" role="alert">
+                  <span>{railFilesLoadError}</span>
+                  <button type="button" className="btn btn-sm" onClick={loadRailFiles}>{t('ui.retry')}</button>
+                </div>
+              )}
+              {!railFilesLoadError && (logFiles.length === 0
                 ? <div className="log-files-empty">{t('status.filesEmpty')}</div>
                 : (
                   <div className="rail-files">
@@ -1102,7 +1149,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                       </button>
                     )}
                   </div>
-                )}
+                ))}
             </section>
           </aside>
         </div>
