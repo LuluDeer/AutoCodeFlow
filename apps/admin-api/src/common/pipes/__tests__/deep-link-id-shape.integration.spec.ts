@@ -61,7 +61,9 @@ describe("F-41 深链 ID 形态校验（400 形态错 / 404 不存在，不再 5
       getExecutions: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       getExecutionStats: jest.fn().mockResolvedValue({ successRate: 100 }),
       getExecution: jest.fn(),
-      getExecutionLogs: jest.fn().mockResolvedValue({ lines: [], totalLines: 0 }),
+      getExecutionLogs: jest
+        .fn()
+        .mockResolvedValue({ lines: [], totalLines: 0 }),
     } as unknown as Record<string, jest.Mock>;
     applicationService = {
       findById: jest.fn(),

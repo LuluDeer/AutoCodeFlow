@@ -68,7 +68,10 @@ export function isOriginAllowed(
 export function corsOriginValidator(
   allowedOrigins: string[],
   isDevelopment: boolean,
-): (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => void {
+): (
+  origin: string | undefined,
+  callback: (err: Error | null, allow?: boolean) => void,
+) => void {
   return (origin, callback) => {
     // Allow server-to-server calls (no Origin header)
     if (!origin) {
@@ -83,6 +86,9 @@ export function corsOriginValidator(
       `Origin ${origin} not allowed by CORS (403 CORS_ORIGIN_NOT_ALLOWED)`,
       "CORS",
     );
-    callback(new AppError(ErrorCode.CORS_ORIGIN_NOT_ALLOWED, { origin }), false);
+    callback(
+      new AppError(ErrorCode.CORS_ORIGIN_NOT_ALLOWED, { origin }),
+      false,
+    );
   };
 }

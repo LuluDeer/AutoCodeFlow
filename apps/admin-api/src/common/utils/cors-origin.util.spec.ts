@@ -1,5 +1,9 @@
 import { HttpException } from "@nestjs/common";
-import { isOriginAllowed, parseAllowedOrigins, corsOriginValidator } from "./cors-origin.util";
+import {
+  isOriginAllowed,
+  parseAllowedOrigins,
+  corsOriginValidator,
+} from "./cors-origin.util";
 
 describe("cors-origin.util (ARCH-001)", () => {
   describe("parseAllowedOrigins", () => {
@@ -117,7 +121,10 @@ describe("cors-origin.util (ARCH-001)", () => {
     }
 
     it("无 Origin 头（server-to-server）放行", () => {
-      const validator = corsOriginValidator(["https://admin.example.com"], false);
+      const validator = corsOriginValidator(
+        ["https://admin.example.com"],
+        false,
+      );
       const { err, allow } = run(validator, undefined);
       expect(err).toBeNull();
       expect(allow).toBe(true);
@@ -157,7 +164,10 @@ describe("cors-origin.util (ARCH-001)", () => {
     });
 
     it("生产环境白名单外 origin（含 localhost）同样 403 拒绝", () => {
-      const validator = corsOriginValidator(["https://admin.example.com"], false);
+      const validator = corsOriginValidator(
+        ["https://admin.example.com"],
+        false,
+      );
       for (const origin of [
         "http://localhost:5176",
         "http://127.0.0.1:5176",

@@ -957,7 +957,10 @@ export class TaskController {
     type: WebhookStatusResponseDto,
     description: "Webhook 状态（密钥从不返回）",
   })
-  webhookStatus(@Param("id", ParseUuidShapePipe) id: string, @CurrentUser() user: AuthUser) {
+  webhookStatus(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.taskWebhookService.getStatus(id, user);
   }
 
@@ -1055,7 +1058,10 @@ export class TaskController {
     type: PaginatedExecutionListDto,
     description: "执行历史（已排除大文本列）",
   })
-  executions(@Param("id", ParseUuidShapePipe) id: string, @Query() p: TaskExecutionsQueryDto) {
+  executions(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Query() p: TaskExecutionsQueryDto,
+  ) {
     return this.taskService.getExecutions(id, p);
   }
 

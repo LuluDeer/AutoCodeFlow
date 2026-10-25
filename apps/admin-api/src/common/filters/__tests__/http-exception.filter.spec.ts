@@ -149,7 +149,7 @@ describe("HttpExceptionFilter — PG 22P02 兜底映射（F-41）", () => {
 
   function pg22P02(value: string): QueryFailedError {
     return new QueryFailedError(
-      'SELECT * FROM tasks WHERE id = $1',
+      "SELECT * FROM tasks WHERE id = $1",
       [value],
       Object.assign(
         new Error(`invalid input syntax for type uuid: "${value}"`),
@@ -171,7 +171,11 @@ describe("HttpExceptionFilter — PG 22P02 兜底映射（F-41）", () => {
 
   it("非 22P02 的其它 DB 错误仍保持 500 兜底（不扩大映射面）", () => {
     const { host, status, json } = makeHost();
-    const err = new QueryFailedError("SELECT 1", [], Object.assign(new Error("relation missing"), { code: "42P01" }) as Error);
+    const err = new QueryFailedError(
+      "SELECT 1",
+      [],
+      Object.assign(new Error("relation missing"), { code: "42P01" }) as Error,
+    );
     new HttpExceptionFilter().catch(err, host);
 
     expect(status).toHaveBeenCalledWith(500);
