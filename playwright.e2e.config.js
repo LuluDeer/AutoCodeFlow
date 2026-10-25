@@ -23,7 +23,9 @@ module.exports = {
   workers: 1,
   retries: 1,
   use: {
-    baseURL: 'http://localhost:5176',
+    // 与 apps/admin-web/playwright.config.ts 同款：环境可覆盖（e2e-full 把
+    // vite 起在别的端口时设 PLAYWRIGHT_BASE_URL），默认本脚本常规 5176。
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5176',
     headless: true,
     // LANG-ERR-01 / UI-10：**必须显式指定浏览器 locale**。
     // 界面语言判定（apps/admin-web/src/i18n/index.ts 的 detectLanguage）已按产品

@@ -113,7 +113,9 @@ export default defineConfig({
     port: Number(process.env.VITE_PORT || 5176),
     proxy: {
       '/api': {
-        target: 'http://localhost:3105',
+        // e2e-full 类编排（或任何把 admin-api 起在别的端口的场景）用
+        // VITE_API_PROXY_TARGET 覆盖；默认指向 demo/dev 常规的 3105。
+        target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:3105',
         changeOrigin: true,
         // F-40（UIUX 审计 P1-1）：demo 栈 admin-api 的 CORS 白名单钉死在
         // 8088（docker-compose.demo.yml：CORS_ALLOWED_ORIGINS=
