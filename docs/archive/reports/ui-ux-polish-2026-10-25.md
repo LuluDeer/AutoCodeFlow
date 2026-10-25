@@ -36,7 +36,11 @@
 - 修复：B1（F-52~57，7 commit d487353d..fdcf89f8 + 00a403dd 收尾），约 3477 用例绿
 
 ### R4（收口轮）
-- 全量回归 + 本报告提交
+- admin-api 全量套件：PASS（exit=0）
+- admin-web 生产构建（tsc -b + vite build）：首轮抓到 W2/W3b 的 4 处类型回归（vitest/lint 均不查类型，批次门禁盲区）→ 已修（32f73337），重建过
+- admin-web 全量 vitest 终验 + 本报告提交
+- 8088 构建态验收：demo 容器为旧镜像（源码修复未部署），以 tsc+vite 生产构建 + dev 真机复验代位；下次部署 demo 栈后自然收敛（含 live 500 深链 7 条）
+- 遗留：F-55 真分页（待拍板——响应形状变更打断四端消费方）；桌面语言默认值 OPEN-DECISIONS D5 待拍板
 
 ## 发现总表
 
@@ -110,6 +114,6 @@ R2'-C 基线：test:renderer / test:main（61 组）/ test:e2e（11 条）/ audi
 
 发现 **57 条**（P0×1 / P1×8 / P2×14 / P3×34），处置：**修复 54 条**、未复现 1（F-49）、非缺陷 1（F-50）、wontfix 1（F-51）。桌面端 F-22~F-38 全清；admin-web F-1~21/F-39~48 全清；admin-api F-52~57 全清。累计提交 ~60 commit（develop，未 push）。
 
-验证基线：admin-web vitest 242 文件/2050 用例全绿且 unhandled 0、lint/lint:i18n 0 错、tsc+vite build 过；admin-api 批内定向 ~3477 用例绿 + lint 0 错（全量套件见 R4）；executor-desktop 五条基线全绿（53 组自测/11 e2e/UI 审计 0 issues/视觉审计）。
+验证基线：admin-web vitest 242 文件/2050 用例全绿且 unhandled 0、lint/lint:i18n 0 错、tsc+vite build 过（R4 抓到并修复 4 处类型回归后重建）；admin-api 全量套件 PASS + 批内定向 ~3477 用例绿 + lint 0 错；executor-desktop 五条基线全绿（53 组自测/11 e2e/UI 审计 0 issues/视觉审计）。
 
 方法论沉淀：真机 DOM 级验证 > 截图；修复批次须等占用同文件/同端口的前批完成；e2e 前必须完整重建（旧 dist 假象已两次实证）；契约变更走 swagger:export+gen:api-types 再生成；scheduler 类「模块加载期捕获」的库必须在零 import 的 setupFiles[0] 包裹。
