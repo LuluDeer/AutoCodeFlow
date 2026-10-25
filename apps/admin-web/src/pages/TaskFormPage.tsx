@@ -110,6 +110,14 @@ import '../i18n';
 // UI-06: 单页分区锚点。全部 Form.Item 同时挂载，锚点条只负责滚动定位。
 const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', 'sec-glue'] as const;
 
+/**
+ * F-10（UIAUDIT P3-3）：params 体积上限（64KB）的前端镜像。
+ * 单一事实源在后端 admin-api `task/params-size.util.ts` 的 TASK_PARAMS_MAX_BYTES，
+ * create/update/trigger/webhook 四入口统一按 JSON utf8 字节数 400；此处值必须
+ * 与其保持一致（口径：JSON.stringify(params) 的 utf8 字节数）。
+ */
+const TASK_PARAMS_MAX_BYTES = 65_536;
+
 // §2.3：`Form.useWatch` 的**整表单**订阅形态。必须是模块级常量——每次渲染新建
 // `[]` 会让 useWatch 的依赖比较认成「变了」而重复重算（见其 flattenDeps）。
 const ALL_FORM_FIELDS: string[] = [];
@@ -669,6 +677,27 @@ export default function TaskFormPage() {
         const badList = badSecretKeys.map((b) => `"${b.key}"`).join('、');
         message.error(t('taskForm.secrets.invalidKeys', { list: badList }));
         setValidationAnnouncement(t('taskForm.secrets.invalidKeysShort', { list: badList }));
+        scrollToSection(SECTION_IDS[3]);
+        return;
+      }
+    }
+    // F-10（UIAUDIT P3-3）：params 体积 64KB 前端预检。后端
+    // admin-api task/params-size.util 的 TASK_PARAMS_MAX_BYTES=65_536 对
+    // create/update/trigger/webhook 四个入口统一 400（taskParamsByteSize 按
+    // JSON utf8 字节数计）；此前超限只在提交后收到一条裸 400。这里以同一口径
+    // （JSON.stringify utf8 字节，TextEncoder）在提交前拦下并滚到参数分区。
+    if (values.params != null) {
+      let byteSize: number;
+      try {
+        byteSize = new TextEncoder().encode(JSON.stringify(values.params) ?? '').length;
+      } catch {
+        // 循环引用等序列化失败：后端同样按「不可序列化=超限」处理，交后端 400。
+        byteSize = Number.POSITIVE_INFINITY;
+      }
+      if (byteSize > TASK_PARAMS_MAX_BYTES) {
+        const sizeText = Number.isFinite(byteSize) ? String(byteSize) : '∞';
+        message.error(t('taskForm.params.tooLarge', { size: sizeText, max: String(TASK_PARAMS_MAX_BYTES) }));
+        setValidationAnnouncement(t('taskForm.params.tooLargeShort', { size: sizeText, max: String(TASK_PARAMS_MAX_BYTES) }));
         scrollToSection(SECTION_IDS[3]);
         return;
       }

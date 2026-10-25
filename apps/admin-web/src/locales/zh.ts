@@ -2712,6 +2712,8 @@ export default {
   'taskForm.field.upstreamDependencies.placeholder': '选择上游任务（可多选，全部成功后自动触发本任务）',
   'taskForm.params.alertTitle': '任务默认参数',
   'taskForm.params.alertDesc': '以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。',
+  'taskForm.params.tooLarge': '任务参数体积超出上限（{{size}}/{{max}} 字节），请精简后再保存',
+  'taskForm.params.tooLargeShort': '任务参数超出 64KB 上限：{{size}}/{{max}} 字节',
   'taskForm.field.params': '默认参数',
   // SEC-02 续（生产故障）：凭据编辑器。此前控制台**没有**这个入口，而执行器报错
   // 文案却在教用户「请在平台 secrets 配置 FEISHU_APP_ID」——一条在 UI 上无法执行

@@ -2704,6 +2704,8 @@ export default {
   'taskForm.field.upstreamDependencies.placeholder': 'Select upstream tasks (multiple; auto-triggers this task after all succeed)',
   'taskForm.params.alertTitle': 'Default Params',
   'taskForm.params.alertDesc': 'These params are injected into the task as AUTOFLOW_<KEY> environment variables on every execution. You can override defaults by passing params with the same name at trigger time.',
+  'taskForm.params.tooLarge': 'Task parameters exceed the size limit ({{size}}/{{max}} bytes); trim them before saving',
+  'taskForm.params.tooLargeShort': 'Task parameters exceed the 64KB limit: {{size}}/{{max}} bytes',
   'taskForm.field.params': 'Default Params',
   // SEC-02 follow-up (production incident): the credentials editor had no entry
   // point at all, while executor error text told users to "configure

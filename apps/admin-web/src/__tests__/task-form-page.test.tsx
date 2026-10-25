@@ -322,6 +322,38 @@ describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 
     expect(payload.executorTags).toBeNull();
     expect(payload.executeMode).toBe('single');
   }, 15_000);
+
+  // ── F-10（UIAUDIT P3-3）：params 64KB 提交前预检 ──────────────────────────
+  // 后端 task/params-size.util 的 TASK_PARAMS_MAX_BYTES=65_536 对 create/update
+  // 统一 400；此前超限只在提交后收到裸 400。表单在提交前以同口径（JSON utf8
+  // 字节）拦下：不发起 POST、给出可读提示并滚到参数分区。
+  it('F-10：params 超过 64KB 时提交前拦截——不发起 POST 并给出体积提示', async () => {
+    mockRouteParams = {}; // 创建态：无 :id
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'fat-params-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+    // 塞一个 >64KB 的参数值（ParamsEditor 行内输入，70_000 字符 > 65_536 字节）
+    fireEvent.click(screen.getByRole('button', { name: /添加参数/ }));
+    fireEvent.change(screen.getByPlaceholderText('参数名'), { target: { value: 'big' } });
+    fireEvent.change(screen.getByPlaceholderText('参数值'), {
+      target: { value: 'x'.repeat(70_000) },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+
+    // 提示出现在 UI-12 播报区（含实际体积与上限字节）
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('task-form-validation-announcement').textContent).toContain('65536'),
+    );
+    expect(screen.getByTestId('task-form-validation-announcement').textContent).toContain('任务参数');
+    // 关键：请求未发出（后端 400 的前置拦截）
+    expect(tasksApi.create).not.toHaveBeenCalled();
+  }, 20_000);
 });
 
 // UIUX-F-43（审计 P2-1）：saving 置位在元信息校验之后，此前快速连点会全部
