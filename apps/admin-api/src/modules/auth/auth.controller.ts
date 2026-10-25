@@ -46,6 +46,9 @@ import { getEnvVar } from "../../config/env";
 import { AUTH_THROTTLE } from "../../config/throttle-profiles";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { SessionRevokeResponseDto } from "./dto/misc-response.dto";
+// F-56：sessions/:id 形态管道（非法 id 400 INVALID_VALUE_FORMAT，替代
+// 200 {success:false}）。
+import { ParseIntShapePipe } from "../../common/pipes/parse-int-shape.pipe";
 import {
   AuthLogoutDto,
   AuthProfileDto,
@@ -387,28 +390,32 @@ export class AuthController {
   @ApiBearerAuth("JWT")
   @ApiOperation({
     description:
-      "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。",
+      "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。",
     summary: "撤销我的一个会话",
   })
   @ApiResponse({ status: 200, description: "会话已撤销" })
-  @ApiResponse({ status: 401, description: "会话不存在或不属于你" })
+  // F-56（UIAUDIT 后端轮 P3-3）：错误语义归位——
+  //   · id 形态非法 → 400 INVALID_VALUE_FORMAT（ParseIntShapePipe，与 users
+  //     同源管道；此前返回 200 {success:false}，HTTP 成功/语义失败的双层
+  //     解读与全站「错误必 4xx+errorCode」形态相悖）；
+  //   · 不存在/不属于你 → 404（SESSION_NOT_FOUND 码，目录状态从 401 归位为
+  //     404——该码只服务本撤销面，401 会触发 admin-web axios 拦截器的
+  //     「会话过期」处理链（静默跳登录），把「吊销一条已死会话」放大成
+  //     整页登出；归属反枚举不受影响：他人 id 与不存在 id 同形 404）。
+  @ApiResponse({ status: 404, description: "会话不存在或已吊销" })
   async revokeSession(
-    @Param("id") id: string,
+    @Param("id", ParseIntShapePipe) id: number,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const sessionId = Number(id);
-    if (!Number.isInteger(sessionId)) {
-      return { success: false };
-    }
-    await this.authService.revokeSession(user.id, sessionId);
+    await this.authService.revokeSession(user.id, id);
     await this.auditService
       .log({
         userId: user.id,
         username: user.username,
         action: "auth.session.revoke",
         resource: "auth",
-        resourceId: id,
+        resourceId: String(id),
         ip: req.ip,
       })
       .catch((err: unknown) =>
