@@ -47,6 +47,8 @@ import { SOP_ASSIGNMENT_STATUS_COLOR, SOP_STATUS_COLOR } from '../utils/status-c
 import { useIsMobile } from '../hooks/useIsMobile';
 // A11Y-DRAWER-01：SOP 详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
 import { useDrawerA11y } from '../hooks/useDrawerA11y';
+// UIUX-F-3：列表 load 序号守卫（与 AgentSessionsPage 共用同一实现）
+import { useRaceGuard } from '../utils/raceGuard';
 import { sopsApi } from '../api/sops';
 // SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -134,24 +136,33 @@ export default function SopsPage() {
   // 必须落到页内错误块——此前只弹一条一闪而过的 toast，表格停在「暂无数据」
   // 空态，把读取失败谎报成「还没有任何 SOP」。
   const [loadError, setLoadError] = useState<unknown>(null);
+  // UIUX-F-3（审计 P2-2，对齐 AgentSessionsPage 同名实现的 RACE-POLL 守卫）：
+  // load 有三个并发入口——翻页 effect、15s 静默轮询、写后手动刷新。无「谁是
+  // 最新」判据时，第 1 页的慢响应可晚于第 2 页到达：分页器停在第 2 页而表格
+  // 显示第 1 页；轮询旧页响应也能盖掉刚翻到的新页。序号守卫同款：过期响应
+  // 一律丢弃，silent 与非 silent 共用同一判据（否则轮询仍可能盖掉手动刷新）。
+  const raceGuard = useRaceGuard();
   const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const seq = raceGuard.next();
     if (!opts?.silent) setLoading(true);
     try {
       const res = await sopsApi.list({ page, pageSize });
+      if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（不覆盖更新的一页）
       setItems(res.items);
       setTotal(res.total);
       // 成功即清错误（后台静默拍自愈同效）
       setLoadError(null);
     } catch (err: unknown) {
+      if (!raceGuard.isLatest(seq)) return;
       // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据
       if (!opts?.silent) {
         setLoadError(err);
         message.error(t('sops.loadFailed'));
       }
     } finally {
-      if (!opts?.silent) setLoading(false);
+      if (raceGuard.isLatest(seq) && !opts?.silent) setLoading(false);
     }
-  }, [page, pageSize, t]);
+  }, [page, pageSize, t, raceGuard]);
 
   useEffect(() => {
     void load();

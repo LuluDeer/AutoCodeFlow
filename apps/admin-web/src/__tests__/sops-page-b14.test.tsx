@@ -424,3 +424,50 @@ describe('SopsPage UX 边界（首载失败态 / 草稿标题必填）', () => {
     });
   });
 });
+
+// UIUX-F-3（审计 P2-2，对齐 AgentSessionsPage 的 RACE-POLL 守卫）：load 的三个
+// 并发入口（翻页 / 15s 轮询 / 手动刷新）无「谁是最新」判据时，第 1 页慢响应
+// 晚于第 2 页到达会把表格盖回第 1 页数据——分页器停在第 2 页而内容是第 1 页。
+describe('UIUX-F-3 SopsPage 列表 load 竞态守卫', () => {
+  const p2Sop: Sop = { ...sop, id: 'sop-2', slug: 'demo-p2', title: 'P2 SOP' };
+
+  it('第 1 页慢响应晚于第 2 页到达，不得覆盖新页', async () => {
+    const pendingP1: Array<(v: unknown) => void> = [];
+    vi.mocked(sopsApi.list).mockImplementation(async (params?: { page?: number }) => {
+      if ((params?.page ?? 1) === 1) {
+        return new Promise((resolve) => { pendingP1.push(resolve); }); // 第 1 页：到达时机由测试控制
+      }
+      return { items: [p2Sop], total: 25 }; // 第 2 页：立即返回
+    });
+
+    render(
+      <MemoryRouter>
+        <SopsPage />
+      </MemoryRouter>,
+    );
+
+    // 首屏第 1 页（先放行挂起的那一发，表格与分页器才渲染）
+    await act(async () => {
+      pendingP1.shift()!({ items: [sop], total: 25 });
+    });
+    await screen.findByText('Demo SOP');
+
+    const nextBtn = () => document.querySelector('.ant-pagination-next') as HTMLButtonElement;
+    const prevBtn = () => document.querySelector('.ant-pagination-prev') as HTMLButtonElement;
+
+    // 下一页（第 2 页立即返回）→ 返回第 1 页（挂起）→ 再下一页（立即返回）：
+    // 此时第 1 页的慢响应仍在途
+    await act(async () => { fireEvent.click(nextBtn()); });
+    await screen.findByText('P2 SOP');
+    await act(async () => { fireEvent.click(prevBtn()); });
+    await act(async () => { fireEvent.click(nextBtn()); });
+    await screen.findByText('P2 SOP');
+
+    // 第 1 页的慢响应此刻才到达——必须被丢弃，表格仍是第 2 页
+    await act(async () => {
+      pendingP1.shift()!({ items: [sop], total: 25 });
+    });
+    expect(screen.queryByText('Demo SOP')).toBeNull();
+    expect(screen.getByText('P2 SOP')).toBeTruthy();
+  });
+});
