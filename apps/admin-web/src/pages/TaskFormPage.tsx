@@ -109,6 +109,19 @@ const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', '
 // `[]` 会让 useWatch 的依赖比较认成「变了」而重复重算（见其 flattenDeps）。
 const ALL_FORM_FIELDS: string[] = [];
 
+/**
+ * F-39（UIUX 审计 P0-1）①：草稿里「非表单字段树」的自持 state 键（单一事实源）。
+ *
+ * captureDraftSnapshot 把它们显式附加进草稿（恢复自持 state 必需）；但**恢复侧
+ * 不得让它们随 setFieldsValue 进表单 store**——antd 会把未注册键原样存进 store，
+ * 提交 getFieldsValue(true) 带出后，executorMode（非 CreateTaskDto 字段）被后端
+ * forbidNonWhitelisted 判 400，而草稿仅在成功/手动丢弃时清除 → 创建任务被无感知
+ * 地永久卡死（真机审计：草稿恢复后创建 100% 失败且自锁）。恢复侧已剔除、提交侧
+ * buildExecutorPayload 再白名单剥离（executor-mode.ts F-39②），两层防御。
+ */
+const DRAFT_STATE_ONLY_KEYS = ['runtimeVersion', 'codeSource', 'executorMode'] as const;
+const DRAFT_STATE_ONLY_KEY_SET: ReadonlySet<string> = new Set(DRAFT_STATE_ONLY_KEYS);
+
 export default function TaskFormPage() {
   const { t } = useTranslation();
   // BUGFIX（P1，commit 7d66a9b0 清单）：语言切换时 t 引用变化，曾令把 t 列入
@@ -482,8 +495,15 @@ export default function TaskFormPage() {
     const data = restoredDraft.data;
     if (!data || typeof data !== 'object') return;
     const values = data as Record<string, unknown>;
-    // 字段级合并：只覆盖草稿里显式存在的键
-    form.setFieldsValue(values);
+    // F-39①：setFieldsValue 只回填表单真实注册的字段——自持 state 键
+    // （DRAFT_STATE_ONLY_KEYS）由下方各自的 setState 显式恢复。否则它们被种进
+    // 表单 store，提交 getFieldsValue(true) 原样带出 → 后端 400（见常量处注释）。
+    // 字段级合并语义不变：草稿里其余键照旧只覆盖表单当前值。
+    const formValues: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (!DRAFT_STATE_ONLY_KEY_SET.has(key)) formValues[key] = value;
+    }
+    form.setFieldsValue(formValues);
     // 非字段树的自持 state 必须显式同步（与编辑回填/模板预填同一份清单，
     // 见那两处 effect 的注释：漏一个就会出现"界面显示 A、提交 B"）。
     if (typeof values.triggerType === 'string') setTriggerType(values.triggerType);
@@ -507,7 +527,9 @@ export default function TaskFormPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restoredDraft, draftStorageKey, isEdit, loadingTask, templateId, templatePrefilled, dirty, form]);
 
-  /** DRAFT-01：把当前表单 + 自持 state 快照成草稿载荷（由 onValuesChange 驱动） */
+  /** DRAFT-01：把当前表单 + 自持 state 快照成草稿载荷（由 onValuesChange 驱动）。
+   * 附加的三个自持键必须与 DRAFT_STATE_ONLY_KEYS 一致（F-39：恢复侧按该清单
+   * 从 setFieldsValue 中剔除它们；两处共用同一常量防漂移）。 */
   const captureDraftSnapshot = useCallback(() => {
     setDraftValues({
       ...form.getFieldsValue(true),

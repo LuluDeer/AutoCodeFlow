@@ -263,3 +263,93 @@ describe('DRAFT-01 丢弃与提交清理', () => {
     expect(readDraft(EDIT_KEY, DRAFT_SCHEMA_VERSION)).toBeNull();
   });
 });
+
+// ── F-39（UIUX 审计 P0-1）回归：草稿自持 state 键不得进入提交载荷 ─────────────
+// 真机根因：captureDraftSnapshot 把 executorMode（自持 state）写进草稿，恢复时
+// form.setFieldsValue 把它种进表单 store，提交 getFieldsValue(true) 原样带出 →
+// 后端 forbidNonWhitelisted 400「property executorMode should not exist」；
+// 草稿仅在成功/手动丢弃时清除 → 创建任务 100% 失败且用户被无感知地永久卡死。
+// 修复（三层）：① 恢复侧 setFieldsValue 剔除 DRAFT_STATE_ONLY_KEYS；
+// ② buildExecutorPayload 白名单剥离非 DTO 键；③ 失败不清草稿（既有语义），
+//    同一草稿修复后可成功提交——本组用例钉住端到端行为。
+describe('F-39 回归：草稿恢复后创建任务可用（executorMode 不进载荷）', () => {
+  function writeFullDraft() {
+    // 模拟真实 captureDraftSnapshot 产物：表单字段 + 三个自持 state 键
+    writeDraft(
+      NEW_KEY,
+      {
+        name: 'draft-name',
+        entrypoint: 'tasks/main.py',
+        triggerType: 'manual',
+        runtime: 'python',
+        timeout: 300,
+        maxRetry: 3,
+        retryDelay: 0,
+        priority: 2,
+        runtimeVersion: null,
+        codeSource: 'git',
+        executorMode: 'auto',
+      },
+      DRAFT_SCHEMA_VERSION,
+    );
+  }
+
+  it('创建态恢复含 executorMode 的草稿 → create 载荷无 executorMode 且创建成功、草稿清除', async () => {
+    writeFullDraft();
+    vi.mocked(tasksApi.create).mockResolvedValue({ id: 'created-1', name: 'draft-name' } as never);
+    mockRouteParams = {};
+    renderPage();
+    await screen.findByTestId('task-form-draft-restored');
+    await waitFor(() => expect(nameInput().value).toBe('draft-name'));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    });
+    await waitFor(() => expect(vi.mocked(tasksApi.create)).toHaveBeenCalledTimes(1), {
+      timeout: 5000,
+    });
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect('executorMode' in payload).toBe(false);
+    // 修复前该 400（executorMode should not exist）；修复后同一草稿一次成功
+    expect(payload.name).toBe('draft-name');
+    expect(payload.entrypoint).toBe('tasks/main.py');
+    // 成功后草稿清除——不再自锁
+    expect(readDraft(NEW_KEY, DRAFT_SCHEMA_VERSION)).toBeNull();
+  });
+
+  it('提交失败不清草稿：同一草稿在服务端恢复后可再次成功提交', async () => {
+    writeFullDraft();
+    vi.mocked(tasksApi.create)
+      .mockRejectedValueOnce({
+        code: 400,
+        errorCode: 'VALIDATION_FAILED',
+        message: '参数校验失败',
+        params: null,
+      } as never)
+      .mockResolvedValue({ id: 'created-2', name: 'draft-name' } as never);
+    mockRouteParams = {};
+    renderPage();
+    await screen.findByTestId('task-form-draft-restored');
+    await waitFor(() => expect(nameInput().value).toBe('draft-name'));
+
+    // 第一次提交：400 → 草稿必须保留（用户输入不丢）
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    });
+    await waitFor(() => expect(vi.mocked(tasksApi.create)).toHaveBeenCalledTimes(1), {
+      timeout: 5000,
+    });
+    expect(readDraft(NEW_KEY, DRAFT_SCHEMA_VERSION)).not.toBeNull();
+
+    // 第二次提交：成功 → 载荷干净 + 草稿清除
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    });
+    await waitFor(() => expect(vi.mocked(tasksApi.create)).toHaveBeenCalledTimes(2), {
+      timeout: 5000,
+    });
+    const payload = vi.mocked(tasksApi.create).mock.calls[1][0] as unknown as Record<string, unknown>;
+    expect('executorMode' in payload).toBe(false);
+    expect(readDraft(NEW_KEY, DRAFT_SCHEMA_VERSION)).toBeNull();
+  });
+});

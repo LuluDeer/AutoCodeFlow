@@ -15,6 +15,7 @@ import TaskFormPage from '../pages/TaskFormPage';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
+  stripNonDtoPayloadKeys,
   applyRequirementsPayload,
 } from '../pages/executor-mode';
 import { applyMaintenanceWindowsPayload } from '../pages/maintenance-windows';
@@ -231,6 +232,59 @@ describe('buildExecutorPayload（提交 payload，N19 + R8/N28）', () => {
     );
     expect(pinned.executorId).toBe(PIN_UUID);
     expect(pinned.deploymentPolicy).toBe('prefer');
+  });
+});
+
+// F-39（UIUX 审计 P0-1）②：提交载荷白名单——非 CreateTaskDto 声明的键一律剥离。
+// 真机根因：草稿恢复把自持 state 键 executorMode 种进表单 store，提交
+// getFieldsValue(true) 原样带出 → 后端 forbidNonWhitelisted 400「should not
+// exist」且草稿仅在成功/手动丢弃时清除 → 创建任务被无感知地永久卡死。
+describe('F-39 stripNonDtoPayloadKeys / buildExecutorPayload 白名单剥离', () => {
+  it('剥离 executorMode 等自持 state 键与未知键，DTO 键原样保留', () => {
+    const payload = buildExecutorPayload(
+      {
+        name: 't',
+        triggerType: 'manual',
+        runtime: 'python',
+        entrypoint: 'tasks/main.py',
+        executorMode: 'auto',
+        runtimeVersion: null,
+        codeSource: 'git',
+        someLegacyFieldGoneFromForm: 'junk',
+      },
+      'auto',
+    );
+    expect('executorMode' in payload).toBe(false);
+    expect('someLegacyFieldGoneFromForm' in payload).toBe(false);
+    expect(payload.name).toBe('t');
+    expect(payload.runtime).toBe('python');
+    expect(payload.entrypoint).toBe('tasks/main.py');
+  });
+
+  it('表单载体键 upstreamDependencies 保留（外层 applyDependenciesPayload 消费后再删）', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', upstreamDependencies: ['uuid-1'] },
+      'auto',
+    );
+    expect(payload.upstreamDependencies).toEqual(['uuid-1']);
+  });
+
+  it('运行时字段照旧归一后仍在（executeMode/affinity null 化不受剥离影响）', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', executorAffinityTags: [], executorAntiAffinityTags: undefined },
+      'broadcast',
+    );
+    expect(payload.executeMode).toBe('broadcast');
+    expect(payload.executorAffinityTags).toBeNull();
+    expect(payload.executorAntiAffinityTags).toBeNull();
+  });
+
+  it('stripNonDtoPayloadKeys：纯函数、不改入参、空入参安全', () => {
+    const input = { name: 't', junk: 1 };
+    const out = stripNonDtoPayloadKeys(input);
+    expect(out).toEqual({ name: 't' });
+    expect(input.junk).toBe(1);
+    expect(stripNonDtoPayloadKeys({})).toEqual({});
   });
 });
 
