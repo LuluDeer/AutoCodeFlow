@@ -323,8 +323,20 @@ client.interceptors.response.use(
       const qs = params.toString();
       window.location.href = `/login${qs ? `?${qs}` : ''}`;
     };
+    // F-1（UIUX 审计 P1-1）：公开认证端点的失败语义本来就是 401 ——
+    // /auth/login 的 INVALID_USERNAME_OR_PASSWORD / ACCOUNT_INACTIVE、
+    // /auth/totp/verify 的「凭据或 TOTP 验证码错误」（auth.controller Swagger
+    // 明示 401）。这些 401 与「会话过期」无关：若照走 refresh→logout→redirect
+    // 链，输错密码=整页 reload、用户名/TOTP 第二步全清空，且登录页顶栏谎报
+    // 「会话已过期」。对这两类请求不做任何 401 处理，直接 reject——交给
+    // LoginPage 的 catch（页内 role=alert 呈现真实原因，输入原样保留）。
+    // 判据用 includes 与既有 /auth/refresh 排除同款（url 均为相对路径；
+    // /auth/totp/enable|disable 是 JWT 鉴权端点，其 401 仍按会话过期处理）。
+    const isPublicAuthRequest = !!originalRequest.url && (
+      originalRequest.url.includes('/auth/login') || originalRequest.url.includes('/auth/totp/verify')
+    );
     // Avoid infinite retry loop on the refresh endpoint itself
-    if (err.response?.status === 401 && !originalRequest._retried && !originalRequest.url?.includes('/auth/refresh')) {
+    if (err.response?.status === 401 && !isPublicAuthRequest && !originalRequest._retried && !originalRequest.url?.includes('/auth/refresh')) {
       originalRequest._retried = true;
       try {
         const newToken = await tryRefreshToken();
@@ -335,7 +347,7 @@ client.interceptors.response.use(
         useAuthStore.getState().logout();
         redirectToLogin('expired');
       }
-    } else if (err.response?.status === 401) {
+    } else if (err.response?.status === 401 && !isPublicAuthRequest) {
       useAuthStore.getState().logout();
       redirectToLogin('expired');
     }

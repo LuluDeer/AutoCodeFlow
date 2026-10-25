@@ -290,6 +290,46 @@ describe('401 refresh and DR-04 logout race', () => {
   });
 });
 
+// F-1（UIUX 审计 P1-1）：公开认证端点的失败语义就是 401 —— 密码错/TOTP 码错
+// 绝不能走「refresh→logout→redirect」会话过期链（旧行为：输错密码触发整页
+// reload + 登录页谎报「会话已过期」，输入框全清空）。401 必须原样 reject，
+// 交给 LoginPage 的 catch 呈现真实原因。
+describe('F-1: 公开认证端点的 401 不走会话过期链', () => {
+  it.each(['/auth/login', '/auth/totp/verify'])('%s 401 → 不刷新、不登出、不弹 toast，reject 原样透出', async (url) => {
+    adapter.mockImplementationOnce(failure(401));
+    const post = vi.spyOn(axios, 'post');
+
+    await expect(
+      (client as unknown as (config: { url: string; method: string; adapter: typeof adapter }) => Promise<unknown>)({
+        url, method: 'post', adapter,
+      }),
+    ).rejects.toEqual({ message: 'HTTP 401', __status: 401 });
+
+    expect(post).not.toHaveBeenCalled(); // 不打 refresh
+    expect(adapter).toHaveBeenCalledTimes(1); // 不重试
+    expect(useAuthStore.getState()).toMatchObject({ token: 'old-access', refreshToken: 'old-refresh' });
+    expect(message.error).not.toHaveBeenCalled(); // 401 保持静默（页面 catch 负责）
+  });
+
+  it('边界：/auth/totp/enable 是 JWT 鉴权端点，其 401 仍走 refresh 重放（不得被误排除）', async () => {
+    adapter.mockImplementationOnce(failure(401));
+    const post = vi.spyOn(axios, 'post').mockResolvedValue({
+      data: { code: 0, data: { accessToken: 'new-access', refreshToken: 'new-refresh' } },
+    });
+
+    await expect(
+      (client as unknown as (config: { url: string; method: string; adapter: typeof adapter }) => Promise<unknown>)({
+        url: '/auth/totp/enable', method: 'post', adapter,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      `${getApiBaseUrl()}/auth/refresh`, { refreshToken: 'old-refresh' }, { timeout: 10_000 },
+    );
+    expect(adapter).toHaveBeenCalledTimes(2);
+  });
+});
+
 // LANG-ERR-01（2026-10-20）：拦截器 toast 必须**先按 errorCode 翻译**再回落服务端
 // message。这是前端使用率最高的一条失败出口（403/404/409/429/5xx 全在这里弹，
 // 且弹完就打 __toastedByClient 标抑制页面兜底），此前它把单语言的服务端中文 message
