@@ -178,6 +178,26 @@ if (/split\(':'\)\[0\]/.test(wizardNoComments)) {
   throw new Error("D: 地址端口改写不得用 split(':')[0]（IPv6 截断缺陷）");
 }
 
+// ── UIUX F-23（2026-10-25 审计）：重跑向导不得静默重置未暴露的三项 ──────
+// 审计实证：向导 finish() 硬编码 executorHost:'0.0.0.0'（用户配置的
+// 127.0.0.1 回环监听被静默改回全网卡）、DEFAULT_FORM 的 autoStartExecutor/
+// autoStart 默认值覆盖已存值，且 autoStart true→false 时 OS 自启项不清理。
+// 这里钉住渲染侧的三条预填/保留锚点（主进程对称 disable 由 main-index
+// selftest 钉住），任何一条被拆即红。
+if (!wizardNoComments.includes('cfg.configured === true')) {
+  throw new Error('F-23: Wizard 重跑态（configured===true）必须预填当前值');
+}
+if (!wizardNoComments.includes('autoStartExecutor: typeof cfg.autoStartExecutor') ||
+    !wizard.includes('getAutoLaunch')) {
+  throw new Error('F-23: Wizard 重跑必须预填 autoStartExecutor（config）与 autoStart（autolaunch:get OS 真值）');
+}
+if (/executorHost: '0\.0\.0\.0'/.test(wizardNoComments)) {
+  throw new Error("F-23: Wizard finish() 不得无条件硬编码 executorHost:'0.0.0.0'（重跑会静默降级用户的回环监听）");
+}
+if (!wizardNoComments.includes("typeof wizardCfg?.executorHost === 'string' && wizardCfg.executorHost")) {
+  throw new Error('F-23: Wizard finish() 必须沿用挂载时读到的 executorHost（首次安装才回落默认）');
+}
+
 // F-37（DEEP_REVIEW 0ef3bbe）：main 进程 IPC 处理器不得在函数体内 require()
 // （模块统一顶层 import；main 进程无打包懒加载收益，属历史噪音）。
 const ipcHandlers = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');

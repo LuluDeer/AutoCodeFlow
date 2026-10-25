@@ -572,6 +572,19 @@ export function registerIpcHandlers(): void {
       if (!(await setAutoLaunchEnabled(true))) {
         configStore.save({ autoStart: false });
       }
+    } else {
+      // F-23（UIUX 审计 2026-10-25）：与 true 分支**对称**关闭——此前只有
+      // enable 分支，autoStart true→false 时 OS 自启项（设置页/托盘此前写入
+      // 的）不被清除：托盘勾选态读 config（未勾选）、设置页开关读 OS 真值
+      // （已开启），同一开关两处 UI 呈现相反状态，下次开机应用仍自启。重跑
+      // 向导预填当前值（Wizard 侧 autolaunch:get）后「未触碰 = 原值」，此
+      // 分支只在用户显式关掉（或预填到 false）时才走到。
+      if (!(await setAutoLaunchEnabled(false))) {
+        // 打包态 disable 失败（注册表/.desktop 删除被拒）：config 已是
+        // false，托盘（读 config）如实显示未勾选，但设置页（读 OS 真值）
+        // 可能仍显示已开启——主进程侧无法进一步收敛，记日志供排障。
+        log.warn('Wizard: setAutoLaunchEnabled(false) failed; OS autostart entry may remain');
+      }
     }
     // B-9：start() 是"同步必成功"的假象——spawn 成功不等于执行器能起来
     // （端口被占/秒退/注册被拒都只落日志），而旧实现**先关窗再启动**，向导

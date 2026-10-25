@@ -12,6 +12,9 @@ declare const window: Window & {
     // 重跑向导预填：已配置机器从设置页唤出时，表单先载入当前配置（token 为
     // 掩码哨兵 '******'，原样回传 = 保留已存 token，见 config-store TOKEN_MASK）。
     getConfig: () => Promise<Record<string, unknown>>;
+    // F-23：重跑向导预填「开机自动启动」用 OS 自启真值（与设置页开关同源，
+    // autolaunch:get），避免 config.autoStart 与 OS 状态脱节时预填错值。
+    getAutoLaunch: () => Promise<boolean>;
     // 首启向导「下载源」步：并行探测官方源与国内镜像（任一 HTTP 应答即算可达）。
     testInterpreterSource: () => Promise<{
       official: { ok: boolean; ms: number; detail: string };
@@ -137,6 +140,29 @@ export default function Wizard() {
             ? f.pullMode
             : (typeof cfg.pullMode === 'boolean' ? cfg.pullMode : f.pullMode),
         }));
+        // F-23（UIUX 审计）：重跑向导不再静默重置「完成」步的两个自启开关——
+        // DEFAULT_FORM 的 autoStartExecutor:true / autoStart:false 只是首次
+        // 安装的默认值，已配置机器（configured===true）预填当前值，用户未
+        // 触碰即原样回传。autoStart 以 OS 自启真值（autolaunch:get）为准：
+        // 设置页开关读 OS 真值、托盘勾选态读 config 落盘值，两者此前会因
+        // 脱节而互相矛盾——预填 OS 真值让「不动 = 不变」，残留差异由
+        // ipc-handlers 保存路径的对称 disable 兜底收敛。
+        if (cfg.configured === true) {
+          setForm((f) => ({
+            ...f,
+            autoStartExecutor: typeof cfg.autoStartExecutor === 'boolean' ? cfg.autoStartExecutor : f.autoStartExecutor,
+          }));
+          window.electronAPI.getAutoLaunch()
+            .then((osEnabled) => setForm((f) => ({ ...f, autoStart: osEnabled === true })))
+            .catch(() => {
+              // 读不到 OS 自启态（平台接口异常等）：退回 config 落盘值——
+              // 两处 UI 的最终对齐由保存路径的对称 disable 兜底。
+              setForm((f) => ({
+                ...f,
+                autoStart: typeof cfg.autoStart === 'boolean' ? cfg.autoStart : f.autoStart,
+              }));
+            });
+        }
       })
       .catch(() => { /* 读取失败保持空表单（首次安装语义），不炸向导 */ });
   }, []);
@@ -147,7 +173,16 @@ export default function Wizard() {
     try {
       const r = await window.electronAPI.saveAndCloseWizard({
         ...form,
-        executorHost: '0.0.0.0',
+        // F-23（UIUX 审计）：重跑向导不再把 executorHost 悄悄改回全网卡监听
+        // ——向导没有该字段的输入位，finish() 此前硬编码 '0.0.0.0'，用户刻意
+        // 配置的仅本机回环监听（127.0.0.1）会被静默降级且无任何提示。沿用
+        // 挂载时读到的已存配置（首次安装读不到/为空时回落原固定默认，行为
+        // 不变；与下方 maxConcurrentTasks/logLevel 的「未暴露字段保留」同款
+        // 口径）。
+        executorHost:
+          typeof wizardCfg?.executorHost === 'string' && wizardCfg.executorHost
+            ? wizardCfg.executorHost
+            : '0.0.0.0',
         // 重跑向导不重置未暴露的档位：沿用挂载时读到的已存配置（首次安装
         // 读不到时回落原默认 10/info，行为不变）——否则重跑一次会把
         // logLevel=debug / 自定义并发数悄悄冲回默认。

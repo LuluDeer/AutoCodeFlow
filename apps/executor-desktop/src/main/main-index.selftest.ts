@@ -324,9 +324,26 @@ function main(): void {
         `V4-P3: heartbeat ${fn.replace('private ', '').replace('(', '')} 入口必须丢弃 stop() 后到达的在飞探针回调（timer===null 守卫）`,
       );
     }
+
+    // ── UIUX F-23（2026-10-25 审计）：向导保存路径对 autoStart 必须**对称**──
+    // 审计实证：config:save-and-close-wizard 只在 autoStart===true 时 enable，
+    // true→false 分支不调 disable——OS 自启项残留，托盘勾选态（读 config）
+    // 与设置页开关（读 OS 真值）呈现相反状态。钉住两个方向的 await 调用
+    // （用 await 前缀做锚点，避免被 log.warn 里的同名字符串误满足）。
+    const wizardSaveIdx = ipcSrc.indexOf("ipcMain.handle('config:save-and-close-wizard'");
+    assert.ok(wizardSaveIdx >= 0, 'F-23: 找不到 config:save-and-close-wizard handler');
+    const wizardSaveBody = ipcSrc.slice(
+      wizardSaveIdx,
+      Math.max(ipcSrc.indexOf('ipcMain.handle(', wizardSaveIdx + 10), ipcSrc.length),
+    );
+    assert.ok(
+      wizardSaveBody.includes('await setAutoLaunchEnabled(true)') &&
+        wizardSaveBody.includes('await setAutoLaunchEnabled(false)'),
+      'F-23: 向导保存路径必须对 autoStart 对称——false 分支也必须 await setAutoLaunchEnabled(false)（否则托盘与设置页状态矛盾、OS 自启项残留）',
+    );
   }
 
-  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors)');
+  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry)');
 }
 
 main();
