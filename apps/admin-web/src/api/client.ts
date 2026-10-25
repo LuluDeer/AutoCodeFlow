@@ -267,19 +267,67 @@ async function tryRefreshToken(): Promise<string> {
     }
     if (!refreshToken) throw new Error('No refresh token');
 
+    // F-6（UIUX 审计 P2-5）：「另一 tab 的轮换已生效」判据——不比对「自己
+    // 发起时的 RT」，而比对「当前存储 RT（内存/落盘）是否已不是自己这枚」。
+    // 是 → 别人的刷新已成功，自己这枚已被后端轮换吊销。
+    const supersededByAnotherTab = (): boolean => {
+      const memory = useAuthStore.getState().refreshToken;
+      if (memory && memory !== refreshToken) return true;
+      const disk = readPersistedAuthState()?.refreshToken;
+      return !!disk && disk !== refreshToken;
+    };
+    /** F-6：采纳另一 tab 落盘的新会话（token+RT 一并同步），返回其 access。 */
+    const adoptPersistedSession = (): string | null => {
+      const fresh = readPersistedAuthState();
+      if (!fresh?.token) return null;
+      setToken(fresh.token);
+      if (fresh.refreshToken) setRefreshToken(fresh.refreshToken);
+      return fresh.token;
+    };
+
     // Use a plain axios call to bypass our own response interceptor
     // and avoid an infinite 401 retry loop on the refresh endpoint itself.
-    const resp = await axios.post(
-      `${getApiBaseUrl()}/auth/refresh`,
-      { refreshToken },
-      { timeout: 10_000 },
-    );
+    let resp: Awaited<ReturnType<typeof axios.post>>;
+    try {
+      resp = await axios.post(
+        `${getApiBaseUrl()}/auth/refresh`,
+        { refreshToken },
+        { timeout: 10_000 },
+      );
+    } catch (err: unknown) {
+      // F-6① TOCTOU：B 在 A 落盘前读走旧 RT，A 先完成轮换（旧 RT 已被后端
+      // 吊销）→ B 携吊销票刷新必 401。若存储 RT 已不是自己这枚，说明另一 tab
+      // 的会话活得好好的——复用它的新 access（不登出不跳转，旧行为会把 B 整
+      // 个踢回登录页）；仅当存储 RT 仍是自己这枚（自己这枚是真死了）才把失
+      // 败抛给拦截器走登出链。
+      if (axios.isAxiosError(err) && err.response?.status === 401 && supersededByAnotherTab()) {
+        const adopted = adoptPersistedSession();
+        if (adopted) return adopted;
+        // 落盘损坏读不出 access 的极端边界：不登出（别人的新票生效中），给
+        // 原始请求打上 superseded 标记拒绝——拦截器据此跳过登出链。
+        const superseded = new Error('Auth refresh superseded by another tab');
+        (superseded as Error & { __superseded?: boolean }).__superseded = true;
+        throw superseded;
+      }
+      throw err;
+    }
     // axios wraps the body in resp.data; our interceptor unwraps to resp.data for client calls
     const body = resp.data ?? resp;
     const accessToken: string = body.data?.accessToken ?? body.accessToken;
     const newRefresh: string | undefined = body.data?.refreshToken ?? body.refreshToken;
     if (!accessToken) throw new Error('Refresh response missing accessToken');
     // Discard refresh results from a session that has logged out or changed.
+    // F-6②：本 tab 已登出（RT 为 null）时维持旧行为——丢弃结果，绝不把
+    // 已撤销的 token 写回（DR-04 logout race 语义不变）。但「存储 RT 已被
+    // storage 事件换成另一 tab 更新的值」不再走丢弃+登出：那会扔掉一次成功
+    // 的刷新并误杀活会话。改为复用另一 tab 的新 access；读不到落盘时保留本
+    // 次服务端刚签发的 access（宽限窗口内同样有效），且绝不把自己轮换出的
+    // refreshToken 盖到另一 tab 较新的会话上。
+    const currentRefresh = useAuthStore.getState().refreshToken;
+    if (currentRefresh && currentRefresh !== refreshToken) {
+      const adopted = adoptPersistedSession() ?? accessToken;
+      return adopted;
+    }
     if (useAuthStore.getState().refreshToken !== refreshToken) throw new Error('Auth session changed');
     setToken(accessToken);
     if (newRefresh) setRefreshToken(newRefresh);
@@ -343,9 +391,17 @@ client.interceptors.response.use(
         originalRequest.headers = originalRequest.headers ?? {};
         originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
         return client(originalRequest);
-      } catch {
-        useAuthStore.getState().logout();
-        redirectToLogin('expired');
+      } catch (refreshErr: unknown) {
+        // F-6：另一 tab 的新票已生效（存储 RT 已换人、只是自己读不到其 access）
+        // 时不登出——只在本 tab 会话真死（存储 RT 仍是自己这枚 / 已登出）时才
+        // 走登出+重定向链。superseded 场景放弃本次重放，原始 401 交给页面
+        // catch 呈现（另一 tab 的会话仍在正常服务）。
+        if ((refreshErr as { __superseded?: boolean } | null)?.__superseded === true) {
+          // no logout / no redirect
+        } else {
+          useAuthStore.getState().logout();
+          redirectToLogin('expired');
+        }
       }
     } else if (err.response?.status === 401 && !isPublicAuthRequest) {
       useAuthStore.getState().logout();
