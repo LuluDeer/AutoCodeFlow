@@ -11,6 +11,7 @@ import { getExecutorAuthToken } from './logs';
 import {
   getAdminStatus,
   getHeartbeatState,
+  isRegistrationConflictActive,
   recordHeartbeat,
   setAdminApiReachable,
 } from '../heartbeat-state';
@@ -154,6 +155,10 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
     workerStats: taskWorkerManager.getStats(),
     adminApiReachable: reachable,
     tokenValid: !!getExecutorAuthToken(),
+    // P1-1: /token 409 慢性冲突态——自最近一次 409 起持续至成功取回 token。
+    // 旧实现下该场景完全静默（静态 token 心跳照常 201），运维只能靠翻执行器
+    // 日志的「fetchToken failed: 409」发现；现 health 面直接可见。
+    registrationConflict: isRegistrationConflictActive(),
     lastHeartbeat: getHeartbeatState().lastHeartbeatTime,
     timestamp: new Date().toISOString(),
   });
@@ -187,6 +192,8 @@ healthRouter.get('/health/admin-status', (_req: Request, res: Response) => {
     heartbeatStatus,
     lastHeartbeatTime,
     adminApiReachable,
+    // P1-1: /token 409 冲突态（与 /health 同源，桌面结构化消费）。
+    registrationConflict: isRegistrationConflictActive(),
     executorVersion: EXECUTOR_VERSION,
     protocolVersion: PROTOCOL_VERSION,
     uptimeSec: Math.round(process.uptime()),

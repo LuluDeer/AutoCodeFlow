@@ -190,3 +190,126 @@ describe('runCommand output cap (R74-A1 轴 4)', () => {
     expect(result.stdout.length).toBeGreaterThanOrEqual(CAP);
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// 本轮审计修复回归锁（P2-6 prepare 子进程 ulimit 包装 / P3-14 输出截断标记）
+// ---------------------------------------------------------------------------
+
+describe('runCommand prepare-phase rlimit wrapping (P2-6)', () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+  function withPlatform(platform: NodeJS.Platform, fn: () => void): void {
+    Object.defineProperty(process, 'platform', { value: platform });
+    try {
+      fn();
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
+  }
+
+  afterEach(() => {
+    jest.resetModules();
+    jest.clearAllMocks();
+  });
+
+  it('POSIX: wraps long-running children (timeout/signal callers) in an sh ulimit script', async () => {
+    jest.resetModules();
+    const childProcessModule = await import('child_process');
+    const { runCommand: run } = await import('./run-command');
+    const spawnMock = childProcessModule.spawn as unknown as jest.Mock;
+    let captured: [string, string[]] | null = null;
+    withPlatform('linux', () => {
+      const proc = fakeProc();
+      spawnMock.mockReturnValue(proc);
+      const promise = run('git', ['clone', '--bare', 'https://example.com/r.git'], { timeout: 120_000 });
+      proc.emit('close', 0);
+      void promise.then(() => {
+        captured = spawnMock.mock.calls[0] as unknown as [string, string[]];
+      });
+      // spawn 在 promise executor 里同步发生——platform 恢复前已捕获 argv。
+      captured = spawnMock.mock.calls[0] as unknown as [string, string[]];
+    });
+
+    const [cmd, args] = captured as unknown as [string, string[]];
+    expect(cmd).toBe('/bin/sh');
+    expect(args[0]).toBe('-c');
+    const script = String(args[1]);
+    // NOFILE 语句形态与 process-rlimits 一致（默认 NOFILE=1024）。CPU 档
+    // 仅在显式配置 TASK_CPU_LIMIT_SECONDS>0 时施加（prepare 无逐任务
+    // timeoutSec 语境，不做 timeout+60s 回落——见 buildPrepareRlimitStatements
+    // 注释）；本 spec 未配置 → 只断言 NOFILE。
+    expect(script).toMatch(/ulimit -n 1024/);
+    expect(script).not.toMatch(/ulimit -t /);
+    // 命令与参数经位置参数透传，零字符串拼接注入面。
+    expect(script).toContain('cmd=$1; shift; exec "$cmd" "$@"');
+    expect(args.slice(3)).toEqual(['git', 'clone', '--bare', 'https://example.com/r.git']);
+  });
+
+  it('POSIX: pure probes (no timeout, no signal) skip the wrapper', async () => {
+    jest.resetModules();
+    const childProcessModule = await import('child_process');
+    const { runCommand: run } = await import('./run-command');
+    const spawnMock = childProcessModule.spawn as unknown as jest.Mock;
+    let captured: [string, string[]] | null = null;
+    withPlatform('linux', () => {
+      const proc = fakeProc();
+      spawnMock.mockReturnValue(proc);
+      const promise = run('uv', ['--version'], {});
+      proc.emit('close', 0);
+      void promise.then(() => {
+        captured = spawnMock.mock.calls[0] as unknown as [string, string[]];
+      });
+      captured = spawnMock.mock.calls[0] as unknown as [string, string[]];
+    });
+
+    const [cmd, args] = captured as unknown as [string, string[]];
+    expect(cmd).toBe('uv');
+    expect(args).toEqual(['--version']);
+  });
+
+  it('win32: returns the argv unwrapped (no ulimit primitive)', async () => {
+    jest.resetModules();
+    const childProcessModule = await import('child_process');
+    const { runCommand: run } = await import('./run-command');
+    const spawnMock = childProcessModule.spawn as unknown as jest.Mock;
+    let captured: [string, string[]] | null = null;
+    withPlatform('win32', () => {
+      const proc = fakeProc();
+      spawnMock.mockReturnValue(proc);
+      const promise = run('git', ['clone', 'x'], { timeout: 60_000 });
+      proc.emit('close', 0);
+      void promise.then(() => {
+        captured = spawnMock.mock.calls[0] as unknown as [string, string[]];
+      });
+      // spawn 在 promise executor 里同步发生——platform 恢复前已捕获 argv。
+      captured = spawnMock.mock.calls[0] as unknown as [string, string[]];
+    });
+
+    expect(captured![0]).toBe('git');
+    expect(captured![1]).toEqual(['clone', 'x']);
+  });
+});
+
+describe('runCommand output truncation marker (P3-14)', () => {
+  it('appends a one-shot truncation marker to each stream after the cap is hit', async () => {
+    const proc = fakeProc();
+    mockSpawn.mockReturnValue(proc);
+    const promise = runCommand('npm', ['install'], {});
+    const chunk = Buffer.from('x'.repeat(1024 * 1024));
+    // 11 × 1MB 越过 10MB CAP → 标记在越限后追加一次；再灌一块标记不重复。
+    for (let i = 0; i < 11; i++) proc.stdout.emit('data', chunk);
+    proc.stdout.emit('data', chunk);
+    for (let i = 0; i < 11; i++) proc.stderr.emit('data', chunk);
+    proc.stderr.emit('data', chunk);
+    proc.emit('close', 0);
+
+    const result = await promise;
+    const stdoutMarkers = (result.stdout.match(/\[logs truncated/g) || []).length;
+    const stderrMarkers = (result.stderr.match(/\[logs truncated/g) || []).length;
+    expect(stdoutMarkers).toBe(1);
+    expect(stderrMarkers).toBe(1);
+    // marker 文案可被 admin LOG_TRUNCATION_MARKER（/\[\s*(?:logs\s+)?truncated\b/i）识别。
+    expect(result.stdout).toMatch(/\[logs truncated, prepare-phase output exceeded 10MB capture cap\]/);
+  });
+});

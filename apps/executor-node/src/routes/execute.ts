@@ -193,14 +193,18 @@ export async function gitCheckoutTo(
       if (signal?.aborted) throw new ExecutionCancelledError(dest);
       if (r.status !== 0) {
         fs.rmSync(cacheDir, { recursive: true, force: true });
-        throw new Error(`git clone 执行失败：${r.stderr.trim()}`);
+        // P2-2（防御纵深）：stderr 里的 URL 可能带内嵌凭据（git 失败时回显
+        // 完整 URL）——对齐 logPrepare 的 redactUrl 脱敏后才进错误消息
+        //（accept 已前置拒绝 userinfo，这里覆盖 ssh/畸形形态与历史缓存的直连载荷）。
+        throw new Error(`git clone 执行失败：${redactUrl(r.stderr.trim())}`);
       }
     } else {
       const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all', '--unshallow'], { timeout: 60_000, signal });
       if (signal?.aborted) throw new ExecutionCancelledError(dest);
       if (r.status !== 0) {
         // Continuing with a stale cache made tasks silently run old code.
-        throw new Error(`git fetch 执行失败：${r.stderr.trim()}`);
+        // P2-2（防御纵深）：同上，stderr 经 redactUrl 再拼接。
+        throw new Error(`git fetch 执行失败：${redactUrl(r.stderr.trim())}`);
       }
     }
     fs.mkdirSync(dest, { recursive: true });
@@ -227,7 +231,7 @@ export async function gitCheckoutTo(
         if (signal?.aborted) throw new ExecutionCancelledError(dest);
       }
     }
-    if (r.status !== 0) throw new Error(`git checkout 执行失败（ref: ${ref}）：${r.stderr.trim()}`);
+    if (r.status !== 0) throw new Error(`git checkout 执行失败（ref: ${ref}）：${redactUrl(r.stderr.trim())}`);
   });
 }
 
@@ -583,10 +587,57 @@ export function acceptExecution(
       if (!allowedGitPattern.test(gitRepo)) {
         return reject(400, `不允许的 gitRepo URL 协议：${gitRepo}`);
       }
-      // S7: SSRF guard — block private IP addresses and localhost
-      const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
-      if (privateIpPattern.test(gitRepo)) {
-        return reject(400, `gitRepo URL 指向受限网络地址：${gitRepo}`);
+      // P2-2（本轮审计，对齐 executor-python execute.py:3560-3586 的 B-2 规则，
+      // 注释互指）：http(s) gitRepo 拒绝 URL 内嵌凭据（userinfo）。泄漏面：
+      // git clone 失败时 stderr 回显完整 URL → errMsg → 日志/回调/审计——
+      // accept 拒绝时的 400 文案也会带原文（与 python 同款「含凭据即拒、
+      // 拒绝文案同样暴露」的取舍：上游 admin 侧 assertSafeGitRepoUrl 已前置
+      // 校验，直连派发才可能到达这里）。ssh:// 只拒绝 password（裸用户名
+      // ssh://git@host 是文档化形态）；scp-like（git@host:path）结构上不可能
+      // 携带密码。ssh URL 同时校验畸形端口（与 python urlsplit.port 同法）。
+      if (typeof gitRepo === 'string') {
+        let parsedGitUrl: URL | null = null;
+        try {
+          parsedGitUrl = new URL(gitRepo);
+          parsedGitUrl.port; // 畸形端口在此抛 TypeError/RangeError
+        } catch {
+          return reject(400, `无效的 gitRepo URL：${gitRepo}`);
+        }
+        const scheme = parsedGitUrl.protocol.replace(/:$/, '');
+        if (scheme === 'http' || scheme === 'https') {
+          if (parsedGitUrl.username !== '' || parsedGitUrl.password !== '') {
+            return reject(
+              400,
+              'gitRepo 不得内嵌凭据（userinfo）；请改用 GIT_ASKPASS / 凭据助手',
+            );
+          }
+        } else if (scheme === 'ssh' && parsedGitUrl.password !== '') {
+          return reject(
+            400,
+            'gitRepo 不得内嵌密码；请改用 SSH 密钥 / GIT_ASKPASS',
+          );
+        }
+      }
+      // S7: SSRF guard — block private IP addresses and localhost.
+      // P2-3（本轮审计，对齐 executor-python execute.py:3611-3618 的
+      // EXECUTOR_ALLOW_PRIVATE_NETWORK 开关语义，注释互指）：开关开启时放行
+      // RFC1918 私网（内网自建 GitLab 是文档化拓扑，与 admin-api 侧
+      // assertSafeExecutorUrl 的 private-lan 语义对齐）；loopback
+      // （localhost/127.x）**不随开关放行**——git clone 打向执行器自身回环
+      // 没有合法拓扑。字符串级判定沿用既有实现（无 DNS 解析），属已知弱差
+      // （非 IP 形式但含私网字样的主机名会被误拒），依赖 admin 侧同款守卫
+      // 前置校验的链路约定。
+      const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})/i;
+      const loopbackPattern = /(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
+      if (typeof gitRepo === 'string' && !config.allowPrivateNetwork) {
+        if (privateIpPattern.test(gitRepo) || loopbackPattern.test(gitRepo)) {
+          return reject(400, `gitRepo URL 指向受限网络地址：${gitRepo}`);
+        }
+      } else if (typeof gitRepo === 'string') {
+        // 开关开启：放行 RFC1918，loopback 仍拒绝（见上方 ADR 注释）。
+        if (loopbackPattern.test(gitRepo)) {
+          return reject(400, `gitRepo URL 指向受限网络地址：${gitRepo}`);
+        }
       }
       const ref = (body.task.gitCommit || body.task.gitBranch || 'main') as string;
       // git checkout uses array args (no shell injection), but an option-like
@@ -738,7 +789,15 @@ async function startExecutionInBackground(
     }
     const workDir = path.join(config.workDir, executionId);
     fs.mkdirSync(workDir, { recursive: true });
-    // S6/Q11: restrict permissions so sibling tasks cannot read this directory
+    // S6/Q11: 0o700 权限收紧。P3-17（本轮审计，对齐 executor-python
+    // execute.py:3531-3537 的如实注释，注释互指）：**同 UID 下 chmod 挡不住
+    // 兄弟任务读本目录**——执行器进程与所有任务进程同一属主，DAC 对同 UID
+    // 无隔离意义；`--ro-bind / /`（bwrap 启用时）更会把其余任务目录只读挂入
+    // 沙箱。跨任务的实际隔离来自**可写面收敛**——0o700 + 私有 .tmp
+    // （见 prepare 段的 P2-8）+ bwrap 下除本 work_dir 外全盘只读，任务无法
+    // **篡改**兄弟目录；但不承诺"读不到"。真正的跨任务读隔离需要 per-task
+    // uid 映射（user namespace 内逐任务映射独立 uid），属行为变更，列残差待
+    // 拍板（python 侧同款残差）。
     try { fs.chmodSync(workDir, 0o700); } catch (_) { /* ignore on unsupported filesystems */ }
     // symlink 检查在 mkdir 之前无法覆盖"dirent 恰在检查与 mkdir 之间被替换"
     // 的 TOCTOU 窗口，这里在真正使用前复查一次。
@@ -896,10 +955,44 @@ export function prepareFailureReason(message: string): CallbackFailureReason {
  * 纪律（`_refine_failure_reason` 返回 None 即不设 reason，admin
  * inferFailureReason 兜底）；node 的 prepareFailureReason 以 'unknown' 兜底
  * 是给 prepare 阶段用的，两个调用方不能共用同一种"总是返回值"的形状。
+ *
+ * P2-11（本轮审计，对齐 executor-python execute.py:546-573 的
+ * `_SANDBOX_STARTUP_FAILURE_RE` + `_sandbox_startup_failure_reason`，注释互指）：
+ * **运行期** bwrap 启动失败（bwrap 二进制在、宿主禁非特权 userns/容器 seccomp
+ * 拦 mount → bwrap 非零退出，stderr 是 `bwrap: setting up uid map: ...` 形态）
+ * 此前落 unknown——运行期失败的输入是 logs（任务输出），不是 errorMessage，
+ * 所以在 withClassifiedFailureReason 的 message-only 签名之上给运行期调用方
+ * 一个显式带 logs 的入口。python 侧同语义的沙箱启用前置条件在这里保留：
+ * 只有 TASK_SANDBOX=bwrap 时才做输出扫描——正常任务也可能打印 "bwrap"，
+ * 沙箱关闭时绝不改判（对齐 python `settings.task_sandbox != SANDBOX_BWRAP`
+ * 早退）。双端同一载荷归入同一 failureReason。
  */
+const SANDBOX_STARTUP_FAILURE_RE = new RegExp(
+  [
+    'bwrap:\\s',
+    'failed to make / slave',
+    'setting up uid map',
+    'no permissions to create a new namespace',
+    'creating new namespace failed',
+    'bwrap: execvp',
+  ].join('|'),
+  'i',
+);
+
+export function runtimeSandboxStartupFailureReason(logs: string | undefined): CallbackFailureReason | null {
+  if (config.taskSandbox !== 'bwrap') return null;
+  if (!logs || !SANDBOX_STARTUP_FAILURE_RE.test(logs)) return null;
+  return 'sandbox_unavailable';
+}
+
 function withClassifiedFailureReason(
   message: string,
+  logs?: string,
 ): { failureReason: CallbackFailureReason } | Record<string, never> {
+  // P2-11: 运行期 bwrap 启动失败优先——它只体现在任务输出里，message 只是
+  // 泛化的「进程以退出码 1 结束」，message-only 分类器永远接不住。
+  const sandboxReason = runtimeSandboxStartupFailureReason(logs);
+  if (sandboxReason) return { failureReason: sandboxReason };
   const reason = prepareFailureReason(message);
   return reason === 'unknown' ? {} : { failureReason: reason };
 }
@@ -1196,12 +1289,77 @@ export class InterpreterUnavailablePrepareError extends Error {
  * 而 `poolSummary()` 返回的是本地 camelCase `installDir`，**不能直接当载荷发**
  * ——那样池目录一栏会永远渲染成 `-`。
  */
+/**
+ * P3-13（本轮审计）：回调 `result` 字段的 4KB 预钳。
+ *
+ * admin 侧 CallbackItemDto 用 `IsBoundedJsonObjectConstraint` 校验 result——
+ * `Buffer.byteLength(JSON.stringify(value), 'utf8') > CALLBACK_RESULT_MAX_BYTES
+ * (=4096)` 即**整条**回调被拒（BatchTaskDto 的数组语义：一条非法整批 400），
+ * 同批 ≤100 条其它执行的真实终态陪葬，随后落盘重发 150 轮全败 → 死信
+ * （executor-python 由另一代理同步修）。触发场景：解释器池版本积累很多时，
+ * `pool.versions` 列表撑爆 4KB。
+ *
+ * 裁剪策略：保**最新**的版本（调度最可能派发的是新池；poolSummary 按
+ * 字典序返回，这里从尾部保留），从头部丢弃，直到字节预算满足；留下截断
+ * 标记（`truncated_from`=原始条数）让 admin/运维知道清单不完整。detail
+ * 文案超预算时同样截断。序列化按 UTF-8 字节计（与 admin jsonBytes 同口径）。
+ */
+const CALLBACK_RESULT_MAX_BYTES = 4096;
+
+export function clampCallbackResult(result: Record<string, unknown>): Record<string, unknown> {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(result) ?? '';
+  } catch {
+    // 不可序列化（理论不可达）：退化为空对象，绝不因观测面炸掉任务收尾。
+    return {};
+  }
+  if (Buffer.byteLength(serialized, 'utf8') <= CALLBACK_RESULT_MAX_BYTES) {
+    return result;
+  }
+  const cloned: Record<string, unknown> = JSON.parse(serialized);
+  const interpreter = cloned.interpreter as Record<string, unknown> | undefined;
+  // pool 的两种合法形态都要兜住：本文件构造的是对象 { install_dir, versions }，
+  // python 侧 `_pool_summary` 的 JSON 形态同为对象；数组形态（防御）一并处理。
+  if (interpreter && (Array.isArray(interpreter.pool) || (interpreter.pool !== null && typeof interpreter.pool === 'object'))) {
+    // pool 是对象时（本文件构造形态 { install_dir, versions }）裁 versions。
+    const pool = interpreter.pool as unknown as Record<string, unknown>;
+    if (Array.isArray(pool.versions)) {
+      const versions = pool.versions as unknown[];
+      // 二分收缩：每轮保留一半**尾部**（最新），直到预算满足。逐条 slice(1)
+      // 在大池上退化成 O(n) 次全量 JSON.stringify（400 版本 ≈ 数百次全序列化），
+      // 二分把序列化次数压到 O(log n)。
+      let kept = [...versions];
+      while (kept.length > 1) {
+        kept = kept.slice(Math.floor(kept.length / 2)); // 丢前半，保尾部（最新）
+        pool.versions = kept;
+        pool.versions_truncated_from = versions.length;
+        if (
+          Buffer.byteLength(JSON.stringify(cloned) ?? '', 'utf8')
+          <= CALLBACK_RESULT_MAX_BYTES
+        ) {
+          break;
+        }
+      }
+      pool.versions = kept;
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(cloned) ?? '', 'utf8') > CALLBACK_RESULT_MAX_BYTES
+    && typeof cloned.interpreter === 'object' && cloned.interpreter !== null) {
+    const interpreter = cloned.interpreter as Record<string, unknown>;
+    if (typeof interpreter.detail === 'string' && interpreter.detail.length > 200) {
+      interpreter.detail = `${interpreter.detail.slice(0, 200)}…[detail truncated for 4KB callback result budget]`;
+    }
+  }
+  return cloned;
+}
+
 function interpreterFailureSnapshot(
   requested: string,
   err: InterpreterUnavailableError,
 ): Record<string, unknown> {
   const pool = poolSummary();
-  return {
+  return clampCallbackResult({
     interpreter: {
       requested,
       // 失败路径上必然没有解析结果——显式 null 而不是省略键，让 admin 侧
@@ -1211,7 +1369,7 @@ function interpreterFailureSnapshot(
       detail: err.detail,
       pool: { install_dir: pool.installDir, versions: pool.versions },
     },
-  };
+  });
 }
 
 /**
@@ -2000,6 +2158,32 @@ async function prepareExecution(
 
   // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
   const env: NodeJS.ProcessEnv = buildChildEnv();
+  // P2-8（本轮审计，对齐 executor-python sandbox.py `with_task_tmpdir`
+  // （sandbox.py:200-215）与 execute.py:3986-3990 的调用点，注释互指）：任务
+  // 私有临时目录 <workDir>/.tmp（0700）并把 TMPDIR/TEMP/TMP 三键指过去。
+  //
+  // 缺口形态：node 的 buildChildEnv 只**透传**宿主 TMPDIR/TEMP/TMP
+  // （env-whitelist.ts），从不重定向——无沙箱形态（demo 容器即如此，镜像无
+  // bwrap）下所有并发任务共享宿主 /tmp：固定名临时文件互踩、残留无人清扫。
+  // bwrap 启用时 --tmpfs /tmp 兜底，但 node 镜像没有 bwrap，该形态不可达。
+  //
+  // 语义对齐 python：目录建在 0700 的 workDir 内 → DAC 收敛到执行器 UID，
+  // 跨任务不互踩；落在 workDir → 任务终态后被 cleanupWorkDir 的 TTL 清扫
+  // 连同工作目录一起回收（.tmp 是 workDir 的普通子项，无需新保护名——
+  // 恰与 python 侧「可被 TTL 清扫回收」同一句承诺）。失败 best-effort：
+  // 建不出来沿用继承值（与 python 的 non-critical 同款降级）。
+  {
+    const taskTmpDir = path.join(workDir, '.tmp');
+    try {
+      fs.mkdirSync(taskTmpDir, { recursive: true });
+      fs.chmodSync(taskTmpDir, 0o700);
+      env['TMPDIR'] = taskTmpDir;
+      env['TEMP'] = taskTmpDir;
+      env['TMP'] = taskTmpDir;
+    } catch (e) {
+      logger.warn(`create task tmpdir failed (non-critical): ${String(e)}`);
+    }
+  }
   // Requirements were installed to .node_modules/<taskId>/node_modules via npm
   // --prefix; Node's resolution chain never reaches a dot-prefixed sibling
   // directory, so point NODE_PATH at it or every require() fails with
@@ -2647,17 +2831,67 @@ executeRouter.post('/executions/:executionId/kill', (req: Request<{ executionId:
   res.json(killBody(true));
 });
 
-/** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
+/** Write execution metadata to workDir/meta/{executionId.json} so the desktop can build history.
+ *
+ * P3-15（本轮审计）：旧实现 read-modify-write 直接 writeFileSync——kill 路径与
+ * runTask 收尾路径并发写同一 meta 文件时（executionId 相同），① 读改写交错
+ * 丢字段（后写者基于旧快照覆盖前写者的 status/endTime）；② 进程在写入中途被
+ * 杀（grace 期 SIGKILL / 断电）留下半写 JSON，desktop history builder 解析
+ * 即抛。修复两点：
+ *   1. 按 executionId 的**进程内互斥队列**（Map<id, Promise> 链）串行化读改写
+ *      ——async 间隙只存在于微任务级，同步 fs 期间不会被打断；
+ *   2. 落盘走 tmp→rename 原子写（对齐 callback.ts atomicWriteFileSync 的
+ *      NETOPT-4 先例），半写文件只会残留在 .tmp，主文件永远完整。
+ * 失败仍 best-effort 吞掉（meta 是观测面，不阻塞任务收尾），但 tmp 残留由
+ * file-logger 的孤儿清扫按 ORPHAN_META_TTL_MS 回收。 */
+const execMetaWriteQueues = new Map<string, Promise<void>>();
+
 function writeExecMeta(executionId: string, data: Record<string, unknown>): void {
-  try {
-    const metaDir = path.join(config.workDir, 'meta');
-    fs.mkdirSync(metaDir, { recursive: true });
-    const metaFile = path.join(metaDir, `${executionId}.json`);
-    const existing = fs.existsSync(metaFile)
-      ? JSON.parse(fs.readFileSync(metaFile, 'utf-8'))
-      : {};
-    fs.writeFileSync(metaFile, JSON.stringify({ ...existing, ...data }, null, 2), 'utf-8');
-  } catch (_) { /* best effort */ }
+  const prev = execMetaWriteQueues.get(executionId) ?? Promise.resolve();
+  const run = prev.then(() => {
+    try {
+      const metaDir = path.join(config.workDir, 'meta');
+      fs.mkdirSync(metaDir, { recursive: true });
+      const metaFile = path.join(metaDir, `${executionId}.json`);
+      const existing = fs.existsSync(metaFile)
+        ? JSON.parse(fs.readFileSync(metaFile, 'utf-8'))
+        : {};
+      const tmp = `${metaFile}.tmp`;
+      try {
+        fs.writeFileSync(tmp, JSON.stringify({ ...existing, ...data }, null, 2), 'utf-8');
+        fs.renameSync(tmp, metaFile);
+      } catch (tmpErr) {
+        // P3-15 降级路径：rename 不可用（跨设备等罕见 FS）时退回直接写主文件
+        // ——原子性让位于可用性，与旧实现等价但不丢字段合并。
+        fs.writeFileSync(metaFile, JSON.stringify({ ...existing, ...data }, null, 2), 'utf-8');
+        void tmpErr;
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* renamed or already gone */ }
+      }
+    } catch (_) { /* best effort */ }
+  });
+  // 队列尾部清理：写完后若本项仍是队尾，摘除条目防 Map 无界增长
+  //（与 execute.ts 既有 gitCacheQueues/taskInstallQueues 的 tail 模式同形）。
+  const tail = run.catch(() => undefined);
+  tail.finally(() => {
+    if (execMetaWriteQueues.get(executionId) === tail) {
+      execMetaWriteQueues.delete(executionId);
+    }
+  });
+  execMetaWriteQueues.set(executionId, tail);
+}
+
+/** P3-15（测试/外部复用出口）：writeExecMeta 的导出形态（同队列入队，签名一致）。
+ *  writeExecMeta 本体是模块私有（路由文件内 8 个调用点），spec 需要直接驱动
+ *  串行化/原子写语义，故经本导出复用同一条队列；生产代码路径请继续用私有版。 */
+export function writeExecMetaForTest(executionId: string, data: Record<string, unknown>): void {
+  writeExecMeta(executionId, data);
+}
+
+/** P3-15（测试出口）：等待全部 executionId 的 meta 写队列清空。 */
+export async function __drainExecMetaWritesForTest(): Promise<void> {
+  const pending = [...execMetaWriteQueues.values()];
+  if (pending.length > 0) await Promise.all(pending);
 }
 
 const CALLBACK_LOG_MAX_LENGTH = 10_000;
@@ -2872,7 +3106,10 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
       // 而 python 侧同一载荷会带 sandbox_unavailable。与 python 同款纪律：
       // 分类器不命中（'unknown'）时**不设**字段交给 admin inferFailureReason
       // 兜底——超时/内存超限/退出码等既有载荷形状零变化。
-      ...(!killed ? withClassifiedFailureReason(message) : {}),
+      // P2-11: 传入 logs——运行期 bwrap 启动失败（bwrap 非零退出）的证据只在
+      // 任务输出里，message-only 分类器接不住（python
+      // `_sandbox_startup_failure_reason` 同款扫描对象）。
+      ...(!killed ? withClassifiedFailureReason(message, logs) : {}),
       durationMs: Date.now() - startTime,
       // NETOPT-D P3-3: 同成功路径——停机时跳过 artifacts 收集，防 flush 窗口
       // 被 gather 消耗导致终态回调丢失。

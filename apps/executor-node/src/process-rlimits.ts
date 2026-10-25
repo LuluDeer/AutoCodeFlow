@@ -32,6 +32,37 @@ export interface RlimitWrappedArgv {
 let win32Noted = false;
 
 /**
+ * P2-6（本轮审计）：prepare 阶段子进程（git/npm/uv/pip）的 ulimit 语句表。
+ *
+ * prepare 的 git/npm/uv 此前完全在资源限制之外——恶意包的 install 脚本可无
+ * 约束地耗尽 fd / CPU / 写满盘（审计 P2-6）。run-command.ts 在 spawn 前调本
+ * 函数拼 sh 包装（与 applyTaskRlimits 同形态）。与任务侧的差异：prepare 没有
+ * 逐任务的 timeoutSec 语境（clone/install 自带 30–300s 阶段超时），CPU 上限
+ * 仅在显式配置 TASK_CPU_LIMIT_SECONDS>0 时施加，不做 timeout+60s 回落——
+ * 否则一个 300s 的 npm install 会被 ulimit -t 拦腰截断（回归风险大于收益，
+ * NOFILE/FSIZE 才是本次的防护目标）。
+ *
+ * 返回空数组 = 该部署未配置任何上限（保持原 argv，零开销）。
+ */
+export function buildPrepareRlimitStatements(): string[] {
+  if (process.platform === 'win32') return [];
+  const statements: string[] = [];
+  const nofile = config.taskNofileLimit;
+  if (nofile > 0) {
+    statements.push(`ulimit -n ${nofile} >/dev/null 2>&1`);
+  }
+  const cpu = config.taskCpuLimitSeconds;
+  if (cpu > 0) {
+    statements.push(`ulimit -t ${cpu} >/dev/null 2>&1`);
+  }
+  const fsizeMb = config.taskFsizeLimitMb;
+  if (fsizeMb > 0) {
+    statements.push(`ulimit -f ${fsizeMb * 2048} >/dev/null 2>&1`);
+  }
+  return statements;
+}
+
+/**
  * 在 POSIX 上把 `cmd/args` 包一层施加 ulimit 的 sh 包装；不设任何上限或在
  * win32 上原样返回。
  *

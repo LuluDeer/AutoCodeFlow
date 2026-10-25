@@ -107,6 +107,13 @@ function runtimeVersionBoundKey(v: string): [number, number] {
   return [parseInt(major, 10), parseInt(minor, 10)];
 }
 
+/** P3-16：磁盘水位 env 解析（非法值钳回该项默认，序校验在 getter 对里做）。 */
+function parseDiskPercent(name: string, fallback: number): number {
+  const raw = parseInt(process.env[name] || '', 10);
+  if (!Number.isFinite(raw) || raw < 1) return fallback;
+  return Math.min(raw, 100);
+}
+
 function resolveRuntimeVersionRange(): { min: string; max: string } {
   const rawMin = (process.env.PYTHON_RUNTIME_VERSION_MIN ?? '').trim();
   const rawMax = (process.env.PYTHON_RUNTIME_VERSION_MAX ?? '').trim();
@@ -175,7 +182,24 @@ export const config = {
   // isAdoptableMaxConcurrentTasks 采纳域同源——否则设到 50000 时 accept 放行
   // 50000 而心跳体截到 10000，容量账本与心跳申报永久脱节。
   maxConcurrentTasks: Math.min(Math.max(envInt('MAX_CONCURRENT_TASKS', 10), 1), 10_000),
-  taskTimeoutSeconds: parseInt(process.env.TASK_TIMEOUT_SECONDS || '300', 10),
+  // P3-19（本轮审计）：TASK_TIMEOUT_SECONDS 非法值回落默认 + warn。旧实现
+  // `parseInt('abc')` 产出 NaN 并静默传播——NaN 在 accept 侧 `(rawTimeout as
+  // number) || config.taskTimeoutSeconds` 不被 falsy 链救回（NaN 缺省路径就是
+  // 默认值本身），随后的 `Number.isFinite(NaN)=false` 让**每一个**派发都以
+  // 400「无效的任务超时」被拒（python 侧同场景是 pydantic 启动即失败，至少
+  // 故障显式）。解析层回落默认值，与 envInt 家族语义一致；0/正数原样透传给
+  // accept 侧的既有判定（0 = 显式不限时），不在此吞掉。
+  taskTimeoutSeconds: (() => {
+    const raw = (process.env.TASK_TIMEOUT_SECONDS ?? '').trim();
+    const parsed = parseInt(raw || '300', 10);
+    if (!Number.isFinite(parsed)) {
+      logger.warn(
+        `[TASK_TIMEOUT_SECONDS] 非法值 "${raw}"（期望整数秒）——回落默认 300`,
+      );
+      return 300;
+    }
+    return parsed;
+  })(),
   // NETOPT-9-5: cap at 60s (same bound as /config/reload). A misconfigured
   // HEARTBEAT_INTERVAL_SECONDS (e.g. 300) would otherwise sit outside admin's
   // own 30s*3 stale-detection window and get the executor marked OFFLINE
@@ -195,17 +219,20 @@ export const config = {
   // P2/L-2：磁盘水位红线（对齐 executor-python config.disk_warn_percent /
   // disk_critical_percent）。TTL 清扫基于 mtime，磁盘在 TTL 窗口内被撑满时无
   // 主动应对：告警水位触发减半 TTL 的紧急清理；临界水位由 accept 阶段拒新任务。
-  // getter 惰性读 env（热重载一致）；非法值钳到 [1,100]，warn 必须 < critical
-  // （否则两条防线语义重叠）。
+  // getter 惰性读 env（热重载一致）；非法值钳到 [1,100]。
+  // P3-16（本轮审计，对齐 executor-python config.py `_validate_disk_threshold_
+  // order`）：warn 必须 < critical，否则「紧急清理」防线永不触发而「拒新任务」
+  // 提前生效，两条防线语义重叠。误配时 warn 日志 + 两者都回落默认（与 python
+  // 抛 ValueError 不同——node 也内嵌在桌面端，配置手滑不应让执行器起不来）。
   get diskWarnPercent(): number {
-    const raw = parseInt(process.env.DISK_WARN_PERCENT || '90', 10);
-    if (!Number.isFinite(raw) || raw < 1) return 90;
-    return Math.min(raw, 100);
+    const warn = parseDiskPercent('DISK_WARN_PERCENT', 90);
+    const critical = parseDiskPercent('DISK_CRITICAL_PERCENT', 95);
+    return warn >= critical ? 90 : warn;
   },
   get diskCriticalPercent(): number {
-    const raw = parseInt(process.env.DISK_CRITICAL_PERCENT || '95', 10);
-    if (!Number.isFinite(raw) || raw < 1) return 95;
-    return Math.min(raw, 100);
+    const warn = parseDiskPercent('DISK_WARN_PERCENT', 90);
+    const critical = parseDiskPercent('DISK_CRITICAL_PERCENT', 95);
+    return warn >= critical ? 95 : critical;
   },
   npmRegistryUrl: process.env.NPM_REGISTRY_URL || '',  // Private npm registry for task dependencies
   // Auth token for the private npm registry (registry-npm/verdaccio grants

@@ -728,3 +728,195 @@ describe('E-27 concurrent refresh single-flight', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P1-1（本轮审计，2026-10-26）：/token 409 慢性冲突——指数退避 + 冲突态暴露。
+//
+// 生产实证：同 push 地址存在旧指纹行时 admin 对 register/token 恒 409，旧实现
+// 以心跳节拍（30s）无限重试（真机 7h 883 次），健康面零痕迹。修复后：
+//   ① 409 单独走指数退避（30s 起步 ×2 封顶 10min），任何非 409 结果复位；
+//   ② conflict 置位经 heartbeat-state 暴露到 /health 与 /health/admin-status。
+// 用例直接驱动 performTokenRefresh 的公开入口（getCurrentToken /
+// forceTokenRefresh），退避窗口用 Date.now 推进模拟时间流逝。
+// ---------------------------------------------------------------------------
+describe('P1-1 /token 409 conflict backoff + health exposure', () => {
+  async function freshAuth() {
+    jest.resetModules();
+    const axiosDefault = ((await import('axios')) as any).default;
+    const { getCurrentToken, forceTokenRefresh, __resetTokenConflictStateForTest } =
+      await import('./auth');
+    const heartbeatState = await import('../heartbeat-state');
+    return {
+      post: axiosDefault.post as jest.Mock,
+      getCurrentToken,
+      forceTokenRefresh,
+      __resetTokenConflictStateForTest,
+      heartbeatState,
+    };
+  }
+
+  function conflict409(): { status: number; response: { status: number } } {
+    // axios 形态的 409：fetchTokenWithRetry 对确定性 4xx 直接上抛，错误携带 response。
+    const err: any = new Error('Request failed with status code 409');
+    err.response = { status: 409 };
+    err.status = 409;
+    return err;
+  }
+
+  function conflict4xx(status: number) {
+    const err: any = new Error(`Request failed with status code ${status}`);
+    err.response = { status };
+    err.status = status;
+    return err;
+  }
+
+  it('escalates the retry interval across consecutive 409s (30s → 60s → 120s, capped at 10min)', async () => {
+    const { post, forceTokenRefresh, __resetTokenConflictStateForTest, heartbeatState } =
+      await freshAuth();
+    __resetTokenConflictStateForTest();
+
+    // 全程 409：每次 forceTokenRefresh 至多发 1 次 POST（409 是确定性拒绝，
+    // fetchTokenWithRetry 不重试）。
+    post.mockRejectedValue(conflict409());
+
+    const now = Date.now();
+    const spy = jest.spyOn(Date, 'now');
+    try {
+      // 第 1 次 409：立即发出（此前无失败锚点）。
+      spy.mockReturnValue(now);
+      await expect(forceTokenRefresh()).resolves.toBeNull();
+      expect(heartbeatState.isRegistrationConflictActive()).toBe(true);
+      const callsAfterFirst = post.mock.calls.length;
+      expect(callsAfterFirst).toBe(1);
+
+      // +31s：第一个冲突退避窗（30s）已过 → 第二次 409 发出。
+      spy.mockReturnValue(now + 31_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(2);
+
+      // +10s（距第 2 次失败 10s < 第二档 60s）→ 退避生效，不发。
+      spy.mockReturnValue(now + 41_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(2);
+
+      // 再过 55s（累计距第 2 次失败 65s > 60s）→ 第 3 次 409 发出（第三档 120s）。
+      spy.mockReturnValue(now + 96_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(3);
+
+      // 冲突间隔按 ×2 递增：距第 3 次失败 100s < 120s → 不发。
+      spy.mockReturnValue(now + 196_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(3);
+
+      // 再过 130s（> 120s）→ 第 4 次发出（第四档 240s）。
+      spy.mockReturnValue(now + 326_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(4);
+
+      // 封顶验证：把时间推到极远（> 全部档位之和），此后每次以 > 封顶窗
+      //（601s > 600s）的间隔推进恰发一次、以 10s 的间隔不发——间隔已钉在
+      // 10min 封顶，不再增长。
+      spy.mockReturnValue(now + 326_000 + 601_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(5);
+      spy.mockReturnValue(now + 326_000 + 2 * 601_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(6);
+      // 距上次仅 10s（远小于封顶窗 600s）→ 退避生效，不发。
+      spy.mockReturnValue(now + 326_000 + 2 * 601_000 + 10_000);
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(6);
+    } finally {
+      spy.mockRestore();
+      __resetTokenConflictStateForTest();
+    }
+  });
+
+  it('resets the backoff after success (next failure starts from the base interval again)', async () => {
+    const { post, forceTokenRefresh, __resetTokenConflictStateForTest, heartbeatState } =
+      await freshAuth();
+    __resetTokenConflictStateForTest();
+
+    const now = Date.now();
+    const spy = jest.spyOn(Date, 'now');
+    try {
+      spy.mockReturnValue(now);
+      post.mockRejectedValue(conflict409());
+      await forceTokenRefresh(); // 409 #1，退避 30s
+      expect(post.mock.calls.length).toBe(1);
+
+      // 冲突解除（admin 接管自愈成功）→ 成功响应。
+      spy.mockReturnValue(now + 31_000);
+      post.mockResolvedValueOnce({
+        status: 201,
+        data: { code: 201, message: 'ok', data: { token: 'healed', tokenHash: 'hash-1' } },
+      });
+      await expect(forceTokenRefresh()).resolves.toBe('healed');
+      // 成功复位冲突态。
+      expect(heartbeatState.isRegistrationConflictActive()).toBe(false);
+
+      // 复位后再次失败：退避必须从 30s 基础档重新开始（不继承上一轮的 60s+），
+      // 验证方式：成功后立即 409，再过 31s 即可重试（若继承 60s 档则发不出）。
+      spy.mockReturnValue(now + 40_000);
+      post.mockRejectedValue(conflict409());
+      await forceTokenRefresh(); // 409 #2（新冲突第一拍）
+      const callsAfterSecondConflict = post.mock.calls.length;
+      spy.mockReturnValue(now + 40_000 + 31_000); // +31s：基础档 30s 已过
+      post.mockRejectedValue(conflict409());
+      await forceTokenRefresh();
+      expect(post.mock.calls.length).toBe(callsAfterSecondConflict + 1);
+    } finally {
+      spy.mockRestore();
+      __resetTokenConflictStateForTest();
+    }
+  });
+
+  it('clears the conflict flag on a non-409 failure (ordinary errors do not inherit conflict pacing)', async () => {
+    const { post, forceTokenRefresh, __resetTokenConflictStateForTest, heartbeatState } =
+      await freshAuth();
+    __resetTokenConflictStateForTest();
+
+    const now = Date.now();
+    const spy = jest.spyOn(Date, 'now');
+    try {
+      spy.mockReturnValue(now);
+      post.mockRejectedValue(conflict409());
+      await forceTokenRefresh();
+      expect(heartbeatState.isRegistrationConflictActive()).toBe(true);
+
+      // 一次普通网络错（非 409）→ 冲突态立即清除。
+      spy.mockReturnValue(now + 61_000);
+      post.mockRejectedValue(new Error('socket hang up'));
+      await forceTokenRefresh();
+      expect(heartbeatState.isRegistrationConflictActive()).toBe(false);
+    } finally {
+      spy.mockRestore();
+      __resetTokenConflictStateForTest();
+    }
+  });
+
+  it('does not treat other 4xx (e.g. 403) as a conflict and clears any prior conflict state', async () => {
+    const { post, forceTokenRefresh, __resetTokenConflictStateForTest, heartbeatState } =
+      await freshAuth();
+    __resetTokenConflictStateForTest();
+
+    const now = Date.now();
+    const spy = jest.spyOn(Date, 'now');
+    try {
+      spy.mockReturnValue(now);
+      post.mockRejectedValue(conflict409());
+      await forceTokenRefresh();
+      expect(heartbeatState.isRegistrationConflictActive()).toBe(true);
+
+      // 403（版本门禁）不是地址冲突：不复位为「冲突」，清除既有冲突态。
+      spy.mockReturnValue(now + 61_000);
+      post.mockRejectedValue(conflict4xx(403));
+      await forceTokenRefresh();
+      expect(heartbeatState.isRegistrationConflictActive()).toBe(false);
+    } finally {
+      spy.mockRestore();
+      __resetTokenConflictStateForTest();
+    }
+  });
+});
