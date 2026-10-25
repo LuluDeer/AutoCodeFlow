@@ -138,6 +138,17 @@ export class UsersController {
       throw new AppError("USER_ROLE_ADMIN_ONLY");
     }
 
+    // P1-1（2026-10-25 审计）：isActive 写面纪律——启用/禁用是管理员对账号的
+    // 治理动作（登录闸/API-Key 属主闸/OIDC 闸都消费这列），对齐 role 的
+    // ADMIN-only 形态；ADMIN 禁用自己会让全站失去已知可登录的管理主体
+    // （与 remove 的自删拒绝同姿态），前置拒绝而非靠「最后一个管理员」兜底。
+    if (!isAdmin && dto.isActive !== undefined) {
+      throw new AppError("USER_ACTIVE_ADMIN_ONLY");
+    }
+    if (isAdmin && user?.id === id && dto.isActive === false) {
+      throw new AppError("USER_SELF_DISABLE_FORBIDDEN");
+    }
+
     // 审计 E-P2-S4：普通用户自改 username 时做唯一性占用校验。
     // 旧实现：自改 username 直接 Object.assign → save，撞 user.username 唯一索引
     // 时冒成裸 500（23505），对前端不可读。此处前置校验：目标 username 已被他人

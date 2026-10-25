@@ -25,11 +25,16 @@ import { ILike, In } from "typeorm";
 import { escapeLikePattern } from "../audit/audit.service";
 
 /**
- * R32-C3: update() 允许落库的列——UpdateUserDto（PartialType(CreateUserDto)）的
- * 全部业务列。单独拎成类型别名的用意：**编译期**就把可写面钉死在这四列上，
- * 将来谁想在 patch 里多加一列，tsc 先红（不必等线上问题复现）。
+ * R32-C3: update() 允许落库的列——UpdateUserDto 的全部业务列。单独拎成类型
+ * 别名的用意：**编译期**就把可写面钉死在这些列上，将来谁想在 patch 里多加
+ * 一列，tsc 先红（不必等线上问题复现）。
+ *
+ * P1-1（2026-10-25 审计）：isActive 入列——这是该列全仓唯一的写点（登录/
+ * API-Key/OIDC 三道闸都读它），列级 UPDATE 保证不会把并发写进来的
+ * sessionVersion / loginFailCount 按旧快照回滚。
  */
-type UpdatableUserColumn = "username" | "email" | "password" | "role";
+type UpdatableUserColumn =
+  "username" | "email" | "password" | "role" | "isActive";
 
 /**
  * ARCH-31: PG 唯一约束冲突（23505）判定——种子竞态里「输家」据此降级为跳过。
@@ -155,7 +160,20 @@ export class UsersService implements OnModuleInit {
       ...createUserDto,
       password: hashed,
     });
-    return this.usersRepository.save(user);
+    // P3-3（2026-10-25 审计）：唯一性竞态兜底——预检（上面 findOne）与落库
+    // 之间是 TOCTOU 窗口，并发同名/同邮箱注册时输家撞 23505 会一路穿到全局
+    // filter 冒成笼统 RESOURCE_EXISTS，不知道撞的是哪个字段。update 路径
+    // R32-A5 起已有 classifyUniqueConflict 归因，create 套用同一份：
+    // 点名 409 USERNAME_TAKEN / EMAIL_TAKEN，无法归因回落 USER_EXISTS。
+    try {
+      return await this.usersRepository.save(user);
+    } catch (e: unknown) {
+      if (isUniqueViolation(e)) {
+        // create 无「自己」可排除：excludeId 传 undefined，任何持有人都算他人。
+        throw await this.classifyUniqueConflict(createUserDto);
+      }
+      throw e;
+    }
   }
 
   // API-07（历史）：签名曾从 PaginationDto 收窄为 PageQueryDto（任务专用过滤
@@ -309,7 +327,7 @@ export class UsersService implements OnModuleInit {
       // （不依赖约束名——TypeORM 的 UQ_<hash> 名不稳定，PG 侧也可能漂移）。
       // 重读失败/无命中/命中自己 → 回落 USER_EXISTS（仍是 409，绝不冒充成功）。
       if (isUniqueViolation(e)) {
-        throw await this.classifyUniqueConflict(id, updateUserDto);
+        throw await this.classifyUniqueConflict(updateUserDto, id);
       }
       throw e;
     }
@@ -358,6 +376,10 @@ export class UsersService implements OnModuleInit {
     if (updateUserDto.password !== undefined)
       patch.password = updateUserDto.password;
     if (updateUserDto.role !== undefined) patch.role = updateUserDto.role;
+    // P1-1: `!== undefined` 判断——isActive: false 是本字段的核心取值，
+    // 真值判断会把「禁用」静默吞掉。
+    if (updateUserDto.isActive !== undefined)
+      patch.isActive = updateUserDto.isActive;
     return patch;
   }
 
@@ -392,19 +414,19 @@ export class UsersService implements OnModuleInit {
         await users.update({ id }, patch);
         const savedInTx = await users.findOne({ where: { id } });
         if (!savedInTx) throw new AppError("USER_ID_NOT_FOUND", { id });
-        if (updateUserDto.password) {
-          // DEADLOCK-01（审计 P2，2026-10-17）：**必须**用事务内的 manager，
-          // 不能用 this.bumpSessionVersion（它走 this.usersRepository，即
-          // 连接池里的**另一条**连接）。
+        if (savedInTx) {
+          // WIKI-AUTH-REVOC + P1-1（2026-10-25 审计）：改密与「禁用账号」同款
+          // 会话失效语义——两者都让在途 access token 的 ver 快照失配即 401。
+          // 禁用是止血动作，只 bump 会话不回收凭据行（API-Key 面由 per-request
+          // 属主闸 owner_inactive 即时判死，不重复建机制）。
           //
-          // 缺陷现场：事务已持有目标行的写锁，而这条外部 UPDATE 需要同一行
-          // 的行锁 → 它排队等事务提交；事务又在 await 它 → 二者互等。单连接
-          // 池（DATABASE_POOL_SIZE=1，或池被并发请求耗尽）下是**确定性死锁**，
-          // 请求挂到连接超时；多连接下也会把池占满并放大锁等待。
-          //
-          // 事务内单条 UPDATE 语义与 bumpSessionVersion 逐字节一致
-          // （increment → SET "sessionVersion" = "sessionVersion" + 1）。
-          await users.increment({ id }, "sessionVersion", 1);
+          // DEADLOCK-01（审计 P2，2026-10-17）：**必须**用事务内的 manager
+          // increment（不能 this.bumpSessionVersion——它走连接池的另一条连接，
+          // 要等本事务的行锁，单连接池下确定性死锁）；事务内单条 increment
+          // 语义与 bumpSessionVersion 逐字节一致。
+          if (updateUserDto.password || updateUserDto.isActive === false) {
+            await users.increment({ id }, "sessionVersion", 1);
+          }
         }
         return savedInTx;
       });
@@ -424,7 +446,12 @@ export class UsersService implements OnModuleInit {
     // 放在写入成功之后：改密失败（校验/落库异常）不误伤在途会话。
     // 返回实体中的 sessionVersion 为 bump 前快照（响应展示无消费方，语义
     // 以签发时重新读取的库中值为准）。
-    if (updateUserDto.password) {
+    //
+    // P1-1（2026-10-25 审计）：禁用账号（isActive → false）同款语义——事件
+    // 止血要求「禁用即下线」。既有 JWT 靠 ver 失配 401；API-Key 无 ver 概念，
+    // 但 authenticate 每请求现读属主 isActive（owner_inactive），天然即时，
+    // 不在此重复处理。enable（true）不 bump——恢复访问无需杀会话。
+    if (updateUserDto.password || updateUserDto.isActive === false) {
       await this.bumpSessionVersion(id);
     }
     return saved;
@@ -432,21 +459,25 @@ export class UsersService implements OnModuleInit {
 
   /**
    * R32-A5：把 PG 23505 归因到具体字段（update 的唯一性竞态兜底）。
+   * P3-3 起 create 也复用本方法（此前只有 update 有竞态兜底）。
    *
    * 只看 dto 里**实际出现**的字段：未改的列不可能被这次写入撞到，为它多查
    * 一次只会带来「把别人的冲突算到你头上」的误报。命中他人 → 点名 409；否则
    * 回落 USER_EXISTS（笼统但仍是 409）。重读本身失败也不改写失败语义。
+   *
+   * @param selfId 排除的「自己」行 id（update 场景）；create 场景传 undefined
+   *   ——任何持有人都算他人（新建行不可能与合法持有人同一主键）。
    */
   private async classifyUniqueConflict(
-    id: number,
-    updateUserDto: UpdateUserDto,
+    updateUserDto: { username?: string; email?: string },
+    selfId?: number,
   ): Promise<AppError> {
     try {
       if (updateUserDto.username) {
         const holder = await this.usersRepository.findOne({
           where: { username: updateUserDto.username },
         });
-        if (holder && holder.id !== id) {
+        if (holder && holder.id !== selfId) {
           return new AppError(ErrorCode.USERNAME_TAKEN);
         }
       }
@@ -454,7 +485,7 @@ export class UsersService implements OnModuleInit {
         const holder = await this.usersRepository.findOne({
           where: { email: updateUserDto.email },
         });
-        if (holder && holder.id !== id) {
+        if (holder && holder.id !== selfId) {
           return new AppError(ErrorCode.EMAIL_TAKEN);
         }
       }

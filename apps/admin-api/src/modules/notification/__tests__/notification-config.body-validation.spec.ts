@@ -10,34 +10,51 @@ import { AuditService } from "../../../modules/audit/audit.service";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 
 /**
- * F-53（UIAUDIT 后端轮 P2-2）：notification-config 两个测试端点的 body 纪律
- * （supertest 走真实参数管道；既有的 notification-config.controller.spec 直调
- * controller，绕过管道，钉不住 ValidationPipe）。
+ * F-53（UIAUDIT 后端轮 P2-2）+ P2-3/P3-5（2026-10-25 审计）：notification-config
+ * 各写端点的 body 纪律（supertest 走真实参数管道；既有的
+ * notification-config.controller.spec 直调 controller，绕过管道，钉不住
+ * ValidationPipe）。
  *
  *   · POST /notification/test —— SendTestDto：多余字段 400（恢复全站
  *     forbidNonWhitelisted 纪律）；channels 走渠道枚举白名单。
  *   · POST /notification/channels/:key/test —— 动态键覆盖体不能 class DTO 化
  *     （键集随渠道类型变化），改挂 ChannelConfigOverridePipe：值必须 string、
  *     非法形状 400；合法 string→string 映射照常透传 service。
+ *   · PATCH /notification/channels/:key（P2-3）—— UpdateChannelDto：此前
+ *     内联 body 使全局管道整体跳过，非 string config 值写穿 DB 打挂读面；
+ *     现值必须 string、多余字段 400。
+ *   · POST /notification/silences（P3-5）—— CreateSilenceDto：scope/level/
+ *     durationMinutes 按 service 校验器同口径搬到 DTO，多余字段 400。
  */
 describe("NotificationConfigController body 纪律（F-53）", () => {
   let app: INestApplication;
   let configService: {
     testChannel: jest.Mock;
     sendTest: jest.Mock;
+    updateChannel: jest.Mock;
   };
+  let silenceService: { create: jest.Mock };
 
   beforeAll(async () => {
     configService = {
       testChannel: jest.fn().mockResolvedValue({ success: true }),
       sendTest: jest.fn().mockResolvedValue({ success: true }),
+      updateChannel: jest.fn().mockReturnValue({ key: "webhook" }),
     };
+    silenceService = { create: jest.fn().mockResolvedValue({ id: "sil-1" }) };
     const moduleRef = await Test.createTestingModule({
       controllers: [NotificationConfigController],
       providers: [
         { provide: NotificationConfigService, useValue: configService },
-        { provide: NotificationService, useValue: {} },
-        { provide: NotificationSilenceService, useValue: {} },
+        // P3-5: createSilence 成功路径会 adoptPersistedSilence 进内存热路径
+        {
+          provide: NotificationService,
+          useValue: {
+            adoptPersistedSilence: jest.fn(),
+            forgetSilence: jest.fn(),
+          },
+        },
+        { provide: NotificationSilenceService, useValue: silenceService },
         { provide: AuditService, useValue: { log: jest.fn() } },
       ],
     })
@@ -113,5 +130,81 @@ describe("NotificationConfigController body 纪律（F-53）", () => {
       url: "https://example/hook",
       password: "***",
     });
+  });
+
+  // ── PATCH /notification/channels/:key（P2-3，F-53 残留清理）────────────
+  it("updateChannel：config 值为数字 → 400（此前写穿 DB 打挂读面）", async () => {
+    const res = await request(app.getHttpServer())
+      .patch("/notification/channels/webhook")
+      .send({ config: { url: "https://ok", port: 587 } });
+    expect(res.status).toBe(400);
+    expect(res.body.errorCode).toBe("VALIDATION_FAILED");
+    expect(configService.updateChannel).not.toHaveBeenCalled();
+  });
+
+  it("updateChannel：enabled 非布尔 → 400", async () => {
+    const res = await request(app.getHttpServer())
+      .patch("/notification/channels/webhook")
+      .send({ enabled: "yes" });
+    expect(res.status).toBe(400);
+    expect(configService.updateChannel).not.toHaveBeenCalled();
+  });
+
+  it("updateChannel：多余字段 → 400（恢复全站 forbidNonWhitelisted 纪律）", async () => {
+    const res = await request(app.getHttpServer())
+      .patch("/notification/channels/webhook")
+      .send({ enabled: true, evil: 1 });
+    expect(res.status).toBe(400);
+    expect(configService.updateChannel).not.toHaveBeenCalled();
+  });
+
+  it("updateChannel：合法 body（enabled + string→string config）透传 service", async () => {
+    const res = await request(app.getHttpServer())
+      .patch("/notification/channels/webhook")
+      .send({ enabled: true, config: { url: "https://example/hook" } });
+    expect(res.status).toBe(200);
+    expect(configService.updateChannel).toHaveBeenCalledWith("webhook", {
+      enabled: true,
+      config: { url: "https://example/hook" },
+    });
+  });
+
+  // ── POST /notification/silences（P3-5，PK-19 收尾）─────────────────────
+  it("createSilence：多余字段 → 400（此前内联 body 静默收下）", async () => {
+    const res = await request(app.getHttpServer())
+      .post("/notification/silences")
+      .send({ scope: "global", durationMinutes: 60, evil: 1 });
+    expect(res.status).toBe(400);
+    expect(silenceService.create).not.toHaveBeenCalled();
+  });
+
+  it("createSilence：durationMinutes 传字符串 → 400（DTO IsNumber）", async () => {
+    const res = await request(app.getHttpServer())
+      .post("/notification/silences")
+      .send({ scope: "global", durationMinutes: "60" });
+    expect(res.status).toBe(400);
+    expect(silenceService.create).not.toHaveBeenCalled();
+  });
+
+  it("createSilence：level 非法枚举 → 400（与 service 校验器同口径）", async () => {
+    const res = await request(app.getHttpServer())
+      .post("/notification/silences")
+      .send({ scope: "global", level: "catastrophic" });
+    expect(res.status).toBe(400);
+    expect(silenceService.create).not.toHaveBeenCalled();
+  });
+
+  it("createSilence：合法 body 透传 service", async () => {
+    const res = await request(app.getHttpServer())
+      .post("/notification/silences")
+      .send({ scope: "task", taskId: "t-1002", durationMinutes: 30 });
+    expect(res.status).toBe(201);
+    expect(silenceService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "task",
+        taskId: "t-1002",
+        durationMinutes: 30,
+      }),
+    );
   });
 });

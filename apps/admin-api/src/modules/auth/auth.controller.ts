@@ -149,7 +149,45 @@ export class AuthController {
     },
   })
   async login(@Body() loginDto: LoginDto, @Req() req: Request) {
-    const result = await this.authService.login(loginDto, requestMeta(req));
+    const meta = requestMeta(req);
+    // P2-4（2026-10-25 审计）：失败路径补审计。此前 audit.log 只在
+    // authService.login() 成功后执行——INVALID_USERNAME_OR_PASSWORD /
+    // LOGIN_LOCKED / ACCOUNT_INACTIVE 等失败零记录，无法回答爆破/撞库溯源
+    // （成功路径 requestMeta 已采 ip/ua）。形态对照 api-keys.auditAuthFailure
+    // 先例：action 同名 + result:"failure" + 失败原因码；绝不落 password。
+    //
+    // 只认业务失败（AppError 系）：DTO 校验 400 在全局管道层、限流 429 在
+    // ThrottlerGuard 层，都到不了本方法体，不会被误记成登录失败。注意
+    // **不能**用 `instanceof AppError`——AppError 构造时按状态码把原型挂到
+    // NestJS 内置异常类上（app-error.ts，保住 178 处按类断言的 spec），
+    // 已构造实例对 AppError 自身的 instanceof 恒 false；这里按实例携带的
+    // errorCode 判别（AppError 的实例字段，普通 Error 没有）。审计自身
+    // 失败 best-effort 吞掉（warn），不掩盖原始错误。
+    let result;
+    try {
+      result = await this.authService.login(loginDto, meta);
+    } catch (e: unknown) {
+      const errorCode = (e as { errorCode?: unknown } | null)?.errorCode;
+      if (typeof errorCode === "string") {
+        await this.auditService
+          .log({
+            userId: undefined,
+            username: loginDto.username,
+            action: "auth.login",
+            resource: "auth",
+            detail: {
+              errorCode,
+              userAgent: meta.userAgent,
+            },
+            result: "failure",
+            ip: req.ip,
+          })
+          .catch((err: unknown) =>
+            this.logger.warn(`audit log failed on login failure: ${err}`),
+          );
+      }
+      throw e;
+    }
     await this.auditService
       .log({
         userId: undefined,

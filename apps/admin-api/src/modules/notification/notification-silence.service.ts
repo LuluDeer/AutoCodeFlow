@@ -36,6 +36,18 @@ export class NotificationSilenceService {
   /** 与 NOTIF-003 内存上限对齐，防 API 滥用打爆表 */
   private static readonly MAX_SILENCES = 1000;
 
+  /**
+   * P3-1（2026-10-25 审计）：durationMinutes 上界（10 年分钟数）。
+   *
+   * 缺陷现场：校验只有「正数 + 有限」两个条件，1e15 这类天文数字全部放行，
+   * endTime 折算 `startTime + durationMinutes * 60_000` 得到远超
+   * Date 上限的毫秒值 → Invalid Date → save 落库失败 → 500。上界取
+   * 10 年（5256000）：静默是运维动作不是归档策略，10 年已无现实用例；
+   * CreateSilenceDto 的 @Max 与本值同源（API 面 fast 400，本处是内部调用方
+   * 的唯一闸）。
+   */
+  public static readonly MAX_SILENCE_DURATION_MINUTES = 5_256_000;
+
   constructor(
     @InjectRepository(NotificationSilence)
     private readonly repo: Repository<NotificationSilence>,
@@ -71,11 +83,15 @@ export class NotificationSilenceService {
     // NETOPT-5①: durationMinutes 数字校验。运行时 @Body() 无 ValidationPipe
     // 白名单（见 CreateSilenceDto 注释），字符串 "abc" 直达此处——旧逻辑
     // `"abc" > 0` 恒 false 跳过折算，endTime 落 NULL = 永不过期静默。
+    // P3-1: 追加上界——1e15 这类值折算 endTime 时溢出为 Invalid Date →
+    // save 500（见 MAX_SILENCE_DURATION_MINUTES 注释）。
     if (
       input.durationMinutes != null &&
       (typeof input.durationMinutes !== "number" ||
         !Number.isFinite(input.durationMinutes) ||
-        input.durationMinutes <= 0)
+        input.durationMinutes <= 0 ||
+        input.durationMinutes >
+          NotificationSilenceService.MAX_SILENCE_DURATION_MINUTES)
     ) {
       throw new AppError(ErrorCode.NOTIFICATION_SILENCE_DURATION_INVALID, {
         durationMinutes: String(input.durationMinutes),

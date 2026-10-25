@@ -352,6 +352,22 @@ export const AUTH_CODES = {
     zh: "账号已被禁用",
     en: "Account is disabled",
   },
+  /**
+   * P3-4（2026-10-25 审计）：JIT 自动建号前的身份声明防御性拒绝。JIT 绕过
+   * CreateUserDto 的校验直写 users 表——IdP 声明的 username 超长（DB 列
+   * varchar(128)）或 email 形态非法时，旧路径撞数据库约束冒 500。**拒发不
+   * 归一**：超长截断会让「SSO 登录身份」与「IdP 侧身份」漂移（后续同 sub
+   * 再登录走 ① 的 sub 绑定不受影响，但管理台显示的名字是截断产物，审计
+   * 无法对账），让管理员在 IdP 侧修正声明才是可追溯的修法。
+   *
+   * **401 而非 403**：与相邻的 OIDC_ACCOUNT_DISABLED / OIDC_SUB_ALREADY_BOUND
+   * 同姿态——拒绝发生在 SSO 回调里，用户尚未取得平台会话。
+   */
+  OIDC_JIT_PROFILE_INVALID: {
+    status: 401,
+    zh: "OIDC 身份声明不满足自动建号要求（{{reason}}），请联系管理员在 IdP 侧修正",
+    en: "OIDC claims do not satisfy auto-provisioning requirements ({{reason}}); ask your administrator to fix them on the IdP",
+  },
   OIDC_STATE_MISMATCH: {
     status: 401,
     zh: "OIDC 登录状态在查询参数与 cookie 之间不一致",
@@ -384,6 +400,25 @@ export const AUTH_CODES = {
     status: 403,
     zh: "只有管理员可以变更用户角色",
     en: "Only administrators may change user roles",
+  },
+  /**
+   * P1-1（2026-10-25 审计）：isActive 写面的两条守卫。启用/禁用是管理员对
+   * 账号的治理动作（登录闸 / API-Key 属主闸 / OIDC 闸都消费该列）：
+   *   · `USER_ACTIVE_ADMIN_ONLY`（403）：非管理员试图变更启用状态——对齐
+   *     `USER_ROLE_ADMIN_ONLY` 的形态（特权字段收紧到 ADMIN）；
+   *   · `USER_SELF_DISABLE_FORBIDDEN`（400）：管理员禁用自己——禁用后当前
+   *     会话即刻失效，极易顺带把全站唯一可登录的管理主体关在门外，与
+   *     `USER_SELF_DELETE_FORBIDDEN`（400）同姿态，前置拒绝。
+   */
+  USER_ACTIVE_ADMIN_ONLY: {
+    status: 403,
+    zh: "只有管理员可以变更账号启用状态",
+    en: "Only administrators may enable or disable accounts",
+  },
+  USER_SELF_DISABLE_FORBIDDEN: {
+    status: 400,
+    zh: "不能禁用自己的账号",
+    en: "Cannot disable your own account",
   },
   /**
    * 「最后一个管理员」与「自删」的**400 变体**。

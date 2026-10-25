@@ -408,8 +408,9 @@ export const APPLICATION_CODES = {
   },
   NOTIFICATION_SILENCE_DURATION_INVALID: {
     status: 400,
-    zh: "durationMinutes 非法：{{durationMinutes}}；应为正数",
-    en: "Invalid durationMinutes: {{durationMinutes}}; expected a positive number",
+    // P3-1（2026-10-25 审计）：校验追加上界（10 年分钟数），文案同步。
+    zh: "durationMinutes 非法：{{durationMinutes}}；应为 1..5256000 的数字（最大 10 年）",
+    en: "Invalid durationMinutes: {{durationMinutes}}; expected a number in 1..5256000 (max 10 years)",
   },
   NOTIFICATION_SILENCE_CHANNEL_TYPE_INVALID: {
     status: 400,

@@ -324,6 +324,84 @@ describe("ProjectAccessService（AUTH-02）", () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    // ─── P2-2（2026-10-25 审计）：授予目标项目必须在场 ─────────────────────
+    // project_members 对 projects 有真 FK（fk_project_members_project），
+    // 此前不存在的 projectId 一路 INSERT 撞 23503 → 裸 500。两层防御：
+    // 入口预检（projectRepo 已接线时）+ catch 层 23503 归因。
+    describe("addMember 目标项目存在性（P2-2）", () => {
+      const makeProjectRepo = (row: unknown) => ({
+        findOne: jest.fn().mockResolvedValue(row),
+      });
+      const makeWithProjectRepo = (projectRow: unknown) => {
+        const { repo } = makeService();
+        const projectRepo = makeProjectRepo(projectRow);
+        // 第三参 @Optional projectRepo（与生产装配 projects.module 同形）
+        const wired = new ProjectAccessService(
+          repo as unknown as never,
+          null as never,
+          projectRepo as never,
+        );
+        return { svc: wired, repo, projectRepo };
+      };
+
+      it("项目不存在 → 404 PROJECT_NOT_FOUND，且不落成员行", async () => {
+        const { svc, repo, projectRepo } = makeWithProjectRepo(null);
+
+        await expect(
+          svc.addMember("p-ghost", 8, "viewer"),
+        ).rejects.toMatchObject({ errorCode: "PROJECT_NOT_FOUND" });
+        expect(projectRepo.findOne).toHaveBeenCalledWith({
+          where: { id: "p-ghost" },
+        });
+        expect(repo.create).not.toHaveBeenCalled();
+        expect(repo.save).not.toHaveBeenCalled();
+      });
+
+      it("项目在 → 照常落行（零行为变化）", async () => {
+        const { svc, repo } = makeWithProjectRepo({ id: "p1", name: "X" });
+        await expect(svc.addMember("p1", 8, "viewer")).resolves.toBeTruthy();
+        expect(repo.create).toHaveBeenCalledWith({
+          projectId: "p1",
+          userId: 8,
+          role: "viewer",
+        });
+      });
+
+      it("projectRepo 未接线（既有极简装配）→ 跳过预检，兜底归因", async () => {
+        const { svc, repo } = makeService();
+        // 既有路径逐字节：无预检查询，insert 照旧成功
+        repo.findOne.mockResolvedValue(null);
+        await expect(svc.addMember("p1", 8, "viewer")).resolves.toBeTruthy();
+      });
+
+      it("INSERT 撞 fk（23503，预检后项目被并发删除）→ 归因 404 PROJECT_NOT_FOUND，不冒 500", async () => {
+        const { svc, repo } = makeService();
+        repo.save.mockRejectedValueOnce(
+          Object.assign(new Error("foreign key violation"), { code: "23503" }),
+        );
+        await expect(svc.addMember("p1", 8, "viewer")).rejects.toMatchObject({
+          errorCode: "PROJECT_NOT_FOUND",
+        });
+      });
+
+      it("INSERT 撞唯一索引（23505，并发重复授予）→ 仍走既有重试收敛，不误归因 404", async () => {
+        const { svc, repo } = makeService();
+        // save 撞 23505 → catch 进重试收敛：update 命中（repo.update 的假实现
+        // 按 findOne 是否有行求值，此处预置命中行）→ 返回已有行。
+        repo.save.mockRejectedValueOnce(
+          Object.assign(new Error("duplicate key"), { code: "23505" }),
+        );
+        repo.findOne.mockResolvedValue({
+          id: "m1",
+          projectId: "p1",
+          userId: 8,
+          role: "viewer",
+          createdAt: new Date(),
+        });
+        await expect(svc.addMember("p1", 8, "viewer")).resolves.toBeTruthy();
+      });
+    });
+
     it("R58: updateMember 走条件 UPDATE——并发 remove 之后不会把成员行「复活」", async () => {
       const { svc, repo } = makeService();
       repo.findOne.mockResolvedValue({

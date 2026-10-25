@@ -277,6 +277,38 @@ describe("UsersController", () => {
       );
       expect(usersSvc.update).toHaveBeenCalled();
     });
+
+    // ─── P1-1（2026-10-25 审计）：isActive 写面纪律 ────────────────────────
+    it("non-admin cannot toggle own isActive（启用/禁用是 ADMIN-only 治理动作）", async () => {
+      await expect(
+        controller.update(2, { isActive: false } as any, normalUser, mockReq),
+      ).rejects.toThrow(ForbiddenException);
+      expect(usersSvc.update).not.toHaveBeenCalled();
+    });
+
+    it("admin cannot disable self（避免全站失去已知可登录的管理主体）", async () => {
+      await expect(
+        controller.update(1, { isActive: false } as any, adminUser, mockReq),
+      ).rejects.toThrow(BadRequestException);
+      expect(usersSvc.update).not.toHaveBeenCalled();
+    });
+
+    it("admin can disable another user（放行进 service，禁用即止血）", async () => {
+      usersSvc.update.mockResolvedValue({ id: 5, isActive: false });
+      await controller.update(
+        5,
+        { isActive: false } as any,
+        adminUser,
+        mockReq,
+      );
+      expect(usersSvc.update).toHaveBeenCalledWith(5, { isActive: false });
+    });
+
+    it("admin enabling self is allowed（enable 不是止血方向，无自伤面）", async () => {
+      usersSvc.update.mockResolvedValue({ id: 1, isActive: true });
+      await controller.update(1, { isActive: true } as any, adminUser, mockReq);
+      expect(usersSvc.update).toHaveBeenCalledWith(1, { isActive: true });
+    });
   });
 
   describe("remove", () => {

@@ -190,6 +190,62 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
   });
 
   // ---------------------------------------------------------------------
+  // P2-1（2026-10-25 审计）：GET /projects/:id 补齐与 findAll 同口径的读面
+  // 判定。此前「全员可读」洞穿租户读面——非成员靠 404 不可区分「不存在」
+  // 与「不可见」（PROJECT_NOT_FOUND 是 404，避免存在性 oracle，ADR-013）。
+  // ---------------------------------------------------------------------
+  describe("findOne 读面成员判定（P2-1）", () => {
+    it("非成员普通用户 → 404 PROJECT_NOT_FOUND（不 403：避免存在性 oracle）", async () => {
+      const { controller } = makeController();
+      // access.resolveRole 缺省 mockResolvedValue(null) → 非成员
+      await expect(controller.findOne("p-other", user)).rejects.toMatchObject({
+        errorCode: "PROJECT_NOT_FOUND",
+      });
+    });
+
+    it("成员（任意档）→ 放行进 service.findOne", async () => {
+      const { controller, service, access } = makeController();
+      access.resolveRole.mockResolvedValue("viewer");
+      service.findOne.mockResolvedValue({ id: "p1", name: "X" });
+      await expect(controller.findOne("p1", user)).resolves.toEqual({
+        id: "p1",
+        name: "X",
+      });
+      expect(service.findOne).toHaveBeenCalledWith("p1");
+    });
+
+    it("ADMIN → 放行（不查成员行，全量读面）", async () => {
+      const { controller, service, access } = makeController();
+      service.findOne.mockResolvedValue({ id: "p1", name: "X" });
+      await expect(controller.findOne("p1", admin)).resolves.toEqual({
+        id: "p1",
+        name: "X",
+      });
+      expect(access.resolveRole).not.toHaveBeenCalled();
+    });
+
+    it("默认项目对普通用户恒可读（与 findAll 的可见集口径一致）", async () => {
+      const { controller, service, access } = makeController();
+      service.findOne.mockResolvedValue({ id: DEFAULT_PROJECT_ID });
+      await expect(
+        controller.findOne(DEFAULT_PROJECT_ID, user),
+      ).resolves.toEqual({ id: DEFAULT_PROJECT_ID });
+      expect(access.resolveRole).not.toHaveBeenCalled();
+    });
+
+    it("ADMIN 读不存在项目仍由 service 抛 404（语义同源）", async () => {
+      const { controller, service } = makeController();
+      const notFound = Object.assign(new Error("项目不存在"), {
+        errorCode: "PROJECT_NOT_FOUND",
+      });
+      service.findOne.mockRejectedValue(notFound);
+      await expect(
+        controller.findOne("p-missing", admin),
+      ).rejects.toMatchObject({ errorCode: "PROJECT_NOT_FOUND" });
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // AUTH-02 后续：项目列表按成员过滤读面（findAll）。
   // ---------------------------------------------------------------------
 

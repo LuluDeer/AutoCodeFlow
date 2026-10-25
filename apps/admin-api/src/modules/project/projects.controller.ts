@@ -93,8 +93,10 @@ function toProjectView(
 
 /**
  * AUTH-01（多租户 Project，第一批后端）：
- * GET /projects 见下方 findAll（AUTH-02 后续改为按成员过滤的读面）；
- * GET /projects/:id 保持全员可读（名称/描述非敏感资源）；
+ * GET /projects 见下方 findAll（AUTH-02 起按成员过滤的读面）；
+ * GET /projects/:id 同口径成员判定（P2-1，2026-10-25 审计：旧注释声称
+ * 「保持全员可读」——那正是漏洞声明，按 id 直读洞穿了 findAll 的租户读面，
+ * 普通用户可探测任意其他租户项目的存在与名称，违背 ADR-013）；
  * POST/PATCH/DELETE 仅 ADMIN——项目是租户边界资源，写面收紧到管理员，
  * 与 Users 模块的 RolesGuard 形态一致。
  */
@@ -176,6 +178,20 @@ export class ProjectsController {
     );
   }
 
+  /**
+   * P2-1（2026-10-25 审计）：GET /projects/:id 补齐与 findAll 同口径的读面
+   * 判定（ADMIN ∪ 默认项目 ∪ 项目成员，谓词与 listMembers/findAll 逐字一致）。
+   *
+   * 此前本端点「全员可读」（旧注释即漏洞声明）：findAll 按成员过滤了列表，
+   * 但拿任意项目 id 直读本端点仍能确认该项目存在并读其名称/描述——洞穿
+   * ADR-013 的租户读面（普通用户不应感知其他租户项目的存在）。
+   *
+   * 非成员给 **404 PROJECT_NOT_FOUND** 而非 403：findAll 已把不可见项目从
+   * 列表抹掉，403 会把「该项目存在但你无权」反向泄露成存在性预言机；404
+   * 与「项目真的不存在」（service.findOne）不可区分，才是与列表过滤自洽的
+   * 答案。listMembers 的 403 PROJECT_ACCESS_DENIED 是另一面（成员名单），
+   * 不构成先例冲突——那条路径的拒绝发生在「项目可见性」之外。
+   */
   @Get(":id")
   @ApiOperation({ summary: "按 id 获取项目" })
   @ApiResponse({
@@ -183,7 +199,18 @@ export class ProjectsController {
     description: "项目（实体形态，不含 myRole）",
     type: ProjectEntityDto,
   })
-  async findOne(@Param("id", ParseUuidShapePipe) id: string): Promise<Project> {
+  async findOne(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @CurrentUser() user: { id: number; role: UserRole } | undefined,
+  ): Promise<Project> {
+    // 与 listMembers 同款短路：ADMIN 全量、默认项目恒可读（「未分配资源」
+    // 的归属视图，读它不构成越权）；其余按成员判定。
+    if (user?.role !== UserRole.ADMIN && id !== DEFAULT_PROJECT_ID) {
+      const role = await this.access.resolveRole(user?.id, id);
+      if (!role) {
+        throw new AppError("PROJECT_NOT_FOUND", { id });
+      }
+    }
     return this.service.findOne(id);
   }
 

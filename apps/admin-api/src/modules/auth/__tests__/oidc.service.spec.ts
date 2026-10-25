@@ -9,7 +9,11 @@ import {
   BadRequestException,
   ForbiddenException,
 } from "@nestjs/common";
-import { OidcService, OIDC_STATE_COOKIE } from "../oidc.service";
+import {
+  OidcService,
+  OIDC_STATE_COOKIE,
+  jitProfileDefect,
+} from "../oidc.service";
 
 jest.mock("axios");
 // issuer 用 127.0.0.1 IP 字面量 + allowPrivateNetwork=true：assertSafeHttpUrl
@@ -479,6 +483,100 @@ describe("OidcService — 身份定位与 JIT 建号", () => {
     await expect(service.resolveAndBindUser(profile)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
+  });
+
+  // ─── P3-4（2026-10-25 审计）：JIT 前的声明防御 ──────────────────────────
+  // JIT 绕过 CreateUserDto 直写 users 表，IdP 声明的 username 超长或 email
+  // 形态非法时旧路径撞数据库约束冒 500。拒发不归一（截断会让平台身份与
+  // IdP 身份漂移），401 + OIDC_JIT_PROFILE_INVALID，日志带原因。
+  it("P3-4: username 超长（>128）→ 拒发（OIDC_JIT_PROFILE_INVALID），不落库", async () => {
+    const { service, usersRepo } = makeService({ "oidc.autoProvision": true });
+    usersRepo.findOne.mockResolvedValue(null);
+    await expect(
+      service.resolveAndBindUser({
+        ...profile,
+        username: "u".repeat(129),
+      }),
+    ).rejects.toMatchObject({ errorCode: "OIDC_JIT_PROFILE_INVALID" });
+    expect(usersRepo.create).not.toHaveBeenCalled();
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("P3-4: email claim 非法形态 → 拒发，不落库", async () => {
+    const { service, usersRepo } = makeService({ "oidc.autoProvision": true });
+    usersRepo.findOne.mockResolvedValue(null);
+    await expect(
+      service.resolveAndBindUser({
+        ...profile,
+        email: "not-an-email",
+      }),
+    ).rejects.toMatchObject({ errorCode: "OIDC_JIT_PROFILE_INVALID" });
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("P3-4: sub 过长导致回落 email 超 255 → 拒发（DB 列宽护栏）", async () => {
+    const { service, usersRepo } = makeService({ "oidc.autoProvision": true });
+    usersRepo.findOne.mockResolvedValue(null);
+    await expect(
+      service.resolveAndBindUser({
+        ...profile,
+        email: null,
+        sub: "s".repeat(250),
+      }),
+    ).rejects.toMatchObject({ errorCode: "OIDC_JIT_PROFILE_INVALID" });
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("P3-4: 合法声明（边界内）照常 JIT 建号（零行为变化）", async () => {
+    const { service, usersRepo } = makeService({ "oidc.autoProvision": true });
+    usersRepo.findOne.mockResolvedValue(null);
+    await expect(
+      service.resolveAndBindUser({
+        ...profile,
+        username: "u".repeat(128),
+        email: null,
+      }),
+    ).resolves.toBeTruthy();
+    expect(usersRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ oidcSub: "sub-abc-123" }),
+    );
+  });
+});
+
+// ─── P3-4：jitProfileDefect 纯函数矩阵（导出面，直测不上 SSO 链路）─────────
+describe("jitProfileDefect（P3-4 纯函数）", () => {
+  const ok = {
+    sub: "sub-1",
+    username: "alice",
+    email: "alice@example.com" as string | null,
+    emailVerified: true,
+    groups: [],
+  };
+
+  it("合法声明 → null", () => {
+    expect(jitProfileDefect(ok)).toBeNull();
+    expect(jitProfileDefect({ ...ok, email: null })).toBeNull();
+    expect(jitProfileDefect({ ...ok, username: "u".repeat(128) })).toBeNull();
+  });
+
+  it("username 空 / 超长 → 缺陷描述", () => {
+    expect(jitProfileDefect({ ...ok, username: "" })).toMatch(/empty/);
+    expect(jitProfileDefect({ ...ok, username: "u".repeat(129) })).toMatch(
+      /exceeds 128/,
+    );
+  });
+
+  it("email 非法形态 / 超长 → 缺陷描述；回落 email 超 255 → 缺陷描述", () => {
+    expect(jitProfileDefect({ ...ok, email: "bad@bad" })).toMatch(
+      /not a valid address/,
+    );
+    // 252 + "@x.io" = 257 > 255（DB 列宽）
+    expect(
+      jitProfileDefect({ ...ok, email: `${"a".repeat(252)}@x.io` }),
+    ).toMatch(/exceeds 255/);
+    expect(
+      jitProfileDefect({ ...ok, email: null, sub: "s".repeat(250) }),
+    ).toMatch(/fallback email/);
   });
 });
 
