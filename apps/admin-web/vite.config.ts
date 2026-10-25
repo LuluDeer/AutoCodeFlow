@@ -126,10 +126,14 @@ export default defineConfig({
         // 改写为白名单值后，同源请求对后端而言与 8088 部署形态一致；
         // 不带 Origin 的请求（同源 GET / curl）原样透传，不受影响。
         // 仅 dev server 生效（server.proxy 不参与构建产物）。
+        // 改写目标可覆盖：e2e-full 等编排把 admin-api 起在别处时，其后端
+        // 白名单也不同（e2e admin-api 放行的是自身放行表），用
+        // VITE_API_PROXY_ORIGIN_REWRITE 指向该栈白名单内的值；默认仍是
+        // demo 栈的 8088。
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq) => {
             if (proxyReq.getHeader('origin')) {
-              proxyReq.setHeader('Origin', 'http://127.0.0.1:8088');
+              proxyReq.setHeader('Origin', process.env.VITE_API_PROXY_ORIGIN_REWRITE || 'http://127.0.0.1:8088');
             }
           });
         },
