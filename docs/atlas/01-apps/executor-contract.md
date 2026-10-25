@@ -1,5 +1,5 @@
 # 执行器 ↔ admin-api 协议契约
-> 所属: docs/atlas/01-apps · 最后核对: 2026-09-23 · 对应代码: apps/admin-api/src/modules/executor/executor.controller.ts、apps/admin-api/src/modules/task/execution-callback.controller.ts 与 dto/execution-callback.dto.ts、apps/executor-node/src（admin-client.ts/callback.ts/main.ts/device-identity.ts）、apps/executor-python（main.py/routers/execute.py/scheduler.py/device_identity.py）
+> 所属: docs/atlas/01-apps · 最后核对: 2026-10-25 · 对应代码: apps/admin-api/src/modules/executor/executor.controller.ts、apps/admin-api/src/modules/task/execution-callback.controller.ts 与 dto/execution-callback.dto.ts、apps/executor-node/src（admin-client.ts/callback.ts/main.ts/device-identity.ts/deployed-apps.ts/installed-packages.ts）、apps/executor-python（main.py/routers/execute.py/scheduler.py/device_identity.py）
 
 本文是执行器（node/python/desktop 内核）与 admin-api 之间机器接口的**双向核实字段表**：左侧为字段，"发送方/接收方"标注实现位置。全局前缀 `/api`；admin 响应恒为 `{code, message, data}` 信封（执行器侧 `unwrapAdminResponseData` / `_unwrap_envelope` 解包）。
 
@@ -19,6 +19,9 @@
 | `maxConcurrentTasks` / `maxConcurrent` | number | — | node 发 `maxConcurrent`；python 发 `maxConcurrentTasks` |
 | `groupName` / `tags` / `description` | string / string[] | — | node 发 groupName；tags/description 仅 admin Swagger 示例可见，两个执行器均未发送 |
 | `restartedAt` / `startupId` | string | — | 进程生命身份（startup-identity.ts / startup_identity.py） |
+| `dispatchMode` | `"push"` / `"pull"` | — | ARCH-32 派发模式自报（node：pull 模式经长轮询取件，NAT 内零入站） |
+| `deployedApps` | `DeployedAppDto[]?` | — | **协议 v7 起（R3-A）**：设备级应用版本事实（`{appId, version, updatedAt?}` 等），语义与心跳完全一致——缺省 → 不动；`[]` → 设备无已部署应用；非法 → 整字段拒绝。node 侧由 `deployed-apps.ts` 扫描 `apps/<appId>/releases/`（双布局识别）落 TTL 缓存上报；**python 侧恒省略**（事实源缺失，fail-honest 不硬造，见下） |
+| `installedPackages` | `InstalledPackageDto[]?` | — | **协议 v7 起（P10）**：设备已安装执行器包清单（`{name, version, …}`）。node 侧事实源为 update-package 路由 checksum 验证通过后落盘的 manifest（`installed-packages.ts` 扫描上报）；**python 侧恒省略**（update-package 路由不存在 → 无事实源） |
 | `deviceFingerprint` | string（64 位小写十六进制） | — | **协议 v3 起**：稳定设备身份 `sha256(deviceId + ":" + installSalt)`（node `device-identity.ts` / python `device_identity.py`）。**ADR-017 阶段 3 起是注册/心跳的定位键**——同机换 IP 再注册时中台按指纹命中原行、复用并更新地址（不产生新设备）；采集失败**不发该键**（不是发 null）——admin 侧字段缺省即按 legacy 兜底（`legacy:{address}`），行为与引入前一致。组成与三平台取值见 [ADR-017](../../adr/adr-017-executor-unique-identity.md) |
 
 - 响应 `data`：执行器行（id/appName/address/status/…）+ `perExecutorToken`（新注册/重启时轮换，否则 null）+ `tokenHash`（N26，执行器采纳为回调令牌 HMAC 源）。
@@ -46,6 +49,8 @@
 | `diskUsage` / `networkLatency` / `totalTaskCount` / `failedTaskCount` | number | admin DTO 支持但执行器未发送（diskUsage 仅 node `/health` 本地返回） |
 | `restartedAt` / `startupId` | string | 两者 |
 | `deviceFingerprint` | string（64 位小写十六进制） | **协议 v3 起**两者（ARCH-36 / ADR-017 阶段 2/3）。admin 侧三态采纳：**缺省 / 形态非法一律保留 DB 旧值**（不是置 NULL——否则旧执行器每 30s 的心跳会把已存指纹历史擦光）。**阶段 3 起驱动注册/心跳的定位**（命中即复用原行 + 更新 address），并驱动中台侧的冲突/漂移观测（push 同址异指纹 → 注册 409；pull → 各自成行） |
+| `deployedApps` | `DeployedAppDto[]?` | **协议 v7 起（R3）**：设备级应用版本事实，admin 落 `executors.deployedApps`（jsonb）供 releases devices 读面与派发版本跟随切设备事实。三态语义：缺省 → 不动；`[]` → 整替为空；非法 → 整字段拒绝。node 由 `deployed-apps.ts` 扫描 `apps/<appId>/releases/`（5c 双布局：新 `releases/<version>/<deploymentId>/` 两段 + 旧单段并存识别）+ TTL 缓存（心跳 30s 一拍）上报。**python 侧恒省略（2026-10-24 裁定，fail-honest）**：事实源（deploy 路由落盘的 `apps/<appId>/` 目录）在本侧不存在，不带键 = 「未上报」，admin 保留旧值——不硬造 |
+| `installedPackages` | `InstalledPackageDto[]?` | **协议 v7 起（P10）**：设备已安装执行器包清单，落 `executors.installedPackages`（jsonb）。node 侧 update-package 路由在 checksum 验证通过后落盘 manifest，`installed-packages.ts` 扫描上报（版本收敛事实源）。**python 侧恒省略**：本侧无 update-package 路由，无事实源（同上裁定） |
 
 - 响应 `data`：心跳后的执行器行 + `tokenHash` 回显（R9/W3：执行器每次心跳采纳，保持回调令牌密钥与 admin 侧轮换同步）。
 
@@ -55,7 +60,7 @@
 
 ## 5. 任务派发（admin → 执行器）：POST http://<executorAddress>/api/execute
 
-- 调用方：admin `ExecutorService.dispatchExecution / dispatchBroadcast`（HTTP 超时 `(task.timeout || 300) + 10` 秒；`assertSafeExecutorUrl` SSRF 前置）。
+- 调用方：admin `ExecutorService.dispatchExecution / dispatchBroadcast`（HTTP 超时 `(task.timeout || 300) + 10` 秒；`assertSafeExecutorUrl` SSRF 前置）。**pull 模式（ARCH-32）下此通道不使用**：node 执行器 `dispatchMode: 'pull'` 时改为长轮询取件（25s，E-01 先原子预留槽位），两种来源共用 `acceptExecution`。
 - 鉴权：`Authorization: Bearer <共享 token>`；`traceparent` 头（admin OTEL 开启时注入，执行器 fail-open 读取）。
 - 请求体：`{ executionId, task, params }`。`task` 关键字段（TaskPayload / CreateTask DTO 对齐）：
 
@@ -146,6 +151,7 @@ admin LOG-01 触发：`limit=2000` 分页推进，依赖 `hasMore`。执行器�
 1. `CallbackItemDto` 任一字段超限 → **整批**被 ParseArrayPipe 拒绝；执行器侧已按 DTO 上限预截断（logs 10k / errorMessage 4000 / 批 100）。
 2. 心跳缺省 `runningExecutionIds` = 旧版执行器语义，admin 会跳过 prepare 期活性保护——字段可以短，不能省。
 2b. 心跳缺省 `reservedSlots` = 旧版执行器语义，中台详情页回落「按已占槽位显示」的旧口径。**绝不可**用 `runningExecutionIds.length` 覆盖 `runningTaskCount` 来消除「计数与活性条数不一致」告警：那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 accept 返回 429 → 任务被误判永久失败，恰是 E-01 要关闭的竞态。
+2c. **协议 v7 两键（`deployedApps` / `installedPackages`）python 侧恒省略是裁定不是缺陷**（2026-10-24 落地核查，fail-honest：无事实源不硬造）——admin 侧对缺省键的语义是「保留旧值」而非「清空」。若在 python 侧造 `[]` 或伪造行，会把设备上真实存在的部署/包清单**擦掉**。待 python 侧事实源（apps 落盘 / update-package）落地后再启用扫描 + TTL 缓存（node 同款）。
 3. 回调令牌算法三方钉死（node `execution-callback-token.ts`、python `execution_callback_token.py`、admin `execution-callback-token.util.ts` 共享同一测试向量），单侧改动即红测试。
 4. 派发响应必须是 2xx + `{status:'accepted'}` 形态；admin 把非 2xx 视为派发失败并回滚容量占坑。
 
