@@ -489,6 +489,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.desc.stopped': '执行器进程未运行',
     'status.desc.offlineRunning': '本地进程仍在运行，但与平台的心跳连接中断。请检查网络或连接设置。',
     'status.desc.stopping': '正在安全停止执行器进程',
+    // F-30（UIUX 审计）：主进程未来新增状态 / 异常值到达时，hero 大字有
+    // `?? status` 兜底而描述行此前渲染为空白——补与 label 同风格的默认描述。
+    'status.desc.unknown': '执行器状态未知。可尝试重启应用；若仍未恢复，请在下方日志中排查。',
     'status.copied': '已复制',
     'status.copyFailed': '复制失败',
     'status.copy': '复制',
@@ -1204,6 +1207,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.desc.stopped': 'The executor process is not running',
     'status.desc.offlineRunning': 'The local process is still running, but the heartbeat connection to the platform is lost. Check the network or connection settings.',
     'status.desc.stopping': 'Safely stopping the executor process',
+    // F-30（UIUX 审计）：见 zh 块同键注释——未知状态时描述行不再留白。
+    'status.desc.unknown': 'Executor status is unknown. Try restarting the app; if it persists, check the logs below.',
     'status.copied': 'Copied',
     'status.copyFailed': 'Copy failed',
     'status.copy': 'Copy',

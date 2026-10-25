@@ -711,11 +711,14 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const statusLabel = !statusLoaded ? t('status.reading') : status === 'pending' && pendingAction === 'stop'
     ? t('status.stopping')
     : (STATUS_LABEL[status] ?? status);
+  // F-30（UIUX 审计）：statusLabel 对表外值有 `?? status` 兜底，描述行此前
+  // 直接查 STATUS_DESC——主进程新增状态 / 异常值时大字有值、描述整行空白。
+  // 补与 label 同风格的默认描述（status.desc.unknown，双语），未知态不再留白。
   const statusDescription = status === 'offline' && running
     ? t('status.desc.offlineRunning')
     : status === 'pending' && pendingAction === 'stop'
       ? t('status.desc.stopping')
-      : STATUS_DESC[status];
+      : (STATUS_DESC[status] ?? t('status.desc.unknown'));
 
   return (
     <>
