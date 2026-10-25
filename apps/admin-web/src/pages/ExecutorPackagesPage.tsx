@@ -542,16 +542,35 @@ export default function ExecutorPackagesPage() {
     });
   };
 
-  const handleStatusToggle = async (pkg: PkgRow) => {
-    // B-3：行级 pending 防双击竞态——已有切换在途时忽略重复触发
+  // P2-4（UI 审计）：弃用/激活补二次确认——弃用会立刻把包从安装向导候选集移除
+  // （findLatest 只取 ACTIVE），单击误触的后果不显性；激活同理（重新进入候选集）。
+  // 两个动作都可逆，确认文案如实注明。对照同文件 handleDelete 的 confirm 形态
+  // （onOk rethrow 保持确认框打开可重试，失败经 showApiError 归一提示）。
+  const handleStatusToggle = (pkg: PkgRow) => {
+    // B-3：行级 pending 防双击——确认框打开期间即占位，重复点击不再连开确认框
     if (togglingId) return;
     setTogglingId(pkg.id);
-    try {
-      if (pkg.status === 'active') await deprecatePackage(pkg.id);
-      else await activatePackage(pkg.id);
-      load();
-    } catch (err: unknown) { showApiError(err, t('execPkg.operateFail')); }
-    finally { setTogglingId(null); }
+    const deprecating = pkg.status === 'active';
+    confirmModal.confirm({
+      title: t(deprecating ? 'execPkg.action.deprecateConfirm' : 'execPkg.action.activateConfirm'),
+      content: t(deprecating ? 'execPkg.action.deprecateConfirmDesc' : 'execPkg.action.activateConfirmDesc'),
+      okText: t(deprecating ? 'execPkg.action.deprecate' : 'execPkg.action.activate'),
+      cancelText: t('execPkg.cancel'),
+      onOk: async () => {
+        try {
+          if (deprecating) await deprecatePackage(pkg.id);
+          else await activatePackage(pkg.id);
+          load();
+        } catch (err: unknown) {
+          showApiError(err, t('execPkg.operateFail'));
+          // 与 handleDelete 同款：rethrow 让 antd 保持确认框打开（可重试/取消）。
+          throw err;
+        } finally {
+          setTogglingId(null);
+        }
+      },
+      onCancel: () => setTogglingId(null),
+    });
   };
 
   // download 路由在 JwtAuthGuard 后，<a href> 无法携带 Authorization（会 401），
@@ -884,7 +903,18 @@ export default function ExecutorPackagesPage() {
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
-              <Form.Item name="version" label={t('execPkg.upload.field.version')} rules={[{ required: true, message: t('execPkg.upload.field.versionRequired') }]}>
+              <Form.Item
+                name="version"
+                label={t('execPkg.upload.field.version')}
+                rules={[
+                  { required: true, message: t('execPkg.upload.field.versionRequired') },
+                  // P3-1（UI 审计）：宽松 semver 形态校验——X.Y.Z 必填，允许
+                  // -prerelease / +build 后缀。后端 DTO 只限长（≤64）不限形，
+                  // 乱版本号会以「最新包」语义比较（compareDottedVersions）时
+                  // 落到 NaN 兜底序，前端先给出可读提示。
+                  { pattern: /^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$/, message: t('execPkg.upload.field.versionPattern') },
+                ]}
+              >
                 <Input placeholder="1.0.0" maxLength={64} />
               </Form.Item>
             </Col>

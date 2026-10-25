@@ -1492,6 +1492,11 @@ export default {
   'execPkg.action.push': 'Push to Scheduler',
   'execPkg.action.deprecate': 'Deprecate this package',
   'execPkg.action.activate': 'Activate this package',
+  // P2-4 (UI audit): confirm before deprecate/activate — deprecation removes the package from the install wizard candidates immediately; reversible at any time
+  'execPkg.action.deprecateConfirm': 'Deprecate this package?',
+  'execPkg.action.deprecateConfirmDesc': 'Once deprecated, this package is removed from the install wizard candidates and can no longer be pushed or deployed. This is reversible — you can re-activate it at any time.',
+  'execPkg.action.activateConfirm': 'Activate this package?',
+  'execPkg.action.activateConfirmDesc': 'Once activated, this package re-enters the install wizard candidates and can be pushed to schedulers. This is reversible — you can deprecate it at any time.',
   // B-9: uploading is a real backend enum (executor-package.entity.ts); it cannot be deprecated/activated until processed (backend 400s)
   'execPkg.action.uploadingLockedTip': 'A package that is still uploading cannot be deprecated or activated — wait for processing to finish',
   'execPkg.status.active': 'Active',
@@ -1524,6 +1529,8 @@ export default {
   'execPkg.upload.field.nameRequired': 'Please enter a package name',
   'execPkg.upload.field.version': 'Version',
   'execPkg.upload.field.versionRequired': 'Please enter a version',
+  // P3-1 (UI audit): loose semver-shape validation message
+  'execPkg.upload.field.versionPattern': 'Version must look like 1.2.3, with an optional suffix (e.g. 1.2.3-beta.1, 1.2.3+build.7)',
   'execPkg.upload.field.type': 'Type',
   'execPkg.upload.field.platform': 'Platform',
   'execPkg.upload.platformAll': 'All',
@@ -1689,6 +1696,9 @@ export default {
   'executorDetail.editModal.maxConcurrent': 'Max concurrent count',
   // PATCH semantics made explicit: clearing maxConcurrentTasks in the edit modal omits the key = server keeps the old value (blank does NOT mean unlimited)
   'executorDetail.editModal.maxConcurrentKeepHint': 'Saving with this cleared keeps the current value {{value}} (blank does not mean unlimited)',
+  // P1-2 (UI audit): the heartbeat whitelist includes maxConcurrentTasks (device last-writer-wins),
+  // so an edit made here is silently overwritten by the next heartbeat (≤30s) — must be explicit
+  'executorDetail.editModal.maxConcurrentHeartbeatHint': 'Online executors periodically report their own capacity and overwrite this value (heartbeat is last-writer-wins); edits to an online executor do not persist. Only edits to an offline executor are kept long-term.',
   'executorDetail.config.title': 'Config hot reload',
   'executorDetail.config.pullDisabledTooltip': 'Pull-mode executors (NAT-bound) cannot receive inbound config pushes; maxConcurrent changes take effect via the next pull/heartbeat instead',
   // B-1: double confirmation for pushing an empty config body (blank fields reset to executor defaults — must be stated)
@@ -1696,6 +1706,8 @@ export default {
   'executorDetail.config.emptyPushConfirmContent': 'All form fields are empty: pushing an empty body resets blank fields to the server-side defaults (max concurrent tasks / task timeout / heartbeat interval return to defaults). Continue?',
   // B-5: for pull executors reload-config returns {queued:true} — report "queued" honestly instead of claiming success
   'executorDetail.config.queued': 'Config update queued; it applies on the executor\'s next pull (heartbeat)',
+  // P2-3 (UI audit): readable feedback when the config push fails (modal stays open for retry; same shape as rotate/remove)
+  'executorDetail.config.pushFail': 'Failed to push config: {{err}}',
   'executorDetail.field.dispatchMode': 'Dispatch mode',
   'executorDetail.dispatchMode.push': 'Push',
   'executorDetail.dispatchMode.pull': 'Pull mode',
@@ -1760,7 +1772,8 @@ export default {
   'install.matchedTitle': 'Matched install package: {{name}}',
   'install.version': 'Version',
   'install.fileSize': 'File size',
-  'install.downloadCount': 'Downloads',
+  // P2-1: `install.downloadCount` removed — the backend entity has no downloadCount
+  // column, so the wizard card never had a real value to render there.
   'install.sha256': 'SHA256',
   'install.changelog': 'Changelog',
   'install.noPackages': 'No install packages available',
@@ -1777,6 +1790,8 @@ export default {
   'install.copiedToken': 'Token copied',
   'install.copy': 'Copy',
   'install.tokenMissing': 'No executor shared Token is configured yet. Please go to the "System Settings" page to generate one before installing the executor.',
+  // P2-5 (UI audit): re-check entry when the Token is missing (no need to restart the wizard after generating one)
+  'install.tokenRecheck': "I've generated it — re-check",
   'install.getCmd': 'Get install command',
   'install.step4Title': 'Run the installation on the target server',
   'install.step4Desc': 'Copy the command below and run it in the target server terminal to complete the installation.',
@@ -1800,6 +1815,8 @@ export default {
   'install.envLabel': 'Environment variable reference',
   'install.envDesc': 'The install command configures the following environment variables automatically. If you need to configure or debug manually, make sure the shared Token field is EXECUTOR_SHARED_TOKEN and fill in a callable address for your deployment network:',
   'install.envBlockLabel': 'Environment variable',
+  // P3-5 (UI audit): fallback guidance when the install-cmd response has no adminApiUrl (same source of truth as the one-click command)
+  'install.env.apiUrlFollowCmd': '(follow the --api-url in the one-click install command)',
   // P0-9 (UX audit): network mode. Behind NAT the machine MUST use pull — the
   // wizard previously only taught push, which yields a topology that registers,
   // shows online, and never receives a single dispatch.
@@ -1821,12 +1838,15 @@ export default {
   'install.step5Title': 'Waiting for executor to come online',
   'install.step5Desc': 'The system is automatically detecting whether the executor on the target server has registered and come online. It polls every 5 seconds, waiting up to 5 minutes.',
   'install.awaiting': 'Waiting for the executor to come online...',
-  'install.elapsed': 'Waited {{seconds}} / 60 seconds, checking every 5 seconds',
+  // P2-2 (UI audit): the total window comes from the {{total}} interpolation (caller passes 300s);
+  // the old hard-coded "60 seconds" contradicted POLL_TIMEOUT_MS=300000
+  'install.elapsed': 'Waited {{seconds}} / {{total}} seconds, checking every 5 seconds',
   'install.onlineSuccess': 'The executor is online!',
   'install.detected': 'Detected executor: <1>{{appName}}</1> ({{address}}) has registered and come online. Installation succeeded.',
   'install.onlineTitle': 'Executor online',
-  'install.timeoutTitle': 'Verification timed out (60s)',
-  'install.timeoutDesc': 'No executor came online within 1 minute. Please follow the troubleshooting steps below.',
+  // P2-2: timeout copy aligned with the 300s window (previously "60s / 1 minute" contradicted it)
+  'install.timeoutTitle': 'Verification timed out (5 minutes)',
+  'install.timeoutDesc': 'No executor came online within 5 minutes. Please follow the troubleshooting steps below.',
   'install.troubleTitle': 'Troubleshooting',
   'install.trouble1': 'Confirm that the install command finished running on the target server without errors',
   'install.trouble2': 'Check that the target server network can reach this platform API address',

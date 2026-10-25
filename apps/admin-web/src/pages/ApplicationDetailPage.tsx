@@ -709,6 +709,9 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
           },
           {
             title: t('appDetail.col.actions'), width: 176, align: 'center' as const,
+            // P3-6（UI 审计）：1280px 视口下列头「Actions」折行——表头单元格
+            // 禁止换行（列宽 176 足够容纳单行标题与两枚动作按钮）。
+            onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
             render: (_: unknown, record: VersionRecord) => {
               const currentRecord =
                 records.find(r => r.version === app.version && (!app.gitCommit || !r.commit || r.commit === app.gitCommit)) ??

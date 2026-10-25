@@ -213,7 +213,22 @@ export default function ExecutorListPage() {
   const hasFilters = !!(searchText || statusFilter || groupFilter || modeFilter);
   const onlineCount = executors.filter(e => e.status === 'online').length;
 
-  // UI-07 ③：选中执行器实体（批量操作条需要 status/appName/address）
+  // UI-07 ③：选中执行器实体（批量操作条需要 status/appName/address）。
+  // P3-3（UI 审计）：选中集合与筛选**解耦修正**——旧实现 selectedExecutors 取自
+  // 全量 executors，筛选后看不见的行仍留在选中集合里参与批量操作（批量删除/
+  // 轮换会作用于用户当前看不见的机器）。现筛选条件变化时从选中集合剔除被筛掉
+  // 的行（ref 持有最新可见 id 集，effect 只随四个筛选条件触发，不随轮询数据
+  // 重建）。
+  const filteredIdsRef = useRef<Set<string>>(new Set());
+  filteredIdsRef.current = new Set(filtered.map((ex) => ex.id));
+  useEffect(() => {
+    setSelectedRowKeys((prev) => {
+      const visible = filteredIdsRef.current;
+      const next = prev.filter((kid) => visible.has(kid));
+      // 引用不变时不 setState，避免无谓重渲染
+      return next.length === prev.length ? prev : next;
+    });
+  }, [searchText, statusFilter, groupFilter, modeFilter]);
   const selectedExecutors = useMemo(
     () => executors.filter((ex) => selectedRowKeys.includes(ex.id)),
     [executors, selectedRowKeys],

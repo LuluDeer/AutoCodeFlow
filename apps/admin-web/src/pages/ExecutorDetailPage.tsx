@@ -193,6 +193,11 @@ export default function ExecutorDetailPage() {
       setConfigOpen(false);
       refreshExecutor();
     },
+    // P2-3（UI 审计）：补失败分支——旧实现无 onError，推送失败时弹窗不关、
+    // 零反馈，TanStack Query 默认把错误吞进 mutation.state。对照同页
+    // rotate/remove 的既有形态（getErrMsg 归一 + 弹窗保留供重试）：失败只提示、
+    // 不关弹窗，用户可直接再点 OK 重试。
+    onError: (e) => { message.error(t('executorDetail.config.pushFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },
   });
   // B-1：onFinish 提交前检查空体——所有字段均未填时（此前打开即空表单且
   // 直接 submit），一键推送空配置体会把执行器配置**静默重置**为服务端默认值
@@ -868,9 +873,25 @@ export default function ExecutorDetailPage() {
 
       <Modal title={t('executorDetail.editModal.title')} open={editOpen} onCancel={() => setEditOpen(false)} onOk={() => editForm.submit()} confirmLoading={updating}>
         <Form form={editForm} layout="vertical" onFinish={updateExecutor}>
-          <Form.Item name="groupName" label={t('executorDetail.editModal.groupName')}><Input /></Form.Item>
+          {/* P3-2（UI 审计）：输入端限长防超长值撑爆详情布局——后端 PATCH /executors/:id
+              的 body 不走 class-validator（内联 Partial<Executor>），无明确列上限，
+              取 300/1000 的合理档位。 */}
+          <Form.Item name="groupName" label={t('executorDetail.editModal.groupName')}><Input maxLength={300} /></Form.Item>
           <Form.Item name="tags" label={t('executorDetail.editModal.tags')} tooltip={t('executorDetail.editModal.tagsTip')}><Select mode="tags" tokenSeparators={[',', ' ']} placeholder={t('executorDetail.editModal.tagsPlaceholder')} /></Form.Item>
-          <Form.Item name="description" label={t('executorDetail.editModal.description')}><Input.TextArea /></Form.Item>
+          <Form.Item name="description" label={t('executorDetail.editModal.description')}><Input.TextArea rows={3} maxLength={1000} /></Form.Item>
+          {/* P1-2（UI 审计）：在线执行器的心跳白名单含 maxConcurrentTasks（设备侧
+              last-writer-wins，≤30s 回写一次）——编辑弹窗改这个值会被下一次心跳
+              静默覆盖。放在字段上方而不是 Form.Item extra：extra 已承载「清空=保留
+              旧值」提示且页面测试钉住了 extra 的有/无语义，两组提示互不掺和。
+              仅在线时出现；离线执行器无心跳覆盖，不打扰。 */}
+          {isOnline && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 8 }}
+              title={t('executorDetail.editModal.maxConcurrentHeartbeatHint')}
+            />
+          )}
           <Form.Item
             name="maxConcurrentTasks"
             label={t('executorDetail.editModal.maxConcurrent')}

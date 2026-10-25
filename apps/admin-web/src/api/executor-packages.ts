@@ -7,7 +7,13 @@ export interface ExecutorPackage {
   type: 'node' | 'python' | 'universal';
   platform: string;
   fileSize: number;
-  sha256: string;
+  /**
+   * P2-1（UI 审计）：对齐后端实体列 `checksum`
+   * （executor-package.entity.ts；`CreateExecutorPackageDto#checksum` 同名）。
+   * 旧声明 `sha256` 在后端**不存在**——安装向导的 SHA-256 行
+   * `{pkg.sha256 && ...}` 恒为 false，校验和从未渲染过。
+   */
+  checksum: string;
   changelog: string;
   /**
    * 后端 `executor_packages.status` 列（`ExecutorPackageStatus`：
@@ -21,7 +27,8 @@ export interface ExecutorPackage {
    * 故此处改为如实声明该列。
    */
   status: 'active' | 'deprecated' | 'uploading';
-  downloadCount: number;
+  // P2-1：`downloadCount` 同为后端不存在的列（实体无此字段，响应里恒缺省），
+  // 向导卡片渲染出一片空白——一并删除。
   createdAt: string;
   updatedAt: string;
 }

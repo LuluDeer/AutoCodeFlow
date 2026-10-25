@@ -1503,6 +1503,11 @@ export default {
   'execPkg.action.push': '推送到调度机',
   'execPkg.action.deprecate': '弃用此包',
   'execPkg.action.activate': '激活此包',
+  // P2-4（UI 审计）：弃用/激活补二次确认——弃用即刻把包移出安装向导候选集，可随时重新激活
+  'execPkg.action.deprecateConfirm': '弃用此包？',
+  'execPkg.action.deprecateConfirmDesc': '弃用后此包将从安装向导的候选集中移除，不能再被推送或部署；此操作可逆，可随时重新激活。',
+  'execPkg.action.activateConfirm': '激活此包？',
+  'execPkg.action.activateConfirmDesc': '激活后此包重新进入安装向导候选集，可被推送到调度机；此操作可逆，可随时弃用。',
   // B-9：uploading 是后端真实枚举（executor-package.entity.ts），处理完成前不可弃用/激活（后端 400）
   'execPkg.action.uploadingLockedTip': '上传中的包不可弃用或激活，请等待处理完成',
   'execPkg.status.active': '活跃',
@@ -1535,6 +1540,8 @@ export default {
   'execPkg.upload.field.nameRequired': '请输入包名',
   'execPkg.upload.field.version': '版本号',
   'execPkg.upload.field.versionRequired': '请输入版本号',
+  // P3-1（UI 审计）：宽松 semver 形态校验提示
+  'execPkg.upload.field.versionPattern': '版本号需形如 1.2.3，可带后缀（如 1.2.3-beta.1、1.2.3+build.7）',
   'execPkg.upload.field.type': '类型',
   'execPkg.upload.field.platform': '平台',
   'execPkg.upload.platformAll': '通用',
@@ -1702,6 +1709,9 @@ export default {
   'executorDetail.editModal.maxConcurrent': '最大并发数',
   // PATCH 语义显性化：编辑弹窗清空最大并发数提交时省略该键 = 服务端保留旧值（留空≠不限制）
   'executorDetail.editModal.maxConcurrentKeepHint': '清空保存将保留当前值 {{value}}（留空≠不限制）',
+  // P1-2（UI 审计）：在线执行器心跳白名单含 maxConcurrentTasks（设备 last-writer-wins），
+  // 编辑弹窗改的值会被下一次心跳（≤30s）静默覆盖——必须显性告知
+  'executorDetail.editModal.maxConcurrentHeartbeatHint': '在线执行器会周期性上报自身容量并覆盖此值（心跳最后写入者胜），对在线执行器的修改不会长期生效；仅离线执行器的修改能长期保留。',
   'executorDetail.config.title': '配置热更新',
   'executorDetail.config.pullDisabledTooltip': 'pull 模式执行器（NAT 内）不可入站推送配置；修改并发上限可随下一次拉取/心跳自动生效',
   // B-1：空配置体推送二次确认（空白字段将重置为执行器默认值，必须明示）
@@ -1709,6 +1719,8 @@ export default {
   'executorDetail.config.emptyPushConfirmContent': '表单所有字段均为空：空配置体推送后，执行器将把空白字段重置为服务端默认配置（最大并发数/任务超时/心跳间隔等回到默认值）。确认继续？',
   // B-5：pull 执行器 reload-config 后端返回 {queued:true}——如实提示「已入队」而非谎报成功
   'executorDetail.config.queued': '配置更新已入队，将在执行器下次拉取（心跳）时生效',
+  // P2-3（UI 审计）：配置推送失败的可读反馈（弹窗保留供重试，形态对齐 rotate/remove）
+  'executorDetail.config.pushFail': '配置推送失败：{{err}}',
   'executorDetail.field.dispatchMode': '派发模式',
   'executorDetail.dispatchMode.push': 'Push 推送',
   'executorDetail.dispatchMode.pull': 'Pull 回连',
@@ -1773,7 +1785,8 @@ export default {
   'install.matchedTitle': '已匹配安装包：{{name}}',
   'install.version': '版本',
   'install.fileSize': '文件大小',
-  'install.downloadCount': '下载次数',
+  // P2-1：`install.downloadCount` 已删除——后端实体无 downloadCount 列，
+  // 向导卡片不再渲染下载次数（渲染恒空白的死字段）。
   'install.sha256': 'SHA256',
   'install.changelog': '更新日志',
   'install.noPackages': '暂无可用安装包',
@@ -1790,6 +1803,8 @@ export default {
   'install.copiedToken': '已复制 Token',
   'install.copy': '复制',
   'install.tokenMissing': '尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。',
+  // P2-5（UI 审计）：Token 未配置时的「重新检查」入口（生成后无需重走向导）
+  'install.tokenRecheck': '我已生成，重新检查',
   'install.getCmd': '获取安装命令',
   'install.step4Title': '在目标服务器上执行安装',
   'install.step4Desc': '复制以下命令，在目标服务器终端中执行即可完成安装。',
@@ -1812,6 +1827,8 @@ export default {
   'install.envLabel': '环境变量配置参考',
   'install.envDesc': '安装命令会自动配置以下环境变量。如需手动配置或调试，请确保共享 Token 字段名使用 EXECUTOR_SHARED_TOKEN，并按部署网络填写可回调地址：',
   'install.envBlockLabel': '环境变量',
+  // P3-5（UI 审计）：install-cmd 响应缺失 adminApiUrl 时的兜底指引（与一键命令同口径）
+  'install.env.apiUrlFollowCmd': '（以一键安装命令中的 --api-url 为准）',
   // P0-9（UX 审计）：网络模式。内网/NAT 后的机器**必须**选回连——向导此前只教学
   // push，照着做会得到一个"注册成功、显示在线、但中台请求永远到不了"的拓扑。
   'install.networkMode': '网络模式',
@@ -1831,12 +1848,15 @@ export default {
   'install.step5Title': '等待执行器上线',
   'install.step5Desc': '系统正在自动检测目标服务器上的执行器是否已成功注册并上线，每 5 秒轮询一次，最长等待 5 分钟。',
   'install.awaiting': '正在等待执行器上线...',
-  'install.elapsed': '已等待 {{seconds}} / 60 秒，每 5 秒检测一次',
+  // P2-2（UI 审计）：总窗口用 {{total}} 插值（调用方传 300s），不再硬编码 60 秒
+  // 与 POLL_TIMEOUT_MS=300000 矛盾
+  'install.elapsed': '已等待 {{seconds}} / {{total}} 秒，每 5 秒检测一次',
   'install.onlineSuccess': '执行器已成功上线！',
   'install.detected': '检测到执行器：<1>{{appName}}</1>（{{address}}）已注册上线，安装成功。',
   'install.onlineTitle': '执行器已上线',
-  'install.timeoutTitle': '验证超时（60 秒）',
-  'install.timeoutDesc': '1 分钟内未检测到执行器上线，请参考以下排查步骤。',
+  // P2-2：超时口径与 300s 窗口对齐（原「60 秒 / 1 分钟」文案自相矛盾）
+  'install.timeoutTitle': '验证超时（5 分钟）',
+  'install.timeoutDesc': '5 分钟内未检测到执行器上线，请参考以下排查步骤。',
   'install.troubleTitle': '排查建议',
   'install.trouble1': '确认安装命令已在目标服务器上执行完毕，且无报错',
   'install.trouble2': '检查目标服务器网络是否能访问本平台 API 地址',

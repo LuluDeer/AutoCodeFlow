@@ -58,10 +58,9 @@ const packageRow: ExecutorPackage = {
   type: 'python',
   platform: 'linux',
   fileSize: 1024,
-  sha256: 'sha256',
+  checksum: 'sha256',
   changelog: '',
   status: 'active',
-  downloadCount: 0,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
@@ -127,21 +126,51 @@ describe('B-2 删除包失败反馈', () => {
 });
 
 describe('B-3 弃用/激活行级 pending', () => {
-  it('快速重复点击只发一次弃用请求（行级 loading 防双击竞态）', async () => {
+  it('快速重复点击只发一次弃用请求（P2-4 二次确认 + 行级 loading 防双击竞态）', async () => {
     let resolveDep: (v: ExecutorPackage) => void = () => {};
     vi.mocked(deprecatePackage).mockReturnValue(new Promise<ExecutorPackage>((r) => { resolveDep = r; }));
+    const confirmSpy = vi.spyOn(confirmModal, 'confirm');
     render(<ExecutorPackagesPage />);
     expect(await screen.findByText('python-runner')).toBeTruthy();
 
     const stopBtn = document.querySelector('.anticon-stop')!.closest('button') as HTMLButtonElement;
     fireEvent.click(stopBtn);
-    // 第一击后按钮进入行级 loading（在途），重复点击被吞
+    // P2-4：第一击先出二次确认框；确认框打开期间行级 loading 已占位，
+    // 重复点击被吞（不会连开第二个确认框、更不会连发请求）
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(stopBtn.classList.contains('ant-btn-loading')).toBe(true));
     fireEvent.click(stopBtn);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+    // 直接驱动 onOk（executor-ui07「Modal.confirm 走 onOk」先例）——确认后才真正发起弃用
+    const onOk = confirmSpy.mock.calls[0][0].onOk!;
+    await act(async () => { void onOk(); });
     expect(deprecatePackage).toHaveBeenCalledTimes(1);
 
     resolveDep({ ...packageRow });
     await waitFor(() => expect(stopBtn.classList.contains('ant-btn-loading')).toBe(false));
+  });
+
+  it('P2-4：弃用前出现二次确认框（注明可逆），取消不发起请求', async () => {
+    const confirmSpy = vi.spyOn(confirmModal, 'confirm');
+    render(<ExecutorPackagesPage />);
+    expect(await screen.findByText('python-runner')).toBeTruthy();
+
+    fireEvent.click(document.querySelector('.anticon-stop')!.closest('button')!);
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
+    const cfg = confirmSpy.mock.calls[0][0];
+    expect(cfg.title).toBe('弃用此包？');
+    // 确认文案必须注明可逆（弃用后移出向导候选集，可随时重新激活）
+    expect(String(cfg.content)).toContain('重新激活');
+    expect(deprecatePackage).not.toHaveBeenCalled();
+
+    // 取消 → 行级 loading 释放，可再次操作
+    cfg.onCancel?.();
+    await waitFor(() => {
+      const btn = document.querySelector('.anticon-stop')!.closest('button') as HTMLButtonElement;
+      expect(btn.classList.contains('ant-btn-loading')).toBe(false);
+    });
+    expect(deprecatePackage).not.toHaveBeenCalled();
   });
 });
 

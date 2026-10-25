@@ -277,19 +277,23 @@ export default function ExecutorInstallWizardPage() {
     ),
   );
 
-  const matchedPackage =
-    packages.find(
-      (p) =>
-        (!selectedType || p.type === selectedType) &&
-        (!selectedPlatform || p.platform === selectedPlatform),
-    ) ?? null;
+  // P3-4（UI 审计）：类型/平台**都未选**时不预匹配——旧实现 `!selectedType ||
+  // p.type === selectedType` 在全空条件下匹配列表第一项，卡片悄悄出现、下一步
+  // 可点，用户可能没做任何选择就带着一个被替他选好的包走完向导。改为：至少
+  // 显式选择类型或平台后才允许匹配（下一步按钮 disabled={!matchedPackage}，
+  // 本处收窄后自然禁用，无须另加门控）。
+  const hasTypeOrPlatformSelection = !!selectedType || !!selectedPlatform;
+  const matchedPackage = hasTypeOrPlatformSelection
+    ? packages.find(
+        (p) =>
+          (!selectedType || p.type === selectedType) &&
+          (!selectedPlatform || p.platform === selectedPlatform),
+      ) ?? null
+    : null;
 
-  const handleStep1Next = () => {
-    if (!matchedPackage) {
-      message.warning(t('install.selectFirst'));
-      return;
-    }
-    setSelectedPackage(matchedPackage);
+  // P2-5（UI 审计）：token 拉取提为独立回调——「重新检查」入口与进入第 3 步
+  // 的自动拉取共用同一实现，避免两份状态漂移。
+  const fetchSharedToken = useCallback(() => {
     setLoadingSharedToken(true);
     import('../api/config')
       .then(({ configApi }) => configApi.getExecutorToken())
@@ -299,6 +303,15 @@ export default function ExecutorInstallWizardPage() {
         message.warning(t('install.getTokenFail'));
       })
       .finally(() => setLoadingSharedToken(false));
+  }, [t]);
+
+  const handleStep1Next = () => {
+    if (!matchedPackage) {
+      message.warning(t('install.selectFirst'));
+      return;
+    }
+    setSelectedPackage(matchedPackage);
+    fetchSharedToken();
     setCurrentStep(2);
   };
 
@@ -462,8 +475,15 @@ export default function ExecutorInstallWizardPage() {
   // 但每一台手工部署的执行器都以默认名 `executor-node-1` 出现在列表里、无法区分。
   //
   // 键名集中在 INSTALL_ENV_KEYS（与执行器源码交叉校验，见 install-wizard-env-vars.test.ts）。
+  //
+  // P3-5（UI 审计）：ADMIN_API_URL 的值与一键命令同源——取 install-cmd 响应里
+  // 后端配置的 adminApiUrl（一键命令 --api-url 用的就是它）。旧实现写
+  // window.location.origin（浏览器地址），与管理台实际部署地址（公网域名/
+  // 反向代理后）可能不一致，两个块自相矛盾。install-cmd 响应缺失时退化为
+  // 「以一键命令中的 --api-url 为准」的指引文案（本块只在 installCmd 就绪后
+  // 渲染，实际几乎总能取到真值）。
   const envVarValues: Record<(typeof INSTALL_ENV_KEYS)[number], string> = {
-    ADMIN_API_URL: adminApiUrl,
+    ADMIN_API_URL: installCmd?.adminApiUrl || t('install.env.apiUrlFollowCmd'),
     EXECUTOR_SHARED_TOKEN: sharedToken ?? '<your-executor-shared-token>',
     EXECUTOR_ADDRESS_PUBLIC: '<host-or-ip>:<port>',
     APP_NAME: 'my-executor-1',
@@ -610,24 +630,23 @@ export default function ExecutorInstallWizardPage() {
                 title={<Text strong>{t('install.matchedTitle', { name: matchedPackage.name })}</Text>}
               >
                 <Row gutter={[16, 8]}>
-                  <Col span={8}>
+                  {/* P2-1（UI 审计）：后端实体列是 checksum（无 downloadCount）——
+                      旧卡片渲染的「下载次数」恒为空白、SHA-256 行因读不存在的
+                      sha256 字段永不渲染。现删除下载次数行，SHA-256 行读 checksum。 */}
+                  <Col span={12}>
                     <Text type="secondary">{t('install.version')}</Text>
                     <div><Text strong>{matchedPackage.version}</Text></div>
                   </Col>
-                  <Col span={8}>
+                  <Col span={12}>
                     <Text type="secondary">{t('install.fileSize')}</Text>
                     <div><Text strong>{formatArtifactSize(matchedPackage.fileSize)}</Text></div>
                   </Col>
-                  <Col span={8}>
-                    <Text type="secondary">{t('install.downloadCount')}</Text>
-                    <div><Text strong>{matchedPackage.downloadCount}</Text></div>
-                  </Col>
-{matchedPackage.sha256 && (
+                  {matchedPackage.checksum && (
                     <Col span={24}>
                       <Text type="secondary">{t('install.sha256')}</Text>
                       <div>
                         <Text code copyable style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                          {matchedPackage.sha256}
+                          {matchedPackage.checksum}
                         </Text>
                       </div>
                     </Col>
@@ -650,7 +669,10 @@ export default function ExecutorInstallWizardPage() {
                 showIcon
                 style={{ marginTop: 16 }}
                 action={
-                  <Button size="small" type="primary" onClick={() => navigate('/executors/packages')}>
+                  // P1-1（UI 审计）：包管理页的真实路由是 /executor-packages
+                  // （router.tsx），/executors/packages 会被 executors/:id 截获
+                  // 渲染错误页——「去上传安装包」此前是个死链。
+                  <Button size="small" type="primary" onClick={() => navigate('/executor-packages')}>
                     {t('install.upload')}
                   </Button>
                 }
@@ -753,6 +775,14 @@ export default function ExecutorInstallWizardPage() {
                 type="warning"
                 showIcon
                 title={t('install.tokenMissing')}
+                // P2-5（UI 审计）：未配置 Token 时「获取安装命令」被禁用（生成的
+                // 命令里 --secret 为空，装出来的执行器注册必被拒），同时给出
+                // 「重新检查」入口——用户在系统设置生成 Token 后不必重走向导。
+                action={
+                  <Button size="small" loading={loadingSharedToken} onClick={fetchSharedToken}>
+                    {t('install.tokenRecheck')}
+                  </Button>
+                }
               />
             )}
           </Card>
@@ -764,6 +794,9 @@ export default function ExecutorInstallWizardPage() {
               type="primary"
               icon={<KeyOutlined />}
               loading={generatingCmd}
+              // P2-5（UI 审计）：Token 未配置（或还在检查）时禁用——一键命令的
+              // --secret 取自共享 Token，未配置时生成的是必然注册失败的命令。
+              disabled={sharedToken == null || loadingSharedToken}
               onClick={handleGenerateInstallCmd}
             >
               {t('install.getCmd')}
@@ -833,12 +866,12 @@ export default function ExecutorInstallWizardPage() {
                     <Text type="secondary">{t('install.platformCol')}</Text>
                     <div><Text strong>{platformLabels[selectedPackage.platform] ?? selectedPackage.platform}</Text></div>
                   </Col>
-                  {selectedPackage.sha256 && (
+                  {selectedPackage.checksum && (
                     <Col span={24} style={{ marginTop: 8 }}>
                       <Text type="secondary">{t('install.sha256')}</Text>
                       <div>
                         <Text code copyable style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                          {selectedPackage.sha256}
+                          {selectedPackage.checksum}
                         </Text>
                       </div>
                     </Col>
@@ -931,7 +964,10 @@ export default function ExecutorInstallWizardPage() {
               <Spin size="large" indicator={<SyncOutlined spin style={{ fontSize: 48, color: token.colorPrimary }} />} />
               <div style={{ marginTop: 20, color: token.colorTextSecondary, fontSize: 15 }}>{t('install.awaiting')}</div>
               <div style={{ marginTop: 8, color: token.colorTextQuaternary, fontSize: 13 }}>
-                {t('install.elapsed', { seconds: elapsedSeconds })}
+                {/* P2-2（UI 审计）：总窗口由词条 {{total}} 承载（300s），不再与
+                    POLL_TIMEOUT_MS 各说各话——旧词条硬编码「/ 60 秒」与 300s
+                    超时窗口矛盾，用户在第 61 秒会以为已经超时。 */}
+                {t('install.elapsed', { seconds: elapsedSeconds, total: Math.round(POLL_TIMEOUT_MS / 1000) })}
               </div>
             </div>
           )}
