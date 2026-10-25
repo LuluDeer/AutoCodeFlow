@@ -227,6 +227,17 @@ async function readCurrentReleaseKey(appRoot: string): Promise<string | null> {
  */
 const APP_LOG_CANDIDATES = ['app.log', 'app.log.1', 'app.log.2', 'app.log.3'];
 
+/**
+ * P2-2：`apps:log:read` 的**文件名白名单**——域名（workDir/apps 整树）只证明
+ * 路径落点，不证明这是日志；manifest.yaml/.env/业务源码都在同域内。合法的
+ * 可读文件就是 resolveAppLogPath 的产物形态（APP_LOG_CANDIDATES），谓词从
+ * 同一份清单派生——deploy.ts 的轮转深度（APP_LOG_KEEP）变化时两侧同源。
+ * 与 ipc-handlers 的接线由 app-inventory.selftest.ts 的源码守卫钉住。
+ */
+export function isAllowedAppLogBasename(name: string): boolean {
+  return APP_LOG_CANDIDATES.includes(name);
+}
+
 /** 返回最新一份存在的应用日志路径；一份都没有时返回空串。 */
 async function resolveAppLogPath(deployDir: string): Promise<string> {
   for (const name of APP_LOG_CANDIDATES) {

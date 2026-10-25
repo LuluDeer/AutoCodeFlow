@@ -228,6 +228,21 @@ function main(): void {
     );
   }
 
+  // ── P3-3：second-instance 未配置态开向导（与 B-14 同语义） ─────────
+  {
+    const idx = indexSrc.indexOf("app.on('second-instance'");
+    assert.ok(idx >= 0, 'P3-3: index.ts 必须处理 second-instance');
+    const block = indexSrc.slice(idx, indexSrc.indexOf('// 托盘应用不随最后一个窗口关闭而退出'));
+    assert.ok(
+      block.includes("configStore.get('configured')") && block.includes('windowManager.openWizard()'),
+      'P3-3: 未 configured 时第二实例唤起必须开向导（与托盘 onOpenConfig 的 B-14 语义一致）',
+    );
+    assert.ok(
+      block.includes('windowManager.focusOrOpenStatus()'),
+      'P3-3: 已配置时保持既有语义（聚焦/打开状态窗）',
+    );
+  }
+
   // ── B-1：托盘/自启路径不得漏 rejection 给全局兜底 ──────────────────
   {
     const trayBlock = indexSrc.slice(indexSrc.indexOf('trayManager.onStart'), indexSrc.indexOf('trayManager.onStop'));

@@ -64,9 +64,20 @@ function readLogIncremental(
     }
 
     if (fromLine > cursor.totalLines) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const allLines = content.split('\n').filter((l) => l.length > 0);
-      return { lines: allLines.slice(fromLine), totalLines: allLines.length };
+      // P3-1：旧实现此处 readFileSync 整文件全量 split；改为 scanLogTail
+      // 尾窗重建（与生产实现逐字同步——SYNC 副本）。
+      const scan = scanLogTail(filePath);
+      if (!scan) {
+        return { lines: [], totalLines: 0 };
+      }
+      cursor.offset = scan.consumedBytes;
+      cursor.totalLines = scan.totalLines;
+      const skip = Math.max(0, fromLine - (scan.totalLines - scan.lines.length));
+      return {
+        lines: scan.lines.slice(skip),
+        totalLines: scan.totalLines,
+        truncated: scan.truncated,
+      };
     }
 
     const length = size - cursor.offset;
@@ -169,13 +180,37 @@ try {
     assert.deepStrictEqual(r.lines, cn, '多字节字符被截断');
   }
 
-  // 场景 6：fromLine 超前于缓存（UI 状态被重置）走全量兜底且不崩
+  // 场景 6：fromLine 超前于缓存（UI 状态被重置）走尾窗重建兜底且不崩
   {
     const f = path.join(dir, 'fwd.log');
     fs.writeFileSync(f, 'l1\nl2\nl3\n');
     const r = readLogIncremental(f, 99);
     assert.deepStrictEqual(r.lines, [], '超前 fromLine 应返回空');
     assert.strictEqual(r.totalLines, 3);
+    // P3-1：重建分支必须把游标落到「最后完整行」——后续增量读从文件尾
+    // 无缝续上（旧全量兜底不重建游标，下一轮会重复读到旧行）。
+    fs.appendFileSync(f, 'l4\n');
+    const r2 = readLogIncremental(f, r.totalLines);
+    assert.deepStrictEqual(r2.lines, ['l4'], '尾窗重建后增量读必须从 EOF 续上');
+    assert.strictEqual(r2.totalLines, 4);
+  }
+
+  // 场景 6b（P3-1）：超长文件的超前 fromLine 重建受尾窗上限约束且行号对齐
+  {
+    const f = path.join(dir, 'fwd-big.log');
+    const rows = Array.from({ length: 4000 }, (_, i) => `row-${String(i + 1).padStart(5, '0')}`);
+    fs.writeFileSync(f, rows.join('\n') + '\n');
+    // 模拟游标被 LRU 驱逐后 UI 从旧行号续读：旧实现此处整文件 readFileSync
+    // + 全量 split（主进程内存尖峰），新实现走 scanLogTail 尾窗（内存与文件
+    // 大小无关），返回行按 fromLine 对齐、全局行号 = totalLines - len
+    //（fromLine 为 0 基行号：3999 = 第 4000 行）。
+    const r = readLogIncremental(f, 3999);
+    assert.deepStrictEqual(r.lines, ['row-04000'], 'fromLine 对齐必须给出该全局行号上的行');
+    assert.strictEqual(r.totalLines, 4000);
+    assert.strictEqual(r.truncated, true, '尾窗截断口径必须如实上报');
+    // 超前出界的 fromLine 与旧全量实现同语义：返回空（但游标仍重建到 EOF）。
+    const r2 = readLogIncremental(f + '-nope', 99);
+    assert.deepStrictEqual(r2.lines, []);
   }
 
   // 场景 7（F-22）：大文件首读走尾窗——行数封顶、totalLines 精确、truncated

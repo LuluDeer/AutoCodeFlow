@@ -27,6 +27,8 @@ import {
   requestExecutorShutdown,
   waitForPortFree,
 } from './port-probe';
+// P2-1：start/stop 的在飞互斥原语（纯模块，语义见 lifecycle-mutex.ts 头注）。
+import { createLifecycleMutex } from './lifecycle-mutex';
 
 export type ExecutorStatus = 'stopped' | 'pending' | 'online' | 'offline';
 
@@ -103,6 +105,14 @@ export class ExecutorProcess {
   private adminRegistration: 'unknown' | 'registered' | 'failed' = 'unknown';
 
   /**
+   * P2-1：start/stop 的在飞互斥（IPC 面此前没有，托盘路径的 B7 布尔互斥只能
+   * "忽略"点击、救不了"stop 被吞"）。决策语义见 lifecycle-mutex.ts 头注：
+   * 同向并发共享 promise（双击 start 只 spawn 一次）、反向并发排队（启动探测
+   * 窗口期的 stop 等 start 落定后如实执行，不再被 `!this.proc` 早退分支吞掉）。
+   */
+  private lifecycleMutex = createLifecycleMutex();
+
+  /**
    * NETOPT-G P1-5：离线判定的迟滞状态（连续失败计数 + 上次成功时刻）。
    * 仅在 applyAdminStatus（结构化端点主判据）里推进；见 notifier-rules.ts
    * 的 advanceHeartbeatHysteresis 注释（一天 86 次误报的修复）。
@@ -165,7 +175,16 @@ export class ExecutorProcess {
     return fs.existsSync(fromDist) ? fromDist : fromAppPath;
   }
 
+  /**
+   * P2-1：对外入口收敛到互斥层。原实现体移入 doStart——它的 `if (this.proc)`
+   * 早退闸只防"已跑起来再 start"，防不了 spawn 前探测窗口（1.5s 端口探测 +
+   * 最长 10s 等端口释放，此窗口 this.proc 仍为 null）内的重入与反向并发。
+   */
   async start(config: AppConfig): Promise<void> {
+    return this.lifecycleMutex.run('start', () => this.doStart(config));
+  }
+
+  private async doStart(config: AppConfig): Promise<void> {
     if (this.proc) {
       log.warn('ExecutorProcess.start() called but process is already running');
       return;
@@ -380,18 +399,38 @@ export class ExecutorProcess {
     });
   }
 
+  /** P2-1：对外入口收敛到互斥层（同 start；语义见 lifecycle-mutex.ts 头注）。 */
   async stop(): Promise<void> {
+    return this.lifecycleMutex.run('stop', () => this.doStop());
+  }
+
+  private async doStop(): Promise<void> {
     if (!this.proc) {
       // B-1②：无子进程句柄——可能是 attach 模式（复用了既有监听者），也可能
       // 本就没启动过。attach 模式下没有 kill 句柄，唯一停机通道是 HTTP 优雅
       // 停机：只有持同一共享令牌的本执行器才会受理；外部进程拒绝时我们无法
-      // （也不该）强杀，仅解除关联并把状态如实置为 stopped。
+      // （也不该）强杀。
       this.stopHealthPoll();
       if (this.attachedExisting) {
-        this.attachedExisting = false;
         const accepted = await this.requestGracefulHttpShutdown();
         if (accepted && this.childPort) {
+          this.attachedExisting = false;
           await waitForPortFree(this.childPort, 10_000);
+        } else if (!accepted) {
+          // P3-4：优雅停机被拒（未配置共享令牌 / 401 / 超时——执行器可能持
+          // 轮换前的旧令牌）或通道不可用。旧实现在此仍置 stopped 并解除关联
+          // ——「已停止」是谎话：进程还活着、端口还被占着，且 isRunning() 翻
+          // false 后用户连重试停止的入口都没了。这里如实保持 attached 与当前
+          // 状态（online）：状态不翻、停止按钮还在，用户可重试或手工清理孤儿。
+          // 说明：executor-node 的 /health 载荷不含 pid 字段（routes/health.ts），
+          // 无法在日志里附 pid，仅如实上报端口与原因。
+          log.warn(
+            'Graceful shutdown of the attached executor was not accepted ' +
+              '(no shared token configured, refused, or timed out — the executor may hold a pre-rotation token). ' +
+              `It is still running and occupying port ${this.childPort ?? '?'}; ` +
+              'status is kept as-is instead of reporting stopped. Retry stop or remove the orphan process manually.',
+          );
+          return;
         }
       }
       this.childPort = null;

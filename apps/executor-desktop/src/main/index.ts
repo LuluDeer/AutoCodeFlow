@@ -109,6 +109,13 @@ function broadcastHistoryChanged(): void {
 export const historyWatcher = new HistoryWatcher({ onChange: broadcastHistoryChanged });
 
 app.on('second-instance', () => {
+  // P3-3：未配置态与托盘「打开配置」（B-14）同语义——用户再次启动应用时
+  // 显然想进入应用；尚未完成向导就拉状态页，页面只有空状态与「未配置」，
+  // 引导入口错位。开向导与首次启动行为一致；已配置保持原语义。
+  if (!configStore.get('configured')) {
+    windowManager.openWizard();
+    return;
+  }
   windowManager.focusOrOpenStatus();
 });
 

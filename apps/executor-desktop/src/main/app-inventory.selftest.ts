@@ -23,7 +23,7 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { listDeployedApps, splitReleaseKey } from './app-inventory';
+import { isAllowedAppLogBasename, listDeployedApps, splitReleaseKey } from './app-inventory';
 
 const APP_A = '11111111-1111-4111-8111-111111111111';
 const DEP_A1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -258,6 +258,45 @@ async function main(): Promise<void> {
       await listDeployedApps(path.join(workDir, 'no-such-dir')),
       [],
     );
+
+    // ── P2-2：apps:log:read 的文件名白名单谓词 ─────────────────────────
+    // 合法可读文件与 resolveAppLogPath 的产物（APP_LOG_CANDIDATES）同源；
+    // 域内其余文件（manifest.yaml/.env/业务源码）必须被拒。
+    assert.ok(isAllowedAppLogBasename('app.log'), '当前写入目标必须可读');
+    for (const rotated of ['app.log.1', 'app.log.2', 'app.log.3']) {
+      assert.ok(isAllowedAppLogBasename(rotated), `轮转副本 ${rotated} 必须可读`);
+    }
+    for (const hostile of [
+      'manifest.yaml',
+      '.env',
+      'index.js',
+      'app.json',
+      'VERSION',
+      'app.log.4',          // 超出 APP_LOG_CANDIDATES 的形态（轮转深度外的猜测名）
+      'app.log.old',
+      'evil.sh',
+      'app.log.txt.exe',
+      '',
+    ]) {
+      assert.ok(!isAllowedAppLogBasename(hostile), `非日志文件 ${JSON.stringify(hostile)} 必须被拒`);
+    }
+
+    // P2-2 接线守卫：apps:log:read 的 IPC 面必须真的调用了白名单谓词
+    //（ipc-handlers 顶层 import electron，行为面无法在裸 node 驱动，按
+    // main-index.selftest 的源码锚点先例钉住接线）。
+    {
+      const ipcSrc = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts'),
+        'utf-8',
+      );
+      const start = ipcSrc.indexOf("ipcMain.handle('apps:log:read'");
+      assert.ok(start >= 0, '找不到 apps:log:read handler');
+      const block = ipcSrc.slice(start, ipcSrc.indexOf("ipcMain.handle('window:minimize'", start));
+      assert.ok(
+        block.includes('isAllowedAppLogBasename('),
+        'P2-2: apps:log:read 必须按文件名白名单（isAllowedAppLogBasename）拒绝域内非日志文件',
+      );
+    }
 
     console.log('app-inventory.selftest: OK');
   } finally {

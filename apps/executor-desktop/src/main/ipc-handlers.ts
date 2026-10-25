@@ -13,7 +13,8 @@ import { pickRecentMetaFiles } from './meta-files';
 // 用户报障（执行器应用显示不对）：应用清单必须按执行器**真实**的
 // apps/<appId>/releases/<version>-<deploymentId>/ 布局解析，而不是把
 // appRoot 的直接子目录（releases/tmp/current）当成部署。见该模块头注。
-import { listDeployedApps } from './app-inventory';
+// P2-2：apps:log:read 的文件名白名单谓词（与 resolveAppLogPath 的产物同源）。
+import { isAllowedAppLogBasename, listDeployedApps } from './app-inventory';
 // 用户报障（列表里全是 UUID）：旧部署没有 app.json，本机唯一的名字线索是
 // 执行器自己日志里的 `Current release for <appName> now points to <key>`。
 import { collectReleaseAppNames, applyRecoveredAppNames } from './app-name-recovery';
@@ -50,6 +51,8 @@ import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process
 import { classifyUvResolution } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
+// P3-5：config:save 的 workDir 落盘前校验（纯决策层，注入 fs 可自检）。
+import { validateWorkDirForSave } from './config-recovery';
 // 拓展包「配置导入/导出 + 执行日志导出」：纯函数层（文件名/导入解析/掩码
 // 契约/大小阈值）抽离自 ipc-handlers——本文件顶层 import electron，裸 node
 // 加载即崩，行为回归闸由 export-flows.selftest.ts 直接驱动该模块。
@@ -305,6 +308,9 @@ interface LogCursor {
 const logCursors = new Map<string, LogCursor>();
 const LOG_CURSOR_LIMIT = 64;
 
+/** P3-6：log:list-files 的返回条目总量上限（超出截断 + 日志，见 handler 内注）。 */
+const LOG_LIST_MAX_ENTRIES = 500;
+
 function readLogIncremental(
   filePath: string,
   fromLine: number,
@@ -347,12 +353,27 @@ function readLogIncremental(
       }
     }
 
-    // 请求起点超前于缓存已知行数（如 UI 状态被重置）→ 保守地从该行号重建：
-    // 此时无法用偏移定位，退回一次全量读（罕见路径，不常发生）。
+    // 请求起点超前于缓存已知行数（如游标被 LRU 驱逐后 UI 又从旧行号续读）→
+    // 无法用偏移定位。P3-1：旧实现退回 readFileSync 整文件 + 全量 split——
+    // 大日志一次主进程内存尖峰，正是 F-22 在首读分支修掉的那类形态。改走
+    // scanLogTail 尾窗重建：单遍顺序扫描、内存与文件大小无关，游标直接落到
+    // 「最后完整行」，后续增量读无缝续上；返回行按 fromLine 对齐（全局行号 =
+    // totalLines - lines.length，与渲染层换算口径一致），更早的行受尾窗上限
+    // 截断（truncated 如实上报——渲染层缓冲本就只留最后 1500/2400 行）。
     if (fromLine > cursor.totalLines) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const allLines = content.split('\n').filter((l) => l.length > 0);
-      return { lines: allLines.slice(fromLine), totalLines: allLines.length };
+      const scan = scanLogTail(filePath);
+      if (!scan) {
+        // 文件此刻打不开等 I/O 异常：与既有 catch 兜底同形态。
+        return { lines: [], totalLines: 0 };
+      }
+      cursor.offset = scan.consumedBytes;
+      cursor.totalLines = scan.totalLines;
+      const skip = Math.max(0, fromLine - (scan.totalLines - scan.lines.length));
+      return {
+        lines: scan.lines.slice(skip),
+        totalLines: scan.totalLines,
+        truncated: scan.truncated,
+      };
     }
 
     // 只需读 offset..size 区间
@@ -588,7 +609,19 @@ export function registerIpcHandlers(): void {
     // 校验并**整次抛出**——此时同批次的其它修改已部分写入，UI 却只显示一句
     // "保存失败"，用户无从判断哪些存了。消毒后再写：非法值回落默认，
     // 越界值钳制，保存必定完整成功。
-    configStore.save(sanitizeConfigInput(cfg));
+    const safeCfg = sanitizeConfigInput(cfg);
+    // P3-5：workDir **变化**时落盘前校验（绝对路径 + 存在/可写，不存在则
+    // 尽力创建）。只在变化时校验：存量坏目录不该把用户改其它字段的保存一并
+    // 堵死（那类问题由执行器自身日志暴露）；不合格以 400 形态回 IPC，
+    // 渲染层显示 saveRejected 错误行，任何键都不落盘。
+    if ('workDir' in safeCfg && safeCfg.workDir !== configBefore.workDir) {
+      const verdict = validateWorkDirForSave(safeCfg.workDir);
+      if (!verdict.ok) {
+        log.warn(`config:save rejected workDir: ${verdict.error}`);
+        return { ok: false, error: verdict.error };
+      }
+    }
+    configStore.save(safeCfg);
     // 热同步 / 重启征询等收尾与 config:import 共用同一实现（见
     // finalizeConfigSave 注——两处各写一遍必然漂移）。
     // 渲染层在调用本通道前已用 ConfirmBar 确认过「会重启执行器」；
@@ -1215,6 +1248,7 @@ export function registerIpcHandlers(): void {
     }
 
     // 任务日志：workDir/logs/YYYY-MM-DD/
+    let truncatedByCap = false;
     const workDir = configStore.get('workDir') as string | undefined;
     if (workDir) {
       const logsDir = path.join(workDir, 'logs');
@@ -1228,10 +1262,31 @@ export function registerIpcHandlers(): void {
           const dayDir = path.join(logsDir, day);
           const files = fs.readdirSync(dayDir).filter((f: string) => f.endsWith('.log'));
           for (const f of files) {
+            // P3-6：总量封顶（桌面端自身日志 30 条 + 每天每任务一条，长跑机器
+            // 上无界）。超限截断并落日志——返回结构是数组（渲染层契约
+            // StatusWindow 的 listLogFiles 签名钉住），没有地方放 truncated
+            // 标志，故只截断 + 日志。日期与文件都按倒序排过，截掉的只是
+            // 最旧的条目。
+            if (result.length >= LOG_LIST_MAX_ENTRIES) {
+              truncatedByCap = true;
+              break;
+            }
             result.push({ label: `${day} / ${f}`, path: path.join(dayDir, f), date: day });
+          }
+          if (result.length >= LOG_LIST_MAX_ENTRIES) {
+            truncatedByCap = true;
+            break;
           }
         }
       }
+    }
+    if (result.length > LOG_LIST_MAX_ENTRIES) {
+      // 兜保险（上游遍历规则变化时仍然不超发）。
+      result.length = LOG_LIST_MAX_ENTRIES;
+      truncatedByCap = true;
+    }
+    if (truncatedByCap) {
+      log.warn(`log:list-files truncated to ${LOG_LIST_MAX_ENTRIES} entries`);
     }
     return result;
   });
@@ -1421,6 +1476,15 @@ export function registerIpcHandlers(): void {
       return { lines: [], totalLines: 0, error: check.error };
     }
     const target = check.resolvedPath!;
+    // P2-2：域内文件名白名单。getAllowedLogDomains 把 workDir/apps 整树放开
+    // 只证明**落点**合法，域内还有 manifest.yaml/.env/业务源码——全部可读就
+    // 超出了「读应用日志」的授权面。合法可读文件与 resolveAppLogPath 的产物
+    // 同源（app.log 及轮转副本，见 app-inventory.isAllowedAppLogBasename），
+    // 对照 log:open-file 的 .log/.txt 白名单姿态。
+    if (!isAllowedAppLogBasename(path.basename(target))) {
+      log.warn(`apps:log:read rejected non-log file: ${logPath}`);
+      return { lines: [], totalLines: 0, error: '仅允许读取应用日志（app.log 及轮转副本）' };
+    }
     if (!fs.existsSync(target)) return { lines: [], totalLines: 0 };
     // PERF-DSK-01：与 log:read 同因——AppsPage 每 2s 轮询，全量重读同样是
     // 平方级 I/O。复用同一套增量游标实现。

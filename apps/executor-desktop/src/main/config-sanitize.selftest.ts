@@ -15,7 +15,9 @@ import * as path from 'node:path';
 import {
   BOOLEAN_FIELDS,
   ENUM_FIELDS,
+  KNOWN_CONFIG_KEYS,
   NUMBER_FIELDS,
+  RENDERER_IMMUTABLE_KEYS,
   STRING_FIELDS,
   STRING_LIST_FIELDS,
   coerceNumber,
@@ -370,12 +372,37 @@ function main(): void {
       }
     }
 
-    // ── 5. 不认识的配置项必须原样透传（新增字段不必改本模块）─────────────
-    assert.strictEqual(
-      sanitizeConfigInput({ someFutureField: 'x' }).someFutureField,
-      'x',
-      '未知字段必须透传',
-    );
+    // ── 5. P2-4：不认识的配置项必须**丢弃**（不再原样透传）─────────────
+    // 旧策略"透传"有两个被审计确认的滥用面：点号键（'a.b'）会被 electron-store
+    // 的 dot-prop setter 变成嵌套写；白名单外的键形状完全不受控。
+    {
+      const out = sanitizeConfigInput({
+        someFutureField: 'x',
+        'nested.injected': 1,
+        __proto__: { evil: true },
+      });
+      assert.strictEqual(out.someFutureField, undefined, '未知字段必须丢弃');
+      assert.strictEqual(out['nested.injected'], undefined, '点号键必须丢弃（防 dot-prop 嵌套写）');
+      assert.strictEqual(Object.keys(out).length, 0, '白名单外键不得有任何残留');
+    }
+
+    // ── 5b. P2-4：configured 必须从渲染层可写集中剔除 ───────────────────
+    {
+      const out = sanitizeConfigInput({ configured: true, adminApiUrl: 'http://x' });
+      assert.strictEqual(
+        out.configured,
+        undefined,
+        '渲染层可写 configured = 可跳过向导（空 token/空 adminApiUrl 起执行器），必须丢弃',
+      );
+      assert.strictEqual(out.adminApiUrl, 'http://x', '同批次的合法键必须照常消毒保存');
+      // 非布尔形态也一样丢（不再是"非布尔丢弃该键"的普通布尔字段语义）。
+      assert.strictEqual(sanitizeConfigInput({ configured: 'yes' }).configured, undefined);
+      assert.ok(
+        RENDERER_IMMUTABLE_KEYS.includes('configured') &&
+          !BOOLEAN_FIELDS.includes('configured'),
+        'configured 必须在 RENDERER_IMMUTABLE_KEYS 且不在 BOOLEAN_FIELDS',
+      );
+    }
 
     // ── 6. 不得就地修改入参（渲染层对象可能来自 React state）─────────────
     {
