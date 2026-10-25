@@ -322,8 +322,9 @@ describe("SopController —— 起草/发布/只读面透传", () => {
       bump: "minor",
       changelog: "c",
       publishedBy: "user:7",
-      // R41-A1：审计上下文随调用一起进 service（谁 + 从哪来）
-      audit: { userId: 7, ip: "10.0.0.9" },
+      // R41-A1：审计上下文随调用一起进 service（谁 + 从哪来）；P2（2026-10-25
+      // 审计）起 username 一并透传（CurrentUser 不带 username 时落 null）。
+      audit: { userId: 7, username: null, ip: "10.0.0.9" },
     });
   });
 

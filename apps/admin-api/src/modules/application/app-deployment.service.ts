@@ -192,6 +192,34 @@ export const PULL_QUEUED_MESSAGE_PREFIX =
 export const DEPLOYMENT_CMD_TTL_MS_DEFAULT = 1_800_000;
 export const EXECUTOR_CMD_TTL_CONFIG_KEY = "executor.cmdTtlMs";
 
+/**
+ * P1-A2（2026-10-25 真机审计）：卡死扫描阈值——PENDING 行 5 分钟。
+ *
+ * deploy() 先 INSERT（PENDING）再异步推送，进程在两步之间崩溃会留下永久
+ * PENDING 行，持续占住 in-flight 唯一索引。正常 PENDING 窗口是进程内的
+ * （自动选机 + 推送重试 ≈ <100s），5 分钟已高于任何合法持有。
+ */
+export const DEPLOYMENT_PENDING_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * P1-A2（2026-10-25 真机审计）：卡死扫描阈值——DEPLOYING/UPGRADING 行
+ * 30 分钟无任何写（心跳/状态推进/批次痕迹都算进度写）→ 判败。
+ *
+ * 判据键是 updatedAt（@UpdateDateColumn）：执行器心跳（handleHeartbeat 的
+ * 条件 UPDATE）、deploy/upgrade 的进度写、灰度批次痕迹写都会刷新它——
+ * 即「以最后一次心跳/事件时间起算」，活跃部署（慢网络拉大包也在持续心跳）
+ * 永远不会被误杀；只有执行器彻底沉默（如注册 409 死锁、容器被删）的行
+ * 才会被扫死，解锁 stop/删除链与该应用的下一个部署。
+ *
+ * 历史取值 10min：对「执行器接受命令后本地慢慢部署」的形态偏紧——执行器
+ * 侧部署完成前不一定产出心跳（大包下载/解压），慢链路下 10 分钟可能误杀
+ * 正常部署，故按审计建议放宽到 30min（仍远小于「永久在途」的故障面）。
+ * 与命令 TTL（DEPLOYMENT_CMD_TTL_MS_DEFAULT，同为 30min）同量级不是巧合：
+ * pull 入队行的豁免窗就是按「TTL 内不扫死」设计的，两窗对齐后豁免仅在
+ * 运维调大 TTL 时才实际生效。
+ */
+export const DEPLOYMENT_STALL_TIMEOUT_MS = 30 * 60_000;
+
 /** DEP-01：统一列表的排序键（毫秒时间戳）：有部署取该版本最近一次部署完成时刻
  *  （deployedAt，缺则行 createdAt），无部署取版本行 createdAt。纯函数便于测试。 */
 export function releaseSortTimestampMs(input: {
@@ -2398,9 +2426,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // 机队下它落在 NAT 内 / Clash 伪 IP 上（198.18.0.1:8002），push 必然
       // 3 × 30s 超时后 FAILED。这里改为**秒级失败**并给出可操作提示，同时
       // 立刻释放该应用的在途槽位（否则后续每次 deploy 都 409）。
+      // P3-①（2026-10-25 审计）：statusMessage 直出管理台状态列，文案用
+      // 可读中文（下同）。
       const msg =
-        "Deploy target executor record no longer exists (it may have been deleted or " +
-        "auto-cleaned). Re-select an executor and deploy again.";
+        "部署目标执行器记录已不存在（可能已被删除或自动清理）——请重新选择执行器后再次部署。";
       this.logger.error(
         `Deploy ${deployment.id} aborted: executorId ${deployment.executorId ?? "(none)"} no ` +
           `longer exists (snapshot address ${deployment.executorAddress}) — failing fast ` +
@@ -2454,10 +2483,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           ...pinCfg,
         });
         // Success（R34-A2：条件写，见 persistDeployProgress 头注）
+        // P3-①（2026-10-25 审计）：这行文案会原样出现在管理台部署行状态列，
+        // 直出英文「Deploy command sent to executor」不可读——改可读中文。
+        // 语义：push HTTP 已成功，行转 DEPLOYING/UPGRADING，等执行器完成
+        // 部署后经心跳回报（running → RUNNING / 失败 → FAILED）。
         await this.persistDeployProgress(
           deployment,
           upgrade ? DeploymentStatus.UPGRADING : DeploymentStatus.DEPLOYING,
-          "Deploy command sent to executor",
+          "部署命令已送达执行器，等待执行器完成部署并回报状态",
           app,
         );
         await this.saveVersionSnapshot(deployment, app, "deploying");
@@ -2477,7 +2510,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
 
     // All attempts exhausted
-    const exhaustedMsg = `Failed to reach executor after ${MAX_ATTEMPTS} attempts: ${lastError}`;
+    // P3-①：推送失败的原因串同样直出状态列——中文化主句，保留底层 err 原文
+    // （axios 报错是排障关键事实，不做翻译/加工）。
+    const exhaustedMsg = `连续 ${MAX_ATTEMPTS} 次推送部署命令到执行器均失败：${lastError}`;
     this.logger.error(
       `Deploy push failed for ${deployment.id} after ${MAX_ATTEMPTS} attempts: ${lastError}`,
     );
@@ -2836,18 +2871,19 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   }
 
   /** Scan every 2 minutes for deployments stuck in an in-progress state
-   *  ('deploying'/'upgrading') with no update for > 10 minutes and mark them
+   *  ('deploying'/'upgrading') with no update for a while and mark them
    *  failed.
-   *  R6: the predicate used to be createdAt-based — a legacy deployment
-   *  upgraded (re-entering DEPLOYING on the SAME row) kept its original
-   *  createdAt and was mis-marked FAILED by this cron 10 minutes later,
-   *  polluting the version snapshot. updatedAt is refreshed both when the
-   *  row enters DEPLOYING/UPGRADING (status save) and on every heartbeat
-   *  save, so the semantics are now "in-progress and untouched for 10
-   *  minutes". UPGRADING is included because upgrades no longer pass through
-   *  DEPLOYING (R5 index compatibility) and still need the same timeout
-   *  coverage.
-   *  QA5: PENDING is swept on a shorter threshold (5 minutes). deploy()
+   *  P1-A2（2026-10-25 真机审计）：阈值收敛为命名常量——DEPLOYING/UPGRADING
+   *  用 DEPLOYMENT_STALL_TIMEOUT_MS（30min）、PENDING 用
+   *  DEPLOYMENT_PENDING_TIMEOUT_MS（5min），语义与取值依据见常量注释。
+   *  R6: the predicate is updatedAt-based — a legacy deployment upgraded
+   *  (re-entering DEPLOYING on the SAME row) kept its original createdAt;
+   *  updatedAt is refreshed both when the row enters DEPLOYING/UPGRADING
+   *  (status save) and on every heartbeat save, so the semantics are
+   *  "in-progress and untouched for the window". UPGRADING is included
+   *  because upgrades no longer pass through DEPLOYING (R5 index
+   *  compatibility) and still need the same timeout coverage.
+   *  QA5: PENDING is swept on a shorter threshold. deploy()
    *  INSERTs the row as PENDING and pushes to the executor asynchronously —
    *  a crash between the two steps leaves the row PENDING forever, where it
    *  keeps matching the partial unique index
@@ -2860,15 +2896,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  三层同口径排除 approvalStatus=pending_approval）。
    *  A-2①: pull 入队后行恒 DEPLOYING 且离线执行器不产生心跳——行龄未超命令
    *  TTL 的「commandId 未决」行（statusMessage 带 PULL_QUEUED_MESSAGE_PREFIX）
-   *  豁免扫描：否则执行器离线 >10min 时行被判 FAILED 并释放 in-flight 槽位，
+   *  豁免扫描：否则执行器离线超窗时行被判 FAILED 并释放 in-flight 槽位，
    *  旧命令在 TTL 内被重连的执行器消费 → 同一执行器两个真实进程。命令 TTL
    *  过后执行器侧本就按 issuedAt 丢弃载荷，届时再扫死是安全的。 */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
     // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
     if (this.leaderGate && !this.leaderGate.isLeader) return;
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const fiveMinutesAgo = new Date(Date.now() - DEPLOYMENT_PENDING_TIMEOUT_MS);
+    const stallCutoff = new Date(Date.now() - DEPLOYMENT_STALL_TIMEOUT_MS);
     const stuck = await this.repo.find({
       where: [
         {
@@ -2884,11 +2920,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         },
         {
           status: DeploymentStatus.DEPLOYING,
-          updatedAt: LessThan(tenMinutesAgo),
+          updatedAt: LessThan(stallCutoff),
         },
         {
           status: DeploymentStatus.UPGRADING,
-          updatedAt: LessThan(tenMinutesAgo),
+          updatedAt: LessThan(stallCutoff),
         },
       ],
       // O-5: bound the cron sweep; rows flipped to FAILED leave the predicate,
@@ -2931,10 +2967,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
     if (sweepable.length === 0) return;
 
+    // P1-A2：statusMessage 直出可读中文（消费面是管理台部署行的状态列，
+    // 与 P3-①「Deploy command sent to executor」中文化同口径）；「[System]」
+    // 前缀保留为机器可识别标记（迁移 1789000000000 的存量文案同款前缀），
+    // 分钟数由常量推导，改阈值不会让文案漂移。
     const PENDING_MSG =
-      "[System] Deployment stuck in PENDING (deploy push never started, " +
-      "likely a restart between insert and push) — timed out after 5 minutes";
-    const TIMEOUT_MSG = "[System] Deployment timed out after 10 minutes";
+      `[System] 部署卡在 PENDING：推送始终未开始（可能服务重启时丢失）——` +
+      `超过 ${DEPLOYMENT_PENDING_TIMEOUT_MS / 60_000} 分钟无进度，系统自动判败`;
+    const TIMEOUT_MSG =
+      `[System] 部署超时（无心跳）——超过 ${DEPLOYMENT_STALL_TIMEOUT_MS / 60_000} 分钟` +
+      `无心跳或进度更新，系统自动判败`;
 
     // O-5: two batched UPDATEs (message differs for PENDING vs DEPLOYING/
     // UPGRADING) instead of N per-row save() round-trips.

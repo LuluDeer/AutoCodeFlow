@@ -107,6 +107,13 @@ const PLATFORM_MEDIA_PATH_RE =
 export interface SopAuditContext {
   /** 登录用户 id（AuthUser.id，整数）；执行器/系统动作缺省为 null。 */
   userId?: number | null;
+  /**
+   * P2（2026-10-25 审计）：登录用户名（AuthUser.username）。审计页「操作人」
+   * 列与按用户过滤消费的是这一列——只带 userId 时页面显示「系统」且筛不到
+   * （对照 task.controller 的审计形态 {userId, username}）。执行器/系统动作
+   * 缺省为 null。
+   */
+  username?: string | null;
   /** 请求来源 ip（req.ip）；cron/内部调用缺省为 null。 */
   ip?: string | null;
 }
@@ -218,6 +225,7 @@ export class SopService {
       // R34-A1 轴 4），把它当操作人写进审计会指错人；操作者靠 userId/ip。
       await this.safeAudit({
         userId: input.audit?.userId ?? null,
+        username: input.audit?.username ?? null,
         ip: input.audit?.ip ?? null,
         action: "sop.update",
         resource: "sop",
@@ -250,6 +258,7 @@ export class SopService {
     // R41-A1：起草落审计（正文只记长度——SOP 正文可能含业务数据）。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.draft",
       resource: "sop",
@@ -341,6 +350,7 @@ export class SopService {
     // 发布了哪个版本」必须能从审计表单表回答，而不是靠会轮转的应用日志。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.publish",
       resource: "sop",
@@ -416,6 +426,7 @@ export class SopService {
     sop.status = "deprecated";
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.deprecate",
       resource: "sop",
@@ -472,6 +483,7 @@ export class SopService {
     }
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.restore",
       resource: "sop",
@@ -549,6 +561,7 @@ export class SopService {
     // 可直接在审计页反查这张工单（sop 行只有资源 id，答不出目标机器）。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.assign",
       resource: "sop_assignment",
@@ -1237,6 +1250,7 @@ export class SopService {
     // 且可 CSV 导出，正文落进去等于开一条持久外带通道；只记长度。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.reply",
       resource: "sop_clarification",
@@ -1397,6 +1411,7 @@ export class SopService {
     // 只记字节量，内容不进审计。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.complete",
       resource: "sop_assignment",
@@ -1868,6 +1883,7 @@ export class SopService {
     if (cancelled > 0) {
       await this.safeAudit({
         userId: input.audit?.userId ?? null,
+        username: input.audit?.username ?? null,
         ip: input.audit?.ip ?? null,
         action: "sop.assignment.cancel",
         resource: "sop",
@@ -2068,6 +2084,7 @@ export class SopService {
   }): Promise<void> {
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.clarify",
       resource: "sop_clarification",

@@ -302,7 +302,7 @@ export class SopController {
     @Param("assignmentId") assignmentId: string,
     @Param("clarificationId") clarificationId: string,
     @Body() dto: HumanReplyDto,
-    @CurrentUser() user: { id: number | string } | undefined,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
     @Ip() ip?: string,
   ) {
     // 确认澄清确实属于该指派（防跨工单答复）
@@ -322,7 +322,11 @@ export class SopController {
       replyBy: `user:${user.id}`,
       // R41-A1：人工答复的审计上下文（谁、从哪来）——答复正文由服务层
       // 只记长度，不经控制器进入审计。
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 
@@ -338,7 +342,7 @@ export class SopController {
   @ApiCreatedResponse({ type: SopResponseDto })
   async draft(
     @Body() dto: DraftSopDto,
-    @CurrentUser() user: { id: number | string } | undefined,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
     @Ip() ip?: string,
   ) {
     return this.sops.draft({
@@ -349,7 +353,11 @@ export class SopController {
       applicationId: dto.applicationId ?? null,
       createdBy: `user:${user.id}`,
       // R41-A1：起草/编辑也留痕（发布的正文就取自工作副本）
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 
@@ -364,7 +372,7 @@ export class SopController {
   async update(
     @Param("id") id: string,
     @Body() dto: UpdateSopDto,
-    @CurrentUser() user?: { id: number | string },
+    @CurrentUser() user?: { id: number | string; username?: string },
     @Ip() ip?: string,
   ) {
     const sop = await this.sops.getSop(id);
@@ -378,7 +386,11 @@ export class SopController {
       // 编辑不改归属：原样透传（draft 对既有 slug 也不写这一列，双重保险）。
       createdBy: sop.createdBy,
       // R41-A1：编辑工作副本留痕（操作者是当前用户，不是 createdBy 属主）
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 
@@ -391,7 +403,7 @@ export class SopController {
   async publish(
     @Param("id") id: string,
     @Body() dto: PublishSopDto,
-    @CurrentUser() user: { id: number | string } | undefined,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
     @Ip() ip?: string,
   ) {
     return this.sops.publish({
@@ -400,7 +412,11 @@ export class SopController {
       changelog: dto.changelog,
       publishedBy: `user:${user.id}`,
       // R41-A1：发布是审计的首要动作（「谁发布了哪个版本」）
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 
@@ -412,7 +428,7 @@ export class SopController {
   async assign(
     @Param("id") id: string,
     @Body() dto: AssignSopDto,
-    @CurrentUser() user: { id: number | string } | undefined,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
     @Ip() ip?: string,
   ) {
     let executorId = dto.executorId;
@@ -433,7 +449,11 @@ export class SopController {
       executorId,
       assignedBy: `user:${user.id}`,
       // R41-A1：指派 / 重派留痕（「把哪张单指派给了谁」）
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 
@@ -466,13 +486,17 @@ export class SopController {
   @ApiOkResponse({ type: SopResponseDto })
   async deprecate(
     @Param("id") id: string,
-    @CurrentUser() user: { id: number | string } | undefined,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
     @Ip() ip?: string,
   ) {
     return this.sops.deprecate({
       sopId: id,
       actor: user ? `user:${user.id}` : undefined,
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 
@@ -488,13 +512,17 @@ export class SopController {
   @ApiOkResponse({ type: SopCancelAssignmentsResponseDto })
   async cancelAssignments(
     @Param("id") id: string,
-    @CurrentUser() user: { id: number | string } | undefined,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
     @Ip() ip?: string,
   ) {
     return this.sops.cancelOpenAssignments({
       sopId: id,
       actor: user ? `user:${user.id}` : undefined,
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 
@@ -504,13 +532,17 @@ export class SopController {
   @ApiOkResponse({ type: SopResponseDto })
   async restore(
     @Param("id") id: string,
-    @CurrentUser() user: { id: number | string } | undefined,
+    @CurrentUser() user: { id: number | string; username?: string } | undefined,
     @Ip() ip?: string,
   ) {
     return this.sops.restore({
       sopId: id,
       actor: user ? `user:${user.id}` : undefined,
-      audit: { userId: auditUserId(user), ip: ip ?? null },
+      audit: {
+        userId: auditUserId(user),
+        username: user?.username ?? null,
+        ip: ip ?? null,
+      },
     });
   }
 }

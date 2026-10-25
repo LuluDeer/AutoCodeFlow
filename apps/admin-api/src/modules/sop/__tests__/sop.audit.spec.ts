@@ -209,6 +209,40 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
     expect(row.detail).toMatchObject({ slug: "demo", actor: "user:7" });
   });
 
+  // P2（2026-10-25 审计）：审计页「操作人」列与按用户过滤消费 username 列
+  // （对照 task.controller 的 {userId, username} 形态）——只带 userId 时页面
+  // 显示「系统」且按用户筛不到。
+  it("P2 · username 随审计上下文落审计行（登录路径）", async () => {
+    const h = harness();
+    await h.service.draft({
+      slug: "demo",
+      title: "T",
+      bodyMarkdown: "正文",
+      createdBy: "user:7",
+      audit: { userId: 7, username: "ops", ip: "10.0.0.9" },
+    });
+    const row = onlyOne(h.auditService);
+    expect(row).toMatchObject({
+      action: "sop.draft",
+      userId: 7,
+      username: "ops",
+    });
+  });
+
+  it("P2 · 机器路径（audit 无 username）→ username 落 null（不编造操作人）", async () => {
+    const h = harness();
+    await h.service.draft({
+      slug: "demo",
+      title: "T",
+      bodyMarkdown: "正文",
+      createdBy: "user:7",
+      audit: { userId: null, ip: null },
+    });
+    const row = onlyOne(h.auditService);
+    expect(row.userId).toBeNull();
+    expect(row.username).toBeNull();
+  });
+
   it("sop.update · 编辑工作副本（只记改了哪些字段，不记字段内容）", async () => {
     const h = harness();
     await h.service.draft({
@@ -645,17 +679,22 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
     return { ctl, sops };
   }
 
-  it("humanReply：userId 来自 CurrentUser，ip 来自 @Ip()（审计行的两个主体列）", async () => {
+  it("humanReply：userId/username 来自 CurrentUser，ip 来自 @Ip()（审计行的主体列）", async () => {
     const h = controllerHarness();
     await h.ctl.humanReply(
       "as-1",
       "cl-1",
       { resolution: "answered", answer: "ok" } as never,
-      { id: 7 },
+      { id: 7, username: "ops" },
       "10.0.0.9",
     );
+    // P2（2026-10-25 审计）：username 必须随审计上下文透传——审计页「操作人」
+    // 列与按用户过滤消费的是它，缺了就显示「系统」且筛不到（对照
+    // task.controller 的 {userId, username} 形态）。
     expect(h.sops.replyClarification).toHaveBeenCalledWith(
-      expect.objectContaining({ audit: { userId: 7, ip: "10.0.0.9" } }),
+      expect.objectContaining({
+        audit: { userId: 7, username: "ops", ip: "10.0.0.9" },
+      }),
     );
   });
 
@@ -668,7 +707,9 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
       { id: "admin-7" },
     );
     expect(h.sops.replyClarification).toHaveBeenCalledWith(
-      expect.objectContaining({ audit: { userId: null, ip: null } }),
+      expect.objectContaining({
+        audit: { userId: null, username: null, ip: null },
+      }),
     );
   });
 

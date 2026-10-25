@@ -244,6 +244,23 @@ export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  * 服务端分页（见 findAll 注释）。
  */
 export const EXECUTOR_LIST_LIMIT = 500;
+
+/**
+ * P1-A（2026-10-25 真机审计）：push 地址「死行接管」所需的静默窗（毫秒）。
+ *
+ * 场景：容器化执行器重建后安装身份漂移（指纹盐/容器 MAC 不落卷），新指纹
+ * 撞上同地址的旧真实指纹行 → register/token 恒 409（旧判定把「同机重装」
+ * 误判成「另一份安装占用」），执行器永远拿不回自己的行。接管的前置是占位行
+ * 已被 stale sweep 判死（status=OFFLINE，自身约需判死窗 = 心跳超时 × 确认
+ * 轮数 ≈ 3 分钟）——本静默窗在其上再加一段，双保险覆盖「容器重启耗时 +
+ * 判死后短暂网络分区恢复」两类边界：静默不足 5 分钟不许接管。
+ *
+ * 可经 `executor.addressTakeoverSilenceMs` 覆盖（非法值回退本缺省，与
+ * `executor.staleOfflineConfirmations` 同款纪律）。测试无需等待——用例把
+ * 行的 lastHeartbeat/updatedAt 回拨即可立即命中。
+ */
+export const EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS = 5 * 60_000;
+
 /**
  * 执行器选择器（executor picker，GET /executors/picker）的硬上限。
  *
@@ -2022,11 +2039,41 @@ export class ExecutorService implements OnModuleInit {
           storedReal !== incomingFingerprint;
         if (foreignInstall) {
           if (incomingDispatchMode === "push") {
-            throw new AppError("EXECUTOR_ADDRESS_TAKEN", {
-              address: data.address,
-            });
+            // P1-A（2026-10-25 真机审计）：容器化执行器**重建**（而非重启）后
+            // 安装身份会漂移——指纹盐落 `<workDir>/.device-identity/`（不落卷
+            // 即随容器层消失）、容器 MAC 每次创建随机 ⇒ deviceId 兜底也变。
+            // 新指纹按地址找回来的旧行还是**真实旧指纹** ⇒ 本分支恒 409，
+            // 执行器永远拿不回自己的行：register / token（issueToken 复用
+            // register）双路全 409（真机实证单台 789 次 fetchToken failed），
+            // 部署心跳 X-Executor-Token 恒 401，部署行永久在途、stop/删除
+            // 全 409——整条部署链死锁。「地址是路由面」的冲突保护对**活着**
+            // 的安装才有意义：占位行已被 sweep 判死（OFFLINE）且静默超过
+            // 接管窗（canTakeOverAbandonedAddressRow）⇒ 视为前一轮安装已把
+            // 地址**遗弃**，允许接管——复用该行，下方重注册路径把指纹/
+            // 元数据/在线态一并刷新（与「存量 legacy 行被同机指纹接管」同一
+            // 方向，只是入口从 legacy 键换成已判死的真实指纹行）。判活行
+            // （ONLINE，或 OFFLINE 但静默未超窗）维持 409：双活安装争抢同一
+            // push 地址仍是真冲突，宁可显式失败被运维看到。
+            if (!this.canTakeOverAbandonedAddressRow(byAddress)) {
+              throw new AppError("EXECUTOR_ADDRESS_TAKEN", {
+                address: data.address,
+              });
+            }
+            this.logger.warn(
+              `Registration from "${data.address}" (fingerprint ${incomingFingerprint?.slice(0, 12)}…)` +
+                ` takes over the abandoned row ${byAddress.id} (fingerprint ${String(
+                  byAddress.deviceFingerprint,
+                ).slice(
+                  0,
+                  12,
+                )}…, OFFLINE and silent beyond the takeover window): ` +
+                `the push address is treated as relinquished by its dead occupant ` +
+                `(executor reinstall/container recreation changed the install identity).`,
+            );
+            e = byAddress;
+          } else {
+            // pull：不拒注册——下走创建分支，建**独立行**（同地址允许重复）。
           }
-          // pull：不拒注册——下走创建分支，建**独立行**（同地址允许重复）。
         } else if (
           incomingFingerprint !== null &&
           storedReal === null &&
@@ -6683,6 +6730,46 @@ export class ExecutorService implements OnModuleInit {
       select: { id: true },
     });
     return rows.some((r) => r.id !== rowId);
+  }
+
+  /**
+   * P1-A（2026-10-25 真机审计）：占位行是否已「死透」到可以把 push 地址让出来
+   * （register 的 foreignInstall 接管判定，见方法内注释）。
+   *
+   * 三个前置缺一不可（宁可 409 也不误接管）：
+   *  ① status=OFFLINE —— stale sweep（连续两轮心跳超时）已判死；ONLINE 行
+   *     哪怕心跳很旧也不接管（判死是 sweep 的职责，这里不重复判）；
+   *  ② dispatchMode=push —— 地址唯一性由 push 行承载（partial 唯一索引）；
+   *     接管 pull 行会把 dispatchMode 翻成 push，可能与同址另一 push 行撞
+   *     唯一索引，且 pull 行本就不占路由位——那种组合保持 409 fail-closed；
+   *  ③ 静默超窗 —— 以 lastHeartbeat 为准（register/心跳都刷新它；执行器
+   *     一 dead sweep 就不再动它），缺列时依次回退 updatedAt/createdAt
+   *     （行存在即必有其一；三者皆缺 → 判不了静默 → 不接管）。
+   *
+   * 时间窗可经 `executor.addressTakeoverSilenceMs` 覆盖（缺省
+   * EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS）；单机注册路径逐行调用，无热路径
+   * 顾虑。测试无需真等：把行的参考时间戳回拨即立即命中。
+   */
+  private canTakeOverAbandonedAddressRow(row: Executor): boolean {
+    if (row.status !== ExecutorStatus.OFFLINE) return false;
+    if (row.dispatchMode !== "push") return false;
+    const reference = row.lastHeartbeat ?? row.updatedAt ?? row.createdAt;
+    const referenceMs = reference
+      ? new Date(reference as unknown as string | Date).getTime()
+      : Number.NaN;
+    if (!Number.isFinite(referenceMs)) return false;
+    return Date.now() - referenceMs >= this.resolveAddressTakeoverSilenceMs();
+  }
+
+  /** 接管静默窗解析（`executor.addressTakeoverSilenceMs`，非法值回退缺省）。 */
+  private resolveAddressTakeoverSilenceMs(): number {
+    const raw = this.configService.get<number>(
+      "executor.addressTakeoverSilenceMs",
+    );
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+      return raw;
+    }
+    return EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS;
   }
 
   private async countTasksBoundByAppName(appName: string): Promise<number> {

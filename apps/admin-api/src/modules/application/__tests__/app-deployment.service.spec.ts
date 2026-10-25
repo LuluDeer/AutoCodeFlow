@@ -10,6 +10,8 @@ import { ConfigService } from "@nestjs/config";
 import { OptimisticLockVersionMismatchError } from "typeorm";
 import {
   AppDeploymentService,
+  DEPLOYMENT_PENDING_TIMEOUT_MS,
+  DEPLOYMENT_STALL_TIMEOUT_MS,
   STOP_NOT_DELIVERED_PREFIX,
 } from "../app-deployment.service";
 import {
@@ -436,7 +438,8 @@ describe("AppDeploymentService", () => {
       const patch = calls[calls.length - 1]?.[1] as
         Record<string, unknown> | undefined;
       expect(patch?.status).toBe(DeploymentStatus.FAILED);
-      expect(String(patch?.statusMessage)).toContain("no longer exists");
+      // P3-①：秒级失败的提示文案已中文化。
+      expect(String(patch?.statusMessage)).toContain("已不存在");
     });
 
     // QA4: upgrade() leaves the row UPGRADING for the whole push (R5) and
@@ -1500,7 +1503,8 @@ describe("AppDeploymentService", () => {
       await (service as any).pushDeployToExecutor(deployment, mockApp);
       expect(deployment.status).toBe(DeploymentStatus.FAILED);
       expect((deployment as any).statusMessage).toContain(
-        "Failed to reach executor",
+        // P3-①：推送耗尽的失败原因串已中文化（底层 err 原文保留在冒号后）。
+        "均失败",
       );
       jest.restoreAllMocks();
     });
@@ -1602,7 +1606,8 @@ describe("AppDeploymentService", () => {
       await (service as any).pushDeployToExecutor(deployment, mockApp);
 
       expect(deployment.status).toBe(DeploymentStatus.DEPLOYING);
-      expect(deployment.statusMessage).toContain("Deploy command sent");
+      // P3-①：推送成功文案已中文化（原「Deploy command sent to executor」）。
+      expect(deployment.statusMessage).toContain("部署命令已送达");
       expect(deployment.deployedVersion).toBe(mockApp.version);
       jest.restoreAllMocks();
     });
@@ -1994,8 +1999,11 @@ describe("AppDeploymentService", () => {
       expect(qb.execute).toHaveBeenCalledTimes(1);
       const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
       expect(setArg.status).toBe(DeploymentStatus.FAILED);
+      // P1-A2/P3-①：卡死文案改可读中文（「[System]」机器标记前缀保留），
+      // 分钟数由常量推导——断言与常量同源，改阈值不会让用例漂移。
       expect(String(setArg.statusMessage)).toBe(
-        "[System] Deployment timed out after 10 minutes",
+        `[System] 部署超时（无心跳）——超过 ${DEPLOYMENT_STALL_TIMEOUT_MS / 60_000} 分钟` +
+          `无心跳或进度更新，系统自动判败`,
       );
       // 版本快照标记仍逐行（composite key 各异，无法并入批量 UPDATE）
       expect(versionSnapshot.status).toBe("failed");
@@ -2024,13 +2032,14 @@ describe("AppDeploymentService", () => {
           DeploymentStatus.UPGRADING,
         ]),
       );
-      // Per-status thresholds: PENDING is swept after 5 minutes (QA5 — the
-      // normal PENDING window is process-internal), DEPLOYING/UPGRADING after
-      // the original 10.
+      // Per-status thresholds (P1-A2: named constants): PENDING is swept
+      // after 5 minutes (QA5 — the normal PENDING window is process-internal),
+      // DEPLOYING/UPGRADING after the stall window (30min — loose enough for
+      // slow-network large-package deploys that keep heartbeating).
       const expectedMs: Record<string, number> = {
-        [DeploymentStatus.PENDING]: 5 * 60 * 1000,
-        [DeploymentStatus.DEPLOYING]: 10 * 60 * 1000,
-        [DeploymentStatus.UPGRADING]: 10 * 60 * 1000,
+        [DeploymentStatus.PENDING]: DEPLOYMENT_PENDING_TIMEOUT_MS,
+        [DeploymentStatus.DEPLOYING]: DEPLOYMENT_STALL_TIMEOUT_MS,
+        [DeploymentStatus.UPGRADING]: DEPLOYMENT_STALL_TIMEOUT_MS,
       };
       for (const w of where) {
         expect(w.createdAt).toBeUndefined();
@@ -2063,12 +2072,12 @@ describe("AppDeploymentService", () => {
 
       await service.detectStuckDeployments();
 
-      // QA5: PENDING 行走 pendingIds 批量 UPDATE（5 分钟文案）
+      // QA5: PENDING 行走 pendingIds 批量 UPDATE（5 分钟文案，P1-A2 中文化）
       const qb = repo.createQueryBuilder.mock.results[0].value;
       const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
       expect(setArg.status).toBe(DeploymentStatus.FAILED);
       expect(String(setArg.statusMessage)).toMatch(/PENDING/);
-      expect(String(setArg.statusMessage)).toMatch(/5 minutes/);
+      expect(String(setArg.statusMessage)).toMatch(/5 分钟/);
       // PENDING rows have no version snapshot yet — nothing to mark failed.
       expect(versionRepo.save).not.toHaveBeenCalled();
     });
@@ -2187,7 +2196,8 @@ describe("AppDeploymentService", () => {
         id: "deploy-pull",
         applicationId: "app-1",
         status: DeploymentStatus.DEPLOYING,
-        // 12 分钟未动：按 10min 判据本应扫死，但命令 TTL（默认 30min）未到
+        // 12 分钟未动：远未到停跳窗（P1-A2 起 30min），命令 TTL（默认 30min）
+        // 也未到——豁免成立，行不被扫死
         updatedAt: new Date(Date.now() - 12 * 60 * 1000),
         statusMessage:
           "Deploy command queued for pull executor (commandId=cmd-1)",
@@ -2225,14 +2235,16 @@ describe("AppDeploymentService", () => {
     });
 
     // A-2①: 命令已被消费（push 路径文案/心跳覆盖了 statusMessage）的行不受
-    // 豁免影响，仍按 10min 正常扫死。
-    it("A-2①: a DEPLOYING row without the pull-queued marker keeps the 10min threshold", async () => {
+    // 豁免影响，仍按停跳窗（P1-A2 起 30min）正常扫死。
+    it("A-2①: a DEPLOYING row without the pull-queued marker keeps the stall threshold", async () => {
       const pushedRow = {
         id: "deploy-push",
         applicationId: "app-1",
         status: DeploymentStatus.DEPLOYING,
-        updatedAt: new Date(Date.now() - 11 * 60 * 1000),
-        statusMessage: "Deploy command sent to executor",
+        updatedAt: new Date(
+          Date.now() - (DEPLOYMENT_STALL_TIMEOUT_MS + 60_000),
+        ),
+        statusMessage: "部署命令已送达执行器，等待执行器完成部署并回报状态",
         deployedVersion: null,
         deployedCommit: null,
       };
@@ -2289,6 +2301,68 @@ describe("AppDeploymentService", () => {
       expect(predicate(upgradedRow)).toBe(false);
       // sanity: the old createdAt-based predicate WOULD have killed it
       expect(upgradedRow.createdAt.getTime() < now - 10 * 60 * 1000).toBe(true);
+    });
+
+    // P1-A3（2026-10-25 真机审计）：超时收败的**出口链**——执行器注册 409
+    // 死锁（fetchToken 恒 409 → 部署心跳恒 401）曾让部署行永久在途，而
+    // stop / 删除部署 / 删应用三面都只挡 in-flight（PENDING/DEPLOYING/
+    // UPGRADING），行收成 FAILED（终态）后三面自然解锁。本用例钉住「sweep
+    // 判败 → stop 放行 → removeDeployment 放行」整条链，防止未来有人把
+    // FAILED 也误加进拦截集合。
+    it("P1-A3: a row swept to FAILED by the stall sweep unlocks stop and removeDeployment", async () => {
+      const stuckRow = {
+        id: "deploy-deadlock",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        statusMessage: "部署命令已送达执行器，等待执行器完成部署并回报状态",
+        executorAddress: mockExecutor.address,
+        executorId: mockExecutor.id,
+        approvalStatus: null,
+        deployedVersion: null,
+        deployedCommit: null,
+        pid: null,
+        updatedAt: new Date(
+          Date.now() - (DEPLOYMENT_STALL_TIMEOUT_MS + 60_000),
+        ),
+      };
+      repo.find.mockResolvedValue([{ ...stuckRow }]);
+      // sweep 的守卫 UPDATE：RETURNING 命中该行（源状态仍是 DEPLOYING）。
+      repo.createQueryBuilder.mockImplementationOnce(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: 1, raw: [{ id: stuckRow.id }] }),
+      }));
+      await service.detectStuckDeployments();
+
+      // sweep 后行已落 FAILED（模拟条件 UPDATE 已提交的库态；statusMessage
+      // 用 sweep 的真实文案，stop 的事件面会按它推导送达标记）。
+      const failedRow = {
+        ...stuckRow,
+        status: DeploymentStatus.FAILED,
+        statusMessage:
+          "[System] 部署超时（无心跳）——超过 30 分钟无心跳或进度更新，系统自动判败",
+      };
+      repo.findOne.mockResolvedValue(failedRow);
+      repo.save.mockImplementation(async (d: Record<string, unknown>) => d);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      // 对照：DEPLOYING 行 stop → 409 APP_DEPLOYMENT_STOP_IN_FLIGHT（见
+      // stop describe 的 P2-1 用例）；FAILED 行不再被挡。
+      const stopped = await service.stop(stuckRow.id);
+      expect(stopped.status).toBe(DeploymentStatus.STOPPED);
+
+      // 对照：在途行删除 → 409 APP_DEPLOYMENT_STILL_IN_FLIGHT；FAILED 行
+      // 是「历史残影」，删除面放行。
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+      await expect(
+        service.removeDeployment(stuckRow.id, { id: 1, username: "ops" }),
+      ).resolves.toEqual({ ok: true, deletedId: stuckRow.id });
+      expect(repo.delete).toHaveBeenCalledWith({ id: stuckRow.id });
     });
   });
 

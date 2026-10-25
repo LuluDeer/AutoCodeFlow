@@ -236,6 +236,20 @@ services:
     networks:
       - autoflow-internal
       - autoflow-public
+    # P3·运维（2026-10-25 审计）：/uploads 落命名卷——此前无 volumes，应用包
+    # （uploads/packages/<appId>/<sha256>/...，部署行 packageUrl 指向它）与执行
+    # 器包（uploads/executor-packages/，UPLOAD_DIR=process.cwd()/uploads/
+    # executor-packages，见 application.controller.ts / executor-package.service.ts）
+    # 全部存容器可写层，容器重建/升级即悬空：存量行的 packageUrl 404（部署/
+    # 回滚链失效）、执行器包要重新上传才能用。挂载点与 Dockerfile 的
+    # WORKDIR=/app 对齐，也与 docker-compose.ha.yml 的共享卷形态
+    # （admin_uploads:/app/uploads）同源——HA override 在此基础上把同一卷挂给
+    # 多副本。
+    # 注意：本改动只让**新**建容器持久化；对已在容器层写过数据的存量容器，
+    # 首次 up -d 重建前需手动迁移（docker cp 出旧目录内容再灌回卷），由运维
+    # 收口执行。
+    volumes:
+      - admin_uploads:/app/uploads
     logging:
       driver: json-file
       options:
@@ -891,6 +905,10 @@ volumes:
   executor_python_data:
   executor_node_data:
   jaeger_data:
+  # P3·运维（2026-10-25 审计）：admin-api 上传面（应用包 + 执行器包）的持久卷
+  # ——挂载点 /app/uploads，语义见 admin-api 服务块内的注释；多副本（HA）
+  # override 复用同一命名卷做共享。
+  admin_uploads:
   # M-1: pg-backup profile 的备份产物卷
   backup_data:
   # M-3/M-4: monitoring profile 数据卷
