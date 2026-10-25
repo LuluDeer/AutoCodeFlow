@@ -275,8 +275,19 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
   }, [record.executionId, record.status, fetchLog, reloadKey]);
 
   // 行级别在数据侧判定一次，渲染层（共享查看器）只按 level 过滤/着色。
+  // F-24（UIUX 审计）：行 id 用**文件全局行号**（与 AppsPage 查看器同款），
+  // 不再用缓冲数组下标——缓冲超 1500 行后每次追加都触发 slice(-1500)，全部
+  // 既有行的下标整体平移 → id 全变，下游两个按 id 判「新行」的机制全部失真
+  // （LogLineList 到达动效整窗误闪、LogViewer「N 条新日志」胶囊一次性 +~1500）。
+  // 缓冲首行的全局行号 = linesRef.current（文件总行数）- lines.length；轮转
+  // 分支的整窗替换也满足该式（新文件尾部重新编号）。linesRef 在 fetchLog 里
+  // 先于 setLines 更新，memo 随 lines 变化重算时两者必然同帧一致。
   const viewerLines = useMemo(
-    () => lines.map((text, index) => ({ id: index, text, level: classifyLog(text) })),
+    () => lines.map((text, index) => ({
+      id: linesRef.current - lines.length + index,
+      text,
+      level: classifyLog(text),
+    })),
     [lines],
   );
 

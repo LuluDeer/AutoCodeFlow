@@ -198,6 +198,18 @@ if (!wizardNoComments.includes("typeof wizardCfg?.executorHost === 'string' && w
   throw new Error('F-23: Wizard finish() 必须沿用挂载时读到的 executorHost（首次安装才回落默认）');
 }
 
+// ── UIUX F-24（2026-10-25 审计）：历史页日志行 id 用文件全局行号 ──────────
+// 审计实证：viewerLines 用缓冲数组下标当 id，缓冲超 1500 行后每次追加的
+// slice(-1500) 让全部既有行下标整体平移 → id 全变——LogLineList 到达动效
+// 整窗误闪、LogViewer「N 条新日志」胶囊每次轮询 +~1500。与 AppsPage 查看器
+// 的全局行号口径（firstLineNo = totalLines - lines.length）对齐。
+if (!pages[2].includes('id: linesRef.current - lines.length + index')) {
+  throw new Error('F-24: HistoryPage viewerLines 行 id 必须用文件全局行号（linesRef.current - lines.length + index，缓冲滑动下 id 稳定）');
+}
+if (/id: index, text/.test(pages[2])) {
+  throw new Error('F-24: HistoryPage 不得用缓冲数组下标当行 id（缓冲滑动后全窗 id 漂移）');
+}
+
 // F-37（DEEP_REVIEW 0ef3bbe）：main 进程 IPC 处理器不得在函数体内 require()
 // （模块统一顶层 import；main 进程无打包懒加载收益，属历史噪音）。
 const ipcHandlers = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
