@@ -192,6 +192,9 @@ export interface UseDraftResult<T> {
  *    时会重新读取；
  *  - 值变化 → 防抖落盘；`enabled=false` 时不写（也不取消已有草稿）；
  *  - 卸载时 flush 挂起的写入（"改完立刻关页"不丢）；
+ *  - F-47（UIUX 审计 P2-5）：`beforeunload`/`pagehide` 同步 flush——直接关闭
+ *    标签页/窗口时 React 卸载清理不会执行，防抖窗口内的最后一笔由这两个
+ *    页面卸载事件同步写盘兜住；
  *  - `discard()` 之后 `restored` 置 null 并停止自动落盘，直到 key 变化。
  */
 export function useDraft<T>({
@@ -287,6 +290,37 @@ export function useDraft<T>({
       if (!k) return;
       // 直接写，不经过 persist（卸载期 setState 会告警）
       writeDraft(k, valueRef.current, versionRef.current);
+    };
+  }, []);
+
+  // F-47（UIUX 审计 P2-5）：beforeunload/pagehide 同步 flush——「改完立刻关页」
+  // 不丢的第三条路径。上面的卸载 flush 只覆盖 React 组件卸载（SPA 站内导航/
+  // 分区替换）；**直接关闭标签页、窗口或浏览器刷新**时整个 JS 上下文被销毁，
+  // React 的 effect cleanup 不会执行，防抖窗口（默认 800ms）内的最后一笔只能
+  // 靠这两个页面卸载事件同步写盘（localStorage 是同步 API，事件回调里的
+  // setItem 能在页面销毁前落盘）。pagehide 兜底 beforeunload 在移动端 Safari
+  // /bfcache 路径下不触发的情况；两个事件都到时写两遍同值，幂等。
+  // 判据与 flush() 一致（pending + enabled + active）：discard 后 pendingRef
+  // 已清零，不会把用户明确丢弃的草稿写回（上方「丢弃后卸载」用例的卸载事件
+  // 姊妹形态，同样被 pendingRef 判据挡住）。
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  useEffect(() => {
+    const flushOnUnload = () => {
+      if (!pendingRef.current) return;
+      const k = keyRef.current;
+      if (!k || !enabledRef.current || !activeRef.current) return;
+      pendingRef.current = false;
+      // 直接写，不经过 persist（页面卸载事件里 setState 无意义）
+      writeDraft(k, valueRef.current, versionRef.current);
+    };
+    window.addEventListener('beforeunload', flushOnUnload);
+    window.addEventListener('pagehide', flushOnUnload);
+    return () => {
+      window.removeEventListener('beforeunload', flushOnUnload);
+      window.removeEventListener('pagehide', flushOnUnload);
     };
   }, []);
 

@@ -263,6 +263,67 @@ describe('useDraft：落盘 / 恢复 / 防抖 / 清除 / 容错', () => {
     expect(readDraft<{ n: number }>(KEY, 1)!.data).toEqual({ n: 2 });
   });
 
+  // ── F-47（UIUX 审计 P2-5）：beforeunload/pagehide 同步 flush ─────────────
+  // 直接关闭标签页/窗口时 React 卸载清理不会执行（整个 JS 上下文销毁），
+  // 防抖窗口内的最后一笔只能靠页面卸载事件同步写盘。
+  describe('F-47 页面卸载事件同步 flush', () => {
+    /** 派发卸载事件（jsdom 不真正卸载页面，仅触发监听器） */
+    const fireUnload = () => {
+      act(() => {
+        window.dispatchEvent(new Event('beforeunload'));
+        window.dispatchEvent(new Event('pagehide'));
+      });
+    };
+
+    it('防抖窗口内派发 beforeunload/pagehide：待写入立即同步落盘', async () => {
+      const { rerender } = renderHook(
+        ({ value }) => useDraft({ key: KEY, value, delay: 10_000 }),
+        { initialProps: { value: { n: 1 } } },
+      );
+      rerender({ value: { n: 2 } });
+      // 防抖 10s 远未到期，且不卸载组件——只派发页面卸载事件
+      fireUnload();
+      expect(readDraft<{ n: number }>(KEY, 1)!.data).toEqual({ n: 2 });
+    });
+
+    it('无待写入（防抖已落盘）时派发卸载事件：不重复写（幂等不炸）', async () => {
+      const { rerender } = renderHook(
+        ({ value }) => useDraft({ key: KEY, value, delay: DELAY }),
+        { initialProps: { value: { n: 1 } } },
+      );
+      await wait(DELAY * 3);
+      const envBefore = readDraft(KEY, 1);
+      fireUnload();
+      // 同值幂等：信封仍有效且 data 不变
+      expect(readDraft(KEY, 1)).toEqual(envBefore);
+      rerender({ value: { n: 9 } });
+      fireUnload();
+      expect(readDraft<{ n: number }>(KEY, 1)!.data).toEqual({ n: 9 });
+    });
+
+    it('discard 后派发卸载事件：已丢弃的草稿不被写回（pendingRef 判据挡住）', async () => {
+      const { result, rerender } = renderHook(
+        ({ value }) => useDraft({ key: KEY, value, delay: 10_000 }),
+        { initialProps: { value: { n: 1 } } },
+      );
+      rerender({ value: { n: 2 } });
+      act(() => result.current.discard());
+      fireUnload();
+      expect(readDraft(KEY, 1)).toBeNull();
+    });
+
+    it('enabled=false 时派发卸载事件：不写（表单未回填完成/提交中不落盘）', async () => {
+      const { rerender } = renderHook(
+        ({ value, enabled }) => useDraft({ key: KEY, value, enabled, delay: 10_000 }),
+        { initialProps: { value: { n: 1 }, enabled: true } },
+      );
+      // 制造一笔 pending 后关闭 enabled（如「提交中」），卸载事件不得写入
+      rerender({ value: { n: 2 }, enabled: false });
+      fireUnload();
+      expect(readDraft(KEY, 1)).toBeNull();
+    });
+  });
+
   it('enabled=false：不落盘（表单尚未回填完成时不覆盖真草稿）', async () => {
     const { rerender } = renderHook(
       ({ value, enabled }) => useDraft({ key: KEY, value, enabled, delay: DELAY }),
