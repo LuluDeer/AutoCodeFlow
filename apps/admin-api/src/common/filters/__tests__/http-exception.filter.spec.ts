@@ -1,4 +1,9 @@
-import { ArgumentsHost, BadRequestException, HttpStatus } from "@nestjs/common";
+import {
+  ArgumentsHost,
+  BadRequestException,
+  HttpStatus,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { QueryFailedError } from "typeorm";
 import { HttpExceptionFilter } from "../http-exception.filter";
 
@@ -181,5 +186,89 @@ describe("HttpExceptionFilter — PG 22P02 兜底映射（F-41）", () => {
     expect(status).toHaveBeenCalledWith(500);
     const body = json.mock.calls[0][0] as Record<string, unknown>;
     expect(body["errorCode"]).toBeNull();
+  });
+});
+
+/**
+ * F-52 自查（UIAUDIT 后端轮，2026-10-25）：管道类 400 的兜底赋码。
+ *
+ * NestJS 内建管道（ParseIntPipe / ParseUUIDPipe / …）拒绝时抛字符串形态的
+ * BadRequestException（"Validation failed (…)"），经 filter 透传时
+ * errorCode 只能是 null——前端 i18n 失效回落裸英文。形态管道（F-41/F-52）
+ * 覆盖了 UUID/int 主键主路，剩余约 7 个模块的原生管道路由（config /
+ * api-keys / executor-package / event-subscriptions / mutex-group /
+ * app-deployment / projects:userId）由此兜底统一为 INVALID_VALUE_FORMAT。
+ * 按消息形态识别："Validation failed (" 是内建管道 exceptionFactory 的固定
+ * 前缀（框架契约）；业务代码手工抛的普通字符串 400 不受影响（不为它编造码）。
+ */
+describe("HttpExceptionFilter — 管道类 400 兜底赋码（F-52 自查）", () => {
+  it("ParseIntPipe 形态的 400 → INVALID_VALUE_FORMAT（中文目录文案）", () => {
+    const { status, json } = (() => {
+      const jsonFn = jest.fn();
+      const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+      const host = {
+        switchToHttp: () => ({
+          getResponse: () => ({ status: statusFn }),
+          getRequest: () => ({ url: "/api/config/abc" }),
+        }),
+      } as unknown as ArgumentsHost;
+      new HttpExceptionFilter().catch(
+        new BadRequestException(
+          "Validation failed (numeric string is expected)",
+        ),
+        host,
+      );
+      return { status: statusFn, json: jsonFn };
+    })();
+
+    expect(status).toHaveBeenCalledWith(400);
+    const body = json.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["code"]).toBe(400);
+    expect(body["errorCode"]).toBe("INVALID_VALUE_FORMAT");
+    expect(body["message"]).toContain("格式非法");
+  });
+
+  it("业务代码手工抛的普通字符串 400 维持 errorCode:null（不为它编造码）", () => {
+    const jsonFn = jest.fn();
+    const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status: statusFn }),
+        getRequest: () => ({ url: "/api/x" }),
+      }),
+    } as unknown as ArgumentsHost;
+    new HttpExceptionFilter().catch(
+      new BadRequestException("clock skew too large"),
+      host,
+    );
+
+    expect(statusFn).toHaveBeenCalledWith(400);
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBeNull();
+    expect(body["message"]).toBe("clock skew too large");
+  });
+
+  it("同款管道消息但非 400（422）不赋码（兜底只钉管道族所在的 400）", () => {
+    const jsonFn = jest.fn();
+    const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status: statusFn }),
+        getRequest: () => ({ url: "/api/x" }),
+      }),
+    } as unknown as ArgumentsHost;
+    new HttpExceptionFilter().catch(
+      // 真实 HttpException 子类（内建管道同款 object response 形态），
+      // 只是状态码换成 422——兜底的 status===400 门必须拦住它。
+      new UnprocessableEntityException(
+        "Validation failed (numeric string is expected)",
+      ),
+      host,
+    );
+
+    expect(statusFn).toHaveBeenCalledWith(422);
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBeNull();
+    expect(body["message"]).toBe("Validation failed (numeric string is expected)");
   });
 });

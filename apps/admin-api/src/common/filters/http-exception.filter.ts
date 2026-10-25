@@ -108,6 +108,34 @@ export class HttpExceptionFilter implements ExceptionFilter {
           }
         }
       }
+
+      // F-52 自查（UIAUDIT 后端轮，2026-10-25）：管道类 400 的兜底赋码。
+      //
+      // 根因：NestJS 内建管道（ParseIntPipe / ParseUUIDPipe / ParseBoolPipe /
+      // ParseArrayPipe…）拒绝时经 HttpErrorByCode 抛
+      // `BadRequestException({ message: "Validation failed (xxx is expected)",
+      // error: "Bad Request", … })`——message 是字符串（非数组）不进上面的
+      // VALIDATION_FAILED 分支，errorCode 只能保持 null，前端按 errorCode 查
+      // i18n 的机制失效、回落裸英文。df08597c（F-41）已给 UUID 侧换
+      // ParseUuidShapePipe、本轮（F-52）给 users/task-templates 换了形态管道
+      // （管道层显式抛 AppError，永远优先命中第一个分支），但仍有约 7 个模块
+      // 的路由挂着原生管道（config / api-keys / executor-package /
+      // event-subscriptions / mutex-group / app-deployment / projects 的
+      // :userId 等），逐个换管道改动面更大且防不住未来漏挂——在 filter 层按
+      // **消息形态**统一兜底："Validation failed (" 是 @nestjs/common 内建
+      // 管道 exceptionFactory 的固定前缀（框架契约，业务代码不会手工拼这个
+      // 形态），普通业务字符串 message 的 400 不受影响（不为它编造码，保持
+      // 本文件「非本机制抛出的异常不赋码」纪律——管道消息本就是本机制
+      // （路由形态校验）的第一现场，赋 INVALID_VALUE_FORMAT 不是编造）。
+      if (
+        errorCode === null &&
+        status === HttpStatus.BAD_REQUEST &&
+        typeof message === "string" &&
+        message.startsWith("Validation failed (")
+      ) {
+        errorCode = "INVALID_VALUE_FORMAT";
+        message = renderZh("INVALID_VALUE_FORMAT");
+      }
     } else if (exception instanceof QueryFailedError) {
       // Handle TypeORM database constraint errors
       const pgError = exception as QueryFailedError & { code?: string };
