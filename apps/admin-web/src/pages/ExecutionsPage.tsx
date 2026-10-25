@@ -426,6 +426,13 @@ export default function ExecutionsPage() {
 
   const hasFilters = !!(search || statusFilter || executorFilter || timeRange);
 
+  // F-48（UIAUDIT P3）：越界页（如 ?page=999）——本页无行但 total>0 时，旧文案
+  // 「暂无执行记录 共 17452 条」自相矛盾（数据明明存在，只是请求页越过了末页）。
+  // 改为如实告知「当前页无数据（共 N 条）」并给「回到第一页」出口；keyset 模式
+  // 没有页码坐标系、不存在越界页形态，不参与判定。
+  const pageOutOfRange =
+    !error && executions.length === 0 && total > 0 && page > 1 && !stablePaging;
+
   /**
    * 2026-10-23：本页失败原因分布。
    *
@@ -881,9 +888,18 @@ export default function ExecutionsPage() {
           {executions.length === 0 ? (
             /* 空态区分：筛选无匹配给「清除筛选」出口；真空态如实提示
                （执行记录由任务触发产生，无直接创建入口可引导） */
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}>
-              {hasFilters && (
-                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={pageOutOfRange
+                ? t('execs.empty.outOfRange', { count: total })
+                : hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}
+            >
+              {pageOutOfRange ? (
+                <Button type="link" size="small" onClick={() => setPage(1)}>{t('execs.backToFirstPage')}</Button>
+              ) : (
+                hasFilters && (
+                  <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+                )
               )}
             </Empty>
           ) : (
@@ -968,9 +984,23 @@ export default function ExecutionsPage() {
           emptyText: shouldShowSkeleton(loading, error, executions.length) ? (
             <PageSkeleton variant="table" />
           ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}>
-              {hasFilters && (
-                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                /* F-48：越界页优先于筛选/真空态文案（越界时「没有匹配」同样误导） */
+                pageOutOfRange
+                  ? t('execs.empty.outOfRange', { count: total })
+                  : hasFilters
+                    ? t('execs.empty.noMatch')
+                    : t('execs.empty')
+              }
+            >
+              {pageOutOfRange ? (
+                <Button type="link" size="small" onClick={() => setPage(1)}>{t('execs.backToFirstPage')}</Button>
+              ) : (
+                hasFilters && (
+                  <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+                )
               )}
             </Empty>
           ),

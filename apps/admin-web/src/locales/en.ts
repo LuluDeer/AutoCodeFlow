@@ -363,6 +363,8 @@ export default {
   'execs.error.title': 'Failed to load execution history',
   'execs.empty': 'No executions yet',
   'execs.empty.noMatch': 'No matching executions',
+  'execs.empty.outOfRange': 'No data on this page ({{count}} executions in total)',
+  'execs.backToFirstPage': 'Back to first page',
   'execs.count': '{{count}} records',
   // §2.1: stable paging (keyset/cursor pagination) switch + custom pager.
   'execs.stablePaging': 'Stable paging',

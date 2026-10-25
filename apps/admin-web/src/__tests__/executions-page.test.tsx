@@ -74,13 +74,13 @@ const pageFixture = (rows: TaskExecution[], total = rows.length) => ({
   pageSize: 20,
 });
 
-function renderPage() {
+function renderPage(initialEntry = '/executions') {
   // ARCH-26: ExecutionsPage 改用 TanStack Query——测试包 QueryClientProvider
   // （对齐 user-management-page.test 先例，retry:false 防 15s 轮询重试噪音）
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/executions']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/executions" element={<ExecutionsPage />} />
           <Route path="/tasks/:taskId" element={<div>task-detail-mock</div>} />
@@ -481,5 +481,37 @@ describe('ExecutionsPage 时间快捷区间（2026-10-25 时刻粒度 presets）
     expect(startDrift).toBeLessThanOrEqual(2000);
     expect(lastCall?.endTime).toBeTruthy();
     expect(dayjs(lastCall?.endTime).diff(dayjs(lastCall?.startTime), 'hour')).toBe(24);
+  });
+});
+
+// ── F-48（UIAUDIT P3）：越界页矛盾文案 ──────────────────────────────────────
+// ?page=999：items 空 + total>0 时，旧文案「暂无执行记录 共 N 条」自相矛盾。
+// 现在如实显示「当前页无数据（共 N 条执行记录）」并提供「回到第一页」出口。
+describe('F-48 越界页文案', () => {
+  it('page=999 显示越界文案（含总数）+ 回到第一页，点击后以 page=1 重取', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([], 17452) as never);
+    renderPage('/executions?page=999');
+
+    expect(await screen.findByText('当前页无数据（共 17452 条执行记录）')).toBeTruthy();
+    expect(screen.queryByText('暂无执行记录')).toBeNull(); // 矛盾文案不再出现
+    expect(mockedTasks.allExecutions).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 999 }),
+      expect.anything(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '回到第一页' }));
+    await waitFor(() =>
+      expect(mockedTasks.allExecutions).toHaveBeenCalledWith(
+        expect.objectContaining({ page: 1 }),
+        expect.anything(),
+      ),
+    );
+  });
+
+  it('非越界空页（page=1 无数据）保持「暂无执行记录」口径（回归）', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([], 0) as never);
+    renderPage('/executions');
+    expect(await screen.findByText('暂无执行记录')).toBeTruthy();
+    expect(screen.queryByText(/当前页无数据/)).toBeNull();
   });
 });

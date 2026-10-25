@@ -368,6 +368,8 @@ export default {
   'execs.error.title': '执行记录加载失败',
   'execs.empty': '暂无执行记录',
   'execs.empty.noMatch': '没有匹配的执行记录',
+  'execs.empty.outOfRange': '当前页无数据（共 {{count}} 条执行记录）',
+  'execs.backToFirstPage': '回到第一页',
   'execs.count': '共 {{count}} 条',
   // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
   'execs.stablePaging': '稳定翻页',
