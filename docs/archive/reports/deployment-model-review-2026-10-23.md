@@ -348,6 +348,7 @@
 | 自主推进 R19（2026-10-25 上午）：P1 netrc 0600 断言 Windows 平台感知（NTFS 权限位映射 0o666 实证，win 侧放宽属主位断言、防线在实现侧 mode 参数）；CI 全绿恢复 | ✅ | 85d13088 |
 | 自主推进 R20（2026-10-25 上午）：MCP create 面对照（前提修正：无 create_task 工具，创建面=create_task_from_template 的 overrides 自由 overlay）——14 字段全可用零 schema 缺口、expectedUpdatedAt 为 update-only；**正确形态判断：客户端 zod 重述会拒掉后端白名单键，描述层对齐而非收紧**；get_task 返回面核查干净（15 字段全在、secrets 双层脱敏是设计） | ✅ | ef20de4f |
 | 自主推进 R21 收官（2026-10-25 上午 09:40）：**全包大回归快照**——admin-api 335/5881、admin-web 236/1957（含 TINFRA 守卫）、executor-node 53/1285、executor-python 1241/0 failed（净再 +9 为 P1 netrc 用例）、acf-cli 410、mcp 302；十守卫全绿。长程 goal（03:00-12:00）R1-R21 累计 **29 个提交**：agent-worker 5c 验证/executions presets/CLI truncated/retention 真缺陷/发布预检/UI-08 三页/memo 修复/服务层四缺陷/python 三缺陷/node 脱敏三漏网/MCP 两面对齐/warnings 66→0 三包 lint 全净/registry 巡查与 P1 凭据通道（E2E 实证）/bundle 守卫 bug/flake 双层根因+TINFRA 治本/atlas 五失实/Windows 权限位 | ✅ | R1-R21 全系 |
+| 自主推进续程 R23-R24（2026-10-25 上午 10:48-11:20）：游标化调研裁定**不做**（表龄 2 天单应用年增 ~4500 行/过滤已拆主场景/先例不省 COUNT/加性随做随有；触发条件与 1-2 人天方案要点登记），顺带修 events page 无 @Max(10000) 深 OFFSET 缺口；**E2E 覆盖地图**（设计稿落盘）——结构性盲区实证（两条大真库链对迁移 62-66 零覆盖、@Optional 静默降级与 63 缺列同款碰巧绿），top1 已实施：arch31 补真库落库断言 ⑤-⑧（**迁移 63 同型缺口的直接回归闸**+installedPackages 首次真库断言），真跑 docker 全链 24/0 | ✅ | 2ea869fc/2e1256cd |
 
 **第二处评审前提修正（随 R2 实证）**：P7 的「scheduled（仅部署）设备永远拿不到新版本」**不成立**——scheduled 部署完成即上报 RUNNING（`deploy.ts:1422-1427`），且 `detectStuckDeployments`（`app-deployment.service.ts:2392-2541`）只扫 PENDING/DEPLOYING/UPGRADING、**永不触碰 RUNNING 行**；默认覆盖面本就包含 scheduled 设备，实际缺口是覆盖面不被如实回显与 stopped 无 opt-in（R2 已补）。
 
