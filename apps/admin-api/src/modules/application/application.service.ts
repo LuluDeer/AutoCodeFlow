@@ -371,9 +371,16 @@ export class ApplicationService implements OnModuleInit {
     }
   }
 
-  /** D3-B-P1-2: best-effort 审计落证（fail-open，审计故障不阻断主链）。 */
+  /**
+   * D3-B-P1-2: best-effort 审计落证（fail-open，审计故障不阻断主链）。
+   * P2 溯源修复（2026-10-26 审计）：payload 增加 username 透传——此前只落
+   * userId，审计页把有操作人的真实用户操作显示成「系统（调度器/API）」，
+   * 溯源失真。与 event-subscription.service.writeAudit（user.username）同形态；
+   * deployFromGit 等无 actor 的机器面调用点不传 username，仍归「系统」。
+   */
   private async writeAudit(payload: {
     userId?: number;
+    username?: string;
     action: string;
     resourceId: string;
     detail?: Record<string, unknown>;
@@ -382,6 +389,7 @@ export class ApplicationService implements OnModuleInit {
     try {
       await this.audit.log({
         userId: payload.userId,
+        username: payload.username,
         action: payload.action,
         resource: "application",
         resourceId: payload.resourceId,
@@ -631,7 +639,8 @@ export class ApplicationService implements OnModuleInit {
 
   async create(
     dto: CreateApplicationDto,
-    user?: { id: number } | null,
+    // P2 溯源修复：user 结构放宽出 username（控制器传完整 AuthUser），审计随行。
+    user?: { id: number; username?: string } | null,
   ): Promise<Application> {
     const existing = await this.findByName(dto.name);
     if (existing) {
@@ -653,6 +662,7 @@ export class ApplicationService implements OnModuleInit {
     // D3-B-P1-2: 创建落证（applicationId + 操作人）。
     await this.writeAudit({
       userId: user?.id,
+      username: user?.username,
       action: "application.create",
       resourceId: saved.id,
       detail: { name: saved.name },
@@ -692,7 +702,8 @@ export class ApplicationService implements OnModuleInit {
   async update(
     id: string,
     dto: UpdateApplicationDto,
-    user?: { id: number; role: UserRole } | null,
+    // P2 溯源修复：user 结构放宽出 username（控制器传完整 AuthUser），审计随行。
+    user?: { id: number; role: UserRole; username?: string } | null,
     opts?: { systemBypass?: boolean },
   ): Promise<Application> {
     // NF-03: 写面属主守卫（先取原始行再校验，避免脱敏面误判）。
@@ -735,6 +746,7 @@ export class ApplicationService implements OnModuleInit {
     if (!opts?.systemBypass) {
       await this.writeAudit({
         userId: user?.id,
+        username: user?.username,
         action: "application.update",
         resourceId: id,
       });
@@ -812,7 +824,8 @@ export class ApplicationService implements OnModuleInit {
 
   async remove(
     id: string,
-    user?: { id: number; role: UserRole } | null,
+    // P2 溯源修复：user 结构放宽出 username（控制器传完整 AuthUser），审计随行。
+    user?: { id: number; role: UserRole; username?: string } | null,
   ): Promise<void> {
     const app = await this.findById(id);
     // NF-03: 写面属主守卫（同 update）+ AUTH-02 项目角色放行
@@ -861,6 +874,7 @@ export class ApplicationService implements OnModuleInit {
     // D3-B-P1-2: 删除落证（applicationId + 操作人 + 名称）。
     await this.writeAudit({
       userId: user?.id,
+      username: user?.username,
       action: "application.delete",
       resourceId: id,
       detail: { name: app.name },
@@ -874,6 +888,7 @@ export class ApplicationService implements OnModuleInit {
       app.name,
       deployments,
       user?.id,
+      user?.username,
     );
   }
 
@@ -982,6 +997,8 @@ export class ApplicationService implements OnModuleInit {
       executorId?: string | null;
     }[],
     userId?: number,
+    // P2 溯源修复：删除人 username 随扇出审计落证（同 remove 的 writeAudit）。
+    username?: string,
   ): Promise<void> {
     // R32-C1（类别 1）：分组键优先用**行身份**（executorId），地址只是没有行
     // 身份时的回落（存量迁移前派发的行、或部署行早于 executorId 列的历史）。
@@ -1056,6 +1073,7 @@ export class ApplicationService implements OnModuleInit {
     };
     await this.writeAudit({
       userId,
+      username,
       action: "application.remove.fanout",
       resourceId: appId,
       detail,

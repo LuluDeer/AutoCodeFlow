@@ -19,6 +19,10 @@ import { UserRole } from "../users/entities/user.entity";
 import { AiService } from "./ai.service";
 import { SystemConfigService } from "../config/config.service";
 import { IsString, IsIn, IsOptional } from "class-validator";
+// P3-1（2026-10-26 审计）：AI 配置数值字段保存面校验——非法值此前静默落库，
+// 运行时 parseInt 失败回退默认值，管理员被「保存成功」误导（见 saveConfig）。
+import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 // ARCH-23 / N-12（2026-10-07 A1 批）：AI 配置域响应契约。
 import {
   AiConfigResponseDto,
@@ -73,6 +77,32 @@ export class SaveAiConfigDto {
   qwenTimeoutMs?: string;
 }
 
+/**
+ * P3-1（2026-10-26 审计）：AI 配置的**数值键白名单**。
+ *
+ * 缺陷现场：qwenMaxTokens 填 "abc" 也能保存成功——落库后
+ * ai.service.getQwenMaxTokens/getQwenTimeoutMs 的 `parseInt 失败 → 静默回退
+ * 默认值` 兜底（原语义：>0 的整数才生效，见 ai.service.ts 482-492）让管理员
+ * 以为配置已生效，实际跑的是默认值。
+ *
+ * 修复口径（与运行时语义逐条对齐）：
+ *   · 必须是纯十进制数字串（^\d+$，trim 后判定）——"12abc"/"1e3"/"0x10"/
+ *     负数一律 400（Number() 会把 "1e3" 当 1000 放行，与管理员「填普通整数」
+ *     的意图不符）；
+ *   · min=1 —— 运行时判据就是 `n > 0`，这里不额外加政策性下限；
+ *   · qwenMaxTokens 上限 65536（默认 4096，DashScope 输出上限宽裕覆盖）；
+ *   · qwenTimeoutMs 上限 3,600,000（1 小时；默认 120000，视频理解场景上限）；
+ *   · 空串/缺省放行 —— ai.service.getAiConfig 把空值当「未配置」走 env/默认
+ *     回退，前端清空输入框 = 恢复默认，是合法操作。
+ */
+const AI_CONFIG_NUMERIC_FIELDS: Record<
+  string,
+  { min: number; max: number; label: string }
+> = {
+  qwenMaxTokens: { min: 1, max: 65_536, label: "qwenMaxTokens" },
+  qwenTimeoutMs: { min: 1, max: 3_600_000, label: "qwenTimeoutMs" },
+};
+
 @ApiTags("AI Config")
 @ApiBearerAuth("JWT")
 @UseGuards(JwtAuthGuard)
@@ -106,6 +136,22 @@ export class AiController {
   @ApiOperation({ summary: "将 AI 配置保存到系统配置存储" })
   @ApiOkResponse({ type: AiConfigSaveResponseDto })
   async saveConfig(@Body() dto: SaveAiConfigDto) {
+    // P3-1: 数值键白名单校验（非法 400 可读，不再静默落库）。
+    // 形态闸用纯十进制数字串（^\d+$）而非 Number()——"1e3"/"0x10" 会被
+    // Number 当作合法数值放行，与「表单里填的是普通整数」的管理员意图不符。
+    for (const [field, range] of Object.entries(AI_CONFIG_NUMERIC_FIELDS)) {
+      const raw = (dto as unknown as Record<string, string | undefined>)[field];
+      const trimmed = raw?.trim() ?? "";
+      if (trimmed === "") continue;
+      const n = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+      if (Number.isNaN(n) || n < range.min || n > range.max) {
+        throw new AppError(ErrorCode.AI_CONFIG_NUMBER_INVALID, {
+          field: range.label,
+          min: range.min,
+          max: range.max,
+        });
+      }
+    }
     const items: Array<{
       key: string;
       value: string;

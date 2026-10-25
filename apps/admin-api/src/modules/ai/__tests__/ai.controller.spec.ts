@@ -4,6 +4,7 @@ import { Reflector } from "@nestjs/core";
 import { AiController } from "../ai.controller";
 import { AiService } from "../ai.service";
 import { SystemConfigService } from "../../config/config.service";
+import { AppError } from "../../../common/errors/app-error";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { UserRole } from "../../users/entities/user.entity";
@@ -132,6 +133,63 @@ describe("AiController (N11)", () => {
       expect(aiSvc.hasApiKeyForProvider).toHaveBeenCalledTimes(1);
       expect(result.hasApiKey).toBe(true);
       expect(JSON.stringify(result)).not.toContain("sk-super-secret");
+    });
+  });
+
+  // P3-1（2026-10-26 审计）：AI 配置数值字段保存面校验——"abc" 此前能保存
+  // 成功，运行时 parseInt 失败静默回退默认值，管理员被「保存成功」误导。
+  describe("saveConfig numeric whitelist (P3-1)", () => {
+    const baseDto = { provider: "qwen" } as const;
+
+    const errOf = async (p: Promise<unknown>): Promise<AppError> =>
+      p.then(
+        () => {
+          throw new Error("expected rejection");
+        },
+        (e) => e as AppError,
+      );
+
+    it("非整数数值字段（abc / 12abc / 1e3 / 越界）→ 400 AI_CONFIG_NUMBER_INVALID，不落库", async () => {
+      for (const bad of ["abc", "12abc", "1e3", "0", "-5", "70000"]) {
+        sysCfg.batchUpsert.mockClear();
+        const err = await errOf(
+          controller.saveConfig({ ...baseDto, qwenMaxTokens: bad }),
+        );
+        expect(err.errorCode).toBe("AI_CONFIG_NUMBER_INVALID");
+        expect(err.getStatus()).toBe(400);
+        expect(sysCfg.batchUpsert).not.toHaveBeenCalled();
+      }
+    });
+
+    it("qwenTimeoutMs 同口径校验（非整数/越界 → 400）", async () => {
+      for (const bad of ["abc", "0", "3600001"]) {
+        const err = await errOf(
+          controller.saveConfig({ ...baseDto, qwenTimeoutMs: bad }),
+        );
+        expect(err.errorCode).toBe("AI_CONFIG_NUMBER_INVALID");
+      }
+      expect(sysCfg.batchUpsert).not.toHaveBeenCalled();
+    });
+
+    it("合法整数与空串放行：值原样进 batchUpsert（空串 = 走默认回退语义）", async () => {
+      sysCfg.batchUpsert.mockResolvedValue([]);
+
+      await controller.saveConfig({
+        ...baseDto,
+        qwenMaxTokens: "8192",
+        qwenTimeoutMs: "",
+      });
+
+      expect(sysCfg.batchUpsert).toHaveBeenCalledTimes(1);
+      const items = sysCfg.batchUpsert.mock.calls[0][0] as Array<{
+        key: string;
+        value: string;
+      }>;
+      const maxTokens = items.find((i) => i.key === "ai.qwenMaxTokens");
+      const timeout = items.find((i) => i.key === "ai.qwenTimeoutMs");
+      expect(maxTokens?.value).toBe("8192");
+      // 空串不是 nullish —— 原样落库（运行时 getAiConfig 把空值当未配置）。
+      expect(timeout?.value).toBe("");
     });
   });
 });

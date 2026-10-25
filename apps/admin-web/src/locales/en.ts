@@ -1083,6 +1083,8 @@ export default {
   'sysSettings.ai.qwenMaxTokensTooltip': "Independent of OpenAI's 500-token cap — multimodal reasoning needs a larger output budget",
   'sysSettings.ai.qwenTimeoutLabel': 'Request timeout (ms)',
   'sysSettings.ai.qwenTimeoutTooltip': 'Video understanding is much slower than plain text (upload + inference can take tens of seconds); default 120s',
+  // P3-1: AI numeric field validation message (same contract as backend AI_CONFIG_NUMBER_INVALID)
+  'sysSettings.ai.numberInvalid': '{{field}} must be an integer between {{min}} and {{max}} (leave empty to restore the default)',
 
   'security.totp.title': 'Two-Factor Authentication (TOTP)',
   'security.totp.intro': 'Once enabled, login requires "password + authenticator code" two-factor verification. Use any TOTP authenticator such as Google Authenticator or Microsoft Authenticator.',

@@ -969,6 +969,19 @@ export const APPLICATION_CODES = {
     en: "Refusing non-http(s) media URL (scheme not allowed): {{url}}",
   },
 
+  /**
+   * P3-1（2026-10-26 审计）：AI 配置数值字段（qwenMaxTokens/qwenTimeoutMs）
+   * 此前保存面零校验——"abc" 落库后运行时 parseInt 失败**静默回退默认值**，
+   * 管理员被「保存成功」误导。现在保存面直接 400（可解析整数 + 语义范围，
+   * 空串放行 = 恢复默认）。用户在表单里填错属 400 语义，与平台侧拒绝的
+   * AI_MEDIA_URL_SCHEME_NOT_ALLOWED（500）分开。
+   */
+  AI_CONFIG_NUMBER_INVALID: {
+    status: 400,
+    zh: "AI 配置项 {{field}} 必须是 {{min}} ~ {{max}} 之间的整数（留空恢复默认）",
+    en: "AI config {{field}} must be an integer between {{min}} and {{max}} (leave empty to restore the default)",
+  },
+
   // ── 任务运行时注册表（modules/runtime/**）───────────────────────────
   /**
    * ARCH-25：重复注册同名 runtime（未显式声明 override）——防止插件静默改写

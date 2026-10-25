@@ -460,12 +460,18 @@ export default function AuditLogPage() {
       width: 120,
       // AUDIT-02：调度器/API 等系统行为无登录用户——空白单元格改为显式
       // 「系统」Tag，此前看起来像数据缺失
-      render: (v: string, r: AuditLog) => (
-        <Space orientation="vertical" size={0}>
-          {v ? <Typography.Text strong>{v}</Typography.Text> : <Tag>{t('audit.operator.system')}</Tag>}
-          {r.ip && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.ip}</Typography.Text>}
-        </Space>
-      ),
+      // P2 溯源修复（2026-10-26）：存量行 username 为空但 userId 非空时，
+      // 显示「#<userId>」可追溯形态而非误标「系统」——application 域旧审计行
+      // 只落了 userId。「系统」Tag 仅留给真正无操作人（userId 也为空）的行。
+      render: (v: string, r: AuditLog) => {
+        const operator = v || (r.userId != null ? `#${r.userId}` : '');
+        return (
+          <Space orientation="vertical" size={0}>
+            {operator ? <Typography.Text strong>{operator}</Typography.Text> : <Tag>{t('audit.operator.system')}</Tag>}
+            {r.ip && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.ip}</Typography.Text>}
+          </Space>
+        );
+      },
     },
     {
       title: t('audit.col.action'),
@@ -717,7 +723,8 @@ export default function AuditLogPage() {
                     <Tag color={RESULT_COLOR[r.result] ?? 'default'} style={{ marginInlineEnd: 0 }}>{resultLabels[r.result] ?? r.result}</Tag>
                   </div>
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                    {r.username ? r.username : t('audit.operator.system')}
+                    {/* P2 溯源修复：username 为空但 userId 非空 → 「#<userId>」回退（同表格列）。 */}
+                    {r.username || (r.userId != null ? `#${r.userId}` : '') || t('audit.operator.system')}
                     {r.ip ? ` · ${r.ip}` : ''}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>

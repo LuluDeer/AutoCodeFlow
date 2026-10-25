@@ -1,4 +1,5 @@
 import { Form, Input, Button, Typography, Card, Alert } from 'antd';
+import type { InputRef } from 'antd';
 import { message } from '../utils/toast';
 import { UserOutlined, LockOutlined, ThunderboltOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -38,9 +39,18 @@ export default function LoginPage() {
   // AUTH-04：SSO 可用性（公开端点，失败静默——登录页不因它阻塞）
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
+  // P3-3（2026-10-26 审计）：登录失败后清空并聚焦密码框所需——受控清空走
+  // Form 实例，聚焦走 InputRef（antd Input.Password ref 即 InputRef 形态）。
+  const [form] = Form.useForm<{ username: string; password: string }>();
+  const passwordRef = useRef<InputRef>(null);
   useEffect(() => {
-    if (formError) errorRef.current?.focus();
-  }, [formError]);
+    if (!formError) return;
+    // P3-3：登录段失败改由 handleLogin catch 聚焦**已清空的密码框**（用户
+    // 直接重输），错误内容仍由 role=alert 即时播报，errorRef 不再抢焦点。
+    // TOTP 段保持既有「错误块接管焦点」行为（动态码框无清空重填语义变更）。
+    if (!totpStage) return;
+    errorRef.current?.focus();
+  }, [formError, totpStage]);
   useEffect(() => {
     authApi
       .oidcStatus()
@@ -76,6 +86,10 @@ export default function LoginPage() {
     } catch (err: unknown) {
       // UI-12：错误落到页内 role=alert 块（替代瞬时 toast）
       setFormError(getErrMsg(err, t('login.badCredentials')));
+      // P3-3：失败后清空密码框并聚焦（用户名保留）——错误密码不再留在输入框
+      // 里，用户落点即重输位置；错误内容由上方 role=alert 块承载。
+      form.setFieldValue('password', '');
+      passwordRef.current?.focus();
     } finally {
       setLoading(false);
     }
@@ -246,6 +260,7 @@ export default function LoginPage() {
           ) : (
           <Form
             layout="vertical"
+            form={form}
             onFinish={handleLogin}
             size="large"
             aria-labelledby="login-form-title"
@@ -270,6 +285,7 @@ export default function LoginPage() {
               rules={[{ required: true, message: t('login.password.required') }]}
             >
               <Input.Password
+                ref={passwordRef}
                 prefix={<LockOutlined style={{ color: '#ccc' }} />}
                 placeholder={t('login.password.placeholder')}
                 autoComplete="current-password"

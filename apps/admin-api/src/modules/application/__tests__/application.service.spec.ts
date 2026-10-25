@@ -1464,13 +1464,19 @@ describe("ApplicationService.remove — fanout audit + notify (DEEP-AUDIT B·4.3
       { id: "dep-2", executorAddress: "exec-2:8100" },
     ]);
 
-    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+    await service.remove("app-1", {
+      id: 1,
+      role: UserRole.ADMIN,
+      username: "ops",
+    });
 
     const fanoutCall = audit.log.mock.calls.find(
       (c) => c[0]?.action === "application.remove.fanout",
     );
     expect(fanoutCall).toBeDefined();
     expect(fanoutCall[0].resourceId).toBe("app-1");
+    // P2 溯源修复：扇出审计随删除人 username 落证（此前只有 userId）。
+    expect(fanoutCall[0].username).toBe("ops");
     expect(fanoutCall[0].detail).toMatchObject({
       appId: "app-1",
       appName: "Demo",
@@ -1571,16 +1577,22 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     service = module.get(ApplicationService);
   });
 
-  it("create：落证 application.create（含 userId 与 resourceId）", async () => {
+  it("create：落证 application.create（含 userId/username 与 resourceId）", async () => {
     appRepo.findOne.mockResolvedValue(null);
     const saved = { id: "app-new", name: "Demo", ownerUserId: 9 };
     appRepo.save.mockResolvedValue(saved);
 
-    await service.create({ name: "Demo" } as never, { id: 9 });
+    // P2 溯源修复：控制器传完整 AuthUser，审计行必须带 username（此前只落
+    // userId，审计页把真实用户操作误标「系统」）。
+    await service.create({ name: "Demo" } as never, {
+      id: 9,
+      username: "ops",
+    });
 
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 9,
+        username: "ops",
         action: "application.create",
         resource: "application",
         resourceId: "app-new",
@@ -1588,7 +1600,7 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     );
   });
 
-  it("update：落证 application.update（systemBypass 时不落证）", async () => {
+  it("update：落证 application.update（含 username；systemBypass 时不落证）", async () => {
     const row = { id: "app-1", name: "Demo", ownerUserId: 9, env: null };
     appRepo.findOne.mockResolvedValue(row);
     appRepo.save.mockResolvedValue(row);
@@ -1596,10 +1608,12 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     await service.update("app-1", { name: "Demo2" } as never, {
       id: 9,
       role: UserRole.ADMIN,
+      username: "ops",
     });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 9,
+        username: "ops",
         action: "application.update",
         resourceId: "app-1",
       }),
@@ -1612,20 +1626,33 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     expect(audit.log).not.toHaveBeenCalled();
   });
 
-  it("remove：落证 application.delete（含 name detail）", async () => {
+  it("remove：落证 application.delete（含 username 与 name detail；扇出审计同带 username）", async () => {
     const row = { id: "app-1", name: "Demo", ownerUserId: 9, packageUrl: null };
     appRepo.findOne.mockResolvedValue(row);
     appRepo.remove.mockResolvedValue(row);
 
-    await service.remove("app-1", { id: 9, role: UserRole.ADMIN });
+    await service.remove("app-1", {
+      id: 9,
+      role: UserRole.ADMIN,
+      username: "ops",
+    });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 9,
+        username: "ops",
         action: "application.delete",
         resourceId: "app-1",
         detail: expect.objectContaining({ name: "Demo" }),
       }),
     );
+    // P2 溯源修复：删除扇出（application.remove.fanout）同样落删除人 username。
+    const fanoutCall = audit.log.mock.calls.find(
+      (c) => c[0]?.action === "application.remove.fanout",
+    );
+    if (fanoutCall) {
+      expect(fanoutCall[0].username).toBe("ops");
+      expect(fanoutCall[0].userId).toBe(9);
+    }
   });
 
   it("deployFromGit：落证 application.deploy（含 git 元信息）", async () => {

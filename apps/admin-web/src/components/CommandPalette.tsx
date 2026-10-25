@@ -50,6 +50,9 @@ import type { TFunction } from 'i18next';
 import '../i18n';
 import { Input, Modal, Typography, theme } from 'antd';
 import { message } from '../utils/toast';
+// P3-2（2026-10-26 审计）：执行记录行的开始时间此前裸 ISO 串（与全站格式
+// 不一致），统一走共享 formatDateTime（locale 跟随 i18n）。
+import { formatDateTime } from '../utils/timeFormat';
 import { LAYOUT_TOKENS } from '../theme/tokens';
 import type { InputRef } from 'antd';
 import {
@@ -431,7 +434,11 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
           id: x.id,
           taskId: x.taskId,
           title: x.taskName || x.taskId,
-          description: [x.status, x.startTime].filter(Boolean).join(' · '),
+          // P3-2：startTime 此前裸 ISO 串（如 `failed · 2026-10-25T15:35:00.014Z`），
+          // 与全站时间格式不一致——统一 formatDateTime（locale 跟随 i18n）。
+          description: [x.status, x.startTime ? formatDateTime(x.startTime) : null]
+            .filter(Boolean)
+            .join(' · '),
         })),
       executor: results.executor.items
         .filter((e) => contains(e.appName) || contains(e.address))

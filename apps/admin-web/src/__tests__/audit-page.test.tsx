@@ -142,8 +142,12 @@ beforeEach(() => {
         detail: { before: { a: 1 }, after: { a: 2 } },
       }),
       makeLog({ id: 3, action: 'executor.delete', resource: 'executor', resourceId: undefined, detail: {} }),
+      // P2 溯源修复：存量行 username 为空但 userId 非空 → 显示「#<userId>」
+      makeLog({ id: 4, action: 'application.update', resource: 'application', username: null, userId: 7, ip: undefined }),
+      // 真正无操作人（username/userId 均空）→ 仍显示「系统」Tag
+      makeLog({ id: 5, action: 'application.deploy', resource: 'application', username: null, userId: null, ip: undefined }),
     ],
-    total: 3,
+    total: 5,
   } as never);
 });
 
@@ -163,8 +167,12 @@ describe('AuditLogPage 列表渲染（QA-03）', () => {
     expect(screen.getAllByText(/abcd1234…/).length).toBeGreaterThanOrEqual(1);
     // 资源ID 缺省显示 -
     expect(screen.getAllByText('-').length).toBeGreaterThanOrEqual(1);
+    // P2 溯源修复：username 为空但 userId=7 的存量行显示「#7」可追溯形态，
+    // 不再误标「系统」；真正无操作人行（userId 也空）才显示系统 Tag。
+    expect(screen.getByText('#7')).toBeTruthy();
+    expect(screen.getByText('系统（调度器/API）')).toBeTruthy();
     // 分页 total
-    expect(screen.getByText('共 3 条')).toBeTruthy();
+    expect(screen.getByText('共 5 条')).toBeTruthy();
   });
 
   it('detail 非空渲染「查看」按钮，空/缺省 detail 不渲染', async () => {

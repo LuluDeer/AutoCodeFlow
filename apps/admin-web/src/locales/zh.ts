@@ -1094,6 +1094,8 @@ export default {
   'sysSettings.ai.qwenMaxTokensTooltip': '独立于 OpenAI 的 500 令牌上限——多模态推理需要更大的输出预算',
   'sysSettings.ai.qwenTimeoutLabel': '请求超时（毫秒）',
   'sysSettings.ai.qwenTimeoutTooltip': '视频理解延迟显著高于纯文本（上传 + 推理可能数十秒），默认 120 秒',
+  // P3-1：AI 数值字段校验失败文案（前端表单 rules 与后端 AI_CONFIG_NUMBER_INVALID 同口径）
+  'sysSettings.ai.numberInvalid': '{{field}}必须是 {{min}} ~ {{max}} 之间的整数（留空恢复默认值）',
 
   'security.totp.title': '两步验证（TOTP）',
   'security.totp.intro': '开启后登录需要「密码 + 验证器动态码」双因子。请使用 Google Authenticator、 Microsoft Authenticator 等任意 TOTP 验证器。',

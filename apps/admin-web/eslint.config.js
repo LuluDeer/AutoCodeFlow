@@ -81,6 +81,10 @@ export default tseslint.config(
             // ExecutionInfoCard 常量（ui09-mobile-pages / antd-deprecation-clean 锚定；
             // 常量对象字面量不在 allowConstantExport 覆盖内，登记名字豁免）
             'UI09_DESCRIPTIONS_COLUMN',
+            // settings AI 配置数值校验（P3-1，settings.ai.test 锚定；
+            // 仅测试消费——组件间共享需挪 utils/）
+            'isValidAiNumber',
+            'AI_NUMBER_FIELDS',
           ],
         },
       ],
