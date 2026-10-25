@@ -10,7 +10,7 @@
 | 回调示例 | Python | 能力探测（`ctx.callback.enabled`）+ `report_success`/`report_failure` 双路径 + `CallbackDisabledError` 降级 | [`examples/callback-report`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/callback-report) |
 | 回调示例 | Node | 同上对等实现（`ctx.http.enabled` + `ctx.reportSuccess`/`reportFailure`） | [`examples/callback-report-node`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/callback-report-node) |
 | 私服依赖示例 | Python | 任务 `requirements` + executor `PYPI_REGISTRY_URL` → per-task venv `uv pip install --index-url` | [`examples/private-registry-deps`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/private-registry-deps) |
-| 私服依赖示例 | Node | 任务 `requirements` + executor `NPM_REGISTRY_URL`（可选 `NPM_REGISTRY_TOKEN`）→ 隔离目录 `.npmrc` + `npm install --prefix` | [`examples/private-registry-deps-node`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/private-registry-deps-node) |
+| 私服依赖示例 | Node | 任务 `requirements` + executor `NPM_REGISTRY_URL`（凭据 `NPM_REGISTRY_TOKEN` 或 `NPM_REGISTRY_USER/PASS` 任一，compose 缺省回落 `REGISTRY_USER/PASS`）→ 隔离目录 `.npmrc` + `npm install --prefix` | [`examples/private-registry-deps-node`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/private-registry-deps-node) |
 
 另有 [`examples/desktop-automation`](https://github.com/LuluDeer/AutoCodeFlow/tree/develop/examples/desktop-automation)
 （桌面自动化/RPA 任务集合，浏览器与 GUI 自动化多脚本，非 ECO-01 四例）。
@@ -71,7 +71,7 @@ admin 下发任务(requirements)
 |------|------|------|
 | `PYPI_REGISTRY_URL` | executor-python 启动环境 | 私服 PyPI 地址（如 `http://registry-pypi:3110/simple`）。未配置走公共 PyPI；平台内置私服见 `apps/registry-pypi` |
 | `NPM_REGISTRY_URL` | executor-node 启动环境 | 私服 npm 地址（如 `http://registry-npm:4873`）。未配置走公共 npm；内置私服见 `apps/registry-npm`（verdaccio） |
-| `NPM_REGISTRY_TOKEN` | 同上（可选） | 私服对 `**` 的 access 是 `$authenticated`（匿名安装必 401）时必配 |
+| `NPM_REGISTRY_TOKEN` / `NPM_REGISTRY_USER`/`NPM_REGISTRY_PASS` | 同上（二者配一即可） | 私服对 `**` 的 access 是 `$authenticated`（匿名安装必 401）时必配其一；token 优先（`_authToken` 行），user/pass 写 `_auth`（Basic）行。compose 缺省回落 `REGISTRY_USER/PASS` |
 | 私有包已发布 | 私服 | pypi 侧演示包 `acfdemopkg` / `example_pkg`；npm 侧为任务引用的 scoped 包 |
 
 **执行器侧安装细节（源码证据）**：
@@ -82,7 +82,8 @@ admin 下发任务(requirements)
   option 形条目（防 `--index-url http://evil` 劫持包索引）。
 - executor-node `apps/executor-node/src/routes/execute.ts`：生成 `.npmrc`
   （`@autoflow`/`@autocodeflow` 双 scope 行 + 非 scoped 包 `registry=` 行 +
-  `_authToken` 行）后 `npm install --prefix <隔离目录>`，`NODE_PATH` 指向
+  凭据行：token 走 `_authToken`、未配 token 时 `NPM_REGISTRY_USER/PASS`
+  走 `_auth`（Basic）行）后 `npm install --prefix <隔离目录>`，`NODE_PATH` 指向
   隔离目录。**scoped 包注意**：scope 行只覆盖平台双 scope，你们自己的
   scope 依赖私服回源行为或把 `NPM_REGISTRY_URL` 指向能解析该 scope 的私服。
 - requirements 仅对 **entrypoint（打包）任务**生效，glue 脚本任务忽略。

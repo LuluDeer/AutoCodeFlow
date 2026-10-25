@@ -40,7 +40,7 @@ docker compose up -d
 docker compose ps   # 所有服务 healthy
 ```
 
-浏览器打开 http://localhost，用 `admin` / `Admin@123456` 登录。
+浏览器打开 http://localhost，用 `admin` / `INITIAL_ADMIN_PASSWORD` 登录——密码即部署时 `.env` 里设置的 `INITIAL_ADMIN_PASSWORD` 值（**无默认口令**：compose 以 `:?` 语法强制必填，`.env.example` 的 `change_me_immediately` 仅为占位示例，部署后立即修改）。
 
 ### 2. 在管理后台直接写脚本（最快路径）
 

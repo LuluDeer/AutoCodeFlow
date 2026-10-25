@@ -70,8 +70,8 @@ compose 默认注入：executor-python `PYPI_REGISTRY_URL=http://registry-pypi:8
 
 ## 健康检查与本地开发
 
-- 健康端点：`GET /health`（免认证）→ `{"status":"ok","service":"pypi-registry"}`；compose 侧服务名 `registry-pypi`。
-- 本地开发：`pip install -r requirements.txt && uvicorn main:app --port 8003`（`PACKAGES_DIR` 不设时用仓库内 `apps/registry-pypi/packages`，缺省凭据会打 stderr 告警）。
+- 健康端点：`GET /health`（免认证）→ `{"status":"ok","service":"pypi-registry"}`；**P3-3 起 503 = 存储不可写探针失败**（`pypi_data` 卷只读/属主漂移/写满时返回 `{"status":"unavailable",...}`，compose healthcheck 非 2xx 即 unhealthy）；compose 侧服务名 `registry-pypi`。
+- 本地开发：`pip install -r requirements.txt && uvicorn main:app --port 8003`（`PACKAGES_DIR` 不设时用仓库内 `apps/registry-pypi/packages`；缺省/弱凭据**拒绝启动**——E-10 fail-closed，未配 `REGISTRY_PASS` 或仍用内置默认弱口令即退出，仅 `ALLOW_DEFAULT_CREDS=1` 逃生阀放行本地开发）。
 - 数据备份：备份 `PACKAGES_DIR` 目录即可（wheel 与 `.sha256` sidecar 同目录存放，无数据库）。
 - 常见故障：
   - **pip/uv 安装 401** → 索引与下载也要求 Basic（S9），客户端需带 `REGISTRY_USER/PASS` 或改部署姿态；

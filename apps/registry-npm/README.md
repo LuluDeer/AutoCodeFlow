@@ -86,11 +86,15 @@ docker run --rm httpd:alpine htpasswd -Bbn <user> '<pass>' >> <volume>/htpasswd
 
 ## 使用
 
-### 1. 创建用户（首次，自助注册开启时）
+### 1. 用户与凭据（自助注册已关闭，2026-10-26 N-3）
+
+`max_users: -1` 后 **npm adduser 不能注册新用户**——新用户由运维离线写入
+htpasswd，见上文「运维：离线新增用户（max_users=-1 后的唯一通道）」。
+既有用户在宿主机登录换 token：
 
 ```bash
-npm adduser --registry http://<host>:4873/
-# 交互式输入 username / password / email；凭证写入 ~/.npmrc（_authToken）
+npm login --registry http://<host>:4873/
+# 用既有 username / password 登录；凭证写入 ~/.npmrc（_authToken）
 ```
 
 ### 2. 安装
@@ -131,7 +135,8 @@ CI 的 `npm-audit` 仍显式 `--registry=https://registry.npmjs.org`，不受私
 
 - `curl /-/ping` 无响应：`docker compose logs registry-npm`；多为
   config.yaml 语法错误或 4873 端口占用。
-- 发布 401/403：确认 `npm adduser` 成功、`.npmrc` 中 token 对应
+- 发布 401/403：确认 htpasswd 中存在该用户（`max_users: -1` 后由运维离线
+  新增，`npm adduser` 不再能注册）、`.npmrc` 中 token/凭据对应
   registry 地址与 `--registry` 完全一致（含末尾斜杠与协议）。
 - 容器重建后用户丢失：历史配置曾把 htpasswd 放在 conf 下（不持久）；
   现指向 storage 卷，若仍复现请检查 `npm_data` 卷是否存在。

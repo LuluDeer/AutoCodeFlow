@@ -305,10 +305,10 @@ Content-Type: application/json
 |------|------|:--------:|------|
 | GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 与 `approvalStatus`（DEP-04：pending_approval/approved/rejected/cancelled）过滤（`page` 默认 1，`pageSize` 默认 20、最大 100）——DEP-01 后作为过渡期 alias 保留，「按版本聚合部署信息」的统一视图用 `/applications/:id/releases` |
 | GET | `/app-deployments/:id` | 是 | 获取部署详情 |
-| GET | `/app-deployments/applications/:appId/events` | 是 | R4（部署模型评审 §4.1A）：应用的不可变部署事件流（append-only）。每个部署域写动作（deploy 新建/复用、审批三动作、upgrade、stop、remove、卡死扫死）一行短事实快照；分页 `page` 默认 1，`pageSize` 默认 50、上限 200，按 `createdAt` 倒序。事件无外键、比部署行活得久（删除部署行后事件保留）。读面登录即可（与部署列表一致） |
+| GET | `/app-deployments/applications/:appId/events` | 是 | R4（部署模型评审 §4.1A）：应用的不可变部署事件流（append-only）。每个部署域写动作（deploy 新建/复用、审批三动作、upgrade、stop、remove、卡死扫死——2min cron：PENDING 5min、DEPLOYING/UPGRADING 30min 无更新）一行短事实快照；分页 `page` 默认 1，`pageSize` 默认 50、上限 200，按 `createdAt` 倒序。事件无外键、比部署行活得久（删除部署行后事件保留）。读面登录即可（与部署列表一致） |
 | POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器。**DEP-04：应用开启 `approvalRequired` 时本端点不派发**——冻结为 `approvalStatus=pending_approval` 的行（响应即带该状态），待审批通过后才推送执行器；待审批行占用 in-flight 名额（同应用至多一个待审批/在途部署，冲突 409） |
 | POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade）。DEP-04：待审批行返回 409（未派发，出口仅审批三动作） |
-| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署。DEP-04：待审批行返回 409 |
+| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署。DEP-04：待审批行返回 409；P2-1（2026-10-25）：在途行（pending/deploying/upgrading）同样 409 `APP_DEPLOYMENT_STOP_IN_FLIGHT`——推送在途时被 stop 会落成「行永久 STOPPED 而设备进程在跑」，在途行的出口只有它自身的完成/失败链 |
 | GET | `/app-deployments/approvals/pending` | 是* | DEP-04：待审批待办列表（ADMIN）——等价 `GET /app-deployments?approvalStatus=pending_approval` |
 | POST | `/app-deployments/:id/approval/approve` | 是* | DEP-04：批准待审批部署（ADMIN）。第二人规则：审批者 ≠ 提交者（`approvalMeta.requestedBy`），违反 403；通过后走与 deploy 相同的推送链。body 可选 `{ reason ≤200 }` 进审批留痕与审计（`deployment.approve`） |
 | POST | `/app-deployments/:id/approval/reject` | 是* | DEP-04：拒绝待审批部署（ADMIN）。第二人规则同上；行落 FAILED 终态（离开 in-flight），reason 进 `approvalMeta`/`statusMessage` 与审计（`deployment.reject`）。body 可选 `{ reason ≤200 }` |
@@ -411,7 +411,7 @@ Content-Type: application/json
 | `version` | string ≤64 | — | 版本定向（渐进回滚）。**等价于 `set-current-version` + `deploy-version` 的组合**（先按快照恢复应用当前字段再下发，会改写中台当前版本）——R1（§4.2）拆分出的两个端点是更明确的表达，建议改用新端点 |
 | `includeStopped` | boolean | `false` | **R2（§4.4）**：all 策略下把 `stopped` 部署行一并纳入升级（stopped 可能是人为停用，故显式 opt-in）。canary 策略忽略该参数 |
 
-**覆盖面（R2 §4.4，实证口径）**：默认升级目标 = 该应用**全部 RUNNING 部署行**。`scheduled`（仅部署待触发）行在执行器侧部署完成时即上报 `running`（`deploy.ts` scheduled 分支），行稳态就是 `RUNNING`，且卡死扫描（`detectStuckDeployments`）只扫 `pending/deploying/upgrading`、永不触碰 RUNNING 行——因此 scheduled 设备**默认就在覆盖内**（升级 = 拉新包切 current，不启动进程）。真正掉出默认覆盖的：`stopped`（opt-in 后纳入）、`failed`（恒排除——失败多与环境相关，应走显式重新部署）、在途行 `pending/deploying/upgrading`（不可重入，**跳过并进 `skipped` 明细，不抛错**）。
+**覆盖面（R2 §4.4，实证口径）**：默认升级目标 = 该应用**全部 RUNNING 部署行**。`scheduled`（仅部署待触发）行在执行器侧部署完成时即上报 `running`（`deploy.ts` scheduled 分支），行稳态就是 `RUNNING`，且卡死扫描（`detectStuckDeployments`）只扫 `pending/deploying/upgrading`、永不触碰 RUNNING 行（2min cron 一轮：PENDING 超 5min、DEPLOYING/UPGRADING 超 30min 无更新即判 FAILED；待审批行与 pull 未决命令行豁免）——因此 scheduled 设备**默认就在覆盖内**（升级 = 拉新包切 current，不启动进程）。真正掉出默认覆盖的：`stopped`（opt-in 后纳入）、`failed`（恒排除——失败多与环境相关，应走显式重新部署）、在途行 `pending/deploying/upgrading`（不可重入，**跳过并进 `skipped` 明细，不抛错**）。
 
 **响应**：`all` 模式返回既有 `{ok, total, succeeded, failed}` **只增不改**——R2 起恒新增两个键：
 
@@ -497,12 +497,12 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 - **A2-B 起为运行时强制**：声明了「属主校验」的写端点若实际未执行校验，
   端点直接 `500`（缺省拒绝），而不是静默放行——详见
   `apps/admin-api/src/common/guards/write-guard-enforcement.interceptor.ts`。
-| POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数） |
+| POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数）。语义注记（F-10）：**PAUSED 任务照常成功**——暂停只停调度（移除定时器），手动/API/依赖触发不受影响，trigger 仅排除 DELETED |
 | GET | `/tasks/:id/webhook` | 是 | 查询任务 webhook 状态（`{ enabled, url }`；secret 永不回传，FEAT-21） |
 | POST | `/tasks/:id/webhook/enable` | 是 | 启用任务 webhook——生成密钥一次性回显 `{ url, secret }`（对已启用任务等价轮换） |
 | POST | `/tasks/:id/webhook/rotate` | 是 | 轮换任务 webhook 密钥（旧密钥立即失效，新密钥一次性回显） |
 | POST | `/tasks/:id/webhook/disable` | 是 | 停用任务 webhook（清空密钥，签名请求即刻 401） |
-| POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行） |
+| POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行）。语义注记（F-10）：暂停后手动/API/依赖触发**照常成功**——暂停只停调度，不拦显式触发 |
 
 **任务 webhook 入站触发（FEAT-21）：**
 
@@ -601,7 +601,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | `triggerType` | string | 是 | `cron` / `fixed_rate` / `api` / `manual` |
 | `cronExpression` | string | 条件 | `triggerType=cron` 时使用的 5 字段 Cron 表达式 |
 | `timezone` | string | 否 | Cron 调度使用的 IANA 时区，例如 `Asia/Shanghai`；留空使用服务端默认时区 |
-| `fixedRate` | number | 条件 | `triggerType=fixed_rate` 时的执行间隔，单位秒 |
+| `fixedRate` | number | 条件 | `triggerType=fixed_rate` 时的执行间隔，单位秒；**上限 2147483 秒**（DTO `@Max` 强制：`tasks.fixedRate` 为 int4 列，且调度侧周期 ×1000 喂给 `setInterval`/Redis PEXPIRE 受 int32/int4 毫秒封顶） |
 | `maintenanceWindows` | MaintenanceWindow[] | 否 | 任务级维护窗口（FEAT-06）：数组形态 `[{ start, end, description? }]`，`start`/`end` 均为 5 字段 Cron——`start` 最近触达时刻开窗、`end` 最近触达时刻关窗（半开区间 `[start, end)`）。命中窗口的**计划触发**（cron/fixed_rate/错失补偿等调度入队路径）被跳过并计入 `/metrics/scheduler` 的 `triggersSkippedMaintenance`，不建执行记录；手动/API 触发不受窗口约束。上限 10 条；窗口 Cron 按服务端本地时间评估。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` / `[]` = 清空 |
 | `timeoutSeconds` | number | 否 | 任务执行超时，单位秒；推荐使用该字段 |
 | `timeout` | number | 否 | 兼容旧字段，语义同 `timeoutSeconds` |
@@ -609,7 +609,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | `timeoutWarnRatio` | number | 否 | 超时预警阈值（CORE-04）：占 `timeout` 的百分数，整数 0–90。执行运行时长达到 `timeout × ratio / 100` 时发送一次 WARNING 级预警通知（复用 `notifyTimeout` 通道，受任务级静默窗口约束），每个执行**至多一次**；例如 `timeout=600`、`ratio=80` → 运行到 480 秒时预警。缺省/`null` = 未启用（存量任务零新通知）；运行态归一化时非 0–90 整数一律视为未启用 |
 | `estimatedDurationSec` | number | 否 | 预估执行时长秒数（CORE-05）：整数 0–604800（7 天上限），`0`/缺省 = 未知。**任务侧属性**，仅参与调度侧执行器负载评分（长任务预估对繁忙执行器惩罚更高，长短混布时倾向把长任务派给更空闲的执行器，权重公式见 executor-score.util.ts）；执行链路（心跳/超时/统计）不消费该字段。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 重置为未知；版本快照随存（回滚不静默重置） |
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
-| `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff。**CORE-02 抖动语义**：实际重试延迟 = `retryDelay × 1000 × 2^(attempt-1)` 的指数基座上加 **±20% 抖动**（admin-api `retry-backoff.util.ts` 纯函数，在四处 enqueue 边界算好整数毫秒传入 BullMQ），摊开同周期失败任务的的重试时刻（thundering herd）；`retryDelay<=0` 仍保持不延迟 |
+| `retryDelay` | number | 否 | 重试退避起始延迟，取值 **0–86400 秒**（F-3：对齐 timeout 窗口防指数退避顶穿定时器 int32 毫秒线）；`0` 表示不配置队列 backoff。**CORE-02 抖动语义**：实际重试延迟 = `retryDelay × 1000 × 2^(attempt-1)` 的指数基座上加 **±20% 抖动**（admin-api `retry-backoff.util.ts` 纯函数，在四处 enqueue 边界算好整数毫秒传入 BullMQ），摊开同周期失败任务的的重试时刻（thundering herd）；`retryDelay<=0` 仍保持不延迟 |
 | `retryableErrors` | string[] | 否 | 可重试错误类型白名单（CORE-02 已 UI 化，admin-web 表单暴露九类中文选项）。**消费语义**（task.processor RETRY-01）：非空白名单 = 仅白名单内的失败会被 BullMQ 重试——匹配规则为错误消息子串或 `failureReason` 分类值（大小写不敏感），未命中转 `UnrecoverableError` 烧尽预算；`null`/`[]` = 全部可重试（既有行为）。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 回到全量可重试。**边界**：`timeout` 类失败另有防双派发守卫，无论白名单如何配置都不会自动重试 |
 
 **重试链路与 attempt 可视化（CORE-02）：**
@@ -1024,7 +1024,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 |------|------|------|
 | `page` / `pageSize` | number | 分页参数 |
 | `userId` | number | 按操作用户过滤 |
-| `action` | string | 操作类型（task.create / task.update / task.delete / 登录等） |
+| `action` | string | 操作类型（task.create / task.update / task.delete / `auth.login` 等——登录**成功与失败均落审计行**，失败行 `result=failure` 并在 `detail` 携带 `errorCode`/`userAgent`） |
 | `resource` | string | 资源类型（task / executor / application 等） |
 | `resourceId` | string | 资源 ID **精确匹配**（AUTH-05 新增；与 `resource` 组合成 (resource, resourceId) 对筛选——Project 实体维度筛选按计划预案缩为此形态，AUTH-01 未启动）。查询串值超 100 字符截断到 100 |
 
@@ -1043,7 +1043,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/users` | 是（Admin） | 分页查询用户列表 |
 | POST | `/users` | 是（Admin） | 创建新用户 |
 | GET | `/users/:id` | 是 | 获取用户详情（非 Admin 仅可查看本人） |
-| PATCH | `/users/:id` | 是 | 更新用户信息（Admin 可改任意用户；非 Admin 仅本人且不可改角色；修改密码需验证当前密码） |
+| PATCH | `/users/:id` | 是 | 更新用户信息（Admin 可改任意用户；非 Admin 仅本人且不可改角色；修改密码需验证当前密码）。**isActive 启停语义**：置 `false` 禁用即 `sessionVersion+1`——在途 access token 的 ver 快照失配即 401（与改密同款会话失效）；API-Key 面由 per-request 属主闸 `owner_inactive` 即时判死 |
 | DELETE | `/users/:id` | 是（Admin） | 删除用户 |
 
 ---
@@ -1057,7 +1057,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/config/history/:key` | 是 | 查询指定 key 的修改历史 |
 | POST | `/config/history/:id/rollback` | 是（Admin） | 回滚到指定历史版本 |
 | POST | `/config/executor-shared-token/generate` | 是（Admin） | 生成新的执行器共享 Token |
-| GET | `/config/executor-shared-token` | 是（Admin） | 查看当前执行器共享 Token（明文）——第四轮起普通用户 403 |
+| GET | `/config/executor-shared-token` | 是（Admin） | 查看当前执行器共享 Token（明文）——第四轮起普通用户 403。**读端点与执行器校验同序**：DB 配置 `executor.sharedToken` 优先，缺省回落 `EXECUTOR_SECRET` env（P1-1：env 配置形态下向导卡片不再误报「尚未配置」） |
 | GET | `/config/:key` | 是 | 查询单个配置项（secret 类字段打码） |
 | PUT | `/config` | 是（Admin） | 创建/更新单个配置项（upsert） |
 | POST | `/config/batch` | 是（Admin） | 批量创建/更新配置项 |
@@ -1120,7 +1120,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/projects` | 是 | 项目列表（按 createdAt ASC；**AUTH-02 后续读面过滤**：ADMIN 全量，普通用户仅「默认项目 ∪ 自己是成员的项目」；每行附 `myRole`——当前主体在该项目的角色，非成员 null） |
-| GET | `/projects/:id` | 是 | 项目详情（详情不过滤，读面收紧仅限列表，见 ADR-013 §6） |
+| GET | `/projects/:id` | 是 | 项目详情（**读面过滤与列表同口径**：ADMIN 全量、默认项目恒可读（「未分配资源」的归属视图），其余非成员 404 `PROJECT_NOT_FOUND`——此前「详情不过滤」已收紧） |
 | GET | `/projects/:id/removal-impact` | 是（ADMIN） | 删除影响面预览（PROJECT-IMPACT-01，见下） |
 | POST | `/projects` | 是（ADMIN） | 创建项目 |
 | PATCH | `/projects/:id` | 是（ADMIN） | 更新项目（默认项目仅允许改 description） |
@@ -1211,14 +1211,14 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |
 | `TRUST_PROXY` | `false` | **第四轮起默认关闭**。Express `trust proxy` 仅在 `true` 时启用——nginx/负载均衡后的部署**必须设为 `true`**，否则限流键与审计 IP 全部记为代理地址 |
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push）：默认放行私网段（10/8、172.16/12、192.168/16、IPv6 ULA）但**拒绝 loopback**；admin-api 与 executor 同机（127.0.0.1）部署时必须设为 `true`。云元数据段（169.254.169.254 等）任何取值下都拒绝 |
-| `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（优先于 user/pass 组合，存在时直接以 `Bearer` 拉取包列表） |
-| `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，用于 `PUT /-/user/login` 换取 bearer token） |
-| `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码 |
+| `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（凭据回落链最高优先，存在时直接以 `Bearer` 拉取包列表） |
+| `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，直接以 `Authorization: Basic` 拉取包列表——2026-10-23 起不再走 `PUT /-/user/login` 换 token：该端点在 Verdaccio 5 是「注册或登录」语义，账号已存在时 409。未配置时回落 `REGISTRY_USER/PASS`） |
+| `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码（回落链：`NPM_REGISTRY_TOKEN` > `NPM_REGISTRY_USER/PASS` > `REGISTRY_USER/PASS`） |
 | `ALERT_WEBHOOK_SECRET` | 空 | Alertmanager webhook 入站 HMAC secret（OBS-02，`POST /api/alerts/webhook`）。留空 = 端点 503 禁用（安全缺省，绝不无鉴权接收）；配置后签名约定同发版 webhook。建议 `openssl rand -hex 32`。Alertmanager 配置样例见 `docs/observability/README.md` §3.5 |
 | `SEC_SECRETS_KEY` | 空 | **任务级 secrets 落库加密密钥**（SEC-02）：32 字节 hex（`openssl rand -hex 32`）或 base64，其他口令按 sha-256 拉伸。留空 = tasks.secrets 明文存储（启动 warn 一次）；配置后写路径全加密（AES-256-GCM `enc:v1:` 信封），派发时解密注入执行器 env。**密钥丢失 = 密文 secrets 不可解密**（派发报错、不静默裸跑）——请纳入密钥管理系统备份；轮换 = 换 key 后对任务做一次任意 update |
 | `EXECUTOR_HEARTBEAT_INTERVAL` | `30000` | executor 心跳间隔毫秒（FEAT-07 注记：心跳超时 sweep 触发的 OFFLINE 翻转现在会发布 `executor.offline` 出站事件，见「Event Subscriptions」段） |
 
-> 三者全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → admin 包列表为空（仅 debug 日志提示凭证未配置），不视为错误。
+> 凭据按三级回落（`NPM_REGISTRY_TOKEN` > `NPM_REGISTRY_USER/PASS` > `REGISTRY_USER/PASS`），三级全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → 按 502 `REGISTRY_UPSTREAM_FAILED` 透出（B-3 起不再静默伪装成空列表；凭据未配置仅 debug 日志提示）。
 
 > 其余环境变量（`JWT_*`、`DB_*`、`EXECUTOR_SECRET`、`AI_*`、`LOG_STORAGE_*` 等）见 `apps/admin-api/src/app.module.ts` 的 Joi 校验 schema 与 `src/config/configuration.ts`。
 

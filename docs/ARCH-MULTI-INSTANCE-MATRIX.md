@@ -252,7 +252,7 @@ destroy no-op）+ executor.service 6 例（接线/rotate 广播/remove 广播/�
 | `executor.detectLostExecutions` | `0 */5 * * * *` | 条件 UPDATE `status=RUNNING` 仅一赢家，`:affected>0` 才 `releaseExecutorSlot`；并发仅增扫描负载 | 🟡 |
 | `executor.cleanupOldRecords` | `0 0 2 * * *` | 单条无界 DELETE，并发抢锁（幂等）| 🟡 |
 | `executor.cleanupOfflineExecutors` | `0 0 * * * *` | 幂等 DELETE | 🟢→🟡 |
-| `app-deployment.detectStuckDeployments` | `0 */2 * * * *` | 并发 `save` 同一 stuck 行（幂等但非原子） | 🟡 |
+| `app-deployment.detectStuckDeployments` | `0 */2 * * * *` | 并发 `save` 同一 stuck 行（幂等但非原子）；卡死阈值：PENDING 5min、DEPLOYING/UPGRADING 30min 无更新 | 🟡 |
 | `log-retention.handleDailyCleanup` | `0 30 3 * * *` | DETACH/DROP + `CREATE … IF NOT EXISTS` 双保险；注释声明幂等 | 🟢→🟡 |
 | `auth.cleanupExpiredTokens` | `EVERY_DAY_AT_3AM` | 幂等 DELETE | 🟢 |
 | `audit.cleanupOldAuditLogs` | `0 5 2 * * *` | bypass 事务 DELETE，幂等 | 🟢 |

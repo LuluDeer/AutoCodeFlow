@@ -21,7 +21,7 @@
 | 字段 | 值 |
 |------|-----|
 | 用户名 | `admin` |
-| 密码 | `.env` 中 `INITIAL_ADMIN_PASSWORD` 的值（默认 `Admin@123456`） |
+| 密码 | `.env` 中 `INITIAL_ADMIN_PASSWORD` 的值（**无默认口令**：compose 以 `:?` 语法强制必填，`.env.example` 的 `change_me_immediately` 仅为占位示例，部署后立即修改） |
 
 > 登录后先到「设置 → 个人信息」改密码。
 

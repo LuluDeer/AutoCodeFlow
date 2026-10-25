@@ -134,7 +134,8 @@ apps/executor-node/src/
 | `HEARTBEAT_INTERVAL_SECONDS` | `30` | 心跳间隔 |
 | `LOG_RETENTION_DAYS` | `7` | 日志/工作目录/死信 TTL |
 | `NPM_REGISTRY_URL` | 空 | 任务 npm 依赖私服（写入临时 .npmrc） |
-| `NPM_REGISTRY_TOKEN` | 空 | 私服 `_authToken`（永不进子进程 env、不打日志） |
+| `NPM_REGISTRY_TOKEN` | 空 | 私服 `_authToken`（Bearer，永不进子进程 env、不打日志） |
+| `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | 私服 Basic 凭据（`_auth` 行，N-1：与 token 二者配一即可，token 优先；compose 缺省回落 `REGISTRY_USER`/`REGISTRY_PASS`） |
 | `PYTHON_REGISTRY_URL` | 空 | deploy.ts 的 pip 安装索引（旧别名，PYPI_REGISTRY_URL 优先） |
 | `PYPI_REGISTRY_URL` / `PYPI_EXTRA_INDEX_URL` | 空 | 私有 PyPI 源 / 附加索引（对齐 python 侧命名；留空 pypi.org） |
 | `PYPI_REGISTRY_USERNAME` / `PYPI_REGISTRY_PASSWORD` | 空 | **P1（2026-10-25）netrc 凭据通道**：两键必须同时配置且至少一索引已设，否则启动告警。凭据写成 0600 netrc 文件，仅以 `NETRC` env 键注入 uv/pip install 子进程——不进 argv/日志/URL userinfo/主进程环境；宿主 `NETRC` 不穿透（测试钉住）。node/python 同语义注入（node 挂 uv 池目录）。留空 = 无凭据通道（私有源匿名 401，与历史一致） |
