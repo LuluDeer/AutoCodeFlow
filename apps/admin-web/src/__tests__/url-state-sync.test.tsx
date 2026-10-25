@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { parseUrlState, serializeUrlState } from '../hooks/useUrlStateSync';
+import { describe, expect, it, afterEach } from 'vitest';
+import { cleanup, render, act } from '@testing-library/react';
+import { useState } from 'react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
+import { parseUrlState, serializeUrlState, useUrlStateSync } from '../hooks/useUrlStateSync';
 
 /**
  * URL-SYNC-02（审计 P2，2026-10-17）：列表页「筛选/分页 ⇄ URL」双向同步。
@@ -121,5 +124,51 @@ describe('serialize/parse 往返（URL-SYNC-02）', () => {
     const state = { ...defaults };
     const roundTrip = parseUrlState(serializeUrlState(state, defaults), defaults);
     expect(roundTrip).toEqual(state);
+  });
+});
+
+// ── F-20（UIAUDIT P3-13）：回写只写受控键，非受控参数不被抹掉 ────────────────
+// 旧实现 state→URL 用 serializeUrlState(state) **整体替换**查询串：外部深链
+// 携带的 state 之外参数（未来埋点/分享参数）会被任一 state 变化静默抹掉。
+// 修复后以当前查询串为底逐个 set/delete 受控键，非受控参数（含其编码形态）
+// 原样保留。
+describe('useUrlStateSync 回写保留非受控参数（F-20）', () => {
+  afterEach(cleanup);
+
+  function renderProbe(initialSearch: string) {
+    const seen: string[] = [];
+    let setPageExternal: (n: number) => void = () => {};
+    function Probe() {
+      const [page, setPage] = useState(1);
+      setPageExternal = setPage;
+      useUrlStateSync({ page }, { page: 1 }, { page: setPage });
+      const loc = useLocation();
+      seen.push(loc.search);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={[`/executions${initialSearch}`]}>
+        <Probe />
+      </MemoryRouter>,
+    );
+    return {
+      last: () => seen[seen.length - 1],
+      setPage: (n: number) => act(() => { setPageExternal(n); }),
+    };
+  }
+
+  it('挂载回写即保留非受控参数（受控键等于默认被清掉，与旧口径一致）', () => {
+    const p = renderProbe('?utm_source=mail&x=%E4%B8%AD&page=1');
+    expect(p.last()).toContain('utm_source=mail');
+    expect(p.last()).toContain('x=%E4%B8%AD'); // 编码形态不变
+    expect(p.last()).not.toContain('page=');
+  });
+
+  it('翻页只写受控键 page=2，非受控参数原样保留', () => {
+    const p = renderProbe('?utm_source=mail&x=%E4%B8%AD&page=1');
+    p.setPage(2);
+    expect(p.last()).toContain('page=2');
+    expect(p.last()).toContain('utm_source=mail');
+    expect(p.last()).toContain('x=%E4%B8%AD');
   });
 });
