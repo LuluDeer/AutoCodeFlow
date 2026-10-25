@@ -152,6 +152,12 @@ export const executorPackagesApi = {
   /**
    * 上传新包。B-12：可选 onUploadProgress 透传 axios 上传进度事件，
    * 页面据此渲染真实进度条（此前大文件上传期间零反馈）。
+   *
+   * F-5（UIUX 审计 P2-4）：执行器包可达数百 MB（后端 multer 上限 500MB），
+   * 弱网下 30s 全局超时必然掐断在途上传——而服务端可能仍在接收，用户按
+   * 「网络错误」提示重传会产生重复包/僵尸包。故上传显式 timeout:0 不限时
+   * （取舍：几百 MB 包 × 弱网远超任何固定秒数；上传进度条 B-12 已提供可感
+   * 知的进行中状态，真卡死可被用户察觉并手动取消）；其余请求保持 30s。
    */
   upload: (
     formData: FormData,
@@ -160,16 +166,21 @@ export const executorPackagesApi = {
     client.post('/executor-packages', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress,
+      timeout: 0,
     }) as Promise<ExecutorPackage>,
 
   /**
    * 下载包文件并触发浏览器保存。
    * download 路由位于 JwtAuthGuard 之后且 JWT 仅从 Authorization 头提取，
    * <a href> 无法携带鉴权头（会 401），因此用 axios blob 请求 + objectURL 下载。
+   *
+   * F-5（UIUX 审计 P2-4）：同上传——数百 MB 包 × 弱网远超 30s 全局超时，
+   * 下载侧显式 timeout:0；页面按钮有 loading 态（downloadingId）可感知进行中。
    */
   download: async (id: string, filename?: string): Promise<void> => {
     const blob = await client.get<Blob>(`/executor-packages/${id}/download`, {
       responseType: 'blob',
+      timeout: 0,
     });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
