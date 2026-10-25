@@ -183,7 +183,7 @@ describe('UIUX-F-2 openDetail 竞态守卫', () => {
   });
 
   it('慢的旧会话响应晚到，不得覆盖新选中会话的详情', async () => {
-    let resolveA!: (v: unknown) => void;
+    let resolveA!: (v: Awaited<ReturnType<typeof agentApi.detail>>) => void;
     vi.mocked(agentApi.detail).mockImplementation(async (id: string) => {
       if (id === 's-run') {
         return new Promise((resolve) => { resolveA = resolve; }); // A 慢

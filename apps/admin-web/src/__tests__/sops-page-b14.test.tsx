@@ -432,7 +432,7 @@ describe('UIUX-F-3 SopsPage 列表 load 竞态守卫', () => {
   const p2Sop: Sop = { ...sop, id: 'sop-2', slug: 'demo-p2', title: 'P2 SOP' };
 
   it('第 1 页慢响应晚于第 2 页到达，不得覆盖新页', async () => {
-    const pendingP1: Array<(v: unknown) => void> = [];
+    const pendingP1: Array<(v: Awaited<ReturnType<typeof sopsApi.list>>) => void> = [];
     vi.mocked(sopsApi.list).mockImplementation(async (params?: { page?: number }) => {
       if ((params?.page ?? 1) === 1) {
         return new Promise((resolve) => { pendingP1.push(resolve); }); // 第 1 页：到达时机由测试控制

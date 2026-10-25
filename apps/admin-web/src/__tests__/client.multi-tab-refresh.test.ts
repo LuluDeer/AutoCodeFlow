@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import axios, { AxiosError, AxiosHeaders, type AxiosAdapter } from 'axios';
+import axios, { AxiosError, AxiosHeaders, type AxiosAdapter, type InternalAxiosRequestConfig } from 'axios';
 import { client, getApiBaseUrl } from '../api/client';
 import { useAuthStore } from '../store/auth';
 
@@ -147,8 +147,14 @@ describe('F-6 多标签 refresh 互踢竞态收尾', () => {
     );
   };
   const reject401 = (reject: (e: unknown) => void) => {
-    reject(new AxiosError('Request failed', undefined, undefined, undefined, {
-      status: 401, statusText: 'Unauthorized', headers: new AxiosHeaders(), data: { message: 'HTTP 401' },
+    // AxiosError 的 response 需要完整 AxiosResponse（含 config）——
+    // InternalAxiosRequestConfig 只强制 headers，与 client.test.ts 的
+    // adapter config 同构。
+    const config = {
+      headers: new AxiosHeaders(),
+    } as InternalAxiosRequestConfig;
+    reject(new AxiosError('Request failed', undefined, config, undefined, {
+      config, status: 401, statusText: 'Unauthorized', headers: new AxiosHeaders(), data: { message: 'HTTP 401' },
     }));
   };
 

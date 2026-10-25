@@ -313,9 +313,16 @@ async function tryRefreshToken(): Promise<string> {
 
     // Use a plain axios call to bypass our own response interceptor
     // and avoid an infinite 401 retry loop on the refresh endpoint itself.
-    let resp: Awaited<ReturnType<typeof axios.post>>;
+    // axios 1.20 泛型默认下 ReturnType<typeof axios.post> 解析为 unknown，
+    // 这里显式建模响应体（封套 {data:{...}} 与裸 {...} 两种历史形态）。
+    type RefreshBody = {
+      data?: { accessToken?: string; refreshToken?: string };
+      accessToken?: string;
+      refreshToken?: string;
+    };
+    let resp: import('axios').AxiosResponse<RefreshBody>;
     try {
-      resp = await axios.post(
+      resp = await axios.post<RefreshBody>(
         `${getApiBaseUrl()}/auth/refresh`,
         { refreshToken },
         { timeout: 10_000 },
@@ -338,8 +345,8 @@ async function tryRefreshToken(): Promise<string> {
       throw err;
     }
     // axios wraps the body in resp.data; our interceptor unwraps to resp.data for client calls
-    const body = resp.data ?? resp;
-    const accessToken: string = body.data?.accessToken ?? body.accessToken;
+    const body: RefreshBody = resp.data ?? {};
+    const accessToken = body.data?.accessToken ?? body.accessToken ?? '';
     const newRefresh: string | undefined = body.data?.refreshToken ?? body.refreshToken;
     if (!accessToken) throw new Error('Refresh response missing accessToken');
     // Discard refresh results from a session that has logged out or changed.
