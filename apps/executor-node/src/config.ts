@@ -214,6 +214,16 @@ export const config = {
   // deliberately NOT in the env whitelist — it must never reach task
   // children. Never logged.
   npmRegistryToken: process.env.NPM_REGISTRY_TOKEN || '',
+  // N-1（2026-10-26 registry-npm 审计）：Basic 形态的私服凭据。Verdaccio 5.31.1
+  // 实测 `Bearer <base64(user:pass)>` 被拒（.npmrc 的 _authToken 走 Bearer，
+  // 装不下 Basic 密码）、JWT 有 60d 有效期且已存在用户无法稳定重签（PUT
+  // /-/user/login 409，见 admin-api registry.controller.ts 注释）——故补
+  // USER/PASS 通道，由 execute.ts 生成 .npmrc 的 `//<host:port>/:_auth=<b64>`
+  // 行。与 npmRegistryToken 同一信任边界（executor 侧 only、不入任务子进程
+  // env 白名单、绝不打日志）；token 优先，USER/PASS 兜底（compose 默认回落
+  // REGISTRY_USER/PASS，与 admin-api 代理面同源凭据）。
+  npmRegistryUser: process.env.NPM_REGISTRY_USER || '',
+  npmRegistryPass: process.env.NPM_REGISTRY_PASS || '',
   pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '',  // Private PyPI registry for task dependencies
   // ---------------------------------------------------------------------
   // WS5（python_task_upload_and_multiversion）新增配置。

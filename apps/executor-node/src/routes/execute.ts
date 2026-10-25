@@ -1826,8 +1826,10 @@ async function prepareExecution(
     }
     logPrepare(`Installing ${actualRequirements.length} packages for task ${taskId}`);
     // 改动3: .npmrc 指向私服（@autoflow / @autocodeflow 双 scope 行）；
-    // 配置了 NPM_REGISTRY_TOKEN 时追加 _authToken 行——registry-npm 对
-    // '**' 的 access 是 $authenticated，匿名安装必 401。token 不打日志。
+    // 配置了 NPM_REGISTRY_TOKEN 时追加 _authToken 行，否则配置了
+    // NPM_REGISTRY_USER/PASS 时追加 _auth（Basic）行（N-1，2026-10-26）——
+    // registry-npm 对 '**' 的 access 是 $authenticated，匿名安装必 401。
+    // 凭据不打日志。
     //
     // The config is deliberately created in a fresh, mode-700 system temp
     // directory rather than in the task cwd or the persistent node_modules
@@ -1843,7 +1845,13 @@ async function prepareExecution(
     // 对含空格/shell 元字符的路径参数显式包裹双引号（cmd.exe 还原为一个 token）。
     // 包名已由 npmNameRe 校验（不含空格），无需加引号。
     const npmArgs = ['install', '--prefix', quoteShellArgForPlatform(nodeModulesDir)];
-    if (config.npmRegistryToken) {
+    // N-1: 认证形态从「仅 token」扩展为「token 或 Basic USER/PASS」——
+    // 只要有任一凭据，安装走 --ignore-scripts（见下方原始边界说明）。
+    const hasNpmCredentials = Boolean(
+      config.npmRegistryToken ||
+        (config.npmRegistryUser && config.npmRegistryPass),
+    );
+    if (hasNpmCredentials) {
       // Keep the existing boundary: authenticated installs disable lifecycle
       // scripts, so an install script cannot read npm_config_userconfig while
       // the token-bearing file exists. This intentionally does not enable
@@ -1861,6 +1869,9 @@ async function prepareExecution(
           config.npmRegistryUrl,
           config.npmRegistryToken,
           actualRequirements,
+          config.npmRegistryUser && config.npmRegistryPass
+            ? { user: config.npmRegistryUser, pass: config.npmRegistryPass }
+            : undefined,
         );
         try {
           if (config.npmRegistryUrl) {
@@ -1902,10 +1913,15 @@ async function prepareExecution(
     if (installResult.status !== 0) {
       const errMsg = installResult.stderr.trim() || 'npm install 执行失败';
       let message = `依赖安装失败：${errMsg}`;
-      // 私服且未配 token 时，失败大概率是 401（registry-npm access=$authenticated）
-      // ——把修复指引直接带到任务可见的失败信息里，而不是只留在执行器日志。
-      if (!config.npmRegistryToken && config.npmRegistryUrl && isPrivateNpmRegistry(config.npmRegistryUrl)) {
-        message += '（提示：私有 npm 源需要 NPM_REGISTRY_TOKEN，否则依赖安装将 401）';
+      // 私服且未配任何凭据时，失败大概率是 401（registry-npm
+      // access=$authenticated）——把修复指引直接带到任务可见的失败信息里，
+      // 而不是只留在执行器日志。
+      if (
+        !hasNpmCredentials &&
+        config.npmRegistryUrl &&
+        isPrivateNpmRegistry(config.npmRegistryUrl)
+      ) {
+        message += '（提示：私有 npm 源需要 NPM_REGISTRY_TOKEN 或 NPM_REGISTRY_USER/PASS，否则依赖安装将 401）';
       }
       logPrepare(message);
       throw new Error(message);
@@ -2420,6 +2436,7 @@ export function buildNpmRcContent(
   registryUrl: string,
   token: string | undefined,
   requirements: string[],
+  basic?: { user: string; pass: string },
 ): string {
   const lines: string[] = [];
   for (const scope of ['@autoflow', '@autocodeflow']) {
@@ -2431,14 +2448,25 @@ export function buildNpmRcContent(
   if (!scopedOnly) {
     lines.push(`registry=${registryUrl}`);
   }
+  // N-1（2026-10-26）：两种凭据形态并存——token（Bearer/JWT）优先，
+  // Basic user:pass 兜底（`_auth` 行，npm 会发 Authorization: Basic）。
+  // 两者互斥写入： Verdaccio 对同一 host 键先到先得，叠加两行只会制造
+  // 「到底哪行生效」的调试泥潭。 Verdaccio 5.31.1 实测 Basic 200/404 通过、
+  // `Bearer <base64(basic)>` 401（Basic 密码不能塞进 _authToken）。
   if (token) {
     const authLine = npmAuthUrlLine(registryUrl);
     if (authLine) lines.push(`${authLine}:_authToken=${token}`);
+  } else if (basic && basic.user && basic.pass) {
+    const authLine = npmAuthUrlLine(registryUrl);
+    if (authLine) {
+      // npm 认可的 Basic 行格式：_auth = base64(user:pass)。
+      lines.push(`${authLine}:_auth=${Buffer.from(`${basic.user}:${basic.pass}`).toString('base64')}`);
+    }
   } else if (registryUrl && isPrivateNpmRegistry(registryUrl)) {
     logger.warn(
-      '私有 npm 源需要 NPM_REGISTRY_TOKEN，否则依赖安装将 401 ' +
-        `(registry=${redactUrl(registryUrl)}，registry-npm 的 access 策略为 $authenticated)。` +
-        '请在执行器环境配置 NPM_REGISTRY_TOKEN 后重试。',
+      '私有 npm 源未配置任何凭据（NPM_REGISTRY_TOKEN 或 NPM_REGISTRY_USER/PASS），' +
+        `依赖安装将 401 (registry=${redactUrl(registryUrl)}，registry-npm 的 access 策略为 $authenticated)。` +
+        '请在执行器环境配置 NPM_REGISTRY_TOKEN 或 NPM_REGISTRY_USER/NPM_REGISTRY_PASS 后重试。',
     );
   }
   return lines.join('\n') + '\n';
@@ -2472,13 +2500,15 @@ interface TemporaryNpmConfig {
 
 /**
  * Create npm's config files outside the task tree. The userconfig can contain
- * NPM_REGISTRY_TOKEN, so the directory and files are private and short-lived;
- * callers must invoke removeTemporaryNpmConfig only after npm has exited.
+ * NPM_REGISTRY_TOKEN or Basic NPM_REGISTRY_USER/PASS (N-1), so the directory
+ * and files are private and short-lived; callers must invoke
+ * removeTemporaryNpmConfig only after npm has exited.
  */
 function createTemporaryNpmConfig(
   registryUrl: string,
   token: string | undefined,
   requirements: string[],
+  basic?: { user: string; pass: string },
 ): TemporaryNpmConfig {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'autocodeflow-npm-'));
   const npmConfig: TemporaryNpmConfig = {
@@ -2492,7 +2522,7 @@ function createTemporaryNpmConfig(
     fs.chmodSync(directory, 0o700);
     fs.writeFileSync(
       npmConfig.userconfig,
-      registryUrl ? buildNpmRcContent(registryUrl, token, requirements) : '',
+      registryUrl ? buildNpmRcContent(registryUrl, token, requirements, basic) : '',
       { encoding: 'utf8', mode: 0o600 },
     );
     fs.chmodSync(npmConfig.userconfig, 0o600);

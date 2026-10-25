@@ -43,6 +43,22 @@ const PYPI_PASS = `bug18-${process.pid}-${Date.now()}`;
 const NPM_USER = 'bug18-user';
 const NPM_PASS = `bug18-${process.pid}-${Date.now()}`;
 
+// N-9（2026-10-26 审计）：live 检查的 Verdaccio 版本从 compose 的 pin 解析，
+// 不再浮动 `verdaccio:5`——5.x minor 行为漂移会让 e2e 结论对生产版本不成立
+// （先例：`/-/verdaccio/packages` 路由漂移，测试桩比生产 5.31.1 晚知两个月）。
+// compose 不可读/未 pin 时回落 5.31.1（与 docker-compose.yml 保持同步改动）。
+function resolveVerdaccioPin() {
+  try {
+    const compose = readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8');
+    const m = /^\s*image:\s*verdaccio\/verdaccio:(\S+)\s*$/m.exec(compose);
+    if (m) return m[1];
+  } catch {
+    // fall through to default
+  }
+  return '5.31.1';
+}
+const VERDACCIO_TAG = resolveVerdaccioPin();
+
 let passed = 0;
 let skipped = 0;
 let cleanupFailures = 0;
@@ -418,9 +434,9 @@ async function liveNpmCheck() {
     skip('npm live publish/install', 'docker or npm is unavailable');
     return;
   }
-  const image = run('docker', ['image', 'inspect', 'verdaccio/verdaccio:5'], { timeout: 20_000 });
+  const image = run('docker', ['image', 'inspect', `verdaccio/verdaccio:${VERDACCIO_TAG}`], { timeout: 20_000 });
   if (image.status !== 0) {
-    skip('npm live publish/install', 'verdaccio/verdaccio:5 image is not available locally');
+    skip('npm live publish/install', `verdaccio/verdaccio:${VERDACCIO_TAG} image is not available locally`);
     return;
   }
 
@@ -448,7 +464,7 @@ async function liveNpmCheck() {
       '--name', container, '-p', '127.0.0.1:0:4873',
       '-v', `${storage}:/verdaccio/storage`,
       '-v', `${path.join(temp, 'config.yaml')}:/verdaccio/conf/config.yaml:ro`,
-      'verdaccio/verdaccio:5',
+      `verdaccio/verdaccio:${VERDACCIO_TAG}`,
     ], { timeout: 60_000 });
     if (docker.status !== 0) throw new Error(redact(`${docker.stdout}\n${docker.stderr}`));
     containerStarted = true;

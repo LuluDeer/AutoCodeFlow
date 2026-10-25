@@ -338,7 +338,10 @@ export class RegistryController {
   // P3-4（2026-10-25 审计）：npm 响应是 {name, latest?, description?} 对象数组，
   // 与 PyPI 的 string[] 契约已分叉——不再共用 RegistryPackagesResponseDto。
   @ApiOkResponse({ type: RegistryNpmPackagesResponseDto })
-  async listNpmPackages(): Promise<{
+  // req 可选（N-4）：既有单测与内部调用以无参形态调本方法，不强行改签名——
+  // 审计只需要 IP，缺 req 时审计行 ip 为空（source 可从容器日志交叉定位）。
+  // @Req() 保留（Nest 运行时注入靠它），TS 侧 `?:` 让无参调用合法。
+  async listNpmPackages(@Req() req?: Request): Promise<{
     packages: Array<{ name: string; latest?: string; description?: string }>;
   }> {
     // 2026-10-23（真机缺陷）：此前请求 `/-/verdaccio/packages`——该路由在
@@ -366,6 +369,20 @@ export class RegistryController {
       this.logger.warn(
         `npm registry returned ${resp.status}: ${resp.text.slice(0, 200)}`,
       );
+      // N-4（2026-10-26 审计）：npm 代理读面此前只打本地 log，零审计——
+      // 与同文件 PyPI 上传审计链（recordUploadAudit）对等性缺口。选择**只记
+      // 失败路径**：读面成功查询是高频低信号操作（前端 Registry 页每次打开
+      // 都拉一次），全量落 audit_logs 只会稀释投毒面告警的信噪比；失败
+      // （凭据配置漂移、registry 故障、被代理拒绝）才是需要可追溯的信号。
+      // 内网 registry 是 $authenticated 面，npm 读失败 ≈ 服务账号失效——
+      // 这正是运维要回溯的时点。
+      await this.recordRegistryReadAudit(req, {
+        action: "registry.npm.list",
+        resource: "registry",
+        resourceId: "npm-packages",
+        result: "failure",
+        detail: { upstreamStatus: resp.status },
+      });
       this.throwUpstreamListFailure("npm registry", resp.status, resp.text);
     }
     let data: unknown;
@@ -373,12 +390,26 @@ export class RegistryController {
       data = JSON.parse(resp.text);
     } catch {
       // B-3：上游回了 2xx 但不是 JSON（如代理层回 HTML）也是上游故障。
+      await this.recordRegistryReadAudit(req, {
+        action: "registry.npm.list",
+        resource: "registry",
+        resourceId: "npm-packages",
+        result: "failure",
+        detail: { upstreamStatus: resp.status, reason: "non_json_response" },
+      });
       throw new AppError("REGISTRY_UPSTREAM_FAILED", {
         upstream: "npm registry",
         detail: `返回了非 JSON 响应体：${resp.text.slice(0, 200)}`,
       });
     }
     if (!Array.isArray(data)) {
+      await this.recordRegistryReadAudit(req, {
+        action: "registry.npm.list",
+        resource: "registry",
+        resourceId: "npm-packages",
+        result: "failure",
+        detail: { upstreamStatus: resp.status, reason: "shape_drift" },
+      });
       throw new AppError("REGISTRY_UPSTREAM_FAILED", {
         upstream: "npm registry",
         detail: `期望包数组，实际是 ${typeof data}（Verdaccio 路由/形状漂移）`,
@@ -625,6 +656,41 @@ export class RegistryController {
         });
         throw err;
       });
+  }
+
+  /**
+   * N-4（2026-10-26 审计）：registry 代理**读面**失败审计的公共落点。
+   * 与 recordUploadAudit 同形态：audit 写失败只记 error 日志、不向上抛
+   * （读失败审计是可观测性增强，绝不能把 502 变 500）。不读 CurrentUser
+   * ——读面由 JwtAuthGuard 放行，controller 层不重复解析用户身份；审计行
+   * 以 action/resource 定位，IP 保留（排障时区分来源容器）。
+   */
+  private async recordRegistryReadAudit(
+    req: Request,
+    params: {
+      action: string;
+      resource: string;
+      resourceId: string;
+      result: "failure";
+      detail?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    try {
+      await this.audit.log({
+        action: params.action,
+        resource: params.resource,
+        resourceId: params.resourceId,
+        // req 可为空（单测直接调 controller.listNpmPackages() 不带 @Req 桩）。
+        ip: req?.ip,
+        result: params.result,
+        detail: params.detail,
+      });
+    } catch (e: unknown) {
+      this.logger.error(
+        `Failed to write audit log for ${params.action} — registry 读失败面失去可追溯性，请检查 audit_logs 写入`,
+        e instanceof Error ? e.stack : String(e),
+      );
+    }
   }
 
   /**
