@@ -510,6 +510,9 @@ export default function UserManagementPage() {
             rules={[
               { required: true, message: t('users.field.usernameRequired') },
               { min: 2, message: t('users.field.usernameMin') },
+              // F-18（UIAUDIT P3-11）：镜像后端 CreateUserDto @MaxLength(128)
+              // （entity DB-006 varchar(128)），超限不再提交后才吃裸 400。
+              { max: 128, message: t('users.field.usernameMax') },
             ]}
           >
             <Input placeholder={t('users.field.usernamePlaceholder')} />

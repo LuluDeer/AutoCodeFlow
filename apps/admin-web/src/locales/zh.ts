@@ -701,6 +701,7 @@ export default {
   'users.field.username': '用户名',
   'users.field.usernameRequired': '请输入用户名',
   'users.field.usernameMin': '用户名至少2个字符',
+  'users.field.usernameMax': '用户名不能超过128个字符',
   'users.field.usernamePlaceholder': '请输入用户名',
   'users.field.password': '密码',
   'users.field.passwordRequired': '请输入密码',

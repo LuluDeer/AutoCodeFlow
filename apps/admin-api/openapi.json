@@ -12248,7 +12248,8 @@
         "properties": {
           "username": {
             "type": "string",
-            "example": "admin"
+            "example": "admin",
+            "maxLength": 128
           },
           "email": {
             "type": "string",
@@ -12398,7 +12399,8 @@
         "properties": {
           "username": {
             "type": "string",
-            "example": "admin"
+            "example": "admin",
+            "maxLength": 128
           },
           "email": {
             "type": "string",

@@ -687,6 +687,7 @@ export default {
   'users.field.username': 'Username',
   'users.field.usernameRequired': 'Please enter a username',
   'users.field.usernameMin': 'Username must be at least 2 characters',
+  'users.field.usernameMax': 'Username must be at most 128 characters',
   'users.field.usernamePlaceholder': 'Enter username',
   'users.field.password': 'Password',
   'users.field.passwordRequired': 'Please enter a password',

@@ -171,6 +171,22 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
     expect(mockedUsers.create).not.toHaveBeenCalled();
   });
 
+  it('F-18：超长用户名（129 字符）被表单校验拦截：不调用 create，显示上限提示', async () => {
+    renderPage();
+    await screen.findByText('alice');
+    fireEvent.click(screen.getByText('新建用户'));
+
+    fireEvent.change(screen.getByPlaceholderText('请输入用户名'), {
+      target: { value: 'u'.repeat(129) },
+    });
+    fireEvent.change(screen.getByPlaceholderText('请输入密码'), { target: { value: 'Str0ng!Pass' } });
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'dave@corp.io' } });
+    fireEvent.click(findBtn(document.body, '创建')!);
+
+    await screen.findByText('用户名不能超过128个字符');
+    expect(mockedUsers.create).not.toHaveBeenCalled();
+  });
+
   it('合法提交：create 收到 username/password/email/role payload 并提示成功', async () => {
     mockedUsers.create.mockResolvedValue(makeUser({}) as never);
     renderPage();
