@@ -13,7 +13,8 @@ const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 declare const window: Window & {
   electronAPI: {
     listApps: () => Promise<AppEntry[]>;
-    readAppLog: (logPath: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number }>;
+    // F-22：truncated = 主进程首读走了尾窗（lines 只是文件尾部窗口）。
+    readAppLog: (logPath: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number; truncated?: boolean }>;
     openAppFolder: (appId: string) => Promise<{ ok: boolean; error?: string }>;
     openReleaseFolder: (appId: string, releaseKey: string) => Promise<{ ok: boolean; error?: string }>;
     uninstallApp: (appId: string) => Promise<{
@@ -121,6 +122,8 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
   // D 修正：原实现 `catch { /* ignore */ }` 把 IPC 失败静默吞掉——用户看到
   // 「暂无日志文件」而真实原因是读取失败（权限/文件被删/通道异常），无法区分。
   const [error, setError] = useState<string | null>(null);
+  // F-22：首读截断口径（主进程尾窗分支返回 true）——汇总行据此如实降级。
+  const [truncated, setTruncated] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const totalLinesRef = useRef(0);
   const inFlight = useRef(false);
@@ -158,6 +161,7 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
       if (result.totalLines < fromLine) {
         // 日志轮转/截断：旧行不能混进新文件的内容，整体换成新文件尾部。
         setLines(result.lines.slice(-APP_LOG_BUFFER).map(toViewerLine));
+        setTruncated(false);
       } else if (result.lines.length > 0) {
         const fetched = result.lines.map(toViewerLine);
         setLines(prev => {
@@ -166,6 +170,9 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
         });
       }
       totalLinesRef.current = result.totalLines;
+      // F-22：截断口径只在首读/「全部重载」（fromLine=0 → 主进程尾窗分支）
+      // 的响应上出现；增量响应不带该字段（undefined）→ 保持现状。
+      if (result.truncated !== undefined) setTruncated(result.truncated);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -226,6 +233,11 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
       onClose={onClose}
       loading={loading}
       error={error ? t('apps.viewer.loadFail', error) : null}
+      // F-22：首读被主进程尾窗截断时如实降级（应用查看器此前没有汇总注记位，
+      // 与历史查看器的 truncatedNote 同口径）。
+      bufferNote={truncated
+        ? t('apps.viewer.truncatedNote', lines.length, totalLinesRef.current)
+        : undefined}
       // 实时轮询有到达感：新行 2s 绿底淡出（行 id 为文件全局行号，首屏不闪）
       arriveAnimation
       // V4 后续优化（3）：warn/error 行 hover 直接打开部署目录（与其他查看器

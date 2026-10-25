@@ -583,6 +583,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.overlay.prevRun': '上一次执行',
     'history.overlay.nextRun': '下一次执行',
     'history.overlay.bufferNote': (a, b) => `已载入 ${a} 行 · 文件共 ${b} 行`,
+    // F-22：大日志首读被主进程尾窗截断时的如实降级显示（替代 bufferNote）。
+    'history.overlay.truncatedNote': (a, b) => `已截断：仅显示最后 ${a} 行 · 文件共 ${b} 行`,
     'history.overlay.empty': '暂无日志（日志文件可能尚未生成）',
     'history.overlay.emptyFiltered': '当前日志中没有匹配内容',
     'history.title': '历史执行记录',
@@ -718,6 +720,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.notice.partialStop': (n) => `（已停止 ${n} 个进程，但文件未删净）`,
     'apps.notice.uninstallFail': '卸载失败',
     'apps.viewer.loadFail': (msg) => `读取日志失败：${msg}（自动刷新已停止，可点「实时」重试）`,
+    // F-22：大日志首读被主进程尾窗截断时的如实降级显示。
+    'apps.viewer.truncatedNote': (a, b) => `已截断：仅显示最后 ${a} 行 · 文件共 ${b} 行`,
     'apps.openDeployDir': '打开部署目录',
     // 查看器行内「打开部署目录」失败的 folderNote（注意：zh 是「目录」，
     // 与列表层 apps.notice.openFolderFail 的「文件夹」是两处原文，不得共用）
@@ -1292,6 +1296,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.overlay.prevRun': 'Previous run',
     'history.overlay.nextRun': 'Next run',
     'history.overlay.bufferNote': (a, b) => `${enPlural(a, 'line', 'lines')} loaded · ${enPlural(b, 'line', 'lines')} in file`,
+    // F-22: honest degraded summary when the first read was tail-truncated (replaces bufferNote).
+    'history.overlay.truncatedNote': (a, b) => `Truncated: showing last ${enPlural(a, 'line', 'lines')} of ${enPlural(b, 'line', 'lines')}`,
     'history.overlay.empty': 'No logs yet (the log file may not exist yet)',
     'history.overlay.emptyFiltered': 'No matching content in this log',
     'history.title': 'Run history',
@@ -1424,6 +1430,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.notice.partialStop': (n) => ` (${n} process(es) stopped, but files were not fully removed)`,
     'apps.notice.uninstallFail': 'Uninstall failed',
     'apps.viewer.loadFail': (msg) => `Failed to read the log: ${msg} (auto-refresh stopped; click "Live" to retry)`,
+    // F-22: honest degraded summary when the first read was tail-truncated.
+    'apps.viewer.truncatedNote': (a, b) => `Truncated: showing last ${enPlural(a, 'line', 'lines')} of ${enPlural(b, 'line', 'lines')}`,
     'apps.openDeployDir': 'Open deployment folder',
     'apps.viewer.folderOpenFail': (r) => `Failed to open the folder: ${r}`,
     'apps.autoRefreshOffTitle': 'Turn off auto-refresh',

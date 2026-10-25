@@ -37,6 +37,7 @@
     "src/main/main-index.selftest.ts",
     "src/main/log-incremental.selftest.ts",
     "src/main/log-tail.selftest.ts",
+    "src/main/log-tail-scan.ts",
     "src/main/child-line-splitter.ts",
     "src/main/child-line-splitter.selftest.ts",
     "src/main/executor-priority.selftest.ts",

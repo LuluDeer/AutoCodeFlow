@@ -38,6 +38,10 @@ import {
   hasAllowedLogExtension,
   isValidExecutionId,
 } from './path-domain';
+// F-22（UIUX 审计 2026-10-25）：log:read / apps:log:read 首读的尾窗扫描——
+// 纯 Node 模块（log-tail.selftest 直接驱动真实现），与游标口径的对齐论证
+// 见该模块头注。
+import { scanLogTail } from './log-tail-scan';
 // python_task_multiversion：设置页的「Python 运行环境」诊断面需要与
 // executor-process 完全同源地解析 uv / 解释器池路径（否则诊断结果会与实际
 // 下发给子进程的值不一致，比没有诊断更误导）。这里刻意复用 executor-process
@@ -280,21 +284,43 @@ const LOG_CURSOR_LIMIT = 64;
 function readLogIncremental(
   filePath: string,
   fromLine: number,
-): { lines: string[]; totalLines: number; error?: string } {
+): { lines: string[]; totalLines: number; truncated?: boolean; error?: string } {
   try {
     const { size } = fs.statSync(filePath);
     let cursor = logCursors.get(filePath);
+    // F-22：本次调用是否新建/重建了游标（首读判据之一，见下方尾窗分支）。
+    let freshCursor = false;
 
     // 文件被截断/轮转（大小回退），或调用方要求的起点落后于缓存 → 重建游标
     if (!cursor || size < cursor.offset) {
       cursor = { offset: 0, totalLines: 0 };
       logCursors.set(filePath, cursor);
+      freshCursor = true;
     }
 
     // 调用方要求从头读（刷新按钮），或游标超前于请求 → 从头重建
     if (fromLine === 0 && cursor.totalLines !== 0) {
       cursor = { offset: 0, totalLines: 0 };
       logCursors.set(filePath, cursor);
+      freshCursor = true;
+    }
+
+    // F-22（UIUX 审计 2026-10-25）：首读（fromLine=0 且游标新建，或游标从未
+    // 交付过任何行）改为**尾窗扫描**——原实现 readFileSync 整个文件并把全部
+    // 行送过桥，而渲染层只留最后 1500/2400 行：10MB+ 日志一次 IPC 全量传输 +
+    // 主进程内存尖峰。同族问题在 logs:getToday 已由 readLastLines 尾窗修过
+    // （NETOPT-2⑥），任务/应用日志两条查看器路径此前漏了同处置。尾窗行数
+    // 上限与游标口径的对齐论证见 log-tail-scan.ts 头注；游标按扫描结果直接
+    // 落到「最后完整行」，后续增量读从文件尾无缝续上。返回值带 truncated
+    // 口径，查看器的「已载入/文件共」汇总据此如实降级。扫描失败（文件此刻
+    // 消失等）→ 落回下方既有路径由 catch 兜底，行为不劣化。
+    if (fromLine === 0 && (freshCursor || cursor.totalLines === 0)) {
+      const scan = scanLogTail(filePath);
+      if (scan) {
+        cursor.offset = scan.consumedBytes;
+        cursor.totalLines = scan.totalLines;
+        return { lines: scan.lines, totalLines: scan.totalLines, truncated: scan.truncated };
+      }
     }
 
     // 请求起点超前于缓存已知行数（如 UI 状态被重置）→ 保守地从该行号重建：

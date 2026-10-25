@@ -14,7 +14,8 @@ declare const window: Window & {
   electronAPI: {
     getHistory: () => Promise<ExecRecord[]>;
     clearHistory: () => Promise<{ ok: boolean }>;
-    readLog: (executionId: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number }>;
+    // F-22：truncated = 主进程首读走了尾窗（lines 只是文件尾部窗口）。
+    readLog: (executionId: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number; truncated?: boolean }>;
     writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
     revealExecLog: (executionId: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
     openTaskLogFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
@@ -194,6 +195,9 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
   const [lines, setLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // F-22：首读截断口径（主进程尾窗分支返回 true）——汇总行据此切换为
+  // 「已截断：仅显示最后 N 行 · 文件共 M 行」的如实降级显示。
+  const [truncated, setTruncated] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const linesRef = useRef(0);
   const inFlight = useRef(false);
@@ -213,12 +217,16 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
       if (res.totalLines < previousTotal) {
         // 日志轮转或截断后，旧行不能继续混在新文件的内容里。
         setLines(res.lines.slice(-1500));
+        setTruncated(false);
       } else if (res.lines.length > 0) {
         setLines(prev => {
           const next = [...prev, ...res.lines];
           return next.length > 1500 ? next.slice(-1500) : next;
         });
       }
+      // F-22：截断口径只在首读/刷新（主进程尾窗分支）的响应上出现；增量
+      // 响应不带该字段（undefined）→ 保持现状，不因后续追加而丢标记。
+      if (res.truncated !== undefined) setTruncated(res.truncated);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       // 终止轮询：文件已被 TTL 清理/通道异常时，1.5s/5s 重试只会反复失败。
@@ -366,8 +374,13 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
       // 全局行号：缓冲截断后行号仍=文件内绝对行号
       // （lineNoOffset - lines.length + index + 1，组件内置语义）。
       lineNoOffset={linesRef.current}
-      // 汇总行三条数字并排：组件内置「显示 x / y 行」，这里追加已载入/文件共。
-      bufferNote={lines.length > 0 ? t('history.overlay.bufferNote', lines.length, linesRef.current) : undefined}
+      // 汇总行三条数字并排：组件内置「显示 x / y 行」，这里追加已载入/文件共；
+      // F-22：首读被主进程尾窗截断时如实降级——不再暗示缓冲外的内容都已载入。
+      bufferNote={lines.length > 0
+        ? truncated
+          ? t('history.overlay.truncatedNote', lines.length, linesRef.current)
+          : t('history.overlay.bufferNote', lines.length, linesRef.current)
+        : undefined}
       emptyState={<span className="log-empty"><Icon name="terminal" className="icon-xs" />{t('history.overlay.empty')}</span>}
       emptyFilteredState={<span className="log-empty"><Icon name="search" className="icon-xs" />{t('history.overlay.emptyFiltered')}</span>}
     />
