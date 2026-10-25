@@ -425,6 +425,27 @@ function StepExecutor({
   const [showToken, setShowToken] = useState(false);
   const [checkingPort, setCheckingPort] = useState(false);
   const [portResult, setPortResult] = useState<{ available: boolean; message: string } | null>(null);
+  // F-33（UIUX 审计）：端口输入改为「草稿字符串」受控。原实现把
+  // parseInt('') = NaN 直接塞进表单并渲染 value={NaN}（React 控制台告警
+  // "Received NaN for the `value` attribute"），且清空后「下一步」静默禁用、
+  // 无任何原因提示。输入过程只保留用户键入的原样字符串（空串合法）；form
+  // 里仍存数值（NaN = 未填写，portValid 闸门拦住「下一步」），显示权归
+  // portText——NaN 不再流进 DOM。
+  const [portText, setPortText] = useState(() =>
+    Number.isFinite(form.executorPort) ? String(form.executorPort) : '');
+
+  // 预填（getConfig 晚到）/返回本步等场景下表单端口外部变化时回填草稿。
+  // 按 parseInt 数值比较：'007' 这类手输前导零不会被重写；清空（NaN）两侧
+  // 恒不等、重写为空串也无害（草稿本就是空）。
+  useEffect(() => {
+    const parsed = portText.trim() === '' ? NaN : Number.parseInt(portText.trim(), 10);
+    if (form.executorPort !== parsed) {
+      setPortText(Number.isFinite(form.executorPort) ? String(form.executorPort) : '');
+    }
+    // portText 有意不入依赖：本 effect 只响应表单端口的**外部**变化（预填），
+    // 键入路径由 handlePortChange 自己同步，回填会打断输入。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.executorPort]);
 
   useEffect(() => {
     window.electronAPI.getLocalIPs()
@@ -460,7 +481,12 @@ function StepExecutor({
     }
   }
 
-  function handlePortChange(v: number) {
+  function handlePortChange(raw: string) {
+    setPortText(raw);
+    // F-33：清空（''）→ NaN 进表单（未填写语义，portValid 闸门接管）；其余
+    // 与旧 parseInt 口径一致（非法部分截断）。
+    const trimmed = raw.trim();
+    const v = trimmed === '' ? NaN : Number.parseInt(trimmed, 10);
     onChange('executorPort', v);
     setPortResult(null);
     // 端口为有效整数时才同步对外地址里的端口段（清空输入得到 NaN 时不拼出 ":NaN"）。
@@ -519,9 +545,11 @@ function StepExecutor({
               className={`input${portResult && !portResult.available ? ' error' : ''}`}
               // min 与本页校验口径（1–65535，见下方越界提示）及设置页
               // EXECUTOR_PORT 区间对齐——原 min={1024} 与校验文案自相矛盾。
+              // F-33：value 走 portText 草稿（清空 = 空串），NaN 不再进 DOM。
               type="number" min={1} max={65535}
-              value={form.executorPort}
-              onChange={(e) => handlePortChange(parseInt(e.target.value, 10))}
+              placeholder="8002"
+              value={portText}
+              onChange={(e) => handlePortChange(e.target.value)}
             />
             <button className="btn wizard-inline-button" onClick={checkPort} disabled={!form.executorPort || checkingPort}>
               {checkingPort ? t('wizard.machine.checking') : t('wizard.machine.checkPort')}
@@ -534,7 +562,14 @@ function StepExecutor({
           )}
           {/* HTML 的 min/max 不阻止手输/粘贴越界值——显式给出校验反馈，
               否则用户可带着非法端口一路点到"完成"。清空输入（NaN）时不显示
-              越界错误，只在确有整数值但超出范围时提示。 */}
+              越界错误，只在确有整数值但超出范围时提示。F-33：清空是「必填」
+              缺失而非越界——给可见原因（portRequired），不再只让「下一步」
+              静默禁用。 */}
+          {portText.trim() === '' && (
+            <div className="test-result fail" role="alert">
+              <Icon name="close" className="icon-xs" /> {t('wizard.machine.portRequired')}
+            </div>
+          )}
           {Number.isInteger(form.executorPort) &&
             (form.executorPort < 1 || form.executorPort > 65535) && (
             <div className="test-result fail" role="alert">

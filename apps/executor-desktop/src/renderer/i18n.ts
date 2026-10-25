@@ -777,6 +777,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'wizard.machine.checking': '检测...',
     'wizard.machine.checkPort': '检测端口',
     'wizard.machine.portRange': '端口必须是 1 – 65535 之间的整数',
+    // F-33（UIUX 审计）：端口清空是「必填」缺失而非「越界」——给可见原因，
+    // 不再只让「下一步」静默禁用。
+    'wizard.machine.portRequired': '端口必填',
     'wizard.machine.publicLabel': '对外地址（Admin API 回调此地址下发任务）',
     'wizard.machine.ipPickerLabel': '本机网卡 IP（点击快速填入，标「推荐」者优先）',
     'wizard.machine.chipSelected': '，已选择',
@@ -1490,6 +1493,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'wizard.machine.checking': 'Checking...',
     'wizard.machine.checkPort': 'Check port',
     'wizard.machine.portRange': 'The port must be an integer between 1 and 65535',
+    // F-33（UIUX 审计）：见 zh 块同键注释。
+    'wizard.machine.portRequired': 'Port is required',
     'wizard.machine.publicLabel': 'Public address (the Admin API calls back this address to dispatch tasks)',
     'wizard.machine.ipPickerLabel': 'Local NIC IPs (click to fill in; "recommended" first)',
     'wizard.machine.chipSelected': ', selected',
