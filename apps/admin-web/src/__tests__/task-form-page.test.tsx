@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useAuthStore } from '../store/auth';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import {
@@ -321,6 +321,38 @@ describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 
     expect(payload.executorGroup).toBeNull();
     expect(payload.executorTags).toBeNull();
     expect(payload.executeMode).toBe('single');
+  }, 15_000);
+});
+
+// UIUX-F-43（审计 P2-1）：saving 置位在元信息校验之后，此前快速连点会全部
+// 进入提交流程各自发 POST——真机实测 4 连点 = 4 个 POST（1×201 + 3×409）。
+describe('UIUX-F-43 提交互斥锁', () => {
+  it('连点 3 次只发 1 个 POST（校验 await 窗口内的连点被入口锁吞掉）', async () => {
+    mockRouteParams = {}; // 创建态
+    let resolveCreate!: (v: unknown) => void;
+    vi.mocked(tasksApi.create).mockReset().mockImplementation(
+      () => new Promise((resolve) => { resolveCreate = resolve; }) as never,
+    );
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'w2-race-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    const submit = screen.getByRole('button', { name: /创建任务/ });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    // 三次点击里只有第一次真正进入提交流程
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveCreate({ id: 'new-task' });
+    });
+    expect(tasksApi.create).toHaveBeenCalledTimes(1);
   }, 15_000);
 });
 

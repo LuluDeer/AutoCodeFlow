@@ -563,7 +563,7 @@ export default function TaskFormPage() {
 
   // P0 (R8) 兜底保留为双保险：单页全挂载后 validateFields() 天然覆盖全部字段，
   // 以下 missing 收集逻辑在正常情况下永远为空集，仅作为防线存在。
-  const handleSubmit = async () => {
+  const submitTaskForm = async () => {
     try {
       await form.validateFields();
     } catch (err: unknown) {
@@ -793,6 +793,24 @@ export default function TaskFormPage() {
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  // UIUX-F-43（审计 P2-1）：提交互斥锁。saving 置位发生在元信息校验**之后**
+  //（validateFields await 窗口内按钮尚无 loading 态），快速连点会全部进入提
+  // 交流程各自走到 tasksApi.create/update——真机实测 4 连点 = 4 个 POST
+  //（1×201 + 3×409，成功反馈被「任务名已存在」错误 toast 淹没）。同步 ref
+  // 锁在入口判定（React state 异步批处理挡不住同一帧内的连点）；POST 在途时
+  // 按钮本身已有 loading={saving}（antd loading 按钮不触发 onClick），本锁
+  // 覆盖的正是校验 await 窗口。与 TaskDetailPage webhookBusy 同款纪律。
+  const submitLockRef = useRef(false);
+  const handleSubmit = async () => {
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    try {
+      await submitTaskForm();
+    } finally {
+      submitLockRef.current = false;
     }
   };
 
