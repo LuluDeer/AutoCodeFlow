@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon, { type IconName } from '../components/Icon';
 import PageHeader from '../components/PageHeader';
 import ConfirmBar from '../components/ConfirmBar';
@@ -516,6 +516,12 @@ export default function ConfigPage() {
 
   // DSK-05：手动检查更新。开发模式（未打包）主进程 updater 未初始化，
   // checkForUpdates 静默返回——因此提示文案刻意不承诺"有新版本"。
+  // F-38（UIUX 审计）：6s 自动清除的 setTimeout 此前不随卸载清理——切走/
+  // 卸载后仍会对已卸载组件 setState。句柄入 ref，重挂前清旧 + 卸载清尾。
+  const checkMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (checkMsgTimerRef.current !== null) clearTimeout(checkMsgTimerRef.current);
+  }, []);
   async function checkUpdate() {
     setChecking(true); setCheckMsg(null);
     try {
@@ -525,7 +531,8 @@ export default function ConfigPage() {
       setCheckMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setChecking(false);
-      setTimeout(() => setCheckMsg(null), 6000);
+      if (checkMsgTimerRef.current !== null) clearTimeout(checkMsgTimerRef.current);
+      checkMsgTimerRef.current = setTimeout(() => setCheckMsg(null), 6000);
     }
   }
 

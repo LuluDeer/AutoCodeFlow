@@ -399,12 +399,19 @@ export default function AppsPage() {
     if (pendingConfirm) confirmBarRef.current?.scrollIntoView({ block: 'nearest' });
   }, [pendingConfirm]);
 
-  /** 打开应用根目录（用户报障：客户端本地无法查看部署的应用文件夹）。 */
+  /** 打开应用根目录（用户报障：客户端本地无法查看部署的应用文件夹）。
+   *  F-38（UIUX 审计）：IPC reject（目录已被手动删除 / shell.openPath 异常
+   *  等）此前成为 unhandled rejection 且无任何用户反馈——点击像"没反应"。
+   *  包 try/catch，失败同样落页内 notice（双语，对齐本页其他动作口径）。 */
   async function handleOpenFolder(entry: AppEntry, releaseOnly: boolean) {
-    const res = releaseOnly
-      ? await window.electronAPI.openReleaseFolder(entry.appId, entry.releaseKey)
-      : await window.electronAPI.openAppFolder(entry.appId);
-    if (!res.ok) setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', res.error ?? t('apps.unknownReason')) });
+    try {
+      const res = releaseOnly
+        ? await window.electronAPI.openReleaseFolder(entry.appId, entry.releaseKey)
+        : await window.electronAPI.openAppFolder(entry.appId);
+      if (!res.ok) setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', res.error ?? t('apps.unknownReason')) });
+    } catch (err) {
+      setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', err instanceof Error ? err.message : String(err)) });
+    }
   }
 
   /** 删除单个历史版本（用户报障：无法撤销部署）。仅由页内确认条触发。 */
