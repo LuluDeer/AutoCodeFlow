@@ -16,7 +16,9 @@
 //   bash scripts/e2e-full.sh e2e-full.spec.js e2e-ui09-mobile.spec.js
 const { test, expect } = require('@playwright/test');
 
-const BASE = 'http://localhost:5176';
+// BASE 同 API 一样可被 E2E_BASE_URL 覆盖（e2e-full.sh 起在非默认端口时；
+// 此前 BASE 硬编码与下一行 E2E_API_BASE 的可覆盖承诺不一致）。
+const BASE = process.env.E2E_BASE_URL || 'http://localhost:5176';
 const API = process.env.E2E_API_BASE || 'http://localhost:3105';
 const USER = 'admin';
 const PASS = 'admin123';
