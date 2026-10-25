@@ -15,6 +15,7 @@ import { renderHook, act } from '@testing-library/react';
 import { client } from '../api/client';
 import {
   useMetricsSummary,
+  useExecutionsList,
   sseFallbackRefetchInterval,
   queryKeys,
 } from '../api/queries';
@@ -149,6 +150,47 @@ describe('useMetricsSummary 条件轮询（注册表驱动，端到端）', () =
 
     // 兜底查询自身的 queryKey 仍是缓存事实源（缓存语义未被本次改动触碰）
     expect(queryClient.getQueryData(queryKeys.metrics.summary)).toBeDefined();
+  });
+
+  // ── F-17（UIAUDIT P3-10）：ExecutionsPage 列表查询同机制接线 ──────────────
+  // 旧实现是页面自管 15s setInterval + 手动 refetch（不受 staleTime 节流，
+  // SSE live 期间照打全量列表请求）。现在 useExecutionsList 接受
+  // options.refetchInterval，页面传 sseFallbackRefetchInterval(executionsStream)
+  // ——live 停轮询、断线 30s 兜底，与 metrics 三钩子同源。
+  it('F-17 useExecutionsList：流 live 零轮询，断线恢复 30s 兜底', async () => {
+    vi.useFakeTimers();
+    FakeEventSource.instances = [];
+    const sse = createSseClient({
+      baseUrl: 'http://api',
+      path: '/executions/stream',
+      statusKey: SSE_STATUS_KEYS.executionsStream,
+      fetchTicket: async () => 't-1',
+      reconnect: false,
+    });
+    await act(async () => {});
+    FakeEventSource.instances[0].onopen?.();
+    expect(getSSEStatus(SSE_STATUS_KEYS.executionsStream)).toBe('live');
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { rerender } = renderHook(
+      () => useExecutionsList({ page: 1, pageSize: 20 }, { refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.executionsStream) }),
+      { wrapper },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(mockGet).toHaveBeenCalledTimes(1); // 仅挂载首取
+
+    // live：两个轮询周期零新增请求
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    // 断线（登记移除）→ 页面重渲染重估 → 30s 兜底恢复
+    sse.close();
+    rerender();
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
   it('流从未挂载（key 未登记）→ 30s 恒轮询（向后兼容）', async () => {

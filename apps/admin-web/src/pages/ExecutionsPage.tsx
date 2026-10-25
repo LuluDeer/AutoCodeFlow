@@ -27,7 +27,8 @@ import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
-import { useExecutionsList, invalidateExecutionData } from '../api/queries';
+import { useExecutionsList, invalidateExecutionData, sseFallbackRefetchInterval } from '../api/queries';
+import { SSE_STATUS_KEYS } from '../api/sse-client';
 import { useExecutionsStream } from '../hooks/useExecutionsStream';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
@@ -326,40 +327,43 @@ export default function ExecutionsPage() {
 
   // ARCH-26: TanStack Query 改造——useRequest 轮询（15s）换 query hooks：
   // 筛选参数进 queryKey（参数变化自动重取，等价 refreshDeps）；
-  // staleTime 全局 30s 兜底切页缓存。15s 轮询由下方 refetchInterval useEffect
-  // 承担（可见性判定与原 pollingWhenHidden:false 一致）。
-  const { data, isLoading: loading, error, refetch } = useExecutionsList({
-    page,
-    pageSize,
-    status: statusFilter,
-    taskName: debouncedSearch || undefined,
-    executorAddress: executorFilter || undefined,
-    startTime: timeRange?.[0]?.toISOString(),
-    endTime: timeRange?.[1]?.toISOString(),
-    // keyset 三态的**唯一**出口，落在下面这个三元里：
-    //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
-    //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
-    //
-    // 为什么不是恒传 `{ cursor: activeCursor }` 让 axios 丢弃 undefined：键要
-    // 不要在**我们**这一层就必须确定——"旧路径逐字节不变"是硬要求，把它押在
-    // axios 的序列化细节上等于把风险外包给库版本。
-    ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
-  });
+  // staleTime 全局 30s 兜底切页缓存。
+  //
+  // F-17（UIAUDIT P3-10）：轮询兜底改走 `sseFallbackRefetchInterval`（与
+  // Dashboard 的 metrics 三钩子同源机制）。旧实现是自管 setInterval +
+  // 手动 refetch——手动刷新**不受 staleTime 节流**，SSE live 期间仍每 15s
+  // 空打一发全量列表请求（注释声称"轮询空转被去重"，与实现不符）。现在：
+  //   · SSE live → refetchInterval 返回 false，零轮询（终态事件 invalidate
+  //     即新鲜度来源）；断线/未登记 → 30s 兜底轮询；
+  //   · 可见性语义不变：refetchInterval 默认 refetchIntervalInBackground:false
+  //     （标签页隐藏暂停、回前台下一拍恢复，等价 pollingWhenHidden:false）；
+  //   · SSE 状态变化经 useExecutionsStream 的 hook state 触发本页重渲染，
+  //     refetchInterval 在下一渲染周期重估（Dashboard 同款接线，无需额外状态）。
+  const { data, isLoading: loading, error, refetch } = useExecutionsList(
+    {
+      page,
+      pageSize,
+      status: statusFilter,
+      taskName: debouncedSearch || undefined,
+      executorAddress: executorFilter || undefined,
+      startTime: timeRange?.[0]?.toISOString(),
+      endTime: timeRange?.[1]?.toISOString(),
+      // keyset 三态的**唯一**出口，落在下面这个三元里：
+      //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
+      //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
+      //
+      // 为什么不是恒传 `{ cursor: activeCursor }` 让 axios 丢弃 undefined：键要
+      // 不要在**我们**这一层就必须确定——"旧路径逐字节不变"是硬要求，把它押在
+      // axios 的序列化细节上等于把风险外包给库版本。
+      ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
+    },
+    { refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.executionsStream) },
+  );
 
   // FEAT-16: 执行终态推送流——SSE live 时终态事件即时 invalidate 列表+汇总
-  // 缓存（<3s 刷新验收），断线时下方 15s 轮询兜底自动成为唯一新鲜度来源
-  // （对齐 DashboardPage：SSE 推送与轮询互斥共存，staleTime 内 refetch 去重）。
+  // 缓存（<3s 刷新验收），断线时上方 refetchInterval 兜底轮询自动成为唯一
+  // 新鲜度来源（对齐 DashboardPage：SSE 推送与轮询互斥共存）。
   useExecutionsStream();
-
-  // 15s 轮询兜底：运行中行需要及时看到终态（SSE 断线时的降级路径）。
-  // 标签页不可见时跳过请求（定时器保留，回到前台后下一拍即恢复——
-  // 等价 pollingWhenHidden:false）。
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') void refetch();
-    }, 15_000);
-    return () => clearInterval(timer);
-  }, [refetch]);
 
   // 引用稳定化（已登记性能缺陷）：原裸表达式 data?.items ?? [] 在 data 未就绪
   // （首载/切筛选换 queryKey/出错）期间每次渲染都分配新数组，下游
