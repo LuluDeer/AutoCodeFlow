@@ -170,3 +170,53 @@ describe('B-8 resumable 集合排除 running', () => {
     });
   });
 });
+
+// UIUX-F-2（审计 P2-1，同型 SOPS-RACE-01）：openDetail 无「谁是最新」判据时，
+// 先点 A（响应慢）再点 B（响应快），A 的旧响应晚到会把 B 抽屉的
+// steps/toolCalls/children 覆盖成 A 的数据——标题是 B、内容是 A。
+describe('UIUX-F-2 openDetail 竞态守卫', () => {
+  const stepOf = (id: string, sessionId: string, content: string) => ({
+    id, sessionId, seq: 1, role: 'assistant', content, reasoning: null,
+    toolCallsJson: null, toolCallId: null, tokensIn: 0, tokensOut: 0,
+    latencyMs: 1, provider: null, model: null, summary: null,
+    createdAt: '2026-01-01T00:00:00Z',
+  });
+
+  it('慢的旧会话响应晚到，不得覆盖新选中会话的详情', async () => {
+    let resolveA!: (v: unknown) => void;
+    vi.mocked(agentApi.detail).mockImplementation(async (id: string) => {
+      if (id === 's-run') {
+        return new Promise((resolve) => { resolveA = resolve; }); // A 慢
+      }
+      return { // B 快
+        session: sessionOf('s-wait', 'waiting_input'),
+        steps: [stepOf('st-b', 's-wait', 'STEP-B-CONTENT')],
+        toolCalls: [],
+        children: [],
+      };
+    });
+
+    renderPage();
+    await screen.findByText('session-s-run');
+    const detailButtons = await screen.findAllByText('详 情');
+
+    // 先点 A（挂起）→ 再点 B（立即返回）
+    fireEvent.click(detailButtons[0]);
+    await waitFor(() => expect(agentApi.detail).toHaveBeenCalledWith('s-run'));
+    fireEvent.click((await screen.findAllByText('详 情'))[1]);
+    await waitFor(() => expect(agentApi.detail).toHaveBeenCalledWith('s-wait'));
+    await screen.findByText('STEP-B-CONTENT');
+
+    // A 的慢响应此刻才到达——必须被丢弃，抽屉仍是 B 的内容
+    await act(async () => {
+      resolveA({
+        session: sessionOf('s-run', 'running'),
+        steps: [stepOf('st-a', 's-run', 'STEP-A-STALE-CONTENT')],
+        toolCalls: [],
+        children: [],
+      });
+    });
+    expect(screen.queryByText('STEP-A-STALE-CONTENT')).toBeNull();
+    expect(screen.getByText('STEP-B-CONTENT')).toBeTruthy();
+  });
+});

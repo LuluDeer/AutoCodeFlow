@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRaceGuard } from '../utils/raceGuard';
 import { useTranslation } from 'react-i18next';
 import {
@@ -171,18 +171,28 @@ export default function AgentSessionsPage() {
       .catch(() => undefined); // 预算行加载失败不影响列表
   }, []);
 
+  // UIUX-F-2（审计 P2-1，同型 SOPS-RACE-01，对齐 SopsPage.detailSeq 同款修法）：
+  // openDetail 此前无「谁是最新」判据——快速先点会话 A 再点 B（或 A 响应慢于
+  // B）时，A 的旧响应晚到会把 B 抽屉的 steps/toolCalls/children 整个覆盖成
+  // A 的数据（标题是 B、内容是 A）；resume() 成功后复用 openDetail 同一路径，
+  // 也会把旧响应写回。每次调用自增序号，仅最新一发允许 setState。
+  const detailSeq = useRef(0);
+
   const openDetail = useCallback(async (s: AgentSession) => {
+    const seq = ++detailSeq.current;
     setDetail(s);
     setSteps([]);
     setToolCalls([]);
     setChildren([]);
     try {
       const d = await agentApi.detail(s.id);
+      if (seq !== detailSeq.current) return; // 过期响应：丢弃（新选中的行不被旧数据覆盖）
       setDetail(d.session);
       setSteps(d.steps);
       setToolCalls(d.toolCalls);
       setChildren(d.children);
     } catch {
+      if (seq !== detailSeq.current) return; // 过期失败同样静默（错误提示只属于最新一次）
       message.error(t('agents.detailFailed'));
     }
   }, [t]);
