@@ -151,6 +151,15 @@ export function normalizeApiBase(url: string): string {
   return out;
 }
 
+/**
+ * P2-3 端间 parity 登记注释（2026-10-26，文档-实现漂移修订）：
+ * 本客户端刻意**无重试、无熔断**——CLI 是一次性交互进程，唯一的自愈面是
+ * 上方 401 单飞刷新（BUG-13）。完整的重试 + 熔断契约只存在于管理面客户端
+ * `packages/autocodeflow-http`（与 node-sdk 两端对齐，见其模块 docstring 的
+ * parity 地图）；任务进程通用通道 `autoflow-sdk`（http.py）与 `mcp-server`
+ * （api.ts，仅超时 + 401 refresh 自愈）同样无重试/熔断。修订任何一端前先
+ * 互读各端注释。
+ */
 function getClient(): AxiosInstance {
   if (!_client) {
     _client = axios.create({

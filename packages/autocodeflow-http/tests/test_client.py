@@ -10,6 +10,9 @@ from autocodeflow_http import (
     ApiHttpStatusError,
     AutoFlowHttpClient,
     CircuitBreaker,
+    CircuitBreakerOpenError,
+    DEFAULT_MAX_RESPONSE_BYTES,
+    ResponseTooLargeError,
     RetryConfig,
     SAFE_METHODS,
 )
@@ -692,3 +695,162 @@ class TestR31E2ErrorCodePassthrough:
             await client.aclose()
         assert resp.status_code == 409
         assert resp.json()["errorCode"] == "TASK_NAME_CONFLICT"
+
+class TestCircuitBreakerOpenTypedError:
+    """P3-5: 熔断 open 抛有类型的 CircuitBreakerOpenError（对齐 node-sdk B-4）。
+
+    旧实现抛裸 RuntimeError，调用方无法与编程错误区分；新类型刻意是
+    RuntimeError 子类——既有 ``except RuntimeError`` 契约零漂移。
+    """
+
+    @pytest.mark.asyncio
+    async def test_open_breaker_raises_typed_error(self):
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout_sec=999)
+        breaker.failure()
+        client = AutoFlowHttpClient(base_url="http://api.example.com", circuit_breaker=breaker)
+        with pytest.raises(CircuitBreakerOpenError, match="Circuit breaker is open"):
+            await client.get("/data")
+
+    @pytest.mark.asyncio
+    async def test_typed_error_is_still_a_runtime_error(self):
+        """向后兼容面：旧调用方的 ``except RuntimeError`` 必须照常接住。"""
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout_sec=999)
+        breaker.failure()
+        client = AutoFlowHttpClient(base_url="http://api.example.com", circuit_breaker=breaker)
+        with pytest.raises(RuntimeError):
+            await client.get("/data")
+
+
+class TestResponseBodyCap:
+    """P3-6: 响应体上限——流式读取超限即中止，rogue 对端不再能灌爆内存。"""
+
+    @pytest.mark.asyncio
+    async def test_oversized_body_aborts_read_with_typed_error(self, respx_mock):
+        respx_mock.get("http://api.example.com/big").mock(
+            return_value=httpx.Response(200, content=b"x" * 1000)
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=3, min_wait_sec=0.001, max_wait_sec=0.002),
+            max_response_bytes=100,
+        )
+        try:
+            # respx 会按 content 自动补 content-length 声明——声明检查与逐块
+            # 累计检查两条路都指向同一错误；这里断言共同前缀（声明超帽路径
+            # 已由 test_declared_content_length_over_cap_aborts_before_read 钉死）。
+            with pytest.raises(ResponseTooLargeError, match="max_response_bytes=100"):
+                await client.get("/big")
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_cap_error_is_not_retried(self, respx_mock):
+        """超限不是传输层故障——重试大概率同错，一次都不该多发。"""
+        route = respx_mock.get("http://api.example.com/big").mock(
+            return_value=httpx.Response(200, content=b"x" * 1000)
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=3, min_wait_sec=0.001, max_wait_sec=0.002),
+            max_response_bytes=100,
+        )
+        try:
+            with pytest.raises(ResponseTooLargeError):
+                await client.get("/big")
+        finally:
+            await client.aclose()
+        assert route.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_declared_content_length_over_cap_aborts_before_read(self, respx_mock):
+        respx_mock.get("http://api.example.com/declared").mock(
+            return_value=httpx.Response(
+                200, headers={"content-length": str(64 * 1024 * 1024)}, content=b"tiny"
+            )
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=0),
+            max_response_bytes=1000,
+        )
+        try:
+            with pytest.raises(ResponseTooLargeError, match="declared content-length"):
+                await client.get("/declared")
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_body_under_cap_passes_through_with_full_surface(self, respx_mock):
+        """帽内响应与旧非流式形态逐面兼容（json/text/headers/status）。"""
+        respx_mock.get("http://api.example.com/ok").mock(
+            return_value=httpx.Response(
+                200, json={"ok": True}, headers={"x-trace": "t1"}
+            )
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=0),
+            max_response_bytes=1000,
+        )
+        try:
+            resp = await client.get("/ok")
+        finally:
+            await client.aclose()
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert resp.headers.get("x-trace") == "t1"
+
+    @pytest.mark.asyncio
+    async def test_cap_none_restores_unbounded_read(self, respx_mock):
+        respx_mock.get("http://api.example.com/big").mock(
+            return_value=httpx.Response(200, content=b"x" * 1000)
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=0),
+            max_response_bytes=None,
+        )
+        try:
+            resp = await client.get("/big")
+        finally:
+            await client.aclose()
+        assert resp.status_code == 200
+        assert len(resp.content) == 1000
+
+    def test_default_cap_is_aligned_with_repo_scale(self):
+        """默认帽 = 50MB（对齐 admin-api MAX_LOG_BYTES 100MB 量级、取保守值）。"""
+        assert DEFAULT_MAX_RESPONSE_BYTES == 50 * 1024 * 1024
+        assert AutoFlowHttpClient()._max_response_bytes == DEFAULT_MAX_RESPONSE_BYTES
+
+
+class TestBackoffJitter:
+    """P3-7: 退避加性抖动（对照 autoflow-sdk callback.py:422 形态）。"""
+
+    def test_wait_strategy_adds_bounded_jitter(self):
+        from autocodeflow_http.client import BACKOFF_JITTER_SEC, _WaitWithRetryAfter
+        from tenacity import wait_exponential, RetryCallState
+
+        strategy = _WaitWithRetryAfter(
+            wait_exponential(multiplier=1.0, max=30.0), None
+        )
+        state = RetryCallState(None, None, (), {})
+        state.attempt_number = 1
+        state.outcome = None  # 无异常 outcome → 纯指数退避路径
+        seen = set()
+        for _ in range(40):
+            seen.add(strategy(state))
+        # 指数基值 ~1s；抖动 ∈ [0, min(0.25, wait)] → 观察值应落在这区间
+        assert all(1.0 <= w <= 1.0 + BACKOFF_JITTER_SEC + 1e-9 for w in seen)
+        assert len(seen) > 1, "jitter 必须让连续调用产生不同等待（抖动生效）"
+
+    def test_protocol_error_evaluation_pinned_to_breaker_not_retry(self):
+        """P3-7 评估结论钉死：ProtocolError 在熔断集、不在重试集。"""
+        import httpx as _hx
+        from autocodeflow_http.client import _CIRCUIT_BREAKABLE_EXC
+        assert _hx.ProtocolError in _CIRCUIT_BREAKABLE_EXC
+        import inspect
+        from autocodeflow_http import client as client_mod
+        src = inspect.getsource(client_mod.AutoFlowHttpClient._request)
+        retry_tuple = src.split("retry=retry_if_exception_type((")[1].split("))")[0]
+        assert "ProtocolError" not in retry_tuple
+        assert "TimeoutException" in retry_tuple and "NetworkError" in retry_tuple

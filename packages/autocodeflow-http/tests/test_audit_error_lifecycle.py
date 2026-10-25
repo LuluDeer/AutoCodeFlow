@@ -9,8 +9,10 @@ max(backoff, parsed)，**没有上限**：服务端/代理回 Retry-After: 3600 
 （默认 None 保持"无条件尊重服务端"的既有行为，该行为已被
 test_retry_after_header_influences_wait 钉死，不破坏）。
 
-注：熔断态抛裸 RuntimeError（调用方无法与编程错误区分）已作为发现记录在
-报告中，但按总控指示「纯异常层级美化」不改代码。
+注（2026-10-26 更新，P3-5）：「熔断态抛裸 RuntimeError、调用方无法与编程错误
+区分」的发现已修复——现抛 ``CircuitBreakerOpenError``（RuntimeError 子类，
+对齐 node-sdk B-4 形态）；本文件此前的既有断言（依赖 RuntimeError 兼容面）
+不受影响。
 """
 from __future__ import annotations
 

@@ -69,6 +69,18 @@ const UNCLASSIFIED_BASELINE = new Set<string>([
   'APP_UPLOAD_MALWARE_DETECTED',
   'APP_UPLOAD_ZIP_GUARD_REJECTED',
   'AI_MEDIA_URL_SCHEME_NOT_ALLOWED',
+  // 2026-10-26（P2-4，vitest 活红 409/410）补录两个新码——先读 admin catalog
+  // 语义后按「归进 6 类会误导」裁定入基线，而非硬塞规则：
+  //  · CORS_ORIGIN_NOT_ALLOWED（catalog/common.ts，403）：**配置面**的预期
+  //    拒绝——catalog 原文「调用方该做的是把来源加进 CORS_ALLOWED_ORIGINS，
+  //    而不是重试」；6 类任何一条（登录/角色/重试/改入参）都会把用户引向
+  //    错误动作（同 `_NOT_ALLOWED` 语义先例 AI_MEDIA_URL_SCHEME_NOT_ALLOWED）。
+  //  · EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED（catalog/executor.ts，400）：
+  //    服务端存储包含性闸——filePath（PATCH 写面或 DB 历史脏行）resolve 后
+  //    越出上传根，CLI 用户无可修入参；与 SOP_MEDIA_STORAGE_PATH_ESCAPED
+  //    同语义先例（领域状态类）。
+  'CORS_ORIGIN_NOT_ALLOWED',
+  'EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED',
   // —— 领域状态类：语义介于 conflict / validation，现有 6 类都给不出准确建议 ——
   'APP_DEPLOYMENT_CANCEL_NOT_REQUESTER',
   'APP_ROLLBACK_DEPLOYMENT_NO_VERSION',

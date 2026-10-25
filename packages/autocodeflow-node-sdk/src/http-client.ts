@@ -561,6 +561,12 @@ export class HttpClient {
     // python SDK 早已显式容忍这种 base（callback.py: ``if
     // self.admin_api_url.endswith("/api")``），本包此前漏了同样的处理——
     // 这里统一剥掉尾部的 `/api`（可重复），与 python 行为对齐。
+    //
+    // P3-10 登记注释（2026-10-26）——与 mcp-server api.ts 的 normalizeApiBase
+    // 归一**方向相反且各自正确**：本处是**剥** /api——本包请求路径常量已自带
+    // `/api` 前缀，baseURL 再带就是双前缀 404；mcp-server 是**补** /api——
+    // 它的请求路径不带前缀，baseURL 必须补齐。两侧消费的路径集不同，行为
+    // 不可互换；改任何一侧前先读对方注释。
     this.client = axios.create({ baseURL: stripTrailingApiSuffix(baseURL), timeout: 10_000 });
 
     // Attach auth + trace headers on every outgoing request.

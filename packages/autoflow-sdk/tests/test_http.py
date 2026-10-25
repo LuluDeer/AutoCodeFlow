@@ -2,7 +2,12 @@
 import pytest
 import httpx
 import respx
-from autoflow_sdk.http import HttpClient, AsyncHttpClient, HttpClientError
+from autoflow_sdk.http import (
+    HttpClient,
+    AsyncHttpClient,
+    HttpClientError,
+    ResponseTooLargeError,
+)
 
 
 class TestTrustEnvPinned:
@@ -353,3 +358,105 @@ class TestRedirectStatusIsSdkError:
         assert excinfo.value.error_code is None
         assert excinfo.value.params == {}
 
+
+
+class TestResponseBodyCap:
+    """P3-6: 响应体上限——流式读取超限即中止，rogue 对端不再能灌爆任务进程内存。
+
+    cap 是本 SDK 的配置出口（构造参数）；与 packages/autocodeflow-http 的
+    同名防护同构（50MB 默认、None 关闭、超限抛 ResponseTooLargeError）。
+    """
+
+    @respx.mock
+    def test_sync_oversized_body_aborts_with_typed_error(self):
+        respx.get("http://api.test/big").mock(
+            return_value=httpx.Response(200, content=b"x" * 1000)
+        )
+        c = HttpClient(base_url="http://api.test", max_response_bytes=100)
+        with pytest.raises(ResponseTooLargeError, match="max_response_bytes=100"):
+            c.get("/big")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_async_oversized_body_aborts_with_typed_error(self):
+        respx.get("http://async.test/big").mock(
+            return_value=httpx.Response(200, content=b"x" * 1000)
+        )
+        async with AsyncHttpClient(base_url="http://async.test", max_response_bytes=100) as c:
+            with pytest.raises(ResponseTooLargeError, match="max_response_bytes=100"):
+                await c.get("/big")
+
+    @respx.mock
+    def test_sync_body_under_cap_passes_through(self):
+        respx.get("http://api.test/ok").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        c = HttpClient(base_url="http://api.test", max_response_bytes=1000)
+        resp = c.get("/ok")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_async_body_under_cap_passes_through(self):
+        respx.get("http://async.test/ok").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        async with AsyncHttpClient(base_url="http://async.test", max_response_bytes=1000) as c:
+            resp = await c.get("/ok")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+    @respx.mock
+    def test_cap_none_restores_unbounded_read(self):
+        respx.get("http://api.test/big").mock(
+            return_value=httpx.Response(200, content=b"x" * 1000)
+        )
+        c = HttpClient(base_url="http://api.test", max_response_bytes=None)
+        resp = c.get("/big")
+        assert resp.status_code == 200
+        assert len(resp.content) == 1000
+
+    @respx.mock
+    def test_declared_content_length_over_cap_aborts_before_read(self):
+        respx.get("http://api.test/declared").mock(
+            return_value=httpx.Response(
+                200, headers={"content-length": str(64 * 1024 * 1024)}, content=b"tiny"
+            )
+        )
+        c = HttpClient(base_url="http://api.test", max_response_bytes=1000)
+        with pytest.raises(ResponseTooLargeError, match="declared content-length"):
+            c.get("/declared")
+
+    @respx.mock
+    def test_post_and_put_still_work_with_cap(self):
+        """非 GET 动词也走 capped 读取——json= 形参不受重构影响。"""
+        respx.post("http://api.test/items").mock(
+            return_value=httpx.Response(201, json={"id": "1"})
+        )
+        respx.put("http://api.test/items/1").mock(
+            return_value=httpx.Response(200, json={"id": "1"})
+        )
+        c = HttpClient(base_url="http://api.test", max_response_bytes=1000)
+        assert c.post("/items", json={"name": "x"}).status_code == 201
+        assert c.put("/items/1", json={"name": "y"}).status_code == 200
+
+    def test_default_cap_is_exported_and_wired(self):
+        from autoflow_sdk import DEFAULT_MAX_RESPONSE_BYTES as PKG_DEFAULT
+        assert PKG_DEFAULT == 50 * 1024 * 1024
+        assert HttpClient()._max_response_bytes == PKG_DEFAULT
+        assert AsyncHttpClient()._max_response_bytes == PKG_DEFAULT
+
+    @respx.mock
+    def test_error_surface_still_works_with_cap(self):
+        """帽内 4xx 依旧走 HttpClientError（capped 读取不改变错误契约）。"""
+        respx.get("http://api.test/err").mock(
+            return_value=httpx.Response(
+                404,
+                json={"code": 404, "message": "nope", "errorCode": "TASK_NOT_FOUND"},
+            )
+        )
+        c = HttpClient(base_url="http://api.test", max_response_bytes=1000)
+        with pytest.raises(HttpClientError) as excinfo:
+            c.get("/err")
+        assert excinfo.value.error_code == "TASK_NOT_FOUND"
