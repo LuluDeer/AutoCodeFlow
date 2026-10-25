@@ -5171,6 +5171,115 @@ describe("ExecutorService (__tests__)", () => {
         /未配置 ADMIN_API_URL/,
       );
     });
+
+    // E-7（2026-10-26 执行器域审计）：安装命令内含共享机器凭据（--secret 明文），
+    // 「谁在何时取过」必须留痕（rotate_token/delete 同为 AUTH-05 已审计）。
+    it("E-7: writes an executor.install_cmd_viewed audit entry without the token or command plaintext", async () => {
+      const audit = { log: jest.fn().mockResolvedValue(undefined) };
+      const module2 = await Test.createTestingModule({
+        providers: [
+          ExecutorService,
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
+          { provide: getRepositoryToken(Executor), useValue: executorRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          {
+            provide: getRepositoryToken(ExecutorMetricsHistory),
+            useValue: metricsHistoryRepo,
+          },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: ConfigService, useValue: configService },
+          {
+            provide: NotificationService,
+            useValue: {
+              notifyExecutorOnline: jest.fn(),
+              notifyExecutorOffline: jest.fn(),
+            },
+          },
+          {
+            provide: SystemConfigService,
+            useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+          },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      const svc = module2.get(ExecutorService);
+      (configService.get as jest.Mock).mockImplementation((key: string) =>
+        key === "app.adminApiUrl"
+          ? "https://admin.example.com"
+          : "viewed-token",
+      );
+
+      const result = await svc.getInstallCmd();
+
+      expect(result.token).toBe("viewed-token");
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "executor.install_cmd_viewed",
+          resource: "executor",
+          resourceId: "install-cmd",
+        }),
+      );
+      // 凭据明文绝不入审计：detail 不含 token/命令字符串。
+      const detail = JSON.stringify(audit.log.mock.calls[0][0]);
+      expect(detail).not.toContain("viewed-token");
+      expect(detail).not.toContain("curl -fsSL");
+    });
+
+    it("E-7: audit failure never fails the command generation (best-effort)", async () => {
+      const audit = {
+        log: jest.fn().mockRejectedValue(new Error("audit down")),
+      };
+      const module2 = await Test.createTestingModule({
+        providers: [
+          ExecutorService,
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
+          { provide: getRepositoryToken(Executor), useValue: executorRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          {
+            provide: getRepositoryToken(ExecutorMetricsHistory),
+            useValue: metricsHistoryRepo,
+          },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: ConfigService, useValue: configService },
+          {
+            provide: NotificationService,
+            useValue: {
+              notifyExecutorOnline: jest.fn(),
+              notifyExecutorOffline: jest.fn(),
+            },
+          },
+          {
+            provide: SystemConfigService,
+            useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+          },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      const svc = module2.get(ExecutorService);
+
+      const result = await svc.getInstallCmd();
+      expect(result.cmd).toContain("curl -fsSL");
+    });
   });
 
   // ============================================================================

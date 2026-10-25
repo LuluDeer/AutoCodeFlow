@@ -163,6 +163,8 @@ import {
   type FingerprintObservation,
   type FingerprintObserveContext,
 } from "./executor-fingerprint.util";
+// E-4（2026-10-26 执行器域审计）：register 身份键入站校验（宽严依据见 util 头注）。
+import { validateRegisterIdentityFields } from "./executor-register-validate.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
@@ -258,6 +260,16 @@ export const EXECUTOR_LIST_LIMIT = 500;
  * 可经 `executor.addressTakeoverSilenceMs` 覆盖（非法值回退本缺省，与
  * `executor.staleOfflineConfirmations` 同款纪律）。测试无需等待——用例把
  * 行的 lastHeartbeat/updatedAt 回拨即可立即命中。
+ *
+ * ⚠️ E-8（2026-10-26 执行器域审计）：**不要把覆盖值配成 0**。0 是合法值
+ * （resolveAddressTakeoverSilenceMs 的 `>= 0` 判定）= 静默窗退化为零——
+ * 接管的剩余前置只剩 `status=OFFLINE` 单闸，而 stale sweep 的判死只代表
+ * 「两个心跳超时窗无心跳」：一次约 3 分钟的网络分区（两台机器、NAT 表项
+ * 更替、VPN 重连）就足以让活安装被判死并立即被同地址的新安装（或攻击者
+ * 的注册请求）接管，旧进程回来后进入 401 自愈风暴（与 P1-A 的 789 次重试
+ * 同形）。建议 ≥60_000（1 分钟，覆盖「判死后立即重启」的正常重装节奏，
+ * 又不至于让自愈明显变慢）；默认 5 分钟是「正常重装 < 5min 完成的概率
+ * 极低」与「攻击者窗口最小化」的折中。
  */
 export const EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS = 5 * 60_000;
 
@@ -839,7 +851,10 @@ export class ExecutorService implements OnModuleInit {
    * in detail.
    */
   private async auditHighRisk(
-    action: "executor.rotate_token" | "executor.delete",
+    action:
+      | "executor.rotate_token"
+      | "executor.delete"
+      | "executor.install_cmd_viewed",
     executor: Pick<Executor, "id" | "address" | "appName">,
     reason?: string,
   ): Promise<void> {
@@ -1952,6 +1967,34 @@ export class ExecutorService implements OnModuleInit {
     // R3-A（§4.3/P10）：已安装执行器包清单（三态语义同 interpreters）。
     installedPackages?: InstalledPackageReport[] | null;
   }) {
+    // E-1（2026-10-26 执行器域审计）：接管路径的 **CAS 谓词参数**——方法级局部
+    // 变量，跨「判定（foreignInstall 接管分支）→ 尾部 update」两段传递。
+    //
+    // 为什么必须是局部变量而非实例字段：register 全程含多个 await（findOne/
+    // observeAddressConflict 等），两个并发 register 会交错执行——实例字段会让
+    // 请求 B 的装填覆盖请求 A 尚未消费的谓词（串值 = 错误的 CAS 或误伤普通
+    // 注册）。局部变量天然按调用帧隔离，无清理/泄漏问题（中途 409 的 throw
+    // 路径也无需兜底清空）。
+    //
+    // 装填点：foreignInstall 接管分支（见该处注释，含 CAS 形态取舍）。消费点：
+    // 尾部 repo.update（常规注册走裸 id update，行为逐字节不变）。
+    let takeoverCasRowId: string | null = null;
+    let takeoverCasHeartbeat: Date | null = null;
+    // E-4（2026-10-26 执行器域审计）：身份键入站校验——先于一切 DB 读/写与
+    // 身份解析路径（issueToken 复用本方法同样被覆盖）。非法 → 400
+    // EXECUTOR_REGISTER_FIELD_INVALID（错误码注释里有「为什么不用逐字段拆码」
+    // 的理由）。appName 必填缺失在此拒绝（appName 是行的身份列；controller
+    // /token 端点的 "executor" 兜底值本身合法，不触发本闸）。
+    if (!data.appName || !data.appName.trim()) {
+      throw new AppError("EXECUTOR_REGISTER_FIELD_INVALID", {
+        field: "appName",
+        reason: "必填（不能为空白）",
+      });
+    }
+    const invalidField = validateRegisterIdentityFields(data);
+    if (invalidField) {
+      throw new AppError("EXECUTOR_REGISTER_FIELD_INVALID", invalidField);
+    }
     // ADR-017 阶段 3：身份解析——**指纹优先**（跨重启稳定的安装身份），
     // `address` 兜底（legacy 执行器/采集失败）。命中指纹行即**复用原行**并
     // 更新其 `address`：执行器换 IP = 同一台机器换地址，不产生「新设备幽灵行」，
@@ -2070,6 +2113,40 @@ export class ExecutorService implements OnModuleInit {
                 `the push address is treated as relinquished by its dead occupant ` +
                 `(executor reinstall/container recreation changed the install identity).`,
             );
+            // E-1（2026-10-26 执行器域审计）：接管是「读 OFFLINE 快照 → 复用行
+            // → 尾部 repo.update({id}, patch)」的跨 await 写法，判定与写库之间
+            // 存在窗口——两执行器同地址同时通过判定（都读到同一 OFFLINE 快照）
+            // 时会先后 update 同一行，后写者覆盖 deviceFingerprint 与身份列，
+            // 先写者持有被覆盖行的明文令牌 → 401 死循环（与 P1-A 修的 789 次
+            // fetchToken failed 同形）。尾部 update 的「不加 CAS」论证
+            // （R55-A1 注释）只覆盖 register 自身的覆盖式上报语义；接管的安全性
+            // 却**完全建立在**「判定时刻 status=OFFLINE」这一前置之上，故写库
+            // 必须复核该前置。
+            //
+            // CAS 形态取舍：谓词只钉 `status = OFFLINE`（markOffline/setOfflineById
+            // 的 lastHeartbeat-CAS 先例在此**不可用**——接管判定基准是
+            // `lastHeartbeat ?? updatedAt ?? createdAt` 三级回退，把「判定时读到的
+            // lastHeartbeat」钉进谓词会误杀基准来自 updatedAt/createdAt 的合法
+            // 接管；lastHeartbeat 为 NULL 的行其谓词又退化成 IS NULL 语义，正中
+            // 「可空列谓词不稳」的坑）。status 单列即完备：任何会推翻接管判定的
+            // 并发写者（并发注册/心跳点亮 ONLINE、管理员 setOfflineById 之外的状态
+            // 迁移）都必然把 status 写成非 OFFLINE，谓词即失配；stale sweep 重写
+            // OFFLINE 不改变谓词（幂等，不干扰）。失配 → update affected=0 →
+            // 下方按既有 409 收口（让位给并发赢家），绝不静默吞掉。
+            //
+            // lastHeartbeat 快照仅用于失配时的诊断日志（见尾部 CAS 段）。
+            takeoverCasRowId = byAddress.id;
+            takeoverCasHeartbeat = byAddress.lastHeartbeat ?? null;
+            // E-2（2026-10-26 执行器域审计）：接管语义 = 设备换魂。占位行的
+            // runningTaskCount 是**旧进程**的容量占用；接管方若未携带重启信号
+            // （restartedAt/startupId 缺失，或与旧行 startupId 恰好一致——模板化
+            // 启动参数会出现），didRestart/shouldRecoverMissingBaseline 都判假，
+            // 下方 ：2444 起的两个清零分支都不进 → 幻影计数残留到首个心跳
+            // （≤30s）。期间派发闸 `runningTaskCount < max` 被幻影压容量（极端
+            // 情况 0/0 型执行被永久排除）。与 didRestart 分支（R-P0-008）同语义：
+            // 旧安装的槽位占用随「设备换魂」一并清零；真实并发占用由接管方
+            // 心跳的真实上报值覆盖（心跳白名单对计数列覆盖写）。
+            byAddress.runningTaskCount = 0;
             e = byAddress;
           } else {
             // pull：不拒注册——下走创建分支，建**独立行**（同地址允许重复）。
@@ -2339,6 +2416,13 @@ export class ExecutorService implements OnModuleInit {
     // `adopted.add("x")`，patch 由"白名单 ∩ adopted"投影，故"没上报"的列连键都
     // 不会出现在 patch 里（不是"值恰好相同"，是**根本不写**）。
     const adopted = new Set<RegisterOwnedColumn>();
+    // E-2：接管分支已在「设备换魂」处清零幻影计数（见 foreignInstall 接管点
+    // 注释）。此处把清零登记进采纳集——若后续 didRestart 判真，其清零分支的
+    // `adopted.add("runningTaskCount")` 是幂等重登记，语义不变。
+    if (takeoverCasRowId !== null && e) {
+      e.runningTaskCount = 0;
+      adopted.add("runningTaskCount");
+    }
     // ADR-017 阶段 3：地址漂移——同一安装从**新地址**上报（机器换网/换 IP）。
     // 复用行 + 更新 `address`（这正是"换 IP 不再产生幽灵行"的落点）。
     // push 模式不许抢占他人地址（新地址若被另一份安装占用 → 409）；pull 模式
@@ -2510,7 +2594,29 @@ export class ExecutorService implements OnModuleInit {
     // adr-026-exempt: 覆盖式上报（身份/配置 + 在线标记），写面 = 白名单 ∩ 采纳集，
     // 无「旧快照盖掉别人新状态」的可能；加 CAS 会变成注册静默丢失（理由见上五行）。
     const patch = this.pickOwnedColumns(e, adopted, REGISTER_OWNED_COLUMNS);
-    await this.repo.update({ id: e.id }, patch);
+    // E-1：接管路径的 CAS 收口。takeoverCasRowId 只在「本请求走过接管分支」时
+    // 非空（局部变量按调用帧隔离，见方法头注释）。常规注册走原有裸 id update，
+    // 行为逐字节不变（R55-A1 的「不加 CAS」论证仍然成立）。
+    if (takeoverCasRowId !== null) {
+      // 谓词 = status 仍 OFFLINE（判定时刻的前置）。失配 = 并发赢家已把行
+      // 点亮/改写（判定窗口内另一接管方 update 成功，或并发心跳/注册落地）
+      // ——本次接管放弃，按既有 409 让位，**一行都不写**。
+      const casResult = await this.repo.update(
+        { id: takeoverCasRowId, status: ExecutorStatus.OFFLINE },
+        patch,
+      );
+      if (!casResult.affected) {
+        this.logger.warn(
+          `Takeover of abandoned row ${takeoverCasRowId} at "${data.address}" lost the ` +
+            `race: the row is no longer OFFLINE (a concurrent takeover/registration ` +
+            `landed first). Refusing with 409; judgment-time lastHeartbeat was ` +
+            `${takeoverCasHeartbeat ? takeoverCasHeartbeat.toISOString() : "null"}.`,
+        );
+        throw new AppError("EXECUTOR_ADDRESS_TAKEN", { address: data.address });
+      }
+    } else {
+      await this.repo.update({ id: e.id }, patch);
+    }
     // R3-A（§4.3）：重注册携带 deployedApps → 落事实行（best-effort 同首注册
     // 分支；键缺失（normalizedDeployedApps === null 含「未上报」与「非法」两态，
     // 后者上方已 warn）→ 完全不动既有行）。
@@ -7376,6 +7482,18 @@ export class ExecutorService implements OnModuleInit {
     // --secret 传共享 token；两者继续经 q() 转义防注入。
     const scriptUrl = `${adminApiUrl.replace(/\/+$/, "")}/api/executors/install.sh`;
     const cmd = `curl -fsSL ${q(scriptUrl)} | bash -s -- --api-url ${q(adminApiUrl)} --secret ${q(sharedToken)}`;
+    // E-7（2026-10-26 执行器域审计）：安装命令内含**共享机器凭据**（--secret
+    // 明文，DR-01 既有取舍），「谁在何时取过」必须留痕——rotate_token/delete
+    // 同为高危已审计（AUTH-05），本读取面是凭据分发点，补齐同一纪律。
+    // best-effort：audit 失败不影响命令生成（auditHighRisk 内部自兜）。
+    // 面向对象不是单个执行器行（视图面），按既有 Pick 形态传占位三元组：
+    // id 用稳定伪 id 让 audit 列表的 resourceId 可聚合（"install-cmd"），
+    // detail 只记 adminApiUrl（token/命令明文绝不入审计）。
+    await this.auditHighRisk("executor.install_cmd_viewed", {
+      id: "install-cmd",
+      address: adminApiUrl,
+      appName: "shared-token-view",
+    });
     return { cmd, token: sharedToken, adminApiUrl };
   }
 

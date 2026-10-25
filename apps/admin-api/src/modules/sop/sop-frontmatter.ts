@@ -296,7 +296,9 @@ export function validateFrontMatter(
         // 空段开头结尾——与执行器侧 domain-allowlist.ts 的字形语义对齐。
         // 既有合法 SOP 均为含点域名（fixtures/seed 未见单标签），不破坏。
         if (
-          !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(s) ||
+          !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(
+            s,
+          ) ||
           s.length > 253
         ) {
           fail(

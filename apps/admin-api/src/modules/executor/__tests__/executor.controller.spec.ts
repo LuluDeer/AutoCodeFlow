@@ -1028,20 +1028,41 @@ describe("ExecutorController", () => {
       expect(svc.register).not.toHaveBeenCalled();
     });
 
-    it("defaults appName to 'executor' when the body omits it", async () => {
+    // E-6（2026-10-26 执行器域审计）：缺 appName 不再兜底 "executor"——那会让
+    // 持有共享令牌的调用方反复以不同 address 制造无主行。旧用例
+    // 「defaults appName to 'executor'」随该收紧淘汰，改钉新契约：400
+    // EXECUTOR_TOKEN_APP_NAME_REQUIRED 且不触达 service。仓内三个执行器来源
+    // （node auth.ts / python auth.py / install.sh APP_NAME）恒带非空 appName，
+    // 收紧无存量兼容风险。
+    it("rejects a body without appName with 400 EXECUTOR_TOKEN_APP_NAME_REQUIRED (E-6: no silent 'executor' rows)", async () => {
       const svc = makeSvc();
       const controller = makeController(svc);
 
-      await controller.getToken(
-        { address: "10.0.0.9:3002" },
-        "Bearer shared-secret",
-      );
-
-      expect(svc.issueToken).toHaveBeenCalledWith({
-        address: "10.0.0.9:3002",
-        appName: "executor",
-        startupId: undefined,
+      await expect(
+        controller.getToken(
+          { address: "10.0.0.9:3002" },
+          "Bearer shared-secret",
+        ),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_TOKEN_APP_NAME_REQUIRED",
       });
+      expect(svc.issueToken).not.toHaveBeenCalled();
+      expect(svc.register).not.toHaveBeenCalled();
+    });
+
+    it("rejects a blank/whitespace appName the same way (E-6)", async () => {
+      const svc = makeSvc();
+      const controller = makeController(svc);
+
+      await expect(
+        controller.getToken(
+          { address: "10.0.0.9:3002", appName: "   " },
+          "Bearer shared-secret",
+        ),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_TOKEN_APP_NAME_REQUIRED",
+      });
+      expect(svc.issueToken).not.toHaveBeenCalled();
     });
 
     it("rejects a wrong shared token with 401 before issuing anything", async () => {

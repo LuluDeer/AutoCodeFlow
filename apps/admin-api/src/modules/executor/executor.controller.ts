@@ -55,6 +55,11 @@ import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
+// E-5：API-Key 主体判定（机器凭据不得借属主身份过项目角色判定）。
+import {
+  ApiKeyUser,
+  isApiKeyUser,
+} from "../../common/interfaces/auth-user.interface";
 import { ProjectAccessService } from "../project/project-access.service";
 // A2/A2-B：写端点授权形态声明 + 运行时证据落证（ownership scope 强制要求）。
 // WriteGuard 装饰器本文件已 import（register 的 token 形态在用）。
@@ -183,11 +188,22 @@ export class ExecutorController {
    * （存量/平台级）维持仅 ADMIN（不进 hasProjectRole：resolveRole 对 null
    * 会落 DEFAULT_PROJECT_ID，语义不同）。viewer/非成员 403；projectAccess
    * 缺席（极简装配）退化为仅 ADMIN——fail-closed。
+   *
+   * E-5（2026-10-26 执行器域审计）：API-Key 主体**显式拒绝**。ApiKeyUser 无
+   * role 字段（auth-user.interface.ts:30-36；jwt-auth.guard.ts 头注自证
+   * 「RolesGuard 补偿不了：ApiKeyUser 没有 role 字段」），而本判定对非 ADMIN
+   * 主体会拿 `user.id` 查项目角色——API-Key 的 userId 是 key 属主的**用户 id**，
+   * 把机器凭据映射到属主的项目身份 = 凭据提权（key 属主是 editor ⇒ 任何持 key
+   * 的进程都能改执行器元数据、影响标签亲和派发）。机器凭据的授权边界由
+   * api-key-scope.util 的 method×path 矩阵承载，项目身份只属于人类会话。
    */
   private async assertCanManageMetadata(
     executor: { projectId?: string | null },
-    user: AuthUser | undefined,
+    user: AuthUser | ApiKeyUser | undefined,
   ): Promise<void> {
+    if (isApiKeyUser(user)) {
+      throw new AppError("EXECUTOR_METADATA_FORBIDDEN");
+    }
     if (user?.role === UserRole.ADMIN) {
       recordOwnershipAssertion("executor", "write");
       return;
@@ -1070,7 +1086,9 @@ export class ExecutorController {
   })
   async update(
     @Param("id") id: string,
-    @CurrentUser() user: AuthUser,
+    // E-5：运行时可能是 ApiKeyUser（JwtAuthGuard 的 acf_ 分支）——类型放宽到
+    // 联合，判定收敛在 assertCanManageMetadata（isApiKeyUser 显式 403）。
+    @CurrentUser() user: AuthUser | ApiKeyUser,
     @Body()
     body: {
       groupName?: string | null;
@@ -1182,7 +1200,8 @@ export class ExecutorController {
    */
   async reloadConfig(
     @Param("id") id: string,
-    @CurrentUser() user: AuthUser,
+    // E-5：同 update——主体类型放宽，判定收敛在 assertCanManageMetadata。
+    @CurrentUser() user: AuthUser | ApiKeyUser,
     @Body()
     body: {
       maxConcurrentTasks?: number;
@@ -1416,13 +1435,22 @@ export class ExecutorController {
       this.systemConfigService,
     );
 
+    // E-6（2026-10-26 执行器域审计）：缺 appName 不再兜底 "executor"——那会让
+    // 持有共享令牌的调用方反复以不同 address 制造无主行（appName 是行的身份列，
+    // "executor" 兜底让这些行在管理台无法归属）。仓内三个执行器来源（node
+    // middleware/auth.ts、python auth.py、install.sh 生成的 APP_NAME）恒带
+    // 非空 appName，收紧无存量兼容风险；语义见 EXECUTOR_TOKEN_APP_NAME_REQUIRED。
+    if (!body.appName || !body.appName.trim()) {
+      throw new AppError("EXECUTOR_TOKEN_APP_NAME_REQUIRED");
+    }
+
     // R9 (round-8 P1 closure, W2): issueToken() replaces the old
     // register()+rotateToken() pair that rotated on EVERY call — the root of
     // the ~30s tokenHash rotation cycle that broke the N26 per-execution
     // callback-token invariant (docs/archive/verifies/verify-round8-e2e.md §1.5).
     return this.svc.issueToken({
       address: body.address,
-      appName: body.appName || "executor",
+      appName: body.appName,
       startupId: body.startupId,
       // ADR-017 阶段 3（复查补口）：指纹必须转发——issueToken 依赖它把
       // register 的行解析收敛到**调用方自己那一行**（缺省即同址多行时任取

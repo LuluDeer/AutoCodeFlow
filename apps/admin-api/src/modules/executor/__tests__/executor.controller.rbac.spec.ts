@@ -126,9 +126,21 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
     // Mock only authentication; exercise the real global role guard and Nest
     // HTTP errors (same harness as the install-cmd DR-01 matrix spec).
     // N-02③：user 带真实 id（controller 判定用它查项目角色）。
+    // E-5：x-test-apikey 头注入 ApiKeyUser 主体（无 role 字段的机器凭据形态，
+    // 与 auth-user.interface.ts:30-36 的 ApiKeyUser 逐字段同形）。
     const jwtGuard = {
       canActivate(context: ExecutionContext) {
         const req = context.switchToHttp().getRequest();
+        if (req.headers["x-test-apikey"]) {
+          req.user = {
+            type: "apiKey",
+            userId: 42,
+            keyPrefix: "acf_test",
+            apiKeyId: 1,
+            scope: "manage",
+          };
+          return true;
+        }
         const role = req.headers["x-test-role"];
         if (!role) throw new UnauthorizedException();
         req.user = { id: 7, role };
@@ -195,6 +207,37 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
         expect(svcOf().update).toHaveBeenCalledWith("e1", {
           groupName: "prod",
         });
+      });
+
+      // E-5（2026-10-26 执行器域审计）：API-Key 主体显式拒绝。ApiKeyUser 无
+      // role 字段；拒绝必须发生在 projectAccess.hasProjectRole **之前**——
+      // 否则机器凭据会借 key 属主（userId）的项目身份过判（凭据提权）。
+      // E-5：API-Key 用例需要带 projectId 的行（证明拒绝与 projectId 无关，
+      // 且发生在项目角色判定之前）。与 attachProject 同形，但独立命名避免
+      // 与 N-02③ 矩阵的桩交互耦合。
+      const attachProjectForApiKey = async (projectId: string | null) => {
+        const svc = svcOf() as ReturnType<typeof makeSvc>;
+        svc.findOne.mockResolvedValue({
+          id: "e1",
+          address: "10.0.0.9:8001",
+          appName: "executor-node",
+          executorStartupId: "startup-1",
+          status: ExecutorStatus.ONLINE,
+          type: ExecutorType.PYTHON,
+          projectId,
+        });
+      };
+
+      it("E-5: 403 to an API-Key principal, project roles never consulted", async () => {
+        await attachProjectForApiKey("p1");
+        projectAccess.hasProjectRole.mockResolvedValue(true); // 即便属主是 editor 也必须拒
+        await request(app.getHttpServer())
+          .patch("/executors/e1")
+          .set("x-test-apikey", "1")
+          .send({ groupName: "prod" })
+          .expect(403);
+        expect(projectAccess.hasProjectRole).not.toHaveBeenCalled();
+        expect(svcOf().update).not.toHaveBeenCalled();
       });
     });
 

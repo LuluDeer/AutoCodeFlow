@@ -127,6 +127,38 @@ export const EXECUTOR_CODES = {
     zh: "maxConcurrentTasks 必须是 1..10000 范围内的整数，或为 null 以清除上限（当前值 {{value}}）",
     en: "maxConcurrentTasks must be an integer in 1..10000, or null to clear the limit (current value {{value}})",
   },
+  /**
+   * E-4（2026-10-26 执行器域审计）：register 身份键校验（appName/address/type/
+   * capabilities/tags/description）。此前这些字段零校验直落库——appName 超长
+   * 撞 varchar 上限是**裸 500**（PG 22001 经全局过滤器透出，无稳定码）；
+   * capabilities/tags 是 simple-array 列，元素含逗号会在读回时被静默劈裂
+   * （"gpu,a100" → ["gpu","a100"]，调度侧按标签 AND 子集匹配永远匹配不到，
+   * 与任务域 create-task.dto.ts 的 executorTags F-7 先例同型）。
+   *
+   * 单码统一 400、按 {{field}}/{{reason}} 区分字段与原因——机器面调用方
+   * （执行器/安装脚本）只需要「哪个字段、为什么」两级信息；逐字段拆码会让
+   * 目录膨胀而消费方并不分支处理（对齐 EXECUTOR_COMMAND_RESULT_INVALID
+   * 的单码形态）。
+   */
+  EXECUTOR_REGISTER_FIELD_INVALID: {
+    status: 400,
+    zh: "注册字段「{{field}}」非法：{{reason}}",
+    en: 'Invalid registration field "{{field}}": {{reason}}',
+  },
+  /**
+   * E-6（2026-10-26 执行器域审计）：POST /executors/token 此前对缺 appName 的
+   * 请求兜底 "executor"（controller），可被反复以不同 address 制造无主行
+   * （共享 token 的持有边界即行扩张边界，行治理脏）。仓内三个执行器来源
+   * （executor-node middleware/auth.ts:254、executor-python auth.py:203、
+   * scripts/install.sh:27 生成的 .env APP_NAME）**总是**携带非空 appName，
+   * 收紧无存量兼容风险（controller.spec 里「缺 appName 兜底」用例已随本修复
+   * 改写）。复用 register 字段校验码：同一「注册字段非法」语义。
+   */
+  EXECUTOR_TOKEN_APP_NAME_REQUIRED: {
+    status: 400,
+    zh: "appName 为必填（不能为空白）：执行器换取令牌时必须上报应用名称",
+    en: "appName is required (must not be blank): executors must report their app name when fetching a token",
+  },
   EXECUTOR_AGENT_CAPABILITY_UNSUPPORTED: {
     status: 400,
     zh: "Agent capabilities 含不支持的能力域",
