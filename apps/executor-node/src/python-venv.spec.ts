@@ -852,7 +852,16 @@ describe('P1 凭据通道：defaultUvEnv 注入 registry-pypi netrc（2026-10-25
     expect(netrcPath).toBeDefined();
     const fs = require('fs') as typeof import('fs');
     expect(fs.existsSync(netrcPath)).toBe(true);
-    expect((fs.statSync(netrcPath).mode & 0o777)).toBe(0o600);
+    // 0600 断言仅 POSIX：Windows 的 statSync().mode 不反映完整 POSIX 权限位
+    // （writeFile 的 0o600 在 NTFS 上映射为只读位，实测 mode&0o777=0o666，
+    // windows-node-tests CI 2026-10-25 实证）。Windows 侧放宽为属主读写位
+    // 断言——0600 收紧的实质防线在实现侧 writeFile mode 参数，POSIX 平台
+    // 由本断言完整钉住。
+    if (process.platform === 'win32') {
+      expect((fs.statSync(netrcPath).mode & 0o700)).toBe(0o600 & 0o700);
+    } else {
+      expect((fs.statSync(netrcPath).mode & 0o777)).toBe(0o600);
+    }
     const content = fs.readFileSync(netrcPath, 'utf8');
     expect(content).toContain('machine registry-pypi');
     expect(content).toContain('login reg-user');
