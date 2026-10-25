@@ -33,12 +33,16 @@ import {
 import {
   SendNotificationDto,
   SendNotificationResultDto,
+  SendTestDto,
 } from "./dto/send-notification.dto";
 // PK-19: createSilence 请求体 Swagger 文档 DTO（运行时 @Body() 仍为内联对象类型）。
 import { CreateSilenceDto } from "./dto/create-silence.dto";
 import { NotificationPayload } from "./channels/base.channel";
 // D3-B-P2-2: 渠道/静默增删审计落证。
 import { AuditService } from "../audit/audit.service";
+// F-53（UIAUDIT P2-2）：testChannel 的动态键覆盖体形状管道（键集随渠道类型
+// 变化，封闭 class DTO 不适用，见管道头注）。
+import { ChannelConfigOverridePipe } from "./channel-config-override.pipe";
 // ARCH-23 / N-12（2026-10-07 A1 批）：通知配置域响应契约。
 import {
   ChannelTestResponseDto,
@@ -121,7 +125,14 @@ export class NotificationConfigController {
   @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "测试通知渠道" })
-  testChannel(@Param("key") key: string, @Body() body: Record<string, string>) {
+  // F-53（UIAUDIT P2-2）：此前裸 Record<string, string>（metatype=Object，
+  // 全局管道跳过）——任意形状 JSON 直达渠道 override。键集是动态的（随渠道
+  // 类型变化），封闭 class DTO 不适用，改挂形状管道（值必须 string + 数量/
+  // 长度护栏，非法 400 VALIDATION_FAILED 形态）。
+  testChannel(
+    @Param("key") key: string,
+    @Body(new ChannelConfigOverridePipe()) body: Record<string, string>,
+  ) {
     return this.configService.testChannel(key, body);
   }
 
@@ -135,9 +146,9 @@ export class NotificationConfigController {
   @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "向渠道发送测试通知" })
-  sendTest(
-    @Body() body: { channels: string[]; title: string; content: string },
-  ) {
+  // F-53（UIAUDIT P2-2）：内联类型换 class DTO（SendTestDto），全局
+  // whitelist+forbidNonWhitelisted 纪律生效；channels 走渠道枚举白名单。
+  sendTest(@Body() body: SendTestDto) {
     return this.configService.sendTest(body);
   }
 

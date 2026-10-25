@@ -23,7 +23,7 @@ import { AuthService } from "./auth.service";
 import { AuditService } from "../audit/audit.service";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
-import { TotpCodeDto, TotpVerifyDto } from "./dto/totp.dto";
+import { TotpCodeDto, TotpDisableDto, TotpVerifyDto } from "./dto/totp.dto";
 // ARCH-23 / N-12：响应体 DTO——此前这些端点只有 description 没有 type，
 // openapi.json 里对应 2xx 无 schema，前端无法生成类型（详见该 DTO 文件头注）。
 import {
@@ -316,9 +316,11 @@ export class AuthController {
     type: TotpDisableResponseDto,
   })
   @ApiResponse({ status: 401, description: "确认失败" })
+  // F-53（UIAUDIT P2-2）：body 换 class DTO——此前内联类型使全局
+  // whitelist+forbidNonWhitelisted 对本面失效（多余字段静默收下）。
   totpDisable(
     @CurrentUser() user: AuthUser,
-    @Body() dto: { password?: string; code?: string },
+    @Body() dto: TotpDisableDto,
   ) {
     return this.authService.totpDisable(user.id, {
       password: dto?.password,

@@ -71,6 +71,9 @@ import { ExecutorPullDto } from "./dto/executor-pull.dto";
 // 运行时 @Body() 仍为内联类型——避免 forbidNonWhitelisted 误杀 executor 协议字段）。
 import { ExecutorRegisterDto } from "./dto/executor-register.dto";
 import { ExecutorHeartbeatDto } from "./dto/executor-heartbeat.dto";
+// F-53（UIAUDIT P2-2）：rotate-token / DELETE 的人操作面可选 reason class DTO
+// （机器协议内联体仍是 PK-19 有意豁免，见各端点头注）。
+import { ExecutorActionReasonDto } from "./dto/executor-action-reason.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import {
   assertAndPinExecutorUrl,
@@ -1334,15 +1337,21 @@ export class ExecutorController {
   @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
     description:
-      "AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
-    schema: { example: { reason: "token suspected leaked" } },
+      "AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+    type: ExecutorActionReasonDto,
     required: false,
   })
   @ApiOkResponse({
     type: ExecutorRotateTokenDto,
     description: "新凭据一次性回显",
   })
-  rotateToken(@Param("id") id: string, @Body() body?: { reason?: string }) {
+  // F-53（UIAUDIT P2-2）：body 换 class DTO——此前内联 { reason?: string } 使
+  // 全局 whitelist+forbidNonWhitelisted 对本面失效；reason 现有 ≤200 上限
+  // （对齐 AUTH-05 前端契约与 DEP-04 ApprovalActionDto 先例）。
+  rotateToken(
+    @Param("id") id: string,
+    @Body() body?: ExecutorActionReasonDto,
+  ) {
     return this.svc.rotateToken(id, body?.reason);
   }
 
@@ -1513,15 +1522,16 @@ export class ExecutorController {
   @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
     description:
-      "AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
-    schema: { example: { reason: "decommissioned host" } },
+      "AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+    type: ExecutorActionReasonDto,
     required: false,
   })
   @ApiResponse({ status: 204, description: "执行器已删除" })
   @ApiResponse({ status: 404, description: "执行器不存在" })
+  // F-53（UIAUDIT P2-2）：同 rotate-token，内联 reason body 换 class DTO。
   async removeExecutor(
     @Param("id") id: string,
-    @Body() body?: { reason?: string },
+    @Body() body?: ExecutorActionReasonDto,
   ): Promise<void> {
     return this.svc.removeById(id, body?.reason);
   }
