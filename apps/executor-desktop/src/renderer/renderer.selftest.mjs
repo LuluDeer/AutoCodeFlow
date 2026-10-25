@@ -210,6 +210,19 @@ if (/id: index, text/.test(pages[2])) {
   throw new Error('F-24: HistoryPage 不得用缓冲数组下标当行 id（缓冲滑动后全窗 id 漂移）');
 }
 
+// ── UIUX F-26（2026-10-25 审计）：R105 主进程原生确认被取消 ≠ 操作失败 ───
+// destructive-actions 取消时统一回 {ok:false, canceled:true}（CONFIRM_CANCELED），
+// 消费方此前没有 canceled 分支：用户点「取消」却得到「删除失败/卸载失败/清除
+// 失败」红条。三处消费回调必须先判 canceled 静默返回。
+const appsPageF26 = pages[0];
+const canceledReturns = (appsPageF26.match(/if \(res\.canceled\) return;/g) || []).length;
+if (canceledReturns < 2) {
+  throw new Error(`F-26: AppsPage 的删除版本/卸载回调必须先判 res.canceled 静默返回（取消≠失败）——现有 ${canceledReturns} 处`);
+}
+if (!/clearHistory\(\)[\s\S]{0,300}result\.canceled/.test(pages[2])) {
+  throw new Error('F-26: HistoryPage.handleClear 必须先判 result.canceled（原生确认被取消不得落「清除失败」红条）');
+}
+
 // F-37（DEEP_REVIEW 0ef3bbe）：main 进程 IPC 处理器不得在函数体内 require()
 // （模块统一顶层 import；main 进程无打包懒加载收益，属历史噪音）。
 const ipcHandlers = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');

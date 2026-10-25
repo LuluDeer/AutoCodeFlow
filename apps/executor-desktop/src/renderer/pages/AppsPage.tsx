@@ -21,13 +21,15 @@ declare const window: Window & {
       ok: boolean;
       mode: 'executor' | 'local';
       stopped?: string[];
+      // F-26：R105 主进程原生二次确认被取消时的回执（{ok:false, canceled:true}）。
+      canceled?: boolean;
       error?: string;
     }>;
     deleteAppRelease: (
       appId: string,
       releaseKey: string,
       deploymentId: string,
-    ) => Promise<{ ok: boolean; error?: string }>;
+    ) => Promise<{ ok: boolean; canceled?: boolean; error?: string }>;
     /**
      * 本机正在运行的常驻应用：deploymentId → {pid, running}。
      * 数据来自 executor 的 /api/app-status（进程登记只在执行器进程内）。
@@ -415,6 +417,10 @@ export default function AppsPage() {
         entry.releaseKey,
         entry.deploymentId,
       );
+      // F-26（R105）：主进程原生二次确认被用户取消时统一回
+      // {ok:false, canceled:true}——用户点了「取消」，不是失败：静默返回，
+      // 不报错、不弹红条、不触发刷新。
+      if (res.canceled) return;
       if (res.ok) {
         setNotice({ kind: 'ok', text: t('apps.notice.deleted', label) });
         await refresh(true);
@@ -433,6 +439,9 @@ export default function AppsPage() {
     setBusy(appId);
     try {
       const res = await window.electronAPI.uninstallApp(appId);
+      // F-26（R105）：同 handleDeleteRelease——原生确认被取消 ≠ 卸载失败，
+      // 静默返回（不报错、不弹红条、不触发刷新）。
+      if (res.canceled) return;
       if (res.ok) {
         setNotice({
           kind: 'ok',

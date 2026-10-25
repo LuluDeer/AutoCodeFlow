@@ -13,7 +13,8 @@ const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 declare const window: Window & {
   electronAPI: {
     getHistory: () => Promise<ExecRecord[]>;
-    clearHistory: () => Promise<{ ok: boolean }>;
+    // F-26：canceled = R105 主进程原生二次确认被用户取消（非失败）。
+    clearHistory: () => Promise<{ ok: boolean; canceled?: boolean }>;
     // F-22：truncated = 主进程首读走了尾窗（lines 只是文件尾部窗口）。
     readLog: (executionId: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number; truncated?: boolean }>;
     writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
@@ -527,6 +528,10 @@ export default function HistoryPage({ active }: { active: boolean }) {
   async function handleClear() {
     try {
       const result = await window.electronAPI.clearHistory();
+      // F-26（R105）：主进程原生二次确认被取消时回 {ok:false, canceled:true}
+      // ——用户点了「取消」，不是失败：静默收起确认条返回（finally），
+      // 不进顶部 error 条（原先的 throw 会把「取消」呈现成「清除失败」红条）。
+      if (!result.ok && result.canceled) return;
       if (!result.ok) throw new Error(t('history.notice.clearFail'));
       setRecords([]);
       setError(null);
