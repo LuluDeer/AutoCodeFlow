@@ -288,7 +288,7 @@ export interface paths {
         post?: never;
         /**
          * 撤销我的一个会话
-         * @description 将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。
+         * @description 将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。
          */
         delete: operations["AuthController_revokeSession"];
         options?: never;
@@ -1362,8 +1362,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 列出执行器
-         * @description 获取全部执行器列表，包含在线状态、分组与标签。
+         * 列出执行器（截断上限见描述；不支持分页）
+         * @description 获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，不得把截断结果当作全量。
          */
         get: operations["ExecutorController_findAll"];
         put?: never;
@@ -3947,6 +3947,18 @@ export interface components {
             /** @description 成功时恒为 true（否则返回 400） */
             enabled: boolean;
         };
+        TotpDisableDto: {
+            /**
+             * @description 确认密码（与 6 位动态码二选一）
+             * @example password123
+             */
+            password?: string;
+            /**
+             * @description 6 位 TOTP 动态验证码（与密码二选一）
+             * @example 123456
+             */
+            code?: string;
+        };
         TotpDisableResponseDto: {
             /** @description 本次调用确实关闭了 TOTP 时为 true；本来就未开启时为 false（幂等空操作） */
             disabled: boolean;
@@ -5673,6 +5685,13 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        ExecutorActionReasonDto: {
+            /**
+             * @description 可选的操作原因（≤200 字符），计入审计
+             * @example decommissioned host
+             */
+            reason?: string;
+        };
         ExecutorRotateTokenDto: {
             /** @description 新共享凭据（仅此一次回显） */
             token: string;
@@ -5751,6 +5770,14 @@ export interface components {
             results?: {
                 [key: string]: "sent" | "blocked" | "failed" | "skipped";
             };
+        };
+        SendTestDto: {
+            /** @description 要扇出的渠道（取值域 = 已注册渠道枚举） */
+            channels: ("email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu")[];
+            /** @description 测试通知标题 */
+            title: string;
+            /** @description 测试通知内容 */
+            content: string;
         };
         SendNotificationDto: {
             /**
@@ -5899,7 +5926,7 @@ export interface components {
             commonAnnotations?: Record<string, never>;
             /** @description Alertmanager 外部 URL */
             externalURL?: string;
-            /** @description 告警列表（空数组被控制器 400 拒绝） */
+            /** @description 告警列表（空数组/缺失由控制器映射层以 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY 拒绝） */
             alerts?: components["schemas"]["AlertmanagerAlertDto"][];
         };
         AlertsWebhookResponseDto: {
@@ -8206,7 +8233,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpDisableDto"];
+            };
+        };
         responses: {
             /** @description TOTP 已停用（或本来未启用） */
             200: {
@@ -8282,7 +8313,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                id: string;
+                id: number;
             };
             cookie?: never;
         };
@@ -8297,8 +8328,8 @@ export interface operations {
                     "application/json": components["schemas"]["SessionRevokeResponseDto"];
                 };
             };
-            /** @description 会话不存在或不属于你 */
-            401: {
+            /** @description 会话不存在或已吊销 */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10272,10 +10303,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
+        /** @description AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
         requestBody?: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ExecutorActionReasonDto"];
             };
         };
         responses: {
@@ -10399,10 +10430,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
+        /** @description AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
         requestBody?: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ExecutorActionReasonDto"];
             };
         };
         responses: {
@@ -10667,7 +10698,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendTestDto"];
+            };
+        };
         responses: {
             201: {
                 headers: {

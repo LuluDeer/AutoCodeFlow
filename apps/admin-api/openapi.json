@@ -497,6 +497,16 @@
         "description": "需要账户密码或有效的 TOTP 验证码作为确认。",
         "operationId": "AuthController_totpDisable",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpDisableDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "TOTP 已停用（或本来未启用）",
@@ -609,7 +619,7 @@
     },
     "/auth/sessions/{id}": {
       "delete": {
-        "description": "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。",
+        "description": "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。",
         "operationId": "AuthController_revokeSession",
         "parameters": [
           {
@@ -617,7 +627,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -633,9 +643,9 @@
             },
             "x-i18n-en": "Session revoked"
           },
-          "401": {
-            "description": "会话不存在或不属于你",
-            "x-i18n-en": "Session does not exist or does not belong to you"
+          "404": {
+            "description": "会话不存在或已吊销",
+            "x-i18n-en": "Session does not exist or has been revoked"
           }
         },
         "security": [
@@ -649,7 +659,7 @@
         ],
         "x-i18n-en": {
           "summary": "Revoke one of my sessions",
-          "description": "Marks the specified refresh token row as revoked (DR-04 semantics - that refresh JWT becomes unusable immediately). Ownership is enforced; passing someone else's id returns 401."
+          "description": "Marks the given refresh token row as revoked (DR-04 semantics - the refresh JWT becomes unusable immediately). Ownership is enforced; someone else's or an already-revoked id returns 404."
         }
       }
     },
@@ -4116,7 +4126,7 @@
     },
     "/executors": {
       "get": {
-        "description": "获取全部执行器列表，包含在线状态、分组与标签。",
+        "description": "获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，不得把截断结果当作全量。",
         "operationId": "ExecutorController_findAll",
         "parameters": [],
         "responses": {
@@ -4139,13 +4149,13 @@
             "JWT": []
           }
         ],
-        "summary": "列出执行器",
+        "summary": "列出执行器（截断上限见描述；不支持分页）",
         "tags": [
           "Executors"
         ],
         "x-i18n-en": {
-          "summary": "List executors",
-          "description": "Get the full executor list, including online status, group, and labels."
+          "summary": "List executors (truncation cap described below; pagination is not supported)",
+          "description": "Get the executor list (ordered by createdAt descending), including online status, groups, and labels. **Pagination is not supported**: query parameters such as page/pageSize are not accepted (ignored, not rejected); the server returns only the newest EXECUTOR_LIST_LIMIT (500) executors by creation time and truncates the rest. Truncation signal: the listLimit/executorTotal fields of GET /executors/runtime-config - when total > listLimit, callers must surface a \"showing first N of M\" style warning and must not treat the truncated result as the full set."
         }
       }
     },
@@ -4530,17 +4540,15 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+          "description": "AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
           "content": {
             "application/json": {
               "schema": {
-                "example": {
-                  "reason": "decommissioned host"
-                }
+                "$ref": "#/components/schemas/ExecutorActionReasonDto"
               }
             }
           },
-          "x-i18n-en": "AUTH-05: optional deletion reason, recorded in the audit log details (this endpoint stays backward compatible - an empty request body is also accepted)."
+          "x-i18n-en": "AUTH-05: optional deletion reason (max 200 chars, ExecutorActionReasonDto), recorded in the audit log detail (the endpoint stays backward compatible - an empty body is fine too)."
         },
         "responses": {
           "204": {
@@ -4658,17 +4666,15 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+          "description": "AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
           "content": {
             "application/json": {
               "schema": {
-                "example": {
-                  "reason": "token suspected leaked"
-                }
+                "$ref": "#/components/schemas/ExecutorActionReasonDto"
               }
             }
           },
-          "x-i18n-en": "AUTH-05: optional rotation reason, recorded in the audit log details (this endpoint stays backward compatible -- an empty request body is fine)."
+          "x-i18n-en": "AUTH-05: optional rotation reason (max 200 chars, ExecutorActionReasonDto), recorded in the audit log detail (the endpoint stays backward compatible - an empty body is fine too)."
         },
         "responses": {
           "200": {
@@ -5169,6 +5175,16 @@
       "post": {
         "operationId": "NotificationConfigController_sendTest",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendTestDto"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "",
@@ -12080,6 +12096,23 @@
           "enabled"
         ]
       },
+      "TotpDisableDto": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "example": "password123",
+            "description": "确认密码（与 6 位动态码二选一）",
+            "x-i18n-en": "Confirmation password (either this or the 6-digit code)"
+          },
+          "code": {
+            "type": "string",
+            "example": "123456",
+            "description": "6 位 TOTP 动态验证码（与密码二选一）",
+            "x-i18n-en": "6-digit TOTP code (either this or the password)"
+          }
+        }
+      },
       "TotpDisableResponseDto": {
         "type": "object",
         "properties": {
@@ -16602,6 +16635,18 @@
           }
         }
       },
+      "ExecutorActionReasonDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "可选的操作原因（≤200 字符），计入审计",
+            "example": "decommissioned host",
+            "x-i18n-en": "Optional operation reason (max 200 chars), recorded in the audit log"
+          }
+        }
+      },
       "ExecutorRotateTokenDto": {
         "type": "object",
         "properties": {
@@ -16884,6 +16929,42 @@
         "required": [
           "success",
           "message"
+        ]
+      },
+      "SendTestDto": {
+        "type": "object",
+        "properties": {
+          "channels": {
+            "type": "array",
+            "description": "要扇出的渠道（取值域 = 已注册渠道枚举）",
+            "items": {
+              "type": "string",
+              "enum": [
+                "email",
+                "dingtalk",
+                "wecom",
+                "slack",
+                "webhook",
+                "feishu"
+              ]
+            },
+            "x-i18n-en": "Channels to fan out to (value domain = the registered channel enum)"
+          },
+          "title": {
+            "type": "string",
+            "description": "测试通知标题",
+            "x-i18n-en": "Test notification title"
+          },
+          "content": {
+            "type": "string",
+            "description": "测试通知内容",
+            "x-i18n-en": "Test notification content"
+          }
+        },
+        "required": [
+          "channels",
+          "title",
+          "content"
         ]
       },
       "SendNotificationDto": {
@@ -17202,12 +17283,12 @@
             "x-i18n-en": "Alertmanager external URL"
           },
           "alerts": {
-            "description": "告警列表（空数组被控制器 400 拒绝）",
+            "description": "告警列表（空数组/缺失由控制器映射层以 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY 拒绝）",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AlertmanagerAlertDto"
             },
-            "x-i18n-en": "Alert list (an empty array is rejected by the controller with 400)"
+            "x-i18n-en": "Alert list (empty or missing alerts are rejected by the controller mapping layer with 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY)"
           }
         }
       },
