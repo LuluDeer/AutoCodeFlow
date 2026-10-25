@@ -198,7 +198,9 @@ export default defineConfig({
     globals: true,
     // O-2：waitFor 默认预算统一（vi.waitFor 包装 10s + testing-library
     // asyncUtilTimeout 10s），详见 src/test-setup.ts 头注。
-    setupFiles: ['src/test-setup.ts'],
+    // F-21：scheduler-guard 必须排最前（scheduler 模块加载时捕获 setImmediate，
+    // 包裹要先于 test-setup.ts 的 react-dom import 执行），见该文件头注。
+    setupFiles: ['src/test-setup-scheduler-guard.ts', 'src/test-setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
     // R12-fix（admin-web-build 间歇性 Unhandled ReferenceError: window is

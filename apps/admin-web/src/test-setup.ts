@@ -78,6 +78,19 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
+// ── F-21（UIAUDIT P3）：setImmediate 队列排空 ────────────────────────────
+// react-dom 的 scheduler 还有一条 Immediate（setImmediate → performWorkUntilDeadline）
+// 派发路径（并发渲染的分片续排走它）。它不受下面的 setTimeout/act flush 约束，
+// 泄漏到 jsdom teardown 后访问已删除的 window 即抛
+// 「ReferenceError: window is not defined」（2026-10-25 全量基线 9 处 unhandled，
+// 命中文件随负载浮动：api-keys-settings / security-settings / task-form-ui06 …）。
+// 包裹（计数器 + teardown 伪影吞除）在 test-setup-scheduler-guard.ts——
+// scheduler 在模块加载时捕获 setImmediate，包裹必须先于任何 react-dom
+// import 执行（零 import 的独立 setup 文件），见该文件头注。这里只做
+// afterEach 的队列排空：连续 5 个宏任务拍零新增才放行（act 的收尾 flush
+// 会续排新的 Immediate，固定轮数只能缩小窗口不能归零）；guard 上限防
+// 病态死循环（等价现状：残留即报 unhandled）。
+
 // ── React 并发渲染残留 flush（R12：第十/十一轮 admin-web-build 的
 //    Unhandled ReferenceError: window is not defined 源于 react-dom
 //    scheduler 的宏任务（MessageChannel）在测试文件结束、jsdom teardown
@@ -95,4 +108,22 @@ afterEach(async () => {
   }
   // 再 flush 一轮 React 更新（act 包裹的同步+微任务部分）。
   await act(async () => {});
+  // F-21：排空 setImmediate 队列至**确认空**（见上方计数器注释）。
+  // yield 自身走 raw immediate——被排空的回调经 wrapped 计数后执行，depth.n
+  // 归零即收敛。
+  const depth = (globalThis as unknown as { __acfImmediateDepth?: { n: number } }).__acfImmediateDepth;
+  const rawSetImmediate = (globalThis as unknown as { __acfRawSetImmediate?: typeof setImmediate }).__acfRawSetImmediate;
+  if (depth && rawSetImmediate) {
+    // 「队列空」需要连续干净拍确认：depth.n 归零后仍可能有挂着的微任务链
+    // （react-query 通知/abort 延续）在 afterEach 返回后的微任务检查点里
+    // 继续排 Immediate——那些发生在本 hook 返回之后、teardown 之前。
+    // 连续 5 个宏任务拍零新增才放行；guard 防病态轮询死循环。
+    let cleanTurns = 0;
+    let guard = 0;
+    while (cleanTurns < 5 && guard < 200) {
+      await new Promise<void>((resolve) => rawSetImmediate(resolve));
+      cleanTurns = depth.n === 0 ? cleanTurns + 1 : 0;
+      guard += 1;
+    }
+  }
 });
