@@ -2911,6 +2911,11 @@ export default {
   'routerError.chunkDesc':
     '应用已发布新版本，当前页面的资源已失效。点击下方按钮刷新即可加载最新版本。',
   'routerError.refresh': '刷新页面',
+  // F-45（UIUX 审计 P2-3）：断网时 chunk 拉取失败不再误报「版本已更新」
+  'routerError.offlineTitle': '网络连接已断开',
+  'routerError.offlineDesc':
+    '当前浏览器处于离线状态，页面资源加载失败。请检查网络连接，恢复后点击下方按钮重试。',
+  'routerError.offlineRetry': '重试',
   'stateError.loadingFailed': '加载失败',
   'stateError.requestFailed': '请求失败，请稍后重试',
   'stateError.copySuccess': '错误信息已复制到剪贴板',

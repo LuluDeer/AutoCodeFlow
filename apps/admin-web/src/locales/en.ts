@@ -2902,6 +2902,12 @@ export default {
   'routerError.chunkDesc':
     'A new version of the app has been deployed and the assets of this page are no longer available. Click the button below to load the latest version.',
   'routerError.refresh': 'Refresh page',
+  // F-45 (UIUX audit P2-3): chunk fetch failure while offline must not be
+  // reported as "new version available"
+  'routerError.offlineTitle': 'Network connection lost',
+  'routerError.offlineDesc':
+    'The browser is currently offline, so page assets failed to load. Check your network connection and retry below once it is restored.',
+  'routerError.offlineRetry': 'Retry',
   'stateError.loadingFailed': 'Failed to load',
   'stateError.requestFailed': 'Request failed. Please try again later.',
   'stateError.copySuccess': 'Error details copied to clipboard',

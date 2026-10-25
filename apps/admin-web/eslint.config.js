@@ -55,6 +55,7 @@ export default tseslint.config(
           allowExportNames: [
             // ErrorFallback/RouteErrorBoundary（route-error-boundary.test 锚定）
             'isChunkLoadError',
+            'isOfflineNow',
             // DashboardPage（design-audit-shard-a-stream / dashboard-trend-zerofill 锚定）
             'streamStatusBadge',
             'buildTrendData',
