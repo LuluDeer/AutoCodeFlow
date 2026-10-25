@@ -1,6 +1,7 @@
 import {
   ArgumentsHost,
   BadRequestException,
+  HttpException,
   HttpStatus,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -272,5 +273,41 @@ describe("HttpExceptionFilter — 管道类 400 兜底赋码（F-52 自查）", 
     expect(body["message"]).toBe(
       "Validation failed (numeric string is expected)",
     );
+  });
+});
+
+describe("HttpExceptionFilter — 429 限流统一赋码（UIAUDIT4 P3-4）", () => {
+  const run = (exception: unknown) => {
+    const jsonFn = jest.fn();
+    const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status: statusFn }),
+        getRequest: () => ({ url: "/api/auth/login" }),
+      }),
+    } as unknown as ArgumentsHost;
+    new HttpExceptionFilter().catch(exception, host);
+    return { statusFn, jsonFn };
+  };
+
+  it("ThrottlerException 形态（字符串 body 的 429）→ RATE_LIMITED + 中文目录文案，不再透出英文异常类名", () => {
+    // @nestjs/throttler 的 ThrottlerException 语义等价形态：429 + 字符串
+    // response（不直接 import throttler，避免为一条映射引入包耦合）。
+    const { statusFn, jsonFn } = run(
+      new HttpException("ThrottlerException: Too Many Requests", 429),
+    );
+    expect(statusFn).toHaveBeenCalledWith(429);
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBe("RATE_LIMITED");
+    expect(body["message"]).toContain("操作过于频繁");
+    expect(String(body["message"])).not.toContain("Throttler");
+  });
+
+  it("对象 body 的 429 同样赋码（任何 429 HttpException 同构处置）", () => {
+    const { jsonFn } = run(
+      new HttpException({ message: "Too Many Requests" }, 429),
+    );
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBe("RATE_LIMITED");
   });
 });

@@ -143,4 +143,16 @@ export const COMMON_CODES = {
     zh: "依赖服务暂不可用，请稍后重试",
     en: "A dependency is temporarily unavailable. Please retry later.",
   },
+  /**
+   * 限流兜底（UIAUDIT4 P3-4）：ThrottlerGuard 拒绝（429）此前经
+   * HttpExceptionFilter 的 HttpException 分支透传 `ThrottlerException: Too
+   * Many Requests` 英文裸文（errorCode:null），前端登录页把它与中文文案
+   * 并排渲染给用户。429 是**调用方频率**问题且有 Retry-After 语义，统一
+   * 映射本码；具体档位/来源不进文案（请求方可控），排障看服务端日志。
+   */
+  RATE_LIMITED: {
+    status: 429,
+    zh: "操作过于频繁，请稍后再试",
+    en: "Too many requests. Please retry later.",
+  },
 } as const satisfies Record<string, ErrorCodeDef>;

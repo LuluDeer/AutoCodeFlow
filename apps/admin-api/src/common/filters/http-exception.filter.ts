@@ -62,7 +62,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
       status = exception.getStatus();
       const exceptionResponse = exception.getResponse();
 
-      if (typeof exceptionResponse === "string") {
+      // P3-4（UIAUDIT4）：429 统一映射 RATE_LIMITED——ThrottlerException 的
+      // 英文裸文（"ThrottlerException: Too Many Requests"）此前经下一分支
+      // 直出 message（errorCode:null），前端把异常类名渲染给用户。限流拒绝
+      // 是调用方频率问题，有稳定码后前端按词条渲染且可与其他 4xx 同构处理。
+      if (status === HttpStatus.TOO_MANY_REQUESTS) {
+        errorCode = "RATE_LIMITED";
+        message = renderZh("RATE_LIMITED");
+      } else if (typeof exceptionResponse === "string") {
         message = exceptionResponse;
       } else if (
         typeof exceptionResponse === "object" &&
