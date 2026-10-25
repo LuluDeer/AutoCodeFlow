@@ -240,3 +240,38 @@ describe('B-12 上传大小校验与进度', () => {
     expect(typeof progressCb).toBe('function');
   });
 });
+
+// ── F-16（UIAUDIT P3-9）：30s 轮询节拍稳定 ─────────────────────────────────
+// 旧实现把 loading 放进轮询 effect 依赖：每次 load 完成 loading 翻转都会拆掉
+// 重建 interval，30s 节拍从「上次完成时刻」重启、持续漂移。修复后守卫走
+// ref，节拍锚定挂载相位。本用例用慢首载（t=25s 才完成）区分两种实现：
+// 旧实现下一拍漂移到 t=55s（t=30s 不触发），修复后 t=30s 照常触发。
+describe('F-16 30s 轮询节拍稳定', () => {
+  it('load 完成（loading 翻转）不重建 interval：节拍锚定挂载相位而非完成时刻', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFirst!: (v: unknown) => void;
+      vi.mocked(listPackages).mockImplementationOnce(
+        () => new Promise((r) => { resolveFirst = r; }) as never,
+      );
+      render(<ExecutorPackagesPage />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(1);
+
+      // 首载在 t=25s 完成（loading true→false）——旧实现此刻重建 interval
+      resolveFirst({ items: [packageRow], total: 1 });
+      await act(async () => { await vi.advanceTimersByTimeAsync(25_000); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(1);
+
+      // t=30s：挂载相位的第一拍（旧实现此处不触发——interval 已在 t=25s 重启）
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(2);
+
+      // t=60s：第二拍照常
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

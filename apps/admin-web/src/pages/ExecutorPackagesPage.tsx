@@ -380,13 +380,20 @@ export default function ExecutorPackagesPage() {
 
   // 补充 P2：自动刷新——包表/推送结果会异步变化（入队任务完成、状态翻转），
   // 旧实现必须手动点刷新。30s 轮询一次；弹窗打开或正在加载时跳过，避免打断交互。
+  // F-16（UIAUDIT P3-9）：跳过判据改走 ref 镜像——旧实现把 loading/uploadOpen/
+  // pushTarget 放进依赖数组，每次 load 完成 loading 翻转都会拆掉重建 interval
+  // （30s 节拍从上次完成时刻重启，持续漂移）。守卫读 ref 后依赖只剩 load，
+  // 节拍稳定（load 本身仅随筛选/分页参数变化而重建，属语义性重建）。
+  const pollGateRef = useRef({ loading, uploadOpen, pushTarget });
+  pollGateRef.current = { loading, uploadOpen, pushTarget };
   useEffect(() => {
     const timer = setInterval(() => {
-      if (loading || uploadOpen || !!pushTarget) return;
+      const gate = pollGateRef.current;
+      if (gate.loading || gate.uploadOpen || !!gate.pushTarget) return;
       void load();
     }, 30000);
     return () => clearInterval(timer);
-  }, [load, loading, uploadOpen, pushTarget]);
+  }, [load]);
 
   const handleUpload = async (values: Record<string, unknown>) => {
     // normFileList 已将字段值收敛为 UploadFile[]（见 utils/upload.ts）。
