@@ -764,6 +764,132 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── 渲染层审计修复：P1-1 向导配置广播 / P2-1 日志读取失败分类 ───────────
+// P1-1：向导保存落盘后主进程广播 config:changed（对齐 history:changed 先例），
+// 配置页据此重取配置合并表单基线——否则重跑向导后主窗仍持旧表单，下次
+// 「保存配置」整表回写会把向导刚保存的端口/地址/名称静默回退。
+// P2-1：主进程对「文件不存在/读取失败」返回 missing/error 标记，渲染层分类
+// 呈现错误态而非清空缓冲冒充「暂无日志」空态。
+{
+  // ① 主进程广播接线：save-and-close-wizard 落盘后必须广播 config:changed
+  if (!ipcHandlers.includes("webContents.send('config:changed')")) {
+    throw new Error('P1-1: 主进程 save-and-close-wizard 未广播 config:changed（主窗表单基线会停留在向导保存前的旧值）');
+  }
+  // ② preload 暴露订阅通道（与 onHistoryChanged 同款形态：on + 可取消）
+  if (!preloadSrc.includes("onConfigChanged") || !preloadSrc.includes("ipcRenderer.on('config:changed'")) {
+    throw new Error('P1-1: preload 未暴露 onConfigChanged/config:changed 订阅通道');
+  }
+  // ③ 配置页订阅 + 重取 getConfig + 走合并策略
+  const configPage = pages[1];
+  if (!configPage.includes('onConfigChanged')) {
+    throw new Error('P1-1: ConfigPage 未订阅 onConfigChanged——向导保存后表单基线不刷新');
+  }
+  if (!configPage.includes('mergeConfigWithDisk(')) {
+    throw new Error('P1-1: ConfigPage 未走 mergeConfigWithDisk 合并（陈旧基线整表回写会覆盖向导新值）');
+  }
+  // ④ 合并策略纯函数：磁盘覆盖基线、用户草稿保留
+  const { mergeConfigWithDisk } = await import('./config-merge.ts');
+  const eq = (got, want, msg) => {
+    if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`P1-1: ${msg}（得到 ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}）`);
+  };
+  const m = mergeConfigWithDisk({
+    // keep：用户改过（1→2）但磁盘也恰为 2 —— 保留草稿且不计入 preservedKeys
+    // （保存与否结果相同，无需用户核对）。
+    savedForm: { port: 8002, name: 'old', token: '******', keep: 1 },
+    form: { port: 8002, name: 'draft', token: '******', keep: 2 },
+    disk: { port: 9999, name: 'wizard', token: '******', keep: 2 },
+  });
+  // 用户改过的 name 草稿保留（即使磁盘也变了）；没改过的 port 随磁盘刷新；
+  // 基线整体 = 磁盘值。
+  eq(m.form.name, 'draft', '用户草稿字段必须保留');
+  eq(m.form.port, 9999, '未编辑字段必须随磁盘刷新');
+  eq(m.form.keep, 2, '编辑过但与磁盘一致的字段保留草稿');
+  eq(m.savedForm, { port: 9999, name: 'wizard', token: '******', keep: 2 }, '基线必须整体采用磁盘值');
+  eq(m.updatedKeys.sort(), ['port'], 'updatedKeys 必须只含未编辑且磁盘变更的字段');
+  eq(m.preservedKeys.sort(), ['name'], 'preservedKeys 必须只含编辑过且与磁盘不同的字段');
+  const m2 = mergeConfigWithDisk({ savedForm: { a: 1 }, form: { a: 1 }, disk: { a: 1 } });
+  eq(m2.updatedKeys, [], '磁盘未变时不得报 updatedKeys');
+  // ⑤ P2-1 主进程标记：log:read 目标不存在 / readLogIncremental catch 必须
+  //    带 missing 标记（不再冒充成功空态）
+  const ipcNoComments = ipcHandlers.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  if (!ipcNoComments.includes('return { lines: [], totalLines: 0, missing: true }')) {
+    throw new Error('P2-1: 主进程 log:read / readLogIncremental 未返回 missing 标记（渲染层无法区分「未落盘」与「文件消失」）');
+  }
+  // ⑥ 分类纯函数：missing/error/shrink/append 四态
+  const { classifyLogRead, MISSING_AFTER_START_MESSAGE } = await import('./log-read-classify.ts');
+  eq(classifyLogRead({ missing: true }, 0).kind, 'missing', '首读 missing = 合法空态');
+  eq(classifyLogRead({ missing: true }, 500).kind, 'error', '已有缓冲后 missing = 错误态');
+  eq(classifyLogRead({ missing: true }, 500).message.length > 0, true, 'missing 错误态必须带人话文案');
+  eq(MISSING_AFTER_START_MESSAGE.length > 0, true, 'missing 兜底文案必须非空');
+  eq(classifyLogRead({ error: '被拒绝' }, 0).kind, 'error', 'error 标记 = 错误态');
+  eq(classifyLogRead({ lines: ['x'], totalLines: 3 }, 9).kind, 'shrink', 'totalLines 回退 = 轮转');
+  eq(classifyLogRead({ lines: ['a', 'b'], totalLines: 5 }, 3).kind, 'append', '正常增量');
+  eq(classifyLogRead({ lines: [], totalLines: 5 }, 3).kind, 'append', '空增量不误判');
+  // 畸形返回不炸：totalLines 缺失按 0、lines 非数组按空
+  eq(classifyLogRead({}, 0).kind, 'append', '畸形返回不得抛错');
+  eq(classifyLogRead(null, 0).kind, 'append', 'null 返回不得抛错');
+  // ⑦ 两页查看器必须走分类点（改回裸 totalLines 比较会重新引入静默清空）
+  if (!pages[2].includes('classifyLogRead(') || !pages[0].includes('classifyLogRead(')) {
+    throw new Error('P2-1: HistoryPage/AppsPage 查看器未走 classifyLogRead 分类（轮转/失败语义会漂移）');
+  }
+  // ⑧ 既有「IPC reject 终止轮询」守卫不回退（NETOPT-7⑥ 口径）
+  if (!pages[2].includes('pollStoppedRef.current = true') || !pages[0].includes('setAutoRefresh(false)')) {
+    throw new Error('P2-1: 错误分支必须终止轮询（NETOPT-7⑥ 口径）');
+  }
+}
+
+// ── 渲染层审计修复：P3-2 IPC 错误前缀剥除 / P3-3 超长复制诚实失败 /
+//    P3-8 列表刷新 in-flight 去重 ─────────────────────────────────────
+{
+  // P3-2：ipcErrorMessage 纯函数 + 全部 catch 分支接线
+  const { ipcErrorMessage } = await import('./ipc-error.ts');
+  const eq = (got, want, msg) => {
+    if (got !== want) throw new Error(`P3-2: ${msg}（得到 ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}）`);
+  };
+  eq(ipcErrorMessage(new Error("Error invoking remote method 'executor:start': Error: 端口 8002 已被占用")),
+    '端口 8002 已被占用', 'Electron invoke 前缀 + V8 Error: 前缀必须剥除');
+  eq(ipcErrorMessage(new Error("Error invoking remote method 'config:get': TypeError: bad")),
+    'bad', '非 Error 类型的 V8 前缀同样剥除');
+  eq(ipcErrorMessage(new Error('本地错误保持原样')), '本地错误保持原样', '无包装前缀不得误伤');
+  eq(ipcErrorMessage('裸字符串'), '裸字符串', '非 Error 输入原样返回');
+  // 全仓渲染层不得再直接输出 err.message（剥前缀必须走统一入口）
+  for (const [file, code] of [
+    ['StatusWindow.tsx', pages[3]], ['HistoryPage.tsx', pages[2]], ['AppsPage.tsx', pages[0]],
+    ['ConfigPage.tsx', pages[1]], ['Wizard.tsx', pages[4]],
+  ]) {
+    if (code.includes('err instanceof Error ? err.message : String(err)')) {
+      throw new Error(`P3-2: ${file} 仍直出 err.message（IPC 包装前缀会漏到用户眼前）`);
+    }
+    if (file !== 'Wizard.tsx' && !code.includes('ipcErrorMessage')) {
+      throw new Error(`P3-2: ${file} 未接线 ipcErrorMessage`);
+    }
+  }
+  const updateBanner = readFileSync(resolve(root, 'components', 'UpdateBanner.tsx'), 'utf8');
+  const healthPanel = readFileSync(resolve(root, 'components', 'HealthPanelCard.tsx'), 'utf8');
+  if (!updateBanner.includes('ipcErrorMessage') || !healthPanel.includes('ipcErrorMessage')) {
+    throw new Error('P3-2: UpdateBanner/HealthPanelCard 未接线 ipcErrorMessage');
+  }
+  // P3-3：preload 对超 1MiB 内容诚实失败（不再归一空串仍报 ok:true）
+  const { MAX_CLIPBOARD_ARG } = await import('../preload/bridge-args.ts');
+  const writeClipboard = preloadSrc.match(/writeClipboardText: \(text: string\) => \{[\s\S]*?\n  \},/);
+  if (!writeClipboard) throw new Error('P3-3: preload writeClipboardText 实现形态变化，断言需同步');
+  if (!writeClipboard[0].includes("error: 'tooLarge'") || !writeClipboard[0].includes('text.length > MAX_CLIPBOARD_ARG')) {
+    throw new Error('P3-3: 超长复制必须诚实返回 {ok:false,error:"tooLarge"}（假「已复制」比失败更伤信任）');
+  }
+  if (MAX_CLIPBOARD_ARG !== 1024 * 1024) throw new Error('P3-3: 剪贴板上限语义变化，断言需同步');
+  // 渲染层消费 tooLarge（复制失败文案区分「内容过大」）
+  if (!pages[3].includes("r?.error === 'tooLarge'") || !pages[2].includes("r?.error === 'tooLarge'")) {
+    throw new Error('P3-3: StatusWindow/HistoryPage 复制失败未区分「内容过大」（status.copyTooLarge 词条接线丢失）');
+  }
+  // P3-8：列表刷新 in-flight 去重（对齐 StatusWindow agent 轮询先例）
+  if (!/loadInFlight\.current = true/.test(pages[2]) || !/if \(loadInFlight\.current\) return;/.test(pages[2])) {
+    throw new Error('P3-8: HistoryPage.load 未加 in-flight 去重（轮询/推送/可见性恢复并发会乱序覆盖）');
+  }
+  if (!/refreshInFlight\.current = true/.test(pages[0]) || !/if \(refreshInFlight\.current\) return;/.test(pages[0])) {
+    throw new Error('P3-8: AppsPage.refresh 未加 in-flight 去重');
+  }
+}
+
 // ── getHistory 推送化（战役遗留 #4）：推送订阅 + 轮询退役守卫 ──────────
 // 主进程 meta 变更哨广播 history:changed，两页订阅刷新；10s 轮询退役、60s
 // 兜底保留。四断言：preload 暴露通道 / 两页都订阅 / 订阅可取消 / 10s 轮询

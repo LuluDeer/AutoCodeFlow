@@ -81,6 +81,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('history:changed', handler);
     return () => ipcRenderer.removeListener('history:changed', handler);
   },
+  // P1-1：配置被外部改写（向导保存落盘）→ 单向推送「配置已变更」，配置页
+  // 据此重取 getConfig 合并表单基线（防止陈旧表单整表回写覆盖向导新值）。
+  // 形态与 onHistoryChanged 同款：主进程广播、无载荷、返回取消订阅函数。
+  onConfigChanged: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('config:changed', handler);
+    return () => ipcRenderer.removeListener('config:changed', handler);
+  },
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   readLog: (executionId: string, fromLine?: number) =>
     ipcRenderer.invoke('log:read', asString(executionId), asLineNumber(fromLine)),
@@ -124,8 +132,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 写剪贴板（走主进程 Electron clipboard，不受安全上下文/权限限制）
   // 正文上限放宽到 1MiB：复制日志行可能很长，但仍是**有界**的（否则一次
   // 过桥就能把任意大的载荷塞进主进程）。
-  writeClipboardText: (text: string) =>
-    ipcRenderer.invoke('clipboard:write-text', asString(text, MAX_CLIPBOARD_ARG)),
+  // P3-3：超长载荷**诚实失败**——此前 asString 把超长值归一成空串仍返回
+  // ok:true，UI 显示「已复制」、用户粘贴为空。现在 preload 侧先判长，超限
+  // 返回 {ok:false, error:'tooLarge'}，渲染层映射「内容过大，复制失败」。
+  writeClipboardText: (text: string) => {
+    const normalized = asString(text, MAX_CLIPBOARD_ARG);
+    if (text.length > MAX_CLIPBOARD_ARG) {
+      return Promise.resolve({ ok: false, error: 'tooLarge' });
+    }
+    return ipcRenderer.invoke('clipboard:write-text', normalized);
+  },
 
   // 日志流（主进程 → 渲染进程，单向推送）
   onLogLine: (cb: (line: string) => void) => {

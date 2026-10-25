@@ -3,6 +3,10 @@ import Icon from '../components/Icon';
 // V4-5（I-07 门面四件）+ V4 后续优化（6）i18n 二期：向导全部文案入双语表
 // （zh 值与原硬编码逐字一致，e2e 依赖的渲染锚点不变）。
 import { createCfgTexts, resolveRendererLocale } from '../i18n';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
+// P3-5：推荐网卡判定抽取到共享模块（与 ConfigPage 同源，原 D-04 实现迁移）。
+import { pickRecommendedIp } from '../network-address';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -109,7 +113,7 @@ export default function Wizard() {
       setTestResult(await window.electronAPI.testConnection(form.adminApiUrl));
     } catch (err) {
       // IPC reject 时 testing 必须复位，否则按钮永久「测试中...」
-      setTestResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
+      setTestResult({ ok: false, message: ipcErrorMessage(err) });
     } finally {
       setTesting(false);
     }
@@ -201,7 +205,7 @@ export default function Wizard() {
     } catch (err) {
       // 原实现未包 try——reject 会让 saving 永久为 true，向导卡在"保存中"
       // 且无任何错误提示，用户只能强杀进程。
-      setFinishError(err instanceof Error ? err.message : String(err));
+      setFinishError(ipcErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -406,11 +410,8 @@ function StepConnect({
   );
 }
 
-/** D-04：推荐网卡判定——排除链路本地（169.254.*）与回环（127.*）后取第一个地址；
- *  全部被排除时返回 null，调用方兜底取 ips[0]（主进程大概率已滤，此处防御性再判）。 */
-function pickRecommendedIp(ips: string[]): string | null {
-  return ips.find((ip) => !ip.startsWith('169.254.') && !ip.startsWith('127.')) ?? null;
-}
+/** D-04：推荐网卡判定——已抽取到共享模块 network-address.ts（P3-5：与
+ *  设置页失焦自动填充/IP 快速选择同源，排除链路本地与回环后取第一个地址）。 */
 
 function StepExecutor({
   form, onChange, onBack, onNext,
@@ -475,7 +476,7 @@ function StepExecutor({
       // 固定 0.0.0.0。
       setPortResult(await window.electronAPI.checkPort(form.executorPort, '0.0.0.0'));
     } catch (err) {
-      setPortResult({ available: false, message: err instanceof Error ? err.message : String(err) });
+      setPortResult({ available: false, message: ipcErrorMessage(err) });
     } finally {
       setCheckingPort(false);
     }
@@ -584,16 +585,23 @@ function StepExecutor({
             <div className="ip-picker-wrap">
               <div className="ip-picker-label">{t('wizard.machine.ipPickerLabel')}</div>
               <div className="ip-picker">
+                {/* P3-6：端口非法（清空/越界，portValid=false）时禁用快速选择
+                    ——此前 `${ip}:${form.executorPort}` 会渲染出 `ip:NaN` 且可
+                    点入表单（对外地址带 NaN 端口一路走到完成）。非法时点按
+                    无效 + 按钮禁用态可见，与 portRequired/portRange 反馈同口径。 */}
                 {localIPs.map((ip) => {
-                  const full = `${ip}:${form.executorPort}`;
-                  const sel = form.executorAddressPublic === full;
+                  // P3-6：端口非法时只显示 ip 段（不拼 `ip:` 尾随冒号，也
+                  // 不会出现 `ip:NaN`），按钮禁用、不可点入表单。
+                  const full = portValid ? `${ip}:${form.executorPort}` : ip;
+                  const sel = portValid && form.executorAddressPublic === full;
                   const rec = ip === recommendedIp;
                   return (
                     <button
                       type="button"
                       key={ip}
                       className={`ip-chip${sel ? ' selected' : ''}`}
-                      onClick={() => selectIP(ip)}
+                      onClick={() => { if (portValid) selectIP(ip); }}
+                      disabled={!portValid}
                       aria-pressed={sel}
                       aria-label={`${full}${sel ? t('wizard.machine.chipSelected') : t('wizard.machine.chipUse')}${rec ? t('wizard.machine.chipRecommended') : ''}`}
                     >

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Icon from './Icon';
 import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
 // PLAN-EXECUTOR-DESKTOP-UX 5.1：面板的**判定逻辑**全部在 main/health-panel.ts
 // 的纯函数里（行顺序、状态优先级、路径脱敏、畸形载荷降级都由
 // health-panel.selftest.ts 钉住）。渲染层只做两件事：
@@ -135,7 +137,7 @@ export default function HealthPanelCard({ apiUrl }: { apiUrl: string }) {
       setSummary(built.summary);
       setCheckedAt(new Date());
     } catch (err) {
-      setLoadError(t('health.error', err instanceof Error ? err.message : String(err)));
+      setLoadError(t('health.error', ipcErrorMessage(err)));
     } finally {
       // reject 后按钮必须能再点（本仓反复出现的缺陷形态：永久 disabled）
       setLoading(false);

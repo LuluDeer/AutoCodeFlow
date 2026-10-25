@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Icon from './Icon';
 // i18n 二期收尾：更新横幅全部文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, resolveRendererLocale } from '../i18n';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -123,7 +125,7 @@ export default function UpdateBanner() {
       await api().downloadUpdate?.();
       // 进度事件会推到 downloading；若 provider 未回推进度则不卡死，保持 available
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       setPhase('error');
     } finally {
       setBusy(false);
@@ -149,7 +151,7 @@ export default function UpdateBanner() {
       }
       // ok:true 时应用即将退出安装，无需任何状态处理
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       setPhase('error');
     } finally {
       setBusy(false);
@@ -180,7 +182,7 @@ export default function UpdateBanner() {
     try {
       await api().checkForUpdate?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       setPhase('error');
     } finally {
       setBusy(false);

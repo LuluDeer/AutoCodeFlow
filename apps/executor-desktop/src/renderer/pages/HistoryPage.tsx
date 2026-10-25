@@ -5,6 +5,10 @@ import ConfirmBar from '../components/ConfirmBar';
 import EmptyState from '../components/EmptyState';
 import LogViewer, { ViewerLogLevel } from '../components/LogViewer';
 import { TAB_SWITCH_EVENT, requestTabSwitch } from '../tab-switch';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
+// P2-1：增量日志读取响应分类（missing/error 标记 → 错误态而非清空缓冲）。
+import { classifyLogRead, MISSING_AFTER_START_MESSAGE } from '../log-read-classify';
 // V4 后续优化（6）i18n 二期：历史页文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 
@@ -128,7 +132,9 @@ function statusBadge(status?: string) {
 function CopyableExecId({ id }: { id: string }) {
   // idle/copied/error 三态：鼠标点击与键盘 Enter/Space 走同一个复制函数，
   // 反馈一致（此前键盘触发无任何反馈）；复制走主进程 clipboard 并兜失败。
+  // P3-3：失败态区分「内容过大」（error:'tooLarge'，超 1MiB 被拒）与一般失败。
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const [errorTooLarge, setErrorTooLarge] = useState(false);
   useEffect(() => {
     if (state === 'idle') return;
     const t = setTimeout(() => setState('idle'), 1200);
@@ -138,8 +144,18 @@ function CopyableExecId({ id }: { id: string }) {
     e.stopPropagation();
     window.electronAPI
       .writeClipboardText(id)
-      .then((r) => setState(r?.ok === false ? 'error' : 'copied'))
-      .catch(() => setState('error'));
+      .then((r) => {
+        if (r?.ok === false) {
+          setErrorTooLarge(r?.error === 'tooLarge');
+          setState('error');
+        } else {
+          setState('copied');
+        }
+      })
+      .catch(() => {
+        setErrorTooLarge(false);
+        setState('error');
+      });
   }
   return (
     <button
@@ -149,7 +165,12 @@ function CopyableExecId({ id }: { id: string }) {
       aria-label={t('history.execIdAria', id)}
       onClick={doCopy}
     >
-      {state === 'copied' ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></> : state === 'error' ? t('status.copyFailed') : id}
+      {/* P3-3：失败区分「内容过大」（超 1MiB 被 preload 拒绝）与一般失败。 */}
+      {state === 'copied'
+        ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></>
+        : state === 'error'
+          ? (errorTooLarge ? t('status.copyTooLarge') : t('status.copyFailed'))
+          : id}
     </button>
   );
 }
@@ -212,24 +233,46 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
     inFlight.current = true;
     try {
       const res = await window.electronAPI.readLog(record.executionId, linesRef.current);
-      setError(null);
+      // P2-1：主进程对「文件不存在 / 读取失败」返回 missing/error 标记（不再
+      // 是成功形态空结果）。分类点在 log-read-classify.ts：
+      //   · error        → 错误态（NETOPT-7⑥ 口径），已有缓冲保留；
+      //   · missing 且已有缓冲 → 「日志已消失」错误态，缓冲保留（用户还能
+      //     看到消失前的内容），停止轮询；
+      //   · missing 且首读 → 合法空态（执行尚未产生日志），不报错；
+      //   · totalLines 回退且未报 missing → 真轮转，沿用整体换新文件尾部。
       const previousTotal = linesRef.current;
-      linesRef.current = res.totalLines;
-      if (res.totalLines < previousTotal) {
+      const verdict = classifyLogRead(res, previousTotal);
+      if (verdict.kind === 'error') {
+        setError(verdict.message || MISSING_AFTER_START_MESSAGE);
+        pollStoppedRef.current = true;
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        return;
+      }
+      if (verdict.kind === 'missing') {
+        // 首读即 missing：合法空态（无日志可读），不报错。
+        setError(null);
+        return;
+      }
+      setError(null);
+      linesRef.current = verdict.totalLines;
+      if (verdict.kind === 'shrink') {
         // 日志轮转或截断后，旧行不能继续混在新文件的内容里。
-        setLines(res.lines.slice(-1500));
+        setLines(verdict.lines.slice(-1500));
         setTruncated(false);
-      } else if (res.lines.length > 0) {
+      } else if (verdict.lines.length > 0) {
         setLines(prev => {
-          const next = [...prev, ...res.lines];
+          const next = [...prev, ...verdict.lines];
           return next.length > 1500 ? next.slice(-1500) : next;
         });
       }
       // F-22：截断口径只在首读/刷新（主进程尾窗分支）的响应上出现；增量
       // 响应不带该字段（undefined）→ 保持现状，不因后续追加而丢标记。
-      if (res.truncated !== undefined) setTruncated(res.truncated);
+      if (verdict.truncated) setTruncated(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       // 终止轮询：文件已被 TTL 清理/通道异常时，1.5s/5s 重试只会反复失败。
       // 置停止标记（隐藏门控的补拉 kick 同样被拦），用户点「重试」
       // （reloadKey）即重新拉取。
@@ -245,13 +288,17 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
   }, [record.executionId]);
 
   // 初始加载 / 原位重试：整链重建（旧行清空、水位归零、恢复轮询资格）。
+  // P3-11：依赖去掉 record.status——状态翻转（running→终态）此前会整链重建
+  // （setLines([]) + 水位归零 + 从头尾窗重拉），查看器闪空、滚动位置丢失。
+  // 状态只影响轮询间隔，轮询 effect（下方）已单独依赖 record.status；
+  // executionId 变化时组件本就以 key=executionId 重挂。
   useEffect(() => {
     linesRef.current = 0;
     pollStoppedRef.current = false;
     setLines([]);
     setLoading(true);
     fetchLog();
-  }, [record.executionId, record.status, fetchLog, reloadKey]);
+  }, [record.executionId, fetchLog, reloadKey]);
 
   // poll every 1.5s while running, every 5s otherwise —— 隐藏页轮询门控：
   // Tab 常驻挂载（App.tsx），历史 Tab 隐藏/窗口最小化时查看器仍在后台拉增量。
@@ -316,7 +363,7 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
         setExportMsg({ kind: 'err', text: t('history.exportLogFail', res.error ?? '') });
       }
     } catch (err) {
-      setExportMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+      setExportMsg({ kind: 'err', text: ipcErrorMessage(err) });
     } finally {
       setExportState('idle');
     }
@@ -420,6 +467,8 @@ export default function HistoryPage({ active }: { active: boolean }) {
   // V4-4（X-05）：列表页搜索快捷键——查看器有 Ctrl+F，列表页同键不同域；
   // 查看器打开时让位（viewingLog 守卫），键盘动线两态不打架。
   const searchRef = useRef<HTMLInputElement>(null);
+  // P3-8：load 的在飞标记（useCallback 内引用，需先于其定义声明）。
+  const loadInFlight = useRef(false);
 
   // 操作反馈 6s 后自动消失。
   useEffect(() => {
@@ -434,7 +483,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
       const res = await window.electronAPI.revealExecLog(executionId);
       if (!res.ok) setNotice({ kind: 'err', text: res.error ?? t('history.notice.revealFail') });
     } catch (err) {
-      setNotice({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+      setNotice({ kind: 'err', text: ipcErrorMessage(err) });
     }
   }
 
@@ -444,13 +493,19 @@ export default function HistoryPage({ active }: { active: boolean }) {
       const res = await window.electronAPI.openTaskLogFolder();
       if (!res.ok) setNotice({ kind: 'err', text: res.error ?? t('history.notice.folderFail') });
     } catch (err) {
-      setNotice({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+      setNotice({ kind: 'err', text: ipcErrorMessage(err) });
     }
   }
 
   const load = useCallback(async (background: boolean = false) => {
+    // P3-8：in-flight 去重——60s 兜底轮询、history:changed 推送、
+    // visibilitychange/MutationObserver kick 可能相邻触发；后完成者覆盖先
+    // 完成者会让列表短暂回退旧数据（乱序竞态）。对齐 StatusWindow agent
+    // 轮询的 inFlight 守卫先例：在飞时丢弃本次触发（下一次兜底轮询会补上）。
+    if (loadInFlight.current) return;
     // 后台轮询不切 loading：空列表下每 5s 闪烁「加载中...」会掩盖空态。
     if (!background) setLoading(true);
+    loadInFlight.current = true;
     try {
       const api = (window as any).electronAPI;
       if (typeof api?.getHistory !== 'function') {
@@ -469,9 +524,10 @@ export default function HistoryPage({ active }: { active: boolean }) {
       });
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
     } finally {
       if (!background) setLoading(false);
+      loadInFlight.current = false;
     }
   }, []);
 
@@ -514,8 +570,9 @@ export default function HistoryPage({ active }: { active: boolean }) {
       if (raw && typeof raw === 'object' && (raw as { tab?: unknown }).tab === 'history') {
         const f = (raw as { historyStatusFilter?: unknown }).historyStatusFilter;
         if (f === 'success' || f === 'failed' || f === 'running') {
+          // P3-12②：过滤重置已由 deferredQuery/statusFilter 的 effect 统一承接
+          // （逐点 resetVisibleResults 会在同一轮渲染里重复清零）。
           setStatusFilter(f);
-          resetVisibleResults();
         }
       }
     };
@@ -537,7 +594,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
       setError(null);
       setNotice({ kind: 'ok', text: t('history.notice.cleared') });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
     } finally {
       setConfirmingClear(false);
     }
@@ -579,6 +636,17 @@ export default function HistoryPage({ active }: { active: boolean }) {
     return Object.entries(groups).sort((a, b) =>
       startOf(b[1].runs[0]) - startOf(a[1].runs[0]) || a[1].label.localeCompare(b[1].label));
   }, [filtered]);
+
+  // P3-12②：分页/展开态的重置挂到**提交态**（deferredQuery）而非每次键入
+  // ——原实现在 onChange 里逐字符 resetVisibleResults()，连续输入时已展开
+  // 的组被反复折叠、分页清零，列表跳变。deferredQuery 追平才重置一次
+  // （输入期间低优先级渲染追平后至多重置一次），过滤本身仍由 deferredQuery
+  // 驱动，结果一致。
+  useEffect(() => {
+    resetVisibleResults();
+    // resetVisibleResults 为组件内普通函数（setState 组合），不构成响应值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deferredQuery, statusFilter]);
 
   const visibleGroups = groupEntries.slice(0, visibleGroupCount);
 
@@ -743,7 +811,9 @@ export default function HistoryPage({ active }: { active: boolean }) {
                 type="search"
                 placeholder={t('history.searchPlaceholder')}
                 value={query}
-                onChange={(e) => { setQuery(e.target.value); resetVisibleResults(); }}
+                // P3-12②：重置已改挂 deferredQuery（提交态）——此处不再逐键
+                // resetVisibleResults（连续输入时展开态/分页反复清零跳变）。
+                onChange={(e) => setQuery(e.target.value)}
                 aria-label={t('history.searchAria')}
               />
             </div>
@@ -758,7 +828,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                   key={value}
                   type="button"
                   className={`history-chip${statusFilter === value ? ' active' : ''}`}
-                  onClick={() => { setStatusFilter(value); resetVisibleResults(); }}
+                  onClick={() => { setStatusFilter(value); }}
                   aria-pressed={statusFilter === value}
                 >{label}</button>
               ))}

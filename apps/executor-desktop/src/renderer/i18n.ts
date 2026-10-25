@@ -149,6 +149,11 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.error.saveRejected': '保存失败：配置未被写入（载荷被主进程拒绝）。',
     'cfg.error.reloadFailed': (err) => `配置已保存，但执行器重启失败：${err}。请在「状态监控」页手动启动。`,
     'cfg.error.saveFailed': (err) => `保存失败：${err}`,
+    // P3-7：设置页数值失焦越界钳制的一次性提示（对齐向导 portRange 口径）。
+    'cfg.error.clamped': (n) => `输入超出允许范围，已调整为 ${n}。`,
+    // P1-1：向导改写配置后，配置页表单基线随磁盘刷新的一次性提示。
+    'cfg.sync.updated': (n) => `向导已更新配置（${n} 项），表单已刷新。`,
+    'cfg.sync.mergedWithDraft': (n) => `向导已更新配置（${n} 项），表单已刷新；你未保存的修改已保留，请核对后重新保存。`,
     // ── 保存影响确认 ──
     'cfg.impact.runningTitle': '执行器正在运行',
     'cfg.impact.unknownTitle': '无法确认执行器运行状态',
@@ -423,6 +428,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'shell.tab.config': '配置',
     'shell.edition': '执行器',
     'shell.tablistAria': '执行器页面',
+    // P3-12①：Tab 快捷键提示词条化——zh 全角括号、en 半角括号（en 下全角
+    // 括号是观感缺陷；label/数字由 App.tsx 传入）。
+    'shell.tabTooltip': (label, n) => `${label}（Ctrl+${n}）`,
     'shell.loading': '加载中...',
     'shell.closeTipLine1': '窗口会关闭，但应用驻留系统托盘，执行器继续运行。',
     'shell.closeTipLine2': '右键托盘图标可查看状态或退出应用。',
@@ -497,6 +505,10 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.filesLoadFailed': '日志文件列表读取失败。',
     'status.copied': '已复制',
     'status.copyFailed': '复制失败',
+    // P3-3：超 1MiB 内容复制被 preload 诚实拒绝（error:'tooLarge'）的反馈。
+    'status.copyTooLarge': '内容过大，复制失败',
+    // P3-4：旧版 preload 缺 executor:status 通道时的降级提示（typeof 守卫分支）。
+    'status.statusUnsupported': '当前版本不支持读取执行器状态',
     'status.copy': '复制',
     'status.filesHistoryHeading': (n) => `历史日志文件 · ${n}`,
     'status.filesSearchAria': '搜索日志文件',
@@ -878,6 +890,11 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.error.saveRejected': 'Save failed: configuration was not written (payload rejected by the main process).',
     'cfg.error.reloadFailed': (err) => `Configuration saved, but the executor failed to restart: ${err}. Start it manually from the Status page.`,
     'cfg.error.saveFailed': (err) => `Save failed: ${err}`,
+    // P3-7：设置页数值失焦越界钳制的一次性提示（对齐向导 portRange 口径）。
+    'cfg.error.clamped': (n) => `The value is out of range and has been adjusted to ${n}.`,
+    // P1-1：向导改写配置后，配置页表单基线随磁盘刷新的一次性提示。
+    'cfg.sync.updated': (n) => `The wizard updated the configuration (${n} ${Number(n) === 1 ? 'item' : 'items'}); the form has been refreshed.`,
+    'cfg.sync.mergedWithDraft': (n) => `The wizard updated the configuration (${n} ${Number(n) === 1 ? 'item' : 'items'}); the form has been refreshed. Your unsaved changes were kept — review and save again.`,
     // ── Save impact confirmation ──
     'cfg.impact.runningTitle': 'Executor is running',
     'cfg.impact.unknownTitle': 'Unable to confirm the executor status',
@@ -1151,6 +1168,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'shell.tab.config': 'Settings',
     'shell.edition': 'Executor',
     'shell.tablistAria': 'Executor pages',
+    // P3-12①：Tab 快捷键提示词条化——zh 全角括号、en 半角括号（en 下全角
+    // 括号是观感缺陷；label/数字由 App.tsx 传入）。
+    'shell.tabTooltip': (label, n) => `${label} (Ctrl+${n})`,
     'shell.loading': 'Loading...',
     'shell.closeTipLine1': 'The window will close, but the app stays in the system tray and the executor keeps running.',
     'shell.closeTipLine2': 'Right-click the tray icon to view status or quit the app.',
@@ -1223,6 +1243,10 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.filesLoadFailed': 'Failed to load the log file list.',
     'status.copied': 'Copied',
     'status.copyFailed': 'Copy failed',
+    // P3-3：超 1MiB 内容复制被 preload 诚实拒绝（error:'tooLarge'）的反馈。
+    'status.copyTooLarge': 'Content too large to copy',
+    // P3-4：旧版 preload 缺 executor:status 通道时的降级提示（typeof 守卫分支）。
+    'status.statusUnsupported': 'This version cannot read executor status',
     'status.copy': 'Copy',
     'status.filesHistoryHeading': (n) => `Log files · ${n}`,
     'status.filesSearchAria': 'Search log files',

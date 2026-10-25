@@ -295,7 +295,9 @@ function MainWindow() {
                   aria-selected={active}
                   aria-controls={meta.panel}
                   id={meta.id}
-                  title={`${meta.label}（Ctrl+${idx + 1}）`}
+                  // P3-12①：快捷键提示走词条（zh 全角/en 半角括号，双语表
+                  // shell.tabTooltip 承接），不再模板字符串硬拼全角括号。
+                  title={shellT('shell.tabTooltip', meta.label, idx + 1)}
                   // roving tabindex：仅当前选中 Tab 可被 Tab 键聚焦
                   tabIndex={active ? 0 : -1}
                 >

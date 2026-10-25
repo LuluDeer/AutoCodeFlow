@@ -6,6 +6,8 @@ import LogLineList from '../components/LogLineList';
 import ConfirmBar from '../components/ConfirmBar';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from '../../main/agent-status-view';
 import { requestTabSwitch } from '../tab-switch';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
 // V4 后续优化（6）i18n 二期：状态页文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 // PLAN-EXECUTOR-DESKTOP-UX 2.1：并发饱和度是纯算术（除零/NaN/超额/阈值配色
@@ -66,6 +68,10 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
   // 复制走主进程 Electron clipboard（非安全上下文/权限受限时 navigator.clipboard
   // 会 reject 甚至为 undefined）；成功/失败都给用户明确反馈。
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
+  // P3-3：失败原因文案——超 1MiB（preload 诚实拒绝 error:'tooLarge'）与
+  // 一般失败分开表述。
+  const [errorKind, setErrorKind] = useState<'generic' | 'tooLarge'>('generic');
+  const copyErrorText = errorKind === 'tooLarge' ? t('status.copyTooLarge') : t('status.copyFailed');
   useEffect(() => {
     if (state === 'idle') return;
     const timer = setTimeout(() => setState('idle'), 1500);
@@ -75,8 +81,18 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
     if (!value || value === '—') return;
     window.electronAPI
       .writeClipboardText(value)
-      .then((r) => setState(r?.ok === false ? 'error' : 'copied'))
-      .catch(() => setState('error'));
+      .then((r) => {
+        if (r?.ok === false) {
+          setErrorKind(r?.error === 'tooLarge' ? 'tooLarge' : 'generic');
+          setState('error');
+        } else {
+          setState('copied');
+        }
+      })
+      .catch(() => {
+        setErrorKind('generic');
+        setState('error');
+      });
   }
   return (
     <div className="copy-row">
@@ -85,8 +101,11 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
         <button
           className={`copy-btn${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
           onClick={copy}
+          // P3-3：复制失败（IPC reject / 内容超 1MiB 被拒绝）时给出原因——
+          // 假「已复制」比失败更伤信任（超长值此前被归一为空串仍报成功）。
+          title={state === 'error' ? copyErrorText : undefined}
         >
-          {state === 'copied' ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></> : state === 'error' ? t('status.copyFailed') : t('status.copy')}
+          {state === 'copied' ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></> : state === 'error' ? copyErrorText : t('status.copy')}
         </button>
       )}
     </div>
@@ -449,8 +468,16 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const autoScroll = useRef(true);
 
   // 页面常驻挂载；切回状态页时重取配置与进程状态，避免设置保存后仍显示旧值。
+  // P3-4：getStatus 补 typeof 守卫（EXP-09 口径——旧版/降级 preload 缺通道时
+  // 同步 TypeError 会炸整棵渲染树；对齐下方 listLogFiles/loadRailFiles 先例）。
   useEffect(() => {
     if (!active) return;
+    const getStatus = window.electronAPI.getStatus;
+    if (typeof getStatus !== 'function') {
+      setStatusLoaded(true);
+      setActionError(t('status.statusApiError', t('status.statusUnsupported')));
+      return;
+    }
     let cancelled = false;
     window.electronAPI
       .getStatus()
@@ -463,9 +490,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setActionError(
-          t('status.statusApiError', err instanceof Error ? err.message : String(err)),
-        );
+        setActionError(t('status.statusApiError', ipcErrorMessage(err)));
       })
       .finally(() => { if (!cancelled) setStatusLoaded(true); });
     return () => { cancelled = true; };
@@ -475,9 +500,14 @@ export default function StatusWindow({ active }: { active: boolean }) {
   // IPC 失败——日志区顶着「等待日志输出…」的空态冒充一切正常。改为如实
   // 呈现错误态 + 重试入口（口径对齐 History/Apps 的错误条）。提取成稳定
   // 回调供挂载 effect 与空态里的重试按钮共用。
+  // P3-4：getTodayLogs 补 typeof 守卫（EXP-09 口径，同上方 getStatus）。
+  // P3-9：重试路径复位 clearedRef——「清空显示」后 clearedRef 会吞掉后续
+  // 所有历史行；重试语义是「重新加载当日日志」，不复位则重试永远无效。
   const loadTodayLogs = useCallback(() => {
+    const getTodayLogs = window.electronAPI.getTodayLogs;
+    if (typeof getTodayLogs !== 'function') return;
     setLogsLoadError(null);
-    window.electronAPI.getTodayLogs().then((result: any) => {
+    getTodayLogs().then((result: any) => {
       if (result?.lines && result.lines.length > 0) {
         // 过滤掉空行；落盘行是 electron-log+winston 双时间戳形态，
         // 统一经 normalizeLogLine 收敛为单时间戳展示。
@@ -615,7 +645,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
       const result = await window.electronAPI.startExecutor();
       if (!result?.ok) throw new Error(t('status.startFail'));
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      setActionError(ipcErrorMessage(err));
     } finally {
       setActing(false);
       setPendingAction(null);
@@ -629,7 +659,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
       const result = await window.electronAPI.stopExecutor();
       if (!result?.ok) throw new Error(t('status.stopFail'));
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      setActionError(ipcErrorMessage(err));
     } finally {
       setActing(false);
       setPendingAction(null);
@@ -996,7 +1026,10 @@ export default function StatusWindow({ active }: { active: boolean }) {
                   ? (logsLoadError ? (
                     <div className="log-empty-block">
                       <span className="log-empty" role="alert"><Icon name="warning" className="icon-xs" />{logsLoadError}</span>
-                      <button type="button" className="btn btn-sm" onClick={loadTodayLogs}>{t('ui.retry')}</button>
+                      {/* P3-9：重试前复位 clearedRef——「清空显示」后 clearedRef
+                          会吞掉后续所有历史行，重试不复位则永远无效。显式重试
+                          语义就是「重新加载当日日志」。 */}
+                      <button type="button" className="btn btn-sm" onClick={() => { clearedRef.current = false; loadTodayLogs(); }}>{t('ui.retry')}</button>
                     </div>
                   )
                   : (

@@ -314,7 +314,7 @@ const LOG_LIST_MAX_ENTRIES = 500;
 function readLogIncremental(
   filePath: string,
   fromLine: number,
-): { lines: string[]; totalLines: number; truncated?: boolean; error?: string } {
+): { lines: string[]; totalLines: number; truncated?: boolean; error?: string; missing?: boolean } {
   try {
     const { size } = fs.statSync(filePath);
     let cursor = logCursors.get(filePath);
@@ -363,8 +363,9 @@ function readLogIncremental(
     if (fromLine > cursor.totalLines) {
       const scan = scanLogTail(filePath);
       if (!scan) {
-        // 文件此刻打不开等 I/O 异常：与既有 catch 兜底同形态。
-        return { lines: [], totalLines: 0 };
+        // 文件此刻打不开等 I/O 异常：P2-1 —— 明确 missing 标记，不再以
+        // 成功形态空结果冒充「暂无日志」（渲染层有缓冲时按错误态呈现）。
+        return { lines: [], totalLines: 0, missing: true };
       }
       cursor.offset = scan.consumedBytes;
       cursor.totalLines = scan.totalLines;
@@ -406,7 +407,9 @@ function readLogIncremental(
     const skip = Math.max(0, fromLine - (cursor.totalLines - newLines.length));
     return { lines: newLines.slice(skip), totalLines: cursor.totalLines };
   } catch {
-    return { lines: [], totalLines: 0 };
+    // P2-1：statSync/openSync 等读失败（文件被删/盘故障/权限）→ 明确 missing
+    // 标记（此前的成功形态空结果会让渲染层把「日志消失」呈现成「暂无日志」）。
+    return { lines: [], totalLines: 0, missing: true };
   } finally {
     // 8-2（audit-r4）：LRU 裁剪由 O(n) 的 Array.from+slice 改为 Map 插入序
     // O(1) 淘汰。Map 按插入顺序迭代：超限时从最旧（队首）删到只剩最近
@@ -644,6 +647,16 @@ export function registerIpcHandlers(): void {
     configStore.save({ ...safeCfg, configured: true });
     applyLogLevel(configStore.get('logLevel'));
     log.info('Wizard complete, config saved');
+    // P1-1：向导改写配置后广播 config:changed —— 主窗（配置页常驻挂载、
+    // 仅挂载时读过一次配置）据此重取配置合并表单基线。否则重跑向导保存后，
+    // 主窗 form/savedForm 仍是旧值，用户再点「保存配置」会把整份旧表单写回，
+    // 向导刚保存的端口/对外地址/名称/并发数被静默回退（渲染层审计 P1-1）。
+    // 对齐 history:changed 的广播先例（index.ts broadcastHistoryChanged）。
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('config:changed');
+      }
+    }
     // UX-DSK-AUTOLAUNCH：向导的「开机自动启动」此前只**落盘**了
     // `autoStart`，却从未真正写系统自启动项。而托盘菜单的勾选态读的正是
     // config.autoStart（tray.getAutoLaunch）——于是用户看到"已勾选"、
@@ -1140,7 +1153,10 @@ export function registerIpcHandlers(): void {
     // (same ^[A-Za-z0-9_-]+$ rule as admin-api heartbeat sanitization) so it
     // can never carry ../ traversal, then domain-check the final path.
     const target = resolveExecutionLogFile(executionId);
-    if (!target) return { lines: [], totalLines: 0 };
+    // P2-1：目标不存在/ID 非法/workDir 未配置 → 明确 missing 标记（渲染层
+    // 据此区分「首读未落盘=合法空态」与「读着读着文件没了=错误态」，不再
+    // 把成功形态的空结果冒充「暂无日志」）。既有成功形态字段不变（向后兼容）。
+    if (!target) return { lines: [], totalLines: 0, missing: true };
     return readLogIncremental(target, fromLine);
   });
 
@@ -1485,7 +1501,7 @@ export function registerIpcHandlers(): void {
       log.warn(`apps:log:read rejected non-log file: ${logPath}`);
       return { lines: [], totalLines: 0, error: '仅允许读取应用日志（app.log 及轮转副本）' };
     }
-    if (!fs.existsSync(target)) return { lines: [], totalLines: 0 };
+    if (!fs.existsSync(target)) return { lines: [], totalLines: 0, missing: true };
     // PERF-DSK-01：与 log:read 同因——AppsPage 每 2s 轮询，全量重读同样是
     // 平方级 I/O。复用同一套增量游标实现。
     return readLogIncremental(target, fromLine);

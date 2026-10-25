@@ -28,6 +28,13 @@ import { agentOutcomeLabel } from '../../main/agent-status-view';
 // 清单（main/config-restart.ts），否则改界面语言/日志级别也会被提示
 // "会立即重启执行器"，把无副作用保存说成高风险操作。
 import { restartRequiredFieldsDiffer } from '../../main/config-restart';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
+// P1-1：向导保存广播 config:changed → 表单与磁盘真值合并（磁盘覆盖基线、
+// 用户未提交草稿保留）。合并策略抽成纯函数由 renderer.selftest 驱动。
+import { mergeConfigWithDisk } from '../config-merge';
+// P3-5：对外地址的网卡判定与向导同源（排除链路本地/回环）。
+import { pickRecommendedIp } from '../network-address';
 
 declare const window: Window & {
   electronAPI: {
@@ -269,6 +276,28 @@ export default function ConfigPage() {
   // 合法值）；blur 才走完整 parseBoundedInt（空串=回落默认、越界钳制）并清
   // 草稿——「所见即所存」的保存语义不变，输入过程中不再被回填打断。
   const [numDrafts, setNumDrafts] = useState<Record<string, string>>({});
+  // P3-7：失焦钳制的一次性可读提示（key=字段名，渲染于对应字段 hint 位）。
+  // 向导对同场景有显式 portRange/portRequired 错误条，设置页此前静默改写，
+  // 用户不知道自己填的值被改了。6s 自动消退（同 checkMsg 的 timer 纪律）。
+  const [clampNotice, setClampNotice] = useState<Record<string, string>>({});
+  const clampTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(() => () => {
+    for (const timer of Object.values(clampTimersRef.current)) clearTimeout(timer);
+  }, []);
+  function reportClamp(key: string, value: number): void {
+    setClampNotice((prev) => ({ ...prev, [key]: String(value) }));
+    const existing = clampTimersRef.current[key];
+    if (existing) clearTimeout(existing);
+    clampTimersRef.current[key] = setTimeout(() => {
+      setClampNotice((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      delete clampTimersRef.current[key];
+    }, 6000);
+  }
 
   /** 数值输入的受控 value：键入中显示草稿原样串，其余显示安全取值（脏值回落默认）。 */
   function numValue(key: string, value: unknown, fallback: number): string {
@@ -302,7 +331,15 @@ export default function ConfigPage() {
       delete next[key];
       return next;
     });
-    set(key, parseBoundedInt(raw, rule.fallback, rule.min, rule.max));
+    const parsed = parseBoundedInt(raw, rule.fallback, rule.min, rule.max);
+    // P3-7：越界钳制不再静默——原始输入是合法整数但被改写时给一次性提示
+    // （空串/非数字回落默认是「未指定」既定语义，不算钳制，不打扰）。
+    const trimmed = raw.trim();
+    if (trimmed !== '') {
+      const n = Number.parseInt(trimmed, 10);
+      if (Number.isFinite(n) && n !== parsed) reportClamp(key, parsed);
+    }
+    set(key, parsed);
   }
   const changedEntries = useMemo(
     () => FIELD_LABEL_KEYS
@@ -322,7 +359,9 @@ export default function ConfigPage() {
     lastOutcome: string | null; lastEffectiveProfile: string | null;
   } | null>(null);
 
-  useEffect(() => {
+  // P3-10：配置加载抽成可重入函数——挂载时跑一次，loadError 错误行提供
+  // 「重试」钮（对齐 History/Apps/日志区的错误+重试口径）。
+  function loadConfig(): void {
     Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
       .then(([cfg, ips]) => {
         setForm(cfg);
@@ -331,6 +370,7 @@ export default function ConfigPage() {
         setAllowedDomainsText(listText(cfg.agentAllowedDomains));
         setLocalIPs(ips);
         setLoaded(true);
+        setLoadError(null);
       })
       .catch((err: unknown) => {
         // NETOPT-7⑤（2026-09-20）：getConfig() 走主进程 configStore.getAllMasked——
@@ -338,13 +378,72 @@ export default function ConfigPage() {
         // .catch：loaded 恒 false → 整页永久「加载中...」+ unhandled rejection，
         // 用户既进不了设置页也不知道原因。对齐 EXP-04 修法（StatusWindow.tsx
         // getStatus() 同源缺陷的先例）：脱离加载态，把原因呈现在页内错误行。
-        setLoadError(t('cfg.error.loadError', err instanceof Error ? err.message : String(err)));
+        setLoadError(t('cfg.error.loadError', ipcErrorMessage(err)));
         setLoaded(true);
       });
     // 旧版 preload 可能未暴露 autolaunch 通道——容错降级为隐藏开关
     if (typeof window.electronAPI.getAutoLaunch === 'function') {
       window.electronAPI.getAutoLaunch().then(setAutoLaunch).catch(() => undefined);
     }
+  }
+
+  useEffect(() => {
+    loadConfig();
+    // 仅挂载时执行（P3-10 的重试走 loadConfig 按钮，不重挂 effect）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // P1-1：向导保存落盘后主进程广播 config:changed → 重取配置并合并。
+  // 合并语义（config-merge.ts）：基线整体采用磁盘新值；用户改过的字段保留
+  // 草稿（改动清单继续如实呈现），没改过的字段随磁盘刷新——既不丢用户
+  // 未提交的修改，也让「保存配置」不再以陈旧基线整表回写、覆盖向导新值。
+  const formRef = useRef(form);
+  formRef.current = form;
+  const savedFormRef = useRef(savedForm);
+  savedFormRef.current = savedForm;
+  // 合并结果的一次性提示（6s 消退，同 checkMsg 纪律）：磁盘更新了 N 项 +
+  // 有用户草稿被保留时如实提示，差异可见。
+  const [externalSyncMsg, setExternalSyncMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!externalSyncMsg) return;
+    const timer = setTimeout(() => setExternalSyncMsg(null), 6000);
+    return () => clearTimeout(timer);
+  }, [externalSyncMsg]);
+
+  useEffect(() => {
+    const electronAPI = (window as unknown as {
+      electronAPI?: { onConfigChanged?: (cb: () => void) => () => void; getConfig?: () => Promise<Record<string, unknown>> };
+    }).electronAPI;
+    // 旧版 preload 缺通道时降级为既有行为（不合并——旧行为，不影响其余功能）
+    if (typeof electronAPI?.onConfigChanged !== 'function' || typeof electronAPI.getConfig !== 'function') return;
+    const offConfigChanged = electronAPI.onConfigChanged(() => {
+      electronAPI.getConfig()!
+        .then((disk) => {
+          const currentForm = formRef.current;
+          const currentSaved = savedFormRef.current;
+          const merged = mergeConfigWithDisk({ savedForm: currentSaved, form: currentForm, disk });
+          setForm(merged.form);
+          setSavedForm(merged.savedForm);
+          // textarea 草稿是独立 state：字段未被用户编辑时随磁盘刷新；编辑过
+          // 则保留（与 merge 的字段级语义一致）。
+          const appsEdited = !sameConfigValue(currentForm.agentAllowedApps, currentSaved.agentAllowedApps);
+          const domainsEdited = !sameConfigValue(currentForm.agentAllowedDomains, currentSaved.agentAllowedDomains);
+          if (!appsEdited) setAllowedAppsText(listText(merged.form.agentAllowedApps));
+          if (!domainsEdited) setAllowedDomainsText(listText(merged.form.agentAllowedDomains));
+          if (merged.updatedKeys.length > 0) {
+            setExternalSyncMsg(
+              merged.preservedKeys.length > 0
+                ? t('cfg.sync.mergedWithDraft', merged.updatedKeys.length)
+                : t('cfg.sync.updated', merged.updatedKeys.length),
+            );
+          }
+        })
+        .catch(() => {
+          // 重取失败：保持既有表单（磁盘可能只是瞬时不可读），不打断编辑。
+        });
+    });
+    return () => offConfigChanged();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 切到「Python 运行环境」页时刷新诊断（旧版 preload 无此通道时静默降级为
@@ -365,7 +464,7 @@ export default function ConfigPage() {
       .getPythonEnvStatus()
       .then((s) => { if (!cancelled) setPyEnv(s); })
       .catch((err) => {
-        if (!cancelled) setPyEnvError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setPyEnvError(ipcErrorMessage(err));
       });
     return () => { cancelled = true; };
   }, []);
@@ -451,7 +550,7 @@ export default function ConfigPage() {
     } catch (err) {
       // D 修正：原实现未包 try——saveConfig reject 会让 saving 永久为 true，
       // 「保存配置」按钮永久禁用且用户完全无感知，只能重启应用。
-      setSaveError(t('cfg.error.saveFailed', err instanceof Error ? err.message : String(err)));
+      setSaveError(t('cfg.error.saveFailed', ipcErrorMessage(err)));
     } finally {
       setSaving(false);
     }
@@ -495,7 +594,7 @@ export default function ConfigPage() {
       const r = await window.electronAPI.testConnection(String(form.adminApiUrl || ''));
       setTestResult(r);
     } catch (err) {
-      setTestResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
+      setTestResult({ ok: false, message: ipcErrorMessage(err) });
     } finally {
       setTesting(false);
     }
@@ -528,7 +627,7 @@ export default function ConfigPage() {
       await window.electronAPI.checkForUpdate();
       setCheckMsg(t('cfg.gen.checkInitiated'));
     } catch (err) {
-      setCheckMsg(err instanceof Error ? err.message : String(err));
+      setCheckMsg(ipcErrorMessage(err));
     } finally {
       setChecking(false);
       if (checkMsgTimerRef.current !== null) clearTimeout(checkMsgTimerRef.current);
@@ -556,7 +655,7 @@ export default function ConfigPage() {
         setIoMsg({ kind: 'ok', text: t('cfg.io.exportDone', r.path ?? '') });
       }
     } catch (err) {
-      setIoMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+      setIoMsg({ kind: 'err', text: ipcErrorMessage(err) });
     } finally {
       setIoBusy(null);
     }
@@ -603,7 +702,7 @@ export default function ConfigPage() {
         setIoMsg({ kind: 'ok', text: t('cfg.io.importDone') });
       }
     } catch (err) {
-      setIoMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+      setIoMsg({ kind: 'err', text: ipcErrorMessage(err) });
     } finally {
       setIoBusy(null);
     }
@@ -626,7 +725,7 @@ export default function ConfigPage() {
         setDiagMsg({ kind: 'ok', text: t('cfg.io.diagnosticDone', r.path ?? '') });
       }
     } catch (err) {
-      setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', err instanceof Error ? err.message : String(err)) });
+      setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', ipcErrorMessage(err)) });
     } finally {
       setDiagBusy(false);
     }
@@ -673,8 +772,16 @@ export default function ConfigPage() {
               否则用户看到的是一张"空表单"而无从知晓读取失败（复用 cfg-save-error
               同型错误行；不与保存失败的 state 合并，避免文案前缀撒谎）。 */}
           {loadError && (
-            <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> {loadError}</div>
+            <div className="cfg-save-error" role="alert">
+              <Icon name="warning" className="icon-xs" /> {loadError}
+              {/* P3-10：读取失败给重试入口（对齐 History/Apps/日志区口径）——
+                  此前只能重启应用来重载窗口。 */}
+              <button type="button" className="btn btn-sm" onClick={() => loadConfig()}>{t('ui.retry')}</button>
+            </div>
           )}
+          {/* P1-1：向导改写配置后表单基线已随磁盘刷新的一次性提示（差异可见：
+              更新字段数 + 是否有用户草稿被保留）。 */}
+          {externalSyncMsg && <div className="cfg-unsaved" role="status"><span aria-hidden="true" />{externalSyncMsg}</div>}
 
           {/* V4-3（V-02）：分区内容收进 cfg-section（cfg-main + cfg-aside 双栏）。
               ≥1400px 宽屏：主列放字段组、右上下文栏放诊断/引导/低频说明——
@@ -744,7 +851,9 @@ export default function ConfigPage() {
                     value={numValue('maxConcurrentTasks', form.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}
                     onChange={(e) => numChange('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)}
                     onBlur={(e) => numBlur('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)} />
-                  <span className="cfg-hint">{t('cfg.gen.maxTasksHint')}</span>
+                  {clampNotice.maxConcurrentTasks
+                    ? <span className="cfg-hint" role="status">{t('cfg.error.clamped', clampNotice.maxConcurrentTasks)}</span>
+                    : <span className="cfg-hint">{t('cfg.gen.maxTasksHint')}</span>}
                 </div>
               </div>
               </div>
@@ -815,6 +924,9 @@ export default function ConfigPage() {
                   <input aria-label={t('cfg.net.portLabel')} className="input" type="number" min={1} max={65535} value={numValue('executorPort', form.executorPort, EXECUTOR_PORT.fallback)}
                     onChange={(e) => numChange('executorPort', EXECUTOR_PORT, e.target.value)}
                     onBlur={(e) => numBlur('executorPort', EXECUTOR_PORT, e.target.value)} />
+                  {clampNotice.executorPort
+                    ? <span className="cfg-hint" role="status">{t('cfg.error.clamped', clampNotice.executorPort)}</span>
+                    : null}
                   </div>
                 </div>
               </div>
@@ -835,9 +947,15 @@ export default function ConfigPage() {
                     value={String(form.executorAddressPublic || '')}
                     onChange={(e) => set('executorAddressPublic', e.target.value)}
                     onBlur={(e) => {
-                      // 留空时用第一块网卡兜底（而不是让 0.0.0.0 流到注册请求）。
-                      if (!e.target.value.trim() && localIPs.length > 0) {
-                        set('executorAddressPublic', `${localIPs[0]}:${port}`);
+                      // 留空时用第一块**可对外注册**的网卡兜底（而不是让
+                      // 0.0.0.0 流到注册请求）。P3-5：与向导 D-04 同源判定
+                      // （network-address.ts）——链路本地（169.254.*）与回环
+                      // （127.*）不能作为对外地址，此前取 localIPs[0] 会把
+                      // 这类地址填出去（与向导口径漂移）。无可推荐地址时
+                      // 保留空串（用户手填），不静默填一个不可达值。
+                      if (!e.target.value.trim()) {
+                        const recommended = pickRecommendedIp(localIPs);
+                        if (recommended) set('executorAddressPublic', `${recommended}:${port}`);
                       }
                     }} />
                   <span className="cfg-hint">
@@ -849,7 +967,9 @@ export default function ConfigPage() {
                   <div className="cfg-field">
                     <label className="cfg-label">{t('cfg.net.ipPickerLabel')}</label>
                     <div className="ip-picker">
-                      {localIPs.map((ip) => {
+                      {/* P3-5：与失焦自动填充同源——链路本地/回环地址不进
+                          快速选择（注册到中台后不可达），同 pickRecommendedIp */}
+                      {localIPs.filter((ip) => !ip.startsWith('169.254.') && !ip.startsWith('127.')).map((ip) => {
                         const full = `${ip}:${port}`;
                         const sel = String(form.executorAddressPublic || '') === full;
                         return (
@@ -1018,7 +1138,9 @@ export default function ConfigPage() {
                     value={numValue('interpreterDownloadTimeoutMs', form.interpreterDownloadTimeoutMs, DOWNLOAD_TIMEOUT_MS.fallback)}
                     onChange={(e) => numChange('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)}
                     onBlur={(e) => numBlur('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)} />
-                  <span className="cfg-hint">{t('cfg.py.timeoutHint')}</span>
+                  {clampNotice.interpreterDownloadTimeoutMs
+                    ? <span className="cfg-hint" role="status">{t('cfg.error.clamped', clampNotice.interpreterDownloadTimeoutMs)}</span>
+                    : <span className="cfg-hint">{t('cfg.py.timeoutHint')}</span>}
                 </div>
               </div>
               </div>
