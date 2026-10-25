@@ -434,19 +434,73 @@ export function readLastLines(
 }
 
 /**
+ * F-25（UIUX 审计 2026-10-25）：执行器重启的**共享收口**——config:save /
+ * config:import（finalizeConfigSave）与向导保存（config:save-and-close-wizard）
+ * 共用同一份「执行器在跑 && 需重启字段变更 → 征询 → stop+start」判据与征询
+ * 文案。此前向导保存只调 executorProcess.start()（对运行中进程是 no-op，
+ * 见 executor-process.ts start() 头部直接 return），与 config:save 的
+ * finalizeConfigSave 判据不同源：重跑向导改端口/token 后新配置落盘却不生效
+ * （启动判定探的还是旧进程），改端口的报错误导（提示「手动启动」仍是 no-op）。
+ *
+ * restartConfirmed：调用方已就「重启会中断任务」征得用户同意（config:save 的
+ * 渲染层 ConfirmBar 路径）。此时不能再弹一次原生确认框——2026-10 真机 E2E
+ * 实测：渲染层 ConfirmBar 确认后主进程又弹 `dialog.showMessageBox`，同一个
+ * 问题问两遍，且原生框在自动化/远程桌面下会额外阻塞保存。config:import /
+ * 向导没有渲染层确认面，走 confirmExecutorRestart 原生征询（文案与
+ * config:save 影响确认条同口径）。
+ *
+ * 返回值：
+ *  · restarted：本次是否真的执行了 stop+start（向导路径据此决定是否等启动判定）；
+ *  · reloadError：执行器热重载失败——它已停留在停止态；
+ *  · restartDeferred：用户选择暂不重启——下次启动执行器时生效。
+ */
+async function reloadExecutorAfterConfigSave(
+  configBefore: AppConfig,
+  options: { restartConfirmed?: boolean } = {},
+): Promise<{ restarted: boolean; reloadError?: string; restartDeferred?: boolean }> {
+  // 如果执行器正在运行：只有"必须重启子进程才生效"的字段（workDir、端口、
+  // token、adminApiUrl、并发数、uv 组等）变化时才热重载——旧实现只要在跑
+  // 就无条件 stop+start，改一个通知开关也会杀掉正在运行的任务。
+  if (!executorProcess.isRunning()) return { restarted: false };
+  if (!restartRequiredFieldsChanged(configBefore, configStore.getAll())) {
+    log.info(
+      'Config saved; no restart-required fields changed — executor left running',
+    );
+    return { restarted: false };
+  }
+  if (!(options.restartConfirmed || (await confirmExecutorRestart()))) {
+    // 用户选择暂不重启：配置已落盘，下次启动执行器时生效。
+    log.info(
+      'Config saved; executor restart deferred by user — takes effect on next start',
+    );
+    return { restarted: false, restartDeferred: true };
+  }
+  try {
+    heartbeat.stop();
+    await executorProcess.stop();
+    await executorProcess.start(configStore.getAll());
+    // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
+    startHeartbeat();
+    log.info('Executor reloaded with new config');
+    return { restarted: true };
+  } catch (err: any) {
+    const reloadError = err?.message ?? String(err);
+    log.error('Failed to reload executor after config save:', reloadError);
+    // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
+    heartbeat.stop();
+    return { restarted: false, reloadError };
+  }
+}
+
+/**
  * 配置写入后的共同收尾——config:save 与 config:import（拓展包）共用同一实现。
  * 两处各写一遍必然漂移（EXP-03 同教训），因此热同步与"是否需要重启执行器"
- * 的全部副作用收敛在这里；调用方只负责把补丁交给 ConfigStore.save。
+ * 的全部副作用收敛在这里（重启判据本体在 reloadExecutorAfterConfigSave，
+ * F-25 起向导保存同源复用）；调用方只负责把补丁交给 ConfigStore.save。
  *
  * 返回值供 UI 如实呈现（配置本身均已落盘成功）：
  *  · reloadError：执行器热重载失败——它已停留在停止态；
  *  · restartDeferred：用户选择暂不重启——下次启动执行器时生效。
- *
- * restartConfirmed：调用方（config:save 的渲染层）已经就"重启会中断任务"
- * 征得用户同意。此时不能再弹一次原生确认框——2026-10 真机 E2E 实测：
- * 渲染层 ConfirmBar 确认后主进程又弹 `dialog.showMessageBox`，同一个问题
- * 问两遍，且原生框在自动化/远程桌面下会额外阻塞保存。config:import 没有
- * 渲染层确认面，仍走原生征询。
  */
 async function finalizeConfigSave(
   configBefore: AppConfig,
@@ -461,44 +515,14 @@ async function finalizeConfigSave(
   // P7b：agentEnabled / 档位 / 中台地址可能被改——热同步 Agent 托管
   // （内部自行读最新配置，启停轮询不销毁 host；失败仅记日志不阻塞保存）
   syncAgentHostWithConfig();
-  // 如果执行器正在运行：只有"必须重启子进程才生效"的字段（workDir、端口、
-  // token、adminApiUrl、并发数、uv 组等）变化时才热重载——旧实现只要在跑
-  // 就无条件 stop+start，改一个通知开关也会杀掉正在运行的任务。
-  // 注意：配置本身已落盘成功，但"热重载"是用户可感知的副作用——若重启
-  // 失败（端口被占 / token 失效等），执行器会停留在停止态。原实现只写日志
-  // 却仍返回 ok:true，渲染层于是显示"已保存，配置已生效"，而执行器其实已经
-  // 死了且无任何提示。现改为把 reload 结果一并回传，让 UI 如实呈现。
-  let reloadError: string | null = null;
-  let restartSkipped = false;
-  if (executorProcess.isRunning()) {
-    if (!restartRequiredFieldsChanged(configBefore, configStore.getAll())) {
-      log.info(
-        'Config saved; no restart-required fields changed — executor left running',
-      );
-    } else if (options.restartConfirmed || (await confirmExecutorRestart())) {
-      try {
-        heartbeat.stop();
-        await executorProcess.stop();
-        await executorProcess.start(configStore.getAll());
-        // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
-        startHeartbeat();
-        log.info('Executor reloaded with new config');
-      } catch (err: any) {
-        reloadError = err?.message ?? String(err);
-        log.error('Failed to reload executor after config save:', reloadError);
-        // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
-        heartbeat.stop();
-      }
-    } else {
-      // 用户选择暂不重启：配置已落盘，下次启动执行器时生效。
-      restartSkipped = true;
-      log.info(
-        'Config saved; executor restart deferred by user — takes effect on next start',
-      );
-    }
-  }
+  // 热重载决策与执行收敛到共享收口（判据见其头注）：配置本身已落盘成功，
+  // 但"热重载"是用户可感知的副作用——若重启失败（端口被占 / token 失效等），
+  // 执行器会停留在停止态。原实现只写日志却仍返回 ok:true，渲染层于是显示
+  // "已保存，配置已生效"，而执行器其实已经死了且无任何提示。现改为把 reload
+  // 结果一并回传，让 UI 如实呈现。
+  const { reloadError, restartDeferred } = await reloadExecutorAfterConfigSave(configBefore, options);
   if (reloadError) return { reloadError };
-  if (restartSkipped) return { restartDeferred: true };
+  if (restartDeferred) return { restartDeferred: true };
   return {};
 }
 
@@ -555,6 +579,9 @@ export function registerIpcHandlers(): void {
     if (!isPlainConfig(cfg)) {
       return { ok: false, error: 'invalid config payload' };
     }
+    // F-25：字段 diff 基线——保存**前**的已落盘配置（与 config:save 同一
+    // 口径，供 reloadExecutorAfterConfigSave 判定"需重启字段是否变化"）。
+    const configBefore = configStore.getAll();
     // 与 config:save 同一个消毒通道（向导的端口输入框同样可能被清空）。
     const safeCfg = sanitizeConfigInput(cfg);
     configStore.save({ ...safeCfg, configured: true });
@@ -594,8 +621,29 @@ export function registerIpcHandlers(): void {
     // B-11：判定里带注册预检——/health/admin-status 明确报 registration
     // failed（典型：密钥与平台 EXECUTOR_SECRET 不一致）时也回流导页内报错，
     // 不再让用户带着坏 Token 完成配置。
+    //
+    // F-25（UIUX 审计 2026-10-25）：重启决策与 config:save **同源**——收敛到
+    // reloadExecutorAfterConfigSave（「在跑 && 需重启字段变更 → 原生征询 →
+    // stop+start」）。旧实现只调 executorProcess.start()，对运行中进程是
+    // no-op（executor-process.ts start() 头部直接 return）：重跑向导改端口/
+    // token 后新配置落盘却不生效，改端口的启动判定还报错误导（探的是旧进程
+    // 之外的**新**端口，提示「手动启动」按下去仍是 no-op，用户唯一出路是托盘
+    // 先停再启）。未变更字段不触发重启——判据只看 EXECUTOR_RESTART_REQUIRED_
+    // FIELDS 的 diff，与 F-23 的「未触碰 = 原样回传」预填协同。
     let startError: string | null = null;
-    if (safeCfg.autoStartExecutor === true) {
+    const wasRunning = executorProcess.isRunning();
+    const reload = wasRunning
+      ? await reloadExecutorAfterConfigSave(configBefore)
+      : { restarted: false, reloadError: undefined, restartDeferred: undefined };
+    if (reload.reloadError) {
+      // 重启失败（端口被占等）：执行器已停在停止态，错误回流导页内展示，
+      // 配置本身已落盘（与 config:save 的 reloadError 呈现同口径）。
+      startError = reload.reloadError;
+    } else if (reload.restarted) {
+      // 刚完成 stop+start：新进程的启动判定照旧把关（B-9/B-11）。
+      startError = await waitForWizardStartVerdict();
+    } else if (!wasRunning && safeCfg.autoStartExecutor === true) {
+      // 首启路径（原 autoStartExecutor 分支原样保留）：spawn + 心跳 + 判定。
       try {
         await executorProcess.start(configStore.getAll());
         // 用**已消毒落盘**的端口，而不是渲染层原始值（NaN 端口会让心跳抛
@@ -610,6 +658,11 @@ export function registerIpcHandlers(): void {
         heartbeat.stop();
         startError = err?.message ?? String(err);
       }
+    } else if (wasRunning && safeCfg.autoStartExecutor === true && !reload.restartDeferred) {
+      // 在跑且未触发重启（重跑向导、需重启字段未变）：沿用 B-9 健康判定——
+      // 旧链路此处调 start()（对运行中进程本就是 no-op）后 verdict 探既有
+      // 进程；用户选择「暂不重启」时跳过（配置下次启动生效，旧进程照跑）。
+      startError = await waitForWizardStartVerdict();
     }
     trayManager.rebuildMenu();
     // DSK-04：向导可能首设 workDir / notifyEnabled——同步通知器

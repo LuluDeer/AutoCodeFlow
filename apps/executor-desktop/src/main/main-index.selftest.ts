@@ -342,6 +342,32 @@ function main(): void {
       'F-23: 向导保存路径必须对 autoStart 对称——false 分支也必须 await setAutoLaunchEnabled(false)（否则托盘与设置页状态矛盾、OS 自启项残留）',
     );
 
+    // ── UIUX F-25（2026-10-25 审计）：向导保存与 config:save 重启判据同源 ──
+    // 审计实证：向导保存只调 executorProcess.start()（对运行中进程是 no-op，
+    // executor-process.ts start() 直接 return），与 config:save 的重启收口
+    // 不同源——重跑向导改端口/token 后新配置落盘却不生效（启动判定探的还是
+    // 旧进程/旧端口，按提示「手动启动」仍是 no-op）。钉住：向导 handler 必须
+    // 捕获 configBefore diff 基线并复用共享重启收口；旧式「只 start() 不判据
+    // 不征询」立即红。
+    assert.ok(
+      wizardSaveBody.includes('const configBefore = configStore.getAll()') &&
+        wizardSaveBody.includes('reloadExecutorAfterConfigSave(configBefore)'),
+      'F-25: 向导保存必须与 config:save 同源复用重启收口（configBefore diff + reloadExecutorAfterConfigSave）',
+    );
+    const reloadFnIdx = ipcSrc.indexOf('async function reloadExecutorAfterConfigSave');
+    assert.ok(reloadFnIdx >= 0, 'F-25: reloadExecutorAfterConfigSave 共享收口必须存在');
+    const reloadFnBody = ipcSrc.slice(
+      reloadFnIdx,
+      ipcSrc.indexOf('async function finalizeConfigSave', reloadFnIdx),
+    );
+    assert.ok(
+      reloadFnBody.includes('restartRequiredFieldsChanged') &&
+        reloadFnBody.includes('confirmExecutorRestart') &&
+        reloadFnBody.includes('await executorProcess.stop()') &&
+        reloadFnBody.includes('await executorProcess.start(configStore.getAll())'),
+      'F-25: 共享重启收口必须保留「需重启字段变更 → 征询 → stop+start+心跳重启」全链',
+    );
+
     // ── UIUX F-28（2026-10-25 审计）：向导窗口随工作区钳制 + 可 resize ──
     // window-manager.ts 顶层 import electron，裸 node 加载即崩（同 index.ts
     // 处置）——按本文件惯例钉源码锚点。审计实证：660×780 固定尺寸在
@@ -386,7 +412,7 @@ function main(): void {
     );
   }
 
-  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp, F-29 focus wizard guard)');
+  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp, F-29 focus wizard guard, F-25 wizard-save restart convergence, F-31 tray-agent-poll gating)');
 }
 
 main();
