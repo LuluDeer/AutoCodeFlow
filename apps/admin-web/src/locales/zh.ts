@@ -1257,6 +1257,7 @@ export default {
   'eventSub.field.url': '推送 URL',
   'eventSub.field.urlRequired': '请输入推送 URL',
   'eventSub.field.urlPattern': '需为公网 http(s) 地址',
+  'eventSub.field.urlMax': 'URL 长度不能超过 2048 字符',
   'eventSub.field.urlTooltip': '服务端会做 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据），非法地址返回 400',
   'eventSub.field.eventTypes': '订阅事件（1-10 个）',
   'eventSub.field.eventTypesRequired': '请至少选择一个事件',

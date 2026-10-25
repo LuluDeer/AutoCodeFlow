@@ -1246,6 +1246,7 @@ export default {
   'eventSub.field.url': 'Push URL',
   'eventSub.field.urlRequired': 'Please enter a push URL',
   'eventSub.field.urlPattern': 'Must be a public http(s) address',
+  'eventSub.field.urlMax': 'URL must be at most 2048 characters',
   'eventSub.field.urlTooltip': 'The server performs deep SSRF validation (rejects internal/loopback/link-local/cloud-metadata addresses per resolved DNS), returning 400 for invalid addresses.',
   'eventSub.field.eventTypes': 'Events to Subscribe (1-10)',
   'eventSub.field.eventTypesRequired': 'Select at least one event',

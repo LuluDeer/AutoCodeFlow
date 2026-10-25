@@ -10,7 +10,7 @@ import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
-import EventSubscriptionsSettings, { subscriptionFailureStats } from '../pages/settings/EventSubscriptionsSettings';
+import EventSubscriptionsSettings, { subscriptionFailureStats, isValidWebhookUrl, WEBHOOK_URL_MAX_LENGTH } from '../pages/settings/EventSubscriptionsSettings';
 import { eventSubscriptionsApi, EventSubscription, EventSubscriptionDeadLetter } from '../api/event-subscriptions';
 
 vi.mock('../api/event-subscriptions', async (importOriginal) => {
@@ -340,6 +340,30 @@ describe('FEAT-15 EventSubscriptionsSettings', () => {
     expect(bad.label).toBe('连续失败 2 次');
     expect(bad.color).toBe('red');
     expect(bad.detail).toBe('boom');
+  });
+
+  // ── F-9（UIAUDIT P3-2）：URL 形状闸门对齐后端 @IsUrl + 2048 上限 ──────────
+  it('F-9 isValidWebhookUrl：合法 http(s) 通过，@IsUrl 必拒的串不再放行', () => {
+    expect(isValidWebhookUrl('https://ci.example.com/hooks/autoflow')).toBe(true);
+    expect(isValidWebhookUrl('http://192.168.1.10:8080/hook')).toBe(true);
+    // 空值 / 非 http(s) 协议 / 纯空白
+    expect(isValidWebhookUrl('')).toBe(false);
+    expect(isValidWebhookUrl(undefined)).toBe(false);
+    expect(isValidWebhookUrl('ftp://ci.example.com')).toBe(false);
+    expect(isValidWebhookUrl('https:// ')).toBe(false);
+    // 旧 URL_PATTERN 放行、@IsUrl 必拒：纯符号 host / 结构垃圾
+    expect(isValidWebhookUrl('https://!!!')).toBe(false);
+    expect(isValidWebhookUrl('https://..')).toBe(false);
+    expect(isValidWebhookUrl('http://!!')).toBe(false);
+  });
+
+  it('F-9 WEBHOOK_URL_MAX_LENGTH = 2048（与后端 @MaxLength 对齐的常量契约）', () => {
+    expect(WEBHOOK_URL_MAX_LENGTH).toBe(2048);
+    // 恰好 2048 的合法 URL 仍通过；上限判断在 Form 规则层（max 规则），这里钉常量
+    // 'https://'(8) + host(2023) + '.example.com/hook'(17) = 2048
+    const url = `https://${'a'.repeat(2023)}.example.com/hook`;
+    expect(url.length).toBe(2048);
+    expect(isValidWebhookUrl(url)).toBe(true);
   });
 });
 

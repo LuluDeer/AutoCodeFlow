@@ -68,6 +68,8 @@ export default tseslint.config(
             'resolveErrorHint',
             // EventSubscriptionsSettings（event-subscriptions-settings.test 锚定）
             'subscriptionFailureStats',
+            // F-9（UIAUDIT P3-2）：webhook URL 形状闸门（同文件测试锚定）
+            'isValidWebhookUrl',
             // SecuritySettings（security-settings.test 锚定）
             'summarizeUserAgent',
             // DashboardEmptyGuide（显隐纯函数与组件天然同文件）

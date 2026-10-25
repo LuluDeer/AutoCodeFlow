@@ -57,6 +57,32 @@ const { Text, Paragraph } = Typography;
 
 const URL_PATTERN = /^https?:\/\/[^\s]+$/;
 
+/** 事件订阅回调 URL 的长度上限（对齐后端 CreateEventSubscriptionDto 的 @MaxLength(2048)）。 */
+export const WEBHOOK_URL_MAX_LENGTH = 2048;
+
+/**
+ * F-9（UIAUDIT P3-2）：回调 URL 前端校验对齐后端 @IsUrl。
+ *
+ * 旧规则只有 `URL_PATTERN`（`/^https?:\/\/[^\s]+$/`），放行 `https://!!!` 这类
+ * @IsUrl 必拒的串 → 提交后裸 400。这里补一层 WHATWG 解析（`new URL()` 抛错即拒，
+ * 拦住 host 缺失/结构垃圾），再加 host 至少含一个字母/数字的形状检查
+ * （`https://!!!` 能过 new URL——`!` 是合法 host 码点，但不是合法域名）。
+ * SSRF 深校验仍由后端 assertSafeHttpUrl 承担，前端只做「别让明显非法的串
+ * 走到网络」的形状闸门。
+ * 导出供测试（subscriptionFailureStats 同款约定）。
+ */
+export function isValidWebhookUrl(value: string | undefined | null): boolean {
+  if (!value || !URL_PATTERN.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    // host 非空且至少含一个字母/数字（排除 `!!!`、`..` 这类纯符号 host）
+    return parsed.hostname.length > 0 && /[a-zA-Z0-9]/.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** 失败统计列纯函数（导出供测试）：连续失败 >0 展示红色统计，否则健康。 */
 export function subscriptionFailureStats(
   sub: EventSubscription,
@@ -388,11 +414,23 @@ function SubscriptionFormModal(props: {
             label={t('eventSub.field.url')}
             rules={[
               { required: true, message: t('eventSub.field.urlRequired') },
-              { pattern: URL_PATTERN, message: t('eventSub.field.urlPattern') },
+              // F-9：形状闸门对齐后端 @IsUrl（URL_PATTERN + WHATWG 解析 + host
+              // 形状），`https://!!!` 这类串在提交前就被拦下而非裸 400。
+              { validator: (_rule, value: string) =>
+                  isValidWebhookUrl(value)
+                    ? Promise.resolve()
+                    : Promise.reject(new Error(t('eventSub.field.urlPattern'))) },
+              // F-9：镜像后端 @MaxLength(2048)——此前前端无上限，超长串提交后裸 400。
+              { max: WEBHOOK_URL_MAX_LENGTH, message: t('eventSub.field.urlMax') },
             ]}
             tooltip={t('eventSub.field.urlTooltip')}
           >
-            <Input placeholder="https://ci.example.com/hooks" data-testid="sub-url-input" />
+            <Input
+              placeholder="https://ci.example.com/hooks"
+              data-testid="sub-url-input"
+              maxLength={WEBHOOK_URL_MAX_LENGTH}
+              showCount={false}
+            />
           </Form.Item>
           <Form.Item
             name="eventTypes"
