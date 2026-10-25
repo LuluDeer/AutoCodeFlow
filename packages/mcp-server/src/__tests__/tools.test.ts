@@ -1852,6 +1852,66 @@ describe("create_task_from_template (CORE-03 server-side instantiate)", () => {
         .handler({ template: "scheduled_backup", name: "x" }),
     ).rejects.toThrow(/API error \(404\)/);
   });
+
+  // MCP-DTO-ALIGN-CREATE 2026-10-25: create face vs CreateTaskDto conclusion pinned here.
+  // create tool = create_task_from_template (overrides IS the CreateTaskDto overlay face,
+  // runtime Record free-overlay, server merges then validates against the CreateTaskDto
+  // whitelist); all 15 fields from the update_task round except expectedUpdatedAt
+  // (UpdateTaskDto-only) are settable via overrides. MCP deliberately does not restate
+  // per-field schemas here (tightening would reject keys the backend whitelist accepts);
+  // the required set + expectedUpdatedAt unavailability live in the descriptions.
+  it("description states the create-side required set (name + triggerType) and that expectedUpdatedAt is update-only", () => {
+    const desc = tools.get("create_task_from_template")!.description;
+    expect(desc).toMatch(/triggerType/);
+    expect(desc).toMatch(/expectedUpdatedAt/);
+    expect(desc).toMatch(/CreateTaskDto/);
+  });
+
+  it("overrides description lists the aligned high-value fields (update_task 15 minus expectedUpdatedAt)", () => {
+    const schema = tools.get("create_task_from_template")!.schema as Record<string, { description?: string }>;
+    const overridesDesc = String(schema.overrides?.description);
+    for (const field of [
+      "secrets", "maintenanceWindows", "priority", "timeoutAction",
+      "timeoutWarnRatio", "estimatedDurationSec", "requirements",
+      "dependencies", "blockStrategy", "misfireStrategy",
+      "executorAffinityTags", "executorAntiAffinityTags", "deploymentPolicy",
+    ]) {
+      expect(overridesDesc, "overrides description should mention " + field).toContain(field);
+    }
+    expect(overridesDesc).toContain("expectedUpdatedAt");
+  });
+
+  it("overrides passes the aligned fields through verbatim (nulls included - create face has no PATCH keep-semantics)", async () => {
+    call.mockResolvedValueOnce([OFFICIAL_ROW]);
+    call.mockResolvedValueOnce({ id: "t13", name: "aligned-create" });
+    const overrides = {
+      triggerType: "cron" as const,
+      secrets: { API_TOKEN: "t" },
+      maintenanceWindows: [{ start: "30 2 * * *", end: "0 4 * * *" }],
+      priority: 3,
+      timeout: 60,
+      timeoutAction: "notify_only" as const,
+      timeoutWarnRatio: 50,
+      estimatedDurationSec: 120,
+      requirements: ["requests>=2.31"],
+      dependencies: { upstream: "22222222-2222-4222-8222-222222222222" },
+      blockStrategy: "discard" as const,
+      misfireStrategy: "fire_once" as const,
+      executorAffinityTags: ["gpu"],
+      executorAntiAffinityTags: ["canary"],
+      deploymentPolicy: "prefer" as const,
+      executorId: null,
+    };
+    await tools
+      .get("create_task_from_template")!
+      .handler({ template: "scheduled_backup", name: "aligned-create", overrides });
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "POST",
+      "/task-templates/" + OFFICIAL_ROW.id + "/instantiate",
+      { description: OFFICIAL_ROW.description, ...overrides, name: "aligned-create" },
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

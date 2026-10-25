@@ -1170,7 +1170,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   // name > overrides > explicit description > template description.
   server.tool(
     "create_task_from_template",
-    "Create a runnable task from a task template (server-side POST /task-templates/:id/instantiate — the template config expands as defaults, the overrides win per field; name is always required). Pass template as its key (official presets: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping) or its uuid — browse all templates including custom ones with list_task_templates. Returns the created task — trigger it with trigger_task.",
+    "Create a runnable task from a task template (server-side POST /task-templates/:id/instantiate — the template config expands as defaults, the overrides win per field; name is always required). Create-side required set (differs from update_task's all-optional PATCH): name, plus triggerType which must come from the template config or the overrides — the backend validates the merged payload against CreateTaskDto and rejects with 400 otherwise; every other field is optional with backend defaults, and update-only fields (expectedUpdatedAt) are not part of the create face. Pass template as its key (official presets: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping) or its uuid — browse all templates including custom ones with list_task_templates. Returns the created task — trigger it with trigger_task.",
     {
       template: z
         .string()
@@ -1192,7 +1192,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       overrides: taskParamsWithinLimits()
         .optional()
         .describe(
-          "Field overrides applied on top of the template config (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, executorGroup)",
+          "Field overrides applied on top of the template config (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, executorGroup, secrets, maintenanceWindows, priority, timeoutAction/timeoutWarnRatio, estimatedDurationSec, requirements, dependencies, blockStrategy, misfireStrategy, executorAffinityTags/executorAntiAffinityTags, deploymentPolicy, executorId, projectId, runbook. NOTE: template instantiate merges then validates the WHOLE payload against CreateTaskDto — triggerType must be set by the template config or the overrides or the backend rejects with 400; expectedUpdatedAt is update-only and never accepted here)",
         ),
     }, { destructiveHint: false },
     async ({ template, name, description, overrides }) => {
