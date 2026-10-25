@@ -354,7 +354,9 @@ class TestReadPathNameGate:
         nested.mkdir(parents=True)
         (nested / "evil-1.0.whl").write_bytes(b"leak")
         with pytest.raises(HTTPException) as ei:
-            app_module.download_package("a/b", "evil-1.0.whl", _user="t")
+            # request 形参随 P2-2 下载审计加入（同 _bare_request 桩）
+            app_module.download_package("a/b", "evil-1.0.whl",
+                                        self._bare_request(), _user="t")
         assert ei.value.status_code == 404
 
     def test_gate_function_rejects_dot_and_dotdot(self):
@@ -1584,3 +1586,570 @@ class TestR90A1FailedUploadLeavesNoPhantomPackage:
         assert resp.status_code == 413
         assert (tmp_packages_dir / "keep-pkg" / "keep-pkg-1.0.whl").exists()
         assert client.get("/simple/keep-pkg/", auth=AUTH).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-26 registry-pypi 修复轮（P1-1 / P2-1..4 / P3 批量）。
+# 各组用例与 main.py 内同号注释一一对应；新增先红后绿，均已做还原反证。
+# ---------------------------------------------------------------------------
+
+
+class TestChunkedUploadRejectedP1P1:
+    """P1-1：上传路由必须带 Content-Length（411），且在认证/读 body 之前短路。
+
+    背景：FastAPI 0.141 在依赖解析（含 verify_auth）之前 await request.form()
+    完整消费 body——chunked 请求可在 401 之前把无界字节收进 /tmp tmpfs。
+    注意：admin-api 代理（form-data 的 form.pipe()）默认 chunked，已同步改为
+    显式 content-length（registry.controller.ts uploadPypiPackage）。
+    """
+
+    @staticmethod
+    def _post_chunked(client, path="/", auth=AUTH):
+        body = (
+            b"--testbound\r\n"
+            b'Content-Disposition: form-data; name="name"\r\n\r\nchunked-pkg\r\n'
+            b"--testbound\r\n"
+            b'Content-Disposition: form-data; name="version"\r\n\r\n1.0\r\n'
+            b"--testbound\r\n"
+            b'Content-Disposition: form-data; name="content"; '
+            b'filename="chunked-pkg-1.0.whl"\r\n'
+            b"Content-Type: application/octet-stream\r\n\r\n"
+            b"payload-bytes\r\n"
+            b"--testbound--\r\n"
+        )
+        # httpx 对迭代器 content 走 chunked（实测：scope 无 content-length）
+        return client.post(
+            path, auth=auth,
+            headers={"content-type": "multipart/form-data; boundary=testbound",
+                     "transfer-encoding": "chunked"},
+            content=iter([body]),
+        )
+
+    def test_chunked_upload_rejected_411_without_reading_body(
+            self, client, tmp_packages_dir):
+        resp = self._post_chunked(client)
+        assert resp.status_code == 411
+        assert "content-length" in resp.json()["detail"].lower()
+        # 一个 body 字节都没消费：不产生任何包目录/临时文件
+        assert list(tmp_packages_dir.glob("*")) == []
+
+    def test_chunked_rejected_even_without_credentials(self, client,
+                                                       tmp_packages_dir):
+        # 长度闸在认证之前——无凭据同样 411（不先 401，也不再读 body）
+        resp = self._post_chunked(client, auth=None)
+        assert resp.status_code == 411
+        assert list(tmp_packages_dir.glob("*")) == []
+
+    def test_alias_endpoint_rejects_chunked_too(self, client):
+        # /upload 是薄 alias（E-39），预检必须同覆盖
+        assert self._post_chunked(client, path="/upload").status_code == 411
+
+    def test_chunked_length_gate_is_scoped_to_upload_routes(self, client):
+        # GET /simple/ 即便声明 chunked 也照常——闸只收敛上传面
+        resp = client.get("/simple/", auth=AUTH,
+                          headers={"transfer-encoding": "chunked"})
+        assert resp.status_code == 200
+
+    def test_middleware_unit_missing_length_never_calls_next(self):
+        """单元级：无 Content-Length 时 411 且 call_next（body 消费）不被触达。"""
+        import asyncio
+        import main as m
+        from starlette.requests import Request
+        scope = {"type": "http", "method": "POST", "path": "/", "scheme": "http",
+                 "server": ("testserver", 80), "query_string": b"",
+                 "headers": [(b"host", b"testserver")]}
+        reached = []
+
+        async def call_next(req):
+            reached.append(True)
+            from starlette.responses import Response
+            return Response(status_code=200)
+
+        async def run():
+            return await m.content_length_precheck(Request(scope), call_next)
+
+        resp = asyncio.run(run())
+        assert resp.status_code == 411
+        assert reached == []
+
+    def test_regular_clients_with_content_length_still_pass(self, client):
+        # 既有形态回归护栏：twine/pip/代理（带 Content-Length 的 multipart）不受影响
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "normal-cl", "version": "1.0"},
+                           files={"content": ("normal-cl-1.0.whl", b"bytes",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+
+
+class TestAuthBackoffP2P3:
+    """P2-3：Basic 凭据防爆破——进程内失败计数 + 指数退避 + 成功清零 + TTL 清扫。"""
+
+    def test_backoff_synthetic_timing_threshold_and_cap(self, monkeypatch):
+        import main as m
+        monkeypatch.setattr(m, "_auth_failures", {})
+        ip = "10.9.8.7"
+        now = 1000.0
+        for _ in range(m.AUTH_FAILURE_THRESHOLD - 1):
+            m._auth_record_failure(ip, now)
+        assert m._auth_lockout_remaining(ip, now) == 0  # 阈值前不退避
+        m._auth_record_failure(ip, now)  # 第 5 次 → 2^5 秒
+        assert m._auth_lockout_remaining(ip, now + 0.5) == 32
+        assert m._auth_lockout_remaining(ip, now + 32) == 0  # 退避过期自动解除
+        m._auth_record_failure(ip, now + 32)  # 第 6 次 → 2^6 秒
+        assert m._auth_lockout_remaining(ip, now + 33) == 63
+        for _ in range(20):  # 指数封顶：2^n 无界增长被 cap 截断
+            m._auth_record_failure(ip, now + 100)
+        remaining = m._auth_lockout_remaining(ip, now + 100)
+        assert remaining <= m.AUTH_BACKOFF_CAP_SECONDS
+
+    def test_repeated_failures_then_429_then_success_clears(self, client):
+        import main as m
+        for _ in range(m.AUTH_FAILURE_THRESHOLD):
+            assert client.get("/simple/", auth=BAD_AUTH).status_code == 401
+        locked = client.get("/simple/", auth=BAD_AUTH)
+        assert locked.status_code == 429
+        assert int(locked.headers["retry-after"]) >= 1
+        # 退避期内「正确凭据」同样被拒（退避优先于便利；NAT 连坐由成功清零缓解）
+        assert client.get("/simple/", auth=AUTH).status_code == 429
+        # 拨动内部状态模拟退避过期（monotonic 由 lockout_until 承载）
+        for state in m._auth_failures.values():
+            state["lockout_until"] = 0.0
+        assert client.get("/simple/", auth=AUTH).status_code == 200
+        assert m._auth_failures == {}  # 成功认证清零
+
+    def test_success_clears_failure_count_below_threshold(self, client):
+        import main as m
+        for _ in range(m.AUTH_FAILURE_THRESHOLD - 1):
+            client.get("/simple/", auth=BAD_AUTH)
+        assert client.get("/simple/", auth=AUTH).status_code == 200
+        assert m._auth_failures == {}
+
+    def test_failure_state_ttl_prune_bounds_growth(self, monkeypatch):
+        import main as m
+        monkeypatch.setattr(m, "_auth_failures", {})
+        now = 10_000.0
+        for i in range(m.AUTH_STATE_PRUNE_SIZE):
+            m._auth_failures[f"ip-{i}"] = {
+                "count": 1, "last_seen": 0.0, "lockout_until": 0.0}
+        m._auth_record_failure("fresh-ip", now)
+        # 过期条目（last_seen 远早于 TTL）被清扫，dict 规模有界
+        assert len(m._auth_failures) == 1
+        assert "fresh-ip" in m._auth_failures
+
+    def test_locked_out_requests_are_429_on_all_authed_routes(self, client):
+        import main as m
+        for _ in range(m.AUTH_FAILURE_THRESHOLD):
+            client.get("/simple/", auth=BAD_AUTH)
+        # 下载面/删除面同样收敛在 verify_auth，退避期内一律 429
+        assert client.get("/packages/any-pkg/any-1.0.whl",
+                          auth=AUTH).status_code == 429
+        assert client.delete("/admin/packages/any-pkg",
+                             auth=AUTH).status_code == 429
+
+
+class TestDeleteAuditP2P1:
+    """P2-1：删除链审计（成功/失败都记，storage_error 形态覆盖部分失败）。"""
+
+    @staticmethod
+    def _upload(client, name, filename=None):
+        return client.post("/", auth=AUTH, data={"name": name, "version": "1.0"},
+                           files={"content": (filename or f"{name}-1.0.whl",
+                                              b"payload-bytes",
+                                              "application/octet-stream")})
+
+    def test_successful_delete_emits_audit_record(self, client, audit_caplog):
+        self._upload(client, "del-audit")
+        audit_caplog.clear()
+        assert client.delete("/admin/packages/del-audit",
+                             auth=AUTH).status_code == 204
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        rec = records[0]
+        assert rec["action"] == "registry.pypi.delete"
+        assert rec["result"] == "success"
+        assert rec["user"] == AUTH[0]
+        assert rec["package"] == "del-audit"
+        assert rec["artifact_count"] == 1
+        assert rec["size"] == len(b"payload-bytes")
+        assert rec["ip"] is not None
+
+    def test_missing_package_delete_emits_failure_audit(self, client, audit_caplog):
+        assert client.delete("/admin/packages/no-such-pkg",
+                             auth=AUTH).status_code == 404
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1
+        assert records[0]["result"] == "failure"
+        assert records[0]["action"] == "registry.pypi.delete"
+        assert records[0]["reason"] == "not_found"
+
+    def test_invalid_name_delete_emits_failure_audit(self, client, audit_caplog):
+        # NETOPT-5⑥ 闸保持 404 不泄露；审计侧用可区分的稳定码
+        assert client.delete("/admin/packages/C:foo", auth=AUTH).status_code == 404
+        records = _audit_records(audit_caplog)
+        assert records and records[0]["reason"] == "invalid_package_name"
+
+    def test_rmtree_oserror_emits_storage_error_audit(
+            self, client, tmp_packages_dir, audit_caplog, monkeypatch):
+        import errno
+        import main as m
+        self._upload(client, "del-err")
+        audit_caplog.clear()
+
+        def exploding_rmtree(path, *args, **kwargs):
+            raise OSError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(m.shutil, "rmtree", exploding_rmtree)
+        raw = TestClient(m.app, raise_server_exceptions=False)
+        assert raw.delete("/admin/packages/del-err", auth=AUTH).status_code == 500
+        records = _audit_records(audit_caplog)
+        assert records and records[0]["reason"] == "storage_error"
+        assert records[0]["result"] == "failure"
+
+    def test_concurrent_delete_race_is_idempotent_404(
+            self, client, tmp_packages_dir, audit_caplog, monkeypatch):
+        """P3-2：rmtree 抛 FileNotFoundError 且目录确已不在 → 与 404 预检同语义。"""
+        import errno
+        import shutil as shutil_mod
+        import main as m
+        self._upload(client, "race-del")
+        audit_caplog.clear()
+        real_rmtree = shutil_mod.rmtree
+
+        def racing_rmtree(path, *args, **kwargs):
+            real_rmtree(path)  # 模拟「另一请求抢先删完」
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+
+        monkeypatch.setattr(m.shutil, "rmtree", racing_rmtree)
+        raw = TestClient(m.app, raise_server_exceptions=False)
+        assert raw.delete("/admin/packages/race-del", auth=AUTH).status_code == 404
+        records = _audit_records(audit_caplog)
+        assert records and records[0]["reason"] == "not_found"
+
+    def test_partial_delete_race_is_storage_error_500(
+            self, client, tmp_packages_dir, audit_caplog, monkeypatch):
+        """P3-2：FileNotFoundError 但目录仍在（部分删除/并发重建）→ storage_error。"""
+        import errno
+        import main as m
+        self._upload(client, "race-part")
+        audit_caplog.clear()
+
+        def partial_rmtree(path, *args, **kwargs):
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+
+        monkeypatch.setattr(m.shutil, "rmtree", partial_rmtree)
+        raw = TestClient(m.app, raise_server_exceptions=False)
+        assert raw.delete("/admin/packages/race-part", auth=AUTH).status_code == 500
+        records = _audit_records(audit_caplog)
+        assert records and records[0]["reason"] == "storage_error"
+
+
+class TestDownloadAuditP2P2:
+    """P2-2：下载面审计（外泄主路径），best-effort 不影响下载语义。"""
+
+    def test_download_emits_audit_record(self, client, audit_caplog):
+        assert client.post("/", auth=AUTH,
+                           data={"name": "dl-audit", "version": "1.0"},
+                           files={"content": ("dl-audit-1.0.whl", b"payload",
+                                              "application/octet-stream")}
+                           ).status_code == 200
+        audit_caplog.clear()
+        resp = client.get("/packages/dl-audit/dl-audit-1.0.whl", auth=AUTH)
+        assert resp.status_code == 200
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        rec = records[0]
+        assert rec["action"] == "registry.pypi.download"
+        assert rec["result"] == "success"
+        assert rec["user"] == AUTH[0]
+        assert rec["package"] == "dl-audit"
+        assert rec["filename"] == "dl-audit-1.0.whl"
+        assert rec["size"] == len(b"payload")
+        assert rec["ip"] is not None
+
+    def test_failed_download_is_not_audited_as_download(self, client, audit_caplog):
+        # 404 不落下载审计（噪声控制——成功下载才是外泄事实）；401 由认证层拒
+        assert client.get("/packages/no-pkg/no-file.whl",
+                          auth=AUTH).status_code == 404
+        assert _audit_records(audit_caplog) == []
+
+
+class TestSidecarWriteFailureP2P4:
+    """P2-4：sidecar 写入走「tmp → link 到位」，任何失败回滚制品——
+    保证「500 必然未发布」（旧实现磁盘写满时 500 但制品已发布）。"""
+
+    @staticmethod
+    def _upload_expect_500(client, tmp_packages_dir, monkeypatch, name):
+        import errno
+        import main as m
+        real_write_text = Path.write_text
+
+        def exploding_write_text(self, data, *args, **kwargs):
+            # 只炸包目录内的落盘写（sidecar tmp）；测试自身对 tmp_path 的
+            # 写不受影响（tmp_path 不在 PACKAGES_DIR 下）
+            if str(self).startswith(str(tmp_packages_dir)):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_write_text(self, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", exploding_write_text)
+        raw = TestClient(m.app, raise_server_exceptions=False)
+        return raw.post("/", auth=AUTH, data={"name": name, "version": "1.0"},
+                        files={"content": (f"{name}-1.0.whl", b"artifact-bytes",
+                                           "application/octet-stream")})
+
+    def test_enospc_on_sidecar_write_leaves_artifact_unpublished(
+            self, client, tmp_packages_dir, audit_caplog, monkeypatch):
+        resp = self._upload_expect_500(client, tmp_packages_dir, monkeypatch,
+                                       "sc-fail")
+        assert resp.status_code == 500
+        pkg = tmp_packages_dir / "sc-fail"
+        assert not (pkg / "sc-fail-1.0.whl").exists()
+        assert not (pkg / "sc-fail-1.0.whl.sha256").exists()
+        leftovers = [f.name for f in pkg.glob("*") if f.name.endswith(".upload")]
+        assert leftovers == []
+        assert client.get("/simple/sc-fail/", auth=AUTH).status_code == 404
+        records = _audit_records(audit_caplog)
+        assert records and records[0]["reason"] == "storage_error"
+
+    def test_sidecar_link_failure_rolls_back_published_artifact(
+            self, client, tmp_packages_dir, audit_caplog, monkeypatch):
+        """P2-4 恢复路径：制品 link 成功后 sidecar link 失败 → unlink 回滚。"""
+        import errno
+        import os as os_mod
+        import main as m
+        real_link = os_mod.link
+        calls = []
+
+        def flaky_link(src, dst, *args, **kwargs):
+            calls.append(str(dst))
+            if len(calls) == 1:
+                return real_link(src, dst, *args, **kwargs)  # 制品 link 成功
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(m.os, "link", flaky_link)
+        raw = TestClient(m.app, raise_server_exceptions=False)
+        resp = raw.post("/", auth=AUTH, data={"name": "sc-rollback", "version": "1.0"},
+                        files={"content": ("sc-rollback-1.0.whl", b"bytes",
+                                           "application/octet-stream")})
+        assert resp.status_code == 500
+        pkg = tmp_packages_dir / "sc-rollback"
+        assert not (pkg / "sc-rollback-1.0.whl").exists(), \
+            "sidecar 落位失败后刚发布的制品必须被回滚"
+        assert client.get("/simple/sc-rollback/", auth=AUTH).status_code == 404
+        records = _audit_records(audit_caplog)
+        assert records and records[0]["reason"] == "storage_error"
+
+    def test_preexisting_stale_sidecar_is_atomically_corrected(
+            self, client, tmp_packages_dir):
+        """P2-4 FileExistsError 分支：CAS 新建制品时残留的过期 sidecar 被
+        os.replace 原子矫正（旧失败轮孤儿，内容可能错）。"""
+        import hashlib
+        payload = b"fresh bytes"
+        pkg = tmp_packages_dir / "sc-stale"
+        pkg.mkdir()
+        (pkg / "sc-stale-1.0.whl.sha256").write_text("0" * 64)  # 过期孤儿
+        resp = client.post("/", auth=AUTH, data={"name": "sc-stale", "version": "1.0"},
+                           files={"content": ("sc-stale-1.0.whl", payload,
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        sidecar = pkg / "sc-stale-1.0.whl.sha256"
+        assert sidecar.read_text().strip() == hashlib.sha256(payload).hexdigest()
+
+
+class TestStaleUploadSweepP3P1:
+    """P3-1：*.upload 残留清扫（启动 + 上传路由共享判据）。"""
+
+    def test_stale_upload_files_removed_fresh_kept(self, client, tmp_packages_dir):
+        import time as time_mod
+        import main as m
+        pkg = tmp_packages_dir / "sweep-pkg"
+        pkg.mkdir()
+        stale = pkg / "sweep-pkg-0.9.whl.stale.upload"
+        fresh = pkg / "sweep-pkg-1.1.whl.fresh.upload"
+        stale.write_bytes(b"old")
+        fresh.write_bytes(b"new")
+        old = time_mod.time() - m.UPLOAD_STALE_SECONDS - 60
+        os.utime(stale, (old, old))
+        assert m._sweep_stale_uploads() == 1
+        assert not stale.exists()
+        assert fresh.exists()
+
+    def test_sweep_never_touches_artifacts_or_sidecars(self, client,
+                                                       tmp_packages_dir):
+        # 制品后缀白名单（.whl/.tar.gz/.zip）不含 .upload——清扫不可能误删制品
+        client.post("/", auth=AUTH, data={"name": "sweep-safe", "version": "1.0"},
+                    files={"content": ("sweep-safe-1.0.whl", b"real",
+                                       "application/octet-stream")})
+        import main as m
+        m._sweep_stale_uploads()
+        assert (tmp_packages_dir / "sweep-safe" / "sweep-safe-1.0.whl").exists()
+        assert (tmp_packages_dir / "sweep-safe" / "sweep-safe-1.0.whl.sha256").exists()
+
+    def test_upload_route_sweeps_with_shared_criteria(self, client,
+                                                      tmp_packages_dir):
+        import time as time_mod
+        import main as m
+        pkg = tmp_packages_dir / "sweep-via-route"
+        pkg.mkdir()
+        residue = pkg / "sweep-via-route-1.0.whl.junk.upload"
+        residue.write_bytes(b"junk")
+        old = time_mod.time() - m.UPLOAD_STALE_SECONDS - 1
+        os.utime(residue, (old, old))
+        m._last_upload_sweep = 0.0  # 节流复位，允许本次上传触发清扫
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "sweep-via-route", "version": "1.0"},
+                           files={"content": ("sweep-via-route-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        assert not residue.exists()
+
+    def test_sweep_survives_missing_directory(self, client, monkeypatch):
+        import main as m
+        monkeypatch.setattr(m, "PACKAGES_DIR",
+                            Path("/nonexistent-sweep-target-xyz"))
+        # _all_package_dirs 的 OSError 守卫：清扫失败按 0 处理，不抛
+        assert m._sweep_stale_uploads() == 0
+
+
+class TestHealthProbeP3P3:
+    """P3-3：/health 真实化——轻量可写性探针，失败 503。"""
+
+    def test_health_still_ok_with_unchanged_shape(self, client):
+        # 成功形态逐字节不变（compose healthcheck 语义不变）
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok", "service": "pypi-registry"}
+
+    def test_storage_failure_returns_503(self, client, monkeypatch):
+        import errno
+        import main as m
+
+        def broken_probe():
+            raise OSError(errno.EROFS, "Read-only file system")
+
+        monkeypatch.setattr(m, "_probe_storage_writable", broken_probe)
+        resp = client.get("/health")
+        assert resp.status_code == 503
+        assert resp.json() == {"status": "unavailable", "service": "pypi-registry"}
+
+    def test_probe_leaves_no_files_behind(self, client, tmp_packages_dir):
+        client.get("/health")
+        assert list(tmp_packages_dir.glob("*")) == []
+
+
+class TestUploadNameVersionGateP3P5:
+    """P3-5：直连面 name/version 显式校验（非空 + 128/64 字节上限），
+    收敛 422 文案与 mkdir ENAMETOOLONG 的 500 面。"""
+
+    @pytest.mark.parametrize("name,version", [
+        ("", "1.0"),            # 空名
+        ("a" * 129, "1.0"),     # 超长名（此前 mkdir ENAMETOOLONG → 500）
+        ("ok-name", ""),        # 空版本（此前静默收进审计行）
+        ("ok-name", "1" * 65),  # 超长版本
+    ])
+    def test_invalid_name_or_version_rejected_400(self, client,
+                                                  tmp_packages_dir,
+                                                  name, version):
+        resp = client.post("/", auth=AUTH, data={"name": name, "version": version},
+                           files={"content": ("gate-nv-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 400
+        # 稳定码而非框架 422 文案/内部异常
+        assert "detail" in resp.json()
+        # 不得落盘（包目录都不该建）
+        assert list(tmp_packages_dir.glob("*")) == []
+
+    def test_boundary_lengths_accepted(self, client, tmp_packages_dir):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "n" * 128, "version": "1" * 64},
+                           files={"content": ("n" * 128 + "-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        assert (tmp_packages_dir / ("n" * 128) / ("n" * 128 + "-1.0.whl")).is_file()
+
+    def test_gate_rejects_carry_stable_reason_codes(self, client, audit_caplog):
+        client.post("/", auth=AUTH, data={"name": "", "version": "1.0"},
+                    files={"content": ("reason-nv-1.0.whl", b"x",
+                                       "application/octet-stream")})
+        records = _audit_records(audit_caplog)
+        assert records and records[0]["reason"] == "invalid_package_name"
+
+
+class TestAuditFieldHygieneP3P4:
+    """P3-4：审计字段截断（filename/package/version 同一 120 上限）+
+    package 记 normalize 后值。"""
+
+    def test_long_client_fields_are_truncated(self, client, audit_caplog):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "p" * 300, "version": "v" * 300},
+                           files={"content": ("f" * 300 + ".whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 400
+        rec = _audit_records(audit_caplog)[0]
+        assert len(rec["package"]) == 120
+        assert len(rec["version"]) == 120
+        assert len(rec["filename"]) == 120
+
+    def test_package_recorded_normalized(self, client, audit_caplog):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "My_Test.Pkg", "version": "1.0"},
+                           files={"content": ("my-test-pkg-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        assert _audit_records(audit_caplog)[0]["package"] == "my-test-pkg"
+
+
+class TestWheelDistMismatchP3P8:
+    """P3-8：wheel dist 段与表单 name 不一致 → warning 审计字段（不 400，
+    避免 400 破坏既有发布流——pip 侧匹配已有限制）。"""
+
+    def test_mismatched_wheel_dist_segment_warns_but_publishes(
+            self, client, audit_caplog):
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "declared-name", "version": "1.0"},
+                           files={"content": (
+                               "other-dist-1.0-py3-none-any.whl", b"x",
+                               "application/octet-stream")})
+        assert resp.status_code == 200
+        rec = _audit_records(audit_caplog)[0]
+        assert rec["warning"] == "wheel_dist_name_mismatch"
+
+    def test_matching_wheel_has_no_warning_field(self, client, audit_caplog):
+        # PEP 427 转义（下划线折叠）由 normalize 统一，_ 与 - 等价
+        resp = client.post("/", auth=AUTH,
+                           data={"name": "declared-name", "version": "1.0"},
+                           files={"content": (
+                               "declared_name-1.0-py3-none-any.whl", b"x",
+                               "application/octet-stream")})
+        assert resp.status_code == 200
+        assert "warning" not in _audit_records(audit_caplog)[0]
+
+
+class TestAsciiCredentialGateP3P6:
+    """P3-6：启动闸补凭据 ASCII 校验（E-10 一并拒启动，错误信息可读）。"""
+
+    @staticmethod
+    def _import_with_env(monkeypatch, tmp_path, user, password):
+        """设好凭据环境并弹出缓存的 main 模块，返回 True 供调用方 import。"""
+        monkeypatch.setenv("REGISTRY_USER", user)
+        monkeypatch.setenv("REGISTRY_PASS", password)
+        monkeypatch.setenv("PACKAGES_DIR", str(tmp_path))
+        import sys
+        sys.modules.pop("main", None)
+        return True
+
+    def test_exits_when_user_non_ascii(self, monkeypatch, tmp_path):
+        assert self._import_with_env(monkeypatch, tmp_path, "用户", "okpass")
+        with pytest.raises(SystemExit) as exc_info:
+            import main  # noqa: F401
+        assert exc_info.value.code == 1
+
+    def test_exits_when_password_non_ascii(self, monkeypatch, tmp_path):
+        assert self._import_with_env(monkeypatch, tmp_path, "okuser", "密码123")
+        with pytest.raises(SystemExit) as exc_info:
+            import main  # noqa: F401
+        assert exc_info.value.code == 1
+
+    def test_ascii_credentials_still_start(self, monkeypatch, tmp_path):
+        assert self._import_with_env(monkeypatch, tmp_path, "okuser", "okpass")
+        import main as app_module  # noqa: F401
+        assert app_module.REGISTRY_PASS == "okpass"

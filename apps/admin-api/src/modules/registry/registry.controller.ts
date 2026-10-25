@@ -548,13 +548,25 @@ export class RegistryController {
         }, timeoutMs);
         const parsedUrl = new URL(uploadUrl);
         const lib = parsedUrl.protocol === "https:" ? https : http;
+        // P1-1（2026-10-26 registry-pypi 审计）：上游上传路由拒收 chunked
+        // （缺 Content-Length 一律 411——认证前的无界 body 缓冲面被关闭）。
+        // form-data 的 .pipe() 默认走 chunked（2026-10-26 节点探针实证），
+        // 这里显式声明长度：本表单只有字符串与 Buffer（file.buffer，multer
+        // 内存存储），getLengthSync 同步精确（header/value 都按
+        // Buffer.byteLength 计，非 ASCII filename 亦正确）；含 stream part
+        // 时它会抛错——本表单不存在该形态。
+        const uploadHeaders: http.OutgoingHttpHeaders = {
+          ...form.getHeaders(),
+          Authorization: `Basic ${auth}`,
+          "content-length": String(form.getLengthSync()),
+        };
         const req = lib.request(
           {
             hostname: parsedUrl.hostname,
             port: parsedUrl.port,
             path: parsedUrl.pathname,
             method: "POST",
-            headers: { ...form.getHeaders(), Authorization: `Basic ${auth}` },
+            headers: uploadHeaders,
           },
           (res) => {
             let body = "";

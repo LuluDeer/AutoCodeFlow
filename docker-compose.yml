@@ -608,6 +608,11 @@ services:
     ports:
       - '127.0.0.1:8003:8003'
     environment:
+      # P2-3（2026-10-26 审计）：这对是共享 Basic 口令——服务端有对端 IP 维度
+      # 的失败退避（连续失败 5 次后按 2^n 秒拒答，成功清零），但 NAT 后多用户
+      # 连坐、多副本计数不共享仍是残余风险；中期方向是 per-identity token
+      # （每个调用方独立凭据，可单独吊销/限速），见
+      # apps/registry-pypi/README.md「安全基线」。
       REGISTRY_USER: ${REGISTRY_USER:-admin}
       # F-2: Basic Auth 密码强制注入（未设置即 compose 解析报错）
       REGISTRY_PASS: ${REGISTRY_PASS:?set REGISTRY_PASS in .env}
@@ -624,13 +629,25 @@ services:
       - no-new-privileges:true
     cap_drop: ['ALL']
     tmpfs:
-      - /tmp
+      # P1-1（2026-10-26 registry-pypi 审计）：/tmp 无 size 上限时默认可达宿主
+      # 内存一半（实测 16G）。认证前的 multipart spool（SpooledTemporaryFile
+      # >1MB 部分落 /tmp）已被服务端 411/413 预检闸挡住（上传路由强制
+      # Content-Length），这里再给 tmpfs 显式上限兜底：1g 对正常上传
+      # （单包 ≤50MB）与运行期临时文件余量充足；打满后 multipart 解析报错
+      # （对客户端 500），不影响 /data 卷与日志面。
+      - /tmp:size=1g
     healthcheck:
       test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8003/health")']
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+    # P3-7（2026-10-26 审计）：关 uvicorn access log——每请求留痕由审计行
+    # （registry.pypi.upload/.delete/.download）与结构化错误日志承接，access
+    # log 属重复预算（logging 上限 10m*5）；高频 pip install 对 /simple/ 的
+    # 轮询不再各占一行（401/退避拒绝等异常仍走服务端日志）。镜像 CMD 不变
+    # （docker run 单跑形态不动），仅 compose 覆盖启动参数。
+    command: uvicorn main:app --host 0.0.0.0 --port 8003 --no-access-log
     networks:
       - autoflow-internal
       - autoflow-public
