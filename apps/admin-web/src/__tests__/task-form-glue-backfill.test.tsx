@@ -47,15 +47,17 @@
  * ''）。现在把断言写进 waitFor 轮询体，轮询到终值为止（同一编辑器组件的
  * sync effect 会以回填后的 props 重渲，mock 随之收到新调用记录）。
  *
- * ## 为什么每个 waitFor 都显式传 timeout（FLAKE 第二层根因，2026-10-25 实锤）
+ * ## 为什么每个 waitFor 都显式传 timeout（历史第二层根因，2026-10-25 已治本）
  *
- * test-setup.ts 的 `configure({ asyncUtilTimeout: 10_000 })` 在 forks 池下
- * **并不作用于测试文件的 waitFor**：setup 文件与测试文件经由两条模块管线
- * 加载出**两份不同的 @testing-library/dom 模块实例**（探针实证：setup 侧
- * `getConfig().asyncUtilTimeout = 10000`、测试侧同一查询 = 1000，模块对象
- * `globalThis.__SETUP_DOM === domMod` 为 false）。所以仓库里所有「默认
- * waitFor」实际都跑在 1s 预算上——这就是历次「超时」归因反复复发的底层
- * 原因。本文件不依赖那份失灵的全局 configure，逐个 waitFor 显式给预算。
+ * 曾长期存在的问题：test-setup.ts 从 '@testing-library/dom' 入口
+ * `configure({ asyncUtilTimeout: 10_000 })`，在 forks 池下**并不作用于
+ * 测试文件的 waitFor**——setup 文件与测试文件经由两条模块管线加载出两份
+ * 不同的 dom 实例（探针实证：setup 侧 = 10000、测试侧 = 1000）。该缺陷
+ * 已于同日治本（TINFRA-1）：setup 改从 '@testing-library/react' 入口
+ * configure，与测试侧同实例生效，并由
+ * src/__tests__/test-infra-async-timeout.test.ts 永久钉住。本文件的
+ * waitFor 保留显式预算——被测链路预算即用例语义的一部分，不随全局默认
+ * 起舞；新用例可依赖全局 10s 默认。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useAuthStore } from '../store/auth';
@@ -184,7 +186,7 @@ async function waitForEditorProp(expected: string, kind: 'value' | 'language') {
         | undefined;
       expect(last?.[kind]).toBe(expected);
     },
-    // 显式预算：全局 asyncUtilTimeout 因双模块实例失灵（见文件头注释），
+    // 显式预算：被测链路预算即用例语义（历史根因已治本，见文件头注释）；
     // 默认只有 1s——并行负载下任务查询回填链路可能超 1s。
     { timeout: 10_000 },
   );

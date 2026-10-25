@@ -1,6 +1,11 @@
 import { vi, afterEach } from 'vitest';
-import { configure } from '@testing-library/dom';
-import { act } from '@testing-library/react';
+// ⚠️ configure 必须从 '@testing-library/react' 入口拿（TINFRA-1，2026-10-25）：
+// forks 池下 setup 文件与测试文件走两条模块管线，从 '@testing-library/dom'
+// 入口 configure 会加载出与测试侧不同的另一份 dom 实例，全局 10s 从未生效
+// （探针实证：setup 侧 = 10000、测试侧 = 1000）。react 入口 re-export 的
+// configure 操作的正是测试侧同一实例（162 处测试导入全部经 react 入口）。
+// 守卫用例 src/__tests__/test-infra-async-timeout.test.ts 钉住该值。
+import { configure, act } from '@testing-library/react';
 
 // ── waitFor 默认预算统一（O-2，测试体系审计 2026-09-18）──────────────
 // 全量跑（95 文件 jsdom + antd 重型页面 + coverage 仪器化）时，transform/
