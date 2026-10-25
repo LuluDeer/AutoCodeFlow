@@ -38,6 +38,9 @@ import {
 } from "./entities/app-deployment-event.entity";
 import { Application } from "./entities/application.entity";
 import { ApplicationService } from "./application.service";
+// P0-1（2026-10-25 审计）：版本恢复链写 applications 表经 ApplicationService.update，
+// 其属主守卫需要 actor（id+role）——controller 从 @CurrentUser 取（AuthUser 含 role）。
+import { UserRole } from "../users/entities/user.entity";
 import { ExecutorService } from "../executor/executor.service";
 import type { Executor } from "../executor/entities/executor.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus/audit 先例——
@@ -995,6 +998,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     appId: string,
     targetId: string,
     trigger?: DeploymentTriggerContext,
+    // P0-1（2026-10-25 审计）：版本恢复链要写 applications 表——actor 透传给
+    // ApplicationService.update 的属主守卫（NF-03）。HTTP 面恒有 @CurrentUser
+    //（@Roles(ADMIN)）；缺省 undefined 只存在于直调 service 的存量单测。
+    actor?: { id: number; role: UserRole } | null,
   ) {
     // R1: deployment-mutating paths must read the raw env (the snapshot
     // carries the env that gets written back); bypass the read-surface
@@ -1007,6 +1014,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       const updatedApp = await this.appService.update(
         appId,
         this.buildVersionRestoreDto(app, version)!,
+        actor,
       );
       const result = await this.upgradeRunningDeployments(
         appId,
@@ -1043,7 +1051,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // packageUrl restore (exposed as packageUrlRestored=false in the
     // response below). Rollbacks that must pin a package file should target
     // a version snapshot (which stores packageUrl in its snapshot payload).
-    const updatedApp = await this.appService.update(appId, updateDto);
+    const updatedApp = await this.appService.update(appId, updateDto, actor);
     const result = await this.upgradeRunningDeployments(
       appId,
       trigger ?? {
@@ -1067,7 +1075,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 触碰部署行/设备**。旧 rollback 把「恢复字段」与「全量下发」捆绑成一个动作，
    * 用户只想改回记录面时也被迫重启全部实例；本端点是拆出的安全半边。
    */
-  async setCurrentVersion(appId: string, versionId: string) {
+  async setCurrentVersion(
+    appId: string,
+    versionId: string,
+    // P0-1：同 rollbackApplication——actor 透传属主守卫（NF-03），ADMIN 可改
+    // 自己/有权限项目的应用，与手动 update 同语义。
+    actor?: { id: number; role: UserRole } | null,
+  ) {
     // R1: 与 rollbackApplication 同源——快照恢复写回的 env 必须是原始值，
     // 绕过 appService.findById 的读面掩码。
     const app = await this.appService.findByIdRaw(appId);
@@ -1084,6 +1098,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const updatedApp = await this.appService.update(
       appId,
       this.buildVersionRestoreDto(app, version)!,
+      actor,
     );
     return {
       ok: true,
@@ -1106,6 +1121,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     versionId: string,
     executorIds?: string[],
     trigger?: DeploymentTriggerContext,
+    // P0-1：同 setCurrentVersion——字段恢复写 applications 表经属主守卫。
+    actor?: { id: number; role: UserRole } | null,
   ) {
     const app = await this.appService.findByIdRaw(appId);
     const version = await this.versionRepo.findOne({
@@ -1119,6 +1136,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const updatedApp = await this.appService.update(
       appId,
       this.buildVersionRestoreDto(app, version)!,
+      actor,
     );
     // 沿用旧 rollback 的触发痕迹语义（本端点即其拆出的下发半边）。
     const effectiveTrigger = trigger ?? {
@@ -1939,6 +1957,23 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     ) {
       throw new AppError(ErrorCode.APP_DEPLOYMENT_AWAITING_APPROVAL);
     }
+    // P2-1（2026-10-25 审计）：在途行（pending/deploying/upgrading）禁停。
+    // 此前 stop 只挡 pending_approval——deploy 的推送是 fire-and-forget，行
+    // 在推送在途时被 stop 立即置 STOPPED 并发 app-stop，随后推送照常到达把
+    // 应用拉起；心跳又被 A-2② 的状态守卫（terminal 行不推进）拒绝，行永久
+    // STOPPED 而设备上进程在跑。与 removeDeployment 的终态守卫（只许终态行
+    // 删除）同口径：在途行的出口只有它自己的完成/失败链。
+    const inFlight: DeploymentStatus[] = [
+      DeploymentStatus.PENDING,
+      DeploymentStatus.DEPLOYING,
+      DeploymentStatus.UPGRADING,
+    ];
+    if (inFlight.includes(deployment.status)) {
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_STOP_IN_FLIGHT, {
+        deploymentId,
+        status: deployment.status,
+      });
+    }
 
     try {
       // ARCH-33（ADR-016）：pull 执行器走命令队列。stop 本就是 best-effort
@@ -2571,6 +2606,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     };
   }
 
+  /**
+   * P3-7（2026-10-25 审计，登记不修）：application_versions **无保留策略**。
+   * 每次部署/升级都按 (applicationId, version, gitCommit, sourceDeploymentId)
+   * 去重落快照，行数随部署次数单调增长且永不清理——版本快照同时是回滚面与
+   * 发布列表的事实源，自动保留/清理需要产品决策（保留多少个版本？released
+   * 与 failed 快照是否同策略？），登记为残差，不在本轮处置。
+   */
   private async saveVersionSnapshot(
     deployment: AppDeployment,
     app: Application,
@@ -3021,6 +3063,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     trigger?: DeploymentTriggerContext,
     version?: string,
     includeStopped = false,
+    // P0-1：version 定向灰度的「定版」分支写 applications 表（快照恢复），
+    // 同样经属主守卫。upgrade-all 是 @Roles(ADMIN) 的人工干预面，恒有
+    // @CurrentUser——按人类 actor 语义透传，无需 systemBypass（机器面先例
+    // 只有 HMAC webhook 一条，见 application.controller.webhook）。
+    actor?: { id: number; role: UserRole } | null,
   ): Promise<{
     ok: boolean;
     total: number;
@@ -3076,7 +3123,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       const app = await this.appService.findByIdRaw(appId);
       if (app.version !== row.version) {
         const updateDto = this.buildVersionRestoreDto(app, row);
-        if (updateDto) await this.appService.update(appId, updateDto);
+        if (updateDto) await this.appService.update(appId, updateDto, actor);
       }
       targetVersion = row.version;
     }

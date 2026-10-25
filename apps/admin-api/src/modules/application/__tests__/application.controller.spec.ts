@@ -857,8 +857,10 @@ describe("ApplicationController RBAC (R1)", () => {
 });
 
 // R1（2026-10-24 部署模型评审 §4.2）：回滚拆分端点的控制器映射——
-// set-current-version 不携带用户上下文（无部署行写入面）；deploy-version
-// 透传 JWT 用户名为 operator + rollback 触发语义；旧 rollback alias 行为不变。
+// set-current-version / deploy-version / 旧 rollback alias 均透传 JWT 用户
+// 上下文（operator + 属主守卫 actor，P0-1：快照恢复写 applications 表必须
+// 携带身份，否则 ApplicationService.update 的属主守卫恒 403）；旧 rollback
+// alias 行为不变。
 describe("ApplicationController version actions (R1 §4.2)", () => {
   let svc: {
     findByNameWithSecret: jest.Mock;
@@ -923,33 +925,47 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
     );
   });
 
-  it("setCurrentVersion 只透传 appId + versionId，不携带用户上下文", async () => {
-    const result = await controller.setCurrentVersion("app-1", {
-      versionId: "ver-1",
-    });
+  // P0-1（2026-10-25 审计）：契约修正——旧用例把「不携带用户上下文」钉成契约，
+  // 但快照恢复写 applications 表经 ApplicationService.update 的属主守卫，
+  // 无 actor 时守卫对 undefined user 恒 403，整条链路功能不可用。该契约本身
+  // 是 bug 的固化；修复后 controller 必须把 @CurrentUser 转成 {id, role} actor
+  // 透传（@Roles(ADMIN) 之下 principal 恒为 JWT AuthUser）。
+  it("setCurrentVersion 透传 appId + versionId + 属主守卫 actor（P0-1）", async () => {
+    const result = await controller.setCurrentVersion(
+      "app-1",
+      { versionId: "ver-1" },
+      { id: 7, role: UserRole.ADMIN },
+    );
     expect(deploymentSvc.setCurrentVersion).toHaveBeenCalledWith(
       "app-1",
       "ver-1",
+      { id: 7, role: UserRole.ADMIN },
     );
     expect(result.dispatched).toBe(false);
   });
 
   // R2（部署模型评审 §4.4）：includeStopped 透传——缺省必须显式落 false
   // （服务层第 5 参缺省值只对 undefined 生效，控制器这里收口缺省语义）。
+  // P0-1：末位 actor 透传属主守卫（快照恢复写面）。
   it("upgradeAll 缺省 includeStopped=false；=true 时透传（R2 §4.4）", async () => {
-    await controller.upgradeAll("app-1", {}, { id: 7, username: "alice" });
+    await controller.upgradeAll(
+      "app-1",
+      {},
+      { id: 7, username: "alice", role: UserRole.ADMIN },
+    );
     expect(deploymentSvc.upgradeAllWithRollout).toHaveBeenCalledWith(
       "app-1",
       null,
       { operator: "alice", triggerType: "upgrade" },
       undefined,
       false,
+      { id: 7, role: UserRole.ADMIN },
     );
 
     await controller.upgradeAll(
       "app-1",
       { rollout: { strategy: "canary", percentage: 30 }, includeStopped: true },
-      { id: 7, username: "alice" },
+      { id: 7, username: "alice", role: UserRole.ADMIN },
     );
     expect(deploymentSvc.upgradeAllWithRollout).toHaveBeenLastCalledWith(
       "app-1",
@@ -957,6 +973,7 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
       { operator: "alice", triggerType: "upgrade" },
       undefined,
       true,
+      { id: 7, role: UserRole.ADMIN },
     );
   });
 
@@ -964,13 +981,14 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
     await controller.deployVersion(
       "app-1",
       { versionId: "ver-1", executorIds: ["exec-1", "exec-2"] },
-      { id: 7, username: "alice" },
+      { id: 7, username: "alice", role: UserRole.ADMIN },
     );
     expect(deploymentSvc.deployVersion).toHaveBeenCalledWith(
       "app-1",
       "ver-1",
       ["exec-1", "exec-2"],
       { operator: "alice", triggerType: "rollback" },
+      { id: 7, role: UserRole.ADMIN },
     );
   });
 
@@ -978,22 +996,28 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
     await controller.deployVersion(
       "app-1",
       { versionId: "ver-1" },
-      { id: 7, username: "alice" },
+      { id: 7, username: "alice", role: UserRole.ADMIN },
     );
     expect(deploymentSvc.deployVersion).toHaveBeenCalledWith(
       "app-1",
       "ver-1",
       undefined,
       { operator: "alice", triggerType: "rollback" },
+      { id: 7, role: UserRole.ADMIN },
     );
   });
 
   it("旧 rollback alias 仍走 rollbackApplication（deprecated 但行为不变）", async () => {
-    await controller.rollback("app-1", "ver-1", { id: 7, username: "alice" });
+    await controller.rollback("app-1", "ver-1", {
+      id: 7,
+      username: "alice",
+      role: UserRole.ADMIN,
+    });
     expect(deploymentSvc.rollbackApplication).toHaveBeenCalledWith(
       "app-1",
       "ver-1",
       { operator: "alice", triggerType: "rollback" },
+      { id: 7, role: UserRole.ADMIN },
     );
   });
 });

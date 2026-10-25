@@ -197,6 +197,17 @@ export const APPLICATION_CODES = {
     zh: "部署 {{deploymentId}} 正在进行中 (status={{status}})；请等待其完成后再删除记录",
     en: "Deployment {{deploymentId}} is in progress (status={{status}}); wait for it to finish before deleting the record",
   },
+  /**
+   * P2-1（2026-10-25 审计）：对在途行（pending/deploying/upgrading）调 stop。
+   * 与上方 APP_DEPLOYMENT_STILL_IN_FLIGHT（删除面）**不共用**：两者的处置
+   * 动作不同（「等完成后再停止」≠「等完成后再删除」），合并会让词条替另一
+   * 个端点说话——MUTEX-01 分码判据的镜像运用。
+   */
+  APP_DEPLOYMENT_STOP_IN_FLIGHT: {
+    status: 409,
+    zh: "部署 {{deploymentId}} 正在进行中 (status={{status}})；请等待其完成后再停止",
+    en: "Deployment {{deploymentId}} is in progress (status={{status}}); wait for it to finish before stopping it",
+  },
   APP_DEPLOYMENT_STILL_RUNNING: {
     status: 409,
     zh: "部署 {{deploymentId}} 仍在运行；请先停止，再删除记录",
@@ -263,6 +274,12 @@ export const APPLICATION_CODES = {
     zh: "缺少 X-Executor-Token 请求头",
     en: "Missing the X-Executor-Token header",
   },
+  /**
+   * P3-5（2026-10-25 审计）：心跳路由已不再抛本码——「查无行/行无执行器/
+   * 令牌无效」三种失败收敛为同一个 401 EXECUTOR_HEARTBEAT_TOKEN_INVALID
+   * （消 404/401 oracle，部署存在性不可被未鉴权探测）。词条保留：admin-web
+   * 的生成 i18n 表仍含该键（该侧由另一轮维护），删码会让键变成孤儿。
+   */
   EXECUTOR_HEARTBEAT_NO_EXECUTOR: {
     status: 401,
     zh: "无法校验令牌：该部署没有关联的执行器",

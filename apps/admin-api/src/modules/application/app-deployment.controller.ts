@@ -54,7 +54,10 @@ import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 
-class ListDeploymentsQueryDto {
+// P3-1（2026-10-25 审计）：page 补 @Max(10000)——对齐 ListDeploymentEventsQueryDto
+// 的 NETOPT-3④ 口径（同文件 events 查询 DTO 既有）：无封顶的 page 可被
+// ?page=99999999 打深 OFFSET + 全量 COUNT 打满连接池。导出仅为 spec 直测。
+export class ListDeploymentsQueryDto {
   @ApiPropertyOptional({ description: "按应用 ID 过滤" })
   @IsOptional()
   @IsUUID()
@@ -69,11 +72,15 @@ class ListDeploymentsQueryDto {
   @IsEnum(DeploymentApprovalStatus)
   approvalStatus?: DeploymentApprovalStatus;
 
-  @ApiPropertyOptional({ default: 1 })
+  // P3-1（2026-10-25 审计）：page 补 @Max(10000)——对齐 ListDeploymentEventsQueryDto
+  // 的 NETOPT-3④ 口径（同文件 events/releases 既有）：无封顶的 page 可被
+  // ?page=99999999 打深 OFFSET + 全量 COUNT 打满连接池。
+  @ApiPropertyOptional({ default: 1, maximum: 10000 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(10000)
   page?: number = 1;
 
   @ApiPropertyOptional({ default: 20, maximum: 100 })
@@ -390,16 +397,19 @@ export class AppDeploymentController {
     if (!token) {
       throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_TOKEN_MISSING);
     }
-    // Look up deployment to find the associated executor
-    const deployment = await this.svc.findById(dto.deploymentId);
-    const executorId = deployment?.executorId;
-    if (!executorId) {
-      throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_NO_EXECUTOR);
-    }
-    const valid = await this.executorService.validateExecutorToken(
-      executorId,
-      token,
-    );
+    // P3-5（2026-10-25 审计）：@Public 机器面必须消 404/401 oracle。旧实现
+    // 先 findById——不存在的 deploymentId 对外 404、存在但令牌错 401，未鉴权
+    // 调用方借此枚举部署行存在性。令牌按部署行所辖执行器校验（逐执行器
+    // bcrypt hash + 共享令牌回退），无法在定位行之前完成——故把「查无行/
+    // 行无执行器/令牌无效」三种失败**收敛为同一个 401**（同 webhook APP-001
+    // 的不可区分拒绝姿态），部署存在性从此不可探测。
+    const deployment = await this.svc
+      .findById(dto.deploymentId)
+      .catch(() => null);
+    const executorId = deployment?.executorId ?? null;
+    const valid = executorId
+      ? await this.executorService.validateExecutorToken(executorId, token)
+      : false;
     if (!valid) {
       throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_TOKEN_INVALID);
     }

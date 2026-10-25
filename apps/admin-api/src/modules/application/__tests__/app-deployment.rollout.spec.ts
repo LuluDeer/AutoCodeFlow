@@ -989,6 +989,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
           entrypoint: "node old.js",
           env: { FOO: "old" },
         }),
+        undefined, // P0-1：定版写面经属主守卫——actor 第三参（本用例未带 actor）
       );
       expect(result).toMatchObject({
         ok: true,

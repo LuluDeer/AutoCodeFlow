@@ -33,6 +33,7 @@ import { AuditService } from "../audit/audit.service";
 import { ApiOkResponse, ApiCreatedResponse } from "@nestjs/swagger";
 import {
   RegistryPackagesResponseDto,
+  RegistryNpmPackagesResponseDto,
   RegistryUploadResponseDto,
 } from "../executor-package/dto/executor-package-response.dto";
 
@@ -40,6 +41,16 @@ import {
 @Controller("registry")
 export class RegistryController {
   private readonly logger = new Logger(RegistryController.name);
+
+  /**
+   * P3-6（2026-10-25 审计）：fetchText 响应体字节上限。fetchText 的两个调用方
+   * （listPypiPackages 的 simple 索引 HTML、listNpmPackages 的 Verdaccio 包
+   * 数组 JSON）都是「读进内存字符串再解析」——上游异常（或被劫持/代理错配）
+   * 时响应体可无限累积。1MB 对私有仓索引（每包名一条锚点/记录）有 2-3 个
+   * 数量级余量；超出即中止连接，按 throwUpstreamListFailure 的既有失败形态
+   * 透出（413 非 504 → REGISTRY_UPSTREAM_FAILED 502，detail 带上限事实）。
+   */
+  private static readonly FETCH_MAX_BYTES = 1024 * 1024;
 
   constructor(
     private readonly config: ConfigService,
@@ -164,7 +175,22 @@ export class RegistryController {
         },
         (res) => {
           let data = "";
-          res.on("data", (chunk) => (data += chunk));
+          // P3-6：响应体字节闸——超出即中止连接并按合成 413 resolve（两个
+          // 调用方把它当非 2xx 走 throwUpstreamListFailure → 502）。
+          let bytes = 0;
+          res.on("data", (chunk) => {
+            bytes += chunk.length;
+            if (bytes > RegistryController.FETCH_MAX_BYTES) {
+              req.destroy();
+              resolve({
+                ok: false,
+                status: HttpStatus.PAYLOAD_TOO_LARGE,
+                text: `upstream response body exceeded ${RegistryController.FETCH_MAX_BYTES} bytes`,
+              });
+              return;
+            }
+            data += chunk;
+          });
           res.on("end", () =>
             resolve({
               ok: (res.statusCode ?? 500) < 400,
@@ -309,7 +335,9 @@ export class RegistryController {
   }
 
   @Get("npm/packages")
-  @ApiOkResponse({ type: RegistryPackagesResponseDto })
+  // P3-4（2026-10-25 审计）：npm 响应是 {name, latest?, description?} 对象数组，
+  // 与 PyPI 的 string[] 契约已分叉——不再共用 RegistryPackagesResponseDto。
+  @ApiOkResponse({ type: RegistryNpmPackagesResponseDto })
   async listNpmPackages(): Promise<{
     packages: Array<{ name: string; latest?: string; description?: string }>;
   }> {

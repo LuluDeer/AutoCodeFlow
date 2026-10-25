@@ -8956,6 +8956,7 @@
             "required": false,
             "in": "query",
             "schema": {
+              "maximum": 10000,
               "default": 1,
               "type": "number"
             }
@@ -9298,6 +9299,7 @@
             "required": false,
             "in": "query",
             "schema": {
+              "maximum": 10000,
               "default": 1,
               "type": "number"
             }
@@ -10477,7 +10479,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RegistryPackagesResponseDto"
+                  "$ref": "#/components/schemas/RegistryNpmPackagesResponseDto"
                 }
               }
             }
@@ -19954,23 +19956,28 @@
           "version": {
             "type": "string",
             "example": "1.0.0",
-            "description": "应用版本号",
-            "x-i18n-en": "Application version"
+            "maxLength": 50,
+            "description": "应用版本号（上限对齐 UploadApplicationDto.version）",
+            "x-i18n-en": "Application version (cap aligned with UploadApplicationDto.version)"
           },
           "runtime": {
             "type": "string",
             "example": "node",
-            "description": "运行时类型",
-            "x-i18n-en": "Runtime type"
+            "maxLength": 50,
+            "description": "运行时类型（上限对齐 UploadApplicationDto.runtime）",
+            "x-i18n-en": "Runtime type (cap aligned with UploadApplicationDto.runtime)"
           },
           "gitRepo": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "gitBranch": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255
           },
           "gitCommit": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128
           },
           "manifest": {
             "type": "object"
@@ -19979,10 +19986,12 @@
             "type": "object"
           },
           "entrypoint": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2000
           },
           "packageUrl": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "approvalRequired": {
             "type": "boolean",
@@ -20020,23 +20029,28 @@
           "version": {
             "type": "string",
             "example": "1.0.0",
-            "description": "应用版本号",
-            "x-i18n-en": "Application version"
+            "maxLength": 50,
+            "description": "应用版本号（上限对齐 UploadApplicationDto.version）",
+            "x-i18n-en": "Application version (cap aligned with UploadApplicationDto.version)"
           },
           "runtime": {
             "type": "string",
             "example": "node",
-            "description": "运行时类型",
-            "x-i18n-en": "Runtime type"
+            "maxLength": 50,
+            "description": "运行时类型（上限对齐 UploadApplicationDto.runtime）",
+            "x-i18n-en": "Runtime type (cap aligned with UploadApplicationDto.runtime)"
           },
           "gitRepo": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "gitBranch": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255
           },
           "gitCommit": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128
           },
           "manifest": {
             "type": "object"
@@ -20045,10 +20059,12 @@
             "type": "object"
           },
           "entrypoint": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2000
           },
           "packageUrl": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "approvalRequired": {
             "type": "boolean",
@@ -21856,12 +21872,51 @@
         "type": "object",
         "properties": {
           "packages": {
-            "description": "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状)",
+            "description": "Package names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离)",
             "type": "array",
             "items": {
               "type": "string"
             },
-            "x-i18n-en": "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 is collapsed into an empty 200 - the frontend error state depends on this shape)"
+            "x-i18n-en": "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream non-2xx/timeouts surface as 502/504 instead of an empty 200 - failure and empty states are semantically separated)"
+          }
+        },
+        "required": [
+          "packages"
+        ]
+      },
+      "RegistryNpmPackageDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "包名",
+            "x-i18n-en": "Package name"
+          },
+          "latest": {
+            "type": "string",
+            "description": "最新版本（上游 version/latest，缺失时省略）",
+            "x-i18n-en": "Latest version (upstream version/latest; omitted when absent)"
+          },
+          "description": {
+            "type": "string",
+            "description": "包描述（上游未提供时省略）",
+            "x-i18n-en": "Package description (omitted when the upstream does not provide one)"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "RegistryNpmPackagesResponseDto": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "description": "Verdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistryNpmPackageDto"
+            },
+            "x-i18n-en": "Verdaccio package array mapping (empty = upstream reachable but no packages; upstream non-2xx/non-JSON/shape drift surfaces as 502, timeout as 504)"
           }
         },
         "required": [

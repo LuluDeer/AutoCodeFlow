@@ -259,6 +259,17 @@ export const EXECUTOR_CODES = {
     zh: "ExecutorPackage {{packageId}} 对应的文件在磁盘上不存在",
     en: "The file for ExecutorPackage {{packageId}} does not exist on disk",
   },
+  /**
+   * P2-2（2026-10-25 审计）：包文件路径越界——filePath（PATCH 写入面或 DB
+   * 历史脏行）resolve 后不在上传根（uploads/executor-packages）内。读/删原语
+   * 的包含性闸（update/openPackageFile 硬 400；remove 的 unlink 跳过只告警）。
+   * 命名对齐 sop-media 的 SOP_MEDIA_STORAGE_PATH_ESCAPED 先例。
+   */
+  EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED: {
+    status: 400,
+    zh: "包文件路径越界：filePath 必须位于执行器包上传目录内",
+    en: "Package file path escaped: filePath must stay inside the executor package upload directory",
+  },
   EXECUTOR_PACKAGE_PUSH_NO_TARGETS: {
     status: 500,
     zh: "没有找到可推送的目标执行器",

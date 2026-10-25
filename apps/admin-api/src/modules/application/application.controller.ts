@@ -733,7 +733,8 @@ export class ApplicationController {
     @Param("id") id: string,
     @Body() dto: UpgradeAllDto,
     // FEAT-20: upgrade-all 逐行落 upgrade 语义 + 操作人用户名。
-    @CurrentUser() user: { id: number; username: string },
+    // P0-1：actor 同时透传给 version 定向灰度的「定版」写面（属主守卫）。
+    @CurrentUser() user: { id: number; username: string; role: UserRole },
   ) {
     return this.deploymentSvc.upgradeAllWithRollout(
       id,
@@ -747,6 +748,7 @@ export class ApplicationController {
       dto?.version,
       // R2 §4.4：stopped 显式 opt-in（仅 all 策略生效，缺省 false）。
       dto?.includeStopped ?? false,
+      user ? { id: user.id, role: user.role } : undefined,
     );
   }
 
@@ -792,8 +794,17 @@ export class ApplicationController {
   async setCurrentVersion(
     @Param("id") appId: string,
     @Body() dto: SetCurrentVersionDto,
+    // P0-1（2026-10-25 审计）：快照恢复写 applications 表经属主守卫
+    // （ApplicationService.update），必须透传 actor——此前不携带用户上下文，
+    // 守卫对 undefined user 恒 403，整条链路功能不可用。@Roles(ADMIN) 之下
+    // principal 恒为 JWT AuthUser（RolesGuard 对 API-Key 无 role 一律拒绝）。
+    @CurrentUser() user: { id: number; role: UserRole },
   ) {
-    return this.deploymentSvc.setCurrentVersion(appId, dto.versionId);
+    return this.deploymentSvc.setCurrentVersion(
+      appId,
+      dto.versionId,
+      user ? { id: user.id, role: user.role } : undefined,
+    );
   }
 
   // SEC-09: 中档限流（应用干预写面，OPS_THROTTLE 默认 30/min）
@@ -810,7 +821,8 @@ export class ApplicationController {
     @Param("id") appId: string,
     @Body() dto: DeployVersionDto,
     // FEAT-20: 下发链逐行落 rollback 语义 + 操作人用户名。
-    @CurrentUser() user: { id: number; username: string },
+    // P0-1：actor 同时透传给快照恢复的属主守卫（见 setCurrentVersion 注）。
+    @CurrentUser() user: { id: number; username: string; role: UserRole },
   ) {
     return this.deploymentSvc.deployVersion(
       appId,
@@ -822,6 +834,7 @@ export class ApplicationController {
             triggerType: DeploymentTriggerType.ROLLBACK,
           }
         : undefined,
+      user ? { id: user.id, role: user.role } : undefined,
     );
   }
 
@@ -840,7 +853,8 @@ export class ApplicationController {
     @Param("id") appId: string,
     @Param("deploymentId") deploymentId: string,
     // FEAT-20: 回退链逐行落 rollback 语义 + 操作人用户名。
-    @CurrentUser() user: { id: number; username: string },
+    // P0-1：actor 同时透传给快照恢复的属主守卫（见 setCurrentVersion 注）。
+    @CurrentUser() user: { id: number; username: string; role: UserRole },
   ) {
     return this.deploymentSvc.rollbackApplication(
       appId,
@@ -851,6 +865,7 @@ export class ApplicationController {
             triggerType: DeploymentTriggerType.ROLLBACK,
           }
         : undefined,
+      user ? { id: user.id, role: user.role } : undefined,
     );
   }
 }

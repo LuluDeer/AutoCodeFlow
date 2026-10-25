@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { OptimisticLockVersionMismatchError } from "typeorm";
@@ -23,6 +24,7 @@ import { AuditService } from "../../audit/audit.service";
 // ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
 import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 import { AppError } from "../../../common/errors/app-error";
+import { UserRole } from "../../users/entities/user.entity";
 import {
   DOMAIN_EVENTS,
   type ExecutorAddressDriftedEventPayload,
@@ -899,6 +901,8 @@ describe("AppDeploymentService", () => {
           packageUrl: "http://packages/app.zip",
           runtime: "node",
         }),
+        // P0-1：快照恢复写面经属主守卫——actor 第三参（本组用例未带 actor）。
+        undefined,
       );
       expect(result).toEqual(
         expect.objectContaining({
@@ -923,10 +927,14 @@ describe("AppDeploymentService", () => {
 
       await service.rollbackApplication("app-1", "version-1");
 
-      expect(appService.update).toHaveBeenCalledWith("app-1", {
-        version: "1.0.1",
-        runtime: "node",
-      });
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        {
+          version: "1.0.1",
+          runtime: "node",
+        },
+        undefined,
+      );
     });
 
     it("rejects a version snapshot from another application", async () => {
@@ -978,10 +986,14 @@ describe("AppDeploymentService", () => {
         "deploy-legacy",
       );
 
-      expect(appService.update).toHaveBeenCalledWith("app-1", {
-        version: "0.9.0",
-        gitCommit: "cafef00d",
-      });
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        {
+          version: "0.9.0",
+          gitCommit: "cafef00d",
+        },
+        undefined,
+      );
       // packageUrl must NOT be written back from the app's current value
       expect(appService.update.mock.calls[0][1]).not.toHaveProperty(
         "packageUrl",
@@ -1058,6 +1070,8 @@ describe("AppDeploymentService", () => {
           packageUrl: "http://packages/app.zip",
           runtime: "node",
         }),
+        // P0-1：快照恢复写面经属主守卫——actor 第三参（本组用例未带 actor）。
+        undefined,
       );
       expect(result).toEqual(
         expect.objectContaining({
@@ -1126,6 +1140,7 @@ describe("AppDeploymentService", () => {
       expect(appService.update).toHaveBeenCalledWith(
         "app-1",
         expect.objectContaining({ version: "1.0.0" }),
+        undefined, // P0-1：actor 第三参（本组用例未带 actor）
       );
       expect(result.dispatched).toBe(true);
       expect(result.upgraded).toEqual([
@@ -1232,6 +1247,82 @@ describe("AppDeploymentService", () => {
       );
       expect(repo.find).not.toHaveBeenCalled();
       expect(repo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  // P0-1（2026-10-25 审计）：spec 缺口修复——上方主 describe 把
+  // ApplicationService.update 整个 mock 掉（:142），属主守卫（NF-03）在
+  // 版本恢复链上从未被执行过，五处 `appService.update(appId, dto)` 两参调用
+  // 全量 403 的缺陷因此漏网。本 describe 装配**真实 ApplicationService**
+  // （只 mock 仓储），验证 setCurrentVersion 全链的守卫语义。
+  describe("setCurrentVersion 属主守卫全链（P0-1：不 mock ApplicationService）", () => {
+    const makeFullChainService = (ownedApp: Record<string, unknown>) => {
+      const appRepo = {
+        // ApplicationService.update 经 findByIdRaw 读原始行做守卫判定。
+        findOne: jest.fn().mockResolvedValue(ownedApp),
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      // moduleRef/aiService 不会被走到：onModuleInit 不触发（_projectAccess
+      // 保持 null → assertCanWriteProjectAware 与 assertCanWrite 等价），
+      // update 主链也不经 aiService。
+      const realAppService = new ApplicationService(
+        appRepo as unknown as any,
+        {} as unknown as any,
+        {} as unknown as any,
+      );
+      const versionRow = {
+        id: "ver-1",
+        applicationId: "app-1",
+        version: "1.2.0",
+        status: "released",
+        snapshot: {},
+        gitCommit: null,
+      };
+      const vRepo = makeRepo();
+      vRepo.findOne.mockResolvedValue(versionRow);
+      const svc = new AppDeploymentService(
+        makeRepo() as unknown as any,
+        vRepo as unknown as any,
+        realAppService as unknown as ApplicationService,
+        executorService as unknown as ExecutorService,
+        {
+          get: jest.fn().mockReturnValue(undefined),
+        } as unknown as ConfigService,
+      );
+      return { svc, appRepo, vRepo };
+    };
+
+    it("ADMIN 对自己的应用 setCurrentVersion 成功走通（守卫放行，字段落库）", async () => {
+      const { svc, appRepo } = makeFullChainService({
+        ...mockApp,
+        ownerUserId: 7,
+      });
+      const result = await svc.setCurrentVersion("app-1", "ver-1", {
+        id: 7,
+        role: UserRole.ADMIN,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.dispatched).toBe(false);
+      // 守卫确实读到行并放行（ADMIN 全量放行语义），恢复字段确实落库。
+      expect(appRepo.findOne).toHaveBeenCalled();
+      expect(appRepo.update).toHaveBeenCalled();
+    });
+
+    it("无 user 上下文直调 service → 403（APPLICATION_NOT_OWNER，修复前必现）", async () => {
+      const { svc, appRepo } = makeFullChainService({
+        ...mockApp,
+        ownerUserId: 7,
+      });
+      // 修复前：update 第三参恒缺省 → 守卫对 undefined user 判非属主 → 403，
+      // 而主 describe 的 mock 把守卫吞掉，链路在真实装配下不可用。
+      await expect(
+        svc.setCurrentVersion("app-1", "ver-1", undefined),
+      ).rejects.toThrow(ForbiddenException);
+      await expect(
+        svc.setCurrentVersion("app-1", "ver-1", undefined),
+      ).rejects.toMatchObject({ errorCode: "APPLICATION_NOT_OWNER" });
+      // 守卫拒绝发生在写库之前。
+      expect(appRepo.update).not.toHaveBeenCalled();
     });
   });
 
@@ -1670,6 +1761,47 @@ describe("AppDeploymentService", () => {
   });
 
   describe("stop", () => {
+    // P2-1（2026-10-25 审计）：在途行禁停。deploy 的推送是 fire-and-forget，
+    // 行在推送在途时被 stop 立即置 STOPPED，推送到达后应用照样拉起，心跳又被
+    // A-2② 状态守卫拒绝 → 行永久 STOPPED 而进程在跑（孤儿进程）。与
+    // removeDeployment 的终态守卫同口径：在途行 stop → 409。
+    it.each([
+      DeploymentStatus.PENDING,
+      DeploymentStatus.DEPLOYING,
+      DeploymentStatus.UPGRADING,
+    ])("P2-1: 在途行 (%s) stop → 409，不发信号不落库", async (status) => {
+      const deployment = {
+        id: "deploy-1",
+        status,
+        executorAddress: mockExecutor.address,
+        pid: 1234,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+
+      await expect(service.stop("deploy-1")).rejects.toMatchObject({
+        errorCode: "APP_DEPLOYMENT_STOP_IN_FLIGHT",
+      });
+      await expect(service.stop("deploy-1")).rejects.toThrow(ConflictException);
+      // 关键反证：不得对执行器发 app-stop，也不得把行写成 STOPPED。
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it("P2-1: 终态行（failed）stop 仍正常（守卫不扩大化）", async () => {
+      const deployment = {
+        id: "deploy-1",
+        status: DeploymentStatus.FAILED,
+        executorAddress: mockExecutor.address,
+        pid: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockImplementation(async (d: Record<string, unknown>) => d);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      const result = await service.stop("deploy-1");
+      expect(result.status).toBe(DeploymentStatus.STOPPED);
+    });
+
     it("sets status to STOPPED and saves", async () => {
       const deployment = {
         id: "deploy-1",
