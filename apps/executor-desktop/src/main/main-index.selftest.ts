@@ -364,9 +364,21 @@ function main(): void {
       /resizable:\s*true/.test(openWizardBody),
       'F-28: 向导窗口必须可 resize（此前 false，矮屏既不能缩也不能拖）',
     );
+
+    // ── UIUX F-29（2026-10-25 审计）：向导在开时不得唤回主窗 ─────────────
+    // focusOrOpenStatus 的守卫顺序必须「先向导后主窗」：向导在开时改为聚焦
+    // 向导——否则托盘「查看状态」把主窗 show 回来，向导与设置页并发编辑后，
+    // 向导完成以挂载时的旧快照整包覆盖。
+    const focusBody = wmSlice('focusOrOpenStatus(): void', 'openStatus(): void');
+    const wizardGuardIdx = focusBody.indexOf('this.wizardWindow && !this.wizardWindow.isDestroyed()');
+    const statusShowIdx = focusBody.indexOf('this.statusWindow.show()');
+    assert.ok(
+      wizardGuardIdx >= 0 && statusShowIdx > wizardGuardIdx,
+      'F-29: focusOrOpenStatus 必须在 show 主窗之前判「向导在开」并聚焦向导（双窗并发编辑会被向导旧快照整包覆盖）',
+    );
   }
 
-  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp)');
+  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp, F-29 focus wizard guard)');
 }
 
 main();

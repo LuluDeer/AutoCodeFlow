@@ -254,6 +254,17 @@ export class WindowManager {
   }
 
   focusOrOpenStatus(): void {
+    // F-29（UIUX 审计 2026-10-25）：向导在开时**不得唤回主窗**——重跑向导
+    // 流已把主窗 hide 让位（statusHiddenByWizard），托盘「查看状态」/通知
+    // 点击若经此把主窗 show 回来，向导与设置页同屏并发编辑，向导「完成」
+    // 会以挂载时的旧配置快照**整包覆盖**设置页里未保存的修改（部分键因不在
+    // 载荷幸存，形成混合态）。改为聚焦向导本身：向导是唯一应处的前台；
+    // 向导关闭后的唤回由 wizardWindow 的 closed 钩子照常完成（幂等）。
+    if (this.wizardWindow && !this.wizardWindow.isDestroyed()) {
+      this.wizardWindow.show();
+      this.wizardWindow.focus();
+      return;
+    }
     if (this.statusWindow && !this.statusWindow.isDestroyed()) {
       this.statusWindow.show();
       this.statusWindow.focus();
