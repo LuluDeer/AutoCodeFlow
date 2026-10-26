@@ -825,6 +825,7 @@ export default {
   'audit.action.notification_silence_create': '创建静默规则',
   'audit.action.notification_silence_delete': '删除静默规则',
   'audit.action.registry_pypi_upload': '上传 PyPI 包',
+  'audit.action.registry_npm_list': '读取 npm 包列表失败',
   'audit.action.subscription_create': '创建事件订阅',
   'audit.action.subscription_update': '更新事件订阅',
   'audit.action.subscription_delete': '删除事件订阅',

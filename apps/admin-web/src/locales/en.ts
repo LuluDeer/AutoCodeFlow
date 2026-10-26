@@ -814,6 +814,7 @@ export default {
   'audit.action.notification_silence_create': 'Create silence rule',
   'audit.action.notification_silence_delete': 'Delete silence rule',
   'audit.action.registry_pypi_upload': 'Upload PyPI package',
+  'audit.action.registry_npm_list': 'npm package list read failed',
   'audit.action.subscription_create': 'Create event subscription',
   'audit.action.subscription_update': 'Update event subscription',
   'audit.action.subscription_delete': 'Delete event subscription',
