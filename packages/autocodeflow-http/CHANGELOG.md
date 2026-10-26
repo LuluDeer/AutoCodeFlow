@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.3.2](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.3.1...autocodeflow-http-v0.3.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **packages:** 共享包层审计 8 项收口——acf-cli 错误码覆盖活红修复（CORS_ORIGIN_NOT_ALLOWED/EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED 按 catalog 语义入基线，6 类规则会给误导建议；vitest 410/410）/autocodeflow-http 文档-实现漂移改 parity 地图（四端对齐虚假声称→本包↔node-sdk 两端+互指注释）/熔断 open 类型化 CircuitBreakerOpenError（对齐 node-sdk）/响应体 50MB cap 双包同构（流式双闸+构造参数出口+ResponseTooLargeError）/退避加性均匀 jitter（封顶防短退避被抖动支配）/ProtocolError 保持熔断不重试评估钉死（瞬时形态已被 5xx/429/网络/超时三路覆盖，落到协议错=确定性缺陷）/AI prompt XML 定界+同名闭合标签中和防逃逸（token 预算不变）/db statement_timeout 30s 可配置（PG 方言变体覆盖，短生命周期进程堵死面防护）/mcp-server·node-sdk /api 归一方向互指注释；各包套件 55/178/67/30/302/142/410 全绿 ([59b5ebe](https://github.com/LuluDeer/AutoCodeFlow/commit/59b5ebe49262275af5addda0957094dd52d8c75a))
+
 ## [0.3.1](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.3.0...autocodeflow-http-v0.3.1) (2026-10-22)
 
 
