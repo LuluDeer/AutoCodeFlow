@@ -321,6 +321,47 @@ async function main(): Promise<void> {
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
+
+  // ── macOS realpath 前缀错位：当前生效版本的删除保护不能被 /var 软链打断 ──
+  // 2026-10-26 CI 实证（desktop-macos-bundle）：`os.tmpdir()` 在 macOS 是
+  // `/var/folders/…`，`realpathSync` 却给出 `/private/var/folders/…`；旧实现拿
+  // 规范化后的 target 与**未规范化**的 releasesDir 求相对路径 → 恒判越界 →
+  // currentKey 恒 null → **「当前生效版本不可删」这道保护在 macOS 上直接失效**
+  // （用户能删掉正在用的版本，应用当场不可用）。这不只是显示问题。
+  //
+  // 本用例在任意非 Windows 平台复现该错位（软链 alias → 真目录）：退回旧写法
+  // 时在 Linux 上即转红（实测）。
+  if (process.platform !== 'win32') {
+    const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-uninst-real-'));
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-uninst-alias-'));
+    const aliasRoot = path.join(aliasParent, 'alias');
+    try {
+      fs.symlinkSync(realRoot, aliasRoot, 'dir');
+      // appRoot 走未规范化的 alias 前缀——与真实调用形态一致。
+      const appRoot = seedApp(aliasRoot, APP_A, [`1.0.0-${DEP_A1}`, `1.0.1-${DEP_A2}`]);
+      const currentKey = readCurrentReleaseKey(appRoot);
+      assert.strictEqual(
+        currentKey,
+        `1.0.1-${DEP_A2}`,
+        '★ macOS 回归：alias 前缀下 current 仍必须解析出 releaseKey（否则删除保护恒失效）',
+      );
+      const guard = canDeleteRelease({
+        releaseKey: `1.0.1-${DEP_A2}`,
+        currentKey,
+        runningDeploymentId: null,
+        deploymentId: DEP_A2,
+      });
+      assert.strictEqual(
+        guard.ok,
+        false,
+        '★ macOS 回归：当前生效版本必须不可删（曾因 currentKey 恒 null 而放行）',
+      );
+    } finally {
+      fs.rmSync(aliasRoot, { recursive: true, force: true });
+      fs.rmSync(aliasParent, { recursive: true, force: true });
+      fs.rmSync(realRoot, { recursive: true, force: true });
+    }
+  }
 }
 
 void main();

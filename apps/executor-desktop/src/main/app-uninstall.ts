@@ -104,13 +104,28 @@ export function resolveReleaseDir(
  * 段丢失），必须取相对 releases/ 的整段——与 app-inventory.ts 的
  * readCurrentReleaseKey 同源语义。这里需要它来**拒绝**删除当前生效的版本
  * （删掉会让 current 悬空、应用直接不可用）。
+ *
+ * ★ macOS：releasesDir 也必须 realpath 后再求相对路径——`realpathSync(current)`
+ * 返回完全规范化的绝对路径，而 `path.join(appRoot, 'releases')` 未规范化；
+ * macOS 上 `/var` 是 `/private/var` 的软链，二者必然错位，相对路径会变成一串
+ * `../../..` 被判成越界。与 app-inventory.ts 同款修法与同款论据（2026-10-26
+ * desktop-macos-bundle 实证：本函数曾使「当前生效版本不可删」保护在 macOS 上
+ * 恒失效——currentKey 恒 null，于是当前版本可被直接删除）。
  */
 export function readCurrentReleaseKey(appRoot: string): string | null {
   try {
     const currentLink = path.join(appRoot, 'current');
     if (!fs.existsSync(currentLink)) return null;
     const real = fs.realpathSync(currentLink);
-    const releasesDir = path.join(appRoot, 'releases');
+    const rawReleasesDir = path.join(appRoot, 'releases');
+    const releasesDir = (() => {
+      try {
+        return fs.realpathSync(rawReleasesDir);
+      } catch {
+        // releases/ 不存在或不可读时回落原值（行为与修改前一致）。
+        return rawReleasesDir;
+      }
+    })();
     const rel = path.relative(releasesDir, real);
     if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
     return rel.split(path.sep).join('/');
