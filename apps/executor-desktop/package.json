@@ -28,7 +28,7 @@
     "auto-launch": "5.0.6",
     "electron-log": "5.4.4",
     "electron-store": "^12.0.0",
-    "electron-updater": "6.8.9"
+    "electron-updater": "6.8.11"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
@@ -41,15 +41,15 @@
     "axe-core": "^4.14.0",
     "concurrently": "^10.0.6",
     "electron": "^45.0.0",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
-    "js-yaml": "^5.4.3",
+    "js-yaml": "^5.5.0",
     "pixelmatch": "^8.0.0",
     "pngjs": "^7.0.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "^5.9.3",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vite-plugin-electron": "^1.1.2",
     "vite-plugin-electron-renderer": "^1.0.0"
   },
