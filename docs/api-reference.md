@@ -1398,7 +1398,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/executor-packages/{id}/push` | 将执行器包推送到调度节点 |
 | GET | `/executor-packages/latest` | 按类型获取最新的 ACTIVE 执行器包 |
 | POST | `/executor-packages/push-result` | 执行器包推送结果回调（由 executor-node 调用） |
-| GET | `/executors` | 列出执行器 |
+| GET | `/executors` | 列出执行器（截断上限见描述；不支持分页） |
 | GET | `/executors/{address}/terminal-states` | 对账终态执行记录（只读） |
 | DELETE | `/executors/{id}` | 删除执行器记录 |
 | GET | `/executors/{id}` | 获取单个执行器详情 |
