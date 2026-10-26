@@ -302,6 +302,50 @@ async function main(): Promise<void> {
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
+
+  // ── macOS realpath 前缀错位：current 归一不能被 /var→/private/var 打断 ──
+  // 2026-10-26 CI 实证（desktop-macos-bundle 的 Main-process selftests 红）：
+  // `os.tmpdir()` 在 macOS 返回 `/var/folders/…`，而 `fsp.realpath()` 解析软链
+  // 得到 `/private/var/folders/…`（`/var` 本身是指向 `/private/var` 的软链）。
+  // 旧实现拿 realpath 后的 target 与**未规范化**的 releasesDir 求相对路径，
+  // 必然得到一串 `../../..` → 判成「指向 releases 之外」→ 恒 null →
+  // `isCurrent` 永远 false。Windows/Linux 无此前缀差，故长期只在 macOS 红。
+  //
+  // 本用例在**任意平台**复现该错位：`workDir` 走软链前缀（alias → real），
+  // 断言 isCurrent 仍能被正确标记。去掉 readCurrentReleaseKey 里对 releasesDir
+  // 的 realpath 对齐，本用例在 Linux 上同样转红（已实测）。
+  if (process.platform !== 'win32') {
+    const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-appinv-real-'));
+    try {
+      // alias 是软链，real 是真目录：模拟 /var 与 /private/var 的关系。
+      const aliasRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acf-appinv-alias-')), 'alias');
+      fs.symlinkSync(realRoot, aliasRoot, 'dir');
+
+      // appRoot 走 **alias**（未规范化）路径——与真实调用形态一致。
+      // 注意 listDeployedApps 收 workDir（内部再拼 apps/），故这里传 aliasRoot。
+      const dRoot = path.join(aliasRoot, 'apps', APP_A);
+      const dReleases = path.join(dRoot, 'releases');
+      fs.mkdirSync(path.join(dReleases, '1.0.0', DEP_A1), { recursive: true });
+      fs.mkdirSync(path.join(dReleases, '1.0.1', DEP_A2), { recursive: true });
+      fs.symlinkSync(path.join(dReleases, '1.0.1', DEP_A2), path.join(dRoot, 'current'), 'dir');
+
+      const dEntries = await listDeployedApps(aliasRoot);
+      const dCurrent = dEntries.find((e) => e.releaseKey === `1.0.1/${DEP_A2}`);
+      assert.ok(dCurrent, 'alias 前缀下两段 release 必须被列出');
+      assert.strictEqual(
+        dCurrent.isCurrent,
+        true,
+        '★ macOS 回归：current 经 realpath 规范化后仍需与 releases 同形态比对' +
+          '（/var→/private/var 前缀差曾使 isCurrent 恒 false）',
+      );
+      const dOther = dEntries.find((e) => e.releaseKey === `1.0.0/${DEP_A1}`);
+      assert.strictEqual(dOther?.isCurrent, false, '非 current 指向的 release 不得标记 isCurrent');
+
+      fs.rmSync(aliasRoot, { recursive: true, force: true });
+    } finally {
+      fs.rmSync(realRoot, { recursive: true, force: true });
+    }
+  }
 }
 
 main();

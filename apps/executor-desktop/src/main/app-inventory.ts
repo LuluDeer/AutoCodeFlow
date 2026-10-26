@@ -200,13 +200,29 @@ export function splitReleaseKey(releaseKey: string): {
  * 段丢失），必须取相对 releases/ 的整段；旧单段的相对路径无 '/'，原样即 key。
  * 悬空/指向 releases 之外 → null（不归一）。isCurrent 比对与 listDeployedApps
  * 产出的 releaseKey 形态一致（collectReleaseLeaves 两边同源）。
+ *
+ * ★ macOS 关键点（2026-10-26 CI 实测，本函数曾因此恒返回 null）：
+ * `fsp.realpath` 会把软链目标解析成**完全规范化**的绝对路径，而 `appRoot` 是
+ * 调用方给的**未规范化**路径。macOS 上二者必然错位——`os.tmpdir()` 返回
+ * `/var/folders/…`，而 `/var` 是指向 `/private/var` 的软链，realpath 出来是
+ * `/private/var/folders/…`。于是 `path.relative(releases, target)` 得到一长串
+ * `../../../../private/var/…`，被下面的 `startsWith('..')` 判成「指向 releases
+ * 之外」→ 恒 null → `isCurrent` 永远为 false（当前版本标记在 macOS 上不可用），
+ * 且只有当 workDir 落在软链前缀下才发作——Windows/Linux 无此错位，故长期未发现。
+ *
+ * 修法：**两侧都走 realpath 再比**（releasesDir 先 realpath 成同一种规范化形态）。
+ * 不改成「比较 target 是否以 releasesDir 字符串开头」——那在 `releases` 与
+ * `releases-2` 这类前缀近邻上会误判；相对路径的 `..` 判定才是严格边界。
+ * realpath(appRoot/releases) 失败（目录不存在）时回落原值，行为与修改前一致。
  */
 async function readCurrentReleaseKey(appRoot: string): Promise<string | null> {
   const currentLink = path.join(appRoot, 'current');
   try {
     await fsp.access(currentLink);
     const target = await fsp.realpath(currentLink);
-    const releasesDir = path.join(appRoot, 'releases');
+    const rawReleasesDir = path.join(appRoot, 'releases');
+    // 与 target 对齐到同一种规范化形态，消除 macOS /var → /private/var 前缀差。
+    const releasesDir = await fsp.realpath(rawReleasesDir).catch(() => rawReleasesDir);
     const rel = path.relative(releasesDir, target);
     if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
     return rel.split(path.sep).join('/');
