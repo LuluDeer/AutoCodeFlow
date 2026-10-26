@@ -54,6 +54,30 @@ import {
 const UPLOAD_DIR = path.join(process.cwd(), "uploads", "executor-packages");
 
 /**
+ * P2-2（2026-10-25 审计）：filePath 包含性判定（纵深防御共用判据）。
+ *
+ * `UpdateExecutorPackageDto.filePath` 只是 @MaxLength(1024) 的自由字符串——
+ * PATCH 直接把它写进行，而 openPackageFile/remove 对该列做
+ * createReadStream/unlink：不校验包含性时，PATCH 指向 /etc/passwd 等任意
+ * 绝对路径即获得「读任意文件」（下载流）与「删任意文件」（unlink）原语。
+ * 对照 sop-media.service.openStream 的 root 包含断言先例：path.resolve 后
+ * 必须仍位于 UPLOAD_DIR 内（绝对路径输入会被 resolve 直接采纳，天然落败；
+ * 逐字节前缀比较补 path.sep 防 `…executor-packages-evil` 这类兄弟目录绕过）。
+ * 导出为纯函数（单测锚点，同 appendPushHistoryEntry 先例）。
+ */
+export function isPathInsideUploadRoot(filePath: string): boolean {
+  const root = path.resolve(UPLOAD_DIR);
+  const abs = path.resolve(root, filePath);
+  return abs.startsWith(root + path.sep);
+}
+
+/** P3-3：PG 唯一约束冲突（23505）判定——TypeORM 的 driverError 包装形态同样命中。 */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; driverError?: { code?: string } } | null;
+  return e?.code === "23505" || e?.driverError?.code === "23505";
+}
+
+/**
  * R9: same-volume staging directory for multer diskStorage uploads. Keeping
  * the temp file inside UPLOAD_DIR makes the final move an atomic rename on
  * the same filesystem instead of buffering the whole (up to 500 MB) upload
@@ -391,6 +415,18 @@ export class ExecutorPackageService implements OnModuleInit {
         } catch {
           // best-effort
         }
+        // P3-3（TOCTOU 兜底）：同名 (name, version, type) 的预检 findOne 与
+        // INSERT 之间存在并发窗口——唯一索引 uq（@Index unique 三列）是真正的
+        // 收口，输家把 PG 23505 映射成与预检**同一个** 409 EXECUTOR_PACKAGE_EXISTS
+        // （对照 users.service R32-A5 / deploy 在途唯一冲突的分流先例），
+        // 不再冒裸 500。
+        if (isUniqueViolation(err)) {
+          throw new AppError("EXECUTOR_PACKAGE_EXISTS", {
+            name: createDto.name,
+            version: createDto.version,
+            type: createDto.type,
+          });
+        }
         throw err;
       }
       this.logger.log(
@@ -612,6 +648,16 @@ export class ExecutorPackageService implements OnModuleInit {
         });
       }
     }
+    // P2-2（纵深第一层）：PATCH filePath 的包含性闸——resolve 后必须仍在
+    // UPLOAD_DIR 内，否则 400（VALIDATION 形态，同 EXT_UNSUPPORTED/NOT_ARCHIVE
+    // 一族）。null（可空列清空）不拦——它不落新路径，也不构成读/删原语。
+    if (typeof updateDto.filePath === "string") {
+      if (!isPathInsideUploadRoot(updateDto.filePath)) {
+        throw new AppError("EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED", {
+          filePath: updateDto.filePath,
+        });
+      }
+    }
     // R60-A1（ADR-026 规则 4）：这里此前是「findOne 快照 → Object.assign(updateDto)
     // → 整行 save()」。TypeORM 的 save 对既有主键走 UPDATE，且按「读当前行 → 列 diff」
     // 只写**与当前行不同**的列——于是快照里**过期的** pushHistory 与当前行不等，
@@ -727,13 +773,23 @@ export class ExecutorPackageService implements OnModuleInit {
     // failed deletion is logged and does not fail the request (the DB row is
     // already gone; the on-disk orphan is invisible to any listing).
     if (pkg.filePath && fs.existsSync(pkg.filePath)) {
-      try {
-        await fs.promises.unlink(pkg.filePath);
-        this.logger.log(`Deleted file from disk: ${pkg.filePath}`);
-      } catch (err) {
+      // P2-2（纵深第二层）：落盘 unlink 前二次断言包含性——DB 里的历史脏行
+      // 或绕过 update 闸的写入面不能把删除变成任意文件删除原语。行已删，
+      // 越界文件不删只告警（不因路径越界阻断删行——删除本身是合法管理动作，
+      // 磁盘孤儿可由运维清理，同上方 orphan 语义）。
+      if (!isPathInsideUploadRoot(pkg.filePath)) {
         this.logger.warn(
-          `Orphaned package file could not be deleted ${pkg.filePath}: ${err}`,
+          `Refusing to unlink ${pkg.filePath} for package ${id}: path is outside the upload root`,
         );
+      } else {
+        try {
+          await fs.promises.unlink(pkg.filePath);
+          this.logger.log(`Deleted file from disk: ${pkg.filePath}`);
+        } catch (err) {
+          this.logger.warn(
+            `Orphaned package file could not be deleted ${pkg.filePath}: ${err}`,
+          );
+        }
       }
     }
   }
@@ -751,6 +807,14 @@ export class ExecutorPackageService implements OnModuleInit {
     pkg: ExecutorPackage;
   }> {
     const pkg = await this.findOne(id);
+    // P2-2（纵深第二层）：落盘读之前二次断言包含性（update 闸是第一层）。
+    // DB 里的历史脏行或绕过 update 的写入面不能把下载流变成任意文件读取原语
+    // （对照 sop-media.service.openStream 的 root 包含断言先例）。
+    if (pkg.filePath && !isPathInsideUploadRoot(pkg.filePath)) {
+      throw new AppError("EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED", {
+        packageId: id,
+      });
+    }
     if (!pkg.filePath || !fs.existsSync(pkg.filePath)) {
       throw new AppError("EXECUTOR_PACKAGE_FILE_MISSING", {
         packageId: id,

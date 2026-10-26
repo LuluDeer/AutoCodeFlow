@@ -12,7 +12,7 @@
  * Electron Notification 在裸 Node selftest 下不可用，因此本文件不进
  * selftest 编译面；可测逻辑全部下沉到 notifier-rules.ts。
  */
-import { Notification } from 'electron';
+import { Notification, app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import log from './logger';
@@ -22,6 +22,12 @@ import {
   pruneSeenByLiveFiles,
   shouldNotifyExecutorStatus,
 } from './notifier-rules';
+// F-27（UIUX 审计 2026-10-25）：通知文案双语——语言判定与托盘/渲染层同一来源
+// （ui-language.ts），文案表在 ui-texts.ts（扁平点号键，zh/en 对齐有 selftest）。
+// 本文件顶层 import electron（Notification），文案表抽在无依赖纯模块里，
+// 判定/插值行为可由 ui-texts.selftest 直接驱动。
+import { resolveUiLanguage } from './ui-language';
+import { uiText } from './ui-texts';
 
 /** 轮询 workDir/meta 的间隔（ms）。终态由 executor-node 落盘，轮询即可，
  *  无需新增 IPC 通道。 */
@@ -105,6 +111,18 @@ export class Notifier {
   private onOpenStatus: (() => void) | null = null;
   /** C-03：任务终态通知的点击路由目标（缺省回落状态窗口）。 */
   private onOpenHistory: (() => void) | null = null;
+  /**
+   * F-27：已落盘的界面语言设置（uiLanguage）读取回调，由 index.ts 注入（同
+   * tray.ts getUiLanguage 的注入方式——notifier 不能 import index.ts 的
+   * configStore 单例，那是循环引用）。undefined 时回落系统语言自动判定。
+   */
+  getUiLanguage: (() => string | undefined) | null = null;
+
+  /** 当前 locale（i18n-DESK-01：显式设置优先，'auto'/未设置才看系统语言）。
+   *  每次构造通知时重新判定——保存语言设置后无需重启应用即切换。 */
+  private locale(): ReturnType<typeof resolveUiLanguage> {
+    return resolveUiLanguage(() => app.getLocale(), this.getUiLanguage?.());
+  }
 
   /** 注入「点击通知 → 打开状态窗口」回调（index.ts 里接 windowManager）。 */
   set onOpenStatusCallback(cb: (() => void) | null) {
@@ -159,7 +177,12 @@ export class Notifier {
   /** 执行器状态回调入口（index.ts 里接 executorProcess/heartbeat 回调）。 */
   onExecutorStatus(status: ExecutorStatusLike): void {
     if (shouldNotifyExecutorStatus(this.lastExecutorStatus, status)) {
-      this.notify('执行器离线', '与平台的心跳连接已中断，请检查网络或平台状态');
+      // F-27：文案随界面语言走（原硬编码中文，英文界面混排）。
+      const locale = this.locale();
+      this.notify(
+        uiText(locale, 'notify.executorOffline.title'),
+        uiText(locale, 'notify.executorOffline.body'),
+      );
     }
     this.lastExecutorStatus = status;
   }
@@ -175,10 +198,12 @@ export class Notifier {
    * 文案与 UpdateBanner 的 available 态同口径。点击路由 status → 聚焦状态窗。
    */
   notifyUpdate(version: string, previouslyDownloaded: boolean): void {
+    // F-27：文案随界面语言走（原硬编码中文）。
+    const locale = this.locale();
     const body = previouslyDownloaded
-      ? `新版本 ${version} 此前已下载完成，可在状态页直接安装（复用本地缓存）`
-      : `新版本 ${version} 已可升级，可在状态页下载安装`;
-    this.notify('发现新版本', body, 'status');
+      ? uiText(locale, 'notify.updateAvailable.bodyCached', { version })
+      : uiText(locale, 'notify.updateAvailable.body', { version });
+    this.notify(uiText(locale, 'notify.updateAvailable.title'), body, 'status');
   }
 
   /** 单轮扫描 meta 目录：读终态 → 规则判断 → 通知。所有异常静默（通知
@@ -235,14 +260,22 @@ export class Notifier {
     this.seenStatus = decision.newSeen;
     this.knownFiles = decision.newKnown;
     for (const c of decision.toNotify) {
-      const title = c.event.status === 'success' ? '任务执行成功' : '任务执行失败';
+      // F-27：标题/正文随界面语言走（原硬编码中文；耗时/退出码后缀同表）。
+      const locale = this.locale();
+      const title = c.event.status === 'success'
+        ? uiText(locale, 'notify.taskSuccess.title')
+        : uiText(locale, 'notify.taskFailed.title');
       const durationMs = durationByFile.get(c.file);
       let body = c.event.taskName;
-      if (durationMs != null) body += ` · 耗时 ${formatDuration(durationMs)}`;
+      if (durationMs != null) {
+        body += ` · ${uiText(locale, 'notify.task.durationSuffix', { duration: formatDuration(durationMs) })}`;
+      }
       // V4-4（X-04）：失败通知附退出码（有值才附）——通知不再是无线索死胡同
       if (c.event.status !== 'success') {
         const exitCode = exitCodeByFile.get(c.file);
-        if (exitCode != null) body += ` · 退出码 ${exitCode}`;
+        if (exitCode != null) {
+          body += ` · ${uiText(locale, 'notify.task.exitCodeSuffix', { code: exitCode })}`;
+        }
       }
       this.notify(title, body, 'history');
     }

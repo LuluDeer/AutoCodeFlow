@@ -13,6 +13,9 @@ import type { AuditLog } from '../../api/audit';
 import { message } from '../../utils/toast';
 // 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
 import { formatDateTime } from '../../utils/timeFormat';
+// 时间范围换算的唯一事实源（与 ApplicationDetailPage events 筛选同口径，
+// 2026-10-24 统一：此前本页直接 toISOString，见 RangePicker onChange 注释）。
+import { eventsRangeToSinceUntil } from '../../utils/timeRange';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
@@ -143,6 +146,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'notification.silence.create': 'audit.action.notification_silence_create',
   'notification.silence.delete': 'audit.action.notification_silence_delete',
   'registry.pypi.upload': 'audit.action.registry_pypi_upload',
+  'registry.npm.list': 'audit.action.registry_npm_list',
   'subscription.create': 'audit.action.subscription_create',
   'subscription.update': 'audit.action.subscription_update',
   'subscription.delete': 'audit.action.subscription_delete',
@@ -457,12 +461,18 @@ export default function AuditLogPage() {
       width: 120,
       // AUDIT-02：调度器/API 等系统行为无登录用户——空白单元格改为显式
       // 「系统」Tag，此前看起来像数据缺失
-      render: (v: string, r: AuditLog) => (
-        <Space orientation="vertical" size={0}>
-          {v ? <Typography.Text strong>{v}</Typography.Text> : <Tag>{t('audit.operator.system')}</Tag>}
-          {r.ip && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.ip}</Typography.Text>}
-        </Space>
-      ),
+      // P2 溯源修复（2026-10-26）：存量行 username 为空但 userId 非空时，
+      // 显示「#<userId>」可追溯形态而非误标「系统」——application 域旧审计行
+      // 只落了 userId。「系统」Tag 仅留给真正无操作人（userId 也为空）的行。
+      render: (v: string, r: AuditLog) => {
+        const operator = v || (r.userId != null ? `#${r.userId}` : '');
+        return (
+          <Space orientation="vertical" size={0}>
+            {operator ? <Typography.Text strong>{operator}</Typography.Text> : <Tag>{t('audit.operator.system')}</Tag>}
+            {r.ip && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.ip}</Typography.Text>}
+          </Space>
+        );
+      },
     },
     {
       title: t('audit.col.action'),
@@ -629,16 +639,36 @@ export default function AuditLogPage() {
           <Option value="success">{resultLabels.success}</Option>
           <Option value="failure">{resultLabels.failure}</Option>
         </Select>
-        <DatePicker.RangePicker
-          presets={rangePresets}
-          onChange={(dates) => {
-            setPending((p) => ({
-              ...p,
-              startTime: dates?.[0]?.toISOString() ?? undefined,
-              endTime: dates?.[1]?.toISOString() ?? undefined,
-            }));
-          }}
-        />
+        {/* 时间范围（2026-10-24 与 events 统一口径）：换算走共享
+            eventsRangeToSinceUntil——since=开始日本地 00:00（整天计入）、
+            until=结束日本地 00:00（结束日当天不计入，半开区间等价于「到前一
+            日 23:59:59.999 止」）。此前这里直接 dates?.[n]?.toISOString()：
+            手选日期恰好等价（日期粒度 picker 给的就是当日 00:00），但预设
+            区间（dayjs() 带当前时分秒）会漏掉「今天」整天的记录——同页的
+            「最近 1 天」在 events 页给 24h 整天窗、这里却几乎空窗。
+            注：events 页另有口径披露 Tooltip（timeHint），本页如需同款需
+            动 locales（zh/en）两个文件，超出本轮 3 文件预算，未加。 */}
+        {/* 口径披露（与 events 页同款，统一轮遗留收口）：「结束日当天
+            不计入」是反直觉口径，Tooltip 明示不靠用户猜。 */}
+        <Tooltip title={t('audit.range.timeHint')}>
+          <DatePicker.RangePicker
+            presets={rangePresets}
+            allowClear
+            onChange={(dates) => {
+              // range 两端齐全才算时间筛选生效；clear 后 dates=null → 两个
+              // undefined（buildAuditListQuery 不装该键，请求形状与未筛一致）。
+              const hasTime = !!(dates && dates[0] && dates[1]);
+              const { since, until } = hasTime
+                ? eventsRangeToSinceUntil(dates as [Dayjs, Dayjs])
+                : { since: undefined, until: undefined };
+              setPending((p) => ({
+                ...p,
+                startTime: since,
+                endTime: until,
+              }));
+            }}
+          />
+        </Tooltip>
         <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>{t('audit.action.search')}</Button>
         {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>{t('audit.action.reset')}</Button>}
         {/* A-12: 导出 CSV（后端 GET /audit/export 同滤，ADMIN-only） */}
@@ -694,7 +724,8 @@ export default function AuditLogPage() {
                     <Tag color={RESULT_COLOR[r.result] ?? 'default'} style={{ marginInlineEnd: 0 }}>{resultLabels[r.result] ?? r.result}</Tag>
                   </div>
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                    {r.username ? r.username : t('audit.operator.system')}
+                    {/* P2 溯源修复：username 为空但 userId 非空 → 「#<userId>」回退（同表格列）。 */}
+                    {r.username || (r.userId != null ? `#${r.userId}` : '') || t('audit.operator.system')}
                     {r.ip ? ` · ${r.ip}` : ''}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>

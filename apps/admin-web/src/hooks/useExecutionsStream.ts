@@ -12,9 +12,12 @@
  *   行集，invalidate（标记 stale → 活跃 observer 立即重取）是正确粒度；
  *   终态事件到 invalidate 重取完成通常 <1s（本地 DB 单查询），满足
  *   「终态刷新 <3s」验收。
- * - 与 15s 轮询兜底互斥共存（对齐 DashboardPage 模式）：SSE live 时轮询
- *   空转（invalidate 已即时刷新，轮询 refetch 在 staleTime 内被去重），
- *   断线时轮询自动成为唯一新鲜度来源。
+ * - 与轮询兜底互斥共存（对齐 DashboardPage 模式）：F-17（UIAUDIT P3-10）起
+ *   列表页轮询走 queries.ts 的 sseFallbackRefetchInterval（refetchInterval
+ *   函数式判定）——SSE live 时**停轮询**（invalidate 已即时刷新），断线时
+ *   30s 兜底轮询自动成为唯一新鲜度来源。（旧实现是页面自管 15s setInterval +
+ *   手动 refetch：手动刷新不受 staleTime 节流，live 期间照打请求，注释与
+ *   实现不符——已随 F-17 修正，此处注释同步对齐。）
  */
 import { QueryClientContext } from '@tanstack/react-query';
 import { useContext, useEffect, useState } from 'react';

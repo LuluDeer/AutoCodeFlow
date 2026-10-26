@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Typography, Tooltip, theme } from 'antd';
 import { PlusOutlined, DeleteOutlined, InfoCircleOutlined, LockOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import {
+  describeSecretKeyProblemKind,
+  SECRET_KEY_PROBLEM_T_KEYS,
+} from '../utils/secretKeyPolicy';
 import '../i18n';
 
 const { Text } = Typography;
@@ -219,44 +223,59 @@ export default function SecretsEditor({ value, onChange, existing }: SecretsEdit
       )}
       {rows.map((row, idx) => {
         const masked = row.value === SECRET_MASK;
+        // F-7（UIUX 审计 P2-6）：键名镜像校验（后端 IsSecretKeyMapConstraint 的
+        // 三条规则，见 utils/secretKeyPolicy.ts）。行内即时红字——用户填 `my-key`、
+        // `PATH`、`AUTOFLOW_TOKEN` 时当场可见，而不是保存时整批 400 再去猜是
+        // 哪一行。空键名不判（emit 本就跳过空键）；键名取 trim 后判定（与 emit
+        // 同一口径）。
+        const trimmedKey = row.key.trim();
+        const keyProblem = trimmedKey ? describeSecretKeyProblemKind(trimmedKey) : null;
         return (
           <div
             key={idx}
-            style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}
+            style={{ marginBottom: 6 }}
           >
-            <Input
-              placeholder={t('secretsEditor.keyPlaceholder')}
-              value={row.key}
-              onChange={e => update(idx, 'key', e.target.value)}
-              style={{ width: 180, maxWidth: '100%', fontFamily: 'monospace' }}
-            />
-            <Text type="secondary">=</Text>
-            {masked ? (
-              // 掩码行：值输入框显示锁形占位而非 "******"，避免用户误以为
-              // 那就是真实值；一旦开始输入即转为普通行。
-              <Input.Password
-                placeholder={t('secretsEditor.maskedPlaceholder')}
-                value=""
-                prefix={<LockOutlined style={{ color: token.colorTextTertiary }} />}
-                onChange={e => update(idx, 'value', e.target.value)}
-                style={{ flex: '1 1 180px', minWidth: 0 }}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <Input
+                placeholder={t('secretsEditor.keyPlaceholder')}
+                value={row.key}
+                onChange={e => update(idx, 'key', e.target.value)}
+                status={keyProblem ? 'error' : undefined}
+                style={{ width: 180, maxWidth: '100%', fontFamily: 'monospace' }}
               />
-            ) : (
-              <Input.Password
-                placeholder={t('secretsEditor.valuePlaceholder')}
-                value={row.value}
-                onChange={e => update(idx, 'value', e.target.value)}
-                style={{ flex: '1 1 180px', minWidth: 0 }}
+              <Text type="secondary">=</Text>
+              {masked ? (
+                // 掩码行：值输入框显示锁形占位而非 "******"，避免用户误以为
+                // 那就是真实值；一旦开始输入即转为普通行。
+                <Input.Password
+                  placeholder={t('secretsEditor.maskedPlaceholder')}
+                  value=""
+                  prefix={<LockOutlined style={{ color: token.colorTextTertiary }} />}
+                  onChange={e => update(idx, 'value', e.target.value)}
+                  style={{ flex: '1 1 180px', minWidth: 0 }}
+                />
+              ) : (
+                <Input.Password
+                  placeholder={t('secretsEditor.valuePlaceholder')}
+                  value={row.value}
+                  onChange={e => update(idx, 'value', e.target.value)}
+                  style={{ flex: '1 1 180px', minWidth: 0 }}
+                />
+              )}
+              <Button
+                type="text"
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                onClick={() => remove(idx)}
+                aria-label={t('secretsEditor.remove')}
               />
+            </div>
+            {keyProblem && (
+              <Text type="danger" style={{ fontSize: 12 }}>
+                {t(SECRET_KEY_PROBLEM_T_KEYS[keyProblem], { key: trimmedKey })}
+              </Text>
             )}
-            <Button
-              type="text"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-              onClick={() => remove(idx)}
-              aria-label={t('secretsEditor.remove')}
-            />
           </div>
         );
       })}

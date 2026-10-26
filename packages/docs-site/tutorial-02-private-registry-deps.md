@@ -50,9 +50,12 @@ compose 已为两个执行器注入默认值指向内置私服，**无需额外�
 # executor-python
 PYPI_REGISTRY_URL=http://<registry-host>:8003/simple/
 
-# executor-node（私服 access=$authenticated 时必配 token）
+# executor-node（私服 access=$authenticated 时必配凭据：token 或 user/pass 任一）
 NPM_REGISTRY_URL=http://<registry-host>:4873
 NPM_REGISTRY_TOKEN=<verdaccio-token>
+# 或 Basic 通道（compose 缺省回落 REGISTRY_USER/PASS）：
+# NPM_REGISTRY_USER=<user>
+# NPM_REGISTRY_PASS=<pass>
 ```
 
 ## 3. 往私服发一个测试包
@@ -70,7 +73,10 @@ twine upload --repository-url http://localhost:8003/ \
 ### npm 侧（Verdaccio）
 
 ```bash
-npm adduser --registry http://localhost:4873/   # 首次创建用户
+# 用户由 .env 预置的 NPM_REGISTRY_USER/PASS 提供（compose 缺省回落
+# REGISTRY_USER/PASS）。自助注册已关闭（max_users: -1）：npm adduser 无法
+# 注册新用户，新用户由运维离线写入 htpasswd；既有用户可用 npm login 换取 token。
+npm login --registry http://localhost:4873/
 cd <你的包目录>
 npm publish --registry http://localhost:4873/
 ```
@@ -96,7 +102,7 @@ npm publish --registry http://localhost:4873/
 
 | 现象 | 原因与解法 |
 |------|-----------|
-| 安装 401 | registry-pypi 索引与上传都要求 Basic Auth（S9）；npm 侧匿名安装必 401，需 `NPM_REGISTRY_TOKEN` |
+| 安装 401 | registry-pypi 索引与上传都要求 Basic Auth（S9）；npm 侧匿名安装必 401，需 `NPM_REGISTRY_TOKEN` 或 `NPM_REGISTRY_USER/PASS`（compose 缺省回落 `REGISTRY_USER/PASS`） |
 | requirements 填 `--index-url` 被拒 | 设计如此（防索引劫持）；索引由执行器侧 env 统一指定 |
 | glue 任务没走安装 | requirements 仅对 entrypoint 任务生效 |
 | 自有 npm scope 装不到 | `.npmrc` scope 行只覆盖 `@autoflow`/`@autocodeflow`；自有 scope 依赖私服回源兜底 |

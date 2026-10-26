@@ -46,6 +46,7 @@ export default {
   'login.totpCode': '动态验证码',
   'login.totpCode.required': '请输入 6 位动态验证码',
   'login.totpCode.placeholder': '6 位动态码',
+  'login.totpCode.digits': '验证码须为 6 位数字',
   'login.totpCode.aria': '动态验证码',
   'login.totpCode.invalid': '动态验证码错误',
   'login.totpHint': '请打开验证器应用获取动态码',
@@ -357,10 +358,18 @@ export default {
   'execs.executorPlaceholder': '执行器地址',
   'execs.timeStart': '开始时间',
   'execs.timeEnd': '结束时间',
+  // 时间快捷区间（2026-10-25）：时刻粒度预设，[now-N, now] 保留时分秒，
+  // 与 events/audit 页的日期粒度预设（整天语义）刻意不同——本页筛选器是
+  // showTime 形态，预设语义必须与手选同一口径。
+  'execs.range.1h': '最近 1 小时',
+  'execs.range.24h': '最近 24 小时',
+  'execs.range.7d': '最近 7 天',
   'execs.clearFilters': '清除筛选',
   'execs.error.title': '执行记录加载失败',
   'execs.empty': '暂无执行记录',
   'execs.empty.noMatch': '没有匹配的执行记录',
+  'execs.empty.outOfRange': '当前页无数据（共 {{count}} 条执行记录）',
+  'execs.backToFirstPage': '回到第一页',
   'execs.count': '共 {{count}} 条',
   // §2.1：稳定翻页（keyset 游标分页）开关 + 自绘分页器。默认关闭时不渲染分页器。
   'execs.stablePaging': '稳定翻页',
@@ -429,6 +438,7 @@ export default {
   'execList.notify.offlineDesc': '{{address}} 已离线，请检查服务状态',
   'execList.installCmdFail.title': '获取安装命令失败',
   'execList.installCmdFail.content': '请检查 admin-api 服务是否正常运行',
+  'execList.installCmdFail.notConfigured': '服务端未配置 ADMIN_API_URL，无法生成安装命令——请在 admin-api 的环境变量中设置后重启（这是配置缺失，服务本身在正常运行）',
   'execList.col.executor': '执行器',
   'execList.col.status': '状态',
   'execList.col.groupTags': '分组 / 标签',
@@ -537,6 +547,7 @@ export default {
   'appList.field.name': '名称',
   'appList.field.nameRequired': '请输入应用名称',
   'appList.field.namePattern': '只允许字母、数字、下划线和连字符',
+  'appList.field.nameMax': '应用名称最长 100 个字符',
   'appList.field.nameTooltip': '全局唯一标识符，建议使用英文，如 order-service。只允许字母、数字、下划线、连字符。创建后不可修改。',
   'appList.field.desc': '描述',
   'appList.field.descTooltip': '简要说明该应用的用途，方便团队成员快速了解。',
@@ -664,6 +675,18 @@ export default {
   'users.role.user': '普通用户',
   'users.status.disabled': '已禁用',
   'users.status.active': '正常',
+  // P1-1（对齐后端 ad5bdef4）：启用/禁用开关文案。禁用确认明示两个即时失效面
+  // （在途会话 bump sessionVersion + API-Key 属主闸）并说明可逆；后端守卫码
+  // USER_ACTIVE_ADMIN_ONLY / USER_SELF_DISABLE_FORBIDDEN 走生成词条（err.*）。
+  'users.action.enable': '启用',
+  'users.action.disable': '禁用',
+  'users.enableSuccess': '用户已启用',
+  'users.disableSuccess': '用户已禁用',
+  'users.enableFail': '启用失败',
+  'users.disableFail': '禁用失败',
+  'users.disableConfirm': '确认禁用',
+  'users.disableConfirmDesc': '禁用后「{{name}}」将无法登录，其所有登录会话与 API-Key 将立即失效；可随时重新启用。',
+  'users.selfDisableForbidden': '不能禁用自己',
   'users.created': '用户创建成功',
   'users.createFail': '创建失败',
   'users.updated': '更新成功',
@@ -692,6 +715,7 @@ export default {
   'users.field.username': '用户名',
   'users.field.usernameRequired': '请输入用户名',
   'users.field.usernameMin': '用户名至少2个字符',
+  'users.field.usernameMax': '用户名不能超过128个字符',
   'users.field.usernamePlaceholder': '请输入用户名',
   'users.field.password': '密码',
   'users.field.passwordRequired': '请输入密码',
@@ -801,6 +825,7 @@ export default {
   'audit.action.notification_silence_create': '创建静默规则',
   'audit.action.notification_silence_delete': '删除静默规则',
   'audit.action.registry_pypi_upload': '上传 PyPI 包',
+  'audit.action.registry_npm_list': '读取 npm 包列表失败',
   'audit.action.subscription_create': '创建事件订阅',
   'audit.action.subscription_update': '更新事件订阅',
   'audit.action.subscription_delete': '删除事件订阅',
@@ -936,6 +961,7 @@ export default {
   'notif.test.sent': '测试通知已发送到所选渠道',
   'notif.test.error': '发送失败：{{msg}}',
   'notif.test.fail': '发送测试通知失败',
+  'notif.test.noEnabledChannels': '所选渠道全部处于禁用状态，没有发往任何渠道；请先在上方启用至少一个已配置的渠道再测试',
 
   'sysSettings.title': '系统设置',
   'sysSettings.description': '配置调度中心的核心参数与运行时选项',
@@ -1069,6 +1095,8 @@ export default {
   'sysSettings.ai.qwenMaxTokensTooltip': '独立于 OpenAI 的 500 令牌上限——多模态推理需要更大的输出预算',
   'sysSettings.ai.qwenTimeoutLabel': '请求超时（毫秒）',
   'sysSettings.ai.qwenTimeoutTooltip': '视频理解延迟显著高于纯文本（上传 + 推理可能数十秒），默认 120 秒',
+  // P3-1：AI 数值字段校验失败文案（前端表单 rules 与后端 AI_CONFIG_NUMBER_INVALID 同口径）
+  'sysSettings.ai.numberInvalid': '{{field}}必须是 {{min}} ~ {{max}} 之间的整数（留空恢复默认值）',
 
   'security.totp.title': '两步验证（TOTP）',
   'security.totp.intro': '开启后登录需要「密码 + 验证器动态码」双因子。请使用 Google Authenticator、 Microsoft Authenticator 等任意 TOTP 验证器。',
@@ -1251,6 +1279,7 @@ export default {
   'eventSub.field.url': '推送 URL',
   'eventSub.field.urlRequired': '请输入推送 URL',
   'eventSub.field.urlPattern': '需为公网 http(s) 地址',
+  'eventSub.field.urlMax': 'URL 长度不能超过 2048 字符',
   'eventSub.field.urlTooltip': '服务端会做 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据），非法地址返回 400',
   'eventSub.field.eventTypes': '订阅事件（1-10 个）',
   'eventSub.field.eventTypesRequired': '请至少选择一个事件',
@@ -1491,6 +1520,11 @@ export default {
   'execPkg.action.push': '推送到调度机',
   'execPkg.action.deprecate': '弃用此包',
   'execPkg.action.activate': '激活此包',
+  // P2-4（UI 审计）：弃用/激活补二次确认——弃用即刻把包移出安装向导候选集，可随时重新激活
+  'execPkg.action.deprecateConfirm': '弃用此包？',
+  'execPkg.action.deprecateConfirmDesc': '弃用后此包将从安装向导的候选集中移除，不能再被推送或部署；此操作可逆，可随时重新激活。',
+  'execPkg.action.activateConfirm': '激活此包？',
+  'execPkg.action.activateConfirmDesc': '激活后此包重新进入安装向导候选集，可被推送到调度机；此操作可逆，可随时弃用。',
   // B-9：uploading 是后端真实枚举（executor-package.entity.ts），处理完成前不可弃用/激活（后端 400）
   'execPkg.action.uploadingLockedTip': '上传中的包不可弃用或激活，请等待处理完成',
   'execPkg.status.active': '活跃',
@@ -1523,6 +1557,8 @@ export default {
   'execPkg.upload.field.nameRequired': '请输入包名',
   'execPkg.upload.field.version': '版本号',
   'execPkg.upload.field.versionRequired': '请输入版本号',
+  // P3-1（UI 审计）：宽松 semver 形态校验提示
+  'execPkg.upload.field.versionPattern': '版本号需形如 1.2.3，可带后缀（如 1.2.3-beta.1、1.2.3+build.7）',
   'execPkg.upload.field.type': '类型',
   'execPkg.upload.field.platform': '平台',
   'execPkg.upload.platformAll': '通用',
@@ -1690,6 +1726,9 @@ export default {
   'executorDetail.editModal.maxConcurrent': '最大并发数',
   // PATCH 语义显性化：编辑弹窗清空最大并发数提交时省略该键 = 服务端保留旧值（留空≠不限制）
   'executorDetail.editModal.maxConcurrentKeepHint': '清空保存将保留当前值 {{value}}（留空≠不限制）',
+  // P1-2（UI 审计）：在线执行器心跳白名单含 maxConcurrentTasks（设备 last-writer-wins），
+  // 编辑弹窗改的值会被下一次心跳（≤30s）静默覆盖——必须显性告知
+  'executorDetail.editModal.maxConcurrentHeartbeatHint': '在线执行器会周期性上报自身容量并覆盖此值（心跳最后写入者胜），对在线执行器的修改不会长期生效；仅离线执行器的修改能长期保留。',
   'executorDetail.config.title': '配置热更新',
   'executorDetail.config.pullDisabledTooltip': 'pull 模式执行器（NAT 内）不可入站推送配置；修改并发上限可随下一次拉取/心跳自动生效',
   // B-1：空配置体推送二次确认（空白字段将重置为执行器默认值，必须明示）
@@ -1697,6 +1736,8 @@ export default {
   'executorDetail.config.emptyPushConfirmContent': '表单所有字段均为空：空配置体推送后，执行器将把空白字段重置为服务端默认配置（最大并发数/任务超时/心跳间隔等回到默认值）。确认继续？',
   // B-5：pull 执行器 reload-config 后端返回 {queued:true}——如实提示「已入队」而非谎报成功
   'executorDetail.config.queued': '配置更新已入队，将在执行器下次拉取（心跳）时生效',
+  // P2-3（UI 审计）：配置推送失败的可读反馈（弹窗保留供重试，形态对齐 rotate/remove）
+  'executorDetail.config.pushFail': '配置推送失败：{{err}}',
   'executorDetail.field.dispatchMode': '派发模式',
   'executorDetail.dispatchMode.push': 'Push 推送',
   'executorDetail.dispatchMode.pull': 'Pull 回连',
@@ -1761,7 +1802,8 @@ export default {
   'install.matchedTitle': '已匹配安装包：{{name}}',
   'install.version': '版本',
   'install.fileSize': '文件大小',
-  'install.downloadCount': '下载次数',
+  // P2-1：`install.downloadCount` 已删除——后端实体无 downloadCount 列，
+  // 向导卡片不再渲染下载次数（渲染恒空白的死字段）。
   'install.sha256': 'SHA256',
   'install.changelog': '更新日志',
   'install.noPackages': '暂无可用安装包',
@@ -1778,6 +1820,8 @@ export default {
   'install.copiedToken': '已复制 Token',
   'install.copy': '复制',
   'install.tokenMissing': '尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。',
+  // P2-5（UI 审计）：Token 未配置时的「重新检查」入口（生成后无需重走向导）
+  'install.tokenRecheck': '我已生成，重新检查',
   'install.getCmd': '获取安装命令',
   'install.step4Title': '在目标服务器上执行安装',
   'install.step4Desc': '复制以下命令，在目标服务器终端中执行即可完成安装。',
@@ -1800,6 +1844,8 @@ export default {
   'install.envLabel': '环境变量配置参考',
   'install.envDesc': '安装命令会自动配置以下环境变量。如需手动配置或调试，请确保共享 Token 字段名使用 EXECUTOR_SHARED_TOKEN，并按部署网络填写可回调地址：',
   'install.envBlockLabel': '环境变量',
+  // P3-5（UI 审计）：install-cmd 响应缺失 adminApiUrl 时的兜底指引（与一键命令同口径）
+  'install.env.apiUrlFollowCmd': '（以一键安装命令中的 --api-url 为准）',
   // P0-9（UX 审计）：网络模式。内网/NAT 后的机器**必须**选回连——向导此前只教学
   // push，照着做会得到一个"注册成功、显示在线、但中台请求永远到不了"的拓扑。
   'install.networkMode': '网络模式',
@@ -1819,12 +1865,15 @@ export default {
   'install.step5Title': '等待执行器上线',
   'install.step5Desc': '系统正在自动检测目标服务器上的执行器是否已成功注册并上线，每 5 秒轮询一次，最长等待 5 分钟。',
   'install.awaiting': '正在等待执行器上线...',
-  'install.elapsed': '已等待 {{seconds}} / 60 秒，每 5 秒检测一次',
+  // P2-2（UI 审计）：总窗口用 {{total}} 插值（调用方传 300s），不再硬编码 60 秒
+  // 与 POLL_TIMEOUT_MS=300000 矛盾
+  'install.elapsed': '已等待 {{seconds}} / {{total}} 秒，每 5 秒检测一次',
   'install.onlineSuccess': '执行器已成功上线！',
   'install.detected': '检测到执行器：<1>{{appName}}</1>（{{address}}）已注册上线，安装成功。',
   'install.onlineTitle': '执行器已上线',
-  'install.timeoutTitle': '验证超时（60 秒）',
-  'install.timeoutDesc': '1 分钟内未检测到执行器上线，请参考以下排查步骤。',
+  // P2-2：超时口径与 300s 窗口对齐（原「60 秒 / 1 分钟」文案自相矛盾）
+  'install.timeoutTitle': '验证超时（5 分钟）',
+  'install.timeoutDesc': '5 分钟内未检测到执行器上线，请参考以下排查步骤。',
   'install.troubleTitle': '排查建议',
   'install.trouble1': '确认安装命令已在目标服务器上执行完毕，且无报错',
   'install.trouble2': '检查目标服务器网络是否能访问本平台 API 地址',
@@ -1902,16 +1951,31 @@ export default {
   'appDetail.settings.adminOnly': '仅管理员可修改应用设置',
   'appDetail.settings.save': '保存修改',
   'appDetail.history.loadFail': '加载版本历史失败',
-  'appDetail.history.rollbackConfirm': '确认回滚',
-  'appDetail.history.rollbackContent': '将回滚到版本 {{version}}，所有运行中的实例将同步升级，确定继续？',
-  'appDetail.history.rollbackOk': '确认回滚',
-  'appDetail.history.rolledBack': '已回滚到 {{version}}，影响 {{count}} 台实例',
-  'appDetail.history.rollbackPkgNotRestored': '注意：该版本无包快照，回滚只恢复了版本号/提交，未回退安装包；如需回退包，请回滚到带包快照的版本。',
-  'appDetail.history.rollbackFail': '回滚失败，请重试',
+  // R1（部署模型评审 §4.2）：旧「回滚」拆为「设为当前版本」+「下发到设备」
+  'appDetail.history.setCurrent': '设为当前版本',
+  'appDetail.history.setCurrentConfirm': '设为当前版本',
+  'appDetail.history.setCurrentContent': '将按版本 {{version}} 的快照恢复应用当前字段（版本号/提交/包地址/入口/环境变量等），不会向任何设备下发。',
+  'appDetail.history.setCurrentOk': '确认设置',
+  'appDetail.history.setCurrentDone': '已设为当前版本 {{version}}（未下发设备）',
+  'appDetail.history.setCurrentFail': '设置失败，请重试',
+  'appDetail.history.deploy': '下发到设备',
+  'appDetail.history.deployTitle': '下发版本 {{version}} 到设备',
+  'appDetail.history.deployOk': '确认下发',
+  'appDetail.history.deployDone': '已下发 {{version}}：{{count}} 台进入升级',
+  'appDetail.history.deploySkipped': '{{count}} 台被跳过——',
+  'appDetail.history.deployFail': '下发失败，请重试',
+  'appDetail.history.deployEmpty': '该应用暂无部署行（请先在「部署实例」页部署）',
+  'appDetail.history.deployHint': '仅运行中的部署行可勾选；快照字段将先恢复到应用，再逐台升级。',
+  // P1-14 前置版：快照是否含 packageUrl 在下发确认前展示（取代事后 packageUrlRestored warning）
+  'appDetail.history.deployPkgPresent': '该版本快照包含包地址：{{url}}',
+  'appDetail.history.deployPkgMissing': '注意：该版本快照不含包地址，本次下发只更新版本号/提交等字段，不会回退安装包。',
   'appDetail.history.currentVersion': '当前版本',
-  'appDetail.history.rollbackReleasedOnly': '仅已发布版本可回滚',
-  'appDetail.history.rollbackAdminOnly': '仅管理员可回滚',
-  'appDetail.history.rollback': '回滚',
+  'appDetail.history.actionReleasedOnly': '仅已发布版本可操作',
+  'appDetail.history.actionAdminOnly': '仅管理员可操作',
+  'appDetail.history.noSnapshot': '该行为历史部署合成行（无版本快照），不支持此操作',
+  'appDetail.history.skip.noDeployment': '无部署行',
+  'appDetail.history.skip.notRunning': '部署行不可下发（{{detail}}）',
+  'appDetail.history.skip.upgradeRejected': '下发被拒绝（{{detail}}）',
   'appDetail.history.empty': '暂无版本历史',
   'appDetail.history.col.status': '状态',
   'appDetail.col.version': '版本',
@@ -1937,6 +2001,56 @@ export default {
   'appDetail.releases.trigger.upgrade': '滚动升级',
   'appDetail.releases.trigger.manual': '手动部署',
   'appDetail.releases.trigger.unknown': '未知',
+  // R3-A（部署模型评审 §4.3）：版本行设备徽标（设备上报事实：运行中/保留/离线）。
+  'appDetail.releases.col.devices': '设备',
+  'appDetail.releases.deviceRunning': '运行中',
+  'appDetail.releases.deviceRetained': '保留',
+  'appDetail.releases.deviceOffline': '离线',
+  'appDetail.releases.deviceOfflineAt': '离线，最后上报 {{time}}',
+  'appDetail.releases.deviceOfflineUnknown': '时间未知',
+  // P8：版本行超上限静默截断的显式告警（完整动作史走事件流）。
+  'appDetail.releases.truncated.title': '版本列表已被截断',
+  'appDetail.releases.truncated.desc': '该应用版本行数超出单次查询上限，较早的版本未在下方列表中显示；完整部署动作历史请查看下方「部署事件流」。',
+  'appDetail.releases.truncated.gotoEvents': '查看事件流',
+  // P8-R：被截版本里「仍有设备保留」的版本号清单（徽标行不在页内，事实靠告警条带回）。
+  'appDetail.releases.truncated.retained': '以下被截断的版本仍有设备保留（运行中或本地留有该版本），但未在下方列表中显示：',
+  'appDetail.releases.truncated.retainedMore': '还有 {{count}} 个版本',
+  // R4（部署模型评审 §4.1A）：部署事件流（不可变动作追溯）。
+  'appDetail.events.title': '部署事件流',
+  'appDetail.events.filter.typeAll': '全部类型',
+  // 时间范围筛选（since/until 半开区间）：Tooltip 必须把「结束日当天不计入」
+  // 讲明白——半开区间下选 10-24 = 到 10-23 23:59:59.999 止，不靠用户猜。
+  'appDetail.events.filter.timeHint': '按事件时间筛选：开始日整天计入；结束日当天不计入（选 10-24 即到 10-23 23:59:59.999 止）',
+  'audit.range.timeHint': '按审计时间筛选：开始日整天计入；结束日当天不计入（选 10-24 即到 10-23 23:59:59.999 止）',
+  'appDetail.events.filter.last1d': '最近 1 天',
+  'appDetail.events.filter.last7d': '最近 7 天',
+  'appDetail.events.filter.last30d': '最近 30 天',
+  'appDetail.events.loadFail': '加载部署事件流失败',
+  'appDetail.events.empty': '暂无部署事件（该应用还没有任何部署域写动作）',
+  'appDetail.events.col.time': '时间',
+  'appDetail.events.col.type': '事件类型',
+  'appDetail.events.col.executor': '执行器',
+  'appDetail.events.col.version': '版本',
+  'appDetail.events.col.operator': '操作者',
+  'appDetail.events.col.summary': '摘要',
+  'appDetail.events.operatorSystem': '系统自动触发（如卡死扫描），无操作人',
+  'appDetail.events.operatorSystemShort': '系统',
+  'appDetail.events.type.deploy_created': '新建部署',
+  'appDetail.events.type.redeploy_reused': '复用重部署',
+  'appDetail.events.type.approval_approved': '审批通过',
+  'appDetail.events.type.approval_rejected': '审批拒绝',
+  'appDetail.events.type.approval_cancelled': '审批撤回',
+  'appDetail.events.type.upgrade': '升级',
+  'appDetail.events.type.stop': '停止',
+  'appDetail.events.type.remove': '删除',
+  'appDetail.events.type.stuck_failed': '卡死判失败',
+  'appDetail.events.detail.reason': '原因',
+  'appDetail.events.detail.runMode': '运行模式',
+  'appDetail.events.detail.previousStatus': '扫死前状态',
+  'appDetail.events.detail.deletedStatus': '删除时状态',
+  'appDetail.events.detail.stopDelivered': '停止信号已送达',
+  'appDetail.events.detail.stopNotDelivered': '停止信号未送达',
+  'appDetail.events.detail.approvalRequired': '需审批',
   // UX-06：版本历史「状态」列此前渲染裸枚举（released/deploying/failed…），
   // 而同一张表相邻列已翻译——中英混排且对非英语用户不可读。
   'appDetail.history.status.released': '已发布',
@@ -1993,6 +2107,13 @@ export default {
   'appDeploy.msg.upgradeAllBlocked': '灰度发布未启动：{{reason}}',
   'appDeploy.msg.upgradeAllDone': '已触发 {{succeeded}}/{{total}} 个实例升级',
   'appDeploy.msg.upgradeAllFail': '批量升级失败',
+  // R2（部署模型评审 §4.4）：覆盖面显式化的提示组——前置拦截如实摆分组计数，
+  // 结果侧 skipped 明细/stopped 未覆盖不假装成功。
+  'appDeploy.msg.nothingToUpgrade': '没有将被覆盖的部署：运行中/仅部署 0 台，已停止 {{stopped}} 台，在途 {{inFlight}} 台——可在弹窗勾选「包含已停止的部署」，或等在途动作完成后再试',
+  'appDeploy.msg.upgradeAllSkipped': '已跳过 {{count}} 台在途部署：{{detail}}',
+  'appDeploy.msg.upgradeAllStoppedHint': '{{count}} 台已停止的部署不在本次覆盖内（如需一并升级请勾选「包含已停止的部署」）',
+  'appDeploy.skipReason.inFlight': '在途（{{status}}）',
+  'appDeploy.skipReason.awaitingApproval': '待审批',
   'appDeploy.col.executor': '执行器',
   'appDeploy.col.status': '状态',
   'appDeploy.col.runMode': '运行模式',
@@ -2015,7 +2136,7 @@ export default {
   'appDeploy.op.adminOnlyStop': '仅管理员可停止部署',
   'appDeploy.op.adminOnlyDeploy': '仅管理员可部署应用',
   'appDeploy.op.upgradeAllTitle': '升级所有运行中实例 ({{count}} 台)',
-  'appDeploy.op.upgradeAllDesc': '将对所有运行中实例触发 git pull + 重启',
+  'appDeploy.op.upgradeAllDesc': '将把应用当前版本下发到覆盖范围内的设备（常驻实例 git pull + 重启；仅部署设备只更新发布物，不启动进程）',
   'appDeploy.action.approve': '批准',
   'appDeploy.action.reject': '拒绝',
   'appDeploy.action.cancel': '撤销',
@@ -2098,9 +2219,19 @@ export default {
   'appDeploy.statusMessage.copied': '失败详情已复制',
   'appDeploy.rollout.modalTitle': '全部升级策略',
   'appDeploy.rollout.full': '全量升级',
-  'appDeploy.rollout.fullDesc': '所有运行中实例立即升级',
+  'appDeploy.rollout.fullDesc': '覆盖范围内的部署行立即升级',
   'appDeploy.rollout.canary': '灰度 20%',
   'appDeploy.rollout.canaryDesc': '先升级约 20% 实例，观察无误后自动全量；首批异常自动回滚',
+  // R2 §4.4：弹窗内覆盖面如实前置（运行 X + 仅部署 Y + 勾选后的已停止 Z）。
+  'appDeploy.rollout.coverageLead': '将覆盖 {{count}} 台已部署设备：',
+  // A-4 披露（部署模型评审 §9.3-2）：升级会重置部署时自定义的启动命令。
+  'appDeploy.rollout.startCommandReset.title': '{{count}} 台设备部署时自定义的启动命令将被重置',
+  'appDeploy.rollout.startCommandReset.desc': '升级推送的启动命令取应用当前入口（{{entrypoint}}），以下行的自定义命令会被覆盖：{{detail}}',
+  'appDeploy.rollout.coverageRunning': '运行 {{count}} 台',
+  'appDeploy.rollout.coverageScheduled': '仅部署 {{count}} 台',
+  'appDeploy.rollout.coverageStopped': '已停止 {{count}} 台',
+  'appDeploy.rollout.includeStopped': '包含已停止的部署',
+  'appDeploy.rollout.includeStoppedHint': '勾选后已停止的部署行也会一并下发（缺省只覆盖运行中/仅部署的设备）',
   'appDeploy.rollout.state.pending': '待灰度',
   'appDeploy.rollout.state.probing': '灰度观察中',
   'appDeploy.rollout.state.promoted': '已转正',
@@ -2316,6 +2447,8 @@ export default {
   'execDetail.log.noLevelLogs': '无 {{level}} 级别日志',
   'execDetail.log.noLevelLogsDesc': '当前执行未匹配到该级别的日志行，切换为全部级别可查看完整日志。',
   'execDetail.log.noSearchHit': '未找到匹配「{{keyword}}」的日志内容',
+  // F-4（UIUX 审计 P2-3）：stick-to-bottom 上翻后的「回到底部」浮钮
+  'execDetail.log.backToBottom': '回到底部',
   // LOG-JSON-01：日志行内 JSON 载荷的「展开看美化」浮层文案
   'execDetail.log.json.prettyTitle': '格式化后的 JSON',
   'execDetail.log.json.prettyTruncated': '格式化后的 JSON（内容过长，已截断）',
@@ -2554,6 +2687,10 @@ export default {
   'taskForm.field.fixedRate.minutes': '{{n}} 分钟',
   'taskForm.field.fixedRate.minuteUnit': '分钟',
   'taskForm.field.fixedRate.placeholder': '60（秒）',
+  // F-7/F-2（本轮审计）：负号与后端 TASK_FIXED_RATE_MAX_SECONDS=2147483
+  // （分钟口径 35791 分钟）的前端镜像校验文案。
+  'taskForm.field.fixedRate.negative': '固定间隔不能为负数',
+  'taskForm.field.fixedRate.maxExceeded': '固定间隔不能超过 {{max}} 分钟',
   'taskForm.window.title': '维护窗口（可选）',
   'taskForm.window.tooltip': '发布/停机时段保护：窗口内的计划触发（Cron、固定间隔、错失补偿）会被跳过并计入调度指标；手动触发不受影响。窗口在『开始 Cron』触达时刻开启、『结束 Cron』触达时刻关闭（半开区间）；窗口 Cron 按服务端本地时间评估。最多 10 条。',
   'taskForm.window.startRequired': '开始 Cron 必填',
@@ -2606,10 +2743,17 @@ export default {
   'taskForm.field.timeoutWarnRatio.hint': '（占超时时间的百分比，0-90；留空不预警）',
   'taskForm.field.timeoutWarnRatio.tooltip': '例如超时 600 秒、阈值 80：运行到 480 秒时发送一次超时预警通知，便于在硬超时前介入。',
   'taskForm.field.timeoutWarnRatio.placeholder': '如 80，留空不预警',
+  // CORE-05（F-9，本轮审计）：预估执行时长——执行器负载评分的加权输入。
+  'taskForm.field.estimatedDurationSec': '预估执行时长',
+  'taskForm.field.estimatedDurationSec.hint': '（秒，0/留空 = 未知；仅用于执行器负载评分）',
+  'taskForm.field.estimatedDurationSec.tooltip': '仅用于调度侧的执行器负载评分：预估越长，繁忙执行器被惩罚越大，长短任务混布时调度更均衡。执行链路（心跳/超时/统计）不消费该字段。0 或留空 = 未知。',
+  'taskForm.field.estimatedDurationSec.placeholder': '用于执行器负载评分，可留空',
   'taskForm.field.maxRetry': '最大尝试次数',
   'taskForm.field.maxRetry.hint': '重试覆盖派发/环境类失败；脚本阶段失败需手动重跑（1 = 不重试）',
   'taskForm.field.retryDelay': '重试延迟',
   'taskForm.field.retryDelay.hint': '（秒，0 = 不延迟；实际延迟带 ±20% 抖动以摊开重试洪峰）',
+  // F-3（本轮审计）：后端 @Max(86400) 的前端镜像校验文案。
+  'taskForm.field.retryDelay.maxExceeded': '重试延迟不能超过 86400 秒',
   'taskForm.field.retryableErrors': '可重试错误类型',
   'taskForm.field.retryableErrors.hint': '（留空 = 全部可重试）',
   'taskForm.field.retryableErrors.tooltip': '仅勾选的错误类型会被自动重试（匹配错误消息或失败分类）。例如只勾选"执行器离线"，脚本错误将在第一次失败后直接终态，不再烧尽重试预算。',
@@ -2621,6 +2765,8 @@ export default {
   'taskForm.field.upstreamDependencies.placeholder': '选择上游任务（可多选，全部成功后自动触发本任务）',
   'taskForm.params.alertTitle': '任务默认参数',
   'taskForm.params.alertDesc': '以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。',
+  'taskForm.params.tooLarge': '任务参数体积超出上限（{{size}}/{{max}} 字节），请精简后再保存',
+  'taskForm.params.tooLargeShort': '任务参数超出 64KB 上限：{{size}}/{{max}} 字节',
   'taskForm.field.params': '默认参数',
   // SEC-02 续（生产故障）：凭据编辑器。此前控制台**没有**这个入口，而执行器报错
   // 文案却在教用户「请在平台 secrets 配置 FEISHU_APP_ID」——一条在 UI 上无法执行
@@ -2633,6 +2779,10 @@ export default {
   // 掩码回写防护：编辑态已存在的凭据只显示掩码，必须重新输入才能保存。
   'taskForm.field.secretsMaskRemaining':
     '还有 {{count}} 项凭据显示为掩码（未重新输入）。直接保存会用掩码字符覆盖真实凭据——请重新输入这些凭据的值，或删除对应行后再保存。',
+  // F-7（UIUX 审计 P2-6）：secrets 键名镜像校验的提交拦截（行内红字在 SecretsEditor，
+  // 这里拦的是绕过行内校验的载荷，如既有合法键被改名成非法键）
+  'taskForm.secrets.invalidKeys': '凭据键名不可用：{{list}}——请修正后重试（规则见凭据分区的行内提示）',
+  'taskForm.secrets.invalidKeysShort': '凭据键名不可用：{{list}}',
   'taskForm.glue.createdTitle': '任务已创建成功！',
   'taskForm.glue.createdDesc': '你可以在下方编写 Glue 脚本（可选）。Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。',
   'taskForm.glue.done': '完成，前往任务详情',
@@ -2817,6 +2967,11 @@ export default {
   'routerError.chunkDesc':
     '应用已发布新版本，当前页面的资源已失效。点击下方按钮刷新即可加载最新版本。',
   'routerError.refresh': '刷新页面',
+  // F-45（UIUX 审计 P2-3）：断网时 chunk 拉取失败不再误报「版本已更新」
+  'routerError.offlineTitle': '网络连接已断开',
+  'routerError.offlineDesc':
+    '当前浏览器处于离线状态，页面资源加载失败。请检查网络连接，恢复后点击下方按钮重试。',
+  'routerError.offlineRetry': '重试',
   'stateError.loadingFailed': '加载失败',
   'stateError.requestFailed': '请求失败，请稍后重试',
   'stateError.copySuccess': '错误信息已复制到剪贴板',
@@ -2956,6 +3111,11 @@ export default {
   'secretsEditor.clearAll': '清空全部凭据',
   'secretsEditor.tooltip': '键名须匹配 [A-Za-z_][A-Za-z0-9_]*，且不得占用平台保留名（PATH / PYTHON* / AUTOFLOW_* 等）。留空的已保存项 = 保留原值。',
   'secretsEditor.touchedWarning': '保存后将按你填写的值更新：未重新输入的已保存凭据保持原值，被删掉的行会被移除。',
+  // F-7（UIUX 审计 P2-6）：键名镜像校验（后端 IsSecretKeyMapConstraint 同规则）的行内红字
+  'secretsEditor.keyError.invalidName': '「{{key}}」不是合法的环境变量名（需匹配 [A-Za-z_][A-Za-z0-9_]*）',
+  'secretsEditor.keyError.reserved': '「{{key}}」是平台保留的环境变量名，不能作为凭据键',
+  'secretsEditor.keyError.autoflowPrefix': '「{{key}}」使用了 AUTOFLOW_ 前缀（平台参数命名空间），请改用别的键名',
+  'secretsEditor.keyError.pythonPrefix': '「{{key}}」使用了 PYTHON 前缀（解释器行为开关），请改用别的键名',
 
   'triggerPreview.title': '触发预览',
   'triggerPreview.nextCount': '未来 {{count}} 次',
@@ -2967,6 +3127,8 @@ export default {
   'triggerPreview.empty': '等待输入…',
   'triggerPreview.tzFallbackLabel': '服务器默认时区（浏览器本地）',
   'triggerPreview.tzUnresolved': '未指定时区：实际触发由服务端进程时区决定，此处按浏览器本地推算，可能不准。',
+  // F-5（本轮审计）：非法时区与「未指定」分词——给出可操作的修正指引。
+  'triggerPreview.tzInvalid': '时区无效：请填写有效 IANA 时区（如 Asia/Shanghai），否则将按服务端进程时区执行。',
 
   'time.relative.justNow': '刚刚',
   'time.relative.minsAgo': '{{n}}分钟前',
@@ -3119,6 +3281,18 @@ export default {
   'sops.draftCreated': '草稿已保存',
   'sops.draftFailed': '草稿保存失败（检查 slug 与 YAML 语法）',
   'sops.create': '保存草稿',
+  'sops.publish.btn': '发布',
+  'sops.publish.title': '发布 SOP「{{slug}}」',
+  'sops.publish.confirmBtn': '确认发布',
+  'sops.publish.bump.patch': 'patch · 修订（末位 +1，如 1.0.0 → 1.0.1）',
+  'sops.publish.bump.minor': 'minor · 小版本（中位 +1，如 1.0.0 → 1.1.0）',
+  'sops.publish.bump.major': 'major · 大版本（首位 +1，如 1.0.0 → 2.0.0）',
+  'sops.publish.changelogPlaceholder': '变更说明（可选，记入版本历史，最长 2000 字）',
+  'sops.publish.note': '发布会对当前工作副本做严格校验并生成不可变版本快照；内容与当前版本完全一致时无法重复发布。',
+  'sops.publish.ok': '已发布新版本 {{version}}',
+  'sops.publish.fail': '发布失败',
+  'sops.publish.noContent': '工作副本缺少 front-matter 或正文，无法发布',
+  'sops.publishedBy.admin': '管理员',
   // 2026-10-23：SOP 归档 / 恢复（deprecated 此前是死状态，SOP 只增不减）
   'sops.cancel': '取消',
   'sops.archive.viewAssignments': '先查看未结束的指派',

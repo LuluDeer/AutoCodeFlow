@@ -5,6 +5,10 @@ import ConfirmBar from '../components/ConfirmBar';
 import EmptyState from '../components/EmptyState';
 import LogViewer, { ViewerLine, ViewerLogLevel } from '../components/LogViewer';
 import { requestTabSwitch } from '../tab-switch';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
+// P2-1：增量日志读取响应分类（missing/error 标记 → 错误态而非清空缓冲）。
+import { classifyLogRead, MISSING_AFTER_START_MESSAGE } from '../log-read-classify';
 // V4 后续优化（6）i18n 二期：应用页文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 
@@ -13,20 +17,23 @@ const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 declare const window: Window & {
   electronAPI: {
     listApps: () => Promise<AppEntry[]>;
-    readAppLog: (logPath: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number }>;
+    // F-22：truncated = 主进程首读走了尾窗（lines 只是文件尾部窗口）。
+    readAppLog: (logPath: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number; truncated?: boolean }>;
     openAppFolder: (appId: string) => Promise<{ ok: boolean; error?: string }>;
     openReleaseFolder: (appId: string, releaseKey: string) => Promise<{ ok: boolean; error?: string }>;
     uninstallApp: (appId: string) => Promise<{
       ok: boolean;
       mode: 'executor' | 'local';
       stopped?: string[];
+      // F-26：R105 主进程原生二次确认被取消时的回执（{ok:false, canceled:true}）。
+      canceled?: boolean;
       error?: string;
     }>;
     deleteAppRelease: (
       appId: string,
       releaseKey: string,
       deploymentId: string,
-    ) => Promise<{ ok: boolean; error?: string }>;
+    ) => Promise<{ ok: boolean; canceled?: boolean; error?: string }>;
     /**
      * 本机正在运行的常驻应用：deploymentId → {pid, running}。
      * 数据来自 executor 的 /api/app-status（进程登记只在执行器进程内）。
@@ -121,6 +128,8 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
   // D 修正：原实现 `catch { /* ignore */ }` 把 IPC 失败静默吞掉——用户看到
   // 「暂无日志文件」而真实原因是读取失败（权限/文件被删/通道异常），无法区分。
   const [error, setError] = useState<string | null>(null);
+  // F-22：首读截断口径（主进程尾窗分支返回 true）——汇总行据此如实降级。
+  const [truncated, setTruncated] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const totalLinesRef = useRef(0);
   const inFlight = useRef(false);
@@ -140,7 +149,7 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
       const res = await window.electronAPI.openReleaseFolder(entry.appId, entry.releaseKey);
       if (!res.ok) setFolderNote(t('apps.viewer.folderOpenFail', res.error ?? t('apps.unknownReason')));
     } catch (err) {
-      setFolderNote(t('apps.viewer.folderOpenFail', err instanceof Error ? err.message : String(err)));
+      setFolderNote(t('apps.viewer.folderOpenFail', ipcErrorMessage(err)));
     }
   }
 
@@ -149,26 +158,47 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
     inFlight.current = true;
     try {
       const result = await window.electronAPI.readAppLog(entry.logPath, fromLine);
+      // P2-1：主进程对「文件不存在 / 读取失败」返回 missing/error 标记（不再
+      // 是成功形态空结果）。分类点在 log-read-classify.ts：error/已有缓冲后
+      // missing → 错误态（缓冲保留、停轮询，对齐 NETOPT-7⑥）；首读 missing
+      // → 合法空态；totalLines 回退且未报 missing → 真轮转，整体换新尾部。
+      const verdict = classifyLogRead(result, totalLinesRef.current);
+      if (verdict.kind === 'error') {
+        setError(verdict.message || MISSING_AFTER_START_MESSAGE);
+        // 停止轮询（对齐 HistoryPage 查看器）：持续失败时不再每 2s 重抛刷屏；
+        // 按钮随之显示「已暂停」，用户排除问题后可手动点「实时」重试。
+        setAutoRefresh(false);
+        return;
+      }
+      if (verdict.kind === 'missing') {
+        // 首读即 missing：合法空态（应用尚未写日志），不报错。
+        setError(null);
+        return;
+      }
       // 行 id = 文件全局行号（本次返回首行的行号 = totalLines - 返回行数）。
       // 追加轮询与缓冲滑动（只留最近 APP_LOG_BUFFER 行）之下 id 保持稳定，
       // 共享查看器的到达动效/「N 条新日志」计数才不会把整屏误判成新行。
-      const firstLineNo = result.totalLines - result.lines.length;
+      const firstLineNo = verdict.totalLines - verdict.lines.length;
       const toViewerLine = (text: string, idx: number): ViewerLine =>
         ({ id: firstLineNo + idx, text, level: classifyLog(text) });
-      if (result.totalLines < fromLine) {
+      if (verdict.kind === 'shrink') {
         // 日志轮转/截断：旧行不能混进新文件的内容，整体换成新文件尾部。
-        setLines(result.lines.slice(-APP_LOG_BUFFER).map(toViewerLine));
-      } else if (result.lines.length > 0) {
-        const fetched = result.lines.map(toViewerLine);
+        setLines(verdict.lines.slice(-APP_LOG_BUFFER).map(toViewerLine));
+        setTruncated(false);
+      } else if (verdict.lines.length > 0) {
+        const fetched = verdict.lines.map(toViewerLine);
         setLines(prev => {
           const next = fromLine === 0 ? fetched : [...prev, ...fetched];
           return next.length > APP_LOG_BUFFER ? next.slice(-APP_LOG_BUFFER) : next;
         });
       }
-      totalLinesRef.current = result.totalLines;
+      totalLinesRef.current = verdict.totalLines;
+      // F-22：截断口径只在首读/「全部重载」（fromLine=0 → 主进程尾窗分支）
+      // 的响应上出现；增量响应不带该字段（undefined）→ 保持现状。
+      if (verdict.truncated) setTruncated(true);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       // 停止轮询（对齐 HistoryPage 查看器）：持续失败时不再每 2s 重抛刷屏；
       // 按钮随之显示「已暂停」，用户排除问题后可手动点「实时」重试。
       setAutoRefresh(false);
@@ -226,6 +256,11 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
       onClose={onClose}
       loading={loading}
       error={error ? t('apps.viewer.loadFail', error) : null}
+      // F-22：首读被主进程尾窗截断时如实降级（应用查看器此前没有汇总注记位，
+      // 与历史查看器的 truncatedNote 同口径）。
+      bufferNote={truncated
+        ? t('apps.viewer.truncatedNote', lines.length, totalLinesRef.current)
+        : undefined}
       // 实时轮询有到达感：新行 2s 绿底淡出（行 id 为文件全局行号，首屏不闪）
       arriveAnimation
       // V4 后续优化（3）：warn/error 行 hover 直接打开部署目录（与其他查看器
@@ -305,6 +340,8 @@ export default function AppsPage() {
   // 卡内，落在视口外（截图 14 恰好可见纯属夹具卡短）。
   const confirmBarRef = useRef<HTMLDivElement | null>(null);
   const hasLoadedRef = useRef(false);
+  // P3-8：refresh 的在飞标记。
+  const refreshInFlight = useRef(false);
   // V4-4（X-05）：Ctrl+F 聚焦本页搜索框；查看器打开（viewing）时让位给查看器。
   const searchRef = useRef<HTMLInputElement>(null);
   const viewingRef = useRef(false);
@@ -317,17 +354,24 @@ export default function AppsPage() {
   const [running, setRunning] = useState<Record<string, { pid?: number; running?: boolean }>>({});
 
   const refresh = useCallback(async (background: boolean = false) => {
+    // P3-8：in-flight 去重——10s 轮询、visibilitychange/MutationObserver kick
+    // 可能相邻触发，主进程 listApps 是同步 readdir/stat（叠加即放大卡顿），
+    // 后完成者覆盖先完成者也会让列表短暂回退。对齐 StatusWindow agent 轮询
+    // 的 inFlight 守卫先例：在飞时丢弃本次触发。
+    if (refreshInFlight.current) return;
     // 后台轮询不切 loading，避免按钮文案/空态反复闪烁
     if (!background) setLoading(true);
+    refreshInFlight.current = true;
     try {
       const list = await window.electronAPI.listApps();
       setApps(list);
       hasLoadedRef.current = true;
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
     } finally {
       if (!background) setLoading(false);
+      refreshInFlight.current = false;
     }
     // 运行态单独取：它依赖执行器进程在线，拿不到就保持空（UI 不显示"运行中"，
     // 而不是谎报）。**绝不因它失败而把整个列表标记为错误**——列表本身是好的。
@@ -385,12 +429,19 @@ export default function AppsPage() {
     if (pendingConfirm) confirmBarRef.current?.scrollIntoView({ block: 'nearest' });
   }, [pendingConfirm]);
 
-  /** 打开应用根目录（用户报障：客户端本地无法查看部署的应用文件夹）。 */
+  /** 打开应用根目录（用户报障：客户端本地无法查看部署的应用文件夹）。
+   *  F-38（UIUX 审计）：IPC reject（目录已被手动删除 / shell.openPath 异常
+   *  等）此前成为 unhandled rejection 且无任何用户反馈——点击像"没反应"。
+   *  包 try/catch，失败同样落页内 notice（双语，对齐本页其他动作口径）。 */
   async function handleOpenFolder(entry: AppEntry, releaseOnly: boolean) {
-    const res = releaseOnly
-      ? await window.electronAPI.openReleaseFolder(entry.appId, entry.releaseKey)
-      : await window.electronAPI.openAppFolder(entry.appId);
-    if (!res.ok) setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', res.error ?? t('apps.unknownReason')) });
+    try {
+      const res = releaseOnly
+        ? await window.electronAPI.openReleaseFolder(entry.appId, entry.releaseKey)
+        : await window.electronAPI.openAppFolder(entry.appId);
+      if (!res.ok) setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', res.error ?? t('apps.unknownReason')) });
+    } catch (err) {
+      setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', ipcErrorMessage(err)) });
+    }
   }
 
   /** 删除单个历史版本（用户报障：无法撤销部署）。仅由页内确认条触发。 */
@@ -403,6 +454,10 @@ export default function AppsPage() {
         entry.releaseKey,
         entry.deploymentId,
       );
+      // F-26（R105）：主进程原生二次确认被用户取消时统一回
+      // {ok:false, canceled:true}——用户点了「取消」，不是失败：静默返回，
+      // 不报错、不弹红条、不触发刷新。
+      if (res.canceled) return;
       if (res.ok) {
         setNotice({ kind: 'ok', text: t('apps.notice.deleted', label) });
         await refresh(true);
@@ -410,7 +465,7 @@ export default function AppsPage() {
         setNotice({ kind: 'err', text: res.error ?? t('apps.notice.deleteFail') });
       }
     } catch (err) {
-      setNotice({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+      setNotice({ kind: 'err', text: ipcErrorMessage(err) });
     } finally {
       setBusy(null);
     }
@@ -421,6 +476,9 @@ export default function AppsPage() {
     setBusy(appId);
     try {
       const res = await window.electronAPI.uninstallApp(appId);
+      // F-26（R105）：同 handleDeleteRelease——原生确认被取消 ≠ 卸载失败，
+      // 静默返回（不报错、不弹红条、不触发刷新）。
+      if (res.canceled) return;
       if (res.ok) {
         setNotice({
           kind: 'ok',
@@ -439,7 +497,7 @@ export default function AppsPage() {
         await refresh(true);
       }
     } catch (err) {
-      setNotice({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+      setNotice({ kind: 'err', text: ipcErrorMessage(err) });
     } finally {
       setBusy(null);
     }

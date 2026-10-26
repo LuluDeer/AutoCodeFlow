@@ -1,3 +1,12 @@
+/* eslint-disable react-refresh/only-export-components --
+ * 理由：本文件默认导出 KpiSparkline 组件，同时导出 3 个非组件成员
+ * （SPARKLINE_HEIGHT / recentDateKeys / buildSparklineData）。
+ * recentDateKeys/buildSparklineData 是 DashboardPage 主趋势图
+ * （buildTrendData 与其同源，见 DashboardPage 注释）与 dashboard 测试的
+ * 依赖面；挪独立文件会把「日期轴补零」口径与 sparkline 消费上下文割裂，
+ * 且连锁改动 DashboardPage import。本文件非热更迭代热点，disable 换
+ * 最小改动面。（eslint warning 收敛第三弹决策：同源口径成对消费 +
+ * 连锁页面 → disable 优先，同 MainLayout 先例） */
 /**
  * UI-04 ①：KPI 指标卡内嵌迷你趋势线（sparkline）。
  *

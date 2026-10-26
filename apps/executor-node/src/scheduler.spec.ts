@@ -5,6 +5,10 @@ jest.mock('./config', () => ({
     maxConcurrentTasks: 10,
     executorAddress: 'localhost:8002',
     executorAddressPublic: '',
+    // R3-B：默认指向不存在的目录 → deployedApps 稳定为 []（apps/ ENOENT =
+    // 「本机无部署应用」的真事实），既有用例互不干扰。
+    workDir: '/nonexistent-deployed-apps-r3b',
+    deployedAppsScanTtlSeconds: 60,
   },
 }));
 jest.mock('./logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
@@ -321,5 +325,261 @@ describe('scheduler', () => {
     expect(body.interpreters[0].version).toBe('3.12.1');
     clearInterval(timer);
     registerInterpretersProvider(async () => []);
+  });
+
+  // R3-B（部署模型评审 2026-10-23 §4.3/§P5）：心跳携带设备级应用版本事实。
+  // 纯附加可选键——旧字段必须原样在场（不因新增键改既有字段与失败语义）。
+  it('R3-B: reports deployedApps in the heartbeat body alongside intact legacy fields', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { config } = require('./config');
+    const { resetDeployedAppsCacheForTest } = require('./deployed-apps');
+
+    // deploy.ts 落盘形态的最小事实：apps/<appId>/current → releases/<releaseKey>
+    // + app.json（见 deployed-apps.spec 的完整解析矩阵，此处只证心跳接线）。
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-r3b-hb-'));
+    const appId = '11111111-1111-4111-8111-111111111111';
+    const releaseKey = '1.2.3-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    fs.mkdirSync(path.join(workDir, 'apps', appId, 'releases', releaseKey), { recursive: true });
+    fs.symlinkSync(
+      path.join(workDir, 'apps', appId, 'releases', releaseKey),
+      path.join(workDir, 'apps', appId, 'current'),
+      'dir',
+    );
+    fs.writeFileSync(
+      path.join(workDir, 'apps', appId, 'app.json'),
+      JSON.stringify({
+        runMode: 'daemon',
+        lastVersion: '1.2.3',
+        lastDeployedAt: '2026-10-23T10:00:00.000Z',
+      }),
+    );
+
+    const originalWorkDir = config.workDir;
+    resetDeployedAppsCacheForTest();
+    try {
+      config.workDir = workDir;
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      expect(body.deployedApps).toEqual([
+        {
+          appId,
+          currentVersion: '1.2.3',
+          currentReleaseKey: releaseKey,
+          retainedVersions: ['1.2.3'],
+          runMode: 'daemon',
+          lastDeployedAt: '2026-10-23T10:00:00.000Z',
+        },
+      ]);
+      // 旧字段不因新增键而缺席（粘性 provider/热更过的 config 值只断类型——
+      // 它们由各自的既有用例钉死，这里只守「附加键不破坏既有 body」红线）。
+      expect(body.address).toBe('localhost:8002');
+      expect(body.version).toBe('1.0.0');
+      expect(typeof body.cpuUsage).toBe('number');
+      expect(typeof body.memUsage).toBe('number');
+      expect(typeof body.runningTaskCount).toBe('number');
+      expect(typeof body.reservedSlots).toBe('number');
+      expect(typeof body.deadLetterCount).toBe('number');
+      expect(typeof body.maxConcurrentTasks).toBe('number');
+      expect(Array.isArray(body.runningExecutionIds)).toBe(true);
+      expect(Array.isArray(body.interpreters)).toBe(true);
+      expect(typeof body.restartedAt).toBe('string');
+      expect(typeof body.startupId).toBe('string');
+      clearInterval(timer);
+    } finally {
+      config.workDir = originalWorkDir;
+      resetDeployedAppsCacheForTest();
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  // fail-honest 红线（§4.3）：扫描失败 → 省略整键（JSON 序列化丢键 =「未上报」，
+  // admin 保留旧值），绝不阻塞或弄挂心跳本体（对齐 A7 diskUsage 的失败语义）。
+  it('R3-B: scan failure omits deployedApps but the heartbeat still goes out', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { config } = require('./config');
+    const { resetDeployedAppsCacheForTest } = require('./deployed-apps');
+
+    // apps/ 目录级不可读（普通文件占位 → ENOTDIR ≠ ENOENT → 扫描抛错）
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-r3b-hb-fail-'));
+    fs.writeFileSync(path.join(workDir, 'apps'), 'not a directory');
+
+    const originalWorkDir = config.workDir;
+    resetDeployedAppsCacheForTest();
+    try {
+      config.workDir = workDir;
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      // 心跳本体照发，其余字段完好
+      expect(body.address).toBe('localhost:8002');
+      expect(typeof body.runningTaskCount).toBe('number');
+      // deployedApps 为 undefined → JSON.stringify 丢键（A7 diskUsage 同款断言）
+      expect(body.deployedApps).toBeUndefined();
+      clearInterval(timer);
+    } finally {
+      config.workDir = originalWorkDir;
+      resetDeployedAppsCacheForTest();
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  // P10（executor 包版本收敛）：心跳携带已安装执行器包清单。键语义与
+  // deployedApps 一致——[] 是「已上报且无安装包」的真事实；扫描失败省略整键。
+  // 收集器扫 <cwd>/.pkg-updates/manifests，须重定向 cwd（真实 fs，非 mock）。
+  it('P10: reports installedPackages in the heartbeat body (manifest fact source)', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { resetInstalledPackagesCacheForTest } = require('./installed-packages');
+
+    // update-package.ts 落盘形态的最小事实：一个校验通过的 manifest
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-p10-hb-'));
+    fs.mkdirSync(path.join(root, '.pkg-updates', 'manifests'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.pkg-updates', 'manifests', '11111111-1111-4111-8111-111111111111.json'),
+      JSON.stringify({
+        packageId: '11111111-1111-4111-8111-111111111111',
+        name: 'node-runtime',
+        type: 'node',
+        version: '22.0.0',
+        checksum: 'a'.repeat(64),
+        downloadedAt: '2026-10-24T10:00:00.000Z',
+      }),
+    );
+
+    const realCwd = process.cwd();
+    resetInstalledPackagesCacheForTest();
+    try {
+      process.chdir(root);
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      expect(body.installedPackages).toEqual([
+        { name: 'node-runtime', type: 'node', version: '22.0.0' },
+      ]);
+      // 附加键不破坏既有 body（R3-B 用例同款红线）
+      expect(body.address).toBe('localhost:8002');
+      expect(typeof body.runningTaskCount).toBe('number');
+      expect(Array.isArray(body.deployedApps)).toBe(true);
+      clearInterval(timer);
+    } finally {
+      process.chdir(realCwd);
+      resetInstalledPackagesCacheForTest();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // 空目录（无 manifests/）→ [] 是真事实：设备从未成功下载过执行器包。
+  // 这个三态区分是 admin 侧「缺省 = 保留旧值」语义的前提，绝不能静默丢键。
+  it('P10: empty manifests dir reports [] (reported-and-empty, not omitted)', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { resetInstalledPackagesCacheForTest } = require('./installed-packages');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-p10-hb-empty-'));
+    const realCwd = process.cwd();
+    resetInstalledPackagesCacheForTest();
+    try {
+      process.chdir(root);
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      expect(body).toHaveProperty('installedPackages');
+      expect(body.installedPackages).toEqual([]);
+      clearInterval(timer);
+    } finally {
+      process.chdir(realCwd);
+      resetInstalledPackagesCacheForTest();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // fail-honest 红线（§4.3，与 deployedApps 同款）：目录级扫描失败 → 省略整键
+  // （manifests 父路径被普通文件占位 → ENOTDIR ≠ ENOENT → 扫描抛错），心跳照发。
+  it('P10: scan failure omits installedPackages but the heartbeat still goes out', async () => {
+    jest.useFakeTimers();
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { resetInstalledPackagesCacheForTest } = require('./installed-packages');
+
+    // 跨平台注入目录级失败（原「文件占位」手法在 Windows 的 readdir 行为不同
+    // ——CI windows-node-tests 实测返回空数组而非 ENOTDIR，2026-10-24）：
+    // 直接 mock readdirSync 对 manifests 路径抛非 ENOENT 错误。
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-p10-hb-fail-'));
+    const notDir = new Error('not a directory (injected)') as Error & { code?: string };
+    notDir.code = 'ENOTDIR';
+    const readdirSpy = jest.spyOn(fs, 'readdirSync').mockImplementation(
+      ((...args: unknown[]) => {
+        if (String(args[0]).includes('manifests')) throw notDir;
+        return undefined as never;
+      }) as never,
+    );
+    const realCwd = process.cwd();
+    resetInstalledPackagesCacheForTest();
+    try {
+      process.chdir(root);
+      const timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      // 心跳本体照发，其余字段完好
+      expect(body.address).toBe('localhost:8002');
+      expect(typeof body.runningTaskCount).toBe('number');
+      // installedPackages 为 undefined → JSON.stringify 丢键（admin 保留旧值）
+      expect(body.installedPackages).toBeUndefined();
+      clearInterval(timer);
+    } finally {
+      readdirSpy.mockRestore();
+      process.chdir(realCwd);
+      resetInstalledPackagesCacheForTest();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突态随心跳自报。
+  // 中台据此对「指纹错位的冲突心跳」停止供活性（活性四列不登记），让 sweep
+  // 判死 → 接管窗打开 → E-1 CAS 收敛。两拍断言：置位 → true、复位 → false。
+  it('方案 b: reports registrationConflict in the heartbeat body (set and reset both observable)', async () => {
+    jest.useFakeTimers();
+    const { startHeartbeat } = require('./scheduler');
+    const {
+      setRegistrationConflict,
+      resetAdminStatusForTest,
+    } = require('./heartbeat-state');
+
+    resetAdminStatusForTest();
+    const timer = startHeartbeat();
+    try {
+      // 第一拍：冲突激活（fetchToken 拒绝 409 的置位路径）→ 心跳体携带 true
+      setRegistrationConflict(true);
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.length).toBeGreaterThan(0);
+      expect(post.mock.calls.at(-1)![1].registrationConflict).toBe(true);
+
+      // 第二拍：冲突复位（成功取回 token / 非 409 结果的清除路径）→ 下拍 false
+      setRegistrationConflict(false);
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.at(-1)![1].registrationConflict).toBe(false);
+    } finally {
+      // heartbeat-state 是真模块（非 mock），状态跨用例残留会污染同文件其余
+      // 心跳用例——与 resetInstalledPackagesCacheForTest 同款清理纪律。
+      resetAdminStatusForTest();
+      clearInterval(timer);
+    }
   });
 });

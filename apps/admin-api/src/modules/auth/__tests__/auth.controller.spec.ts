@@ -1,6 +1,8 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { AuthController } from "../auth.controller";
 import { AuthService } from "../auth.service";
+// P2-4: 登录失败审计只认 AppError（业务失败）——本 spec 据此构造失败面。
+import { AppError } from "../../../common/errors/app-error";
 import { AuditService } from "../../audit/audit.service";
 import { AuthUser } from "../../../common/interfaces/auth-user.interface";
 import { UserRole } from "../../users/entities/user.entity";
@@ -84,6 +86,95 @@ describe("AuthController", () => {
       await expect(
         controller.login({ username: "bad", password: "bad" } as any, mockReq),
       ).rejects.toThrow("invalid credentials");
+    });
+
+    // ─── P2-4（2026-10-25 审计）：失败路径补审计 ──────────────────────────
+    // 此前 audit.log 只在 login 成功后执行，INVALID_USERNAME_OR_PASSWORD /
+    // LOGIN_LOCKED / ACCOUNT_INACTIVE 等失败零记录，无法回答爆破/撞库溯源。
+    // 注意：AppError 构造时原型挂到 NestJS 内置异常类（app-error.ts），
+    // 断言按 errorCode / 对应异常类，不能 toThrow(AppError)。
+    it("密码错（AppError 业务失败）→ 审计 failure 行（含 ip、不含密码）后原样上抛", async () => {
+      authSvc.login.mockRejectedValue(
+        new AppError("INVALID_USERNAME_OR_PASSWORD"),
+      );
+      await expect(
+        controller.login(
+          { username: "admin", password: "wrong-pass" } as any,
+          mockReq,
+        ),
+      ).rejects.toMatchObject({ errorCode: "INVALID_USERNAME_OR_PASSWORD" });
+
+      expect(auditSvc.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: "admin",
+          action: "auth.login",
+          resource: "auth",
+          result: "failure",
+          ip: "192.168.1.1",
+          detail: expect.objectContaining({
+            errorCode: "INVALID_USERNAME_OR_PASSWORD",
+          }),
+        }),
+      );
+      // 绝不落密码：整份审计载荷里不允许出现明文口令
+      const payload = auditSvc.log.mock.calls[0][0] as Record<string, unknown>;
+      expect(JSON.stringify(payload)).not.toContain("wrong-pass");
+      // 成功行未写（login 失败后不应继续走成功审计）
+      expect(auditSvc.log).toHaveBeenCalledTimes(1);
+    });
+
+    it("锁定（LOGIN_LOCKED）→ 审计 failure 行，detail 带失败原因码", async () => {
+      authSvc.login.mockRejectedValue(
+        new AppError("LOGIN_LOCKED", { minutes: 3 }),
+      );
+      await expect(
+        controller.login(
+          { username: "admin", password: "secret" } as any,
+          mockReq,
+        ),
+      ).rejects.toMatchObject({ errorCode: "LOGIN_LOCKED" });
+      expect(auditSvc.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "auth.login",
+          result: "failure",
+          detail: expect.objectContaining({ errorCode: "LOGIN_LOCKED" }),
+        }),
+      );
+    });
+
+    it("非业务异常（无 errorCode 的普通 Error）不记登录失败审计（只记业务失败）", async () => {
+      authSvc.login.mockRejectedValue(new Error("connection reset"));
+      await expect(
+        controller.login(
+          { username: "admin", password: "secret" } as any,
+          mockReq,
+        ),
+      ).rejects.toThrow("connection reset");
+      expect(auditSvc.log).not.toHaveBeenCalled();
+    });
+
+    it("失败审计自身故障 → best-effort 吞掉（不掩盖原始错误）", async () => {
+      authSvc.login.mockRejectedValue(
+        new AppError("INVALID_USERNAME_OR_PASSWORD"),
+      );
+      auditSvc.log.mockRejectedValue(new Error("audit DB down"));
+      await expect(
+        controller.login({ username: "admin", password: "x" } as any, mockReq),
+      ).rejects.toMatchObject({ errorCode: "INVALID_USERNAME_OR_PASSWORD" });
+      expect(auditSvc.log).toHaveBeenCalledTimes(1);
+    });
+
+    it("成功路径的既有 success 行不变（无 result 字段 = success）", async () => {
+      authSvc.login.mockResolvedValue({
+        accessToken: "at",
+        refreshToken: "rt",
+      });
+      await controller.login(
+        { username: "admin", password: "secret" } as any,
+        mockReq,
+      );
+      const payload = auditSvc.log.mock.calls[0][0] as Record<string, unknown>;
+      expect(payload.result).toBeUndefined();
     });
   });
 

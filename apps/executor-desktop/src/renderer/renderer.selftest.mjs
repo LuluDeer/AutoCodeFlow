@@ -178,6 +178,51 @@ if (/split\(':'\)\[0\]/.test(wizardNoComments)) {
   throw new Error("D: 地址端口改写不得用 split(':')[0]（IPv6 截断缺陷）");
 }
 
+// ── UIUX F-23（2026-10-25 审计）：重跑向导不得静默重置未暴露的三项 ──────
+// 审计实证：向导 finish() 硬编码 executorHost:'0.0.0.0'（用户配置的
+// 127.0.0.1 回环监听被静默改回全网卡）、DEFAULT_FORM 的 autoStartExecutor/
+// autoStart 默认值覆盖已存值，且 autoStart true→false 时 OS 自启项不清理。
+// 这里钉住渲染侧的三条预填/保留锚点（主进程对称 disable 由 main-index
+// selftest 钉住），任何一条被拆即红。
+if (!wizardNoComments.includes('cfg.configured === true')) {
+  throw new Error('F-23: Wizard 重跑态（configured===true）必须预填当前值');
+}
+if (!wizardNoComments.includes('autoStartExecutor: typeof cfg.autoStartExecutor') ||
+    !wizard.includes('getAutoLaunch')) {
+  throw new Error('F-23: Wizard 重跑必须预填 autoStartExecutor（config）与 autoStart（autolaunch:get OS 真值）');
+}
+if (/executorHost: '0\.0\.0\.0'/.test(wizardNoComments)) {
+  throw new Error("F-23: Wizard finish() 不得无条件硬编码 executorHost:'0.0.0.0'（重跑会静默降级用户的回环监听）");
+}
+if (!wizardNoComments.includes("typeof wizardCfg?.executorHost === 'string' && wizardCfg.executorHost")) {
+  throw new Error('F-23: Wizard finish() 必须沿用挂载时读到的 executorHost（首次安装才回落默认）');
+}
+
+// ── UIUX F-24（2026-10-25 审计）：历史页日志行 id 用文件全局行号 ──────────
+// 审计实证：viewerLines 用缓冲数组下标当 id，缓冲超 1500 行后每次追加的
+// slice(-1500) 让全部既有行下标整体平移 → id 全变——LogLineList 到达动效
+// 整窗误闪、LogViewer「N 条新日志」胶囊每次轮询 +~1500。与 AppsPage 查看器
+// 的全局行号口径（firstLineNo = totalLines - lines.length）对齐。
+if (!pages[2].includes('id: linesRef.current - lines.length + index')) {
+  throw new Error('F-24: HistoryPage viewerLines 行 id 必须用文件全局行号（linesRef.current - lines.length + index，缓冲滑动下 id 稳定）');
+}
+if (/id: index, text/.test(pages[2])) {
+  throw new Error('F-24: HistoryPage 不得用缓冲数组下标当行 id（缓冲滑动后全窗 id 漂移）');
+}
+
+// ── UIUX F-26（2026-10-25 审计）：R105 主进程原生确认被取消 ≠ 操作失败 ───
+// destructive-actions 取消时统一回 {ok:false, canceled:true}（CONFIRM_CANCELED），
+// 消费方此前没有 canceled 分支：用户点「取消」却得到「删除失败/卸载失败/清除
+// 失败」红条。三处消费回调必须先判 canceled 静默返回。
+const appsPageF26 = pages[0];
+const canceledReturns = (appsPageF26.match(/if \(res\.canceled\) return;/g) || []).length;
+if (canceledReturns < 2) {
+  throw new Error(`F-26: AppsPage 的删除版本/卸载回调必须先判 res.canceled 静默返回（取消≠失败）——现有 ${canceledReturns} 处`);
+}
+if (!/clearHistory\(\)[\s\S]{0,300}result\.canceled/.test(pages[2])) {
+  throw new Error('F-26: HistoryPage.handleClear 必须先判 result.canceled（原生确认被取消不得落「清除失败」红条）');
+}
+
 // F-37（DEEP_REVIEW 0ef3bbe）：main 进程 IPC 处理器不得在函数体内 require()
 // （模块统一顶层 import；main 进程无打包懒加载收益，属历史噪音）。
 const ipcHandlers = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
@@ -373,11 +418,17 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   eq(displayNumber(null, 10), 10, 'null 状态必须显示默认 10');
   eq(displayNumber(4, 10), 4, '正常值原样显示');
 
-  // 设置页必须真的调用该解析通道（改成裸 parseInt 立即红）
+  // 设置页必须真的调用该解析通道（改成裸 parseInt 立即红）。
+  // F-34（UIUX 审计）更新：夹紧时机后移到 blur——三个数值字段改为
+  // numChange（键入：合法整数即时入表单、越界先钳）+ numBlur（完整
+  // parseBoundedInt 收口：空串=默认、越界钳制）+ numValue（显示层草稿/脏值
+  // 兜底）。锚点改为钉「blur 收口走 parseBoundedInt + 显示层走 numValue」，
+  // NaN 仍进不了保存链路。
   for (const field of ['maxConcurrentTasks', 'executorPort', 'interpreterDownloadTimeoutMs']) {
-    const re = new RegExp(`set\\('${field}',\\s*\\n?\\s*parseBoundedInt\\(`);
-    if (!re.test(config)) {
-      throw new Error(`UX-DSK-NUM: ConfigPage 的 ${field} 未走 parseBoundedInt（会重新引入 NaN）`);
+    const blurRe = new RegExp(`numBlur\\('${field}',\\s*[A-Z_]+,\\s*e\\.target\\.value\\)`);
+    const valueRe = new RegExp(`numValue\\('${field}'`);
+    if (!blurRe.test(config) || !valueRe.test(config)) {
+      throw new Error(`UX-DSK-NUM: ConfigPage 的 ${field} 未走 numBlur(parseBoundedInt 收口) + numValue（会重新引入 NaN 或回填毛刺）`);
     }
   }
   // 不得再出现无兜底的 parseInt（允许注释里出现该形态，故先去注释）
@@ -713,6 +764,132 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── 渲染层审计修复：P1-1 向导配置广播 / P2-1 日志读取失败分类 ───────────
+// P1-1：向导保存落盘后主进程广播 config:changed（对齐 history:changed 先例），
+// 配置页据此重取配置合并表单基线——否则重跑向导后主窗仍持旧表单，下次
+// 「保存配置」整表回写会把向导刚保存的端口/地址/名称静默回退。
+// P2-1：主进程对「文件不存在/读取失败」返回 missing/error 标记，渲染层分类
+// 呈现错误态而非清空缓冲冒充「暂无日志」空态。
+{
+  // ① 主进程广播接线：save-and-close-wizard 落盘后必须广播 config:changed
+  if (!ipcHandlers.includes("webContents.send('config:changed')")) {
+    throw new Error('P1-1: 主进程 save-and-close-wizard 未广播 config:changed（主窗表单基线会停留在向导保存前的旧值）');
+  }
+  // ② preload 暴露订阅通道（与 onHistoryChanged 同款形态：on + 可取消）
+  if (!preloadSrc.includes("onConfigChanged") || !preloadSrc.includes("ipcRenderer.on('config:changed'")) {
+    throw new Error('P1-1: preload 未暴露 onConfigChanged/config:changed 订阅通道');
+  }
+  // ③ 配置页订阅 + 重取 getConfig + 走合并策略
+  const configPage = pages[1];
+  if (!configPage.includes('onConfigChanged')) {
+    throw new Error('P1-1: ConfigPage 未订阅 onConfigChanged——向导保存后表单基线不刷新');
+  }
+  if (!configPage.includes('mergeConfigWithDisk(')) {
+    throw new Error('P1-1: ConfigPage 未走 mergeConfigWithDisk 合并（陈旧基线整表回写会覆盖向导新值）');
+  }
+  // ④ 合并策略纯函数：磁盘覆盖基线、用户草稿保留
+  const { mergeConfigWithDisk } = await import('./config-merge.ts');
+  const eq = (got, want, msg) => {
+    if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`P1-1: ${msg}（得到 ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}）`);
+  };
+  const m = mergeConfigWithDisk({
+    // keep：用户改过（1→2）但磁盘也恰为 2 —— 保留草稿且不计入 preservedKeys
+    // （保存与否结果相同，无需用户核对）。
+    savedForm: { port: 8002, name: 'old', token: '******', keep: 1 },
+    form: { port: 8002, name: 'draft', token: '******', keep: 2 },
+    disk: { port: 9999, name: 'wizard', token: '******', keep: 2 },
+  });
+  // 用户改过的 name 草稿保留（即使磁盘也变了）；没改过的 port 随磁盘刷新；
+  // 基线整体 = 磁盘值。
+  eq(m.form.name, 'draft', '用户草稿字段必须保留');
+  eq(m.form.port, 9999, '未编辑字段必须随磁盘刷新');
+  eq(m.form.keep, 2, '编辑过但与磁盘一致的字段保留草稿');
+  eq(m.savedForm, { port: 9999, name: 'wizard', token: '******', keep: 2 }, '基线必须整体采用磁盘值');
+  eq(m.updatedKeys.sort(), ['port'], 'updatedKeys 必须只含未编辑且磁盘变更的字段');
+  eq(m.preservedKeys.sort(), ['name'], 'preservedKeys 必须只含编辑过且与磁盘不同的字段');
+  const m2 = mergeConfigWithDisk({ savedForm: { a: 1 }, form: { a: 1 }, disk: { a: 1 } });
+  eq(m2.updatedKeys, [], '磁盘未变时不得报 updatedKeys');
+  // ⑤ P2-1 主进程标记：log:read 目标不存在 / readLogIncremental catch 必须
+  //    带 missing 标记（不再冒充成功空态）
+  const ipcNoComments = ipcHandlers.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  if (!ipcNoComments.includes('return { lines: [], totalLines: 0, missing: true }')) {
+    throw new Error('P2-1: 主进程 log:read / readLogIncremental 未返回 missing 标记（渲染层无法区分「未落盘」与「文件消失」）');
+  }
+  // ⑥ 分类纯函数：missing/error/shrink/append 四态
+  const { classifyLogRead, MISSING_AFTER_START_MESSAGE } = await import('./log-read-classify.ts');
+  eq(classifyLogRead({ missing: true }, 0).kind, 'missing', '首读 missing = 合法空态');
+  eq(classifyLogRead({ missing: true }, 500).kind, 'error', '已有缓冲后 missing = 错误态');
+  eq(classifyLogRead({ missing: true }, 500).message.length > 0, true, 'missing 错误态必须带人话文案');
+  eq(MISSING_AFTER_START_MESSAGE.length > 0, true, 'missing 兜底文案必须非空');
+  eq(classifyLogRead({ error: '被拒绝' }, 0).kind, 'error', 'error 标记 = 错误态');
+  eq(classifyLogRead({ lines: ['x'], totalLines: 3 }, 9).kind, 'shrink', 'totalLines 回退 = 轮转');
+  eq(classifyLogRead({ lines: ['a', 'b'], totalLines: 5 }, 3).kind, 'append', '正常增量');
+  eq(classifyLogRead({ lines: [], totalLines: 5 }, 3).kind, 'append', '空增量不误判');
+  // 畸形返回不炸：totalLines 缺失按 0、lines 非数组按空
+  eq(classifyLogRead({}, 0).kind, 'append', '畸形返回不得抛错');
+  eq(classifyLogRead(null, 0).kind, 'append', 'null 返回不得抛错');
+  // ⑦ 两页查看器必须走分类点（改回裸 totalLines 比较会重新引入静默清空）
+  if (!pages[2].includes('classifyLogRead(') || !pages[0].includes('classifyLogRead(')) {
+    throw new Error('P2-1: HistoryPage/AppsPage 查看器未走 classifyLogRead 分类（轮转/失败语义会漂移）');
+  }
+  // ⑧ 既有「IPC reject 终止轮询」守卫不回退（NETOPT-7⑥ 口径）
+  if (!pages[2].includes('pollStoppedRef.current = true') || !pages[0].includes('setAutoRefresh(false)')) {
+    throw new Error('P2-1: 错误分支必须终止轮询（NETOPT-7⑥ 口径）');
+  }
+}
+
+// ── 渲染层审计修复：P3-2 IPC 错误前缀剥除 / P3-3 超长复制诚实失败 /
+//    P3-8 列表刷新 in-flight 去重 ─────────────────────────────────────
+{
+  // P3-2：ipcErrorMessage 纯函数 + 全部 catch 分支接线
+  const { ipcErrorMessage } = await import('./ipc-error.ts');
+  const eq = (got, want, msg) => {
+    if (got !== want) throw new Error(`P3-2: ${msg}（得到 ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}）`);
+  };
+  eq(ipcErrorMessage(new Error("Error invoking remote method 'executor:start': Error: 端口 8002 已被占用")),
+    '端口 8002 已被占用', 'Electron invoke 前缀 + V8 Error: 前缀必须剥除');
+  eq(ipcErrorMessage(new Error("Error invoking remote method 'config:get': TypeError: bad")),
+    'bad', '非 Error 类型的 V8 前缀同样剥除');
+  eq(ipcErrorMessage(new Error('本地错误保持原样')), '本地错误保持原样', '无包装前缀不得误伤');
+  eq(ipcErrorMessage('裸字符串'), '裸字符串', '非 Error 输入原样返回');
+  // 全仓渲染层不得再直接输出 err.message（剥前缀必须走统一入口）
+  for (const [file, code] of [
+    ['StatusWindow.tsx', pages[3]], ['HistoryPage.tsx', pages[2]], ['AppsPage.tsx', pages[0]],
+    ['ConfigPage.tsx', pages[1]], ['Wizard.tsx', pages[4]],
+  ]) {
+    if (code.includes('err instanceof Error ? err.message : String(err)')) {
+      throw new Error(`P3-2: ${file} 仍直出 err.message（IPC 包装前缀会漏到用户眼前）`);
+    }
+    if (file !== 'Wizard.tsx' && !code.includes('ipcErrorMessage')) {
+      throw new Error(`P3-2: ${file} 未接线 ipcErrorMessage`);
+    }
+  }
+  const updateBanner = readFileSync(resolve(root, 'components', 'UpdateBanner.tsx'), 'utf8');
+  const healthPanel = readFileSync(resolve(root, 'components', 'HealthPanelCard.tsx'), 'utf8');
+  if (!updateBanner.includes('ipcErrorMessage') || !healthPanel.includes('ipcErrorMessage')) {
+    throw new Error('P3-2: UpdateBanner/HealthPanelCard 未接线 ipcErrorMessage');
+  }
+  // P3-3：preload 对超 1MiB 内容诚实失败（不再归一空串仍报 ok:true）
+  const { MAX_CLIPBOARD_ARG } = await import('../preload/bridge-args.ts');
+  const writeClipboard = preloadSrc.match(/writeClipboardText: \(text: string\) => \{[\s\S]*?\n  \},/);
+  if (!writeClipboard) throw new Error('P3-3: preload writeClipboardText 实现形态变化，断言需同步');
+  if (!writeClipboard[0].includes("error: 'tooLarge'") || !writeClipboard[0].includes('text.length > MAX_CLIPBOARD_ARG')) {
+    throw new Error('P3-3: 超长复制必须诚实返回 {ok:false,error:"tooLarge"}（假「已复制」比失败更伤信任）');
+  }
+  if (MAX_CLIPBOARD_ARG !== 1024 * 1024) throw new Error('P3-3: 剪贴板上限语义变化，断言需同步');
+  // 渲染层消费 tooLarge（复制失败文案区分「内容过大」）
+  if (!pages[3].includes("r?.error === 'tooLarge'") || !pages[2].includes("r?.error === 'tooLarge'")) {
+    throw new Error('P3-3: StatusWindow/HistoryPage 复制失败未区分「内容过大」（status.copyTooLarge 词条接线丢失）');
+  }
+  // P3-8：列表刷新 in-flight 去重（对齐 StatusWindow agent 轮询先例）
+  if (!/loadInFlight\.current = true/.test(pages[2]) || !/if \(loadInFlight\.current\) return;/.test(pages[2])) {
+    throw new Error('P3-8: HistoryPage.load 未加 in-flight 去重（轮询/推送/可见性恢复并发会乱序覆盖）');
+  }
+  if (!/refreshInFlight\.current = true/.test(pages[0]) || !/if \(refreshInFlight\.current\) return;/.test(pages[0])) {
+    throw new Error('P3-8: AppsPage.refresh 未加 in-flight 去重');
+  }
+}
+
 // ── getHistory 推送化（战役遗留 #4）：推送订阅 + 轮询退役守卫 ──────────
 // 主进程 meta 变更哨广播 history:changed，两页订阅刷新；10s 轮询退役、60s
 // 兜底保留。四断言：preload 暴露通道 / 两页都订阅 / 订阅可取消 / 10s 轮询
@@ -857,6 +1034,21 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
   if (!readFileSync(resolve(root, 'components', 'ConfirmBar.tsx'), 'utf8').includes('role="alertdialog"')) {
     throw new Error('报障回归：共享 ConfirmBar 缺少 role="alertdialog" 语义');
+  }
+  // F-35（UIUX 审计）：ConfirmBar 的 Esc 必须以「捕获阶段 + stopImmediatePropagation」
+  // 隔离同页其他 Esc 语义（全屏查看器关闭等）。背景：确认条与查看器的 Esc 监听
+  // 都挂 document——① stopPropagation 拦不住**同一节点**上的其他监听器（两个
+  // 都会触发，「取消确认 + 关查看器」同时发生）；② 单改 stopImmediatePropagation
+  // 也不够——确认条 effect 依赖 [onCancel]（父组件每渲染新箭头函数）会反复
+  // 重注册、监听顺序漂移到查看器之后，bubble 阶段的先后不可依赖。捕获阶段
+  // （addEventListener 第三参 true）确定性地先于 document 冒泡执行，行为锚点
+  // 同时钉住这两个要素。
+  {
+    const confirmBarSrc = readFileSync(resolve(root, 'components', 'ConfirmBar.tsx'), 'utf8');
+    if (!/addEventListener\('keydown', handler, true\)/.test(confirmBarSrc)
+      || !confirmBarSrc.includes('stopImmediatePropagation')) {
+      throw new Error('F-35：ConfirmBar 的 Esc 必须挂捕获阶段（addEventListener 第三参 true）并以 stopImmediatePropagation 隔离同页其他 Esc 语义');
+    }
   }
   if (/window\.confirm\(/.test(appsPage)) {
     throw new Error('UI 回归：应用页仍在使用原生 confirm 弹窗（无边框窗口下不可靠，须走页内确认条）');
@@ -1359,8 +1551,11 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 
   // 视觉优化：窗口放大 + 去掉四周底边（卡片边框/阴影/圆角 + wrap padding）
-  if (!wm.includes('width: 660,') || !wm.includes('height: 780,')) {
-    throw new Error('向导视觉: 窗口尺寸未放大（仍偏小）');
+  // F-28（2026-10-25 审计）：660×780 固定尺寸改为「名义尺寸随 workArea 钳制」
+  // ——普通屏仍取满 660×780（锚点钉在 Math.min 上限字面量上），矮屏收敛到
+  // 工作区内（openStatus 同款做法）。
+  if (!wm.includes('Math.min(660, workArea.width)') || !wm.includes('Math.min(780, workArea.height)')) {
+    throw new Error('向导视觉: 窗口名义尺寸未保持 660×780 或缺少 workArea 钳制');
   }
   if (!/\.wizard-wrap \{[\s\S]*?padding: 0;/.test(css)) {
     throw new Error('向导视觉: .wizard-wrap 仍有 padding（四周底边来源）');

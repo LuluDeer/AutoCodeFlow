@@ -380,13 +380,20 @@ export default function ExecutorPackagesPage() {
 
   // 补充 P2：自动刷新——包表/推送结果会异步变化（入队任务完成、状态翻转），
   // 旧实现必须手动点刷新。30s 轮询一次；弹窗打开或正在加载时跳过，避免打断交互。
+  // F-16（UIAUDIT P3-9）：跳过判据改走 ref 镜像——旧实现把 loading/uploadOpen/
+  // pushTarget 放进依赖数组，每次 load 完成 loading 翻转都会拆掉重建 interval
+  // （30s 节拍从上次完成时刻重启，持续漂移）。守卫读 ref 后依赖只剩 load，
+  // 节拍稳定（load 本身仅随筛选/分页参数变化而重建，属语义性重建）。
+  const pollGateRef = useRef({ loading, uploadOpen, pushTarget });
+  pollGateRef.current = { loading, uploadOpen, pushTarget };
   useEffect(() => {
     const timer = setInterval(() => {
-      if (loading || uploadOpen || !!pushTarget) return;
+      const gate = pollGateRef.current;
+      if (gate.loading || gate.uploadOpen || !!gate.pushTarget) return;
       void load();
     }, 30000);
     return () => clearInterval(timer);
-  }, [load, loading, uploadOpen, pushTarget]);
+  }, [load]);
 
   const handleUpload = async (values: Record<string, unknown>) => {
     // normFileList 已将字段值收敛为 UploadFile[]（见 utils/upload.ts）。
@@ -535,16 +542,38 @@ export default function ExecutorPackagesPage() {
     });
   };
 
-  const handleStatusToggle = async (pkg: PkgRow) => {
-    // B-3：行级 pending 防双击竞态——已有切换在途时忽略重复触发
+  // P2-4（UI 审计）：弃用/激活补二次确认——弃用会立刻把包从安装向导候选集移除
+  // （findLatest 只取 ACTIVE），单击误触的后果不显性；激活同理（重新进入候选集）。
+  // 两个动作都可逆，确认文案如实注明。对照同文件 handleDelete 的 confirm 形态
+  // （onOk rethrow 保持确认框打开可重试，失败经 showApiError 归一提示）。
+  const handleStatusToggle = (pkg: PkgRow) => {
+    // B-3：行级 pending 防双击——确认框打开期间即占位，重复点击不再连开确认框
     if (togglingId) return;
     setTogglingId(pkg.id);
-    try {
-      if (pkg.status === 'active') await deprecatePackage(pkg.id);
-      else await activatePackage(pkg.id);
-      load();
-    } catch (err: unknown) { showApiError(err, t('execPkg.operateFail')); }
-    finally { setTogglingId(null); }
+    const deprecating = pkg.status === 'active';
+    confirmModal.confirm({
+      // 三元在 t() 外做分支——t() 入参保持字面量，i18n 动态键守卫静态可判
+      title: deprecating ? t('execPkg.action.deprecateConfirm') : t('execPkg.action.activateConfirm'),
+      content: deprecating
+        ? t('execPkg.action.deprecateConfirmDesc')
+        : t('execPkg.action.activateConfirmDesc'),
+      okText: deprecating ? t('execPkg.action.deprecate') : t('execPkg.action.activate'),
+      cancelText: t('execPkg.cancel'),
+      onOk: async () => {
+        try {
+          if (deprecating) await deprecatePackage(pkg.id);
+          else await activatePackage(pkg.id);
+          load();
+        } catch (err: unknown) {
+          showApiError(err, t('execPkg.operateFail'));
+          // 与 handleDelete 同款：rethrow 让 antd 保持确认框打开（可重试/取消）。
+          throw err;
+        } finally {
+          setTogglingId(null);
+        }
+      },
+      onCancel: () => setTogglingId(null),
+    });
   };
 
   // download 路由在 JwtAuthGuard 后，<a href> 无法携带 Authorization（会 401），
@@ -877,7 +906,18 @@ export default function ExecutorPackagesPage() {
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
-              <Form.Item name="version" label={t('execPkg.upload.field.version')} rules={[{ required: true, message: t('execPkg.upload.field.versionRequired') }]}>
+              <Form.Item
+                name="version"
+                label={t('execPkg.upload.field.version')}
+                rules={[
+                  { required: true, message: t('execPkg.upload.field.versionRequired') },
+                  // P3-1（UI 审计）：宽松 semver 形态校验——X.Y.Z 必填，允许
+                  // -prerelease / +build 后缀。后端 DTO 只限长（≤64）不限形，
+                  // 乱版本号会以「最新包」语义比较（compareDottedVersions）时
+                  // 落到 NaN 兜底序，前端先给出可读提示。
+                  { pattern: /^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$/, message: t('execPkg.upload.field.versionPattern') },
+                ]}
+              >
                 <Input placeholder="1.0.0" maxLength={64} />
               </Form.Item>
             </Col>

@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { ExecutorService } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
 // FEAT-04: ExecutorService now injects the metrics-history repo (read side)
@@ -93,6 +94,13 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -533,7 +541,9 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         address: "host:3002",
         tokenHash: "$2b$12$old",
       });
-      executorRepo.update.mockImplementation(() => Promise.resolve({ affected: 1 }));
+      executorRepo.update.mockImplementation(() =>
+        Promise.resolve({ affected: 1 }),
+      );
       await service.rotateToken("e1");
 
       // 未被轮换的 host:3003 仍是缓存命中，不再消耗 bcrypt

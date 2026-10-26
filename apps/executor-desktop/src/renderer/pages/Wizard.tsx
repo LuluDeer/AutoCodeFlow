@@ -3,6 +3,10 @@ import Icon from '../components/Icon';
 // V4-5（I-07 门面四件）+ V4 后续优化（6）i18n 二期：向导全部文案入双语表
 // （zh 值与原硬编码逐字一致，e2e 依赖的渲染锚点不变）。
 import { createCfgTexts, resolveRendererLocale } from '../i18n';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
+// P3-5：推荐网卡判定抽取到共享模块（与 ConfigPage 同源，原 D-04 实现迁移）。
+import { pickRecommendedIp } from '../network-address';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -12,6 +16,9 @@ declare const window: Window & {
     // 重跑向导预填：已配置机器从设置页唤出时，表单先载入当前配置（token 为
     // 掩码哨兵 '******'，原样回传 = 保留已存 token，见 config-store TOKEN_MASK）。
     getConfig: () => Promise<Record<string, unknown>>;
+    // F-23：重跑向导预填「开机自动启动」用 OS 自启真值（与设置页开关同源，
+    // autolaunch:get），避免 config.autoStart 与 OS 状态脱节时预填错值。
+    getAutoLaunch: () => Promise<boolean>;
     // 首启向导「下载源」步：并行探测官方源与国内镜像（任一 HTTP 应答即算可达）。
     testInterpreterSource: () => Promise<{
       official: { ok: boolean; ms: number; detail: string };
@@ -106,7 +113,7 @@ export default function Wizard() {
       setTestResult(await window.electronAPI.testConnection(form.adminApiUrl));
     } catch (err) {
       // IPC reject 时 testing 必须复位，否则按钮永久「测试中...」
-      setTestResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
+      setTestResult({ ok: false, message: ipcErrorMessage(err) });
     } finally {
       setTesting(false);
     }
@@ -137,6 +144,29 @@ export default function Wizard() {
             ? f.pullMode
             : (typeof cfg.pullMode === 'boolean' ? cfg.pullMode : f.pullMode),
         }));
+        // F-23（UIUX 审计）：重跑向导不再静默重置「完成」步的两个自启开关——
+        // DEFAULT_FORM 的 autoStartExecutor:true / autoStart:false 只是首次
+        // 安装的默认值，已配置机器（configured===true）预填当前值，用户未
+        // 触碰即原样回传。autoStart 以 OS 自启真值（autolaunch:get）为准：
+        // 设置页开关读 OS 真值、托盘勾选态读 config 落盘值，两者此前会因
+        // 脱节而互相矛盾——预填 OS 真值让「不动 = 不变」，残留差异由
+        // ipc-handlers 保存路径的对称 disable 兜底收敛。
+        if (cfg.configured === true) {
+          setForm((f) => ({
+            ...f,
+            autoStartExecutor: typeof cfg.autoStartExecutor === 'boolean' ? cfg.autoStartExecutor : f.autoStartExecutor,
+          }));
+          window.electronAPI.getAutoLaunch()
+            .then((osEnabled) => setForm((f) => ({ ...f, autoStart: osEnabled === true })))
+            .catch(() => {
+              // 读不到 OS 自启态（平台接口异常等）：退回 config 落盘值——
+              // 两处 UI 的最终对齐由保存路径的对称 disable 兜底。
+              setForm((f) => ({
+                ...f,
+                autoStart: typeof cfg.autoStart === 'boolean' ? cfg.autoStart : f.autoStart,
+              }));
+            });
+        }
       })
       .catch(() => { /* 读取失败保持空表单（首次安装语义），不炸向导 */ });
   }, []);
@@ -147,7 +177,16 @@ export default function Wizard() {
     try {
       const r = await window.electronAPI.saveAndCloseWizard({
         ...form,
-        executorHost: '0.0.0.0',
+        // F-23（UIUX 审计）：重跑向导不再把 executorHost 悄悄改回全网卡监听
+        // ——向导没有该字段的输入位，finish() 此前硬编码 '0.0.0.0'，用户刻意
+        // 配置的仅本机回环监听（127.0.0.1）会被静默降级且无任何提示。沿用
+        // 挂载时读到的已存配置（首次安装读不到/为空时回落原固定默认，行为
+        // 不变；与下方 maxConcurrentTasks/logLevel 的「未暴露字段保留」同款
+        // 口径）。
+        executorHost:
+          typeof wizardCfg?.executorHost === 'string' && wizardCfg.executorHost
+            ? wizardCfg.executorHost
+            : '0.0.0.0',
         // 重跑向导不重置未暴露的档位：沿用挂载时读到的已存配置（首次安装
         // 读不到时回落原默认 10/info，行为不变）——否则重跑一次会把
         // logLevel=debug / 自定义并发数悄悄冲回默认。
@@ -166,7 +205,7 @@ export default function Wizard() {
     } catch (err) {
       // 原实现未包 try——reject 会让 saving 永久为 true，向导卡在"保存中"
       // 且无任何错误提示，用户只能强杀进程。
-      setFinishError(err instanceof Error ? err.message : String(err));
+      setFinishError(ipcErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -371,11 +410,8 @@ function StepConnect({
   );
 }
 
-/** D-04：推荐网卡判定——排除链路本地（169.254.*）与回环（127.*）后取第一个地址；
- *  全部被排除时返回 null，调用方兜底取 ips[0]（主进程大概率已滤，此处防御性再判）。 */
-function pickRecommendedIp(ips: string[]): string | null {
-  return ips.find((ip) => !ip.startsWith('169.254.') && !ip.startsWith('127.')) ?? null;
-}
+/** D-04：推荐网卡判定——已抽取到共享模块 network-address.ts（P3-5：与
+ *  设置页失焦自动填充/IP 快速选择同源，排除链路本地与回环后取第一个地址）。 */
 
 function StepExecutor({
   form, onChange, onBack, onNext,
@@ -390,6 +426,27 @@ function StepExecutor({
   const [showToken, setShowToken] = useState(false);
   const [checkingPort, setCheckingPort] = useState(false);
   const [portResult, setPortResult] = useState<{ available: boolean; message: string } | null>(null);
+  // F-33（UIUX 审计）：端口输入改为「草稿字符串」受控。原实现把
+  // parseInt('') = NaN 直接塞进表单并渲染 value={NaN}（React 控制台告警
+  // "Received NaN for the `value` attribute"），且清空后「下一步」静默禁用、
+  // 无任何原因提示。输入过程只保留用户键入的原样字符串（空串合法）；form
+  // 里仍存数值（NaN = 未填写，portValid 闸门拦住「下一步」），显示权归
+  // portText——NaN 不再流进 DOM。
+  const [portText, setPortText] = useState(() =>
+    Number.isFinite(form.executorPort) ? String(form.executorPort) : '');
+
+  // 预填（getConfig 晚到）/返回本步等场景下表单端口外部变化时回填草稿。
+  // 按 parseInt 数值比较：'007' 这类手输前导零不会被重写；清空（NaN）两侧
+  // 恒不等、重写为空串也无害（草稿本就是空）。
+  useEffect(() => {
+    const parsed = portText.trim() === '' ? NaN : Number.parseInt(portText.trim(), 10);
+    if (form.executorPort !== parsed) {
+      setPortText(Number.isFinite(form.executorPort) ? String(form.executorPort) : '');
+    }
+    // portText 有意不入依赖：本 effect 只响应表单端口的**外部**变化（预填），
+    // 键入路径由 handlePortChange 自己同步，回填会打断输入。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.executorPort]);
 
   useEffect(() => {
     window.electronAPI.getLocalIPs()
@@ -419,13 +476,18 @@ function StepExecutor({
       // 固定 0.0.0.0。
       setPortResult(await window.electronAPI.checkPort(form.executorPort, '0.0.0.0'));
     } catch (err) {
-      setPortResult({ available: false, message: err instanceof Error ? err.message : String(err) });
+      setPortResult({ available: false, message: ipcErrorMessage(err) });
     } finally {
       setCheckingPort(false);
     }
   }
 
-  function handlePortChange(v: number) {
+  function handlePortChange(raw: string) {
+    setPortText(raw);
+    // F-33：清空（''）→ NaN 进表单（未填写语义，portValid 闸门接管）；其余
+    // 与旧 parseInt 口径一致（非法部分截断）。
+    const trimmed = raw.trim();
+    const v = trimmed === '' ? NaN : Number.parseInt(trimmed, 10);
     onChange('executorPort', v);
     setPortResult(null);
     // 端口为有效整数时才同步对外地址里的端口段（清空输入得到 NaN 时不拼出 ":NaN"）。
@@ -484,9 +546,11 @@ function StepExecutor({
               className={`input${portResult && !portResult.available ? ' error' : ''}`}
               // min 与本页校验口径（1–65535，见下方越界提示）及设置页
               // EXECUTOR_PORT 区间对齐——原 min={1024} 与校验文案自相矛盾。
+              // F-33：value 走 portText 草稿（清空 = 空串），NaN 不再进 DOM。
               type="number" min={1} max={65535}
-              value={form.executorPort}
-              onChange={(e) => handlePortChange(parseInt(e.target.value, 10))}
+              placeholder="8002"
+              value={portText}
+              onChange={(e) => handlePortChange(e.target.value)}
             />
             <button className="btn wizard-inline-button" onClick={checkPort} disabled={!form.executorPort || checkingPort}>
               {checkingPort ? t('wizard.machine.checking') : t('wizard.machine.checkPort')}
@@ -499,7 +563,14 @@ function StepExecutor({
           )}
           {/* HTML 的 min/max 不阻止手输/粘贴越界值——显式给出校验反馈，
               否则用户可带着非法端口一路点到"完成"。清空输入（NaN）时不显示
-              越界错误，只在确有整数值但超出范围时提示。 */}
+              越界错误，只在确有整数值但超出范围时提示。F-33：清空是「必填」
+              缺失而非越界——给可见原因（portRequired），不再只让「下一步」
+              静默禁用。 */}
+          {portText.trim() === '' && (
+            <div className="test-result fail" role="alert">
+              <Icon name="close" className="icon-xs" /> {t('wizard.machine.portRequired')}
+            </div>
+          )}
           {Number.isInteger(form.executorPort) &&
             (form.executorPort < 1 || form.executorPort > 65535) && (
             <div className="test-result fail" role="alert">
@@ -514,16 +585,23 @@ function StepExecutor({
             <div className="ip-picker-wrap">
               <div className="ip-picker-label">{t('wizard.machine.ipPickerLabel')}</div>
               <div className="ip-picker">
+                {/* P3-6：端口非法（清空/越界，portValid=false）时禁用快速选择
+                    ——此前 `${ip}:${form.executorPort}` 会渲染出 `ip:NaN` 且可
+                    点入表单（对外地址带 NaN 端口一路走到完成）。非法时点按
+                    无效 + 按钮禁用态可见，与 portRequired/portRange 反馈同口径。 */}
                 {localIPs.map((ip) => {
-                  const full = `${ip}:${form.executorPort}`;
-                  const sel = form.executorAddressPublic === full;
+                  // P3-6：端口非法时只显示 ip 段（不拼 `ip:` 尾随冒号，也
+                  // 不会出现 `ip:NaN`），按钮禁用、不可点入表单。
+                  const full = portValid ? `${ip}:${form.executorPort}` : ip;
+                  const sel = portValid && form.executorAddressPublic === full;
                   const rec = ip === recommendedIp;
                   return (
                     <button
                       type="button"
                       key={ip}
                       className={`ip-chip${sel ? ' selected' : ''}`}
-                      onClick={() => selectIP(ip)}
+                      onClick={() => { if (portValid) selectIP(ip); }}
+                      disabled={!portValid}
                       aria-pressed={sel}
                       aria-label={`${full}${sel ? t('wizard.machine.chipSelected') : t('wizard.machine.chipUse')}${rec ? t('wizard.machine.chipRecommended') : ''}`}
                     >

@@ -72,7 +72,25 @@ const MAX_SNAPSHOT_ENTRIES = 10;
  * 10000 上限——解释器清单是低频静态配置，200 条足够且防上报面写放大）：
  * jsonb 列由**执行器上报**填充，不设上界等于把写放大权交给对端。
  */
-const MAX_INTERPRETER_ENTRIES = 200;
+export const MAX_INTERPRETER_ENTRIES = 200;
+
+/**
+ * P2-1（2026-10-26 第三轮审计）：单条上报面字符串字段的长度上界——与条数上界
+ * 同一立场（防 jsonb 写放大：55MB body 上限内 200 条 × 任意长度 path/discoveredAt
+ * 会随读面整体反序列化）。
+ *
+ * - path ≤ 1024：现实解释器路径是 UV_PYTHON_INSTALL_DIR 内的绝对路径
+ *   （几十~百字符量级），1024 留足深目录余量；绝对路径超 1024 本身就是异常产物。
+ * - discoveredAt ≤ 64：ISO 8601 时刻现实 ≤ 30 字符（含毫秒 + 时区），64 已有
+ *   2 倍余量（对齐 deployed-apps.util.ts 的 lastDeployedAt ≤64 同位字段先例）。
+ *
+ * 超限与结构非法同策：**整字段拒绝采纳**（返回 null，调用方 warn + DB 保留
+ * 旧值），绝不截断单条——interpreters 是执行器缓存池的**全量快照**，截断会让
+ * 调度把被截掉的真实条目判为「池里没有」（与 deployedApps「截断让整替语义
+ * 误删」同一理由，见 deployed-apps.util.ts MAX_DEPLOYED_APPS 注释）。
+ */
+export const MAX_INTERPRETER_PATH_LENGTH = 1024;
+export const MAX_INTERPRETER_DISCOVERED_AT_LENGTH = 64;
 
 /** CONTRACT §2.2：`version` 合法形态为 `X.Y`（探测回退）或 `X.Y.Z`（完整补丁）。 */
 const INTERPRETER_VERSION_PATTERN = /^\d+\.\d+(\.\d+)?$/;
@@ -164,6 +182,12 @@ export function normalizeInterpreters(
   value: unknown,
 ): ExecutorInterpreter[] | null {
   if (!Array.isArray(value)) return null;
+  // P3-3（2026-10-26 第三轮审计）：超限**整体拒绝**而非静默截断——interpreters
+  // 是缓存池全量快照，截断（旧 `if (out.length >= MAX) break`）会把第 201+ 条
+  // 真实条目从调度判据里抹掉（调度以为池里没有该版本），与 deployedApps
+  // 「截断让整替语义误删」同一失真形态。上界本身保留（防写放大），只是违规
+  // 的后果从「半采纳」改为「不采纳」（调用方 warn + DB 保留旧值，三态不变）。
+  if (value.length > MAX_INTERPRETER_ENTRIES) return null;
   const out: ExecutorInterpreter[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -173,13 +197,20 @@ export function normalizeInterpreters(
     const trimmed = version.trim();
     if (!INTERPRETER_VERSION_PATTERN.test(trimmed)) return null;
     const entry: ExecutorInterpreter = { version: trimmed };
-    if (typeof item.path === "string") entry.path = item.path;
+    // P2-1：path/discoveredAt 采纳面加长度上界（常量注释里有取值依据）。
+    // 超限整字段拒绝（返回 null），不截断、不剥除该字段——半采纳同样不可信。
+    if (typeof item.path === "string") {
+      if (item.path.length > MAX_INTERPRETER_PATH_LENGTH) return null;
+      entry.path = item.path;
+    }
     if (typeof item.available === "boolean") entry.available = item.available;
     if (typeof item.discoveredAt === "string") {
+      if (item.discoveredAt.length > MAX_INTERPRETER_DISCOVERED_AT_LENGTH) {
+        return null;
+      }
       entry.discoveredAt = item.discoveredAt;
     }
     out.push(entry);
-    if (out.length >= MAX_INTERPRETER_ENTRIES) break;
   }
   return out;
 }

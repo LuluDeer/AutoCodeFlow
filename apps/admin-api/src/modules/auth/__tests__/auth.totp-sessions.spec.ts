@@ -1,5 +1,9 @@
 import { Test } from "@nestjs/testing";
-import { UnauthorizedException, BadRequestException } from "@nestjs/common";
+import {
+  UnauthorizedException,
+  BadRequestException,
+  NotFoundException,
+} from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
@@ -675,10 +679,13 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       );
     });
 
-    it("rejects revoking a session the user does not own", async () => {
+    it("rejects revoking a session the user does not own (F-56: 404，不再 401)", async () => {
+      // F-56（UIAUDIT P3-3）：SESSION_NOT_FOUND 目录状态 401→404。401 会触发
+      // admin-web 拦截器的「会话过期」静默跳登录链（吊销一条已死会话被放大成
+      // 整页登出）；404 与全站资源不存在语义归位。
       refreshTokenRepo.update.mockResolvedValue({ affected: 0 });
       await expect(service.revokeSession(1, 999)).rejects.toThrow(
-        UnauthorizedException,
+        NotFoundException,
       );
     });
 

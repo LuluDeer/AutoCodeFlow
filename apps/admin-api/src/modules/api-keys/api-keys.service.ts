@@ -218,8 +218,7 @@ export class ApiKeysService {
   ): Promise<ApiKeyView | null> {
     const row = await this.repo.findOne({ where: { id } });
     if (!row || row.userId !== userId) return null;
-    const expired =
-      !!row.expiresAt && row.expiresAt.getTime() <= Date.now();
+    const expired = !!row.expiresAt && row.expiresAt.getTime() <= Date.now();
     if (!row.revokedAt && !expired) {
       throw new AppError("API_KEY_DELETE_ACTIVE_FORBIDDEN", { apiKeyId: id });
     }

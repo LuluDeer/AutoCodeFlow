@@ -3,13 +3,18 @@ import { randomUUID } from 'crypto';
 import { config, EXECUTOR_VERSION, PROTOCOL_VERSION } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
-import { recordHeartbeat } from './heartbeat-state';
+import { recordHeartbeat, isRegistrationConflictActive } from './heartbeat-state';
 import { executorStartedAt, executorStartupId } from './startup-identity';
 // ARCH-36（ADR-017 阶段 2）：设备指纹与 register 同源（同一 memo）。
 import { getDeviceFingerprint } from './device-identity';
 import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelope';
 // A7（第四轮审计）：磁盘水位随心跳透出（admin 既有 diskUsage 列，免迁移）。
 import { diskUsagePercentOrNull } from './file-logger';
+// R3-B（部署模型评审 2026-10-23 §4.3/§P5）：设备级应用版本事实随心跳上报。
+import { collectDeployedAppsForHeartbeat } from './deployed-apps';
+// P10（executor 包版本收敛）：已安装执行器包清单随心跳上报（失败语义与
+// deployedApps 一致：扫描失败省略整键）。
+import { collectInstalledPackages } from './installed-packages';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
@@ -300,6 +305,18 @@ async function sendHeartbeat() {
       // 池里根本没有 3.12 的执行器上。provider 走 WS3 的 TTL 探测缓存，
       // 心跳路径零 uv 进程开销（NFR-10）。
       interpreters: await collectInterpreters(),
+      // R3-B（部署模型评审 2026-10-23 §4.3/§P5）：设备级应用版本事实（本机
+      // apps/ 的 current/保留版本清单）。纯附加可选键——扫描失败 → undefined
+      // （JSON 序列化丢键 =「未上报」，admin 保留旧值），绝不阻塞或弄挂心跳
+      // 本体；与 interpreters 的「失败收敛空数组」刻意不同：apps/ 不可读时
+      // 我们不知道有没有应用，空数组会把「未知」伪装成「无应用」。
+      deployedApps: collectDeployedAppsForHeartbeat(),
+      // P10（executor 包版本收敛）：已安装执行器包清单（本机
+      // .pkg-updates/manifests/*.json 扫描，事实源是 update-package.ts 在
+      // checksum 验证通过后落盘的 manifest）。键省略语义与 deployedApps 一致：
+      // 扫描失败 → undefined（JSON 序列化丢键 =「未上报」，admin 保留旧值），
+      // 绝不阻塞或弄挂心跳本体；[] 则是「已上报且无安装包」的真事实。
+      installedPackages: collectInstalledPackages(),
       // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
       // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
       maxConcurrentTasks: config.maxConcurrentTasks,
@@ -316,6 +333,16 @@ async function sendHeartbeat() {
       // PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
       // 中台可据此在心跳路径同样做兼容性分支。
       protocolVersion: PROTOCOL_VERSION,
+      // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突自报。
+      // 语义「自最近一次 409 起持续至成功取回 token」（写方 auth.ts 的
+      // recordTokenConflict / clearTokenConflict，读方
+      // isRegistrationConflictActive——/health 同源，纯内存读取零开销）。
+      // 三态纪律：**恒发送**（含 false——false = 「当前无冲突」的真事实，
+      // 与 deployedApps 的 [] 同口径；键缺席 = 未上报，是旧执行器 / python
+      // 的合法形态）。中台消费判据：true 且心跳指纹与行已存真实指纹错位
+      // → 活性四列不登记（心跳不再把冲突行保持 ONLINE，接管窗得以打开）。
+      // 详见 protocol.json compatibilityMatrix v8 条目。
+      registrationConflict: isRegistrationConflictActive(),
     });
     // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
     // stored tokenHash (same adoption as register/POST /token), so the

@@ -311,7 +311,7 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
   });
 
   describe("flush 兜底与状态还原", () => {
-    it("flush send failure → NOTIFICATION_FAILED audit (best-effort), no rethrow", async () => {
+    it("flush send failure → NOTIFICATION_FAILED audit (best-effort), no rethrow；审计自身失败 → warn 可见（巡查收口）", async () => {
       notificationService.notifyFailureWithConfig.mockRejectedValue(
         new Error("smtp down"),
       );
@@ -327,6 +327,19 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
           resourceId: "t1",
         }),
       );
+
+      // 巡查·静默吞错收口：审计兜底自身失败时必须 warn（此前 bare catch
+      // 完全静默——这批告警的唯一落痕也随之消失，双重丢失零痕迹）。
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => undefined);
+      auditService.log.mockRejectedValue(new Error("audit db down"));
+      await service.recordFailure(rec());
+      await expect(service.flush("t1")).resolves.toBeDefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("NOTIFICATION_FAILED 审计兜底写入失败"),
+      );
+      warnSpy.mockRestore();
     });
 
     it("parseWindowState: corrupted ctx falls back to taskId as taskName; r: fields become reason distribution", () => {
@@ -571,9 +584,7 @@ describe("NotificationDigestService 生命周期与 fail-open（R31-A3）", () =
 
     await svc.onModuleDestroy();
     expect(inst.quit).toHaveBeenCalledTimes(1);
-    expect(
-      (svc as unknown as { client: unknown }).client,
-    ).toBeNull();
+    expect((svc as unknown as { client: unknown }).client).toBeNull();
 
     await expect(svc.onModuleDestroy()).resolves.toBeUndefined();
     expect(inst.quit).toHaveBeenCalledTimes(1);
@@ -592,9 +603,7 @@ describe("NotificationDigestService 生命周期与 fail-open（R31-A3）", () =
 
     await svc.onModuleDestroy();
     expect(timersOf(svc).size).toBe(0);
-    expect(
-      (svc as unknown as { testClient?: unknown }).testClient,
-    ).toBeNull();
+    expect((svc as unknown as { testClient?: unknown }).testClient).toBeNull();
   });
 
   it("窗到期由定时器自己 flush（不依赖调用方）：只发一条汇总，定时器先摘表，窗不再重复发", async () => {
@@ -606,7 +615,9 @@ describe("NotificationDigestService 生命周期与 fail-open（R31-A3）", () =
       await svc.recordFailure(rec());
       expect(timersOf(svc).has("t1")).toBe(true);
       // 窗内不发：聚合的全部意义
-      expect(notificationService.notifyFailureWithConfig).not.toHaveBeenCalled();
+      expect(
+        notificationService.notifyFailureWithConfig,
+      ).not.toHaveBeenCalled();
 
       await jest.advanceTimersByTimeAsync(WINDOW_MINUTES * 60_000 + 1);
 

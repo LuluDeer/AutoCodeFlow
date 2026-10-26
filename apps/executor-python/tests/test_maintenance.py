@@ -464,6 +464,32 @@ def test_lifespan_starts_and_stops_disk_cleanup(monkeypatch, work_root):
     # neutralize the E2 wiring (covered in test_callback_persistence.py)
     monkeypatch.setattr(execute_module, 'start_callback_retry_task', lambda: None)
     monkeypatch.setattr(execute_module, 'stop_callback_retry_task', AsyncMock())
+    # 顺序耦合泄漏收口（2026-10-24，CI 全量反复红根因）：真 lifespan 的关闭
+    # 序列会跑 await_background_tasks_after_kill / fail_prepare_stage…_on_shutdown，
+    # 其回调 drain 走 get_http_client() 在测试 loop 上建真 httpx transport 并向
+    # 不可达的 admin 地址发起连接——lifespan 退出后 loop 关闭，残留 transport
+    # 在后续任意 GC 时 __del__ 抛 unraisable，pytest 归罪到**下一个套件**
+    # （实测：test_scheduler trust_env 用例 ERROR / config_reload 后本用例自身
+    # 爆 21 个 unclosed socket）。本用例验证 disk_cleanup provider 接线，把
+    # 两条 shutdown drain 路径一并替换为 no-op（回调行为另有
+    # test_callback_persistence 专测），从源头消灭 transport。
+    monkeypatch.setattr(
+        execute_module, 'await_background_tasks_after_kill',
+        AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        execute_module, 'fail_prepare_stage_executions_on_shutdown',
+        AsyncMock(return_value=0))
+    # 顺序耦合泄漏修复（2026-10-24 全量反复红）：本用例跑**真** main.lifespan，
+    # 不拦 heartbeat/pull 时 _heartbeat_task 会启动真心跳循环，其
+    # get_http_client() 在测试 loop 上建真 httpx.AsyncClient——lifespan 退出
+    # 只 cancel 任务不 aclose client，asyncio.run 关 loop 后残留 transport 在
+    # 后续 GC __del__ 抛 unraisable，pytest 归罪到**下一套件**的 teardown
+    # （实测 test_scheduler trust_env 用例 ERROR）。本用例验证 disk_cleanup
+    # provider 接线，拦掉心跳/pull 零覆盖损失（心跳另有 test_scheduler 专测）。
+    async def _park_forever():
+        await asyncio.sleep(3600)
+    monkeypatch.setattr(main_module, 'heartbeat_task', _park_forever)
+    monkeypatch.setattr(main_module, 'pull_task', _park_forever)
 
     started = {}
 
@@ -604,3 +630,40 @@ def test_cleanup_uv_cache_skipped_while_live_venv_task(work_root, monkeypatch):
     # 活跃任务结束后，下一轮清扫正常回收
     maintenance.cleanup_work_dir(ttl_days=7)
     assert not stale.exists()
+
+
+def test_cleanup_invalidates_venv_deps_cache_after_venv_removal(work_root):
+    """巡查 2026-10-25（方向2 异常吞掉/悬空引用）：cleanup_work_dir 的
+    venv 依赖映射缓存失效判定原本引用 for 循环外的循环变量
+    ``count_key``——恰因残留 ``'venvs'`` 值才碰巧成立，重构循环即断。
+    现改为按计数账本判定：删过 venv 就必须失效缓存（指纹机制的双保险），
+    一枚 venv 都没删时不得乱失效（保住指纹缓存命中路径）。"""
+    import maintenance
+
+    venv_old = work_root / '.venvs' / 'task-old'
+    venv_old.mkdir(parents=True)
+    _age(venv_old)
+
+    maintenance._venv_deps_cache = {'/some/home': ['task-old']}
+    maintenance._venv_deps_fingerprint = ('stale',)
+    counts = maintenance.cleanup_work_dir(ttl_days=7)
+    assert counts['venvs'] == 1
+    assert maintenance._venv_deps_cache is None, '删除 venv 后依赖映射缓存必须失效'
+    assert maintenance._venv_deps_fingerprint is None
+
+
+def test_cleanup_keeps_venv_deps_cache_when_no_venv_removed(work_root):
+    """没删任何 venv 时不得误伤依赖映射缓存（指纹缓存命中路径保住）。"""
+    import maintenance
+
+    fresh = work_root / 'exec-fresh'
+    fresh.mkdir()  # 新鲜目录：不会被清扫
+
+    maintenance._venv_deps_cache = {'/some/home': ['task-live']}
+    maintenance._venv_deps_fingerprint = ('fresh',)
+    counts = maintenance.cleanup_work_dir(ttl_days=7)
+    assert counts['venvs'] == 0
+    assert maintenance._venv_deps_cache == {'/some/home': ['task-live']}
+    assert maintenance._venv_deps_fingerprint == ('fresh',)
+
+    maintenance._invalidate_venv_deps_cache()  # 收尾：不泄漏给后续用例

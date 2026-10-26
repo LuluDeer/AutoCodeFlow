@@ -22,6 +22,7 @@ from scheduler import (
     pull_task,
     register_interpreters_provider,
     get_http_client,
+    aclose_http_clients,
 )
 from auth import (
     get_current_token,
@@ -240,6 +241,20 @@ async def lifespan(app: FastAPI):
     # E8: stop the disk sweep before exiting.
     maintenance.stop_disk_cleanup_task()
     await notify_offline()
+    # O-24 收口（executor-python 质量巡查 2026-10-25）：关停序列的最后一次
+    # aclose_http_clients 之后不得再有任何 get_http_client() 调用——但
+    # notify_offline() 本身依赖共享池发停机通知，而 execute.stop_callback_
+    # retry_task() 里的那次 aclose 发生在它之前，等于 notify_offline 又重建
+    # 了一个此后无人关闭的池。产品侧 lifespan 一直没有最终收口（测试侧
+    # conftest._close_asyncio_loops 已在 2026-10-24 为顺序耦合 flake 单独兜
+    # 过同一问题）。现在把最终 aclose 放在 notify_offline 之后：正常关机后
+    # loop 里不再挂未关闭的 httpx transport（ResourceWarning 噪音消除），
+    # lifespan 复用（reload/测试）也不会在 per-loop 表里留下死 client。
+    # best-effort：关停路径上的收尾失败只记日志，绝不阻断后续步骤。
+    try:
+        await aclose_http_clients()
+    except Exception as e:
+        logger.warning(f'Shutdown HTTP client pool close failed: {e}')
     logger.info(f'Executor shutdown complete')
     # SEC-NEW-3: drop the hook with the lifespan so a re-run (tests) never
     # resurrect tasks on a dead loop.
@@ -350,6 +365,12 @@ def _register_payload() -> dict:
         'maxConcurrentTasks': settings.max_concurrent_tasks,
         'restartedAt': executor_started_at,
         'startupId': executor_startup_id,
+        # R3-B/P10（协议 v7）：`deployedApps` / `installedPackages` 在注册载荷
+        # 同样**恒省略**（=「未上报」，admin 不动既有行）——本执行器没有
+        # /api/deploy、/api/update-package 路由（node-only，见 protocol.json
+        # executorNodeOnly 段），两键的事实源（<workDir>/apps/ 与
+        # .pkg-updates/manifests/）在本侧不存在，完整裁定见 config.py
+        # PROTOCOL_VERSION 注释。心跳侧同款省略（scheduler._heartbeat_payload）。
     }
     # ARCH-36（ADR-017 阶段 2）：稳定设备指纹（sha256(deviceId:installSalt)）。
     # 采集失败/不可用 → **整个键缺席**（而非送 null）——与 node 侧
@@ -469,6 +490,14 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+# P2-10（执行器服务审计，2026-10-26）：请求体 2MB 上限——对齐 executor-node
+# 的 express.json({ limit: '2mb' })（A-6 同一决策：2MB 覆盖 admin 现有合法
+# 载荷，含超长 glueSource 派发）。uvicorn 默认不限长，持有令牌的调用方可发
+# 任意大 JSON 打爆执行器内存。Content-Length 预检在读 body 前 413；chunked
+# 请求逐 chunk 计数短路。
+from request_size_limit import MAX_BODY_BYTES, RequestSizeLimitMiddleware  # noqa: E402
+
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_BODY_BYTES)
 app.include_router(health.router)
 app.include_router(execute.router, prefix='/api')
 app.include_router(logs.router, prefix='/api')

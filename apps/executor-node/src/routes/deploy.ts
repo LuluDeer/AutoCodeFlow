@@ -18,6 +18,7 @@ import type { ResolvedTool } from '../toolchain';
 import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
+import { invalidateDeployedAppsCache } from '../deployed-apps';
 import { ZipSafetyError, safeExtractZip } from '../zip-safety';
 import { isExecutorShuttingDown } from '../shutdown-state';
 
@@ -735,10 +736,8 @@ function startApp(
   });
 }
 
-/** Strip embedded credentials (user:token@) before a URL reaches the logs. */
-function redactUrl(u: string): string {
-  return u.replace(/\/\/[^/@]+@/, '//***@');
-}
+// redactUrl 已收敛到 src/redact-url.ts（单一事实源；update-package.ts 同批接入）。
+import { redactUrl } from '../redact-url';
 
 /** Download a package over HTTP/HTTPS to a local path. Delegates to the
  *  shared downloader (Bearer token + cross-host redirect stripping + absolute
@@ -777,6 +776,24 @@ function normalizeReleasePart(value: string | null | undefined, fallback: string
   return normalized || fallback;
 }
 
+/**
+ * 5c（部署模型评审 2026-10-23 §9.7）：releaseKey 的**相对目录形态**。
+ *
+ * 新布局（2026-10-24 起）：releases/<version>/<deploymentId>/ 两段——目录名
+ * 即版本，deployed-apps/桌面端的版本归一直接取目录名，不再依赖
+ * `${version}-${deploymentId}` 后缀反解的脆弱性。
+ *
+ * releaseKey 字符串形态统一为 `<version>/<deploymentId>`（POSIX 分隔符）：
+ * · 落盘路径 = path.join(releasesDir, ...releaseKey.split('/'))；
+ * · resolveReleasePaths 的唯一后缀追加在**尾段**（deploymentId 之后）；
+ * · 日志/上报（currentReleaseKey）原样携带该字符串——admin 侧只做等值比对
+ *   （R3：resolveVersionFollowPackage 读 currentVersion，不解析 releaseKey），
+ *   历史值混两种形态不破坏判定。
+ */
+export function buildReleaseKey(version: string, deploymentId: string): string {
+  return `${version}/${deploymentId}`;
+}
+
 interface DeploymentPaths {
   appRoot: string;
   releasesDir: string;
@@ -801,7 +818,7 @@ export function buildDeploymentPaths(
   }
 
   const versionPart = normalizeReleasePart(version, 'version');
-  const releaseKey = `${versionPart}-${deploymentId}`;
+  const releaseKey = buildReleaseKey(versionPart, deploymentId);
   const appRoot = path.join(workDir, 'apps', appId);
   const releasesDir = path.join(appRoot, 'releases');
   const tmpDir = path.join(appRoot, 'tmp');
@@ -812,15 +829,32 @@ export function buildDeploymentPaths(
     tmpDir,
     currentLink: path.join(appRoot, 'current'),
     releaseKey,
-    finalReleaseDir: path.join(releasesDir, releaseKey),
-    extractDir: path.join(tmpDir, `${releaseKey}-extracting`),
+    finalReleaseDir: path.join(releasesDir, ...releaseKey.split('/')),
+    extractDir: path.join(tmpDir, `${releaseKey.split('/').join('-')}-extracting`),
   };
 }
 
-function readCurrentTarget(currentLink: string): string | null {
+/**
+ * 5c：readlink 结果 → releaseKey（相对 releases/ 的 POSIX 形态）。
+ *
+ * 新两段布局下 current 指向 releases/<version>/<deploymentId>，readlink 的
+ * basename 只剩 deploymentId（版本段丢失）——必须取**相对 releases/ 的两段**。
+ * 兼容期旧单段布局（basename 即完整 releaseKey）同样归一：相对路径无 '/' 时
+ * 原样返回。返回值供 pruneOldReleases（豁免 current 指向组）与
+ * restoreCurrentRelease（回滚目标）使用，两者都需要能定位 releases/ 下的真实
+ * 目录，相对形态对两种布局都成立（path.join(releasesDir, key) 深度自适配）。
+ */
+function readCurrentTarget(currentLink: string, releasesDir?: string): string | null {
   try {
     if (fs.existsSync(currentLink) && fs.lstatSync(currentLink).isSymbolicLink()) {
-      return fs.readlinkSync(currentLink);
+      const target = fs.readlinkSync(currentLink);
+      if (!releasesDir) return target;
+      const rel = path.relative(releasesDir, path.resolve(path.dirname(currentLink), target));
+      // 相对路径逃出 releases/（异常软链）→ 不归一，交由调用方当无 current 处理。
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+      // 新两段：'<version>/<deploymentId>'；旧单段：'<version>-<deploymentId>'。
+      // 统一转 POSIX 分隔符，Windows junction 的 readlink 也得到 '/' 形态。
+      return rel.split(path.sep).join('/');
     }
   } catch (err: any) {
     logger.warn(`[deploy] Failed to read current release link: ${err.message}`);
@@ -873,8 +907,10 @@ export function resolveReleasePaths(paths: DeploymentPaths): DeploymentPaths {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     releasePathSeq += 1;
     const suffix = `${Date.now().toString(36)}-${process.pid.toString(36)}-${releasePathSeq.toString(36)}`;
+    // 5c：后缀追加在尾段（deploymentId 之后），版本段保持干净——
+    // releases/<version>/<deploymentId>-<suffix>。
     releaseKey = `${paths.releaseKey}-${suffix}`;
-    finalReleaseDir = path.join(paths.releasesDir, releaseKey);
+    finalReleaseDir = path.join(paths.releasesDir, ...releaseKey.split('/'));
     if (!fs.existsSync(finalReleaseDir)) break;
   }
 
@@ -886,7 +922,7 @@ export function resolveReleasePaths(paths: DeploymentPaths): DeploymentPaths {
     ...paths,
     releaseKey,
     finalReleaseDir,
-    extractDir: path.join(paths.tmpDir, `${releaseKey}-extracting`),
+    extractDir: path.join(paths.tmpDir, `${releaseKey.split('/').join('-')}-extracting`),
   };
 }
 
@@ -897,12 +933,33 @@ function removePathIfExists(target: string): void {
 }
 
 // E-12（DEEP_REVIEW 0ef3bbe）: 应用部署的 releases 历史与 app.log 永不回收。
-// 每次升级都新增 apps/<appId>/releases/<version>-<deploymentId>/（含完整
+// 每次升级都新增 apps/<appId>/releases/<version>/<deploymentId>/（含完整
 // node_modules/venv），工作目录清理又把 'apps' 整体列入保护名单，旧 release 与
 // daemon 的 app.log 都无任何回收路径，磁盘无界增长。下面补 retention：
-//   · releases 目录保留「current 指向项 + 最近 keepCount-1 个（按 mtime）」，其余删；
+//   · releases 目录按**版本组**裁剪到 KEEP_VERSIONS 个（组内全保），
+//     current 指向的组豁免；旧单段目录同批参与淘汰（自然迁移，不搬目录）。
 //   · app.log 超大小阈值时按 .1/.2/.3 轮转（保留 keep 份历史）。
-const KEEP_RELEASES = 5;
+//
+// 5c（§9.7）：容量语义从 KEEP_RELEASES=5（5 个 release 目录）改为
+// KEEP_VERSIONS=3（3 个版本组 × 每组全部部署目录）。同版本多部署行不再
+// 共享前缀歧义、retained 语义按版本归组。env 可配（.env.example 同步，B-6）。
+const KEEP_VERSIONS = Math.min(
+  Math.max(parseKeepVersionsEnv(), 1),
+  50,
+);
+
+/** EXECUTOR_KEEP_VERSIONS 解析：非正整数回落默认 3（对齐 config.ts 的
+ *  parsePositiveIntEnv 语义：NaN/0/负数/小数一律非法，绝不透传畸形值）。 */
+function parseKeepVersionsEnv(): number {
+  const raw = (process.env.EXECUTOR_KEEP_VERSIONS ?? '').trim();
+  if (raw === '') return 3;
+  const v = Number(raw);
+  if (!Number.isInteger(v) || v <= 0) {
+    logger.warn(`[EXECUTOR_KEEP_VERSIONS] 非法值 "${raw}"（需正整数）——回落默认 3`);
+    return 3;
+  }
+  return v;
+}
 const APP_LOG_MAX_BYTES = 50 * 1024 * 1024; // 50MB
 const APP_LOG_KEEP = 3;
 
@@ -974,25 +1031,35 @@ export function buildFailedExitMessage(
 }
 
 /**
- * Prune a deployment's `releases/` history: keep the symlink target that
- * `current` points at (the live release) plus the `keepCount-1` newest other
- * releases by mtime; delete everything else. Returns the removed absolute dirs.
- * Best-effort: any scan/delete failure is logged, never throws.
+ * 5c（§9.7）后按**版本组**裁剪 releases/ 历史（E-12 语义的第二代）：
+ *
+ * · 新两段布局：releases/<version>/<deploymentId>/ → <version> 是组，组内
+ *   部署目录**全保**（同版本重复部署的历史都在）；
+ * · 旧单段布局（迁移窗口）：releases/<version>-<deploymentId>/ 每个目录
+ *   自成一组，与版本组同批按 mtime 新旧参与淘汰——**旧目录不搬**（搬运活
+ *   目录有删改竞态，评审 §9.4 红线），靠自然淘汰迁移；
+ * · current 指向的组**豁免**（无论多旧都不删——回滚保活的语义与上一代一致）；
+ * · 保留最新 keepVersions-1 个其他组 + current 组，合计 ≤ keepVersions 组。
+ *
+ * 返回被删的绝对目录数组（组删除时逐目录记录）。Best-effort：任何扫描/删除
+ * 失败只 warn，绝不抛。
  */
 export function pruneOldReleases(
   releasesDir: string,
   currentLink: string,
-  keepCount: number = KEEP_RELEASES,
+  keepVersions: number = KEEP_VERSIONS,
 ): string[] {
   const removed: string[] = [];
   try {
     if (!fs.existsSync(releasesDir)) return removed;
-    // current 指向项的目录名（releaseKey）——无论如何不删。
-    const currentTarget = readCurrentTarget(currentLink);
-    const currentBase = currentTarget ? path.basename(currentTarget) : null;
+    // current 指向项的 releaseKey（相对 releases/，两段或单段）→ 所属组名。
+    // 组 = releases/ 下的直接子目录：两段布局是 <version>，单段是目录本身。
+    // 无论多旧，current 组一律豁免。
+    const currentTarget = readCurrentTarget(currentLink, releasesDir);
+    const currentGroup = currentTarget ? currentTarget.split('/')[0] : null;
 
     const entries = fs.readdirSync(releasesDir, { withFileTypes: true });
-    const dirs = entries
+    const groups = entries
       .filter((e) => e.isDirectory())
       .map((e) => {
         const full = path.join(releasesDir, e.name);
@@ -1006,20 +1073,22 @@ export function pruneOldReleases(
       })
       .sort((a, b) => b.mtime - a.mtime); // newest first
 
-    // 保留集合：current + 最新 (keepCount-1) 个，合计 keepCount 个。
-    const survivors = new Set<string>(currentBase ? [currentBase] : []);
-    for (const d of dirs) {
-      if (survivors.size >= keepCount) break;
-      survivors.add(d.name);
+    // 保留集合：current 组 + 最新 (keepVersions-1) 个其他组，合计 ≤ keepVersions。
+    const survivors = new Set<string>(currentGroup ? [currentGroup] : []);
+    for (const g of groups) {
+      if (survivors.size >= keepVersions) break;
+      survivors.add(g.name);
     }
 
-    for (const d of dirs) {
-      if (survivors.has(d.name)) continue;
+    for (const g of groups) {
+      if (survivors.has(g.name)) continue;
+      // 旧单段布局：删该目录本身即整组；新两段布局：删 <version>/ 组目录。
+      // 两者形态一致（releases/ 直接子目录），一条 rmSync 覆盖两种布局。
       try {
-        fs.rmSync(d.full, { recursive: true, force: true });
-        removed.push(d.full);
+        fs.rmSync(g.full, { recursive: true, force: true });
+        removed.push(g.full);
       } catch (err: any) {
-        logger.warn(`[deploy] retention: failed to remove old release ${d.full}: ${err.message}`);
+        logger.warn(`[deploy] retention: failed to remove old release group ${g.full}: ${err.message}`);
       }
     }
   } catch (err: any) {
@@ -1115,7 +1184,14 @@ function switchCurrentRelease(currentLink: string, targetDir: string): void {
 function restoreCurrentRelease(currentLink: string, previousTarget: string | null): void {
   try {
     if (previousTarget) {
-      switchCurrentRelease(currentLink, previousTarget);
+      // 5c：previousTarget 现在是相对 releases/ 的 releaseKey（readCurrentTarget
+      // 的归一形态）。switchCurrentRelease 的软链目标需要能被后续 readlink/realpath
+      // 消费——解析成绝对路径写入，保持与正向切换（finalReleaseDir）同一形态。
+      const base = path.dirname(currentLink); // appRoot
+      const target = path.isAbsolute(previousTarget)
+        ? previousTarget
+        : path.resolve(base, 'releases', ...previousTarget.split('/'));
+      switchCurrentRelease(currentLink, target);
     } else if (fs.existsSync(currentLink)) {
       fs.unlinkSync(currentLink);
     }
@@ -1238,7 +1314,9 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
     // 新目录，避免删掉 current 正在指向的活 release —— 否则失败回滚会把 current
     // 指向已删除的目录。详见 resolveReleasePaths 注释。
     paths = resolveReleasePaths(paths);
-    const previousCurrentTarget = readCurrentTarget(paths.currentLink);
+    // 5c：归一到相对 releases/ 的 releaseKey（两段/单段都成立）——回滚时
+    // switchCurrentRelease 直接把它作为软链目标。
+    const previousCurrentTarget = readCurrentTarget(paths.currentLink, paths.releasesDir);
     let switchedCurrent = false;
     try {
       // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
@@ -1274,7 +1352,14 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       if (packageUrl) {
         // Package-based deployment: download zip and extract into a temporary release dir.
         logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
-        const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
+        // 5c：releaseKey 含 '/'（两段形态），zip 临时文件名必须平铺拍扁——
+        // path.join(tmpDir, "1.0.0/<id>.zip") 是两段路径，tmp/<version>/ 目录
+        // 从未创建，downloadFile 的 open 直接 ENOENT（E2E selftest 实测第三处
+        // 漏改；extractDir 同款拍扁见 buildDeploymentPaths/resolveReleasePaths）。
+        const zipPath = path.join(
+          paths.tmpDir,
+          `${paths.releaseKey.split('/').join('-')}.zip`,
+        );
         await downloadPackage(packageUrl, zipPath, 5, true, deployAbort.signal);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
         // 解压走 `safeExtractZip`（与 execute.ts 的包任务同一条路径）。
@@ -1328,7 +1413,9 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         const cloneArgs = ['clone', '--depth', '1'];
         if (gitBranch) cloneArgs.push('--branch', gitBranch);
         cloneArgs.push(gitRepo, '.');
-        logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch || '<default>'}`);
+        // execute.ts 的 git checkout 路径（logPrepare）早已对 gitRepo 脱敏；
+        // https 形态的 gitRepo 同样可携带 user:token@ 内嵌凭据，这里对齐同一纪律。
+        logger.info(`[deploy] Cloning ${redactUrl(gitRepo)}@${gitBranch || '<default>'}`);
         const cloneR = await runCommand(
           'git', cloneArgs,
           { cwd: paths.extractDir, timeout: 120_000, signal: deployAbort.signal },
@@ -1360,6 +1447,12 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       }
 
       removePathIfExists(paths.finalReleaseDir);
+      // 5c：finalReleaseDir 是两段路径（releases/<version>/<deploymentId>），
+      // rename 的目标父目录必须先建——fs.renameSync 不会自动创建中间目录，
+      // 版本组目录（releases/<version>/）缺席时直接 ENOENT（E2E selftest 实测
+      // 首次部署必炸：单测 mock 了 fs/路径存在性检查，掩盖了这一层）。
+      // recursive: true 对已存在目录是 no-op，旧单段布局同批兼容。
+      fs.mkdirSync(path.dirname(paths.finalReleaseDir), { recursive: true });
       fs.renameSync(paths.extractDir, paths.finalReleaseDir);
       switchCurrentRelease(paths.currentLink, paths.finalReleaseDir);
       switchedCurrent = true;
@@ -1412,6 +1505,11 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       if (pruned.length > 0) {
         logger.info(`[deploy] retention: pruned ${pruned.length} old release(s) for ${appName}`);
       }
+
+      // R3-B（部署模型评审 §4.3）：current/retained 事实已变——失效心跳清单
+      // 缓存，下一次心跳即上报新版本（不受扫描 TTL 拖延）。只清缓存，不影响
+      // 部署主链（对齐上方 app.json 的 best-effort 姿态）。
+      invalidateDeployedAppsCache();
 
       // Start app if runMode is daemon or once
       // Pick a sensible default entrypoint based on runtime when none was specified

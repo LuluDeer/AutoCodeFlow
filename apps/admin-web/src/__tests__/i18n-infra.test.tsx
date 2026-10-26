@@ -72,4 +72,48 @@ describe('UI-10 i18n 基础设施', () => {
     expect(i18n.t('login.username')).toBe('用户名');
     expect(i18n.t('brand.tagline')).toBe('企业级任务调度平台');
   });
+
+  // ── F-42（UIUX 审计 P1-3）：同步注册 + 存储键收敛回归 ─────────────────────
+  // 旧实现 en 动态 import → initI18n await 期间 React 已挂载，冷启动 EN 侧边栏
+  // 整块中文 / raw key、运行时切 EN 全站 17 页 raw key（side bar nav.* 裸奔）。
+  describe('F-42 同步注册与存储键收敛', () => {
+    it('双语资源在模块求值期同步注册（无动态包竞态窗口）', () => {
+      // import 本文件即已执行 i18n/index.ts 的 initI18n()——不需要 await：
+      // 同步注册的判据就是「此刻」资源已就位且实例已初始化。
+      expect(i18n.hasResourceBundle('zh', 'translation')).toBe(true);
+      expect(i18n.hasResourceBundle('en', 'translation')).toBe(true);
+      expect(i18n.isInitialized).toBe(true);
+    });
+
+    it('旧键 i18nextLng 兼容读取并一次性迁移写入 autoflow-lang', () => {
+      localStorage.setItem('i18nextLng', 'en');
+      expect(detectLanguage()).toBe('en');
+      // 收敛：迁移后写入新键（此后写入只走 STORAGE_KEY）
+      expect(localStorage.getItem(STORAGE_KEY)).toBe('en');
+    });
+
+    it('新键优先于旧键（两键并存时以 autoflow-lang 为准）', () => {
+      localStorage.setItem(STORAGE_KEY, 'zh');
+      localStorage.setItem('i18nextLng', 'en');
+      expect(detectLanguage()).toBe('zh');
+      // 不被旧键改写
+      expect(localStorage.getItem(STORAGE_KEY)).toBe('zh');
+    });
+
+    it('旧键非合法值忽略（回落浏览器语言判定）', () => {
+      localStorage.setItem('i18nextLng', 'fr');
+      vi.spyOn(window.navigator, 'language', 'get').mockReturnValue('zh-CN');
+      expect(detectLanguage()).toBe('zh');
+      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    });
+
+    it('setLanguage 只写 autoflow-lang（写入面收敛，不产生 i18nextLng）', async () => {
+      await setLanguage('en');
+      expect(localStorage.getItem(STORAGE_KEY)).toBe('en');
+      expect(localStorage.getItem('i18nextLng')).toBeNull();
+      await setLanguage('zh');
+      expect(localStorage.getItem(STORAGE_KEY)).toBe('zh');
+      expect(localStorage.getItem('i18nextLng')).toBeNull();
+    });
+  });
 });

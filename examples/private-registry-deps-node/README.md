@@ -19,7 +19,7 @@ admin 下发任务(requirements)
 | 配置 | 位置 | 说明 |
 |------|------|------|
 | `NPM_REGISTRY_URL` | executor-node 的 `.env` / 启动环境 | 私服 npm 地址（如 `http://registry-npm:4873`）。**未配置时走公共 npm**；平台内置私服见 `apps/registry-npm`（verdaccio） |
-| `NPM_REGISTRY_TOKEN` | 同上（可选） | 私服对 `**` 的 access 是 `$authenticated`（匿名安装必 401）时必配；token 不会出现在日志里 |
+| `NPM_REGISTRY_TOKEN` 或 `NPM_REGISTRY_USER`/`NPM_REGISTRY_PASS` | 同上（二者配一即可） | 私服对 `**` 的 access 是 `$authenticated`（匿名安装必 401）时必配其一；token（`_authToken` 行）优先，user/pass 写 `_auth`（Basic）行。compose 缺省回落 `REGISTRY_USER/PASS`；token 不会出现在日志里 |
 | 私有包已发布 | registry-npm | 私服中需存在任务引用的 scoped 包（如 `@yourco/your-pkg`） |
 
 执行器侧的安装细节（源码证据）：

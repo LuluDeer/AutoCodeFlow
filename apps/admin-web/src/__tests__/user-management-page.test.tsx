@@ -17,9 +17,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+// 仅用于 afterEach 的 destroyAll（清掉命令式 Modal.confirm 的 body 级 holder，
+// 对齐 projects-page.test.tsx 的双重保险口径）
+import { Modal } from 'antd';
 import UserManagementPage from '../pages/UserManagementPage';
 import { usersApi } from '../api/users';
 import type { User } from '../api/users';
+import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/users', () => ({
   usersApi: {
@@ -98,15 +102,47 @@ async function confirmPopconfirm(titleText: string) {
   fireEvent.click(okBtn);
 }
 
+/**
+ * Modal.confirm 确认键。antd v6 确认框标题**双渲染**（.ant-modal-title 无障碍
+ * 头 + .ant-modal-confirm-title）——按文本查找必撞 multiple，故用 findAllByText
+ * 拿锚点、在 .ant-modal-confirm 层内取按钮（footer 顺序 [取消, OK]，末位即 OK）。
+ */
+async function confirmModalByTitle(titleText: string) {
+  const anchors = await screen.findAllByText(titleText);
+  const layer = (anchors[0].closest('.ant-modal-confirm') ?? document.body) as HTMLElement;
+  const layerBtns = Array.from(layer.querySelectorAll('button')) as HTMLButtonElement[];
+  const okBtn = layerBtns[layerBtns.length - 1];
+  expect(okBtn).toBeTruthy();
+  fireEvent.click(okBtn);
+}
+
+/** Modal.confirm 取消键（footer 倒数第二个） */
+async function cancelModalByTitle(titleText: string) {
+  const anchors = await screen.findAllByText(titleText);
+  const layer = (anchors[0].closest('.ant-modal-confirm') ?? document.body) as HTMLElement;
+  const layerBtns = Array.from(layer.querySelectorAll('button')) as HTMLButtonElement[];
+  const cancelBtn = layerBtns[layerBtns.length - 2];
+  expect(cancelBtn).toBeTruthy();
+  fireEvent.click(cancelBtn);
+}
+
 beforeEach(() => {
   mockedUsers.list.mockReset().mockResolvedValue({ list: usersFixture, total: 3, page: 1, pageSize: 20 });
   mockedUsers.create.mockReset();
   mockedUsers.update.mockReset();
   mockedUsers.remove.mockReset();
+  // P1-1：清掉上一用例可能写入的登录态（自禁置灰用例会 set 当前用户）
+  useAuthStore.setState({ user: null });
 });
 
 afterEach(() => {
   cleanup();
+  // P1-1 禁用确认走命令式 Modal.confirm：它挂到 body 上的独立 holder，不在
+  // React 根里，cleanup() 清不掉；关闭还带 zoom 动画，jsdom 里动画不会自然
+  // 结束、节点残留——下一个用例的查询会读到上一个用例的弹框。既 destroyAll
+  // 又强制摘掉残留节点（双重保险，projects-page.test.tsx 同款）。
+  Modal.destroyAll();
+  document.querySelectorAll('.ant-modal-wrap, .ant-modal-root').forEach((n) => n.remove());
 });
 
 describe('UserManagementPage 列表渲染（QA-03）', () => {
@@ -168,6 +204,22 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
     fireEvent.click(findBtn(document.body, '创建')!);
 
     await screen.findByText('密码至少8个字符');
+    expect(mockedUsers.create).not.toHaveBeenCalled();
+  });
+
+  it('F-18：超长用户名（129 字符）被表单校验拦截：不调用 create，显示上限提示', async () => {
+    renderPage();
+    await screen.findByText('alice');
+    fireEvent.click(screen.getByText('新建用户'));
+
+    fireEvent.change(screen.getByPlaceholderText('请输入用户名'), {
+      target: { value: 'u'.repeat(129) },
+    });
+    fireEvent.change(screen.getByPlaceholderText('请输入密码'), { target: { value: 'Str0ng!Pass' } });
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'dave@corp.io' } });
+    fireEvent.click(findBtn(document.body, '创建')!);
+
+    await screen.findByText('用户名不能超过128个字符');
     expect(mockedUsers.create).not.toHaveBeenCalled();
   });
 
@@ -343,5 +395,123 @@ describe('UserManagementPage 空页钳制与 URL 同步（UX 边界）', () => {
     await waitFor(() => {
       expect(mockedUsers.list).toHaveBeenCalledWith(2, 20, expect.anything(), 'bob');
     });
+  });
+});
+
+// ─── P1-1（对齐后端 ad5bdef4 isActive 写面）：行内启用/禁用开关 ───────────
+describe('UserManagementPage 启用/禁用开关（P1-1）', () => {
+  /** antd Switch 渲染成 button[role="switch"]（audit-keyset-paging 同款口径） */
+  const rowSwitch = (row: HTMLElement): HTMLButtonElement =>
+    row.querySelector('button[role="switch"]') as HTMLButtonElement;
+
+  it('每行渲染开关，checked 与状态列 Tag 同源（isActive 字段）', async () => {
+    renderPage();
+    await screen.findByText('alice');
+
+    const aliceRow = screen.getByText('alice').closest('tr') as HTMLElement;
+    const carolRow = screen.getByText('carol').closest('tr') as HTMLElement;
+    expect(rowSwitch(aliceRow).getAttribute('aria-checked')).toBe('true');
+    expect(rowSwitch(carolRow).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('禁用：先弹二次确认（明示会话/API-Key 即时失效），确认后 update(id, { isActive: false }) + toast + 列表刷新', async () => {
+    mockedUsers.update.mockResolvedValue(makeUser({}) as never);
+    renderPage();
+    await screen.findByText('alice');
+
+    const row = screen.getByText('bob').closest('tr') as HTMLElement;
+    fireEvent.click(rowSwitch(row));
+
+    // 影响性动作必须二次确认，文案明示两个即时失效面与可逆性
+    // （antd v6 确认框标题双渲染，断言用 findAllByText）
+    expect((await screen.findAllByText('确认禁用')).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText(/所有登录会话与 API-Key 将立即失效/)).length,
+    ).toBeGreaterThan(0);
+
+    await confirmModalByTitle('确认禁用');
+    await waitFor(() => {
+      expect(mockedUsers.update).toHaveBeenCalledWith(2, { isActive: false });
+    });
+    expect(await screen.findByText('用户已禁用')).toBeTruthy();
+    // 成功后失效 ['users']：状态列即时回正的数据面（list 重取一次）
+    await waitFor(() => {
+      expect(mockedUsers.list).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('禁用确认弹窗点取消：不发请求', async () => {
+    renderPage();
+    await screen.findByText('alice');
+
+    const row = screen.getByText('bob').closest('tr') as HTMLElement;
+    fireEvent.click(rowSwitch(row));
+    await screen.findAllByText('确认禁用');
+
+    await cancelModalByTitle('确认禁用');
+
+    // 不断言弹层卸载：jsdom 不派发 transitionend，zoom 动画不结束、确认框
+    // 节点会留到 afterEach 强摘（见 afterEach 双重保险）。行为口径只看请求：
+    fireEvent.click(rowSwitch(row));
+    await waitFor(() => {
+      expect(mockedUsers.update).not.toHaveBeenCalled();
+    });
+  });
+
+  it('启用（可逆）：不弹确认直接生效，update(id, { isActive: true }) + toast', async () => {
+    mockedUsers.update.mockResolvedValue(makeUser({}) as never);
+    renderPage();
+    await screen.findByText('alice');
+
+    const row = screen.getByText('carol').closest('tr') as HTMLElement;
+    fireEvent.click(rowSwitch(row));
+
+    await waitFor(() => {
+      expect(mockedUsers.update).toHaveBeenCalledWith(3, { isActive: true });
+    });
+    expect(await screen.findByText('用户已启用')).toBeTruthy();
+    expect(screen.queryAllByText('确认禁用')).toHaveLength(0);
+  });
+
+  it('ADMIN 自己那行开关置灰 + Tooltip，点击不发请求（后端 400 USER_SELF_DISABLE_FORBIDDEN 前置拦截）', async () => {
+    useAuthStore.setState({ user: { id: 1, username: 'alice', role: 'admin' } });
+    renderPage();
+    await screen.findByText('alice');
+
+    const aliceRow = screen.getByText('alice').closest('tr') as HTMLElement;
+    const bobRow = screen.getByText('bob').closest('tr') as HTMLElement;
+    expect(rowSwitch(aliceRow).disabled).toBe(true);
+    expect(rowSwitch(bobRow).disabled).toBe(false);
+
+    // disabled 按钮不派发点击——确认弹窗不出、请求不发
+    fireEvent.click(rowSwitch(aliceRow));
+    await waitFor(() => {
+      expect(screen.queryAllByText('确认禁用')).toHaveLength(0);
+    });
+    expect(mockedUsers.update).not.toHaveBeenCalled();
+  });
+
+  it('禁用失败：后端 403（USER_ACTIVE_ADMIN_ONLY）按生成词条渲染错误 toast，列表不失效', async () => {
+    // reject 形态对齐 axios 错误（Error 实例 + response.data.errorCode），
+    // 走 showApiError → getErrMsg → translateByErrorCode 生成链
+    mockedUsers.update.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 403'), {
+        response: { status: 403, data: { errorCode: 'USER_ACTIVE_ADMIN_ONLY' } },
+      }),
+    );
+    renderPage();
+    await screen.findByText('alice');
+
+    const row = screen.getByText('bob').closest('tr') as HTMLElement;
+    fireEvent.click(rowSwitch(row));
+    await confirmModalByTitle('确认禁用');
+
+    // 文案来自 scripts/gen-error-i18n.mjs 生成的 err.USER_ACTIVE_ADMIN_ONLY 词条
+    await screen.findByText('只有管理员可以变更账号启用状态');
+    // 失败不失效 ['users']：list 仍只有首屏那一次
+    await waitFor(() => {
+      expect(mockedUsers.update).toHaveBeenCalled();
+    });
+    expect(mockedUsers.list).toHaveBeenCalledTimes(1);
   });
 });

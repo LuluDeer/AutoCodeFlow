@@ -62,7 +62,72 @@ class TestDatabaseConfig:
             # PK-08: connection-hygiene kwargs must ride every engine.
             pool_pre_ping=True,
             pool_recycle=DEFAULT_POOL_RECYCLE_SECONDS,
+            # P3-9: statement_timeout 经 libpq options 传播（默认 30s）。
+            connect_args={"options": "-c statement_timeout=30000"},
         )
+
+
+class TestStatementTimeout:
+    """P3-9: 语句级超时——配置传播断言（mock create_engine，不真连库）。
+
+    背景：任务进程 pool_size=2 + 短生命周期——一条挂死查询占满 2 条连接
+    就把本进程 DB 面堵死。连接级 statement_timeout 是兜底闸。
+    """
+
+    @patch("autocodeflow_db.connection.create_engine")
+    @patch("autocodeflow_db.connection.sessionmaker")
+    def test_default_timeout_propagated_to_libpq_options(self, mock_sessionmaker, mock_create_engine):
+        mock_create_engine.return_value = MagicMock()
+        mock_sessionmaker.return_value = MagicMock()
+
+        DatabaseConfig().build()
+        kwargs = mock_create_engine.call_args.kwargs
+        assert kwargs["connect_args"] == {"options": "-c statement_timeout=30000"}
+
+    def test_default_value(self):
+        assert DatabaseConfig().statement_timeout_ms == 30_000
+
+    @patch("autocodeflow_db.connection.create_engine")
+    @patch("autocodeflow_db.connection.sessionmaker")
+    def test_custom_timeout_propagated(self, mock_sessionmaker, mock_create_engine):
+        mock_create_engine.return_value = MagicMock()
+        mock_sessionmaker.return_value = MagicMock()
+
+        DatabaseConfig(statement_timeout_ms=5000).build()
+        kwargs = mock_create_engine.call_args.kwargs
+        assert kwargs["connect_args"] == {"options": "-c statement_timeout=5000"}
+
+    @patch("autocodeflow_db.connection.create_engine")
+    @patch("autocodeflow_db.connection.sessionmaker")
+    def test_zero_disables_statement_timeout(self, mock_sessionmaker, mock_create_engine):
+        mock_create_engine.return_value = MagicMock()
+        mock_sessionmaker.return_value = MagicMock()
+
+        DatabaseConfig(statement_timeout_ms=0).build()
+        kwargs = mock_create_engine.call_args.kwargs
+        assert kwargs["connect_args"] == {}
+
+    @patch("autocodeflow_db.connection.create_engine")
+    @patch("autocodeflow_db.connection.sessionmaker")
+    def test_non_postgres_url_gets_no_libpq_options(self, mock_sessionmaker, mock_create_engine):
+        """options 是 libpq 专属——sqlite 等方言注入即连接报错，必须跳过。"""
+        mock_create_engine.return_value = MagicMock()
+        mock_sessionmaker.return_value = MagicMock()
+
+        DatabaseConfig(url="sqlite:///local.db").build()
+        kwargs = mock_create_engine.call_args.kwargs
+        assert kwargs["connect_args"] == {}
+
+    @patch("autocodeflow_db.connection.create_engine")
+    @patch("autocodeflow_db.connection.sessionmaker")
+    def test_dialect_variant_still_gets_options(self, mock_sessionmaker, mock_create_engine):
+        """postgresql+psycopg2:// 等方言变体同样命中（startswith 前缀判定）。"""
+        mock_create_engine.return_value = MagicMock()
+        mock_sessionmaker.return_value = MagicMock()
+
+        DatabaseConfig(url="postgresql+psycopg2://user@host/db").build()
+        kwargs = mock_create_engine.call_args.kwargs
+        assert kwargs["connect_args"] == {"options": "-c statement_timeout=30000"}
 
 
 class TestDatabaseSession:
@@ -128,6 +193,8 @@ class TestGetSession:
             echo=False,
             pool_pre_ping=True,
             pool_recycle=DEFAULT_POOL_RECYCLE_SECONDS,
+            # P3-9: 默认 30s 语句级超时随每个 engine 传播。
+            connect_args={"options": "-c statement_timeout=30000"},
         )
 
 
@@ -175,6 +242,7 @@ class TestFromEnv:
             echo=False,
             pool_pre_ping=True,
             pool_recycle=DEFAULT_POOL_RECYCLE_SECONDS,
+            connect_args={"options": "-c statement_timeout=30000"},
         )
         # 清理模块级单例，避免影响后续用例
         dispose_engine()

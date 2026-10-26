@@ -30,6 +30,7 @@
 
         "unused-css-rules": ["warn", {"maxLength": 0}],
         "unused-javascript": ["warn", {"maxLength": 0}],
+        "valid-source-maps": "warn",
         "network-dependency-tree-insight": "off",
         "forced-reflow-insight": "off",
         "legacy-javascript": "off",

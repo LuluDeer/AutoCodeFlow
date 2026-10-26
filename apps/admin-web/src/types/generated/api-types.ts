@@ -288,7 +288,7 @@ export interface paths {
         post?: never;
         /**
          * 撤销我的一个会话
-         * @description 将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。
+         * @description 将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。
          */
         delete: operations["AuthController_revokeSession"];
         options?: never;
@@ -1362,8 +1362,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 列出执行器
-         * @description 获取全部执行器列表，包含在线状态、分组与标签。
+         * 列出执行器（截断上限见描述；不支持分页）
+         * @description 获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，不得把截断结果当作全量。
          */
         get: operations["ExecutorController_findAll"];
         put?: never;
@@ -2949,8 +2949,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 触发所有运行中实例升级到最新版本
-         * @description DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。
+         * 触发该应用全部已部署设备升级到最新版本
+         * @description DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。R2（部署模型评审 §4.4）：覆盖面显式化——默认 = 全部 RUNNING 部署行（含 scheduled「仅部署」行：实证口径为 scheduled 部署完成即上报 running，稳态就是 RUNNING）；includeStopped=true 时 all 策略把 stopped 行一并纳入（canary 忽略该参数——健康探测需要活进程）；pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细（不抛错）；failed 行恒排除。响应新增 coverage 按状态分组计数。version 定向参数等价于 set-current-version + deploy-version 组合（会改写中台当前版本），建议改用 R1 拆分端点
          */
         post: operations["ApplicationController_upgradeAll"];
         delete?: never;
@@ -2999,6 +2999,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/applications/{id}/set-current-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 将应用当前字段设为指定版本快照（不动部署/设备）
+         * @description R1（部署模型评审 §4.2）：只按 application_versions 快照恢复应用当前字段（version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime，与 rollback 同一映射），绝不触碰部署行与设备。响应 dispatched:false。校验与错误码与 rollback 快照路径一致（版本存在 404、属本应用/已发布 400）
+         */
+        post: operations["ApplicationController_setCurrentVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/applications/{id}/deploy-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 按版本快照恢复应用字段后下发到设备（可按执行器点名）
+         * @description R1（部署模型评审 §4.2）：先执行与 set-current-version 完全相同的字段恢复，再下发。executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有 upgrade 链（部署行 startCommand 会被覆写为恢复后的 app.entrypoint——既有 upgrade 语义）。执行器无部署行/行状态不可下发的进响应 skipped 明细（no_deployment/not_running/upgrade_rejected），不报错。部署行触发痕迹落 triggerType=rollback + 操作人（该端点为旧「应用回滚」拆出的下发半边）
+         */
+        post: operations["ApplicationController_deployVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/applications/{id}/rollback/{deploymentId}": {
         parameters: {
             query?: never;
@@ -3009,8 +3049,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 将应用回滚到历史版本
-         * @description 从版本快照或历史部署记录恢复应用字段，然后触发运行中实例升级
+         * 将应用回滚到历史版本（deprecated alias）
+         * @deprecated
+         * @description 【deprecated】下一版本删除。等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用 POST /applications/:id/set-current-version 与 POST /applications/:id/deploy-version
          */
         post: operations["ApplicationController_rollback"];
         delete?: never;
@@ -3048,6 +3089,26 @@ export interface paths {
          * @description 每个至少有一次部署的应用返回一行。用于替代应用列表页原先逐个应用发起的扇出请求（N 个请求共用同一个限流桶）。
          */
         get: operations["AppDeploymentController_findStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/app-deployments/applications/{appId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出应用的部署事件流（不可变动作追溯）
+         * @description R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥
+         */
+        get: operations["AppDeploymentController_listApplicationEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3462,6 +3523,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 按应用/任务查询产物索引（仅管理员）
+         * @description 按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。
+         */
+        get: operations["ArtifactsController_listArtifactRows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tasks/executions/{execId}/artifacts": {
         parameters: {
             query?: never;
@@ -3866,6 +3947,18 @@ export interface components {
             /** @description 成功时恒为 true（否则返回 400） */
             enabled: boolean;
         };
+        TotpDisableDto: {
+            /**
+             * @description 确认密码（与 6 位动态码二选一）
+             * @example password123
+             */
+            password?: string;
+            /**
+             * @description 6 位 TOTP 动态验证码（与密码二选一）
+             * @example 123456
+             */
+            code?: string;
+        };
         TotpDisableResponseDto: {
             /** @description 本次调用确实关闭了 TOTP 时为 true；本来就未开启时为 false（幂等空操作） */
             disabled: boolean;
@@ -3977,6 +4070,8 @@ export interface components {
             role?: "admin" | "user";
             /** @description 非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19） */
             currentPassword?: string;
+            /** @description 账号启用/禁用（ADMIN-only；禁用后登录 403 且在途会话立即失效） */
+            isActive?: boolean;
         };
         UserDeleteResponseDto: {
             /** @enum {boolean} */
@@ -4956,6 +5051,50 @@ export interface components {
              */
             discoveredAt?: string;
         };
+        DeployedAppDto: {
+            /**
+             * @description 部署时的 applicationId
+             * @example 5f8a3c2e-9b41-4d6a-a1b2-c3d4e5f6a7b8
+             */
+            appId: string;
+            /**
+             * @description 设备 current 软链指向的版本；无 current（未部署成功）为 null
+             * @example 1.2.0
+             */
+            currentVersion?: string | null;
+            /**
+             * @description current 软链指向的 release 目录名
+             * @example 1.2.0-3f9d2b7a-deploy-8t4
+             */
+            currentReleaseKey?: string | null;
+            /**
+             * @description 设备 releases/ 下仍保留的版本集合（prune 后快照）
+             * @example [
+             *       "1.2.0",
+             *       "1.1.0"
+             *     ]
+             */
+            retainedVersions?: string[];
+            /**
+             * @description 部署/升级时选择的运行模式；设备侧无记录为 null
+             * @example daemon
+             * @enum {string|null}
+             */
+            runMode?: "once" | "daemon" | "scheduled" | null;
+            /**
+             * @description 最近一次部署完成时刻（ISO 8601）；无记录为 null
+             * @example 2026-10-24T08:00:00.000Z
+             */
+            lastDeployedAt?: string | null;
+        };
+        InstalledPackageDto: {
+            /** @example python-runtime */
+            name: string;
+            /** @example uv */
+            type: string;
+            /** @example 0.7.12 */
+            version: string;
+        };
         ExecutorRegisterDto: {
             /**
              * @description 执行器应用名称
@@ -5049,6 +5188,10 @@ export interface components {
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string | null;
+            /** @description R3-A（§4.3）：设备级应用版本事实（执行器启动时随注册上报一份，语义与心跳 deployedApps 完全一致：缺省 → 不动；[] → 设备无已部署应用；非法 → 整字段拒绝）。 */
+            deployedApps?: components["schemas"]["DeployedAppDto"][];
+            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单（语义与心跳 installedPackages 完全一致）。 */
+            installedPackages?: components["schemas"]["InstalledPackageDto"][];
         };
         ExecutorRegisterResponseDto: {
             /** Format: uuid */
@@ -5230,6 +5373,15 @@ export interface components {
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string | null;
+            /** @description R3-A（§4.3）：设备级应用版本事实（apps/ 目录扫描）。缺省 → 中台完全不动既有事实行（旧执行器）；[] → 设备上没有任何已部署应用（整替 = 全部既有行删除）；结构非法/超 50 项/同一 appId 重复 → 整字段拒绝采纳。落库语义：整替该执行器全部 executor_app_versions 行（数组外的应用 = 设备已卸载）。 */
+            deployedApps?: components["schemas"]["DeployedAppDto"][];
+            /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。 */
+            installedPackages?: components["schemas"]["InstalledPackageDto"][];
+            /**
+             * @description 方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。
+             * @example false
+             */
+            registrationConflict?: boolean;
         };
         ExecutorHeartbeatResponseDto: {
             /** Format: uuid */
@@ -5361,6 +5513,30 @@ export interface components {
             commands?: {
                 [key: string]: unknown;
             }[];
+        };
+        ExecutorCommandResultDto: {
+            /** @description 命令 id（中台入队时签发的 UUID v4，执行器原样回传；它同时是 acf:cmdres:/acf:cmdmeta: 键的成分） */
+            commandId: string;
+            /**
+             * @description 执行器注册地址
+             * @example http://10.0.0.5:9100
+             */
+            address: string;
+            /**
+             * @description 命令类型（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）
+             * @example deploy
+             */
+            type: string;
+            /** @description 命令是否执行成功 */
+            ok: boolean;
+            /** @description 执行器本地路由的 HTTP 状态码 */
+            status?: number;
+            /** @description 失败原因（≤2000）。执行器侧自截 1000 字符，这里给双倍余量——闸的意义是堵住非受信上报面的自由文本写放大，不是复刻执行器侧的截断行为 */
+            error?: string | null;
+            /** @description 本地执行耗时（毫秒） */
+            durationMs?: number;
+            /** @description ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——上报行定位与归属比对用 */
+            deviceFingerprint?: string | null;
         };
         ExecutorCommandResultResponseDto: {
             /** @enum {boolean} */
@@ -5540,6 +5716,13 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        ExecutorActionReasonDto: {
+            /**
+             * @description 可选的操作原因（≤200 字符），计入审计
+             * @example decommissioned host
+             */
+            reason?: string;
+        };
         ExecutorRotateTokenDto: {
             /** @description 新共享凭据（仅此一次回显） */
             token: string;
@@ -5610,6 +5793,12 @@ export interface components {
             };
             description: string;
         };
+        UpdateChannelDto: {
+            /** @description 启用/停用该渠道 */
+            enabled?: boolean;
+            /** @description 渠道配置覆盖（string → string 映射，哨兵 '***' 不覆盖真实机密） */
+            config?: Record<string, never>;
+        };
         ChannelTestResponseDto: {
             /** @description 仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results */
             success: boolean;
@@ -5618,6 +5807,14 @@ export interface components {
             results?: {
                 [key: string]: "sent" | "blocked" | "failed" | "skipped";
             };
+        };
+        SendTestDto: {
+            /** @description 要扇出的渠道（取值域 = 已注册渠道枚举） */
+            channels: ("email" | "dingtalk" | "wecom" | "slack" | "webhook" | "feishu")[];
+            /** @description 测试通知标题 */
+            title: string;
+            /** @description 测试通知内容 */
+            content: string;
         };
         SendNotificationDto: {
             /**
@@ -5695,12 +5892,15 @@ export interface components {
             taskId?: string;
             /** @description scope=application 时必填：应用 UUID */
             applicationId?: string;
-            /** @description 仅静默该级别（精确匹配 info/warning/error/critical，非「及以下」）；空 = 全部级别 */
-            level?: string;
+            /**
+             * @description 仅静默该级别（精确匹配，非「及以下」）；空 = 全部级别
+             * @enum {string}
+             */
+            level?: "info" | "warning" | "error" | "critical";
             /** @description 静默原因（审计记录用） */
             reason?: string;
             /**
-             * @description 静默时长（分钟）；缺省走系统默认 TTL
+             * @description 静默时长（分钟，1..5256000=10 年）；缺省走系统默认 TTL（P3-1 上界）
              * @example 60
              */
             durationMinutes?: number;
@@ -5766,7 +5966,7 @@ export interface components {
             commonAnnotations?: Record<string, never>;
             /** @description Alertmanager 外部 URL */
             externalURL?: string;
-            /** @description 告警列表（空数组被控制器 400 拒绝） */
+            /** @description 告警列表（空数组/缺失由控制器映射层以 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY 拒绝） */
             alerts?: components["schemas"]["AlertmanagerAlertDto"][];
         };
         AlertsWebhookResponseDto: {
@@ -6637,12 +6837,12 @@ export interface components {
             /** @description 应用描述 */
             description?: string;
             /**
-             * @description 应用版本号
+             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
              * @example 1.0.0
              */
             version: string;
             /**
-             * @description 运行时类型
+             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
              * @example node
              */
             runtime: string;
@@ -6667,12 +6867,12 @@ export interface components {
             /** @description 应用描述 */
             description?: string;
             /**
-             * @description 应用版本号
+             * @description 应用版本号（上限对齐 UploadApplicationDto.version）
              * @example 1.0.0
              */
             version?: string;
             /**
-             * @description 运行时类型
+             * @description 运行时类型（上限对齐 UploadApplicationDto.runtime）
              * @example node
              */
             runtime?: string;
@@ -6763,6 +6963,20 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        AppReleaseDeviceDto: {
+            /** @description 执行器行 id */
+            executorId: string;
+            /** @description 执行器可读名（executors.appName）；行已删/未上报名时 null */
+            executorName: string | null;
+            /** @description 该设备该应用 current 指向的版本（保留场景下可能与本行版本不同） */
+            currentVersion: string | null;
+            /** @description 本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本） */
+            retained: boolean;
+            /** @description executors.status === ONLINE（离线设备的版本事实可能已过期） */
+            online: boolean;
+            /** @description executors.lastHeartbeat（设备最后上报时刻，ISO） */
+            lastHeartbeat: string | null;
+        };
         AppReleaseRowDto: {
             /**
              * Format: uuid
@@ -6795,6 +7009,8 @@ export interface components {
             operatorSource: "deployments.operator" | "application_versions.createdBy";
             /** @description operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON） */
             operatorMissingReason: string;
+            /** @description R3-A（§4.3）：正在运行或本地保留该版本的设备（设备心跳上报事实；无设备上报时为空数组）。deploymentStatus/executorAddress 等字段仍是部署行推断（渐进迁移），设备真实状态以本字段为准。响应字段只增不改 */
+            devices: components["schemas"]["AppReleaseDeviceDto"][];
         };
         AppReleasesResponseDto: {
             data: components["schemas"]["AppReleaseRowDto"][];
@@ -6802,12 +7018,43 @@ export interface components {
             page: number;
             /** @description 默认 50，上限 200 */
             pageSize: number;
+            /** @description R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改 */
+            truncated: boolean;
+            /** @description P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在本页返回行中」的版本号（字母序）；truncated=false 恒空数组。响应字段只增不改 */
+            retainedButTruncated: string[];
         };
         RolloutStrategyDto: Record<string, never>;
         UpgradeAllDto: {
             rollout?: components["schemas"]["RolloutStrategyDto"];
-            /** @description 本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本 */
+            /** @description 本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本。注意：该参数等价于 set-current-version + deploy-version 的组合（先按快照恢复应用当前字段，再下发），且会改写中台当前版本——R1（§4.2）拆分出的这两个端点是更明确的表达，建议改用新端点 */
             version?: string;
+            /** @description all 策略下把 stopped 部署行一并纳入升级（缺省 false——stopped 可能是人为停用）。pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细；failed 行恒排除（应走显式重新部署）。canary 策略忽略本参数 */
+            includeStopped?: boolean;
+        };
+        UpgradeAllCoverageDto: {
+            /** @description RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once） */
+            running: number;
+            /** @description RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖） */
+            scheduled: number;
+            /** @description STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显） */
+            stopped: number;
+            /** @description FAILED 行数（恒排除，应走显式重新部署） */
+            failed: number;
+            /** @description pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细） */
+            inFlight: number;
+        };
+        UpgradeAllSkippedItemDto: {
+            /** Format: uuid */
+            deploymentId: string;
+            /** Format: uuid */
+            executorId: string | null;
+            /** @enum {string} */
+            status: "pending" | "deploying" | "upgrading";
+            /**
+             * @description in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）
+             * @enum {string}
+             */
+            reason: "in_flight" | "awaiting_approval";
         };
         UpgradeAllResponseDto: {
             /** @description false = 金丝雀批次被拒绝（ARCH-31 在途互斥）或全部失败 */
@@ -6818,6 +7065,10 @@ export interface components {
             total: number;
             succeeded: number;
             failed: number;
+            /** @description 该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过 */
+            coverage?: components["schemas"]["UpgradeAllCoverageDto"];
+            /** @description 在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4） */
+            skipped?: components["schemas"]["UpgradeAllSkippedItemDto"][];
             /** @description 在实际启动了金丝雀批次（或被阻塞）时出现 */
             rollout?: {
                 batchId?: string;
@@ -6847,6 +7098,78 @@ export interface components {
                 avgDuration: number;
                 criticalTasks: string[];
             };
+        };
+        SetCurrentVersionDto: {
+            /**
+             * Format: uuid
+             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released
+             */
+            versionId: string;
+        };
+        SetCurrentVersionResponseDto: {
+            ok: boolean;
+            /** @description 恒 false——本端点不下发任何设备（下发走 deploy-version） */
+            dispatched: boolean;
+            /** @description 恢复后的应用 version（= 快照 version） */
+            version: string;
+            /**
+             * Format: uuid
+             * @description 命中的 application_versions.id
+             */
+            versionId: string;
+            /** @description 恢复后的应用行（已掩码） */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+        };
+        DeployVersionDto: {
+            /**
+             * Format: uuid
+             * @description application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released；下发前先按该快照恢复应用当前字段
+             */
+            versionId: string;
+            /** @description 仅对这些执行器对应的 RUNNING 部署行下发（重复 id 幂等去重）。缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 一致）。执行器无部署行/行状态不可下发的进响应 skipped 明细，不报错 */
+            executorIds?: string[];
+        };
+        DeployVersionUpgradedEntryDto: {
+            /** Format: uuid */
+            deploymentId: string;
+            /**
+             * Format: uuid
+             * @description 部署行所在执行器（行无执行器时 null）
+             */
+            executorId: string | null;
+            executorAddress: string | null;
+        };
+        DeployVersionSkippedEntryDto: {
+            /**
+             * Format: uuid
+             * @description 显式点名路径下恒有值；缺省（全 RUNNING）路径下取部署行值
+             */
+            executorId: string | null;
+            /** Format: uuid */
+            deploymentId: string | null;
+            /**
+             * @description no_deployment=该执行器在本应用下没有部署行；not_running=最新部署行状态非 running（detail 带实际 status）；upgrade_rejected=upgrade 链拒绝（detail 带原因）
+             * @enum {string}
+             */
+            reason: "no_deployment" | "not_running" | "upgrade_rejected";
+            /** @description 跳过原因的机器可读补充（状态值 / 原始错误消息） */
+            detail?: string | null;
+        };
+        DeployVersionResponseDto: {
+            ok: boolean;
+            /** @description 恒 true——本端点就是下发动作（恢复+下发） */
+            dispatched: boolean;
+            /** @description 本次下发的目标版本（= 快照 version） */
+            version: string;
+            /**
+             * Format: uuid
+             * @description 命中的 application_versions.id
+             */
+            versionId: string;
+            upgraded: components["schemas"]["DeployVersionUpgradedEntryDto"][];
+            skipped: components["schemas"]["DeployVersionSkippedEntryDto"][];
+            /** @description 恢复后的应用行（已掩码） */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
         };
         ApplicationRollbackResponseDto: {
             ok: boolean;
@@ -6953,6 +7276,43 @@ export interface components {
             failed: number;
             /** @description 最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null */
             lastDeployedAt: string | null;
+        };
+        AppDeploymentEventRowDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            applicationId: string;
+            /**
+             * Format: uuid
+             * @description 触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）
+             */
+            deploymentId: string | null;
+            /** Format: uuid */
+            executorId: string | null;
+            executorAddress: string | null;
+            /** @enum {string} */
+            eventType: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
+            /** @description 动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion） */
+            deployedVersion: string | null;
+            /**
+             * @description 动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null
+             * @enum {string|null}
+             */
+            triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
+            /** @description 操作人（JWT 用户名）；系统路径为 null */
+            operator: string | null;
+            /** @description 短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥） */
+            detail?: {
+                [key: string]: unknown;
+            } | null;
+            createdAt: string;
+        };
+        AppDeploymentEventsPageDto: {
+            data: components["schemas"]["AppDeploymentEventRowDto"][];
+            total: number;
+            page: number;
+            /** @description 默认 50，上限 200 */
+            pageSize: number;
         };
         CreateDeploymentDto: {
             /** @description 执行器 ID（留空则自动选择负载最低的在线执行器） */
@@ -7162,8 +7522,20 @@ export interface components {
             error?: string;
         };
         RegistryPackagesResponseDto: {
-            /** @description Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状) */
+            /** @description Package names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离) */
             packages: string[];
+        };
+        RegistryNpmPackageDto: {
+            /** @description 包名 */
+            name: string;
+            /** @description 最新版本（上游 version/latest，缺失时省略） */
+            latest?: string;
+            /** @description 包描述（上游未提供时省略） */
+            description?: string;
+        };
+        RegistryNpmPackagesResponseDto: {
+            /** @description Verdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504） */
+            packages: components["schemas"]["RegistryNpmPackageDto"][];
         };
         RegistryUploadResponseDto: {
             success: boolean;
@@ -7175,6 +7547,33 @@ export interface components {
             /** @description 字节 */
             size: number;
             sha256: string;
+        };
+        ExecutionArtifactRowDto: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description 所属执行 ID
+             */
+            executionId: string;
+            /**
+             * Format: uuid
+             * @description 所属任务 ID（冗余快照）
+             */
+            taskId: string;
+            /** @description 所属应用 ID（冗余快照；null = 任务未挂应用或应用已删除——SET NULL 语义） */
+            applicationId?: string | null;
+            /** @description 产物裸文件名 */
+            name: string;
+            /** @description 字节数 */
+            size: number;
+            /** @description 存储字节的 sha256 */
+            sha256: string;
+            /**
+             * Format: date-time
+             * @description 索引行创建时间（ISO-8601，随终态回调写入）
+             */
+            createdAt: string;
         };
         ExecutionArtifactDto: {
             name: string;
@@ -7886,7 +8285,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TotpDisableDto"];
+            };
+        };
         responses: {
             /** @description TOTP 已停用（或本来未启用） */
             200: {
@@ -7962,7 +8365,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                id: string;
+                id: number;
             };
             cookie?: never;
         };
@@ -7977,8 +8380,8 @@ export interface operations {
                     "application/json": components["schemas"]["SessionRevokeResponseDto"];
                 };
             };
-            /** @description 会话不存在或不属于你 */
-            401: {
+            /** @description 会话不存在或已吊销 */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9634,7 +10037,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutorCommandResultDto"];
+            };
+        };
         responses: {
             200: {
                 headers: {
@@ -9644,8 +10051,22 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorCommandResultResponseDto"];
                 };
             };
+            /** @description 载荷形态非法（DTO 白名单校验） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description 执行器令牌无效 */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 命令不属于该执行器（跨行回报） */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9952,10 +10373,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
+        /** @description AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
         requestBody?: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ExecutorActionReasonDto"];
             };
         };
         responses: {
@@ -10079,10 +10500,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
+        /** @description AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。 */
         requestBody?: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ExecutorActionReasonDto"];
             };
         };
         responses: {
@@ -10307,7 +10728,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description 渠道配置更新体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChannelDto"];
+            };
+        };
         responses: {
             200: {
                 headers: {
@@ -10347,7 +10773,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendTestDto"];
+            };
+        };
         responses: {
             201: {
                 headers: {
@@ -12186,6 +12616,56 @@ export interface operations {
             };
         };
     };
+    ApplicationController_setCurrentVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetCurrentVersionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetCurrentVersionResponseDto"];
+                };
+            };
+        };
+    };
+    ApplicationController_deployVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployVersionDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployVersionResponseDto"];
+                };
+            };
+        };
+    };
     ApplicationController_rollback: {
         parameters: {
             query?: never;
@@ -12249,6 +12729,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppDeploymentStatsDto"][];
+                };
+            };
+        };
+    };
+    AppDeploymentController_listApplicationEvents: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+                /** @description 按事件类型过滤（AppDeploymentEventType 九值单值；直等命中 (applicationId, eventType) 复合索引） */
+                eventType?: "deploy_created" | "redeploy_reused" | "approval_approved" | "approval_rejected" | "approval_cancelled" | "upgrade" | "stop" | "remove" | "stuck_failed";
+                /** @description 起始时间（ISO 8601）；半开区间含头：createdAt >= since */
+                since?: string;
+                /** @description 结束时间（ISO 8601）；半开区间不含尾：createdAt < until */
+                until?: string;
+            };
+            header?: never;
+            path: {
+                appId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 裸四键信封（data/total/page/pageSize），同 /releases 形态 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentEventsPageDto"];
                 };
             };
         };
@@ -12964,7 +13475,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RegistryPackagesResponseDto"];
+                    "application/json": components["schemas"]["RegistryNpmPackagesResponseDto"];
                 };
             };
         };
@@ -13031,6 +13542,39 @@ export interface operations {
             };
             /** @description 执行记录不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ArtifactsController_listArtifactRows: {
+        parameters: {
+            query?: {
+                page?: number;
+                pageSize?: number;
+                /** @description 按应用过滤（冗余自任务行 tasks.applicationId 的写时快照；任务未挂应用/应用已删的产物行不命中） */
+                applicationId?: string;
+                /** @description 按任务过滤（冗余自执行行 task_executions.taskId） */
+                taskId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionArtifactRowDto"][];
+                };
+            };
+            /** @description 调用者不是管理员 */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -69,7 +69,7 @@
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `NPM_REGISTRY_URL` / `PYPI_REGISTRY_URL` | 空=官方源 | 私服地址（compose 内默认注入 `http://registry-npm:4873`、`http://registry-pypi:8003/simple/`） |
-| `NPM_REGISTRY_TOKEN` / `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | S5 私服服务账号；token 优先于 user/pass |
+| `NPM_REGISTRY_TOKEN` / `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | S5 私服服务账号；token 优先于 user/pass（`_authToken` 行 vs `_auth` Basic 行，二者配一即可）。compose 已把 USER/PASS 注入 admin-api 与 executor-node——executor-node 侧缺省回落 `REGISTRY_USER`/`REGISTRY_PASS`（同源凭据）；独立部署执行器需显式传入 |
 | `REGISTRY_UPLOAD_TIMEOUT_MS` | `60000` | registry 上传代理超时 |
 | `REGISTRY_USER` / `REGISTRY_PASS` | `admin` / change_me | registry-pypi 服务自身凭证（仅 Basic Auth；E-34 起无 `PYPI_API_KEY`） |
 
@@ -108,7 +108,7 @@
 
 ## 常见坑
 
-1. `EXECUTION_CALLBACK_SECRET`/`THROTTLE_CALLBACK_LIMIT`/`NPM_REGISTRY_TOKEN` compose **默认未注入**——需要时自行加进 compose `environment` 或独立部署传参。
+1. `EXECUTION_CALLBACK_SECRET`/`THROTTLE_CALLBACK_LIMIT`/`NPM_REGISTRY_TOKEN` compose **默认未注入**——需要时自行加进 compose `environment` 或独立部署传参（`NPM_REGISTRY_USER/PASS` 已默认注入：admin-api 与 executor-node 均消费，executor-node 侧回落 `REGISTRY_USER/PASS`；仅 token 通道仍需手动加）。
 2. `LOG_STORAGE_DRIVER=s3` 但没启用 minio profile → 日志写入失败。
 3. `POSTGRES_PASSWORD` 改了但卷已初始化 → 容器仍用旧密码；换密码须 `down -v`。
 4. admin-api 侧 env 经 Joi 校验（configuration.ts），格式非法直接拒绝启动——报错信息里会指出变量名。

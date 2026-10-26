@@ -5,13 +5,19 @@ import {
   IsObject,
   IsUUID,
   IsInt,
+  IsIn,
+  IsISO8601,
   MaxLength,
+  Min,
+  Max,
   Validate,
   ValidatorConstraint,
   ValidatorConstraintInterface,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { Type } from "class-transformer";
 import { RunMode } from "../entities/app-deployment.entity";
+import { AppDeploymentEventType } from "../entities/app-deployment-event.entity";
 
 /**
  * A-11: env 载荷体积红线。
@@ -134,4 +140,60 @@ export class DeploymentHeartbeatDto {
   @MaxLength(2000)
   @IsOptional()
   message?: string;
+}
+
+/**
+ * R4（部署模型评审 §4.1A）：GET /app-deployments/applications/:appId/events
+ * 查询参数（默认 50，上限 200，口径与 ListReleasesQueryDto 一致）。
+ */
+export class ListDeploymentEventsQueryDto {
+  // @Max(10000)：对齐通用 PageQueryDto 的 NETOPT-3④ 口径——无封顶的 page
+  // 可被 ?page=99999999 打深 OFFSET + 全量 COUNT 打满连接池（游标化调研
+  // 2026-10-25 发现的漏网之口；本表规模下游标化暂不做，封顶是便宜几个
+  // 量级的防御）。
+  @ApiPropertyOptional({ default: 1, maximum: 10000 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10000)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 50, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  pageSize?: number = 50;
+
+  /**
+   * AppDeploymentEventType 九值取值域（varchar 裸 token，实测自实体枚举）。
+   * Object.values 而非手抄九个字符串：枚举扩值时校验白名单自动跟随，不会
+   * 出现「实体已有新值、DTO 还拒收」的静默 400。
+   */
+  @ApiPropertyOptional({
+    enum: Object.values(AppDeploymentEventType),
+    description:
+      "按事件类型过滤（AppDeploymentEventType 九值单值；直等命中 (applicationId, eventType) 复合索引）",
+  })
+  @IsOptional()
+  @IsIn(Object.values(AppDeploymentEventType))
+  eventType?: AppDeploymentEventType;
+
+  /** 半开区间含头：createdAt >= since（ISO 8601）。 */
+  @ApiPropertyOptional({
+    description: "起始时间（ISO 8601）；半开区间含头：createdAt >= since",
+  })
+  @IsOptional()
+  @IsISO8601()
+  since?: string;
+
+  /** 半开区间不含尾：createdAt < until（ISO 8601）——按天滚窗可无缝衔接。 */
+  @ApiPropertyOptional({
+    description: "结束时间（ISO 8601）；半开区间不含尾：createdAt < until",
+  })
+  @IsOptional()
+  @IsISO8601()
+  until?: string;
 }

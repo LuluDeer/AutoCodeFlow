@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import SettingsPage from '../pages/settings/index';
+import SettingsPage, { AI_NUMBER_FIELDS, isValidAiNumber } from '../pages/settings/index';
 import { aiApi } from '../api/ai';
 import { MemoryRouter } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
@@ -120,5 +120,35 @@ describe('settings 页 AI 配置区块（R6 ADMIN-only 降级）', () => {
     // mutation onError 与 handleSave catch 双路 toast（同文案），holder 内两条 →
     // getAllByText 容忍多命中（notification-silences 先例）
     expect((await screen.findAllByText('AI 配置校验未通过')).length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * P3-1（2026-10-26 审计）：AI 配置数值字段校验——此前「最大输出令牌数」填
+ * "abc" 能保存成功，运行时 parseInt 失败静默回退默认值，管理员被误导。
+ * 前端 isValidAiNumber 与后端 saveConfig 的 AI_CONFIG_NUMBER_INVALID 白名单
+ * 同口径（范围逐字一致，见 AI_NUMBER_FIELDS）。
+ */
+describe('AI 数值字段校验 isValidAiNumber（P3-1）', () => {
+  it('范围与后端白名单同口径：qwenMaxTokens 1~65536、qwenTimeoutMs 1~3600000', () => {
+    expect(AI_NUMBER_FIELDS.qwenMaxTokens).toEqual({ min: 1, max: 65536 });
+    expect(AI_NUMBER_FIELDS.qwenTimeoutMs).toEqual({ min: 1, max: 3600000 });
+  });
+
+  it('非空值必须是范围内整数：拒绝 abc / 12abc / 1e3 / 0 / -5 / 越界值', () => {
+    const { min, max } = AI_NUMBER_FIELDS.qwenMaxTokens;
+    for (const bad of ['abc', '12abc', '1e3', '0', '-5', '70000', 0, -5]) {
+      expect(isValidAiNumber(bad, min, max)).toBe(false);
+    }
+    for (const good of ['1', '4096', '65536', 8192]) {
+      expect(isValidAiNumber(good, min, max)).toBe(true);
+    }
+  });
+
+  it('空值放行（= 清空恢复默认，后端按未配置走 env/默认回退）', () => {
+    const { min, max } = AI_NUMBER_FIELDS.qwenMaxTokens;
+    for (const empty of [undefined, null, '', '   ']) {
+      expect(isValidAiNumber(empty, min, max)).toBe(true);
+    }
   });
 });

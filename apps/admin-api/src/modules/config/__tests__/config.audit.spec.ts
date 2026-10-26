@@ -84,7 +84,9 @@ describe("R83 · 配置写动作落审计", () => {
     expect(call.detail.isSecret).toBe(true);
     expect(call.detail.valueLength).toBe("super-secret-token-value".length);
     // 硬约束：值不得进审计（哪怕 key 本身不敏感）
-    expect(JSON.stringify(call.detail)).not.toContain("super-secret-token-value");
+    expect(JSON.stringify(call.detail)).not.toContain(
+      "super-secret-token-value",
+    );
     // ADR-028 / R83：**键集合**也钉死 —— 只允许这几个元数据字段。
     // 只断言「不含这个值」不够：将来有人加一个 value/raw 字段，换个值就漏过去了。
     expect(Object.keys(call.detail).sort()).toEqual([
@@ -117,7 +119,9 @@ describe("R83 · 配置写动作落审计", () => {
     expect(call.detail.maskSentinelResolved).toBe(true);
     expect(JSON.stringify(call.detail)).not.toContain("real-value-kept");
     // 哨兵被解析回真值，库里的值没被 *** 覆盖
-    expect(h.repo.rows.get("executor.sharedToken").value).toBe("real-value-kept");
+    expect(h.repo.rows.get("executor.sharedToken").value).toBe(
+      "real-value-kept",
+    );
   });
 
   it("remove 落 config.delete", async () => {
@@ -138,8 +142,14 @@ describe("R83 · 配置写动作落审计", () => {
   });
 
   it("审计抛错 → 配置写入仍成功，且 logger.error 有痕（fail-open 但绝不静默）", async () => {
-    const boom = { log: jest.fn(async () => { throw new Error("audit down"); }) };
-    const errSpy = jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    const boom = {
+      log: jest.fn(async () => {
+        throw new Error("audit down");
+      }),
+    };
+    const errSpy = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation(() => undefined);
     const h = await harness(boom);
 
     await expect(
@@ -147,7 +157,9 @@ describe("R83 · 配置写动作落审计", () => {
     ).resolves.toBeDefined();
     expect(h.repo.rows.get("k1").value).toBe("v1");
     expect(errSpy).toHaveBeenCalled();
-    expect(String(errSpy.mock.calls[0][0])).toContain("config audit write failed");
+    expect(String(errSpy.mock.calls[0][0])).toContain(
+      "config audit write failed",
+    );
     errSpy.mockRestore();
   });
 });

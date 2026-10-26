@@ -268,6 +268,19 @@ docker compose restart executor-python
 curl -H 'Authorization: Bearer <token>' http://localhost:3105/api/executors
 ```
 
+#### 地址接管自愈与静默窗（E-8 警示）
+
+容器化执行器**重建**（而非重启）后安装身份会漂移（指纹盐/容器 MAC 不落卷），
+重新注册会撞上同地址旧行的 409。中台的自愈机制：旧行已被判死（OFFLINE）且
+静默超过接管窗后，允许新安装**接管**该行（复用行 id，部署/执行历史不断裂）。
+
+接管窗默认 5 分钟，可经 `EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS` 环境变量覆盖。
+
+> ⚠️ **不要把该值配成 0**：0 等价于「只剩 OFFLINE 单闸」——stale sweep 的
+> 判死只代表约 3 分钟无心跳，一次网络分区就足以让**活着的**安装被同地址的
+> 任何注册方接管，旧进程回来后进入 401 自愈风暴。建议 ≥60000（1 分钟）；
+> 若无特殊需要保持默认 5 分钟。
+
 ### 执行器重启后的任务恢复
 
 执行器重启后，系统会自动将该执行器上处于 `running` 状态的任务标记为 `failed`，并根据任务的重试配置自动重新调度。无需手动干预。
@@ -366,13 +379,17 @@ curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
 > `scripts/bundle-executor-artifact.sh` 生成：dist + 生产 node_modules），
 > 下载失败时回退项目 checkout 本地复制（开发场景）。
 
-> **私服模式必须为执行器配置 `NPM_REGISTRY_TOKEN`**：registry-npm
+> **私服模式必须为执行器配置 npm 凭据：`NPM_REGISTRY_TOKEN` 或
+> `NPM_REGISTRY_USER`/`NPM_REGISTRY_PASS` 任一**：registry-npm
 > （Verdaccio）对 `**` 与 `@autoflow/*` 的 access 均为 `$authenticated`，
-> 未配置该 token 的 executor-node 安装任务依赖（含 `@autoflow/*` 私包与经
-> 私服代理的公共包）会收到 401。独立部署执行器时在执行器进程环境中设置
-> `NPM_REGISTRY_TOKEN`（与 admin-api 侧同值，见 docs/deployment.md 环境变量
-> 表与 `.env.example`）；缺省时执行器会在安装前打 warn 日志、失败信息中
-> 附带该提示。
+> 两者皆缺时 executor-node 安装任务依赖（含 `@autoflow/*` 私包与经私服
+> 代理的公共包）会收到 401。token（Bearer）为可选的高优先通道；未配
+> token 时执行器把 `NPM_REGISTRY_USER/PASS` 写成临时 `.npmrc` 的 `_auth`
+> （Basic）行。compose 形态下二者默认回落 `REGISTRY_USER/PASS`（与
+> admin-api 代理面同源凭据，见 docker-compose.yml executor-node 服务注释）；
+> 独立部署执行器时在执行器进程环境中显式设置（见 docs/deployment.md 环境
+> 变量表与 `.env.example`）。凭据皆缺时执行器会在安装前打 warn 日志、
+> 失败信息中附带该提示。
 
 ### 执行器负载均衡策略
 
@@ -575,7 +592,7 @@ TTL），脚本内注释标注了断言窗口与实现常量的对应关系。
 ### 前置条件
 
 - docker compose 完整栈在跑：admin-api(:3105)、redis、executor-node 至少各一
-- 管理员凭据可用（默认 `admin` / `Admin@123456`，即 compose 缺省 `INITIAL_ADMIN_PASSWORD`）
+- 管理员凭据可用（用户 `admin`；密码 = 部署时 `.env` 里设置的 `INITIAL_ADMIN_PASSWORD`——**无默认口令**，compose 以 `:?` 语法强制必填，`.env.example` 的 `change_me_immediately` 仅为占位示例，部署后立即修改）
 - 容器按 compose label（`com.docker.compose.service=redis/admin-api/executor-node`）自动发现，非标命名用 `CHAOS_*_CONTAINER` 环境变量覆盖
 
 ### 运行方式

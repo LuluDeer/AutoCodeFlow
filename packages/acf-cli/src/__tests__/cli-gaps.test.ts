@@ -791,6 +791,76 @@ describe('acf app upgrade-all', () => {
     }
     expect(mockedPost).not.toHaveBeenCalled();
   });
+
+  // ── R2（部署模型评审 §4.4，2026-10-24）：覆盖面显式化 ─────────────────────
+  it('--include-stopped（all）→ body {includeStopped:true}；分组 coverage/skipped 如实输出', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({
+      ok: true,
+      total: 3,
+      succeeded: 2,
+      failed: 1,
+      coverage: { running: 1, scheduled: 1, stopped: 1, failed: 0, inFlight: 1 },
+      skipped: [
+        { deploymentId: 'd-inflight-aaaaaaaaaaaa', executorId: 'exec-e', status: 'deploying', reason: 'in_flight' },
+      ],
+    });
+    await run(appsCommand(), 'app upgrade-all app1 -y --include-stopped');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', {
+      includeStopped: true,
+    });
+    const out = logs.join('\n');
+    // 覆盖面分组一行（stopped included）+ 在途跳过黄字明细（id 截 12 位）
+    expect(out).toContain('coverage: running 1, deploy-only 1, stopped 1 (included)');
+    expect(out).toContain('skipped: d-inflight-a executor=exec-e status=deploying reason=in_flight');
+    expect(process.exitCode).toBe(1); // failed=1 → CI 看得见
+  });
+
+  it('--include-stopped 与 --strategy canary 同给 → 用法错误（码 2），请求不发出', async () => {
+    const err = captureStderr();
+    await expect(
+      run(appsCommand(), 'app upgrade-all app1 --strategy canary --include-stopped'),
+    ).rejects.toThrow(/process\.exit\(2\)/);
+    expect(err.join('\n')).toContain('--include-stopped only applies to the all strategy');
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('未开 include-stopped 且存在 stopped 行 → 黄字指路（如实提示未覆盖）', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({
+      ok: true,
+      total: 2,
+      succeeded: 2,
+      failed: 0,
+      coverage: { running: 1, scheduled: 1, stopped: 2, failed: 0, inFlight: 0 },
+      skipped: [],
+    });
+    await run(appsCommand(), 'app upgrade-all app1 -y');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', undefined);
+    const out = logs.join('\n');
+    expect(out).toContain('coverage: running 1, deploy-only 1, stopped 2,');
+    expect(out).toContain('--include-stopped');
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+  });
+
+  it('--version + --include-stopped 同层组合（all）', async () => {
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({
+      ok: true,
+      total: 1,
+      succeeded: 1,
+      failed: 0,
+      version: '1.9.0',
+      coverage: { running: 0, scheduled: 0, stopped: 1, failed: 0, inFlight: 0 },
+      skipped: [],
+    });
+    await run(appsCommand(), 'app upgrade-all app1 --version 1.9.0 --include-stopped -y');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', {
+      version: '1.9.0',
+      includeStopped: true,
+    });
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

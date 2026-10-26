@@ -312,6 +312,16 @@ describe('POST /api/update-package — download behaviour', () => {
       try { actualFs.unlinkSync(p); } catch { /* already gone */ }
       return undefined;
     }) as never);
+    // P10: manifest 落盘（installed-packages.ts 的 writePackageManifest）走
+    // 同步 writeFileSync/renameSync——真实落盘，供下方 manifest 断言。
+    (mockFs.writeFileSync as jest.Mock).mockImplementation(((p: string, data: string) => {
+      actualFs.writeFileSync(p, data);
+      return undefined;
+    }) as never);
+    (mockFs.renameSync as jest.Mock).mockImplementation(((from: string, to: string) => {
+      actualFs.renameSync(from, to);
+      return undefined;
+    }) as never);
   });
 
   function listen(server: http.Server): Promise<number> {
@@ -372,6 +382,19 @@ describe('POST /api/update-package — download behaviour', () => {
       );
       // The downloaded file is kept for the deployment pipeline
       expect(actualFs.existsSync(path.join(tmpDir, '.pkg-updates', 'pkg-download-test.zip'))).toBe(true);
+      // P10: checksum 验证通过 → manifest 落盘（心跳 installedPackages 的事实源），
+      // 形状含推送载荷透传的 name/type/version 与 checksum。
+      const manifestPath = path.join(tmpDir, '.pkg-updates', 'manifests', 'pkg-download-test.json');
+      expect(actualFs.existsSync(manifestPath)).toBe(true);
+      const manifest = JSON.parse(actualFs.readFileSync(manifestPath, 'utf-8'));
+      expect(manifest).toEqual(
+        expect.objectContaining({
+          packageId: 'pkg-download-test',
+          version: '9.9.9',
+          checksum,
+        }),
+      );
+      expect(typeof manifest.downloadedAt).toBe('string');
     } finally {
       spyCwd.mockRestore();
       await closeServer(server);
@@ -426,6 +449,9 @@ describe('POST /api/update-package — download behaviour', () => {
       );
       // 完整性校验失败的包**不得留在磁盘上**（半成品清理）
       expect(actualFs.existsSync(tmpFile)).toBe(false);
+      // P10: 校验失败同样**不写 manifest**——manifest 是「校验通过的已安装
+      // 事实」，篡改/失败品绝不能经心跳伪装成已安装。
+      expect(actualFs.existsSync(path.join(tmpDir, '.pkg-updates', 'manifests', 'pkg-sum-test.json'))).toBe(false);
     } finally {
       spyCwd.mockRestore();
       await closeServer(server);
@@ -468,6 +494,14 @@ describe('POST /api/update-package — download behaviour', () => {
           checksum: 'a'.repeat(64),
         });
       expect(retry.status).not.toBe(409);
+
+      // P10: 下载失败（HTTP 500）同样不写 manifest——半成品不算已安装事实。
+      expect(
+        actualFs.existsSync(path.join(tmpDir, '.pkg-updates', 'manifests', 'pkg-fail-test.json')),
+      ).toBe(false);
+      expect(
+        actualFs.existsSync(path.join(tmpDir, '.pkg-updates', 'manifests', 'pkg-fail-test-2.json')),
+      ).toBe(false);
     } finally {
       spyCwd.mockRestore();
       await closeServer(server);

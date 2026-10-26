@@ -505,3 +505,112 @@ describe('A-6 — JSON_BODY_LIMIT (express.json body ceiling)', () => {
       .expect(413);
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// 本轮审计修复回归锁（P3-16 磁盘水位序校验 / P3-19 TASK_TIMEOUT_SECONDS NaN 回落）
+// ---------------------------------------------------------------------------
+
+// P3-16（对齐 executor-python config.py `_validate_disk_threshold_order`）：
+// warn 必须 < critical，否则「紧急清理」防线永不触发而「拒新任务」提前生效。
+// 误配时两者都回落默认（90/95）+ warn 日志（node 内嵌桌面端，配置手滑不应让
+// 执行器起不来——与 python 抛 ValueError 的差异是刻意的）。
+describe('executor-node config disk watermark ordering (P3-16)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.DISK_WARN_PERCENT;
+    delete process.env.DISK_CRITICAL_PERCENT;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('defaults to warn=90 / critical=95 when unset', async () => {
+    const { config } = await import('./config');
+    expect(config.diskWarnPercent).toBe(90);
+    expect(config.diskCriticalPercent).toBe(95);
+  });
+
+  it('warn >= critical resets BOTH to defaults (90/95) and logs a warning', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      process.env.DISK_WARN_PERCENT = '95';
+      process.env.DISK_CRITICAL_PERCENT = '90';
+      const { config } = await import('./config');
+      expect(config.diskWarnPercent).toBe(90);
+      expect(config.diskCriticalPercent).toBe(95);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('warn == critical resets BOTH to defaults (equal means overlapping semantics)', async () => {
+    process.env.DISK_WARN_PERCENT = '90';
+    process.env.DISK_CRITICAL_PERCENT = '90';
+    const { config } = await import('./config');
+    expect(config.diskWarnPercent).toBe(90);
+    expect(config.diskCriticalPercent).toBe(95);
+  });
+
+  it('keeps a valid warn < critical pair untouched', async () => {
+    process.env.DISK_WARN_PERCENT = '80';
+    process.env.DISK_CRITICAL_PERCENT = '92';
+    const { config } = await import('./config');
+    expect(config.diskWarnPercent).toBe(80);
+    expect(config.diskCriticalPercent).toBe(92);
+  });
+});
+
+// P3-19：TASK_TIMEOUT_SECONDS 非法值（垃圾字符串）在解析层回落默认 300 + warn。
+// 旧实现 parseInt 产出 NaN 并静默传播——accept 侧 Number.isFinite(NaN)=false 让
+// 每一个派发都以 400「无效的任务超时」被拒（python 同场景是启动即失败，至少显式）。
+describe('executor-node config taskTimeoutSeconds invalid value fallback (P3-19)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.TASK_TIMEOUT_SECONDS;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('falls back to 300 (with a warning) on a garbage value instead of propagating NaN', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      process.env.TASK_TIMEOUT_SECONDS = 'abc';
+      const { config } = await import('./config');
+      expect(config.taskTimeoutSeconds).toBe(300);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('keeps explicit 0 (unbounded) and valid integers intact', async () => {
+    process.env.TASK_TIMEOUT_SECONDS = '0';
+    let { config } = await import('./config');
+    expect(config.taskTimeoutSeconds).toBe(0);
+
+    jest.resetModules();
+    delete process.env.TASK_TIMEOUT_SECONDS;
+    process.env.TASK_TIMEOUT_SECONDS = '600';
+    ({ config } = await import('./config'));
+    expect(config.taskTimeoutSeconds).toBe(600);
+  });
+
+  it('defaults to 300 when unset or empty', async () => {
+    let { config } = await import('./config');
+    expect(config.taskTimeoutSeconds).toBe(300);
+
+    jest.resetModules();
+    process.env.TASK_TIMEOUT_SECONDS = '';
+    ({ config } = await import('./config'));
+    expect(config.taskTimeoutSeconds).toBe(300);
+  });
+});

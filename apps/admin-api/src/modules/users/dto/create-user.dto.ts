@@ -11,9 +11,15 @@ import {
 import { UserRole } from "../entities/user.entity";
 
 export class CreateUserDto {
-  @ApiProperty({ example: "admin" })
+  @ApiProperty({ example: "admin", maxLength: 128 })
   @IsString()
   @IsNotEmpty()
+  // F-18（UIAUDIT P3-11）：用户名长度上限——此前 create/update DTO 仅
+  // @IsNotEmpty，多 KB 用户名可入库（varchar 溢出由 DB 层兜底报错）。
+  // 上限 128 对齐 DB 列 users.username varchar(128)（entity DB-006）与
+  // LoginDto 的 sane-length 先例（L-1）；UpdateUserDto 经 PartialType 传播，
+  // 两个写面同步收口。
+  @MaxLength(128)
   username: string;
 
   @ApiProperty({ example: "admin@example.com" })

@@ -512,8 +512,7 @@ export class CollabMediaUploadResponseDto {
   sizeBytes: number;
 
   @ApiProperty({
-    description:
-      "平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式",
+    description: "平台路径 /api/sop/media/<id> —— mediaRefs 唯一合法形式",
   })
   mediaPath: string;
 }

@@ -16,7 +16,7 @@
  */
 import { Badge, Card, Typography, Button, Space, Alert, Select, Input } from 'antd';
 import { CopyOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, RedoOutlined, LinkOutlined } from '@ant-design/icons';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { message } from '../utils/toast';
@@ -196,10 +196,17 @@ export default function ExecutionLogSection({
   const [inputKeyword, setInputKeyword] = useState('');
   const [activeKeyword, setActiveKeyword] = useState('');
 
-  /** SSE 生命周期 → 父页（页头徽标/断流告警）。合并去重避免无谓的父渲染。 */
-  const reportStream = (s: { streaming: boolean; disconnected: boolean }) => {
+  /**
+   * SSE 生命周期 → 父页（页头徽标/断流告警）。合并去重避免无谓的父渲染。
+   * F-19（UIAUDIT P3-12）：用 useCallback 固化引用——下方 SSE effect 把它列进
+   * 依赖数组；此前裸函数每渲染新引用，依赖数组被迫用 eslint-disable 压制
+   * （refresh/onStreamStatusChange 实际稳定但禁用项掩盖了未来引入不稳定回调
+   * 时的陈旧闭包）。固化后 refresh（React Query v5 refetch 为 observer 实例
+   * 方法，引用稳定）与本回调一并进依赖，当前调用面下 effect 触发语义不变。
+   */
+  const reportStream = useCallback((s: { streaming: boolean; disconnected: boolean }) => {
     onStreamStatusChange(s);
-  };
+  }, [onStreamStatusChange]);
 
   // SSE log streaming when running
   // F-08（DEEP_REVIEW 0ef3bbe）：自建 EventSource 收敛到统一 createSseClient 工厂
@@ -330,8 +337,9 @@ export default function ExecutionLogSection({
       setStreaming(false);
       reportStream({ streaming: false, disconnected: false });
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.status, execId, taskId, reconnectKey]);
+  // F-19：依赖补全（refresh/reportStream 已通过 useCallback/observer refetch
+  // 稳定化，见 reportStream 注释）——不再用 eslint-disable 压制。
+  }, [data?.status, execId, taskId, reconnectKey, refresh, reportStream]);
 
   // SSE 断流后的轮询兜底：仅对未终态执行刷新，到达终态后自动停止。
   // U3: 标签页不可见时跳过请求（回到前台后下一拍即恢复刷新）。

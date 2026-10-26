@@ -36,6 +36,10 @@ from device_identity import get_device_fingerprint
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 from artifacts import gather_artifacts_for_callback, artifacts_dir_for
+# R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存——同 URL 的包
+# 第二次执行零下载（审查/解压照常每次执行，缓存只省下载）。_download_package
+# 经参数传入 pkg_cache.download_with_cache（未命中时逐字节沿用既有下载链）。
+import pkg_cache
 # A-11R：与 node `JSON.stringify` 逐字节一致的序列化器（浮点指数排版 + JS
 # 整数键排序），供 params→env 的非字符串值与类型化通道使用。
 from js_json import js_json_dumps
@@ -163,6 +167,13 @@ def _build_uv_env(cache_dir: Path) -> dict[str, str]:
             logger.warning('interpreters.build_uv_env failed (%s); falling back to local whitelist', exc)
     env = _build_install_env(cache_dir)
     env['UV_PYTHON_DOWNLOADS'] = 'manual'
+    # P1 凭据通道（本地兜底分支）：builder 缺席时同样注入 netrc，防两分支漂移。
+    inject = getattr(_interpreters, 'maybe_inject_pypi_netrc', None) if _interpreters is not None else None
+    if callable(inject):
+        try:
+            inject(env, cache_dir)
+        except Exception as exc:  # noqa: BLE001 - 凭据文件失败不阻断安装路径
+            logger.warning('maybe_inject_pypi_netrc failed (%s); install 将无凭据', exc)
     return env
 
 
@@ -333,6 +344,14 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
     if cache_dir.exists() and not _is_bare_git_repo(cache_dir):
         logger.warning('git cache %s is not a valid bare repo (killed clone?) — quarantining and re-cloning', cache_dir)
         _quarantine_broken_cache(cache_dir)
+    # P2-6：prepare 阶段的 git 子进程此前完全在资源上限之外——给 clone/fetch/
+    # checkout 统一套与任务同款的 RLIMIT（POSIX；win32 返回 None 原样 spawn）。
+    # 预算按最长的单阶段超时取（clone 120s > fetch 60s > checkout 30/60s），
+    # CPU 兜底 = 预算 + 60s。
+    _prep_rlimit = _prepare_rlimit_pre_exec(_git_clone_timeout())
+    git_spawn_kwargs: dict = (
+        {'preexec_fn': _prep_rlimit} if _prep_rlimit is not None else {}
+    )
     if not cache_dir.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -341,7 +360,7 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
             # first refresh (and on a checkout miss) so arbitrary refs keep
             # resolving like the old full clone.
             subprocess.run(['git', 'clone', '--bare', '--depth', '1', repo_url, str(cache_dir)],
-                           check=True, timeout=_git_clone_timeout())
+                           check=True, timeout=_git_clone_timeout(), **git_spawn_kwargs)
         except Exception:
             # A failed clone leaves a partial bare repo behind; the existence
             # check above would then skip re-cloning forever.
@@ -352,14 +371,14 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
         # it once so arbitrary-ref checkouts don't regress.
         _unshallow_bare_repo(cache_dir)
         subprocess.run(['git', '-C', str(cache_dir), 'fetch', '--all'],
-                       check=True, timeout=60)
+                       check=True, timeout=60, **git_spawn_kwargs)
     dest.mkdir(parents=True, exist_ok=True)
     # --work-tree + checkout exports files at the given ref to dest.
     try:
         subprocess.run(
             ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
              'checkout', ref, '--', '.'],
-            check=True, timeout=30,
+            check=True, timeout=30, **git_spawn_kwargs,
         )
     except subprocess.CalledProcessError:
         # O-13: the shallow clone may not contain the requested ref (a tag or
@@ -371,7 +390,7 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
         subprocess.run(
             ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
              'checkout', ref, '--', '.'],
-            check=True, timeout=60,
+            check=True, timeout=60, **git_spawn_kwargs,
         )
 
 router = APIRouter()
@@ -765,13 +784,34 @@ def _callback_logs_max_chars() -> int:
 
     默认 10000 = 原硬编码值（`_truncate_logs` 里的 `max_length = 10000`），
     仅在需要放大回调日志窗口时经 `CALLBACK_LOGS_MAX_CHARS` 覆盖。
-    缺省/非法一律回落 10000，绝不回落 0（0 会把每条日志截成空串）。"""
+    缺省/非法一律回落 10000，绝不回落 0（0 会把每条日志截成空串）。
+
+    P3-12（执行器服务审计，2026-10-26）：此前只校验 `> 0`，运维配一个
+    超过 admin CallbackItemDto `@MaxLength(512_000)` 的值（如 600_000）
+    时，超长 logs 让 admin 把**整批**（≤100 条）回调整体拒收——同批其它
+    执行的真实终态陪葬，随后落盘重发 150 轮全败 → 死信（毒丸化）。
+    现在配置值一律钳到 `CALLBACK_LOGS_ADMIN_MAX_CHARS`（512_000）：钳制
+    只可能发生在显式配大的部署上（默认 10000 远低于上限，行为零变化），
+    超限 warn 一次说明钳到了哪、为什么。
+    """
     raw = getattr(settings, 'callback_logs_max_chars', 10000)
     try:
         value = int(raw)
     except (TypeError, ValueError):
         return 10000
-    return value if value > 0 else 10000
+    if value <= 0:
+        return 10000
+    if value > CALLBACK_LOGS_ADMIN_MAX_CHARS:
+        logger.warning(
+            'CALLBACK_LOGS_MAX_CHARS=%s exceeds the admin callback DTO cap '
+            '(%s chars) — clamping to %s; a larger value would make admin '
+            'reject the WHOLE callback batch (≤100 items) as one invalid '
+            'payload, dead-lettering unrelated terminal results in the same '
+            'batch',
+            value, CALLBACK_LOGS_ADMIN_MAX_CHARS, CALLBACK_LOGS_ADMIN_MAX_CHARS,
+        )
+        return CALLBACK_LOGS_ADMIN_MAX_CHARS
+    return value
 
 # R4-C P1: bounds for task output handling.
 # - In-memory accumulation of stdout/stderr is capped: a `while true; echo` task
@@ -793,6 +833,11 @@ MAX_STREAM_LINE_BYTES = 1_000_000
 # R4-C P2: callback payload guards (admin DTO: errorMessage MaxLength 4096,
 # logs MaxLength 512_000 — the 10k log truncation below covers logs).
 MAX_ERROR_MESSAGE_CHARS = 4000
+# P3-12（执行器服务审计，2026-10-26）：回调 logs 的**硬上限** = admin
+# CallbackItemDto 的 @MaxLength(512_000)。超限载荷让 admin 把**整批**
+# （≤100 条）回调整体拒收（BatchTaskDto 数组语义：一条非法整批 400），
+# 同批其它执行的真实终态陪葬，随后落盘重发 150 轮全败 → 死信。
+CALLBACK_LOGS_ADMIN_MAX_CHARS = 512_000
 CALLBACK_RETRY_ATTEMPTS = 3
 CALLBACK_RETRY_BASE_DELAY_SECONDS = 1.0
 
@@ -928,6 +973,67 @@ def _validate_requirements(requirements: list[str]) -> None:
                 status_code=400,
                 detail=f'无效的 requirement（不允许选项形式）：{spec!r}',
             )
+
+
+# ---------------------------------------------------------------------------
+# P2-6（执行器服务审计，2026-10-26）：prepare 阶段子进程的资源上限。
+#
+# 沙箱（build_sandbox_cmd）只包任务进程（run_task 的 spawn），而 prepare 阶段
+# 的 git / uv 子进程完全在沙箱与资源上限之外——此前唯一的护栏是各自的阶段
+# 超时。恶意 requirements（含 zip 包内 requirements.txt，包作者可与任务作者
+# 不同）触发的 wheel build / 安装脚本可以在无内存约束下挖矿 / 写满盘。
+# 沙箱范围决策（prepare 是否也进 bwrap）另行登记，不在本修复内实施。
+#
+# 这里给 prepare 子进程套与任务同款的 RLIMIT（sandbox.build_rlimit_pre_exec
+# 的既有形态）：RLIMIT_AS/CPU/FSIZE/NOFILE 沿 settings 全量复用；RLIMIT_CPU
+# 未配置时按「阶段超时 + 60s」兜底（与任务进程的 fallback 口径一致）。
+# 仅 POSIX 生效（win32 无 resource 原语，与任务侧 build_rlimit_pre_exec 的
+# 平台守卫同源）；limits 为空（全部 0）时返回 None 保持既有 spawn kwargs。
+# ---------------------------------------------------------------------------
+def _prepare_rlimit_pre_exec(timeout_seconds: float) -> Optional[Callable[[], None]]:
+    """Build the prepare-subprocess rlimit preexec_fn from settings (POSIX)."""
+    import resource  # noqa: F401 - POSIX only; ImportError guarded below
+
+    try:
+        import resource as _resource
+    except ImportError:  # pragma: no cover - 非 POSIX 兜底
+        return None
+
+    limits: dict = {}
+    mb = settings.task_memory_limit_mb
+    if mb and mb > 0:
+        value = mb * 1024 * 1024
+        limits[_resource.RLIMIT_AS] = (value, value)
+
+    cpu = settings.task_cpu_limit_seconds or 0
+    if not cpu and timeout_seconds and timeout_seconds > 0:
+        # 0（无阶段超时）时也不设 CPU 硬限——超时路径已负责杀树。
+        cpu = int(timeout_seconds) + 60
+    if cpu and cpu > 0:
+        # 硬限留 10s 余量：让阶段超时 kill 先到场（与任务侧同款注释语义）。
+        limits[_resource.RLIMIT_CPU] = (cpu, cpu + 10)
+
+    fsize_mb = settings.task_fsize_limit_mb
+    if fsize_mb and fsize_mb > 0:
+        value = fsize_mb * 1024 * 1024
+        limits[_resource.RLIMIT_FSIZE] = (value, value)
+
+    nofile = settings.task_nofile_limit
+    if nofile and nofile > 0:
+        limits[_resource.RLIMIT_NOFILE] = (nofile, nofile)
+
+    if not limits:
+        return None
+
+    def _apply() -> None:
+        for rsrc, (soft, hard) in limits.items():
+            try:
+                _resource.setrlimit(rsrc, (soft, hard))
+            except (ValueError, OSError) as exc:  # 单条失败不阻断其余
+                logger.warning('setrlimit(%s, %r) failed in prepare preexec: %s',
+                               rsrc, (soft, hard), exc)
+
+    return _apply
 
 
 def _clamp_timeout_seconds(value: Any, default: int) -> int:
@@ -1283,8 +1389,12 @@ _task_locks_guard = threading.Lock()
 # 合法声明值——匹配语义是前缀匹配，声明粒度就是主.次。
 RUNTIME_VERSION_PATTERN = re.compile(r'^\d+\.\d+$')
 
-# AC-03a / NFR-04：zip 下载体积上限（与 admin 上传侧 200MB 限制同值，CON-03）。
-ZIP_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024
+# AC-03a / NFR-04：zip 下载体积上限（与 admin 上传侧 200MB 限制同值，CON-03）
+# 已收口为 Settings.package_download_max_bytes（env PACKAGE_DOWNLOAD_MAX_BYTES
+# 与 node executor 同名同源；默认 200MB 不变，无效值回落默认并 warn——解析
+# 与钳制规则见 config.py 该字段注释）。_download_package 按次读取 settings，
+# 测试注入面从模块常量 monkeypatch 迁移为 settings 属性 monkeypatch
+# （与 test_pkg_cache.py 对 pkg_cache_max_bytes 的注入同款）。
 # NFR-09：下载/解压属任务准备阶段。整体超时预算独立于任务超时（任务超时在
 # 运行阶段才生效，准备阶段不能不受控挂起）。
 # NETOPT-6③：这个数字的**真实语义是整个下载流的总预算**（asyncio.timeout 包住
@@ -1423,6 +1533,60 @@ def merge_requirements(package_reqs: list[str], task_reqs: list[str]) -> list[st
     return list(merged.values())
 
 
+# P3-13（执行器服务审计，2026-10-26）：回调 `result` 字段的 4KB 预钳——
+# 镜像 executor-node routes/execute.ts 的 clampCallbackResult / CALLBACK_RESULT_MAX_BYTES。
+#
+# admin 侧 CallbackItemDto 用 IsBoundedJsonObjectConstraint 校验 result——
+# `len(json.dumps(value).encode('utf-8')) > 4096` 即**整条**回调被拒
+# （BatchTaskDto 的数组语义：一条非法整批 400），同批 ≤100 条其它执行的
+# 真实终态陪葬，随后落盘重发 150 轮全败 → 死信。触发场景：解释器池版本
+# 积累很多时，`pool.versions` 列表撑爆 4KB。
+#
+# 裁剪策略与 node 逐语义同形：保**最新**的版本（调度最可能派发的是新池；
+# _pool_summary 按探测顺序返回，这里从尾部保留），从头部丢弃，直到字节
+# 预算满足；留下 `truncated_from`=原始条数标记让 admin/运维知道清单不完整。
+# detail 文案超预算时同样截断。序列化按 UTF-8 字节计（与 admin jsonBytes
+# 同口径）。
+CALLBACK_RESULT_MAX_BYTES = 4096
+
+
+def _clamp_interpreter_result(result: dict) -> dict:
+    """把解释器失败快照钳进 admin 的 4KB result 预算（超出时原地裁剪）。"""
+    try:
+        serialized = json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        # 不可序列化（理论不可达）：退化为空对象，绝不因观测面炸掉任务收尾。
+        return {}
+    if len(serialized.encode('utf-8')) <= CALLBACK_RESULT_MAX_BYTES:
+        return result
+    try:
+        cloned = json.loads(serialized)
+    except ValueError:  # pragma: no cover - dumps/loads 往返不可达
+        return {}
+    interpreter = cloned.get('interpreter')
+    if isinstance(interpreter, dict) and isinstance(interpreter.get('pool'), dict):
+        pool = interpreter['pool']
+        versions = pool.get('versions')
+        if isinstance(versions, list):
+            kept = list(versions)
+            while len(kept) > 1:
+                pool['versions'] = kept
+                pool['versions_truncated_from'] = len(versions)
+                probe = json.dumps(cloned, ensure_ascii=False)
+                if len(probe.encode('utf-8')) <= CALLBACK_RESULT_MAX_BYTES:
+                    break
+                kept = kept[1:]  # 从头部丢，保尾部（最新）
+            pool['versions'] = kept
+    if len(json.dumps(cloned, ensure_ascii=False).encode('utf-8')) > CALLBACK_RESULT_MAX_BYTES \
+            and isinstance(cloned.get('interpreter'), dict):
+        detail = cloned['interpreter'].get('detail')
+        if isinstance(detail, str) and len(detail) > 200:
+            cloned['interpreter']['detail'] = (
+                f'{detail[:200]}…[detail truncated for 4KB callback result budget]'
+            )
+    return cloned
+
+
 def _interpreter_failure_result(
     runtime_version: str,
     exc: BaseException,
@@ -1450,7 +1614,9 @@ def _interpreter_failure_result(
             f'{settings.app_name}[已缓存: {", ".join(pool["versions"]) or "无"}]'
         ),
         'durationMs': int((time.monotonic() - started_at) * 1000),
-        'result': {
+        # P3-13：result 是 admin 唯一接受的结构化通道，但 IsBoundedJsonObject
+        # 4KB 上限会让超限的整条回调被拒（整批陪葬）——发送前预钳。
+        'result': _clamp_interpreter_result({
             'interpreter': {
                 'requested': runtime_version,
                 'resolved': None,
@@ -1458,7 +1624,7 @@ def _interpreter_failure_result(
                 'detail': str(getattr(exc, 'detail', '') or str(exc)),
                 'pool': pool,
             }
-        },
+        }),
     }
 
 
@@ -1533,6 +1699,38 @@ def _serialize_param_value(v: Any) -> str:
     if isinstance(v, str):
         return v
     return js_json_dumps(v)
+
+
+# P2-2（2026-10-26 执行器域审计）：params 逐键通道的**键名闸**。
+#
+# params 注入形态是 `AUTOFLOW_<KEY 大写>`，键名**直接成为子进程环境变量名**：
+# 含 `=` 的键（`A=B` → `AUTOFLOW_A=B`）会坏掉 env 块（node 侧 spawn 构造 env
+# 直接抛错——secrets 向量 illegal-equals 自证同形；python dict 虽不校验 env 名，
+# 子进程拿到的名字已无法被 shell/脚本按常规方式引用）；短横线在 shell 引用
+# （`$AUTOFLOW_MY-KEY`）里必然错位；unicode 键在 Windows env 块不保证可移植。
+# 单一事实源：packages/executor-protocol/protocol.json 顶层 `params` 段
+# （keyPattern `^[A-Za-z0-9_]{1,64}$`、onInvalidKey skip-and-warn）——与
+# secrets 键名规则（`^[A-Za-z_][A-Za-z0-9_]*$`，secret_env.py）的两点刻意差异：
+# ① 无首字符限制（AUTOFLOW_ 前缀保证 env 名首字符合法，数字开头的原始键
+# 1ST_RETRY 不构成风险）；② 长度 ≤64（含前缀后仍有界）。**不挂保留名/前缀
+# 拒绝**：params 走 AUTOFLOW_ 命名空间，用户参数触碰不到平台变量（同名参数
+# 被平台键按注入顺序覆盖是既有语义，非漏洞）。
+#
+# 三端同款规则（常量注释互指）：admin 源头主闸
+# apps/admin-api/src/modules/executor/dispatch-params-keys.util.ts
+# （派发时已 skip 坏键并 warn 带 taskId/executionId）；node 防御纵深
+# apps/executor-node/src/param-env.ts isInjectableParamEnvKey（注入循环同款
+# skip+warn）；本函数是 python 侧对等兜底——admin/node 校验过也照拦，
+# 执行器不能假设上游一定校验过（与 secret_env.py 头注同一立场）。
+#
+# 向量断言：tests/test_executor_protocol_contract.py 的 params 段（对真实
+# 实现逐条断言 protocol.json params.vectors）。
+_PARAM_KEY_RE = re.compile(r'^[A-Za-z0-9_]{1,64}$')
+
+
+def _is_injectable_param_key(key: str) -> bool:
+    """该 params 键能否经 `AUTOFLOW_<KEY 大写>` 通道注入子进程 env。"""
+    return bool(isinstance(key, str) and _PARAM_KEY_RE.match(key))
 
 
 def _serialize_params_json(params: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1687,6 +1885,9 @@ async def _download_package(url: str, dest: Path, *,
     A-5（P2）：`should_cancel` 非空时逐 chunk 检查，命中抛 _PrepareCancelled
     （kill 不再把整个下载预算跑完才收敛）；半成品照常清理。"""
     headers = _package_download_headers(url)
+    # 体积上限按次读取（env 可配，见 Settings.package_download_max_bytes）；
+    # 错误消息同值回显，运维看到的上限与实际生效值一致。
+    max_bytes = settings.package_download_max_bytes
     received = 0
     try:
         # 总预算（执行器镜像为 python:3.12-slim，asyncio.timeout 3.11+ 可用）。
@@ -1720,6 +1921,19 @@ async def _download_package(url: str, dest: Path, *,
                                 raise RuntimeError(
                                     '包下载失败：重定向地址不合法'
                                 )
+                            # P2-7（执行器服务审计，2026-10-26）：**每一跳**
+                            # 对重定向目标重跑与首跳同款的 SSRF 判定——
+                            # node lib/download.ts 的 redirect 递归同样过
+                            # assertSafeHttpUrl（每跳复检）。首跳合法不代表
+                            # 目标可信：目标服务器的一句 302 就能把执行器
+                            # 变成内网/云元数据的探测 oracle（响应差/时序/
+                            # 错误文案），此前这里只做跨 host 剥 Bearer、
+                            # 不复检地址。拒则中止（半成品由外层 except
+                            # 清理），不跟随。
+                            if _host_is_restricted(_hostname or ''):
+                                raise RuntimeError(
+                                    f'包下载失败：重定向地址指向受限网络（{_hostname}）'
+                                )
                             # node lib/download.ts 同语义：跨 host 剥离 Authorization
                             # （共享令牌绝不泄漏给非 admin 目标），同 host 保留续传。
                             if current_headers.get('Authorization') and (
@@ -1740,9 +1954,9 @@ async def _download_package(url: str, dest: Path, *,
                                 if should_cancel is not None and should_cancel():
                                     raise _PrepareCancelled()
                                 received += len(chunk)
-                                if received > ZIP_DOWNLOAD_MAX_BYTES:
+                                if received > max_bytes:
                                     raise RuntimeError(
-                                        f'包体积超过 {ZIP_DOWNLOAD_MAX_BYTES} 字节上限'
+                                        f'包体积超过 {max_bytes} 字节上限'
                                     )
                                 handle.write(chunk)
                         break
@@ -1764,7 +1978,8 @@ def _remove_quietly(path: Path) -> None:
         pass
 
 
-def _extract_package(zip_path: Path, work_dir: Path) -> None:
+def _extract_package(zip_path: Path, work_dir: Path, *,
+                      package_url: Optional[str] = None) -> None:
     """`vet_zip` + `safe_extract`（AC-03a）。WS3 模块缺席时**明确失败**。
 
     绝不退化成 `zipfile.extractall` 之类的兜底——那正是 zip-slip 的入口。
@@ -1786,6 +2001,11 @@ def _extract_package(zip_path: Path, work_dir: Path) -> None:
     except Exception as exc:
         violation = getattr(exc, 'violation', None)
         if violation:
+            # R5b（评审 §六 4）：审查拒绝时顺带清除缓存条目（首次下载的恶意
+            # 包与缓存条目被事后替换两种来源一并覆盖），否则坏字节会被反复
+            # 命中、反复在这里失败。best-effort：purge 失败不掩盖原始异常。
+            if package_url:
+                pkg_cache.purge_pkg_cache_entry(package_url)
             raise RuntimeError(
                 f'zip 包未通过安全检查（{violation}）：{exc}'
             ) from exc
@@ -2087,6 +2307,40 @@ def accept_execution(
         raise ExecutionRejected(
             503, '执行器磁盘已达临界水位，拒绝接收新任务'
         )
+
+    # P2-9（执行器服务审计，2026-10-26）：timeout 三键别名（timeoutSeconds ??
+    # timeout_seconds ?? timeout）的 1..86400 边界手检——与 executor-node
+    # acceptExecution 的同款闸（execute.ts:649-653）逐语义对齐，且与下面
+    # requirements 守卫一样**必须在登记之前**（登记后的 raise 会把该
+    # executionId 永久留在 live 表里，重复领取守卫从此永远拒绝它）。
+    #
+    # 位置在协议闸门**之前**（node 的手检同样先于协议 schema 闸，见
+    # execute.ts 547-653 的顺序）：手检给出比 schema 文案更具体的 400 文案
+    # （「无效的任务超时：…（期望 0（不限时）或 1..86400 秒）」，与 node
+    # 逐字同形）。协议闸的生成物（P2-9 已给 timeout_seconds 补边界）仍在
+    # 手检之后兜底拦截同类畸形。
+    #
+    # 此前的分叉：协议 schema 对 timeoutSeconds/timeout 有 0..86400 边界，
+    # 但 `timeout_seconds` 别名无边界（protocol.json 该键缺 minimum/maximum，
+    # 本批已同步补上）；且 node accept 对三键解析后的值统一手检 1..86400
+    # （400），python 却一路漏到 run_task 的 `_resolve_task_timeout` 静默
+    # `_clamp_timeout_seconds`——同一载荷 `timeout_seconds: -5` 在 node 上
+    # 400、在 python 上被钳成 1 秒（任务立即被超时杀）。admin 的 bug 因此
+    # 表现为「python 执行器上所有任务秒死」。0（显式不限时）放行，交给
+    # 下游解析语义处理（与 node accept 的 0 分支一致）。
+    # req.task 由外层反序列化模型透传，畸形载荷（协议向量）下可能不是
+    # dict——手检对非 dict 形态跳过，交给后面的协议闸门以 400 拒收。
+    _task_for_timeout = req.task if isinstance(req.task, dict) else {}
+    for _timeout_key in ('timeoutSeconds', 'timeout_seconds', 'timeout'):
+        _raw_timeout = _task_for_timeout.get(_timeout_key)
+        if _raw_timeout is None or _raw_timeout == 0:
+            continue
+        if not isinstance(_raw_timeout, int) or isinstance(_raw_timeout, bool) \
+                or not (1 <= _raw_timeout <= 86400):
+            raise ExecutionRejected(
+                400,
+                f'无效的任务超时：{_raw_timeout!r}（期望 0（不限时）或 1..86400 秒）',
+            )
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
@@ -3225,6 +3479,15 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
         unregister_live_execution(req.executionId)
 
 
+# P3-14（执行器服务审计，2026-10-26）：prepare 阶段子进程输出的内存累积上限
+# （与任务输出的 MAX_LOG_MEMORY_CHARS 同量级；marker 文案对齐任务侧截断标记，
+# admin 的 LOG_TRUNCATION_MARKER（/\[\s*(?:logs\s+)?truncated\b/i）可命中）。
+PREPARE_LOG_MEMORY_CHARS = 10_000_000
+PREPARE_LOG_TRUNCATION_MARKER = (
+    f'\n...[logs truncated in memory after {PREPARE_LOG_MEMORY_CHARS} chars]...'
+)
+
+
 async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str] | None = None) -> tuple[int | None, str]:
     """Run a uv subprocess with combined output captured.
 
@@ -3236,27 +3499,113 @@ async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str
     killProcessTree 的做法。前提：子进程必须自带进程组（POSIX
     preexec_fn=os.setsid，与任务子进程同款），否则 killpg 会命中执行器自己
     所在的进程组；win32 无所谓——taskkill /T 按 pid 树走，不依赖进程组。
+
+    P3-14：输出捕获从 ``communicate()``（全量驻留内存，无上限）改为流式
+    readline 的 bounded 累积——超过 PREPARE_LOG_MEMORY_CHARS 后丢弃后续
+    输出并附截断标记（对齐任务输出的 bounded 语义与 node runCommand 的
+    CAP 上限形态）。坏字节按 UTF-8 replace 解码（与旧 communicate 的
+    decode 口径一致）；超长单行（理论可达：uv 报错不带换行）由
+    readline 的保护上限截断为一条（任务侧 MAX_STREAM_LINE_BYTES 同源
+    问题，此处失败面只是 prepare 报错文案，无需树杀）。
     """
     spawn_kwargs: dict = {}
     if sys.platform != 'win32':
+        # P2-6：POSIX 上 setsid（进程组，树杀前提）+ 与任务同款的 RLIMIT——
+        # prepare 子进程（uv/uv pip）此前完全在资源上限之外。preexec 组合
+        # 形态与任务侧 _spawn_kwargs_for_platform 的 _combined 同源。
         spawn_kwargs = {'preexec_fn': os.setsid}
+        rlimit_fn = _prepare_rlimit_pre_exec(timeout_seconds)
+        if rlimit_fn is not None:
+            def _combined() -> None:
+                os.setsid()
+                rlimit_fn()
+            spawn_kwargs['preexec_fn'] = _combined
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=env,
+        # limit= 传给 StreamReader：单行超过它 readline 会抛 ValueError——
+        # 捕获后按"流不可信"截断收尾（与任务侧语义一致），绝不漏成未处理异常。
+        limit=MAX_STREAM_LINE_BYTES,
         **spawn_kwargs,
     )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-    except asyncio.TimeoutError:
-        await _kill_process_tree(proc)
+    captured: list[str] = []
+    captured_chars = 0
+    truncated = False
+
+    # P3-14：流式 bounded 累积。生产路径 spawn 恒带 stdout=PIPE；个别测试
+    # 桩（_FakeUvProc 等 40+ 处既有替身）只模拟 communicate()/wait() 而无
+    # stdout 属性——对无 stdout 的句柄回落旧 communicate() 语义（语义等价：
+    # 桩的输出本来就小，不经过 bounded 路径）。
+    if getattr(proc, 'stdout', None) is None:
         try:
-            await proc.wait()
-        except Exception:
-            pass
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            await _kill_process_tree(proc)
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+            raise
+        return proc.returncode, (out.decode('utf-8', errors='replace') if out else '')
+
+    async def _drain() -> None:
+        nonlocal captured_chars, truncated
+        assert proc.stdout is not None
+        while True:
+            try:
+                raw_line = await proc.stdout.readline()
+            except ValueError:
+                # 单行超 limit：丢弃该行剩余部分，继续 drain 到 EOF，
+                # 进程正常收尾（prepare 失败面只是错误文案）。
+                truncated = True
+                try:
+                    await proc.stdout.read(-1)
+                except Exception:
+                    pass
+                continue
+            if not raw_line:
+                return
+            line = raw_line.decode('utf-8', errors='replace')
+            if captured_chars < PREPARE_LOG_MEMORY_CHARS:
+                captured.append(line)
+                captured_chars += len(line)
+            else:
+                truncated = True
+
+    try:
+        drain_task = asyncio.ensure_future(_drain())
+        wait_task = asyncio.ensure_future(proc.wait())
+        try:
+            # (drain, wait) 同一截止时间——A-1 同款组合（任务等待路径的
+            # 超时对象必须覆盖整个生命周期，不能只盖流）。
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.gather(drain_task, wait_task)),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            drain_task.cancel()
+            wait_task.cancel()
+            try:
+                await asyncio.gather(drain_task, wait_task, return_exceptions=True)
+            except BaseException:
+                pass
+            await _kill_process_tree(proc)
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+            raise
+        except BaseException:
+            wait_task.cancel()
+            raise
+    except asyncio.TimeoutError:
         raise
-    return proc.returncode, (out.decode('utf-8', errors='replace') if out else '')
+    out = ''.join(captured)
+    if truncated:
+        out += PREPARE_LOG_TRUNCATION_MARKER
+    return proc.returncode, out
 
 
 def _venv_python_bin(venv_dir: Path) -> Path:
@@ -3766,7 +4115,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if _prepare_cancelled(entry):
             return _killed_prepare_result(started_at)
         try:
-            size = await _download_package(
+            # R5b（部署模型评审 §九 9.4-5b）：外层换成带字节缓存的取件入口。
+            # 未命中路径对 _download_package 的调用参数与无缓存时代**逐字节
+            # 一致**（上述 SSRF/Bearer/超时/体积/取消检查语义全保留）；命中
+            # 路径零网络往返。缓存侧一切故障 fail-open 回网络，绝不 fail 任务。
+            size = await pkg_cache.download_with_cache(
+                _download_package,
                 safe_url,
                 zip_path,
                 should_cancel=lambda: _prepare_cancelled(entry),
@@ -3776,7 +4130,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             )
             if _prepare_cancelled(entry):
                 return _killed_prepare_result(started_at)
-            await asyncio.to_thread(_extract_package, zip_path, work_dir)
+            # 红线（评审 §六 4）：缓存命中路径也每次执行照常执行 zip 安全审查
+            # （_extract_package 内 vet_zip + safe_extract）——缓存只省下载，
+            # 不做任何安全决策；审查拒绝时由其内部清除缓存条目。
+            await asyncio.to_thread(
+                _extract_package, zip_path, work_dir, package_url=safe_url,
+            )
             if _prepare_cancelled(entry):
                 return _killed_prepare_result(started_at)
         except _PrepareCancelled:
@@ -3856,12 +4215,31 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     env['TASK_ID'] = str(task.get('id') or '')
     env['TASK_NAME'] = str(task.get('name') or '')
     if req.params:
+        # P2-2（2026-10-26 执行器域审计）：键名闸（防御纵深）——admin 源头主闸
+        # （dispatch-params-keys.util.ts，同规则常量注释互指）已先行丢弃非法键，
+        # 此处兜底的理由见 _is_injectable_param_key 头注：pull 载荷/直连 execute
+        # 都是入口，执行器不能假设上游一定校验过。非法键 skip + warn（键名不是
+        # 密值，可安全记日志），绝不因此让整次执行失败——跳过坏键、保留好键。
+        _skipped_params = []
         for k, v in req.params.items():
             # A-11R：字符串回归裸值、非字符串走与 JSON.stringify 逐字节一致的
             # JS 序列化。A-11 曾把字符串也 JSON 化（多一对引号），导致所有经
             # 中台 UI 配置的参数与官方文档教的裸读方式冲突（生产实证：
             # tk-ship-notify 静默停摆 12 天）——详见 _serialize_param_value。
+            if not _is_injectable_param_key(k):
+                _skipped_params.append(k)
+                continue
             env[f'AUTOFLOW_{k.upper()}'] = _serialize_param_value(v)
+        if _skipped_params:
+            # 与 secrets 的 skip-warn 同款口径：静默丢弃是最难排查的失败形态。
+            logger.warning(
+                'Ignored %d task param(s) whose names cannot become '
+                'AUTOFLOW_<KEY> env names (must match [A-Za-z0-9_]{1,64}; '
+                'equals/space/dash keys would corrupt the child env): %s',
+                len(_skipped_params),
+                ', '.join(_skipped_params[:10])
+                + (f' … (+{len(_skipped_params) - 10} more)' if len(_skipped_params) > 10 else ''),
+            )
 
         # A-11R ②：类型化通道——整个 params 一份 JSON，供需要精确类型的消费方
         # （SDK 的 from_env/fromEnv）做类型还原。逐键通道的字符串形态原理上
@@ -4061,13 +4439,35 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         node_exe = 'node.exe' if sys.platform == 'win32' else 'node'
         cmd = [node_exe, entrypoint]
         if requirements:
-            # R4-C P3: this executor never installs node dependencies; failing
-            # silently used to make the task die later with MODULE_NOT_FOUND.
+            # P3-18（执行器服务审计，2026-10-26）：node 依赖在本执行器上
+            # **显式失败**而不是带着警告继续——旧实现只 warn 后照跑，任务
+            # 在运行期以 MODULE_NOT_FOUND 死掉且无 failureReason 分类。
+            # 归 runtime_missing（与 node 侧「runtime 不可用」同族：声明的
+            # 运行面在这台机器上不完整，处置动作 = 改派 node 执行器）。
+            # 正常调度按 capabilities 过滤不会把 node+requirements 任务派到
+            # 本侧；这条闸只对直连派发 / 能力误报的路径快速失败。
             logger.warning(
-                'Task %s: runtime=node ignores requirements %s '
-                '(npm dependency installation is not supported on the python executor)',
+                'Task %s: runtime=node with requirements %s rejected — '
+                'npm dependency installation is not supported on the python '
+                'executor (dispatch should filter by capabilities)',
                 task.get('name'), requirements,
             )
+            return {
+                'success': False,
+                'logs': '',
+                'exitCode': None,
+                # 文案同时承载两个职责：给用户指路（改派/去依赖）+ 命中
+                # _refine_failure_reason 的 runtime_missing 规则（`runtime
+                # "node" 不可用` 骨架，与 node 侧「runtime "node" 不可用」
+                # 同族，两侧行为同判）。
+                'errorMessage': (
+                    '本执行器（python executor）不支持 runtime=node 的依赖安装：'
+                    'runtime "node" 不可用（该任务声明了 requirements，'
+                    '本执行器不具备 node 依赖运行面）；'
+                    '请改派 node 执行器或去掉依赖声明'
+                ),
+                'durationMs': int((time.monotonic() - started_at) * 1000),
+            }
     elif runtime == 'shell':
         cmd = _build_shell_cmd(work_dir, entrypoint)
     else:

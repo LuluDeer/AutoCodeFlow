@@ -1,6 +1,6 @@
 # artifacts 模块 — 执行产物上传 / 下载（FEAT-05）
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/artifacts
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-10-25 · 对应代码: apps/admin-api/src/modules/artifacts
 
 ## 职责
 
@@ -11,10 +11,11 @@
 ```
 modules/artifacts/
 ├── artifacts.module.ts            装配：TaskModule + ExecutorModule（凭据校验依赖）
-├── artifacts.controller.ts        上传/清单/下载三路由（无统一前缀，见下）
+├── artifacts.controller.ts        上传/清单/下载/索引四路由（无统一前缀，见下）
 ├── artifacts.service.ts           路径守卫/落盘/sha 校验/清单读取/上传鉴权
 ├── artifacts.constants.ts         根目录、数量/大小上限、安全文件名正则
 ├── artifacts-retention.service.ts 每日 TTL 清理（LOG_RETENTION_DAYS，与日志保留期同源）
+├── dto/artifact-index.dto.ts      ARTIFACTS-INDEX-46 索引查询/响应 DTO（ListArtifactRowsDto）
 └── __tests__/artifacts.service.spec.ts
 ```
 
@@ -25,6 +26,7 @@ modules/artifacts/
 | PUT | `/api/executions/:execId/artifacts/:name` | `@Public()` + 处理器内校验执行器凭据 | 上传单个产物（multipart 字段名 `file`；机器通道命名对齐 `executions/callback`） |
 | GET | `/api/tasks/executions/:execId/artifacts` | 全局 JWT | 产物清单（读 `task_executions.artifacts` jsonb） |
 | GET | `/api/tasks/executions/:execId/artifacts/:name` | 全局 JWT | 流式下载（`stream.pipeline` 直写响应） |
+| GET | `/api/artifacts` | JWT + `@Roles(ADMIN)` | **ARTIFACTS-INDEX-46**：产物元数据索引查询（`?applicationId=&taskId=&page=&pageSize=`）——jsonb 清单无索引不可查询，此面读 `execution_artifacts` 新表（1790000000065 迁移建表）按应用/任务维度分页；过渡期存量执行无新表行 → 如实返回空，不回落 jsonb。权限与下载/清单同档 ADMIN-only（A-2 口径） |
 
 上传与下载基路径刻意不同：上传挂 `executions/...`（机器面），下载挂 `tasks/executions/...`（管理台面，对齐计划书）。
 

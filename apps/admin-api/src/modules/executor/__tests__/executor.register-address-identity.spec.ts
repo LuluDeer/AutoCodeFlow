@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { ConflictException, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorService } from "../executor.service";
@@ -65,7 +66,9 @@ const makeQb = (rows: Row[]) => {
         resolveOne = () =>
           clone(rows.find((r) => r.deviceFingerprint === params.fp) ?? null);
         resolveMany = () =>
-          rows.filter((r) => r.deviceFingerprint === params.fp).map(clone) as Row[];
+          rows
+            .filter((r) => r.deviceFingerprint === params.fp)
+            .map(clone) as Row[];
       } else if (sql.includes("address")) {
         resolveOne = () =>
           clone(rows.find((r) => r.address === params.address) ?? null);
@@ -73,7 +76,8 @@ const makeQb = (rows: Row[]) => {
           rows.filter((r) => r.address === params.address).map(clone) as Row[];
       } else if (sql.includes("id")) {
         resolveOne = () => clone(rows.find((r) => r.id === params.id) ?? null);
-        resolveMany = () => rows.filter((r) => r.id === params.id).map(clone) as Row[];
+        resolveMany = () =>
+          rows.filter((r) => r.id === params.id).map(clone) as Row[];
       }
       return qb;
     },
@@ -96,7 +100,8 @@ const makeRepo = (rows: Row[], ledger: Row[] = []) => {
   const repo: any = {
     findOne: jest.fn(async (opts: any) => {
       const w = opts?.where ?? {};
-      if (w.id !== undefined) return clone(rows.find((r) => r.id === w.id) ?? null);
+      if (w.id !== undefined)
+        return clone(rows.find((r) => r.id === w.id) ?? null);
       if (w.deviceFingerprint !== undefined)
         return clone(
           rows.find((r) => r.deviceFingerprint === w.deviceFingerprint) ?? null,
@@ -108,7 +113,9 @@ const makeRepo = (rows: Row[], ledger: Row[] = []) => {
     find: jest.fn(async (opts: any) => {
       const w = opts?.where ?? {};
       const all =
-        w.address !== undefined ? rows.filter((r) => r.address === w.address) : rows;
+        w.address !== undefined
+          ? rows.filter((r) => r.address === w.address)
+          : rows;
       return (opts?.take ? all.slice(0, opts.take) : all).map(clone);
     }),
     findBy: jest.fn().mockResolvedValue([]),
@@ -207,11 +214,20 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
   let executorRepo: any;
   let ledger: Row[];
   let service: ExecutorService;
+  /** P1-A：ConfigService 键值覆盖面（每个用例自带，beforeEach 清空）。 */
+  const configValues: Record<string, unknown> = {};
 
   const buildService = async (): Promise<ExecutorService> => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: makeRepo([]) },
         { provide: getRepositoryToken(Task), useValue: makeRepo([]) },
@@ -225,7 +241,14 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
         },
         {
           provide: ConfigService,
-          useValue: { get: jest.fn().mockReturnValue("http") },
+          // P1-A：键可覆盖的替身——默认仍回 "http"（与既有用例同行为），
+          // 仅当用例向 configValues 塞了键时按键取值（接管静默窗注入用）。
+          useValue: {
+            get: jest.fn(
+              (key: string) =>
+                (configValues as Record<string, unknown>)[key] ?? "http",
+            ),
+          },
         },
         {
           provide: NotificationService,
@@ -261,7 +284,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
     service = await buildService();
   };
 
-  const registerPayload = (overrides: Row = {}) => ({ ...INTRUDER, ...overrides });
+  const registerPayload = (overrides: Row = {}) => ({
+    ...INTRUDER,
+    ...overrides,
+  });
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
@@ -332,7 +358,11 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
 
   it("同址两行 + 上报了自己的指纹（v3 执行器常态）→ 按指纹命中自己的行，不碰别人", async () => {
     const foreign = foreignRow();
-    const mine = legacyRow({ id: "mine-v3", deviceFingerprint: FP_A, appName: "mine-node" });
+    const mine = legacyRow({
+      id: "mine-v3",
+      deviceFingerprint: FP_A,
+      appName: "mine-node",
+    });
     await setup([foreign, mine]);
 
     const { executor, perExecutorToken } = await service.registerExecutor(
@@ -341,7 +371,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
 
     expect(executor.id).toBe("mine-v3");
     // 自己那行照常采纳上报（修复不得把 v3 执行器一起挡死）。
-    expect(mine).toMatchObject({ executorVersion: "9.9.9", capabilities: ["hijacked"] });
+    expect(mine).toMatchObject({
+      executorVersion: "9.9.9",
+      capabilities: ["hijacked"],
+    });
     expect(perExecutorToken).not.toBeNull();
     // 别人那行一个字都不动。
     expect(foreign).toMatchObject({
@@ -397,7 +430,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
   });
 
   it("单行地址 + 无指纹（存量 legacy 执行器）→ 行为逐字节不变：复用自己的行", async () => {
-    const onlyRow = legacyRow({ appName: "legacy-node", status: ExecutorStatus.OFFLINE });
+    const onlyRow = legacyRow({
+      appName: "legacy-node",
+      status: ExecutorStatus.OFFLINE,
+    });
     await setup([onlyRow]);
 
     await expect(
@@ -433,8 +469,16 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
     await setup([legacy, foreign]);
 
     const err = await service
-      .registerExecutor(registerPayload({ dispatchMode: "push", deviceFingerprint: FP_A }) as any)
-      .then(() => null, (e: unknown) => e);
+      .registerExecutor(
+        registerPayload({
+          dispatchMode: "push",
+          deviceFingerprint: FP_A,
+        }) as any,
+      )
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
 
     expect(err).toBeInstanceOf(ConflictException);
     expect((err as AppError).errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
@@ -445,7 +489,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
       status: ExecutorStatus.OFFLINE,
       tokenHash: "$2b$12$legacyhash",
     });
-    expect(foreign).toMatchObject({ appName: "victim-node", tokenHash: "$2b$12$victimhash" });
+    expect(foreign).toMatchObject({
+      appName: "victim-node",
+      tokenHash: "$2b$12$victimhash",
+    });
   });
 
   it("同形态 / pull → 不接管、新建独立行；legacy 行与别人那行都原样不动", async () => {
@@ -471,7 +518,10 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
       tokenHash: "$2b$12$legacyhash",
     });
     expect(legacy.executorStartupId).toBeUndefined();
-    expect(foreign).toMatchObject({ appName: "victim-node", tokenHash: "$2b$12$victimhash" });
+    expect(foreign).toMatchObject({
+      appName: "victim-node",
+      tokenHash: "$2b$12$victimhash",
+    });
   });
 
   it("对照组：地址只有一行 legacy + 上报真实指纹 → 仍按「升级接管」复用该行（不加严）", async () => {
@@ -479,11 +529,190 @@ describe("R32-C5 L1 — register 同址多行 + 无指纹：身份不可判定�
     await setup([onlyRow]);
 
     const { executor } = await service.registerExecutor(
-      registerPayload({ dispatchMode: "push", deviceFingerprint: FP_A, appName: "legacy-node" }) as any,
+      registerPayload({
+        dispatchMode: "push",
+        deviceFingerprint: FP_A,
+        appName: "legacy-node",
+      }) as any,
     );
 
     expect(executor.id).toBe("old-legacy");
     expect(onlyRow.deviceFingerprint).toBe(FP_A);
     expect(onlyRow.status).toBe(ExecutorStatus.ONLINE);
+  });
+
+  // ── P1-A（2026-10-25 真机审计）：foreignInstall 的「死行接管」自愈 ──
+  //
+  // 真机链：容器化执行器**重建**后指纹漂移（盐落容器层 workDir / 容器 MAC
+  // 随机），新指纹按地址找回来的旧行还是真实旧指纹 ⇒ push 注册恒 409
+  // EXECUTOR_ADDRESS_TAKEN（register 与 /token 的 issueToken 同路）⇒ 执行器
+  // 永远拿不回自己的行（实证单台 789 次 fetchToken failed）⇒ 部署心跳恒 401
+  // ⇒ 部署行永久在途、stop/删除全 409。修复口径：地址占用保护只对**活着**
+  // 的安装有意义——占位行已被 stale sweep 判死（OFFLINE）且静默超过接管窗
+  // （EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS，可经
+  // executor.addressTakeoverSilenceMs 覆盖）⇒ 允许接管复用该行；判活/静默
+  // 不足/无时间戳可判/pull 占位，一律维持 409 fail-closed。
+  describe("P1-A — push 地址被死行占用时允许接管（同机重装自愈）", () => {
+    beforeEach(() => {
+      for (const key of Object.keys(configValues)) delete configValues[key];
+    });
+
+    /** 已判死的占位行（真实旧指纹；静默 10 分钟 > 5 分钟接管窗）。 */
+    const deadOccupant = (o: Row = {}): Row =>
+      foreignRow({
+        status: ExecutorStatus.OFFLINE,
+        lastHeartbeat: new Date(Date.now() - 10 * 60_000),
+        ...o,
+      });
+
+    it("单行 push 占位已判死且静默超窗 + 陌生新指纹 → 接管复用该行：指纹/元数据刷新、令牌重签", async () => {
+      const dead = deadOccupant();
+      await setup([dead]);
+
+      const { executor, perExecutorToken } = await service.registerExecutor(
+        registerPayload({
+          dispatchMode: "push",
+          deviceFingerprint: FP_A,
+        }) as any,
+      );
+
+      // 复用旧行（不是新建行）——部署/执行历史按 executorId 归属，不断裂。
+      expect(executor.id).toBe("victim-v3");
+      // 重注册路径把身份与在线态一并刷新。
+      expect(dead).toMatchObject({
+        deviceFingerprint: FP_A,
+        status: ExecutorStatus.ONLINE,
+        appName: "intruder-node",
+        executorVersion: "9.9.9",
+        executorStartupId: "intruder-startup",
+      });
+      // didRestart（新 startupId）⇒ 令牌轮换，执行器拿回可用凭据（自愈出口）。
+      expect(perExecutorToken).not.toBeNull();
+      expect(dead.tokenHash).not.toBe("$2b$12$victimhash");
+    });
+
+    it("占位行 OFFLINE 但静默未超窗（1 分钟）→ 仍 409，零写入", async () => {
+      const recentlyDead = deadOccupant({
+        lastHeartbeat: new Date(Date.now() - 60_000),
+      });
+      await setup([recentlyDead]);
+
+      const err = await service
+        .registerExecutor(
+          registerPayload({
+            dispatchMode: "push",
+            deviceFingerprint: FP_A,
+          }) as any,
+        )
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as AppError).errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(ledger).toEqual([]);
+      expect(recentlyDead).toMatchObject({
+        deviceFingerprint: FP_B,
+        tokenHash: "$2b$12$victimhash",
+        status: ExecutorStatus.OFFLINE,
+      });
+    });
+
+    it("占位行活着（ONLINE，哪怕心跳已旧）→ 仍 409：判死是 sweep 的职责，这里不重复判", async () => {
+      const live = foreignRow({
+        lastHeartbeat: new Date(Date.now() - 10 * 60_000),
+      });
+      await setup([live]);
+
+      const err = await service
+        .registerExecutor(
+          registerPayload({
+            dispatchMode: "push",
+            deviceFingerprint: FP_A,
+          }) as any,
+        )
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as AppError).errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(live).toMatchObject({
+        deviceFingerprint: FP_B,
+        status: ExecutorStatus.ONLINE,
+        tokenHash: "$2b$12$victimhash",
+      });
+    });
+
+    it("占位行已判死但为 pull 模式 → 仍 409：pull 行不占路由位，接管会翻转其 dispatchMode", async () => {
+      const deadPull = deadOccupant({ dispatchMode: "pull" });
+      await setup([deadPull]);
+
+      const err = await service
+        .registerExecutor(
+          registerPayload({
+            dispatchMode: "push",
+            deviceFingerprint: FP_A,
+          }) as any,
+        )
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as AppError).errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
+      expect(executorRepo.save).not.toHaveBeenCalled();
+      expect(deadPull.dispatchMode).toBe("pull");
+    });
+
+    it("占位行 OFFLINE 但无任何时间戳可判静默 → 仍 409（fail-closed）", async () => {
+      const noTimestamps = deadOccupant({
+        lastHeartbeat: undefined,
+        updatedAt: undefined,
+        createdAt: undefined,
+      });
+      await setup([noTimestamps]);
+
+      const err = await service
+        .registerExecutor(
+          registerPayload({
+            dispatchMode: "push",
+            deviceFingerprint: FP_A,
+          }) as any,
+        )
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as AppError).errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
+      expect(executorRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("接管静默窗可经 executor.addressTakeoverSilenceMs 注入（=0 立即放行判死行）", async () => {
+      configValues["executor.addressTakeoverSilenceMs"] = 0;
+      // 刚判死 1 秒的行：缺省 5 分钟窗不放行，注入 0 后立即放行。
+      const justDied = deadOccupant({
+        lastHeartbeat: new Date(Date.now() - 1_000),
+      });
+      await setup([justDied]);
+
+      const { executor, perExecutorToken } = await service.registerExecutor(
+        registerPayload({
+          dispatchMode: "push",
+          deviceFingerprint: FP_A,
+        }) as any,
+      );
+
+      expect(executor.id).toBe("victim-v3");
+      expect(perExecutorToken).not.toBeNull();
+      expect(justDied.status).toBe(ExecutorStatus.ONLINE);
+    });
   });
 });

@@ -92,13 +92,14 @@ async function main(): Promise<void> {
 
   // ── 2. standard 档：可以试跑，失败后按 diagnose 重试 ───────────────────
   {
-    const { handlers, calls } = makeHandlers({ diagnose: (i) => (i >= 3 ? 'deliver' : 'retry') });
+    // P2-1：diagnose 的 deliver 不再是交付（见 4b）——这里改用 escalate 收敛
+    const { handlers, calls } = makeHandlers({ diagnose: (i) => (i >= 3 ? 'escalate' : 'retry') });
     const r = await runAgentLoop({
       environment: ENV,
       permissions: perms('standard'),
       handlers,
     });
-    assert.strictEqual(r.outcome, 'delivered');
+    assert.strictEqual(r.outcome, 'escalated');
     assert.strictEqual(calls.trialRun, 3, '三次迭代 = 三次试跑（闸门按次记账）');
     assert.strictEqual(r.iterations, 3);
     assert.strictEqual(r.trialRuns, 3);
@@ -126,6 +127,35 @@ async function main(): Promise<void> {
     const r = await runAgentLoop({ environment: ENV, permissions: perms('standard'), handlers });
     assert.notStrictEqual(r.outcome, 'delivered', '试跑成功但验收失败不得判为交付');
     assert.strictEqual(r.outcome, 'escalated');
+  }
+
+  // ── 4b. ★ P2-1 验收旁路：验收失败后 LLM 自评 deliver → 降级 escalate ────
+  {
+    const { handlers } = makeHandlers({
+      trialOutcomes: [{ ok: false, output: 'still failing' }],
+      verifyPass: false,
+      diagnose: () => 'deliver',
+    });
+    const r = await runAgentLoop({ environment: ENV, permissions: perms('standard'), handlers });
+    assert.strictEqual(r.outcome, 'escalated', '验收未通过时 LLM 自评 deliver 绝不能产出 delivered');
+    assert.notStrictEqual(r.outcome, 'delivered');
+    assert.ok(
+      (r.stopMessage ?? '').includes('deliver'),
+      `降级原因必须如实上报（含 deliver 字样）：${r.stopMessage ?? ''}`,
+    );
+    assert.ok(r.candidate, '候选要带回来供人工复核（降级转人工的处置对象）');
+  }
+
+  // ── 4c. ★ P2-1 对照：verify 通过的 deliver 直返 delivered（语义保留）────
+  {
+    const { handlers, calls } = makeHandlers({
+      trialOutcomes: [{ ok: true, output: 'ok' }, { ok: true, output: 'ok2' }],
+      verifyPass: true,
+      diagnose: () => 'deliver',
+    });
+    const r = await runAgentLoop({ environment: ENV, permissions: perms('standard'), handlers });
+    assert.strictEqual(r.outcome, 'delivered', 'verify 通过在第 ④ 步直接交付，不经诊断');
+    assert.strictEqual(calls.diagnose, 0, 'verify 通过时 diagnose 不应被调用');
   }
 
   // ── 5. ★ 迭代触顶 → gate_stopped（合法终态，不抛）─────────────────────

@@ -17,12 +17,22 @@
  * 为何复制而非 import：ipc-handlers.ts 顶层 import electron，裸 node 下
  * 加载即失败（同 log-incremental.selftest.ts 的处置）。
  *
+ * F-22（UIUX 审计 2026-10-25）扩展：readLogIncremental 的「fromLine=0 且游标
+ * 新建」首读分支改走尾窗扫描（scanLogTail）——log:read / apps:log:read 两条
+ * 查看器路径此前把整个文件全量过桥，渲染层只留 1500/2400 行。scanLogTail 抽在
+ * 纯 Node 模块 log-tail-scan.ts（零 electron 依赖），本文件**直接 import 真实现**
+ * 做行为断言（无 SYNC 副本）；与游标口径的对齐论证见该模块头注。接线锚点由
+ * 文末 SYNC GUARD 钉住（log:read / apps:log:read 必须仍走 readLogIncremental，
+ * readLogIncremental 必须仍走 scanLogTail）。
+ *
  * Run via: npm run test:main
  */
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+// F-22：scanLogTail 是纯 Node 模块——直接驱动真实现（无 SYNC 副本）。
+import { LOG_TAIL_MAX_LINES, scanLogTail } from './log-tail-scan';
 
 // ── SYNC：与 src/main/ipc-handlers.ts 的 readLastLines 等价实现 ──
 const LOG_TAIL_WINDOW_BYTES = 256 * 1024;
@@ -180,6 +190,96 @@ try {
       'CRLF 行尾的 \\r 残留必须剥离（否则渲染层规范化正则失配）',
     );
   }
+
+  // ── F-22：scanLogTail（log:read / apps:log:read 首读尾窗）───────────────
+  // 语义锚点：与 readLogIncremental 的游标口径逐字一致——非空行计数、
+  // 不剥 \r、文件尾未终结行 withheld、空行占字节但不计行。
+  {
+    // 小文件：全量语义（行/行数/游标偏移/未截断）。
+    const f = path.join(dir, 'scan-small.log');
+    fs.writeFileSync(f, 'l1\nl2\nl3\n');
+    const scan = scanLogTail(f);
+    assert.ok(scan, '正常文件不得返回 null');
+    assert.deepStrictEqual(scan.lines, ['l1', 'l2', 'l3'], '小文件尾窗应等于全文件');
+    assert.strictEqual(scan.totalLines, 3, 'totalLines 必须是游标口径（非空完整行）');
+    assert.strictEqual(
+      scan.consumedBytes,
+      fs.statSync(f).size,
+      '游标偏移必须落在 EOF（文件以 \\n 结尾）',
+    );
+    assert.strictEqual(scan.truncated, false, '未截断必须如实上报 false');
+
+    // 空文件 / 不存在的文件。
+    fs.writeFileSync(path.join(dir, 'scan-empty.log'), '');
+    const scanEmpty = scanLogTail(path.join(dir, 'scan-empty.log'));
+    assert.ok(scanEmpty, '空文件不是错误');
+    assert.deepStrictEqual(scanEmpty.lines, []);
+    assert.strictEqual(scanEmpty.totalLines, 0);
+    assert.strictEqual(
+      scanLogTail(path.join(dir, 'scan-missing.log')),
+      null,
+      '缺失文件返回 null（调用方回落旧路径兜底）',
+    );
+
+    // 行数超过尾窗：只留尾部 maxLines 行、totalLines 精确、truncated 如实，
+    // 且「totalLines - lines.length」正好是渲染层全局行号的首行号 - 1。
+    const big = path.join(dir, 'scan-big.log');
+    const total = 5000;
+    const bigLines = Array.from({ length: total }, (_, i) => `line-${String(i + 1).padStart(5, '0')}`);
+    fs.writeFileSync(big, bigLines.join('\n') + '\n');
+    const scanBig = scanLogTail(big);
+    assert.ok(scanBig);
+    assert.strictEqual(scanBig.lines.length, LOG_TAIL_MAX_LINES, '默认尾窗 3000 行（1500/2400 消费口径 + 余量）');
+    assert.strictEqual(scanBig.lines[0], 'line-02001', '尾窗首行错位');
+    assert.strictEqual(scanBig.lines[LOG_TAIL_MAX_LINES - 1], 'line-05000', '尾窗末行错位');
+    assert.strictEqual(scanBig.totalLines, total, 'totalLines 必须是全文件精确值（不是窗口内行数）');
+    assert.strictEqual(scanBig.truncated, true, '截断必须如实上报');
+    assert.strictEqual(scanBig.totalLines - scanBig.lines.length, 2000, '全局行号换算口径漂移');
+    // 自定义 maxLines 仍精确。
+    const scan2 = scanLogTail(big, 2);
+    assert.ok(scan2);
+    assert.deepStrictEqual(scan2.lines, ['line-04999', 'line-05000']);
+    assert.strictEqual(scan2.truncated, true);
+
+    // CRLF：**不剥** \r（游标口径——本路径没有 readLastLines 的渲染层配套），
+    // 且 \r 计入游标偏移。
+    const crlf = path.join(dir, 'scan-crlf.log');
+    fs.writeFileSync(crlf, 'a\r\nb\r\n');
+    const scanCrlf = scanLogTail(crlf);
+    assert.ok(scanCrlf);
+    assert.deepStrictEqual(scanCrlf.lines, ['a\r', 'b\r'], 'scanLogTail 沿用游标口径（不剥 \\r）');
+    assert.strictEqual(scanCrlf.totalLines, 2);
+    assert.strictEqual(scanCrlf.consumedBytes, 6, '\\r 必须计入游标偏移（a\\r\\n b\\r\\n 共 6 字节）');
+
+    // 空行：与游标路径同口径——不计行数、不返回，但字节计入偏移。
+    const blanks = path.join(dir, 'scan-blanks.log');
+    fs.writeFileSync(blanks, 'a\n\nb\n');
+    const scanBlanks = scanLogTail(blanks);
+    assert.ok(scanBlanks);
+    assert.deepStrictEqual(scanBlanks.lines, ['a', 'b'], '空行不得混入行缓冲');
+    assert.strictEqual(scanBlanks.totalLines, 2, '空行不计入游标 totalLines');
+    assert.strictEqual(scanBlanks.consumedBytes, fs.statSync(blanks).size, '空行的字节必须计入游标偏移');
+
+    // 文件尾未终结行：withheld（不计不交），游标停最后一个 \n 之后。
+    const partial = path.join(dir, 'scan-partial.log');
+    fs.writeFileSync(partial, 'done\nhalf');
+    const scanPartial = scanLogTail(partial);
+    assert.ok(scanPartial);
+    assert.deepStrictEqual(scanPartial.lines, ['done'], '未终结的尾行不得提前交付');
+    assert.strictEqual(scanPartial.totalLines, 1);
+    assert.strictEqual(scanPartial.consumedBytes, 5, '游标必须停在最后一个 \\n 之后');
+
+    // 多字节字符跨 1MB 读块边界：StringDecoder 必须接住（不出现 U+FFFD）。
+    const mb = path.join(dir, 'scan-mb-boundary.log');
+    // 1048575 个 ASCII 字节 + 3 字节 '任' → 该字符横跨第一个 1MB 块边界。
+    fs.writeFileSync(mb, 'x'.repeat(1024 * 1024 - 1) + '任' + '-tail\nend\n');
+    const scanMb = scanLogTail(mb);
+    assert.ok(scanMb);
+    assert.strictEqual(scanMb.lines.length, 2);
+    assert.ok(scanMb.lines[0].endsWith('任-tail'), `跨块多字节被切坏: ...${scanMb.lines[0].slice(-12)}`);
+    assert.ok(!scanMb.lines[0].includes('\uFFFD'), '跨块多字节出现替换符');
+    assert.strictEqual(scanMb.totalLines, 2);
+  }
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -205,4 +305,29 @@ const handlerBody = ipcSource.slice(startIdx, nextIdx);
 assert.ok(!handlerBody.includes('readFileSync'), 'SYNC: logs:getToday 仍有整读残留（NETOPT-2⑥ 性能回归）');
 assert.ok(handlerBody.includes('readLastLines'), 'SYNC: logs:getToday 未调用 readLastLines');
 
-console.log('log-tail selftest: all assertions passed (8 scenarios + sync guard)');
+// ── F-22 SYNC GUARD：log:read / apps:log:read 两条查看器路径必须仍走
+// readLogIncremental，且其首读分支必须仍走 scanLogTail 尾窗。任何一处被
+// 改回整读/全量过桥（性能回归），这里立即变红。
+for (const needle of [
+  "import { scanLogTail } from './log-tail-scan';",
+  'const scan = scanLogTail(filePath);',
+  'truncated: scan.truncated',
+]) {
+  assert.ok(ipcSource.includes(needle), `SYNC: ipc-handlers.ts 缺少 F-22 尾窗首读实现片段: ${needle}`);
+}
+function handlerBodyOf(name: string): string {
+  const idx = ipcSource.indexOf(`ipcMain.handle('${name}'`);
+  assert.ok(idx !== -1, `SYNC: 找不到 handler ${name}`);
+  const next = ipcSource.indexOf('ipcMain.handle', idx + 10);
+  return ipcSource.slice(idx, next >= 0 ? next : undefined);
+}
+assert.ok(
+  handlerBodyOf('log:read').includes('readLogIncremental(target, fromLine)'),
+  'SYNC: log:read 必须经 readLogIncremental（增量游标语义不得被绕过）',
+);
+assert.ok(
+  handlerBodyOf('apps:log:read').includes('readLogIncremental(target, fromLine)'),
+  'SYNC: apps:log:read 必须经 readLogIncremental（增量游标语义不得被绕过）',
+);
+
+console.log('log-tail selftest: all assertions passed (8 + F-22 scan scenarios + sync guard)');

@@ -55,6 +55,11 @@ import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
+// E-5：API-Key 主体判定（机器凭据不得借属主身份过项目角色判定）。
+import {
+  ApiKeyUser,
+  isApiKeyUser,
+} from "../../common/interfaces/auth-user.interface";
 import { ProjectAccessService } from "../project/project-access.service";
 // A2/A2-B：写端点授权形态声明 + 运行时证据落证（ownership scope 强制要求）。
 // WriteGuard 装饰器本文件已 import（register 的 token 形态在用）。
@@ -71,6 +76,13 @@ import { ExecutorPullDto } from "./dto/executor-pull.dto";
 // 运行时 @Body() 仍为内联类型——避免 forbidNonWhitelisted 误杀 executor 协议字段）。
 import { ExecutorRegisterDto } from "./dto/executor-register.dto";
 import { ExecutorHeartbeatDto } from "./dto/executor-heartbeat.dto";
+// P2-4（2026-10-26 第三轮审计）：command-result 请求体 class DTO——这个端点
+// **运行时**也换 class（白名单校验生效），与 register/heartbeat 的文档型豁免
+// 不同（本端点字段集合是执行器上报面的闭集，见 DTO 头注）。
+import { ExecutorCommandResultDto } from "./dto/executor-command-result.dto";
+// F-53（UIAUDIT P2-2）：rotate-token / DELETE 的人操作面可选 reason class DTO
+// （机器协议内联体仍是 PK-19 有意豁免，见各端点头注）。
+import { ExecutorActionReasonDto } from "./dto/executor-action-reason.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import {
   assertAndPinExecutorUrl,
@@ -87,6 +99,14 @@ import {
 } from "./protocol-compat.util";
 // ARCH-32: pull 派发长轮询端点（ADR-015）
 import { ExecutorPullService } from "./executor-pull.service";
+
+/**
+ * P2-4：命令元数据形态（acf:cmdmeta 读面）——直接复用 ExecutorPullService
+ * 的返回类型（单一事实源，meta 形状演进时本文件零改动）。
+ */
+type ExecutorCommandMeta = Awaited<
+  ReturnType<ExecutorPullService["getCommandMeta"]>
+>;
 // E-1（中台↔执行器深度审查）：pull 配置热更新——configVersion 指纹 + 配置拉取端点。
 import {
   buildExecutorConfigPayload,
@@ -99,6 +119,8 @@ import {
 import { recordRuntime } from "../metrics/runtime-metrics-entry";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 // A6（DEEP_REVIEW §七）: 死信对账端点的响应契约 + 窗口上界常量。
+// F-41（UIUX 审计 P1-2）：详情路由参数 ID 形态校验（/executors/not-exist 旧实现 500）。
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import { TerminalStatesResponseDto } from "./dto/executor-terminal-states.dto";
 import {
   TERMINAL_STATES_MAX_LOOKBACK_MS,
@@ -107,6 +129,12 @@ import {
 // python_task_multiversion（WS2 · CONTRACT §2.2）：上报面解释器清单条目的
 // 结构类型（与 service / 实体同一份定义，避免内联字面量漂移）。
 import type { ExecutorInterpreter } from "./interpreter-match.util";
+// R3-A（部署模型评审 §4.3）：设备级应用版本事实/已安装包清单（结构校验在
+// service 侧 deployed-apps.util.ts，controller 只做 F-7 白名单转发）。
+import type {
+  DeployedAppReport,
+  InstalledPackageReport,
+} from "./deployed-apps.util";
 import {
   ExecutorGroupsDto,
   ExecutorInstallCmdDto,
@@ -116,6 +144,17 @@ import {
   ExecutorRuntimeConfigDto,
   ExecutorTagsDto,
 } from "../../common/dto/misc-2xx-response.dto";
+
+/**
+ * P3-2（2026-10-26 第三轮审计）：pull 长轮询等待窗口的**硬帽**（55s）。
+ *
+ * `executor.pullWaitMs` 是运维可调配置，此前只按它钳位——一个 >60s 的配置会
+ * 让长轮询打穿反代通用 60s 读超时（请求被 504/断流，执行器侧表现为随机失败）。
+ * 55s 与 dto/executor-pull.dto.ts `waitMs` 的 Swagger 承诺（「上限 55s」）及
+ * sop-collab 控制器的 POLL_MAX_WAIT_MS=25s 同一纪律：服务端阻塞窗口必须 <
+ * 反代读超时。Math.min 三钳：min(请求值, 配置值, 55s)。
+ */
+const PULL_WAIT_HARD_CAP_MS = 55_000;
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -172,11 +211,22 @@ export class ExecutorController {
    * （存量/平台级）维持仅 ADMIN（不进 hasProjectRole：resolveRole 对 null
    * 会落 DEFAULT_PROJECT_ID，语义不同）。viewer/非成员 403；projectAccess
    * 缺席（极简装配）退化为仅 ADMIN——fail-closed。
+   *
+   * E-5（2026-10-26 执行器域审计）：API-Key 主体**显式拒绝**。ApiKeyUser 无
+   * role 字段（auth-user.interface.ts:30-36；jwt-auth.guard.ts 头注自证
+   * 「RolesGuard 补偿不了：ApiKeyUser 没有 role 字段」），而本判定对非 ADMIN
+   * 主体会拿 `user.id` 查项目角色——API-Key 的 userId 是 key 属主的**用户 id**，
+   * 把机器凭据映射到属主的项目身份 = 凭据提权（key 属主是 editor ⇒ 任何持 key
+   * 的进程都能改执行器元数据、影响标签亲和派发）。机器凭据的授权边界由
+   * api-key-scope.util 的 method×path 矩阵承载，项目身份只属于人类会话。
    */
   private async assertCanManageMetadata(
     executor: { projectId?: string | null },
-    user: AuthUser | undefined,
+    user: AuthUser | ApiKeyUser | undefined,
   ): Promise<void> {
+    if (isApiKeyUser(user)) {
+      throw new AppError("EXECUTOR_METADATA_FORBIDDEN");
+    }
     if (user?.role === UserRole.ADMIN) {
       recordOwnershipAssertion("executor", "write");
       return;
@@ -243,6 +293,10 @@ export class ExecutorController {
       // service 侧——缺省/非法一律不动 DB 值）。阶段 3 起它是 register 的**行
       // 定位键**（指纹优先、address 兜底），见 executor.service.register 注释。
       deviceFingerprint?: string | null;
+      // R3-A（部署模型评审 §4.3）：设备级应用版本事实/已安装包清单（可选；
+      // 语义与心跳完全一致——执行器重启后随注册先报一份，缺省 → 不动 DB）。
+      deployedApps?: DeployedAppReport[];
+      installedPackages?: InstalledPackageReport[];
     },
     @Headers("authorization") auth: string,
   ) {
@@ -280,6 +334,10 @@ export class ExecutorController {
       // ARCH-36（ADR-017 阶段 2）：转发设备指纹（同一 F-7 白名单纪律——
       // 漏这行 = 上报被静默丢弃，冲突观测拿不到数据）。
       deviceFingerprint: body.deviceFingerprint,
+      // R3-A（§4.3）：转发设备级应用版本事实与已安装包清单（同一 F-7 白名单
+      // 纪律；落库语义与心跳共用同一实现）。
+      deployedApps: body.deployedApps,
+      installedPackages: body.installedPackages,
     };
     // N4: register + token issuance is idempotent per (address, startupId) —
     // a duplicate register from the SAME process life (same startupId, no
@@ -371,6 +429,15 @@ export class ExecutorController {
       // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；缺省/非法即保留 DB
       // 旧值，规范化在 service 侧）。
       deviceFingerprint?: string | null;
+      // R3-A（部署模型评审 §4.3）：设备级应用版本事实（可选；缺省 → 中台
+      // 完全不动 executor_app_versions 既有行——旧执行器零影响）。
+      deployedApps?: DeployedAppReport[];
+      // R3-A（§4.3/P10）：已安装执行器包清单（可选；三态语义同 interpreters）。
+      installedPackages?: InstalledPackageReport[];
+      // 方案 b（协议 v8，接管自愈死锁修复）：/token 409 慢性冲突自报（可选；
+      // 缺席 = 未上报，node 恒发含 false）。中台消费判据在 service 侧：
+      // true 且心跳指纹与行已存真实指纹错位 → 活性四列不登记。
+      registrationConflict?: boolean;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -414,6 +481,15 @@ export class ExecutorController {
       // ARCH-36（ADR-017 阶段 2）：转发设备指纹（心跳是主要重复观测点——
       // 两台机器并存时各自 30s 一次的心跳都会走到 service 的观测器）。
       deviceFingerprint: body.deviceFingerprint,
+      // R3-A（§4.3）：转发设备级应用版本事实与已安装包清单（F-7 显式白名单，
+      // 漏转发 = 上报被静默丢弃，中台事实源从此缺数据）。落库语义/结构校验
+      // 在 service 侧（applyReportedAppVersions / deployed-apps.util.ts）。
+      deployedApps: body.deployedApps,
+      installedPackages: body.installedPackages,
+      // 方案 b（协议 v8）：转发 /token 409 冲突自报（F-7 显式白名单，漏转发
+      // = 执行器侧的自报永远到不了 service 的活性判据，死锁修复失效）。
+      // 布尔语义（=== true 才采信）在 service 侧判定。
+      registrationConflict: body.registrationConflict,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with
@@ -475,8 +551,8 @@ export class ExecutorController {
     @Body()
     body: {
       address: string;
-      // 客户端期望的等待窗口；服务端按 EXECUTOR_PULL_WAIT_MS 钳位
-      // （上限 55s，低于反代通用 60s 读超时）。
+      // 客户端期望的等待窗口；服务端按 EXECUTOR_PULL_WAIT_MS 钳位，并有
+      // 55s 硬帽（P3-2，见 PULL_WAIT_HARD_CAP_MS）。
       waitMs?: number;
       // ARCH-33（ADR-016）：执行器当前空闲槽位数。缺省 = 未上报（旧执行器）
       // → 按「有空槽」处理，任务照常出队，行为与今日逐字节一致。
@@ -496,6 +572,11 @@ export class ExecutorController {
       executorId?: string | null;
     },
     @Headers("authorization") auth: string,
+    // P3-1（2026-10-26 第三轮审计）：passthrough Res——只挂 close 监听做断连
+    // 探针，响应仍由框架按返回值序列化（passthrough 语义）。此前长轮询不感知
+    // 断连：执行器断开后服务端仍每 500ms RPOP 到 waitMs 耗尽，窗口末端弹出的
+    // 任务投给死 socket 必然丢失，还把队列里本可活到下一轮的载荷提前吞掉。
+    @Res({ passthrough: true }) res?: Response,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
     // 工单 11（ADR-017 决策 §3 补全）：认证与行定位一次成型。
@@ -521,6 +602,16 @@ export class ExecutorController {
       // 保留既有语义：认证通过但行仍无法唯一判定 → 404（执行器据此重注册/升级）。
       throw new AppError("EXECUTOR_NOT_FOUND");
     }
+    // P3-1：断连探针。'close' 在连接提前断开（执行器超时放弃/网络抖动）时触发；
+    // destroyed/writableEnded 兜住「监听挂上前就已断」与「框架已写完响应」两态。
+    // res 缺省（直接 new Controller 的单测不经 HTTP）→ 探针恒 false = 不感知
+    // 断连，行为与引入前一致。
+    let clientGone = false;
+    res?.on("close", () => {
+      clientGone = true;
+    });
+    const isClientGone = () =>
+      clientGone || (res ? res.destroyed || res.writableEnded : false);
     const maxWait =
       this.configService.get<number>("executor.pullWaitMs") ?? 25000;
     // SEC-PULL-01：原实现是 Math.max(0, Math.min(Number(body.waitMs ?? maxWait), maxWait))。
@@ -530,10 +621,15 @@ export class ExecutorController {
     // `deadline = Date.now() + NaN`，而 `Date.now() >= NaN` 恒为 false，
     // while(true) 永不 break —— 请求被永久挂住（每次还占一个 Redis 往返），
     // 属可远程触发的资源耗尽。此处显式做有限性校验，非法值回落到 maxWait。
+    //
+    // P3-2：55s **硬帽**（PULL_WAIT_HARD_CAP_MS）——executor.pullWaitMs 是运维
+    // 可调配置，仅按它钳位时一个 >60s 的配置会打穿反代 60s 读超时（长轮询被
+    // 反代 504/断流）。硬帽与 dto/executor-pull.dto.ts 的 Swagger 承诺
+    // （「上限 55s」）对齐，Math.min 双钳：min(请求值, 配置值, 55s)。
     const requestedWait = Number(body.waitMs ?? maxWait);
     const waitMs = Number.isFinite(requestedWait)
-      ? Math.max(0, Math.min(requestedWait, maxWait))
-      : maxWait;
+      ? Math.max(0, Math.min(requestedWait, maxWait, PULL_WAIT_HARD_CAP_MS))
+      : Math.min(maxWait, PULL_WAIT_HARD_CAP_MS);
     // ARCH-33: 任务出队门禁。缺省（未上报）按「有槽位」放行——存量旧执行器
     // 不发该字段，行为必须与今日一致。显式上报 0/负数 = 满载：只发命令。
     const wantTask =
@@ -547,7 +643,11 @@ export class ExecutorController {
     const wantCommands =
       isPull && supportsControlPlane(executor.protocolVersion);
     const { task: payload, commands } = isPull
-      ? await this.pullService.pullWork(executor.id, waitMs, { wantTask })
+      ? await this.pullService.pullWork(executor.id, waitMs, {
+          wantTask,
+          // P3-1：断连探针下沉到取件循环（弹出任务前检查，断连即停）。
+          isConnected: isClientGone,
+        })
       : { task: null, commands: [] };
     return {
       task: payload ?? null,
@@ -572,6 +672,8 @@ export class ExecutorController {
   // 鉴权同款（per-executor 令牌 + address 身份键）。best-effort 语义：中台侧
   // 只记日志 + 写短期结果键（排障读面），**不是**业务终态的事实源——deploy 由
   // /app-deployments/heartbeat 收敛，update-package 由 push-result 收敛。
+  // P2-4（2026-10-26 第三轮审计）：内联 body 换 class DTO（ExecutorCommandResultDto
+  // ——error ≤2000 / commandId UUID 形态，恢复全局管道白名单）+ cmdmeta 归属绑定。
   @WriteGuard("executor", {
     scope: "token",
     reason: "执行器上报 pull 控制命令的执行结果（ARCH-33，机器面非用户会话）",
@@ -583,35 +685,65 @@ export class ExecutorController {
       "ARCH-33：pull 模式执行器上报其从 pull 响应中领取的控制命令（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）的执行结果。属尽力而为——业务的终态仍通过各自的回调收敛。",
     summary: "上报 pull 控制命令的执行结果",
   })
+  @ApiBody({ type: ExecutorCommandResultDto })
   @ApiOkResponse({ type: ExecutorCommandResultResponseDto })
+  @ApiResponse({ status: 400, description: "载荷形态非法（DTO 白名单校验）" })
   @ApiResponse({ status: 401, description: "执行器令牌无效" })
+  @ApiResponse({ status: 403, description: "命令不属于该执行器（跨行回报）" })
   async reportCommandResult(
     @Body()
-    body: {
-      commandId: string;
-      address: string;
-      type: string;
-      ok: boolean;
-      status?: number;
-      error?: string | null;
-      durationMs?: number;
-      // ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——pull 同地址
-      // 多行并存时用于唯一定位本行（ADR-017 §5）。
-      deviceFingerprint?: string | null;
-    },
+    body: ExecutorCommandResultDto,
     @Headers("authorization") auth: string,
   ) {
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
-    const isValid = await this.svc.validateTokenByAddress(
+    // P2-4：认证与行定位一次成型——authenticateMachineRequest 是
+    // validateTokenByAddress 的超集（auth 判定语义逐字节一致，额外返回按
+    // 指纹/地址定位到的行），归属比对需要「回报行」的身份。
+    // 共享令牌 + 同址多行歧义时 executor 为 null（ok 仍可为 true）——该形态
+    // 在下方归属比对里 fail-closed。
+    const authz = await this.svc.authenticateMachineRequest(
       body.address,
       token,
-      body.deviceFingerprint,
+      { deviceFingerprint: body.deviceFingerprint },
     );
-    if (!isValid) {
+    if (!authz.ok) {
       throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     if (!body.commandId || !body.type) {
       throw new AppError("EXECUTOR_COMMAND_RESULT_INVALID");
+    }
+    // P2-4（纵深缺口收口）：归属比对——cmdmeta 记录了命令的目标行（P2-4 起
+    // 入队时增记 executorId）。任意执行器可对任意 commandId 回报的旧缺口在
+    // 此关上：一条伪造的 ok=false 能把别人的部署行收成 FAILED。
+    // 兼容：meta 缺失（存量命令 / Redis 抖动）→ 放行 + warn（升级窗口内
+    // 30min TTL 的存量 meta 无 executorId，同走放行分支——语义一致）。
+    let meta: ExecutorCommandMeta | null = null;
+    try {
+      meta = (await this.pullService?.getCommandMeta(body.commandId)) ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to resolve command meta for ${body.commandId} (ownership check skipped; the deployment row will ` +
+          `converge through the stuck sweep): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (meta && meta.executorId) {
+      const reporter = authz.executor;
+      if (!reporter || reporter.id !== meta.executorId) {
+        this.logger.warn(
+          `Command result for ${body.commandId} (${body.type}) reported by ` +
+            `${reporter?.id ?? "<unresolved row>"} @ ${body.address} but targeted at executor ` +
+            `${meta.executorId} — rejecting cross-row report`,
+        );
+        throw new AppError("EXECUTOR_COMMAND_RESULT_NOT_OWNED", {
+          commandId: body.commandId,
+        });
+      }
+    } else if (!meta) {
+      this.logger.warn(
+        `Command result for ${body.commandId} (${body.type}) has no command meta ` +
+          `(legacy command issued before ownership binding, or Redis hiccup) — ` +
+          `accepting without ownership check`,
+      );
     }
     if (body.ok) {
       this.logger.log(
@@ -636,25 +768,18 @@ export class ExecutorController {
     });
     // P0-4（生产报告 2026-10-22 §4.4）：失败结果必须**推进业务行**，不能只写
     // 日志 + 600s 的 Redis 结果键。执行器上报里只有 commandId，部署行 id 来自
-    // 入队时记的旁路元数据（acf:cmdmeta:{id}）。best-effort：元数据缺失/Redis
-    // 抖动时静默跳过，收敛退回到既有的卡死扫描（与引入本机制前一致）。
+    // 入队时记的旁路元数据（acf:cmdmeta:{id}）——上方归属比对已取回，此处
+    // 直接复用（省一次 Redis GET）。best-effort：元数据缺失时静默跳过，收敛
+    // 退回到既有的卡死扫描（与引入本机制前一致）。
     if (body.ok !== true) {
-      try {
-        const meta = await this.pullService?.getCommandMeta(body.commandId);
-        if (meta && meta.type === "deploy" && meta.deploymentId) {
-          this.svc.publishControlCommandFailure({
-            commandId: body.commandId,
-            type: meta.type,
-            address: body.address,
-            deploymentId: meta.deploymentId,
-            error: body.error ?? null,
-          });
-        }
-      } catch (err) {
-        this.logger.warn(
-          `Failed to resolve command meta for ${body.commandId} (the deployment row will ` +
-            `converge through the stuck sweep): ${err instanceof Error ? err.message : String(err)}`,
-        );
+      if (meta && meta.type === "deploy" && meta.deploymentId) {
+        this.svc.publishControlCommandFailure({
+          commandId: body.commandId,
+          type: meta.type,
+          address: body.address,
+          deploymentId: meta.deploymentId,
+          error: body.error ?? null,
+        });
       }
     }
     return { ok: true };
@@ -792,8 +917,21 @@ export class ExecutorController {
   // 列表既挡不住信息（可经 executions 侧信道获得）又会打断 TaskFormPage 的
   // 执行器下拉。凭证类面（notification/ai config）仍为 ADMIN。
   @ApiOperation({
-    description: "获取全部执行器列表，包含在线状态、分组与标签。",
-    summary: "列出执行器",
+    // F-55（UIAUDIT 后端轮 P3-2）：契约如实化——本端点**不支持分页**，此前
+    // live 实测 `?page=99999999&pageSize=50` 被**静默忽略**（收下参数不生效，
+    // API-07 同型「参数收下不生效」缺陷）：调用方以为在翻页，执行器数超过
+    // 截断上限时第 2 页返回与第 1 页完全相同的前缀行。真分页（PageQueryDto
+    // 下推 DB + 分页元数据）会改响应形状（数组 → {items,total,…} 信封），
+    // 打断 admin-web / acf-cli / mcp-server 四端消费方——登记 fix-b1 报告
+    // 「待拍板」，本轮只把截断行为写进契约（OpenAPI 如实描述）。
+    description:
+      "获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。" +
+      "**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；" +
+      "服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。" +
+      "截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，" +
+      "调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，" +
+      "不得把截断结果当作全量。",
+    summary: "列出执行器（截断上限见描述；不支持分页）",
   })
   @ApiOkResponse({ type: [ExecutorResponseDto] })
   findAll() {
@@ -991,7 +1129,7 @@ export class ExecutorController {
   @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiOkResponse({ type: ExecutorResponseDto })
   @ApiResponse({ status: 404, description: "执行器不存在" })
-  findOne(@Param("id") id: string) {
+  findOne(@Param("id", ParseUuidShapePipe) id: string) {
     return this.svc.findOne(id);
   }
 
@@ -1028,7 +1166,9 @@ export class ExecutorController {
   })
   async update(
     @Param("id") id: string,
-    @CurrentUser() user: AuthUser,
+    // E-5：运行时可能是 ApiKeyUser（JwtAuthGuard 的 acf_ 分支）——类型放宽到
+    // 联合，判定收敛在 assertCanManageMetadata（isApiKeyUser 显式 403）。
+    @CurrentUser() user: AuthUser | ApiKeyUser,
     @Body()
     body: {
       groupName?: string | null;
@@ -1140,7 +1280,8 @@ export class ExecutorController {
    */
   async reloadConfig(
     @Param("id") id: string,
-    @CurrentUser() user: AuthUser,
+    // E-5：同 update——主体类型放宽，判定收敛在 assertCanManageMetadata。
+    @CurrentUser() user: AuthUser | ApiKeyUser,
     @Body()
     body: {
       maxConcurrentTasks?: number;
@@ -1308,15 +1449,18 @@ export class ExecutorController {
   @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
     description:
-      "AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
-    schema: { example: { reason: "token suspected leaked" } },
+      "AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+    type: ExecutorActionReasonDto,
     required: false,
   })
   @ApiOkResponse({
     type: ExecutorRotateTokenDto,
     description: "新凭据一次性回显",
   })
-  rotateToken(@Param("id") id: string, @Body() body?: { reason?: string }) {
+  // F-53（UIAUDIT P2-2）：body 换 class DTO——此前内联 { reason?: string } 使
+  // 全局 whitelist+forbidNonWhitelisted 对本面失效；reason 现有 ≤200 上限
+  // （对齐 AUTH-05 前端契约与 DEP-04 ApprovalActionDto 先例）。
+  rotateToken(@Param("id") id: string, @Body() body?: ExecutorActionReasonDto) {
     return this.svc.rotateToken(id, body?.reason);
   }
 
@@ -1371,13 +1515,22 @@ export class ExecutorController {
       this.systemConfigService,
     );
 
+    // E-6（2026-10-26 执行器域审计）：缺 appName 不再兜底 "executor"——那会让
+    // 持有共享令牌的调用方反复以不同 address 制造无主行（appName 是行的身份列，
+    // "executor" 兜底让这些行在管理台无法归属）。仓内三个执行器来源（node
+    // middleware/auth.ts、python auth.py、install.sh 生成的 APP_NAME）恒带
+    // 非空 appName，收紧无存量兼容风险；语义见 EXECUTOR_TOKEN_APP_NAME_REQUIRED。
+    if (!body.appName || !body.appName.trim()) {
+      throw new AppError("EXECUTOR_TOKEN_APP_NAME_REQUIRED");
+    }
+
     // R9 (round-8 P1 closure, W2): issueToken() replaces the old
     // register()+rotateToken() pair that rotated on EVERY call — the root of
     // the ~30s tokenHash rotation cycle that broke the N26 per-execution
     // callback-token invariant (docs/archive/verifies/verify-round8-e2e.md §1.5).
     return this.svc.issueToken({
       address: body.address,
-      appName: body.appName || "executor",
+      appName: body.appName,
       startupId: body.startupId,
       // ADR-017 阶段 3（复查补口）：指纹必须转发——issueToken 依赖它把
       // register 的行解析收敛到**调用方自己那一行**（缺省即同址多行时任取
@@ -1487,15 +1640,16 @@ export class ExecutorController {
   @ApiParam({ name: "id", description: "执行器 ID" })
   @ApiBody({
     description:
-      "AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
-    schema: { example: { reason: "decommissioned host" } },
+      "AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+    type: ExecutorActionReasonDto,
     required: false,
   })
   @ApiResponse({ status: 204, description: "执行器已删除" })
   @ApiResponse({ status: 404, description: "执行器不存在" })
+  // F-53（UIAUDIT P2-2）：同 rotate-token，内联 reason body 换 class DTO。
   async removeExecutor(
     @Param("id") id: string,
-    @Body() body?: { reason?: string },
+    @Body() body?: ExecutorActionReasonDto,
   ): Promise<void> {
     return this.svc.removeById(id, body?.reason);
   }

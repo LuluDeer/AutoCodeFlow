@@ -40,9 +40,53 @@ export default tseslint.config(
       'react-hooks/unsupported-syntax': 'off',
       'react-hooks/config': 'off',
       'react-hooks/gating': 'off',
+      // react-refresh/only-export-components 收官（66→0）：本应用存在一类
+      // 「页面/组件 + 纯函数同文件导出供测试锚定」的既定测试策略——纯函数
+      // （状态派生/格式化/分类判定）与组件同文件，__tests__ 直接 import 断言。
+      // 这些导出并非给其它组件消费（不破坏 fast-refresh 边界），而是测试锚点；
+      // 挪文件会造成组件与被测纯函数的长期分叉（KpiSparkline 先例已证明此策略
+      // 有效）。故用插件 0.5.x 的 allowExportNames 显式登记这批测试锚定函数：
+      // 名单出现新条目时必须先确认「导出仅测试消费」再登记，组件间共享的逻辑
+      // 一律挪 utils/（copyErrorText→utils/clipboard.copyText 先例）。
       'react-refresh/only-export-components': [
         'warn',
-        { allowConstantExport: true },
+        {
+          allowConstantExport: true,
+          allowExportNames: [
+            // ErrorFallback/RouteErrorBoundary（route-error-boundary.test 锚定）
+            'isChunkLoadError',
+            'isOfflineNow',
+            // DashboardPage（design-audit-shard-a-stream / dashboard-trend-zerofill 锚定）
+            'streamStatusBadge',
+            'buildTrendData',
+            // ApiKeysSettings（api-keys-settings.test 锚定）
+            'apiKeyStatus',
+            'apiKeyDeletable',
+            // ExecutorPackagesPage（包名缩短纯函数，页内+测试消费）
+            'shortUploader',
+            // SsoCompletePage（sso-complete-page.test 锚定）
+            'resolveErrorHint',
+            // EventSubscriptionsSettings（event-subscriptions-settings.test 锚定）
+            'subscriptionFailureStats',
+            // F-9（UIAUDIT P3-2）：webhook URL 形状闸门（同文件测试锚定）
+            'isValidWebhookUrl',
+            // SecuritySettings（security-settings.test 锚定）
+            'summarizeUserAgent',
+            // DashboardEmptyGuide（显隐纯函数与组件天然同文件）
+            'shouldShowEmptyGuide',
+            // GroupFilterBar（executor-ui07.test 锚定）
+            'groupBuckets',
+            // BatchActionBar 向后兼容 re-export（executor-ui07.test 锚定）
+            'runBatch',
+            // ExecutionInfoCard 常量（ui09-mobile-pages / antd-deprecation-clean 锚定；
+            // 常量对象字面量不在 allowConstantExport 覆盖内，登记名字豁免）
+            'UI09_DESCRIPTIONS_COLUMN',
+            // settings AI 配置数值校验（P3-1，settings.ai.test 锚定；
+            // 仅测试消费——组件间共享需挪 utils/）
+            'isValidAiNumber',
+            'AI_NUMBER_FIELDS',
+          ],
+        },
       ],
     },
   },

@@ -66,7 +66,8 @@ export function classifyDeliveryFailure(error: unknown): DeliveryFailureKind {
   }
   const code = (error as { code?: unknown } | undefined | null)?.code;
   if (typeof code === "string") {
-    if (/^(ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT)$/.test(code)) return "timeout";
+    if (/^(ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT)$/.test(code))
+      return "timeout";
     if (
       /^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE|ERR_NETWORK|ERR_BAD_RESPONSE|CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE)$/.test(
         code,

@@ -34,6 +34,42 @@
 | `categories:performance` | 既有决策（基线未稳定前不卡发版），本轮维持。 |
 | `unused-css-rules` / `unused-javascript` | 单页审计口径，而这是 SPA：`/` 落到登录页时，绝大部分应用 bundle 与 antd 样式**本来就没用上**。数值恒高（实测 CSS 34 KiB / JS 180–186 KiB），当作回归信号看，不当作失败。 |
 | `render-blocking-resources` | 同上，首屏外资源天然被判为无效，需拆包/预加载才能真降。 |
+| `valid-source-maps` | 见下节「为什么 `valid-source-maps` 是 warn」。 |
+
+### 为什么 `valid-source-maps` 是 warn
+
+**它不是被上游默认带进来才红的，是「chunk 长大到越过阈值」才第一次生效的。**
+
+Lighthouse 只在脚本 **≥ 500 KiB（512000 B）** 时才要求它带 source map
+（`valid-source-maps.js` 的 `LARGE_JS_BYTE_THRESHOLD`），而它找 map 的唯一途径是
+DevTools 的 `sourceMapURL`——即 bundle 末尾的 `//# sourceMappingURL=` 魔法注释
+或响应头 `SourceMap:`。
+
+本仓 `vite.config.ts` 用 `sourcemap: 'hidden'`（O-17：**产出** `.map` 供排障侧按
+URL 拉取，但**不注入**注释，以免浏览器在首屏自动下载几十 MB 的 map）。二者叠加
+的结果是：`dist/` 里躺着一份合法的 `.map`，Lighthouse 却永远发现不了它 →
+`valid-source-maps` 恒判 0。
+
+此前一直绿，只是因为没有任何 chunk 越过 500 KiB。2026-10-26 的 i18n 词条增长
+把 `i18n-*.js` 顶到 **605.9 kB**（`lang="zh"` 与 `en` 两份词条都被打进同一 chunk），
+`GlueEditor-*.js`（2.7 MB，懒加载）本就超过——于是这条断言从「不适用」变成
+「每个 URL 红一次」，`develop` 与所有 PR 全红。
+
+**为什么不是 error（不修 build）：**
+
+- **不能改成 `sourcemap: true`**：那会把 `sourceMappingURL` 注进 2.7 MB 的
+  GlueEditor 与 606 KB 的 i18n，浏览器一进登录页就会去拉 ~12 MB 的 map，
+  首屏性能直接倒退——正是 O-17 当初选择 `hidden` 的理由。
+- **不能只在审计服务器补 `SourceMap:` 头**：`scripts/lhci-serve.cjs` 是审计环境的
+  替身，让它在响应头里自报 map 只是「让审计看得见」，而**生产 nginx 并不发这个
+  头**——那是把审计口径与生产形态脱钩，属于假绿。
+- 真正的收敛方向是 **chunk 拆分**（i18n 按语言拆 / 懒加载），那是性能优化议题，
+  不该与「修 CI 红灯」混在同一轮。
+
+因此与 `unused-css-rules` 同档：**留作回归信号（warn），不阻塞发版**。若日后
+真的希望它变成 error，路径是先把 `i18n` chunk 拆到 500 KiB 以下，再把
+`sourcemap` 切到 `true`（或让生产 nginx 按需发 `SourceMap:` 头），两者都要
+单独取证，不要靠调这条断言蒙过去。
 
 ### off —— 评估口径与当前架构不匹配
 

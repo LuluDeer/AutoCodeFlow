@@ -248,7 +248,9 @@ describe("AgentRuntimeService.run —— 闸门在循环开头", () => {
 
 describe("AgentRuntimeService.run —— 失败归因不混淆", () => {
   it("模型调用抛错 → failed（不是 budget_exceeded），且把错误记进 step 与终态", async () => {
-    const h = harness({ llm: [new Error("401 invalid api key"), new Error("401 invalid api key")] });
+    const h = harness({
+      llm: [new Error("401 invalid api key"), new Error("401 invalid api key")],
+    });
     const out = await h.service.run("sess-1");
 
     expect(out.status).toBe("failed");
@@ -277,7 +279,9 @@ describe("AgentRuntimeService.run —— 失败归因不混淆", () => {
   });
 
   it("非 Error 抛出物（字符串/对象）也被如实收敛，不冒泡", async () => {
-    const h = harness({ llm: [new Error("string-ish failure"), new Error("string-ish failure")] });
+    const h = harness({
+      llm: [new Error("string-ish failure"), new Error("string-ish failure")],
+    });
     await expect(h.service.run("sess-1")).resolves.toMatchObject({
       status: "failed",
     });

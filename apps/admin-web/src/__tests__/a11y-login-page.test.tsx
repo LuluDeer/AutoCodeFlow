@@ -6,7 +6,8 @@
  *   · 控件与 label 真实关联（label[for] === input[id]，而非仅靠同名 aria-label）
  *   · 首屏焦点落在用户名输入框
  *   · 密码框 type=password、提交按钮 type=submit（原生表单语义可用）
- *   · 登录失败渲染页内 role=alert 错误块并接管焦点（此前只有瞬时 toast）
+ *   · 登录失败渲染页内 role=alert 错误块（此前只有瞬时 toast）；P3-3 起失败后
+ *     清空密码框并聚焦（用户名保留），焦点给到重输位置而非错误块
  *   · 进入 TOTP 阶段：标题/aria-labelledby 同步切换，焦点进入动态码输入框
  *
  * 断言纪律：全部为行为断言（getByRole / aria 属性 / focus 归属 / 键盘事件），
@@ -140,7 +141,7 @@ describe('UI-12 LoginPage — 表单语义', () => {
 });
 
 describe('UI-12 LoginPage — 失败播报与 TOTP 阶段', () => {
-  it('登录失败渲染页内 role=alert 错误块，并接管焦点（替代瞬时 toast）', async () => {
+  it('登录失败渲染页内 role=alert 错误块；清空密码框并聚焦（用户名保留，P3-3）', async () => {
     // Axios 形态错误（err.response.data.message 优先），校验后端文案被原样呈现
     vi.mocked(authApi.login).mockRejectedValue(
       Object.assign(new Error('Request failed'), { response: { data: { message: '账号已被锁定' } } }),
@@ -153,13 +154,14 @@ describe('UI-12 LoginPage — 失败播报与 TOTP 阶段', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('账号已被锁定');
-    // 焦点接管：键盘用户无需自行寻找错误位置（焦点落在包裹 alert 的容器上）
-    await waitFor(() => {
-      const focused = document.activeElement as HTMLElement | null;
-      expect(focused).toBeTruthy();
-      expect(focused === alert || focused?.contains(alert)).toBe(true);
-    });
     expect(mockNav).not.toHaveBeenCalled();
+    // P3-3：失败后密码框被清空且焦点落在密码框——用户落点即重输位置，
+    // 错误内容由 role=alert 即时播报（不再由错误块接管焦点）。
+    const password = screen.getByLabelText('密码') as HTMLInputElement;
+    expect(password.value).toBe('');
+    await waitFor(() => expect(document.activeElement).toBe(password));
+    // 用户名保留，不强迫重输
+    expect((screen.getByLabelText('用户名') as HTMLInputElement).value).toBe('alice');
   });
 
   it('错误块可关闭，关闭后不再占据 alert 角色', async () => {

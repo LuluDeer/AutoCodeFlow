@@ -33,12 +33,20 @@ import {
 import {
   SendNotificationDto,
   SendNotificationResultDto,
+  SendTestDto,
 } from "./dto/send-notification.dto";
-// PK-19: createSilence 请求体 Swagger 文档 DTO（运行时 @Body() 仍为内联对象类型）。
+// P3-5（PK-19 收尾）：createSilence 请求体 class DTO（校验器已挂到类上，
+// 运行时 @Body() 即本类，恢复全站 whitelist 纪律）。
 import { CreateSilenceDto } from "./dto/create-silence.dto";
+// P2-3（F-53 残留清理）：updateChannel 请求体 class DTO（值必须 string +
+// 键数/长度护栏，详见该 DTO 头注）。
+import { UpdateChannelDto } from "./dto/update-channel.dto";
 import { NotificationPayload } from "./channels/base.channel";
 // D3-B-P2-2: 渠道/静默增删审计落证。
 import { AuditService } from "../audit/audit.service";
+// F-53（UIAUDIT P2-2）：testChannel 的动态键覆盖体形状管道（键集随渠道类型
+// 变化，封闭 class DTO 不适用，见管道头注）。
+import { ChannelConfigOverridePipe } from "./channel-config-override.pipe";
 // ARCH-23 / N-12（2026-10-07 A1 批）：通知配置域响应契约。
 import {
   ChannelTestResponseDto,
@@ -72,16 +80,21 @@ export class NotificationConfigController {
     return this.configService.getAllChannels();
   }
 
+  // P2-3（2026-10-25 审计，F-53 残留清理）：body 从内联类型改 class DTO
+  // （UpdateChannelDto）——此前 metatype=Object 使全局 ValidationPipe 整体
+  // 跳过，非 string config 值写穿 DB 后 maskChannel 对其 replace → PATCH 500
+  // 且 GET /channels 持续 500（hydrateFromPersisted 回灌坏值）。
   @Patch("channels/:key")
   @ApiOkResponse({ type: NotificationChannelDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "更新通知渠道配置" })
+  @ApiBody({ type: UpdateChannelDto, description: "渠道配置更新体" })
   async updateChannel(
     @Param("key") key: string,
-    @Body() body: { enabled?: boolean; config?: Record<string, string> },
+    @Body() dto: UpdateChannelDto,
     @CurrentUser() user: AuthUser,
   ) {
-    const result = this.configService.updateChannel(key, body);
+    const result = this.configService.updateChannel(key, dto);
     // D3-B-P2-2: 渠道配置变更落证（不落 config 明文——仅 key/enabled 差量）。
     // A-4: 变更已生效后才写审计——审计库故障时 best-effort 吞掉（对齐
     // task.service R-28 先例），不再让已生效的配置变更反向吃 500。
@@ -91,7 +104,7 @@ export class NotificationConfigController {
         action: "notification.channel.update",
         resource: "notification_channel",
         resourceId: key,
-        detail: { enabledChanged: body.enabled !== undefined },
+        detail: { enabledChanged: dto.enabled !== undefined },
       });
     } catch (err: unknown) {
       this.logger.warn(
@@ -121,7 +134,14 @@ export class NotificationConfigController {
   @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "测试通知渠道" })
-  testChannel(@Param("key") key: string, @Body() body: Record<string, string>) {
+  // F-53（UIAUDIT P2-2）：此前裸 Record<string, string>（metatype=Object，
+  // 全局管道跳过）——任意形状 JSON 直达渠道 override。键集是动态的（随渠道
+  // 类型变化），封闭 class DTO 不适用，改挂形状管道（值必须 string + 数量/
+  // 长度护栏，非法 400 VALIDATION_FAILED 形态）。
+  testChannel(
+    @Param("key") key: string,
+    @Body(new ChannelConfigOverridePipe()) body: Record<string, string>,
+  ) {
     return this.configService.testChannel(key, body);
   }
 
@@ -135,9 +155,9 @@ export class NotificationConfigController {
   @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "向渠道发送测试通知" })
-  sendTest(
-    @Body() body: { channels: string[]; title: string; content: string },
-  ) {
+  // F-53（UIAUDIT P2-2）：内联类型换 class DTO（SendTestDto），全局
+  // whitelist+forbidNonWhitelisted 纪律生效；channels 走渠道枚举白名单。
+  sendTest(@Body() body: SendTestDto) {
     return this.configService.sendTest(body);
   }
 
@@ -211,23 +231,14 @@ export class NotificationConfigController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "创建通知静默" })
   @ApiResponse({ status: 201, description: "已创建的静默规则" })
-  // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 createSilence 用内联对象类型无 @ApiBody，
-  // openapi 缺 requestBody。补 @ApiBody({ type: CreateSilenceDto })（运行时
-  // @Body() 类型不变，校验仍由 silenceService.create 内部完成）。
+  // P3-5（2026-10-25 审计，PK-19 收尾）：body 从内联对象类型改 class DTO
+  // （CreateSilenceDto 挂上校验器）——此前 metatype=Object 使全局 whitelist/
+  // forbidNonWhitelisted 对本面整体跳过，多余字段静默收下；现按全站纪律
+  // 400。scope/level/durationMinutes 等口径与 silenceService.create 同源，
+  // service 内部校验保持不动（它还是内部调用方的唯一闸）。
   @ApiBody({ type: CreateSilenceDto, description: "静默规则创建体" })
-  async createSilence(
-    @Body()
-    body: {
-      scope: "global" | "task" | "application";
-      channelType?: string;
-      taskId?: string;
-      applicationId?: string;
-      level?: string;
-      reason?: string;
-      durationMinutes?: number;
-    },
-  ) {
-    const row = await this.silenceService.create(body);
+  async createSilence(@Body() dto: CreateSilenceDto) {
+    const row = await this.silenceService.create(dto);
     // ARCH-31: 同步进 NotificationService 的内存热路径——此前只落 DB，
     // isSilenced 看不到本规则（要等进程重启回灌才生效）。
     this.notificationService.adoptPersistedSilence(row);
@@ -238,7 +249,7 @@ export class NotificationConfigController {
         action: "notification.silence.create",
         resource: "notification_silence",
         resourceId: row.id,
-        detail: { scope: body.scope },
+        detail: { scope: dto.scope },
       });
     } catch (err: unknown) {
       this.logger.warn(

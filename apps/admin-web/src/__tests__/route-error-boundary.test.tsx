@@ -8,7 +8,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
-import RouteErrorBoundary, { isChunkLoadError } from '../components/RouteErrorBoundary';
+import RouteErrorBoundary, { isChunkLoadError, isOfflineNow } from '../components/RouteErrorBoundary';
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐既有先例）
 const g = globalThis as Record<string, unknown>;
@@ -90,5 +90,54 @@ describe('NETOPT-4 RouteErrorBoundary（路由级错误兜底）', () => {
     expect(isChunkLoadError(new Error('普通渲染错误'))).toBe(false);
     expect(isChunkLoadError('字符串错误')).toBe(false);
     expect(isChunkLoadError(undefined)).toBe(false);
+  });
+
+  // F-45（UIUX 审计 P2-3）：断网时 chunk 拉取失败被误报为「版本已更新，请刷新」
+  // ——离线下刷新不可能成功，文案与真实原因（网络断开）完全错位。
+  describe('F-45 离线分流（navigator.onLine=false）', () => {
+    const originalOnLine = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+
+    afterEach(() => {
+      if (originalOnLine) {
+        Object.defineProperty(Navigator.prototype, 'onLine', originalOnLine);
+      }
+    });
+
+    function setOnLine(value: boolean): void {
+      Object.defineProperty(Navigator.prototype, 'onLine', {
+        get: () => value,
+        configurable: true,
+      });
+    }
+
+    it('离线 + chunk 失败 → 「网络连接已断开」文案与重试按钮，不再谎报发版', () => {
+      setOnLine(false);
+      renderThrowingRoute(
+        new TypeError('Failed to fetch dynamically imported module: http://localhost/assets/app-abc.js'),
+      );
+
+      expect(screen.getByText('网络连接已断开')).toBeTruthy();
+      expect(screen.getByText('重试')).toBeTruthy();
+      expect(screen.queryByText('版本已更新，请刷新')).toBeNull();
+      expect(screen.queryByText('刷新页面')).toBeNull();
+    });
+
+    it('在线 + chunk 失败 → 维持「版本已更新，请刷新」原文案（isOfflineNow 回落安全）', () => {
+      setOnLine(true);
+      renderThrowingRoute(
+        new TypeError('Failed to fetch dynamically imported module: http://localhost/assets/app-abc.js'),
+      );
+
+      expect(screen.getByText('版本已更新，请刷新')).toBeTruthy();
+      expect(screen.getByText('刷新页面')).toBeTruthy();
+      expect(screen.queryByText('网络连接已断开')).toBeNull();
+    });
+
+    it('isOfflineNow：仅在 navigator.onLine 明确为 false 时判离线（undefined/true → 在线）', () => {
+      setOnLine(true);
+      expect(isOfflineNow()).toBe(false);
+      setOnLine(false);
+      expect(isOfflineNow()).toBe(true);
+    });
   });
 });

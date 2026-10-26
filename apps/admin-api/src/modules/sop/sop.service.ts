@@ -10,14 +10,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import {
-  Repository,
-  In,
-  IsNull,
-  LessThan,
-  Not,
-  Or,
-} from "typeorm";
+import { Repository, In, IsNull, LessThan, Not, Or } from "typeorm";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { ExecutorService } from "../executor/executor.service";
 // R41-A1（R34-A1 遗留②）：关键写动作的审计落库（唯一可事后追溯的操作记录）。
@@ -114,6 +107,13 @@ const PLATFORM_MEDIA_PATH_RE =
 export interface SopAuditContext {
   /** 登录用户 id（AuthUser.id，整数）；执行器/系统动作缺省为 null。 */
   userId?: number | null;
+  /**
+   * P2（2026-10-25 审计）：登录用户名（AuthUser.username）。审计页「操作人」
+   * 列与按用户过滤消费的是这一列——只带 userId 时页面显示「系统」且筛不到
+   * （对照 task.controller 的审计形态 {userId, username}）。执行器/系统动作
+   * 缺省为 null。
+   */
+  username?: string | null;
   /** 请求来源 ip（req.ip）；cron/内部调用缺省为 null。 */
   ip?: string | null;
 }
@@ -225,6 +225,7 @@ export class SopService {
       // R34-A1 轴 4），把它当操作人写进审计会指错人；操作者靠 userId/ip。
       await this.safeAudit({
         userId: input.audit?.userId ?? null,
+        username: input.audit?.username ?? null,
         ip: input.audit?.ip ?? null,
         action: "sop.update",
         resource: "sop",
@@ -257,6 +258,7 @@ export class SopService {
     // R41-A1：起草落审计（正文只记长度——SOP 正文可能含业务数据）。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.draft",
       resource: "sop",
@@ -348,6 +350,7 @@ export class SopService {
     // 发布了哪个版本」必须能从审计表单表回答，而不是靠会轮转的应用日志。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.publish",
       resource: "sop",
@@ -423,6 +426,7 @@ export class SopService {
     sop.status = "deprecated";
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.deprecate",
       resource: "sop",
@@ -434,7 +438,9 @@ export class SopService {
         actor: input.actor ?? null,
       },
     });
-    this.logger.log(`SOP deprecated: slug=${sop.slug} by=${input.actor ?? "?"}`);
+    this.logger.log(
+      `SOP deprecated: slug=${sop.slug} by=${input.actor ?? "?"}`,
+    );
     return sop;
   }
 
@@ -477,6 +483,7 @@ export class SopService {
     }
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.restore",
       resource: "sop",
@@ -554,6 +561,7 @@ export class SopService {
     // 可直接在审计页反查这张工单（sop 行只有资源 id，答不出目标机器）。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.assign",
       resource: "sop_assignment",
@@ -1125,8 +1133,9 @@ export class SopService {
     // 修订锚取决于谁最后落库）。
     // 条件写的 WHERE 取「本次动作的合法起始状态」= 读取时的前置值
     // （null 或 escalated_to_human），只有胜者继续做修订 / 发版 / 投递。
-    const answeredBy =
-      input.resolution as NonNullable<SopClarification["resolution"]>;
+    const answeredBy = input.resolution as NonNullable<
+      SopClarification["resolution"]
+    >;
     const answer = this.sanitizeUntrusted(input.answer);
     const claim = await this.clarifications.update(
       {
@@ -1170,9 +1179,13 @@ export class SopService {
         // 整行回写会把「读 SOP 快照 → 修订 → 落库」之间的并发编辑（例如管理员同时
         // 改了 slug/name）按旧值盖回去。这里只可能改 frontMatterJson 与 bodyMarkdown
         // （两个 if 各自决定），故按改动集合下发。
-        const amendmentPatch: { frontMatterJson?: Record<string, unknown>; bodyMarkdown?: string } = {};
+        const amendmentPatch: {
+          frontMatterJson?: Record<string, unknown>;
+          bodyMarkdown?: string;
+        } = {};
         if (input.amendedFrontMatterYaml)
-          amendmentPatch.frontMatterJson = sop.frontMatterJson as unknown as Record<string, unknown>;
+          amendmentPatch.frontMatterJson =
+            sop.frontMatterJson as unknown as Record<string, unknown>;
         if (input.amendedBodyMarkdown)
           amendmentPatch.bodyMarkdown = sop.bodyMarkdown;
         // adr-026-exempt: 只写**内容列**（frontMatterJson / bodyMarkdown），不碰状态；
@@ -1237,6 +1250,7 @@ export class SopService {
     // 且可 CSV 导出，正文落进去等于开一条持久外带通道；只记长度。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.reply",
       resource: "sop_clarification",
@@ -1305,7 +1319,10 @@ export class SopService {
     // 改回 in_progress（进而被失联扫描判 stalled：一次交付被改写成两次错误
     // 状态）。前置状态集合 = 读取时允许的全部活跃态，等价于「非终态」。
     await this.assignments.update(
-      { id: a.id, status: In(["assigned", "in_progress", "blocked", "stalled"]) },
+      {
+        id: a.id,
+        status: In(["assigned", "in_progress", "blocked", "stalled"]),
+      },
       {
         lastProgressAt: new Date(),
         progressJson: input.progressJson ?? a.progressJson,
@@ -1394,6 +1411,7 @@ export class SopService {
     // 只记字节量，内容不进审计。
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.complete",
       resource: "sop_assignment",
@@ -1764,11 +1782,18 @@ export class SopService {
     // NaN 守卫（与 agent-session list 同款，R3 后端遗留）：controller 的
     // Number("abc")=NaN 会穿透 Math.max/Math.min 钳制直达 skip/take 炸 500。
     // 非有限数视同未传、回落 1/20（对齐「非法深链安全回落」契约，不 400）。
+    // F-54（UIAUDIT 后端轮 P3-1）：page 补上限 10000——对齐 NETOPT-3④ 的
+    // PageQueryDto 口径（与 agent-session.service 同批、events 先例 2ea869fc
+    // 一致），封住 `?page=99999999` 深 OFFSET + 全量 COUNT。仍在 clamp 内做
+    // （不引 DTO）以保持「非法值安全回落、绝不 400」的既有契约。
     const rawPage = options.page;
     const rawPageSize = options.pageSize;
-    const page = Math.max(
-      1,
-      typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+    const page = Math.min(
+      10000,
+      Math.max(
+        1,
+        typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+      ),
     );
     const pageSize = Math.min(
       100,
@@ -1858,6 +1883,7 @@ export class SopService {
     if (cancelled > 0) {
       await this.safeAudit({
         userId: input.audit?.userId ?? null,
+        username: input.audit?.username ?? null,
         ip: input.audit?.ip ?? null,
         action: "sop.assignment.cancel",
         resource: "sop",
@@ -2058,6 +2084,7 @@ export class SopService {
   }): Promise<void> {
     await this.safeAudit({
       userId: input.audit?.userId ?? null,
+      username: input.audit?.username ?? null,
       ip: input.audit?.ip ?? null,
       action: "sop.clarify",
       resource: "sop_clarification",

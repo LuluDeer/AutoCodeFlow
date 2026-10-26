@@ -71,6 +71,9 @@ import {
 import { toBullPriority } from "../../common/utils/task-priority.util";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
+// ARTIFACTS-INDEX-46: 产物元数据索引行（跨模块 forFeature 同款纪律——只
+// import 实体类，TypeORM 元数据无运行时依赖环，注册在 task.module.ts）。
+import { ExecutionArtifactRow } from "../artifacts/entities/execution-artifact.entity";
 // python_task_multiversion（FR-19 / AC-19a）：zip 来源的 runtime 一致性校验
 // 需读 applications 行。**刻意经 dataSource.getRepository(Application)** 而非
 // @InjectRepository：ApplicationModule imports forwardRef(() => TaskModule)，
@@ -1051,6 +1054,12 @@ export class TaskService {
     // 纯退避轮询，行为与引入前等价）。
     @Optional()
     private readonly executionWakeService?: ExecutionWakeService | null,
+    // ARTIFACTS-INDEX-46: 产物元数据索引表写侧（终态回调 jsonb 清单与新表
+    // 双轨写）。@Optional 同 reportRepo/projectRepo 先例——既有单测装配未提供
+    // 该仓储时回退 null，此时新表不写、jsonb 主链逐字节不变（读面回落 jsonb）。
+    @Optional()
+    @InjectRepository(ExecutionArtifactRow)
+    private readonly artifactIndexRepo?: Repository<ExecutionArtifactRow> | null,
   ) {
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional 依赖缺失时降级不可观测——
     // 事件总线/审计静默缺失会让终态事件不发、依赖触发审计不写。生产装配下这些
@@ -1426,7 +1435,13 @@ export class TaskService {
     try {
       const saved = await this.taskRepo.save(this.taskRepo.create(normalized));
       await this.saveVersion(saved.id, undefined, undefined, saved);
-      return saved;
+      // F-4（SEC-02 安全红线）：create 是写路径唯一漏脱敏的返回点——
+      // update/pause/resume/updateGlue/findOne 全部经 maskSecretsForResponse，
+      // 契约是「API 读取永久脱敏（叶子值回 ******）」。save 返回的是含
+      // 明文/密文的原始行，控制器原样回传会把真实凭据带给调用方（并随审计
+      // 日志/代理日志落盘）。importDefinition 复用本方法，其响应只取
+      // taskId/name，一并覆盖。
+      return this.maskSecretsForResponse(saved);
     } catch (err) {
       if (isUniqueViolation(err)) {
         // 技术债 A 组（2026-10-01）：迁移 1790000000050 起 tasks.name 有唯一
@@ -1535,6 +1550,20 @@ export class TaskService {
   private async assertDependencyValuesExist(
     dependencies: Record<string, string>,
   ): Promise<void> {
+    // F-5（服务层纵深防御）：DTO 边界的 IsDependencyValueMapConstraint 已把
+    // value 收口为字符串，但本方法还有**编程式直连调用方**（MCP/脚本/自动
+    // 注册，不经全局 ValidationPipe）——value=123/true 之类的非字符串进
+    // In([...]) 查 uuid 列会触发 PG 42883（function uuid_eq_integer does
+    // not exist）裸 500。这里前置 typeof 收口为可读 400 VALIDATION_FAILED
+    // （复用通用校验码，不新增目录条目）。
+    const nonStringKeys = Object.entries(dependencies)
+      .filter(([, v]) => typeof v !== "string")
+      .map(([k]) => k);
+    if (nonStringKeys.length > 0) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail: `dependencies 的依赖值必须是任务 id（字符串），以下键的值类型非法：${nonStringKeys.join(", ")}`,
+      });
+    }
     const values = [...new Set(Object.values(dependencies))];
     if (values.length === 0) return;
     const found = await this.taskRepo.find({
@@ -2250,6 +2279,15 @@ export class TaskService {
       }
     }
     const normalized = this.normalizeTaskDto(dto);
+    // F-1（安全红线）：PATCH 请求体不允许重写主键 id。UpdateTaskDto 经
+    // PartialType 继承了 CreateTaskDto 的可选 @IsUUID id——不剔除的话，
+    // 下方 Object.assign 会把内存实体的主键改掉，taskPatchFromDto 还会把
+    // id 写进列级 patch（UPDATE ... SET "id" = ...，改写主键）。
+    // 刻意放在 update 路径而非 normalizeTaskDto：create 的 R6 契约（客户端
+    // 自带 id + 查重/TASK_ID_EXISTS）合法消费 normalized.id（见 create 内
+    // 预检），而 normalizeTaskDto 是 create/update 共享的。形态与同函数既有
+    // `delete normalized.secrets` / expectedUpdatedAt 的消费即弃一致。
+    delete normalized.id;
     // 同 create：PATCH 显式带 gitRepo 时即校验（缺省 = 保留旧值，不重复校验既有列）
     if (normalized.gitRepo) {
       await assertSafeGitRepoUrl(normalized.gitRepo);
@@ -2263,6 +2301,12 @@ export class TaskService {
       Object.keys(normalized.dependencies).length > 0
     ) {
       await this.assertDependencyValuesExist(normalized.dependencies);
+      // F-2: update 路径此前缺环/自依赖检测（checkCircularDependency 只有
+      // create 一个调用点）——PATCH 一个自依赖或 A↔B 双环映射会落库成
+      // triggerDependentTasks 的永动死链。整体替换语义下显式提供即终态，
+      // 按 create 同一契约检测；自身 id 传入使自环也被拒。缺省（不带
+      // dependencies）= 保留旧值，存量映射不重复检测。
+      await this.checkCircularDependency(id, normalized.dependencies);
     }
     // TASK-PROJ-01: 改变归属项目同样需要授权（缺省 = 保留旧归属，不重复校验）
     if (normalized.projectId !== undefined) {
@@ -2644,6 +2688,10 @@ export class TaskService {
     const patch: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(dto)) {
       if (value === undefined) continue;
+      // F-1 防御性兜底：主键 id 永不进列级 patch——本方法的所有调用方里只有
+      // update 携带 DTO 原键，上游漏删时这里拦下，避免 UPDATE 改写主键。
+      // updateGlue 等手工 patch 不含该键，不受影响。
+      if (key === "id") continue;
       patch[key] = value;
     }
     return patch;
@@ -2714,6 +2762,14 @@ export class TaskService {
     // 依赖触发方传入 "dependency"。
     triggerTypeOverride?: string,
   ) {
+    // F-10（语义钉死，2026-10-25 审计）：trigger 刻意**只排除 DELETED**——
+    // findOne 的行谓词是 Not(DELETED)，PAUSED 任务手动/API/依赖触发照常
+    // **成功**。这是与维护窗口同一款设计哲学（见 scheduler.enqueue 头注：
+    // 「手动/API 触发不受窗口约束——发布窗口内人工补跑是预期操作」）：
+    // 暂停只停**调度**（schedulerService.stop 移除定时器），不拦人工显式
+    // 触发。若将来要改成「PAUSED 拒绝手动触发」，必须显式产品决策——
+    // 回归 spec（task.service.spec「trigger PAUSED 任务手动触发成功」）
+    // 会转红，防止无意识收紧。
     const task = await this.findOne(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(task, user);
@@ -2747,8 +2803,13 @@ export class TaskService {
           warn: (message) => this.logger.warn(message),
           releaseSlot: (address) =>
             releaseExecutorSlotByAddress(this.dataSource, address),
-          notifyKill: (executionId, address) =>
-            this.executorService.notifyExecutorKill(executionId, address),
+          notifyKill: (executionId, address, executorId) =>
+            // P2-3: 透传被覆盖行的行身份（pull 同址多行时按行寻路 kill）。
+            this.executorService.notifyExecutorKill(
+              executionId,
+              address,
+              executorId,
+            ),
         },
       );
       if (gateOutcome === "skip") {
@@ -4777,7 +4838,16 @@ export class TaskService {
   ): Promise<string | null> {
     try {
       return await s3.get(s3.objectKey(executionId));
-    } catch {
+    } catch (err: unknown) {
+      // 巡查·静默吞错收口：这里同时承接「对象不存在（首页 append，正常）」
+      // 与「S3 故障 / 超过 MAX_LOG_BYTES（异常）」两类结局，此前 bare catch
+      // 一律 null——后者会把 BUG-06 内容并集的 existing 静默置空，fallback
+      // 落库的日志从此缺前几页且日志面零痕迹。best-effort 保留 null 语义
+      // （不炸主链），但异常必须可见：warn 一次（外层 put 失败时还会再 warn
+      // 一次回退原因，两行日志共同定位存储侧故障）。
+      this.logger.warn(
+        `S3 existing log read failed for execution ${executionId} (${err instanceof Error ? err.message : String(err)}) — append fallback may lose prior pages`,
+      );
       return null;
     }
   }
@@ -5155,16 +5225,23 @@ export class TaskService {
    * P2: HTTP 实现收敛至 ExecutorService.notifyExecutorKill（scheduler stale
    * sweep re-enqueue 前的 kill 通知共用，避免两份逻辑）。本包装保留调用点
    * 契约：空地址跳过、异常兜底吞掉。
+   *
+   * P2-3（2026-10-26 第三轮审计）：透传执行行的 executorId（行身份）——pull
+   * 同址多行时 kill 必须按行寻路（进别行命令队列 = 静默 miss，而这是 stale
+   * sweep 防双跑的关键防线）。存量行（迁移 0055 前派发）executorId 为空，
+   * 上层回落 address 寻路 + warn，行为与引入前一致。
    */
   private async notifyExecutorKill(
     executionId: string,
     executorAddress?: string | null,
+    executorId?: string | null,
   ): Promise<void> {
     if (!executorAddress) return;
     try {
       await this.executorService.notifyExecutorKill(
         executionId,
         executorAddress,
+        executorId,
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -5172,6 +5249,68 @@ export class TaskService {
         `Failed to notify executor ${executorAddress} to kill execution ${executionId}: ${message}`,
       );
     }
+  }
+
+  /**
+   * ARTIFACTS-INDEX-46（部署模型评审 §4.6）：终态回调产物清单的关系化同步
+   * （execution_artifacts 表写侧，与 task_executions.artifacts jsonb 双轨）。
+   *
+   * ## 整替语义（幂等 upsert）
+   *
+   * 回调可能重报清单（执行器重试整批、清单随后补齐），唯一键 (executionId,
+   * name) 下「逐条 upsert」会让**上次有、这次没有**的产物残留成幽灵行——与
+   * jsonb 侧「整列覆盖」语义不一致。故这里按执行整替：先 delete 该执行全部
+   * 索引行、再 insert 本批清单。winner 语义（transitionToTerminal affected=1
+   * 才走到这里）保证同一执行至多整替一次；重复回调走 affected=0 分支不会重放。
+   *
+   * ## applicationId 快照
+   *
+   * 冗余自任务行 tasks.applicationId（**写时快照**，非 FK 联动）：任务删除后
+   * 执行行级联消失（taskId CASCADE），索引行随执行行走；应用删除后 FK SET
+   * NULL 保留历史行（见迁移 1790000000065 头注）。任务查不到（已删的极端
+   * 竞态）→ null——按应用查不到它，但按任务/执行维度仍完整。
+   *
+   * ARTIFACTS-INDEX-47（服务层质量巡查·事务边界）：delete+insert 必须在
+   * **同一事务**内。winner 语义（transitionToTerminal affected=1 才走到这里）
+   * 保证同一执行**至多整替一次**——重复回调 affected=0 直接 continue，执行
+   * 已终态化后不会有「下一次上报」补写。若两步写无事务：delete 成功、insert
+   * 失败（连接抖动/约束冲突）时该执行的索引行被清空且**永久丢失**（jsonb
+   * 主轨仍在，GET /artifacts 对该执行从此恒空，直到 90d retention 级联删）。
+   * 包进事务后 best-effort 的前提才真正成立：失败 = 整体没写（原子），
+   * 调用点 warn 不炸主链的语义不变。
+   *
+   * @private 仅由 handleCallback winner 分支调用（调用点已做 best-effort 包裹）。
+   */
+  private async syncArtifactIndexRows(
+    executionId: string,
+    taskId: string,
+    artifacts: Array<{ name: string; size: number; sha256: string }>,
+  ): Promise<void> {
+    if (!this.artifactIndexRepo) return;
+    // applicationId 快照：任务行可能已删（执行行尚在的窗口极窄，但仍要防御）。
+    let applicationId: string | null = null;
+    if (taskId) {
+      const taskRow = await this.taskRepo.findOne({
+        where: { id: taskId },
+        select: ["applicationId"] as never,
+      });
+      applicationId = taskRow?.applicationId ?? null;
+    }
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(ExecutionArtifactRow, { executionId });
+      if (artifacts.length === 0) return;
+      const rows = artifacts.map((a) =>
+        this.artifactIndexRepo!.create({
+          executionId,
+          taskId,
+          applicationId,
+          name: a.name,
+          size: a.size,
+          sha256: a.sha256,
+        }),
+      );
+      await manager.insert(ExecutionArtifactRow, rows);
+    });
   }
 
   async handleCallback(
@@ -5569,6 +5708,39 @@ export class TaskService {
           }
           results.push({ executionId: cb.executionId, success: true });
           continue;
+        }
+
+        // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：产物元数据索引双轨写——
+        // jsonb 清单已随上方 transitionToTerminal patch 落库，这里在**同一
+        // 写点**同步 upsert 关系化新表（execution_artifacts），供
+        // GET /artifacts?applicationId=&taskId= 索引查询。三要点：
+        //  ① 仅 winner 分支执行（重复回调 affected=0 已 continue，天然幂等
+        //    不会重放扇出）；
+        //  ② 整替语义（先 delete 后 insert）：回调重报清单时以最新上报为准
+        //    （与 jsonb 整列覆盖同款语义），唯一 (executionId,name) 不会撞；
+        //  ③ best-effort：新表写失败只 warn 不抛——产物清单本身是 best-effort
+        //    （FEAT-05 头注），索引表缺失行只影响新查询端点的完备性，绝不能
+        //    反过来阻塞终态主链；两侧短暂不一致由下一次上报/TTL 清理收敛。
+        //  ④ 触发条件与 jsonb 写点逐字节同款（非空数组才写）——空清单/缺省
+        //    上报在 jsonb 侧不覆盖旧值，索引侧同样不动，两侧恒同宽。
+        if (
+          this.artifactIndexRepo &&
+          Array.isArray(cb.artifacts) &&
+          cb.artifacts.length > 0
+        ) {
+          try {
+            await this.syncArtifactIndexRows(
+              cb.executionId,
+              execution.taskId,
+              cb.artifacts,
+            );
+          } catch (err: unknown) {
+            this.logger.warn(
+              `ARTIFACTS-INDEX-46: execution ${cb.executionId} 产物索引行同步失败（best-effort，jsonb 主链不受影响）: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
 
         // 可观测性补齐：终态条件 UPDATE 命中（winner）——业务受理计数。
@@ -6107,7 +6279,13 @@ export class TaskService {
     await this.releaseExecutorSlot(executorAddress);
     // 改动5: 通知执行器真正终止进程（best-effort；地址为空则跳过，
     // 任何失败都在 notifyExecutorKill 内被吞掉）。
-    await this.notifyExecutorKill(execId, executorAddress);
+    // P2-3: 透传行身份 execution.executorId（findOne 快照；存量行为 null →
+    // 上层回落 address 寻路）——pull 同址多行时 kill 必须送达正确行。
+    await this.notifyExecutorKill(
+      execId,
+      executorAddress,
+      execution.executorId,
+    );
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };
   }

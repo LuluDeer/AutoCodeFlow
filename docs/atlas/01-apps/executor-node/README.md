@@ -1,5 +1,5 @@
 # executor-node 应用总览（Node.js 执行器）
-> 所属: docs/atlas/01-apps/executor-node · 最后核对: 2026-09-13 · 对应代码: apps/executor-node/src
+> 所属: docs/atlas/01-apps/executor-node · 最后核对: 2026-10-25 · 对应代码: apps/executor-node/src
 
 ## 一句话定位
 
@@ -72,27 +72,46 @@ cmd/bash 提供）；`node` 与 `python` 由**实跑结论**决定——`node` �
 
 ```
 apps/executor-node/src/
-├── main.ts                       启动引导、注册/补注册、优雅停机
-├── config.ts                     全部环境变量集中解析（含 WORK_DIR 大小写不敏感 getter）
+├── main.ts                       启动引导、注册/补注册、pull 模式取件循环、优雅停机
+├── config.ts                     全部环境变量集中解析（WORK_DIR 大小写不敏感 getter；
+│                                 PYPI_REGISTRY_USERNAME/PASSWORD 双键校验，见环境变量表）
 ├── admin-client.ts               多 admin URL 故障转移 + 401 自愈（request/forceTokenRefresh）
-├── admin-envelope.ts             admin {code,message,data} 信封解包 + tokenHash 采纳
-├── admin-api-url.ts              base URL 归一化与 /api 拼接
+├── admin-envelope.ts / admin-api-url.ts / admin-http-agent.ts
+│                                 admin 信封解包 + tokenHash 采纳；base URL 归一化；HTTP agent
 ├── middleware/auth.ts            执行器动态 token 获取/校验（verifyToken 门 + fetchToken）
 ├── execution-callback-token.ts   v1.<executionId>.<expiresAt>.<hmac> 每执行回调令牌（N23）
-├── env-whitelist.ts              子进程环境变量白名单（SEC-01，含 secret 拒传清单）
-├── scheduler.ts                  心跳报文组装（CPU/内存/运行数/活性上报/死信数）
-├── callback.ts                   回调队列、批量发送、指数退避、落盘与死信
+├── env-whitelist.ts / secret-env.ts / redact-url.ts
+│                                 子进程 env 白名单（SEC-01）、secret 注入与 URL 脱敏
+├── scheduler.ts                  心跳报文组装（CPU/内存/运行数/活性上报/死信数；
+│                                 协议 v7 起随心跳上报 deployedApps/installedPackages）
+├── deployed-apps.ts / installed-packages.ts
+│                                 协议 v7 事实源：apps/<appId>/releases/ 扫描（5c 双布局：
+│                                 新 releases/<version>/<deploymentId>/ 两段 + 旧单段识别）
+│                                 与执行器包 manifest 扫描，各带 TTL 缓存（心跳 30s 一拍）
+├── callback.ts / dead-letter-sidecar.ts
+│                                 回调队列/批量/退避/落盘/死信；死信 sidecar 对账重放
 ├── task-worker.ts                按 taskId 串行的 TaskWorker 池 + 空闲回收（5 分钟）
+├── pull.ts                       ARCH-32 pull 模式长轮询取件（25s；E-01 先预留槽位）
 ├── artifacts.ts                  产物收集（≤20 个、单个 ≤100MB）与 PUT 上传
-├── file-logger.ts                workDir/logs/<日期>/<executionId>.log 缓冲写 + TTL 清理
+├── file-logger.ts / log-stream-pusher.ts
+│                                 logs/<日期>/<executionId>.log 缓冲写 + TTL；日志流推送
 ├── manifest.ts                   manifest.yaml/yml 加载与任务字段合并
-├── heartbeat-state.ts / startup-identity.ts  心跳状态与进程生命身份
-├── run-command.ts / safe-path.ts / zip-guard.ts  子进程运行、路径与 zip 安全工具
+├── toolchain.ts / runtime-detection.ts / interpreters.ts / python-venv.ts / python-defaults.ts
+│                                 运行时工具链单一真值源、能力探测（实跑验真）、多版本解释器池与 venv
+├── memory-watchdog.ts / process-rlimits.ts / commands.ts / run-command.ts
+│                                 内存看护、进程 rlimit、命令封装与子进程运行
+├── heartbeat-state.ts / startup-identity.ts / executor-instance-id.ts / device-identity.ts
+│                                 心跳状态、进程生命身份、实例 ID、设备指纹
+├── safe-path.ts / zip-guard.ts / zip-safety.ts / param-env.ts
+│                                 路径与 zip 安全、params→env 注入（A-11R）
+├── lib/ · generated/             内部工具库；executor-protocol 生成的 zod schema
 └── routes/
     ├── execute.ts                POST /execute + POST /executions/:id/kill（核心管线，见 execution-pipeline.md）
     ├── health.ts                 /health /health/live /health/ready
     ├── logs.ts                   GET /logs/:executionId?fromLine=&limit=（≤2000/页）
-    ├── deploy.ts                 应用部署接收（git/zip 包 → 装依赖 → once/daemon/scheduled）
+    ├── deploy.ts                 应用部署接收（git/zip 包 → 装依赖 → once/daemon/scheduled；
+    │                             releases/ 按版本组 prune：KEEP_VERSIONS=3 组、组内全保，
+    │                             EXECUTOR_KEEP_VERSIONS 可调；current 软链切活版本）
     ├── update-package.ts         POST /update-package（下载→SHA-256 校验→解压替换→回调确认）
     └── config.ts                 POST /config/reload 配置热更（含 workDir 安全切换）
 ```
@@ -115,8 +134,11 @@ apps/executor-node/src/
 | `HEARTBEAT_INTERVAL_SECONDS` | `30` | 心跳间隔 |
 | `LOG_RETENTION_DAYS` | `7` | 日志/工作目录/死信 TTL |
 | `NPM_REGISTRY_URL` | 空 | 任务 npm 依赖私服（写入临时 .npmrc） |
-| `NPM_REGISTRY_TOKEN` | 空 | 私服 `_authToken`（永不进子进程 env、不打日志） |
-| `PYTHON_REGISTRY_URL` | 空 | 仅 deploy.ts 的 pip 安装使用 |
+| `NPM_REGISTRY_TOKEN` | 空 | 私服 `_authToken`（Bearer，永不进子进程 env、不打日志） |
+| `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | 私服 Basic 凭据（`_auth` 行，N-1：与 token 二者配一即可，token 优先；compose 缺省回落 `REGISTRY_USER`/`REGISTRY_PASS`） |
+| `PYTHON_REGISTRY_URL` | 空 | deploy.ts 的 pip 安装索引（旧别名，PYPI_REGISTRY_URL 优先） |
+| `PYPI_REGISTRY_URL` / `PYPI_EXTRA_INDEX_URL` | 空 | 私有 PyPI 源 / 附加索引（对齐 python 侧命名；留空 pypi.org） |
+| `PYPI_REGISTRY_USERNAME` / `PYPI_REGISTRY_PASSWORD` | 空 | **P1（2026-10-25）netrc 凭据通道**：两键必须同时配置且至少一索引已设，否则启动告警。凭据写成 0600 netrc 文件，仅以 `NETRC` env 键注入 uv/pip install 子进程——不进 argv/日志/URL userinfo/主进程环境；宿主 `NETRC` 不穿透（测试钉住）。node/python 同语义注入（node 挂 uv 池目录）。留空 = 无凭据通道（私有源匿名 401，与历史一致） |
 | `REQUIRE_TOKEN` | 空 | `true` 时无 token 则拒绝 /api/*（默认 dev 放行） |
 | `LOG_LEVEL` | `info` | winston 级别 |
 

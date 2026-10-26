@@ -1,7 +1,7 @@
 # MCP 工具地图（56 个）
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-23 · 对应代码: packages/mcp-server/src（tools.ts 注册 **56** 个 server.tool，9 个 register*Tools；index.ts 入口）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-25 · 对应代码: packages/mcp-server/src（tools.ts 注册 **56** 个 server.tool，9 个 register*Tools；index.ts 入口）
 >
-> 数量由 `scripts/check-mcp-tools-doc.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 56 个，漏了 16 个）。
+> 数量由 `scripts/check-interface-maps.mjs` 守护：源码注册的工具名必须逐个出现在本页，缺一即红。**手写枚举必然单向腐烂**（本页曾停留在 40 个，实际 56 个，漏了 16 个）。
 
 ## 怎么连
 
@@ -78,7 +78,7 @@ acf config show                                    # 打印配置文件路径
 | list_tasks | page/pageSize/status/name | 任务列表（GET /tasks） |
 | get_task | taskId | 任务详情（GET /tasks/:id） |
 | trigger_task | taskId, params? | 立即触发并返回 executionId（POST /tasks/:id/trigger）；不支持 per-run 钉扎（DTO 白名单 400） |
-| update_task | taskId + 任务字段… | PATCH 更新；`executorId` 钉扎/置 null 清除；与 `executeMode="broadcast"` 互斥 400 |
+| update_task | taskId + 任务字段…（2026-10-25 MCP-DTO-ALIGN 对齐 UpdateTaskDto，新增 15 字段：secrets / maintenanceWindows / priority / timeout / timeoutSeconds / timeoutAction / timeoutWarnRatio / estimatedDurationSec / requirements / dependencies / blockStrategy / misfireStrategy / executorAffinity(Anti)Tags / deploymentPolicy / expectedUpdatedAt） | PATCH 更新；`executorId` 钉扎/置 null 清除；与 `executeMode="broadcast"` 互斥 400；secrets 逐键合并（叶子 `"******"` 保留存量、null 删键，键名规则复述会被拒）；priority 1-4；expectedUpdatedAt 乐观锁（冲突 409 → get_task 重取重试） |
 | list_task_versions | taskId | 配置版本历史（GET /tasks/:id/versions） |
 | rollback_task_version | taskId, versionId | 版本回滚（POST …/rollback） |
 | compare_task_versions | taskId, v1, v2 | 版本字段级 diff |

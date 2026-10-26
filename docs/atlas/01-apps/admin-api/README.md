@@ -1,6 +1,6 @@
 # admin-api 应用总览
 
-> 所属: docs/atlas/01-apps/admin-api · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src
+> 所属: docs/atlas/01-apps/admin-api · 最后核对: 2026-10-25 · 对应代码: apps/admin-api/src
 
 ## 一句话定位
 
@@ -21,7 +21,7 @@ admin-api 是 AutoCodeFlow 的 **NestJS 后端单体服务**：承载管理台�
 | 指标 | prom-client | ^15.1.3 |
 | 定时任务 | @nestjs/schedule | ^6.1.3 |
 | 安全 | helmet | ^8.2.0 |
-| 其他 | minio（产物 S3）、nodemailer（邮件）、axios | ^8.0.7 / ^9.0.5 / ^1.17.0 |
+| 其他 | minio（S3 日志对象存储，task 模块 log-storage）、nodemailer（邮件）、axios | ^8.0.7 / ^9.0.5 / ^1.17.0 |
 | 语言 | typescript | ^5.1.3 |
 
 常用命令（apps/admin-api 下）：`npm run start:dev`（watch 启动）、`npm run build`、`npm run start:prod`（`node dist/main`）、`npm run migration:run|revert|generate`（走 `src/data-source.ts`）、`npm run typecheck`、`npm run test`、`npm run test:e2e`。
@@ -61,7 +61,7 @@ main.ts
 | `app.module.ts` | 模块装配中心：全部 env 的 Joi schema、DB/Redis/限流注册、全局 guard 注册 |
 | `common/` | 跨模块横切件：decorators（`@Public()`/`@Roles()`/`@CurrentUser()`）、guards（jwt-auth、roles）、interceptors（response/timeout）、filters、middleware（trace-id、upload-auth）、services（domain-event-bus、redis-lock）、tracing（OpenTelemetry）、utils |
 | `config/` | `configuration.ts`（配置树唯一来源 + `buildTypeOrmDataSourceOptions`）、`env.ts`（`getEnvVar`，供装饰器求值期/迁移 CLI 读取）、`throttle-profiles.ts`（AUTH_THROTTLE/OPS_THROTTLE 限流档） |
-| `migrations/` | **106** 个 TypeORM 迁移（`1717473142678-InitialSchema` 起，`1790000000061-AddExecutorIdToExecutorMetricsHistory` 止）+ `migrations.spec.ts` 守护测试（数量与首尾由 `scripts/check-atlas-counts.mjs` 守护） |
+| `migrations/` | **111** 个 TypeORM 迁移（`1717473142678-InitialSchema` 起，`1790000000066-AddExecutorAppVersionTimestamps` 止：62-66 为部署模型评审 R3/R4/§4.6 与 R3 时间戳缺口收口）+ `migrations.spec.ts` 守护测试（数量与首尾由 `scripts/check-atlas-counts.mjs` 守护） |
 | `data-source.ts` | 仅供 migration CLI 使用的独立 DataSource（不经 NestDI，经 `getEnvVar` 读 env） |
 | `modules/` | 业务模块，见下表 |
 | `__tests__/`、`@types/` | 进程级 spec（如 main-env-preload.spec.ts）与类型声明 |
@@ -83,7 +83,7 @@ main.ts
 | scheduler | Cron 调度器（BullMQ 入队、调度指标） | [调度模块](modules/scheduler.md) |
 | executor | 执行器注册/心跳/管理（`/executors`） | [执行器模块](modules/executor.md) |
 | executor-package | 执行器安装包分发（`/executor-packages`） | [executor-package.md](modules/executor-package.md) |
-| artifacts | 执行产物存储与下载（MinIO/S3） | [产物模块](modules/artifacts.md) |
+| artifacts | 执行产物存储/下载 + ARTIFACTS-INDEX-46 索引查询面（本地盘 `uploads/artifacts`；MinIO/S3 对象存储只用于 task 模块日志通道，见 [task 模块](modules/task.md)） | [产物模块](modules/artifacts.md) |
 | notification | 通知渠道配置 + 告警入口（`/notification`、`/alerts`） | [通知模块](modules/notification.md) |
 | ai | AI 辅助（脚本生成/失败分析，OpenAI/Ollama） | [AI 模块](modules/ai.md) |
 | task-template | 任务模板（`/task-templates`） | [任务模板模块](modules/task-template.md) |

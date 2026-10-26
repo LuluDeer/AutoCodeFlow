@@ -44,7 +44,7 @@
 | 环节 | 锚点 | 语义 |
 |---|---|---|
 | 路由 | `apps/admin-api/src/modules/executor/executor.controller.ts`（register/heartbeat/token/offline 均 `@Public()`，处理器内自行验签） | 机器面独立于人面 JWT |
-| 注册幂等键 | `executor.service.ts` `register()`：**ADR-017 阶段 3 起先按 `deviceFingerprint` 定位行**（稳定安装身份），`address` 兜底（legacy 执行器/采集失败）；命中即复用原行并更新 `address`（换 IP = 同机换地址，不产生新行）。进程生命身份 `(startupId)` 用于 token 幂等（N4） | 同 `(指纹,startupId)` 重注册不轮换 token；同地址不同指纹按派发模式分叉（push 409 / pull 各自成行） |
+| 注册幂等键 | `executor.service.ts` `register()`：**ADR-017 阶段 3 起先按 `deviceFingerprint` 定位行**（稳定安装身份），`address` 兜底（legacy 执行器/采集失败）；命中即复用原行并更新 `address`（换 IP = 同机换地址，不产生新行）。进程生命身份 `(startupId)` 用于 token 幂等（N4） | 同 `(指纹,startupId)` 重注册不轮换 token；同地址不同指纹按派发模式分叉（push 409 / pull 各自成行；**push 409 的接管例外**：占位行已被 sweep 判 OFFLINE 且静默超 `EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS`（缺省 5min，`executor.addressTakeoverSilenceMs` 可覆盖）时，视为前一轮安装已遗弃该地址，允许新指纹接管复用该行——`canTakeOverAbandonedAddressRow`，P1-A 2026-10-25 容器重建指纹漂移死锁修复；判活行（ONLINE，或 OFFLINE 但静默未超窗）维持 409） |
 | 重启检测 | `hasExecutorRestarted`（比较 `restartedAt`/`executorStartupId` 基线） | 命中即 `failRunningExecutionsAfterRestart`（终态化 RUNNING 执行 + 释放槽位 + 按预算重试）。**ADR-017 阶段 3 起匹配维度优先按行身份 `executorId`**（存量执行行 `executorId IS NULL` 时回落 `executorAddress`，行为与引入前一致）——地址在同址多行并存时不再唯一，纯按地址会把**另一台机器正在跑的健康执行**误判成 `EXECUTOR_RESTART` |
 | 字段白名单 | `executor.service.ts:488` 附近 F-7 注释块 | `repo.create` 显式字段——caller 永远写不了 `id/tokenHash/status/runningTaskCount/version` |
 | 令牌轮换 | `executor.service.ts:1556` `rotateToken()` | `randomBytes(32).toString("hex")`，bcrypt cost 12 存 `tokenHash`（select:false 列），明文只在响应出现一次 |
@@ -67,7 +67,7 @@
 | `deadLetterCount` | — | 回调死信积压观测 |
 | `maxConcurrentTasks` | — | 容量热更（仅 node，1..10000） |
 | `startupId`/`restartedAt` | — | 重启检测基线 |
-| `deviceFingerprint` | —（协议 v3 起建议发） | **ADR-017 阶段 3 起是注册/心跳的行定位键**：`sha256(deviceId:installSalt)` 64 位小写十六进制。命中即复用原行 + 更新 address（换 IP 不产生幽灵行）。缺省/非法 → 走 legacy（`legacy:{address}` 兜底键），行为与引入前一致；同地址不同指纹按派发模式分叉（push 409 / pull 各自成行） |
+| `deviceFingerprint` | —（协议 v3 起建议发） | **ADR-017 阶段 3 起是注册/心跳的行定位键**：`sha256(deviceId:installSalt)` 64 位小写十六进制。命中即复用原行 + 更新 address（换 IP 不产生幽灵行）。缺省/非法 → 走 legacy（`legacy:{address}` 兜底键），行为与引入前一致；同地址不同指纹按派发模式分叉（push 409 / pull 各自成行；**push 409 的接管例外**：占位行已被 sweep 判 OFFLINE 且静默超 `EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS`（缺省 5min，`executor.addressTakeoverSilenceMs` 可覆盖）时，视为前一轮安装已遗弃该地址，允许新指纹接管复用该行——`canTakeOverAbandonedAddressRow`，P1-A 2026-10-25 容器重建指纹漂移死锁修复；判活行（ONLINE，或 OFFLINE 但静默未超窗）维持 409） |
 
 ### 回调面的行身份（协议 v6，ADR-017 阶段 3 方案 C）
 

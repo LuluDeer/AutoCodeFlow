@@ -1028,20 +1028,41 @@ describe("ExecutorController", () => {
       expect(svc.register).not.toHaveBeenCalled();
     });
 
-    it("defaults appName to 'executor' when the body omits it", async () => {
+    // E-6（2026-10-26 执行器域审计）：缺 appName 不再兜底 "executor"——那会让
+    // 持有共享令牌的调用方反复以不同 address 制造无主行。旧用例
+    // 「defaults appName to 'executor'」随该收紧淘汰，改钉新契约：400
+    // EXECUTOR_TOKEN_APP_NAME_REQUIRED 且不触达 service。仓内三个执行器来源
+    // （node auth.ts / python auth.py / install.sh APP_NAME）恒带非空 appName，
+    // 收紧无存量兼容风险。
+    it("rejects a body without appName with 400 EXECUTOR_TOKEN_APP_NAME_REQUIRED (E-6: no silent 'executor' rows)", async () => {
       const svc = makeSvc();
       const controller = makeController(svc);
 
-      await controller.getToken(
-        { address: "10.0.0.9:3002" },
-        "Bearer shared-secret",
-      );
-
-      expect(svc.issueToken).toHaveBeenCalledWith({
-        address: "10.0.0.9:3002",
-        appName: "executor",
-        startupId: undefined,
+      await expect(
+        controller.getToken(
+          { address: "10.0.0.9:3002" },
+          "Bearer shared-secret",
+        ),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_TOKEN_APP_NAME_REQUIRED",
       });
+      expect(svc.issueToken).not.toHaveBeenCalled();
+      expect(svc.register).not.toHaveBeenCalled();
+    });
+
+    it("rejects a blank/whitespace appName the same way (E-6)", async () => {
+      const svc = makeSvc();
+      const controller = makeController(svc);
+
+      await expect(
+        controller.getToken(
+          { address: "10.0.0.9:3002", appName: "   " },
+          "Bearer shared-secret",
+        ),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_TOKEN_APP_NAME_REQUIRED",
+      });
+      expect(svc.issueToken).not.toHaveBeenCalled();
     });
 
     it("rejects a wrong shared token with 401 before issuing anything", async () => {
@@ -1270,6 +1291,8 @@ describe("ExecutorController", () => {
         });
         expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
           wantTask: true,
+          // P3-1：断连探针随 opts 下沉到取件循环。
+          isConnected: expect.any(Function),
         });
       });
 
@@ -1334,6 +1357,7 @@ describe("ExecutorController", () => {
 
         expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
           wantTask: false,
+          isConnected: expect.any(Function),
         });
         // 命令照常下发——这正是「满载时仍可运维」的关键
         expect(result.commands).toEqual([{ commandId: "c1" }]);
@@ -1355,6 +1379,8 @@ describe("ExecutorController", () => {
 
         expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
           wantTask: true,
+          // P3-1：断连探针随 opts 下沉到取件循环。
+          isConnected: expect.any(Function),
         });
       });
 
@@ -1377,7 +1403,45 @@ describe("ExecutorController", () => {
 
         expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
           wantTask: true,
+          // P3-1：断连探针随 opts 下沉到取件循环。
+          isConnected: expect.any(Function),
         });
+      });
+
+      // P3-2（2026-10-26 第三轮审计）：executor.pullWaitMs 是运维可调配置，
+      // 仅按它钳位时一个 >60s 的配置会打穿反代 60s 读超时。硬帽 55s 兜底。
+      it("P3-2：配置超 55s 时仍被硬帽钳到 55000（不打穿反代读超时）", async () => {
+        const svc = makeSvc("pull");
+        const pullService = {
+          pullWork: jest.fn().mockResolvedValue({ task: null, commands: [] }),
+        };
+        const controller = new ExecutorController(
+          svc as any,
+          // 配置 pullWaitMs=120000（>60s）——旧实现会把长轮询窗口放大到 120s。
+          { get: jest.fn().mockReturnValue("120000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        // 显式上报大窗口与缺省（取配置值）两条路径都必须落在 55s 硬帽内。
+        await controller.pullDispatch(
+          { address: "nat:9999", waitMs: 120_000 },
+          "Bearer token",
+        );
+        await controller.pullDispatch({ address: "nat:9999" }, "Bearer token");
+
+        expect(pullService.pullWork).toHaveBeenNthCalledWith(
+          1,
+          "e-pull",
+          55_000,
+          { wantTask: true, isConnected: expect.any(Function) },
+        );
+        expect(pullService.pullWork).toHaveBeenNthCalledWith(
+          2,
+          "e-pull",
+          55_000,
+          { wantTask: true, isConnected: expect.any(Function) },
+        );
       });
 
       it("push 执行器轮询：返回空载荷且不触队列", async () => {
@@ -1520,9 +1584,21 @@ describe("ExecutorController", () => {
   // 部署域订阅收口（秒级）。执行器上报里只有 commandId，部署行 id 来自
   // 入队时记的旁路元数据（acf:cmdmeta:{id}）。
   describe("reportCommandResult — P0-4 失败回执推进部署行", () => {
-    const makeController = (over: { svc?: any; pull?: any } = {}) => {
+    const makeController = (
+      over: { svc?: any; pull?: any; reporterRow?: { id: string } | null } = {},
+    ) => {
       const svc = {
-        validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        // P2-4：认证与行定位一次成型——authenticateMachineRequest 是
+        // validateTokenByAddress 的超集（auth 判定语义一致，额外返回回报行）。
+        authenticateMachineRequest: jest.fn().mockResolvedValue({
+          ok: true,
+          executor:
+            over.reporterRow === undefined
+              ? { id: "exec-row-1" }
+              : over.reporterRow,
+          via: "per-executor",
+          resolvedBy: "fingerprint",
+        }),
         publishControlCommandFailure: jest.fn(),
         ...over.svc,
       };
@@ -1595,9 +1671,101 @@ describe("ExecutorController", () => {
         "Bearer token-1",
       );
 
-      // 成功路径连元数据都不需要查（省一次 Redis 往返）。
-      expect(pullService.getCommandMeta).not.toHaveBeenCalled();
+      // P2-4：归属比对让成功路径也要查一次 meta（伪造 ok=true 同样必须验
+      // 归属）；但失败事件仍只对失败路径发布。
+      expect(pullService.getCommandMeta).toHaveBeenCalledTimes(1);
       expect(svc.publishControlCommandFailure).not.toHaveBeenCalled();
+    });
+
+    // P2-4（纵深缺口收口）：任意执行器可对任意 commandId 回报的缺口在此关上。
+    it("P2-4：跨行回报（meta.executorId ≠ 回报行）→ 403 拒绝且不入账", async () => {
+      const { controller, svc, pullService } = makeController({
+        // 回报行 exec-row-1，命令目标行 exec-row-2 → 不匹配。
+        pull: {
+          getCommandMeta: jest.fn().mockResolvedValue({
+            type: "deploy",
+            deploymentId: "deploy-1",
+            appId: "app-1",
+            executorId: "exec-row-2",
+          }),
+        },
+      });
+
+      await expect(
+        controller.reportCommandResult(
+          {
+            commandId: "cmd-5",
+            address: "exec.local:8002",
+            type: "deploy",
+            ok: false,
+            error: "forged",
+          },
+          "Bearer token-1",
+        ),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_COMMAND_RESULT_NOT_OWNED",
+      });
+
+      // 拒绝必须发生在入账/事件之前——不能留下伪造的失败痕迹。
+      expect(pullService.recordCommandResult).not.toHaveBeenCalled();
+      expect(svc.publishControlCommandFailure).not.toHaveBeenCalled();
+    });
+
+    it("P2-4：同址多行歧义（回报行无法定位）且 meta 有目标 → fail-closed 拒绝", async () => {
+      const { controller, pullService } = makeController({
+        reporterRow: null, // 共享令牌 + 同址多行歧义态
+        pull: {
+          getCommandMeta: jest.fn().mockResolvedValue({
+            type: "deploy",
+            deploymentId: "deploy-1",
+            appId: null,
+            executorId: "exec-row-2",
+          }),
+        },
+      });
+
+      await expect(
+        controller.reportCommandResult(
+          {
+            commandId: "cmd-6",
+            address: "exec.local:8002",
+            type: "deploy",
+            ok: true,
+          },
+          "Bearer token-1",
+        ),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_COMMAND_RESULT_NOT_OWNED",
+      });
+      expect(pullService.recordCommandResult).not.toHaveBeenCalled();
+    });
+
+    it("P2-4：meta 带目标且与回报行一致 → 正常入账（归属比对不误伤）", async () => {
+      const { controller, svc, pullService } = makeController({
+        pull: {
+          getCommandMeta: jest.fn().mockResolvedValue({
+            type: "deploy",
+            deploymentId: "deploy-1",
+            appId: "app-1",
+            executorId: "exec-row-1",
+          }),
+        },
+      });
+
+      await expect(
+        controller.reportCommandResult(
+          {
+            commandId: "cmd-7",
+            address: "exec.local:8002",
+            type: "deploy",
+            ok: false,
+            error: "real failure",
+          },
+          "Bearer token-1",
+        ),
+      ).resolves.toEqual({ ok: true });
+      expect(pullService.recordCommandResult).toHaveBeenCalledTimes(1);
+      expect(svc.publishControlCommandFailure).toHaveBeenCalledTimes(1);
     });
 
     it("非 deploy 命令（app-stop）失败不发部署事件", async () => {

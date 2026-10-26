@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Table,
   Button,
   Tag,
@@ -9,6 +9,7 @@ import { Table,
   Badge,
   Tooltip,
   Alert,
+  Checkbox,
   Empty,
   Popconfirm,
   Form,
@@ -39,6 +40,8 @@ import { copyText } from '../utils/clipboard';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import StateError from '../components/StateError';
+// UI-08：首屏数据未达时以骨架形态替代裸 spinner（见下方列表分支）
+import PageSkeleton from '../components/PageSkeleton';
 import { useAuthStore } from '../store/auth';
 
 const { Text } = Typography;
@@ -148,7 +151,14 @@ function DeployStatusMessage({ text }: { text: string }) {
     </div>
   );
 }
-export default function AppDeploymentPage({ applicationId }: { applicationId: string }) {
+export default function AppDeploymentPage({
+  applicationId,
+  appEntrypoint,
+}: {
+  applicationId: string;
+  /** A-4 披露：应用当前 entrypoint（升级会把它推给设备并重置行上 startCommand 快照） */
+  appEntrypoint?: string;
+}) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：分隔线/浅填充走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
@@ -175,6 +185,9 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   // P1-9：全部升级的灰度策略选择（Popconfirm 装不下 Radio，改 Modal）
   const [rolloutModalOpen, setRolloutModalOpen] = useState(false);
   const [rolloutStrategy, setRolloutStrategy] = useState<'full' | 'canary'>('full');
+  // R2（部署模型评审 §4.4）：stopped 显式 opt-in（默认关——stopped 可能是人为
+  // 停用；仅 full 策略生效，canary 健康探测需要活进程不扩覆盖）。
+  const [rolloutIncludeStopped, setRolloutIncludeStopped] = useState(false);
   const [deployForm] = Form.useForm();
   // R5 RBAC：安装向导为 ADMIN-only，普通用户隐藏入口
   // W3：部署写面（deploy/stop/upgrade/upgrade-all）后端已 @Roles(ADMIN)，按钮级禁用
@@ -399,10 +412,59 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     }
   };
 
+  // R2（部署模型评审 §4.4）：升级所有的前置统计从「runningCount===0 拦截」改为
+  // 按部署行状态分组如实计数。后端实证口径：scheduled「仅部署」行部署完成即
+  // 上报 running，稳态就是 RUNNING——默认覆盖 = 运行 + 仅部署；stopped 显式
+  // opt-in；在途行（pending/deploying/upgrading）不可重入、服务端跳过并明细回显。
+  const coverageStats = useMemo(() => {
+    const running = deployments.filter((d) => d.status === 'running');
+    return {
+      running: running.filter((d) => d.runMode !== 'scheduled').length,
+      scheduled: running.filter((d) => d.runMode === 'scheduled').length,
+      stopped: deployments.filter((d) => d.status === 'stopped').length,
+      inFlight: deployments.filter((d) =>
+        d.status === 'pending' || d.status === 'deploying' || d.status === 'upgrading',
+      ).length,
+    };
+  }, [deployments]);
+
+  // 弹窗内「将覆盖 M 台设备（运行 X + 仅部署 Y…）」的分组文案素材。
+  // A-4 披露口径：升级推送的 entrypoint = 当前 app.entrypoint，行上与它不同的
+  // startCommand（部署时自定义的启动命令）会被重置——这些行必须被点名。
+  const customStartCommandRows = deployments.filter(
+    (d) => !!d.startCommand && appEntrypoint !== undefined && d.startCommand !== appEntrypoint,
+  );
+  const rolloutWillIncludeStopped = rolloutStrategy === 'full' && rolloutIncludeStopped;
+  const rolloutCovered =
+    coverageStats.running +
+    coverageStats.scheduled +
+    (rolloutWillIncludeStopped ? coverageStats.stopped : 0);
+  const rolloutCoverageParts = [
+    t('appDeploy.rollout.coverageRunning', { count: coverageStats.running }),
+    t('appDeploy.rollout.coverageScheduled', { count: coverageStats.scheduled }),
+    ...(rolloutWillIncludeStopped
+      ? [t('appDeploy.rollout.coverageStopped', { count: coverageStats.stopped })]
+      : []),
+  ];
+
   const handleUpgradeAll = async (strategy: 'full' | 'canary') => {
-    const runningCount = deployments.filter(d => d.status === 'running').length;
-    if (runningCount === 0) {
-      message.warning(t('appDeploy.msg.noRunningUpgrade'));
+    // 前置判断按分组覆盖面：运行 + 仅部署为默认覆盖；stopped 仅在 full 策略
+    // 且勾选后纳入（canary 不扩——健康探测需要活进程）。
+    const includeStopped = strategy === 'full' && rolloutIncludeStopped;
+    const covered =
+      coverageStats.running +
+      coverageStats.scheduled +
+      (includeStopped ? coverageStats.stopped : 0);
+    if (covered === 0) {
+      // 旧实现只看 runningCount===0：stopped-only / 全在途场景下这句提示撒谎。
+      // 改为如实摆出各组计数并指引用户（勾选包含已停止 / 等在途完成）。
+      message.warning(
+        t('appDeploy.msg.nothingToUpgrade', {
+          stopped: coverageStats.stopped,
+          inFlight: coverageStats.inFlight,
+        }),
+        8,
+      );
       return;
     }
     setUpgradingAll(true);
@@ -411,6 +473,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       const result = await applicationsApi.upgradeAll(
         applicationId,
         strategy === 'canary' ? { strategy: 'canary', percentage: 20 } : undefined,
+        includeStopped || undefined,
       );
       // A-8：灰度被互斥拒绝（同应用已有在途批次等）时后端返回 200 + ok:false +
       // rollout.blockedReason——旧实现不看 ok 恒报 success，用户以为灰度已启动。
@@ -422,6 +485,28 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         );
       } else {
         message.success(t('appDeploy.msg.upgradeAllDone', { succeeded: result.succeeded, total: result.total }));
+        // R2 §4.4：skipped 非空（在途行被服务端跳过）时如实列明细——不能让
+        // success 文案掩盖「这几台没被升级」。
+        const skipped = result.skipped ?? [];
+        if (skipped.length > 0) {
+          // 字面量 t() 分支（skipReasonText 同款风格）——不落动态键基线。
+          const detail = skipped
+            .map((s) =>
+              s.reason === 'awaiting_approval'
+                ? `${shortExecutorRowId(s.deploymentId)} ${t('appDeploy.skipReason.awaitingApproval')}`
+                : `${shortExecutorRowId(s.deploymentId)} ${t('appDeploy.skipReason.inFlight', { status: s.status })}`,
+            )
+            .join('；');
+          message.warning(
+            t('appDeploy.msg.upgradeAllSkipped', { count: skipped.length, detail }),
+            8,
+          );
+        } else if (!includeStopped && (result.coverage?.stopped ?? 0) > 0) {
+          // 未勾选包含已停止且确实存在 stopped 设备——明示它们不在本次覆盖内。
+          message.info(
+            t('appDeploy.msg.upgradeAllStoppedHint', { count: result.coverage?.stopped ?? 0 }),
+          );
+        }
       }
       scheduleDelayedRefresh(2000);
       setRolloutModalOpen(false);
@@ -714,14 +799,16 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         </Space>
         <Space>
           <Button icon={<ReloadOutlined />} size="small" onClick={fetchAll}>{t('appDeploy.action.refresh')}</Button>
-          {deployments.filter(d => d.status === 'running').length > 0 && (
+          {/* R2 §4.4：入口放宽为「存在可覆盖或可 opt-in 的行」——stopped-only 的
+              应用也能从弹窗勾选「包含已停止」走升级；全在途/无部署行仍隐藏。 */}
+          {deployments.some((d) => d.status === 'running' || d.status === 'stopped') && (
             <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyUpgrade')}>
               {/* P1-9：灰度策略需 Radio 选择，Popconfirm 装不下——改开策略 Modal */}
               <Button
                 icon={<UpCircleOutlined />}
                 size="small"
                 disabled={!isAdmin}
-                onClick={() => { setRolloutStrategy('full'); setRolloutModalOpen(true); }}
+                onClick={() => { setRolloutStrategy('full'); setRolloutIncludeStopped(false); setRolloutModalOpen(true); }}
               >
                 {t('appDeploy.action.upgradeAll')}
               </Button>
@@ -773,7 +860,13 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         />
       ) : null}
 
-      {deployments.length === 0 && !loading && !loadError ? (
+      {/* UI-08：首屏（数据未达、未出错、加载中）以骨架替代空态/表格——此前首帧
+          列表区无任何反馈（仅 Table 内建 spinner 或空白），与全站列表页骨架形态
+          不一致。数据到达后（含 3s 轮询拍，后台拍不置 loading）不再进此分支，
+          空态/错误态语义不变。 */}
+      {loading && loadError === null && deployments.length === 0 ? (
+        <PageSkeleton variant="table" rows={6} />
+      ) : deployments.length === 0 && !loading && !loadError ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={t('appDeploy.empty')}
@@ -924,6 +1017,30 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
           {t('appDeploy.op.upgradeAllDesc')}
         </Text>
+        {/* R2 §4.4：覆盖面如实前置——「将覆盖 M 台设备（运行 X + 仅部署 Y…）」。
+            默认覆盖 = 运行中 + 仅部署（scheduled 实证稳态即 RUNNING）；stopped
+            仅勾选后计入；canary 不扩覆盖（健康探测需要活进程）。 */}
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
+          {t('appDeploy.rollout.coverageLead', { count: rolloutCovered })}
+          {rolloutCoverageParts.join(' + ')}
+        </Text>
+        {/* A-4 披露（部署模型评审 §9.3-2 收口）：升级推送的 entrypoint 即当前
+            app.entrypoint，部署时自定义过启动命令的行会被重置为新 entrypoint
+            ——不披露则用户以为自定义命令仍在生效。 */}
+        {customStartCommandRows.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={t('appDeploy.rollout.startCommandReset.title', { count: customStartCommandRows.length })}
+            description={t('appDeploy.rollout.startCommandReset.desc', {
+              entrypoint: appEntrypoint ?? '—',
+              detail: customStartCommandRows
+                .map((r) => shortExecutorRowId(r.id) + ': ' + r.startCommand)
+                .join('；'),
+            })}
+          />
+        )}
         <Radio.Group
           value={rolloutStrategy}
           onChange={(e) => setRolloutStrategy(e.target.value)}
@@ -942,6 +1059,18 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             </Text>
           </Radio>
         </Radio.Group>
+        {rolloutStrategy === 'full' && (
+          <Checkbox
+            checked={rolloutIncludeStopped}
+            onChange={(e) => setRolloutIncludeStopped(e.target.checked)}
+            style={{ marginTop: 12 }}
+          >
+            {t('appDeploy.rollout.includeStopped')}
+            <Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>
+              {t('appDeploy.rollout.includeStoppedHint')}
+            </Text>
+          </Checkbox>
+        )}
       </Modal>
     </div>
   );

@@ -40,9 +40,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * **刻意不提供反向**：up 之后无法区分「本条迁移开的」与「用户自己开的」，
  * 任何 down 都会把用户后来主动打开的渠道一起关掉。回滚请用管理台按渠道操作（可见、可审计）。
  */
-export class EnableConfiguredNotificationChannels1790000000059
-  implements MigrationInterface
-{
+export class EnableConfiguredNotificationChannels1790000000059 implements MigrationInterface {
   name = "EnableConfiguredNotificationChannels1790000000059";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

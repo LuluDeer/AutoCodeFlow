@@ -6,6 +6,8 @@ import LogLineList from '../components/LogLineList';
 import ConfirmBar from '../components/ConfirmBar';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from '../../main/agent-status-view';
 import { requestTabSwitch } from '../tab-switch';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
 // V4 后续优化（6）i18n 二期：状态页文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
 // PLAN-EXECUTOR-DESKTOP-UX 2.1：并发饱和度是纯算术（除零/NaN/超额/阈值配色
@@ -66,6 +68,10 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
   // 复制走主进程 Electron clipboard（非安全上下文/权限受限时 navigator.clipboard
   // 会 reject 甚至为 undefined）；成功/失败都给用户明确反馈。
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
+  // P3-3：失败原因文案——超 1MiB（preload 诚实拒绝 error:'tooLarge'）与
+  // 一般失败分开表述。
+  const [errorKind, setErrorKind] = useState<'generic' | 'tooLarge'>('generic');
+  const copyErrorText = errorKind === 'tooLarge' ? t('status.copyTooLarge') : t('status.copyFailed');
   useEffect(() => {
     if (state === 'idle') return;
     const timer = setTimeout(() => setState('idle'), 1500);
@@ -75,8 +81,18 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
     if (!value || value === '—') return;
     window.electronAPI
       .writeClipboardText(value)
-      .then((r) => setState(r?.ok === false ? 'error' : 'copied'))
-      .catch(() => setState('error'));
+      .then((r) => {
+        if (r?.ok === false) {
+          setErrorKind(r?.error === 'tooLarge' ? 'tooLarge' : 'generic');
+          setState('error');
+        } else {
+          setState('copied');
+        }
+      })
+      .catch(() => {
+        setErrorKind('generic');
+        setState('error');
+      });
   }
   return (
     <div className="copy-row">
@@ -85,8 +101,11 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
         <button
           className={`copy-btn${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
           onClick={copy}
+          // P3-3：复制失败（IPC reject / 内容超 1MiB 被拒绝）时给出原因——
+          // 假「已复制」比失败更伤信任（超长值此前被归一为空串仍报成功）。
+          title={state === 'error' ? copyErrorText : undefined}
         >
-          {state === 'copied' ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></> : state === 'error' ? t('status.copyFailed') : t('status.copy')}
+          {state === 'copied' ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></> : state === 'error' ? copyErrorText : t('status.copy')}
         </button>
       )}
     </div>
@@ -231,29 +250,34 @@ function LogFilesPanel() {
   const [fileQuery, setFileQuery] = useState('');
   const [logFiles, setLogFiles] = useState<Array<{ label: string; path: string; date: string }>>([]);
   const [fileError, setFileError] = useState<string | null>(null);
+  // F-32（UIUX 审计）：列表读取失败态——此前失败静默置空列表、面板顶着
+  // 「暂无日志文件」冒充正常。错误如实呈现 + 重试入口（对齐 History/Apps）。
+  const [filesLoadError, setFilesLoadError] = useState<string | null>(null);
 
   // 加载日志文件列表
-  useEffect(() => {
+  const loadFiles = useCallback(() => {
     // EXP-09（本轮体验审查）：此前是 `listLogFiles().then(setLogFiles)`——
     // 既无 .catch 也无 `typeof === 'function'` 守卫。旧版 preload 未暴露该方法
     // 时这里会**同步抛 TypeError** → React 卸载整棵树 → 窗口只剩背景色（正是
     // preload/index.ts:40-42 记录过的那次事故形态）。同仓 ConfigPage.tsx:93 已
     // 为同类情形写了 typeof 守卫，此处对齐。
     if (typeof window.electronAPI.listLogFiles !== 'function') return;
-    let cancelled = false;
+    setFilesLoadError(null);
     window.electronAPI
       .listLogFiles()
       .then((files) => {
-        if (!cancelled) setLogFiles(files);
+        setLogFiles(files);
       })
       .catch(() => {
-        // 读取失败时保持空列表（面板显示「暂无日志文件」），不炸整棵渲染树。
-        if (!cancelled) setLogFiles([]);
+        // 读取失败：不再冒充「暂无日志文件」空态——错误态 + 重试入口。
+        setLogFiles([]);
+        setFilesLoadError(t('status.filesLoadFailed'));
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
+
+  useEffect(() => {
+    loadFiles();
+  }, [loadFiles]);
 
   // 打开日志文件失败（关联程序缺失/路径被拒）时给出反馈，而不是点击无反应
   function openFile(p: string) {
@@ -271,7 +295,14 @@ function LogFilesPanel() {
       <div className="log-fs-files-title">{t('status.filesHistoryHeading', logFiles.length)}</div>
       <input className="log-file-search" type="search" aria-label={t('status.filesSearchAria')} placeholder={t('status.filesSearchPlaceholder')} value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} />
       {fileError && <div className="log-files-error" role="alert">{fileError}</div>}
-      {visibleLogFiles.length === 0
+      {/* F-32：列表读取失败——错误 + 重试，替代冒充性的空态文案 */}
+      {filesLoadError && (
+        <div className="log-files-error" role="alert">
+          <span>{filesLoadError}</span>
+          <button type="button" className="btn btn-sm" onClick={loadFiles}>{t('ui.retry')}</button>
+        </div>
+      )}
+      {!filesLoadError && (visibleLogFiles.length === 0
         ? <div className="log-files-empty">{fileQuery ? t('status.filesNoMatch') : t('status.filesEmpty')}</div>
         : visibleLogFiles.map((f) => (
             <button
@@ -283,7 +314,7 @@ function LogFilesPanel() {
               <span className="log-file-label">{f.label}</span>
               <span className="log-file-open"><Icon name="external" className="icon-xs" /> {t('ui.open')}</span>
             </button>
-          ))
+          )))
       }
     </div>
   );
@@ -362,6 +393,11 @@ export default function StatusWindow({ active }: { active: boolean }) {
   // 右栏「日志文件」快捷区（与全屏查看器共用 listLogFiles IPC）
   const [logFiles, setLogFiles] = useState<Array<{ label: string; path: string; date: string }>>([]);
   const [railFileError, setRailFileError] = useState<string | null>(null);
+  // F-32（UIUX 审计）：当日历史日志 / 右栏日志文件列表的读取失败态——失败
+  // 不再被「等待输出 / 暂无文件」的空态冒充（错误 + 重试入口，口径对齐
+  // History/Apps 页的错误条）。
+  const [logsLoadError, setLogsLoadError] = useState<string | null>(null);
+  const [railFilesLoadError, setRailFilesLoadError] = useState<string | null>(null);
   // B-02：今日概览条（hero 与日志工作区之间）的原始历史记录（R4 state 化）。
   // null = 尚未读到 / 读取失败（概览整条不渲染）。概览从它派生（useMemo），
   // C-01 停止确认的「运行中」计数也取自同一份——不为确认条二次发 getHistory。
@@ -432,8 +468,16 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const autoScroll = useRef(true);
 
   // 页面常驻挂载；切回状态页时重取配置与进程状态，避免设置保存后仍显示旧值。
+  // P3-4：getStatus 补 typeof 守卫（EXP-09 口径——旧版/降级 preload 缺通道时
+  // 同步 TypeError 会炸整棵渲染树；对齐下方 listLogFiles/loadRailFiles 先例）。
   useEffect(() => {
     if (!active) return;
+    const getStatus = window.electronAPI.getStatus;
+    if (typeof getStatus !== 'function') {
+      setStatusLoaded(true);
+      setActionError(t('status.statusApiError', t('status.statusUnsupported')));
+      return;
+    }
     let cancelled = false;
     window.electronAPI
       .getStatus()
@@ -446,29 +490,43 @@ export default function StatusWindow({ active }: { active: boolean }) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setActionError(
-          t('status.statusApiError', err instanceof Error ? err.message : String(err)),
-        );
+        setActionError(t('status.statusApiError', ipcErrorMessage(err)));
       })
       .finally(() => { if (!cancelled) setStatusLoaded(true); });
     return () => { cancelled = true; };
   }, [active]);
 
-  useEffect(() => {
-    // 启动时先加载当天的历史日志（经 preload 暴露的方法；禁止用
-    // window.electronAPI.invoke —— preload 不暴露 invoke，会同步抛异常
-    // → React 卸载整棵树 → 主窗口只有背景色黑屏，见 preload/index.ts 注释）
-    window.electronAPI.getTodayLogs().then((result: any) => {
+  // F-32（UIUX 审计）：当日历史日志加载。此前 `.catch(() => {})` 静默吞掉
+  // IPC 失败——日志区顶着「等待日志输出…」的空态冒充一切正常。改为如实
+  // 呈现错误态 + 重试入口（口径对齐 History/Apps 的错误条）。提取成稳定
+  // 回调供挂载 effect 与空态里的重试按钮共用。
+  // P3-4：getTodayLogs 补 typeof 守卫（EXP-09 口径，同上方 getStatus）。
+  // P3-9：重试路径复位 clearedRef——「清空显示」后 clearedRef 会吞掉后续
+  // 所有历史行；重试语义是「重新加载当日日志」，不复位则重试永远无效。
+  const loadTodayLogs = useCallback(() => {
+    const getTodayLogs = window.electronAPI.getTodayLogs;
+    if (typeof getTodayLogs !== 'function') return;
+    setLogsLoadError(null);
+    getTodayLogs().then((result: any) => {
       if (result?.lines && result.lines.length > 0) {
         // 过滤掉空行；落盘行是 electron-log+winston 双时间戳形态，
-        // 统一经 normalizeLogLine 收敛为单时间戳展示（见上方注释）。
+        // 统一经 normalizeLogLine 收敛为单时间戳展示。
         const validLines = (result.lines as string[]).filter((l) => l.trim().length > 0);
         if (!clearedRef.current) {
           const historical = validLines.slice(-500).map(normalizeLogLine);
           setLogs((live) => mergeHistoryWithLive(historical, live));
         }
       }
-    }).catch(() => {});
+    }).catch(() => {
+      setLogsLoadError(t('status.logsLoadFailed'));
+    });
+  }, []);
+
+  useEffect(() => {
+    // 启动时先加载当天的历史日志（经 preload 暴露的方法；禁止用
+    // window.electronAPI.invoke —— preload 不暴露 invoke，会同步抛异常
+    // → React 卸载整棵树 → 主窗口只有背景色黑屏，见 preload/index.ts 注释）
+    loadTodayLogs();
 
     const offLog = window.electronAPI.onLogLine((line) => {
       setLogs((prev) => retainRecentLogs([...prev, normalizeLogLine(line)]));
@@ -479,7 +537,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
       setRunning(s !== 'stopped');
     });
     return () => { offLog(); offStatus(); };
-  }, []);
+  }, [loadTodayLogs]);
 
   useEffect(() => {
     // 状态窗常驻时也要反映分钟级 Agent 指派的开始/完成。沿用设置页的
@@ -509,22 +567,32 @@ export default function StatusWindow({ active }: { active: boolean }) {
         .finally(() => { inFlight = false; });
     };
     refresh();
-    const timer = setInterval(refresh, 2_000);
+    // F-31（UIUX 审计）：窗口最小化/隐藏时 2s 轮询纯空转（HistoryPage/AppsPage
+    // 均有 document.hidden 门控，唯独本页漏了）——隐藏期跳过快照拉取，窗口
+    // 重新可见后下一轮（≤2s）自动恢复，无需 visibilitychange 监听。
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      refresh();
+    }, 2_000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [active]);
 
-  // 右栏日志文件列表：旧版 preload 缺通道时直接跳过（分区显示空态，不影响其余面板）；
-  // 读取失败静默为空列表，与全屏查看器同一口径，不炸渲染树。
-  useEffect(() => {
-    if (!active) return;
+  // F-32（UIUX 审计）：右栏日志文件列表加载。读取失败不再静默为空列表
+  // （空态会谎报「暂无日志文件」）——错误态 + 重试。
+  const loadRailFiles = useCallback(() => {
     const listLogFiles = window.electronAPI.listLogFiles;
     if (typeof listLogFiles !== 'function') return;
-    let cancelled = false;
+    setRailFilesLoadError(null);
     listLogFiles()
-      .then((files) => { if (!cancelled) setLogFiles(files); })
-      .catch(() => { if (!cancelled) setLogFiles([]); });
-    return () => { cancelled = true; };
-  }, [active]);
+      .then((files) => setLogFiles(files))
+      .catch(() => setRailFilesLoadError(t('status.filesLoadFailed')));
+  }, []);
+
+  // 右栏日志文件列表：旧版 preload 缺通道时直接跳过（分区显示空态，不影响其余面板）
+  useEffect(() => {
+    if (!active) return;
+    loadRailFiles();
+  }, [active, loadRailFiles]);
 
   useEffect(() => {
     if (autoScroll.current && logRef.current) {
@@ -557,7 +625,13 @@ export default function StatusWindow({ active }: { active: boolean }) {
       typeof electronAPI?.onHistoryChanged === 'function'
         ? electronAPI.onHistoryChanged(() => refresh())
         : null;
-    const timer = setInterval(refresh, 60_000);
+    // F-31（UIUX 审计）：60s 兜底轮询加 document.hidden 门控（对齐 HistoryPage
+    // 同款兜底的既有做法）——窗口隐藏时 fs.watch 推送订阅仍在，兜底轮询不再
+    // 为看不见的窗口空转；重新可见后下一轮自动补上。
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      refresh();
+    }, 60_000);
     return () => { cancelled = true; clearInterval(timer); offChanged?.(); };
   }, [active]);
 
@@ -571,7 +645,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
       const result = await window.electronAPI.startExecutor();
       if (!result?.ok) throw new Error(t('status.startFail'));
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      setActionError(ipcErrorMessage(err));
     } finally {
       setActing(false);
       setPendingAction(null);
@@ -585,7 +659,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
       const result = await window.electronAPI.stopExecutor();
       if (!result?.ok) throw new Error(t('status.stopFail'));
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      setActionError(ipcErrorMessage(err));
     } finally {
       setActing(false);
       setPendingAction(null);
@@ -711,11 +785,14 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const statusLabel = !statusLoaded ? t('status.reading') : status === 'pending' && pendingAction === 'stop'
     ? t('status.stopping')
     : (STATUS_LABEL[status] ?? status);
+  // F-30（UIUX 审计）：statusLabel 对表外值有 `?? status` 兜底，描述行此前
+  // 直接查 STATUS_DESC——主进程新增状态 / 异常值时大字有值、描述整行空白。
+  // 补与 label 同风格的默认描述（status.desc.unknown，双语），未知态不再留白。
   const statusDescription = status === 'offline' && running
     ? t('status.desc.offlineRunning')
     : status === 'pending' && pendingAction === 'stop'
       ? t('status.desc.stopping')
-      : STATUS_DESC[status];
+      : (STATUS_DESC[status] ?? t('status.desc.unknown'));
 
   return (
     <>
@@ -943,15 +1020,26 @@ export default function StatusWindow({ active }: { active: boolean }) {
               >
                 {logs.length === 0
                   /* 空日志不再只留一句"等待输出"：按执行器当前状态给一句
-                     "为什么还没有日志 / 下一步做什么"（引导闭环） */
-                  ? (
+                     "为什么还没有日志 / 下一步做什么"（引导闭环）。
+                     F-32（UIUX 审计）：当日历史日志读取失败时如实呈现错误态 +
+                     重试入口——失败不得冒充「等待日志输出…」的空态。 */
+                  ? (logsLoadError ? (
+                    <div className="log-empty-block">
+                      <span className="log-empty" role="alert"><Icon name="warning" className="icon-xs" />{logsLoadError}</span>
+                      {/* P3-9：重试前复位 clearedRef——「清空显示」后 clearedRef
+                          会吞掉后续所有历史行，重试不复位则永远无效。显式重试
+                          语义就是「重新加载当日日志」。 */}
+                      <button type="button" className="btn btn-sm" onClick={() => { clearedRef.current = false; loadTodayLogs(); }}>{t('ui.retry')}</button>
+                    </div>
+                  )
+                  : (
                     <div className="log-empty-block">
                       <span className="log-empty"><Icon name="terminal" className="icon-xs" />{t('logviewer.waiting')}</span>
                       <span className="log-empty-hint">
                         {running ? t('status.logWaitingRunning') : t('status.logWaitingHint')}
                       </span>
                     </div>
-                  )
+                  ))
                   : <LogLineList
                       lines={logs}
                       displayed={previewEntries}
@@ -1060,7 +1148,14 @@ export default function StatusWindow({ active }: { active: boolean }) {
             <section className="overview-card" aria-label={t('status.filesHeading')}>
               <div className="overview-heading">{t('status.filesHeading')}</div>
               {railFileError && <div className="log-files-error" role="alert">{railFileError}</div>}
-              {logFiles.length === 0
+              {/* F-32（UIUX 审计）：列表读取失败——错误 + 重试，不再冒充「暂无日志文件」 */}
+              {railFilesLoadError && (
+                <div className="log-files-error" role="alert">
+                  <span>{railFilesLoadError}</span>
+                  <button type="button" className="btn btn-sm" onClick={loadRailFiles}>{t('ui.retry')}</button>
+                </div>
+              )}
+              {!railFilesLoadError && (logFiles.length === 0
                 ? <div className="log-files-empty">{t('status.filesEmpty')}</div>
                 : (
                   <div className="rail-files">
@@ -1087,7 +1182,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
                       </button>
                     )}
                   </div>
-                )}
+                ))}
             </section>
           </aside>
         </div>

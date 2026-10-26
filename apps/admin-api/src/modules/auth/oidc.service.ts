@@ -86,6 +86,44 @@ export const OIDC_STATE_COOKIE = "acf_oidc_state";
 const STATE_TTL_SECONDS = 600;
 const CLOCK_SKEW_SECONDS = 60;
 
+/**
+ * P3-4（2026-10-25 审计）：JIT 自动建号前的声明防御性校验（纯函数，便于
+ * 单测）。返回缺陷描述（用作 AppError 的 reason 参数与日志）；null = 通过。
+ *
+ * 上限口径与 users 表列宽 / CreateUserDto 同源：
+ *   · username：非空且 ≤128（users.username varchar(128)，entity @Length
+ *     上界同值；CreateUserDto F-18 上限对齐）；
+ *   · email：声明非空时必须是合法 email 形态且 ≤255（users.email 列宽）；
+ *     缺省回落 `${sub}@oidc.local.invalid` 时整体也必须 ≤255（sub 来自
+ *     IdP、长度不受本仓控制）。
+ *
+ * 只拒**不可安全归一**的形态（超长/非法）：没有做任何截断或改写——见
+ * resolveAndBindUser ③ 内注释的「拒发不归一」论证。
+ */
+export function jitProfileDefect(profile: OidcProfile): string | null {
+  const username = typeof profile.username === "string" ? profile.username : "";
+  if (username.length === 0) return "username claim is empty";
+  if (username.length > 128) {
+    return `username claim exceeds 128 chars (got ${username.length})`;
+  }
+  // email 列宽 varchar(255)（TypeORM 默认）；形态用 CreateUserDto @IsEmail
+  // 的宽口径近似——本地部分 @ 域名，不含空白。拒绝明显非法即可，不在 SSO
+  // 链路上重抄一套完整 RFC 校验。
+  const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const fallbackEmail = `${profile.sub}@oidc.local.invalid`;
+  if (profile.email != null && profile.email !== "") {
+    if (profile.email.length > 255) {
+      return `email claim exceeds 255 chars (got ${profile.email.length})`;
+    }
+    if (!EMAIL_SHAPE.test(profile.email)) {
+      return "email claim is not a valid address";
+    }
+  } else if (fallbackEmail.length > 255) {
+    return `sub claim too long to derive a fallback email (got ${fallbackEmail.length} chars, max 255)`;
+  }
+  return null;
+}
+
 @Injectable()
 export class OidcService {
   private readonly logger = new Logger(OidcService.name);
@@ -539,6 +577,20 @@ export class OidcService {
     }
     // ③ JIT 自动建号（默认关）
     if (this.config.get<boolean>("oidc.autoProvision") === true) {
+      // P3-4（2026-10-25 审计）：JIT 前的声明防御。JIT 绕过 CreateUserDto
+      // 直写 users 表，IdP 声明的 username 超长（DB 列 varchar(128)，
+      // CreateUserDto 同上限）或 email 形态非法/超长（DB 列 varchar(255)）
+      // 时，旧路径撞数据库约束冒 500。**拒发不归一**：截断会让平台身份与
+      // IdP 身份漂移（审计无法对账），让管理员在 IdP 侧修正声明才是可追溯
+      // 的修法——日志只落 sub 前缀与原因（不落 email 等敏感值，同本文件
+      // 既有拒绝日志的口径）。
+      const defect = jitProfileDefect(profile);
+      if (defect) {
+        this.logger.warn(
+          `OIDC JIT provision rejected: ${defect} (sub=${profile.sub.slice(0, 8)}…, username='${profile.username}')`,
+        );
+        throw new AppError("OIDC_JIT_PROFILE_INVALID", { reason: defect });
+      }
       const provisionedRole = this.roleFromGroups(profile.groups);
       // 随机 32 字节占位密码：SSO 用户永远不走密码登录。直接 repo.create
       // 绕过 UsersService.create 的密码强度校验——占位密码不参与任何认证面，

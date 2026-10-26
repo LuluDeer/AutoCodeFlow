@@ -497,6 +497,16 @@
         "description": "需要账户密码或有效的 TOTP 验证码作为确认。",
         "operationId": "AuthController_totpDisable",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpDisableDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "TOTP 已停用（或本来未启用）",
@@ -609,7 +619,7 @@
     },
     "/auth/sessions/{id}": {
       "delete": {
-        "description": "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。",
+        "description": "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。",
         "operationId": "AuthController_revokeSession",
         "parameters": [
           {
@@ -617,7 +627,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -633,9 +643,9 @@
             },
             "x-i18n-en": "Session revoked"
           },
-          "401": {
-            "description": "会话不存在或不属于你",
-            "x-i18n-en": "Session does not exist or does not belong to you"
+          "404": {
+            "description": "会话不存在或已吊销",
+            "x-i18n-en": "Session does not exist or has been revoked"
           }
         },
         "security": [
@@ -649,7 +659,7 @@
         ],
         "x-i18n-en": {
           "summary": "Revoke one of my sessions",
-          "description": "Marks the specified refresh token row as revoked (DR-04 semantics - that refresh JWT becomes unusable immediately). Ownership is enforced; passing someone else's id returns 401."
+          "description": "Marks the given refresh token row as revoked (DR-04 semantics - the refresh JWT becomes unusable immediately). Ownership is enforced; someone else's or an already-revoked id returns 404."
         }
       }
     },
@@ -3935,6 +3945,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutorCommandResultDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "",
@@ -3946,9 +3966,17 @@
               }
             }
           },
+          "400": {
+            "description": "载荷形态非法（DTO 白名单校验）",
+            "x-i18n-en": "Malformed payload (DTO whitelist validation)"
+          },
           "401": {
             "description": "执行器令牌无效",
             "x-i18n-en": "Invalid executor token"
+          },
+          "403": {
+            "description": "命令不属于该执行器（跨行回报）",
+            "x-i18n-en": "Command does not belong to this executor (cross-row report)"
           }
         },
         "summary": "上报 pull 控制命令的执行结果",
@@ -4116,7 +4144,7 @@
     },
     "/executors": {
       "get": {
-        "description": "获取全部执行器列表，包含在线状态、分组与标签。",
+        "description": "获取执行器列表（按 createdAt 降序），包含在线状态、分组与标签。**不支持分页**：page/pageSize 等查询参数不被接受（忽略而非报错）；服务端按创建时间只返回最新 EXECUTOR_LIST_LIMIT（500）台，超出部分被截断。截断信号：GET /executors/runtime-config 的 listLimit/executorTotal 字段，调用方在 total > listLimit 时须呈现「仅显示前 N / 共 M 台」类告警，不得把截断结果当作全量。",
         "operationId": "ExecutorController_findAll",
         "parameters": [],
         "responses": {
@@ -4139,13 +4167,13 @@
             "JWT": []
           }
         ],
-        "summary": "列出执行器",
+        "summary": "列出执行器（截断上限见描述；不支持分页）",
         "tags": [
           "Executors"
         ],
         "x-i18n-en": {
-          "summary": "List executors",
-          "description": "Get the full executor list, including online status, group, and labels."
+          "summary": "List executors (truncation cap described below; pagination is not supported)",
+          "description": "Get the executor list (ordered by createdAt descending), including online status, groups, and labels. **Pagination is not supported**: query parameters such as page/pageSize are not accepted (ignored, not rejected); the server returns only the newest EXECUTOR_LIST_LIMIT (500) executors by creation time and truncates the rest. Truncation signal: the listLimit/executorTotal fields of GET /executors/runtime-config - when total > listLimit, callers must surface a \"showing first N of M\" style warning and must not treat the truncated result as the full set."
         }
       }
     },
@@ -4530,17 +4558,15 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "AUTH-05：可选的删除原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+          "description": "AUTH-05：可选的删除原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
           "content": {
             "application/json": {
               "schema": {
-                "example": {
-                  "reason": "decommissioned host"
-                }
+                "$ref": "#/components/schemas/ExecutorActionReasonDto"
               }
             }
           },
-          "x-i18n-en": "AUTH-05: optional deletion reason, recorded in the audit log details (this endpoint stays backward compatible - an empty request body is also accepted)."
+          "x-i18n-en": "AUTH-05: optional deletion reason (max 200 chars, ExecutorActionReasonDto), recorded in the audit log detail (the endpoint stays backward compatible - an empty body is fine too)."
         },
         "responses": {
           "204": {
@@ -4658,17 +4684,15 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "AUTH-05：可选的轮换原因，会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
+          "description": "AUTH-05：可选的轮换原因（≤200 字符，ExecutorActionReasonDto），会记入审计日志详情（该端点保持向后兼容——请求体为空也可以）。",
           "content": {
             "application/json": {
               "schema": {
-                "example": {
-                  "reason": "token suspected leaked"
-                }
+                "$ref": "#/components/schemas/ExecutorActionReasonDto"
               }
             }
           },
-          "x-i18n-en": "AUTH-05: optional rotation reason, recorded in the audit log details (this endpoint stays backward compatible -- an empty request body is fine)."
+          "x-i18n-en": "AUTH-05: optional rotation reason (max 200 chars, ExecutorActionReasonDto), recorded in the audit log detail (the endpoint stays backward compatible - an empty body is fine too)."
         },
         "responses": {
           "200": {
@@ -5100,6 +5124,18 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "渠道配置更新体",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateChannelDto"
+              }
+            }
+          },
+          "x-i18n-en": "Channel config update body"
+        },
         "responses": {
           "200": {
             "description": "",
@@ -5169,6 +5205,16 @@
       "post": {
         "operationId": "NotificationConfigController_sendTest",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendTestDto"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "",
@@ -8622,7 +8668,7 @@
     },
     "/applications/{id}/upgrade-all": {
       "post": {
-        "description": "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。",
+        "description": "DEP-02: body 缺省（或 rollout.strategy=all）= 既有全量升级；rollout.strategy=canary 时先升 percentage 比例（至少 1 台）→ 健康探测（manifest.healthCheck 声明，DEP-03）→ 通过后自动提升其余台；任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，admin-api 重启即暂停（行级 rolloutState=failed）。R2（部署模型评审 §4.4）：覆盖面显式化——默认 = 全部 RUNNING 部署行（含 scheduled「仅部署」行：实证口径为 scheduled 部署完成即上报 running，稳态就是 RUNNING）；includeStopped=true 时 all 策略把 stopped 行一并纳入（canary 忽略该参数——健康探测需要活进程）；pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细（不抛错）；failed 行恒排除。响应新增 coverage 按状态分组计数。version 定向参数等价于 set-current-version + deploy-version 组合（会改写中台当前版本），建议改用 R1 拆分端点",
         "operationId": "ApplicationController_upgradeAll",
         "parameters": [
           {
@@ -8661,13 +8707,13 @@
             "bearer": []
           }
         ],
-        "summary": "触发所有运行中实例升级到最新版本",
+        "summary": "触发该应用全部已部署设备升级到最新版本",
         "tags": [
           "Application Management"
         ],
         "x-i18n-en": {
-          "summary": "Trigger upgrade of all running instances to the latest version",
-          "description": "DEP-02: body absent (or rollout.strategy=all) = existing full upgrade;"
+          "summary": "Trigger an upgrade of every deployed device of this application to the latest version",
+          "description": "DEP-02: an absent body (or rollout.strategy=all) keeps the existing full upgrade; rollout.strategy=canary first upgrades percentage of rows (at least 1) -> health probing (manifest.healthCheck, DEP-03) -> auto-promotes the rest on success; any failure pauses the batch and auto-rolls back upgraded rows. The batch is in-process state: an admin-api restart pauses it (row-level rolloutState=failed). R2 (deployment model review §4.4): coverage made explicit - default = all RUNNING deployment rows (including scheduled deploy-only rows: empirically a scheduled deploy reports running on completion, so their steady state is RUNNING); includeStopped=true additionally includes stopped rows under the all strategy (canary ignores the flag - health probing needs live processes); pending/deploying/upgrading in-flight rows are always skipped and listed in the response skipped detail (no error thrown); failed rows are always excluded. The response adds coverage with per-status counts. The version targeting parameter is equivalent to the set-current-version + deploy-version combination (it rewrites the platform's current version); prefer the R1 split endpoints"
         }
       }
     },
@@ -8753,9 +8799,112 @@
         }
       }
     },
+    "/applications/{id}/set-current-version": {
+      "post": {
+        "description": "R1（部署模型评审 §4.2）：只按 application_versions 快照恢复应用当前字段（version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime，与 rollback 同一映射），绝不触碰部署行与设备。响应 dispatched:false。校验与错误码与 rollback 快照路径一致（版本存在 404、属本应用/已发布 400）",
+        "operationId": "ApplicationController_setCurrentVersion",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCurrentVersionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetCurrentVersionResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "将应用当前字段设为指定版本快照（不动部署/设备）",
+        "tags": [
+          "Application Management"
+        ],
+        "x-i18n-en": {
+          "summary": "Set the application's current fields from a version snapshot (no deployments or devices touched)",
+          "description": "R1 (deployment model review 2026-10-23 §4.2): restores the application's current fields from the application_versions snapshot only (version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime, same mapping as rollback) and never touches deployment rows or devices. The response carries dispatched:false. Validation and error codes match the rollback snapshot path (404 when the version does not exist, 400 for another app's version or a non-released one)."
+        }
+      }
+    },
+    "/applications/{id}/deploy-version": {
+      "post": {
+        "description": "R1（部署模型评审 §4.2）：先执行与 set-current-version 完全相同的字段恢复，再下发。executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有 upgrade 链（部署行 startCommand 会被覆写为恢复后的 app.entrypoint——既有 upgrade 语义）。执行器无部署行/行状态不可下发的进响应 skipped 明细（no_deployment/not_running/upgrade_rejected），不报错。部署行触发痕迹落 triggerType=rollback + 操作人（该端点为旧「应用回滚」拆出的下发半边）",
+        "operationId": "ApplicationController_deployVersion",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployVersionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployVersionResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "按版本快照恢复应用字段后下发到设备（可按执行器点名）",
+        "tags": [
+          "Application Management"
+        ],
+        "x-i18n-en": {
+          "summary": "Restore the application fields from a version snapshot, then dispatch to devices (optionally targeting specific executors)",
+          "description": "R1 (deployment model review 2026-10-23 §4.2): first performs exactly the same field restore as set-current-version, then dispatches. Omitted executorIds = all RUNNING deployment rows of the application (identical to the legacy rollback); explicit executorIds = per-executor upgrade through the existing upgrade chain only (the deployment row's startCommand is overwritten with the restored app.entrypoint — existing upgrade semantics). Executors without a deployment row, or whose row is not dispatchable, are reported in the response skipped list (no_deployment/not_running/upgrade_rejected) instead of raising. Deployment rows record triggerType=rollback plus the operator (this endpoint is the dispatch half split out of the legacy application rollback)."
+        }
+      }
+    },
     "/applications/{id}/rollback/{deploymentId}": {
       "post": {
-        "description": "从版本快照或历史部署记录恢复应用字段，然后触发运行中实例升级",
+        "deprecated": true,
+        "description": "【deprecated】下一版本删除。等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用 POST /applications/:id/set-current-version 与 POST /applications/:id/deploy-version",
         "operationId": "ApplicationController_rollback",
         "parameters": [
           {
@@ -8792,13 +8941,13 @@
             "bearer": []
           }
         ],
-        "summary": "将应用回滚到历史版本",
+        "summary": "将应用回滚到历史版本（deprecated alias）",
         "tags": [
           "Application Management"
         ],
         "x-i18n-en": {
-          "summary": "Roll an application back to a historical version",
-          "description": "Restore application fields from a version snapshot or historical deployment record, then trigger an upgrade of running instances"
+          "summary": "Roll the application back to a historical version (deprecated alias)",
+          "description": "[deprecated] Will be removed in the next version. Equivalent to the combination of set-current-version + deploy-version (executorIds omitted); behavior is byte-for-byte identical to previous releases. New callers should use POST /applications/:id/set-current-version and POST /applications/:id/deploy-version instead."
         }
       }
     },
@@ -8837,6 +8986,7 @@
             "required": false,
             "in": "query",
             "schema": {
+              "maximum": 10000,
               "default": 1,
               "type": "number"
             }
@@ -8910,6 +9060,109 @@
         "x-i18n-en": {
           "summary": "Deployment statistics per application (aggregated)",
           "description": "Returns one row per application with at least one deployment. Replaces the application list page's previous per-application fan-out requests (N requests sharing a single rate-limit bucket)."
+        }
+      }
+    },
+    "/app-deployments/applications/{appId}/events": {
+      "get": {
+        "description": "R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥",
+        "operationId": "AppDeploymentController_listApplicationEvents",
+        "parameters": [
+          {
+            "name": "appId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 10000,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 200,
+              "default": 50,
+              "type": "number"
+            }
+          },
+          {
+            "name": "eventType",
+            "required": false,
+            "in": "query",
+            "description": "按事件类型过滤（AppDeploymentEventType 九值单值；直等命中 (applicationId, eventType) 复合索引）",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "deploy_created",
+                "redeploy_reused",
+                "approval_approved",
+                "approval_rejected",
+                "approval_cancelled",
+                "upgrade",
+                "stop",
+                "remove",
+                "stuck_failed"
+              ]
+            },
+            "x-i18n-en": "Filter by event type (a single value of the nine AppDeploymentEventType values; equality matches the (applicationId, eventType) composite index prefix)"
+          },
+          {
+            "name": "since",
+            "required": false,
+            "in": "query",
+            "description": "起始时间（ISO 8601）；半开区间含头：createdAt >= since",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "Start time (ISO 8601); half-open interval, inclusive lower bound: createdAt >= since"
+          },
+          {
+            "name": "until",
+            "required": false,
+            "in": "query",
+            "description": "结束时间（ISO 8601）；半开区间不含尾：createdAt < until",
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "End time (ISO 8601); half-open interval, exclusive upper bound: createdAt < until"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "裸四键信封（data/total/page/pageSize），同 /releases 形态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentEventsPageDto"
+                }
+              }
+            },
+            "x-i18n-en": "Bare four-key envelope (data/total/page/pageSize), same shape as /releases"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "列出应用的部署事件流（不可变动作追溯）",
+        "tags": [
+          "App Deployment"
+        ],
+        "x-i18n-en": {
+          "summary": "List an application's deployment event stream (immutable action trail)",
+          "description": "R4 (deployment model review 2026-10-23 4.1A): immutable deployment event stream (append-only). Each deployment-domain write action produces one short fact snapshot row (event type / version fact / operator); events have no UPDATE/DELETE path, and remove events outlive the deployment row (the event table has no foreign key to it). Paginated, default 50 / max 200, ordered by createdAt descending. The write side guarantees event detail never contains env secrets"
         }
       }
     },
@@ -9076,6 +9329,7 @@
             "required": false,
             "in": "query",
             "schema": {
+              "maximum": 10000,
               "default": 1,
               "type": "number"
             }
@@ -10255,7 +10509,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RegistryPackagesResponseDto"
+                  "$ref": "#/components/schemas/RegistryNpmPackagesResponseDto"
                 }
               }
             }
@@ -10362,6 +10616,88 @@
         "x-i18n-en": {
           "summary": "Upload a single execution artifact (executor -> platform, best effort)",
           "description": "Authenticated with the executor shared token or that executor's dynamic token (the same credential the executor uses for terminal-state callbacks). Accepts multipart/form-data with field name 'file' (same shape as the executor package upload channel). An optional ?sha256= is cross-checked against the uploaded bytes."
+        }
+      }
+    },
+    "/artifacts": {
+      "get": {
+        "description": "按应用/任务维度分页查询执行产物索引（execution_artifacts 表；含跨执行的聚合视图）。存量执行（索引建立前终态化）无新表行，如实返回空——按执行的清单请走 GET /tasks/executions/:execId/artifacts。需要管理员 JWT。",
+        "operationId": "ArtifactsController_listArtifactRows",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 10000,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "maximum": 100,
+              "default": 20,
+              "type": "number"
+            }
+          },
+          {
+            "name": "applicationId",
+            "required": false,
+            "in": "query",
+            "description": "按应用过滤（冗余自任务行 tasks.applicationId 的写时快照；任务未挂应用/应用已删的产物行不命中）",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by application (a write-time snapshot of tasks.applicationId; artifact rows whose task has no application, or whose application was deleted, do not match)"
+          },
+          {
+            "name": "taskId",
+            "required": false,
+            "in": "query",
+            "description": "按任务过滤（冗余自执行行 task_executions.taskId）",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "x-i18n-en": "Filter by task (snapshotted from task_executions.taskId)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutionArtifactRowDto"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "调用者不是管理员",
+            "x-i18n-en": "Caller is not an administrator"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "按应用/任务查询产物索引（仅管理员）",
+        "tags": [
+          "Execution Artifacts"
+        ],
+        "x-i18n-en": {
+          "summary": "Query the artifact index by application/task (admin only)",
+          "description": "Page through the execution artifact index (execution_artifacts table; a cross-execution aggregate view) filtered by application/task. Executions that reached a terminal state before this index existed have no rows here and honestly return empty -- for a per-execution manifest use GET /tasks/executions/:execId/artifacts. Requires an admin JWT."
         }
       }
     },
@@ -11792,6 +12128,23 @@
           "enabled"
         ]
       },
+      "TotpDisableDto": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "example": "password123",
+            "description": "确认密码（与 6 位动态码二选一）",
+            "x-i18n-en": "Confirmation password (either this or the 6-digit code)"
+          },
+          "code": {
+            "type": "string",
+            "example": "123456",
+            "description": "6 位 TOTP 动态验证码（与密码二选一）",
+            "x-i18n-en": "6-digit TOTP code (either this or the password)"
+          }
+        }
+      },
       "TotpDisableResponseDto": {
         "type": "object",
         "properties": {
@@ -11927,7 +12280,8 @@
         "properties": {
           "username": {
             "type": "string",
-            "example": "admin"
+            "example": "admin",
+            "maxLength": 128
           },
           "email": {
             "type": "string",
@@ -12077,7 +12431,8 @@
         "properties": {
           "username": {
             "type": "string",
-            "example": "admin"
+            "example": "admin",
+            "maxLength": 128
           },
           "email": {
             "type": "string",
@@ -12102,6 +12457,11 @@
             "type": "string",
             "description": "非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19）",
             "x-i18n-en": "Required when a non-admin user changes their own password (SEC-12); the service strips this field before persisting (R19)"
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "账号启用/禁用（ADMIN-only；禁用后登录 403 且在途会话立即失效）",
+            "x-i18n-en": "Enable/disable the account (ADMIN-only; disabling makes login return 403 and invalidates in-flight sessions immediately)"
           }
         }
       },
@@ -14743,6 +15103,87 @@
           "version"
         ]
       },
+      "DeployedAppDto": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "example": "5f8a3c2e-9b41-4d6a-a1b2-c3d4e5f6a7b8",
+            "description": "部署时的 applicationId",
+            "x-i18n-en": "applicationId at deploy time"
+          },
+          "currentVersion": {
+            "type": "string",
+            "example": "1.2.0",
+            "nullable": true,
+            "description": "设备 current 软链指向的版本；无 current（未部署成功）为 null",
+            "x-i18n-en": "version the device's current symlink points to; null when there is no current (never deployed successfully)"
+          },
+          "currentReleaseKey": {
+            "type": "string",
+            "example": "1.2.0-3f9d2b7a-deploy-8t4",
+            "nullable": true,
+            "description": "current 软链指向的 release 目录名",
+            "x-i18n-en": "release directory name the current symlink points to"
+          },
+          "retainedVersions": {
+            "example": [
+              "1.2.0",
+              "1.1.0"
+            ],
+            "description": "设备 releases/ 下仍保留的版本集合（prune 后快照）",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "versions still kept under the device's releases/ (post-prune snapshot)"
+          },
+          "runMode": {
+            "type": "string",
+            "example": "daemon",
+            "nullable": true,
+            "enum": [
+              "once",
+              "daemon",
+              "scheduled"
+            ],
+            "description": "部署/升级时选择的运行模式；设备侧无记录为 null",
+            "x-i18n-en": "run mode chosen at deploy/upgrade time; null when the device has no record"
+          },
+          "lastDeployedAt": {
+            "type": "string",
+            "example": "2026-10-24T08:00:00.000Z",
+            "nullable": true,
+            "description": "最近一次部署完成时刻（ISO 8601）；无记录为 null",
+            "x-i18n-en": "last deployment completion time (ISO 8601); null when there is no record"
+          }
+        },
+        "required": [
+          "appId"
+        ]
+      },
+      "InstalledPackageDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "python-runtime"
+          },
+          "type": {
+            "type": "string",
+            "example": "uv"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.7.12"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "version"
+        ]
+      },
       "ExecutorRegisterDto": {
         "type": "object",
         "properties": {
@@ -14877,6 +15318,22 @@
             "nullable": true,
             "description": "ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：注册时先按指纹解析行（地址退化为可达性元数据）。缺省/非法 → 保留已存值并回退到按地址查找；从未上报过指纹的行会带上服务端生成的 `legacy:{address}` 兜底键。",
             "x-i18n-en": "ARCH-36 (ADR-017 phases two/three): stable installation identity - sha256(deviceId + ':' + installSalt), 64 lowercase hex characters. ADR-017 phase three makes it the row lookup key: registration resolves the row by fingerprint first (address degrades to reachability metadata). Default/invalid -> the stored value is kept and lookup falls back to address; rows that have never reported a fingerprint carry a server-generated `legacy:{address}` fallback key."
+          },
+          "deployedApps": {
+            "description": "R3-A（§4.3）：设备级应用版本事实（执行器启动时随注册上报一份，语义与心跳 deployedApps 完全一致：缺省 → 不动；[] → 设备无已部署应用；非法 → 整字段拒绝）。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeployedAppDto"
+            },
+            "x-i18n-en": "R3-A (§4.3): device-level application version facts (reported once at executor startup along with registration; semantics identical to heartbeat deployedApps: omitted -> untouched; [] -> no deployed applications on the device; invalid -> the whole field is rejected)."
+          },
+          "installedPackages": {
+            "description": "R3-A（§4.3/P10）：设备已安装的执行器包清单（语义与心跳 installedPackages 完全一致）。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstalledPackageDto"
+            },
+            "x-i18n-en": "R3-A (§4.3/P10): executor packages installed on the device (semantics identical to heartbeat installedPackages)."
           }
         },
         "required": [
@@ -15294,6 +15751,28 @@
             "nullable": true,
             "description": "ARCH-36（ADR-017 第二/三阶段）：稳定的安装身份 —— sha256(deviceId + ':' + installSalt)，64 位小写十六进制字符。ADR-017 第三阶段把它定为行查找键：register/heartbeat 先按指纹解析行，因此换了 IP 的机器会复用既有行，而不是新建幽灵行。缺省/非法 → 保留已存值（legacy 或采集失败的执行器绝不能把已存指纹清空），并回退到按地址查找。",
             "x-i18n-en": "ARCH-36 (ADR-017 phase 2/3): stable installation identity - sha256(deviceId + ':' + installSalt), 64 lowercase hexadecimal characters. ADR-017 phase 3 makes it the row lookup key: register/heartbeat first resolve the row by fingerprint, so a machine that changed IP reuses the existing row instead of creating a ghost row. Default/invalid -> the stored value is preserved (legacy executors or ones whose collection failed must never clear the stored fingerprint), and lookup falls back to by address."
+          },
+          "deployedApps": {
+            "description": "R3-A（§4.3）：设备级应用版本事实（apps/ 目录扫描）。缺省 → 中台完全不动既有事实行（旧执行器）；[] → 设备上没有任何已部署应用（整替 = 全部既有行删除）；结构非法/超 50 项/同一 appId 重复 → 整字段拒绝采纳。落库语义：整替该执行器全部 executor_app_versions 行（数组外的应用 = 设备已卸载）。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeployedAppDto"
+            },
+            "x-i18n-en": "R3-A (§4.3): device-level application version facts (scan of the apps/ directory). Omitted -> the platform leaves existing fact rows completely untouched (legacy executors); [] -> the device has no deployed applications (full replacement = all existing rows deleted); structurally invalid, more than 50 items, or a duplicate appId -> the whole field is rejected. Persistence semantics: full replacement of all executor_app_versions rows for this executor (applications absent from the array = uninstalled on the device)."
+          },
+          "installedPackages": {
+            "description": "R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstalledPackageDto"
+            },
+            "x-i18n-en": "R3-A (§4.3/P10): executor packages installed on the device. Same three-state semantics as interpreters: omitted -> keep the stored DB value; [] -> reported with nothing installed; structurally invalid or more than 100 items -> the whole field is rejected."
+          },
+          "registrationConflict": {
+            "type": "boolean",
+            "example": false,
+            "description": "方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。",
+            "x-i18n-en": "Protocol v8 (takeover self-heal, plan b): executor self-report of chronic /token 409 conflict — set from the most recent 409 until a token is successfully obtained. Tri-state: absent = not reported (legacy executors / python without support; the control plane keeps legacy liveness semantics); false = reported and currently conflict-free; true = conflict in progress"
           }
         },
         "required": [
@@ -15657,6 +16136,61 @@
         "required": [
           "task",
           "dispatchMode"
+        ]
+      },
+      "ExecutorCommandResultDto": {
+        "type": "object",
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "description": "命令 id（中台入队时签发的 UUID v4，执行器原样回传；它同时是 acf:cmdres:/acf:cmdmeta: 键的成分）",
+            "x-i18n-en": "Command id (UUID v4 issued by the control plane at enqueue time, echoed back verbatim; also a component of the acf:cmdres: / acf:cmdmeta: keys)"
+          },
+          "address": {
+            "type": "string",
+            "example": "http://10.0.0.5:9100",
+            "description": "执行器注册地址",
+            "x-i18n-en": "Executor registration address"
+          },
+          "type": {
+            "type": "string",
+            "example": "deploy",
+            "description": "命令类型（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）",
+            "x-i18n-en": "Command type (deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package)"
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "命令是否执行成功",
+            "x-i18n-en": "Whether the command succeeded"
+          },
+          "status": {
+            "type": "number",
+            "description": "执行器本地路由的 HTTP 状态码",
+            "x-i18n-en": "HTTP status code of the executor-local route"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "失败原因（≤2000）。执行器侧自截 1000 字符，这里给双倍余量——闸的意义是堵住非受信上报面的自由文本写放大，不是复刻执行器侧的截断行为",
+            "x-i18n-en": "Failure reason (≤2000). Executors self-truncate at 1000 chars; this allows double headroom — the gate exists to block free-text write amplification from untrusted report surfaces, not to mirror executor-side truncation"
+          },
+          "durationMs": {
+            "type": "number",
+            "description": "本地执行耗时（毫秒）",
+            "x-i18n-en": "Local execution duration (milliseconds)"
+          },
+          "deviceFingerprint": {
+            "type": "string",
+            "nullable": true,
+            "description": "ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——上报行定位与归属比对用",
+            "x-i18n-en": "ADR-017 phase 3: stable device fingerprint (optional; legacy executors omit it) — used for row resolution and ownership comparison"
+          }
+        },
+        "required": [
+          "commandId",
+          "address",
+          "type",
+          "ok"
         ]
       },
       "ExecutorCommandResultResponseDto": {
@@ -16201,6 +16735,18 @@
           }
         }
       },
+      "ExecutorActionReasonDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "可选的操作原因（≤200 字符），计入审计",
+            "example": "decommissioned host",
+            "x-i18n-en": "Optional operation reason (max 200 chars), recorded in the audit log"
+          }
+        }
+      },
       "ExecutorRotateTokenDto": {
         "type": "object",
         "properties": {
@@ -16454,6 +17000,21 @@
           "description"
         ]
       },
+      "UpdateChannelDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "启用/停用该渠道",
+            "x-i18n-en": "Enable/disable this channel"
+          },
+          "config": {
+            "type": "object",
+            "description": "渠道配置覆盖（string → string 映射，哨兵 '***' 不覆盖真实机密）",
+            "x-i18n-en": "Channel config override (string → string map; the '***' sentinel does not overwrite real secrets)"
+          }
+        }
+      },
       "ChannelTestResponseDto": {
         "type": "object",
         "properties": {
@@ -16483,6 +17044,42 @@
         "required": [
           "success",
           "message"
+        ]
+      },
+      "SendTestDto": {
+        "type": "object",
+        "properties": {
+          "channels": {
+            "type": "array",
+            "description": "要扇出的渠道（取值域 = 已注册渠道枚举）",
+            "items": {
+              "type": "string",
+              "enum": [
+                "email",
+                "dingtalk",
+                "wecom",
+                "slack",
+                "webhook",
+                "feishu"
+              ]
+            },
+            "x-i18n-en": "Channels to fan out to (value domain = the registered channel enum)"
+          },
+          "title": {
+            "type": "string",
+            "description": "测试通知标题",
+            "x-i18n-en": "Test notification title"
+          },
+          "content": {
+            "type": "string",
+            "description": "测试通知内容",
+            "x-i18n-en": "Test notification content"
+          }
+        },
+        "required": [
+          "channels",
+          "title",
+          "content"
         ]
       },
       "SendNotificationDto": {
@@ -16667,6 +17264,7 @@
           "channelType": {
             "type": "string",
             "description": "仅作范围记录（isSilenced 在渠道扇出前判定，无法按渠道裁剪投递，NETOPT-5① 如实化）；取值须为已注册渠道类型",
+            "maxLength": 32,
             "x-i18n-en": "Recorded as scope only (isSilenced is evaluated before channel fan-out, so deliveries cannot be trimmed per channel; NETOPT-5 (1) made explicit); the value must be a registered channel type"
           },
           "taskId": {
@@ -16681,19 +17279,28 @@
           },
           "level": {
             "type": "string",
-            "description": "仅静默该级别（精确匹配 info/warning/error/critical，非「及以下」）；空 = 全部级别",
-            "x-i18n-en": "Silences only this level (exact match of info/warning/error/critical, not \"and below\"); empty = all levels"
+            "enum": [
+              "info",
+              "warning",
+              "error",
+              "critical"
+            ],
+            "description": "仅静默该级别（精确匹配，非「及以下」）；空 = 全部级别",
+            "x-i18n-en": "Silence exactly this level (exact match, not \"and below\"); empty = all levels"
           },
           "reason": {
             "type": "string",
             "description": "静默原因（审计记录用）",
+            "maxLength": 255,
             "x-i18n-en": "Silence reason (for the audit record)"
           },
           "durationMinutes": {
             "type": "number",
             "example": 60,
-            "description": "静默时长（分钟）；缺省走系统默认 TTL",
-            "x-i18n-en": "Silence duration (minutes); default uses the system default TTL"
+            "description": "静默时长（分钟，1..5256000=10 年）；缺省走系统默认 TTL（P3-1 上界）",
+            "minimum": 1,
+            "maximum": 5256000,
+            "x-i18n-en": "Silence duration (minutes, 1..5256000 = 10 years); defaults to the system TTL (P3-1 upper bound)"
           }
         },
         "required": [
@@ -16801,12 +17408,12 @@
             "x-i18n-en": "Alertmanager external URL"
           },
           "alerts": {
-            "description": "告警列表（空数组被控制器 400 拒绝）",
+            "description": "告警列表（空数组/缺失由控制器映射层以 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY 拒绝）",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AlertmanagerAlertDto"
             },
-            "x-i18n-en": "Alert list (an empty array is rejected by the controller with 400)"
+            "x-i18n-en": "Alert list (empty or missing alerts are rejected by the controller mapping layer with 400 NOTIFICATION_ALERT_PAYLOAD_EMPTY)"
           }
         }
       },
@@ -19470,23 +20077,28 @@
           "version": {
             "type": "string",
             "example": "1.0.0",
-            "description": "应用版本号",
-            "x-i18n-en": "Application version"
+            "maxLength": 50,
+            "description": "应用版本号（上限对齐 UploadApplicationDto.version）",
+            "x-i18n-en": "Application version (cap aligned with UploadApplicationDto.version)"
           },
           "runtime": {
             "type": "string",
             "example": "node",
-            "description": "运行时类型",
-            "x-i18n-en": "Runtime type"
+            "maxLength": 50,
+            "description": "运行时类型（上限对齐 UploadApplicationDto.runtime）",
+            "x-i18n-en": "Runtime type (cap aligned with UploadApplicationDto.runtime)"
           },
           "gitRepo": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "gitBranch": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255
           },
           "gitCommit": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128
           },
           "manifest": {
             "type": "object"
@@ -19495,10 +20107,12 @@
             "type": "object"
           },
           "entrypoint": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2000
           },
           "packageUrl": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "approvalRequired": {
             "type": "boolean",
@@ -19536,23 +20150,28 @@
           "version": {
             "type": "string",
             "example": "1.0.0",
-            "description": "应用版本号",
-            "x-i18n-en": "Application version"
+            "maxLength": 50,
+            "description": "应用版本号（上限对齐 UploadApplicationDto.version）",
+            "x-i18n-en": "Application version (cap aligned with UploadApplicationDto.version)"
           },
           "runtime": {
             "type": "string",
             "example": "node",
-            "description": "运行时类型",
-            "x-i18n-en": "Runtime type"
+            "maxLength": 50,
+            "description": "运行时类型（上限对齐 UploadApplicationDto.runtime）",
+            "x-i18n-en": "Runtime type (cap aligned with UploadApplicationDto.runtime)"
           },
           "gitRepo": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "gitBranch": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255
           },
           "gitCommit": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 128
           },
           "manifest": {
             "type": "object"
@@ -19561,10 +20180,12 @@
             "type": "object"
           },
           "entrypoint": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2000
           },
           "packageUrl": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 2048
           },
           "approvalRequired": {
             "type": "boolean",
@@ -19766,6 +20387,52 @@
           "snapshot"
         ]
       },
+      "AppReleaseDeviceDto": {
+        "type": "object",
+        "properties": {
+          "executorId": {
+            "type": "string",
+            "description": "执行器行 id",
+            "x-i18n-en": "executor row id"
+          },
+          "executorName": {
+            "type": "string",
+            "nullable": true,
+            "description": "执行器可读名（executors.appName）；行已删/未上报名时 null",
+            "x-i18n-en": "human-readable executor name (executors.appName); null when the row is deleted or no name was reported"
+          },
+          "currentVersion": {
+            "type": "string",
+            "nullable": true,
+            "description": "该设备该应用 current 指向的版本（保留场景下可能与本行版本不同）",
+            "x-i18n-en": "version the device's current points to for this application (may differ from this row's version in the retained case)"
+          },
+          "retained": {
+            "type": "boolean",
+            "description": "本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本）",
+            "x-i18n-en": "this row's version is in the device's retainedVersions (the device still holds this version on disk)"
+          },
+          "online": {
+            "type": "boolean",
+            "description": "executors.status === ONLINE（离线设备的版本事实可能已过期）",
+            "x-i18n-en": "executors.status === ONLINE (version facts of an offline device may be stale)"
+          },
+          "lastHeartbeat": {
+            "type": "string",
+            "nullable": true,
+            "description": "executors.lastHeartbeat（设备最后上报时刻，ISO）",
+            "x-i18n-en": "executors.lastHeartbeat (the device's last report time, ISO)"
+          }
+        },
+        "required": [
+          "executorId",
+          "executorName",
+          "currentVersion",
+          "retained",
+          "online",
+          "lastHeartbeat"
+        ]
+      },
       "AppReleaseRowDto": {
         "type": "object",
         "properties": {
@@ -19861,6 +20528,14 @@
             "type": "string",
             "description": "operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON）",
             "x-i18n-en": "Reason why operator is null (RELEASE_OPERATOR_MISSING_REASON)"
+          },
+          "devices": {
+            "description": "R3-A（§4.3）：正在运行或本地保留该版本的设备（设备心跳上报事实；无设备上报时为空数组）。deploymentStatus/executorAddress 等字段仍是部署行推断（渐进迁移），设备真实状态以本字段为准。响应字段只增不改",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppReleaseDeviceDto"
+            },
+            "x-i18n-en": "R3-A (§4.3): devices currently running or locally retaining this version (facts reported by device heartbeats; empty array when no device has reported). deploymentStatus/executorAddress and similar fields are still deployment-row inferences (gradual migration); the real device state is this field. Response fields are add-only"
           }
         },
         "required": [
@@ -19877,7 +20552,8 @@
           "triggerType",
           "operator",
           "operatorSource",
-          "operatorMissingReason"
+          "operatorMissingReason",
+          "devices"
         ]
       },
       "AppReleasesResponseDto": {
@@ -19899,13 +20575,28 @@
             "type": "number",
             "description": "默认 50，上限 200",
             "x-i18n-en": "Default 50, maximum 200"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改",
+            "x-i18n-en": "R4 (4.7): true when the synthetic aggregation scan hits the 5000-row cap (aggregation reflects only the scanned portion and may be incomplete); false when under the cap or on pages other than page 1. Response fields are additive-only"
+          },
+          "retainedButTruncated": {
+            "description": "P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在本页返回行中」的版本号（字母序）；truncated=false 恒空数组。响应字段只增不改",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "P8-R (deployment-model review leftover): when truncated=true swallows the devices badge of truncated versions, lists the versions that have devices keeping them (currentVersion match or in retainedVersions) but are not among the rows returned on this page (alphabetical); always an empty array when truncated=false. Response fields are additive-only"
           }
         },
         "required": [
           "data",
           "total",
           "page",
-          "pageSize"
+          "pageSize",
+          "truncated",
+          "retainedButTruncated"
         ]
       },
       "RolloutStrategyDto": {
@@ -19921,10 +20612,89 @@
           "version": {
             "type": "string",
             "maxLength": 64,
-            "description": "本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本",
-            "x-i18n-en": "This rollout targets a historical released version (version **string**, not uuid) - used for progressive rollback. Default: the application's current version"
+            "description": "本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本。注意：该参数等价于 set-current-version + deploy-version 的组合（先按快照恢复应用当前字段，再下发），且会改写中台当前版本——R1（§4.2）拆分出的这两个端点是更明确的表达，建议改用新端点",
+            "x-i18n-en": "This rollout targets a historical released version (version **string**, not uuid) - used for progressive rollback. Default: the application's current version. Note: this parameter is equivalent to the set-current-version + deploy-version combination (it first restores the application fields from the snapshot, then dispatches) and rewrites the platform's current version - the two R1 (§4.2) split endpoints express this more explicitly; prefer them"
+          },
+          "includeStopped": {
+            "type": "boolean",
+            "description": "all 策略下把 stopped 部署行一并纳入升级（缺省 false——stopped 可能是人为停用）。pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细；failed 行恒排除（应走显式重新部署）。canary 策略忽略本参数",
+            "x-i18n-en": "Include STOPPED deployment rows in the upgrade under the all strategy (default false - stopped may be a deliberate shutdown). pending/deploying/upgrading in-flight rows are always skipped and listed in the response skipped detail; failed rows are always excluded (redeploy explicitly instead). The canary strategy ignores this flag"
           }
         }
+      },
+      "UpgradeAllCoverageDto": {
+        "type": "object",
+        "properties": {
+          "running": {
+            "type": "number",
+            "description": "RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once）",
+            "x-i18n-en": "Number of RUNNING rows with runMode != scheduled (live-process semantics: daemon/once)"
+          },
+          "scheduled": {
+            "type": "number",
+            "description": "RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖）",
+            "x-i18n-en": "Number of RUNNING rows with runMode = scheduled (deploy-only, awaiting task trigger - empirically a scheduled deploy reports running on completion, so the row's steady state is RUNNING and it is covered together with running by default)"
+          },
+          "stopped": {
+            "type": "number",
+            "description": "STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显）",
+            "x-i18n-en": "Number of STOPPED rows (upgraded only when includeStopped=true; the count is always reported)"
+          },
+          "failed": {
+            "type": "number",
+            "description": "FAILED 行数（恒排除，应走显式重新部署）",
+            "x-i18n-en": "Number of FAILED rows (always excluded; redeploy explicitly instead)"
+          },
+          "inFlight": {
+            "type": "number",
+            "description": "pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细）",
+            "x-i18n-en": "Number of in-flight rows (pending/deploying/upgrading; always skipped, each listed in the skipped detail)"
+          }
+        },
+        "required": [
+          "running",
+          "scheduled",
+          "stopped",
+          "failed",
+          "inFlight"
+        ]
+      },
+      "UpgradeAllSkippedItemDto": {
+        "type": "object",
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "executorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "deploying",
+              "upgrading"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "in_flight",
+              "awaiting_approval"
+            ],
+            "description": "in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）",
+            "x-i18n-en": "in_flight = an in-flight deploy/upgrade cannot be re-entered; awaiting_approval = row awaiting approval (DEP-04, reuses the pending slot)"
+          }
+        },
+        "required": [
+          "deploymentId",
+          "executorId",
+          "status",
+          "reason"
+        ]
       },
       "UpgradeAllResponseDto": {
         "type": "object",
@@ -19949,6 +20719,23 @@
           },
           "failed": {
             "type": "number"
+          },
+          "coverage": {
+            "description": "该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UpgradeAllCoverageDto"
+              }
+            ],
+            "x-i18n-en": "Per-status counts of the application's deployment rows (R2 §4.4). running+scheduled is the default coverage; stopped is upgraded only when includeStopped=true; failed is always excluded; inFlight is always skipped"
+          },
+          "skipped": {
+            "description": "在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpgradeAllSkippedItemDto"
+            },
+            "x-i18n-en": "Skip detail for in-flight rows (pending/deploying/upgrading) - not an error; each row carries its reason (R2 §4.4)"
           },
           "rollout": {
             "type": "object",
@@ -20060,6 +20847,200 @@
           "appId",
           "appName",
           "analysis"
+        ]
+      },
+      "SetCurrentVersionDto": {
+        "type": "object",
+        "properties": {
+          "versionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released",
+            "x-i18n-en": "application_versions.id (the version snapshot primary key, not the version number string) — status must be released"
+          }
+        },
+        "required": [
+          "versionId"
+        ]
+      },
+      "SetCurrentVersionResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "dispatched": {
+            "type": "boolean",
+            "description": "恒 false——本端点不下发任何设备（下发走 deploy-version）",
+            "x-i18n-en": "Always false — this endpoint never dispatches to any device (dispatching goes through deploy-version)"
+          },
+          "version": {
+            "type": "string",
+            "description": "恢复后的应用 version（= 快照 version）",
+            "x-i18n-en": "The application version after the restore (= the snapshot version)"
+          },
+          "versionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "命中的 application_versions.id",
+            "x-i18n-en": "The matched application_versions.id"
+          },
+          "updatedApp": {
+            "description": "恢复后的应用行（已掩码）",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationResponseDto"
+              }
+            ],
+            "x-i18n-en": "The restored application row (masked)"
+          }
+        },
+        "required": [
+          "ok",
+          "dispatched",
+          "version",
+          "versionId",
+          "updatedApp"
+        ]
+      },
+      "DeployVersionDto": {
+        "type": "object",
+        "properties": {
+          "versionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "application_versions.id（版本快照主键，非 version 号字符串）——status 必须为 released；下发前先按该快照恢复应用当前字段",
+            "x-i18n-en": "application_versions.id (the version snapshot primary key, not the version number string) — status must be released; the application's current fields are restored from this snapshot before dispatching"
+          },
+          "executorIds": {
+            "maxItems": 100,
+            "description": "仅对这些执行器对应的 RUNNING 部署行下发（重复 id 幂等去重）。缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 一致）。执行器无部署行/行状态不可下发的进响应 skipped 明细，不报错",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "Dispatch only to the RUNNING deployment rows of these executors (duplicate ids are deduped idempotently). Default = all RUNNING deployment rows of the application (same as the legacy rollback). Executors without a deployment row, or whose row is not dispatchable, are reported in the response skipped list instead of raising an error"
+          }
+        },
+        "required": [
+          "versionId"
+        ]
+      },
+      "DeployVersionUpgradedEntryDto": {
+        "type": "object",
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "executorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "部署行所在执行器（行无执行器时 null）",
+            "x-i18n-en": "The executor of the deployment row (null when the row has no executor)"
+          },
+          "executorAddress": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "deploymentId",
+          "executorId",
+          "executorAddress"
+        ]
+      },
+      "DeployVersionSkippedEntryDto": {
+        "type": "object",
+        "properties": {
+          "executorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "显式点名路径下恒有值；缺省（全 RUNNING）路径下取部署行值",
+            "x-i18n-en": "Always present on the explicit-targeting path; on the default (all RUNNING) path it takes the deployment row's value"
+          },
+          "deploymentId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "no_deployment",
+              "not_running",
+              "upgrade_rejected"
+            ],
+            "description": "no_deployment=该执行器在本应用下没有部署行；not_running=最新部署行状态非 running（detail 带实际 status）；upgrade_rejected=upgrade 链拒绝（detail 带原因）",
+            "x-i18n-en": "no_deployment = the executor has no deployment row under this application; not_running = the latest deployment row is not running (detail carries the actual status); upgrade_rejected = the upgrade chain rejected it (detail carries the reason)"
+          },
+          "detail": {
+            "type": "string",
+            "nullable": true,
+            "description": "跳过原因的机器可读补充（状态值 / 原始错误消息）",
+            "x-i18n-en": "Machine-readable supplement for the skip reason (status value / raw error message)"
+          }
+        },
+        "required": [
+          "executorId",
+          "deploymentId",
+          "reason"
+        ]
+      },
+      "DeployVersionResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "dispatched": {
+            "type": "boolean",
+            "description": "恒 true——本端点就是下发动作（恢复+下发）",
+            "x-i18n-en": "Always true — this endpoint is the dispatch action itself (restore + dispatch)"
+          },
+          "version": {
+            "type": "string",
+            "description": "本次下发的目标版本（= 快照 version）",
+            "x-i18n-en": "The version dispatched this time (= the snapshot version)"
+          },
+          "versionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "命中的 application_versions.id",
+            "x-i18n-en": "The matched application_versions.id"
+          },
+          "upgraded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeployVersionUpgradedEntryDto"
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeployVersionSkippedEntryDto"
+            }
+          },
+          "updatedApp": {
+            "description": "恢复后的应用行（已掩码）",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationResponseDto"
+              }
+            ],
+            "x-i18n-en": "The restored application row (masked)"
+          }
+        },
+        "required": [
+          "ok",
+          "dispatched",
+          "version",
+          "versionId",
+          "upgraded",
+          "skipped",
+          "updatedApp"
         ]
       },
       "ApplicationRollbackResponseDto": {
@@ -20374,6 +21355,123 @@
           "running",
           "failed",
           "lastDeployedAt"
+        ]
+      },
+      "AppDeploymentEventRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "applicationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deploymentId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）",
+            "x-i18n-en": "Deployment row id that triggered this event; the row may already have been deleted (events carry no foreign key and outlive the row)"
+          },
+          "executorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "executorAddress": {
+            "type": "string",
+            "nullable": true
+          },
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "deploy_created",
+              "redeploy_reused",
+              "approval_approved",
+              "approval_rejected",
+              "approval_cancelled",
+              "upgrade",
+              "stop",
+              "remove",
+              "stuck_failed"
+            ]
+          },
+          "deployedVersion": {
+            "type": "string",
+            "nullable": true,
+            "description": "动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion）",
+            "x-i18n-en": "Version fact at the time of the action (deploy/upgrade records app.version at action time; stop/remove/stuck records the row's deployedVersion)"
+          },
+          "triggerType": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "upgrade",
+              "rollback",
+              "approval"
+            ],
+            "description": "动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null",
+            "x-i18n-en": "Action semantics (DeploymentTriggerType); null for machine-driven paths (e.g. the stuck sweep)"
+          },
+          "operator": {
+            "type": "string",
+            "nullable": true,
+            "description": "操作人（JWT 用户名）；系统路径为 null",
+            "x-i18n-en": "Operator (JWT username); null for system-driven paths"
+          },
+          "detail": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥）",
+            "x-i18n-en": "Short fact snapshot (scalars such as reason/runMode/deletedStatus; the write side guarantees it never contains env secrets)"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "applicationId",
+          "deploymentId",
+          "executorId",
+          "executorAddress",
+          "eventType",
+          "deployedVersion",
+          "triggerType",
+          "operator",
+          "createdAt"
+        ]
+      },
+      "AppDeploymentEventsPageDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppDeploymentEventRowDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "pageSize": {
+            "type": "number",
+            "description": "默认 50，上限 200",
+            "x-i18n-en": "Default 50, maximum 200"
+          }
+        },
+        "required": [
+          "data",
+          "total",
+          "page",
+          "pageSize"
         ]
       },
       "CreateDeploymentDto": {
@@ -20895,12 +21993,51 @@
         "type": "object",
         "properties": {
           "packages": {
-            "description": "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状)",
+            "description": "Package names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离)",
             "type": "array",
             "items": {
               "type": "string"
             },
-            "x-i18n-en": "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 is collapsed into an empty 200 - the frontend error state depends on this shape)"
+            "x-i18n-en": "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream non-2xx/timeouts surface as 502/504 instead of an empty 200 - failure and empty states are semantically separated)"
+          }
+        },
+        "required": [
+          "packages"
+        ]
+      },
+      "RegistryNpmPackageDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "包名",
+            "x-i18n-en": "Package name"
+          },
+          "latest": {
+            "type": "string",
+            "description": "最新版本（上游 version/latest，缺失时省略）",
+            "x-i18n-en": "Latest version (upstream version/latest; omitted when absent)"
+          },
+          "description": {
+            "type": "string",
+            "description": "包描述（上游未提供时省略）",
+            "x-i18n-en": "Package description (omitted when the upstream does not provide one)"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "RegistryNpmPackagesResponseDto": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "description": "Verdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistryNpmPackageDto"
+            },
+            "x-i18n-en": "Verdaccio package array mapping (empty = upstream reachable but no packages; upstream non-2xx/non-JSON/shape drift surfaces as 502, timeout as 504)"
           }
         },
         "required": [
@@ -20944,6 +22081,63 @@
           "name",
           "size",
           "sha256"
+        ]
+      },
+      "ExecutionArtifactRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "executionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "所属执行 ID",
+            "x-i18n-en": "Owning execution ID"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "所属任务 ID（冗余快照）",
+            "x-i18n-en": "Owning task ID (snapshotted)"
+          },
+          "applicationId": {
+            "type": "string",
+            "nullable": true,
+            "description": "所属应用 ID（冗余快照；null = 任务未挂应用或应用已删除——SET NULL 语义）",
+            "x-i18n-en": "Owning application ID (snapshotted; null = the task has no application or the application was deleted -- SET NULL semantics)"
+          },
+          "name": {
+            "type": "string",
+            "description": "产物裸文件名",
+            "x-i18n-en": "Bare artifact file name"
+          },
+          "size": {
+            "type": "number",
+            "description": "字节数",
+            "x-i18n-en": "Size in bytes"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "存储字节的 sha256",
+            "x-i18n-en": "sha256 of the stored bytes"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "索引行创建时间（ISO-8601，随终态回调写入）",
+            "x-i18n-en": "Index row creation time (ISO-8601, written with the terminal-state callback)"
+          }
+        },
+        "required": [
+          "id",
+          "executionId",
+          "taskId",
+          "name",
+          "size",
+          "sha256",
+          "createdAt"
         ]
       },
       "ExecutionArtifactDto": {

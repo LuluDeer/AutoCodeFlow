@@ -64,8 +64,10 @@ export function resolveAppRoot(
  * `releases/<releaseKey>` 子目录（而不是任意传入的路径）。
  *
  * 删除单版本时渲染层传的是 `deployDir`（来自 apps:list）。这里不接受任意
- * 路径：必须是 `<appsRoot>/<appId>/releases/<key>` 这一固定深度，且每一段
- * 都过白名单——避免将来 IPC 参数被篡改成 `<appsRoot>` 本身或应用根目录。
+ * 路径：必须是 `<appsRoot>/<appId>/releases/<key>`（旧单段）或
+ * `<appsRoot>/<appId>/releases/<version>/<deploymentId>`（5c 两段）之内的
+ * 路径，且**每一段**都过白名单——避免将来 IPC 参数被篡改成 `<appsRoot>`
+ * 本身或应用根目录。
  */
 export function resolveReleaseDir(
   workDir: string | undefined,
@@ -74,11 +76,22 @@ export function resolveReleaseDir(
 ): { ok: true; releaseDir: string; appRoot: string } | { ok: false; error: string } {
   const root = resolveAppRoot(workDir, appId);
   if (!root.ok) return root;
-  if (!isSafeAppId(releaseKey)) {
+  // 5c：releaseKey 可为 '<version>/<deploymentId>' 两段（POSIX 分隔）。先按
+  // 段拆开逐段白名单，段数限 1..2（更深的形态一概拒绝，防穿越面不扩大）。
+  if (typeof releaseKey !== 'string') {
     return { ok: false, error: 'releaseKey 含非法字符' };
   }
+  const segments = releaseKey.split('/');
+  if (segments.length < 1 || segments.length > 2) {
+    return { ok: false, error: 'releaseKey 含非法字符' };
+  }
+  for (const seg of segments) {
+    if (!isSafeAppId(seg)) {
+      return { ok: false, error: 'releaseKey 含非法字符' };
+    }
+  }
   const releasesDir = path.join(root.appRoot, 'releases');
-  const releaseDir = path.resolve(releasesDir, releaseKey);
+  const releaseDir = path.resolve(releasesDir, ...segments);
   if (!releaseDir.startsWith(releasesDir + path.sep)) {
     return { ok: false, error: 'releaseKey 解析后落在 releases 目录之外' };
   }
@@ -86,15 +99,21 @@ export function resolveReleaseDir(
 }
 
 /**
- * 纯函数：读出 current 软链/junction 指向的 release 目录名（无 current 时为 null）。
- * 与 app-inventory.ts 的 readCurrentReleaseKey 同源语义，但这里需要它来**拒绝**
- * 删除当前生效的版本（删掉会让 current 悬空、应用直接不可用）。
+ * 纯函数：读出 current 软链/junction 指向的 releaseKey（相对 releases/，POSIX
+ * 形态；无 current 时为 null）。5c 两段布局的 basename 只剩 deploymentId（版本
+ * 段丢失），必须取相对 releases/ 的整段——与 app-inventory.ts 的
+ * readCurrentReleaseKey 同源语义。这里需要它来**拒绝**删除当前生效的版本
+ * （删掉会让 current 悬空、应用直接不可用）。
  */
 export function readCurrentReleaseKey(appRoot: string): string | null {
   try {
     const currentLink = path.join(appRoot, 'current');
     if (!fs.existsSync(currentLink)) return null;
-    return path.basename(fs.realpathSync(currentLink));
+    const real = fs.realpathSync(currentLink);
+    const releasesDir = path.join(appRoot, 'releases');
+    const rel = path.relative(releasesDir, real);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    return rel.split(path.sep).join('/');
   } catch {
     return null;
   }

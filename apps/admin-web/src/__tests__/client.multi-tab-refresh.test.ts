@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import axios, { AxiosError, AxiosHeaders, type AxiosAdapter } from 'axios';
+import axios, { AxiosError, AxiosHeaders, type AxiosAdapter, type InternalAxiosRequestConfig } from 'axios';
 import { client, getApiBaseUrl } from '../api/client';
 import { useAuthStore } from '../store/auth';
 
@@ -121,6 +121,131 @@ describe('A-4 refresh 前重读 localStorage 最新 token', () => {
   });
 });
 
+// F-6（UIUX 审计 P2-5）：多标签页 refresh「互踢」残余竞态收尾——
+//  ① TOCTOU：B 在 A 落盘前读走旧 RT，携已被轮换吊销的 RT 去刷新必 401；
+//     此时存储 RT 已不是自己这枚 → 别人的刷新已成功，复用新 access，不登出。
+//  ② 「成功刷新被守卫误杀」：refresh 在途期间 storage 事件把另一 tab 的新 RT
+//     同步进内存，旧守卫会把成功结果扔掉并登出；新语义改为复用新票。
+// 判据统一为「当前存储 RT 是否已不是自己那枚」，而非「自己发起时的 RT」。
+describe('F-6 多标签 refresh 互踢竞态收尾', () => {
+  /** 把 store/persist 置为「A/B 同持的旧会话」（两 tab 轮换前的共同起点）。 */
+  const seedSharedSession = () => {
+    writePersisted({ token: 'old-access', refreshToken: 'rt-old', user: { id: 1, username: 'alice' } });
+    useAuthStore.getState().setAuth('old-access', 'rt-old', { id: 1, username: 'alice' });
+  };
+  /** 模拟 tab A 完成轮换：新会话落盘（zustand persist 的原子写入）。 */
+  const aRotatesToDisk = () => {
+    writePersisted({ token: 'a-access', refreshToken: 'rt-new', user: { id: 1, username: 'alice' } });
+  };
+  /** 模拟 storage 事件把 A 的落盘同步进本 tab（B）内存。 */
+  const deliverStorageEvent = () => {
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+  };
+  const reject401 = (reject: (e: unknown) => void) => {
+    // AxiosError 的 response 需要完整 AxiosResponse（含 config）——
+    // InternalAxiosRequestConfig 只强制 headers，与 client.test.ts 的
+    // adapter config 同构。
+    const config = {
+      headers: new AxiosHeaders(),
+    } as InternalAxiosRequestConfig;
+    reject(new AxiosError('Request failed', undefined, config, undefined, {
+      config, status: 401, statusText: 'Unauthorized', headers: new AxiosHeaders(), data: { message: 'HTTP 401' },
+    }));
+  };
+
+  it('TOCTOU：B 携已被轮换的旧 RT 刷新 401（storage 已同步 A 新票）→ 复用 A 的新 access，不登出', async () => {
+    seedSharedSession();
+    adapter.mockImplementationOnce(failure401);
+    let rejectRefresh!: (e: unknown) => void;
+    const post = vi.spyOn(axios, 'post').mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectRefresh = reject; }),
+    );
+
+    const request = client.get('/tasks', { adapter: adapter as unknown as AxiosAdapter });
+    await vi.advanceTimersByTimeAsync(0);
+    // B 用的是自己发起时的 rt-old（A 尚未落盘）——TOCTOU 窗口
+    expect(post).toHaveBeenCalledWith(
+      `${getApiBaseUrl()}/auth/refresh`, { refreshToken: 'rt-old' }, { timeout: 10_000 },
+    );
+    // A 完成轮换：落盘 + storage 事件同步进 B 内存；B 的 refresh 随后 401
+    aRotatesToDisk();
+    deliverStorageEvent();
+    reject401(rejectRefresh);
+
+    await expect(request).resolves.toEqual({ ok: true }); // 原请求携 A 的新 access 重放成功
+    expect(useAuthStore.getState()).toMatchObject({ token: 'a-access', refreshToken: 'rt-new' }); // 未登出
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('双标签同时过期：B 的 refresh 携旧票 401、仅落盘已换新（storage 事件未达的纯 TOCTOU 窗口）→ 仍复用新票，并发请求都重放成功且不登出', async () => {
+    seedSharedSession();
+    // 两个并发首请求各吃一次 401（单飞 refresh 只发一发）
+    adapter.mockImplementationOnce(failure401).mockImplementationOnce(failure401);
+    let rejectRefresh!: (e: unknown) => void;
+    const post = vi.spyOn(axios, 'post').mockImplementation(
+      () => new Promise((_resolve, reject) => { rejectRefresh = reject; }),
+    );
+
+    const first = client.get('/tasks/1', { adapter: adapter as unknown as AxiosAdapter });
+    const second = client.get('/tasks/2', { adapter: adapter as unknown as AxiosAdapter });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(post).toHaveBeenCalledTimes(1);
+    // A 完成轮换：只落盘，storage 事件尚未到达 B（内存仍是 rt-old）
+    aRotatesToDisk();
+    reject401(rejectRefresh);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }]);
+    expect(useAuthStore.getState()).toMatchObject({ token: 'a-access', refreshToken: 'rt-new' }); // 未登出
+    expect(post).toHaveBeenCalledTimes(1); // 不补发第二发注定失败的 refresh
+  });
+
+  it('成功刷新不再被「session changed」守卫误杀：在途期间 storage 已同步 A 的新 RT → 复用 A 的新 access，A 的 RT 不被覆盖', async () => {
+    seedSharedSession();
+    adapter.mockImplementationOnce(failure401);
+    let resolveRefresh!: (v: { data: unknown }) => void;
+    const post = vi.spyOn(axios, 'post').mockImplementation(
+      () => new Promise((resolve) => { resolveRefresh = resolve; }),
+    );
+
+    const request = client.get('/tasks', { adapter: adapter as unknown as AxiosAdapter });
+    await vi.advanceTimersByTimeAsync(0);
+    // B 的 refresh 在途期间，A 的轮换经 storage 事件同步进 B 内存（RT 已换人）
+    aRotatesToDisk();
+    deliverStorageEvent();
+    // B 携旧票的 refresh 仍成功返回（后端宽限窗口：旧票尚未判死）
+    resolveRefresh({ data: { code: 0, data: { accessToken: 'b-access', refreshToken: 'b-rt' } } });
+
+    // 旧行为：守卫判「session changed」→ 扔掉成功结果 + 登出跳转（双 tab 全灭）
+    // 新行为：复用 A 的新 access 重放；b-rt 绝不盖掉 A 较新的 rt-new
+    await expect(request).resolves.toEqual({ ok: true });
+    expect(useAuthStore.getState()).toMatchObject({ token: 'a-access', refreshToken: 'rt-new' });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('回归：本 tab 已登出（RT 为 null）时仍丢弃在途刷新结果，绝不把 token 写回（DR-04 语义不变）', async () => {
+    seedSharedSession();
+    adapter.mockImplementationOnce(failure401);
+    let resolveRefresh!: (v: { data: unknown }) => void;
+    const post = vi.spyOn(axios, 'post').mockImplementation(
+      () => new Promise((resolve) => { resolveRefresh = resolve; }),
+    );
+
+    const request = client.get('/tasks', { adapter: adapter as unknown as AxiosAdapter });
+    await vi.advanceTimersByTimeAsync(0);
+    useAuthStore.getState().logout(); // 本 tab 登出（RT → null）
+    resolveRefresh({ data: { code: 0, data: { accessToken: 'revoked-access', refreshToken: 'revoked-rt' } } });
+
+    await expect(request).rejects.toBeDefined();
+    expect(useAuthStore.getState()).toMatchObject({ token: null, refreshToken: null });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('A-4 storage 事件同步（跨标签页）', () => {
   it('另一 tab 轮换写入 → 本 tab 内存同步为新 token', () => {
     writePersisted({
@@ -162,6 +287,89 @@ describe('A-4 storage 事件同步（跨标签页）', () => {
     expect(useAuthStore.getState()).toMatchObject({
       token: 'tab-b-access',
       refreshToken: 'tab-b-refresh',
+    });
+  });
+
+  // ── F-12（UIAUDIT P3-5）：storage 同步的「user 没变不写」判据 ─────────────
+  // 旧判据 `user !== persisted.user` 恒真（persisted.user 每次重新 JSON.parse，
+  // 引用永不相等）→ 每次跨 tab 写入都多打一发 setUser。序列化串比较后：
+  // 同一账号（同 id 同字段）不再 setUser，字段真变才写。
+  it('F-12：另一 tab 写入的 user 与内存相同（串相等）→ 不再触发 setUser', () => {
+    const setUserSpy = vi.spyOn(useAuthStore.getState(), 'setUser');
+    writePersisted({
+      token: 'tab-b-access',
+      refreshToken: 'tab-b-refresh',
+      user: { id: 1, username: 'alice' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    expect(setUserSpy).not.toHaveBeenCalled();
+    setUserSpy.mockRestore();
+  });
+
+  it('F-12：user 字段真变（同 id 换 username）→ 仍同步 setUser（幂等语义保留）', () => {
+    const setUserSpy = vi.spyOn(useAuthStore.getState(), 'setUser');
+    writePersisted({
+      token: 'tab-b-access',
+      refreshToken: 'tab-b-refresh',
+      user: { id: 1, username: 'alice-renamed' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    expect(setUserSpy).toHaveBeenCalledTimes(1);
+    setUserSpy.mockRestore();
+  });
+
+  // ── F-13（UIAUDIT P3-6）：跨 tab 换账号 → 整页 reload ────────────────────
+  // 已挂载页面的缓存/视图是前账号读面，只换 token 会残留前账号数据；识别
+  // user.id 变化即整页 reload（与 redirectToLogin 的整页语义对齐）。
+  // 断言口径：jsdom 的 location.reload 是 non-configurable own property，
+  // 无法 spy——改用 reload 分支的**早退副作用**区分：换账号事件不做任何局部
+  // 同步（token/user 保持旧值，页面随后由 reload 归零）；同账号轮换则正常同步。
+  it('F-13：另一 tab 登录了另一个账号（user.id 变化）→ reload 早退，不做局部同步', () => {
+    writePersisted({
+      token: 'tab-c-access',
+      refreshToken: 'tab-c-refresh',
+      user: { id: 2, username: 'bob' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    // 早退副作用：换账号后 token/user 保持旧值（若误走局部同步分支，
+    // token 会变成 tab-c-access）——jsdom 的 reload 本体只产生无害 stderr。
+    expect(useAuthStore.getState()).toMatchObject({
+      token: 'tab-b-access',
+      refreshToken: 'tab-b-refresh',
+    });
+    expect(useAuthStore.getState().user).toMatchObject({ id: 1, username: 'alice' });
+  });
+
+  it('F-13：同账号 token 轮换（id 不变）→ 正常局部同步（回归）', () => {
+    writePersisted({
+      token: 'tab-a-access',
+      refreshToken: 'tab-a-refresh',
+      user: { id: 1, username: 'alice' },
+    });
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'autoflow-auth',
+        newValue: localStorage.getItem('autoflow-auth'),
+      }),
+    );
+    expect(useAuthStore.getState()).toMatchObject({
+      token: 'tab-a-access',
+      refreshToken: 'tab-a-refresh',
     });
   });
 });

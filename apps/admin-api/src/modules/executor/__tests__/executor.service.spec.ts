@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getQueueToken } from "@nestjs/bullmq";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import {
   NotFoundException,
   ServiceUnavailableException,
@@ -161,6 +162,13 @@ describe("ExecutorService (__tests__)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: repo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -207,6 +215,13 @@ describe("ExecutorService (__tests__)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -2918,6 +2933,59 @@ describe("ExecutorService (__tests__)", () => {
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+
+    // P2-3（2026-10-26 第三轮审计）：pull 同址多行并存（ADR-017 §5）时，仅按
+    // address 寻路的 kill 会进别行的命令队列（resolveExecutorTransport 无
+    // ORDER BY、任一行获胜），错误机器查无此执行且无任何痕迹——而这是 stale
+    // sweep 防双跑的关键防线。透传 executorId 后走既有按行解析分支。
+    it("P2-3: executorId 在 → 按行定位 pull 命令队列（不 POST 快照地址）", async () => {
+      executorRepo.findOne.mockResolvedValueOnce({
+        id: "row-b",
+        address: "10.0.0.9:8002",
+        dispatchMode: "pull",
+        protocolVersion: 3,
+      });
+      const enqueue = jest.fn().mockResolvedValue("cmd-1");
+      // deliverControlCommand 走 enqueueExecutorCommand(executor.id, ...)，
+      // 它委托 pullService.enqueueCommand——本替身按同名方法对齐。
+      (service as unknown as { pullService: unknown }).pullService = {
+        enqueueCommand: enqueue,
+      };
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      try {
+        await service.notifyExecutorKill("e1", "10.0.0.9:8002", "row-b");
+        expect(enqueue).toHaveBeenCalledWith(
+          "row-b",
+          "kill-execution",
+          expect.objectContaining({ executionId: "e1" }),
+        );
+        // 绝不回退 push：目标行已按 id 唯一定位，快照地址是冗余出站面。
+        expect(mockedAxios.post).not.toHaveBeenCalled();
+      } finally {
+        (service as unknown as { pullService: unknown }).pullService = null;
+      }
+    });
+
+    it("P2-3: executorId 缺（存量行）→ 回落 address 寻路并 warn", async () => {
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      try {
+        await service.notifyExecutorKill("e1", "10.0.0.9:8002");
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("no executorId"),
+        );
+        // 回落路径保持既有 push 语义（地址直连）。
+        expect(mockedAxios.post).toHaveBeenCalledWith(
+          "http://10.0.0.9:8002/api/executions/e1/kill",
+          {},
+          expect.objectContaining({ timeout: 3000 }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   // SEC-SSRF-02 守卫语义：用真实实现，证明被守卫的地址确实会被拒绝、
@@ -3714,6 +3782,13 @@ describe("ExecutorService (__tests__)", () => {
       const module2 = await Test.createTestingModule({
         providers: [
           ExecutorService,
+          // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
           { provide: getRepositoryToken(Executor), useValue: executorRepo },
           { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
           { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -3774,6 +3849,13 @@ describe("ExecutorService (__tests__)", () => {
       const module2 = await Test.createTestingModule({
         providers: [
           ExecutorService,
+          // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
           { provide: getRepositoryToken(Executor), useValue: executorRepo },
           { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
           { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -5142,6 +5224,115 @@ describe("ExecutorService (__tests__)", () => {
         /未配置 ADMIN_API_URL/,
       );
     });
+
+    // E-7（2026-10-26 执行器域审计）：安装命令内含共享机器凭据（--secret 明文），
+    // 「谁在何时取过」必须留痕（rotate_token/delete 同为 AUTH-05 已审计）。
+    it("E-7: writes an executor.install_cmd_viewed audit entry without the token or command plaintext", async () => {
+      const audit = { log: jest.fn().mockResolvedValue(undefined) };
+      const module2 = await Test.createTestingModule({
+        providers: [
+          ExecutorService,
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
+          { provide: getRepositoryToken(Executor), useValue: executorRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          {
+            provide: getRepositoryToken(ExecutorMetricsHistory),
+            useValue: metricsHistoryRepo,
+          },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: ConfigService, useValue: configService },
+          {
+            provide: NotificationService,
+            useValue: {
+              notifyExecutorOnline: jest.fn(),
+              notifyExecutorOffline: jest.fn(),
+            },
+          },
+          {
+            provide: SystemConfigService,
+            useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+          },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      const svc = module2.get(ExecutorService);
+      (configService.get as jest.Mock).mockImplementation((key: string) =>
+        key === "app.adminApiUrl"
+          ? "https://admin.example.com"
+          : "viewed-token",
+      );
+
+      const result = await svc.getInstallCmd();
+
+      expect(result.token).toBe("viewed-token");
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "executor.install_cmd_viewed",
+          resource: "executor",
+          resourceId: "install-cmd",
+        }),
+      );
+      // 凭据明文绝不入审计：detail 不含 token/命令字符串。
+      const detail = JSON.stringify(audit.log.mock.calls[0][0]);
+      expect(detail).not.toContain("viewed-token");
+      expect(detail).not.toContain("curl -fsSL");
+    });
+
+    it("E-7: audit failure never fails the command generation (best-effort)", async () => {
+      const audit = {
+        log: jest.fn().mockRejectedValue(new Error("audit down")),
+      };
+      const module2 = await Test.createTestingModule({
+        providers: [
+          ExecutorService,
+          {
+            provide: DataSource,
+            useValue: {
+              transaction: async (fn: any) => fn({ getRepository: () => null }),
+            },
+          },
+          { provide: getRepositoryToken(Executor), useValue: executorRepo },
+          { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+          { provide: getRepositoryToken(Task), useValue: taskRepo },
+          {
+            provide: getRepositoryToken(ExecutorMetricsHistory),
+            useValue: metricsHistoryRepo,
+          },
+          { provide: getQueueToken("task-queue"), useValue: taskQueue },
+          { provide: ConfigService, useValue: configService },
+          {
+            provide: NotificationService,
+            useValue: {
+              notifyExecutorOnline: jest.fn(),
+              notifyExecutorOffline: jest.fn(),
+            },
+          },
+          {
+            provide: SystemConfigService,
+            useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+          },
+          {
+            provide: SecretsCryptoService,
+            useValue: new SecretsCryptoService({ get: () => "" } as any),
+          },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      const svc = module2.get(ExecutorService);
+
+      const result = await svc.getInstallCmd();
+      expect(result.cmd).toContain("curl -fsSL");
+    });
   });
 
   // ============================================================================
@@ -6459,7 +6650,13 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
       opts.appDeploymentRepo as never, // appDeploymentRepo（@Optional）
       null as never, // tokenCacheSync（@Optional，位于 mutexGroupRepo 前）
       null as never, // mutexGroupRepo（@Optional）
-      opts.applicationVersionRepo as never, // applicationVersionRepo（@Optional，尾参）
+      opts.applicationVersionRepo as never, // applicationVersionRepo（@Optional）
+      null as never, // executorAppVersionRepo（@Optional）
+      // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调；
+      // 该 spec 不触达 deployedApps 路径，直通即可）。
+      {
+        transaction: async (fn: any) => fn({ getRepository: () => null }),
+      } as never,
     );
 
   const r26Messages = (): string[] =>
@@ -6535,6 +6732,13 @@ describe("ExecutorService — ARCH-34 address 冲突接线", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -6761,6 +6965,13 @@ describe("ARCH-35 P1: dispatch 部署归属偏好接线（ExecutorService）", (
   const buildService = async (opts: { withDeploymentRepo?: boolean } = {}) => {
     const providers: any[] = [
       ExecutorService,
+      // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+      {
+        provide: DataSource,
+        useValue: {
+          transaction: async (fn: any) => fn({ getRepository: () => null }),
+        },
+      },
       { provide: getRepositoryToken(Executor), useValue: executorRepo },
       { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
       { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -7283,6 +7494,13 @@ describe("FEAT-22 方案 A: dispatch 部署约束 strict 接线（ExecutorServic
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -7653,6 +7871,13 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
   ): Promise<ExecutorService> => {
     const providers: any[] = [
       ExecutorService,
+      // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+      {
+        provide: DataSource,
+        useValue: {
+          transaction: async (fn: any) => fn({ getRepository: () => null }),
+        },
+      },
       { provide: getRepositoryToken(Executor), useValue: executorRepo },
       { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
       { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -7974,6 +8199,13 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -8421,6 +8653,13 @@ describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -8734,6 +8973,13 @@ describe("ExecutorService removal impact (B·1.1)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -8817,6 +9063,13 @@ describe("ExecutorService removal impact (B·1.1)", () => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -8863,10 +9116,13 @@ describe("ExecutorService removal impact (B·1.1)", () => {
   describe("cleanupOfflineExecutors 保留天数（运行期可配）", () => {
     const runCleanupWithRetention = async (configValue: string | null) => {
       executorRepo.find.mockResolvedValue([]);
-      (service as unknown as { systemConfigService: { findOne: jest.Mock } })
-        .systemConfigService.findOne = jest
+      (
+        service as unknown as { systemConfigService: { findOne: jest.Mock } }
+      ).systemConfigService.findOne = jest
         .fn()
-        .mockResolvedValue(configValue === null ? null : { value: configValue });
+        .mockResolvedValue(
+          configValue === null ? null : { value: configValue },
+        );
       await service.cleanupOfflineExecutors();
       // 断言交给 repo.find 的 cutoff 谓词（LessThan 的 _value 是 Date）
       const calls = (executorRepo.find as jest.Mock).mock.calls as unknown[][];
@@ -8897,8 +9153,9 @@ describe("ExecutorService removal impact (B·1.1)", () => {
 
     it("读配置抛错 → 静默回落 7 天，清理不挂", async () => {
       executorRepo.find.mockResolvedValue([]);
-      (service as unknown as { systemConfigService: { findOne: jest.Mock } })
-        .systemConfigService.findOne = jest
+      (
+        service as unknown as { systemConfigService: { findOne: jest.Mock } }
+      ).systemConfigService.findOne = jest
         .fn()
         .mockRejectedValue(new Error("config db down"));
       await expect(service.cleanupOfflineExecutors()).resolves.toBeUndefined();
@@ -8907,7 +9164,8 @@ describe("ExecutorService removal impact (B·1.1)", () => {
         where: { lastHeartbeat: { _value: Date } };
       };
       const days = Math.round(
-        (Date.now() - findArg.where.lastHeartbeat._value.getTime()) / 86_400_000,
+        (Date.now() - findArg.where.lastHeartbeat._value.getTime()) /
+          86_400_000,
       );
       expect(days).toBe(7);
     });
@@ -9051,6 +9309,13 @@ describe("ExecutorService — ADR-017 阶段 3 指纹定位与冲突分叉", () 
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
@@ -9095,6 +9360,13 @@ describe("ExecutorService — ADR-017 阶段 3 指纹定位与冲突分叉", () 
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
+        // R3-B：applyReportedAppVersions 整替事务的 DataSource 替身（直通回调）。
+        {
+          provide: DataSource,
+          useValue: {
+            transaction: async (fn: any) => fn({ getRepository: () => null }),
+          },
+        },
         { provide: getRepositoryToken(Executor), useValue: repo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },

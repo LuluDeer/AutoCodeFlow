@@ -31,12 +31,14 @@ import {
   AppDeploymentStatsDto,
   DeploymentRemoveResponseDto,
   PaginatedAppDeploymentsDto,
+  AppDeploymentEventsPageDto,
 } from "./dto/app-deployment-response.dto";
 import { ApiHeader } from "@nestjs/swagger";
 import {
   CreateDeploymentDto,
   DeploymentHeartbeatDto,
   ApprovalActionDto,
+  ListDeploymentEventsQueryDto,
 } from "./dto/app-deployment.dto";
 import { DeploymentApprovalStatus } from "./entities/app-deployment.entity";
 import { IsOptional, IsUUID, IsInt, Min, Max, IsEnum } from "class-validator";
@@ -52,7 +54,10 @@ import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 
-class ListDeploymentsQueryDto {
+// P3-1（2026-10-25 审计）：page 补 @Max(10000)——对齐 ListDeploymentEventsQueryDto
+// 的 NETOPT-3④ 口径（同文件 events 查询 DTO 既有）：无封顶的 page 可被
+// ?page=99999999 打深 OFFSET + 全量 COUNT 打满连接池。导出仅为 spec 直测。
+export class ListDeploymentsQueryDto {
   @ApiPropertyOptional({ description: "按应用 ID 过滤" })
   @IsOptional()
   @IsUUID()
@@ -67,11 +72,15 @@ class ListDeploymentsQueryDto {
   @IsEnum(DeploymentApprovalStatus)
   approvalStatus?: DeploymentApprovalStatus;
 
-  @ApiPropertyOptional({ default: 1 })
+  // P3-1（2026-10-25 审计）：page 补 @Max(10000)——对齐 ListDeploymentEventsQueryDto
+  // 的 NETOPT-3④ 口径（同文件 events/releases 既有）：无封顶的 page 可被
+  // ?page=99999999 打深 OFFSET + 全量 COUNT 打满连接池。
+  @ApiPropertyOptional({ default: 1, maximum: 10000 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(10000)
   page?: number = 1;
 
   @ApiPropertyOptional({ default: 20, maximum: 100 })
@@ -125,6 +134,44 @@ export class AppDeploymentController {
   @ApiOkResponse({ type: [AppDeploymentStatsDto] })
   findStats() {
     return this.svc.findStats();
+  }
+
+  /**
+   * R4（部署模型评审 §4.1A）：应用的不可变部署事件流（append-only 动作
+   * 追溯——deploy 新建/复用、审批三动作、upgrade、stop、remove、卡死扫死）。
+   *
+   * 路由顺序约束：同 stats——必须声明在 `@Get(":id")` 之前，否则
+   * "applications" 会被 `:id` 捕获 → ParseUUIDPipe 400。
+   *
+   * 读面、无 @Roles（与 findAll/stats 一致，登录即可）；分页默认 50、上限 200
+   * （对齐 /applications/:id/releases），不额外挂 @Throttle（走全局档）。
+   */
+  @Get("applications/:appId/events")
+  @ApiOperation({
+    description:
+      "R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流（append-only）。每个部署域写动作一行短事实快照（事件类型/版本事实/操作人）；事件无 UPDATE/DELETE 路径，remove 事件比部署行活得久（事件表无外键）。分页默认 50、上限 200，按 createdAt 倒序。事件 detail 由写入侧保证不含 env 密钥",
+    summary: "列出应用的部署事件流（不可变动作追溯）",
+  })
+  @ApiOkResponse({
+    type: AppDeploymentEventsPageDto,
+    description: "裸四键信封（data/total/page/pageSize），同 /releases 形态",
+  })
+  listApplicationEvents(
+    @Param("appId") appId: string,
+    @Query() query: ListDeploymentEventsQueryDto,
+  ) {
+    // 过滤参数（eventType/since/until）透传 service；DTO 已校验枚举值与
+    // ISO 8601 形态，这里不做二次解析。
+    return this.svc.getEventsByApp(
+      appId,
+      query.page ?? 1,
+      query.pageSize ?? 50,
+      {
+        eventType: query.eventType,
+        since: query.since,
+        until: query.until,
+      },
+    );
   }
 
   @Get(":id")
@@ -350,16 +397,19 @@ export class AppDeploymentController {
     if (!token) {
       throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_TOKEN_MISSING);
     }
-    // Look up deployment to find the associated executor
-    const deployment = await this.svc.findById(dto.deploymentId);
-    const executorId = deployment?.executorId;
-    if (!executorId) {
-      throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_NO_EXECUTOR);
-    }
-    const valid = await this.executorService.validateExecutorToken(
-      executorId,
-      token,
-    );
+    // P3-5（2026-10-25 审计）：@Public 机器面必须消 404/401 oracle。旧实现
+    // 先 findById——不存在的 deploymentId 对外 404、存在但令牌错 401，未鉴权
+    // 调用方借此枚举部署行存在性。令牌按部署行所辖执行器校验（逐执行器
+    // bcrypt hash + 共享令牌回退），无法在定位行之前完成——故把「查无行/
+    // 行无执行器/令牌无效」三种失败**收敛为同一个 401**（同 webhook APP-001
+    // 的不可区分拒绝姿态），部署存在性从此不可探测。
+    const deployment = await this.svc
+      .findById(dto.deploymentId)
+      .catch(() => null);
+    const executorId = deployment?.executorId ?? null;
+    const valid = executorId
+      ? await this.executorService.validateExecutorToken(executorId, token)
+      : false;
     if (!valid) {
       throw new AppError(ErrorCode.EXECUTOR_HEARTBEAT_TOKEN_INVALID);
     }

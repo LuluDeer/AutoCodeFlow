@@ -4,11 +4,14 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { OptimisticLockVersionMismatchError } from "typeorm";
 import {
   AppDeploymentService,
+  DEPLOYMENT_PENDING_TIMEOUT_MS,
+  DEPLOYMENT_STALL_TIMEOUT_MS,
   STOP_NOT_DELIVERED_PREFIX,
 } from "../app-deployment.service";
 import {
@@ -23,6 +26,7 @@ import { AuditService } from "../../audit/audit.service";
 // ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
 import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 import { AppError } from "../../../common/errors/app-error";
+import { UserRole } from "../../users/entities/user.entity";
 import {
   DOMAIN_EVENTS,
   type ExecutorAddressDriftedEventPayload,
@@ -130,6 +134,8 @@ describe("AppDeploymentService", () => {
       | "resolveExecutorTransport"
       | "deliverControlCommand"
       | "enqueueExecutorCommand"
+      // P2-2：判败 sweep 的「撤令」包装（detectStuckDeployments 调用）
+      | "recallDeploymentCommands"
     >
   >;
 
@@ -160,6 +166,8 @@ describe("AppDeploymentService", () => {
       // ARCH-33: 默认 push——本 spec 验证的是 push 路径语义，pull 通道的
       // 行为由 control-plane 专项用例覆盖。
       ...controlPlaneMocks(),
+      // P2-2：判败 sweep 的撤令包装（默认无在途命令）。
+      recallDeploymentCommands: jest.fn().mockResolvedValue(0),
     } as unknown as typeof executorService;
 
     const module = await Test.createTestingModule({
@@ -434,7 +442,8 @@ describe("AppDeploymentService", () => {
       const patch = calls[calls.length - 1]?.[1] as
         Record<string, unknown> | undefined;
       expect(patch?.status).toBe(DeploymentStatus.FAILED);
-      expect(String(patch?.statusMessage)).toContain("no longer exists");
+      // P3-①：秒级失败的提示文案已中文化。
+      expect(String(patch?.statusMessage)).toContain("已不存在");
     });
 
     // QA4: upgrade() leaves the row UPGRADING for the whole push (R5) and
@@ -899,6 +908,8 @@ describe("AppDeploymentService", () => {
           packageUrl: "http://packages/app.zip",
           runtime: "node",
         }),
+        // P0-1：快照恢复写面经属主守卫——actor 第三参（本组用例未带 actor）。
+        undefined,
       );
       expect(result).toEqual(
         expect.objectContaining({
@@ -923,10 +934,14 @@ describe("AppDeploymentService", () => {
 
       await service.rollbackApplication("app-1", "version-1");
 
-      expect(appService.update).toHaveBeenCalledWith("app-1", {
-        version: "1.0.1",
-        runtime: "node",
-      });
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        {
+          version: "1.0.1",
+          runtime: "node",
+        },
+        undefined,
+      );
     });
 
     it("rejects a version snapshot from another application", async () => {
@@ -978,10 +993,14 @@ describe("AppDeploymentService", () => {
         "deploy-legacy",
       );
 
-      expect(appService.update).toHaveBeenCalledWith("app-1", {
-        version: "0.9.0",
-        gitCommit: "cafef00d",
-      });
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        {
+          version: "0.9.0",
+          gitCommit: "cafef00d",
+        },
+        undefined,
+      );
       // packageUrl must NOT be written back from the app's current value
       expect(appService.update.mock.calls[0][1]).not.toHaveProperty(
         "packageUrl",
@@ -1022,6 +1041,295 @@ describe("AppDeploymentService", () => {
       expect(versionRepo.findOne).toHaveBeenCalledWith({
         where: { id: "deploy-legacy" },
       });
+    });
+  });
+
+  // R1（2026-10-24 部署模型评审 §4.2）：回滚拆分出的两个显式动作。
+  describe("setCurrentVersion / deployVersion（R1 §4.2 拆分）", () => {
+    const releasedVersion = {
+      id: "version-1",
+      applicationId: "app-1",
+      version: "1.0.0",
+      gitCommit: "abc123",
+      status: "released",
+      snapshot: {
+        version: "1.0.0",
+        runtime: "node",
+        gitBranch: "release",
+        packageUrl: "http://packages/app.zip",
+        env: { NODE_ENV: "production" },
+        entrypoint: "node app.js",
+        manifest: { tasks: [] },
+      },
+    };
+
+    it("setCurrentVersion：恢复应用字段且绝不触碰部署行（dispatched:false）", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+
+      const result = await service.setCurrentVersion("app-1", "version-1");
+
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        expect.objectContaining({
+          version: "1.0.0",
+          gitCommit: "abc123",
+          gitBranch: "release",
+          packageUrl: "http://packages/app.zip",
+          runtime: "node",
+        }),
+        // P0-1：快照恢复写面经属主守卫——actor 第三参（本组用例未带 actor）。
+        undefined,
+      );
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: true,
+          dispatched: false,
+          version: "1.0.0",
+          versionId: "version-1",
+        }),
+      );
+      // 安全半边：不读、不写任何部署行
+      expect(repo.find).not.toHaveBeenCalled();
+      expect(repo.findOne).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it("setCurrentVersion：版本不存在 → 404（不走 legacy 部署行回退）", async () => {
+      versionRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.setCurrentVersion("app-1", "missing"),
+      ).rejects.toThrow(NotFoundException);
+      expect(appService.update).not.toHaveBeenCalled();
+      expect(repo.find).not.toHaveBeenCalled();
+    });
+
+    it("setCurrentVersion：复用 rollback 校验——他应用版本 400、未发布 400", async () => {
+      versionRepo.findOne.mockResolvedValueOnce({
+        ...releasedVersion,
+        applicationId: "other-app",
+      });
+      await expect(
+        service.setCurrentVersion("app-1", "version-1"),
+      ).rejects.toThrow(BadRequestException);
+
+      versionRepo.findOne.mockResolvedValueOnce({
+        ...releasedVersion,
+        status: "deploying",
+      });
+      await expect(
+        service.setCurrentVersion("app-1", "version-1"),
+      ).rejects.toThrow(BadRequestException);
+      expect(appService.update).not.toHaveBeenCalled();
+    });
+
+    it("deployVersion 缺省 executorIds：恢复字段 + 对全部 RUNNING 行下发（旧 rollback 语义）", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        approvalStatus: null,
+        executorAddress: "executor:3001",
+      });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.deployVersion("app-1", "version-1");
+
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        expect.objectContaining({ version: "1.0.0" }),
+        undefined, // P0-1：actor 第三参（本组用例未带 actor）
+      );
+      expect(result.dispatched).toBe(true);
+      expect(result.upgraded).toEqual([
+        {
+          deploymentId: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+        },
+      ]);
+      expect(result.skipped).toEqual([]);
+      // findRunningByApp 查的是 RUNNING 行（与旧 rollback 相同谓词）
+      expect(repo.find).toHaveBeenCalledWith({
+        where: { applicationId: "app-1", status: DeploymentStatus.RUNNING },
+        order: { createdAt: "DESC" },
+      });
+    });
+
+    it("deployVersion 缺省：无 trigger 时逐行落 rollback 语义 + operator=null（对齐旧 rollback）", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-1",
+          applicationId: "app-1",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        approvalStatus: null,
+        executorAddress: "executor:3001",
+      });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.deployVersion("app-1", "version-1");
+
+      const saved = repo.save.mock.calls
+        .map(([e]: any[]) => e)
+        .find((e: any) => e.triggerType === "rollback");
+      expect(saved).toBeDefined();
+      expect(saved.operator).toBeNull();
+    });
+
+    it("deployVersion 显式 executorIds：无部署行/非 RUNNING 行进 skipped，不抛错", async () => {
+      versionRepo.findOne.mockResolvedValue(releasedVersion);
+      // findAllByApp：exec-1 有 RUNNING 行；exec-2 只有 stopped 行；exec-3 无行
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-2",
+          executorId: "exec-2",
+          executorAddress: "executor:3002",
+          status: DeploymentStatus.STOPPED,
+        },
+        {
+          id: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        approvalStatus: null,
+        executorAddress: "executor:3001",
+      });
+      repo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      const result = await service.deployVersion("app-1", "version-1", [
+        "exec-3",
+        "exec-2",
+        "exec-1",
+      ]);
+
+      expect(result.dispatched).toBe(true);
+      expect(result.upgraded).toEqual([
+        {
+          deploymentId: "deploy-1",
+          executorId: "exec-1",
+          executorAddress: "executor:3001",
+        },
+      ]);
+      expect(result.skipped).toEqual([
+        { executorId: "exec-3", deploymentId: null, reason: "no_deployment" },
+        {
+          executorId: "exec-2",
+          deploymentId: "deploy-2",
+          reason: "not_running",
+          detail: `status=${DeploymentStatus.STOPPED}`,
+        },
+      ]);
+    });
+
+    it("deployVersion：恢复校验失败 → 抛错且不触碰任何部署行", async () => {
+      versionRepo.findOne.mockResolvedValue({
+        ...releasedVersion,
+        status: "deploying",
+      });
+
+      await expect(service.deployVersion("app-1", "version-1")).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(repo.find).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  // P0-1（2026-10-25 审计）：spec 缺口修复——上方主 describe 把
+  // ApplicationService.update 整个 mock 掉（:142），属主守卫（NF-03）在
+  // 版本恢复链上从未被执行过，五处 `appService.update(appId, dto)` 两参调用
+  // 全量 403 的缺陷因此漏网。本 describe 装配**真实 ApplicationService**
+  // （只 mock 仓储），验证 setCurrentVersion 全链的守卫语义。
+  describe("setCurrentVersion 属主守卫全链（P0-1：不 mock ApplicationService）", () => {
+    const makeFullChainService = (ownedApp: Record<string, unknown>) => {
+      const appRepo = {
+        // ApplicationService.update 经 findByIdRaw 读原始行做守卫判定。
+        findOne: jest.fn().mockResolvedValue(ownedApp),
+        update: jest.fn().mockResolvedValue(undefined),
+      };
+      // moduleRef/aiService 不会被走到：onModuleInit 不触发（_projectAccess
+      // 保持 null → assertCanWriteProjectAware 与 assertCanWrite 等价），
+      // update 主链也不经 aiService。
+      const realAppService = new ApplicationService(
+        appRepo as unknown as any,
+        {} as unknown as any,
+        {} as unknown as any,
+      );
+      const versionRow = {
+        id: "ver-1",
+        applicationId: "app-1",
+        version: "1.2.0",
+        status: "released",
+        snapshot: {},
+        gitCommit: null,
+      };
+      const vRepo = makeRepo();
+      vRepo.findOne.mockResolvedValue(versionRow);
+      const svc = new AppDeploymentService(
+        makeRepo() as unknown as any,
+        vRepo as unknown as any,
+        realAppService as unknown as ApplicationService,
+        executorService as unknown as ExecutorService,
+        {
+          get: jest.fn().mockReturnValue(undefined),
+        } as unknown as ConfigService,
+      );
+      return { svc, appRepo, vRepo };
+    };
+
+    it("ADMIN 对自己的应用 setCurrentVersion 成功走通（守卫放行，字段落库）", async () => {
+      const { svc, appRepo } = makeFullChainService({
+        ...mockApp,
+        ownerUserId: 7,
+      });
+      const result = await svc.setCurrentVersion("app-1", "ver-1", {
+        id: 7,
+        role: UserRole.ADMIN,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.dispatched).toBe(false);
+      // 守卫确实读到行并放行（ADMIN 全量放行语义），恢复字段确实落库。
+      expect(appRepo.findOne).toHaveBeenCalled();
+      expect(appRepo.update).toHaveBeenCalled();
+    });
+
+    it("无 user 上下文直调 service → 403（APPLICATION_NOT_OWNER，修复前必现）", async () => {
+      const { svc, appRepo } = makeFullChainService({
+        ...mockApp,
+        ownerUserId: 7,
+      });
+      // 修复前：update 第三参恒缺省 → 守卫对 undefined user 判非属主 → 403，
+      // 而主 describe 的 mock 把守卫吞掉，链路在真实装配下不可用。
+      await expect(
+        svc.setCurrentVersion("app-1", "ver-1", undefined),
+      ).rejects.toThrow(ForbiddenException);
+      await expect(
+        svc.setCurrentVersion("app-1", "ver-1", undefined),
+      ).rejects.toMatchObject({ errorCode: "APPLICATION_NOT_OWNER" });
+      // 守卫拒绝发生在写库之前。
+      expect(appRepo.update).not.toHaveBeenCalled();
     });
   });
 
@@ -1199,7 +1507,8 @@ describe("AppDeploymentService", () => {
       await (service as any).pushDeployToExecutor(deployment, mockApp);
       expect(deployment.status).toBe(DeploymentStatus.FAILED);
       expect((deployment as any).statusMessage).toContain(
-        "Failed to reach executor",
+        // P3-①：推送耗尽的失败原因串已中文化（底层 err 原文保留在冒号后）。
+        "均失败",
       );
       jest.restoreAllMocks();
     });
@@ -1301,7 +1610,8 @@ describe("AppDeploymentService", () => {
       await (service as any).pushDeployToExecutor(deployment, mockApp);
 
       expect(deployment.status).toBe(DeploymentStatus.DEPLOYING);
-      expect(deployment.statusMessage).toContain("Deploy command sent");
+      // P3-①：推送成功文案已中文化（原「Deploy command sent to executor」）。
+      expect(deployment.statusMessage).toContain("部署命令已送达");
       expect(deployment.deployedVersion).toBe(mockApp.version);
       jest.restoreAllMocks();
     });
@@ -1460,6 +1770,47 @@ describe("AppDeploymentService", () => {
   });
 
   describe("stop", () => {
+    // P2-1（2026-10-25 审计）：在途行禁停。deploy 的推送是 fire-and-forget，
+    // 行在推送在途时被 stop 立即置 STOPPED，推送到达后应用照样拉起，心跳又被
+    // A-2② 状态守卫拒绝 → 行永久 STOPPED 而进程在跑（孤儿进程）。与
+    // removeDeployment 的终态守卫同口径：在途行 stop → 409。
+    it.each([
+      DeploymentStatus.PENDING,
+      DeploymentStatus.DEPLOYING,
+      DeploymentStatus.UPGRADING,
+    ])("P2-1: 在途行 (%s) stop → 409，不发信号不落库", async (status) => {
+      const deployment = {
+        id: "deploy-1",
+        status,
+        executorAddress: mockExecutor.address,
+        pid: 1234,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+
+      await expect(service.stop("deploy-1")).rejects.toMatchObject({
+        errorCode: "APP_DEPLOYMENT_STOP_IN_FLIGHT",
+      });
+      await expect(service.stop("deploy-1")).rejects.toThrow(ConflictException);
+      // 关键反证：不得对执行器发 app-stop，也不得把行写成 STOPPED。
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it("P2-1: 终态行（failed）stop 仍正常（守卫不扩大化）", async () => {
+      const deployment = {
+        id: "deploy-1",
+        status: DeploymentStatus.FAILED,
+        executorAddress: mockExecutor.address,
+        pid: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockImplementation(async (d: Record<string, unknown>) => d);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      const result = await service.stop("deploy-1");
+      expect(result.status).toBe(DeploymentStatus.STOPPED);
+    });
+
     it("sets status to STOPPED and saves", async () => {
       const deployment = {
         id: "deploy-1",
@@ -1652,12 +2003,55 @@ describe("AppDeploymentService", () => {
       expect(qb.execute).toHaveBeenCalledTimes(1);
       const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
       expect(setArg.status).toBe(DeploymentStatus.FAILED);
+      // P1-A2/P3-①：卡死文案改可读中文（「[System]」机器标记前缀保留），
+      // 分钟数由常量推导——断言与常量同源，改阈值不会让用例漂移。
       expect(String(setArg.statusMessage)).toBe(
-        "[System] Deployment timed out after 10 minutes",
+        `[System] 部署超时（无心跳）——超过 ${DEPLOYMENT_STALL_TIMEOUT_MS / 60_000} 分钟` +
+          `无心跳或进度更新，系统自动判败`,
       );
       // 版本快照标记仍逐行（composite key 各异，无法并入批量 UPDATE）
       expect(versionSnapshot.status).toBe("failed");
       expect(versionRepo.save).toHaveBeenCalledWith(versionSnapshot);
+    });
+
+    // P2-2（2026-10-26 第三轮审计）：判败即撤令——行进 FAILED 后 in-flight 槽位
+    // 释放，而该部署的 pull deploy 命令在命令 TTL（≤30min）内仍会被回归 pull
+    // 的执行器执行（设备装上无人跟踪的应用 + 可能与新部署叠成双进程）。
+    it("P2-2：判败 sweep 对实际命中的行撤销在途 pull 命令（未命中行不撤）", async () => {
+      const stuckDeployment = {
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        statusMessage: null,
+        deployedVersion: "1.0.0",
+      };
+      repo.find.mockResolvedValue([stuckDeployment]);
+      repo.createQueryBuilder.mockImplementationOnce(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: 1, raw: [{ id: "deploy-1" }] }),
+      }));
+
+      await service.detectStuckDeployments();
+
+      // 只有被本次 UPDATE **实际命中**的行才撤令（A-9 同口径：并发已推进的
+      // 行不在 affectedIds 里，它的命令仍有效）。
+      expect(executorService.recallDeploymentCommands).toHaveBeenCalledWith(
+        "deploy-1",
+      );
+    });
+
+    it("P2-2：sweep 未命中任何行（无在途部署）→ 不撤令", async () => {
+      repo.find.mockResolvedValue([]);
+
+      await service.detectStuckDeployments();
+
+      expect(executorService.recallDeploymentCommands).not.toHaveBeenCalled();
     });
 
     // R6: the stuck predicate must key on updatedAt (refreshed when the row
@@ -1682,13 +2076,14 @@ describe("AppDeploymentService", () => {
           DeploymentStatus.UPGRADING,
         ]),
       );
-      // Per-status thresholds: PENDING is swept after 5 minutes (QA5 — the
-      // normal PENDING window is process-internal), DEPLOYING/UPGRADING after
-      // the original 10.
+      // Per-status thresholds (P1-A2: named constants): PENDING is swept
+      // after 5 minutes (QA5 — the normal PENDING window is process-internal),
+      // DEPLOYING/UPGRADING after the stall window (30min — loose enough for
+      // slow-network large-package deploys that keep heartbeating).
       const expectedMs: Record<string, number> = {
-        [DeploymentStatus.PENDING]: 5 * 60 * 1000,
-        [DeploymentStatus.DEPLOYING]: 10 * 60 * 1000,
-        [DeploymentStatus.UPGRADING]: 10 * 60 * 1000,
+        [DeploymentStatus.PENDING]: DEPLOYMENT_PENDING_TIMEOUT_MS,
+        [DeploymentStatus.DEPLOYING]: DEPLOYMENT_STALL_TIMEOUT_MS,
+        [DeploymentStatus.UPGRADING]: DEPLOYMENT_STALL_TIMEOUT_MS,
       };
       for (const w of where) {
         expect(w.createdAt).toBeUndefined();
@@ -1721,12 +2116,12 @@ describe("AppDeploymentService", () => {
 
       await service.detectStuckDeployments();
 
-      // QA5: PENDING 行走 pendingIds 批量 UPDATE（5 分钟文案）
+      // QA5: PENDING 行走 pendingIds 批量 UPDATE（5 分钟文案，P1-A2 中文化）
       const qb = repo.createQueryBuilder.mock.results[0].value;
       const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
       expect(setArg.status).toBe(DeploymentStatus.FAILED);
       expect(String(setArg.statusMessage)).toMatch(/PENDING/);
-      expect(String(setArg.statusMessage)).toMatch(/5 minutes/);
+      expect(String(setArg.statusMessage)).toMatch(/5 分钟/);
       // PENDING rows have no version snapshot yet — nothing to mark failed.
       expect(versionRepo.save).not.toHaveBeenCalled();
     });
@@ -1845,7 +2240,8 @@ describe("AppDeploymentService", () => {
         id: "deploy-pull",
         applicationId: "app-1",
         status: DeploymentStatus.DEPLOYING,
-        // 12 分钟未动：按 10min 判据本应扫死，但命令 TTL（默认 30min）未到
+        // 12 分钟未动：远未到停跳窗（P1-A2 起 30min），命令 TTL（默认 30min）
+        // 也未到——豁免成立，行不被扫死
         updatedAt: new Date(Date.now() - 12 * 60 * 1000),
         statusMessage:
           "Deploy command queued for pull executor (commandId=cmd-1)",
@@ -1883,14 +2279,16 @@ describe("AppDeploymentService", () => {
     });
 
     // A-2①: 命令已被消费（push 路径文案/心跳覆盖了 statusMessage）的行不受
-    // 豁免影响，仍按 10min 正常扫死。
-    it("A-2①: a DEPLOYING row without the pull-queued marker keeps the 10min threshold", async () => {
+    // 豁免影响，仍按停跳窗（P1-A2 起 30min）正常扫死。
+    it("A-2①: a DEPLOYING row without the pull-queued marker keeps the stall threshold", async () => {
       const pushedRow = {
         id: "deploy-push",
         applicationId: "app-1",
         status: DeploymentStatus.DEPLOYING,
-        updatedAt: new Date(Date.now() - 11 * 60 * 1000),
-        statusMessage: "Deploy command sent to executor",
+        updatedAt: new Date(
+          Date.now() - (DEPLOYMENT_STALL_TIMEOUT_MS + 60_000),
+        ),
+        statusMessage: "部署命令已送达执行器，等待执行器完成部署并回报状态",
         deployedVersion: null,
         deployedCommit: null,
       };
@@ -1947,6 +2345,68 @@ describe("AppDeploymentService", () => {
       expect(predicate(upgradedRow)).toBe(false);
       // sanity: the old createdAt-based predicate WOULD have killed it
       expect(upgradedRow.createdAt.getTime() < now - 10 * 60 * 1000).toBe(true);
+    });
+
+    // P1-A3（2026-10-25 真机审计）：超时收败的**出口链**——执行器注册 409
+    // 死锁（fetchToken 恒 409 → 部署心跳恒 401）曾让部署行永久在途，而
+    // stop / 删除部署 / 删应用三面都只挡 in-flight（PENDING/DEPLOYING/
+    // UPGRADING），行收成 FAILED（终态）后三面自然解锁。本用例钉住「sweep
+    // 判败 → stop 放行 → removeDeployment 放行」整条链，防止未来有人把
+    // FAILED 也误加进拦截集合。
+    it("P1-A3: a row swept to FAILED by the stall sweep unlocks stop and removeDeployment", async () => {
+      const stuckRow = {
+        id: "deploy-deadlock",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        statusMessage: "部署命令已送达执行器，等待执行器完成部署并回报状态",
+        executorAddress: mockExecutor.address,
+        executorId: mockExecutor.id,
+        approvalStatus: null,
+        deployedVersion: null,
+        deployedCommit: null,
+        pid: null,
+        updatedAt: new Date(
+          Date.now() - (DEPLOYMENT_STALL_TIMEOUT_MS + 60_000),
+        ),
+      };
+      repo.find.mockResolvedValue([{ ...stuckRow }]);
+      // sweep 的守卫 UPDATE：RETURNING 命中该行（源状态仍是 DEPLOYING）。
+      repo.createQueryBuilder.mockImplementationOnce(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: 1, raw: [{ id: stuckRow.id }] }),
+      }));
+      await service.detectStuckDeployments();
+
+      // sweep 后行已落 FAILED（模拟条件 UPDATE 已提交的库态；statusMessage
+      // 用 sweep 的真实文案，stop 的事件面会按它推导送达标记）。
+      const failedRow = {
+        ...stuckRow,
+        status: DeploymentStatus.FAILED,
+        statusMessage:
+          "[System] 部署超时（无心跳）——超过 30 分钟无心跳或进度更新，系统自动判败",
+      };
+      repo.findOne.mockResolvedValue(failedRow);
+      repo.save.mockImplementation(async (d: Record<string, unknown>) => d);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      // 对照：DEPLOYING 行 stop → 409 APP_DEPLOYMENT_STOP_IN_FLIGHT（见
+      // stop describe 的 P2-1 用例）；FAILED 行不再被挡。
+      const stopped = await service.stop(stuckRow.id);
+      expect(stopped.status).toBe(DeploymentStatus.STOPPED);
+
+      // 对照：在途行删除 → 409 APP_DEPLOYMENT_STILL_IN_FLIGHT；FAILED 行
+      // 是「历史残影」，删除面放行。
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+      await expect(
+        service.removeDeployment(stuckRow.id, { id: 1, username: "ops" }),
+      ).resolves.toEqual({ ok: true, deletedId: stuckRow.id });
+      expect(repo.delete).toHaveBeenCalledWith({ id: stuckRow.id });
     });
   });
 

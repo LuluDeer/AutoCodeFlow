@@ -11,6 +11,11 @@ COPY --from=builder /install /usr/local
 COPY main.py .
 # E-10（DEEP_REVIEW 0ef3bbe）：非 root 用户运行——此前镜像以 root 启动。
 RUN useradd -r -u 1001 appuser && chown -R appuser:appuser /app
+# P1-2（UIAUDIT4）：/data/packages 必须在镜像内就存在且属 appuser——
+# 命名卷首次挂载时 Docker 按镜像内该路径的内容与属主初始化卷；路径在
+# 镜像里缺失时挂载点由 Docker 以 root 创建（实测 demo 栈 /data/packages
+# root:root，appuser 写路径全 500 PermissionError）。仅 chown /app 不覆盖本卷。
+RUN mkdir -p /data/packages && chown -R appuser:appuser /data
 USER appuser
 VOLUME ["/data/packages"]
 EXPOSE 8003

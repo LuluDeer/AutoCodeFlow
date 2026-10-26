@@ -8,7 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import type { FallbackProps } from 'react-error-boundary';
-import ErrorFallback, { copyErrorText } from '../components/ErrorFallback';
+import ErrorFallback from '../components/ErrorFallback';
+import { copyText } from '../utils/clipboard';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 
@@ -122,7 +123,7 @@ describe('StateError（UI-08 页内错误态标准块）', () => {
     Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
     const exec = vi.fn().mockReturnValue(true);
     document.execCommand = exec as unknown as typeof document.execCommand;
-    const ok = await copyErrorText('fallback-copy');
+    const ok = await copyText('fallback-copy');
     expect(ok).toBe(true);
     expect(exec).toHaveBeenCalledWith('copy');
   });

@@ -7,7 +7,7 @@ import {
   PROJECT_ROLE_RANK,
   isProjectRole,
 } from "./entities/project-member.entity";
-import { DEFAULT_PROJECT_ID } from "./project.entity";
+import { DEFAULT_PROJECT_ID, Project } from "./project.entity";
 // R32-A5（轴1/轴3）：成员授予前校验目标用户存在（project_members.userId 无 FK）。
 import { UsersService } from "../users/users.service";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
@@ -56,6 +56,19 @@ export type ProjectRoleResolution =
   | { readonly status: "none" }
   | { readonly status: "unavailable" };
 
+/**
+ * P2-2: PG 外键冲突（23503）判定——addMember 的 INSERT 撞
+ * fk_project_members_project（目标项目不存在/被并发删除）时据此归因 404。
+ * 只认 driver 层的 code，不做错误消息匹配（防 PG 文案/版本漂移；与
+ * users.service.isUniqueViolation 同款两处都看）。
+ */
+function isForeignKeyViolation(e: unknown): boolean {
+  const err = e as
+    { code?: unknown; driverError?: { code?: unknown } } | null | undefined;
+  const code = err?.code ?? err?.driverError?.code;
+  return code === "23503";
+}
+
 export interface ProjectMemberView {
   id: string;
   projectId: string;
@@ -91,6 +104,12 @@ export class ProjectAccessService {
     // （与 AUTH-02 之前逐字节一致）。
     @Optional()
     private readonly usersService?: UsersService | null,
+    // P2-2（2026-10-25 审计）：成员授予前的目标项目存在性预检。@Optional 同
+    // usersService——极简装配不破，缺席时由 addMember catch 层的 23503 归因
+    // 兜底。projects.module 的 forFeature 已含 Project，零装配改动。
+    @Optional()
+    @InjectRepository(Project)
+    private readonly projectRepo?: Repository<Project> | null,
   ) {}
 
   /**
@@ -195,7 +214,10 @@ export class ProjectAccessService {
     views: ProjectMemberView[],
   ): Promise<ProjectMemberView[]> {
     if (!this.usersService || views.length === 0) return views;
-    let byId: Map<number, { username: string; email: string; isActive: boolean }>;
+    let byId: Map<
+      number,
+      { username: string; email: string; isActive: boolean }
+    >;
     try {
       byId = await this.usersService.findIdentitiesByIds(
         views.map((v) => v.userId),
@@ -228,6 +250,13 @@ export class ProjectAccessService {
     this.assertRole(role);
     // R32-A5（轴1 幽灵成员 / 轴3 成员管理）：授予对象必须在场。
     await this.assertTargetUserExists(userId);
+    // P2-2（2026-10-25 审计）：授予目标项目也必须在场。project_members 对
+    // projects 有真 FK（fk_project_members_project，迁移 1790000000015），
+    // 此前不存在的 projectId 一路 INSERT 撞 23503 → 裸 500。入口预检给点名
+    // 404（PROJECT_NOT_FOUND，projects 域既有点名码，不新增码）；仓储缺席
+    // （@Optional 极简装配）时跳过预检，由下方 23503 兜底归因。预检与插入
+    // 之间仍夹着「项目被并发删除」的 TOCTOU 窗口——那是 catch 层的职责。
+    await this.assertProjectExists(projectId);
     // R58（ADR-026 规则 4）：先**条件 UPDATE**，再按需插入——不再 `findOne → 改字段 → 整行 save`。
     //
     // 那条旧路径有一个真实的复活窗口：并发的 removeMember 在 findOne 与 save 之间删掉这一行时，
@@ -243,12 +272,33 @@ export class ProjectAccessService {
       const row = this.repo.create({ projectId, userId, role });
       return this.toEnrichedView(await this.repo.save(row));
     } catch (err) {
+      // P2-2 第二层：预检（或 @Optional 仓储缺席跳过预检）与 INSERT 之间项目
+      // 被并发删除 → INSERT 撞 fk_project_members_project（23503）。归因为
+      // 点名 404，不让它冒成 500；同时避免把 23503 当「并发重复插入」去走
+      // 下面的重试收敛（重试同样撞 FK，只会把原始错误再抛一遍）。
+      if (isForeignKeyViolation(err)) {
+        throw new AppError(ErrorCode.PROJECT_NOT_FOUND, { id: projectId });
+      }
       // 并发 addMember：另一个请求刚插入了同一 (projectId, userId) —— 退化成更新（幂等收敛）。
       const retried = await this.repo.update({ projectId, userId }, { role });
       if (!retried.affected) throw err;
       const row = await this.repo.findOne({ where: { projectId, userId } });
       if (!row) throw err;
       return this.toEnrichedView(row);
+    }
+  }
+
+  /**
+   * P2-2：成员授予前的目标项目存在性闸（与 assertTargetUserExists 同形态）。
+   *
+   * projectRepo 缺席（既有单测/极简装配 `new ProjectAccessService(repo)`）时
+   * 跳过——行为与改动前一致，兜底交给 addMember catch 层的 23503 归因。
+   */
+  private async assertProjectExists(projectId: string): Promise<void> {
+    if (!this.projectRepo) return;
+    const exists = await this.projectRepo.findOne({ where: { id: projectId } });
+    if (!exists) {
+      throw new AppError(ErrorCode.PROJECT_NOT_FOUND, { id: projectId });
     }
   }
 
@@ -365,9 +415,7 @@ export class ProjectAccessService {
    * 与 `enrichIdentities` 同口径：补全失败只 warn、字段缺席——写面成功与否
    * 不该被一个展示字段的查询连坐。
    */
-  private async toEnrichedView(
-    row: ProjectMember,
-  ): Promise<ProjectMemberView> {
+  private async toEnrichedView(row: ProjectMember): Promise<ProjectMemberView> {
     const [view] = await this.enrichIdentities([this.toView(row)]);
     return view;
   }

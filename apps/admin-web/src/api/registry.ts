@@ -26,9 +26,13 @@ export const registryApi = {
   },
 
   // Upload PyPI package through admin-api proxy
+  // F-5（UIUX 审计 P2-4）：PyPI 包上传是 multipart 大包传输（弱网下可达数十
+  // 上百 MB），30s 全局超时会掐断在途上传——服务端可能仍在接收，重传造成
+  // 重复包。显式 timeout:0 不限时（上传期间 RegistryPage 有 uploading 态）。
   uploadPypiPackage: async (form: FormData): Promise<void> => {
     await client.post('/registry/pypi/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0,
     });
   },
 

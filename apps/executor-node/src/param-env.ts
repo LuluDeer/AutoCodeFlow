@@ -103,3 +103,42 @@ export function serializeParamsJson(
   if (keys.length === 0) return null;
   return JSON.stringify(params);
 }
+
+/**
+ * P2-2（2026-10-26 执行器域审计）：params 逐键通道的**键名闸**。
+ *
+ * ## 为什么 params 也需要键名闸（此前零校验）
+ *
+ * params 注入形态是 `env[paramEnvKey(k)] = …`，即 `AUTOFLOW_<KEY 大写>`——
+ * 键名**直接成为子进程环境变量名**。含 `=` 的键（`A=B` → `AUTOFLOW_A=B`）会让
+ * node spawn 构造 env 时**直接抛错**（secrets 向量 illegal-equals 注释自证同形：
+ * spawn 对含 `=` 的 env 键同步 throw，任务以与参数毫无关系的形式失败）；
+ * 含空格/短横线/点的键在 shell 引用（`$AUTOFLOW_MY-KEY`）里必然错位。此前
+ * 这些键直通 env——POSIX 下部分形态侥幸可用（unicode 键），Windows 下必坏，
+ * 且两端失败方式不一致（node spawn 抛错 / python 静默注入坏名）。
+ *
+ * ## 规则形态（对齐 secrets keyPattern 的宽松版）
+ *
+ * 单一事实源是 `packages/executor-protocol/protocol.json` 顶层 `params` 段
+ * （keyPattern `^[A-Za-z0-9_]{1,64}$`、onInvalidKey skip-and-warn）。与
+ * secret-env.ts 的 `SAFE_SECRET_NAME_RE`（`^[A-Za-z_][A-Za-z0-9_]*$`）的两点
+ * 刻意差异：① 无首字符限制——`AUTOFLOW_` 前缀保证 env 名首字符合法，数字开头
+ * 的原始键不构成风险；② 长度 ≤64——含前缀后仍有界。**不挂保留名/前缀拒绝**：
+ * params 走 `AUTOFLOW_` 命名空间，用户参数不可能触碰平台变量（同名参数被
+ * PARAMS_JSON_ENV_KEY 等平台键按注入顺序覆盖，那是既有语义不是漏洞）。
+ *
+ * 三端同款规则（常量注释互指）：admin 源头主闸
+ * `apps/admin-api/src/modules/executor/dispatch-params-keys.util.ts`
+ * （DISPATCH_PARAM_KEY_PATTERN，派发时跳过坏键保留好键）；本文件是执行器侧
+ * 防御纵深（pull 载荷、直连 /api/execute 都是入口，执行器不能假设上游一定
+ * 校验过——与 secret-env.ts 头注同一立场）；python 对等实现
+ * `apps/executor-python/routers/execute.py` 的 `_is_injectable_param_key`。
+ * 向量断言：`__tests__/executor-protocol-contract.spec.ts` 的 params 段
+ * （对真实实现逐条断言 protocol.json params.vectors）。
+ */
+const SAFE_PARAM_ENV_KEY_RE = /^[A-Za-z0-9_]{1,64}$/;
+
+/** 该 params 键是否可注入逐键通道（`AUTOFLOW_<KEY 大写>` 形态）。 */
+export function isInjectableParamEnvKey(key: string): boolean {
+  return SAFE_PARAM_ENV_KEY_RE.test(key);
+}

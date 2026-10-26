@@ -1,4 +1,11 @@
-import { ArgumentsHost, BadRequestException, HttpStatus } from "@nestjs/common";
+import {
+  ArgumentsHost,
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  UnprocessableEntityException,
+} from "@nestjs/common";
+import { QueryFailedError } from "typeorm";
 import { HttpExceptionFilter } from "../http-exception.filter";
 
 /**
@@ -128,5 +135,179 @@ describe("HttpExceptionFilter — 校验错误可达性（体验审查）", () =
     // LANG-ERR-01：前缀是中文兜底「参数校验失败：」——同样钉住"前缀存在"，
     // 否则实现回退成无前缀常量时这条会假绿。
     expect(body.message.startsWith("参数校验失败：")).toBe(true);
+  });
+});
+
+// F-41（UIUX 审计 P1-2）：PG 22P02（值形态与列类型不匹配——主流场景是 UUID
+// 主键列收到非 UUID 深链值）必须映射为 400 INVALID_VALUE_FORMAT，不得冒泡 500。
+describe("HttpExceptionFilter — PG 22P02 兜底映射（F-41）", () => {
+  function makeHost() {
+    const json = jest.fn();
+    const status = jest.fn().mockReturnValue({ json });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status }),
+        getRequest: () => ({ url: "/api/tasks/999999" }),
+      }),
+    } as unknown as ArgumentsHost;
+    return { host, status, json };
+  }
+
+  function pg22P02(value: string): QueryFailedError {
+    return new QueryFailedError(
+      "SELECT * FROM tasks WHERE id = $1",
+      [value],
+      Object.assign(
+        new Error(`invalid input syntax for type uuid: "${value}"`),
+        { code: "22P02" },
+      ) as Error,
+    );
+  }
+
+  it("22P02 → 400 INVALID_VALUE_FORMAT（请求方输入错误，非服务器故障）", () => {
+    const { host, status, json } = makeHost();
+    new HttpExceptionFilter().catch(pg22P02("999999"), host);
+
+    expect(status).toHaveBeenCalledWith(400);
+    const body = json.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["code"]).toBe(400);
+    expect(body["errorCode"]).toBe("INVALID_VALUE_FORMAT");
+    expect(body["message"]).toContain("格式非法");
+  });
+
+  it("非 22P02 的其它 DB 错误仍保持 500 兜底（不扩大映射面）", () => {
+    const { host, status, json } = makeHost();
+    const err = new QueryFailedError(
+      "SELECT 1",
+      [],
+      Object.assign(new Error("relation missing"), { code: "42P01" }) as Error,
+    );
+    new HttpExceptionFilter().catch(err, host);
+
+    expect(status).toHaveBeenCalledWith(500);
+    const body = json.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBeNull();
+  });
+});
+
+/**
+ * F-52 自查（UIAUDIT 后端轮，2026-10-25）：管道类 400 的兜底赋码。
+ *
+ * NestJS 内建管道（ParseIntPipe / ParseUUIDPipe / …）拒绝时抛字符串形态的
+ * BadRequestException（"Validation failed (…)"），经 filter 透传时
+ * errorCode 只能是 null——前端 i18n 失效回落裸英文。形态管道（F-41/F-52）
+ * 覆盖了 UUID/int 主键主路，剩余约 7 个模块的原生管道路由（config /
+ * api-keys / executor-package / event-subscriptions / mutex-group /
+ * app-deployment / projects:userId）由此兜底统一为 INVALID_VALUE_FORMAT。
+ * 按消息形态识别："Validation failed (" 是内建管道 exceptionFactory 的固定
+ * 前缀（框架契约）；业务代码手工抛的普通字符串 400 不受影响（不为它编造码）。
+ */
+describe("HttpExceptionFilter — 管道类 400 兜底赋码（F-52 自查）", () => {
+  it("ParseIntPipe 形态的 400 → INVALID_VALUE_FORMAT（中文目录文案）", () => {
+    const { status, json } = (() => {
+      const jsonFn = jest.fn();
+      const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+      const host = {
+        switchToHttp: () => ({
+          getResponse: () => ({ status: statusFn }),
+          getRequest: () => ({ url: "/api/config/abc" }),
+        }),
+      } as unknown as ArgumentsHost;
+      new HttpExceptionFilter().catch(
+        new BadRequestException(
+          "Validation failed (numeric string is expected)",
+        ),
+        host,
+      );
+      return { status: statusFn, json: jsonFn };
+    })();
+
+    expect(status).toHaveBeenCalledWith(400);
+    const body = json.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["code"]).toBe(400);
+    expect(body["errorCode"]).toBe("INVALID_VALUE_FORMAT");
+    expect(body["message"]).toContain("格式非法");
+  });
+
+  it("业务代码手工抛的普通字符串 400 维持 errorCode:null（不为它编造码）", () => {
+    const jsonFn = jest.fn();
+    const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status: statusFn }),
+        getRequest: () => ({ url: "/api/x" }),
+      }),
+    } as unknown as ArgumentsHost;
+    new HttpExceptionFilter().catch(
+      new BadRequestException("clock skew too large"),
+      host,
+    );
+
+    expect(statusFn).toHaveBeenCalledWith(400);
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBeNull();
+    expect(body["message"]).toBe("clock skew too large");
+  });
+
+  it("同款管道消息但非 400（422）不赋码（兜底只钉管道族所在的 400）", () => {
+    const jsonFn = jest.fn();
+    const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status: statusFn }),
+        getRequest: () => ({ url: "/api/x" }),
+      }),
+    } as unknown as ArgumentsHost;
+    new HttpExceptionFilter().catch(
+      // 真实 HttpException 子类（内建管道同款 object response 形态），
+      // 只是状态码换成 422——兜底的 status===400 门必须拦住它。
+      new UnprocessableEntityException(
+        "Validation failed (numeric string is expected)",
+      ),
+      host,
+    );
+
+    expect(statusFn).toHaveBeenCalledWith(422);
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBeNull();
+    expect(body["message"]).toBe(
+      "Validation failed (numeric string is expected)",
+    );
+  });
+});
+
+describe("HttpExceptionFilter — 429 限流统一赋码（UIAUDIT4 P3-4）", () => {
+  const run = (exception: unknown) => {
+    const jsonFn = jest.fn();
+    const statusFn = jest.fn().mockReturnValue({ json: jsonFn });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status: statusFn }),
+        getRequest: () => ({ url: "/api/auth/login" }),
+      }),
+    } as unknown as ArgumentsHost;
+    new HttpExceptionFilter().catch(exception, host);
+    return { statusFn, jsonFn };
+  };
+
+  it("ThrottlerException 形态（字符串 body 的 429）→ RATE_LIMITED + 中文目录文案，不再透出英文异常类名", () => {
+    // @nestjs/throttler 的 ThrottlerException 语义等价形态：429 + 字符串
+    // response（不直接 import throttler，避免为一条映射引入包耦合）。
+    const { statusFn, jsonFn } = run(
+      new HttpException("ThrottlerException: Too Many Requests", 429),
+    );
+    expect(statusFn).toHaveBeenCalledWith(429);
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBe("RATE_LIMITED");
+    expect(body["message"]).toContain("操作过于频繁");
+    expect(String(body["message"])).not.toContain("Throttler");
+  });
+
+  it("对象 body 的 429 同样赋码（任何 429 HttpException 同构处置）", () => {
+    const { jsonFn } = run(
+      new HttpException({ message: "Too Many Requests" }, 429),
+    );
+    const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
+    expect(body["errorCode"]).toBe("RATE_LIMITED");
   });
 });

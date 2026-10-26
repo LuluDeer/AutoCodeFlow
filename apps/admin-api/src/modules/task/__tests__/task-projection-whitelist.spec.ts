@@ -1,25 +1,57 @@
+import { getMetadataArgsStorage } from "typeorm";
 import { TASK_PROJECTION_WHITELIST } from "../dto/list-tasks-query.dto";
+import { Task } from "../entities/task.entity";
 
 /**
- * PERF-02（本轮体验审查）：`dependencies` 必须在投影白名单内。
+ * F-8（2026-10-25 审计）：白名单与实体列的 parity 断言。
  *
- * 缺陷：F-10 引入 `?fields=` 轻量投影时，把 `dependencies` 归类为「重量列」
- * 排除在白名单外（`task.service.ts:1013` 对白名单外字段直接 400）。但它是
- * TaskDependencyGraph 的**唯一**边集来源——`admin-web/src/components/
- * dag-layout.ts:58` 直接读 `t.dependencies`，undefined 即 `continue`。而
- * `useAllTasksForDag` 走的正是 `listAll` 的默认投影 `?fields=id,name`。
- *
- * 后果（生产 100% 复现，与数据规模无关）：任何配了上下游依赖的任务，打开
- * 「依赖」页签都显示空图 + 「该任务没有依赖其他任务，也没有任务依赖它」；
- * 「触发整条链」按钮退化为只触发单任务。
- *
- * 为什么既有测试全绿：`dag-layout.test.ts` 与 `task-dag-chain-trigger.test.tsx`
- * 都直接构造带 `dependencies` 的对象并 mock 掉 `tasksApi.listAll`，**绕过
- * API 层**；而 admin-api 侧此前**没有任何**针对该白名单的测试。
- *
- * 反证：从白名单里删掉 "dependencies"，第一条用例立刻变红。
+ * `?fields=` 的每一项都会变成 `SELECT "col"`——白名单里混入实体不存在的列
+ * （`enabled` 曾混入：启停语义在 status 列，Task 实体从未有过 enabled），
+ * 传它只会 400，属于「契约公示了不存在的列」的假 API 面。本 parity 测试
+ * 遍历白名单断言每一项都是 Task 实体的真实列（元数据级，无需 DB 连接），
+ * 防止将来再漂移。
  */
+describe("TASK_PROJECTION_WHITELIST — 白名单 ⊆ Task 实体列（F-8 parity）", () => {
+  const taskColumnNames = new Set(
+    getMetadataArgsStorage()
+      .columns.filter((c) => c.target === Task)
+      .map((c) => c.propertyName),
+  );
+
+  it.each([...TASK_PROJECTION_WHITELIST])(
+    "白名单项 %s 是 Task 实体的真实列",
+    (field) => {
+      expect(taskColumnNames.has(field)).toBe(true);
+    },
+  );
+
+  it("F-8 沿革：幽灵项 enabled 已删除（启停语义在 status 列，实体无该列）", () => {
+    expect(TASK_PROJECTION_WHITELIST).not.toContain("enabled");
+    // 反证：实体确实没有 enabled 列——若未来真加了该列，上面的删除即可重审
+    expect(taskColumnNames.has("enabled")).toBe(false);
+  });
+});
+
 describe("TASK_PROJECTION_WHITELIST — PERF-02 DAG 边集来源", () => {
+  /**
+   * PERF-02（本轮体验审查）：`dependencies` 必须在投影白名单内。
+   *
+   * 缺陷：F-10 引入 `?fields=` 轻量投影时，把 `dependencies` 归类为「重量列」
+   * 排除在白名单外（`task.service.ts:1013` 对白名单外字段直接 400）。但它是
+   * TaskDependencyGraph 的**唯一**边集来源——`admin-web/src/components/
+   * dag-layout.ts:58` 直接读 `t.dependencies`，undefined 即 `continue`。而
+   * `useAllTasksForDag` 走的正是 `listAll` 的默认投影 `?fields=id,name`。
+   *
+   * 后果（生产 100% 复现，与数据规模无关）：任何配了上下游依赖的任务，打开
+   * 「依赖」页签都显示空图 + 「该任务没有依赖其他任务，也没有任务依赖它」；
+   * 「触发整条链」按钮退化为只触发单任务。
+   *
+   * 为什么既有测试全绿：`dag-layout.test.ts` 与 `task-dag-chain-trigger.test.tsx`
+   * 都直接构造带 `dependencies` 的对象并 mock 掉 `tasksApi.listAll`，**绕过
+   * API 层**；而 admin-api 侧此前**没有任何**针对该白名单的测试。
+   *
+   * 反证：从白名单里删掉 "dependencies"，第一条用例立刻变红。
+   */
   it("包含 dependencies（DAG 的唯一边集来源，缺失则图恒空）", () => {
     expect(TASK_PROJECTION_WHITELIST).toContain("dependencies");
   });

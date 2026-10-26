@@ -782,3 +782,186 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
     });
   });
 });
+
+/**
+ * F-3/F-5/F-6/F-7（2026-10-25 后端审计修复轮）：触发配置上限、依赖值类型
+ * 收口、simple-array 元素禁逗号。全部走真实 ValidationPipe（与 main.ts 同
+ * 配置），UpdateTaskDto 经 PartialType 一并回归。
+ */
+describe("CreateTaskDto / UpdateTaskDto — 审计修复轮上限与类型收口", () => {
+  // 与 main.ts 全局管道同配置（同文件首个 describe 的形态）
+  const pipe = new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+  });
+
+  const validateCreate = (value: object) =>
+    pipe.transform(value, {
+      type: "body",
+      metatype: CreateTaskDto,
+    }) as Promise<CreateTaskDto>;
+
+  const validateUpdate = (value: object) =>
+    pipe.transform(value, {
+      type: "body",
+      metatype: UpdateTaskDto,
+    }) as Promise<UpdateTaskDto>;
+
+  describe("fixedRate 上限（F-3/F-6：int4 列 + 定时器 int32 ms 溢出线）", () => {
+    const base = { name: "t1", triggerType: "fixed_rate" as const };
+
+    it("accepts 2147483（×1000 = 2147483000 ms < 2^31-1）", async () => {
+      const result = await validateCreate({ ...base, fixedRate: 2147483 });
+      expect(result.fixedRate).toBe(2147483);
+    });
+
+    it("rejects 2147484 及以上（定时器回绕成负数 = 1ms 风暴）", async () => {
+      await expect(
+        validateCreate({ ...base, fixedRate: 2147484 }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        validateCreate({ ...base, fixedRate: 2 ** 31 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto（PATCH）继承同一上限", async () => {
+      const ok = await validateUpdate({ fixedRate: 30 });
+      expect(ok.fixedRate).toBe(30);
+      await expect(validateUpdate({ fixedRate: 2147484 })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe("retryDelay 上限（F-3：对齐 timeout 的 86400 语义）", () => {
+    it("accepts 86400（1 天）", async () => {
+      const result = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        retryDelay: 86400,
+      });
+      expect(result.retryDelay).toBe(86400);
+    });
+
+    it("rejects 86401（防 68 年重试延迟 / BullMQ delay 溢出）", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          retryDelay: 86401,
+        }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(validateUpdate({ retryDelay: 86401 })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe("dependencies value 类型收口（F-5：value 必须是任务 id 字符串）", () => {
+    const base = { name: "t1", triggerType: "api" };
+
+    // ValidationPipe 的 BadRequestException.message 是状态文案，约束明细在
+    // getResponse().message 数组里——断言走响应体 JSON。
+    const rejectionJson = async (p: Promise<unknown>): Promise<string> => {
+      const err = (await p.catch((e: unknown) => e)) as {
+        getResponse?: () => unknown;
+      };
+      expect(err).toBeInstanceOf(BadRequestException);
+      return JSON.stringify(err.getResponse ? err.getResponse() : err);
+    };
+
+    it("accepts string values（value=上游任务 id 契约）", async () => {
+      const result = await validateCreate({
+        ...base,
+        dependencies: { "task-a-name": "550e8400-e29b-41d4-a716-446655440000" },
+      });
+      expect(result.dependencies).toEqual({
+        "task-a-name": "550e8400-e29b-41d4-a716-446655440000",
+      });
+    });
+
+    it("accepts an empty object（无依赖；清空语义走显式 null）", async () => {
+      const result = await validateCreate({ ...base, dependencies: {} });
+      expect(result.dependencies).toEqual({});
+    });
+
+    it("rejects a numeric value（原样会 In([123]) 查 uuid 列 → PG 42883 裸 500）", async () => {
+      expect(
+        await rejectionJson(
+          validateCreate({ ...base, dependencies: { a: 123 } }),
+        ),
+      ).toMatch(/依赖值必须是任务 id/);
+    });
+
+    it("rejects a boolean value", async () => {
+      expect(
+        await rejectionJson(
+          validateCreate({ ...base, dependencies: { a: true } }),
+        ),
+      ).toMatch(/依赖值必须是任务 id/);
+    });
+
+    it("rejects an empty-string value（空串不可能是合法任务 id）", async () => {
+      expect(
+        await rejectionJson(
+          validateCreate({ ...base, dependencies: { a: "  " } }),
+        ),
+      ).toMatch(/依赖值必须是任务 id/);
+    });
+
+    it("UpdateTaskDto（PATCH）继承同一校验", async () => {
+      const ok = await validateUpdate({
+        dependencies: { b: "550e8400-e29b-41d4-a716-446655440000" },
+      });
+      expect(ok.dependencies).toEqual({
+        b: "550e8400-e29b-41d4-a716-446655440000",
+      });
+      expect(
+        await rejectionJson(validateUpdate({ dependencies: { b: 456 } })),
+      ).toMatch(/依赖值必须是任务 id/);
+      // 显式 null = 清空（PATCH 语义）照常放行
+      expect((await validateUpdate({ dependencies: null })).dependencies).toBe(
+        null,
+      );
+    });
+  });
+
+  describe("simple-array 元素禁逗号（F-7：逗号 join 落库会被静默劈裂）", () => {
+    const base = { name: "t1", triggerType: "api" };
+
+    it.each([
+      ["retryableErrors", ["timeout", "conn,reset"]],
+      ["alarmChannels", ["email", "webhook,x"]],
+      ["executorTags", ["gpu,a100"]],
+      ["executorAffinityTags", ["edge,cloud"]],
+      ["executorAntiAffinityTags", ["windows,11"]],
+    ])(
+      "rejects %s with a comma-bearing element (400)",
+      async (field, value) => {
+        await expect(
+          validateCreate({ ...base, [field]: value }),
+        ).rejects.toThrow(BadRequestException);
+      },
+    );
+
+    it.each([
+      ["retryableErrors", ["timeout", "etcd unreachable"]],
+      ["alarmChannels", ["email", "webhook"]],
+      ["executorTags", ["gpu"]],
+      ["executorAffinityTags", ["edge"]],
+      ["executorAntiAffinityTags", ["windows"]],
+    ])("accepts %s with comma-free elements", async (field, value) => {
+      const result = await validateCreate({ ...base, [field]: value });
+      expect(result[field as keyof CreateTaskDto]).toEqual(value);
+    });
+
+    it("UpdateTaskDto（PATCH）继承同一校验", async () => {
+      await expect(validateUpdate({ executorTags: ["a,b"] })).rejects.toThrow(
+        BadRequestException,
+      );
+      const ok = await validateUpdate({ executorTags: ["a"] });
+      expect(ok.executorTags).toEqual(["a"]);
+    });
+  });
+});

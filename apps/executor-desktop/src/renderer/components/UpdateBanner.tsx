@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Icon from './Icon';
 // i18n 二期收尾：更新横幅全部文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, resolveRendererLocale } from '../i18n';
+// P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
+import { ipcErrorMessage } from '../ipc-error';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -30,7 +32,9 @@ type Phase = 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
 interface UpdateApi {
   checkForUpdate?: () => Promise<{ ok: boolean }>;
   downloadUpdate?: () => Promise<{ ok: boolean }>;
-  installUpdate?: () => Promise<{ ok: boolean }>;
+  installUpdate?: () => Promise<{ ok: boolean; error?: string; canceled?: boolean }>;
+  // F-37（UIUX 审计）：取消在途下载（electron-updater 原生 CancellationToken）。
+  cancelUpdateDownload?: () => Promise<{ ok: boolean; canceled: boolean }>;
   // payload 类型与 preload 契约（src/preload/index.ts onUpdateAvailable）一致：
   // previouslyDownloaded 已入契约（B-3②），releaseNotes 同理（4.2）。
   // 方法保持可选是「electronAPI 缺失时防御性降级」的既有口径。
@@ -121,7 +125,7 @@ export default function UpdateBanner() {
       await api().downloadUpdate?.();
       // 进度事件会推到 downloading；若 provider 未回推进度则不卡死，保持 available
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       setPhase('error');
     } finally {
       setBusy(false);
@@ -131,12 +135,43 @@ export default function UpdateBanner() {
   const handleInstall = useCallback(async () => {
     setBusy(true);
     try {
-      await api().installUpdate?.();
+      const res = await api().installUpdate?.();
+      // F-37（UIUX 审计）：无可安装更新时主进程如实回传 ok:false（此前
+      // quitAndInstall no-op 仍回 ok:true，渲染层无感、语义不实）。哨兵
+      // UPDATER_NO_DOWNLOADED_UPDATE 映射双语提示；未知 error 原样展示。
+      // R105 原生确认被取消（canceled:true）不是失败：静默返回（F-26 口径）。
+      if (res && res.ok === false) {
+        if (res.canceled) return;
+        setError(
+          res.error === 'UPDATER_NO_DOWNLOADED_UPDATE'
+            ? t('update.noDownloadedUpdate')
+            : (res.error || t('update.failed')),
+        );
+        setPhase('error');
+      }
+      // ok:true 时应用即将退出安装，无需任何状态处理
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       setPhase('error');
     } finally {
       setBusy(false);
+    }
+  }, []);
+
+  // F-37：取消在途下载——主进程以 CancellationToken 原生中断（electron-updater
+  // 6.x 调研结论：原生取消可行，无需「关闭弹窗 + 不自动安装」的降级方案），
+  // 随后重发 update-available 让横幅回到 available 态；这里本地同步置回作双
+  // 保险（事件到达时重复 setState 无害）。canceled:false = 无在途下载可取消
+  // （竞态：下载刚完成，'downloaded' 事件已在路上），维持现状等事件。
+  const handleCancelDownload = useCallback(async () => {
+    try {
+      const res = await api().cancelUpdateDownload?.();
+      if (res?.ok && res.canceled) {
+        setPhase('available');
+        setError('');
+      }
+    } catch {
+      // 取消请求失败：保持 downloading 态（下载可能仍在继续），不打断进度
     }
   }, []);
 
@@ -147,7 +182,7 @@ export default function UpdateBanner() {
     try {
       await api().checkForUpdate?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(ipcErrorMessage(err));
       setPhase('error');
     } finally {
       setBusy(false);
@@ -212,6 +247,14 @@ export default function UpdateBanner() {
             max={100}
             aria-label={t('update.progressAria', pct)}
           />
+        </div>
+        {/* F-37（UIUX 审计）：下载期给用户「取消」路径——大包弱网期间此前
+            横幅常驻占版面且无从退出。取消后主进程重发 update-available，
+            横幅回到 available 态（可再次下载或直接无视）。 */}
+        <div className="update-banner-actions">
+          <button className="btn btn-sm" onClick={() => void handleCancelDownload()}>
+            {t('update.cancelDownload')}
+          </button>
         </div>
       </div>
     );

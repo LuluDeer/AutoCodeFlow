@@ -1,5 +1,5 @@
 {
-  "$comment": "B-5 i18n 缺键守卫基线（scripts/i18n-key-check.mjs 消费）。allowedMissing = 已知的存量缺键（t('key') 在 zh/en 缺失但暂缓补词条的，需 PR 说明；词条补齐后必须删除条目——陈旧条目会被守卫点名，N-04 纪律同 i18n-baseline.json）。dynamicCallFiles = 存在动态翻译键（t(变量/模板串)，静态不可判）的文件清单，新增文件必须在此登记并说明取键来源。首次落地（2026-10-02）实测：静态键 2448 个，zh/en 各 2695 词条，零缺失——allowedMissing 为空即真实状态。LANG-ERR-01 追加 utils/error.ts：其取键来源为 `err.${errorCode}`——errorCode 是**后端响应体**字段（380 个稳定错误码），词条由 scripts/gen-error-i18n.mjs 从后端码表生成（见 locales/generated/error-codes.{zh,en}.ts），静态源码里不可能出现字面量键名。该文件先用 i18n.exists(key) 判定再 t(key)，缺失即回落服务端中文兜底、绝不渲染裸码。SECURITY §3.1 追加 components/PasswordStrengthMeter.tsx：取键来源是 `utils/passwordPolicy.ts` 导出的两张**常量表**——`PASSWORD_STRENGTH_LEVELS[level].labelKey`（security.password.strength.{empty,weak,fair,good,strong}）与 `PASSWORD_RULE_LABEL_KEYS[ruleId]`（security.password.rule.{length,uppercase,digit,special}）。两张表的键都是字面量、且已全部落进 zh/en 词条（由 utils/__tests__/password-policy.test.ts 断言 labelKey 前缀），动态只是「由等级/规则 id 查表」，不存在运行期未知键名。",
+  "$comment": "B-5 i18n 缺键守卫基线（scripts/i18n-key-check.mjs 消费）。allowedMissing = 已知的存量缺键（t('key') 在 zh/en 缺失但暂缓补词条的，需 PR 说明；词条补齐后必须删除条目——陈旧条目会被守卫点名，N-04 纪律同 i18n-baseline.json）。dynamicCallFiles = 存在动态翻译键（t(变量/模板串)，静态不可判）的文件清单，新增文件必须在此登记并说明取键来源。首次落地（2026-10-02）实测：静态键 2448 个，zh/en 各 2695 词条，零缺失——allowedMissing 为空即真实状态。LANG-ERR-01 追加 utils/error.ts：其取键来源为 `err.${errorCode}`——errorCode 是**后端响应体**字段（380 个稳定错误码），词条由 scripts/gen-error-i18n.mjs 从后端码表生成（见 locales/generated/error-codes.{zh,en}.ts），静态源码里不可能出现字面量键名。该文件先用 i18n.exists(key) 判定再 t(key)，缺失即回落服务端中文兜底、绝不渲染裸码。SECURITY §3.1 追加 components/PasswordStrengthMeter.tsx：取键来源是 `utils/passwordPolicy.ts` 导出的两张**常量表**——`PASSWORD_STRENGTH_LEVELS[level].labelKey`（security.password.strength.{empty,weak,fair,good,strong}）与 `PASSWORD_RULE_LABEL_KEYS[ruleId]`（security.password.rule.{length,uppercase,digit,special}）。两张表的键都是字面量、且已全部落进 zh/en 词条（由 utils/__tests__/password-policy.test.ts 断言 labelKey 前缀），动态只是「由等级/规则 id 查表」，不存在运行期未知键名。F-7（UIUX 审计 P2-6）追加 components/SecretsEditor.tsx：取键来源是 utils/secretKeyPolicy.ts 导出的 SECRET_KEY_PROBLEM_T_KEYS 常量表——由 describeSecretKeyProblemKind 返回的四类问题 id（invalidName/reserved/autoflowPrefix/pythonPrefix）查表得 secretsEditor.keyError.* 键。表的键是字面量、已全部落进 zh/en 词条（由 __tests__/secret-key-policy.test.ts 与 secret-key-policy-source-guard.test.ts 钉住映射完整性与双侧规则一致），动态只是「由问题分类查表」，不存在运行期未知键名。",
   "allowedMissing": [],
   "dynamicCallFiles": [
     "api/client.ts",
@@ -7,6 +7,7 @@
     "components/CronHelper.tsx",
     "components/ExecutionInfoCard.tsx",
     "components/PasswordStrengthMeter.tsx",
+    "components/SecretsEditor.tsx",
     "components/dashboard/ExecutorHeatBars.tsx",
     "components/task-form/RuntimeVersionField.tsx",
     "components/task-form/TaskFormExecutorSection.tsx",

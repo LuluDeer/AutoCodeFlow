@@ -129,8 +129,9 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
   // R49-A1：列级写（queryBuilder().update().set(patch)）的落点断言入口。
   // 生产代码改成条件列级写后，用例要看的是 **patch 里到底写了哪些列**，
   // 而不是整行 save 的实体快照——后者正是本轮要消灭的对象。
-  (repo as unknown as { updatePatches: Array<Record<string, unknown>> })
-    .updatePatches = [];
+  (
+    repo as unknown as { updatePatches: Array<Record<string, unknown>> }
+  ).updatePatches = [];
   // PERF-03（本轮体验审查）：执行列表端点改为由 TypeORM 元数据派生读投影
   // （`executionListSelectColumns*` 读 `repo.metadata.columns`），故仓储替身
   // 必须像真实 Repository 一样带 metadata——此前替身缺这一项，一旦生产代码
@@ -193,8 +194,9 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
       update: jest.fn().mockReturnThis(),
       set: jest.fn((p: Record<string, unknown>) => {
         patch = p;
-        (repo as unknown as { updatePatches: Array<Record<string, unknown>> })
-          .updatePatches.push(p);
+        (
+          repo as unknown as { updatePatches: Array<Record<string, unknown>> }
+        ).updatePatches.push(p);
         return qb;
       }),
       // Mimic a conditional UPDATE: apply the patch onto the snapshot entity
@@ -292,12 +294,26 @@ describe("TaskService (__tests__)", () => {
       // tests that need rollback semantics override transaction entirely.
       transaction: jest.fn(async (fn: any) =>
         fn({
-          delete: jest.fn(async (_target: unknown, criteria: unknown) =>
-            logLineRepo.delete(criteria as any),
-          ),
+          delete: jest.fn(async (target: unknown, criteria: unknown) => {
+            // ARTIFACTS-INDEX-47: 索引整替（ExecutionArtifactRow）同经事务
+            // manager——委托到 artifactRepo 桩，legacy 断言口径不变。
+            if ((target as any)?.name === "ExecutionArtifactRow") {
+              const repo = (service as any)["artifactIndexRepo"];
+              return repo?.delete(criteria);
+            }
+            return logLineRepo.delete(criteria as any);
+          }),
           save: jest.fn(async (_target: unknown, rows: unknown) =>
             logLineRepo.save(rows as any),
           ),
+          // ARTIFACTS-INDEX-47: manager.insert 委托到 artifactRepo.insert。
+          insert: jest.fn(async (target: unknown, rows: unknown) => {
+            if ((target as any)?.name === "ExecutionArtifactRow") {
+              const repo = (service as any)["artifactIndexRepo"];
+              return repo?.insert(rows);
+            }
+            return undefined;
+          }),
         }),
       ),
       createQueryBuilder: jest.fn(() => ({
@@ -1687,12 +1703,10 @@ describe("TaskService (__tests__)", () => {
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
           // R63-A1: 任务行 = 列级条件写（update）；执行行 = save(create(...))
-          update: jest.fn(
-            async (_t: unknown, criteria: any, patch: any) => {
-              updates.push({ criteria, patch });
-              return { affected: 1 };
-            },
-          ),
+          update: jest.fn(async (_t: unknown, criteria: any, patch: any) => {
+            updates.push({ criteria, patch });
+            return { affected: 1 };
+          }),
           save: jest.fn(async (...args: any[]) => {
             const row = args[args.length - 1];
             if (row && typeof row === "object") {
@@ -4350,6 +4364,29 @@ describe("TaskService (__tests__)", () => {
         expect(committed).toEqual(["old-0", "old-1"]);
       });
 
+      // 巡查·静默吞错收口：s3GetExistingLog 的 catch 必须可见（warn）——
+      // 它承接「对象不存在（正常）」与「S3 故障/超量（异常）」两类结局，
+      // bare catch 会把 BUG-06 内容并集的 existing 静默置空，fallback 落库
+      // 的日志缺前几页且零痕迹。
+      it("s3GetExistingLog: S3 读异常 → warn 一次且返回 null（best-effort 语义不变）", async () => {
+        const warnSpy = jest
+          .spyOn((service as any).logger, "warn")
+          .mockImplementation(() => undefined);
+        const failingS3 = {
+          objectKey: (id: string) => `execution-logs/${id}.log.gz`,
+          get: jest.fn().mockRejectedValue(new Error("S3 read timeout")),
+        } as never;
+        const out = await (service as any)["s3GetExistingLog"](
+          failingS3,
+          "e-s3",
+        );
+        expect(out).toBeNull();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("S3 existing log read failed"),
+        );
+        warnSpy.mockRestore();
+      });
+
       it("append mode (backfill page 2+) skips the delete but still commits atomically", async () => {
         const exec = {
           id: "e1",
@@ -5323,6 +5360,210 @@ describe("TaskService (__tests__)", () => {
       // 仍回报 success（幂等确认）。
       expect(res[0].success).toBe(true);
     });
+
+    // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：产物清单双轨写——jsonb 列与
+    // execution_artifacts 索引表在终态回调 winner 分支同写。repo 桩直接替换
+    // 可选注入位（生产由 TaskModule forFeature 提供）。
+    describe("ARTIFACTS-INDEX-46 产物索引双轨写", () => {
+      let artifactRepo: {
+        delete: jest.Mock;
+        create: jest.Mock;
+        insert: jest.Mock;
+      };
+
+      beforeEach(() => {
+        artifactRepo = {
+          delete: jest.fn().mockResolvedValue({ affected: 0 }),
+          create: jest.fn((x: unknown) => x),
+          insert: jest.fn().mockResolvedValue(undefined),
+        };
+        // @ts-expect-error: 测试直接替换可选注入位（生产由 TaskModule 提供）
+        service["artifactIndexRepo"] = artifactRepo;
+      });
+
+      const mkExec = () => ({
+        id: "exec-art-1",
+        taskId: "task-art-1",
+        taskName: "artifact-job",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "host-a:1",
+        logs: "",
+      });
+
+      it("winner 回调带非空清单 → jsonb patch 与索引表整替同步写（先 delete 后 insert）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue({
+          id: "task-art-1",
+          applicationId: "app-1",
+        });
+        const manifest = [
+          { name: "a.csv", size: 10, sha256: "0".repeat(64) },
+          { name: "b.log", size: 20, sha256: "1".repeat(64) },
+        ];
+        const res = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: manifest,
+          },
+        ]);
+        expect(res[0].success).toBe(true);
+        // jsonb 侧：终态 patch 携带整列清单（既有行为，双轨之一）。
+        const patches = (
+          execRepo as unknown as {
+            updatePatches: Array<Record<string, unknown>>;
+          }
+        ).updatePatches;
+        expect(patches.some((p) => p.artifacts === manifest)).toBe(true);
+        // 索引表侧：按执行整替（delete + insert），行带 taskId/appId 快照。
+        expect(artifactRepo.delete).toHaveBeenCalledWith({
+          executionId: "exec-art-1",
+        });
+        expect(artifactRepo.insert).toHaveBeenCalledTimes(1);
+        const rows = artifactRepo.insert.mock.calls[0][0];
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toMatchObject({
+          executionId: "exec-art-1",
+          taskId: "task-art-1",
+          applicationId: "app-1",
+          name: "a.csv",
+          size: 10,
+        });
+      });
+
+      it("缺省/空清单 → 双侧都不写（jsonb 不覆盖旧值，索引表不动）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        const res1 = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+          },
+        ]);
+        expect(res1[0].success).toBe(true);
+        expect(artifactRepo.delete).not.toHaveBeenCalled();
+        expect(artifactRepo.insert).not.toHaveBeenCalled();
+        const patches = (
+          execRepo as unknown as {
+            updatePatches: Array<Record<string, unknown>>;
+          }
+        ).updatePatches;
+        expect(patches.some((p) => "artifacts" in p)).toBe(false);
+      });
+
+      it("重复回调（已终态，affected=0）→ 不重放索引写（winner 语义）", async () => {
+        const exec = { ...mkExec(), status: ExecutionStatus.SUCCESS };
+        execRepo.findOne.mockResolvedValue(exec);
+        await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 1, sha256: "f" }],
+          },
+        ]);
+        expect(artifactRepo.delete).not.toHaveBeenCalled();
+        expect(artifactRepo.insert).not.toHaveBeenCalled();
+      });
+
+      it("索引写失败 → best-effort 只 warn，主链照常成功（jsonb 不受影响）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        artifactRepo.delete.mockRejectedValue(new Error("db down"));
+        const warnSpy = jest
+          .spyOn(
+            (service as unknown as { logger: { warn: jest.Mock } }).logger,
+            "warn",
+          )
+          .mockImplementation(() => undefined);
+        const res = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 1, sha256: "f" }],
+          },
+        ]);
+        expect(res[0].success).toBe(true);
+        expect(warnSpy).toHaveBeenCalled();
+        warnSpy.mockRestore();
+      });
+
+      it("任务行已删 → applicationId 快照 null（按任务/执行维度仍完整）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue(null);
+        await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 1, sha256: "f" }],
+          },
+        ]);
+        const rows = artifactRepo.insert.mock.calls[0][0];
+        expect(rows[0].applicationId).toBeNull();
+      });
+
+      // ARTIFACTS-INDEX-47（服务层质量巡查·事务边界）：整替的 delete+insert
+      // 必须同事务。winner 语义保证同一执行至多整替一次——insert 失败时
+      // 不存在「下次上报补写」，旧行为（先 delete 后 insert、无事务）会把
+      // 索引行清空且永久丢失（jsonb 主轨在、GET /artifacts 对该执行恒空）。
+      it("ARTIFACTS-INDEX-47: 索引整替走同一事务；insert 失败 = 整体没写（原子）", async () => {
+        const exec = mkExec();
+        execRepo.findOne.mockResolvedValue(exec);
+        taskRepo.findOne.mockResolvedValue({
+          id: "task-art-1",
+          applicationId: "app-1",
+        });
+        // 事务替身：manager 委托到 artifactRepo 桩；insert 抛错时事务
+        // 回滚——用「staged 只在成功路径落账」模拟真实 ROLLBACK 语义。
+        const committedDeletes: unknown[] = [];
+        const committedInserts: unknown[] = [];
+        const realTransaction = dataSource.transaction;
+        dataSource.transaction.mockImplementationOnce(async (fn: any) => {
+          const staged = { deletes: [] as unknown[], inserts: [] as unknown[] };
+          const manager = {
+            delete: async (_t: unknown, criteria: unknown) => {
+              staged.deletes.push(criteria);
+            },
+            insert: async (_t: unknown, _rows: unknown) => {
+              throw new Error("connection reset mid-insert");
+            },
+          };
+          try {
+            await fn(manager);
+            committedDeletes.push(...staged.deletes);
+            committedInserts.push(...staged.inserts);
+          } catch (err) {
+            // ROLLBACK：staged 丢弃，任何一面都不落账。
+            throw err;
+          }
+        });
+
+        const res = await service.handleCallback([
+          {
+            executionId: "exec-art-1",
+            status: "success",
+            executorAddress: "host-a:1",
+            artifacts: [{ name: "a.csv", size: 10, sha256: "0".repeat(64) }],
+          },
+        ]);
+
+        // best-effort：主链照常成功（jsonb 不受影响），只 warn。
+        expect(res[0].success).toBe(true);
+        // 原子性：delete 已进入事务但回滚——最终没有任何一面落账。
+        expect(committedDeletes).toHaveLength(0);
+        expect(committedInserts).toHaveLength(0);
+        // repo 桩（事务外路径）不再被触碰：整替完全收进事务。
+        expect(artifactRepo.delete).not.toHaveBeenCalled();
+        expect(artifactRepo.insert).not.toHaveBeenCalled();
+        void realTransaction;
+      });
+    });
   });
 
   describe("saveVersion", () => {
@@ -5862,6 +6103,32 @@ describe("TaskService (__tests__)", () => {
       expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
         "e1",
         "10.0.0.9:8002",
+        // P2-3：本夹具的行没有 executorId（存量行形态）——第三参 undefined，
+        // 上层回落 address 寻路并 warn。
+        undefined,
+      );
+    });
+
+    // P2-3（2026-10-26 第三轮审计）：kill 透传执行行的 executorId（行身份）——
+    // pull 同址多行时 kill 必须按行寻路，仅按 address 会进别行命令队列而静默
+    // miss（stale sweep 防双跑的关键防线）。存量行（无 executorId）走上一条
+    // 用例的形态：第三参 undefined，上层回落 address 寻路 + warn。
+    it("P2-3: kill notification passes the execution's executorId through (改动5 + P2-3)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "10.0.0.9:8002",
+        executorId: "row-b",
+        startTime: new Date(Date.now() - 1000),
+      };
+      givenOwnedExecution(exec);
+
+      await service.killExecution("e1", ADMIN_USER);
+
+      expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
+        "e1",
+        "10.0.0.9:8002",
+        "row-b",
       );
     });
 
@@ -7660,6 +7927,202 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
     });
   });
 
+  // ── 2026-10-25 后端审计修复轮（F-1/F-2/F-4/F-10）────────────────────────
+  describe("F-4: create 响应脱敏（SEC-02 红线，写路径最后一个漏点）", () => {
+    it("create 带 secrets → 响应叶子值全 ******，落库值保持真实", async () => {
+      taskRepo.findOne.mockResolvedValue(null); // R6 预检：id 未占用
+      taskRepo.save.mockImplementation((t: any) =>
+        Promise.resolve({ id: "1", ...t }),
+      );
+
+      const result: any = await service.create({
+        name: "with-secrets",
+        triggerType: "api",
+        secrets: { API_TOKEN: "sk-live-abc", DB_PASSWORD: "hunter2" },
+      } as any);
+
+      // 响应面：每个叶子都是掩码（与 findOne/update/pause/resume/updateGlue 同契约）
+      expect(result.secrets).toEqual({
+        API_TOKEN: "******",
+        DB_PASSWORD: "******",
+      });
+      expect(JSON.stringify(result)).not.toContain("sk-live-abc");
+      // 落库面：save 收到的仍是真实值（降级桩明文透传）
+      const savedRow = taskRepo.save.mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(savedRow["secrets"]).toEqual({
+        API_TOKEN: "sk-live-abc",
+        DB_PASSWORD: "hunter2",
+      });
+    });
+
+    it("create 不带 secrets → 响应无 secrets 键（掩码函数透传 undefined）", async () => {
+      taskRepo.findOne.mockResolvedValue(null);
+      taskRepo.save.mockImplementation((t: any) =>
+        Promise.resolve({ id: "2", ...t }),
+      );
+
+      const result: any = await service.create({
+        name: "no-secrets",
+        triggerType: "api",
+      } as any);
+      expect(result.secrets).toBeUndefined();
+    });
+  });
+
+  describe("F-1: PATCH 请求体不可重写任务主键 id", () => {
+    // makeRepo 的列级写落点（update describe 内的 taskWrites 同款，本 describe
+    // 在外层作用域，故就地定义）。
+    const taskWritePatches = (): Array<Record<string, any>> =>
+      (taskRepo as unknown as { updatePatches: Array<Record<string, any>> })
+        .updatePatches;
+
+    it("PATCH body 带 id → 列级 patch 不含 id，响应与库内主键不变", async () => {
+      const task = {
+        id: "real-id",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        executorId: null,
+        executeMode: "single",
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+
+      const result: any = await service.update("real-id", {
+        id: "attacker-chosen-id",
+        name: "new",
+      } as any);
+
+      // 列级写不含主键（UPDATE ... SET 里没有 id）
+      expect(taskWritePatches()).toHaveLength(1);
+      expect(taskWritePatches()[0]).not.toHaveProperty("id");
+      expect(taskWritePatches()[0]).toMatchObject({ name: "new" });
+      // 内存实体与响应的主键都未被改写
+      expect(task.id).toBe("real-id");
+      expect(result.id).toBe("real-id");
+    });
+  });
+
+  describe("F-2: update 补环/自依赖检测（dependencies 整体替换语义）", () => {
+    const UUID_A = "2509e892-cb1c-4746-9505-2dfe932ebf33";
+    const UUID_B = "fe2b2e65-56aa-4fb1-8f11-34e1ff902335";
+    const taskWritePatches = (): Array<Record<string, any>> =>
+      (taskRepo as unknown as { updatePatches: Array<Record<string, any>> })
+        .updatePatches;
+
+    it("自依赖 PATCH（value=自身 id）→ 400 检测到循环依赖", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: UUID_A,
+        name: "A",
+        status: TaskStatus.ACTIVE,
+        executorId: null,
+        executeMode: "single",
+      });
+      taskRepo.find.mockResolvedValue([{ id: UUID_A }]); // value 存在
+
+      await expect(
+        service.update(UUID_A, { dependencies: { self: UUID_A } } as any),
+      ).rejects.toThrow("检测到循环依赖");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("A↔B 双环 PATCH → 400（沿 DB 里的现存映射检出环）", async () => {
+      // findByIdRaw → A；环检测沿 value 走 → B（B 仍依赖 A）
+      taskRepo.findOne
+        .mockResolvedValueOnce({
+          id: UUID_A,
+          name: "A",
+          status: TaskStatus.ACTIVE,
+          executorId: null,
+          executeMode: "single",
+        })
+        .mockResolvedValueOnce({
+          id: UUID_B,
+          name: "B",
+          dependencies: { a: UUID_A },
+        });
+      taskRepo.find.mockResolvedValue([{ id: UUID_B }]); // value 存在
+
+      await expect(
+        service.update(UUID_A, { dependencies: { b: UUID_B } } as any),
+      ).rejects.toThrow("检测到循环依赖");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("无环的正常 PATCH → 照常落库（dependencies 进列级 patch）", async () => {
+      // 按查询条件分派：findByIdRaw / 回读 → A（含新映射）；环检测沿 value
+      // 查 UUID_B → B 行（不依赖任何任务，无环）。
+      taskRepo.findOne.mockImplementation(async (crit: any) => {
+        if (crit?.where?.id === UUID_B) {
+          return { id: UUID_B, name: "B", dependencies: {} };
+        }
+        return {
+          id: UUID_A,
+          name: "A",
+          status: TaskStatus.ACTIVE,
+          executorId: null,
+          executeMode: "single",
+          dependencies: { b: UUID_B },
+        };
+      });
+      taskRepo.find.mockResolvedValue([{ id: UUID_B }]);
+
+      const result: any = await service.update(UUID_A, {
+        dependencies: { b: UUID_B },
+      } as any);
+      expect(taskWritePatches()[0].dependencies).toEqual({ b: UUID_B });
+      expect(result.dependencies).toEqual({ b: UUID_B });
+    });
+
+    it("F-5 服务层兜底：非字符串 value（编程式调用方）→ 400 VALIDATION，不触 In([...]) 查询", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: UUID_A,
+        name: "A",
+        status: TaskStatus.ACTIVE,
+        executorId: null,
+        executeMode: "single",
+      });
+
+      await expect(
+        service.update(UUID_A, {
+          dependencies: { bad: 123 } as unknown as Record<string, string>,
+        } as any),
+      ).rejects.toThrow(/依赖值必须是任务 id/);
+      // 关键：非字符串值绝不进 uuid 列查询（否则 PG 42883 裸 500）
+      expect(taskRepo.find).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("F-10: PAUSED 任务手动触发成功（语义钉死：暂停只停调度）", () => {
+    it("trigger on a PAUSED task creates the execution and enqueues", async () => {
+      const task = {
+        id: "1",
+        name: "paused-task",
+        params: {},
+        maxRetry: 1,
+        retryDelay: 0,
+        currentVersion: "v1",
+        status: TaskStatus.PAUSED, // 关键：暂停态
+      };
+      const exec = { id: "exec-paused-1", status: ExecutionStatus.PENDING };
+      taskRepo.findOne.mockResolvedValue(task);
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({
+          create: jest.fn().mockReturnValue(exec),
+          save: jest.fn().mockResolvedValue(exec),
+        }),
+      );
+
+      const result = await service.trigger("1", {});
+      expect(result).toEqual(exec);
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-paused-1" },
+        expect.anything(),
+      );
+    });
+  });
 });
 
 // R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。

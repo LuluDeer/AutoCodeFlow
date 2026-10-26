@@ -7,9 +7,13 @@ auth:
     # 进 /verdaccio/conf，若 htpasswd 留在 conf 下，用户凭证会随容器重建丢失；
     # /verdaccio/storage 是持久卷 npm_data，凭证得以留存。
     file: /verdaccio/storage/htpasswd
-    # 自助注册上限（verdaccio：-1 禁止自助注册、0 不限制）。保持 100 与
-    # 既有部署兼容；纯内网收紧场景可改 -1，改后用户需运维离线写入 htpasswd。
-    max_users: 100
+    # N-3（2026-10-26 审计）：-1 禁止自助注册。此前 100 意味着内网任意容器可
+    # PUT /-/user/org.couchdb.user:<name> 注册即获得读写（publish 面唯一闸门
+    # 就是 $authenticated）。README「加固建议」本就列为收紧项，现落地：用户由
+    # 运维离线写入 htpasswd（docker compose exec registry-npm htpasswd 已不可用
+    # ——read_only 容器无 htpasswd 二进制，改在宿主生成行后追加进卷文件）。
+    # 改动需重建容器生效：docker compose up -d --force-recreate registry-npm
+    max_users: -1
 uplinks:
   npmjs:
     url: https://registry.npmjs.org/

@@ -67,7 +67,10 @@ describe("MutexGroupService scope (N-15)", () => {
     expect(saved.scope).toBe("device");
     // R75：只写 dto 带来的那一列，不整行 save（整行 save 会在实体将来多出
     // 别的写者时，把那些列按快照写回去）
-    expect(repo.update).toHaveBeenCalledWith({ id: "g-1" }, { scope: "device" });
+    expect(repo.update).toHaveBeenCalledWith(
+      { id: "g-1" },
+      { scope: "device" },
+    );
     expect(repo.save).not.toHaveBeenCalled();
   });
 

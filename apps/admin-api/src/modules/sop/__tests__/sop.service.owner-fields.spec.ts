@@ -62,7 +62,10 @@ function harness(sop?: Any) {
   const service = Object.assign(Object.create(SopService.prototype), {
     sops,
     versions,
-    assignments: { create: jest.fn((v: Any) => ({ ...v })), save: jest.fn(async (v: Any) => v) },
+    assignments: {
+      create: jest.fn((v: Any) => ({ ...v })),
+      save: jest.fn(async (v: Any) => v),
+    },
     clarifications: {},
     scheduler: { getStats: () => ({ isLeader: true }) },
     config: { get: () => undefined },

@@ -9,12 +9,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useAuthStore } from '../store/auth';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
+  stripNonDtoPayloadKeys,
   applyRequirementsPayload,
 } from '../pages/executor-mode';
 import { applyMaintenanceWindowsPayload } from '../pages/maintenance-windows';
@@ -234,6 +235,59 @@ describe('buildExecutorPayload（提交 payload，N19 + R8/N28）', () => {
   });
 });
 
+// F-39（UIUX 审计 P0-1）②：提交载荷白名单——非 CreateTaskDto 声明的键一律剥离。
+// 真机根因：草稿恢复把自持 state 键 executorMode 种进表单 store，提交
+// getFieldsValue(true) 原样带出 → 后端 forbidNonWhitelisted 400「should not
+// exist」且草稿仅在成功/手动丢弃时清除 → 创建任务被无感知地永久卡死。
+describe('F-39 stripNonDtoPayloadKeys / buildExecutorPayload 白名单剥离', () => {
+  it('剥离 executorMode 等自持 state 键与未知键，DTO 键原样保留', () => {
+    const payload = buildExecutorPayload(
+      {
+        name: 't',
+        triggerType: 'manual',
+        runtime: 'python',
+        entrypoint: 'tasks/main.py',
+        executorMode: 'auto',
+        runtimeVersion: null,
+        codeSource: 'git',
+        someLegacyFieldGoneFromForm: 'junk',
+      },
+      'auto',
+    );
+    expect('executorMode' in payload).toBe(false);
+    expect('someLegacyFieldGoneFromForm' in payload).toBe(false);
+    expect(payload.name).toBe('t');
+    expect(payload.runtime).toBe('python');
+    expect(payload.entrypoint).toBe('tasks/main.py');
+  });
+
+  it('表单载体键 upstreamDependencies 保留（外层 applyDependenciesPayload 消费后再删）', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', upstreamDependencies: ['uuid-1'] },
+      'auto',
+    );
+    expect(payload.upstreamDependencies).toEqual(['uuid-1']);
+  });
+
+  it('运行时字段照旧归一后仍在（executeMode/affinity null 化不受剥离影响）', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', executorAffinityTags: [], executorAntiAffinityTags: undefined },
+      'broadcast',
+    );
+    expect(payload.executeMode).toBe('broadcast');
+    expect(payload.executorAffinityTags).toBeNull();
+    expect(payload.executorAntiAffinityTags).toBeNull();
+  });
+
+  it('stripNonDtoPayloadKeys：纯函数、不改入参、空入参安全', () => {
+    const input = { name: 't', junk: 1 };
+    const out = stripNonDtoPayloadKeys(input);
+    expect(out).toEqual({ name: 't' });
+    expect(input.junk).toBe(1);
+    expect(stripNonDtoPayloadKeys({})).toEqual({});
+  });
+});
+
 describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 单页语义）', () => {
   it('单页全挂载下直接提交：name/runtime/entrypoint 仍在 POST payload（不再依赖分步推进）', async () => {
     // 历史（e2e-full.spec.js 用例 25）：分步渲染卸载 step 0/1 的 Form.Item 后
@@ -267,6 +321,149 @@ describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 
     expect(payload.executorGroup).toBeNull();
     expect(payload.executorTags).toBeNull();
     expect(payload.executeMode).toBe('single');
+  }, 15_000);
+
+  // ── F-10（UIAUDIT P3-3）：params 64KB 提交前预检 ──────────────────────────
+  // 后端 task/params-size.util 的 TASK_PARAMS_MAX_BYTES=65_536 对 create/update
+  // 统一 400；此前超限只在提交后收到裸 400。表单在提交前以同口径（JSON utf8
+  // 字节）拦下：不发起 POST、给出可读提示并滚到参数分区。
+  it('F-10：params 超过 64KB 时提交前拦截——不发起 POST 并给出体积提示', async () => {
+    mockRouteParams = {}; // 创建态：无 :id
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'fat-params-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+    // 塞一个 >64KB 的参数值（ParamsEditor 行内输入，70_000 字符 > 65_536 字节）
+    fireEvent.click(screen.getByRole('button', { name: /添加参数/ }));
+    fireEvent.change(screen.getByPlaceholderText('参数名'), { target: { value: 'big' } });
+    fireEvent.change(screen.getByPlaceholderText('参数值'), {
+      target: { value: 'x'.repeat(70_000) },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+
+    // 提示出现在 UI-12 播报区（含实际体积与上限字节）
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('task-form-validation-announcement').textContent).toContain('65536'),
+    );
+    expect(screen.getByTestId('task-form-validation-announcement').textContent).toContain('任务参数');
+    // 关键：请求未发出（后端 400 的前置拦截）
+    expect(tasksApi.create).not.toHaveBeenCalled();
+  }, 20_000);
+});
+
+// UIUX-F-43（审计 P2-1）：saving 置位在元信息校验之后，此前快速连点会全部
+// 进入提交流程各自发 POST——真机实测 4 连点 = 4 个 POST（1×201 + 3×409）。
+describe('UIUX-F-43 提交互斥锁', () => {
+  it('连点 3 次只发 1 个 POST（校验 await 窗口内的连点被入口锁吞掉）', async () => {
+    mockRouteParams = {}; // 创建态
+    let resolveCreate!: (v: unknown) => void;
+    vi.mocked(tasksApi.create).mockReset().mockImplementation(
+      () => new Promise((resolve) => { resolveCreate = resolve; }) as never,
+    );
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'w2-race-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    const submit = screen.getByRole('button', { name: /创建任务/ });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    // 三次点击里只有第一次真正进入提交流程
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveCreate({ id: 'new-task' });
+    });
+    expect(tasksApi.create).toHaveBeenCalledTimes(1);
+  }, 15_000);
+});
+
+// UIUX-F-7（审计 P2-6）：secrets 键名镜像校验的提交闸门。行内红字在
+// SecretsEditor；此处钉住：载荷里出现非法键（绕过行内校验/改名路径）时
+// 提交被拦下且给出可读提示，而不是整批 400 到后端。
+describe('UIUX-F-7 secrets 键名提交闸门', () => {
+  it('新增行填非法键名 → 提交被拦（不发 POST），错误提示与行内红字在场', async () => {
+    mockRouteParams = {}; // 创建态
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'f7-secrets-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    // 凭据分区添加一行并填入非法键（连字符形状）
+    fireEvent.click(screen.getByText(/添加凭据|Add credential/));
+    const keyInputsAll = () =>
+      Array.from(document.querySelectorAll('input.ant-input')).filter(
+        (i) => !(i as HTMLInputElement).type || (i as HTMLInputElement).type === 'text',
+      ) as HTMLInputElement[];
+    fireEvent.change(keyInputsAll()[keyInputsAll().length - 1], {
+      target: { value: 'my-key' },
+    });
+    const passwords = Array.from(
+      document.querySelectorAll('input[type="password"]'),
+    ) as HTMLInputElement[];
+    fireEvent.change(passwords[passwords.length - 1], { target: { value: 'tok' } });
+
+    // 行内红字即时可见（不需要点提交才知道）
+    expect(screen.getByText(/不是合法的环境变量名/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+
+    // 闸门：POST 不发生，错误 toast 与 aria-live 播报双路在场（同一文案两处渲染）
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(tasksApi.create).not.toHaveBeenCalled();
+    expect(screen.getAllByText(/凭据键名不可用/).length).toBeGreaterThanOrEqual(1);
+    expect(
+      document.querySelector('[data-testid="task-form-validation-announcement"]')?.textContent,
+    ).toContain('凭据键名不可用');
+  }, 15_000);
+
+  it('合法键名的凭据行不拦截（POST 正常发出且带 secrets）', async () => {
+    mockRouteParams = {}; // 创建态
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+
+    renderPage();
+
+    const nameInput = await screen.findByPlaceholderText('daily-report');
+    fireEvent.change(nameInput, { target: { value: 'f7-ok-secrets-task' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    fireEvent.click(screen.getByText(/添加凭据|Add credential/));
+    const keyInputsAll = () =>
+      Array.from(document.querySelectorAll('input.ant-input')).filter(
+        (i) => !(i as HTMLInputElement).type || (i as HTMLInputElement).type === 'text',
+      ) as HTMLInputElement[];
+    fireEvent.change(keyInputsAll()[keyInputsAll().length - 1], {
+      target: { value: 'FEISHU_APP_ID' },
+    });
+    const passwords = Array.from(
+      document.querySelectorAll('input[type="password"]'),
+    ) as HTMLInputElement[];
+    fireEvent.change(passwords[passwords.length - 1], { target: { value: 'tok' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(payload.secrets).toEqual({ FEISHU_APP_ID: 'tok' });
   }, 15_000);
 });
 
@@ -512,6 +709,25 @@ describe('applyTimeoutPolicyPayload（CORE-04）', () => {
     expect(applyTimeoutPolicyPayload({ timeoutWarnRatio: 12.5 }).timeoutWarnRatio).toBeNull();
   });
 
+  // CORE-05（F-9，本轮审计）：estimatedDurationSec 与 timeoutWarnRatio 同型的
+  // null 透传——合法整数（0..604800）原样；小数四舍五入到最近秒（后端 @IsInt）；
+  // 空串/undefined/负值/超界 → 显式 null（PATCH null = 重置为未知；缺省 = 保留
+  // 旧值，"清空输入框"必须发 null 才能真正重置）。
+  it('F-9：estimatedDurationSec 合法整数原样、小数取整、空/负/超界 → 显式 null', () => {
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 3600 }).estimatedDurationSec).toBe(3600);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 0 }).estimatedDurationSec).toBe(0);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 604800 }).estimatedDurationSec).toBe(604800);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 12.4 }).estimatedDurationSec).toBe(12);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 12.6 }).estimatedDurationSec).toBe(13);
+    // 超界钳到上限（后端 @Max(604800) = 7 天）
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: 700_000 }).estimatedDurationSec).toBe(604_800);
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: '' }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: undefined }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: null }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({ estimatedDurationSec: -5 }).estimatedDurationSec).toBeNull();
+    expect(applyTimeoutPolicyPayload({}).estimatedDurationSec).toBeNull();
+  });
+
   it('保留其它字段不变（仅接管超时策略两字段）', () => {
     const payload = applyTimeoutPolicyPayload({ name: 't', timeout: 600, executorId: 'e1' });
     expect(payload.name).toBe('t');
@@ -533,6 +749,16 @@ describe('timeoutPolicyFormValues（CORE-04 编辑态加载映射）', () => {
     expect(timeoutPolicyFormValues({ timeoutAction: null }).timeoutAction).toBe('kill');
     expect(timeoutPolicyFormValues({}).timeoutAction).toBe('kill');
     expect(timeoutPolicyFormValues({ timeoutWarnRatio: null }).timeoutWarnRatio).toBeUndefined();
+  });
+
+  // CORE-05（F-9）：estimatedDurationSec 编辑态回填——数值原样，null/缺省 →
+  // undefined（InputNumber 空态）。
+  it('F-9：estimatedDurationSec 数值回填、null/缺省 → undefined（空态）', () => {
+    expect(
+      timeoutPolicyFormValues({ timeoutAction: 'kill', estimatedDurationSec: 1800 }).estimatedDurationSec,
+    ).toBe(1800);
+    expect(timeoutPolicyFormValues({ estimatedDurationSec: null }).estimatedDurationSec).toBeUndefined();
+    expect(timeoutPolicyFormValues({}).estimatedDurationSec).toBeUndefined();
   });
 });
 
@@ -672,5 +898,44 @@ describe('TASK-PROJ-01 归属项目选择器', () => {
     // 表单仍可用：选择器在场、必填项可填
     expect(await screen.findByTestId('task-project-select')).toBeTruthy();
     expect(document.querySelector('#name')).toBeTruthy();
+  }, 15_000);
+});
+
+// UIUX-F-46（审计 P2-4）：编辑不存在任务（/tasks/999999/edit）此前渲染 33% 完成
+// 度的空白新建表单，无任何加载失败提示。分流口径对齐 TaskDetailPage 的 W1 修复
+// （U7/F-41）：404 → 「任务不存在」空态 + 返回列表；其它错误 → 错误态 + 重试 +
+// 返回列表；两种形态都不再渲染新建表单。
+describe('UIUX-F-46 编辑态详情加载失败', () => {
+  it('404（__status=404）→ 「任务不存在」空态 + 返回列表，不渲染新建表单', async () => {
+    vi.mocked(tasksApi.get).mockReset().mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 404'), { __status: 404 }) as never,
+    );
+
+    renderPage();
+
+    expect(await screen.findByText('任务不存在')).toBeTruthy();
+    expect(screen.getByText('返回任务列表')).toBeTruthy();
+    // 表单主体不渲染（name 字段不存在 = 不是空白新建表单）
+    expect(document.querySelector('#name')).toBeNull();
+    expect(screen.queryByRole('button', { name: /保存修改/ })).toBeNull();
+  }, 15_000);
+
+  it('5xx → 错误态（任务详情加载失败 + 重试 + 返回列表），点重试重新拉取详情', async () => {
+    vi.mocked(tasksApi.get)
+      .mockReset()
+      .mockRejectedValueOnce(new Error('Request failed with status code 500') as never)
+      .mockResolvedValue({ id: 'task-1', name: 'ok-task', runtime: 'python', entrypoint: 'main.py', updatedAt: '2026-01-01T00:00:00Z' } as never);
+
+    renderPage();
+
+    expect(await screen.findByText('任务详情加载失败')).toBeTruthy();
+    expect(screen.getByText('返回任务列表')).toBeTruthy();
+    expect(document.querySelector('#name')).toBeNull();
+
+    // 重试：详情请求重新发起，成功后表单回填
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+    await vi.waitFor(() => expect(tasksApi.get).toHaveBeenCalledTimes(2));
+    expect(await screen.findByDisplayValue('ok-task')).toBeTruthy();
+    expect(screen.queryByText('任务详情加载失败')).toBeNull();
   }, 15_000);
 });

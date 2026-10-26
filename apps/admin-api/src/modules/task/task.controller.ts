@@ -32,6 +32,10 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+// F-41（UIUX 审计 P1-2）：读面路由参数的 ID 形态校验——非 UUID 深链在进
+// service/DB 前就被 400（第一道防线；全局 22P02 兜底映射见
+// http-exception.filter）。projects.controller 同款管道先例。
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import {
   AuthUser,
   isApiKeyUser,
@@ -679,7 +683,7 @@ export class TaskController {
   })
   @ApiOkResponse({ type: ExecutionLogsPageResponseDto })
   executionLogsByExecId(
-    @Param("execId") execId: string,
+    @Param("execId", ParseUuidShapePipe) execId: string,
     @Query() query: ExecutionLogsQueryDto,
   ) {
     return this.taskService.getExecutionLogs(
@@ -698,7 +702,7 @@ export class TaskController {
   })
   @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiOkResponse({ type: TaskExecutionResponseDto })
-  executionByExecId(@Param("execId") execId: string) {
+  executionByExecId(@Param("execId", ParseUuidShapePipe) execId: string) {
     return this.taskService.getExecution(execId);
   }
 
@@ -720,7 +724,7 @@ export class TaskController {
     description:
       "FIX-5.1 起 successRate/succeeded/failed 均为全量执行口径；recentSuccessRate 仍保留最近 20 次窗口",
   })
-  getStats(@Param("id") id: string) {
+  getStats(@Param("id", ParseUuidShapePipe) id: string) {
     return this.taskService.getExecutionStats(id);
   }
 
@@ -737,7 +741,8 @@ export class TaskController {
     description: "AI 推荐结果；fallback=true 表示走了启发式降级路径",
   })
   async suggestSchedule(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
   ) {
     return this.taskService.suggestSchedule(id, user);
@@ -754,7 +759,7 @@ export class TaskController {
     description: "完整任务实体，密钥已掩码",
   })
   @ApiResponse({ status: 404, description: "任务不存在" })
-  findOne(@Param("id") id: string) {
+  findOne(@Param("id", ParseUuidShapePipe) id: string) {
     return this.taskService.findOne(id);
   }
 
@@ -773,7 +778,7 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async exportDefinition(
-    @Param("id") id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @Res() res: Response,
   ): Promise<void> {
     const { filename, payload } = await this.taskService.exportDefinition(id);
@@ -795,7 +800,8 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async update(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: UpdateTaskDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -828,7 +834,8 @@ export class TaskController {
     },
   })
   async updateGlue(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() body: { source: string; language?: string },
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -864,7 +871,8 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async remove(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -908,7 +916,8 @@ export class TaskController {
       "触发被拒绝：已存在参数相同的活跃执行（blockStrategy=discard）",
   })
   async trigger(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: TriggerTaskDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -953,7 +962,10 @@ export class TaskController {
     type: WebhookStatusResponseDto,
     description: "Webhook 状态（密钥从不返回）",
   })
-  webhookStatus(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+  webhookStatus(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.taskWebhookService.getStatus(id, user);
   }
 
@@ -974,7 +986,8 @@ export class TaskController {
     description: "Webhook URL + 一次性密钥",
   })
   webhookEnable(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 webhookStatus 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -997,7 +1010,8 @@ export class TaskController {
     description: "Webhook URL + 一次性密钥",
   })
   webhookRotate(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 webhookStatus 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1020,7 +1034,8 @@ export class TaskController {
     description: "停用后的响应：`{ enabled: false }`",
   })
   webhookDisable(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 webhookStatus 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1051,7 +1066,10 @@ export class TaskController {
     type: PaginatedExecutionListDto,
     description: "执行历史（已排除大文本列）",
   })
-  executions(@Param("id") id: string, @Query() p: TaskExecutionsQueryDto) {
+  executions(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Query() p: TaskExecutionsQueryDto,
+  ) {
     return this.taskService.getExecutions(id, p);
   }
 
@@ -1067,7 +1085,10 @@ export class TaskController {
     description: "完整执行行（包含 logs/aiAnalysis）",
   })
   @ApiResponse({ status: 404, description: "执行记录不存在" })
-  execution(@Param("id") id: string, @Param("execId") execId: string) {
+  execution(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Param("execId", ParseUuidShapePipe) execId: string,
+  ) {
     return this.taskService.getExecution(execId, id);
   }
 
@@ -1081,7 +1102,10 @@ export class TaskController {
   @ApiParam({ name: "execId", description: "执行记录 ID" })
   @ApiOkResponse({ type: ExecutionReportResponseDto })
   @ApiResponse({ status: 404, description: "执行记录不存在" })
-  executionReport(@Param("id") id: string, @Param("execId") execId: string) {
+  executionReport(
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Param("execId", ParseUuidShapePipe) execId: string,
+  ) {
     return this.taskService.getExecutionReport(execId, id);
   }
 
@@ -1111,8 +1135,8 @@ export class TaskController {
   })
   @ApiOkResponse({ type: ExecutionLogsPageResponseDto })
   async executionLogs(
-    @Param("id") id: string,
-    @Param("execId") execId: string,
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Param("execId", ParseUuidShapePipe) execId: string,
     @Query() query: ExecutionLogsQueryDto,
   ) {
     await this.taskService.getExecution(execId, id);
@@ -1147,8 +1171,8 @@ export class TaskController {
   })
   @SkipTimeout()
   async streamLogs(
-    @Param("id") id: string,
-    @Param("execId") execId: string,
+    @Param("id", ParseUuidShapePipe) id: string,
+    @Param("execId", ParseUuidShapePipe) execId: string,
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
@@ -1239,7 +1263,8 @@ export class TaskController {
     description: "非 Git 任务不支持回滚",
   })
   async rollback(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Body() dto: RollbackTaskDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -1286,7 +1311,8 @@ export class TaskController {
     description: "无请求体——回滚目标即 :versionId 路径参数",
   })
   async rollbackToVersion(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 getVersions 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("versionId") versionId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -1319,7 +1345,7 @@ export class TaskController {
     type: [TaskVersionDto],
     description: "最近 100 个快照",
   })
-  getVersions(@Param("id") id: string) {
+  getVersions(@Param("id", ParseUuidShapePipe) id: string) {
     return this.taskService.getVersions(id);
   }
 
@@ -1337,7 +1363,7 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "任务或版本不存在" })
   async compareVersions(
-    @Param("id") id: string,
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("versionId1") versionId1: string,
     @Param("versionId2") versionId2: string,
   ) {
@@ -1364,7 +1390,8 @@ export class TaskController {
   @ApiResponse({ status: 400, description: "任务已处于暂停状态" })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async pause(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1397,7 +1424,8 @@ export class TaskController {
   @ApiResponse({ status: 400, description: "任务已在运行中" })
   @ApiResponse({ status: 404, description: "任务不存在" })
   async resume(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -1426,7 +1454,8 @@ export class TaskController {
     description: "已更新执行记录并持久化 aiAnalysis（POST 默认 201）",
   })
   async analyzeExecution(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -1465,7 +1494,8 @@ export class TaskController {
   })
   @ApiResponse({ status: 404, description: "执行记录不存在" })
   async killExecution(
-    @Param("id") id: string,
+    // F-9: 写端点 :id 统一 ParseUuidShapePipe（对照 findOne 既有形态）
+    @Param("id", ParseUuidShapePipe) id: string,
     @Param("execId") execId: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,

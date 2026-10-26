@@ -66,6 +66,16 @@ describe('formatArtifactSize', () => {
     expect(formatArtifactSize(2048)).toBe('2.0 KB');
     expect(formatArtifactSize(1048576)).toBe('1.0 MB');
   });
+
+  // F-15（UIAUDIT P3-8）：补 TB 档——此前封顶 GB，1024.0 GB 可读性差
+  it('F-15：≥1TB 进 TB 档（1024.0 GB → 1.0 TB），负数/非有限值仍回落 -', () => {
+    expect(formatArtifactSize(1024 ** 4)).toBe('1.0 TB');
+    expect(formatArtifactSize(1099511627776 * 1.5)).toBe('1.5 TB');
+    // TB 是封顶档：更大值停在 TB 不再换算
+    expect(formatArtifactSize(1024 ** 5)).toBe('1024.0 TB');
+    expect(formatArtifactSize(-1)).toBe('-');
+    expect(formatArtifactSize(Number.NaN)).toBe('-');
+  });
 });
 
 describe('ArtifactsList', () => {

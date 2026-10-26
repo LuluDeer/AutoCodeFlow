@@ -17,7 +17,13 @@ COPY --from=builder /app/dist ./dist
 
 # Q-10: run as non-root user（adduser -S -G appgroup → 主组为 appgroup，
 # chown 必须用 appuser:appgroup；appuser:appuser 会 chown: unknown group）
+# UPLOAD_DIR=cwd/uploads 为运行时目录：镜像内必须预建并属 appuser——命名卷首挂载
+# 按镜像内路径属主初始化，路径缺失时挂载点被 Docker 以 root 创建，appuser 写路径
+# 全 EACCES 且 Bootstrap 即崩（实测：挂 admin_uploads 卷后 multer 模块加载期
+# mkdirSync /app/uploads/.app-upload-tmp 直接 EACCES，容器崩溃循环；同型坑先例
+# registry-pypi /data/packages 3f0a0ceb）。
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
+    && mkdir -p /app/uploads/.app-upload-tmp \
     && chown -R appuser:appgroup /app
 USER appuser
 

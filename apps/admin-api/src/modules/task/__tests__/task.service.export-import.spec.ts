@@ -243,6 +243,28 @@ describe("TaskService — 任务定义导出/导入（E-1）", () => {
       expect(result.warnings).toContain(TASK_IMPORT_SECRETS_IGNORED_WARNING);
     });
 
+    it("F-4: import 响应体不含任何 secrets 材料（复用 create 的脱敏返回，仅取 taskId/name）", async () => {
+      const { service, deps } = makeService();
+      deps.taskRepo.save.mockImplementation((t: unknown) =>
+        Promise.resolve({ id: "new-3", ...(t as object) }),
+      );
+
+      const result = await service.importDefinition(importPayload(baseTask), {
+        id: 7,
+      });
+
+      // 响应面只暴露 taskId/name/warnings——create 内部已脱敏的整行不会漏出
+      expect(Object.keys(result).sort()).toEqual([
+        "name",
+        "taskId",
+        "warnings",
+      ]);
+      // 任何键都不承载 secrets 材料（warnings 文案本身提及 SEC-02 属预期提示）
+      for (const key of Object.keys(result)) {
+        expect(key.toLowerCase()).not.toContain("secret");
+      }
+    });
+
     it("重名 1 次冲突 → 追加 (imported) 后缀重试成功", async () => {
       const { service, deps } = makeService();
       deps.taskRepo.save

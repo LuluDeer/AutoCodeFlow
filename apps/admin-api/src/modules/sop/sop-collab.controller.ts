@@ -7,11 +7,14 @@ import {
   Ip,
   Param,
   Post,
+  Res,
   UploadedFile,
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
+// P3-1（2026-10-26 第三轮审计）：长轮询断连探针需要 passthrough Response。
+import type { Response } from "express";
 import { ConfigService } from "@nestjs/config";
 import {
   IsArray,
@@ -289,30 +292,47 @@ function parseRelayMessages(
     const content = m?.content;
     if (typeof content === "string") {
       if (content.length === 0) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+          index,
+        });
       }
       if (content.length > 100_000) {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+          index,
+        });
       }
       return { role, content } as MultimodalMessage;
     }
     if (!Array.isArray(content) || content.length === 0) {
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     const parts: MultimodalPart[] = [];
     for (const part of content) {
       if (!part || typeof part !== "object") {
-        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+        throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+          index,
+        });
       }
       const rec = part as Record<string, unknown>;
-      if (rec.type === "text" && typeof rec.text === "string" && rec.text.length > 0) {
+      if (
+        rec.type === "text" &&
+        typeof rec.text === "string" &&
+        rec.text.length > 0
+      ) {
         if (rec.text.length > 100_000) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+            index,
+          });
         }
         parts.push({ type: "text", text: rec.text });
         continue;
       }
-      const image = rec.type === "image_url" ? (rec.image_url as { url?: unknown } | undefined) : undefined;
+      const image =
+        rec.type === "image_url"
+          ? (rec.image_url as { url?: unknown } | undefined)
+          : undefined;
       if (image && typeof image.url === "string") {
         const url = image.url;
         const isHttp = /^https?:\/\//i.test(url);
@@ -320,23 +340,33 @@ function parseRelayMessages(
           /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(url) &&
           url.length <= 3 * 1024 * 1024;
         if (!isHttp && !isInlineImage) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+            index,
+          });
         }
         if (isHttp && url.length > 2048) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+            index,
+          });
         }
         imageCount += 1;
         if (imageCount > 4) {
-          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, { index });
+          throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_TOO_LARGE, {
+            index,
+          });
         }
         parts.push({ type: "image_url", image_url: { url: image.url } });
         continue;
       }
       // video_url / 未知 part：该 provider 无视频能力；拒绝比静默丢弃诚实。
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     if (parts.length === 0) {
-      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, { index });
+      throw new AppError(ErrorCode.SOP_COLLAB_MESSAGE_CONTENT_REQUIRED, {
+        index,
+      });
     }
     return { role, content: parts } as MultimodalMessage;
   });
@@ -373,6 +403,10 @@ export class SopCollabController {
   async poll(
     @Body() body: AgentCollabPollDto,
     @Headers("authorization") auth: string,
+    // P3-1（2026-10-26 第三轮审计）：passthrough Res——只挂 close 监听做断连
+    // 探针，响应仍由框架序列化。此前断连后循环仍每 500ms 查一次 DB 直到 25s
+    // 窗口耗尽（纯浪费的查询洪泛；弹性扩容期的 DB 压力放大器）。
+    @Res({ passthrough: true }) res?: Response,
   ) {
     const executor = await this.authenticate(
       body?.address,
@@ -385,8 +419,21 @@ export class SopCollabController {
         ? Math.min(requested, POLL_MAX_WAIT_MS)
         : 0;
     const start = Date.now();
+    // P3-1：断连探针。'close' 在执行器提前断开时触发；destroyed/writableEnded
+    // 兜住「监听挂上前已断」与「响应已写出」两态。res 缺省（不经 HTTP 的单测）
+    // → 恒 false = 不感知断连，行为与引入前一致。
+    let clientGone = false;
+    res?.on("close", () => {
+      clientGone = true;
+    });
+    const isClientGone = () =>
+      clientGone || (res ? res.destroyed || res.writableEnded : false);
 
     for (;;) {
+      // P3-1：断连即停——不再发起下一轮 DB 查询（结果也送不出去了）。
+      if (isClientGone()) {
+        return { items: [], sopPolicy: this.sopPolicy() };
+      }
       const items = await this.sops.pollPending({
         executorId: executor.id,
         // B-5：按 id 重发的数组形态必须透传（DTO 声明支持、service 支持）——

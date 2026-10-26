@@ -41,9 +41,12 @@ export function formatRelativeTime(value: TimeInput, t?: TFunc): string {
  * 时长（毫秒）→ 可读文案，带 i18n（分/秒为最小档，≥1 小时进小时档）。
  * F-35（DEEP_REVIEW 0ef3bbe）：补 ≥3600s 的小时档——此前 3725000ms 会渲染成
  * "62分5秒"，超长任务可读性差。
+ * F-14（UIAUDIT P3-7）：负值 clamp 到 0（数据异常/时钟偏移时不再渲染 "-123ms"）；
+ * NaN/Infinity 等非有限值回落占位符（同 FALLBACK 口径）。0ms 保持既有输出不变。
  */
 export function formatDuration(ms: number | null | undefined, t?: TFunc): string {
-  if (ms == null) return FALLBACK;
+  if (ms == null || !Number.isFinite(ms)) return FALLBACK;
+  if (ms <= 0) return '0ms';
   if (ms < 1000) return `${ms}ms`;
 
   const T = t ?? fallbackT;
@@ -66,9 +69,11 @@ export function formatDuration(ms: number | null | undefined, t?: TFunc): string
  * F-35（DEEP_REVIEW 0ef3bbe）：收敛原先散落的两处逐字节重复实现
  * （ExecutionCompare.tsx / ExecutorDetailPage.tsx 历史列），并补小时档。
  * <1 小时输出与旧实现逐字一致（不回归），≥1 小时由 "3725.0s" 变为 "1h2m"。
+ * F-14：负值 clamp 到 0、非有限值回落占位符（与 formatDuration 同口径）。
  */
 export function formatDurationShort(ms: number | null | undefined): string {
-  if (ms == null) return FALLBACK;
+  if (ms == null || !Number.isFinite(ms)) return FALLBACK;
+  if (ms <= 0) return '0ms';
   if (ms < 1000) return `${ms}ms`;
 
   const seconds = ms / 1000;
@@ -77,6 +82,29 @@ export function formatDurationShort(ms: number | null | undefined): string {
   const hours = Math.floor(seconds / 3600);
   const restMinutes = Math.floor((seconds % 3600) / 60);
   return `${hours}h${restMinutes}m`;
+}
+
+/**
+ * 调度延迟（毫秒）→ 直方图派生值专用格式化（P3-② 审计）。
+ *
+ * 为什么不直接用 formatDuration：derived.avgTriggerLatencyMs / p99TriggerLatencyMs
+ * 是**桶插值浮点**（实测「平均 6.716883116883117ms」），而 formatDuration 的亚秒
+ * 档原样输出 `${ms}ms`，17 位小数直接糊在卡面上。执行时长（另一消费者）来自
+ * Date.now 差值恒为整数，不受影响——故只给延迟卡换专用档位，不动共享出口：
+ *   · <10ms   保留 1 位小数（6.7168… → 6.7ms；整值不带尾零，3 → 3ms）
+ *   · <1000ms 取整（10~999ms 整数已可读，无千分位需求）
+ *   · ≥1s     复用 formatDuration 人类可读档（1.2s / 1分3秒），不输出 12,345ms
+ * 与 formatDuration 同口径：非有限值回落 '—'、负值 clamp 到 0、0 → '0ms'。
+ */
+export function formatLatencyMs(ms: number | null | undefined, t?: TFunc): string {
+  if (ms == null || !Number.isFinite(ms)) return FALLBACK;
+  if (ms <= 0) return '0ms';
+  if (ms < 10) {
+    const rounded = Math.round(ms * 10) / 10;
+    return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}ms`;
+  }
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return formatDuration(ms, t);
 }
 
 /**

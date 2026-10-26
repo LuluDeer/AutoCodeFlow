@@ -105,7 +105,12 @@ describe("R32-B1 执行类写面角色判定不可用 → fail-closed", () => {
       save: jest.fn(),
     };
     const scheduler = { stop: jest.fn() };
-    const svc = build({ access: failingRepo(), scope: "any", taskRepo, scheduler });
+    const svc = build({
+      access: failingRepo(),
+      scope: "any",
+      taskRepo,
+      scheduler,
+    });
 
     const err = await catchError(() => svc.pause("t1", plainUser));
 
@@ -128,10 +133,7 @@ describe("R32-B1 正常路径（DB 正常时 100% 行为不变）", () => {
   const row = { ownerUserId: 7, projectId: "p1" };
   const plainUser = { id: 8, role: UserRole.USER };
 
-  const build = (
-    role: string | null,
-    scope: "owner" | "any",
-  ): TaskService =>
+  const build = (role: string | null, scope: "owner" | "any"): TaskService =>
     new TaskService(
       {} as never,
       {} as never,
@@ -150,7 +152,9 @@ describe("R32-B1 正常路径（DB 正常时 100% 行为不变）", () => {
       null as never,
       null as never,
       new ProjectAccessService(
-        { findOne: jest.fn().mockResolvedValue(role ? { role } : null) } as never,
+        {
+          findOne: jest.fn().mockResolvedValue(role ? { role } : null),
+        } as never,
         null as never,
       ) as never,
       null as never,
@@ -236,7 +240,10 @@ describe("R32-B1 装配钉子（防三态被静默降级成二态）", () => {
     );
 
     await expect(
-      svc.assertCanOperate({ ownerUserId: 7, projectId: "p1" }, { id: 8, role: UserRole.USER }),
+      svc.assertCanOperate(
+        { ownerUserId: 7, projectId: "p1" },
+        { id: 8, role: UserRole.USER },
+      ),
     ).resolves.toBeUndefined();
     expect(resolveRole).toHaveBeenCalledWith(8, "p1");
   });

@@ -344,6 +344,18 @@ export default () => ({
      */
     staleOfflineConfirmations:
       parseInt(process.env.EXECUTOR_STALE_OFFLINE_CONFIRMATIONS, 10) || 2,
+    /**
+     * 方案 b（协议 v8，接管自愈死锁修复 2026-10-26）：是否采信心跳载荷的
+     * /token 409 冲突自报（`registrationConflict`）——true（默认）时，
+     * 「冲突自报 + 心跳指纹与行已存真实指纹错位」的心跳**不刷新活性四列**
+     * （status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat），
+     * 让 sweep 照常判死、接管窗（5min）得以打开、E-1 CAS 收敛——修复
+     * 「静态 token 心跳把指纹错位的冲突行保持 ONLINE、接管窗永不打开」的死锁。
+     * 置 false 恢复 v7 语义（任何心跳都刷新活性）作为应急回滚；死锁会随之
+     * 复现。判据实现见 ExecutorService.heartbeat 的 suppressLivenessAdoption。
+     */
+    honorHeartbeatConflictSelfReport:
+      process.env.EXECUTOR_HONOR_HEARTBEAT_CONFLICT_SELF_REPORT !== "false",
     // EXE-VER-1: 执行器最低版本门禁 —— 空（默认）= 关闭，零行为变化。
     // 开启后 register 的 version 低于下限则 403；heartbeat 响应回显
     // minVersion/versionCompliant 供执行器侧漂移告警。比较语义见
@@ -912,8 +924,7 @@ if (process.env.NODE_ENV === "production") {
       host === "localhost" || host === "127.0.0.1" || host === "::1";
     // 单标签主机名（无点）= Docker/compose 服务名或内网短名，公网不可解析。
     const isServiceName = !host.includes(".") && !host.includes(":");
-    const httpAllowed =
-      isLoopback || (allowPrivateRegistry && isServiceName);
+    const httpAllowed = isLoopback || (allowPrivateRegistry && isServiceName);
     if (u.protocol !== "https:" && !(u.protocol === "http:" && httpAllowed)) {
       throw new Error(
         `[AutoFlow] 生产环境 ${name} 必须使用 https://（仅 localhost/127.0.0.1 允许 http；` +

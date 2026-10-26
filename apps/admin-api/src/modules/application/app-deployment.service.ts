@@ -11,11 +11,14 @@ import { InjectRepository } from "@nestjs/typeorm";
 import {
   Repository,
   LessThan,
+  MoreThanOrEqual,
+  And,
   In,
   IsNull,
   Like,
   Raw,
   OptimisticLockVersionMismatchError,
+  FindOptionsWhere,
 } from "typeorm";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
@@ -28,8 +31,16 @@ import {
   RunMode,
 } from "./entities/app-deployment.entity";
 import { ApplicationVersion } from "./entities/application-version.entity";
+// R4（§4.1A）：不可变部署事件表（部署域动作追溯，纯旁路记录）。
+import {
+  AppDeploymentEvent,
+  AppDeploymentEventType,
+} from "./entities/app-deployment-event.entity";
 import { Application } from "./entities/application.entity";
 import { ApplicationService } from "./application.service";
+// P0-1（2026-10-25 审计）：版本恢复链写 applications 表经 ApplicationService.update，
+// 其属主守卫需要 actor（id+role）——controller 从 @CurrentUser 取（AuthUser 含 role）。
+import { UserRole } from "../users/entities/user.entity";
 import { ExecutorService } from "../executor/executor.service";
 import type { Executor } from "../executor/entities/executor.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus/audit 先例——
@@ -46,6 +57,7 @@ import {
 } from "./dto/app-deployment.dto";
 import {
   AppReleaseRow,
+  AppReleaseDevice,
   ReleaseTriggerType,
   RELEASE_OPERATOR_MISSING_REASON,
 } from "./dto/app-release.dto";
@@ -135,6 +147,22 @@ export const RELEASES_SYNTHETIC_SCAN_PAGE_SIZE = 1000;
 export const RELEASES_SYNTHETIC_SCAN_MAX_ROWS = 5000;
 
 /**
+ * R4（§4.1A）：计入「该版本累计部署次数」的事件类型——deploy 新建行、复用行
+ * 重推、叠加升级各是一次真实下发动作。approval_approved **不**计入：审批 gated
+ * 应用的 deploy_created 已计一次，审批只是让那次动作真正发生（再计即双计）。
+ * stop/remove/stuck_failed 不是部署动作，不参与计数。
+ */
+const DEPLOY_COUNTED_EVENT_TYPES: string[] = [
+  AppDeploymentEventType.DEPLOY_CREATED,
+  AppDeploymentEventType.REDEPLOY_REUSED,
+  AppDeploymentEventType.UPGRADE,
+];
+
+/** R4（§4.1A）：/events 分页参数（默认 50、上限 200，对齐 /releases 口径）。 */
+export const DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE = 50;
+export const DEPLOYMENT_EVENTS_MAX_PAGE_SIZE = 200;
+
+/**
  * stop() 未能把停机信号送达执行器时，写进 statusMessage 的前缀。
  *
  * **跨端契约**：admin-web 按这个前缀判断该用 warning 还是 success 提示
@@ -163,6 +191,34 @@ export const PULL_QUEUED_MESSAGE_PREFIX =
  *  commandTtlMs 同键同缺省——30min。两处读同一 ConfigService 键，调参一处生效）。 */
 export const DEPLOYMENT_CMD_TTL_MS_DEFAULT = 1_800_000;
 export const EXECUTOR_CMD_TTL_CONFIG_KEY = "executor.cmdTtlMs";
+
+/**
+ * P1-A2（2026-10-25 真机审计）：卡死扫描阈值——PENDING 行 5 分钟。
+ *
+ * deploy() 先 INSERT（PENDING）再异步推送，进程在两步之间崩溃会留下永久
+ * PENDING 行，持续占住 in-flight 唯一索引。正常 PENDING 窗口是进程内的
+ * （自动选机 + 推送重试 ≈ <100s），5 分钟已高于任何合法持有。
+ */
+export const DEPLOYMENT_PENDING_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * P1-A2（2026-10-25 真机审计）：卡死扫描阈值——DEPLOYING/UPGRADING 行
+ * 30 分钟无任何写（心跳/状态推进/批次痕迹都算进度写）→ 判败。
+ *
+ * 判据键是 updatedAt（@UpdateDateColumn）：执行器心跳（handleHeartbeat 的
+ * 条件 UPDATE）、deploy/upgrade 的进度写、灰度批次痕迹写都会刷新它——
+ * 即「以最后一次心跳/事件时间起算」，活跃部署（慢网络拉大包也在持续心跳）
+ * 永远不会被误杀；只有执行器彻底沉默（如注册 409 死锁、容器被删）的行
+ * 才会被扫死，解锁 stop/删除链与该应用的下一个部署。
+ *
+ * 历史取值 10min：对「执行器接受命令后本地慢慢部署」的形态偏紧——执行器
+ * 侧部署完成前不一定产出心跳（大包下载/解压），慢链路下 10 分钟可能误杀
+ * 正常部署，故按审计建议放宽到 30min（仍远小于「永久在途」的故障面）。
+ * 与命令 TTL（DEPLOYMENT_CMD_TTL_MS_DEFAULT，同为 30min）同量级不是巧合：
+ * pull 入队行的豁免窗就是按「TTL 内不扫死」设计的，两窗对齐后豁免仅在
+ * 运维调大 TTL 时才实际生效。
+ */
+export const DEPLOYMENT_STALL_TIMEOUT_MS = 30 * 60_000;
 
 /** DEP-01：统一列表的排序键（毫秒时间戳）：有部署取该版本最近一次部署完成时刻
  *  （deployedAt，缺则行 createdAt），无部署取版本行 createdAt。纯函数便于测试。 */
@@ -229,6 +285,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // @Optional 仅为既有单测装配兼容，先例 eventBus/audit）。
     @Optional()
     private readonly leaderGate: LeaderGateService | null = null,
+    // R4（§4.1A）：部署事件写入面（@Optional 同上——存量 spec 未 provide 该
+    // token 时 → null → 事件静默不写、读面走 legacy 回退，主动作不受影响；
+    // 生产装配恒有：application.module forFeature 已注册）。
+    @Optional()
+    @InjectRepository(AppDeploymentEvent)
+    private readonly deploymentEventRepo: Repository<AppDeploymentEvent> | null = null,
   ) {}
 
   /** Build auth headers for executor requests. Must resolve through
@@ -341,6 +403,86 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // of deployment rows; bounds memory on internal list consumers.
       take: 5000,
     });
+  }
+
+  /**
+   * R4（§4.1A）：应用的部署事件流读面（GET /app-deployments/applications/
+   * :appId/events）——不可变动作追溯，分页默认 50、上限 200（对齐 /releases）。
+   * 裸四键信封 {data,total,page,pageSize}。事件行只含短事实（写入侧已保证
+   * detail 不带 env），无需掩码。
+   *
+   * 过滤参数（上轮遗留：事件量极大时深翻页代价高——把结果集缩到调用方关心
+   * 的切片再分页，深 OFFSET 不再作用于全量）：
+   *   · eventType 直等——完整命中 idx_app_deployment_events_application_type
+   *     的 (applicationId, eventType) 前缀；
+   *   · since/until 为**半开区间 [since, until)**：since 含头（createdAt >=
+   *     since）、until 不含尾（createdAt < until）。两侧同为闭区间的「按天
+   *     滚窗」会让边界时刻的事件在相邻两窗各出现一次；同为开区间则会漏。
+   *     时间列过滤叠加在 idx_app_deployment_events_application_created
+   *     (applicationId, createdAt) 上。
+   */
+  async getEventsByApp(
+    applicationId: string,
+    page = 1,
+    pageSize = DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE,
+    filters?: {
+      eventType?: AppDeploymentEventType;
+      since?: string;
+      until?: string;
+    },
+  ): Promise<{
+    data: AppDeploymentEvent[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    // fail-honest：生产装配恒有该 repo（application.module forFeature）；
+    // 缺席是装配错误——静默回空页会把「没接线」伪装成「无事件」。
+    if (!this.deploymentEventRepo) {
+      // LANG-ZH-01：装配错误是面向运维的报错文案——中文（技术标识
+      // AppDeploymentEvent/TypeOrmModule.forFeature 保留原文）。
+      throw new Error(
+        "AppDeploymentEvent 仓储未接线（应为 application.module 的 " +
+          "TypeOrmModule.forFeature 注册；缺席属装配错误，静默回空页会把「没接线」" +
+          "伪装成「无事件」，fail-honest 直接抛出）",
+      );
+    }
+    const safePageSize = Math.min(
+      Math.max(
+        1,
+        Math.trunc(Number(pageSize)) || DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE,
+      ),
+      DEPLOYMENT_EVENTS_MAX_PAGE_SIZE,
+    );
+    const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
+    // 过滤键只在「有值」时进 where：缺省（不带参数）走与此前逐字节相同的
+    // where: { applicationId }——加性变更，既有调用方行为不变。
+    const where: FindOptionsWhere<AppDeploymentEvent> = { applicationId };
+    if (filters?.eventType) {
+      where.eventType = filters.eventType;
+    }
+    // since/until 解析成 Date 一次：非法串在 DTO 层已被 @IsISO8601 拦下，
+    // 这里的新 Date(since) 对已验证的 ISO 串是确定性的；即便绕过 DTO 直调
+    // service（内部调用方），Invalid Date 会让 TypeORM 查询抛错——fail-fast
+    // 优于静默忽略。
+    if (filters?.since && filters.until) {
+      where.createdAt = And(
+        MoreThanOrEqual(new Date(filters.since)),
+        LessThan(new Date(filters.until)),
+      );
+    } else if (filters?.since) {
+      where.createdAt = MoreThanOrEqual(new Date(filters.since));
+    } else if (filters?.until) {
+      where.createdAt = LessThan(new Date(filters.until));
+    }
+    const [data, total] = await this.deploymentEventRepo.findAndCount({
+      where,
+      // id 兜底排序：同秒多事件（如批量扫死）下保证翻页顺序稳定。
+      order: { createdAt: "DESC", id: "DESC" },
+      skip: (safePage - 1) * safePageSize,
+      take: safePageSize,
+    });
+    return { data, total, page: safePage, pageSize: safePageSize };
   }
 
   /** Internal: raw lookup (unmasked env) for deploy/upgrade send paths —
@@ -507,12 +649,23 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     total: number;
     page: number;
     pageSize: number;
+    /** R4（§4.7）：synthetic 扫描到达 RELEASES_SYNTHETIC_SCAN_MAX_ROWS 上限
+     *  （聚合以已扫描部分为准）时 true——去静默截断。只增不改的响应字段。 */
+    truncated: boolean;
+    /** P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，
+     *  列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在
+     *  本页返回行中」的版本号——「设备还留着这版」的事实不因分页截断而消失。
+     *  恒为数组和 truncated=false 时空数组；版本号按本页版本行同序（createdAt
+     *  DESC）回退字母序。只增不改的响应字段。 */
+    retainedButTruncated: string[];
   }> {
     const safePageSize = Math.min(
       Math.max(1, Math.trunc(Number(pageSize)) || RELEASES_DEFAULT_PAGE_SIZE),
       RELEASES_MAX_PAGE_SIZE,
     );
     const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
+    // R4（§4.7）：synthetic 扫描只在第 1 页跑——第 2+ 页无扫描即无截断，false。
+    let truncated = false;
 
     const [versions, total] = await this.versionRepo.findAndCount({
       where: { applicationId },
@@ -557,6 +710,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       : [];
     const sourceById = new Map(sourceDeployments.map((d) => [d.id, d]));
 
+    // R3-A（§4.3）：设备级版本事实（心跳上报，executor_app_versions）——
+    // 每版本行聚合 devices 徽标（正在运行/本地保留该版本的设备）。一次取全
+    // 应用事实、行内内存匹配；无任何设备上报（旧执行器混合窗口期）时为
+    // 空数组，行上 devices 恒存在（只增不改），部署行推断字段原样保留。
+    const deviceFacts =
+      await this.executorService.getAppVersionFacts(applicationId);
+
     const data: AppReleaseRow[] = versions.map((v) => {
       const latest = latestByDeployment.get(v.version) ?? null;
       const snapshot =
@@ -594,6 +754,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         status: v.status,
         createdAt: v.createdAt ? new Date(v.createdAt).toISOString() : null,
         synthetic: false,
+        devices: this.buildReleaseDevices(v.version, deviceFacts),
       };
     });
 
@@ -623,6 +784,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           else seen.set(key, { latest: d, count: 1 });
         }
         if (rows.length < RELEASES_SYNTHETIC_SCAN_PAGE_SIZE) break;
+        // R4（§4.7）：本页扫满且已到总扫描上限——此前这里静默截断（§P8），
+        // 现在显式上报 truncated=true（响应字段只增）。
+        if (
+          skip + RELEASES_SYNTHETIC_SCAN_PAGE_SIZE >=
+          RELEASES_SYNTHETIC_SCAN_MAX_ROWS
+        ) {
+          truncated = true;
+        }
       }
       const snapshotVersions = new Set(
         versions.length === 0
@@ -663,6 +832,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           status: latest.status,
           createdAt: deployedAt ? new Date(deployedAt).toISOString() : null,
           synthetic: true,
+          // R3-A：synthetic 行同享设备徽标（key 是真实版本串时；__unknown__
+          // 无版本可比对 → devices 恒空）。
+          devices: this.buildReleaseDevices(
+            key === "__unknown__" ? null : key,
+            deviceFacts,
+          ),
         });
       }
     }
@@ -680,7 +855,75 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         }),
     );
 
-    return { data, total, page: safePage, pageSize: safePageSize };
+    return {
+      data,
+      total,
+      page: safePage,
+      pageSize: safePageSize,
+      truncated,
+      // P8-R：truncated=true 时被截版本的 devices 徽标整行不可见——用同一份
+      // 全应用设备事实（getAppVersionFacts 本就与页无关地全量拉回）求差集，
+      // 把「有设备保留但不在本页行中」的版本号显式带回，零额外查询。
+      retainedButTruncated: truncated
+        ? this.buildRetainedButTruncated(data, deviceFacts)
+        : [],
+    };
+  }
+
+  /**
+   * R3-A（§4.3）：版本行的设备徽标聚合——只列「currentVersion === 该版本
+   * （正在运行）或 该版本 ∈ retainedVersions（本地保留）」的设备。
+   *
+   * `retained` 如实表达「本行版本 ∈ 设备 retainedVersions」（设备磁盘上仍
+   * 持有该版本，可本地切回）；「运行中/保留」的展示区分由消费方按
+   * `currentVersion === 行版本` 判定（设备 current 正指向该版本时通常
+   * 同时 retained=true，两者不互斥）。
+   */
+  private buildReleaseDevices(
+    version: string | null,
+    facts: Awaited<ReturnType<ExecutorService["getAppVersionFacts"]>>,
+  ): AppReleaseDevice[] {
+    if (!version) return [];
+    return facts
+      .filter(
+        (f) =>
+          f.currentVersion === version || f.retainedVersions.includes(version),
+      )
+      .map((f) => ({
+        executorId: f.executorId,
+        executorName: f.executorName,
+        currentVersion: f.currentVersion,
+        retained: f.retainedVersions.includes(version),
+        online: f.online,
+        lastHeartbeat: f.lastHeartbeat,
+      }));
+  }
+
+  /**
+   * P8-R（部署模型评审遗留）：「有设备保留但被 truncated 吞掉」的版本号差集。
+   *  口径与 buildReleaseDevices 完全一致：currentVersion 命中或 ∈ retainedVersions
+   *  即「设备还留着这版」；与本页已返回行的版本集合（含 synthetic 行）求差，
+   *  剩下的就是只在被截部分出现的事实版本号。纯内存计算（facts 本就全量在
+   *  手），字母序排序保证响应确定性。
+   */
+  private buildRetainedButTruncated(
+    rows: AppReleaseRow[],
+    facts: Awaited<ReturnType<ExecutorService["getAppVersionFacts"]>>,
+  ): string[] {
+    const present = new Set<string>();
+    for (const r of rows) {
+      if (r.version) present.add(r.version);
+    }
+    const missing = new Set<string>();
+    for (const f of facts) {
+      if (f.currentVersion && !present.has(f.currentVersion)) {
+        missing.add(f.currentVersion);
+      }
+      for (const v of f.retainedVersions) {
+        if (!present.has(v)) missing.add(v);
+      }
+    }
+    return [...missing].sort();
   }
 
   /** DEP-01：从部署行的持久化信号推导触发方式（无 trigger 列，零 schema 变更）。
@@ -755,10 +998,38 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return updateDto;
   }
 
+  /**
+   * R1（2026-10-24 部署模型评审 §4.2）：rollbackApplication 快照路径的三重守卫
+   * 抽段——setCurrentVersion / deployVersion 与 rollbackApplication 共用同一份
+   * 校验与错误码（属本应用 → 有版本号 → released），三个写面口径永不漂移。
+   */
+  private assertVersionRestorable(
+    appId: string,
+    version: {
+      applicationId: string;
+      version: string | null;
+      status: string | null;
+    },
+  ): void {
+    if (version.applicationId !== appId) {
+      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_OTHER_APP);
+    }
+    if (!version.version) {
+      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NO_NUMBER);
+    }
+    if (version.status !== "released") {
+      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NOT_RELEASED);
+    }
+  }
+
   async rollbackApplication(
     appId: string,
     targetId: string,
     trigger?: DeploymentTriggerContext,
+    // P0-1（2026-10-25 审计）：版本恢复链要写 applications 表——actor 透传给
+    // ApplicationService.update 的属主守卫（NF-03）。HTTP 面恒有 @CurrentUser
+    //（@Roles(ADMIN)）；缺省 undefined 只存在于直调 service 的存量单测。
+    actor?: { id: number; role: UserRole } | null,
   ) {
     // R1: deployment-mutating paths must read the raw env (the snapshot
     // carries the env that gets written back); bypass the read-surface
@@ -766,19 +1037,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const app = await this.appService.findByIdRaw(appId);
     const version = await this.versionRepo.findOne({ where: { id: targetId } });
     if (version) {
-      if (version.applicationId !== appId) {
-        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_OTHER_APP);
-      }
-      if (!version.version) {
-        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NO_NUMBER);
-      }
-      if (version.status !== "released") {
-        throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NOT_RELEASED);
-      }
+      this.assertVersionRestorable(appId, version);
 
       const updatedApp = await this.appService.update(
         appId,
         this.buildVersionRestoreDto(app, version)!,
+        actor,
       );
       const result = await this.upgradeRunningDeployments(
         appId,
@@ -815,7 +1079,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // packageUrl restore (exposed as packageUrlRestored=false in the
     // response below). Rollbacks that must pin a package file should target
     // a version snapshot (which stores packageUrl in its snapshot payload).
-    const updatedApp = await this.appService.update(appId, updateDto);
+    const updatedApp = await this.appService.update(appId, updateDto, actor);
     const result = await this.upgradeRunningDeployments(
       appId,
       trigger ?? {
@@ -831,6 +1095,192 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       packageUrlRestored: false,
       updatedApp,
     };
+  }
+
+  /**
+   * R1（2026-10-24 部署模型评审 §4.2）：「设为当前版本」——只按版本快照恢复
+   * 应用当前字段（与 rollbackApplication 前半段同一映射/校验/错误码），**绝不
+   * 触碰部署行/设备**。旧 rollback 把「恢复字段」与「全量下发」捆绑成一个动作，
+   * 用户只想改回记录面时也被迫重启全部实例；本端点是拆出的安全半边。
+   */
+  async setCurrentVersion(
+    appId: string,
+    versionId: string,
+    // P0-1：同 rollbackApplication——actor 透传属主守卫（NF-03），ADMIN 可改
+    // 自己/有权限项目的应用，与手动 update 同语义。
+    actor?: { id: number; role: UserRole } | null,
+  ) {
+    // R1: 与 rollbackApplication 同源——快照恢复写回的 env 必须是原始值，
+    // 绕过 appService.findById 的读面掩码。
+    const app = await this.appService.findByIdRaw(appId);
+    const version = await this.versionRepo.findOne({
+      where: { id: versionId },
+    });
+    if (!version) {
+      // 旧 rollback 对查无版本走 legacy 部署行回退；本端点只收 versionId
+      // （版本快照主键），查无即 404，不再隐式落到部署行语义。
+      throw new AppError(ErrorCode.APP_VERSION_NOT_FOUND, { versionId });
+    }
+    this.assertVersionRestorable(appId, version);
+
+    const updatedApp = await this.appService.update(
+      appId,
+      this.buildVersionRestoreDto(app, version)!,
+      actor,
+    );
+    return {
+      ok: true,
+      dispatched: false,
+      version: version.version,
+      versionId: version.id,
+      updatedApp,
+    };
+  }
+
+  /**
+   * R1（2026-10-24 部署模型评审 §4.2）：「下发到设备」——先执行与
+   * setCurrentVersion 完全相同的字段恢复，再下发：
+   *   · executorIds 缺省 = 该应用全部 RUNNING 部署行（与旧 rollback 行为一致）；
+   *   · 显式 executorIds = 仅对这些执行器对应的 RUNNING 部署行逐台走既有
+   *     upgrade 链；无部署行/行状态不可下发的执行器不抛错，进 skipped 明细。
+   */
+  async deployVersion(
+    appId: string,
+    versionId: string,
+    executorIds?: string[],
+    trigger?: DeploymentTriggerContext,
+    // P0-1：同 setCurrentVersion——字段恢复写 applications 表经属主守卫。
+    actor?: { id: number; role: UserRole } | null,
+  ) {
+    const app = await this.appService.findByIdRaw(appId);
+    const version = await this.versionRepo.findOne({
+      where: { id: versionId },
+    });
+    if (!version) {
+      throw new AppError(ErrorCode.APP_VERSION_NOT_FOUND, { versionId });
+    }
+    this.assertVersionRestorable(appId, version);
+
+    const updatedApp = await this.appService.update(
+      appId,
+      this.buildVersionRestoreDto(app, version)!,
+      actor,
+    );
+    // 沿用旧 rollback 的触发痕迹语义（本端点即其拆出的下发半边）。
+    const effectiveTrigger = trigger ?? {
+      operator: null,
+      triggerType: DeploymentTriggerType.ROLLBACK,
+    };
+
+    const upgraded: Array<{
+      deploymentId: string;
+      executorId: string | null;
+      executorAddress: string | null;
+    }> = [];
+    const skipped: Array<{
+      executorId: string | null;
+      deploymentId: string | null;
+      reason: string;
+      detail?: string;
+    }> = [];
+
+    if (!executorIds || executorIds.length === 0) {
+      // 缺省 = 旧 rollback 语义：全部 RUNNING 行逐台 upgrade（allSettled 容错）。
+      const running = await this.findRunningByApp(appId);
+      await this.collectVersionDispatch(running, effectiveTrigger, {
+        upgraded,
+        skipped,
+      });
+    } else {
+      // 显式点名：按执行器分组核对部署行，无行/不可下发的进 skipped 而非报错。
+      const rows = await this.findAllByApp(appId);
+      const seen = new Set<string>();
+      for (const executorId of executorIds) {
+        if (seen.has(executorId)) continue; // 重复 id 幂等去重
+        seen.add(executorId);
+        const matching = rows.filter((d) => d.executorId === executorId);
+        if (matching.length === 0) {
+          skipped.push({
+            executorId,
+            deploymentId: null,
+            reason: "no_deployment",
+          });
+          continue;
+        }
+        const runnable = matching.filter(
+          (d) => d.status === DeploymentStatus.RUNNING,
+        );
+        if (runnable.length === 0) {
+          // findAllByApp 按 createdAt DESC——用最新一行说明不可下发的原因。
+          const latest = matching[0];
+          skipped.push({
+            executorId,
+            deploymentId: latest.id,
+            reason: "not_running",
+            detail: `status=${latest.status}`,
+          });
+          continue;
+        }
+        await this.collectVersionDispatch(runnable, effectiveTrigger, {
+          upgraded,
+          skipped,
+        });
+      }
+    }
+
+    return {
+      ok: true,
+      dispatched: true,
+      version: version.version,
+      versionId: version.id,
+      upgraded,
+      skipped,
+      updatedApp,
+    };
+  }
+
+  /** deployVersion 的逐台下发收集器：fulfilled → upgraded；rejected → skipped
+   *  （reason=upgrade_rejected，detail 带原始 message）。缺省/显式两路径共用，
+   *  保证两路径的 upgrade 链语义逐字节一致。 */
+  private async collectVersionDispatch(
+    rows: AppDeployment[],
+    trigger: DeploymentTriggerContext,
+    out: {
+      upgraded: Array<{
+        deploymentId: string;
+        executorId: string | null;
+        executorAddress: string | null;
+      }>;
+      skipped: Array<{
+        executorId: string | null;
+        deploymentId: string | null;
+        reason: string;
+        detail?: string;
+      }>;
+    },
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      rows.map((d) => this.upgrade(d.id, trigger)),
+    );
+    results.forEach((r, i) => {
+      const d = rows[i];
+      if (r.status === "fulfilled") {
+        out.upgraded.push({
+          deploymentId: d.id,
+          executorId: d.executorId ?? null,
+          executorAddress: d.executorAddress ?? null,
+        });
+      } else {
+        const msg =
+          r.reason instanceof Error ? r.reason.message : String(r.reason);
+        out.skipped.push({
+          executorId: d.executorId ?? null,
+          deploymentId: d.id,
+          reason: "upgrade_rejected",
+          detail: msg,
+        });
+      }
+    });
   }
 
   /**
@@ -952,6 +1402,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         }
         throw err;
       }
+      // R4（§4.1A）：审批请求行也是一次「部署动作的发起」——此刻落 deploy_created
+      // 事件（approvalRequired=true 进 detail）；approve 时不另计部署事件（避免
+      // 双计，见 DEPLOY_COUNTED_EVENT_TYPES）。版本事实 = 动作时的 app.version。
+      await this.recordDeploymentEvent({
+        applicationId,
+        deploymentId: savedRequest.id,
+        eventType: AppDeploymentEventType.DEPLOY_CREATED,
+        executorId: executor.id,
+        executorAddress: executor.address,
+        deployedVersion: app.version ?? null,
+        triggerType: trigger?.triggerType ?? null,
+        operator: trigger?.operator ?? null,
+        detail: { approvalRequired: true, runMode: savedRequest.runMode },
+      });
       // QA1: HTTP response is a read surface — return masked.
       return this.maskDeploymentForRead(savedRequest);
     }
@@ -1027,6 +1491,19 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       this.logger.log(
         `Redeploy reuses existing deployment ${reused.id} for ${app.name} on ${executor.address}`,
       );
+      // R4（§4.1A）：行复用重推不产生新部署行——事件表是这次动作的唯一痕迹，
+      // deployCount 聚合（redeploy_reused 计入）依赖它。
+      await this.recordDeploymentEvent({
+        applicationId,
+        deploymentId: reused.id,
+        eventType: AppDeploymentEventType.REDEPLOY_REUSED,
+        executorId: reused.executorId,
+        executorAddress: reused.executorAddress,
+        deployedVersion: app.version ?? null,
+        triggerType: trigger?.triggerType ?? null,
+        operator: trigger?.operator ?? null,
+        detail: { runMode: reused.runMode },
+      });
       this.pushDeployToExecutor(reused, app).catch((err) => {
         this.logger.error(`Failed to push deploy to executor: ${err.message}`);
       });
@@ -1071,6 +1548,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // Asynchronously push deploy command to executor
     this.pushDeployToExecutor(saved, app).catch((err) => {
       this.logger.error(`Failed to push deploy to executor: ${err.message}`);
+    });
+
+    // R4（§4.1A）：新建行落 deploy_created 事件（版本事实 = 动作时的
+    // app.version；行上的 deployedVersion 要等推送/心跳推进才置位）。
+    await this.recordDeploymentEvent({
+      applicationId,
+      deploymentId: saved.id,
+      eventType: AppDeploymentEventType.DEPLOY_CREATED,
+      executorId: saved.executorId,
+      executorAddress: saved.executorAddress,
+      deployedVersion: app.version ?? null,
+      triggerType: trigger?.triggerType ?? null,
+      operator: trigger?.operator ?? null,
+      detail: { runMode: saved.runMode },
     });
 
     // QA1: HTTP response is a read surface — return masked.
@@ -1133,6 +1624,19 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       this.logger.error(`Approved deploy push failed: ${err.message}`);
     });
     await this.writeApprovalAudit("deployment.approve", deployment, actor);
+    // R4（§4.1A）：审批决策进事件流（不计入 deployCount——请求行的
+    // deploy_created 已计，见 DEPLOY_COUNTED_EVENT_TYPES）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.APPROVAL_APPROVED,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: app.version ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: deployment.operator ?? null,
+      detail: { reason: reason ?? null },
+    });
     return this.maskDeploymentForRead(deployment);
   }
 
@@ -1187,6 +1691,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       actor,
       reason,
     );
+    // R4（§4.1A）：审批拒绝进事件流（reason 是决策的短事实）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.APPROVAL_REJECTED,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: deployment.deployedVersion ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: actor.name ?? null,
+      detail: { reason: reason ?? null },
+    });
     return this.maskDeploymentForRead(deployment);
   }
 
@@ -1237,6 +1753,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deployment.statusMessage = `Deployment request cancelled by ${actor.name ?? "unknown"}`;
     deployment.approvalMeta = nextMeta;
     await this.writeApprovalAudit("deployment.cancel", deployment, actor);
+    // R4（§4.1A）：提交者撤回进事件流。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.APPROVAL_CANCELLED,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: deployment.deployedVersion ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: actor.name ?? null,
+      detail: null,
+    });
     return this.maskDeploymentForRead(deployment);
   }
 
@@ -1334,6 +1862,51 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   }
 
   /**
+   * R4（§4.1A）：部署事件落库（append-only 不可变事件表，纯旁路记录）。
+   *
+   * 事务策略：与部署行同库但**不共事务**（best-effort + warn）。部署域主链
+   * （deploy/approve/upgrade/stop…）本身大多无显式事务边界，事件 insert 与
+   * 主链写操作分属独立语句——事件表抖动绝不能拖挂主动作（部署推送已在执行器
+   * 侧生效，因事件失败回滚主链反而制造「执行器有进程、中台无记录」的分裂）。
+   * fail-open 口径与 writeApprovalAudit 相同。
+   *
+   * detail 只放标量短事实（reason/runMode/deletedStatus 等），**绝不放 env**：
+   * 事件表没有掩码读面，密钥进事件即泄漏（QA1 同源约束）。
+   */
+  private async recordDeploymentEvent(input: {
+    applicationId: string;
+    deploymentId: string | null;
+    eventType: AppDeploymentEventType;
+    executorId?: string | null;
+    executorAddress?: string | null;
+    deployedVersion?: string | null;
+    triggerType?: string | null;
+    operator?: string | null;
+    detail?: Record<string, unknown> | null;
+  }): Promise<void> {
+    if (!this.deploymentEventRepo) return; // @Optional 装配缺席（存量单测）
+    try {
+      await this.deploymentEventRepo.insert({
+        applicationId: input.applicationId,
+        deploymentId: input.deploymentId,
+        executorId: input.executorId ?? null,
+        executorAddress: input.executorAddress ?? null,
+        eventType: input.eventType,
+        deployedVersion: input.deployedVersion ?? null,
+        triggerType: input.triggerType ?? null,
+        operator: input.operator ?? null,
+        detail: input.detail ?? null,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Deployment event write failed (${input.eventType}, deployment=` +
+          `${input.deploymentId ?? "n/a"}): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  /**
    * Trigger upgrade on an existing deployment (git pull + restart).
    */
   async upgrade(
@@ -1374,6 +1947,22 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
     await this.saveWithOptimisticLock(deployment);
 
+    // R4（§4.1A）：叠加升级是行原位覆盖（无新行）——事件表是这次动作的唯一
+    // 痕迹；R1 deploy-version / 旧 rollback alias / upgrade-all 全部经本方法，
+    // 单写入点全覆盖。版本事实 = 本次推送目标 app.version（行上 deployedVersion
+    // 要等心跳确认才推进）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.UPGRADE,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: app.version ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: deployment.operator ?? null,
+      detail: null,
+    });
+
     this.pushDeployToExecutor(deployment, app, true).catch((err) => {
       this.logger.error(`Upgrade push failed: ${err.message}`);
     });
@@ -1395,6 +1984,23 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
     ) {
       throw new AppError(ErrorCode.APP_DEPLOYMENT_AWAITING_APPROVAL);
+    }
+    // P2-1（2026-10-25 审计）：在途行（pending/deploying/upgrading）禁停。
+    // 此前 stop 只挡 pending_approval——deploy 的推送是 fire-and-forget，行
+    // 在推送在途时被 stop 立即置 STOPPED 并发 app-stop，随后推送照常到达把
+    // 应用拉起；心跳又被 A-2② 的状态守卫（terminal 行不推进）拒绝，行永久
+    // STOPPED 而设备上进程在跑。与 removeDeployment 的终态守卫（只许终态行
+    // 删除）同口径：在途行的出口只有它自己的完成/失败链。
+    const inFlight: DeploymentStatus[] = [
+      DeploymentStatus.PENDING,
+      DeploymentStatus.DEPLOYING,
+      DeploymentStatus.UPGRADING,
+    ];
+    if (inFlight.includes(deployment.status)) {
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_STOP_IN_FLIGHT, {
+        deploymentId,
+        status: deployment.status,
+      });
     }
 
     try {
@@ -1461,6 +2067,23 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const saved = await this.saveWithOptimisticLock(deployment);
     // D3-B-P2-1: stop 执行门落证（审批门已有痕，执行门此前无痕）。
     await this.writeTransitionAudit("deployment.stop", saved);
+    // R4（§4.1A）：停机动作进事件流；送达与否从 STOP_NOT_DELIVERED_PREFIX
+    // 推导（与前端同一条跨端契约），失败保留「信号没送到」的事实。
+    await this.recordDeploymentEvent({
+      applicationId: saved.applicationId,
+      deploymentId: saved.id,
+      eventType: AppDeploymentEventType.STOP,
+      executorId: saved.executorId,
+      executorAddress: saved.executorAddress,
+      deployedVersion: saved.deployedVersion ?? null,
+      triggerType: saved.triggerType ?? null,
+      operator: saved.operator ?? null,
+      detail: {
+        stopSignalDelivered: !(saved.statusMessage ?? "").startsWith(
+          STOP_NOT_DELIVERED_PREFIX,
+        ),
+      },
+    });
     // QA1: mask the HTTP return; the raw entity was already persisted.
     return this.maskDeploymentForRead(saved);
   }
@@ -1525,6 +2148,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deletedStatus: deployment.status,
       deployedVersion: deployment.deployedVersion,
       deletedBy: actor?.username ?? null,
+    });
+
+    // R4（§4.1A）：事件无外键、比行活得久——删除前的最后一条事实，同样必须
+    // 在 delete 之前落（事件表是「这台设备曾部署过」的唯一幸存痕迹）。
+    await this.recordDeploymentEvent({
+      applicationId: deployment.applicationId,
+      deploymentId: deployment.id,
+      eventType: AppDeploymentEventType.REMOVE,
+      executorId: deployment.executorId,
+      executorAddress: deployment.executorAddress,
+      deployedVersion: deployment.deployedVersion ?? null,
+      triggerType: deployment.triggerType ?? null,
+      operator: actor?.username ?? null,
+      detail: { deletedStatus: deployment.status },
     });
 
     await this.repo.delete({ id: deploymentId });
@@ -1789,9 +2426,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // 机队下它落在 NAT 内 / Clash 伪 IP 上（198.18.0.1:8002），push 必然
       // 3 × 30s 超时后 FAILED。这里改为**秒级失败**并给出可操作提示，同时
       // 立刻释放该应用的在途槽位（否则后续每次 deploy 都 409）。
+      // P3-①（2026-10-25 审计）：statusMessage 直出管理台状态列，文案用
+      // 可读中文（下同）。
       const msg =
-        "Deploy target executor record no longer exists (it may have been deleted or " +
-        "auto-cleaned). Re-select an executor and deploy again.";
+        "部署目标执行器记录已不存在（可能已被删除或自动清理）——请重新选择执行器后再次部署。";
       this.logger.error(
         `Deploy ${deployment.id} aborted: executorId ${deployment.executorId ?? "(none)"} no ` +
           `longer exists (snapshot address ${deployment.executorAddress}) — failing fast ` +
@@ -1845,10 +2483,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           ...pinCfg,
         });
         // Success（R34-A2：条件写，见 persistDeployProgress 头注）
+        // P3-①（2026-10-25 审计）：这行文案会原样出现在管理台部署行状态列，
+        // 直出英文「Deploy command sent to executor」不可读——改可读中文。
+        // 语义：push HTTP 已成功，行转 DEPLOYING/UPGRADING，等执行器完成
+        // 部署后经心跳回报（running → RUNNING / 失败 → FAILED）。
         await this.persistDeployProgress(
           deployment,
           upgrade ? DeploymentStatus.UPGRADING : DeploymentStatus.DEPLOYING,
-          "Deploy command sent to executor",
+          "部署命令已送达执行器，等待执行器完成部署并回报状态",
           app,
         );
         await this.saveVersionSnapshot(deployment, app, "deploying");
@@ -1868,7 +2510,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
 
     // All attempts exhausted
-    const exhaustedMsg = `Failed to reach executor after ${MAX_ATTEMPTS} attempts: ${lastError}`;
+    // P3-①：推送失败的原因串同样直出状态列——中文化主句，保留底层 err 原文
+    // （axios 报错是排障关键事实，不做翻译/加工）。
+    const exhaustedMsg = `连续 ${MAX_ATTEMPTS} 次推送部署命令到执行器均失败：${lastError}`;
     this.logger.error(
       `Deploy push failed for ${deployment.id} after ${MAX_ATTEMPTS} attempts: ${lastError}`,
     );
@@ -1888,8 +2532,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // R33-B2 / R34-A2: 条件写在 failDeploymentIfInFlight 里（与 SSRF 分支同一实现）。
     await this.failDeploymentIfInFlight(deployment, exhaustedMsg);
   }
-
-
 
   /**
    * R34-A2（ADR-026）：推送**成功**路径的状态写也必须条件化。
@@ -1999,6 +2641,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     };
   }
 
+  /**
+   * P3-7（2026-10-25 审计，登记不修）：application_versions **无保留策略**。
+   * 每次部署/升级都按 (applicationId, version, gitCommit, sourceDeploymentId)
+   * 去重落快照，行数随部署次数单调增长且永不清理——版本快照同时是回滚面与
+   * 发布列表的事实源，自动保留/清理需要产品决策（保留多少个版本？released
+   * 与 failed 快照是否同策略？），登记为残差，不在本轮处置。
+   */
   private async saveVersionSnapshot(
     deployment: AppDeployment,
     app: Application,
@@ -2082,9 +2731,59 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     await this.versionRepo.save(version);
   }
 
+  /**
+   * R4（§4.7 / §4.1A）：版本 deployCount 改为事件表 DB 侧 GROUP BY 聚合。
+   *
+   * 切换依据：行复用模型下「同一版本部署过几次」在 app_deployments 上不可
+   * 数（原地覆盖只留现状）——事件表（deploy_created/redeploy_reused/upgrade）
+   * 才是动作的持久载体；DB 侧 GROUP BY 也让该读面摆脱 findAllByApp 的
+   * take:5000 内存闸（超限静默失真是 §P8 的问题本体）。
+   *
+   * legacy 回退：该应用**一条事件都没有**时，事件聚合恒为空——回退旧的
+   * findAllByApp 行计数。迁移 1790000000064 已把「迁移 1790000000062 之前
+   * 历史动作数凭空消失」的混合窗口期消除（对无事件应用从现存部署行合成
+   * deploy_created 下界事件，折算语义见该迁移注释），但本分支仍需保留，
+   * 服务两类残余场景：
+   *  1. **回填后仍无行可折算的应用**：部署行已全被 remove（行删除不落
+   *     remove 事件之外的历史）或从未有过部署行——回填无米下炊，事件表对其
+   *     恒空，行计数仍是唯一可用口径（findAllByApp 也空时得空 map，自洽）；
+   *  2. **测试装配缺席**：deploymentEventRepo 为 null（@Optional 存量单测
+   *     装配）同走回退。
+   * 有事件即切事件聚合的语义不变（混加行数与事件数无法自洽，行数随行复用
+   * 漂移）。
+   */
   private async buildDeployCountMap(
     applicationId: string,
   ): Promise<Map<string, number>> {
+    if (this.deploymentEventRepo) {
+      const eventCount = await this.deploymentEventRepo.count({
+        where: { applicationId },
+      });
+      if (eventCount > 0) {
+        const rows: Array<Record<string, unknown>> =
+          await this.deploymentEventRepo
+            .createQueryBuilder("e")
+            .select("e.deployedVersion", "version")
+            .addSelect("COUNT(*)", "count")
+            .where("e.applicationId = :applicationId", { applicationId })
+            .andWhere("e.eventType IN (:...types)", {
+              types: DEPLOY_COUNTED_EVENT_TYPES,
+            })
+            .andWhere("e.deployedVersion IS NOT NULL")
+            .groupBy("e.deployedVersion")
+            .getRawMany();
+        const countMap = new Map<string, number>();
+        for (const row of rows) {
+          // pg 驱动下 COUNT(*) 回 bigint 字符串（findStats 同款收口）。
+          const n = Number(row.count);
+          if (typeof row.version === "string" && Number.isFinite(n) && n > 0) {
+            countMap.set(row.version, n);
+          }
+        }
+        return countMap;
+      }
+    }
+    // legacy 回退：事件表空（或测试装配缺席）→ 既有行计数语义。
     const deployments = await this.findAllByApp(applicationId);
     const countMap = new Map<string, number>();
     for (const d of deployments) {
@@ -2172,18 +2871,19 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   }
 
   /** Scan every 2 minutes for deployments stuck in an in-progress state
-   *  ('deploying'/'upgrading') with no update for > 10 minutes and mark them
+   *  ('deploying'/'upgrading') with no update for a while and mark them
    *  failed.
-   *  R6: the predicate used to be createdAt-based — a legacy deployment
-   *  upgraded (re-entering DEPLOYING on the SAME row) kept its original
-   *  createdAt and was mis-marked FAILED by this cron 10 minutes later,
-   *  polluting the version snapshot. updatedAt is refreshed both when the
-   *  row enters DEPLOYING/UPGRADING (status save) and on every heartbeat
-   *  save, so the semantics are now "in-progress and untouched for 10
-   *  minutes". UPGRADING is included because upgrades no longer pass through
-   *  DEPLOYING (R5 index compatibility) and still need the same timeout
-   *  coverage.
-   *  QA5: PENDING is swept on a shorter threshold (5 minutes). deploy()
+   *  P1-A2（2026-10-25 真机审计）：阈值收敛为命名常量——DEPLOYING/UPGRADING
+   *  用 DEPLOYMENT_STALL_TIMEOUT_MS（30min）、PENDING 用
+   *  DEPLOYMENT_PENDING_TIMEOUT_MS（5min），语义与取值依据见常量注释。
+   *  R6: the predicate is updatedAt-based — a legacy deployment upgraded
+   *  (re-entering DEPLOYING on the SAME row) kept its original createdAt;
+   *  updatedAt is refreshed both when the row enters DEPLOYING/UPGRADING
+   *  (status save) and on every heartbeat save, so the semantics are
+   *  "in-progress and untouched for the window". UPGRADING is included
+   *  because upgrades no longer pass through DEPLOYING (R5 index
+   *  compatibility) and still need the same timeout coverage.
+   *  QA5: PENDING is swept on a shorter threshold. deploy()
    *  INSERTs the row as PENDING and pushes to the executor asynchronously —
    *  a crash between the two steps leaves the row PENDING forever, where it
    *  keeps matching the partial unique index
@@ -2196,15 +2896,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  三层同口径排除 approvalStatus=pending_approval）。
    *  A-2①: pull 入队后行恒 DEPLOYING 且离线执行器不产生心跳——行龄未超命令
    *  TTL 的「commandId 未决」行（statusMessage 带 PULL_QUEUED_MESSAGE_PREFIX）
-   *  豁免扫描：否则执行器离线 >10min 时行被判 FAILED 并释放 in-flight 槽位，
+   *  豁免扫描：否则执行器离线超窗时行被判 FAILED 并释放 in-flight 槽位，
    *  旧命令在 TTL 内被重连的执行器消费 → 同一执行器两个真实进程。命令 TTL
    *  过后执行器侧本就按 issuedAt 丢弃载荷，届时再扫死是安全的。 */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
     // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
     if (this.leaderGate && !this.leaderGate.isLeader) return;
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const fiveMinutesAgo = new Date(Date.now() - DEPLOYMENT_PENDING_TIMEOUT_MS);
+    const stallCutoff = new Date(Date.now() - DEPLOYMENT_STALL_TIMEOUT_MS);
     const stuck = await this.repo.find({
       where: [
         {
@@ -2220,11 +2920,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         },
         {
           status: DeploymentStatus.DEPLOYING,
-          updatedAt: LessThan(tenMinutesAgo),
+          updatedAt: LessThan(stallCutoff),
         },
         {
           status: DeploymentStatus.UPGRADING,
-          updatedAt: LessThan(tenMinutesAgo),
+          updatedAt: LessThan(stallCutoff),
         },
       ],
       // O-5: bound the cron sweep; rows flipped to FAILED leave the predicate,
@@ -2267,10 +2967,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
     if (sweepable.length === 0) return;
 
+    // P1-A2：statusMessage 直出可读中文（消费面是管理台部署行的状态列，
+    // 与 P3-①「Deploy command sent to executor」中文化同口径）；「[System]」
+    // 前缀保留为机器可识别标记（迁移 1789000000000 的存量文案同款前缀），
+    // 分钟数由常量推导，改阈值不会让文案漂移。
     const PENDING_MSG =
-      "[System] Deployment stuck in PENDING (deploy push never started, " +
-      "likely a restart between insert and push) — timed out after 5 minutes";
-    const TIMEOUT_MSG = "[System] Deployment timed out after 10 minutes";
+      `[System] 部署卡在 PENDING：推送始终未开始（可能服务重启时丢失）——` +
+      `超过 ${DEPLOYMENT_PENDING_TIMEOUT_MS / 60_000} 分钟无进度，系统自动判败`;
+    const TIMEOUT_MSG =
+      `[System] 部署超时（无心跳）——超过 ${DEPLOYMENT_STALL_TIMEOUT_MS / 60_000} 分钟` +
+      `无心跳或进度更新，系统自动判败`;
 
     // O-5: two batched UPDATEs (message differs for PENDING vs DEPLOYING/
     // UPGRADING) instead of N per-row save() round-trips.
@@ -2342,8 +3048,29 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     for (const d of sweepable) {
       if (!affectedIds.has(d.id)) continue; // A-9: 未被本次 UPDATE 命中（并发已推进）→ 不动快照
+      const previousStatus = d.status; // R4：扫死前的在途状态进事件 detail
       d.status = DeploymentStatus.FAILED;
+      // P2-2（2026-10-26 第三轮审计）：判败即撤令——行进 FAILED 后 in-flight
+      // 槽位释放、新部署放行，而该部署的 pull deploy 命令在命令 TTL（默认
+      // 30min）内仍滞留在执行器队列里：回归 pull 的执行器会照常执行它，给
+      // 设备装上无人跟踪的应用（终态行心跳守卫拒绝推进），还可能与新部署
+      // 叠成双进程。按 acf:cmdbydep:{deploymentId} 反向集合撤销在途命令
+      // （ExecutorService 包装层收敛 Redis 故障，best-effort 不影响判败主链；
+      // 撤销失败退回既有兜底：命令 TTL 过后执行器侧按 issuedAt 丢弃）。
+      await this.executorService.recallDeploymentCommands(d.id);
       await this.markVersionSnapshotStatus(d, "failed");
+      // R4（§4.1A）：系统侧转 FAILED 也进事件流（operator=null——机器路径）。
+      await this.recordDeploymentEvent({
+        applicationId: d.applicationId,
+        deploymentId: d.id,
+        eventType: AppDeploymentEventType.STUCK_FAILED,
+        executorId: d.executorId,
+        executorAddress: d.executorAddress,
+        deployedVersion: d.deployedVersion ?? null,
+        triggerType: d.triggerType ?? null,
+        operator: null,
+        detail: { previousStatus },
+      });
       this.logger.warn(
         `Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}, status=${d.status}`,
       );
@@ -2366,12 +3093,31 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *    批次并对已升级台自动回滚（复用「重新部署上一版本」链）。
    *    manifest 无 healthCheck 声明时跳过探测直接提升（行为可预期：无验收
    *    依据时阻塞灰度毫无意义）。
+   *
+   * R2（部署模型评审 §4.4/§9.4，2026-10-24）：覆盖面显式化——「该应用已部署
+   * 的设备」默认 = 全部 RUNNING 行。scheduled 实证口径（与 §P7 的原始推断
+   * 不同）：executor deploy.ts scheduled 分支部署完成即一次性
+   * reportStatus(deploymentId,'running')，行经 handleHeartbeat 状态守卫落
+   * RUNNING；此后无进程、无持续心跳，但 detectStuckDeployments 只扫
+   * PENDING(5min)/DEPLOYING(10min)/UPGRADING(10min)，**永不触碰 RUNNING 行**
+   * ——scheduled 行稳态就是 RUNNING，findRunningByApp 天然覆盖，不存在
+   * 「拿不到新版本」。真正掉出覆盖面的只有「完成上报丢失 → 滞留 DEPLOYING →
+   * 10min 后被扫成 FAILED」的行，而那是 failed 口径（默认排除，走显式重新
+   * 部署）。因此默认覆盖集合与改造前逐字节一致；本方法新增的只是把覆盖面
+   * **显式分组回显**（coverage）+ 在途行跳过明细（skipped，不抛错）+ stopped
+   * 显式 opt-in（includeStopped，默认 false——stopped 可能是人为停用）。
    */
   async upgradeAllWithRollout(
     appId: string,
     rollout?: { strategy?: "canary" | "all"; percentage?: number } | null,
     trigger?: DeploymentTriggerContext,
     version?: string,
+    includeStopped = false,
+    // P0-1：version 定向灰度的「定版」分支写 applications 表（快照恢复），
+    // 同样经属主守卫。upgrade-all 是 @Roles(ADMIN) 的人工干预面，恒有
+    // @CurrentUser——按人类 actor 语义透传，无需 systemBypass（机器面先例
+    // 只有 HMAC webhook 一条，见 application.controller.webhook）。
+    actor?: { id: number; role: UserRole } | null,
   ): Promise<{
     ok: boolean;
     total: number;
@@ -2379,6 +3125,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     failed: number;
     /** version 定向灰度时回显实际目标版本（快照恢复后 app 的 version）。 */
     version?: string;
+    /** R2 §4.4：覆盖面分组计数（本方法所有返回路径恒携带）。 */
+    coverage: {
+      running: number;
+      scheduled: number;
+      stopped: number;
+      failed: number;
+      inFlight: number;
+    };
+    /** R2 §4.4：在途行跳过明细（pending/deploying/upgrading 不抛错）。 */
+    skipped: Array<{
+      deploymentId: string;
+      executorId: string | null;
+      status: string;
+      reason: string;
+    }>;
     rollout?: {
       batchId: string;
       strategy: "canary" | "all";
@@ -2412,11 +3173,53 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       const app = await this.appService.findByIdRaw(appId);
       if (app.version !== row.version) {
         const updateDto = this.buildVersionRestoreDto(app, row);
-        if (updateDto) await this.appService.update(appId, updateDto);
+        if (updateDto) await this.appService.update(appId, updateDto, actor);
       }
       targetVersion = row.version;
     }
-    const deployments = await this.findRunningByApp(appId);
+    // R2 §4.4：覆盖面分组——一次拉全量行（不加 application relation，分组只
+    // 需状态/模式标量列），JS 侧按状态分组。RUNNING 内再按 runMode 拆出
+    // scheduled（仅部署待触发）单独计数；「已部署设备」默认覆盖两者之和，
+    // 与改造前 findRunningByApp 的集合逐字节一致（见方法头实证注释）。
+    const allRows = await this.repo.find({
+      where: { applicationId: appId },
+      order: { createdAt: "DESC" },
+    });
+    const runningRows = allRows.filter(
+      (d) => d.status === DeploymentStatus.RUNNING,
+    );
+    const stoppedRows = allRows.filter(
+      (d) => d.status === DeploymentStatus.STOPPED,
+    );
+    const inFlightRows = allRows.filter(
+      (d) =>
+        d.status === DeploymentStatus.PENDING ||
+        d.status === DeploymentStatus.DEPLOYING ||
+        d.status === DeploymentStatus.UPGRADING,
+    );
+    const coverage = {
+      running: runningRows.filter((d) => d.runMode !== RunMode.SCHEDULED)
+        .length,
+      scheduled: runningRows.filter((d) => d.runMode === RunMode.SCHEDULED)
+        .length,
+      stopped: stoppedRows.length,
+      failed: allRows.filter((d) => d.status === DeploymentStatus.FAILED)
+        .length,
+      inFlight: inFlightRows.length,
+    };
+    // 在途行跳过明细：不抛错（一次 upgrade-all 不应被单台在途行打断），但必须
+    // 如实回显。待审批行复用 status=pending 占坑（DEP-04），单独给出原因。
+    const skipped = inFlightRows.map((d) => ({
+      deploymentId: d.id,
+      executorId: d.executorId ?? null,
+      status: d.status,
+      reason:
+        d.status === DeploymentStatus.PENDING &&
+        d.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
+          ? "awaiting_approval"
+          : "in_flight",
+    }));
+    const deployments = runningRows;
     const strategy = rollout?.strategy ?? "all";
 
     // ARCH-31: 同应用并发批次守卫（跨实例）——DB 里若已有在途（pending/
@@ -2432,6 +3235,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           total: deployments.length,
           succeeded: 0,
           failed: 0,
+          coverage,
+          skipped,
           ...(targetVersion ? { version: targetVersion } : {}),
           rollout: {
             batchId: String(
@@ -2447,17 +3252,28 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       }
     }
 
-    // all 模式：逐字节保持既有 controller 内联实现（QA-02 spec 消费该形状）。
+    // all 模式：既有四键形状（ok/total/succeeded/failed）逐字节保持，只**增**
+    // coverage/skipped。includeStopped 仅作用于 all 策略——canary 的健康探测
+    // 需要活进程，把 stopped 设备扩进灰度只会制造必失败的探测；canary 集合
+    // 维持既有「全部 RUNNING 行」口径（scheduled 实证口径已在其中，见上）。
+    // canary 空集回退（deployments.length===0）也进本分支：effective 收口保证
+    // 「canary 忽略 includeStopped」零例外（回退路径不偷偷扩覆盖）。
     if (strategy !== "canary" || deployments.length === 0) {
+      const effectiveIncludeStopped = includeStopped && strategy !== "canary";
+      const targets = effectiveIncludeStopped
+        ? [...runningRows, ...stoppedRows]
+        : runningRows;
       const results = await Promise.allSettled(
-        deployments.map((d) => this.upgrade(d.id, trigger)),
+        targets.map((d) => this.upgrade(d.id, trigger)),
       );
       const succeeded = results.filter((r) => r.status === "fulfilled").length;
       return {
         ok: true,
-        total: deployments.length,
+        total: targets.length,
         succeeded,
-        failed: deployments.length - succeeded,
+        failed: targets.length - succeeded,
+        coverage,
+        skipped,
         ...(targetVersion ? { version: targetVersion } : {}),
       };
     }
@@ -2510,6 +3326,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           total: deployments.length,
           succeeded: 0,
           failed: 1,
+          coverage,
+          skipped,
           ...(targetVersion ? { version: targetVersion } : {}),
           rollout: {
             batchId,
@@ -2533,6 +3351,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       total: deployments.length,
       succeeded: batch.upgradedIds.length,
       failed: 0,
+      coverage,
+      skipped,
       ...(targetVersion ? { version: targetVersion } : {}),
       rollout: {
         batchId,
@@ -2742,10 +3562,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // _QueryDeepPartialEntity 深度收窄（字面量报 TS2322），故用一次窄化断言；
       // 这只是编译期问题，退回 save() 会重新引入「覆盖并发列」的真实缺陷。
       // adr-026-exempt: 只写 rolloutMeta 一列（租约心跳，advisory）；不碰任何状态列。
-      await this.repo.update(
-        { id },
-        { rolloutMeta: nextMeta } as unknown as Parameters<typeof this.repo.update>[1],
-      );
+      await this.repo.update({ id }, {
+        rolloutMeta: nextMeta,
+      } as unknown as Parameters<typeof this.repo.update>[1]);
       row.rolloutMeta = nextMeta;
     } catch {
       // 租约刷新是尽力而为（失败仅影响滚动重启时的 sweep 判据）

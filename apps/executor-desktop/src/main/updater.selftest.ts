@@ -403,10 +403,13 @@ function main(): void {
       '4.2: updater.ts 的 update-available 分支必须调用 normalizeReleaseNotes',
     );
     assert.ok(
-      /broadcast\(\s*UPDATE_EVENTS\.available\s*,\s*\{[\s\S]{0,400}?releaseNotes[\s\S]{0,100}?\}\s*\)/.test(
-        source,
-      ),
-      '4.2: updater:available 的广播载荷必须包含 releaseNotes 字段',
+      // F-37（UIUX 审计）跟进：available 广播载荷抽成 lastAvailableBroadcast
+      // 对象（取消下载后原样重发让横幅回 available），锚点同步为「载荷对象
+      // 含 releaseNotes 字段 + broadcast 走该载荷」——意图不变：渲染层必须
+      // 收到 normalizeReleaseNotes 产物的 releaseNotes。
+      /lastAvailableBroadcast\s*=\s*\{[\s\S]{0,400}?releaseNotes[\s\S]{0,100}?\}/.test(source) &&
+        /broadcast\(\s*UPDATE_EVENTS\.available\s*,\s*lastAvailableBroadcast\s*\)/.test(source),
+      '4.2: updater:available 的广播载荷必须包含 releaseNotes 字段（F-37 起经 lastAvailableBroadcast 载荷）',
     );
     assert.ok(
       source.includes('export const RELEASE_NOTES_MAX_CHARS'),

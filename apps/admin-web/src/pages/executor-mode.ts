@@ -3,6 +3,8 @@
  * 独立成文件是为了同时满足 react-refresh（组件文件只导出组件）与可测性。
  */
 
+import type { components } from '../types/generated/api-types';
+
 export type ExecutorMode = 'auto' | 'group' | 'pinned' | 'broadcast';
 
 /** NF-04：编辑态任务对象的亲和/反亲和字段。保留最小结构类型以避免
@@ -59,6 +61,100 @@ export function deriveExecutorMode(task: {
   if (task.executorAppName) return 'pinned';
   if (task.executorGroup || (task.executorTags && task.executorTags.length > 0)) return 'group';
   return 'auto';
+}
+
+/* ------------------------------------------------------------------ *
+ * F-39（UIUX 审计 P0-1）②：提交载荷白名单。
+ *
+ * 真机复现：草稿恢复把自持 state 键（executorMode）经 setFieldsValue 种进
+ * 表单 store，提交 getFieldsValue(true) 原样带出，后端
+ * whitelist+forbidNonWhitelisted 判 400「property executorMode should not
+ * exist」；草稿仅在成功/手动丢弃时清除 → 用户被无感知地永久卡死。
+ * 恢复侧已改为只回填注册字段（TaskFormPage DRAFT_STATE_ONLY_KEYS 过滤），
+ * 本层是纵深防御：任何来源（旧版本草稿里的已消亡字段名、未来的自持 state、
+ * 程序化 setFieldsValue 误植）进入 values 的非 DTO 键都在这里被剥离，而不是
+ * 等后端 400 才暴露。
+ *
+ * 清单由生成类型 `keyof components['schemas']['CreateTaskDto']` 派生并用
+ * `satisfies` 双向钉死：后端 DTO 增删字段 → CI api-types-drift 变红 →
+ * 重新 gen:api-types → 这里的字面量缺失/多出键都会**编译期**报错，不会静默
+ * 漂移（漂移方向的安全性：缺键=新字段被剥=提交缺字段（可立刻发现），不会
+ * 出现"垃圾键再次 400"）。
+ *
+ * 例外：`upstreamDependencies` 不是 DTO 字段，但它是依赖映射的**表单载体**，
+ * 由提交链**外层**的 applyDependenciesPayload 消费（重建 dependencies 后
+ * delete 载体键，QA-01 的层级顺序，见 TaskFormPage handleSubmit 注释），
+ * 必须在本层保留。
+ * ------------------------------------------------------------------ */
+
+/** CreateTaskDto 声明的全部键（与 openapi.json 逐字段对齐，编译期完整性由 satisfies 保证）。 */
+const TASK_DTO_PAYLOAD_KEYS = {
+  id: true,
+  name: true,
+  description: true,
+  status: true,
+  triggerType: true,
+  cronExpression: true,
+  timezone: true,
+  fixedRate: true,
+  maintenanceWindows: true,
+  runtime: true,
+  runtimeVersion: true,
+  requirements: true,
+  dependencies: true,
+  entrypoint: true,
+  gitRepo: true,
+  gitBranch: true,
+  gitCommit: true,
+  currentVersion: true,
+  timeout: true,
+  timeoutSeconds: true,
+  timeoutAction: true,
+  timeoutWarnRatio: true,
+  maxRetry: true,
+  retryDelay: true,
+  estimatedDurationSec: true,
+  retryableErrors: true,
+  priority: true,
+  executeMode: true,
+  blockStrategy: true,
+  misfireStrategy: true,
+  alarmEmail: true,
+  alarmChannels: true,
+  params: true,
+  secrets: true,
+  deploymentPolicy: true,
+  executorAppName: true,
+  executorGroup: true,
+  executorTags: true,
+  executorAffinityTags: true,
+  executorAntiAffinityTags: true,
+  executorId: true,
+  glueSource: true,
+  glueLanguage: true,
+  applicationId: true,
+  codeSource: true,
+  runbook: true,
+  projectId: true,
+} as const satisfies Record<keyof components['schemas']['CreateTaskDto'], true>;
+
+const TASK_DTO_KEY_SET: ReadonlySet<string> = new Set(Object.keys(TASK_DTO_PAYLOAD_KEYS));
+
+/** 非 DTO 的表单载体键：由提交链外层归一/删除，必须穿过本层（见上方块注释）。 */
+const PAYLOAD_CARRIER_KEYS: ReadonlySet<string> = new Set(['upstreamDependencies']);
+
+/**
+ * 剥离 values 里所有非 CreateTaskDto 声明（且非载体）的键。
+ * 独立导出以便单测直接钉住白名单语义（buildExecutorPayload 末尾自动调用）。
+ */
+export function stripNonDtoPayloadKeys(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (TASK_DTO_KEY_SET.has(key) || PAYLOAD_CARRIER_KEYS.has(key)) out[key] = value;
+  }
+  return out;
 }
 
 /**
@@ -129,7 +225,9 @@ export function buildExecutorPayload(
     payload.executorTags = null;
     payload.executorAppName = null;
   }
-  return payload;
+  // F-39②：白名单兜底剥离（见上方块注释）——executorMode 这类自持 state 键、
+  // 旧版本草稿里已消亡的字段名，都不再进入提交载荷。
+  return stripNonDtoPayloadKeys(payload);
 }
 
 /**

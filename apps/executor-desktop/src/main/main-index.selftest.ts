@@ -228,6 +228,21 @@ function main(): void {
     );
   }
 
+  // ── P3-3：second-instance 未配置态开向导（与 B-14 同语义） ─────────
+  {
+    const idx = indexSrc.indexOf("app.on('second-instance'");
+    assert.ok(idx >= 0, 'P3-3: index.ts 必须处理 second-instance');
+    const block = indexSrc.slice(idx, indexSrc.indexOf('// 托盘应用不随最后一个窗口关闭而退出'));
+    assert.ok(
+      block.includes("configStore.get('configured')") && block.includes('windowManager.openWizard()'),
+      'P3-3: 未 configured 时第二实例唤起必须开向导（与托盘 onOpenConfig 的 B-14 语义一致）',
+    );
+    assert.ok(
+      block.includes('windowManager.focusOrOpenStatus()'),
+      'P3-3: 已配置时保持既有语义（聚焦/打开状态窗）',
+    );
+  }
+
   // ── B-1：托盘/自启路径不得漏 rejection 给全局兜底 ──────────────────
   {
     const trayBlock = indexSrc.slice(indexSrc.indexOf('trayManager.onStart'), indexSrc.indexOf('trayManager.onStop'));
@@ -249,10 +264,12 @@ function main(): void {
   {
     // V4-P2：updater available → 系统通知（广播只达已开窗口，状态窗关闭时
     // 用户永远看不到「有新版本」——必须补 notifier.notifyUpdate 注入链）。
+    // F-27（2026-10-25 审计）跟进：notifyUpdate 文案迁入 ui-texts 双语表，
+    // 锚点从硬编码「发现新版本」改为「notifyUpdate 复用 notify + uiText 取键」。
     const notifierSrc = read('notifier.ts');
     const updaterSrc = read('updater.ts');
     assert.ok(
-      notifierSrc.includes('notifyUpdate(') && notifierSrc.includes("this.notify('发现新版本'"),
+      notifierSrc.includes('notifyUpdate(') && notifierSrc.includes('this.notify('),
       'V4-P2: notifier 必须提供 notifyUpdate()（复用 notify()，点击路由 status）',
     );
     assert.ok(
@@ -263,6 +280,40 @@ function main(): void {
     assert.ok(
       indexCode.includes('setUpdateAvailableNotifier('),
       'V4-P2: index.ts 必须把 notifier.notifyUpdate 注入 updater',
+    );
+
+    // ── UIUX F-27（2026-10-25 审计）：系统通知与主进程原生对话框双语化 ──
+    // 审计实证：notifier 与 ipc-handlers 的原生对话框硬编码中文，英文界面
+    // 混排中文；托盘已有 getUiLanguage 注入先例但未接入通知器。钉住三处：
+    // 文案表覆盖消费面、notifier 走 uiText + 暴露注入口、index.ts 完成接线。
+    const uiTextsSrc = read('ui-texts.ts');
+    assert.ok(
+      uiTextsSrc.includes("'notify.executorOffline.title'") &&
+        uiTextsSrc.includes("'notify.task.durationSuffix'") &&
+        uiTextsSrc.includes("'dialog.confirm.cancel'") &&
+        uiTextsSrc.includes("'dialog.restart.defer'"),
+      'F-27: ui-texts 双语文案表必须覆盖通知与对话框消费面（键位对齐由 ui-texts.selftest 钉住）',
+    );
+    assert.ok(
+      notifierSrc.includes("uiText(locale, 'notify.updateAvailable.title'") &&
+        notifierSrc.includes('getUiLanguage'),
+      'F-27: notifier 通知文案必须走 ui-texts 双语表，并暴露 getUiLanguage 注入口',
+    );
+    assert.ok(
+      indexCode.includes('notifier.getUiLanguage = () => savedUiLanguage()'),
+      'F-27: index.ts 必须把 uiLanguage 读取回调注入 notifier（同托盘先例）',
+    );
+    const ipcNoComments = ipcSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    assert.ok(
+      ipcNoComments.includes("uiText(currentUiLocale(), 'dialog.exportConfig.title')") &&
+        ipcNoComments.includes('function currentUiLocale()') &&
+        ipcNoComments.includes('resolveUiLanguage'),
+      'F-27: ipc-handlers 原生对话框标题/按钮必须经 currentUiLocale() + uiText 取双语（不得回退硬编码中文）',
+    );
+    assert.ok(
+      !ipcNoComments.includes("buttons: ['取消', '继续']") &&
+        !ipcNoComments.includes("buttons: ['重启执行器', '暂不重启']"),
+      'F-27: 原生对话框按钮不得残留硬编码中文',
     );
 
     // V4-P2：托盘「检查更新 / 打开日志文件夹」——回调注入面 + index.ts 接线
@@ -324,9 +375,95 @@ function main(): void {
         `V4-P3: heartbeat ${fn.replace('private ', '').replace('(', '')} 入口必须丢弃 stop() 后到达的在飞探针回调（timer===null 守卫）`,
       );
     }
+
+    // ── UIUX F-23（2026-10-25 审计）：向导保存路径对 autoStart 必须**对称**──
+    // 审计实证：config:save-and-close-wizard 只在 autoStart===true 时 enable，
+    // true→false 分支不调 disable——OS 自启项残留，托盘勾选态（读 config）
+    // 与设置页开关（读 OS 真值）呈现相反状态。钉住两个方向的 await 调用
+    // （用 await 前缀做锚点，避免被 log.warn 里的同名字符串误满足）。
+    const wizardSaveIdx = ipcSrc.indexOf("ipcMain.handle('config:save-and-close-wizard'");
+    assert.ok(wizardSaveIdx >= 0, 'F-23: 找不到 config:save-and-close-wizard handler');
+    const wizardSaveBody = ipcSrc.slice(
+      wizardSaveIdx,
+      Math.max(ipcSrc.indexOf('ipcMain.handle(', wizardSaveIdx + 10), ipcSrc.length),
+    );
+    assert.ok(
+      wizardSaveBody.includes('await setAutoLaunchEnabled(true)') &&
+        wizardSaveBody.includes('await setAutoLaunchEnabled(false)'),
+      'F-23: 向导保存路径必须对 autoStart 对称——false 分支也必须 await setAutoLaunchEnabled(false)（否则托盘与设置页状态矛盾、OS 自启项残留）',
+    );
+
+    // ── UIUX F-25（2026-10-25 审计）：向导保存与 config:save 重启判据同源 ──
+    // 审计实证：向导保存只调 executorProcess.start()（对运行中进程是 no-op，
+    // executor-process.ts start() 直接 return），与 config:save 的重启收口
+    // 不同源——重跑向导改端口/token 后新配置落盘却不生效（启动判定探的还是
+    // 旧进程/旧端口，按提示「手动启动」仍是 no-op）。钉住：向导 handler 必须
+    // 捕获 configBefore diff 基线并复用共享重启收口；旧式「只 start() 不判据
+    // 不征询」立即红。
+    assert.ok(
+      wizardSaveBody.includes('const configBefore = configStore.getAll()') &&
+        wizardSaveBody.includes('reloadExecutorAfterConfigSave(configBefore)'),
+      'F-25: 向导保存必须与 config:save 同源复用重启收口（configBefore diff + reloadExecutorAfterConfigSave）',
+    );
+    const reloadFnIdx = ipcSrc.indexOf('async function reloadExecutorAfterConfigSave');
+    assert.ok(reloadFnIdx >= 0, 'F-25: reloadExecutorAfterConfigSave 共享收口必须存在');
+    const reloadFnBody = ipcSrc.slice(
+      reloadFnIdx,
+      ipcSrc.indexOf('async function finalizeConfigSave', reloadFnIdx),
+    );
+    assert.ok(
+      reloadFnBody.includes('restartRequiredFieldsChanged') &&
+        reloadFnBody.includes('confirmExecutorRestart') &&
+        reloadFnBody.includes('await executorProcess.stop()') &&
+        reloadFnBody.includes('await executorProcess.start(configStore.getAll())'),
+      'F-25: 共享重启收口必须保留「需重启字段变更 → 征询 → stop+start+心跳重启」全链',
+    );
+
+    // ── UIUX F-28（2026-10-25 审计）：向导窗口随工作区钳制 + 可 resize ──
+    // window-manager.ts 顶层 import electron，裸 node 加载即崩（同 index.ts
+    // 处置）——按本文件惯例钉源码锚点。审计实证：660×780 固定尺寸在
+    // ≤768p 矮屏下底部「完成/上一步」被任务栏裁切且 resizable:false。
+    const wmCode = read('window-manager.ts').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const wmSlice = (startMarker: string, endMarker: string): string => {
+      const s = wmCode.indexOf(startMarker);
+      assert.ok(s >= 0, `F-28/F-29: window-manager.ts 找不到 ${startMarker}`);
+      const e = wmCode.indexOf(endMarker, s + startMarker.length);
+      return e > s ? wmCode.slice(s, e) : wmCode.slice(s);
+    };
+    const openWizardBody = wmSlice('openWizard(): void', 'focusOrOpenStatus(): void');
+    assert.ok(
+      openWizardBody.includes('Math.min(660, workArea.width)') &&
+        openWizardBody.includes('Math.min(780, workArea.height)') &&
+        openWizardBody.includes('workArea'),
+      'F-28: 向导窗口尺寸必须随 workArea 钳制（对齐 openStatus 的做法，矮屏不裁底部按钮）',
+    );
+    assert.ok(
+      /resizable:\s*true/.test(openWizardBody),
+      'F-28: 向导窗口必须可 resize（此前 false，矮屏既不能缩也不能拖）',
+    );
+
+    // ── UIUX F-29（2026-10-25 审计）：向导在开时不得唤回主窗 ─────────────
+    // focusOrOpenStatus 的守卫顺序必须「先向导后主窗」：向导在开时改为聚焦
+    // 向导——否则托盘「查看状态」把主窗 show 回来，向导与设置页并发编辑后，
+    // 向导完成以挂载时的旧快照整包覆盖。
+    const focusBody = wmSlice('focusOrOpenStatus(): void', 'openStatus(): void');
+    const wizardGuardIdx = focusBody.indexOf('this.wizardWindow && !this.wizardWindow.isDestroyed()');
+    const statusShowIdx = focusBody.indexOf('this.statusWindow.show()');
+    assert.ok(
+      wizardGuardIdx >= 0 && statusShowIdx > wizardGuardIdx,
+      'F-29: focusOrOpenStatus 必须在 show 主窗之前判「向导在开」并聚焦向导（双窗并发编辑会被向导旧快照整包覆盖）',
+    );
+    // F-29 收尾让路（e2e n10 用例1 实证回归）：完成路径 closeWizard()（异步
+    // close）→ focusOrOpenStatus() 必须仍能开出状态窗——wizardClosing 标志
+    // 是这条让路通道的锚点，缺失则向导「完成」后桌面无窗（守卫吞掉状态窗）。
+    const closeWizardBody = wmSlice('closeWizard(): void', '\n}');
+    assert.ok(
+      focusBody.includes('!this.wizardClosing') && closeWizardBody.includes('this.wizardClosing = true'),
+      'F-29: closeWizard 必须置 wizardClosing、focusOrOpenStatus 必须对 closing 向导让路（否则完成路径开不出状态窗）',
+    );
   }
 
-  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors)');
+  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp, F-29 focus wizard guard, F-25 wizard-save restart convergence, F-31 tray-agent-poll gating)');
 }
 
 main();

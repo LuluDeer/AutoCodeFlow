@@ -149,6 +149,11 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.error.saveRejected': '保存失败：配置未被写入（载荷被主进程拒绝）。',
     'cfg.error.reloadFailed': (err) => `配置已保存，但执行器重启失败：${err}。请在「状态监控」页手动启动。`,
     'cfg.error.saveFailed': (err) => `保存失败：${err}`,
+    // P3-7：设置页数值失焦越界钳制的一次性提示（对齐向导 portRange 口径）。
+    'cfg.error.clamped': (n) => `输入超出允许范围，已调整为 ${n}。`,
+    // P1-1：向导改写配置后，配置页表单基线随磁盘刷新的一次性提示。
+    'cfg.sync.updated': (n) => `向导已更新配置（${n} 项），表单已刷新。`,
+    'cfg.sync.mergedWithDraft': (n) => `向导已更新配置（${n} 项），表单已刷新；你未保存的修改已保留，请核对后重新保存。`,
     // ── 保存影响确认 ──
     'cfg.impact.runningTitle': '执行器正在运行',
     'cfg.impact.unknownTitle': '无法确认执行器运行状态',
@@ -336,11 +341,14 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.agent.profileDeveloper': 'developer —— 容器沙箱（后续版本）',
     'cfg.agent.profileOps': 'ops-assist —— 操作内网系统（后续版本）',
     'cfg.agent.profileFull': 'full-trust —— 完全信任（需书面确认）',
-    'cfg.agent.profileHint': 'standard = 在受限工作区内试跑生成的代码（process 沙箱：env 白名单 + 路径域 + 超时）',
+    // P2-5：档位边界如实声明——process 后端是「平台闸门」（env 白名单 + 路径域
+    // + 超时），不是 OS 级隔离；HOME/PATH 会传入、网络不受限。部署方按合规
+    // 要求选档时必须看得到这条边界。
+    'cfg.agent.profileHint': 'standard = 在受限工作区内试跑生成的代码（process 沙箱=平台闸门：env 白名单 + 路径域 + 超时；非 OS 级完整隔离，网络不受限）',
     'cfg.agent.codeExecLabel': '代码执行（细粒度覆盖，留空跟随预设）',
     'cfg.agent.followPreset': '（跟随预设）',
     'cfg.agent.codeExecOff': 'off —— 只产出代码文本，不执行',
-    'cfg.agent.codeExecSandbox': 'sandbox —— 受限工作区内试跑',
+    'cfg.agent.codeExecSandbox': 'sandbox —— 受限工作区内试跑（process 后端=平台闸门，非完整隔离）',
     'cfg.agent.codeExecHost': 'host —— 本机运行（后续版本）',
     'cfg.agent.codeExecHint': 'off 档：Agent 产出代码供人工审阅，交付变成“给人看”',
     'cfg.agent.hostAccessLabel': '本机应用访问（细粒度覆盖，留空跟随预设）',
@@ -423,6 +431,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'shell.tab.config': '配置',
     'shell.edition': '执行器',
     'shell.tablistAria': '执行器页面',
+    // P3-12①：Tab 快捷键提示词条化——zh 全角括号、en 半角括号（en 下全角
+    // 括号是观感缺陷；label/数字由 App.tsx 传入）。
+    'shell.tabTooltip': (label, n) => `${label}（Ctrl+${n}）`,
     'shell.loading': '加载中...',
     'shell.closeTipLine1': '窗口会关闭，但应用驻留系统托盘，执行器继续运行。',
     'shell.closeTipLine2': '右键托盘图标可查看状态或退出应用。',
@@ -489,8 +500,18 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.desc.stopped': '执行器进程未运行',
     'status.desc.offlineRunning': '本地进程仍在运行，但与平台的心跳连接中断。请检查网络或连接设置。',
     'status.desc.stopping': '正在安全停止执行器进程',
+    // F-30（UIUX 审计）：主进程未来新增状态 / 异常值到达时，hero 大字有
+    // `?? status` 兜底而描述行此前渲染为空白——补与 label 同风格的默认描述。
+    'status.desc.unknown': '执行器状态未知。可尝试重启应用；若仍未恢复，请在下方日志中排查。',
+    // F-32（UIUX 审计）：当日日志 / 日志文件列表读取失败——如实呈现，不冒充空态。
+    'status.logsLoadFailed': '今日日志读取失败，请重试；若持续失败请检查日志文件权限。',
+    'status.filesLoadFailed': '日志文件列表读取失败。',
     'status.copied': '已复制',
     'status.copyFailed': '复制失败',
+    // P3-3：超 1MiB 内容复制被 preload 诚实拒绝（error:'tooLarge'）的反馈。
+    'status.copyTooLarge': '内容过大，复制失败',
+    // P3-4：旧版 preload 缺 executor:status 通道时的降级提示（typeof 守卫分支）。
+    'status.statusUnsupported': '当前版本不支持读取执行器状态',
     'status.copy': '复制',
     'status.filesHistoryHeading': (n) => `历史日志文件 · ${n}`,
     'status.filesSearchAria': '搜索日志文件',
@@ -583,6 +604,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.overlay.prevRun': '上一次执行',
     'history.overlay.nextRun': '下一次执行',
     'history.overlay.bufferNote': (a, b) => `已载入 ${a} 行 · 文件共 ${b} 行`,
+    // F-22：大日志首读被主进程尾窗截断时的如实降级显示（替代 bufferNote）。
+    'history.overlay.truncatedNote': (a, b) => `已截断：仅显示最后 ${a} 行 · 文件共 ${b} 行`,
     'history.overlay.empty': '暂无日志（日志文件可能尚未生成）',
     'history.overlay.emptyFiltered': '当前日志中没有匹配内容',
     'history.title': '历史执行记录',
@@ -718,6 +741,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.notice.partialStop': (n) => `（已停止 ${n} 个进程，但文件未删净）`,
     'apps.notice.uninstallFail': '卸载失败',
     'apps.viewer.loadFail': (msg) => `读取日志失败：${msg}（自动刷新已停止，可点「实时」重试）`,
+    // F-22：大日志首读被主进程尾窗截断时的如实降级显示。
+    'apps.viewer.truncatedNote': (a, b) => `已截断：仅显示最后 ${a} 行 · 文件共 ${b} 行`,
     'apps.openDeployDir': '打开部署目录',
     // 查看器行内「打开部署目录」失败的 folderNote（注意：zh 是「目录」，
     // 与列表层 apps.notice.openFolderFail 的「文件夹」是两处原文，不得共用）
@@ -767,6 +792,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'wizard.machine.checking': '检测...',
     'wizard.machine.checkPort': '检测端口',
     'wizard.machine.portRange': '端口必须是 1 – 65535 之间的整数',
+    // F-33（UIUX 审计）：端口清空是「必填」缺失而非「越界」——给可见原因，
+    // 不再只让「下一步」静默禁用。
+    'wizard.machine.portRequired': '端口必填',
     'wizard.machine.publicLabel': '对外地址（Admin API 回调此地址下发任务）',
     'wizard.machine.ipPickerLabel': '本机网卡 IP（点击快速填入，标「推荐」者优先）',
     'wizard.machine.chipSelected': '，已选择',
@@ -832,6 +860,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'update.availableHint': '当前版本已可升级',
     'update.downloading': '下载中…',
     'update.download': '下载更新',
+    // F-37（UIUX 审计）：下载取消入口 + 无可安装更新的如实提示。
+    'update.cancelDownload': '取消下载',
+    'update.noDownloadedUpdate': '当前没有已下载完成的更新，请先下载再安装。',
     // ── 4.2：更新日志（默认折叠，纯文本渲染；见 UpdateBanner 的 update-notes）──
     'update.notesShow': '查看更新内容',
     'update.notesHide': '收起更新内容',
@@ -862,6 +893,11 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.error.saveRejected': 'Save failed: configuration was not written (payload rejected by the main process).',
     'cfg.error.reloadFailed': (err) => `Configuration saved, but the executor failed to restart: ${err}. Start it manually from the Status page.`,
     'cfg.error.saveFailed': (err) => `Save failed: ${err}`,
+    // P3-7：设置页数值失焦越界钳制的一次性提示（对齐向导 portRange 口径）。
+    'cfg.error.clamped': (n) => `The value is out of range and has been adjusted to ${n}.`,
+    // P1-1：向导改写配置后，配置页表单基线随磁盘刷新的一次性提示。
+    'cfg.sync.updated': (n) => `The wizard updated the configuration (${n} ${Number(n) === 1 ? 'item' : 'items'}); the form has been refreshed.`,
+    'cfg.sync.mergedWithDraft': (n) => `The wizard updated the configuration (${n} ${Number(n) === 1 ? 'item' : 'items'}); the form has been refreshed. Your unsaved changes were kept — review and save again.`,
     // ── Save impact confirmation ──
     'cfg.impact.runningTitle': 'Executor is running',
     'cfg.impact.unknownTitle': 'Unable to confirm the executor status',
@@ -1047,11 +1083,14 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.agent.profileDeveloper': 'developer — container sandbox (future version)',
     'cfg.agent.profileOps': 'ops-assist — operate intranet systems (future version)',
     'cfg.agent.profileFull': 'full-trust — full trust (requires written approval)',
-    'cfg.agent.profileHint': 'standard = trial-run generated code in a restricted workspace (process sandbox: env allowlist + path domains + timeout)',
+    // P2-5 (en mirror): the process backend is platform gating (env allowlist +
+    // path domains + timeout), NOT OS-level isolation — HOME/PATH pass through,
+    // network is unrestricted.
+    'cfg.agent.profileHint': 'standard = trial-run generated code in a restricted workspace (process sandbox = platform gating: env allowlist + path domains + timeout; not full OS isolation, network unrestricted)',
     'cfg.agent.codeExecLabel': 'Code execution (fine-grained override; empty follows the preset)',
     'cfg.agent.followPreset': '(follow preset)',
     'cfg.agent.codeExecOff': 'off — produce code text only, no execution',
-    'cfg.agent.codeExecSandbox': 'sandbox — trial run in a restricted workspace',
+    'cfg.agent.codeExecSandbox': 'sandbox — trial run in a restricted workspace (process backend = platform gating, not full isolation)',
     'cfg.agent.codeExecHost': 'host — run on this machine (future version)',
     'cfg.agent.codeExecHint': 'off: the Agent produces code for human review; delivery becomes "for humans to read"',
     'cfg.agent.hostAccessLabel': 'Local app access (fine-grained override; empty follows the preset)',
@@ -1135,6 +1174,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'shell.tab.config': 'Settings',
     'shell.edition': 'Executor',
     'shell.tablistAria': 'Executor pages',
+    // P3-12①：Tab 快捷键提示词条化——zh 全角括号、en 半角括号（en 下全角
+    // 括号是观感缺陷；label/数字由 App.tsx 传入）。
+    'shell.tabTooltip': (label, n) => `${label} (Ctrl+${n})`,
     'shell.loading': 'Loading...',
     'shell.closeTipLine1': 'The window will close, but the app stays in the system tray and the executor keeps running.',
     'shell.closeTipLine2': 'Right-click the tray icon to view status or quit the app.',
@@ -1200,8 +1242,17 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.desc.stopped': 'The executor process is not running',
     'status.desc.offlineRunning': 'The local process is still running, but the heartbeat connection to the platform is lost. Check the network or connection settings.',
     'status.desc.stopping': 'Safely stopping the executor process',
+    // F-30（UIUX 审计）：见 zh 块同键注释——未知状态时描述行不再留白。
+    'status.desc.unknown': 'Executor status is unknown. Try restarting the app; if it persists, check the logs below.',
+    // F-32（UIUX 审计）：见 zh 块同键注释——读取失败不再冒充空态。
+    'status.logsLoadFailed': 'Failed to load today\'s logs. Retry; if it keeps failing, check the log file permissions.',
+    'status.filesLoadFailed': 'Failed to load the log file list.',
     'status.copied': 'Copied',
     'status.copyFailed': 'Copy failed',
+    // P3-3：超 1MiB 内容复制被 preload 诚实拒绝（error:'tooLarge'）的反馈。
+    'status.copyTooLarge': 'Content too large to copy',
+    // P3-4：旧版 preload 缺 executor:status 通道时的降级提示（typeof 守卫分支）。
+    'status.statusUnsupported': 'This version cannot read executor status',
     'status.copy': 'Copy',
     'status.filesHistoryHeading': (n) => `Log files · ${n}`,
     'status.filesSearchAria': 'Search log files',
@@ -1292,6 +1343,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.overlay.prevRun': 'Previous run',
     'history.overlay.nextRun': 'Next run',
     'history.overlay.bufferNote': (a, b) => `${enPlural(a, 'line', 'lines')} loaded · ${enPlural(b, 'line', 'lines')} in file`,
+    // F-22: honest degraded summary when the first read was tail-truncated (replaces bufferNote).
+    'history.overlay.truncatedNote': (a, b) => `Truncated: showing last ${enPlural(a, 'line', 'lines')} of ${enPlural(b, 'line', 'lines')}`,
     'history.overlay.empty': 'No logs yet (the log file may not exist yet)',
     'history.overlay.emptyFiltered': 'No matching content in this log',
     'history.title': 'Run history',
@@ -1424,6 +1477,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.notice.partialStop': (n) => ` (${n} process(es) stopped, but files were not fully removed)`,
     'apps.notice.uninstallFail': 'Uninstall failed',
     'apps.viewer.loadFail': (msg) => `Failed to read the log: ${msg} (auto-refresh stopped; click "Live" to retry)`,
+    // F-22: honest degraded summary when the first read was tail-truncated.
+    'apps.viewer.truncatedNote': (a, b) => `Truncated: showing last ${enPlural(a, 'line', 'lines')} of ${enPlural(b, 'line', 'lines')}`,
     'apps.openDeployDir': 'Open deployment folder',
     'apps.viewer.folderOpenFail': (r) => `Failed to open the folder: ${r}`,
     'apps.autoRefreshOffTitle': 'Turn off auto-refresh',
@@ -1471,6 +1526,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'wizard.machine.checking': 'Checking...',
     'wizard.machine.checkPort': 'Check port',
     'wizard.machine.portRange': 'The port must be an integer between 1 and 65535',
+    // F-33（UIUX 审计）：见 zh 块同键注释。
+    'wizard.machine.portRequired': 'Port is required',
     'wizard.machine.publicLabel': 'Public address (the Admin API calls back this address to dispatch tasks)',
     'wizard.machine.ipPickerLabel': 'Local NIC IPs (click to fill in; "recommended" first)',
     'wizard.machine.chipSelected': ', selected',
@@ -1535,6 +1592,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'update.availableHint': 'The current version can be upgraded',
     'update.downloading': 'Downloading...',
     'update.download': 'Download update',
+    // F-37（UIUX 审计）：见 zh 块同键注释。
+    'update.cancelDownload': 'Cancel download',
+    'update.noDownloadedUpdate': 'No downloaded update is ready — download it first.',
     // ── 4.2: release notes (collapsed by default, rendered as plain text) ──
     'update.notesShow': "What's new",
     'update.notesHide': 'Hide release notes',

@@ -233,21 +233,34 @@ export function useSchedulerStats() {
  * （后端走原 OFFSET 路径，响应不含 nextCursor）；`''` = keyset 起点；非空串 =
  * 上一页返回的不透明游标原样回传。这里**原样透传，不做任何归一化**——
  * `cursor ?? ''` 之类会把「不带游标」变成「带空游标」，正好破坏零风险的默认路径。
+ *
+ * `options.refetchInterval`（F-17，UIAUDIT P3-10）：ExecutionsPage 传
+ * `sseFallbackRefetchInterval(SSE_STATUS_KEYS.executionsStream)`——SSE live 时
+ * 停轮询（终态事件 invalidate 即新鲜度来源），断线恢复 30s 兜底轮询。此前
+ * 页面自管 setInterval + 手动 refetch：手动刷新**不受 staleTime 节流**，SSE
+ * live 期间也每 15s 空打一发全量列表请求。
  */
-export function useExecutionsList(params: {
-  page: number;
-  pageSize: number;
-  status?: string;
-  taskName?: string;
-  executorAddress?: string;
-  startTime?: string;
-  endTime?: string;
-  /** keyset 分页游标（不透明）。缺省 = 走 OFFSET 路径（现有行为，响应无 nextCursor）。 */
-  cursor?: string;
-}): UseQueryResult<{ items: TaskExecution[]; total: number; nextCursor?: string | null }> {
+export function useExecutionsList(
+  params: {
+    page: number;
+    pageSize: number;
+    status?: string;
+    taskName?: string;
+    executorAddress?: string;
+    startTime?: string;
+    endTime?: string;
+    /** keyset 分页游标（不透明）。缺省 = 走 OFFSET 路径（现有行为，响应无 nextCursor）。 */
+    cursor?: string;
+  },
+  options?: {
+    /** 透传 TanStack refetchInterval（函数式判定随 SSE 状态重估）。 */
+    refetchInterval?: number | false | (() => number | false);
+  },
+): UseQueryResult<{ items: TaskExecution[]; total: number; nextCursor?: string | null }> {
   return useQuery({
     queryKey: queryKeys.executions.list(params),
     queryFn: ({ signal }) => tasksApi.allExecutions(params, signal),
+    refetchInterval: options?.refetchInterval,
     // 列表页用户主动翻页/筛选，参数变化即视为新数据——全局 staleTime 足够
   });
 }

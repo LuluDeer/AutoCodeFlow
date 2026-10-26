@@ -38,14 +38,17 @@ export const CRASH_DIALOG_TEXTS: Record<TrayLocale, { title: string; body: strin
     body:
       '桌面端主进程发生未处理的异常，即将保存现场并退出。\n' +
       '正在运行的执行器子进程会被一并优雅停止（正在执行的任务可能中断）。\n' +
-      '详细信息见用户数据目录 logs/ 下的当日日志；重启应用即可恢复。',
+      '详细信息见用户数据目录 logs/ 下的当日日志；重启应用即可恢复。\n' +
+      '若反复出现，请删除用户数据目录下的 config.json（损坏的配置文件会自动备份为 .corrupt-*）。',
   },
   en: {
     title: 'AutoCodeFlow Executor hit an internal error',
     body:
       'The desktop main process hit an unhandled exception and is about to exit.\n' +
       'The executor child process will be stopped gracefully first (running tasks may be interrupted).\n' +
-      'See today\'s log under the logs/ folder of the user data directory. Relaunch the app to recover.',
+      'See today\'s log under the logs/ folder of the user data directory. Relaunch the app to recover.\n' +
+      'If this keeps happening, delete config.json under the user data directory ' +
+      '(a corrupted config file is automatically backed up as .corrupt-*).',
   },
 };
 

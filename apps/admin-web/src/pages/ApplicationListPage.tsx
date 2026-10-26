@@ -199,6 +199,10 @@ export default function ApplicationListPage() {
     } finally {
       setLoading(false);
     }
+    // 「缺 t」是伪问题：i18next 的 t() 在调用期经模块级 i18n 实例动态解析
+    // 当前语言（R8 轮已实证语言切换无需重建回调），把 t 加进依赖只会无谓
+    // 重建 fetchApps 并触发整页重拉；本回调无真实外部依赖。刻意不列，勿补。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { fetchApps(); }, [fetchApps]);
@@ -839,6 +843,11 @@ export default function ApplicationListPage() {
             label={t('appList.field.name')}
             rules={[
               { required: true, message: t('appList.field.nameRequired') },
+              // P2 审计：后端 Create/Update DTO 对 name 均有 @MaxLength(100)——
+              // 只靠后端时 300 字符英文名吃裸 400（弹窗内无表单回显，只剩一条
+              // 泛化 toast）。对照 ProjectsPage 名称同款形态：max 校验规则 +
+              // 输入端 maxLength 截断双保险。
+              { max: 100, message: t('appList.field.nameMax') },
               // 字符白名单只在**新建**时校验：编辑态名字是 disabled 的不可变
               // 标识（handleSubmit 本就 delete 掉 name 再提交），而 zip 上传
               // 通道历来不限字符——存量应用名若含非 ASCII 字符（如复制粘贴
@@ -858,7 +867,7 @@ export default function ApplicationListPage() {
               icon: <InfoCircleOutlined />,
             }}
           >
-            <Input placeholder="my-autocodeflow-app" disabled={!!editingApp} />
+            <Input placeholder="my-autocodeflow-app" disabled={!!editingApp} maxLength={100} />
           </Form.Item>
 
           <Form.Item

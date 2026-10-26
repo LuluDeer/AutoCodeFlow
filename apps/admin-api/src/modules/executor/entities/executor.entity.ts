@@ -228,6 +228,24 @@ export class Executor {
   interpreters: ExecutorInterpreter[] | null;
 
   /**
+   * R3-A（部署模型评审 2026-10-23 §4.3 / P10 收敛；迁移
+   * 1790000000063-AddExecutorAppVersions）：执行器心跳上报的**已安装执行器包
+   * 清单** `installedPackages`（[{name,type,version}]，设备侧事实）。
+   *
+   * 三态与 interpreters 同款（可空、无 DEFAULT——两态混淆会让 P10 的设备级
+   * 包版本收敛读面把存量旧执行器误读成「什么都没装」）：
+   * - `null` = 未上报（旧执行器 / 新版未携带）→ 保留 DB 旧值；
+   * - `[]`   = 已上报且未安装任何执行器包 → 覆盖；
+   * - 结构非法 → 整字段拒绝采纳 + warn（结构校验见 deployed-apps.util.ts）。
+   */
+  @Column({ type: "jsonb", nullable: true })
+  installedPackages: Array<{
+    name: string;
+    type: string;
+    version: string;
+  }> | null;
+
+  /**
    * SEC-03: per-executor token stored as bcrypt hash.
    * Rotated via POST /api/executors/:id/rotate-token.
    */

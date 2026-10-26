@@ -17,7 +17,9 @@
 ## 1. 登录
 
 浏览器打开 **http://localhost**：用户名 `admin`，密码为 `.env` 中
-`INITIAL_ADMIN_PASSWORD` 的值（默认 `Admin@123456`）。登录后先改密码。
+`INITIAL_ADMIN_PASSWORD` 的值（**无默认口令**：compose 以 `:?` 语法强制必填，
+`.env.example` 的 `change_me_immediately` 仅为占位示例，部署后立即修改）。
+登录后先改密码。
 
 ## 2. 建应用
 

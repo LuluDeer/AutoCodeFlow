@@ -19,6 +19,10 @@
  *   ③ 批次在秒级完成（远低于 15min 硬超时）：所有行终态 promoted/done、
  *      两台部署 RUNNING，A 日志出现 `finished (promoted all)`；
  *   ④ 无任何行卡在 pending/probing（改造前必然全停在 pending）。
+ *   ⑤-⑧ 协议 v7 设备事实落库断言（5c 教训 56aa2697 的固化——迁移 63 缺列
+ *      当时靠本链日志 warn「顺带」暴露，修复后无直接断言；见下方断言组注释）：
+ *      executor_app_versions 行数与版本 / 落库失败关键字 / executors.
+ *      installedPackages 三态采纳 / app_deployment_events 事件流有痕。
  *
  * 用法：
  *   node scripts/arch31-rollout-cross-instance-selftest.mjs
@@ -451,6 +455,71 @@ async function main() {
     `elapsed=${elapsed}s A 日志含 finished=${logA.includes('finished (promoted all)')}`);
   ok('④ 无行卡在 pending/probing（改造前必然全卡这里）',
     !states.includes('pending') && !states.includes('probing'), `states=${states}`);
+
+  // ── 协议 v7 设备事实落库（5c 教训的固化断言）────────────────────────
+  // 5c 轮（56aa2697）本链靠 admin 日志 warn「顺带」暴露了迁移 63 缺列
+  // （executor_app_versions 从建表起每拍落库必败，设备版本事实从未持久化，
+  // 单测映射替身零感知）。修复后该暴露通道没有固化为断言——若同型缺口
+  // 再现（列漂移/整替写错/采纳三态退化），落库失败是 fail-open（warn 不
+  // 炸心跳），selftest 仍会全绿。以下把「真的落了库」钉成直接断言：
+  //   ⑤ executor_app_versions 每执行器一行、currentVersion = 应用版本
+  //     （canary 重部署同 packageUrl → 版本不变 '1.0.0'；缺列/落库失败
+  //     时该查询报错或 0 行，本断言红——迁移 63 同型缺口的直接回归闸）；
+  //   ⑥ admin 日志无 executor_app_versions 落库失败关键字（fail-open
+  //     唯一输出面，断言不 dump 就永远看不到——同上方灰度日志的处理）；
+  //   ⑦ executors.installedPackages 三态采纳（协议 v7 第二键，node 侧
+  //     manifests/ 不存在上报 []，admin 覆盖列——钉「列可写且被采纳」，
+  //     本 selftest 执行器不自装包，[] 即正确事实）；
+  //   ⑧ app_deployment_events 事件流最小核心写点（deploy ≥ 每台一条 +
+  //     canary upgrade 有痕）：R4 事件表此前只有 mock repo 单测。
+  // 等待窗口：deployedApps 随 30s 心跳上报（TTL 缓存首拍即扫），上面
+  // ④ 的完成等待已消耗数拍，此处再留最多 45s 轮询收敛。
+  const APP_VERSION = '1.0.0';
+  let factRows = '';
+  const factDeadline = Date.now() + 45_000;
+  while (Date.now() < factDeadline) {
+    factRows = queryDb(
+      `SELECT count(*) || E'\t' || count(*) FILTER (WHERE "currentVersion" = '${APP_VERSION}') `
+      + `FROM executor_app_versions WHERE "applicationId" = '${appId}';`,
+    );
+    const [factTotalW, factMatchedW] = factRows.split('\t');
+    if (Number(factTotalW) >= 2 && Number(factMatchedW) >= 2) break;
+    await sleep(3000);
+  }
+  const [factTotal, factMatched] = factRows.split('\t');
+  console.log(`  设备版本事实行：total=${factTotal} currentVersion=${APP_VERSION} 匹配=${factMatched}`);
+  ok('⑤ 协议 v7 deployedApps 已真实落库（executor_app_versions ≥2 行且版本匹配）',
+    Number(factTotal) >= 2 && Number(factMatched) >= 2,
+    `total=${factTotal} matched=${factMatched}（缺列/落库失败时为 0——5c 迁移 63 同型缺口的直接回归闸）`);
+
+  const factFailHits = [['A', logA], ['B', logB]]
+    .filter(([, t]) => /executor_app_versions.*failed|applyReportedAppVersions|deployedApps.*(fail|reject)/i.test(t))
+    .map(([label]) => label);
+  ok('⑥ 心跳落库无静默失败（admin 日志无 executor_app_versions 失败关键字）',
+    factFailHits.length === 0, `失败日志出现在实例: ${factFailHits.join(',') || '(无)'}`);
+
+  const installedPkgs = queryDb(
+    `SELECT coalesce("installedPackages"::text, '<NULL>') FROM executors WHERE id IN ('${execRows[0].id}', '${execRows[1].id}');`,
+  );
+  const installedLines = installedPkgs.split('\n').filter(Boolean);
+  ok('⑦ 协议 v7 installedPackages 三态采纳（executors 列为 JSON 数组，非 NULL）',
+    installedLines.length >= 2 && installedLines.every((v) => v.startsWith('[')),
+    `values=${installedLines.join(' | ')}（NULL=键被静默丢弃；[] = 已上报且无安装包，均属正确事实）`);
+
+  const evtTotal = Number(queryDb(
+    `SELECT count(*) FROM app_deployment_events WHERE "applicationId" = '${appId}';`,
+  ));
+  const evtDeploy = Number(queryDb(
+    `SELECT count(*) FROM app_deployment_events WHERE "applicationId" = '${appId}' AND "eventType" = 'deploy_created';`,
+  ));
+  const evtUpgrade = Number(queryDb(
+    `SELECT count(*) FROM app_deployment_events WHERE "applicationId" = '${appId}' AND "eventType" = 'upgrade';`,
+  ));
+  console.log(`  部署事件：total=${evtTotal} deploy_created=${evtDeploy} upgrade=${evtUpgrade}`);
+  ok('⑧ app_deployment_events 事件流有痕（deploy ≥2 + canary upgrade ≥1）',
+    evtDeploy >= 2 && evtUpgrade >= 1,
+    `total=${evtTotal} deploy=${evtDeploy} upgrade=${evtUpgrade}（R4 事件表此前只有 mock 单测）`);
+
   ok('两台部署最终 RUNNING（提升后仍健康）',
     finalRows.length >= 2 && finalRows.every((d) => d.status === 'running'),
     `statuses=${finalRows.map((d) => d.status).join(',')}`);

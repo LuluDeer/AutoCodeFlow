@@ -46,6 +46,7 @@ curl http://localhost:4873/-/ping          # 期望 200 + {}
 | 变量 | 缺省 | 用途 |
 |------|------|------|
 | `REGISTRY_USER` / `REGISTRY_PASS` | `admin` / `change_me` | registry-pypi 的 Basic Auth（简单索引 `/simple/` 也要求鉴权，S9） |
+| `PYPI_REGISTRY_USERNAME` / `PYPI_REGISTRY_PASSWORD` | 空 | **执行器侧**安装凭据（P1 通道，2026-10-25）：与 `REGISTRY_USER/PASS` 同值——执行器写成 0600 netrc，仅注入 uv install 子进程（`NETRC` env 键），凭据不进 argv/日志/URL |
 | `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` | 空 | verdaccio 用户 |
 
 > 端口仅绑定 `127.0.0.1`：执行器走 compose 内部网络（`http://registry-pypi:8003`
@@ -66,9 +67,12 @@ executor-node 注入
 # executor-python
 PYPI_REGISTRY_URL=http://<registry-host>:8003/simple/
 
-# executor-node（私服 access=$authenticated 时必配 token）
+# executor-node（私服 access=$authenticated 时必配凭据：token 或 user/pass 任一）
 NPM_REGISTRY_URL=http://<registry-host>:4873
 NPM_REGISTRY_TOKEN=<verdaccio-token>
+# 或 Basic 通道（compose 缺省回落 REGISTRY_USER/PASS）：
+# NPM_REGISTRY_USER=<user>
+# NPM_REGISTRY_PASS=<pass>
 ```
 
 改完重启执行器进程生效。
@@ -90,7 +94,12 @@ twine upload --repository-url http://localhost:8003/ \
 ### npm 侧（Verdaccio）
 
 ```bash
-npm adduser --registry http://localhost:4873/   # 首次创建用户
+# 用户由 .env 预置的 NPM_REGISTRY_USER/PASS 提供（compose 缺省回落
+# REGISTRY_USER/PASS）。自助注册已关闭（max_users: -1）：npm adduser 无法
+# 注册新用户，新用户由运维离线写入 htpasswd（见
+# apps/registry-npm/README.md「运维：离线新增用户」）；既有用户可用
+# npm login 换取 token。
+npm login --registry http://localhost:4873/
 cd <你的包目录>
 npm publish --registry http://localhost:4873/
 ```
@@ -125,7 +134,7 @@ requirements 填你的私有 npm 包名，完整说明见
 
 | 现象 | 原因与解法 |
 |------|-----------|
-| 安装 401 | registry-pypi 简单索引与上传都要求 Basic Auth（S9）；确认 `REGISTRY_PASS` 与执行器侧 `PYPI_REGISTRY_URL` 可达。npm 侧 access=`$authenticated`，匿名安装必 401，需 `NPM_REGISTRY_TOKEN` |
+| 安装 401 | registry-pypi 简单索引与上传都要求 Basic Auth（S9）；确认 `REGISTRY_PASS` 与执行器侧 `PYPI_REGISTRY_URL` 可达。**P1 修复（2026-10-25）**：执行器侧 `PYPI_REGISTRY_URL` 仍强制无凭据（config 校验拒绝 userinfo，uv 子进程环境剥离宿主 `PIP_*`/`UV_*`），但已补受控凭据通道——在执行器环境设 `PYPI_REGISTRY_USERNAME/PASSWORD`（与 `REGISTRY_USER/PASS` 同值），执行器写成 0600 netrc 仅注入 uv install 子进程，安装即通过；两键留空则维持无凭据姿态（默认仍 401）。官方包需求可叠加 `PYPI_EXTRA_INDEX_URL`。npm 侧 access=`$authenticated`，匿名安装必 401，需 `NPM_REGISTRY_TOKEN` 或 `NPM_REGISTRY_USER/PASS`（compose 缺省回落 `REGISTRY_USER/PASS`） |
 | requirements 填了 `--index-url …` 被拒 | 设计如此（防索引劫持）；索引由执行器侧 env 统一指定，requirements 只写包规格 |
 | glue 脚本任务没走安装 | requirements 仅对 entrypoint（打包）任务生效 |
 | 自己的 npm scope 装不到 | `.npmrc` 的 scope 行只覆盖 `@autoflow`/`@autocodeflow` 两个平台 scope；自有 scope 依赖私服回源兜底，或让 `NPM_REGISTRY_URL` 指向能解析该 scope 的私服 |

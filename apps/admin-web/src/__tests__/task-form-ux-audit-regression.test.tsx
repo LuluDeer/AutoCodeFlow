@@ -118,7 +118,9 @@ describe('D1 fixed_rate 非 60 整数倍不得被静默改写', () => {
       runtime: 'python',
       entrypoint: 'main.py',
       triggerType: 'fixed_rate',
-      fixedRate: 90, // ← 非 60 整数倍：展示为「1 分钟」
+      // F-6（本轮审计）：formatter 有余秒向下取到一位小数——90s 展示「1.5 分钟」
+      // （旧实现显示「1 分钟」，小数被吞）。
+      fixedRate: 90,
       timeoutSeconds: 300,
       maxRetry: 3,
       params: {},
@@ -128,8 +130,8 @@ describe('D1 fixed_rate 非 60 整数倍不得被静默改写', () => {
     await screen.findByDisplayValue('fixed-task');
 
     const input = itemByLabel(/执行间隔/).querySelector('input') as HTMLInputElement;
-    // 展示侧：90s 向下取整为 1 分钟（formatter 语义，不是缺陷）
-    expect(input.value).toBe('1 分钟');
+    // 展示侧：90s 展示为 1.5 分钟（F-6 一位小数语义；floor 口径永不夸大间隔）
+    expect(input.value).toBe('1.5 分钟');
 
     // 用户没改一个字符，只是点进输入框又点走（极常见的"看看配置"动作）
     fireEvent.focus(input);
@@ -223,8 +225,10 @@ describe('D3 「保存为模板」固化上游依赖（NF-02）', () => {
 
     const depSel = itemByLabel(/上游依赖/).querySelector('.ant-select') as HTMLElement;
     fireEvent.mouseDown(depSel);
+    // F-11：选项 label 改为 ellipsis span（截断超长任务名）——文本在 content
+    // 容器的 span 子节点里，选择器随实现更新（文本契约本身不变）。
     const opt = await screen.findByText('upstream-job', {
-      selector: '.ant-select-item-option-content',
+      selector: '.ant-select-item-option-content span',
     });
     fireEvent.click(opt);
 
@@ -243,5 +247,25 @@ describe('D3 「保存为模板」固化上游依赖（NF-02）', () => {
     expect(config.dependencies).toEqual({ 'upstream-job': UPSTREAM_ID });
     // 载体键绝不能进 config：CreateTaskDto 未声明，后端 forbidNonWhitelisted 会 400
     expect(Object.keys(config)).not.toContain('upstreamDependencies');
+  }, 30_000);
+});
+
+// ── F-11 ────────────────────────────────────────────────────────────────────
+describe('F-11 依赖下拉选项 ellipsis（超长任务名截断）', () => {
+  it('选项 label 渲染 ellipsis span（maxWidth + nowrap + textOverflow）', async () => {
+    mockRouteParams = {}; // 创建态（无需任务回填，依赖候选由 listAll 提供）
+    renderPage();
+    await screen.findByPlaceholderText('daily-report');
+
+    const depSel = itemByLabel(/上游依赖/).querySelector('.ant-select') as HTMLElement;
+    fireEvent.mouseDown(depSel);
+    const opt = await screen.findByText('upstream-job', {
+      selector: '.ant-select-item-option-content span',
+    });
+    // 与表格侧既有 ellipsis 形态同款（TaskFormExecutorSection.DEPENDENCY_OPTION_ELLIPSIS）
+    expect(opt.style.maxWidth).toBe('320px');
+    expect(opt.style.whiteSpace).toBe('nowrap');
+    expect(opt.style.textOverflow).toBe('ellipsis');
+    expect(opt.style.overflow).toBe('hidden');
   }, 30_000);
 });

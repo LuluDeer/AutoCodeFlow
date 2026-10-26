@@ -18,8 +18,12 @@ import { listWorkspaceFiles } from './workspace';
  *   requirements: 从 SOP frontMatter.target 侧透传（P7a 恒空数组占位）
  */
 
-/** 打包时排除的观测产物目录（截图/录屏/执行证据是记录不是应用源码）。 */
-const EXCLUDED_PREFIXES = ['browser-recordings/', 'screenshots/', 'isolated-runs/'];
+/**
+ * 打包时排除的观测产物目录（截图/录屏/执行证据是记录不是应用源码）。
+ * trial-in-flight.json = P2-4 的试跑在飞登记（kill-tree 的孤儿清扫输入），
+ * 正常结束即删——但崩溃窗口内可能残留，绝不能混进候选应用包。
+ */
+const EXCLUDED_PREFIXES = ['browser-recordings/', 'screenshots/', 'isolated-runs/', 'trial-in-flight.json'];
 
 /** interpreter → 包 runtime 类型（executor-node 可执行的运行时域）。 */
 export function interpreterToRuntime(interpreter: string): 'python' | 'node' {

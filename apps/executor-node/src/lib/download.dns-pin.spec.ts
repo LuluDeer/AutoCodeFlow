@@ -23,7 +23,7 @@ import * as path from 'path';
 import * as dns from 'node:dns';
 import { EventEmitter } from 'node:events';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+ 
 const nodeHttp = require('http') as typeof import('http');
 
 import { downloadFile } from './download';

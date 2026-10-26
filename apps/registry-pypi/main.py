@@ -17,9 +17,12 @@ import binascii
 import hashlib
 import json
 import logging
+import math
 import os
 import re
+import sys
 import tempfile
+import time
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,7 +70,6 @@ _using_default = (
     REGISTRY_USER == _DEFAULT_USER and REGISTRY_PASS == _DEFAULT_PASS
 )
 if not REGISTRY_PASS or _using_default:
-    import sys
     if os.getenv("ALLOW_DEFAULT_CREDS", "") == "1":
         print(
             "[AutoFlow] WARNING: Using default/empty credentials. "
@@ -83,30 +85,113 @@ if not REGISTRY_PASS or _using_default:
         )
         sys.exit(1)
 
+# P3-6（2026-10-26 审计）：凭据必须还是 ASCII——Basic 认证头按 ascii 解码后与
+# REGISTRY_USER/PASS 做 compare_digest，非 ASCII 凭据永远无法匹配；而且
+# secrets.compare_digest 对非 ASCII str 直接抛 TypeError，会把「密码错」变成
+# 500。与其运行期 500，不如启动期 fail-fast（E-10 一并拒启动），错误信息给出
+# 可操作的修法。此处无逃生阀：非 ASCII 凭据在 Basic 语义下不存在可用形态。
+for _cred_name, _cred_value in (
+        ("REGISTRY_USER", REGISTRY_USER), ("REGISTRY_PASS", REGISTRY_PASS)):
+    if not _cred_value.isascii():
+        print(
+            f"[AutoFlow] FATAL: {_cred_name} contains non-ASCII characters. "
+            "Basic auth credentials are ASCII-only (the header is decoded as "
+            "ASCII before comparison). Reconfigure with an ASCII-only value.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+# P2-3（2026-10-26 审计）：Basic 凭据防爆破——进程内失败计数 + 指数退避。
+# 容器探针实证本服务是单 worker（uvicorn 默认单进程），进程内 dict 即全局
+# 状态；键取 TCP 对端 IP（_peer_ip，不可伪造——XFF 从不参与键）。连续失败
+# 达到阈值后按 2^n 秒拒答（429 + Retry-After，指数封顶防无界），成功认证
+# 清零；失败态带 TTL 清扫防 dict 增长。
+# 残余风险（README「安全基线」同步登记）：多 worker/多副本部署时计数退化为
+# per-process；同一 NAT 出口后的多用户会互相连坐（任何一次成功登录即清零，
+# 也部分缓解了连坐）。中期方向：per-identity token（每个调用方独立凭据，
+# 可单独吊销/限速），共享 Basic 口令只作过渡。
+AUTH_FAILURE_THRESHOLD = 5        # 连续失败达到 N 次后开始退避
+AUTH_BACKOFF_CAP_SECONDS = 300    # 2^n 秒封顶：指数不能无界
+AUTH_STATE_TTL_SECONDS = 3600     # 失败态最后更新超过 TTL 视为过期（可清扫）
+AUTH_STATE_PRUNE_SIZE = 1024      # dict 超过该规模才做 O(n) 清扫（常态零开销）
+_auth_failures: dict[str, dict[str, float]] = {}
+
+
+def _auth_lockout_remaining(ip: str, now: float) -> int:
+    """该对端仍需等待的秒数（向上取整，至少 1）；不在退避期返回 0。"""
+    state = _auth_failures.get(ip)
+    if not state:
+        return 0
+    until = state["lockout_until"]
+    if now >= until:
+        return 0
+    # 向上取整且不低于 1——math.ceil 保证 remaining 不超过退避总时长本身
+    # （int()+1 的写法会把整秒边界顶成 cap+1）。
+    return max(1, math.ceil(until - now))
+
+
+def _auth_record_failure(ip: str, now: float) -> None:
+    if len(_auth_failures) >= AUTH_STATE_PRUNE_SIZE:
+        stale = [key for key, value in _auth_failures.items()
+                 if now - value["last_seen"] > AUTH_STATE_TTL_SECONDS]
+        for key in stale:
+            _auth_failures.pop(key, None)
+    state = _auth_failures.get(ip)
+    count = (state["count"] + 1) if state else 1
+    entry = {"count": count, "last_seen": now, "lockout_until": 0.0}
+    if count >= AUTH_FAILURE_THRESHOLD:
+        backoff = min(2.0 ** count, float(AUTH_BACKOFF_CAP_SECONDS))
+        entry["lockout_until"] = now + backoff
+        # 只在退避（重）生效时打一条 warn；429 响应本身不再逐请求刷日志，
+        # 否则攻击者能用垃圾请求把日志预算刷爆。
+        logger.warning(
+            "auth backoff engaged: peer reached %d consecutive failures",
+            count)
+    _auth_failures[ip] = entry
+
+
+def _auth_record_success(ip: str) -> None:
+    _auth_failures.pop(ip, None)
+
 
 def verify_auth(request: Request):
-    # Parse locally so malformed credentials always use the same response.
+    # 所有失败路径汇聚到同一个 unauthorized——畸形凭据与错误口令对外完全
+    # 同形（401 + WWW-Authenticate: Basic），不泄露是哪一步没过。
     unauthorized = HTTPException(
         status_code=401, detail="Unauthorized",
         headers={"WWW-Authenticate": "Basic"})
+    ip = _peer_ip(request) or "unknown"
+    now = time.monotonic()
+    retry_after = _auth_lockout_remaining(ip, now)
+    if retry_after:
+        # 退避期内直接拒答（凭据都不看）：爆破方得到的信息只有「稍后再来」，
+        # 每次拒答的边际成本是一次 dict 查询。
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed authentication attempts; retry later",
+            headers={"Retry-After": str(retry_after)})
+    ok = False
+    username = ""
     header = request.headers.get("authorization")
-    if not header:
-        raise unauthorized
-    scheme, separator, encoded = header.partition(" ")
-    if not separator or scheme.lower() != "basic" or not encoded:
-        raise unauthorized
-    try:
-        decoded = base64.b64decode(encoded, validate=True).decode("ascii")
-    except (binascii.Error, UnicodeDecodeError):
-        raise unauthorized
-    username, separator, password = decoded.partition(":")
-    if not separator or not username or not password:
-        raise unauthorized
-    ok_user = secrets.compare_digest(username, REGISTRY_USER)
-    ok_pass = secrets.compare_digest(password, REGISTRY_PASS)
-    if not (ok_user and ok_pass):
-        raise unauthorized
-    return username
+    if header:
+        scheme, separator, encoded = header.partition(" ")
+        if separator and scheme.lower() == "basic" and encoded:
+            decoded = None
+            try:
+                decoded = base64.b64decode(encoded, validate=True).decode("ascii")
+            except (binascii.Error, UnicodeDecodeError):
+                pass
+            if decoded is not None:
+                username, separator, password = decoded.partition(":")
+                if separator and username and password:
+                    ok = (secrets.compare_digest(username, REGISTRY_USER)
+                          and secrets.compare_digest(password, REGISTRY_PASS))
+    if ok:
+        _auth_record_success(ip)
+        return username
+    _auth_record_failure(ip, now)
+    raise unauthorized
 
 
 # ── 审计面（R90-A1）───────────────────────────────────────────────────────────
@@ -117,16 +202,23 @@ def verify_auth(request: Request):
 # (http://host:8003/)，那条路径完全不落审计。这里补上服务端自己的审计行：
 #
 #   logger = audit.registry.pypi   （一行一条 JSON，便于日志平台解析）
-#   action = registry.pypi.upload  （与本仓 audit 目录登记的 action 同名）
+#   action = registry.pypi.upload / .delete / .download
 #
-# 只记「谁、往哪个包推了什么字节、成功/失败、失败原因码」——**不记**口令、
+# P2-1/P2-2（2026-10-26 审计）：删除链与下载面此前完全不落痕——admin-api 没有
+# pypi 删除/下载代理，直连 8003 的删除（制品销毁）与下载（私有制品外泄主路径）
+# 在两层都看不到。三者共用 _audit_event：
+#
+# 只记「谁、动了哪个包的什么制品、成功/失败、失败原因码」——**不记**口令、
 # 不记 Authorization 头、不记内部绝对路径（审计日志会外流到 SIEM/日志平台）；
 # 拒绝原因一律用稳定码（invalid_filename / invalid_format /
-# invalid_package_name / too_large / conflict / storage_error / internal_error），
-# 不把异常文本或堆栈写进去。
+# invalid_package_name / invalid_version / too_large / conflict /
+# not_found / storage_error / internal_error），不把异常文本或堆栈写进去。
 AUDIT_LOGGER_NAME = "audit.registry.pypi"
-AUDIT_ACTION = "registry.pypi.upload"
-#: 审计里回显的 filename 上限——客户端可控，不能让它把日志行撑爆。
+AUDIT_ACTION_UPLOAD = "registry.pypi.upload"
+AUDIT_ACTION_DELETE = "registry.pypi.delete"
+AUDIT_ACTION_DOWNLOAD = "registry.pypi.download"
+#: 审计里回显的客户端可控字段上限——不能让单条请求把日志行撑爆。
+#: filename/package/version 同一上限（P3-4），与 R90-A1 的 filename 闸同风格。
 AUDIT_FILENAME_MAX = 120
 
 audit_logger = logging.getLogger(AUDIT_LOGGER_NAME)
@@ -166,6 +258,57 @@ def _peer_ip(request: Request) -> str | None:
     return getattr(client, "host", None)
 
 
+def _audit_event(
+    request: Request,
+    *,
+    action: str,
+    result: str,
+    user: str,
+    package: str | None = None,
+    version: str | None = None,
+    filename: str | None = None,
+    size: int | None = None,
+    sha256: str | None = None,
+    reason: str | None = None,
+    unchanged: bool | None = None,
+    artifact_count: int | None = None,
+    warning: str | None = None,
+) -> None:
+    """写一条审计行（best-effort：审计故障绝不影响业务语义）。
+
+    P3-4：客户端可控字段（package/version/filename）统一截断到
+    AUDIT_FILENAME_MAX；package 记 normalize 后的值（与索引/落盘形态一致，
+    聚合口径稳定）。未提供的可选字段不出现在行里（消费方按需取）。
+    """
+    record = {
+        "action": action,
+        "service": "registry-pypi",
+        "result": result,
+        "user": user,
+        "package": (normalize(package)[:AUDIT_FILENAME_MAX]
+                    if package else package),
+        "version": version[:AUDIT_FILENAME_MAX] if version else version,
+        "filename": filename[:AUDIT_FILENAME_MAX] if filename else filename,
+        "size": size,
+        "sha256": sha256,
+        "reason": reason,
+        "ip": _peer_ip(request),
+    }
+    if unchanged is not None:
+        record["unchanged"] = unchanged
+    if artifact_count is not None:
+        record["artifact_count"] = artifact_count
+    if warning is not None:
+        record["warning"] = warning
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        record["x_forwarded_for"] = forwarded[:AUDIT_FILENAME_MAX]
+    try:
+        audit_logger.info(json.dumps(record, ensure_ascii=False, sort_keys=True))
+    except Exception:  # pragma: no cover - 审计故障不得影响业务语义
+        logger.exception("%s audit write failed", action)
+
+
 def audit_upload(
     request: Request,
     *,
@@ -178,30 +321,13 @@ def audit_upload(
     sha256: str | None = None,
     reason: str | None = None,
     unchanged: bool | None = None,
+    warning: str | None = None,
 ) -> None:
-    """写一条 registry.pypi.upload 审计（best-effort：绝不把请求打挂）。"""
-    record = {
-        "action": AUDIT_ACTION,
-        "service": "registry-pypi",
-        "result": result,
-        "user": user,
-        "package": package,
-        "version": version,
-        "filename": filename[:AUDIT_FILENAME_MAX],
-        "size": size,
-        "sha256": sha256,
-        "reason": reason,
-        "ip": _peer_ip(request),
-    }
-    if unchanged is not None:
-        record["unchanged"] = unchanged
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        record["x_forwarded_for"] = forwarded[:AUDIT_FILENAME_MAX]
-    try:
-        audit_logger.info(json.dumps(record, ensure_ascii=False, sort_keys=True))
-    except Exception:  # pragma: no cover - 审计故障不得影响上传语义
-        logger.exception("registry.pypi.upload audit write failed")
+    """写一条 registry.pypi.upload 审计（见 _audit_event 的统一形态）。"""
+    _audit_event(request, action=AUDIT_ACTION_UPLOAD, result=result, user=user,
+                 package=package, version=version, filename=filename,
+                 size=size, sha256=sha256, reason=reason, unchanged=unchanged,
+                 warning=warning)
 
 
 def normalize(name: str) -> str:
@@ -259,40 +385,63 @@ SIDECAR_SUFFIX = ".sha256"
 UPLOAD_SUFFIX = ".upload"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
-# B-6（私有包仓库域审计）：413 预检余量——S10 的 50MB 上限此前在 handler 内
-# 逐块累加时才判，完整 multipart 已被 Starlette 收进 SpooledTemporaryFile
-# （超 1MB 部分落盘），慢客户端可先占满磁盘/带宽再被拒。按 Content-Length
-# 预检，超限直接 413 短路，不进入 multipart 解析。multipart 有 boundary 与
-# 表单字段（name/version）开销，给 64 KiB 余量避免边界误杀；无 Content-Length
-# （chunked）或头畸形时不预检，handler 内的流式累计闸（S10）仍是最终防线。
+# B-6（413 预检）+ P1-1（2026-10-26 审计：认证前无界 body 缓冲）：
+# FastAPI 0.141 在依赖解析（含 verify_auth）之前就 await request.form() 完整
+# 消费 body——401 之前整个 multipart 已被 Starlette MultiPartParser 收进
+# SpooledTemporaryFile（>1MB 部分落 /tmp tmpfs）。两级中间件闸在**读 body 之前**
+# 短路：
+#   ① P1-1 上传路由必须带 Content-Length：twine/pip 恒带；admin-api 代理已同步
+#      改为显式 content-length（registry.controller.ts uploadPypiPackage——
+#      form-data 的 form.pipe() 默认 chunked，2026-10-26 节点探针实证）。缺失
+#      一律 411 Length Required：无界长度让「预检」失去意义，也堵死认证前的
+#      tmpfs/内存 DoS 面（一个 body 字节都不读）。
+#   ② B-6 Content-Length 超限 413 短路：multipart 有 boundary 与表单字段
+#      （name/version）开销，给 64 KiB 余量避免边界误杀；畸形头不预检
+#      （交给底层协议栈——h11 会拒畸形 Content-Length）。
+# 既有防线保留为纵深：handler 内流式累计闸（S10）与 compose tmpfs size 上限
+# （P1-1，/tmp:size=1g）。
+#
+# 根治方案登记（本轮不做）：改造上传 handler 自行读 request.stream() 的
+# raw-body——绕开 MultiPartParser 的整体 spool，边收边写包目录 .upload 临时
+# 文件并逐块累计，chunked 形态下也有 O(chunk) 的落盘/内存上限。代价是放弃
+# FastAPI 的 multipart 契约（name/version 表单字段要手解）与 python-multipart
+# 的边界处理，测试矩阵大改，登记为后续项。
 CONTENT_LENGTH_MARGIN = 64 * 1024
 
 
 @app.middleware("http")
 async def content_length_precheck(request: Request, call_next):
-    """B-6: upload 路由的 Content-Length 预检（超限 413 短路）。
+    """P1-1/B-6: upload 路由的预认证请求体闸（缺长 411、超限 413 短路）。
 
     仅拦 POST/PUT 且路径命中上传面（/ 与 /upload——E-39 的单一实现 + 薄
-    alias）；其余请求原样放行。413 响应体形态与 FastAPI HTTPException 一致
-    （{"detail": ...}），客户端解析无需分支。
+    alias）；其余请求原样放行。411/413 响应体形态与 FastAPI HTTPException
+    一致（{"detail": ...}），客户端解析无需分支。
     """
     if request.method in ("POST", "PUT") and request.url.path in ("/", "/upload"):
         raw = request.headers.get("content-length")
-        if raw is not None:
-            try:
-                length = int(raw)
-            except ValueError:
-                length = None  # 畸形头不预检，交给底层/流式闸处理
-            if length is not None and length > MAX_UPLOAD_BYTES + CONTENT_LENGTH_MARGIN:
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": (
-                            "Payload too large: request body exceeds the "
-                            f"{MAX_UPLOAD_BYTES} byte upload limit"
-                        )
-                    },
-                )
+        if raw is None:
+            # P1-1：chunked（无 Content-Length）一律拒收——正规客户端
+            # （twine/pip/admin-api 代理）都带长度；411 稳定码，不读 body。
+            return JSONResponse(
+                status_code=411,
+                content={"detail": (
+                    "Length required: uploads must declare Content-Length "
+                    "(chunked transfer encoding is not accepted)")},
+            )
+        try:
+            length = int(raw)
+        except ValueError:
+            length = None  # 畸形头不预检，交给底层协议栈/流式闸处理
+        if length is not None and length > MAX_UPLOAD_BYTES + CONTENT_LENGTH_MARGIN:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": (
+                        "Payload too large: request body exceeds the "
+                        f"{MAX_UPLOAD_BYTES} byte upload limit"
+                    )
+                },
+            )
     return await call_next(request)
 
 
@@ -303,6 +452,55 @@ def sidecar_path(path: Path) -> Path:
 def is_meta_file(name: str) -> bool:
     """Sidecar / in-flight upload files must never appear in the index."""
     return name.endswith(SIDECAR_SUFFIX) or name.endswith(UPLOAD_SUFFIX)
+
+
+# P3-1（2026-10-26 审计）：.upload 半成品清扫——上传进程崩溃/容器被杀会在包
+# 目录留下 mkstemp 的 .upload 残留（is_meta_file 挡住了它们进索引，但磁盘
+# 占用只进不出）。mtime 超过 UPLOAD_STALE_SECONDS 即删；启动时清一次（见文
+# 件末尾的 startup 钩子），上传路由节流共享（进程内至多每小时实扫一次）。
+# 判据与 is_meta_file 同源：能以 .upload 结尾的只可能是上传流程落盘的临时
+# 文件（制品后缀白名单 .whl/.tar.gz/.zip 不含 .upload），误删风险为零。
+UPLOAD_STALE_SECONDS = 24 * 3600
+UPLOAD_SWEEP_MIN_INTERVAL = 3600
+_last_upload_sweep = 0.0
+
+
+def _sweep_stale_uploads(now: float | None = None) -> int:
+    """删除 mtime 超阈值的 *.upload 残留，返回删除数（OSError 全守卫）。"""
+    now = time.time() if now is None else now
+    removed = 0
+    for d in _all_package_dirs():
+        try:
+            candidates = list(d.glob("*"))
+        except OSError:
+            continue
+        for f in candidates:
+            if not f.name.endswith(UPLOAD_SUFFIX):
+                continue
+            try:
+                if now - f.stat().st_mtime <= UPLOAD_STALE_SECONDS:
+                    continue
+                f.unlink()
+                removed += 1
+            except OSError:
+                continue
+    return removed
+
+
+def _maybe_sweep_stale_uploads() -> None:
+    """上传路由的节流入口：每进程至多每小时实际扫一次盘。"""
+    global _last_upload_sweep
+    now = time.monotonic()
+    if now - _last_upload_sweep < UPLOAD_SWEEP_MIN_INTERVAL:
+        return
+    _last_upload_sweep = now
+    try:
+        removed = _sweep_stale_uploads()
+    except Exception:  # pragma: no cover - 清扫绝不影响上传
+        logger.exception("stale .upload sweep failed")
+        return
+    if removed:
+        logger.info("swept %d stale .upload temp file(s)", removed)
 
 
 # ── 上传面文件名闸（R90-A1）───────────────────────────────────────────────────
@@ -384,8 +582,30 @@ def artifact_sha256(path: Path) -> str:
     return digest
 
 
+def _probe_storage_writable() -> None:
+    """P3-3（2026-10-26 审计）：轻量可写性探针——包根 touch 一个临时文件并
+    立即删除。os.access(W_OK) 查不出卷满（ENOSPC）/只读挂载（EROFS）/属主
+    漂移；touch+删三个 syscall 全覆盖。探针文件落在包**根**（非包目录），
+    索引面永远扫不到；异常原样上抛，由 /health 决定 503。
+    """
+    fd, probe_name = tempfile.mkstemp(
+        dir=PACKAGES_DIR, prefix=".healthprobe-", suffix=".tmp")
+    os.close(fd)
+    os.unlink(probe_name)
+
+
 @app.get("/health")
 def health():
+    # P3-3：/health 从「进程活着」升级为「存储真的可写」——pypi_data 卷只读/
+    # 属主漂移/写满时返回 503（compose healthcheck 语义不变：非 2xx 即
+    # unhealthy）。探针本身三个 syscall，无自身 DoS 面。
+    try:
+        _probe_storage_writable()
+    except OSError:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "service": "pypi-registry"},
+        )
     return {"status": "ok", "service": "pypi-registry"}
 
 
@@ -692,13 +912,23 @@ def package_index(package_name: str, request: Request, _user: str = Depends(veri
     rows = []
     for version in sorted(by_version, key=_version_sort_key):
         for f in sorted(by_version[version], key=lambda x: x.name):
+            # P3-2（2026-10-26 审计）：glob 到 stat/读 sidecar 之间制品可能被
+            # 并发删除——f.stat()/open 的 OSError 此前会整页 500。守卫语义与
+            # _artifact_files 一致：该文件按不存在处理（正在被删除的索引短暂
+            # 少一行，好过 pip 拿到 500）。
+            try:
+                size = f.stat().st_size
+                mtime = datetime.fromtimestamp(
+                    f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M")
+                digest = artifact_sha256(f)
+            except OSError:
+                continue
             rows.append((
                 version,
                 f.name,
-                artifact_sha256(f),
-                _human_size(f.stat().st_size),
-                datetime.fromtimestamp(
-                    f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                digest,
+                _human_size(size),
+                mtime,
             ))
     etag, last_modified = _package_listing_state(d)
     return _conditional_html_response(
@@ -707,7 +937,8 @@ def package_index(package_name: str, request: Request, _user: str = Depends(veri
 
 
 @app.get("/packages/{package_name}/{filename}")
-def download_package(package_name: str, filename: str, _user: str = Depends(verify_auth)):
+def download_package(package_name: str, filename: str, request: Request,
+                     _user: str = Depends(verify_auth)):
     # S9: path-traversal guard — reject filenames that escape the package directory
     safe_name = normalize(package_name)
     # NETOPT-5⑥: 包目录名同样过 is_safe_package_name——文件名侧的目录分量
@@ -724,13 +955,30 @@ def download_package(package_name: str, filename: str, _user: str = Depends(veri
     if is_meta_file(safe_filename) or not _is_safe_artifact_filename(safe_filename):
         raise HTTPException(status_code=404, detail="File not found")
     f = PACKAGES_DIR / safe_name / safe_filename
-    if not f.exists() or not f.is_file():
+    # P3-2：exists/is_file 与 FileResponse 的 open 之间制品可能被并发删除——
+    # 显式 stat 一次（404），否则缺失的文件会让 FileResponse 内部抛 RuntimeError
+    # 逃逸成 500。顺手把 size 带给审计。
+    try:
+        size = f.stat().st_size
+    except OSError:
         raise HTTPException(status_code=404, detail="File not found")
+    if not f.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    # P2-2（2026-10-26 审计）：下载是私有制品外泄的主路径，直连 8003 时
+    # admin-api 完全看不见——FileResponse 前落 best-effort 审计（谁、取了
+    # 哪个包的哪个文件、多大）。下载是高频面：_audit_event 内部 try/except
+    # 兜底，审计写入失败绝不影响下载本身；行开销 = 一行 JSON 到 stderr，
+    # 内网低频可接受。若未来需要压量，降级形态是「只记失败 + 成功按请求
+    # 采样」（登记，不做——审计的第一性质是「不能丢」）。
+    _audit_event(request, action=AUDIT_ACTION_DOWNLOAD, result="success",
+                 user=_user, package=safe_name, filename=safe_filename,
+                 size=size)
     return FileResponse(str(f))
 
 
 @app.delete("/admin/packages/{package_name}")
-def delete_package(package_name: str, _user: str = Depends(verify_auth)):
+def delete_package(package_name: str, request: Request,
+                   _user: str = Depends(verify_auth)):
     """B-4①: 制品生命周期管理面（最小面：**整包删除**）。
 
     此前制品只进不出——无任何删除端点，pypi_data 卷无界增长，且误传的
@@ -742,20 +990,64 @@ def delete_package(package_name: str, _user: str = Depends(verify_auth)):
     幂等重传）。认证复用 verify_auth——本服务只有一套 Basic 凭据
     （REGISTRY_USER/PASS），具备上传权即具备删除权，与上传面同一信任级。
 
+    P2-1（2026-10-26 审计）：删除链此前零审计——admin-api 无 pypi 删除代理，
+    直连删除在两层都不落痕。这里复用上传审计面新增 registry.pypi.delete，
+    成功/失败都记：user / package（归一化）/ 制品数 / 字节数 / ip；失败用
+    稳定码（invalid_package_name / not_found / storage_error）。
+
     返回：204（删除成功，无响应体）/ 404（包不存在或包名不合法——与读取
     路径同闸同语义，不泄露闸的存在）。
     """
     normalized = normalize(package_name)
     # NETOPT-5⑥ 同款读取路径闸：归一化后仍带盘符/分隔符的名字按 404 处理。
     if not is_safe_package_name(normalized):
+        _audit_event(request, action=AUDIT_ACTION_DELETE, result="failure",
+                     user=_user, package=normalized,
+                     reason="invalid_package_name")
         raise HTTPException(status_code=404, detail="Package not found")
     d = PACKAGES_DIR / normalized
     if not d.exists() or not d.is_dir():
+        _audit_event(request, action=AUDIT_ACTION_DELETE, result="failure",
+                     user=_user, package=normalized, reason="not_found")
         raise HTTPException(status_code=404, detail="Package not found")
     # rmtree 的范围有界：包目录内只可能是上传流程落盘的制品/sidecar/临时
     # 文件（PKG-DIR-01 保证目录名是包根下的单分量，N14 保证文件名无目录
     # 分量，os.link 只在包目录内建链）。
-    shutil.rmtree(d)
+    # P2-1：审计字段在删除前统计（制品数/字节），OSError 守卫——「记账」
+    # 失败按 None/0 处理，绝不能反过来挡住「删除」。
+    artifacts = _artifact_files(d)
+    total_bytes = 0
+    for f in artifacts:
+        try:
+            total_bytes += f.stat().st_size
+        except OSError:
+            pass
+    try:
+        shutil.rmtree(d)
+    except FileNotFoundError:
+        # P3-2：并发删除竞态——exists 预检后另一请求已整包删完。目录确已
+        # 不存在 → 与上方 404 预检同语义（幂等 404）；目录仍在 → 属部分删除
+        # （rmtree 中途子项消失/并发上传重建了目录），按 storage_error 落 500。
+        if d.exists():
+            _audit_event(request, action=AUDIT_ACTION_DELETE, result="failure",
+                         user=_user, package=normalized,
+                         artifact_count=len(artifacts), size=total_bytes,
+                         reason="storage_error")
+            raise
+        _audit_event(request, action=AUDIT_ACTION_DELETE, result="failure",
+                     user=_user, package=normalized, reason="not_found")
+        raise HTTPException(status_code=404, detail="Package not found")
+    except OSError:
+        # 非预期存储故障（权限/EBUSY……）：落 storage_error 审计后原样抛给
+        # 框架（对外 500，不额外泄露内部路径）——与上传面 storage_error 同形。
+        _audit_event(request, action=AUDIT_ACTION_DELETE, result="failure",
+                     user=_user, package=normalized,
+                     artifact_count=len(artifacts), size=total_bytes,
+                     reason="storage_error")
+        raise
+    _audit_event(request, action=AUDIT_ACTION_DELETE, result="success",
+                 user=_user, package=normalized, artifact_count=len(artifacts),
+                 size=total_bytes)
     return Response(status_code=204)
 
 
@@ -763,8 +1055,10 @@ def delete_package(package_name: str, _user: str = Depends(verify_auth)):
 async def upload_package(
     request: Request,
     content: UploadFile = File(...),
-    name: str = Form(...),
-    version: str = Form(...),
+    # P3-5：name/version 不用 Form(...) 必填——缺失/空值在框架层是 422 文案，
+    # 收敛不进稳定码体系。默认空串 + handler 内非空闸 → 统一 400。
+    name: str = Form(""),
+    version: str = Form(""),
     _user: str = Depends(verify_auth),
 ):
     """Canonical upload endpoint — the twine/pip wire contract.
@@ -785,8 +1079,10 @@ async def upload_package(
 async def upload_package_alt(
     request: Request,
     content: UploadFile = File(...),
-    name: str = Form(...),
-    version: str = Form(...),
+    # P3-5：name/version 不用 Form(...) 必填——缺失/空值在框架层是 422 文案，
+    # 收敛不进稳定码体系。默认空串 + handler 内非空闸 → 统一 400。
+    name: str = Form(""),
+    version: str = Form(""),
     _user: str = Depends(verify_auth),
 ):
     """Deprecated alias of ``POST /`` (E-39).
@@ -800,6 +1096,21 @@ async def upload_package_alt(
     return await _store_upload(request, _user, content, name, version)
 
 
+def _rollback_published_artifact(dest: Path) -> None:
+    """P2-4 恢复路径：sidecar 落位失败时撤下刚发布的制品（best-effort）。
+
+    unlink 不占用新数据块，ENOSPC 场景下几乎必然成功；若它也失败（极少），
+    残留的制品没有 sidecar——下载/索引侧 artifact_sha256 的懒回填会在下次
+    访问时补上哈希，一致性最终收敛。完整恢复路径见 README「故障恢复」。
+    """
+    try:
+        dest.unlink(missing_ok=True)
+    except OSError:
+        logger.error(
+            "rollback after sidecar write failure failed too; artifact may "
+            "remain without its sha256 sidecar (lazy backfill will recover)")
+
+
 async def _store_upload(
     request: Request,
     user: str,
@@ -807,8 +1118,11 @@ async def _store_upload(
     name: str,
     version: str,
 ):
-    """上传的唯一实现：文件名闸 → 包名闸 → 临时文件 → 原子落盘 → sidecar → 审计。"""
+    """上传的唯一实现：名版闸 → 文件名闸 → 包名闸 → 临时文件 → 原子落盘 → sidecar → 审计。"""
     raw_filename = content.filename or ""
+    # P3-1：上传路由节流清扫 .upload 残留（与启动清扫共享判据，每小时至多
+    # 实扫一次盘，常态 O(1)）。
+    _maybe_sweep_stale_uploads()
 
     def reject(status: int, detail: str, reason: str, **extra) -> None:
         """拒绝 = 落一条 failure 审计 + 抛稳定 HTTP 错误码。
@@ -821,6 +1135,17 @@ async def _store_upload(
                      **extra)
         raise HTTPException(status_code=status, detail=detail)
 
+    # P3-5（2026-10-26 审计）：直连面补 name/version 显式校验——非空 + 长度
+    # 上限 128/64 字节（与 admin-api 代理的 A7 闸同值，registry.controller.ts
+    # uploadPypiPackage；按字节限对代理白名单里的 ASCII 名字数值一致，且额外
+    # 保证 normalize 后的目录名到不了 NAME_MAX——此前超长名由 mkdir 的
+    # ENAMETOOLONG 逃逸成 500，空版本则静默收进审计行）。
+    if not name or len(name.encode("utf-8", "replace")) > 128:
+        reject(400, ("Invalid package name: must be non-empty and at most "
+                     "128 bytes"), "invalid_package_name")
+    if not version or len(version.encode("utf-8", "replace")) > 64:
+        reject(400, ("Invalid package version: must be non-empty and at most "
+                     "64 bytes"), "invalid_version")
     # R90-A1: 文件名闸必须在**落盘之前**——包括 mkstemp 的 prefix。此前客户端
     # 可控的 300 字节名字会让 mkstemp 抛 OSError(ENAMETOOLONG) 逃逸成 500；
     # NUL/换行/Windows 非法字符同理，`?` `#` `%` 则在 Linux 上落盘后破坏索引页
@@ -839,6 +1164,17 @@ async def _store_upload(
         reject(400, "Invalid package name: must be a single relative name "
                     "(no leading '/', drive letter or path separator)",
                "invalid_package_name")
+    # P3-8（2026-10-26 审计）：wheel 的 dist 段（文件名首段）与表单 name 理论
+    # 上应一致。评估后选「warning 审计字段」而非 400：pip 按归一化名在
+    # /simple/<name>/ 里匹配、再按锚点文件名解析，dist 段不一致的 wheel 仍能
+    # 被显式安装（受 pip 侧匹配限制），400 会破坏既有发布流；这里只留痕供
+    # 聚合告警。wheel dist 段的转义（PEP 427 把 [-_.] 连跑折叠成 _）被
+    # normalize 一并折叠，两侧同函数比较。
+    warning = None
+    if filename.endswith(".whl"):
+        dist_segment = filename[:-4].split("-", 1)[0]
+        if normalize(dist_segment) != normalized:
+            warning = "wheel_dist_name_mismatch"
     # R90-A1: 记下包目录是不是本次新建的——失败清理只删自己新建的空目录
     # （见函数末尾 finally），已发布的包一律不动。
     created_dir = not (PACKAGES_DIR / normalized).is_dir()
@@ -849,11 +1185,30 @@ async def _store_upload(
     # package directory while computing sha256 in the same 1 MiB-chunk pass,
     # so peak memory stays O(chunk) instead of O(wheel size). The hash is
     # computed once and reused for both the duplicate check and the sidecar.
+    #
+    # P2-4（2026-10-26 审计）：sidecar 与制品同一 CAS 风格——sidecar 的 tmp
+    # 文件也放包目录（/data 卷内，同文件系统 os.link 才可行；/tmp 是 tmpfs，
+    # 跨设备 link 必失败）。写入顺序保证「500 ⇒ 未发布」：
+    #   ① 两个 tmp 先建（含 sidecar tmp，ENOSPC 在此暴露，制品尚未 link；
+    #      建临时文件纳入下方 try 的审计面——此前 mkstemp 失败是无审计的 500）；
+    #   ② 流式写制品 tmp + 算 sha；
+    #   ③ os.link 制品（CAS：409/幂等分支不变）；
+    #   ④ os.link sidecar 到位；失败则**回滚 unlink 制品**再抛——回滚窗口内
+    #      已开始的下载可能短暂 404，可接受（恢复路径见 README「故障恢复」）。
     total = 0
     sha = None
-    fd, tmp_name = tempfile.mkstemp(dir=d, prefix=filename + ".", suffix=UPLOAD_SUFFIX)
-    tmp = Path(tmp_name)
+    tmp: Path | None = None
+    sidecar_tmp: Path | None = None
     try:
+        # 先建 sidecar tmp 并立即关 fd（mkstemp 失败时不留任何打开的句柄）；
+        # 制品 tmp 的 fd 随后由 os.fdopen 接管。两个 tmp 的创建都在审计面内。
+        sc_fd, sc_tmp_name = tempfile.mkstemp(
+            dir=d, prefix=filename + SIDECAR_SUFFIX + ".", suffix=UPLOAD_SUFFIX)
+        os.close(sc_fd)
+        sidecar_tmp = Path(sc_tmp_name)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=d, prefix=filename + ".", suffix=UPLOAD_SUFFIX)
+        tmp = Path(tmp_name)
         h = hashlib.sha256()
         with os.fdopen(fd, "wb") as out:
             while True:
@@ -871,6 +1226,11 @@ async def _store_upload(
                 h.update(chunk)
                 out.write(chunk)
         sha = h.hexdigest()
+
+        # P2-4 ①：先把 sidecar 内容写进 tmp——ENOSPC 在此暴露，此时制品尚未
+        # link，「500 ⇒ 未发布」的保证成立（旧实现是制品 link 之后再
+        # write_text，磁盘写满时得到「500 但制品已发布」的语义劈叉）。
+        sidecar_tmp.write_text(sha)
 
         # N30 (R8): atomic check-and-set via os.link replaces the old
         # dest.exists() pre-check + os.replace, which raced: two concurrent
@@ -892,7 +1252,7 @@ async def _store_upload(
                 # bytes -> 200, original artifact untouched.
                 audit_upload(request, user=user, result="success", package=name,
                              version=version, filename=filename, size=total,
-                             sha256=sha, unchanged=True)
+                             sha256=sha, unchanged=True, warning=warning)
                 return {"message": f"Uploaded {filename} (unchanged)",
                         "package": name, "version": version, "unchanged": True}
             reject(409, (f"Artifact {filename} already exists with a different "
@@ -900,7 +1260,17 @@ async def _store_upload(
                          f"packages is not allowed"),
                    "conflict", size=total, sha256=sha)
 
-        sidecar_path(dest).write_text(sha)
+        try:
+            os.link(sidecar_tmp, sidecar_path(dest))
+        except FileExistsError:
+            # 制品是本次 CAS 新建的：同名 sidecar 只可能是旧失败轮残留或懒
+            # 回填的过期内容——os.replace 原子矫正（sidecar 是派生数据，制品
+            # 才是权威；replace 是 rename，不新增数据块，无 ENOSPC 面）。
+            os.replace(sidecar_tmp, sidecar_path(dest))
+        except OSError:
+            # ENOSPC/权限等：撤下刚发布的制品再抛——保证「500 必然未发布」。
+            _rollback_published_artifact(dest)
+            raise
     except HTTPException:
         raise  # reject() 已落过 failure 审计，不重复记
     except Exception as exc:
@@ -912,7 +1282,10 @@ async def _store_upload(
         logger.error("upload failed while storing artifact (%s)", type(exc).__name__)
         raise
     finally:
-        tmp.unlink(missing_ok=True)  # no-op after a successful os.link
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)  # no-op after a successful os.link
+        if sidecar_tmp is not None:
+            sidecar_tmp.unlink(missing_ok=True)  # P2-4: sidecar tmp 同样清理
         # R90-A1: 失败路径不留「幻影包」——pkg_dir 在流式累计闸之前就 mkdir，
         # 413/异常之后空目录会永久留在盘上并出现在根索引与包索引里（脏数据，
         # 同时也是「某个包名被尝试过」的枚举面）。只删本次新建且仍为空的目录：
@@ -925,5 +1298,21 @@ async def _store_upload(
                 pass
 
     audit_upload(request, user=user, result="success", package=name,
-                 version=version, filename=filename, size=total, sha256=sha)
+                 version=version, filename=filename, size=total, sha256=sha,
+                 warning=warning)
     return {"message": f"Uploaded {filename}", "package": name, "version": version}
+
+
+@app.on_event("startup")
+def _startup_sweep_stale_uploads() -> None:
+    """P3-1：进程启动时清一次 .upload 残留（uvicorn lifespan 触发；测试里
+    不经 with TestClient 不跑 lifespan，清扫判据由 _sweep_stale_uploads 的
+    单测直接钉住）。"""
+    try:
+        removed = _sweep_stale_uploads()
+    except Exception:  # pragma: no cover - 清扫绝不阻塞启动
+        logger.exception("startup .upload sweep failed")
+        return
+    if removed:
+        logger.info("startup sweep removed %d stale .upload temp file(s)",
+                    removed)

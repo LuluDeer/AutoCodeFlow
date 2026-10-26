@@ -22,9 +22,25 @@
  *   - 数值字段一律钳到合法区间，非有限数回落到字段默认值（config-store defaults）；
  *   - 字符串字段非字符串回落 ''；
  *   - `workDir` 空白视为"不修改"（丢弃该键）——否则一次空字符串会把已初始化
- *     的工作目录清成空串，任务落盘点直接消失。
+ *     的工作目录清成空串，任务落盘点直接消失；
+ *   - **P2-4：键集白名单**——只放行 KNOWN_CONFIG_KEYS 里的键，未知键一律
+ *     丢弃。旧策略"其余键原样透传"有两个被审计确认的滥用面：① electron-store
+ *     的 setter 按点号切键（dot-prop），渲染层送 `'a.b': 1` 会变成**嵌套写**，
+ *     任意垃圾键从此落盘且永不清理；② 白名单外的键没有任何消毒，形状不受控。
+ *     代价是新增配置字段必须在本模块登记（SYNC 守卫会把漂移变成红灯，
+ *     与 export-flows.IMPORTABLE_CONFIG_KEYS 的同款纪律）。
+ *   - **P2-4：`configured` 移出渲染层可写集**（RENDERER_IMMUTABLE_KEYS）——
+ *     它是「已完成初始化向导」的标志，渲染层可写 = 被注入的脚本可以跳过
+ *     向导把应用标成已配置，后续 start 会拿着空 token / 空 adminApiUrl 起
+ *     执行器。设置页保存时原样回传的 `configured`（掩码配置的回显）被丢弃
+ *     = 落盘值保持不变，既有合法链路无感；置位只发生在主进程链路（向导
+ *     完成的 save-and-close-wizard）。
  * 消毒只覆盖"渲染层可能送错"的形状，语义校验（端口是否可用等）仍在调用方。
  */
+
+// P2-2：agentAllowedDomains 的条目字形闸。domain-allowlist 是零依赖纯模块，
+// 保住本文件「裸 node 可测（不拉 electron / conf）」的纪律。
+import { filterAllowlistDomains } from './agent/domain-allowlist';
 
 /** 数值字段的区间与默认值（与 config-store.ts 的 defaults 对齐）。 */
 export interface NumberFieldRule {
@@ -59,9 +75,11 @@ export const STRING_FIELDS: readonly string[] = [
   'logLevel',
 ];
 
-/** 布尔字段：非布尔**丢弃该键**（不猜测语义，保持已存值不变）。 */
+/**
+ * 布尔字段：非布尔**丢弃该键**（不猜测语义，保持已存值不变）。
+ * `configured` 不在这里——它被移入 RENDERER_IMMUTABLE_KEYS（P2-4，见其注释）。
+ */
 export const BOOLEAN_FIELDS: readonly string[] = [
-  'configured',
   'autoStart',
   'autoStartExecutor',
   'notifyEnabled',
@@ -72,6 +90,21 @@ export const BOOLEAN_FIELDS: readonly string[] = [
   // 等于用户没开 Agent 却被偷偷开了（ADR-022 信任模型变更的入口，更不能错）。
   'agentEnabled',
 ];
+
+/**
+ * P2-4：渲染层**不可写**的键——语义上只允许主进程链路置位，消毒层无条件
+ * 从保存补丁里剔除。
+ *
+ * `configured` 是「已完成初始化向导」的标志：渲染层可写时，被注入的脚本
+ * 可以在未完成向导的情况下把它置 true（BOOLEAN_FIELDS 曾把它当普通布尔
+ * 放行），跳过引导后 start 会拿着空 token / 空 adminApiUrl 起执行器。
+ * 设置页回显的 configured 被丢弃 = 落盘值保持不变（已配置机器无感）；
+ * 置位点只剩向导完成链路（config:save-and-close-wizard 的
+ * `save({ ...safeCfg, configured: true })`）。配置导入（config:import）经
+ * 同一消毒通道，导入的 configured 同样不再透传——导入到新机器后仍走一次
+ * 向导确认启动参数（导入文件可能只含部分字段，静默标成已配置更危险）。
+ */
+export const RENDERER_IMMUTABLE_KEYS: readonly string[] = ['configured'];
 
 /**
  * P7a（agent-and-deployment / ADR-022）：Agent 权限档位的**封闭枚举**字段。
@@ -121,6 +154,27 @@ export const STRING_LIST_FIELDS: readonly { key: string; max: number }[] = [
 ];
 
 /**
+ * P2-4：保存面（config:save / config:import / 向导）的**键集白名单**。
+ * 由各字段表 + 密钥/目录等特殊键派生——新增配置字段时把键加进对应字段表
+ * （或下方显式清单），白名单自动跟上；自检见 config-sanitize.selftest.ts
+ * 的 SYNC 守卫（与 export-flows.IMPORTABLE_CONFIG_KEYS / config-store 的
+ * AppConfig 三方对齐）。
+ */
+export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
+  ...NUMBER_FIELDS.map((r) => r.key),
+  ...STRING_FIELDS,
+  ...BOOLEAN_FIELDS,
+  ...ENUM_FIELDS.map((r) => r.key),
+  ...STRING_LIST_FIELDS.map((r) => r.key),
+  // 密钥（走 save() 的独立加密/掩码分支）与工作目录（sanitize 有专门的
+  // "空白 = 不修改"规则），都不属于上面的形状字段表：
+  'executorToken',
+  'workDir',
+  // 已知但渲染层不可写（sanitize 输出里被剔除）：
+  ...RENDERER_IMMUTABLE_KEYS,
+]);
+
+/**
  * 把任意入参规整成一个落进 electron-store 安全的值。
  *
  * 非有限数（NaN / ±Infinity）、`null`、`undefined`、`{}`、`[]`、数字字符串
@@ -148,12 +202,24 @@ function clamp(n: number, rule: NumberFieldRule): number {
 /**
  * 消毒一份渲染层送来的配置补丁，返回**新对象**（不改入参）。
  *
- * 只处理本模块认识的形状；其余键原样透传（避免每次新增配置项都要改这里）。
+ * P2-4：先按 KNOWN_CONFIG_KEYS 过滤键集（未知键/点号键一律丢弃，不再原样
+ * 透传），再剔除渲染层不可写键（RENDERER_IMMUTABLE_KEYS），最后只对本模块
+ * 认识的形状做消毒（数值钳制/枚举归一化/清单白名单等，语义见各字段表）。
  */
 export function sanitizeConfigInput(
   cfg: Record<string, unknown>,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...cfg };
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(cfg)) {
+    // 点号键（'a.b'）不匹配任何白名单键，在这里就被丢弃——不会走到
+    // electron-store 的 dot-prop 嵌套写。
+    if (!KNOWN_CONFIG_KEYS.has(key)) continue;
+    out[key] = cfg[key];
+  }
+  // 渲染层不可写键：无条件剔除（置位只属于主进程链路，见其注释）。
+  for (const key of RENDERER_IMMUTABLE_KEYS) {
+    delete out[key];
+  }
 
   for (const rule of NUMBER_FIELDS) {
     if (rule.key in out) {
@@ -199,10 +265,16 @@ export function sanitizeConfigInput(
       out[rule.key] = [];
       continue;
     }
-    out[rule.key] = v
+    const cleaned = v
       .filter((s): s is string => typeof s === 'string' && s.trim() !== '')
       .map((s) => s.trim())
       .slice(0, rule.max);
+    // P2-2：域名清单逐条过字形闸——单标签（"com"）会在执行器侧被
+    // endsWith 匹配放大成放行一切 *.com；非法条目落盘前剔除（与 admin
+    // 发布校验、runtime 白名单并集共用 domain-allowlist 的同一份语义）。
+    out[rule.key] = rule.key === 'agentAllowedDomains'
+      ? filterAllowlistDomains(cleaned).valid
+      : cleaned;
   }
 
   // 密钥字段：非字符串时**丢弃**（ConfigStore.save 里 executorToken 走独立的

@@ -28,8 +28,9 @@
  * 整段包裹命中文本，与逐 token 着色在同一行内会互相切断；此时以命中高亮为
  * 唯一视觉层级（见下方渲染分支）。
  */
-import { Popover } from 'antd';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Popover, theme } from 'antd';
+import { VerticalAlignBottomOutlined } from '@ant-design/icons';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import {
@@ -42,6 +43,14 @@ import { buildLogSearchSegments } from '../utils/log-search';
 
 /** 每行固定高度（px）——fontSize 12 × lineHeight 1.6 ≈ 19.2，取 20 便于整除 */
 export const LOG_ROW_HEIGHT = 20;
+/**
+ * F-4（UIUX 审计 P2-3）：stick-to-bottom 判定阈值（px）。
+ *
+ * 用户滚动位置距底部不超过该值视为「贴底」——只有贴底时，流式追加才跟随
+ * 吸底；上翻超过阈值后追加不再拽走滚动位置，由「回到底部」浮钮恢复。
+ * 40px ≈ 两行日志的余量，覆盖「几乎贴底但差一点点」的场景，避免误判成上翻。
+ */
+export const LOG_STICK_BOTTOM_THRESHOLD_PX = 40;
 /** 视口外上下各多渲染的缓冲行数（快速滚动时减少白屏） */
 const OVERSCAN = 20;
 
@@ -150,13 +159,46 @@ export interface LogWindowProps {
 export default function LogWindow({ text, keyword = '', height = 500, testId }: LogWindowProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const { t } = useTranslation();
+  const { token } = theme.useToken();
+
+  // ── F-4（UIUX 审计 P2-3）：stick-to-bottom ──────────────────────────────
+  // 旧行为是 `useEffect(() => { el.scrollTop = el.scrollHeight }, [text])` 的
+  // 无条件吸底：SSE 每一批追加都会把用户上翻后的滚动位置拽回底部，流式阶段
+  // 的日志区基本不可上翻排查。
+  // 新判据：仅当用户当前贴近底部（≤ LOG_STICK_BOTTOM_THRESHOLD_PX）时才跟随
+  // 追加；上翻后保持位置，并浮现「回到底部」按钮（点击跳回最新一行）。
+  // atBottom 用 ref + state 双份：ref 供 text effect 同步读取（state 在
+  // effect 闭包里会晚一拍），state 只负责驱动浮钮渲染。
+  const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
+  const [showBackToBottom, setShowBackToBottom] = useState(false);
+
+  /** 由滚动事件/程序化滚动统一重算「是否贴底」并同步浮钮可见性。 */
+  const measureBottom = useCallback((el: HTMLDivElement) => {
+    const near =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= LOG_STICK_BOTTOM_THRESHOLD_PX;
+    atBottomRef.current = near;
+    setAtBottom(near);
+    setShowBackToBottom(!near);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    atBottomRef.current = true;
+    setAtBottom(true);
+    setShowBackToBottom(false);
+  }, []);
 
   const lines = useMemo(() => text.split('\n'), [text]);
 
-  // 流式追加/视图切换后自动吸底（与原 <pre> 的 logRef 行为一致）
+  // 流式追加后仅贴底时跟随（上翻保持位置）；初始挂载 atBottom=true，保持
+  // 「打开即看最新」的既有行为。
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [text]);
 
   const start = Math.max(0, Math.floor(scrollTop / LOG_ROW_HEIGHT) - OVERSCAN);
@@ -164,23 +206,29 @@ export default function LogWindow({ text, keyword = '', height = 500, testId }: 
   const visible = lines.slice(start, end);
 
   return (
-    <div
-      ref={scrollRef}
-      data-testid={testId}
-      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-      style={{
-        background: 'var(--log-bg)',
-        color: 'var(--log-text)',
-        padding: 16,
-        borderRadius: 8,
-        height,
-        overflow: 'auto',
-        fontSize: 12,
-        // UI-01：MASTER.md §Typography——日志/等宽场景用 Fira Code
-        fontFamily: 'var(--font-mono)',
-        lineHeight: `${LOG_ROW_HEIGHT}px`,
-      }}
-    >
+    // F-4：relative 外壳承载「回到底部」浮钮——浮钮悬在滚动容器右下角内侧，
+    // 不参与日志滚动布局（absolute 定位于外壳）。
+    <div style={{ position: 'relative' }}>
+      <div
+        ref={scrollRef}
+        data-testid={testId}
+        onScroll={(e) => {
+          setScrollTop(e.currentTarget.scrollTop);
+          measureBottom(e.currentTarget);
+        }}
+        style={{
+          background: 'var(--log-bg)',
+          color: 'var(--log-text)',
+          padding: 16,
+          borderRadius: 8,
+          height,
+          overflow: 'auto',
+          fontSize: 12,
+          // UI-01：MASTER.md §Typography——日志/等宽场景用 Fira Code
+          fontFamily: 'var(--font-mono)',
+          lineHeight: `${LOG_ROW_HEIGHT}px`,
+        }}
+      >
       {/* 撑高层：总高度 = 行数 × 行高，制造真实滚动条 */}
       <div style={{ height: lines.length * LOG_ROW_HEIGHT, position: 'relative' }}>
         <div style={{ position: 'absolute', top: start * LOG_ROW_HEIGHT, left: 0, right: 0 }}>
@@ -227,6 +275,25 @@ export default function LogWindow({ text, keyword = '', height = 500, testId }: 
           })}
         </div>
       </div>
+      </div>
+      {showBackToBottom && !atBottom && (
+        <Button
+          size="small"
+          icon={<VerticalAlignBottomOutlined />}
+          onClick={scrollToBottom}
+          data-testid={testId ? `${testId}-back-to-bottom` : 'log-back-to-bottom'}
+          aria-label={t('execDetail.log.backToBottom')}
+          style={{
+            position: 'absolute',
+            right: 16,
+            bottom: 12,
+            zIndex: 2,
+            boxShadow: token.boxShadowSecondary,
+          }}
+        >
+          {t('execDetail.log.backToBottom')}
+        </Button>
+      )}
     </div>
   );
 }

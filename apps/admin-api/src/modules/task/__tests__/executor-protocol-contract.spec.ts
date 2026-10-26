@@ -117,15 +117,48 @@ describe("A3 执行器协议契约（admin-api 侧）", () => {
     expect(dto.deviceFingerprint).toBe("a".repeat(64));
   });
 
-  it("ADR-017 v6：协议版本矩阵含 6，且 currentProtocolVersion === 6", () => {
-    // 版本矩阵必须为 v6 登记条目——缺条目会让本方案的「中台可区分 v6/v5」
-    // 前提落空（evolutionRules 第 1 条要求新增可选字段也 bump）。
-    expect(protocol.versioning.currentProtocolVersion).toBe(6);
+  it("ADR-017 v6 + R3-B v7 + 方案 b v8：矩阵含 6/7/8，且 currentProtocolVersion === 8", () => {
+    // 版本矩阵必须为每个 bump 过的版本登记条目——缺条目会让「中台可区分
+    // 相邻版本」的前提落空（evolutionRules 第 1 条要求新增可选字段也 bump）。
+    // v6 = ADR-017 回调 deviceFingerprint；v7 = R3-B（部署模型评审 §4.3）
+    // register/heartbeat 可选 deployedApps/installedPackages；
+    // v8 = 方案 b（接管自愈死锁修复）：heartbeat 可选 registrationConflict
+    // （方向执行器→中台，缺席 = 未上报）+ 同批合并登记顶层 params 键名
+    // 运行时语义段。
+    expect(protocol.versioning.currentProtocolVersion).toBe(8);
     const versions = protocol.versioning.compatibilityMatrix.map(
       (m: { protocolVersion: number }) => m.protocolVersion,
     );
     expect(versions).toContain(6);
+    expect(versions).toContain(7);
+    expect(versions).toContain(8);
     // 既有版本条目不得被删（已发布端按旧条目断言）。
     for (const v of [1, 2, 3, 4, 5]) expect(versions).toContain(v);
+  });
+
+  it("方案 b v8：HeartbeatPayload 登记了 registrationConflict（可选布尔，方向执行器→中台）", () => {
+    const hb = protocol.schemas.HeartbeatPayload;
+    expect(hb).toBeDefined();
+    expect(hb.properties.registrationConflict).toMatchObject({
+      type: "boolean",
+    });
+    // 可选（兼容性红线：旧执行器 / executor-python 缺席 = 未上报，中台按
+    // v7 语义完全不动活性判定）。
+    expect(hb.required ?? []).not.toContain("registrationConflict");
+    // 方向是执行器→中台：中台消费判据的落点必须在 service 侧存在。
+    const svcSource = readFileSync(
+      path.join(
+        findRepoRoot(__dirname),
+        "apps",
+        "admin-api",
+        "src",
+        "modules",
+        "executor",
+        "executor.service.ts",
+      ),
+      "utf-8",
+    );
+    expect(svcSource).toContain("suppressLivenessAdoption");
+    expect(svcSource).toContain("honorHeartbeatConflictSelfReport");
   });
 });

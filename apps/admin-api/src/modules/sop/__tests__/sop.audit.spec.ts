@@ -209,6 +209,40 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
     expect(row.detail).toMatchObject({ slug: "demo", actor: "user:7" });
   });
 
+  // P2（2026-10-25 审计）：审计页「操作人」列与按用户过滤消费 username 列
+  // （对照 task.controller 的 {userId, username} 形态）——只带 userId 时页面
+  // 显示「系统」且按用户筛不到。
+  it("P2 · username 随审计上下文落审计行（登录路径）", async () => {
+    const h = harness();
+    await h.service.draft({
+      slug: "demo",
+      title: "T",
+      bodyMarkdown: "正文",
+      createdBy: "user:7",
+      audit: { userId: 7, username: "ops", ip: "10.0.0.9" },
+    });
+    const row = onlyOne(h.auditService);
+    expect(row).toMatchObject({
+      action: "sop.draft",
+      userId: 7,
+      username: "ops",
+    });
+  });
+
+  it("P2 · 机器路径（audit 无 username）→ username 落 null（不编造操作人）", async () => {
+    const h = harness();
+    await h.service.draft({
+      slug: "demo",
+      title: "T",
+      bodyMarkdown: "正文",
+      createdBy: "user:7",
+      audit: { userId: null, ip: null },
+    });
+    const row = onlyOne(h.auditService);
+    expect(row.userId).toBeNull();
+    expect(row.username).toBeNull();
+  });
+
   it("sop.update · 编辑工作副本（只记改了哪些字段，不记字段内容）", async () => {
     const h = harness();
     await h.service.draft({
@@ -397,7 +431,9 @@ describe("R41-A1 · 每个写动作各落一条审计（action / resource / reso
     });
     expect(r.newSopVersion).toBe("1.0.0");
     expect(h.auditService.log).toHaveBeenCalledTimes(2);
-    const actions = h.auditService.log.mock.calls.map((c: Any[]) => c[0].action);
+    const actions = h.auditService.log.mock.calls.map(
+      (c: Any[]) => c[0].action,
+    );
     expect(actions).toEqual(["sop.publish", "sop.reply"]);
     // 版本行也带上了本次答复的主体（「这个版本是谁发的」不只靠 actor 字符串）
     expect(h.auditService.log.mock.calls[0][0]).toMatchObject({
@@ -528,7 +564,10 @@ describe("R41-A1 · 审计失败策略（不阻断业务，但必须 error 留�
     expect(h.sops.save).not.toHaveBeenCalled();
     // R47：列级写 + currentVersion CAS（首发布时 WHERE 用 IS NULL 表达「还没有版本」）
     expect(h.sops.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "sop-1", currentVersion: expect.anything() }),
+      expect.objectContaining({
+        id: "sop-1",
+        currentVersion: expect.anything(),
+      }),
       { currentVersion: "1.0.0", status: "published" },
     );
     // 不阻断 ≠ 静默：必须 error 级别留痕（含动作与错误原因）
@@ -629,7 +668,7 @@ describe("R41-A1 · 没有写动作的路径一条都不落（不放大计量）
 describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
   function controllerHarness() {
     const sops = {
-    update: jest.fn(async () => ({ affected: 1 })),
+      update: jest.fn(async () => ({ affected: 1 })),
       getAssignment: jest.fn(async (id: string) => ({
         assignment: { id },
         clarifications: [{ id: "cl-1" }],
@@ -640,17 +679,22 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
     return { ctl, sops };
   }
 
-  it("humanReply：userId 来自 CurrentUser，ip 来自 @Ip()（审计行的两个主体列）", async () => {
+  it("humanReply：userId/username 来自 CurrentUser，ip 来自 @Ip()（审计行的主体列）", async () => {
     const h = controllerHarness();
     await h.ctl.humanReply(
       "as-1",
       "cl-1",
       { resolution: "answered", answer: "ok" } as never,
-      { id: 7 },
+      { id: 7, username: "ops" },
       "10.0.0.9",
     );
+    // P2（2026-10-25 审计）：username 必须随审计上下文透传——审计页「操作人」
+    // 列与按用户过滤消费的是它，缺了就显示「系统」且筛不到（对照
+    // task.controller 的 {userId, username} 形态）。
     expect(h.sops.replyClarification).toHaveBeenCalledWith(
-      expect.objectContaining({ audit: { userId: 7, ip: "10.0.0.9" } }),
+      expect.objectContaining({
+        audit: { userId: 7, username: "ops", ip: "10.0.0.9" },
+      }),
     );
   });
 
@@ -663,7 +707,9 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
       { id: "admin-7" },
     );
     expect(h.sops.replyClarification).toHaveBeenCalledWith(
-      expect.objectContaining({ audit: { userId: null, ip: null } }),
+      expect.objectContaining({
+        audit: { userId: null, username: null, ip: null },
+      }),
     );
   });
 
@@ -678,7 +724,7 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
       updateCapabilities: jest.fn(async () => undefined),
     };
     const sops = {
-    update: jest.fn(async () => ({ affected: 1 })),
+      update: jest.fn(async () => ({ affected: 1 })),
       ingestClarification: jest.fn(async () => ({
         clarification: { id: "cl-1", clientClarificationId: "cc-1", round: 1 },
         escalated: false,
@@ -971,4 +1017,3 @@ describe("R70-A1 · 澄清/交付审计行的 detail 带 sopId（审计页深链
     );
   });
 });
-

@@ -113,8 +113,30 @@ export default defineConfig({
     port: Number(process.env.VITE_PORT || 5176),
     proxy: {
       '/api': {
-        target: 'http://localhost:3105',
+        // e2e-full 类编排（或任何把 admin-api 起在别的端口的场景）用
+        // VITE_API_PROXY_TARGET 覆盖；默认指向 demo/dev 常规的 3105。
+        target: process.env.VITE_API_PROXY_TARGET || 'http://localhost:3105',
         changeOrigin: true,
+        // F-40（UIUX 审计 P1-1）：demo 栈 admin-api 的 CORS 白名单钉死在
+        // 8088（docker-compose.demo.yml：CORS_ALLOWED_ORIGINS=
+        // http://localhost:8088,http://127.0.0.1:8088）。浏览器对**同源**
+        // POST/PUT/PATCH/DELETE 也会携带 Origin 头（此处即 http://127.0.0.1:5176），
+        // 该头被代理原样透传 → 命中白名单外的 origin → 后端整链 500
+        // （连登录 POST 都失败，dev 端口下全站写链路不可用）。
+        // 改写为白名单值后，同源请求对后端而言与 8088 部署形态一致；
+        // 不带 Origin 的请求（同源 GET / curl）原样透传，不受影响。
+        // 仅 dev server 生效（server.proxy 不参与构建产物）。
+        // 改写目标可覆盖：e2e-full 等编排把 admin-api 起在别处时，其后端
+        // 白名单也不同（e2e admin-api 放行的是自身放行表），用
+        // VITE_API_PROXY_ORIGIN_REWRITE 指向该栈白名单内的值；默认仍是
+        // demo 栈的 8088。
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            if (proxyReq.getHeader('origin')) {
+              proxyReq.setHeader('Origin', process.env.VITE_API_PROXY_ORIGIN_REWRITE || 'http://127.0.0.1:8088');
+            }
+          });
+        },
       },
     },
   },
@@ -182,7 +204,9 @@ export default defineConfig({
     globals: true,
     // O-2：waitFor 默认预算统一（vi.waitFor 包装 10s + testing-library
     // asyncUtilTimeout 10s），详见 src/test-setup.ts 头注。
-    setupFiles: ['src/test-setup.ts'],
+    // F-21：scheduler-guard 必须排最前（scheduler 模块加载时捕获 setImmediate，
+    // 包裹要先于 test-setup.ts 的 react-dom import 执行），见该文件头注。
+    setupFiles: ['src/test-setup-scheduler-guard.ts', 'src/test-setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
     // R12-fix（admin-web-build 间歇性 Unhandled ReferenceError: window is

@@ -179,7 +179,21 @@ def _get_admin_api_url() -> str:
 
 
 async def _fetch_token() -> Optional[str]:
-    """Fetch a fresh token from admin-api."""
+    """Fetch a fresh token from admin-api.
+
+    ⚠️ 缺口登记（方案 b / 协议 v8，2026-10-26）：本函数**不识别 409**——地址
+    被另一份安装占用（EXECUTOR_ADDRESS_TAKEN）时走的是下方 `not 2xx → None`
+    的兜底，与"网络失败"不可区分。协议 v8 的 `registrationConflict` 心跳键
+    （方案 b，接管自愈死锁修复）在本执行器因此**恒缺席**（=「未上报」，中台
+    按 v7 语义不动活性判定——protocol.json v8 条目明示，行为合法）；node 侧
+    蓝本：heartbeat-state.ts（409 置位/成功清除）+ middleware/auth.ts
+    （recordTokenConflict/clearTokenConflict）+ scheduler.ts 心跳体。后续批
+    补齐时：本函数对 409 调 set_registration_conflict(True)、对任何非 409
+    结果调 set_registration_conflict(False)，scheduler._heartbeat_payload 加
+    `registrationConflict` 键（与 config.py PROTOCOL_VERSION 注释的两处缺席
+    裁定同步移除）。在那之前，admin 侧对 python 执行器的接管自愈依赖既有
+    stale sweep（无静态 token 心跳续命时本来就会判死，不受本缺口影响）。
+    """
     try:
         # 网络性能审计（2026-09-18）：改用 O-24 共享连接池（延迟导入避免
         # auth↔scheduler 模块级环）。token 刷新路径（启动、30min 轮换、

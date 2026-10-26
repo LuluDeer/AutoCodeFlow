@@ -19,6 +19,9 @@ import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 // TASK-PROJ-01: 归属项目写面校验需读 projects 行（存在性判定）。与上方
 // ExecutionReport 同款跨模块 forFeature——只取连接与元数据，无运行时依赖环。
 import { Project } from "../project/project.entity";
+// ARTIFACTS-INDEX-46: 产物元数据索引表（终态回调写点双轨写——jsonb 清单与新表
+// 同位置写入，见 task.service.handleCallback）。同款跨模块 forFeature，无运行时依赖环。
+import { ExecutionArtifactRow } from "../artifacts/entities/execution-artifact.entity";
 import { LogRetentionCleanupService } from "./log-retention/log-retention-cleanup.service"; // Stream D/DB-002
 import { S3LogObjectRetentionService } from "./log-retention/s3-log-object-retention.service"; // WIKI-LOG-S3GC
 // FIX-4.2: webhook 同步等待的终态唤醒（Redis pub/sub，发布侧 task.service/
@@ -47,6 +50,8 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
       ExecutionReport,
       // TASK-PROJ-01: 归属项目存在性校验（projects 表；写方 ProjectsService）
       Project,
+      // ARTIFACTS-INDEX-46: 产物索引行（写方 TaskService.handleCallback 双轨写）
+      ExecutionArtifactRow,
     ]),
     BullModule.registerQueue({ name: "task-queue" }),
     // forwardRef：SEC-02 起 ExecutorModule 反向 import 本模块（取

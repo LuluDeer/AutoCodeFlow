@@ -55,6 +55,25 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(v) ? v : fallback;
 }
 
+/** 2026-10-24 安全审计轮收口：正整数 env 解析——NaN/0/负数一律回落默认。
+ * 与 envInt 的差异：envInt 把 0/负值保留给调用方钳制（各语义不同），而
+ * 体积上限这类配置的 0/负数没有合法语义（0 = 解除上限、负数 = 全部拒绝），
+ * 必须在解析层就救回，不让畸形值改变安全闸行为方向。 */
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? '').trim();
+  if (raw === '') return fallback;
+  // Number 全量解析而非 parseInt 截断：parseInt("1.5")=1 会把上限设成
+  // 1 字节（一切下载失败），必须把小数形态整体判非法。
+  const v = Number(raw);
+  if (!Number.isInteger(v) || v <= 0) {
+    logger.warn(
+      `[${name}] 非法值 "${raw}"（需正整数）——回落默认 ${fallback}`,
+    );
+    return fallback;
+  }
+  return v;
+}
+
 function validateOptionalUrlSetting(value: string, settingName: string): string {
   try {
     return validateCredentialFreeHttpUrl(value, settingName);
@@ -86,6 +105,13 @@ const RUNTIME_VERSION_DEFAULT_MAX = '3.14';
 function runtimeVersionBoundKey(v: string): [number, number] {
   const [major, minor] = v.split('.');
   return [parseInt(major, 10), parseInt(minor, 10)];
+}
+
+/** P3-16：磁盘水位 env 解析（非法值钳回该项默认，序校验在 getter 对里做）。 */
+function parseDiskPercent(name: string, fallback: number): number {
+  const raw = parseInt(process.env[name] || '', 10);
+  if (!Number.isFinite(raw) || raw < 1) return fallback;
+  return Math.min(raw, 100);
 }
 
 function resolveRuntimeVersionRange(): { min: string; max: string } {
@@ -156,7 +182,24 @@ export const config = {
   // isAdoptableMaxConcurrentTasks 采纳域同源——否则设到 50000 时 accept 放行
   // 50000 而心跳体截到 10000，容量账本与心跳申报永久脱节。
   maxConcurrentTasks: Math.min(Math.max(envInt('MAX_CONCURRENT_TASKS', 10), 1), 10_000),
-  taskTimeoutSeconds: parseInt(process.env.TASK_TIMEOUT_SECONDS || '300', 10),
+  // P3-19（本轮审计）：TASK_TIMEOUT_SECONDS 非法值回落默认 + warn。旧实现
+  // `parseInt('abc')` 产出 NaN 并静默传播——NaN 在 accept 侧 `(rawTimeout as
+  // number) || config.taskTimeoutSeconds` 不被 falsy 链救回（NaN 缺省路径就是
+  // 默认值本身），随后的 `Number.isFinite(NaN)=false` 让**每一个**派发都以
+  // 400「无效的任务超时」被拒（python 侧同场景是 pydantic 启动即失败，至少
+  // 故障显式）。解析层回落默认值，与 envInt 家族语义一致；0/正数原样透传给
+  // accept 侧的既有判定（0 = 显式不限时），不在此吞掉。
+  taskTimeoutSeconds: (() => {
+    const raw = (process.env.TASK_TIMEOUT_SECONDS ?? '').trim();
+    const parsed = parseInt(raw || '300', 10);
+    if (!Number.isFinite(parsed)) {
+      logger.warn(
+        `[TASK_TIMEOUT_SECONDS] 非法值 "${raw}"（期望整数秒）——回落默认 300`,
+      );
+      return 300;
+    }
+    return parsed;
+  })(),
   // NETOPT-9-5: cap at 60s (same bound as /config/reload). A misconfigured
   // HEARTBEAT_INTERVAL_SECONDS (e.g. 300) would otherwise sit outside admin's
   // own 30s*3 stale-detection window and get the executor marked OFFLINE
@@ -166,22 +209,30 @@ export const config = {
   // NETOPT-F P3-2: 改用 envInt（`|| 30` 会把 env=0 吞成默认 30——语义应为
   // 钳到下界 5；与 maxConcurrentTasks 已改 envInt 的语义对齐）。
   heartbeatIntervalSeconds: Math.min(Math.max(envInt('HEARTBEAT_INTERVAL_SECONDS', 30), 5), 60),
+  // R3-B（部署模型评审 2026-10-23 §4.3）：deployedApps 心跳清单的扫描 TTL
+  // （秒）。默认 60 = 心跳 30s 一拍时每两拍扫一次盘；部署成功会主动失效缓存
+  // （deploy.ts 调 invalidateDeployedAppsCache），上报时效不受 TTL 拖延。env 钳
+  // 5..600（同 envInt/上下界钳制的家族语义）。
+  deployedAppsScanTtlSeconds: Math.min(Math.max(envInt('DEPLOYED_APPS_SCAN_TTL_SECONDS', 60), 5), 600),
   logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
   // ---------------------------------------------------------------------
   // P2/L-2：磁盘水位红线（对齐 executor-python config.disk_warn_percent /
   // disk_critical_percent）。TTL 清扫基于 mtime，磁盘在 TTL 窗口内被撑满时无
   // 主动应对：告警水位触发减半 TTL 的紧急清理；临界水位由 accept 阶段拒新任务。
-  // getter 惰性读 env（热重载一致）；非法值钳到 [1,100]，warn 必须 < critical
-  // （否则两条防线语义重叠）。
+  // getter 惰性读 env（热重载一致）；非法值钳到 [1,100]。
+  // P3-16（本轮审计，对齐 executor-python config.py `_validate_disk_threshold_
+  // order`）：warn 必须 < critical，否则「紧急清理」防线永不触发而「拒新任务」
+  // 提前生效，两条防线语义重叠。误配时 warn 日志 + 两者都回落默认（与 python
+  // 抛 ValueError 不同——node 也内嵌在桌面端，配置手滑不应让执行器起不来）。
   get diskWarnPercent(): number {
-    const raw = parseInt(process.env.DISK_WARN_PERCENT || '90', 10);
-    if (!Number.isFinite(raw) || raw < 1) return 90;
-    return Math.min(raw, 100);
+    const warn = parseDiskPercent('DISK_WARN_PERCENT', 90);
+    const critical = parseDiskPercent('DISK_CRITICAL_PERCENT', 95);
+    return warn >= critical ? 90 : warn;
   },
   get diskCriticalPercent(): number {
-    const raw = parseInt(process.env.DISK_CRITICAL_PERCENT || '95', 10);
-    if (!Number.isFinite(raw) || raw < 1) return 95;
-    return Math.min(raw, 100);
+    const warn = parseDiskPercent('DISK_WARN_PERCENT', 90);
+    const critical = parseDiskPercent('DISK_CRITICAL_PERCENT', 95);
+    return warn >= critical ? 95 : critical;
   },
   npmRegistryUrl: process.env.NPM_REGISTRY_URL || '',  // Private npm registry for task dependencies
   // Auth token for the private npm registry (registry-npm/verdaccio grants
@@ -190,6 +241,16 @@ export const config = {
   // deliberately NOT in the env whitelist — it must never reach task
   // children. Never logged.
   npmRegistryToken: process.env.NPM_REGISTRY_TOKEN || '',
+  // N-1（2026-10-26 registry-npm 审计）：Basic 形态的私服凭据。Verdaccio 5.31.1
+  // 实测 `Bearer <base64(user:pass)>` 被拒（.npmrc 的 _authToken 走 Bearer，
+  // 装不下 Basic 密码）、JWT 有 60d 有效期且已存在用户无法稳定重签（PUT
+  // /-/user/login 409，见 admin-api registry.controller.ts 注释）——故补
+  // USER/PASS 通道，由 execute.ts 生成 .npmrc 的 `//<host:port>/:_auth=<b64>`
+  // 行。与 npmRegistryToken 同一信任边界（executor 侧 only、不入任务子进程
+  // env 白名单、绝不打日志）；token 优先，USER/PASS 兜底（compose 默认回落
+  // REGISTRY_USER/PASS，与 admin-api 代理面同源凭据）。
+  npmRegistryUser: process.env.NPM_REGISTRY_USER || '',
+  npmRegistryPass: process.env.NPM_REGISTRY_PASS || '',
   pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '',  // Private PyPI registry for task dependencies
   // ---------------------------------------------------------------------
   // WS5（python_task_upload_and_multiversion）新增配置。
@@ -237,6 +298,29 @@ export const config = {
       process.env.PYPI_EXTRA_INDEX_URL || '',
       'PYPI_EXTRA_INDEX_URL',
     );
+  },
+  // P1（契约断裂修复，2026-10-25）：registry-pypi Basic 凭据对（与 python 侧
+  // config.py 的 pypi_registry_username/password 对等）。凭据经 0600 netrc
+  // 文件注入 uv/pip install 子进程（NETRC env 键），不进 argv/日志/URL
+  // userinfo，不写主进程环境。空 = 无凭据通道，行为与历史逐字节一致。
+  get pypiRegistryUsername(): string {
+    return (process.env.PYPI_REGISTRY_USERNAME || '').trim();
+  },
+  get pypiRegistryPassword(): string {
+    return process.env.PYPI_REGISTRY_PASSWORD || '';
+  },
+  /** P1：凭据对非空但索引全空时的配置错误消息（空串 = 配置合法）。 */
+  get pypiCredentialsConfigError(): string {
+    const user = this.pypiRegistryUsername;
+    const pass = this.pypiRegistryPassword;
+    if (!user && !pass) return '';
+    if (!user || !pass) {
+      return 'PYPI_REGISTRY_USERNAME 与 PYPI_REGISTRY_PASSWORD 必须同时配置（当前只配置了其一）';
+    }
+    if (!this.pypiRegistryUrl && !this.pypiExtraIndexUrl) {
+      return '配置了 PYPI_REGISTRY_USERNAME/PASSWORD 但未配置任何索引（PYPI_REGISTRY_URL / PYPI_EXTRA_INDEX_URL 至少其一）';
+    }
+    return '';
   },
   // 任务 Python 版本区间（CONTRACT.md §1.1；审计二轮 B-3）：默认 3.7~3.14 与
   // executor-python config.py 逐字对齐，可用 PYTHON_RUNTIME_VERSION_MIN/MAX
@@ -318,7 +402,27 @@ export const config = {
   },
   // zip 整包下载体积上限（字节）。与 SSRF/下载链既有 200MB 语义对齐
   // （CONTRACT.md §3.2 zip 渠道 size cap 200MB）。
-  packageDownloadMaxBytes: parseInt(process.env.PACKAGE_DOWNLOAD_MAX_BYTES || String(200 * 1024 * 1024), 10),
+  //
+  // 非法值救回（对齐下方 pkgCacheMaxBytes 与 python 侧 Settings 的「救回
+  // 而非拒启」裁定，2026-10-24 安全审计轮登记的缺陷收口）：裸 parseInt 把
+  // 非数字 env（"abc"/"1.5" 等）解析成 NaN，而下载链体积闸是
+  // bytes > maxBytes —— NaN 比较恒 false = **静默解除上限**（最危险方向）；
+  // 0/负数反之（恒 true = 一切下载立即失败）。非正整数一律回落 200MB 默认。
+  packageDownloadMaxBytes: parsePositiveIntEnv(
+    'PACKAGE_DOWNLOAD_MAX_BYTES',
+    200 * 1024 * 1024,
+  ),
+  // R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存（<workDir>/
+  // .pkg-cache）的体积预算，超限按 mtime 淘汰最旧（pkg-cache.ts）。默认 4GiB
+  // 与解释器池总预算（INTERPRETER_TOTAL_GB）同量级：单包上限 200MB 下可容纳
+  // ~20 个不同包。getter 惰性读 env（热重载一致）；**0 = 显式关闭缓存**
+  // （不读不写，行为与无缓存时代一致）；负数按 0 处理（手滑防御，静默钳制
+  // 而不是启动失败——缓存是性能优化，不是红线配置）。
+  get pkgCacheMaxBytes(): number {
+    const raw = parseInt(process.env.PKG_CACHE_MAX_BYTES || '', 10);
+    if (!Number.isFinite(raw)) return 4 * 1024 * 1024 * 1024;
+    return Math.max(raw, 0);
+  },
   token: process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || (() => { const i = process.argv.indexOf('--token'); return i !== -1 ? process.argv[i + 1] || '' : ''; })(),
   // N23: dedicated HMAC secret for per-execution callback tokens; when unset
   // the shared token above is used as the HMAC source secret (admin-api
@@ -500,8 +604,38 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 从而对前者做真实行身份判定、对后者保持既有地址判据，并观测机队覆盖率。
  * 仅新增**可选**字段：PROTOCOL_CONTROL_PLANE_MIN 仍为 2、
  * supportedMinProtocolVersion 仍为 1，不改变任何既有分支。
+ *
+ * R3-B（2026-10-24，部署模型评审 §4.3/P5）：6 → 7。register/heartbeat 新增
+ * **可选**键 `deployedApps`（deployed-apps.ts 扫描的设备级应用版本事实）与
+ * `installedPackages`（已安装执行器包清单。P10 收敛后 executor-node 侧事实源
+ * 已落地：update-package.ts 在 checksum 验证通过后写
+ * .pkg-updates/manifests/<packageId>.json，installed-packages.ts 扫描该目录
+ * 产出心跳清单；扫描失败仍按 fail-honest 省略键——契约三态语义里
+ * 「缺省 = 未上报」，合法）。
+ *
+ * bump 的目的与 v2~v6 同款（evolutionRules 第 1 条）：让中台能区分「v7 执行
+ * 器应上报设备事实」与「旧执行器无此事实可报」，为 R3-A 读面/派发面（版本跟
+ * 随的设备事实优先回退链）提供混合窗口期判据。执行器侧扫描失败 → 省略键，
+ * 绝不因扫描阻塞或弄挂心跳本体。仅新增**可选**字段：
+ * PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，
+ * 不改变任何既有分支。三端同值由 admin protocol-version-consistency.spec
+ * 钉住（node === python === protocol.json currentProtocolVersion；python 本
+ * 轮仅同步常量、不落地上报，v7 键对它是可选省略，协议合法）。
+ *
+ * 方案 b（2026-10-26，接管自愈死锁修复）：7 → 8。heartbeat 新增**可选**键
+ * `registrationConflict: boolean`（心跳体**恒发送**，含 false）——把本执行器
+ * 的 /token 409 慢性冲突态（heartbeat-state.isRegistrationConflictActive，
+ * b876498a 已有）送上心跳线缆，语义「自最近一次 409 起持续至成功取回 token」。
+ * 中台消费判据：该键为 true 且心跳指纹与行已存真实指纹错位 → 活性四列不
+ * 登记（心跳不再把冲突行保持 ONLINE）→ sweep 判死 → 既有接管窗（5min）→
+ * E-1 CAS 收敛——修复「新指纹安装拿不到 token 后以静态 token 心跳、把冲突行
+ * 保持 ONLINE、接管窗（要求 OFFLINE）永不打开」的死锁。仅新增**可选**字段
+ * （缺席 = 未上报，旧执行器/python 行为不变）：PROTOCOL_CONTROL_PLANE_MIN
+ * 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。同一次
+ * bump 合并登记顶层 params 键名运行时语义段（protocol.json params——键名闸
+ * 三端对账，实现见 param-env.ts isInjectableParamEnvKey）。
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 8;
 
 /**
  * A-6（P2）：express.json() 请求体上限。express 默认 100KB，而 admin 派发载荷

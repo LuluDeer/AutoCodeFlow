@@ -46,6 +46,39 @@ export class SendNotificationDto {
 }
 
 /**
+ * F-53（UIAUDIT 后端轮 P2-2）：POST /notification/test（admin 全渠道测试扇出）
+ * 的请求体 class DTO。此前控制器用内联类型 `{ channels: string[]; title:
+ * string; content: string }`（metatype=Object，全局 ValidationPipe 跳过）——
+ * 任意多余字段被静默收下，「多余字段必 400」的全站纪律在这一面失效。
+ *
+ * 校验面对齐同文件 SendNotificationDto 的既有口径：channels 走 AlertChannel
+ * 取值域白名单（service 的 switch 对未知渠道本就静默跳过，DTO 先拦住比静默
+ * 跳过诚实）；title/content 维持**必填**（与 service sendTest 签名和旧内联
+ * 类型逐字一致，翻译为 class DTO 不放宽也不收紧），只钉类型不设长度上限——
+ * 本模块对通知文案无既有长度契约（SendNotificationDto 同样无），发明出上限
+ * 反而会对既有调用方引入新的 400（滥用面由全局 body 1MB + ADMIN-only 兜住）。
+ */
+export class SendTestDto {
+  @ApiProperty({
+    type: [String],
+    enum: Object.values(AlertChannel),
+    description: "要扇出的渠道（取值域 = 已注册渠道枚举）",
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsIn(Object.values(AlertChannel), { each: true })
+  channels: string[];
+
+  @ApiProperty({ description: "测试通知标题" })
+  @IsString()
+  title: string;
+
+  @ApiProperty({ description: "测试通知内容" })
+  @IsString()
+  content: string;
+}
+
+/**
  * V2 (round-7): response body of POST /api/notification/send. The endpoint
  * keeps 2xx semantics (notification failures must never 500 a task callback),
  * but reports the per-channel delivery outcome so callers can detect SSRF

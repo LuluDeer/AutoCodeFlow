@@ -189,14 +189,44 @@ export class ExecutorPushResultDto {
   error?: string;
 }
 
-/** GET /registry/{pypi,npm}/packages —— 上游索引包名清单（registry.controller）。 */
+/** GET /registry/pypi/packages —— 上游 simple 索引包名清单（registry.controller）。 */
 export class RegistryPackagesResponseDto {
   @ApiProperty({
     type: [String],
     description:
-      "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状)",
+      "Package names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离)",
   })
   packages: string[];
+}
+
+/**
+ * GET /registry/npm/packages 的单包行（P3-4，2026-10-25 审计）：npm 端点自
+ * 2026-10-23 起映射 Verdaccio `/-/verdaccio/data/packages` 的包对象数组为
+ * `{name, latest?, description?}`，但 swagger 声明仍指向共享的
+ * RegistryPackagesResponseDto（`packages: string[]`）——契约漂移。本 DTO 钉住
+ * 真实响应形状（latest 取上游 version；描述/版本缺失时整键省略）。
+ */
+export class RegistryNpmPackageDto {
+  @ApiProperty({ description: "包名" })
+  name: string;
+
+  @ApiPropertyOptional({
+    description: "最新版本（上游 version/latest，缺失时省略）",
+  })
+  latest?: string;
+
+  @ApiPropertyOptional({ description: "包描述（上游未提供时省略）" })
+  description?: string;
+}
+
+/** GET /registry/npm/packages —— Verdaccio 包清单（registry.controller）。 */
+export class RegistryNpmPackagesResponseDto {
+  @ApiProperty({
+    type: [RegistryNpmPackageDto],
+    description:
+      "Verdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504）",
+  })
+  packages: RegistryNpmPackageDto[];
 }
 
 /** POST /registry/pypi/upload —— 代理上传回执。 */

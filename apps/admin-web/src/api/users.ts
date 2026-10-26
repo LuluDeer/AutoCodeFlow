@@ -5,7 +5,16 @@ import { client as apiClient } from './client';
 // role 被渲染成必填、currentPassword 根本不在契约里，均已修后端+生成器）。
 // 读模型 User 保持手写（前端读模型是唯一事实源，见 api/tasks.ts 头注同款决策）。
 export type CreateUserDto = components['schemas']['CreateUserDto'];
-export type UpdateUserDto = components['schemas']['UpdateUserDto'];
+// P1-1（对齐后端 ad5bdef4）：isActive 启用/禁用写面。后端 UpdateUserDto 已落
+// `isActive?: boolean`（users.controller 守卫：非 ADMIN 403 USER_ACTIVE_ADMIN_ONLY、
+// 禁用自己 400 USER_SELF_DISABLE_FORBIDDEN），但 openapi.json 尚未随该 commit
+// 重导出（openapi:export 需 DB+Redis），生成类型里还没有该字段——先在消费侧
+// 交集补齐。等 `npm run openapi:export && npm run gen:api-types` 重跑后生成类型
+// 自带同名字段，本交集自然重合，届时可移除手写段。
+export type UpdateUserDto = components['schemas']['UpdateUserDto'] & {
+  /** 账号启用/禁用（ADMIN-only；禁用后在途会话与 API-Key 立即失效） */
+  isActive?: boolean;
+};
 
 export interface User {
   id: number;

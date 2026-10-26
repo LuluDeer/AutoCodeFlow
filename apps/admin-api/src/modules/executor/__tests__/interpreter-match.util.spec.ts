@@ -244,11 +244,48 @@ describe("normalizeInterpreters（CONTRACT §2.2 上报结构校验）", () => {
     ]);
   });
 
-  it("条数上界 200（防上报面写放大）", () => {
+  // P3-3（2026-10-26 第三轮审计）：超限从「静默截断到 200」改为**整体拒绝**
+  // ——interpreters 是缓存池全量快照，截断会把第 201+ 条真实条目从调度判据里
+  // 抹掉（与 deployedApps「截断让整替语义误删」同一失真形态，见 util 常量注释）。
+  it("条数上界 200：超限整体拒绝（不截断）", () => {
     const huge = Array.from({ length: 500 }, (_, i) => ({
       version: `3.${i}.0`,
     }));
-    expect(normalizeInterpreters(huge)?.length).toBe(200);
+    expect(normalizeInterpreters(huge)).toBeNull();
+    // 恰好 200 条（上界本身）合法——拒绝只发生在超出时。
+    const exact = Array.from({ length: 200 }, (_, i) => ({
+      version: `3.${i % 100}.${i % 10}`,
+    }));
+    expect(normalizeInterpreters(exact)?.length).toBe(200);
+  });
+
+  // P2-1（2026-10-26 第三轮审计）：path/discoveredAt 采纳面长度上界——
+  // 超长整字段拒绝（不截断、不剥除该字段），合法值原样通过，缺省三态不变。
+  it("path ≤1024 合法通过，超长整字段拒绝", () => {
+    const legal = { version: "3.7.9", path: `/data/interp/${"a".repeat(900)}` };
+    expect(normalizeInterpreters([legal])).toEqual([legal]);
+    expect(
+      normalizeInterpreters([{ version: "3.7.9", path: "x".repeat(1025) }]),
+    ).toBeNull();
+  });
+
+  it("discoveredAt ≤64 合法通过，超长整字段拒绝", () => {
+    const legal = {
+      version: "3.7.9",
+      discoveredAt: "2026-10-26T10:00:00.000Z",
+    };
+    expect(normalizeInterpreters([legal])).toEqual([legal]);
+    expect(
+      normalizeInterpreters([
+        { version: "3.7.9", discoveredAt: "t".repeat(65) },
+      ]),
+    ).toBeNull();
+  });
+
+  it("path/discoveredAt 缺省 → 三态不变（条目只带 version，不补键）", () => {
+    expect(normalizeInterpreters([{ version: "3.12.3" }])).toEqual([
+      { version: "3.12.3" },
+    ]);
   });
 
   it("归一结果可直接喂给 interpreterSatisfies（两函数语义对齐）", () => {

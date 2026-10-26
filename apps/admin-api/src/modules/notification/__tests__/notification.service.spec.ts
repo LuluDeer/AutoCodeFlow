@@ -448,8 +448,11 @@ describe("NotificationService", () => {
       expect(results).toEqual({ slack: "failed" });
 
       // 打印实际落地的 label，让「被记成什么」可肉眼核验
-      // eslint-disable-next-line no-console
-      console.log("R33-A1 actual delivery labels:", JSON.stringify(deliveryLabels()));
+
+      console.log(
+        "R33-A1 actual delivery labels:",
+        JSON.stringify(deliveryLabels()),
+      );
 
       expect(deliveryCount("slack", "success")).toBe(0);
       expect(deliveryCount("slack", "failure")).toBe(1);
@@ -1578,7 +1581,7 @@ describe("NotificationService", () => {
       warnSpy.mockRestore();
     });
 
-    it("审计写失败自身吞掉（兜底路径不二次炸主链）", async () => {
+    it("审计写失败自身吞掉（兜底路径不二次炸主链），且 warn 可见（巡查收口）", async () => {
       const auditLog = jest.fn().mockRejectedValue(new Error("audit db down"));
       const { svc, email } = await makeServiceWithAudit({ log: auditLog });
       const errSpy = jest
@@ -1595,6 +1598,11 @@ describe("NotificationService", () => {
         ]),
       ).resolves.toEqual({ email: "failed" });
       expect(auditLog).toHaveBeenCalledTimes(1);
+      // 巡查·静默吞错收口：这条审计是全渠道失败后的唯一落痕，兜底写失败
+      // 必须在日志面可见（此前 bare catch 完全静默 = 告警双重丢失零痕迹）。
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("NOTIFICATION_FAILED 审计兜底写入失败"),
+      );
       errSpy.mockRestore();
       warnSpy.mockRestore();
     });
@@ -1621,7 +1629,9 @@ describe("NotificationService", () => {
     // "状态级故障"。判据应是逐渠道**投递结果**，不是 promise 有没有 reject。
     it("R32-A2: 全部渠道 status=failed（不抛错）同样落一条 NOTIFICATION_FAILED 审计", async () => {
       const auditLog = jest.fn().mockResolvedValue(undefined);
-      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
@@ -1652,7 +1662,9 @@ describe("NotificationService", () => {
     // fail-open 语义与"不放大审计噪声"不变。
     it("R32-A2: 部分渠道 status=failed（有渠道成功）时不落审计", async () => {
       const auditLog = jest.fn().mockResolvedValue(undefined);
-      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
       const warnSpy = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});

@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, OnModuleInit, Optional } from "@nestjs/common";
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleInit,
+  Optional,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -286,7 +292,7 @@ export class SystemConfigService implements OnModuleInit {
     //   · '***' 哨兵同理：只有「本次显式 isSecret:false」才意味着"提交的字面量
     //     就是真值"（显式取消密钥标记）；省略时按库里分类判定，把读面回显的
     //     掩码解析回真值，绝不把 '***' 写进库（S3 的同一类数据破坏）。
-    const isSecret = dto.isSecret ?? (existing?.isSecret === true);
+    const isSecret = dto.isSecret ?? existing?.isSecret === true;
     let value = dto.value;
     if (isSecret && value === "***" && existing) {
       value = existing.value;

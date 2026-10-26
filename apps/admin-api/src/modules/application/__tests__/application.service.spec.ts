@@ -81,16 +81,25 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   update: jest.fn().mockResolvedValue({ affected: 1 }),
   remove: jest.fn(),
   delete: jest.fn().mockResolvedValue({ affected: 0 }),
+  // R5a：remove() 的包清理引用计数走 createQueryBuilder——缺省计数 0
+  //（无其他引用，允许 unlink）；需要「仍被引用/查询失败」语义的用例用
+  // overrides 覆盖。链式桩与 A-7 describe 的 versionRepo 同构。
+  createQueryBuilder: jest.fn(() => ({
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    getCount: jest.fn().mockResolvedValue(0),
+  })),
   ...overrides,
 });
-
 
 /**
  * R54：deployFromGit 的部署头/收尾改用**列级 update**（ADR-026 规则 4），因此
  * 「最后一次状态写入」要从 update 的 patch 读（save 的实参里已经没有它了）。
  * 没有 update 记录时回落到 save 实参，兼容尚未改写的路径。
  */
-const lastStatusPatch = (appRepo: ReturnType<typeof makeRepo>): Record<string, any> => {
+const lastStatusPatch = (
+  appRepo: ReturnType<typeof makeRepo>,
+): Record<string, any> => {
   const updates = (appRepo.update as jest.Mock).mock.calls;
   if (updates.length > 0) return updates[updates.length - 1]?.[1] ?? {};
   const saves = (appRepo.save as jest.Mock).mock.calls;
@@ -453,8 +462,7 @@ describe("ApplicationService", () => {
         );
 
         expect(mockedSpawn).toHaveBeenCalledTimes(2);
-        const lastSave =
-          lastStatusPatch(appRepo);
+        const lastSave = lastStatusPatch(appRepo);
         expect(lastSave.gitCommit).toBe("deadbeef");
       });
     });
@@ -930,8 +938,7 @@ describe("ApplicationService", () => {
         await expect(
           service.deployFromGit("1", "https://github.com/o/r.git", "main"),
         ).rejects.toThrow(/git clone failed/);
-        const lastSave =
-          lastStatusPatch(appRepo);
+        const lastSave = lastStatusPatch(appRepo);
         expect(lastSave.status).toBe(ApplicationStatus.FAILED);
       } finally {
         rmSpy.mockRestore();
@@ -978,6 +985,196 @@ describe("ApplicationService", () => {
       expect(appRepo.remove).toHaveBeenCalledWith(app);
       unlink.mockRestore();
     });
+  });
+});
+
+// -------------------------------------------------------------------------
+// R5a（评审 §4.5/§九 5a）：内容寻址包存储的应用删除清理——remove() 在级联
+// 删除前枚举当前行 + 版本快照钉住的全部 packageUrl，删行后按「无其他引用」
+// 逐 URL 清理（其他应用行手填 packageUrl 指进本应用子树时不误删），并
+// best-effort 回收空 <sha256>/<appId> 目录。旧扁平文件/旧 URL 行为不变。
+// -------------------------------------------------------------------------
+describe("ApplicationService.remove — R5a 内容寻址包清理", () => {
+  const SHA_A = "a".repeat(64);
+  const SHA_B = "b".repeat(64);
+  const URL_A = `http://api.example.com/uploads/packages/app-1/${SHA_A}/pkg.zip`;
+  const URL_B = `http://api.example.com/uploads/packages/app-1/${SHA_B}/pkg.zip`;
+  const FLAT_URL = "http://api.example.com/uploads/packages/Demo_123.zip";
+  const PKG_ROOT = path.normalize(
+    path.join(process.cwd(), "uploads", "packages"),
+  );
+  const localPathFor = (url: string) =>
+    path.join(PKG_ROOT, ...url.split("/uploads/packages/")[1].split("/"));
+
+  const admin = { id: 1, role: UserRole.ADMIN };
+
+  /** 装配：appRepo 可覆写（引用计数语义），versionRepo 可选注入。 */
+  const buildSvc = async (
+    appRepoOverrides: Partial<Record<string, jest.Mock>> = {},
+    versionRepo: {
+      find: jest.Mock;
+      createQueryBuilder: jest.Mock;
+    } | null = null,
+  ) => {
+    const repo = makeRepo({ findOne: jest.fn(), ...appRepoOverrides });
+    const providers: unknown[] = [
+      ApplicationService,
+      { provide: getRepositoryToken(Application), useValue: repo },
+      { provide: ModuleRef, useValue: { get: jest.fn() } },
+      {
+        provide: AiService,
+        useValue: {
+          analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: "" }),
+        },
+      },
+      {
+        provide: AiAnalysisService,
+        useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+      },
+    ];
+    if (versionRepo) {
+      providers.push({
+        provide: getRepositoryToken(ApplicationVersion),
+        useValue: versionRepo,
+      });
+    }
+    const module = await Test.createTestingModule({
+      providers: providers as never,
+    }).compile();
+    return { svc: module.get(ApplicationService), appRepo: repo };
+  };
+
+  const appRow = (packageUrl: string | null) =>
+    ({
+      id: "app-1",
+      name: "Demo",
+      ownerUserId: 1,
+      packageUrl,
+    }) as Application;
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("当前行嵌套包被清理，且空 <sha256>/<appId> 目录被回收（根目录不动）", async () => {
+    const unlinkSpy = jest
+      .spyOn(fs.promises, "unlink")
+      .mockResolvedValue(undefined);
+    // spyOn 对已安装的 spy 幂等——清历史调用，断言与本用例一一对应。
+    unlinkSpy.mockClear();
+    const rmdirSpy = jest
+      .spyOn(fs.promises, "rmdir")
+      .mockResolvedValue(undefined as never);
+    const { svc, appRepo } = await buildSvc();
+    appRepo.findOne.mockResolvedValue(appRow(URL_A));
+
+    await svc.remove("app-1", admin);
+
+    expect(appRepo.remove).toHaveBeenCalled();
+    expect(unlinkSpy).toHaveBeenCalledTimes(1);
+    expect(unlinkSpy).toHaveBeenCalledWith(localPathFor(URL_A));
+    expect(rmdirSpy).toHaveBeenCalledWith(path.join(PKG_ROOT, "app-1", SHA_A));
+    expect(rmdirSpy).toHaveBeenCalledWith(path.join(PKG_ROOT, "app-1"));
+    expect(rmdirSpy).not.toHaveBeenCalledWith(PKG_ROOT);
+  });
+
+  it("快照钉住的 URL 一并清理；同字节多版本共享路径去重后只删一次", async () => {
+    const unlinkSpy = jest
+      .spyOn(fs.promises, "unlink")
+      .mockResolvedValue(undefined);
+    unlinkSpy.mockClear();
+    // URL_A 同时是当前行与两条快照的值（同字节重传/多版本同包），URL_B 仅被
+    // 一条快照钉住——去重后各删一次。
+    const versionRepo = {
+      find: jest
+        .fn()
+        .mockResolvedValue([
+          { snapshot: { packageUrl: URL_A } },
+          { snapshot: { packageUrl: URL_A } },
+          { snapshot: { packageUrl: URL_B } },
+        ]),
+      createQueryBuilder: jest.fn(() => ({
+        where: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+      })),
+    };
+    const { svc, appRepo } = await buildSvc({}, versionRepo);
+    appRepo.findOne.mockResolvedValue(appRow(URL_A));
+
+    await svc.remove("app-1", admin);
+
+    expect(unlinkSpy).toHaveBeenCalledTimes(2);
+    expect(unlinkSpy).toHaveBeenCalledWith(localPathFor(URL_A));
+    expect(unlinkSpy).toHaveBeenCalledWith(localPathFor(URL_B));
+  });
+
+  it("URL 仍被其他应用行引用时不删（宁留孤儿，不误删）", async () => {
+    const unlinkSpy = jest
+      .spyOn(fs.promises, "unlink")
+      .mockResolvedValue(undefined);
+    // 全局引用计数（applications.packageUrl）命中 1——别的应用手填了同一 URL。
+    const { svc, appRepo } = await buildSvc({
+      createQueryBuilder: jest.fn(() => ({
+        where: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(1),
+      })),
+    });
+    appRepo.findOne.mockResolvedValue(appRow(URL_A));
+
+    await svc.remove("app-1", admin);
+
+    expect(appRepo.remove).toHaveBeenCalled();
+    expect(unlinkSpy).not.toHaveBeenCalled();
+  });
+
+  it("引用计数查询失败按有引用处理（不删，删除主链不受影响）", async () => {
+    const unlinkSpy = jest
+      .spyOn(fs.promises, "unlink")
+      .mockResolvedValue(undefined);
+    const { svc, appRepo } = await buildSvc({
+      createQueryBuilder: jest.fn(() => {
+        throw new Error("db down");
+      }),
+    });
+    appRepo.findOne.mockResolvedValue(appRow(URL_A));
+
+    await expect(svc.remove("app-1", admin)).resolves.toBeUndefined();
+    expect(unlinkSpy).not.toHaveBeenCalled();
+  });
+
+  it("旧扁平 URL 仍被清理（兼容），且不回收 uploads/packages 根目录", async () => {
+    const unlinkSpy = jest
+      .spyOn(fs.promises, "unlink")
+      .mockResolvedValue(undefined);
+    const rmdirSpy = jest
+      .spyOn(fs.promises, "rmdir")
+      .mockResolvedValue(undefined as never);
+    const { svc, appRepo } = await buildSvc();
+    appRepo.findOne.mockResolvedValue(appRow(FLAT_URL));
+
+    await svc.remove("app-1", admin);
+
+    expect(unlinkSpy).toHaveBeenCalledWith(localPathFor(FLAT_URL));
+    expect(rmdirSpy).not.toHaveBeenCalled();
+  });
+
+  it("快照枚举失败时降级为只清当前行 URL（绝不阻断删除主链）", async () => {
+    const unlinkSpy = jest
+      .spyOn(fs.promises, "unlink")
+      .mockResolvedValue(undefined);
+    const versionRepo = {
+      find: jest.fn().mockRejectedValue(new Error("db down")),
+      // 引用计数链桩（返回 0：无其他引用，允许清理当前行 URL）
+      createQueryBuilder: jest.fn(() => ({
+        where: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+      })),
+    };
+    const { svc, appRepo } = await buildSvc({}, versionRepo);
+    appRepo.findOne.mockResolvedValue(appRow(URL_A));
+
+    await expect(svc.remove("app-1", admin)).resolves.toBeUndefined();
+    expect(unlinkSpy).toHaveBeenCalledWith(localPathFor(URL_A));
   });
 });
 
@@ -1267,13 +1464,19 @@ describe("ApplicationService.remove — fanout audit + notify (DEEP-AUDIT B·4.3
       { id: "dep-2", executorAddress: "exec-2:8100" },
     ]);
 
-    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+    await service.remove("app-1", {
+      id: 1,
+      role: UserRole.ADMIN,
+      username: "ops",
+    });
 
     const fanoutCall = audit.log.mock.calls.find(
       (c) => c[0]?.action === "application.remove.fanout",
     );
     expect(fanoutCall).toBeDefined();
     expect(fanoutCall[0].resourceId).toBe("app-1");
+    // P2 溯源修复：扇出审计随删除人 username 落证（此前只有 userId）。
+    expect(fanoutCall[0].username).toBe("ops");
     expect(fanoutCall[0].detail).toMatchObject({
       appId: "app-1",
       appName: "Demo",
@@ -1374,16 +1577,22 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     service = module.get(ApplicationService);
   });
 
-  it("create：落证 application.create（含 userId 与 resourceId）", async () => {
+  it("create：落证 application.create（含 userId/username 与 resourceId）", async () => {
     appRepo.findOne.mockResolvedValue(null);
     const saved = { id: "app-new", name: "Demo", ownerUserId: 9 };
     appRepo.save.mockResolvedValue(saved);
 
-    await service.create({ name: "Demo" } as never, { id: 9 });
+    // P2 溯源修复：控制器传完整 AuthUser，审计行必须带 username（此前只落
+    // userId，审计页把真实用户操作误标「系统」）。
+    await service.create({ name: "Demo" } as never, {
+      id: 9,
+      username: "ops",
+    });
 
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 9,
+        username: "ops",
         action: "application.create",
         resource: "application",
         resourceId: "app-new",
@@ -1391,7 +1600,7 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     );
   });
 
-  it("update：落证 application.update（systemBypass 时不落证）", async () => {
+  it("update：落证 application.update（含 username；systemBypass 时不落证）", async () => {
     const row = { id: "app-1", name: "Demo", ownerUserId: 9, env: null };
     appRepo.findOne.mockResolvedValue(row);
     appRepo.save.mockResolvedValue(row);
@@ -1399,10 +1608,12 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     await service.update("app-1", { name: "Demo2" } as never, {
       id: 9,
       role: UserRole.ADMIN,
+      username: "ops",
     });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 9,
+        username: "ops",
         action: "application.update",
         resourceId: "app-1",
       }),
@@ -1415,20 +1626,33 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
     expect(audit.log).not.toHaveBeenCalled();
   });
 
-  it("remove：落证 application.delete（含 name detail）", async () => {
+  it("remove：落证 application.delete（含 username 与 name detail；扇出审计同带 username）", async () => {
     const row = { id: "app-1", name: "Demo", ownerUserId: 9, packageUrl: null };
     appRepo.findOne.mockResolvedValue(row);
     appRepo.remove.mockResolvedValue(row);
 
-    await service.remove("app-1", { id: 9, role: UserRole.ADMIN });
+    await service.remove("app-1", {
+      id: 9,
+      role: UserRole.ADMIN,
+      username: "ops",
+    });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 9,
+        username: "ops",
         action: "application.delete",
         resourceId: "app-1",
         detail: expect.objectContaining({ name: "Demo" }),
       }),
     );
+    // P2 溯源修复：删除扇出（application.remove.fanout）同样落删除人 username。
+    const fanoutCall = audit.log.mock.calls.find(
+      (c) => c[0]?.action === "application.remove.fanout",
+    );
+    if (fanoutCall) {
+      expect(fanoutCall[0].username).toBe("ops");
+      expect(fanoutCall[0].userId).toBe(9);
+    }
   });
 
   it("deployFromGit：落证 application.deploy（含 git 元信息）", async () => {
@@ -1566,14 +1790,19 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
       const LOCAL_URL_OLD = "http://api.local/uploads/packages/Demo_111.zip";
       const LOCAL_URL_NEW = "http://api.local/uploads/packages/Demo_222.zip";
 
-      const buildWithRefs = async (referencedCount: number) => {
+      // R5a：oldUrl 可参数化——嵌套内容寻址形态（<appId>/<sha256>/<name>.zip）
+      // 与旧扁平形态共用同一套装配。
+      const buildWithRefs = async (
+        referencedCount: number,
+        oldUrl: string = LOCAL_URL_OLD,
+      ) => {
         const versionRepo = {
           findOne: jest.fn().mockResolvedValue({
             id: "v-existing",
             applicationId: "app-1",
             version: "1.0.1",
             status: "released",
-            snapshot: { packageUrl: LOCAL_URL_OLD, entrypoint: "dist/main.js" },
+            snapshot: { packageUrl: oldUrl, entrypoint: "dist/main.js" },
           }),
           save: jest
             .fn()
@@ -1660,6 +1889,59 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
 
         expect(versionRepo.save).toHaveBeenCalledTimes(1);
         expect(unlinkSpy).not.toHaveBeenCalled();
+      });
+
+      // R5a：旧包为嵌套内容寻址路径（<appId>/<sha256>/<name>.zip）——无其他
+      // 快照引用时按嵌套路径 unlink，并 best-effort 回收空 <sha256>/ 与其父
+      // <appId>/ 目录；uploads/packages 根目录绝不被 rmdir。
+      it("R5a: 嵌套内容寻址旧包无引用时清理并回收空目录", async () => {
+        const sha = "a".repeat(64);
+        const nestedOld = `http://api.local/uploads/packages/app-1/${sha}/Demo.zip`;
+        const nestedNew = `http://api.local/uploads/packages/app-1/${"b".repeat(64)}/Demo.zip`;
+        const { svc, unlinkSpy } = await buildWithRefs(0, nestedOld);
+        const rmdirSpy = jest
+          .spyOn(fs.promises, "rmdir")
+          .mockResolvedValue(undefined as never);
+
+        await svc.recordUploadVersion(
+          {
+            ...app,
+            packageUrl: nestedNew,
+          } as unknown as Application,
+          { id: 7 },
+        );
+
+        const pkgRoot = path.normalize(
+          path.join(process.cwd(), "uploads", "packages"),
+        );
+        const shaDir = path.join(pkgRoot, "app-1", sha);
+        expect(unlinkSpy).toHaveBeenCalledWith(path.join(shaDir, "Demo.zip"));
+        // 先试 <sha256>/ 目录，空则再试 <appId>/ 目录；根目录不在回收面。
+        expect(rmdirSpy).toHaveBeenCalledWith(shaDir);
+        expect(rmdirSpy).toHaveBeenCalledWith(path.join(pkgRoot, "app-1"));
+        expect(rmdirSpy).not.toHaveBeenCalledWith(pkgRoot);
+      });
+
+      // R5a：旧扁平文件仍按原语义清理（单段路径），且没有嵌套父目录可回收——
+      // rmdir 不得碰 uploads/packages 根。
+      it("R5a: 旧扁平旧包清理时不回收 uploads/packages 根目录", async () => {
+        const { svc, unlinkSpy } = await buildWithRefs(0);
+        const rmdirSpy = jest
+          .spyOn(fs.promises, "rmdir")
+          .mockResolvedValue(undefined as never);
+
+        await svc.recordUploadVersion(
+          {
+            ...app,
+            packageUrl: LOCAL_URL_NEW,
+          } as unknown as Application,
+          { id: 7 },
+        );
+
+        expect(unlinkSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Demo_111.zip"),
+        );
+        expect(rmdirSpy).not.toHaveBeenCalled();
       });
     });
   });

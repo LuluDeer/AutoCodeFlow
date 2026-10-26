@@ -308,7 +308,13 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
           if (auth === "Bearer svc-token" || auth === basic) {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(
-              JSON.stringify([{ name: "@autoflow/core", version: "1.2.3", description: "core lib" }]),
+              JSON.stringify([
+                {
+                  name: "@autoflow/core",
+                  version: "1.2.3",
+                  description: "core lib",
+                },
+              ]),
             );
           } else {
             res.writeHead(401);
@@ -348,7 +354,9 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
+      packages: [
+        { name: "@autoflow/core", latest: "1.2.3", description: "core lib" },
+      ],
     });
     expect(seen).toEqual([
       {
@@ -375,7 +383,9 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
+      packages: [
+        { name: "@autoflow/core", latest: "1.2.3", description: "core lib" },
+      ],
     });
     // 回落后应当带上 Basic 凭据（而不是匿名直拉 → 恒空列表）
     expect(seen).toEqual([
@@ -458,7 +468,9 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [{ name: "@autoflow/core", latest: "1.2.3", description: "core lib" }],
+      packages: [
+        { name: "@autoflow/core", latest: "1.2.3", description: "core lib" },
+      ],
     });
     expect(seen).toEqual([
       {
@@ -487,6 +499,128 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     });
     // 2026-10-23：不再有 login 往返——错了就是 Basic 被 401 拒，直接 502。
     expect(seen.map((r) => r.url)).toEqual(["/-/verdaccio/data/packages"]);
+  });
+});
+
+describe("RegistryController npm listing audit (N-4, 2026-10-26)", () => {
+  /** Stand-in upstream that answers every data/packages request with `status`. */
+  const makeNpmUpstream = (status: number, body: string): http.Server =>
+    http.createServer((_req, res) => {
+      res.setHeader("Connection", "close");
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(body);
+    });
+
+  it("N-4: upstream failure writes a registry.npm.list failure audit before the 502", async () => {
+    const server = makeNpmUpstream(401, JSON.stringify({ error: "auth" }));
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const audit = makeAudit();
+    const controller = makeController(
+      { registry: { npm: { url: `http://127.0.0.1:${port}` } } },
+      audit,
+    );
+
+    await expect(controller.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+    });
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "registry.npm.list",
+        resource: "registry",
+        resourceId: "npm-packages",
+        result: "failure",
+        detail: expect.objectContaining({ upstreamStatus: 401 }),
+      }),
+    );
+    destroyAll();
+  });
+
+  it("N-4: non-JSON 2xx response is audited with reason=non_json_response", async () => {
+    const server = makeNpmUpstream(200, "<html>proxy page</html>");
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const audit = makeAudit();
+    const controller = makeController(
+      { registry: { npm: { url: `http://127.0.0.1:${port}` } } },
+      audit,
+    );
+
+    await expect(controller.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "registry.npm.list",
+        result: "failure",
+        detail: expect.objectContaining({
+          reason: "non_json_response",
+          upstreamStatus: 200,
+        }),
+      }),
+    );
+    destroyAll();
+  });
+
+  it("N-4: shape drift (2xx non-array) is audited with reason=shape_drift", async () => {
+    const server = makeNpmUpstream(200, JSON.stringify({ not: "an array" }));
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const audit = makeAudit();
+    const controller = makeController(
+      { registry: { npm: { url: `http://127.0.0.1:${port}` } } },
+      audit,
+    );
+
+    await expect(controller.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "registry.npm.list",
+        result: "failure",
+        detail: expect.objectContaining({ reason: "shape_drift" }),
+      }),
+    );
+    destroyAll();
+  });
+
+  it("N-4: success path stays audit-free (high-frequency low-signal read)", async () => {
+    const server = makeNpmUpstream(
+      200,
+      JSON.stringify([{ name: "left-pad", version: "1.3.0" }]),
+    );
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const audit = makeAudit();
+    const controller = makeController(
+      { registry: { npm: { url: `http://127.0.0.1:${port}` } } },
+      audit,
+    );
+
+    const result = await controller.listNpmPackages();
+    expect(result.packages).toEqual([{ name: "left-pad", latest: "1.3.0" }]);
+    expect(audit.log).not.toHaveBeenCalled();
+    destroyAll();
+  });
+
+  it("N-4: audit write failure does not turn the 502 into a 500 (log-only)", async () => {
+    const server = makeNpmUpstream(401, JSON.stringify({ error: "auth" }));
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const audit = makeAudit();
+    (audit.log as jest.Mock).mockRejectedValue(new Error("db down"));
+    const controller = makeController(
+      { registry: { npm: { url: `http://127.0.0.1:${port}` } } },
+      audit,
+    );
+
+    await expect(controller.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+      message: expect.stringContaining("401"),
+    });
+    destroyAll();
   });
 });
 
@@ -685,7 +819,8 @@ describe("RegistryController npm 认证形态 (2026-10-23)", () => {
   let server: http.Server;
   let destroyAll: () => void;
   let port: number;
-  const seen: Array<{ method?: string; url?: string; authorization?: string }> = [];
+  const seen: Array<{ method?: string; url?: string; authorization?: string }> =
+    [];
 
   beforeAll(async () => {
     // Verdaccio 替身：`/-/verdaccio/data/packages` **只认真实形态的请求**——
@@ -705,7 +840,9 @@ describe("RegistryController npm 认证形态 (2026-10-23)", () => {
           const expected = `Basic ${Buffer.from("svc2:svc2-pass").toString("base64")}`;
           if (req.headers.authorization === expected) {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify([{ name: "@autoflow/cached", version: "0.0.1" }]));
+            res.end(
+              JSON.stringify([{ name: "@autoflow/cached", version: "0.0.1" }]),
+            );
           } else {
             res.writeHead(401);
             res.end("unauthorized");
@@ -769,7 +906,9 @@ describe("RegistryController npm 认证形态 (2026-10-23)", () => {
       controller.listNpmPackages(),
     ]);
 
-    const packageCalls = seen.filter((r) => r.url === "/-/verdaccio/data/packages");
+    const packageCalls = seen.filter(
+      (r) => r.url === "/-/verdaccio/data/packages",
+    );
     expect(packageCalls).toHaveLength(2);
     for (const c of packageCalls) {
       expect(c.authorization).toBe(

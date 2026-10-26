@@ -780,15 +780,18 @@ function collectVenvDependency(homes: Map<string, string[]>, venvDir: string, la
 }
 
 /**
- * 部署 venv 的固定布局深度：`<workDir>/apps/<appId>/releases/<releaseKey>/.venv`。
+ * 部署 venv 的固定布局深度（5c 后双布局并存，迁移窗口）：
+ * · 旧单段：`<workDir>/apps/<appId>/releases/<version>-<deploymentId>/.venv`；
+ * · 新两段：`<workDir>/apps/<appId>/releases/<version>/<deploymentId>/.venv`。
  *
  * 为什么**固定深度**而不是递归 `apps/**` 全树：本函数跑在 6h 清扫定时器上，
  * 而 `apps/` 会随应用数与历史 release 数增长（每个 release 内含 node_modules /
  * venv，成千上万个文件）。无界遍历 `workDir` 既慢又会把事件循环拖住。部署侧
- * 的路径由 `deploy.ts` 的 `buildDeploymentPaths()` 唯一决定，就是这四层，
+ * 的路径由 `deploy.ts` 的 `buildDeploymentPaths()` 唯一决定，就是这几层，
  * 因此逐层枚举 + 固定深度既能覆盖全部真实 venv，又把开销钉死在
  * `O(应用数 × releases 数)` 次 `readdir`（且每次 readdir 都被 try/catch 兜住，
- * 任何一个不可读目录只跳过自己）。
+ * 任何一个不可读目录只跳过自己）。两段布局多下钻一层（组内部署目录），深度
+ * 仍固定（release 层探测 `.venv` 不在时对子目录各探一次 `.venv`，最多 +1 层）。
  */
 function collectDeployVenvDependencies(homes: Map<string, string[]>): void {
   const appsRoot = path.join(config.workDir, 'apps');
@@ -811,12 +814,30 @@ function collectDeployVenvDependencies(homes: Map<string, string[]>): void {
       // 只认目录：release 目录内才是真正被启动的应用，symlink/junction
       // （`current` 不在此层，但防御未来布局变化）不追。
       if (!release.isDirectory()) continue;
-      const venvDir = path.join(releasesRoot, release.name, '.venv');
+      const releaseDir = path.join(releasesRoot, release.name);
+      const venvDir = path.join(releaseDir, '.venv');
       collectVenvDependency(
         homes,
         venvDir,
         `apps/${appDir.name}/releases/${release.name}`,
       );
+      // 5c 两段布局：releases/<version>/<deploymentId>/.venv——release 层是
+      // 版本组目录（自身无 .venv），部署目录在子层。组内每个子目录各探一次，
+      // 语义与外层完全一致（固定 +1 深度，不递归更深）。
+      let children: fs.Dirent[];
+      try {
+        children = fs.readdirSync(releaseDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const child of children) {
+        if (!child.isDirectory()) continue;
+        collectVenvDependency(
+          homes,
+          path.join(releaseDir, child.name, '.venv'),
+          `apps/${appDir.name}/releases/${release.name}/${child.name}`,
+        );
+      }
     }
   }
 }

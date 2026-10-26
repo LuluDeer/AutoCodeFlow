@@ -448,6 +448,27 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
         # 中台可据此在心跳路径做兼容性分支（见 config.py PROTOCOL_VERSION）。
         'protocolVersion': PROTOCOL_VERSION,
+        # P2-4（执行器服务审计，2026-10-26）：并发上限随心跳上报——对齐
+        # executor-node scheduler.ts sendHeartbeat（E9：admin 容量核算不再依赖
+        # 注册期快照，读 config 对象属性，/config/reload 热更 max_concurrent_tasks
+        # 后下一个心跳即回传新值）。此前只有注册载荷带该键（main.py
+        # _register_payload），热更后 admin 继续按旧值派发（过派 → 本地排队 /
+        # 欠派 → 空转），容量核算永久失真。admin 心跳 DTO（executor-heartbeat.
+        # dto.ts maxConcurrentTasks）既有采纳面，字段始终发送（int）。
+        'maxConcurrentTasks': settings.max_concurrent_tasks,
+        # R3-B/P10（协议 v7）：`deployedApps` / `installedPackages` 两键在本侧
+        # **恒缺席**（不带进 payload = JSON 里无此键 =「未上报」，中台保留
+        # 既有数据）。事实源裁定与完整理由见 config.py PROTOCOL_VERSION 注释
+        # ——node 蓝本扫描的 `<workDir>/apps/` 与 `.pkg-updates/manifests/`
+        # 分别由 /api/deploy、/api/update-package 落盘，两条路由均为 node-only
+        # （protocol.json executorNodeOnly 段），python 从不创建这些事实，
+        # 不硬造空数组（[] = 「明确没有」，与「不知道」不可混）。
+        #
+        # 方案 b（协议 v8）：`registrationConflict` 键在本侧**恒缺席**——
+        # 同款 fail-honest 裁定（auth.py 的 /token 409 缺口登记 + config.py
+        # PROTOCOL_VERSION 注释「两处缺席」裁定）：没有 409 观测就没有可上报
+        # 的冲突态，键缺席 = 「未上报」（中台按 v7 语义不动活性判定，合法）。
+        # 后续批补齐时在本 payload 加 `registrationConflict: _conflict_active()`。
     }
     # ARCH-36（ADR-017 阶段 2）：设备指纹随心跳**幂等重传**（register 已落库）。
     # 价值：①「注册期数据目录恰好只读、之后恢复」可自愈；② admin 可比对注册期

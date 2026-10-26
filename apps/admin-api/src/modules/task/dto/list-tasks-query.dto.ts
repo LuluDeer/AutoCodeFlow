@@ -48,7 +48,10 @@ export const TASK_PROJECTION_WHITELIST = [
   "applicationId",
   "projectId",
   "executorAppName",
-  "enabled",
+  // F-8（本轮审计）：`enabled` 是幽灵项——Task 实体从未有该列（启停语义
+  // 在 status: active/paused），?fields=enabled 只会 400。删除项已由
+  // task-projection-whitelist.spec 的「白名单 ⊆ 实体列」parity 测试钉住，
+  // 防止将来再混入不存在的列名。
   "timeout",
   "maxRetry",
   "retryDelay",

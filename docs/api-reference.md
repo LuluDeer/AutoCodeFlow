@@ -210,10 +210,12 @@ curl -i http://localhost:3105/api/tasks -H "Authorization: Bearer acf_<64 hex>"
 | POST | `/applications/upload` | 是 | 上传应用包（multipart/form-data，按名称 upsert） |
 | GET | `/applications/:id/versions` | 是 | 版本历史快照（无快照的历史数据回退展示部署记录）——DEP-01 后作为过渡期 alias 保留，统一追溯请用 `/applications/:id/releases` |
 | GET | `/applications/:id/releases` | 是 | **统一发布追溯视图（DEP-01 新增）**：按版本聚合包地址与最近一次部署的状态/时间/触发方式，见下节 |
-| POST | `/applications/:id/upgrade-all` | 是 | 对所有 RUNNING 部署触发滚动升级；**DEP-02 新增可选请求体** `rollout` 灰度策略（缺省=all 保持既有全量语义零破坏），契约见「Rollout 灰度发布与健康检查（DEP-02/03）」节 |
+| POST | `/applications/:id/upgrade-all` | 是 | 对该应用**全部 RUNNING 部署行**（含 scheduled「仅部署」行——实证稳态即 RUNNING）触发滚动升级；**R2（部署模型评审 §4.4）** 新增 `includeStopped`（stopped 显式 opt-in，仅 all 策略）与按状态分组的 `coverage`/`skipped` 响应（在途行跳过明细）；`rollout` 灰度策略（DEP-02，缺省=all）不变，契约见「Rollout 灰度发布与健康检查（DEP-02/03）」节 |
 | POST | `/applications/:id/sync-tasks` | 是 | 解析应用 manifest.json 自动注册任务 |
 | POST | `/applications/:id/analyze` | 是 | AI 应用健康分析（聚合全部任务执行统计） |
-| POST | `/applications/:id/rollback/:deploymentId` | 是 | 回滚到指定版本快照/部署记录 |
+| POST | `/applications/:id/set-current-version` | 是 | **R1（部署模型评审 §4.2）**：只按版本快照恢复应用当前字段，**不动部署行/设备**（响应 `dispatched:false`），契约见「应用版本动作（R1 §4.2）」节 |
+| POST | `/applications/:id/deploy-version` | 是 | **R1（部署模型评审 §4.2）**：先做与 set-current-version 相同的字段恢复，再对部署行下发升级（缺省=全部 RUNNING 行；可按 `executorIds` 点名），契约见「应用版本动作（R1 §4.2）」节 |
+| POST | `/applications/:id/rollback/:deploymentId` | 是 | **【deprecated alias】**下一版本删除；等价于 set-current-version + deploy-version（executorIds 缺省）的组合，行为与历史版本逐字节一致。新调用方请改用上面两个端点 |
 | POST | `/applications/webhook` | 否（HMAC 签名） | CI/CD 触发发版部署；目标应用必须配置 `webhookSecret` 并使用 HMAC 签名 |
 
 **上传应用包（POST /applications/upload）：**
@@ -228,7 +230,11 @@ multipart/form-data 字段：
 
 - 请求经全局 ValidationPipe 校验（whitelist + forbidNonWhitelisted），携带未声明字段会返回 400
 - 按名称 upsert：应用已存在则只更新 `packageUrl`（可选更新 runtime），不存在则创建（初始版本 `1.0.0`）
-- `packageUrl` 由 `API_BASE_URL` 拼接生成：`{API_BASE_URL}/uploads/packages/{filename}`
+- **R5a 内容寻址存储（2026-10-24 起）**：`packageUrl` 由 `API_BASE_URL` 拼接生成，形如 `{API_BASE_URL}/uploads/packages/{appId}/{sha256}/{origName}.zip`——sha256 对上传字节流式计算，落盘路径即 `uploads/packages/<appId>/<sha256>/<origName>.zip`
+  - **同字节天然去重**：同一字节重复上传解析到同一路径与同一 URL——已存在时直接复用既有文件（不重写，mtime 稳定），执行器侧按 URL 键控的 zip 字节缓存（executor-node `.pkg-cache`）跨版本重复执行全部命中缓存，不再重复下载
+  - **首传原子落盘**：暂存文件经 tmp+rename 原子发布；原始文件名收敛为单段安全文件名（剥目录分量、非 `[A-Za-z0-9._-]` 字符替换为 `_`、上限 120 字符），表单 `name` 不再进入文件名
+  - **清理语义**：版本快照仍按 URL 钉住包；内容寻址后同字节不同版本号共享同一路径，同版本重传/删除应用的清理按引用计数判定（无其他快照/应用行引用才删），并 best-effort 回收空 `<sha256>/`、`<appId>/` 目录
+  - **旧数据兼容**：升级前上传的扁平文件 `uploads/packages/<name>_<ts>.zip` 原地保留，其旧 `packageUrl` 继续可访问/可清理，读路径不受影响
 - **`API_BASE_URL` 未配置时直接返回 500（fail-fast）**，不再静默回退 `http://localhost:PORT` 生成不可达 URL
 - **SEC-05 zip bomb 防护（400 拒绝）**：包落库前过中央目录结构守卫——解压比 / 条目数 / 单文件与总量声明上限（env `ZIP_MAX_*` 可调，默认 100 / 10000 / 512 MiB / 1 GiB / 嵌套成员 64 MiB）+ 嵌套 zip 探测 1 层；结构损坏（截断 / CD 尺寸篡改 / zip64 哨兵）同样 400（`Package rejected by zip-bomb guard (<violation>)`）
 - **SEC-05 可选 clamd 扫描（`CLAMD_ENABLED=true` 时）**：上传包流式 INSTREAM 送 ClamAV；**fail-closed**——检出 400，扫描不可达/超时/异常 503（`antivirus scan is unavailable (fail-closed)`）；默认关闭零影响。行为细节见 docs/deployment.md「上传面 zip bomb 防护与病毒扫描」
@@ -299,9 +305,10 @@ Content-Type: application/json
 |------|------|:--------:|------|
 | GET | `/app-deployments` | 是 | 分页查询部署列表，支持 `applicationId` 与 `approvalStatus`（DEP-04：pending_approval/approved/rejected/cancelled）过滤（`page` 默认 1，`pageSize` 默认 20、最大 100）——DEP-01 后作为过渡期 alias 保留，「按版本聚合部署信息」的统一视图用 `/applications/:id/releases` |
 | GET | `/app-deployments/:id` | 是 | 获取部署详情 |
+| GET | `/app-deployments/applications/:appId/events` | 是 | R4（部署模型评审 §4.1A）：应用的不可变部署事件流（append-only）。每个部署域写动作（deploy 新建/复用、审批三动作、upgrade、stop、remove、卡死扫死——2min cron：PENDING 5min、DEPLOYING/UPGRADING 30min 无更新）一行短事实快照；分页 `page` 默认 1，`pageSize` 默认 50、上限 200，按 `createdAt` 倒序。事件无外键、比部署行活得久（删除部署行后事件保留）。读面登录即可（与部署列表一致） |
 | POST | `/app-deployments/applications/:appId/deploy` | 是 | 将应用分配到执行器部署；`executorId` 留空时自动选择在线且负载最低的执行器。**DEP-04：应用开启 `approvalRequired` 时本端点不派发**——冻结为 `approvalStatus=pending_approval` 的行（响应即带该状态），待审批通过后才推送执行器；待审批行占用 in-flight 名额（同应用至多一个待审批/在途部署，冲突 409） |
 | POST | `/app-deployments/:id/upgrade` | 是 | 触发部署升级（overlay upgrade）。DEP-04：待审批行返回 409（未派发，出口仅审批三动作） |
-| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署。DEP-04：待审批行返回 409 |
+| POST | `/app-deployments/:id/stop` | 是 | 停止运行中的部署。DEP-04：待审批行返回 409；P2-1（2026-10-25）：在途行（pending/deploying/upgrading）同样 409 `APP_DEPLOYMENT_STOP_IN_FLIGHT`——推送在途时被 stop 会落成「行永久 STOPPED 而设备进程在跑」，在途行的出口只有它自身的完成/失败链 |
 | GET | `/app-deployments/approvals/pending` | 是* | DEP-04：待审批待办列表（ADMIN）——等价 `GET /app-deployments?approvalStatus=pending_approval` |
 | POST | `/app-deployments/:id/approval/approve` | 是* | DEP-04：批准待审批部署（ADMIN）。第二人规则：审批者 ≠ 提交者（`approvalMeta.requestedBy`），违反 403；通过后走与 deploy 相同的推送链。body 可选 `{ reason ≤200 }` 进审批留痕与审计（`deployment.approve`） |
 | POST | `/app-deployments/:id/approval/reject` | 是* | DEP-04：拒绝待审批部署（ADMIN）。第二人规则同上；行落 FAILED 终态（离开 in-flight），reason 进 `approvalMeta`/`statusMessage` 与审计（`deployment.reject`）。body 可选 `{ reason ≤200 }` |
@@ -338,7 +345,9 @@ Content-Type: application/json
 
 **目标**：合并 `application_versions`（版本号/包地址/快照）与 `app_deployments`（部署时间/状态/执行器）两个语义面，**一行 = 一次版本发布**，「这次部署用了哪个包」一屏完成。纯只读聚合视图，**零 schema 变更**（不占迁移时间戳）。
 
-**响应** `{ data: AppReleaseRow[], total, page, pageSize }`——`total` 为版本快照表行数（synthetic 部署聚合行不并入，属过渡期语义），`pageSize` 默认 50、**上限 200**（超出部分截断，防全表）。排序键 = 该版本最近一次部署完成时刻（无部署则为版本行创建时刻），降序。
+**响应** `{ data: AppReleaseRow[], total, page, pageSize, truncated }`——`total` 为版本快照表行数（synthetic 部署聚合行不并入，属过渡期语义），`pageSize` 默认 50、**上限 200**（超出部分截断，防全表）。排序键 = 该版本最近一次部署完成时刻（无部署则为版本行创建时刻），降序。
+
+- `truncated`（R4，部署模型评审 §4.7，2026-10-24）：**只增不改**的新字段。第 1 页 synthetic 聚合扫描到达 5000 行上限（`RELEASES_SYNTHETIC_SCAN_MAX_ROWS`）时 `true`——聚合以已扫描部分为准，可能不完整（此前静默截断，§P8）；未到上限或第 2 页起恒 `false`（synthetic 扫描只在第 1 页运行）。
 
 | 字段 | 来源 | 说明 |
 |------|------|------|
@@ -348,8 +357,42 @@ Content-Type: application/json
 | `triggerType` | `app_deployments.triggerType` 列（FEAT-20，迁移 1790000000004）：`manual` / `upgrade` / `rollback` / `approval`（approve 动作产生的部署行）；存量行回退推导（升级指纹→`upgrade`、`deployedAt` 已置位→`manual`、否则 `unknown`、无部署 null） | 列值优先，推导仅兜底 |
 | `operator` / `operatorSource` / `operatorMissingReason` | 部署行 `operator` 列（FEAT-20，写入=JWT 用户名；deploy/upgrade/rollback/approve 各写面均落）优先；存量行回退 `application_versions.createdBy` | `operatorSource` 标注命中面：`deployments.operator` / `application_versions.createdBy`；两处皆 null 时 `operatorMissingReason` 说明 |
 | `synthetic` | — | 有部署记录但从未保存版本快照的历史数据（心跳竞态等）合成行，`deployedVersion=null` 的部署归一为一条 `version=null` 行；对齐 `/versions` 的 legacy fallback 语义，仅第 1 页参与 |
+| `devices` | `executor_app_versions`（设备心跳上报的**设备级版本事实**，R3-A/迁移 1790000000063）× `executors`（名称/在线状态） | **R3-A（部署模型评审 §4.3，2026-10-24）新增，只增不改**：正在运行（`currentVersion === 行版本`）或本地保留（`行版本 ∈ retainedVersions`）该版本的设备清单，每项 `{executorId, executorName, currentVersion, retained, online, lastHeartbeat}`。无任何设备上报（旧执行器混合窗口期）恒为 `[]`。**注意**：`deploymentStatus`/`executorAddress`/`deploymentCount` 仍是**部署行推断**（渐进迁移保留），设备真实状态以 `devices` 为准；`lastHeartbeat` 即设备最后上报时刻，`online=false` 的事实可能已过期 |
 
 > **旧端点过渡期保留（不删除、不重定向）**：`GET /applications/:id/versions`（版本快照/回滚消费面，携带 snapshot 与 deployCount）与 `GET /app-deployments`（逐部署行列表）与本端点数据同源；新前端一律消费 `/releases`，旧端点收口另立任务。admin-web `ApplicationDetailPage` 接入为后续轮工作（本任务只落 API 契约）。
+
+---
+
+## 应用版本动作：设为当前版本 / 下发到设备（R1，2026-10-24 部署模型评审 §4.2）
+
+旧 `POST /applications/:id/rollback/:id` 把「按版本快照恢复应用当前字段」与「对全部 RUNNING 部署行下发升级」**捆绑为一个动作**——用户只想改回记录面时也被迫重启全部实例（评审 P6）。R1 将其拆为两个显式动作；旧端点保留一版作为 deprecated alias（内部仍是原 `rollbackApplication` 路径，行为逐字节不变），下一版本删除。语义对照另见 `docs/rollback-semantics.md`。
+
+**`POST /api/applications/:id/set-current-version`**（ADMIN）——安全半边：
+
+```json
+{ "versionId": "<application_versions.id（uuid，非 version 号字符串）>" }
+```
+
+- 只按版本快照恢复应用当前字段（`version/gitCommit/gitBranch/packageUrl/env/entrypoint/manifest/runtime`，与 rollback 快照路径**同一映射与校验**）；**绝不读写部署行、绝不下发任何设备**，响应 `dispatched:false`。
+- 校验与错误码与 rollback 快照路径一致：版本不存在 404（`APP_VERSION_NOT_FOUND`，不走 legacy 部署行回退）；属他应用 400（`APP_ROLLBACK_VERSION_OTHER_APP`）、无版本号 400、非 `released` 400。
+- legacy 部署行（无版本快照的合成行）不支持本端点——只收版本快照主键。
+
+**`POST /api/applications/:id/deploy-version`**（ADMIN）——下发半边：
+
+```json
+{ "versionId": "<uuid>", "executorIds": ["<uuid>", "..."] }
+```
+
+| 字段 | 必填 | 说明 |
+|------|:----:|------|
+| `versionId` | 是 | `application_versions.id`（uuid），须为 `released`——下发前先做与 set-current-version **完全相同**的字段恢复 |
+| `executorIds` | 否 | 缺省 = 该应用**全部 RUNNING 部署行**（与旧 rollback 行为一致）；显式点名 = 仅对这些执行器对应的 RUNNING 部署行逐台下发（重复 id 幂等去重，上限 100） |
+
+- 响应 `{ok, dispatched:true, version, versionId, upgraded:[{deploymentId, executorId, executorAddress}], skipped:[{executorId, deploymentId, reason, detail?}], updatedApp}`。
+- 点名的执行器**无部署行**（`no_deployment`）、**行状态不可下发**（`not_running`，detail 带 `status=<行状态>`）或 **upgrade 链被拒**（`upgrade_rejected`，detail 带原因）时不抛错，进 `skipped` 明细；只有「版本快照校验失败」（不存在/他应用/未发布）才整单 4xx。
+- 下发逐行走既有 `upgrade` 链（`Promise.allSettled` 容错），部署行触发痕迹落 `triggerType=rollback` + 操作人（JWT 用户名；缺省 `operator=null`，与旧 rollback 相同）。
+- **既有 upgrade 语义披露（A-4）**：upgrade 会把部署行的 `startCommand` **覆写为恢复后的 `app.entrypoint`**——部署时自定义过的启动命令在升级后丢失，行上记录的是本次实际推送值。本端点不改此语义，只做披露。
+- CLI：`acf app set-current-version <appId> <versionId>` / `acf app deploy-version <appId> <versionId> [--executors <id1,id2>] [-y]`。
 
 ---
 
@@ -358,13 +401,33 @@ Content-Type: application/json
 **`POST /api/applications/:id/upgrade-all`**（ADMIN）：请求体全可选，**缺省（不传 body 或不传 `rollout`）= `all` 全量升级，既有语义逐字节保持**。批次本体是 admin-api 进程内状态（最低正确形态）：**服务重启即暂停灰度**——启动 sweep 把遗留 `pending/probing` 行标记 `failed`（`rolloutMeta.failureReason = "admin-api restarted — rollout batch not resumed"`），需人工重发；批次硬超时 15 分钟兜底收尾，canary 首批心跳确认宽限窗 120 秒。
 
 ```json
-{ "rollout": { "strategy": "canary", "percentage": 34 } }
+{ "rollout": { "strategy": "canary", "percentage": 34 }, "includeStopped": false }
 ```
 
 | 字段 | 类型 | 缺省 | 说明 |
 |------|------|------|------|
 | `rollout.strategy` | `"canary" \| "all"` | `all` | canary=分批灰度；all=既有全量（同一 Promise.allSettled 路径） |
 | `rollout.percentage` | int 1-100 | 50 | canary 首批台数 = `ceil(N × percentage%)`，**至少 1 台**、至多 N |
+| `version` | string ≤64 | — | 版本定向（渐进回滚）。**等价于 `set-current-version` + `deploy-version` 的组合**（先按快照恢复应用当前字段再下发，会改写中台当前版本）——R1（§4.2）拆分出的两个端点是更明确的表达，建议改用新端点 |
+| `includeStopped` | boolean | `false` | **R2（§4.4）**：all 策略下把 `stopped` 部署行一并纳入升级（stopped 可能是人为停用，故显式 opt-in）。canary 策略忽略该参数 |
+
+**覆盖面（R2 §4.4，实证口径）**：默认升级目标 = 该应用**全部 RUNNING 部署行**。`scheduled`（仅部署待触发）行在执行器侧部署完成时即上报 `running`（`deploy.ts` scheduled 分支），行稳态就是 `RUNNING`，且卡死扫描（`detectStuckDeployments`）只扫 `pending/deploying/upgrading`、永不触碰 RUNNING 行（2min cron 一轮：PENDING 超 5min、DEPLOYING/UPGRADING 超 30min 无更新即判 FAILED；待审批行与 pull 未决命令行豁免）——因此 scheduled 设备**默认就在覆盖内**（升级 = 拉新包切 current，不启动进程）。真正掉出默认覆盖的：`stopped`（opt-in 后纳入）、`failed`（恒排除——失败多与环境相关，应走显式重新部署）、在途行 `pending/deploying/upgrading`（不可重入，**跳过并进 `skipped` 明细，不抛错**）。
+
+**响应**：`all` 模式返回既有 `{ok, total, succeeded, failed}` **只增不改**——R2 起恒新增两个键：
+
+```json
+{
+  "ok": true, "total": 3, "succeeded": 2, "failed": 1,
+  "coverage": { "running": 1, "scheduled": 1, "stopped": 2, "failed": 0, "inFlight": 1 },
+  "skipped": [
+    { "deploymentId": "…", "executorId": "…", "status": "upgrading", "reason": "in_flight" }
+  ]
+}
+```
+
+- `coverage`：该应用部署行按状态分组计数（`running`=RUNNING 且非常驻定时模式；`scheduled`=RUNNING 且 runMode=scheduled；计数恒回显，与是否纳入升级无关）；
+- `skipped`：在途行明细，`reason`：`in_flight`（在途部署/升级不可重入）/ `awaiting_approval`（待审批行，DEP-04 复用 pending 占坑）；
+- canary 模式额外携带 `rollout: {batchId, strategy, canaryIds, promotedIds}`（首批失败时 `ok=false, failed=1`）；灰度集合维持「全部 RUNNING 行」口径，`includeStopped` 不扩（健康探测需要活进程）。
 
 **canary 状态机（`app_deployments.rolloutState`，迁移 1790000000001，NULL=非批次路径）**：
 
@@ -376,8 +439,6 @@ pending/probing 任意环节失败 → failed（未回滚，含重启 sweep）
 probing 探测通过前的已升级台，批次失败时 → rolled_back（自动回滚完成）
 ```
 
-**响应**：`all` 模式返回既有 `{ok, total, succeeded, failed}`；canary 模式额外携带 `rollout: {batchId, strategy, canaryIds, promotedIds}`（首批失败时 `ok=false, failed=1`）。
-
 **批次失败判定与自动回滚（DEP-03）**——任一命中即暂停批次（无暂停队列，直接终态）：
 1. 首批/提升轮 `upgrade` 触发抛错；
 2. canary 台心跳上报 `failed/stopped`；
@@ -385,7 +446,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 4. 健康探测窗耗尽（`failThreshold` 次 × `interval` 间隔全失败）；
 5. 批次硬超时（15min）。
 
-失败时对**已触发升级且未失败**的部署行自动执行「重新部署上一版本」：取 `application_versions` 中该应用最近一个 `released` 且版本号 ≠ 该行当前 `deployedVersion` 的快照，恢复 snapshot 内 `version/gitCommit/packageUrl/gitBranch/env/entrypoint` 后走既有 `pushDeployToExecutor(upgrade)` 链；行落 `rolled_back`（`rolloutMeta.failureReason` 记录原因）。**无上一版本可回退时 fail-safe**：保持新版本运行并仅标记 `failed`（不人为打红可用部署）。注意：自动回滚只恢复单台 push 载荷，**不回写 applications 表当前版本**——全量回退请走既有 `POST /applications/:id/rollback/:deploymentId`。
+失败时对**已触发升级且未失败**的部署行自动执行「重新部署上一版本」：取 `application_versions` 中该应用最近一个 `released` 且版本号 ≠ 该行当前 `deployedVersion` 的快照，恢复 snapshot 内 `version/gitCommit/packageUrl/gitBranch/env/entrypoint` 后走既有 `pushDeployToExecutor(upgrade)` 链；行落 `rolled_back`（`rolloutMeta.failureReason` 记录原因）。**无上一版本可回退时 fail-safe**：保持新版本运行并仅标记 `failed`（不人为打红可用部署）。注意：自动回滚只恢复单台 push 载荷，**不回写 applications 表当前版本**——全量回退请走 `POST /applications/:id/deploy-version`（先 set-current-version 恢复全局字段，再下发；R1 §4.2 拆分后的新口径）。
 
 **健康检查声明（应用 `manifest.healthCheck`，落 applications.manifest jsonb，零新列）**：
 
@@ -436,12 +497,12 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 - **A2-B 起为运行时强制**：声明了「属主校验」的写端点若实际未执行校验，
   端点直接 `500`（缺省拒绝），而不是静默放行——详见
   `apps/admin-api/src/common/guards/write-guard-enforcement.interceptor.ts`。
-| POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数） |
+| POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数）。语义注记（F-10）：**PAUSED 任务照常成功**——暂停只停调度（移除定时器），手动/API/依赖触发不受影响，trigger 仅排除 DELETED |
 | GET | `/tasks/:id/webhook` | 是 | 查询任务 webhook 状态（`{ enabled, url }`；secret 永不回传，FEAT-21） |
 | POST | `/tasks/:id/webhook/enable` | 是 | 启用任务 webhook——生成密钥一次性回显 `{ url, secret }`（对已启用任务等价轮换） |
 | POST | `/tasks/:id/webhook/rotate` | 是 | 轮换任务 webhook 密钥（旧密钥立即失效，新密钥一次性回显） |
 | POST | `/tasks/:id/webhook/disable` | 是 | 停用任务 webhook（清空密钥，签名请求即刻 401） |
-| POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行） |
+| POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行）。语义注记（F-10）：暂停后手动/API/依赖触发**照常成功**——暂停只停调度，不拦显式触发 |
 
 **任务 webhook 入站触发（FEAT-21）：**
 
@@ -540,7 +601,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | `triggerType` | string | 是 | `cron` / `fixed_rate` / `api` / `manual` |
 | `cronExpression` | string | 条件 | `triggerType=cron` 时使用的 5 字段 Cron 表达式 |
 | `timezone` | string | 否 | Cron 调度使用的 IANA 时区，例如 `Asia/Shanghai`；留空使用服务端默认时区 |
-| `fixedRate` | number | 条件 | `triggerType=fixed_rate` 时的执行间隔，单位秒 |
+| `fixedRate` | number | 条件 | `triggerType=fixed_rate` 时的执行间隔，单位秒；**上限 2147483 秒**（DTO `@Max` 强制：`tasks.fixedRate` 为 int4 列，且调度侧周期 ×1000 喂给 `setInterval`/Redis PEXPIRE 受 int32/int4 毫秒封顶） |
 | `maintenanceWindows` | MaintenanceWindow[] | 否 | 任务级维护窗口（FEAT-06）：数组形态 `[{ start, end, description? }]`，`start`/`end` 均为 5 字段 Cron——`start` 最近触达时刻开窗、`end` 最近触达时刻关窗（半开区间 `[start, end)`）。命中窗口的**计划触发**（cron/fixed_rate/错失补偿等调度入队路径）被跳过并计入 `/metrics/scheduler` 的 `triggersSkippedMaintenance`，不建执行记录；手动/API 触发不受窗口约束。上限 10 条；窗口 Cron 按服务端本地时间评估。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` / `[]` = 清空 |
 | `timeoutSeconds` | number | 否 | 任务执行超时，单位秒；推荐使用该字段 |
 | `timeout` | number | 否 | 兼容旧字段，语义同 `timeoutSeconds` |
@@ -548,7 +609,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | `timeoutWarnRatio` | number | 否 | 超时预警阈值（CORE-04）：占 `timeout` 的百分数，整数 0–90。执行运行时长达到 `timeout × ratio / 100` 时发送一次 WARNING 级预警通知（复用 `notifyTimeout` 通道，受任务级静默窗口约束），每个执行**至多一次**；例如 `timeout=600`、`ratio=80` → 运行到 480 秒时预警。缺省/`null` = 未启用（存量任务零新通知）；运行态归一化时非 0–90 整数一律视为未启用 |
 | `estimatedDurationSec` | number | 否 | 预估执行时长秒数（CORE-05）：整数 0–604800（7 天上限），`0`/缺省 = 未知。**任务侧属性**，仅参与调度侧执行器负载评分（长任务预估对繁忙执行器惩罚更高，长短混布时倾向把长任务派给更空闲的执行器，权重公式见 executor-score.util.ts）；执行链路（心跳/超时/统计）不消费该字段。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 重置为未知；版本快照随存（回滚不静默重置） |
 | `maxRetry` | number | 否 | 最大尝试次数（BullMQ attempts），0–10；服务端会保证至少为 `1` |
-| `retryDelay` | number | 否 | 重试退避起始延迟，单位秒；`0` 表示不配置队列 backoff。**CORE-02 抖动语义**：实际重试延迟 = `retryDelay × 1000 × 2^(attempt-1)` 的指数基座上加 **±20% 抖动**（admin-api `retry-backoff.util.ts` 纯函数，在四处 enqueue 边界算好整数毫秒传入 BullMQ），摊开同周期失败任务的的重试时刻（thundering herd）；`retryDelay<=0` 仍保持不延迟 |
+| `retryDelay` | number | 否 | 重试退避起始延迟，取值 **0–86400 秒**（F-3：对齐 timeout 窗口防指数退避顶穿定时器 int32 毫秒线）；`0` 表示不配置队列 backoff。**CORE-02 抖动语义**：实际重试延迟 = `retryDelay × 1000 × 2^(attempt-1)` 的指数基座上加 **±20% 抖动**（admin-api `retry-backoff.util.ts` 纯函数，在四处 enqueue 边界算好整数毫秒传入 BullMQ），摊开同周期失败任务的的重试时刻（thundering herd）；`retryDelay<=0` 仍保持不延迟 |
 | `retryableErrors` | string[] | 否 | 可重试错误类型白名单（CORE-02 已 UI 化，admin-web 表单暴露九类中文选项）。**消费语义**（task.processor RETRY-01）：非空白名单 = 仅白名单内的失败会被 BullMQ 重试——匹配规则为错误消息子串或 `failureReason` 分类值（大小写不敏感），未命中转 `UnrecoverableError` 烧尽预算；`null`/`[]` = 全部可重试（既有行为）。`PATCH /tasks/:id` 缺省 = 保留旧值，显式 `null` = 回到全量可重试。**边界**：`timeout` 类失败另有防双派发守卫，无论白名单如何配置都不会自动重试 |
 
 **重试链路与 attempt 可视化（CORE-02）：**
@@ -619,8 +680,8 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| POST | `/executors/register` | 否* | 执行器注册（返回/绑定执行器专属 Token）。可选字段：`protocolVersion`（整数，协议版本）/ `dispatchMode`（`push`/`pull`）/ `interpreters`（解释器缓存池清单）/ `deviceFingerprint`（**协议 v3 起**，见心跳行说明） |
-| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛）。可选指标字段：`cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` / `runningTaskCount`（**已占槽位**，含 E-01 取件预留）/ `totalTaskCount` / `failedTaskCount` / `runningExecutionIds`（≤10000，`null`=旧版未上报；**在跑执行**的 id 清单，与 `runningTaskCount` 是两个账本）/ `reservedSlots`（**E-01-RPT，协议 v4 起**：pull 长轮询「已预留但尚未认领」的槽位数，非负整数且必须 `≤ runningTaskCount`（预留是已占槽位的子集，越界即拒绝采纳、库内原值不动）；**始终发送含 `0`**，`null`=旧版执行器未上报。**只用于展示与告警换算**：详情页据此显示「实际运行 = runningTaskCount − reservedSlots」并与 `runningExecutionIds.length` 比对，派发闸门仍只读 `runningTaskCount`——否则会重开 E-01 要关闭的超卖竞态）/ `deadLetterCount`（回调死信积压数，**0..100000** 非负整数，`null`=旧版执行器未上报该字段（区别于 `0`：已上报且无积压），`>0` 表示回调持续失败、载荷已落盘执行器本地 dead-letter）/ `maxConcurrentTasks`（1..10000 容量热更新）/ `deviceFingerprint`（**ARCH-36 / ADR-017 阶段 2/3，协议 v3 起**：稳定安装身份 `sha256(deviceId + ":" + installSalt)` 的 **64 位小写十六进制**。**阶段 3 起是 register/heartbeat 的行定位键**——命中即复用原行并更新 `address`（换 IP 不再产生幽灵行），`address` 降级为可达性元数据；未上报指纹的存量执行器由中台落 `legacy:{address}` 兜底键、仍按地址定位。缺省或形态非法一律**保留库内原值**——旧执行器或采集失败的执行器绝不会把已存指纹擦成 `null`）。服务端对白名单外字段静默丢弃（防 mass-assignment），非法取值不落库 |
+| POST | `/executors/register` | 否* | 执行器注册（返回/绑定执行器专属 Token）。可选字段：`protocolVersion`（整数，协议版本）/ `dispatchMode`（`push`/`pull`）/ `interpreters`（解释器缓存池清单）/ `deviceFingerprint`（**协议 v3 起**，见心跳行说明）/ `deployedApps` 与 `installedPackages`（**R3-A，协议 v7 起**，设备级版本事实，语义与心跳完全一致——执行器重启后随注册先报一份，见下节「设备级版本事实」） |
+| POST | `/executors/heartbeat` | 否* | 执行器心跳上报（携带 `restartedAt`/`startupId` 用于重启收敛）。可选指标字段：`cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` / `runningTaskCount`（**已占槽位**，含 E-01 取件预留）/ `totalTaskCount` / `failedTaskCount` / `runningExecutionIds`（≤10000，`null`=旧版未上报；**在跑执行**的 id 清单，与 `runningTaskCount` 是两个账本）/ `reservedSlots`（**E-01-RPT，协议 v4 起**：pull 长轮询「已预留但尚未认领」的槽位数，非负整数且必须 `≤ runningTaskCount`（预留是已占槽位的子集，越界即拒绝采纳、库内原值不动）；**始终发送含 `0`**，`null`=旧版执行器未上报。**只用于展示与告警换算**：详情页据此显示「实际运行 = runningTaskCount − reservedSlots」并与 `runningExecutionIds.length` 比对，派发闸门仍只读 `runningTaskCount`——否则会重开 E-01 要关闭的超卖竞态）/ `deadLetterCount`（回调死信积压数，**0..100000** 非负整数，`null`=旧版执行器未上报该字段（区别于 `0`：已上报且无积压），`>0` 表示回调持续失败、载荷已落盘执行器本地 dead-letter）/ `maxConcurrentTasks`（1..10000 容量热更新）/ `deviceFingerprint`（**ARCH-36 / ADR-017 阶段 2/3，协议 v3 起**：稳定安装身份 `sha256(deviceId + ":" + installSalt)` 的 **64 位小写十六进制**。**阶段 3 起是 register/heartbeat 的行定位键**——命中即复用原行并更新 `address`（换 IP 不再产生幽灵行），`address` 降级为可达性元数据；未上报指纹的存量执行器由中台落 `legacy:{address}` 兜底键、仍按地址定位。缺省或形态非法一律**保留库内原值**——旧执行器或采集失败的执行器绝不会把已存指纹擦成 `null`）/ `deployedApps`（**R3-A，部署模型评审 §4.3 / 协议 v7 起**：设备级应用版本事实，见下节「设备级版本事实」）/ `installedPackages`（**R3-A/P10**：设备已安装的执行器包清单 `[{name,type,version}]`，≤100 项；三态语义与 `interpreters` 同款——缺省 → 保留 DB 旧值，`[]` → 已上报且无安装包，结构非法 → 整字段拒绝采纳；落 `executors.installedPackages` jsonb 列）。服务端对白名单外字段静默丢弃（防 mass-assignment），非法取值不落库 |
 | POST | `/executors/token` | 否* | 执行器以注册凭证换取专属 Token。**副作用（register-on-token）**：若该 `address` 尚无执行器行（典型场景：compose 启动竞态下 register 失败——register 不会自动重试，heartbeat 对未知地址返回 404 也不建行），本端点会补建仅含 `address`/`appName` 的瘦行：`type`/`capabilities`/`maxConcurrentTasks`/`executorVersion` 等富元数据缺失（runtime 过滤对空 capabilities 全放行，故竞态窗口内该执行器可能被选中执行任意 runtime 任务），直到执行器进程重启重新 register 才补齐 |
 | POST | `/executors/offline` | 否* | 执行器主动下线 |
 | GET | `/executors/:address/terminal-states` | 否* | **A6 死信对账（只读）**：返回该执行器上**已终态**的执行清单（`items[].{executionId,status,endedAt}` + `hasMore` + `serverTime`），按终态时间升序，供执行器核对本地回调死信目录。query：`since`（ISO-8601 水印，只回终态时间 `COALESCE(endTime, createdAt) >= since` 的行；缺省/非法回退 24h，最老钳到 30 天）、`limit`（1..2000，默认 500）。执行器据此分三层处置：命中清单→删死信；未命中且死信原因是重发预算耗尽→重新入队重发；未命中且是毒丸（超大/坏 JSON）或救回次数用尽→保留待人工。**严格只读**：不改执行行、不释放槽位、不写审计 |
@@ -641,6 +702,34 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/executors/:id/metrics` | 是 | 执行器运行指标 |
 
 > *执行器接口使用执行器专属 Token / 安装凭证认证，非用户 JWT。
+
+#### 设备级版本事实（R3-A，心跳/注册可选键 `deployedApps`，2026-10-24 部署模型评审 §4.3）
+
+上表 register/heartbeat 行 `deployedApps` / `installedPackages` 键的载荷与落库语义展开：
+
+```jsonc
+{
+  "deployedApps": [
+    {
+      "appId": "5f8a3c2e-9b41-4d6a-a1b2-c3d4e5f6a7b8",   // 部署时的 applicationId
+      "currentVersion": "1.2.0",        // 设备 current 软链指向的版本；无 current → null
+      "currentReleaseKey": "1.2.0-3f9d2b7a-deploy-8t4",  // current 指向的 release 目录名
+      "retainedVersions": ["1.2.0", "1.1.0"],  // releases/ 下仍保留的版本集合（prune 后）
+      "runMode": "daemon",              // once | daemon | scheduled | null
+      "lastDeployedAt": "2026-10-24T08:00:00.000Z"      // ISO；无记录 → null
+    }
+  ]
+}
+```
+
+**落库与语义**（全部可选键，旧执行器不带则行为逐字节不变）：
+
+- 落新表 `executor_app_versions`（迁移 1790000000063；`(executorId, applicationId)` 唯一，行 = 一份最新设备事实，非历史流水）；执行器行删除/应用删除时 FK 级联清理。
+- **整替**：心跳带 `deployedApps` → 该执行器全部事实行按数组整体替换（**不在数组中的应用行删除 = 设备已卸载**）；`[]` = 设备上无任何已部署应用（清空）。
+- **键缺失 → 完全不动**（fail-honest「无数据」而非清空——旧执行器与新执行器共存窗口期的兼容性红线）。
+- **校验闸**（结构非法 → **整字段拒绝采纳** + warn，既有行保留）：≤50 项；`retainedVersions` 每项 ≤20；字符串长度上限（版本 ≤128 / releaseKey ≤255 / appId ≤64）；同一 appId 重复上报拒绝（全量快照无法裁决先后）；`lastDeployedAt` 非 ISO 可解析拒绝。超限**拒绝而非截断**——`deployedApps` 是全量快照，截断会让整替语义删错行。
+- 幂等：同一载荷重复心跳不重写未变化的行（`lastReportedAt` 只在行内容变化时刷新；设备活性看 `executors.lastHeartbeat`）。
+- **消费面**：`GET /applications/:id/releases` 的 `devices` 字段（设备徽标）；派发面版本跟随 `resolveVersionFollowPackage` 切换为「设备上报 `currentVersion` 优先、无上报行/null 回退部署行推断」（评审 §九 9.3-1——两套设备当前版本并存会打架，事实源永远比部署行新鲜）。
 
 ---
 
@@ -935,7 +1024,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 |------|------|------|
 | `page` / `pageSize` | number | 分页参数 |
 | `userId` | number | 按操作用户过滤 |
-| `action` | string | 操作类型（task.create / task.update / task.delete / 登录等） |
+| `action` | string | 操作类型（task.create / task.update / task.delete / `auth.login` 等——登录**成功与失败均落审计行**，失败行 `result=failure` 并在 `detail` 携带 `errorCode`/`userAgent`） |
 | `resource` | string | 资源类型（task / executor / application 等） |
 | `resourceId` | string | 资源 ID **精确匹配**（AUTH-05 新增；与 `resource` 组合成 (resource, resourceId) 对筛选——Project 实体维度筛选按计划预案缩为此形态，AUTH-01 未启动）。查询串值超 100 字符截断到 100 |
 
@@ -954,7 +1043,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/users` | 是（Admin） | 分页查询用户列表 |
 | POST | `/users` | 是（Admin） | 创建新用户 |
 | GET | `/users/:id` | 是 | 获取用户详情（非 Admin 仅可查看本人） |
-| PATCH | `/users/:id` | 是 | 更新用户信息（Admin 可改任意用户；非 Admin 仅本人且不可改角色；修改密码需验证当前密码） |
+| PATCH | `/users/:id` | 是 | 更新用户信息（Admin 可改任意用户；非 Admin 仅本人且不可改角色；修改密码需验证当前密码）。**isActive 启停语义**：置 `false` 禁用即 `sessionVersion+1`——在途 access token 的 ver 快照失配即 401（与改密同款会话失效）；API-Key 面由 per-request 属主闸 `owner_inactive` 即时判死 |
 | DELETE | `/users/:id` | 是（Admin） | 删除用户 |
 
 ---
@@ -968,7 +1057,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/config/history/:key` | 是 | 查询指定 key 的修改历史 |
 | POST | `/config/history/:id/rollback` | 是（Admin） | 回滚到指定历史版本 |
 | POST | `/config/executor-shared-token/generate` | 是（Admin） | 生成新的执行器共享 Token |
-| GET | `/config/executor-shared-token` | 是（Admin） | 查看当前执行器共享 Token（明文）——第四轮起普通用户 403 |
+| GET | `/config/executor-shared-token` | 是（Admin） | 查看当前执行器共享 Token（明文）——第四轮起普通用户 403。**读端点与执行器校验同序**：DB 配置 `executor.sharedToken` 优先，缺省回落 `EXECUTOR_SECRET` env（P1-1：env 配置形态下向导卡片不再误报「尚未配置」） |
 | GET | `/config/:key` | 是 | 查询单个配置项（secret 类字段打码） |
 | PUT | `/config` | 是（Admin） | 创建/更新单个配置项（upsert） |
 | POST | `/config/batch` | 是（Admin） | 批量创建/更新配置项 |
@@ -1031,7 +1120,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/projects` | 是 | 项目列表（按 createdAt ASC；**AUTH-02 后续读面过滤**：ADMIN 全量，普通用户仅「默认项目 ∪ 自己是成员的项目」；每行附 `myRole`——当前主体在该项目的角色，非成员 null） |
-| GET | `/projects/:id` | 是 | 项目详情（详情不过滤，读面收紧仅限列表，见 ADR-013 §6） |
+| GET | `/projects/:id` | 是 | 项目详情（**读面过滤与列表同口径**：ADMIN 全量、默认项目恒可读（「未分配资源」的归属视图），其余非成员 404 `PROJECT_NOT_FOUND`——此前「详情不过滤」已收紧） |
 | GET | `/projects/:id/removal-impact` | 是（ADMIN） | 删除影响面预览（PROJECT-IMPACT-01，见下） |
 | POST | `/projects` | 是（ADMIN） | 创建项目 |
 | PATCH | `/projects/:id` | 是（ADMIN） | 更新项目（默认项目仅允许改 description） |
@@ -1122,14 +1211,14 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |
 | `TRUST_PROXY` | `false` | **第四轮起默认关闭**。Express `trust proxy` 仅在 `true` 时启用——nginx/负载均衡后的部署**必须设为 `true`**，否则限流键与审计 IP 全部记为代理地址 |
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push）：默认放行私网段（10/8、172.16/12、192.168/16、IPv6 ULA）但**拒绝 loopback**；admin-api 与 executor 同机（127.0.0.1）部署时必须设为 `true`。云元数据段（169.254.169.254 等）任何取值下都拒绝 |
-| `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（优先于 user/pass 组合，存在时直接以 `Bearer` 拉取包列表） |
-| `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，用于 `PUT /-/user/login` 换取 bearer token） |
-| `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码 |
+| `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（凭据回落链最高优先，存在时直接以 `Bearer` 拉取包列表） |
+| `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，直接以 `Authorization: Basic` 拉取包列表——2026-10-23 起不再走 `PUT /-/user/login` 换 token：该端点在 Verdaccio 5 是「注册或登录」语义，账号已存在时 409。未配置时回落 `REGISTRY_USER/PASS`） |
+| `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码（回落链：`NPM_REGISTRY_TOKEN` > `NPM_REGISTRY_USER/PASS` > `REGISTRY_USER/PASS`） |
 | `ALERT_WEBHOOK_SECRET` | 空 | Alertmanager webhook 入站 HMAC secret（OBS-02，`POST /api/alerts/webhook`）。留空 = 端点 503 禁用（安全缺省，绝不无鉴权接收）；配置后签名约定同发版 webhook。建议 `openssl rand -hex 32`。Alertmanager 配置样例见 `docs/observability/README.md` §3.5 |
 | `SEC_SECRETS_KEY` | 空 | **任务级 secrets 落库加密密钥**（SEC-02）：32 字节 hex（`openssl rand -hex 32`）或 base64，其他口令按 sha-256 拉伸。留空 = tasks.secrets 明文存储（启动 warn 一次）；配置后写路径全加密（AES-256-GCM `enc:v1:` 信封），派发时解密注入执行器 env。**密钥丢失 = 密文 secrets 不可解密**（派发报错、不静默裸跑）——请纳入密钥管理系统备份；轮换 = 换 key 后对任务做一次任意 update |
 | `EXECUTOR_HEARTBEAT_INTERVAL` | `30000` | executor 心跳间隔毫秒（FEAT-07 注记：心跳超时 sweep 触发的 OFFLINE 翻转现在会发布 `executor.offline` 出站事件，见「Event Subscriptions」段） |
 
-> 三者全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → admin 包列表为空（仅 debug 日志提示凭证未配置），不视为错误。
+> 凭据按三级回落（`NPM_REGISTRY_TOKEN` > `NPM_REGISTRY_USER/PASS` > `REGISTRY_USER/PASS`），三级全缺时 registry 代理保持匿名行为：authenticated-only registry（如 Verdaccio `access: $authenticated`）对包列表返回 401 → 按 502 `REGISTRY_UPSTREAM_FAILED` 透出（B-3 起不再静默伪装成空列表；凭据未配置仅 debug 日志提示）。
 
 > 其余环境变量（`JWT_*`、`DB_*`、`EXECUTOR_SECRET`、`AI_*`、`LOG_STORAGE_*` 等）见 `apps/admin-api/src/app.module.ts` 的 Joi 校验 schema 与 `src/config/configuration.ts`。
 
@@ -1202,7 +1291,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 233 个操作，覆盖 199 个路径。
+共 237 个操作，覆盖 203 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1238,6 +1327,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/app-deployments/{id}/stop` | 停止运行中的部署 |
 | POST | `/app-deployments/{id}/upgrade` | 触发叠加升级 |
 | POST | `/app-deployments/applications/{appId}/deploy` | 将应用分配到执行器 |
+| GET | `/app-deployments/applications/{appId}/events` | 列出应用的部署事件流（不可变动作追溯） |
 | GET | `/app-deployments/approvals/pending` | 列出待审批的部署 |
 | POST | `/app-deployments/heartbeat` | 执行器上报应用运行状态（需要 X-Executor-Token） |
 | GET | `/app-deployments/stats` | 各应用的部署统计（聚合） |
@@ -1247,14 +1337,17 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/applications/{id}` | 获取应用详情 |
 | PUT | `/applications/{id}` | 更新应用 |
 | POST | `/applications/{id}/analyze` | 应用健康度 AI 分析 |
+| POST | `/applications/{id}/deploy-version` | 按版本快照恢复应用字段后下发到设备（可按执行器点名） |
 | GET | `/applications/{id}/releases` | 列出应用的统一发布记录（版本 × 最新部署） |
 | GET | `/applications/{id}/removal-impact` | 预览删除该应用会破坏什么 |
-| POST | `/applications/{id}/rollback/{deploymentId}` | 将应用回滚到历史版本 |
+| POST | `/applications/{id}/rollback/{deploymentId}` | 将应用回滚到历史版本（deprecated alias） |
+| POST | `/applications/{id}/set-current-version` | 将应用当前字段设为指定版本快照（不动部署/设备） |
 | POST | `/applications/{id}/sync-tasks` | 从 manifest.json 同步任务注册 |
-| POST | `/applications/{id}/upgrade-all` | 触发所有运行中实例升级到最新版本 |
+| POST | `/applications/{id}/upgrade-all` | 触发该应用全部已部署设备升级到最新版本 |
 | GET | `/applications/{id}/versions` | 获取应用版本历史 |
 | POST | `/applications/upload` | 上传应用包（zip） |
 | POST | `/applications/webhook` | 版本发布 Webhook |
+| GET | `/artifacts` | 按应用/任务查询产物索引（仅管理员） |
 | GET | `/audit` | 分页查询审计日志（仅管理员） |
 | GET | `/audit/actions` | 审计动作清单（去重，仅管理员） |
 | GET | `/audit/export` | 导出审计日志为 CSV（最多 10 000 行，仅管理员） |
@@ -1305,7 +1398,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/executor-packages/{id}/push` | 将执行器包推送到调度节点 |
 | GET | `/executor-packages/latest` | 按类型获取最新的 ACTIVE 执行器包 |
 | POST | `/executor-packages/push-result` | 执行器包推送结果回调（由 executor-node 调用） |
-| GET | `/executors` | 列出执行器 |
+| GET | `/executors` | 列出执行器（截断上限见描述；不支持分页） |
 | GET | `/executors/{address}/terminal-states` | 对账终态执行记录（只读） |
 | DELETE | `/executors/{id}` | 删除执行器记录 |
 | GET | `/executors/{id}` | 获取单个执行器详情 |

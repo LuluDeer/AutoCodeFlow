@@ -14,6 +14,13 @@ export const API_URL = process.env.AUTOCODEFLOW_API_URL || 'http://localhost:310
  * admin-api 有全局 `api` 前缀，默认 URL（无 /api）对所有请求 404。
  * baseUrl 缺 /api 尾段时请求期补上；已带则逐字节原样（对齐 node-sdk
  * stripTrailingApiSuffix 的双形态归一先例）。
+ *
+ * P3-10 登记注释（2026-10-26）——与 node-sdk 的归一**方向相反且各自正确**：
+ * 本函数是**补** /api——本包的请求路径（apiRequest 的各 path 常量）不带
+ * `/api` 前缀，baseURL 必须补上才能命中 admin-api 的全局前缀；node-sdk
+ * http-client.ts 的 stripTrailingApiSuffix 是**剥** /api——它的请求路径常量
+ * 已自带 `/api`（如 `/api/executions/callback`），baseURL 再带就成了双前缀
+ * 404。两侧消费的路径集不同，行为不可互换；改任何一侧前先读对方注释。
  */
 export function normalizeApiBase(url: string): string {
   let out = url.trim().replace(/\/+$/, '');
@@ -40,6 +47,12 @@ export const API_TOKEN = process.env.AUTOCODEFLOW_API_TOKEN || '';
  * refreshToken 保存在内存中供下一次过期使用（进程生命周期内持续自愈；
  * 不落盘——MCP 无凭据存储职责，进程重启重新注入 env）。
  * env 在每次 401 时懒读取，便于测试注入。
+ *
+ * P2-3 端间 parity 登记注释（2026-10-26）：本包**无重试、无熔断**——自愈面
+ * 仅请求超时（下方 REQUEST_TIMEOUT_MS）+ 401 refresh（BUG-14）。完整的
+ * 重试 + 熔断契约只存在于管理面客户端 `packages/autocodeflow-http`（与
+ * node-sdk 两端对齐，见其模块 docstring 的 parity 地图）；acf-cli /
+ * autoflow-sdk 同样无（见各自 client 注释）。
  */
 
 /** 请求超时预算（N12）：admin-api 卡死时 MCP 工具不得无限挂起。

@@ -18,6 +18,9 @@ import {
   RETRY_BACKOFF_MS,
   httpStatusOf,
 } from '../admin-http-agent';
+// P1-1: /token 409 冲突态经 heartbeat-state 暴露到 /health 与 /health/admin-status
+//（该模块无路由依赖，auth→heartbeat-state 不会成环）。
+import { setRegistrationConflict, isRegistrationConflictActive } from '../heartbeat-state';
 
 /**
  * NETOPT-G P1-1：token 获取的重试次数。
@@ -125,6 +128,69 @@ const TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
 let tokenFetchFailedAt: number | null = null;
 const TOKEN_FETCH_BACKOFF_MS = 30_000;
 
+// ---------------------------------------------------------------------------
+// P1-1（本轮审计，2026-10-26）：/token 409 慢性冲突的退避升级与可观测。
+//
+// 生产实证：同 push 地址存在旧指纹行（容器重建后安装身份漂移）时，admin 对
+// register/token 双路恒 409（executor.service.ts 的 EXECUTOR_ADDRESS_TAKEN）。
+// 旧实现把 409 与网络错同等对待——只吃 30s 单一退避、以心跳节拍无限重试
+// （真机 7h 实测 883 次 fetchToken failed），健康面看不到任何冲突痕迹；更糟的
+// 是静态 token 心跳照常 201，admin 侧冲突行永远 OFFLINE 不了，接管自愈
+// （canTakeOverAbandonedAddressRow，要求 OFFLINE + 静默超窗）被自己的心跳锁死。
+//
+// 修复口径：
+//   ① 409（且仅 409）单独走**指数退避**：30s 起步 ×2 递增、封顶 10min
+//      （TOKEN_CONFLICT_BACKOFF_MS）；任何非 409 结果（成功、网络错、其它 4xx
+//      /5xx）都复位冲突退避——冲突解除后必须立即恢复既有 30s 节奏，不得继承
+//      上一轮的长间隔。
+//   ② 冲突期间置位 registrationConflict（heartbeat-state 模块），经 /health 与
+//      /health/admin-status 暴露，运维/桌面可观测；成功取回 token 即清除。
+//   ③ 409 期间不再叠加普通 fetchToken 退避计时（两个退避语义独立：普通失败
+//      30s 固定，冲突指数）。
+// ---------------------------------------------------------------------------
+
+/** 冲突退避起步间隔（与普通失败退避同值，语义：第一次 409 行为与旧实现一致）。 */
+const TOKEN_CONFLICT_BACKOFF_BASE_MS = 30_000;
+/** 冲突退避封顶（10min）：冲突自愈（接管窗 5min，admin EXECUTOR_ADDRESS_TAKEOVER_
+ *  SILENCE_MS）后至多 10min 内收敛，避免无限增长到小时级。 */
+const TOKEN_CONFLICT_BACKOFF_MAX_MS = 10 * 60 * 1000;
+/** 上次 409 的时间戳（epoch ms）——普通失败退避计时复用同一字段。 */
+let tokenConflictBackoffMs = TOKEN_CONFLICT_BACKOFF_BASE_MS;
+
+function recordTokenConflict(): void {
+  // P1-1: 指数退避调度——**第一次** 409 的下一次重试间隔 = BASE(30s)，与旧实现
+  // 的普通失败节奏一致（旧实现第一次失败后 30s 才重试）；**后续**每次 409 把
+  // 间隔 ×2，封顶 10min。上限取值依据：封顶必须 > admin 接管窗（5min，
+  // EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS）+ 执行器重试到点的时间差，否则冲突
+  // 自愈后第一拍仍撞 409（行还没到接管条件）就把节奏锁死在低位。
+  tokenConflictBackoffMs = isRegistrationConflictActive()
+    ? Math.min(tokenConflictBackoffMs * 2, TOKEN_CONFLICT_BACKOFF_MAX_MS)
+    : TOKEN_CONFLICT_BACKOFF_BASE_MS;
+  tokenFetchFailedAt = Date.now();
+  setRegistrationConflict(true);
+  console.warn(
+    `[auth] fetchToken rejected with 409 (executor address conflicts with another ` +
+      `installation on admin side). Next attempt in ` +
+      `${Math.round(tokenConflictBackoffMs / 1000)}s ` +
+      `(exponential backoff, cap ${TOKEN_CONFLICT_BACKOFF_MAX_MS / 60_000}min). ` +
+      `Check EXECUTOR_ADDRESS_PUBLIC uniqueness or resolve the admin-side ` +
+      `address row conflict.`,
+  );
+}
+
+function clearTokenConflict(): void {
+  tokenConflictBackoffMs = TOKEN_CONFLICT_BACKOFF_BASE_MS;
+  setRegistrationConflict(false);
+}
+
+/** 冲突退避是否仍在生效窗口内（performTokenRefresh 的快速短路判定）。 */
+function withinConflictBackoff(nowMs: number): boolean {
+  return (
+    tokenFetchFailedAt !== null &&
+    nowMs - tokenFetchFailedAt < tokenConflictBackoffMs
+  );
+}
+
 // N41: fired (fire-and-forget) after every SUCCESSFUL fetchToken. main.ts
 // uses it to re-register with rich metadata when the startup register
 // failed — the /token endpoint's register side effect rebuilds the row
@@ -226,10 +292,24 @@ async function fetchToken(): Promise<string | null> {
       // source secret for per-execution callback tokens stays in sync with
       // whatever admin-api currently stores (see admin-envelope.ts).
       adoptExecutorTokenHash(response.data);
+      // P1-1: 成功即复位冲突态——退避间隔回 30s、registrationConflict 撤销。
+      clearTokenConflict();
       notifyTokenAcquired();
       return token;
     }
   } catch (_err: unknown) {
+    // P1-1: 409（地址冲突）是 admin 的**确定性**身份裁决——单独走指数退避，
+    // 不与普通网络错共享同一节奏。判定用 httpStatusOf（axios 错误形态，
+    // fetchTokenWithRetry 对 4xx 不重试直接上抛，status 一定在 response 上）。
+    const conflictStatus = httpStatusOf(_err);
+    if (conflictStatus === 409) {
+      recordTokenConflict();
+      console.warn('[auth] fetchToken failed: 409 Conflict (executor address already taken)');
+      return null;
+    }
+    // 非 409 的失败路径复位冲突计数：冲突解除（无论以成功还是其它错误呈现）
+    // 后不得继承上一轮冲突的长退避——否则一次网络抖动之后的重试间隔仍是 10min。
+    clearTokenConflict();
     // Fall back to static token if dynamic token fetch fails
     // Log at warn level so token refresh failures are visible in diagnostics
     const msg = _err instanceof Error ? _err.message : String(_err);
@@ -258,25 +338,41 @@ let refreshInFlight: Promise<void> | null = null;
 let refreshFetchSeq = 0;
 
 async function performTokenRefresh(): Promise<void> {
-  const now = new Date();
+  // P1-1: 统一用 Date.now()（而不是 `new Date()`）——退避锚点
+  // （recordTokenConflict / 普通失败路径）写的也是 Date.now()。两处此前各用
+  // 一把钟（new Date 走 V8 内建、Date.now 可被 jest.spyOn 打桩），单测里锚点
+  // 是桩时刻、判定是真实时钟，退避窗口永远错位；生产上两者等价，但同一状态机
+  // 必须单源取时。Python 侧 _refresh_token_if_needed 已是 time.monotonic() 单源。
+  const nowMs = Date.now();
+  // P1-1: 冲突（409）退避优先判定——409 期间重试间隔按指数增长（30s→10min），
+  // 与普通失败退避（固定 30s）分开计量。冲突记录复用 tokenFetchFailedAt 字段
+  // （两者都以「上次失败时刻」为退避锚点），但窗口用冲突间隔回答。
+  if (withinConflictBackoff(nowMs)) {
+    return;
+  }
   // Back off after a failed fetch — without this every request hangs for
   // the 10s fetch timeout while admin-api is unreachable.
+  // P1-1: 非 409 失败仍用固定 TOKEN_FETCH_BACKOFF_MS；冲突分支已在上面短路，
+  // 所以这里的窗口只对普通失败生效。
   if (
+    !isRegistrationConflictActive() &&
     tokenFetchFailedAt !== null &&
-    now.getTime() - tokenFetchFailedAt < TOKEN_FETCH_BACKOFF_MS
+    nowMs - tokenFetchFailedAt < TOKEN_FETCH_BACKOFF_MS
   ) {
     return;
   }
   // Refresh if no token, expired, or within 5 minutes of expiration
-  if (tokenExpiresAt === null || now >= new Date(tokenExpiresAt.getTime() - 5 * 60 * 1000)) {
+  if (tokenExpiresAt === null || nowMs >= tokenExpiresAt.getTime() - 5 * 60 * 1000) {
     const newToken = await fetchToken();
     if (newToken) {
       dynamicToken = newToken;
-      tokenExpiresAt = new Date(now.getTime() + TOKEN_REFRESH_INTERVAL);
+      tokenExpiresAt = new Date(nowMs + TOKEN_REFRESH_INTERVAL);
       tokenFetchFailedAt = null;
       refreshFetchSeq += 1;
-    } else {
-      tokenFetchFailedAt = now.getTime();
+    } else if (!isRegistrationConflictActive()) {
+      // P1-1: 409 路径已在 recordTokenConflict 里设置锚点与冲突间隔；
+      // 只有普通失败才在这里记「上次失败时刻」（固定 30s 窗口锚点）。
+      tokenFetchFailedAt = nowMs;
     }
   }
 }
@@ -402,4 +498,13 @@ export async function forceTokenRefresh(): Promise<string | null> {
     refreshInFlight = null;
   }
   return dynamicToken;
+}
+
+/** P1-1（测试出口）：重置 409 冲突退避状态机——退避间隔、失败锚点、冲突标志。
+ *  既有单测按 resetModules 逐用例重建模块注册表，天然隔离；该钩子给同一注册表
+ *  内连续驱动多次 409 → 退避递增的用例用（对齐 scheduler 的
+ *  resetVersionDriftWarnStateForTest 先例）。 */
+export function __resetTokenConflictStateForTest(): void {
+  clearTokenConflict();
+  tokenFetchFailedAt = null;
 }

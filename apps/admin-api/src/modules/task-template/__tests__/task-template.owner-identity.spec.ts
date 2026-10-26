@@ -135,7 +135,10 @@ describe("属主键编码：buildTemplateOwnerKey / parseTemplateOwnerKey", () =
     const key = buildTemplateOwnerKey({ id: 123456, username: long });
     expect(key.length).toBeLessThanOrEqual(TEMPLATE_OWNER_KEY_MAX_LENGTH);
     expect(key.startsWith("user:123456|")).toBe(true);
-    expect(parseTemplateOwnerKey(key)).toEqual({ kind: "keyed", userId: 123456 });
+    expect(parseTemplateOwnerKey(key)).toEqual({
+      kind: "keyed",
+      userId: 123456,
+    });
   });
 
   it("username 含分隔符/冒号也不破坏解析（id 段在前、首个 | 之后全归展示段）", () => {
@@ -164,9 +167,9 @@ describe("属主键编码：buildTemplateOwnerKey / parseTemplateOwnerKey", () =
 describe("isTemplateOwner：id 权威 / 历史行回退", () => {
   it("新键：id 相同即属主——username 改了也还是属主（修掉「改名即失属主」）", () => {
     const key = buildTemplateOwnerKey({ id: 1, username: "alice" });
-    expect(
-      isTemplateOwner(key, { id: 1, username: "alice-renamed" }),
-    ).toBe(true);
+    expect(isTemplateOwner(key, { id: 1, username: "alice-renamed" })).toBe(
+      true,
+    );
   });
 
   it("新键：id 不同则**即使 username 相同**也不是属主（同名新号继承的正面阻断）", () => {
@@ -255,9 +258,7 @@ describe("TaskTemplateService.remove：删号后同名新号不得继承归属",
       { name: "A 的模板", config: { ...VALID_CONFIG } },
       { id: 1, username: "alice" },
     );
-    await expect(h.svc.remove(tpl.id, bob)).rejects.toThrow(
-      ForbiddenException,
-    );
+    await expect(h.svc.remove(tpl.id, bob)).rejects.toThrow(ForbiddenException);
     expect(h.repo.delete).not.toHaveBeenCalled();
   });
 
@@ -298,19 +299,27 @@ describe("历史行兼容 + 残余风险（未回填前不可消除）", () => {
     "缺陷复现（历史行形态）：同名新号 B 能删 A 的模板——旧判定只比 username 的实证；" +
       "修复只对新写入的行生效，历史行需回填才能一并堵住",
     async () => {
-    const h = await makeService();
-    // 修复前**所有**行都是这个形态，所以这条断言等价于「旧实现的越权可复现」。
-    const tpl = h.seed({ id: "legacy-2", key: "legacy2", createdBy: "alice" });
-    const sameName = { id: 2, username: "alice", role: UserRole.USER };
-    await h.svc.remove(tpl.id, sameName);
-    expect(h.repo.delete).toHaveBeenCalledWith({ id: "legacy-2" });
-  });
+      const h = await makeService();
+      // 修复前**所有**行都是这个形态，所以这条断言等价于「旧实现的越权可复现」。
+      const tpl = h.seed({
+        id: "legacy-2",
+        key: "legacy2",
+        createdBy: "alice",
+      });
+      const sameName = { id: 2, username: "alice", role: UserRole.USER };
+      await h.svc.remove(tpl.id, sameName);
+      expect(h.repo.delete).toHaveBeenCalledWith({ id: "legacy-2" });
+    },
+  );
 });
 
 describe("create 缺省创建者：沿用历史行语义（createdBy=NULL，仅 ADMIN 可删）", () => {
   it("不传 creator → createdBy=null；普通用户删 → 403 LEGACY_ADMIN_ONLY", async () => {
     const h = await makeService();
-    const tpl = await h.svc.create({ name: "anon", config: { ...VALID_CONFIG } });
+    const tpl = await h.svc.create({
+      name: "anon",
+      config: { ...VALID_CONFIG },
+    });
     expect(tpl.createdBy).toBeNull();
     await expect(h.svc.remove(tpl.id, alice)).rejects.toThrow(
       ForbiddenException,

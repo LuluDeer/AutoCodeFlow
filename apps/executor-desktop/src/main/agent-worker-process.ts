@@ -21,6 +21,7 @@ import { LineSplitter } from './child-line-splitter';
 import type { AgentHostConfig, AgentHostStats } from './agent/agent-host';
 import {
   parseAgentWorkerEvent,
+  parseAgentWorkerRequest,
   type AgentWorkerReady,
 } from './agent-worker-protocol';
 
@@ -34,6 +35,12 @@ export interface AgentWorkerLogger {
 /** shutdownWhenIdle 后仍未退出的兜底上限——超过任何闸门预算（单指派时长
  * 上限按 GateLimits 面收敛），到点强杀并记日志，绝不留下僵尸 worker。 */
 const SHUTDOWN_IDLE_KILL_AFTER_MS = 2 * 60 * 60 * 1000;
+
+/** P3-1：死管道日志的安全形态——只提取消息类型，绝不记载荷（config 消息
+ * 携带 executorToken，任何截断长度都可能把凭据前缀写进日志）。 */
+function deadLineType(line: string): string {
+  return parseAgentWorkerRequest(line)?.t ?? 'unparseable';
+}
 
 export interface AgentWorkerHandleDeps {
   address: string;
@@ -212,7 +219,10 @@ export class AgentWorkerHandle {
 
   private writeLine(line: string): void {
     if (!this.alive) {
-      this.deps.log.warn(`[agent-worker] write while dead: ${line.slice(0, 80)}`);
+      // P3-1：死管道日志只记消息类型，不记载荷——载荷可能携带 executorToken
+      // （config 消息全量下发，token 在前 80 字符内），截断日志等于把凭据
+      // 前缀写进 electron-log。
+      this.deps.log.warn(`[agent-worker] write while dead: t=${deadLineType(line)}`);
       return;
     }
     this.child!.stdin?.write(`${line}\n`);

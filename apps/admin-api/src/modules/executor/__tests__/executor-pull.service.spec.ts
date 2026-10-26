@@ -22,6 +22,10 @@ jest.mock("ioredis", () => ({
         get: jest.fn().mockResolvedValue(null),
         set: jest.fn().mockResolvedValue("OK"),
         del: jest.fn().mockResolvedValue(1),
+        // P2-2：deploymentId→commandIds 反向集合 + 撤销标记（sadd/expire/smembers）。
+        sadd: jest.fn().mockResolvedValue(1),
+        expire: jest.fn().mockResolvedValue(1),
+        smembers: jest.fn().mockResolvedValue([]),
         on: jest.fn(),
         quit: jest.fn().mockResolvedValue("OK"),
       };
@@ -530,13 +534,26 @@ describe("ExecutorPullService — 控制面命令（ARCH-33）", () => {
           type: "deploy",
           deploymentId: "deploy-1",
           appId: "app-1",
+          executorId: "exec-1",
         }),
       );
 
+      // P2-4：meta 增记目标 executorId（归属比对的数据源）。
       await expect(svc.getCommandMeta("cmd-1")).resolves.toEqual({
         type: "deploy",
         deploymentId: "deploy-1",
         appId: "app-1",
+        executorId: "exec-1",
+      });
+      // P2-4 兼容：存量 meta（升级窗口内入队）无 executorId → 读面为 null。
+      client.get.mockResolvedValueOnce(
+        JSON.stringify({ type: "deploy", deploymentId: "deploy-1" }),
+      );
+      await expect(svc.getCommandMeta("cmd-old")).resolves.toEqual({
+        type: "deploy",
+        deploymentId: "deploy-1",
+        appId: null,
+        executorId: null,
       });
     });
 
@@ -566,6 +583,258 @@ describe("ExecutorPullService — 控制面命令（ARCH-33）", () => {
       // 命令本身照样进了队列。
       expect(client.lpush).toHaveBeenCalledTimes(1);
     });
+
+    // ── P2-2（2026-10-26 第三轮审计）：deploymentId→commandIds 反向集合 ──
+    //
+    // stuck sweep 判 FAILED 后，≤30min 命令 TTL 内滞留在执行器队列里的 deploy
+    // 命令仍会被回归 pull 的执行器执行（设备装上无人跟踪的应用）。判败即撤令
+    // 的反查数据源就是本集合（写入在 enqueueCommand，读取在 cancelCommandsForDeployment）。
+    it("P2-2：deploy 命令入队时维护 acf:cmdbydep:{deploymentId} 反向集合（SADD+EXPIRE）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+
+      await svc.enqueueCommand("exec-1", "deploy", {
+        deploymentId: "deploy-1",
+      });
+
+      expect(client.sadd).toHaveBeenCalledWith(
+        "acf:cmdbydep:deploy-1",
+        expect.any(String),
+      );
+      expect(client.expire).toHaveBeenCalledWith("acf:cmdbydep:deploy-1", 1800);
+    });
+
+    it("P2-2：非部署类命令（无 deploymentId）不维护反向集合", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+
+      await svc.enqueueCommand("exec-1", "config-reload", {});
+
+      expect(client.sadd).not.toHaveBeenCalled();
+    });
+
+    it("P2-2：cancelCommandsForDeployment 给集合内全部命令打撤销标记并清集合", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.smembers.mockResolvedValueOnce(["c-1", "c-2"]);
+
+      await expect(svc.cancelCommandsForDeployment("deploy-1")).resolves.toBe(
+        2,
+      );
+
+      // 每条命令一个撤销标记（TTL 与命令 TTL 同源：命令过期后标记是幽灵数据）。
+      expect(client.set).toHaveBeenCalledWith(
+        "acf:cmdcancel:c-1",
+        expect.stringContaining("stuck-sweep"),
+        "EX",
+        1800,
+      );
+      expect(client.set).toHaveBeenCalledWith(
+        "acf:cmdcancel:c-2",
+        expect.any(String),
+        "EX",
+        1800,
+      );
+      // 部署已终态：反向集合使命结束，清掉防残留。
+      expect(client.del).toHaveBeenCalledWith("acf:cmdbydep:deploy-1");
+    });
+
+    it("P2-2：无在途命令时返回 0，不写任何标记", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.smembers.mockResolvedValueOnce([]);
+
+      await expect(svc.cancelCommandsForDeployment("deploy-1")).resolves.toBe(
+        0,
+      );
+      expect(client.set).not.toHaveBeenCalled();
+      expect(client.del).not.toHaveBeenCalled();
+    });
+
+    it("P2-2：被判败撤销的命令取件时丢弃不投递，并留作废痕迹到结果键", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      routeRpop(client, {
+        cmd: [
+          JSON.stringify({
+            commandId: "c-canceled",
+            type: "deploy",
+            payload: {},
+            issuedAt: Date.now(),
+          }),
+        ],
+      });
+      // 撤销标记在（判败 sweep 已执行）。
+      client.get.mockImplementation(async (key: string) =>
+        key === "acf:cmdcancel:c-canceled"
+          ? JSON.stringify({ canceledBy: "stuck-sweep" })
+          : null,
+      );
+      const warn = jest
+        .spyOn(
+          (svc as unknown as { logger: Record<string, jest.Mock> }).logger,
+          "warn",
+        )
+        .mockImplementation(() => {});
+
+      await expect(
+        svc.pullWork("exec-1", 0, { wantTask: true }),
+      ).resolves.toEqual({ task: null, commands: [] });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("canceled pull command c-canceled"),
+      );
+      // 作废原因落 acf:cmdres（排障读面可见「命令为什么没执行」）。
+      const resCall = client.set.mock.calls.find(
+        ([key]) => key === "acf:cmdres:c-canceled",
+      ) as unknown as [string, string] | undefined;
+      expect(resCall).toBeDefined();
+      expect(JSON.parse(resCall![1])).toMatchObject({
+        commandId: "c-canceled",
+        ok: false,
+        canceled: true,
+      });
+      expect(JSON.parse(resCall![1]).error).toContain("作废");
+    });
+
+    it("P2-2：正常命令（无撤销标记）不受影响，照常投递", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      routeRpop(client, {
+        cmd: [
+          JSON.stringify({
+            commandId: "c-alive",
+            type: "app-stop",
+            payload: {},
+            issuedAt: Date.now(),
+          }),
+        ],
+      });
+      client.get.mockResolvedValue(null);
+
+      await expect(
+        svc.pullWork("exec-1", 0, { wantTask: true }),
+      ).resolves.toEqual({
+        task: null,
+        commands: [
+          expect.objectContaining({ commandId: "c-alive", type: "app-stop" }),
+        ],
+      });
+    });
+  });
+
+  // ── P3-1（2026-10-26 第三轮审计）：长轮询断连感知 ──────────────────────
+  //
+  // 纯轮询模型没有悬挂请求，但断连后仍每 500ms RPOP 到 waitMs 耗尽——窗口
+  // 末端弹出的任务投给死 socket 必然丢失，还把队列里本可活到下一轮的载荷
+  // 提前吞掉。控制器以 res 'close' 注入探针，取件循环每轮等待前探活。
+  describe("P3-1 断连感知（isConnected 探针）", () => {
+    const makeService = async () => {
+      const module = await Test.createTestingModule({
+        providers: [
+          ExecutorPullService,
+          {
+            provide: ConfigService,
+            useValue: { get: jest.fn(() => "900000") },
+          },
+        ],
+      }).compile();
+      return module.get(ExecutorPullService);
+    };
+
+    const clientOf = (svc: ExecutorPullService) =>
+      (
+        svc as unknown as { ensureClient: () => Record<string, jest.Mock> }
+      ).ensureClient();
+
+    it("探针返回 false → 第一轮取件后立即退出（不再 RPOP、不再等待）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      // 空队列：rpop 恒 null——若无断连感知，本用例会真实等待 25s 而超时。
+      const isConnected = jest.fn(() => false);
+
+      const startedAt = Date.now();
+      await expect(
+        svc.pullWork("exec-1", 25_000, { wantTask: true, isConnected }),
+      ).resolves.toEqual({ task: null, commands: [] });
+      // 远小于 waitMs（25s）即返回 = 提前退出生效。
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      // 第一轮恰好各探测一次任务/命令队列，之后停止。
+      expect(client.rpop).toHaveBeenCalledTimes(2);
+      expect(isConnected).toHaveBeenCalled();
+    });
+
+    it("探针首轮 true、后续 false → 恰好多跑一轮后停止（弹出任务前探活）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      // 首轮（还未等待）连接存活；第一轮 500ms 等待期间断连 → 第 2 轮探活
+      // 失败即停，第 3 轮的 RPOP 永远不发生。
+      const isConnected = jest
+        .fn()
+        .mockImplementationOnce(() => true)
+        .mockReturnValue(false);
+
+      await expect(
+        svc.pullWork("exec-1", 25_000, { wantTask: true, isConnected }),
+      ).resolves.toEqual({ task: null, commands: [] });
+      // 两轮 = 2×(cmd rpop + task rpop) = 4 次，第 3 轮被探针拦下。
+      expect(client.rpop).toHaveBeenCalledTimes(4);
+    });
+
+    it("探针缺省（undefined）= 不感知断连，既有语义基线不变", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      // waitMs=0：立即取一次即返回（既有语义），证明缺省路径可走通。
+      await expect(
+        svc.pullWork("exec-1", 0, { wantTask: true }),
+      ).resolves.toEqual({ task: null, commands: [] });
+      expect(client.rpop).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── P3-4（2026-10-26 第三轮审计）：takeTask 排水上限 ──────────────────
+  //
+  // 对照命令侧 MAX_COMMANDS_PER_PULL=64：while(true) 无排水上限时，一条被
+  // 病态数据灌满的队列会让单次 pull 串行 RPOP 上千次。128 条全废 → 放弃本轮。
+  it("P3-4：连续过期载荷达到排水上限（128）后放弃本轮并 warn", async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorPullService,
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn(() => "900000") },
+        },
+      ],
+    }).compile();
+    const svc = module.get(ExecutorPullService);
+    const client = (
+      svc as unknown as { ensureClient: () => Record<string, jest.Mock> }
+    ).ensureClient();
+    // 任务队列灌满确定过期的载荷（TTL 15min，pushedAt 老 16min）；命令队列空
+    // （rpop 按 key 分派，避免命令队列的弹出被误计入排水计数）。
+    const stalePayload = JSON.stringify({
+      executionId: "e1",
+      pushedAt: Date.now() - 16 * 60_000,
+    });
+    client.rpop.mockImplementation(async (key: string) =>
+      key.startsWith("acf:cmd:") ? null : stalePayload,
+    );
+    const warn = jest
+      .spyOn(
+        (svc as unknown as { logger: Record<string, jest.Mock> }).logger,
+        "warn",
+      )
+      .mockImplementation(() => {});
+
+    await expect(
+      svc.pullWork("exec-1", 0, { wantTask: true }),
+    ).resolves.toEqual({ task: null, commands: [] });
+    // 恰好在第 128 次任务排水后停止（不是 while(true) 烧到队列空）；
+    // 总 rpop = 1 次命令队列探测 + 128 次任务排水。
+    const taskPops = client.rpop.mock.calls.filter(
+      ([key]) => !String(key).startsWith("acf:cmd:"),
+    ).length;
+    expect(taskPops).toBe(128);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("per-take cap"));
   });
 
   describe("P1-3 Redis 瞬时故障降级", () => {

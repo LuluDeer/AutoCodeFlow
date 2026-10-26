@@ -165,6 +165,49 @@ describe('health route admin API probing', () => {
     expect(res.body.appName).toBe('test-executor');
     expect(requestedPaths).toEqual(['/api/health']);
   });
+
+  // P1-1（本轮审计）：/token 409 慢性冲突态经 /health 与 /health/admin-status
+  // 暴露。auth.ts 在 409 时置位 heartbeat-state 的 registrationConflict，成功
+  // 取回 token 即清除；这里直接驱动 heartbeat-state 验证两个暴露面的翻转。
+  it('P1-1: exposes registrationConflict on /health and /health/admin-status, flipping with the token chain', async () => {
+    const heartbeatState = require('../heartbeat-state') as {
+      setRegistrationConflict: (v: boolean) => void;
+      resetAdminStatusForTest: () => void;
+    };
+    server = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.end('ok');
+    });
+    const port = await listen(server);
+    mockConfig.adminApiUrlInternal = `http://127.0.0.1:${port}`;
+
+    const app = express();
+    app.use('/', healthRouter);
+
+    try {
+      heartbeatState.resetAdminStatusForTest();
+
+      // 默认：无冲突。
+      const calm = await request(app).get('/health');
+      expect(calm.body.registrationConflict).toBe(false);
+      const calmStatus = await request(app).get('/health/admin-status');
+      expect(calmStatus.body.registrationConflict).toBe(false);
+
+      // 409 置位 → 两个暴露面都为 true。
+      heartbeatState.setRegistrationConflict(true);
+      const conflicted = await request(app).get('/health');
+      expect(conflicted.body.registrationConflict).toBe(true);
+      const conflictedStatus = await request(app).get('/health/admin-status');
+      expect(conflictedStatus.body.registrationConflict).toBe(true);
+
+      // token 链恢复（auth.ts clearTokenConflict）→ 撤销。
+      heartbeatState.setRegistrationConflict(false);
+      const healed = await request(app).get('/health');
+      expect(healed.body.registrationConflict).toBe(false);
+    } finally {
+      heartbeatState.resetAdminStatusForTest();
+    }
+  });
 });
 
 // E-20（DEEP_REVIEW 0ef3bbe）：探针端点与 Windows 指标口径。

@@ -177,9 +177,36 @@ async function testRealBundleSmoke(): Promise<void> {
   h.kill();
 }
 
+async function testDeadPipeLogRedaction(): Promise<void> {
+  // P3-1：死管道日志只记消息类型不记载荷——config 消息携带 executorToken，
+  // 旧实现 `line.slice(0, 80)` 会把 token 前缀写进 electron-log。
+  // （公开调用方都先判 alive，死分支是防御性的——经类型化缝隙直击 writeLine，
+  //  锚定「一旦命中，载荷绝不入日志」的红线。）
+  const warns: string[] = [];
+  const h = new AgentWorkerHandle({
+    address: 'selftest:1',
+    workDir: WORKDIR,
+    config: { ...CONFIG, executorToken: 'sk-secret-token-abcdef' },
+    entryPath: FAKE_ENTRY,
+    spawnEnv: { ...process.env },
+    log: { info: () => undefined, warn: (m) => warns.push(m), error: () => undefined },
+  });
+  assert.strictEqual(h.alive, false, '从未 start 的 handle 必须是 dead 态');
+  const writeLine = (h as unknown as { writeLine: (line: string) => void }).writeLine.bind(h);
+  writeLine(JSON.stringify({ t: 'config', config: { ...CONFIG, executorToken: 'sk-secret-token-abcdef' } }));
+  assert.strictEqual(warns.length, 1, `死管道写入必须记一条 warn，实际 ${warns.length}`);
+  assert.ok(warns[0].includes('t=config'), `日志必须含消息类型 t=config，实际：${warns[0]}`);
+  assert.ok(!warns[0].includes('sk-secret-token'), `载荷（token）绝不能进日志：${warns[0]}`);
+  assert.ok(!warns[0].includes('adminApiUrl'), `载荷（配置体）不能进日志：${warns[0]}`);
+  // 非协议行（烂行）→ 如实记 unparseable，也不回显内容
+  writeLine('not-json-at-all');
+  assert.ok(warns[1].includes('t=unparseable') && !warns[1].includes('not-json-at-all'), `烂行形态：${warns[1]}`);
+}
+
 (async () => {
   await testFakeWorkerRoundTrip();
   await testCrashAndSelfHeal();
+  await testDeadPipeLogRedaction();
   await testRealBundleSmoke();
   fs.rmSync(WORKDIR, { recursive: true, force: true });
   console.log('agent-worker-process.selftest: all assertions passed');

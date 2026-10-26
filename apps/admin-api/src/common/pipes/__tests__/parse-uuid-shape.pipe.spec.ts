@@ -15,7 +15,9 @@ import { DEFAULT_PROJECT_ID } from "../../../modules/project/project.entity";
  *
  * 本文件把两侧都钉住：
  *  ① 默认项目 id 必须通过（修复前此用例红）；
- *  ② 真正的非法串仍然 400（放宽不能变成放行面扩张）。
+ *  ② 真正的非法串仍然 400（放宽不能变成放行面扩张），且封套统一为
+ *     INVALID_VALUE_FORMAT（F-52，UIAUDIT P2-1：与 users 侧 ParseIntShapePipe、
+ *     filter 的 22P02 兜底三方同码同文案）。
  */
 const META: ArgumentMetadata = { type: "param", metatype: String, data: "id" };
 
@@ -65,9 +67,14 @@ describe("ParseUuidShapePipe（路由参数 UUID 形状校验）", () => {
     );
   });
 
-  it("拒绝时的文案与 NestJS 逐字一致（前端/既有 spec 不感知实现变化）", async () => {
-    await expect(pipe().transform("abc", META)).rejects.toThrow(
-      "Validation failed (uuid is expected)",
+  it("拒绝封套：INVALID_VALUE_FORMAT（F-52 全站统一码，中文目录文案）", async () => {
+    const err = await pipe()
+      .transform("abc", META)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect((err as { errorCode?: string }).errorCode).toBe(
+      "INVALID_VALUE_FORMAT",
     );
+    expect((err as { message?: string }).message).toContain("格式非法");
   });
 });

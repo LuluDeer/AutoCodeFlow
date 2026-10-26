@@ -22,6 +22,8 @@ import { formatDateTime } from '../utils/timeFormat';
 import { useAuthStore } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// UI-08：首屏数据未达时以骨架形态替代裸 spinner / 误报空态（见下方视图分支）
+import PageSkeleton from '../components/PageSkeleton';
 // UI-07：视图切换 / 分组聚合条 / 卡片视图 / 批量操作条 / 实时状态
 import ViewToggle, { readViewMode, writeViewMode, type ExecutorViewMode } from '../components/executor/ViewToggle';
 import GroupFilterBar from '../components/executor/GroupFilterBar';
@@ -107,6 +109,11 @@ export default function ExecutorListPage() {
       }
       prevStatusMap.current[ex.id] = ex.status;
     });
+    // 「缺 t」是伪问题：i18next 的 t() 在调用期经模块级 i18n 实例动态解析
+    // 当前语言（R8 轮已实证语言切换无需重建回调），把 t 加进依赖会让每次
+    // 语言切换都重建 effect 并重放首轮基线（isFirstLoad 已翻 false 后的
+    // 重复通知风险）。刻意不列，勿补。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, notifApi]);
 
   const navigate = useNavigate();
@@ -144,8 +151,20 @@ export default function ExecutorListPage() {
       const res = await client.get<{ cmd: string }>('/executors/install-cmd');
       setInstallCmd(res);
       setInstallCmdModal(true);
-    } catch {
-      confirmModal.error({ title: t('execList.installCmdFail.title'), content: t('execList.installCmdFail.content') });
+    } catch (err: unknown) {
+      // P1-1（UIAUDIT4）：503 EXECUTOR_INSTALL_CMD_NOT_CONFIGURED 是服务端
+      // **配置缺失**（ADMIN_API_URL 环境变量），不是 admin-api 故障——统一
+      // 「请检查服务是否正常运行」会把排障方向带偏。按错误码分流文案；
+      // 其余错误（网络/5xx）维持原服务检查指引。
+      const errorCode = (err as { response?: { data?: { errorCode?: string } } })
+        ?.response?.data?.errorCode;
+      confirmModal.error({
+        title: t('execList.installCmdFail.title'),
+        content:
+          errorCode === 'EXECUTOR_INSTALL_CMD_NOT_CONFIGURED'
+            ? t('execList.installCmdFail.notConfigured')
+            : t('execList.installCmdFail.content'),
+      });
     }
   };
 
@@ -194,7 +213,22 @@ export default function ExecutorListPage() {
   const hasFilters = !!(searchText || statusFilter || groupFilter || modeFilter);
   const onlineCount = executors.filter(e => e.status === 'online').length;
 
-  // UI-07 ③：选中执行器实体（批量操作条需要 status/appName/address）
+  // UI-07 ③：选中执行器实体（批量操作条需要 status/appName/address）。
+  // P3-3（UI 审计）：选中集合与筛选**解耦修正**——旧实现 selectedExecutors 取自
+  // 全量 executors，筛选后看不见的行仍留在选中集合里参与批量操作（批量删除/
+  // 轮换会作用于用户当前看不见的机器）。现筛选条件变化时从选中集合剔除被筛掉
+  // 的行（ref 持有最新可见 id 集，effect 只随四个筛选条件触发，不随轮询数据
+  // 重建）。
+  const filteredIdsRef = useRef<Set<string>>(new Set());
+  filteredIdsRef.current = new Set(filtered.map((ex) => ex.id));
+  useEffect(() => {
+    setSelectedRowKeys((prev) => {
+      const visible = filteredIdsRef.current;
+      const next = prev.filter((kid) => visible.has(kid));
+      // 引用不变时不 setState，避免无谓重渲染
+      return next.length === prev.length ? prev : next;
+    });
+  }, [searchText, statusFilter, groupFilter, modeFilter]);
   const selectedExecutors = useMemo(
     () => executors.filter((ex) => selectedRowKeys.includes(ex.id)),
     [executors, selectedRowKeys],
@@ -545,7 +579,13 @@ export default function ExecutorListPage() {
         />
       ) : null}
 
-      {effectiveViewMode === 'card' ? (
+      {/* UI-08：首屏（数据未达且未出错）以骨架替代两视图——此前卡片分支在
+          executors=[] 时直接渲染 Empty「无匹配执行器」，把「加载中」误报成
+          「没有数据」；表格分支只有 antd 内建 spinner，与全站列表页形态不一致。
+          数据到达后（含轮询拍）不再进此分支，筛选/空态语义不变。 */}
+      {loading && !error && executors.length === 0 ? (
+        <PageSkeleton variant="table" rows={6} />
+      ) : effectiveViewMode === 'card' ? (
         <ExecutorCardGrid
           executors={filtered}
           selectedIds={selectedRowKeys}

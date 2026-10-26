@@ -86,10 +86,14 @@ describe('PERF-10 源码层：轮询 tick 必须判可见性', () => {
     expect(iVisibility).toBeLessThan(iRequest);
   });
 
-  it('与本仓既有三处可见性守卫同款（不是自创形态）', () => {
-    // 防止后续有人把它改成 `document.hidden` 之类不一致的写法
+  it('与本仓既有可见性守卫同款（不是自创形态）', () => {
+    // 防止后续有人把它改成 `document.hidden` 之类不一致的写法。
+    // F-17（UIAUDIT P3-10）：ExecutionsPage 的 15s 轮询兜底改走 TanStack
+    // refetchInterval（sseFallbackRefetchInterval 接线，queries.ts）——可见性
+    // 语义由 refetchInterval 默认 refetchIntervalInBackground:false 承担
+    // （隐藏暂停、回前台下一拍恢复），源码里不再有 visibilityState 判据，
+    // 移出本清单（守卫对象只剩仍用手动 setInterval 的两处）。
     for (const rel of [
-      ['pages', 'ExecutionsPage.tsx'],
       // REFACTOR-EXEC-03：断流轮询兜底随日志子系统迁至 ExecutionLogSection
       ['components', 'ExecutionLogSection.tsx'],
       ['pages', 'AppDeploymentPage.tsx'],

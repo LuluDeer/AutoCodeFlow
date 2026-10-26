@@ -21,18 +21,31 @@
 - **熔断**：网络类（上表 + ``httpx.ProtocolError``，即对端中途断连的
   RemoteProtocolError / LocalProtocolError）/ 5xx / 429 计入 ``CircuitBreaker``
   失败计数（见 ``_CIRCUIT_BREAKABLE_EXC``）；非网络异常不计。熔断 open 时请求
-  直接抛 ``RuntimeError("Circuit breaker is open ...")``。
+  直接抛 ``CircuitBreakerOpenError``（P3-5：RuntimeError 子类——既有
+  ``except RuntimeError`` 调用方零改动，但可与之区分编程错误）。
+- **响应体上限**（P3-6）：默认 ``max_response_bytes=50MB``，流式读取超限即中止
+  并抛 ``ResponseTooLargeError``（rogue 对端防护）；设 None 关闭恢复全量进内存。
 
-### 与 node SDK 的 parity 关系
+### 端间 parity 关系（2026-10-26 如实修订——旧文案声称"四端已对齐"，漂移）
 
-本包（Python）有上述重试 + 熔断契约；``packages/autocodeflow-node-sdk`` 的
-``http-client.ts`` 已补齐同款指数退避重试 + ``CircuitBreaker``（B-4 对齐：
-``CircuitBreakerOpenError``、half-open 探测、``Retry-After`` 解析与可重试状态码
-集合均与本契约同构）。四端（python SDK / node SDK / CLI / MCP）的重试与熔断行为
-已对齐，调用方可按本契约预期 node SDK 侧的退避与熔断语义。
+- **本包 ↔ ``packages/autocodeflow-node-sdk`` 两端对齐**（B-4）：node 侧
+  ``http-client.ts`` 已补齐同款指数退避重试 + ``CircuitBreaker``——
+  ``CircuitBreakerOpenError``、half-open 探测、``Retry-After`` 解析与可重试
+  状态码集合均与本契约同构。调用方可按本契约预期 **node SDK 侧**的退避与
+  熔断语义，仅此两端。
+- **其余两端不在本契约内**（各自 docstring 已有取舍理由，此处互指）：
+  - ``packages/autoflow-sdk``（http.py 的 HttpClient / AsyncHttpClient，任务内
+    通用通道）：**无重试、无熔断**——理由见其类 docstring（BUG-15 复审定调：
+    幂等重试由任务代码自决）；
+  - ``packages/acf-cli``（client.ts）：axios 单发 + 401 单飞刷新自愈（BUG-13），
+    无重试/熔断——见其 ``getClient`` 头注；
+  - ``packages/mcp-server``（api.ts）：仅请求超时（``REQUEST_TIMEOUT_MS``）+
+    401 refresh 自愈（BUG-14），无重试/熔断。
+  修订任何一端的重试/熔断面之前，请先互读其余各端注释，保持这份地图不失真。
 """
 from __future__ import annotations
 
+import random
 import time
 import logging
 from dataclasses import dataclass, field
@@ -55,12 +68,32 @@ logger = logging.getLogger(__name__)
 # side effects on the server, unlike POST/PUT/DELETE/PATCH.
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# P3-6: 响应体默认上限（字节）。量级参照 admin-api S3 日志存储的
+# MAX_LOG_BYTES（100MB 解压硬帽）；本客户端是任务进程的通用 HTTP 出站，
+# 取更保守的 50MB——rogue 对端（配置错误的服务 / 被劫持的代理）一次吐几 GB
+# 时，任务进程不至于把整机内存吃穿。构造时传 None 可显式关闭（不推荐）。
+DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
+# P3-7: 退避加性抖动上限（秒）。对齐 autoflow-sdk callback.py 的
+# CALLBACK_RETRY_JITTER_S = 0.25（同形态：最终延迟 + random.uniform(0, JITTER)）。
+# 实际加的抖动还会被 min(JITTER, 本轮等待) 封顶——生产形态（min_wait=1s）下
+# 与 callback.py 一致，测试用极短退避时抖动不至于反客为主。
+BACKOFF_JITTER_SEC = 0.25
+
 # PK-09: circuit breaker 只统计网络类失败（连接错误/超时/5xx）。
 # 非网络异常（ValueError/TypeError/业务逻辑错误）不计入熔断失败计数。
 _CIRCUIT_BREAKABLE_EXC = (
     httpx.HTTPStatusError,  # 5xx / 429（_do 只对 retryable_statuses 抛）
     httpx.TimeoutException,
     httpx.NetworkError,     # 父类：ConnectError / ReadError / WriteError / CloseError
+    # P3-7 评估（2026-10-26）：ProtocolError 计入熔断但**不进重试集**（见下方
+    # tenacity retry= 元组），评估结论=保持现状。理由：可重试的瞬时故障形态已
+    # 被其余三条覆盖——5xx/429 走 HTTPStatusError、连接拒绝/读写断走
+    # NetworkError、慢走 TimeoutException；落到 ProtocolError 意味着对端在协议
+    # 层**明确违规**（中途断流/畸形帧），十有八九是确定性缺陷而非瞬时抖动
+    # （真正的瞬时形态——503、连接被拒、超时——都不会以 ProtocolError 呈现），
+    # 对幂等 GET 重试大概率同错，只烧退避预算。正确处置正是本行的选择：计入
+    # 熔断失败计数 → 快速失败 + half-open 探测自愈。
     httpx.ProtocolError,    # RemoteProtocolError / LocalProtocolError（对端中途断连）
 )
 
@@ -121,6 +154,33 @@ class ApiHttpStatusError(httpx.HTTPStatusError):
         return params if isinstance(params, dict) else {}
 
 
+class CircuitBreakerOpenError(RuntimeError):
+    """P3-5: 熔断 open 时快速失败抛出的**有类型**错误（对齐 node-sdk B-4 形态）。
+
+    node 侧同构类型见 ``packages/autocodeflow-node-sdk`` http-client.ts 的
+    ``CircuitBreakerOpenError``（类型名即 ``name``/类名，文案同形；本包是通用
+    客户端，文案不指名 Admin API）。刻意继承 ``RuntimeError``：模块 docstring
+    的 PK-32 契约与既有调用方/测试钉死的 ``except RuntimeError`` 语义不变——
+    旧的裸 ``RuntimeError`` raise 只是换成更可判别的子类，行为零漂移。
+    """
+
+    def __init__(self, message: str = (
+        "Circuit breaker is open — request blocked "
+        "(failing fast until the reset timeout elapses)"
+    )) -> None:
+        super().__init__(message)
+
+
+class ResponseTooLargeError(RuntimeError):
+    """P3-6: 响应体超过 ``max_response_bytes`` 上限（rogue 对端防护）。
+
+    流式读取在超限的当口**中止**（累计到帽即抛，连接随之关闭），不再把全量
+    响应灌进内存。刻意**不**继承 httpx 异常族：这不是传输层故障——十有八九
+    是对端就是要吐这么大，重试大概率同错；也不计入熔断（
+    ``_CIRCUIT_BREAKABLE_EXC`` 不含本类），是否当作"故障"由调用方裁定。
+    """
+
+
 @dataclass
 class RetryConfig:
     """Configuration for HTTP retry behavior."""
@@ -158,13 +218,24 @@ class _WaitWithRetryAfter:
     R134-A1: max_retry_after_sec 可选地对"服务端指定"的等待时间设上限
     （None = 不设上限，即历史行为）。没有上限时一个 Retry-After: 3600 就能
     把任务进程停一小时——max_wait_sec 从来不管这条路径。
+
+    P3-7: 最终等待时间加**加性均匀抖动**（上限 ``BACKOFF_JITTER_SEC``，实际
+    幅度再被 min(JITTER, 本轮等待) 封顶）——对照 autoflow-sdk callback.py:422
+    的 ``delay + random.uniform(0, CALLBACK_RETRY_JITTER_S)`` 形态。动机：
+    N 个任务进程同时打同一端点时，无抖动的指数退避会让重试波次完全同步
+    （雷群效应）；抖动只加不减，不破坏"至少等这么久"的 Retry-After 语义，
+    也不顶穿 max_wait / max_retry_after 的量级。
     """
 
     def __init__(
-        self, base: wait_exponential, max_retry_after_sec: Optional[float] = None
+        self,
+        base: wait_exponential,
+        max_retry_after_sec: Optional[float] = None,
+        jitter_sec: float = BACKOFF_JITTER_SEC,
     ):
         self._base = base
         self._max_retry_after = max_retry_after_sec
+        self._jitter_sec = max(0.0, float(jitter_sec))
 
     def __call__(self, retry_state: RetryCallState) -> float:
         wait = self._base(retry_state)
@@ -183,6 +254,10 @@ class _WaitWithRetryAfter:
                         )
                         parsed = self._max_retry_after
                     wait = max(wait, parsed)
+        # P3-7: 抖动加在（含 Retry-After 的）最终延迟之上，与 callback.py:422
+        # 同形态；min(JITTER, wait) 让极短退避（测试形态）不被抖动支配。
+        if self._jitter_sec > 0 and wait > 0:
+            wait += random.uniform(0, min(self._jitter_sec, wait))
         return wait
 
     @staticmethod
@@ -263,6 +338,10 @@ class AutoFlowHttpClient:
     """
     HTTP client with built-in retry, authentication, and circuit breaker.
 
+    P3-6: 响应体默认按 ``max_response_bytes``（50MB，见
+    ``DEFAULT_MAX_RESPONSE_BYTES``）流式封顶，超限中止读取并抛
+    ``ResponseTooLargeError``；传 ``None`` 恢复"全量进内存"的旧行为。
+
     Usage::
 
         client = AutoFlowHttpClient(base_url="https://api.example.com", auth_token="xxx")
@@ -276,12 +355,14 @@ class AutoFlowHttpClient:
         timeout_sec: float = 30.0,
         retry_config: Optional[RetryConfig] = None,
         circuit_breaker: Optional[CircuitBreaker] = None,
+        max_response_bytes: Optional[int] = DEFAULT_MAX_RESPONSE_BYTES,
     ):
         self.base_url = base_url.rstrip("/")
         self._auth_token = auth_token
         self._timeout = timeout_sec
         self._retry = retry_config or RetryConfig()
         self._breaker = circuit_breaker or CircuitBreaker()
+        self._max_response_bytes = max_response_bytes
         # PK-09(1): 实例级 AsyncClient 单例（lazy init），实现连接池复用。
         # 此前每请求新建 AsyncClient → 零连接复用。初始化是 check-then-set，
         # 在 asyncio 单线程事件循环内原子（无需锁；见 _get_client）。
@@ -330,6 +411,58 @@ class AutoFlowHttpClient:
             return True
         return method.upper() in SAFE_METHODS
 
+    async def _read_capped(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        data: Any,
+        headers: dict[str, str] | None,
+    ) -> httpx.Response:
+        """P3-6: 流式读取响应体，超过 ``_max_response_bytes`` 立即中止并抛
+        ``ResponseTooLargeError``（rogue 对端防护，理由见该类 docstring）。
+
+        返回值与 ``client.request`` 的非流式 Response 逐面兼容——
+        status / headers / reason_phrase / text / json / request 全部可用，
+        上层（可重试状态码判定、Retry-After 解析、错误体提取）无感。
+        注意字节数按 ``iter_bytes`` 的**解码后**内容计（gzip 等传输编码已解），
+        与"进程内存实际占用"对齐。
+        """
+        cap = self._max_response_bytes
+        assert cap is not None  # 调用方 _do 已判空；仅防御重构
+        async with client.stream(
+            method, url, json=data, headers=self._build_headers(headers),
+        ) as raw:
+            # 先看声明：Content-Length 已超帽 → 一个字节都不必读，直接中止。
+            # 声明可伪造也可缺失——不可信/缺失时回落到逐块累计检查。
+            declared = raw.headers.get("content-length")
+            if declared is not None:
+                try:
+                    declared_bytes = int(declared)
+                except ValueError:
+                    declared_bytes = None
+                if declared_bytes is not None and declared_bytes > cap:
+                    raise ResponseTooLargeError(
+                        f"declared content-length {declared_bytes} exceeds "
+                        f"max_response_bytes={cap} - read aborted before body"
+                    )
+            buf = bytearray()
+            # 注意是 aiter_bytes（AsyncClient 流的异步迭代器；iter_bytes 是同步形态）。
+            async for chunk in raw.aiter_bytes():
+                buf.extend(chunk)
+                if len(buf) > cap:
+                    raise ResponseTooLargeError(
+                        f"response body exceeded max_response_bytes={cap} - "
+                        f"read aborted (rogue-peer protection)"
+                    )
+            # 以既有非流式形态返回：同 status/headers/request + 已读 content。
+            return httpx.Response(
+                raw.status_code,
+                headers=raw.headers,
+                content=bytes(buf),
+                request=raw.request,
+            )
+
     async def _request(
         self, method: str, path: str, data: Any = None, headers: dict[str, str] | None = None
     ) -> httpx.Response:
@@ -338,19 +471,26 @@ class AutoFlowHttpClient:
         PK-32 错误契约详见模块 docstring。要点：
         - 可重试状态码（429/5xx 默认）抛 ``HTTPStatusError``；
         - 安全方法自动重试，非安全方法默认只发一次（``safe_methods_only``）；
-        - 熔断 open 时直接抛 ``RuntimeError``，不发起网络请求。
+        - 熔断 open 时直接抛 ``CircuitBreakerOpenError``（RuntimeError 子类），
+          不发起网络请求；
+        - 响应体超过 ``max_response_bytes`` 抛 ``ResponseTooLargeError``（P3-6）。
         """
         if self._breaker.is_open:
-            raise RuntimeError("Circuit breaker is open — request blocked")
+            raise CircuitBreakerOpenError()
 
         url = f"{self.base_url}{path}" if self.base_url else path
 
         async def _do() -> httpx.Response:
             # PK-09(1): 复用实例级 AsyncClient（连接池）。
             client = self._get_client()
-            resp = await client.request(
-                method, url, json=data, headers=self._build_headers(headers),
-            )
+            if self._max_response_bytes is not None:
+                # P3-6: 有帽走流式读取——超限在读取途中中止，全量响应不再
+                # 无界进内存；无帽（None）保持 ``client.request`` 一次到位。
+                resp = await self._read_capped(client, method, url, data, headers)
+            else:
+                resp = await client.request(
+                    method, url, json=data, headers=self._build_headers(headers),
+                )
             if resp.status_code in self._retry.retryable_statuses:
                 # R31-E2: 抛子类而非裸 HTTPStatusError——message/request/response
                 # 逐字节不变（PK-32 契约不动），额外提供 error_code / params。
@@ -374,6 +514,8 @@ class AutoFlowHttpClient:
                     # R134-A1: 服务器指定的等待时间可选上限（None = 旧行为）。
                     self._retry.max_retry_after_sec,
                 ),
+                # P3-7: ProtocolError 刻意不在重试集——评估结论与理由见
+                # _CIRCUIT_BREAKABLE_EXC 定义处的注释（计入熔断，不重试）。
                 retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError)),
                 reraise=True,
             )(_do)

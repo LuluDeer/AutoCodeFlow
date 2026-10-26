@@ -1116,7 +1116,10 @@ describe("R32-A2: SSRF DNS pinning 回归钉子", () => {
     mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
     const channel = new WebhookChannel(makeStore());
     await expect(
-      channel.send({ title: "t", content: "c" }, "http://rebind.example.com/hook"),
+      channel.send(
+        { title: "t", content: "c" },
+        "http://rebind.example.com/hook",
+      ),
     ).resolves.toBe("sent");
 
     const opts = (mockedAxios.post as jest.Mock).mock.calls[0][2] as {

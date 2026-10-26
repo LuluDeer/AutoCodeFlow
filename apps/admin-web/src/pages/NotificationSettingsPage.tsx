@@ -607,8 +607,21 @@ export default function NotificationSettingsPage() {
       setGlobalTestResult({ success: false, message: getErrMsg(err, t('notif.test.fail')) });
     },
   });
-  const sendTest = (data: { channels: string[]; title: string; content: string }) =>
+  const sendTest = (data: { channels: string[]; title: string; content: string }) => {
+    // P3-④（审计）：后端对「所选渠道全部禁用/未知」回 200 + success:false +
+    // **英文 message**（notification-config.service sendTest 的 no-enabled-channels
+    // 分支不带 errorCode，getErrMsg 的三级本地化降级走不到），用户会看到裸英文。
+    // 发送前预判：渠道列表已加载且所选渠道一个都没启用时，直接给本地化提示，
+    // 不发注定零投递的请求（部分禁用/部分启用仍放行——后端会投递启用的那些）。
+    if (channels) {
+      const enabledKeys = new Set(channels.filter((c) => c.enabled).map((c) => c.key));
+      if (data.channels.every((ch) => !enabledKeys.has(ch))) {
+        setGlobalTestResult({ success: false, message: t('notif.test.noEnabledChannels') });
+        return;
+      }
+    }
     sendTestMut.mutate(data);
+  };
   const sending = sendTestMut.isPending;
 
   // 排查清单 #2：渠道启停 Switch 此前无 in-flight 标记——受控 Switch 在 PATCH

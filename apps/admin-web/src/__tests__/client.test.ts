@@ -53,7 +53,9 @@ describe('DR-06 safe-method retries', () => {
   });
 
   it.each(['get', 'head', 'options'].flatMap(method =>
-    [undefined, 500, 502, 504].map(status => ({ method, status })),
+    // F-41：500 从重试面移除（应用层确定性故障不重试）——只保留网络失败与
+    // 网关类暂态 5xx（502/503/504）。
+    [undefined, 502, 503, 504].map(status => ({ method, status })),
   ))('$method retries $status / network failure once after 1s', async ({ method, status }) => {
     adapter.mockImplementationOnce(failure(status));
     const request = (client as unknown as (config: { url: string; method: string; adapter: typeof adapter }) => Promise<unknown>)({ url: '/tasks', method, adapter });
@@ -67,7 +69,9 @@ describe('DR-06 safe-method retries', () => {
     expect(message.error).not.toHaveBeenCalled();
   });
 
-  it.each([400, 403, 404, 409, 429])('GET does not retry HTTP %i', async (status) => {
+  // F-41：500 是应用层确定性故障（如深链坏 id 的 DB cast），重试零收益纯翻倍
+  // 请求与 toast——移出重试面；429 是限流信号，尊重之。两者都不重试。
+  it.each([400, 403, 404, 409, 429, 500])('GET does not retry HTTP %i', async (status) => {
     adapter.mockImplementation(failure(status));
     // DUP-TOAST：拦截器对这些状态码弹过 toast，reject 值带 __toastedByClient
     // 标——页面 catch 的 showApiError 兜底据此去重，不再二次弹错。
@@ -283,6 +287,46 @@ describe('401 refresh and DR-04 logout race', () => {
     expect(post.mock.calls.map(([url]) => url)).toEqual([
       `${getApiBaseUrl()}/auth/refresh`, `${getApiBaseUrl()}/auth/logout`,
     ]);
+  });
+});
+
+// F-1（UIUX 审计 P1-1）：公开认证端点的失败语义就是 401 —— 密码错/TOTP 码错
+// 绝不能走「refresh→logout→redirect」会话过期链（旧行为：输错密码触发整页
+// reload + 登录页谎报「会话已过期」，输入框全清空）。401 必须原样 reject，
+// 交给 LoginPage 的 catch 呈现真实原因。
+describe('F-1: 公开认证端点的 401 不走会话过期链', () => {
+  it.each(['/auth/login', '/auth/totp/verify'])('%s 401 → 不刷新、不登出、不弹 toast，reject 原样透出', async (url) => {
+    adapter.mockImplementationOnce(failure(401));
+    const post = vi.spyOn(axios, 'post');
+
+    await expect(
+      (client as unknown as (config: { url: string; method: string; adapter: typeof adapter }) => Promise<unknown>)({
+        url, method: 'post', adapter,
+      }),
+    ).rejects.toEqual({ message: 'HTTP 401', __status: 401 });
+
+    expect(post).not.toHaveBeenCalled(); // 不打 refresh
+    expect(adapter).toHaveBeenCalledTimes(1); // 不重试
+    expect(useAuthStore.getState()).toMatchObject({ token: 'old-access', refreshToken: 'old-refresh' });
+    expect(message.error).not.toHaveBeenCalled(); // 401 保持静默（页面 catch 负责）
+  });
+
+  it('边界：/auth/totp/enable 是 JWT 鉴权端点，其 401 仍走 refresh 重放（不得被误排除）', async () => {
+    adapter.mockImplementationOnce(failure(401));
+    const post = vi.spyOn(axios, 'post').mockResolvedValue({
+      data: { code: 0, data: { accessToken: 'new-access', refreshToken: 'new-refresh' } },
+    });
+
+    await expect(
+      (client as unknown as (config: { url: string; method: string; adapter: typeof adapter }) => Promise<unknown>)({
+        url: '/auth/totp/enable', method: 'post', adapter,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      `${getApiBaseUrl()}/auth/refresh`, { refreshToken: 'old-refresh' }, { timeout: 10_000 },
+    );
+    expect(adapter).toHaveBeenCalledTimes(2);
   });
 });
 

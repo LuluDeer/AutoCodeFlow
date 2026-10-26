@@ -219,6 +219,41 @@ export class ApplicationVersionHistoryRowDto {
   snapshot: Record<string, unknown> | null;
 }
 
+/** R3-A（§4.3）：版本行的设备徽标（设备心跳上报的事实聚合，见 AppReleaseDevice）。 */
+export class AppReleaseDeviceDto {
+  @ApiProperty({ description: "执行器行 id" })
+  executorId: string;
+
+  @ApiProperty({
+    nullable: true,
+    description: "执行器可读名（executors.appName）；行已删/未上报名时 null",
+  })
+  executorName: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      "该设备该应用 current 指向的版本（保留场景下可能与本行版本不同）",
+  })
+  currentVersion: string | null;
+
+  @ApiProperty({
+    description: "本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本）",
+  })
+  retained: boolean;
+
+  @ApiProperty({
+    description: "executors.status === ONLINE（离线设备的版本事实可能已过期）",
+  })
+  online: boolean;
+
+  @ApiProperty({
+    nullable: true,
+    description: "executors.lastHeartbeat（设备最后上报时刻，ISO）",
+  })
+  lastHeartbeat: string | null;
+}
+
 /** GET /applications/:id/releases —— DEP-01 统一发布追溯：一行 = 一次版本发布。 */
 export class AppReleaseRowDto {
   @ApiProperty({
@@ -286,9 +321,16 @@ export class AppReleaseRowDto {
     description: "operator 为 null 时的原因（RELEASE_OPERATOR_MISSING_REASON）",
   })
   operatorMissingReason: string;
+
+  @ApiProperty({
+    type: () => [AppReleaseDeviceDto],
+    description:
+      "R3-A（§4.3）：正在运行或本地保留该版本的设备（设备心跳上报事实；无设备上报时为空数组）。deploymentStatus/executorAddress 等字段仍是部署行推断（渐进迁移），设备真实状态以本字段为准。响应字段只增不改",
+  })
+  devices: AppReleaseDeviceDto[];
 }
 
-/** GET /applications/:id/releases 信封（裸四键，非 paginate() 双键形态）。 */
+/** GET /applications/:id/releases 信封（裸四键 + truncated，非 paginate() 双键形态）。 */
 export class AppReleasesResponseDto {
   @ApiProperty({ type: [AppReleaseRowDto] })
   data: AppReleaseRowDto[];
@@ -301,6 +343,19 @@ export class AppReleasesResponseDto {
 
   @ApiProperty({ description: "默认 50，上限 200" })
   pageSize: number;
+
+  @ApiProperty({
+    description:
+      "R4（§4.7）：synthetic 聚合扫描到达 5000 行上限（聚合以已扫描部分为准，可能不完整）时 true；未到上限或非第 1 页恒 false。响应字段只增不改",
+  })
+  truncated: boolean;
+
+  @ApiProperty({
+    type: [String],
+    description:
+      "P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在本页返回行中」的版本号（字母序）；truncated=false 恒空数组。响应字段只增不改",
+  })
+  retainedButTruncated: string[];
 }
 
 /** POST /applications/:id/sync-tasks —— manifest.json 任务注册回执。 */

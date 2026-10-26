@@ -13,7 +13,8 @@ import { pickRecentMetaFiles } from './meta-files';
 // 用户报障（执行器应用显示不对）：应用清单必须按执行器**真实**的
 // apps/<appId>/releases/<version>-<deploymentId>/ 布局解析，而不是把
 // appRoot 的直接子目录（releases/tmp/current）当成部署。见该模块头注。
-import { listDeployedApps } from './app-inventory';
+// P2-2：apps:log:read 的文件名白名单谓词（与 resolveAppLogPath 的产物同源）。
+import { isAllowedAppLogBasename, listDeployedApps } from './app-inventory';
 // 用户报障（列表里全是 UUID）：旧部署没有 app.json，本机唯一的名字线索是
 // 执行器自己日志里的 `Current release for <appName> now points to <key>`。
 import { collectReleaseAppNames, applyRecoveredAppNames } from './app-name-recovery';
@@ -32,12 +33,16 @@ import type { AppConfig } from './config-store';
 import { EXECUTOR_RESTART_REQUIRED_FIELDS } from './config-restart';
 import { decryptToken } from './token-crypto';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
-import { checkForUpdatesUserInitiated, downloadUpdate, quitAndInstall } from './updater';
+import { checkForUpdatesUserInitiated, cancelDownload, downloadUpdate, quitAndInstall } from './updater';
 import {
   checkPathWithinDomains,
   hasAllowedLogExtension,
   isValidExecutionId,
 } from './path-domain';
+// F-22（UIUX 审计 2026-10-25）：log:read / apps:log:read 首读的尾窗扫描——
+// 纯 Node 模块（log-tail.selftest 直接驱动真实现），与游标口径的对齐论证
+// 见该模块头注。
+import { scanLogTail } from './log-tail-scan';
 // python_task_multiversion：设置页的「Python 运行环境」诊断面需要与
 // executor-process 完全同源地解析 uv / 解释器池路径（否则诊断结果会与实际
 // 下发给子进程的值不一致，比没有诊断更误导）。这里刻意复用 executor-process
@@ -46,6 +51,8 @@ import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process
 import { classifyUvResolution } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
+// P3-5：config:save 的 workDir 落盘前校验（纯决策层，注入 fs 可自检）。
+import { validateWorkDirForSave } from './config-recovery';
 // 拓展包「配置导入/导出 + 执行日志导出」：纯函数层（文件名/导入解析/掩码
 // 契约/大小阈值）抽离自 ipc-handlers——本文件顶层 import electron，裸 node
 // 加载即崩，行为回归闸由 export-flows.selftest.ts 直接驱动该模块。
@@ -76,7 +83,15 @@ import { createGuardedIpcMain } from './ipc-sender-guard';
 // R89：连接失败文案归一（只回错误码，不回显解析后的地址）。
 import { describeConnectionError } from './network-util';
 // R105：破坏性通道的主进程二次确认（渲染层的 ConfirmBar 拦不住注入脚本）。
+// F-27：确认文案双语——zh/en 同源存放在 destructive-actions 的 policy 上。
 import { CONFIRM_CANCELED, confirmDestructive } from './destructive-actions';
+import type { DestructiveChannel, DestructivePolicy } from './destructive-actions';
+// F-27（UIUX 审计 2026-10-25）：主进程原生对话框（R105 确认 / 重启征询 /
+// 导出导入标题）文案随界面语言走——判定与托盘/渲染层同一来源（ui-language.ts），
+// 文案表在 ui-texts.ts（zh/en 键位对齐由 ui-texts.selftest 钉住）。
+import { resolveUiLanguage } from './ui-language';
+import type { UiLocale } from './ui-language';
+import { uiText } from './ui-texts';
 // SEC-IPC-TYPE（R86-A1 轴 1）：config:check-port 的参数闸 + 探测实现（纯 Node）。
 import { checkPortAvailable } from './port-check';
 // sender 白名单的 file: 锚点必须与 loadFile 的入口页同源（window-manager 唯一真值源）。
@@ -106,26 +121,42 @@ import { resolveRendererIndex } from './window-manager';
 /**
  * R105：原生模态确认的适配器。modal 到发起窗口，渲染层无法自证「用户已同意」。
  * 窗口取不到时仍弹（无父窗口），但绝不静默放行。
+ *
+ * F-27（UIUX 审计 2026-10-25）：按钮/标题/正文随界面语言走——动作名与后果
+ * 说明的 en 文案同源存放在 destructive-actions 的 policy（labelEn/detailEn，
+ * 本表即 R105 文案唯一事实源），按钮与问句模板在 ui-texts 表。
  */
-async function confirmViaNativeDialog(policy: {
-  label: string;
-  detail: string;
-}): Promise<boolean> {
+async function confirmViaNativeDialog(
+  policy: DestructivePolicy & { channel: DestructiveChannel },
+): Promise<boolean> {
+  const locale = currentUiLocale();
+  const action = locale === 'en' ? policy.labelEn : policy.label;
+  const detail = locale === 'en' ? policy.detailEn : policy.detail;
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
   const options = {
     type: 'warning' as const,
-    buttons: ['取消', '继续'],
+    buttons: [uiText(locale, 'dialog.confirm.cancel'), uiText(locale, 'dialog.confirm.continue')],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
-    title: policy.label,
-    message: `确定要${policy.label}吗？`,
-    detail: policy.detail,
+    title: action,
+    message: uiText(locale, 'dialog.confirm.message', { action }),
+    detail,
   };
   const result = win
     ? await dialog.showMessageBox(win, options)
     : await dialog.showMessageBox(options);
   return result.response === 1;
+}
+
+/**
+ * F-27：主进程原生对话框的界面语言判定——与托盘（tray-texts）/渲染层
+ * （renderer i18n）共用 ui-language.ts 的同一份规则：显式设置 'zh'/'en'
+ * 优先、'auto'/未设置跟随 app.getLocale()、非法值默认英文。每次弹框实时
+ * 判定（与托盘 rebuildMenu 同口径），保存语言设置后无需重启应用。
+ */
+function currentUiLocale(): UiLocale {
+  return resolveUiLanguage(() => app.getLocale(), configStore.get('uiLanguage'));
 }
 
 const ipcMain = createGuardedIpcMain(electronIpcMain, {
@@ -241,18 +272,18 @@ export function restartRequiredFieldsChanged(before: AppConfig, after: AppConfig
  * 确需重启且执行器正在运行时，先征得用户同意——重启会中断正在运行的任务。
  * 取消只意味着"暂不重启"：配置本身已落盘成功，下次手动启动执行器 / 应用
  * 重启时自然生效。
+ * F-27：按钮/标题/正文随界面语言走（文案在 ui-texts 表，zh 值与原硬编码逐字一致）。
  */
 async function confirmExecutorRestart(): Promise<boolean> {
+  const locale = currentUiLocale();
   const { response } = await dialog.showMessageBox({
     type: 'question',
-    buttons: ['重启执行器', '暂不重启'],
+    buttons: [uiText(locale, 'dialog.restart.accept'), uiText(locale, 'dialog.restart.defer')],
     defaultId: 0,
     cancelId: 1,
     noLink: true,
-    message: '配置已保存，需要重启执行器才能生效',
-    detail:
-      '重启执行器会中断正在运行的任务。要现在重启吗？\n' +
-      '（选择「暂不重启」后，新配置将在下次启动执行器时生效）',
+    message: uiText(locale, 'dialog.restart.message'),
+    detail: uiText(locale, 'dialog.restart.detail'),
   });
   return response === 0;
 }
@@ -277,32 +308,73 @@ interface LogCursor {
 const logCursors = new Map<string, LogCursor>();
 const LOG_CURSOR_LIMIT = 64;
 
+/** P3-6：log:list-files 的返回条目总量上限（超出截断 + 日志，见 handler 内注）。 */
+const LOG_LIST_MAX_ENTRIES = 500;
+
 function readLogIncremental(
   filePath: string,
   fromLine: number,
-): { lines: string[]; totalLines: number; error?: string } {
+): { lines: string[]; totalLines: number; truncated?: boolean; error?: string; missing?: boolean } {
   try {
     const { size } = fs.statSync(filePath);
     let cursor = logCursors.get(filePath);
+    // F-22：本次调用是否新建/重建了游标（首读判据之一，见下方尾窗分支）。
+    let freshCursor = false;
 
     // 文件被截断/轮转（大小回退），或调用方要求的起点落后于缓存 → 重建游标
     if (!cursor || size < cursor.offset) {
       cursor = { offset: 0, totalLines: 0 };
       logCursors.set(filePath, cursor);
+      freshCursor = true;
     }
 
     // 调用方要求从头读（刷新按钮），或游标超前于请求 → 从头重建
     if (fromLine === 0 && cursor.totalLines !== 0) {
       cursor = { offset: 0, totalLines: 0 };
       logCursors.set(filePath, cursor);
+      freshCursor = true;
     }
 
-    // 请求起点超前于缓存已知行数（如 UI 状态被重置）→ 保守地从该行号重建：
-    // 此时无法用偏移定位，退回一次全量读（罕见路径，不常发生）。
+    // F-22（UIUX 审计 2026-10-25）：首读（fromLine=0 且游标新建，或游标从未
+    // 交付过任何行）改为**尾窗扫描**——原实现 readFileSync 整个文件并把全部
+    // 行送过桥，而渲染层只留最后 1500/2400 行：10MB+ 日志一次 IPC 全量传输 +
+    // 主进程内存尖峰。同族问题在 logs:getToday 已由 readLastLines 尾窗修过
+    // （NETOPT-2⑥），任务/应用日志两条查看器路径此前漏了同处置。尾窗行数
+    // 上限与游标口径的对齐论证见 log-tail-scan.ts 头注；游标按扫描结果直接
+    // 落到「最后完整行」，后续增量读从文件尾无缝续上。返回值带 truncated
+    // 口径，查看器的「已载入/文件共」汇总据此如实降级。扫描失败（文件此刻
+    // 消失等）→ 落回下方既有路径由 catch 兜底，行为不劣化。
+    if (fromLine === 0 && (freshCursor || cursor.totalLines === 0)) {
+      const scan = scanLogTail(filePath);
+      if (scan) {
+        cursor.offset = scan.consumedBytes;
+        cursor.totalLines = scan.totalLines;
+        return { lines: scan.lines, totalLines: scan.totalLines, truncated: scan.truncated };
+      }
+    }
+
+    // 请求起点超前于缓存已知行数（如游标被 LRU 驱逐后 UI 又从旧行号续读）→
+    // 无法用偏移定位。P3-1：旧实现退回 readFileSync 整文件 + 全量 split——
+    // 大日志一次主进程内存尖峰，正是 F-22 在首读分支修掉的那类形态。改走
+    // scanLogTail 尾窗重建：单遍顺序扫描、内存与文件大小无关，游标直接落到
+    // 「最后完整行」，后续增量读无缝续上；返回行按 fromLine 对齐（全局行号 =
+    // totalLines - lines.length，与渲染层换算口径一致），更早的行受尾窗上限
+    // 截断（truncated 如实上报——渲染层缓冲本就只留最后 1500/2400 行）。
     if (fromLine > cursor.totalLines) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const allLines = content.split('\n').filter((l) => l.length > 0);
-      return { lines: allLines.slice(fromLine), totalLines: allLines.length };
+      const scan = scanLogTail(filePath);
+      if (!scan) {
+        // 文件此刻打不开等 I/O 异常：P2-1 —— 明确 missing 标记，不再以
+        // 成功形态空结果冒充「暂无日志」（渲染层有缓冲时按错误态呈现）。
+        return { lines: [], totalLines: 0, missing: true };
+      }
+      cursor.offset = scan.consumedBytes;
+      cursor.totalLines = scan.totalLines;
+      const skip = Math.max(0, fromLine - (scan.totalLines - scan.lines.length));
+      return {
+        lines: scan.lines.slice(skip),
+        totalLines: scan.totalLines,
+        truncated: scan.truncated,
+      };
     }
 
     // 只需读 offset..size 区间
@@ -335,7 +407,9 @@ function readLogIncremental(
     const skip = Math.max(0, fromLine - (cursor.totalLines - newLines.length));
     return { lines: newLines.slice(skip), totalLines: cursor.totalLines };
   } catch {
-    return { lines: [], totalLines: 0 };
+    // P2-1：statSync/openSync 等读失败（文件被删/盘故障/权限）→ 明确 missing
+    // 标记（此前的成功形态空结果会让渲染层把「日志消失」呈现成「暂无日志」）。
+    return { lines: [], totalLines: 0, missing: true };
   } finally {
     // 8-2（audit-r4）：LRU 裁剪由 O(n) 的 Array.from+slice 改为 Map 插入序
     // O(1) 淘汰。Map 按插入顺序迭代：超限时从最旧（队首）删到只剩最近
@@ -408,19 +482,73 @@ export function readLastLines(
 }
 
 /**
+ * F-25（UIUX 审计 2026-10-25）：执行器重启的**共享收口**——config:save /
+ * config:import（finalizeConfigSave）与向导保存（config:save-and-close-wizard）
+ * 共用同一份「执行器在跑 && 需重启字段变更 → 征询 → stop+start」判据与征询
+ * 文案。此前向导保存只调 executorProcess.start()（对运行中进程是 no-op，
+ * 见 executor-process.ts start() 头部直接 return），与 config:save 的
+ * finalizeConfigSave 判据不同源：重跑向导改端口/token 后新配置落盘却不生效
+ * （启动判定探的还是旧进程），改端口的报错误导（提示「手动启动」仍是 no-op）。
+ *
+ * restartConfirmed：调用方已就「重启会中断任务」征得用户同意（config:save 的
+ * 渲染层 ConfirmBar 路径）。此时不能再弹一次原生确认框——2026-10 真机 E2E
+ * 实测：渲染层 ConfirmBar 确认后主进程又弹 `dialog.showMessageBox`，同一个
+ * 问题问两遍，且原生框在自动化/远程桌面下会额外阻塞保存。config:import /
+ * 向导没有渲染层确认面，走 confirmExecutorRestart 原生征询（文案与
+ * config:save 影响确认条同口径）。
+ *
+ * 返回值：
+ *  · restarted：本次是否真的执行了 stop+start（向导路径据此决定是否等启动判定）；
+ *  · reloadError：执行器热重载失败——它已停留在停止态；
+ *  · restartDeferred：用户选择暂不重启——下次启动执行器时生效。
+ */
+async function reloadExecutorAfterConfigSave(
+  configBefore: AppConfig,
+  options: { restartConfirmed?: boolean } = {},
+): Promise<{ restarted: boolean; reloadError?: string; restartDeferred?: boolean }> {
+  // 如果执行器正在运行：只有"必须重启子进程才生效"的字段（workDir、端口、
+  // token、adminApiUrl、并发数、uv 组等）变化时才热重载——旧实现只要在跑
+  // 就无条件 stop+start，改一个通知开关也会杀掉正在运行的任务。
+  if (!executorProcess.isRunning()) return { restarted: false };
+  if (!restartRequiredFieldsChanged(configBefore, configStore.getAll())) {
+    log.info(
+      'Config saved; no restart-required fields changed — executor left running',
+    );
+    return { restarted: false };
+  }
+  if (!(options.restartConfirmed || (await confirmExecutorRestart()))) {
+    // 用户选择暂不重启：配置已落盘，下次启动执行器时生效。
+    log.info(
+      'Config saved; executor restart deferred by user — takes effect on next start',
+    );
+    return { restarted: false, restartDeferred: true };
+  }
+  try {
+    heartbeat.stop();
+    await executorProcess.stop();
+    await executorProcess.start(configStore.getAll());
+    // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
+    startHeartbeat();
+    log.info('Executor reloaded with new config');
+    return { restarted: true };
+  } catch (err: any) {
+    const reloadError = err?.message ?? String(err);
+    log.error('Failed to reload executor after config save:', reloadError);
+    // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
+    heartbeat.stop();
+    return { restarted: false, reloadError };
+  }
+}
+
+/**
  * 配置写入后的共同收尾——config:save 与 config:import（拓展包）共用同一实现。
  * 两处各写一遍必然漂移（EXP-03 同教训），因此热同步与"是否需要重启执行器"
- * 的全部副作用收敛在这里；调用方只负责把补丁交给 ConfigStore.save。
+ * 的全部副作用收敛在这里（重启判据本体在 reloadExecutorAfterConfigSave，
+ * F-25 起向导保存同源复用）；调用方只负责把补丁交给 ConfigStore.save。
  *
  * 返回值供 UI 如实呈现（配置本身均已落盘成功）：
  *  · reloadError：执行器热重载失败——它已停留在停止态；
  *  · restartDeferred：用户选择暂不重启——下次启动执行器时生效。
- *
- * restartConfirmed：调用方（config:save 的渲染层）已经就"重启会中断任务"
- * 征得用户同意。此时不能再弹一次原生确认框——2026-10 真机 E2E 实测：
- * 渲染层 ConfirmBar 确认后主进程又弹 `dialog.showMessageBox`，同一个问题
- * 问两遍，且原生框在自动化/远程桌面下会额外阻塞保存。config:import 没有
- * 渲染层确认面，仍走原生征询。
  */
 async function finalizeConfigSave(
   configBefore: AppConfig,
@@ -435,44 +563,14 @@ async function finalizeConfigSave(
   // P7b：agentEnabled / 档位 / 中台地址可能被改——热同步 Agent 托管
   // （内部自行读最新配置，启停轮询不销毁 host；失败仅记日志不阻塞保存）
   syncAgentHostWithConfig();
-  // 如果执行器正在运行：只有"必须重启子进程才生效"的字段（workDir、端口、
-  // token、adminApiUrl、并发数、uv 组等）变化时才热重载——旧实现只要在跑
-  // 就无条件 stop+start，改一个通知开关也会杀掉正在运行的任务。
-  // 注意：配置本身已落盘成功，但"热重载"是用户可感知的副作用——若重启
-  // 失败（端口被占 / token 失效等），执行器会停留在停止态。原实现只写日志
-  // 却仍返回 ok:true，渲染层于是显示"已保存，配置已生效"，而执行器其实已经
-  // 死了且无任何提示。现改为把 reload 结果一并回传，让 UI 如实呈现。
-  let reloadError: string | null = null;
-  let restartSkipped = false;
-  if (executorProcess.isRunning()) {
-    if (!restartRequiredFieldsChanged(configBefore, configStore.getAll())) {
-      log.info(
-        'Config saved; no restart-required fields changed — executor left running',
-      );
-    } else if (options.restartConfirmed || (await confirmExecutorRestart())) {
-      try {
-        heartbeat.stop();
-        await executorProcess.stop();
-        await executorProcess.start(configStore.getAll());
-        // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
-        startHeartbeat();
-        log.info('Executor reloaded with new config');
-      } catch (err: any) {
-        reloadError = err?.message ?? String(err);
-        log.error('Failed to reload executor after config save:', reloadError);
-        // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
-        heartbeat.stop();
-      }
-    } else {
-      // 用户选择暂不重启：配置已落盘，下次启动执行器时生效。
-      restartSkipped = true;
-      log.info(
-        'Config saved; executor restart deferred by user — takes effect on next start',
-      );
-    }
-  }
+  // 热重载决策与执行收敛到共享收口（判据见其头注）：配置本身已落盘成功，
+  // 但"热重载"是用户可感知的副作用——若重启失败（端口被占 / token 失效等），
+  // 执行器会停留在停止态。原实现只写日志却仍返回 ok:true，渲染层于是显示
+  // "已保存，配置已生效"，而执行器其实已经死了且无任何提示。现改为把 reload
+  // 结果一并回传，让 UI 如实呈现。
+  const { reloadError, restartDeferred } = await reloadExecutorAfterConfigSave(configBefore, options);
   if (reloadError) return { reloadError };
-  if (restartSkipped) return { restartDeferred: true };
+  if (restartDeferred) return { restartDeferred: true };
   return {};
 }
 
@@ -514,7 +612,19 @@ export function registerIpcHandlers(): void {
     // 校验并**整次抛出**——此时同批次的其它修改已部分写入，UI 却只显示一句
     // "保存失败"，用户无从判断哪些存了。消毒后再写：非法值回落默认，
     // 越界值钳制，保存必定完整成功。
-    configStore.save(sanitizeConfigInput(cfg));
+    const safeCfg = sanitizeConfigInput(cfg);
+    // P3-5：workDir **变化**时落盘前校验（绝对路径 + 存在/可写，不存在则
+    // 尽力创建）。只在变化时校验：存量坏目录不该把用户改其它字段的保存一并
+    // 堵死（那类问题由执行器自身日志暴露）；不合格以 400 形态回 IPC，
+    // 渲染层显示 saveRejected 错误行，任何键都不落盘。
+    if ('workDir' in safeCfg && safeCfg.workDir !== configBefore.workDir) {
+      const verdict = validateWorkDirForSave(safeCfg.workDir);
+      if (!verdict.ok) {
+        log.warn(`config:save rejected workDir: ${verdict.error}`);
+        return { ok: false, error: verdict.error };
+      }
+    }
+    configStore.save(safeCfg);
     // 热同步 / 重启征询等收尾与 config:import 共用同一实现（见
     // finalizeConfigSave 注——两处各写一遍必然漂移）。
     // 渲染层在调用本通道前已用 ConfirmBar 确认过「会重启执行器」；
@@ -529,11 +639,24 @@ export function registerIpcHandlers(): void {
     if (!isPlainConfig(cfg)) {
       return { ok: false, error: 'invalid config payload' };
     }
+    // F-25：字段 diff 基线——保存**前**的已落盘配置（与 config:save 同一
+    // 口径，供 reloadExecutorAfterConfigSave 判定"需重启字段是否变化"）。
+    const configBefore = configStore.getAll();
     // 与 config:save 同一个消毒通道（向导的端口输入框同样可能被清空）。
     const safeCfg = sanitizeConfigInput(cfg);
     configStore.save({ ...safeCfg, configured: true });
     applyLogLevel(configStore.get('logLevel'));
     log.info('Wizard complete, config saved');
+    // P1-1：向导改写配置后广播 config:changed —— 主窗（配置页常驻挂载、
+    // 仅挂载时读过一次配置）据此重取配置合并表单基线。否则重跑向导保存后，
+    // 主窗 form/savedForm 仍是旧值，用户再点「保存配置」会把整份旧表单写回，
+    // 向导刚保存的端口/对外地址/名称/并发数被静默回退（渲染层审计 P1-1）。
+    // 对齐 history:changed 的广播先例（index.ts broadcastHistoryChanged）。
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('config:changed');
+      }
+    }
     // UX-DSK-AUTOLAUNCH：向导的「开机自动启动」此前只**落盘**了
     // `autoStart`，却从未真正写系统自启动项。而托盘菜单的勾选态读的正是
     // config.autoStart（tray.getAutoLaunch）——于是用户看到"已勾选"、
@@ -546,6 +669,19 @@ export function registerIpcHandlers(): void {
       if (!(await setAutoLaunchEnabled(true))) {
         configStore.save({ autoStart: false });
       }
+    } else {
+      // F-23（UIUX 审计 2026-10-25）：与 true 分支**对称**关闭——此前只有
+      // enable 分支，autoStart true→false 时 OS 自启项（设置页/托盘此前写入
+      // 的）不被清除：托盘勾选态读 config（未勾选）、设置页开关读 OS 真值
+      // （已开启），同一开关两处 UI 呈现相反状态，下次开机应用仍自启。重跑
+      // 向导预填当前值（Wizard 侧 autolaunch:get）后「未触碰 = 原值」，此
+      // 分支只在用户显式关掉（或预填到 false）时才走到。
+      if (!(await setAutoLaunchEnabled(false))) {
+        // 打包态 disable 失败（注册表/.desktop 删除被拒）：config 已是
+        // false，托盘（读 config）如实显示未勾选，但设置页（读 OS 真值）
+        // 可能仍显示已开启——主进程侧无法进一步收敛，记日志供排障。
+        log.warn('Wizard: setAutoLaunchEnabled(false) failed; OS autostart entry may remain');
+      }
     }
     // B-9：start() 是"同步必成功"的假象——spawn 成功不等于执行器能起来
     // （端口被占/秒退/注册被拒都只落日志），而旧实现**先关窗再启动**，向导
@@ -555,8 +691,29 @@ export function registerIpcHandlers(): void {
     // B-11：判定里带注册预检——/health/admin-status 明确报 registration
     // failed（典型：密钥与平台 EXECUTOR_SECRET 不一致）时也回流导页内报错，
     // 不再让用户带着坏 Token 完成配置。
+    //
+    // F-25（UIUX 审计 2026-10-25）：重启决策与 config:save **同源**——收敛到
+    // reloadExecutorAfterConfigSave（「在跑 && 需重启字段变更 → 原生征询 →
+    // stop+start」）。旧实现只调 executorProcess.start()，对运行中进程是
+    // no-op（executor-process.ts start() 头部直接 return）：重跑向导改端口/
+    // token 后新配置落盘却不生效，改端口的启动判定还报错误导（探的是旧进程
+    // 之外的**新**端口，提示「手动启动」按下去仍是 no-op，用户唯一出路是托盘
+    // 先停再启）。未变更字段不触发重启——判据只看 EXECUTOR_RESTART_REQUIRED_
+    // FIELDS 的 diff，与 F-23 的「未触碰 = 原样回传」预填协同。
     let startError: string | null = null;
-    if (safeCfg.autoStartExecutor === true) {
+    const wasRunning = executorProcess.isRunning();
+    const reload = wasRunning
+      ? await reloadExecutorAfterConfigSave(configBefore)
+      : { restarted: false, reloadError: undefined, restartDeferred: undefined };
+    if (reload.reloadError) {
+      // 重启失败（端口被占等）：执行器已停在停止态，错误回流导页内展示，
+      // 配置本身已落盘（与 config:save 的 reloadError 呈现同口径）。
+      startError = reload.reloadError;
+    } else if (reload.restarted) {
+      // 刚完成 stop+start：新进程的启动判定照旧把关（B-9/B-11）。
+      startError = await waitForWizardStartVerdict();
+    } else if (!wasRunning && safeCfg.autoStartExecutor === true) {
+      // 首启路径（原 autoStartExecutor 分支原样保留）：spawn + 心跳 + 判定。
       try {
         await executorProcess.start(configStore.getAll());
         // 用**已消毒落盘**的端口，而不是渲染层原始值（NaN 端口会让心跳抛
@@ -571,6 +728,11 @@ export function registerIpcHandlers(): void {
         heartbeat.stop();
         startError = err?.message ?? String(err);
       }
+    } else if (wasRunning && safeCfg.autoStartExecutor === true && !reload.restartDeferred) {
+      // 在跑且未触发重启（重跑向导、需重启字段未变）：沿用 B-9 健康判定——
+      // 旧链路此处调 start()（对运行中进程本就是 no-op）后 verdict 探既有
+      // 进程；用户选择「暂不重启」时跳过（配置下次启动生效，旧进程照跑）。
+      startError = await waitForWizardStartVerdict();
     }
     trayManager.rebuildMenu();
     // DSK-04：向导可能首设 workDir / notifyEnabled——同步通知器
@@ -608,7 +770,8 @@ export function registerIpcHandlers(): void {
   // 再走与「保存配置」完全同一条 sanitizeConfigInput → save 链路。
   ipcMain.handle('config:export', async () => {
     const result = await dialog.showSaveDialog({
-      title: '导出配置（执行器密钥以掩码导出）',
+      // F-27：标题随界面语言走（下同——导入/诊断/执行日志导出对话框）。
+      title: uiText(currentUiLocale(), 'dialog.exportConfig.title'),
       defaultPath: path.join(app.getPath('downloads'), configExportFileName(new Date())),
       filters: [{ name: 'JSON', extensions: ['json'] }],
     });
@@ -626,7 +789,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('config:import', async () => {
     const result = await dialog.showOpenDialog({
-      title: '导入配置',
+      title: uiText(currentUiLocale(), 'dialog.importConfig.title'),
       filters: [{ name: 'JSON', extensions: ['json'] }],
       properties: ['openFile'],
     });
@@ -678,7 +841,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('diagnostics:export', async () => {
     const now = new Date();
     const result = await dialog.showSaveDialog({
-      title: '导出诊断报告（执行器密钥已脱敏）',
+      title: uiText(currentUiLocale(), 'dialog.exportDiagnostics.title'),
       defaultPath: path.join(app.getPath('downloads'), diagnosticReportFileName(now)),
       filters: [{ name: 'JSON', extensions: ['json'] }],
     });
@@ -894,6 +1057,13 @@ export function registerIpcHandlers(): void {
     return { ok: true };
   });
 
+  // F-37（UIUX 审计）：取消在途下载（渲染层 downloading 态的「取消下载」钮）。
+  // electron-updater 原生 CancellationToken 实现；无在途下载时 canceled:false
+  // （竞态安全，渲染层无需处理）。
+  ipcMain.handle('updater:cancel-download', async () => {
+    return cancelDownload();
+  });
+
   // 用户确认升级：下载完成后退出并安装（AppImage/deb 均由 electron-updater
   // 按 resources/package-type 分派对应安装器）
   ipcMain.handle('updater:install', async () => {
@@ -901,8 +1071,10 @@ export function registerIpcHandlers(): void {
     if (!(await confirmDestructive('updater:install', confirmViaNativeDialog))) {
       return CONFIRM_CANCELED;
     }
-    quitAndInstall();
-    return { ok: true };
+    // F-37（UIUX 审计）：无可安装更新时旧实现仍返回 ok:true（quitAndInstall
+    // 对该情形是 no-op）——语义不实。现在如实回传，error 为稳定哨兵字符串，
+    // 渲染层映射双语提示。
+    return quitAndInstall();
   });
 
   // ── 历史记录 & 日志 ────────────────────────────────────
@@ -981,7 +1153,10 @@ export function registerIpcHandlers(): void {
     // (same ^[A-Za-z0-9_-]+$ rule as admin-api heartbeat sanitization) so it
     // can never carry ../ traversal, then domain-check the final path.
     const target = resolveExecutionLogFile(executionId);
-    if (!target) return { lines: [], totalLines: 0 };
+    // P2-1：目标不存在/ID 非法/workDir 未配置 → 明确 missing 标记（渲染层
+    // 据此区分「首读未落盘=合法空态」与「读着读着文件没了=错误态」，不再
+    // 把成功形态的空结果冒充「暂无日志」）。既有成功形态字段不变（向后兼容）。
+    if (!target) return { lines: [], totalLines: 0, missing: true };
     return readLogIncremental(target, fromLine);
   });
 
@@ -1040,7 +1215,7 @@ export function registerIpcHandlers(): void {
       };
     }
     const result = await dialog.showSaveDialog({
-      title: '导出执行日志',
+      title: uiText(currentUiLocale(), 'dialog.exportExecLog.title'),
       defaultPath: path.join(app.getPath('downloads'), execLogExportFileName(executionId, new Date())),
       filters: [
         { name: '日志文件', extensions: ['log', 'txt'] },
@@ -1089,6 +1264,7 @@ export function registerIpcHandlers(): void {
     }
 
     // 任务日志：workDir/logs/YYYY-MM-DD/
+    let truncatedByCap = false;
     const workDir = configStore.get('workDir') as string | undefined;
     if (workDir) {
       const logsDir = path.join(workDir, 'logs');
@@ -1102,10 +1278,31 @@ export function registerIpcHandlers(): void {
           const dayDir = path.join(logsDir, day);
           const files = fs.readdirSync(dayDir).filter((f: string) => f.endsWith('.log'));
           for (const f of files) {
+            // P3-6：总量封顶（桌面端自身日志 30 条 + 每天每任务一条，长跑机器
+            // 上无界）。超限截断并落日志——返回结构是数组（渲染层契约
+            // StatusWindow 的 listLogFiles 签名钉住），没有地方放 truncated
+            // 标志，故只截断 + 日志。日期与文件都按倒序排过，截掉的只是
+            // 最旧的条目。
+            if (result.length >= LOG_LIST_MAX_ENTRIES) {
+              truncatedByCap = true;
+              break;
+            }
             result.push({ label: `${day} / ${f}`, path: path.join(dayDir, f), date: day });
+          }
+          if (result.length >= LOG_LIST_MAX_ENTRIES) {
+            truncatedByCap = true;
+            break;
           }
         }
       }
+    }
+    if (result.length > LOG_LIST_MAX_ENTRIES) {
+      // 兜保险（上游遍历规则变化时仍然不超发）。
+      result.length = LOG_LIST_MAX_ENTRIES;
+      truncatedByCap = true;
+    }
+    if (truncatedByCap) {
+      log.warn(`log:list-files truncated to ${LOG_LIST_MAX_ENTRIES} entries`);
     }
     return result;
   });
@@ -1295,7 +1492,16 @@ export function registerIpcHandlers(): void {
       return { lines: [], totalLines: 0, error: check.error };
     }
     const target = check.resolvedPath!;
-    if (!fs.existsSync(target)) return { lines: [], totalLines: 0 };
+    // P2-2：域内文件名白名单。getAllowedLogDomains 把 workDir/apps 整树放开
+    // 只证明**落点**合法，域内还有 manifest.yaml/.env/业务源码——全部可读就
+    // 超出了「读应用日志」的授权面。合法可读文件与 resolveAppLogPath 的产物
+    // 同源（app.log 及轮转副本，见 app-inventory.isAllowedAppLogBasename），
+    // 对照 log:open-file 的 .log/.txt 白名单姿态。
+    if (!isAllowedAppLogBasename(path.basename(target))) {
+      log.warn(`apps:log:read rejected non-log file: ${logPath}`);
+      return { lines: [], totalLines: 0, error: '仅允许读取应用日志（app.log 及轮转副本）' };
+    }
+    if (!fs.existsSync(target)) return { lines: [], totalLines: 0, missing: true };
     // PERF-DSK-01：与 log:read 同因——AppsPage 每 2s 轮询，全量重读同样是
     // 平方级 I/O。复用同一套增量游标实现。
     return readLogIncremental(target, fromLine);

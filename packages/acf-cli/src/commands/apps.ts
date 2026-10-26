@@ -33,12 +33,29 @@ interface Deployment {
  * .upgradeAllWithRollout）。all 模式恒 ok:true + succeeded/failed 计数；
  * canary 额外带 rollout 批次信息；ARCH-31 同应用在途批次互斥时
  * ok:false + rollout.blockedReason（业务拒绝，HTTP 仍是 2xx）。
+ * R2（部署模型评审 §4.4）：新增 coverage 按状态分组计数与 skipped 在途
+ * 跳过明细——只增不改，旧字段语义不变。
  */
 interface UpgradeAllResult {
   ok: boolean;
   total: number;
   succeeded: number;
   failed: number;
+  /** R2 §4.4：覆盖面分组计数（running+scheduled 为默认覆盖面）。 */
+  coverage?: {
+    running: number;
+    scheduled: number;
+    stopped: number;
+    failed: number;
+    inFlight: number;
+  };
+  /** R2 §4.4：在途行（pending/deploying/upgrading）跳过明细。 */
+  skipped?: Array<{
+    deploymentId: string;
+    executorId: string | null;
+    status: string;
+    reason: string;
+  }>;
   rollout?: {
     batchId: string;
     strategy: string;
@@ -46,6 +63,40 @@ interface UpgradeAllResult {
     promotedIds: string[];
     blockedReason?: string;
   };
+}
+
+/**
+ * R1（部署模型评审 §4.2）：POST /applications/:id/set-current-version 响应——
+ * 只按版本快照恢复应用当前字段，dispatched 恒 false（不下发任何设备）。
+ */
+interface SetCurrentVersionResult {
+  ok: boolean;
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+}
+
+/**
+ * R1（部署模型评审 §4.2）：POST /applications/:id/deploy-version 响应——
+ * 字段恢复 + 下发。skipped.reason：no_deployment（执行器无部署行）/
+ * not_running（行状态不可下发）/ upgrade_rejected（upgrade 链被拒，真失败）。
+ */
+interface DeployVersionResult {
+  ok: boolean;
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+  upgraded: Array<{
+    deploymentId: string;
+    executorId: string | null;
+    executorAddress: string | null;
+  }>;
+  skipped: Array<{
+    executorId: string | null;
+    deploymentId: string | null;
+    reason: string;
+    detail?: string | null;
+  }>;
 }
 
 function statusColor(s: string): string {
@@ -414,10 +465,14 @@ export function appsCommand(): Command {
   // 保持；canary 传 { rollout: { strategy: 'canary', percentage? } }。
   // 2026-10-07：UpgradeAllDto 增可选 version（版本定向灰度/渐进回滚）——
   // --version <v> 时 body 带顶层 version；缺省不带（升级目标恒为应用当前版本）。
+  // R2（部署模型评审 §4.4，2026-10-24）：覆盖面显式化——默认覆盖 = 全部
+  // RUNNING 行（scheduled「仅部署」行实证稳态即 RUNNING，同属默认覆盖）；
+  // --include-stopped 把 stopped 行显式纳入（仅 all 策略）；在途行由服务端
+  // 跳过并在响应 skipped 明细回显（黄字透出，不当作失败）。
   // 批次由服务端异步推进（心跳确认 → 健康探测 → 提升），受理 ≠ 完成。
   cmd.command('upgrade-all <appId>')
     .description(
-      "Trigger a rolling upgrade of all RUNNING deployments to the application's current version (or --version). Default = full upgrade (pre-DEP-02 semantics, no body). Canary batches advance asynchronously on the server — acceptance is not completion",
+      "Trigger a rolling upgrade of the application's deployed devices to its current version (or --version). Default coverage = all RUNNING rows (deploy-only/scheduled rows report running on completion, so they are covered too); --include-stopped additionally dispatches STOPPED rows (all strategy only). Canary batches advance asynchronously on the server — acceptance is not completion",
     )
     .option('--strategy <strategy>', 'Rollout strategy: all (default) | canary (first batch → heartbeat confirm → health probe → auto-promote the rest, DEP-02)')
     .option(
@@ -433,11 +488,16 @@ export function appsCommand(): Command {
     )
     .option(
       '--version <version>',
-      'Target a historical released version (version string, not uuid) — enables gradual rollback. Default: the application\'s current version. The app record is restored from that version snapshot before the rollout starts',
+      'Target a historical released version (version string, not uuid) — enables gradual rollback. Default: the application\'s current version. The app record is restored from that version snapshot before the rollout starts. Equivalent to the R1 set-current-version + deploy-version split endpoints; prefer those',
+    )
+    .option(
+      '--include-stopped',
+      'Also dispatch STOPPED deployment rows under the all strategy (default: only RUNNING rows — daemon and deploy-only alike). The canary strategy rejects this flag (health probing needs live processes)',
+      false,
     )
     .option('--json', 'Emit raw JSON (CI-consumable)')
     .option('-y, --yes', 'Skip the confirmation prompt for a FULL upgrade (all strategy)', false)
-    .action(async (appId: string, opts: { strategy?: string; percentage?: number; version?: string; json?: boolean; yes?: boolean }) => {
+    .action(async (appId: string, opts: { strategy?: string; percentage?: number; version?: string; includeStopped?: boolean; json?: boolean; yes?: boolean }) => {
       const strategy = opts.strategy ?? 'all';
       if (strategy !== 'all' && strategy !== 'canary') {
         emitUsageError(`Unknown rollout strategy "${strategy}" — expected one of: all | canary`);
@@ -445,13 +505,18 @@ export function appsCommand(): Command {
       if (opts.percentage !== undefined && strategy !== 'canary') {
         emitUsageError('--percentage only applies to --strategy canary (the full-upgrade path never reads it)');
       }
+      // R2 §4.4：includeStopped 只作用于 all——canary 的健康探测需要活进程，
+      // 扩覆盖只会造出必失败的灰度首批；客户端先拒（与 --percentage 同口径）。
+      if (opts.includeStopped && strategy !== 'all') {
+        emitUsageError('--include-stopped only applies to the all strategy (canary batches probe live processes)');
+      }
       // P1（CLI-AGENT-UX-AUDIT）：全量滚动升级会重启该应用**所有 RUNNING 部署**，
       // 此前零确认。canary 天然是低风险首步（且服务端会自动提升/回滚），不设门；
       // all 是「一次性动全量」，需要显式表态——与三处 delete 共用同一套非交互语义。
       if (strategy === 'all') {
         if (
           !(await confirmDestructive(
-            `Roll out the upgrade to ALL running deployments of ${appId}?`,
+            `Roll out the upgrade to ALL running deployments of ${appId}${opts.includeStopped ? ' (including stopped rows)' : ''}?`,
             { yes: opts.yes },
           ))
         ) {
@@ -460,8 +525,16 @@ export function appsCommand(): Command {
       }
       const spinner = ora('Triggering upgrade…').start();
       try {
-        // all：不传 body —— 与既有全量升级语义逐字节一致；canary：rollout
-        // 白名单体，percentage 仅在给出时携带（服务端缺省 50）。
+        // all：缺省（无 version/include-stopped）不传 body —— 与既有全量升级
+        // 语义逐字节一致；canary：rollout 白名单体，percentage 仅在给出时携带
+        // （服务端缺省 50）。R2：all + --include-stopped 带 {includeStopped:true}。
+        const allExtras =
+          opts.version !== undefined || opts.includeStopped
+            ? {
+                ...(opts.version !== undefined ? { version: opts.version } : {}),
+                ...(opts.includeStopped ? { includeStopped: true } : {}),
+              }
+            : undefined;
         const body =
           strategy === 'canary'
             ? {
@@ -471,9 +544,7 @@ export function appsCommand(): Command {
                   ...(opts.percentage !== undefined ? { percentage: opts.percentage } : {}),
                 },
               }
-            : opts.version !== undefined
-              ? { version: opts.version }
-              : undefined;
+            : allExtras;
         const r = await post<UpgradeAllResult>(`/applications/${appId}/upgrade-all`, body);
         spinner.stop();
         if (opts.json) {
@@ -494,6 +565,24 @@ export function appsCommand(): Command {
           );
           process.exitCode = 1;
           return;
+        }
+        // R2 §4.4：覆盖面分组如实回显（旧输出只报 succeeded/total，用户无从知道
+        // 「仅部署」行也在覆盖内、stopped 有多少台被留下）。
+        const cov = r.coverage;
+        if (cov) {
+          console.log(
+            chalk.gray(
+              `  coverage: running ${cov.running}, deploy-only ${cov.scheduled}, stopped ${cov.stopped}${opts.includeStopped ? ' (included)' : ''}, failed ${cov.failed}, in-flight ${cov.inFlight}`,
+            ),
+          );
+        }
+        // 在途跳过明细：黄字逐行列出（不是失败——exit code 不受影响）。
+        for (const s of r.skipped ?? []) {
+          console.log(
+            chalk.yellow(
+              `  skipped: ${s.deploymentId.slice(0, 12)} executor=${s.executorId ?? '-'} status=${s.status} reason=${s.reason}`,
+            ),
+          );
         }
         if (strategy === 'canary') {
           spinner.succeed(`Canary batch accepted: first batch ${r.succeeded}/${r.total} deployment(s)`);
@@ -519,9 +608,116 @@ export function appsCommand(): Command {
             );
             process.exitCode = 1;
           }
+          // 存在 stopped 行且本次未纳入——显式指路（如实提示，不留「以为全升了」的误会）。
+          if (!opts.includeStopped && (cov?.stopped ?? 0) > 0) {
+            console.log(
+              chalk.yellow(
+                `  ⚠ ${cov!.stopped} stopped deployment(s) not covered — pass --include-stopped to include them`,
+              ),
+            );
+          }
         }
       } catch (e: unknown) {
         emitError('Failed to trigger upgrade-all', e, { spinner });
+      }
+    });
+
+  // ── R1（2026-10-24 部署模型评审 §4.2）：应用回滚拆出的两个显式动作 ──────
+  // 「设为当前版本」只按版本快照恢复应用当前字段（绝不触碰部署行/设备）；
+  // 「下发到设备」先做同一份字段恢复，再对部署行逐台走 upgrade 链。旧 POST
+  // /applications/:id/rollback/:id 已标 deprecated alias（admin-web 已切双动作），
+  // CLI 不再暴露旧端点——此前 CLI 本就没有 app rollback 子命令，保持不补。
+
+  // acf app set-current-version <appId> <versionId>
+  cmd.command('set-current-version <appId> <versionId>')
+    .description(
+      "Restore the application's current fields from a released version snapshot (version/commit/packageUrl/entrypoint/env/manifest — same mapping as the deprecated rollback). NEVER touches deployment rows or devices; to dispatch use: acf app deploy-version",
+    )
+    .option('--json', 'Emit raw JSON (CI-consumable)')
+    .action(async (appId: string, versionId: string, opts: { json?: boolean }) => {
+      // 安全半边（只改记录面）不设确认门——与 upgrade-all 的 canary 首步同口径。
+      const spinner = ora('Setting current version…').start();
+      try {
+        const r = await post<SetCurrentVersionResult>(
+          `/applications/${appId}/set-current-version`,
+          { versionId },
+        );
+        spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(r, null, 2));
+          return;
+        }
+        spinner.succeed(`Current version set to ${r.version}`);
+        console.log(chalk.gray(`  versionId: ${r.versionId}  dispatched: ${r.dispatched} (no devices touched)`));
+      } catch (e: unknown) {
+        emitError('Failed to set current version', e, { spinner });
+      }
+    });
+
+  // acf app deploy-version <appId> <versionId> [--executors <id1,id2>]
+  cmd.command('deploy-version <appId> <versionId>')
+    .description(
+      'Restore the app fields from the version snapshot, then dispatch an upgrade to its deployment rows (default: ALL running rows, same as the deprecated rollback). Executors without a dispatchable row are reported as skipped, not errors',
+    )
+    .option('--executors <ids>', 'Comma-separated executor ids to dispatch to (default: all running deployment rows of the application)')
+    .option('--json', 'Emit raw JSON (CI-consumable)')
+    .option('-y, --yes', 'Skip the confirmation prompt (the dispatch restarts the selected deployments)', false)
+    .action(async (appId: string, versionId: string, opts: { executors?: string; json?: boolean; yes?: boolean }) => {
+      let executorIds: string[] | undefined;
+      if (opts.executors !== undefined) {
+        executorIds = opts.executors.split(',').map((s) => s.trim()).filter(Boolean);
+        if (executorIds.length === 0) {
+          emitUsageError('--executors must list at least one executor id (comma-separated)');
+        }
+      }
+      // 下发半边会重启所选部署——与 upgrade-all 全量路径同款确认门。
+      const scope = executorIds
+        ? `${executorIds.length} named executor(s)`
+        : 'ALL running deployments';
+      if (
+        !(await confirmDestructive(
+          `Deploy version to ${scope} of ${appId}? (this restarts those deployments)`,
+          { yes: opts.yes },
+        ))
+      ) {
+        return;
+      }
+      const spinner = ora('Dispatching version…').start();
+      try {
+        const r = await post<DeployVersionResult>(`/applications/${appId}/deploy-version`, {
+          versionId,
+          ...(executorIds ? { executorIds } : {}),
+        });
+        spinner.stop();
+        // upgrade_rejected = 有行在 upgrade 链被拒（真失败）；no_deployment /
+        // not_running 是显式点名的预期跳过——CI 只对前者红。
+        const rejected = r.skipped.filter((s) => s.reason === 'upgrade_rejected');
+        if (opts.json) {
+          console.log(JSON.stringify(r, null, 2));
+          if (r.upgraded.length === 0 || rejected.length > 0) process.exitCode = 1;
+          return;
+        }
+        if (r.upgraded.length === 0) {
+          spinner.fail('No deployment was dispatched (all targets skipped)');
+          for (const s of r.skipped) {
+            console.error(chalk.red(`  ${s.executorId ?? s.deploymentId ?? '?'}: ${s.reason}${s.detail ? ` (${s.detail})` : ''}`));
+          }
+          process.exitCode = 1;
+          return;
+        }
+        spinner.succeed(`Version ${r.version} dispatched: ${r.upgraded.length} deployment(s) upgrading`);
+        for (const u of r.upgraded) {
+          console.log(chalk.gray(`  ${u.deploymentId.slice(0, 12)}  executor: ${u.executorId ?? '-'}  ${u.executorAddress ?? ''}`));
+        }
+        if (r.skipped.length > 0) {
+          console.error(chalk.yellow(`  ⚠ ${r.skipped.length} skipped:`));
+          for (const s of r.skipped) {
+            console.error(chalk.yellow(`  ${s.executorId ?? s.deploymentId ?? '?'}: ${s.reason}${s.detail ? ` (${s.detail})` : ''}`));
+          }
+          if (rejected.length > 0) process.exitCode = 1;
+        }
+      } catch (e: unknown) {
+        emitError('Failed to deploy version', e, { spinner });
       }
     });
 
@@ -624,6 +820,9 @@ export function appsCommand(): Command {
     createdAt: string | null;
     synthetic?: boolean;
   }
+  // P8-R：被截版本「仍有设备保留」清单的展示上限——超出折叠为计数，与
+  // admin-web ApplicationDetailPage 的 RETAINED_BUT_TRUNCATED_MAX_TAGS（10）同口径。
+  const RETAINED_BUT_TRUNCATED_MAX = 10;
   cmd.command('releases <appId>')
     .description('List unified release history (version × latest deployment) for an application — the modern DEP-01 view; `app versions` is the legacy alias')
     .option('-p, --page <n>', 'Page number', '1')
@@ -633,13 +832,22 @@ export function appsCommand(): Command {
     .action(async (appId: string, opts: { page?: string; pageSize?: string; json?: boolean }) => {
       const spinner = ora('Fetching releases…').start();
       try {
-        // getReleases returns `{ data, total, page, pageSize }`
-        const data = await get<{ data?: AppRelease[]; list?: AppRelease[]; total?: number }>(
+        // getReleases returns `{ data, total, page, pageSize, truncated, retainedButTruncated }`
+        // （0a278da6：truncated=synthetic 聚合扫描到 5000 行上限被截；
+        // retainedButTruncated=被截但仍有设备保留的版本号，字母序。）
+        const data = await get<{
+          data?: AppRelease[];
+          list?: AppRelease[];
+          total?: number;
+          truncated?: boolean;
+          retainedButTruncated?: string[];
+        }>(
           `/applications/${appId}/releases`,
           { page: opts.page, pageSize: opts.pageSize },
         );
         spinner.stop();
         if (opts.json) {
+          // 信封原样透传（truncated / retainedButTruncated 一并直出，CI 自行判断）
           console.log(JSON.stringify(data));
           return;
         }
@@ -666,6 +874,27 @@ export function appsCommand(): Command {
         }
         console.log(table.toString());
         console.log(chalk.gray(`Total: ${data.total ?? list.length}  page ${opts.page}`));
+        // P8（对齐 admin-web Releases 截断告警条）：truncated=true = synthetic
+        // 聚合扫描到 5000 行上限被截——表格用户必须看到「被截」事实，否则会把
+        // 「看到的」当「全量」。--json 形态已在上方原样透传两字段，不走这里。
+        if (data.truncated) {
+          console.log(
+            chalk.yellow(
+              `⚠ 版本行数超上限被截断，仅显示前 ${list.length} 条；完整动作史见事件流（acf app releases --json 可拿 truncated/retainedButTruncated 原始字段）`,
+            ),
+          );
+          // P8-R：被截版本里「仍有设备保留」的版本号显式列出——徽标行不在
+          // 本页，不列出的话「设备还留着这版」的事实就从表格消失。超 10 个
+          // 折叠计数，与前端 RETAINED_BUT_TRUNCATED_MAX_TAGS 口径一致。
+          const retained = data.retainedButTruncated ?? [];
+          if (retained.length > 0) {
+            const shown = retained.slice(0, RETAINED_BUT_TRUNCATED_MAX).join(', ');
+            const more = retained.length > RETAINED_BUT_TRUNCATED_MAX
+              ? `（还有 ${retained.length - RETAINED_BUT_TRUNCATED_MAX} 个版本）`
+              : '';
+            console.log(chalk.yellow(`  被截断但仍有设备保留的版本: ${shown}${more}`));
+          }
+        }
       } catch (e: unknown) {
         emitError('Failed to list releases', e, { spinner });
       }

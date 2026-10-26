@@ -341,8 +341,13 @@ return v`;
             error: err instanceof Error ? err.message : String(err),
           },
         });
-      } catch {
-        /* audit is best-effort */
+      } catch (auditErr: unknown) {
+        // 巡查·静默吞错收口：汇总发送失败后的 NOTIFICATION_FAILED 审计是
+        // 这批告警的唯一落痕（与 listener 直接发送失败同款兜底），写失败
+        // 静默吞 = 告警双重丢失零痕迹。best-effort 保留，warn 可见。
+        this.logger.warn(
+          `NOTIFICATION_FAILED 审计兜底写入失败（digest 兜底路径）: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`,
+        );
       }
       return null;
     }
@@ -441,8 +446,13 @@ return v`;
             count: state.count,
           },
         });
-      } catch {
-        /* audit is best-effort */
+      } catch (auditErr: unknown) {
+        // 巡查·静默吞错收口：汇总发送失败后的 NOTIFICATION_FAILED 审计是
+        // 这批告警的唯一落痕（与 listener 直接发送失败同款兜底），写失败
+        // 静默吞 = 告警双重丢失零痕迹。best-effort 保留，warn 可见。
+        this.logger.warn(
+          `NOTIFICATION_FAILED 审计兜底写入失败（digest 兜底路径）: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`,
+        );
       }
     }
   }

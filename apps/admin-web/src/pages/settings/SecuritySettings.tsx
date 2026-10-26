@@ -206,11 +206,15 @@ export function TotpCard() {
             }
           />
           <Space>
+            {/* F-11（UIAUDIT P3-4）：与 LoginPage 同款仅数字输入——过滤非数字
+                （输入法/粘贴面）+ inputMode=numeric；后端 @Matches(/^\d{6}$/)。 */}
             <Input
               placeholder={t('security.totp.codePlaceholder')}
               maxLength={6}
+              inputMode="numeric"
+              autoComplete="one-time-code"
               value={code}
-              onChange={(e) => setCode(e.target.value)}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
               style={{ width: 200 }}
               aria-label={t('security.totp.codeLabel')}
             />

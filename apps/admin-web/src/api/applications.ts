@@ -103,6 +103,25 @@ export interface VersionHistoryEntry {
 }
 
 /**
+ * R3-A（部署模型评审 2026-10-23 §4.3）：版本行上的设备徽标——正在运行或
+ * 本地保留该版本的设备（设备心跳上报的事实，非部署行推断）。
+ */
+export interface AppReleaseDevice {
+  /** 执行器行 id */
+  executorId: string;
+  /** 执行器可读名（executors.appName）；行已删/未上报名时 null */
+  executorName: string | null;
+  /** 该设备该应用 current 指向的版本（保留场景下可能与本行版本不同） */
+  currentVersion: string | null;
+  /** 本行版本 ∈ 设备 retainedVersions（设备磁盘仍持有该版本） */
+  retained: boolean;
+  /** executors.status === ONLINE（离线设备的版本事实可能已过期） */
+  online: boolean;
+  /** executors.lastHeartbeat（设备最后上报时刻，ISO） */
+  lastHeartbeat: string | null;
+}
+
+/**
  * DEP-01：统一发布追溯行（GET /applications/:id/releases）。
  * 一行 = 一次版本发布：版本快照（application_versions）+ 该版本最近一次部署
  * （app_deployments）两语义面合并。与后端 dto/app-release.dto.ts 逐字段对齐。
@@ -137,10 +156,63 @@ export interface AppReleaseRow {
   createdAt: string | null;
   /** 部署记录合成行（从未保存版本快照的历史数据，deployedVersion=null 归一 version=null） */
   synthetic: boolean;
+  /**
+   * R3-A（§4.3）：正在运行或本地保留该版本的设备（设备上报事实聚合）。
+   * 旧后端（R3-A 前）不带该键——可选以兼容过渡期；无设备上报时为空数组。
+   */
+  devices?: AppReleaseDevice[];
 }
 
 export interface AppReleasesPage {
   data: AppReleaseRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /**
+   * P8：版本行超 RELEASES_MAX_PAGE_SIZE 被静默截断时为 true（响应字段只增，
+   * 旧后端不带该键——可选以兼容过渡期）。消费方应显式告警，否则「看到的
+   * 不是全量」会被当成「就这么多」。
+   */
+  truncated?: boolean;
+  /**
+   * P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，
+   * 后端用全量设备事实求差集带回的「有设备保留但不在本页行中」的版本号
+   * 列表（字母序；truncated=false 恒空）。旧后端不带该键——可选以兼容过渡期。
+   */
+  retainedButTruncated?: string[];
+}
+
+/**
+ * R4（部署模型评审 2026-10-23 §4.1A）：不可变部署事件流行
+ * （GET /app-deployments/applications/:appId/events，实体原样序列化——
+ * 与后端 dto/app-deployment-response.dto.ts 的 AppDeploymentEventRowDto 逐字段对齐）。
+ *
+ * 事件行只含短事实快照（写入侧保证 detail 不带 env），无需掩码；
+ * deploymentId 无外键——remove 事件比部署行活得久。
+ */
+export interface AppDeploymentEventRow {
+  id: string;
+  applicationId: string;
+  /** 触发本事件的部署行 id；行可能已被 remove 删除 */
+  deploymentId: string | null;
+  executorId: string | null;
+  executorAddress: string | null;
+  /** AppDeploymentEventType（varchar 裸 token；展示层负责人类可读映射） */
+  eventType: string;
+  /** 动作发生时的版本事实；动作时未知为 null */
+  deployedVersion: string | null;
+  /** 动作语义（manual/upgrade/rollback/approval）；机器路径为 null */
+  triggerType: string | null;
+  /** 操作人（JWT 用户名）；机器路径（如卡死扫描）为 null */
+  operator: string | null;
+  /** 短事实快照（reason/runMode/previousStatus/deletedStatus 等标量） */
+  detail?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** R4 §4.1A：事件流分页信封（裸四键，同 /releases 形态）。 */
+export interface AppDeploymentEventsPage {
+  data: AppDeploymentEventRow[];
   total: number;
   page: number;
   pageSize: number;
@@ -171,7 +243,11 @@ export const applicationsApi = {
       packageFileWillBeDeleted: boolean;
     }>(`/applications/${id}/removal-impact`),
   upload: (formData: FormData) =>
-    client.post<Application>('/applications/upload', formData),
+    // F-5b（UIUX 审计 P2-4 同型遗留，对齐 F-5 的 executor-packages/registry 处置）：
+    // 应用包上传上限 200MB（后端 FileInterceptor），弱网下远超全局 30s——axios
+    // 掐断报「网络错误」而服务端可能仍在接收，用户重传会产生重复/僵尸包。
+    // 显式 timeout:0 不限时，由上传中的 loading 态 + 用户手动取消兜底。
+    client.post<Application>('/applications/upload', formData, { timeout: 0 }),
   webhook: (payload: unknown) => client.post<{ ok: boolean }>('/applications/webhook', payload),
   syncTasks: (id: string) =>
     client.post<{ ok: boolean; registeredCount: number }>(`/applications/${id}/sync-tasks`),
@@ -179,10 +255,14 @@ export const applicationsApi = {
    * P1-9：后端 upgrade-all 早已支持 body.rollout（灰度策略），前端此前 POST 时
    * 不带 body——灰度发布在 UI 上没有任何入口。现在把策略透传：
    *   strategy='canary' 时按 percentage% 灰度首批，后端自动观察/转正/回滚。
+   * R2（部署模型评审 §4.4）：includeStopped 仅 all 策略生效（stopped 显式
+   * opt-in）；响应新增 coverage 分组计数与 skipped 在途跳过明细——只增不改，
+   * 旧调用方按需消费。
    */
   upgradeAll: (
     id: string,
     rollout?: { strategy: 'full' | 'canary'; percentage?: number },
+    includeStopped?: boolean,
   ) =>
     // A-8：canary 被互斥拒绝时后端返回 200 + ok:false + rollout.blockedReason
     // （非 HTTP 错误），前端必须读这两个字段才不会把「未启动」当成「已成功」。
@@ -191,10 +271,27 @@ export const applicationsApi = {
       total: number;
       succeeded: number;
       failed: number;
+      /** R2 §4.4：按状态分组的覆盖面计数（后端恒回显）。 */
+      coverage?: {
+        running: number;
+        scheduled: number;
+        stopped: number;
+        failed: number;
+        inFlight: number;
+      };
+      /** R2 §4.4：在途行（pending/deploying/upgrading）跳过明细。 */
+      skipped?: Array<{
+        deploymentId: string;
+        executorId: string | null;
+        status: string;
+        reason: string;
+      }>;
       rollout?: { batchId: string; blockedReason?: string };
     }>(
       `/applications/${id}/upgrade-all`,
-      rollout ? { rollout } : {},
+      rollout || includeStopped
+        ? { ...(rollout ? { rollout } : {}), ...(includeStopped ? { includeStopped: true } : {}) }
+        : {},
     ),
   getVersionHistory: (id: string) =>
     client.get<VersionHistoryEntry[]>(`/applications/${id}/versions`),
@@ -203,23 +300,78 @@ export const applicationsApi = {
     client.get<AppReleasesPage>(`/applications/${id}/releases`, {
       params: { page, pageSize },
     }),
-  rollback: (appId: string, targetId: string) =>
-    client.post<{
-      ok: boolean;
-      rolledBackTo: string | null;
-      total: number;
-      succeeded: number;
-      failed: number;
-      /**
-       * P1-14：后端 R16——legacy（无版本快照）行的回滚只恢复 version/commit，
-       * 无法恢复 packageUrl（legacy 行不存历史 packageUrl）。前端必须如实提示，
-       * 否则用户以为连包也回退了。
-       */
-      packageUrlRestored?: boolean;
-    }>(
-      `/applications/${appId}/rollback/${targetId}`,
+  /**
+   * R4（§4.1A）：应用的不可变部署事件流（append-only 动作追溯）。分页默认
+   * 50、上限 200（对齐 /releases）；按 createdAt 倒序（同秒多事件 id 兜底）。
+   * 注意路由挂在 /app-deployments 控制器下（非 /applications/:id/...）。
+   *
+   * eventType/since/until：服务端过滤（上轮遗留——事件量极大时深翻页代价
+   * 高）。eventType 单值（九枚举之一）；since/until 为 ISO 8601 半开区间
+   * [since, until)（含头不含尾）。
+   */
+  getDeploymentEvents: (
+    id: string,
+    page = 1,
+    pageSize = 50,
+    filters?: { eventType?: string; since?: string; until?: string },
+  ) =>
+    client.get<AppDeploymentEventsPage>(`/app-deployments/applications/${id}/events`, {
+      params: {
+        page,
+        pageSize,
+        ...(filters?.eventType ? { eventType: filters.eventType } : {}),
+        ...(filters?.since ? { since: filters.since } : {}),
+        ...(filters?.until ? { until: filters.until } : {}),
+      },
+    }),
+  /**
+   * R1（部署模型评审 2026-10-23 §4.2）：旧 rollback 端点（恢复应用字段 + 全量
+   * 下发捆绑）已标 deprecated，UI 拆成两个显式动作——
+   *   · setCurrentVersion 只按版本快照恢复应用当前字段（dispatched 恒 false，
+   *     绝不动部署行/设备）；
+   *   · deployVersion 恢复字段后下发（缺省全部 RUNNING 行；可按执行器点名，
+   *     无部署行/不可下发的执行器进 skipped 明细而非报错）。
+   */
+  setCurrentVersion: (id: string, versionId: string) =>
+    client.post<SetCurrentVersionResult>(`/applications/${id}/set-current-version`, {
+      versionId,
+    }),
+  deployVersion: (id: string, versionId: string, executorIds?: string[]) =>
+    client.post<DeployVersionResult>(
+      `/applications/${id}/deploy-version`,
+      executorIds ? { versionId, executorIds } : { versionId },
     ),
 };
+
+/** R1 §4.2：POST /applications/:id/set-current-version 响应。 */
+export interface SetCurrentVersionResult {
+  ok: boolean;
+  /** 恒 false——本端点不下发任何设备 */
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+}
+
+/** R1 §4.2：POST /applications/:id/deploy-version 响应。 */
+export interface DeployVersionResult {
+  ok: boolean;
+  /** 恒 true——本端点就是下发动作 */
+  dispatched: boolean;
+  version: string;
+  versionId: string;
+  upgraded: Array<{
+    deploymentId: string;
+    executorId: string | null;
+    executorAddress: string | null;
+  }>;
+  /** no_deployment / not_running / upgrade_rejected（detail 带补充信息） */
+  skipped: Array<{
+    executorId: string | null;
+    deploymentId: string | null;
+    reason: 'no_deployment' | 'not_running' | 'upgrade_rejected';
+    detail?: string | null;
+  }>;
+}
 
 /** MUTEX-01：互斥组配置管理（读面全登录用户，写面 ADMIN）。 */
 export const mutexGroupsApi = {

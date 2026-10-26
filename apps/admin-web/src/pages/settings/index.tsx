@@ -564,6 +564,37 @@ function SystemConfigTab() {
 }
 
 // ─── AI Config Tab ───────────────────────────────────────────────────────────
+
+/**
+ * P3-1（2026-10-26 审计）：AI 配置数值字段范围——与后端 ai.controller
+ * saveConfig 的 AI_CONFIG_NUMBER_INVALID 白名单**同口径**（min/max 逐字一致）：
+ * qwenMaxTokens 1~65536、qwenTimeoutMs 1~3600000。前端先行拦截给出即时表单
+ * 错误，后端 400 兜底防绕过 UI 的直连请求。
+ */
+export const AI_NUMBER_FIELDS = {
+  qwenMaxTokens: { min: 1, max: 65_536 },
+  qwenTimeoutMs: { min: 1, max: 3_600_000 },
+} as const;
+
+/**
+ * P3-1 数值字段校验纯函数（导出供测试，对齐 EventSubscriptionsSettings
+ * isValidWebhookUrl 先例）：空值放行——后端把空串当「未配置」走 env/默认
+ * 回退（ai.service.getAiConfig 语义），前端清空输入框 = 恢复默认，是合法操作。
+ * 非空时必须是 min~max 内的十进制整数（^\d+$ 形态闸，拒绝 "abc"/"12abc"/
+ * "1e3"/负数——与后端 saveConfig 的 AI_CONFIG_NUMBER_INVALID 同口径）。
+ */
+export function isValidAiNumber(
+  value: string | number | undefined | null,
+  min: number,
+  max: number,
+): boolean {
+  const trimmed = value == null ? '' : String(value).trim();
+  if (trimmed === '') return true;
+  if (!/^\d+$/.test(trimmed)) return false;
+  const n = Number(trimmed);
+  return n >= min && n <= max;
+}
+
 function AiConfigTab() {
   const [form] = Form.useForm();
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -759,11 +790,62 @@ function AiConfigTab() {
               <Form.Item name="qwenModel" label={t('sysSettings.ai.modelLabel')} tooltip={t('sysSettings.ai.qwenModelTooltip')}>
                 <Input placeholder="qwen-vl-max" />
               </Form.Item>
-              <Form.Item name="qwenMaxTokens" label={t('sysSettings.ai.qwenMaxTokensLabel')} tooltip={t('sysSettings.ai.qwenMaxTokensTooltip')}>
-                <Input placeholder="4096" />
+              <Form.Item
+                name="qwenMaxTokens"
+                label={t('sysSettings.ai.qwenMaxTokensLabel')}
+                tooltip={t('sysSettings.ai.qwenMaxTokensTooltip')}
+                // P3-1：数值白名单校验（与后端 AI_CONFIG_NUMBER_INVALID 同口径，
+                // 范围见 AI_NUMBER_FIELDS）——"abc" 此前能保存成功，运行时
+                // parseInt 失败静默回退默认值，管理员被误导。
+                rules={[
+                  {
+                    validator: (_rule, value) =>
+                      isValidAiNumber(
+                        value,
+                        AI_NUMBER_FIELDS.qwenMaxTokens.min,
+                        AI_NUMBER_FIELDS.qwenMaxTokens.max,
+                      )
+                        ? Promise.resolve()
+                        : Promise.reject(
+                            new Error(
+                              t('sysSettings.ai.numberInvalid', {
+                                field: t('sysSettings.ai.qwenMaxTokensLabel'),
+                                min: AI_NUMBER_FIELDS.qwenMaxTokens.min,
+                                max: AI_NUMBER_FIELDS.qwenMaxTokens.max,
+                              }),
+                            ),
+                          ),
+                  },
+                ]}
+              >
+                <Input placeholder="4096" inputMode="numeric" />
               </Form.Item>
-              <Form.Item name="qwenTimeoutMs" label={t('sysSettings.ai.qwenTimeoutLabel')} tooltip={t('sysSettings.ai.qwenTimeoutTooltip')}>
-                <Input placeholder="120000" />
+              <Form.Item
+                name="qwenTimeoutMs"
+                label={t('sysSettings.ai.qwenTimeoutLabel')}
+                tooltip={t('sysSettings.ai.qwenTimeoutTooltip')}
+                rules={[
+                  {
+                    validator: (_rule, value) =>
+                      isValidAiNumber(
+                        value,
+                        AI_NUMBER_FIELDS.qwenTimeoutMs.min,
+                        AI_NUMBER_FIELDS.qwenTimeoutMs.max,
+                      )
+                        ? Promise.resolve()
+                        : Promise.reject(
+                            new Error(
+                              t('sysSettings.ai.numberInvalid', {
+                                field: t('sysSettings.ai.qwenTimeoutLabel'),
+                                min: AI_NUMBER_FIELDS.qwenTimeoutMs.min,
+                                max: AI_NUMBER_FIELDS.qwenTimeoutMs.max,
+                              }),
+                            ),
+                          ),
+                  },
+                ]}
+              >
+                <Input placeholder="120000" inputMode="numeric" />
               </Form.Item>
             </>
           )}

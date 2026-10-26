@@ -7,6 +7,7 @@ import * as os from 'os';
 import { app } from 'electron';
 import * as path from 'path';
 import { decryptToken, encryptToken, isValueEncrypted } from './token-crypto';
+import { createStoreToleratingCorruption, hardenConfigFilePermissions } from './config-recovery';
 import type { UiLanguage } from './ui-language';
 import log from './logger';
 
@@ -200,22 +201,48 @@ export function isStrictTokenEncryption(): boolean {
 }
 
 // electron-store 11 的默认导出即类本身；经类型导入拿到实例形状，
-// 运行时构造器（any）在此收窄。
+// 运行时构造器（any）在此收窄。name 显式传 'config'（与库默认值同值，
+// 行为不变）：configFilePath() 对损坏恢复/权限收紧所用的落盘路径必须与
+// store 实际读写路径是同一个，不能依赖"默认名恰好如此"的隐式契约。
 type ElectronStoreInstance = ElectronStoreClass<AppConfig>;
+const STORE_FILE_NAME = 'config';
 const StoreCtor = Store as unknown as new (options?: {
   defaults?: Partial<AppConfig>;
+  name?: string;
 }) => ElectronStoreInstance;
 
 export class ConfigStore {
   private store: ElectronStoreInstance;
 
   constructor() {
-    this.store = new StoreCtor({ defaults });
+    // P1-1：config.json 损坏（断电写半行/磁盘满/手改坏 JSON）时，conf 16 的
+    // `clearInvalidConfig` 默认 false → 构造抛 SyntaxError，此前直接炸进
+    // crash-guard → 每次启动弹「重启即可恢复」后退出，重启永远无效（无限
+    // 崩溃循环）。这里交给 config-recovery 的决策层：坏文件改名
+    // `config.json.corrupt-<ts>` 留证（同目录，token 等字段可手工抢救）→
+    // 以 defaults 重建继续启动。决策语义与测试见 config-recovery.ts 头注。
+    this.store = createStoreToleratingCorruption<ElectronStoreInstance>({
+      createStore: () => new StoreCtor({ defaults, name: STORE_FILE_NAME }),
+      configPath: ConfigStore.configFilePath(),
+      logWarn: (message) => log.warn(message),
+    }).store;
     // 初始化 workDir 默认值
     if (!this.store.get('workDir')) {
       this.store.set('workDir', path.join(app.getPath('userData'), 'tasks'));
     }
     this.migratePlaintextToken();
+    // P3-2：构造路径可能没有触发写盘（文件不存在时 chmod 静默跳过），
+    // 每次保存后的收紧才是常态生效点；此处覆盖"存量 0644 文件"场景。
+    hardenConfigFilePermissions(ConfigStore.configFilePath());
+  }
+
+  /**
+   * 配置文件的绝对路径（`<userData>/config.json`）。electron-store 在主进程
+   * 的默认 cwd 就是 userData、默认文件名就是 'config'（构造时已显式传入），
+   * 损坏恢复（P1-1）与权限收紧（P3-2）据此定位同一个文件。
+   */
+  static configFilePath(): string {
+    return path.join(app.getPath('userData'), `${STORE_FILE_NAME}.json`);
   }
 
   /**
@@ -285,6 +312,9 @@ export class ConfigStore {
       }
       this.store.set(k as keyof AppConfig, v);
     }
+    // P3-2：写盘后收紧权限——config.json 含执行器共享令牌，不能跟随 umask
+    // 放开同机其他用户的读权限（best-effort：Windows/权限被拒时静默跳过）。
+    hardenConfigFilePermissions(ConfigStore.configFilePath());
   }
 
   /**

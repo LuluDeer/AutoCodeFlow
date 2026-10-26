@@ -120,17 +120,22 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // 以 fs.watch + debounce 广播 history:changed（main/index.ts），替代双页 10s
       // 轮询；preload 暴露 onHistoryChanged 供历史页/状态页订阅。同样属实现已落地。
       //
+      // F-37（UIUX 审计）再补 1 个：cancelUpdateDownload。下载期「取消下载」钮
+      // → updater:cancel-download（electron-updater 6.x 原生 CancellationToken
+      // 中断在途下载）；对应主进程 handler 已落地。
+      //
       // 教训：本地 `dist/` 是**上一次 build 的产物**，直接跑 e2e 会漏掉「新增但
       // 未重建」的通道（本地 41 vs CI 44 vs 实际 48）。改动 preload 后必须
       // `npm run build` 再跑本用例，否则白名单会以过期运行时为准。
       expect(channels).toEqual(
         [
+          'cancelUpdateDownload',
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
           'downloadUpdate', 'exportConfig', 'exportDiagnosticReport', 'exportExecLog', 'getAgentStatus', 'getAutoLaunch',
           'getConfig', 'getHealthPanel', 'getHistory',
           'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
           'getWindowState', 'importConfig', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow',
-          'onHistoryChanged', 'onLogLine',
+          'onConfigChanged', 'onHistoryChanged', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',

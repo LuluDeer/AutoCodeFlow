@@ -324,7 +324,8 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         "ExecutorController.register",
         // ARCH-33（ADR-016）：pull 控制命令的执行结果上报（机器面，非用户会话）。
         // 与 pullDispatch 同属执行器长轮询通道的写面：执行器只持有自己的令牌，
-        // 端点内以 validateTokenByAddress(address, token) 自证身份。
+        // 端点内以 authenticateMachineRequest(address, token) 自证身份（P2-4：
+        // 归属比对需要它顺带解析出的回报行）。
         "ExecutorController.reportCommandResult",
         "ExecutorPackageController.pushResult",
         // FEAT-21：任务 webhook 入站触发——per-task secret HMAC（webhook-hmac.util），

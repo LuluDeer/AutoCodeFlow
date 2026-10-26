@@ -3,6 +3,8 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { Application } from "./entities/application.entity";
 import { AppDeployment } from "./entities/app-deployment.entity";
 import { ApplicationVersion } from "./entities/application-version.entity";
+// R4（§4.1A）：不可变部署事件表（部署域动作追溯，纯旁路记录）。
+import { AppDeploymentEvent } from "./entities/app-deployment-event.entity";
 // MUTEX-01：互斥组配置实体（组 CRUD + 应用挂组）。
 import { MutexGroup } from "./entities/mutex-group.entity";
 import { ApplicationService } from "./application.service";
@@ -27,6 +29,7 @@ import { NotificationModule } from "../notification/notification.module";
       AppDeployment,
       ApplicationVersion,
       MutexGroup,
+      AppDeploymentEvent,
     ]),
     forwardRef(() => TaskModule),
     ExecutorModule,

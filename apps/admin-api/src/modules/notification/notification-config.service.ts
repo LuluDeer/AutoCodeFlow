@@ -212,7 +212,22 @@ export class NotificationConfigService implements OnModuleInit {
     for (const row of rows) {
       const channel = this.channelConfigs.get(row.key);
       if (!channel) continue; // 未知渠道键（枚举演进后的遗留行）不污染内存
-      channel.config = { ...row.config };
+      // P2-3（2026-10-25 审计）：存量毒值防御——历史版本（F-53 残留窗口）曾
+      // 让非 string config 值写穿 DB（jsonb 不挑类型）。直接回灌会让读面
+      // maskChannel 对非 string 调 replace 抛 TypeError → GET /channels 持续
+      // 500（读面被单条历史坏键扣死）。这里跳过非 string 值并 warn：单个坏键
+      // 不再打挂读面，坏值也不再静默（warn 给出键名与渠道，便于运维定位清理）。
+      const sanitized: Record<string, string> = {};
+      for (const [k, v] of Object.entries(row.config ?? {})) {
+        if (typeof v !== "string") {
+          this.logger.warn(
+            `[channel-config] persisted config for ${row.key}.${k} is not a string (type: ${typeof v}) — skipped (legacy poisoned value); re-save the channel in the admin UI to clean it up`,
+          );
+          continue;
+        }
+        sanitized[k] = v;
+      }
+      channel.config = sanitized;
       channel.enabled = row.enabled;
       // 同步发送面（env 种子值让位于已保存值，与渠道解析顺序一致）
       this.syncStore(row.key);

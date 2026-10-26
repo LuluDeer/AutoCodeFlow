@@ -54,6 +54,10 @@
           "jsonpath": "$.packages[''].version"
         },
         {
+          "type": "generic",
+          "path": "/packages/autocodeflow-node-sdk/README.md"
+        },
+        {
           "type": "json",
           "path": "/packages/acf-cli/package.json",
           "jsonpath": "$.version"

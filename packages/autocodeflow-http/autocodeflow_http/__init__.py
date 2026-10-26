@@ -3,6 +3,9 @@ from .client import (
     ApiHttpStatusError,
     AutoFlowHttpClient,
     CircuitBreaker,
+    CircuitBreakerOpenError,
+    DEFAULT_MAX_RESPONSE_BYTES,
+    ResponseTooLargeError,
     RetryConfig,
     SAFE_METHODS,
 )
@@ -12,6 +15,9 @@ __all__ = [
     "ApiHttpStatusError",
     "AutoFlowHttpClient",
     "CircuitBreaker",
+    "CircuitBreakerOpenError",
+    "DEFAULT_MAX_RESPONSE_BYTES",
+    "ResponseTooLargeError",
     "RetryConfig",
     "SAFE_METHODS",
 ]

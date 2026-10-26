@@ -70,8 +70,16 @@ export interface BlockStrategyGateHooks {
   warn(message: string): void;
   /** 被覆盖 RUNNING 执行的执行器槽位回退（未提供则不释放） */
   releaseSlot?(address: string | null): Promise<void>;
-  /** 被覆盖 RUNNING 执行的进程终止下发（A4：先终态后 kill，见下） */
-  notifyKill?(executionId: string, address: string): Promise<void>;
+  /** 被覆盖 RUNNING 执行的进程终止下发（A4：先终态后 kill，见下）。
+   *
+   * P2-3（2026-10-26 第三轮审计）：第三个参数透传被覆盖行的 executorId
+   * （行身份，迁移 0055 前的存量行为 null）——pull 同址多行时 kill 必须按行
+   * 寻路进正确的命令队列，仅按 address 会进别行队列而静默 miss。 */
+  notifyKill?(
+    executionId: string,
+    address: string,
+    executorId?: string | null,
+  ): Promise<void>;
   /** discard 命中的 metrics 出口（调度面 recordTriggerSkippedBlockStrategy） */
   onDiscardSkip?(): void;
 }
@@ -160,7 +168,13 @@ export async function applyBlockStrategyGate(
         // 下发失败仅 warn，绝不阻塞 CANCELLED 终态与新触发的执行。
         if (candidate.status === ExecutionStatus.RUNNING) {
           try {
-            await hooks.notifyKill?.(row.id, row.executorAddress);
+            // P2-3：透传行身份（candidate 快照的 executorId；存量行 null →
+            // 上层回落 address 寻路并 warn，行为与引入前一致）。
+            await hooks.notifyKill?.(
+              row.id,
+              row.executorAddress,
+              candidate.executorId ?? null,
+            );
             hooks.warn(
               `COVER_EARLY: kill notified to executor ${row.executorAddress} for covered execution ${row.id}`,
             );

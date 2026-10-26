@@ -25,7 +25,18 @@
 export const CODE_EXECUTION_MODES = ['off', 'sandbox', 'host'] as const;
 export type CodeExecutionMode = (typeof CODE_EXECUTION_MODES)[number];
 
-/** 沙箱后端。P7a 只实现 none/process；container/vm 是登记在案的保留值。 */
+/**
+ * 沙箱后端。P7a 只实现 none/process；container/vm 是登记在案的保留值。
+ *
+ * P2-5 边界声明（面向部署方的如实口径，不改行为）：
+ *  - **process = 平台闸门，不是 OS 级隔离**：解释器封闭枚举 + env 白名单 +
+ *    工作区路径域 + 超时树杀；HOME/PATH 会传入子进程、网络不受限。防的是
+ *    「误操作/误删」，防不住恶意代码（07 §5 结论）。
+ *  - **container / vm 未实现**：config-sanitize 的枚举仍放行落盘（值合法），
+ *    但 resolveLocalPermissions 的 pickAxis 会把未实现档钳回该预设的默认
+ *    （standard/developer → process，off → none）；中台合并再钳一次。即
+ *    「落盘会被钳回 process/none」，运行行为永远不会落在未实现档上。
+ */
 export const SANDBOX_BACKEND_MODES = ['none', 'process', 'container', 'vm'] as const;
 export type SandboxBackendMode = (typeof SANDBOX_BACKEND_MODES)[number];
 
@@ -252,7 +263,9 @@ export function mergeWithCenterPolicy(
   // 连带丢掉其它轴。故只对真实预设名做白名单判定。
   const presetAllowed =
     allowed === null || local.preset === 'custom' || allowed.includes(local.preset);
-  let effectivePreset: AgentPreset | 'custom' = local.preset;
+  // P3-5：effectivePreset 从未被改写（旧代码此处有过 `clamped ? a : a` 的死
+  // 赋值，已清理）——合并后 preset 恒保持本地值，钳制只作用于各轴。
+  const effectivePreset: AgentPreset | 'custom' = local.preset;
   let clamped = false;
   if (!presetAllowed) {
     const merged = mergeAxes(PRESET_DEFINITIONS.minimal, local);
@@ -273,7 +286,6 @@ export function mergeWithCenterPolicy(
       merged.sandboxBackend !== local.sandboxBackend ||
       merged.hostAccess !== local.hostAccess ||
       merged.taskExecution !== local.taskExecution;
-    effectivePreset = clamped ? local.preset : local.preset;
     return {
       ...merged,
       preset: effectivePreset,

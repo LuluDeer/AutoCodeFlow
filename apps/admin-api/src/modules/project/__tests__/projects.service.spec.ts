@@ -105,7 +105,10 @@ describe("ProjectsService（AUTH-01）", () => {
       expect(saved.name).toBe("Renamed");
       // R62：只写 dto 带来的列（不再整行 save —— 实体将来多出别的写者时，
       // 整行 save 会变成「顺手把旧值写回去」）
-      expect(repo.update).toHaveBeenCalledWith({ id: row.id }, { name: "Renamed" });
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: row.id },
+        { name: "Renamed" },
+      );
       expect(repo.save).not.toHaveBeenCalled();
     });
 

@@ -58,10 +58,9 @@ const packageRow: ExecutorPackage = {
   type: 'python',
   platform: 'linux',
   fileSize: 1024,
-  sha256: 'sha256',
+  checksum: 'sha256',
   changelog: '',
   status: 'active',
-  downloadCount: 0,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
@@ -127,21 +126,51 @@ describe('B-2 删除包失败反馈', () => {
 });
 
 describe('B-3 弃用/激活行级 pending', () => {
-  it('快速重复点击只发一次弃用请求（行级 loading 防双击竞态）', async () => {
+  it('快速重复点击只发一次弃用请求（P2-4 二次确认 + 行级 loading 防双击竞态）', async () => {
     let resolveDep: (v: ExecutorPackage) => void = () => {};
     vi.mocked(deprecatePackage).mockReturnValue(new Promise<ExecutorPackage>((r) => { resolveDep = r; }));
+    const confirmSpy = vi.spyOn(confirmModal, 'confirm');
     render(<ExecutorPackagesPage />);
     expect(await screen.findByText('python-runner')).toBeTruthy();
 
     const stopBtn = document.querySelector('.anticon-stop')!.closest('button') as HTMLButtonElement;
     fireEvent.click(stopBtn);
-    // 第一击后按钮进入行级 loading（在途），重复点击被吞
+    // P2-4：第一击先出二次确认框；确认框打开期间行级 loading 已占位，
+    // 重复点击被吞（不会连开第二个确认框、更不会连发请求）
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(stopBtn.classList.contains('ant-btn-loading')).toBe(true));
     fireEvent.click(stopBtn);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+    // 直接驱动 onOk（executor-ui07「Modal.confirm 走 onOk」先例）——确认后才真正发起弃用
+    const onOk = confirmSpy.mock.calls[0][0].onOk!;
+    await act(async () => { void onOk(); });
     expect(deprecatePackage).toHaveBeenCalledTimes(1);
 
     resolveDep({ ...packageRow });
     await waitFor(() => expect(stopBtn.classList.contains('ant-btn-loading')).toBe(false));
+  });
+
+  it('P2-4：弃用前出现二次确认框（注明可逆），取消不发起请求', async () => {
+    const confirmSpy = vi.spyOn(confirmModal, 'confirm');
+    render(<ExecutorPackagesPage />);
+    expect(await screen.findByText('python-runner')).toBeTruthy();
+
+    fireEvent.click(document.querySelector('.anticon-stop')!.closest('button')!);
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1));
+    const cfg = confirmSpy.mock.calls[0][0];
+    expect(cfg.title).toBe('弃用此包？');
+    // 确认文案必须注明可逆（弃用后移出向导候选集，可随时重新激活）
+    expect(String(cfg.content)).toContain('重新激活');
+    expect(deprecatePackage).not.toHaveBeenCalled();
+
+    // 取消 → 行级 loading 释放，可再次操作
+    cfg.onCancel?.();
+    await waitFor(() => {
+      const btn = document.querySelector('.anticon-stop')!.closest('button') as HTMLButtonElement;
+      expect(btn.classList.contains('ant-btn-loading')).toBe(false);
+    });
+    expect(deprecatePackage).not.toHaveBeenCalled();
   });
 });
 
@@ -238,5 +267,40 @@ describe('B-12 上传大小校验与进度', () => {
     await waitFor(() => expect(uploadPackage).toHaveBeenCalled());
     const progressCb = vi.mocked(uploadPackage).mock.calls[0][1];
     expect(typeof progressCb).toBe('function');
+  });
+});
+
+// ── F-16（UIAUDIT P3-9）：30s 轮询节拍稳定 ─────────────────────────────────
+// 旧实现把 loading 放进轮询 effect 依赖：每次 load 完成 loading 翻转都会拆掉
+// 重建 interval，30s 节拍从「上次完成时刻」重启、持续漂移。修复后守卫走
+// ref，节拍锚定挂载相位。本用例用慢首载（t=25s 才完成）区分两种实现：
+// 旧实现下一拍漂移到 t=55s（t=30s 不触发），修复后 t=30s 照常触发。
+describe('F-16 30s 轮询节拍稳定', () => {
+  it('load 完成（loading 翻转）不重建 interval：节拍锚定挂载相位而非完成时刻', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFirst!: (v: unknown) => void;
+      vi.mocked(listPackages).mockImplementationOnce(
+        () => new Promise((r) => { resolveFirst = r; }) as never,
+      );
+      render(<ExecutorPackagesPage />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(1);
+
+      // 首载在 t=25s 完成（loading true→false）——旧实现此刻重建 interval
+      resolveFirst({ items: [packageRow], total: 1 });
+      await act(async () => { await vi.advanceTimersByTimeAsync(25_000); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(1);
+
+      // t=30s：挂载相位的第一拍（旧实现此处不触发——interval 已在 t=25s 重启）
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(2);
+
+      // t=60s：第二拍照常
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(vi.mocked(listPackages)).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

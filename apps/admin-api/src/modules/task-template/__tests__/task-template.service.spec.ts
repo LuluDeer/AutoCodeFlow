@@ -221,7 +221,11 @@ describe("TaskTemplateService (CORE-03)", () => {
         createdBy: null,
       }),
     );
-    await svc.remove("legacy", { id: 99, username: "root", role: UserRole.ADMIN });
+    await svc.remove("legacy", {
+      id: 99,
+      username: "root",
+      role: UserRole.ADMIN,
+    });
     expect(repo.delete).toHaveBeenCalledWith({ id: "legacy" });
   });
 

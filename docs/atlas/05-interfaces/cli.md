@@ -1,4 +1,4 @@
-# CLI 命令地图（acf，67 个子命令）
+# CLI 命令地图（acf，69 个子命令）
 > 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-20 · 对应代码: packages/acf-cli/src（index.ts + commands/ 12 个文件）
 
 ## 怎么连
@@ -17,7 +17,7 @@
 
 优先级：CLI 选项 > 环境变量 > conf 存储。CLI 不持有 executor token；执行器面操作不在命令范围内。
 
-## 命令地图（13 个域 + config，共 67 个子命令）
+## 命令地图（13 个域 + config，共 69 个子命令）
 
 ### login / config（6）
 
@@ -62,7 +62,7 @@
 | `task glue <id>` | 在线更新 GLUE 脚本 | `-f <file>`/`--stdin` `--language python\|javascript\|shell` |
 | `task lint <file>` | 本地语法检查 glue 脚本（js/mjs/cjs/py/sh，不执行） | `--language <lang>` 覆盖自动识别；源码经 **stdin** 传给解释器（Windows 路径反斜杠不再被 bash/python 吃掉）；解释器缺失 → 码 2（环境问题，区别于语法错的码 1） |
 
-### app（12）— commands/apps.ts
+### app（14）— commands/apps.ts
 
 | 命令 | 作用 | 关键选项 |
 |---|---|---|
@@ -73,9 +73,11 @@
 | `app deploy <id>` | 部署到执行器（`--executor` 缺省=自动选最低负载）。**缺省 `-m scheduled`（仅部署、中台/定时触发）**；显式 `once`/`daemon` 会立刻启动入口脚本（CLI 发请求前黄色预警）；`deploy-only` 是 scheduled 的自解释别名 | `-e/--executor` `-m/--run-mode once\|daemon\|scheduled\|deploy-only` `--env '{"K":"v"}'` `--start-command <cmd>` |
 | `app deployments [appId]` | 部署列表 | `-p/-n` `--json` |
 | `app versions <id>` | 应用版本历史（过渡期 legacy alias） | `--json` |
-| `app releases <appId>` | **DEP-01 统一发布追溯**：版本 × 最近部署（状态/次数/执行器/runMode/触发方式） | `-p/-n`（上限 200）`--json` |
+| `app releases <appId>` | **DEP-01 统一发布追溯**：版本 × 最近部署（状态/次数/执行器/runMode/触发方式）；后端信封的 `truncated=true`（synthetic 聚合到 5000 行上限被截）时表格后打截断 warn，并列出「被截但仍有设备保留」的版本号（超 10 个折叠计数，与前端同口径） | `-p/-n`（上限 200）`--json`（信封原样透传 `truncated`/`retainedButTruncated`） |
 | `app upload <zip>` | multipart 上传应用包（按名称 upsert；`.zip` 校验在服务端） | `--name`（必填）`--runtime` `--version <v>`（**不被根 --version 劫持**）`--json` |
 | `app upgrade-all <appId>` | 全量/灰度滚动升级（受理≠完成，异步推进） | `--strategy all\|canary` `--percentage <n>` `--version <v>`（定向灰度/渐进回滚）；**`all`（缺省）需 `-y/--yes`**（动全量，非交互缺则码 2），canary 无门 |
+| `app set-current-version <appId> <versionId>` | **R1/4.2 回滚拆分·动作一**：只切中台当前版本指针，不碰任何设备（可对 stopped/离线版本执行；幂等） | `--json` |
+| `app deploy-version <appId> <versionId>` | **R1/4.2 回滚拆分·动作二**：按执行器点名下发指定版本（缺省=全部 RUNNING 行；无部署行/不可下发执行器进 skipped 明细不报错） | `-e/--executor <id>`（可多次） `--json` |
 | `app deploy <id>` | 部署到执行器 | `--env <json>` 坏 JSON → 码 2（本地 payload，请求不发出） |
 
 ### executor（4）— commands/executors.ts

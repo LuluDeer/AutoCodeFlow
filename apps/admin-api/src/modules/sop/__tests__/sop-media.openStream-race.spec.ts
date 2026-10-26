@@ -96,7 +96,9 @@ describe("SopMediaService.openStream · 保留期整删与单文件读并发", (
 
   it("父目录被整体删除（ENOTDIR/ENOENT）同样收敛为 404，不冒泡原始异常", () => {
     statSyncMock.mockImplementationOnce(() => {
-      const err = new Error("ENOTDIR: not a directory") as NodeJS.ErrnoException;
+      const err = new Error(
+        "ENOTDIR: not a directory",
+      ) as NodeJS.ErrnoException;
       err.code = "ENOTDIR";
       throw err;
     });
@@ -109,7 +111,9 @@ describe("SopMediaService.openStream · 保留期整删与单文件读并发", (
 
   it("非 ENOENT 类错误（如 EACCES）不伪装成 404——原样抛出，避免把权限故障说成文件不存在", () => {
     statSyncMock.mockImplementationOnce(() => {
-      const err = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+      const err = new Error(
+        "EACCES: permission denied",
+      ) as NodeJS.ErrnoException;
       err.code = "EACCES";
       throw err;
     });

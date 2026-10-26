@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 // MODAL-01：命令式 Modal 从 utils/modal 取（吃暗色主题 + i18n locale）；
-// 本文件只用命令式 Modal.*，无 <Modal> JSX 组件，故整块从 antd 导入中移除。
+// R1（部署模型评审 §4.2）的下发弹窗是带勾选状态的受控 <Modal> 组件（在 React
+// 树内，本就消费主题/locale），按 utils/modal 头注从 antd 导入为 AntdModal。
 import { Modal } from '../utils/modal';
-import { Descriptions,
+import { Modal as AntdModal,
+  Checkbox,
+  Descriptions,
   Badge,
   Card,
   Table,
@@ -20,6 +23,7 @@ import { Descriptions,
   Form,
   Input,
   Select,
+  DatePicker,
   Statistic,
   Alert,
   theme } from 'antd';
@@ -29,8 +33,18 @@ import {
   SaveOutlined, HistoryOutlined,
   RocketOutlined, RobotOutlined,
 } from '@ant-design/icons';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { applicationsApi, Application, VersionHistoryEntry, AppReleaseRow } from '../api/applications';
+import {
+  applicationsApi,
+  deploymentsApi,
+  Application,
+  VersionHistoryEntry,
+  AppReleaseRow,
+  AppDeploymentEventRow,
+  AppDeployment,
+  DeployVersionResult,
+} from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
@@ -43,6 +57,10 @@ import { triggerLabel, releaseStatusLabel, TRIGGER_COLOR } from '../utils/trigge
 // （与筛选下拉同源；未知值回退原始 token）。
 import { runtimeLabel } from '../utils/runtime-label';
 import { useRaceGuard } from '../utils/raceGuard';
+// 时间范围筛选换算的唯一事实源挪到 utils/timeRange（2026-10-24：audit 页
+// 也要消费同一口径，跨页从页面文件导入会拉进整个页面模块图；文件底部
+// re-export 保住既有 `from './ApplicationDetailPage'` 导入方）。
+import { eventsRangeToSinceUntil } from '../utils/timeRange';
 // D-P2-09：时间格式化统一走共享 formatDateTime（与全站同源）。
 import { formatDateTime } from '../utils/timeFormat';
 // P3 审计：应用/发布部署状态 → Tag color 映射收敛到单一事实源
@@ -83,6 +101,10 @@ function AiAnalysisTab({ appId }: { appId: string }) {
     } finally {
       setLoading(false);
     }
+    // 「缺 t」是伪问题：i18next 的 t() 在调用期经模块级 i18n 实例动态解析
+    // 当前语言（R8 轮已实证语言切换无需重建回调），把 t 加进依赖只会无谓
+    // 重建 runAnalysis；appId 才是真正的数据依赖。刻意不列，勿补。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId]);
 
   return (
@@ -499,7 +521,9 @@ type VersionRecord = VersionHistoryEntry;
 function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload: () => Promise<void> }) {
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [rollingBack, setRollingBack] = useState<string | null>(null);
+  // R1（部署模型评审 §4.2）：旧单一「回滚」拆为「设为当前版本」+「下发到设备」，
+  // 行级 loading 各自独立。
+  const [settingKey, setSettingKey] = useState<string | null>(null);
   // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
   const { nameOf } = useExecutorNames();
   // UX-05：同 TasksTab——失败只弹 message，records 保持 []，表格 emptyText 显示
@@ -507,6 +531,20 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const [loadError, setLoadError] = useState<unknown>(null);
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
+
+  // ── R1 §4.2「下发到设备」弹窗状态 ─────────────────────────────────
+  const [deployTarget, setDeployTarget] = useState<{
+    key: string;
+    versionId: string;
+    version: string | null;
+  } | null>(null);
+  // null=清单读取中（弹窗内 Spin）
+  const [deployRows, setDeployRows] = useState<AppDeployment[] | null>(null);
+  // undefined=未知（读取中/读取失败不误导）；null=快照无 packageUrl；string=有。
+  const [deployPkgUrl, setDeployPkgUrl] = useState<string | null | undefined>(undefined);
+  // 勾选缺省 = 全部 RUNNING 行的执行器（与旧 rollback 缺省行为一致）
+  const [checkedExecutors, setCheckedExecutors] = useState<string[]>([]);
+  const [deploying, setDeploying] = useState(false);
 
   const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
 
@@ -519,31 +557,95 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 
   useEffect(() => { fetchVersions(); }, [fetchVersions]);
 
-  const handleRollback = async (targetId: string, version: string | null) => {
+  /** R1 §4.2：「设为当前版本」——安全半边，只按快照恢复应用字段，不动任何设备。 */
+  const handleSetCurrent = (key: string, record: VersionRecord) => {
     Modal.confirm({
-      title: t('appDetail.history.rollbackConfirm'),
-      content: t('appDetail.history.rollbackContent', { version: version ?? t('appDetail.unknown') }),
-      okText: t('appDetail.history.rollbackOk'),
-      okType: 'danger',
+      title: t('appDetail.history.setCurrentConfirm'),
+      content: t('appDetail.history.setCurrentContent', { version: record.version ?? t('appDetail.unknown') }),
+      okText: t('appDetail.history.setCurrentOk'),
       cancelText: t('appDetail.cancel'),
       onOk: async () => {
-        setRollingBack(targetId);
+        setSettingKey(key);
         try {
-          const res = await applicationsApi.rollback(app.id, targetId);
-          message.success(t('appDetail.history.rolledBack', { version: res.rolledBackTo ?? version ?? t('appDetail.unknown'), count: res.total ?? 0 }));
-          // P1-14：R16——legacy 行回滚不恢复 packageUrl。旧实现无任何提示，用户以为
-          // 连包也回退了；这里显式 warning 暴露后端的 packageUrlRestored=false。
-          if (res.packageUrlRestored === false) {
-            message.warning(t('appDetail.history.rollbackPkgNotRestored'));
-          }
+          const res = await applicationsApi.setCurrentVersion(app.id, record.id!);
+          message.success(t('appDetail.history.setCurrentDone', { version: res.version }));
           await Promise.all([fetchVersions(), onAppReload()]);
         } catch (err: unknown) {
-          showApiError(err, t('appDetail.history.rollbackFail'));
+          showApiError(err, t('appDetail.history.setCurrentFail'));
         } finally {
-          setRollingBack(null);
+          setSettingKey(null);
         }
       },
     });
+  };
+
+  /** R1 §4.2：「下发到设备」——打开弹窗：拉部署行勾选面 + /releases 的
+   * packageUrl 前置展示（P1-14 前置版：取代事后 packageUrlRestored warning，
+   * getReleases 每版本行本就带 packageUrl，无需新读面）。 */
+  const openDeployModal = async (record: VersionRecord) => {
+    if (!record.id) return;
+    setDeployTarget({ key: getVersionKey(record), versionId: record.id, version: record.version });
+    setDeployRows(null);
+    setDeployPkgUrl(undefined);
+    setCheckedExecutors([]);
+    try {
+      const [deps, releases] = await Promise.all([
+        deploymentsApi.list(app.id, 1, 100),
+        // packageUrl 是确认前的提示信息，读取失败不阻断下发面（保持 undefined）
+        applicationsApi.getReleases(app.id, 1, 200).catch(() => null),
+      ]);
+      const rows = deps.data ?? [];
+      setDeployRows(rows);
+      setCheckedExecutors([
+        ...new Set(
+          rows
+            .filter((d) => d.status === 'running')
+            .map((d) => d.executorId)
+            .filter((x): x is string => !!x),
+        ),
+      ]);
+      const release = releases ? (releases.data.find((r) => r.id === record.id) ?? null) : null;
+      setDeployPkgUrl(release ? release.packageUrl : undefined);
+    } catch (err: unknown) {
+      // 部署行拉不到 = 无从安全勾选，如实报错并关闭弹窗（不静默空列表假装没设备）
+      showApiError(err, t('appDetail.history.deployFail'));
+      setDeployTarget(null);
+    }
+  };
+
+  const closeDeployModal = () => {
+    setDeployTarget(null);
+    setDeployRows(null);
+    setCheckedExecutors([]);
+  };
+
+  /** skipped 明细本地化（reason 稳定码 → 文案；detail 带状态/原因补充）。 */
+  const skipReasonText = (s: DeployVersionResult['skipped'][number]): string =>
+    s.reason === 'no_deployment'
+      ? t('appDetail.history.skip.noDeployment')
+      : s.reason === 'not_running'
+        ? t('appDetail.history.skip.notRunning', { detail: s.detail ?? '' })
+        : t('appDetail.history.skip.upgradeRejected', { detail: s.detail ?? '' });
+
+  const confirmDeploy = async () => {
+    if (!deployTarget || checkedExecutors.length === 0) return;
+    setDeploying(true);
+    try {
+      const res = await applicationsApi.deployVersion(app.id, deployTarget.versionId, checkedExecutors);
+      message.success(t('appDetail.history.deployDone', { version: res.version, count: res.upgraded.length }));
+      if (res.skipped.length > 0) {
+        message.warning(
+          t('appDetail.history.deploySkipped', { count: res.skipped.length }) +
+            res.skipped.map((s) => `${s.executorId ?? s.deploymentId ?? '?'}: ${skipReasonText(s)}`).join('；'),
+        );
+      }
+      closeDeployModal();
+      await Promise.all([fetchVersions(), onAppReload()]);
+    } catch (err: unknown) {
+      showApiError(err, t('appDetail.history.deployFail'));
+    } finally {
+      setDeploying(false);
+    }
   };
 
   return (
@@ -606,7 +708,10 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
             },
           },
           {
-            title: t('appDetail.col.actions'), width: 90, align: 'center' as const,
+            title: t('appDetail.col.actions'), width: 176, align: 'center' as const,
+            // P3-6（UI 审计）：1280px 视口下列头「Actions」折行——表头单元格
+            // 禁止换行（列宽 176 足够容纳单行标题与两枚动作按钮）。
+            onHeaderCell: () => ({ style: { whiteSpace: 'nowrap' as const } }),
             render: (_: unknown, record: VersionRecord) => {
               const currentRecord =
                 records.find(r => r.version === app.version && (!app.gitCommit || !r.commit || r.commit === app.gitCommit)) ??
@@ -616,42 +721,139 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
               // P1-14：旧判据 `!!record.id && record.status !== 'released'` 对 legacy
               // 行（id 恒为 null）永远 false——即使该行 failed/deploying 也能点回滚，
               // 与后端 legacy 路径的守卫（无 deployedVersion 则 400）脱节。
-              // 对齐后端两条路径：
-              //   · 有快照 id：后端只允许 released 版本回滚；
-              //   · legacy 行：后端要求有 version，且失败/进行中行不应回滚。
-              const rollbackDisabled = record.id
+              // 对齐后端：仅已发布版本可操作；legacy 行无版本快照 id，两个新动作
+              // 均不支持（旧 rollback alias 仍可在服务端处理，UI 不再暴露）。
+              const notReleased = record.id
                 ? record.status !== 'released'
                 : !record.version || ['failed', 'deploying', 'upgrading', 'pending'].includes(record.status);
+              const hasSnapshot = !!record.id;
+              const disabled = !hasSnapshot || notReleased || !isAdmin;
+              const tooltip = !hasSnapshot
+                ? t('appDetail.history.noSnapshot')
+                : notReleased
+                  ? t('appDetail.history.actionReleasedOnly')
+                  : !isAdmin
+                    ? t('appDetail.history.actionAdminOnly')
+                    : undefined;
               if (isCurrent) return <Tag color="green">{t('appDetail.history.currentVersion')}</Tag>;
+              // R1 §4.2：安全动作（设为当前版本，默认色）+ 危险动作（下发到设备，
+              // danger 色）分立，恢复记录面不再隐式重启全部实例。
               return (
-                <Tooltip title={rollbackDisabled ? t('appDetail.history.rollbackReleasedOnly') : !isAdmin ? t('appDetail.history.rollbackAdminOnly') : undefined}>
-                  <Button
-                    size="small"
-                    danger
-                    disabled={rollbackDisabled || !isAdmin}
-                    loading={rollingBack === key}
-                    onClick={() => handleRollback(key, record.version)}
-                  >
-                    {t('appDetail.history.rollback')}
-                  </Button>
-                </Tooltip>
+                <Space size={4}>
+                  <Tooltip title={tooltip}>
+                    <Button
+                      size="small"
+                      disabled={disabled}
+                      loading={settingKey === key}
+                      onClick={() => hasSnapshot && handleSetCurrent(key, record)}
+                    >
+                      {t('appDetail.history.setCurrent')}
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title={tooltip}>
+                    <Button
+                      size="small"
+                      danger
+                      disabled={disabled}
+                      onClick={() => hasSnapshot && openDeployModal(record)}
+                    >
+                      {t('appDetail.history.deploy')}
+                    </Button>
+                  </Tooltip>
+                </Space>
               );
             },
           },
         ]}
         dataSource={records}
         loading={loading} size="small"
-        // UI 打磨：固定列合计 590 + executor 弹性列最小宽，补 scroll.x 防窄屏挤压
-        scroll={{ x: 780 }}
+        // UI 打磨：固定列合计 590 + 双动作列 176 + executor 弹性列最小宽，补 scroll.x 防窄屏挤压
+        scroll={{ x: 880 }}
         pagination={{ pageSize: 20, showTotal: (n) => t('appDetail.count', { count: n }) }}
         locale={{ emptyText: t('appDetail.history.empty') }}
       />
       )}
+
+      {/* R1 §4.2：下发到设备弹窗——按执行器勾选部署行（仅 RUNNING 可下发），
+          packageUrl 前置展示取代事后 packageUrlRestored warning。 */}
+      <AntdModal
+        open={!!deployTarget}
+        title={t('appDetail.history.deployTitle', { version: deployTarget?.version ?? '' })}
+        okText={t('appDetail.history.deployOk')}
+        okButtonProps={{ danger: true, disabled: checkedExecutors.length === 0 }}
+        confirmLoading={deploying}
+        cancelText={t('appDetail.cancel')}
+        onCancel={closeDeployModal}
+        onOk={confirmDeploy}
+        destroyOnHidden
+      >
+        {deployPkgUrl !== undefined &&
+          (deployPkgUrl === null ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t('appDetail.history.deployPkgMissing')}
+            />
+          ) : (
+            <Alert
+              type="success"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t('appDetail.history.deployPkgPresent', { url: deployPkgUrl })}
+            />
+          ))}
+        {deployRows === null ? (
+          <Spin style={{ display: 'block', margin: '16px auto' }} />
+        ) : deployRows.length === 0 ? (
+          <Empty description={t('appDetail.history.deployEmpty')} />
+        ) : (
+          <>
+            {deployRows.map((d) => {
+              const name = nameOf(d);
+              const label = name ? `${name} (${d.executorAddress})` : (d.executorAddress ?? d.id);
+              // 仅 RUNNING 且带执行器 id 的行可勾选；其余行如实展示状态（不可下发）
+              const canDispatch = d.status === 'running' && !!d.executorId;
+              return (
+                <div
+                  key={d.id}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}
+                >
+                  <Checkbox
+                    checked={!!d.executorId && checkedExecutors.includes(d.executorId)}
+                    disabled={!canDispatch}
+                    onChange={(e) => {
+                      if (!d.executorId) return;
+                      setCheckedExecutors((prev) =>
+                        e.target.checked
+                          ? [...new Set([...prev, d.executorId!])]
+                          : prev.filter((x) => x !== d.executorId),
+                      );
+                    }}
+                  >
+                    {label}
+                  </Checkbox>
+                  <Tag color={RELEASE_DEPLOY_STATUS_COLOR[d.status] ?? 'default'}>
+                    {releaseStatusLabel(d.status, t) ?? d.status}
+                  </Tag>
+                </div>
+              );
+            })}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('appDetail.history.deployHint')}
+            </Typography.Text>
+          </>
+        )}
+      </AntdModal>
     </Card>
   );
 }
 
 // ─── Releases（DEP-01 统一发布追溯）───────────────────────────────────────────
+/** P8-R：截断告警条里「有设备保留但被截」的版本号 Tag 上限——超出部分折叠为
+ *  「+N more」计数 Tag（版本号可能极多，告警条不能变成无限长清单）。 */
+const RETAINED_BUT_TRUNCATED_MAX_TAGS = 10;
+
 const RELEASE_DEPLOY_STATUS_LABELS = (t: (k: string) => string): Record<string, string> => ({
   pending: t('appDetail.releases.status.pending'), deploying: t('appDetail.releases.status.deploying'), running: t('appDetail.releases.status.running'), stopped: t('appDetail.releases.status.stopped'), failed: t('appDetail.releases.status.failed'), upgrading: t('appDetail.releases.status.upgrading'),
 });
@@ -659,12 +861,285 @@ const RELEASE_TRIGGER_LABELS = (t: (k: string) => string): Record<string, string
   upgrade: t('appDetail.releases.trigger.upgrade'), manual: t('appDetail.releases.trigger.manual'), unknown: t('appDetail.releases.trigger.unknown'),
 });
 
+// R4（§4.1A）：部署事件类型 → 人类可读标签（后端 AppDeploymentEventType 九值，
+// varchar 裸 token——枚举扩值时未知 token 原样展示，与 triggerLabel 同策：
+// 宁可露出可搜索的 token 也不抹掉可诊断信息）。
+const EVENT_TYPE_LABELS = (t: (k: string) => string): Record<string, string> => ({
+  deploy_created: t('appDetail.events.type.deploy_created'),
+  redeploy_reused: t('appDetail.events.type.redeploy_reused'),
+  approval_approved: t('appDetail.events.type.approval_approved'),
+  approval_rejected: t('appDetail.events.type.approval_rejected'),
+  approval_cancelled: t('appDetail.events.type.approval_cancelled'),
+  upgrade: t('appDetail.events.type.upgrade'),
+  stop: t('appDetail.events.type.stop'),
+  remove: t('appDetail.events.type.remove'),
+  stuck_failed: t('appDetail.events.type.stuck_failed'),
+});
+// Tag 配色按「动作性质」分组：创建/复用=蓝、审批=橙、升级=青、停止=默认、
+// 删除=红、扫死=火山红。未知 token 回退 default（后端新增枚举时中性展示）。
+const EVENT_TYPE_COLOR: Record<string, string> = {
+  deploy_created: 'blue',
+  redeploy_reused: 'geekblue',
+  approval_approved: 'orange',
+  approval_rejected: 'volcano',
+  approval_cancelled: 'orange',
+  upgrade: 'cyan',
+  stop: 'default',
+  remove: 'red',
+  stuck_failed: 'magenta',
+};
+
+// eventsRangeToSinceUntil 已挪至 utils/timeRange：页面内自用走顶部 import，
+// 旧的兼容 re-export 已删（原消费方仅 __tests__/application-deployment-events
+// .test.tsx，已改为直接 import utils/timeRange）。新消费方同样直接 import。
+
+/**
+ * R4（§4.1A）：应用部署事件流表（不可变动作追溯）。独立加载/独立分页，
+ * 挂在 ReleasesTab 版本表下方——版本表回答「现在有哪些版本」，事件流回答
+ * 「谁在什么时候对哪台设备做了什么」，两张表数据源与生命周期互不耦合。
+ *
+ * 分页沿用 RACE-PAGE 同款序号守卫（翻页请求乱序时旧页数据不覆盖新页）。
+ */
+function DeploymentEventsTable({ app }: { app: Application }) {
+  const [events, setEvents] = useState<AppDeploymentEventRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+  // 服务端过滤（上轮遗留：事件量极大时深翻页代价高）——eventType 单选；
+  // undefined = 全部（不带参数，请求形状与旧后端逐字节一致）。
+  const [eventTypeFilter, setEventTypeFilter] = useState<string | undefined>(undefined);
+  // 时间范围（同 eventType 服务端过滤）：null = 不筛。日期粒度 → 换算口径见
+  // eventsRangeToSinceUntil（结束日当天不计入）。引用变化即触发 useEffect 重拉，
+  // 与 eventTypeFilter 同一条依赖驱动链（不手动触发，双触发会发两个请求）。
+  const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const { t } = useTranslation();
+  // 同 ReleasesTab：执行器可读名解析（事件行 executorAddress 是写入时的地址
+  // 快照，executorId 优先、address 回落；解析不到如实回落地址，绝不编造）。
+  const { nameOf } = useExecutorNames();
+  const raceGuard = useRaceGuard();
+
+  const fetchEvents = useCallback(async (p: number, eventType?: string, range?: [Dayjs, Dayjs] | null) => {
+    const seq = raceGuard.next();
+    setLoading(true);
+    setError(null);
+    try {
+      // 筛选对象按值装配（无值不进对象；全空 = undefined 第 4 参，请求形状与
+      // 旧后端逐字节一致——既有测试断言的就是这个形状）。range 两端齐全才
+      // 算时间筛选生效（RangePicker 不开 allowEmpty，防御式判空以防未来改动）。
+      const hasTime = !!(range && range[0] && range[1]);
+      const filters =
+        eventType || hasTime
+          ? {
+              ...(eventType ? { eventType } : {}),
+              ...(hasTime ? eventsRangeToSinceUntil(range as [Dayjs, Dayjs]) : {}),
+            }
+          : undefined;
+      const res = await applicationsApi.getDeploymentEvents(app.id, p, 20, filters);
+      if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（RACE-PAGE 同款）
+      setEvents(res.data ?? []);
+      setTotal(res.total ?? 0);
+      setPage(res.page ?? p);
+    } catch (err: unknown) {
+      if (!raceGuard.isLatest(seq)) return;
+      setError(err);
+    } finally {
+      if (raceGuard.isLatest(seq)) setLoading(false);
+    }
+  }, [app.id, raceGuard]);
+
+  // eventTypeFilter 进依赖：筛选变化 → 回第 1 页重拉（不再手动触发，双触发
+  // 会发两个请求，raceGuard 只保序不保去重）。回第 1 页是因为旧页码对新
+  // 结果集大概率越界（空页误导），且即便未越界「第 N 页的某类型事件」语义
+  // 也已漂移。
+  useEffect(() => { fetchEvents(1, eventTypeFilter, timeRange); }, [fetchEvents, eventTypeFilter, timeRange]);
+
+  if (error) {
+    // 事件流加载失败不拖垮版本表：区块内降级 StateError（重试 + 复制）。
+    // 重试带当前筛选——失败的就是那次过滤请求，重试丢筛选会让「重试成功」
+    // 显示未过滤数据，用户误以为过滤已生效。
+    return (
+      <Card variant="borderless" style={{ marginTop: 16 }} data-testid="events-card">
+        <StateError
+          error={error}
+          onRetry={() => fetchEvents(1, eventTypeFilter, timeRange)}
+          title={t('appDetail.events.loadFail')}
+        />
+      </Card>
+    );
+  }
+
+  const eventColumns = [
+    {
+      title: t('appDetail.events.col.time'),
+      dataIndex: 'createdAt',
+      width: 170,
+      render: (v: string) => formatDateTime(v),
+    },
+    {
+      title: t('appDetail.events.col.type'),
+      dataIndex: 'eventType',
+      width: 130,
+      render: (v: string) => (
+        <Tag color={EVENT_TYPE_COLOR[v] || 'default'} data-testid="event-type-tag">
+          {EVENT_TYPE_LABELS(t)[v] || v}
+        </Tag>
+      ),
+    },
+    {
+      title: t('appDetail.events.col.executor'),
+      dataIndex: 'executorAddress',
+      width: 180,
+      ellipsis: true,
+      render: (v: string | null, r: AppDeploymentEventRow) => {
+        const name = nameOf({ executorId: r.executorId, executorAddress: v });
+        if (!name) return v || '-';
+        return (
+          <Tooltip title={v ?? undefined}>
+            <span>{name}</span>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: t('appDetail.events.col.version'),
+      dataIndex: 'deployedVersion',
+      width: 110,
+      render: (v: string | null) => (v ? <Tag color="blue">{v}</Tag> : '-'),
+    },
+    {
+      title: t('appDetail.events.col.operator'),
+      dataIndex: 'operator',
+      width: 120,
+      render: (v: string | null) =>
+        v ? v : (
+          <Tooltip title={t('appDetail.events.operatorSystem')}>
+            <Text type="secondary">{t('appDetail.events.operatorSystemShort')}</Text>
+          </Tooltip>
+        ),
+    },
+    {
+      title: t('appDetail.events.col.summary'),
+      dataIndex: 'detail',
+      ellipsis: true,
+      render: (detail: Record<string, unknown> | null | undefined, r: AppDeploymentEventRow) => {
+        const parts: string[] = [];
+        // 已知键逐个如实翻译；detail 是 jsonb 开放结构，未知键原样 k=v
+        if (detail) {
+          for (const [k, val] of Object.entries(detail)) {
+            if (val === null || val === undefined || val === '') continue;
+            if (k === 'reason') parts.push(`${t('appDetail.events.detail.reason')}: ${String(val)}`);
+            else if (k === 'runMode') parts.push(`${t('appDetail.events.detail.runMode')}: ${String(val)}`);
+            else if (k === 'previousStatus') parts.push(`${t('appDetail.events.detail.previousStatus')}: ${RELEASE_DEPLOY_STATUS_LABELS(t)[String(val)] || String(val)}`);
+            else if (k === 'deletedStatus') parts.push(`${t('appDetail.events.detail.deletedStatus')}: ${RELEASE_DEPLOY_STATUS_LABELS(t)[String(val)] || String(val)}`);
+            else if (k === 'stopSignalDelivered') parts.push(
+              val
+                ? t('appDetail.events.detail.stopDelivered')
+                : t('appDetail.events.detail.stopNotDelivered'),
+            );
+            else if (k === 'approvalRequired') {
+              if (val) parts.push(t('appDetail.events.detail.approvalRequired'));
+            } else {
+              parts.push(`${k}=${String(val)}`);
+            }
+          }
+        }
+        // triggerType 是动作语义的补充（manual/upgrade/rollback/approval），
+        // 放摘要末尾；机器路径（null）不展示——与 operator 的系统标注呼应。
+        if (r.triggerType) parts.push(triggerLabel(r.triggerType, t) || r.triggerType);
+        if (parts.length === 0) return <Text type="secondary">-</Text>;
+        return parts.join(' · ');
+      },
+    },
+  ];
+
+  // 九值下拉选项复用 EVENT_TYPE_LABELS（标签唯一事实源——表格 Tag 与筛选
+  // 下拉同一映射，不会出现「筛选里叫 A、表格里叫 B」）。
+  const eventTypeOptions = Object.keys(EVENT_TYPE_LABELS(t)).map((v) => ({
+    value: v,
+    label: EVENT_TYPE_LABELS(t)[v],
+  }));
+
+  // 快捷区间（audit 页先例形态）：事件流的常见问法是「最近 24 小时/7 天
+  // 出过什么事」。预设区间作为**整天**语义给（[7 天前的 0 点, 今天 0 点]），
+  // 换算仍走 eventsRangeToSinceUntil，与手选日期同一口径。
+  const timePresets = [
+    { label: t('appDetail.events.filter.last1d'), value: [dayjs().subtract(1, 'day'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('appDetail.events.filter.last7d'), value: [dayjs().subtract(7, 'day'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('appDetail.events.filter.last30d'), value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
+  ];
+
+  return (
+    <Card
+      variant="borderless"
+      style={{ marginTop: 16 }}
+      title={t('appDetail.events.title')}
+      extra={(
+        <Space wrap>
+          <Select
+            allowClear
+            placeholder={t('appDetail.events.filter.typeAll')}
+            style={{ width: 150 }}
+            value={eventTypeFilter}
+            onChange={(v) => setEventTypeFilter(v)}
+            options={eventTypeOptions}
+            data-testid="event-type-filter"
+          />
+          {/* 时间范围：日期粒度 RangePicker（结束日当天不计入——Tooltip 与
+              eventsRangeToSinceUntil 注释披露同一口径）。预设区间在 jsdom
+              测试里是唯一可真实点到 onChange 的入口（antd 6.6.x 的日期格子
+              需要 rc-picker 指针/布局事件，jsdom 无——executions/audit 两处
+              测试已记录该限制），故预设必须真实可用，不能是纯装饰。 */}
+          {/* data-testid 放包裹 span：antd 会把多余 props 透传到内部 input 上
+              （RangePicker 两个输入框都会带上 → 查询歧义），span 上恰好唯一。 */}
+          <span data-testid="event-time-filter">
+            <Tooltip title={t('appDetail.events.filter.timeHint')}>
+              <DatePicker.RangePicker
+                value={timeRange}
+                onChange={(val) => setTimeRange(val as [Dayjs, Dayjs] | null)}
+                presets={timePresets}
+                allowClear
+                style={{ width: 260 }}
+              />
+            </Tooltip>
+          </span>
+          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchEvents(page, eventTypeFilter, timeRange)}>{t('appDetail.refresh')}</Button>
+        </Space>
+      )}
+      data-testid="events-card"
+    >
+      <Table<AppDeploymentEventRow>
+        rowKey={(e) => e.id}
+        columns={eventColumns}
+        dataSource={events}
+        loading={loading}
+        size="small"
+        scroll={{ x: 920 }}
+        data-testid="deployment-events-table"
+        pagination={{
+          current: page,
+          pageSize: 20,
+          total,
+          showTotal: (n) => t('appDetail.count', { count: n }),
+          onChange: (p) => fetchEvents(p, eventTypeFilter, timeRange),
+        }}
+        locale={{ emptyText: t('appDetail.events.empty') }}
+      />
+    </Card>
+  );
+}
+
 function ReleasesTab({ app }: { app: Application }) {
   const [rows, setRows] = useState<AppReleaseRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  // P8：版本行超上限静默截断标志——true 时在版本表上方渲染显式告警条。
+  const [truncated, setTruncated] = useState(false);
+  // P8-R：truncated 吞掉的版本里「仍有设备保留」的版本号列表——徽标行
+  // 不在页内，事实只能靠告警条文案显式带回（后端差集计算，见 AppReleasesPage）。
+  const [retainedButTruncated, setRetainedButTruncated] = useState<string[]>([]);
   const { t } = useTranslation();
   // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
   const { nameOf } = useExecutorNames();
@@ -692,6 +1167,10 @@ function ReleasesTab({ app }: { app: Application }) {
       setRows(res.data ?? []);
       setTotal(res.total ?? 0);
       setPage(res.page ?? p);
+      // P8：截断标志随页落地（旧后端不带该键 → undefined → 如实按未截断）
+      setTruncated(res.truncated ?? false);
+      // P8-R：被截版本中仍有设备保留的版本号随页落地（旧后端不带该键 → 空数组）
+      setRetainedButTruncated(res.retainedButTruncated ?? []);
     } catch (err: unknown) {
       if (!raceGuard.isLatest(seq)) return; // 过期失败同样不覆盖当前视图
       setError(err);
@@ -765,6 +1244,64 @@ function ReleasesTab({ app }: { app: Application }) {
       },
     },
     {
+      // R3-A（部署模型评审 §4.3）：设备徽标——设备心跳上报的「谁在跑/保留这一版」。
+      // 与「执行器」列（最近一次部署行的地址快照，推断）不同源：本列是设备事实。
+      title: t('appDetail.releases.col.devices'),
+      dataIndex: 'devices',
+      width: 210,
+      render: (_: unknown, r: AppReleaseRow) => {
+        const devices = r.devices ?? [];
+        // 旧后端（R3-A 前）/无任何设备上报：无徽标。与「未部署」区分——
+        // 部署推断字段仍在（执行器列/部署状态列），此处如实显示占位。
+        if (devices.length === 0) return <Text type="secondary">-</Text>;
+        return (
+          <Space size={4} wrap>
+            {devices.map((d) => {
+              // 名字以响应内嵌的 executorName 为准（后端聚合），缺失时回落
+              // 本页清单索引，再回落 id 前缀——绝不显示「未知设备」编造。
+              const name =
+                d.executorName ||
+                nameOf({ executorId: d.executorId }) ||
+                d.executorId.slice(0, 8);
+              const running = d.currentVersion === r.version;
+              const label = running
+                ? t('appDetail.releases.deviceRunning')
+                : t('appDetail.releases.deviceRetained');
+              return (
+                <Tooltip
+                  key={d.executorId}
+                  title={
+                    d.online
+                      ? name
+                      : t('appDetail.releases.deviceOfflineAt', {
+                          time: d.lastHeartbeat
+                            ? formatDateTime(d.lastHeartbeat)
+                            : t('appDetail.releases.deviceOfflineUnknown'),
+                        })
+                  }
+                >
+                  {/* 离线置灰：设备不再上报后版本事实可能已过期（卸载/切换）， */}
+                  {/* 不能继续与在线设备同权重展示 */}
+                  <Tag
+                    data-testid="release-device-badge"
+                    color={d.online ? (running ? 'green' : 'blue') : 'default'}
+                    style={
+                      d.online
+                        ? undefined
+                        : { color: '#9ca3af', background: '#fafafa' }
+                    }
+                  >
+                    {name} · {label}
+                    {!d.online ? ` · ${t('appDetail.releases.deviceOffline')}` : ''}
+                  </Tag>
+                </Tooltip>
+              );
+            })}
+          </Space>
+        );
+      },
+    },
+    {
       title: t('appDetail.releases.col.operator'), dataIndex: 'operator', width: 110,
       render: (v: string | null) =>
         v ? v : (
@@ -789,15 +1326,62 @@ function ReleasesTab({ app }: { app: Application }) {
   }
 
   return (
-    <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchReleases(page)}>{t('appDetail.refresh')}</Button>}>
-      <Table<AppReleaseRow>
+    <div>
+      {/* P8：版本行超 RELEASES_MAX_PAGE_SIZE 被静默截断——显式告知而非让用户
+          把「看到的」当「全量」；完整动作史走事件流（不可变、分页无截断）。 */}
+      {/* P8-R：被截版本里「仍有设备保留」的版本号显式列出——徽标行不在页内，
+          不列出的话「设备还留着这版」的事实就从版本表消失（部署模型评审遗留）。 */}
+      {truncated && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          data-testid="releases-truncated-alert"
+          message={t('appDetail.releases.truncated.title')}
+          description={(
+            <div>
+              <div>{t('appDetail.releases.truncated.desc')}</div>
+              {retainedButTruncated.length > 0 && (
+                <div data-testid="releases-retained-but-truncated" style={{ marginTop: 8 }}>
+                  {t('appDetail.releases.truncated.retained')}
+                  <div style={{ marginTop: 4 }}>
+                    <Space size={4} wrap>
+                      {retainedButTruncated.slice(0, RETAINED_BUT_TRUNCATED_MAX_TAGS).map((v) => (
+                        <Tag key={v} data-testid="retained-but-truncated-tag" style={{ fontSize: 11 }}>{v}</Tag>
+                      ))}
+                      {retainedButTruncated.length > RETAINED_BUT_TRUNCATED_MAX_TAGS && (
+                        <Tag style={{ fontSize: 11 }}>
+                          {t('appDetail.releases.truncated.retainedMore', {
+                            count: retainedButTruncated.length - RETAINED_BUT_TRUNCATED_MAX_TAGS,
+                          })}
+                        </Tag>
+                      )}
+                    </Space>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          action={(
+            <Button
+              size="small"
+              data-testid="truncated-goto-events"
+              onClick={() => document.getElementById('app-deployment-events')?.scrollIntoView({ behavior: 'smooth' })}
+            >
+              {t('appDetail.releases.truncated.gotoEvents')}
+            </Button>
+          )}
+        />
+      )}
+      <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={() => fetchReleases(page)}>{t('appDetail.refresh')}</Button>}>
+        <Table<AppReleaseRow>
         rowKey={(r) => r.id ?? r.latestDeploymentId ?? `${r.version ?? 'unknown'}-${r.createdAt ?? 'none'}`}
         columns={columns}
         dataSource={rows}
         loading={loading}
         size="small"
-        // UI 打磨：固定列合计 740 + executor 弹性列最小宽，补 scroll.x
-        scroll={{ x: 920 }}
+        // UI 打磨：固定列合计 740 + devices 210 + executor 弹性列最小宽，补 scroll.x
+        scroll={{ x: 1130 }}
         data-testid="releases-table"
         pagination={{
           current: page,
@@ -806,13 +1390,32 @@ function ReleasesTab({ app }: { app: Application }) {
           showTotal: (n) => t('appDetail.count', { count: n }),
           onChange: (p) => fetchReleases(p),
         }}
-        locale={{ emptyText: t('appDetail.releases.empty') }}
-      />
-    </Card>
+          locale={{ emptyText: t('appDetail.releases.empty') }}
+        />
+      </Card>
+      {/* R4（§4.1A）：事件流区块（不可变动作追溯）——锚点 id 供截断告警条跳转 */}
+      <div id="app-deployment-events">
+        <DeploymentEventsTable app={app} />
+      </div>
+    </div>
   );
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
+// P3-③（审计）：?tab= 深链健壮化——此前 `searchParams.get('tab') || 'overview'`
+// 对**无效值**（如 ?tab=history，实际 key 是 versions）不设防：antd Tabs 的
+// activeKey 落在空档，内容区一片空白、连第一个 Tab 都不高亮。对齐
+// ExecutionDetailPage.normalizeTabKey 同名先例：白名单命中才采用，否则回退
+// 默认 Tab。其余 ?tab= 消费方（ExecutionDetailPage / NotificationSettingsPage /
+// settings）本轮已核验，均有白名单归一化，无需改动。
+const TAB_KEY_DEFAULT = 'overview';
+const TAB_KEYS = ['overview', 'deployments', 'tasks', 'versions', 'releases', 'settings', 'ai'] as const;
+type AppDetailTabKey = (typeof TAB_KEYS)[number];
+
+function normalizeTabKey(raw: string | null): AppDetailTabKey {
+  return (TAB_KEYS as readonly string[]).includes(raw || '') ? (raw as AppDetailTabKey) : TAB_KEY_DEFAULT;
+}
+
 export default function ApplicationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
@@ -829,7 +1432,8 @@ export default function ApplicationDetailPage() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [notFound, setNotFound] = useState(false);
 
-  const activeTab = searchParams.get('tab') || 'overview';
+  // P3-③：无效 tab 深链（?tab=history 等）归一化到默认 Tab，不再渲染空白内容区
+  const activeTab = normalizeTabKey(searchParams.get('tab'));
 
   // NETOPT-7④（2026-09-20）：两个应用详情间导航（同路由 :id 组件不重挂）时新旧
   // fetchApp 并发——旧 id 的响应晚到会 setApp(旧应用)；旧 id 的 404 晚到会
@@ -917,7 +1521,7 @@ export default function ApplicationDetailPage() {
           {
             key: 'deployments',
             label: <span><RocketOutlined /> {t('appDetail.tab.deployments')}</span>,
-            children: <AppDeploymentPage applicationId={app.id} />,
+            children: <AppDeploymentPage applicationId={app.id} appEntrypoint={app.entrypoint} />,
           },
           {
             key: 'tasks',

@@ -44,6 +44,7 @@ import {
   probePlaywright,
   type BrowserActionInput,
 } from './browser';
+import { filterAllowlistDomains } from './domain-allowlist';
 import { AgentGuiSession, GUI_ACTIONS_MAX, type GuiDriver } from './gui';
 import { WindowsGuiDriver } from './gui-windows';
 import type { CollabClient } from './collab-client';
@@ -346,8 +347,15 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
   const allowedDomainsForBrowser = (): string[] => {
     const fromSop = (deps.sop.frontMatter.constraints as { allowedDomains?: unknown } | undefined)?.allowedDomains;
     const sopDomains = Array.isArray(fromSop) ? fromSop.filter((d): d is string => typeof d === 'string') : [];
-    // SOP ∪ 权限档位——两份白名单的并集（档位白名单是机器级授权）
-    return [...new Set([...sopDomains, ...deps.permissions.allowedDomains])];
+    // SOP ∪ 权限档位——两份白名单的并集（档位白名单是机器级授权）。
+    // P2-2：并集**零复检**是漏洞——单标签条目（"com"）会让 endsWith 匹配
+    // 放大成放行一切 *.com。并集后逐域校验，非法域剔除 + warn（两个来源
+    // 各自的入口——admin 发布校验、config 消毒——理论上已拦，这里是最后一道）。
+    const { valid, invalid } = filterAllowlistDomains([...sopDomains, ...deps.permissions.allowedDomains]);
+    for (const bad of invalid) {
+      console.warn(`[agent] allowedDomains 非法条目已剔除（不进入浏览器白名单）: ${bad.slice(0, 120)}`);
+    }
+    return valid;
   };
 
   const mimeFor = (name: string): string =>
@@ -487,6 +495,12 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
           lines.push(bits.filter(Boolean).join(' '));
         } else {
           lines.push(`${i + 1}. ${input.action} 失败：${r.refusal ?? r.detail ?? 'unknown'}`);
+          // P2-3：越界终止——会话已被强制关闭，后续动作必然全部失败，
+          // 立即停止动作循环（不再白耗尝试、也不再多烧一次页面交互）。
+          if (r.sessionClosed) {
+            lines.push('[浏览器] 会话因页面落在白名单外被终止，本轮剩余动作取消。');
+            break;
+          }
         }
       }
     } finally {
@@ -560,8 +574,11 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         `试跑结果：\n${trial.output}`,
         baseContext(),
         '若属 SOP 信息不足 → action=clarify 并给出问题；',
-        '若你判断本轮已实际达成验收（试跑输出可证）→ action=deliver；',
-        '否则修正文件后 action=retry。',
+        // P2-1：不再教「自评达成即可 deliver」的旁路——交付只由平台验收
+        // （acceptance）通过判定，verify 未通过时 deliver 会被降级为转人工。
+        'action=deliver 不再被平台接受为交付：只有验收（acceptance）通过才会',
+        '交付，验收未通过时 deliver 会被降级为转人工——不要用它表达「我觉得做完了」；',
+        '无法在本机达成验收且不是 SOP 信息问题 → action=escalate；否则修正文件后 action=retry。',
       ].join('\n\n');
       const parsed = await chatJson(
         llm,

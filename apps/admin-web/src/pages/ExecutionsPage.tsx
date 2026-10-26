@@ -20,14 +20,15 @@ import {
   SearchOutlined, FilterOutlined, ReloadOutlined, EyeOutlined, StopOutlined,
   SwapOutlined, DownloadOutlined, LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
-import type { Dayjs } from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
-import { useExecutionsList, invalidateExecutionData } from '../api/queries';
+import { useExecutionsList, invalidateExecutionData, sseFallbackRefetchInterval } from '../api/queries';
+import { SSE_STATUS_KEYS } from '../api/sse-client';
 import { useExecutionsStream } from '../hooks/useExecutionsStream';
 import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
@@ -326,42 +327,52 @@ export default function ExecutionsPage() {
 
   // ARCH-26: TanStack Query 改造——useRequest 轮询（15s）换 query hooks：
   // 筛选参数进 queryKey（参数变化自动重取，等价 refreshDeps）；
-  // staleTime 全局 30s 兜底切页缓存。15s 轮询由下方 refetchInterval useEffect
-  // 承担（可见性判定与原 pollingWhenHidden:false 一致）。
-  const { data, isLoading: loading, error, refetch } = useExecutionsList({
-    page,
-    pageSize,
-    status: statusFilter,
-    taskName: debouncedSearch || undefined,
-    executorAddress: executorFilter || undefined,
-    startTime: timeRange?.[0]?.toISOString(),
-    endTime: timeRange?.[1]?.toISOString(),
-    // keyset 三态的**唯一**出口，落在下面这个三元里：
-    //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
-    //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
-    //
-    // 为什么不是恒传 `{ cursor: activeCursor }` 让 axios 丢弃 undefined：键要
-    // 不要在**我们**这一层就必须确定——"旧路径逐字节不变"是硬要求，把它押在
-    // axios 的序列化细节上等于把风险外包给库版本。
-    ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
-  });
+  // staleTime 全局 30s 兜底切页缓存。
+  //
+  // F-17（UIAUDIT P3-10）：轮询兜底改走 `sseFallbackRefetchInterval`（与
+  // Dashboard 的 metrics 三钩子同源机制）。旧实现是自管 setInterval +
+  // 手动 refetch——手动刷新**不受 staleTime 节流**，SSE live 期间仍每 15s
+  // 空打一发全量列表请求（注释声称"轮询空转被去重"，与实现不符）。现在：
+  //   · SSE live → refetchInterval 返回 false，零轮询（终态事件 invalidate
+  //     即新鲜度来源）；断线/未登记 → 30s 兜底轮询；
+  //   · 可见性语义不变：refetchInterval 默认 refetchIntervalInBackground:false
+  //     （标签页隐藏暂停、回前台下一拍恢复，等价 pollingWhenHidden:false）；
+  //   · SSE 状态变化经 useExecutionsStream 的 hook state 触发本页重渲染，
+  //     refetchInterval 在下一渲染周期重估（Dashboard 同款接线，无需额外状态）。
+  const { data, isLoading: loading, error, refetch } = useExecutionsList(
+    {
+      page,
+      pageSize,
+      status: statusFilter,
+      taskName: debouncedSearch || undefined,
+      executorAddress: executorFilter || undefined,
+      startTime: timeRange?.[0]?.toISOString(),
+      endTime: timeRange?.[1]?.toISOString(),
+      // keyset 三态的**唯一**出口，落在下面这个三元里：
+      //   · 关闭开关 → 整个 `cursor` 键都不出现（`{}`），请求与改动前完全一致；
+      //   · 打开开关 → 空串（`?cursor=`，keyset 起点）或上一页返回的不透明游标。
+      //
+      // 为什么不是恒传 `{ cursor: activeCursor }` 让 axios 丢弃 undefined：键要
+      // 不要在**我们**这一层就必须确定——"旧路径逐字节不变"是硬要求，把它押在
+      // axios 的序列化细节上等于把风险外包给库版本。
+      ...(activeCursor === undefined ? {} : { cursor: activeCursor }),
+    },
+    { refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.executionsStream) },
+  );
 
   // FEAT-16: 执行终态推送流——SSE live 时终态事件即时 invalidate 列表+汇总
-  // 缓存（<3s 刷新验收），断线时下方 15s 轮询兜底自动成为唯一新鲜度来源
-  // （对齐 DashboardPage：SSE 推送与轮询互斥共存，staleTime 内 refetch 去重）。
+  // 缓存（<3s 刷新验收），断线时上方 refetchInterval 兜底轮询自动成为唯一
+  // 新鲜度来源（对齐 DashboardPage：SSE 推送与轮询互斥共存）。
   useExecutionsStream();
 
-  // 15s 轮询兜底：运行中行需要及时看到终态（SSE 断线时的降级路径）。
-  // 标签页不可见时跳过请求（定时器保留，回到前台后下一拍即恢复——
-  // 等价 pollingWhenHidden:false）。
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') void refetch();
-    }, 15_000);
-    return () => clearInterval(timer);
-  }, [refetch]);
-
-  const executions: TaskExecution[] = data?.items ?? [];
+  // 引用稳定化（已登记性能缺陷）：原裸表达式 data?.items ?? [] 在 data 未就绪
+  // （首载/切筛选换 queryKey/出错）期间每次渲染都分配新数组，下游
+  // failureBuckets 的 useMemo 依赖随之每渲染变化，memo 退化成每渲染重算。
+  // 包进 useMemo 后依赖 data?.items：就绪时 TanStack Query 的
+  // structural sharing 保证内容不变则引用不变；未就绪时依赖恒为
+  // undefined——两种形态下 executions 引用都稳定，下游（failureBuckets /
+  // Table dataSource / ExecutionCompareModal）不再被无谓打穿。
+  const executions: TaskExecution[] = useMemo(() => data?.items ?? [], [data?.items]);
   const total: number = data?.total ?? 0;
 
   // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析。
@@ -415,6 +426,13 @@ export default function ExecutionsPage() {
 
   const hasFilters = !!(search || statusFilter || executorFilter || timeRange);
 
+  // F-48（UIAUDIT P3）：越界页（如 ?page=999）——本页无行但 total>0 时，旧文案
+  // 「暂无执行记录 共 17452 条」自相矛盾（数据明明存在，只是请求页越过了末页）。
+  // 改为如实告知「当前页无数据（共 N 条）」并给「回到第一页」出口；keyset 模式
+  // 没有页码坐标系、不存在越界页形态，不参与判定。
+  const pageOutOfRange =
+    !error && executions.length === 0 && total > 0 && page > 1 && !stablePaging;
+
   /**
    * 2026-10-23：本页失败原因分布。
    *
@@ -447,7 +465,10 @@ export default function ExecutionsPage() {
           setPageSize(ps ?? 20);
           resetCursorStack(stablePaging);
         },
-        showTotal: (t2) => t('execs.count', { count: t2 }),
+        // F-44（UIUX 审计 P2-2）：请求失败 ≠ 空结果——total=0（data undefined 兜底）
+        // 会被渲染成「共 0 条」，用户误判执行记录丢失。错误态下不显示计数
+        // （错误详情与重试入口见上方 StateError）。
+        showTotal: (t2) => (error ? '' : t('execs.count', { count: t2 })),
         showSizeChanger: true,
       };
 
@@ -685,6 +706,19 @@ export default function ExecutionsPage() {
     },
   ];
 
+  // 快捷区间（events/audit 页先例形态，2026-10-25 补齐）：执行记录的高频问法是
+  // 「最近 1/24 小时出过什么执行」——此前只有手调时刻一途。预设按**时刻粒度**
+  // 语义给（[now-N, now]，保留时分秒），onChange 后仍走下方 timeRange →
+  // toISOString() 直传，后端闭区间语义与手选完全一致。rc-picker 预设点击走
+  // triggerSubmitChange 直接提交、不经 showTime 的确认按钮（源码验证：
+  // PresetPanel li onClick → onPresetSubmit → triggerSubmitChange，rc-picker
+  // @rc-component/picker），jsdom 测试可真实点到 onChange。
+  const timePresets = [
+    { label: t('execs.range.1h'), value: [dayjs().subtract(1, 'hour'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('execs.range.24h'), value: [dayjs().subtract(24, 'hour'), dayjs()] as [Dayjs, Dayjs] },
+    { label: t('execs.range.7d'), value: [dayjs().subtract(7, 'day'), dayjs()] as [Dayjs, Dayjs] },
+  ];
+
   return (
     <div>
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，刷新进 extra） */}
@@ -779,9 +813,11 @@ export default function ExecutionsPage() {
           allowClear
           style={{ width: 180, maxWidth: '100%' }}
         />
+        {/* 快捷区间定义见上方 timePresets：时刻粒度与手选一致，预设只是少点几下。 */}
         <RangePicker
           showTime
           format="MM-DD HH:mm"
+          presets={timePresets}
           placeholder={[t('execs.timeStart'), t('execs.timeEnd')]}
           value={timeRange}
           onChange={val => { setTimeRange(val as [Dayjs, Dayjs] | null); setPage(1); resetCursorStack(stablePaging); }}
@@ -852,9 +888,18 @@ export default function ExecutionsPage() {
           {executions.length === 0 ? (
             /* 空态区分：筛选无匹配给「清除筛选」出口；真空态如实提示
                （执行记录由任务触发产生，无直接创建入口可引导） */
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}>
-              {hasFilters && (
-                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={pageOutOfRange
+                ? t('execs.empty.outOfRange', { count: total })
+                : hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}
+            >
+              {pageOutOfRange ? (
+                <Button type="link" size="small" onClick={() => setPage(1)}>{t('execs.backToFirstPage')}</Button>
+              ) : (
+                hasFilters && (
+                  <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+                )
               )}
             </Empty>
           ) : (
@@ -939,9 +984,23 @@ export default function ExecutionsPage() {
           emptyText: shouldShowSkeleton(loading, error, executions.length) ? (
             <PageSkeleton variant="table" />
           ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}>
-              {hasFilters && (
-                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                /* F-48：越界页优先于筛选/真空态文案（越界时「没有匹配」同样误导） */
+                pageOutOfRange
+                  ? t('execs.empty.outOfRange', { count: total })
+                  : hasFilters
+                    ? t('execs.empty.noMatch')
+                    : t('execs.empty')
+              }
+            >
+              {pageOutOfRange ? (
+                <Button type="link" size="small" onClick={() => setPage(1)}>{t('execs.backToFirstPage')}</Button>
+              ) : (
+                hasFilters && (
+                  <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+                )
               )}
             </Empty>
           ),
@@ -963,7 +1022,10 @@ export default function ExecutionsPage() {
             gap: 12,
           }}
         >
-          <Text type="secondary" style={{ fontSize: 12 }}>{t('execs.count', { count: total })}</Text>
+          {/* F-44（UIUX 审计 P2-2）：错误态不显示「共 0 条」计数（同上方 StateError 分流） */}
+          {!error && (
+            <Text type="secondary" style={{ fontSize: 12 }}>{t('execs.count', { count: total })}</Text>
+          )}
           <Button
             size="small"
             icon={<LeftOutlined />}

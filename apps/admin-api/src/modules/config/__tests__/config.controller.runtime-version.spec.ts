@@ -12,6 +12,7 @@
  */
 import { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import request from "supertest";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
@@ -30,6 +31,9 @@ describe("ConfigController GET /config/runtime-version (G-1)", () => {
     const module = await Test.createTestingModule({
       controllers: [ConfigController],
       providers: [
+        // P1-1（UIAUDIT4）：controller 注入了 NestConfigService（env 兜底读
+        // executor.sharedToken），默认 get 返回 undefined = env 未配置
+        { provide: ConfigService, useValue: { get: () => undefined } },
         {
           provide: SystemConfigService,
           useValue: {

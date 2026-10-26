@@ -16,6 +16,7 @@ import {
 } from "../executor-package.entity";
 import fs from "fs";
 import * as crypto from "crypto";
+import * as path from "path";
 import { Readable } from "stream";
 import axios from "axios";
 import { ExecutorPackageController } from "../executor-package.controller";
@@ -141,6 +142,12 @@ describe("ExecutorPackageService", () => {
   let service: ExecutorPackageService;
   let repo: jest.Mocked<Repository<ExecutorPackage>>;
 
+  // P2-2：与服务同源的包含性判据——行上 filePath 的真实形态是「上传根内的
+  // 绝对路径」（create() 用 path.join(UPLOAD_DIR, filename)）。旧 fixture 用
+  // 「/uploads/…」这种与真实根无关的形态，在包含性闸下恰好是非法值——一并
+  // 修正为真实形态。
+  const UPLOAD_ROOT = path.join(process.cwd(), "uploads", "executor-packages");
+
   const UPLOAD_TMP_FILE = "/tmp/pkg-upload-tmp/upload-1";
   const mockFile: Express.Multer.File = {
     // P1: the on-disk temp content must start with the zip magic bytes
@@ -169,7 +176,10 @@ describe("ExecutorPackageService", () => {
     platform: "linux",
     description: "test",
     filename: "my-executor-1.0.0-abcd1234.zip",
-    filePath: "/uploads/executor-packages/my-executor-1.0.0-abcd1234.zip",
+    filePath: path.join(
+      UPLOAD_ROOT,
+      "my-executor-1.0.0-abcd1234.zip",
+    ) as unknown as string,
     originalFilename: "executor-v1.0.0.zip",
     mimeType: "application/zip",
     fileSize: 1024,
@@ -334,6 +344,51 @@ describe("ExecutorPackageService", () => {
       // the orphan is gone from disk
       expect(diskFiles.has(dest)).toBe(false);
     });
+
+    // P3-3（TOCTOU 兜底）：预检 findOne 与 INSERT 之间的并发窗口由唯一索引
+    // 收口——输家把 PG 23505 映射成与预检相同的 409 EXECUTOR_PACKAGE_EXISTS，
+    // 不再冒裸 500（对照 users.service R32-A5 分流先例）。
+    it("P3-3: 预检漏网的并发重名（save 撞 23505）→ 409 EXECUTOR_PACKAGE_EXISTS", async () => {
+      repo.findOne.mockResolvedValue(null); // 预检通过（对手尚未提交）
+      repo.create.mockReturnValue(mockPkg);
+      repo.save.mockRejectedValue(
+        Object.assign(
+          new Error(
+            'duplicate key value violates unique constraint "IDX_executor_packages_name_version_type"',
+          ),
+          { code: "23505" },
+        ),
+      );
+
+      await expect(
+        service.create(
+          { name: "my-executor", version: "1.0.0", type: "node" } as any,
+          mockFile,
+        ),
+      ).rejects.toMatchObject({ errorCode: "EXECUTOR_PACKAGE_EXISTS" });
+
+      // moved-in-place 文件仍按 QA9 清理（新分支不改变既有清理语义）。
+      const rename = (fs.promises as any).rename as jest.Mock;
+      const dest = rename.mock.calls[0][1] as string;
+      const unlink = (fs.promises as any).unlink as jest.Mock;
+      expect(unlink).toHaveBeenCalledWith(dest);
+    });
+
+    it("P3-3: driverError 包装形态的 23505 同样命中分流", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.create.mockReturnValue(mockPkg);
+      repo.save.mockRejectedValue({
+        driverError: { code: "23505" },
+        message: "wrapped violation",
+      });
+
+      await expect(
+        service.create(
+          { name: "my-executor", version: "1.0.0", type: "node" } as any,
+          mockFile,
+        ),
+      ).rejects.toMatchObject({ errorCode: "EXECUTOR_PACKAGE_EXISTS" });
+    });
   });
 
   // QA9: startup sweep — a crashed process or a killed 500 MB upload leaves
@@ -432,6 +487,46 @@ describe("ExecutorPackageService", () => {
         } as any),
       ).rejects.toThrow(ConflictException);
     });
+
+    // P2-2（2026-10-25 审计）：filePath 的包含性闸（纵深第一层）。旧实现只有
+    // @MaxLength(1024)——PATCH 指向 /etc/passwd 即获得读/删任意文件原语。
+    it("P2-2: PATCH filePath 指向 /etc（上传根外）→ 400，不落库", async () => {
+      repo.findOne.mockResolvedValue({ ...mockPkg });
+      await expect(
+        service.update("pkg-001", { filePath: "/etc/passwd" } as any),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED",
+      });
+      expect(repo.update).not.toHaveBeenCalled();
+    });
+
+    it("P2-2: 兄弟目录前缀（executor-packages-evil）不因逐字节前缀巧合而放行", async () => {
+      repo.findOne.mockResolvedValue({ ...mockPkg });
+      const sibling = path.join(
+        process.cwd(),
+        "uploads",
+        "executor-packages-evil",
+        "x.zip",
+      );
+      await expect(
+        service.update("pkg-001", { filePath: sibling } as any),
+      ).rejects.toMatchObject({
+        errorCode: "EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED",
+      });
+    });
+
+    it("P2-2: PATCH filePath 指向上传根内合法路径 → 过（列级 patch 落库）", async () => {
+      repo.findOne.mockResolvedValue({ ...mockPkg });
+      const inside = path.join(UPLOAD_ROOT, "sub-dir", "pkg-fixed.zip");
+      const result = await service.update("pkg-001", {
+        filePath: inside,
+      } as any);
+      expect(result.filePath).toBe(inside);
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: "pkg-001" },
+        { filePath: inside },
+      );
+    });
   });
 
   describe("remove", () => {
@@ -483,6 +578,19 @@ describe("ExecutorPackageService", () => {
 
       expect((fs.promises as any).unlink).not.toHaveBeenCalled();
       expect(repo.remove).toHaveBeenCalled();
+    });
+
+    // P2-2（纵深第二层）：越界路径的 unlink 是「任意文件删除」原语——行照常
+    // 删（删除是合法管理动作），但拒绝触盘、只告警（磁盘孤儿同上方 orphan 语义）。
+    it("P2-2: 行 filePath 越界 → 照常删行，但拒绝 unlink", async () => {
+      const escaped = { ...mockPkg, filePath: "/etc/passwd" };
+      repo.findOne.mockResolvedValue(escaped);
+      repo.remove.mockResolvedValue(escaped);
+
+      await service.remove("pkg-001");
+
+      expect(repo.remove).toHaveBeenCalledWith(escaped);
+      expect((fs.promises as any).unlink).not.toHaveBeenCalled();
     });
   });
 
@@ -578,6 +686,16 @@ describe("ExecutorPackageService", () => {
       await expect(service.openPackageFile("pkg-001")).rejects.toThrow(
         NotFoundException,
       );
+      expect(fs.createReadStream).not.toHaveBeenCalled();
+    });
+
+    // P2-2（纵深第二层）：下载流开闸前二次断言包含性——历史脏行不能把下载
+    // 变成任意文件读取原语。
+    it("P2-2: 行 filePath 越界（/etc/passwd）→ 400，不触盘", async () => {
+      repo.findOne.mockResolvedValue({ ...mockPkg, filePath: "/etc/passwd" });
+      await expect(service.openPackageFile("pkg-001")).rejects.toMatchObject({
+        errorCode: "EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED",
+      });
       expect(fs.createReadStream).not.toHaveBeenCalled();
     });
   });

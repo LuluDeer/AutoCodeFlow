@@ -236,6 +236,20 @@ services:
     networks:
       - autoflow-internal
       - autoflow-public
+    # P3·运维（2026-10-25 审计）：/uploads 落命名卷——此前无 volumes，应用包
+    # （uploads/packages/<appId>/<sha256>/...，部署行 packageUrl 指向它）与执行
+    # 器包（uploads/executor-packages/，UPLOAD_DIR=process.cwd()/uploads/
+    # executor-packages，见 application.controller.ts / executor-package.service.ts）
+    # 全部存容器可写层，容器重建/升级即悬空：存量行的 packageUrl 404（部署/
+    # 回滚链失效）、执行器包要重新上传才能用。挂载点与 Dockerfile 的
+    # WORKDIR=/app 对齐，也与 docker-compose.ha.yml 的共享卷形态
+    # （admin_uploads:/app/uploads）同源——HA override 在此基础上把同一卷挂给
+    # 多副本。
+    # 注意：本改动只让**新**建容器持久化；对已在容器层写过数据的存量容器，
+    # 首次 up -d 重建前需手动迁移（docker cp 出旧目录内容再灌回卷），由运维
+    # 收口执行。
+    volumes:
+      - admin_uploads:/app/uploads
     logging:
       driver: json-file
       options:
@@ -377,6 +391,13 @@ services:
       # 可选：追加官方索引（--extra-index-url 语义），缓解「私有源无上游、
       # 公共包必失败」；不设则行为不变。
       PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
+      # P1（契约断裂修复，2026-10-25）：registry-pypi Basic 凭据对。与
+      # REGISTRY_USER/REGISTRY_PASS 同值即可——执行器把它写成 0600 netrc
+      # （uv cache 旁 .uv-netrc），仅以 NETRC env 键注入 uv install 子进程；
+      # 凭据不进 argv/日志/URL，也不进执行器主进程环境。留空（默认）= 无凭据
+      # 通道，私有源匿名 401 姿态与历史一致。
+      PYPI_REGISTRY_USERNAME: ${PYPI_REGISTRY_USERNAME:-}
+      PYPI_REGISTRY_PASSWORD: ${PYPI_REGISTRY_PASSWORD:-}
       # ── python_task_multiversion：解释器缓存池与多版本 ──────────────
       # 任务可声明 runtimeVersion（Python 主.次版本）按需获取解释器；不声明
       # 则沿用宿主解释器（存量语义逐字节不变）。
@@ -487,10 +508,31 @@ services:
       # B-2：同 PYPI_REGISTRY_URL 的 `${VAR-default}` 语义——显式置空回落
       # npmjs.com 官方源（执行器侧空串=未配置），仅未设置才取私有源默认。
       NPM_REGISTRY_URL: ${NPM_REGISTRY_URL-http://registry-npm:4873}
+      # N-1（2026-10-26 registry-npm 审计）：registry-npm 的 '**' 与
+      # '@autoflow/*' 均 access: $authenticated（apps/registry-npm/config.yaml），
+      # 执行器任务 npm install 私包必 401——与上方 PyPI netrc 凭据注入完全
+      # 对称的缺口，PyPI 修了 npm 漏了。
+      # 形态选型（2026-10-26 对 5.31.1 实测）：Basic 认证通过；
+      # `Bearer <base64(user:pass)>` 被 401 拒绝 → .npmrc 的 `_authToken`
+      # （npm 发 Bearer）装不了 Basic 密码；JWT 又有 60d 有效期
+      # （config.yaml security.api.jwt.sign.expiresIn）且已存在用户无法稳定
+      # 重签（PUT /-/user/login 409，见 registry.controller.ts「2026-10-23」
+      # 注释）。故走 USER/PASS：executor-node 在任务 .npmrc 生成
+      # `//<host:port>/:_auth=<base64(user:pass)>`（execute.ts
+      # buildNpmRcContent）。默认回落 REGISTRY_USER/PASS（与 admin-api 代理面
+      # 同源凭据，demo 由 .env.demo 的 REGISTRY_PASS 驱动、与 registry 卷内
+      # htpasswd 的 admin 账号匹配）——零新增密钥、永不过期；预签发 token
+      # 场景（公网 npm）仍走 NPM_REGISTRY_TOKEN，优先级更高。
+      NPM_REGISTRY_USER: ${NPM_REGISTRY_USER:-${REGISTRY_USER:-admin}}
+      NPM_REGISTRY_PASS: ${NPM_REGISTRY_PASS:-${REGISTRY_PASS:?set REGISTRY_PASS in .env}}
       # 与 executor-python 的 PYPI_REGISTRY_URL 同语义：--index-url 替换默认
       # 索引、registry-pypi 无上游代理；可用 PYPI_EXTRA_INDEX_URL 追加官方索引。
       PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL-http://registry-pypi:8003/simple/}
       PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
+      # P1（契约断裂修复，2026-10-25）：与上方 executor-python 块同族——netrc
+      # 注入 uv/pip install 子进程（node 侧 defaultUvEnv，池目录下 .uv-netrc）。
+      PYPI_REGISTRY_USERNAME: ${PYPI_REGISTRY_USERNAME:-}
+      PYPI_REGISTRY_PASSWORD: ${PYPI_REGISTRY_PASSWORD:-}
       # ── python_task_multiversion：解释器缓存池（node 侧同构） ────────
       # executor-node 的 python 分支与 executor-python 对等（声明版本按需
       # 获取解释器）。uv 定位顺序：UV_BIN → PATH → desktop 内置（Electron
@@ -566,6 +608,11 @@ services:
     ports:
       - '127.0.0.1:8003:8003'
     environment:
+      # P2-3（2026-10-26 审计）：这对是共享 Basic 口令——服务端有对端 IP 维度
+      # 的失败退避（连续失败 5 次后按 2^n 秒拒答，成功清零），但 NAT 后多用户
+      # 连坐、多副本计数不共享仍是残余风险；中期方向是 per-identity token
+      # （每个调用方独立凭据，可单独吊销/限速），见
+      # apps/registry-pypi/README.md「安全基线」。
       REGISTRY_USER: ${REGISTRY_USER:-admin}
       # F-2: Basic Auth 密码强制注入（未设置即 compose 解析报错）
       REGISTRY_PASS: ${REGISTRY_PASS:?set REGISTRY_PASS in .env}
@@ -582,13 +629,25 @@ services:
       - no-new-privileges:true
     cap_drop: ['ALL']
     tmpfs:
-      - /tmp
+      # P1-1（2026-10-26 registry-pypi 审计）：/tmp 无 size 上限时默认可达宿主
+      # 内存一半（实测 16G）。认证前的 multipart spool（SpooledTemporaryFile
+      # >1MB 部分落 /tmp）已被服务端 411/413 预检闸挡住（上传路由强制
+      # Content-Length），这里再给 tmpfs 显式上限兜底：1g 对正常上传
+      # （单包 ≤50MB）与运行期临时文件余量充足；打满后 multipart 解析报错
+      # （对客户端 500），不影响 /data 卷与日志面。
+      - /tmp:size=1g
     healthcheck:
       test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8003/health")']
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+    # P3-7（2026-10-26 审计）：关 uvicorn access log——每请求留痕由审计行
+    # （registry.pypi.upload/.delete/.download）与结构化错误日志承接，access
+    # log 属重复预算（logging 上限 10m*5）；高频 pip install 对 /simple/ 的
+    # 轮询不再各占一行（401/退避拒绝等异常仍走服务端日志）。镜像 CMD 不变
+    # （docker run 单跑形态不动），仅 compose 覆盖启动参数。
+    command: uvicorn main:app --host 0.0.0.0 --port 8003 --no-access-log
     networks:
       - autoflow-internal
       - autoflow-public
@@ -610,6 +669,17 @@ services:
     volumes:
       - npm_data:/verdaccio/storage
       - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
+    # N-5（2026-10-26 审计）：verdaccio 不暴露文件 mode 配置，卷内 htpasswd 与
+    # .verdaccio-db.json（含 JWT 签名 secret）默认 0644。容器以 uid 10001 运行、
+    # 卷可写（read_only 只锁根 fs），启动前 umask 077 + chmod 600 收敛为仅属主
+    # 可读写；卷属主 verdacci(10001) 与容器运行身份一致，chmod 可行（容器内
+    # 实证）。umask 同时让 verdaccio 运行期新建的缓存文件继承最小权限。
+    # 保留镜像默认 Cmd 的 --listen 参数语义：仅在其前面插入凭据收敛步骤后 exec。
+    command: >
+      /bin/sh -ec 'umask 077;
+      [ -f /verdaccio/storage/htpasswd ] && chmod 600 /verdaccio/storage/htpasswd || true;
+      [ -f /verdaccio/storage/.verdaccio-db.json ] && chmod 600 /verdaccio/storage/.verdaccio-db.json || true;
+      exec verdaccio --config /verdaccio/conf/config.yaml --listen http://0.0.0.0:4873'
     # NETOPT-8⑧: E-10 同款加固——registry-pypi 段（read_only/no-new-privileges/
     # cap_drop/tmpfs）三件套+tmpfs 齐全，本段此前全缺。verdaccio 只写 storage 卷
     # （npm_data:/verdaccio/storage，htpasswd 也在其中，见 config.yaml），日志走
@@ -630,8 +700,12 @@ services:
       retries: 3
       start_period: 30s
     networks:
+      # N-3（2026-10-26 审计）：从 autoflow-public 摘除。逐个核对过调用方——
+      # admin-api 代理面（docker-compose.yml NPM_REGISTRY_URL→registry.controller）、
+      # executor-node 拉包（NPM_REGISTRY_URL）、admin-web nginx `/npm/` 上游
+      # （apps/admin-web/nginx.conf:197）——全部在 autoflow-internal；该服务还
+      # 是可写仓库（publish/unpublish），无任何理由暴露在 public 网络。
       - autoflow-internal
-      - autoflow-public
     logging:
       driver: json-file
       options:
@@ -880,6 +954,10 @@ volumes:
   executor_python_data:
   executor_node_data:
   jaeger_data:
+  # P3·运维（2026-10-25 审计）：admin-api 上传面（应用包 + 执行器包）的持久卷
+  # ——挂载点 /app/uploads，语义见 admin-api 服务块内的注释；多副本（HA）
+  # override 复用同一命名卷做共享。
+  admin_uploads:
   # M-1: pg-backup profile 的备份产物卷
   backup_data:
   # M-3/M-4: monitoring profile 数据卷

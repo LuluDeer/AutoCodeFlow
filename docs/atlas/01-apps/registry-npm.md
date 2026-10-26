@@ -11,7 +11,7 @@ AutoCodeFlow 的私有 npm registry：托管 `@autoflow/*` / `@autocodeflow/*` �
 |---|---|---|
 | `storage` | `/verdaccio/storage` | 持久卷 `npm_data`（compose 挂载） |
 | `auth.htpasswd.file` | `/verdaccio/storage/htpasswd` | R8：凭证放存储卷内，容器重建不丢（config.yaml 以只读单文件挂载） |
-| `auth.htpasswd.max_users` | `100` | 自助注册上限；`-1` = 禁止自助注册（纯内网收紧场景，用户由运维离线写入） |
+| `auth.htpasswd.max_users` | `-1`（2026-10-26 N-3） | 禁止自助注册；用户由运维离线写入 htpasswd（`100` 为旧值，收紧前存量用户不受影响） |
 | `uplinks.npmjs` | `https://registry.npmjs.org/` | 公共包回源 |
 | `max_body_size` | `100mb` | 发布包体积上限（显式声明防误改） |
 | `security.api.jwt.sign.expiresIn` | `60d` | API token 有效期（web 端 7d） |
@@ -26,7 +26,7 @@ compose 侧（docker-compose.yml `registry-npm` 服务）：镜像 `verdaccio/ve
 
 - 匿名：仅 `/-/ping`（compose healthcheck）放行；metadata / tarball / publish / unpublish 全部 401（`$authenticated`）。
 - 登录用户：读写皆可（内部仓库按登录用户授权；分角色需后续接入外部 auth plugin）。
-- 用户创建：`npm adduser --registry http://<host>:4873/`，凭证写入客户端 `~/.npmrc` 的 `_authToken`。
+- 用户创建：自助注册已关闭（`max_users: -1`），**由运维离线写入 htpasswd**（bcrypt 行追加进 `npm_data` 卷，见 apps/registry-npm/README.md「运维：离线新增用户」）；既有用户 `npm login --registry http://<host>:4873/` 换取 token 写入客户端 `~/.npmrc` 的 `_authToken`。
 - 边界由 `npm run test:registry-npm` 静态校验（禁止 `$all`/`$anonymous`、确认 token 有效期/持久化 htpasswd/loopback 端口绑定）。
 
 ## 分工：谁上传、谁下载
@@ -42,7 +42,7 @@ compose 侧（docker-compose.yml `registry-npm` 服务）：镜像 `verdaccio/ve
 ```
 
 - **上传（写）**：开发者/CI 用 npm CLI 直接 publish 内部包（如 `packages/autocodeflow-node-sdk` 构建产物）；admin-api 的 `registry` 模块（JWT 保护，`@Controller("registry")`）以代理身份读包列表/转发上传，凭据来自 env `NPM_REGISTRY_USER` / `NPM_REGISTRY_PASS` / `NPM_REGISTRY_TOKEN`（未配置时匿名——在 `$authenticated` 策略下会失败）。
-- **下载（读）**：executor-node 任务安装是主力消费方——`NPM_REGISTRY_URL` 指向私服（compose 默认 `http://registry-npm:4873`），`NPM_REGISTRY_TOKEN` 写入每次安装的临时 .npmrc（`_authToken` 行）。因为 `'**'` 也要求 `$authenticated`，**匿名安装必 401**，执行器必须配 token（apps/executor-node/src/routes/execute.ts `buildNpmRcContent` 注释）。
+- **下载（读）**：executor-node 任务安装是主力消费方——`NPM_REGISTRY_URL` 指向私服（compose 默认 `http://registry-npm:4873`），每次安装的临时 .npmrc 写入凭据（`buildNpmRcContent`：token 优先写 `_authToken` 行，未配 token 时用 `NPM_REGISTRY_USER/PASS` 写 `_auth`（Basic）行；compose 缺省回落 `REGISTRY_USER/PASS`）。因为 `'**'` 也要求 `$authenticated`，**匿名安装必 401**，执行器必须配上述任一通道（apps/executor-node/src/routes/execute.ts `buildNpmRcContent` 注释）。
 - **公共包**：私服无缓存时自动回源 npmjs 并缓存（需容器可出网）；仅内部 scope 的任务会只写 scoped registry 行，公共包走客户端默认源。
 
 ## 健康检查与运维
@@ -51,7 +51,7 @@ compose 侧（docker-compose.yml `registry-npm` 服务）：镜像 `verdaccio/ve
 - Web UI：`http://<host>:4873/`（登录后可浏览包；`web.enabled: false` 可整体关闭，npm 协议不受影响）。
 - 数据备份：整库状态都在 `npm_data` 卷（包存储 + htpasswd），备份该卷即备份全部；`config.yaml` 本身无状态、只读挂载。
 - 常见故障：
-  - **执行器安装 401** → `NPM_REGISTRY_TOKEN` 未配置或 htpasswd 用户被删（`'**'` 均要求 `$authenticated`）；
+  - **执行器安装 401** → 凭据未配置（`NPM_REGISTRY_TOKEN` 与 `NPM_REGISTRY_USER/PASS` 皆缺，compose 侧二者缺省回落 `REGISTRY_USER/PASS`）或 htpasswd 用户被删（`'**'` 均要求 `$authenticated`）；
   - **healthcheck 恒 unhealthy** → 见上文 127.0.0.1 vs ::1 说明（verdaccio 5 仅 IPv4）；
   - **公共包拉不下来** → 容器无出网且缓存未命中（`proxy: npmjs` 需要出网）。
 
@@ -63,7 +63,8 @@ compose 侧（docker-compose.yml `registry-npm` 服务）：镜像 `verdaccio/ve
 3. admin-api: BullMQ 派发 POST /api/execute → executor-node
 4. executor-node routes/execute.ts:
      mkdtemp 临时目录写 .npmrc（@autoflow/@autocodeflow scope 行 + 全局 registry 行
-     + _authToken 行）→ npm install --prefix .node_modules/<taskId> → npm 退出即删临时目录
+     + 凭据行：token 走 _authToken、未配 token 时 user/pass 走 _auth（Basic））
+     → npm install --prefix .node_modules/<taskId> → npm 退出即删临时目录
 5. Verdaccio: @autoflow/sdk 命中内部存储；lodash 未命中则回源 npmjs 并缓存
 6. 任务运行（NODE_PATH 指向安装目录）→ 终态回调
 ```

@@ -786,3 +786,99 @@ describe('abort signal propagation (defect 4)', () => {
     expect(run).toBeDefined();
   });
 });
+
+describe('P1 凭据通道：defaultUvEnv 注入 registry-pypi netrc（2026-10-25）', () => {
+  // defaultUvEnv 是模块私有函数；通过 ensurePythonVenv 的 uv 分支观察其产物
+  // （env 传给 run 桩）。凭据经 config mock 的 getter 注入。
+  const { config } = jest.requireMock('./config') as { config: Record<string, unknown> };
+
+  function makeUvRun() {
+    const runs: Array<{ cmd: string; args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    const run = jest.fn(async (cmd: string, args: string[], opts?: RunCommandOptions) => {
+      runs.push({ cmd, args, env: opts?.env });
+      const r: RunCommandResult = { status: 0, stdout: '', stderr: '' };
+      return r;
+    });
+    return { runs, run };
+  }
+
+  function uvDeps(run: ReturnType<typeof makeUvRun>['run']): PythonVenvDeps {
+    return {
+      platform: 'linux',
+      run,
+      exists: () => false,
+      discoverInstalled: jest.fn(async () => [
+        {
+          version: '3.12.13',
+          path: POOL_PY,
+          available: true,
+          discoveredAt: '2026-10-25T00:00:00Z',
+        } satisfies InterpreterInfo,
+      ]),
+      resolveUvBin: async () => ({ path: UV_BIN, source: 'path' } satisfies UvResolution),
+      ensureVersion: async () => POOL_PY,
+    };
+  }
+
+  afterEach(() => {
+    delete config.pypiRegistryUsername;
+    delete config.pypiRegistryPassword;
+    config.pypiRegistryUrl = '';
+    config.pypiExtraIndexUrl = '';
+    try {
+      const fs = require('fs') as typeof import('fs');
+      fs.rmSync(path.join(POOL_DIR, '.uv-netrc'), { force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+
+  it('未配置凭据 → uv 子进程 env 无 NETRC（现状钉住）', async () => {
+    const { runs, run } = makeUvRun();
+    await ensurePythonVenv({ venvDir: VENV_DIR, deps: uvDeps(run) });
+    expect(runs.length).toBeGreaterThan(0);
+    for (const r of runs) {
+      expect(r.env?.NETRC).toBeUndefined();
+    }
+  });
+
+  it('配置凭据对 + 索引 → NETRC 指向 0600 netrc，内容与索引 host/凭据一致', async () => {
+    config.pypiRegistryUsername = 'reg-user';
+    config.pypiRegistryPassword = 'reg-pass';
+    config.pypiRegistryUrl = 'http://registry-pypi:8003/simple/';
+    const { runs, run } = makeUvRun();
+    await ensurePythonVenv({ venvDir: VENV_DIR, deps: uvDeps(run) });
+    const netrcPath = runs[0].env?.NETRC as string;
+    expect(netrcPath).toBeDefined();
+    const fs = require('fs') as typeof import('fs');
+    expect(fs.existsSync(netrcPath)).toBe(true);
+    // 0600 断言仅 POSIX：Windows 的 statSync().mode 不反映完整 POSIX 权限位
+    // （writeFile 的 0o600 在 NTFS 上映射为只读位，实测 mode&0o777=0o666，
+    // windows-node-tests CI 2026-10-25 实证）。Windows 侧放宽为属主读写位
+    // 断言——0600 收紧的实质防线在实现侧 writeFile mode 参数，POSIX 平台
+    // 由本断言完整钉住。
+    if (process.platform === 'win32') {
+      expect((fs.statSync(netrcPath).mode & 0o700)).toBe(0o600 & 0o700);
+    } else {
+      expect((fs.statSync(netrcPath).mode & 0o777)).toBe(0o600);
+    }
+    const content = fs.readFileSync(netrcPath, 'utf8');
+    expect(content).toContain('machine registry-pypi');
+    expect(content).toContain('login reg-user');
+    expect(content).toContain('password reg-pass');
+  });
+
+  it('附加索引 host 不同 → 同一凭据集覆盖两个 host（去重）', async () => {
+    config.pypiRegistryUsername = 'reg-user';
+    config.pypiRegistryPassword = 'reg-pass';
+    config.pypiRegistryUrl = 'http://registry-pypi:8003/simple/';
+    config.pypiExtraIndexUrl = 'https://pypi.example.org/simple/';
+    const { runs, run } = makeUvRun();
+    await ensurePythonVenv({ venvDir: VENV_DIR, deps: uvDeps(run) });
+    const fs = require('fs') as typeof import('fs');
+    const content = fs.readFileSync(runs[0].env?.NETRC as string, 'utf8');
+    expect(content.split('machine ').length - 1).toBe(2);
+    expect(content).toContain('machine pypi.example.org');
+  });
+});
+

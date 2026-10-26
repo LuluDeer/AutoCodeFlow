@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from urllib.parse import urlsplit
@@ -122,6 +123,15 @@ def _version_key(value: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
+logger = logging.getLogger(__name__)
+
+# AC-03a / NFR-04（CON-03）：zip 整包渠道单包下载体积上限的**默认值**（字节）。
+# 与 node executor（executor-node/src/config.ts 的 packageDownloadMaxBytes）的
+# 200MB 默认同源同值；env 名与无效值处置规则见
+# Settings.package_download_max_bytes 的字段注释。
+PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT = 200 * 1024 * 1024
+
+
 class Settings(BaseSettings):
     # Do not echo rejected environment values: registry credentials must not
     # appear in startup errors or logs either.
@@ -171,6 +181,42 @@ class Settings(BaseSettings):
     executor_pull_mode: bool = False
     task_timeout_seconds: int = 300  # Default task timeout (5 minutes)
     heartbeat_interval_seconds: int = 30  # Heartbeat interval
+
+    @field_validator('heartbeat_interval_seconds')
+    @classmethod
+    def _validate_heartbeat_interval_seconds(cls, value: int) -> int:
+        """钳到 5..60 秒（P2-5，对齐 executor-node config.ts 的同款钳制）。
+
+        node 侧口径（config.ts heartbeatIntervalSeconds 注释逐字互指）：
+        - 上界 60：与 /config/reload 的热更闸同界。一个配错的
+          HEARTBEAT_INTERVAL_SECONDS（如 300）会落在 admin 自身 30s×3 的
+          stale 判死窗之外——两拍之间执行器被判 OFFLINE，dispatch 静默停止
+          直到下一拍，运维看到的只是「任务不派了」。
+        - 下界 5：env=0 / 负值不能变成每秒一次的心跳风暴（node 侧
+          NETOPT-C P3 的下界语义同源）。
+
+        与 node 一致取**钳制**而非报错：env 是运维启动参数，钳到边界比让
+        执行器起不来更符合「活性优先」。
+        """
+        if value < 5:
+            logger.warning(
+                'HEARTBEAT_INTERVAL_SECONDS=%s is outside the supported '
+                'range [5, 60] — clamped to 5 (parity with executor-node '
+                'config.ts heartbeatIntervalSeconds)',
+                value,
+            )
+            return 5
+        if value > 60:
+            logger.warning(
+                'HEARTBEAT_INTERVAL_SECONDS=%s is outside the supported '
+                'range [5, 60] — clamped to 60 (a slower beat would sit '
+                "outside admin's 30s*3 stale-detection window and get the "
+                'executor marked OFFLINE between heartbeats)',
+                value,
+            )
+            return 60
+        return value
+
     pypi_registry_url: str = ''  # Optional credential-free private PyPI index URL
 
     @field_validator('pypi_registry_url')
@@ -188,6 +234,35 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_pypi_extra_index_url(cls, value: str) -> str:
         return validate_pypi_registry_url(value)
+
+    # P1（契约断裂修复，2026-10-25）：registry-pypi Basic 凭据对。设计稿见
+    # docs/archive/reports/pypi-credential-channel-design.md——凭据经 per-host
+    # netrc 文件（0600）注入 uv install 子进程（NETRC env 键），绝不进
+    # argv/日志/URL userinfo，也绝不写进执行器主进程 os.environ。
+    # 空（默认）= 无凭据通道，安装行为与历史逐字节一致。
+    pypi_registry_username: str = ''
+    pypi_registry_password: str = ''
+
+    @model_validator(mode='after')
+    def _validate_pypi_credentials_pair(self) -> 'Settings':
+        """凭据对非空时必须至少配置一个索引（fail-fast，不回显凭据值）。
+
+        防两类配错：① 凭据配了但索引未配置——凭据永远用不上，运维误以为
+        私有源认证已生效；② 将来误把凭据指向非私有源 host。消息只提键名，
+        绝不含 username/password 的值（config 红线：凭据不入日志）。
+        """
+        has_user = bool(self.pypi_registry_username.strip())
+        has_pass = bool(self.pypi_registry_password)
+        if has_user != has_pass:
+            raise ValueError(
+                'PYPI_REGISTRY_USERNAME 与 PYPI_REGISTRY_PASSWORD 必须同时配置（当前只配置了其一）'
+            )
+        if has_user and not (self.pypi_registry_url or self.pypi_extra_index_url):
+            raise ValueError(
+                '配置了 PYPI_REGISTRY_USERNAME/PASSWORD 但未配置任何索引'
+                '（PYPI_REGISTRY_URL / PYPI_EXTRA_INDEX_URL 至少其一）'
+            )
+        return self
     # R4-C P2: when true, an executor without a configured token refuses
     # /api/* requests (503) instead of the dev-mode allow-all behavior.
     require_token: bool = False
@@ -224,6 +299,61 @@ class Settings(BaseSettings):
     #     安全；活跃 venv 任务安装期间仍整轮跳过（live guard 保留）。
     uv_cache_ttl_days: int = 30
     uv_cache_max_mb: int = 0
+
+    # R5b（部署模型评审 2026-10-23 §九 9.4-5b）：zip 包字节缓存
+    # （`<work_dir>/.pkg-cache`）的体积预算，超限按 mtime 淘汰最旧
+    # （pkg_cache.py）。默认 4GiB 与 node config.pkgCacheMaxBytes 同源：与解释
+    # 器池总预算（INTERPRETER_TOTAL_GB）同量级，单包上限 200MB 下可容纳 ~20 个
+    # 不同包。每次使用时读取（热重载一致）；**0 = 显式关闭缓存**（不读不写，
+    # 行为与无缓存时代一致）；负数按 0 处理（手滑防御，静默钳制而不是启动失败
+    # ——缓存是性能优化，不是红线配置；与 node `Math.max(raw, 0)` 同语义）。
+    pkg_cache_max_bytes: int = 4 * 1024 * 1024 * 1024
+
+    # zip 整包渠道的**单包下载体积上限**（字节）。此前是 routers/execute.py 的
+    # 硬编码常量 ZIP_DOWNLOAD_MAX_BYTES；部署模型评审 2026-10-23 §9（commit
+    # 3f3f56c0 提交信息）登记过它与 node 侧的不对称：node 的同语义配置
+    # PACKAGE_DOWNLOAD_MAX_BYTES（executor-node config.ts 的
+    # packageDownloadMaxBytes）可经 env 覆盖，python 侧不可。本字段收口该
+    # 遗留项：
+    #   - env 名：pydantic snake_case → 大写的默认映射恰好产出与 node 完全
+    #     同名的 PACKAGE_DOWNLOAD_MAX_BYTES，运维只需记一个变量名——与
+    #     PKG_CACHE_MAX_BYTES / MAX_CONCURRENT_TASKS / TASK_TIMEOUT_SECONDS
+    #     等「两侧同名」既有惯例一致；
+    #   - 默认 200MB 不变（行为零漂移，与 admin 上传侧同值 CON-03）；
+    #   - 无效值（非数字/非正数）回落默认并 warn：对齐本文件「env 是运维
+    #     启动参数，救回比拒启更符合可用性」的既有裁定（见
+    #     max_concurrent_tasks 的钳制注释；node 侧 envInt 对空串/NaN 同样是
+    #     回退默认）。**不复制 node 的缺陷**：node 侧 `parseInt` 对垃圾值产出
+    #     NaN，`bytes > NaN` 恒 False，等于静默解除上限；0/负数 node 放行
+    #     原值会让一切下载立即超限——python 侧两者都视为手滑，回落默认并告警。
+    package_download_max_bytes: int = PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT
+
+    @field_validator('package_download_max_bytes', mode='before')
+    @classmethod
+    def _validate_package_download_max_bytes(cls, value: object) -> int:
+        raw = value
+        if isinstance(value, str):
+            try:
+                value = int(value.strip())
+            except ValueError:
+                value = None
+        # bool 是 int 子类（True 会被当 1 字节上限），显式排除。
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            logger.warning(
+                'PACKAGE_DOWNLOAD_MAX_BYTES=%r 无效（须为正整数），'
+                '回落默认 %d 字节',
+                raw,
+                PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT,
+            )
+            return PACKAGE_DOWNLOAD_MAX_BYTES_DEFAULT
+        return value
+
+    @field_validator('pkg_cache_max_bytes')
+    @classmethod
+    def _validate_pkg_cache_max_bytes(cls, value: int) -> int:
+        if value < 0:
+            return 0
+        return value
 
     @field_validator('disk_warn_percent', 'disk_critical_percent')
     @classmethod
@@ -509,5 +639,52 @@ EXECUTOR_VERSION = '2.0.0'
 # 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。与 node 侧
 # config.ts PROTOCOL_VERSION 必须同值（强一致性闸 = admin-api
 # protocol-version-consistency.spec.ts）。
-PROTOCOL_VERSION = 6
+#
+# R3-B（2026-10-24，部署模型评审 §4.3/P5）：6 → 7。register/heartbeat 新增
+# **可选**键 `deployedApps`（设备级应用版本事实）与 `installedPackages`（已
+# 安装执行器包清单），方向为**执行器→中台**（中台只采信落库：executor_app_
+# versions 整替语义 / executors.installedPackages jsonb）。协议版本声明的是
+# 「讲 v7 语言」（与 v2 的 commands python 仅实现两型本地路由仍列实现方同款
+# 口径）。PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍
+# 为 1，不改变任何既有分支。同值闸同上（node === python === protocol.json）。
+#
+# python 侧两键**恒省略**的裁定（2026-10-24 落地核查，fail-honest：不硬造）。
+# node 蓝本的事实源在本执行器**均不存在**，缺省即「未上报」（admin 三态收口
+# normalizeDeployedApps/normalizeInstalledPackages 对省略=不动 DB），没有可
+# 扫描的对象就没有可上报的事实——补空数组会把「不知道」伪装成「没有」：
+#
+# · deployedApps：事实源是 deploy 路由落盘的 `<workDir>/apps/<appId>/`
+#   （current 软链 + app.json + releases/）。python 执行器**没有 /api/deploy
+#   路由**（commands.py 能力缺口表 + protocol.json executorNodeOnly 段均登记
+#   deploy/app-stop/app-uninstall/update-package 为 node-only），故本侧从不
+#   创建该目录树——node 形态的目录只可能出现在与 node 执行器共用的 workDir
+#   里，那是**另一台执行器的事实**，本侧上报等于替别人代报（且无从区分
+#   归属），恒省略是唯一诚实姿态。
+# · installedPackages：事实源是 update-package 路由在 checksum 验证通过后
+#   落盘的 `.pkg-updates/manifests/<packageId>.json`。python 同样**没有
+#   /api/update-package 路由**（同上 node-only），从不写 manifests——省略
+#   即如实声明「本执行器无包安装事实」。注意 `.pkg-updates` 名字仍留在
+#   maintenance._PROTECTED_WORKDIR_NAMES（workDir 若与 node 共用，清扫不得
+#   误删别人的制品；保护名 ≠ 事实源）。
+#
+# 将来 python 补齐这两条路由（并按 protocol.json 要求把 executorNodeOnly
+# 条目提升进 schemas 段）时，在此两键落地 node 同款扫描 + TTL 缓存 + 心跳
+# 接入（蓝本：node 侧 deployed-apps.ts / installed-packages.ts），本注释
+# 与 scheduler._heartbeat_payload / main._register_payload 处的省略注释
+# 一并移除。
+#
+# 方案 b（2026-10-26，接管自愈死锁修复）：7 → 8。heartbeat 新增**可选**键
+# `registrationConflict: boolean`（方向为**执行器→中台**，语义「自最近一次
+# /token 409 起至成功取回 token」，键缺席 = 未上报）。本执行器**两处缺席**
+# 的裁定（同上方 deployedApps/installedPackages 的 fail-honest 同款）：
+# ① 载荷缺键——auth.py 现无 /token 409 识别（缺口登记见 auth.py 头注），
+#   没有 409 观测就没有可上报的冲突态；中台对「键缺席」按 v7 语义完全不动
+#   活性判定（protocol.json v8 条目明示），本执行器心跳行为与引入前逐字节
+#   一致。后续批补齐时：auth.py 记录 409 态（写方 409 置位 / 成功清除）+
+#   scheduler._heartbeat_payload 加 `registrationConflict: _conflict_active()`，
+#   蓝本 node 侧 heartbeat-state.ts + middleware/auth.ts。
+# ② 同一次 bump 合并登记 protocol.json 顶层 params 键名运行时语义段——
+#   本侧对等实现 routers/execute.py `_is_injectable_param_key`（注入循环
+#   skip+warn，admin/node 同款常量互指），已随本批落地。
+PROTOCOL_VERSION = 8
 

@@ -57,6 +57,13 @@ _PROTECTED_WORKDIR_NAMES = {
     # 「同一 address 出现两个指纹」的观测全部失真。node 侧
     # `PROTECTED_WORKDIR_NAMES`（file-logger.ts）同名同源。
     '.device-identity',
+    # R5b（部署模型评审 2026-10-23 §九 9.4-5b）：`.pkg-cache` 是 zip 任务包的
+    # **字节缓存**（pkg_cache.py，按 URL 键控）。第 1 段清扫按顶层条目 mtime 删
+    # 除一切非基础设施目录——不保护就会在 TTL 后被整棵删掉，P2 的 N×M 重复下载
+    # 原地复发。它**不走 TTL 清扫**（缓存条目的价值与"最近是否用过"而非"存在
+    # 多久"挂钩）：回收由 pkg_cache 自身的字节预算（pkg_cache_max_bytes，超限
+    # 按 mtime 淘汰最旧）负责，与 .venvs 走分片 TTL 是刻意不同的策略。
+    '.pkg-cache',
 }
 
 
@@ -774,8 +781,11 @@ def cleanup_work_dir(ttl_days: int = None) -> dict:
                 counts[count_key] += 1
 
     # 9-3（audit-r4）：本轮回可能删除了 venv——显式失效依赖映射缓存
-    # （指纹机制下删除会自然改变指纹，这里是双保险）。
-    if count_key == 'venvs' and counts['venvs'] > 0:
+    # （指纹机制下删除会自然改变指纹，这里是双保险）。巡查 2026-10-25：
+    # 原判定 `count_key == 'venvs'` 引用的是上方 for 循环的循环变量（循环
+    # 外悬空——恰因残留 'venvs' 值才碰巧成立，重构循环即断），改为按计数
+    # 账本直接判定，语义即本意：删过 venv 才失效。
+    if counts['venvs'] > 0:
         _invalidate_venv_deps_cache()
 
     # A5（第四轮审计）：共享 uv 下载缓存治理（`<work_dir>/.venvs/.uv-cache`，

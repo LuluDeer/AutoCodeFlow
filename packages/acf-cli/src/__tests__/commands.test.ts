@@ -304,6 +304,92 @@ describe('acf app releases (DEP-01 modern read surface)', () => {
     const line = logs.find((l) => l.startsWith('{'));
     expect(JSON.parse(line as string)).toEqual(data);
   });
+
+  // 0a278da6 后端在信封里加了 truncated / retainedButTruncated 两字段，CLI
+  // 表格形态此前静默忽略——表格用户看不到「被截」事实（把看到的当全量）。
+  it('truncated=true 时表格后打黄色截断 warn + 列出仍有设备保留的版本号（≤10 全列，>10 折叠计数）', async () => {
+    const versions = Array.from({ length: 12 }, (_, i) => `1.0.${i}`);
+    mockedGet.mockResolvedValueOnce({
+      data: [
+        {
+          id: 'v1', version: '1.2.0', deployedAt: '2026-01-01T00:00:00Z',
+          deploymentStatus: 'running', deploymentCount: 2, executorAddress: 'node-1:8002',
+          runMode: 'scheduled', triggerType: 'manual', status: 'released', createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      total: 5001,
+      page: 1,
+      pageSize: 50,
+      truncated: true,
+      retainedButTruncated: versions,
+    });
+    const { logs, spy } = captureLog();
+    try {
+      await run(appsCommand(), 'app releases a1');
+    } finally {
+      spy.mockRestore();
+    }
+    const out = logs.join('\n');
+    // 截断事实必须可见：warn 行 + 「仅显示前 1 条」计数（= 本页 data 行数）
+    expect(out).toContain('⚠ 版本行数超上限被截断');
+    expect(out).toContain('仅显示前 1 条');
+    // retainedButTruncated：前 10 个版本号列出（与前端 RETAINED_BUT_TRUNCATED_MAX_TAGS 同口径），
+    // 第 11/12 个折叠为「还有 2 个版本」计数
+    expect(out).toContain('被截断但仍有设备保留的版本: 1.0.0, 1.0.1, 1.0.2, 1.0.3, 1.0.4, 1.0.5, 1.0.6, 1.0.7, 1.0.8, 1.0.9');
+    expect(out).toContain('（还有 2 个版本）');
+    expect(out).not.toContain('1.0.10');
+    expect(out).not.toContain('1.0.11');
+  });
+
+  it('truncated=false（或缺省）不打截断 warn；retainedButTruncated 非空也只在 truncated 时展示', async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: [
+        {
+          id: 'v1', version: '1.2.0', deployedAt: '2026-01-01T00:00:00Z',
+          deploymentStatus: 'running', deploymentCount: 1, executorAddress: 'node-1:8002',
+          runMode: 'scheduled', triggerType: 'manual', status: 'released', createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      truncated: false,
+      retainedButTruncated: [],
+    });
+    const { logs, spy } = captureLog();
+    try {
+      await run(appsCommand(), 'app releases a1');
+    } finally {
+      spy.mockRestore();
+    }
+    const out = logs.join('\n');
+    expect(out).not.toContain('被截断');
+    expect(out).toContain('table(1)');
+  });
+
+  it('--json 透传 truncated / retainedButTruncated 原始字段（信封原样直出，零本地变换）', async () => {
+    const data = {
+      data: [],
+      total: 5001,
+      page: 1,
+      pageSize: 50,
+      truncated: true,
+      retainedButTruncated: ['0.9.0', '0.9.1'],
+    };
+    mockedGet.mockResolvedValueOnce(data);
+    const { logs, spy } = captureLog();
+    try {
+      await run(appsCommand(), 'app releases a1 --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(line, '--json 输出必须是单行 JSON 信封').toBeTruthy();
+    // 逐字节透传：两字段原样在信封里，CI 可直接 jq .truncated 判断
+    expect(JSON.parse(line as string)).toEqual(data);
+    expect(JSON.parse(line as string).truncated).toBe(true);
+    expect(JSON.parse(line as string).retainedButTruncated).toEqual(['0.9.0', '0.9.1']);
+  });
 });
 
 describe('acf app deployments (P2 contract fix)', () => {
@@ -1543,5 +1629,110 @@ describe('acf mutex（互斥组命令组）', () => {
     expect(mutex, 'mutex 命令组未挂到 program').toBeTruthy();
     const names = mutex!.commands.map((c) => c.name()).sort();
     expect(names).toEqual(['create', 'delete', 'list', 'update']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1（2026-10-24 部署模型评审 §4.2）：应用回滚拆分出的两个显式动作。
+// set-current-version 只恢复应用字段（安全半边）；deploy-version 恢复后下发
+// （危险半边，带确认门，skipped 明细分级置退出码）。
+// ---------------------------------------------------------------------------
+describe('acf app set-current-version（R1 §4.2）', () => {
+  it('POSTs /applications/:id/set-current-version with { versionId }', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: false, version: '1.1.0', versionId: 'ver-2',
+    });
+    await run(appsCommand(), 'app set-current-version a1 ver-2');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/a1/set-current-version', { versionId: 'ver-2' });
+  });
+
+  it('--json 直出响应对象', async () => {
+    const result = { ok: true, dispatched: false, version: '1.1.0', versionId: 'ver-2' };
+    mockedPost.mockResolvedValueOnce(result);
+    const out = await jsonOut(() => run(appsCommand(), 'app set-current-version a1 ver-2 --json'));
+    expect(JSON.parse(out)).toEqual(result);
+  });
+});
+
+describe('acf app deploy-version（R1 §4.2）', () => {
+  beforeEach(() => {
+    process.exitCode = undefined;
+    // mockReset（非 clearAllMocks）：一旦某用例在 action 前被 commander 拒绝，
+    // 其 mockResolvedValueOnce 残留会污染后续用例的响应队列。
+    mockedPost.mockReset();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it('缺省 --executors：POST 体只带 versionId（= 全部 RUNNING 行，旧 rollback 语义）', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [{ deploymentId: 'dep-1', executorId: 'exec-1', executorAddress: 'n1:8002' }],
+      skipped: [],
+    });
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --yes');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/a1/deploy-version', { versionId: 'ver-2' });
+  });
+
+  it('--executors <id1,id2>：POST 体带 executorIds 数组（空白段剔除）', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [{ deploymentId: 'dep-1', executorId: 'exec-1', executorAddress: 'n1:8002' }],
+      skipped: [],
+    });
+    // run() 助手按空白切分参数——值里不能带空格；空段（,,）验证 filter(Boolean)
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --executors exec-1,,exec-2 --yes');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/a1/deploy-version', {
+      versionId: 'ver-2',
+      executorIds: ['exec-1', 'exec-2'],
+    });
+  });
+
+  it('全部跳过（upgraded=0）→ 退出码 1（CI 看得见「没下发任何设备」）', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [],
+      skipped: [{ executorId: 'exec-9', deploymentId: null, reason: 'no_deployment' }],
+    });
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --executors exec-9 --yes');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('upgrade_rejected 跳过项 → 退出码 1；纯 no_deployment/not_running 跳过不打红', async () => {
+    mockedPost.mockResolvedValueOnce({
+      ok: true, dispatched: true, version: '1.1.0', versionId: 'ver-2',
+      upgraded: [{ deploymentId: 'dep-1', executorId: 'exec-1', executorAddress: 'n1:8002' }],
+      skipped: [
+        { executorId: 'exec-2', deploymentId: 'dep-2', reason: 'not_running', detail: 'status=stopped' },
+        { executorId: 'exec-3', deploymentId: 'dep-3', reason: 'upgrade_rejected', detail: 'conflict' },
+      ],
+    });
+    await run(appsCommand(), 'app deploy-version a1 ver-2 --executors exec-1,exec-2,exec-3 --yes');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('非交互且无 -y 时以用法错误拒绝（不静默假绿）', async () => {
+    const origIsTTY = process.stdin.isTTY;
+    try {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      await expect(run(appsCommand(), 'app deploy-version a1 ver-2')).rejects.toThrow(
+        /process\.exit\(2\)/,
+      );
+      expect(mockedPost).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', {
+        value: origIsTTY,
+        configurable: true,
+      });
+    }
+  });
+
+  it('变异检测：两个子命令必须挂在 app 命令树上（防「写了没接」）', async () => {
+    const names = appsCommand().commands.map((c) => c.name());
+    expect(names).toContain('set-current-version');
+    expect(names).toContain('deploy-version');
   });
 });

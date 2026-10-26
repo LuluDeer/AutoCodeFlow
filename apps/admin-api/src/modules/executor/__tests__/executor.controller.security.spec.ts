@@ -188,6 +188,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           "address",
           "appName",
           "capabilities",
+          // R3（协议 v7）：心跳上报的设备应用事实随白名单透传（service 侧
+          // 做结构校验，非法整字段拒绝采纳——与 interpreters 同类）。
+          "deployedApps",
           "description",
           // ARCH-32: 派发模式自报随白名单透传（service 侧枚举外值落回 push）
           "dispatchMode",
@@ -199,6 +202,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           // runningTaskCount/version 仍由 F-7 逐字段白名单拦住）。
           "deviceFingerprint",
           "groupName",
+          // R3（协议 v7）：执行器自装包清单随白名单透传（installedPackages，
+          // 当前 node/python 均按契约省略——无事实源不造假）。
+          "installedPackages",
           // python_task_multiversion（WS2）：解释器清单随白名单透传（service
           // 侧做结构校验与采纳决策——非法即整字段拒绝采纳）。
           "interpreters",

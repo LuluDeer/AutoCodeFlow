@@ -202,6 +202,117 @@ const AGENT_SESSION_STATUS = z.enum([
 ]);
 
 /**
+ * MCP-DTO-ALIGN（2026-10-25）：update_task 参数面对齐 UpdateTaskDto（=
+ * PartialType(CreateTaskDto)）——上轮巡查登记 17 个落后字段，本批补齐
+ * agent 高价值子集 15 个（secrets/维护窗口/priority/timeout 系/
+ * requirements/dependencies/blockStrategy/misfireStrategy/亲和×2/
+ * deploymentPolicy/estimatedDurationSec/expectedUpdatedAt +
+ * timeoutSeconds 补 max(86400)），登记 2 个（runtimeVersion/codeSource，
+ * 理由见任务报告）。值域/上限逐字对齐后端事实源（出处逐条标注），不在
+ * MCP 侧发明私有语义：收窄不得越过 @IsEnum/@Max 的值域（否则拒掉后端
+ * 接受的合法值），放宽不得越过 @Min 的下界。
+ *
+ * admin-api 源文件（本包**不可 import**：mcp-server tsconfig rootDir=./src
+ * 且 exclude 测试，跨树相对导入违反 TS6059——约束在此**重述**，语义由
+ * tools.test.ts 的值域断言钉住，与 secret-key-map.constraint.spec.ts 的
+ * 两侧对等性测试同一先例）：
+ *  · CreateTaskDto     apps/admin-api/src/modules/task/dto/create-task.dto.ts
+ *  · 枚举值域          apps/admin-api/src/modules/task/entities/task.entity.ts
+ *  · TIMEOUT_ACTIONS   apps/admin-api/src/modules/task/timeout-policy.util.ts
+ *  · secret 键名规则   apps/admin-api/src/modules/task/dto/secret-key-map.constraint.ts
+ */
+/** BlockStrategy（task.entity.ts:25；DTO @IsEnum，create-task.dto.ts:273）。 */
+const BLOCK_STRATEGY = z.enum(["serial", "discard", "cover_early"]);
+/** MisfireStrategy（task.entity.ts:80；DTO @IsEnum，create-task.dto.ts:277）。 */
+const MISFIRE_STRATEGY = z.enum(["ignore", "fire_once"]);
+/** TimeoutAction（timeout-policy.util.ts TIMEOUT_ACTIONS；DTO 用 @IsIn）。 */
+const TIMEOUT_ACTION = z.enum(["kill", "kill_retry", "notify_only"]);
+
+/**
+ * priority：@IsEnum(TaskPriority)（create-task.dto.ts:256-259）。
+ *
+ * TaskPriority 是 TS 数字枚举（LOW=1..CRITICAL=4，task.entity.ts:31），
+ * 运行时 Object.values = [1,2,3,4,"LOW","NORMAL","HIGH","CRITICAL"]（数字
+ * 枚举自带反向映射，大写 label 也在 values 里）——class-validator 0.14 实测
+ * 接受数字 1-4 与大写 label；**小写 label 与 "1"/"2" 数字串被 400 拒绝**
+ * （tools.test.ts 有用例钉住该经验事实）。落库前实体列 transformer 把数字
+ * 转小写 PG label（task.entity.ts:199），agent 侧无需关心。
+ */
+const TASK_PRIORITY = z.union([
+  z.int().min(1).max(4),
+  z.enum(["LOW", "NORMAL", "HIGH", "CRITICAL"]),
+]);
+
+/**
+ * maintenanceWindows 单条（MaintenanceWindowDto + @ValidateNested(each)）：
+ *   · start/end：非空 5 字段 cron（@IsCron5Field，与主 cron 同一门）；
+ *   · description：非空、≤200 码点（@MaxLength(200)，validator.js 按码点计）。
+ * MCP 侧只复述**结构**边界（5 字段 = 空格分隔的 5 个非空 token；条数 ≤10
+ * 由外层 .max(10) 对齐 @ArrayMaxSize(10)）；cron 语义合法性交给后端同源
+ * 校验器（IsCron5Field = 调度器注册路径同一实现），不在客户端重写解析器。
+ */
+const MAINTENANCE_WINDOW_ITEM = z
+  .object({
+    start: z
+      .string()
+      .refine((v) => v.trim().length > 0 && v.trim().split(/\s+/).length === 5, {
+        message: "start must be a 5-field cron expression (minute hour day month weekday)",
+      })
+      .describe("窗口开启 cron（5 字段：分 时 日 月 周；结构外语义校验在后端 IsCron5Field）"),
+    end: z
+      .string()
+      .refine((v) => v.trim().length > 0 && v.trim().split(/\s+/).length === 5, {
+        message: "end must be a 5-field cron expression (minute hour day month weekday)",
+      })
+      .describe("窗口关闭 cron（5 字段；start 最近触达开窗、end 最近触达关窗，半开区间）"),
+    description: textWithin(200)
+      .optional()
+      .describe("窗口用途说明（≤200 码点，展示/日志用）"),
+  })
+  .strict();
+
+/**
+ * secrets：DTO = @IsObject + @Validate(IsSecretKeyMapConstraint)。
+ *
+ * 值形态刻意宽（unknown：叶子允许 null=删除该键 / "******"=保留 / 字符串=
+ * 覆盖），因为**逐键合并语义在后端**（task.service.ts:2288-2299 applyPatch）
+ * ——MCP 若在客户端替后端合并，必须先拿到明文旧值，而读路径永久脱敏
+ * （叶子恒 ******），客户端合并必然错。键名规则逐字复述
+ * secret-key-map.constraint.ts（合法环境变量名 + 保留名黑名单 +
+ * AUTOFLOW_/PYTHON 前缀禁用），把后端的 400 提前到入站层。
+ */
+const RESERVED_SECRET_NAMES = new Set(
+  [
+    "EXECUTION_ID", "TASK_ID", "TASK_NAME", "NODE_PATH",
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    "npm_config_cache", "npm_config_prefix",
+    "TMPDIR", "TEMP", "TMP", "USER", "LOGNAME", "SHELL",
+    "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE",
+    "HOMEDRIVE", "HOMEPATH", "USERNAME", "APPDATA", "LOCALAPPDATA",
+    "ProgramData",
+    "EXECUTOR_SHARED_TOKEN", "EXECUTOR_SECRET", "EXECUTION_CALLBACK_SECRET",
+  ].map((n) => n.toUpperCase()),
+);
+const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const taskSecretsMap = () =>
+  z.record(z.string(), z.unknown()).superRefine((secrets, ctx) => {
+    for (const key of Object.keys(secrets)) {
+      const upper = key.toUpperCase();
+      let problem: string | null = null;
+      if (!SECRET_NAME_RE.test(key)) {
+        problem = `secret key "${key}" is not a valid environment variable name (must match [A-Za-z_][A-Za-z0-9_]*)`;
+      } else if (RESERVED_SECRET_NAMES.has(upper)) {
+        problem = `secret key "${key}" is a platform-reserved environment variable name`;
+      } else if (upper.startsWith("AUTOFLOW_")) {
+        problem = `secret key "${key}" uses the AUTOFLOW_ prefix (reserved for task params)`;
+      } else if (upper.startsWith("PYTHON")) {
+        problem = `secret key "${key}" uses the PYTHON prefix (interpreter behavior switches)`;
+      }
+      if (problem) ctx.addIssue({ code: "custom", message: problem });
+    }
+  });
+
+/**
  * R111-A1（MCP 入参**字符串长度**审计）：按**码点**计数的字符串上限。
  *
  * 为什么不用 `z.string().max(N)`：zod 的 `.max()` 数的是 **UTF-16 码元**
@@ -429,7 +540,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   // ---- update_task ---------------------------------------------------------
   server.tool(
     "update_task",
-    'Update an existing task via PATCH (only the fields you pass are changed). Supports executor pinning: set executorId to pin the task to one executor (fails fast if it is offline), or pass executorId: null to clear the pin. executorId is mutually exclusive with executeMode="broadcast" — the backend rejects that combination with 400.',
+    'Update an existing task via PATCH (only the fields you pass are changed; explicit null clears nullable fields). Supports executor pinning: set executorId to pin the task to one executor (fails fast if it is offline), or pass executorId: null to clear the pin. executorId is mutually exclusive with executeMode="broadcast" — the backend rejects that combination with 400. Also supports task-level secrets (per-key merge; leaf "******" keeps the stored value, null deletes the key), maintenance windows, priority (1-4), timeout policy (timeoutSeconds/timeoutAction/timeoutWarnRatio), dependency requirements, upstream task dependencies (map display-name → upstream task id), block/misfire strategies, executor affinity tags, deployment policy, and expectedUpdatedAt optimistic locking (409 on conflict).',
     {
       taskId: UUID_PATH_ID.describe("Task ID to update"),
       // R111-A1 上限出处：CreateTaskDto.name 的 @IsTaskName()
@@ -472,13 +583,58 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .string()
         .optional()
         .describe("Entry point file path relative to the repo root"),
+      // MCP-DTO-ALIGN：timeout（遗留字段，create-task.dto.ts:184-192）此前
+      // 整体缺失——@IsInt @Min(0) @Max(86400)，0 = 不限制；与 timeoutSeconds
+      // 同值域（后端把 timeoutSeconds 归一化到 timeout）。
+      timeout: z
+        .number()
+        .int()
+        .min(0)
+        .max(86400)
+        .optional()
+        .describe(
+          "Execution timeout in seconds (legacy field — prefer timeoutSeconds; 0 = no limit; backend accepts 0-86400)",
+        ),
+      // MCP-DTO-ALIGN：timeoutSeconds 补上界 max(86400)（此前只写 min(0)，
+      // 缺失的 .max 让 >86400 的值原样上送、被后端 @Max(86400) 400——与描述
+      // 文案"backend accepts 0-86400"不符）。对齐 create-task.dto.ts:197-201。
       timeoutSeconds: z
         .number()
         .int()
         .min(0)
+        .max(86400)
         .optional()
         .describe(
           "Execution timeout in seconds (0 = no limit; backend accepts 0-86400)",
+        ),
+      // CORE-04（create-task.dto.ts:209-216）：null/缺省 = kill；显式 null 重置。
+      timeoutAction: TIMEOUT_ACTION
+        .nullable()
+        .optional()
+        .describe(
+          'Timeout action: kill (default — executor kills the process tree) | kill_retry (kill + re-enqueue once within retry budget) | notify_only (admin only notifies, executor-side hard timeout still applies). Omit = keep current value; explicit null = reset to kill.',
+        ),
+      // CORE-04（create-task.dto.ts:226-230）：百分数 0-90；null = 未启用。
+      timeoutWarnRatio: z
+        .number()
+        .int()
+        .min(0)
+        .max(90)
+        .nullable()
+        .optional()
+        .describe(
+          "Timeout early-warning threshold: integer percent (0-90) of timeout. One WARNING notification fires when runtime reaches timeout×ratio/100 (at most once per execution). Omit = keep; explicit null = disable.",
+        ),
+      // CORE-05（create-task.dto.ts:246-254）：0/缺省 = 未知；null = 重置为未知。
+      estimatedDurationSec: z
+        .number()
+        .int()
+        .min(0)
+        .max(604800)
+        .nullable()
+        .optional()
+        .describe(
+          "Estimated execution duration in seconds (0/omitted = unknown; 0-604800). Only feeds scheduler executor load scoring — never consumed by the execution path. Explicit null = reset to unknown.",
         ),
       maxRetry: z
         .number()
@@ -487,8 +643,33 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .max(10)
         .optional()
         .describe("Max retry attempts (0-10)"),
+      // A4 乐观锁（update-task.dto.ts:22-29）：透传 + 409 语义写在 description。
+      expectedUpdatedAt: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "Optimistic lock: the task's updatedAt (ISO timestamp) you read before editing. When present, the backend rejects the update with 409 TASK_UPDATE_STALE if the stored row moved (someone else updated first); re-fetch via get_task and retry. Omitted/null = skip the check (last write wins).",
+        ),
       executeMode: EXECUTE_MODE.optional().describe(
         "Dispatch mode: single | broadcast. broadcast fans out to all online executors and cannot be combined with executorId.",
+      ),
+      // A4（第三轮审计·中）/ N-14（create-task.dto.ts:260-279 语义）。
+      blockStrategy: BLOCK_STRATEGY
+        .nullable()
+        .optional()
+        .describe(
+          'Re-trigger policy while a same-params run is active: serial (queue, default) | discard (skip this trigger) | cover_early (cancel the running execution and rerun). null = legacy rows default to serial.',
+        ),
+      misfireStrategy: MISFIRE_STRATEGY
+        .nullable()
+        .optional()
+        .describe(
+          "Misfire policy when the scheduler was down at fire time: ignore (skip, default) | fire_once (fire once on recovery).",
+        ),
+      // CORE-01：数字 1-4 或大写 label（@IsEnum 的经验接受面，见 TASK_PRIORITY 注释）。
+      priority: TASK_PRIORITY.optional().describe(
+        "Task priority: 1 (LOW) | 2 (NORMAL, default) | 3 (HIGH) | 4 (CRITICAL) — integers, or the uppercase labels LOW/NORMAL/HIGH/CRITICAL. Lowercase labels and numeric strings are rejected (backend @IsEnum).",
       ),
       executorId: z
         .string()
@@ -513,6 +694,68 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .string()
         .optional()
         .describe("Associated application ID"),
+      // ---------------------------------------------------------------------------
+      // MCP-DTO-ALIGN（2026-10-25）：以下 9 个字段上轮登记缺失，值域逐字对齐
+      // CreateTaskDto（PartialType 传播到 UpdateTaskDto）。null 语义照抄 DTO：
+      // 可空列显式 null = 清除/重置，缺省 = 保留旧值（N28）。
+      // ---------------------------------------------------------------------------
+      // SEC-02（create-task.dto.ts:292-321）：逐键合并语义在后端，这里只校键名。
+      secrets: taskSecretsMap()
+        .nullable()
+        .optional()
+        .describe(
+          'Task-level secrets (credential key/value pairs, separate from params; stored encrypted, read back masked as "******"). Per-key merge on PATCH: omit a key or keep its "******" value to preserve it, null a key to delete it, any other value overwrites; the whole field as explicit null clears all secrets. Dispatched both merged into params as AUTOFLOW_<KEY> (legacy channel) and as a standalone secrets payload injected under the original key names.',
+        ),
+      // FEAT-06（create-task.dto.ts:94-112）：≤10 条；null/[] = 清空窗口。
+      maintenanceWindows: z
+        .array(MAINTENANCE_WINDOW_ITEM)
+        .max(10)
+        .nullable()
+        .optional()
+        .describe(
+          "Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each item {start, end, description?} uses 5-field cron; the window opens at the latest start-cron fire and closes at the latest end-cron fire (half-open). At most 10 items; explicit null or [] clears all windows.",
+        ),
+      // W-21（create-task.dto.ts:148-158）：≤50 条非空；服务层拒前导 '-'。
+      requirements: z
+        .array(z.string().min(1))
+        .max(50)
+        .nullable()
+        .optional()
+        .describe(
+          'Dependency specs the executor installs before running (python: per-task uv venv; node: npm packages), e.g. ["requests>=2.31", "rich==13.7.1"]. Ignored for GLUE tasks. At most 50 non-empty strings; specs with a leading "-" are rejected. Explicit null = clear.',
+        ),
+      // FIX-1.1（create-task.dto.ts:159-178）：value 才是依赖任务 id。
+      dependencies: z
+        .record(z.string(), z.string())
+        .nullable()
+        .optional()
+        .describe(
+          "Upstream task dependencies: { display-name: upstream-task-id } — the VALUE is the dependency task id (consumed by cycle detection / dependency fan-out). Every value must be an existing task id; self-dependency and cycles are rejected. Explicit null = clear.",
+        ),
+      // NF-04（create-task.dto.ts:334-350）：OR 亲和；null/[] = 清除。
+      executorAffinityTags: z
+        .array(z.string())
+        .nullable()
+        .optional()
+        .describe(
+          "Executor tag affinity (OR semantics — executors holding ANY of these tags are candidates, then load-scored). Orthogonal to executorTags (hard AND capability requirement). Explicit null/[] clears.",
+        ),
+      // NF-04（create-task.dto.ts:351-366）：排除语义；null/[] = 清除。
+      executorAntiAffinityTags: z
+        .array(z.string())
+        .nullable()
+        .optional()
+        .describe(
+          "Executor tag anti-affinity (exclusion — executors holding ANY of these tags are excluded). Applies to single and broadcast dispatch; combined with affinity, anti-affinity subtracts from the affinity hit set. Explicit null/[] clears.",
+        ),
+      // FEAT-22（create-task.dto.ts:322-330）：strict/prefer；null = 跟随全局。
+      deploymentPolicy: z
+        .enum(["strict", "prefer"])
+        .nullable()
+        .optional()
+        .describe(
+          "Task-level dispatch deployment override: strict restricts candidates to executors explicitly deployed with the bound app (queues as WAITING when none can take it); prefer keeps the soft preference. null/omitted = follow the global executor.deploymentPolicy. Priority chain: executorId pin > executorAppName > deployment constraint > whole cluster.",
+        ),
     }, { destructiveHint: true, idempotentHint: true },
     async ({ taskId, ...fields }) => {
       // Drop undefined fields so PATCH only touches what the caller supplied;
@@ -927,7 +1170,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   // name > overrides > explicit description > template description.
   server.tool(
     "create_task_from_template",
-    "Create a runnable task from a task template (server-side POST /task-templates/:id/instantiate — the template config expands as defaults, the overrides win per field; name is always required). Pass template as its key (official presets: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping) or its uuid — browse all templates including custom ones with list_task_templates. Returns the created task — trigger it with trigger_task.",
+    "Create a runnable task from a task template (server-side POST /task-templates/:id/instantiate — the template config expands as defaults, the overrides win per field; name is always required). Create-side required set (differs from update_task's all-optional PATCH): name, plus triggerType which must come from the template config or the overrides — the backend validates the merged payload against CreateTaskDto and rejects with 400 otherwise; every other field is optional with backend defaults, and update-only fields (expectedUpdatedAt) are not part of the create face. Pass template as its key (official presets: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping) or its uuid — browse all templates including custom ones with list_task_templates. Returns the created task — trigger it with trigger_task.",
     {
       template: z
         .string()
@@ -949,7 +1192,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       overrides: taskParamsWithinLimits()
         .optional()
         .describe(
-          "Field overrides applied on top of the template config (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, executorGroup)",
+          "Field overrides applied on top of the template config (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, executorGroup, secrets, maintenanceWindows, priority, timeoutAction/timeoutWarnRatio, estimatedDurationSec, requirements, dependencies, blockStrategy, misfireStrategy, executorAffinityTags/executorAntiAffinityTags, deploymentPolicy, executorId, projectId, runbook. NOTE: template instantiate merges then validates the WHOLE payload against CreateTaskDto — triggerType must be set by the template config or the overrides or the backend rejects with 400; expectedUpdatedAt is update-only and never accepted here)",
         ),
     }, { destructiveHint: false },
     async ({ template, name, description, overrides }) => {

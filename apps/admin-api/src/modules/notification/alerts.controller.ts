@@ -1,4 +1,5 @@
 import { Body, Controller, Headers, Logger, Post, Req } from "@nestjs/common";
+import { ValidationPipe } from "@nestjs/common";
 import {
   ApiBody,
   ApiOperation,
@@ -129,7 +130,22 @@ export class AlertsController {
   })
   @ApiCreatedResponse({ type: AlertsWebhookResponseDto })
   async webhook(
-    @Body() payload: AlertmanagerWebhookPayload,
+    // F-53（UIAUDIT P2-2/P3-4）：body 校验启用。参数级 ValidationPipe 以
+    // expectedType 指定 AlertmanagerWebhookDto（本参数的 TS 类型仍是映射层
+    // 的 interface，运行时 metatype=Object，全局管道照旧跳过，无双重校验）。
+    // 与全站 forbidNonWhitelisted 纪律的**显式例外**：whitelist 静默剥离未知
+    // 键——外部 Alertmanager 版本字段面不可控，未知键 400 会把告警吞在门槛上；
+    // HMAC（handler 内对 req.rawBody）不受已解析对象的剥离影响。形状错
+    // （alerts 非数组等）仍 400；缺失/空数组走映射层的
+    // NOTIFICATION_ALERT_PAYLOAD_EMPTY（既有契约，见 DTO 头注）。
+    @Body(
+      new ValidationPipe({
+        expectedType: AlertmanagerWebhookDto,
+        whitelist: true,
+        transform: true,
+      }),
+    )
+    payload: AlertmanagerWebhookPayload,
     @Headers("x-hub-signature-256") signature?: string,
     @Headers("x-autocodeflow-timestamp") timestamp?: string,
     @Req() req?: Request & { rawBody?: Buffer },

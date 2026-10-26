@@ -9,6 +9,8 @@ import {
   PARAMS_JSON_ENV_KEY,
   serializeParamEnvValue,
   serializeParamsJson,
+  // P2-2：params 键名闸的运行时向量对账（见下方 params describe）。
+  isInjectableParamEnvKey,
 } from '../param-env';
 import { pageLogLines } from '../routes/logs';
 
@@ -200,6 +202,39 @@ describe('A3 执行器协议契约（executor-node 侧）', () => {
           vec.key,
           vec.injectable,
         ]);
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // params（P2-2）：逐键通道键名闸的运行时语义向量
+  // -----------------------------------------------------------------------
+
+  describe('params（P2-2）', () => {
+    const section = protocol.params;
+
+    it('向量逐条对真实实现断言（isInjectableParamEnvKey）', () => {
+      // 键名规则与 secrets 同策：不在 schemas.ExecuteRequest 里闸（非法键的
+      // 线上语义是 skip-and-warn，收进 schema 会把「跳过坏键」变成「拒绝任务」）
+      // ——本段是唯一共享闸。与 secrets 的刻意差异（宽松版字符集 + 长度上界）
+      // 由向量逐条钉住：1ST_RETRY（数字开头）必须放行、A=B/MY-KEY/超长必须拒。
+      expect(section.onInvalidKey).toBe('skip-and-warn');
+      expect(section.injection).toBe('AUTOFLOW_<KEY-uppercase>');
+      const vectors = section.vectors;
+      expect(vectors.length).toBeGreaterThanOrEqual(8);
+      expect(vectors.some((v: { injectable: boolean }) => v.injectable)).toBe(true);
+      expect(vectors.some((v: { injectable: boolean }) => !v.injectable)).toBe(true);
+      for (const vec of vectors) {
+        expect([vec.key, isInjectableParamEnvKey(vec.key)]).toEqual([
+          vec.key,
+          vec.injectable,
+        ]);
+      }
+      // 注入形态一致性：合法键经 paramEnvKey 必须产出合法 env 名（无 `=`、
+      // 含 AUTOFLOW_ 前缀后整体仍匹配 env 名形态）。
+      for (const vec of vectors.filter((v: { injectable: boolean }) => v.injectable)) {
+        const envName = `AUTOFLOW_${vec.key.toUpperCase()}`;
+        expect(envName).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
       }
     });
   });

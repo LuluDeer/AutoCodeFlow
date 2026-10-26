@@ -44,6 +44,47 @@ export function getErrMsg(err: unknown, defaultMsg = i18n.t('common.operateFaile
 }
 
 /**
+ * F-8（UIAUDIT P3-1）：i18next nesting 注入中和。
+ *
+ * 背景：`translateByErrorCode` 把后端错误体里的 `params` 原样传给 i18next
+ * 插值，而全局配置是 `escapeValue: false`（React 文本节点已转义，无需二次）。
+ * i18next 在插值之后还会对**结果串**做 nesting 扫描（`$t(key)` → 取词典）——
+ * param 值若含 `$t(`，就是「数据牵引词条」的注入面（v26 的 skipOnVariables
+ * 默认挡掉了「插值引入新 nesting」的情形，但那是库的默认行为而非本层的
+ * 契约；未来任何非 React sink 或库行为变化都会重新打开它，故在边界中和）。
+ *
+ * 中和方式：在 `$t(` 的 `$` 与 `t` 之间插一个空格（`$t (`）——破坏 nesting
+ * 触发 token（regexp 要求 `$t(` 连续），且**不删除任何原有字符**，恶意/畸形
+ * 输入仍如实可见。合法参数（任务名、路径、计数）不含 `$t(`，展示零影响。
+ *
+ * 单次全局替换即不动点：替换产物 `$t (` 里 `$` 与 `t` 相邻、`t` 与 `(` 不相邻，
+ * 与前后文字拼接都重组不出新的连续 `$t(`（逐字符用例见
+ * __tests__/error-code-i18n.test.ts 的 F-8 组）。
+ */
+export function neutralizeI18nNesting(value: string): string {
+  return value.replace(/\$t\(/g, '$t (');
+}
+
+/**
+ * 递归中和 params 里的所有字符串。i18next 的插值只吃顶层标量，但非字符串值
+ * （数组/嵌套对象）会被 makeString 成串后混进结果，nesting 扫描作用在**整串**
+ * 上——所以必须深走一遍，而不是只处理顶层。
+ */
+function sanitizeI18nParams(params: Record<string, unknown>): Record<string, unknown> {
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return neutralizeI18nNesting(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(v)) out[k] = walk(val);
+      return out;
+    }
+    return v;
+  };
+  return walk(params) as Record<string, unknown>;
+}
+
+/**
  * 按 `errorCode` 取当前语言的文案；取不到返回 `null`（由调用方回落服务端
  * `message`）。抽成独立函数是为了让「码 → 本地化」这条链路可被单测直接钉住，
  * 不必构造整个 axios 错误对象。
@@ -60,7 +101,9 @@ export function translateByErrorCode(data: {
   // 用户，既不报错也不影响构建（正是 i18n-source-guard 记录过的那类生产故障）。
   if (!i18n.exists(key)) return null;
   const params = (data?.params ?? {}) as Record<string, unknown>;
-  return i18n.t(key, params);
+  // F-8：params 是后端错误体原样对象——先中和 `$t(` 再交给 i18next（见
+  // neutralizeI18nNesting 注释），nesting 注入面在本层关闭。
+  return i18n.t(key, sanitizeI18nParams(params));
 }
 
 /**

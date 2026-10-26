@@ -771,7 +771,10 @@ describe("P1: qwen provider (multimodal)", () => {
           role: "user",
           content: [
             { type: "text", text: "输入框里是什么？" },
-            { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,AAAA" },
+            },
           ],
         },
       ],

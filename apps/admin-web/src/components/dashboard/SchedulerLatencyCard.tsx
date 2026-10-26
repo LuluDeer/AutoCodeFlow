@@ -11,37 +11,22 @@
 import { Typography, Tooltip } from 'antd';
 import { FieldTimeOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { formatDuration } from '../../utils/timeFormat';
+import { formatLatencyMs } from '../../utils/timeFormat';
 import type { SchedulerMetricsResponse } from '../../api/metrics';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
+// UX-03/UX-01：色阶阈值常量与 latencyColor 挪至 ./color-tokens（react-refresh
+// 收敛：组件文件仅保留组件导出；色阶纯函数零 React 依赖，外部消费方仅色阶测试）。
+import { latencyColor } from './color-tokens';
 
 const { Text } = Typography;
-
-/** P99 色阶阈值（导出供测试锚定）：≥1000ms 红 / ≥250ms 黄 / 其余绿 */
-export const LATENCY_THRESHOLDS = { warning: 250, critical: 1000 } as const;
-
-/**
- * UX-03（本轮体验审查）：中间档此前取 `var(--color-ring)`——双主题都是
- * #22C55E（品牌绿），于是 P99 300ms 渲染成绿色，值班者读成「正常」。
- * 改取 `--color-warning`（亮 #D97706 / 暗 #F59E0B）。
- *
- * UX-01：无样本档此前取 `var(--color-secondary)`（#1E293B，MASTER.md 里的
- * **表面色**而非正文色），暗色下落在 #1A1E2F 卡面上对比度仅 1.13:1，等于
- * 看不见。改取主题感知的 `--chart-axis-text`（亮 #475569 / 暗 #94A3B8）。
- */
-export function latencyColor(ms: number | null | undefined): string {
-  if (ms == null) return 'var(--chart-axis-text)';
-  if (ms >= LATENCY_THRESHOLDS.critical) return 'var(--color-destructive)';
-  if (ms >= LATENCY_THRESHOLDS.warning) return 'var(--color-warning)';
-  return 'var(--color-accent)';
-}
 
 interface SchedulerLatencyCardProps {
   metrics: SchedulerMetricsResponse | undefined;
 }
 
-/** 三指标行：标签 + 值（formatDuration 复用既有工具） */
+/** 三指标行：标签 + 值（formatLatencyMs 专用档：直方图派生浮点不裸奔，
+ *  P3-② 审计——此前「平均 6.716883116883117ms」17 位小数直接糊在卡面上） */
 function LatencyStat({ label, value, color, t }: { label: React.ReactNode; value: number | null | undefined; color?: string; t?: (k: string, o?: Record<string, unknown>) => string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -49,7 +34,7 @@ function LatencyStat({ label, value, color, t }: { label: React.ReactNode; value
         {label}
       </Text>
       <Text style={{ fontSize: 13, fontWeight: 600, color: color ?? 'var(--color-foreground)' }}>
-        {value == null ? '—' : formatDuration(value, t)}
+        {value == null ? '—' : formatLatencyMs(value, t)}
       </Text>
     </div>
   );

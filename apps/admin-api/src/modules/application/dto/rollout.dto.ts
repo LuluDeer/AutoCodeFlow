@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsObject,
@@ -102,12 +103,27 @@ export class UpgradeAllDto {
   @ApiPropertyOptional({
     maxLength: 64,
     description:
-      "本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本",
+      "本次灰度定向到某个历史 released 版本（version **字符串**，非 uuid）——用于渐进式回滚。缺省：应用当前版本。注意：该参数等价于 set-current-version + deploy-version 的组合（先按快照恢复应用当前字段，再下发），且会改写中台当前版本——R1（§4.2）拆分出的这两个端点是更明确的表达，建议改用新端点",
   })
   @IsOptional()
   @IsString()
   @MaxLength(64)
   version?: string;
+
+  /**
+   * R2（部署模型评审 §4.4 / §9.4，2026-10-24）：覆盖面显式化的显式 opt-in。
+   * stopped 行可能是人为停用，缺省不纳入；true 时 all 策略把 stopped 行一并
+   * 下发升级（canary 策略忽略该参数——健康探测需要活进程，覆盖面维持既有
+   * 全部 RUNNING 口径）。缺省覆盖面 = 全部 RUNNING 行（含 scheduled 实证口径：
+   * scheduled 部署完成即上报 running，行稳态就是 RUNNING，详见 service 注释）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "all 策略下把 stopped 部署行一并纳入升级（缺省 false——stopped 可能是人为停用）。pending/deploying/upgrading 在途行恒跳过并进响应 skipped 明细；failed 行恒排除（应走显式重新部署）。canary 策略忽略本参数",
+  })
+  @IsOptional()
+  @IsBoolean()
+  includeStopped?: boolean;
 }
 
 /**

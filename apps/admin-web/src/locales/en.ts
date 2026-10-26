@@ -41,6 +41,7 @@ export default {
   'login.totpCode': 'Verification code',
   'login.totpCode.required': 'Please enter the 6-digit verification code',
   'login.totpCode.placeholder': '6-digit code',
+  'login.totpCode.digits': 'The code must be exactly 6 digits',
   'login.totpCode.aria': 'Verification code',
   'login.totpCode.invalid': 'Incorrect verification code',
   'login.totpHint': 'Open your authenticator app for the code',
@@ -351,10 +352,19 @@ export default {
   'execs.executorPlaceholder': 'Executor address',
   'execs.timeStart': 'Start time',
   'execs.timeEnd': 'End time',
+  // Time quick ranges (2026-10-25): time-granularity presets, [now-N, now]
+  // keeping h/m/s — deliberately different from the day-granularity presets on
+  // events/audit pages; this page's filter is a showTime picker and presets
+  // must share the same semantics as manual selection.
+  'execs.range.1h': 'Last 1 hour',
+  'execs.range.24h': 'Last 24 hours',
+  'execs.range.7d': 'Last 7 days',
   'execs.clearFilters': 'Clear filters',
   'execs.error.title': 'Failed to load execution history',
   'execs.empty': 'No executions yet',
   'execs.empty.noMatch': 'No matching executions',
+  'execs.empty.outOfRange': 'No data on this page ({{count}} executions in total)',
+  'execs.backToFirstPage': 'Back to first page',
   'execs.count': '{{count}} records',
   // §2.1: stable paging (keyset/cursor pagination) switch + custom pager.
   'execs.stablePaging': 'Stable paging',
@@ -422,6 +432,7 @@ export default {
   'execList.notify.offlineDesc': '{{address}} went offline, please check its service status',
   'execList.installCmdFail.title': 'Failed to fetch install command',
   'execList.installCmdFail.content': 'Check that the admin-api service is running',
+  'execList.installCmdFail.notConfigured': 'ADMIN_API_URL is not configured on the server, so no install command can be generated. Set it in the admin-api environment and restart (this is a missing setting, not a service failure).',
   'execList.col.executor': 'Executor',
   'execList.col.status': 'Status',
   'execList.col.groupTags': 'Group / Tags',
@@ -525,6 +536,7 @@ export default {
   'appList.field.name': 'Name',
   'appList.field.nameRequired': 'Please enter the application name',
   'appList.field.namePattern': 'Only letters, digits, underscore and hyphen are allowed',
+  'appList.field.nameMax': 'Application name must be at most 100 characters',
   'appList.field.nameTooltip': 'Globally unique identifier, e.g. order-service. Only letters, digits, underscore and hyphen allowed. Cannot be changed after creation.',
   'appList.field.desc': 'Description',
   'appList.field.descTooltip': 'Briefly describe what this application does to help teammates understand.',
@@ -649,6 +661,20 @@ export default {
   'users.role.user': 'Standard user',
   'users.status.disabled': 'Disabled',
   'users.status.active': 'Active',
+  // P1-1 (parity with backend ad5bdef4): enable/disable switch strings. The
+  // disable confirmation spells out both immediate revocation surfaces
+  // (in-flight sessions + API keys) and that the action is reversible; the
+  // backend guard codes USER_ACTIVE_ADMIN_ONLY / USER_SELF_DISABLE_FORBIDDEN
+  // are covered by the generated err.* entries.
+  'users.action.enable': 'Enable',
+  'users.action.disable': 'Disable',
+  'users.enableSuccess': 'User enabled',
+  'users.disableSuccess': 'User disabled',
+  'users.enableFail': 'Enable failed',
+  'users.disableFail': 'Disable failed',
+  'users.disableConfirm': 'Confirm disable',
+  'users.disableConfirmDesc': '"{{name}}" will no longer be able to sign in. All their login sessions and API keys will be revoked immediately; you can re-enable at any time.',
+  'users.selfDisableForbidden': 'You cannot disable your own account',
   'users.created': 'User created',
   'users.createFail': 'Create failed',
   'users.updated': 'Updated',
@@ -677,6 +703,7 @@ export default {
   'users.field.username': 'Username',
   'users.field.usernameRequired': 'Please enter a username',
   'users.field.usernameMin': 'Username must be at least 2 characters',
+  'users.field.usernameMax': 'Username must be at most 128 characters',
   'users.field.usernamePlaceholder': 'Enter username',
   'users.field.password': 'Password',
   'users.field.passwordRequired': 'Please enter a password',
@@ -787,6 +814,7 @@ export default {
   'audit.action.notification_silence_create': 'Create silence rule',
   'audit.action.notification_silence_delete': 'Delete silence rule',
   'audit.action.registry_pypi_upload': 'Upload PyPI package',
+  'audit.action.registry_npm_list': 'npm package list read failed',
   'audit.action.subscription_create': 'Create event subscription',
   'audit.action.subscription_update': 'Update event subscription',
   'audit.action.subscription_delete': 'Delete event subscription',
@@ -922,6 +950,7 @@ export default {
   'notif.test.sent': 'Test notification sent to the selected channels',
   'notif.test.error': 'Send failed: {{msg}}',
   'notif.test.fail': 'Failed to send test notification',
+  'notif.test.noEnabledChannels': 'All selected channels are disabled — nothing was sent. Enable at least one configured channel above before testing.',
 
   'sysSettings.title': 'System Settings',
   'sysSettings.description': 'Core parameters and runtime options for the scheduler',
@@ -1055,6 +1084,8 @@ export default {
   'sysSettings.ai.qwenMaxTokensTooltip': "Independent of OpenAI's 500-token cap — multimodal reasoning needs a larger output budget",
   'sysSettings.ai.qwenTimeoutLabel': 'Request timeout (ms)',
   'sysSettings.ai.qwenTimeoutTooltip': 'Video understanding is much slower than plain text (upload + inference can take tens of seconds); default 120s',
+  // P3-1: AI numeric field validation message (same contract as backend AI_CONFIG_NUMBER_INVALID)
+  'sysSettings.ai.numberInvalid': '{{field}} must be an integer between {{min}} and {{max}} (leave empty to restore the default)',
 
   'security.totp.title': 'Two-Factor Authentication (TOTP)',
   'security.totp.intro': 'Once enabled, login requires "password + authenticator code" two-factor verification. Use any TOTP authenticator such as Google Authenticator or Microsoft Authenticator.',
@@ -1239,6 +1270,7 @@ export default {
   'eventSub.field.url': 'Push URL',
   'eventSub.field.urlRequired': 'Please enter a push URL',
   'eventSub.field.urlPattern': 'Must be a public http(s) address',
+  'eventSub.field.urlMax': 'URL must be at most 2048 characters',
   'eventSub.field.urlTooltip': 'The server performs deep SSRF validation (rejects internal/loopback/link-local/cloud-metadata addresses per resolved DNS), returning 400 for invalid addresses.',
   'eventSub.field.eventTypes': 'Events to Subscribe (1-10)',
   'eventSub.field.eventTypesRequired': 'Select at least one event',
@@ -1479,6 +1511,11 @@ export default {
   'execPkg.action.push': 'Push to Scheduler',
   'execPkg.action.deprecate': 'Deprecate this package',
   'execPkg.action.activate': 'Activate this package',
+  // P2-4 (UI audit): confirm before deprecate/activate — deprecation removes the package from the install wizard candidates immediately; reversible at any time
+  'execPkg.action.deprecateConfirm': 'Deprecate this package?',
+  'execPkg.action.deprecateConfirmDesc': 'Once deprecated, this package is removed from the install wizard candidates and can no longer be pushed or deployed. This is reversible — you can re-activate it at any time.',
+  'execPkg.action.activateConfirm': 'Activate this package?',
+  'execPkg.action.activateConfirmDesc': 'Once activated, this package re-enters the install wizard candidates and can be pushed to schedulers. This is reversible — you can deprecate it at any time.',
   // B-9: uploading is a real backend enum (executor-package.entity.ts); it cannot be deprecated/activated until processed (backend 400s)
   'execPkg.action.uploadingLockedTip': 'A package that is still uploading cannot be deprecated or activated — wait for processing to finish',
   'execPkg.status.active': 'Active',
@@ -1511,6 +1548,8 @@ export default {
   'execPkg.upload.field.nameRequired': 'Please enter a package name',
   'execPkg.upload.field.version': 'Version',
   'execPkg.upload.field.versionRequired': 'Please enter a version',
+  // P3-1 (UI audit): loose semver-shape validation message
+  'execPkg.upload.field.versionPattern': 'Version must look like 1.2.3, with an optional suffix (e.g. 1.2.3-beta.1, 1.2.3+build.7)',
   'execPkg.upload.field.type': 'Type',
   'execPkg.upload.field.platform': 'Platform',
   'execPkg.upload.platformAll': 'All',
@@ -1676,6 +1715,9 @@ export default {
   'executorDetail.editModal.maxConcurrent': 'Max concurrent count',
   // PATCH semantics made explicit: clearing maxConcurrentTasks in the edit modal omits the key = server keeps the old value (blank does NOT mean unlimited)
   'executorDetail.editModal.maxConcurrentKeepHint': 'Saving with this cleared keeps the current value {{value}} (blank does not mean unlimited)',
+  // P1-2 (UI audit): the heartbeat whitelist includes maxConcurrentTasks (device last-writer-wins),
+  // so an edit made here is silently overwritten by the next heartbeat (≤30s) — must be explicit
+  'executorDetail.editModal.maxConcurrentHeartbeatHint': 'Online executors periodically report their own capacity and overwrite this value (heartbeat is last-writer-wins); edits to an online executor do not persist. Only edits to an offline executor are kept long-term.',
   'executorDetail.config.title': 'Config hot reload',
   'executorDetail.config.pullDisabledTooltip': 'Pull-mode executors (NAT-bound) cannot receive inbound config pushes; maxConcurrent changes take effect via the next pull/heartbeat instead',
   // B-1: double confirmation for pushing an empty config body (blank fields reset to executor defaults — must be stated)
@@ -1683,6 +1725,8 @@ export default {
   'executorDetail.config.emptyPushConfirmContent': 'All form fields are empty: pushing an empty body resets blank fields to the server-side defaults (max concurrent tasks / task timeout / heartbeat interval return to defaults). Continue?',
   // B-5: for pull executors reload-config returns {queued:true} — report "queued" honestly instead of claiming success
   'executorDetail.config.queued': 'Config update queued; it applies on the executor\'s next pull (heartbeat)',
+  // P2-3 (UI audit): readable feedback when the config push fails (modal stays open for retry; same shape as rotate/remove)
+  'executorDetail.config.pushFail': 'Failed to push config: {{err}}',
   'executorDetail.field.dispatchMode': 'Dispatch mode',
   'executorDetail.dispatchMode.push': 'Push',
   'executorDetail.dispatchMode.pull': 'Pull mode',
@@ -1747,7 +1791,8 @@ export default {
   'install.matchedTitle': 'Matched install package: {{name}}',
   'install.version': 'Version',
   'install.fileSize': 'File size',
-  'install.downloadCount': 'Downloads',
+  // P2-1: `install.downloadCount` removed — the backend entity has no downloadCount
+  // column, so the wizard card never had a real value to render there.
   'install.sha256': 'SHA256',
   'install.changelog': 'Changelog',
   'install.noPackages': 'No install packages available',
@@ -1764,6 +1809,8 @@ export default {
   'install.copiedToken': 'Token copied',
   'install.copy': 'Copy',
   'install.tokenMissing': 'No executor shared Token is configured yet. Please go to the "System Settings" page to generate one before installing the executor.',
+  // P2-5 (UI audit): re-check entry when the Token is missing (no need to restart the wizard after generating one)
+  'install.tokenRecheck': "I've generated it — re-check",
   'install.getCmd': 'Get install command',
   'install.step4Title': 'Run the installation on the target server',
   'install.step4Desc': 'Copy the command below and run it in the target server terminal to complete the installation.',
@@ -1787,6 +1834,8 @@ export default {
   'install.envLabel': 'Environment variable reference',
   'install.envDesc': 'The install command configures the following environment variables automatically. If you need to configure or debug manually, make sure the shared Token field is EXECUTOR_SHARED_TOKEN and fill in a callable address for your deployment network:',
   'install.envBlockLabel': 'Environment variable',
+  // P3-5 (UI audit): fallback guidance when the install-cmd response has no adminApiUrl (same source of truth as the one-click command)
+  'install.env.apiUrlFollowCmd': '(follow the --api-url in the one-click install command)',
   // P0-9 (UX audit): network mode. Behind NAT the machine MUST use pull — the
   // wizard previously only taught push, which yields a topology that registers,
   // shows online, and never receives a single dispatch.
@@ -1808,12 +1857,15 @@ export default {
   'install.step5Title': 'Waiting for executor to come online',
   'install.step5Desc': 'The system is automatically detecting whether the executor on the target server has registered and come online. It polls every 5 seconds, waiting up to 5 minutes.',
   'install.awaiting': 'Waiting for the executor to come online...',
-  'install.elapsed': 'Waited {{seconds}} / 60 seconds, checking every 5 seconds',
+  // P2-2 (UI audit): the total window comes from the {{total}} interpolation (caller passes 300s);
+  // the old hard-coded "60 seconds" contradicted POLL_TIMEOUT_MS=300000
+  'install.elapsed': 'Waited {{seconds}} / {{total}} seconds, checking every 5 seconds',
   'install.onlineSuccess': 'The executor is online!',
   'install.detected': 'Detected executor: <1>{{appName}}</1> ({{address}}) has registered and come online. Installation succeeded.',
   'install.onlineTitle': 'Executor online',
-  'install.timeoutTitle': 'Verification timed out (60s)',
-  'install.timeoutDesc': 'No executor came online within 1 minute. Please follow the troubleshooting steps below.',
+  // P2-2: timeout copy aligned with the 300s window (previously "60s / 1 minute" contradicted it)
+  'install.timeoutTitle': 'Verification timed out (5 minutes)',
+  'install.timeoutDesc': 'No executor came online within 5 minutes. Please follow the troubleshooting steps below.',
   'install.troubleTitle': 'Troubleshooting',
   'install.trouble1': 'Confirm that the install command finished running on the target server without errors',
   'install.trouble2': 'Check that the target server network can reach this platform API address',
@@ -1891,16 +1943,33 @@ export default {
   'appDetail.settings.adminOnly': 'Only admins can modify application settings',
   'appDetail.settings.save': 'Save Changes',
   'appDetail.history.loadFail': 'Failed to load version history',
-  'appDetail.history.rollbackConfirm': 'Confirm Rollback',
-  'appDetail.history.rollbackContent': 'Will roll back to version {{version}}. All running instances will be upgraded. Continue?',
-  'appDetail.history.rollbackOk': 'Confirm Rollback',
-  'appDetail.history.rolledBack': 'Rolled back to {{version}}, affecting {{count}} instances',
-  'appDetail.history.rollbackPkgNotRestored': 'Note: this version has no package snapshot; only version/commit was restored, the package was NOT rolled back. To roll back the package, roll back to a version with a package snapshot.',
-  'appDetail.history.rollbackFail': 'Rollback failed, please retry',
+  // R1 (deployment model review §4.2): the old single "Rollback" is split into
+  // "Set Current Version" + "Deploy to Devices"
+  'appDetail.history.setCurrent': 'Set Current',
+  'appDetail.history.setCurrentConfirm': 'Set Current Version',
+  'appDetail.history.setCurrentContent': 'Restores the application current fields from the version {{version}} snapshot (version/commit/package URL/entrypoint/env). No devices are dispatched.',
+  'appDetail.history.setCurrentOk': 'Set Current',
+  'appDetail.history.setCurrentDone': 'Current version set to {{version}} (no devices dispatched)',
+  'appDetail.history.setCurrentFail': 'Failed to set current version, please retry',
+  'appDetail.history.deploy': 'Deploy',
+  'appDetail.history.deployTitle': 'Deploy Version {{version}} to Devices',
+  'appDetail.history.deployOk': 'Deploy',
+  'appDetail.history.deployDone': 'Dispatched {{version}}: {{count}} deployment(s) upgrading',
+  'appDetail.history.deploySkipped': '{{count}} skipped — ',
+  'appDetail.history.deployFail': 'Deploy failed, please retry',
+  'appDetail.history.deployEmpty': 'No deployment rows for this application (deploy from the Deployments tab first)',
+  'appDetail.history.deployHint': 'Only running deployment rows are selectable; snapshot fields are restored to the application first, then each row is upgraded.',
+  // P1-14 (front-loaded): whether the snapshot has a packageUrl is shown BEFORE
+  // confirming the dispatch (replaces the after-the-fact packageUrlRestored warning)
+  'appDetail.history.deployPkgPresent': 'This version snapshot has a package URL: {{url}}',
+  'appDetail.history.deployPkgMissing': 'Note: this version snapshot has no package URL; this dispatch only updates version/commit fields and will NOT roll back the package.',
   'appDetail.history.currentVersion': 'Current Version',
-  'appDetail.history.rollbackReleasedOnly': 'Only released versions can be rolled back',
-  'appDetail.history.rollbackAdminOnly': 'Only admins can roll back',
-  'appDetail.history.rollback': 'Rollback',
+  'appDetail.history.actionReleasedOnly': 'Only released versions support this action',
+  'appDetail.history.actionAdminOnly': 'Only admins can perform this action',
+  'appDetail.history.noSnapshot': 'This row is a synthetic legacy deployment row (no version snapshot); this action is not supported',
+  'appDetail.history.skip.noDeployment': 'no deployment row',
+  'appDetail.history.skip.notRunning': 'deployment row not dispatchable ({{detail}})',
+  'appDetail.history.skip.upgradeRejected': 'dispatch rejected ({{detail}})',
   'appDetail.history.empty': 'No version history',
   'appDetail.history.col.status': 'Status',
   'appDetail.col.version': 'Version',
@@ -1926,6 +1995,58 @@ export default {
   'appDetail.releases.trigger.upgrade': 'Rolling Upgrade',
   'appDetail.releases.trigger.manual': 'Manual Deploy',
   'appDetail.releases.trigger.unknown': 'Unknown',
+  // R3-A (deployment-model review §4.3): per-device badges on release rows.
+  'appDetail.releases.col.devices': 'Devices',
+  'appDetail.releases.deviceRunning': 'Running',
+  'appDetail.releases.deviceRetained': 'Retained',
+  'appDetail.releases.deviceOffline': 'Offline',
+  'appDetail.releases.deviceOfflineAt': 'Offline, last reported {{time}}',
+  'appDetail.releases.deviceOfflineUnknown': 'time unknown',
+  // P8: explicit warning when release rows are silently truncated.
+  'appDetail.releases.truncated.title': 'Release list truncated',
+  'appDetail.releases.truncated.desc': 'This application has more release rows than the single-query limit; older versions are not shown in the list below. See the full action history in the deployment event stream below.',
+  'appDetail.releases.truncated.gotoEvents': 'View events',
+  // P8-R: versions dropped by truncation that devices still keep (badge rows are
+  // not in this page; the fact rides on the alert banner instead).
+  'appDetail.releases.truncated.retained': 'The truncated versions below are still kept by devices (running or retained locally) but are not shown in the list:',
+  'appDetail.releases.truncated.retainedMore': '{{count}} more version(s)',
+  // R4 (deployment-model review §4.1A): immutable deployment event stream.
+  'appDetail.events.title': 'Deployment Events',
+  'appDetail.events.filter.typeAll': 'All Types',
+  // Time-range filter (since/until half-open interval): the tooltip must spell
+  // out that the end date itself is excluded — picking Oct 24 means "through
+  // Oct 23 23:59:59.999" under [since, until).
+  'appDetail.events.filter.timeHint': 'Filter by event time: the start date is fully included; the end date itself is excluded (picking 10-24 means through 10-23 23:59:59.999)',
+  'audit.range.timeHint': 'Filter by audit time: the start date is fully included; the end date itself is excluded (picking 10-24 means through 10-23 23:59:59.999)',
+  'appDetail.events.filter.last1d': 'Last 1 day',
+  'appDetail.events.filter.last7d': 'Last 7 days',
+  'appDetail.events.filter.last30d': 'Last 30 days',
+  'appDetail.events.loadFail': 'Failed to load deployment events',
+  'appDetail.events.empty': 'No deployment events yet (no write actions in the deployment domain)',
+  'appDetail.events.col.time': 'Time',
+  'appDetail.events.col.type': 'Event Type',
+  'appDetail.events.col.executor': 'Executor',
+  'appDetail.events.col.version': 'Version',
+  'appDetail.events.col.operator': 'Operator',
+  'appDetail.events.col.summary': 'Summary',
+  'appDetail.events.operatorSystem': 'Triggered automatically by the system (e.g. stuck scan); no operator',
+  'appDetail.events.operatorSystemShort': 'System',
+  'appDetail.events.type.deploy_created': 'Deploy Created',
+  'appDetail.events.type.redeploy_reused': 'Redeploy Reused',
+  'appDetail.events.type.approval_approved': 'Approval Approved',
+  'appDetail.events.type.approval_rejected': 'Approval Rejected',
+  'appDetail.events.type.approval_cancelled': 'Approval Cancelled',
+  'appDetail.events.type.upgrade': 'Upgrade',
+  'appDetail.events.type.stop': 'Stop',
+  'appDetail.events.type.remove': 'Remove',
+  'appDetail.events.type.stuck_failed': 'Stuck Failed',
+  'appDetail.events.detail.reason': 'Reason',
+  'appDetail.events.detail.runMode': 'Run mode',
+  'appDetail.events.detail.previousStatus': 'Status before stuck-fail',
+  'appDetail.events.detail.deletedStatus': 'Status at removal',
+  'appDetail.events.detail.stopDelivered': 'Stop signal delivered',
+  'appDetail.events.detail.stopNotDelivered': 'Stop signal not delivered',
+  'appDetail.events.detail.approvalRequired': 'Approval required',
   // UX-06: the release-history Status column used to render raw enums.
   'appDetail.history.status.released': 'Released',
   'appDetail.history.status.running': 'Running',
@@ -1978,6 +2099,14 @@ export default {
   'appDeploy.msg.upgradeAllBlocked': 'Rollout not started: {{reason}}',
   'appDeploy.msg.upgradeAllDone': 'Triggered upgrade for {{succeeded}}/{{total}} instances',
   'appDeploy.msg.upgradeAllFail': 'Batch upgrade failed',
+  // R2 (deployment model review §4.4): coverage-explicit prompts — the
+  // pre-flight guard reports per-status counts; result side surfaces skipped
+  // details and uncovered stopped rows instead of pretending success.
+  'appDeploy.msg.nothingToUpgrade': 'No deployments would be covered: 0 running/deploy-only, {{stopped}} stopped, {{inFlight}} in-flight — enable "Include stopped deployments" in the dialog, or retry after in-flight actions finish',
+  'appDeploy.msg.upgradeAllSkipped': 'Skipped {{count}} in-flight deployment(s): {{detail}}',
+  'appDeploy.msg.upgradeAllStoppedHint': '{{count}} stopped deployment(s) are not covered (enable "Include stopped deployments" to include them)',
+  'appDeploy.skipReason.inFlight': 'in flight ({{status}})',
+  'appDeploy.skipReason.awaitingApproval': 'awaiting approval',
   'appDeploy.col.executor': 'Executor',
   'appDeploy.col.status': 'Status',
   'appDeploy.col.runMode': 'Run mode',
@@ -1999,7 +2128,7 @@ export default {
   'appDeploy.op.adminOnlyStop': 'Only administrators can stop deployments',
   'appDeploy.op.adminOnlyDeploy': 'Only administrators can deploy the app',
   'appDeploy.op.upgradeAllTitle': 'Upgrade all running instances ({{count}})',
-  'appDeploy.op.upgradeAllDesc': 'Will trigger git pull + restart on all running instances',
+  'appDeploy.op.upgradeAllDesc': 'Dispatches the current version to covered devices (daemon instances: git pull + restart; deploy-only devices: refresh the release without starting a process)',
   'appDeploy.action.approve': 'Approve',
   'appDeploy.action.reject': 'Reject',
   'appDeploy.action.cancel': 'Cancel',
@@ -2077,9 +2206,19 @@ export default {
   'appDeploy.statusMessage.copied': 'Failure details copied',
   'appDeploy.rollout.modalTitle': 'Upgrade all strategy',
   'appDeploy.rollout.full': 'Full rollout',
-  'appDeploy.rollout.fullDesc': 'Upgrade all running instances immediately',
+  'appDeploy.rollout.fullDesc': 'Upgrade every covered deployment immediately',
   'appDeploy.rollout.canary': 'Canary 20%',
   'appDeploy.rollout.canaryDesc': 'Upgrade ~20% first; auto-promote after observation, auto-rollback on failure',
+  // R2 §4.4: explicit coverage preview in the dialog (running X + deploy-only Y + stopped Z when opted in).
+  'appDeploy.rollout.coverageLead': 'Will cover {{count}} deployed device(s): ',
+  // A-4 disclosure: upgrade resets deploy-time custom start commands.
+  'appDeploy.rollout.startCommandReset.title': 'Custom start commands on {{count}} deployment(s) will be reset',
+  'appDeploy.rollout.startCommandReset.desc': "Upgrade pushes the app's current entrypoint ({{entrypoint}}); custom commands on these rows will be overwritten: {{detail}}",
+  'appDeploy.rollout.coverageRunning': '{{count}} running',
+  'appDeploy.rollout.coverageScheduled': '{{count}} deploy-only',
+  'appDeploy.rollout.coverageStopped': '{{count}} stopped',
+  'appDeploy.rollout.includeStopped': 'Include stopped deployments',
+  'appDeploy.rollout.includeStoppedHint': 'Stopped rows will also be dispatched (default covers running/deploy-only devices)',
   'appDeploy.rollout.state.pending': 'Pending rollout',
   'appDeploy.rollout.state.probing': 'Canary observing',
   'appDeploy.rollout.state.promoted': 'Promoted',
@@ -2297,6 +2436,8 @@ export default {
   'execDetail.log.noLevelLogs': 'No {{level}} logs',
   'execDetail.log.noLevelLogsDesc': 'The current execution has no log lines at this level; switch to All levels to view the full logs.',
   'execDetail.log.noSearchHit': 'No log content matching "{{keyword}}"',
+  // F-4 (UIUX audit P2-3): "back to bottom" floating button after scrolling up
+  'execDetail.log.backToBottom': 'Back to bottom',
   // LOG-JSON-01: "expand to view pretty JSON" popover copy for JSON log payloads
   'execDetail.log.json.prettyTitle': 'Formatted JSON',
   'execDetail.log.json.prettyTruncated': 'Formatted JSON (truncated; payload too long)',
@@ -2539,6 +2680,9 @@ export default {
   'taskForm.field.fixedRate.minutes': '{{n}} minutes',
   'taskForm.field.fixedRate.minuteUnit': 'minutes',
   'taskForm.field.fixedRate.placeholder': '60 (seconds)',
+  // F-7/F-2: negative sign + frontend mirror of TASK_FIXED_RATE_MAX_SECONDS=2147483 (35791 minutes).
+  'taskForm.field.fixedRate.negative': 'Fixed interval cannot be negative',
+  'taskForm.field.fixedRate.maxExceeded': 'Fixed interval cannot exceed {{max}} minutes',
   'taskForm.window.title': 'Maintenance Window (optional)',
   'taskForm.window.tooltip': 'Release/downtime protection: scheduled triggers within the window (Cron, fixed rate, missed-run compensation) are skipped and counted in scheduling metrics; manual triggers are unaffected. The window opens when the Start Cron hits and closes when the End Cron hits (half-open interval); window Crons are evaluated in server local time. Up to 10 windows.',
   'taskForm.window.startRequired': 'Start Cron is required',
@@ -2592,10 +2736,17 @@ export default {
   'taskForm.field.timeoutWarnRatio.hint': '(percentage of the timeout, 0-90; empty disables the warning)',
   'taskForm.field.timeoutWarnRatio.tooltip': 'e.g., 600s timeout with threshold 80: a warning notification fires at 480s so you can intervene before the hard timeout.',
   'taskForm.field.timeoutWarnRatio.placeholder': 'e.g., 80, empty disables the warning',
+  // CORE-05 (F-9): estimated duration — weighted input for executor load scoring.
+  'taskForm.field.estimatedDurationSec': 'Estimated Duration',
+  'taskForm.field.estimatedDurationSec.hint': '(seconds, 0/empty = unknown; feeds executor load scoring only)',
+  'taskForm.field.estimatedDurationSec.tooltip': 'Used only by the scheduler for executor load scoring: longer estimates penalize busy executors more, which balances mixed short/long workloads. The execution path (heartbeat/timeout/stats) never consumes it. 0 or empty = unknown.',
+  'taskForm.field.estimatedDurationSec.placeholder': 'Used for executor load scoring; optional',
   'taskForm.field.maxRetry': 'Max Attempts',
   'taskForm.field.maxRetry.hint': 'Retries cover dispatch/environment failures; script-stage failures need a manual re-run (1 = no retry)',
   'taskForm.field.retryDelay': 'Retry Delay',
   'taskForm.field.retryDelay.hint': '(seconds; 0 = no delay; actual delay includes ±20% jitter to spread retry bursts)',
+  // F-3: frontend mirror of the backend @Max(86400) validation message.
+  'taskForm.field.retryDelay.maxExceeded': 'Retry delay cannot exceed 86400 seconds',
   'taskForm.field.retryableErrors': 'Retryable Error Types',
   'taskForm.field.retryableErrors.hint': '(empty = all retryable)',
   'taskForm.field.retryableErrors.tooltip': 'Only selected error types are auto-retried (matching error message or failure category). e.g., if only "Executor offline" is selected, script errors go terminal after the first failure without exhausting the retry budget.',
@@ -2607,6 +2758,8 @@ export default {
   'taskForm.field.upstreamDependencies.placeholder': 'Select upstream tasks (multiple; auto-triggers this task after all succeed)',
   'taskForm.params.alertTitle': 'Default Params',
   'taskForm.params.alertDesc': 'These params are injected into the task as AUTOFLOW_<KEY> environment variables on every execution. You can override defaults by passing params with the same name at trigger time.',
+  'taskForm.params.tooLarge': 'Task parameters exceed the size limit ({{size}}/{{max}} bytes); trim them before saving',
+  'taskForm.params.tooLargeShort': 'Task parameters exceed the 64KB limit: {{size}}/{{max}} bytes',
   'taskForm.field.params': 'Default Params',
   // SEC-02 follow-up (production incident): the credentials editor had no entry
   // point at all, while executor error text told users to "configure
@@ -2618,6 +2771,10 @@ export default {
     'Injected into the task process under their ORIGINAL env var names — scripts can read os.environ["FEISHU_APP_ID"], and third-party SDKs get their canonical names (boto3 reads AWS_ACCESS_KEY_ID). Unlike "Default Params", which are prefixed with AUTOFLOW_. Values are stored encrypted and can never be read back after saving.',
   'taskForm.field.secretsMaskRemaining':
     '{{count}} credential(s) are still shown as masked (not re-entered). Saving now would overwrite the real credentials with the mask literal — re-enter their values, or delete those rows, before saving.',
+  // F-7 (UIUX audit P2-6): submit-side gate for the key-name mirror validation
+  // (inline errors live in SecretsEditor; this catches payloads that bypass them)
+  'taskForm.secrets.invalidKeys': 'Invalid credential key name(s): {{list}} — fix them and retry (see inline hints in the credentials section)',
+  'taskForm.secrets.invalidKeysShort': 'Invalid credential key name(s): {{list}}',
   'taskForm.glue.createdTitle': 'Task created successfully!',
   'taskForm.glue.createdDesc': 'You can write a Glue script below (optional). A Glue script is code that runs directly on the executor node without needing a linked code repository.',
   'taskForm.glue.done': 'Done, go to task detail',
@@ -2802,6 +2959,12 @@ export default {
   'routerError.chunkDesc':
     'A new version of the app has been deployed and the assets of this page are no longer available. Click the button below to load the latest version.',
   'routerError.refresh': 'Refresh page',
+  // F-45 (UIUX audit P2-3): chunk fetch failure while offline must not be
+  // reported as "new version available"
+  'routerError.offlineTitle': 'Network connection lost',
+  'routerError.offlineDesc':
+    'The browser is currently offline, so page assets failed to load. Check your network connection and retry below once it is restored.',
+  'routerError.offlineRetry': 'Retry',
   'stateError.loadingFailed': 'Failed to load',
   'stateError.requestFailed': 'Request failed. Please try again later.',
   'stateError.copySuccess': 'Error details copied to clipboard',
@@ -2944,6 +3107,12 @@ export default {
   'secretsEditor.clearAll': 'Clear all credentials',
   'secretsEditor.tooltip': 'Names must match [A-Za-z_][A-Za-z0-9_]* and must not shadow platform-reserved names (PATH / PYTHON* / AUTOFLOW_*). Leaving a saved row blank keeps its stored value.',
   'secretsEditor.touchedWarning': 'On save: values you entered are applied, saved credentials you did not re-enter keep their stored value, and deleted rows are removed.',
+  // F-7 (UIUX audit P2-6): inline errors for the key-name mirror validation
+  // (same rules as the backend IsSecretKeyMapConstraint)
+  'secretsEditor.keyError.invalidName': '"{{key}}" is not a valid environment variable name (must match [A-Za-z_][A-Za-z0-9_]*)',
+  'secretsEditor.keyError.reserved': '"{{key}}" is a platform-reserved environment variable name and cannot be used as a credential key',
+  'secretsEditor.keyError.autoflowPrefix': '"{{key}}" uses the AUTOFLOW_ prefix (reserved for task params) — pick a different name',
+  'secretsEditor.keyError.pythonPrefix': '"{{key}}" uses the PYTHON prefix (interpreter behavior switches) — pick a different name',
 
   'triggerPreview.title': 'Trigger preview',
   'triggerPreview.nextCount': 'Next {{count}} times',
@@ -2955,6 +3124,8 @@ export default {
   'triggerPreview.empty': 'Waiting for input…',
   'triggerPreview.tzFallbackLabel': 'Server default timezone (browser local)',
   'triggerPreview.tzUnresolved': 'No timezone set: actual firing uses the server process timezone; this preview uses the browser local timezone and may be off.',
+  // F-5: invalid timezone gets its own actionable message (distinct from "unset").
+  'triggerPreview.tzInvalid': 'Invalid timezone: enter a valid IANA timezone (e.g. Asia/Shanghai); otherwise the server process timezone applies.',
 
   'time.relative.justNow': 'just now',
   'time.relative.minsAgo': '{{n}} min ago',
@@ -3109,6 +3280,18 @@ export default {
   'sops.draftCreated': 'Draft saved',
   'sops.draftFailed': 'Failed to save draft (check slug and YAML syntax)',
   'sops.create': 'Save draft',
+  'sops.publish.btn': 'Publish',
+  'sops.publish.title': 'Publish SOP "{{slug}}"',
+  'sops.publish.confirmBtn': 'Publish',
+  'sops.publish.bump.patch': 'patch · revision (last digit +1, e.g. 1.0.0 → 1.0.1)',
+  'sops.publish.bump.minor': 'minor · feature (middle digit +1, e.g. 1.0.0 → 1.1.0)',
+  'sops.publish.bump.major': 'major · breaking (first digit +1, e.g. 1.0.0 → 2.0.0)',
+  'sops.publish.changelogPlaceholder': 'Changelog (optional, stored in version history, max 2000 chars)',
+  'sops.publish.note': 'Publishing strictly validates the working copy and writes an immutable version snapshot. Publishing is rejected when the content is identical to the current version.',
+  'sops.publish.ok': 'Published new version {{version}}',
+  'sops.publish.fail': 'Publish failed',
+  'sops.publish.noContent': 'Working copy is missing front-matter or body; cannot publish',
+  'sops.publishedBy.admin': 'Admin',
   // 2026-10-23: SOP archive / restore (deprecated used to be a dead status)
   'sops.cancel': 'Cancel',
   'sops.archive.viewAssignments': 'Review the unfinished assignments first',

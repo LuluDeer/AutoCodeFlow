@@ -162,12 +162,67 @@ export function readWorkspaceFile(workspaceRoot: string, rel: string): { ok: tru
   }
 }
 
-/** 写工作区内文本文件（内容上限 1MB——候选应用源码的合理上界）。 */
-export function writeWorkspaceFile(workspaceRoot: string, rel: string, content: string): { ok: true; path: string } | { ok: false; error: string } {
+/**
+ * P3-3：单指派工作区总量预算（默认 200MB，测试可注入更小值）。
+ * 单文件 1MB 上限只防「单发超大」；LLM 可以 20 文件 × N 轮地慢性填满磁盘
+ * （ 试跑/验收/录屏全落同一工作区），总量预算是第二道闸。录屏/截图等
+ * 平台自产产物也计入占用——超限时对 LLM 的新写入如实拒绝。
+ */
+export const WORKSPACE_TOTAL_BUDGET_BYTES = 200 * 1024 * 1024;
+
+/** 统计工作区现有占用（字节数）。目录深度封顶防环形/病态树拖垮写入路径。 */
+function workspaceUsedBytes(root: string): number {
+  let total = 0;
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 12) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      // 链接不跟随也不计体积（与 listWorkspaceFiles 同款纪律）
+      if (e.isSymbolicLink()) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p, depth + 1);
+      else {
+        try {
+          const st = fs.statSync(p);
+          if (st.isFile()) total += st.size;
+        } catch { /* 竞态删除的文件不计 */ }
+      }
+    }
+  };
+  walk(root, 0);
+  return total;
+}
+
+/**
+ * 写工作区内文本文件（内容上限 1MB——候选应用源码的合理上界）。
+ * P3-3：另受工作区**总量预算**约束——现有占用 + 本次写入 > 预算 → 拒绝
+ * （拒绝先行，绝不先写后判）。
+ */
+export function writeWorkspaceFile(
+  workspaceRoot: string,
+  rel: string,
+  content: string,
+  totalBudgetBytes: number = WORKSPACE_TOTAL_BUDGET_BYTES,
+): { ok: true; path: string } | { ok: false; error: string } {
   const resolved = resolveWithinWorkspace(workspaceRoot, rel);
   if (!resolved.ok) return { ok: false, error: resolved.error };
   if (typeof content !== 'string' || content.length > 1024 * 1024) {
     return { ok: false, error: 'content empty or too large (>1MB)' };
+  }
+  const incoming = Buffer.byteLength(content, 'utf8');
+  if (Number.isFinite(totalBudgetBytes) && totalBudgetBytes > 0) {
+    const used = workspaceUsedBytes(workspaceRoot);
+    if (used + incoming > totalBudgetBytes) {
+      return {
+        ok: false,
+        error: `workspace total budget exceeded: used ${used} + incoming ${incoming} > budget ${totalBudgetBytes} bytes`,
+      };
+    }
   }
   try {
     fs.mkdirSync(path.dirname(resolved.path), { recursive: true });

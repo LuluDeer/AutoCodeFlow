@@ -8,7 +8,7 @@ import {
   nextFixedRateFireTimes,
   formatFireTime,
   validateTimezone,
-  previewNeedsTimezoneWarning,
+  timezoneWarningKind,
 } from '../../utils/trigger-preview';
 
 const { Text } = Typography;
@@ -64,12 +64,13 @@ export default function TriggerPreview({
       );
       const tz = validateTimezone(timezone);
       // P1-3：tz 为空/非法时浏览器推算 ≠ 服务端进程时区，不得自信渲染时刻。
+      // F-5：两态区分——'unspecified'（未填）与 'invalid'（填了但非法）文案不同。
       return {
         kind: 'cron' as const,
         times,
         // 已解析时区才显示具体时区名；未解析时不冒充「服务器默认时区」。
         tzLabel: tz ?? '',
-        tzUnresolved: previewNeedsTimezoneWarning(timezone),
+        tzWarningKind: timezoneWarningKind(timezone),
       };
     }
     if (triggerType === 'fixed_rate') {
@@ -78,7 +79,7 @@ export default function TriggerPreview({
         TRIGGER_PREVIEW_COUNT,
         anchor,
       );
-      return { kind: 'fixed_rate' as const, times, tzLabel: '', tzUnresolved: false };
+      return { kind: 'fixed_rate' as const, times, tzLabel: '', tzWarningKind: 'none' as const };
     }
     return null;
   }, [triggerType, cronExpression, fixedRate, timezone, anchor]);
@@ -90,8 +91,13 @@ export default function TriggerPreview({
   const sparse =
     preview.times.length > 0 && preview.times.length < TRIGGER_PREVIEW_COUNT;
   // P1-3：有效表达式但时区未解析——浏览器推算的时刻可能与服务端差数小时，
-  // 改显警示而非自信渲染时刻。
-  const tzWarn = preview.kind === 'cron' && preview.tzUnresolved && preview.times.length > 0;
+  // 改显警示而非自信渲染时刻。F-5：'unspecified'（未填）与 'invalid'（填了
+  // 但非法 IANA）分词——后者给可操作的修正指引。
+  const tzWarn = preview.kind === 'cron' && preview.tzWarningKind !== 'none' && preview.times.length > 0;
+  const tzWarnMessage =
+    preview.kind === 'cron' && preview.tzWarningKind === 'invalid'
+      ? t('triggerPreview.tzInvalid')
+      : t('triggerPreview.tzUnresolved');
 
   return (
     <div
@@ -122,10 +128,11 @@ export default function TriggerPreview({
 
       {tzWarn ? (
         // P1-3：时区未指定/非法——时刻由服务端进程时区决定，浏览器本地推算可能不准。
+        // F-5：非法时区单独词条（「请填写有效 IANA 时区」修正指引）。
         <Alert
           type="warning"
           showIcon
-          title={t('triggerPreview.tzUnresolved')}
+          title={tzWarnMessage}
           style={{ padding: '4px 12px' }}
         />
       ) : preview.times.length > 0 ? (

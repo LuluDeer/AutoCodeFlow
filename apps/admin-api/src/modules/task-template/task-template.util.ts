@@ -152,8 +152,7 @@ export interface TemplateOwnerRef {
 
 /** 解析结果：新键（按 id 判）或历史行（按 username 判）。 */
 export type ParsedTemplateOwner =
-  | { kind: "keyed"; userId: number }
-  | { kind: "legacy"; username: string };
+  { kind: "keyed"; userId: number } | { kind: "legacy"; username: string };
 
 /**
  * 由创建者身份构造属主键。

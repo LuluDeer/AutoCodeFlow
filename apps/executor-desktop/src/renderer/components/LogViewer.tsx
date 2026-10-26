@@ -35,6 +35,19 @@ export interface ViewerLine { id: number | string; text: string; level: ViewerLo
 
 const LOG_VIEWER_PAGE = 350;
 
+/**
+ * P3-1：全屏查看器的**单例活跃栈**。状态页 LogViewer 与历史/应用页 overlay
+ * 可以同时挂载（页面常驻、按 Tab 显隐）——两个实例的 Esc/Ctrl+F 都挂在
+ * document 上，此前会同时触发：按一次 Esc 把可见与隐藏两个查看器一起关掉，
+ * Ctrl+F 两处抢焦点。后开者持有键盘语义：栈顶（最后打开且未关闭）实例才
+ * 响应，先开的等栈顶关闭后自动重新持有。
+ */
+const viewerStack: symbol[] = [];
+
+function isTopOfViewerStack(self: symbol): boolean {
+  return viewerStack[viewerStack.length - 1] === self;
+}
+
 export interface LogViewerProps {
   /** 顶栏标题节点（如 `运行日志 <small>N 行</small>`） */
   title: React.ReactNode;
@@ -196,9 +209,24 @@ export default function LogViewer({
     });
   }
 
-  // Esc 关闭
+  // Esc 关闭（P3-1：仅栈顶查看器响应，防双实例同时关闭）
+  const viewerIdRef = useRef<symbol | null>(null);
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const id = Symbol('log-viewer');
+    viewerIdRef.current = id;
+    viewerStack.push(id);
+    return () => {
+      viewerIdRef.current = null;
+      const idx = viewerStack.indexOf(id);
+      if (idx >= 0) viewerStack.splice(idx, 1);
+    };
+  }, []);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (!isTopOfViewerStack(viewerIdRef.current!)) return;
+      onClose();
+    };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
@@ -212,10 +240,11 @@ export default function LogViewer({
     return () => { returnFocusRef.current?.focus(); };
   }, []);
 
-  // Ctrl+F 聚焦搜索
+  // Ctrl+F 聚焦搜索（P3-1：仅栈顶查看器响应，防双实例抢焦点）
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        if (!isTopOfViewerStack(viewerIdRef.current!)) return;
         e.preventDefault();
         inputRef.current?.focus();
       }

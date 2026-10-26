@@ -151,11 +151,20 @@ export class AgentSessionService {
     // 非有限数（NaN/±Infinity）一律视同未传、回落 1/20，而不是 400——
     // 400 会改变「非法深链安全回落」契约。钳制本身维持原状（page≥1、
     // pageSize∈[1,100]）。
+    // F-54（UIAUDIT 后端轮 P3-1）：page 补上限 10000——对齐 NETOPT-3④ 的
+    // PageQueryDto 口径（与 events 先例 2ea869fc 一致）：无封顶的 page 生成
+    // 深 OFFSET + getManyAndCount 全量 COUNT，可钉满连接池（ADMIN-only 小表，
+    // 风险低，属标准统一而非堵洞）。仍在 clamp 内做（不引 DTO）以保持本端点
+    // 「非法值安全回落、绝不 400」的契约——语义是「超限视同翻到最深一页内的
+    // 最后一屏」而非报错。
     const rawPage = options.page;
     const rawPageSize = options.pageSize;
-    const page = Math.max(
-      1,
-      typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+    const page = Math.min(
+      10000,
+      Math.max(
+        1,
+        typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+      ),
     );
     const pageSize = Math.min(
       100,

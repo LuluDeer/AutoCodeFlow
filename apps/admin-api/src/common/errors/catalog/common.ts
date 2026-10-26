@@ -33,6 +33,46 @@ export const COMMON_CODES = {
     zh: "参数校验失败",
     en: "Validation failed",
   },
+  /**
+   * F-40（UIUX 审计 P1-1）：跨域 Origin 不在 CORS 白名单。
+   *
+   * 旧实现 `callback(new Error("Origin ... not allowed by CORS"))` 冒泡到
+   * HttpExceptionFilter 被兜成 **500「服务器内部错误」（errorCode:null）**——
+   * dev 端口 / 新前端域名接入时的第一现场与真实服务器故障完全不可区分，
+   * 排障方向被误导（真机证据：登录 POST 500，后端日志 "Unhandled exception:
+   * Origin http://127.0.0.1:5176 not allowed by CORS"）。403 + 稳定码：拒绝是
+   * **配置面**的预期结果，不是故障——调用方该做的是把来源加进
+   * CORS_ALLOWED_ORIGINS，而不是重试。
+   *
+   * 文案刻意**不插值** {{origin}}：origin 是请求方可控头，前端 toast 会按
+   * errorCode 渲染本词条（escapeValue:false 的插值面，见 admin-web
+   * utils/error.ts translateByErrorCode），把请求方可控值原样拼进用户可见文案
+   * 没有必要；被拒来源经 `params.origin` 透出（错误封套独立字段 + 服务端日志），
+   * 供排障/工单直接定位。
+   */
+  CORS_ORIGIN_NOT_ALLOWED: {
+    status: 403,
+    zh: "请求来源未被 API 跨域白名单放行（CORS_ALLOWED_ORIGINS）",
+    en: "Request origin is not allowed by the API CORS whitelist (CORS_ALLOWED_ORIGINS)",
+  },
+  /**
+   * F-41（UIUX 审计 P1-2）：请求值形态与目标列类型不匹配（PG 22P02
+   * invalid_text_representation——主流场景是 UUID 主键列收到非 UUID 值，
+   * 如深链 `/tasks/999999`；整数/布尔列收到非数字串同理）。
+   *
+   * 这是**请求方**的输入错误而非服务器故障：旧实现从 QueryFailedError 冒泡成
+   * 500「服务器内部错误」（errorCode:null），深链打错 id 的第一现场与真实故障
+   * 完全不可区分，还诱发前端重试。第一道防线是路由参数管道
+   * （ParseUuidShapePipe，projects.controller 先例），本码兜住一切绕过管道
+   * 直达 DB 的形态错误（写路径 body 携带的关联 id、未来新增路由漏挂管道等），
+   * 全局兜底映射为 400。值内容不进文案/params（请求方可控，且 DB 原始报错
+   * 只落服务端日志）。
+   */
+  INVALID_VALUE_FORMAT: {
+    status: 400,
+    zh: "请求值格式非法（与目标字段类型不匹配）",
+    en: "Invalid request value format for the target field type",
+  },
   // PG 23505 / 23503 的全局兜底（原先散落在 filter 里的硬编码英文）
   RESOURCE_EXISTS: {
     status: 409,
@@ -102,5 +142,17 @@ export const COMMON_CODES = {
     status: 503,
     zh: "依赖服务暂不可用，请稍后重试",
     en: "A dependency is temporarily unavailable. Please retry later.",
+  },
+  /**
+   * 限流兜底（UIAUDIT4 P3-4）：ThrottlerGuard 拒绝（429）此前经
+   * HttpExceptionFilter 的 HttpException 分支透传 `ThrottlerException: Too
+   * Many Requests` 英文裸文（errorCode:null），前端登录页把它与中文文案
+   * 并排渲染给用户。429 是**调用方频率**问题且有 Retry-After 语义，统一
+   * 映射本码；具体档位/来源不进文案（请求方可控），排障看服务端日志。
+   */
+  RATE_LIMITED: {
+    status: 429,
+    zh: "操作过于频繁，请稍后再试",
+    en: "Too many requests. Please retry later.",
   },
 } as const satisfies Record<string, ErrorCodeDef>;

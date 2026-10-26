@@ -23,7 +23,7 @@ import { AuthService } from "./auth.service";
 import { AuditService } from "../audit/audit.service";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
-import { TotpCodeDto, TotpVerifyDto } from "./dto/totp.dto";
+import { TotpCodeDto, TotpDisableDto, TotpVerifyDto } from "./dto/totp.dto";
 // ARCH-23 / N-12：响应体 DTO——此前这些端点只有 description 没有 type，
 // openapi.json 里对应 2xx 无 schema，前端无法生成类型（详见该 DTO 文件头注）。
 import {
@@ -46,6 +46,9 @@ import { getEnvVar } from "../../config/env";
 import { AUTH_THROTTLE } from "../../config/throttle-profiles";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { SessionRevokeResponseDto } from "./dto/misc-response.dto";
+// F-56：sessions/:id 形态管道（非法 id 400 INVALID_VALUE_FORMAT，替代
+// 200 {success:false}）。
+import { ParseIntShapePipe } from "../../common/pipes/parse-int-shape.pipe";
 import {
   AuthLogoutDto,
   AuthProfileDto,
@@ -146,7 +149,45 @@ export class AuthController {
     },
   })
   async login(@Body() loginDto: LoginDto, @Req() req: Request) {
-    const result = await this.authService.login(loginDto, requestMeta(req));
+    const meta = requestMeta(req);
+    // P2-4（2026-10-25 审计）：失败路径补审计。此前 audit.log 只在
+    // authService.login() 成功后执行——INVALID_USERNAME_OR_PASSWORD /
+    // LOGIN_LOCKED / ACCOUNT_INACTIVE 等失败零记录，无法回答爆破/撞库溯源
+    // （成功路径 requestMeta 已采 ip/ua）。形态对照 api-keys.auditAuthFailure
+    // 先例：action 同名 + result:"failure" + 失败原因码；绝不落 password。
+    //
+    // 只认业务失败（AppError 系）：DTO 校验 400 在全局管道层、限流 429 在
+    // ThrottlerGuard 层，都到不了本方法体，不会被误记成登录失败。注意
+    // **不能**用 `instanceof AppError`——AppError 构造时按状态码把原型挂到
+    // NestJS 内置异常类上（app-error.ts，保住 178 处按类断言的 spec），
+    // 已构造实例对 AppError 自身的 instanceof 恒 false；这里按实例携带的
+    // errorCode 判别（AppError 的实例字段，普通 Error 没有）。审计自身
+    // 失败 best-effort 吞掉（warn），不掩盖原始错误。
+    let result;
+    try {
+      result = await this.authService.login(loginDto, meta);
+    } catch (e: unknown) {
+      const errorCode = (e as { errorCode?: unknown } | null)?.errorCode;
+      if (typeof errorCode === "string") {
+        await this.auditService
+          .log({
+            userId: undefined,
+            username: loginDto.username,
+            action: "auth.login",
+            resource: "auth",
+            detail: {
+              errorCode,
+              userAgent: meta.userAgent,
+            },
+            result: "failure",
+            ip: req.ip,
+          })
+          .catch((err: unknown) =>
+            this.logger.warn(`audit log failed on login failure: ${err}`),
+          );
+      }
+      throw e;
+    }
     await this.auditService
       .log({
         userId: undefined,
@@ -316,10 +357,9 @@ export class AuthController {
     type: TotpDisableResponseDto,
   })
   @ApiResponse({ status: 401, description: "确认失败" })
-  totpDisable(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: { password?: string; code?: string },
-  ) {
+  // F-53（UIAUDIT P2-2）：body 换 class DTO——此前内联类型使全局
+  // whitelist+forbidNonWhitelisted 对本面失效（多余字段静默收下）。
+  totpDisable(@CurrentUser() user: AuthUser, @Body() dto: TotpDisableDto) {
     return this.authService.totpDisable(user.id, {
       password: dto?.password,
       code: dto?.code,
@@ -385,28 +425,32 @@ export class AuthController {
   @ApiBearerAuth("JWT")
   @ApiOperation({
     description:
-      "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的 id 返回 401。",
+      "将指定的 refresh token 行标记为已撤销（DR-04 语义——该 refresh JWT 立即不可用）。会强制校验归属；传入他人的/已吊销的 id 返回 404。",
     summary: "撤销我的一个会话",
   })
   @ApiResponse({ status: 200, description: "会话已撤销" })
-  @ApiResponse({ status: 401, description: "会话不存在或不属于你" })
+  // F-56（UIAUDIT 后端轮 P3-3）：错误语义归位——
+  //   · id 形态非法 → 400 INVALID_VALUE_FORMAT（ParseIntShapePipe，与 users
+  //     同源管道；此前返回 200 {success:false}，HTTP 成功/语义失败的双层
+  //     解读与全站「错误必 4xx+errorCode」形态相悖）；
+  //   · 不存在/不属于你 → 404（SESSION_NOT_FOUND 码，目录状态从 401 归位为
+  //     404——该码只服务本撤销面，401 会触发 admin-web axios 拦截器的
+  //     「会话过期」处理链（静默跳登录），把「吊销一条已死会话」放大成
+  //     整页登出；归属反枚举不受影响：他人 id 与不存在 id 同形 404）。
+  @ApiResponse({ status: 404, description: "会话不存在或已吊销" })
   async revokeSession(
-    @Param("id") id: string,
+    @Param("id", ParseIntShapePipe) id: number,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
-    const sessionId = Number(id);
-    if (!Number.isInteger(sessionId)) {
-      return { success: false };
-    }
-    await this.authService.revokeSession(user.id, sessionId);
+    await this.authService.revokeSession(user.id, id);
     await this.auditService
       .log({
         userId: user.id,
         username: user.username,
         action: "auth.session.revoke",
         resource: "auth",
-        resourceId: id,
+        resourceId: String(id),
         ip: req.ip,
       })
       .catch((err: unknown) =>

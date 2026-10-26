@@ -114,6 +114,85 @@ async function main(): Promise<void> {
       assert.ok(fs.existsSync(path.join(appRoot, 'releases', keys[0])), 'current 版本目录仍在');
     }
 
+    // ── 2b. 5c 双布局：版本组（releases/<version>/<dep>/）为保留单位 ────
+    // 新两段布局下 releases/ 直接子目录是版本组：组内多部署共享保留位；
+    // current 指向组内某部署时整组豁免；组内有部署在跑时整组跳过（保守）。
+    {
+      const appId = '88888888-8888-4888-8888-888888888888';
+      const appRoot = path.join(workDir, 'apps', appId);
+      const releases = path.join(appRoot, 'releases');
+      const groups: Array<{ name: string; deps: string[] }> = [
+        { name: '1.0.0', deps: ['dep-a', 'dep-b', 'dep-c'] },
+        { name: '2.0.0', deps: ['dep-a'] },
+        { name: '3.0.0', deps: ['dep-a'] },
+      ];
+      groups.forEach((g, gi) => {
+        g.deps.forEach((dep, di) => {
+          const dir = path.join(releases, g.name, dep);
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, 'app.log'), `log ${g.name}/${dep}\n`);
+          const t = new Date(Date.UTC(2026, 0, 1, 0, gi, di));
+          fs.utimesSync(dir, t, t);
+        });
+        const gt = new Date(Date.UTC(2026, 0, 1, 0, gi, 0));
+        fs.utimesSync(path.join(releases, g.name), gt, gt);
+      });
+      setCurrent(appRoot, releases, '3.0.0/dep-a');
+
+      const outcome = await sweepAppReleases({
+        workDir,
+        fetchRunningDeploymentIds: async () => new Set(),
+        keep: 2,
+      });
+      const app = outcome.apps.find((a) => a.appId === appId)!;
+      // keep=2 → 保留 current 组(3.0.0) + 最新 1 组(2.0.0)；1.0.0 组整组删。
+      assert.deepStrictEqual(
+        app.deleted,
+        ['1.0.0'],
+        '候选版本组按组淘汰（组内 3 个部署一起走）',
+      );
+      assert.ok(!fs.existsSync(path.join(releases, '1.0.0')), '1.0.0 组目录必须被删');
+      assert.ok(fs.existsSync(path.join(releases, '2.0.0', 'dep-a')), '最新其他组保留');
+      assert.ok(fs.existsSync(path.join(releases, '3.0.0', 'dep-a')), 'current 组保留');
+    }
+
+    // ── 2c. 5c：组内有 running 部署 → 整组跳过（保守闸门）────────────
+    {
+      const appId = '99999999-9999-4999-8999-999999999999';
+      const appRoot = path.join(workDir, 'apps', appId);
+      const releases = path.join(appRoot, 'releases');
+      const groups2: Array<{ name: string; deps: string[] }> = [
+        { name: '1.0.0', deps: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'] },
+        { name: '2.0.0', deps: ['dep-a'] },
+        { name: '3.0.0', deps: ['dep-a'] },
+      ];
+      groups2.forEach((g, gi) => {
+        g.deps.forEach((dep) => {
+          fs.mkdirSync(path.join(releases, g.name, dep), { recursive: true });
+        });
+        const gt = new Date(Date.UTC(2026, 0, 2, 0, gi, 0));
+        fs.utimesSync(path.join(releases, g.name), gt, gt);
+      });
+      setCurrent(appRoot, releases, '3.0.0/dep-a');
+
+      const outcome2 = await sweepAppReleases({
+        workDir,
+        fetchRunningDeploymentIds: async () =>
+          new Set(['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']),
+        keep: 2,
+      });
+      const app2 = outcome2.apps.find((a) => a.appId === appId)!;
+      assert.ok(
+        !app2.deleted.includes('1.0.0'),
+        '组内有部署在跑 → 整组跳过（不冒删）',
+      );
+      assert.ok(
+        app2.skipped.some((s) => s.startsWith('1.0.0')),
+        '被跳过的组要进 skipped 且带原因',
+      );
+      assert.ok(fs.existsSync(path.join(releases, '1.0.0', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')));
+    }
+
     // ── 3. 运行中的 daemon 版本不删 ──────────────────────────────────
     {
       const appId = '33333333-3333-4333-8333-333333333333';

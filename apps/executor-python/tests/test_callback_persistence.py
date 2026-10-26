@@ -857,6 +857,113 @@ def test_lifespan_starts_retry_task_and_drains_on_shutdown(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_lifespan_closes_http_pool_after_notify_offline(monkeypatch):
+    """巡查 2026-10-25（方向1 资源泄漏）：产品侧 lifespan 的最终收口。
+
+    execute.stop_callback_retry_task 内部虽有一次 aclose_http_clients，但
+    lifespan 在其后仍要跑 notify_offline()——它经 get_http_client() 重建
+    共享池，这个池此后无人关闭（上轮「共享池 lifespan 不关」的产品侧遗留）。
+    现在 lifespan 必须在 notify_offline **之后**再 aclose 一次，且顺序正确
+    （先通知后关池，否则停机通知自身无连接可用）。"""
+    import main as main_module
+    import scheduler as sched
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(main_module, 'check_admin_api_connectivity', AsyncMock())
+    monkeypatch.setattr(main_module, 'register_executor', AsyncMock())
+    monkeypatch.setattr(main_module.execute, 'kill_running_task_processes',
+                        AsyncMock(return_value=0))
+    monkeypatch.setattr(main_module.execute, 'stop_callback_retry_task', AsyncMock())
+    monkeypatch.setattr(main_module.execute, 'start_callback_retry_task', lambda: None)
+    monkeypatch.setattr(
+        execute_module, 'await_background_tasks_after_kill',
+        AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        execute_module, 'fail_prepare_stage_executions_on_shutdown',
+        AsyncMock(return_value=0))
+    monkeypatch.setattr(main_module.maintenance, 'start_disk_cleanup_task', lambda: None)
+    monkeypatch.setattr(main_module.maintenance, 'stop_disk_cleanup_task', lambda: None)
+
+    async def _park_forever():
+        await asyncio.sleep(3600)
+    monkeypatch.setattr(main_module, 'heartbeat_task', _park_forever)
+    monkeypatch.setattr(main_module, 'pull_task', _park_forever)
+
+    events: list[str] = []
+
+    async def fake_notify():
+        events.append('notify')
+        # notify_offline 生产实现会经共享池发请求——这里在它内部确认池仍可用
+        #（没有被过早 aclose 清掉）。
+        client = sched.get_http_client()
+        assert client is not None
+
+    real_aclose = sched.aclose_http_clients
+
+    async def spy_aclose():
+        events.append('aclose')
+        await real_aclose()
+
+    monkeypatch.setattr(main_module, 'notify_offline', fake_notify)
+    monkeypatch.setattr(sched, 'aclose_http_clients', spy_aclose)
+    monkeypatch.setattr(main_module, 'aclose_http_clients', spy_aclose)
+
+    async def scenario():
+        async with main_module.lifespan(main_module.app):
+            pass
+        # notify_offline 之后必须有一次最终关池，且顺序是 notify → aclose
+        assert events.count('aclose') >= 1
+        assert events.index('aclose') > events.index('notify'), \
+            '最终 aclose 必须发生在 notify_offline 之后（停机通知自身依赖共享池）'
+        # 收口后 per-loop 池表为空：loop 关闭时不留未关闭的 httpx transport
+        assert len(sched._http_client_by_loop) == 0
+
+    asyncio.run(scenario())
+
+
+def test_lifespan_aclose_failure_is_best_effort(monkeypatch):
+    """最终关池抛异常不得阻断关机序列（后续 set_on_token_acquired(None) 等
+    收尾步骤照常执行）。"""
+    import main as main_module
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(main_module, 'check_admin_api_connectivity', AsyncMock())
+    monkeypatch.setattr(main_module, 'register_executor', AsyncMock())
+    monkeypatch.setattr(main_module.execute, 'kill_running_task_processes',
+                        AsyncMock(return_value=0))
+    monkeypatch.setattr(main_module.execute, 'stop_callback_retry_task', AsyncMock())
+    monkeypatch.setattr(main_module.execute, 'start_callback_retry_task', lambda: None)
+    monkeypatch.setattr(
+        execute_module, 'await_background_tasks_after_kill',
+        AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        execute_module, 'fail_prepare_stage_executions_on_shutdown',
+        AsyncMock(return_value=0))
+    monkeypatch.setattr(main_module.maintenance, 'start_disk_cleanup_task', lambda: None)
+    monkeypatch.setattr(main_module.maintenance, 'stop_disk_cleanup_task', lambda: None)
+
+    async def _park_forever():
+        await asyncio.sleep(3600)
+    monkeypatch.setattr(main_module, 'heartbeat_task', _park_forever)
+    monkeypatch.setattr(main_module, 'pull_task', _park_forever)
+    monkeypatch.setattr(main_module, 'notify_offline', AsyncMock())
+
+    async def boom():
+        raise RuntimeError('pool close exploded')
+
+    monkeypatch.setattr(main_module, 'aclose_http_clients', boom)
+
+    import auth as auth_module
+
+    async def scenario():
+        async with main_module.lifespan(main_module.app):
+            pass
+        # 关机序列没被 aclose 异常炸断：hook 清理等尾步已执行
+        assert auth_module._token_acquired_listener is None
+
+    asyncio.run(scenario())
+
+
 # ── QA8: shutdown worker-flush window ─────────────────────────────────────────
 # 树杀（kill_running_task_processes）只杀 OS 进程；_run_and_callback 协程要先
 # 观察到子进程退出才会产出终态回调。停机序列若从树杀直接进 stop_callback_retry_task

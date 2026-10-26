@@ -81,7 +81,7 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 | `member` | `member.grant` · `member.revoke` · `member.update` |
 | `notification` | `notification.channel.update` · `notification.silence.create` · `notification.silence.delete` |
 | `project` | `project.create` · `project.delete` · `project.update` |
-| `registry` | `registry.pypi.upload` |
+| `registry` | `registry.npm.list` · `registry.pypi.upload` |
 | `sop` | `sop.assign` · `sop.assignment.cancel` · `sop.clarification.escalated` · `sop.clarify` · `sop.complete` · `sop.deprecate` · `sop.draft` · `sop.publish` · `sop.reply` · `sop.restore` · `sop.timeout.stalled` · `sop.timeout.unclaimed` · `sop.update` |
 | `subscription` | `subscription.create` · `subscription.delete` · `subscription.update` |
 | `task` | `task.batch_delete` · `task.batch_pause` · `task.batch_resume` · `task.batch_trigger` · `task.create` · `task.delete` · `task.import` · `task.pause` · `task.resume` · `task.rollback` · `task.trigger` · `task.trigger_api` · `task.trigger_dependency` · `task.trigger_webhook` · `task.update` · `task.webhook_disable` |

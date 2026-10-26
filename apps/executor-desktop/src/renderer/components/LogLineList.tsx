@@ -64,6 +64,8 @@ interface LogRowProps {
   showLineNo: boolean;
   hovered: boolean;
   copyFeedback: CopyFeedback;
+  /** P3-3：失败态 title（父组件按错误类别区分「内容过大 / 一般失败」）。 */
+  copyFailTitle: string;
   searching: boolean;
   q: string;
   onOpenFile?: () => void;
@@ -82,6 +84,7 @@ const LogRow = memo(function LogRow({
   showLineNo,
   hovered,
   copyFeedback,
+  copyFailTitle,
   searching,
   q,
   onOpenFile,
@@ -115,7 +118,7 @@ const LogRow = memo(function LogRow({
           <button
             type="button"
             className={`log-line-tool${copyFeedback === 'copied' ? ' is-ok' : copyFeedback === 'error' ? ' is-err' : ''}`}
-            title={copyFeedback === 'error' ? t('logviewer.copyFail') : t('logviewer.copyLine')}
+            title={copyFeedback === 'error' ? copyFailTitle : t('logviewer.copyLine')}
             aria-label={t('logviewer.copyLine')}
             onClick={() => onCopy(line.text, i)}
           >
@@ -151,6 +154,9 @@ export default function LogLineList({
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [copyIdx, setCopyIdx] = useState<number | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>('none');
+  // P3-3：最近一次复制失败是否因内容过大（超 1MiB 被 preload 拒绝）——
+  // 失败 title 据此区分「内容过大 / 一般失败」。
+  const copyFailTooLargeRef = useRef(false);
   useEffect(() => {
     if (copyFeedback === 'none') return;
     const t = setTimeout(() => {
@@ -163,17 +169,32 @@ export default function LogLineList({
   const handleHover = useCallback((i: number | null) => setHoverIdx(i), []);
   const handleCopy = useCallback((text: string, i: number) => {
     const api = (window as unknown as {
-      electronAPI?: { writeClipboardText?: (t: string) => Promise<{ ok: boolean }> };
+      electronAPI?: { writeClipboardText?: (t: string) => Promise<{ ok: boolean; error?: string }> };
     }).electronAPI;
     setCopyIdx(i);
     if (typeof api?.writeClipboardText !== 'function') {
+      copyFailTooLargeRef.current = false;
       setCopyFeedback('error');
       return;
     }
     api.writeClipboardText(text)
-      .then((r) => setCopyFeedback(r?.ok === false ? 'error' : 'copied'))
-      .catch(() => setCopyFeedback('error'));
+      .then((r) => {
+        // P3-3：超 1MiB 被 preload 诚实拒绝（error:'tooLarge'）——同样按失败
+        // 反馈，title 区分「内容过大」。
+        copyFailTooLargeRef.current = r?.ok === false && r?.error === 'tooLarge';
+        setCopyFeedback(r?.ok === false ? 'error' : 'copied');
+      })
+      .catch(() => {
+        copyFailTooLargeRef.current = false;
+        setCopyFeedback('error');
+      });
   }, []);
+
+  // P3-3：失败行的 title 文案（按最近一次失败类别取词）。
+  const copyFailTitleText =
+    copyFeedback === 'error' && copyFailTooLargeRef.current
+      ? t('status.copyTooLarge')
+      : t('logviewer.copyFail');
 
   // ── trace 合并：对展示行抽取 trace 段（渲染层能力，不改行文本）──
   const q = query.trim().toLowerCase();
@@ -205,6 +226,7 @@ export default function LogLineList({
             showLineNo={showLineNo}
             hovered={hoverIdx === i}
             copyFeedback={copyIdx === i ? copyFeedback : 'none'}
+            copyFailTitle={copyFailTitleText}
             searching={searching}
             q={q}
             onOpenFile={onOpenFile}

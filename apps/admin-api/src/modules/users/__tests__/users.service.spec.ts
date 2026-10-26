@@ -422,9 +422,12 @@ describe("UsersService", () => {
   // 语义有两种码 = 缺陷。admin 改他人账号更是完全没有预检，唯一兜底就是这里。
   describe("update — 唯一性竞态 23505 兜底（R32-A5）", () => {
     const uniqueViolation = () =>
-      Object.assign(new Error("duplicate key value violates unique constraint"), {
-        code: "23505",
-      });
+      Object.assign(
+        new Error("duplicate key value violates unique constraint"),
+        {
+          code: "23505",
+        },
+      );
 
     it("UPDATE 撞 username 唯一索引 → 409 USERNAME_TAKEN（不落成笼统 RESOURCE_EXISTS）", async () => {
       repo.findOne
@@ -435,7 +438,11 @@ describe("UsersService", () => {
           role: UserRole.USER,
         })
         // 归因重读：该 username 已被**他人**占用（并发赢家已落库）
-        .mockResolvedValueOnce({ id: 9, username: "racer", email: "other@x.io" });
+        .mockResolvedValueOnce({
+          id: 9,
+          username: "racer",
+          email: "other@x.io",
+        });
       // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
       repo.update.mockRejectedValueOnce(uniqueViolation());
 
@@ -452,7 +459,11 @@ describe("UsersService", () => {
           password: "hashed",
           role: UserRole.USER,
         })
-        .mockResolvedValueOnce({ id: 9, username: "racer", email: "taken@x.io" });
+        .mockResolvedValueOnce({
+          id: 9,
+          username: "racer",
+          email: "taken@x.io",
+        });
       // R32-C3: 写入原语是列级 UPDATE —— 23505 从它抛出，兜底路径不变
       repo.update.mockRejectedValueOnce(uniqueViolation());
 
@@ -880,6 +891,147 @@ describe("UsersService", () => {
       });
       repo.createQueryBuilder.mockReturnValue(adminQb([{ id: 1 }]));
       await expect(service.remove(1)).rejects.toThrow("不能删除最后一个管理员");
+    });
+  });
+
+  // ─── P1-1（2026-10-25 审计）：isActive 写面 —— 此前全仓零写路，禁用账号
+  // 的「立即止血」不可达。本 describe 钉三件事：patch 放行该列、禁用即
+  // bump（在途 JWT 401）、enable 不 bump。API-Key 面不建新机制（per-request
+  // owner_inactive 闸已在 api-keys.service.authenticate）。
+  describe("update — isActive 写面（P1-1）", () => {
+    it("禁用（isActive:false）进入列级 patch，且 bump sessionVersion（在途 JWT 即刻 401）", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({ id: 5, username: "bob", role: "user" })
+        .mockResolvedValueOnce({ id: 5, username: "bob", isActive: false });
+      await service.update(5, { isActive: false } as any);
+
+      // 列级 UPDATE 只带 isActive 一列（R32-C3 语义不因新列破坏）
+      expect(repo.update).toHaveBeenCalledWith({ id: 5 }, { isActive: false });
+      expect(repo.increment).toHaveBeenCalledWith(
+        { id: 5 },
+        "sessionVersion",
+        1,
+      );
+    });
+
+    it("启用（isActive:true）不 bump——恢复访问无需杀会话", async () => {
+      repo.findOne
+        .mockResolvedValueOnce({ id: 5, username: "bob", role: "user" })
+        .mockResolvedValueOnce({ id: 5, username: "bob", isActive: true });
+      await service.update(5, { isActive: true } as any);
+
+      expect(repo.update).toHaveBeenCalledWith({ id: 5 }, { isActive: true });
+      expect(repo.increment).not.toHaveBeenCalled();
+    });
+
+    it("降级管理员 + 同时禁用：事务路径内 increment（DEADLOCK-01 语义不变）", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+        isActive: true,
+      });
+      const txRepo = {
+        ...makeRepo(),
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({ id: 1, role: UserRole.ADMIN })
+          .mockResolvedValueOnce({
+            id: 1,
+            role: UserRole.USER,
+            isActive: false,
+          }),
+        createQueryBuilder: jest.fn().mockReturnValue({
+          setLock: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+        }),
+      };
+      repo.manager.transaction.mockImplementation(async (cb: any) =>
+        cb({ getRepository: () => txRepo }),
+      );
+
+      await service.update(1, {
+        role: UserRole.USER,
+        isActive: false,
+      } as any);
+
+      // 事务内的 increment（txRepo），不是连接池侧的 repo.increment
+      expect(txRepo.update).toHaveBeenCalledWith(
+        { id: 1 },
+        { role: UserRole.USER, isActive: false },
+      );
+      expect(txRepo.increment).toHaveBeenCalledWith(
+        { id: 1 },
+        "sessionVersion",
+        1,
+      );
+      expect(repo.increment).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── P3-3（2026-10-25 审计）：create 唯一性竞态 23505 归因 —— update 路径
+  // R32-A5 起有 classifyUniqueConflict，create 此前没有（预检与落库之间的
+  // TOCTOU 输家冒成笼统 RESOURCE_EXISTS）。套用同一份归因。
+  describe("create — 唯一性竞态 23505 兜底（P3-3）", () => {
+    const dupErr = () =>
+      Object.assign(new Error("duplicate key"), { code: "23505" });
+
+    it("撞 username 唯一索引 → 409 USERNAME_TAKEN", async () => {
+      repo.findOne.mockResolvedValue(null); // 预检通过（竞态窗口）
+      repo.findOne.mockImplementation(async ({ where }: any) =>
+        where?.username === "bob" ? { id: 9, username: "bob" } : null,
+      );
+      repo.save.mockRejectedValueOnce(dupErr());
+
+      await expect(
+        service.create({
+          username: "bob",
+          email: "bob@example.com",
+          password: "Str0ng!Pass",
+        }),
+      ).rejects.toThrow("用户名已被占用");
+    });
+
+    it("撞 email 唯一索引 → 409 EMAIL_TAKEN", async () => {
+      repo.findOne.mockImplementation(async ({ where }: any) =>
+        where?.email === "taken@example.com" ? { id: 9 } : null,
+      );
+      repo.save.mockRejectedValueOnce(dupErr());
+
+      await expect(
+        service.create({
+          username: "carol",
+          email: "taken@example.com",
+          password: "Str0ng!Pass",
+        }),
+      ).rejects.toThrow("邮箱已被占用");
+    });
+
+    it("重读无法归因 → 回落 USER_EXISTS（绝不冒充成功）", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.save.mockRejectedValueOnce(dupErr());
+
+      await expect(
+        service.create({
+          username: "dave",
+          email: "dave@example.com",
+          password: "Str0ng!Pass",
+        }),
+      ).rejects.toThrow("用户名或邮箱已存在");
+    });
+
+    it("非 23505 的异常原样上抛（不吞真实故障）", async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.save.mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(
+        service.create({
+          username: "erin",
+          email: "erin@example.com",
+          password: "Str0ng!Pass",
+        }),
+      ).rejects.toThrow("connection reset");
     });
   });
 });

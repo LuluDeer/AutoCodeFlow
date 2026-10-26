@@ -126,10 +126,7 @@ export type ChannelDeliveryResults = Record<string, ChannelDeliveryStatus>;
  * 老看板与告警规则里的 `result="failure"` 表达式无需改动即可继续工作。
  */
 export type DeliveryMetricResult =
-  | "success"
-  | "failure"
-  | "blocked"
-  | "skipped";
+  "success" | "failure" | "blocked" | "skipped";
 
 /**
  * R33-A1: 把一次逐渠道投递结局映射成指标 result label。
@@ -535,8 +532,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     //     spec 已钉住 blocked/skipped 不落审计），部分失败仍只走日志+指标，
     //     不放大审计噪声。
     const failedEverywhere =
-      entries.length > 0 &&
-      entries.every((e) => delivery[e.name] === "failed");
+      entries.length > 0 && entries.every((e) => delivery[e.name] === "failed");
     // R150-A1：`entries.length === 0 && channels.length > 0` = 请求了渠道但一个
     // 都没路由上（名字未注册）。它不是"没有渠道要发"（channels 为空），而是
     // "以为发了、其实一条都没发"——与 failedEverywhere 同等严重，必须落审计。
@@ -563,15 +559,21 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
                 ? failures
                 : entries.length > 0
                   ? entries.map(
-                      (e) => `${e.name}: delivery failed (channel reported 'failed')`,
+                      (e) =>
+                        `${e.name}: delivery failed (channel reported 'failed')`,
                     )
                   : channels.map(
                       (c) => `${c}: unregistered channel name — not routed`,
                     ),
           },
         });
-      } catch {
-        /* audit is best-effort */
+      } catch (err: unknown) {
+        // 巡查·静默吞错收口：这条审计是「全部渠道失败」后的**唯一落痕**
+        // （A-1/R150-A1 的设计目标就是消灭告警静默丢失零痕迹），兜底写失败
+        // 若再静默吞掉，目标即落空。保留 best-effort（不炸主链），warn 可见。
+        this.logger.warn(
+          `NOTIFICATION_FAILED 审计兜底写入失败（告警已在渠道面全败，此为唯一落痕）: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     return delivery;

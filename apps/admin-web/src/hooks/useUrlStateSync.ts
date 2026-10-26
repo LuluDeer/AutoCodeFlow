@@ -155,7 +155,18 @@ export function useUrlStateSync<T extends UrlStateRecord>(
 
   // ── state → URL ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const next = serializeUrlState(state, defaults);
+    // F-20（UIAUDIT P3-13）：回写以**当前查询串为底改写受控键**，不再用
+    // serializeUrlState(state) 整体替换。外部深链携带的 state 之外参数（未来
+    // 埋点/分享参数）此前会被任一 state 变化静默抹掉；现在逐个受控键
+    // set/delete，非受控参数原样保留（位次与编码随 URLSearchParams 拷贝不变）。
+    // 受控键自身的清理语义与旧实现一致：偏离默认才保留，等于默认/空即删除。
+    const desired = serializeUrlState(state, defaults);
+    const next = new URLSearchParams(searchParams);
+    for (const key of Object.keys(state)) {
+      const v = desired.get(key);
+      if (v === null) next.delete(key);
+      else if (next.get(key) !== v) next.set(key, v);
+    }
     const nextStr = next.toString();
     if (nextStr === searchParams.toString()) return; // 已一致：不动 URL
     lastPushedRef.current = nextStr;

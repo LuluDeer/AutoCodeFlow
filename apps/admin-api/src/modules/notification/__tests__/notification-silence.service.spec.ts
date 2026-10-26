@@ -112,6 +112,33 @@ describe("NotificationSilenceService (FEAT-01)", () => {
       ).resolves.toBeDefined();
       await expect(service.create({ scope: "global" })).resolves.toBeDefined();
     });
+
+    // P3-1（2026-10-25 审计）：上界护栏。1e15 这类值此前穿透折算
+    // （durationMinutes * 60_000 溢出 → Invalid Date → save 500）。
+    it("rejects durationMinutes above the 10-year cap (P3-1)", async () => {
+      await expect(
+        service.create({ scope: "global", durationMinutes: 1e15 }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.create({
+          scope: "global",
+          durationMinutes:
+            NotificationSilenceService.MAX_SILENCE_DURATION_MINUTES + 1,
+        }),
+      ).rejects.toMatchObject({
+        errorCode: "NOTIFICATION_SILENCE_DURATION_INVALID",
+      });
+    });
+
+    it("durationMinutes at the cap boundary (5256000 = 10y) is accepted and folds endTime", async () => {
+      const created = await service.create({
+        scope: "global",
+        durationMinutes:
+          NotificationSilenceService.MAX_SILENCE_DURATION_MINUTES,
+      });
+      expect(created.endTime).toBeDefined();
+      expect(created.endTime!.getTime()).toBeGreaterThan(Date.now());
+    });
   });
 
   it("lists active rows via filtered query", async () => {

@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import i18n, { setLanguage } from '../i18n';
-import { getErrMsg, translateByErrorCode } from '../utils/error';
+import { getErrMsg, translateByErrorCode, neutralizeI18nNesting } from '../utils/error';
 
 /** 造一个 axios 风格的错误对象（getErrMsg 的真实入参形态）。 */
 function axiosErr(data: Record<string, unknown>): Error {
@@ -48,6 +48,46 @@ describe('LANG-ERR-01 错误码 → 本地化文案', () => {
     expect(
       translateByErrorCode({ errorCode: 'TASK_NAME_EXISTS', params: { name: '每日报表' } }),
     ).toBe('任务名「每日报表」已存在');
+  });
+
+  // ── F-8（UIAUDIT P3-1）：i18next nesting 注入中和 ─────────────────────────
+  //
+  // i18next 在插值后对结果串做 nesting 扫描；param 值含 `$t(key)` 时即「数据
+  // 牵引词条」注入面（escapeValue:false 全局配置下尤其要防）。translateByErrorCode
+  // 在传参前对 params 深中和 `$t(` → `$t (`，下列用例钉住两层：
+  //   ① 纯函数：token 被破坏、字符不删除、单次替换即不动点；
+  //   ② 集成：恶意 params 经 translateByErrorCode 后，嵌套 key 的词条内容
+  //      绝不出现在输出里（只可能是原文回显）。
+  it('F-8 纯函数：$t( 被中和为 $t (（不删字符，单次替换即不动点）', () => {
+    expect(neutralizeI18nNesting('$t(a.b)')).toBe('$t (a.b)');
+    expect(neutralizeI18nNesting('正常参数名')).toBe('正常参数名');
+    // 重组用例：中和产物与前后文拼接不得再产生连续 `$t(`
+    expect(neutralizeI18nNesting('$t($t(a)')).toBe('$t ($t (a)');
+    expect(neutralizeI18nNesting('$$t(a)')).toBe('$$t (a)');
+    expect(neutralizeI18nNesting('$t(t(a)')).toBe('$t (t(a)');
+    // 中和后不再含可触发的 nesting token
+    expect(neutralizeI18nNesting('$t(a.b)')).not.toMatch(/\$t\(/);
+  });
+
+  it('F-8 集成：恶意 params {"x":"$t(a.b)"} 不得牵引任意词条进提示', () => {
+    // TASK_NAME_EXISTS 词条含 {{name}}——name 注入 `$t(err.EXECUTOR_NOT_FOUND)`
+    // 若 nesting 被触发，输出会混入「执行器不存在」（词条内容）。
+    const malicious = translateByErrorCode({
+      errorCode: 'TASK_NAME_EXISTS',
+      params: { name: '$t(err.EXECUTOR_NOT_FOUND)' },
+    }) as string;
+    expect(malicious).not.toContain('执行器不存在');
+    // 字符不删除：原文以中和形态如实可见（可审计、不静默吞内容）
+    expect(malicious).toContain('$t (err.EXECUTOR_NOT_FOUND)');
+  });
+
+  it('F-8 集成：嵌套在数组里的字符串同样被深中和（数组经 String() 会把内容混进结果串）', () => {
+    const malicious = translateByErrorCode({
+      errorCode: 'TASK_NAME_EXISTS',
+      params: { name: ['$t(err.EXECUTOR_NOT_FOUND)'] },
+    }) as string;
+    expect(malicious).not.toContain('执行器不存在');
+    expect(malicious).toContain('$t (');
   });
 
   it('未登记的码 → 返回 null（由调用方回落服务端 message），绝不返回裸码', () => {

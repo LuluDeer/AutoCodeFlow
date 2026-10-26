@@ -2,10 +2,7 @@ import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
-import {
-  BadRequestException,
-  NotFoundException,
-} from "@nestjs/common";
+import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { TaskService } from "../task.service";
 import { UserRole } from "../../users/entities/user.entity";
 import {
@@ -108,7 +105,11 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
   // R63-A1: rollbackToVersion 读版本行（getVersion）；rollback 走事务 manager。
   let versionRepo: Repo;
   let dataSource: { transaction: jest.Mock; createQueryBuilder: jest.Mock };
-  let schedulerService: { stop: jest.Mock; scheduleOne: jest.Mock; getStats: jest.Mock };
+  let schedulerService: {
+    stop: jest.Mock;
+    scheduleOne: jest.Mock;
+    getStats: jest.Mock;
+  };
   let executorService: { notifyExecutorKill: jest.Mock };
   let aiService: { analyzeFailure: jest.Mock; chat: jest.Mock };
   const ADMIN_USER = { id: 1, role: UserRole.ADMIN };
@@ -123,7 +124,9 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
       scheduleOne: jest.fn().mockResolvedValue(undefined),
       getStats: jest.fn().mockReturnValue({}),
     };
-    executorService = { notifyExecutorKill: jest.fn().mockResolvedValue(undefined) };
+    executorService = {
+      notifyExecutorKill: jest.fn().mockResolvedValue(undefined),
+    };
     aiService = {
       analyzeFailure: jest.fn().mockResolvedValue(""),
       chat: jest.fn().mockResolvedValue(""),
@@ -395,9 +398,12 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
           s.timeout = 900;
         },
       );
-      givenConditionalUpdate(() => store.status === TaskStatus.PAUSED, ({ setPatch }) => {
-        Object.assign(store, setPatch ?? {});
-      });
+      givenConditionalUpdate(
+        () => store.status === TaskStatus.PAUSED,
+        ({ setPatch }) => {
+          Object.assign(store, setPatch ?? {});
+        },
+      );
 
       const result = await service.resume("t2");
 
@@ -669,7 +675,13 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
 
     it("输给并发 remove（行已软删）→ 404（与顺序执行同解），不重复软删、不改行", async () => {
       const store = givenTaskStore(
-        { id: "t1", status: TaskStatus.ACTIVE, name: "n", deletedAt: null, secrets: null },
+        {
+          id: "t1",
+          status: TaskStatus.ACTIVE,
+          name: "n",
+          deletedAt: null,
+          secrets: null,
+        },
         (s) => {
           s.deletedAt = new Date("2026-10-21T00:00:00.000Z");
         },
@@ -933,7 +945,9 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
       );
       const { taskSaves, taskUpdates } = givenRollbackTransaction(store);
 
-      const result: any = await service.rollback("t1", { gitCommit: "new-sha" });
+      const result: any = await service.rollback("t1", {
+        gitCommit: "new-sha",
+      });
 
       expect(store.gitCommit).toBe("new-sha");
       // 反证核心：整行回写会把这两列盖回方法读到的旧值
@@ -1025,7 +1039,12 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
 
     it("rollbackToVersion 输给并发 remove（行已软删）→ 404，不复活软删行、不排调度", async () => {
       const store = givenTaskStore(
-        { id: "t1", name: "当前名", status: TaskStatus.ACTIVE, deletedAt: null },
+        {
+          id: "t1",
+          name: "当前名",
+          status: TaskStatus.ACTIVE,
+          deletedAt: null,
+        },
         (s) => {
           s.deletedAt = new Date("2026-10-21T00:00:00.000Z");
           s.status = TaskStatus.DELETED;
@@ -1039,9 +1058,9 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
       });
       givenRowPredicateUpdate(store);
 
-      await expect(
-        service.rollbackToVersion("t1", "v1"),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
+        NotFoundException,
+      );
 
       // 行没有被"写回来"：软删标记与并发写下的 status 全部原样
       expect(store.deletedAt).toEqual(new Date("2026-10-21T00:00:00.000Z"));
@@ -1063,8 +1082,10 @@ describe("R46-A1: tasks 行状态迁移必须条件写 + 只写改变的列", ()
       taskRepo.findOne.mockImplementation(async () => ({ ...row }));
 
       await service.saveVersion("t1");
-      const snapshot = versionRepo.create.mock.calls[0][0]
-        .snapshot as Record<string, unknown>;
+      const snapshot = versionRepo.create.mock.calls[0][0].snapshot as Record<
+        string,
+        unknown
+      >;
 
       versionRepo.findOne.mockResolvedValue({
         id: "v1",

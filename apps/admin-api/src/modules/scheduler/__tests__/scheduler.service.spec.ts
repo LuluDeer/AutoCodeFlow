@@ -553,10 +553,7 @@ describe("SchedulerService", () => {
           return qb;
         });
         qb.where.mockImplementation(
-          (
-            _sql: string,
-            params?: { windowStart?: Date },
-          ) => {
+          (_sql: string, params?: { windowStart?: Date }) => {
             if (params?.windowStart) windowStart = params.windowStart;
             return qb;
           },
@@ -717,7 +714,9 @@ describe("SchedulerService", () => {
         (service as any).cronHasMissedFirePoint(task, lastTriggerTime, now);
 
       expect(
-        missed(makeTask({ cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" })),
+        missed(
+          makeTask({ cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" }),
+        ),
       ).toBe(true);
       // 同一表达式、同一时刻，只换时区 → 结论必须相反
       expect(
@@ -1267,6 +1266,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "running-1",
         "host:3002",
+        // P2-3：gate 透传行身份；本夹具行未设 executorId → null（回落 address）。
+        null,
       );
       // 终态照常落库、新触发照常入队——kill 只是补充动作。
       const coverQb = execRepo.createQueryBuilder.mock.results[0].value;
@@ -1310,6 +1311,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "running-1",
         "host:3002",
+        // P2-3：gate 透传行身份；本夹具行未设 executorId → null（回落 address）。
+        null,
       );
       expect(queue.add).toHaveBeenCalled();
     });
@@ -2754,6 +2757,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "exec-crash",
         "host:3002",
+        // P2-3：stale sweep 透传行身份；存量夹具行无 executorId → undefined。
+        undefined,
       );
       expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalledWith(
         task,
@@ -2886,6 +2891,8 @@ describe("SchedulerService", () => {
       expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
         "exec-crash",
         "host:3002",
+        // P2-3：stale sweep 透传行身份；存量夹具行无 executorId → undefined。
+        undefined,
       );
       // 重试编排失败被吞掉，恢复事务仍已完成
       expect(executorService.scheduleRetryAfterRecovery).toHaveBeenCalled();
@@ -2936,6 +2943,8 @@ describe("SchedulerService", () => {
         expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
           e.id,
           e.executorAddress,
+          // P2-3：第三参为行身份（存量夹具行无 executorId → undefined）。
+          undefined,
         );
       }
     });
@@ -3426,6 +3435,24 @@ describe("SchedulerService", () => {
         expect(computeTriggerDedupTtlMs(makeTask({ triggerType }))).toBe(5_000);
       },
     );
+
+    it("F-3/F-6: 超长 period（存量行）→ TTL 被 clamp 到 2^31-1 ms（PEXPIRE 上限）", () => {
+      // fixedRate=3000000s（DTO @Max(2147483) 封顶前的存量形态）→ periodMs
+      // 3e9 超过 int4 毫秒上限；clamp 保证 TTL 恒可安全下发 PEXPIRE / Redis 锁。
+      const ttl = computeTriggerDedupTtlMs(
+        makeTask({
+          triggerType: TaskTriggerType.FIXED_RATE,
+          fixedRate: 3_000_000,
+        }),
+      );
+      expect(ttl).toBe(2 ** 31 - 1);
+      // 正常周期不受 clamp 影响
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 15 }),
+        ),
+      ).toBe(14_500);
+    });
   });
 
   describe("scheduleOne", () => {

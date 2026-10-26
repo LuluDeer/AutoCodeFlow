@@ -197,6 +197,17 @@ export const APPLICATION_CODES = {
     zh: "部署 {{deploymentId}} 正在进行中 (status={{status}})；请等待其完成后再删除记录",
     en: "Deployment {{deploymentId}} is in progress (status={{status}}); wait for it to finish before deleting the record",
   },
+  /**
+   * P2-1（2026-10-25 审计）：对在途行（pending/deploying/upgrading）调 stop。
+   * 与上方 APP_DEPLOYMENT_STILL_IN_FLIGHT（删除面）**不共用**：两者的处置
+   * 动作不同（「等完成后再停止」≠「等完成后再删除」），合并会让词条替另一
+   * 个端点说话——MUTEX-01 分码判据的镜像运用。
+   */
+  APP_DEPLOYMENT_STOP_IN_FLIGHT: {
+    status: 409,
+    zh: "部署 {{deploymentId}} 正在进行中 (status={{status}})；请等待其完成后再停止",
+    en: "Deployment {{deploymentId}} is in progress (status={{status}}); wait for it to finish before stopping it",
+  },
   APP_DEPLOYMENT_STILL_RUNNING: {
     status: 409,
     zh: "部署 {{deploymentId}} 仍在运行；请先停止，再删除记录",
@@ -227,6 +238,13 @@ export const APPLICATION_CODES = {
     zh: "指定的部署没有已部署版本",
     en: "The specified deployment has no deployed version",
   },
+  // R1（2026-10-24 部署模型评审 §4.2）：set-current-version / deploy-version
+  // 只收版本快照主键，查无即 404（不象旧 rollback 那样隐式落到 legacy 部署行）。
+  APP_VERSION_NOT_FOUND: {
+    status: 404,
+    zh: "指定的版本快照不存在",
+    en: "The specified version snapshot was not found",
+  },
   APP_ROLLOUT_VERSION_NOT_FOUND: {
     status: 400,
     zh: '该应用下未找到版本 "{{version}}"',
@@ -256,6 +274,12 @@ export const APPLICATION_CODES = {
     zh: "缺少 X-Executor-Token 请求头",
     en: "Missing the X-Executor-Token header",
   },
+  /**
+   * P3-5（2026-10-25 审计）：心跳路由已不再抛本码——「查无行/行无执行器/
+   * 令牌无效」三种失败收敛为同一个 401 EXECUTOR_HEARTBEAT_TOKEN_INVALID
+   * （消 404/401 oracle，部署存在性不可被未鉴权探测）。词条保留：admin-web
+   * 的生成 i18n 表仍含该键（该侧由另一轮维护），删码会让键变成孤儿。
+   */
   EXECUTOR_HEARTBEAT_NO_EXECUTOR: {
     status: 401,
     zh: "无法校验令牌：该部署没有关联的执行器",
@@ -384,8 +408,9 @@ export const APPLICATION_CODES = {
   },
   NOTIFICATION_SILENCE_DURATION_INVALID: {
     status: 400,
-    zh: "durationMinutes 非法：{{durationMinutes}}；应为正数",
-    en: "Invalid durationMinutes: {{durationMinutes}}; expected a positive number",
+    // P3-1（2026-10-25 审计）：校验追加上界（10 年分钟数），文案同步。
+    zh: "durationMinutes 非法：{{durationMinutes}}；应为 1..5256000 的数字（最大 10 年）",
+    en: "Invalid durationMinutes: {{durationMinutes}}; expected a number in 1..5256000 (max 10 years)",
   },
   NOTIFICATION_SILENCE_CHANNEL_TYPE_INVALID: {
     status: 400,
@@ -396,6 +421,23 @@ export const APPLICATION_CODES = {
     status: 400,
     zh: "Webhook URL 被 SSRF 策略拒绝（不允许指向 private/loopback/link-local/benchmark/CGNAT 目标）：{{url}}",
     en: "The webhook URL was refused by the SSRF policy (private/loopback/link-local/benchmark/CGNAT targets are not allowed): {{url}}",
+  },
+  /**
+   * F-53 / LANG-ERR-01：`POST /notification/channels/:key/test` 的 per-channel
+   * 配置覆盖体形状不合规。
+   *
+   * 为什么**一个码带 reason** 而不是拆成五个码：这五条校验（非对象 / 键过多 /
+   * 键过长 / 值非 string / 值过长）是**同一个开放映射的同一道形状闸**，调用方
+   * 的处置动作完全相同（改请求体），拆五个码只会让码表膨胀而不增加信息。真正
+   * 需要机器区分的是"哪个约束被违反"，那由 reason 承载——比看文案可靠。
+   *
+   * 此前是裸 `BadRequestException`（响应体无 errorCode），前端只能渲染服务端
+   * 中文兜底文案，英文界面下直接出现中文。
+   */
+  NOTIFICATION_CONFIG_OVERRIDE_INVALID: {
+    status: 400,
+    zh: "渠道配置覆盖体非法（{{reason}}）",
+    en: "Invalid channel config override ({{reason}})",
   },
 
   // ── 事件订阅（event-subscriptions/**）─────────────────────────────
@@ -942,6 +984,19 @@ export const APPLICATION_CODES = {
     status: 500,
     zh: "拒绝非 http(s) 的媒体 URL（协议不被允许）：{{url}}",
     en: "Refusing non-http(s) media URL (scheme not allowed): {{url}}",
+  },
+
+  /**
+   * P3-1（2026-10-26 审计）：AI 配置数值字段（qwenMaxTokens/qwenTimeoutMs）
+   * 此前保存面零校验——"abc" 落库后运行时 parseInt 失败**静默回退默认值**，
+   * 管理员被「保存成功」误导。现在保存面直接 400（可解析整数 + 语义范围，
+   * 空串放行 = 恢复默认）。用户在表单里填错属 400 语义，与平台侧拒绝的
+   * AI_MEDIA_URL_SCHEME_NOT_ALLOWED（500）分开。
+   */
+  AI_CONFIG_NUMBER_INVALID: {
+    status: 400,
+    zh: "AI 配置项 {{field}} 必须是 {{min}} ~ {{max}} 之间的整数（留空恢复默认）",
+    en: "AI config {{field}} must be an integer between {{min}} and {{max}} (leave empty to restore the default)",
   },
 
   // ── 任务运行时注册表（modules/runtime/**）───────────────────────────

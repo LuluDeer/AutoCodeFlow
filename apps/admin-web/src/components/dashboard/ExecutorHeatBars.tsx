@@ -13,26 +13,14 @@ import { ApiOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
+// UI-03：色阶阈值常量与 heatColor 挪至 ./color-tokens（react-refresh 收敛：
+// 组件文件仅保留组件导出；色阶纯函数零 React 依赖，外部消费方仅色阶测试）。
+import { heatColor } from './color-tokens';
 
 const { Text } = Typography;
 
-/** 色阶阈值（导出供测试锚定） */
-export const HEAT_THRESHOLDS = { warning: 65, critical: 85 } as const;
-
-/** 阈值色阶：≥85 红 / ≥65 黄 / 其余绿（双主题同值，均为图形色非正文色）。
- *
- *  UX-03（本轮体验审查）：中间档此前取 `var(--color-ring)`，而 `--color-ring`
- *  双主题都是 #22C55E（品牌绿）——于是 CPU 70% 与 20% 同为绿色，高水位预警
- *  完全失效。改取 `--color-warning`（亮 #D97706 / 暗 #F59E0B）。 */
-export function heatColor(usage: number | null | undefined): string {
-  if (usage == null) return 'var(--color-border)';
-  if (usage >= HEAT_THRESHOLDS.critical) return 'var(--color-destructive)';
-  if (usage >= HEAT_THRESHOLDS.warning) return 'var(--color-warning)';
-  return 'var(--color-accent)';
-}
-
-/** 条形宽度百分比（0-100 钳制；null → 0） */
-export function heatWidth(usage: number | null | undefined): number {
+/** 条形宽度百分比（0-100 钳制；null → 0）。仅本文件使用，不再导出。 */
+function heatWidth(usage: number | null | undefined): number {
   if (usage == null) return 0;
   return Math.min(100, Math.max(0, usage));
 }

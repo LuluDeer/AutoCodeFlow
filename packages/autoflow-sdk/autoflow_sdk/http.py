@@ -2,6 +2,92 @@
 from typing import Any, Dict, Optional
 import httpx
 
+# P3-6: 响应体默认上限（字节），与 packages/autocodeflow-http 的
+# DEFAULT_MAX_RESPONSE_BYTES 同值（量级参照 admin-api S3 日志存储的
+# MAX_LOG_BYTES=100MB，任务内通用通道取更保守的 50MB）。任务代码可经
+# HttpClient / AsyncHttpClient 的同名构造参数调整或传 None 关闭。
+DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+
+
+class ResponseTooLargeError(RuntimeError):
+    """P3-6: 响应体超过 ``max_response_bytes`` 上限（rogue 对端防护）。
+
+    流式读取在超限的当口**中止**（累计到帽即抛，连接随之关闭），不再把
+    全量响应灌进任务进程内存。刻意**不**继承 httpx 异常族：这不是传输层
+    故障——十有八九是对端就是要吐这么大，重试大概率同错；是否当作"故障"
+    由任务代码裁定。与 packages/autocodeflow-http 的同名错误同构（两包无
+    依赖关系，各自保留一份同语义实现，改动请成对修改——见
+    _extract_error_body 的既有先例）。
+    """
+
+
+def _abort_on_declared_size(headers: httpx.Headers, cap: int) -> None:
+    """P3-6: Content-Length 声明已超帽 → 一个字节都不读直接中止。
+
+    声明可伪造也可缺失——不可信/缺失时回落到逐块累计检查（调用方）。
+    """
+    declared = headers.get("content-length")
+    if declared is None:
+        return
+    try:
+        declared_bytes = int(declared)
+    except ValueError:
+        return
+    if declared_bytes > cap:
+        raise ResponseTooLargeError(
+            f"declared content-length {declared_bytes} exceeds "
+            f"max_response_bytes={cap} - read aborted before body"
+        )
+
+
+def _capped_response(raw: httpx.Response, buf: bytearray) -> httpx.Response:
+    """以既有非流式形态返回（status/headers/request/text/json 逐面可用）。"""
+    return httpx.Response(
+        raw.status_code, headers=raw.headers, content=bytes(buf), request=raw.request
+    )
+
+
+def _read_body_capped_sync(
+    client: httpx.Client, method: str, url: str, cap: Optional[int], **kwargs: Any
+) -> httpx.Response:
+    """P3-6: 有帽 → 流式读取、超限中止；无帽（None）→ 旧全量形态。
+
+    cap 按 ``iter_bytes`` 的**解码后**字节计（gzip 等传输编码已解），与任务
+    进程内存实际占用对齐。
+    """
+    if cap is None:
+        return client.request(method, url, **kwargs)
+    with client.stream(method, url, **kwargs) as raw:
+        _abort_on_declared_size(raw.headers, cap)
+        buf = bytearray()
+        for chunk in raw.iter_bytes():
+            buf.extend(chunk)
+            if len(buf) > cap:
+                raise ResponseTooLargeError(
+                    f"response body exceeded max_response_bytes={cap} - "
+                    f"read aborted (rogue-peer protection)"
+                )
+        return _capped_response(raw, buf)
+
+
+async def _read_body_capped_async(
+    client: httpx.AsyncClient, method: str, url: str, cap: Optional[int], **kwargs: Any
+) -> httpx.Response:
+    """P3-6 异步版（aiter_bytes；其余同 :func:`_read_body_capped_sync`）。"""
+    if cap is None:
+        return await client.request(method, url, **kwargs)
+    async with client.stream(method, url, **kwargs) as raw:
+        _abort_on_declared_size(raw.headers, cap)
+        buf = bytearray()
+        async for chunk in raw.aiter_bytes():
+            buf.extend(chunk)
+            if len(buf) > cap:
+                raise ResponseTooLargeError(
+                    f"response body exceeded max_response_bytes={cap} - "
+                    f"read aborted (rogue-peer protection)"
+                )
+        return _capped_response(raw, buf)
+
 
 def _extract_error_body(response: Any) -> Optional[Dict[str, Any]]:
     """R31-E2: 取出 admin-api 错误体（{ code, message, errorCode, params }）。
@@ -69,12 +155,29 @@ class HttpClient:
     从未有过——照写即错)。非幂等方法（post/put/delete）永不被隐式重试；
     幂等重试由任务代码自行决定（raise_for_status 直抛 HttpClientError，
     是 httpx.HTTPStatusError 的子类）。
+
+    P2-3 端间 parity 互指（2026-10-26 如实修订）：带重试+熔断契约的是**管理面**
+    客户端 packages/autocodeflow-http（与 node-sdk 两端对齐）；本类是任务内
+    通用通道，刻意薄——无重试无熔断（理由如上）。acf-cli / mcp-server 同样
+    无（见各自 client 注释）。
+
+    P3-6 响应体上限：``max_response_bytes``（默认 50MB）按**解码后**字节流式
+    封顶，超限中止读取并抛 ``ResponseTooLargeError``（rogue 对端防护）。
+    这是给任务代码的配置出口——传 None 关闭，或传更大值放开（例如已知要拉
+    大文件的通道）。
     """
 
-    def __init__(self, base_url: str = "", timeout: float = 30.0, headers: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        base_url: str = "",
+        timeout: float = 30.0,
+        headers: Optional[Dict[str, str]] = None,
+        max_response_bytes: Optional[int] = DEFAULT_MAX_RESPONSE_BYTES,
+    ):
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._headers = headers or {}
+        self._max_response_bytes = max_response_bytes
 
     def _client(self) -> httpx.Client:
         # NETOPT-E P3-4（trust_env 三分法，反向交叉引用）: 本包是任务内
@@ -91,25 +194,32 @@ class HttpClient:
 
     def get(self, path: str, **kwargs) -> httpx.Response:
         with self._client() as c:
-            resp = c.get(path, **kwargs)
+            # P3-6: 响应体封顶走统一的 capped 读取（None = 旧行为）。
+            resp = _read_body_capped_sync(c, "GET", path, self._max_response_bytes, **kwargs)
             _raise(resp)
             return resp
 
     def post(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
         with self._client() as c:
-            resp = c.post(path, json=json, **kwargs)
+            resp = _read_body_capped_sync(
+                c, "POST", path, self._max_response_bytes, json=json, **kwargs
+            )
             _raise(resp)
             return resp
 
     def put(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
         with self._client() as c:
-            resp = c.put(path, json=json, **kwargs)
+            resp = _read_body_capped_sync(
+                c, "PUT", path, self._max_response_bytes, json=json, **kwargs
+            )
             _raise(resp)
             return resp
 
     def delete(self, path: str, **kwargs) -> httpx.Response:
         with self._client() as c:
-            resp = c.delete(path, **kwargs)
+            resp = _read_body_capped_sync(
+                c, "DELETE", path, self._max_response_bytes, **kwargs
+            )
             _raise(resp)
             return resp
 
@@ -156,11 +266,19 @@ class AsyncHttpClient:
     关闭：析构时机由 GC 决定，且循环引用下可能迟迟不触发。
     """
 
-    def __init__(self, base_url: str = "", timeout: float = 30.0, headers: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        base_url: str = "",
+        timeout: float = 30.0,
+        headers: Optional[Dict[str, str]] = None,
+        max_response_bytes: Optional[int] = DEFAULT_MAX_RESPONSE_BYTES,
+    ):
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._headers = headers or {}
         self._client: Optional[httpx.AsyncClient] = None
+        # P3-6: 响应体上限（同 HttpClient——配置出口见该类 docstring）。
+        self._max_response_bytes = max_response_bytes
 
     def _get_client(self) -> httpx.AsyncClient:
         """懒初始化实例级 AsyncClient（复用连接池）。
@@ -217,21 +335,29 @@ class AsyncHttpClient:
             pass
 
     async def get(self, path: str, **kwargs) -> httpx.Response:
-        resp = await self._get_client().get(path, **kwargs)
+        resp = await _read_body_capped_async(
+            self._get_client(), "GET", path, self._max_response_bytes, **kwargs
+        )
         _raise(resp)
         return resp
 
     async def post(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
-        resp = await self._get_client().post(path, json=json, **kwargs)
+        resp = await _read_body_capped_async(
+            self._get_client(), "POST", path, self._max_response_bytes, json=json, **kwargs
+        )
         _raise(resp)
         return resp
 
     async def put(self, path: str, json: Any = None, **kwargs) -> httpx.Response:
-        resp = await self._get_client().put(path, json=json, **kwargs)
+        resp = await _read_body_capped_async(
+            self._get_client(), "PUT", path, self._max_response_bytes, json=json, **kwargs
+        )
         _raise(resp)
         return resp
 
     async def delete(self, path: str, **kwargs) -> httpx.Response:
-        resp = await self._get_client().delete(path, **kwargs)
+        resp = await _read_body_capped_async(
+            self._get_client(), "DELETE", path, self._max_response_bytes, **kwargs
+        )
         _raise(resp)
         return resp

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRaceGuard } from '../utils/raceGuard';
 import { useTranslation } from 'react-i18next';
 import {
@@ -24,6 +24,8 @@ import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 // UI-16：列表请求失败不再只弹 toast——页内原位错误块 + 重试入口
 import StateError from '../components/StateError';
+// UI-08：首屏数据未达时以骨架形态替代裸 spinner / 空态误报（见下方列表分支）
+import PageSkeleton from '../components/PageSkeleton';
 // UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
 // ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -169,18 +171,28 @@ export default function AgentSessionsPage() {
       .catch(() => undefined); // 预算行加载失败不影响列表
   }, []);
 
+  // UIUX-F-2（审计 P2-1，同型 SOPS-RACE-01，对齐 SopsPage.detailSeq 同款修法）：
+  // openDetail 此前无「谁是最新」判据——快速先点会话 A 再点 B（或 A 响应慢于
+  // B）时，A 的旧响应晚到会把 B 抽屉的 steps/toolCalls/children 整个覆盖成
+  // A 的数据（标题是 B、内容是 A）；resume() 成功后复用 openDetail 同一路径，
+  // 也会把旧响应写回。每次调用自增序号，仅最新一发允许 setState。
+  const detailSeq = useRef(0);
+
   const openDetail = useCallback(async (s: AgentSession) => {
+    const seq = ++detailSeq.current;
     setDetail(s);
     setSteps([]);
     setToolCalls([]);
     setChildren([]);
     try {
       const d = await agentApi.detail(s.id);
+      if (seq !== detailSeq.current) return; // 过期响应：丢弃（新选中的行不被旧数据覆盖）
       setDetail(d.session);
       setSteps(d.steps);
       setToolCalls(d.toolCalls);
       setChildren(d.children);
     } catch {
+      if (seq !== detailSeq.current) return; // 过期失败同样静默（错误提示只属于最新一次）
       message.error(t('agents.detailFailed'));
     }
   }, [t]);
@@ -424,10 +436,16 @@ export default function AgentSessionsPage() {
           style={{ marginBottom: 16 }}
         />
       ) : null}
-      {/* UI-09 第三轮：≤768px 卡片列表（MOBILE-CARD-01 同款结构级降级）——
-          会话卡按首查信息组织：状态+标题 → 类型+触发来源 → 用量 → 开始时间 →
-          操作；桌面保留 6 列表格。 */}
-      {isMobile ? (
+      {/* UI-08：首屏（数据未达、未出错、加载中）以骨架替代两形态——此前移动端
+          卡片分支在 items=[] 时直接渲染 Empty「暂无 Agent 会话」，把「加载中」
+          误报成「没有数据」；桌面表格只有内建 spinner，与全站列表页骨架形态
+          不一致。数据到达后（含轮询拍）不再进此分支，筛选/空态语义不变。 */}
+      {loading && loadError === null && items.length === 0 ? (
+        <PageSkeleton variant="table" rows={6} />
+      ) : isMobile ? (
+        // UI-09 第三轮：≤768px 卡片列表（MOBILE-CARD-01 同款结构级降级）——
+        // 会话卡按首查信息组织：状态+标题 → 类型+触发来源 → 用量 → 开始时间 →
+        // 操作；桌面保留 6 列表格。
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {items.length === 0 ? (
             emptyNode

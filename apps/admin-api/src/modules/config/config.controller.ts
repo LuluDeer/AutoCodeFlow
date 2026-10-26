@@ -34,6 +34,8 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { UserRole } from "../users/entities/user.entity";
 import { SystemConfigService, UpsertConfig } from "./config.service";
+import { ConfigService as NestConfigService } from "@nestjs/config";
+import { getExecutorSharedToken } from "../../common/utils/verify-executor-token.util";
 import { UpsertConfigDto } from "./dto/upsert-config.dto";
 import { ConfigHistoryQueryDto } from "./dto/config-history-query.dto";
 // ARCH-23 / N-12：本模块响应体 DTO（详见 dto/config-response.dto.ts 头注——
@@ -56,7 +58,10 @@ import { LEGACY_DEFAULT_INTERPRETERS } from "../executor/interpreter-match.util"
 @UseGuards(JwtAuthGuard)
 @Controller("config")
 export class ConfigController {
-  constructor(private readonly configService: SystemConfigService) {}
+  constructor(
+    private readonly configService: SystemConfigService,
+    private readonly nestConfigService: NestConfigService,
+  ) {}
 
   // SEC-CFG-01（本轮审计）：本控制器所有写路由与 executor-shared-token 读路由
   // 都带 @Roles(ADMIN)，但系统配置的**通用读路由**此前没有——任何已认证用户
@@ -238,12 +243,17 @@ export class ConfigController {
     type: ExecutorSharedTokenStatusDto,
   })
   async getExecutorSharedToken() {
-    try {
-      const cfg = await this.configService.findOne("executor.sharedToken");
-      return { token: cfg.value ?? null, hasToken: !!cfg.value };
-    } catch {
-      return { token: null, hasToken: false };
-    }
+    // P1-1（UIAUDIT4）：与 verifyExecutorToken **同一解析顺序**（DB 优先、
+    // env executor.sharedToken/EXECUTOR_SECRET 兜底）。此前本端点只读 DB——
+    // env 配置形态（demo 栈/compose 部署）下执行器认证全部走 env 兜底且
+    // 一直可用，而向导的 Token 卡片却显示「尚未配置」：同一设置两个视角
+    // 不一致，还诱导了「生成一个 DB token」的危险操作（DB token 一旦写入，
+    // 校验基准切换，仍持 env 密钥的执行器全体 401——demo 实测踩中）。
+    const token = await getExecutorSharedToken(
+      this.nestConfigService,
+      this.configService,
+    );
+    return { token, hasToken: !!token };
   }
 
   // G-1（admin-web 深度审查）：Python 版本契约的**权威下发端点**。

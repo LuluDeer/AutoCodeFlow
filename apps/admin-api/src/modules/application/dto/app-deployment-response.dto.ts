@@ -188,6 +188,55 @@ export class DeploymentRemoveResponseDto {
   deletedId: string;
 }
 
+/** R2（§4.4）：upgrade-all 响应的覆盖面分组计数（按部署行状态）。 */
+export class UpgradeAllCoverageDto {
+  @ApiProperty({
+    description:
+      "RUNNING 且 runMode≠scheduled 的行数（活进程语义：daemon/once）",
+  })
+  running: number;
+
+  @ApiProperty({
+    description:
+      "RUNNING 且 runMode=scheduled 的行数（仅部署待触发——实证口径：scheduled 部署完成即上报 running，行稳态就是 RUNNING，默认与 running 一并覆盖）",
+  })
+  scheduled: number;
+
+  @ApiProperty({
+    description:
+      "STOPPED 行数（仅 includeStopped=true 时纳入升级；计数恒回显）",
+  })
+  stopped: number;
+
+  @ApiProperty({ description: "FAILED 行数（恒排除，应走显式重新部署）" })
+  failed: number;
+
+  @ApiProperty({
+    description:
+      "pending/deploying/upgrading 在途行数（恒跳过，逐行进 skipped 明细）",
+  })
+  inFlight: number;
+}
+
+/** R2（§4.4）：upgrade-all 跳过明细——在途行不抛错，逐行给出原因。 */
+export class UpgradeAllSkippedItemDto {
+  @ApiProperty({ format: "uuid" })
+  deploymentId: string;
+
+  @ApiProperty({ nullable: true, format: "uuid" })
+  executorId: string | null;
+
+  @ApiProperty({ enum: ["pending", "deploying", "upgrading"] })
+  status: string;
+
+  @ApiProperty({
+    enum: ["in_flight", "awaiting_approval"],
+    description:
+      "in_flight=在途部署/升级不可重入；awaiting_approval=待审批行（DEP-04，复用 pending 占坑）",
+  })
+  reason: string;
+}
+
 /** POST /applications/:id/upgrade-all（DEP-02 灰度/全量升级的批次回执）。 */
 export class UpgradeAllResponseDto {
   @ApiProperty({
@@ -209,6 +258,25 @@ export class UpgradeAllResponseDto {
 
   @ApiProperty()
   failed: number;
+
+  /**
+   * R2（§4.4）：覆盖面分组计数——upgrade-all 本体恒返回；optional 仅因
+   * ApplicationRollbackResponseDto.rollout 复用本类型（deprecated rollback 走
+   * upgradeRunningDeployments，不带该字段——「只增不改」约束下不能给它加形状）。
+   */
+  @ApiPropertyOptional({
+    type: UpgradeAllCoverageDto,
+    description:
+      "该应用部署行按状态分组的计数（R2 §4.4）。running+scheduled 为默认覆盖面；stopped 仅 includeStopped=true 时升级；failed 恒排除；inFlight 恒跳过",
+  })
+  coverage?: UpgradeAllCoverageDto;
+
+  @ApiPropertyOptional({
+    type: [UpgradeAllSkippedItemDto],
+    description:
+      "在途行（pending/deploying/upgrading）的跳过明细——不抛错，逐行给出原因（R2 §4.4）",
+  })
+  skipped?: UpgradeAllSkippedItemDto[];
 
   @ApiPropertyOptional({
     type: "object",
@@ -282,4 +350,200 @@ export class ApplicationRollbackResponseDto {
     description: "恢复后的应用行（已掩码）",
   })
   updatedApp: ApplicationResponseDto;
+}
+
+/**
+ * R1（2026-10-24 部署模型评审 §4.2）：POST /applications/:id/set-current-version
+ * ——只按版本快照恢复应用当前字段，绝不触碰部署行/设备。
+ */
+export class SetCurrentVersionResponseDto {
+  @ApiProperty()
+  ok: boolean;
+
+  @ApiProperty({
+    description: "恒 false——本端点不下发任何设备（下发走 deploy-version）",
+  })
+  dispatched: boolean;
+
+  @ApiProperty({ description: "恢复后的应用 version（= 快照 version）" })
+  version: string;
+
+  @ApiProperty({
+    format: "uuid",
+    description: "命中的 application_versions.id",
+  })
+  versionId: string;
+
+  @ApiProperty({
+    type: ApplicationResponseDto,
+    description: "恢复后的应用行（已掩码）",
+  })
+  updatedApp: ApplicationResponseDto;
+}
+
+/** deploy-version 响应：成功进入下发链的部署行。 */
+export class DeployVersionUpgradedEntryDto {
+  @ApiProperty({ format: "uuid" })
+  deploymentId: string;
+
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description: "部署行所在执行器（行无执行器时 null）",
+  })
+  executorId: string | null;
+
+  @ApiProperty({ nullable: true })
+  executorAddress: string | null;
+}
+
+/** deploy-version 响应：被跳过的执行器/部署行（业务明细，非错误）。 */
+export class DeployVersionSkippedEntryDto {
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description: "显式点名路径下恒有值；缺省（全 RUNNING）路径下取部署行值",
+  })
+  executorId: string | null;
+
+  @ApiProperty({ nullable: true, format: "uuid" })
+  deploymentId: string | null;
+
+  @ApiProperty({
+    enum: ["no_deployment", "not_running", "upgrade_rejected"],
+    description:
+      "no_deployment=该执行器在本应用下没有部署行；not_running=最新部署行状态非 running（detail 带实际 status）；upgrade_rejected=upgrade 链拒绝（detail 带原因）",
+  })
+  reason: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: "跳过原因的机器可读补充（状态值 / 原始错误消息）",
+  })
+  detail?: string | null;
+}
+
+/**
+ * R1（2026-10-24 部署模型评审 §4.2）：POST /applications/:id/deploy-version
+ * ——字段恢复 + 下发（缺省全部 RUNNING 行；显式 executorIds 按执行器点名，
+ * 无行/不可下发的进 skipped，不报错）。
+ */
+export class DeployVersionResponseDto {
+  @ApiProperty()
+  ok: boolean;
+
+  @ApiProperty({
+    description: "恒 true——本端点就是下发动作（恢复+下发）",
+  })
+  dispatched: boolean;
+
+  @ApiProperty({ description: "本次下发的目标版本（= 快照 version）" })
+  version: string;
+
+  @ApiProperty({
+    format: "uuid",
+    description: "命中的 application_versions.id",
+  })
+  versionId: string;
+
+  @ApiProperty({ type: [DeployVersionUpgradedEntryDto] })
+  upgraded: DeployVersionUpgradedEntryDto[];
+
+  @ApiProperty({ type: [DeployVersionSkippedEntryDto] })
+  skipped: DeployVersionSkippedEntryDto[];
+
+  @ApiProperty({
+    type: ApplicationResponseDto,
+    description: "恢复后的应用行（已掩码）",
+  })
+  updatedApp: ApplicationResponseDto;
+}
+
+/**
+ * R4（2026-10-24 部署模型评审 §4.1A）：GET /app-deployments/applications/
+ * :appId/events —— 不可变部署事件流（append-only，动作追溯）。事件行由
+ * 写入侧保证只含短事实（detail 不带 env），读面无需掩码。
+ */
+export class AppDeploymentEventRowDto {
+  @ApiProperty({ format: "uuid" })
+  id: string;
+
+  @ApiProperty({ format: "uuid" })
+  applicationId: string;
+
+  @ApiProperty({
+    nullable: true,
+    format: "uuid",
+    description:
+      "触发本事件的部署行 id；行可能已被删除（事件无外键、比行活得久）",
+  })
+  deploymentId: string | null;
+
+  @ApiProperty({ nullable: true, format: "uuid" })
+  executorId: string | null;
+
+  @ApiProperty({ nullable: true })
+  executorAddress: string | null;
+
+  @ApiProperty({
+    enum: [
+      "deploy_created",
+      "redeploy_reused",
+      "approval_approved",
+      "approval_rejected",
+      "approval_cancelled",
+      "upgrade",
+      "stop",
+      "remove",
+      "stuck_failed",
+    ],
+  })
+  eventType: string;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      "动作发生时的版本事实（deploy/upgrade 写动作时 app.version；stop/remove/stuck 写行上 deployedVersion）",
+  })
+  deployedVersion: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    enum: ["manual", "upgrade", "rollback", "approval"],
+    description:
+      "动作语义（DeploymentTriggerType）；机器路径（如卡死扫描）为 null",
+  })
+  triggerType: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: "操作人（JWT 用户名）；系统路径为 null",
+  })
+  operator: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    additionalProperties: true,
+    description:
+      "短事实快照（reason/runMode/deletedStatus 等标量；写入侧保证不含 env 密钥）",
+  })
+  detail?: Record<string, unknown> | null;
+
+  @ApiProperty()
+  createdAt: string;
+}
+
+/** GET /app-deployments/applications/:appId/events 信封（裸四键，同 /releases）。 */
+export class AppDeploymentEventsPageDto {
+  @ApiProperty({ type: [AppDeploymentEventRowDto] })
+  data: AppDeploymentEventRowDto[];
+
+  @ApiProperty()
+  total: number;
+
+  @ApiProperty()
+  page: number;
+
+  @ApiProperty({ description: "默认 50，上限 200" })
+  pageSize: number;
 }

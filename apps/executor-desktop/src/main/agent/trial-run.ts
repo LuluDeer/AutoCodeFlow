@@ -1,8 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { StringDecoder } from 'node:string_decoder';
 import type { CodeExecutionMode } from './permission-profile';
 import { resolveWithinWorkspace } from './workspace';
-import { spawnWithTreeTimeout } from './kill-tree';
+import { spawnWithTreeTimeout, TRIAL_RECORD_FILENAME } from './kill-tree';
 
 /**
  * P7a 续批（agent-and-deployment）：试跑的真实执行体——process 沙箱。
@@ -169,14 +170,22 @@ export async function runTrialInSandbox(input: TrialRunInput): Promise<TrialRunR
     let timedOut = false;
     let settled = false;
 
+    // P3-5：流式解码器（stdout/stderr 各一，不能共用——撕裂字节按流归属）
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+
     const collect = (buf: Buffer, isErr: boolean): void => {
       const cap = TRIAL_OUTPUT_CAP;
+      // P3-5：按 chunk 直接 toString('utf8') 会在块边界把多字节字符撕成
+      // U+FFFD（中文输出每 ~64KB 必现）。StringDecoder 保持块间的解码状态，
+      // 撕裂字节留到下一块拼完再出。
+      const decoder = isErr ? stderrDecoder : stdoutDecoder;
       const target = isErr ? { get: () => stderr, set: (v: string) => { stderr = v; } } : { get: () => stdout, set: (v: string) => { stdout = v; } };
       if (target.get().length >= cap) {
         truncated = true;
         return;
       }
-      const piece = buf.toString('utf8');
+      const piece = decoder.write(buf);
       if (target.get().length + piece.length > cap) {
         target.set(target.get() + piece.slice(0, cap - target.get().length));
         truncated = true;
@@ -190,9 +199,12 @@ export async function runTrialInSandbox(input: TrialRunInput): Promise<TrialRunR
     // P7b：spawnWithTreeTimeout——超时经 killTree 整组终止（含孙进程），
     // 修复 P7a 残差「Windows kill() 只终止单进程，孙进程泄漏」。POSIX 靠
     // detached 进程组，Windows 靠 taskkill /T /F。
+    // P2-4：recordFile 把 pgid 落进工作区——worker 死亡后的孤儿树由启动
+    // 清扫（sweepStaleTrialTrees）按记录击杀；正常结束记录即删。
     void spawnWithTreeTimeout(command, [resolved.path, ...args], {
       cwd: input.workspaceRoot,
       env: childEnv,
+      recordFile: path.join(input.workspaceRoot, TRIAL_RECORD_FILENAME),
     }, timeoutMs, collect).then(({ exitCode, timedOut: to, errorMessage }) => {
       timedOutLocal = to;
       spawnError = errorMessage;

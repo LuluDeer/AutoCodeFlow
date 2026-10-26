@@ -141,4 +141,21 @@ describe('SEC-03 LoginPage TOTP 分支', () => {
     expect(useAuthStore.getState().token).toBeNull();
     expect(screen.getByLabelText('动态验证码')).toBeTruthy();
   });
+
+  // ── F-11（UIAUDIT P3-4）：TOTP 输入仅数字 ────────────────────────────────
+  // 后端 totp.dto @Matches(/^\d{6}$/)，此前 abc123 可直接提交吃裸 400。前端
+  // 双保险：getValueFromEvent 过滤非数字（输入法/粘贴面）+ pattern 规则对齐。
+  it('F-11：非数字输入被过滤，非六位数字提交被表单校验拦截（不发 verify）', async () => {
+    vi.mocked(authApi.login).mockResolvedValue({ totpRequired: true } as never);
+    renderLogin();
+    fillAndSubmit();
+    const codeInput = await screen.findByLabelText('动态验证码');
+    // 输入混入字母 → 过滤后只剩数字
+    fireEvent.change(codeInput, { target: { value: 'ab12cd34' } });
+    expect((codeInput as HTMLInputElement).value).toBe('1234');
+    // 不足六位提交 → pattern 校验红字，verifyLogin 不发出
+    fireEvent.submit(document.querySelector('form.ant-form')!);
+    await waitFor(() => expect(screen.getByText('验证码须为 6 位数字')).toBeTruthy());
+    expect(authApi.verifyLogin).not.toHaveBeenCalled();
+  });
 });

@@ -230,6 +230,23 @@ if (typeof window !== 'undefined') {
       useAuthStore.getState().logout();
       return;
     }
+    // F-13（UIAUDIT P3-6）：另一 tab 登录了**另一个账号**（user.id 变化）→
+    // 本 tab 整页 reload。已挂载页面的 TanStack 缓存/视图状态都是前账号的读面
+    // （有的页面还有本地 state 副本），只换 token 不清缓存会残留前账号数据
+    // 直到下一次 refetch/导航。整页 reload 一次性归还干净初始态——与
+    // redirectToLogin 的整页语义对齐（logout 分支同理）。
+    // 登出（persisted.user 为空）不走这里：上方分支已按登出处理；本 tab 从
+    // 未登录（内存 user 为 null）→ id 不存在「变化」，也不 reload。
+    const currentUserId = useAuthStore.getState().user?.id;
+    const persistedUserId = (persisted.user as { id?: unknown } | null)?.id;
+    if (
+      currentUserId != null &&
+      persistedUserId != null &&
+      persistedUserId !== currentUserId
+    ) {
+      window.location.reload();
+      return;
+    }
     const { setToken, setRefreshToken, setUser } = useAuthStore.getState();
     if (persisted.token && useAuthStore.getState().token !== persisted.token) {
       setToken(persisted.token);
@@ -240,7 +257,16 @@ if (typeof window !== 'undefined') {
     ) {
       setRefreshToken(persisted.refreshToken);
     }
-    if (persisted.user && useAuthStore.getState().user !== persisted.user) {
+    // F-12（UIAUDIT P3-5）：旧判据 `user !== persisted.user` 恒为 true——
+    // persisted.user 每次 storage 事件都重新 JSON.parse，对象引用永不可能与
+    // 内存 user 相等，短路失效 → 每次跨 tab 认证写入都多一次 setUser（幂等但
+    // 多一次重渲染）。改为序列化串比较：同一份 persist 载荷的 user 写入/读回
+    // 键序一致，串相等即「没变」，真正变化（如 profile 回写 totpEnabled）才写。
+    if (
+      persisted.user &&
+      JSON.stringify(useAuthStore.getState().user) !==
+        JSON.stringify(persisted.user)
+    ) {
       setUser(persisted.user as AuthStateUser);
     }
   });
@@ -267,19 +293,74 @@ async function tryRefreshToken(): Promise<string> {
     }
     if (!refreshToken) throw new Error('No refresh token');
 
+    // F-6（UIUX 审计 P2-5）：「另一 tab 的轮换已生效」判据——不比对「自己
+    // 发起时的 RT」，而比对「当前存储 RT（内存/落盘）是否已不是自己这枚」。
+    // 是 → 别人的刷新已成功，自己这枚已被后端轮换吊销。
+    const supersededByAnotherTab = (): boolean => {
+      const memory = useAuthStore.getState().refreshToken;
+      if (memory && memory !== refreshToken) return true;
+      const disk = readPersistedAuthState()?.refreshToken;
+      return !!disk && disk !== refreshToken;
+    };
+    /** F-6：采纳另一 tab 落盘的新会话（token+RT 一并同步），返回其 access。 */
+    const adoptPersistedSession = (): string | null => {
+      const fresh = readPersistedAuthState();
+      if (!fresh?.token) return null;
+      setToken(fresh.token);
+      if (fresh.refreshToken) setRefreshToken(fresh.refreshToken);
+      return fresh.token;
+    };
+
     // Use a plain axios call to bypass our own response interceptor
     // and avoid an infinite 401 retry loop on the refresh endpoint itself.
-    const resp = await axios.post(
-      `${getApiBaseUrl()}/auth/refresh`,
-      { refreshToken },
-      { timeout: 10_000 },
-    );
+    // axios 1.20 泛型默认下 ReturnType<typeof axios.post> 解析为 unknown，
+    // 这里显式建模响应体（封套 {data:{...}} 与裸 {...} 两种历史形态）。
+    type RefreshBody = {
+      data?: { accessToken?: string; refreshToken?: string };
+      accessToken?: string;
+      refreshToken?: string;
+    };
+    let resp: import('axios').AxiosResponse<RefreshBody>;
+    try {
+      resp = await axios.post<RefreshBody>(
+        `${getApiBaseUrl()}/auth/refresh`,
+        { refreshToken },
+        { timeout: 10_000 },
+      );
+    } catch (err: unknown) {
+      // F-6① TOCTOU：B 在 A 落盘前读走旧 RT，A 先完成轮换（旧 RT 已被后端
+      // 吊销）→ B 携吊销票刷新必 401。若存储 RT 已不是自己这枚，说明另一 tab
+      // 的会话活得好好的——复用它的新 access（不登出不跳转，旧行为会把 B 整
+      // 个踢回登录页）；仅当存储 RT 仍是自己这枚（自己这枚是真死了）才把失
+      // 败抛给拦截器走登出链。
+      if (axios.isAxiosError(err) && err.response?.status === 401 && supersededByAnotherTab()) {
+        const adopted = adoptPersistedSession();
+        if (adopted) return adopted;
+        // 落盘损坏读不出 access 的极端边界：不登出（别人的新票生效中），给
+        // 原始请求打上 superseded 标记拒绝——拦截器据此跳过登出链。
+        const superseded = new Error('Auth refresh superseded by another tab');
+        (superseded as Error & { __superseded?: boolean }).__superseded = true;
+        throw superseded;
+      }
+      throw err;
+    }
     // axios wraps the body in resp.data; our interceptor unwraps to resp.data for client calls
-    const body = resp.data ?? resp;
-    const accessToken: string = body.data?.accessToken ?? body.accessToken;
+    const body: RefreshBody = resp.data ?? {};
+    const accessToken = body.data?.accessToken ?? body.accessToken ?? '';
     const newRefresh: string | undefined = body.data?.refreshToken ?? body.refreshToken;
     if (!accessToken) throw new Error('Refresh response missing accessToken');
     // Discard refresh results from a session that has logged out or changed.
+    // F-6②：本 tab 已登出（RT 为 null）时维持旧行为——丢弃结果，绝不把
+    // 已撤销的 token 写回（DR-04 logout race 语义不变）。但「存储 RT 已被
+    // storage 事件换成另一 tab 更新的值」不再走丢弃+登出：那会扔掉一次成功
+    // 的刷新并误杀活会话。改为复用另一 tab 的新 access；读不到落盘时保留本
+    // 次服务端刚签发的 access（宽限窗口内同样有效），且绝不把自己轮换出的
+    // refreshToken 盖到另一 tab 较新的会话上。
+    const currentRefresh = useAuthStore.getState().refreshToken;
+    if (currentRefresh && currentRefresh !== refreshToken) {
+      const adopted = adoptPersistedSession() ?? accessToken;
+      return adopted;
+    }
     if (useAuthStore.getState().refreshToken !== refreshToken) throw new Error('Auth session changed');
     setToken(accessToken);
     if (newRefresh) setRefreshToken(newRefresh);
@@ -323,19 +404,39 @@ client.interceptors.response.use(
       const qs = params.toString();
       window.location.href = `/login${qs ? `?${qs}` : ''}`;
     };
+    // F-1（UIUX 审计 P1-1）：公开认证端点的失败语义本来就是 401 ——
+    // /auth/login 的 INVALID_USERNAME_OR_PASSWORD / ACCOUNT_INACTIVE、
+    // /auth/totp/verify 的「凭据或 TOTP 验证码错误」（auth.controller Swagger
+    // 明示 401）。这些 401 与「会话过期」无关：若照走 refresh→logout→redirect
+    // 链，输错密码=整页 reload、用户名/TOTP 第二步全清空，且登录页顶栏谎报
+    // 「会话已过期」。对这两类请求不做任何 401 处理，直接 reject——交给
+    // LoginPage 的 catch（页内 role=alert 呈现真实原因，输入原样保留）。
+    // 判据用 includes 与既有 /auth/refresh 排除同款（url 均为相对路径；
+    // /auth/totp/enable|disable 是 JWT 鉴权端点，其 401 仍按会话过期处理）。
+    const isPublicAuthRequest = !!originalRequest.url && (
+      originalRequest.url.includes('/auth/login') || originalRequest.url.includes('/auth/totp/verify')
+    );
     // Avoid infinite retry loop on the refresh endpoint itself
-    if (err.response?.status === 401 && !originalRequest._retried && !originalRequest.url?.includes('/auth/refresh')) {
+    if (err.response?.status === 401 && !isPublicAuthRequest && !originalRequest._retried && !originalRequest.url?.includes('/auth/refresh')) {
       originalRequest._retried = true;
       try {
         const newToken = await tryRefreshToken();
         originalRequest.headers = originalRequest.headers ?? {};
         originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
         return client(originalRequest);
-      } catch {
-        useAuthStore.getState().logout();
-        redirectToLogin('expired');
+      } catch (refreshErr: unknown) {
+        // F-6：另一 tab 的新票已生效（存储 RT 已换人、只是自己读不到其 access）
+        // 时不登出——只在本 tab 会话真死（存储 RT 仍是自己这枚 / 已登出）时才
+        // 走登出+重定向链。superseded 场景放弃本次重放，原始 401 交给页面
+        // catch 呈现（另一 tab 的会话仍在正常服务）。
+        if ((refreshErr as { __superseded?: boolean } | null)?.__superseded === true) {
+          // no logout / no redirect
+        } else {
+          useAuthStore.getState().logout();
+          redirectToLogin('expired');
+        }
       }
-    } else if (err.response?.status === 401) {
+    } else if (err.response?.status === 401 && !isPublicAuthRequest) {
       useAuthStore.getState().logout();
       redirectToLogin('expired');
     }
@@ -343,10 +444,18 @@ client.interceptors.response.use(
     // TanStack Query 侧已显式 retry:false（见 api/queryClient.ts），避免"axios 1 次 ×
     // Query 2 次"叠加成一次失败 6 发请求 + 多条重复 toast。
     // Retry only safe methods: a failed response may still have caused side effects.
+    //
+    // F-41（UIUX 审计 P1-2）：重试面收窄——只有**暂时性**故障值得自动重试：
+    // 网络层失败（无响应）与网关类 5xx（502/503/504）。500 是应用层确定性故障
+    // （真机实测：深链坏 id 时详情页 5 个并发 GET 全 500，旧实现 1s 后整组重放
+    // ——10 秒窗口 10 发；重试一次同样的 bug 零收益、纯翻倍请求与 toast）。
+    // 429 是服务端限流信号，尊重之（本层 1s 固定退避对限流过猛，交由上层决策）。
+    // 4xx 一律不重试（不变，确定性失败）。
     if (!originalRequest._retryCount) originalRequest._retryCount = 0;
     const status = err.response?.status;
     const isSafeMethod = ['get', 'head', 'options'].includes((originalRequest.method || 'get').toLowerCase());
-    if (isSafeMethod && originalRequest._retryCount < 1 && (!err.response || (status >= 500 && status < 600))) {
+    const isTransient = !err.response || status === 502 || status === 503 || status === 504;
+    if (isSafeMethod && originalRequest._retryCount < 1 && isTransient) {
       originalRequest._retryCount++;
       await new Promise<void>(resolve => setTimeout(resolve, 1000));
       return _client(originalRequest);

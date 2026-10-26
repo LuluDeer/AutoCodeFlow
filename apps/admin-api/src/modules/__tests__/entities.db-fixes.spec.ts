@@ -163,7 +163,10 @@ describe("PK-10 (3): ExecutionLogLine 联合 PK (id, createdAt) 对齐分区表"
  */
 describe("R32-C2: 安全列必须保持 select:false（整实体 save 的护栏）", () => {
   const REQUIRED_SELECT_FALSE: Array<[string, string]> = [
-    ["tokenHash", "per-executor bcrypt 令牌哈希：去掉即「心跳整实体 save 回滚轮换」→ 旧凭据复活"],
+    [
+      "tokenHash",
+      "per-executor bcrypt 令牌哈希：去掉即「心跳整实体 save 回滚轮换」→ 旧凭据复活",
+    ],
     ["agentCapabilities", "Agent 协作能力：去掉即可能被心跳旧快照擦掉"],
     ["agentCapabilitiesUpdatedAt", "Agent 能力租约续报时间：同上"],
   ];

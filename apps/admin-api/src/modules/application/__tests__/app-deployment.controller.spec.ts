@@ -2,7 +2,10 @@ import "reflect-metadata";
 import { ExecutionContext } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import { validate } from "class-validator";
-import { AppDeploymentController } from "../app-deployment.controller";
+import {
+  AppDeploymentController,
+  ListDeploymentsQueryDto,
+} from "../app-deployment.controller";
 import { AppDeploymentService } from "../app-deployment.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { DeploymentHeartbeatDto } from "../dto/app-deployment.dto";
@@ -163,6 +166,27 @@ describe("DeploymentHeartbeatDto validation (R17)", () => {
 });
 
 /**
+ * P3-1（2026-10-25 审计）：ListDeploymentsQueryDto.page 补 @Max(10000)——
+ * 对齐 ListDeploymentEventsQueryDto 的 NETOPT-3④ 口径（无封顶的 page 可被
+ * ?page=99999999 打深 OFFSET + 全量 COUNT 打满连接池）。DTO 定义在
+ * app-deployment.controller.ts 内（未抽 dto 文件），直接 import 验证。
+ */
+describe("ListDeploymentsQueryDto page cap (P3-1)", () => {
+  it("accepts page within 1..10000 and pageSize within 1..100", async () => {
+    const dto = Object.assign(new ListDeploymentsQueryDto(), {
+      page: 10000,
+      pageSize: 100,
+    });
+    expect(await validate(dto)).toHaveLength(0);
+  });
+
+  it("rejects page beyond 10000 (deep-offset flood guard)", async () => {
+    const dto = Object.assign(new ListDeploymentsQueryDto(), { page: 10001 });
+    expect((await validate(dto)).length).toBeGreaterThan(0);
+  });
+});
+
+/**
  * QA-02（coverage 第一阶段）：部署控制器的端点委托与心跳鉴权链行为。
  * RBAC 元数据与 DTO 校验已有专项 spec；本段补「调用参数进入服务 +
  * X-Executor-Token 三段校验（缺头/无执行器/错 token）+ 部署面委托」。
@@ -243,12 +267,25 @@ describe("AppDeploymentController — endpoint delegation & heartbeat auth (QA-0
     expect(exec.validateExecutorToken).not.toHaveBeenCalled();
   });
 
-  it("heartbeat rejects when the deployment has no associated executor", async () => {
+  // P3-5（2026-10-25 审计）：查无行/行无执行器/令牌无效三种失败收敛为同一个
+  // 401「执行器令牌无效」（消 404/401 oracle——未鉴权调用方不得借此枚举部署
+  // 行存在性，姿态同 webhook APP-001）。
+  it("heartbeat rejects an unknown deployment with the same 401 as a bad token (no oracle)", async () => {
+    const { controller, svc, exec } = make();
+    svc.findById.mockRejectedValueOnce(new Error("APP_DEPLOYMENT_NOT_FOUND"));
+    await expect(
+      controller.heartbeat({ ...base } as any, "tok"),
+    ).rejects.toThrow("执行器令牌无效");
+    expect(exec.validateExecutorToken).not.toHaveBeenCalled();
+    expect(svc.handleHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("heartbeat rejects when the deployment has no associated executor (same 401, no oracle)", async () => {
     const { controller, svc, exec } = make();
     svc.findById.mockResolvedValueOnce({ id: "deploy-1", executorId: null });
     await expect(
       controller.heartbeat({ ...base } as any, "tok"),
-    ).rejects.toThrow("没有关联的执行器");
+    ).rejects.toThrow("执行器令牌无效");
     expect(exec.validateExecutorToken).not.toHaveBeenCalled();
     expect(svc.handleHeartbeat).not.toHaveBeenCalled();
   });

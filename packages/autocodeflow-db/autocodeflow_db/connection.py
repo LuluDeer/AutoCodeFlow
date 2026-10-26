@@ -57,6 +57,16 @@ class DatabaseConfig:
     pool_overflow: int = 0
     echo: bool = False
     pool_recycle: int = DEFAULT_POOL_RECYCLE_SECONDS
+    #: P3-9（2026-10-26）: 语句级超时（PostgreSQL ``statement_timeout``，毫秒）。
+    #:
+    #: 取舍说明：本进程是**短生命周期任务进程**且 pool_size=2（见上）——一条
+    #: 挂死的查询（锁等待 / 函数死循环 / 误全表扫）就能占满全部 2 条连接，
+    #: 把本进程的 DB 面整个堵死到任务超时被杀。连接级默认 30s 兜底（libpq
+    #: ``options`` 传播，池化复用时不会被遗忘，比每条语句手动 SET 可靠）。
+    #: 0/负值显式关闭；仅对 postgresql 方言生效（sqlite 等测试/本地方言不注）。
+    #: 经 ``DATABASE_URL`` 自带 options 的极端场景会被本字段覆盖——这里是其
+    #: 唯一真值源。长驻服务（admin-api 侧）不使用本包，不受影响。
+    statement_timeout_ms: int = 30_000
 
     _engine: Optional[Engine] = field(default=None, init=False, repr=False)
     _session_factory: Optional[sessionmaker] = field(default=None, init=False, repr=False)
@@ -89,12 +99,31 @@ class DatabaseConfig:
                         # PK-08: keep long-lived task connections healthy.
                         pool_pre_ping=True,
                         pool_recycle=self.pool_recycle,
+                        # P3-9: 语句级超时经 libpq options 传播（见字段注释）。
+                        connect_args=self._connect_args(),
                     )
                     # 顺序有意义：先发布 factory 再发布 engine，旁路读者不会
                     # 看到 (engine, None) 这种半初始化组合。
                     self._session_factory = sessionmaker(bind=engine)
                     self._engine = engine
         return self._engine, self._session_factory  # type: ignore[return-value]
+
+    def _connect_args(self) -> dict:
+        """P3-9: 组装 connect_args——仅 postgresql 方言注入 statement_timeout。
+
+        "postgresql" 前缀同时覆盖 ``postgresql://`` 与
+        ``postgresql+psycopg2://`` 等方言变体；sqlite 等非 PG 形态返回空
+        （options 是 libpq 专属，注入别的方言直接连接报错）。
+        """
+        if (
+            self.statement_timeout_ms
+            and self.statement_timeout_ms > 0
+            and self.url.startswith("postgresql")
+        ):
+            return {
+                "options": f"-c statement_timeout={int(self.statement_timeout_ms)}"
+            }
+        return {}
 
     def dispose(self) -> None:
         """Close all pooled connections; a later :meth:`build` recreates them."""

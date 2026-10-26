@@ -1,7 +1,9 @@
+import { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import { createHmac } from "crypto";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import request from "supertest";
 import {
   BadGatewayException,
   ServiceUnavailableException,
@@ -263,5 +265,126 @@ describe("AlertsController webhook (OBS-02)", () => {
     expect(res.ok).toBe(true);
     const arg = notificationService.sendAll.mock.calls[0][0];
     expect(arg.content).not.toContain("Runbook:");
+  });
+});
+
+/**
+ * F-53（UIAUDIT 后端轮 P2-2/P3-4）：webhook body 校验启用后的契约
+ * （supertest 走真实参数管道——上面的直调用例绕过管道，钉不住 ValidationPipe）。
+ *
+ * 关键契约：
+ *   · 未知键（顶层 + alerts 项内）**静默剥离**而非 400——外部 Alertmanager
+ *     版本字段面不可控，这是对全站 forbidNonWhitelisted 纪律的显式例外；
+ *   · 剥离发生在「已解析对象」上，HMAC 仍按 req.rawBody 原始字节校验
+ *     （合法签名 + 带未知键的载荷照常放行 = 剥离不影响签名面的证明）；
+ *   · 已知字段形状错 → 400 VALIDATION_FAILED。
+ */
+describe("AlertsController webhook body validation (F-53, supertest 真实管道)", () => {
+  let app: INestApplication;
+  let notificationService: { sendAll: jest.Mock };
+  let taskRepo: { findOne: jest.Mock };
+
+  function signOf(timestamp: string, body: Buffer): string {
+    return (
+      "sha256=" +
+      createHmac("sha256", SECRET)
+        .update(Buffer.concat([Buffer.from(`${timestamp}.`), body]))
+        .digest("hex")
+    );
+  }
+
+  beforeAll(async () => {
+    notificationService = { sendAll: jest.fn() };
+    taskRepo = { findOne: jest.fn().mockResolvedValue(null) };
+    const moduleRef = await Test.createTestingModule({
+      controllers: [AlertsController],
+      providers: [
+        {
+          provide: NotificationService,
+          useValue: notificationService,
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === "alert.webhookSecret" ? SECRET : undefined,
+          },
+        },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+      ],
+    }).compile();
+    app = moduleRef.createNestApplication({ rawBody: true });
+    // 控制器注册的全局 filter 在 main.ts——测试里补挂，断言 errorCode 封套。
+    const { HttpExceptionFilter } =
+      await import("../../../common/filters/http-exception.filter");
+    app.useGlobalFilters(new HttpExceptionFilter());
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    notificationService.sendAll.mockClear();
+    taskRepo.findOne.mockClear();
+  });
+
+  it("未知键（顶层 + alerts 项内）被静默剥离，合法签名照常放行（HMAC 对 rawBody 不受剥离影响）", async () => {
+    notificationService.sendAll.mockResolvedValue({ wecom: "sent" });
+    const rawBody = Buffer.from(
+      JSON.stringify({
+        version: "4",
+        status: "firing",
+        alerts: [
+          {
+            status: "firing",
+            labels: { alertname: "PG_DOWN" },
+            annotations: { summary: "down" },
+            startsAt: "2026-10-25T00:00:00Z",
+            futureFieldFromNewerAlertmanager: { nested: true },
+          },
+        ],
+        brandNewTopLevelField: "whatever",
+      }),
+    );
+    const timestamp = String(Date.now());
+
+    // 注意：superagent 对 Buffer + application/json 会 JSON.stringify 再序列化
+    //（wire bytes 变成 {"type":"Buffer",...}，与签名字节不一致必 401）——
+    // 发签名字节的 utf8 字符串原样上送。
+    const res = await request(app.getHttpServer())
+      .post("/alerts/webhook")
+      .set("X-AutoCodeFlow-Timestamp", timestamp)
+      .set("X-Hub-Signature-256", signOf(timestamp, rawBody))
+      .set("Content-Type", "application/json")
+      .send(rawBody.toString("utf8"));
+
+    expect(res.status).toBe(201);
+    expect(notificationService.sendAll).toHaveBeenCalledTimes(1);
+    // alertname 照常映射进标题（剥离未知键没有伤及消费字段）。
+    const arg = notificationService.sendAll.mock.calls[0][0];
+    expect(arg.title).toContain("PG_DOWN");
+  });
+
+  it("已知字段形状错（alerts 传字符串）→ 400 VALIDATION_FAILED 封套", async () => {
+    const rawBody = Buffer.from(
+      JSON.stringify({ status: "firing", alerts: "oops" }),
+    );
+    const timestamp = String(Date.now());
+
+    // 注意：superagent 对 Buffer + application/json 会 JSON.stringify 再序列化
+    //（wire bytes 变成 {"type":"Buffer",...}，与签名字节不一致必 401）——
+    // 发签名字节的 utf8 字符串原样上送。
+    const res = await request(app.getHttpServer())
+      .post("/alerts/webhook")
+      .set("X-AutoCodeFlow-Timestamp", timestamp)
+      .set("X-Hub-Signature-256", signOf(timestamp, rawBody))
+      .set("Content-Type", "application/json")
+      .send(rawBody.toString("utf8"));
+
+    expect(res.status).toBe(400);
+    expect(res.body.errorCode).toBe("VALIDATION_FAILED");
+    expect(notificationService.sendAll).not.toHaveBeenCalled();
   });
 });

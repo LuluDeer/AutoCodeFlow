@@ -13,6 +13,11 @@
  *   私有网段不再被自动放行；内网部署请将对应 origin 显式加入白名单并在部署文档说明。
  */
 
+import { Logger } from "@nestjs/common";
+
+import { AppError } from "../errors/app-error";
+import { ErrorCode } from "../errors/error-codes";
+
 // 开发默认：仅本机来源（scheme + 主机 + 可选端口），不包含 0.0.0.0/::1 等。
 const DEV_DEFAULT_ORIGIN_PATTERN =
   /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
@@ -46,4 +51,44 @@ export function isOriginAllowed(
     return true;
   }
   return false;
+}
+
+/**
+ * F-40（UIUX 审计 P1-1）：构造 enableCors 的 origin 校验回调（main.ts 使用）。
+ *
+ * 拒绝形态从裸 `new Error(...)` 改为带稳定码的 AppError：裸 Error 经 cors
+ * 中间件 next(err) 冒泡到 HttpExceptionFilter 会被兜成 **500「服务器内部错误」
+ * （errorCode:null）**，与真实服务器故障不可区分；AppError 是 HttpException
+ * 子类，filter 按主路径渲染为规范 403 + `CORS_ORIGIN_NOT_ALLOWED` 错误封套
+ * （params.origin 透出被拒来源，进统一错误体与服务端日志）。
+ *
+ * 第二参恒传 false：抛错路径下 cors 包直接 next(err)，该值无实际语义，写 false
+ * 只为显式表达"未放行"（对照放行分支的 true）。
+ */
+export function corsOriginValidator(
+  allowedOrigins: string[],
+  isDevelopment: boolean,
+): (
+  origin: string | undefined,
+  callback: (err: Error | null, allow?: boolean) => void,
+) => void {
+  return (origin, callback) => {
+    // Allow server-to-server calls (no Origin header)
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    if (isOriginAllowed(origin, allowedOrigins, isDevelopment)) {
+      callback(null, true);
+      return;
+    }
+    Logger.warn(
+      `Origin ${origin} not allowed by CORS (403 CORS_ORIGIN_NOT_ALLOWED)`,
+      "CORS",
+    );
+    callback(
+      new AppError(ErrorCode.CORS_ORIGIN_NOT_ALLOWED, { origin }),
+      false,
+    );
+  };
 }
