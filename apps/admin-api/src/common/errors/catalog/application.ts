@@ -422,6 +422,23 @@ export const APPLICATION_CODES = {
     zh: "Webhook URL 被 SSRF 策略拒绝（不允许指向 private/loopback/link-local/benchmark/CGNAT 目标）：{{url}}",
     en: "The webhook URL was refused by the SSRF policy (private/loopback/link-local/benchmark/CGNAT targets are not allowed): {{url}}",
   },
+  /**
+   * F-53 / LANG-ERR-01：`POST /notification/channels/:key/test` 的 per-channel
+   * 配置覆盖体形状不合规。
+   *
+   * 为什么**一个码带 reason** 而不是拆成五个码：这五条校验（非对象 / 键过多 /
+   * 键过长 / 值非 string / 值过长）是**同一个开放映射的同一道形状闸**，调用方
+   * 的处置动作完全相同（改请求体），拆五个码只会让码表膨胀而不增加信息。真正
+   * 需要机器区分的是"哪个约束被违反"，那由 reason 承载——比看文案可靠。
+   *
+   * 此前是裸 `BadRequestException`（响应体无 errorCode），前端只能渲染服务端
+   * 中文兜底文案，英文界面下直接出现中文。
+   */
+  NOTIFICATION_CONFIG_OVERRIDE_INVALID: {
+    status: 400,
+    zh: "渠道配置覆盖体非法（{{reason}}）",
+    en: "Invalid channel config override ({{reason}})",
+  },
 
   // ── 事件订阅（event-subscriptions/**）─────────────────────────────
   EVENT_SUBSCRIPTION_NOT_FOUND: {

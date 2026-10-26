@@ -117,7 +117,10 @@ describe("NotificationConfigController body 纪律（F-53）", () => {
       .post("/notification/channels/webhook/test")
       .send({ url: "https://ok", port: 587 });
     expect(res.status).toBe(400);
-    expect(res.body.errorCode).toBe("VALIDATION_FAILED");
+    // LANG-ERR-01：该面由 ChannelConfigOverridePipe 自主校验，不再借道
+    // ValidationPipe 的 VALIDATION_FAILED——改专用码后 errorCode 直指「覆盖体
+    // 形状」这一具体面（reason 参数区分五类约束），前端可给出针对性文案。
+    expect(res.body.errorCode).toBe("NOTIFICATION_CONFIG_OVERRIDE_INVALID");
     expect(configService.testChannel).not.toHaveBeenCalled();
   });
 

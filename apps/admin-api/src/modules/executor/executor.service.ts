@@ -2741,6 +2741,10 @@ export class ExecutorService implements OnModuleInit {
         throw new AppError("EXECUTOR_ADDRESS_TAKEN", { address: data.address });
       }
     } else {
+      // adr-026-exempt: 常规注册的裸 id 覆盖写。patch = 白名单 ∩ 采纳集，每列都由
+      // 本次上报重新确定，无「旧快照盖掉别人新状态」的可能；加 CAS 会在 sweep
+      // 恰好置 OFFLINE 的瞬间 affected=0 ⇒ 注册静默丢失（完整论证见本方法
+      // `pickOwnedColumns` 前的五行）。接管路径已在上方走 status 谓词 CAS。
       await this.repo.update({ id: e.id }, patch);
     }
     // R3-A（§4.3）：重注册携带 deployedApps → 落事实行（best-effort 同首注册

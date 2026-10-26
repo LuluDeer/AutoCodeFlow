@@ -1,4 +1,5 @@
-import { BadRequestException, type PipeTransform } from "@nestjs/common";
+import type { PipeTransform } from "@nestjs/common";
+import { AppError } from "../../common/errors/app-error";
 
 /**
  * F-53（UIAUDIT 后端轮 P2-2）：POST /notification/channels/:key/test 的
@@ -20,8 +21,9 @@ import { BadRequestException, type PipeTransform } from "@nestjs/common";
  *   ③ 键数量 ≤32、单键 ≤64 字符、单值 ≤4096 字符（渠道配置键的现实上界
  *      远低于此；全局 body 1MB 之下再给这层 admin-only 面一个便宜的护栏）。
  *
- * 错误形态与全局 ValidationPipe 对齐：BadRequestException + message 数组，
- * 经 HttpExceptionFilter 落成 400 VALIDATION_FAILED（detail 进 message）。
+ * 错误形态（LANG-ERR-01）：统一抛 `AppError('NOTIFICATION_CONFIG_OVERRIDE_INVALID')`，
+ * reason 参数区分具体约束。原先抛裸 `BadRequestException`（响应体无 errorCode），
+ * 前端只能渲染服务端中文兜底文案——英文界面下直接出现中文。
  */
 export class ChannelConfigOverridePipe implements PipeTransform<
   unknown,
@@ -35,47 +37,31 @@ export class ChannelConfigOverridePipe implements PipeTransform<
   transform(value: unknown): Record<string, string> {
     if (value === undefined || value === null) return {};
     if (typeof value !== "object" || Array.isArray(value)) {
-      throw new BadRequestException({
-        statusCode: 400,
-        message: ["config override must be an object (string → string map)"],
-        error: "Bad Request",
+      throw new AppError("NOTIFICATION_CONFIG_OVERRIDE_INVALID", {
+        reason: "must be an object (string → string map)",
       });
     }
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length > ChannelConfigOverridePipe.MAX_KEYS) {
-      throw new BadRequestException({
-        statusCode: 400,
-        message: [
-          `config override accepts at most ${ChannelConfigOverridePipe.MAX_KEYS} keys`,
-        ],
-        error: "Bad Request",
+      throw new AppError("NOTIFICATION_CONFIG_OVERRIDE_INVALID", {
+        reason: `at most ${ChannelConfigOverridePipe.MAX_KEYS} keys`,
       });
     }
     const out: Record<string, string> = {};
     for (const [k, v] of entries) {
       if (k.length > ChannelConfigOverridePipe.MAX_KEY_LENGTH) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: [
-            `config override key too long (max ${ChannelConfigOverridePipe.MAX_KEY_LENGTH}): ${k.slice(0, 16)}…`,
-          ],
-          error: "Bad Request",
+        throw new AppError("NOTIFICATION_CONFIG_OVERRIDE_INVALID", {
+          reason: `key too long (max ${ChannelConfigOverridePipe.MAX_KEY_LENGTH}): ${k.slice(0, 16)}…`,
         });
       }
       if (typeof v !== "string") {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: [`config override value for "${k}" must be a string`],
-          error: "Bad Request",
+        throw new AppError("NOTIFICATION_CONFIG_OVERRIDE_INVALID", {
+          reason: `value for "${k}" must be a string`,
         });
       }
       if (v.length > ChannelConfigOverridePipe.MAX_VALUE_LENGTH) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: [
-            `config override value for "${k}" too long (max ${ChannelConfigOverridePipe.MAX_VALUE_LENGTH})`,
-          ],
-          error: "Bad Request",
+        throw new AppError("NOTIFICATION_CONFIG_OVERRIDE_INVALID", {
+          reason: `value for "${k}" too long (max ${ChannelConfigOverridePipe.MAX_VALUE_LENGTH})`,
         });
       }
       out[k] = v;

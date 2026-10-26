@@ -209,8 +209,8 @@ export function collectReleaseAppNames(
   }
 
   const signature = buildSignature(files);
-  // constant-time-exempt: signature 是**文件列表的缓存键**（路径/mtime/size 派生），不是凭据。
   // 快路径让位：还有欠着的全量补扫且节流窗口已开时，必须重建（见 retryFullScanAt 注）。
+  // constant-time-exempt: signature 是**文件列表的缓存键**（路径/mtime/size 派生），不是凭据。
   if (
     cachedSignature === signature &&
     (retryFullScanAt === null || io.now() < retryFullScanAt)
