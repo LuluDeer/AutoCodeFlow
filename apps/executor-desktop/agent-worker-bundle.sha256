@@ -15,5 +15,10 @@
 #
 # 变更记录：
 #   - N-06 首版基线：worker 拆分 + playwright 分发接线（host=esbuild 7101KB）。
-source-digest: 9c620395e63f0ef99a4db0b42cb60f6aed8b3d43223f1b1d7812ed18ea62f8cb
+source-digest: 3f26e393f55cf6175f3c9a2b13538a0ba96531a71572e4a8a9229556df41cbff
 904ffc29208c7f2496fa70adbf8e51b6d596a4fe72f0d150ce5b280606d436f3  dist/index.js
+# 2026-10-26（深度审计打磨轮）：agent-worker 审计修复——main.ts（init 清扫上次死亡遗留试跑树+
+#   统一 exitWorker 先杀在飞树+withdraw 回执语义登记+畸形请求日志只记长度）。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），38 个输入文件。
+source-digest: 3f26e393f55cf6175f3c9a2b13538a0ba96531a71572e4a8a9229556df41cbff
+3b165206b32e2abc7ecc5e94f29938672c9500b29c5a3809bf864992c03108f9  index.js

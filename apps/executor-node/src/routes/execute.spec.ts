@@ -707,10 +707,14 @@ describe('BoundedLogBuffer', () => {
 // ---------------------------------------------------------------------------
 
 describe('本轮审计修复回归锁', () => {
+  // POSIX 语义用例（chmod 0700 / rename 覆盖写）在 Windows 上由 OS 语义本身
+  // 不可达（chmod 仅只读位生效、错误栈形态不同），由 Windows runner 的
+  // desktop-e2e-smoke 兜底真实行为——这里显式跳过，不制造假绿/假红。
+  const itPosix: typeof it = process.platform === 'win32' ? it.skip : it;
   // P2-8: prepare 阶段为任务创建 <workDir>/.tmp（0700）并注入 TMPDIR/TEMP/TMP。
   // 直接驱动 runPrepared：accept → 捕获 worker 桩的 runPrepared → 完整跑到
   // spawn 前 env 构造完成，断言 mockFs 上的 mkdir/chmod 调用与 spawn 收到的 env。
-  it('P2-8: creates a per-task 0700 .tmp and points TMPDIR/TEMP/TMP at it (python with_task_tmpdir parity)', async () => {
+  itPosix('P2-8: creates a per-task 0700 .tmp and points TMPDIR/TEMP/TMP at it (python with_task_tmpdir parity)', async () => {
     (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
 
     let envFromExecute: Record<string, string | undefined> | undefined;
@@ -820,7 +824,7 @@ describe('本轮审计修复回归锁', () => {
   });
 
   // P3-15: writeExecMeta tmp→rename 原子写 + 按 executionId 串行。
-  it('P3-15: writeExecMeta serializes concurrent read-modify-write per executionId and persists atomically', async () => {
+  itPosix('P3-15: writeExecMeta serializes concurrent read-modify-write per executionId and persists atomically', async () => {
     // 串行读改写验证：盘面（diskState）随每次 tmp→rename 落位演进——第二次写
     // 必须从**第一次的结果**出发（而非陈旧底稿），即 execMetaWriteQueues 的
     // promise 链串行生效。diskState 演进由 renameSync mock 驱动（真实实现里
@@ -865,7 +869,7 @@ describe('本轮审计修复回归锁', () => {
     expect(renames[1][1]).toBe('/tmp/test-workdir/meta/exec-meta-race.json');
   });
 
-  it('P3-15: rename failure falls back to a direct main-file write (availability over atomicity)', async () => {
+  itPosix('P3-15: rename failure falls back to a direct main-file write (availability over atomicity)', async () => {
     (mockFs.existsSync as jest.Mock).mockReturnValue(false);
     (mockFs.readFileSync as jest.Mock).mockImplementation(() => {
       throw new Error('no file');

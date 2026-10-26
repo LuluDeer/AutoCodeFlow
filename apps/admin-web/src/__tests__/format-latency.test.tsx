@@ -8,7 +8,7 @@
  * ≥1s 复用 formatDuration 人类可读档；非有限值/空值回落 '—'、负值 clamp 0。
  * 既有整型延迟（80/100/42ms）输出不变（dashboard-ui04 先例回归）。
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import '../i18n';
 import { formatLatencyMs } from '../utils/timeFormat';

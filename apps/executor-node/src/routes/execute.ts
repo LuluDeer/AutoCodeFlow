@@ -601,7 +601,7 @@ export function acceptExecution(
         let parsedGitUrl: URL | null = null;
         try {
           parsedGitUrl = new URL(gitRepo);
-          parsedGitUrl.port; // 畸形端口在此抛 TypeError/RangeError
+          void parsedGitUrl.port; // 畸形端口在此抛 TypeError/RangeError
         } catch {
           return reject(400, `无效的 gitRepo URL：${gitRepo}`);
         }

@@ -3945,6 +3945,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutorCommandResultDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "",
@@ -3956,9 +3966,17 @@
               }
             }
           },
+          "400": {
+            "description": "载荷形态非法（DTO 白名单校验）",
+            "x-i18n-en": "Malformed payload (DTO whitelist validation)"
+          },
           "401": {
             "description": "执行器令牌无效",
             "x-i18n-en": "Invalid executor token"
+          },
+          "403": {
+            "description": "命令不属于该执行器（跨行回报）",
+            "x-i18n-en": "Command does not belong to this executor (cross-row report)"
           }
         },
         "summary": "上报 pull 控制命令的执行结果",
@@ -5106,6 +5124,18 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "渠道配置更新体",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateChannelDto"
+              }
+            }
+          },
+          "x-i18n-en": "Channel config update body"
+        },
         "responses": {
           "200": {
             "description": "",
@@ -12427,6 +12457,11 @@
             "type": "string",
             "description": "非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19）",
             "x-i18n-en": "Required when a non-admin user changes their own password (SEC-12); the service strips this field before persisting (R19)"
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "账号启用/禁用（ADMIN-only；禁用后登录 403 且在途会话立即失效）",
+            "x-i18n-en": "Enable/disable the account (ADMIN-only; disabling makes login return 403 and invalidates in-flight sessions immediately)"
           }
         }
       },
@@ -15732,6 +15767,12 @@
               "$ref": "#/components/schemas/InstalledPackageDto"
             },
             "x-i18n-en": "R3-A (§4.3/P10): executor packages installed on the device. Same three-state semantics as interpreters: omitted -> keep the stored DB value; [] -> reported with nothing installed; structurally invalid or more than 100 items -> the whole field is rejected."
+          },
+          "registrationConflict": {
+            "type": "boolean",
+            "example": false,
+            "description": "方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。",
+            "x-i18n-en": "Protocol v8 (takeover self-heal, plan b): executor self-report of chronic /token 409 conflict — set from the most recent 409 until a token is successfully obtained. Tri-state: absent = not reported (legacy executors / python without support; the control plane keeps legacy liveness semantics); false = reported and currently conflict-free; true = conflict in progress"
           }
         },
         "required": [
@@ -16095,6 +16136,61 @@
         "required": [
           "task",
           "dispatchMode"
+        ]
+      },
+      "ExecutorCommandResultDto": {
+        "type": "object",
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "description": "命令 id（中台入队时签发的 UUID v4，执行器原样回传；它同时是 acf:cmdres:/acf:cmdmeta: 键的成分）",
+            "x-i18n-en": "Command id (UUID v4 issued by the control plane at enqueue time, echoed back verbatim; also a component of the acf:cmdres: / acf:cmdmeta: keys)"
+          },
+          "address": {
+            "type": "string",
+            "example": "http://10.0.0.5:9100",
+            "description": "执行器注册地址",
+            "x-i18n-en": "Executor registration address"
+          },
+          "type": {
+            "type": "string",
+            "example": "deploy",
+            "description": "命令类型（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）",
+            "x-i18n-en": "Command type (deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package)"
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "命令是否执行成功",
+            "x-i18n-en": "Whether the command succeeded"
+          },
+          "status": {
+            "type": "number",
+            "description": "执行器本地路由的 HTTP 状态码",
+            "x-i18n-en": "HTTP status code of the executor-local route"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "失败原因（≤2000）。执行器侧自截 1000 字符，这里给双倍余量——闸的意义是堵住非受信上报面的自由文本写放大，不是复刻执行器侧的截断行为",
+            "x-i18n-en": "Failure reason (≤2000). Executors self-truncate at 1000 chars; this allows double headroom — the gate exists to block free-text write amplification from untrusted report surfaces, not to mirror executor-side truncation"
+          },
+          "durationMs": {
+            "type": "number",
+            "description": "本地执行耗时（毫秒）",
+            "x-i18n-en": "Local execution duration (milliseconds)"
+          },
+          "deviceFingerprint": {
+            "type": "string",
+            "nullable": true,
+            "description": "ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——上报行定位与归属比对用",
+            "x-i18n-en": "ADR-017 phase 3: stable device fingerprint (optional; legacy executors omit it) — used for row resolution and ownership comparison"
+          }
+        },
+        "required": [
+          "commandId",
+          "address",
+          "type",
+          "ok"
         ]
       },
       "ExecutorCommandResultResponseDto": {
@@ -16904,6 +17000,21 @@
           "description"
         ]
       },
+      "UpdateChannelDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "启用/停用该渠道",
+            "x-i18n-en": "Enable/disable this channel"
+          },
+          "config": {
+            "type": "object",
+            "description": "渠道配置覆盖（string → string 映射，哨兵 '***' 不覆盖真实机密）",
+            "x-i18n-en": "Channel config override (string → string map; the '***' sentinel does not overwrite real secrets)"
+          }
+        }
+      },
       "ChannelTestResponseDto": {
         "type": "object",
         "properties": {
@@ -17153,6 +17264,7 @@
           "channelType": {
             "type": "string",
             "description": "仅作范围记录（isSilenced 在渠道扇出前判定，无法按渠道裁剪投递，NETOPT-5① 如实化）；取值须为已注册渠道类型",
+            "maxLength": 32,
             "x-i18n-en": "Recorded as scope only (isSilenced is evaluated before channel fan-out, so deliveries cannot be trimmed per channel; NETOPT-5 (1) made explicit); the value must be a registered channel type"
           },
           "taskId": {
@@ -17167,19 +17279,28 @@
           },
           "level": {
             "type": "string",
-            "description": "仅静默该级别（精确匹配 info/warning/error/critical，非「及以下」）；空 = 全部级别",
-            "x-i18n-en": "Silences only this level (exact match of info/warning/error/critical, not \"and below\"); empty = all levels"
+            "enum": [
+              "info",
+              "warning",
+              "error",
+              "critical"
+            ],
+            "description": "仅静默该级别（精确匹配，非「及以下」）；空 = 全部级别",
+            "x-i18n-en": "Silence exactly this level (exact match, not \"and below\"); empty = all levels"
           },
           "reason": {
             "type": "string",
             "description": "静默原因（审计记录用）",
+            "maxLength": 255,
             "x-i18n-en": "Silence reason (for the audit record)"
           },
           "durationMinutes": {
             "type": "number",
             "example": 60,
-            "description": "静默时长（分钟）；缺省走系统默认 TTL",
-            "x-i18n-en": "Silence duration (minutes); default uses the system default TTL"
+            "description": "静默时长（分钟，1..5256000=10 年）；缺省走系统默认 TTL（P3-1 上界）",
+            "minimum": 1,
+            "maximum": 5256000,
+            "x-i18n-en": "Silence duration (minutes, 1..5256000 = 10 years); defaults to the system TTL (P3-1 upper bound)"
           }
         },
         "required": [

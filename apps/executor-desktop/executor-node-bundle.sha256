@@ -604,9 +604,19 @@
 #   （私服地址可携带 user:token@ 内嵌凭据）；deploy.ts 的 Cloning gitRepo 日志对齐
 #   execute.ts 的脱敏纪律；三处 redactUrl 收敛为新模块 src/redact-url.ts（单一事实源）。
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
-source-digest: 601ca625be7237b5e830b4cfe58a7bb5d31375a1c1667e6e1615f46404ef4cb2
+source-digest: 99796e33e2290f16913f89b8ce617bb355fc85f80b7d2514f29d28fd8980dd0f
 2a877e9148c97150ac8efe2810ca280ada2245e1e2cc0af6dbbe720c40aba242  index.js
 #   - 99796e33…（2026-10-25）：P1 凭据通道——python-venv.ts（writePypiNetrc/pypiNetrcHosts 挂进 defaultUvEnv）+ config.ts（pypi 凭据 getter 三件）。
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），50 个输入文件。
 source-digest: 99796e33e2290f16913f89b8ce617bb355fc85f80b7d2514f29d28fd8980dd0f
 309b3d4e3c5b9639fb072f43f49728d07931025cb50db328aa471008234cf0f5  index.js
+# 2026-10-26（深度审计打磨轮）：executor-node 审计修复 C 批 + 接管自愈方案 b——
+#   middleware/auth.ts（409 指数退避+双时钟单源化）/heartbeat-state.ts（registrationConflict 态）/
+#   routes/health.ts（暴露冲突态）/routes/execute.ts（gitRepo userinfo 拒绝+per-task .tmp 0700+
+#   bwrap 启动失败分类+回调 result 4KB 二分收缩+writeExecMeta 串行原子写+void 表达式）/run-command.ts
+#   （prepare rlimit ulimit 包装+10MB 截断 marker）/process-rlimits.ts（buildPrepareRlimitStatements）/
+#   config.ts（磁盘阈值内序回落+TASK_TIMEOUT_SECONDS 非法回落+npmRegistryUser/Pass+PROTOCOL_VERSION=8）/
+#   generated/protocol.schemas.ts（v8 HeartbeatPayload）。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: 29fc62370b565e8228f98e1ff6ec1791767ab3c2b910a5433b8ef128569c0fae
+dec932c12626ac73b224f4187aeace03bd26207728b8eeb8ad262fdbc39cba5c  index.js

@@ -135,7 +135,7 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
           'getConfig', 'getHealthPanel', 'getHistory',
           'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
           'getWindowState', 'importConfig', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow',
-          'onHistoryChanged', 'onLogLine',
+          'onConfigChanged', 'onHistoryChanged', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',

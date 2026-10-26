@@ -4070,6 +4070,8 @@ export interface components {
             role?: "admin" | "user";
             /** @description 非 admin 用户修改自己的密码时必填（SEC-12）；service 落库前会剥离该字段（R19） */
             currentPassword?: string;
+            /** @description 账号启用/禁用（ADMIN-only；禁用后登录 403 且在途会话立即失效） */
+            isActive?: boolean;
         };
         UserDeleteResponseDto: {
             /** @enum {boolean} */
@@ -5375,6 +5377,11 @@ export interface components {
             deployedApps?: components["schemas"]["DeployedAppDto"][];
             /** @description R3-A（§4.3/P10）：设备已安装的执行器包清单。三态语义与 interpreters 同款：缺省 → 保留 DB 旧值；[] → 已上报且无安装包；结构非法/超 100 项 → 整字段拒绝采纳。 */
             installedPackages?: components["schemas"]["InstalledPackageDto"][];
+            /**
+             * @description 方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。
+             * @example false
+             */
+            registrationConflict?: boolean;
         };
         ExecutorHeartbeatResponseDto: {
             /** Format: uuid */
@@ -5506,6 +5513,30 @@ export interface components {
             commands?: {
                 [key: string]: unknown;
             }[];
+        };
+        ExecutorCommandResultDto: {
+            /** @description 命令 id（中台入队时签发的 UUID v4，执行器原样回传；它同时是 acf:cmdres:/acf:cmdmeta: 键的成分） */
+            commandId: string;
+            /**
+             * @description 执行器注册地址
+             * @example http://10.0.0.5:9100
+             */
+            address: string;
+            /**
+             * @description 命令类型（deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package）
+             * @example deploy
+             */
+            type: string;
+            /** @description 命令是否执行成功 */
+            ok: boolean;
+            /** @description 执行器本地路由的 HTTP 状态码 */
+            status?: number;
+            /** @description 失败原因（≤2000）。执行器侧自截 1000 字符，这里给双倍余量——闸的意义是堵住非受信上报面的自由文本写放大，不是复刻执行器侧的截断行为 */
+            error?: string | null;
+            /** @description 本地执行耗时（毫秒） */
+            durationMs?: number;
+            /** @description ADR-017 阶段 3：稳定设备指纹（可选；旧执行器不传）——上报行定位与归属比对用 */
+            deviceFingerprint?: string | null;
         };
         ExecutorCommandResultResponseDto: {
             /** @enum {boolean} */
@@ -5762,6 +5793,12 @@ export interface components {
             };
             description: string;
         };
+        UpdateChannelDto: {
+            /** @description 启用/停用该渠道 */
+            enabled?: boolean;
+            /** @description 渠道配置覆盖（string → string 映射，哨兵 '***' 不覆盖真实机密） */
+            config?: Record<string, never>;
+        };
         ChannelTestResponseDto: {
             /** @description 仅当每一个请求的渠道都真的投递成功（'sent'）时为 true；任一路为 'blocked'/'failed'/'skipped' 都是 false，逐通道结果见 results */
             success: boolean;
@@ -5855,12 +5892,15 @@ export interface components {
             taskId?: string;
             /** @description scope=application 时必填：应用 UUID */
             applicationId?: string;
-            /** @description 仅静默该级别（精确匹配 info/warning/error/critical，非「及以下」）；空 = 全部级别 */
-            level?: string;
+            /**
+             * @description 仅静默该级别（精确匹配，非「及以下」）；空 = 全部级别
+             * @enum {string}
+             */
+            level?: "info" | "warning" | "error" | "critical";
             /** @description 静默原因（审计记录用） */
             reason?: string;
             /**
-             * @description 静默时长（分钟）；缺省走系统默认 TTL
+             * @description 静默时长（分钟，1..5256000=10 年）；缺省走系统默认 TTL（P3-1 上界）
              * @example 60
              */
             durationMinutes?: number;
@@ -9997,7 +10037,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutorCommandResultDto"];
+            };
+        };
         responses: {
             200: {
                 headers: {
@@ -10007,8 +10051,22 @@ export interface operations {
                     "application/json": components["schemas"]["ExecutorCommandResultResponseDto"];
                 };
             };
+            /** @description 载荷形态非法（DTO 白名单校验） */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description 执行器令牌无效 */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 命令不属于该执行器（跨行回报） */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10670,7 +10728,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description 渠道配置更新体 */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChannelDto"];
+            };
+        };
         responses: {
             200: {
                 headers: {

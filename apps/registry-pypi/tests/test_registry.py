@@ -1994,7 +1994,11 @@ class TestStaleUploadSweepP3P1:
         residue.write_bytes(b"junk")
         old = time_mod.time() - m.UPLOAD_STALE_SECONDS - 1
         os.utime(residue, (old, old))
-        m._last_upload_sweep = 0.0  # 节流复位，允许本次上传触发清扫
+        # 节流复位：_maybe_sweep_stale_uploads 用 time.monotonic()（进程运行秒数），
+        # 直接置 0 在「刚启动的进程」里仍落在节流窗内（CI 全套仅 ~25s）——必须把
+        # 上次清扫时刻推回到节流窗之前，任何进程年龄下都能触发（否则本地长跑绿、
+        # CI 短跑红的时序依赖）。
+        m._last_upload_sweep = time_mod.monotonic() - m.UPLOAD_SWEEP_MIN_INTERVAL - 1
         resp = client.post("/", auth=AUTH,
                            data={"name": "sweep-via-route", "version": "1.0"},
                            files={"content": ("sweep-via-route-1.0.whl", b"x",
