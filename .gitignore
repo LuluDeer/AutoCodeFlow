@@ -199,6 +199,12 @@ apps/executor-desktop/e2e/.layout-analysis/
 # e2e 视觉巡检产物（visual-audit.cjs 的多尺寸截图 + geometry 报告，不入库）
 apps/executor-desktop/e2e/.visual/
 
+# e2e 量化审计产物（ui-metrics.cjs 的 metrics.json/txt + overlay 截图，不入库）
+apps/executor-desktop/e2e/.metrics/
+
+# e2e 深度布局扫描产物（ui-deep-scan.cjs 的 deep.json/report + 问题框截图，不入库）
+apps/executor-desktop/e2e/.deep-scan/
+
 # Windows 环境变量展开残留：某次测试把未展开的 `%SystemDrive%` 当路径用，
 # 于是在 apps/executor-python/ 下生成了一个名为 `%SystemDrive%` 的目录，
 # 里面是 Windows 缓存 .db（3 个文件约 0.9MB）。**不是源码**，不入库。

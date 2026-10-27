@@ -16,6 +16,8 @@
     "test:e2e": "playwright test --config=e2e/playwright.config.js",
     "audit:ui": "node e2e/ui-audit.cjs",
     "audit:visual": "node e2e/visual-audit.cjs",
+    "audit:metrics": "node e2e/ui-metrics.cjs",
+    "audit:deep": "node e2e/ui-deep-scan.cjs",
     "build": "npm run build:executor && npm run build:agent-worker && npm run build:main && npm run build:renderer",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",

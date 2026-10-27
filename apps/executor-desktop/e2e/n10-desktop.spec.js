@@ -260,24 +260,14 @@ test.describe('N-10 三例', () => {
       );
       expect(saved.ok).toBe(true);
 
-      // ③ 切到「历史」tab（页面常驻 DOM、active 才拉数）→ 分组渲染
+      // ③ 切到「历史」tab（页面常驻 DOM、active 才拉数）→ 执行台账行
       await win.locator('#history-tab').click();
-      const group = win.locator('.history-group-header', { hasText: 'N-10 混沌冒烟任务' });
-      await expect(group).toBeVisible({ timeout: 15000 });
-      // 组级统计：1 失败 / 1 次（损坏文件不得计入、不得让面板空白）
-      await expect(group.locator('.history-stat.failed')).toHaveText('1 失败');
-      await expect(group.locator('.history-stat.total')).toHaveText('1 次');
-      await expect(group.locator('.history-group-meta .badge')).toHaveText('失败');
-
-      // ④ 运行行：首个组有 auto-expand 语义（expandedApp 为 null 时自动展开
-      //    第一组，HistoryPage 的报障修复）——此处不该再点头部（点了反而会
-      //    toggle 收起），直接断言展开后的运行行徽章 + 注入的 errorMessage
-      const runRow = win.locator('.history-run-row');
-      await expect(runRow).toHaveCount(1, { timeout: 10000 });
-      await expect(runRow.locator('.badge')).toHaveText('失败');
+      const runRow = win.locator('.history-run-row', { hasText: 'N-10 混沌冒烟任务' });
+      await expect(runRow).toHaveCount(1, { timeout: 15000 });
+      await expect(runRow.locator('.historyx-status-text')).toHaveText('失败');
       await expect(runRow.locator('.history-run-err')).toContainText('CHAOS-DRILL 注入样本');
 
-      // ⑤ 状态页主面在切走后依然完好（常驻 DOM 显隐语义）
+      // ④ 状态页主面在切走后依然完好（常驻 DOM 显隐语义）
       await win.locator('#status-tab').click();
       await expect(win.locator('.hero-card')).toHaveCount(1);
 

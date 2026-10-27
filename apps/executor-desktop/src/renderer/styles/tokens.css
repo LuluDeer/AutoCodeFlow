@@ -130,7 +130,9 @@
   --yellow-hover: #b45309;
   --yellow-bg: rgb(217 119 6 / 0.10);
   --yellow-border: rgb(217 119 6 / 0.32);
-  --yellow-text: #b45309;
+  /* 4.26 → 4.78：#b45309 在 amber 10% 底（.ll-warn / .info-banner.warn）上
+     达不到 4.5:1，10px 粗体日志级别尤其明显；压暗一档，白底与琥珀底同时达标。 */
+  --yellow-text: #a84d08;
 
   --blue: #2563eb;
   --blue-bg: rgb(37 99 235 / 0.08);

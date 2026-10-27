@@ -512,7 +512,9 @@ select.input {
 }
 .log-fs-content .log-line-no {
   flex: 0 0 56px;
-  color: var(--text3);
+  /* --text3 在 hover 行底色（rgba(15,23,42,.045) 叠白 = #edeef1）上只有
+     4.45:1；行号作次要信息再压暗半档到 5.0:1，观感几乎不变。 */
+  color: #5b6679;
   text-align: right;
   user-select: none;
   font-variant-numeric: tabular-nums;
@@ -674,7 +676,10 @@ select.input {
 .update-banner-icon .icon { width: 19px; height: 19px; }
 .update-banner-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .update-banner-text strong { font-size: 13px; color: var(--text); }
-.update-banner-text span { font-size: 11.5px; color: var(--text3); }
+/* 横幅底色带色（available/ready 绿底、error 红底），--text3 在两种色底上
+   只有 4.31 / 4.22:1；副标题是操作提示（「点击重启并安装…」），降到 --text2
+   （7.2 / 7.1:1）。 */
+.update-banner-text span { font-size: 11.5px; color: var(--text2); }
 .update-banner-actions { display: flex; gap: var(--space-sm); flex: none; }
 
 .update-banner-available,
@@ -704,7 +709,8 @@ select.input {
 .update-notes summary {
   cursor: pointer;
   font-size: 11.5px;
-  color: var(--accent);
+  /* 绿底上 --accent(#15803d) 只有 4.18:1，链接也必须达 4.5；压暗一档到 5.96:1 */
+  color: var(--accent-hover);
   list-style: none;
   user-select: none;
   width: fit-content;

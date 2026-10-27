@@ -11,6 +11,13 @@ import { ipcErrorMessage } from '../ipc-error';
 import { classifyLogRead, MISSING_AFTER_START_MESSAGE } from '../log-read-classify';
 // V4 后续优化（6）i18n 二期：应用页文案入双语表（zh 值与原硬编码逐字一致）。
 import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../i18n';
+import {
+  avatarTone,
+  compareGroups,
+  passesFilter,
+  type AppFilter,
+  type AppSort,
+} from '../apps-view';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
@@ -39,6 +46,8 @@ declare const window: Window & {
      * 数据来自 executor 的 /api/app-status（进程登记只在执行器进程内）。
      */
     getRunningApps: () => Promise<Record<string, { pid?: number; running?: boolean }>>;
+    /** 复制文本走主进程 Electron clipboard（不受安全上下文/权限限制）。 */
+    writeClipboardText: (text: string) => Promise<{ ok: boolean; error?: string }>;
   };
 };
 
@@ -86,11 +95,24 @@ type AppGroup = {
   newestAt: number;
   current: AppEntry | null;
   runningCount: number;
+  versionCount: number;
+  hasName: boolean;
+  hasCurrent: boolean;
+  hasLog: boolean;
   nameMatches: boolean;
   matchedEntries: AppEntry[];
 };
 
-const INITIAL_APP_COUNT = 30;
+type RunningMap = Record<string, { pid?: number; running?: boolean }>;
+
+type RunStatus = 'running' | 'scheduled' | 'stopped';
+
+const STATUS_LABEL_KEY: Record<RunStatus, string> = {
+  running: 'appx.status.running',
+  scheduled: 'appx.status.scheduled',
+  stopped: 'appx.status.stopped',
+};
+
 const INITIAL_RELEASE_COUNT = 3;
 const MORE_RELEASE_COUNT = 20;
 
@@ -105,6 +127,46 @@ function classifyLog(line: string): ViewerLogLevel {
   if (l.includes('error') || l.includes('failed') || l.includes('err ')) return 'error';
   if (l.includes('warn')) return 'warn';
   return '';
+}
+
+function groupStatus(group: AppGroup): RunStatus {
+  if (group.runningCount > 0) return 'running';
+  if (runModeOf(group) === 'scheduled') return 'scheduled';
+  return 'stopped';
+}
+
+function runModeOf(group: AppGroup): string {
+  return group.entries[0]?.runMode ?? '—';
+}
+
+/** 列表副标题用的「模式 · 」前缀；无模式（null / '-' / '—'）时不渲染分隔符。 */
+function runModePrefix(group: AppGroup): string {
+  const mode = group.entries[0]?.runMode?.trim();
+  return mode && mode !== '-' && mode !== '—' ? `${mode} · ` : '';
+}
+
+function versionLabel(entry: AppEntry): string {
+  if (entry.version) return `v${entry.version}`;
+  return entry.releaseKey ? t('apps.versionUnknown') : t('apps.noReleaseYet');
+}
+
+function avatarClassName(name: string | null, appId: string, size?: 'sm' | 'lg'): string {
+  const base = name
+    ? `app-avatar appx-avatar appx-avatar-tone-${avatarTone(appId)}`
+    : 'app-avatar appx-avatar app-avatar-unknown appx-avatar-unknown';
+  return size ? `${base} appx-avatar-${size}` : base;
+}
+
+function avatarInitial(name: string | null): string {
+  return name ? name.trim().charAt(0).toUpperCase() : '?';
+}
+
+function firstDeletable(group: AppGroup, running: RunningMap): AppEntry | null {
+  return group.entries.find(entry =>
+    entry.releaseKey
+    && !entry.isCurrent
+    && !running[entry.deploymentId]?.running,
+  ) ?? null;
 }
 
 // ── 应用日志查看器（日志工作台 v3 第二步之二：改接共享 components/LogViewer）──
@@ -313,16 +375,111 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
   );
 }
 
+// ── 版本行列表（卡片内联展开 / 详情抽屉共用）────────────────────────────────
+interface ReleaseListProps {
+  appId: string;
+  entries: AppEntry[];
+  limit: number;
+  initialLimit: number;
+  running: RunningMap;
+  busy: string | null;
+  pendingConfirm: PendingConfirm | null;
+  onViewLog: (entry: AppEntry) => void;
+  onOpenFolder: (entry: AppEntry, releaseOnly: boolean) => void;
+  onRequestDelete: (appId: string, entry: AppEntry, label: string) => void;
+  onSetLimit: (appId: string, limit: number) => void;
+}
+
+function ReleaseList({
+  appId,
+  entries,
+  limit,
+  initialLimit,
+  running,
+  busy,
+  pendingConfirm,
+  onViewLog,
+  onOpenFolder,
+  onRequestDelete,
+  onSetLimit,
+}: ReleaseListProps) {
+  const groupBusy = Boolean(busy);
+  const hiddenCount = Math.max(0, entries.length - limit);
+  return (
+    <>
+      {entries.slice(0, limit).map(entry => {
+        const isRunning = Boolean(running[entry.deploymentId]?.running);
+        const pid = running[entry.deploymentId]?.pid;
+        const blocked = entry.isCurrent || isRunning;
+        const label = versionLabel(entry);
+        return (
+          <div key={entry.releaseKey || entry.deploymentId} className="app-deployment-row appx-release-row">
+            <div className="app-deployment-info" title={entry.releaseKey
+              ? t('apps.deploymentTitle', entry.releaseKey, entry.deploymentId, entry.deployedAt ? formatLocaleDateTime(entry.deployedAt) : t('apps.deployTimeUnknown'))
+              : t('apps.deploymentPendingTitle')}>
+              <div className="app-deployment-top">
+                <span className="app-deployment-version">{label}</span>
+                {entry.isCurrent && <span className="app-badge app-badge-current" title={t('apps.currentBadgeTitle')}>{t('apps.currentBadge')}</span>}
+                {isRunning && <span className="app-badge app-badge-running" title={pid ? t('apps.runningBadgeTitle', pid) : t('apps.runningBadgeTitlePlain')}>{t('history.status.running')}</span>}
+              </div>
+              <div className="app-deployment-sub">
+                {entry.releaseKey ? t('apps.deployedAs', entry.deploymentId.slice(0, 8)) : t('apps.awaitingRelease')}
+                {entry.deployedAt && ` · ${formatDeployTime(entry.deployedAt)}`}
+              </div>
+            </div>
+            <div className="app-deployment-actions">
+              {entry.hasLog ? (
+                <button type="button" className="btn btn-sm" onClick={() => onViewLog(entry)}>{t('apps.appLog')}</button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-sm app-no-log-link"
+                  onClick={() => requestTabSwitch('history')}
+                  title={entry.runMode === 'scheduled'
+                    ? t('apps.noLogScheduledTitle')
+                    : t('apps.noLogTitle')}
+                >{t('apps.execLog')}</button>
+              )}
+              {entry.releaseKey && (
+                <>
+                  <button type="button" className="btn btn-sm app-icon-button" onClick={() => onOpenFolder(entry, true)} title={t('apps.openReleaseTitle')} aria-label={t('apps.openReleaseAria', label)}><Icon name="folder" /></button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger-ghost app-icon-button"
+                    disabled={blocked || groupBusy || Boolean(pendingConfirm)}
+                    onClick={() => onRequestDelete(appId, entry, label)}
+                    title={entry.isCurrent
+                      ? t('apps.deleteBlockedCurrent')
+                      : isRunning
+                        ? t('apps.deleteBlockedRunning')
+                        : t('apps.deleteAllowedTitle')}
+                    aria-label={t('apps.deleteAria', label)}
+                  >{busy === entry.appId + entry.releaseKey ? '...' : <Icon name="trash" />}</button>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {(hiddenCount > 0 || limit > initialLimit) && (
+        <div className="app-release-more">
+          {hiddenCount > 0 && <button type="button" onClick={() => onSetLimit(appId, limit + MORE_RELEASE_COUNT)}>{t('apps.moreReleases', Math.min(hiddenCount, MORE_RELEASE_COUNT), hiddenCount)}</button>}
+          {limit > initialLimit && <button type="button" onClick={() => onSetLimit(appId, initialLimit)}>{t('apps.collapseReleases')}</button>}
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── Main apps page ────────────────────────────────────────────────────────────
 export default function AppsPage() {
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<'all' | 'running' | 'unnamed'>('all');
-  const [sortOrder, setSortOrder] = useState<'recent' | 'name'>('recent');
-  const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
-  const [releaseLimits, setReleaseLimits] = useState<Record<string, number>>({});
-  const [visibleAppCount, setVisibleAppCount] = useState(INITIAL_APP_COUNT);
+  const [filter, setFilter] = useState<AppFilter>('all');
+  const [sortOrder, setSortOrder] = useState<AppSort>('recent');
+  // 抽屉内版本列表的分页（同一时刻只有一个抽屉，复用单个上限值）。
+  const [detailLimit, setDetailLimit] = useState<number | null>(null);
   // D 修正：列表加载失败同样不能静默——失败会让页面显示「暂无已部署应用」，
   // 用户会误以为需要去后台部署，而真实原因是本地 IPC/目录读取异常。
   const [error, setError] = useState<string | null>(null);
@@ -336,6 +493,8 @@ export default function AppsPage() {
   // 弹窗——无边框窗口下会阻塞渲染进程且样式不可控（部分平台直接
   // 不显示，HistoryPage 清除历史早已因此改为页内确认），此处对齐。
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  // 详情抽屉是唯一详情面：表格行 / 紧凑行点击都打开它，关闭时焦点还给触发行。
+  const [detailAppId, setDetailAppId] = useState<string | null>(null);
   // C-05：确认条出现时必须滚进视口——列表尾部卡片的「卸载/删除」把确认条插在
   // 卡内，落在视口外（截图 14 恰好可见纯属夹具卡短）。
   const confirmBarRef = useRef<HTMLDivElement | null>(null);
@@ -346,12 +505,15 @@ export default function AppsPage() {
   const searchRef = useRef<HTMLInputElement>(null);
   const viewingRef = useRef(false);
   viewingRef.current = viewing !== null;
+  // 抽屉焦点管理：打开时聚焦关闭钮，关闭时把焦点还给触发行（Esc/关闭钮/卸载后一致）。
+  const drawerCloseRef = useRef<HTMLButtonElement | null>(null);
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
 
   // 正在运行的常驻应用（deploymentId → pid）。删除版本时主进程会自行再查一次
   // （权威判据），这里拉取纯粹为了**显示**：让用户一眼看到哪个版本真的在跑，
   // 而不是只看到「当前版本」（current 指向 ≠ 进程活着——daemon 启动失败时
   // current 已经切过去但进程没起来）。
-  const [running, setRunning] = useState<Record<string, { pid?: number; running?: boolean }>>({});
+  const [running, setRunning] = useState<RunningMap>({});
 
   const refresh = useCallback(async (background: boolean = false) => {
     // P3-8：in-flight 去重——10s 轮询、visibilitychange/MutationObserver kick
@@ -429,6 +591,37 @@ export default function AppsPage() {
     if (pendingConfirm) confirmBarRef.current?.scrollIntoView({ block: 'nearest' });
   }, [pendingConfirm]);
 
+  function openDetail(appId: string, trigger: HTMLElement | null) {
+    detailTriggerRef.current = trigger;
+    setDetailAppId(appId);
+  }
+
+  function closeDetail() {
+    setDetailAppId(null);
+    const trigger = detailTriggerRef.current;
+    detailTriggerRef.current = null;
+    if (trigger) requestAnimationFrame(() => trigger.focus());
+  }
+
+  // 抽屉打开时把焦点移到关闭钮（non-modal，不圈闭焦点；主列表仍可键盘到达）。
+  useEffect(() => {
+    if (detailAppId) drawerCloseRef.current?.focus();
+  }, [detailAppId]);
+
+  // 详情抽屉：Esc 关闭并归还焦点。确认条打开时 Esc 只取消确认（ConfirmBar
+  // 自身处理）；日志查看器打开时 Esc 只关查看器——抽屉不能跟着一起关，
+  // 否则关掉查看器后用户会丢失原来的上下文。
+  useEffect(() => {
+    if (!detailAppId) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (viewing || pendingConfirm) return;
+      closeDetail();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [detailAppId, viewing, pendingConfirm]);
+
   /** 打开应用根目录（用户报障：客户端本地无法查看部署的应用文件夹）。
    *  F-38（UIUX 审计）：IPC reject（目录已被手动删除 / shell.openPath 异常
    *  等）此前成为 unhandled rejection 且无任何用户反馈——点击像"没反应"。
@@ -441,6 +634,19 @@ export default function AppsPage() {
       if (!res.ok) setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', res.error ?? t('apps.unknownReason')) });
     } catch (err) {
       setNotice({ kind: 'err', text: t('apps.notice.openFolderFail', ipcErrorMessage(err)) });
+    }
+  }
+
+  /** 复制完整 appId（详情抽屉用）。 */
+  async function handleCopyId(appId: string) {
+    try {
+      const res = await window.electronAPI.writeClipboardText(appId);
+      setNotice({
+        kind: res.ok ? 'ok' : 'err',
+        text: `${t('appx.action.copyId')} ${appId.slice(0, 8)}`,
+      });
+    } catch (err) {
+      setNotice({ kind: 'err', text: ipcErrorMessage(err) });
     }
   }
 
@@ -530,13 +736,18 @@ export default function AppsPage() {
           return tokens.every(token => searchable.includes(token));
         })
         : entries;
+      const current = entries.find(entry => entry.isCurrent) ?? null;
       return {
         appId,
         name,
         entries,
         newestAt: entries.reduce((latest, entry) => Math.max(latest, entry.deployedAt ?? 0), 0),
-        current: entries.find(entry => entry.isCurrent) ?? null,
+        current,
         runningCount: entries.filter(entry => running[entry.deploymentId]?.running).length,
+        versionCount: entries.filter(entry => Boolean(entry.releaseKey)).length,
+        hasName: Boolean(name),
+        hasCurrent: Boolean(current),
+        hasLog: entries.some(entry => entry.hasLog),
         nameMatches,
         matchedEntries,
       };
@@ -544,32 +755,217 @@ export default function AppsPage() {
   }, [apps, running, tokens]);
 
   const filteredGroups = useMemo(() => grouped
-    .filter(group =>
-      (!tokens.length || group.matchedEntries.length > 0)
-      && (filter !== 'running' || group.runningCount > 0)
-      && (filter !== 'unnamed' || !group.name),
-    )
-    .sort((a, b) => sortOrder === 'name'
-      ? (a.name ?? a.appId).localeCompare(b.name ?? b.appId, 'zh-CN')
-      : b.newestAt - a.newestAt || (a.name ?? a.appId).localeCompare(b.name ?? b.appId, 'zh-CN')),
+    .filter(group => (!tokens.length || group.matchedEntries.length > 0) && passesFilter(group, filter))
+    .sort((a, b) => compareGroups(a, b, sortOrder)),
   [grouped, tokens, filter, sortOrder]);
 
+  // 打开新应用 / 搜索变化时复位抽屉内版本分页。
   useEffect(() => {
-    setVisibleAppCount(INITIAL_APP_COUNT);
-    setReleaseLimits({});
-    setExpandedApps({});
-  }, [query, filter, sortOrder]);
+    setDetailLimit(null);
+  }, [detailAppId, query]);
 
-  const visibleGroups = filteredGroups.slice(0, visibleAppCount);
+  // 抽屉里的应用被卸载/目录消失后自动收起（焦点仍归还到触发行）。
+  useEffect(() => {
+    if (detailAppId && !grouped.some(group => group.appId === detailAppId)) {
+      closeDetail();
+    }
+  }, [detailAppId, grouped]);
+
   const releaseCount = apps.filter(entry => Boolean(entry.releaseKey)).length;
   const runningCount = apps.filter(entry => Boolean(running[entry.deploymentId]?.running)).length;
+  const detailGroup = detailAppId
+    ? grouped.find(group => group.appId === detailAppId) ?? null
+    : null;
+  // 抽屉是 fixed 覆盖层：从抽屉里发起删除/卸载时，页面级确认条会被抽屉
+  // 盖住（Playwright 实测点击被 header 拦截）。有抽屉时确认条直接渲染在
+  // 抽屉 body 顶部，保证「看到哪个对象、就在哪个上下文确认」。
+  const confirmInDrawer = Boolean(detailGroup && pendingConfirm);
+
+  function requestDeleteRelease(appId: string, entry: AppEntry, label: string) {
+    setPendingConfirm({ kind: 'delete-release', appId, entry, label });
+  }
+
+  function sortAria(col: 'app' | 'current' | 'versions' | 'status' | 'deployed'):
+  'ascending' | 'descending' | 'none' {
+    if (sortOrder === 'name' && col === 'app') return 'ascending';
+    if (sortOrder === 'versions' && col === 'versions') return 'descending';
+    if (sortOrder === 'recent' && col === 'deployed') return 'descending';
+    if (sortOrder === 'running' && col === 'status') return 'descending';
+    return 'none';
+  }
 
   if (viewing) {
     return <AppLogScreen entry={viewing} onClose={() => setViewing(null)} />;
   }
 
+  const filters: { value: AppFilter; label: string }[] = [
+    { value: 'all', label: t('appx.filter.all') },
+    { value: 'running', label: t('appx.status.running') },
+    { value: 'hasCurrent', label: t('appx.filter.hasCurrent') },
+    { value: 'noCurrent', label: t('appx.filter.noCurrent') },
+    { value: 'unnamed', label: t('apps.filterUnnamed') },
+    { value: 'hasLog', label: t('appx.filter.hasLog') },
+  ];
+
+  function renderReleases(group: AppGroup) {
+    const releases = group.matchedEntries;
+    const initialLimit = query && !group.nameMatches ? MORE_RELEASE_COUNT : INITIAL_RELEASE_COUNT;
+    const limit = detailLimit ?? initialLimit;
+    return (
+      <>
+        <div className="appx-detail-heading">{t('appx.detail.releases')}</div>
+        <ReleaseList
+          appId={group.appId}
+          entries={releases}
+          limit={limit}
+          initialLimit={initialLimit}
+          running={running}
+          busy={busy}
+          pendingConfirm={pendingConfirm}
+          onViewLog={setViewing}
+          onOpenFolder={(entry, releaseOnly) => void handleOpenFolder(entry, releaseOnly)}
+          onRequestDelete={requestDeleteRelease}
+          onSetLimit={(_appId, next) => setDetailLimit(next)}
+        />
+      </>
+    );
+  }
+
+  function renderConfirmBar() {
+    if (!pendingConfirm) return null;
+    return (
+      <div ref={confirmBarRef} className="appx-confirm-host">
+        <ConfirmBar
+          titleId="apps-confirm-title"
+          title={
+            pendingConfirm.kind === 'uninstall'
+              ? t('apps.uninstallConfirmTitle', pendingConfirm.name)
+              : t('apps.deleteConfirmTitle', pendingConfirm.label, pendingConfirm.entry.deploymentId.slice(0, 8))}
+          description={
+            (pendingConfirm.kind === 'uninstall'
+              ? t('apps.uninstallConfirmDesc', pendingConfirm.count)
+              : t('apps.deleteConfirmDesc'))
+            + t('apps.irreversible')}
+          confirmLabel={pendingConfirm.kind === 'uninstall' ? t('apps.confirmUninstall') : t('apps.confirmDelete')}
+          variant="danger"
+          confirmDisabled={Boolean(busy)}
+          onConfirm={() => {
+            const action = pendingConfirm;
+            setPendingConfirm(null);
+            if (action.kind === 'uninstall') void handleUninstall(action.appId, action.name, action.count);
+            else void handleDeleteRelease(action.entry);
+          }}
+          onCancel={() => setPendingConfirm(null)}
+        />
+      </div>
+    );
+  }
+
+  function renderDrawer(group: AppGroup) {
+    const status = groupStatus(group);
+    return (
+      <aside
+        className="appx-drawer"
+        role="dialog"
+        aria-modal="false"
+        aria-labelledby="appx-detail-title"
+      >
+        <header className="appx-drawer-head">
+          <h2 id="appx-detail-title" className="appx-drawer-title">{t('appx.detail.title')}</h2>
+          <button
+            ref={drawerCloseRef}
+            type="button"
+            className="btn btn-sm appx-drawer-close"
+            onClick={closeDetail}
+            aria-label={t('ui.close')}
+            title={t('ui.close')}
+          ><Icon name="close" /></button>
+        </header>
+        <div className="appx-drawer-body">
+          {confirmInDrawer && renderConfirmBar()}
+          <section className="appx-detail-hero">
+            <span className={avatarClassName(group.name, group.appId, 'lg')} aria-hidden="true">{avatarInitial(group.name)}</span>
+            <span className="appx-detail-hero-text">
+              <strong
+                className={group.name ? 'appx-detail-name' : 'appx-detail-name appx-detail-name-unknown'}
+                title={group.name
+                  ? t('apps.nameTitle', group.name, group.appId)
+                  : t('apps.nameUnknownTitle', group.appId)}
+              >
+                {group.name ?? t('apps.unknownName')}
+              </strong>
+              <span className="appx-detail-sub">
+                {runModePrefix(group)}{group.appId.slice(0, 8)}
+              </span>
+            </span>
+          </section>
+
+          {!group.name && <p className="appx-detail-hint">{t('appx.unknownHint')}</p>}
+
+          <section className="appx-detail-section">
+            <div className="appx-detail-id-row">
+              <code className="appx-detail-id" title={group.appId}>{group.appId}</code>
+              <button type="button" className="btn btn-sm" onClick={() => void handleCopyId(group.appId)}>
+                <Icon name="copy" /> {t('appx.action.copyId')}
+              </button>
+            </div>
+            <h3 className="appx-detail-heading">{t('appx.detail.overview')}</h3>
+            <div className="appx-detail-grid">
+              <div className="appx-detail-row">
+                <span className="appx-detail-label">{t('appx.col.status')}</span>
+                <span className={`appx-status appx-status-${status}`}>
+                  <span className={`appx-dot appx-dot-${status}`} aria-hidden="true" />
+                  {t(STATUS_LABEL_KEY[status])}
+                </span>
+              </div>
+              <div className="appx-detail-row">
+                <span className="appx-detail-label">{t('appx.col.current')}</span>
+                <span className="appx-detail-value">
+                  {group.current ? (
+                    <span className="app-badge app-badge-current">
+                      {group.current.version ? `v${group.current.version}` : t('apps.noCurrent')}
+                    </span>
+                  ) : t('apps.noCurrent')}
+                </span>
+              </div>
+              <div className="appx-detail-row">
+                <span className="appx-detail-label">{t('appx.col.deployedAt')}</span>
+                <span className="appx-detail-value appx-num">{group.newestAt > 0 ? formatDeployTime(group.newestAt) : '—'}</span>
+              </div>
+              <div className="appx-detail-row">
+                <span className="appx-detail-label">{t('appx.col.versions')}</span>
+                <span className="appx-detail-value appx-num">{group.versionCount}</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="appx-detail-section">
+            {renderReleases(group)}
+          </section>
+
+          <section className="appx-detail-section appx-danger-zone">
+            <h3 className="appx-detail-heading">{t('appx.detail.danger')}</h3>
+            <p className="appx-danger-hint">{t('appx.detail.uninstallHint')}</p>
+            <button
+              type="button"
+              className="btn btn-sm btn-outline-danger"
+              onClick={() => setPendingConfirm({ kind: 'uninstall', appId: group.appId, name: group.name ?? group.appId.slice(0, 8), count: group.entries.length })}
+              disabled={Boolean(busy) || Boolean(pendingConfirm)}
+              title={t('apps.uninstallTitle')}
+            >
+              {busy === group.appId ? t('apps.busy') : t('apps.uninstall')}
+            </button>
+          </section>
+        </div>
+      </aside>
+    );
+  }
+
+  // 详情打开时给页面让出右侧抽屉宽度（≥1400px，见 apps-v5.css）：抽屉是非模态的，
+  // 列表仍要可操作；不整体右移的话「操作」列与标题栏刷新钮会被抽屉整块盖住，
+  // 键盘 Tab 还会落进看不见的按钮。窄窗前抽屉本身覆盖列表，保持原样。
   return (
-    <div className="status-page apps-page">
+    <div className={`status-page apps-page${detailAppId ? ' apps-page--detail' : ''}`}>
       <PageHeader
         icon={<Icon name="box" />}
         title={t('apps.title')}
@@ -597,18 +993,26 @@ export default function AppsPage() {
           {search && <button type="button" onClick={() => setSearch('')} aria-label={t('apps.clearSearch')}><Icon name="close" className="icon-xs" /></button>}
         </div>
         <div className="apps-filters" aria-label={t('apps.filtersAria')}>
-          <button type="button" className={filter === 'all' ? 'active' : ''} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>{t('logviewer.levelAll')}</button>
-          <button type="button" className={filter === 'running' ? 'active' : ''} aria-pressed={filter === 'running'} onClick={() => setFilter('running')}>{t('history.status.running')}</button>
-          <button type="button" className={filter === 'unnamed' ? 'active' : ''} aria-pressed={filter === 'unnamed'} onClick={() => setFilter('unnamed')}>{t('apps.filterUnnamed')}</button>
+          {filters.map(item => (
+            <button
+              key={item.value}
+              type="button"
+              className={filter === item.value ? 'active' : ''}
+              aria-pressed={filter === item.value}
+              onClick={() => setFilter(item.value)}
+            >{item.label}</button>
+          ))}
         </div>
         <select
           className="apps-sort"
           value={sortOrder}
-          onChange={event => setSortOrder(event.target.value as 'recent' | 'name')}
+          onChange={event => setSortOrder(event.target.value as AppSort)}
           aria-label={t('apps.sortAria')}
         >
-          <option value="recent">{t('apps.sortRecent')}</option>
-          <option value="name">{t('apps.sortName')}</option>
+          <option value="recent">{t('appx.sort.recentDeploy')}</option>
+          <option value="name">{t('appx.sort.name')}</option>
+          <option value="versions">{t('appx.sort.versions')}</option>
+          <option value="running">{t('appx.sort.running')}</option>
         </select>
       </div>
       )}
@@ -629,6 +1033,11 @@ export default function AppsPage() {
           {notice.text}
         </div>
       )}
+
+      {/* 破坏性操作的唯一确认条：页面级入口（表格 … 菜单）在这里渲染；
+          抽屉内发起的操作由 renderConfirmBar 渲染到抽屉 body 顶部，避免被
+          fixed 抽屉盖住。 */}
+      {pendingConfirm && !confirmInDrawer && renderConfirmBar()}
 
       {loading && apps.length === 0 && !error && (
         <div className="apps-list" aria-label={t('apps.loadingAria')}>
@@ -656,11 +1065,11 @@ export default function AppsPage() {
       )}
 
       {apps.length > 0 && filteredGroups.length === 0 && (
-        <EmptyState icon="search" title={t('apps.empty.noMatchTitle')}>
+        <EmptyState icon="search" title={t('appx.noMatch')}>
           <span className="empty-state-text">{filter === 'running' && !query
             ? t('apps.empty.noRunningBody')
             : t('apps.empty.noMatchBody')}</span>
-          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setFilter('all'); }}>{t('history.empty.clearFilters')}</button>
+          <button type="button" className="btn btn-sm" onClick={() => { setSearch(''); setFilter('all'); }}>{t('appx.filter.all')}</button>
         </EmptyState>
       )}
 
@@ -669,198 +1078,206 @@ export default function AppsPage() {
       {filteredGroups.length > 0 && (query || filter !== 'all') && (
         <div className="apps-results-summary">
           {t('apps.summary.found', filteredGroups.length)}
-          {filteredGroups.length > visibleAppCount && t('apps.summary.shown', visibleAppCount)}
         </div>
       )}
 
       <div className="apps-list">
-        {visibleGroups.map(group => {
-          const { appId, name, entries, current } = group;
-          const expanded = expandedApps[appId] ?? Boolean(query);
-          const groupBusy = Boolean(busy);
-          const releases = group.matchedEntries;
-          const initialLimit = query && !group.nameMatches ? MORE_RELEASE_COUNT : INITIAL_RELEASE_COUNT;
-          const limit = releaseLimits[appId] ?? initialLimit;
-          const hiddenCount = Math.max(0, releases.length - limit);
-          return (
-            <section key={appId} className={`app-group-card${expanded ? ' expanded' : ''}`}>
-              <button
-                className="app-group-toggle"
-                type="button"
-                aria-expanded={expanded}
-                onClick={event => {
-                  // C-05：展开后把卡片滚进视口（收起不滚）。必须先同步取卡片
-                  // 元素再 rAF——React 合成事件的 currentTarget 在处理器返回后
-                  // 即被置空，rAF 回调里不能再取；rAF 时本次展开的 DOM 已提交，
-                  // 'nearest' 按**展开后**的卡片高度做最小滚动。
-                  const card = event.currentTarget.closest<HTMLElement>('.app-group-card');
-                  setExpandedApps(previous => ({ ...previous, [appId]: !expanded }));
-                  if (card && !expanded) {
-                    requestAnimationFrame(() => card.scrollIntoView({ block: 'nearest' }));
-                  }
-                }}
-              >
-                <span className="app-group-main">
-                  <span className="app-group-name-row">
-                    <span className={`app-avatar${name ? '' : ' app-avatar-unknown'}`} aria-hidden="true">
-                      {name ? name.trim().charAt(0).toUpperCase() : '?'}
-                    </span>
-                    <span className={`app-group-name${name ? '' : ' app-group-name-unknown'}`} title={name ? t('apps.nameTitle', name, appId) : t('apps.nameUnknownTitle', appId)}>
-                      {name ?? t('apps.unknownName')}
-                      {!name && <span className="app-group-id-hint">{appId.slice(0, 8)}</span>}
-                    </span>
-                    {/* B-07：当前版本徽章升格到折叠态名称行——默认视图不必展开
-                        就能看出应用哪个版本在生效（15 个应用的默认视图此前
-                        只是一个目录页）。无 current 时不渲染徽章，副标题如实
-                        保留「无当前版本」口径。 */}
-                    {current && (
-                      <span className="app-badge app-badge-current">
-                        {current.version ? t('apps.currentVersionBadge', current.version) : t('apps.currentVersionUnknown')}
-                      </span>
-                    )}
-                  </span>
-                  <span className="app-group-summary">
-                    {/* 有徽章后副标题不再重复「当前 vX」；无 current 时保持原口径 */}
-                    {!current && t('apps.noCurrent')}
-                    {group.newestAt > 0 && `${current ? '' : ' · '}${t('apps.lastDeployed', formatDeployTime(group.newestAt))}`}
-                  </span>
-                </span>
-                <span className="app-group-header-meta">
-                  {/* V4-5（I-06）：scheduled 前置预告——「为什么没有应用日志」的
-                      教育从查看器空态前移到列表层（数据已有 entry.runMode） */}
-                  {entries.some(entry => entry.runMode === 'scheduled') && (
-                    <span className="app-badge app-badge-scheduled" title={t('apps.scheduledTitle')}>{t('apps.scheduled')}</span>
-                  )}
-                  {group.runningCount > 0 && <span className="app-badge app-badge-running">{t('apps.runningCount', group.runningCount)}</span>}
-                  <span className="app-group-count">{t('apps.versionCount', entries.filter(entry => entry.releaseKey).length || 0)}</span>
-                  <span className={`app-group-chevron${expanded ? ' expanded' : ''}`} aria-hidden="true"><Icon name="chevron-down" /></span>
-                </span>
-              </button>
-
-              {/* V4-5（M-02）：常驻挂载 + collapsible 高度过渡（同 HistoryPage 口径） */}
-              <div
-                id={`app-releases-${appId}`}
-                className="collapsible app-group-details-collapsible"
-                data-open={expanded}
-                aria-hidden={!expanded}
-              >
-                <div className="collapsible-inner" inert={!expanded}>
-                <div className="app-group-details">
-                  <div className="app-group-tools">
-                    <span className="app-group-path" title={entries[0]?.appRoot ?? ''}><span>{entries[0]?.appRoot}</span></span>
-                    <div className="app-group-actions">
-                      <button type="button" className="btn btn-sm" onClick={() => void handleOpenFolder(entries[0], false)} title={t('apps.openFolderTitle')}><Icon name="folder" /> {t('apps.openFolder')}</button>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline-danger"
-                        onClick={() => setPendingConfirm({ kind: 'uninstall', appId, name: name ?? appId.slice(0, 8), count: entries.length })}
-                        disabled={groupBusy || Boolean(pendingConfirm)}
-                        title={t('apps.uninstallTitle')}
-                      >
-                        {busy === appId ? t('apps.busy') : t('apps.uninstall')}
-                      </button>
-                    </div>
-                  </div>
-                  {pendingConfirm && pendingConfirm.appId === appId && (
-                    /* V4-4（X-01）：换装共享 ConfirmBar——主钮统一 autoFocus
-                        （此前此处 autoFocus 在「取消」上，与停机确认相反） */
-                    <div ref={confirmBarRef}>
-                      <ConfirmBar
-                        titleId={`apps-confirm-title-${appId}`}
-                        title={
-                          pendingConfirm.kind === 'uninstall'
-                            ? t('apps.uninstallConfirmTitle', pendingConfirm.name)
-                            : t('apps.deleteConfirmTitle', pendingConfirm.label, pendingConfirm.entry.deploymentId.slice(0, 8))}
-                        description={
-                          (pendingConfirm.kind === 'uninstall'
-                            ? t('apps.uninstallConfirmDesc', pendingConfirm.count)
-                            : t('apps.deleteConfirmDesc'))
-                          + t('apps.irreversible')}
-                        confirmLabel={pendingConfirm.kind === 'uninstall' ? t('apps.confirmUninstall') : t('apps.confirmDelete')}
-                        variant="danger"
-                        confirmDisabled={Boolean(busy)}
-                        onConfirm={() => {
-                          const action = pendingConfirm;
-                          setPendingConfirm(null);
-                          if (action.kind === 'uninstall') void handleUninstall(action.appId, action.name, action.count);
-                          else void handleDeleteRelease(action.entry);
-                        }}
-                        onCancel={() => setPendingConfirm(null)}
-                      />
-                    </div>
-                  )}
-                  <div className="app-releases-heading">{t('apps.localReleases')}{query && !group.nameMatches ? t('apps.matching', releases.length) : ''}</div>
-                  {releases.slice(0, limit).map(entry => {
-                    const isRunning = Boolean(running[entry.deploymentId]?.running);
-                    const blocked = entry.isCurrent || isRunning;
-                    const label = entry.version ? `v${entry.version}` : entry.releaseKey ? t('apps.versionUnknown') : t('apps.noReleaseYet');
-                    return (
-                      <div key={entry.releaseKey || entry.deploymentId} className="app-deployment-row">
-                        <div className="app-deployment-info" title={entry.releaseKey
-                          ? t('apps.deploymentTitle', entry.releaseKey, entry.deploymentId, entry.deployedAt ? formatLocaleDateTime(entry.deployedAt) : t('apps.deployTimeUnknown'))
-                          : t('apps.deploymentPendingTitle')}>
-                          <div className="app-deployment-top">
-                            <span className="app-deployment-version">{label}</span>
-                            {entry.isCurrent && <span className="app-badge app-badge-current" title={t('apps.currentBadgeTitle')}>{t('apps.currentBadge')}</span>}
-                            {isRunning && <span className="app-badge app-badge-running" title={running[entry.deploymentId]?.pid ? t('apps.runningBadgeTitle', running[entry.deploymentId]?.pid) : t('apps.runningBadgeTitlePlain')}>{t('history.status.running')}</span>}
-                          </div>
-                          <div className="app-deployment-sub">
-                            {entry.releaseKey ? t('apps.deployedAs', entry.deploymentId.slice(0, 8)) : t('apps.awaitingRelease')}
-                            {entry.deployedAt && ` · ${formatDeployTime(entry.deployedAt)}`}
-                          </div>
-                        </div>
-                        <div className="app-deployment-actions">
-                          {entry.hasLog ? (
-                            <button type="button" className="btn btn-sm" onClick={() => setViewing(entry)}>{t('apps.appLog')}</button>
+        <div className="appx-table-wrap">
+            <table className="appx-table" aria-label={t('apps.title')}>
+              <thead>
+                <tr>
+                  <th scope="col" className="appx-cell-app" aria-sort={sortAria('app')}>{t('appx.col.app')}</th>
+                  <th scope="col" className="appx-cell-current" aria-sort={sortAria('current')}>{t('appx.col.current')}</th>
+                  <th scope="col" className="appx-cell-versions" aria-sort={sortAria('versions')}>{t('appx.col.versions')}</th>
+                  <th scope="col" className="appx-cell-status" aria-sort={sortAria('status')}>{t('appx.col.status')}</th>
+                  <th scope="col" className="appx-cell-deployed" aria-sort={sortAria('deployed')}>{t('appx.col.deployedAt')}</th>
+                  <th scope="col" className="appx-cell-log">{t('appx.col.log')}</th>
+                  <th scope="col" className="appx-cell-actions">{t('appx.col.actions')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredGroups.map(group => {
+                  const { appId, name } = group;
+                  const status = groupStatus(group);
+                  const logEntry = group.current?.hasLog
+                    ? group.current
+                    : group.entries.find(entry => entry.hasLog) ?? null;
+                  const deletable = firstDeletable(group, running);
+                  return (
+                    <tr
+                      key={appId}
+                      className="appx-row"
+                      tabIndex={0}
+                      onClick={event => openDetail(appId, event.currentTarget)}
+                      onKeyDown={event => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        openDetail(appId, event.currentTarget);
+                      }}
+                    >
+                      <td className="appx-cell-app">
+                        <span className={avatarClassName(name, appId, 'sm')} aria-hidden="true">{avatarInitial(name)}</span>
+                        <span className="appx-app-text">
+                          <span
+                            className={name ? 'appx-app-name' : 'appx-app-name appx-app-name-unknown'}
+                            title={name ? t('apps.nameTitle', name, appId) : t('apps.nameUnknownTitle', appId)}
+                          >
+                            {name ?? t('apps.unknownName')}
+                            {!name && <span className="appx-id-chip">{appId.slice(0, 8)}</span>}
+                          </span>
+                          <span className="appx-app-sub">
+                            {runModePrefix(group)}{appId.slice(0, 8)}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="appx-cell-current">
+                        {group.current ? (
+                          <span className="app-badge app-badge-current">
+                            {group.current.version ? `v${group.current.version}` : t('apps.noCurrent')}
+                          </span>
+                        ) : (
+                          <span className="appx-muted" title={t('apps.noCurrent')} aria-label={t('apps.noCurrent')}>—</span>
+                        )}
+                      </td>
+                      <td className="appx-cell-versions appx-num">{group.versionCount}</td>
+                      <td className="appx-cell-status">
+                        <span className={`appx-status appx-status-${status}`}>
+                          <span className={`appx-dot appx-dot-${status}`} aria-hidden="true" />
+                          {t(STATUS_LABEL_KEY[status])}
+                        </span>
+                      </td>
+                      <td className="appx-cell-deployed appx-num">
+                        {group.newestAt > 0 ? formatDeployTime(group.newestAt) : <span className="appx-muted">—</span>}
+                      </td>
+                      <td className="appx-cell-log">
+                        <span
+                          className={group.hasLog ? 'appx-log-state appx-log-state-present' : 'appx-log-state'}
+                          title={group.hasLog ? t('appx.log.present') : t('appx.log.missing')}
+                        >
+                          {group.hasLog ? t('appx.log.present') : '—'}
+                        </span>
+                      </td>
+                      <td className="appx-cell-actions" onClick={event => event.stopPropagation()}>
+                        <div className="appx-row-actions">
+                          {logEntry ? (
+                            <button
+                              type="button"
+                              className="btn btn-sm appx-action-btn"
+                              onClick={() => setViewing(logEntry)}
+                              title={t('apps.appLog')}
+                            >{t('appx.action.log')}</button>
                           ) : (
                             <button
                               type="button"
-                              className="btn btn-sm app-no-log-link"
+                              className="btn btn-sm appx-action-btn app-no-log-link"
                               onClick={() => requestTabSwitch('history')}
-                              title={entry.runMode === 'scheduled'
+                              title={group.entries[0]?.runMode === 'scheduled'
                                 ? t('apps.noLogScheduledTitle')
                                 : t('apps.noLogTitle')}
                             >{t('apps.execLog')}</button>
                           )}
-                          {entry.releaseKey && (
-                            <>
-                              <button type="button" className="btn btn-sm app-icon-button" onClick={() => void handleOpenFolder(entry, true)} title={t('apps.openReleaseTitle')} aria-label={t('apps.openReleaseAria', label)}><Icon name="folder" /></button>
+                          <button
+                            type="button"
+                            className="btn btn-sm appx-action-btn"
+                            onClick={() => void handleOpenFolder(group.entries[0], false)}
+                            title={t('apps.openFolderTitle')}
+                          >{t('appx.action.folder')}</button>
+                          <details className="appx-menu">
+                            <summary
+                              className="btn btn-sm appx-menu-trigger"
+                              aria-label={t('appx.col.actions')}
+                              title={t('appx.col.actions')}
+                            >⋯</summary>
+                            <div className="appx-menu-pop">
                               <button
                                 type="button"
-                                className="btn btn-sm btn-danger-ghost app-icon-button"
-                                disabled={blocked || groupBusy || Boolean(pendingConfirm)}
-                                onClick={() => setPendingConfirm({ kind: 'delete-release', appId, entry, label })}
-                                title={entry.isCurrent
-                                  ? t('apps.deleteBlockedCurrent')
-                                  : isRunning
-                                    ? t('apps.deleteBlockedRunning')
-                                    : t('apps.deleteAllowedTitle')}
-                                aria-label={t('apps.deleteAria', label)}
-                              >{busy === entry.appId + entry.releaseKey ? '...' : <Icon name="trash" />}</button>
-                            </>
-                          )}
+                                className="appx-menu-item"
+                                onClick={event => {
+                                  event.currentTarget.closest('details')?.removeAttribute('open');
+                                  openDetail(appId, event.currentTarget.closest<HTMLElement>('.appx-row'));
+                                }}
+                              >{t('appx.action.details')}</button>
+                              <button
+                                type="button"
+                                className="appx-menu-item"
+                                disabled={!deletable || Boolean(pendingConfirm) || Boolean(busy)}
+                                title={deletable ? t('apps.deleteAllowedTitle') : t('apps.deleteBlockedCurrent')}
+                                onClick={event => {
+                                  event.currentTarget.closest('details')?.removeAttribute('open');
+                                  if (deletable) requestDeleteRelease(appId, deletable, versionLabel(deletable));
+                                }}
+                              >{deletable ? t('apps.deleteAria', versionLabel(deletable)) : t('apps.confirmDelete')}</button>
+                              <button
+                                type="button"
+                                className="appx-menu-item appx-menu-item-danger"
+                                disabled={Boolean(pendingConfirm) || Boolean(busy)}
+                                onClick={event => {
+                                  event.currentTarget.closest('details')?.removeAttribute('open');
+                                  setPendingConfirm({ kind: 'uninstall', appId, name: name ?? appId.slice(0, 8), count: group.entries.length });
+                                }}
+                              >{t('apps.uninstall')}</button>
+                            </div>
+                          </details>
                         </div>
-                      </div>
-                    );
-                  })}
-                  {(hiddenCount > 0 || limit > initialLimit) && (
-                    <div className="app-release-more">
-                      {hiddenCount > 0 && <button type="button" onClick={() => setReleaseLimits(previous => ({ ...previous, [appId]: limit + MORE_RELEASE_COUNT }))}>{t('apps.moreReleases', Math.min(hiddenCount, MORE_RELEASE_COUNT), hiddenCount)}</button>}
-                      {limit > initialLimit && <button type="button" onClick={() => setReleaseLimits(previous => ({ ...previous, [appId]: initialLimit }))}>{t('apps.collapseReleases')}</button>}
-                    </div>
-                  )}
-                </div>
-                </div>
-              </div>
-            </section>
-          );
-        })}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        <div className="appx-compact-list">
+          {filteredGroups.map(group => {
+            const { appId, name } = group;
+            const status = groupStatus(group);
+            const currentVersion = group.current?.version ?? null;
+            return (
+              <button
+                key={appId}
+                type="button"
+                className="appx-compact-row"
+                onClick={event => openDetail(appId, event.currentTarget)}
+              >
+                <span className={avatarClassName(name, appId, 'sm')} aria-hidden="true">{avatarInitial(name)}</span>
+                <span className="appx-compact-main">
+                  <span className="appx-compact-top">
+                    <span
+                      className={name ? 'appx-compact-name' : 'appx-compact-name appx-compact-name-unknown'}
+                      title={name ? t('apps.nameTitle', name, appId) : t('apps.nameUnknownTitle', appId)}
+                    >
+                      {name ?? t('apps.unknownName')}
+                      {!name && <span className="appx-id-chip">{appId.slice(0, 8)}</span>}
+                    </span>
+                    {currentVersion ? (
+                      <span className="app-badge app-badge-current appx-compact-current">{`v${currentVersion}`}</span>
+                    ) : (
+                      <span
+                        className="appx-compact-current appx-muted"
+                        title={group.current ? t('apps.versionUnknown') : t('apps.noCurrent')}
+                        aria-label={group.current ? t('apps.versionUnknown') : t('apps.noCurrent')}
+                      >—</span>
+                    )}
+                    <span
+                      className={`appx-compact-run appx-status-${status}`}
+                      title={t(STATUS_LABEL_KEY[status])}
+                    >
+                      <span className={`appx-dot appx-dot-${status}`} aria-hidden="true" />
+                      {t(STATUS_LABEL_KEY[status])}
+                    </span>
+                  </span>
+                  <span className="appx-compact-sub">
+                    {runModePrefix(group)}{group.newestAt > 0 ? formatDeployTime(group.newestAt) : '—'} · {t('apps.versionCount', group.versionCount)}
+                  </span>
+                </span>
+                <span className="appx-compact-chevron" aria-hidden="true"><Icon name="chevron-right" /></span>
+              </button>
+            );
+          })}
+        </div>
       </div>
-      {filteredGroups.length > visibleAppCount && (
-        <button type="button" className="btn apps-more-apps" onClick={() => setVisibleAppCount(count => count + INITIAL_APP_COUNT)}>
-          {t('apps.moreApps', Math.min(INITIAL_APP_COUNT, filteredGroups.length - visibleAppCount), filteredGroups.length - visibleAppCount)}
-        </button>
-      )}
+
+      {detailGroup && renderDrawer(detailGroup)}
     </div>
   );
 }
