@@ -141,7 +141,6 @@ export interface Task {
   retryDelay?: number;
   retryableErrors?: string[];
   timeout: number;
-  timeoutSeconds?: number;
   /**
    * 任务级失败告警配置。两列是任务失败通知的**唯一**来源——
    * `notification.service.notifyFailureWithConfig(..., task.alarmEmail,
@@ -200,11 +199,18 @@ export interface Task {
    * python_task_multiversion（FR-06）：任务声明的 Python **主.次**版本
    * （如 "3.7" / "3.12"；null = 不声明，走执行器宿主默认解释器）。
    *
-   * 为什么手写而非取自 generated：admin-api 的 **响应** 里没有 `Task` schema
-   * （实测 openapi.json 602 个 schema 中只有 CreateTaskDto/UpdateTaskDto/
-   * TriggerTaskDto 等请求体，没有读模型 Task），因此本接口是**读模型的唯一
-   * 事实源**，必须自己声明。请勿因"api-types 里已经有了"而删除——那指的是
-   * **请求 DTO**（components["schemas"]["CreateTaskDto"]），与本读模型无关。
+   * ## 与生成类型的关系（2026-10-27 校正）
+   *
+   * 这里此前写的是「admin-api 的响应里没有 Task schema，openapi.json 602 个
+   * schema 中只有请求体」——**这个断言是错的**：生成物里有
+   * `components["schemas"]["TaskResponseDto"]`（53 字段，见
+   * `src/types/generated/api-types.ts`），它与 `apps/admin-api/openapi.json`
+   * 同批导出、受 CI drift 门禁保护。
+   *
+   * 准确口径：**这份手写读模型只保留前端真实消费的字段子集**，字段增删以
+   * `TaskResponseDto` 为准——不要凭注释推断后端有没有某字段，去读生成物。
+   * 同一批还删掉了后端从不返回的 `timeoutSeconds`（读面只有 `timeout`（秒）；
+   * `timeoutSeconds` 只出现在**请求 DTO / 模板 config** 的桥接里）。
    */
   runtimeVersion?: string | null;
   /**

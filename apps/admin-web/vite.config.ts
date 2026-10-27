@@ -226,6 +226,13 @@ export default defineConfig({
     // afterEach），此处对 teardown 竞态豁免标红（vitest 4 的
     // dangerouslyIgnoreUnhandledErrors 选项，CLI 同名 flag）——真正断言失败
     // 仍会正常标红。
+    //
+    // 2026-10-27 实施轮 #9 补充：这个开关是**全域**豁免，它同时无视了真缺陷泄漏出的
+    // 浮空拒绝（"忘了 await / 忘了 catch"永远不会红）。本轮补上**分类上报**
+    // （src/test-support/unhandled-rejection.ts + test-setup.ts 安装）：已知 teardown
+    // 竞态静默、其余以 '[ACF][unhandledRejection]' 前缀大声打日志——保持 CI 不随机红
+    // 的同时让真回归在日志里可检索。彻底关掉本开关的前置条件写在该文件头
+    // （teardown 竞态不再产生 unhandled rejection）。
     dangerouslyIgnoreUnhandledErrors: true,
     // DEEP_REVIEW 轮7 验证发现（2026-09-14）：本套件为 jsdom + antd 重型页面，
     // 83 文件全量跑时单文件 transform/import 累计达数百秒，首个渲染用例实测

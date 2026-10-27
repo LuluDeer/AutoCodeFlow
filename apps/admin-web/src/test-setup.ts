@@ -6,6 +6,15 @@ import { vi, afterEach } from 'vitest';
 // configure 操作的正是测试侧同一实例（162 处测试导入全部经 react 入口）。
 // 守卫用例 src/__tests__/test-infra-async-timeout.test.ts 钉住该值。
 import { configure, act } from '@testing-library/react';
+// 浮空 promise 拒绝的**分类上报**（2026-10-27 实施轮 #9）：
+// vite.config.ts 的 dangerouslyIgnoreUnhandledErrors 是全域豁免（起因是 React+jsdom
+// teardown 竞态），它同时把真缺陷的浮空拒绝一起无视了。这里按特征分流：
+// 已知 teardown 竞态静默，其余一律以 '[ACF][unhandledRejection]' 前缀大声打日志
+// （不改 pass/fail，但让真回归在 CI 日志里可检索）。分类器与判定边界见
+// src/test-support/unhandled-rejection.ts 及其用例。
+import { installUnhandledRejectionReporter } from './test-support/unhandled-rejection';
+
+installUnhandledRejectionReporter();
 
 // ── waitFor 默认预算统一（O-2，测试体系审计 2026-09-18）──────────────
 // 全量跑（95 文件 jsdom + antd 重型页面 + coverage 仪器化）时，transform/

@@ -558,7 +558,10 @@ export default function TaskListPage() {
         cronExpression: src.cronExpression,
         timezone: src.timezone,
         fixedRate: src.fixedRate,
-        timeout: src.timeoutSeconds ?? src.timeout,
+        // 读面只有 `timeout`（秒）。此前写 `src.timeoutSeconds ?? src.timeout` 是
+        // 对一个**后端从不返回**的字段做兜底（timeoutSeconds 只在请求 DTO /
+        // 模板 config 里，落库前被 normalizeTaskDto 映射成 timeout）——死兜底。
+        timeout: src.timeout,
         // CORE-04: 超时策略（F-03：此前克隆丢字段，副本静默退回默认 kill/无预警）
         timeoutAction: src.timeoutAction,
         timeoutWarnRatio: src.timeoutWarnRatio,
@@ -611,7 +614,14 @@ export default function TaskListPage() {
     {
       title: t('taskList.col.name'),
       key: 'name',
-      sorter: (a: Task, b: Task) => a.name.localeCompare(b.name),
+      // 2026-10-27：删掉列头 sorter。它是**纯客户端**排序（只比较当前 dataSource），
+      // 而本表是**服务端分页 + 游标（keyset）分页**——排出来的只是当页 20 行，
+      // 用户以为按名称全局排序、翻页后顺序又变，属主动误导。
+      // 后端确实支持 sortBy=name/sortOrder（list-tasks-query.dto.ts +
+      // task.service 的 TASK_SORT_WHITELIST），但 assertCursorCompatibleWithQuery
+      // 对 cursor+sortBy **直接 400**：服务端排序与游标分页在当前契约里互斥。
+      // 要真正按名称排序需先在产品层二选一（取消游标分页 / 后端支持 cursor+sortBy），
+      // 已登记 docs/OPEN-DECISIONS.md D6。
       render: (_: unknown, r: Task) => (
         // UI 打磨：名称/描述单行 ellipsis——此前双行均不断行，长描述把行高
         // 撑得忽高忽低；div minWidth:0 让弹性列内的省略号真正生效

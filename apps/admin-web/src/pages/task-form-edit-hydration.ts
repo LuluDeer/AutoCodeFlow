@@ -40,7 +40,8 @@ export function buildEditFormValues(task: Task): Record<string, unknown> {
     timezone: task.timezone,
     fixedRate: task.fixedRate,
     priority: toPriorityValue(task.priority),
-    timeout: task.timeoutSeconds ?? task.timeout ?? 300,
+    // 读面只有 timeout（timeoutSeconds 是写面 DTO 字段，落库前即被映射掉）
+    timeout: task.timeout ?? 300,
     // CORE-04: 超时策略（timeoutAction 缺省 kill；预警阈值空态 undefined）
     ...timeoutPolicyFormValues(task),
     maxRetry: task.maxRetry ?? 3,

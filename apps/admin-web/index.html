@@ -2,7 +2,10 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <!-- BRAND（2026-10-27）：此前用的 public/vite.svg 是 Vite 默认 logo，
+         生产控制台的标签页/书签上显示的是构建工具的图标。改为自有标记
+         （public/acf-mark.svg，与 src/theme/tokens.ts 同色）。 -->
+    <link rel="icon" type="image/svg+xml" href="/acf-mark.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- LIGHTHOUSE-SEO（本轮）：此前无 meta description，Lighthouse SEO
          审计 meta-description 直接判 0 分并失败。管理台虽主要面向内网登录
@@ -11,7 +14,9 @@
       name="description"
       content="AutoCodeFlow 管理与运维控制台：任务编排、执行器管理、执行记录与审计。"
     />
-    <title>AutoCodeFlow</title>
+    <!-- 标题此前是裸产品名「AutoCodeFlow」，多标签/书签里与其他页面无法区分。
+         带上岗位语义，同时保留可搜索的产品名。 -->
+    <title>AutoCodeFlow 控制台 · 任务编排与执行器管理</title>
     <!-- UI-02：DOM 解析前注入 data-theme，防首帧闪白（FOUC）。
          F-30（DEEP_REVIEW 0ef3bbe）：脚本正文收敛为单一来源 src/theme/tokens.ts 的
          THEME_INIT_SCRIPT，由 vite.config.ts 的 themeInitPlugin 在构建/开发期注入本位置
