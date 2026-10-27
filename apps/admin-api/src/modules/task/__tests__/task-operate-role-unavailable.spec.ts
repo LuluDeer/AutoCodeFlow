@@ -294,7 +294,9 @@ describe("R32-B1 残余点：任务项目归属写面（assertCanAssignProject�
     ).assertCanAssignProject("p1", user);
 
   it("DB 抖动 → 503 PROJECT_ROLE_UNAVAILABLE（不是 403「你没有权限」）", async () => {
-    const svc = build(jest.fn().mockRejectedValue(new Error("connection reset")));
+    const svc = build(
+      jest.fn().mockRejectedValue(new Error("connection reset")),
+    );
 
     const err = await call(svc).then(
       () => {
@@ -329,4 +331,3 @@ describe("R32-B1 残余点：任务项目归属写面（assertCanAssignProject�
     ).resolves.toBeUndefined();
   });
 });
-

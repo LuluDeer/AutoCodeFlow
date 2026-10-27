@@ -1,10 +1,5 @@
 import { User, UserRole } from "../../src/modules/users/entities/user.entity";
-import {
-  futureDate,
-  nextSeq,
-  pastDate,
-  uniqueSuffix,
-} from "./deterministic";
+import { futureDate, nextSeq, pastDate, uniqueSuffix } from "./deterministic";
 
 /**
  * 测试数据工厂：User 实体

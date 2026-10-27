@@ -384,7 +384,12 @@ describe("getAgentMediaRootDir · env 归一（空白必须回退默认根）", 
  */
 describe("SOP 媒体落盘：异步写入 + rename 原子发布（WEB-IO-01）", () => {
   const save = (name = "a.png", body = "123") =>
-    svc.save({ assignmentId: ASG, name, buf: bytes(body), uploadedBy: "agent:sop:x" });
+    svc.save({
+      assignmentId: ASG,
+      name,
+      buf: bytes(body),
+      uploadedBy: "agent:sop:x",
+    });
 
   it("字节走 fs.promises.writeFile（异步接口），不是 writeFileSync", async () => {
     // 钉法说明：Node 的 fs 命名空间属性不可重定义（jest.spyOn(fs,"writeFileSync")
@@ -426,9 +431,10 @@ describe("SOP 媒体落盘：异步写入 + rename 原子发布（WEB-IO-01）",
     expect(entries).toHaveLength(1);
     expect(entries[0]).not.toContain(".tmp-");
 
-    const row = (repo.save.mock.calls[0] as unknown[])[0] as { storedPath: string };
+    const row = (repo.save.mock.calls[0] as unknown[])[0] as {
+      storedPath: string;
+    };
     expect(entries[0]).toBe(path.basename(row.storedPath));
     expect(stored.sizeBytes).toBe(5);
   });
 });
-
