@@ -6,7 +6,9 @@ import { BullModule } from "@nestjs/bullmq";
 import { AgentSession } from "./entities/agent-session.entity";
 import { AgentStep } from "./entities/agent-step.entity";
 import { AgentToolCall } from "./entities/agent-tool-call.entity";
+import { AgentApproval } from "./entities/agent-approval.entity";
 import { AgentSessionService } from "./runtime/agent-session.service";
+import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentRuntimeService } from "./runtime/agent-runtime.service";
 import { AgentProcessor, AGENT_QUEUE_NAME } from "./runtime/agent.processor";
@@ -47,7 +49,12 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
 @Module({
   imports: [
     ConfigModule,
-    TypeOrmModule.forFeature([AgentSession, AgentStep, AgentToolCall]),
+    TypeOrmModule.forFeature([
+      AgentSession,
+      AgentStep,
+      AgentToolCall,
+      AgentApproval,
+    ]),
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
     AiModule,
     forwardRef(() => TaskModule),
@@ -65,6 +72,7 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
   controllers: [AgentController],
   providers: [
     AgentSessionService,
+    AgentApprovalsService,
     AgentBudgetService,
     AgentRuntimeService,
     AgentProcessor,

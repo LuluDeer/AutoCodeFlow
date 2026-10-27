@@ -549,18 +549,22 @@ console.log("\n── 11. 执行器纪律 ──");
     /c\.status !== "awaiting_approval"/.test(src));
 }
 
-// ═══ APPROVAL-GAP tripwire（审计轮 #11，A1）══════════════════════════
+// ═══ APPROVAL tripwire（审计轮 #11 登记 → 实施轮 #12 闭环收口）═════════
 //
-// 事实（2026-10-27 实测）：`approvalRequired: true` 的 5 个工具
+// 历史（2026-10-27 实测）：`approvalRequired: true` 的 5 个工具
 // （update_task / rollback_task_version / upgrade_deployment / stop_deployment /
-// sop_publish）会返回 awaiting_approval，但：
-//   · `requestApproval()` 只拼字符串 + 推通知，**不落库**（无 approval 实体）；
-//   · `agent.controller` 只有 list/detail/create/resume/budget 五条路由，
-//     **没有任何批准端点**；
+// sop_publish）曾返回 awaiting_approval 但审批**只有申请没有批准**：
+//   · `requestApproval()` 只拼字符串 + 推通知，不落库（无 approval 实体）；
+//   · `agent.controller` 没有任何批准端点；
 //   · `markWaiting()` 在生产代码里零调用方。
-// ⇒ 这 5 个工具"声明可经人工点头执行，实际永久不可执行"。
+// ⇒ "声明上可经人工点头执行，实际永久不可执行"，当时以如实降级文案收口。
 //
-// 本 tripwire 不是要修它（审批闭环是独立工作流），而是要**防止它悄悄变成
+// 实施轮 #12（2026-10-28）闭环落地：agent_approvals 实体（迁移 1790000000067）
+// + requestApproval 落库并 markWaiting 挂起 + grant/deny 端点（条件写）+
+// grant 后复用 resume 链路恢复。本 tripwire 继续钉住**两端一致性**：
+//   · grant 端点存在 ⇒ 落库链路必须真的接上（requestApproval 必须调用
+//     approvals 落库 + markWaiting），且注册表/执行体文案不得再宣称"不可执行"；
+//   · 若将来 grant 端点被移除 ⇒ 本闸转回要求 APPROVAL-GAP 注释与降级文案。
 // 谎话或悄悄被"修好"而文案没跟上**：两种状态都要显式。
 console.log("\n── APPROVAL-GAP tripwire ──");
 {
@@ -568,8 +572,9 @@ console.log("\n── APPROVAL-GAP tripwire ──");
     join(apiDir, "src/modules/agent/agent.controller.ts"),
     "utf8",
   );
-  const hasGrantEndpoint = /@Post\(["']approvals?\/[^"']*\/?[^"']*["']\)/.test(ctrl) &&
-    /grant|approve/.test(ctrl);
+  // grant/deny 走 sessions/:id/approvals/:key/grant|deny 路由（实施轮 #12）。
+  const hasGrantEndpoint =
+    /approvals?\/[^"']*\/(grant|deny)/.test(ctrl) && /grant|approve/.test(ctrl);
 
   const registry = readFileSync(
     join(apiDir, "src/modules/agent/tools/tool-registry.ts"),
@@ -592,11 +597,40 @@ console.log("\n── APPROVAL-GAP tripwire ──");
       /当前不可执行/.test(executor) && /审批通道尚未接通/.test(executor),
     );
   } else {
-    // 有人补了 grant 端点 → 提醒把声明/文案一起更新（否则文案在说谎）
+    // 闭环已接通（实施轮 #12）：文案与注册表必须同步翻转——继续说"不可执行"
+    // 会诱导模型放弃本来能完成的动作。
+    const executor = readFileSync(
+      join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"),
+      "utf8",
+    );
     check(
       "已出现批准端点：注册表注释与执行体文案必须同步更新（去掉不可执行的表述）",
       !documentsGap,
       "检测到 approvals 路由，但注册表仍写着 APPROVAL-GAP",
+    );
+    check(
+      "闭环后回给模型的文案必须说明审批单已提交（不再宣称不可执行）",
+      /已提交审批单/.test(executor) && !/当前不可执行/.test(executor),
+      "grant 端点已存在，执行体仍在说「当前不可执行」",
+    );
+    // 落库与挂起必须真的接上——端点存在而 requestApproval 不落库 = 回到 A1。
+    check(
+      "requestApproval 必须经 agent_approvals 落库（不能只拼字符串推通知）",
+      /this\.approvals\.request\(/.test(executor),
+    );
+    check(
+      "requestApproval 必须把会话挂起（markWaiting 生产零调用是 A1 的原始形态之一）",
+      /this\.sessions\.markWaiting\(/.test(executor),
+    );
+    // approve/deny 必须条件写（结论唯一，ADR-026）。
+    check(
+      "审批处置必须是条件写（pending → 终态一次，并发处置后到者 409）",
+      /Not\(In\(\["granted", "denied"\]\)\)/.test(
+        readFileSync(
+          join(apiDir, "src/modules/agent/runtime/agent-approvals.service.ts"),
+          "utf8",
+        ),
+      ),
     );
   }
 }

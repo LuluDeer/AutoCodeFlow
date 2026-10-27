@@ -27,6 +27,9 @@ import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { AgentSessionService } from "./runtime/agent-session.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
+import { AgentApprovalsService } from "./runtime/agent-approvals.service";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import type { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AGENT_QUEUE_NAME, type AgentJobData } from "./runtime/agent.processor";
 import {
   AGENT_SESSION_KINDS,
@@ -93,6 +96,7 @@ export class AgentController {
   constructor(
     private readonly sessions: AgentSessionService,
     private readonly budget: AgentBudgetService,
+    private readonly approvals: AgentApprovalsService,
     @InjectQueue(AGENT_QUEUE_NAME) private readonly queue: Queue<AgentJobData>,
   ) {}
 
@@ -202,5 +206,98 @@ export class AgentController {
   @ApiOkResponse({ type: AgentBudgetResponseDto })
   budgetInfo() {
     return this.budget.resolveBudget();
+  }
+
+  // ── A1 审批闭环（实施轮 #12）──────────────────────────────────────
+  //
+  // grant / deny 是 approvalRequired 工具（update_task / rollback_task_version /
+  // upgrade_deployment / stop_deployment / sop_publish）从「声明可审批」变为
+  // 「真的可审批」的另一半：申请在 ToolExecutorService.requestApproval 落库，
+  // 这里提供人工处置端点，批准后复用既有 resume 链路恢复会话。
+
+  /** 审批单处置的共享体：approve 与 deny 只差 decision 值。 */
+  private async decideApproval(
+    sessionId: string,
+    approvalKey: string,
+    decision: "granted" | "denied",
+    user: AuthUser,
+  ) {
+    const session = await this.sessions.requireById(sessionId);
+    const approval = await this.approvals.findByKey(approvalKey);
+    if (!approval) {
+      throw new AppError("AGENT_APPROVAL_NOT_FOUND", { approvalKey });
+    }
+    // 归属校验：审批单必须属于 URL 里的会话——防止拿 A 会话的审批键去
+    // 处置 B 会话（审批单本身不校验调用方会话，谁持 ADMIN 谁可处置）。
+    if (approval.sessionId !== session.id) {
+      throw new AppError("AGENT_APPROVAL_SESSION_MISMATCH", { sessionId });
+    }
+    // 条件写（pending → granted/denied）：并发处置撞上时后到者收 409。
+    const row = await this.approvals.decide(
+      approvalKey,
+      decision,
+      user.username,
+    );
+    if (!row) {
+      throw new AppError("AGENT_APPROVAL_NOT_FOUND", { approvalKey });
+    }
+
+    // 会话恢复：挂起中的会话（waiting_input）重新入队走既有 run() 链路
+    // （可重入）；已终态/已运行则跳过（resume 自身的语义与 B-8 守卫在此
+    // 依旧成立——denied 后管理员可能想直接终止，不强行复活）。
+    let resumed = false;
+    if (session.status === "waiting_input") {
+      await this.queue.add(
+        "run",
+        { sessionId, reason: "resume:approval" },
+        { jobId: `${sessionId}:resume:${Date.now()}`, attempts: 1 },
+      );
+      resumed = true;
+    }
+    return {
+      ok: true,
+      approval: {
+        approvalKey: row.approvalKey,
+        status: row.status,
+        decidedBy: row.decidedBy,
+        decidedAt: row.decidedAt,
+      },
+      resumed,
+    };
+  }
+
+  @Post("sessions/:id/approvals/:approvalKey/grant")
+  @ApiOperation({ summary: "批准 Agent 审批单并恢复会话" })
+  @ApiOkResponse({ schema: { type: "object", additionalProperties: true } })
+  async grantApproval(
+    @Param("id") id: string,
+    @Param("approvalKey") approvalKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.decideApproval(id, approvalKey, "granted", user);
+  }
+
+  @Post("sessions/:id/approvals/:approvalKey/deny")
+  @ApiOperation({ summary: "拒绝 Agent 审批单" })
+  @ApiOkResponse({ schema: { type: "object", additionalProperties: true } })
+  async denyApproval(
+    @Param("id") id: string,
+    @Param("approvalKey") approvalKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.decideApproval(id, approvalKey, "denied", user);
+  }
+
+  @Get("sessions/:id/approvals")
+  @ApiOperation({ summary: "列出会话的全部审批单" })
+  @ApiOkResponse({
+    schema: {
+      type: "array",
+      items: { type: "object", additionalProperties: true },
+    },
+  })
+  async listApprovals(@Param("id") id: string) {
+    await this.sessions.requireById(id);
+    return this.approvals.listForSession(id);
   }
 }

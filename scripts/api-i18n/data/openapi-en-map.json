@@ -1426,5 +1426,11 @@
   "验证码错误，或没有预登记的密钥": "Invalid verification code, or no pre-registered key",
   "默认 50，上限 200": "Default 50, maximum 200",
   "默认运行参数（纯运行时参数，不含凭据）": "Default run parameters (pure runtime parameters, no credentials)",
-  "（过滤后）行集合的真实总数": "True total of the (filtered) row set"
+  "（过滤后）行集合的真实总数": "True total of the (filtered) row set",
+  "审批单 {{approvalKey}} 不存在": "Approval request {{approvalKey}} not found",
+  "审批单 {{approvalKey}} 已被处置（当前状态：{{status}}）——审批结论只能有一个": "Approval request {{approvalKey}} has already been decided (current status: {{status}}) — an approval can only be decided once",
+  "审批单不属于会话 {{sessionId}}——请从会话详情页发起处置": "The approval request does not belong to session {{sessionId}} — decide it from the session detail page",
+  "批准 Agent 审批单并恢复会话": "Grant an agent approval request and resume the session",
+  "拒绝 Agent 审批单": "Deny an agent approval request",
+  "列出会话的全部审批单": "List all approval requests of a session"
 }

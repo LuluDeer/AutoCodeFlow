@@ -402,6 +402,21 @@ export const EXECUTOR_CODES = {
     zh: "会话仍在运行中——重复入队会产生双份推理循环副作用，无需恢复",
     en: "The session is still running — re-enqueueing would duplicate the reasoning loop and its side effects; no recovery needed",
   },
+  AGENT_APPROVAL_NOT_FOUND: {
+    status: 404,
+    zh: "审批单 {{approvalKey}} 不存在",
+    en: "Approval request {{approvalKey}} not found",
+  },
+  AGENT_APPROVAL_ALREADY_DECIDED: {
+    status: 409,
+    zh: "审批单 {{approvalKey}} 已被处置（当前状态：{{status}}）——审批结论只能有一个",
+    en: "Approval request {{approvalKey}} has already been decided (current status: {{status}}) — an approval can only be decided once",
+  },
+  AGENT_APPROVAL_SESSION_MISMATCH: {
+    status: 409,
+    zh: "审批单不属于会话 {{sessionId}}——请从会话详情页发起处置",
+    en: "The approval request does not belong to session {{sessionId}} — decide it from the session detail page",
+  },
   AGENT_TOOL_EXECUTOR_NOT_FOUND: {
     status: 404,
     zh: "执行器 {{address}} 不存在",

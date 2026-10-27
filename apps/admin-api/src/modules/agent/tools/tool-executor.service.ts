@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { AgentSession } from "../entities/agent-session.entity";
 import { AgentSessionService } from "../runtime/agent-session.service";
 import { AgentNotifyService } from "../runtime/agent-notify.service";
+import { AgentApprovalsService } from "../runtime/agent-approvals.service";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
 import { SopService } from "../../sop/sop.service";
 import {
@@ -51,6 +52,8 @@ export class ToolExecutorService implements AgentToolExecutor {
     private readonly sessions: AgentSessionService,
     private readonly api: AgentApiClient,
     private readonly notify: AgentNotifyService,
+    // A1 审批闭环（实施轮 #12）：审批单落库与状态翻转。
+    private readonly approvals: AgentApprovalsService,
     // forwardRef：agent.module ↔ sop.module 装配期环（与 ToolBinderService
     // 同款）。B-2/B-3 的两道执行体入口校验需要读 SOP 侧数据（slug→id、
     // 澄清归属投影）。
@@ -172,19 +175,18 @@ export class ToolExecutorService implements AgentToolExecutor {
         approvalId,
         errorMessage: verdict.message,
       });
-      // APPROVAL-GAP（2026-10-27 审计轮 #11，A1）：审批**当前没有闭环**——
-      // requestApproval 不落库，agent.controller 也没有 grant 端点，
-      // 所以"等待审批"实际上等于"这次调用不会被批准"。
-      // 文案必须如实这么写：告诉模型"别再试同一个工具、换只读路径或上报"，
-      // 而不是让它以为"等一会儿就能过"——后者会让它反复重试，把速率配额
-      // 烧在等待审批上（C4 已把 awaiting_approval 排除出配额，但重试本身
-      // 仍是浪费轮次）。
+      // A1 审批闭环（实施轮 #12）：审批单已落库（agent_approvals）、会话已
+      // markWaiting 挂起，管理员在会话详情页 grant 后 controller 复用既有
+      // resume 链路恢复。回给模型的文案从轮 #11 的降级表述改为
+      // 「已提交审批」——管道接通后继续说降级话术会诱导模型放弃可完成的
+      // 动作；「不要重复提交」仍然保留：挂起期间重试只会再次挂起。
+      // （tripwire 判据：轮 #11 的降级话术不得再出现在本文件——见
+      // agent-boundary-check.mjs 的 APPROVAL 段。）
       return {
         content:
-          `【需人工审批，当前不可执行】${verdict.message}` +
-          `（审批单 ${approvalId}）` +
-          `注意：审批通道尚未接通，重复提交只会再次挂起——请改用只读手段继续排查，` +
-          `或把结论与建议写进最终报告交由人工执行。`,
+          `【需人工审批，已提交审批单】${verdict.message}` +
+          `（审批单 ${approvalId}）会话已挂起等待人工处置；` +
+          `批准后将自动恢复执行本调用，请勿重复提交同一工具调用。`,
         truncated: false,
       };
     }
@@ -421,6 +423,17 @@ export class ToolExecutorService implements AgentToolExecutor {
     reason: string,
   ): Promise<string> {
     const approvalId = `apr-${session.id}-${Date.now()}`;
+    // A1 审批闭环（实施轮 #12）：先落库（agent_approvals，approvalKey 唯一
+    // 约束保证重试幂等）再把会话挂起——「先落盘后发送」同款纪律。挂起用
+    // markWaiting 的条件写（R36）：会话恰好被 finish 收敛到终态时挂起让位，
+    // 此时的审批单留在 pending 等管理员处置（或过期清理），不阻塞任何人。
+    await this.approvals.request({
+      approvalKey: approvalId,
+      sessionId: session.id,
+      toolName: spec.name,
+      reason,
+    });
+    await this.sessions.markWaiting(session.id, `等待审批 ${approvalId}`);
     this.logger.log(
       `Agent approval requested: session=${session.id} tool=${spec.name} approval=${approvalId}`,
     );

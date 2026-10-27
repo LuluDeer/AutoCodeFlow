@@ -436,6 +436,7 @@
 | 1790000000064 | BackfillAppDeploymentEvents | R4 补位（部署模型评审 2026-10-23）：deployCount 孔回填——无事件应用从现存部署行合成 deploy_created 下界事件（detail.backfill 标注、NOT EXISTS 应用级防双计、keyset 分批），消除事件聚合切换的混合窗口期 | 已落盘（commit 105b42f4） |
 | 1790000000065 | ExecutionArtifactsIndex | ARTIFACTS-INDEX-46（部署模型评审 §4.6 执行产物元数据索引） | 已落盘（本批）：新表 execution_artifacts（id/executionId/taskId/applicationId/name/size/sha256/createdAt；唯一 (executionId,name)；taskId/applicationId 索引；applicationId FK SET NULL）——task_executions.artifacts jsonb 关系化，终态回调写点双轨同步 upsert；存量不回填（与 1790000000055/0061 不猜映射先例一致），读面回落 jsonb；新索引查询端点 GET /artifacts |
 | 1790000000066 | AddExecutorAppVersionTimestamps | 5c E2E selftest 发现的 R3 迁移缺口收口：executor_app_versions 补 createdAt/updatedAt 列（实体 91-93 行的 @CreateDate/@UpdateDateColumn 从建表起就缺席——jest 用映射替身测不到，真 PG 迁移链首跑暴露：column does not exist，心跳落库全败） | 已落盘（本批）：ALTER TABLE ADD COLUMN IF NOT EXISTS 双列 + 同步修 63 建表语句（空库一次到位，66 幂等兜住已执行过 63 的库） |
+| 1790000000067 | CreateAgentApprovals | A1 审批闭环（审计轮 #11 → 实施轮 #12）落库半边：agent_approvals 建表（approvalKey 唯一 / sessionId / toolName / reason / status pending→granted/denied / decidedBy/decidedAt；状态+会话双索引）。5 个 approvalRequired 工具从「声明可审批、实际永久不可执行」收口为真闭环：requestApproval 落库 + markWaiting 挂起 + grant/deny 条件写端点 + grant 后复用 resume 链路 | 已落盘（本批）：CREATE TABLE IF NOT EXISTS + approvalKey 唯一索引 + 双普通索引；down 直接 DROP（闭环前无历史数据） |
 
 ## 变更日志
 

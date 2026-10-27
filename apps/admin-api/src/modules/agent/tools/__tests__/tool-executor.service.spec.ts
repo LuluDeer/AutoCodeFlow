@@ -26,6 +26,7 @@ function harness(opts?: {
   const sessions = {
     recordToolCall: jest.fn(async (v: unknown) => v),
     listToolCalls: jest.fn(async () => opts?.toolCalls ?? []),
+    markWaiting: jest.fn(async () => undefined),
   };
   const api = {
     invoke: jest.fn(
@@ -48,14 +49,21 @@ function harness(opts?: {
     ),
   };
   const checkSpy = jest.spyOn(boundary, "check");
+  // A1 审批闭环（实施轮 #12）：requestApproval 现在要经 approvals 落库并
+  // markWaiting 挂起——替身默认放行（不落真行），闭环行为由
+  // agent-approvals.spec.ts 与本文件的新用例钉。
+  const approvals = {
+    request: jest.fn(async (v: unknown) => v),
+  };
   const svc = new ToolExecutorService(
     boundary,
     sessions as never,
     api as never,
     notify as never,
+    approvals as never,
     sops as never,
   );
-  return { svc, boundary, sessions, api, notify, sops, checkSpy };
+  return { svc, boundary, sessions, api, notify, approvals, sops, checkSpy };
 }
 
 function session(patch: Partial<AgentSession> = {}): AgentSession {
@@ -147,21 +155,34 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
   // 【等待人工审批】——而"等待"在实现上等于"永远等不到"（审批单不落库、
   // 无 grant 端点、markWaiting 无生产调用方）。断言把**声明与实现不符**
   // 固化成了预期行为。现改为断言"如实告知不可执行"，并把三条事实一起钉住。
-  it("NEED_APPROVAL：审批单落库（awaiting_approval）+ 通知推送 + 如实告知当前不可执行", async () => {
+  it("NEED_APPROVAL：审批单落库 + 会话挂起 + 通知推送 + 告知已提交（A1 闭环）", async () => {
     const h = harness();
     const out = await h.svc.execute(
       session(),
       call("sop_publish", { sopId: "sop-1" }),
       null,
     );
-    // 不再诱导模型"等一会儿就能过"，而是明确说通道没接通
-    expect(out.content).toContain("【需人工审批，当前不可执行】");
-    expect(out.content).toContain("审批通道尚未接通");
+    // 闭环后文案不再说"不可执行"——审批单真的在等人处置，grant 后自动恢复
+    expect(out.content).toContain("【需人工审批，已提交审批单】");
+    expect(out.content).toContain("请勿重复提交");
+    // 落库三件套：agent_approvals 申请（含幂等键）、调用行 awaiting_approval、
+    // 会话 markWaiting 挂起（"生产零调用"是 A1 的原始形态之一，必须钉住）
+    expect(h.approvals.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalKey: expect.stringContaining("apr-s-1-"),
+        sessionId: "s-1",
+        toolName: "sop_publish",
+      }),
+    );
     expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "awaiting_approval",
         approvalId: expect.stringContaining("apr-s-1-"),
       }),
+    );
+    expect(h.sessions.markWaiting).toHaveBeenCalledWith(
+      "s-1",
+      expect.stringContaining("等待审批"),
     );
     expect(h.notify.approvalRequested).toHaveBeenCalled();
   });

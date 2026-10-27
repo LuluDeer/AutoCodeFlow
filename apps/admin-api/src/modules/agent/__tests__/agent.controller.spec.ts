@@ -22,6 +22,11 @@ function harness(sessionRow: Partial<AgentSession> | null) {
   const ctl = new AgentController(
     sessions as never,
     { resolveBudget: jest.fn() } as never,
+    {
+      findByKey: jest.fn(async () => null),
+      decide: jest.fn(async () => null),
+      listForSession: jest.fn(async () => []),
+    } as never,
     queue as never,
   );
   return { ctl, sessions, queue };

@@ -5760,6 +5760,145 @@
         }
       }
     },
+    "/agent/sessions/{id}/approvals/{approvalKey}/grant": {
+      "post": {
+        "operationId": "AgentController_grantApproval",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approvalKey",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "批准 Agent 审批单并恢复会话",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Grant an agent approval request and resume the session"
+        }
+      }
+    },
+    "/agent/sessions/{id}/approvals/{approvalKey}/deny": {
+      "post": {
+        "operationId": "AgentController_denyApproval",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approvalKey",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "拒绝 Agent 审批单",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Deny an agent approval request"
+        }
+      }
+    },
+    "/agent/sessions/{id}/approvals": {
+      "get": {
+        "operationId": "AgentController_listApprovals",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出会话的全部审批单",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "List all approval requests of a session"
+        }
+      }
+    },
     "/sop": {
       "get": {
         "operationId": "SopController_list",

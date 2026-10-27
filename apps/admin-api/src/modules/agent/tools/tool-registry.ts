@@ -56,22 +56,13 @@ export interface AgentToolSpec {
    * 另一个 Agent 的执行依据，04 §4.3），这一条不随全局写审批策略放宽而
    * 放宽。注意与 hardDisabled 的区别：需审批的工具人工点头后可执行。
    *
-   * ⚠️ **APPROVAL-GAP（2026-10-27 审计轮 #11，A1）：这条声明目前没有闭环。**
-   *
-   * 现状实测：`requestApproval()` 只是拼一个 `apr-<sessionId>-<ts>` 字符串
-   * 并推一条通知，**不落库**（没有任何 approval 实体），`agent.controller`
-   * 也只有 list/detail/create/resume/budget 五个路由，**没有任何"批准"端点**；
-   * `markWaiting()` 在生产代码里零调用方。
-   * 于是标了 `approvalRequired: true` 的工具（update_task /
-   * rollback_task_version / upgrade_deployment / stop_deployment /
-   * sop_publish）会稳定返回 `awaiting_approval`，然后**永远等不到批准**——
-   * 即"声明上可经人工点头执行，实际上永久不可执行"。
-   *
-   * 处置（本轮）：**如实降级**——把语义写清楚，并让"声明可审批"这件事不再
-   * 欺骗使用者。真正的闭环（审批实体 + grant/revoke 端点 + 恢复执行）是
-   * 一条独立工作流，登记在 OPEN-DECISIONS，不在本轮硬塞。
-   * 判据由 `agent-boundary-check.mjs` 的 APPROVAL-GAP tripwire 钉住：
-   * 一旦有人补上 grant 端点，该 tripwire 会提示把本段注释与 DTO 文案一起更新。
+   * 闭环链路（2026-10-28 实施轮 #12，A1 从轮 #11 的「如实降级」收口为真闭环）：
+   * ToolExecutorService.requestApproval 把审批单落库（agent_approvals，迁移
+   * 1790000000067）并 markWaiting 挂起会话；管理员经 agent.controller 的
+   * `POST sessions/:id/approvals/:key/grant|deny` 处置（条件写，结论唯一）；
+   * grant 后 controller 对 waiting_input 会话复用既有 resume 链路（reason=
+   * resume:approval）恢复执行。判据由 agent-boundary-check.mjs 的 tripwire
+   * 钉住：grant 端点与「不可执行」文案不能并存——一方出现另一方必须翻转。
    */
   approvalRequired?: true;
 }
