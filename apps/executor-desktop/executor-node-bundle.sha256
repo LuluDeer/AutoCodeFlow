@@ -620,3 +620,15 @@ source-digest: 99796e33e2290f16913f89b8ce617bb355fc85f80b7d2514f29d28fd8980dd0f
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
 source-digest: 29fc62370b565e8228f98e1ff6ec1791767ab3c2b910a5433b8ef128569c0fae
 dec932c12626ac73b224f4187aeace03bd26207728b8eeb8ad262fdbc39cba5c  index.js
+# 2026-10-28（CI drift 修复）：executor-node 源码零改动，但 810c8b3a（Dependabot
+#   executor-node-minor-and-patch 组）bump 了 dotenv 18.0.8→18.0.9 / js-yaml
+#   5.4.3→5.5.0——两者都进 ncc bundle ⇒ 产物哈希必变，而该 commit 漏回填本清单
+#   ⇒ CI desktop-bundle-drift 红（run 40539949015 实测）。
+#   教训（ADR-005 补一条）：executor-node 的 package.json/lockfile 依赖变更与
+#   源码变更同罪——都必须同 commit 重打回填。
+#   本哈希取自 CI 重打输出（actual=686b26a7…，CI node 24 + 锁定依赖树），非
+#   本机重打（84244815…）：ncc 字节输出含环境敏感成分，跨环境不可复现，权威
+#   环境是跑这个闸的 CI runner 本身。semantics 闸（source-digest 29fc6237…）
+#   不变——源码没动，动的只是依赖树。
+source-digest: 29fc62370b565e8228f98e1ff6ec1791767ab3c2b910a5433b8ef128569c0fae
+686b26a7490dade38648fd59a88daef738665055350b728edea0e37099d97916  index.js

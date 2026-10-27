@@ -104,7 +104,9 @@ const RICH_NAMES = [
 ];
 const STRESS_NAMES = [
   '跨境电商订单对账与发票归档批处理任务-华东生产集群-高峰期全量重算-含多币种结算与税务口径校验-v2',
-  'https://admin.example.internal:3001/api/v1/executions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/artifacts/download?token=0123456789abcdef0123456789abcdef',
+  // token 值用占位符形态（<your-token> 语义）——gitleaks 的 generic-api-key
+  // 规则会把 32 位 hex token 误当真凭据（CI secret-scan 实测红）。
+  'https://admin.example.internal:3001/api/v1/executions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/artifacts/download?token=PLACEHOLDER-TEST-TOKEN-NOT-A-SECRET',
   '🚀🚀 Emoji 前缀任务 ✅ 完成态 🧪 实验分支（多字节宽字符测试）',
   '超长数字 123456789012345678901234567890 与路径 /var/lib/autocodeflow/workspaces/executor-01/releases/2026.10.27-0f9e8d7c6b5a4321/artifacts/report-final-v3.csv',
   '供应商结算单生成',

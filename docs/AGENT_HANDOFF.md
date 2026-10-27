@@ -857,7 +857,7 @@ cd packages/mcp-server && npx tsc --noEmit
 ```
 
 注意：
-- `apps/executor-desktop/resources/executor-node/index.js` 是生成物，源码改 `apps/executor-node/src` 后走打包流程更新。
+- `apps/executor-desktop/resources/executor-node/`（内嵌 executor-node 的 ncc bundle）是生成物，**不入库**（F-19 后 .gitignore）；源码改 `apps/executor-node/src` 后走 `npm run build:executor` 重打，哈希跟踪在 `apps/executor-desktop/executor-node-bundle.sha256`。
 - admin-api 全局 `ResponseInterceptor` 把成功响应包成 `{ code, message, data }`，admin-web 在 `src/api/client.ts` 的 axios interceptor 自动拆包；CLI 与 MCP 已在 `packages/acf-cli/src/client.ts` 与 `packages/mcp-server/src/index.ts` 加上对称拆包逻辑（2026-09-02）。
 - 文档可能比代码旧，以代码+测试交叉校验。
 

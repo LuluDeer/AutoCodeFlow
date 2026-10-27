@@ -75,8 +75,8 @@ export function installUnhandledRejectionReporter(
     if (classifyUnhandledRejection(reason) === "known-teardown") return;
     const detail = reason instanceof Error ? (reason.stack ?? reason.message) : reason;
     logger.error(
-      `${UNEXPECTED_REJECTION_PREFIX} 检测到非 teardown 竞态的浮空 promise 拒绝——` +
-        `这通常是"忘记 await/忘记 catch"的真缺陷（当前不判红，见 vite.config.ts 注释）：`,
+      `${UNEXPECTED_REJECTION_PREFIX} unexpected floating promise rejection (not a known teardown race) — ` +
+        `usually a missing await/catch, a real defect (not failing yet, see vite.config.ts):`,
       detail,
     );
     // 兜住 promise 本身，避免 "unhandled rejection" 计数继续累积
