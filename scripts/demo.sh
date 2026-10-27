@@ -82,10 +82,39 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "✗ Node.js 18+ is required for the demo seed/verification scripts (no npm install needed)." >&2
-  exit 1
-fi
+# ── host tool gates（node ≥18 + curl）─────────────────────────────────────
+# 抽成函数只为「可测」：demo.selftest.sh 用 stub PATH 直接跑这两道门，不必
+# 真起 compose（真栈要 Docker，CI 跑不动）——否则预检门不门得住只能靠人读码。
+require_node_and_curl() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "✗ node not found. The seed/verification steps are Node-only scripts (no npm install needed)." >&2
+    echo "  Fix: install Node 24 — nvm install 24 && nvm use 24   (repo engines: >=24)" >&2
+    exit 1
+  fi
+
+  # 版本口径：根 package.json engines 是 >=24（构建/开发面），而演示脚本只跑
+  # 零依赖 node、最低 18 就够——verify 段用**全局 fetch**，17 及以下直接
+  # ReferenceError，且报错落在 heredoc 中段，看不出是版本问题（旧预检只
+  # command -v node，正是这条漏检）。这里按脚本真实需要判 18，修复动作指向
+  # engines 要求的 24，免得用户按 18 装完又撞上别的工具的 engines 报错。
+  local node_major
+  node_major="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))' 2>/dev/null || echo 0)"
+  if [[ ! "$node_major" =~ ^[0-9]+$ ]] || (( node_major < 18 )); then
+    echo "✗ node $(node -v 2>/dev/null || echo '?') is too old: the demo scripts need Node >= 18 (repo engines require >= 24)." >&2
+    echo "  Why: the verification step uses global fetch (Node 18+); older node dies with a bare ReferenceError." >&2
+    echo "  Fix: nvm install 24 && nvm use 24   (or install Node 24 from https://nodejs.org)" >&2
+    exit 1
+  fi
+
+  # wait_url 靠 curl 轮询 /health/ready。缺 curl 时症状是「每步都 did not
+  # become ready」，把人引去翻容器日志，查错了方向。
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "✗ curl not found: wait_url polls the /health/ready endpoints with curl." >&2
+    echo "  Fix: apt install curl   (macOS: brew install curl)" >&2
+    exit 1
+  fi
+}
+require_node_and_curl
 
 if docker compose version >/dev/null 2>&1; then
   DC=(docker compose)
@@ -331,13 +360,32 @@ wait_url "http://127.0.0.1:$PY_EXECUTOR_PORT/health" "executor-python" 120
 sleep 3
 
 # ── seed ─────────────────────────────────────────────────────────────────
+# seed 的失败不在这一步直接终止：收尾文案要按**实际计数**说清缺什么。
+# 旧版收尾是固定文案（宣称 3 个任务 + 3 条 SOP 均已 seed），而 seed 里
+# SOP draft/publish 失败只 console.error、缺任务 id 时整批 skip，脚本照样
+# 退出 0 —— 用户看到「已 seed 3 条 SOP」，SOP 页面却是空的。
+SEED_LOG=""
+SEED_RC=0
 if (( DO_SEED )); then
   echo "→ seeding demo tasks + SOPs"
-  node "$ROOT/scripts/demo-seed.mjs" \
-    --base-url "http://127.0.0.1:$API_PORT" \
-    --username admin \
-    --password "$ADMIN_PW"
+  SEED_LOG="$(mktemp "${TMPDIR:-/tmp}/acf-demo-seed.XXXXXX")"
+  if ! node "$ROOT/scripts/demo-seed.mjs" \
+      --base-url "http://127.0.0.1:$API_PORT" \
+      --username admin \
+      --password "$ADMIN_PW" 2>&1 | tee "$SEED_LOG"; then
+    SEED_RC=1
+  fi
 fi
+
+# 判据：只认 seed 打印的 ACF_SEED_SUMMARY 行（机器可读），不解析人类可读文案。
+# 解析不到就是「未知」，绝不能退回默认的「3 + 3」。
+seed_stat() {
+  local key="$1" value=""
+  if [[ -n "$SEED_LOG" && -f "$SEED_LOG" ]]; then
+    value="$(grep -o "\"$key\":[0-9]*" "$SEED_LOG" | tail -1 | cut -d: -f2 || true)"
+  fi
+  printf '%s' "$value"
+}
 
 # ── executor shared token：env 形态由 GET 端点兜底透出（P1-1 修正）──────
 # 不在此生成 DB token：verifyExecutorToken 的解析顺序是 DB 优先、env 兜底，
@@ -423,6 +471,40 @@ throw new Error(`execution ${executionId} did not finish (last status: ${last})`
 NODE
 
 # ── summary ──────────────────────────────────────────────────────────────
+# 收尾文案里的 seed 行只按 ACF_SEED_SUMMARY 的真实计数打印；解析不到就写
+# 「未知」，绝不回落成「3 tasks + 3 SOPs」。
+SEED_LINES=""
+DEMO_INCOMPLETE=0
+if (( DO_SEED )); then
+  SEED_TASKS="$(seed_stat tasks)"
+  SEED_TASKS_FAILED="$(seed_stat tasksFailed)"
+  SEED_TASKS_EXPECTED="$(seed_stat expectedTasks)"
+  SEED_SOPS="$(seed_stat sops)"
+  SEED_SOP_FAILED="$(seed_stat sopFailed)"
+  SEED_SOP_SKIPPED="$(seed_stat sopSkipped)"
+  SEED_SOPS_EXPECTED="$(seed_stat expectedSops)"
+  if [[ -z "$SEED_TASKS" || -z "$SEED_SOPS" ]]; then
+    SEED_LINES="    - ⚠ seed 未打印 ACF_SEED_SUMMARY：实际 seed 了什么未知（以上方 seed 输出为准）"
+    DEMO_INCOMPLETE=1
+  else
+    SEED_LINES="    - ${SEED_TASKS}/${SEED_TASKS_EXPECTED} demo task(s) + ${SEED_SOPS}/${SEED_SOPS_EXPECTED} demo SOP(s) seeded"
+    if (( SEED_TASKS_FAILED > 0 )); then
+      SEED_LINES+="$(printf '\n%s' "    - ⚠ ${SEED_TASKS_FAILED} 个演示任务创建失败（任务页会缺条目）")"
+      DEMO_INCOMPLETE=1
+    fi
+    if [[ "$SEED_SOPS" != "$SEED_SOPS_EXPECTED" ]]; then
+      SEED_LINES+="$(printf '\n%s' "    - ⚠ SOP 未全部 seed：${SEED_SOPS}/${SEED_SOPS_EXPECTED} 就位（失败 ${SEED_SOP_FAILED}，跳过 ${SEED_SOP_SKIPPED}）")"
+      SEED_LINES+="$(printf '\n%s' "       补救：node scripts/demo-seed.mjs --base-url http://127.0.0.1:${API_PORT} --username admin --password 见上方 Password（幂等，已有资源复用）")"
+      DEMO_INCOMPLETE=1
+    fi
+  fi
+  if [[ "$SEED_RC" != "0" ]]; then
+    DEMO_INCOMPLETE=1
+  fi
+else
+  SEED_LINES="    - seed skipped (--no-seed): 任务/SOP 均未预置"
+fi
+
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
@@ -434,8 +516,7 @@ cat <<EOF
   Password  $ADMIN_PW
 
   What just happened:
-    - 3 demo tasks + 3 demo SOPs were seeded
-    - demo-hello-fixed ran once and reached SUCCESS
+${SEED_LINES}    - demo-hello-fixed ran once and reached SUCCESS
     - Node + Python executors registered and pulled the job (no inbound port)
 
   Try next:
@@ -449,3 +530,13 @@ cat <<EOF
   Reset  ./scripts/demo.sh --reset
 ────────────────────────────────────────────────────────────
 EOF
+
+if [[ -n "$SEED_LOG" ]]; then
+  rm -f "$SEED_LOG"
+fi
+# 有未达标项：栈本身已起来（UI 可用），但「3 tasks + 3 SOPs」不成立 ⇒
+# 按实际计数非零退出，别让 CI/脚本调用方把半成品当成功。
+if (( DEMO_INCOMPLETE )); then
+  echo "✗ demo 已启动，但上述项未达标（SOP 未全部 seed 等）——按实际计数以非零退出；补救命令见上方。" >&2
+  exit 1
+fi

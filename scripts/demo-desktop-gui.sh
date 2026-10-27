@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Desktop Agent GUI demo (Linux X11/Xvfb). No Docker, no LLM, no API key.
+# Desktop Agent GUI demo (Linux X11/Xvfb). No Docker, no LLM, no API key —
+# but it does need one `npm --prefix apps/executor-desktop install` (see below).
 #
 # It runs the SAME X11GuiDriver used by executor-desktop's agent host:
 #   probe -> focus -> type -> screenshot -> press Enter
@@ -11,8 +12,11 @@
 # produces the evidence image used in the README.
 #
 # Requirements (Ubuntu/Debian): Xvfb, xfwm4, xdotool, xprop, ffmpeg,
-# python3-tk, node. The production executor also needs xdotool + ffmpeg; see
-# docs/operations.md.
+# python3-tk, node, plus executor-desktop's dev deps:
+#   npm --prefix apps/executor-desktop install
+# (this demo compiles apps/executor-desktop/dist-selftest/ with the local tsc;
+# that directory is gitignored, so a clean clone has no prebuilt driver).
+# The production executor also needs xdotool + ffmpeg; see docs/operations.md.
 #
 # Usage:
 #   ./scripts/demo-desktop-gui.sh
@@ -50,6 +54,17 @@ fail() {
   exit 1
 }
 
+# dist-selftest/ 被 .gitignore 忽略（构建产物）：干净克隆里必然没有，下面要用
+# tsconfig.selftest.json 现场编译。缺 apps/executor-desktop/node_modules/typescript
+# 时 npx 会去网上拉一份 tsc（离线/受限网络直接失败），而失败信息只有
+# "failed to build" + 一屏 xvfb/wm 日志——根本看不出缺的是依赖。所以先判依赖，
+# 缺了就停在这一步，不往下跑 Xvfb/xterm 那些无关步骤。
+if [[ ! -f "$ROOT/apps/executor-desktop/node_modules/typescript/package.json" ]]; then
+  echo "✗ apps/executor-desktop/node_modules/typescript is missing — this demo needs it." >&2
+  echo "  Why: it compiles apps/executor-desktop/dist-selftest/ (gitignored) with the local tsc." >&2
+  echo "  Fix: npm --prefix apps/executor-desktop install" >&2
+  exit 1
+fi
 for tool in Xvfb xfwm4 xdotool xprop ffmpeg python3 node; do
   command -v "$tool" >/dev/null 2>&1 || fail "missing required tool: $tool"
 done
@@ -57,8 +72,10 @@ python3 -c "import tkinter" >/dev/null 2>&1 || fail "python3-tk is not installed
 
 if [[ ! -f "$DRIVER" ]]; then
   echo "→ building executor-desktop selftest driver"
-  (cd "$ROOT/apps/executor-desktop" && npx tsc -p tsconfig.selftest.json) \
-    || fail "failed to build $DRIVER"
+  # 本地 .bin/tsc 而不是 npx：npx 在依赖缺失时会联网取一份 tsc（预检已挡，
+  # 这里再断掉隐式下载这条路径）。
+  (cd "$ROOT/apps/executor-desktop" && ./node_modules/.bin/tsc -p tsconfig.selftest.json) \
+    || fail "tsc -p tsconfig.selftest.json failed (see the compiler errors above)"
 fi
 
 DISPLAY_NUM_ONLY="${DISPLAY_NUM#:}"

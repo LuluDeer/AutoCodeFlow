@@ -8,12 +8,18 @@ import {
   aggregateSopPages,
   API_PAGE_SIZE,
   aggregatePages,
+  CONNECTION_ENV_ALIASES,
+  DEFAULT_BASE_URL,
+  DEFAULT_USERNAME,
+  DEMO_SOP_COUNT,
   demoSopDefs,
   demoTaskDefs,
   findExisting,
   findSop,
   listAll,
   pageCount,
+  resolveConnectionArgs,
+  resolveOption,
   sopPageCount,
   triggerTargets,
   unwrap,
@@ -48,6 +54,92 @@ test("findExisting 命中同名任务（幂等复用依据）", () => {
   const tasks = [{ name: "demo-hello-fixed", id: "t1" }];
   assert.equal(findExisting(tasks, "demo-hello-fixed").id, "t1");
   assert.equal(findExisting(tasks, "nope"), undefined);
+});
+
+// ── 连接参数解析（CLI > env 别名 > 默认）──
+// 这三条判据对应一次真实故障：头注写 ACF_API_URL/ACF_USER，实现只认
+// ACF_BASE_URL/ACF_USERNAME ⇒ CI 里 `ACF_API_URL=... node demo-seed.mjs`
+// 静默连默认 localhost 还报成功。下面任何一条变红，都说明别名链又断了。
+
+test("连接参数：环境变量别名生效（ACF_API_URL / ACF_USER）", () => {
+  const r = resolveConnectionArgs({
+    args: [],
+    env: { ACF_API_URL: "http://ci-host:3105", ACF_USER: "seed-bot", ACF_PASSWORD: "pw" },
+  });
+  assert.equal(r.baseUrl, "http://ci-host:3105");
+  assert.equal(r.username, "seed-bot");
+  assert.equal(r.password, "pw");
+});
+
+test("连接参数：正名优先于别名（ACF_BASE_URL 压 ACF_API_URL，ACF_USERNAME 压 ACF_USER）", () => {
+  const r = resolveConnectionArgs({
+    args: [],
+    env: {
+      ACF_BASE_URL: "http://primary:3105",
+      ACF_API_URL: "http://legacy:3105",
+      ACF_USERNAME: "primary-user",
+      ACF_USER: "legacy-user",
+    },
+  });
+  assert.equal(r.baseUrl, "http://primary:3105");
+  assert.equal(r.username, "primary-user");
+});
+
+test("连接参数：显式 CLI 参数优先于环境变量（含别名）", () => {
+  const r = resolveConnectionArgs({
+    args: ["--base-url", "http://cli:3105", "--username", "cli-user", "--password", "cli-pw"],
+    env: {
+      ACF_BASE_URL: "http://env:3105",
+      ACF_API_URL: "http://env-alias:3105",
+      ACF_USERNAME: "env-user",
+      ACF_USER: "env-alias-user",
+      ACF_PASSWORD: "env-pw",
+    },
+  });
+  assert.equal(r.baseUrl, "http://cli:3105");
+  assert.equal(r.username, "cli-user");
+  assert.equal(r.password, "cli-pw");
+});
+
+test("连接参数：都没有时回退默认（password 无默认值）", () => {
+  const r = resolveConnectionArgs({ args: [], env: {} });
+  assert.equal(r.baseUrl, DEFAULT_BASE_URL);
+  assert.equal(r.username, DEFAULT_USERNAME);
+  assert.equal(r.password, undefined);
+  assert.deepEqual(resolveConnectionArgs(), {
+    baseUrl: DEFAULT_BASE_URL,
+    username: DEFAULT_USERNAME,
+    password: undefined,
+  });
+});
+
+test("连接参数：尾斜杠削掉、空白 env 视同未设置", () => {
+  const r = resolveConnectionArgs({
+    args: ["--base-url", "http://host:3105///"],
+    env: { ACF_USERNAME: "   ", ACF_USER: "alias-user", ACF_API_URL: "   " },
+  });
+  assert.equal(r.baseUrl, "http://host:3105");
+  assert.equal(r.username, "alias-user");
+  const onlyBlankEnv = resolveConnectionArgs({ args: [], env: { ACF_API_URL: "", ACF_USER: "  " } });
+  assert.equal(onlyBlankEnv.baseUrl, DEFAULT_BASE_URL);
+  assert.equal(onlyBlankEnv.username, DEFAULT_USERNAME);
+});
+
+test("连接参数：flag 后缺值直接报错，不静默回落到默认地址", () => {
+  assert.throws(
+    () => resolveConnectionArgs({ args: ["--base-url", "--username", "u"], env: {} }),
+    /--base-url 缺少取值/,
+  );
+  assert.throws(
+    () => resolveOption({ flag: "--password", args: ["--password"], env: {} }),
+    /--password 缺少取值/,
+  );
+});
+
+test("别名表覆盖三个连接 flag（少写一项 = 对应 env 写法静默失效）", () => {
+  assert.deepEqual(Object.keys(CONNECTION_ENV_ALIASES).sort(), ["--base-url", "--password", "--username"]);
+  assert.deepEqual(CONNECTION_ENV_ALIASES["--base-url"], ["ACF_BASE_URL", "ACF_API_URL"]);
+  assert.deepEqual(CONNECTION_ENV_ALIASES["--username"], ["ACF_USERNAME", "ACF_USER"]);
 });
 
 test("unwrap 拆信封且非信封 passthrough", () => {
@@ -177,6 +269,11 @@ test("demoSopDefs：缺演示任务 id 直接拒绝（platform 锚点不可凭�
     () => demoSopDefs({ "demo-hello-fixed": "uuid-hello" }),
     /任务 id/,
   );
+});
+
+test("DEMO_SOP_COUNT 与 demoSopDefs 条目数同步（整批跳过时靠它报 expectedSops）", () => {
+  const defs = demoSopDefs({ "demo-hello-fixed": "uuid-hello", "demo-cron-report": "uuid-cron" });
+  assert.equal(defs.length, DEMO_SOP_COUNT);
 });
 
 test("演示 SOP：3 条、demo-sop- 前缀、slug 合法、title 非空", () => {

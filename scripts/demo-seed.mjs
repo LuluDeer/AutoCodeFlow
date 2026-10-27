@@ -16,7 +16,20 @@
  * 用法：
  *   node scripts/demo-seed.mjs --base-url http://localhost:3105 \
  *     --username admin --password 'Admin@123456'
- *   环境变量 ACF_API_URL / ACF_USER / ACF_PASSWORD 亦可。
+ *   环境变量（与 flag 一一对应，别名见 CONNECTION_ENV_ALIASES）：
+ *     --base-url ← ACF_BASE_URL | ACF_API_URL
+ *     --username ← ACF_USERNAME | ACF_USER
+ *     --password ← ACF_PASSWORD
+ *   CLI flag 优先于环境变量；都没有时 base-url 回退 http://localhost:3105、
+ *   username 回退 admin（password 无默认值，缺了直接非零退出）。
+ *
+ * 输出契约：正常跑完时最后一行必为机器可读计数（demo.sh 据此打印收尾文案，
+ * 不解析任何人类可读文案）：
+ *   ACF_SEED_SUMMARY {"tasks":3,"tasksFailed":0,"expectedTasks":3,
+ *                     "sops":3,"sopFailed":0,"sopSkipped":0,"expectedSops":3}
+ * 任一条任务创建失败、或任一 SOP 未真正就位（draft/publish 失败、因缺平台
+ * 锚点被整批跳过）时退出码为 1——收尾不会再出现「3 SOP 已 seed」而 SOP
+ * 页面为空的情况。
  *
  * 卸载：脚本创建的任务都在 demo- 前缀、SOP 都在 demo-sop- 前缀下，
  * `acf task delete` / UI 删除即可。
@@ -26,6 +39,84 @@ import process from "node:process";
 
 const DEMO_PREFIX = "demo-";
 export const API_PAGE_SIZE = 100;
+/** admin-api 默认地址（与 scripts/demo.sh 的默认 --api-port 3105 对齐）。 */
+export const DEFAULT_BASE_URL = "http://localhost:3105";
+/** 默认登录名（demo 全栈唯一的初始账号）。 */
+export const DEFAULT_USERNAME = "admin";
+/**
+ * 演示 SOP 条数（demoSopDefs 的条目数）。
+ * 单独导出是为了「SOP 整批被跳过」时仍能报 expectedSops——此时
+ * demoSopDefs 会抛错、拿不到数组，没有这个常量就只剩一个 0，收尾文案
+ * 无法回答「少了 / 本该有几条」。selftest 断言两者相等，改一处忘另一处会红。
+ */
+export const DEMO_SOP_COUNT = 3;
+
+/**
+ * 环境变量别名表：flag → 候选 env（越靠前越优先）。
+ *
+ * 故障形态（本轮实证）：头注写的是 ACF_API_URL / ACF_USER / ACF_PASSWORD，
+ * 而旧实现按「ACF_ + flag 去 -- 大写」拼名字，只认 ACF_BASE_URL /
+ * ACF_USERNAME（ACF_PASSWORD 恰好同名才碰巧可用）。于是
+ *   ACF_API_URL=http://ci-host:3105 node scripts/demo-seed.mjs
+ * 既不报错、也不连 ci-host，而是静默连默认的 localhost:3105 —— CI 与远端
+ * 演示全部打进空气，还照样打印「done」。别名表让文档写法与实现同时生效；
+ * 删掉任何一项，对应写法就重新变成静默失效，这正是本表的判据。
+ */
+export const CONNECTION_ENV_ALIASES = {
+  "--base-url": ["ACF_BASE_URL", "ACF_API_URL"],
+  "--username": ["ACF_USERNAME", "ACF_USER"],
+  "--password": ["ACF_PASSWORD"],
+};
+
+/**
+ * 纯函数：解析一个「带取值」的 CLI flag，优先级 CLI > env 候选链 > fallback。
+ *
+ * 显式写了 flag 却没给值（到结尾，或后面紧跟另一个 --flag）时抛错而不是
+ * 回落 env：旧实现此时返回 undefined，接着 ?? fallback 静默生效——用户以为
+ * 指定了远端地址，实际连的是 localhost。宁可红，也不要「看起来成功」。
+ *
+ * @param {{args?: string[], env?: Record<string,string|undefined>, flag: string,
+ *          envKeys?: string[], fallback?: string}} spec
+ */
+export function resolveOption({ args = [], env = {}, flag, envKeys = [], fallback = undefined }) {
+  const index = args.indexOf(flag);
+  if (index >= 0) {
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error(`${flag} 缺少取值（用法见文件头）`);
+    }
+    return value;
+  }
+  for (const key of envKeys) {
+    const raw = env?.[key];
+    // 空串视同未设置：CI 里 `ACF_API_URL= node ...` 很常见，空串当值会把
+    // base-url 变成 ""，请求打到相对路径、报错信息还指不到根因。
+    if (typeof raw === "string" && raw.trim() !== "") return raw.trim();
+  }
+  return fallback;
+}
+
+/**
+ * 纯函数：解析连接参数（--base-url / --username / --password）。
+ *
+ * 抽成纯函数是为了让 demo-seed.selftest.mjs 能离线断言三条判据：
+ * 别名生效、显式 CLI 优先、都没有时回退默认——否则这几条只能靠真起一套
+ * admin-api 才能验证，而它们恰恰是最容易再次退化的地方。
+ */
+export function resolveConnectionArgs({ args = [], env = {} } = {}) {
+  const baseUrl = resolveOption({
+    args, env, flag: "--base-url", envKeys: CONNECTION_ENV_ALIASES["--base-url"], fallback: DEFAULT_BASE_URL,
+  });
+  const username = resolveOption({
+    args, env, flag: "--username", envKeys: CONNECTION_ENV_ALIASES["--username"], fallback: DEFAULT_USERNAME,
+  });
+  const password = resolveOption({
+    args, env, flag: "--password", envKeys: CONNECTION_ENV_ALIASES["--password"],
+  });
+  // 尾斜杠会让 `${baseUrl}/api/auth/login` 出现双斜杠（部分反代直接 404），
+  // 在解析这一层统一削掉，调用方不必再各自处理。
+  return { baseUrl: baseUrl.replace(/\/+$/, ""), username, password };
+}
 
 /** 纯函数：从任务列表里找同名演示任务（幂等复用的依据） */
 export function findExisting(tasks, name) {
@@ -464,19 +555,27 @@ export async function listAllSops(baseUrl, token) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const argOf = (flag, def = undefined) => {
-    const i = args.indexOf(flag);
-    return i >= 0 ? args[i + 1] : process.env[`ACF_${flag.replace("--", "").toUpperCase()}`] ?? def;
-  };
-  const baseUrl = (argOf("--base-url") ?? "http://localhost:3105").replace(/\/+$/, "");
-  const username = argOf("--username") ?? "admin";
-  const password = argOf("--password");
+  // 解析走纯函数（见 resolveConnectionArgs）：别名与优先级都在那里被 selftest
+  // 钉住，main 只负责取结果——否则这条链又会退回「按 flag 名拼 env」的写法。
+  const { baseUrl, username, password } = resolveConnectionArgs({ args, env: process.env });
   const skipTrigger = args.includes("--skip-trigger");
 
   if (!password) {
     console.error("[demo-seed] missing --password (or ACF_PASSWORD env)");
     process.exit(1);
   }
+
+  // 计数容器：收尾用 ACF_SEED_SUMMARY 一次性吐给 demo.sh，替换掉此前
+  // 「固定文案宣称 3 tasks + 3 SOPs」的谎报。
+  const summary = {
+    tasks: 0,
+    tasksFailed: 0,
+    expectedTasks: demoTaskDefs().length,
+    sops: 0,
+    sopFailed: 0,
+    sopSkipped: 0,
+    expectedSops: DEMO_SOP_COUNT,
+  };
 
   console.log(`[demo-seed] admin-api: ${baseUrl}`);
   const login = await apiFetch(baseUrl, "/api/auth/login", {
@@ -534,12 +633,23 @@ async function main() {
     });
     if (!res.ok) {
       console.error(`[demo-seed] create ${def.name} failed (${res.status}): ${JSON.stringify(res.data).slice(0, 300)}`);
-      process.exit(1);
+      // 不再当场 exit：剩下两条任务仍可建、收尾才能一次性报出真实计数
+      // （否则 demo.sh 只看到非零退出码，无法回答「到底缺什么」）。
+      summary.tasksFailed += 1;
+      continue;
     }
     const id = unwrap(res.data)?.id;
+    if (!id) {
+      // 建成但拿不到 id：后续 trigger 会拼出 /api/tasks/undefined/trigger，
+      // SOP 锚点也会静默指向空——按失败计，别把它算进「已 seed」。
+      console.error(`[demo-seed] create ${def.name}: response missing id`);
+      summary.tasksFailed += 1;
+      continue;
+    }
     console.log(`[demo-seed] task created: ${def.name} (${id})`);
     created.push({ def, id, reused: false });
   }
+  summary.tasks = created.length;
 
   if (!skipTrigger) {
     // fixed_rate 由调度器自动跑；cron/manual 演示任务各只主动触发一次。
@@ -562,8 +672,12 @@ async function main() {
   try {
     sopDefs = demoSopDefs(taskMap);
   } catch (e) {
+    // 平台锚点缺任务 id ⇒ 整批 SOP 无法建。此前这里只 console.error 一行
+    // 就继续往下跑、最后仍报「3 SOP 已 seed」；现在记成 sopSkipped，收尾
+    // 计数会显示 0/3，demo.sh 据此如实告警并非零退出。
     console.error(`[demo-seed] skip SOP seed: ${e instanceof Error ? e.message : String(e)}`);
     sopDefs = [];
+    summary.sopSkipped = DEMO_SOP_COUNT;
   }
   const existingSops = await listAllSops(baseUrl, token);
   const sops = [];
@@ -585,10 +699,17 @@ async function main() {
         },
       });
       if (!res.ok) {
+        // 单条失败不阻断其余两条：计数里如实记一条 sopFailed，收尾统一交代。
         console.error(`[demo-seed] draft ${def.slug} failed (${res.status}): ${JSON.stringify(res.data).slice(0, 300)}`);
-        process.exit(1);
+        summary.sopFailed += 1;
+        continue;
       }
       sopId = unwrap(res.data)?.id;
+      if (!sopId) {
+        console.error(`[demo-seed] draft ${def.slug}: response missing id`);
+        summary.sopFailed += 1;
+        continue;
+      }
       console.log(`[demo-seed] sop drafted: ${def.slug} (${sopId})`);
     }
     // listVersions 返回裸数组（非分页）；有版本 = 已发布过，不再发布。
@@ -600,8 +721,11 @@ async function main() {
         body: { changelog: "demo seed 初版" },
       });
       if (!res.ok) {
+        // 草稿在库里但没发布 = 演示时看到的是「草稿态、不能指派」，
+        // 与「已 seed」的承诺不符，一律按失败计。
         console.error(`[demo-seed] publish ${def.slug} failed (${res.status}): ${JSON.stringify(res.data).slice(0, 300)}`);
-        process.exit(1);
+        summary.sopFailed += 1;
+        continue;
       }
       // publish 返回 { sop, version: SopVersion 实体 }——版本号在 version.version
       const v = unwrap(res.data)?.version;
@@ -611,17 +735,33 @@ async function main() {
     }
     sops.push({ slug: def.slug, id: sopId });
   }
+  summary.sops = sops.length;
 
   const sopLines = sops.map(({ slug, id }) => `    - ${slug} (${id})`).join("\n");
+  const incomplete = summary.tasksFailed > 0 || summary.sopFailed > 0 || summary.sopSkipped > 0;
   console.log(`
 [demo-seed] done. Open the admin web URL printed by scripts/demo.sh (demo default http://localhost:8088) and check:
   - 执行记录（demo-fragile 应有一条 failed，含失败分类与错误信息）
   - demo-hello-fixed 将每 15s 产生一条成功执行
   - 任务详情页的「依赖 DAG」/ 配置历史 / 通知设置可继续演示
-  - SOP 页面三条 demo-sop- 前缀的演示 SOP（已发布 v1.0.0）：
-${sopLines}
+  - SOP 页面 ${summary.sops}/${summary.expectedSops} 条 demo-sop- 前缀的演示 SOP：
+${sopLines || "    （无——见上方 sop 相关报错）"}
     教程：docs/tutorials/05-sop-agent-demo.md（指派/执行/GUI 演示的步骤与前置）
 卸载：删除 demo- 前缀任务与 demo-sop- 前缀 SOP 即可。`);
+
+  // 机器可读计数：demo.sh 只认这一行（不解析任何人类可读文案），
+  // 所以「文案说成功但实际没有」的情况不可能再出现。
+  console.log(`ACF_SEED_SUMMARY ${JSON.stringify(summary)}`);
+
+  if (incomplete) {
+    console.error(
+      `[demo-seed] 未全部就位：tasks ${summary.tasks}/${summary.expectedTasks}` +
+        `（失败 ${summary.tasksFailed}），sops ${summary.sops}/${summary.expectedSops}` +
+        `（失败 ${summary.sopFailed}，跳过 ${summary.sopSkipped}）`,
+    );
+    console.error("[demo-seed] 按实际计数非零退出；修好上面的报错后重跑本脚本即可补齐（幂等，已有资源复用）");
+    process.exitCode = 1;
+  }
 }
 
 // 仅直接执行时运行（selftest 可 import 纯函数）

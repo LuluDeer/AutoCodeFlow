@@ -15,7 +15,10 @@
 # is replaced with a scripted response. Set ACF_LLM_API_KEY / ACF_LLM_BASE_URL /
 # ACF_LLM_MODEL to use a real OpenAI-compatible provider instead.
 #
-# Requirements: Xvfb, xfwm4, xdotool, xprop, ffmpeg, python3-tk, node.
+# Requirements: Xvfb, xfwm4, xdotool, xprop, ffmpeg, python3-tk, node, plus
+# executor-desktop's dev deps (this demo compiles the gitignored
+# apps/executor-desktop/dist-selftest/ with the local tsc):
+#   npm --prefix apps/executor-desktop install
 #
 # Usage:
 #   ./scripts/demo-desktop-agent.sh
@@ -54,6 +57,17 @@ fail() {
   exit 1
 }
 
+# dist-selftest/ 被 .gitignore 忽略（构建产物）：干净克隆里必然没有，下面要用
+# tsconfig.selftest.json 现场编译。缺 apps/executor-desktop/node_modules/typescript
+# 时 npx 会去网上拉一份 tsc（离线/受限网络直接失败），而失败信息只有
+# "failed to build" + 一屏 xvfb/wm 日志——根本看不出缺的是依赖。所以先判依赖，
+# 缺了就停在这一步，不往下跑 Xvfb/xterm 那些无关步骤。
+if [[ ! -f "$ROOT/apps/executor-desktop/node_modules/typescript/package.json" ]]; then
+  echo "✗ apps/executor-desktop/node_modules/typescript is missing — this demo needs it." >&2
+  echo "  Why: it compiles apps/executor-desktop/dist-selftest/ (gitignored) with the local tsc." >&2
+  echo "  Fix: npm --prefix apps/executor-desktop install" >&2
+  exit 1
+fi
 for tool in Xvfb xfwm4 xdotool xprop ffmpeg python3 node; do
   command -v "$tool" >/dev/null 2>&1 || fail "missing required tool: $tool"
 done
@@ -61,8 +75,9 @@ python3 -c "import tkinter" >/dev/null 2>&1 || fail "python3-tk is not installed
 
 if [[ ! -f "$DIST/runtime.js" || ! -f "$DIST/loop.js" || ! -f "$DIST/gui-x11.js" ]]; then
   echo "→ building executor-desktop selftest modules"
-  (cd "$ROOT/apps/executor-desktop" && npx tsc -p tsconfig.selftest.json) \
-    || fail "failed to build $DIST"
+  # 本地 .bin/tsc（预检已保证存在），不走 npx 的隐式下载路径。
+  (cd "$ROOT/apps/executor-desktop" && ./node_modules/.bin/tsc -p tsconfig.selftest.json) \
+    || fail "tsc -p tsconfig.selftest.json failed (see the compiler errors above)"
 fi
 
 DISPLAY_NUM_ONLY="${DISPLAY_NUM#:}"
