@@ -1,0 +1,19 @@
+# COV-DENOMINATOR（2026-10-27 审计轮 #7）
+#
+# 为什么需要这个文件：pytest.ini 里的 `--cov=.` 会把**测试代码本身**也算进
+# 覆盖率分母，而本目录 tests/（约 20648 行）比产品代码（约 13094 行）还多——
+# 实测 .coverage 里 72 个被测文件有 45 个在 tests/，于是
+#   · 全量口径：15853 stmts / 94.52%
+#   · 只算源码： 5273 stmts / 87.30%
+# 差 7pt。85% 的地板在全量口径下折算成源码侧只有约 59%：测试写得越多，数字越
+# 好看，与产品代码的质量完全脱钩（可放行 28pt 的源码退化）。
+#
+# pytest-cov 没有 --omit 开关（实测报 unrecognized arguments），覆盖率配置
+# 必须落在 coverage 自己的配置面（.coveragerc / setup.cfg / pyproject.toml）。
+# 这里只做一件事：把 tests/ 从分母里摘出去，其余保持 coverage 默认。
+#
+# 反证（改前红/改后绿）：删掉本文件的 omit 段 → pytest 摘要 TOTAL 从
+# 5273 stmts 回到 15853 stmts，"覆盖率"从 87.3% 跳到 94.5%。
+[run]
+omit =
+    tests/*

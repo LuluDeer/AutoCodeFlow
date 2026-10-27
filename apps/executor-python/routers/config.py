@@ -136,8 +136,19 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
         )
     if req.task_timeout_seconds is not None and req.task_timeout_seconds < 1:
         raise HTTPException(status_code=400, detail='task_timeout_seconds 必须 >= 1')
-    if req.heartbeat_interval_seconds is not None and req.heartbeat_interval_seconds < 5:
-        raise HTTPException(status_code=400, detail='heartbeat_interval_seconds 必须 >= 5')
+    # NETOPT-9-5 对齐（node routes/config.ts 同一句 '必须在 5 到 60 之间'）：
+    # 上界 60 不是审美，是**活性判据**。admin 的 stale sweep 用**自身**配置的
+    # interval ×3（默认 30s×3=90s）判 OFFLINE，不读执行器上报值；一旦热更到
+    # >=120s，每两次心跳之间的空档都落在 stale 窗之外 → 执行器被判 OFFLINE、
+    # 派发静默停止（运维只看到「任务不派了」，且只能靠重启救回）。
+    # 共享协议 schema 只声明 min(5)，故这里的执行器侧闸才是有效边界。
+    if req.heartbeat_interval_seconds is not None and (
+        req.heartbeat_interval_seconds < 5 or req.heartbeat_interval_seconds > 60
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail='heartbeat_interval_seconds 必须在 5 到 60 之间',
+        )
     if isinstance(raw_body, dict):
         try:
             # strict=True：pydantic 默认 lax 会把字符串 "4" 强转成 int，而 zod 与
@@ -176,16 +187,40 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
             logger.info(f'Hot-reloaded task_timeout_seconds={req.task_timeout_seconds}')
         
         if req.heartbeat_interval_seconds is not None:
-            if req.heartbeat_interval_seconds < 5:
-                raise HTTPException(status_code=400, detail='heartbeat_interval_seconds 必须 >= 5')
+            # 上界复查（与上方预检同域）。此处同样不能依赖 Settings 的
+            # field_validator：pydantic 未开 validate_assignment，裸赋值**不**触发
+            # 校验器（settings.heartbeat_interval_seconds = 120 会真的写到 120，
+            # 已实测）。故端点必须自己守住 5..60 两端。
+            if (
+                req.heartbeat_interval_seconds < 5
+                or req.heartbeat_interval_seconds > 60
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail='heartbeat_interval_seconds 必须在 5 到 60 之间',
+                )
             settings.heartbeat_interval_seconds = req.heartbeat_interval_seconds
             updated_fields.append('heartbeat_interval_seconds')
             logger.info(f'Hot-reloaded heartbeat_interval_seconds={req.heartbeat_interval_seconds}')
         
         if req.admin_api_url is not None:
-            settings.admin_api_url = req.admin_api_url
-            updated_fields.append('admin_api_url')
-            logger.info(f'Hot-reloaded admin_api_url={req.admin_api_url}')
+            # Pull-mode config reload root-cause（R12-fix，与 node
+            # routes/config.ts:242-253 同一处置）：admin-api 自身没有配置时会**省略**
+            # adminApiUrl，但旧版 admin / 第三方生产者仍可能发 ""。空值不携带任何
+            # 可用信息，却会把 build_admin_api_url() 的 base 打成空串 → 派生 URL 变
+            # 成相对路径 "/api/executors/heartbeat"（httpx 直接抛），心跳/注册/回调
+            # 全挂且不可自愈（只有重启 + 改 env 能救）。故空值/纯空白**不应用**，
+            # 如实列入 ignored_fields（与 adminApiUrls 的处置同形），拓扑保持不变。
+            if req.admin_api_url.strip():
+                settings.admin_api_url = req.admin_api_url
+                updated_fields.append('admin_api_url')
+                logger.info(f'Hot-reloaded admin_api_url={req.admin_api_url}')
+            else:
+                ignored_fields.append('adminApiUrl(empty)')
+                logger.warning(
+                    'Config reload ignored empty admin_api_url '
+                    '(kept existing admin API base URL)'
+                )
 
         if req.admin_api_url_internal is not None:
             settings.admin_api_url_internal = req.admin_api_url_internal
