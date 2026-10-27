@@ -119,8 +119,10 @@ describe("接线顺序（main.ts）", () => {
    * （守卫分母归零、测试没进收集面）。
    */
   it("per-IP 硬顶注册在 55MB body parser 之前", () => {
-    const fs = require("node:fs") as typeof import("node:fs");
-    const pathMod = require("node:path") as typeof import("node:path");
+    const fs = jest.requireActual("node:fs") as typeof import("node:fs");
+    const pathMod = jest.requireActual(
+      "node:path",
+    ) as typeof import("node:path");
     const mainTs = fs.readFileSync(
       pathMod.join(__dirname, "..", "..", "..", "main.ts"),
       "utf-8",
