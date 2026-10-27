@@ -1,1 +1,11 @@
 .npm-cache/
+
+# preload 的编译产物（轮 #7 桌面轴）：
+# 真实产物落 dist/preload（scripts/bundle-preload.cjs），打包只收 dist/**；
+# 而 src/preload/index.js 是 2026-06 编译后一直**被 git 跟踪**的过期副本，
+# 与已大改的 src/preload/index.ts 早已漂移——任何按文件名读/grep/评审的工具
+# （含审计脚本、检索型 agent）都可能读到过期桥实现。这里忽略新增的
+# src/preload/*.js 与 sourcemap，防止再落一份编译产物进源码目录。
+# 注：已跟踪的 src/preload/index.js 不受 ignore 影响，需人工 `git rm --cached`。
+src/preload/*.js
+src/preload/*.js.map

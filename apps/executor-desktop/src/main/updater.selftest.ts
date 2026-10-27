@@ -185,6 +185,66 @@ function extractSourceNotesSegment(source: string): string {
   return source.slice(start, end);
 }
 
+// ── A 副本：安装判据 + 安装期 error 归因（与 src/main/updater.ts 逐字同构）──
+// 同 releaseNotes 段的处境：updater.ts 顶层 import electron，裸 node 加载即崩，
+// 行为只能靠副本验证，再用「源文件必须包含同一段实现」做 SYNC 守卫。
+// 区段标记：起 = 本行下方的 canInstall 定义，止 = "A 副本结束" 注释。
+export function canInstall(downloadedVersion: string | null): boolean {
+  return typeof downloadedVersion === 'string' && downloadedVersion.trim() !== '';
+}
+
+/**
+ * A-3：当前安装形态是否支持**应用内**自更新。
+ *
+ * 判据刻意与 electron-updater 自己的分派同源，不另立一套：
+ *  - Windows（NSIS）/ macOS：恒支持（AppUpdater.isUpdaterActive 只判 isPackaged）；
+ *  - Linux：只有 AppImage 支持——AppImageUpdater.isUpdaterActive 仅看
+ *    process.env.APPIMAGE，缺失（deb/rpm/pacman/tar 安装）时直接
+ *    `Promise.resolve(null)`，一个事件都不发。这时对用户谎称"已发起检查"
+ *    等于永久静默：渲染层等不到 available/error，界面永远停在上一个状态。
+ */
+export function isSelfUpdateSupported(platform: string, appImageEnv: string | undefined): boolean {
+  if (platform === 'win32' || platform === 'darwin') return true;
+  return typeof appImageEnv === 'string' && appImageEnv !== '';
+}
+
+/**
+ * A-2：'error' 事件是否该显性化给用户（归因判定，纯函数）。
+ *
+ * 三种「用户在等结果」的场景：
+ *  - userCheck：用户主动点「检查更新」，失败必须有回音；
+ *  - downloading：用户确认过的下载流程（DSK-03 的显性面）；
+ *  - installRequested：install 已经发出——安装器失败必须让用户知道，
+ *    而不是把界面留在「安装中…」。
+ * 其余（后台定时检查的离线/私服 404）落日志即可，不打扰用户。
+ */
+export function surfaceUpdaterError(
+  userCheck: boolean,
+  downloading: boolean,
+  installRequested: boolean,
+): boolean {
+  return userCheck || downloading || installRequested;
+}
+// ── A 副本结束 ──────────────────────────────────────────────────────
+
+/** 副本 A 段（canInstall → 「A 副本结束」之间的三个纯函数）。 */
+function extractCopyInstallSegment(source: string): string {
+  const start = source.indexOf('export function canInstall');
+  const end = source.indexOf('// ── A 副本结束');
+  assert.ok(start >= 0, 'selftest: install copy start marker not found');
+  assert.ok(end > start, 'selftest: install copy end marker not found');
+  return source.slice(start, end);
+}
+
+/** 源文件 A 段（canInstall → broadcast 定义之前）。 */
+function extractSourceInstallSegment(source: string): string {
+  const start = source.indexOf('export function canInstall');
+  const end = source.indexOf('/** 给所有存活窗口广播事件');
+  assert.ok(start >= 0, 'updater.ts: install segment start marker not found');
+  assert.ok(end > start, 'updater.ts: install segment end marker not found');
+  return source.slice(start, end);
+}
+
 function main(): void {
   // selftest 产物位于 apps/executor-desktop/dist-selftest/，源码在其上级 src/
   const srcPath = path.join(__dirname, '..', 'src', 'main', 'updater.ts');
@@ -431,9 +491,105 @@ function main(): void {
     );
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // A. 更新链诚实化：可安装判据 / 安装形态 / install 期 error 可见
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    // ⓪ SYNC：副本必须与源文件逐字同构（同 RELEASE_NOTES SYNC 的手法）
+    assert.equal(
+      normalize(extractCopyInstallSegment(main_copySource)),
+      normalize(extractSourceInstallSegment(source)),
+      'A: updater.selftest.ts 的 canInstall/isSelfUpdateSupported/surfaceUpdaterError ' +
+        '副本与 src/main/updater.ts 不同步 —— 改一处必须改两处',
+    );
+
+    // ① 可安装判据：只看「本进程是否真的下载完成」，与 isUpdaterActive 无关
+    assert.equal(canInstall(null), false, 'A-1: 没有已下载版本时不可安装');
+    assert.equal(canInstall(''), false, 'A-1: 空版本号不可安装');
+    assert.equal(canInstall('   '), false, 'A-1: 纯空白版本号不可安装（畸形事件不得放行）');
+    assert.equal(canInstall('1.9.5'), true, 'A-1: 已下载版本可安装');
+
+    // ② 安装形态：与 electron-updater 的分派同源（AppImageUpdater 只看 APPIMAGE）
+    assert.equal(
+      isSelfUpdateSupported('linux', '/tmp/AutoCodeFlow-1.9.5.AppImage'), true,
+      'A-3: AppImage 支持应用内自更新',
+    );
+    assert.equal(isSelfUpdateSupported('linux', undefined), false, 'A-3: deb/rpm（无 APPIMAGE）不支持自更新');
+    assert.equal(isSelfUpdateSupported('linux', ''), false, 'A-3: APPIMAGE 为空串同样不支持');
+    assert.equal(isSelfUpdateSupported('win32', undefined), true, 'A-3: Windows（NSIS）恒支持');
+    assert.equal(isSelfUpdateSupported('darwin', undefined), true, 'A-3: macOS 恒支持');
+
+    // ③ install 期 error 必须可见，后台噪音仍静默
+    assert.equal(
+      surfaceUpdaterError(false, false, true), true,
+      'A-2: install 请求在飞时 error 必须 surface（旧实现因 downloading=false 把它吞掉）',
+    );
+    assert.equal(surfaceUpdaterError(true, false, false), true, 'A-2: 用户主动检查失败必须可见');
+    assert.equal(surfaceUpdaterError(false, true, false), true, 'A-2: 用户确认的下载失败必须可见');
+    assert.equal(
+      surfaceUpdaterError(false, false, false), false,
+      'A-2: 后台定时检查的离线/私服 404 噪音仍只落日志',
+    );
+
+    // ④ 接线守卫（源文件层面，防行为被静默改回旧形态）
+    assert.ok(
+      !/if \(!autoUpdater\.isUpdaterActive\(\)\)/.test(source),
+      'A-1: quitAndInstall 不得再拿 isUpdaterActive() 当「有没有已下载更新」的判据',
+    );
+    assert.ok(
+      /if \(!canInstall\(downloadedUpdateVersion\)\)[\s\S]{0,400}?'UPDATER_NO_DOWNLOADED_UPDATE'/.test(source),
+      'A-1: 无已下载更新时必须回既有哨兵 UPDATER_NO_DOWNLOADED_UPDATE',
+    );
+    assert.ok(source.includes('installRequested = true'), 'A-2: quitAndInstall 必须置 installRequested');
+    assert.ok(
+      /surfaceUpdaterError\(\s*runCheckState\.surfaceError,\s*downloading,\s*installRequested\s*\)/.test(source),
+      'A-2: error 处理器必须按 installRequested 归因（否则 install 失败静默）',
+    );
+    assert.ok(
+      /update-downloaded'[\s\S]{0,600}?downloadedUpdateVersion = version/.test(source),
+      'A-1: update-downloaded 处理器必须记录 downloadedUpdateVersion（判据的唯一数据来源）',
+    );
+    assert.ok(
+      /downloadUpdate\(\): Promise<void> \{[\s\S]{0,700}?downloadedUpdateVersion = null/.test(source),
+      'A-1: 新一轮下载开始必须作废旧的 downloadedUpdateVersion' +
+        '（electron-updater 失败/取消会 clear 掉安装包，否则 canInstall 放行一次 no-op 安装）',
+    );
+
+    // ⑤ 跨文件接线：IPC 面的安装形态判定 + 渲染层的双语映射
+    const ipcSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts'),
+      'utf-8',
+    );
+    assert.ok(
+      /if \(!isSelfUpdateSupported\(process\.platform, process\.env\.APPIMAGE\)\)[\s\S]{0,400}?UPDATER_UNSUPPORTED_INSTALL/.test(
+        ipcSrc,
+      ),
+      'A-3: updater:check 必须在不支持自更新的安装形态下回 UPDATER_UNSUPPORTED_INSTALL',
+    );
+    const configPageSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'renderer', 'pages', 'ConfigPage.tsx'),
+      'utf-8',
+    );
+    assert.ok(
+      configPageSrc.includes('UPDATER_UNSUPPORTED_INSTALL') &&
+        configPageSrc.includes("t('cfg.gen.updateUnsupportedInstall')"),
+      'A-3: ConfigPage 必须把 UPDATER_UNSUPPORTED_INSTALL 映射成 i18n 文案（不得内联中文）',
+    );
+    const i18nSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'renderer', 'i18n.ts'),
+      'utf-8',
+    );
+    assert.equal(
+      i18nSrc.split("'cfg.gen.updateUnsupportedInstall':").length - 1,
+      2,
+      'A-3: i18n.ts 的 zh/en 两表都必须有 cfg.gen.updateUnsupportedInstall（双语齐平）',
+    );
+  }
+
   console.log(
     'updater selftest: all assertions passed (pure segment in sync, ' +
-      `releaseNotes normalization + ${RELEASE_NOTES_MAX_CHARS}-char cap)`,
+      `releaseNotes normalization + ${RELEASE_NOTES_MAX_CHARS}-char cap, ` +
+      'install predicates + install-phase error attribution)',
   );
 }
 

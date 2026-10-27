@@ -350,6 +350,9 @@ let agentHost: AgentWorkerHandle | null = null;
 let agentHostIdentity: string | null = null;
 let agentHostReady: Promise<void> = Promise.resolve();
 let agentTickPromise: Promise<unknown> | null = null;
+// B：连续 defer 计数——agentHostTransition 用它封顶（MAX_AGENT_HOST_DEFERS），
+// 超限即强制重建，防「tick 一直不结束 ⇒ 身份替换永久 defer ⇒ 旧身份继续收单」。
+let agentHostDeferStreak = 0;
 let agentTimer: NodeJS.Timeout | null = null;
 let lastAgentStatusRefreshError: string | null = null;
 
@@ -397,8 +400,17 @@ export function syncAgentHostWithConfig(): void {
     const cfg = configStore.getAll();
     if (cfg.agentEnabled && cfg.adminApiUrl && cfg.workDir) {
       const identity = configuredAgentIdentity(cfg);
-      const transition = agentHostTransition(agentHostIdentity, identity, agentTickPromise !== null);
-      if (transition === 'defer') return;
+      const transition = agentHostTransition(
+        agentHostIdentity,
+        identity,
+        agentTickPromise !== null,
+        agentHostDeferStreak,
+      );
+      if (transition === 'defer') {
+        agentHostDeferStreak += 1;
+        return;
+      }
+      agentHostDeferStreak = 0;
       if (transition === 'replace' && agentHost) {
         // 当前 tick 可能正在使用旧 Client/工作目录；等它结束再切换。
         queueAgentWithdrawal(agentHost);

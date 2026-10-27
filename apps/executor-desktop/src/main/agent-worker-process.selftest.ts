@@ -48,6 +48,8 @@ rl.on('line', (line) => {
       send({ t: 'stats', stats: { working: false, lastAssignmentId: null, lastOutcome: null, processed: 0, lastEffectiveProfile: null } });
       return;
     case 'tick':
+      // B：'no-tick-result' = 「收到了 tick 却永不回结果」的卡死形态。
+      if (${JSON.stringify(stage)} === 'no-tick-result') return;
       send({ t: 'tick-result', worked: true, detail: 'fake-tick' });
       send({ t: 'not-a-known-event', junk: true }); // 畸形事件不得影响后续协议
       return;
@@ -139,6 +141,65 @@ async function testCrashAndSelfHeal(): Promise<void> {
   h.kill();
 }
 
+/**
+ * B：tick 看门狗——worker 收到 tick 却永不回 tick-result。
+ *
+ * 现实形态：stdin 半死 / worker 主循环被浏览器子进程堵死。旧实现里 tickPending
+ * 永不落定 ⇒ single-flight 永久成立 ⇒ index.ts 跳过后续所有 tick（托管永久空转），
+ * 身份状态机看到 tickInFlight 恒真而永久 defer（旧 token / 旧 workDir 继续收单）。
+ *
+ * 断言三件事：① tick 必须**落定**为超时形态（不 reject、不悬挂）；
+ * ② 同一轮触发 kill（日志 + alive 归 false）；③ 下一次 tick 自愈重启。
+ * 用 tickTimeoutMs=150 注入缩短超时（生产值 2h15m，见 TICK_WATCHDOG_MS），
+ * 另用 5s 的 Promise.race 兜住"根本没落定"的坏形态，避免用例挂死。
+ * 反证：删掉 tick() 里的 armTickWatchdog() 调用 → 本例在 5s 上限处转红。
+ */
+async function testTickWatchdog(): Promise<void> {
+  const entry = path.join(WORKDIR, 'stalled-worker.cjs');
+  fs.writeFileSync(entry, fakeWorkerSource('no-tick-result'));
+  const errors: string[] = [];
+  const h = new AgentWorkerHandle({
+    address: 'selftest:1',
+    workDir: WORKDIR,
+    config: { ...CONFIG, executorToken: 'sk-secret-token-abcdef' },
+    entryPath: entry,
+    spawnEnv: { ...process.env },
+    log: { ...quietLog, error: (m) => errors.push(m) },
+    tickTimeoutMs: 150,
+  });
+  await h.start();
+  assert.strictEqual(h.alive, true, '假 worker 必须起来');
+
+  const settled = await Promise.race([
+    h.tick(),
+    new Promise<{ worked: boolean; detail?: string }>((_, reject) =>
+      setTimeout(() => reject(new Error('tick 在看门狗到点后仍未落定')), 5_000)),
+  ]);
+  assert.strictEqual(settled.worked, false, '超时 tick 必须如实回 worked:false');
+  assert.ok(
+    (settled.detail ?? '').includes('tick timeout'),
+    `超时形态的 detail 必须写明 tick timeout，实际 detail=${settled.detail}`,
+  );
+  // 同轮 kill 的判据：日志（同步写入）+ alive 最终归 false（exit 事件异步到达）
+  assert.ok(
+    errors.some((m) => m.includes('tick watchdog fired')),
+    '看门狗到点必须记一条 error 日志（同轮触发 kill 的证据）',
+  );
+  assert.ok(
+    !errors.some((m) => m.includes('sk-secret-token')),
+    '看门狗日志只记超时与毫秒数，不得把载荷（token）写进日志',
+  );
+  const deadBy = Date.now() + 2_000;
+  while (h.alive && Date.now() < deadBy) await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(h.alive, false, '看门狗到点必须 kill worker（否则后续 tick 继续被 single-flight 挡掉）');
+
+  // 自愈：换回健康脚本后下一次 tick 走 !alive 分支 respawn 并恢复往返
+  fs.writeFileSync(entry, fakeWorkerSource('ok'));
+  const healed = await h.tick();
+  assert.strictEqual(healed.worked, true, `看门狗 kill 后 tick 必须自愈重启，实际 detail=${healed.detail}`);
+  h.kill();
+}
+
 async function testRealBundleSmoke(): Promise<void> {
   const entry = path.join(__dirname, '..', 'resources', 'agent-worker', 'dist', 'index.js');
   if (!fs.existsSync(entry)) {
@@ -203,10 +264,63 @@ async function testDeadPipeLogRedaction(): Promise<void> {
   assert.ok(warns[1].includes('t=unparseable') && !warns[1].includes('not-json-at-all'), `烂行形态：${warns[1]}`);
 }
 
+/**
+ * PIPE-EPIPE（2026-10-27 审计轮 #7）：管道断开不得升级为 uncaughtException。
+ *
+ * 现实形态：worker 退出（自愈重启 / SIGKILL 兜底）与 30s tick 的 write 之间
+ * 没有同步，写一个已断开的管道会 emit 'error'；无监听者时 Node 视为
+ * uncaughtException → crash-guard 退出整个桌面端（用户视角："RPA 客户端自己关了"）。
+ *
+ * 为什么要临时接管 uncaughtException：该失败**不是**能被 try/catch 捕获的同步
+ * 抛出，而是 EventEmitter 的 'error' 事件在下一 tick 无人接收才升级——只有
+ * "先抢下 uncaughtException，再看它有没有被触发"才能把失败变成断言。
+ * 反证（实测）：注释掉 start() 里的 child.stdin?.on('error') → captured 非 null，本例转红。
+ */
+async function testStdinErrorIsContained(): Promise<void> {
+  const h = new AgentWorkerHandle({
+    address: '127.0.0.1:9999',
+    workDir: WORKDIR,
+    config: { ...CONFIG, executorToken: 'sk-secret-token-abcdef' },
+    entryPath: FAKE_ENTRY,
+    spawnEnv: { ...process.env },
+    log: quietLog,
+  });
+  await h.start();
+  assert.strictEqual(h.alive, true, '假 worker 必须起来');
+
+  const child = (h as unknown as { child: import('node:child_process').ChildProcess })
+    .child;
+  assert.ok(child?.stdin, 'worker stdin 必须存在');
+
+  let captured: unknown = null;
+  const onUncaught = (err: unknown) => {
+    captured = err;
+  };
+  process.on('uncaughtException', onUncaught);
+  try {
+    // 真实故障形态：管道已断开，而 handle 仍然认为活着。
+    child.stdin.destroy(new Error('EPIPE (simulated)'));
+    const writeLine = (h as unknown as { writeLine: (line: string) => void })
+      .writeLine.bind(h);
+    writeLine(JSON.stringify({ t: 'tick' }));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  } finally {
+    process.removeListener('uncaughtException', onUncaught);
+  }
+  assert.strictEqual(
+    captured,
+    null,
+    '管道 error 必须被 start() 的 stdin 监听吞掉，不得升级为 uncaughtException（否则 crash-guard 会退出整个桌面端）',
+  );
+  h.kill();
+}
+
 (async () => {
   await testFakeWorkerRoundTrip();
   await testCrashAndSelfHeal();
   await testDeadPipeLogRedaction();
+  await testStdinErrorIsContained();
+  await testTickWatchdog();
   await testRealBundleSmoke();
   fs.rmSync(WORKDIR, { recursive: true, force: true });
   console.log('agent-worker-process.selftest: all assertions passed');
