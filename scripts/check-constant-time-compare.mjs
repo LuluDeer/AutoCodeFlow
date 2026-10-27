@@ -110,6 +110,25 @@ if (hits.length > 0) {
   process.exit(1);
 }
 
+// SCAN-FLOOR（2026-10-27 审计轮 #7）：扫描规模下界。
+// 0 个文件 → 0 处命中 → 永远绿——这是本仓反复踩过的"守卫假绿"形态：扫描根
+// 改名、glob 失效、忽略规则写反都会让分母归零，而输出仍是一句令人安心的 ✔。
+// 当前实测 965 个文件，取下界 900（≈93%）：正常增删不误伤，真正的"扫不到
+// 东西"立刻红。对照同族先例：check-ssrf-deny-parity.mjs 的「解析出 0 条即红」、
+// check-cron-leader-gate.mjs 的 MIN_EXPECTED。
+const MIN_FILES = 900;
+if (files.length < MIN_FILES) {
+  console.error(
+    "✖ 恒定时间比较守卫：只扫到 " +
+      files.length +
+      " 个文件（下界 " +
+      MIN_FILES +
+      "）——分母塌了，不是代码变干净了。",
+  );
+  console.error("  检查扫描目标与忽略规则是否仍覆盖 apps 与 packages。");
+  process.exit(1);
+}
+
 console.log(
   "✔ 恒定时间比较守卫通过：" + files.length + " 个文件里没有凭据类值与 ===/== 混用。",
 );

@@ -238,6 +238,10 @@ cd AutoCodeFlow
 cp .env.example .env
 # Required: INITIAL_ADMIN_PASSWORD (>= 8 chars; weak values are rejected at boot)
 #           POSTGRES_PASSWORD / JWT_SECRET / JWT_REFRESH_SECRET / EXECUTOR_SECRET
+# For a local trial you also need: ALLOW_LOOPBACK_CORS=true
+#   (compose defaults to NODE_ENV=production + localhost CORS origins, and the
+#    production guard rejects loopback origins unless this is explicitly set —
+#    without it admin-api exits at boot. Use your real domain in production.)
 vim .env
 
 docker compose up -d

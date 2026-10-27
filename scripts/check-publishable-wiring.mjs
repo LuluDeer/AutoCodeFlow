@@ -3,8 +3,8 @@
  * 「可发布包必须接线」守卫。
  *
  * 由来：`packages/autocodeflow-{ai,http,notify,db}` 四个包有源码 + 测试 + pyproject + CHANGELOG，
- * 却**不在** `release.yml` 的 version-guard 里、**不在**任何 publish 矩阵里、**版本冻结在 0.2.3**
- * （平台其余包在 1.12.1），且**全仓零消费者**。
+ * 却**不在** `release.yml` 的 version-guard 里、**不在**任何 publish 矩阵里、**版本停在 0.3.2**
+ * （平台主线已到 1.15.x），且**全仓零消费者**。
  *
  * 这又是「**文件存在 ≠ 在链路里**」那一族 —— 本 session 已经在这个形态上抓到过三次：
  * 守卫写了没接 CI、selftest 写了没进 test:main、`ZIP_MAX_*` 定义了没有调用方。现在是第四个载体。
@@ -36,7 +36,7 @@ const RELEASE = join(ROOT, ".github", "workflows", "release.yml");
 const UNWIRED_BASELINE = new Map([
   [
     "autocodeflow-ai",
-    "待决策：接进 PyPI 发布线（含 version-guard 与文档）或删除；版本冻结在 0.2.3、仓内零消费者",
+    "待决策：接进 PyPI 发布线（含 version-guard 与文档）或删除；版本 0.3.2（落后平台主线 1.15.x 十余个 minor）、仓内零消费者",
   ],
   [
     "autocodeflow-http",

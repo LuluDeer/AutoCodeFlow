@@ -162,6 +162,20 @@ services:
       EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5176}
+      # F-1（2026-10-27 审计轮 #7）：本机试跑的关键开关——缺了它整栈起不来。
+      # admin-api 的生产守卫拒绝「NODE_ENV=production 且 CORS 含 localhost/127.0.0.1」
+      # （configuration.ts:1004-1015），而本文件默认 NODE_ENV=production、上面的
+      # CORS_ORIGINS 默认值恰恰是 localhost ⇒ 「照 README 灌 .env 后
+      # docker compose up」的默认组合会被 fail-fast 打死，而报错发生在容器日志里，
+      # 用户看到的是页面打不开。
+      # 语义边界（写清楚，避免被误读成"默认放开"）：默认留空 = 行为完全不变
+      # （仍是生产 fail-fast）；只有显式 true 才放行回环来源。
+      # 为什么显式列出而不是依赖 env_file：env_file 本已会把 .env 里的同名键注入
+      # 容器，但 compose 的 environment 块对本文件的所有键都是**逐个声明**的，
+      # 该键此前在本块缺席，导致"本机试跑必需"这件事在部署面完全不可见
+      # （.env.example:72 是注释状态，quickstart/README 也没提）。显式列出后
+      # 它与 CORS_ORIGINS / ADMIN_WEB_ORIGIN 同构，读 compose 即知依赖。
+      ALLOW_LOOPBACK_CORS: ${ALLOW_LOOPBACK_CORS:-}
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # 显式堆上限（比依赖容器 mem_limit 兜底更早、更可控地 OOM）：500 并发
@@ -759,6 +773,13 @@ services:
     volumes:
       - backup_data:/backup
       - ./scripts/pg-backup.sh:/usr/local/bin/pg-backup.sh:ro
+      # OPS-07（2026-10-27 实施轮 #9）：恢复脚本也必须挂进来。
+      # scripts/pg-restore.sh 的"最常用"用法是
+      #   docker compose --profile backup run --rm pg-backup bash /usr/local/bin/pg-restore.sh ...
+      # 但此前只挂了 pg-backup.sh / entrypoint，容器里根本没有 pg-restore.sh
+      # ⇒ 灾备时照抄 runbook 得到 "No such file or directory"，高压下运维会直接跳过
+      # 迁移校验放流量。挂上即让 runbook 可照抄执行（只读、无副作用）。
+      - ./scripts/pg-restore.sh:/usr/local/bin/pg-restore.sh:ro
       - ./scripts/pg-backup-entrypoint.sh:/usr/local/bin/pg-backup-entrypoint.sh:ro
     entrypoint: ['/bin/sh', '/usr/local/bin/pg-backup-entrypoint.sh']
     depends_on:

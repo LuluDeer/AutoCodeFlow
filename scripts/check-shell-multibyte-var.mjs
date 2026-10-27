@@ -222,6 +222,16 @@ function main() {
     );
     process.exit(1);
   }
+  // SCAN-FLOOR（2026-10-27 审计轮 #7）：扫描规模下界。0 个目标 = 永远绿
+  // （glob 改名 / 目录搬迁 / 忽略规则写反都会把分母清零，输出仍是 OK）。
+  // 当前实测 40 个文件（workflows + *.sh），取下界 30。
+  const MIN_TARGETS = 30;
+  if (targets.length < MIN_TARGETS) {
+    console.error(
+      `[check-shell-multibyte-var] ✖ 只扫到 ${targets.length} 个文件（下界 ${MIN_TARGETS}）——分母塌了，不是脚本变干净了。`,
+    );
+    process.exit(1);
+  }
   console.log(
     `[check-shell-multibyte-var] OK：${targets.length} 个文件（workflows + *.sh）无多字节变量名陷阱`,
   );

@@ -214,8 +214,9 @@ jobs:
           cache-dependency-path: apps/admin-api/package-lock.json
       - run: npm ci
         working-directory: apps/admin-api
-      # coverageThreshold 已按第七轮实测水位取地板（stmts 68 / branch 58 /
-      # funcs 56 / lines 69），防倒退用；覆盖率抬升后应同步上调。
+      # 覆盖率地板在 apps/admin-api/package.json 的 jest.coverageThreshold.global
+      # 里生效（stmts 87 / branch 76 / funcs 81 / lines 88），防倒退用；
+      # 覆盖率抬升后应同步上调。
       # --maxWorkers=2 + 4GB worker 堆顶 + 闲置回收：套件增重后（4567 例）
       # 覆盖率插桩 × 默认 workers 峰值内存先触 runner 总量（exit 134，
       # run 37345065125），砍 workers 后单 worker 又触 Node 默认 ~2GB 堆顶
