@@ -132,9 +132,21 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 # 源码模式（生产）——需 root
 sudo ./deploy.sh --mode source --env production --i-know-its-production
 
-# Docker 模式（试跑）
-./deploy.sh --mode docker --env staging
+# Docker 模式（试跑）——注意 --build：不给它就**不会重建镜像**
+./deploy.sh --mode docker --env staging --build
 ```
+
+> **镜像不会自动重建**（2026-10-27 审计轮 #7 修正）：docker 模式的 `--build` 是
+> 显式动作。代码变了却没加 `--build` 时，`compose up` 仍会成功、清单仍会记下
+> 新 commit、横幅仍报"部署完成"——而线上跑的是旧镜像（管理台还是旧前端、新接口
+> 404），下一次 `rollback` 还会"回滚"到同一个版本。现在脚本会在清单 `gitCommit`
+> 与当前 HEAD 不一致时**告警**（`--env production` 直接拒绝），确属配置类变更
+> 可用 `--allow-stale-image` 显式放行，清单会记 `imageState`。
+
+> **就绪检查默认从严**（同上）：`/api/health/ready` 不通过时部署**判失败**——
+> 该端点会真的连 DB/Redis（连错库、Redis 口令轮换未同步、读副本配错都会 503），
+> 而 `/live` 只证明进程活着。依赖抖动窗口内确需放行时用 `--allow-degraded`，
+> 清单会记 `readiness=degraded`。
 
 > **向后兼容**：不带 `--mode` 时默认为 `docker`，与旧版 `deploy.sh` 行为一致；
 > `-e/--env`、`-b/--build`、`-d/--detach` 等旧参数仍可用。
@@ -159,8 +171,10 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 
 ```
 ① 预检 Preflight    平台/版本/端口/磁盘（--skip-preflight 可跳过）
-② 配置解析 Config   .env 缺失则自动生成 + 填充 openssl 随机密钥；
-                    生产模式强校验（长度/占位值/CORS 不含 localhost）
+② 配置解析 Config   .env 缺失则自动生成 + 填充 openssl 随机密钥（含
+                    INITIAL_ADMIN_PASSWORD，只打印一次）；非生产写
+                    ALLOW_LOOPBACK_CORS=true，生产缺真实域名则 fail-fast；
+                    然后**无条件**跑生产强校验（长度/占位值/回环 CORS）
 ③ 依赖准备 Deps     源码模式：npm ci / uv venv（复用 Makefile 的 uv 优先策略）
 ④ 构建 Build        npm run build；写产物指纹供回滚
 ⑤ 基础设施 Infra    PostgreSQL + Redis（复用 infra/docker-compose.yml）

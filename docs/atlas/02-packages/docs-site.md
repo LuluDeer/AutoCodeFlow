@@ -23,7 +23,7 @@ packages/docs-site/
 │   ├── contract.md          回调与信封契约（重组自 packages/contract-fixtures/README.md）
 │   └── release.md           版本与发布流程
 ├── scripts/
-│   ├── sync-check.mjs       DOC-09 漂移校验：站点内容 vs 仓库源头文档（版本号/端点/契约面）
+│   ├── sync-check.mjs       DOC-09 漂移校验：站点 vs 源头（版本号/截断常量/枚举/DTO 字段/env 表/能力矩阵/契约面/教程索引，共八面）
 │   └── sync-check.selftest.mjs
 └── .vitepress/dist/         构建产物（已提交在库内）
 ```
@@ -40,7 +40,7 @@ npm run build      # 构建（ignoreDeadLinks:false，死链即构建失败）
 npm run preview    # 本地预览构建产物
 ```
 
-根目录快捷方式：`npm run build:docs-site`。CI 构建与死链验证由 ci.yml 的 `docs-site-build` job 承担（先跑 `scripts/sync-check.mjs` + selftest 再构建，DOC-09：站点内容与仓库源头文档漂移时**拦截构建/部署**）。
+根目录快捷方式：`npm run build:docs-site`。CI 构建与死链验证由 ci.yml 的 `docs-site-build` job 承担（先跑 `packages/docs-site/scripts/sync-check.mjs` + selftest 再构建，DOC-09：站点内容与仓库源头文档漂移时**拦截构建/部署**）。
 
 ## 部署方式（.github/workflows/docs-site-deploy.yml 核实）
 
@@ -73,7 +73,8 @@ npm run preview    # 本地预览构建产物
 
 ## 常见改动场景
 
-- **加一个页面**：根目录新增 `.md` → `config.mts` 的 nav/sidebar 挂链接 → 本地 `npm run dev` 验证 → 若页面引用仓库内数字（版本、端点），在 `scripts/sync-check.mjs` 登记判据（DOC-09 才能守护它）。
+- **加一个页面**：根目录新增 `.md` → `config.mts` 的 nav/sidebar 挂链接 → 本地 `npm run dev` 验证 → 若页面引用仓库内数字（版本、端点），在 `packages/docs-site/scripts/sync-check.mjs` 的 `runAllChecks()` 里登记判据（DOC-09 才能守护它；**新增一面要同步改 `sync-check.selftest.mjs` 的面数断言**，否则基线用例会红）。
+- **教程页缺失/新增**：源头 `docs/tutorials/index.md` 是事实源，站点 `tutorials.md` 与 `config.mts` 的 sidebar 必须同步；判据⑧ 按两位序号比条目集合与标题。**未镜像的教程必须登记在 `TUTORIAL_MIRROR_EXEMPT` 并写清"补完要做什么"**——豁免过期（源头已删改而豁免没跟上）同样红。
 - **改 base/站点元信息**：只动 `config.mts`；改 `BASE_PATH` 必须同步 Pages 项目页路径认知（两处强绑定）。
 - **源头文档更新后站点报漂移**：跑 `node packages/docs-site/scripts/sync-check.mjs` 看判据输出，按提示更新站点页面对应数字/段落——**先改源头文档，再同步镜像页面**。
 

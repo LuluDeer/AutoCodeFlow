@@ -69,7 +69,7 @@ npm run preview    # 本地预览构建产物
 ## DOC-09：与仓库源头文档的 drift 同步校验
 
 文档站是源头文档的镜像视图，纪律是「**先改源头，再同步到本站**」。为防
-漂移，`scripts/sync-check.mjs`（零依赖 node 脚本）在构建/部署前机检七面
+漂移，`packages/docs-site/scripts/sync-check.mjs`（零依赖 node 脚本）在构建/部署前机检八面
 可机检面：
 
 | 判据 | 源头 ↔ 站点 |
@@ -81,12 +81,13 @@ npm run preview    # 本地预览构建产物
 | env 注入表 | docs/sdk-guide.md ↔ 站点 getting-started.md 变量清单 |
 | 能力矩阵行 | docs/sdk-guide.md ↔ 站点 capability-matrix.md 逐行比对 +「N 项」表述 |
 | 契约面 | contract-fixtures/README.md ↔ 站点 contract.md 四条信封/错误体表述 |
+| 教程索引条目 | docs/tutorials/index.md ↔ 站点 .vitepress/config.mts 的教程 sidebar（按两位序号比条目集合与标题；未镜像的以 `TUTORIAL_MIRROR_EXEMPT` 显式豁免，豁免过期同样红） |
 
 漂移时 exit 1 + 差异清单（CI 红），由人工按清单同步——**不做自动覆盖**
 （会破坏站点侧的导航改写、仓库绝对链接等重组痕迹）。自检：
 `node scripts/sync-check.selftest.mjs`（tmp 沙箱注入受控漂移，14 例断言）。
 
 ```bash
-node scripts/sync-check.mjs           # 七面校验（构建/部署前置）
+node scripts/sync-check.mjs           # 八面校验（构建/部署前置）
 node scripts/sync-check.selftest.mjs  # 校验器自检
 ```

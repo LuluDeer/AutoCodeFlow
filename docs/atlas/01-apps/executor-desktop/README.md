@@ -49,7 +49,7 @@ executor-desktop 是 **Electron 托盘应用**：把 ncc 打包的 executor-node
 
 ## 内核托管（executor-process.ts）
 
-- 入口：打包态 `process.resourcesPath/executor-node/index.js`，开发态 `resources/executor-node/index.js`（由 `scripts/bundle-executor.sh` 用 @vercel/ncc 从 apps/executor-node 产出，见 `npm run build:executor`）。
+- 入口：打包态 `process.resourcesPath/executor-node/index.js`，开发态 `resources/executor-node/index.js`（由 `apps/executor-desktop/scripts/bundle-executor.sh` 用 @vercel/ncc 从 apps/executor-node 产出，见 `npm run build:executor`）。
 - spawn `process.execPath`（即 Electron 二进制）+ `ELECTRON_RUN_AS_NODE: '1'`，env 注入：`APP_NAME`、`PORT`（默认 8002）、`EXECUTOR_ADDRESS`（`<host>:<port>`）、`EXECUTOR_ADDRESS_PUBLIC`、`ADMIN_API_URL`、`WORK_DIR`（默认 `userData/tasks`）、`MAX_CONCURRENT_TASKS`、`EXECUTOR_SHARED_TOKEN`（由 `token-crypto.decryptToken` 解出 `enc:ss:` 信封）。
 - 在线状态判定：health 轮询只是"进程存活"信号；真正的 online/offline 由子进程日志文本推断（`Register failed` / `Heartbeat failed` → failed，见到成功日志 → registered），R23 修复了"存活即 online"的误判。
 - 停机：`stop()` 等待退出 8s 超时后强杀进程树；`before-quit` 用 `preventDefault` 保证先停执行器再退出。

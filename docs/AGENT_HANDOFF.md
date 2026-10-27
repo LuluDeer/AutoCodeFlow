@@ -3,8 +3,11 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-28（轮 30：executor-desktop 客户端 UI 全面深度优化）
-当前分支：`codex/executor-client-ui`（worktree：`C:\Users\12154\.codex\worktrees\executor-client-ui\AutoCodeFlow`）
+更新时间：2026-10-26（最近一次真实交付：`643cf3f1`「chore(desktop): 1.9.3 → 1.9.4」）
+当前分支：`main`
+
+> 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
+> 头部这两行曾互相矛盾（原写 2026-09-28 / `codex/executor-client-ui`，而本文件第 50-51 行写 2026-10-06 / `develop`），已按 git 事实校正：`git log -1` = 2026-10-26 `643cf3f1`，`git rev-parse --abbrev-ref HEAD` = `main`。
 
 ## 状态快照
 
@@ -327,7 +330,7 @@
   - **残差（如实）**：① 评审说的 `callbackContract` 常量**没放进 contract-fixtures**——A3 已建 `packages/executor-protocol/protocol.json` 专门承载执行器↔admin 的回调契约，再放一份会**制造两个事实源**，故如实登记为「已由 A3 以更好的形态覆盖」而不是照抄评审措辞；② 守卫只覆盖**字面量**路由，`get(url, {...})` 这类拼装路径（exec.ts 流式日志下载）不在覆盖面；③ `NotificationSettingsPage` 的 `CHANNEL_LABELS` 键集未纳入机检（函数未导出、当前 6 项齐全）。
   - **下轮建议**：① A5 SSE 客户端统一（前半 `createSseClient` 已由 F-08 落地，剩余是短效 ticket 升级，文档标为中期路线）；② A6 回调可靠性分层；③ A3 完整形态（schema 化）；④ A2-B。生产真机项不变。
   - **⚠ 下轮开工前必读（A5/A6 的硬前置）**：A5（短效 ticket）与 A6（`GET /executors/:address/terminal-states` 对账端点）**都要新增 REST 端点**，而 `apps/admin-api/openapi.json` 是**机器生成产物**：
-    - **本机生成不了**——`npm run swagger:export` 委托 `test/openapi-export.e2e-spec.ts`，**实测需要真实 PG + Redis**（重试 10 次后失败）。旧脚本 `scripts/export-openapi.ts` 里那套「离线装配技巧」（`manualInitialization` / OfflineQueue stub）只适用于**已停用**的 ts-node 路径，**不能照搬到 Jest 路径**（已实测踩过）。
+    - **本机生成不了**——`npm run swagger:export` 委托 `test/openapi-export.e2e-spec.ts`，**实测需要真实 PG + Redis**（重试 10 次后失败）。旧脚本 `apps/admin-api/scripts/export-openapi.ts` 里那套「离线装配技巧」（`manualInitialization` / OfflineQueue stub）只适用于**已停用**的 ts-node 路径，**不能照搬到 Jest 路径**（已实测踩过）。
     - **手改也不可靠**——openapi.json 的 `paths` 与 `components.schemas` **都不是字母序而是插入序**（= 控制器/装饰器求值序），新增端点的 key 落位无从推断。A3 那次手改能成，是因为改的是**原地修改**（枚举删一项、加一个 503 响应），不涉及插入序。
     - **可用办法**：故意带着过期的 openapi.json 推送 → CI 的 `api-types-drift` job 会执行 `git diff --exit-code -- openapi.json` 并把**完整 unified diff 打进 job 日志** → 从日志取回生成物精确回填本地，再跑 `npm run gen:api-types`（这个纯吃 JSON，本机可跑）重新生成 api-types.ts。代价是**多一个 CI 周期的红**，不要误判为回归。
     - 顺序建议：先落 admin-api + admin-web 代码与测试（本地全绿），再单开一个 commit 处理产物同步。

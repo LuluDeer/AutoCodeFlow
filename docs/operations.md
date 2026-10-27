@@ -163,7 +163,7 @@ mc ilm rule ls autoflow-minio/autoflow-logs
 |------|------|------|
 | PostgreSQL 全库 | tasks / task_executions / execution_log_lines / 系统配置、用户与审计等全部业务表 | 上文 `pg_dump` 命令（每日 cron）；或对 `postgres_data` 卷做物理快照（见下文 pgBackRest 建议） |
 | `.env` secrets | `JWT_SECRET` / `DB_PASSWORD` / `REDIS_PASSWORD` / `EXECUTOR_SECRET` / `MINIO_ROOT_PASSWORD` / `INITIAL_ADMIN_PASSWORD` 等 | 文件级备份并妥善保管权限；丢失后按「安全加固」节重建并轮换 |
-| 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose 未为 admin-api 挂载卷，该目录仅存于容器文件系统，容器重建即丢失。备份：`docker compose cp admin-api:/app/uploads /backup/autoflow/uploads_$(date +%F)`；或接受重建后重新上传 |
+| 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose **已**为 admin-api 挂命名卷 `admin_uploads`（`docker-compose.yml` 的 `volumes: - admin_uploads:/app/uploads`），因此容器重建**不会**丢；但**从不自动备份**，卷损坏/误删即永久丢失。备份（写卷，不依赖容器在跑）：`docker run --rm -v autoflow_admin_uploads:/data -v "$PWD":/backup alpine tar czf /backup/uploads_$(date +%F).tar.gz /data`；回灌把源/目标对调。 |
 | S3/MinIO 日志桶 | `LOG_STORAGE_DRIVER=s3` 时 `autoflow-logs` 桶 `execution-logs/` 前缀对象（`minio_data` 卷） | `mc mirror autoflow-minio/autoflow-logs /backup/autoflow/minio/`；MinIO 卷本身无内置备份，仅镜像导出 |
 | 上游包缓存（可选） | `pypi_data`（registry-pypi `/data/packages` 中代理自 PyPI 的上游缓存） | 仅上游包缓存，可从 PyPI 重新拉取重建，备份优先级低 |
 | 私有发布包（必须备份） | `npm_data`（registry-npm verdaccio storage，含私有发布的 `@autoflow/*`）与 `pypi_data` 中手动 `twine upload` 的私有 wheel | 私有发布物**无法从 PyPI/npm 上游重建**——必须备份（如 `docker run --rm -v autoflow_npm_data:/data -v $(pwd):/backup alpine tar czf /backup/npm_data_$(date +%F).tar.gz /data`），或在恢复预案中明确接受「从源码重新走 CI 发布」的替代流程并演练 |
@@ -182,9 +182,13 @@ gunzip -c /backup/autoflow/db_20240101_020000.sql.gz \
 #    MinIO 对象（mc mirror --overwrite 回放）
 
 # 4. 启动并跑迁移链（幂等，重复执行无副作用，可安全重跑）
+#    注意用 :prod 入口——镜像是 npm ci --omit=dev + 只 COPY dist，**没有 ts-node**，
+#    因此 `npm run migration:show` / `migration:run`（ts-node + src/）在容器里
+#    必然报 "ts-node: not found"。查已应用清单与其等价 psql 写法二选一：
 docker compose start admin-api
-docker compose exec admin-api npm run migration:show
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
+docker compose exec -T postgres psql -U autoflow -d autoflow \
+  -c "SELECT name FROM migrations ORDER BY id;"
 
 # 5. 健康检查
 curl http://localhost:3105/api/health/live
@@ -736,11 +740,16 @@ gunzip -c /backup/autoflow/db_YYYYMMDD_HHMMSS.sql.gz \
 # 1. 检查执行器是否在线
 curl http://localhost:3105/api/executors
 
-# 2. 检查 Redis 队列
-docker compose exec redis redis-cli llen bull:tasks:wait
+# 2. 检查 Redis 队列积压（队列名 task-queue，见
+#    apps/admin-api/src/modules/task/task.processor.ts 的 @Processor("task-queue")；
+#    bull 为 BullMQ 默认键前缀）
+docker compose exec redis redis-cli llen bull:task-queue:wait
 
-# 3. 查看 BullMQ 队列状态
-docker compose exec admin-api npm run queue:status
+# 3. 查看 BullMQ 队列其余状态（admin-api 没有 queue:status 脚本，
+#    状态只能从 Redis 按 bull:<队列名>:<状态> 直接读）
+docker compose exec redis redis-cli llen bull:task-queue:active
+docker compose exec redis redis-cli llen bull:task-queue:failed
+docker compose exec redis redis-cli llen bull:task-queue:delayed
 
 # 4. 检查 admin-api 日志中的调度错误
 docker compose logs --tail=50 admin-api | grep ERROR

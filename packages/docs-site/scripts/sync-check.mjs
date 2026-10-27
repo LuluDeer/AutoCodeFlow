@@ -436,6 +436,108 @@ export function checkContractSurface() {
   return { errors };
 }
 
+
+// ── 判据 ⑧：教程索引条目数/标题集合（docs/tutorials/index.md ↔ 站点 sidebar）──
+// 站点教程是 docs/tutorials 的镜像：sidebar 的条目集合必须与源头索引表对得上。
+// 事实（本轮实证）：源头 5 篇（01..05），sidebar 只镜像了 4 篇——差值没有判据
+// 盯着，于是 05 缺席一直没人发现。本判据只比「条目/标题」，不比正文（正文由
+// 人工同步纪律负责）：源头有条目而站点没有、站点有而源头没有、标题改了没跟，
+// 三种漂移都红。
+//
+// 已知豁免：**当前为空**。05 已于 2026-10-27 补页
+// （packages/docs-site/tutorial-05-sop-agent-demo.md + sidebar 条目），
+// 豁免随之下线——这正是豁免表的设计意图：它是登记项而不是隐式默认，
+// 补完必须删掉，否则"豁免过期"判据会红。
+// 新增豁免时必须写清「补完要做什么」，否则下一个人只会续期不会偿还。
+export const TUTORIAL_MIRROR_EXEMPT = [];
+
+// 对齐键用**两位序号**而不是 slug：站点侧文件名是「重写」过的
+// （源头 01-first-scheduled-task.md ↔ 站点 /tutorial-01-first-task），
+// 按 slug 比会立刻误报两条；序号是两边都稳定、且人工排序时真正在意的东西。
+/** 纯函数：解析源头教程索引表（| [01 · 标题](01-slug.md) | …）。 */
+export function parseTutorialSource(text) {
+  return [...text.matchAll(/^\|\s*\[([^\]]+)\]\((\d{2}-[a-z0-9-]+)\.md\)/gm)].map((m) => ({
+    number: m[2].slice(0, 2),
+    slug: m[2],
+    title: m[1].trim(),
+  }));
+}
+
+/** 纯函数：解析站点 sidebar 的教程条目（{ text: …, link: '/tutorial-NN-slug' }）。 */
+export function parseTutorialSidebar(text) {
+  return [...text.matchAll(/\{\s*text:\s*'([^']*)',\s*link:\s*'\/tutorial-(\d{2}-[a-z0-9-]+)'/g)].map((m) => ({
+    number: m[2].slice(0, 2),
+    slug: m[2],
+    title: m[1].trim(),
+  }));
+}
+
+/** 去掉「01 · 」前缀后比标题：序号由 slug 承载，标题只比主题本身。 */
+function normalizeTutorialTitle(title) {
+  return String(title).replace(/^\d{2}\s*·\s*/, "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 纯函数：比对源头索引与站点 sidebar（导出以便 selftest/反证直接喂字符串）。
+ * @returns {{errors: string[], source: number, mirrored: number}}
+ */
+export function compareTutorialIndex({ source, sidebar, exempt = TUTORIAL_MIRROR_EXEMPT }) {
+  const errors = [];
+  const sourceByNumber = new Map(source.map((s) => [s.number, s]));
+  const sidebarByNumber = new Map(sidebar.map((s) => [s.number, s]));
+  const exemptByNumber = new Map(exempt.map((e) => [e.slug.slice(0, 2), e]));
+
+  for (const item of sidebar) {
+    if (!sourceByNumber.has(item.number)) {
+      errors.push(
+        `站点 sidebar 的教程 /tutorial-${item.slug} 在 docs/tutorials/index.md 中没有同序号条目` +
+          `（源头已删/改名？）`,
+      );
+    }
+  }
+  for (const item of source) {
+    const mirrored = sidebarByNumber.get(item.number);
+    if (mirrored) {
+      const a = normalizeTutorialTitle(item.title);
+      const b = normalizeTutorialTitle(mirrored.title);
+      if (a !== b) {
+        errors.push(
+          `教程 ${item.number} 标题漂移：源头「${item.title}」≠ 站点「${mirrored.title}」`,
+        );
+      }
+      continue;
+    }
+    if (exemptByNumber.has(item.number)) continue;
+    errors.push(
+      `站点 sidebar 缺教程 ${item.slug}（源头 docs/tutorials/index.md 有条目「${item.title}」，` +
+        `镜像未同步且未登记豁免）`,
+    );
+  }
+  // 豁免过期也是漂移：源头删了教程而豁免还在，会把这个序号永久放行。
+  for (const e of exempt) {
+    if (!sourceByNumber.has(e.slug.slice(0, 2))) {
+      errors.push(`教程镜像豁免 ${e.slug} 已不在源头索引中（豁免过期，删掉 TUTORIAL_MIRROR_EXEMPT 该条）`);
+    }
+  }
+  return { errors, source: source.length, mirrored: sidebar.length };
+}
+
+export function checkTutorialIndex() {
+  const source = parseTutorialSource(readRepo("docs/tutorials/index.md"));
+  const sidebar = parseTutorialSidebar(readSite(".vitepress/config.mts"));
+  if (source.length === 0) throw new Error("docs/tutorials/index.md 未解析出任何教程条目（表格格式变了？）");
+  if (sidebar.length === 0) throw new Error("站点 .vitepress/config.mts 未解析出任何教程 sidebar 条目");
+  return compareTutorialIndex({ source, sidebar });
+}
+
+function runCheck(name, fn) {
+  try {
+    return { name, errors: fn().errors ?? [] };
+  } catch (e) {
+    return { name, errors: [`校验器异常：${e?.message ?? e}`] };
+  }
+}
+
 export function runAllChecks() {
   const checks = [
     ["lockstep 版本号", checkVersions],
@@ -445,17 +547,13 @@ export function runAllChecks() {
     ["env 注入表", checkEnvInjectionTable],
     ["能力矩阵行数", checkCapabilityMatrixRows],
     ["契约面", checkContractSurface],
+    // 判据 ⑧（2026-10-27 审计轮 #8）：站点教程索引 ↔ 源头 docs/tutorials/index.md。
+    // 它此前不存在，于是"镜像 4 篇 vs 源头 5 篇"这种漂移无人发现（sync-check 只校验
+    // 版本号/枚举/字段，不校验条目数）。05 号教程尚未镜像，用 TUTORIAL_MIRROR_EXEMPT
+    // 显式登记豁免并写理由；豁免过期（源头新增/删改而豁免表没跟上）也会红。
+    ["教程索引条目", checkTutorialIndex],
   ];
-  const results = [];
-  for (const [name, fn] of checks) {
-    try {
-      const r = fn();
-      results.push({ name, errors: r.errors ?? [] });
-    } catch (e) {
-      results.push({ name, errors: [`校验器异常：${e?.message ?? e}`] });
-    }
-  }
-  return results;
+  return checks.map(([name, fn]) => runCheck(name, fn));
 }
 
 function main() {
@@ -470,7 +568,7 @@ function main() {
     process.exit(1);
   }
   const covered = results.map((r) => r.name).join("、");
-  console.log(`✔ 文档站同步校验通过（DOC-09）：${covered} 七面无 drift`);
+  console.log(`✔ 文档站同步校验通过（DOC-09）：${covered} ${results.length} 面无 drift`);
 }
 
 // DOC-09-GUARD（本轮审计）：入口判定此前是

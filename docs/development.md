@@ -125,9 +125,10 @@ pytest
 cd apps/executor-node
 npm test
 
-# 桌面执行器测试
+# 桌面执行器测试（该包**没有** `test` 脚本：主进程自测与渲染层自测是两条链）
 cd apps/executor-desktop
-npm test
+npm run test:main      # 主进程 selftest 套件（含 agent-host e2e）
+npm run test:renderer  # 渲染层自测
 
 # SDK 测试
 cd packages/autoflow-sdk && pytest
@@ -279,8 +280,9 @@ this.runtimes.register(definition, { override: true });
    ConfigModule `validationSchema`（Joi）声明变量与默认值 →
    `src/config/configuration.ts` 映射为配置对象 → 消费方注入 `ConfigService`
    以 `configService.get("section.key")` 读取。
-2. **直读豁免清单**（维护位置：`apps/admin-api/.eslintrc.js` 的
-   `overrides`，每处必须带理由注释）：
+2. **直读豁免清单**（维护位置：`apps/admin-api/eslint.config.js` 里
+   `no-restricted-properties` 的豁免段；该文件用 flat config（ESLint 9+），
+   没有 `.eslintrc.js` / `overrides` 这个旧形态。每处必须带理由注释）：
    - `src/config/configuration.ts` —— 唯一合法的 env → 配置映射层；
    - `src/config/env.ts`（`getEnvVar()`）—— 模块求值期（装饰器参数、模块级
      常量）或无 DI 环境（如 TypeORM CLI）的唯一收口 util，调用点必须注释

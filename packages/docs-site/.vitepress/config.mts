@@ -48,6 +48,7 @@ export default defineConfig({
           { text: '02 · 私服依赖', link: '/tutorial-02-private-registry-deps' },
           { text: '03 · 多执行器扩容', link: '/tutorial-03-multi-executor-scaling' },
           { text: '04 · 告警接入值班', link: '/tutorial-04-alerting-oncall' },
+          { text: '05 · SOP 生态演示', link: '/tutorial-05-sop-agent-demo' },
         ],
       },
       {

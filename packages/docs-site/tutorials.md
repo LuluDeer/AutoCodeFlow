@@ -1,8 +1,8 @@
 # 教程索引 — 从 0 到生产
 
 > 重组自 [docs/tutorials/](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/tutorials)（DOC-06）。
-> 四篇教程按真实上线顺序编排：每篇可独立阅读，也可以从头跟到尾走完
-> 「建任务 → 依赖私服化 → 执行器扩容 → 告警值班」的完整生产化路径。
+> 五篇教程按真实上线顺序编排：每篇可独立阅读，也可以从头跟到尾走完
+> 「建任务 → 依赖私服化 → 执行器扩容 → 告警值班 → Agent 接 SOP」的完整生产化路径。
 
 | 篇 | 主题 | 你将学会 |
 |----|------|---------|
@@ -10,6 +10,7 @@
 | [02 · 私服依赖](tutorial-02-private-registry-deps) | 起内置 npm/PyPI 私服 → 发布内部包 → 任务 requirements 引用 | 任务级依赖声明（W-21）+ 私服安装链路，让任务脚本脱离「把依赖装进执行器镜像」的苦力活 |
 | [03 · 多执行器扩容](tutorial-03-multi-executor-scaling) | 第二台执行器注册 → 负载感知调度 → 灰度发布 | 横向扩容执行器、理解负载评分（CORE-05）与 canary 灰度（DEP-02）如何保护生产 |
 | [04 · 告警接入值班](tutorial-04-alerting-oncall) | 通知渠道 → 静默窗口 → Alertmanager → 告警路由 | 把平台通知与 Prometheus/Alertmanager 告警接入企业微信/钉钉/Slack，runbook 随告警直达 |
+| [05 · SOP 生态演示](tutorial-05-sop-agent-demo) | 种子预置 SOP → 指派 → Agent 执行 → 平台复核 → GUI/X11 演示 | SOP 声明式契约（capabilities/acceptance/constraints）、版本快照与幂等发布、复核会话不信自述的独立验证链路 |
 
 ## 阅读前提
 

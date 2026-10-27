@@ -216,9 +216,9 @@
 | UI-18 | P2 | done | 主会话（handoff UI-17 下轮建议③） | 2026-09-14 | admin-web BatchActionBar + ExecutorDetailPage + locales/{zh,en} + 新 __tests__/executor-pull-gating.test.tsx | 待提交 | **pull 执行器入站推送面收口**（ARCH-32 UX 补完）：① 批量 reload-config 目标剔除 pull 执行器（入站 POST 对 NAT 内执行器必然失败——静默失败升级为显式门控：全 pull 直接 warning 不弹确认；部分剔除在确认弹窗文案标注跳过台数）；② ExecutorDetailPage 派发模式字段（Push/Pull Tag）+ pull 时「配置热更新」按钮 disabled + tooltip（并发上限等修改经下次拉取/心跳生效）；③ zh/en 各 7 key；④ 测试只增 +4（executor-pull-gating：混合选择仅对 push 发请求/全 pull 不弹不发/详情页 Tag 与禁用/缺省可用）= admin-web **669/669** + tsc -b 0 错 + lint 0 error（warnings 全存量）。另修两处 CI 假红：executor-python 版本漂移节流用例注入固定时钟（time.monotonic() 基点随机器而异——CI runner 新启动仅数秒，首测即被 600s 窗口节流，本地绿 CI 红）+ desktop 内嵌 executor-node bundle 随 ARCH-32 重打（desktop-bundle-drift W-18 守卫拦截，npm run build:executor） |
 
 | ARCH-33 | P1 | done | 主会话（用户提供生产实证并确认「扩展 pull 通道到控制面」方向 + 「node python 桌面端都要」范围） | 2026-09-20 | 新 `docs/adr/adr-016-executor-control-plane-pull.md` + admin-api（executor-pull.service 命令队列 / protocol-compat.util 门禁 / executor.service 传输分流 / executor.controller pull 响应 commands + 新 command-result 端点 / app-deployment.service deploy+stop 改道 / application.service 清理扇出改道 / executor-package.service 包推送改道 / configuration+app.module+两个 .env.example 加 EXECUTOR_CMD_TTL_MS）+ executor-node（新 commands.ts + pull.ts 命令消费与 freeSlots + config.ts 协议 v2 + 两个 spec + 新 commands.spec）+ executor-python（新 commands.py + scheduler.py 命令消费与 freeSlots + config.py 协议 v2 + 新 tests/test_commands.py + test_scheduler.py + .env.example）+ admin-web（新 utils/control-plane.ts + BatchActionBar/ExecutorDetailPage 判据修订 + 新 control-plane.test.ts + executor-pull-gating 扩写 + api/executors.ts 加 protocolVersion）+ protocol.json（versioning 1→2 + 新 ControlCommand/CommandResult schema 与向量）+ 双端生成物 + 新 scripts/control-plane-pull-selftest.mjs + package.json test:control-plane-pull + ADR 索引 + docs/deployment.md + desktop bundle 重打回填 | 待提交 | **控制面 pull 通道（NAT 拓扑下中台主动操作执行器全部失效的根治）**。**故障实证**：公网中台（154.217.234.30）+ 公司内网执行器（192.168.4.54:8003）拓扑下，`app_deployments.statusMessage = "Failed to reach executor after 3 attempts: timeout of 30000ms exceeded"`；`curl http://192.168.4.54:8003/api/health/live` → `http_code=000`；`ip route get 192.168.4.54` → 走默认公网网关（无内网路由）。执行器出站回连正常（心跳在线），但**中台无法反向连入**——网络拓扑不可达，非配置笔误。**根因**：ADR-015 只把「任务派发」搬上了 pull 通道，`dispatchMode` 在整个 application/部署模块**零引用**，部署链路是纯 push 硬编码；stop/uninstall/config-reload/kill/包推送同样。**裁定（ADR-016）**：控制面命令走 **pull 命令队列**——① 新队列 `acf:cmd:{executorId}` 与任务队列**物理分离**（任务派发这条已验收链路的入队/出队/TTL/单飞语义逐字节不变）；② 命令类型**封闭枚举**六类，本地路径由执行器按类型**自行构造**，绝不接受中台下发的自由路径；③ 执行器本地回环 `127.0.0.1:{port}` + 自身令牌（E-1 配置热更新已验证的先例，apply 逻辑单一事实源、零漂移，本地路由全部校验照常生效）；④ **协议 1→2**，中台以 `PROTOCOL_CONTROL_PLANE_MIN=2` 为闸——v1/未上报执行器会**静默忽略** commands 字段，中台若照发会把「静默丢弃」误判成「投递成功」，故退回 push（失败可见），`supportedMinProtocolVersion` 保持 1（兼容性红线：旧执行器照常注册、照常收任务）。**两个关键设计点**：① **freeSlots**——旧实现满载时连长轮询都不发，若沿用则**执行器满载时控制命令永远送不到**（部署/停止/热更新全部静默失效）；现在始终长轮询，满载时上报 `freeSlots=0`，服务端**不出队任务**（取走也没槽位跑，等于把瞬态容量问题固化成执行失败——正是 E-01 关闭的那类问题）但照发命令；② **语义损失如实声明**——deploy/stop/uninstall/kill 零损失，config-reload 与 update-package 失去同步结果，接口返回 `queued: true`（**不谎报成功**），终态另有通道收敛（deploy→`/app-deployments/heartbeat`，update-package→`push-result`）。**python 能力缺口如实登记**：python 只有 config-reload/kill-execution 两个本地路由，deploy/app-stop/app-uninstall/update-package 是 node-only（protocol.json `executorNodeOnly` 段早已登记）——python 收到这四类**如实回报 unsupported**，而非回环打一个必然 404 的请求（后者只会产出无行动价值的 "HTTP 404"）。这是**既有**缺口，非本次回归。**补齐两处缺失守卫（实施中发现的真实缺口）**：① 此前**没有任何测试读 `versioning` 段**（全仓 grep 零命中），四处版本常量靠手抄——新增 `protocol-version-consistency.spec.ts` 把 protocol.json / 两端 PROTOCOL_VERSION / admin 两个下限常量钉死并校验矩阵自洽；② `schemas` ↔ `schemaVectors` **无覆盖闸**（TS 侧比的是手维护映射与向量键、python 侧从向量反推 schema 集，两者都看不见「有 schema 无向量」）——两侧各补一条与 `schemas` 段本身的比对。**反证有牙（实测）**：改 protocol.json 版本号 → 版本闸 2 例转红；加一个无向量的 schema → 两侧覆盖闸同时转红。**真机端到端自检（决定性证据）**：新 `npm run test:control-plane-pull`，执行器地址设 `unreachable-nat-host.invalid:9999`，**14/14 全绿**——含 ④ 对照项（实测该地址入站确实不可达，否则后续成功证明力为零）、②b 执行器**确实消费队列并应用配置**（执行器侧日志为证，非只看接口返回值）、⑤c 部署指令经 pull 通道抵达且被执行器受理、⑤d 失败原因是执行器侧业务失败（`Cloning into '.'...`）而**非**原始故障 "Failed to reach executor"。**验收**：admin-api **192 套件 3177/3177**、executor-node **792/792**、executor-python **947 passed**、admin-web **1022/1022**；typecheck:all 7 工程 0 错；lint:all **0 error**（30 warnings 全存量，逐文件对照确认）；`check:protocol-sync` 幂等（连跑两次产物字节一致）、`check-failure-reasons` 与 docs-site `sync-check` 全绿；desktop `test:main` exit 0；ADR-005 bundle 重打 `239bbd2e…` → `3680d5e7…`（2508→2521kB）并回填清单。**残差（如实）**：① `GET api/logs/:id` 日志回填属**读**方向，单向 pull 通道载不了响应体——**明确不在本机制范围**，NAT 执行器维持既有降级路径（终态回调携带日志尾部）；② python 四类命令的本地路由未补齐（node-only 能力缺口，port 属独立工作）；③ 命令通道**不扩大信任面**（中台今日已能对 push 执行器发同样入站 POST、也能给任何 pull 执行器下发含任意脚本的 glue 任务=任意代码执行）——封闭枚举限制的是误配与内部错误的影响半径，不是新增授权 |
-| ARCH-34 | P0 | done | 主会话（用户报告生产现象：「只部署了执行器A，创建任务下发任务时居然是执行器B运行的」，授权排查并推进） | 2026-09-23 | 新 `docs/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md` + 新 `apps/admin-api/src/modules/executor/executor-address-conflict.util.ts` + 新 `__tests__/executor-address-conflict.util.spec.ts` + `executor.service.ts`（构造器实例化跟踪器 + `observeAddressConflict()` + register/heartbeat 两处接线）+ `executor.service.spec.ts`（R-26 块扩写 + 新接线块）+ 新 `docs/adr/adr-017-executor-unique-identity.md`（Proposed）+ `docs/adr/README.md` | 待提交 | **排查「部署 A 却跑在 B」**。**结论（双根因）**：① **主因（无条件触发）**——`app_deployments` 行记了 `executorId`/`executorAddress`，但 manifest 驱动的任务自动注册**不写** `task.executorId`，故任务恒走全机队分支按负载择优；**选执行器时全仓没有一处查过部署归属**——用户的部署意图在调度面被静默丢弃。这是**预期行为而非调度 bug**（B 上任务能跑成功的原因：执行路径 `<workDir>/<executionId>/` 与部署产物树 `<workDir>/apps/<appId>/` **互不相交**，任务执行根本不依赖本地是否部署过）。② **次因（需 address 碰撞才触发）**——`address` 是自报的 LAN IP+端口，两机同处 `192.168.1.x` 私网即碰撞，导致注册互覆、**共享同一 pull 队列**、`startupId` 不同使 `didRestart` 抖动 → `failRunningExecutionsAfterRestart` 把对方 RUNNING 执行误杀为 `EXECUTOR_RESTART`、`rotateToken()` 风暴互废令牌——解释了现象的**间歇性**。**P0 已落地**：`address` 冲突检测（判据为「**被顶替的**进程生命重新上报」而非「同 address 出现不同 startupId」——后者是正常重启的形状会致每次重启误报；`startupId` 为每进程随机 UUID，故真重启永不误判；旧执行器未上报 `startupId` 则不跟踪）+ ERROR 级通知 + 10min 节流 + fail-open（通知抛错绝不影响注册/心跳主链）。**P1 已落地**见 ARCH-35。**P2（需 ADR）**：设备指纹唯一标识（ADR-017 Proposed）；读面富化（`app_deployments`/`task_executions` 前端展示执行器名而非地址——用户明确指出 NAT 内地址可重复）。**回答用户「执行器有无唯一标识」：没有设备指纹级标识**——`executors.id` 稳定但注册时不用它定位行（用 address）；`executorStartupId` 每重启即变；`appName` 无约束（默认 `executor-node-1`/hostname）；`EXECUTOR_ID` 全仓唯一用处是 `update-package.ts` 上报，注册身份完全不用。 |
-| ARCH-35 | P1 | done | 主会话（承接 ARCH-34 排查，用户「你看着来推进」+「继续推进优化」授权） | 2026-09-23 | 新 `apps/admin-api/src/modules/executor/executor-deployment-affinity.util.ts` + 新 `__tests__/executor-deployment-affinity.util.spec.ts` + 新 `__tests__/executor-deployment-entity-registration.spec.ts` + `executor.service.ts`（新 `resolveRunningDeployments()` + `dispatch()` 分区接线 + 决策日志 `deploymentAffinity` 字段 + R-26 第三项 warn）+ `executor.service.spec.ts`（新接线块 10 例）+ `executor.module.ts`（forFeature 加 `AppDeployment`）+ `configuration.ts`/`app.module.ts`/`.env.example`（`EXECUTOR_PREFER_DEPLOYED`）+ `docs/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md`（§5.2 修订）+ `docs/adr/adr-017-executor-unique-identity.md`（交叉引用） | 待提交 | **部署归属偏好（ARCH-34 主因的语义修正）**。**关键前置结论（决定方案形态）**：经双执行器全量核验，**任务执行完全不依赖执行器本地是否部署过该应用**——四种 `codeSource`（git/glue/application_zip/存量 NULL）的执行树与部署产物树互不相交，`applicationId` 在执行器侧从不变成文件路径；最硬旁证：**`executor-python` 根本没有 deploy 路由**（`commands.py` 声明 "unsupported"），若执行依赖本地部署则所有 python 执行器上的任务都无法运行。**故方案必须是「偏好」而非「过滤」**——硬过滤会误伤全部未部署任务与 python 执行器（候选集清空 → 派发失败）。**实现**：`app_deployments` 中 `status='running'` 行，`executorId` 精确命中优先、`executorAddress` 兜底（兼容存量 `executorId IS NULL` 行）；**稳定分区**（命中组整体前置、组内保持评分序），**不改评分**（决策日志 score 必须始终是真实负载分，否则「为什么选这台」无法回溯）；插入点选在**评分排序之后、原子占坑之前**（排序前分区会被随后的全量 sort 打散）；占坑循环逐个尝试 → 部署那台满了/离线自动回落全机队，**零新增失败面**；查询失败不抛（warn+原序，偏好缺失≠无法调度）；开关 `EXECUTOR_PREFER_DEPLOYED` 默认 true（不新增失败面故默认开，一行可回滚）；**刻意不加 TTL 缓存**（事故场景正是「刚部署完 A→立刻下发任务」，缓存会让用户在最该生效的时刻看到旧结论）。决策日志新增 `deploymentAffinity`（`preferred`/`matchedByExecutorId`/`matchedByAddressOnly`/`runningDeployments`），可区分「没部署」与「部署了但没命中候选」。**测试**：util 21 例 + 接线 10 例（含偏好生效、降级回落、开关关/无 applicationId/无部署行/仓库未装配的零行为变化、查询抛错 best-effort、决策日志字段）+ 实体元数据 5 例（钉住 `AppDeployment` 在 executor 侧二次注册后 `@ManyToOne(Application)` 关系闭包可解析——**这类错误只在启动期建元数据时暴露，全 mock 的单测永远测不到**，首版子集写法实测即因 `Application#tasks` 缺 `Task` 而抛错，故改用运行时同款实体 glob）。**验证**：admin-api **208 suites / 3404 tests 全绿**，tsc 0 错，eslint 0 告警，六道门禁全绿。**遗留**：本项不修 address 碰撞——若生产确有碰撞，偏好仍可能因两机共享一行而指错（属 ARCH-34 的 P2/ADR-017 范围）。 |
-| E-01-RPT | P1 | done | 主会话（用户报生产现象：「RPA5 执行器在中台一直显示 当前运行任务 1/10 10% 活性上报 0 条，与运行计数 1 不一致 明明执行器所在设备看没有在执行的任务」，授权从代码层修复） | 2026-09-23 | 新 `docs/adr/adr-018-executor-occupied-vs-running.md` + `packages/executor-protocol/protocol.json`（versioning v3→v4 + 矩阵条目）+ executor-node（`scheduler.ts` 新 `registerPullReservedSlotsProvider`/`collectReservedSlots` + 心跳 `reservedSlots`；`pull.ts` 新预留追踪三处跃迁点 + `resetPullReservedSlotsForTest`；`config.ts` 协议 3→4；`pull.spec.ts` +3、`scheduler.spec.ts` +2）+ executor-python（`scheduler.py` 新 `get_pull_reserved_slots`/`_track_`/`_untrack_` + 心跳 `reservedSlots` + `pull_task` 三处接线；`config.py` 协议 3→4；`tests/test_scheduler.py` +5）+ admin-api（`entities/executor.entity.ts` 新 `reservedSlots` 列 + 新 `migrations/1790000000039-AddExecutorReservedSlots.ts` + `executor.controller.ts` 白名单转发 + `executor.service.ts` 新 `isAdoptableReservedSlots` 与配对采纳段 + 重启双分支清零 + `getExecutorMetrics.current.reservedSlots`；`executor.service.spec.ts` +10、`executor.controller.security.spec.ts` 白名单 +1）+ admin-web（`api/executors.ts` 两处类型 + `pages/ExecutorDetailPage.tsx` 换算与预留说明 + `locales/{zh,en}.ts` 各 2 key + 新 `__tests__/executor-detail-reserved-slots.test.tsx` 4 例）+ `docs/{api-reference.md, PLAN-CLAIMS.md}` + atlas 四份 + **`apps/executor-desktop/executor-node-bundle.sha256`**（ADR-005 同 commit 重打：`b9156891…` → `ce5aa19c…`） | 待提交 | **根因不是计数泄漏，也不是卡住的任务**——是 E-01 防超卖机制的固有上报口径缺口。E-01 要求 pull 循环在发起 25s 长轮询**之前**先原子预留一个容量槽位（node `pull.ts` 的 `Atomics.add` / python `try_reserve_running_slot`），预留计入**同一个并发账本**，故 `runningTaskCount` 在长轮询窗口内**诚实包含**它——这正是「长轮询窗口内 admin 不会再往最后一个空槽 push 派发」的实现方式本身。而 `runningExecutionIds` 来自**另一个账本**（node `liveExecutions` Map / python `_live_executions`），只有真正领取到的执行才有 id。空闲执行器几乎始终处在长轮询窗口内（25s 窗口 + 1s 轮询），稳态上报恒为「`runningTaskCount=1` + `runningExecutionIds=[]`」——**两个数字都对**，却度量不同的东西：前者是**已占槽位**，后者是**在跑执行**。详情页把两者直接交叉核对，遂恒亮不一致告警。这也解释了为什么 `task_executions WHERE status='running'` 是 0 行：现场其实什么都没卡住。**修法（ADR-018，协议 3→4）**：心跳新增**始终发送**的 `reservedSlots`（预留中槽位数），详情页显示「实际运行 = `runningTaskCount` − `reservedSlots`」并用该值与 `runningExecutionIds.length` 比对；**派发闸门一行未改**（`selectLeastLoaded`/容量守卫仍只读 `runningTaskCount`），E-01 语义逐字节不变。**明确否决**用户初步提议的「用 `runningExecutionIds.length` 覆盖 `runningTaskCount`」：那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 accept 返回 429 → 任务被误判**永久失败**，恰是 E-01 当年要关闭的竞态（`docs/DEEP_REVIEW_0ef3bbe.md` §E-01）；且 `runningExecutionIds` 只是「真正领取到的执行」的子集、两端都按 10000 截顶，并发逼近封顶时数组必然少于真实在跑数，用它覆盖计数会系统性低报（**注**：本条原还引用「python 侧 ids 截断到 200」，该 200 系独立缺陷、已由 NETOPT-C-P2-1 修正为三端同值 10000，故否决理由**不依赖**它——两个账本口径不同，用派生量覆盖源量本身就是错的）。**采纳纪律**：三态（缺省保留 DB 旧值 / 非法 warn+保留 / 合法含 0 覆盖）+ 自洽硬约束 `reservedSlots ≤ runningTaskCount`（子集关系，违反即拒绝——配对校验用采纳后的 `e.runningTaskCount`，因 `metricValues.runningTaskCount` 可能刚被越界校验删除）+ 重启双分支连预留一起清零（重启后进程内 pull 循环已消失）。**验证**：admin-api 4 shard 全绿（1090+878+692+809=3469）、executor-node 923 绿、executor-python 44 绿、admin-web 1254 绿、check-migrations/check-shell-multibyte-var/gen:protocol/openapi+api-types drift 六道门禁全绿；bundle 同目录重复构建两次逐字节一致（`ce5aa19c…`，2585kB→2593kB）。**遗留**：python 侧 `runningExecutionIds` 当时仍截断到 200（node 为 10000）——并发 >200 时 stale sweep 存活宽限失效，与本次修法无关，属独立潜在缺陷，**已由下一行 NETOPT-C-P2-1 处置（两半齐修：封顶改 10000 + `max_concurrent_tasks` 补 1..10000 上界）** |
+| ARCH-34 | P0 | done | 主会话（用户报告生产现象：「只部署了执行器A，创建任务下发任务时居然是执行器B运行的」，授权排查并推进） | 2026-09-23 | 新 `docs/archive/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md` + 新 `apps/admin-api/src/modules/executor/executor-address-conflict.util.ts` + 新 `__tests__/executor-address-conflict.util.spec.ts` + `executor.service.ts`（构造器实例化跟踪器 + `observeAddressConflict()` + register/heartbeat 两处接线）+ `executor.service.spec.ts`（R-26 块扩写 + 新接线块）+ 新 `docs/adr/adr-017-executor-unique-identity.md`（Proposed）+ `docs/adr/README.md` | 待提交 | **排查「部署 A 却跑在 B」**。**结论（双根因）**：① **主因（无条件触发）**——`app_deployments` 行记了 `executorId`/`executorAddress`，但 manifest 驱动的任务自动注册**不写** `task.executorId`，故任务恒走全机队分支按负载择优；**选执行器时全仓没有一处查过部署归属**——用户的部署意图在调度面被静默丢弃。这是**预期行为而非调度 bug**（B 上任务能跑成功的原因：执行路径 `<workDir>/<executionId>/` 与部署产物树 `<workDir>/apps/<appId>/` **互不相交**，任务执行根本不依赖本地是否部署过）。② **次因（需 address 碰撞才触发）**——`address` 是自报的 LAN IP+端口，两机同处 `192.168.1.x` 私网即碰撞，导致注册互覆、**共享同一 pull 队列**、`startupId` 不同使 `didRestart` 抖动 → `failRunningExecutionsAfterRestart` 把对方 RUNNING 执行误杀为 `EXECUTOR_RESTART`、`rotateToken()` 风暴互废令牌——解释了现象的**间歇性**。**P0 已落地**：`address` 冲突检测（判据为「**被顶替的**进程生命重新上报」而非「同 address 出现不同 startupId」——后者是正常重启的形状会致每次重启误报；`startupId` 为每进程随机 UUID，故真重启永不误判；旧执行器未上报 `startupId` 则不跟踪）+ ERROR 级通知 + 10min 节流 + fail-open（通知抛错绝不影响注册/心跳主链）。**P1 已落地**见 ARCH-35。**P2（需 ADR）**：设备指纹唯一标识（ADR-017 Proposed）；读面富化（`app_deployments`/`task_executions` 前端展示执行器名而非地址——用户明确指出 NAT 内地址可重复）。**回答用户「执行器有无唯一标识」：没有设备指纹级标识**——`executors.id` 稳定但注册时不用它定位行（用 address）；`executorStartupId` 每重启即变；`appName` 无约束（默认 `executor-node-1`/hostname）；`EXECUTOR_ID` 全仓唯一用处是 `update-package.ts` 上报，注册身份完全不用。 |
+| ARCH-35 | P1 | done | 主会话（承接 ARCH-34 排查，用户「你看着来推进」+「继续推进优化」授权） | 2026-09-23 | 新 `apps/admin-api/src/modules/executor/executor-deployment-affinity.util.ts` + 新 `__tests__/executor-deployment-affinity.util.spec.ts` + 新 `__tests__/executor-deployment-entity-registration.spec.ts` + `executor.service.ts`（新 `resolveRunningDeployments()` + `dispatch()` 分区接线 + 决策日志 `deploymentAffinity` 字段 + R-26 第三项 warn）+ `executor.service.spec.ts`（新接线块 10 例）+ `executor.module.ts`（forFeature 加 `AppDeployment`）+ `configuration.ts`/`app.module.ts`/`.env.example`（`EXECUTOR_PREFER_DEPLOYED`）+ `docs/archive/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md`（§5.2 修订）+ `docs/adr/adr-017-executor-unique-identity.md`（交叉引用） | 待提交 | **部署归属偏好（ARCH-34 主因的语义修正）**。**关键前置结论（决定方案形态）**：经双执行器全量核验，**任务执行完全不依赖执行器本地是否部署过该应用**——四种 `codeSource`（git/glue/application_zip/存量 NULL）的执行树与部署产物树互不相交，`applicationId` 在执行器侧从不变成文件路径；最硬旁证：**`executor-python` 根本没有 deploy 路由**（`commands.py` 声明 "unsupported"），若执行依赖本地部署则所有 python 执行器上的任务都无法运行。**故方案必须是「偏好」而非「过滤」**——硬过滤会误伤全部未部署任务与 python 执行器（候选集清空 → 派发失败）。**实现**：`app_deployments` 中 `status='running'` 行，`executorId` 精确命中优先、`executorAddress` 兜底（兼容存量 `executorId IS NULL` 行）；**稳定分区**（命中组整体前置、组内保持评分序），**不改评分**（决策日志 score 必须始终是真实负载分，否则「为什么选这台」无法回溯）；插入点选在**评分排序之后、原子占坑之前**（排序前分区会被随后的全量 sort 打散）；占坑循环逐个尝试 → 部署那台满了/离线自动回落全机队，**零新增失败面**；查询失败不抛（warn+原序，偏好缺失≠无法调度）；开关 `EXECUTOR_PREFER_DEPLOYED` 默认 true（不新增失败面故默认开，一行可回滚）；**刻意不加 TTL 缓存**（事故场景正是「刚部署完 A→立刻下发任务」，缓存会让用户在最该生效的时刻看到旧结论）。决策日志新增 `deploymentAffinity`（`preferred`/`matchedByExecutorId`/`matchedByAddressOnly`/`runningDeployments`），可区分「没部署」与「部署了但没命中候选」。**测试**：util 21 例 + 接线 10 例（含偏好生效、降级回落、开关关/无 applicationId/无部署行/仓库未装配的零行为变化、查询抛错 best-effort、决策日志字段）+ 实体元数据 5 例（钉住 `AppDeployment` 在 executor 侧二次注册后 `@ManyToOne(Application)` 关系闭包可解析——**这类错误只在启动期建元数据时暴露，全 mock 的单测永远测不到**，首版子集写法实测即因 `Application#tasks` 缺 `Task` 而抛错，故改用运行时同款实体 glob）。**验证**：admin-api **208 suites / 3404 tests 全绿**，tsc 0 错，eslint 0 告警，六道门禁全绿。**遗留**：本项不修 address 碰撞——若生产确有碰撞，偏好仍可能因两机共享一行而指错（属 ARCH-34 的 P2/ADR-017 范围）。 |
+| E-01-RPT | P1 | done | 主会话（用户报生产现象：「RPA5 执行器在中台一直显示 当前运行任务 1/10 10% 活性上报 0 条，与运行计数 1 不一致 明明执行器所在设备看没有在执行的任务」，授权从代码层修复） | 2026-09-23 | 新 `docs/adr/adr-018-executor-occupied-vs-running.md` + `packages/executor-protocol/protocol.json`（versioning v3→v4 + 矩阵条目）+ executor-node（`scheduler.ts` 新 `registerPullReservedSlotsProvider`/`collectReservedSlots` + 心跳 `reservedSlots`；`pull.ts` 新预留追踪三处跃迁点 + `resetPullReservedSlotsForTest`；`config.ts` 协议 3→4；`pull.spec.ts` +3、`scheduler.spec.ts` +2）+ executor-python（`scheduler.py` 新 `get_pull_reserved_slots`/`_track_`/`_untrack_` + 心跳 `reservedSlots` + `pull_task` 三处接线；`config.py` 协议 3→4；`tests/test_scheduler.py` +5）+ admin-api（`entities/executor.entity.ts` 新 `reservedSlots` 列 + 新 `migrations/1790000000039-AddExecutorReservedSlots.ts` + `executor.controller.ts` 白名单转发 + `executor.service.ts` 新 `isAdoptableReservedSlots` 与配对采纳段 + 重启双分支清零 + `getExecutorMetrics.current.reservedSlots`；`executor.service.spec.ts` +10、`executor.controller.security.spec.ts` 白名单 +1）+ admin-web（`api/executors.ts` 两处类型 + `pages/ExecutorDetailPage.tsx` 换算与预留说明 + `locales/{zh,en}.ts` 各 2 key + 新 `__tests__/executor-detail-reserved-slots.test.tsx` 4 例）+ `docs/{api-reference.md, PLAN-CLAIMS.md}` + atlas 四份 + **`apps/executor-desktop/executor-node-bundle.sha256`**（ADR-005 同 commit 重打：`b9156891…` → `ce5aa19c…`） | 待提交 | **根因不是计数泄漏，也不是卡住的任务**——是 E-01 防超卖机制的固有上报口径缺口。E-01 要求 pull 循环在发起 25s 长轮询**之前**先原子预留一个容量槽位（node `pull.ts` 的 `Atomics.add` / python `try_reserve_running_slot`），预留计入**同一个并发账本**，故 `runningTaskCount` 在长轮询窗口内**诚实包含**它——这正是「长轮询窗口内 admin 不会再往最后一个空槽 push 派发」的实现方式本身。而 `runningExecutionIds` 来自**另一个账本**（node `liveExecutions` Map / python `_live_executions`），只有真正领取到的执行才有 id。空闲执行器几乎始终处在长轮询窗口内（25s 窗口 + 1s 轮询），稳态上报恒为「`runningTaskCount=1` + `runningExecutionIds=[]`」——**两个数字都对**，却度量不同的东西：前者是**已占槽位**，后者是**在跑执行**。详情页把两者直接交叉核对，遂恒亮不一致告警。这也解释了为什么 `task_executions WHERE status='running'` 是 0 行：现场其实什么都没卡住。**修法（ADR-018，协议 3→4）**：心跳新增**始终发送**的 `reservedSlots`（预留中槽位数），详情页显示「实际运行 = `runningTaskCount` − `reservedSlots`」并用该值与 `runningExecutionIds.length` 比对；**派发闸门一行未改**（`selectLeastLoaded`/容量守卫仍只读 `runningTaskCount`），E-01 语义逐字节不变。**明确否决**用户初步提议的「用 `runningExecutionIds.length` 覆盖 `runningTaskCount`」：那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 accept 返回 429 → 任务被误判**永久失败**，恰是 E-01 当年要关闭的竞态（`docs/archive/reviews/deep-review-0ef3bbe.md` §E-01）；且 `runningExecutionIds` 只是「真正领取到的执行」的子集、两端都按 10000 截顶，并发逼近封顶时数组必然少于真实在跑数，用它覆盖计数会系统性低报（**注**：本条原还引用「python 侧 ids 截断到 200」，该 200 系独立缺陷、已由 NETOPT-C-P2-1 修正为三端同值 10000，故否决理由**不依赖**它——两个账本口径不同，用派生量覆盖源量本身就是错的）。**采纳纪律**：三态（缺省保留 DB 旧值 / 非法 warn+保留 / 合法含 0 覆盖）+ 自洽硬约束 `reservedSlots ≤ runningTaskCount`（子集关系，违反即拒绝——配对校验用采纳后的 `e.runningTaskCount`，因 `metricValues.runningTaskCount` 可能刚被越界校验删除）+ 重启双分支连预留一起清零（重启后进程内 pull 循环已消失）。**验证**：admin-api 4 shard 全绿（1090+878+692+809=3469）、executor-node 923 绿、executor-python 44 绿、admin-web 1254 绿、check-migrations/check-shell-multibyte-var/gen:protocol/openapi+api-types drift 六道门禁全绿；bundle 同目录重复构建两次逐字节一致（`ce5aa19c…`，2585kB→2593kB）。**遗留**：python 侧 `runningExecutionIds` 当时仍截断到 200（node 为 10000）——并发 >200 时 stale sweep 存活宽限失效，与本次修法无关，属独立潜在缺陷，**已由下一行 NETOPT-C-P2-1 处置（两半齐修：封顶改 10000 + `max_concurrent_tasks` 补 1..10000 上界）** |
 | NETOPT-C-P2-1 | P1 | done | 主会话（E-01-RPT 收口时点名的**独立缺陷**，用户指示「独立缺陷你也看看怎么修复」） | 2026-09-23 | `apps/executor-python/config.py`（新 `MAX_RUNNING_EXECUTION_IDS = 10_000` 单点常量 + 新 `_validate_max_concurrent_tasks` 钳 1..10000）+ `apps/executor-python/scheduler.py`（新 `_capped_running_execution_ids()` 取代硬编码 `[:200]`，含 provider 异常/非列表收敛为 `[]` + 越界 warn；从 config 导入常量）+ `apps/executor-python/routers/config.py`（reload 上界预检 + 写入前复查，两处 400 `between 1 and 10000`）+ `apps/executor-python/tests/test_scheduler.py`（改 200→10000 并新增 4 例：全部上报/三端同值守卫/越界截顶/provider 异常与非列表降级）+ `apps/executor-python/tests/test_config_reload.py`（新 `TestMaxConcurrentTasksUpperBound` 4 例）+ `apps/admin-api/.../protocol-version-consistency.spec.ts`（新 `NETOPT-C P2-1` 三端一致性闸 3 例）+ `packages/executor-protocol/protocol.json`（v4 `$comment` 修正对「python 截断到 200」的引用，否决理由改为不依赖该缺陷）+ `docs/adr/adr-018-executor-occupied-vs-running.md`（替代方案 B 的附加理由同步修正）+ `apps/executor-desktop/executor-node-bundle.sha256`（changelog 注释同步；**bundle 本体无需重打**——本轮零 `executor-node/src` 改动，已实测产物哈希与 manifest 仍一致）+ 文档订正（`docs/atlas/01-apps/executor-contract.md`、`docs/atlas/01-apps/executors-comparison.md`、`docs/atlas/04-flows/executor-registration.md`、`apps/admin-web/src/api/executors.ts` 的陈旧 `≤200` 注释） | 待提交 | **python 心跳把 `runningExecutionIds` 截断到 200，而 node/admin 一直是 10000**——且那行旁边的注释写着 "node parity"，是抄了一个**不存在**的 parity。这不是无害的保守取值：admin 的 stale sweep（`scheduler.service.ts` `recoverStaleExecutions`）把「该 executionId 出现在上报数组里」当作**唯一**活性证据，命中才跳过恢复（宽限到 `max(6×timeout, 5min)`），未命中即按 stale 判死。并发 >200 时第 201+ 个在跑执行从上报里**静默消失**，其活性宽限失效——一个正在健康长跑（prepare 期 git clone + venv 可达 ~600s）的任务被提前恢复成 FAILED，**正是 E1 引入该字段要消灭的误判**，只是触发条件从「0 个 id（旧版不上报）」变成「>200 个 id」。**可达性由第二个缺口保证**：python 的 `max_concurrent_tasks` **只有下界没有上界**（node 侧 env 钳 1..10000 + reload 400 两处都有），故 `MAX_CONCURRENT_TASKS=500` 能真的放行 500 并发——单修截断值只是把悬崖从 200 挪到 10000。**修法（两半齐修）**：① 封顶常量单点化到 `config.py`（scheduler 从 config 导入，避免反向导入成环）并改为 10000，与 admin `MAX_RUNNING_EXECUTION_IDS`、E9 `maxConcurrentTasks` 采纳域三端同值；② `max_concurrent_tasks` 钳到 1..10000——env 走**钳制**（同 node `Math.min(Math.max(...))`，运维设到天上执行器仍要能起来）、reload 走 **400**（同 node `'between 1 and 10000'`，交互式推送要立刻反馈）；③ 越界截顶补 `logger.warning`（node 早就有「overflow ids lose stale-sweep grace」，python 此前连截断都不记日志——静默截断会让任务被误判时运维毫无线索）。**关键取舍：为什么不是 200→10000 的裸改**——必须先算心跳体积：admin `main.ts` 只给 `/api/executions/callback` 开了 55mb，`/api/executors/heartbeat` 走全局 **1mb**；UUID 单个 JSON 字面量 38 字节 → 10000 个 = 390,001 字节 ≈ **381 KiB = 1mb 的 37%**，跑满封顶仍留 2.6× 余量，不会把心跳打成 413（413 → 中台判执行器 OFFLINE，比少报 id 严重得多）。**反证有牙（实测两处）**：① 把 `config.py` 常量改回 200 → 新的一致性闸立即红（`Expected: 10000, Received: 200`）；② 移除 reload 的两处上界守卫 → `test_rejects_above_cap` / `test_rejects_absurd_value` 立即红（`assert 200 == 400`，即旧实现真的会接受 50000）。**验证**：executor-python **1057 passed / 3 skipped**（基线 1049 → +8，全量套件）；`protocol-version-consistency.spec.ts` 10/10；`gen:protocol` 零漂移（只改 `$comment`，不涉 `schemas`）；bundle 产物哈希实测与 manifest 一致。**残差（如实）**：node 侧 `MAX_RUNNING_EXECUTION_IDS` 与 python 侧现由一致性闸钉住，但 admin 侧常量仍靠同一条闸（读源码正则）而非编译期共享——三端跨语言，无更硬的机制。 |
 | ARCH-36 | P1 | done | 主会话（承接 ARCH-34/ARCH-35，用户在三条剩余轨道中选定「ADR-017 阶段 2」先行） | 2026-09-23 | `packages/executor-protocol/protocol.json`（v2→v3 + 矩阵条目）+ 新 `packages/executor-protocol/device-identity.vectors.json`（三端共享金向量）+ 新 `apps/executor-node/src/device-identity.ts` + 新 `src/device-identity.spec.ts` + `src/{config,main,scheduler,file-logger}.ts` + 新 `apps/executor-python/device_identity.py` + 新 `apps/executor-python/tests/test_device_identity.py` + `apps/executor-python/tests/test_registration.py`（注册载荷断言 +1 字段 + 新增采集失败反证用例） + `{config,main,scheduler,maintenance}.py` + `apps/admin-api/src/modules/executor/entities/executor.entity.ts` + 新 `executor-fingerprint.util.ts` + 新 `__tests__/executor-fingerprint.util.spec.ts` + `executor.service.ts` + `executor.controller.ts` + `dto/executor-{register,heartbeat}.dto.ts` + 新 `migrations/1790000000038-AddExecutorDeviceFingerprint.ts` + `__tests__/executor.service.spec.ts`（新接线块 16 例）+ `__tests__/executor.controller.security.spec.ts`（白名单 +1）+ `docs/PLAN-CLAIMS.md` + `docs/adr/adr-017-executor-unique-identity.md` + **`apps/executor-desktop/executor-node-bundle.sha256`**（ADR-005 同 commit 重打：`56e16540…` → `f528b16c…`）+ **`apps/admin-api/openapi.json` + `apps/admin-web/src/types/generated/api-types.ts`**（改 DTO 装饰器必须重跑的两件已提交生成物，随 `3e6c6258` 补账） | 待提交 | **ADR-017 阶段 2：三端上报 `deviceFingerprint` + 中台落列 + 冲突/漂移观测（零定位变更）**。**目标**：把判据从 P0 的**时序推断**（被顶替的进程生命复活）升级为**直接比较**——指纹跨重启不变，故「同一 address 两个不同指纹」是零误报的并存证据；反之「同一指纹换 address」是机器换网的**正常**漂移，必须与冲突分开（混在一起会让每次换网都告警）。**本阶段只采集与观测，不改任何定位逻辑**（注册仍按 `address` 定位行），故可独立发布/回滚。**身份组成**：`sha256(deviceId + ":" + installSalt)` 64 位小写十六进制；`deviceId` = Windows 注册表 MachineGuid（`execFileSync` argv 式、2s 超时、**不经 shell**）/ Linux `/etc/machine-id`（回退 `/var/lib/dbus/machine-id`）/ macOS `ioreg` IOPlatformUUID；三者皆不可得回退 `sha256("fallback:<mac>:<hostname>")`；`installSalt` = 首次启动生成随机 UUID 并持久化。**实现期对 ADR 的一处收紧（盐按执行器 kind 分域）**：同机同 workDir 上的 node/python 是**两个逻辑执行器**，共用盐会得出同一指纹 → 阶段 3 以指纹定位时被折叠成一行，正是本 ADR 要消灭的故障；目录形态 `<workDir>/.device-identity/<kind>.salt`（保护一个目录名即可护住所有 kind，平铺成顶层多文件会让保护名单随 kind 增长）。**落地中发现并修掉的静默故障**：workDir 顶层的**一切**（含文件）都被 TTL 清扫按 mtime 删除，盐若放顶层会被 weekly（LOG_RETENTION_DAYS）清掉 → **每周静默漂移一次指纹**；两端 `PROTECTED_WORKDIR_NAMES`/`_PROTECTED_WORKDIR_NAMES` 同批加 `.device-identity`。**纪律**：采集失败一律 `null` + 只 warn 一次，绝不阻断启动/注册；**只上报哈希，绝不上报原始 machineId**（不可反查）。**中台**：`executors.deviceFingerprint varchar(64)` 可空 + **非唯一**索引（唯一性留阶段 3 回填后单独加）；register/heartbeat 双写，三态与 `interpreters` 同款——**缺省/非法一律不动 DB**（否则旧执行器每 30s 的心跳会把已存指纹擦成 NULL，而历史正是本阶段最需要的数据）；非法形态非法 `warn` 而只留 `debug`（心跳 30s/台，warn 会刷屏）。**观测两类分向、各自零误报**：硬冲突（同址双指纹）→ ERROR 日志 + 通知（与 P0 同级，数据正确性问题）+ 10min 按 (address,fingerprint) 节流；漂移 → 仅 info 日志不告警。**观测口径** `stats()` 给出 `reportsWithFingerprint/reports` 覆盖率与 `conflictRate`，回答「到底有多少台真的报了」。**告警载荷富化（实现期补）**：只报「有几个指纹」而不报**是哪几个**，运维仍要手工翻日志关联——新增 `distinctFingerprintsOnAddress` 清单并进载荷（与 P0 同时给出被顶替者/顶替者两个 startupId 对称）。**两个跟踪器独立外发**（刻意不去重）：一台机器同时命中两条判据会收两条告警，证据面不同（进程并存 vs 安装身份冲突），合并会丢「哪条通路成立」的区分度。**协议 v3**：`executor→admin` 可选字段，v1/v2 执行器不发该字段、中台行为与引入前逐字节一致。**测试**：node 30 + python 52 + admin util 31 + service 接线 16 = 129 例（含三平台 deviceId、MAC 兜底、盐持久化三态、fail-open、双写三态、存量旧执行器零告警、两判据独立外发、stats 口径）；三端一致性靠 `device-identity.vectors.json` **金向量同源**（node spec 与 python test 共读）防算法漂移。**两处既有断言因契约扩展同步更新（都在测试侧、均属有意扩展）**：① admin-api `executor.controller.security.spec.ts` 的 F-7 register 白名单枚举 +1 字段；② python `test_registration.py` 的注册载荷逐字段断言 +1 字段（该用例原先把整份载荷钉死；指纹**因机器而异**，故按同文件既有的 `interpreters` 同款做法 **monkeypatch 钉死采集结果**，把断言与"本机身份"解耦，并新增一条"采集失败 → 整个键缺席（不是送 null）且注册照常"的反证用例）。**验证**：admin-api **210 suites / 3457 tests**（全绿）、executor-node **43 suites / 919 tests** + `tsc` 0 错、executor-python **1040 passed / 5 skipped**、admin-api `tsc --noEmit` 0 错、`lint:all` 0 error、**六道门禁 + 协议生成幂等全绿**（migrations 83 / index-drift 28 / enum-drift 13 / consumer-routes / lint-gates / docs-site-sync）+ desktop bundle 漂移门禁本地模拟通过。**顺带修复（与前序无关的存量缺陷，建议单独成 commit）**：`apps/admin-api/src/common/utils/zip-guard.util.ts` 在 HEAD 上即已 prettier 不合规（`lint:api` 在本次改动前就是红的），纯格式、零语义变更。**另按 ADR-005 同 commit 重打了 desktop 内嵌执行器 bundle** —— 本次改了 `apps/executor-node/src`（新增 `device-identity.ts`、`PROTOCOL_VERSION` 2→3、注册/心跳载荷 + `PROTECTED_WORKDIR_NAMES`），若不重打，CI 的 `desktop-bundle-drift`（W-18/F-19）必红，且**发布物**里的桌面端内嵌执行器仍是旧行为（不会上报指纹 → 本阶段观测在桌面端整片缺失、阶段 3 前置条件不成立）。该清单历史上已因同一原因报红三次（cc54aa2f / NETOPT-8③ / 0c67ccfd）。**遗留**：阶段 3（注册以 `deviceFingerprint` 定位、`address` 降级、列加非空约束 + 存量回填 `legacy:${address}`）未做，需灰度验证存量执行器不被拒；另两条轨道（读面富化、pull 队列键解耦）待续。 |
 | ARCH-36-R2 | P0 | done | 主会话（用户「彻底审查工作区的修改是否全面…避免遗留 bug」→「全面修复」授权） | 2026-10-15 | `task.processor.ts`（P0-1 ownedPatch 补 executorId 落库）、`task.service.ts`（回调行身份闸 + handleCallback 侧映射参数）、`execution-callback.controller.ts`（服务端推导凭据归属行）、`scheduler.service.ts`（活性探测按行身份）、`executor.service.ts`（resolveCredentialExecutorId + tokenCacheIdentityKey + issueToken 指纹化 + 三缓存分键）、`executor.controller.ts`（/token 转发指纹）、`sop-collab.controller.ts`（凭据反查兜底）、`apps/executor-node/src/middleware/auth.ts`、`apps/executor-python/auth.py`、`apps/executor-desktop/src/main/agent/collab-client.ts`（multipart address 字段）、两份 DTO 注释 + ADR-017 头部 + api-reference + 多个 spec、重生成 openapi.json + api-types.ts、重打两个 desktop bundle + 回填两份 sha256 清单 | 待提交 | **ADR-017 阶段 3 第二轮回查补口**（第一轮 ARCH-36-R 修了「身份键换了、消费方没换」，但仍留下 4 个静默/门禁级缺口）。**P0-1（功能空洞，最严重）**：迁移 0055 加了 task_executions.executorId 列与索引、failRunningExecutionsAfterRestart 也改成按它查询，但**没有任何代码把值写进该列**——executor.service.dispatch 只做内存赋值，真正落库的 task.processor.ownedPatch 漏了该列（该文件本轮零改动）。后果是**静默失效**：register/heartbeat 恒传 e.id（非 null）→ 查询恒走 executorId = $1 分支 → 全表该列 NULL → **恒命中 0 行** → 执行器重启恢复退化成「什么都不做」（遗留 RUNNING 只能等 stale sweep，failureReason 从 EXECUTOR_RESTART 降级为 STALE_RECOVERED）；注释承诺的 IsNull() 地址回落分支**在生产不可达**。**为什么测试全绿**：execRepo.find 被整体 mock（where 谓词被忽略），那条「钉住 find 参数」只断言 take/order。修法：ownedPatch 补条件投影 + 两处反证用例（落库侧断言 patch.executorId；查询侧补 where 形态断言）。**P1-2**：/executors/token 未接指纹——两端都不发、控制器不转发、issueToken 签名无该参数，于是 register({address}) 回落 findOne({address})，pull 同址多行时**任取一行 → rotateToken(别人的行)**（那台随即 401，执行卡 RUNNING）。修法：控制器 DTO 转发 + issueToken 指纹优先定位 + 回显哈希改按 executor.id 取 + issuedTokenCache 改按**定位身份**分键（否则第一台的明文令牌会幂等回给第二台）+ 两端上报；新增反证（实测：改回地址键 → B 拿到与 A **逐字节相同**的令牌）。**P1-3**：desktop Agent 走 sop-collab 面但**无法产出指纹**（盐按 <workDir>/.device-identity/<kind>.salt 分域，属内嵌 executor-node bundle，Agent worker 另一进程不共享）→ 只认指纹会让「pull 同址多行 + 桌面 Agent」整片 401/404。修法：指纹缺省时用**所持凭据反查行身份**（per-executor 令牌是行绑定的 bcrypt 比对，强度不低于指纹；且指纹是可伪造自报值）。另修**独立缺陷**：两个 multipart 上传（media / candidate-package）手工拼 body 时**都没带 address 字段**，而 admin 用 @Body() body.address 做鉴权 → 恒 400「address 必填」→ **媒体/候选包上传整片失败**。**P1-4**：collectRunningLiveness 用 new Map(rows.map(ex=>[ex.address,ex])) 建地址索引——同址多行**静默折叠为最后一行**，A 的健康长任务去读 B 的 runningExecutionIds，命中与否全凭巧合 → A 失去存活宽限被提前恢复成 FAILED（实测反证：地址索引下 transaction 被调用 1 次 = 误杀）；改按 executorId 定位，存量无行身份的行只在**地址唯一**时采纳（歧义即不跳过）。回调地址闸同理改接**凭据所属行**（控制器服务端推导，作为**独立参数**传入——绝不放 DTO 字段，否则等于把不可伪造的判据交给伪造方）；实测反证：去掉判定 → 同址跨行回调被放行。**P0-2/P1-1（红门禁，实测）**：desktop 内嵌 bundle 未按 ADR-005 重打（check-desktop-bundle-drift exit 1，stash 回 HEAD 复测 8071b1dc… 与本轮 7ac2ad3d… 对比证明是本轮引入）+ openapi.json/api-types.ts 未重生成 → 重打两个 bundle 并回填两份 digest/字节哈希、重跑 swagger:export + gen:api-types。**P2**：两份 DTO 注释仍写「Collected and observed only; it does NOT participate in row lookup」、ADR-017 头部仍写「阶段 3 待实施 / 不参与任何定位」、register 参数注释与 api-reference 同款——全部改述为指纹定位。**验证**：admin-api **277 套件 / 4696 例全绿**（含本轮新增 8 条反证）；tsc api/node/web/desktop 0 错；eslint 改动文件 0 错；migrations/index-drift/enum-drift/consumer-routes/docs-site-sync/response-schema/lint-gates/protocol-sync 全绿；executor-python 相关 6 套件 **199 passed**；desktop test:main 全绿；bundle 产物实测含新代码。**如实记录**：executor-deployment-entity-registration.spec.ts 在 HEAD 基线**同样失败**（stash 复测 6/6 红），属存量抖动非本轮引入；全量并发跑时 execution-callback.controller.spec.ts 曾并发争用失败，**单跑 36/36 绿**。 |
@@ -485,7 +485,7 @@
 
 - 2026-09-10 主会话：**NF-02 done（03e23d1）**——执行编排 UI 收口。侦察确认后端编排面全在（tasks.dependencies jsonb 映射/checkCircularDependency 环检测+链深 10 上限/triggerDependentTasks 上游全 SUCCESS 扇出+claim 去重/batch trigger 端点），缺的只是编辑入口——本轮补齐：①TaskFormPage「上游依赖」多选（纯逻辑层 task-dependencies.ts：buildDependenciesPayload 空集显式 null 对齐 N28 PATCH 语义/dependenciesFormValues 回填+名称快照；候选列表历史上曾使用 pageSize 500，现已改为后端上限 100 的分页聚合，并过滤自身）；②TaskDependencyGraph「触发整条链」按钮（图节点全集 batch/trigger，孤立任务保留入口）；③dashboard-ui04 时间炸弹测试顺手修复（trendFixture 固定日期 09-01~03 在 7 天滚动窗滚出后 sparkHasData 恒 false→sparkline 永不渲染→waitFor 超时，2026-09-10 实爆；改相对今天生成）。测试 527→538 只增 +11；tsc -b/build/lint 绿。缩水：fail-fast 失败分支策略未做（需后端新列+迁移+调度语义变更，如实声明不在本轮）。
 
-- 2026-09-09 主会话（Wave1 验收收口）：**ARCH-23 收口 + ARCH-24/DSK-02/DSK-03 销账 + EventSubscriptionModule DI 挂死根治（1bd4d1c + 00ef578 + 53d95b3）**。①**DI 根治**：OutboundEventDispatcher↔OutboxDispatcher 互为构造器 `@Optional @Inject(对方令牌)` + 模块 useFactory 别名 → **DI graph 解析期环**（解析 Outbound 需 OUTBOX 别名→需 Outbox 实体→需 OUTBOUND 别名→需 Outbound(在途)；`@Optional` 拦不住「解析中」的环，Nest 挂死而非报错；AUTH-01 加模块改变 DI 求值序后暴露，e2e/bootstrap 复现「compile() 永不 resolve、全 provider DONE」）——两派发器改「构造器注入 ModuleRef + 运行时首次用到 `moduleRef.get(TOKEN,{strict:false})` 懒取 + try/catch 回落 null（语义等价 @Optional）+ 结果缓存」，令牌仍由模块 useFactory 注册只是不再作为构造器依赖被解析；event-subscriptions 3 套件 39 例全绿。②**ARCH-23 全链收口**：admin-api `scripts/export-openapi.ts`（standalone app 不监听端口；无 DB 环境经 TypeOrmModule.forRoot 静态版旁路 AppModule 内 forRootAsync（manualInitialization+installExtensions:false+retryAttempts:0）；BullModule.queueClass 注入 OfflineQueue 子类（stub client 结构性满足 ioredis 探测，defineCommand 真注册防 lua 命令错误风暴 OOM）；0 paths fail-fast 防假绿灯；JSON.stringify(doc,null,2)+尾换行字节级幂等）+ `swagger:export` script + `test/openapi-export.e2e-spec.ts`（**实测裸 ts-node 进程 NestFactory.create DI 挂死、Jest 环稳定**，导出载体复用 e2e 基建跑完整 AppModule）；openapi.json（138 paths/191905 bytes）与 admin-web `src/types/generated/api-types.ts`（openapi-typescript 7.13.0，7052 行）+ README **生成物入库**——.gitignore 反转 openapi.json 忽略（drift 校验=git diff 生成物 vs 库内版本，忽略即永远看不到 drift）；admin-web +`gen:api-types`、根 +`openapi:export`/`gen:api-types` 双入口；ci.yml 新 **api-types-drift** job（PG+Redis service 容器对齐 admin-api-test；两段各自「重新生成→git diff --exit-code」拦契约面/生成面漂移，::error 指引重跑命令；schedule 轮旁路对齐 QA-08）；**同 commit 附带修复**：multer@2.3.0（四个 high）/hono@^4.13.5（三个 moderate）overrides + DB_READ_REPLICA_URL_SCHEMA 抽命名导出（spec 直接 import 同一对象防注册面/测试面漂移）。验证：admin-api 2185/2185（2137 只增）tsc 绿、admin-web 527/527 + tsc -b 绿、导出两次 md5 一致、官方 registry 复核 audit 仅余 minio 链 4 moderate 已知豁免。缩水：手写 interface 渐进替换不在本轮（按认领声明）。③**ARCH-24（7210e3b+e5db222）/DSK-02+03（c4a0fbc）实施由 003/004 员工子代理完成、主会话验收销账**——注记：c4a0fbc 的 commit message 声称 CI desktop-linux-bundle job 但实际未含 ci.yml 改动，本批 00ef578 一并补交（PR/dispatch 触发、AppImage+deb+latest-linux.yml artifact）。④mcp-server lockfile 同步（53d95b3，hono 4.13.1→4.13.7 override 生效+元数据对齐）。
+- 2026-09-09 主会话（Wave1 验收收口）：**ARCH-23 收口 + ARCH-24/DSK-02/DSK-03 销账 + EventSubscriptionModule DI 挂死根治（1bd4d1c + 00ef578 + 53d95b3）**。①**DI 根治**：OutboundEventDispatcher↔OutboxDispatcher 互为构造器 `@Optional @Inject(对方令牌)` + 模块 useFactory 别名 → **DI graph 解析期环**（解析 Outbound 需 OUTBOX 别名→需 Outbox 实体→需 OUTBOUND 别名→需 Outbound(在途)；`@Optional` 拦不住「解析中」的环，Nest 挂死而非报错；AUTH-01 加模块改变 DI 求值序后暴露，e2e/bootstrap 复现「compile() 永不 resolve、全 provider DONE」）——两派发器改「构造器注入 ModuleRef + 运行时首次用到 `moduleRef.get(TOKEN,{strict:false})` 懒取 + try/catch 回落 null（语义等价 @Optional）+ 结果缓存」，令牌仍由模块 useFactory 注册只是不再作为构造器依赖被解析；event-subscriptions 3 套件 39 例全绿。②**ARCH-23 全链收口**：admin-api `apps/admin-api/scripts/export-openapi.ts`（standalone app 不监听端口；无 DB 环境经 TypeOrmModule.forRoot 静态版旁路 AppModule 内 forRootAsync（manualInitialization+installExtensions:false+retryAttempts:0）；BullModule.queueClass 注入 OfflineQueue 子类（stub client 结构性满足 ioredis 探测，defineCommand 真注册防 lua 命令错误风暴 OOM）；0 paths fail-fast 防假绿灯；JSON.stringify(doc,null,2)+尾换行字节级幂等）+ `swagger:export` script + `test/openapi-export.e2e-spec.ts`（**实测裸 ts-node 进程 NestFactory.create DI 挂死、Jest 环稳定**，导出载体复用 e2e 基建跑完整 AppModule）；openapi.json（138 paths/191905 bytes）与 admin-web `src/types/generated/api-types.ts`（openapi-typescript 7.13.0，7052 行）+ README **生成物入库**——.gitignore 反转 openapi.json 忽略（drift 校验=git diff 生成物 vs 库内版本，忽略即永远看不到 drift）；admin-web +`gen:api-types`、根 +`openapi:export`/`gen:api-types` 双入口；ci.yml 新 **api-types-drift** job（PG+Redis service 容器对齐 admin-api-test；两段各自「重新生成→git diff --exit-code」拦契约面/生成面漂移，::error 指引重跑命令；schedule 轮旁路对齐 QA-08）；**同 commit 附带修复**：multer@2.3.0（四个 high）/hono@^4.13.5（三个 moderate）overrides + DB_READ_REPLICA_URL_SCHEMA 抽命名导出（spec 直接 import 同一对象防注册面/测试面漂移）。验证：admin-api 2185/2185（2137 只增）tsc 绿、admin-web 527/527 + tsc -b 绿、导出两次 md5 一致、官方 registry 复核 audit 仅余 minio 链 4 moderate 已知豁免。缩水：手写 interface 渐进替换不在本轮（按认领声明）。③**ARCH-24（7210e3b+e5db222）/DSK-02+03（c4a0fbc）实施由 003/004 员工子代理完成、主会话验收销账**——注记：c4a0fbc 的 commit message 声称 CI desktop-linux-bundle job 但实际未含 ci.yml 改动，本批 00ef578 一并补交（PR/dispatch 触发、AppImage+deb+latest-linux.yml artifact）。④mcp-server lockfile 同步（53d95b3，hono 4.13.1→4.13.7 override 生效+元数据对齐）。
 
 - 2026-09-09 子代理 W2-A/W2-B：**FEAT-20 + NF-01 双 done（f640832 feat(feat-20) + b92c39c feat(nf-01)）**。①**FEAT-20 部署 triggerType/operator 落库（DEP-01 遗留收口）**：迁移 1790000000004（app_deployments 加 triggerType varchar(32)/operator varchar(100) 两可空列，幂等；ARCH-29 分配表先登记后落盘）；写面=deploy→manual+JWT 用户名（审批分支同落）、upgrade（单台/upgrade-all/webhook 滚动升级）→upgrade、rollbackApplication（快照/legacy 双路径）与 DEP-03 自动回滚→rollback、approveDeployment→approval+审批人（提交人痕迹保留在 approvalMeta，行上为「真正让它发生的人」）；读面=GET /app-deployments 列表/详情掩码面原样透出 + /releases 聚合行 triggerType 列值优先（存量行回退 classifyReleaseTrigger 信号推导）、operator 部署行列优先（回退 createdBy），operatorSource 双值随命中面标注；测试 +18（迁移 spec 5 + trigger-operator service spec 9 + 既有 controller/rollout 断言升级）；前端已兼容 null 存量行。②**NF-01 任务级 API 触发 token**：迁移 1790000000005（api_keys 加 scopes varchar(128) 可空词表列，幂等）；**scope 契约决策=不扩三级枚举，以词表列承载扩展域 `task:trigger`**（向后兼容存量行、AuthUser 类型面零变化）；guard 分流在 AUTH-03 既有 ApiKeyAuth 校验链叠加窄域豁免（仅 POST+isTaskTriggerPath+词表命中才解除 403；批量触发/其他写/管理面/JWT-only 全部照旧拒绝），403/401 语义与既有链一致（scope 提示文案/防枚举统一文案）；CreateApiKeyDto 增可选 scopes 入参（@Contains task:trigger 白名单校验+空格词表归一），ApiKeyView 透出 scopes；POST /tasks/:id/trigger 响应契约与 JWT 面完全一致（同一 taskService.trigger），API-Key 主体审计 task.trigger_api（username=api-key:<keyPrefix>，detail 含 apiKeyId/taskId/scope），JWT 面 task.trigger 零变化；测试 +18（guard 分流 6+词表解析 2+迁移 4+controller 分流审计 4）。**基线：admin-api 2063→2136 只增 +73，127 suites 全绿，tsc --noEmit 绿，check-migrations 绿（下一号 1790000000007）**。缩水声明：①webhook 触发的滚动升级复用 upgrade 链故行上 triggerType=upgrade（未单列 webhook 值，属 upgrade 语义子集）；②task:trigger 不放行批量触发端点（最小权限裁定，非缩水）；③FEAT-20 期间并行会话 stash 隔离曾致工作区改动被移出，tracked 部分自 stash 683cecde 找回、untracked 3 文件按原断言重建，最终足迹与描述一致且全量回归绿。
 - 2026-09-09 子代理 W2-C：**UI-15 + UI-16 双 done（3eec70c refactor(ui-15) + 6019529 feat(ui-16)）**。①**UI-15 mutation/toast 一致性治理**：全站盘点（grep useRequest manual run/useMutation/message./notification. 共 175 处调用点）后按「写操作失败必有可见反馈、文案走 getErrMsg、成功形态沿页面惯例不强行统一」治理——QA-03 两处前科收口（UserManagementPage handleCreateSubmit/handleResetPwdSubmit 的 validateFields rejection 补 .catch：isFormValidationError 静默走 Form 红字、其余 getErrMsg toast；ApiKeysSettings revokeMut/createMut 补 onError）+ 静默失败点 19 处补齐（SecuritySettings TOTP setup/enable/disable+会话吊销单条/批量 5 处；EventSubscriptionsSettings replay/create/update/toggle/remove 5 处；settings/index Token 生成/EditModal 保存/回滚/配置删除/AI 保存 6 处，其中 Modal.confirm onOk 与 onClick 直调 mutateAsync 的 rejection 链一律补 try/catch 终点防 unhandled rejection；NotificationSettingsPage 模板保存/渠道保存/渠道测试/全局测试发送/静默创建/静默删除 6 处 useRequest manual onError + handleEnableChange try/catch，测试请求失败同步落 testResult Alert 形态与业务失败同一容器）。测试 +12（514→526）：每个触碰面 ≥1 例 mock api reject → toast 文案断言（含 response.data.message 透出与兜底文案两路）。②**UI-16 toast-only 页 StateError 补齐**：清单=audit 页 + RegistryPage PyPI/npm 双 Tab（settings 各 Tab 数据面均为 react-query/useRequest 有 error 或业务态容器，不在 toast-only 缩水注记范围）；audit useQuery 补 error/refetch 接 StateError（重试=refetch，失败与「暂无审计记录」空态语义分离）；api/registry.ts 两 list 方法移除 try/catch 吞错返回 []（错误透出，对齐 taskTemplatesApi.list 先例）；RegistryPage 双 Tab 各接 StateError（重试=refresh）+ 空态/表格补 !error 门控。测试 526→527（registry 原「吞错空态」断言升级为 StateError 渲染+复制+重试恢复 ×2；audit 既有 11 例零改动全绿）。基线：admin-web **527/527**（514 只增 +13）+ tsc -b 绿 + eslint 0 errors（21 warnings 既有）+ build ✓；admin-api 零改动、零新 npm 依赖。协作注记：并行会话 SEC-10（2a44927）曾 stash 隔离在途 WIP 并注记「UI-16 在途」，已核对两 commit 足迹（UI-15 仅 admin-web pages/__tests__、UI-16 仅 audit/registry 足迹）与 SEC-10（admin-api audit/scripts）零重叠；工作区曾出现外部还原（UI-16 源码改动一度被还原，重新应用后入 6019529，断言与源码一致性已全量回归）。
@@ -1706,7 +1706,7 @@ const syncTotpEnabled = (enabled: boolean) => {
 
 **这是判据该有的样子**：能挡什么、挡不住什么，都写在与实现同层的注释里。
 
-（另：工作区里还有两个临时探针 `apps/admin-web/__probe_r138.mjs` / `src/__scratch_orphan_r138.ts`，交付前必须删 —— 我会在验收时查。）
+（另：工作区里还有两个临时探针（apps/admin-web 下的 `__probe_r138.mjs` / `__scratch_orphan_r138.ts`），交付前必须删 —— 我会在验收时查。两者**从未入库**，故这里只写文件名不留可点路径。）
 - 2026-10-20 **R145 · 审阅 R138-A1 的「外科手术式回滚」（这是本轮最有价值的一处）**。
 
 我上一轮说「最后那个 CAS 条件是关键」，读 diff 确认它做了，而且**把失败场景写成了可复现的叙事**：
@@ -1738,7 +1738,7 @@ const syncTotpEnabled = (enabled: boolean) => {
 实际效果是：**类型系统从此不再回答「这个字段是否存在」这个问题** —— 于是没人去问「那它到底由谁写入」。
 
 ## 当前状态（交付前要盯的两件事）
-1. 工作区里有 `apps/admin-web/src/__tests__/zz-debug-r138.test.ts` —— 调试文件，**必须在提交前删掉**
+1. 工作区里有 src/__tests__/zz-debug-r138.test.ts（临时调试文件，**必须在提交前删掉**；从未入库，故不留可点路径）
    （它会被 `npx vitest run` 收集，等于把调试断言留在回归网里）；
 2. `SecuritySettings.tsx` / `queries.ts` / `store/auth.ts` / `UserManagementPage.tsx` 四处已改，三个新用例文件已落盘，agent 仍在跑全量基线。
 
@@ -2853,3 +2853,390 @@ agent 报「9 个 `--json` 命令的 stdout 可整体 `JSON.parse`，失败时 s
 
 `docs/OPEN-DECISIONS.md` 的 **D3** 从「要不要统一（可能截断）」改成「**未能复现截断，不建议基于这个理由改动**」，并写明剩下的未测形态。
 **一条待决策项因为一次实证而缩小了范围，这是这轮的实际产出。**
+
+---
+
+## 2026-10-27 · 审计轮 #6（5 个只读 subagent 并行调研 → 主控判定与落地）
+
+> 与前面几轮形式不同：先派 **5 个只读 subagent** 分区调研（admin-web / admin-api /
+> 执行器+协议 / packages+CLI / 文档+CI），全部要求「CodeGraph 优先、证据到行、只读」；
+> 再由主控汇总、判定、落地、并以「改前红 → 改后绿」的自证复核。目的：把「一个人顺着读」
+> 换成「五个方向同时逼近 + 只信可复现证据」。
+
+### 一、调研结论（P0 空缺）
+
+- **admin-api**：事务/并发面硬化到位（条件 UPDATE 基线 0、cron leader 门禁 22/22、索引漂移 0），
+  无 P0；真实问题集中在**同步阻塞 IO** 与两处错误语义、一处整行回写。
+- **admin-web**：tsc/eslint/vitest/i18n 三守卫全绿；6 条 P2（重复请求、假排序、无 h1、
+  Vite 默认 favicon、手写读模型漂移、词条同行合并）。
+- **执行器/协议**：生成物与 SSOT 逐字节同步、schema 闸真接线、树杀两端一致；1 条 P1
+  （python `/config/reload` 心跳上界缺失）+ 3 条 P2。
+- **packages/CLI**：`packages/browser-debug` 是未入库的半成品（不能编译、bin 指向不存在的
+  文件、CLI 会话模型断裂、两个 puppeteer API 已被移除、0 测试、license 与仓库冲突）；
+  `docs/OPEN-DECISIONS` 的 A2/A3/B1/B3 四段与代码不符。
+- **文档/CI**：手册 6 处调用不存在的 npm script；本地 `test:unit` **不含任何守卫脚本**，
+  结构性复现不了 CI；PLAN-CLAIMS 15 处证据指针指向已移动/不存在的文件而无人发现。
+
+### 二、落地（每条都做过反证：改前红 → 改后绿）
+
+| # | 改动 | 反证 |
+|---|---|---|
+| 1 | python `/config/reload` 补心跳**上界 60**（预检 + 应用两处）；`adminApiUrl` 空值/纯空白不再覆盖拓扑（列进 `ignored_fields`） | 去掉上界 ⇒ 2 例红；还原 ⇒ 34 例全绿 |
+| 2 | `sop-media.service.save()` 从 `writeFileSync` 改 `fs.promises` + tmp/rename 原子发布（100 MiB 上限 + memoryStorage，一次同步写会让同副本所有 HTTP 停摆） | 改回同步 ⇒ 2 例红（异步调用断言 + ENOSPC 不留半截文件/不写 DB） |
+| 3 | `assertCanAssignProject` 从二态 `resolveRole` 改三态：DB 抖动 ⇒ **503** 而不是 403「你没有权限」 | 改回二态 ⇒ 1 例红 |
+| 4 | `markVersionSnapshotStatus` 从「findOne → 整行 save」改**列级条件 UPDATE**（`status: Not(target)`，天然幂等） | 改回 ⇒ 5 例红 |
+| 5 | 删 `packages/browser-debug`（未跟踪；红掉 `check:publishable-wiring`），取证后归档到 `/tmp/acf-archive/` | 该守卫 rc 1 → 0 |
+| 6 | `test:mcp-tool-surface` 增判据 ⑥（required 参数必须有描述）+ 规则纯函数化 + `--selftest` 6 例 | 现行 56 工具 / 52 个 required 参数 0 违规（防退化，不是补债）；selftest 全绿 |
+| 7 | `check-docs` 新增判据 ④「正文裸路径指针」+ 7 例自检；**顺带修 15 处**真指针（例如把指向仓库根 `scripts/` 的打包脚本路径改成它真实所在的 `apps/executor-desktop/scripts/bundle-executor.sh`） | 判据 ④ 首跑 18 项红（其中两类是花括号简写/省略号约定，已豁免 + 文档内相对路径按文档目录解析）→ 修后 0 |
+| 8 | admin-web 六项 P2：执行器清单走 Query 缓存（同页多调用方合并成 1 次请求）、删假排序 sorter、页标题 h1、自有 favicon + title、读模型去死字段（连带 3 处死兜底）、en 词条换行 | `tsc -b` 0；vitest 249 文件 **2097** 例全绿；lint 0 error 0 warning |
+| 9 | 文档真相对齐：OPEN-DECISIONS A2（版本 0.3.2）/A3（收窄为 3 条 + `executor online` 缺口）/B1（回调两侧都有有界重试）/B3（python 有熔断，差异在「node 单实例跨端点共享」）、新增 B4/B5/D6；ROADMAP P0 拆成 done+阻塞两条；ci.yml 覆盖地板注释改 87/76/81/88；AGENT_HANDOFF 头按 git 事实校正；operations/development 的 runbook 命令；atlas cli.md 的 `-y/--yes` | `check:docs` / `check:cli-doc` / `check:atlas-counts` 全绿 |
+| 10 | 根 package.json 新增 `test:guards` / `test:guards:repo` / `test:guards:selftests`（成员与 CI 的 `selftests` job 逐一对应，新增守卫时两边都要加） | 两组各自 rc=0 |
+
+### 三、验证矩阵（本轮真实跑过）
+
+- admin-api：**351 套件 / 6180 例**全绿；`tsc --noEmit` 0；改动文件的 eslint 0。
+- admin-web：`tsc -b` 0；**249 文件 / 2097 例**全绿（`--maxWorkers=3`）；lint 0 error 0 warning；`lint:i18n` + 缺键守卫绿。
+- executor-python：全量 pytest **EXIT=0**，覆盖率 94.52%（门槛 85%）。
+- 守卫：`test:guards:repo` rc=0；`test:guards:selftests` EXIT=0；`check:docs` 自检 **21** 例全绿。
+- `check:publishable-wiring` / `check:no-hoisting` / `test:mcp-tool-surface` 绿。
+
+### 四、判定「不做」并给理由（避免下轮重复讨论）
+
+- **产物下载复用库里记录的 sha256**（省一次整文件重算）：**不改**。`X-SHA256` 头的语义是
+  「客户端收到的字节的摘要」；改成读库里的值后，这个头就不再证明任何关于**实际字节**的事
+  （磁盘损坏/被替换都验不出来）。省一次读换掉完整性校验不划算；将来若要优化，方向是
+  「落 mtime+size，未变则复用并显式标注 `sha256Source: recorded`」，而不是静默复用。
+- **保留期 cron 的同步 `readdirSync/statSync` 遍历**（`artifacts-retention` /
+  `agent-media-retention`）：确认是 P2 级事件循环阻塞，但改动要动两个服务的遍历逻辑与既有
+  用例，收益（低频 cron 的百毫秒级）低于回归风险 ⇒ 记为遗留。
+- **把「按名称排序」接到服务端**：`cursor + sortBy` 后端直接 400（`assertCursorCompatibleWithQuery`），
+  属产品层二选一 ⇒ 删掉假 sorter 并登记 **D6**，本轮不动分页契约。
+
+### 五、遗留（下轮可直接认领）
+
+1. `acf executor online` 逆操作缺失（见 OPEN-DECISIONS A3）。
+2. 保留期 cron 的同步 fs 遍历。
+3. protocol 的 `adminApiUrls` 与 python 心跳三键（B4/B5）。
+4. 任务列表排序与游标分页互斥（D6）。
+5. 本轮改动**未提交**（工作区 ~20 个文件），等人工确认后一次 commit。
+
+---
+
+## 2026-10-27 · 审计轮 #7（5 个只读 subagent 并行 → 主控落地与自证）
+
+> 分区与轮 #6 **刻意不重叠**：executor-desktop / 测试体系有效性 / 运维可部署性 /
+> 首次成功漏斗 / 安全纵深。完整报告（含五份调研的证据链、五轴结论、判定不做与
+> 遗留清单）见 [审计轮 #7 报告](archive/reports/audit-round-7-2026-10-27.md)。
+> 轮 #6 的在途改动未被当作缺陷、未回滚、未提交；两轮足迹**零重叠**。
+
+### 一、五轴结论
+
+五轴**均无 P0**。共同形态是同一类：**"看起来有防线/看起来成功了"** —— 闸门存在但
+分母塌了、测试存在但没被收集、部署脚本报成功但代码没换、代理少一条 location 就
+返回 200 + HTML。
+
+| 轴 | 最高级别 | 代表问题 |
+|---|---|---|
+| executor-desktop | P1 | worker 管道 EPIPE 无监听 → uncaughtException → crash-guard 退出整个桌面端 |
+| 测试体系有效性 | 2×P1 | python 覆盖率分母含 tests/（85% 地板 ≈ 源码 59%）；332 行用例从未被任何 jest 配置收集 |
+| 运维/部署 | 4×P1 | source 模式 nginx 缺 /uploads（APP-002 必复现）、rsync --delete 删上传包、首部署自举必崩、docker 缺 --build 假部署 |
+| 首次成功漏斗 | 2×P1 | compose 默认组合撞 CORS 生产守卫（照 README 走必死）；deploy.sh 生成 .env 后跳过校验 |
+| 安全纵深 | P1 | 回调限流桶键取自客户端可伪造 header，而该路径是唯一的 55MB 预认证 body 解析 |
+
+### 二、本轮落地（每条都有"改前红 → 改后绿"）
+
+| # | 改动 | 证据 |
+|---|---|---|
+| 1 | 新增 `apps/executor-python/.coveragerc`（`[run] omit = tests/*`）+ pytest.ini 说明 + 地板 85→86 | TOTAL 15853→**5273** stmts；94.52%→**87.31%**；585 例绿（pytest-cov 无 `--omit` 开关，实测 `unrecognized arguments`） |
+| 2 | `apps/admin-api/package.json` jest `roots` 纳入 `test/`（收编孤儿 spec）+ 新增 `test/factories/deterministic.ts`、把 user/task 工厂改造成**确定性工厂**（去掉纯 ESM 的 faker） | `--listTests` 351→**353**；收编第一层就炸出第二层：faker 10 是纯 ESM，在 `--experimental-vm-modules` 入口下 import 即 `ReferenceError: exports is not defined` ⇒ 这两个 spec 是**三重假绿**（断言写了 / 没进收集面 / 进了也会炸）。改造后 `npm test -- test/factories` **29/29**、裸 `npx jest` 亦 29/29；顺带修掉 factory 密码不含数字（12% 偶发）的真缺陷 |
+| 3 | `deploy.sh` source 站点模板补 `location ^~ /uploads/`；删掉指向不存在路径的 `location /metrics`；横幅改 `/api/metrics` | 扩闸后 spec **7/7** 绿；把 location 抽掉 → **红**；`deploy.selftest.sh` 50/50 |
+| 4 | `deploy.sh` `rsync --delete` 排除 `uploads`/`logs` | `bash -n` OK；理由写在代码里（运行时目录 ≠ 源码） |
+| 5 | CORS 首跑陷阱：README Option 1 + quickstart 路径 B 各一行；compose 显式列 `ALLOW_LOOPBACK_CORS` | `docker compose config` 实测：缺省 `""`、设为 true → `"true"`（默认仍 fail-fast，语义不变） |
+| 6 | `agent-worker-process.ts` 加 `stdin.on('error')` + 新 selftest `testStdinErrorIsContained`（临时接管 uncaughtException 把"是否升级"变成断言） | 全绿；注释掉监听 → selftest **红**（captured=Error） |
+| 7 | 两条守卫加扫描规模下界（`MIN_FILES=900` / `MIN_TARGETS=30`） | 现状 965/40 绿；把下界改 100000 → exit 1「分母塌了，不是代码变干净了」 |
+| 8 | 两条死文档（`logs nginx` 无此服务、教程 01 的「设置 → 个人信息」已移除） | `check:docs` 全绿 |
+
+### 三、判定与更正
+
+- **不做／推迟**（理由与前置条件见报告 §3.1）：回调限流双层 + pre-auth
+  Content-Length 闸（需先定 per-IP 硬顶口径，登记为 **D7**）、`?token=` 查询参数
+  （删除属 breaking）、deploy.sh 的三条"报告绿但不可用"（假部署 / ready 被 `|| true`
+  吞 / config_phase 跳过校验）、桌面更新链诚实化与 tick 看门狗、test:guards 补 19 个
+  CI 脚本。
+- **更正轮 #6 的一处结论**：`acf executor online` **不是**真实缺口——心跳/注册会无条件
+  把该行置回 ONLINE 并清 `offlineReason`（`executor.service.ts:2694-2701`），
+  `set-offline` 自愈（≤30s）。已登记 **D7-2**，A3 的定性作废。
+
+### 三·五、一条值得记住的形态
+
+"测试没跑"有三种深度，本轮一次撞齐：**断言写了 → 文件不在收集面 → 即使收集也
+import 期就炸**。任何一层单独看都像绿的（`grep` 有断言、`npm test` 退出码 0、
+文件存在），只有把三层同时打开才看见它从未保护过任何东西。判据：**"这条用例上次
+变红是什么时候？"** 答不上来，它就是装饰。
+
+### 四、验证矩阵（真实跑过）
+
+`python3 -m pytest -q`（585 例 / 87.31%）· `jest --listTests`（353）·
+`jest test/factories`（29/29）· `jest uploads-proxy-consistency`（7/7）·
+`bash scripts/deploy.selftest.sh`（50/50）· `bash -n deploy.sh` ·
+`docker compose config` · `node dist-selftest/agent-worker-process.selftest.js` ·
+`npm run test:guards:repo`（exit 0）· `npm run check:docs` ·
+`tsc -p tsconfig.spec.json --noEmit`（0 错）。
+**没跑**：任何 `docker compose up`、Playwright/_electron e2e、`test:unit` 全量、
+Windows/macOS 侧 —— 部署链四条 P1 的崩溃形态是读码 + 官方语义推断（有既有 spec 旁证），
+不是实机复现。
+
+### 五、遗留（下轮可直接认领，按 收益/风险 排序）
+
+1. 回调限流双层 + pre-auth Content-Length 闸（D7 拍板后即可实施）。
+2. deploy.sh 三连：缺 `--build` 假部署告警、ready 失败默认 die + `--allow-degraded`、
+   config_phase 补键并**无条件**校验。
+3. 桌面更新链诚实化（`canInstall()` 取代 `isUpdaterActive()`；非 AppImage 安装如实报
+   `UPDATER_UNSUPPORTED_INSTALL`）+ tick 看门狗 + defer 上限。
+4. test:guards 补 19 个 CI 脚本；vitest `dangerouslyIgnoreUnhandledErrors` 收窄；
+   `--retryTimes/--reruns` 静默吸收 flaky 的可见化。
+5. 两处弱断言：`jwt-auth.guard.apikey.spec.ts` 裸 `catch {}`、`agent-trigger.service.spec.ts:292`
+   的 `expect(true).toBe(true)`。
+6. 桌面 P2/P3：`spawnSync('uv --version')` 5s 冻主线程、健康面板每次刷新写临时文件、
+   被跟踪的过期产物 `src/preload/index.js`。
+7. 漏斗 P2：demo.sh 的 node 版本门 / curl 预检、seed 脚本头注 `ACF_API_URL` 不存在、
+   demo 收尾无条件宣称 seed 成功、docs-site 教程 4 vs 5 篇无守卫。
+8. 运维 P2：operations.md 灾备命令（容器内 ts-node 不存在）、`pg-restore.sh` 未挂载、
+   uploads 卷描述与 compose 相反。
+9. 本轮改动**未提交**（13 个修改 + 2 个新增），与轮 #6 的在途改动共存、足迹不重叠，
+   可分开评审/提交（建议顺序见报告 §6）。
+
+---
+
+## 2026-10-27 · 实施轮 #8（1 主控 + 2 实施 subagent，把轮 #7 的 P1 落成代码）
+
+> 完整交付见 [实施轮 #8 报告](archive/reports/implementation-round-8-2026-10-27.md)。
+> 形式变化：上一轮是 5 个**只读调研** subagent，本轮是 2 个**实施** subagent
+> （桌面端一组 / 脚本与演示一组），文件面硬切分；部署链与安全面由主控做。
+
+### 一、落地（8 组，全部带反证）
+
+| # | 项 | 关键改动 | 自证 |
+|---|---|---|---|
+| 1 | 部署链 OPS-03 | 生成 .env 补 `INITIAL_ADMIN_PASSWORD`（只打印一次）、非生产写 `ALLOW_LOOPBACK_CORS`、生产缺域名 fail-fast；**不再整体跳过**生产校验；校验改读 `CORS_ALLOWED_ORIGINS \|\| CORS_ORIGINS` 并与守卫同口径判回环 | `deploy.selftest` 新增「缺口令被拒」「回环放行」两例，58/58 |
+| 2 | 部署链 OPS-04 | 缺 `--build` 时比较清单 `gitCommit` vs HEAD：dry-run 告警 / 生产 die（`--allow-stale-image` 逃生）/ dev-staging 告警；清单记 `imageState` | 白盒 12a~12c（tmp git 仓库制造 commit 漂移） |
+| 3 | 部署链 OPS-05 | `/health/ready` 失败**默认判失败**（旧为吞掉）+ `--allow-degraded` + 清单记 `readiness` | 白盒 12d/12e（覆写 `wait_http` 造恒 503） |
+| 4 | 部署链 OPS-09 | 删掉指向不存在路径的 `location /metrics`，横幅改 `/api/metrics` | 部署守卫 spec 断言反向（`not.toMatch`） |
+| 5 | 安全 F1 | 新增 `ip-ceiling.middleware.ts`（滑动窗口 + 可注入时钟），注册在 **55MB parser 之前**；`CALLBACK_IP_CEILING_PER_MINUTE` 默认 12000 进 `configuration.ts` + `.env.example` | 10 例单测，含「换 `x-executor-address` 换不到新桶」「429+Retry-After」「告警按 IP 节流」「接线顺序早于 parser」 |
+| 6 | 桌面更新链 | `downloadedUpdateVersion` + `canInstall()` 取代 `isUpdaterActive()`（后者只判 isPackaged，AppImage 恒 true）；install 期 error 不再被吞；deb/rpm 如实回 `UPDATER_UNSUPPORTED_INSTALL` + 双语键 | 4 条反证（改回旧判据/旧 surface/删看门狗/defer 不封顶）逐条转红 |
+| 7 | 桌面 tick/defer | `TICK_WATCHDOG_MS`（复用闸门单指派上限 +15min）超时落定 + kill（下轮自愈）；`MAX_AGENT_HOST_DEFERS=20` 到顶强制重建 | 假 worker「收到 tick 不回 tick-result」用例 + defer 封顶用例 |
+| 8 | 漏斗脚本 + 站点判据 | demo.sh node≥18/curl 预检；seed 别名（`ACF_API_URL`/`ACF_USER`）+ `ACF_SEED_SUMMARY` 结构化计数 + 非零退出；三个 demo-desktop 预检本地 tsc；sync-check 新增「教程索引条目」并**并入 runAllChecks（7→8 面）** | demo.selftest 全绿（+6 组）、seed selftest 26 条、sync-check 8 面无 drift；6 类反向注入逐条转红 |
+
+### 二、判定（新）
+
+- **不做 pre-auth Content-Length 闸**（轮 #7 的 F2 建议）：body-parser 已按声明长度拒；
+  执行器回调走 axios / `json=` 均带 Content-Length，能挡的只剩扫描器；真正的放大器
+  是并发数 ⇒ 用 per-IP 硬顶（本轮第 5 项）对症。已记入 OPEN-DECISIONS D7 选项 ③ 并否决。
+
+### 三、验证矩阵（真实跑过）
+
+`deploy.selftest` **58/58** · 生产形态 end-to-end dry-run 走完 ⑧ · admin-api
+`npm test -- src/common` **57 套件/658 例** · 新中间件 10/10 · configuration 57/57 ·
+admin-api `tsc` 0 · 桌面双 tsc + 4 个 selftest（主控独立复跑）· sync-check 8 面 + 自检 ·
+`demo.selftest` + `demo-seed.selftest`（26 条）· `test:guards:repo` exit 0 · `test:env-drift` OK。
+**没跑**：docker compose up、真 AppImage/deb 更新链、demo-desktop 真机（Xvfb）、
+`test:unit` 全量、Playwright e2e。
+
+### 四、遗留（下一轮候选）
+
+1. `test:guards` ↔ CI 的 19 个脚本差集（最大的「本地绿 CI 红」来源）。
+2. 两处弱断言（裸 `catch {}` / `expect(true).toBe(true)`）+ vitest
+   `dangerouslyIgnoreUnhandledErrors` 收窄。
+3. 桌面：`spawnSync('uv --version')` 5s 冻主线程、健康面板每刷新写临时文件、被跟踪的
+   过期 `src/preload/index.js`。
+4. 运维：operations.md 灾备命令（容器内无 ts-node）、`pg-restore.sh` 未挂载、
+   uploads 卷描述与 compose 相反、docker 模式多起一套 PG/Redis。
+5. 站点补 05 教程镜像页（补完删 `TUTORIAL_MIRROR_EXEMPT`）；per-IP 硬顶取值需一次压测确认。
+6. 本轮改动**未提交**，与轮 #6 / #7 共存、足迹不重叠（建议提交切分见报告 §5）。
+
+---
+
+## 2026-10-27 · 实施轮 #9（本地闸门对齐 CI + 测试体系最后三处假绿）
+
+> 完整交付见 [实施轮 #9 报告](archive/reports/implementation-round-9-2026-10-27.md)。
+> 编排事故如实记录：**2 个实施 subagent 都在收尾前崩溃（无收尾消息）**，改动已落盘；
+> 主控逐项复核、补完缺失的自检与接线、并独立跑了全量验证——多代理预案有效，
+> 但没有半成品混进树里是**靠复核**，不是靠 subagent 的收尾。
+
+### 一、本轮最有价值的一条：判据存在 ≠ 判据在跑
+
+`check-shell-multibyte-var.mjs` 长期只在 CI 跑。接进 `test:guards` 后**立刻抓到
+7 处真违规，全是轮 #8 我自己写进 `deploy.sh` 的**（`$var，` / `$var（` 形态：
+macOS runner 的 bash 3.2 + 非 UTF-8 locale 下会把多字节首字节并进变量名，
+`set -u` 直接 `unbound variable` 中止 step）——本地全绿、CI 必红。
+
+- 新增 7 个 npm 别名并并入 `test:guards:repo`（另 `check-migrations.selftest` 进
+  `test:guards:selftests`）；`//guards-ci-parity` 里**逐条写明仍不纳入的 CI 脚本及理由**；
+  `//test:guards` 里"逐一对应"的过头表述改成事实口径。
+- 违规用该守卫自己的 `--fix` 修掉，复跑 40 文件 0 命中。
+
+### 二、部署链（OPS-06 / OPS-07 + runbook）
+
+- docker 模式**不再**启动 `infra/` 那套 PG/Redis（就绪交给 compose `service_healthy`）：
+  此前两套并存，宿主 `psql/pg_dump` 看到的是**空库**，灾备演练证明错对象。
+- `pg-backup` 服务补挂 `pg-restore.sh`：否则 runbook 里那条 `compose run … pg-restore.sh`
+  在容器内 `No such file`。
+- `operations.md`：恢复改用 `migration:run:prod`（镜像无 ts-node）+ `psql` 查 `migrations`；
+  uploads 备份说明改成"已挂命名卷 `admin_uploads`，但从不自动备份"并给 tar 命令。
+- `deploy.selftest` **58 → 61 例**（新增 infra 两态 + pg-restore 挂载）。
+
+### 三、测试体系最后三处假绿
+
+| 位置 | 新形态 | 验证 |
+|---|---|---|
+| `jwt-auth.guard.apikey.spec.ts` 的裸 `catch {}` | 补 `getResponse` + 恒失败 jwt 桩策略，把 passport 跑到 `handleRequest`，断言 `UnauthorizedException` 与 401 语义 | 5/5 |
+| `agent-trigger.service.spec.ts` 的 `expect(true).toBe(true)` | 正反两态：leader 清过期桶 / 非 leader 不动 | 17/17 |
+| admin-web `dangerouslyIgnoreUnhandledErrors`（全域豁免） | 保留开关（关掉会回到随机红）但补**分类上报**：已知 teardown 静默、其余打 `[ACF][unhandledRejection]`；分类器纯函数 + 4 例边界；文件头写明彻底关闭的前置条件 | 4/4 + `tsc -b` 0 |
+
+### 四、桌面 P2/P3（子代理改，主控补自检/接线）
+
+`diag-probes.ts`（uv 探测异步化 + 60s TTL + 并发合流 / workDir 可写性**不落盘**）、
+`.gitignore` 挡 `src/preload/*.js`；主控补 `diag-probes.selftest.ts`（3 组含反证向断言）
+并接进 `tsconfig.selftest` include 与 `test:main`——`check-desktop-selftests-wired` 报 59/59。
+
+### 五、验证矩阵（真实跑过）
+
+`test:guards:repo` **EXIT=0** · `deploy.selftest` **61/61** · `compose --profile backup config` OK ·
+admin-api 5/5 与 17/17 · admin-web **全量 vitest EXIT=0**（249 文件）+ `tsc -b` 0 ·
+desktop **`test:main` EXIT=0**（59 selftest 全链）+ 双 tsc 0 · `check:guards-wired` /
+`check:docs` / `sync-check`（8 面）全绿。
+**没跑**：docker compose up、真 AppImage/deb 更新链、demo-desktop 真机、Playwright e2e。
+
+### 六、遗留
+
+1. `git rm --cached apps/executor-desktop/src/preload/index.js(.map)`（提交时一并做）。
+2. 彻底移除 `dangerouslyIgnoreUnhandledErrors`（前置：teardown 竞态不再产生 unhandled rejection）。
+3. `test:guards` 仍不含 `e2e-full.sh`（需真栈；要本地可跑得有一键 `compose up→seed→跑→down`）。
+4. 站点补 05 教程镜像页；`deploy.sh` 三个新开关需真机演练；per-IP 硬顶待压测。
+
+### 七、工作区状态
+
+**四轮叠加未提交**（#6 ~40 文件 / #7 16 / #8 16 / #9 ~20），足迹互不重叠，
+建议按轮次分四次 commit（消息里带对应报告链接）。
+
+---
+
+## 2026-10-27 · 实施轮 #10（镜像补齐 + 过期产物下线 + 三套全量回归）
+
+> 完整交付：[实施轮 #10 报告](archive/reports/implementation-round-10-2026-10-27.md)。
+> 形式：主控 + 2 个**只读**调研 subagent（SDK 层 / Agent·SOP 运行时纵深）并行，
+> 主控同时清「可立即偿还的技术债」并跑全量回归 —— 调研慢、清账快，互不阻塞。
+
+### 一、落地
+
+| 项 | 改动 | 为什么 |
+|---|---|---|
+| 站点补 05 镜像 | 新增 `packages/docs-site/tutorial-05-sop-agent-demo.md` + sidebar 条目 + 索引行（四篇→五篇） | 05 缺席一年无人发现（判据⑧ 是轮 #8 才补的）。**补页 = 让豁免归零**，否则豁免会变成永久续期 |
+| 豁免归零 | `TUTORIAL_MIRROR_EXEMPT` 1 条 → **`[]`**，selftest 沙箱基线同步去掉该条 | 豁免表是"待偿还项"登记，补完必须删；空表才有约束力。**反证**：删 sidebar 的 05 → `sync-check` 立即红 |
+| 过期产物下线 | `git rm --cached apps/executor-desktop/src/preload/index.js`（磁盘保留） | 2026-06 编译产物，与已大改的 `index.ts` 漂移；真实产物落 `dist/preload`，打包只收 `dist/**`。留着 = 任何按文件名读/grep/评审的工具都会读到过期桥实现 |
+
+### 二、四轮叠加后的第一次全量回归
+
+| 套件 | 结果 |
+|---|---|
+| admin-api `npm test` | **354 套件 / 6221 例全绿** |
+| admin-web `vitest run --maxWorkers=3` | **250 文件 / 2101 例全绿** |
+| executor-python `pytest -q` | **EXIT 0**，覆盖率 87.31%（地板 86） |
+
+结论：**四轮叠加没有引入回归**（此前每轮只跑受影响的子集）。
+
+### 三、验证
+
+`sync-check` 8 面 + 自检 · `vitepress build` OK（产出 `dist/tutorial-05-sop-agent-demo.html`）·
+`check-desktop-selftests-wired` 59/59 · 桌面 `tsc` 0 + `renderer.selftest` 0 ·
+`test:guards:repo` EXIT=0 · `deploy.selftest` 61/61 · `check:docs` 全绿。
+
+### 四、**真机 e2e 首跑**（此前各轮都只写"没跑 e2e"）
+
+复用本机 demo 栈的 PG/Redis，另建隔离库 `acf_e2e_verify`（`127.0.0.1:5432` 被另一个
+项目占用，走容器 IP 直连；迁移 + admin seed 全真跑）⇒ **4 套件 / 38 例全绿**。
+
+**当场抓到一个静默污染**：单独跑 e2e（`npm test` / 裸 jest / CI 的 admin-api-test job）
+会执行 `openapi-export.e2e-spec.ts`，它写**纯中文**文档 ⇒ 入库产物里的
+**1503 处 `x-i18n-en` 全部消失**（`grep -c` 1503 → 0，5059 行 diff），而测试全绿。
+
+修法两层：① spec 只在 `ACF_OPENAPI_EXPORT=1` 时落盘（该变量**只有**
+`npm run swagger:export` 会设），其余入口改为只校验并打印 `dry: …`；
+② `inject-openapi-en.mjs --check` 先数产物里的 `x-i18n-en` 条数，低于地板 1200 就红
+**并点名成因**。反证：把产物里的键全剥掉 → 立即红；恢复后绿。
+改后整套 e2e 跑完 `x-i18n-en` **1503 → 1503**、`git diff` 为空；
+`swagger:export` 仍能落盘且零漂移。
+
+### 五、首部署自举的真机演练
+
+轮 #8 的 OPS-03 此前只有 dry-run 证据，本轮做成**真跑**（白盒：tmp 目录复制
+deploy.sh、摘掉末尾 `main`、直接调 `config_phase`）：
+staging 全新目录 → 生成并打印管理员口令（37 字节）+ 写 `ALLOW_LOOPBACK_CORS=true`；
+production 缺真实域名 → **当场 fail-fast**（不是崩到 ⑧ 才暴露）。
+三条断言固化进 `deploy.selftest.sh` 第 14 段（**61 → 69 例**）。
+
+### 六、两个只读调研 subagent 超时无产出（如实登记）
+
+SDK 层与 Agent·SOP 运行时纵深两个 subagent 跑约 50 分钟零产出，已 `interrupt_agent`
+中断，**不当作已覆盖**。主控自行初查 SDK 层：重试语义两端已对齐且注释详实
+（node 仅幂等重试 / python 任务内通道刻意无重试 / 契约在 `autocodeflow-http`）、
+熔断差异已在 B3 登记、四库仍零消费者 —— **无新 P0/P1**；唯一待决策项仍是
+**A2**（四库接发布线 vs 删除，属产品决策）。**Agent·SOP 运行时纵深未被覆盖**。
+
+### 七、遗留（继续滚动）
+
+`dangerouslyIgnoreUnhandledErrors` 彻底关闭（需 teardown 竞态先消失）、
+`e2e-full.sh` 进本地闸（需真栈一键脚本）、deploy.sh 三开关真镜像演练（自举已真跑，
+镜像重建与就绪闸门仍只有白盒）、per-IP 硬顶压测、
+**Agent·SOP 运行时纵深审计（轮 #11 已补）**、A2 产品决策。
+
+---
+
+## 2026-10-27 · 实施轮 #11（真机验证 + Agent 运行时三处 P1）
+
+> 完整交付：[实施轮 #11 报告](archive/reports/implementation-round-11-2026-10-27.md)。
+> 编排：主控 + **1 个限时 25 分钟的只读 subagent**（上一轮两个 subagent 跑 50 分钟
+> 零产出被中断；这轮改成"到点无论进展如何立刻交 + 分段交付"）——**生效了**，
+> 交回 3 条 P1 + 9 条 P2 + 10 条"不是问题"。
+
+### 一、per-IP 硬顶：第一次真机验证
+
+此前只有 10 例单测（假 express 对象）。单测证明不了"是否真挂进 Nest / 是否真在
+55MB parser 之前 / 路径是否匹配"——任何一件错位都表现为"测试全绿但线上没防护"。
+
+本轮把 admin-api **真跑起来**（真实 PG/Redis + `NODE_ENV=production`），新增
+`scripts/ip-ceiling-live-drill.mjs`（`npm run test:ip-ceiling-live`，不进 CI：
+要真栈）。结果 **5/5 通过**，其中最关键一条是「**换 `x-executor-address` 仍被拦**」
+——那正是原缺陷的绕过形态。**反证**：服务端额度调到 100000 重启 → 同一脚本红 3 项。
+
+### 二、Agent 运行时 3 条 P1
+
+| ID | 问题 | 处置 |
+|---|---|---|
+| A1 | **审批只有申请没有批准**：`requestApproval` 只拼字符串不落库、controller 无 grant 端点、`markWaiting` 生产零调用 ⇒ 5 个 `approvalRequired` 工具（update_task / rollback_task_version / upgrade_deployment / stop_deployment / sop_publish）**永久不可执行** | **如实降级**：注册表加 APPROVAL-GAP 注释；文案由「等待人工审批」改为「**需人工审批，当前不可执行**…审批通道尚未接通」；加 tripwire（补了 grant 端点就要求同步改文案）。**反证**：改回旧文案 → 立即红 |
+| A2 | **自动触发会话空 scope 打残白名单**：incident 白名单含 trigger_task/retry_execution/kill_execution/pause_task/resume_task，全是绑定资源的工具，而 `validateScope` 对空集合直接 deny ⇒ 事件处置只剩只读 | 新增 `buildEventScope`，按事件类型绑定**该事件自身资源**；认不出即 `{}`（保守默认不倒退）。**修复中被新断言抓出一个真错**：`executor.offline` 的 resourceKey 是**地址**而非 executorId，首版绑错维度 → 改为从载荷取 id，取不到不绑 |
+| C4 | `awaiting_approval` 计入速率配额（审批没闭环时"用等待惩罚自己"） | `countPriorCalls` 排除该状态（与既有"排除 denied"同精神） |
+
+### 三、登记不修（附理由）
+
+**A3（P1，唯一未修）**：闸门 counters 跨崩溃不落盘（只在终态/澄清分支回写 journal）
+⇒ 反复 kill 可续命 15 轮/2h，违反 `gates.ts` 头注"resume 不重置"纪律。要动
+journal 写入时机与崩溃恢复语义，属独立切片，**列为下一轮首位**。
+其余 B1（`dependency_install` 闸是死代码）、B2（limits 生产恒为空）、B3（澄清上限
+不协商）、B4（预算轮内不判）、C1（deploy_* 无 approvalRequired）、C2（resourceKind
+缺省放行）、C3（澄清归属校验在执行体）均登记，各有明确前置条件。
+
+### 四、验证
+
+admin-api 全量 **354 套件 / 6225 例全绿**（+4）· 真机演练 5/5（反证红 3 项）·
+`agent-boundary-check` 全绿（含 APPROVAL-GAP tripwire）· `test:guards:repo` EXIT=0 ·
+测试实例已清理、端口 3199 已释放。
+
+### 五、遗留（按优先级）
+
+1. **A3 闸门计数跨崩溃丢失**（P1，唯一未修）。
+2. 审批闭环（审批实体 + grant/revoke + 恢复执行）——A1 只做了如实降级。
+3. B1~B4 / C1~C3 八条 P2。
+4. `dangerouslyIgnoreUnhandledErrors` 关闭、`e2e-full.sh` 进本地闸、
+   deploy.sh 真镜像演练、A2 产品决策。
+

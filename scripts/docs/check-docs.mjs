@@ -16,6 +16,13 @@
 //   ③ root-hygiene —— 仓库根目录只允许白名单内的 Markdown（README / LICENSE /
 //                  CHANGELOG / CONTRIBUTING / AGENTS 等）。一次性报告一律进
 //                  docs/archive/。
+//   ④ bare-paths  —— 正文里用反引号写的**仓库相对路径**（`docs/…` / `scripts/…` /
+//                  `apps/…` / `packages/…`）必须真实存在。
+//                  为什么单列一条：①（死链）只认 Markdown 链接，而本仓的「证据出处」
+//                  大量写成行内裸路径（尤其 PLAN-CLAIMS 的认领记录）。文件被移到
+//                  docs/archive/ 或改名后，这类指针就**静默失效**——复核者点不开、
+//                  也无法判断它是"结论的来源"还是"作者写错的名字"。判据①看不见它们，
+//                  所以必须有一条专门盯它（2026-10-27 实测一次就抓到 15 处）。
 //
 // 零依赖：仅 node:fs / node:path，node ≥ 18 可直接跑。
 // 用法：node scripts/docs/check-docs.mjs [--only=links|orphans|root-hygiene] [--json]
@@ -152,10 +159,96 @@ export function checkRootHygiene(root = REPO_ROOT) {
     .map((name) => `${name}（根目录不允许放一次性文档，请移入 docs/archive/）`);
 }
 
+/**
+ * 判据 ④ 扫的形态：正文里用行内代码写出的**仓库相对路径**。
+ *
+ * 为什么单列一条：判据 ①（死链）只认 Markdown 链接，而本仓的「证据出处」大量写成
+ * 行内裸路径（尤其 PLAN-CLAIMS 的认领记录）。文件被移到 docs/archive/ 或改名后，
+ * 这类指针**静默失效**——复核者点不开，也无法判断它是结论的来源还是作者写错的名字。
+ * 判据 ① 看不见它们，所以必须有一条专门盯它（2026-10-27 实测一次抓到 15 处）。
+ *
+ * 三种刻意豁免（不然这条会变成噪音源而被关掉）：
+ *   · 围栏代码块整体跳过——里面的路径可能是示例/模板，本就不承诺指向仓内文件；
+ *   · 含三个连续点的省略写法跳过——作者主动省略了中间目录，无法按字面解析；
+ *   · 源文件在 docs/archive/ 的整篇豁免——归档是历史快照，改它等于篡改当时记录。
+ *
+ * 实现上刻意**不用正则匹配"带反引号的大表达式"**，而是按反引号切分取奇数段
+ * （行内代码总是成对出现，奇数下标即代码段）。反引号在正则字面量里要转义，
+ * 两层规则叠在一起既难读也容易写错——首版正是这么写坏的。
+ */
+const BACKTICK = String.fromCharCode(96);
+
+const REPO_PATH_PREFIXES = ["docs/", "scripts/", "apps/", "packages/"];
+const REPO_PATH_EXTS = [
+  ".md", ".mjs", ".cjs", ".js", ".ts", ".tsx",
+  ".sh", ".json", ".py", ".yml", ".yaml",
+];
+
+/** 去掉围栏代码块（按行状态机，不依赖正则转义）。 */
+export function stripFencedCode(text) {
+  const fence = BACKTICK + BACKTICK + BACKTICK;
+  const kept = [];
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (line.trimStart().startsWith(fence)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+/** 取出一段 Markdown 里的所有行内代码内容（已剔除围栏块）。 */
+export function extractInlineCode(text) {
+  const parts = stripFencedCode(text).split(BACKTICK);
+  return parts.filter((_, i) => i % 2 === 1);
+}
+
+/** 这段行内代码看起来是不是一个仓库相对路径？ */
+export function looksLikeRepoPath(s) {
+  const v = s.trim();
+  if (!REPO_PATH_PREFIXES.some((p) => v.startsWith(p))) return false;
+  if (v.includes(" ") || v.includes("*") || v.includes("<") || v.includes(">")) return false;
+  return REPO_PATH_EXTS.some((e) => v.endsWith(e));
+}
+
+/**
+ * 判据 ④：正文裸路径指针必须指向真实存在的文件。
+ *
+ * 解析顺序与判据 ①（链接）保持一致，否则会大量误伤**文档内相对路径**：
+ * `apps/admin-web/lighthouserc.md` 里写的 `scripts/lhci-serve.cjs` 指的是
+ * `apps/admin-web/scripts/lhci-serve.cjs`，不是仓库根的 `scripts/`。
+ *   1) 先按仓库根解析（本仓多数证据指针是这种写法）；
+ *   2) 再按文档所在目录解析（文档内相对引用）。
+ *
+ * 再叠加两类**写法约定**豁免：
+ *   · 花括号简写（`src/routes/{execute,deploy}.ts`）——一条写多个文件，无法按字面解析；
+ *   · 省略号（三个点或 `…`）——作者主动省略中间目录。
+ * 这些不是"指针失效"，是"指针本来就是一组/一段"，强行展开只会让作者放弃写指针。
+ */
+export function checkBarePaths(root = REPO_ROOT) {
+  const errors = [];
+  for (const rel of listMarkdown(root)) {
+    if (rel.startsWith("docs/archive/")) continue;
+    const text = fs.readFileSync(path.join(root, rel), "utf8");
+    for (const span of extractInlineCode(text)) {
+      if (!looksLikeRepoPath(span)) continue;
+      if (span.includes("...") || span.includes("…")) continue;
+      if (span.includes("{") || span.includes("}")) continue;
+      if (fs.existsSync(path.join(root, span))) continue;
+      if (fs.existsSync(path.resolve(root, path.dirname(rel), span))) continue;
+      errors.push(rel + " → " + span + "（正文裸路径指针指向不存在的文件）");
+    }
+  }
+  return errors;
+}
+
 const CHECKS = {
   links: { run: checkLinks, label: "死链" },
   orphans: { run: checkOrphans, label: "孤儿文档" },
   "root-hygiene": { run: checkRootHygiene, label: "根目录洁癖" },
+  "bare-paths": { run: checkBarePaths, label: "正文裸路径指针" },
 };
 
 function main(argv) {

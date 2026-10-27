@@ -30,11 +30,19 @@
 | `acf config set-url <url>` | 设置 API 基地址 | — |
 | `acf config set-token <token>` | 直接写入 token（提示优先 login/ACF_TOKEN） | — |
 
-> **无人值守语义（2026-10-08，CLI-AGENT-UX-AUDIT）**：`app delete` / `task delete` /
-> `task batch delete` / `deploy remove` / `app upgrade-all`(all) / `executor rotate`
-> 都有确认门；**stdin 非 TTY 时缺 `-y/--yes` 以退出码 2 拒绝**（既不静默放行也不
-> 静默取消）。`login` 在非交互下不会对地址/用户名/密码发问，缺 `--user` 或
-> `ACF_PASSWORD` 时同样以 2 报可操作错误。
+> **无人值守语义（2026-10-08 建立，2026-10-27 校正清单）**：以下命令的**破坏性动作**都有确认门 ——
+> `app delete` / `app upgrade-all`(all) / `task delete` / `task batch delete` /
+> `task kill` / `task webhook enable·rotate·disable` / `apikey revoke` /
+> `deploy remove` / `executor rotate`；**stdin 非 TTY 时缺 `-y/--yes` 以退出码 2 拒绝**
+> （既不静默放行也不静默取消）。
+>
+> 按后果分类、**刻意不加门**的（避免把自动化拖笨）：`task rollback`（每次写入都落版本
+> 快照、可再回滚）、`deploy stop`（可 redeploy/upgrade 恢复，不销毁数据）、
+> `executor offline`（不打断在跑任务，执行器下次心跳即自愈）、`task webhook status`
+> 与 `app upgrade-all --strategy canary`（只读 / 小步放量）。
+>
+> `login` 在非交互下不会对地址/用户名/密码发问，缺 `--user` 或 `ACF_PASSWORD` 时
+> 同样以 2 报可操作错误。
 
 ### task（23）— commands/tasks.ts
 
@@ -55,10 +63,10 @@
 | `task rollback <id>` | 版本回滚 | `--version <versionId>`（根命令不注册 --version，该选项不被劫持） |
 | `task compare <id> <v1> <v2>` | 版本 diff | `--json` |
 | `task pause <id>` / `resume <id>` | 暂停/恢复调度 | — |
-| `task kill <taskId> <execId>` | 强杀执行 | — |
+| `task kill <taskId> <execId>` | 强杀执行（KILLED 是终态，无法恢复） | `-y, --yes`（非交互缺则码 2） |
 | `task export <id>` / `import <file>` | 定义导出/导入（`-`=stdin；导入后默认 paused） | `-o <file>` |
 | `task batch trigger\|pause\|resume\|delete` | 批量动作（≤500 个） | `--ids id1,id2` 或 positional；**`delete` 需 `-y/--yes`**（非交互缺则码 2），其余 action 无门 |
-| `task webhook enable\|rotate\|disable\|status <id>` | 入站 webhook（HMAC；secret 只回显一次） | — |
+| `task webhook enable\|rotate\|disable\|status <id>` | 入站 webhook（HMAC；secret 只回显一次） | `-y, --yes`（仅 enable/rotate/disable；`status` 只读无门） |
 | `task glue <id>` | 在线更新 GLUE 脚本 | `-f <file>`/`--stdin` `--language python\|javascript\|shell` |
 | `task lint <file>` | 本地语法检查 glue 脚本（js/mjs/cjs/py/sh，不执行） | `--language <lang>` 覆盖自动识别；源码经 **stdin** 传给解释器（Windows 路径反斜杠不再被 bash/python 吃掉）；解释器缺失 → 码 2（环境问题，区别于语法错的码 1） |
 

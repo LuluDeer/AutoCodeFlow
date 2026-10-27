@@ -97,7 +97,7 @@ npm run lint
 ## 常见坑
 
 - **迁移撞号**：不登记分配表直接建文件，CI `check-migrations` 拦截；并行会话同时领任务时先查板。
-- **openapi 双写入路径**：曾因 `scripts/export-openapi.ts`（ts-node）与 Jest 路径枚举反射不一致导致 drift 双红——只用 `npm run swagger:export`（委托 Jest spec），ts-node 路径仅留档勿运行。
+- **openapi 双写入路径**：曾因 `apps/admin-api/scripts/export-openapi.ts`（ts-node）与 Jest 路径枚举反射不一致导致 drift 双红——只用 `npm run swagger:export`（委托 Jest spec），ts-node 路径仅留档勿运行。
 - **新 env 只改 configuration.ts**：Joi schema 未注册时测试/生产校验口径漂移，务必三处同批。
 - **实体放错位置**：不放 `modules/**` 下或文件名不以 `.entity.ts` 结尾，CLI 迁移路径加载不到元数据（`data-source.ts` 头注的 AUTH-01 教训）。
 

@@ -14,6 +14,7 @@ import {
   checkLinks,
   checkOrphans,
   checkRootHygiene,
+  checkBarePaths,
 } from "./check-docs.mjs";
 
 let passed = 0;
@@ -166,6 +167,74 @@ test("根目录：子目录里的 md 不受洁癖检查影响", () => {
     "docs/FINAL-SUMMARY.md": "# y\n",
   });
   assert.deepEqual(checkRootHygiene(dir), []);
+});
+
+// ── 判据 ④：正文裸路径指针 ───────────────────────────────────────────────
+// 这一组的每条反例都对应一次真实误报/漏报：省略号与花括号简写是作者主动的
+// 写法约定（强行展开只会让作者放弃写指针），文档内相对路径若按仓库根解析会
+// 把 apps/admin-web 的 scripts/lhci-serve.cjs 判成死指针。
+const BACKTICK = String.fromCharCode(96);
+const code = (s) => BACKTICK + s + BACKTICK;
+const fence = (s) => BACKTICK + BACKTICK + BACKTICK + "\n" + s + "\n" + BACKTICK + BACKTICK + BACKTICK;
+
+test("裸路径：行内路径指向不存在的文件 → 报错", () => {
+  const dir = fixture({
+    "docs/README.md": "# x\n\n见 " + code("scripts/gone.mjs") + "\n",
+  });
+  const errors = checkBarePaths(dir);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /scripts\/gone\.mjs/);
+});
+
+test("裸路径：行内路径存在 → 通过", () => {
+  const dir = fixture({
+    "docs/README.md": "# x\n\n见 " + code("scripts/here.mjs") + "\n",
+    "scripts/here.mjs": "// x\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
+});
+
+test("裸路径：文档内相对路径（按文档目录解析）→ 通过", () => {
+  const dir = fixture({
+    "apps/web/notes.md": "见 " + code("scripts/serve.cjs") + "\n",
+    "apps/web/scripts/serve.cjs": "// x\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
+});
+
+test("裸路径：围栏代码块里的路径不检查", () => {
+  const dir = fixture({
+    "docs/README.md": "# x\n\n" + fence("node " + code("scripts/not-real.mjs")) + "\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
+});
+
+test("裸路径：花括号简写与省略号豁免", () => {
+  const dir = fixture({
+    "docs/README.md":
+      "# x\n\n" +
+      code("apps/executor-node/src/{callback,config}.ts") +
+      " 与 " +
+      code("docs/atlas/…/audit.md") +
+      " 与 " +
+      code("apps/admin-api/.../x.spec.ts") +
+      "\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
+});
+
+test("裸路径：docs/archive/ 源文件整体豁免（历史快照不改写）", () => {
+  const dir = fixture({
+    "docs/archive/old.md": "见 " + code("scripts/deleted-long-ago.mjs") + "\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
+});
+
+test("裸路径：普通行内代码（非仓库路径）不误报", () => {
+  const dir = fixture({
+    "docs/README.md": "# x\n\n" + code("npm run test:api") + " " + code("ConfigService") + "\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
 });
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────

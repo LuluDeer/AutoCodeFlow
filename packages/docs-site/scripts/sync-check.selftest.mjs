@@ -108,6 +108,18 @@ VALID_FAILURE_REASONS = frozenset({
   "packages/docs-site/capability-matrix.md": `| **http: 默认超时** | x | y |
 | **callback: 截断上限** | x | y |
 `,
+  // 判据 ⑧（教程索引条目）：沙箱基线必须同时提供"源头索引"与"站点 sidebar"，
+  // 否则该面在基线里恒报"未解析出任何条目"——那是真的缺文件，不是漂移。
+  "docs/tutorials/index.md": `| 教程 | 主题 |
+|---|---|
+| [01 · 第一个定时任务](01-first-scheduled-task.md) | 定时 |
+`,
+  "packages/docs-site/.vitepress/config.mts": `export default {
+  sidebar: [
+    { text: '01 · 第一个定时任务', link: '/tutorial-01-first-scheduled-task' },
+  ],
+};
+`,
   "packages/docs-site/contract.md": `## 回调契约（CallbackItemDto）
 
 | 字段 | 说明 |
@@ -120,13 +132,13 @@ VALID_FAILURE_REASONS = frozenset({
 `,
 };
 
-// ── 用例 1：基线自洽 → 七面全绿 ─────────────────────────────────────────
+// ── 用例 1：基线自洽 → 八面全绿 ─────────────────────────────────────────
 {
   const { mod, cleanup } = await loadSandbox(baseline);
   const results = mod.runAllChecks();
   const allErrors = results.flatMap((r) => r.errors);
-  assert("基线自洽：七面全绿", allErrors.length === 0);
-  assert("基线自洽：七面全部执行", results.length === 7 && results.every((r) => r.errors.length === 0));
+  assert("基线自洽：八面全绿", allErrors.length === 0);
+  assert("基线自洽：八面全部执行", results.length === 8 && results.every((r) => r.errors.length === 0));
   cleanup();
 }
 
@@ -436,14 +448,14 @@ VALID_FAILURE_REASONS = frozenset({
 }
 
 // ── 用例 9：真实仓库冒烟——当前工作区状态应与主脚本实跑结论一致 ─────────
-// （不硬编码绿/红：只断言脚本能对真实文件完成七面校验且无异常。）
+// （不硬编码绿/红：只断言脚本能对真实文件完成八面校验且无异常。）
 {
   const realMod = await import(
     pathToFileURL(scriptSrc).href + `?real=${Date.now()}`
   );
   // 真实仓库的 REPO_ROOT 指向本仓库根（scripts/ 上三级），直接跑
   const results = realMod.runAllChecks();
-  assert("真实仓库：七面校验全部可执行（无校验器异常）", results.length === 7 && results.every((r) => !r.errors.some((e) => e.includes("校验器异常"))));
+  assert("真实仓库：八面校验全部可执行（无校验器异常）", results.length === 8 && results.every((r) => !r.errors.some((e) => e.includes("校验器异常"))));
 }
 
 console.log(failures === 0 ? "\n✔ sync-check.selftest 全部通过" : `\n✘ sync-check.selftest 失败 ${failures} 项`);
