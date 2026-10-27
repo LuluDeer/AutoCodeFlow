@@ -544,6 +544,61 @@ console.log("\n── 11. 执行器纪律 ──");
 
   // 结果截断阈值合理
   check("截断阈值在 1k-8k 之间", TOOL_RESULT_MAX_CHARS >= 1000 && TOOL_RESULT_MAX_CHARS <= 8000, `=${TOOL_RESULT_MAX_CHARS}`);
+  // C4（审计轮 #11）：awaiting_approval 不得消耗速率配额
+  check("速率计数排除 awaiting_approval（审批没闭环时不惩罚自己）",
+    /c\.status !== "awaiting_approval"/.test(src));
+}
+
+// ═══ APPROVAL-GAP tripwire（审计轮 #11，A1）══════════════════════════
+//
+// 事实（2026-10-27 实测）：`approvalRequired: true` 的 5 个工具
+// （update_task / rollback_task_version / upgrade_deployment / stop_deployment /
+// sop_publish）会返回 awaiting_approval，但：
+//   · `requestApproval()` 只拼字符串 + 推通知，**不落库**（无 approval 实体）；
+//   · `agent.controller` 只有 list/detail/create/resume/budget 五条路由，
+//     **没有任何批准端点**；
+//   · `markWaiting()` 在生产代码里零调用方。
+// ⇒ 这 5 个工具"声明可经人工点头执行，实际永久不可执行"。
+//
+// 本 tripwire 不是要修它（审批闭环是独立工作流），而是要**防止它悄悄变成
+// 谎话或悄悄被"修好"而文案没跟上**：两种状态都要显式。
+console.log("\n── APPROVAL-GAP tripwire ──");
+{
+  const ctrl = readFileSync(
+    join(apiDir, "src/modules/agent/agent.controller.ts"),
+    "utf8",
+  );
+  const hasGrantEndpoint = /@Post\(["']approvals?\/[^"']*\/?[^"']*["']\)/.test(ctrl) &&
+    /grant|approve/.test(ctrl);
+
+  const registry = readFileSync(
+    join(apiDir, "src/modules/agent/tools/tool-registry.ts"),
+    "utf8",
+  );
+  const documentsGap = /APPROVAL-GAP/.test(registry);
+
+  if (!hasGrantEndpoint) {
+    check(
+      "审批无闭环时，注册表必须显式登记该事实（APPROVAL-GAP 注释）",
+      documentsGap,
+      "补了 grant 端点就把这段注释改成已闭环，否则使用者会以为可审批",
+    );
+    const executor = readFileSync(
+      join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"),
+      "utf8",
+    );
+    check(
+      "回给模型的文案必须如实说当前不可执行（不能诱导它等待）",
+      /当前不可执行/.test(executor) && /审批通道尚未接通/.test(executor),
+    );
+  } else {
+    // 有人补了 grant 端点 → 提醒把声明/文案一起更新（否则文案在说谎）
+    check(
+      "已出现批准端点：注册表注释与执行体文案必须同步更新（去掉不可执行的表述）",
+      !documentsGap,
+      "检测到 approvals 路由，但注册表仍写着 APPROVAL-GAP",
+    );
+  }
 }
 
 rmSync(scratch, { recursive: true, force: true });

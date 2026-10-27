@@ -126,6 +126,17 @@ export default () => ({
     // FEAT-21: 任务 webhook 触发端（/webhooks/tasks/:taskId）独立档
     webhookLimit: parseInt(process.env.THROTTLE_WEBHOOK_LIMIT || "60", 10),
     webhookTtl: parseInt(process.env.THROTTLE_WEBHOOK_TTL || "60000", 10),
+    // F1（2026-10-27 审计轮 #7）：回调面 per-IP 硬顶（次/分钟/来源 IP）。
+    // 与上面各档的关系：那些档是 @nestjs/throttler 的**桶**（回调按
+    // x-executor-address 分桶，见 B-2），而该头客户端可设 ⇒ 换头即换桶、
+    // 聚合无上限；本值是一条与头无关的 IP 边界，在 body 解析之前生效
+    // （middleware 见 src/common/middleware/ip-ceiling.middleware.ts）。
+    // 默认 12000：100 台执行器 × 60/min = 6000/min，留 2 倍余量。
+    callbackIpCeilingPerMinute: Math.max(
+      1,
+      parseInt(process.env.CALLBACK_IP_CEILING_PER_MINUTE || "12000", 10) ||
+        12_000,
+    ),
   },
   // SSE 日志流并发上限（进程内计数）：单 execution / 全局。
   // task.service.ts 读取本配置节；此前 sse 节从未注册，env 覆盖是死代码，现补齐。

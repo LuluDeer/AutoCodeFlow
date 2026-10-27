@@ -248,3 +248,85 @@ describe("R32-B1 装配钉子（防三态被静默降级成二态）", () => {
     expect(resolveRole).toHaveBeenCalledWith(8, "p1");
   });
 });
+
+describe("R32-B1 残余点：任务项目归属写面（assertCanAssignProject）同样三态", () => {
+  /**
+   * 反证（本组的理由）：`assertCanAssignProject` 是 R32-B1 之后**唯一**还在用二态
+   * `resolveRole` 的写面。DB 抖动 ⇒ null ⇒ 与「非成员」同形 ⇒ 403
+   * `TASK_PROJECT_ASSIGN_FORBIDDEN`（「你没有权限」）；而真实原因是这一秒查不到，
+   * 用户的 editor 权限一直都在。方向 fail-closed 没错，结论错了。
+   */
+  const user = { id: 8, role: UserRole.USER };
+
+  const build = (findOneMembership: jest.Mock): TaskService =>
+    new TaskService(
+      {} as never, // 0 taskRepo
+      {} as never, // 1 execRepo
+      {} as never, // 2 logLineRepo
+      {} as never, // 3 versionRepo
+      {} as never, // 4 taskQueue
+      {} as never, // 5 dataSource
+      {} as never, // 6 schedulerService
+      {} as never, // 7 aiService
+      {} as never, // 8 aiAnalysisService
+      { get: () => "owner" } as never, // 9 configService
+      {} as never, // 10 executorService
+      null as never, // 11 eventBus
+      {} as never, // 12 secretsCrypto
+      null as never, // 13 tracing
+      null as never, // 14 reportRepo
+      { findOne: jest.fn().mockResolvedValue({ id: "p1" }) } as never, // 15 projectRepo
+      new ProjectAccessService(
+        { findOne: findOneMembership } as never,
+        null as never,
+      ) as never, // 16 projectAccess
+      null as never, // 17 audit
+    );
+
+  const call = (svc: TaskService): Promise<void> =>
+    (
+      svc as unknown as {
+        assertCanAssignProject: (
+          p: string,
+          u: { id: number; role?: UserRole },
+        ) => Promise<void>;
+      }
+    ).assertCanAssignProject("p1", user);
+
+  it("DB 抖动 → 503 PROJECT_ROLE_UNAVAILABLE（不是 403「你没有权限」）", async () => {
+    const svc = build(jest.fn().mockRejectedValue(new Error("connection reset")));
+
+    const err = await call(svc).then(
+      () => {
+        throw new Error("expected rejection");
+      },
+      (e: any) => e,
+    );
+
+    expect(err).toBeInstanceOf(ServiceUnavailableException);
+    expect(err.errorCode).toBe("PROJECT_ROLE_UNAVAILABLE");
+    expect(err.getStatus()).toBe(503);
+  });
+
+  it("非成员 / viewer → 仍 403 TASK_PROJECT_ASSIGN_FORBIDDEN（语义未变）", async () => {
+    const none = build(jest.fn().mockResolvedValue(null));
+    await expect(call(none)).rejects.toMatchObject({
+      errorCode: "TASK_PROJECT_ASSIGN_FORBIDDEN",
+    });
+
+    const viewer = build(jest.fn().mockResolvedValue({ role: "viewer" }));
+    await expect(call(viewer)).rejects.toMatchObject({
+      errorCode: "TASK_PROJECT_ASSIGN_FORBIDDEN",
+    });
+  });
+
+  it("editor / admin → 放行（正常路径逐字节不变）", async () => {
+    await expect(
+      call(build(jest.fn().mockResolvedValue({ role: "editor" }))),
+    ).resolves.toBeUndefined();
+    await expect(
+      call(build(jest.fn().mockResolvedValue({ role: "admin" }))),
+    ).resolves.toBeUndefined();
+  });
+});
+

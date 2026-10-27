@@ -172,10 +172,19 @@ export class ToolExecutorService implements AgentToolExecutor {
         approvalId,
         errorMessage: verdict.message,
       });
+      // APPROVAL-GAP（2026-10-27 审计轮 #11，A1）：审批**当前没有闭环**——
+      // requestApproval 不落库，agent.controller 也没有 grant 端点，
+      // 所以"等待审批"实际上等于"这次调用不会被批准"。
+      // 文案必须如实这么写：告诉模型"别再试同一个工具、换只读路径或上报"，
+      // 而不是让它以为"等一会儿就能过"——后者会让它反复重试，把速率配额
+      // 烧在等待审批上（C4 已把 awaiting_approval 排除出配额，但重试本身
+      // 仍是浪费轮次）。
       return {
         content:
-          `【等待人工审批】${verdict.message}` +
-          `（审批单 ${approvalId}）请不要重复提交，改用其他只读手段继续排查。`,
+          `【需人工审批，当前不可执行】${verdict.message}` +
+          `（审批单 ${approvalId}）` +
+          `注意：审批通道尚未接通，重复提交只会再次挂起——请改用只读手段继续排查，` +
+          `或把结论与建议写进最终报告交由人工执行。`,
         truncated: false,
       };
     }
@@ -324,10 +333,18 @@ export class ToolExecutorService implements AgentToolExecutor {
     toolName: string,
   ): Promise<number> {
     const calls = await this.sessions.listToolCalls(sessionId);
-    // 只数**真正执行过**的（denied 不该消耗速率预算——否则越权尝试
-    // 会把正常调用也拖到限流，反而放大了攻击效果）
-    return calls.filter((c) => c.toolName === toolName && c.status !== "denied")
-      .length;
+    // 只数**真正执行过**的：
+    //   · denied 不该消耗速率预算——否则越权尝试会把正常调用也拖到限流，
+    //     反而放大了攻击效果；
+    //   · awaiting_approval 也不该（C4，审计轮 #11）：审批通道尚未闭环
+    //     （A1），若它计入配额，一个会话只要碰几次"需审批"的工具就会把
+    //     15 次配额耗尽，而它一次都没真正执行过——等于用"等待"惩罚自己。
+    return calls.filter(
+      (c) =>
+        c.toolName === toolName &&
+        c.status !== "denied" &&
+        c.status !== "awaiting_approval",
+    ).length;
   }
 
   /**

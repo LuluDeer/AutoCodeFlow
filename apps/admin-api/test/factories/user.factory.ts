@@ -1,5 +1,10 @@
-import { faker } from "@faker-js/faker";
 import { User, UserRole } from "../../src/modules/users/entities/user.entity";
+import {
+  futureDate,
+  nextSeq,
+  pastDate,
+  uniqueSuffix,
+} from "./deterministic";
 
 /**
  * 测试数据工厂：User 实体
@@ -38,17 +43,15 @@ export interface UserFactoryOptions {
 export function buildUser(overrides: UserFactoryOptions = {}): User {
   const user = new User();
 
-  user.id = overrides.id ?? faker.number.int({ min: 1, max: 999999 });
-  user.username = overrides.username ?? faker.internet.username().toLowerCase();
-  user.email = overrides.email ?? faker.internet.email().toLowerCase();
-  // 生成符合约束的密码（至少8位，包含字母和数字）
-  user.password =
-    overrides.password ??
-    faker.internet.password({
-      length: 12,
-      memorable: false,
-      pattern: /[a-zA-Z0-9]/,
-    });
+  // 唯一后缀：用户名/邮箱/口令同源，保证"同一进程内唯一"这条用例成立。
+  const suffix = uniqueSuffix();
+  user.id = overrides.id ?? nextSeq();
+  user.username = overrides.username ?? `user${suffix}`;
+  user.email = overrides.email ?? `user${suffix}@example.com`;
+  // 密码满足「至少 8 位、含字母与数字」——这是**构造出来的**，不再靠随机
+  // 字符集"碰运气"（旧实现用 faker 的 pattern: /[a-zA-Z0-9]/，只约束字符集、
+  // 不保证出现数字：12 位全字母概率约 12%，对应一条 ~12% 概率偶发失败的用例）。
+  user.password = overrides.password ?? `Passw0rd${suffix}`;
   user.role = overrides.role ?? UserRole.USER;
   user.isActive = overrides.isActive ?? true;
   user.loginFailCount = overrides.loginFailCount ?? 0;
@@ -61,8 +64,8 @@ export function buildUser(overrides: UserFactoryOptions = {}): User {
   user.lastTotpCounter =
     overrides.lastTotpCounter !== undefined ? overrides.lastTotpCounter : null;
   user.oidcSub = overrides.oidcSub !== undefined ? overrides.oidcSub : null;
-  user.createdAt = overrides.createdAt ?? faker.date.past({ years: 1 });
-  user.updatedAt = overrides.updatedAt ?? faker.date.recent({ days: 30 });
+  user.createdAt = overrides.createdAt ?? pastDate(60 * 24 * 30);
+  user.updatedAt = overrides.updatedAt ?? pastDate(5);
 
   return user;
 }
@@ -98,7 +101,7 @@ export function buildAdminUser(overrides: UserFactoryOptions = {}): User {
 export function buildLockedUser(overrides: UserFactoryOptions = {}): User {
   return buildUser({
     loginFailCount: 5,
-    lockedUntil: faker.date.future({ years: 1 }),
+    lockedUntil: futureDate(30),
     isActive: false,
     ...overrides,
   });
@@ -109,9 +112,9 @@ export function buildLockedUser(overrides: UserFactoryOptions = {}): User {
  */
 export function buildTotpUser(overrides: UserFactoryOptions = {}): User {
   return buildUser({
-    totpSecret: faker.string.alphanumeric(32).toUpperCase(),
+    totpSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
     totpEnabled: true,
-    lastTotpCounter: faker.number.int({ min: 1, max: 1000 }),
+    lastTotpCounter: nextSeq(),
     ...overrides,
   });
 }

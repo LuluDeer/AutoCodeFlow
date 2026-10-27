@@ -143,14 +143,20 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(h.checkSpy.mock.calls[0][3]).toBe(1);
   });
 
-  it("NEED_APPROVAL：审批单落库（awaiting_approval）+ 通知推送 + 回给模型提示", async () => {
+  // APPROVAL-GAP（2026-10-27 审计轮 #11，A1）：本用例原先断言文案含
+  // 【等待人工审批】——而"等待"在实现上等于"永远等不到"（审批单不落库、
+  // 无 grant 端点、markWaiting 无生产调用方）。断言把**声明与实现不符**
+  // 固化成了预期行为。现改为断言"如实告知不可执行"，并把三条事实一起钉住。
+  it("NEED_APPROVAL：审批单落库（awaiting_approval）+ 通知推送 + 如实告知当前不可执行", async () => {
     const h = harness();
     const out = await h.svc.execute(
       session(),
       call("sop_publish", { sopId: "sop-1" }),
       null,
     );
-    expect(out.content).toContain("【等待人工审批】");
+    // 不再诱导模型"等一会儿就能过"，而是明确说通道没接通
+    expect(out.content).toContain("【需人工审批，当前不可执行】");
+    expect(out.content).toContain("审批通道尚未接通");
     expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "awaiting_approval",
@@ -158,6 +164,24 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       }),
     );
     expect(h.notify.approvalRequested).toHaveBeenCalled();
+  });
+
+  // C4（审计轮 #11）：awaiting_approval 不得消耗速率配额——审批通道没闭环时，
+  // 一个会话碰几次"需审批"的工具就会把配额烧光，而它一次都没真正执行过。
+  it("C4：awaiting_approval 不计入速率配额（只有真正执行过才算）", async () => {
+    const h = harness();
+    h.sessions.listToolCalls.mockResolvedValue([
+      { toolName: "sop_publish", status: "awaiting_approval" },
+      { toolName: "sop_publish", status: "awaiting_approval" },
+      { toolName: "sop_publish", status: "success" },
+    ]);
+    await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "sop-1" }),
+      null,
+    );
+    // 3 条历史里 2 条 awaiting_approval 被排除 ⇒ priorCalls=1
+    expect(h.checkSpy.mock.calls[0][3]).toBe(1);
   });
 
   it("执行成功：小结果原样回传；recordOutcome(true)", async () => {

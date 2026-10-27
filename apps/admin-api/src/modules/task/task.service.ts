@@ -1240,7 +1240,17 @@ export class TaskService {
       // 退化为「仅 ADMIN 可设置」（上面已放行 ADMIN）。
       throw new AppError("TASK_PROJECT_ASSIGN_ADMIN_ONLY");
     }
-    const role = await this.projectAccess.resolveRole(user.id, projectId);
+    // R32-B1 的最后一处残余（本批）：这里此前仍走**二态** `resolveRole` —— DB
+    // 抖动 ⇒ null ⇒ 与「非成员」同形 ⇒ 403 TASK_PROJECT_ASSIGN_FORBIDDEN。
+    // 方向上是 fail-closed（不越权），但结论是错的：用户的权限一直都在，只是这一
+    // 秒查不到，403 会把他引向「找管理员申请权限」。改为三态：
+    // unavailable ⇒ 503 PROJECT_ROLE_UNAVAILABLE（可重试），
+    // none / viewer ⇒ 403（语义未变）。
+    const resolution = await this.resolveOperateRoleState(user.id, projectId);
+    if (resolution.status === "unavailable") {
+      throw new AppError(ErrorCode.PROJECT_ROLE_UNAVAILABLE);
+    }
+    const role = resolution.status === "role" ? resolution.role : "none";
     if (role !== "editor" && role !== "admin") {
       throw new AppError("TASK_PROJECT_ASSIGN_FORBIDDEN");
     }

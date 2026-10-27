@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { createReadStream, mkdirSync, statSync } from "fs";
+import { createReadStream, statSync } from "fs";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -103,8 +103,21 @@ export class SopMediaService {
     ) {
       throw new AppError(ErrorCode.SOP_MEDIA_STORAGE_PATH_ESCAPED);
     }
-    mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, input.buf);
+    // WEB-IO-01：单文件上限 100 MiB，且控制器走 FileInterceptor 的 memoryStorage
+    // （整包已在内存里）。此时再 writeFileSync 会把事件循环按住到写完整文件为止——
+    // 期间同一副本上的**所有** HTTP 都停摆，包括执行器的 pull 长轮询与终态回调
+    // （两者都有 TTL/超时语义，一次 100 MiB 同步写足以让它们虚假超时）。
+    // 与 artifacts.service.saveArtifact 同形：tmp 写 + rename 原子发布。rename 同时
+    // 保证下载端（openStream）永远看不到半截文件——盘上结构按 assignmentId 分目录、
+    // 保留期清理可整目录删，半截文件会被当合法媒体读出去。
+    const dir = path.dirname(abs);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const tmp = path.join(
+      dir,
+      `.${diskName}.tmp-${crypto.randomBytes(6).toString("hex")}`,
+    );
+    await fs.promises.writeFile(tmp, input.buf);
+    await fs.promises.rename(tmp, abs);
 
     const row = await this.mediaRepo.save(
       this.mediaRepo.create({

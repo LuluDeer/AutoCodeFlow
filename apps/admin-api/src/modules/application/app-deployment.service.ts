@@ -16,6 +16,7 @@ import {
   In,
   IsNull,
   Like,
+  Not,
   Raw,
   OptimisticLockVersionMismatchError,
   FindOptionsWhere,
@@ -2712,8 +2713,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     status: string,
   ): Promise<void> {
     if (!deployment.deployedVersion) return;
-    const version = await this.versionRepo.findOne({
-      where: {
+    // R50 同款（ADR-026 规则 4）：从「findOne → 改字段 → **整行 save**」改为
+    // **列级条件 UPDATE**，只写 status 一列。
+    //
+    // 旧写法在 QA6 注释自己承认的真实形态（同一版本在多台执行器并发 rolling
+    // upgrade）下有两个后果：
+    //  ① 后写者按**自己读到的旧快照**整行回写，把对方刚写的
+    //     status / snapshot / description 一起覆盖回去；
+    //  ② 读与写之间的窗口里用户改的 description 会被整行回写弹回旧值。
+    // 条件写把「当前 status 已经是目标值」写进 WHERE（Not(status)），因此：
+    //  · 幂等——重复调用 affected=0，不产生无意义写入；
+    //  · 行不存在时同样 affected=0（旧代码是 findOne 返回 null 后 return），
+    //    语义逐字节等价，故无需读回。
+    await this.versionRepo.update(
+      {
         applicationId: deployment.applicationId,
         version: deployment.deployedVersion,
         // 同 saveVersionSnapshot：null 字面量在 TypeORM 1.x 的 where 里会抛错，
@@ -2723,12 +2736,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
             ? deployment.deployedCommit
             : IsNull(),
         sourceDeploymentId: deployment.id,
+        status: Not(status),
       },
-    });
-    if (!version || version.status === status) return;
-
-    version.status = status;
-    await this.versionRepo.save(version);
+      { status },
+    );
   }
 
   /**
