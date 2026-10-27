@@ -602,6 +602,96 @@ async function main(): Promise<void> {
     await center.close();
   }
 
+  console.log('-- 14. running 中途 kill：计数已落盘，重启后闸门接续累计（不归零）--');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_BAD, '{"action":"retry"}', PLAN_OK],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    // kill 模拟：第 3 次 LLM 中继（第 2 轮的 plan）永不返回——真实 kill 下
+    // 循环没有机会走 error 收敛（不回报、不清日志），挂起即等价。此前每轮
+    // 记账的计数必须已在磁盘上。
+    let llmCalls = 0;
+    const originalLlm = client.llmRelay.bind(client);
+    client.llmRelay = async (address, input) => {
+      llmCalls += 1;
+      if (llmCalls === 3) await new Promise<void>(() => undefined); // 「被 kill」
+      return originalLlm(address, input);
+    };
+    const host1 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    const running = host1.tick(); // 领单 → 第 1 轮完成 → 第 2 轮 plan 处挂起
+    let killedJournal: AssignmentJournal | null = null;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const j = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
+      if (j?.counters && j.counters.iterations >= 2) {
+        killedJournal = j;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    check('kill 前 running 计数已即时落盘（第 2 轮已记账）',
+      killedJournal?.phase === 'running' &&
+      killedJournal.counters?.iterations === 2 && killedJournal.counters?.trialRuns === 1,
+      `journal=${JSON.stringify(killedJournal?.counters ?? null)}`);
+    // 等第 3 次 LLM 调用真正挂起再重启：journal 落盘（同步）先于 llmCalls=3，
+    // 不等这道栅栏，host2 的调用可能撞上 hang 分支把用例自己挂死。
+    while (llmCalls < 3) await new Promise((r) => setTimeout(r, 10));
+    // ── 重启：新 host 实例接手同一 workDir ──
+    const host2 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    const r = await host2.tick();
+    check('重启实例重领了崩溃指派', r.worked === true);
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('恢复 poll 按单定向重发（running 恢复路径）',
+      JSON.stringify(polls[1]?.body.resendAssignments ?? null) === JSON.stringify([ASSIGNMENT_ID]));
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    const result = complete?.body.result as { iterations?: number; trialRuns?: number } | undefined;
+    check('重启后续跑交付', complete?.body.status === 'completed');
+    check('闸门从崩溃点接续（iterations=2+1=3，归零则是 1）',
+      result?.iterations === 3, `iterations=${result?.iterations}`);
+    check('试跑预算同样延续（trialRuns=1+1=2）', result?.trialRuns === 2, `trialRuns=${result?.trialRuns}`);
+    check('续跑只补跑 1 轮 LLM（不从头重放历史）', llmCalls === 4, `llmCalls=${llmCalls}`);
+    check('交付后日志清理', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    void running; // host1 的 tick 永远挂起（kill 现场），进程退出时一并消亡
+    await center.close();
+  }
+
+  console.log('-- 14b. journal 带计数直接续跑：闸门从既有计数继续（对照 11 节加强版）--');
+  {
+    const workDir = newWorkDir();
+    seedJournal(workDir, {
+      phase: 'running',
+      // 崩溃前已跑 2 轮 + 1 次试跑——重启后必须从 2 起跑，而不是从 0
+      counters: { iterations: 2, clarifications: 0, trialRuns: 1, dependencyInstalls: 0, startedAt: Date.now() },
+    });
+    const center = makeCenter({
+      llmScript: [PLAN_BAD, '{"action":"retry"}', PLAN_OK],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    const r = await host.tick();
+    check('带计数日志的重领成功', r.worked === true);
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    const result = complete?.body.result as { iterations?: number; trialRuns?: number } | undefined;
+    check('续跑交付', complete?.body.status === 'completed');
+    check('迭代从 2 接续（iterations=2+2=4；忽略计数重跑只会是 2）',
+      result?.iterations === 4, `iterations=${result?.iterations}`);
+    check('试跑从 1 接续（trialRuns=1+2=3；忽略计数只会是 2）',
+      result?.trialRuns === 3, `trialRuns=${result?.trialRuns}`);
+    check('交付后日志清理', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    await center.close();
+  }
+
   console.log('-- 15. 澄清发送失败：按幂等键重试（同 tick 快恢复 + 跨 tick 兜底）--');
   {
     const workDir = newWorkDir();

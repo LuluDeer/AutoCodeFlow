@@ -296,6 +296,39 @@ async function main(): Promise<void> {
     assert.strictEqual(r.iterations, 2, '触顶时不得再推进迭代');
   }
 
+  // ── 12c. 计数流出（onCounters）：每次记账后可见最新值，供调用方落盘 ──────
+  {
+    // onCounters 是崩溃落盘的钩子：host 靠它把计数写进 journal，running
+    // 中途被 kill 后重启才能恢复。这里钉住流出的时机与内容——没有流出，
+    // host 侧落盘的就是旧值，恢复语义形同虚设。
+    const T = 1_700_000_000_000;
+    const { handlers } = makeHandlers({ diagnose: () => 'retry' });
+    const seen: Array<{ iterations: number; trialRuns: number; startedAt: number }> = [];
+    const r = await runAgentLoop({
+      environment: ENV,
+      permissions: perms('standard'),
+      handlers,
+      counters: { ...createCounters(T), iterations: 2, trialRuns: 1 },
+      limits: { maxIterations: 5 },
+      now: () => T,
+      onCounters: (c) => seen.push({ iterations: c.iterations, trialRuns: c.trialRuns, startedAt: c.startedAt }),
+    });
+    assert.strictEqual(r.outcome, 'gate_stopped', '从 2 起跑到 5 触顶（对照场景）');
+    assert.strictEqual(seen.length, 6, '每次 iterate + trial_run 记账都必须流出（3 轮 × 2 次）');
+    assert.deepStrictEqual(
+      seen.map((s) => s.iterations),
+      [3, 3, 4, 4, 5, 5],
+      'iterate 与 trial_run 交替流出，且沿用带入的起点继续累计',
+    );
+    assert.deepStrictEqual(
+      seen.map((s) => s.trialRuns),
+      [1, 2, 2, 3, 3, 4],
+      'trial_run 记账紧随本轮 iterate 流出（latest 值可见）',
+    );
+    assert.ok(seen.every((s) => s.startedAt === T), 'startedAt 保持首次迭代时刻（不被恢复改写）');
+    assert.strictEqual(seen[seen.length - 1].iterations, r.iterations, '最后一次流出 = 结果里的终值');
+  }
+
   // ── 13. 墙钟触顶在循环中生效（会话级，不只是记账级）─────────────────────
   {
     let now = 1_700_000_000_000;

@@ -557,6 +557,18 @@ export class AgentHost {
         permissions: effective,
         handlers,
         limits: this.deps.limits ?? null,
+        // 计数流出（崩溃落盘）：每轮记账后把最新闸门计数写回本地日志——
+        // running 中途被 kill 后重启才能从磁盘恢复（resume 不重置），否则
+        // 反复 kill 就是清零续命的预算规避通道。写失败不阻塞循环——上限
+        // 在内存里仍然生效，只丢恢复点（与 onGuiActions 同款降级）。
+        onCounters: (counters) => {
+          journal.counters = counters;
+          try {
+            saveAssignmentJournal(dir, journal);
+          } catch {
+            /* 落盘失败不阻塞循环——内存计数仍然生效 */
+          }
+        },
         // 预算跨续跑/崩溃恢复连续（墙钟自首次迭代起算，resume 不重置）
         ...(journal.counters ? { counters: journal.counters } : {}),
       });

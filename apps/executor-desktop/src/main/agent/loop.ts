@@ -104,6 +104,12 @@ export interface AgentLoopInput {
   environment: EnvironmentReport;
   permissions: EffectiveAgentPermissions;
   handlers: LoopHandlers;
+  /**
+   * 计数流出（崩溃落盘的钩子）：每次记账（iterate/trial_run/clarify）之后
+   * 以最新计数调用——调用方（host）据此把计数原子写进本地日志，running
+   * 中途被 kill 后重启才能从磁盘恢复（resume 不重置）。不传则纯内存计数。
+   */
+  onCounters?: (counters: GateCounters) => void;
   counters?: GateCounters;
   limits?: Partial<GateLimits> | null;
   now?: () => number;
@@ -154,6 +160,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
         return stopped(snapshot(), counters, gate.reason, gate.message, t);
       }
       counters = recordAction(counters, 'iterate', t);
+      input.onCounters?.(counters);
       const iteration = counters.iterations;
 
       // ── ② 规划 ──────────────────────────────────────────────────────
@@ -188,6 +195,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       }
 
       counters = recordAction(counters, 'trial_run', t);
+      input.onCounters?.(counters);
       const trial = await input.handlers.trialRun({ iteration, candidate });
       feedback = trial;
 
@@ -244,6 +252,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           };
         }
         counters = recordAction(counters, 'clarify', t);
+        input.onCounters?.(counters);
         if (next === 'escalate') {
           return {
             outcome: 'escalated',
