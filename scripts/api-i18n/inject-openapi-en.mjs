@@ -295,9 +295,14 @@ function run() {
   const check = argv.includes("--check");
   const map = readMap();
   const doc = JSON.parse(fs.readFileSync(OPENAPI, "utf8"));
-  // 产物形态先判（与"缺英文"分开报：一个说产物是半成品，一个说映射表没覆盖）
+  // 产物形态先判（与"缺英文"分开报：一个说产物是半成品，一个说映射表没覆盖）。
+  // 只在 --check 门禁里跑：apply 模式（swagger:export 的第二步）读到的正是
+  // spec 刚写出的纯中文新产物，0 键是**输入前提**而非污染；注入后写盘的
+  // 条数由 missing==0 + 收集面地板间接保证，半成品入库仍会被 CI 的 --check 拦下。
+  // 曾无条件执行，导致 swagger:export 的注入步首跑即红（2026-10-28 CI
+  // api-types-drift 实测：新导出产物 0 键 → exit 1 → openapi.json 停在未注入态）。
   const existingI18nKeys = countI18nKeys(doc);
-  if (existingI18nKeys < MIN_I18N_KEYS) {
+  if (check && existingI18nKeys < MIN_I18N_KEYS) {
     console.error(
       `✘ API-I18N 产物形态异常：openapi.json 里只有 ${existingI18nKeys} 处 x-i18n-en` +
         `（地板 ${MIN_I18N_KEYS}）——这份产物是「未经注入」的半成品。`,
