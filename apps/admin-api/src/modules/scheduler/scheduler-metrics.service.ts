@@ -42,6 +42,17 @@ export interface SchedulerMetricsSnapshot {
   triggerLatencyBuckets: number[];
   /** 最近一次延迟（毫秒），毛刺观测 */
   lastTriggerLatencyMs: number;
+  /**
+   * INCIDENT-2026-10-28（P0-3）：**计划落点被丢弃**的次数
+   * （node-cron `execution:missed` 事件计数）。
+   *
+   * 与 triggersFailed 语义不同——后者是"触发了但入队失败"，本计数是
+   * "压根没触发"。这是本次事故唯一能直接反映"丢了一个落点"的指标：
+   * 12:00 丢点时 task_executions 无行、misfire 告警静默、日志里什么都没有。
+   *
+   * 正常情况下恒为 0；非 0 即说明事件循环曾被阻塞到丢拍。
+   */
+  cronSlotsMissed: number;
   /** 进程启动时间（ISO），供速率计算 */
   startedAt: string;
 }
@@ -84,6 +95,7 @@ export class SchedulerMetricsService {
     TRIGGER_LATENCY_BUCKETS_MS.length,
   ).fill(0);
   private lastTriggerLatencyMs = 0;
+  private cronSlotsMissed = 0;
 
   /** 记录一次调度扫描 tick 及其耗时 */
   recordTick(durationMs: number): void {
@@ -128,6 +140,19 @@ export class SchedulerMetricsService {
     this.misfiresSkippedDependencies++;
   }
 
+  /**
+   * INCIDENT-2026-10-28（P0-3）：记录一个被引擎丢弃的计划落点。
+   *
+   * 触发来源：node-cron 的 `execution:missed` 事件——定时器迟醒超过
+   * `missedExecutionTolerance` 时派发。正常情况下恒为 0；非 0 即说明
+   * 事件循环曾被阻塞到丢拍，是本次事故类问题的直接信号。
+   *
+   * 告警建议：单调计数，适合做"5 分钟内增量 > 0 即告警"。
+   */
+  recordCronSlotMissed(): void {
+    this.cronSlotsMissed++;
+  }
+
   /** 记录一次触发失败（入队/补偿失败等） */
   recordTriggerFailed(): void {
     this.triggersFailed++;
@@ -169,6 +194,7 @@ export class SchedulerMetricsService {
       triggersSkippedBlockStrategy: this.triggersSkippedBlockStrategy,
       triggersSkippedMaintenance: this.triggersSkippedMaintenance,
       misfiresSkippedDependencies: this.misfiresSkippedDependencies,
+      cronSlotsMissed: this.cronSlotsMissed,
       triggersFailed: this.triggersFailed,
       dependencyTriggersClaimed: this.dependencyTriggersClaimed,
       dependencyTriggersSkipped: this.dependencyTriggersSkipped,
