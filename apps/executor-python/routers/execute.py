@@ -992,8 +992,10 @@ def _validate_requirements(requirements: list[str]) -> None:
 # ---------------------------------------------------------------------------
 def _prepare_rlimit_pre_exec(timeout_seconds: float) -> Optional[Callable[[], None]]:
     """Build the prepare-subprocess rlimit preexec_fn from settings (POSIX)."""
-    import resource  # noqa: F401 - POSIX only; ImportError guarded below
-
+    # 只在 try 内 import：历史上这里先写了一句裸 `import resource`（注释还写着
+    # "ImportError guarded below"），于是 Windows 上第一句就 ModuleNotFoundError，
+    # 下面的 `except ImportError: return None` 永远到不了 —— win32 守卫是死代码，
+    # 而 gitRepo / uv 建 venv 两条 prepare 路径都无条件调本函数（行 351/3517）。
     try:
         import resource as _resource
     except ImportError:  # pragma: no cover - 非 POSIX 兜底

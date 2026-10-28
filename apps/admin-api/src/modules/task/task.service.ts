@@ -2045,6 +2045,12 @@ export class TaskService {
     // findAndCount 的数组 where 语义完全一致——故两条路径不会漂移。
     qb.where(this.buildTaskListWhere(p) as never);
 
+    // total 必须在加游标谓词之前取（理由同 getExecutionsByKeyset：typeorm 的
+    // COUNT 保留 WHERE，getManyAndCount 会把「共 N 条」算成「剩余 N 条」）。
+    // 旧实现在加了游标之后调 getManyAndCount，缺陷被 mock 掩盖——那个 mock
+    // 的注释写着「真实的 COUNT 也不含游标」（错的），比生产"更正确"。
+    const total = await qb.getCount();
+
     if (cursor) {
       // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
       // 主键从库里取回（含微秒）。**不要**改回"毫秒半开区间"：那版在同毫秒内
@@ -2073,7 +2079,7 @@ export class TaskService {
     // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
     qb.take(p.pageSize + 1);
 
-    const [rows, total] = await qb.getManyAndCount();
+    const rows = await qb.getMany();
 
     const hasMore = rows.length > p.pageSize;
     const list = hasMore ? rows.slice(0, p.pageSize) : rows;
@@ -3542,6 +3548,14 @@ export class TaskService {
     // 过滤条件：与 OFFSET 分支共用同一份装配（单份真值源，杜绝漂移）。
     this.applyAllExecutionsFilters(qb, p);
 
+    // total 必须在**加游标谓词之前**取：typeorm 的 executeCountQuery 只清
+    // orderBy/groupBy/offset/limit/skip/take，**WHERE 原样保留**
+    // （node_modules/typeorm/query-builder/SelectQueryBuilder.js:1856 实测），
+    // 所以带着游标谓词去 count 得到的是「剩余条数」——第 1 页「共 11 条」、
+    // 第 2 页「共 9 条」，用户在同一个筛选条件下看着总数凭空变少。
+    // 原注释写的是「不含游标下界」，与实现相反（注释是对的意图，代码是错的）。
+    const total = await qb.getCount();
+
     if (cursor) {
       // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
       // 主键从库里取回（含微秒）。论证见 getExecutionsByKeyset 头注。
@@ -3559,12 +3573,9 @@ export class TaskService {
     // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
     qb.take(p.pageSize + 1);
 
-    // total 用独立的 COUNT（同过滤条件、不含游标下界）——语义与 OFFSET 分支的
-    // `getManyAndCount` 返回值一致：真实总数，不是"剩余条数"、也不是 -1。
     // 两次查询**顺序**执行（不 Promise.all 同一个 qb）：getMany 会改写
     // expressionMap.queryEntity，与并发的 getCount 抢同一个可变对象不安全。
     const rows = await qb.getMany();
-    const total = await qb.getCount();
 
     const hasMore = rows.length > p.pageSize;
     const list = hasMore ? rows.slice(0, p.pageSize) : rows;

@@ -301,10 +301,16 @@ function makeExecRepo(rowset: Row[]) {
           state.getManyCalls += 1;
           return runQuery(filters, cursorParams, take);
         }),
-        // total 语义：同过滤条件下的**全量**行数（不含游标下界、不含 take）
+        /**
+         * total 语义：**当前 WHERE 下的行数**——与真实 typeorm 一致
+         * （`executeCountQuery` 只清 orderBy/limit，WHERE 原样保留）。
+         * 因此这里必须用**调用时刻已加的** cursorParams，而不是恒为 null：
+         * 恒为 null 会让「先加游标再 COUNT」这种真实缺陷在 mock 里变成绿
+         * （mock 比生产更正确的老坑）。生产现在是在加游标之前调它。
+         */
         getCount: jest.fn(async () => {
           state.countCalls += 1;
-          return runQuery(filters, null, null).length;
+          return runQuery(filters, cursorParams, null).length;
         }),
         // OFFSET 分支的取数入口（keyset 分支不得用它——由 getManyAndCountCalls
         // 计数断言，而不是抛错：抛错会让"顺手在 OFFSET 路径也换成 getMany"

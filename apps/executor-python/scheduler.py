@@ -372,12 +372,6 @@ def _collect_interpreters() -> list:
     return value
 
 
-def _heartbeat_retry_exhausted(retry_state):
-    """Called when all retries are exhausted — return None to suppress RetryError."""
-    logger.warning(f'Heartbeat failed after all retries: {retry_state.outcome.exception()}')
-    return None
-
-
 def _disk_usage_percent() -> float | None:
     """A7（第四轮审计）：work_dir 所在文件系统已用百分比（0-100）。
 
@@ -490,7 +484,12 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
     ),
     retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException, httpx.TransportError, OSError)),
     before_sleep=before_sleep_log(logger, logging.WARNING),
-    retry_error_callback=_heartbeat_retry_exhausted,
+    # 不要 retry_error_callback：tenacity 耗尽重试时若不抛异常，调用方拿到的
+    # 是**正常返回**。历史实现让它返回 None，于是 heartbeat_task 里
+    # `await _send_heartbeat(...)` 之后无条件 `record_heartbeat(True)` ——
+    # admin 不可达/DNS 断/心跳恒 401 时 /health 反而报 healthy 并刷新
+    # lastHeartbeat，把「执行器与中台失联」这件事伪装成健康（运维盲区）。
+    # 现在 RetryError 会向上抛，落到 except 分支 record_heartbeat(False)。
 )
 async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str = None) -> None:
     """ERR-04: single heartbeat attempt — tenacity retries this on transient failures.
@@ -754,30 +753,46 @@ async def pull_task() -> None:
                 _untrack_pull_reservation()
 
 
-async def heartbeat_task() -> None:
+async def _heartbeat_once() -> None:
+    """一次心跳（含结果回灌健康模块）。
+
+    独立成函数是为了**可测**：此前这段逻辑内联在 `while True` 里，测试只能把
+    `_send_heartbeat` 换成一个「会抛错的假函数」——那条路径不经过 tenacity 的
+    重试耗尽语义，于是 `retry_error_callback` 把失败吞成正常返回的缺陷，
+    测试永远看不见（实测：真路径三次重试耗尽后 `record_heartbeat(True)`）。
+
+    HEALTH-01：`record_heartbeat` 必须与**真实结果**绑定——成功才 True，
+    任何异常（含 tenacity 的 RetryError）都是 False。
+    """
     # HEALTH-01: 延迟导入——routers/__init__ 会 import execute.py，而 execute.py
     # 在模块级回调 scheduler.register_running_execution_ids_provider（E1 那段
     # 注释已说明过这条依赖），所以 scheduler 顶层 import routers.* 会形成循环导入
     # （已实测 AttributeError）。改为在函数内导入，运行时 routers 早已加载完毕。
     from routers.health import record_heartbeat
 
+    try:
+        # SEC-03: use dynamic token with auto-refresh
+        token = await get_current_token()
+        # OPS-03: generate trace ID for heartbeat
+        trace_id = str(uuid.uuid4())
+        logger.info(f'[{trace_id}] Sending heartbeat')
+        await _send_heartbeat(get_http_client(), token, trace_id)  # O-24: shared pool
+        # HEALTH-01（本轮审计）：此前**没有任何地方**调用
+        # routers/health.record_heartbeat —— 它是死代码。后果是
+        # /health 的 _admin_api_reachable 永远是 None，于是每次探针都退化成
+        # 一次 5s 超时的实时外呼（docstring 声称「用缓存值」是假的），
+        # lastHeartbeat 也永远是 null，运维无法据此判断心跳链路是否健康。
+        # 现在把真实心跳结果回灌给健康模块。
+        record_heartbeat(True)
+    except Exception as e:
+        # ERR-04: all retries exhausted — log as warning and keep the loop alive
+        logger.warning(f'Heartbeat failed after all retries: {e}')
+        record_heartbeat(False)
+
+
+async def heartbeat_task() -> None:
     while True:
-        try:
-            await asyncio.sleep(settings.heartbeat_interval_seconds)
-            # SEC-03: use dynamic token with auto-refresh
-            token = await get_current_token()
-            # OPS-03: generate trace ID for heartbeat
-            trace_id = str(uuid.uuid4())
-            logger.info(f'[{trace_id}] Sending heartbeat')
-            await _send_heartbeat(get_http_client(), token, trace_id)  # O-24: shared pool
-            # HEALTH-01（本轮审计）：此前**没有任何地方**调用
-            # routers/health.record_heartbeat —— 它是死代码。后果是
-            # /health 的 _admin_api_reachable 永远是 None，于是每次探针都退化成
-            # 一次 5s 超时的实时外呼（docstring 声称「用缓存值」是假的），
-            # lastHeartbeat 也永远是 null，运维无法据此判断心跳链路是否健康。
-            # 现在把真实心跳结果回灌给健康模块。
-            record_heartbeat(True)
-        except Exception as e:
-            # ERR-04: all retries exhausted — log as warning and keep the loop alive
-            logger.warning(f'Heartbeat failed after all retries: {e}')
-            record_heartbeat(False)
+        await asyncio.sleep(settings.heartbeat_interval_seconds)
+        # 心跳失败不得让循环退出（执行中的任务还在跑）；异常已在
+        # _heartbeat_once 内收敛为 record_heartbeat(False)。
+        await _heartbeat_once()

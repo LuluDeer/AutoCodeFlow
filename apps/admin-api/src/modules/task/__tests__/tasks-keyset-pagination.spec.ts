@@ -273,18 +273,23 @@ function makeTaskRepo(rowset: Row[]) {
         }),
         skip: jest.fn(() => qb),
         /**
-         * 与真实 `getManyAndCount` 一致：**取数套游标过滤，计数不套**
-         * （typeorm 的 executeCountQuery 会剥掉 take/limit 但保留**外层** where；
-         * 游标谓词由 andWhere 加入，故真实的 COUNT 也不含它——见对 total 的断言）。
+         * 取数（`getMany`）：**套游标过滤**。计数（`getCount`）：**不套游标**
+         * ——生产实现是在加游标谓词**之前**调 getCount。
+         *
+         * ⚠️ 历史坑（本轮修）：旧 mock 只有 `getManyAndCount`，并在注释里写下
+         * 「真实的 COUNT 也不含游标谓词」。实测 typeorm 1.1.2 的
+         * `executeCountQuery` 只清 orderBy/groupBy/offset/limit/skip/take，
+         * **WHERE 原样保留**（SelectQueryBuilder.js:1856）——真实 COUNT 带着
+         * 游标条件，于是「共 N 条」越翻越小。mock 比生产"更正确"，把真缺陷
+         * 盖了整整一轮。现在两条语义分开实现，谁错谁红。
          */
-        getManyAndCount: jest.fn(async () => {
+        countRows: () => rowset.filter((r) => matchesWhere(r, where)).length,
+        materializeRows: () => {
           state.lastKeysetParams = cursorParams;
           state.lastKeysetPredicate = predicate;
           state.lastKeysetSelect = selected;
           state.lastKeysetOrder = order;
-
           let rows = rowset.filter((r) => matchesWhere(r, where));
-          const total = rows.length;
           if (cursorParams) {
             // ⚠️ 关键：按**生产实际发出的 SQL 形态**执行对应语义，而不是永远用
             // 正确的那一种。否则"把生产改回毫秒半开区间"时数据断言照样绿——
@@ -316,9 +321,19 @@ function makeTaskRepo(rowset: Row[]) {
             }
           }
           rows.sort(compareDesc);
-          return [rows.slice(0, take), total];
+          return rows;
+        },
+        getCount: jest.fn(async () => qb.countRows()),
+        getMany: jest.fn(async () => qb.materializeRows().slice(0, take)),
+        /**
+         * `getManyAndCount` **不是**「行套游标、计数不套」——它两次都用当前 WHERE
+         * （typeorm 的 COUNT 保留 WHERE）。这里如实建模：两者都套游标。
+         * 只有这样，「用 getManyAndCount 算 keyset 的 total」才会红。
+         */
+        getManyAndCount: jest.fn(async () => {
+          const rows = qb.materializeRows();
+          return [rows.slice(0, take), rows.length];
         }),
-        getMany: jest.fn(async () => []),
       };
       return qb;
     }),
