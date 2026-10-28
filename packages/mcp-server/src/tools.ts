@@ -49,6 +49,72 @@ const JSON_ERROR = (data: unknown) => ({
 });
 
 /**
+ * F3（本轮审计）：出参脱敏的哨兵 **回传即污染**。
+ *
+ * 读路径把敏感值写成 `[redacted]`（见 redact.ts），而 agent 的典型工作流是
+ * 「`get_task` 读到参数 → 改一个字段 → `update_task` 把参数原样带回」。后端对
+ * `params` **没有任何掩码语义**（只有 `secrets` 的叶子 `******` 表示"保留"），
+ * 于是 `params.API_KEY = "[redacted]"` 会被当成真实值写进 `tasks.params`，
+ * 下次执行拿字面量 `[redacted]` 去认证 —— 失败原因与真实配置毫无关系。
+ * 对 `secrets` 更糟：`[redacted]` 不是保留哨兵（那是 `******`），会**覆盖**掉
+ * 真实密钥。
+ *
+ * 因此写面统一拒绝这个哨兵：宁可明确失败并告诉调用方「重新读一遍、或别传这个
+ * 字段」，也不接受一个确定会破坏配置的写入。
+ */
+const REDACTION_SENTINEL = '[redacted]';
+
+/** 在任意嵌套结构里找 `[redacted]`，返回首个命中路径（无命中 → null）。 */
+export function findRedactionSentinel(
+  value: unknown,
+  path = '$',
+  depth = 0,
+): string | null {
+  if (depth > 12) return null;
+  if (typeof value === 'string') {
+    return value.includes(REDACTION_SENTINEL) ? path : null;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const hit = findRedactionSentinel(value[i], `${path}[${i}]`, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof value === 'object' && value !== null) {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const hit = findRedactionSentinel(v, `${path}.${k}`, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * 写面统一守卫：载荷里出现脱敏哨兵 → 明确失败（见 `findRedactionSentinel`）。
+ * `secrets` 是唯一例外：其叶子 `******` 是后端「保留原值」的合法约定，
+ * 但 `[redacted]` 依然是污染（会覆盖真实密钥）。
+ */
+function rejectRedactionSentinel(
+  body: Record<string, unknown>,
+  toolName: string,
+): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+  const hit = findRedactionSentinel(body);
+  if (!hit) return null;
+  return JSON_ERROR({
+    error: "REDACTION_SENTINEL_IN_PAYLOAD",
+    field: hit,
+    message:
+      `${toolName} refused the write: ${hit} still contains the redaction sentinel ` +
+      `"${REDACTION_SENTINEL}" from a previous read. Writing it back would store the ` +
+      "sentinel as if it were the real value (for secrets it would overwrite the stored " +
+      "credential). Re-read the resource, change only the fields you mean to change, and " +
+      "omit the masked ones — or pass null to clear them.",
+  });
+}
+
+/**
  * R31-E2: 工具错误的结构化面。
  *
  * admin-api 的错误体是 `{ code, message, errorCode, params }`——MCP 侧此前只把
@@ -835,6 +901,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
             "executorAntiAffinityTags, executorId, codeSource, runbook, projectId, status.",
         });
       }
+      const redacted = rejectRedactionSentinel(body, "update_task");
+      if (redacted) return redacted;
       const data = await call<unknown>("PATCH", `/tasks/${taskId}`, body);
       return JSON_CONTENT(data);
     },
@@ -1450,6 +1518,8 @@ export function registerApplicationTools(
             "gitCommit, manifest, env, entrypoint, packageUrl, webhookSecret, mutexGroupId, approvalRequired.",
         });
       }
+      const redacted = rejectRedactionSentinel(body, "update_application");
+      if (redacted) return redacted;
       const data = await call<unknown>(
         "PUT",
         `/applications/${applicationId}`,

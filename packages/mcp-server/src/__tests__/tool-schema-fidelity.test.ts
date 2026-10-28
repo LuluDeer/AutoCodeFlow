@@ -276,3 +276,63 @@ describe("deploy_application / deploy_app：目标机被静默替换必须说出
     expect(payload.actualExecutorId).toBe(execB);
   });
 });
+
+describe("写面拒绝脱敏哨兵回传（F3）", () => {
+  const taskId = "33333333-3333-4333-8333-333333333333";
+
+  it("params 里带 [redacted]（读-改-写回传）→ 明确失败，不发 PATCH", async () => {
+    const res = await invoke(tools, "update_task", {
+      taskId,
+      params: { API_KEY: "[redacted]", TIMEOUT: 30 },
+    });
+    expect(res.isError).toBe(true);
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.error).toBe("REDACTION_SENTINEL_IN_PAYLOAD");
+    expect(payload.field).toBe("$.params.API_KEY");
+    // 提示必须给出下一步动作，而不是只说"错了"
+    expect(payload.message).toContain("Re-read");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("secrets 叶子是 [redacted] → 同样拒绝（后端只把 ****** 当「保留」，[redacted] 会覆盖真实密钥）", async () => {
+    const res = await invoke(tools, "update_task", {
+      taskId,
+      secrets: { DB_PASSWORD: "[redacted]" },
+    });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).field).toBe("$.secrets.DB_PASSWORD");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("secrets 叶子是 ******（后端「保留原值」约定）→ 放行，原样透传", async () => {
+    await invoke(tools, "update_task", {
+      taskId,
+      secrets: { DB_PASSWORD: "******", NEW_KEY: "v" },
+    });
+    expect(bodyOf(call)).toEqual({
+      secrets: { DB_PASSWORD: "******", NEW_KEY: "v" },
+    });
+  });
+
+  it("update_application 的 env / manifest 同一条守卫", async () => {
+    const res = await invoke(tools, "update_application", {
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      env: { API_TOKEN: "[redacted]" },
+    });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).field).toBe("$.env.API_TOKEN");
+
+    const res2 = await invoke(tools, "update_application", {
+      applicationId: "11111111-1111-4111-8111-111111111111",
+      manifest: { healthCheck: { token: "[redacted]" } },
+    });
+    expect(res2.isError).toBe(true);
+    expect(JSON.parse(res2.content[0].text).field).toBe("$.manifest.healthCheck.token");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("普通值不受影响（回归：不误伤正常写入）", async () => {
+    await invoke(tools, "update_task", { taskId, params: { TIMEOUT: 30 } });
+    expect(bodyOf(call)).toEqual({ params: { TIMEOUT: 30 } });
+  });
+});
