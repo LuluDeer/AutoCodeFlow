@@ -14,6 +14,35 @@ import {
 // 取 500 保持对外状态码不变。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
+import { PROMPT_DATA_HEADER, tagDelimited } from "./prompt-guard";
+import { parseSseFrames, parseStreamDelta } from "./ai-sse";
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
+import {
+  isTruncatedFinish,
+  normalizeAssistantContent,
+  normalizeToolCalls,
+} from "./llm-response";
+import {
+  legacyProviders,
+  normalizeProviderEntry,
+  parseProvidersJson,
+  removeProviderEntry,
+  serializeProviders,
+  upsertProviderEntry,
+  type AiProviderEntry,
+  type AiPurpose,
+} from "./ai-providers";
+import {
+  DEFAULT_MEDIA_URL_TTL_MS,
+  buildSignedMediaUrl,
+  type SignResult,
+} from "./ai-media-url";
+import {
+  resolveAiRoute,
+  type ResolvedRoute,
+  type RouteOverride,
+  type RouteResolution,
+} from "./ai-route";
 
 // ═══════════════════════════════════════════════════════════════════
 // P1（agent-and-deployment）：多模态消息契约
@@ -63,15 +92,38 @@ export interface MultimodalRequest {
   messages: MultimodalMessage[];
   tools?: ToolSchema[];
   toolChoice?: "auto" | "none";
-  /** 覆盖 ai.qwenMaxTokens。 */
+  /**
+   * 用途 → 决定路由与参数（注册表 + `ai.routes.<purpose>.*`）：
+   *   · `agent`（默认）——Agent 推理 / 执行器 relay，要求 tool-calling 面；
+   *   · `video`——视频理解（转 SOP），要求该 provider 声明支持视频。
+   */
+  purpose?: "agent" | "video";
+  /**
+   * 覆盖本次调用的 provider id（设置页"用这个模型做视频分析"的直接选择）。
+   * 只影响这一次调用，不改 `ai.routes.*` 的持久化配置。
+   */
+  provider?: string;
+  /** 覆盖路由的 maxTokens（不配则用路由分配值）。 */
   maxTokens?: number;
+  /**
+   * 要求严格 JSON 输出（执行器 plan/diagnose 协议用）。
+   * 只在调用方明确需要时下发——强制 JSON 会毁掉"给结论"的自由文本输出。
+   */
+  responseFormat?: "json_object";
 }
 
 export interface MultimodalResponse {
   content: string;
   toolCalls?: ToolCall[];
-  usage: { tokensIn: number; tokensOut: number };
+  /**
+   * `cachedTokens` = 上游报告的**命中缓存**的输入 token（OpenAI 兼容端点
+   * `usage.prompt_tokens_details.cached_tokens`；部分厂商放在 `usage.cached_tokens`）。
+   * 只有 >0 时才出现——既有断言/存储形状不受影响，同时让"这次有没有命中"可见。
+   */
+  usage: { tokensIn: number; tokensOut: number; cachedTokens?: number };
   model: string;
+  /** 实际命中的 provider id（多 provider 下"这一步是谁答的"必须可归因）。 */
+  provider?: string;
 }
 
 /** 媒体 URL 的允许协议（拒绝 file:// 等怪协议）。 */
@@ -86,6 +138,29 @@ const MEDIA_URL_RE = /^https?:\/\//i;
  */
 const DATA_IMAGE_RE = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i;
 const MAX_INLINE_IMAGE_CHARS = 3 * 1024 * 1024;
+
+/** 路由参数解析：空串/非法值 → undefined（表示"未覆盖"）。 */
+function numOrUndefined(
+  raw: string | number | undefined | null,
+): number | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** 未启用/不可用时的统一空响应（fail-open：调用方按"无结果"降级）。 */
+function emptyResponse(): MultimodalResponse {
+  return { content: "", usage: { tokensIn: 0, tokensOut: 0 }, model: "" };
+}
+
+/** 消息里是否含 video_url 片段（能力闸的判据）。 */
+function hasVideoPart(messages: MultimodalMessage[]): boolean {
+  for (const m of messages) {
+    if (typeof m.content === "string") continue;
+    if (m.content.some((p) => p?.type === "video_url")) return true;
+  }
+  return false;
+}
 
 /**
  * B-4：上游 usage 收敛——provider 返回的 prompt_tokens/completion_tokens
@@ -117,7 +192,19 @@ export class AiService {
     } catch {
       // not in DB — fall through to env
     }
-    return this.config.get<string>(`ai.${key}`, defaultValue);
+    // 契约是"永远返回字符串"：ConfigService 的 `get(key, default)` 在少数实现/
+    // 测试替身里可能返回 undefined（不认第二个参数），下游 `.trim()` 会当场炸。
+    // 收敛在这里，路由解析就永远拿到字符串（空串 = 未配置）。
+    const envValue = this.config.get<string | number>(
+      `ai.${key}`,
+      defaultValue,
+    );
+    if (typeof envValue === "string") return envValue;
+    // 数值型 env（configuration.ts 里 parseInt 过的项）也要能透传
+    if (typeof envValue === "number" && Number.isFinite(envValue)) {
+      return String(envValue);
+    }
+    return defaultValue ?? "";
   }
 
   /**
@@ -161,23 +248,24 @@ export class AiService {
     if (provider === "disabled") return "";
     const sanitized = this.sanitizeLogs(logs);
     const runtime = task.runtime || "unknown";
+    // P3-8 对齐：三段用户可控内容全部定界（声明见 PROMPT_DATA_HEADER）。
+    // 顺序仍是「先 sanitizeLogs 脱敏 → 再定界」，两者职责不重叠：前者防
+    // 凭据外泄，后者防「数据被当指令执行」。
     const lines: string[] = [
-      `You are an automated task analysis assistant. Task "${task.name}" (runtime: ${runtime}) failed. Analyze the root cause and suggest a fix.`,
+      PROMPT_DATA_HEADER,
+      `You are an automated task analysis assistant. A task failed (runtime: ${runtime}). Analyze the root cause and suggest a fix.`,
+      tagDelimited("task_name", task.name, 200),
     ];
     if (context?.failureReason) {
-      lines.push(
-        `Failure classification (already determined by the platform): ${context.failureReason}`,
-      );
+      lines.push(tagDelimited("task_error", context.failureReason, 500));
     }
     if (typeof context?.exitCode === "number") {
       lines.push(`Process exit code: ${context.exitCode}`);
     }
     if (context?.runbook && context.runbook.trim()) {
-      lines.push(
-        `Task runbook (operator-maintained troubleshooting notes for this task):\n${context.runbook.slice(0, 2000)}`,
-      );
+      lines.push(tagDelimited("task_runbook", context.runbook, 2000));
     }
-    lines.push(`\nError logs:\n${sanitized}`);
+    lines.push(tagDelimited("task_logs", sanitized, 4000));
     lines.push(
       `\nRespond in this format:\n**Failure reason:** ...\n**Fix suggestion:** ...`,
     );
@@ -216,8 +304,9 @@ export class AiService {
       };
     }
     const prompt = [
+      PROMPT_DATA_HEADER,
       `You are a cron scheduling expert. Suggest the optimal cron schedule for the following task.`,
-      `Task name: ${taskName}`,
+      tagDelimited("task_name", taskName, 200),
       `Current cron: ${currentCron || "(none)"}`,
       `Execution history (last ${stats.total} runs):`,
       `  Successes: ${stats.successes}, Failures: ${stats.failures}`,
@@ -304,17 +393,25 @@ export class AiService {
       )
       .join("\n");
     const prompt = [
+      PROMPT_DATA_HEADER,
       `You are an operations analyst. Assess the health of the following application and provide actionable recommendations.`,
-      `Application: ${appName}`,
+      tagDelimited("app_name", appName, 200),
       `Total tasks: ${stats.totalTasks}`,
       `Average success rate: ${stats.avgSuccessRate}%`,
       `Average execution duration: ${stats.avgDurationMs}ms`,
       stats.criticalTasks.length
-        ? `Critical tasks (success rate < 50%): ${stats.criticalTasks.join(", ")}`
+        ? // 名字逐个 JSON 引号化：任务名是用户可控文本，逗号拼接时一个含
+          // 换行的名字就能伪造出「下一段指令」的行结构（定界标签在这里不适用
+          // ——它们本就属于下面 task_list 的子集，重复定界只会让模型分不清）
+          `Critical tasks (success rate < 50%): ${stats.criticalTasks
+            .map((n) => JSON.stringify(n))
+            .join(", ")}`
         : `No critical tasks detected.`,
       ``,
       `Per-task breakdown:`,
-      perTaskLines || "  (no tasks)",
+      perTaskLines
+        ? tagDelimited("task_list", perTaskLines, 4000)
+        : "  (no tasks)",
       ``,
       `Respond in this format:`,
       `**Health status:** (Healthy / Warning / Critical)`,
@@ -324,36 +421,376 @@ export class AiService {
     return this.callProvider(prompt);
   }
 
-  /** Dispatch a prompt to the configured provider. Returns "" on error or if provider unknown. */
-  private async callProvider(prompt: string): Promise<string> {
-    const provider = await this.getAiConfig("provider", "disabled");
+  // ── provider 注册表与按用途路由（推理质量轮：LLM 接入与分配）──────────
+
+  /**
+   * 读取 provider 注册表。
+   *
+   * 三级来源，优先级从高到低：
+   *   ① DB `ai.providers`（JSON 数组，**不含密钥**）——设置页写入的形态；
+   *   ② 旧配置键合成（`ai.openai*` / `ai.qwen*` / `ai.ollama*`）——存量部署
+   *      升级后零行为变化，且**旧键继续作为该 id 的回落**（所以升级不必改 .env）；
+   *   ③ `LEGACY_DEFAULTS` 的内置缺省。
+   *
+   * 密钥单独取 `ai.providers.<id>.apiKey`（DB，isSecret），未配置时回落到
+   * `ai.<id>ApiKey` 旧键。注册表 JSON 里**永不存密钥**——`system_configs` 的
+   * 掩码是逐键语义，把 key 混进 JSON 等于让整条记录无法掩码。
+   */
+  private async loadProviders(): Promise<{
+    entries: AiProviderEntry[];
+    keys: Record<string, string>;
+    legacy: boolean;
+    errors: string[];
+  }> {
+    const raw = await this.getAiConfig("providers", "");
+    const parsed = parseProvidersJson(raw);
+
+    const [
+      openaiBaseUrl,
+      openaiModel,
+      openaiMaxTokens,
+      qwenBaseUrl,
+      qwenModel,
+      qwenMaxTokens,
+      qwenTimeoutMs,
+      ollamaHost,
+      ollamaModel,
+    ] = await Promise.all([
+      this.getAiConfig("openaiBaseUrl", "https://api.openai.com/v1"),
+      this.getAiConfig("openaiModel", "gpt-4o-mini"),
+      this.getAiConfig("openaiMaxTokens", "500"),
+      this.getAiConfig(
+        "qwenBaseUrl",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      ),
+      this.getAiConfig("qwenModel", "qwen-vl-max"),
+      this.getAiConfig("qwenMaxTokens", "4096"),
+      this.getAiConfig("qwenTimeoutMs", "120000"),
+      this.getAiConfig("ollamaHost", "http://localhost:11434"),
+      this.getAiConfig("ollamaModel", "llama3"),
+    ]);
+
+    const legacyEntries = legacyProviders({
+      openai: {
+        baseUrl: openaiBaseUrl,
+        model: openaiModel,
+        maxTokens: Number(openaiMaxTokens),
+      },
+      qwen: {
+        baseUrl: qwenBaseUrl,
+        model: qwenModel,
+        maxTokens: Number(qwenMaxTokens),
+        timeoutMs: Number(qwenTimeoutMs),
+      },
+      ollama: { baseUrl: ollamaHost, model: ollamaModel },
+    });
+
+    const fromJson = parsed.configured && parsed.entries.length > 0;
+    const entries = fromJson ? parsed.entries : legacyEntries;
+
+    const keys: Record<string, string> = {};
+    await Promise.all(
+      entries.map(async (entry) => {
+        const scoped = await this.getAiConfig(
+          `providers.${entry.id}.apiKey`,
+          "",
+        );
+        if (scoped) {
+          keys[entry.id] = scoped;
+          return;
+        }
+        // 旧键回落（只对三个内置 id 有意义）
+        if (entry.id === "qwen")
+          keys[entry.id] = await this.getAiConfig("qwenApiKey", "");
+        else if (entry.id === "openai")
+          keys[entry.id] = await this.getAiConfig("openaiApiKey", "");
+      }),
+    );
+
+    return { entries, keys, legacy: !fromJson, errors: parsed.errors };
+  }
+
+  /** 解析某个用途的生效路由（未启用/能力不符都如实返回原因）。 */
+  private async routeFor(
+    purpose: AiPurpose,
+    providerOverride?: string,
+  ): Promise<RouteResolution> {
+    const [{ entries, keys }, globalProvider, prefix] = await Promise.all([
+      this.loadProviders(),
+      this.getAiConfig("provider", "disabled"),
+      Promise.resolve(`routes.${purpose}`),
+    ]);
+
+    const [provider, model, maxTokens, timeoutMs, temperature] =
+      await Promise.all([
+        this.getAiConfig(`${prefix}.provider`, ""),
+        this.getAiConfig(`${prefix}.model`, ""),
+        this.getAiConfig(`${prefix}.maxTokens`, ""),
+        this.getAiConfig(`${prefix}.timeoutMs`, ""),
+        this.getAiConfig(`${prefix}.temperature`, ""),
+      ]);
+
+    const requested = (providerOverride ?? "").trim();
+    const override: RouteOverride = {
+      // 请求级覆盖 > 配置覆盖 > 全局缺省（顺序即优先级）
+      ...(requested
+        ? { provider: requested }
+        : provider.trim()
+          ? { provider: provider.trim() }
+          : {}),
+      ...(model.trim() ? { model: model.trim() } : {}),
+      ...(numOrUndefined(maxTokens) !== undefined
+        ? { maxTokens: numOrUndefined(maxTokens) }
+        : {}),
+      ...(numOrUndefined(timeoutMs) !== undefined
+        ? { timeoutMs: numOrUndefined(timeoutMs) }
+        : {}),
+      ...(numOrUndefined(temperature) !== undefined
+        ? { temperature: numOrUndefined(temperature) }
+        : {}),
+    };
+
+    return resolveAiRoute({
+      purpose,
+      globalProvider,
+      providers: entries,
+      keys,
+      override,
+    });
+  }
+
+  /** 供设置页显示：注册表条目 + 每个条目是否已配密钥（永不回传密钥值）。 */
+  async listProviderViews(): Promise<{
+    providers: Array<AiProviderEntry & { hasApiKey: boolean; legacy: boolean }>;
+    errors: string[];
+  }> {
+    const { entries, keys, legacy, errors } = await this.loadProviders();
+    return {
+      providers: entries.map((e) => ({
+        ...e,
+        hasApiKey: !!keys[e.id],
+        legacy,
+      })),
+      errors,
+    };
+  }
+
+  /**
+   * 设置页读面：注册表 + 每个用途当前指向 + 解析错误。
+   *
+   * `routes[purpose].provider` 为空串表示"跟随全局 `ai.provider`"——
+   * 前端据此刻画"继承/覆盖"两种状态，而不是自己猜。
+   */
+  async providerAdminView(): Promise<{
+    providers: Array<AiProviderEntry & { hasApiKey: boolean; legacy: boolean }>;
+    errors: string[];
+    routes: Record<
+      AiPurpose,
+      { provider: string; model: string; maxTokens: string; timeoutMs: string }
+    >;
+  }> {
+    const { providers, errors } = await this.listProviderViews();
+    const purposes: AiPurpose[] = ["analysis", "agent", "video"];
+    const entries = await Promise.all(
+      purposes.map(async (purpose) => {
+        const [provider, model, maxTokens, timeoutMs] = await Promise.all([
+          this.getAiConfig(`routes.${purpose}.provider`, ""),
+          this.getAiConfig(`routes.${purpose}.model`, ""),
+          this.getAiConfig(`routes.${purpose}.maxTokens`, ""),
+          this.getAiConfig(`routes.${purpose}.timeoutMs`, ""),
+        ]);
+        return [purpose, { provider, model, maxTokens, timeoutMs }] as const;
+      }),
+    );
+    return { providers, errors, routes: Object.fromEntries(entries) as never };
+  }
+
+  /**
+   * 新增/更新一个 provider 条目（设置页"接入端点"）。
+   *
+   * **首次保存会物化缺省条目**：`ai.providers` 为空时读面是旧键合成的三条
+   * （见 `loadProviders`），这里把它们**一并写入**注册表——从此以注册表为准。
+   * 这是刻意的：否则"存了一条却仍在读 env"会让设置页显示与实际生效不一致
+   * （改了模型不生效、怀疑平台坏了）。代价是旧 env 键对这些 id 不再生效，
+   * 由设置页接管（页面上会摘掉 `legacy` 标记）。
+   *
+   * 密钥语义与 `system_configs` 一致：不传或传 `***` = 保持原值（前端回显
+   * 掩码，不该因为"没改密钥"就把密钥清空）；传空串 = 清除。
+   */
+  async saveProvider(input: {
+    id: string;
+    label?: string;
+    transport?: string;
+    baseUrl: string;
+    model: string;
+    maxTokens?: number;
+    timeoutMs?: number;
+    supportsVideo?: boolean;
+    enabled?: boolean;
+    apiKey?: string;
+  }): Promise<void> {
+    const normalized = normalizeProviderEntry(
+      {
+        id: input.id,
+        label: input.label,
+        transport: input.transport,
+        baseUrl: input.baseUrl,
+        model: input.model,
+        maxTokens: input.maxTokens,
+        timeoutMs: input.timeoutMs,
+        supportsVideo: input.supportsVideo,
+        enabled: input.enabled,
+      },
+      input.id,
+    );
+    if (normalized.status === "error") {
+      throw new AppError(ErrorCode.AI_PROVIDER_INVALID, {
+        detail: normalized.message,
+      });
+    }
+    if (!/^https?:\/\//i.test(normalized.entry.baseUrl)) {
+      throw new AppError(ErrorCode.AI_PROVIDER_INVALID, {
+        detail: "baseUrl 必须是 http(s) 地址",
+      });
+    }
+    if (!normalized.entry.model.trim()) {
+      throw new AppError(ErrorCode.AI_PROVIDER_INVALID, {
+        detail: "模型名不能为空",
+      });
+    }
+
+    const { entries } = await this.loadProviders();
+    await this.systemConfig.upsert({
+      key: "ai.providers",
+      value: serializeProviders(upsertProviderEntry(entries, normalized.entry)),
+      description: "AI provider 注册表（不含密钥）",
+    });
+
+    const key = (input.apiKey ?? "").trim();
+    if (key === "***") return; // 保持原值
+    if (key === "") {
+      // 显式清空：写空串而不是删行（保留 isSecret 元数据，历史可追溯）
+      await this.systemConfig.upsert({
+        key: `ai.providers.${normalized.entry.id}.apiKey`,
+        value: "",
+        description: `provider ${normalized.entry.id} 的 API Key`,
+        isSecret: true,
+      });
+      return;
+    }
+    await this.systemConfig.upsert({
+      key: `ai.providers.${normalized.entry.id}.apiKey`,
+      value: key,
+      description: `provider ${normalized.entry.id} 的 API Key`,
+      isSecret: true,
+    });
+  }
+
+  /** 删除一个 provider 条目（连同它的密钥行——孤儿密钥是纯负债）。 */
+  async deleteProvider(id: string): Promise<void> {
+    const { entries } = await this.loadProviders();
+    const next = removeProviderEntry(entries, id);
+    if (next.length === entries.length) {
+      throw new AppError(ErrorCode.AI_PROVIDER_NOT_FOUND, { id });
+    }
+    await this.systemConfig.upsert({
+      key: "ai.providers",
+      value: serializeProviders(next),
+      description: "AI provider 注册表（不含密钥）",
+    });
     try {
-      if (provider === "openai") return await this.callOpenAI(prompt);
-      if (provider === "ollama") return await this.callOllama(prompt);
-      // P1: qwen 走纯文本时复用 OpenAI 兼容分支的骨架，但用 qwen 自己的
-      // 模型/密钥/令牌上限——不作为 openai 的别名，否则「切到 qwen」会意外
-      // 带上 gpt-4o-mini 与 500 令牌上限。
-      if (provider === "qwen") return await this.callQwenText(prompt);
+      await this.systemConfig.remove(`ai.providers.${id}.apiKey`);
+    } catch {
+      // 删除密钥失败不阻塞条目删除（下次覆盖写入时会被覆盖）；
+      // 但服务日志里应能看到——这里交给上层 upsert 的成功路径，不额外抛。
+    }
+  }
+
+  /**
+   * 把某个用途指向某个 provider（空串 = 跟随全局）。
+   *
+   * 只写 `ai.routes.<purpose>.provider/.model` 两键：maxTokens/timeoutMs/
+   * temperature 属于"细调"，由环境变量或系统配置直接设置，不在这条
+   * "选模型"的主路径上增加字段（少一个必填项就少一类填错）。
+   */
+  async assignRoute(
+    purpose: AiPurpose,
+    providerId: string,
+    model: string,
+  ): Promise<void> {
+    await Promise.all([
+      this.systemConfig.upsert({
+        key: `ai.routes.${purpose}.provider`,
+        value: providerId.trim(),
+        description: `${purpose} 用途使用的 provider（空=跟随全局）`,
+      }),
+      this.systemConfig.upsert({
+        key: `ai.routes.${purpose}.model`,
+        value: model.trim(),
+        description: `${purpose} 用途覆盖的模型名（空=用条目缺省）`,
+      }),
+    ]);
+  }
+
+  /**
+   * 为一段已落库的视频签发**给模型用的直链**（视频转 SOP 的前置）。
+   *
+   * 为什么由 AiService 提供而不是端点自己拼：签名密钥/可达 base/TTL 是 AI 侧
+   * 配置（`ai.mediaUrlSecret` / `ai.mediaBaseUrl` / `ai.mediaUrlTtlMs`），
+   * 端点只该拿到"能用/不能用 + URL"。未配置时返回可读原因，让端点把它翻译成
+   * 用户提示，而不是发一条模型取不到的链接（那会表现为"生成卡住"）。
+   */
+  async signedVideoUrl(mediaId: string, fileName: string): Promise<SignResult> {
+    const [secret, baseUrl, ttlRaw] = await Promise.all([
+      this.getAiConfig("mediaUrlSecret", ""),
+      this.getAiConfig("mediaBaseUrl", ""),
+      this.getAiConfig("mediaUrlTtlMs", String(DEFAULT_MEDIA_URL_TTL_MS)),
+    ]);
+    const ttl = Number(ttlRaw);
+    return buildSignedMediaUrl(
+      { mediaId, fileName },
+      {
+        secret,
+        baseUrl,
+        ttlMs: Number.isFinite(ttl) && ttl > 0 ? ttl : DEFAULT_MEDIA_URL_TTL_MS,
+      },
+    );
+  }
+
+  /**
+   * 校验视频直链用的签名密钥（下载端与签发端**必须**同源：都是 DB 优先 +
+   * env 兜底，任何一边读错都会变成"链接永远验不过"）。
+   */
+  async signingSecret(): Promise<string> {
+    return this.getAiConfig("mediaUrlSecret", "");
+  }
+
+  /** Dispatch a prompt to the **analysis** route. Returns "" when unavailable. */
+  private async callProvider(prompt: string): Promise<string> {
+    const resolved = await this.routeFor("analysis");
+    if (resolved.status === "error") {
+      // fail-open：与既有姿态一致——未启用/不可用即返回空，调用方按「无结果」
+      // 降级。debug 级：默认 disabled 的部署不该被这条刷屏。
+      this.logger.debug(`AI analysis 跳过：${resolved.message}`);
+      return "";
+    }
+    const route = resolved.route;
+    for (const note of route.notes)
+      this.logger.debug(`AI route(${route.purpose}): ${note}`);
+    try {
+      if (route.transport === "ollama") {
+        return await this.callGenerate(route, prompt);
+      }
+      const res = await this.callCompatible(route, {
+        messages: [{ role: "user", content: prompt }],
+      });
+      return res.content;
     } catch (e: unknown) {
       this.logger.warn(
         `AI error: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
     return "";
-  }
-
-  /**
-   * P1: Qwen 纯文本路径（供既有三类分析复用：失败分析 / 排程建议 / 应用健康）。
-   *
-   * 与 chatMultimodal 的分工：本方法只处理 string prompt、返回 string，
-   * 与 callOpenAI 契约逐一对应（故可被 callProvider 直接替换使用）；
-   * 多模态与 tool-calling 走 chatMultimodal。
-   */
-  private async callQwenText(prompt: string): Promise<string> {
-    const res = await this.chatMultimodal({
-      messages: [{ role: "user", content: prompt }],
-    });
-    return res.content;
   }
 
   /**
@@ -369,73 +806,47 @@ export class AiService {
    * 安全：出站走与 callOpenAI 完全相同的守卫——assertAndPinHttpUrl
    * （SSRF + DNS pin）+ maxRedirects:0（拒 3xx 绕过）。**不新开旁路**。
    */
+  /**
+   * 多模态 / tool-calling 对话（Agent 与视频理解共用）。
+   *
+   * **不再按厂商分派**：`qwen` 只是注册表里的一条（`supportsVideo: true`），
+   * 任何 OpenAI 兼容端点都能承载 Agent。用途（`req.purpose`）决定走哪条路由：
+   *   · `agent`（默认）→ 支持 tool-calling 的端点，输出/超时按 Agent 下限抬；
+   *   · `video` → **必须** `supportsVideo` 的端点，否则如实不可用（不静默降级）。
+   *
+   * 安全：出站仍走与既有分支完全相同的守卫——`assertAndPinHttpUrl`（SSRF +
+   * DNS pin）+ `maxRedirects: 0`（拒 3xx 绕过）+ `validateMediaUrls`
+   * （媒体 URL 只接受 http(s) / 受限 inline 图片）。**不新开旁路**。
+   */
   async chatMultimodal(req: MultimodalRequest): Promise<MultimodalResponse> {
-    const provider = await this.getAiConfig("provider", "disabled");
-    if (provider !== "qwen") {
-      // fail-open：与既有 analyzeFailure 一致的姿态——未启用即返回空，
-      // 调用方按「无结果」降级，绝不抛错影响主链。
-      return {
-        content: "",
-        usage: { tokensIn: 0, tokensOut: 0 },
-        model: "",
-      };
+    const purpose: AiPurpose = req.purpose ?? "agent";
+    const resolved = await this.routeFor(purpose, req.provider);
+    if (resolved.status === "error") {
+      this.logger.warn(
+        `chatMultimodal(${purpose}) 不可用：${resolved.message}`,
+      );
+      return emptyResponse();
+    }
+    const route = resolved.route;
+    for (const note of route.notes)
+      this.logger.debug(`AI route(${purpose}): ${note}`);
+
+    if (route.transport !== "openai") {
+      // 到这里只可能是配置指错（路由层已拒 agent 走 generate 面）
+      this.logger.warn(
+        `chatMultimodal(${purpose}) 选中的 provider「${route.provider}」只有 /api/generate 面，无法承载多模态/tool-calling`,
+      );
+      return emptyResponse();
+    }
+    if (!route.supportsVideo && hasVideoPart(req.messages)) {
+      // 路由层对 video 用途已拒；这里是防御性兜底（例如 agent 用途误传视频）
+      this.logger.warn(
+        `chatMultimodal(${purpose}) 收到 video_url，但 provider「${route.provider}」未声明支持视频——已忽略本次调用`,
+      );
+      return emptyResponse();
     }
 
-    const apiKey = await this.getAiConfig("qwenApiKey", "");
-    if (!apiKey) {
-      this.logger.warn("chatMultimodal: qwen provider enabled but no API key");
-      return { content: "", usage: { tokensIn: 0, tokensOut: 0 }, model: "" };
-    }
-
-    const model = await this.getAiConfig("qwenModel", "qwen-vl-max");
-    const baseUrl = await this.getAiConfig(
-      "qwenBaseUrl",
-      "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    );
-    const maxTokens = req.maxTokens ?? (await this.getQwenMaxTokens());
-    const timeoutMs = await this.getQwenTimeoutMs();
-
-    // F-3（SEC-NEW）: 与 callOpenAI 同款——校验同时把目标 pin 到通过的 IP
-    // （Host/SNI 保留），关闭 DNS rebinding 窗口。
-    const pinned = await assertAndPinHttpUrl(baseUrl, {
-      allowPrivateNetwork:
-        this.config.get<boolean>("ai.allowPrivateNetwork") === true,
-    });
-    const pinCfg = pinnedAxiosConfig(pinned);
-
-    this.validateMediaUrls(req.messages);
-
-    const body: Record<string, unknown> = {
-      model,
-      messages: req.messages,
-      max_tokens: maxTokens,
-    };
-    if (req.tools && req.tools.length > 0) {
-      body.tools = req.tools;
-      body.tool_choice = req.toolChoice ?? "auto";
-    }
-
-    const r = await axios.post(`${baseUrl}/chat/completions`, body, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      timeout: timeoutMs,
-      // R3: maxRedirects=0 —— 3xx 不得绕过首跳 SSRF 校验（同 callOpenAI）。
-      maxRedirects: 0,
-      ...pinCfg,
-    });
-
-    const choice = r.data?.choices?.[0];
-    const usage = r.data?.usage ?? {};
-    return {
-      content: choice?.message?.content ?? "",
-      toolCalls: choice?.message?.tool_calls ?? undefined,
-      usage: {
-        // B-4：usage 来自上游 HTTP 响应（不可信）——Number 强转 + 有限性
-        // 兜底后再出本模块，杜绝字符串/畸形值流入下游 SQL 拼接点。
-        tokensIn: usageCount(usage.prompt_tokens),
-        tokensOut: usageCount(usage.completion_tokens),
-      },
-      model,
-    };
+    return this.callCompatible(route, req);
   }
 
   /**
@@ -479,102 +890,231 @@ export class AiService {
     }
   }
 
-  private async getQwenMaxTokens(): Promise<number> {
-    const raw = await this.getAiConfig("qwenMaxTokens", "4096");
-    const n = parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? n : 4096;
-  }
+  /**
+   * OpenAI 兼容调用（analysis / agent / video 共用**同一条**实现）。
+   *
+   * 为什么能共用：三者的差别只有「模型 / 令牌上限 / 超时 / 要不要 tools」，
+   * 而这些都是路由的一部分；HTTP 形状、SSRF 守卫、响应归一三件事完全相同。
+   * 按用途复制三份实现只会让守卫与归一在某一份里悄悄漂移（历史上 qwen 分支
+   * 就是因为"另抄一份"而漏掉过校验）。
+   */
+  private async callCompatible(
+    route: ResolvedRoute,
+    req: MultimodalRequest,
+  ): Promise<MultimodalResponse> {
+    // AI-001 / F-3：SSRF 守卫 + DNS pin（Host/SNI 保留），关闭 rebinding 窗口。
+    // ARCH-31：AI_ALLOW_PRIVATE_NETWORK=true 时放开内网（link-local 恒拒）。
+    const pinned = await assertAndPinHttpUrl(route.baseUrl, {
+      allowPrivateNetwork:
+        this.config.get<boolean>("ai.allowPrivateNetwork") === true,
+    });
+    const pinCfg = pinnedAxiosConfig(pinned);
 
-  private async getQwenTimeoutMs(): Promise<number> {
-    const raw = await this.getAiConfig("qwenTimeoutMs", "120000");
-    const n = parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? n : 120000;
+    this.validateMediaUrls(req.messages);
+
+    const body: Record<string, unknown> = {
+      model: route.model,
+      messages: req.messages,
+      max_tokens: req.maxTokens ?? route.maxTokens,
+    };
+    // 只在显式配置时下发温度——不猜 provider 的默认值
+    if (route.temperature !== undefined) body.temperature = route.temperature;
+    if (req.tools && req.tools.length > 0) {
+      body.tools = req.tools;
+      body.tool_choice = req.toolChoice ?? "auto";
+    }
+    if (req.responseFormat) {
+      body.response_format = { type: req.responseFormat };
+    }
+
+    const r = await axios.post(`${route.baseUrl}/chat/completions`, body, {
+      headers: { Authorization: `Bearer ${route.apiKey}` },
+      timeout: route.timeoutMs,
+      // R3: maxRedirects=0 —— 3xx 不得绕过首跳 SSRF 校验。
+      maxRedirects: 0,
+      ...pinCfg,
+    });
+
+    const choice = r.data?.choices?.[0];
+    const usage = r.data?.usage ?? {};
+    const cachedTokens = usageCount(
+      usage.prompt_tokens_details?.cached_tokens ??
+        usage.input_tokens_details?.cached_tokens ??
+        usage.cached_tokens,
+    );
+
+    // 上游响应是**不可信输入**（见 llm-response.ts 的三种畸形形状）。
+    const content = normalizeAssistantContent(choice?.message?.content);
+    const toolCalls = normalizeToolCalls(choice?.message?.tool_calls);
+
+    // 命中率只统计"有输入"的调用（tokensIn>0），避免把空响应算成 miss
+    if (usageCount(usage.prompt_tokens) > 0) {
+      recordRuntime("autoflow_ai_cache_lookup_total", {
+        result: cachedTokens > 0 ? "hit" : "miss",
+      });
+    }
+
+    if (isTruncatedFinish(choice?.finish_reason)) {
+      this.logger.warn(
+        `chatMultimodal: output truncated by max_tokens (provider=${route.provider}, ` +
+          `model=${route.model}, maxTokens=${body.max_tokens}, ` +
+          `toolCalls=${toolCalls?.length ?? 0})`,
+      );
+    }
+
+    return {
+      content,
+      toolCalls,
+      usage: {
+        tokensIn: usageCount(usage.prompt_tokens),
+        tokensOut: usageCount(usage.completion_tokens),
+        ...(cachedTokens > 0 ? { cachedTokens } : {}),
+      },
+      model: route.model,
+      provider: route.provider,
+    };
   }
 
   /**
-   * F-6（审计）: openai 分支 max_tokens 提为可配（此前硬编码 500）。
-   * 默认 500 与旧硬编码逐字节一致（失败日志分析的省成本档，零行为漂移）；
-   * env 走 configuration.ts 的 ai.openaiMaxTokens（OPENAI_MAX_TOKENS），
-   * DB 系统配置（ai.openaiMaxTokens）可进一步覆盖——与 qwenMaxTokens 同款
-   * 双轨与解析兜底（非法值回退默认 500）。
+   * 流式版本（SSE）：给"看视频出草稿"这类**慢轮次**用。
+   *
+   * 与 `chatMultimodal` 的差别只在传输：同样的路由/守卫/媒体校验，`stream: true`
+   * 后逐帧解析 `data:`，每段增量回调 `onDelta`。返回的仍是**完整**响应（内容 +
+   * usage），调用方照旧做协议解析与落库——流只是"让人先看到"。
+   *
+   * `stream_options.include_usage` 是 OpenAI 的扩展：不支持的 provider 会忽略它，
+   * 此时 usage 为空（下游按 0 记），不影响正文。
    */
-  private async getOpenAiMaxTokens(): Promise<number> {
-    const raw = await this.getAiConfig("openaiMaxTokens", "500");
-    const n = parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? n : 500;
-  }
+  async chatMultimodalStream(
+    req: MultimodalRequest,
+    handlers: { onDelta?: (text: string) => void; signal?: AbortSignal } = {},
+  ): Promise<MultimodalResponse> {
+    const purpose: AiPurpose = req.purpose ?? "agent";
+    const resolved = await this.routeFor(purpose, req.provider);
+    if (resolved.status === "error") {
+      this.logger.warn(
+        `chatMultimodalStream(${purpose}) 不可用：${resolved.message}`,
+      );
+      return emptyResponse();
+    }
+    const route = resolved.route;
+    if (route.transport !== "openai") return emptyResponse();
+    if (!route.supportsVideo && hasVideoPart(req.messages))
+      return emptyResponse();
 
-  private async callOpenAI(prompt: string) {
-    const model = await this.getAiConfig("openaiModel", "gpt-4o-mini");
-    const apiKey = await this.getAiConfig("openaiApiKey", "");
-    const baseUrl = await this.getAiConfig(
-      "openaiBaseUrl",
-      "https://api.openai.com/v1",
-    );
-    // AI-001: refuse SSRF (private/loopback/link-local/cloud-metadata) for
-    // admin-configured AI base URLs. The check is the same as the webhook
-    // channel — both stem from config-driven outbound HTTP.
-    // ARCH-31（2026-09-13）: AI_ALLOW_PRIVATE_NETWORK=true 时放开内网目标
-    // （同姿态：link-local 云元数据恒拒），默认 false 零行为变化。
-    // F-3（SEC-NEW）: 校验同时把目标 pin 到通过的 IP（Host/SNI 保留），
-    // 关闭 DNS rebinding 窗口——AI 配置可含自定义域名，逐查询 rebind 可把
-    // 请求打到云元数据/内网。
-    const pinned = await assertAndPinHttpUrl(baseUrl, {
+    const pinned = await assertAndPinHttpUrl(route.baseUrl, {
       allowPrivateNetwork:
         this.config.get<boolean>("ai.allowPrivateNetwork") === true,
     });
     const pinCfg = pinnedAxiosConfig(pinned);
-    // F-6: max_tokens 来自 ai.openaiMaxTokens（默认 500 = 旧硬编码）。
-    const maxTokens = await this.getOpenAiMaxTokens();
-    // 原始 baseUrl 原样拼路径（new URL 归一化会改字节形态）；pin 由 agent.lookup 完成。
-    const r = await axios.post(
-      `${baseUrl}/chat/completions`,
+    this.validateMediaUrls(req.messages);
+
+    const body: Record<string, unknown> = {
+      model: route.model,
+      messages: req.messages,
+      max_tokens: req.maxTokens ?? route.maxTokens,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    if (route.temperature !== undefined) body.temperature = route.temperature;
+    if (req.responseFormat) body.response_format = { type: req.responseFormat };
+
+    const r = await axios.post(`${route.baseUrl}/chat/completions`, body, {
+      headers: { Authorization: `Bearer ${route.apiKey}` },
+      // 流式下 timeout 是"整条连接"的上限；视频推理本来慢，取路由分配值
+      timeout: route.timeoutMs,
+      responseType: "stream",
+      maxRedirects: 0,
+      ...(handlers.signal ? { signal: handlers.signal } : {}),
+      ...pinCfg,
+    });
+
+    let content = "";
+    let usage: { tokensIn: number; tokensOut: number; cachedTokens?: number } =
       {
-        model,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: maxTokens,
+        tokensIn: 0,
+        tokensOut: 0,
+      };
+
+    await new Promise<void>((resolve, reject) => {
+      const stream = r.data as NodeJS.ReadableStream;
+      let buffer = "";
+      const onData = (chunk: Buffer | string) => {
+        buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        let parsedFrames: ReturnType<typeof parseSseFrames>;
+        try {
+          parsedFrames = parseSseFrames(buffer);
+        } catch (err) {
+          reject(err);
+          return;
+        }
+        buffer = parsedFrames.rest;
+        for (const frame of parsedFrames.frames) {
+          let delta: ReturnType<typeof parseStreamDelta>;
+          try {
+            delta = parseStreamDelta(frame.data);
+          } catch (err) {
+            // 流内错误帧：如实上抛（调用方据此报错，而不是当成"模型没说话"）
+            reject(err);
+            return;
+          }
+          if (!delta) continue;
+          if (delta.usage) usage = delta.usage;
+          if (delta.text) {
+            content += delta.text;
+            try {
+              handlers.onDelta?.(delta.text);
+            } catch {
+              // 下游（HTTP 连接）断了不该中断已产生的推理——继续收完
+            }
+          }
+        }
+      };
+      stream.on("data", onData);
+      stream.on("end", () => resolve());
+      stream.on("error", (err: Error) => reject(err));
+    });
+
+    if (usage.tokensIn > 0) {
+      recordRuntime("autoflow_ai_cache_lookup_total", {
+        result: usage.cachedTokens ? "hit" : "miss",
+      });
+    }
+
+    return {
+      content,
+      usage: {
+        tokensIn: usage.tokensIn,
+        tokensOut: usage.tokensOut,
+        ...(usage.cachedTokens ? { cachedTokens: usage.cachedTokens } : {}),
       },
-      {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        timeout: 30_000,
-        // R3: assertSafeHttpUrl only validates the first-hop URL; refuse
-        // 3xx so a redirect cannot bypass the SSRF guard into a private
-        // target.
-        maxRedirects: 0,
-        ...pinCfg,
-      },
-    );
-    return r.data.choices[0].message.content;
+      model: route.model,
+      provider: route.provider,
+    };
   }
 
-  private async callOllama(prompt: string) {
-    const host = await this.getAiConfig("ollamaHost", "http://localhost:11434");
-    // AI-001: SSRF guard for self-hosted Ollama.
-    // ARCH-31（2026-09-13）: 默认姿态拒一切非 public——本地 Ollama 的默认
-    // localhost:11434 也被拒（历史缺口：文档宣称支持本地 Ollama 但闸门不放行）。
-    // AI_ALLOW_PRIVATE_NETWORK=true 显式放开 loopback/restricted/private-lan
-    // （同机自建部署），link-local 云元数据仍恒拒。开关为 env 级部署配置，
-    // 不进 DB 系统配置（与 EXECUTOR_ALLOW_PRIVATE_NETWORK 同形态）。
-    // F-3（SEC-NEW）: 同 callOpenAI，pin 到校验通过的 IP。
-    const pinned = await assertAndPinHttpUrl(host, {
+  /**
+   * ollama 的 `/api/generate`（只有纯文本分析用途走这里）。
+   *
+   * Agent / 视频用途在路由层就被拒（该面没有 tools，也不接受多模态片段）——
+   * 静默降级成"无工具文本模式"会让 Agent 每一步工具调用都失败。
+   */
+  private async callGenerate(
+    route: ResolvedRoute,
+    prompt: string,
+  ): Promise<string> {
+    const pinned = await assertAndPinHttpUrl(route.baseUrl, {
       allowPrivateNetwork:
         this.config.get<boolean>("ai.allowPrivateNetwork") === true,
     });
     const pinCfg = pinnedAxiosConfig(pinned);
-    const model = await this.getAiConfig("ollamaModel", "llama3");
     const r = await axios.post(
-      `${host}/api/generate`,
-      { model, prompt, stream: false },
-      // R3: maxRedirects=0 — see callOpenAI comment. Ollama is
-      // self-hosted; a redirect to a private host would still slip past
-      // the first-hop check, so we refuse 3xx outright.
-      {
-        timeout: 60_000,
-        maxRedirects: 0,
-        ...pinCfg,
-      },
+      `${route.baseUrl}/api/generate`,
+      { model: route.model, prompt, stream: false },
+      // R3: maxRedirects=0 —— 自建服务的 3xx 同样不得绕过首跳校验。
+      { timeout: route.timeoutMs, maxRedirects: 0, ...pinCfg },
     );
-    return r.data.response;
+    return typeof r.data?.response === "string" ? r.data.response : "";
   }
 
   /** Return current effective AI config (for the settings page to display). */
@@ -607,60 +1147,36 @@ export class AiService {
   }
 
   /**
-   * P2: 当前生效的 provider / model（供 Agent 逐条记录「这一步是谁答的」）。
+   * 当前生效路由（供 Agent 逐条记录「这一步是谁答的」）。
    *
-   * 为什么由 AiService 暴露而不是调用方自己猜：路由是 AiService 的内部
-   * 决策（provider 枚举 + 各 provider 的默认模型），调用方复制一份解析逻辑
-   * 必然漂移——而 steps.provider/model 正是排查与成本归因的依据，错了会
-   * 把排查引向错误方向。
+   * 为什么由 AiService 暴露而不是调用方自己猜：路由是内部决策（注册表 +
+   * 用途覆盖 + 参数下限），调用方复制一份解析逻辑必然漂移——而
+   * `steps.provider/model` 正是排查与成本归因的依据，错了会把排查引向错误方向。
    */
-  async getActiveRoute(): Promise<{ provider: string; model: string }> {
-    const provider = await this.getAiConfig("provider", "disabled");
-    if (provider === "qwen") {
-      return {
-        provider,
-        model: await this.getAiConfig("qwenModel", "qwen-vl-max"),
-      };
-    }
-    if (provider === "openai") {
-      return {
-        provider,
-        model: await this.getAiConfig("openaiModel", "gpt-4o-mini"),
-      };
-    }
-    if (provider === "ollama") {
-      return {
-        provider,
-        model: await this.getAiConfig("ollamaModel", "llama3"),
-      };
-    }
-    return { provider, model: "" };
+  async getActiveRoute(
+    purpose: AiPurpose = "agent",
+  ): Promise<{ provider: string; model: string }> {
+    const resolved = await this.routeFor(purpose);
+    if (resolved.status === "error") return { provider: "disabled", model: "" };
+    return {
+      provider: resolved.route.provider,
+      model: resolved.route.model,
+    };
   }
 
   /**
-   * P1: 按 provider 返回「该 provider 是否已配置密钥」。
+   * 「当前生效 provider 是否已配置密钥」（设置页展示用，永不回传密钥值）。
    *
-   * 为什么需要这个方法：既有 AiController.getConfig 硬编码查
-   * `ai.openaiApiKey`，加了 qwen 之后会让「选了 qwen 但 API Key 显示未配置」
-   * ——前端据此误判为不可用（设计文档 05 §5 改造清单 #3）。
+   * 语义变化（推理质量轮）：不再按 `ai.provider` 手写 qwen/openai 分支——
+   * 注册表里任何 OpenAI 兼容条目都算，密钥来源统一（scoped key → 旧键）。
    */
   async hasApiKeyForProvider(): Promise<boolean> {
-    const provider = await this.getAiConfig("provider", "disabled");
-    const keyName =
-      provider === "qwen"
-        ? "qwenApiKey"
-        : provider === "openai"
-          ? "openaiApiKey"
-          : null;
-    if (!keyName) return false;
-    try {
-      const rec = await this.systemConfig.findOne(`ai.${keyName}`);
-      if (rec?.value) return true;
-    } catch {
-      // not in DB — fall through to env
-    }
-    // env 兜底：未在 DB 配置时，看 env 注入的同名键（configuration.ts ai 段）
-    const envVal = this.config.get<string>(`ai.${keyName}`, "");
-    return !!envVal;
+    const { entries, keys } = await this.loadProviders();
+    const global = (
+      await this.getAiConfig("provider", "disabled")
+    ).toLowerCase();
+    const entry = entries.find((e) => e.id === global);
+    if (!entry || entry.transport !== "openai") return false;
+    return !!keys[entry.id]?.trim();
   }
 }

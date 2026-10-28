@@ -999,6 +999,150 @@ export const APPLICATION_CODES = {
     en: "AI config {{field}} must be an integer between {{min}} and {{max}} (leave empty to restore the default)",
   },
 
+  /**
+   * provider 条目非法（id 形态 / baseUrl / 数值范围）。400：管理员在设置页
+   * 填错了，属可自助修复——错误文案带上具体字段，而不是笼统"参数错误"。
+   */
+  AI_PROVIDER_INVALID: {
+    status: 400,
+    zh: "模型接入配置不合法：{{detail}}",
+    en: "Invalid model provider configuration: {{detail}}",
+  },
+
+  /** 删除不存在的 provider（可能已被别处删除）。 */
+  AI_PROVIDER_NOT_FOUND: {
+    status: 404,
+    zh: "模型接入不存在：{{id}}",
+    en: "Model provider not found: {{id}}",
+  },
+
+  // ── 视频转 SOP 交互式会话（modules/ai/ai-sop-session*）──────────────
+  /**
+   * 同一会话已有一轮在跑。409 语义：不是用户填错，也不是服务坏了，
+   * 而是"这一次重复提交"——重试前先等上一轮结束（或刷新看结果）。
+   */
+  AI_SOP_TURN_IN_PROGRESS: {
+    status: 409,
+    zh: "这一轮还在生成中（同一会话不支持并发提交），请等它完成或刷新查看",
+    en: "A turn is already running for this session — wait for it to finish or refresh",
+  },
+
+  /** 会话不存在（或已被保留期清理）。 */
+  AI_SOP_SESSION_NOT_FOUND: {
+    status: 404,
+    zh: "编写会话不存在：{{id}}",
+    en: "Authoring session not found: {{id}}",
+  },
+
+  /** 这一轮既没有文字也没有新视频——没什么可发给模型。 */
+  AI_SOP_NO_INPUT: {
+    status: 400,
+    zh: "请补充一句话，或再传一段录屏",
+    en: "Add a message or upload another recording",
+  },
+
+  /**
+   * 会话挂的视频数已达上限。上限存在的理由：每轮都要把**全部**视频重发
+   * （无状态 API 没有跨轮记忆），数量线性抬高每轮成本。
+   */
+  AI_SOP_VIDEO_LIMIT: {
+    status: 400,
+    zh: "一次会话最多挂 {{max}} 段录屏（每轮都要全量重发，成本随数量上升）",
+    en: "At most {{max}} recordings per session (all of them are resent each turn)",
+  },
+
+  /**
+   * 追问次数用尽后模型仍在追问。不静默截断：如实让人补信息或换更强的模型，
+   * 而不是继续每轮重算全部视频。
+   */
+  AI_SOP_QUESTIONS_EXHAUSTED: {
+    status: 400,
+    zh: "本会话已追问 {{max}} 次仍未收敛——请补充关键信息，或换用更强的视频模型",
+    en: "The model has asked {{max}} questions without converging — add the missing details or use a stronger video model",
+  },
+
+  // ── 视频转 SOP（modules/ai/ai-media*, ai-sop-draft）─────────────────
+  /**
+   * 上传的视频文件名不可用。文件名会参与**下载路径**（模型按其扩展名判类型），
+   * 故只允许 `[A-Za-z0-9._-]` 且不得以点开头（防穿越/隐藏文件）。
+   * 400：管理员在表单里选错了文件，属可自助修复。
+   */
+  AI_MEDIA_NAME_INVALID: {
+    status: 400,
+    zh: "文件名不可用：只允许字母、数字、点、下划线与连字符，且不能以点开头",
+    en: "Invalid file name: only letters, digits, dot, underscore and hyphen are allowed, and it must not start with a dot",
+  },
+
+  /** 视频格式不在白名单（mp4/webm/mov/m4v）——发错类型会让模型侧直接拒。 */
+  AI_MEDIA_TYPE_NOT_ALLOWED: {
+    status: 400,
+    zh: "不支持的视频格式（允许 mp4 / webm / mov / m4v）",
+    en: "Unsupported video format (allowed: mp4 / webm / mov / m4v)",
+  },
+
+  /** 空文件。 */
+  AI_MEDIA_EMPTY: {
+    status: 400,
+    zh: "上传的文件为空",
+    en: "The uploaded file is empty",
+  },
+
+  /** 超过单文件上限（100MB）。 */
+  AI_MEDIA_TOO_LARGE: {
+    status: 413,
+    zh: "视频超过单文件上限 {{max}} 字节",
+    en: "Video exceeds the per-file limit of {{max}} bytes",
+  },
+
+  /** 解析后的存储路径越界（纵深防御，正常不可达）。 */
+  AI_MEDIA_PATH_ESCAPED: {
+    status: 500,
+    zh: "媒体存储路径越界（平台拒绝）",
+    en: "Media storage path escaped the allowed root (refused by the platform)",
+  },
+
+  /** 媒体不存在（或已被保留期清理）。 */
+  AI_MEDIA_NOT_FOUND: {
+    status: 404,
+    zh: "视频不存在或已被清理：{{mediaId}}",
+    en: "Video not found or already purged: {{mediaId}}",
+  },
+
+  /**
+   * 签不出直链：没配 `AI_MEDIA_BASE_URL`（模型可达地址）或
+   * `AI_MEDIA_URL_SECRET`（签名密钥）。503 语义——这是部署配置缺失，
+   * 不是用户填错，也不是单次请求的问题。
+   */
+  AI_VIDEO_LINK_UNAVAILABLE: {
+    status: 503,
+    zh: "视频直链不可用（{{reason}}）——请管理员配置 AI_MEDIA_BASE_URL 与 AI_MEDIA_URL_SECRET",
+    en: "Video link unavailable ({{reason}}) — ask an admin to configure AI_MEDIA_BASE_URL and AI_MEDIA_URL_SECRET",
+  },
+
+  /**
+   * 没有可用的视频理解模型：`ai.routes.video` 没指向支持视频的条目，
+   * 或模型返回空（fail-open）。400 语义——选错了模型/没接入视频模型。
+   */
+  AI_VIDEO_MODEL_UNAVAILABLE: {
+    status: 400,
+    zh: "没有可用的视频理解模型（请在 AI 设置里接入一个勾选「支持视频」的模型，并把它设为视频用途）",
+    en: "No video-capable model available (add a model marked as supporting video and assign it to the video purpose)",
+  },
+
+  /** 模型输出不是可解析的 JSON 对象（或缺少 title/bodyMarkdown）。 */
+  AI_DRAFT_UNPARSABLE: {
+    status: 502,
+    zh: "模型没有返回可解析的 SOP 草稿（可重试；持续失败请换更强的模型）",
+    en: "The model did not return a parsable SOP draft (retry; if it persists, use a stronger model)",
+  },
+
+  /** front-matter 结构性非法（未知键/类型错）——草稿级校验就挡下了。 */
+  AI_DRAFT_FRONTMATTER_INVALID: {
+    status: 502,
+    zh: "模型给出的 SOP front-matter 不合法：{{detail}}",
+    en: "The model returned an invalid SOP front-matter: {{detail}}",
+  },
+
   // ── 任务运行时注册表（modules/runtime/**）───────────────────────────
   /**
    * ARCH-25：重复注册同名 runtime（未显式声明 override）——防止插件静默改写

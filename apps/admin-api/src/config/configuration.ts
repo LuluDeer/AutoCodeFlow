@@ -270,6 +270,22 @@ export default () => ({
     // ARCH-31（2026-09-13）: AI 出站私网豁免（语义见 app.module Joi 段注记）。
     // 默认 false 零行为变化——本地 Ollama（默认 localhost:11434）需显式开启。
     allowPrivateNetwork: process.env.AI_ALLOW_PRIVATE_NETWORK === "true",
+    // 视频转 SOP（推理质量轮）：视频理解必须给模型一条**可达的直链**。
+    // · mediaBaseUrl：对 provider 可达的 base（公网反代 / CDN / OSS），
+    //   缺失即"视频转 SOP 不可用"（签发失败，明确拒绝而不是发无效链接）；
+    // · mediaUrlSecret：签发短时签名 URL 的 HMAC 密钥（>=16 字符）。
+    //   **不配置也能跑其它功能**，只是视频转 SOP 会被如实拒绝。
+    // · mediaUrlTtlMs：有效期，默认 60 分钟（生成排队 + 下载都算在内）。
+    mediaBaseUrl: process.env.AI_MEDIA_BASE_URL || "",
+    mediaUrlSecret: process.env.AI_MEDIA_URL_SECRET || "",
+    mediaUrlTtlMs:
+      parseInt(process.env.AI_MEDIA_URL_TTL_MS || "3600000", 10) || 3600000,
+    // 保留期（推理质量轮）：上传素材与会话消息都会持续沉淀，必须有人清。
+    // 媒体默认 7 天（与执行器媒体一致）；会话 30 天（过程记录比素材值得多留）。
+    mediaRetentionDays:
+      parseInt(process.env.AI_MEDIA_RETENTION_DAYS || "7", 10) || 7,
+    sessionRetentionDays:
+      parseInt(process.env.AI_SESSION_RETENTION_DAYS || "30", 10) || 30,
   },
   // P2（agent-and-deployment）: 中台 Agent 运行时。
   // 预算是**代码层强制**的闸门（不靠 prompt 叮嘱模型节约）——见

@@ -104,7 +104,9 @@ export type RuntimeCounterName =
   | "autoflow_agent_denied_total"
   | "autoflow_agent_budget_exceeded_total"
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
-  | "autoflow_agent_llm_retry_total";
+  | "autoflow_agent_llm_retry_total"
+  // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
+  | "autoflow_ai_cache_lookup_total";
 
 /** 计数器标签集（无标签计数器传空对象） */
 export type RuntimeCounterLabels = Readonly<Record<string, string>>;
@@ -291,6 +293,15 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
     // **长得一样**（都是 succeeded / failed），只能靠这里区分"provider 在抖"
     // 与"provider 真的坏了"；fatal 占比高则是配置问题（密钥/参数），根本
     // 不该去调重试次数。
+    // 前缀缓存命中率：只回答一个运营问题——「给这家厂商开着视频对话，
+    // 缓存到底有没有省到钱」。没有 provider 维度：registry 的 labelValueSets
+    // 需要**固定枚举**，而 provider 是用户自定义的（动态维度会让 series 爆炸）；
+    // 需要按厂商看时，看日志里的 `cachedTokens` 更直接。
+    autoflow_ai_cache_lookup_total: {
+      help: "AI calls by prompt-cache lookup result (hit / miss) — ratio is the cache hit rate",
+      labelNames: ["result"],
+      labelValueSets: [{ result: "hit" }, { result: "miss" }],
+    },
     autoflow_agent_llm_retry_total: {
       help: "Agent LLM call retry outcomes (scheduled / recovered / exhausted / fatal / deadline)",
       labelNames: ["result"],

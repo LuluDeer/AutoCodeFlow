@@ -111,6 +111,8 @@ const OPEN_ROUTE_REGISTRY: Readonly<Record<string, string>> = {
     "执行器一键安装脚本文本；脚本本身不含密钥（--secret 由调用方以参数传入）",
   "ExecutorController.getExecutorArtifact":
     "执行器安装包静态 artifact 下载（内网分发通道，内容为公开二进制）",
+  "AiMediaController.download":
+    "视频转 SOP 的直链下载：取字节的是**模型 provider**（没有也不该有平台凭据），授权由 URL 里的短时 HMAC 签名承担（覆盖 mediaId+exp+fileName，默认 60 分钟）——挂 JWT 只会把它 401 掉。签名无效 403 / 过期 410 / 文件不存在 404；能力只覆盖那一个文件",
   "ExecutorPackageController.download":
     "执行器包下载：控制器内**手搓双凭据**校验（verifyExecutorToken 执行器令牌 / access JWT），失败即 401——鉴权在 handler 里而不在守卫里，故登记在此",
 };
@@ -553,6 +555,7 @@ describe("R203-A1 全路由鉴权矩阵（route-authz-matrix）", () => {
     // 关键回归位：任何「新开一个 @Public 读端点」的改动都会让本断言红。
     expect(Object.keys(OPEN_ROUTE_REGISTRY).sort()).toEqual(
       [
+        "AiMediaController.download",
         "ExecutorController.getExecutorArtifact",
         "ExecutorController.getInstallScript",
         "ExecutorPackageController.download",
