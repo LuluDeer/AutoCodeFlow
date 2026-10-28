@@ -44,6 +44,28 @@ CancelledError 守卫单独持久化，其余全丢（admin 侧留 RUNNING 到 s
 修法：CancelledError 里先 `_persist_failed_callback(batch, url)` 落盘再抛，由既有磁盘
 replay 循环接手。
 
+### 1.4 webhook 状态读取失败被当成「未启用」→ 误点即轮换密钥（E4）
+
+`loadWebhookStatus` 旧实现 `.catch(() => setWebhookStatus(null))`：读取失败与
+「确实未启用」落到同一个 null。于是**已启用**的任务在 GET 失败时显示「未启用 +
+启用按钮」，而后端对已启用任务再次 `POST /webhook/enable` 会**轮换密钥**
+（task.controller.ts:980）——误点一次，外部集成方带签名的调用全部 401，UI 全程
+没有任何提示。
+
+修法：webhook 状态做成三态（已启用 / 未启用 / **未知**）。未知时 tag 显示
+「状态未知」、卡片给出「读取失败」+ 原因 + 重试按钮，并**不渲染启用按钮**，
+从 UI 上消除误轮换路径。
+
+### 1.5 部署页 loading 被 3s 轮询抢走序号 → 表格永久转圈（E2）
+
+`fetchAll` 与轮询 `fetchDeployments` 共用 `fetchSeq`，而 fetchAll 只在
+`seq === fetchSeq.current` 时才收 loading。于是「翻页请求在飞行中，一次轮询拍
+自增了序号」→ 翻页请求的 finally 被判过期 → loading 永真：表格一直转圈、行变灰
+不可交互，直到用户再翻页（慢网下请求 ≥3s 几乎必现）。
+
+修法：loading 用独立的 `loadingSeq`（只有 fetchAll 递增），数据写入仍共用
+`fetchSeq`。
+
 ## 2. 反证（都实测改回旧行为会红）
 
 | 修复 | 反证动作 | 结果 |
@@ -57,6 +79,8 @@ MCP 哨兵守卫 | 删掉两处 `rejectRedactionSentinel` 调用 | 3 条红（�
 - `packages/mcp-server`：**8 files / 321 tests**（新增 5 例，仍全部走
   `z.object(shape).parse` 再进 handler）
 - `apps/executor-python`：pytest 全绿，覆盖率 **87.52%**（门槛 86%，新增 3 例）
+- `apps/admin-web`：**253 files / 2114 tests**（新增 3 例）+ `tsc -b` 0 错；
+  i18n key-check 静态键 2803 / zh-en 各 3139 一致
 - `packages/mcp-server` `tsc --noEmit` 0 错；`check-docs` 全绿
 
 ## 4. 仍开着（下一轮）
@@ -64,10 +88,7 @@ MCP 哨兵守卫 | 删掉两处 `rejectRedactionSentinel` 调用 | 3 条红（�
 - **E1（P1）** 部署页把「当前页 20 行」当全量：升级覆盖面低报（弹窗说 20 台、实际
   50 台）、第 21 台起占用校验失效、翻到全 failed 页时「升级所有」按钮消失。**需要
   后端「本应用覆盖统计」端点或前端全量拉取**，四处派生量必须同源。
-- **E2（P2）** 部署页 `loading` 与 3s 轮询共用 `fetchSeq` → 刷新请求的 finally 被判
-  过期，表格永久转圈。
 - **E3（P2）** SSE 换票失败走共享 axios 拦截器 → 每 3–30s 一条错误 toast，永不停止。
-- **E4（P2）** webhook 状态读取失败被吞成「未启用」→ 误点启用会**轮换密钥**。
 - **E5（P3）** 「最近 1/24 小时」预设渲染期求值，挂机后查的是旧窗口。
 - **G1 余项**：`_shutting_down` 已接上，但 `/health` 仍不返回该状态（运维看不到
   "正在排水"）；`G4` config reload 部分生效。

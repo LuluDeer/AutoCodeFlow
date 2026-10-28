@@ -90,9 +90,7 @@
 | C1 | P2 | `deploy_application`/`deploy_app` 是 write 但无 `approvalRequired`（依赖 DEP-04 平台级审批） | 需先确认 DEP-04 默认开关 |
 | C3 | P2 | 澄清回复归属校验在执行体而非闸门 | 需 sop 侧投影数据做 pre-resolve hook |
 | E1 | **P1** | `AppDeploymentPage` 多处派生量（升级覆盖面 / 占用机集合 / 自定义 startCommand 告警 / 升级入口门 / 待审批计数）只按**当前页 20 行**算，而 `upgradeAll` 是后端全行执行 → 弹窗低报影响范围、第 21 台起的占用校验失效、翻到全 failed 页时「升级所有」按钮消失 | 需先有「本应用覆盖统计」的数据面（后端聚合端点或前端全量拉取），四处派生量必须同源 |
-| E2 | P2 | `AppDeploymentPage` 的 `loading` 与 3s 轮询共用 `fetchSeq` 序号：轮询拍若在刷新请求返回前自增，`fetchAll` 的 finally 被判过期 → 表格永久转圈直到用户再点一次 | 判据独立化（loading 只由 fetchAll 自己收） |
 | E3 | P2 | SSE 换票失败走共享 axios 拦截器 → 每 3–30s 弹一条错误 toast（去重窗口只有 1.5s），后端滚动发布时用户被持续轰炸 | 换票请求加「跳过全局 toast」标记，页面级只提示一次 |
-| E4 | P2 | `TaskDetailPage` webhook 状态读取失败被吞成 `null`（与「确实未启用」同形）→ 卡片显示「未启用 + 启用按钮」；而后端对已启用任务再 enable 会**轮换密钥**，误点即让外部集成 401 | webhookStatus 三态（loading/known/error），error 态禁止 enable |
 | E5 | P3 | `ExecutionsPage` 的「最近 1/24 小时」预设 `value` 在**渲染期**求值；SSE live 时页面不再周期重渲 → 挂机 N 小时后点「最近 1 小时」查的是 N 小时前的窗口 | 预设改为点击时求值 |
 | G4 | P3 | `/api/config/reload` 在 400 之前已部分赋值（并发上限 / admin_api_url）→ 调用方以为整批未生效；pull 模式每 25s 重复同一半应用 | 先全量校验再统一赋值 |
 
@@ -108,6 +106,12 @@
   `pollGateRef` 镜像修掉）；本轮只是补了 silent/失焦，节拍本身无需再改。
 
 ### 已收口（滚动，最近在上）
+
+- 2026-10-28 · 实施轮 #17 · **webhook 状态读取失败被当成「未启用」**：`catch(() =>
+  setStatus(null))` 让「未知」与「未启用」同形，而后端对已启用任务再次 enable 会
+  **轮换密钥** → 一次网络抖动变成一次误轮换。改为三态，未知态不渲染启用按钮。
+- 2026-10-28 · 实施轮 #17 · **部署页 loading 被轮询抢序号**：`fetchAll` 与 3s 轮询共用
+  `fetchSeq`，翻页请求的 finally 被判过期 → 表格永久转圈。loading 改用独立序号。
 
 - 2026-10-28 · 实施轮 #17 · **MCP 写面拒绝脱敏哨兵回传**：读路径把敏感值写成
   `[redacted]`，agent「读-改-写」会把它当真实值写回 `params`（后端对 params 无掩码
