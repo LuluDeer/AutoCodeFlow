@@ -239,8 +239,16 @@ export function tasksCommand(): Command {
       '--wait-timeout <seconds>',
       'Max seconds to keep polling with --wait before giving up (default 600)',
       (v: string) => {
-        const n = Number.parseInt(v, 10);
-        if (!Number.isFinite(n) || n <= 0) {
+        // F5（本轮审计）：`parseInt("1m")` = 1 —— 用户写 `1m`（本意 60 秒）
+        // 得到 1 秒，长任务立刻"假超时"并 exit 1，提示语还让人以为是任务卡住。
+        // 只接受纯数字（与同文件 intOption 同口径）。
+        if (!/^\d+$/.test(v.trim())) {
+          throw new InvalidArgumentError(
+            'must be a positive integer in seconds (e.g. 600); units like "10m" are not supported',
+          );
+        }
+        const n = Number(v.trim());
+        if (!Number.isSafeInteger(n) || n <= 0) {
           throw new InvalidArgumentError('must be a positive integer (seconds)');
         }
         return n;

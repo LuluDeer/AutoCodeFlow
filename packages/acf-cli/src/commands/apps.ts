@@ -449,10 +449,39 @@ export function appsCommand(): Command {
             );
           }
         }
-        const dep = await post<{ id?: string; status?: string; executorId?: string }>(
-          `/app-deployments/applications/${id}/deploy`,
-          body,
-        );
+        const dep = await post<{
+          id?: string;
+          status?: string;
+          executorId?: string;
+          approvalStatus?: string | null;
+        }>(`/app-deployments/applications/${id}/deploy`, body);
+        // F2（本轮审计）：DEP-04 审批门打开时，后端返回 status=pending +
+        // approvalStatus=pending_approval 且**不下发**。旧实现无条件打印
+        // `✔ Deployment triggered` 并 exit 0 —— `acf app deploy && …` 会把
+        // 「冻结待审批、设备上什么都没跑」读成部署成功；该行还占着 in-flight
+        // 槽位，后续部署 409，调用方只看到"冲突"却不知道自己是在等审批。
+        // MCP 的 deploy_application 早已按此判定，CLI 漏了。
+        const awaitingApproval =
+          dep?.approvalStatus === 'pending_approval' || dep?.status === 'pending';
+        if (awaitingApproval) {
+          spinner.warn('Deployment frozen pending approval — NOT dispatched yet');
+          console.log(
+            chalk.gray(
+              `  deployment: ${dep?.id ?? '-'}  status: ${dep?.status ?? '-'}  ` +
+                `approval: ${dep?.approvalStatus ?? 'pending'}  executor: ${dep?.executorId ?? 'auto'}`,
+            ),
+          );
+          console.log(
+            chalk.yellow(
+              '  This application requires a second-person approval. The code has NOT been deployed. ' +
+                'Run `acf approval pending` to see it, or `acf approval approve <id> <deploymentId>` to release it.',
+            ),
+          );
+          // 非零退出：脚本里的 `acf app deploy … && 验证部署` 不能再把「等审批」
+          // 当成「已部署」。语义是"未完成"，不是"参数错"（那是 2）。
+          process.exitCode = 1;
+          return;
+        }
         spinner.succeed('Deployment triggered');
         console.log(chalk.gray(`  deployment: ${dep?.id ?? '-'}  status: ${dep?.status ?? '-'}  executor: ${dep?.executorId ?? 'auto'}`));
       } catch (e: unknown) {

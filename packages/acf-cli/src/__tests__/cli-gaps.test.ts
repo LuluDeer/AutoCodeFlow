@@ -13,10 +13,10 @@ import * as path from 'path';
 // ora mock 记录每个实例：succeed/fail 文案走 spinner 而非 console.log，
 // 断言「Task exported to / Task imported: <id> / revoked」时要查最后一个实例。
 const { oraInstances } = vi.hoisted(() => ({
-  oraInstances: [] as Array<{ start: Mock; succeed: Mock; fail: Mock; stop: Mock; text: string }>,
+  oraInstances: [] as Array<{ start: Mock; succeed: Mock; warn: Mock; fail: Mock; stop: Mock; text: string }>,
 }));
 
-function lastSpinner(): { start: Mock; succeed: Mock; fail: Mock; stop: Mock; text: string } {
+function lastSpinner(): { start: Mock; succeed: Mock; warn: Mock; fail: Mock; stop: Mock; text: string } {
   const s = oraInstances.at(-1);
   expect(s, 'no ora spinner was created for this run').toBeTruthy();
   return s!;
@@ -24,9 +24,10 @@ function lastSpinner(): { start: Mock; succeed: Mock; fail: Mock; stop: Mock; te
 
 vi.mock('ora', () => ({
   default: () => {
-    const o: { start: Mock; succeed: Mock; fail: Mock; stop: Mock; text: string } = {
+    const o: { start: Mock; succeed: Mock; warn: Mock; fail: Mock; stop: Mock; text: string } = {
       start: vi.fn(),
       succeed: vi.fn(),
+      warn: vi.fn(),
       fail: vi.fn(),
       stop: vi.fn(),
       text: '',
@@ -932,6 +933,42 @@ describe('acf app deploy --run-mode（P0 语义/默认值/预警）', () => {
     expect(mockedPost).not.toHaveBeenCalled();
   });
 
+  // F2（本轮审计）：DEP-04 审批门打开时后端返回 status=pending +
+  // approvalStatus=pending_approval 且**不下发**。旧实现照样 `✔ Deployment
+  // triggered` + exit 0 —— CI 里 `acf app deploy && 验证` 把「冻结待审批」
+  // 读成「已部署」，而设备上什么都没跑。
+  it('待审批（pending_approval）→ 明说未下发 + exitCode 1（不再谎报 triggered）', async () => {
+    mockedPost.mockResolvedValueOnce({
+      id: 'd9',
+      status: 'pending',
+      approvalStatus: 'pending_approval',
+      executorId: 'e1',
+    });
+    const logs = captureStdout();
+    process.exitCode = 0;
+    await run(appsCommand(), 'app deploy app1');
+    // 状态行走 spinner（warn），细节走 stdout —— 两处都要能看出"没下发"
+    const warnText = String(lastSpinner().warn.mock.calls[0]?.[0] ?? '');
+    expect(warnText).toContain('frozen pending approval');
+    expect(warnText).toContain('NOT dispatched');
+    const out = logs.join('\n');
+    expect(out).toContain('acf approval approve');
+    expect(out).toContain('approval: pending_approval');
+    expect(lastSpinner().succeed).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  it('正常派发（status=running）→ 仍 exitCode 0 且打印 triggered（回归：不误伤）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'running', executorId: 'e1' });
+    captureStdout();
+    process.exitCode = 0;
+    await run(appsCommand(), 'app deploy app1');
+    expect(lastSpinner().succeed).toHaveBeenCalledWith('Deployment triggered');
+    expect(lastSpinner().warn).not.toHaveBeenCalled();
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+  });
+
   it('--env/--start-command 与 runMode 同体透传（回归：body 形状不变）', async () => {
     mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'running' });
     captureStdout();
@@ -942,6 +979,32 @@ describe('acf app deploy --run-mode（P0 语义/默认值/预警）', () => {
       env: { K: 'v' },
       startCommand: 'node-dist-run',
     });
+  });
+});
+
+// F5（本轮审计）：`parseInt("1m")` = 1 —— 写 `1m` 得到 1 秒，长任务立刻
+// 「假超时」并 exit 1，提示语还让人以为是任务卡住。只接受纯数字。
+describe('acf task trigger --wait-timeout 严格整数（F5）', () => {
+  it('带单位的 "1m" → 参数错误，请求不发出', async () => {
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        run(tasksCommand(), 'task trigger t1 --wait --wait-timeout 1m'),
+      ).rejects.toThrow();
+      expect(errSpy.mock.calls.map((c) => String(c[0])).join('')).toContain(
+        'units like "10m" are not supported',
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('纯数字 600 正常接受（回归：不误伤）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'x1', status: 'running' });
+    captureStdout();
+    await run(tasksCommand(), 'task trigger t1 --wait-timeout 600');
+    expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/trigger');
   });
 });
 
