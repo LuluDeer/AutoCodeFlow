@@ -1696,11 +1696,16 @@ export function registerDeploymentTools(
     "Deploy an application to an executor. runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Leave executorId empty to auto-select the online executor with lowest load. Optionally override env vars and start command. NOTE (DEP-04): if the application has deployment approval enabled, the response returns approvalStatus=pending_approval and NOTHING is dispatched — the deployment waits for a second-person approval (POST /app-deployments/:id/approval/approve|reject, or /approval/cancel by the requester). A 409 means the application already has an in-progress deployment.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
+      // F4（本轮审计）：收窄为 uuid。旧实现 z.string() 会把 "MY-LAPTOP" 这类
+      // 非 id 原样发给后端，而后端在 executor 不存在时**静默改投**最低负载的
+      // 另一台（app-deployment.service.ts:1339-1358 只 warn 一句）——代码被装到
+      // 用户没想到的机器上，响应里只有一个陌生 id，很容易被当成"正常自动选择"。
       executorId: z
         .string()
+        .uuid()
         .optional()
         .describe(
-          "Target executor ID (optional — auto-selects the lowest-load online executor)",
+          "Target executor ID (uuid). Omit to auto-select the lowest-load online executor. If the id no longer exists the backend re-selects another executor — the response then carries executorReassigned=true.",
         ),
       runMode: z
         .enum(["once", "daemon", "scheduled"])
@@ -1749,6 +1754,28 @@ export function registerDeploymentTools(
             "/approval/approve (or the requester cancels via /approval/cancel).",
         });
       }
+      // F4：后端在目标 executor 不存在时会静默改投另一台（只 warn 一句），
+      // 而调用方从响应里读不出这个替换 —— 必须在结构化面上说出来。
+      const actualExecutorId = data?.executorId;
+      if (
+        executorId !== undefined &&
+        typeof actualExecutorId === "string" &&
+        actualExecutorId !== executorId
+      ) {
+        return JSON_CONTENT({
+          ...data,
+          executorReassigned: true,
+          requestedExecutorId: executorId,
+          actualExecutorId,
+          note:
+            "The requested executor no longer exists (or is not addressable), so the backend " +
+            "re-selected the least-loaded online executor: the code was deployed to " +
+            actualExecutorId +
+            ", NOT to " +
+            executorId +
+            ". Re-deploy with a valid executorId (list_executors) if that is the wrong machine.",
+        });
+      }
       // once/daemon really do start the entry script now — say so structurally
       // instead of leaving it to the caller's reading of runMode semantics.
       if (effectiveRunMode === "once" || effectiveRunMode === "daemon") {
@@ -1780,11 +1807,16 @@ export function registerDeploymentTools(
     "Deploy an application by NAME (resolved via GET /applications). runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Shares the deploy_application route and DEP-04 approval semantics: applications with approval enabled return approvalStatus=pending_approval and are not dispatched until a second person approves.",
     {
       appName: z.string().describe("Application name (unique)"),
+      // F4（本轮审计）：收窄为 uuid。旧实现 z.string() 会把 "MY-LAPTOP" 这类
+      // 非 id 原样发给后端，而后端在 executor 不存在时**静默改投**最低负载的
+      // 另一台（app-deployment.service.ts:1339-1358 只 warn 一句）——代码被装到
+      // 用户没想到的机器上，响应里只有一个陌生 id，很容易被当成"正常自动选择"。
       executorId: z
         .string()
+        .uuid()
         .optional()
         .describe(
-          "Target executor ID (optional — auto-selects the lowest-load online executor)",
+          "Target executor ID (uuid). Omit to auto-select the lowest-load online executor. If the id no longer exists the backend re-selects another executor — the response then carries executorReassigned=true.",
         ),
       runMode: z
         .enum(["once", "daemon", "scheduled"])
@@ -1835,6 +1867,28 @@ export function registerDeploymentTools(
           note: "Deployment is frozen pending approval (DEP-04): nothing was dispatched to the executor. A second person must approve POST /app-deployments/" +
             String(data.id ?? ":id") +
             "/approval/approve (or the requester cancels via /approval/cancel).",
+        });
+      }
+      // F4：与 deploy_application 同一条判据——目标机不存在时后端静默改投，
+      // 必须在结构化面上说出来（否则调用方以为装在自己指定的机器上）。
+      const actualExecutorId = data?.executorId;
+      if (
+        executorId !== undefined &&
+        typeof actualExecutorId === "string" &&
+        actualExecutorId !== executorId
+      ) {
+        return JSON_CONTENT({
+          ...data,
+          executorReassigned: true,
+          requestedExecutorId: executorId,
+          actualExecutorId,
+          note:
+            "The requested executor no longer exists (or is not addressable), so the backend " +
+            "re-selected the least-loaded online executor: the code was deployed to " +
+            actualExecutorId +
+            ", NOT to " +
+            executorId +
+            ". Re-deploy with a valid executorId (list_executors) if that is the wrong machine.",
         });
       }
       // Same startsImmediately signalling as deploy_application (see comment there).

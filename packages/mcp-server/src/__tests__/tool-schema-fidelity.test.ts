@@ -227,3 +227,52 @@ describe("create_application：审批门与互斥组在创建时就该可设", (
     });
   });
 });
+
+describe("deploy_application / deploy_app：目标机被静默替换必须说出来（F4）", () => {
+  const execA = "66666666-6666-4666-8666-666666666666";
+  const execB = "77777777-7777-4777-8777-777777777777";
+  const appId = "11111111-1111-4111-8111-111111111111";
+
+  it("后端改投另一台 → executorReassigned=true + 说明实际机器（仍算成功）", async () => {
+    call.mockResolvedValueOnce({ id: "d1", status: "running", executorId: execB });
+    const res = await invoke(tools, "deploy_application", {
+      applicationId: appId,
+      executorId: execA,
+    });
+    const payload = JSON.parse(res.content[0].text);
+    expect(res.isError).toBeUndefined();
+    expect(payload.executorReassigned).toBe(true);
+    expect(payload.requestedExecutorId).toBe(execA);
+    expect(payload.actualExecutorId).toBe(execB);
+    expect(payload.note).toContain(execB);
+    expect(payload.note).toContain("NOT to");
+  });
+
+  it("派到指定机器 → 不许多出 reassigned 标记（回归：不误报）", async () => {
+    call.mockResolvedValueOnce({ id: "d1", status: "running", executorId: execA });
+    const res = await invoke(tools, "deploy_application", {
+      applicationId: appId,
+      executorId: execA,
+    });
+    expect(JSON.parse(res.content[0].text).executorReassigned).toBeUndefined();
+  });
+
+  it("executorId 不是 uuid → 解析期就拒（不再让后端静默改投）", async () => {
+    await expect(
+      invoke(tools, "deploy_application", { applicationId: appId, executorId: "MY-LAPTOP" }),
+    ).rejects.toThrow();
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("deploy_app 同一条判据（按名字部署时也会改投）", async () => {
+    call.mockResolvedValueOnce([{ id: appId, name: "payments" }]);
+    call.mockResolvedValueOnce({ id: "d2", status: "running", executorId: execB });
+    const res = await invoke(tools, "deploy_app", {
+      appName: "payments",
+      executorId: execA,
+    });
+    const payload = JSON.parse(res.content[0].text);
+    expect(payload.executorReassigned).toBe(true);
+    expect(payload.actualExecutorId).toBe(execB);
+  });
+});
