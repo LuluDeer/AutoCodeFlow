@@ -22,3 +22,8 @@ source-digest: 3f26e393f55cf6175f3c9a2b13538a0ba96531a71572e4a8a9229556df41cbff
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），38 个输入文件。
 source-digest: 3f26e393f55cf6175f3c9a2b13538a0ba96531a71572e4a8a9229556df41cbff
 3b165206b32e2abc7ecc5e94f29938672c9500b29c5a3809bf864992c03108f9  index.js
+# 2026-10-28（审计轮 #13 回填）：6b3ad02c（A3 闸门计数崩溃持久化，loop.ts/gates 自检改动）
+#   未按维护规则同步回填——本条补上欠账（源码语义摘要 + 字节哈希一次到位）。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），38 个输入文件。
+source-digest: 9976aabdea48f76f9daf43fff2c8b259500b4a6e72ea36a933ae334bb73827a1
+379bbd831c8af5d5ef02356d66eb154b03448321ad5ea96d2546078600f9d984  index.js

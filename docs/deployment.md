@@ -278,8 +278,12 @@ docker compose up -d
 
 ### 第 4 步：执行数据库迁移
 
+> 容器镜像无 ts-node，必须用 `:prod` 入口（`node dist/migration-lock-cli.js`）；
+> 不带 `:prod` 的 npm script 依赖 ts-node（devDependencies），容器内必然
+> `ts-node: not found`。下同。
+
 ```bash
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 ```
 
 ### 第 5 步：验证服务状态
@@ -696,7 +700,7 @@ docker compose up -d
 5. **执行新增迁移**
 
 ```bash
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 ```
 
 6. **验证服务正常**
@@ -723,8 +727,8 @@ curl http://localhost:3105/api/health/live
 ### 迁移失败
 
 - 确认数据库已成功启动且可连接
-- 查看迁移日志了解具体错误：`docker compose exec admin-api npm run migration:run 2>&1`
-- 如需回滚：`docker compose exec admin-api npm run migration:revert`
+- 查看迁移日志了解具体错误：`docker compose exec admin-api npm run migration:run:prod 2>&1`
+- 如需回滚：`docker compose exec admin-api npm run migration:revert:prod`
 
 ### 执行器无法注册
 

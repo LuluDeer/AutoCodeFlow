@@ -55,12 +55,13 @@ docker compose pull
 docker compose up -d --build
 
 # 执行新的数据库迁移（如有）
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 ```
 
----
-
-## 数据备份与恢复
+> **为什么用 `:prod` 变体**：容器镜像 `npm ci --omit=dev` + 只 COPY dist，**没有
+> ts-node**；不带 `:prod` 的 `migration:run/show/revert`（ts-node + src/）在容器内
+> 必然报 `ts-node: not found`（详见「恢复步骤骨架」第 4 步）。`:prod` 入口
+> `node dist/migration-lock-cli.js` 同样带 pg_advisory_lock 互斥，语义与 dev 版一致。
 
 ### 方式一（推荐）：compose 内置 pg-backup profile（M-1）
 
@@ -163,7 +164,7 @@ mc ilm rule ls autoflow-minio/autoflow-logs
 |------|------|------|
 | PostgreSQL 全库 | tasks / task_executions / execution_log_lines / 系统配置、用户与审计等全部业务表 | 上文 `pg_dump` 命令（每日 cron）；或对 `postgres_data` 卷做物理快照（见下文 pgBackRest 建议） |
 | `.env` secrets | `JWT_SECRET` / `DB_PASSWORD` / `REDIS_PASSWORD` / `EXECUTOR_SECRET` / `MINIO_ROOT_PASSWORD` / `INITIAL_ADMIN_PASSWORD` 等 | 文件级备份并妥善保管权限；丢失后按「安全加固」节重建并轮换 |
-| 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose **已**为 admin-api 挂命名卷 `admin_uploads`（`docker-compose.yml` 的 `volumes: - admin_uploads:/app/uploads`），因此容器重建**不会**丢；但**从不自动备份**，卷损坏/误删即永久丢失。备份（写卷，不依赖容器在跑）：`docker run --rm -v autoflow_admin_uploads:/data -v "$PWD":/backup alpine tar czf /backup/uploads_$(date +%F).tar.gz /data`；回灌把源/目标对调。 |
+| 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose **已**为 admin-api 挂命名卷 `admin_uploads`（`docker-compose.yml` 的 `volumes: - admin_uploads:/app/uploads`），因此容器重建**不会**丢；但**从不自动备份**，卷损坏/误删即永久丢失。备份（写卷，不依赖容器在跑）：`docker run --rm -v autoflow_admin_uploads:/data -v "$PWD":/backup alpine tar czf /backup/uploads_$(date +%F).tar.gz /data`；回灌把源/目标对调。**新增命名卷挂运行时目录前必须在镜像内预建目录并 chown 给 appuser**——否则首挂载点由卷以 root 属主创建，容器内 EACCES 崩溃循环（本仓库已两次踩中：registry-pypi 与 admin-api uploads）。 |
 | S3/MinIO 日志桶 | `LOG_STORAGE_DRIVER=s3` 时 `autoflow-logs` 桶 `execution-logs/` 前缀对象（`minio_data` 卷） | `mc mirror autoflow-minio/autoflow-logs /backup/autoflow/minio/`；MinIO 卷本身无内置备份，仅镜像导出 |
 | 上游包缓存（可选） | `pypi_data`（registry-pypi `/data/packages` 中代理自 PyPI 的上游缓存） | 仅上游包缓存，可从 PyPI 重新拉取重建，备份优先级低 |
 | 私有发布包（必须备份） | `npm_data`（registry-npm verdaccio storage，含私有发布的 `@autoflow/*`）与 `pypi_data` 中手动 `twine upload` 的私有 wheel | 私有发布物**无法从 PyPI/npm 上游重建**——必须备份（如 `docker run --rm -v autoflow_npm_data:/data -v $(pwd):/backup alpine tar czf /backup/npm_data_$(date +%F).tar.gz /data`），或在恢复预案中明确接受「从源码重新走 CI 发布」的替代流程并演练 |
@@ -674,8 +675,13 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 5. **查看迁移状态**：
 
 ```bash
-docker compose exec admin-api npm run migration:show
+# 容器内无 ts-node（dev 版 migration:show 依赖 src/ + ts-node），用纯 JS 等价命令：
+docker compose exec admin-api node node_modules/typeorm/cli.js migration:show -d dist/data-source.js
 ```
+
+> typeorm CLI shim 本身是纯 JS，不需要 ts-node；`dist/data-source.js` 已随镜像交付。
+> `migration:run` / `migration:revert` 有现成 `:prod` 入口（`node dist/migration-lock-cli.js`，
+> 带 pg_advisory_lock 互斥），直接用；`migration:show` 只读、无锁需求，无需加脚本。
 
 ### 标准升级步骤
 
@@ -689,7 +695,7 @@ docker compose pull
 docker compose up -d --build admin-api admin-web
 
 # 3. 执行迁移（迁移链按幂等约束设计，可安全续跑）
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 
 # 4. 重启执行器，使运行时配置和 artifact 版本收敛
 docker compose up -d --build executor-node executor-python
@@ -701,7 +707,7 @@ docker compose up -d --build executor-node executor-python
 
 - [ ] `docker compose ps` 全部关键服务 healthy。
 - [ ] `curl http://localhost:3105/api/health/live` 返回 healthy，`/api/health/services` 中 DB/Redis/queue 正常。
-- [ ] `docker compose exec admin-api npm run migration:show` 无待执行迁移。
+- [ ] `docker compose exec admin-api node node_modules/typeorm/cli.js migration:show -d dist/data-source.js` 无待执行迁移。
 - [ ] 管理后台可登录，任务列表、执行器列表、执行详情可打开。
 - [ ] 手动触发一个低风险测试任务，执行记录进入终态且日志可读。
 - [ ] `/api/metrics` 可抓取，Grafana dashboard 无新增 target down / queue backlog / DB pool 饱和告警。
@@ -719,7 +725,7 @@ git checkout <previous-tag-or-commit>
 docker compose up -d --build admin-api admin-web executor-node executor-python
 
 # 迁移回滚（仅限已确认可逆迁移）
-docker compose exec admin-api npm run migration:revert
+docker compose exec admin-api npm run migration:revert:prod
 
 # 极端情况：从备份恢复数据库
 gunzip -c /backup/autoflow/db_YYYYMMDD_HHMMSS.sql.gz \
@@ -986,15 +992,20 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
 
 ### 手动执行迁移
 
+> 以下均为**容器内**可跑的 `:prod` 形态（镜像无 ts-node，dev 版 npm script 会
+> `ts-node: not found`，见「恢复步骤骨架」第 4 步）。宿主机上跑 dev 版
+> `npm run migration:*` 的前提是 `apps/admin-api` 已 `npm install`（devDependencies
+> 含 ts-node）。
+
 ```bash
-# 查看迁移状态
-docker compose exec admin-api npm run migration:show
+# 查看迁移状态（容器内等价于 migration:show；typeorm CLI shim 是纯 JS）
+docker compose exec admin-api node node_modules/typeorm/cli.js migration:show -d dist/data-source.js
 
 # 执行待处理的迁移
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 
 # 回滚最后一次迁移（谨慎操作）
-docker compose exec admin-api npm run migration:revert
+docker compose exec admin-api npm run migration:revert:prod
 ```
 
 ### 清理历史执行记录（按需）
@@ -1045,9 +1056,9 @@ ORDER BY c.relname;
 #### 存量库升级演练（迁移上线前的维护窗口执行）
 
 1. **演练前**：对 `execution_log_lines` 行数与占用做基线（`SELECT COUNT(*), pg_size_pretty(pg_total_relation_size('execution_log_lines'))`；建议在行数 ≥ 100 万的真机库演练，充分暴露搬迁耗时）。
-2. **执行**：`docker compose exec admin-api npm run migration:run`。存量库在线搬迁流程（迁移内自动完成，无需人工干预）：rename 原表为 `execution_log_lines_legacy`（瞬时元数据操作）→ 建分区父表（同列 + 联合 PK + 三个读取路径索引）→ `INSERT SELECT` 一次性搬迁存量数据 → 预建 today-1 ~ today+7 分区。
+2. **执行**：`docker compose exec admin-api npm run migration:run:prod`。存量库在线搬迁流程（迁移内自动完成，无需人工干预）：rename 原表为 `execution_log_lines_legacy`（瞬时元数据操作）→ 建分区父表（同列 + 联合 PK + 三个读取路径索引）→ `INSERT SELECT` 一次性搬迁存量数据 → 预建 today-1 ~ today+7 分区。
 3. **中断可续跑**：搬迁是守卫式分步推进（按 relkind 判定状态），中断后重新 `migration:run` 自动从断点续走，`ON CONFLICT DO NOTHING` 保证不重复插。
-4. **验证**：`migration:show` 显示迁移已应用；上方「确认分区状态」查询可见分区表 + 日分区；抽查若干 executionId 的日志读取（管理台执行详情页日志 Tab）与搬迁前一致；新写入的执行产生新日志行且落入当日分区。
+4. **验证**：`migration:show`（容器内 `node node_modules/typeorm/cli.js migration:show -d dist/data-source.js`）显示迁移已应用；上方「确认分区状态」查询可见分区表 + 日分区；抽查若干 executionId 的日志读取（管理台执行详情页日志 Tab）与搬迁前一致；新写入的执行产生新日志行且落入当日分区。
 5. **验收（10× 时长）**：搬迁完成次日观察 03:30 cron 日志——分区库路径单次清理为 2 条 DDL（毫秒级），对比 legacy DELETE 清理同量级行数（数百万行/数十批）的分钟级时长，差值即为验收依据；如需精确计时可在演练库手动构造 30 天前分区对比两种路径。
 
 #### legacy 表人工清理（迁移完成并观察 ≥ 1 个保留期后）
@@ -1062,7 +1073,7 @@ SELECT COUNT(*) FROM execution_log_lines_legacy;
 DROP TABLE execution_log_lines_legacy;
 ```
 
-如需回滚分区化（罕见：如降级 PG 版本），`npm run migration:revert` 会把分区数据回流 legacy 普通表后再 DROP 分区父表；大表回流耗时长，务必在维护窗口执行。
+如需回滚分区化（罕见：如降级 PG 版本），`migration:revert:prod` 会把分区数据回流 legacy 普通表后再 DROP 分区父表；大表回流耗时长，务必在维护窗口执行。
 
 #### 分区异常兜底
 
@@ -1118,8 +1129,8 @@ docker compose pull
 docker compose up -d --build admin-api admin-web
 docker compose up -d --build executor-node executor-python
 
-# 3. 数据库迁移（幂等；重复执行为 no-op）
-docker compose exec admin-api npm run migration:run
+# 3. 数据库迁移（幂等；重复执行为 no-op；容器内必须 :prod 入口——镜像无 ts-node）
+docker compose exec admin-api npm run migration:run:prod
 
 # 4. 通过判据（逐条验证）
 curl -fsS http://localhost:<api端口>/api/health   # 健康检查 200（另 /api/health/ready）
@@ -1142,7 +1153,7 @@ docker compose up -d --build
 
 # 2. 数据库回滚（仅当本版迁移有破坏性变更且旧代码不兼容新列时才需要；
 #    迁移默认只增不改，旧代码通常兼容新 schema，优先跳过此步）
-docker compose exec admin-api npm run migration:revert   # 单步回退，逐步执行
+docker compose exec admin-api npm run migration:revert:prod   # 单步回退，逐步执行
 
 # 3. 最坏情况：从备份恢复（上文「恢复步骤骨架」）
 ```

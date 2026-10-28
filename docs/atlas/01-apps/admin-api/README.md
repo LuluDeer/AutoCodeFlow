@@ -61,7 +61,7 @@ main.ts
 | `app.module.ts` | 模块装配中心：全部 env 的 Joi schema、DB/Redis/限流注册、全局 guard 注册 |
 | `common/` | 跨模块横切件：decorators（`@Public()`/`@Roles()`/`@CurrentUser()`）、guards（jwt-auth、roles）、interceptors（response/timeout）、filters、middleware（trace-id、upload-auth）、services（domain-event-bus、redis-lock）、tracing（OpenTelemetry）、utils |
 | `config/` | `configuration.ts`（配置树唯一来源 + `buildTypeOrmDataSourceOptions`）、`env.ts`（`getEnvVar`，供装饰器求值期/迁移 CLI 读取）、`throttle-profiles.ts`（AUTH_THROTTLE/OPS_THROTTLE 限流档） |
-| `migrations/` | **111** 个 TypeORM 迁移（`1717473142678-InitialSchema` 起，`1790000000066-AddExecutorAppVersionTimestamps` 止：62-66 为部署模型评审 R3/R4/§4.6 与 R3 时间戳缺口收口）+ `migrations.spec.ts` 守护测试（数量与首尾由 `scripts/check-atlas-counts.mjs` 守护） |
+| `migrations/` | **112** 个 TypeORM 迁移（`1717473142678-InitialSchema` 起，`1790000000067-CreateAgentApprovals` 止：62-66 为部署模型评审 R3/R4/§4.6 与 R3 时间戳缺口收口，67 为 A1 审批闭环落库）+ `migrations.spec.ts` 守护测试（数量与首尾由 `scripts/check-atlas-counts.mjs` 守护） |
 | `data-source.ts` | 仅供 migration CLI 使用的独立 DataSource（不经 NestDI，经 `getEnvVar` 读 env） |
 | `modules/` | 业务模块，见下表 |
 | `__tests__/`、`@types/` | 进程级 spec（如 main-env-preload.spec.ts）与类型声明 |

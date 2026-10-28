@@ -81,12 +81,16 @@ ARM64 / Apple Silicon 部署前，确认 CI 的 `docker-multiarch-build` job 已
 ### 2.3 执行数据库迁移
 
 ```bash
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 ```
+
+> 容器镜像无 ts-node（`npm ci --omit=dev` + 只 COPY dist），必须用 `:prod` 入口；
+> dev 版 `migration:run`/`migration:revert`（ts-node + src/）在容器内报
+> `ts-node: not found`。
 
 > 如果迁移失败，立刻回滚：
 > ```bash
-> docker compose exec admin-api npm run migration:revert
+> docker compose exec admin-api npm run migration:revert:prod
 > # 还原代码
 > git checkout HEAD~1
 > docker compose up -d
@@ -248,8 +252,8 @@ docker compose up -d
 ### 数据库回滚
 
 ```bash
-# 回滚最后一次迁移
-docker compose exec admin-api npm run migration:revert
+# 回滚最后一次迁移（容器内必须 :prod 入口——镜像无 ts-node）
+docker compose exec admin-api npm run migration:revert:prod
 
 # 从备份恢复（极端情况）
 docker compose exec -T postgres psql -U autoflow autoflow < backup_20240101_1200.sql
@@ -263,7 +267,7 @@ docker compose exec -T postgres psql -U autoflow autoflow < backup_20240101_1200
 |------|----------|
 | 前端白屏 | `docker compose logs admin-web --tail=30` |
 | API 502/503 | `docker compose logs admin-api --tail=50` |
-| 迁移报错 | `docker compose exec admin-api npm run migration:run 2>&1` |
+| 迁移报错 | `docker compose exec admin-api npm run migration:run:prod 2>&1` |
 | 执行器断线 | `docker compose logs executor-node --tail=30` |
 | 端口被占 | `ss -tlnp \| grep -E '80\|3105\|8001\|8002'` |
 | 内存不足 | `docker stats --no-stream` |
