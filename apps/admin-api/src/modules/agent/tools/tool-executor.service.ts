@@ -103,6 +103,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       await this.sessions.recordToolCall({
         sessionId: session.id,
         stepId,
+        toolCallId: call.id,
         toolName,
         tier: "read",
         status: "error",
@@ -132,6 +133,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         await this.sessions.recordToolCall({
           sessionId: session.id,
           stepId,
+          toolCallId: call.id,
           toolName,
           tier: "read",
           args: this.sanitizeArgs(args),
@@ -170,6 +172,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       await this.sessions.recordToolCall({
         sessionId: session.id,
         stepId,
+        toolCallId: call.id,
         toolName,
         tier: AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
         args: this.sanitizeArgs(args),
@@ -198,6 +201,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       await this.sessions.recordToolCall({
         sessionId: session.id,
         stepId,
+        toolCallId: call.id,
         toolName,
         tier: AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
         args: this.sanitizeArgs(args),
@@ -218,6 +222,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       await this.sessions.recordToolCall({
         sessionId: session.id,
         stepId,
+        toolCallId: call.id,
         toolName,
         tier: verdict.spec.tier,
         args: this.sanitizeArgs(args),
@@ -254,6 +259,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         await this.sessions.recordToolCall({
           sessionId: session.id,
           stepId,
+          toolCallId: call.id,
           toolName,
           tier: spec.tier,
           args: this.sanitizeArgs(args),
@@ -277,6 +283,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         await this.sessions.recordToolCall({
           sessionId: session.id,
           stepId,
+          toolCallId: call.id,
           toolName,
           tier: spec.tier,
           args: this.sanitizeArgs(args),
@@ -309,6 +316,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       await this.sessions.recordToolCall({
         sessionId: session.id,
         stepId,
+        toolCallId: call.id,
         toolName,
         tier: spec.tier,
         args: this.sanitizeArgs(args),
@@ -328,6 +336,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     await this.sessions.recordToolCall({
       sessionId: session.id,
       stepId,
+      toolCallId: call.id,
       toolName,
       tier: spec.tier,
       args: this.sanitizeArgs(args),

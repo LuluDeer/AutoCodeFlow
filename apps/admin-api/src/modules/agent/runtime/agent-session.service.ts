@@ -74,6 +74,8 @@ export interface AppendStepInput {
 export interface RecordToolCallInput {
   sessionId: string;
   stepId?: string | null;
+  /** 模型给的 tool_call id（重放时唯一的关联键，见实体注释）。 */
+  toolCallId?: string | null;
   toolName: string;
   tier: AgentToolTier;
   args?: Record<string, unknown> | null;
@@ -451,6 +453,7 @@ export class AgentSessionService {
     const row = this.toolCalls.create({
       sessionId: input.sessionId,
       stepId: input.stepId ?? null,
+      toolCallId: input.toolCallId ?? null,
       toolName: input.toolName,
       tier: input.tier,
       argsJson: input.args ?? null,

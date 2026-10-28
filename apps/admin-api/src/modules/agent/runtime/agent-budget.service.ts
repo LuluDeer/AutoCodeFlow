@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { AgentBudget } from "../entities/agent-session.entity";
+import { DEFAULT_CONTEXT_WINDOW } from "./agent-context";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 
 /**
@@ -81,6 +82,30 @@ export class AgentBudgetService {
       maxToolCalls: this.readInt(
         "agent.budget.maxToolCalls",
         DEFAULT_BUDGET.maxToolCalls,
+      ),
+    };
+  }
+
+  /**
+   * 解析上下文窗口策略（设计文档 02 §4.3 滑动窗口的可调面）。
+   *
+   * 与 `resolveBudget()` 的分工：预算在**会话创建时快照**（事后调小不能
+   * 追溯性判死正在跑的会话，审计也要能看到"当时允许多少"）；窗口不落库、
+   * 每轮实时解析——它只影响"这一轮给模型看多少历史"，调小即刻生效无副作用，
+   * 换模型（窗口变大）时也不需要重开会话。
+   */
+  resolveContextWindow(): {
+    maxTokens: number;
+    minRecentMessages: number;
+  } {
+    return {
+      maxTokens: this.readInt(
+        "agent.context.maxTokens",
+        DEFAULT_CONTEXT_WINDOW.maxTokens,
+      ),
+      minRecentMessages: this.readInt(
+        "agent.context.minRecentMessages",
+        DEFAULT_CONTEXT_WINDOW.minRecentMessages,
       ),
     };
   }

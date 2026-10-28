@@ -102,7 +102,9 @@ export type RuntimeCounterName =
   | "autoflow_agent_tokens_total"
   | "autoflow_agent_tool_calls_total"
   | "autoflow_agent_denied_total"
-  | "autoflow_agent_budget_exceeded_total";
+  | "autoflow_agent_budget_exceeded_total"
+  // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
+  | "autoflow_agent_llm_retry_total";
 
 /** 计数器标签集（无标签计数器传空对象） */
 export type RuntimeCounterLabels = Readonly<Record<string, string>>;
@@ -282,6 +284,22 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "max_tokens" },
         { reason: "wall_clock" },
         { reason: "max_tool_calls" },
+      ],
+    },
+    // 推理质量轮：LLM 重试结局。为什么单独一个计数器而不是只看 failed：
+    // 「重试后成功」（recovered）与「重试耗尽」（exhausted）在会话终态上
+    // **长得一样**（都是 succeeded / failed），只能靠这里区分"provider 在抖"
+    // 与"provider 真的坏了"；fatal 占比高则是配置问题（密钥/参数），根本
+    // 不该去调重试次数。
+    autoflow_agent_llm_retry_total: {
+      help: "Agent LLM call retry outcomes (scheduled / recovered / exhausted / fatal / deadline)",
+      labelNames: ["result"],
+      labelValueSets: [
+        { result: "scheduled" },
+        { result: "recovered" },
+        { result: "exhausted" },
+        { result: "fatal" },
+        { result: "deadline" },
       ],
     },
   };

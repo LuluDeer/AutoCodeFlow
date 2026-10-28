@@ -34,6 +34,11 @@ function harness(
     context?: Any;
     /** 工具调用台账（rebuildMessages 补 tool 应答的数据源，实施轮 #14）。 */
     toolCallRows?: Any[];
+    /** 会话开始时刻（重试截止判定的输入；默认"刚刚开始"）。 */
+    startedAt?: Date;
+    /** 上下文窗口（推理质量轮）：显式调小以触发折叠。 */
+    contextMaxTokens?: number;
+    minRecentMessages?: number;
   } = {},
 ) {
   const steps = opts.steps ?? [];
@@ -48,7 +53,7 @@ function harness(
     totalSteps: steps.length,
     budgetJson: opts.budget ?? null,
     contextJson: opts.context ?? null,
-    startedAt: new Date(0),
+    startedAt: opts.startedAt ?? new Date(),
   };
 
   const sessionService = {
@@ -79,6 +84,11 @@ function harness(
 
   const budgetService = {
     check: jest.fn(() => opts.verdict ?? { ok: true }),
+    // 推理质量轮：上下文窗口策略（默认宽松——不折叠；需要折叠的用例显式调小）
+    resolveContextWindow: jest.fn(() => ({
+      maxTokens: opts.contextMaxTokens ?? 24_000,
+      minRecentMessages: opts.minRecentMessages ?? 12,
+    })),
   };
 
   const queue = [...(opts.llm ?? [])];
@@ -106,6 +116,12 @@ function harness(
     budgetService as never,
     aiService as never,
   );
+  // 重试的等待一律走注入的 sleep：真实等待（1s→2s）会让每个重试用例白跑
+  // 3 秒，而这里要断言的是**判据与间隔**，不是定时器本身。
+  service.llmRetryOptions = {
+    sleep: async () => undefined,
+    random: () => 0.5,
+  };
 
   /** 第 n 次 LLM 调用的请求体（mock.calls 的元组在推断下是空类型，故收口在此）。 */
   const llmCall = (n: number): Any => chatMultimodal.mock.calls[n]?.[0];
@@ -611,7 +627,9 @@ describe("AgentRuntimeService —— 审批闭环执行侧（实施轮 #14）", 
       llm: [
         {
           content: "",
-          toolCalls: [{ id: "c1", function: { name: "sop_publish", arguments: "{}" } }],
+          toolCalls: [
+            { id: "c1", function: { name: "sop_publish", arguments: "{}" } },
+          ],
           usage: { tokensIn: 1, tokensOut: 1 },
         },
         // 若循环没停，这里会被消费（第二轮 LLM 调用）
@@ -634,7 +652,10 @@ describe("AgentRuntimeService —— 审批闭环执行侧（实施轮 #14）", 
     const out = await h.service.run("sess-1");
 
     // waiting_input 不是终态：不写终态、不落 finish（grant 后 resume 继续）
-    expect(out).toMatchObject({ status: "waiting_input", reason: "needs_approval" });
+    expect(out).toMatchObject({
+      status: "waiting_input",
+      reason: "needs_approval",
+    });
     expect(h.finished).toHaveLength(0);
     expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
   });
@@ -661,7 +682,13 @@ describe("AgentRuntimeService —— 审批闭环执行侧（实施轮 #14）", 
           errorMessage: null,
         },
       ],
-      llm: [{ content: "结论", toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } }],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 0, tokensOut: 0 },
+        },
+      ],
     });
 
     await h.service.run("sess-1");
@@ -694,7 +721,13 @@ describe("AgentRuntimeService —— 审批闭环执行侧（实施轮 #14）", 
           errorMessage: "已被 alice 人工拒绝",
         },
       ],
-      llm: [{ content: "结论", toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } }],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 0, tokensOut: 0 },
+        },
+      ],
     });
 
     await h.service.run("sess-1");
@@ -726,12 +759,473 @@ describe("AgentRuntimeService —— 审批闭环执行侧（实施轮 #14）", 
           errorMessage: null,
         },
       ],
-      llm: [{ content: "结论", toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } }],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 0, tokensOut: 0 },
+        },
+      ],
     });
 
     await h.service.run("sess-1");
-    const toolMsgs = h.llmCall(0).messages.filter((m: Any) => m.role === "tool");
+    const toolMsgs = h
+      .llmCall(0)
+      .messages.filter((m: Any) => m.role === "tool");
     expect(toolMsgs).toHaveLength(1);
     expect(toolMsgs[0].content).toBe("已有应答");
+  });
+});
+
+describe("AgentRuntimeService —— LLM 分类重试（推理质量轮）", () => {
+  it("401 是确定性失败：不重试、不白烧第二次调用（重发必然同样失败）", async () => {
+    const h = harness({
+      llm: [
+        new Error("401 invalid api key"),
+        {
+          content: "不该被消费",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+    expect(h.finished[0].patch).toMatchObject({
+      errorMessage: "LLM call failed: 401 invalid api key",
+    });
+  });
+
+  it("502 是瞬态：退避后重试成功，会话不 failed、也不落失败 step", async () => {
+    const badGateway = Object.assign(new Error("bad gateway"), {
+      response: { status: 502 },
+    });
+    const h = harness({
+      llm: [
+        badGateway,
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 2, tokensOut: 1 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(2);
+    expect(
+      h.appended.filter((s) => String(s.content).includes("[模型调用失败]")),
+    ).toHaveLength(0);
+  });
+
+  it("重试次数用尽 → failed，只落一条失败 step（可复盘，且不重复记账）", async () => {
+    const badGateway = () =>
+      Object.assign(new Error("bad gateway"), { response: { status: 502 } });
+    const h = harness({
+      llm: [badGateway(), badGateway(), badGateway()],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    // 默认策略 3 次尝试（首次 + 2 次重试）
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(3);
+    expect(h.appended).toHaveLength(1);
+  });
+
+  it("墙钟将到期 → 放弃重试（睡完也是被预算闸门判死，白等还白烧一次调用）", async () => {
+    const badGateway = Object.assign(new Error("bad gateway"), {
+      response: { status: 502 },
+    });
+    const h = harness({
+      // 会话已跑了 30 分钟的 29:59 → 只剩 1 秒，而首次退避要 1 秒 + 抖动
+      startedAt: new Date(Date.now() - (30 * 60 * 1000 - 200)),
+      budget: {
+        maxSteps: 20,
+        maxTokens: 1e9,
+        wallClockMs: 30 * 60 * 1000,
+        maxToolCalls: 50,
+      },
+      llm: [badGateway, { content: "不该被消费", toolCalls: [], usage: {} }],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("AgentRuntimeService —— 上下文窗口折叠（推理质量轮）", () => {
+  /** 造 n 轮「用户长文本 + 助手应答」的历史步骤。 */
+  const longHistory = (n: number): Any[] => {
+    const out: Any[] = [];
+    for (let i = 0; i < n; i += 1) {
+      out.push(
+        step({
+          id: `u${i}`,
+          role: "user",
+          content: `${i} 排查`.padEnd(600, "查"),
+        }),
+      );
+      out.push(step({ id: `a${i}`, role: "assistant", content: "已确认" }));
+    }
+    return out;
+  };
+
+  it("历史超预算 → 请求里是「system + 确定性摘要 + 最近消息」", async () => {
+    const steps = longHistory(30);
+    const h = harness({
+      steps,
+      contextMaxTokens: 800,
+      minRecentMessages: 4,
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    await h.service.run("sess-1");
+    const msgs = h.llmCall(0).messages;
+
+    expect(msgs[0].role).toBe("system");
+    expect(String(msgs[1].content)).toContain("早期对话摘要");
+    // 折叠必须真的省了窗口，否则这段代码没有意义
+    expect(msgs.length).toBeLessThan(steps.length + 1);
+  });
+
+  it("未超预算 → 原样发送（零成本路径，不打扰模型）", async () => {
+    const h = harness({
+      steps: [step({ id: "u1", role: "user", content: "排查 executor-03" })],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    await h.service.run("sess-1");
+    const msgs = h.llmCall(0).messages;
+
+    // system + 1 条历史，没有摘要消息插进来
+    expect(msgs).toHaveLength(2);
+    expect(String(msgs[1].content)).toBe("排查 executor-03");
+  });
+
+  it("折叠只影响请求，不改写重建出来的完整历史（下一轮仍以全量为事实）", async () => {
+    const steps = longHistory(20);
+    const h = harness({
+      steps,
+      contextMaxTokens: 600,
+      minRecentMessages: 2,
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    await h.service.run("sess-1");
+
+    // 最近一条历史（第 19 轮的助手应答）仍在请求末尾：折叠只吃早期段
+    const msgs = h.llmCall(0).messages;
+    expect(String(msgs[msgs.length - 1].content)).toBe("已确认");
+    // 折叠是**纯读侧**计算：steps 一条都没被删、也没被写上 summary
+    // （改写历史等于把审计事实删掉，还会让 resume 看到被篡改的过去）
+    expect(steps).toHaveLength(40);
+    expect(steps.every((s) => s.summary == null)).toBe(true);
+  });
+});
+
+describe("AgentRuntimeService —— 同批调用的挂起语义", () => {
+  it("某个调用需审批后，同批剩余调用**不再执行**，且各得一条说明性 tool 应答", async () => {
+    const execute = jest.fn(async (_session: Any, call: Any) => {
+      if (call.id === "c2") {
+        return {
+          content: "【需人工审批，已提交审批单】…",
+          truncated: false,
+          needsApproval: true,
+        };
+      }
+      return { content: "ok", truncated: false };
+    });
+
+    const h = harness({
+      llm: [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", function: { name: "get_task", arguments: "{}" } },
+            { id: "c2", function: { name: "sop_publish", arguments: "{}" } },
+            { id: "c3", function: { name: "get_task", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        {
+          name: "get_task",
+          description: "d",
+          parameters: {},
+          tier: "read" as const,
+        },
+        {
+          name: "sop_publish",
+          description: "d",
+          parameters: {},
+          tier: "write" as const,
+        },
+      ]),
+      execute,
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out).toMatchObject({ status: "waiting_input" });
+    // 只执行到「进入审批」的那一个为止：c3 绝不能在会话已挂起后还产生副作用
+    expect(execute).toHaveBeenCalledTimes(2);
+    // 未执行的那一个如实落台账（denied，带 tool_call id + 取自工具定义的分级）
+    expect(h.recordedToolCalls).toContainEqual(
+      expect.objectContaining({
+        toolCallId: "c3",
+        toolName: "get_task",
+        tier: "read",
+        status: "denied",
+      }),
+    );
+  });
+});
+
+describe("AgentRuntimeService —— 工具结果重放按 tool_call id 对齐", () => {
+  it("同一 step 里两个同名调用各自重放自己的结果（不再共用第一行）", async () => {
+    const h = harness({
+      steps: [
+        step({
+          id: "s1",
+          role: "assistant",
+          content: "",
+          toolCallsJson: [
+            {
+              id: "c1",
+              function: { name: "get_execution", arguments: '{"id":"e1"}' },
+            },
+            {
+              id: "c2",
+              function: { name: "get_execution", arguments: '{"id":"e2"}' },
+            },
+          ],
+        }),
+      ],
+      toolCallRows: [
+        {
+          id: "row1",
+          stepId: "s1",
+          toolCallId: "c1",
+          toolName: "get_execution",
+          status: "ok",
+          resultJson: { executionId: "e1" },
+          resultTruncated: false,
+          errorMessage: null,
+        },
+        {
+          id: "row2",
+          stepId: "s1",
+          toolCallId: "c2",
+          toolName: "get_execution",
+          status: "ok",
+          resultJson: { executionId: "e2" },
+          resultTruncated: false,
+          errorMessage: null,
+        },
+      ],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    await h.service.run("sess-1");
+    const toolMsgs = h
+      .llmCall(0)
+      .messages.filter((m: Any) => m.role === "tool");
+
+    expect(toolMsgs).toHaveLength(2);
+    expect(String(toolMsgs[0].content)).toContain("e1");
+    expect(String(toolMsgs[1].content)).toContain("e2");
+  });
+
+  it("存量行没有 toolCallId 时按 (stepId, 工具名) 兜底，且一行只消费一次", async () => {
+    const h = harness({
+      steps: [
+        step({
+          id: "s1",
+          role: "assistant",
+          content: "",
+          toolCallsJson: [
+            { id: "c1", function: { name: "get_task", arguments: "{}" } },
+            { id: "c2", function: { name: "get_task", arguments: "{}" } },
+          ],
+        }),
+      ],
+      toolCallRows: [
+        {
+          id: "row1",
+          stepId: "s1",
+          toolCallId: null,
+          toolName: "get_task",
+          status: "ok",
+          resultJson: { n: 1 },
+          resultTruncated: false,
+          errorMessage: null,
+        },
+        {
+          id: "row2",
+          stepId: "s1",
+          toolCallId: null,
+          toolName: "get_task",
+          status: "ok",
+          resultJson: { n: 2 },
+          resultTruncated: false,
+          errorMessage: null,
+        },
+      ],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    await h.service.run("sess-1");
+    const toolMsgs = h
+      .llmCall(0)
+      .messages.filter((m: Any) => m.role === "tool");
+
+    expect(toolMsgs).toHaveLength(2);
+    // 两条应答内容不同 = 第二行真的被读了（此前两处都会命中 row1）
+    expect(String(toolMsgs[0].content)).not.toBe(String(toolMsgs[1].content));
+  });
+});
+
+describe("AgentRuntimeService —— 批次内墙钟闸（推理质量轮）", () => {
+  it("墙钟已到期 → 一个工具都不执行，全部如实回「未执行（墙钟）」", async () => {
+    const execute = jest.fn(async () => ({ content: "ok", truncated: false }));
+    const h = harness({
+      // 会话墙钟已过：预算闸门在循环开头判，但一批调用每个最多 60s——
+      // 十个调用就能跑过上限，期间还在产生副作用。故批次内要重判。
+      startedAt: new Date(Date.now() - 31 * 60 * 1000),
+      budget: {
+        maxSteps: 20,
+        maxTokens: 1e9,
+        wallClockMs: 30 * 60 * 1000,
+        maxToolCalls: 50,
+      },
+      llm: [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", function: { name: "get_task", arguments: "{}" } },
+            { id: "c2", function: { name: "trigger_task", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        {
+          name: "get_task",
+          description: "d",
+          parameters: {},
+          tier: "read" as const,
+        },
+        {
+          name: "trigger_task",
+          description: "d",
+          parameters: {},
+          tier: "write" as const,
+        },
+      ]),
+      execute,
+    });
+
+    await h.service.run("sess-1");
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(h.recordedToolCalls.map((r) => r.errorMessage)).toEqual([
+      "skipped: wall_clock",
+      "skipped: wall_clock",
+    ]);
+    // 两条说明性应答都在（缺一条就是上游 400），且模型被告知原因
+    const secondCall = h.llmCall(1).messages;
+    expect(
+      secondCall.filter(
+        (m: Any) => m.role === "tool" && String(m.content).includes("墙钟预算"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("墙钟未到期时照常执行（闸门不能误杀正常批次）", async () => {
+    const execute = jest.fn(async () => ({ content: "ok", truncated: false }));
+    const h = harness({
+      budget: {
+        maxSteps: 20,
+        maxTokens: 1e9,
+        wallClockMs: 30 * 60 * 1000,
+        maxToolCalls: 50,
+      },
+      llm: [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", function: { name: "get_task", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        {
+          name: "get_task",
+          description: "d",
+          parameters: {},
+          tier: "read" as const,
+        },
+      ]),
+      execute,
+    });
+
+    await h.service.run("sess-1");
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });

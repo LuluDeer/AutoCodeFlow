@@ -69,6 +69,22 @@ export class AgentToolCall {
   @Column({ type: "uuid", nullable: true })
   stepId: string | null;
 
+  /**
+   * 模型给的 tool_call id（`tool_calls[].id`）。
+   *
+   * 为什么需要单独一列（而不是靠 stepId + toolName 推断）：
+   * 一个 assistant 步可以带**多个同名**调用（模型并行查两次 `get_execution`
+   * 是常见形态），(stepId, toolName) 无法区分它们。重建上下文时按名字匹配，
+   * 两个调用的重放会命中同一行记录——模型因此以为"两次查询答案一样"，而
+   * 第二次的真实结果从未被读。恢复路径（审批 grant / 重启）是**主路径**，
+   * 这个缺口不是边角问题。
+   *
+   * 存量行允许 NULL（迁移前写入的记录没有这个字段），重建时按
+   * (stepId, toolName) 兜底且一行只消费一次。
+   */
+  @Column({ type: "varchar", length: 128, nullable: true })
+  toolCallId: string | null;
+
   @Column({ type: "varchar", length: 64 })
   toolName: string;
 

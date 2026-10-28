@@ -5,7 +5,10 @@ import {
   type ToolCall,
 } from "../../ai/ai.service";
 import { AgentSessionService } from "./agent-session.service";
-import { AgentBudgetService } from "./agent-budget.service";
+import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
+import { planContextWindow, type ContextWindowOptions } from "./agent-context";
+import { withLlmRetry, type LlmRetryOptions } from "./agent-llm-retry";
+import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import type { AgentSession } from "../entities/agent-session.entity";
 import type { AgentStep } from "../entities/agent-step.entity";
 import type { AgentToolCall } from "../entities/agent-tool-call.entity";
@@ -18,6 +21,27 @@ import type { AgentToolCall } from "../entities/agent-tool-call.entity";
  * 完整性——需要全文时走 agent_tool_calls.resultJson 人工回读。
  */
 const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
+
+/** LLM 重试的观测点（scheduled / recovered / exhausted / fatal / deadline）。 */
+const LLM_RETRY_METRIC = "autoflow_agent_llm_retry_total";
+
+/**
+ * 一批工具调用里「没有执行」的两种情况与回给模型的应答文本。
+ *
+ * 为什么必须回一条（而不是静默跳过）：OpenAI 兼容协议要求每个 tool_call
+ * 都有 tool 应答，缺一条上游直接 400；而「这批里剩下的没执行」是模型在
+ * 恢复后必须知道的事实——否则它会在 resume 时以为那几次也做过了。
+ */
+const NOT_EXECUTED_TEXT: Record<"approval" | "wall_clock", string> = {
+  approval:
+    "【未执行】本次调用未执行：同一批调用里前一个工具调用已进入人工审批，" +
+    "会话已挂起等待处置（已提交的审批单批准后会自动恢复）。" +
+    "如需执行本调用，请在恢复后重新提交。",
+  wall_clock:
+    "【未执行】本次调用未执行：会话墙钟预算（wallClockMs）已到期，" +
+    "平台不再发起新的工具调用（避免在注定失败的会话里继续产生副作用）。" +
+    "如需继续，请新建会话或调大预算后重新指派。",
+};
 
 /**
  * P2：Agent 推理循环（设计文档 02 §4）。
@@ -36,11 +60,15 @@ const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
  * 若在末尾判定，最后一轮已经产生了副作用（可能已经调了工具、改了生产配置），
  * 闸门就形同虚设。开头判定保证「超限即不再发起新的推理与工具调用」。
  *
- * ## P2 范围（刻意的）
- * 本阶段只做**循环骨架 + 预算 + 持久化**，工具集在 P3 接入。因此现在
- * `availableTools` 返回空数组，循环的终态即「模型给出文本结论」。
- * 这样 P2 可以先独立验证「LLM 能长驻、能多轮、能被闸门管住」，而不必
- * 同时承担工具边界（P3）的风险——风险拆开，是这两阶段分界的本意。
+ * ## 演进（P2 只做骨架时的口径，供对照）
+ * P2 只做**循环骨架 + 预算 + 持久化**（`availableTools` 返回空数组，终态即
+ * 「模型给出文本结论」），工具集在 P3 接。推理质量轮（2026-10）在此基础上
+ * 补三件**只影响「怎么用好同一份预算」、不动闸门与状态机**的事：
+ *   · 上下文窗口折叠（`agent-context.ts`，请求侧纯计算，2 §4.3）；
+ *   · LLM 分类重试（`agent-llm-retry.ts`，含墙钟截止）；
+ *   · 同批调用的挂起语义（一个调用等审批 ⇒ 同批剩余不执行）。
+ * 三者的共同纪律：**闸门与终态语义一字不改**——闸门错了是安全事故，
+ * 而这三件错了是"会话更容易失败/更贵"，风险量级不同，不能混在一次改动里。
  */
 
 /** 一次循环运行的结果。 */
@@ -49,7 +77,8 @@ export interface RunOutcome {
    * waiting_input = 因需人工审批而暂停（审批单已落库、会话已挂起）。
    * 它不是终态：grant 之后走 resume 继续。
    */
-  status: "succeeded" | "failed" | "budget_exceeded" | "aborted" | "waiting_input";
+  status:
+    "succeeded" | "failed" | "budget_exceeded" | "aborted" | "waiting_input";
   steps: number;
   reason?: string;
 }
@@ -109,6 +138,24 @@ export class AgentRuntimeService {
 
   /** P3 会注入真实实现；P2 保持 null（无工具，纯文本推理）。 */
   private toolExecutor: AgentToolExecutor | null = null;
+
+  /**
+   * 重试钩子的注入点（生产留空 = 真实时钟 + 真实 sleep）。
+   *
+   * 为什么做成可写字段而不是构造参数：退避是「只在故障时才走到」的分支，
+   * 单测必须能把 1s/2s 的等待钉成 0ms 并逐次断言判据（见 spec）；而它是
+   * 运行时的**可观测细节**，不是依赖——走 DI 会给 5 处构造点都加参数，
+   * 换不来任何装配收益。同 `setToolExecutor` 的既有做法。
+   */
+  llmRetryOptions: LlmRetryOptions = {};
+
+  /**
+   * 上下文窗口覆盖（不传则每次 run 从配置解析 `agent.context.*`）。
+   *
+   * 与预算是**两种不同语义**：预算是会话快照（审计要能回答"当时允许多少"），
+   * 窗口是运行时调优（模型换代后现场调小即可，不该追溯性影响在跑的会话）。
+   */
+  contextWindow: Partial<ContextWindowOptions> | null = null;
 
   constructor(
     private readonly sessionService: AgentSessionService,
@@ -171,23 +218,40 @@ export class AgentRuntimeService {
         ? await this.toolExecutor.availableTools(fresh)
         : [];
 
+      // 上下文窗口（设计文档 02 §4.3 的滑动窗口）：每轮都基于**完整**历史
+      // 重新算一次折叠计划，而不是改写 messages 变量本身——这样崩溃重启/
+      // 审批恢复/重复入队的每一次 run 都从同一份事实出发（可重入纪律）。
+      const window = this.resolveContextWindow();
+      const plan = planContextWindow(messages, window);
+      if (plan.foldedMessages > 0) {
+        this.logger.debug(
+          `Agent context folded: session=${sessionId} folded=${plan.foldedMessages} ` +
+            `tokens≈${plan.tokensBefore}→${plan.tokensAfter}`,
+        );
+      }
+
+      const deadlineAt = this.retryDeadline(fresh);
+
       let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
       const t0 = Date.now();
       try {
-        res = await this.callLlmWithRetry({
-          messages,
-          tools:
-            tools.length > 0
-              ? tools.map((t) => ({
-                  type: "function" as const,
-                  function: {
-                    name: t.name,
-                    description: t.description,
-                    parameters: t.parameters,
-                  },
-                }))
-              : undefined,
-        });
+        res = await this.callLlmWithRetry(
+          {
+            messages: plan.messages,
+            tools:
+              tools.length > 0
+                ? tools.map((t) => ({
+                    type: "function" as const,
+                    function: {
+                      name: t.name,
+                      description: t.description,
+                      parameters: t.parameters,
+                    },
+                  }))
+                : undefined,
+          },
+          deadlineAt,
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         // 模型调用失败 → 记 step 后收敛为 failed（不是 budget_exceeded：
@@ -234,16 +298,23 @@ export class AgentRuntimeService {
         return { status: "succeeded", steps: usage.steps + 1 };
       }
 
+      // 工具分级按**本次暴露给模型的定义**取，而不是猜：台账的 tier 决定
+      // 保留期（write/dangerous ≥180 天、read 30 天），猜错等于把一次写操作
+      // 的审计记录提前 150 天删掉。
+      const tierByName = new Map(tools.map((t) => [t.name, t.tier]));
+
       // ── 工具执行（P3 接入；无 executor 时视为不可用）──
       if (!this.toolExecutor) {
         // P2 未装配工具集：模型要求调工具但我们做不了 → 如实告知并收敛，
         // 不静默忽略（静默会让模型以为调用成功了，然后在错误前提上继续推理）
         for (const call of res.toolCalls) {
+          const toolName = call.function?.name ?? "unknown";
           await this.sessionService.recordToolCall({
             sessionId,
             stepId: step.id,
-            toolName: call.function?.name ?? "unknown",
-            tier: "read",
+            toolCallId: call.id,
+            toolName,
+            tier: tierByName.get(toolName) ?? "read",
             status: "denied",
             errorMessage: "tool execution not available (P2: no toolset wired)",
           });
@@ -261,8 +332,44 @@ export class AgentRuntimeService {
       // 推理，就会在「状态说在等审批」的窗口里继续调 LLM、继续重提同一调用，
       // 而 B-8 的双跑守卫正是按状态判的（grant/resume 会放进第二个 job）。
       // 因此把本轮工具结果回灌后立即收束，让 waiting_input 与事实一致。
+      //
+      // 推理质量轮补的第二半：**同一批里后面的调用一律不执行**。
+      // 模型可以一次给出多个 tool_calls（并行调用），此前是逐个照跑——
+      // 于是「第 2 个调用需审批 → 会话挂起」之后，第 3 个写操作照样执行，
+      // 而会话状态已经宣称"在等人工处置"。这是**挂起语义与副作用不一致**：
+      // 管理员看到的是一次待审批，实际发生的是"审批之外的另一次写"。
+      // 参考 langchain ToolCallLimitMiddleware 的 'end' 语义：限流/中断时
+      // 未执行的调用必须各得一条说明性 tool 应答，而不是消失。
+      //
+      // 同一处还有第二道**批次内**的墙钟闸：预算闸门只在循环开头判，而一批
+      // 调用每个最多 60s——十个调用就能跑过墙钟上限，把「35 分钟才死的会话」
+      // 变成常态，期间还在持续产生副作用。因此每次执行前重判一次截止时间。
       let waitingForApproval = false;
       for (const call of res.toolCalls) {
+        const wallClockExpired =
+          deadlineAt !== null && Date.now() >= deadlineAt;
+        if (waitingForApproval || wallClockExpired) {
+          const toolName = call.function?.name ?? "unknown";
+          const reason = waitingForApproval ? "approval" : "wall_clock";
+          // 记 denied：它确实没执行，且 denied 不计入速率预算（不会被
+          // "等审批"这件与它无关的事拖累配额）。
+          await this.sessionService.recordToolCall({
+            sessionId,
+            stepId: step.id,
+            toolCallId: call.id,
+            toolName,
+            tier: tierByName.get(toolName) ?? "read",
+            status: "denied",
+            errorMessage: `skipped: ${reason}`,
+          });
+          messages = this.pushToolResult(
+            messages,
+            call,
+            NOT_EXECUTED_TEXT[reason],
+          );
+          continue;
+        }
+
         const result = await this.toolExecutor.execute(fresh, call, step.id);
         messages = this.pushToolResult(messages, call, result.content);
         if (result.needsApproval) waitingForApproval = true;
@@ -281,33 +388,79 @@ export class AgentRuntimeService {
   }
 
   /**
-   * LLM 调用的一次瞬态重试（网络/5xx）。参考 OpenAI SDK 的默认 retry 语义：
-   * **只在抛出异常时重试**，此时还没有任何工具副作用，重试安全；协议错误
+   * 一次推理调用：**分类重试 + 指数退避 + 墙钟截止**（见 agent-llm-retry.ts）。
+   *
+   * 重试只在抛出时发生——此时还没有任何工具副作用，重发是安全的；协议错误
    * （模型返回了内容但不合法）不走这里，交由上层/protocol 校验处理。
    *
-   * 为什么需要：真实 provider 偶发 502/连接重置，一次抖动不该让整个
+   * 为什么值得重试：真实 provider 偶发 502/连接重置，一次抖动不该让整个
    * ops_watch / incident 会话直接 failed（会话状态已持久化，重跑成本更高）。
+   * 为什么只对一部分错误重试：401/400/422 是确定性失败，重发必然同样失败，
+   * 只会把「配置错了」伪装成「偶发抖动」并白烧一次令牌。
    */
   private async callLlmWithRetry(
     request: Parameters<AiService["chatMultimodal"]>[0],
+    deadlineAt: number | null,
   ): ReturnType<AiService["chatMultimodal"]> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        return await this.aiService.chatMultimodal(request);
-      } catch (err) {
-        lastError = err;
-        if (attempt === 0) {
+    const injected = this.llmRetryOptions;
+    let retried = false;
+
+    const res = await withLlmRetry(
+      () => this.aiService.chatMultimodal(request),
+      {
+        ...injected,
+        deadlineAt,
+        onRetry: (evt) => {
+          retried = true;
+          recordRuntime(LLM_RETRY_METRIC, { result: "scheduled" });
           this.logger.warn(
-            `LLM call failed (attempt 1/2), retrying once: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
+            `LLM call failed (attempt ${evt.attempt}/${evt.maxAttempts}), ` +
+              `retrying in ${evt.delayMs}ms: ${
+                evt.error instanceof Error
+                  ? evt.error.message
+                  : String(evt.error)
+              }`,
           );
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      }
-    }
-    throw lastError;
+          injected.onRetry?.(evt);
+        },
+        onGiveUp: (info) => {
+          recordRuntime(LLM_RETRY_METRIC, { result: info.reason });
+          if (info.reason !== "fatal") {
+            // fatal 的成因（密钥失效/参数错）由上层收敛为 failed 并落库，
+            // 这里不重复记 —— 重试相关的「试过几次才放弃」才是本指标的语义。
+            this.logger.warn(
+              `LLM call gave up after ${info.attempts} attempt(s): ${info.reason}`,
+            );
+          }
+          injected.onGiveUp?.(info);
+        },
+      },
+    );
+    if (retried) recordRuntime(LLM_RETRY_METRIC, { result: "recovered" });
+    return res;
+  }
+
+  /**
+   * 重试的墙钟截止（epoch ms；null = 不设）。
+   *
+   * 会话预算是硬闸门（`startedAt + wallClockMs`），而重试发生在两道闸门之间：
+   * 若「睡完这一觉」预算已到期，重试注定被下一轮闸门判死——白等几秒还白烧
+   * 一次调用。故把截止时间交给重试层，让它提前收手。
+   */
+  private retryDeadline(session: AgentSession): number | null {
+    if (!session.startedAt) return null;
+    const wallClockMs = Number(
+      (session.budgetJson as { wallClockMs?: unknown } | null)?.wallClockMs ??
+        DEFAULT_BUDGET.wallClockMs,
+    );
+    if (!Number.isFinite(wallClockMs) || wallClockMs <= 0) return null;
+    return new Date(session.startedAt).getTime() + wallClockMs;
+  }
+
+  /** 上下文窗口策略：显式覆盖优先，否则读配置（每轮实时解析）。 */
+  private resolveContextWindow(): Partial<ContextWindowOptions> {
+    if (this.contextWindow) return this.contextWindow;
+    return this.budgetService.resolveContextWindow();
   }
 
   // ── 上下文重建（可重入的关键）────────────────────────────────────
@@ -359,6 +512,16 @@ export class AgentRuntimeService {
         .filter((s) => s.role === "tool" && s.toolCallId)
         .map((s) => s.toolCallId as string),
     );
+    // 按 tool_call id 建索引：一个 assistant 步可以带**多个同名**调用
+    // （模型并行查两次 get_execution 是常见形态），只按 (stepId, toolName)
+    // 匹配会让两次重放拿到**同一行**结果——模型因此认为"两次查询答案一样"，
+    // 而实际上第二行记录从未被读。call id 是唯一能区分它们的键。
+    const rowByCallId = new Map<string, AgentToolCall>();
+    for (const row of toolCalls) {
+      if (row.toolCallId) rowByCallId.set(row.toolCallId, row);
+    }
+    // 存量行（迁移前没有 toolCallId）按名字兜底时，一行只能用一次。
+    const consumedRowIds = new Set<string>();
 
     for (const s of steps) {
       messages.push(...this.stepToMessages(s));
@@ -369,11 +532,12 @@ export class AgentRuntimeService {
         : [];
       for (const call of calls) {
         if (!call?.id || answeredIds.has(call.id)) continue;
-        const row = toolCalls.find(
-          (c) =>
-            c.stepId === s.id &&
-            c.toolName === (call.function?.name ?? "") &&
-            !answeredIds.has(call.id),
+        const row = this.pickReplayRow(
+          s,
+          call,
+          toolCalls,
+          rowByCallId,
+          consumedRowIds,
         );
         messages.push({
           role: "tool",
@@ -384,6 +548,36 @@ export class AgentRuntimeService {
       }
     }
     return messages;
+  }
+
+  /**
+   * 为一条待重放的 tool_call 找它的执行记录。
+   *
+   * 优先按 `toolCallId`（写入侧唯一的可靠关联）；找不到才退回
+   * (stepId, 工具名)——那是 `toolCallId` 列存在之前的唯一依据，存量会话
+   * 仍在库里，不能因为迁移就把它们判成「结果缺失」。
+   */
+  private pickReplayRow(
+    step: AgentStep,
+    call: ToolCall,
+    rows: AgentToolCall[],
+    rowByCallId: Map<string, AgentToolCall>,
+    consumedRowIds: Set<string>,
+  ): AgentToolCall | undefined {
+    const direct = rowByCallId.get(call.id);
+    if (direct) {
+      consumedRowIds.add(direct.id);
+      return direct;
+    }
+    const toolName = call.function?.name ?? "";
+    const fallback = rows.find(
+      (r) =>
+        r.stepId === step.id &&
+        r.toolName === toolName &&
+        !consumedRowIds.has(r.id),
+    );
+    if (fallback) consumedRowIds.add(fallback.id);
+    return fallback;
   }
 
   /**
