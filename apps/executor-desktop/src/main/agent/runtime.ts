@@ -186,6 +186,49 @@ const DIAGNOSE_REPAIR =
   '上一次输出不是合法 JSON。只返回一个 JSON 对象，不要解释；' +
   '必须包含 action（retry|clarify|escalate|deliver）。';
 
+/**
+ * 桌面侧 relay 失败的**分类重试**判据（与 admin-api 的 agent-llm-retry.ts
+ * 同一哲学，形态适配桌面侧的字符串 error 面）：
+ *
+ * - **瞬态**（网络码 / 超时 / 429 / 5xx）→ 指数退避重试，最多 3 次尝试。
+ *   参考.langgraph `default_retry_on`（连接错误与 5xx 重试）。
+ * - **确定性**（401 凭据失效 / 400 参数 / 其它 4xx、中台 fail-open 空
+ *   content）→ 立即如实失败。重试「配置错了」只会把失败推迟几百毫秒，
+ *   还会把「该去修配置」伪装成「偶发抖动」。
+ *
+ * 判定基于 CollabClient 收敛出的 error 字符串（`xxx (status=NNN)` /
+ * Node 网络错误码 / 纯文案），与 agent-llm-retry.ts 的「结构化状态码 →
+ * 错误码 → 文案」同一顺序：带状态码先按状态码判，文案只做窄匹配——
+ * 不认裸数字（`max_tokens must be <= 500` 里有个 500 不代表 5xx）。
+ */
+const RELAY_RETRYABLE_TEXT_RES: ReadonlyArray<RegExp> = [
+  /\bstatus=(?:408|425|429)\b/,
+  /\bstatus=5\d\d\b/,
+  /\beconn(?:reset|aborted|refused)\b|\betimedout\b|\besockettimedout\b|\bepipe\b|\beai_again\b|\benet(unreach|down)\b|\behostunreach\b/i,
+  /socket hang up|connection reset|network error/i,
+  /bad gateway|service unavailable|gateway timeout|internal server error/i,
+  /request timeout|total duration exceeded|timed?\s*out/i,
+];
+
+/** 瞬态 relay 错误值不值得重试（导出供 selftest 钉判据）。 */
+export function isRetryableRelayError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  const status = /\bstatus=(\d{3})\b/.exec(error);
+  if (status) {
+    const code = Number(status[1]);
+    if (code === 408 || code === 425 || code === 429) return true;
+    if (code >= 500 && code <= 599) return true;
+    // 其余带状态码的（含全部其它 4xx）都是确定性失败
+    return false;
+  }
+  return RELAY_RETRYABLE_TEXT_RES.some((re) => re.test(error));
+}
+
+/** relay 瞬态失败的重试节奏：0.5s → 1s（上限 8s），共 3 次尝试。 */
+const RELAY_RETRY_MAX_ATTEMPTS = 3;
+const RELAY_RETRY_INITIAL_MS = 500;
+const RELAY_RETRY_MAX_MS = 8_000;
+
 function withImageParts(
   text: string,
   urls: string[],
@@ -208,16 +251,37 @@ async function chatJson(
 ): Promise<Record<string, unknown>> {
   let current = messages;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const res = await llm.chat({ messages: current });
-    if (!res.ok) {
-      // 瞬态 relay/网络失败：重试一次同样的请求（无工具副作用）；第二次仍
-      // 失败才如实上抛。参考 OpenAI SDK 的默认 retry 语义。
-      if (attempt === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        continue;
+    // ── relay 瞬态失败的分类重试（0.5s → 1s，最多 3 次尝试）──────────
+    // 与 admin-api 的 withLlmRetry 同哲学：只重试瞬态；确定性失败（401/
+    // 400/空 content）立即如实上抛——重试「配置错了」只是白烧调用并把
+    // 「该修配置」伪装成「偶发抖动」。错误分类见 isRetryableRelayError。
+    let res: { ok: boolean; error?: string; content: string } | null = null;
+    let lastRelayError = '';
+    for (let relayAttempt = 1; relayAttempt <= RELAY_RETRY_MAX_ATTEMPTS; relayAttempt += 1) {
+      res = await llm.chat({ messages: current });
+      if (res.ok) {
+        lastRelayError = '';
+        break;
       }
-      throw new Error(`LLM relay 不可用：${res.error ?? 'unknown'}`);
+      lastRelayError = res.error ?? 'unknown';
+      // 确定性失败（含 fail-open 空 content 之外的 4xx）不重试
+      if (!isRetryableRelayError(lastRelayError)) {
+        throw new Error(`LLM relay 不可用：${lastRelayError}`);
+      }
+      // 瞬态失败且还有余量 → 退避后重试
+      if (relayAttempt < RELAY_RETRY_MAX_ATTEMPTS) {
+        const delayMs = Math.min(
+          RELAY_RETRY_INITIAL_MS * 2 ** (relayAttempt - 1),
+          RELAY_RETRY_MAX_MS,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
+    if (res === null || lastRelayError !== '' || !res.ok) {
+      // 瞬态重试耗尽：如实上抛（loop 收敛为 outcome=error，会话可续）
+      throw new Error(`LLM relay 不可用（已重试 ${RELAY_RETRY_MAX_ATTEMPTS - 1} 次）：${lastRelayError}`);
+    }
+
     const parsed = extractJsonObject(res.content);
     if (parsed) return parsed;
     if (attempt === 0) {
