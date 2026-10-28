@@ -188,6 +188,42 @@ async function main(): Promise<void> {
     console.log('  (跳过：非 Linux 平台无 /proc 归属校验——sweep 登记为 best-effort Linux only)');
   }
 
+  console.log('-- 6b2. 超时必落定：setsid 逃逸者持有管道时（POSIX only）--');
+  if (process.platform !== 'win32') {
+    // 候选代码 Popen(start_new_session=True) 脱离进程组：组杀杀不到它，
+    // 它继承的 stdout/stderr 写端让 pipe 永不 EOF → close 永不触发。
+    // 宽限强制销毁必须让 spawnWithTreeTimeout 在「timeout + 5s 宽限」内落定。
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-escape-'));
+    fs.writeFileSync(
+      path.join(ws, 'escape.js'),
+      [
+        "const { spawn } = require('child_process');",
+        // setsid 孙进程：脱离进程组 + 继承 stdio 管道
+        "const g = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+        'g.unref();',
+        "console.log('parent exiting');",
+      ].join('\n'),
+      'utf8',
+    );
+    const t0 = Date.now();
+    const res = await spawnWithTreeTimeout(
+      process.execPath,
+      [path.join(ws, 'escape.js')],
+      { cwd: ws, env: buildTrialEnv('node') },
+      1500,
+    );
+    const elapsed = Date.now() - t0;
+    check(
+      '超时 + 逃逸者持有管道 → 必然落定（timeout+5s 宽限内）',
+      res.timedOut === true && elapsed < 8_000,
+      `elapsed=${elapsed}ms res=${JSON.stringify(res)}`,
+    );
+    check('落定时 errorMessage 指明管道被强销毁', (res.errorMessage ?? '').includes('grace'), res.errorMessage ?? '');
+    fs.rmSync(ws, { recursive: true, force: true });
+  } else {
+    console.log('  (跳过：Windows 无 setsid 形态——树杀走 taskkill /T)');
+  }
+
   assert.ok(true);
   console.log(failures ? `\n=== ${failures} 项失败 ===\n` : '\n=== kill-tree selftest 全部通过 ===\n');
   process.exit(failures ? 1 : 0);

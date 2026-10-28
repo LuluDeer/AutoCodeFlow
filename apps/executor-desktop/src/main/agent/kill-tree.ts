@@ -228,6 +228,17 @@ export function spawnWithTreeTimeout(
     let settled = false;
     let errorMessage: string | null = null;
 
+    /**
+     * 超时强杀后的宽限定时器：进程组击杀杀不到 setsid/守护化逃逸者——
+     * 候选代码 `subprocess.Popen(..., start_new_session=True)` 会脱离进程组，
+     * SIGKILL 杀不到它，而它继承了 stdout/stderr 写端，pipe 永不 EOF →
+     * 'close' 永不触发 → 本 Promise 永不落定，runTrialInSandbox 的 await
+     * 永久挂起（整条 agent 循环卡死）。宽限到期强制销毁管道并落定：
+     * 「timedOut 必然收敛」的承诺优先于「等到自然退出」。
+     */
+    let graceTimer: NodeJS.Timeout | null = null;
+    const KILL_GRACE_MS = 5_000;
+
     const timer = setTimeout(() => {
       timedOut = true;
       // killed 语义 = 「终止信号已发出」（同步置位）。异步等待 killTree 完成
@@ -235,6 +246,18 @@ export function spawnWithTreeTimeout(
       // 若先走 finish 会拿到 killed=false / exitCode=1 的失真快照。
       killed = true;
       void killTree(child.pid ?? 0);
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        errorMessage = 'kill grace expired: child stdout/stderr destroyed (escaped process may hold the pipe)';
+        try {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        } catch { /* 尽力而为 */ }
+        // destroy 不保证触发 child 'close'（stdio 引用计数是实现细节）——
+        // 显式落定，finish 的 settled 幂等让两条路径天然安全。
+        finish(null);
+      }, KILL_GRACE_MS);
+      graceTimer.unref?.();
     }, timeoutMs);
 
     child.stdout?.on('data', (b: Buffer) => onChunk?.(b, false));
@@ -244,6 +267,10 @@ export function spawnWithTreeTimeout(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer !== null) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
+      }
       unregister();
       // 超时强杀下进程可能以任意退出码触发 close（Windows taskkill /F → 1）
       // ——退出码已无意义，归 null（调用方以 timedOut 判定，不是 exitCode）
