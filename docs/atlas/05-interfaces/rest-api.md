@@ -1,8 +1,8 @@
 # REST 接口地图
-> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-20 · 对应代码: apps/admin-api/src/modules/*（**30** 个 controller 文件，**28** 个路由前缀）
+> 所属: docs/atlas/05-interfaces · 最后核对: 2026-10-28 · 对应代码: apps/admin-api/src/modules/*（**33** 个 controller 文件，**30** 个路由前缀）
 >
 > 路由前缀由 `scripts/check-interface-maps.mjs` 守护：源码里每个 `@Controller("<前缀>")` 都必须在本页出现，缺一即红。
-> 本页是**地图**不是全量清单（全量 195 条见 [docs/api-reference.md](../../api-reference.md) 附录），但「整个域缺失」属于漂移。
+> 本页是**地图**不是全量清单（全量 240 个操作 / 206 个路径见 [docs/api-reference.md](../../api-reference.md) 附录），但「整个域缺失」属于漂移。
 
 ## 怎么调
 
@@ -82,7 +82,10 @@
 - `/metrics`：`GET` `·summary` `·trend` `·executors` `·failures` `·scheduler`（JWT）。
 - `/notification`：`GET channels`、`PATCH channels/:key`、`POST channels/:key/test`、`POST test·send`、`GET/POST silences`、`DELETE silences/:id`（JWT）。
 - `/alerts`：`POST webhook`（@Public，告警平台回调入口）。
-- `/ai`：`GET/POST config`、`POST test`（JWT；`AI_PROVIDER` 侧配置）。
+- `/ai`：`GET/POST config`、`POST test`、`GET/PUT providers`、`DELETE providers/:id`、`PUT routes`（JWT；provider 注册表 + 按用途路由，`AI_PROVIDER` 旧键继续回落）。
+- `/ai/media`：`POST` 上传录屏（JWT+ADMIN，mp4/webm/mov/m4v ≤100MB）、`GET :mediaId/:fileName` 签名直链下载（@Public，HMAC 短时签名，支持 HEAD/Range 206）。
+- `/ai/sop-draft`：`POST from-video`（JWT+ADMIN，只出草稿不落库）。
+- `/ai/sop-sessions`：`POST` 开会话、`GET` 本人会话列表、`GET :id`、`POST :id/turns`、`POST :id/turns/stream`（SSE）、`POST :id/saved`（JWT+ADMIN；每轮全量重发视频，回合锁防并发）。
 - `/audit`：`GET`（filters 白名单）、`GET export`（JWT）。
 - `/config`：`GET`、`GET :key`、`PUT`、`POST batch`、`DELETE :key`、`GET history(/:key)`、`POST history/:id/rollback`、`GET/POST executor-shared-token(/generate)`（读 JWT，写面 ADMIN，[config 模块](../01-apps/admin-api/modules/config.md)）。
 - `/registry`：`GET pypi/packages`、`GET npm/packages`、`POST pypi/upload`（JWT，私服代理面）。

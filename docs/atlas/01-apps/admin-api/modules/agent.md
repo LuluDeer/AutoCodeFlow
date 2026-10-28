@@ -38,6 +38,8 @@ modules/agent/
     ├── agent-session.service.ts       生命周期与持久化（唯一落库入口）
     ├── agent-budget.service.ts        预算闸门（四道）
     ├── agent-runtime.service.ts       推理循环（可重入）
+    ├── agent-context.ts               ★ 上下文窗口折叠（滑动窗口，纯函数）
+    ├── agent-llm-retry.ts             ★ LLM 分类重试（退避 + 墙钟截止，纯函数）
     ├── agent-notify.service.ts        会话通知（§7.2 分级 + 静默成功 + fail-open）
     └── agent.processor.ts             BullMQ worker（并发固定 2）
 ```
@@ -193,6 +195,7 @@ drain 后下个窗口重新累积。一次执行器下线会刷出几十条失�
 | `autoflow_agent_tool_calls_total` | tool, tier, status | 工具分布（denied 是安全信号） |
 | `autoflow_agent_denied_total` | reason | 边界拦截（P3 启用） |
 | `autoflow_agent_budget_exceeded_total` | reason | 预算触顶（防成本事故） |
+| `autoflow_agent_llm_retry_total` | result | LLM 重试结局（scheduled/recovered/exhausted/fatal/deadline）——「重试后成功」与「重试耗尽」在会话终态上长得一样，只能靠它区分 |
 
 > 指标名在 `runtime-metrics.ts` 注册表登记是**必须**的——`recordRuntime`
 > 对未注册名静默忽略，漏注册会让埋点形同虚设。测试有对应断言。
