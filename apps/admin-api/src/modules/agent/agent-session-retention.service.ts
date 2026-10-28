@@ -2,7 +2,7 @@ import { Injectable, Logger, Optional } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { Repository } from "typeorm";
 
 import {
   AgentSession,
@@ -46,6 +46,20 @@ export const AGENT_APPROVAL_RETENTION_DEFAULT_DAYS = 180;
 
 /** 单批 IN 列表上限（每日批量任务，分块防超长语句）。 */
 const DELETE_CHUNK = 500;
+
+/**
+ * 终态会话 id 的分页加载批大小。
+ *
+ * 为什么按 id **keyset 分页**而不是一次 find 全量：终态会话只增不减，运营
+ * 数年后是数十万~百万行——一次 find 全量载入内存再分块删，每天 cron 都是
+ * 一次内存尖峰（此前工具调用/审批单各自再复制一份 id 数组）。keyset 游标
+ * （上一批最大 id 起步）让每批内存有界且游标稳定，删除语句仍在 IN 列表上
+ * 走既有索引。
+ */
+const SCAN_BATCH = 1_000;
+
+/** 导出供测试构造满批页（keyset 分页的「尾批不满即停」语义钉死用）。 */
+export const AGENT_RETENTION_SCAN_BATCH = SCAN_BATCH;
 
 const ENV_STEP_RETENTION_DAYS = "AGENT_STEP_RETENTION_DAYS";
 const ENV_TOOL_CALL_READ_RETENTION_DAYS = "AGENT_TOOL_CALL_READ_RETENTION_DAYS";
@@ -137,26 +151,53 @@ export class AgentSessionRetentionService {
 
     // 只清**终态**会话的 steps——非终态（pending/running/waiting_input）的
     // steps 是推理循环可重入与上下文重建的唯一数据源（见 agent-step 头注）。
-    const terminalIds = (
-      await this.sessions.find({
-        where: { status: In([...AGENT_TERMINAL_STATUSES]) },
-        select: { id: true },
-      })
-    ).map((s) => s.id);
-
+    // 终态 id 按 keyset 分页加载（内存有界）；删除沿用 IN 分块。
     let stepsDeleted = 0;
-    for (let i = 0; i < terminalIds.length; i += DELETE_CHUNK) {
-      const chunk = terminalIds.slice(i, i + DELETE_CHUNK);
-      const res = await this.steps
-        .createQueryBuilder()
-        .delete()
-        .where("sessionId IN (:...ids)", { ids: chunk })
-        .andWhere("createdAt < :cutoff", { cutoff: stepCutoff })
-        .execute();
-      stepsDeleted += res.affected ?? 0;
+    let approvalsDeleted = 0;
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await this.loadTerminalSessionIds(cursor);
+      if (page.length === 0) break;
+      cursor = page[page.length - 1];
+
+      // steps：会话终态 + createdAt 超期才删
+      for (let i = 0; i < page.length; i += DELETE_CHUNK) {
+        const chunk = page.slice(i, i + DELETE_CHUNK);
+        const res = await this.steps
+          .createQueryBuilder()
+          .delete()
+          .where("sessionId IN (:...ids)", { ids: chunk })
+          .andWhere("createdAt < :cutoff", { cutoff: stepCutoff })
+          .execute();
+        stepsDeleted += res.affected ?? 0;
+      }
+
+      // 审批单：只清「已处置 + 会话已终态 + 超期」的行。
+      // · 只看 createdAt 不看 decidedAt：一张单挂在 waiting_input 上一年没被
+      //   处置时，它既没有 decidedAt 也不该被保留成永久垃圾——但 status 仍是
+      //   pending，下面的 IN 会把这类行挡住（待办工作项不自动消失，交人工处置）。
+      // · 不看 tool_calls 是否已被删：两者保留期不同（read 30 天），用会话
+      //   终态做归属依据，避免「tool_call 先被清 → 审批单永远找不到」的孤儿行。
+      for (let i = 0; i < page.length; i += DELETE_CHUNK) {
+        const chunk = page.slice(i, i + DELETE_CHUNK);
+        const res = await this.approvals
+          .createQueryBuilder()
+          .delete()
+          .where("sessionId IN (:...ids)", { ids: chunk })
+          .andWhere("status IN (:...statuses)", {
+            statuses: [...SETTLED_APPROVAL_STATUSES],
+          })
+          .andWhere("createdAt < :cutoff", { cutoff: approvalCutoff })
+          .execute();
+        approvalsDeleted += res.affected ?? 0;
+      }
+
+      // 尾批不满 → 本页即最后一页
+      if (page.length < SCAN_BATCH) break;
     }
 
-    // tool_calls 按 tier 分档清理（read 短、write/dangerous 与审计对齐）
+    // tool_calls 按 tier 分档清理（read 短、write/dangerous 与审计对齐）——
+    // tier + createdAt 自带筛选条件，无需按会话归属，单语句即可。
     let toolCallsDeleted = 0;
     const tierBatches: Array<{
       tiers: string[];
@@ -175,32 +216,30 @@ export class AgentSessionRetentionService {
       toolCallsDeleted += res.affected ?? 0;
     }
 
-    // 审批单：只清「已处置 + 会话已终态 + 超期」的行。
-    // · 只看 createdAt 不看 decidedAt：一张单挂在 waiting_input 上一年没被处置时，
-    //   它既没有 decidedAt 也不该被保留成永久垃圾——但 status 仍是 pending，
-    //   下面的 IN 会把这类行挡住（待办工作项不自动消失，交人工处置）。
-    // · 不看 tool_calls 是否已被删：两者保留期不同（read 30 天），用会话终态
-    //   做归属依据，避免「tool_call 先被清 → 审批单永远找不到」的孤儿行。
-    let approvalsDeleted = 0;
-    for (let i = 0; i < terminalIds.length; i += DELETE_CHUNK) {
-      const chunk = terminalIds.slice(i, i + DELETE_CHUNK);
-      const res = await this.approvals
-        .createQueryBuilder()
-        .delete()
-        .where("sessionId IN (:...ids)", { ids: chunk })
-        .andWhere("status IN (:...statuses)", {
-          statuses: [...SETTLED_APPROVAL_STATUSES],
-        })
-        .andWhere("createdAt < :cutoff", { cutoff: approvalCutoff })
-        .execute();
-      approvalsDeleted += res.affected ?? 0;
-    }
-
     return {
       steps: stepsDeleted,
       toolCalls: toolCallsDeleted,
       approvals: approvalsDeleted,
     };
+  }
+
+  /** keyset 分页加载一页终态会话 id（id 升序，游标 = 上一页最大 id）。 */
+  private async loadTerminalSessionIds(
+    afterId: string | null,
+  ): Promise<string[]> {
+    const qb = this.sessions
+      .createQueryBuilder("s")
+      .select("s.id", "id")
+      .where("s.status IN (:...statuses)", {
+        statuses: [...AGENT_TERMINAL_STATUSES],
+      })
+      .orderBy("s.id", "ASC")
+      .limit(SCAN_BATCH);
+    if (afterId !== null) {
+      qb.andWhere("s.id > :afterId", { afterId });
+    }
+    const rows = await qb.getRawMany<{ id: string }>();
+    return rows.map((r) => r.id);
   }
 
   private cutoff(now: Date, days: number): Date {

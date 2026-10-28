@@ -2,6 +2,7 @@ import { ConfigService } from "@nestjs/config";
 
 import {
   AgentSessionRetentionService,
+  AGENT_RETENTION_SCAN_BATCH,
   AGENT_STEP_RETENTION_DEFAULT_DAYS,
   AGENT_TOOL_CALL_READ_RETENTION_DEFAULT_DAYS,
   AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS,
@@ -27,24 +28,48 @@ function deleteQb(affected = 3) {
   return chain;
 }
 
+/** select qb 桩：捕获 where/andWhere/orderBy/limit，getRawMany 返回受控行。 */
+function selectQb(rows: string[]) {
+  const calls: Array<{ sql: string; params: Record<string, unknown> }> = [];
+  const chain: Record<string, unknown> = {
+    calls,
+    select: jest.fn().mockReturnThis(),
+    where: jest.fn((sql: string, params: Record<string, unknown>) => {
+      calls.push({ sql, params });
+      return chain;
+    }),
+    andWhere: jest.fn((sql: string, params: Record<string, unknown>) => {
+      calls.push({ sql, params });
+      return chain;
+    }),
+    orderBy: jest.fn().mockReturnThis(),
+    limit: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn(async () => rows.map((id) => ({ id }))),
+  };
+  return chain;
+}
+
 function harness(opts?: {
   sessions?: Array<{ id: string; status: string }>;
+  /** 分页页表：每页 id（keyset 游标依次消耗）；缺省 = 单页全部终态 id。 */
+  terminalPages?: string[][];
   configValues?: Record<string, unknown>;
   stepAffected?: number;
   toolCallAffected?: number;
   approvalAffected?: number;
 }) {
+  const terminalStatuses = ["succeeded", "failed", "aborted", "budget_exceeded"];
   const sessions = {
-    // find 尊重 where.status 的 In(...) 语义（FindOperator.value 是白名单）
-    find: jest.fn(
-      async (q?: { where?: { status?: { value?: readonly string[] } } }) => {
-        const allowed = q?.where?.status?.value;
-        const rows = opts?.sessions ?? [];
-        return Array.isArray(allowed)
-          ? rows.filter((r) => allowed.includes(r.status))
-          : rows;
-      },
-    ),
+    createQueryBuilder: jest.fn(() => {
+      const page =
+        opts?.terminalPages ??
+        [
+          (opts?.sessions ?? [])
+            .filter((r) => terminalStatuses.includes(r.status))
+            .map((r) => r.id),
+        ].filter((p) => p.length > 0);
+      return selectQb(page.shift() ?? []);
+    }),
   };
   const stepQb = deleteQb(opts?.stepAffected ?? 3);
   const toolCallQb = deleteQb(opts?.toolCallAffected ?? 5);
@@ -102,11 +127,53 @@ describe("AgentSessionRetentionService · steps（B-10）", () => {
     for (const id of ["s-run", "s-wait", "s-pending"]) {
       expect(where.params.ids).not.toContain(id);
     }
-    expect(h.sessions.find).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { status: expect.anything() },
-      }),
+    // keyset 扫描：只查终态集合、按 id 升序分页
+    const scan = h.sessions.createQueryBuilder.mock.results[0].value;
+    expect(scan.calls[0].sql).toContain("s.status IN (:...statuses)");
+    expect(scan.calls[0].params.statuses).not.toContain("running");
+    expect(scan.calls[0].params.statuses).not.toContain("pending");
+    expect(scan.calls[0].params.statuses).not.toContain("waiting_input");
+    expect(scan.where).not.toHaveBeenCalledWith(
+      expect.stringContaining("s.id >"),
+      expect.anything(),
+    ); // 首页无游标
+  });
+
+  it("keyset 分页：游标逐页推进、页间不重不漏、尾批不满即停", async () => {
+    const B = AGENT_RETENTION_SCAN_BATCH;
+    const page = (n: number, prefix: string): string[] =>
+      Array.from({ length: n }, (_, i) => `${prefix}-${i}`);
+    const h = harness({
+      terminalPages: [
+        page(B, "a"), // 满批 → 继续
+        page(B, "b"), // 满批 → 继续
+        page(3, "c"), // 尾批不满 → 终止
+      ],
+    });
+    const result = await h.svc.cleanupExpiredRows(NOW);
+    // 前两页各切 2 个 DELETE_CHUNK（B/500），尾页 1 次 → 5 次 IN 删除
+    const stepCalls = h.stepQb.calls.filter((c) =>
+      c.sql.includes("sessionId IN (:...ids)"),
     );
+    expect(stepCalls).toHaveLength(5);
+    // 第 2/3 页查询带游标：s.id > 上一页最大 id
+    const secondScan = h.sessions.createQueryBuilder.mock.results[1].value;
+    expect(
+      secondScan.calls.find((c: { sql: string }) => c.sql.includes("s.id >"))
+        .params.afterId,
+    ).toBe(`a-${B - 1}`);
+    const thirdScan = h.sessions.createQueryBuilder.mock.results[2].value;
+    expect(
+      thirdScan.calls.find((c: { sql: string }) => c.sql.includes("s.id >"))
+        .params.afterId,
+    ).toBe(`b-${B - 1}`);
+    // 第 3 页后终止：只有 3 次 select 扫描
+    expect(h.sessions.createQueryBuilder).toHaveBeenCalledTimes(3);
+    // 删除计数跨页累计（steps 5 次 × 3；approvals 5 次 × 2——替身默认值不同）
+    expect(result.steps).toBe(15);
+    expect(result.approvals).toBe(10);
+    // tool_calls 与会话无关，恒 2 次 tier 批次
+    expect(h.toolCallQb.calls.filter((c) => c.sql.includes("tier IN"))).toHaveLength(2);
   });
 
   it("默认保留 90 天：cutoff = now - 90d，超界删除、边界内保留", async () => {
@@ -127,6 +194,7 @@ describe("AgentSessionRetentionService · steps（B-10）", () => {
     });
     await h.svc.cleanupExpiredRows(NOW);
     expect(h.stepQb.execute).not.toHaveBeenCalled();
+    expect(h.approvalQb.execute).not.toHaveBeenCalled();
   });
 });
 
@@ -237,7 +305,7 @@ describe("AgentSessionRetentionService · cron 门禁与容错（B-10）", () =>
   });
 
   it("LeaderGate 非 leader 时整轮跳过（多实例不重复删）", async () => {
-    const sessions = { find: jest.fn(async () => []) };
+    const sessions = { createQueryBuilder: jest.fn(() => selectQb([])) };
     const stepQb = deleteQb();
     const toolCallQb = deleteQb();
     const approvalQb = deleteQb();
@@ -250,7 +318,7 @@ describe("AgentSessionRetentionService · cron 门禁与容错（B-10）", () =>
       { get: () => undefined } as unknown as ConfigService,
     );
     await svc.handleDailyCleanup();
-    expect(sessions.find).not.toHaveBeenCalled();
+    expect(sessions.createQueryBuilder).not.toHaveBeenCalled();
     expect(stepQb.execute).not.toHaveBeenCalled();
   });
 
