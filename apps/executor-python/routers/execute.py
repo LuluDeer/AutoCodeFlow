@@ -2611,7 +2611,26 @@ async def _flush_live_callbacks() -> int:
         if not batch:
             break
         url = build_admin_api_url('/executions/callback')
-        if await _send_callback_batch_with_retry(url, batch):
+        try:
+            sent = await _send_callback_batch_with_retry(url, batch)
+        except asyncio.CancelledError:
+            # G3（审计轮 #15）：停机排水用 `wait_for(_flush_live_callbacks(), 10s)`，
+            # 而单批重试预算是「3 次 × 10s + 退避」——admin 慢/不可达时必然超时被
+            # 取消。此刻 batch 已被 `_drain_live_callback_queue()` 从内存队列摘走，
+            # 取消会把它随协程销毁：既没发出、也没落盘，与「durability is the file」
+            # 的承诺相反（同批 N 条终态里只有发起者自己那条被 `_run_and_callback`
+            # 的 CancelledError 守卫单独持久化，其余全丢）。
+            # 取消前先把整批写到磁盘，让 replay 循环接手。
+            try:
+                _persist_failed_callback(batch, url)
+                logger.warning(
+                    'Callback drain cancelled; persisted %d item(s) for replay instead of dropping them',
+                    len(batch),
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error('Failed to persist callback batch on cancel: %s', exc)
+            raise
+        if sent:
             delivered += len(batch)
         else:
             # E2 parity: park the whole batch on disk (replay sends it as one

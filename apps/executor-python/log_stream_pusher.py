@@ -198,15 +198,38 @@ class LogStreamPusher:
                 chunks_to_flush.insert(0, marker)
 
             all_pushed = True
-            for chunk in chunks_to_flush:
-                try:
-                    await self._push_chunk(chunk)
-                except Exception as err:
-                    all_pushed = False
+            pushed = 0
+            try:
+                for chunk in chunks_to_flush:
+                    try:
+                        await self._push_chunk(chunk)
+                    except Exception as err:
+                        all_pushed = False
+                        logger.debug(
+                            f"[LogStreamPusher] Failed to push chunk for execution {self.execution_id}: {err}"
+                        )
+                        # Continue with next chunks despite failure
+                    pushed += 1
+            except asyncio.CancelledError:
+                # G2（审计轮 #15）：本协程通常就是 `self.timer`。外部 `flush()`
+                # 会 cancel 它，而此刻 chunks 已从 self.chunks 摘走、只存在于
+                # 这个局部列表里 —— 取消会让剩余分片随协程销毁，而 flush() 紧接着
+                # 的 `_flush_now()` 看到缓冲已空直接返回：**尾部日志静默丢失且无
+                # marker**（`_first_dropped_line` 只覆盖背压丢行，不覆盖这条路径）。
+                # 既然被取消，就把没发出去的部分塞回缓冲队首，交给调用方那次
+                # `_flush_now()` 继续发。
+                remaining = chunks_to_flush[pushed:]
+                if remaining:
+                    async with self._lock:
+                        self.chunks = remaining + self.chunks
+                        self._buffered_bytes = sum(
+                            int(c.get("bytes", 0) or 0) for c in self.chunks
+                        )
                     logger.debug(
-                        f"[LogStreamPusher] Failed to push chunk for execution {self.execution_id}: {err}"
+                        f"[LogStreamPusher] Flush cancelled for execution {self.execution_id}; "
+                        f"requeued {len(remaining)} chunk(s) instead of dropping them"
                     )
-                    # Continue with next chunks despite failure
+                raise
             # P3（A8 对齐 node）: 缓冲清空且全部推送成功 → 复位背压告警闸，
             # 让下一次独立的背压事件仍能产出一条 warn（而非本执行终身静默）。
             if all_pushed:
