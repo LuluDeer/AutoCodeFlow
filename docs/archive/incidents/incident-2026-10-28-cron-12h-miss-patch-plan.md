@@ -12,7 +12,23 @@
 | **P0-1** demote 保表 + `runningTasks.clear()` + 代际标记 | ✅ 已落地 | 6 条 spec（含 2 条边界对照）；`scheduler` 全绿 |
 | **P0-3** `missedExecutionTolerance` + `execution:missed` | ✅ 已落地 | `createTask` 断言 + 监听器挂载断言 |
 | **P0-2** 日志异步化（stdout+stderr） | ✅ 已落地，**部署改造待排期** | 7 条 spec（含子进程真实文件场景）；541 测试全绿 |
-| **P1-1/1-2/1-3、P2-1** | ⬜ 待实施 | — |
+| **P1-1** 落点对账告警（`auditMissedFirePoints`） | ✅ 已落地 | 5 条 spec（多点 cron / 维护窗口 / 非 Leader / manual） |
+| **P1-2** event-loop lag 指标 | ✅ 已落地 | 7 条 spec；接入 `/api/metrics/scheduler` 的 `eventLoop` |
+| **P1-3** Leader TTL 解耦 | ✅ 已落地 | 4 条 spec（含"单次失败不 demote"与常量关系） |
+| **P2-1** misfire 落点判定为主判据 | ✅ 由 P1-1 覆盖，原项关闭 | — |
+
+**P1-3 的行为变更**（运维需知）：
+
+| 常量 | 旧值 | 新值 | 影响 |
+|---|---|---|---|
+| `SCHEDULER_LEADER_TTL_MS` | 30s | **90s** | 能扛 28~40s 冻结；真故障时失锁判定更慢 |
+| `SCHEDULER_LEADER_RETRY_MS` | 15s | **3s** | 丢锁后更快拿回 |
+| 校验周期（原 `TTL/2`） | 15s | **固定 15s** | 与 TTL 解耦——否则 TTL 提到 90s 会让切换变 45s |
+| 连续校验失败阈值 | 1 次即 demote | **2 次** | 单次 Redis 毛刺不再升级成调度中断 |
+
+> TTL 变长会让**真故障**时发现并切换得更慢，这是有意的取舍：P0-1 之后
+> "丢锁"不再等于"丢调度"（定时器保活、DB claim 判决），所以可以让 TTL
+> 偏向"容忍抖动"而不是"快速切换"。
 
 > **实施中发现并修正的一个设计缺陷**（§2.5.7）：代际快照必须取**回调开始
 > 时刻**，不能取**注册时刻**——否则 demote 之前注册的定时器在 demote 之后

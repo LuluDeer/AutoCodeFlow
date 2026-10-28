@@ -10,6 +10,7 @@ import {
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import { ExecutionReport } from "./entities/execution-report.entity";
 import { SchedulerService } from "../scheduler/scheduler.service";
+import { EventLoopLagService } from "../../common/metrics/event-loop-lag.service";
 
 @Injectable()
 export class MetricsService {
@@ -25,6 +26,10 @@ export class MetricsService {
     // 反向依赖 MetricsModule）。
     @Inject(forwardRef(() => SchedulerService))
     private schedulerService: SchedulerService,
+    // INCIDENT-2026-10-28（P1-2）：事件循环阻塞监控。10-28 那次冻结在应用侧
+    // 零数据留存，时间线全靠 nginx/PG/redis 三条外部证据反推——本服务补上
+    // 这个盲区。
+    private readonly eventLoopLag: EventLoopLagService,
     // ARCH-27: 进程标识（hostname）经 ConfigService 读取（configuration.ts
     // app.hostname，OS/容器注入），取代直读 process.env.HOSTNAME。
     private readonly configService: ConfigService,
@@ -287,6 +292,8 @@ export class MetricsService {
     return {
       ...metrics,
       scheduler: this.schedulerService.getStats(),
+      // P1-2：事件循环阻塞（process 级，与 Leader 身份无关，follower 也有值）
+      eventLoop: this.eventLoopLag.getSnapshot(),
       instance: {
         pid: process.pid,
         // ARCH-27: 经 ConfigService 读 app.hostname（OS/容器注入的进程标识，

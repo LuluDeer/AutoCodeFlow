@@ -69,10 +69,39 @@ import { TracingService } from "../../common/tracing/tracing.service";
 
 /** TASK-006: Leader Election 锁 key（RedisLockService 会加 lock: 前缀） */
 export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
-/** Leader 锁 TTL；RedisLockService 内置 watchdog 以 TTL/3 周期续期 */
-export const SCHEDULER_LEADER_TTL_MS = 30_000;
-/** 非 Leader（跟随者）重试竞选间隔 */
-export const SCHEDULER_LEADER_RETRY_MS = 15_000;
+/**
+ * Leader 锁 TTL；RedisLockService 内置 watchdog 以 TTL/3 周期续期。
+ *
+ * INCIDENT-2026-10-28（P1-3）：30s → 90s。10-28 11:59 的事件循环冻结实测
+ * 28~40s，30s TTL 会被直接打穿（丢锁 → demote → 丢落点）。90s 覆盖该量级；
+ * 10-26 那次 87s 卡顿仍在边缘，但 P0-1（demote 不再清定时器）已使"丢锁"
+ * 不再等于"丢调度"，所以这里只需降低触发频率，不再承担正确性。
+ */
+export const SCHEDULER_LEADER_TTL_MS = 90_000;
+/**
+ * 非 Leader（跟随者）重试竞选间隔。
+ *
+ * INCIDENT-2026-10-28（P1-3）：15s → 3s。丢锁后越快拿回，调度真空越短。
+ * 竞选尝试是单次 `SET NX`，3s 间隔的额外 Redis 压力可忽略。
+ */
+export const SCHEDULER_LEADER_RETRY_MS = 3_000;
+/**
+ * INCIDENT-2026-10-28（P1-3）：Leader 租约校验周期——**固定值，不随 TTL 缩放**。
+ *
+ * 此前校验周期 = `SCHEDULER_LEADER_TTL_MS / 2`，于是"TTL 越长，真故障时发现
+ * 并切换得越慢"：TTL 提到 90s 会让校验变成 45s。解耦后校验恒为 15s。
+ */
+export const SCHEDULER_LEADER_VERIFY_MS = 15_000;
+/**
+ * INCIDENT-2026-10-28（P1-3）：连续 N 次 extendLock 失败才 demote。
+ *
+ * 单次失败可能只是 Redis 抖动/命令超时（`commandTimeout: 3000`）；此前一次
+ * 失败即 demote，会让一次网络毛刺升级成调度中断。取 2 次（≥1 个校验周期）。
+ *
+ * 与 RedisLockService 的 `REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES = 3`
+ * 区分：那个数的是**续期**失败，本常量数的是**归属校验**失败，两者独立。
+ */
+export const SCHEDULER_LEADER_VERIFY_MAX_FAILURES = 2;
 /**
  * fail-open 降级期间（isLeader 但 leaderLock === null，Redis 不可用）的重试
  * 间隔：Redis 恢复后 5s 内补拿真实锁并收敛为单 Leader，把"多实例同时降级
@@ -410,6 +439,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private isLeader = false;
   private leaderRetryTimer: NodeJS.Timeout | null = null;
   private leaderVerifyTimer: NodeJS.Timeout | null = null;
+  /**
+   * INCIDENT-2026-10-28（P1-3）：连续归属校验失败计数。
+   * 成功即清零；达 `SCHEDULER_LEADER_VERIFY_MAX_FAILURES` 才 demote。
+   */
+  private leaderVerifyFailures = 0;
 
   /**
    * INCIDENT-2026-10-28 §2.5：调度代际号，每次 demote 递增。
@@ -550,16 +584,23 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private startLeaderVerification(): void {
     this.stopLeaderVerification();
     if (!this.leaderLock) return;
+    this.leaderVerifyFailures = 0;
     this.leaderVerifyTimer = setInterval(() => {
       void this.verifyLeadership();
-    }, SCHEDULER_LEADER_TTL_MS / 2);
+    }, SCHEDULER_LEADER_VERIFY_MS);
     this.leaderVerifyTimer.unref();
   }
 
   /**
    * 用 extendLock 探测 Leader 租约是否仍归本实例（同一 lockId 才会续期成功）。
-   * Redis 抖动时保留租约（RedisLockService 内部 watchdog 会继续续期），
-   * 下一个校验周期再判定，避免单次网络抖动造成无谓的 Leader 切换。
+   *
+   * Redis 抖动时保留租约（RedisLockService 内部 watchdog 会继续续期），下一个
+   * 校验周期再判定，避免单次网络抖动造成无谓的 Leader 切换。
+   *
+   * INCIDENT-2026-10-28（P1-3）：连续 `SCHEDULER_LEADER_VERIFY_MAX_FAILURES`
+   * 次归属校验失败才 demote。此前一次 `false` 即 demote——而 extendLock 返回
+   * false 只说明"此刻锁不归我"，可能是一次命令超时后被误判，也可能是锁刚
+   * 被 watchdog 续上。多观察一拍能挡掉绝大多数毛刺。
    */
   private async verifyLeadership(): Promise<void> {
     const lock = this.leaderLock;
@@ -570,8 +611,27 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         lock.lockId,
         SCHEDULER_LEADER_TTL_MS,
       );
-      if (!ok) this.demote("leader lease expired");
+      if (ok) {
+        this.leaderVerifyFailures = 0;
+        return;
+      }
+      this.leaderVerifyFailures += 1;
+      if (this.leaderVerifyFailures >= SCHEDULER_LEADER_VERIFY_MAX_FAILURES) {
+        this.logger.warn(
+          `Leader lease check failed ${this.leaderVerifyFailures} consecutive ` +
+            `time(s) — demoting`,
+        );
+        this.demote("leader lease expired");
+      } else {
+        this.logger.warn(
+          `Leader lease check failed once (${this.leaderVerifyFailures}/` +
+            `${SCHEDULER_LEADER_VERIFY_MAX_FAILURES}) — keeping leadership, ` +
+            `will re-check in ${SCHEDULER_LEADER_VERIFY_MS}ms`,
+        );
+      }
     } catch (err: unknown) {
+      // 异常路径沿用既有语义：不据此 demote（RedisLockService 的 watchdog
+      // 仍在续期），仅记 debug——连不上时没有可靠信息可判断归属。
       this.logger.debug(
         `Leader lease check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -736,6 +796,106 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
     // CRON-GUARD：顶层异常闸门——DB 抖动不得升级为未处理 rejection（进程退出）。
     await this.guardTick("checkMisfires", () => this.checkMisfiresBody());
+  }
+
+  /**
+   * INCIDENT-2026-10-28（P1-1）：计划的 cron 落点是否被静默丢弃 —— **只告警，
+   * 不补偿**。
+   *
+   * ## 与 checkMisfires 的分工
+   *
+   * `checkMisfires` 的判据是"距上次触发超过 2×周期"，对多点 cron 的语义是错的：
+   * `0 8,12,17 * * *` 的"最近两落点间隔"会随当前时刻漂移（09:00 时算出 15h、
+   * 12:30 时算出 4h），于是 12:00 真丢点静默（只隔 4h）、而每晚 03:00~08:00
+   * 误报 59 条。生产实测 2.4 天 12,342 条告警，真问题被完全淹没。
+   *
+   * 本方法改用**落点存在性**作判据（`lastWindowCronFireBefore` 反查"最近一个
+   * 计划落点"），与时刻无关：最近落点已过 grace 却晚于 lastTriggerTime →
+   * 确实漏了。这条判据与周期形状无关，对 `0 8,12,17` 这类多点表达式同样成立。
+   *
+   * ## 为什么不做补偿
+   *
+   * 业务侧 2026-10-28 已明确：默认只告警、不自动补跑。汇总任务是日报，补跑会
+   * 造成数据时序错乱；且单次运行 1.8~44 分钟，可能与下一批撞车。详见事故方案
+   * 文档 §10。补偿仅对显式 opt-in（`misfireStrategy=fire_once`）的任务生效，
+   * 那条路径由 `checkMisfires` 负责。
+   *
+   * ## 排除项
+   *
+   * 维护窗口内的落点不算漏跑——窗口本就要抑制触发，否则每个窗口都告警。
+   */
+  @Cron("0 */5 * * * *")
+  async auditMissedFirePoints() {
+    if (!this.isLeader) {
+      this.logger.debug(
+        "auditMissedFirePoints skipped: not the scheduler leader",
+      );
+      return;
+    }
+    await this.guardTick("auditMissedFirePoints", () =>
+      this.auditMissedFirePointsBody(),
+    );
+  }
+
+  /** auditMissedFirePoints 的扫描体（异常由 guardTick 统一兜住）。 */
+  private async auditMissedFirePointsBody(): Promise<void> {
+    const now = new Date();
+    // grace：给事件循环抖动/入队延迟留余量。取 90s——大于 30s 的
+    // missedExecutionTolerance，确保"引擎还能补跑"的落点不被提前告警。
+    const GRACE_MS = 90_000;
+    let idCursor = "";
+    for (;;) {
+      const where: Record<string, unknown> = {
+        status: TaskStatus.ACTIVE,
+        triggerType: TaskTriggerType.CRON,
+      };
+      if (idCursor) where.id = MoreThan(idCursor);
+      const tasks = await this.taskRepo.find({
+        where,
+        order: { id: "ASC" },
+        take: ACTIVE_TASK_PAGE_SIZE,
+      });
+      if (tasks.length === 0) break;
+      for (const task of tasks) {
+        if (!task.lastTriggerTime) continue;
+        const expr = task.cronExpression?.trim();
+        if (!expr) continue;
+
+        const lastFire = lastWindowCronFireBefore(
+          expr,
+          now,
+          MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+          task.timezone?.trim() || undefined,
+        );
+        // 反查不到（表达式非法 / 超出回看窗口）→ 无法判定，不告警
+        if (!lastFire) continue;
+        // 落点还没到 grace，或该落点之前已经触发过 → 正常
+        if (now.getTime() - lastFire.getTime() < GRACE_MS) continue;
+        if (lastFire.getTime() <= task.lastTriggerTime.getTime()) continue;
+        // 维护窗口内的落点是被有意抑制的，不算漏跑
+        if (
+          findActiveMaintenanceWindow(
+            task.maintenanceWindows,
+            lastFire,
+            task.timezone?.trim() || undefined,
+          )
+        ) {
+          continue;
+        }
+
+        const lateMs = now.getTime() - lastFire.getTime();
+        this.logger.warn(
+          `Scheduled fire point MISSED for "${task.name}" at ` +
+            `${lastFire.toISOString()} (expression=${expr}, ` +
+            `late by ${Math.round(lateMs / 1000)}s, ` +
+            `lastTriggerTime=${task.lastTriggerTime.toISOString()}) — ` +
+            `no compensation will be attempted (strategy=ignore by default)`,
+        );
+        this.schedulerMetrics.recordCronSlotMissed();
+      }
+      if (tasks.length < ACTIVE_TASK_PAGE_SIZE) break;
+      idCursor = tasks[tasks.length - 1].id;
+    }
   }
 
   /** checkMisfires 的扫描体（异常由 guardTick 统一兜住）。 */

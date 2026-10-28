@@ -2,6 +2,7 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { MetricsService } from "../metrics.service";
+import { EventLoopLagService } from "../../../common/metrics/event-loop-lag.service";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { Task } from "../../task/entities/task.entity";
 import {
@@ -68,6 +69,22 @@ describe("MetricsService", () => {
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("test-hostname") },
+        },
+        // INCIDENT-2026-10-28（P1-2）：getSchedulerMetrics 现在也带
+        // eventLoop 快照。这里只桩 getSnapshot——事件循环的真实采样在
+        // 本 spec 的职责之外（由 event-loop-lag.service.spec.ts 覆盖）。
+        {
+          provide: EventLoopLagService,
+          useValue: {
+            getSnapshot: jest.fn().mockReturnValue({
+              lastSampleMaxMs: 0,
+              lastSampleP99Ms: 0,
+              worstMaxMs: 0,
+              warnCount: 0,
+              lastSampleAt: null,
+              thresholdMs: 1000,
+            }),
+          },
         },
       ],
     }).compile();

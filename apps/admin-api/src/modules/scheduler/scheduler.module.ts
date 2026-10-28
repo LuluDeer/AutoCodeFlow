@@ -9,6 +9,7 @@ import { TaskExecution } from "../task/entities/task-execution.entity";
 import { TaskModule } from "../task/task.module";
 import { ExecutorModule } from "../executor/executor.module";
 import { RedisLockService } from "../../common/services/redis-lock.service";
+import { EventLoopLagService } from "../../common/metrics/event-loop-lag.service";
 
 @Module({
   imports: [
@@ -21,7 +22,20 @@ import { RedisLockService } from "../../common/services/redis-lock.service";
     // 模块，无循环。
     ExecutorModule,
   ],
-  providers: [SchedulerService, SchedulerMetricsService, RedisLockService],
-  exports: [SchedulerService, SchedulerMetricsService, RedisLockService],
+  providers: [
+    SchedulerService,
+    SchedulerMetricsService,
+    RedisLockService,
+    // INCIDENT-2026-10-28（P1-2）：事件循环阻塞监控。放这里是因为它消费
+    // SchedulerMetricsService（同模块，无额外依赖），且与调度域的可观测性
+    // 同属一组。
+    EventLoopLagService,
+  ],
+  exports: [
+    SchedulerService,
+    SchedulerMetricsService,
+    RedisLockService,
+    EventLoopLagService,
+  ],
 })
 export class SchedulerModule {}
