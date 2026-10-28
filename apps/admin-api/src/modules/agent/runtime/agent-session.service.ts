@@ -241,12 +241,17 @@ export class AgentSessionService {
    * 标记会话开始运行。
    * startedAt 只在第一次置位（resume 不重置）——否则墙钟预算会被反复续命，
    * 「单会话 30 分钟上限」形同虚设。
+   *
+   * @returns CAS 是否赢得执行凭据（affected > 0）。**调用方必须消费它**：
+   * 输掉 CAS = 会话已被另一个 worker 置 running（重复 resume 入队 / 定时
+   * 扫描撞上在跑会话）或已收敛终态——输家不得进入推理循环（GAP-1：此前
+   * affected 被丢弃，输家照跑，B-8 声称的双跑守卫实际不成立）。
    */
-  async markRunning(id: string): Promise<void> {
+  async markRunning(id: string): Promise<boolean> {
     // B-8：CAS 双保险——只有「非 running 且未终态」的会话能被置 running。
     // ① 双 worker 领到同一会话（重复入队的残余窗口）时只有一方真正置态；
     // ② 防住把终态会话拉回 running 的状态机倒退。
-    await this.sessions
+    const res = await this.sessions
       .createQueryBuilder()
       .update(AgentSession)
       .set({
@@ -262,6 +267,7 @@ export class AgentSessionService {
         },
       )
       .execute();
+    return (res.affected ?? 0) > 0;
   }
 
   private async needsStartedAt(id: string): Promise<boolean> {

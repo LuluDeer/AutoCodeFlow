@@ -76,9 +76,16 @@ export interface RunOutcome {
   /**
    * waiting_input = 因需人工审批而暂停（审批单已落库、会话已挂起）。
    * 它不是终态：grant 之后走 resume 继续。
+   * running = 本次 run 未执行——会话已被另一个 worker 领走（CAS 输家让位，
+   * 或定时扫描撞上在跑会话）。调用方如实记录即可，绝不能当失败处理。
    */
   status:
-    "succeeded" | "failed" | "budget_exceeded" | "aborted" | "waiting_input";
+    | "succeeded"
+    | "failed"
+    | "budget_exceeded"
+    | "aborted"
+    | "waiting_input"
+    | "running";
   steps: number;
   reason?: string;
 }
@@ -182,16 +189,31 @@ export class AgentRuntimeService {
       session.status === "succeeded" ||
       session.status === "failed" ||
       session.status === "aborted" ||
-      session.status === "budget_exceeded"
+      session.status === "budget_exceeded" ||
+      // running = 另一个 worker 正在跑（重复 resume 入队 / 定时扫描撞车）。
+      // 直接让位：进入循环就是双 LLM 调用 + 工具副作用双份。
+      session.status === "running"
     ) {
       this.logger.debug(
-        `run(${sessionId}) skipped — terminal (${session.status})`,
+        `run(${sessionId}) skipped — status=${session.status}`,
       );
       return { status: session.status, steps: session.totalSteps };
     }
 
-    // 首次运行置 startedAt；resume 不重置（否则墙钟预算可被无限续命）
-    await this.sessionService.markRunning(sessionId);
+    // 首次运行置 startedAt；resume 不重置（否则墙钟预算可被无限续命）。
+    // CAS 赢家才获得执行凭据：输掉 = 两个 worker 近似同时通过上面的终态
+    // 检查（B-8 窗口），对方已把会话置 running——本 job 必须立即让位，
+    // 否则「状态说在跑、实际两个循环」的窗口就是真实的双跑（GAP-1）。
+    const claimed = await this.sessionService.markRunning(sessionId);
+    if (!claimed) {
+      this.logger.warn(
+        `run(${sessionId}) lost the markRunning race — another worker owns it`,
+      );
+      const current = await this.sessionService.requireById(sessionId);
+      // pending/终态以外的漂移形态如实回传；pending（刚创建尚未置态）按
+      // 让位处理——置态是对方的事，本 job 不再碰状态机。
+      return { status: current.status, steps: current.totalSteps } as RunOutcome;
+    }
 
     let messages = await this.rebuildMessages(sessionId);
 

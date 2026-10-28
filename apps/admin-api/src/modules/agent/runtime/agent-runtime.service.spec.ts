@@ -45,11 +45,14 @@ function harness(
   const appended: Any[] = [];
   const finished: Array<{ status: string; patch: Any }> = [];
   const recordedToolCalls: Any[] = [];
-  const markRunning = jest.fn(async () => undefined);
+  const markRunning = jest.fn(async () => true);
 
   const session: Any = {
     id: "sess-1",
-    status: opts.status ?? "running",
+    // run() 的真实入口状态：pending（首跑）/ waiting_input（resume）。
+    // 旧默认 "running" 是 markRunning 静默 no-op 时代的产物——fence 之后
+    // 「入口即 running」= 另一个 worker 在跑，run() 必须让位（GAP-1）。
+    status: opts.status ?? "pending",
     totalSteps: steps.length,
     budgetJson: opts.budget ?? null,
     contextJson: opts.context ?? null,
@@ -163,6 +166,41 @@ describe("AgentRuntimeService.run —— 幂等与终态", () => {
       expect(h.finished).toHaveLength(0);
     },
   );
+
+  it("GAP-1 执行凭据：markRunning CAS 输家立即让位——不进循环、不调 LLM（B-8 双跑守卫落地）", async () => {
+    // 两个 worker 近似同时通过终态检查的窗口：后到者 markRunning affected=0
+    const h = harness({
+      status: "waiting_input",
+      llm: [
+        {
+          content: "不该被调用",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.sessionService.markRunning.mockResolvedValue(false);
+    h.sessionService.requireById.mockResolvedValue({
+      ...h.sessionService.requireById(),
+      status: "running",
+      totalSteps: 3,
+    });
+
+    const out = await h.service.run("sess-1");
+
+    // 输家返回「当前归属方状态」，绝不发起推理或工具副作用
+    expect(out).toEqual({ status: "running", steps: 3 });
+    expect(h.chatMultimodal).not.toHaveBeenCalled();
+    expect(h.finished).toHaveLength(0);
+  });
+
+  it("GAP-1 执行凭据：running 状态直接让位（定时扫描撞上在跑会话）", async () => {
+    const h = harness({ status: "running" });
+    const out = await h.service.run("sess-1");
+    expect(out).toEqual({ status: "running", steps: 0 });
+    expect(h.sessionService.markRunning).not.toHaveBeenCalled();
+    expect(h.chatMultimodal).not.toHaveBeenCalled();
+  });
 
   it("模型给出文本结论（无 toolCalls）→ succeeded，并落结论与摘要", async () => {
     const h = harness({
