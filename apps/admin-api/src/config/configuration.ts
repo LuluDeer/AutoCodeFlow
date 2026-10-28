@@ -287,6 +287,19 @@ export default () => ({
         10,
       ),
     },
+    // 推理质量轮：上下文窗口（设计文档 02 §4.3 滑动窗口）。
+    // 与预算**不同语义**：预算是会话快照（审计要回答"当时允许多少"），
+    // 窗口每轮实时解析——换模型/调小窗口即刻生效，不追溯影响在跑的会话。
+    context: {
+      maxTokens: parseInt(
+        process.env.AGENT_CONTEXT_MAX_TOKENS || "24000",
+        10,
+      ),
+      minRecentMessages: parseInt(
+        process.env.AGENT_CONTEXT_MIN_RECENT_MESSAGES || "12",
+        10,
+      ),
+    },
     // P4: 触发器。事件路径**先过聚合窗口**再起会话（防风暴——一次执行器
     // 下线会刷出几十条失败事件，逐条触发会让令牌成本与队列都爆炸）。
     trigger: {
