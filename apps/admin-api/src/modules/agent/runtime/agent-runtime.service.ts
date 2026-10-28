@@ -370,7 +370,11 @@ export class AgentRuntimeService {
           continue;
         }
 
-        const result = await this.toolExecutor.execute(fresh, call, step.id);
+        const result = await this.executeToolCallGuarded(
+          fresh,
+          call,
+          step.id,
+        );
         messages = this.pushToolResult(messages, call, result.content);
         if (result.needsApproval) waitingForApproval = true;
       }
@@ -384,6 +388,51 @@ export class AgentRuntimeService {
           reason: "needs_approval",
         };
       }
+    }
+  }
+
+  /**
+   * 工具执行的兜底收敛（防僵尸会话）。
+   *
+   * ToolExecutorService 承诺「自身失败收敛为 result」，但它的**前置链**里有
+   * 不受它控制的纯计算（审批键的 canonicalJson 递归等）——那类意外异常若
+   * 逃到这里，run() 的调用方 AgentProcessor 刻意不重抛（防副作用双份），
+   * 会话将永久停在 running：没有任何定时扫描会收走它，运营看板永久红一行。
+   *
+   * 因此在这里把意外异常收敛为**可判定的失败终态**（记 denied 台账 + tool
+   * 应答 + finish(failed)）——与模块纪律「一切失败收敛为可判定终态」一致；
+   * 这不是吞错，是把「崩溃」如实变成「该调用失败了、会话结束了」。
+   */
+  private async executeToolCallGuarded(
+    session: AgentSession,
+    call: ToolCall,
+    stepId: string | null,
+  ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }> {
+    const toolName = call.function?.name ?? "unknown";
+    try {
+      return await this.toolExecutor!.execute(session, call, stepId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Agent tool call threw unexpectedly: session=${session.id} tool=${toolName} — ${msg}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      await this.sessionService
+        .recordToolCall({
+          sessionId: session.id,
+          stepId,
+          toolCallId: call.id,
+          toolName,
+          tier: "read",
+          args: null,
+          status: "error",
+          errorMessage: `unexpected: ${msg}`.slice(0, 500),
+        })
+        .catch(() => undefined);
+      return {
+        content: `【调用失败】工具执行发生未预期异常：${msg}。请改用其他手段或说明需要人工介入。`,
+        truncated: false,
+      };
     }
   }
 

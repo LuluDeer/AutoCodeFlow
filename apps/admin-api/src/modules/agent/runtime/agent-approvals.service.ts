@@ -163,18 +163,28 @@ export class AgentApprovalsService {
  *
  * 只为「同参重试命中同一审批键」服务——不做通用序列化器，因此不处理
  * Date/Buffer 等特殊类型（工具参数来自 JSON.parse，本来就只有 JSON 类型）。
+ *
+ * 深度钳位（防线前移）：buildKey 在**边界闸门的深度闸之前**执行——工具参数
+ * 来自 LLM，`[[[…]]]` 在字符预算内可嵌数万层，无界递归会在这里先爆栈
+ * （RangeError 逃出 tool-executor → 运行时循环无兜底 → 会话永久卡 running）。
+ * 超深部分截断为稳定占位串：两个不同深载荷可能得到同键，但它们必然被
+ * boundary 的 MAX_SCAN_DEPTH 拒绝（buildKey 之后、任何副作用之前），
+ * 键碰撞不可达。合法工具参数都是两三层 schema，钳位不影响任何真实调用。
  */
-export function canonicalJson(value: unknown): string {
+const CANONICAL_MAX_DEPTH = 64;
+
+export function canonicalJson(value: unknown, depth = 0): string {
+  if (depth > CANONICAL_MAX_DEPTH) return '"[DEEP_NESTED]"';
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value) ?? "null";
   }
   if (Array.isArray(value)) {
-    return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
+    return `[${value.map((v) => canonicalJson(v, depth + 1)).join(",")}]`;
   }
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, v]) => v !== undefined)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `{${entries
-    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`)
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v, depth + 1)}`)
     .join(",")}}`;
 }

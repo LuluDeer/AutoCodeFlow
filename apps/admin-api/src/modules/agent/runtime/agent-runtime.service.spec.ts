@@ -1010,6 +1010,63 @@ describe("AgentRuntimeService —— 同批调用的挂起语义", () => {
   });
 });
 
+describe("AgentRuntimeService —— 工具执行意外异常的兜底收敛（防僵尸会话）", () => {
+  it("executor.execute 抛出意外异常 → 记台账 + tool 应答 + 继续循环，不炸 run()", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", function: { name: "get_task", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        // 第二轮：模型收到失败说明后给出结论收尾
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        {
+          name: "get_task",
+          description: "d",
+          parameters: {},
+          tier: "read" as const,
+        },
+      ]),
+      // 前置链意外崩溃（如审批键的 canonicalJson 爆栈）——executor 自身
+      // 承诺收敛，但那类异常发生在它的 try 之外
+      execute: jest.fn(async () => {
+        throw new RangeError("Maximum call stack size exceeded");
+      }),
+    });
+
+    const out = await h.service.run("sess-1");
+
+    // 会话得到**可判定的终态**而不是永久卡 running（AgentProcessor 刻意
+    // 不重抛，逃出 run() 的异常没有任何清扫机制会收走它）
+    expect(out).toMatchObject({ status: "succeeded" });
+    // 意外异常落台账（error 状态，带截断的原因）
+    expect(h.recordedToolCalls).toContainEqual(
+      expect.objectContaining({
+        toolCallId: "c1",
+        toolName: "get_task",
+        status: "error",
+      }),
+    );
+    // 模型拿到的是说明性 tool 应答（指引它换路径而不是盲目重试）
+    const secondReq = h.chatMultimodal.mock.calls[1][0] as Any;
+    const toolMsg = secondReq.messages.find(
+      (m: Any) => m.role === "tool" && m.tool_call_id === "c1",
+    );
+    expect(String(toolMsg?.content)).toContain("未预期异常");
+  });
+});
+
 describe("AgentRuntimeService —— 工具结果重放按 tool_call id 对齐", () => {
   it("同一 step 里两个同名调用各自重放自己的结果（不再共用第一行）", async () => {
     const h = harness({

@@ -309,6 +309,20 @@ describe("AgentApprovalsService · 确定性键与一次性领取（实施轮 #1
     );
   });
 
+  it("深嵌套参数不爆栈（canonicalJson 递归有深度钳位——RangeError 不得在 boundary 深度闸之前逃出）", () => {
+    const svc = new AgentApprovalsService({} as never);
+    // 5 万层嵌套：boundary 的 MAX_SCAN_DEPTH=32 会拒它，但 buildKey 在闸门
+    // **之前**执行——若无钳位，这里先以 RangeError 崩掉 tool-executor，
+    // 异常沿运行时循环上逃、会话永久卡 running。
+    let deep: unknown = "leaf";
+    for (let i = 0; i < 50_000; i += 1) deep = [deep];
+    expect(() => svc.buildKey("s", "t", { params: deep })).not.toThrow();
+    // 键仍是确定性字符串（超深部分被截断为稳定占位串）
+    expect(svc.buildKey("s", "t", { params: deep })).toMatch(
+      /^apr-s-[0-9a-f]{16}$/,
+    );
+  });
+
   it("consume：条件写 granted → consumed，命中 0 行即未领取", async () => {
     const repo = {
       update: jest.fn(async () => ({ affected: 1 })),
