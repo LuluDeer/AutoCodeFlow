@@ -94,12 +94,8 @@
 | E3 | P2 | SSE 换票失败走共享 axios 拦截器 → 每 3–30s 弹一条错误 toast（去重窗口只有 1.5s），后端滚动发布时用户被持续轰炸 | 换票请求加「跳过全局 toast」标记，页面级只提示一次 |
 | E4 | P2 | `TaskDetailPage` webhook 状态读取失败被吞成 `null`（与「确实未启用」同形）→ 卡片显示「未启用 + 启用按钮」；而后端对已启用任务再 enable 会**轮换密钥**，误点即让外部集成 401 | webhookStatus 三态（loading/known/error），error 态禁止 enable |
 | E5 | P3 | `ExecutionsPage` 的「最近 1/24 小时」预设 `value` 在**渲染期**求值；SSE live 时页面不再周期重渲 → 挂机 N 小时后点「最近 1 小时」查的是 N 小时前的窗口 | 预设改为点击时求值 |
-| F1 | **P1** | MCP `update_application`/`create_application`/`update_task` 的 zod shape 缺后端合法字段（`mutexGroupId` / `approvalRequired` / `projectId` / `alarmChannels` / `runbook` …）→ SDK 剥掉未知键，后端收到空/残缺 patch 仍 200 → 「调用了、成功了、什么都没发生」；`create_application` 漏 `approvalRequired` 更会静默取消第二人审批 | 补字段 + handler 级「空 patch 拒绝」 |
-| F2 | P2 | `acf app deploy` 把 DEP-04 的 `status=pending`（待审批、未下发）打印成 `✔ Deployment triggered` 并 exit 0 | 照 MCP 同一判定加分支 + 非零退出 |
 | F3 | P2 | 出参脱敏哨兵 `[redacted]` 与后端掩码哨兵 `******` 不一致 → 「读-改-写」会把 `[redacted]` 当真实值写回 `params` | 统一哨兵或排除 `params` |
 | F4 | P2 | `deploy_application`/`deploy_app` 的 `executorId` 不校验也不比对响应 → 指定机器不存在时后端静默改投「最低负载」另一台 | 收窄为 UUID + 响应比对 |
-| F5 | P3 | `acf task trigger --wait-timeout 1m` 被 `parseInt` 吞成 1 秒 → 长任务立刻假超时 | 复用同文件 `intOption` 严格解析 |
-| G1 | **P1** | executor-python 的停机排水闸 `_shutting_down` 在生产启动路径（`uvicorn main:app`）无人置位 → SIGTERM 窗口内仍接受新任务，随后被 30s 宽限 + 树杀推成 `failed/executor_restart`，中台已收 200 不会改派 | 置位挪到 lifespan/信号钩子，+1 用例 |
 | G2 | P2 | `LogStreamPusher.flush()` 取消正在发网络的定时 flush → 已出队的尾部日志分片静默丢失且无 marker | cancel 前等 flush 锁，或 CancelledError 时把分片塞回 |
 | G3 | P2 | 停机 `wait_for(_flush_live_callbacks(), 10s)` 超时取消 → 已出队的回调批次不落盘（与「durability is the file」相反），同批 N-1 条终态丢失 | CancelledError 里先 persist 再抛 |
 | G4 | P3 | `/api/config/reload` 在 400 之前已部分赋值（并发上限 / admin_api_url）→ 调用方以为整批未生效；pull 模式每 25s 重复同一半应用 | 先全量校验再统一赋值 |
@@ -116,6 +112,19 @@
   `pollGateRef` 镜像修掉）；本轮只是补了 silent/失焦，节拍本身无需再改。
 
 ### 已收口（滚动，最近在上）
+
+- 2026-10-28 · 实施轮 #16 · **MCP 写工具少声明的字段 = 永远传不进去**：MCP SDK 把
+  shape 归一成 `z.object(shape)` 再 parse，zod 剥掉未声明键。补 9 个字段
+  （`approvalRequired` / `mutexGroupId` / `runtimeVersion` / `retryDelay` /
+  `retryableErrors` / `alarmChannels` / `codeSource` / `runbook` / `projectId`），
+  并给 `update_application` / `update_task` 加空 patch 拒绝。测试**必须**走
+  `z.object(shape).parse` 再进 handler，否则这类缺陷永远绿。
+- 2026-10-28 · 实施轮 #16 · **CLI 把「待审批」当部署成功**（`status=pending` 时旧实现
+  仍打印 `✔ Deployment triggered` + exit 0）+ `--wait-timeout 1m` 被 `parseInt`
+  吞成 1 秒（长任务假超时）。
+- 2026-10-28 · 实施轮 #16 · **executor-python 排水闸从未置位**：置位者在
+  `if __name__ == '__main__'` 内，而镜像是 `uvicorn main:app`。改为 lifespan 里
+  链式接管信号（先置位、再转发给 uvicorn 的处理器）。
 
 - 2026-10-28 · 实施轮 #15 · `keyset` 翻页的 total 越翻越小：typeorm 的
   `executeCountQuery` 只清 orderBy/limit、**保留 WHERE**，两条 keyset 路径都在
