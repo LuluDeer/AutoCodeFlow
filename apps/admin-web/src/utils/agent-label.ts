@@ -53,6 +53,7 @@ export const AGENT_TOOL_STATUS_T_KEYS: Record<string, string> = {
 export const AGENT_APPROVAL_STATUS_T_KEYS: Record<string, string> = {
   pending: 'agents.approvalStatus.pending',
   granted: 'agents.approvalStatus.granted',
+  consumed: 'agents.approvalStatus.consumed',
   denied: 'agents.approvalStatus.denied',
 };
 

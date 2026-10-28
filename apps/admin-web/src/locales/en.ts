@@ -3448,6 +3448,7 @@ export default {
   // Approval request statuses (agent_approvals.status: pending → granted/denied)
   'agents.approvalStatus.pending': 'Pending',
   'agents.approvalStatus.granted': 'Granted',
+  'agents.approvalStatus.consumed': 'Executed (one-time grant)',
   'agents.approvalStatus.denied': 'Denied',
   // Step roles (LLM message protocol)
   'agents.role.system': 'System',

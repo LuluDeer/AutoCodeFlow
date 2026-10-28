@@ -31,7 +31,10 @@ import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 
 /** 闸门判定结果。 */
 export type BoundaryVerdict =
-  | { kind: "ALLOW"; spec: AgentToolSpec }
+  // approvedApprovalKey：本次放行所依据的审批单键（执行体据此原子领取；
+  // 无审批闸的工具为 undefined）。带出来是为了让「放行」与「领取」绑定同
+  // 一个键，调用方不必重算。
+  | { kind: "ALLOW"; spec: AgentToolSpec; approvedApprovalKey?: string }
   | { kind: "DENY"; reason: DenyReason; message: string }
   | { kind: "NEED_APPROVAL"; spec: AgentToolSpec; message: string };
 
@@ -124,12 +127,20 @@ export class AgentBoundaryService {
    * @param toolName 请求的工具名
    * @param args 工具参数（**不可信**）
    * @param callCountForTool 该工具在本会话内已调用次数（调用方从 DB 数）
+   * @param approvedApprovalKey 调用方持有的**已批准审批单键**（实施轮 #14）
+   *
+   * `approvedApprovalKey` 只放行「⑥ 分级审批」这一步，其余五道闸（工具集、
+   * 硬禁用、参数、scope、速率/熔断）**照旧生效**——人工点头放行的是「这个
+   * 具体调用可以做」，不是「这个会话此后不受约束」。是否允许放行由执行体
+   * 判定（它查库确认该键存在且状态为 granted，并在执行前原子领取），闸门
+   * 本身不读库（纯函数，可单测）。
    */
   check(
     session: AgentSession,
     toolName: string,
     args: Record<string, unknown> | null,
     callCountForTool: number,
+    approvedApprovalKey: string | null = null,
   ): BoundaryVerdict {
     const spec = AGENT_TOOL_BY_NAME.get(toolName);
 
@@ -187,6 +198,20 @@ export class AgentBoundaryService {
 
     // ── ⑥ 分级审批（最后一道——前面都是「一律拒绝」，这里是「可批准」）──
     const policy = this.resolveApprovalPolicy();
+
+    // 已获批的**这一具体调用**：跳过三处 NEED_APPROVAL，直接放行。
+    // 注意 policy 级禁用（allowDangerous=false）**不**被审批覆盖——那是
+    // 「这个能力没开」，不是「这次需要人点头」；用审批去覆盖等于绕过配置。
+    if (approvedApprovalKey) {
+      if (spec.tier === "dangerous" && !policy.allowDangerous) {
+        return this.deny(
+          "needs_approval",
+          `危险类工具 ${toolName} 当前未启用（agent.policy.allowDangerous=false）。` +
+            `已批准的审批单 ${approvedApprovalKey} 不能覆盖配置级禁用。`,
+        );
+      }
+      return { kind: "ALLOW", spec, approvedApprovalKey };
+    }
 
     if (spec.tier === "dangerous") {
       if (!policy.allowDangerous) {

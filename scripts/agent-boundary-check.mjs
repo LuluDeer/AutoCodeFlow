@@ -684,15 +684,56 @@ console.log("\n── APPROVAL-GAP tripwire ──");
       "requestApproval 必须把会话挂起（markWaiting 生产零调用是 A1 的原始形态之一）",
       /this\.sessions\.markWaiting\(/.test(executor),
     );
-    // approve/deny 必须条件写（结论唯一，ADR-026）。
+    // approve/deny 必须条件写（结论唯一，ADR-026）。谓词必须是**正面**的
+    // `status: "pending"`：新增 consumed 后，否定式谓词（非 granted/denied）
+    // 会把已执行过的单重新翻回 granted，等于给一次副作用发第二张通行证。
+    const approvalsSrc = readFileSync(
+      join(apiDir, "src/modules/agent/runtime/agent-approvals.service.ts"),
+      "utf8",
+    );
     check(
       "审批处置必须是条件写（pending → 终态一次，并发处置后到者 409）",
-      /Not\(In\(\["granted", "denied"\]\)\)/.test(
-        readFileSync(
-          join(apiDir, "src/modules/agent/runtime/agent-approvals.service.ts"),
-          "utf8",
+      /\{\s*approvalKey,\s*status:\s*"pending"\s*\}/.test(approvalsSrc),
+      "decide() 的条件写谓词必须正面钉住 status='pending'",
+    );
+
+    // ── 执行侧闭环（实施轮 #14）───────────────────────────────────
+    //
+    // 轮 #12 只做了申请侧：闸门恒返回 NEED_APPROVAL、grant 只翻数据库行，
+    // 「批准后真的能执行」不成立。本段钉住消费侧的四个支点，删掉任一即红：
+    //   ① 审批键确定性（不能再有 Date.now()——重试必须命中同一行）；
+    //   ② 闸门接受「本次调用的通行证」（第五参）；
+    //   ③ 执行体领取审批单（granted → consumed，副作用之前）；
+    //   ④ 运行时遇审批停轮（否则状态已 waiting_input 而循环还在跑）。
+    const boundarySrc = readFileSync(
+      join(apiDir, "src/modules/agent/boundary/agent-boundary.service.ts"),
+      "utf8",
+    );
+    check(
+      "① 审批键必须确定性构造（不得含 Date.now 等时间戳——重试幂等的前提）",
+      /buildKey\(/.test(approvalsSrc) &&
+        !/apr-\$\{session\.id\}-\$\{Date\.now\(\)\}/.test(executor),
+      "requestApproval 仍用时间戳拼键 ⇒ 每次重试都是新单",
+    );
+    check(
+      "② 闸门必须能消费「已批准审批单」（check 的第五参 + ALLOW 回带键）",
+      /approvedApprovalKey: string \| null = null/.test(boundarySrc) &&
+        /kind: "ALLOW", spec, approvedApprovalKey/.test(boundarySrc),
+    );
+    check(
+      "③ 执行体必须在副作用之前领取审批单（consume：granted → consumed）",
+      /this\.approvals\.consume\(/.test(executor) &&
+        /consume\(approvalKey/.test(approvalsSrc),
+    );
+    check(
+      "④ 运行时遇 needsApproval 必须停轮（waiting_input 与「循环已停」一致）",
+      /needsApproval/.test(executor) &&
+        /if \(waitingForApproval\)/.test(
+          readFileSync(
+            join(apiDir, "src/modules/agent/runtime/agent-runtime.service.ts"),
+            "utf8",
+          ),
         ),
-      ),
     );
   }
 }

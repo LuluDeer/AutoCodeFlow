@@ -211,6 +211,28 @@ export class AgentSessionService {
     });
   }
 
+  /**
+   * 按审批单键回写工具调用行的终态（实施轮 #14）。
+   *
+   * 为什么需要：审批单被 deny 之后，`agent_tool_calls` 里那一行会永远停在
+   * `awaiting_approval`——台账因此无法区分「没人处理」与「明确被拒」，
+   * 会话详情页也一直显示挂起。条件写钉住 `awaiting_approval`：只改还没走完
+   * 的那一行，已执行/已拒绝的行不被二次覆盖。
+   *
+   * @returns 受影响行数（0 = 没有处于该状态的调用行，不是错误）
+   */
+  async settleToolCallByApprovalId(
+    approvalId: string,
+    status: Extract<AgentToolCallStatus, "denied" | "error">,
+    errorMessage: string,
+  ): Promise<number> {
+    const res = await this.toolCalls.update(
+      { approvalId, status: "awaiting_approval" },
+      { status, errorMessage },
+    );
+    return res.affected ?? 0;
+  }
+
   // ── 状态迁移 ────────────────────────────────────────────────────
 
   /**

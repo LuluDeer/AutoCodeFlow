@@ -192,6 +192,14 @@ export class AgentController {
       throw new AppError("AGENT_SESSION_ALREADY_RUNNING");
     }
 
+    // A1 执行侧闭环（实施轮 #14）：还有 pending 审批单时不允许绕过审批直接
+    // 恢复。否则「审批」从门退化成通知——会话在未批准状态下继续推理并重提
+    // 同一工具，管理员唯一的出口只剩拒绝。处置单之后再恢复（grant 会自动
+    // 入队；deny 后此守卫自然放开，管理员可显式恢复）。
+    if (await this.approvals.hasPendingForSession(id)) {
+      throw new AppError("AGENT_SESSION_PENDING_APPROVAL", { sessionId: id });
+    }
+
     await this.queue.add(
       "run",
       { sessionId: id, reason: "resume:manual" },
@@ -242,11 +250,31 @@ export class AgentController {
       throw new AppError("AGENT_APPROVAL_NOT_FOUND", { approvalKey });
     }
 
-    // 会话恢复：挂起中的会话（waiting_input）重新入队走既有 run() 链路
-    // （可重入）；已终态/已运行则跳过（resume 自身的语义与 B-8 守卫在此
-    // 依旧成立——denied 后管理员可能想直接终止，不强行复活）。
+    // 处置结果的行为**按 decision 分流**（实施轮 #14 修）：
+    //
+    //   · granted → 若会话挂起在 waiting_input 且**没有其它仍在等的单**，
+    //     重新入队恢复（重放同一调用时闸门会读到 granted 并放行一次）。
+    //     仍有 pending 时先不恢复：恢复也只会立刻再次挂起，白烧一轮 LLM。
+    //   · denied  → **不自动恢复**。原实现 deny 同样 resume，而模型手里没有
+    //     「被拒绝」这一事实（回给它的最后一条是「已提交审批单」），最自然的
+    //     下一步就是重提同一调用 → 再生成一张单 → 管理员只能无限拒绝，
+    //     拒绝反而成了一个可持续驱动的执行/计费循环。这里把调用行按 denied
+    //     落库（台账可辨），管理员若想让它继续，显式 resume 即可——那时
+    //     rebuildMessages 会把「被拒绝」作为 tool 应答喂回模型。
+    if (decision === "denied") {
+      await this.sessions.settleToolCallByApprovalId(
+        approvalKey,
+        "denied",
+        `已被 ${user.username} 人工拒绝（审批单 ${approvalKey}）——不得重试同一调用`,
+      );
+    }
+
     let resumed = false;
-    if (session.status === "waiting_input") {
+    if (
+      decision === "granted" &&
+      session.status === "waiting_input" &&
+      !(await this.approvals.hasPendingForSession(sessionId))
+    ) {
       await this.queue.add(
         "run",
         { sessionId, reason: "resume:approval" },

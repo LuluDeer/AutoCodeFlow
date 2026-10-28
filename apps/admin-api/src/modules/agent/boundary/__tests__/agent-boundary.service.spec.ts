@@ -445,6 +445,57 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
     ).toMatchObject({ kind: "ALLOW" });
   });
 
+  // ── 实施轮 #14：已批准审批单只放行「⑥ 分级审批」，其余五道闸照旧 ──
+  it("通行证放行 approvalRequired / write 审批闸，且回带键（供执行体领取）", () => {
+    const { svc } = harness({ "agent.policy.writeRequiresApproval": true });
+    expect(
+      svc.check(chatSession(), "sop_publish", { sopId: "sop-1" }, 0, "apr-s-1-x"),
+    ).toMatchObject({ kind: "ALLOW", approvedApprovalKey: "apr-s-1-x" });
+    expect(
+      svc.check(chatSession(), "trigger_task", { taskId: "t-1" }, 0, "apr-s-1-y"),
+    ).toMatchObject({ kind: "ALLOW", approvedApprovalKey: "apr-s-1-y" });
+  });
+
+  it("通行证**不能**覆盖 scope 闸（人工点头放行的是这一次调用，不是整个会话）", () => {
+    const { svc } = harness();
+    const outOfScope = session({
+      id: "s-1",
+      kind: "chat",
+      scopeJson: { tasks: ["t-other"] },
+    } as never);
+    expect(
+      svc.check(outOfScope, "update_task", { taskId: "t-1", patch: {} }, 0, "apr-x"),
+    ).toMatchObject({ kind: "DENY", reason: "out_of_scope" });
+  });
+
+  it("通行证**不能**覆盖速率闸 / 硬禁用 / 配置级禁用", () => {
+    const { svc } = harness({ "agent.policy.dangerousRequiresApproval": true });
+    // 速率：已调用 15 次（默认上限）→ rate_limited
+    expect(
+      svc.check(chatSession(), "sop_publish", { sopId: "sop-1" }, 15, "apr-x"),
+    ).toMatchObject({ kind: "DENY", reason: "rate_limited" });
+    // 硬禁用工具：连审批机会都没有
+    expect(
+      svc.check(
+        chatSession(),
+        "approve_deployment",
+        { deploymentId: "d-1" },
+        0,
+        "apr-x",
+      ),
+    ).toMatchObject({ kind: "DENY", reason: "hard_disabled" });
+    // 配置级禁用（allowDangerous=false）是「能力没开」，不是「本次需点头」
+    expect(
+      svc.check(
+        chatSession(),
+        "delete_application",
+        { applicationId: "app-1" },
+        0,
+        "apr-x",
+      ),
+    ).toMatchObject({ kind: "DENY", reason: "needs_approval" });
+  });
+
   it("resolveApprovalPolicy：字符串布尔解析（'1'/'0'/垃圾回退）", () => {
     const on = harness({ "agent.policy.writeRequiresApproval": "1" });
     expect(on.svc.resolveApprovalPolicy().writeRequiresApproval).toBe(true);

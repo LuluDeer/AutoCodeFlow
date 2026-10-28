@@ -13,6 +13,10 @@ function harness(opts?: {
     args: Record<string, unknown>,
   ) => Promise<unknown>;
   toolCalls?: Array<{ toolName: string; status: string }>;
+  /** 已存在的审批单（granted/denied/consumed/pending）；默认无。 */
+  existingApproval?: { approvalKey: string; status: string; decidedBy?: string | null } | null;
+  /** consume 条件写是否成功（默认 true）。 */
+  consumeOk?: boolean;
   sops?: Partial<{
     getBySlug: (slug: string) => Promise<unknown>;
     getClarificationScopeInfo: (
@@ -54,6 +58,13 @@ function harness(opts?: {
   // agent-approvals.spec.ts 与本文件的新用例钉。
   const approvals = {
     request: jest.fn(async (v: unknown) => v),
+    // 实施轮 #14（执行侧闭环）：闸门消费审批结论需要这三个口子。
+    //   buildKey 用真实实现（纯函数，键的确定性本身要被测）
+    //   findByKey 默认「没有审批单」；consume 默认领取成功。
+    buildKey: (sessionId: string, toolName: string, args: Record<string, unknown> | null) =>
+      `apr-${sessionId}-${toolName}-${JSON.stringify(args ?? null)}`,
+    findByKey: jest.fn(async () => opts?.existingApproval ?? null),
+    consume: jest.fn(async () => opts?.consumeOk ?? true),
   };
   const svc = new ToolExecutorService(
     boundary,
@@ -185,6 +196,82 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       expect.stringContaining("等待审批"),
     );
     expect(h.notify.approvalRequested).toHaveBeenCalled();
+    // needsApproval 是运行时的「停轮」信号：没有它，会话会在已 waiting_input
+    // 的状态下继续下一轮推理（实施轮 #14 的并发缺陷形态）。
+    expect(out.needsApproval).toBe(true);
+  });
+
+  // ── 执行侧闭环（实施轮 #14）：审批结论必须被执行路径消费 ──────────────
+  //
+  // 原实现只有申请侧：闸门恒返回 NEED_APPROVAL，grant 只翻数据库行。批准后
+  // resume，模型重提同一调用会得到第二张单——「人工点头后可用」不成立。
+  it("granted 审批单 → 闸门放行（其余闸照旧）+ 执行前领取 + 真的调用 API", async () => {
+    const h = harness({
+      existingApproval: { approvalKey: "apr-s-1-sop_publish-x", status: "granted" },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "sop-1" }),
+      null,
+    );
+    // 闸门收到第五参（本次调用的通行证），而不是再次 NEED_APPROVAL
+    expect(h.checkSpy.mock.calls[0][4]).toEqual(expect.any(String));
+    expect(h.api.invoke).toHaveBeenCalled();
+    expect(out.content).not.toContain("需人工审批");
+    // 领取在副作用之前：consume 被调用且 key 与闸门收到的一致
+    expect(h.approvals.consume).toHaveBeenCalledWith(h.checkSpy.mock.calls[0][4]);
+  });
+
+  it("denied 审批单 → 直接拒绝：不重新申请、不挂起、不调用 API", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-s-1-sop_publish-x",
+        status: "denied",
+        decidedBy: "alice",
+      },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "sop-1" }),
+      null,
+    );
+    expect(out.content).toContain("已被人工拒绝");
+    expect(out.content).toContain("alice");
+    expect(out.needsApproval).toBeUndefined();
+    expect(h.approvals.request).not.toHaveBeenCalled();
+    expect(h.sessions.markWaiting).not.toHaveBeenCalled();
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "denied" }),
+    );
+  });
+
+  it("consumed 审批单 → 拒绝（一张批准单只放行一次）", async () => {
+    const h = harness({
+      existingApproval: { approvalKey: "apr-s-1-sop_publish-x", status: "consumed" },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "sop-1" }),
+      null,
+    );
+    expect(out.content).toContain("只放行一次");
+    expect(h.api.invoke).not.toHaveBeenCalled();
+  });
+
+  it("领取失败（并发抢单 / 已被用掉）→ 拒绝且不产生副作用", async () => {
+    const h = harness({
+      existingApproval: { approvalKey: "apr-s-1-sop_publish-x", status: "granted" },
+      consumeOk: false,
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "sop-1" }),
+      null,
+    );
+    expect(out.content).toContain("已被另一次调用使用");
+    expect(h.approvals.consume).toHaveBeenCalled();
+    expect(h.api.invoke).not.toHaveBeenCalled();
   });
 
   // C4（审计轮 #11）：awaiting_approval 不得消耗速率配额——审批通道没闭环时，

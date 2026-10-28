@@ -16,13 +16,15 @@ function harness(options: {
   session: Partial<AgentSession> | null;
   approval?: Partial<AgentApproval> | null;
   decideResult?: Partial<AgentApproval> | null;
+  /** 处置后是否仍有其它待审批单（grant 的恢复前置）。 */
+  hasPending?: boolean;
 }) {
   const approvals = {
     findByKey: jest.fn(async () => options.approval ?? null),
     decide: jest.fn(async () => options.decideResult ?? null),
     listForSession: jest.fn(async () => []),
     request: jest.fn(),
-    hasPendingForSession: jest.fn(),
+    hasPendingForSession: jest.fn(async () => options.hasPending ?? false),
   };
   const sessions = {
     requireById: jest.fn(async () => {
@@ -33,6 +35,7 @@ function harness(options: {
     create: jest.fn(),
     list: jest.fn(),
     budget: jest.fn(),
+    settleToolCallByApprovalId: jest.fn(async () => 1),
   };
   const queue = {
     add: jest.fn(async () => undefined),
@@ -186,7 +189,7 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
     );
   });
 
-  it("deny：同样放行 resume（会话回到循环，该调用由运行时按未批准终局）", async () => {
+  it("deny：**不**自动 resume；按审批单把调用行落成 denied（实施轮 #14 语义反转）", async () => {
     const h = harness({
       session: { id: "s-1", status: "waiting_input" } as Partial<AgentSession>,
       approval: pendingApproval as Partial<AgentApproval>,
@@ -204,12 +207,53 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
       ok: boolean;
       resumed: boolean;
     };
-    expect(out.resumed).toBe(true);
+    // 原实现 deny 也 resume：模型手里没有「被拒绝」的事实，下一轮必然重提
+    // 同一调用 → 再生成一张单 → 管理员只能无限拒绝（可持续驱动的执行循环）。
+    expect(out.resumed).toBe(false);
+    expect(h.queue.add).not.toHaveBeenCalled();
     expect(h.approvals.decide).toHaveBeenCalledWith(
       pendingApproval.approvalKey,
       "denied",
       "alice",
     );
+    expect(
+      h.sessions.settleToolCallByApprovalId,
+    ).toHaveBeenCalledWith(
+      pendingApproval.approvalKey,
+      "denied",
+      expect.stringContaining("alice"),
+    );
+  });
+
+  it("grant：仍有其它 pending 单 → 先不恢复（恢复只会立刻再次挂起）", async () => {
+    const h = harness({
+      session: { id: "s-1", status: "waiting_input" } as Partial<AgentSession>,
+      approval: pendingApproval as Partial<AgentApproval>,
+      decideResult: grantedRow as Partial<AgentApproval>,
+      hasPending: true,
+    });
+    const out = (await (
+      h.ctl as unknown as {
+        grantApproval: (a: string, b: string, c: unknown) => Promise<unknown>;
+      }
+    ).grantApproval("s-1", pendingApproval.approvalKey!, admin)) as {
+      resumed: boolean;
+    };
+    expect(out.resumed).toBe(false);
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("resume：会话仍有 pending 审批单 → 409（审批不能被绕过）", async () => {
+    const h = harness({
+      session: { id: "s-1", status: "waiting_input" } as Partial<AgentSession>,
+      hasPending: true,
+    });
+    await expect(
+      (h.ctl as unknown as { resume: (id: string) => Promise<unknown> }).resume(
+        "s-1",
+      ),
+    ).rejects.toThrow(ConflictException);
+    expect(h.queue.add).not.toHaveBeenCalled();
   });
 
   it("非挂起会话（如已被 sweep 终态化）→ 只翻转审批单，不入队", async () => {
@@ -236,5 +280,49 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
         h.ctl as unknown as { listApprovals: (id: string) => Promise<unknown> }
       ).listApprovals("missing"),
     ).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe("AgentApprovalsService · 确定性键与一次性领取（实施轮 #14）", () => {
+  it("同会话 + 同工具 + 同参数（键序不同）→ 同一键（重试幂等的前提）", () => {
+    const svc = new AgentApprovalsService({} as never);
+    const a = svc.buildKey("s-1", "update_task", { taskId: "t-1", name: "n" });
+    const b = svc.buildKey("s-1", "update_task", { name: "n", taskId: "t-1" });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^apr-s-1-[0-9a-f]{16}$/);
+  });
+
+  it("参数/工具/会话任一不同 → 不同键（不同调用各自申请）", () => {
+    const svc = new AgentApprovalsService({} as never);
+    const base = svc.buildKey("s-1", "update_task", { taskId: "t-1" });
+    expect(svc.buildKey("s-1", "update_task", { taskId: "t-2" })).not.toBe(base);
+    expect(svc.buildKey("s-1", "deploy_application", { taskId: "t-1" })).not.toBe(base);
+    expect(svc.buildKey("s-2", "update_task", { taskId: "t-1" })).not.toBe(base);
+    // 原实现用 Date.now()：同一调用两次执行必然不同键（此断言把它钉死）
+    expect(svc.buildKey("s-1", "update_task", { taskId: "t-1" })).toBe(base);
+  });
+
+  it("数组保序：参数顺序不同是不同调用", () => {
+    const svc = new AgentApprovalsService({} as never);
+    expect(svc.buildKey("s", "t", { ids: ["a", "b"] })).not.toBe(
+      svc.buildKey("s", "t", { ids: ["b", "a"] }),
+    );
+  });
+
+  it("consume：条件写 granted → consumed，命中 0 行即未领取", async () => {
+    const repo = {
+      update: jest.fn(async () => ({ affected: 1 })),
+    };
+    const svc = new AgentApprovalsService(repo as never);
+    await expect(svc.consume("apr-s-1-x")).resolves.toBe(true);
+    expect(repo.update).toHaveBeenCalledWith(
+      { approvalKey: "apr-s-1-x", status: "granted" },
+      { status: "consumed" },
+    );
+
+    const lost = new AgentApprovalsService(
+      { update: jest.fn(async () => ({ affected: 0 })) } as never,
+    );
+    await expect(lost.consume("apr-s-1-x")).resolves.toBe(false);
   });
 });

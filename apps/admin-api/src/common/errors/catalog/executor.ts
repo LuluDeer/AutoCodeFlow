@@ -402,6 +402,11 @@ export const EXECUTOR_CODES = {
     zh: "会话仍在运行中——重复入队会产生双份推理循环副作用，无需恢复",
     en: "The session is still running — re-enqueueing would duplicate the reasoning loop and its side effects; no recovery needed",
   },
+  AGENT_SESSION_PENDING_APPROVAL: {
+    status: 409,
+    zh: "会话 {{sessionId}} 仍有未处置的审批单——请先在会话详情页批准或拒绝，再恢复会话",
+    en: "Session {{sessionId}} still has pending approval requests — approve or deny them in the session detail page before resuming",
+  },
   AGENT_APPROVAL_NOT_FOUND: {
     status: 404,
     zh: "审批单 {{approvalKey}} 不存在",

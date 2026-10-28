@@ -3448,6 +3448,7 @@ export default {
   // 审批单状态（agent_approvals.status：pending → granted/denied）
   'agents.approvalStatus.pending': '待批准',
   'agents.approvalStatus.granted': '已批准',
+  'agents.approvalStatus.consumed': '已执行（一次性放行）',
   'agents.approvalStatus.denied': '已拒绝',
   // 推理步骤角色（LLM 消息协议）
   'agents.role.system': '系统',

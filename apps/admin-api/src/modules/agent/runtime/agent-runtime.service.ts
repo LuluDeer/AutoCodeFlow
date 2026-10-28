@@ -8,6 +8,16 @@ import { AgentSessionService } from "./agent-session.service";
 import { AgentBudgetService } from "./agent-budget.service";
 import type { AgentSession } from "../entities/agent-session.entity";
 import type { AgentStep } from "../entities/agent-step.entity";
+import type { AgentToolCall } from "../entities/agent-tool-call.entity";
+
+/**
+ * 重放进上下文时单条工具结果的上限（字符）。
+ *
+ * 与执行体的 TOOL_RESULT_MAX_CHARS（2000）同量级：重建上下文可能一次补多条，
+ * 逐条 2000 已足够模型判断「上一步看到了什么」，再大就是拿上下文窗口换
+ * 完整性——需要全文时走 agent_tool_calls.resultJson 人工回读。
+ */
+const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
 
 /**
  * P2：Agent 推理循环（设计文档 02 §4）。
@@ -35,7 +45,11 @@ import type { AgentStep } from "../entities/agent-step.entity";
 
 /** 一次循环运行的结果。 */
 export interface RunOutcome {
-  status: "succeeded" | "failed" | "budget_exceeded" | "aborted";
+  /**
+   * waiting_input = 因需人工审批而暂停（审批单已落库、会话已挂起）。
+   * 它不是终态：grant 之后走 resume 继续。
+   */
+  status: "succeeded" | "failed" | "budget_exceeded" | "aborted" | "waiting_input";
   steps: number;
   reason?: string;
 }
@@ -60,12 +74,18 @@ export interface AgentToolDefinition {
 export interface AgentToolExecutor {
   /** 本次会话可用的工具（受 kind 白名单 + scope 约束）。 */
   availableTools(session: AgentSession): Promise<AgentToolDefinition[]>;
-  /** 执行一次工具调用并返回给模型的观察结果。 */
+  /**
+   * 执行一次工具调用并返回给模型的观察结果。
+   *
+   * `needsApproval` = 本次调用需人工审批且审批单已落库、会话已挂起。运行时
+   * 收到它必须**停止本轮循环**（不再调 LLM），否则「会话已 waiting_input」
+   * 与「循环仍在跑」并存，resume 会放进第二个 worker。
+   */
   execute(
     session: AgentSession,
     call: ToolCall,
     stepId: string | null,
-  ): Promise<{ content: string; truncated: boolean }>;
+  ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }>;
 }
 
 /** 系统提示词——定义 Agent 的角色与**边界纪律**。 */
@@ -236,9 +256,26 @@ export class AgentRuntimeService {
         continue;
       }
 
+      // 待审批 = 本轮的**出口**（实施轮 #14）。审批单已落库、会话已由
+      // ToolExecutor 用 markWaiting 挂起到 waiting_input；若这里继续下一轮
+      // 推理，就会在「状态说在等审批」的窗口里继续调 LLM、继续重提同一调用，
+      // 而 B-8 的双跑守卫正是按状态判的（grant/resume 会放进第二个 job）。
+      // 因此把本轮工具结果回灌后立即收束，让 waiting_input 与事实一致。
+      let waitingForApproval = false;
       for (const call of res.toolCalls) {
         const result = await this.toolExecutor.execute(fresh, call, step.id);
         messages = this.pushToolResult(messages, call, result.content);
+        if (result.needsApproval) waitingForApproval = true;
+      }
+      if (waitingForApproval) {
+        this.logger.log(
+          `Agent run paused for approval: session=${sessionId} steps=${usage.steps + 1}`,
+        );
+        return {
+          status: "waiting_input",
+          steps: usage.steps + 1,
+          reason: "needs_approval",
+        };
       }
     }
   }
@@ -280,6 +317,21 @@ export class AgentRuntimeService {
    *
    * 这是「会话可中断可恢复」的实现本身：不依赖任何进程内状态，
    * 因此 resume 与「重启后恢复」走的是同一条路径、同一份数据。
+   *
+   * ## 为什么必须补「工具应答」（实施轮 #14）
+   *
+   * 工具结果只活在运行时内存里（`pushToolResult`），`agent_steps` 里只有
+   * assistant 步的 `toolCallsJson`；`agent_tool_calls` 才是结果的落点。
+   * 于是重启/恢复重建出来的对话是「assistant 要求调工具 → 没有对应 tool
+   * 消息 → 下一句」——OpenAI 兼容协议明确禁止（assistant 的每个 tool_call
+   * 都必须有 tool 应答），上游直接 400，会话在 resume 后立刻 failed。
+   * 审批闭环把 resume 变成了主路径（grant → 恢复 → 重放调用），这个缺口
+   * 就从「偶发」变成「必然」。
+   *
+   * 修法：按 stepId + 工具名把 `agent_tool_calls` 的结果/失败原因补成 tool
+   * 消息，紧跟在该 assistant 步之后。已存在 tool 步（历史数据/测试构造）的
+   * toolCallId 不重复补。补出来的内容明确标注「重放」，避免模型把它当成
+   * 新观察。
    */
   private async rebuildMessages(
     sessionId: string,
@@ -301,10 +353,58 @@ export class AgentRuntimeService {
       { role: "system", content: systemContent },
     ];
 
+    const toolCalls = await this.sessionService.listToolCalls(sessionId);
+    const answeredIds = new Set(
+      steps
+        .filter((s) => s.role === "tool" && s.toolCallId)
+        .map((s) => s.toolCallId as string),
+    );
+
     for (const s of steps) {
       messages.push(...this.stepToMessages(s));
+      // 折叠步只剩摘要（其 tool_calls 已不在消息里），不补应答
+      if (s.role !== "assistant" || s.summary) continue;
+      const calls = Array.isArray(s.toolCallsJson)
+        ? (s.toolCallsJson as ToolCall[])
+        : [];
+      for (const call of calls) {
+        if (!call?.id || answeredIds.has(call.id)) continue;
+        const row = toolCalls.find(
+          (c) =>
+            c.stepId === s.id &&
+            c.toolName === (call.function?.name ?? "") &&
+            !answeredIds.has(call.id),
+        );
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: this.replayedToolResult(row),
+        });
+        answeredIds.add(call.id);
+      }
     }
     return messages;
+  }
+
+  /**
+   * 把一条工具调用记录渲染成「重放给模型的 tool 应答」。
+   *
+   * 只描述**已发生的事实**（成功摘要 / 被拒原因 / 仍待审批），不编造结果：
+   * 模型据此决定下一步，编造会让它在错误前提上继续推理。
+   */
+  private replayedToolResult(row: AgentToolCall | undefined): string {
+    if (!row) {
+      return "【工具结果缺失】该调用没有对应的执行记录（可能在上报前中断）——请重新观察现状后再决定下一步。";
+    }
+    if (row.status === "awaiting_approval") {
+      return `【等待人工审批】${row.errorMessage ?? "该调用需人工审批"}（会话已挂起；批准后会恢复并执行，请勿重复提交）。`;
+    }
+    if (row.status === "ok") {
+      const body = row.resultJson ? JSON.stringify(row.resultJson) : "";
+      const clipped = body.slice(0, TOOL_RESULT_REPLAY_MAX_CHARS);
+      return `【工具结果（重放）】${clipped}${row.resultTruncated ? "…（原结果已截断）" : ""}`;
+    }
+    return `【调用未成功】状态 ${row.status}${row.errorMessage ? `：${row.errorMessage}` : ""}`;
   }
 
   private stepToMessages(step: AgentStep): MultimodalMessage[] {

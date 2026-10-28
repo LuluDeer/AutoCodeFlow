@@ -14,6 +14,7 @@ export default {
   'err.AGENT_APPROVAL_SESSION_MISMATCH': 'The approval request does not belong to session {{sessionId}} — decide it from the session detail page',
   'err.AGENT_SESSION_ALREADY_RUNNING': 'The session is still running — re-enqueueing would duplicate the reasoning loop and its side effects; no recovery needed',
   'err.AGENT_SESSION_NOT_FOUND': 'Agent session {{sessionId}} not found',
+  'err.AGENT_SESSION_PENDING_APPROVAL': 'Session {{sessionId}} still has pending approval requests — approve or deny them in the session detail page before resuming',
   'err.AGENT_TOOL_EXECUTOR_NOT_FOUND': 'Executor {{address}} not found',
   'err.AGENT_TOOL_EXECUTOR_TARGET_REQUIRED': 'Either executorId or executorAddress must be provided',
   'err.AGENT_TOOL_MUTEX_GROUP_PATCH_EMPTY': 'update_mutex_group: at least one editable field is required (name / maxConcurrentPerDevice / scope / description)',

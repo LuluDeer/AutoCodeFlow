@@ -61,7 +61,9 @@ export const AGENT_TOOL_STATUS_COLOR: Record<string, string> = {
  */
 export const AGENT_APPROVAL_STATUS_COLOR: Record<string, string> = {
   pending: 'orange',
+  // granted = 已批准、等执行；consumed = 已凭该单执行过一次（一次性放行）
   granted: 'green',
+  consumed: 'blue',
   denied: 'red',
 };
 

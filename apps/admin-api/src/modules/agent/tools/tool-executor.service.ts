@@ -90,7 +90,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     session: AgentSession,
     call: { id: string; function: { name: string; arguments: string } },
     stepId: string | null,
-  ): Promise<{ content: string; truncated: boolean }> {
+  ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }> {
     const toolName = call.function?.name ?? "unknown";
 
     // 解析参数——模型给的是 JSON 字符串，可能是畸形 JSON
@@ -142,8 +142,57 @@ export class ToolExecutorService implements AgentToolExecutor {
       }
     }
 
+    // ── 审批单消费（执行侧闭环，实施轮 #14）─────────────────────────
+    // 闸门的 NEED_APPROVAL 是**纯函数判定**（不读库），审批结论的消费在这里。
+    // 键是确定性的（同会话 + 同工具 + 同参数 ⇒ 同键），因此：
+    //   · granted  → 把键作为「本次调用通行证」带给闸门（其余五道闸照常生效）；
+    //   · denied   → 按拒绝回给模型，不重新申请、不再次挂起；
+    //   · consumed → 这张单已放行过一次，重复调用按拒绝（一张单只放行一次）；
+    //   · pending  → 不重复申请（request 的 23505 分支会命中同一行）。
+    // 没有审批单时 approvedKey=null，闸门按既有策略自行返回 NEED_APPROVAL。
+    const approvalKey = this.approvals.buildKey(session.id, toolName, args);
+    const existingApproval = await this.approvals.findByKey(approvalKey);
+    if (
+      existingApproval &&
+      (existingApproval.status === "denied" ||
+        existingApproval.status === "consumed")
+    ) {
+      const why =
+        existingApproval.status === "denied"
+          ? `该调用已被人工拒绝（审批单 ${approvalKey}${
+              existingApproval.decidedBy
+                ? `，处置人 ${existingApproval.decidedBy}`
+                : ""
+            }）——不得重试同一调用，请改走其他手段或把结论写进最终报告。`
+          : `该调用已凭审批单 ${approvalKey} 执行过一次；一张批准单只放行一次，` +
+            `重复提交同一调用会被拒绝。若确需再次执行，请改用只读手段核实结果，` +
+            `或在最终报告中说明需要人工再执行一次。`;
+      await this.sessions.recordToolCall({
+        sessionId: session.id,
+        stepId,
+        toolName,
+        tier: AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
+        args: this.sanitizeArgs(args),
+        status: "denied",
+        approvalId: approvalKey,
+        errorMessage: why,
+      });
+      this.logger.warn(
+        `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=${existingApproval.status}`,
+      );
+      return { content: `【调用被拒绝】${why}`, truncated: false };
+    }
+    const approvedKey =
+      existingApproval?.status === "granted" ? approvalKey : null;
+
     // ── 闸门（唯一入口）──
-    const verdict = this.boundary.check(session, toolName, args, priorCalls);
+    const verdict = this.boundary.check(
+      session,
+      toolName,
+      args,
+      priorCalls,
+      approvedKey,
+    );
 
     if (verdict.kind === "DENY") {
       await this.sessions.recordToolCall({
@@ -164,6 +213,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         session,
         verdict.spec,
         verdict.message,
+        approvalKey,
       );
       await this.sessions.recordToolCall({
         sessionId: session.id,
@@ -175,19 +225,18 @@ export class ToolExecutorService implements AgentToolExecutor {
         approvalId,
         errorMessage: verdict.message,
       });
-      // A1 审批闭环（实施轮 #12）：审批单已落库（agent_approvals）、会话已
-      // markWaiting 挂起，管理员在会话详情页 grant 后 controller 复用既有
-      // resume 链路恢复。回给模型的文案从轮 #11 的降级表述改为
-      // 「已提交审批」——管道接通后继续说降级话术会诱导模型放弃可完成的
-      // 动作；「不要重复提交」仍然保留：挂起期间重试只会再次挂起。
-      // （tripwire 判据：轮 #11 的降级话术不得再出现在本文件——见
-      // agent-boundary-check.mjs 的 APPROVAL 段。）
+      // A1 审批闭环（实施轮 #12 申请侧 / #14 执行侧）：审批单已落库
+      // （agent_approvals）、会话已 markWaiting 挂起。`needsApproval` 让运行时
+      // **停下本轮循环**——否则循环会在会话已显示 waiting_input 的情况下继续
+      // 调 LLM、继续重提调用，出现「状态说在等审批、实际还在跑」的窗口
+      // （B-8 的双跑守卫正是按状态判的）。
       return {
         content:
           `【需人工审批，已提交审批单】${verdict.message}` +
           `（审批单 ${approvalId}）会话已挂起等待人工处置；` +
-          `批准后将自动恢复执行本调用，请勿重复提交同一工具调用。`,
+          `管理员批准后将自动恢复会话并执行本次调用，请勿重复提交同一工具调用。`,
         truncated: false,
+        needsApproval: true,
       };
     }
 
@@ -213,6 +262,36 @@ export class ToolExecutorService implements AgentToolExecutor {
         });
         return { content: `【调用被拒绝】${denyMsg}`, truncated: false };
       }
+    }
+
+    // ── 领取审批单（granted → consumed）——**必须在副作用之前**──
+    // 领取成功才执行：反过来（先执行再领取）在并发下会出现「两次执行、一次
+    // 领取」，副作用双份。领取失败 = 这张单已被别处用掉，按拒绝处理
+    // （fail-closed：宁可少执行一次让管理员重新批准，不可多执行一次）。
+    if (verdict.approvedApprovalKey) {
+      const claimed = await this.approvals.consume(verdict.approvedApprovalKey);
+      if (!claimed) {
+        const why =
+          `审批单 ${verdict.approvedApprovalKey} 已被另一次调用使用` +
+          `（一张批准单只放行一次）——本次调用未执行。`;
+        await this.sessions.recordToolCall({
+          sessionId: session.id,
+          stepId,
+          toolName,
+          tier: spec.tier,
+          args: this.sanitizeArgs(args),
+          status: "denied",
+          approvalId: verdict.approvedApprovalKey,
+          errorMessage: why,
+        });
+        this.logger.warn(
+          `Agent approval claim lost: session=${session.id} tool=${toolName} approval=${verdict.approvedApprovalKey}`,
+        );
+        return { content: `【调用被拒绝】${why}`, truncated: false };
+      }
+      this.logger.log(
+        `Agent approval consumed: session=${session.id} tool=${toolName} approval=${verdict.approvedApprovalKey}`,
+      );
     }
 
     const started = Date.now();
@@ -421,8 +500,11 @@ export class ToolExecutorService implements AgentToolExecutor {
     session: AgentSession,
     spec: AgentToolSpec,
     reason: string,
+    approvalKey: string,
   ): Promise<string> {
-    const approvalId = `apr-${session.id}-${Date.now()}`;
+    // 键由调用方按 (会话, 工具, 参数) 确定性生成（approvals.buildKey）：
+    // 同参重试命中同一行，管理员批的那张就是模型正在等的那张。
+    const approvalId = approvalKey;
     // A1 审批闭环（实施轮 #12）：先落库（agent_approvals，approvalKey 唯一
     // 约束保证重试幂等）再把会话挂起——「先落盘后发送」同款纪律。挂起用
     // markWaiting 的条件写（R36）：会话恰好被 finish 收敛到终态时挂起让位，

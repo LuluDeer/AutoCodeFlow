@@ -14,6 +14,7 @@ export default {
   'err.AGENT_APPROVAL_SESSION_MISMATCH': '审批单不属于会话 {{sessionId}}——请从会话详情页发起处置',
   'err.AGENT_SESSION_ALREADY_RUNNING': '会话仍在运行中——重复入队会产生双份推理循环副作用，无需恢复',
   'err.AGENT_SESSION_NOT_FOUND': 'Agent 会话 {{sessionId}} 不存在',
+  'err.AGENT_SESSION_PENDING_APPROVAL': '会话 {{sessionId}} 仍有未处置的审批单——请先在会话详情页批准或拒绝，再恢复会话',
   'err.AGENT_TOOL_EXECUTOR_NOT_FOUND': '执行器 {{address}} 不存在',
   'err.AGENT_TOOL_EXECUTOR_TARGET_REQUIRED': 'executorId 与 executorAddress 必须提供其一',
   'err.AGENT_TOOL_MUTEX_GROUP_PATCH_EMPTY': 'update_mutex_group: 至少需要一个可改字段（name / maxConcurrentPerDevice / scope / description）',

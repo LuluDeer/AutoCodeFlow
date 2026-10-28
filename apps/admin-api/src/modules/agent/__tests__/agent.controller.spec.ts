@@ -9,7 +9,10 @@ import type { AgentSession } from "../entities/agent-session.entity";
  * 绕过 BullMQ 去重，双 worker 会双跑同一会话），终态会话仍按既有语义返回
  * ok:false。
  */
-function harness(sessionRow: Partial<AgentSession> | null) {
+function harness(
+  sessionRow: Partial<AgentSession> | null,
+  opts: { hasPending?: boolean } = {},
+) {
   const sessions = {
     requireById: jest.fn(async () => sessionRow),
     create: jest.fn(),
@@ -26,6 +29,8 @@ function harness(sessionRow: Partial<AgentSession> | null) {
       findByKey: jest.fn(async () => null),
       decide: jest.fn(async () => null),
       listForSession: jest.fn(async () => []),
+      // 实施轮 #14：resume 前置校验（有 pending 审批单时拒绝绕过审批）
+      hasPendingForSession: jest.fn(async () => opts.hasPending ?? false),
     } as never,
     queue as never,
   );
@@ -66,6 +71,14 @@ describe("AgentController · resume 状态防线（B-8）", () => {
       { sessionId: "s-1", reason: "resume:manual" },
       expect.objectContaining({ attempts: 1 }),
     );
+  });
+
+  // 实施轮 #14：审批必须先处置——否则「审批」从门退化成通知，会话在未
+  // 批准状态下继续推理并重提同一工具。
+  it("仍有 pending 审批单 → 409，不入队（审批不能被 resume 绕过）", async () => {
+    const h = harness({ ...baseSession, status: "waiting_input" }, { hasPending: true });
+    await expect(h.ctl.resume("s-1")).rejects.toThrow(ConflictException);
+    expect(h.queue.add).not.toHaveBeenCalled();
   });
 
   it("failed/budget_exceeded/pending 仍放行入队（运行时的终态幂等闸兜底）", async () => {

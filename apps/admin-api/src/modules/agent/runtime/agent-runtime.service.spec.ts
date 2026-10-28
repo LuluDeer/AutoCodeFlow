@@ -32,6 +32,8 @@ function harness(
     budget?: Any;
     usage?: Partial<Any>;
     context?: Any;
+    /** 工具调用台账（rebuildMessages 补 tool 应答的数据源，实施轮 #14）。 */
+    toolCallRows?: Any[];
   } = {},
 ) {
   const steps = opts.steps ?? [];
@@ -72,6 +74,7 @@ function harness(
       recordedToolCalls.push(input);
       return input;
     }),
+    listToolCalls: jest.fn(async () => opts.toolCallRows ?? []),
   };
 
   const budgetService = {
@@ -599,5 +602,136 @@ describe("AgentRuntimeService —— 摘要（通知渠道用）", () => {
       await h.service.run("sess-1");
       expect(h.finished[0].patch.summary).toBeNull();
     }
+  });
+});
+
+describe("AgentRuntimeService —— 审批闭环执行侧（实施轮 #14）", () => {
+  it("工具返回 needsApproval → 本轮立即收束为 waiting_input，不再发起第二轮推理", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "",
+          toolCalls: [{ id: "c1", function: { name: "sop_publish", arguments: "{}" } }],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        // 若循环没停，这里会被消费（第二轮 LLM 调用）
+        {
+          content: "第二轮不该发生",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => []),
+      execute: jest.fn(async () => ({
+        content: "【需人工审批，已提交审批单】…",
+        truncated: false,
+        needsApproval: true,
+      })),
+    });
+
+    const out = await h.service.run("sess-1");
+
+    // waiting_input 不是终态：不写终态、不落 finish（grant 后 resume 继续）
+    expect(out).toMatchObject({ status: "waiting_input", reason: "needs_approval" });
+    expect(h.finished).toHaveLength(0);
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+  });
+
+  it("rebuildMessages 为「已发出但没有应答的 tool_call」补 tool 消息（防上游 400）", async () => {
+    const h = harness({
+      steps: [
+        step({
+          id: "s1",
+          role: "assistant",
+          content: "",
+          toolCallsJson: [
+            { id: "c1", function: { name: "get_task", arguments: "{}" } },
+          ],
+        }),
+      ],
+      toolCallRows: [
+        {
+          stepId: "s1",
+          toolName: "get_task",
+          status: "ok",
+          resultJson: { id: "t-1" },
+          resultTruncated: false,
+          errorMessage: null,
+        },
+      ],
+      llm: [{ content: "结论", toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } }],
+    });
+
+    await h.service.run("sess-1");
+    const msgs = h.llmCall(0).messages;
+    const toolMsg = msgs.find((m: Any) => m.role === "tool");
+    expect(toolMsg).toMatchObject({ role: "tool", tool_call_id: "c1" });
+    expect(String(toolMsg.content)).toContain("工具结果（重放）");
+    expect(String(toolMsg.content)).toContain("t-1");
+  });
+
+  it("被拒的调用重放时如实说明「已被拒绝」，不让模型以为还能重试", async () => {
+    const h = harness({
+      steps: [
+        step({
+          id: "s1",
+          role: "assistant",
+          content: "",
+          toolCallsJson: [
+            { id: "c1", function: { name: "update_task", arguments: "{}" } },
+          ],
+        }),
+      ],
+      toolCallRows: [
+        {
+          stepId: "s1",
+          toolName: "update_task",
+          status: "denied",
+          resultJson: null,
+          resultTruncated: false,
+          errorMessage: "已被 alice 人工拒绝",
+        },
+      ],
+      llm: [{ content: "结论", toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } }],
+    });
+
+    await h.service.run("sess-1");
+    const toolMsg = h.llmCall(0).messages.find((m: Any) => m.role === "tool");
+    expect(String(toolMsg.content)).toContain("调用未成功");
+    expect(String(toolMsg.content)).toContain("已被 alice 人工拒绝");
+  });
+
+  it("已有 tool 步的 toolCallId 不重复补（历史数据/自测构造的形态）", async () => {
+    const h = harness({
+      steps: [
+        step({
+          id: "s2",
+          role: "assistant",
+          content: "",
+          toolCallsJson: [
+            { id: "c1", function: { name: "get_task", arguments: "{}" } },
+          ],
+        }),
+        step({ id: "s3", role: "tool", content: "已有应答", toolCallId: "c1" }),
+      ],
+      toolCallRows: [
+        {
+          stepId: "s2",
+          toolName: "get_task",
+          status: "ok",
+          resultJson: { id: "t-1" },
+          resultTruncated: false,
+          errorMessage: null,
+        },
+      ],
+      llm: [{ content: "结论", toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } }],
+    });
+
+    await h.service.run("sess-1");
+    const toolMsgs = h.llmCall(0).messages.filter((m: Any) => m.role === "tool");
+    expect(toolMsgs).toHaveLength(1);
+    expect(toolMsgs[0].content).toBe("已有应答");
   });
 });
