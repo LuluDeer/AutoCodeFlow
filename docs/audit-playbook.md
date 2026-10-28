@@ -89,10 +89,17 @@
 | C1 | P2 | `deploy_application`/`deploy_app` 是 write 但无 `approvalRequired`（依赖 DEP-04 平台级审批） | 需先确认 DEP-04 默认开关 |
 | C3 | P2 | 澄清回复归属校验在执行体而非闸门 | 需 sop 侧投影数据做 pre-resolve hook |
 | D1 | P2 | 审批单只存结论，不存 `consumedAt`/`decidedBy` → 审批 UI 没有时间线，无法回答「谁在什么时候放行的」 | 需加列 + 迁移 |
-| D2 | P3 | `ExecutorDetailPage` 的 kill/inspect 按钮恒可点（后端 409 才报错） | 需把执行态前置到按钮 disabled（含测试） |
 
 > 记录口径：**修完就删行**，并在下面「已收口」留一行可追溯的结论（含提交号与反证方式），
 > 否则下一轮会把同一件事再查一遍。
+
+### 复核后判定「不是问题」（本仓实测，勿重跑）
+
+- `ExecutionsPage` / `ExecutionDetailPage` 的「终止」按钮**已按执行态收敛**
+  （`running|waiting|pending` 才渲染 Popconfirm），不是「恒可点」；审计提法来自
+  未读源码的猜测，实测两处都有状态判据（含 KILL-WAITING 对 waiting 的补齐）。
+- `ExecutorPackagesPage` 的轮询节拍**不会**随 `loading` 翻转重建（F-16 已用
+  `pollGateRef` 镜像修掉）；本轮只是补了 silent/失焦，节拍本身无需再改。
 
 ### 已收口（滚动，最近在上）
 

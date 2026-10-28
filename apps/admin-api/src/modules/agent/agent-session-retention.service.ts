@@ -10,6 +10,7 @@ import {
 } from "./entities/agent-session.entity";
 import { AgentStep } from "./entities/agent-step.entity";
 import { AgentToolCall } from "./entities/agent-tool-call.entity";
+import { AgentApproval } from "./entities/agent-approval.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 AgentMediaRetentionService）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
@@ -28,7 +29,11 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
  *   90 天的行——非终态会话的 steps 是可重入/重建上下文的唯一数据源，动了
  *   会把挂起会话作废；
  * · **tool_calls**：按 tier 分别保留——read 30 天、write/dangerous 180 天
- *   （与审计保留期对齐，见 agent-tool-call.entity 头注）。
+ *   （与审计保留期对齐，见 agent-tool-call.entity 头注）；
+ * · **approvals**：已处置（granted/consumed/denied）且所属会话已终态的、超
+ *   180 天的行——审批单是**审计物证**（谁批准、何时真的执行），保留期与
+ *   write/dangerous 的 tool_calls 对齐；`pending` **不删**：它是待办工作项，
+ *   删掉等于静默抹掉一个还在等人点头的请求（会话会停在 waiting_input 且无迹可查）。
  * 默认值即上表；`AGENT_STEP_RETENTION_DAYS` /
  * `AGENT_TOOL_CALL_READ_RETENTION_DAYS` /
  * `AGENT_TOOL_CALL_WRITE_RETENTION_DAYS` 可覆盖（可选环境变量，未设/非法
@@ -37,6 +42,7 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
 export const AGENT_STEP_RETENTION_DEFAULT_DAYS = 90;
 export const AGENT_TOOL_CALL_READ_RETENTION_DEFAULT_DAYS = 30;
 export const AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS = 180;
+export const AGENT_APPROVAL_RETENTION_DEFAULT_DAYS = 180;
 
 /** 单批 IN 列表上限（每日批量任务，分块防超长语句）。 */
 const DELETE_CHUNK = 500;
@@ -45,6 +51,10 @@ const ENV_STEP_RETENTION_DAYS = "AGENT_STEP_RETENTION_DAYS";
 const ENV_TOOL_CALL_READ_RETENTION_DAYS = "AGENT_TOOL_CALL_READ_RETENTION_DAYS";
 const ENV_TOOL_CALL_WRITE_RETENTION_DAYS =
   "AGENT_TOOL_CALL_WRITE_RETENTION_DAYS";
+const ENV_APPROVAL_RETENTION_DAYS = "AGENT_APPROVAL_RETENTION_DAYS";
+
+/** 已处置的审批状态（pending 是待办工作项，绝不由清理任务删除）。 */
+const SETTLED_APPROVAL_STATUSES = ["granted", "consumed", "denied"] as const;
 
 @Injectable()
 export class AgentSessionRetentionService {
@@ -60,6 +70,8 @@ export class AgentSessionRetentionService {
     private readonly steps: Repository<AgentStep>,
     @InjectRepository(AgentToolCall)
     private readonly toolCalls: Repository<AgentToolCall>,
+    @InjectRepository(AgentApproval)
+    private readonly approvals: Repository<AgentApproval>,
     private readonly config: ConfigService,
   ) {}
 
@@ -74,10 +86,11 @@ export class AgentSessionRetentionService {
   async handleDailyCleanup(): Promise<void> {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     try {
-      const { steps, toolCalls } = await this.cleanupExpiredRows();
-      if (steps + toolCalls > 0) {
+      const { steps, toolCalls, approvals } = await this.cleanupExpiredRows();
+      if (steps + toolCalls + approvals > 0) {
         this.logger.log(
-          `Agent session retention: 清理 steps=${steps} 行、toolCalls=${toolCalls} 行`,
+          `Agent session retention: 清理 steps=${steps} 行、toolCalls=${toolCalls} 行、` +
+            `approvals=${approvals} 行`,
         );
       }
     } catch (err) {
@@ -91,6 +104,7 @@ export class AgentSessionRetentionService {
   async cleanupExpiredRows(now: Date = new Date()): Promise<{
     steps: number;
     toolCalls: number;
+    approvals: number;
   }> {
     const stepCutoff = this.cutoff(
       now,
@@ -111,6 +125,13 @@ export class AgentSessionRetentionService {
       this.resolveDays(
         ENV_TOOL_CALL_WRITE_RETENTION_DAYS,
         AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS,
+      ),
+    );
+    const approvalCutoff = this.cutoff(
+      now,
+      this.resolveDays(
+        ENV_APPROVAL_RETENTION_DAYS,
+        AGENT_APPROVAL_RETENTION_DEFAULT_DAYS,
       ),
     );
 
@@ -154,7 +175,32 @@ export class AgentSessionRetentionService {
       toolCallsDeleted += res.affected ?? 0;
     }
 
-    return { steps: stepsDeleted, toolCalls: toolCallsDeleted };
+    // 审批单：只清「已处置 + 会话已终态 + 超期」的行。
+    // · 只看 createdAt 不看 decidedAt：一张单挂在 waiting_input 上一年没被处置时，
+    //   它既没有 decidedAt 也不该被保留成永久垃圾——但 status 仍是 pending，
+    //   下面的 IN 会把这类行挡住（待办工作项不自动消失，交人工处置）。
+    // · 不看 tool_calls 是否已被删：两者保留期不同（read 30 天），用会话终态
+    //   做归属依据，避免「tool_call 先被清 → 审批单永远找不到」的孤儿行。
+    let approvalsDeleted = 0;
+    for (let i = 0; i < terminalIds.length; i += DELETE_CHUNK) {
+      const chunk = terminalIds.slice(i, i + DELETE_CHUNK);
+      const res = await this.approvals
+        .createQueryBuilder()
+        .delete()
+        .where("sessionId IN (:...ids)", { ids: chunk })
+        .andWhere("status IN (:...statuses)", {
+          statuses: [...SETTLED_APPROVAL_STATUSES],
+        })
+        .andWhere("createdAt < :cutoff", { cutoff: approvalCutoff })
+        .execute();
+      approvalsDeleted += res.affected ?? 0;
+    }
+
+    return {
+      steps: stepsDeleted,
+      toolCalls: toolCallsDeleted,
+      approvals: approvalsDeleted,
+    };
   }
 
   private cutoff(now: Date, days: number): Date {

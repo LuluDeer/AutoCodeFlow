@@ -5,6 +5,7 @@ import {
   AGENT_STEP_RETENTION_DEFAULT_DAYS,
   AGENT_TOOL_CALL_READ_RETENTION_DEFAULT_DAYS,
   AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS,
+  AGENT_APPROVAL_RETENTION_DEFAULT_DAYS,
 } from "../agent-session-retention.service";
 
 /** delete qb 链桩：捕获 where/andWhere 参数，execute 返回受控 affected。 */
@@ -31,6 +32,7 @@ function harness(opts?: {
   configValues?: Record<string, unknown>;
   stepAffected?: number;
   toolCallAffected?: number;
+  approvalAffected?: number;
 }) {
   const sessions = {
     // find 尊重 where.status 的 In(...) 语义（FindOperator.value 是白名单）
@@ -46,8 +48,10 @@ function harness(opts?: {
   };
   const stepQb = deleteQb(opts?.stepAffected ?? 3);
   const toolCallQb = deleteQb(opts?.toolCallAffected ?? 5);
+  const approvalQb = deleteQb(opts?.approvalAffected ?? 2);
   const steps = { createQueryBuilder: jest.fn(() => stepQb) };
   const toolCalls = { createQueryBuilder: jest.fn(() => toolCallQb) };
+  const approvals = { createQueryBuilder: jest.fn(() => approvalQb) };
   const config = {
     get: jest.fn((key: string) => opts?.configValues?.[key]),
   };
@@ -56,9 +60,20 @@ function harness(opts?: {
     sessions as never,
     steps as never,
     toolCalls as never,
+    approvals as never,
     config as unknown as ConfigService,
   );
-  return { svc, sessions, steps, toolCalls, stepQb, toolCallQb, config };
+  return {
+    svc,
+    sessions,
+    steps,
+    toolCalls,
+    approvals,
+    stepQb,
+    toolCallQb,
+    approvalQb,
+    config,
+  };
 }
 
 const DAY = 86_400_000;
@@ -158,27 +173,80 @@ describe("AgentSessionRetentionService · tool_calls 按 tier（B-10）", () => 
 });
 
 describe("AgentSessionRetentionService · cron 门禁与容错（B-10）", () => {
-  it("删除行数如实返回（steps + toolCalls 分计；toolCalls 为两档 tier 批次之和）", async () => {
+  it("删除行数如实返回（steps / toolCalls / approvals 分计；toolCalls 为两档 tier 批次之和）", async () => {
     const h = harness({
       sessions: [{ id: "s-done", status: "failed" }],
       stepAffected: 2,
       toolCallAffected: 9,
+      approvalAffected: 4,
     });
     await expect(h.svc.cleanupExpiredRows(NOW)).resolves.toEqual({
       steps: 2,
       toolCalls: 18, // read 批次 9 + write/dangerous 批次 9
+      approvals: 4,
     });
+  });
+
+  // ── 实施轮 #15：审批单也有保留期（此前只清 steps/tool_calls，agent_approvals
+  // 只增不减；且台账行被清后审批单成孤儿——无 FK，没人会再删它） ──
+  it("审批单：只删「已处置 + 会话终态 + 超 180 天」，pending 永不进删除条件", async () => {
+    const h = harness({
+      sessions: [
+        { id: "s-done", status: "succeeded" },
+        { id: "s-run", status: "running" },
+      ],
+    });
+    await h.svc.cleanupExpiredRows(NOW);
+    const q = h.approvalQb.calls;
+    const where = q.find((c) => c.sql.includes("sessionId IN (:...ids)"))!;
+    expect(where.params.ids).toEqual(["s-done"]); // 非终态会话的审批单不动
+    const status = q.find((c) => c.sql.includes("status IN (:...statuses)"))!;
+    expect(status.params.statuses).toEqual(["granted", "consumed", "denied"]);
+    expect(status.params.statuses).not.toContain("pending");
+    const cutoff = q.find((c) => c.sql.includes("createdAt < :cutoff"))!;
+    expect((cutoff.params.cutoff as Date).getTime()).toBe(
+      NOW.getTime() - AGENT_APPROVAL_RETENTION_DEFAULT_DAYS * DAY,
+    );
+  });
+
+  it("审批单保留期可被 AGENT_APPROVAL_RETENTION_DAYS 覆盖（非法值回落默认）", async () => {
+    const overridden = harness({
+      sessions: [{ id: "s-done", status: "succeeded" }],
+      configValues: { AGENT_APPROVAL_RETENTION_DAYS: "30" },
+    });
+    await overridden.svc.cleanupExpiredRows(NOW);
+    expect(
+      (
+        overridden.approvalQb.calls.find((c) =>
+          c.sql.includes("createdAt < :cutoff"),
+        )!.params.cutoff as Date
+      ).getTime(),
+    ).toBe(NOW.getTime() - 30 * DAY);
+
+    const junk = harness({
+      sessions: [{ id: "s-done", status: "succeeded" }],
+      configValues: { AGENT_APPROVAL_RETENTION_DAYS: "abc" },
+    });
+    await junk.svc.cleanupExpiredRows(NOW);
+    expect(
+      (
+        junk.approvalQb.calls.find((c) => c.sql.includes("createdAt < :cutoff"))!
+          .params.cutoff as Date
+      ).getTime(),
+    ).toBe(NOW.getTime() - AGENT_APPROVAL_RETENTION_DEFAULT_DAYS * DAY);
   });
 
   it("LeaderGate 非 leader 时整轮跳过（多实例不重复删）", async () => {
     const sessions = { find: jest.fn(async () => []) };
     const stepQb = deleteQb();
     const toolCallQb = deleteQb();
+    const approvalQb = deleteQb();
     const svc = new AgentSessionRetentionService(
       { isLeader: false } as never,
       sessions as never,
       { createQueryBuilder: () => stepQb } as never,
       { createQueryBuilder: () => toolCallQb } as never,
+      { createQueryBuilder: () => approvalQb } as never,
       { get: () => undefined } as unknown as ConfigService,
     );
     await svc.handleDailyCleanup();
