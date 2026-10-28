@@ -220,6 +220,12 @@ export default function TaskDetailPage() {
   // FEAT-21: 任务 webhook 管理。secret 只在 enable/rotate 响应中一次性出现，
   // 关闭弹窗即丢弃——后端读面永不回传。
   const [webhookStatus, setWebhookStatus] = useState<TaskWebhookStatus | null>(null);
+  // E4（审计轮 #15）：读取失败必须与「确实未启用」区分开。旧实现 catch 里
+  // `setWebhookStatus(null)`，于是**已启用**的任务在 GET 失败时显示
+  // 「未启用 + 启用按钮」；而后端对已启用任务再次 enable 会**轮换密钥**
+  // （task.controller.ts:980「对已启用的任务再次启用会轮换密钥」），误点一次
+  // 就让外部集成的签名全部 401，而 UI 全程没有任何提示。
+  const [webhookStatusError, setWebhookStatusError] = useState<unknown>(null);
   const [issuedSecret, setIssuedSecret] = useState<TaskWebhookSecretIssued | null>(null);
 
   // 防重复提交（排查清单 #2）：webhook 三个写操作此前无任何 in-flight 标记，
@@ -231,8 +237,14 @@ export default function TaskDetailPage() {
   const loadWebhookStatus = useCallback(() => {
     if (!id) return;
     tasksApi.webhookStatus(id)
-      .then(setWebhookStatus)
-      .catch(() => setWebhookStatus(null));
+      .then((s) => {
+        setWebhookStatus(s);
+        setWebhookStatusError(null);
+      })
+      .catch((err: unknown) => {
+        setWebhookStatus(null);
+        setWebhookStatusError(err ?? new Error('webhook status unavailable'));
+      });
   }, [id]);
 
   useEffect(() => {
@@ -984,13 +996,27 @@ export default function TaskDetailPage() {
                   <Space>
                     <ApiOutlined />
                     {t('taskDetail.webhook.title')}
-                    <Tag color={webhookStatus?.enabled ? 'success' : 'default'}>
-                      {webhookStatus?.enabled ? t('taskDetail.webhook.enabled') : t('taskDetail.webhook.disabled')}
+                    {/* 三态：已启用 / 未启用 / **未知**（读取失败）。未知绝不能
+                        显示成「未启用」——那会把一次网络抖动变成一次误操作的机会。 */}
+                    <Tag color={webhookStatusError ? 'warning' : webhookStatus?.enabled ? 'success' : 'default'}>
+                      {webhookStatusError
+                        ? t('taskDetail.webhook.statusUnknownTag')
+                        : webhookStatus?.enabled
+                          ? t('taskDetail.webhook.enabled')
+                          : t('taskDetail.webhook.disabled')}
                     </Tag>
                   </Space>
                 }
               >
-                {webhookStatus?.enabled ? (
+                {webhookStatusError ? (
+                  <Space direction="vertical" size={8}>
+                    <Text type="danger">{t('taskDetail.webhook.statusUnknown')}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('taskDetail.webhook.statusUnknownHint')}
+                    </Text>
+                    <Button size="small" onClick={loadWebhookStatus}>{t('taskDetail.webhook.retry')}</Button>
+                  </Space>
+                ) : webhookStatus?.enabled ? (
                   <>
                     <Typography.Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 12 }}>
                       {t('taskDetail.webhook.desc')}
