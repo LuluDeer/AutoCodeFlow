@@ -37,6 +37,49 @@ import * as path from 'path';
 /** 试跑在飞登记文件名（落在试跑 workspace 根；打包/列目录按观测产物对待）。 */
 export const TRIAL_RECORD_FILENAME = 'trial-in-flight.json';
 
+/**
+ * 进程组是否仍有存活成员（Linux：kill(-pgid, 0) 信号探测）。
+ * 组长退出后只要还有任一成员，组就活着——kill(-pgid) 仍能命中整组。
+ */
+function processGroupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 扫描 /proc 找到归属 pgid 的任一存活成员并读其 cmdline（Linux only）。
+ * 用于组长已退的孤儿组：归属校验必须基于**组员**的 cmdline（与登记的
+ * 解释器比对防 pid 复用误杀）。找不到可读成员返回 null（保守跳过）。
+ */
+function readAnyGroupMemberCmdline(pgid: number): string | null {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return null;
+  }
+  for (const name of entries) {
+    const pid = Number(name);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    try {
+      // /proc/<pid>/stat 第 5 字段是 pgrp。comm 字段可能含空格/括号，
+      // 以最后一个 ')' 之后的字段起算才稳。
+      const stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
+      const after = stat.slice(stat.lastIndexOf(')') + 1).trim().split(' ');
+      const pgrp = Number(after[2]);
+      if (pgrp !== pgid) continue;
+      return fs.readFileSync(`/proc/${name}/cmdline`, 'utf8');
+    } catch {
+      continue; // 进程竞态退出——下一个
+    }
+  }
+  return null;
+}
+
 /** 在飞试跑树注册表：pgid（= detached 组长 pid）→ 解释器名（诊断用）。 */
 const inFlightTrees = new Map<number, string>();
 
@@ -111,7 +154,25 @@ export function sweepStaleTrialTrees(workspacesRoot: string, log?: (line: string
     try {
       cmdline = fs.readFileSync(`/proc/${pgid}/cmdline`, 'utf8');
     } catch {
-      continue; // 进程组已死——记录已删，无事可做
+      // /proc/<pgid> 只索引**组长**进程——组长已退不等于组已死：入口脚本
+      // fork 守护后自退、或组长恰在 worker 死亡窗口内退出时，组内成员
+      // 仍然存活。此处绝不能直接判「树已死」删记录（那是孤儿泄漏）：
+      // 先探组存活，组真死了才清理。
+      if (!processGroupAlive(pgid)) continue; // 组确已死——记录已删，无事可做
+      const memberCmdline = readAnyGroupMemberCmdline(pgid);
+      if (memberCmdline === null) continue; // 组员存在但读不到 cmdline——保守跳过（不误杀也不漏记）
+      if (interpreter && !memberCmdline.includes(interpreter)) {
+        log?.(`sweep: pgid ${pgid} 组长已退，存活组员 cmdline 不含登记的解释器 ${interpreter}——疑似 pid 复用，跳过击杀`);
+        continue;
+      }
+      try {
+        process.kill(-pgid, 'SIGKILL');
+        killed += 1;
+        log?.(`sweep: killed orphan trial tree pgid=${pgid} (组长已退，按存活组员归属确认; ${interpreter || 'unknown interpreter'})`);
+      } catch {
+        try { process.kill(pgid, 'SIGKILL'); killed += 1; } catch { /* 已死 */ }
+      }
+      continue;
     }
     if (interpreter && !cmdline.includes(interpreter)) {
       log?.(`sweep: pgid ${pgid} cmdline 不含登记的解释器 ${interpreter}——疑似 pid 复用，跳过击杀`);

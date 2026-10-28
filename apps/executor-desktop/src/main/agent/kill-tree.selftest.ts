@@ -183,6 +183,29 @@ async function main(): Promise<void> {
     fs.writeFileSync(recordPath, JSON.stringify({ pgid: 99999999, interpreter: 'node' }), 'utf8');
     const killed3 = sweepStaleTrialTrees(root);
     check('陈旧记录（树已死）→ 0 击杀且记录清理', killed3 === 0 && !fs.existsSync(recordPath));
+
+    // 6d：组长已退、组内成员存活（PROC-3）——孤儿组必须被清扫，不能按
+    // 「/proc/<pgid> ENOENT」误判成树已死而漏杀。
+    // 形态：组长 detached（= 进程组组长），fork 普通（非 detached）组员
+    // 后退出——组员留在组里，组长 /proc 条目消失。
+    const leaver = spawnDetached(
+      process.execPath,
+      [
+        '-e',
+        "const { spawn } = require('child_process');" +
+        "spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' }).unref();" +
+        'setTimeout(() => process.exit(0), 100);',
+      ],
+      { cwd: root, env: { ...process.env } },
+    );
+    await sleep(600); // 等组长退出、组员稳定运行
+    check('组长已退（前置条件）', !alive(leaver.pid ?? 0));
+    fs.writeFileSync(recordPath, JSON.stringify({ pgid: leaver.pid, interpreter: path.basename(process.execPath), recordedAt: new Date().toISOString() }), 'utf8');
+    const killed4 = sweepStaleTrialTrees(root, (line) => console.log(`    [sweep] ${line}`));
+    await sleep(300);
+    check('组长已退但组员存活 → 孤儿组被清扫（不误判树已死）', killed4 === 1, `killed=${killed4}`);
+    check('清扫后登记文件已删', !fs.existsSync(recordPath));
+
     fs.rmSync(root, { recursive: true, force: true });
   } else {
     console.log('  (跳过：非 Linux 平台无 /proc 归属校验——sweep 登记为 best-effort Linux only)');
