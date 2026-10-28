@@ -58,11 +58,21 @@ executor 链式转发 | 删掉 `previous(signum, frame)` | 用例红（uvicorn �
 
 ## 3. 验证矩阵
 
-- `packages/mcp-server`：**8 files / 312 tests**（新增 10 例，全部走
+- `packages/mcp-server`：**8 files / 316 tests**（新增 10 例，全部走
   `z.object(shape).parse` 再进 handler——直接把 args 塞 handler 会让这个缺陷永远绿）。
 - `packages/acf-cli`：**12 files / 414 tests**（新增 4 例）。
 - `apps/executor-python`：pytest 全绿，覆盖率 **87.47%**（门槛 86%，新增 3 例）。
 - `packages/mcp-server` / `packages/acf-cli` `tsc --noEmit` 0 错。
+
+### 1.4 MCP 部署目标机被静默替换（F4）
+
+后端在 `executorId` 查不到时（stale id / 手抄错一位 / 行已删除）**只 warn 一句就
+改投最低负载的另一台**，而工具把响应原样返回：调用方读到一个陌生 id，很容易当成
+「正常自动选择」，实际代码已经装到别的机器上并启动。修法：`executorId` 收窄为
+uuid（非 id 形态解析期即拒），并在 `deploy_application` / `deploy_app` 的响应里比对
+请求与实际，不一致时补 `executorReassigned` / `requestedExecutorId` /
+`actualExecutorId` + 说明。部署本身成功，故不置 `isError`，但这句话必须结构化可见。
+反证：删掉比对块 → 对应用例红。
 
 ## 4. 仍开着的（下一轮）
 
@@ -70,8 +80,6 @@ executor 链式转发 | 删掉 `previous(signum, frame)` | 用例红（uvicorn �
   失效、翻到全 failed 页时「升级所有」按钮消失。
 - **F3（P2）** 出参脱敏哨兵 `[redacted]` 与后端掩码 `******` 不一致 → 读-改-写会把
   `[redacted]` 当真实值写回 `params`。
-- **F4（P2）** `deploy_application` 的 `executorId` 不校验也不比对响应 → 指定机器
-  不存在时后端静默改投另一台。
 - **G2/G3（P2）** 停机时丢日志分片、丢已出队的回调批次（与「durability is the file」
   注释相反）。
 - **E2/E3/E4/E5、G4**：部署页 loading 卡死、SSE 换票失败 toast 风暴、webhook 状态

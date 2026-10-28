@@ -95,7 +95,6 @@
 | E4 | P2 | `TaskDetailPage` webhook 状态读取失败被吞成 `null`（与「确实未启用」同形）→ 卡片显示「未启用 + 启用按钮」；而后端对已启用任务再 enable 会**轮换密钥**，误点即让外部集成 401 | webhookStatus 三态（loading/known/error），error 态禁止 enable |
 | E5 | P3 | `ExecutionsPage` 的「最近 1/24 小时」预设 `value` 在**渲染期**求值；SSE live 时页面不再周期重渲 → 挂机 N 小时后点「最近 1 小时」查的是 N 小时前的窗口 | 预设改为点击时求值 |
 | F3 | P2 | 出参脱敏哨兵 `[redacted]` 与后端掩码哨兵 `******` 不一致 → 「读-改-写」会把 `[redacted]` 当真实值写回 `params` | 统一哨兵或排除 `params` |
-| F4 | P2 | `deploy_application`/`deploy_app` 的 `executorId` 不校验也不比对响应 → 指定机器不存在时后端静默改投「最低负载」另一台 | 收窄为 UUID + 响应比对 |
 | G2 | P2 | `LogStreamPusher.flush()` 取消正在发网络的定时 flush → 已出队的尾部日志分片静默丢失且无 marker | cancel 前等 flush 锁，或 CancelledError 时把分片塞回 |
 | G3 | P2 | 停机 `wait_for(_flush_live_callbacks(), 10s)` 超时取消 → 已出队的回调批次不落盘（与「durability is the file」相反），同批 N-1 条终态丢失 | CancelledError 里先 persist 再抛 |
 | G4 | P3 | `/api/config/reload` 在 400 之前已部分赋值（并发上限 / admin_api_url）→ 调用方以为整批未生效；pull 模式每 25s 重复同一半应用 | 先全量校验再统一赋值 |
@@ -112,6 +111,10 @@
   `pollGateRef` 镜像修掉）；本轮只是补了 silent/失焦，节拍本身无需再改。
 
 ### 已收口（滚动，最近在上）
+
+- 2026-10-28 · 实施轮 #16 · **MCP 部署目标机被静默替换**：后端 `executorId` 查不到时
+  只 warn 一句就改投最低负载的另一台；两个 deploy 工具现在比对请求/实际，补
+  `executorReassigned` + 实际机器 id，并把 `executorId` 收窄为 uuid。
 
 - 2026-10-28 · 实施轮 #16 · **MCP 写工具少声明的字段 = 永远传不进去**：MCP SDK 把
   shape 归一成 `z.object(shape)` 再 parse，zod 剥掉未声明键。补 9 个字段
