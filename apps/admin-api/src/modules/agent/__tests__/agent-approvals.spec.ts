@@ -315,9 +315,11 @@ describe("AgentApprovalsService · 确定性键与一次性领取（实施轮 #1
     };
     const svc = new AgentApprovalsService(repo as never);
     await expect(svc.consume("apr-s-1-x")).resolves.toBe(true);
+    // 状态与执行时刻必须是**同一条** UPDATE（两次写会留下「status=consumed、
+    // consumedAt 为空」的窗口，而审计恰恰要区分这一格）
     expect(repo.update).toHaveBeenCalledWith(
       { approvalKey: "apr-s-1-x", status: "granted" },
-      { status: "consumed" },
+      { status: "consumed", consumedAt: expect.any(Date) },
     );
 
     const lost = new AgentApprovalsService(

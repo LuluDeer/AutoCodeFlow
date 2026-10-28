@@ -104,6 +104,8 @@ export interface AgentApproval {
   /** 处置人。null = 尚未处置。 */
   decidedBy: string | null;
   decidedAt: string | null;
+  /** 领取（副作用真的开始执行）时刻。null = 未执行，或该列上线前的历史行。 */
+  consumedAt: string | null;
   createdAt: string;
 }
 
@@ -115,6 +117,7 @@ export interface AgentApprovalDecision {
     status: AgentApprovalStatus | string;
     decidedBy: string | null;
     decidedAt: string | null;
+    consumedAt: string | null;
   };
   /** grant 且会话挂起在 waiting_input 时，服务端已自动重新入队。 */
   resumed: boolean;

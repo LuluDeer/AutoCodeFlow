@@ -80,6 +80,18 @@ export class AgentApproval {
   @Column({ type: "timestamptz", nullable: true })
   decidedAt: Date | null;
 
+  /**
+   * 领取（= 副作用真的开始执行）时刻。NULL 有两种语义，且都重要：
+   *   · 还没被领取（pending / granted 卡住 / denied）——**「批准了但从未执行」
+   *     正是审计要能看见的那一类**；
+   *   · 迁移 1790000000068 之前的 consumed 行（当时无此列，不臆造回填）。
+   *
+   * 与 decidedAt 分开记的理由：批准人与执行者不是同一个主体，批准到执行之间
+   * 可能隔几分钟也可能隔一天，合并成一列就再也算不出这段时延。
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  consumedAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 }

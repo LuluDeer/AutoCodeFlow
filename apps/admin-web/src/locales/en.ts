@@ -3406,6 +3406,7 @@ export default {
   'agents.col.reason': 'Reason',
   'agents.col.decidedBy': 'Decided by',
   'agents.col.decidedAt': 'Decided at',
+  'agents.col.consumedAt': 'Executed at',
   'agents.approval.grant': 'Approve',
   'agents.approval.deny': 'Deny',
   'agents.approval.grantOk': 'Approved ({{key}})',

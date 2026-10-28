@@ -8,7 +8,7 @@
  * mock 风格对齐 agent-sessions-page-b14.test.tsx（api 层 mock + antd shim）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import '../i18n';
 import AgentSessionsPage from '../pages/AgentSessionsPage';
@@ -92,6 +92,7 @@ const approvalOf = (overrides: Partial<AgentApproval>): AgentApproval => ({
   status: 'pending',
   decidedBy: null,
   decidedAt: null,
+  consumedAt: null,
   createdAt: '2026-01-01T00:00:00Z',
   ...overrides,
 });
@@ -143,6 +144,7 @@ beforeEach(() => {
       status: 'granted',
       decidedBy: 'admin',
       decidedAt: '2026-01-01T00:01:00Z',
+      consumedAt: null,
     },
     resumed: true,
   });
@@ -153,6 +155,7 @@ beforeEach(() => {
       status: 'denied',
       decidedBy: 'admin',
       decidedAt: '2026-01-01T00:01:00Z',
+      consumedAt: null,
     },
     resumed: false,
   });
@@ -185,6 +188,49 @@ describe('A1 审批闭环：详情抽屉「审批单」区块', () => {
     expect(screen.getByText('拒 绝')).toBeTruthy();
     // waiting_input 行有「等待审批」徽标
     expect(screen.getAllByText('等待审批').length).toBeGreaterThan(0);
+  });
+
+  it('已执行单展示执行时刻，granted 卡住的单展示占位（可区分「批准了但没执行」）', async () => {
+    vi.mocked(agentApi.listApprovals).mockResolvedValue([
+      approvalOf({
+        id: 'apr-a',
+        approvalKey: 'apr-a',
+        toolName: 'stop_deployment',
+        status: 'consumed',
+        decidedBy: 'admin',
+        decidedAt: '2026-01-01T00:01:00Z',
+        consumedAt: '2026-01-01T00:05:00Z',
+      }),
+      approvalOf({
+        id: 'apr-b',
+        approvalKey: 'apr-b',
+        toolName: 'update_task',
+        status: 'granted',
+        decidedBy: 'admin',
+        decidedAt: '2026-01-01T00:02:00Z',
+        consumedAt: null,
+      }),
+    ]);
+    renderPage();
+    await screen.findByText('session-s-wait');
+    await openDetail('s-wait');
+    await openApprovalsTab();
+
+    // 列头存在：执行时刻与批准时刻分开（合并成一列就算不出「批准→执行」时延）
+    expect(await screen.findByText('执行时刻')).toBeTruthy();
+    expect(screen.getByText('已执行（一次性放行）')).toBeTruthy();
+
+    const dateCells = (tool: string) =>
+      within(screen.getByText(tool).closest('tr')!)
+        .queryAllByText(/2026/)
+        .length;
+    // consumed 行：decidedAt + consumedAt = 2 个时间格（列表不显示 createdAt）
+    expect(dateCells('stop_deployment')).toBe(2);
+    // granted 行（批准了但从未执行）：只有 decidedAt，执行时刻是占位
+    expect(dateCells('update_task')).toBe(1);
+    expect(
+      within(screen.getByText('update_task').closest('tr')!).getAllByText('—').length,
+    ).toBeGreaterThan(0);
   });
 
   it('无审批单 → 空态如实提示，不渲染操作按钮', async () => {

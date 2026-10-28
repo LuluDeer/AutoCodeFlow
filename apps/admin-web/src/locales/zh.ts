@@ -3406,6 +3406,7 @@ export default {
   'agents.col.reason': '审批理由',
   'agents.col.decidedBy': '处置人',
   'agents.col.decidedAt': '处置时间',
+  'agents.col.consumedAt': '执行时刻',
   'agents.approval.grant': '批准',
   'agents.approval.deny': '拒绝',
   'agents.approval.grantOk': '已批准（{{key}}）',

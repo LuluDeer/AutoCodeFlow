@@ -432,6 +432,15 @@ export default function AgentSessionsPage() {
       render: (v: string | null) => formatDateTime(v),
     },
     {
+      // 审批可追溯（实施轮 #15）：批准之后到底有没有真的执行、什么时候执行的。
+      // 与 decidedAt 分开列：批准人与执行者不是同一主体，中间可能隔很久；
+      // 「批准了但从未执行」（granted 卡住）这一行会在这里显示「—」，正是要看的东西。
+      title: t('agents.col.consumedAt'),
+      dataIndex: 'consumedAt',
+      width: 170,
+      render: (v: string | null) => formatDateTime(v),
+    },
+    {
       title: t('sops.col.actions'),
       width: 150,
       render: (_, a) =>

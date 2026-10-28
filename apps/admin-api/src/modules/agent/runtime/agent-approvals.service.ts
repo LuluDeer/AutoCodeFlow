@@ -150,7 +150,9 @@ export class AgentApprovalsService {
   async consume(approvalKey: string): Promise<boolean> {
     const updated = await this.approvals.update(
       { approvalKey, status: "granted" },
-      { status: "consumed" },
+      // consumedAt 与状态同一条 UPDATE 落：分成两次写会出现「状态已 consumed、
+      // 时刻为空」的窗口，而那正是审计要区分的「批准了但没执行」。
+      { status: "consumed", consumedAt: new Date() },
     );
     return (updated.affected ?? 0) > 0;
   }
