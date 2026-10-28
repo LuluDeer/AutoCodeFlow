@@ -413,6 +413,39 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
     expect(recorded.args.note as string).toContain("[REDACTED_HEX]");
     expect(recorded.args.note as string).not.toContain("0123abcd0123abcd");
   });
+
+  it("嵌套层的凭据同样剥离（对象/数组递归——落库前无死角）", async () => {
+    const h = harness();
+    await h.svc.execute(
+      session(),
+      call("trigger_task", {
+        taskId: "t-1",
+        params: {
+          nested: { apiToken: "sk-nested-secret", password: "hunter2" },
+          tokens: ["tok-a", "tok-b"],
+          list: ["tok-a", "tok-b"],
+          note: "Bearer nested.should.not.leak",
+        },
+      }),
+      null,
+    );
+    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as {
+      args: Record<string, unknown>;
+    };
+    const params = recorded.args.params as Record<string, unknown>;
+    const nested = params.nested as Record<string, unknown>;
+    expect(nested.apiToken).toBe("[REDACTED]");
+    expect(nested.password).toBe("[REDACTED]");
+    // 键名含 token → 整体剥除（键名剥除优先于递归）
+    expect(params.tokens).toBe("[REDACTED]");
+    // 中性键名的数组：元素逐个过值形态脱敏
+    expect(params.list).toEqual(["tok-a", "tok-b"]);
+    const note = params.note as string;
+    expect(note).toContain("[REDACTED]");
+    expect(note).not.toContain("nested.should.not.leak");
+    // 非 凭据键/字符串 字段原样保留（回归锚：脱敏不误伤数据）
+    expect(recorded.args.taskId).toBe("t-1");
+  });
 });
 
 // B-2：sop_get 的 slug 路径在执行体入口先解析成 id 再走闸——闸门语义单一

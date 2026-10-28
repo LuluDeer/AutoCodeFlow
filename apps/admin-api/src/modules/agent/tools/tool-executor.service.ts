@@ -43,6 +43,9 @@ export const TOOL_TIMEOUT_MS = 60_000;
  */
 export const TOOL_RESULT_MAX_CHARS = 2000;
 
+/** 凭据类键名（顶层与嵌套层一视同仁剥除）。 */
+const SECRET_KEYS_RE = /token|password|passwd|secret|apikey|api_key|credential/i;
+
 @Injectable()
 export class ToolExecutorService implements AgentToolExecutor {
   private readonly logger = new Logger(ToolExecutorService.name);
@@ -443,22 +446,35 @@ export class ToolExecutorService implements AgentToolExecutor {
    * 参数来自 LLM，可能包含它从上下文里抄来的凭据样式串。剥离的判据与
    * AiService.sanitizeLogs 同口径（项目已有 S-10 纪律），并额外按**键名**
    * 剥离凭据字段。
+   *
+   * 脱敏必须**递归**：嵌套对象/数组里的字符串同样落库（resultJson 进审计
+   * 详情页）——只扫顶层会把 `{"params":{"password":"…"}}` 形态整个漏掉。
+   * args 来自 JSON.parse（无环），深度钳位只是防御性收口。
    */
   private sanitizeArgs(
     args: Record<string, unknown> | null,
   ): Record<string, unknown> | null {
     if (!args) return null;
-    const SECRET_KEYS =
-      /token|password|passwd|secret|apikey|api_key|credential/i;
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(args)) {
-      if (SECRET_KEYS.test(k)) {
-        out[k] = "[REDACTED]";
-        continue;
-      }
-      out[k] = typeof v === "string" ? this.sanitizeString(v) : v;
+    return this.sanitizeValue(args, 0) as Record<string, unknown>;
+  }
+
+  private sanitizeValue(value: unknown, depth: number): unknown {
+    if (depth > 32) return "[TRUNCATED_NESTED]";
+    if (Array.isArray(value)) {
+      return value.map((v) => this.sanitizeValue(v, depth + 1));
     }
-    return out;
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (SECRET_KEYS_RE.test(k)) {
+          out[k] = "[REDACTED]";
+          continue;
+        }
+        out[k] = this.sanitizeValue(v, depth + 1);
+      }
+      return out;
+    }
+    return typeof value === "string" ? this.sanitizeString(value) : value;
   }
 
   private sanitizeString(s: string): string {
