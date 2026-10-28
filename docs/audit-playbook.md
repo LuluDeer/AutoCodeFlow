@@ -94,9 +94,6 @@
 | E3 | P2 | SSE 换票失败走共享 axios 拦截器 → 每 3–30s 弹一条错误 toast（去重窗口只有 1.5s），后端滚动发布时用户被持续轰炸 | 换票请求加「跳过全局 toast」标记，页面级只提示一次 |
 | E4 | P2 | `TaskDetailPage` webhook 状态读取失败被吞成 `null`（与「确实未启用」同形）→ 卡片显示「未启用 + 启用按钮」；而后端对已启用任务再 enable 会**轮换密钥**，误点即让外部集成 401 | webhookStatus 三态（loading/known/error），error 态禁止 enable |
 | E5 | P3 | `ExecutionsPage` 的「最近 1/24 小时」预设 `value` 在**渲染期**求值；SSE live 时页面不再周期重渲 → 挂机 N 小时后点「最近 1 小时」查的是 N 小时前的窗口 | 预设改为点击时求值 |
-| F3 | P2 | 出参脱敏哨兵 `[redacted]` 与后端掩码哨兵 `******` 不一致 → 「读-改-写」会把 `[redacted]` 当真实值写回 `params` | 统一哨兵或排除 `params` |
-| G2 | P2 | `LogStreamPusher.flush()` 取消正在发网络的定时 flush → 已出队的尾部日志分片静默丢失且无 marker | cancel 前等 flush 锁，或 CancelledError 时把分片塞回 |
-| G3 | P2 | 停机 `wait_for(_flush_live_callbacks(), 10s)` 超时取消 → 已出队的回调批次不落盘（与「durability is the file」相反），同批 N-1 条终态丢失 | CancelledError 里先 persist 再抛 |
 | G4 | P3 | `/api/config/reload` 在 400 之前已部分赋值（并发上限 / admin_api_url）→ 调用方以为整批未生效；pull 模式每 25s 重复同一半应用 | 先全量校验再统一赋值 |
 
 > 记录口径：**修完就删行**，并在下面「已收口」留一行可追溯的结论（含提交号与反证方式），
@@ -111,6 +108,15 @@
   `pollGateRef` 镜像修掉）；本轮只是补了 silent/失焦，节拍本身无需再改。
 
 ### 已收口（滚动，最近在上）
+
+- 2026-10-28 · 实施轮 #17 · **MCP 写面拒绝脱敏哨兵回传**：读路径把敏感值写成
+  `[redacted]`，agent「读-改-写」会把它当真实值写回 `params`（后端对 params 无掩码
+  语义）或**覆盖** `secrets`（保留哨兵是 `******`，不是 `[redacted]`）。现在写前
+  有界递归检查整个 body，命中即 `REDACTION_SENTINEL_IN_PAYLOAD` + 命中路径 + 下一步。
+- 2026-10-28 · 实施轮 #17 · **executor-python 停机两条静默丢弃**：`flush()` 取消正在
+  发网络的定时 flush（尾部日志分片随协程销毁、无 marker）；排水 `wait_for` 超时取消
+  已出队的回调批次（不落盘，与「durability is the file」相反）。两处都在
+  CancelledError 里先把数据放回缓冲/落盘，再抛。
 
 - 2026-10-28 · 实施轮 #16 · **MCP 部署目标机被静默替换**：后端 `executorId` 查不到时
   只 warn 一句就改投最低负载的另一台；两个 deploy 工具现在比对请求/实际，补
