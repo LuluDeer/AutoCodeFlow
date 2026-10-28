@@ -161,6 +161,23 @@ describe("AgentBoundaryService · ③ 参数校验（不可信输入）", () => 
     expect(v).toMatchObject({ kind: "DENY", reason: "invalid_params" });
   });
 
+  it("深嵌套载荷按 invalid_params 拒绝（递归扫描不爆栈——RangeError 不得逃出闸门）", () => {
+    const { svc } = harness();
+    // 5 万层嵌套数组：100KB 预算内的合法 JSON。若无深度闸，scanValue 递归
+    // 会在任何模式匹配之前以 RangeError 崩掉边界服务本身。
+    // trigger_task 的 params 是自由 object，嵌套载荷能进到扫描层。
+    let deep: unknown = "ok";
+    for (let i = 0; i < 50_000; i += 1) deep = [deep];
+    const v = svc.check(
+      session(),
+      "trigger_task",
+      { taskId: "t-1", params: deep },
+      0,
+    );
+    expect(v).toMatchObject({ kind: "DENY", reason: "invalid_params" });
+    expect((v as { message: string }).message).toContain("嵌套超过");
+  });
+
   it("无 schema 属性的工具不因未知键误拒（props 空集跳过白名单检查）", () => {
     const { svc } = harness();
     const v = svc.check(

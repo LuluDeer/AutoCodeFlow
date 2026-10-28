@@ -82,6 +82,17 @@ export const DEFAULT_RATE_LIMIT: RateLimit = {
 const MAX_STRING_LEN = 100_000;
 
 /**
+ * 嵌套扫描深度上限。
+ *
+ * scanValue 对嵌套对象/数组递归；参数来自 LLM 的 JSON 输出，`[[[…]]]`
+ * 形态在 100KB 字符预算内可嵌数万层——递归本身会先于任何模式匹配爆栈
+ * （RangeError 从闸门逃出去 = 「边界服务自己崩了」）。深度超限按
+ * invalid_params 拒绝：合法工具参数没有这么深的嵌套（工具 schema 都是
+ * 两三层结构），拒绝是如实的语义而不是猜测。
+ */
+const MAX_SCAN_DEPTH = 32;
+
+/**
  * 危险模式扫描（设计文档 03 §5.2）。
  *
  * 工具的字符串参数来自 LLM，**必须视为不可信输入**。这里的模式针对
@@ -284,19 +295,26 @@ export class AgentBoundaryService {
 
     // 逐字段扫描
     for (const [key, value] of Object.entries(a)) {
-      const strVerdict = this.scanValue(spec.name, key, value);
+      const strVerdict = this.scanValue(spec.name, key, value, 0);
       if (strVerdict) return strVerdict;
     }
 
     return null;
   }
 
-  /** 递归扫描字符串值（含嵌套对象/数组）。 */
+  /** 递归扫描字符串值（含嵌套对象/数组；深度超限按 invalid_params 拒绝）。 */
   private scanValue(
     toolName: string,
     key: string,
     value: unknown,
+    depth: number,
   ): BoundaryVerdict | null {
+    if (depth > MAX_SCAN_DEPTH) {
+      return this.deny(
+        "invalid_params",
+        `${toolName}.${key}: 参数嵌套超过 ${MAX_SCAN_DEPTH} 层（畸形/恶意载荷）`,
+      );
+    }
     if (typeof value === "string") {
       if (value.length > MAX_STRING_LEN) {
         return this.deny(
@@ -317,7 +335,7 @@ export class AgentBoundaryService {
 
     if (Array.isArray(value)) {
       for (const item of value) {
-        const v = this.scanValue(toolName, key, item);
+        const v = this.scanValue(toolName, key, item, depth + 1);
         if (v) return v;
       }
       return null;
@@ -325,7 +343,7 @@ export class AgentBoundaryService {
 
     if (value && typeof value === "object") {
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        const nested = this.scanValue(toolName, `${key}.${k}`, v);
+        const nested = this.scanValue(toolName, `${key}.${k}`, v, depth + 1);
         if (nested) return nested;
       }
       return null;
