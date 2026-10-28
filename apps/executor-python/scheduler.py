@@ -794,5 +794,5 @@ async def heartbeat_task() -> None:
     while True:
         await asyncio.sleep(settings.heartbeat_interval_seconds)
         # 心跳失败不得让循环退出（执行中的任务还在跑）；异常已在
-        # _heartbeat_once 内收敛为 record_heartbeat(False)。
+        # _heartbeat_once 内收敛（健康面记 False）。
         await _heartbeat_once()

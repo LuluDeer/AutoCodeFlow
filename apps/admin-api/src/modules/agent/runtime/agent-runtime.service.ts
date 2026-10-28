@@ -5,7 +5,14 @@ import {
   type ToolCall,
 } from "../../ai/ai.service";
 import { AgentSessionService } from "./agent-session.service";
-import { AgentBudgetService } from "./agent-budget.service";
+import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
+import {
+  DEFAULT_CONTEXT_WINDOW,
+  planContextWindow,
+  type ContextWindowOptions,
+} from "./agent-context";
+import { withLlmRetry, type LlmRetryOptions } from "./agent-llm-retry";
+import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import type { AgentSession } from "../entities/agent-session.entity";
 import type { AgentStep } from "../entities/agent-step.entity";
 import type { AgentToolCall } from "../entities/agent-tool-call.entity";
@@ -18,6 +25,22 @@ import type { AgentToolCall } from "../entities/agent-tool-call.entity";
  * 完整性——需要全文时走 agent_tool_calls.resultJson 人工回读。
  */
 const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
+
+/** LLM 重试的观测点（scheduled / recovered / exhausted / fatal / deadline）。 */
+const LLM_RETRY_METRIC = "autoflow_agent_llm_retry_total";
+
+/**
+ * 同一批工具调用里，某一次已进入「等人工审批」之后，**其余调用**回给模型的
+ * 应答文本。
+ *
+ * 为什么必须回一条（而不是静默跳过）：OpenAI 兼容协议要求每个 tool_call
+ * 都有 tool 应答，缺一条上游直接 400；而「会话已挂起、这批里剩下的没执行」
+ * 是模型在恢复后必须知道的事实——否则它会在 resume 时以为那几次也做过了。
+ */
+const NOT_EXECUTED_AFTER_SUSPEND =
+  "【未执行】本次调用未执行：同一批调用里前一个工具调用已进入人工审批，" +
+  "会话已挂起等待处置（已提交的审批单批准后会自动恢复）。" +
+  "如需执行本调用，请在恢复后重新提交。";
 
 /**
  * P2：Agent 推理循环（设计文档 02 §4）。
@@ -110,6 +133,24 @@ export class AgentRuntimeService {
   /** P3 会注入真实实现；P2 保持 null（无工具，纯文本推理）。 */
   private toolExecutor: AgentToolExecutor | null = null;
 
+  /**
+   * 重试钩子的注入点（生产留空 = 真实时钟 + 真实 sleep）。
+   *
+   * 为什么做成可写字段而不是构造参数：退避是「只在故障时才走到」的分支，
+   * 单测必须能把 1s/2s 的等待钉成 0ms 并逐次断言判据（见 spec）；而它是
+   * 运行时的**可观测细节**，不是依赖——走 DI 会给 5 处构造点都加参数，
+   * 换不来任何装配收益。同 `setToolExecutor` 的既有做法。
+   */
+  llmRetryOptions: LlmRetryOptions = {};
+
+  /**
+   * 上下文窗口覆盖（不传则每次 run 从配置解析 `agent.context.*`）。
+   *
+   * 与预算是**两种不同语义**：预算是会话快照（审计要能回答"当时允许多少"），
+   * 窗口是运行时调优（模型换代后现场调小即可，不该追溯性影响在跑的会话）。
+   */
+  contextWindow: Partial<ContextWindowOptions> | null = null;
+
   constructor(
     private readonly sessionService: AgentSessionService,
     private readonly budgetService: AgentBudgetService,
@@ -171,23 +212,40 @@ export class AgentRuntimeService {
         ? await this.toolExecutor.availableTools(fresh)
         : [];
 
+      // 上下文窗口（设计文档 02 §4.3 的滑动窗口）：每轮都基于**完整**历史
+      // 重新算一次折叠计划，而不是改写 messages 变量本身——这样崩溃重启/
+      // 审批恢复/重复入队的每一次 run 都从同一份事实出发（可重入纪律）。
+      const window = this.resolveContextWindow();
+      const plan = planContextWindow(messages, window);
+      if (plan.foldedMessages > 0) {
+        this.logger.debug(
+          `Agent context folded: session=${sessionId} folded=${plan.foldedMessages} ` +
+            `tokens≈${plan.tokensBefore}→${plan.tokensAfter}`,
+        );
+      }
+
+      const deadlineAt = this.retryDeadline(fresh);
+
       let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
       const t0 = Date.now();
       try {
-        res = await this.callLlmWithRetry({
-          messages,
-          tools:
-            tools.length > 0
-              ? tools.map((t) => ({
-                  type: "function" as const,
-                  function: {
-                    name: t.name,
-                    description: t.description,
-                    parameters: t.parameters,
-                  },
-                }))
-              : undefined,
-        });
+        res = await this.callLlmWithRetry(
+          {
+            messages: plan.messages,
+            tools:
+              tools.length > 0
+                ? tools.map((t) => ({
+                    type: "function" as const,
+                    function: {
+                      name: t.name,
+                      description: t.description,
+                      parameters: t.parameters,
+                    },
+                  }))
+                : undefined,
+          },
+          deadlineAt,
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         // 模型调用失败 → 记 step 后收敛为 failed（不是 budget_exceeded：
@@ -234,16 +292,23 @@ export class AgentRuntimeService {
         return { status: "succeeded", steps: usage.steps + 1 };
       }
 
+      // 工具分级按**本次暴露给模型的定义**取，而不是猜：台账的 tier 决定
+      // 保留期（write/dangerous ≥180 天、read 30 天），猜错等于把一次写操作
+      // 的审计记录提前 150 天删掉。
+      const tierByName = new Map(tools.map((t) => [t.name, t.tier]));
+
       // ── 工具执行（P3 接入；无 executor 时视为不可用）──
       if (!this.toolExecutor) {
         // P2 未装配工具集：模型要求调工具但我们做不了 → 如实告知并收敛，
         // 不静默忽略（静默会让模型以为调用成功了，然后在错误前提上继续推理）
         for (const call of res.toolCalls) {
+          const toolName = call.function?.name ?? "unknown";
           await this.sessionService.recordToolCall({
             sessionId,
             stepId: step.id,
-            toolName: call.function?.name ?? "unknown",
-            tier: "read",
+            toolCallId: call.id,
+            toolName,
+            tier: tierByName.get(toolName) ?? "read",
             status: "denied",
             errorMessage: "tool execution not available (P2: no toolset wired)",
           });
@@ -261,8 +326,33 @@ export class AgentRuntimeService {
       // 推理，就会在「状态说在等审批」的窗口里继续调 LLM、继续重提同一调用，
       // 而 B-8 的双跑守卫正是按状态判的（grant/resume 会放进第二个 job）。
       // 因此把本轮工具结果回灌后立即收束，让 waiting_input 与事实一致。
+      //
+      // 推理质量轮补的第二半：**同一批里后面的调用一律不执行**。
+      // 模型可以一次给出多个 tool_calls（并行调用），此前是逐个照跑——
+      // 于是「第 2 个调用需审批 → 会话挂起」之后，第 3 个写操作照样执行，
+      // 而会话状态已经宣称"在等人工处置"。这是**挂起语义与副作用不一致**：
+      // 管理员看到的是一次待审批，实际发生的是"审批之外的另一次写"。
+      // 参考 langchain ToolCallLimitMiddleware 的 'end' 语义：限流/中断时
+      // 未执行的调用必须各得一条说明性 tool 应答，而不是消失。
       let waitingForApproval = false;
       for (const call of res.toolCalls) {
+        if (waitingForApproval) {
+          const toolName = call.function?.name ?? "unknown";
+          // 记 denied：它确实没执行，且 denied 不计入速率预算（不会被
+          // "等审批"这件与它无关的事拖累配额）。
+          await this.sessionService.recordToolCall({
+            sessionId,
+            stepId: step.id,
+            toolCallId: call.id,
+            toolName,
+            tier: tierByName.get(toolName) ?? "read",
+            status: "denied",
+            errorMessage: "skipped: session suspended for approval on a sibling call",
+          });
+          messages = this.pushToolResult(messages, call, NOT_EXECUTED_AFTER_SUSPEND);
+          continue;
+        }
+
         const result = await this.toolExecutor.execute(fresh, call, step.id);
         messages = this.pushToolResult(messages, call, result.content);
         if (result.needsApproval) waitingForApproval = true;

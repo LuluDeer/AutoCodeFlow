@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 import pytest
+from tenacity import RetryError
 import httpx
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -91,8 +92,11 @@ class TestHeartbeatRetry:
 
         # Patch asyncio.sleep so tenacity's wait_exponential doesn't slow tests
         with patch('asyncio.sleep', new_callable=AsyncMock):
-            # reraise=False: tenacity swallows the error after exhausting retries
-            await _send_heartbeat(mock_client, "test-token")
+            # 实施轮 #15：耗尽重试后**必须抛出**（RetryError），不能返回 None。
+            # 返回 None 会让调用方以为心跳成功 → /health 把「与中台失联」报成
+            # 健康。这条断言就是那个语义的守门人。
+            with pytest.raises(RetryError):
+                await _send_heartbeat(mock_client, "test-token")
 
         # Should have tried exactly 3 times (stop_after_attempt(3))
         assert mock_client.post.call_count == 3
@@ -196,8 +200,10 @@ class TestHeartbeatSelfHeal:
              patch('scheduler.psutil.virtual_memory') as mem_mock, \
              patch('asyncio.sleep', new_callable=AsyncMock):
             mem_mock.return_value = SimpleNamespace(percent=2.0)
-            # tenacity swallows the final HTTPStatusError via retry_error_callback
-            await _send_heartbeat(mock_client, 'same-token')
+            # 实施轮 #15：耗尽重试后抛 RetryError（不再被 retry_error_callback
+            # 吞成正常返回——那会让 /health 在持续 401 时报「健康」）。
+            with pytest.raises(RetryError):
+                await _send_heartbeat(mock_client, 'same-token')
 
         assert mock_client.post.call_count == 3
 
@@ -1175,11 +1181,17 @@ def test_record_heartbeat_has_a_real_call_site():
 
     import scheduler as scheduler_module
 
-    src = inspect.getsource(scheduler_module.heartbeat_task)
-    assert 'record_heartbeat(' in src, 'heartbeat_task 必须回灌心跳结果'
+    # 实施轮 #15：逻辑从 `while True` 里抽到 `_heartbeat_once()`——内联时
+    # 测试只能整体替换 `_send_heartbeat`，永远走不到 tenacity 的重试耗尽分支。
+    src = inspect.getsource(scheduler_module._heartbeat_once)
+    assert 'record_heartbeat(' in src, '_heartbeat_once 必须回灌心跳结果'
     # 成功与失败两条路径都要上报（否则失败时健康面仍显示旧的成功态）
     assert 'record_heartbeat(True)' in src
     assert 'record_heartbeat(False)' in src
+    # 循环本身只负责节拍，不再重复一份回灌逻辑（否则两处会漂）
+    loop_src = inspect.getsource(scheduler_module.heartbeat_task)
+    assert '_heartbeat_once(' in loop_src
+    assert 'record_heartbeat(' not in loop_src
 
 
 def test_record_heartbeat_updates_health_state():
@@ -1233,6 +1245,47 @@ async def test_heartbeat_task_feeds_health_on_success(monkeypatch):
         '心跳成功跑过之后 /health 的缓存态应为 True，而不是仍为 None'
     )
     assert health_module._last_heartbeat_time is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_real_tenacity_path_reports_unreachable(monkeypatch):
+    """**真路径**：tenacity 重试耗尽必须让健康面变 False，而不是被吞成成功。
+
+    历史缺陷（实施轮 #15 修）：`@retry(retry_error_callback=_heartbeat_retry_exhausted)`
+    里的回调 `return None` —— tenacity 耗尽后**不抛异常**，`_send_heartbeat`
+    正常返回，于是 `record_heartbeat(True)` 执行：admin 不可达时 /health 反而
+    报 healthy 并刷新 lastHeartbeat。上面的用例把 `_send_heartbeat` 整体替换成
+    会抛错的假函数，因此从不经过这条路，给了假保证。
+
+    反证：把 `retry_error_callback` 加回装饰器 → 本用例红（健康面为 True）。
+    """
+    import httpx
+    from tenacity import wait_none
+
+    from routers import health as health_module
+    import scheduler as scheduler_module
+
+    health_module._admin_api_reachable = None
+
+    def boom(*_args, **_kwargs):
+        raise httpx.ConnectError('admin unreachable')
+
+    monkeypatch.setattr(scheduler_module, 'request_with_self_heal', boom)
+    # 重试间隔归零：只验证语义，不花 3×1s 等退避
+    monkeypatch.setattr(scheduler_module._send_heartbeat.retry, 'wait', wait_none())
+    monkeypatch.setattr(scheduler_module._send_heartbeat.retry, 'stop', _stop_after_1())
+
+    await scheduler_module._heartbeat_once()
+
+    assert health_module._admin_api_reachable is False, (
+        '重试耗尽后必须记 False —— 否则 /health 把「与中台失联」报成健康'
+    )
+
+
+def _stop_after_1():
+    from tenacity import stop_after_attempt
+
+    return stop_after_attempt(1)
 
 
 @pytest.mark.asyncio
