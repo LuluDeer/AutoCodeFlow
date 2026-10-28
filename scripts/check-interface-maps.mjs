@@ -144,7 +144,27 @@ let failures = 0;
   // 必须作为**反引号包住的路由路径**出现（`/sop` 或 `/sop/...`），而不是随便在正文里提一句：
   // 只做 `doc.includes(prefix)` 时，删掉整个 SOP 一节仍会因为别处的 `/sop/assignments/...` 而假绿
   // （实测反证时踩到：删掉「## SOP」整节，守卫仍然通过）。
-  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\  const absent = [...prefixes].filter((p) => !doc.includes(p)).sort();");
+  // 正则转义：把前缀里的正则元字符字面化。**注意**：替换串必须是 "\\$&"，
+  // 历史版本这里被写坏过（替换串里塞进了一整行 JS 源码），后果是含 `.` `(`
+  // 等元字符的路由前缀被替换成垃圾串 → 该前缀永远匹配不上 → 守卫对这类
+  // 前缀永久假绿（当前前缀恰好都是普通字符，所以从未暴露）。反证见
+  // scripts/check-interface-maps.selftest.mjs 的 escapeRe 用例。
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // 自检（判据自身的判据）：历史版本这里曾被写坏成「替换串里塞一整行 JS 源码」——
+  // 语法仍合法，含 `.` `(` 等元字符的前缀被替换成垃圾串后**永久匹配不上**，
+  // 于是这类前缀的缺失检查静默失效（当前前缀恰好都是普通字符，所以从未暴露）。
+  // 一旦转义逻辑被改坏，下面这条立即红，不再依赖「恰好没有元字符」的运气。
+  {
+    const probe = escapeRe("a.b(c)");
+    if (probe !== "a\\.b\\(c\\)") {
+      console.error(
+        "✖ escapeRe 自检失败：期望 a\\.b\\(c\\)，实际 " + JSON.stringify(probe) +
+          " —— 判据对含正则元字符的路由前缀会永久假绿。",
+      );
+      failures += 1;
+      return;
+    }
+  }
   const absent = [...prefixes]
     .filter((p) => !new RegExp("`/" + escapeRe(p) + "(`|/)").test(doc))
     .sort();

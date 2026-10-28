@@ -14,6 +14,14 @@
  * 例外：`node scripts/...` 与 `npm run ...` 之外还有「被别的脚本内联调用」的情形，本判据不覆盖；
  * 那类脚本请显式加进 ALLOWLIST 并写明理由。
  *
+ * ## 扫描面（2026-10-28 扩）：根 scripts/ + apps/<pkg>/scripts/ + packages/<pkg>/scripts/
+ *
+ * 原实现只扫根 `scripts/`。子项目的守卫（如 admin-api 的
+ * `apps/admin-api/scripts/check-route-authz-matrix.mjs`）因此**完全不在判据内**：
+ * 新增一个子项目级守卫，本闸不会提任何要求——正是「脚本存在但没人跑」的同一种
+ * 静默失败，只是换了个目录。现在三处都扫；子项目守卫若由该包的 jest/pytest
+ * 收集面覆盖，走 ALLOWLIST 显式说明（豁免必须写明为什么「已经有人跑」）。
+ *
  * 用法：node scripts/check-guards-wired.mjs
  */
 import { readdirSync, readFileSync, existsSync } from "node:fs";
@@ -24,6 +32,12 @@ const ROOT = process.cwd();
 /** 只报告、或按需手动跑的脚本（显式列出，每条给理由）。 */
 const ALLOWLIST = {
   "scripts/report-sibling-implementations.mjs": "只报告（雷达），刻意不进 CI —— 它不产生红/绿判定",
+  // 本脚本是「让那条 spec 在任意入口一把跑完」的 CLI 外壳；**判据本体**
+  // （route-authz-matrix.spec.ts）位于 admin-api 的 src/**/__tests__ 下，已被
+  // CI 的 admin-api test job（jest --shard）作为普通 spec 收集执行——矩阵本身
+  // 不是「没人跑」，只是没通过本外壳跑。--selftest 的可读输出留给本地/排障用。
+  "apps/admin-api/scripts/check-route-authz-matrix.mjs":
+    "判据本体 route-authz-matrix.spec.ts 已被 admin-api jest job 收集；本文件只是 CLI 外壳",
 };
 
 function walk(dir, out) {
@@ -46,8 +60,25 @@ function walk(dir, out) {
 
 const guards = [];
 walk(join(ROOT, "scripts"), guards);
+// 子项目守卫（apps/<pkg>/scripts、packages/<pkg>/scripts）：同样适用「存在 ≠ 在链路里」。
+for (const group of ["apps", "packages"]) {
+  let children = [];
+  try {
+    children = readdirSync(join(ROOT, group), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    continue;
+  }
+  for (const child of children) walk(join(ROOT, group, child, "scripts"), guards);
+}
 if (guards.length === 0) {
   console.error("✖ 一个守卫脚本都没扫到 —— 路径或正则失效了。");
+  process.exit(1);
+}
+// 规模下界：扫描面收窄（目录改名/正则失效）时不能静默变成「零个守卫全绿」。
+if (guards.length < 20) {
+  console.error("✖ 只扫到 " + guards.length + " 个守卫 —— 明显少于历史规模（37+），扫描面可能失效。");
   process.exit(1);
 }
 
