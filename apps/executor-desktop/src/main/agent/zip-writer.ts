@@ -72,6 +72,18 @@ export function buildZip(entries: ZipEntry[], now: Date = new Date()): Buffer {
   if (entries.length > 500) throw new Error(`zip 成员数 ${entries.length} 超上限 500`);
   const { time, date } = dosDateTime(now);
 
+  // 成员名唯一性：ZIP 格式本身允许同名重复条目，但解压行为未定义（多数
+  // 实现「后写者胜」）——同名成员 = 归档内容不可预测。典型来源是调用方
+  // 把工作区里 LLM 自建的 manifest.yaml 与平台构建的同名成员一起塞进来
+  // （打包器已过滤；这里是格式侧第二道防线）。
+  const seen = new Set<string>();
+  for (const e of entries) {
+    if (seen.has(e.name)) {
+      throw new Error(`zip 成员重名: ${e.name.slice(0, 64)}（归档内容将不可预测）`);
+    }
+    seen.add(e.name);
+  }
+
   const localParts: Buffer[] = [];
   const centralParts: Buffer[] = [];
   let offset = 0;

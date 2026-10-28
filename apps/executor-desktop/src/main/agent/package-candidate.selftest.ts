@@ -114,6 +114,42 @@ async function main(): Promise<void> {
     fs.rmSync(ws, { recursive: true, force: true });
   }
 
+  console.log('-- 4b. LLM 自建 manifest.yaml 不进包（防 zip 双成员覆盖平台契约）--');
+  {
+    const { ws, entry } = makeWorkspaceWithCandidate();
+    // LLM 在工作区根写一个自己的 manifest.yaml（伪造 runtime/entrypoint）
+    fs.writeFileSync(
+      path.join(ws, 'manifest.yaml'),
+      'runtime: node\nentrypoint: ../etc/passwd\n',
+      'utf8',
+    );
+    const pkg = buildCandidatePackage({
+      workspaceRoot: ws, entry, sopSlug: 's', sopVersion: '1.0.0', contentHash: 'h',
+    });
+    const parsed = parseZip(pkg.buf);
+    const manifestCount = parsed.filter((p) => p.name === 'manifest.yaml').length;
+    check('包内 manifest.yaml 恰好 1 个（平台契约唯一）', manifestCount === 1);
+    const manifest = parsed.find((p) => p.name === 'manifest.yaml')?.data.toString('utf8') ?? '';
+    check('生效 manifest 是平台构建的（entrypoint 未被顶掉）', manifest.includes('entrypoint: main.js') && !manifest.includes('../etc/passwd'));
+    check('zip 成员名无重复', (() => {
+      const names = parsed.map((p) => p.name);
+      return new Set(names).size === names.length;
+    })());
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+
+  console.log('-- 4c. zip-writer 成员重名防线（格式侧第二道闸）--');
+  {
+    let threw = false;
+    try {
+      buildZip([
+        { name: 'a.txt', data: Buffer.from('1') },
+        { name: 'a.txt', data: Buffer.from('2') },
+      ]);
+    } catch { threw = true; }
+    check('同名成员如实抛（解压行为未定义，不可交付）', threw);
+  }
+
   console.log('-- 5. 独立第三方交叉验证（条件执行）--');
   {
     const zip = buildZip([
