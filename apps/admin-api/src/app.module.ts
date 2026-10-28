@@ -345,6 +345,14 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // localhost:11434 也被拒）；true 放行 loopback/restricted/private-lan
         // （同机自建 Ollama / Tailscale 端点），link-local 云元数据仍恒拒。
         // AI 配置面为 ADMIN-only，信任边界与 executor 开关一致。
+        // 视频转 SOP（推理质量轮）：直链签名与对 provider 可达的 base。
+        // 均为可选——不配置时该功能如实不可用，其它 AI 能力不受影响。
+        AI_MEDIA_BASE_URL: Joi.string().allow("").optional(),
+        AI_MEDIA_URL_SECRET: Joi.string().allow("").optional(),
+        AI_MEDIA_URL_TTL_MS: Joi.number().integer().min(60000).default(3600000),
+        // 保留期（推理质量轮）：媒体默认 7 天（与执行器媒体一致）、会话 30 天
+        AI_MEDIA_RETENTION_DAYS: Joi.number().integer().min(1).default(7),
+        AI_SESSION_RETENTION_DAYS: Joi.number().integer().min(1).default(30),
         AI_ALLOW_PRIVATE_NETWORK: Joi.string()
           .valid("true", "false")
           .default("false"),
