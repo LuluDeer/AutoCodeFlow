@@ -27,3 +27,8 @@ source-digest: 3f26e393f55cf6175f3c9a2b13538a0ba96531a71572e4a8a9229556df41cbff
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），38 个输入文件。
 source-digest: 9976aabdea48f76f9daf43fff2c8b259500b4a6e72ea36a933ae334bb73827a1
 379bbd831c8af5d5ef02356d66eb154b03448321ad5ea96d2546078600f9d984  index.js
+# 2026-10-28（推理质量轮）：agent 上下文预算化——新增 prompt-context.ts（合法 JSON +
+#   按字段截断 + 优先级档位）并改写 runtime.ts 的 baseContext() 调用点。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），40 个输入文件。
+source-digest: 8d6fae8d7c119af77311d6932e14a120da06d007d0741eded3a35ab24d179d5a
+6347268d83b36a9d1a8ad06ce2a14f6319cbc123b6f7f23d02256aa67e6563fa  index.js

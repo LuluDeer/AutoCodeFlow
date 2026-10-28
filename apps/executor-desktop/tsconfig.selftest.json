@@ -94,6 +94,8 @@
     "src/main/agent/agent-host.selftest.ts",
     "src/main/agent/loop.ts",
     "src/main/agent/loop.selftest.ts",
+    "src/main/agent/prompt-context.ts",
+    "src/main/agent/prompt-context.selftest.ts",
     "src/main/agent/trial-run.ts",
     "src/main/agent/trial-run.selftest.ts",
     "src/main/agent/collab-client.ts",

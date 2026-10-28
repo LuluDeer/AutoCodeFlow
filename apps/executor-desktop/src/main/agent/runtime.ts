@@ -45,6 +45,7 @@ import {
   type BrowserActionInput,
 } from './browser';
 import { filterAllowlistDomains } from './domain-allowlist';
+import { buildAgentContext } from './prompt-context';
 import { AgentGuiSession, GUI_ACTIONS_MAX, type GuiDriver } from './gui';
 import { WindowsGuiDriver } from './gui-windows';
 import type { CollabClient } from './collab-client';
@@ -273,40 +274,35 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
   let entry: EntrySpec | null = null;
 
   const baseContext = (): string =>
-    JSON.stringify(
-      {
-        sop: {
-          slug: deps.sop.slug,
-          title: deps.sop.title,
-          version: deps.sop.version,
-          contentHash: deps.sop.contentHash,
-          frontMatter: deps.sop.frontMatter,
-          body: deps.sop.bodyMarkdown,
-        },
-        environment: deps.environment,
-        workspaceFiles: listWorkspaceFiles(deps.workspaceRoot),
-        // P7b：最近一轮浏览器观察（页面文本/截图/录屏的 mediaPath 引用）
-        lastBrowserOutputs: lastBrowserOutputs || undefined,
-        // P7c：最近一轮 GUI 观察（仅白名单应用的窗口截图）
-        lastGuiOutputs: lastGuiOutputs || undefined,
-        // 截图的可访问 URL（仅 mediaBaseUrl 配置且上传成功时）
-        lastGuiImages: lastGuiImageUrls.length ? lastGuiImageUrls : undefined,
-        // P7d：澄清问答历史（续跑后规划/诊断能看到中台补了什么）
-        clarificationHistory: deps.clarificationHistory?.length
-          ? deps.clarificationHistory
-          : undefined,
-        permissions: {
-          codeExecution: deps.permissions.codeExecution,
-          browserAllowed: browserAllowed(),
-          allowedDomains: allowedDomainsForBrowser(),
-          guiAllowed: guiAllowed(),
-          allowedApps: guiAllowed() ? deps.permissions.allowedApps : [],
-          note: 'host 档未实现；工作区外路径与非白名单解释器会被平台拒绝',
-        },
+    buildAgentContext({
+      sop: {
+        slug: deps.sop.slug,
+        title: deps.sop.title,
+        version: deps.sop.version,
+        contentHash: deps.sop.contentHash,
+        frontMatter: deps.sop.frontMatter as unknown as Record<string, unknown>,
+        bodyMarkdown: deps.sop.bodyMarkdown,
       },
-      null,
-      1,
-    ).slice(0, 96 * 1024);
+      environment: deps.environment,
+      workspaceFiles: listWorkspaceFiles(deps.workspaceRoot),
+      // P7b：最近一轮浏览器观察（页面文本/截图/录屏的 mediaPath 引用）
+      ...(lastBrowserOutputs ? { lastBrowserOutputs } : {}),
+      // P7c：最近一轮 GUI 观察（仅白名单应用的窗口截图）
+      ...(lastGuiOutputs ? { lastGuiOutputs } : {}),
+      // 截图的可访问 URL（仅 mediaBaseUrl 配置且上传成功时）
+      ...(lastGuiImageUrls.length ? { lastGuiImages: lastGuiImageUrls } : {}),
+      // P7d：澄清问答历史（续跑后规划/诊断能看到中台补了什么）
+      ...(deps.clarificationHistory?.length
+        ? { clarificationHistory: deps.clarificationHistory }
+        : {}),
+      permissions: {
+        codeExecution: deps.permissions.codeExecution,
+        browserAllowed: browserAllowed(),
+        allowedDomains: allowedDomainsForBrowser(),
+        guiAllowed: guiAllowed(),
+        allowedApps: guiAllowed() ? deps.permissions.allowedApps : [],
+      },
+    });
 
   const runEntry = async (
     interpreter: TrialInterpreter,
