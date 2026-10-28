@@ -447,3 +447,74 @@ describe("AgentSessionService · finish/markWaiting 的并发收敛", () => {
     expect(where.status).toBeDefined();
   });
 });
+
+describe("AgentSessionService · 陈旧 running 清扫（GAP-2）", () => {
+  it("超阈 running → 条件写收敛 failed（errorMessage 指明可 resume）", async () => {
+    const h = harness();
+    (h.sessions.find as jest.Mock).mockResolvedValueOnce([
+      { id: "stale-1" },
+      { id: "stale-2" },
+    ]);
+    const swept = await h.svc.sweepStaleRunning(new Date("2026-10-29T00:00:00Z"));
+    expect(swept).toEqual(["stale-1", "stale-2"]);
+    // find 只找 running 且 updatedAt 早于阈值（心跳语义：30 分钟无步进）
+    const findArg = (h.sessions.find as jest.Mock).mock.calls[0][0] as {
+      where: { status: string; updatedAt: { type: string; value: Date } };
+      take: number;
+    };
+    expect(findArg.where.status).toBe("running");
+    expect(findArg.where.updatedAt.type).toBe("lessThan");
+    expect(findArg.take).toBeLessThanOrEqual(1000);
+    // 收敛是**条件写**：WHERE 钉 status=running（与运行中 finish 竞态让位）
+    const [where, patch] = (h.sessions.update as jest.Mock).mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(where).toMatchObject({ id: "stale-1", status: "running" });
+    expect(patch.status).toBe("failed");
+    expect(String(patch.errorMessage)).toContain("resume");
+    expect(patch.finishedAt).toBeDefined();
+  });
+
+  it("无陈旧 running → 零更新调用", async () => {
+    const h = harness();
+    (h.sessions.find as jest.Mock).mockResolvedValueOnce([]);
+    await h.svc.sweepStaleRunning();
+    expect(h.sessions.update).not.toHaveBeenCalled();
+  });
+
+  it("cron 入口：非 Leader 跳过；Leader 正常执行；异常吞掉不炸", async () => {
+    // 非 Leader：直接跳过（sweep 未被调用）
+    const h1 = harness();
+    (h1.sessions.find as jest.Mock).mockResolvedValue([]);
+    const gated = new AgentSessionService(
+      h1.sessions as never,
+      h1.svc["steps"] as never,
+      h1.svc["toolCalls"] as never,
+      h1.svc["budgetService"] as never,
+      h1.svc["notify"] as never,
+      { isLeader: false } as never,
+    );
+    await gated.handleStaleRunningSweep();
+    expect(h1.sessions.find).not.toHaveBeenCalled();
+
+    // Leader：正常执行
+    const h2 = harness();
+    (h2.sessions.find as jest.Mock).mockResolvedValue([]);
+    const leader = new AgentSessionService(
+      h2.sessions as never,
+      h2.svc["steps"] as never,
+      h2.svc["toolCalls"] as never,
+      h2.svc["budgetService"] as never,
+      h2.svc["notify"] as never,
+      { isLeader: true } as never,
+    );
+    await leader.handleStaleRunningSweep();
+    expect(h2.sessions.find).toHaveBeenCalled();
+
+    // gate 缺席（@Optional 单测装配）→ 门禁不生效；sweep 抛错被吞不炸
+    const h3 = harness();
+    (h3.sessions.find as jest.Mock).mockRejectedValueOnce(new Error("db down"));
+    await expect(h3.svc.handleStaleRunningSweep()).resolves.toBeUndefined();
+  });
+});

@@ -1,6 +1,7 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Not, Repository } from "typeorm";
+import { In, LessThan, Not, Repository } from "typeorm";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
@@ -21,6 +22,7 @@ import {
 import { AgentBudgetService } from "./agent-budget.service";
 import { AgentNotifyService } from "./agent-notify.service";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
+import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
 
 /**
  * P2：会话生命周期与持久化。
@@ -42,6 +44,19 @@ export function safeTokenCount(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
+
+/**
+ * 陈旧 running 判死阈值（GAP-2）：30 分钟无任何落库步进即视为持有者已死。
+ * 心跳 = updatedAt（appendStep/recordToolCall/markRunning 都刷新它），
+ * 最长合法静默窗口 ≈ 单轮重试 8s×3 + 工具批 10×60s ≈ 11 分钟，取 30 分钟
+ * 留足裕量（对齐 detectStuckDeployments 的 DEPLOYING 口径）。
+ */
+export const STALE_RUNNING_TIMEOUT_MS = 30 * 60_000;
+
+/** 陈旧 running 收敛时的 errorMessage（如实指明发生了什么 + 恢复路径）。 */
+export const STALE_RUNNING_MESSAGE =
+  "会话执行中断（admin-api 进程重启/崩溃，超过 30 分钟无任何步进）——" +
+  "会话数据完好，可在排查后经 resume 重建上下文继续";
 
 /** 创建会话的输入。 */
 export interface CreateSessionInput {
@@ -100,7 +115,28 @@ export class AgentSessionService {
     private readonly toolCalls: Repository<AgentToolCall>,
     private readonly budgetService: AgentBudgetService,
     private readonly notify: AgentNotifyService,
+    // ARCH-31 §5: 多实例下 cron 维护任务仅 Leader 执行（@Optional——既有
+    // 单测直接 new 装配时 gate 缺席 → null → 门禁不生效，先例同 retention）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {}
+
+  /**
+   * cron 入口（每 10 分钟）：Leader 门禁 + sweepStaleRunning。
+   * 与 AgentSessionRetentionService.handleDailyCleanup / detectStuckDeployments
+   * 同一门禁纪律——多副本下只有 Leader 做维护扫描。
+   */
+  @Cron("0 */10 * * * *")
+  async handleStaleRunningSweep(): Promise<void> {
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
+    try {
+      await this.sweepStaleRunning();
+    } catch (err) {
+      this.logger.error(
+        `Agent stale-running sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // ── 创建与查询 ──────────────────────────────────────────────────
 
@@ -516,5 +552,60 @@ export class AgentSessionService {
       toolCalls: fresh?.totalToolCalls ?? 0,
       startedAt: fresh?.startedAt ?? null,
     };
+  }
+
+  // ── 陈旧 running 清扫（GAP-2：崩溃后僵尸 running 的恢复语义）──────
+
+  /**
+   * 收敛陈旧 running 会话为 failed（数据完好，可经 resume 重建上下文）。
+   *
+   * ## 为什么必须有
+   * run() 中途 admin-api 崩溃/重启 → 会话永久停在 running：B-8 的 resume
+   * 409 只拦「非 running」调用方，而没有任何机制把 running 收敛——
+   * steps 与 tool_calls 数据完好、可完整重建上下文，状态机却锁死，只能改库。
+   *
+   * ## 心跳语义（零新列）
+   * `updatedAt`（@UpdateDateColumn）即天然租约：运行中的会话每轮推理都
+   * appendStep / recordToolCall（≥每 2-3 分钟一次），每次都自动刷新它。
+   * 阈值 30 分钟（对齐 detectStuckDeployments 的 DEPLOYING 判死口径）：
+   * 单轮 LLM 重试最坏 ~8s×3 + 工具批 ~10×60s ≈ 11 分钟，30 分钟已高于
+   * 任何合法无步进窗口。
+   *
+   * ## 收敛为 failed 而不是直接重入队
+   * 崩溃瞬间的执行位置未知（可能停在工具副作用中途）——盲目 resume 有
+   * 双份副作用风险（GAP-1 的 fence 只保证单 worker，不保证「上次执行到
+   * 哪」可续）。如实判 failed + errorMessage 指明可 resume：管理员或自动
+   * 链路按需 resume（重建上下文后模型看到事实状态，重新规划未完成的
+   * 副作用），与桌面端「崩溃重领整单重跑」同一保守取向。
+   */
+  async sweepStaleRunning(now: Date = new Date()): Promise<string[]> {
+    const staleBefore = new Date(now.getTime() - STALE_RUNNING_TIMEOUT_MS);
+    const stale = await this.sessions.find({
+      where: { status: "running", updatedAt: LessThan(staleBefore) },
+      select: { id: true },
+      take: 1000,
+    });
+    const swept: string[] = [];
+    for (const { id } of stale) {
+      // 条件写：仍 running 才收敛——与运行中的 finish 竞态时让位
+      // （心跳刚刷新的行 updatedAt 已离开谓词，这层是双保险）。
+      const res = await this.sessions.update(
+        { id, status: "running" },
+        {
+          status: "failed",
+          finishedAt: now,
+          waitingFor: null,
+          errorMessage: STALE_RUNNING_MESSAGE,
+        },
+      );
+      if ((res.affected ?? 0) > 0) swept.push(id);
+    }
+    if (swept.length > 0) {
+      this.logger.warn(
+        `Agent stale-running sweep: ${swept.length} session(s) converged to failed ` +
+          `(no progress for >${Math.round(STALE_RUNNING_TIMEOUT_MS / 60_000)}min) — resumable via resume API`,
+      );
+    }
+    return swept;
   }
 }
