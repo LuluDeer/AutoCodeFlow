@@ -141,7 +141,10 @@ export function spawnDetached(command: string, args: string[], opts: { cwd: stri
   });
 }
 
-/** 终止一棵进程树。返回是否发出了终止信号（树已不存在 = true）。 */
+/** 终止一棵进程树。返回是否发出了终止信号（树已不存在 = true）。
+ *  **false = 击杀动作真实失败**（EPERM / taskkill 拒绝访问 / 不可用）——
+ *  调用方（spawnWithTreeTimeout）据此把「树可能仍存活」写进 errorMessage，
+ *  绝不静默吞掉：超时后树还活着却报「已终止」会让上层在错误前提上继续。 */
 export function killTree(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(false);
   if (process.platform === 'win32') {
@@ -152,10 +155,16 @@ export function killTree(pid: number): Promise<boolean> {
 
 function execFilePromise(cmd: string, args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { windowsHide: true, timeout: 5000 }, (err) => {
-      // err 常见形态：「进程不存在」——树已经死了，语义上就是成功
-      resolve(true);
-      void err;
+    execFile(cmd, args, { windowsHide: true, timeout: 5000 }, (err, _stdout, stderr) => {
+      if (!err) {
+        resolve(true);
+        return;
+      }
+      // 「进程不存在」是成功语义（树已自行退出）；其它失败（拒绝访问、
+      // taskkill 不可用、被超时杀掉）如实上报——超时路径的击杀失败绝不能
+      // 被静默当成「已终止」。
+      const msg = `${err.message} ${stderr ?? ''}`.toLowerCase();
+      resolve(/no process|not found|不存在|找不到|cannot find/.test(msg));
     });
   });
 }
@@ -166,13 +175,17 @@ function killProcessGroup(pid: number): Promise<boolean> {
       // 负号 = 杀整个进程组（要求子进程以 detached 启动）
       process.kill(-pid, 'SIGKILL');
       resolve(true);
-    } catch {
-      // 组不存在（已退出）或权限不足——尽力补一刀单进程
+    } catch (err) {
+      // ESRCH（组不存在，已退出）是成功语义；EPERM 等真实失败尽力补一刀
+      // 单进程（同样区分 ESRCH 与其它错误）。
       try {
         process.kill(pid, 'SIGKILL');
         resolve(true);
-      } catch {
-        resolve(true); // 已死即成功语义
+      } catch (err2) {
+        resolve(
+          (err2 as NodeJS.ErrnoException).code === 'ESRCH' ||
+            (err as NodeJS.ErrnoException).code === 'ESRCH',
+        );
       }
     }
   });
@@ -245,7 +258,14 @@ export function spawnWithTreeTimeout(
       // 会与 close 事件竞速：taskkill /F 后进程以 exit code 1 触发 close，
       // 若先走 finish 会拿到 killed=false / exitCode=1 的失真快照。
       killed = true;
-      void killTree(child.pid ?? 0);
+      void killTree(child.pid ?? 0).then((ok) => {
+        // 击杀真实失败（EPERM/权限/工具缺失）≠ 已死即成功：树可能仍在跑。
+        // errorMessage 进试跑结果（→ LLM 上下文/证据日志），上层据此判断
+        // 「这个工作区的产物不可信」，而不是在树偷跑时还当正常超时处理。
+        if (!ok) {
+          errorMessage = errorMessage ?? 'kill failed: process tree may still be alive (kill signal was not delivered)';
+        }
+      });
       graceTimer = setTimeout(() => {
         graceTimer = null;
         errorMessage = 'kill grace expired: child stdout/stderr destroyed (escaped process may hold the pipe)';
