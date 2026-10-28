@@ -756,6 +756,63 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Task-level dispatch deployment override: strict restricts candidates to executors explicitly deployed with the bound app (queues as WAITING when none can take it); prefer keeps the soft preference. null/omitted = follow the global executor.deploymentPolicy. Priority chain: executorId pin > executorAppName > deployment constraint > whole cluster.",
         ),
+      // F1（本轮审计）：CreateTaskDto 有、而本 shape 缺的 7 个字段 —— PATCH 是
+      // 本包唯一的任务写入口（连 create_task 都没有），缺一个就等于那件事
+      // "调了、成功了、没发生"。逐个对齐 DTO 的约束：
+      //   runtimeVersion: /^\d+\.\d+$/（仅 runtime=python 有意义）
+      //   retryDelay: 整数 0..86400（更大值会把指数退避顶到 int32 毫秒溢出线）
+      //   retryableErrors / alarmChannels: 字符串数组，**元素不得含逗号**
+      //     （simple-array 列以逗号 join 落库，含逗号会在读回时被劈成两条）
+      //   codeSource: git | glue | application_zip；显式 null = 清除声明
+      //   runbook: markdown 运维手册（随失败通知一并附上）
+      //   projectId: uuid 或 null（null = 未分配；设置它会改任务归属与可见范围）
+      runtimeVersion: z
+        .string()
+        .regex(/^\d+\.\d+$/, 'must be "major.minor" (e.g. 3.12)')
+        .optional()
+        .describe(
+          "Python interpreter version as major.minor (e.g. 3.12). Only meaningful when runtime=python.",
+        ),
+      retryDelay: z
+        .number()
+        .int()
+        .min(0)
+        .max(86_400)
+        .optional()
+        .describe("Delay before a retry, in seconds (0..86400)."),
+      retryableErrors: z
+        .array(z.string().regex(/^[^,]*$/, "must not contain a comma"))
+        .optional()
+        .describe(
+          "Substrings that mark a failure as retryable. Elements must not contain commas (simple-array storage splits on commas).",
+        ),
+      alarmChannels: z
+        .array(z.string().regex(/^[^,]*$/, "must not contain a comma"))
+        .optional()
+        .describe(
+          "Alarm channels notified on failure. Elements must not contain commas.",
+        ),
+      codeSource: z
+        .enum(["git", "glue", "application_zip"])
+        .nullable()
+        .optional()
+        .describe(
+          "Code source channel: git | glue | application_zip (application_zip also needs applicationId). Mutually exclusive with gitRepo/glueSource. Explicit null clears the declaration.",
+        ),
+      runbook: z
+        .string()
+        .optional()
+        .describe(
+          "Markdown runbook shown on the task page and attached to failure notifications.",
+        ),
+      projectId: z
+        .string()
+        .uuid()
+        .nullable()
+        .optional()
+        .describe(
+          "Owning project id (null = unassigned). Changing it changes the task's visibility and write authorisation scope.",
+        ),
     }, { destructiveHint: true, idempotentHint: true },
     async ({ taskId, ...fields }) => {
       // Drop undefined fields so PATCH only touches what the caller supplied;
@@ -763,6 +820,21 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       const body = Object.fromEntries(
         Object.entries(fields).filter(([, v]) => v !== undefined),
       );
+      // 空 patch = 必然空转（后端对 `{}` 返回 200 并落一条 task.update 审计）。
+      // 与其让 agent 以为改完了，不如明确失败并列出可写字段。
+      if (Object.keys(body).length === 0) {
+        return JSON_ERROR({
+          error: "NO_UPDATABLE_FIELDS",
+          message:
+            "update_task received no updatable field, so nothing would change. " +
+            "Pass at least one of: name, cronExpression, timezone, fixedRate, maintenanceWindows, " +
+            "runtime, runtimeVersion, requirements, dependencies, timeout, timeoutSeconds, " +
+            "timeoutAction, timeoutWarnRatio, maxRetry, retryDelay, estimatedDurationSec, " +
+            "retryableErrors, priority, executeMode, blockStrategy, misfireStrategy, alarmChannels, " +
+            "params, secrets, deploymentPolicy, executorTags, executorAffinityTags, " +
+            "executorAntiAffinityTags, executorId, codeSource, runbook, projectId, status.",
+        });
+      }
       const data = await call<unknown>("PATCH", `/tasks/${taskId}`, body);
       return JSON_CONTENT(data);
     },
@@ -1278,6 +1350,25 @@ export function registerApplicationTools(
       env: deploymentEnvWithinLimits().optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
+      // F1（本轮审计）：漏字段 = 静默丢弃。MCP SDK 把工具的原始 shape 归一成
+      // z.object(shape) 再 parse，zod 默认**剥掉未声明的键**——所以
+      // `create_application{approvalRequired:true}` 曾经发出去的是
+      // `{name,version,runtime}`，应用落库时审批门为 false，之后的部署全部直接
+      // 下发、第二人审批被静默取消（安全语义丢失，且调用方看到的是"成功"）。
+      approvalRequired: z
+        .boolean()
+        .optional()
+        .describe(
+          "DEP-04: require a second-person approval before each deploy (default false). Omit to keep the schema default.",
+        ),
+      mutexGroupId: z
+        .string()
+        .uuid()
+        .nullable()
+        .optional()
+        .describe(
+          "MUTEX-01: id of the application mutex group to join (null = not in any group). Use list_mutex_groups to discover ids.",
+        ),
     }, { destructiveHint: false },
     async (args) => {
       const data = await call<unknown>("POST", "/applications", args);
@@ -1322,6 +1413,23 @@ export function registerApplicationTools(
         .describe(
           "HMAC-SHA256 webhook secret (max 256 chars; empty string disables webhook auth)",
         ),
+      // F1：`list_mutex_groups` 的描述逐字写着「用返回的 id 作为
+      // update_application 的 mutexGroupId」，但本 shape 里没有这个键 ——
+      // 照着工具描述操作必然空转（zod 剥键 → PUT body {} → 后端 200）。
+      mutexGroupId: z
+        .string()
+        .uuid()
+        .nullable()
+        .optional()
+        .describe(
+          "MUTEX-01: id of the application mutex group to join (null = leave any group). Use list_mutex_groups to discover ids.",
+        ),
+      approvalRequired: z
+        .boolean()
+        .optional()
+        .describe(
+          "DEP-04: require a second-person approval before each deploy. Turning this off re-opens direct dispatch.",
+        ),
     }, { destructiveHint: true, idempotentHint: true },
     async ({ applicationId, ...fields }) => {
       // Drop undefined fields — the global ValidationPipe with
@@ -1330,6 +1438,18 @@ export function registerApplicationTools(
       const body = Object.fromEntries(
         Object.entries(fields).filter(([, v]) => v !== undefined),
       );
+      // 空 patch = 必然空转：后端对 `{}` 直接跳过写入并返回 200（还会落一条
+      // application.update 审计）。这类"成功"会让 agent 以为改完了——宁可
+      // 明确失败并告诉它哪些字段可写。
+      if (Object.keys(body).length === 0) {
+        return JSON_ERROR({
+          error: "NO_UPDATABLE_FIELDS",
+          message:
+            "update_application received no updatable field, so nothing would change. " +
+            "Pass at least one of: description, version, runtime, status, gitRepo, gitBranch, " +
+            "gitCommit, manifest, env, entrypoint, packageUrl, webhookSecret, mutexGroupId, approvalRequired.",
+        });
+      }
       const data = await call<unknown>(
         "PUT",
         `/applications/${applicationId}`,
