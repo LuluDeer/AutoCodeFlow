@@ -19,6 +19,9 @@ vi.mock('../api/agent', () => ({
     resume: vi.fn(),
     budget: vi.fn(),
     create: vi.fn(),
+    listApprovals: vi.fn(),
+    grantApproval: vi.fn(),
+    denyApproval: vi.fn(),
   },
   AGENT_SESSION_STATUSES: [
     'pending',
@@ -105,6 +108,8 @@ beforeEach(() => {
     children: [],
   }));
   vi.mocked(agentApi.resume).mockReset().mockResolvedValue({ ok: true });
+  // A1 审批闭环：详情抽屉会拉审批单列表（默认空，本文件用例不涉审批）
+  vi.mocked(agentApi.listApprovals).mockReset().mockResolvedValue([]);
   vi.mocked(agentApi.budget).mockReset().mockResolvedValue({
     maxSteps: 40,
     maxTokens: 1000,

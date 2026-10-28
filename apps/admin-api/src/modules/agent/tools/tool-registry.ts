@@ -43,8 +43,13 @@ export interface AgentToolSpec {
    * HARD_DISABLED_REASON。
    */
   hardDisabled?: true;
-  /** 本工具操作的目标资源类型（scope 校验用）。 */
-  resourceKind?:
+  /**
+   * 本工具操作的目标资源类型（scope 校验用）。**必填**（审计轮 #11 C2）：
+   * 缺省曾会被 validateScope 当作「不绑定资源」直接放行——新增工具忘了写
+   * 这一行，scope 白名单就对它失效。改必填后缺省是编译错误，`none` 必须
+   * 显式声明（「我考虑过这个工具不绑定资源」是决策，不是遗漏）。
+   */
+  resourceKind:
     "application" | "executor" | "task" | "project" | "sop" | "none";
   /** 参数中哪个字段承载资源 id（scope 交叉验证用）。 */
   resourceIdParam?: string;
@@ -607,6 +612,13 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "dangerous",
+    // SCOPE-WAIVER(delete_mutex_group)：审计轮 #11 C2 唯一豁免。groupId 不是
+    // 任何既有 scope 集合（applications/executors/tasks/projects/sops）的键，
+    // 绑定它需要给 scope 模型新增 mutex_groups 维度（闸门 + 会话创建 +
+    // buildEventScope 三处同批）——属设计面改动，不为单工具擅动。当前实际
+    // 防线：dangerous 默认禁用（allowDangerous=false）+ 即便开闸仍强制审批
+    // （dangerousRequiresApproval 默认 true）+ 409 挂载守卫，人工点头时
+    // groupId 在审批单 reason 里可见。扩维度后删除本豁免。
     resourceKind: "none",
   },
 

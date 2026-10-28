@@ -54,6 +54,17 @@ export const AGENT_TOOL_STATUS_COLOR: Record<string, string> = {
   awaiting_approval: 'orange',
 };
 
+/**
+ * Agent 审批单状态 → Tag color（A1 审批闭环，实施轮 #12 前端半边）。
+ * 取值语义对齐 AGENT_TOOL_STATUS_COLOR：pending=待审批（orange）、
+ * granted=已批准（green）、denied=已拒绝（red）。
+ */
+export const AGENT_APPROVAL_STATUS_COLOR: Record<string, string> = {
+  pending: 'orange',
+  granted: 'green',
+  denied: 'red',
+};
+
 /** 应用状态 → Tag color（ApplicationDetailPage 概览；原 STATUS_COLORS 原值迁移） */
 export const APPLICATION_STATUS_COLOR: Record<string, string> = {
   active: 'green', deploying: 'blue', failed: 'red',

@@ -49,6 +49,13 @@ export const AGENT_TOOL_STATUS_T_KEYS: Record<string, string> = {
   circuit_open: 'agents.toolStatus.circuitOpen',
 };
 
+/** AgentApproval.status 的已知取值（审批单状态机：pending→granted/denied）。 */
+export const AGENT_APPROVAL_STATUS_T_KEYS: Record<string, string> = {
+  pending: 'agents.approvalStatus.pending',
+  granted: 'agents.approvalStatus.granted',
+  denied: 'agents.approvalStatus.denied',
+};
+
 /** AgentStep.role 的已知取值（LLM 消息协议角色）。 */
 export const AGENT_STEP_ROLE_T_KEYS: Record<string, string> = {
   system: 'agents.role.system',
@@ -93,6 +100,13 @@ export function agentToolStatusLabel(
   t: (key: string) => string,
 ): string {
   return labelOf(AGENT_TOOL_STATUS_T_KEYS, status, t);
+}
+
+export function agentApprovalStatusLabel(
+  status: string | null | undefined,
+  t: (key: string) => string,
+): string {
+  return labelOf(AGENT_APPROVAL_STATUS_T_KEYS, status, t);
 }
 
 export function agentStepRoleLabel(

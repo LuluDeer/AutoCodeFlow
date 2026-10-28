@@ -39,7 +39,7 @@ vi.mock('../store/auth', () => ({
 }));
 
 vi.mock('../api/agent', () => ({
-  agentApi: { list: vi.fn(), detail: vi.fn(), resume: vi.fn(), budget: vi.fn(), create: vi.fn() },
+  agentApi: { list: vi.fn(), detail: vi.fn(), resume: vi.fn(), budget: vi.fn(), create: vi.fn(), listApprovals: vi.fn(), grantApproval: vi.fn(), denyApproval: vi.fn() },
 }));
 vi.mock('../api/sops', () => ({
   sopsApi: {
@@ -240,6 +240,7 @@ beforeEach(() => {
     toolCalls: [],
     children: [],
   }));
+  vi.mocked(agentApi.listApprovals).mockReset().mockResolvedValue([]);
   vi.mocked(agentApi.budget).mockReset().mockResolvedValue({
     maxSteps: 40,
     maxTokens: 1000,

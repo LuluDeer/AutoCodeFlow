@@ -36,6 +36,7 @@ import { agentApi } from '../api/agent';
 import { formatDateTime } from '../utils/timeFormat';
 // UX-06：裸枚举收敛到共享词表（status/kind/工具状态/角色/层级 唯一事实源）
 import {
+  agentApprovalStatusLabel,
   agentKindLabel,
   agentStatusLabel,
   agentStepRoleLabel,
@@ -43,8 +44,11 @@ import {
   agentToolTierLabel,
 } from '../utils/agent-label';
 // P3 审计：Agent 会话/工具状态 → Tag color 映射收敛到单一事实源
-import { AGENT_SESSION_STATUS_COLOR, AGENT_TOOL_STATUS_COLOR } from '../utils/status-color';
+import { AGENT_APPROVAL_STATUS_COLOR, AGENT_SESSION_STATUS_COLOR, AGENT_TOOL_STATUS_COLOR } from '../utils/status-color';
+// A1 审批闭环：grant/deny 失败的兜底提示（__toastedByClient 去重，见 utils/error.ts）
+import { showApiError } from '../utils/error';
 import type {
+  AgentApproval,
   AgentBudget,
   AgentSession,
   AgentStep,
@@ -57,6 +61,11 @@ import type {
  * 会话是中台 Agent 的行为留痕：列表看「Agent 最近在干什么/烧了多少」，
  * 详情看「每一步谁答的、调了什么工具、被闸门拦了几次」。除 resume 外
  * 全部只读——会话的生命周期由运行时与闸门管理，人工只做「看」和「放行」。
+ *
+ * A1 审批闭环（实施轮 #12 前端半边）：详情抽屉新增「审批单」页签——
+ * pending 单给批准/拒绝操作，grant 且会话 waiting_input 时服务端自动
+ * resume；409（并发已处置）如实提示并刷新。waiting_input 行叠加
+ * 「等待审批」徽标（approval 区块存在 pending 单或 waitingFor 提到审批）。
  */
 
 const { Text, Paragraph } = Typography;
@@ -74,6 +83,18 @@ function usageOf(s: AgentSession, t: (k: string, v?: Record<string, unknown>) =>
     tokens: s.totalTokensIn + s.totalTokensOut,
     tools: s.totalToolCalls,
   });
+}
+
+/**
+ * A1 审批闭环：waiting_input 行的「等待审批」徽标。
+ *
+ * 口径按任务要求取**宽**判据：waiting_input 即挂徽标。当前运行时里会话
+ * 挂起在 waiting_input 的唯一路径就是审批（tool-executor requestApproval →
+ * markWaiting「等待审批 <approvalKey>」），将来若出现其他人工输入场景，
+ * 抽屉里的 waitingFor 文案仍会如实区分。
+ */
+function needsApprovalBadge(s: AgentSession): boolean {
+  return s.status === 'waiting_input';
 }
 
 export default function AgentSessionsPage() {
@@ -107,6 +128,10 @@ export default function AgentSessionsPage() {
   const [toolCalls, setToolCalls] = useState<AgentToolCall[]>([]);
   const [children, setChildren] = useState<AgentSession[]>([]);
   const [resuming, setResuming] = useState(false);
+  // A1 审批闭环：详情抽屉的审批单列表 + 处置中状态（按 approvalKey 记，
+  // 允许逐单 loading，避免一张单转圈全部按钮禁用）
+  const [approvals, setApprovals] = useState<AgentApproval[]>([]);
+  const [decidingKey, setDecidingKey] = useState<string | null>(null);
 
   // B-14：silent 轮询不闪 loading（对齐 SopsPage 同款处理）
   //
@@ -184,6 +209,7 @@ export default function AgentSessionsPage() {
     setSteps([]);
     setToolCalls([]);
     setChildren([]);
+    setApprovals([]); // A1 审批闭环：切会话先清旧审批单，防串页
     try {
       const d = await agentApi.detail(s.id);
       if (seq !== detailSeq.current) return; // 过期响应：丢弃（新选中的行不被旧数据覆盖）
@@ -194,6 +220,16 @@ export default function AgentSessionsPage() {
     } catch {
       if (seq !== detailSeq.current) return; // 过期失败同样静默（错误提示只属于最新一次）
       message.error(t('agents.detailFailed'));
+    }
+    // 审批单列表独立请求：挂了不影响 steps/toolCalls/children 的呈现
+    // （同款语义：预算行失败不影响列表）。过期响应同样丢弃。
+    try {
+      const a = await agentApi.listApprovals(s.id);
+      if (seq !== detailSeq.current) return;
+      setApprovals(a);
+    } catch {
+      if (seq !== detailSeq.current) return;
+      setApprovals([]);
     }
   }, [t]);
 
@@ -212,13 +248,58 @@ export default function AgentSessionsPage() {
     }
   }, [detail, openDetail, t]);
 
+  // A1 审批闭环（实施轮 #12 前端半边）：审批单处置。
+  //
+  //   · 成功 → 按 resumed 如实提示（grant 且会话 waiting_input 时服务端已
+  //     自动重新入队），随后刷新详情（审批单列表随 openDetail 一并重拉）
+  //     与列表（会话状态可能已从 waiting_input 翻转）。
+  //   · 409（AGENT_APPROVAL_ALREADY_DECIDED，并发处置后到者）→ 拦截器已按
+  //     err.* 词条弹过具体提示；这里只刷新，让状态如实回到 granted/denied。
+  //     __toastedByClient 缺失（老后端/非拦截器路径）时兜底补一条。
+  //   · 其余失败 → 兜底提示；页面状态保持可重试（单据仍在列表里）。
+  const decideApproval = useCallback(async (approvalKey: string, decision: 'grant' | 'deny') => {
+    if (!detail) return;
+    setDecidingKey(approvalKey);
+    try {
+      const r = decision === 'grant'
+        ? await agentApi.grantApproval(detail.id, approvalKey)
+        : await agentApi.denyApproval(detail.id, approvalKey);
+      // 文案按 decision × resumed 四态**逐一写字面量键**（模板串
+      // t(`agents.approval.${decision}Ok`) 对缺键守卫是动态键：静态不可判，
+      // 只能整文件进基线豁免）。四态本来就只有四种，写全字面量能让「键是否
+      // 存在」继续被 i18n-key-check 静态验证，不为一行省事放宽基线。
+      const okMessage = decision === 'grant'
+        ? r.resumed
+          ? t('agents.approval.grantOk.resumed', { key: approvalKey })
+          : t('agents.approval.grantOk', { key: approvalKey })
+        : r.resumed
+          ? t('agents.approval.denyOk.resumed', { key: approvalKey })
+          : t('agents.approval.denyOk', { key: approvalKey });
+      message.success(okMessage);
+      await openDetail(detail);
+      await load({ silent: true });
+    } catch (err: unknown) {
+      showApiError(err, t('agents.approval.decideFailed', { key: approvalKey }));
+      // 409 后到者也要刷新——审批单状态已被对方翻转，本侧列表如实跟进
+      const status = (err as { __status?: unknown } | null)?.__status;
+      if (status === 409) {
+        await openDetail(detail);
+        await load({ silent: true });
+      }
+    } finally {
+      setDecidingKey(null);
+    }
+  }, [detail, openDetail, load, t]);
+
   const sessionColumns: ColumnsType<AgentSession> = [
     {
       title: t('agents.col.title'),
       ellipsis: true,
       render: (_, s) => (
-        <Space size={4}>
+        <Space size={4} wrap>
           {statusTag(s.status, t)}
+          {/* A1 审批闭环：waiting_input（当前唯一挂起场景 = 审批）叠加提醒徽标 */}
+          {needsApprovalBadge(s) && <Tag color="orange">{t('agents.approvalBadge')}</Tag>}
           <Text strong>{s.title ?? agentKindLabel(s.kind, t)}</Text>
         </Space>
       ),
@@ -314,12 +395,77 @@ export default function AgentSessionsPage() {
     },
   ];
 
+  // A1 审批闭环：审批单表列（详情抽屉「审批单」页签）。reason 是边界闸门
+  // 给出的审批理由，可含模板插值与长文本——摘要截断与入参列同口径（160 字符）。
+  const approvalColumns: ColumnsType<AgentApproval> = [
+    {
+      title: t('agents.col.tool'),
+      dataIndex: 'toolName',
+      width: 180,
+      render: (v: string, a) => (
+        <Space size={4}>
+          <Tag color={AGENT_APPROVAL_STATUS_COLOR[a.status] ?? 'default'}>
+            {agentApprovalStatusLabel(a.status, t)}
+          </Tag>
+          <Text style={{ fontSize: 12 }}>{v}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: t('agents.col.reason'),
+      ellipsis: true,
+      render: (_, a) => (
+        <Text style={{ fontSize: 12 }} type="secondary">
+          {a.reason.slice(0, 160)}
+        </Text>
+      ),
+    },
+    {
+      title: t('agents.col.decidedBy'),
+      width: 140,
+      render: (_, a) => (a.decidedBy ?? <Text type="secondary">—</Text>),
+    },
+    {
+      title: t('agents.col.decidedAt'),
+      dataIndex: 'decidedAt',
+      width: 170,
+      render: (v: string | null) => formatDateTime(v),
+    },
+    {
+      title: t('sops.col.actions'),
+      width: 150,
+      render: (_, a) =>
+        a.status === 'pending' ? (
+          <Space size={4}>
+            <Button
+              size="small"
+              type="primary"
+              loading={decidingKey === a.approvalKey}
+              disabled={decidingKey !== null && decidingKey !== a.approvalKey}
+              onClick={() => void decideApproval(a.approvalKey, 'grant')}
+            >
+              {t('agents.approval.grant')}
+            </Button>
+            <Button
+              size="small"
+              danger
+              disabled={decidingKey !== null && decidingKey !== a.approvalKey}
+              onClick={() => void decideApproval(a.approvalKey, 'deny')}
+            >
+              {t('agents.approval.deny')}
+            </Button>
+          </Space>
+        ) : null,
+    },
+  ];
+
   const childColumns: ColumnsType<AgentSession> = [
     {
       title: t('agents.col.title'),
       render: (_, s) => (
-        <Space size={4}>
+        <Space size={4} wrap>
           {statusTag(s.status, t)}
+          {needsApprovalBadge(s) && <Tag color="orange">{t('agents.approvalBadge')}</Tag>}
           <Text strong>{s.title ?? agentKindLabel(s.kind, t)}</Text>
         </Space>
       ),
@@ -456,7 +602,10 @@ export default function AgentSessionsPage() {
                   <Text strong ellipsis style={{ flex: 1, minWidth: 0 }}>
                     {s.title ?? agentKindLabel(s.kind, t)}
                   </Text>
-                  {statusTag(s.status, t)}
+                  <Space size={4} wrap>
+                    {needsApprovalBadge(s) && <Tag color="orange">{t('agents.approvalBadge')}</Tag>}
+                    {statusTag(s.status, t)}
+                  </Space>
                 </div>
                 <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                   <Tag style={{ marginInlineEnd: 0 }}>{agentKindLabel(s.kind, t)}</Tag>
@@ -584,6 +733,24 @@ export default function AgentSessionsPage() {
                       size="small"
                     />
                   ),
+                },
+                {
+                  // A1 审批闭环：pending 单给批准/拒绝操作；处置后详情与列表
+                  // 自动刷新（见 decideApproval）。空态与其他页签一致。
+                  key: 'approvals',
+                  label: t('agents.tab.approvals', { count: approvals.length }),
+                  children:
+                    approvals.length > 0 ? (
+                      <Table<AgentApproval>
+                        rowKey="id"
+                        columns={approvalColumns}
+                        dataSource={approvals}
+                        pagination={false}
+                        size="small"
+                      />
+                    ) : (
+                      <Text type="secondary">{t('agents.approvalsEmpty')}</Text>
+                    ),
                 },
                 {
                   key: 'children',

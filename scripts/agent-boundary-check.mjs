@@ -243,6 +243,68 @@ console.log("\n── 2. 工具分级 ──");
   for (const n of ["trigger_task", "retry_execution", "kill_execution"]) {
     check(`${n} 为 write（可审批放行）`, AGENT_TOOL_BY_NAME.get(n)?.tier === "write");
   }
+
+  // ── C2（审计轮 #11）：资源维度必须显式（白名单字面量守卫）──────────
+  // resourceKind 已改必填（缺省 = 编译错误），这里钉的是**语义面**：
+  //   ① 全集每个 spec 都显式声明（防动态拼 spec / 改回可选的旁路）；
+  //   ② 值必须落在已知资源类型集合里——validateScope 用
+  //      `${resourceKind}s` 拼 scope 集合键，拼出一个没人写进 scope 的
+  //      键 = 该工具的 scope 白名单永远不命中（要么全拒要么形同虚设），
+  //      新资源类型必须连同闸门与 scope 语义一起设计，不能只改注册表；
+  //   ③ hardDisabled 的审批类工具允许 none（永久不可执行，无 scope 面）；
+  //      非 hardDisabled 的 dangerous 必须绑定资源（dangerous 放行唯一
+  //      途径是显式开闸+审批，此时必须能被 scope 圈住）。
+  const KNOWN_RESOURCE_KINDS = new Set([
+    "application", "executor", "task", "project", "sop", "none",
+  ]);
+  const noKind = ALL_AGENT_TOOL_SPECS.filter((t) => !t.resourceKind);
+  check(
+    "C2：每个工具都显式声明 resourceKind（none 也必须显式写）",
+    noKind.length === 0,
+    `缺省=${noKind.map((t) => t.name).join(",") || "(无)"}`,
+  );
+  const unknownKind = ALL_AGENT_TOOL_SPECS.filter(
+    (t) => !KNOWN_RESOURCE_KINDS.has(t.resourceKind),
+  );
+  check(
+    "C2：resourceKind 全部在已知资源类型集合内（拼出的 ${kind}s 必须是 scope 真键）",
+    unknownKind.length === 0,
+    `未知=${unknownKind.map((t) => `${t.name}:${t.resourceKind}`).join(",") || "(无)"}`,
+  );
+  // ③ 非 hardDisabled 的 dangerous 必须绑定资源（放行唯一途径是显式开闸+
+  //    审批，此时必须能被 scope 圈住）。豁免通道：注册表在该 spec 旁写
+  //    SCOPE-WAIVER(<tool>) 注释说明理由——豁免必须显式，且本闸会核对
+  //    豁免名单与实际形态一致（多豁免/漏豁免都红）。
+  const dangerousUnscoped = ALL_AGENT_TOOL_SPECS.filter(
+    (t) =>
+      t.tier === "dangerous" &&
+      t.resourceKind === "none" &&
+      t.hardDisabled !== true,
+  );
+  const waiverRe = /SCOPE-WAIVER\(([a-z_]+)\)/g;
+  const waived = new Set();
+  let w;
+  const registrySrcC2 = readFileSync(
+    join(apiDir, "src/modules/agent/tools/tool-registry.ts"),
+    "utf8",
+  );
+  while ((w = waiverRe.exec(registrySrcC2))) waived.add(w[1]);
+  const undeclared = dangerousUnscoped.filter((t) => !waived.has(t.name));
+  check(
+    "C2：非硬禁用的 dangerous 必须绑定资源（或持 SCOPE-WAIVER 豁免注释）",
+    undeclared.length === 0,
+    `越界=${undeclared.map((t) => t.name).join(",") || "(无)"}`,
+  );
+  const staleWaivers = [...waived].filter(
+    (n) =>
+      !dangerousUnscoped.some((t) => t.name === n) &&
+      !AGENT_TOOL_BY_NAME.has(n),
+  );
+  check(
+    "C2：SCOPE-WAIVER 无过期项（工具已绑定资源或已删除应清掉豁免）",
+    staleWaivers.length === 0,
+    `过期=${staleWaivers.join(",") || "(无)"}`,
+  );
 }
 
 // ═══ 3. 第①道：工具白名单 ════════════════════════════════════════

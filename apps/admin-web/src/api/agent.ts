@@ -5,6 +5,10 @@ import { client } from './client';
  * ADMIN-only）。会话/步骤/工具调用是中台 Agent 的全部行为留痕——没有这个
  * 视图，运维只能查库才能回答「中台 Agent 刚才做了什么、烧了多少令牌」。
  * resume 是唯一的写动作，走与服务端相同的终态守卫。
+ *
+ * A1 审批闭环（审计轮 #11 → 实施轮 #12 前端半边）：审批单的列出与处置
+ * （grant/deny）。服务端条件写钉住 pending——并发处置撞上时后到者收 409
+ * （AGENT_APPROVAL_ALREADY_DECIDED，错误词条已生成进 locales/generated）。
  */
 
 export const AGENT_SESSION_STATUSES = [
@@ -83,6 +87,39 @@ export interface AgentToolCall {
   createdAt: string;
 }
 
+/** 审批单状态（admin-api agent-approval.entity.ts 的 AGENT_APPROVAL_STATUSES）。 */
+export const AGENT_APPROVAL_STATUSES = ['pending', 'granted', 'denied'] as const;
+export type AgentApprovalStatus = (typeof AGENT_APPROVAL_STATUSES)[number];
+
+/** 审批单（agent_approvals 行；字段对齐 admin-api AgentApproval 实体）。 */
+export interface AgentApproval {
+  id: string;
+  /** 申请幂等键（= agent_tool_calls.approvalId，`apr-<sessionId>-<ts>`）。 */
+  approvalKey: string;
+  sessionId: string;
+  toolName: string;
+  /** 边界闸门给出的审批理由（原样透传给审批人）。 */
+  reason: string;
+  status: AgentApprovalStatus | string;
+  /** 处置人。null = 尚未处置。 */
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+/** 审批单处置响应（agent.controller decideApproval）。 */
+export interface AgentApprovalDecision {
+  ok: boolean;
+  approval: {
+    approvalKey: string;
+    status: AgentApprovalStatus | string;
+    decidedBy: string | null;
+    decidedAt: string | null;
+  };
+  /** grant 且会话挂起在 waiting_input 时，服务端已自动重新入队。 */
+  resumed: boolean;
+}
+
 export const agentApi = {
   list: (params?: { kind?: string; status?: string; page?: number; pageSize?: number }) =>
     client.get('/agent/sessions', { params }) as Promise<{
@@ -99,5 +136,14 @@ export const agentApi = {
   /** 恢复挂起/失败会话（服务端终态守卫：succeeded/aborted 不可恢复）。 */
   resume: (id: string) =>
     client.post(`/agent/sessions/${id}/resume`) as Promise<{ ok: boolean; reason?: string }>,
+  /** 会话的全部审批单（按 createdAt 升序）。 */
+  listApprovals: (id: string) =>
+    client.get(`/agent/sessions/${id}/approvals`) as Promise<AgentApproval[]>,
+  /** 批准审批单（会话挂起在 waiting_input 时服务端自动恢复）。 */
+  grantApproval: (id: string, approvalKey: string) =>
+    client.post(`/agent/sessions/${id}/approvals/${approvalKey}/grant`) as Promise<AgentApprovalDecision>,
+  /** 拒绝审批单。 */
+  denyApproval: (id: string, approvalKey: string) =>
+    client.post(`/agent/sessions/${id}/approvals/${approvalKey}/deny`) as Promise<AgentApprovalDecision>,
   budget: () => client.get('/agent/budget') as Promise<AgentBudget>,
 };
