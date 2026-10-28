@@ -464,24 +464,29 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       const bits = [`${i + 1}. ${name}`, result.detail ?? ''];
       if (result.screenshotPath) {
         bits.push(`screenshot=${result.screenshotPath}`);
+        // 单次读取：同一截图此前被 readFileSync 两次（上传一次、转 base64 又一次）
+        let png: Buffer | null = null;
         try {
-          const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
-            name: path.basename(result.screenshotPath),
-            mime: 'image/png',
-            buf: fs.readFileSync(path.join(deps.workspaceRoot, result.screenshotPath)),
-          });
-          if (up.ok && up.mediaPath) {
-            bits.push(`mediaPath=${up.mediaPath}`);
-            // 优先 inline data URL：私有化部署不必把媒体目录暴露到公网，
-            // 且实测 provider 接受真实截图的 base64。单图原始 ≤1.5MB
-            //（base64 后 ~2MB，低于中台 3MB 上限）；更大才回退公网 URL。
-            try {
-              const abs = path.join(deps.workspaceRoot, result.screenshotPath);
-              const buf = fs.readFileSync(abs);
-              if (buf.length <= 1.5 * 1024 * 1024) {
+          png = fs.readFileSync(path.join(deps.workspaceRoot, result.screenshotPath));
+        } catch {
+          /* 读不到本地截图：上传与 inline URL 都无从谈起 */
+        }
+        if (png) {
+          try {
+            const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
+              name: path.basename(result.screenshotPath),
+              mime: 'image/png',
+              buf: png,
+            });
+            if (up.ok && up.mediaPath) {
+              bits.push(`mediaPath=${up.mediaPath}`);
+              // 优先 inline data URL：私有化部署不必把媒体目录暴露到公网，
+              // 且实测 provider 接受真实截图的 base64。单图原始 ≤1.5MB
+              //（base64 后 ~2MB，低于中台 3MB 上限）；更大才回退公网 URL。
+              if (png.length <= 1.5 * 1024 * 1024) {
                 lastGuiImageUrls = [
                   ...lastGuiImageUrls,
-                  `data:image/png;base64,${buf.toString('base64')}`,
+                  `data:image/png;base64,${png.toString('base64')}`,
                 ].slice(-2);
               } else {
                 const base = deps.mediaBaseUrl?.replace(/\/+$/, '');
@@ -492,12 +497,10 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
                   ].slice(-2);
                 }
               }
-            } catch {
-              /* 读不到本地截图不阻塞上传结果 */
             }
+          } catch {
+            /* 上传失败不抹掉本机截图位置，留给后续诊断 */
           }
-        } catch {
-          /* 上传失败不抹掉本机截图位置，留给后续诊断 */
         }
       }
       lines.push(bits.filter(Boolean).join(' '));
