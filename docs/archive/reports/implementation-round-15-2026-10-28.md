@@ -93,3 +93,24 @@ tenacity 耗尽重试后**不抛异常**，`_send_heartbeat` 正常返回 → `r
   （含 KILL-WAITING 对 waiting 的补齐），不是「恒可点」。
 - `traceparent` 写进回调 JSON 体不会 400：`ParseArrayPipe` 只 whitelist 不 forbid。
 - 杀端点与终态回调的「双发」窗口有互斥标记 + admin 终态守卫，不构成重复终态。
+
+## 6. 一次自伤事故（如实记录）
+
+本轮用 `git add -A` 提交 executor-python 修复时，把**另一并发会话**正在编辑的
+「推理质量轮」工作树（`agent-context.ts` / `agent-llm-retry.ts` + `agent-runtime.service.ts`
+改写）一起卷进了提交；那份 WIP 的配套改动（`agent-tool-call.entity` 的 `toolCallId`、
+`agent-budget.service` 的 `resolveContextWindow`、`configuration.ts` 的 `agent.context`
+段）当时还没落盘，于是 **HEAD 一度不可编译**：
+
+```
+agent-runtime.service.ts(218,27): error TS2339: Property 'resolveContextWindow' does not exist
+agent-runtime.service.ts(309,13): error TS2353: 'toolCallId' does not exist in type 'RecordToolCallInput'
+```
+
+处置：新增一个 revert 提交，把 `agent-runtime.service.ts` 恢复成 d249b5c2 的版本，
+并把那两个模块与其 spec 从库里移除（**文件保留在工作区**，交给正在做这件事的会话
+按完整形态提交）。随后在干净 worktree（`git worktree add --detach c78f241d`）里验证：
+`tsc --noEmit` 0 错、agent 模块 14 suites / 230 tests 全绿。
+
+纪律已写进 `docs/audit-playbook.md` §0：**多会话共用工作区禁止 `git add -A`**，
+提交前用干净 worktree 验证 HEAD 自洽。
