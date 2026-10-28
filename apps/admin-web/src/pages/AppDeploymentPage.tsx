@@ -210,6 +210,12 @@ export default function AppDeploymentPage({
   // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
   // 置 cancelled，让已 in-flight 的旧响应在 resolve 后被丢弃。
   const fetchSeq = useRef(0);
+  // E2（审计轮 #15）：`loading` 的归属必须与「数据新鲜度」分开。
+  // 两者共用 fetchSeq 时，轮询拍（fetchDeployments）会在刷新请求返回前自增序号，
+  // 于是 fetchAll 的 finally 被判"过期"而跳过 setLoading(false) —— 之后没有任何
+  // 代码再清它，表格永久转圈、行变灰不可交互，直到用户再翻页/再触发一次刷新。
+  // 轮询与数据写入仍共用 fetchSeq（后发者胜，正确）；loading 只认自己的序号。
+  const loadingSeq = useRef(0);
 
   // F-34（DEEP_REVIEW 0ef3bbe）：轮询拍只拉**部署列表**——执行器清单（下拉候选
   // 与占用判断）在秒级轮询窗口内几乎不变，原先每 3s 全量 GET /executors 属浪费；
@@ -231,6 +237,7 @@ export default function AppDeploymentPage({
 
   const fetchAll = useCallback(async () => {
     const seq = ++fetchSeq.current;
+    const loadSeq = ++loadingSeq.current;
     setLoading(true);
     try {
       // 执行器侧只走 picker() 轻读面：部署下拉候选、占用判断与 useExecutorNames
@@ -251,7 +258,8 @@ export default function AppDeploymentPage({
       // UI-16：列表加载失败改在页内呈现（含重试/复制），不再只弹一闪而过的 toast
       setLoadError(err);
     } finally {
-      if (seq === fetchSeq.current) setLoading(false);
+      // 只由"最后一次 fetchAll"收 loading：轮询拍不得把它卡住（见 loadingSeq 注释）。
+      if (loadSeq === loadingSeq.current) setLoading(false);
     }
   }, [applicationId, page]);
 
