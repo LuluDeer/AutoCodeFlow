@@ -49,7 +49,7 @@ import {
   type LocalAgentConfigInput,
 } from './permission-profile';
 import { runAgentLoop, type AgentLoopResult } from './loop';
-import { buildLoopHandlers, newClarificationId, type SopPayload } from './runtime';
+import { buildLoopHandlers, isRetryableRelayError, newClarificationId, type SopPayload } from './runtime';
 import type { CollabClient } from './collab-client';
 import type { GateLimits } from './gates';
 import { runIsolatedTask } from './isolated-runner';
@@ -717,6 +717,29 @@ export class AgentHost {
         /* 落盘失败仍发送：本轮窗口内崩溃会丢恢复点，但澄清链路不断 */
       }
       await this.sendClarificationForJournal(journal);
+      return;
+    }
+
+    // ── outcome=error 的分类续跑（GAP-3 桌面半边）────────────────────
+    // runtime 的注释与旧行为不一致：loop 说「收敛为 outcome=error，会话可续」
+    // （relay 瞬态失败经分类重试耗尽后就是这条路，预算计数还在），但这里旧
+    // 逻辑一律 reportComplete(failed) + 清日志——指派被终结，恢复点被删。
+    // 瞬态类错误（5xx/网络码/超时）按「机器临时不可用」处理：保留 journal、
+    // 请求中台按 id 重发重领（既有崩溃恢复通道），下个 poll 续跑；闸门计数
+    // 跨重跑连续（墙钟不重置），重试风暴被 iteration/墙钟上限天然约束。
+    // 确定性错误（401/400 等）重跑必然同样失败，维持 failed 终结。
+    if (
+      result.outcome === 'error' &&
+      isRetryableRelayError(result.stopMessage ?? '')
+    ) {
+      journal.lastSendError = `transient relay failure, awaiting re-claim: ${(result.stopMessage ?? '').slice(0, 160)}`;
+      try {
+        saveAssignmentJournal(dir, journal);
+      } catch {
+        /* 落盘失败也不上报 failed——中台超时治理兜底，宁可多等不误杀 */
+      }
+      this.resendAssignmentsOnNextPoll = true;
+      this.stats.lastOutcome = 'transient_error_requeue';
       return;
     }
 

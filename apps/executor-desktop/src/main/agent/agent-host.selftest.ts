@@ -730,6 +730,77 @@ async function main(): Promise<void> {
     await center.close();
   }
 
+  console.log('-- 15b. 瞬态 relay 失败 → 续跑通道（GAP-3）：journal 保留 + 下轮 poll 重发重领 --');
+  {
+    const workDir = newWorkDir();
+    // makeCenter 的 llm 端点恒 200（脚本控制内容），模拟 relay 5xx 需要注入
+    // 替身 client：llmRelay / reportComplete 可控，poll 走真实本地 server。
+    const workCenter = makeCenter({
+      llmScript: [],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+        { items: [] },
+      ],
+    });
+    const baseUrl = await workCenter.listen();
+    const base = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    let relayCalls = 0;
+    const client = Object.create(base) as CollabClient;
+    // 瞬态 5xx：chatJson 分类重试 3 次耗尽 → loop 收敛 outcome=error，
+    // stopMessage 带 status=503（isRetryableRelayError 判 true）
+    (client as unknown as { llmRelay: unknown }).llmRelay = async () => {
+      relayCalls += 1;
+      return { ok: false, error: 'llm relay failed (status=503)', content: '' };
+    };
+    const completes: Array<Record<string, unknown>> = [];
+    (client as unknown as { reportComplete: unknown }).reportComplete = async (
+      _a: string, _id: string, input: Record<string, unknown>,
+    ) => {
+      completes.push(input);
+      return { ok: true, accepted: true };
+    };
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick(); // 领单 → relay 3 次耗尽 → 瞬态续跑通道
+    check('relay 重试耗尽（3 次尝试）', relayCalls === 3, `calls=${relayCalls}`);
+    check('瞬态 error 不上报 failed（零 reportComplete）', completes.length === 0);
+    const j1 = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
+    check('journal 保留（恢复点未删）', j1 !== null && j1.phase === 'running');
+    check('lastSendError 记录续跑等待态', (j1?.lastSendError ?? '').includes('transient relay failure'));
+    check('host 请求下轮 poll 重发重领', (host as unknown as { resendAssignmentsOnNextPoll: boolean }).resendAssignmentsOnNextPoll === true);
+    check('stats 如实记录续跑态', host.stats.lastOutcome === 'transient_error_requeue');
+    // 对照：确定性错误（401）必须维持 failed 终结（独立 center——pollScript
+    // 是逐次弹出的共享队列，复用会被 503 实例消费成空页）
+    const workDir2 = newWorkDir();
+    relayCalls = 0;
+    const workCenter2 = makeCenter({
+      llmScript: [],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+        { items: [] },
+      ],
+    });
+    const baseUrl2 = await workCenter2.listen();
+    const base2 = new CollabClient({ baseUrl: baseUrl2, token: 't', timeoutMs: 5000 });
+    const client2 = Object.create(base2) as CollabClient;
+    (client2 as unknown as { llmRelay: unknown }).llmRelay = async () => {
+      relayCalls += 1;
+      return { ok: false, error: 'llm relay failed (status=401)', content: '' };
+    };
+    const completes2: Array<Record<string, unknown>> = [];
+    (client2 as unknown as { reportComplete: unknown }).reportComplete = async (
+      _a: string, _id: string, input: Record<string, unknown>,
+    ) => {
+      completes2.push(input);
+      return { ok: true, accepted: true };
+    };
+    const host2 = new AgentHost({ address: 'a:1', workDir: workDir2, getConfig: () => makeConfig(baseUrl2), client: client2 });
+    await host2.tick();
+    check('确定性 401 → 如实 failed 终结（零重试）', relayCalls === 1 && completes2.length === 1 && completes2[0].status === 'failed');
+    check('401 终结后 journal 清理', loadAssignmentJournal(journalDirFor(workDir2), ASSIGNMENT_ID) === null);
+    await workCenter.close();
+    await workCenter2.close();
+  }
+
   console.log('-- 12. P3-2 畸形指派载荷：首跑前拦截，可判定失败回报 --');
   {
     const workDir = newWorkDir();
