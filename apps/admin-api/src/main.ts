@@ -27,7 +27,26 @@ import * as path from "path";
 // real process environment behave the same. (Import hoisting requires the
 // module import below to be dynamic.)
 import { config as loadEnvFile } from "dotenv";
+import { installAsyncStdout } from "./common/utils/async-stdout.util";
 loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
+// INCIDENT-2026-10-28（P0-2）：stdout/stderr 异步化**必须挂在模块级顶层**。
+//
+// 为什么不能放进 bootstrap()：TS 编译为 CommonJS 后所有静态 import 提升为
+// 文件顶部的 require()，它们**先于**任何模块级语句求值。放 bootstrap() 开头
+// 意味着 app.module / configuration.ts 等模块的模块体求值期日志仍走同步写；
+// 而 configuration.ts 的启动期校验会在配置错误时 throw 并触发 logFatal——
+// 那恰恰是最需要可靠落盘的时刻。
+//
+// 为什么 import 必须在调用语句之前写：tsc 对 CommonJS 按源码顺序 emit，
+// `installAsyncStdout_1 = require(...)` 不会提前到调用处之前，否则就是
+// TDZ 崩溃（Cannot access before initialization）。
+//
+// 调用必须晚于 loadEnvFile：util 在调用期读取 LOG_ASYNC_STDOUT（W-22
+// 模块求值期读取），.env 先落盘取值才正确。
+//
+// 安装后在「目标为普通文件」时才生效；管道/socket/journald 本就是异步写，
+// 直接短路（不介入、不注册 exit 钩子）。详见 async-stdout.util.ts。
+installAsyncStdout();
 const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";

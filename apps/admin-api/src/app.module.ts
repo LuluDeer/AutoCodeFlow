@@ -78,6 +78,18 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         LOG_LEVEL: Joi.string()
           .valid("error", "warn", "info", "debug", "verbose")
           .default("info"),
+        // INCIDENT-2026-10-28（P0-2）：stdout/stderr 异步化开关。
+        //
+        // 生产用 `nohup ... &>> log` 时 fd 指向普通文件，Node 对普通文件的
+        // process.stdout 是 SyncWriteStream（同步写）——盘一卡就把主线程钉住
+        // （10-28 冻结约 40s，打穿 30s Leader 租约）。
+        // 默认 true（异步 + 有界丢弃）；false 恢复旧的同步写行为，用于排查
+        // 「日志本身丢太多」的现场。
+        //
+        // 注意：实际读取发生在 main.ts 的**模块求值期**（经 getEnvVar，早于
+        // ConfigModule 生命周期），此处注册是为了让非法取值在启动时可见，
+        // 并让配置面可发现（ARCH-27）。
+        LOG_ASYNC_STDOUT: Joi.string().valid("true", "false").default("true"),
         // ARCH-27: 此前 configuration.ts 读取但未注册（审计缺口）。
         APP_PROTOCOL: Joi.string().default("http"),
         DB_POOL_SIZE: Joi.number().integer().min(1).default(20),
