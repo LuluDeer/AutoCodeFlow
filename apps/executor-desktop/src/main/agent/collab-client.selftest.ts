@@ -9,7 +9,7 @@
  */
 import * as assert from 'node:assert';
 import * as http from 'node:http';
-import { CollabClient } from './collab-client';
+import { COLLAB_RESPONSE_BODY_MAX_BYTES, CollabClient } from './collab-client';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -237,6 +237,50 @@ async function main(): Promise<void> {
     const client4 = new CollabClient({ baseUrl: 'not a url', token: 't' });
     const r4 = await client4.poll('a:1');
     check('非法 baseUrl → ok:false（不抛）', r4.ok === false);
+
+    // 响应体超限：明确报「超限」而不是把丢弃后的残体当非法 JSON——
+    // 把「中台响应异常膨胀」误报成「协议坏了」会把排查引向错误方向。
+    // 反证：把 rawRequest 的 overflow 分支改回静默截断 → 此用例转红。
+    const s5 = await makeServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ pad: 'x'.repeat(COLLAB_RESPONSE_BODY_MAX_BYTES + 1024) }));
+    });
+    const client5 = new CollabClient({ baseUrl: s5.url, token: 't', timeoutMs: 5000 });
+    const r5 = await client5.poll('a:1');
+    check(
+      '响应体超限 → ok:false + 明确报超限（非「非法 JSON」）',
+      r5.ok === false && (r5.error ?? '').includes('字节上限') && (r5.error ?? '').includes('实收'),
+    );
+    await s5.close();
+
+    // 慢速滴流：每 100ms 吐一小块、总时长远超 timeoutMs——空闲超时拦不住
+    // 这种「活着但在拖」的响应，总时长硬闸必须收敛（绝不挂死循环）。
+    // 注意走 reportProgress 而不是 poll：poll 内部把超时抬到
+    // max(timeoutMs, waitMs+10s)（长轮询语义），滴流必须长于那个下限才有意义。
+    const s6 = await makeServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      let n = 0;
+      const drip = setInterval(() => {
+        n += 1;
+        if (n > 60) {
+          clearInterval(drip);
+          res.end(JSON.stringify({ accepted: true }));
+          return;
+        }
+        res.write('x');
+      }, 100);
+      res.on('close', () => clearInterval(drip));
+    });
+    const client6 = new CollabClient({ baseUrl: s6.url, token: 't', timeoutMs: 1500 });
+    const t0 = Date.now();
+    const r6 = await client6.reportProgress('a:1', 'asg-1', {});
+    const elapsed = Date.now() - t0;
+    check(
+      '慢速滴流 → 总时长硬闸收敛（≤ timeoutMs + 2s 余量）且报因明确',
+      r6.ok === false && (r6.error ?? '').includes('total duration') && elapsed < 3500,
+      `elapsed=${elapsed}ms error=${r6.error ?? '(none)'}`,
+    );
+    await s6.close();
   }
 
   console.log(failures ? `\n=== ${failures} 项失败 ===\n` : '\n=== collab-client selftest 全部通过 ===\n');

@@ -16,11 +16,26 @@ import { URL } from 'url';
  *   身份链）+ body.address 双标识。
  * · 超时（默认 30s；poll 由调用方给更长）经 socket 销毁强制收敛——**绝不
  *   挂死**：Agent 循环是长任务，一次网络悬挂不该占死整个会话。
+ *   `req.setTimeout` 是**空闲**超时（socket 上无字节流动才计时），慢速滴流
+ *   的服务端可以让它永不触发；因此请求体写完（`finish`）后再起一道
+ *   **总时长硬闸**兜底——滴流/悬空响应最迟 `timeoutMs` 内收敛。硬闸刻意
+ *   自 `finish` 起算而不是请求开始：录屏等大体积上传走的就是「慢但在推进」
+ *   的链路，上传阶段只受空闲超时约束（挂了会触发），不应被总时长误杀。
  * · 所有失败收敛为 `{ ok:false, error }`，**绝不抛**——调用方是循环/上报
  *   路径，网络抖动应被如实记录而不是打断状态机。
+ * · 响应体超 4MB 上限时按「响应超限」明确失败（error 里带上限与实收字节数），
+ *   绝不把被丢弃的半份响应当非法 JSON 报告——那会把「中台响应异常膨胀」
+ *   伪装成「协议坏了」，排查方向全错。
  */
 
 export const COLLAB_DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * 响应体字节上限：collect 已到顶后继续接收的字节只计数不保留——计数是为了
+ * 在 `end` 时能如实报出「实收 N 字节」。中台正常响应（poll/relay/complete）
+ * 都在 KB 量级；只有代理劫持/网关错页/路径打错才会顶到这个闸。
+ */
+export const COLLAB_RESPONSE_BODY_MAX_BYTES = 4 * 1024 * 1024;
 
 /** 中台 relay 的规范化响应（对齐 admin-api MultimodalResponse 的子集）。 */
 export interface LlmRelayResponse {
@@ -394,11 +409,24 @@ export class CollabClient {
         (res) => {
           const chunks: Buffer[] = [];
           let size = 0;
+          let overflow = false;
           res.on('data', (c: Buffer) => {
             size += c.length;
-            if (size <= 4 * 1024 * 1024) chunks.push(c);
+            // 超限后继续计数（如实报实收量），但不再保留字节——
+            // 4MB 是排水口不是存储，别让异常响应占住内存。
+            if (!overflow && size > COLLAB_RESPONSE_BODY_MAX_BYTES) overflow = true;
+            if (!overflow) chunks.push(c);
           });
           res.on('end', () => {
+            if (overflow) {
+              resolve({
+                ok: false,
+                status: res.statusCode ?? null,
+                error: `响应体超过 ${COLLAB_RESPONSE_BODY_MAX_BYTES} 字节上限（实收 ${size}）——疑似代理劫持/网关错页，未按协议处理`,
+                body: '',
+              });
+              return;
+            }
             resolve({
               ok: (res.statusCode ?? 500) >= 200 && (res.statusCode ?? 500) < 300,
               status: res.statusCode ?? null,
@@ -415,6 +443,20 @@ export class CollabClient {
       });
       req.on('error', (err) => {
         resolve({ ok: false, status: null, error: err.message, body: '' });
+      });
+      // 总时长硬闸：req.setTimeout 只管空闲，慢速滴流可让它永不触发。
+      // 自请求体写完起算（大体积上传本身慢但在推进，只受空闲超时约束），
+      // 到点未收敛即销毁——一次网络悬挂不该占死整个会话。
+      let hardDeadline: NodeJS.Timeout | null = null;
+      req.on('finish', () => {
+        const limit = timeoutMs ?? this.timeoutMs;
+        hardDeadline = setTimeout(() => {
+          req.destroy(new Error(`request total duration exceeded ${limit}ms (slow trickle response?)`));
+        }, limit);
+        hardDeadline.unref?.();
+      });
+      req.on('close', () => {
+        if (hardDeadline !== null) clearTimeout(hardDeadline);
       });
       req.write(payload);
       req.end();
