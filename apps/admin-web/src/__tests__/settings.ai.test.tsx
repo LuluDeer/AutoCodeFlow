@@ -20,6 +20,19 @@ vi.mock('../api/ai', () => ({
     testConfig: vi.fn(),
     analyzeApp: vi.fn(),
     suggestSchedule: vi.fn(),
+    // 推理质量轮：AI Tab 里新增了「模型接入与分配」卡片（ADMIN-only）
+    listProviders: vi.fn().mockResolvedValue({
+      providers: [],
+      errors: [],
+      routes: {
+        analysis: { provider: '', model: '', maxTokens: '', timeoutMs: '' },
+        agent: { provider: '', model: '', maxTokens: '', timeoutMs: '' },
+        video: { provider: '', model: '', maxTokens: '', timeoutMs: '' },
+      },
+    }),
+    saveProvider: vi.fn(),
+    deleteProvider: vi.fn(),
+    assignRoute: vi.fn(),
   },
 }));
 vi.mock('../api/config', () => ({

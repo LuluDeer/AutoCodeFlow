@@ -32,6 +32,7 @@ import {
   ExecutionsPage,
   ProjectsPage,
   SopsPage,
+  SopFromVideoPage,
   AgentSessionsPage,
 } from './router-pages';
 
@@ -90,6 +91,10 @@ export const router = createBrowserRouter(
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
         { path: 'sops', element: <RequireAdmin>{withSuspense(<SopsPage />)}</RequireAdmin> },
+        {
+          path: 'sops/from-video',
+          element: <RequireAdmin>{withSuspense(<SopFromVideoPage />)}</RequireAdmin>,
+        },
         { path: 'agent-sessions', element: <RequireAdmin>{withSuspense(<AgentSessionsPage />)}</RequireAdmin> },
       ],
     },

@@ -41,6 +41,7 @@ import PageSkeleton from '../../components/PageSkeleton';
 import StateError from '../../components/StateError';
 // SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
 import SecuritySettings from './SecuritySettings';
+import AiProvidersSettings from './AiProvidersSettings';
 // AUTH-03: API Keys Tab（限权机器凭证管理），独立文件
 import ApiKeysSettings from './ApiKeysSettings';
 // FEAT-15: 事件订阅 Tab（webhook 出站事件 + 死信 replay），独立文件
@@ -909,7 +910,13 @@ export default function SettingsPage() {
     {
       key: 'ai',
       label: <Space><RobotOutlined aria-hidden />{t('sysSettings.tab.ai')}</Space>,
-      children: <AiConfigTab />,
+      children: (
+        <>
+          <AiConfigTab />
+          {/* N11 同理：provider 读面回显 baseUrl/模型拓扑、写面能改出站目标 → ADMIN-only */}
+          {isAdmin ? <AiProvidersSettings /> : null}
+        </>
+      ),
     },
     {
       key: 'config',

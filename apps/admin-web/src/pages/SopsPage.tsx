@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
@@ -26,7 +26,7 @@ import { message } from '../utils/toast';
 import { Modal as confirmModal } from '../utils/modal';
 // 归档/恢复的 409（有未结束指派）要透出后端文案而非通用失败
 import { showApiError } from '../utils/error';
-import { ReloadOutlined } from '@ant-design/icons';
+import { ReloadOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
@@ -91,6 +91,7 @@ const TERMINAL_ASSIGNMENT_STATUSES: SopAssignment['status'][] = ['failed', 'stal
 
 export default function SopsPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽）
   const isMobile = useIsMobile();
   // A11Y-DRAWER-01：详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
@@ -619,6 +620,12 @@ useEffect(() => {
           <Space>
             <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void load()}>
               {t('sops.refresh')}
+            </Button>
+            <Button
+              icon={<VideoCameraOutlined aria-hidden />}
+              onClick={() => navigate('/sops/from-video')}
+            >
+              {t('sops.fromVideo')}
             </Button>
             <Button type="primary" onClick={() => setDraftOpen(true)}>
               {t('sops.newDraft')}
