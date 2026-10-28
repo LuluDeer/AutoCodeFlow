@@ -279,3 +279,81 @@ def test_backpressure_warns_once_per_episode_and_resets_after_clean_flush(
         assert len(warnings()) == 3
 
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# G1（审计轮 #15）：排水闸在**生产启动路径**上从未被置位
+#
+# 事实链：`_shutting_down = True` 原本只出现在 `if __name__ == '__main__'` 里的
+# signal 处理器中，而生产镜像用 `uvicorn main:app` 启动（Dockerfile:58）——
+# 那段代码根本不执行；即便 `python main.py`，uvicorn 的 capture_signals() 也会
+# 覆盖 SIGTERM 处理器。于是 routers/execute.py 的 503 排水闸恒为假：停机窗口内
+# 被领走的任务会被 30s 宽限 + 树杀推成 failed/executor_restart，而中台已收到
+# 200、不会再改派。
+#
+# 既有 4 条用例都是直接 monkeypatch `_shutting_down = True`（测闸门本身），
+# 因此从不经过"谁来置位"这条路——本组用例补的正是这个缺口。
+# ---------------------------------------------------------------------------
+def test_signal_drain_gate_flips_flag_and_chains_uvicorn(monkeypatch):
+    """信号到来 → 先置位排水闸，再把控制权交回 uvicorn 原处理器（不吞停机）。"""
+    import signal as signal_module
+
+    import main as main_module
+
+    installed: dict = {}
+    previous_calls: list[int] = []
+
+    def previous_handler(signum, frame):  # 模拟 uvicorn 的 handle_exit
+        previous_calls.append(signum)
+
+    monkeypatch.setattr(main_module, '_shutting_down', False)
+    monkeypatch.setattr(
+        main_module.signal, 'getsignal', lambda sig: previous_handler, raising=True
+    )
+    monkeypatch.setattr(
+        main_module.signal,
+        'signal',
+        lambda sig, handler: installed.__setitem__(sig, handler),
+        raising=True,
+    )
+
+    main_module.install_signal_drain_gate()
+
+    assert signal_module.SIGTERM in installed and signal_module.SIGINT in installed
+    installed[signal_module.SIGTERM](signal_module.SIGTERM, None)
+
+    assert main_module.is_shutting_down() is True
+    assert previous_calls == [signal_module.SIGTERM], '必须调用 uvicorn 原处理器'
+
+
+def test_signal_drain_gate_is_installed_from_lifespan(monkeypatch):
+    """闸门必须在 lifespan 启动时注册（`__main__` 段在生产不会执行）。"""
+    import inspect
+
+    import main as main_module
+
+    src = inspect.getsource(main_module.lifespan)
+    assert 'install_signal_drain_gate()' in src, (
+        'lifespan 必须调用 install_signal_drain_gate —— 否则 uvicorn main:app 启动下'
+        '排水闸仍恒为假（G1 原缺陷）'
+    )
+
+
+def test_signal_drain_gate_is_idempotent(monkeypatch):
+    """重复注册不得把自己再套一层（否则一次信号递归调用自己）。"""
+    import main as main_module
+
+    handlers: dict = {}
+
+    def self_handler(signum, frame):  # 名字模拟已安装的链
+        pass
+
+    self_handler.__name__ = '_handler'
+
+    monkeypatch.setattr(main_module.signal, 'getsignal', lambda sig: self_handler)
+    monkeypatch.setattr(
+        main_module.signal, 'signal', lambda sig, handler: handlers.__setitem__(sig, handler)
+    )
+
+    main_module.install_signal_drain_gate()
+    assert handlers == {}, '已安装过的信号不应再次被包装'
