@@ -78,6 +78,11 @@ import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
 import type { Request } from "express";
 import { ConfigService } from "@nestjs/config";
 import { RedisLockService } from "../../common/services/redis-lock.service";
+// SEC-3：应用发布 webhook 的投递幂等（DB 唯一约束仲裁，跨实例/跨重启有效）。
+import {
+  WebhookDeliveryService,
+  WEBHOOK_DELIVERY_SCOPE_APP_RELEASE,
+} from "./webhook-delivery.service";
 // SEC-09: 限流分域——upgrade-all/rollback 属集群干预写面，挂中档
 // OPS_THROTTLE（默认 30/min）。装饰器求值期读取属 ARCH-27 显式豁免
 //（见 src/config/throttle-profiles.ts 头注）。
@@ -140,6 +145,11 @@ export class ApplicationController {
     // 行为与改动前一致；生产由 ApplicationModule 提供同一 Redis 实例）。
     @Optional()
     private readonly replayGuard?: RedisLockService | null,
+    // SEC-3：投递幂等账本（@Optional——单测装配缺席即跳过，行为与改动前一致；
+    // 生产由 ApplicationModule 提供）。与上面的签名去重**互补**：replayGuard 是
+    // 10 分钟 Redis 窗（同签名重放），本服务是 7 天 DB 账本（同 delivery id 重试）。
+    @Optional()
+    private readonly webhookDelivery?: WebhookDeliveryService | null,
   ) {
     // multer diskStorage resolves `destination` at request time; ensure the
     // staging dir exists at boot so a first upload never hits ENOENT.
@@ -611,14 +621,13 @@ export class ApplicationController {
     @Headers("x-hub-signature-256") signature?: string,
     @Headers("x-autocodeflow-timestamp") timestamp?: string,
     @Req() req?: Request & { rawBody?: Buffer },
-    // SEC-R3-4：可选投递幂等键（末位以保持既有位置参数契约）。
+    // SEC-3：可选投递幂等键（末位以保持既有位置参数契约）。
     //
-    // 目前**只接收、不参与去重**——`_` 前缀是刻意的：lint 的 no-unused-vars 让
-    // 「声明了却没用」保持可见，而不是用 eslint-disable 把它藏起来。真正的去重
-    // 需要一张 `(deliveryKey, appId)` 的持久化账本（与 task-webhook 的
-    // SEC-R3-4 同款，但那里是内存 TTL 窗，应用发布 webhook 是跨实例/长窗口场景，
-    // 内存实现会在多副本下失效）。已登记进 docs/audit-playbook.md §5 SEC-3。
-    @Headers("x-autoflow-delivery") _delivery?: string,
+    // 参数名不带 `_` 前缀是判据的一部分：lint 的 no-unused-vars 会盯着它，
+    // 「接收了却没用」不可能再悄悄回归（此前正是这个形态：header 收下、函数体
+    // 从不使用，同一 delivery id 重试每次都重新发布）。缺席/空串 ⇒ 视为无 key，
+    // 行为与去重上线前完全一致。
+    @Headers("x-autoflow-delivery") delivery?: string,
   ) {
     const logger = new Logger("ReleaseWebhook");
 
@@ -653,6 +662,43 @@ export class ApplicationController {
         `Webhook: signature verification failed (${failure}) for app "${dto.appName}"`,
       );
       throw new AppError(ErrorCode.APP_WEBHOOK_AUTH_FAILED);
+    }
+
+    // SEC-3：投递幂等（先于签名去重——delivery id 是调用方显式声明的「同一次投递」，
+    // 语义比「同签名」更强；签名去重仍保留给不带 delivery 的老集成）。
+    // · 首次 / 无 key → claimed:true，继续；
+    // · 已有未过期同键 → claimed:false，**提前返回** 200 + duplicate:true（CI 停止
+    //   重试），绝不 updateVersion、绝不 triggerDeploy；
+    // · 账本不可用（DB 抖动）→ fail-open：warn 后照常执行。宁可重复一次发布，
+    //   也不能让所有 CI 集成因附属表不可达而全挂（与 replayGuard 同姿态）。
+    if (this.webhookDelivery) {
+      try {
+        const claim = await this.webhookDelivery.claim({
+          scope: WEBHOOK_DELIVERY_SCOPE_APP_RELEASE,
+          key: delivery,
+          appId: targetApp.id,
+        });
+        if (!claim.claimed) {
+          logger.log(
+            `Release webhook: duplicate delivery "${delivery}" for "${dto.appName}" ` +
+              `(first received ${claim.receivedAt?.toISOString() ?? "unknown"}); skipped version update/rollout`,
+          );
+          return {
+            ok: true,
+            duplicate: true,
+            deliveryKey: delivery,
+            receivedAt: claim.receivedAt,
+            // 与 signature 去重同一响应形态，老调用方读到 deduplicated 也能停重试。
+            deduplicated: true,
+          } as never;
+        }
+      } catch (err: unknown) {
+        logger.warn(
+          `Release webhook: delivery ledger unavailable, proceeding without dedupe: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
 
     // SEC-R3-4（P2）：同一签名在窗内重复到达时不再重复 update/upgrade

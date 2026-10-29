@@ -7,6 +7,8 @@ import { ApplicationVersion } from "./entities/application-version.entity";
 import { AppDeploymentEvent } from "./entities/app-deployment-event.entity";
 // MUTEX-01：互斥组配置实体（组 CRUD + 应用挂组）。
 import { MutexGroup } from "./entities/mutex-group.entity";
+// SEC-3：应用发布 webhook 的投递幂等账本（(scope, deliveryKey) 唯一仲裁）。
+import { WebhookDelivery } from "./entities/webhook-delivery.entity";
 import { ApplicationService } from "./application.service";
 // SEC-R3-4：CI 发布回调去重（每模块自带实例，与 task/notification 同款）
 import { RedisLockService } from "../../common/services/redis-lock.service";
@@ -15,6 +17,9 @@ import { AppDeploymentService } from "./app-deployment.service";
 import { AppDeploymentController } from "./app-deployment.controller";
 import { MutexGroupService } from "./mutex-group.service";
 import { MutexGroupController } from "./mutex-group.controller";
+// SEC-3：投递去重服务 + 其保留期清理（每日 cron + LeaderGate + 分批删除）。
+import { WebhookDeliveryService } from "./webhook-delivery.service";
+import { WebhookDeliveryRetentionService } from "./webhook-delivery-retention.service";
 import { TaskModule } from "../task/task.module";
 import { ExecutorModule } from "../executor/executor.module";
 import { AiModule } from "../ai/ai.module";
@@ -32,6 +37,7 @@ import { NotificationModule } from "../notification/notification.module";
       ApplicationVersion,
       MutexGroup,
       AppDeploymentEvent,
+      WebhookDelivery,
     ]),
     forwardRef(() => TaskModule),
     ExecutorModule,
@@ -48,6 +54,10 @@ import { NotificationModule } from "../notification/notification.module";
     ApplicationService,
     AppDeploymentService,
     MutexGroupService,
+    // SEC-3：controller 用它判断同一 delivery id 是否重复投递。
+    WebhookDeliveryService,
+    // SEC-3：过期账本清理（@Cron + LeaderGate 门禁，ARCH-31 §5）。
+    WebhookDeliveryRetentionService,
     RedisLockService,
   ],
   // MUTEX-01：MutexGroupService 一并导出——agent 侧 ToolBinderService 要把它
