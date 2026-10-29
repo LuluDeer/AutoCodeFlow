@@ -182,8 +182,18 @@ export interface ExecutionTerminalEventPayload {
   failureReason: string | null;
   /** 回调上报的错误信息（若有）。 */
   errorMessage?: string;
-  /** 回调上报的日志（可能截断）——仅够 listener 做头行摘要回退，不落库。 */
-  logs?: string;
+  /**
+   * 回调日志的**首行摘要**（硬切 500 字符，`logHeadOf()` 派生，与告警摘要
+   * 同口径）。rt-3：此字段此前是回调原始 `logs`（DTO 上限 512_000 字符）——
+   * 那份载荷要经 Redis PUBLISH 逐副本广播、并被每条 SSE 连接各自再
+   * `JSON.stringify` 一遍，而唯一消费方（告警摘要回退）只取首行。
+   *
+   * **契约**：事件只传「事实 + 句柄」。日志全文在数据面——DB
+   * `task_executions.logs` 与 S3 对象（`logStorage`/`logObjectKey`），需要全文
+   * 的消费方走 `GET /tasks/:id/executions/:execId/logs` 一次性拉取，不从事件
+   * 广播里取（CloudEvents「notifications, not data dumps」同理）。
+   */
+  logHead?: string;
   /** 该执行已有的 AI 分析（若有），随通知透传——与迁移前读取时序等价。 */
   aiAnalysis?: string | null;
   /** 执行时长（毫秒，回调上报或按 startTime 推算）。 */

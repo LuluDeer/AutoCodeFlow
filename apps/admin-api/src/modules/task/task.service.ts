@@ -114,6 +114,9 @@ import {
 // 复用的判据，后者是本域自己的取舍。
 import { executionCsvHeaderRow, executionToCsvRow } from "./execution-csv";
 import { csvTruncationMarker } from "../../common/utils/csv-export.util";
+// rt-3：终态事件载荷只带日志首行摘要（硬切 500，与告警 errorSummary 共用同一
+// 常量/函数）；事件广播不传日志全文，全文留在 DB/S3 数据面。
+import { logHeadOf } from "../../common/utils/execution-summary.util";
 // §2.1 游标分页：keyset 游标的编解码（纯函数，非法输入一律 400 VALIDATION_FAILED）。
 // 推广到 GET /tasks 后**只有一份实现**——`*KeysetCursor*` 是通用名，
 // `*ExecutionCursor*` 是 executions 端点沿用下来的别名（转调，不是副本）。
@@ -4081,7 +4084,26 @@ export class TaskService {
 
     const flush = async (): Promise<boolean> => {
       // Returns true when execution is terminal and no more lines pending
-      const exec = await this.execRepo.findOne({ where: { id: execId } });
+      // rt-7：列级投影——本函数只读 status/taskId/logStorage/logObjectKey
+      // （maybeNotifyTimeoutWarning 另需 id/startTime，见下注），而 `logs` 是
+      // text 列（回调上限 512KB）、`result`/`params`/`artifacts` 是 jsonb、
+      // `aiAnalysis` 是 text。此前每拍 findOne 取整行：64 条并发流 × 1/5s~1/1s
+      // 即 13-64 次/秒把几十 KB 的无关列搬出库、并在进程内驻留（R-24 退避只
+      // 降了空转 QPS，没降列宽）。投影后单次返回 <200B。
+      const exec = await this.execRepo.findOne({
+        where: { id: execId },
+        select: {
+          id: true,
+          status: true,
+          taskId: true,
+          logStorage: true,
+          logObjectKey: true,
+          // startTime 不是「顺便带上」：下面的超时预警观察点
+          // （maybeNotifyTimeoutWarning → `if (!exec.startTime) return`）与
+          // elapsed 计算都依赖它，漏选会让预警静默失效。id 同理用于 SETNX 锁键。
+          startTime: true,
+        },
+      });
       if (!exec) return true;
 
       // FIX-3.1: 超时预警观察点（终态轮次跳过——预警只对进行中的执行有意义）。
@@ -5152,7 +5174,12 @@ export class TaskService {
       status: status as ExecutionTerminalEventPayload["status"],
       failureReason: failureReason ?? null,
       errorMessage: cb.errorMessage,
-      logs: cb.logs,
+      // rt-3：只带**首行摘要**（硬切 500，与 listener 的 errorSummary 同常量
+      // EXECUTION_SUMMARY_MAX_CHARS），不再携带回调原始 logs。事件会被逐副本
+      // PUBLISH 到 Redis、并被每条 SSE 连接各自再 JSON.stringify 一遍，而唯一
+      // 消费方只取首行做告警回退——全文留在数据面（DB logs 列 / S3 对象），
+      // 需要全文的消费方走 GET .../executions/:execId/logs 一次性拉取。
+      logHead: logHeadOf(cb.logs),
       aiAnalysis: execution.aiAnalysis ?? null,
       durationMs,
       finishedAt: finishedAt.toISOString(),

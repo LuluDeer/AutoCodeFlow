@@ -27,6 +27,7 @@ import { ConfigService } from "@nestjs/config";
 import { DomainEventBus } from "../domain-event-bus.service";
 import {
   EXECUTION_EVENTS_RELAY_CHANNEL,
+  EXECUTION_EVENT_PAYLOAD_MAX_BYTES,
   ExecutionEventsRelayService,
 } from "../execution-events-relay.service";
 import {
@@ -206,5 +207,51 @@ describe("ExecutionEventsRelayService (A3 cross-instance terminal events)", () =
       ),
     ).not.toThrow();
     expect(seen).toHaveLength(0);
+  });
+
+  // rt-3：载荷大小护栏——只告警不阻断（relay 是 fail-open 读面补发，丢事件
+  // 比多传几 KB 更糟）；护栏的职责是「有人把日志全文塞回载荷」时叫出来。
+  const silenceLogger = (): jest.Mock => {
+    const warn = jest.fn();
+    (
+      service as unknown as {
+        logger: { warn: jest.Mock; error: jest.Mock; log: jest.Mock };
+      }
+    ).logger = { warn, error: jest.fn(), log: jest.fn() };
+    return warn;
+  };
+
+  it("h) 常规终态载荷（含 500 字符 logHead）不触发大小护栏", async () => {
+    const warn = silenceLogger();
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      makePayload({ logHead: "x".repeat(500) }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(publisher().publish).toHaveBeenCalledTimes(1);
+    const [, raw] = publisher().publish.mock.calls[0] as [string, string];
+    // 实测：信封 + 500 字符 logHead 远小于 8KB 护栏
+    expect(Buffer.byteLength(raw, "utf8")).toBeLessThan(
+      EXECUTION_EVENT_PAYLOAD_MAX_BYTES,
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("i) 载荷超 8KB：warn 带 eventId 且照常广播（不阻断）", async () => {
+    const warn = silenceLogger();
+    // 模拟「回归」：有人往载荷里塞了日志全文（rt-3 之前 logs 就是这样）
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      makePayload({ logHead: "y".repeat(64 * 1024) }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = String(warn.mock.calls[0][0]);
+    expect(msg).toContain("exec-1"); // eventId（executionId）
+    expect(msg).toContain(DOMAIN_EVENTS.EXECUTION_FAILED);
+    // 未阻断：广播仍发出（护栏语义 = 告警）
+    expect(publisher().publish).toHaveBeenCalledTimes(1);
   });
 });

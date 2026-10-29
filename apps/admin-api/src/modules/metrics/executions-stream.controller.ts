@@ -32,6 +32,13 @@ import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
  *   （handleCallback winner / killExecution 落库后发布），载荷为 common 层
  *   ExecutionTerminalEventPayload（全原始类型），JSON 序列化后直接透传，
  *   不做二次解释；SSE event 名 = 领域事件名，客户端 addEventListener 消费。
+ *   rt-3：载荷是**摘要型**——不再携带回调原始 logs（≤512KB），只带派生
+ *   `logHead`（首行 ≤500 字符）。这一层的成本被乘了两次（跨实例 relay 的
+ *   `JSON.stringify` + PUBLISH，以及**每条连接各自** 的 `JSON.stringify`），
+ *   所以「载荷里不放数据面内容」不只是 relay 的规矩：viaRelay 补发的载荷
+ *   （另一实例经 Redis 转来）与本实例 emit 的载荷形状完全一致、走同一条
+ *   `sendEvent` 透传，故任何一端的字段膨胀都会线性放大到全部订阅连接上。
+ *   日志全文按需走 GET /tasks/:id/executions/:execId/logs 拉取。
  * - 无快照帧：订阅窗口错过建连前的终态事件属可接受降级——页面列表首屏仍走
  *   GET /tasks/executions/all（query hooks 首次拉取），SSE 只做「终态加速」，
  *   与 metrics/stream 的「快照即数据」语义不同，不引入快照查询。
