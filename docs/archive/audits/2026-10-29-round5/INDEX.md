@@ -198,3 +198,23 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 2. 仍只测函数的 4 条：enum-drift / lint-gates / user-facing-language / workflow-actions-pinned
    （npm-audit-exemptions 需联网，openapi-response-schema 归属未定）。
 3. 结构化残差：db keyset 深分页、CIR-05 残差。
+
+---
+
+## 13. 追加：第 14 轮（守卫的守卫补判据 + T4 真收官）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 第三判据 | `check-guards-wired` 现在检查「有自检 ⇒ 自检必须真被跑」（本地 `test:guards` 递归展开 + CI 10 个 workflow 的 211 个 `run:` 块，剥注释、按缩进 dedent、合并同文件 flag）；selftest 7→20 条；豁免分两张表，`one-side` 要求 wired 那面做事实核对 | `f42b419d` |
+| T4 收官 | enum-drift / lint-gates / user-facing-language / workflow-actions-pinned 接 harness（27/13/24/13 条）；修掉「`--update` 把空扫描面写成合法空基线」「`--report` 吞结构错」「捕获组只留最后成员」等假绿 | `b2d466bc` |
+| 文档 | 迁移 123→124（G6 `runOnUpstreamFailure`） | `f626c70b` |
+
+验证：`test:guards:repo` **exit 0**；`check-guards-wired` 报「45 个守卫有自检 / 44 个两面都跑 / 0 个只接一面」；
+**42/44 个 `check-*.mjs` 已接共享 harness**（剩 2 个：npm-audit-exemptions 需联网、openapi-response-schema 是 CLI 外壳）。
+
+### 下轮入口
+
+1. 剩 2 条：`check-npm-audit-exemptions`（判据本体需 registry，可只收编自检执行层）、
+   `check-openapi-response-schema`（主文件是外壳、伴生 selftest 已接，决定归并方式）。
+2. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G8（工具注册表插件化）。
+3. 建议给 `test:guards:repo` 记录一次基线耗时（57 个 script），避免后续再加守卫时无感膨胀。
