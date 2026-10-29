@@ -3408,6 +3408,49 @@ describe("TaskService (__tests__)", () => {
       });
     });
 
+    // rt-2：S3 模式下多页必须合并成**一次** put（旧实现每页读回整对象 +
+    // 全量 gzipSync，200 页是 O(P²) 压缩量 + 每页一次同步阻塞）。
+    it("rt-2: S3 backfill buffers pages into a single put", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "exec-1:8002",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const put = jest.fn(
+        async (_id: string, _content: string) => "execution-logs/e1.log.gz",
+      );
+      jest
+        .spyOn(service as any, "resolveS3Storage")
+        .mockReturnValue({ put } as any);
+      jest
+        .spyOn(service as any, "s3GetExistingLog")
+        .mockResolvedValue("" as never);
+      const axios = (await import("axios")).default;
+      (axios.get as jest.Mock).mockClear();
+      (axios.get as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { lines: ["a", "b"], totalLines: 3, hasMore: true },
+        })
+        .mockResolvedValueOnce({
+          data: { lines: ["c"], totalLines: 3, hasMore: false },
+        });
+
+      await service.handleCallback([
+        {
+          executionId: "e1",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(put.mock.calls[0][1]).toBe("a\nb\nc");
+    });
+
     it("R4-P1: multi-page backfill appends — every page survives, delete runs once (page 0 only)", async () => {
       const exec = {
         id: "e1",
