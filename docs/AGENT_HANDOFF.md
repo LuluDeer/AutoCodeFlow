@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十六轮 → rt-6 排空循环，main）**：
+  - **rt-6 续（`5db72689`）**：上一轮把 outbox 批量 5→20、并发 3→10；本轮把 `scanOnce` 改成**排空循环**——只要本轮取满（可能还有积压）就立即 claim 下一批，不再等下一个 5s tick；上限 `OUTBOX_DRAIN_MAX_BATCHES=3`（最多 60 行/tick，下游挂起最坏 90s），到顶打一条「backlog remains」WARN。旧「整批饱和」提示在排空后已不准确，替换。
+  - **验证**：admin-api tsc 0；outbox **43 例**（+2：取满立即再 claim、per-tick 上限）；全量 admin-api 见本轮末尾复核。
+  - **核对（并行流已落地）**：rt-7（日志流列投影）、WEB-1/3/4/5（recharts 首屏、SSE 后台不重连、审批单可看见要执行的参数——`ToolArgsView` + `ToolArgsView` 关联）、SEC/EXEC/OBS 大部分条目。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结在 1.9.0，release 工具面）、守卫审计未做项、migration-symmetry 全量命中。
+
 - **本轮（2026-10-29 第十五轮 → rt-8 事件驱动保活 + rt-6 恢复吞吐，main）**：
   - **rt-8（P3，`5e1d85bf`）**：`/executions/stream` 曾每秒醒一次判断「是否该 ping」（250 条连接 = 250 次/s 的 Promise + abort listener 成对分配），而 ping 周期是 30s。改为 `setTimeout(idlePingMs)` 单定时器 + **每写一帧重置**（与日志流同口径），连接生命周期只剩 `waitAbort(signal)`；定时器 `unref()`。删掉失效的 `waitCancellable`。
   - **rt-6（P2，`b443364c`）**：outbox 恢复速率是 `BATCH/INTERVAL` 的乘积——5 行/5s = 1 行/s，比入队面（≈22 行/s）低 1.5 个量级；一次 10 分钟下游故障要 3.6-14 小时排空，且期间只有「积压增长」告警、没有恢复中信号。`BATCH` 5→20、`CONCURRENCY` 3→10；构造期断言改为「租约 ≥ 单行上界 × 波数」（20 行两波 30s < 60s 租约，不扩大重复投递窗）。同步修正 `ARCH-MULTI-INSTANCE-MATRIX.md` 的陈旧口径（仍写 BATCH=1）。
