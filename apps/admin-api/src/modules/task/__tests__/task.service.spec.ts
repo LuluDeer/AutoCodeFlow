@@ -7530,12 +7530,21 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
       from: 2,
     });
+    // P1（第 6 轮）：分区键范围必须下推——否则 execution_log_lines 的日分区
+    // 全部各扫一遍（默认保留 30 天 = ×31）。
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      "l.createdAt >= :logSince AND l.createdAt <= :logUntil",
+      expect.objectContaining({
+        logSince: expect.any(Date),
+        logUntil: expect.any(Date),
+      }),
+    );
     expect(qb.andWhere).not.toHaveBeenCalledWith("l.level = :level", {
       level: expect.anything(),
     });
     expect(qb.skip).not.toHaveBeenCalled();
     expect(logLineRepo.count).toHaveBeenCalledWith({
-      where: { executionId: "exec-1" },
+      where: expect.objectContaining({ executionId: "exec-1" }),
     });
     expect(result).toEqual({
       lines: ["line0"],
@@ -7562,7 +7571,7 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(qb.skip).toHaveBeenCalledWith(2);
     // totalLines 按 level 过滤后计数（分页元数据描述过滤行集）
     expect(logLineRepo.count).toHaveBeenCalledWith({
-      where: { executionId: "exec-1", level: "ERROR" },
+      where: expect.objectContaining({ executionId: "exec-1", level: "ERROR" }),
     });
     expect(result).toEqual({
       lines: ["[ERROR] boom"],
@@ -7600,7 +7609,7 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     });
     expect(qb.skip).not.toHaveBeenCalled();
     expect(logLineRepo.count).toHaveBeenCalledWith({
-      where: { executionId: "exec-1" },
+      where: expect.objectContaining({ executionId: "exec-1" }),
     });
   });
 });

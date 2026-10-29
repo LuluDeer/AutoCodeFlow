@@ -3959,6 +3959,32 @@ export class TaskService implements OnModuleInit {
    * - level=null（未过滤）时行为与 OBS-03 之前完全一致；
    * - 过滤时 level IS NULL 的行（存量行/推断不到的行 = 未知级别）不返回。
    */
+  /**
+   * 日志读的分区窗口（第 6 轮八域审计 P1）。
+   *
+   * `execution_log_lines` 按 `createdAt` RANGE 分区，但读路径此前只按
+   * executionId 过滤——PG 无法裁剪，每次读都会对**全部日分区**各做一次索引
+   * 扫描（默认保留 30 天 ⇒ ×31 放大）。日志行只会落在执行开始到终态附近，
+   * 用「开始-1h ~ (终态 ?? now)+1h」作分区键范围：仍覆盖时钟偏移/重试写入，
+   * 同时把扫描限制在 1-2 个分区。exec 缺失时退化为「epoch ~ now+1h」。
+   */
+  private logPartitionWindow(
+    exec:
+      | Pick<TaskExecution, "startTime" | "createdAt" | "endTime">
+      | null
+      | undefined,
+  ): { since: Date; until: Date } {
+    const HOUR = 60 * 60 * 1000;
+    const base = exec?.startTime ?? exec?.createdAt ?? null;
+    const since = base
+      ? new Date(new Date(base).getTime() - HOUR)
+      : new Date(0);
+    const until = exec?.endTime
+      ? new Date(new Date(exec.endTime).getTime() + HOUR)
+      : new Date(Date.now() + HOUR);
+    return { since, until };
+  }
+
   async getExecutionLogs(
     execId: string,
     fromLine = 0,
@@ -3973,6 +3999,7 @@ export class TaskService implements OnModuleInit {
         executionId: execId,
       });
     }
+    const logWindow = this.logPartitionWindow(exec);
     // LOG-02 + High-6.1: S3-stored logs are streamed line-by-line so we never
     // hold the full decompressed payload in memory; DB rows remain the
     // fallback (and the db-driver path).
@@ -3998,7 +4025,12 @@ export class TaskService implements OnModuleInit {
     // 形态与 OBS-03 之前完全一致（行号游标 + 全量 count），存量行为不变。
     const qb = this.logLineRepo
       .createQueryBuilder("l")
-      .where("l.executionId = :id", { id: execId });
+      .where("l.executionId = :id", { id: execId })
+      // P1（第 6 轮）：分区键范围——让 PG 只扫执行窗口覆盖的分区。
+      .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
+        logSince: logWindow.since,
+        logUntil: logWindow.until,
+      });
     if (level) {
       qb.andWhere("l.level = :level", { level });
     } else {
@@ -4018,8 +4050,19 @@ export class TaskService implements OnModuleInit {
       // OBS-03: totalLines 与过滤语义一致——level 过滤时按 level 计数
       // （分页元数据描述的是调用方能翻到的行集），未过滤时保持全量计数。
       level
-        ? this.logLineRepo.count({ where: { executionId: execId, level } })
-        : this.logLineRepo.count({ where: { executionId: execId } }),
+        ? this.logLineRepo.count({
+            where: {
+              executionId: execId,
+              level,
+              createdAt: Between(logWindow.since, logWindow.until),
+            },
+          })
+        : this.logLineRepo.count({
+            where: {
+              executionId: execId,
+              createdAt: Between(logWindow.since, logWindow.until),
+            },
+          }),
     ]);
     return {
       lines: lines.map((r) => r.content),
@@ -4250,9 +4293,16 @@ export class TaskService implements OnModuleInit {
         return terminal;
       }
 
+      // P1（第 6 轮）：与 REST 同款分区窗口——SSE 每 1s 一拍、并发 64 条时
+      // 没有分区裁剪就是 31× 的分区索引探测。
+      const sseLogWindow = this.logPartitionWindow(exec);
       const lines = await this.logLineRepo
         .createQueryBuilder("l")
         .where("l.executionId = :id", { id: execId })
+        .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
+          logSince: sseLogWindow.since,
+          logUntil: sseLogWindow.until,
+        })
         .andWhere("l.lineNumber >= :from", { from: nextLine })
         .orderBy("l.lineNumber", "ASC")
         .select(["l.lineNumber", "l.content"])
