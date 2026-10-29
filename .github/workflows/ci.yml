@@ -724,9 +724,12 @@ jobs:
         with:
           node-version: 24
       - name: Migration allocation check
+        # T4：判据自检并入 --selftest（原伴生 check-migrations.selftest.mjs 已删除）：
+        # 反证撞号/重复登记/漏登/CONCURRENTLY 三件套 + 「注册行被注释掉或只作示例也算登记」
+        # 的假绿 + 文件名不是 13 位时间戳时静默跳过 + 扫描面下界/事实源缺失的结构红。
         run: |
+          node scripts/check-migrations.mjs --selftest
           node scripts/check-migrations.mjs
-          node scripts/check-migrations.selftest.mjs
       # T3（第 4 轮测试质量审计）：迁移 up()/down() 对称性棘轮。
       # 审计实测：122 个迁移里 68 个无 spec；有 spec 的 54 个里 51 个的 down 只做
       # 文本断言（`expect(typeof down).toBe("function")` 之类），仅 3 个真正执行
@@ -843,8 +846,12 @@ jobs:
         run: npm run check:infra-doc-counts
       # 「手写枚举单向腐烂」的两个剩余面：MCP 工具地图曾停在 40 个（实际 56，漏 16）；
       # REST 地图曾写「24 controller / 21 前缀」（实际 30 / 28），且 7 个路由前缀整域缺失。
+      # T4：--selftest 反证三处假绿（工具名在散文/更长名字里命中也算收录、标签映射与词条写在
+      # 注释里也算、@Controller 写法解析不了时静默跳过）+ 扫描面下界与事实源缺失的结构红。
       - name: Interface maps (MCP tool names + REST route prefixes) vs code
-        run: node scripts/check-interface-maps.mjs
+        run: |
+          node scripts/check-interface-maps.mjs --selftest
+          node scripts/check-interface-maps.mjs
       # 同一道 SSRF 闸在两个 app 各有一份实现：admin-api 是表驱动 + 18 条矩阵，
       # executor-node 长期是弱版本（R74-A1 实测 ::ffff:127.0.0.1 整条放行）。
       # 镜像矩阵必须跟着长，否则「加了危险段、只在一侧生效」永远不会被发现。
@@ -871,8 +878,13 @@ jobs:
         run: node scripts/check-guards-wired.mjs --selftest
       # desktop 的 selftest 必须被 test:main 执行：48 个文件里曾有 2 个（browser / package-candidate）
       # 从未在 CI 跑过，而它们的头注都写着「Run via: npm run test:main」——文档说它跑，实际不跑。
+      # T4：--selftest 反证「npm run test:main:subset 被当成跑了 test:main」（前缀误配）、
+      # 「只在 schedule 上跑的 job 被当成随 push 运行」、执行点归属不到 job 时的静默跳过，
+      # 以及 src/main 消失 / 清单解析不到任何项的结构红。
       - name: Desktop selftests are wired into test:main
-        run: node scripts/check-desktop-selftests-wired.mjs
+        run: |
+          node scripts/check-desktop-selftests-wired.mjs --selftest
+          node scripts/check-desktop-selftests-wired.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
@@ -900,8 +912,11 @@ jobs:
       # 的 Python 校验集、executor-node 可上报集。任何一处漏改都是**静默**故障：
       # 最严重的是 admin 回调 DTO 的 @IsIn——执行器上报未登记值会让整批回调 400
       # 被拒（不是单条失败），任务永远停在运行中。零依赖，秒级。
+      # T4：--selftest 反证「事实源被清空 → [] === [] 永真绿」「注释里的取值被算成成员」
+      # 两处假绿，以及四条抽取面解析失败时的结构红（旧实现是抛栈，与漂移混在一起）。
       - name: Failure-reason enum alignment guard (FR-08/D15)
         run: |
+          node scripts/check-failure-reasons.mjs --selftest
           node scripts/check-failure-reasons.mjs
       # LANG-ZH-01（用户指令：所有面向用户的文字必须中文）：**面向用户英文文字**
       # 棘轮守卫。判据三面——openapi.json 的字段 description / 端点 summary

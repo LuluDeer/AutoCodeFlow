@@ -320,7 +320,7 @@
 
 > 单一事实源：apps/admin-api/src/migrations/ 的时间戳分配。
 
-> 单一事实源：apps/admin-api/src/migrations/ 的时间戳分配。**新增迁移前先在此登记，再建文件**；分配规则=在盘最大时间戳 +1（不跳号、不段预留），撞号/漏登由 CI `check-migrations` 拦截（scripts/check-migrations.mjs，自检 scripts/check-migrations.selftest.mjs）。时间戳即 Date.now() 毫秒段，与既有序一致。
+> 单一事实源：apps/admin-api/src/migrations/ 的时间戳分配。**新增迁移前先在此登记，再建文件**；分配规则=在盘最大时间戳 +1（不跳号、不段预留），撞号/漏登由 CI `check-migrations` 拦截（scripts/check-migrations.mjs，判据自检 `--selftest`）。时间戳即 Date.now() 毫秒段，与既有序一致。
 
 | 时间戳 | 迁移 | 任务/归属 | 备注 |
 |---|---|---|---|

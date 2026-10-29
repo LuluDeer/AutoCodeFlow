@@ -368,8 +368,7 @@ docs: 更新 SDK 使用示例
    `.env.example`、`docs/` 对应环境变量表——规约详见上文「配置读取规约（ARCH-27）」。
 4. **新增数据库迁移** → 时间戳先在 `docs/PLAN-CLAIMS.md`「迁移时间戳分配表」登记
    （分配规则=在盘最大时间戳 +1，先登记再建文件），CI `check-migrations` job 会拦截
-   撞号与漏登（scripts/check-migrations.mjs，可本地预跑；配套自检
-   scripts/check-migrations.selftest.mjs）。
+   撞号与漏登（scripts/check-migrations.mjs，可本地预跑；判据自检用 `--selftest`）。
 5. **平台影响** → `executor-node` 源码改动必须与重打的 `bundle` 同 commit 提交；
    涉及执行器/调度行为变更对照 `docs/VERIFY-MATRIX.md` 补真机验证项。
 
