@@ -3830,6 +3830,65 @@ describe("TaskService (__tests__)", () => {
         return depQb;
       };
 
+      // G6：失败边——FAILED 回调也要扇出，但**只**触发声明了
+      // runOnUpstreamFailure 的下游；未声明者保持「失败不触发」。
+      it("G6: 失败回调只触发声明失败边的下游", async () => {
+        const exec = {
+          id: "e-dep-f",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          {
+            id: "t-compensate",
+            dependencies: { up: "t-upstream" },
+            runOnUpstreamFailure: true,
+          },
+          [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        const result = await service.handleCallback([
+          {
+            executionId: "e-dep-f",
+            status: "failed",
+            errorMessage: "boom",
+          },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(taskQueue.add).toHaveBeenCalledWith(
+          "execute",
+          { executionId: expect.any(String) },
+          expect.objectContaining({ attempts: expect.any(Number) }),
+        );
+      });
+
+      it("G6: 未声明失败边的下游在 FAILED 回调时不被触发", async () => {
+        const exec = {
+          id: "e-dep-f2",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream({ id: "t-plain", dependencies: { up: "t-upstream" } }, [
+          { taskId: "t-upstream", status: ExecutionStatus.FAILED },
+        ]);
+
+        await service.handleCallback([
+          {
+            executionId: "e-dep-f2",
+            status: "failed",
+            errorMessage: "boom",
+          },
+        ]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
       it("triggers a dependent task when a SUCCESS callback lands and all deps are satisfied", async () => {
         const exec = {
           id: "e-dep",
