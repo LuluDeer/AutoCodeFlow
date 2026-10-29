@@ -259,3 +259,21 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 2. **`minio/minio:RELEASE.2024-10-13T13-34-11Z` 解析不到**：Docker Hub 仓库已下线
    （hub API 404 / registry 401 / manifest inspect denied）。已加 `ALLOW_UNPINNED` 豁免（复查
    2026-12-31）；要根治需迁 quay.io 或换实现。
+
+---
+
+## 16. 追加：第 17 轮（Dockerfile FROM 固定 + 守卫扩面）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| FROM 固定 | `apps/*/Dockerfile` 的 **10 条 FROM** 固定到 manifest list digest（node:24-alpine ×5 / nginx:1.27-alpine / python:3.12-slim ×4）；双路交叉验证（hub API + `docker manifest inspect`，amd64 子 digest 与 hub `images[]` 逐位吻合）；5 个 Dockerfile 全部 `docker build --check` 无警告 | `64323598` |
+| 守卫扩面 | `check-image-pinned` 扫描面从「仓库根」扩到「根 + `apps/<app>/Dockerfile*`」，加下界（文件 ≥4 / FROM ≥8），selftest 10→12（新增「apps 下未固定 → 红」「apps 目录不存在 → 结构红」） | `64323598` |
+| 文档 | 迁移 124→125（sop_clarifications 待处理部分索引） | `ec620d00` |
+
+验证：`check-image-pinned` 主跑 25 条镜像引用 → 固定 24 / 豁免 1（minio）/ 未固定 0；
+`test:guards:repo` **exit 0**（842 个 ✔）；`check-guards-wired`：45 个守卫全接线、46 个有自检、
+45 个两面都跑、0 个只接一面。
+
+**CIR-05 到此收口**：action（106 处）+ compose 镜像（14 行）+ Dockerfile FROM（10 行）三层都已固定，
+各有一道机械守卫。唯一遗留是 `minio/minio`——Docker Hub 仓库已下线，`ALLOW_UNPINNED` 带理由豁免，
+根治需迁 quay.io 或换实现（复查日期 2026-12-31）。
