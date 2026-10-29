@@ -293,15 +293,30 @@ def test_run_uv_spawns_through_launcher(monkeypatch):
 
 @posix_only
 def test_prepare_run_keeps_unwrapped_command_in_error(monkeypatch):
-    """git 失败文案不得暴露 launcher argv（用户看到的是真实命令）。"""
+    """git 失败文案不得暴露 launcher argv（用户看到的是真实命令）。
+
+    Round6-P2-A：prepare 的 spawn 从 ``subprocess.run`` 换成
+    ``Popen + communicate(timeout=)``（超时要整树杀），替身随之改为 Popen；
+    断言面不变——异常里的 cmd 仍是未包装的真实命令。
+    """
     real_cmd = ['git', 'clone', '--bare', 'url', '/tmp/cache']
     wrapped_holder = {}
 
-    def fake_run(cmd, **kwargs):
-        wrapped_holder['cmd'] = cmd
-        raise execute_module.subprocess.CalledProcessError(128, cmd)
+    class FakePopen:
+        returncode = 128
+        pid = 4321
 
-    monkeypatch.setattr(execute_module.subprocess, 'run', fake_run)
+        def __init__(self, argv, **kwargs):
+            wrapped_holder['cmd'] = list(argv)
+            wrapped_holder['kwargs'] = kwargs
+
+        def communicate(self, timeout=None):
+            return (None, None)
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(execute_module.subprocess, 'Popen', FakePopen)
     with pytest.raises(execute_module.subprocess.CalledProcessError) as excinfo:
         execute_module._run_prepare_cmd(real_cmd, {'RLIMIT_AS': (1024, 1024)}, timeout=5)
     # launcher 确实被用上了
@@ -309,6 +324,9 @@ def test_prepare_run_keeps_unwrapped_command_in_error(monkeypatch):
     # 但异常里的 cmd 是真实命令（与改动前逐字一致，分类规则不受影响）
     assert excinfo.value.cmd == real_cmd
     assert excinfo.value.returncode == 128
+    # output/stderr 与 subprocess.run（未设 PIPE）时代逐字一致：都是 None
+    assert excinfo.value.output is None
+    assert excinfo.value.stderr is None
 
 
 # ---------------------------------------------------------------------------

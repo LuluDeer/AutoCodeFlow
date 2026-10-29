@@ -303,19 +303,33 @@ def test_git_checkout_to_serializes_same_repo(tmp_path, monkeypatch):
     state = {'active': 0, 'peak': 0, 'overlap': False}
     guard = threading.Lock()
 
-    def fake_run(cmd, **kwargs):
-        with guard:
-            state['active'] += 1
-            if state['active'] > state['peak']:
-                state['peak'] = state['active']
-            if state['active'] > 1:
-                state['overlap'] = True
-        time.sleep(0.05)
-        with guard:
-            state['active'] -= 1
-        return subprocess.CompletedProcess(cmd, 0, b'', b'')
+    class FakePopen:
+        """``_run_prepare_cmd`` 现在走 ``Popen + communicate(timeout=)``
+        （Round6-P2-A：超时改为整树杀），替身随之改为 Popen。计时段落在
+        ``communicate``（≈ 子进程存活的模拟时长）。"""
 
-    monkeypatch.setattr(execute_module.subprocess, 'run', fake_run)
+        returncode = 0
+        pid = 4321
+
+        def __init__(self, argv, **kwargs):
+            self.argv = list(argv)
+
+        def communicate(self, timeout=None):
+            with guard:
+                state['active'] += 1
+                if state['active'] > state['peak']:
+                    state['peak'] = state['active']
+                if state['active'] > 1:
+                    state['overlap'] = True
+            time.sleep(0.05)
+            with guard:
+                state['active'] -= 1
+            return (None, None)
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(execute_module.subprocess, 'Popen', FakePopen)
 
     url = 'https://example.com/org/serial-repo.git'
     errors = []

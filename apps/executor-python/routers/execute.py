@@ -319,8 +319,14 @@ def _unshallow_bare_repo(cache_dir: Path) -> None:
     if not _is_shallow_bare_repo(cache_dir):
         return
     try:
-        subprocess.run(['git', '-C', str(cache_dir), 'fetch', '--unshallow'],
-                       check=True, timeout=_git_clone_timeout())
+        # Round6-P2-A 邻接收口：本 fetch 也是 git prepare 的子进程，且**同样
+        # 直接写共享 .git_cache**。此前裸 subprocess.run 不带独立进程组，超时
+        # 只能杀直接子进程（git-remote-https/index-pack 成孤儿继续写缓存）——
+        # 与 _run_prepare_cmd 修的是同一失效模式。改走 _run_prepare_cmd 后它
+        # 自动获得 start_new_session + 超时整树杀；limits 传 None 表示不施加
+        # RLIMIT（本路径本就无资源限制预算，不改既有语义）。
+        _run_prepare_cmd(['git', '-C', str(cache_dir), 'fetch', '--unshallow'],
+                         None, timeout=_git_clone_timeout())
         logger.info('Unshallowed git cache %s (restored full history)', cache_dir.name)
     except subprocess.CalledProcessError as exc:
         # Already complete / concurrent unshallow / remote does not support it —
@@ -370,6 +376,73 @@ def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
         _git_checkout_to_locked(repo_url, cache_dir, ref, dest)
 
 
+def _posix_kill_process_group(proc) -> None:
+    """POSIX 侧组杀：``killpg(SIGKILL)`` 打整棵树，失败再退化为 ``proc.kill()``。
+
+    异步的 ``_kill_process_tree``（任务侧，跑在事件循环里）与同步的
+    ``_kill_process_tree_sync``（prepare 阶段，跑在 executor 线程里）共用这一份
+    实现——「killpg 前先比对**执行器自己**的 pgid」这条安全底线（EXEC-02：
+    子进程万一没拿到独立进程组，killpg 等于把执行器连同其它并发任务一起
+    SIGKILL）只能有一处，两处复制必然漂移。
+    """
+    if proc.pid is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+        if pgid == os.getpgid(0):
+            # 不是独立进程组：killpg 会打到执行器自己 → 只杀该 pid。
+            logger.warning(
+                'task child pid %s shares the executor process group (pgid %s); '
+                'falling back to a single-process kill', proc.pid, pgid,
+            )
+            proc.kill()
+            return
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _kill_process_tree_sync(proc) -> None:
+    """``_kill_process_tree`` 的**同步孪生**：prepare 阶段（git）的超时收尸。
+
+    为什么必须另有一份：prepare 的 subprocess 由 ``_run_prepare_cmd`` 在
+    ``run_in_executor`` 的**工作线程**里起（``git_checkout_to`` 全程同步），
+    那里没有事件循环可 ``await``——异步版 ``_kill_process_tree`` 调不动。
+
+    平台分支与异步版逐条同形（Round6-P2-A：与 node ``run-command.ts`` 的
+    ``killProcessTree`` 对齐）：POSIX 走组杀（子进程由 spawn 的
+    ``start_new_session=True`` 自带进程组，所以 ``killpg`` 覆盖孙进程），
+    win32 无进程组语义 → ``taskkill /T /F`` 按 pid 树走，再 ``proc.kill()``
+    兜底。
+    """
+    if proc.pid is None:
+        return
+    if sys.platform == 'win32':
+        try:
+            subprocess.run(
+                ['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except Exception:  # noqa: BLE001 - 尽力而为（进程可能已退出）
+            pass
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        return
+    _posix_kill_process_group(proc)
+
+
+# 树杀之后等直接子进程被内核回收的上限（孙进程已由 killpg/taskkill 杀掉，
+# 这里只负责「不留僵尸、不在超时收尾里无限等待」）。
+_PREPARE_REAP_TIMEOUT_SECONDS = 5.0
+
+
 def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
     """P2-6 + EXEC-02: 在资源上限下运行一个 prepare 阶段的子进程（git）。
 
@@ -378,21 +451,54 @@ def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
       Python），而本函数所在的 prepare 阶段本身就跑在 ``asyncio.to_thread``
       线程里，CPython 明确标注这条路径在多线程下可能死锁（EXEC-02）。
     * POSIX 再给一个 ``start_new_session=True``：子进程自带进程组，prepare 超时
-      时 ``_kill_process_tree`` 的 killpg 才有意义（win32 无此语义，原样 spawn）。
+      时 ``_kill_process_tree_sync`` 的 killpg 才有意义（win32 无此语义，
+      ``taskkill /T /F`` 走 pid 树）。
     * **失败文案**：``CalledProcessError`` 里带着 launcher 的 argv（解释器路径 +
       limits JSON），直接上报会让用户看到一串内部实现细节。这里把 cmd 还原成
       未包装的真实命令再抛（异常文本与改动前逐字对齐，分类规则不受影响）。
+
+    Round6-P2-A（跨端一致性 P2）：**超时收尾从 ``subprocess.run`` 换成
+    ``Popen`` + ``communicate(timeout=)``。``subprocess.run`` 的超时只 kill
+    **直接子进程**——launcher 是 ``execvpe`` 换镜像（同 pid），但它 exec 出来的
+    git 会再 spawn ``git-remote-https`` / ``index-pack`` / 钩子脚本，这些孙进程
+    在直接子进程被 kill 后成了孤儿，继续写**共享的** ``.git_cache``：下一次
+    prepare 的 ``rev-parse --is-bare-repository`` 探测就可能读到半写状态
+    （``_quarantine_broken_cache`` 只能事后补救，且丢掉整份缓存）。node 侧
+    （``lib/run-command.ts`` 的 ``killProcessTree``，git prepare 走
+    ``routes/execute.ts`` 的 ``runCommand``）一直是整树杀，此处逐条对齐。
+
+    超时**文案**与 ``subprocess.run`` 的既有形状保持逐字同义
+    （``Command '...' timed out after N seconds``，cmd 是未包装的真实命令），
+    故 ``_refine_failure_reason`` 的既有分类规则（``git…clone/fetch/checkout``
+    → git_fetch_failed，admin 侧兜底 timeout）不受影响。
     """
     wrapped = build_launcher_cmd(cmd, limits)
     spawn_kwargs = {} if sys.platform == 'win32' else {'start_new_session': True}
+    # stdout/stderr 不设 PIPE：与改动前的 subprocess.run 完全一致（继承执行器
+    # 的 fd，异常对象里的 output/stderr 仍是 None）——不借这次改动改用户可见
+    # 文案的输入面。
+    proc = subprocess.Popen(wrapped, **spawn_kwargs)
     try:
-        return subprocess.run(wrapped, check=True, timeout=timeout, **spawn_kwargs)
-    except subprocess.CalledProcessError as exc:
-        if wrapped is cmd:
-            raise
-        raise subprocess.CalledProcessError(
-            exc.returncode, cmd, output=exc.output, stderr=exc.stderr,
-        ) from None
+        proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree_sync(proc)
+        # 收尸：直接子进程被 SIGKILL 后必须 wait() 回收，否则留僵尸；孙进程
+        # 已由 killpg/taskkill 一并带走，无需（也无法）逐个 wait。
+        try:
+            proc.wait(timeout=_PREPARE_REAP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:  # pragma: no cover - 内核未回收则告警
+            logger.warning(
+                'prepare child pid %s still unreaped %.0fs after tree kill',
+                proc.pid, _PREPARE_REAP_TIMEOUT_SECONDS,
+            )
+        # 与 CalledProcessError 分支同款：异常里的 cmd 还原成未包装的真实命令
+        # （launcher 的 argv 是内部实现细节）。
+        raise subprocess.TimeoutExpired(cmd, timeout) from None
+    if proc.returncode != 0:
+        # 与改动前逐字同形：cmd 是未包装的真实命令，output/stderr 均为 None
+        # （没有 capture，与 subprocess.run 未设 PIPE 时一致）。
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+    return subprocess.CompletedProcess(wrapped, proc.returncode)
 
 
 def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path) -> None:
@@ -1927,6 +2033,35 @@ def _killed_prepare_result(started_at: float) -> dict:
     }
 
 
+def _package_url_host_denied(host: str) -> bool:
+    """packageUrl **地址闸**的单一判据（首跳闸与逐跳重定向复检共用）。
+
+    Round6-P2-B（跨端一致性 P2）：重定向复检此前只调 ``_host_is_restricted``，
+    完全不看 ``EXECUTOR_ALLOW_PRIVATE_NETWORK``——而 node 侧每一跳重入
+    ``downloadFile`` 时 ``assertSafeHttpUrl`` 都读同一个全局开关
+    （``lib/ssrf-guard.ts`` 的 ``const allow = options.allowPrivateNetwork ===
+    true || config.allowPrivateNetwork === true; if (allow) return;``）。后果是
+    「同主机 302 到另一个内网地址」这一内网拓扑在 node 上成功、在 python 上
+    必然失败——正是本轮审计要消掉的分叉。
+
+    判据与 ``_assert_safe_package_url`` 的既有裁定**同源**（SEC-NEW-2 ADR，
+    与同文件 gitRepo 守卫逐条对齐）：
+      * 开关关闭（默认）→ loopback / RFC1918 / link-local / 未指定地址全拒；
+      * 开关开启 → 放行私网（内网自建文件服务是文档化拓扑）；
+      * loopback **不随开关放行**（git-face 同款裁定：执行器打自己的回环没有
+        合法拓扑，只保留绕过成本）。
+
+    放行边界与 node 的**唯一**刻意差异就是最后一条（node 开关开启时连回环也
+    放行）；它是本仓既有的、有 ADR 的收紧，重定向复检不能比首跳更松也不能更严，
+    故与首跳共用这一份判据。
+    """
+    if not _host_is_restricted(host):
+        return False
+    if not bool(getattr(settings, 'allow_private_network', False)):
+        return True
+    return _host_is_loopback(host)
+
+
 def _assert_safe_package_url(url: str) -> str:
     """packageUrl 的 SSRF 闸（fail-closed），返回规范化后的 URL。
 
@@ -1959,14 +2094,11 @@ def _assert_safe_package_url(url: str) -> str:
             detail='packageUrl 不得内嵌用户凭据（userinfo）',
         )
 
-    allow_private = bool(getattr(settings, 'allow_private_network', False))
-    if _host_is_restricted(hostname):
-        loopback_only = _host_is_loopback(hostname)
-        if not (allow_private and not loopback_only):
-            raise HTTPException(
-                status_code=400,
-                detail=f'packageUrl 指向受限网络地址：{hostname}',
-            )
+    if _package_url_host_denied(hostname):
+        raise HTTPException(
+            status_code=400,
+            detail=f'packageUrl 指向受限网络地址：{hostname}',
+        )
     return candidate
 
 
@@ -2082,7 +2214,14 @@ async def _download_package(url: str, dest: Path, *,
                             # 错误文案），此前这里只做跨 host 剥 Bearer、
                             # 不复检地址。拒则中止（半成品由外层 except
                             # 清理），不跟随。
-                            if _host_is_restricted(_hostname or ''):
+                            #
+                            # Round6-P2-B：复检走 `_package_url_host_denied`
+                            # （与首跳闸**同一判据**），不再只看
+                            # `_host_is_restricted`——开关开启时放行内网，
+                            # 与 node 每跳重入 downloadFile → assertSafeHttpUrl
+                            # 读同一个全局 allowPrivateNetwork 逐条同语义。
+                            # 开关关闭（默认）时行为与修复前逐字不变。
+                            if _package_url_host_denied(_hostname or ''):
                                 raise RuntimeError(
                                     f'包下载失败：重定向地址指向受限网络（{_hostname}）'
                                 )
@@ -2238,6 +2377,10 @@ async def _kill_process_tree(proc) -> None:
     原因没拿到独立进程组（未来改坏 spawn kwargs / 半初始化的句柄），
     ``getpgid(proc.pid)`` 会返回执行器自己的 pgid —— 此时 killpg 等于自杀
     （执行器连同其它并发任务一起 SIGKILL）。这种情况退化为只杀那个 pid。
+
+    Round6-P2-A：POSIX 分支抽到 ``_posix_kill_process_group``，与 prepare 阶段
+    的同步孪生 ``_kill_process_tree_sync`` 共用（上面那条安全底线因此只有一份
+    实现）。
     """
     if proc.pid is None:
         return
@@ -2258,22 +2401,7 @@ async def _kill_process_tree(proc) -> None:
         except (ProcessLookupError, OSError):
             pass
     else:
-        try:
-            pgid = os.getpgid(proc.pid)
-            if pgid == os.getpgid(0):
-                # 不是独立进程组：killpg 会打到执行器自己 → 只杀该 pid。
-                logger.warning(
-                    'task child pid %s shares the executor process group (pgid %s); '
-                    'falling back to a single-process kill', proc.pid, pgid,
-                )
-                proc.kill()
-                return
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            try:
-                proc.kill()
-            except (ProcessLookupError, OSError):
-                pass
+        _posix_kill_process_group(proc)
 
 
 async def kill_running_task_processes() -> int:
