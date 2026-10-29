@@ -394,10 +394,13 @@ CIR-01（残差另记）、CIR-02、CIR-03、CIR-04。其中 CIR-03/04 仍在工
 
 | 验收面 | 结果 | 证据 |
 |---|---|---|
+| admin-api（最终） | **386 套件 / 6673 例全绿** | `jest --silent --maxWorkers=4`，exit 0（并发会话收工后复跑） |
 | admin-api（HEAD 隔离） | 6647 例通过、0 失败 | `git worktree add --detach /tmp/acf-head-verify HEAD` + 单测全量；3 个套件因**工作树缺 `.env`**（`JWT_SECRET is required`）在 worker 层崩，主树同批 383/6658 全绿 |
 | SEC-02 三端对等 spec | 9/9 通过 | 在 HEAD 隔离树单独复跑（主树当时红是并发会话未提交的 `executor-node/src/env-whitelist.ts` 改动） |
 | admin-web | 258 文件 2150 例 | `npx vitest run` |
 | desktop | 61 个 selftest + renderer | `npm run test:main` / `test:renderer` |
-| 守卫链 | 除 `check:desktop-bundle-drift` 外全绿 | `test:guards:repo`；该项红是因为并发会话正在改 `executor-node/src`（uncommitted），其摘要须待其提交后重打回填 |
+| 守卫链 | **全绿（exit 0）** | `test:guards:repo`；并发会话提交 `4fb115ef` 后 `executor-node` 摘要漂移已在 `27f9b152` 重打回填，两段摘要一致 |
 
 > 结论口径：**HEAD 是绿的**；当前工作区的剩余红项全部来自并发会话的在途改动（`apps/executor-node/src/{env-whitelist,param-env,routes/execute}.ts`、`apps/executor-python/**`、`protocol.json`），不属于本轮提交。
+
+> 收口状态（13:55）：admin-api 386/6673、admin-web 258/2150、desktop 61 selftest + renderer、`test:guards:repo` exit 0 —— 四面全绿。
