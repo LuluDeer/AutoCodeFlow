@@ -973,6 +973,21 @@ node dist\main.js
 - **运维取舍**：生产/资源隔离敏感部署请用 Linux 容器（secure overlay 下 bwrap 沙箱 + rlimit 全生效）；Windows 仅建议开发/冒烟用途——与 R14 章开头「Windows 上作为普通进程运行」的定位一致。
 - **实现注记（EXEC-02，2026-10-29）**：POSIX 的资源上限不再经 `preexec_fn` 施加（多线程进程 fork 后跑 Python 有死锁面），改为「新 exec 的单线程 launcher」`task_launcher.py`：`start_new_session=True` 先建会话 → launcher 设 RLIMIT → `execvpe` 真实命令（PID 不变，树杀语义不变）。每次 spawn 多约 15ms；limits 不合规时 fail-closed（任务失败，绝不静默无限制执行）。
 
+### 4c. 浏览器侧 HTTP/2 与首屏并发（WEB-2，2026-10-29）
+
+`apps/admin-web/nginx.conf` 只监听明文 80——**浏览器不会在明文端口协商 h2**
+（h2c 仅少数非浏览器客户端使用），所以 HTTP/1.1 的「同 host 6 连接」上限是否
+生效取决于 TLS 落在哪一层：
+
+- **推荐形态**：TLS 终止在反代/ingress，admin-web 容器只服务内网。浏览器到
+  反代那一段走 HTTP/2（多路复用，无 6 连接约束），本文件无需改动。
+- **本容器直接对公网提供 TLS**：挂载证书后新增 `443` server 块并开
+  `http2 on;`（nginx ≥1.25.1；镜像为 1.27），保留 80→443 跳转。默认镜像不内置
+  ssl 配置，避免缺证书时容器起不来。
+- **代码侧**：命令面板与快捷键速查已从 entry 拆成按需 chunk（`MainLayout` 懒
+  加载 + 打开才挂载），首屏资源数不再包含它们；`web-entry-chunk-split.test.ts`
+  以源码级守卫防止静态 import 回潮。
+
 ### 5. 停服与优雅退出（R-08，重要）
 
 - `taskkill <pid>`（不带 /F）**无法**停 Windows 控制台程序；`taskkill /F` = 强杀，**不会**执行优雅收尾，运行中任务的子进程树会泄漏为孤儿。

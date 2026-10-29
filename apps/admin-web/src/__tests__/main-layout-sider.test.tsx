@@ -166,4 +166,12 @@ describe('UI-03 折叠态与持久化', () => {
     // 折叠态下按钮 aria-label 仍随主题态可读
     expect(themeBtn.getAttribute('aria-label')).toContain('切换主题');
   });
+
+  // WEB-2：命令面板改成「打开才挂载」的 lazy chunk——⌘K 必须仍能在
+  // 面板挂载之前唤起它（热键监听常驻 MainLayout，面板内 hotkeys={false}）。
+  it("WEB-2: Ctrl+K 在命令面板未挂载时也能唤起（lazy chunk）", async () => {
+    renderLayout();
+    fireEvent.keyDown(window, { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true });
+    expect(await screen.findByRole('dialog', {}, { timeout: 3000 })).toBeTruthy();
+  });
 });

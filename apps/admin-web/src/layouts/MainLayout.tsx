@@ -5,7 +5,16 @@
  * 同步改 8 处且割裂「布局持久化键/面包屑判定」与使用它们的组件上下文，
  * 改动面远超收益；本文件非热更迭代热点，牺牲该文件的 fast refresh 边界
  * 换最小改动面。（eslint warning 收敛轮决策：消费方多 → disable 优先） */
-import { useState, useEffect, useRef, useCallback, memo, type ReactNode } from 'react';
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  lazy,
+  Suspense,
+  memo,
+  type ReactNode,
+} from 'react';
 import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import { message } from '../utils/toast';
 import {
@@ -38,10 +47,14 @@ import { useAuthStore } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
-import CommandPalette from '../components/CommandPalette';
+// WEB-2：命令面板/快捷键速查只在用户真的唤起时才需要——改成按需 chunk，
+// 不再整块塞进 entry（首屏 24 个资源里少两个大依赖，HTTP/1.1 下少一波）。
+const CommandPalette = lazy(() => import('../components/CommandPalette'));
 // HOTKEY-01：全站快捷键（g 前缀跳转 + ? 速查 Modal）——在本壳层挂载一次
 import useGlobalHotkeys from '../hooks/useGlobalHotkeys';
-import ShortcutHelpModal from '../components/ShortcutHelpModal';
+const ShortcutHelpModal = lazy(
+  () => import('../components/ShortcutHelpModal'),
+);
 import { isMacPlatform, searchShortcutHint } from './shortcut-hint';
 import { useThemeStore } from '../theme/store';
 // D-P2-16（设计审计）：品牌渐变唯一事实源（Logo / 用户头像共用）
@@ -363,6 +376,21 @@ export default function MainLayout() {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [mobileSiderOpen]);
+
+  // WEB-2：⌘K/Ctrl+K 的**常驻**监听（命令面板本身改成「打开才挂载」的 lazy
+  // chunk，热键必须在它挂载之前就可用）。面板内不再重复监听（hotkeys={false}），
+  // 否则两个监听器会把 toggle 抵消成空操作。
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // UI-12：用户菜单受控展开态——承载 aria-expanded（键盘可达 + 读屏可播报展开态）
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -725,11 +753,20 @@ export default function MainLayout() {
         </Content>
       </Layout>
 
-      {/* FEAT-09: 全局命令面板——⌘K/Ctrl+K 或头部搜索按钮唤起 */}
-      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+      {/* FEAT-09: 全局命令面板——⌘K/Ctrl+K 或头部搜索按钮唤起。
+          未打开时不挂载（lazy chunk 也不会被请求）。 */}
+      {paletteOpen && (
+        <Suspense fallback={null}>
+          <CommandPalette open onOpenChange={setPaletteOpen} hotkeys={false} />
+        </Suspense>
+      )}
 
       {/* HOTKEY-01：快捷键速查 Modal——? / Shift+/ 唤起，Esc 关闭 */}
-      <ShortcutHelpModal open={helpOpen} onOpenChange={setHelpOpen} />
+      {helpOpen && (
+        <Suspense fallback={null}>
+          <ShortcutHelpModal open onOpenChange={setHelpOpen} />
+        </Suspense>
+      )}
 
       {/* UI-09：移动端抽屉遮罩（≤768px 且抽屉展开时显示，点击收起）
           UI-12：原为裸 div + onClick（键盘不可达），改为原生 button——可聚焦、
