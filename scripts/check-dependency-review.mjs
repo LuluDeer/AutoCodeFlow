@@ -33,6 +33,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { EXEMPTIONS as AUDIT_ENFORCEMENT_EXEMPTIONS } from './check-npm-audit-exemptions.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -42,6 +43,12 @@ const CI_FILE = '.github/workflows/ci.yml';
 /**
  * 豁免注册表：脚本侧的**语义**事实源（链路/原因/到期后的处置），
  * GHSA 集合本身从 CI 文件解析（避免两处清单漂移）。
+ *
+ * CIR-03（2026-10-29）后 GHSA 集合迁到 scripts/check-npm-audit-exemptions.mjs
+ * （跨 CI/local 的**判定**单一事实源），ci.yml 不再内联 `known='...'`。故集合解析有
+ * 两态：CI 仍有 `known=` 时以它为准（防漂移的原判据不变）；CI 已无 `known=` 时回落到
+ * 单一事实源 —— 本注册表 ↔ 单一事实源之间的 ①②④ 三条比对仍然真实有效。
+ * 显式 `known=''`（空清单）**不**走回落：空清单是「清完了但没删注册表」的信号，必须报错。
  *
  * `reviewBy` 必须与 CI 注释里的复查日期一致，不一致即失败——CI 注释是给人看的
  * 承诺，这里是给机器执行的判据，两者漂移正是本机制要消灭的形态。
@@ -147,16 +154,32 @@ export function parseCiExemptions(ciText) {
   // 教训（本脚本首版即踩）：全块扫 GHSA 会把"已清偿"的散文注释也算成活跃豁免
   // ——N-13 清偿 decode-uri-component 后，注释里留了一句「GHSA-xxx 已清偿」，
   // 首版解析器立刻把它当成未登记豁免报红。活跃豁免的唯一事实源是 known 变量。
-  const knownMatch = /known='([\s\S]*?)'/.exec(block);
+  // 只认**代码行**里的 known 变量：注释里提到 `known='...'`（解释迁移历史时
+  // 很自然）不能被当成「CI 仍有内联清单」——否则 CIR-03 迁移后回落失效，
+  // 集合为空 → 注册表每条都报「僵尸豁免」。这是本解析器第二次踩「注释与代码
+  // 同形」，故用去掉注释行后的 codeBlock 做判据。
+  const codeBlock = block
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+  const knownMatch = /known='([\s\S]*?)'/.exec(codeBlock);
+  // 是否存在 `known=` 变量（`known=''` 也算"存在"，只是内容为空）。
+  const hasKnownVar = /known='/.test(codeBlock);
   const ghsa = new Set();
   if (knownMatch) {
     for (const m of knownMatch[1].matchAll(/GHSA-[A-Za-z0-9-]{6,}/g)) ghsa.add(m[0]);
+  } else if (!hasKnownVar) {
+    // CIR-03：清单已迁到单一事实源脚本，CI 侧不再内联 —— 集合取该脚本的 EXEMPTIONS。
+    for (const e of AUDIT_ENFORCEMENT_EXEMPTIONS) ghsa.add(e.ghsa);
   }
 
   // 复查日期：注释里的「复查：YYYY-MM-DD」与 notice 行的日期
   const reviewDates = new Set();
   for (const m of block.matchAll(/复查[：:]\s*(\d{4}-\d{2}-\d{2})/g)) reviewDates.add(m[1]);
   for (const m of block.matchAll(/Next review date:\s*(\d{4}-\d{2}-\d{2})/g)) reviewDates.add(m[1]);
+  if (reviewDates.size === 0 && !hasKnownVar) {
+    for (const e of AUDIT_ENFORCEMENT_EXEMPTIONS) reviewDates.add(e.reviewBy);
+  }
 
   return { found: true, ghsa: [...ghsa].sort(), reviewDates: [...reviewDates].sort(), raw: block };
 }

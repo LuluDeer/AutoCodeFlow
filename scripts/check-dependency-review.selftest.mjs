@@ -2,6 +2,7 @@
 // scripts/check-dependency-review.mjs 自检：构造 CI 文本矩阵，断言判据逐条有齿。
 // 每个负例都对应一个**真实会发生的**静默形态（漏登记/僵尸豁免/日期漂移/到期）。
 import { check, parseCiExemptions, EXEMPTIONS } from './check-dependency-review.mjs';
+import { EXEMPTIONS as AUDIT_EXEMPTIONS } from './check-npm-audit-exemptions.mjs';
 
 let failures = 0;
 function assert(name, cond) {
@@ -73,6 +74,21 @@ const TWO = [EX('GHSA-vcc3-ghjq-m6fr'), EX('GHSA-528h-pc64-c93x')];
   assert('散文中的已清偿 GHSA 不算活跃豁免', !p.ghsa.includes('GHSA-zzzz-zzzz-zzzz'));
   assert('known 变量中的豁免被取到', p.ghsa.includes('GHSA-528h-pc64-c93x'));
 }
+// ── ①c CIR-03 迁移态：CI 不再内联 known= 时，集合回落到单一事实源脚本 ──
+{
+  const ci = [
+    '  npm-audit:',
+    '    steps:',
+    '      - run: node scripts/check-npm-audit-exemptions.mjs --dir . --retries 3',
+  ].join('\n');
+  const p = parseCiExemptions(ci);
+  assert(
+    '无 known= 时回落到单一事实源（条数一致，不报「未解析到」）',
+    p.ghsa.length === AUDIT_EXEMPTIONS.length && p.ghsa.length > 0,
+  );
+  assert('回落时复查日期也来自单一事实源', p.reviewDates.length > 0);
+}
+
 {
   // 空 known（漏洞已清零）：解析到 0 条 → 应触发"请同步删注册表"
   const ci = [

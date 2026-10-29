@@ -395,107 +395,24 @@ jobs:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: ${{ matrix.project }}/package-lock.json
-      # npm registry 的 audit endpoint 偶发 503/瞬时不可用（非真实漏洞），
-      # 退避重试三次；真实漏洞在重试后仍会稳定红灯。
-      # 输出同时落 /tmp/audit.json（--json）供豁免清单比对。
-      - name: npm audit (with retry)
+      # ── npm audit + 豁免判定：判据在脚本里（单一事实源，local/CI 共用）──────────
+      # 原实现把「重试 3 次 npm audit」「known='...' 豁免清单」「comm -23 比对」
+      # 「::notice:: / ::error::」全部内联在本 step，于是同一判据在
+      # scripts/ci-local.sh 里又写了一遍（裸 npm audit 非零即红）——干净树上本地
+      # 必红、CI 绿，本地唯一应对是永远加 --skip-audit（CIR-03）。现在判据只有
+      # 一处：scripts/check-npm-audit-exemptions.mjs（ci-local 的 job_npm_audit
+      # 调同一脚本，豁免清单与复查日期也只在它的 EXEMPTIONS 里）。
+      #   命中 GHSA 全部已登记 → exit 0（打印下次复查日期）
+      #   有未登记 GHSA       → exit 1，逐条打印 `GHSA / 包名 / severity / title`
+      #   npm 自身失败/JSON 畸形 → exit 1（fail-closed，绝不当成「无漏洞」）
+      # --retries 3 只对 npm 的**瞬时**失败重试（registry 503 等）；真实命中与
+      # ENOLOCK 这类确定性失败不重试（原实现无差别重试会让红灯白等 90 秒）。
+      # 历史豁免理由（stream-json 链不可 override、extract-zip 无修复版等）已随
+      # known 清单迁移到脚本的 EXEMPTIONS 注释；scripts/check-dependency-review.mjs
+      # 在 CI 无 known= 时回落到同一清单，登记表与会话仍双向校验。
+      - name: npm audit + exemption check (single source of truth)
         working-directory: ${{ matrix.project }}
-        run: |
-          status=0
-          for attempt in 1 2 3; do
-            if npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=moderate --json > /tmp/audit.json 2>/tmp/audit.err; then
-              cat /tmp/audit.err >&2 || true
-              exit 0
-            fi
-            status=$?
-            cat /tmp/audit.err >&2 || true
-            echo "audit attempt $attempt failed (exit $status), backing off..."
-            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 30)); fi
-          done
-          # 重试后仍红 → 与豁免清单比对：全部命中已知豁免则放行并提示复查，
-          # 任何未登记的新漏洞保持红灯（fail-closed）。
-          # 豁免判定键 = advisory 的 GHSA 编号（模块名会随链路变化，
-          # GHSA 是稳定身份）；新增豁免必须在下方注释登记模块链+原因+复查日期。
-          #
-          # ── 豁免清单（append-only，逐条注明链路/原因/复查日期）──
-          # N-13（2026-09-27 复查）：**GHSA-vcc3-ghjq-m6fr 已清偿**——原计划
-          # 「评估 overrides 强升 query-string@9」经真实 MinIO 端到端实测**不可行**
-          # （query-string@9 是 ESM-only，minio 的 CJS require 拿到 {default:...}，
-          # 运行时 `qs.stringify is not a function`）；但**更精准的
-          # `overrides.decode-uri-component=0.5.0` 实测安全**（真实 MinIO
-          # put/stat/get+gunzip/listObjectsV2/remove 全通过 + admin-api 全量
-          # 226 套件 3790 例全绿），已在 apps/admin-api/package.json 落地。
-          # 该条已从下方 known 列表移除；复查机制见 scripts/check-dependency-review.mjs。
-          # GHSA-528h-pc64-c93x  stream-json ≤3.4.0 O(depth²) DoS
-          #   链：admin-api minio@8.0.7→stream-json@1.9.1
-          #   原因：minio 8.x 钉 stream-json ^1.8；其 notification.js 硬依赖
-          #         `stream-json/jsonl/Parser.js`（v1 路径 + 大写 P）
-          #   复查：2026-12-30（**N-13 实测：不可用 override 强升**——stream-json@3
-          #         改名为 src/jsonl/parser.js 小写并加 exports map，且 minio.js
-          #         第 32 行**无条件 eager require** notification.js，于是
-          #         `require('minio')` 本身即抛 MODULE_NOT_FOUND，整条 S3 日志链全废。
-          #         到期动作=续期豁免或换 S3 客户端，不得 override）
-          # GHSA-hqr4-qq8f-hg3x  stream-json ≤3.5.0 JSONC 解析器对累积注释整段重扫
-          # GHSA-mjw6-4jj6-33hc  stream-json <3.6.0 Assembler 原型污染
-          #   （this.current[this.key] 写在 Object.prototype 上）
-          #   链：同上（admin-api minio@8.0.7→stream-json@1.9.1）
-          #   原因：修复版均在 v3（3.5.1/3.6.0），与 GHSA-528h 同一不可 override
-          #         约束；通知链仅消费 admin 私服内部 MinIO 事件，非公网输入面。
-          #   复查：2026-12-30（随 GHSA-528h 同批复查；到期动作=续期豁免或换 S3
-          #         客户端，不得 override）
-          #
-          # ── 2026-10-19 批次：无修复版的 devDependency 链（4 条 GHSA）──────────
-          # 本轮把 38 条 Dependabot 告警逐条溯源，27 条已用 override/升级消除
-          # （js-yaml / tmp / dompurify / uuid / brace-expansion / glob / undici /
-          #  vite / esbuild / anyio / pytest）。以下 4 条上游**无修复版**
-          # （first_patched_version = null），且全部只在开发期工具链可达。
-          # GHSA-7pqw-9j4j-h8q3  extract-zip ≤2.0.1 符号链接归档条目可任意写文件
-          # GHSA-jmr9-qjv8-65gv  extract-zip ≤2.0.1 未校验符号链接路径穿越
-          #   链：admin-web devDep @lhci/cli@0.15.1 → @puppeteer/browsers → extract-zip
-          #   原因：extract-zip 最新即 2.0.1（vulnerable range 含 2.0.1），
-          #         @lhci/cli 最新 0.15.1 无法再升；该链仅 Lighthouse CI 性能审计用，
-          #         不进任何生产构建产物。
-          #   复查：2026-12-30（到期动作=复查上游是否发版或换链；无目标版本，不得 override）
-          # GHSA-ch52-4w7c-c8xp  http-cache-semantics ≤4.2.0 —— 已清偿（2026-10-22）
-          #   executor-desktop override http-cache-semantics@4.3.0；electron-builder --version
-          #   与 desktop selftest 均通过；已从下方 known 与注册表移除。
-          # GHSA-hp3w-g68c-fv3c  sprintf-js —— 已移除（2026-10-23）
-          #   该 advisory 于 2026-10-22 19:21 UTC 被 GitHub **撤回**（withdrawn_at 已置，
-          #   理由=格式串精度异常属应用侧职责），Dependabot 告警亦已 dismiss。
-          #   历史处置仍有效：admin-api / executor-node / node-sdk 用 argparse@2.0.1
-          #   override 消除了 js-yaml@3→argparse@1→sprintf-js 链。
-          #
-          echo "Still failing after retries — matching against exemption list (SEC-06)..."
-          known='GHSA-528h-pc64-c93x
-          GHSA-hqr4-qq8f-hg3x
-          GHSA-mjw6-4jj6-33hc
-          GHSA-7pqw-9j4j-h8q3
-          GHSA-jmr9-qjv8-65gv'
-          # 提取 JSON 中所有 moderate 及以上 advisory 的 GHSA id（去重排序）
-          found=$(node -e '
-            const a = require("/tmp/audit.json");
-            const vulns = a.vulnerabilities ? Object.values(a.vulnerabilities) : [];
-            const ids = new Set();
-            for (const v of vulns) {
-              for (const via of v.via || []) {
-                if (typeof via === "object" && via.url) {
-                  const m = via.url.match(/GHSA-[A-Za-z0-9-]+/);
-                  if (m) ids.add(m[0]);
-                }
-              }
-            }
-            console.log([...ids].sort().join("\n"));
-          ')
-          echo "Known exemptions:"; echo "$known" | sed 's/^ *//'
-          echo "Found in this audit:"; echo "$found"
-          unmatched=$(comm -23 <(echo "$found" | grep -v '^$' | sort) <(echo "$known" | sed 's/^ *//' | grep -v '^$' | sort))
-          if [ -n "$unmatched" ]; then
-            echo "::error::New vulnerability (moderate+) not on the exemption list — must fix or review explicitly:"
-            echo "$unmatched"
-            exit 1
-          fi
-          echo "::notice::All findings are known exemptions (SEC-06). Next review date: 2026-12-30."
-          exit 0
+        run: node "$GITHUB_WORKSPACE/scripts/check-npm-audit-exemptions.mjs" --dir . --retries 3
 
       # N-13 / BUG-04：豁免**复查机制**。上面那道闸回答「有没有新漏洞」，
       # 这道回答「我们接受的那些，还该继续接受吗」——豁免清单里早就写了复查日期，
