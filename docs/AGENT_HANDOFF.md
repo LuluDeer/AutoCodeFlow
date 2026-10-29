@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十六轮 → 三个入站 webhook 全部收口（SEC-R3-4 收尾），main）**：
+  - **`09120d54`**：`applications` CI 发布回调是第三个可重放面——重放同一签名会再写一遍版本元数据，并在 `triggerDeploy` 时对所有 RUNNING 部署**再发起一轮滚动升级**（CI 重试/抓包重放 = 重复发布）。按同款 SETNX 去重：命中返回 `{deduplicated:true}`（200）、不 update、不升级；`@Optional` 注入 + ApplicationModule 显式提供 Redis。
+  - **`94fbd7a7`（自查发现的安全回归）**：上一轮把 `X-AutoFlow-Delivery` 放进去重键，但 HMAC 只覆盖 `${timestamp}.${rawBody}`——delivery 头不在签名范围内，攻击者改一个头就能绕过去重。修法：键**只用签名**（`sha256(signature)`），delivery 仅用于日志；新增反证用例「同一签名 + 两个不同 delivery → 键必须相同」。
+  - **验证**：admin-api tsc 0；task webhook 去重 **5 例**、applications **31 例**；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项、OBS/RT 余项。
+
 - **本轮（2026-10-29 第二十五轮 → 入站 webhook 幂等去重（SEC-R3-4），main）**：
   - **`2f7954e9`**：签名 + ±5min 窗只证明「新鲜」，证明不了「没被重放」。同一 (taskId, 签名) 窗内再来一次时，旧实现会再建一条 execution（清理/发布/对账类任务重复执行），告警回调则整渠道再扇出一遍。新增 `RedisLockService.setIfAbsent`（原子 SET NX PX）；任务 webhook 与告警 webhook 均在验签后按 `webhook:<scope>:<sha256(delivery|signature)>` 抢占 10 分钟键，命中返回 `{deduplicated:true}`（200 让投递方停重试）且不触发/不扇出；新增可选头 `X-AutoFlow-Delivery`。**fail-open**（Redis 挂了 warn 后继续——去重是加固不是可用性前提），@Optional 注入保证单测/极简装配行为逐字节不变。
   - **验证**：admin-api tsc 0；task webhook **23 例**（+4）、notification **371 例**（+1）；全量 admin-api 见本轮末尾复核；eslint 0。
