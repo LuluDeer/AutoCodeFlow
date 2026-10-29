@@ -587,20 +587,29 @@ export class AgentSessionService {
         .where("id = :id", { id: sessionId })
         .execute();
 
-      // 令牌指标（成本归因）
+      // 令牌指标（成本归因）：第三个参数是**令牌数量**，不是 +1。
+      // 少了它这张指标只是「有令牌的步数」，按它算成本会低 2~3 个数量级。
       if (tokensIn > 0) {
-        recordRuntime("autoflow_agent_tokens_total", {
-          provider: input.provider ?? "unknown",
-          model: input.model ?? "unknown",
-          direction: "in",
-        });
+        recordRuntime(
+          "autoflow_agent_tokens_total",
+          {
+            provider: input.provider ?? "unknown",
+            model: input.model ?? "unknown",
+            direction: "in",
+          },
+          tokensIn,
+        );
       }
       if (tokensOut > 0) {
-        recordRuntime("autoflow_agent_tokens_total", {
-          provider: input.provider ?? "unknown",
-          model: input.model ?? "unknown",
-          direction: "out",
-        });
+        recordRuntime(
+          "autoflow_agent_tokens_total",
+          {
+            provider: input.provider ?? "unknown",
+            model: input.model ?? "unknown",
+            direction: "out",
+          },
+          tokensOut,
+        );
       }
 
       return saved;

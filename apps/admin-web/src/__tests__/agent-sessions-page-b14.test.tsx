@@ -176,6 +176,25 @@ describe('B-8 resumable 集合排除 running', () => {
   });
 });
 
+describe('观测审计 P3：budget_exceeded 不显示「恢复」入口', () => {
+  it('后端对 budget_exceeded 固定回 ok:false，前端不再给死入口', async () => {
+    vi.mocked(agentApi.detail).mockImplementation(async (id: string) => ({
+      session: sessionOf(id, id === 's-run' ? 'running' : 'budget_exceeded'),
+      steps: [],
+      toolCalls: [],
+      children: [],
+    }));
+    renderPage();
+    await screen.findByText('session-s-run');
+    const detailButtons = await screen.findAllByText('详 情');
+    fireEvent.click(detailButtons[1]);
+    await waitFor(() => expect(agentApi.detail).toHaveBeenCalledWith('s-wait'));
+    await screen.findByText('上下文与结论');
+    expect(screen.queryByText('恢复')).toBeNull();
+    expect(screen.queryByText('恢 复')).toBeNull();
+  });
+});
+
 // UIUX-F-2（审计 P2-1，同型 SOPS-RACE-01）：openDetail 无「谁是最新」判据时，
 // 先点 A（响应慢）再点 B（响应快），A 的旧响应晚到会把 B 抽屉的
 // steps/toolCalls/children 覆盖成 A 的数据——标题是 B、内容是 A。

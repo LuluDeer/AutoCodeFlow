@@ -499,8 +499,10 @@ export default function AgentSessionsPage() {
 
   // B-8：running 不在可恢复集合——后端对 running 会话的 resume 返回 409
   //（重复入队会产生双份推理循环副作用），前端同步隐藏入口。
+  // 观测审计 P3：budget_exceeded 同样要排除——后端固定回 ok:false
+  //（预算是创建时快照，步数/令牌按会话累计），按钮只会产生一条失败提示。
   const resumable = detail !== null &&
-    ['waiting_input', 'failed', 'budget_exceeded', 'pending'].includes(detail.status);
+    ['waiting_input', 'failed', 'pending'].includes(detail.status);
 
   // UI-09 第三轮：筛选/刷新/预算节点在桌面（页头 extra 一行）与移动端
   //（页头下方纵向堆叠）两处复用——Select 窄屏放满整行，避免固定 160px

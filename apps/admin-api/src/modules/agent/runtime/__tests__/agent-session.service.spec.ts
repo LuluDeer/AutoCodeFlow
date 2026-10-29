@@ -2,6 +2,10 @@ import { NotFoundException } from "@nestjs/common";
 
 import { AgentSessionService, safeTokenCount } from "../agent-session.service";
 import { AGENT_TERMINAL_STATUSES } from "../../entities/agent-session.entity";
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../../metrics/runtime-metrics-entry";
 
 /** TypeORM 惯用 fake：createQueryBuilder 链式桩。 */
 function qbChain(result: unknown = { affected: 1 }) {
@@ -314,6 +318,7 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
 
 describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
   it("appendStep：seq = MAX+1，缺省字段归 0/null；用量与 step 同事务累加", async () => {
+    resetRuntimeMetrics();
     const h = harness();
     const step = await h.svc.appendStep("s-1", {
       role: "assistant",
@@ -328,6 +333,30 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
     expect(setArg.totalTokensIn()).toContain("12");
     expect(setArg.totalTokensOut()).toContain("34");
     expect(setArg.totalSteps()).toContain("totalSteps");
+
+    // 观测审计 P1：令牌指标的增量必须是**令牌数**（12/34），不是步数（1/1）。
+    // 此前它只是「有令牌的 LLM 步数」，成本对账会低 2~3 个数量级。
+    const tokens = getRuntimeCountersSnapshot().get(
+      "autoflow_agent_tokens_total",
+    );
+    expect(
+      tokens?.get(
+        JSON.stringify({
+          provider: "qwen",
+          model: "qwen-vl-max",
+          direction: "in",
+        }),
+      ),
+    ).toBe(12);
+    expect(
+      tokens?.get(
+        JSON.stringify({
+          provider: "qwen",
+          model: "qwen-vl-max",
+          direction: "out",
+        }),
+      ),
+    ).toBe(34);
   });
 
   it("appendStep：tokens 缺省为 0（不记令牌指标分支）", async () => {

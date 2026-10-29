@@ -219,7 +219,7 @@ groups:
           severity: warning
         annotations:
           summary: 'Agent 预算触顶突增（reason={{ $labels.reason }}）'
-          description: '30 分钟内预算闸门触发 {{ $value }} 次（reason={{ $labels.reason }}，阈值 5）。排查：按 reason 分辨——max_tokens/max_tool_calls 频发 = 会话在循环重试或工具结果异常膨胀，查对应会话轨迹；wall_clock 频发 = 模型/网络变慢；确属正常大任务 → 调预算而非放任触顶（每次触顶都会终止会话）。令牌消耗对账用 autoflow_agent_tokens_total（provider/model/dimension 维度）。'
+          description: '30 分钟内预算闸门触发 {{ $value }} 次（reason={{ $labels.reason }}，阈值 5）。排查：按 reason 分辨——max_tokens/max_tool_calls 频发 = 会话在循环重试或工具结果异常膨胀，查对应会话轨迹；wall_clock 频发 = 模型/网络变慢；确属正常大任务 → 调预算而非放任触顶（每次触顶都会终止会话）。令牌消耗对账用 autoflow_agent_tokens_total（provider/model/direction 维度）。'
 
       # 边界闸门拒绝突增（not_in_toolset/needs_approval/invalid_params/
       # out_of_scope/rate_limited/circuit_open/hard_disabled 七类）= 安全信号：

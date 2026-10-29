@@ -216,7 +216,7 @@ suspend(session, waitingFor)
 |---|---|---|
 | **定时** | 复用现有 `scheduler` 模块（已有 node-cron + leader election，多副本安全） | 每小时巡检、每日体检报告 |
 | **事件** | 订阅 `common/events/domain-events.ts` | 执行失败、执行器离线、部署失败 |
-| **人工** | Admin Web 对话 / `POST /api/agent/sessions` | 管理员问「昨天为什么挂了」 |
+| **人工** | `POST /api/agent/sessions`（**暂无 Admin Web 入口**，见 §7.1 残差注记） | 管理员问「昨天为什么挂了」 |
 | **指派** | 来自另一个 Agent 会话（`parentSessionId`） | 执行器 Agent 回问细节 |
 
 ### 5.2 事件订阅：慎重设计（防风暴）
@@ -282,18 +282,30 @@ domain event ──► AgentTriggerService.onEvent()
 
 ### 7.1 指标（接入现有 `modules/metrics`）
 
+**已实现**（以 `apps/admin-api/src/modules/metrics/runtime-metrics.ts` 的
+`RUNTIME_COUNTERS` / `RUNTIME_GAUGES` 为准；`agent-metrics-labels.spec.ts`
+守标签取值与实体常量一致）：
+
 ```
 autoflow_agent_sessions_total{kind,status}
-autoflow_agent_steps_total{provider,model}
-autoflow_agent_tokens_total{provider,model,direction}     # 成本核心指标
+autoflow_agent_tokens_total{provider,model,direction}     # 成本核心指标（增量=令牌数）
 autoflow_agent_tool_calls_total{tool,tier,status}
-autoflow_agent_tool_duration_seconds{tool}                # histogram
-autoflow_agent_denied_total{tool,reason}                  # 边界拦截次数
+autoflow_agent_denied_total{reason}                       # 边界拦截次数
 autoflow_agent_budget_exceeded_total{reason}
-autoflow_agent_active_sessions                            # gauge
+autoflow_agent_llm_retry_total{result}                    # 重试/续跑观测
 ```
 
 `autoflow_agent_tokens_total` 与 `autoflow_agent_denied_total` 是最该配告警的两个：前者防成本事故，后者是安全信号。
+
+> **残差（2026-10-29 观测审计，如实登记）**：
+> · 本节曾列出 `autoflow_agent_steps_total`、`autoflow_agent_tool_duration_seconds`、
+>   `autoflow_agent_active_sessions` 三条**从未实现**的指标，按本表配告警会得到
+>   静默空图；已删除，需要时另行立项。
+> · `autoflow_agent_tokens_total` 的 help/告警一直宣称是「成本归因唯一数据源」，
+>   但 2026-10-29 之前它的增量是「事件次数」而不是令牌量（成本会低 2~3 个
+>   数量级）。已修为累加实际令牌数；历史时间序列在修复点前后不可直接比较。
+> · §5.1「人工」一行曾写「Admin Web 对话」，实际只有 HTTP 端点、没有 UI
+>   入口（`chat` 类型只能经 API/脚本创建）。
 
 ### 7.2 通知（复用 `modules/notification`）
 

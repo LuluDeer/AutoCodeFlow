@@ -19,16 +19,32 @@ import {
  */
 const counters = new Map<RuntimeCounterName, Map<string, number>>();
 
-/** 记录一次运行时计数（纯内存自增，不抛错）。 */
+/**
+ * 记录一次运行时计数（纯内存自增，不抛错）。
+ *
+ * `value` 默认 1（事件计数）。令牌类计数器必须传**实际数量**：此前 API 只有
+ * 事件语义，`autoflow_agent_tokens_total` 的 help/告警都写着「令牌消耗、
+ * 成本归因唯一数据源」，实际记的却是「有令牌的 LLM 步数」——运维按它做
+ * 成本对账会低 2~3 个数量级（观测审计 P1）。渲染侧本来就是
+ * `counter.inc(labels, 快照值)`，所以这里按增量累加即可，无需改渲染。
+ *
+ * 非法 value（NaN/Infinity/负数）按 1 处理：监控数值失真比丢一次计数更坏，
+ * 但也不能让脏值把计数器写坏（Prometheus 不接受 NaN 增量）。
+ */
 export function recordRuntime(
   name: RuntimeCounterName,
   labels: RuntimeCounterLabels = {},
+  value = 1,
 ): void {
   // 未知计数器名（埋点契约外）静默忽略，不影响调用方主流程
   if (!(name in RUNTIME_COUNTERS)) return;
+  const inc =
+    typeof value === "number" && Number.isFinite(value) && value > 0
+      ? value
+      : 1;
   const byLabel = counters.get(name) ?? new Map<string, number>();
   const key = JSON.stringify(labels);
-  byLabel.set(key, (byLabel.get(key) ?? 0) + 1);
+  byLabel.set(key, (byLabel.get(key) ?? 0) + inc);
   counters.set(name, byLabel);
 }
 
