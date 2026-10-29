@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第五十二轮 → Web 可访问性/性能/错误态（第 6 轮 P2），main）**：
+  - **`0c490079`**：① JSON 浮层只有鼠标能开（role=button + tabIndex 的死焦点）→ 受控 Popover + Enter/Space + `aria-expanded/aria-haspopup`；② 日志行数每次渲染 split（搜索每键一次）→ `useMemo`；③ `ArtifactsList` 加载失败丢弃 error、空 list 直接 null（被当成「无产物」）→ StateError 可重试 + zh/en 文案；新增 2 条用例（错误态→重试成功、键盘展开/收起）。
+  - **验证**：admin-web tsc 0；artifacts-list 8 例、log-json-render 11 例；全量 web 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（槽位冲销幂等、SSE 槽位拒绝计数/告警、`screenshot` 等待、`ExecutionLogSection` 其它竞态）。
+
 - **本轮（2026-10-29 第五十一轮 → 第 6 轮 P2 批（SOP 索引/N+1 + Web 状态竞态），main）**：
   - **`7e0ece5f`**：① `sop_clarifications` 无 `resolution/createdAt` 索引，5 分钟兜底扫描 seq scan+Sort（表无 retention）→ 迁移 **0080** partial 索引（只装未答复行，CONCURRENTLY + 超时豁免，实体显式命名）；② 兜底扫描 2×N 串行点查（最多 200 往返）→ 一次 `In()` 批读（新增 `AgentSessionService.findStatusByIds`），R33-A2 条件 UPDATE 语义不变。
   - **`f4c3f409`**：① `SopsPage` 切条目先清场（否则新抽屉短暂渲染上一条的版本/指派/澄清，失败时永久串数据）；② `SopFromVideoPage` 草稿回填改为「session 变化驱动」单一 effect（修复 URL 深链续跑不回填、切会话保留上一条正文的问题），删掉重复写入路径。
