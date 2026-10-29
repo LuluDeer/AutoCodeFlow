@@ -64,9 +64,15 @@ describe("AddAuditAndRefreshTokenQueryIndexes1790000000022（PK-16）", () => {
     expect(sql.match(/CREATE INDEX (?!CONCURRENTLY)/g)).toBeNull();
   });
 
-  it("down：逆序回收三个索引（幂等 DROP INDEX IF EXISTS）", () => {
+  it("down：逆序回收三个索引（幂等 DROP INDEX CONCURRENTLY IF EXISTS——回滚不锁表）", () => {
     const downPart = sql.split("public async down")[1];
-    expect(downPart.match(/DROP INDEX IF EXISTS/g)?.length).toBe(3);
+    expect(downPart.match(/DROP INDEX CONCURRENTLY IF EXISTS/g)?.length).toBe(
+      3,
+    );
+    // 第 4 轮 T3 守卫判据（check-migration-symmetry「CONCURRENTLY 两侧一致」）：
+    // up 用 CONCURRENTLY 建，down 用普通 DROP INDEX 会取 ACCESS EXCLUSIVE 锁 → 回滚锁表
+    // 只匹配真正带引号索引名的语句（注释里的散文中出现 DROP INDEX 不算）
+    expect(downPart).not.toMatch(/DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?\s*"/);
     // 逆序：expires_at → user_id → action_created_at
     expect(downPart.indexOf('"idx_refresh_tokens_expires_at"')).toBeLessThan(
       downPart.indexOf('"idx_refresh_tokens_user_id"'),
@@ -74,5 +80,15 @@ describe("AddAuditAndRefreshTokenQueryIndexes1790000000022（PK-16）", () => {
     expect(downPart.indexOf('"idx_refresh_tokens_user_id"')).toBeLessThan(
       downPart.indexOf('"idx_audit_logs_action_created_at"'),
     );
+  });
+
+  it("down：与 up 同一套超时豁免（会话级 SET + finally RESET）", () => {
+    const downPart = sql.split("public async down")[1];
+    expect(downPart).toContain("SET statement_timeout = 0");
+    expect(downPart).toContain("RESET statement_timeout");
+    expect(downPart.indexOf("SET statement_timeout")).toBeLessThan(
+      downPart.indexOf("DROP INDEX CONCURRENTLY"),
+    );
+    expect(downPart).toContain("finally");
   });
 });

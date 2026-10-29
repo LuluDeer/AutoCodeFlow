@@ -32,8 +32,16 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 并发建索引：tasks 是高频写表（调度器每 tick 读、触发链路写），走
  * CREATE UNIQUE INDEX CONCURRENTLY——PG 硬约束「CONCURRENTLY 不能在事务块内
  * 执行」，故声明 transaction = false（同 1790000000049 / 1790000000022 口径）。
- * 每条语句自身原子，IF NOT EXISTS 保证重跑可重入。down 为人工 revert 路径
- * （维护窗口执行），保持普通 DROP；被改名行的原名不可从索引回滚复原。
+ * 每条语句自身原子，IF NOT EXISTS 保证重跑可重入。被改名行的原名不可从
+ * 索引回滚复原（down 只恢复无约束形态，不做数据逆操作）。
+ *
+ * 回滚对称（第 4 轮 T3 守卫 check-migration-symmetry 抓到的「回滚锁表」）：
+ * down 曾是普通 `DROP INDEX`——tasks 是高频写表（调度器每 tick 读、触发链路
+ * 写），普通 DROP 取 ACCESS EXCLUSIVE 锁，回滚期间写入排队，与「up 不锁写」
+ * 自相矛盾。现改为 `DROP INDEX CONCURRENTLY IF EXISTS`（up 用 CONCURRENTLY
+ * 建，down 就必须同样 CONCURRENTLY 拆）；DROP 同为单条语句、同样吃连接池
+ * 30s statement_timeout，故 down 复用 up 的会话级 SET + finally RESET 豁免
+ * （口径同 1790000000075）。
  */
 export class AddTasksNameUniqueIndex1790000000050 implements MigrationInterface {
   name = "AddTasksNameUniqueIndex1790000000050";
@@ -78,9 +86,16 @@ export class AddTasksNameUniqueIndex1790000000050 implements MigrationInterface 
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
+    // 与 up 对称：普通 DROP INDEX 会锁表，必须 CONCURRENTLY；超时豁免同 up
+    // （单条语句受 30s 限制，被取消则回滚半途中断、留下半删索引）。
+    await queryRunner.query(`SET statement_timeout = 0`);
+    try {
     await queryRunner.query(`
-      DROP INDEX IF EXISTS "idx_tasks_name_unique"
+      DROP INDEX CONCURRENTLY IF EXISTS "idx_tasks_name_unique"
     `);
+    } finally {
+      await queryRunner.query(`RESET statement_timeout`);
+    }
     // 被去重改名的行不可复原（原名未留痕）；down 仅恢复无约束形态。
   }
 }

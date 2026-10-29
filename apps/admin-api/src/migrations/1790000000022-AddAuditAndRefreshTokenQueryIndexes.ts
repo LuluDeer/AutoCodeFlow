@@ -27,7 +27,16 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 外层事务）；两条必须同时成立，缺一即报
  * "CREATE INDEX CONCURRENTLY cannot run inside a transaction block"。
  * 每条语句自身原子（失败半成品索引由 PG 自动清理），IF NOT EXISTS 保证
- * 重跑可重入。down 为人工 revert 路径（维护窗口执行），保持普通 DROP。
+ * 重跑可重入。
+ *
+ * 回滚对称（第 4 轮 T3 守卫 check-migration-symmetry 抓到的「回滚锁表」）：
+ * down 曾是普通 `DROP INDEX`——audit_logs 是 append-only 高频写表，普通
+ * DROP 取 ACCESS EXCLUSIVE 锁，回滚期间整表写入排队，「up 不锁写」的目标
+ * 被 down 自己抵消。现改为 `DROP INDEX CONCURRENTLY IF EXISTS`：up 用
+ * CONCURRENTLY 建，down 就必须同样 CONCURRENTLY 拆（守卫判据：两侧
+ * CONCURRENTLY 必须一致，理由「回滚会锁表」）。DROP 也是单条语句、同样吃
+ * 连接池 30s statement_timeout（被取消会中断回滚并留下半删索引），故 down
+ * 复用 up 的会话级 SET + finally RESET 豁免（口径同 1790000000075）。
  */
 export class AddAuditAndRefreshTokenQueryIndexes1790000000022 implements MigrationInterface {
   name = "AddAuditAndRefreshTokenQueryIndexes1790000000022";
@@ -64,16 +73,24 @@ export class AddAuditAndRefreshTokenQueryIndexes1790000000022 implements Migrati
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
+    // 与 up 对称：普通 DROP INDEX 会锁表（ACCESS EXCLUSIVE），必须
+    // CONCURRENTLY；超时豁免同 up（单条语句受 30s 限制，被取消则回滚半途
+    // 中断、留下半删索引）。逆序回收与 up 相反。
+    await queryRunner.query(`SET statement_timeout = 0`);
+    try {
     await queryRunner.query(`
-      DROP INDEX IF EXISTS "idx_refresh_tokens_expires_at"
+      DROP INDEX CONCURRENTLY IF EXISTS "idx_refresh_tokens_expires_at"
     `);
 
     await queryRunner.query(`
-      DROP INDEX IF EXISTS "idx_refresh_tokens_user_id"
+      DROP INDEX CONCURRENTLY IF EXISTS "idx_refresh_tokens_user_id"
     `);
 
     await queryRunner.query(`
-      DROP INDEX IF EXISTS "idx_audit_logs_action_created_at"
+      DROP INDEX CONCURRENTLY IF EXISTS "idx_audit_logs_action_created_at"
     `);
+    } finally {
+      await queryRunner.query(`RESET statement_timeout`);
+    }
   }
 }

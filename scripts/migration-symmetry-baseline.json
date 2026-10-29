@@ -1,31 +1,5 @@
 {
   "$comment": "迁移 up()/down() 对称性棘轮基线（scripts/check-migration-symmetry.mjs）。语义是『集合精确相等』：修好一条就从 violations 删一条（不删 = 基线陈旧 = 红），新增一条必须显式写进来并在评审里说明。irreversible 记录 down() 里显式 throw『不可逆』的迁移（必须带理由字符串），同样用于让『又有一个迁移放弃回滚』出现在 diff 里。本文件只由人维护，脚本不会自动改写。",
-  "violations": [
-    {
-      "file": "apps/admin-api/src/migrations/1790000000022-AddAuditAndRefreshTokenQueryIndexes.ts",
-      "object": "index:idx_audit_logs_action_created_at",
-      "reason": "concurrently"
-    },
-    {
-      "file": "apps/admin-api/src/migrations/1790000000022-AddAuditAndRefreshTokenQueryIndexes.ts",
-      "object": "index:idx_refresh_tokens_user_id",
-      "reason": "concurrently"
-    },
-    {
-      "file": "apps/admin-api/src/migrations/1790000000022-AddAuditAndRefreshTokenQueryIndexes.ts",
-      "object": "index:idx_refresh_tokens_expires_at",
-      "reason": "concurrently"
-    },
-    {
-      "file": "apps/admin-api/src/migrations/1790000000049-AddExecutionTaskCreatedAtIndex.ts",
-      "object": "index:idx_task_executions_task_id_created_at_id",
-      "reason": "concurrently"
-    },
-    {
-      "file": "apps/admin-api/src/migrations/1790000000050-AddTasksNameUniqueIndex.ts",
-      "object": "index:idx_tasks_name_unique",
-      "reason": "concurrently"
-    }
-  ],
+  "violations": [],
   "irreversible": []
 }

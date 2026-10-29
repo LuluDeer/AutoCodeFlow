@@ -72,11 +72,26 @@ describe("AddTasksNameUniqueIndex1790000000050（技术债 A 组）", () => {
     ).toBe(1);
   });
 
-  it("down：仅 DROP 唯一索引（幂等；被去重改名的行不可复原，不做数据逆操作）", () => {
+  it("down：仅 DROP 唯一索引（幂等、CONCURRENTLY 回滚不锁表；被去重改名的行不可复原，不做数据逆操作）", () => {
     const downPart = sql.split("public async down")[1];
-    expect(downPart).toContain('DROP INDEX IF EXISTS "idx_tasks_name_unique"');
+    expect(downPart).toContain(
+      'DROP INDEX CONCURRENTLY IF EXISTS "idx_tasks_name_unique"',
+    );
+    // 守卫 check-migration-symmetry：up 的 CONCURRENTLY 与 down 必须一致，
+    // 普通 DROP INDEX 在 tasks（高频写表）上取 ACCESS EXCLUSIVE 锁 → 回滚锁表
+    // 只匹配真正带引号索引名的语句（注释里的散文中出现 DROP INDEX 不算）
+    expect(downPart).not.toMatch(/DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?\s*"/);
     expect(downPart).not.toContain("UPDATE");
     expect(downPart).not.toContain("DELETE");
+  });
+
+  it("down：与 up 同一套超时豁免（会话级 SET + finally RESET）", () => {
+    const downPart = sql.split("public async down")[1];
+    expect(downPart).toContain("SET statement_timeout = 0");
+    expect(downPart).toContain("RESET statement_timeout");
+    expect(downPart.indexOf("SET statement_timeout")).toBeLessThan(
+      downPart.indexOf("DROP INDEX CONCURRENTLY"),
+    );
   });
 
   it("实体 @Index 与迁移对齐（命名唯一索引 idx_tasks_name_unique(name)）", () => {
