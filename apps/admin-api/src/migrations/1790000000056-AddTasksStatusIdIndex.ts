@@ -49,11 +49,22 @@ export class AddTasksStatusIdIndex1790000000056 implements MigrationInterface {
   transaction = false;
 
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // 连接池对每条语句设 statement_timeout=30s；CONCURRENTLY 是**单条**
+    // 语句，大表构建可能超过 30s。本迁移 transaction=false，SET LOCAL
+    // 没有事务块会退化成警告 + 无效（对照 0037 的写法不可照抄）——因此
+    // 用会话级 SET 并在 finally 复位（连接会归还池，污染会波及后续查询）。
+    // 超时的后果不是"重跑即可"：PG 会留下 indisvalid=false 的同名索引，
+    // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
+    await queryRunner.query(`SET statement_timeout = 0`);
+    try {
     // 单行字符串是刻意的：scripts/check-index-drift.mjs 的 DDL 扫描器按正则
     // 匹配**同一行内**的语句（先例 1790000000055 的同款注释）。
     await queryRunner.query(
       `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_tasks_status_id" ON "tasks" ("status", "id")`,
     );
+    } finally {
+      await queryRunner.query(`RESET statement_timeout`);
+    }
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
