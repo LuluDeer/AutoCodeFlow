@@ -1092,6 +1092,12 @@ jobs:
       # 而 admin-api 服务块一个都没注入 → 容器内回落 localhost:8003（指向自己）。
       # 单测显式注入 env 所以一直绿——「mock 不等于能跑」的典型。
       # 本守卫把「controller 读的键必须在 compose 的 admin-api 里有出处」钉死。
+      # T4：--selftest 改跑真脚本子进程并逐条断言退出码 + 报错文本（11 条）。反证
+      # 四处历史假绿：① 兄弟服务头带尾注/锚点时旧解析器结束不了 admin-api 的块，
+      # 兄弟服务的 environment 顶包；② `KEY: ""` / `${X:-}` 空值算「已注入」；
+      # ③ 注释掉的 config.get 算数；④ PYPI_REGISTRY_URL 的豁免不校验派生源。
+      # 另有事实源缺失（compose / controller）与扫描面下界（服务数 / env 键数 /
+      # controller 键数）的结构红。
       - name: Compose service address injection guard
         run: |
           node scripts/check-compose-service-env.mjs --selftest
@@ -1111,6 +1117,11 @@ jobs:
   # 用户真调用那个工具/子命令时才 404，且 404 会被信封拆包层吞成空错误体。
   # 本闸把「用到的每条路由都必须存在于 openapi.json」变成 CI 判据。
   # openapi.json 是已提交产物，故无需 npm ci / PG / Redis。
+  # T4：--selftest 改跑真脚本子进程（9 条，退出码 + 报错文本 + 文件:行）。反证三处
+  # 历史假绿：① 注释里的 `call("GET", "/x")` 被当成真调用（真调用全注释掉后条数仍
+  # 过下界 → 扫描已瞎却报绿）；② `.spec.ts` 进扫描面（测试里的老端点把下界撑住）；
+  # ③ openapi 产物塌方时两侧同时变空 → 「全部命中」。另有 --root fixture 下的
+  # 事实源缺失（openapi / tools.ts / commands 目录）结构红。
   consumer-routes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1409,6 +1420,12 @@ jobs:
         # 本地即可复现的语义闸（与构建路径/ncc 版本无关），先跑——它红了就是真漂移，
         # 且失败信息直接给出回填命令，不必等下面的字节闸。N-06 起同时覆盖
         # agent-worker 段（同脚本双段输出）。
+        # T4：--selftest 改跑真脚本子进程（10 条），fixture 是「真 sha256 清单 + 真
+        # 源码树」（摘要现算，不碰仓库里的清单）。反证三处历史假绿：① 删掉 CLI 的
+        # exit(1) 旧自检照样全绿（闸不关门）；② `--print` 在源码目录不在时打印空
+        # 摘要并 exit 0 —— 回填命令正好是 --print，一次误跑就能让语义闸永久绿；
+        # ③ 清单缺 source-digest / 输入文件塌到下界以下被当成「漂移 1 项」。现在
+        # 事实源缺失与扫描面塌方是**结构红**（判据不可信），与真漂移分开报。
         run: |
           cd "$GITHUB_WORKSPACE"
           node scripts/check-desktop-bundle-drift.mjs --selftest
