@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十五轮 → 入站 webhook 幂等去重（SEC-R3-4），main）**：
+  - **`2f7954e9`**：签名 + ±5min 窗只证明「新鲜」，证明不了「没被重放」。同一 (taskId, 签名) 窗内再来一次时，旧实现会再建一条 execution（清理/发布/对账类任务重复执行），告警回调则整渠道再扇出一遍。新增 `RedisLockService.setIfAbsent`（原子 SET NX PX）；任务 webhook 与告警 webhook 均在验签后按 `webhook:<scope>:<sha256(delivery|signature)>` 抢占 10 分钟键，命中返回 `{deduplicated:true}`（200 让投递方停重试）且不触发/不扇出；新增可选头 `X-AutoFlow-Delivery`。**fail-open**（Redis 挂了 warn 后继续——去重是加固不是可用性前提），@Optional 注入保证单测/极简装配行为逐字节不变。
+  - **验证**：admin-api tsc 0；task webhook **23 例**（+4）、notification **371 例**（+1）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **残差**：applications CI webhook 是第三个可重放面（同一 util、不同 handler），下一轮按同一模式接入。
+  - **下轮入口**：applications webhook 去重、WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项。
+
 - **本轮（2026-10-29 第二十四轮 → 工具参数保守修复（Agent 鲁棒性），main）**：
   - **`cea9f7c3`**：真实模型常把 `tool_call.arguments` 写成「包在 Markdown 围栏里 / 前后夹解释 / 末尾多逗号」。旧实现直接 `JSON.parse`——这些**无歧义**的语法噪音会让本可成功的调用变成 error，模型只能重试（浪费一轮 token 与延迟）。新增 `repairToolArguments`：依次尝试「原始 → 去围栏 → 去前后散文（截取本体）→ 去尾逗号」，命中即用；**缺值/缺括号一律不猜**（猜错参数比报错更难查），失败文案带「已尝试 N 种保守修复」+ 原始片段。参考 langchain `parse_partial_json` 的取舍。
   - **验证**：admin-api tsc 0；tool-executor **42 例**（+8，含 execute 端到端修复）；agent 模块 **357 例**；全量 admin-api 见本轮末尾复核；eslint 0。
