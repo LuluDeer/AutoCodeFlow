@@ -136,3 +136,25 @@ admin-web 261/2167、desktop 未改动。
 2. **伴生 selftest 三条需先定归属**：dependency-review / desktop-update-chain / no-hoisting
    （按 check-migrations 前例：收编进主文件 or 保留伴生）。
 3. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10（触发幂等键）。
+
+---
+
+## 10. 追加：第 11 轮（B1 批 3 + 伴生 selftest 收编）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| B1 批 3 | compose-service-env / consumer-routes / desktop-bundle-drift 迁 harness，30 条用例；修掉「兄弟服务 env 顶包」「空值算注入」「注释里的 call() 当真调用」「`--print` 吞结构错」等假绿 | `390aadcd` |
+| 伴生收编 | no-hoisting / dependency-review / desktop-update-chain 三条的 `.selftest.mjs` **全部收编并删除**（读码推翻「需要 registry/产物」的预设）；17/15/15 条用例；docs 四处路径同步 | `06efdf12` |
+
+验证：`test:guards:repo` **exit 0**；六条 selftest 全绿；真实配置输出与改前逐字一致。
+
+已接 harness：**25 个** `check-*.mjs`。剩余未接：B1 档 10 条（enum-drift / error-i18n /
+lint-gates / password-policy-sync / release-config / sdk-docs-truthfulness / shell-multibyte-var /
+throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 spawn 5 条
+（conditional-writes / infra-doc-counts / metric-docs / npm-audit-exemptions / openapi-response-schema）。
+
+### 下轮入口
+
+1. B1 剩余 10 条按同模板迁（其中 `enum-drift` / `user-facing-language` 体量大，留到最后）。
+2. 已自 spawn 的 5 条收编（`openapi-response-schema` 的伴生文件已在第 10 轮处理）。
+3. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10（触发幂等键）。
