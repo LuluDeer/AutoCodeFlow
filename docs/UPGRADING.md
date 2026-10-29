@@ -446,6 +446,8 @@ done
 - `scripts/check-release-config.mjs` 的判据 ④ 在本地就先红；
 - 根条目只有一个，extra-files 只能把它们改成**同一个**版本。
 
+**本次已定了 A（全 2.0.0）**——下面三条路保留作决策记录，B/C 不再执行。
+
 三条路：
 
 | 方案 | 做法 | 流水线改动 | 适用 |
@@ -459,6 +461,23 @@ done
 （`package.json` + lock），合入后直接 `git tag desktop-v1.10.0 && git push origin desktop-v1.10.0`。
 
 > 结论：**这次选 A 或 B 都不动流水线**，区别只在 commit 里有没有 `!`。选 C 才需要改造。
+
+**A 方案的发布前检查（合并 Release PR 后、打 tag 前）**
+
+```bash
+# 五个事实源必须同为 2.0.0（version.txt 后三个由 Release PR 自动改，确认没漏）
+grep -h '^version' version.txt
+node -e "console.log(require('./packages/acf-cli/package.json').version)"
+node -e "console.log(require('./packages/mcp-server/package.json').version)"
+node -e "console.log(require('./packages/autocodeflow-node-sdk/package.json').version)"
+grep -h '^version' packages/autoflow-sdk/pyproject.toml
+npm run check:release-config   # 六层一致性全绿才打 tag
+```
+
+- CHANGELOG 顶部应出现 `⚠ BREAKING CHANGES` 两条（产物上传鉴权 / webhook 投递语义）；
+- SDK 的 GitHub Release 会被 `release.yml` 的 `demote-sdk-release` 自动标成 **prerelease**
+  （这是刻意的：GitHub `latest` 必须留给 `desktop-v*`，否则桌面自动更新会去比 SDK 版本号）；
+- 桌面单独打 `desktop-v1.10.0`，与 `v2.0.0` 互不影响。
 
 ## 7. 已知取舍
 
