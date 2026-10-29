@@ -11,6 +11,14 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十五轮 → rt-8 事件驱动保活 + rt-6 恢复吞吐，main）**：
+  - **rt-8（P3，`5e1d85bf`）**：`/executions/stream` 曾每秒醒一次判断「是否该 ping」（250 条连接 = 250 次/s 的 Promise + abort listener 成对分配），而 ping 周期是 30s。改为 `setTimeout(idlePingMs)` 单定时器 + **每写一帧重置**（与日志流同口径），连接生命周期只剩 `waitAbort(signal)`；定时器 `unref()`。删掉失效的 `waitCancellable`。
+  - **rt-6（P2，`b443364c`）**：outbox 恢复速率是 `BATCH/INTERVAL` 的乘积——5 行/5s = 1 行/s，比入队面（≈22 行/s）低 1.5 个量级；一次 10 分钟下游故障要 3.6-14 小时排空，且期间只有「积压增长」告警、没有恢复中信号。`BATCH` 5→20、`CONCURRENCY` 3→10；构造期断言改为「租约 ≥ 单行上界 × 波数」（20 行两波 30s < 60s 租约，不扩大重复投递窗）。同步修正 `ARCH-MULTI-INSTANCE-MATRIX.md` 的陈旧口径（仍写 BATCH=1）。
+  - **验证**：admin-api tsc 0；metrics 130 例、outbox 42 例全绿；check-docs 绿；eslint 0。
+  - **核对（并行流已落地）**：rt-7（日志流 findOne 改列投影，只取 status/taskId/logStorage/logObjectKey/startTime/id）。
+  - **并行流**：正在做第 4 轮 T3（migration symmetry：up 用 CONCURRENTLY 的迁移，down 也必须 CONCURRENTLY + 会话级超时豁免）与前端词条；本会话未触碰其编辑。
+  - **下轮入口**：rt-6 的排空循环（claim 到空为止，再提一个量级）、WEB-2（nginx HTTP/2）、SDK-DX 余项、守卫审计未做项、migration-symmetry 其余命中。
+
 - **本轮（2026-10-29 第十四轮 → rt-4 共享快照 + 守卫自检接线，main）**：
   - **rt-4（P2，`f60cad8e`）**：`/metrics/stream` 的快照按**连接**生成——每条 Dashboard 连接每 3s 各自重跑 `getSummary`（4 COUNT + 30 天 GROUP BY/AVG）+ `getExecutorStats` + 调度器 Redis；32 连接 ≈75 SQL/s（64 条是 30 天聚合），扩到 300 连接即 600 SQL/s，监控自己会打满 DB 池。新增 `MetricsSnapshotCacheService`：**单飞 + 2s TTL** 跨连接复用同一份快照，协议零变化；单查询失败只降级该段并进 `errors`（连接照发 error 帧），失败结果也进缓存。控制器删掉连接内联计算与失效的 `logQueryFailure`。
   - **守卫自检接线（`1a6e2161`）**：把上一轮 `check-guards-wired --selftest`（临时假根复现「注释步骤算接线」「npm run 前缀误配」两种误绿）接进 `test:guards:repo` 与 CI guards job——有自检但没人跑 = 同一种失效。
