@@ -303,9 +303,17 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 | 项 | 内容 | commit |
 |---|---|---|
 | 超时整树杀 | `_run_with_limits` 从 `subprocess.run(timeout)` 改 `Popen + communicate(timeout)`；超时 `killpg(SIGKILL)` 整树（含「killpg 前比对执行器自己的 pgid」安全底线），win32 退化 `taskkill /T /F`；重新抛 `TimeoutExpired(cmd, timeout)` 与分类规则对齐 | `025e8817` |
-| 重定向复检 | 新增 `_package_url_host_denied(host)`：302 复检此前只调 `_host_is_restricted`、不看 `allow_private_network`，导致内网同主机 302 在 python 必失败、node 成功；现在两处统一判定（开关下放行私网，云元数据/回环仍拒，边界逐条对齐 node 的 ssrf-guard） | `025e8817` |
+| 重定向复检 | 新增 `_package_url_host_denied(host)`：302 复检此前只调 `_host_is_restricted`、不看 `allow_private_network`，导致内网同主机 302 在 python 必失败、node 成功；现在两处统一判定（开关下放行私网**与 169.254**——与 node 一致：node 的 ssrf-guard 没有元数据特判，`if (allow) return` 在受限判定之前；**loopback 恒拒**是 SEC-NEW-2 的刻意收紧；首跳闸与复检走同一判据，根因消除） | `025e8817` |
 
 测试：新增/改写覆盖「孙进程被杀（`ProcessLookupError` 判死）」「超时异常文本仍是真实命令而非
 launcher argv」「开关关：302→内网拒 / 开关开：302→内网放行 / 开关开：302→169.254.169.254 仍拒」。
 全量 `pytest tests -q` **exit 0**（覆盖率 88.06% ≥ 86）；`test:guards:repo` **exit 0**。
 反证：两处各还原 → 对应用例红。
+
+> **更正（22:20）**：提交 `025e8817` 的信息里写「开关打开时云元数据/回环仍然拒绝」，**其中「云元数据仍拒」是错的**——
+> 按 node 的真实语义（ssrf-guard 无元数据特判），开关打开时 169.254/16 一并放行；执行者用例钉的是
+> 「开关开→放行 / 开关关→拒绝」，并在 docstring 写明「任何收紧都必须是有意改这条用例」。loopback 恒拒仍然成立
+> （python 侧既有裁定，node 放行——这是两端唯一刻意差异）。此处按事实更正，不回写历史提交。
+>
+> 邻接收口：同一条 prepare 路径上的 `_unshallow_bare_repo` 的 `fetch --unshallow` 也改走整树杀（同失效模式）。
+> 剩余 P3：`_is_bare_git_repo` 的 rev-parse 探测仍是裸 `subprocess.run`（只读、不写缓存，风险低于本轮两条）。
