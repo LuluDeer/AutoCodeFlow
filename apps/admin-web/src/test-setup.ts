@@ -60,7 +60,7 @@ configure({ asyncUtilTimeout: 10_000 });
 // error-code-i18n 等）自行调用 `await setLanguage('en')` 覆盖本基线，行为不变。
 //
 // ⚠️ 必须做存在性判断：本 setup 是**全局**的，而个别测试文件带
-// `// @vitest-environment node`（如 monaco-first-paint.perf01.test.ts），
+// `// @vitest-environment node`（如 first-paint-no-unused-vendor.test.ts），
 // 那种环境下没有 localStorage——直接调用会以
 // `ReferenceError: localStorage is not defined` 让该套件**整个无法加载**
 // （no tests，而非 skip）。node 环境下没有 localStorage 也就不存在

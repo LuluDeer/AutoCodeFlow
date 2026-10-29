@@ -9,7 +9,8 @@
  * 逐字重复。本工厂把连接生命周期收敛为单一点：
  *  - token 注入仍由调用方经 buildSseUrl 完成（F-05 安全取舍在 api/sse.ts 记录）；
  *  - 本工厂只负责：建连、onopen 重置退避、断线退避重建（指数退避封顶）、
- *    具名/默认帧分发、close 时关流 + 清定时器。
+ *    具名/默认帧分发、页面隐藏时停流 / 回前台重连（WEB-3）、close 时关流 +
+ *    清定时器 + 摘除可见性监听。
  * 消费方只写「事件语义」（onMessage / events / onStatus），不再各自实现重连。
  *
  * NETOPT-DEBT：另维护一份模块级连接状态注册表（statusKey → 状态），供
@@ -163,6 +164,14 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
   let es: EventSource | null = null;
   let attempt = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * WEB-3（第 3 轮 web-ux 审计）：标签页被隐藏后**主动停流**的标志位。
+   *
+   * 与 `closed` 分开：`closed` 是终态（组件卸载，永不恢复）；`paused` 是
+   * 可逆的中途态（切回前台要重新建流）。隐藏期间不允许任何建流路径生效
+   * （换票中的 connect 落地、退避定时器、onerror 兜底），否则又是后台重连。
+   */
+  let paused = false;
 
   const clearTimer = () => {
     if (timer !== null) {
@@ -173,7 +182,7 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
 
   /** 换票失败或断线后的统一退避重试（A5：换票是一次网络请求，可能失败）。 */
   const scheduleReconnect = () => {
-    if (closed) return;
+    if (closed || paused) return;
     if (!reconnect) {
       setStatus('reconnecting');
       return;
@@ -186,7 +195,7 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
   };
 
   const connect = async () => {
-    if (closed) return;
+    if (closed || paused) return;
     setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
 
     // A5：每次建流（含重连）都现换一枚 30s 票据——票据短效，不能复用旧值。
@@ -198,8 +207,8 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
       scheduleReconnect();
       return;
     }
-    // 换票期间被 close（组件卸载）→ 丢弃票据，不再建流。
-    if (closed) return;
+    // 换票期间被 close（组件卸载）/ 被隐藏（后台标签）→ 丢弃票据，不再建流。
+    if (closed || paused) return;
 
     es = new EventSource(buildSseUrl(baseUrl, path, ticket));
 
@@ -224,6 +233,43 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     };
   };
 
+  // ── WEB-3（第 3 轮 web-ux 审计）：Page Visibility 暂停/恢复 ──────────────
+  // 症状：全站轮询都守「页面隐藏即暂停」（TanStack refetchIntervalInBackground
+  // 默认 false），但三条 SSE 流（metrics / executions / logs）从不看
+  // document.visibilityState——Dashboard / 执行器列表 / 执行记录页留在后台标签
+  // 时，服务端每 3s 照跑一拍（getSummary 自身 ≈ 6 条聚合查询，整拍 8–10 条），
+  // 并占满默认 32 个 stream 槽位（超限返回真 503，把看板用户挡在门外）。
+  //
+  // 取舍（两条都别做错）：
+  //  ① hidden 时**不走 scheduleReconnect**——那会在后台每 30s 重建一次连接，
+  //     等于把"少跑聚合查询"换成了"持续重连"，比现状更糟；这里是断流 + 清表；
+  //  ② visible 时**立即重连并 attempt = 0**——隐藏不是失败，不该继承退避
+  //     （否则从后台切回来还要多等一个 3s/6s/… 的窗口）。
+  const onVisibilityChange = () => {
+    if (closed) return;
+    if (document.visibilityState === 'hidden') {
+      if (paused) return;
+      paused = true;
+      clearTimer(); // 退避定时器若在跑，一并停掉（后台不许重连）
+      es?.close();
+      es = null;
+      return;
+    }
+    // visible（以及任何非 hidden 的取值，如 'prerender' 之外的 'visible'）：
+    // 只有真正暂停过才重连，避免每次 visibilitychange 都多建一条连接。
+    if (paused) {
+      paused = false;
+      attempt = 0;
+      void connect();
+    }
+  };
+
+  // node 侧（vitest node 环境 / SSR 探针）没有 document：直接跳过监听。
+  const canListen = typeof document !== 'undefined' && !!document.addEventListener;
+  if (canListen) {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
   void connect();
 
   return {
@@ -232,6 +278,11 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
       clearTimer();
       es?.close();
       es = null;
+      // 监听摘除（防泄漏）：不摘会让已卸载的客户端继续响应 visibilitychange，
+      // 且同一页面反复挂载/卸载会累积监听器（每个 client 一个）。
+      if (canListen) {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
       // 组件卸载清理登记（防泄漏）：注册表删键 → getSSEStatus 回 undefined，
       // 消费方（queries.ts 函数式 refetchInterval）自动恢复 30s 轮询兜底。
       if (statusKey) {

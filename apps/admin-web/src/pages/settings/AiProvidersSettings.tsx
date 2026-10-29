@@ -23,6 +23,9 @@ import { filterProvidersForPurpose } from './ai-provider-filter';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { message } from '../../utils/toast';
 import { showApiError } from '../../utils/error';
+// WEB-5：页内原位错误态标准块（UI-16）——与 ApiKeys/EventSubscriptions/
+// Security 三个同目录子页同一形态，「读失败」不再伪装成「空」。
+import StateError from '../../components/StateError';
 import {
   aiApi,
   type AiProviderAdminView,
@@ -48,12 +51,27 @@ export default function AiProvidersSettings() {
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<Partial<SaveAiProviderPayload> | null>(null);
   const [form] = Form.useForm<SaveAiProviderPayload>();
+  /**
+   * WEB-5（第 3 轮 web-ux 审计）：读取失败的**原位**错误态。
+   *
+   * 此前 load() 失败只弹一条 3 秒 toast，data 保持 null，页面就如实渲染成
+   * 「providers 为空 + 分配下拉全空」——用户看到的是「没配模型」，实际是
+   * 「没读到」。对一个配置页这是危险的误导：最可能的下一步是**重复添加一份
+   * provider**（密钥再录一次）或误判「推理能力未配置」而回滚版本。
+   * 与同目录三个子页（ApiKeys/EventSubscriptions/Security）的 UI-16 约定对齐：
+   * 页内原位错误块 + 重试，且**不渲染**空表与分配区（"空"不得被读成事实）。
+   */
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       setData(await aiApi.listProviders());
     } catch (err) {
+      // toast 保留（多页共用的即时反馈），但不再**只有** toast：
+      // 原位错误态才是本页的事实源。
+      setLoadError(err);
       showApiError(err);
     } finally {
       setLoading(false);
@@ -213,35 +231,47 @@ export default function AiProvidersSettings() {
     >
       <Typography.Paragraph type="secondary">{t('aiProviders.description')}</Typography.Paragraph>
 
-      {(data?.errors?.length ?? 0) > 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          title={t('aiProviders.errors')}
-          description={data?.errors.join('；')}
+      {loadError ? (
+        // WEB-5：读失败 = 错误态，不是空态。空表与分配区在此分支里**不渲染**
+        //（否则「暂无数据」会被读成「还没接入模型」）。
+        <StateError
+          error={loadError}
+          title={t('aiProviders.loadFailed')}
+          onRetry={() => void load()}
         />
+      ) : (
+        <>
+          {(data?.errors?.length ?? 0) > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              title={t('aiProviders.errors')}
+              description={data?.errors.join('；')}
+            />
+          )}
+
+          <Table
+            rowKey="id"
+            size="small"
+            pagination={false}
+            dataSource={providers}
+            columns={columns}
+            scroll={{ x: 900 }}
+          />
+
+          <Divider />
+          <Typography.Title level={5}>{t('aiProviders.routes.title')}</Typography.Title>
+          <Typography.Paragraph type="secondary">
+            {t('aiProviders.routes.description')}
+          </Typography.Paragraph>
+          <Row gutter={16}>
+            {routeSelect('analysis', filterProvidersForPurpose('analysis', providers))}
+            {routeSelect('agent', filterProvidersForPurpose('agent', providers))}
+            {routeSelect('video', filterProvidersForPurpose('video', providers))}
+          </Row>
+        </>
       )}
-
-      <Table
-        rowKey="id"
-        size="small"
-        pagination={false}
-        dataSource={providers}
-        columns={columns}
-        scroll={{ x: 900 }}
-      />
-
-      <Divider />
-      <Typography.Title level={5}>{t('aiProviders.routes.title')}</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        {t('aiProviders.routes.description')}
-      </Typography.Paragraph>
-      <Row gutter={16}>
-        {routeSelect('analysis', filterProvidersForPurpose('analysis', providers))}
-        {routeSelect('agent', filterProvidersForPurpose('agent', providers))}
-        {routeSelect('video', filterProvidersForPurpose('video', providers))}
-      </Row>
 
       <Modal
         open={editing !== null}

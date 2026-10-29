@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRaceGuard } from '../utils/raceGuard';
 import { useTranslation } from 'react-i18next';
 import {
@@ -49,6 +49,12 @@ import {
 import { AGENT_APPROVAL_STATUS_COLOR, AGENT_SESSION_STATUS_COLOR, AGENT_TOOL_STATUS_COLOR } from '../utils/status-color';
 // A1 审批闭环：grant/deny 失败的兜底提示（__toastedByClient 去重，见 utils/error.ts）
 import { showApiError } from '../utils/error';
+// WEB-4：批准前的二次确认走 MODAL-01 出口（主题化/locale 化；JSX 形态的
+// `<Modal>` 仍用 antd 组件，两者并存是本仓既有写法，见 SopsPage.tsx:11/26）
+import { Modal as confirmModal } from '../utils/modal';
+// WEB-4：审批行的入参结构化视图（只读键值列表，长值可折叠）
+import ToolArgsView from '../components/ToolArgsView';
+import { argsSummary } from '../utils/toolArgs';
 import type {
   AgentApproval,
   AgentBudget,
@@ -341,6 +347,68 @@ export default function AgentSessionsPage() {
     }
   }, [detail, openDetail, load, t]);
 
+  /**
+   * WEB-4：审批单 → 触发它的那次工具调用（决策依据的**唯一**来源）。
+   *
+   * 关联键：`agent_tool_calls.approvalId` 里存的就是 approvalKey 本身——
+   * tool-executor.service.ts 的 `requestApproval` 第一行 `const approvalId =
+   * approvalKey;`，随后 `persist({ status:'awaiting_approval', approvalId, args })`
+   * 把**同一组参数**连同审批键一起落库。两者同源，故用 approvalKey 直接匹配
+   * （同名工具的多次调用也能各自对上自己那张单）。
+   *
+   * 取不到就是历史数据/被保留策略清掉的行：下游如实显示「未记录入参」，不猜。
+   */
+  const toolCallByApprovalKey = useMemo(() => {
+    const map = new Map<string, AgentToolCall>();
+    for (const c of toolCalls) {
+      if (c.approvalId) map.set(c.approvalId, c);
+    }
+    return map;
+  }, [toolCalls]);
+
+  /**
+   * WEB-4：批准前的二次确认。
+   *
+   * 为什么批准需要而拒绝不需要：grant 在服务端是**有副作用且不可撤销**的一步
+   * （granted → 自动 resume 会话 → 重放该次调用 → 真正执行写工具 → 记 consumed；
+   * 一张单只能领一次，执行后没有回滚入口）。deny 相反：它只是让闸门继续关着，
+   * 无副作用、错了可以重新发起，所以保持单击（多余确认只会训练用户盲点「确定」）。
+   *
+   * 正文三件套对齐「盲签」这一缺陷本体：要动什么（工具名）、拿什么动（参数摘要）、
+   * 以及代价（立即执行且不可撤销）。
+   */
+  const confirmGrant = useCallback((a: AgentApproval) => {
+    const args = toolCallByApprovalKey.get(a.approvalKey)?.argsJson ?? null;
+    const { pairs, rest } = argsSummary(args, 3);
+    const summaryText = pairs.length === 0
+      ? t('agents.approval.argsEmpty')
+      : `${pairs.join(t('agents.approval.confirmSep'))}${
+        rest > 0 ? t('agents.approval.confirmMore', { count: rest }) : ''
+      }`;
+    confirmModal.confirm({
+      title: t('agents.approval.confirmTitle', { tool: a.toolName }),
+      content: (
+        <div style={{ fontSize: 12 }}>
+          <Paragraph style={{ marginBottom: 6 }}>
+            <Text type="secondary">{t('agents.col.tool')}：</Text>
+            <Text code>{a.toolName}</Text>
+          </Paragraph>
+          <Paragraph style={{ marginBottom: 6 }}>
+            <Text type="secondary">{t('agents.col.args')}：</Text>
+            <Text>{summaryText}</Text>
+          </Paragraph>
+          <Paragraph style={{ marginBottom: 0 }}>
+            <Text type="danger">{t('agents.approval.confirmIrreversible')}</Text>
+          </Paragraph>
+        </div>
+      ),
+      okText: t('agents.approval.confirmOk'),
+      cancelText: t('agents.approval.confirmCancel'),
+      // onOk 返回 Promise：antd 在等待期间给确认键转圈，避免连点发出两次 grant
+      onOk: () => decideApproval(a.approvalKey, 'grant'),
+    });
+  }, [toolCallByApprovalKey, decideApproval, t]);
+
   const sessionColumns: ColumnsType<AgentSession> = [
     {
       title: t('agents.col.title'),
@@ -445,8 +513,13 @@ export default function AgentSessionsPage() {
     },
   ];
 
-  // A1 审批闭环：审批单表列（详情抽屉「审批单」页签）。reason 是边界闸门
-  // 给出的审批理由，可含模板插值与长文本——摘要截断与入参列同口径（160 字符）。
+  // A1 审批闭环：审批单表列（详情抽屉「审批单」页签）。
+  //
+  // WEB-4（P2，2026-10-29 web-ux）：审批的全部价值是「人替系统看一眼这次要做什么」，
+  // 而此前这一页恰恰看不到要做什么——reason 在**数据层**被 `.slice(0, 160)` 截断
+  // （rc-table 的 ellipsis title 取自同一串，hover 也读不到全文），入参完全缺席。
+  // 现在 reason 走 Typography 的三行折叠（全文留在 DOM、可展开），并新增「入参」列
+  // 按 approvalKey ↔ 工具调用行关联出该次调用的 argsJson（只读结构化视图）。
   const approvalColumns: ColumnsType<AgentApproval> = [
     {
       title: t('agents.col.tool'),
@@ -462,12 +535,31 @@ export default function AgentSessionsPage() {
       ),
     },
     {
+      // 三行折叠 + 展开：理由属「审批人必须能读全」的文本，不能截断（WEB-4 主诉之一）。
+      // 不设 ellipsis:true——rc-table 的 ellipsis 只在 hover 给 title，而 title 又是
+      // 同一串 children，等于什么都没多给。
       title: t('agents.col.reason'),
-      ellipsis: true,
       render: (_, a) => (
-        <Text style={{ fontSize: 12 }} type="secondary">
-          {a.reason.slice(0, 160)}
-        </Text>
+        <Paragraph
+          type="secondary"
+          style={{ marginBottom: 0, fontSize: 12, maxWidth: 420 }}
+          ellipsis={{
+            rows: 3,
+            expandable: 'collapsible',
+            symbol: (expanded) =>
+              expanded ? t('agents.approval.collapse') : t('agents.approval.expand'),
+          }}
+        >
+          {a.reason}
+        </Paragraph>
+      ),
+    },
+    {
+      // 决策依据的本体：这次调用到底要动什么（只读——批准的是当时落库的那组参数）
+      title: t('agents.col.args'),
+      width: 300,
+      render: (_, a) => (
+        <ToolArgsView args={toolCallByApprovalKey.get(a.approvalKey)?.argsJson} />
       ),
     },
     {
@@ -501,10 +593,12 @@ export default function AgentSessionsPage() {
               type="primary"
               loading={decidingKey === a.approvalKey}
               disabled={decidingKey !== null && decidingKey !== a.approvalKey}
-              onClick={() => void decideApproval(a.approvalKey, 'grant')}
+              // WEB-4：单击即执行 → 二次确认（正文列出工具名/参数摘要/不可撤销，见 confirmGrant）
+              onClick={() => confirmGrant(a)}
             >
               {t('agents.approval.grant')}
             </Button>
+            {/* 拒绝保持单击：无副作用，多一步确认只会训练用户盲点「确定」 */}
             <Button
               size="small"
               danger
@@ -871,6 +965,9 @@ export default function AgentSessionsPage() {
                         dataSource={approvals}
                         pagination={false}
                         size="small"
+                        // WEB-4：新增「入参」列后固定列合计 ~1110，抽屉 920 会挤压
+                        // 弹性列（理由）——交给横向滚动，窄屏不塌陷（对齐本页列表 scroll.x 先例）
+                        scroll={{ x: 1180 }}
                       />
                     ) : (
                       <Text type="secondary">{t('agents.approvalsEmpty')}</Text>

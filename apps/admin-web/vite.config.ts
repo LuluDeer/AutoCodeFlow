@@ -156,9 +156,27 @@ export default defineConfig({
           // Split large vendor libraries into separate chunks
           const chunks: Array<[string, string[]]> = [
             ['vendor-react', ['react', 'react-dom', 'react-router-dom']],
-            // Keep route-heavy UI libraries out of forced vendor chunks so lazy pages
-            // can share only the pieces they actually import.
-            ['vendor-charts', ['recharts']],
+            // WEB-1（第 3 轮 web-ux 审计）：**刻意不给 recharts 建强制 chunk**。
+            //
+            // 这里原有一行 `['vendor-charts', ['recharts']]`，注释写着「把
+            // route-heavy UI 库移出强制 vendor chunk，让 lazy 页面只共享它真正
+            // import 的部分」。实测效果与注释相反——与上一条 monaco 完全同构的
+            // 机理：提成**共享 chunk** 后，只要有任何静态可达模块与该 chunk 产生
+            // 静态边，Vite 就把整个 chunk 当作 entry 的静态依赖**预加载**，
+            // recharts 的三个消费方（DashboardPage / ExecutorDetailPage /
+            // KpiSparkline，全部路由级 lazy）是不是 lazy 已经不重要。
+            //
+            // 实测（构建前）：dist/index.html 的 20 条 modulepreload 里有一条
+            //   <link rel="modulepreload" href="/assets/vendor-charts-*.js">
+            // 而 vendor-charts 是 391.20 kB raw / **112.12 kB gzip**——首屏
+            // 628.5 KB gz 的 17.3%，比 entry 自身（86.5 KB gz）还大，且登录页
+            // 用户永不执行。
+            //
+            // 移除后走 Vite 默认分包：recharts 落回真正 import 它的 lazy 页面
+            // chunk；实测 index.html 里 vendor-charts 的 modulepreload 消失。
+            //
+            // 回归守卫见 src/__tests__/first-paint-no-unused-vendor.test.ts
+            // （读构建产物，同时钉住 vendor-charts 与 GlueEditor 不进首屏）。
             // PERF-01（本轮体验审查）：**刻意不给 monaco 建强制 chunk**。
             //
             // 这里原有一行 `['vendor-monaco', ['@monaco-editor/react',
@@ -181,8 +199,8 @@ export default defineConfig({
             // （GlueEditor 仅被路由级 lazy 的 TaskFormPage/TaskDetailPage 引用）。
             // 实测 index.html 里 monaco 的 modulepreload 与 stylesheet 双双消失。
             //
-            // 回归守卫见 src/__tests__/monaco-first-paint.perf01.test.ts
-            // （读构建产物的 index.html，钉住「首屏不得出现 monaco」）。
+            // 回归守卫见 src/__tests__/first-paint-no-unused-vendor.test.ts
+            // （读构建产物的 index.html，同时钉住 monaco 与 recharts 不进首屏）。
             ['vendor-query', ['@tanstack/react-query', 'ahooks']],
             ['vendor-utils', ['axios', 'dayjs']],
           ];

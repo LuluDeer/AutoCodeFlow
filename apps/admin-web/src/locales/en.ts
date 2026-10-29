@@ -3424,6 +3424,16 @@ export default {
   'agents.col.consumedAt': 'Executed at',
   'agents.approval.grant': 'Approve',
   'agents.approval.deny': 'Deny',
+  // ── WEB-4 (P2): decision basis for approvals — full reason + read-only args + confirm before grant ──
+  'agents.approval.argsEmpty': 'No arguments recorded (legacy approval)',
+  'agents.approval.expand': 'Expand',
+  'agents.approval.collapse': 'Collapse',
+  'agents.approval.confirmTitle': 'Approve and run "{{tool}}"?',
+  'agents.approval.confirmSep': ', ',
+  'agents.approval.confirmMore': 'and {{count}} more',
+  'agents.approval.confirmIrreversible': 'Approving executes immediately and cannot be undone: the server resumes the session and replays this tool call (one approval grants exactly one run).',
+  'agents.approval.confirmOk': 'Approve and run',
+  'agents.approval.confirmCancel': 'Cancel',
   'agents.approval.grantOk': 'Approved ({{key}})',
   'agents.approval.grantOk.resumed': 'Approved ({{key}}); the session has been re-enqueued',
   'agents.approval.denyOk': 'Denied ({{key}})',
@@ -3529,6 +3539,9 @@ export default {
   'aiProviders.legacy': 'Legacy',
   'aiProviders.legacyHint': 'Derived from legacy config keys (not yet in the registry) — saving any entry switches to the registry',
   'aiProviders.errors': 'Some entries could not be parsed',
+  // WEB-5：读取失败的页内错误态标题（此前失败只弹 toast，页面渲染成
+  // 「No data」，把「没读到」误读成「没配置」）。
+  'aiProviders.loadFailed': 'Failed to load model providers',
   'aiProviders.field.id': 'ID (lowercase letters/digits/._-)',
   'aiProviders.field.label': 'Display name',
   'aiProviders.field.baseUrl': 'baseUrl (OpenAI-compatible endpoint)',

@@ -86,7 +86,7 @@ import '../i18n';
 // 用户哪怕只看「任务配置」Tab，路由加载时也会整包预取编辑器。改 React.lazy：
 // antd Tabs 非激活面板不渲染，动态 import 只在用户切到「Glue 脚本」Tab 时才
 // 发起；Suspense 给 Spin 占位。monaco 不进首屏的构建面守卫见
-// __tests__/monaco-first-paint.perf01.test.ts（读 dist 产物断言）。
+// __tests__/first-paint-no-unused-vendor.test.ts（读 dist 产物断言）。
 const GlueEditor = lazy(() => import('../components/GlueEditor'));
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { priorityTag } from '../utils/priority';

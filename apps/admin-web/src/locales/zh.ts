@@ -3424,6 +3424,16 @@ export default {
   'agents.col.consumedAt': '执行时刻',
   'agents.approval.grant': '批准',
   'agents.approval.deny': '拒绝',
+  // ── WEB-4（P2）：审批单的决策依据——全文理由 + 只读入参 + 批准前二次确认 ──
+  'agents.approval.argsEmpty': '未记录入参（旧审批单）',
+  'agents.approval.expand': '展开',
+  'agents.approval.collapse': '收起',
+  'agents.approval.confirmTitle': '确认批准并执行「{{tool}}」？',
+  'agents.approval.confirmSep': '，',
+  'agents.approval.confirmMore': '等 {{count}} 项',
+  'agents.approval.confirmIrreversible': '批准后将立即执行且不可撤销：服务端会恢复该会话并重放这一次工具调用（一张单只放行一次）。',
+  'agents.approval.confirmOk': '批准并执行',
+  'agents.approval.confirmCancel': '取消',
   'agents.approval.grantOk': '已批准（{{key}}）',
   'agents.approval.grantOk.resumed': '已批准（{{key}}），会话已重新入队',
   'agents.approval.denyOk': '已拒绝（{{key}}）',
@@ -3529,6 +3539,9 @@ export default {
   'aiProviders.legacy': '旧配置',
   'aiProviders.legacyHint': '当前由旧配置键合成（尚未写入新注册表）——保存任意条目后以注册表为准',
   'aiProviders.errors': '部分条目无法解析',
+  // WEB-5：读取失败的页内错误态标题（此前失败只弹 toast，页面渲染成
+  // 「暂无数据」，把「没读到」误读成「没配置」）。
+  'aiProviders.loadFailed': '读取模型接入配置失败',
   'aiProviders.field.id': '标识（小写字母/数字/._-）',
   'aiProviders.field.label': '显示名',
   'aiProviders.field.baseUrl': 'baseUrl（OpenAI 兼容端点）',
