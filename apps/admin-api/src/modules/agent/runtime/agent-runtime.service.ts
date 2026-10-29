@@ -57,6 +57,19 @@ const RESUME_LLM_MIN_WALL_CLOCK_LEFT_MS = 5 * 60_000;
 export const AUTO_RESUME_WAITING_FOR = "auto_resume";
 
 /**
+ * 同一批**只读**工具调用的并行上限（agent 推理质量轮 / langgraph 参考）。
+ *
+ * 模型一次给出多个 tool_calls 时，只读调用彼此无依赖（查两次 get_execution、
+ * 并行看 task + executor），串行执行把延迟相加。这里对「整批都是只读」的
+ * 情况做有界并行（4 路），任何一批里出现 write/dangerous 就退回严格串行——
+ * 写操作的顺序与审批语义不能因为并行而改变。
+ *
+ * 只读没有副作用，边界闸门的速率计数在并发下最多短暂超出 4 次（读请求，
+ * 且下一次调用即被限流），代价远小于把 4 个读串成一条链。
+ */
+const READ_TOOL_CONCURRENCY = 4;
+
+/**
  * 一批工具调用里「没有执行」的两种情况与回给模型的应答文本。
  *
  * 为什么必须回一条（而不是静默跳过）：OpenAI 兼容协议要求每个 tool_call
@@ -549,6 +562,32 @@ export class AgentRuntimeService {
         // 同一处还有第二道**批次内**的墙钟闸：预算闸门只在循环开头判，而一批
         // 调用每个最多 60s——十个调用就能跑过墙钟上限，把「35 分钟才死的会话」
         // 变成常态，期间还在持续产生副作用。因此每次执行前重判一次截止时间。
+        // 只读批次的并行执行（见 READ_TOOL_CONCURRENCY）。判定「整批都是
+        // read」才走并行；否则保持原严格串行循环（写操作顺序/审批语义不变）。
+        const allReadOnly =
+          res.toolCalls.length > 1 &&
+          res.toolCalls.every(
+            (c) =>
+              (tierByName.get(c.function?.name ?? "unknown") ?? "read") ===
+              "read",
+          ) &&
+          !(deadlineAt !== null && Date.now() >= deadlineAt);
+        if (allReadOnly) {
+          const results = await this.executeReadOnlyBatch(
+            fresh,
+            res.toolCalls,
+            step.id,
+          );
+          for (let i = 0; i < res.toolCalls.length; i += 1) {
+            messages = this.pushToolResult(
+              messages,
+              res.toolCalls[i],
+              results[i].content,
+            );
+          }
+          continue;
+        }
+
         let waitingForApproval = false;
         for (const call of res.toolCalls) {
           const wallClockExpired =
@@ -682,6 +721,40 @@ export class AgentRuntimeService {
       }
     }
     return replayed;
+  }
+
+  /**
+   * 并行执行一整批**只读**工具调用（有界并发，结果保持原始调用顺序）。
+   *
+   * 前置条件由调用方保证：整批都是 read tier 且墙钟未过期。只读调用没有
+   * 副作用、不需要审批，因此可以安全并行；单行失败由 executeToolCallGuarded
+   * 收敛为说明性结果，不影响同批其它调用。
+   */
+  private async executeReadOnlyBatch(
+    session: AgentSession,
+    calls: ToolCall[],
+    stepId: string | null,
+  ): Promise<Array<{ content: string; truncated: boolean }>> {
+    const results = new Array<{ content: string; truncated: boolean }>(
+      calls.length,
+    );
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(READ_TOOL_CONCURRENCY, calls.length) },
+      async () => {
+        while (cursor < calls.length) {
+          const idx = cursor;
+          cursor += 1;
+          results[idx] = await this.executeToolCallGuarded(
+            session,
+            calls[idx],
+            stepId,
+          );
+        }
+      },
+    );
+    await Promise.all(workers);
+    return results;
   }
 
   private async executeToolCallGuarded(

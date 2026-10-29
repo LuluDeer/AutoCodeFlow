@@ -1861,3 +1861,121 @@ describe("AgentRuntimeService.run —— 未预期异常兜底收敛", () => {
     expect(String(h.finished[0].patch.errorMessage)).toContain("runtime error");
   });
 });
+
+/**
+ * 只读工具批次并行执行（langgraph 并行 tool call 的同类优化）。
+ *
+ * 模型一次给多个只读调用时，串行执行把延迟相加；只读无副作用，可安全并行。
+ * 写/危险调用仍严格串行——顺序与审批语义不能因为并行而改变。
+ */
+describe("AgentRuntimeService · 只读工具批次并行", () => {
+  const readDef = (name: string) => ({
+    name,
+    description: "d",
+    parameters: {},
+    tier: "read" as const,
+  });
+  const call = (id: string, name: string) => ({
+    id,
+    type: "function" as const,
+    function: { name, arguments: "{}" },
+  });
+
+  it("同一批两个只读调用并行启动，结果按调用顺序回灌", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "",
+          toolCalls: [call("c1", "get_task"), call("c2", "list_tasks")],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    let active = 0;
+    let peak = 0;
+    const resolvers: Array<() => void> = [];
+    const execute = jest.fn(
+      () =>
+        new Promise<{ content: string; truncated: boolean }>((resolve) => {
+          active += 1;
+          peak = Math.max(peak, active);
+          resolvers.push(() => {
+            active -= 1;
+            resolve({ content: "ok", truncated: false });
+          });
+        }),
+    );
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        readDef("get_task"),
+        readDef("list_tasks"),
+      ]),
+      execute,
+    });
+
+    const running = h.service.run("sess-1");
+    // 等到两个执行都发起（并行的话此时 execute 已调用两次）
+    await new Promise((r) => setImmediate(r));
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(peak).toBe(2);
+
+    resolvers.forEach((r) => r());
+    await running;
+
+    const secondReq = h.llmCall(1) as Any;
+    const toolMsgs = secondReq.messages.filter((m: Any) => m.role === "tool");
+    expect(toolMsgs.map((m: Any) => m.tool_call_id)).toEqual(["c1", "c2"]);
+  });
+
+  it("批里出现写调用 → 全程串行（第二个在第一个完成前不启动）", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "",
+          toolCalls: [call("c1", "get_task"), call("c2", "update_task")],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    let resolveFirst: (() => void) | null = null;
+    let calls = 0;
+    const execute = jest.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        await new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return { content: "ok", truncated: false };
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        readDef("get_task"),
+        {
+          name: "update_task",
+          description: "d",
+          parameters: {},
+          tier: "write" as const,
+        },
+      ]),
+      execute,
+    });
+
+    const running = h.service.run("sess-1");
+    await new Promise((r) => setImmediate(r));
+    expect(execute).toHaveBeenCalledTimes(1);
+    resolveFirst!();
+    await running;
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+});
