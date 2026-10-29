@@ -377,3 +377,147 @@ class TestReportCommandResult:
 
         # 不抛出即通过
         await commands.report_command_result({'commandId': 'c1', 'ok': True})
+
+
+class TestUnsupportedCommandTypeReporting:
+    """EXEC-04（第 3 轮并行审计，P2）：未知类型必须产出**可上报**的 ok:false。
+
+    失败模式（改动前）：`parse_control_command` 对未知 type 返回 None →
+    `run_control_commands` 只 warn 后 continue，**不上报**；中台那条命令行永远
+    停在"已下发"，运维无法区分"执行器拒了"与"命令丢了"。
+
+    安全语义不得放宽：未知类型**绝不执行任何动作**（不投递本地路由）。
+    """
+
+    def test_unknown_type_produces_reportable_result(self):
+        result = commands.reject_unsupported_control_command(
+            {'commandId': 'c1', 'type': 'evil'}
+        )
+
+        assert result == {
+            'commandId': 'c1',
+            'type': 'evil',
+            'ok': False,
+            'status': None,
+            'error': 'unsupported command type: evil',
+            'durationMs': 0,
+        }
+
+    def test_error_text_matches_node(self):
+        """文案与 node `rejectUnsupportedControlCommand` 逐字一致。"""
+        assert commands.UNSUPPORTED_COMMAND_TYPE_ERROR.format('rm-rf-slash') == (
+            'unsupported command type: rm-rf-slash'
+        )
+
+    @pytest.mark.parametrize('command_type', commands.CONTROL_COMMAND_TYPES)
+    def test_known_types_are_not_rejected(self, command_type):
+        assert commands.reject_unsupported_control_command(
+            {'commandId': 'c1', 'type': command_type}
+        ) is None
+
+    @pytest.mark.parametrize('raw', [
+        None,
+        'nope',
+        42,
+        ['x'],
+        {},
+        {'type': 'evil'},                   # 缺 commandId → 无从关联，只能丢弃
+        {'commandId': '', 'type': 'evil'},
+        {'commandId': 'bad id', 'type': 'evil'},   # 形态不合协议（含空格）
+        {'commandId': '.leading', 'type': 'evil'},
+        {'commandId': 'c1'},                # 缺 type
+        {'commandId': 'c1', 'type': 42},
+        {'commandId': 'c1', 'type': ''},
+    ])
+    def test_unreportable_payloads_return_none(self, raw):
+        assert commands.reject_unsupported_control_command(raw) is None
+
+    def test_overlong_type_truncated_in_type_field_but_full_in_error(self):
+        """中台 DTO 的 type 上限 64——不截断会被 400 丢掉，又回到"没有结果行"。"""
+        long_type = 'x' * 200
+        result = commands.reject_unsupported_control_command(
+            {'commandId': 'c1', 'type': long_type}
+        )
+
+        assert len(result['type']) == 64
+        assert result['error'] == f'unsupported command type: {long_type}'
+        assert len(result['error']) <= 1000
+
+
+class TestRunControlCommandsReportsUnknownType:
+    @pytest.fixture(autouse=True)
+    def _reset_stats(self):
+        commands.reset_command_stats()
+        yield
+        commands.reset_command_stats()
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_is_reported_and_not_executed(self, monkeypatch):
+        executed = []
+        reported = []
+
+        async def _exec(cmd):
+            executed.append(cmd['commandId'])
+            return {'commandId': cmd['commandId'], 'type': cmd['type'], 'ok': True}
+
+        async def _report(result):
+            reported.append(result)
+
+        monkeypatch.setattr(commands, 'execute_control_command', _exec)
+        monkeypatch.setattr(commands, 'report_command_result', _report)
+
+        await commands.run_control_commands([
+            {'commandId': 'x1', 'type': 'rm-rf-slash', 'payload': {}},
+        ])
+
+        assert executed == []
+        assert len(reported) == 1
+        assert reported[0]['ok'] is False
+        assert reported[0]['commandId'] == 'x1'
+        assert reported[0]['error'] == 'unsupported command type: rm-rf-slash'
+        assert commands.get_command_stats() == {
+            'executed': 0,
+            'reported': 1,
+            'reportFailed': 0,
+            'unsupportedTypeRejected': 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing_command_id_still_dropped(self, monkeypatch, caplog):
+        reported = []
+
+        async def _report(result):
+            reported.append(result)
+
+        monkeypatch.setattr(commands, 'report_command_result', _report)
+
+        with caplog.at_level('WARNING'):
+            await commands.run_control_commands([{'type': 'rm-rf-slash', 'payload': {}}])
+
+        assert reported == []
+        assert any(
+            'Discarded malformed control command' in record.message
+            for record in caplog.records
+        )
+        assert commands.get_command_stats()['unsupportedTypeRejected'] == 0
+
+    @pytest.mark.asyncio
+    async def test_report_failure_is_counted_and_warned(self, monkeypatch, caplog):
+        async def _exec(cmd):
+            return {'commandId': cmd['commandId'], 'type': cmd['type'], 'ok': True}
+
+        async def _boom(_result):
+            raise RuntimeError('admin unreachable')
+
+        monkeypatch.setattr(commands, 'execute_control_command', _exec)
+        monkeypatch.setattr(commands, 'report_command_result', _boom)
+
+        with caplog.at_level('WARNING'):
+            await commands.run_control_commands([
+                {'commandId': 'c1', 'type': 'config-reload', 'payload': {}},
+            ])
+
+        stats = commands.get_command_stats()
+        assert stats['reported'] == 0
+        assert stats['reportFailed'] == 1
+        assert any('Failed to report result' in r.message for r in caplog.records)

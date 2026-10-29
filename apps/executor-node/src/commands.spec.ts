@@ -23,6 +23,7 @@ import {
   executeControlCommand,
   isControlCommandType,
   parseControlCommand,
+  rejectUnsupportedControlCommand,
   type ControlCommandType,
 } from './commands';
 
@@ -189,5 +190,84 @@ describe('control command routing (ARCH-33)', () => {
     expect(result.commandId).toBe('cmd-42');
     expect(result.type).toBe('app-stop');
     expect(typeof result.durationMs).toBe('number');
+  });
+});
+
+/**
+ * EXEC-04（第 3 轮并行审计，P2）：未知命令类型的**可上报拒绝**。
+ *
+ * 失败模式（改动前）：未知 type 在协议闸被拒 → `parseControlCommand` 返回 null →
+ * pull.ts 只 warn 后 `continue`，**不上报结果**。中台那条命令于是永远停在
+ * "已下发"，运维无法区分"执行器拒了"和"命令丢了"。python 侧一直回报
+ * `ok:false`，同一件事两端行为分叉。
+ *
+ * 语义边界（不得放宽）：
+ *   - 未知类型**绝不执行任何动作**（不投递本地路由）——这里只产出一个结果对象；
+ *   - 连 commandId 都拿不到（缺失/畸形）时仍然只能丢弃（没有键可关联）；
+ *   - 已知类型不在此列（返回 null，交回正常执行路径）。
+ */
+describe('EXEC-04: 未知命令类型 → 可上报的 ok:false 结果', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('未知 type + 合法 commandId → ok:false，错误文案两端一致', () => {
+    const result = rejectUnsupportedControlCommand({
+      commandId: '3f1b1c1e-0000-4000-8000-000000000001',
+      type: 'rm-rf-slash',
+      payload: {},
+    });
+
+    expect(result).toMatchObject({
+      commandId: '3f1b1c1e-0000-4000-8000-000000000001',
+      type: 'rm-rf-slash',
+      ok: false,
+      durationMs: 0,
+    });
+    // 与 python commands.py 的 UNSUPPORTED_COMMAND_TYPE_ERROR 逐字一致
+    expect(result!.error).toBe('unsupported command type: rm-rf-slash');
+  });
+
+  it('绝不执行任何动作：不投递本地路由（axios 零调用）', () => {
+    rejectUnsupportedControlCommand({ commandId: 'c1', type: 'rm-rf-slash' });
+    expect(axiosPost).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'deploy',
+    'app-stop',
+    'app-uninstall',
+    'config-reload',
+    'kill-execution',
+    'update-package',
+  ])('已知类型 %s 不走拒绝通道（返回 null）', (type) => {
+    expect(rejectUnsupportedControlCommand({ commandId: 'c1', type })).toBeNull();
+  });
+
+  it.each([
+    [null],
+    ['nope'],
+    [42],
+    [[]],
+    [{ type: 'rm-rf-slash' }], // 缺 commandId：无从关联，只能丢弃
+    [{ commandId: '', type: 'rm-rf-slash' }],
+    [{ commandId: 'bad id', type: 'rm-rf-slash' }], // 形态不合协议（含空格）
+    [{ commandId: '.leading', type: 'rm-rf-slash' }],
+    [{ commandId: 'c1' }], // 缺 type
+    [{ commandId: 'c1', type: 42 }],
+    [{ commandId: 'c1', type: '' }],
+  ])('无法关联到中台行时返回 null：%j', (raw) => {
+    expect(rejectUnsupportedControlCommand(raw)).toBeNull();
+  });
+
+  it('超长未知 type：type 字段按中台 DTO 上限截断，完整原文留在 error 里', () => {
+    const longType = 'x'.repeat(200);
+    const result = rejectUnsupportedControlCommand({ commandId: 'c1', type: longType })!;
+
+    // 中台 ExecutorCommandResultDto.type 是 @MaxLength(64)——不截断会被 400 丢掉，
+    // 于是又回到"中台没有结果行"的原始故障。
+    expect(result.type.length).toBe(64);
+    expect(result.error).toContain(`unsupported command type: ${longType}`);
+    expect(result.error!.length).toBeLessThanOrEqual(1000);
   });
 });

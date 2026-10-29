@@ -45,6 +45,7 @@ python 执行器只有 6 类命令中的 2 类有对应本地路由：
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -109,6 +110,73 @@ def quote_path_segment(value: Any) -> str:
 def is_control_command_type(command_type: Any) -> bool:
     """类型是否属于封闭枚举。"""
     return isinstance(command_type, str) and command_type in CONTROL_COMMAND_TYPES
+
+
+#: EXEC-04（第 3 轮并行审计，P2）：未知命令类型的统一错误文案。
+#: 字面量与 node ``commands.ts:unsupportedCommandTypeError`` **逐字一致**——
+#: 同一个畸形载荷落在哪一侧执行器上，中台看到的原因应当完全一样。
+UNSUPPORTED_COMMAND_TYPE_ERROR = 'unsupported command type: {}'
+
+#: 协议 commandId 形态（node 生成的 ControlCommandSchema 同正则）。
+_COMMAND_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
+
+#: 中台 ``ExecutorCommandResultDto.type`` 是 ``@MaxLength(64)``——上报体里超长的
+#: type 会被 400 整条丢掉，于是又回到"中台没有结果行"的原始故障。截断上报的
+#: type，完整原文留在 error（≤1000）。
+_REPORTED_TYPE_MAX_CHARS = 64
+_ERROR_MAX_CHARS = 1000
+
+#: EXEC-04 可观测性计数（上报失败若长期静默，中台侧表现就是"命令没有结果行"）。
+_COMMAND_STATS: dict[str, int] = {
+    'executed': 0,
+    'reported': 0,
+    'reportFailed': 0,
+    'unsupportedTypeRejected': 0,
+}
+
+
+def get_command_stats() -> dict[str, int]:
+    """命令通道计数快照（与 node ``pull.ts:getControlCommandStats`` 同字段）。"""
+    return dict(_COMMAND_STATS)
+
+
+def reset_command_stats() -> None:
+    """Test hook：清空计数（模块级粘性状态）。"""
+    for key in _COMMAND_STATS:
+        _COMMAND_STATS[key] = 0
+
+
+def reject_unsupported_control_command(raw: Any) -> dict[str, Any] | None:
+    """EXEC-04：把「未知命令类型」转成一条**可上报**的 ``ok=False`` 结果。
+
+    返回 None 的三种情形（仍然只能丢弃 + warn）：
+
+    * 载荷不是 dict / 没有 type；
+    * 没有可关联到中台行的 commandId（缺失或形态不合协议）——没有键就无法入账；
+    * type 属于封闭枚举（那是正常执行路径的事，不是"不支持"）。
+
+    **安全语义不变**：本函数只产出结果对象，绝不执行任何动作（不投递本地路由）。
+    """
+    if not isinstance(raw, dict):
+        return None
+    command_id = raw.get('commandId')
+    command_type = raw.get('type')
+    if not isinstance(command_id, str) or _COMMAND_ID_RE.fullmatch(command_id) is None:
+        return None
+    if not isinstance(command_type, str) or not command_type:
+        return None
+    if is_control_command_type(command_type):
+        return None
+    return {
+        'commandId': command_id,
+        # 未投递本地路由：没有耗时也没有 HTTP 状态。`durationMs` 保留字段（协议
+        # 可选）以便结果体与正常路径同形，中台侧无需分支。
+        'type': command_type[:_REPORTED_TYPE_MAX_CHARS],
+        'ok': False,
+        'status': None,
+        'error': UNSUPPORTED_COMMAND_TYPE_ERROR.format(command_type)[:_ERROR_MAX_CHARS],
+        'durationMs': 0,
+    }
 
 
 def parse_control_command(raw: Any) -> dict[str, Any] | None:
@@ -213,12 +281,15 @@ async def execute_control_command(command: dict[str, Any]) -> dict[str, Any]:
     return _result(False, status=response.status_code, error=detail[:1000])
 
 
-async def report_command_result(result: dict[str, Any]) -> None:
+async def report_command_result(result: dict[str, Any]) -> bool:
     """把命令执行结果上报中台（best-effort）。
 
     上报失败只 warn：业务终态另有回调通道收敛（deploy →
     /app-deployments/heartbeat；update-package → push-result），结果上报覆盖的
     是这两条之外没有回执通道的命令（config-reload / kill-execution）。
+
+    EXEC-04：返回是否上报成功（**绝不抛出**）。调用方据此累计 ``reportFailed``
+    ——静默吞掉上报失败与"静默丢弃命令"是同一种故障观感（中台没有结果行）。
     """
     try:
         token = await get_current_token()
@@ -239,9 +310,11 @@ async def report_command_result(result: dict[str, Any]) -> None:
             },
             timeout=10,
         )
+        return True
     except Exception as exc:
         logger.warning('[command] Failed to report result for %s: %s',
                        result.get('commandId'), exc)
+        return False
 
 
 async def run_control_commands(raw_commands: Any) -> None:
@@ -251,16 +324,41 @@ async def run_control_commands(raw_commands: Any) -> None:
     并发会把「先停后删」的时序打乱。
 
     单条失败不中断整批：一条坏命令不该让同批的其余命令一起丢掉。
+
+    EXEC-04（第 3 轮并行审计，P2）：未知命令类型**必须上报**一条 ``ok=False``
+    （旧实现只 warn 后丢弃，中台那行命令永远停在"已下发"）。只有连 commandId
+    都没有的载荷才继续走「丢弃 + warn」（没有键可入账）。
     """
     if not isinstance(raw_commands, list) or not raw_commands:
         return
 
+    async def _report(result: dict[str, Any]) -> None:
+        """上报一条结果并计数——上报实现即便意外抛错也不得冒泡。"""
+        try:
+            ok = await report_command_result(result)
+        except Exception as exc:  # 打桩/未来实现抛错：不冒泡，计入失败
+            ok = False
+            logger.warning('[command] Failed to report result for %s: %s',
+                           result.get('commandId'), exc)
+        if ok is False:
+            _COMMAND_STATS['reportFailed'] += 1
+        else:
+            _COMMAND_STATS['reported'] += 1
+
     for raw in raw_commands:
         command = parse_control_command(raw)
         if command is None:
-            # 畸形条目：中台侧 parse_command 已拦一道，这里是第二道（队列被外部
-            # 写入 / 版本错配）。丢弃 + warn，不上报（没有 commandId 可关联）。
-            logger.warning('[command] Discarded malformed control command from pull response')
+            rejection = reject_unsupported_control_command(raw)
+            if rejection is None:
+                # 畸形条目：中台侧 parse_command 已拦一道，这里是第二道（队列被
+                # 外部写入 / 版本错配）。丢弃 + warn，不上报（没有 commandId 可关联）。
+                logger.warning('[command] Discarded malformed control command from pull response')
+                continue
+            _COMMAND_STATS['unsupportedTypeRejected'] += 1
+            logger.warning('[command] %s (%s) rejected: %s',
+                           rejection['type'], rejection['commandId'], rejection['error'])
+            await _report(rejection)
             continue
+        _COMMAND_STATS['executed'] += 1
         result = await execute_control_command(command)
-        await report_command_result(result)
+        await _report(result)

@@ -13,8 +13,10 @@ import { pushCallback } from './callback';
 import { getDeviceFingerprint } from './device-identity';
 import { getExecutorInstanceId } from './executor-instance-id';
 import {
+  type ControlCommandResult,
   executeControlCommand,
   parseControlCommand,
+  rejectUnsupportedControlCommand,
 } from './commands';
 import axios from 'axios';
 
@@ -170,6 +172,70 @@ export function resetPullReservedSlotsForTest(): number {
 }
 
 /**
+ * EXEC-04（第 3 轮并行审计，P2）：命令通道的计数快照。
+ *
+ * 日志（warn）是逐条证据，计数是"有没有在堆积"的聚合答案——上报若长期失败，
+ * 中台侧表现为"命令没有结果行"，只有计数能在执行器本地证明是**上报**丢了。
+ * 字段与 python `commands.py:get_command_stats` 一致（两端同形便于比对）。
+ */
+export interface ControlCommandStats {
+  /** 真正投递到本地路由的命令条数。 */
+  executed: number;
+  /** 成功入账的结果条数（含未知类型的 ok:false）。 */
+  reported: number;
+  /** 上报失败条数（best-effort：只 warn，不阻塞主链）。 */
+  reportFailed: number;
+  /** 因"未知命令类型"被拒并上报的条数。 */
+  unsupportedTypeRejected: number;
+}
+
+const controlCommandStats: ControlCommandStats = {
+  executed: 0,
+  reported: 0,
+  reportFailed: 0,
+  unsupportedTypeRejected: 0,
+};
+
+export function getControlCommandStats(): ControlCommandStats {
+  return { ...controlCommandStats };
+}
+
+/** Test hook：计数是模块级粘性状态（jest 模块注册表跨用例保留）。 */
+export function resetControlCommandStatsForTest(): void {
+  controlCommandStats.executed = 0;
+  controlCommandStats.reported = 0;
+  controlCommandStats.reportFailed = 0;
+  controlCommandStats.unsupportedTypeRejected = 0;
+}
+
+/**
+ * 上报一条命令结果（best-effort，绝不抛出）。
+ *
+ * EXEC-04：失败必须留下**可查**的痕迹（warn + `reportFailed` 计数）——静默吞
+ * 掉上报失败与"静默丢弃命令"是同一种故障观感（中台没有结果行）。
+ */
+async function reportControlCommandResult(result: ControlCommandResult): Promise<void> {
+  try {
+    await post('/api/executors/command-result', {
+      ...result,
+      address: config.executorAddressPublic || config.executorAddress,
+      // ADR-017 阶段 3：随机器面上报指纹，服务端据此唯一定位本行（pull
+      // 模式允许同地址多行并存）。采集失败时为 undefined —— 字段缺省即
+      // 服务端 legacy 兜底路径，行为与引入前一致。
+      deviceFingerprint: getDeviceFingerprint() ?? undefined,
+    });
+    controlCommandStats.reported += 1;
+  } catch (err: unknown) {
+    controlCommandStats.reportFailed += 1;
+    logger.warn(
+      `[command] Failed to report result for ${result.commandId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
  * ARCH-33（ADR-016）：执行本批控制面命令，并把结果上报中台。
  *
  * 逐条**串行**执行——app-uninstall 依赖同一批里先到的 app-stop 已生效，
@@ -181,6 +247,11 @@ export function resetPullReservedSlotsForTest(): number {
  * 同语义）。旧实现先整批执行完再统一回报——批内靠前的结果要陪跑整批（一条
  * 命令最长 60s），批中途崩溃则已执行结果全部丢失。上报仍是 best-effort：
  * 失败只 warn，不影响后续命令的执行与回报。
+ *
+ * EXEC-04（第 3 轮并行审计，P2）：**未知命令类型也必须上报**一条 `ok:false`。
+ * 旧实现把它当"畸形条目"整个丢掉（只 warn），中台那行命令永远停在"已下发"；
+ * python 侧一直回报 `ok:false`，同一件事两端分叉。只有**连 commandId 都没有**
+ * 的载荷才继续走「丢弃 + warn」（没有键可入账）。
  */
 async function runControlCommands(rawCommands: unknown): Promise<void> {
   if (!Array.isArray(rawCommands) || rawCommands.length === 0) return;
@@ -188,29 +259,24 @@ async function runControlCommands(rawCommands: unknown): Promise<void> {
   for (const raw of rawCommands) {
     const cmd = parseControlCommand(raw);
     if (!cmd) {
-      // 畸形条目：中台侧 parseCommand 已拦一道，这里是第二道（队列被外部
-      // 写入 / 版本错配）。丢弃 + warn，不上报（没有 commandId 可关联）。
-      logger.warn('[command] Discarded malformed control command from pull response');
+      // EXEC-04：未知命令类型 → **上报** ok:false（与 python 同语义）。
+      // 只有连 commandId 都拿不到时才退回"丢弃 + warn"（没有键可关联）。
+      const rejection = rejectUnsupportedControlCommand(raw);
+      if (!rejection) {
+        logger.warn('[command] Discarded malformed control command from pull response');
+        continue;
+      }
+      controlCommandStats.unsupportedTypeRejected += 1;
+      logger.warn(
+        `[command] ${rejection.type} (${rejection.commandId}) rejected: ${rejection.error}`,
+      );
+      await reportControlCommandResult(rejection);
       continue;
     }
+    controlCommandStats.executed += 1;
     const result = await executeControlCommand(cmd);
     // A-10: 执行完一条立即回报一条——不再攒整批。
-    try {
-      await post('/api/executors/command-result', {
-        ...result,
-        address: config.executorAddressPublic || config.executorAddress,
-        // ADR-017 阶段 3：随机器面上报指纹，服务端据此唯一定位本行（pull
-        // 模式允许同地址多行并存）。采集失败时为 undefined —— 字段缺省即
-        // 服务端 legacy 兜底路径，行为与引入前一致。
-        deviceFingerprint: getDeviceFingerprint() ?? undefined,
-      });
-    } catch (err: unknown) {
-      logger.warn(
-        `[command] Failed to report result for ${result.commandId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    await reportControlCommandResult(result);
   }
 }
 

@@ -41,7 +41,9 @@ import {
  * 先命中 guard 的 `single_file_too_large`）。把它们纳入联合类型是诚实做法：
  * 调用方按 violation 分类时不会遇到类型里没写的值。
  *
- * 后半段是本模块新增的**路径**类违规（guard 不负责这些）。
+ * 后半段是本模块新增的**路径**类违规（guard 不负责这些），以及 EXEC-03 引入的
+ * **Windows 归一化**类违规（`windows_reserved_name` / `windows_trailing_dot_space`
+ * / `duplicate_entry`）——两端（node / python）必须逐字同名同义。
  */
 export type ZipSafetyViolation =
   | ZipGuardViolation
@@ -53,7 +55,10 @@ export type ZipSafetyViolation =
   | 'total_too_large'
   | 'ratio_too_high'
   | 'bad_archive'
-  | 'unsupported_method';
+  | 'unsupported_method'
+  | 'windows_reserved_name'
+  | 'windows_trailing_dot_space'
+  | 'duplicate_entry';
 
 export class ZipSafetyError extends Error {
   constructor(
@@ -77,6 +82,120 @@ const LOCAL_HEADER_SIZE = 30;
 /** Unix `S_IFLNK`：中央目录 external attributes 高 16 位里的文件类型。 */
 const S_IFMT = 0xf000;
 const S_IFLNK = 0xa000;
+
+// ---------------------------------------------------------------------------
+// EXEC-03：条目名的 Windows 归一化
+//
+// 背景：解压结果必须与宿主平台无关。Windows 的落盘语义与 POSIX 有四处差异，
+// 任何一处没对齐，同一个 zip 就会「Linux 解出两份内容、Windows 解成一份」，
+// 或者「写入成功但文件不存在」：
+//
+//   ① 保留设备名：`CON` / `NUL` / `AUX` / `PRN` / `COM1..9` / `LPT1..9`（含
+//      `CON.txt` 这类带扩展名的形式）在 Win32 上是**设备**而不是文件，创建
+//      动作要么失败、要么写到设备上去。
+//   ② 尾随点/空格：`a.txt.` 与 `a.txt ` 会被静默裁成 `a.txt`——声明的名字与
+//      落盘的名字不一致，后续按名字读文件的调用方全部扑空。
+//   ③ 大小写不敏感：`A.txt` 与 `a.txt` 是**同一个文件**，后写覆盖先写。
+//   ④ 同目标重复条目：即便同名（`x.txt` 两次），解出内容也取决于条目顺序。
+//
+// 判定策略取 fail-closed 的「拒绝并给出可判定原因」，而不是 warn 后照写：
+// 归一化冲突意味着"这个包本身自相矛盾"，任何平台上的解压结果都不可信。
+// 规则与本文件的 `normalizeEntryNameForWin32` 一一对应，且必须与
+// `apps/executor-python/zip_safety.py` 的同名实现**逐条一致**（含错误文案）。
+// ---------------------------------------------------------------------------
+
+/**
+ * Windows 保留设备名（小写、不含扩展名）。
+ *
+ * 判定只取 basename 的**主干**（第一个 `.` 之前）——因此 `CON.txt` 命中，
+ * 而 `aux-data.txt` / `console.txt` / `com10.txt` 这类前缀相似项不命中。
+ *
+ * 与 python `WINDOWS_RESERVED_DEVICE_NAMES` 逐字一致（两端各有一份是刻意的：
+ * 两侧运行时互不依赖；`zip-safety.spec.ts` / `test_zip_safety.py` 各自钉住表内容）。
+ */
+export const WINDOWS_RESERVED_DEVICE_NAMES: ReadonlySet<string> = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
+]);
+
+/** 分隔符归一：zip 规范固定用 `/`，但 Windows 工具常混用 `\`；空段与 `.` 段丢弃。 */
+function splitEntryName(name: string): string[] {
+  return name.split(/[\\/]+/).filter((segment) => segment !== '' && segment !== '.');
+}
+
+/**
+ * 逐段裁掉尾随点/空格（Windows 的落盘语义）。
+ *
+ * `..` 段原样保留：它是 `zip_slip` 闸门的判据，归一化绝不能把它悄悄抹成空串
+ * （那会让 `a/../b` 与 `a/b` 在键上撞车，掩盖真正的逃逸意图）。
+ */
+function stripTrailingDotsAndSpaces(segment: string): string {
+  if (segment === '..') return segment;
+  return segment.replace(/[. ]+$/, '');
+}
+
+/**
+ * 归一化键：分隔符归一 → 逐段裁尾随点/空格 → 大小写折叠。
+ *
+ * 两个条目的键相同 ⇒ 在 Windows 落盘语义下写到同一个文件。
+ * 与 python `normalize_entry_name_for_win32` 同算法（含 `..` 例外）。
+ */
+export function normalizeEntryNameForWin32(name: string): string {
+  return splitEntryName(name)
+    .map((segment) => stripTrailingDotsAndSpaces(segment).toLowerCase())
+    .join('/');
+}
+
+/**
+ * EXEC-03 名称闸门：逐段拒绝 Windows 保留设备名与尾随点/空格。
+ *
+ * 逐段而非整体判定：`pkg/CON.txt`、`dir /x.txt` 里的危险成分在中间段。
+ */
+function assertWindowsSafeEntryName(entryName: string): void {
+  for (const segment of splitEntryName(entryName)) {
+    if (segment === '..') continue; // 由 resolveEntryTarget 的 zip_slip 闸门处理
+
+    if (/[. ]$/.test(segment)) {
+      throw new ZipSafetyError(
+        'windows_trailing_dot_space',
+        `zip 条目名含有尾随点或空格（Windows 会静默裁剪）：${entryName}`,
+      );
+    }
+    const stem = segment.split('.')[0].toLowerCase();
+    if (WINDOWS_RESERVED_DEVICE_NAMES.has(stem)) {
+      throw new ZipSafetyError(
+        'windows_reserved_name',
+        `zip 条目使用了 Windows 保留设备名：${entryName}`,
+      );
+    }
+  }
+}
+
+/**
+ * EXEC-03 整包闸门：重复/折叠碰撞的目标检测。
+ *
+ * 必须是**整包**判定（单条目视角看不出冲突），且在写出任何字节之前调用：
+ * 重复条目在 POSIX 上是"后写覆盖先写"、在 Windows 上是"同名同文件"——
+ * 两种结果都让解出内容取决于条目顺序，不可接受。
+ */
+export function assertUniqueEntryTargets(entryNames: readonly string[]): void {
+  const seen = new Map<string, string>();
+  for (const name of entryNames) {
+    const key = normalizeEntryNameForWin32(name);
+    const first = seen.get(key);
+    if (first !== undefined) {
+      throw new ZipSafetyError(
+        'duplicate_entry',
+        `zip 中存在解压到同一目标的多余条目：${first} 与 ${name}（归一化后均为 ${key}）`,
+      );
+    }
+    seen.set(key, name);
+  }
+}
 
 export interface SafeExtractOptions {
   /** 上限；默认取 `getZipGuardLimitsFromEnv()`（与 deploy 路径同源）。 */
@@ -194,6 +313,10 @@ function resolveEntryTarget(destDir: string, entryName: string): string {
   if (segments.some((s) => s === '..')) {
     throw new ZipSafetyError('zip_slip', `zip 条目通过 ".." 逃出目标目录：${entryName}`);
   }
+
+  // EXEC-03：Windows 落盘语义的名称闸门（保留设备名 / 尾随点空格）。
+  // 放在 `..` 判定之后：逃逸永远是更强的违规信号，不应被名称问题掩盖。
+  assertWindowsSafeEntryName(entryName);
 
   const target = path.resolve(destDir, ...segments.filter((s) => s !== '' && s !== '.'));
   const rel = path.relative(path.resolve(destDir), target);
@@ -325,6 +448,11 @@ export function safeExtractZip(
       `zip 声明了 ${entries.length} 个条目（上限 ${limits.maxEntries}）`,
     );
   }
+
+  // EXEC-03：重复/大小写折叠碰撞是**整包**性质，且必须在写出任何字节之前判定
+  // （逐条目写的时候才发现就只剩"谁覆盖谁"这一种收场）。放在尺寸红线之前：
+  // 一个自相矛盾的包先于"是不是炸弹"被判死，两个结论都成立时取更确定的那个。
+  assertUniqueEntryTargets(entries.map((entry) => entry.name));
 
   const destRoot = path.resolve(destDir);
   fs.mkdirSync(destRoot, { recursive: true });
