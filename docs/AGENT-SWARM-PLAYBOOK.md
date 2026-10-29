@@ -208,7 +208,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | P3 | EXEC-05 | env 转发白名单两端不同集、无守卫 | **已修 `c59741fa`**：protocol.json `envForward` 三桶清单 + 双向源码守卫（只登记现状，不扩面） |
 | P3 | EXEC-03/04 | zip Windows 归一化 / 未知命令静默丢弃 | **已修 `988c220b`**（双端归一化 + 未知命令如实上报） |
 | P3 | EXEC-06 | CallbackPayload 两端严格度 | **已核对+钉住 `27670e50`**：生成模型本就是 `strict=True`（审计判断「python lax」已过时）；两端契约测试钉住「字符串数字被拒」防生成器退回 lax |
-| P2 | EXEC-02 | python `preexec_fn`（fork 后 exec 前跑 Python，多线程进程可死锁） | 未修（下一轮：换 start_new_session + ulimit 包装或 prlimit） |
+| P2 | EXEC-02 | python `preexec_fn`（fork 后 exec 前跑 Python，多线程进程可死锁） | **已修 `e22fd5e7`**：新 exec 的单线程 launcher（`start_new_session` 在建会话 → setrlimit → 还原 SIGPIPE → `execvpe`，PID/树杀语义不变）；4 处 spawn 面全覆盖，fail-closed；全量 python 1481 例 / 覆盖 88.29% |
 | P2 | EXEC-07b | admin 源头闸未加折叠冲突判定 | **已修 `27670e50`**：DTO 约束挂到 Create/TriggerTask（保存/触发即 400），判据直接对账 protocol.json 的 8 条向量 |
 
 > **并行工作区纪律（新增）**：本仓可能同时有多个 agent/会话在写。提交永远用

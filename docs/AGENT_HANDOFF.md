@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十轮 → EXEC-02 收编：去掉 preexec_fn 死锁面，main）**：
+  - **EXEC-02（P2）**：执行器是多线程进程，而 POSIX 的 `preexec_fn`（fork 后、exec 前跑 Python）被 CPython 明确标注可能死锁——同一面共 4 处（任务 spawn、uv、git clone/fetch/checkout），prepare 还跑在 `asyncio.to_thread` 里。改为「新 exec 的单线程 launcher」`task_launcher.py`：`start_new_session=True` 在内核/posix_spawn 层先建会话（child 内零 Python，消除 kill 早到导致 killpg 打到自己的窗口）→ launcher 逐条 setrlimit（单条失败可见降级）→ 还原 SIGPIPE/SIGXFZ/SIGXFSZ 为 SIG_DFL（SIG_IGN 跨 exec 继承会改任务信号语义）→ `execvpe`（PID 不变，树杀语义不变）；`_kill_process_tree` 加「pgid == 执行器自身组则不 killpg」底线。limits 双层校验 + fail-closed（绝不在「限制没生效」的形态下继续）。
+  - **验证**：真跑断言子进程 `pid==pgrp==sid`、NOFILE/AS/FSIZE 在第一条指令前生效、exec 后 SIGPIPE 为 SIG_DFL；目标套件 81 例、全量 **1481 passed / 0 failed，覆盖 88.29% ≥ 86%**（task_launcher 100%、sandbox 96%、execute 86%）；先红证明旧实现会返回 `preexec_fn`；win32 路径逐字节未变。docs/deployment.md 的陈旧引用同步更正。
+  - **残差**：每次 spawn +约 15ms；win32 仍无 RLIMIT（与改前一致）；launcher 依赖 `sys.executable`，冻结解释器为空时 fail-closed。
+  - **下轮入口**：WEB-2（nginx HTTP/2）、OBS3-02/03/04（指标标签/容量分母/5xx 日志）、rt-3/rt-4（SSE 投影，若并行流未覆盖）、SDK-DX 余项。
+
 - **本轮（2026-10-29 第九轮 → params 折叠冲突前置 + 回调严格度对账，main）**：
   - **EXEC-07b（P2）**：执行器的折叠冲突闸在 accept 阶段（派发之后）——用户提交任务时看不到，只在触发后收到执行器 400。admin 侧补同一判据：`findDispatchParamKeyCollisions`（与执行器同规则）+ `TaskParamsNoKeyCaseCollision` DTO 约束挂到 Create/TriggerTask 的 params（PATCH 经 PartialType 继承），保存/触发即 400；测试直接加载 `protocol.json` 的 8 条 `params.keyUniqueness` 向量逐条对账，另有约束单测（冲突/放行/非法键/多组排序/畸形）。
   - **EXEC-06（P3）核对**：审计判断「python `model_validate()` lax」**已过时**——生成模型是 `ConfigDict(strict=True)`，实测字符串 `"1"`/浮点 `1.0` 均被拒，与 node `z.number().int()` 同结论，**无需改代码**；把该事实钉成两端契约测试，防生成器未来退回 lax。
