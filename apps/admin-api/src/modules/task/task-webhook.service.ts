@@ -310,6 +310,7 @@ export class TaskWebhookService {
     //   · 命中 → 200 `{deduplicated:true}`（不触发、不报错，让投递方停止重试）。
     // Redis 不可达时 **fail-open**（warn 后继续触发）：去重是加固，不是可用性
     // 前提；让所有 webhook 因缓存故障全挂才是更大的事故。
+    let replayKey: string | null = null;
     if (this.replayGuard) {
       // 键**必须**用签名，不能用 delivery 头：HMAC 只覆盖
       // `${timestamp}.${rawBody}`，delivery 头不在签名范围内——拿它做键等于
@@ -324,6 +325,7 @@ export class TaskWebhookService {
           dedupeKey,
           10 * 60_000,
         );
+        if (firstDelivery) replayKey = dedupeKey;
         if (!firstDelivery) {
           this.logger.warn(
             `Task webhook: duplicate delivery suppressed (taskId=${taskId}, ` +
@@ -355,12 +357,32 @@ export class TaskWebhookService {
       }
     }
 
-    const exec = await this.taskService.trigger(
-      task.id,
-      dto.params !== undefined ? { params: dto.params } : {},
-      null,
-      "webhook",
-    );
+    let exec: TaskExecution;
+    try {
+      exec = await this.taskService.trigger(
+        task.id,
+        dto.params !== undefined ? { params: dto.params } : {},
+        null,
+        "webhook",
+      );
+    } catch (err: unknown) {
+      // 触发失败必须释放幂等键：否则上游按签名重投同一请求会被判成
+      // deduplicated（200）而任务永不执行——一次可重试的故障变成永久丢失。
+      if (replayKey && this.replayGuard) {
+        try {
+          await this.replayGuard.deleteKey(replayKey);
+        } catch (releaseErr: unknown) {
+          this.logger.warn(
+            `Task webhook: failed to release idempotency key after trigger error: ${
+              releaseErr instanceof Error
+                ? releaseErr.message
+                : String(releaseErr)
+            }`,
+          );
+        }
+      }
+      throw err;
+    }
 
     await this.safeAudit({
       action: "task.trigger_webhook",

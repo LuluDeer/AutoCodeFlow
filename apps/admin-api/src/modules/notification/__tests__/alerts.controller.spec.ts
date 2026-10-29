@@ -416,4 +416,37 @@ describe("AlertsController webhook body validation (F-53, supertest 真实管道
     expect(res).toEqual({ deduplicated: true });
     expect(notificationService.sendAll).not.toHaveBeenCalled();
   });
+
+  // SEC-R3-4 / G10：扇出失败必须释放幂等键，否则 Alertmanager 重试被误判重复，
+  // 一次渠道故障变成静默丢警。
+  it("扇出失败释放幂等键（告警可重试）", async () => {
+    const guard = {
+      setIfAbsent: jest.fn(async (_key: string, _ttl: number) => true),
+      deleteKey: jest.fn(async () => undefined),
+    };
+    const c = new AlertsController(
+      notificationService as never,
+      {
+        get: (key: string) =>
+          key === "alert.webhookSecret" ? SECRET : undefined,
+      } as never,
+      taskRepo as never,
+      guard as never,
+    );
+    notificationService.sendAll.mockRejectedValueOnce(
+      new Error("channel down"),
+    );
+    const rawBody = payloadBody();
+    const timestamp = String(Date.now());
+
+    await expect(
+      c.webhook(
+        JSON.parse(rawBody.toString()),
+        sign(timestamp, rawBody),
+        timestamp,
+        { rawBody } as never,
+      ),
+    ).rejects.toThrow("channel down");
+    expect(guard.deleteKey).toHaveBeenCalledTimes(1);
+  });
 });

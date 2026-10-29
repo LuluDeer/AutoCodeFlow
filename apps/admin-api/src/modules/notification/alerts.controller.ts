@@ -171,13 +171,16 @@ export class AlertsController {
     // （旧实现每次重放都全渠道发一遍，等于告警放大）。首投放行；命中返回
     // `{deduplicated:true}`（200 让 Alertmanager 停止重试）。Redis 不可达
     // fail-open：去重是加固，不是让告警链路全挂的理由。
+    let replayKey: string | null = null;
     if (this.replayGuard && signature) {
       const key = `webhook:alert:${createHash("sha256")
         .update(signature)
         .digest("hex")
         .slice(0, 32)}`;
       try {
-        if (!(await this.replayGuard.setIfAbsent(key, 10 * 60_000))) {
+        const first = await this.replayGuard.setIfAbsent(key, 10 * 60_000);
+        if (first) replayKey = key;
+        if (!first) {
           this.logger.warn(
             "Alert webhook: duplicate delivery suppressed (already fanned out within the replay window)",
           );
@@ -231,7 +234,27 @@ export class AlertsController {
     this.logger.log(
       `Alert webhook: ${mapped.alertCount} alert(s), status=${mapped.level === "error" ? "firing" : "resolved"}, taskId=${probe.taskId ?? "n/a"} — fanning out to notification channels`,
     );
-    const results = await this.notificationService.sendAll(notificationPayload);
+    const releaseReplayKey = async (): Promise<void> => {
+      if (!replayKey || !this.replayGuard) return;
+      try {
+        await this.replayGuard.deleteKey(replayKey);
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Alert webhook: failed to release idempotency key after delivery error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    };
+    let results: Awaited<ReturnType<NotificationService["sendAll"]>>;
+    try {
+      results = await this.notificationService.sendAll(notificationPayload);
+    } catch (err: unknown) {
+      // 扇出失败必须释放幂等键：否则 Alertmanager 重试同一告警会被判重、
+      // 告警永久丢失（一次渠道故障变成静默丢警）。
+      await releaseReplayKey();
+      throw err;
+    }
 
     // 通知渠道全 skipped（一个渠道都没配置）——告警没人收到，按失败报
     // （502 让 Alertmanager 重试），但仍返回明细供排障。
@@ -243,6 +266,8 @@ export class AlertsController {
       // LANG-ERR-01：逐渠道明细经 `params` 透出。旧实现把它塞在异常响应对象
       // 的 `results` 键里，而全局 filter 只取 `message`、其余键被丢弃——这份
       // 排障信息**从未真正到达调用方**；走 params 是它第一次真的可见。
+      // 0 渠道投递 = 告警没送达，必须让 Alertmanager 能重试（释放幂等键）。
+      await releaseReplayKey();
       throw new AppError(ErrorCode.NOTIFICATION_ALERT_NOT_DELIVERED, {
         results,
       });

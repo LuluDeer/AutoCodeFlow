@@ -127,4 +127,19 @@ describe("TaskWebhookService — 入站重放去重（SEC-R3-4）", () => {
     expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
   });
+
+  it("触发失败释放幂等键（否则上游重投被误判 deduplicated，任务永久不执行）", async () => {
+    const d = deps();
+    d.taskService.trigger.mockRejectedValueOnce(new Error("queue down"));
+    const guard = {
+      setIfAbsent: jest.fn(async () => true),
+      deleteKey: jest.fn(async () => undefined),
+    };
+    const svc = build(d, guard as never);
+
+    await expect(
+      svc.triggerFromWebhook(TASK_ID, {}, signedRequest()),
+    ).rejects.toThrow("queue down");
+    expect(guard.deleteKey).toHaveBeenCalledTimes(1);
+  });
 });
