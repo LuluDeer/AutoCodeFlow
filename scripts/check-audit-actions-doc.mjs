@@ -43,7 +43,30 @@
  *   · **崩溃 ≠ 红灯**：文档/目录读不到时旧实现是 `readFileSync` 抛栈（`Error: ENOENT`），
  *     与「判据算出来不一致」混在同一个退出通道里。现在结构错误单独成形、单独文案。
  *   · `--root`：模块级 `process.cwd()` 收成参数，`import` 时不实扫、不 `process.exit`。
- *   · `--selftest`：跑真脚本的子进程，9 条用例逐条断言退出码 + 关键文本（含上述假绿的反证）。
+ *   · `--selftest`：跑真脚本的子进程，12 条用例逐条断言退出码 + 关键文本（含上述假绿的反证）。
+ *
+ * ## T5：头部那两个手写数字也纳入判据（`共 N 个 action / M 个域`）
+ *
+ * 上述判据只管「代码里的 action ⊆ 表格」，**文档头部那句 `共 N 个 action / M 个域` 谁都不管**：
+ * 2026-10-29 那轮手工把 68 改成 73，下次加 action 又漂——与 cli-doc / atlas-counts 同族的腐烂点
+ * （数字是手写的，但它描述的对象由守卫维护，于是「有一半是机器事实、另一半是手抄」）。
+ *
+ * 现在：
+ *   · **表格是事实源**：从 `## 谁在写审计` 的表格解析出「action 项总数」与「域（首列）行数」；
+ *   · 头部那句必须与之**逐字对上**，不一致即红，文案点名「头部写 X / 表格实为 Y」（只报一个数
+ *     等于让人自己去猜哪边错）；
+ *   · **解析不到那句话也红**（结构红）：守的是「句子还在」——把句子改写成「本表覆盖 12 个域」、
+ *     或者干脆删掉，数字照样漂，守卫却因为「没找到 = 没什么可比的」而变绿（永真）。
+ *     所以缺句子 → 红，出现多次（不知道该信哪句）→ 也红。
+ *   · 表格解析出 0 行 → 结构红（表格被删时 `0 == 0` 同样是永真）。
+ *
+ * 注意口径：头部数的是**表格里列出的** action，不是代码里实扫到的个数——两者本来就可能差几条：
+ *   · 反向不校验，所以已下线的历史动作可以留在表里（见上文）；
+ *   · 扫描盲区里的动作（透传 / 变量拼的 action）在表里、却扫不到（例如本仓 2026-10-29 的
+ *     `executor.rotate_token`：它经 `auditHighRisk(action, …)` 透传进 `log()`，形如
+ *     `auditHighRisk("executor.rotate_token", …)`，不匹配 `action: "…"`）。
+ * 所以「代码里 N 个」不写进文档头部（那是新的手写事实，且本身就是少算的），它只出现在守卫的绿字里；
+ * 文档头部从表格来，表格由「补文档」这件事维护。
  *
  * 用法：`node scripts/check-audit-actions-doc.mjs [--selftest] [--root <dir>]`
  *   --selftest：在临时 fixture 树里跑真脚本（事实源需要仓库根布局：apps/admin-api/src + docs/atlas）。
@@ -63,6 +86,14 @@ export const DOC_REL = join("docs", "atlas", "01-apps", "admin-api", "modules", 
 export const DOC_SECTION = "## 谁在写审计";
 /** action 字面量：`<域>.<动作>`，允许动作段再带点（如 sop.timeout.unclaimed）。 */
 export const ACTION_RE = /action:\s*"([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)"/g;
+/**
+ * 头部那句计数：`共 **73** 个 action / **16** 个域`。
+ * 粗体可选（去粗体是格式调整，不是漂移）；`/` 兼容全角 `／`；其余措辞**不放宽**——
+ * 这正是判据要钉的形状，改写它就会红（见文件头 T5）。
+ */
+export const HEAD_COUNT_RE = /共\s*\*{0,2}(\d+)\*{0,2}\s*个\s*action\s*[／/]\s*\*{0,2}(\d+)\*{0,2}\s*个\s*域/g;
+/** 清单表格的一行：`| \`域\` | \`a\` · \`b\` |`（首列必须带反引号；表头/分隔行由此天然排除）。 */
+export const TABLE_ROW_RE = /^\|\s*`([^`]+)`\s*\|(.*)\|\s*$/;
 
 /**
  * 扫描面下界。
@@ -176,6 +207,50 @@ export function docSection(doc, heading = DOC_SECTION) {
   return end < 0 ? rest : rest.slice(0, end);
 }
 
+/**
+ * 解析清单表格：每行 `| \`域\` | \`a\` · \`b\` |`，返回 `{ rows, domains, actions }`。
+ *
+ * `rows` 保留每行的域与 action 列表（报错时能说清是哪个域），`actions` 是**项数之和**
+ * （同一 action 在表里出现两次就算两次——重复本身是表格的错，不在本判据的职责内，
+ * 但至少不会让头部数字「对得上」）。
+ */
+export function docTableCounts(section) {
+  const rows = [];
+  for (const line of section.split("\n")) {
+    const m = TABLE_ROW_RE.exec(line);
+    if (m === null) continue;
+    if (m[1] === "域") continue; // 表头（`| 域 | action |`）本身没反引号，双保险
+    const actions = (m[2].match(/`[^`]+`/g) ?? []).map((s) => s.slice(1, -1));
+    rows.push({ domain: m[1], actions });
+  }
+  return {
+    rows,
+    domains: rows.length,
+    actions: rows.reduce((n, r) => n + r.actions.length, 0),
+  };
+}
+
+/**
+ * 找头部那句计数，返回 `[{ actions, domains, index, line }]`。
+ *
+ * 一个都不返回 = 句子被改写/删除；返回多个 = 文档里有两句「共 N 个 action / M 个域」，
+ * 不知道该信哪句。两种都是结构红（调用方判断），不是「没有可比的东西就算了」。
+ */
+export function docHeadCounts(doc) {
+  const hits = [];
+  HEAD_COUNT_RE.lastIndex = 0;
+  let m;
+  while ((m = HEAD_COUNT_RE.exec(doc)) !== null) {
+    hits.push({
+      actions: Number(m[1]),
+      domains: Number(m[2]),
+      index: m.index,
+      line: doc.slice(0, m.index).split("\n").length,
+    });
+  }
+  return hits;
+}
+
 function walk(dir, root, errors) {
   const out = [];
   let entries;
@@ -194,19 +269,33 @@ function walk(dir, root, errors) {
 }
 
 /**
- * 判据本体。返回 `{ errors, problems, found, counts }`：
- *   · errors   = 结构性（扫描面塌了 / 事实源读不到 / 解析出 0 条）——「判据本身不可信」；
- *   · problems = 文档漂移（代码里存在、清单里没有）。
+ * 判据本体。返回 `{ errors, problems, headerProblems, found, counts }`：
+ *   · errors         = 结构性（扫描面塌了 / 事实源读不到 / 解析出 0 条）——「判据本身不可信」；
+ *   · problems       = 文档漂移（代码里存在、清单里没有）；
+ *   · headerProblems = 头部那句计数与表格不符（表格是事实源）。
  * 命中面**只算 `## 谁在写审计` 一节的表格**（T4 修掉的假绿，见文件头）。
  */
 export function check({ root = process.cwd() } = {}) {
   const errors = [];
   const problems = [];
+  const headerProblems = [];
   const found = new Map(); // action -> ["<file>:<line>", …]
-  const counts = { files: 0, actions: 0, sectionChars: 0, root };
+  const counts = {
+    files: 0,
+    actions: 0,
+    sectionChars: 0,
+    root,
+    tableActions: 0,
+    tableDomains: 0,
+    headActions: null,
+    headDomains: null,
+    headLine: null,
+  };
 
   // ① 文档与其清单小节
   let section = null;
+  let table = null;
+  let head = null;
   const doc = readText(join(root, DOC_REL));
   if (doc === null) {
     errors.push(`读不到 ${DOC_REL} —— 文档路径/文件名变了，本判据已经瞎了（不是「文档没问题」）。`);
@@ -218,6 +307,45 @@ export function check({ root = process.cwd() } = {}) {
       );
     } else {
       counts.sectionChars = section.length;
+
+      // ①-a 表格 = 事实源
+      table = docTableCounts(section);
+      counts.tableActions = table.actions;
+      counts.tableDomains = table.domains;
+      if (table.domains === 0 || table.actions === 0) {
+        errors.push(
+          `「${DOC_SECTION}」小节里解析出 ${table.domains} 行、${table.actions} 项清单表格 —— ` +
+            "表被删掉或换了形状（首列应是带反引号的域），判据已瞎（不是「表格没问题」）。",
+        );
+      }
+
+      // ①-b 头部那句手写计数
+      const hits = docHeadCounts(doc);
+      if (hits.length === 0) {
+        errors.push(
+          "头部找不到「共 N 个 action / M 个域」这句计数（被改写或删掉了？）—— " +
+            "句子不在，头部数字就没人核对；当前表格是 " +
+            table.actions +
+            " 个 action / " +
+            table.domains +
+            " 个域，请把头部恢复成「共 **" +
+            table.actions +
+            "** 个 action / **" +
+            table.domains +
+            "** 个域」，不要改守卫。",
+        );
+      } else if (hits.length > 1) {
+        errors.push(
+          `「共 N 个 action / M 个域」在文档里出现 ${hits.length} 次（第 ` +
+            hits.map((h) => h.line).join("、") +
+            " 行）—— 不知道该信哪句；只保留一处（与表格一致的那句）。",
+        );
+      } else {
+        head = hits[0];
+        counts.headActions = head.actions;
+        counts.headDomains = head.domains;
+        counts.headLine = head.line;
+      }
     }
   }
 
@@ -264,14 +392,27 @@ export function check({ root = process.cwd() } = {}) {
     }
   }
 
-  if (errors.length > 0) return { errors, problems, found, counts };
+  if (errors.length > 0) return { errors, problems, headerProblems, found, counts };
 
   // ③ 清单比对（只在生成表小节内算命中）
   const missing = [...found.keys()].filter((a) => !section.includes("`" + a + "`")).sort();
   for (const a of missing) {
     problems.push({ action: a, at: found.get(a).slice(0, 3) });
   }
-  return { errors, problems, found, counts };
+
+  // ④ 头部计数 vs 表格（表格是事实源；两边各自算，绝不拿代码个数顶替）
+  if (head !== null && table !== null) {
+    if (head.actions !== table.actions || head.domains !== table.domains) {
+      headerProblems.push({
+        headActions: head.actions,
+        headDomains: head.domains,
+        tableActions: table.actions,
+        tableDomains: table.domains,
+        line: head.line,
+      });
+    }
+  }
+  return { errors, problems, headerProblems, found, counts };
 }
 
 // ── 自检（T4：全部跑真脚本子进程）─────────────────────────────────────────
@@ -313,6 +454,8 @@ function auditTree({
   extra = {},
   noSrc = false,
   drop = [],
+  head = null,
+  headLine = null,
 } = {}) {
   const files = {};
   if (!noSrc) {
@@ -323,24 +466,38 @@ function auditTree({
     }
     files[`${SRC_REL}/modules/alpha/writer-0.spec.ts`] = writer("spec.only");
   }
-  files[DOC_REL] = auditDoc({ omit, header, prose });
+  files[DOC_REL] = auditDoc({ omit, header, prose, head, headLine });
   Object.assign(files, extra);
   for (const d of drop) delete files[d];
   return files;
 }
 
-/** audit.md 的最小形态：`## 谁在写审计` 里的表格 + 后面的散文小节。 */
-function auditDoc({ omit = [], header = DOC_SECTION + "（**由代码生成，勿手改**）", prose = [] } = {}) {
-  const rows = DOMAINS.map(
-    (d) =>
-      "| `" +
-      d +
-      "` | " +
-      ACTIONS.filter((a) => a.startsWith(d + ".") && !omit.includes(a))
-        .map((a) => "`" + a + "`")
-        .join(" · ") +
-      " |",
+/**
+ * audit.md 的最小形态：`## 谁在写审计` 里的表格 + 后面的散文小节。
+ *
+ * 头部那句计数的**默认值来自渲染出来的表格**（而不是 ACTIONS.length）——否则 `omit`
+ * 用例会顺带把头部也弄红，测的就不是它本来要测的东西了。
+ *   · `head`     ：故意写错的数（`{ actions, domains }`），用来反证头部判据；
+ *   · `headLine` ：整句替换，用来模拟「句子被改写/删除」。
+ */
+function auditDoc({
+  omit = [],
+  header = DOC_SECTION + "（**由代码生成，勿手改**）",
+  prose = [],
+  head = null,
+  headLine = null,
+} = {}) {
+  const rendered = DOMAINS.map((d) => ({
+    domain: d,
+    actions: ACTIONS.filter((a) => a.startsWith(d + ".") && !omit.includes(a)),
+  }));
+  const rows = rendered.map(
+    (r) => "| `" + r.domain + "` | " + r.actions.map((a) => "`" + a + "`").join(" · ") + " |",
   );
+  const tableActions = rendered.reduce((n, r) => n + r.actions.length, 0);
+  const sentence =
+    headLine ??
+    `共 **${head?.actions ?? tableActions}** 个 action / **${head?.domains ?? DOMAINS.length}** 个域。`;
   return [
     "# audit 模块 — 审计日志",
     "",
@@ -350,7 +507,7 @@ function auditDoc({ omit = [], header = DOC_SECTION + "（**由代码生成，�
     "",
     header,
     "",
-    `共 **${ACTIONS.length}** 个 action / **${DOMAINS.length}** 个域。`,
+    sentence,
     "",
     "| 域 | action |",
     "|---|---|",
@@ -369,7 +526,7 @@ function auditDoc({ omit = [], header = DOC_SECTION + "（**由代码生成，�
 }
 
 /**
- * 自检：10 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
+ * 自检：12 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
  *
  * 旧版**没有 selftest**（判据是模块级 IIFE，`import` 就实扫真仓库），所以两处
  * 假绿（整篇文档命中即算 / 注释里的字面量算写入点）都没有被任何东西钉住。
@@ -480,6 +637,35 @@ export function selftest() {
     { code: 1, contains: ["task.killExecution"], absent: ["清单一致"] },
   );
 
+  // ⑪ T5：头部手写计数。表格 60 行项 / 12 域，头部故意写成 99 / 7（两个数都错），
+  // 报错**必须同时点名四个数**（头部写什么 / 表格实为多少）——只报一个数等于让人自己猜。
+  subprocess(
+    "⑪ 【反证·头部计数】头部写 99 个 action / 7 个域（表格实为 60 / 12）→ 红并点名两值",
+    auditTree({ head: { actions: 99, domains: 7 } }),
+    {
+      code: 1,
+      contains: [
+        "头部计数与表格不一致",
+        "头部写 99 个 action / 7 个域",
+        "表格实为 60 个 action / 12 个域",
+      ],
+      absent: ["清单一致", "漂移"],
+    },
+  );
+
+  // ⑫ T5：句子形状被绕开。这里是**改写**（数字还写对了 60/12，但句式不再匹配）；
+  // 「整句删掉」走的是同一条 `hits.length === 0` 分支，所以这条同时钉住两种绕法。
+  // 老实现（没有这条判据）在两种情况下都是绿的：没人找句子 = 没人比对。
+  subprocess(
+    "⑫ 【反证·句子被改写】「共 N 个 action / M 个域」这句话被换掉 → 结构红（不是绿）",
+    auditTree({ headLine: "本表共 60 条动作、覆盖 12 个域。" }),
+    {
+      code: 1,
+      contains: ["结构错误", "头部找不到「共 N 个 action / M 个域」", "表格是 60 个 action / 12 个域"],
+      absent: ["清单一致"],
+    },
+  );
+
   const failed = reportCases(cases, { title: "check-audit-actions-doc selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -493,13 +679,37 @@ if (isMain) {
     selftest();
   } else {
     const root = resolve(argValue(process.argv, "--root") ?? process.cwd());
-    const { errors, problems, counts } = check({ root });
+    const { errors, problems, headerProblems, counts } = check({ root });
 
     if (errors.length > 0) {
       console.error("");
       console.error("✖ 审计动作守卫结构错误（判据本身不可信）：");
       for (const e of errors) console.error("  · " + e);
       console.error("");
+      process.exit(1);
+    }
+
+    if (headerProblems.length > 0) {
+      console.error("");
+      console.error("✖ 审计文档头部计数与表格不一致（表格是事实源）：");
+      for (const hp of headerProblems) {
+        console.error(
+          "  头部写 " +
+            hp.headActions +
+            " 个 action / " +
+            hp.headDomains +
+            " 个域，表格实为 " +
+            hp.tableActions +
+            " 个 action / " +
+            hp.tableDomains +
+            " 个域（头部在第 " +
+            hp.line +
+            " 行）",
+        );
+      }
+      console.error("");
+      console.error("  修法：把 audit.md 里那句「共 N 个 action / M 个域」改成上表实有的项数/域数。");
+      console.error("  **不要**为了对齐头部去删表格行，也不要改守卫来放行。");
       process.exit(1);
     }
 
@@ -521,7 +731,8 @@ if (isMain) {
 
     console.log(
       "✔ 审计动作清单一致：代码里 " + counts.actions + " 个 action 全部在 audit.md 中出现（扫了 " +
-        counts.files + " 个文件）。",
+        counts.files + " 个文件）；头部计数与表格一致（" + counts.tableActions + " 个 action / " +
+        counts.tableDomains + " 个域）。",
     );
   }
 }

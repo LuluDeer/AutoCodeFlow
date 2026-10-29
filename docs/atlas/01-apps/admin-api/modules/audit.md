@@ -67,7 +67,12 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽 `action: "<域>.<动作>"`
 字面量生成并校验：**代码里新增一个 action 而文档没同步，守卫会红**（反向不校验——文档可以记录历史动作）。
 
-共 **73** 个 action / **16** 个域（2026-10-29 补：此前正则只认小写，5 个 camelCase action 一直是盲区）。
+共 **74** 个 action / **16** 个域（表格口径：其中 `executor.rotate_token` 是通过 `auditHighRisk(action, …)` 透传进
+`log()` 的，扫描器只认 `action: "<字面量>"`，扫不到它——守卫头注已写明这类透传盲区，所以守卫绿字里的
+「代码里 N 个」会比这里的 74 少几条；2026-10-29 补：此前正则只认小写，5 个 camelCase action 一直是盲区）。
+
+> 这两个数字由 `check-audit-actions-doc.mjs --selftest` 的判据核对：**表格是事实源**，头部与表格
+> 不符即红（含句子被改写/删除）。加 action 时先改表格，再让头部跟上——别手抄代码里的个数。
 
 | 域 | action |
 |---|---|
