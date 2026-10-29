@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第五十四轮 → 重放渲染语义修复（第 6 轮 P2），main）**：
+  - **`a2f6e82e`**：① 截断结果 `{truncated, sha256, preview(, full)}` 被 `JSON.stringify().slice()` 从中间切断 → 模型收到非法 JSON 前缀；现在有 full 用首尾裁剪（抽到 `tool-result-shaping.ts`，同时打断 runtime↔executor import 环），只有 preview 则明确「仅预览 + sha256 + 请重新查询」。② `skipped: approval|wall_clock` 的 denied 调用重放被说成「调用未成功」（与实时【未执行】语义相反，模型不会重提）→ 按原因渲染【未执行】文案。
+  - **验证**：admin-api tsc 0；agent **379 例**（+4）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（上下文折叠开环估算/工具 schema 预算、screenshot 等待、ExecutionLogSection 其它、分区表 COUNT 等）。
+
 - **本轮（2026-10-29 第五十三轮 → 槽位冲销幂等 + SSE 拒绝计数（第 6 轮 P2），main）**：
   - **`60e46e71`**：广播执行的重复回调会再次冲销同一台执行器（`GREATEST(...,0)` 只防负数不防虚低 → 容量闸超发）。按 `(executionId, address)` Redis SETNX 一次性闸（TTL 10min，fail-open 释放 + warn）。
   - **`b45e4a83`**：`/metrics/stream`、`/executions/stream` 与日志流共用槽位服务，但拒绝只在日志流计数——另两条被拒时告警全静默。计数下沉到槽位服务（三条流一个 series），help/runbook 注明共享容量；+1 用例。
