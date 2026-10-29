@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十二轮 → 审批单 TTL 收口（PK-19），main）**：
+  - **`2ebe3da3`**：`agent_approvals` 的 pending 单此前没有有效期——没人点的审批让会话**永久** waiting_input（既不执行也不失败），看板上永远挂着「待审批」。修法：新增 `expired` 状态（varchar 列，无需迁移；与 denied 区分「谁关的」）+ `expireStalePending`（只扫 pending 且 createdAt < cutoff，条件写钉住 pending，绝不覆盖人工结论）+ `sweepStaleApprovals`（复用既有 10 分钟 Leader cron；收敛三要素：仍 waiting_input / waitingFor 是审批 / 已无 pending 单，缺一不可）。TTL=7 天。前端补 `expired` 词表/徽标（灰）与中英文案。
+  - **验证**：admin-api tsc 0；approvals 过期 3 例 + session 收口 4 例；**全量 admin-api 6724 例全绿**；admin-web tsc 0、**2167 例全绿**（首跑有 1 例 flaky，重跑通过）；enum drift / error-i18n / user-facing-language 守卫全绿。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05、守卫审计 T4（并行流正在推进：index-drift 已改成 spawn 断言退出码 + `--root`）、SEC-R3-4。
+
 - **本轮（2026-10-29 第二十一轮 → Agent 能力承诺与事实对齐，main）**：
   - **`9bcb79db`**：两处「提示词/注释说的能力」与实现不符——① 上下文摘要告诉模型「可用工具回读」历史步骤，但运行时**没有**这个工具（get_tool_call_result 一直是 P4 未做），模型会去调一个不存在的名字并浪费一轮推理；改为「需要时请按 id 重新调用相应工具查询，不要凭摘要猜测」。② `TOOL_RESULT_MAX_CHARS` / `AgentToolCall.resultJson` 注释写「完整结果落库、可回读」，实现是截断时只存脱敏 preview + sha256；注释与 UI 提示同步改为事实口径。
   - 与 SEC-R3-5 同一条纪律：**系统对外的承诺必须与事实一致**；测试钉住摘要措辞。
