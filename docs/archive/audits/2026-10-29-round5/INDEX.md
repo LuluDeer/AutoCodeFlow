@@ -158,3 +158,23 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 1. B1 剩余 10 条按同模板迁（其中 `enum-drift` / `user-facing-language` 体量大，留到最后）。
 2. 已自 spawn 的 5 条收编（`openapi-response-schema` 的伴生文件已在第 10 轮处理）。
 3. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10（触发幂等键）。
+
+---
+
+## 11. 追加：第 12 轮（B1 批 4 + 收编批 2）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| B1 批 4 | error-i18n / password-policy-sync / shell-multibyte-var 迁 harness，35 条用例；修掉「`--report` 绕结构关」「`readdirSync` 静默 catch」「`--fix` 绕下界」「规则字符集为空两侧一样死就绿」等假绿 | `4cb5e093` |
+| 收编批 2 | conditional-writes / infra-doc-counts / metric-docs 接 harness（40→43 / 15→16 / 17→19 条）；修「`--report-saves` 吞结构错（CI 真在跑）」「缺省根跟 cwd → 子目录跑 0 文件假绿」「metric 的『没有基线时 --update』用例名不副实」 | `99d53e41` |
+| 文档同步 | 迁移 78（G4 会话发起人列）→ atlas 123 / infra 123；`--report-saves` 文案从「不失败」改为「不判据红，结构错仍红」 | `e3fc48c4` |
+
+验证：`test:guards:repo` **exit 0**；三条 selftest 43/43、16/16、19/19；35 个 `check-*.mjs` 已接 harness（剩 9 个）。
+
+### 下轮入口
+
+1. **仍只测函数的 7 条**：enum-drift / lint-gates / release-config / sdk-docs-truthfulness /
+   throttler-whitelist / user-facing-language / workflow-actions-pinned。
+2. **已自 spawn 2 条**：npm-audit-exemptions（联网）、openapi-response-schema（主文件是 CLI 外壳，归属未定）。
+3. `scripts/docs/check-docs.mjs` 的 selftest 在独立文件，但 CI 未调 `npm run test:docs` —— 它在 CI 里其实没跑。
+4. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）。
