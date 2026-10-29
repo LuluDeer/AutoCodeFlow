@@ -158,16 +158,24 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 | 优先级 | id | 一句话 | 状态 / 主要落点 |
 |---|---|---|---|
-| P1 | TOOLS-02 | 审批 grant 后动作不会执行：重放文案叫模型「勿重复提交」 | **已修 `d9660f52`**（按审批单状态渲染 granted/denied/consumed/pending）；确定性自动重放留 P2 |
-| P1 | TOOLS-03 | deploy_app / create_task_from_template / create_application 契约错位 | **已修 `cac3bbcb`** |
-| P1 | desktop-poll | poll 单轮下发 3 张，host 只消费第 1 张，其余既不执行也不重投 | **已修 `d566533c`**（按 id 延后重发） |
-| P2 | desktop-gap3 | 瞬态续跑用全局 resend，会把等答复的单打回 running 并 ACK 丢弃答复 | **已修 `d566533c`**（定向 id + awaiting_reply 窄守卫 + 只回排一次） |
-| P2 | approval-replay | 确定性自动重放已批准调用：runtime 直接执行，执行体按 toolCallId **就地更新**原台账行（避开 GAP-5 唯一索引），结果与 assistant 的 tool_call id 保持配对 | 未修（需设计，见 `d9660f52` 提交信息残差） |
-| P2 | desktop-budget | 续跑把链路抖动记进工作预算：15 次 503 后上报「迭代轮次已达上限」 | 未修（`journal.counters` 与迭代闸分离） |
-| P2 | TOOLS-04 | 工具超时只 reject 不取消：副作用仍在继续，台账记 timeout、模型重试 → 双份副作用 | 未修（AbortSignal + 「结果未知」文案） |
-| P3 | TOOLS-06 | 工具结果未脱敏就落库（类注释承诺参数与结果都脱敏）；注意 32+ hex 规则会误伤 sha，需按 key 保留 digest | 未修 |
-| P3 | desktop-resend | poll 后 agent 被关闭、回报失败的分支仍是全局重发；延后 id 只在内存（崩溃窗口内仍会 stalled） | 未修（`agent-host.ts` 关闭分支 + 恢复锚点设计） |
-| — | data/obs | 第二轮补审（data 完整性/迁移/多实例、obs 指标/UI/文档真实性） | 进行中/见当轮交接 |
+| P1 | TOOLS-02 | 审批 grant 后动作不会执行 | **已修 `d9660f52`（文案）+ `c023df3d`（确定性重放）**：runtime 在调 LLM 前直接执行已批准调用，执行体就地更新原台账行 |
+| P1 | TOOLS-03 | 三个写工具 schema↔执行体契约错位 | **已修 `cac3bbcb`** |
+| P1 | desktop-poll | poll 下发 3 张只消费第 1 张 | **已修 `d566533c`** |
+| P1 | data-1 | 挂起恢复不重开墙钟 → 批准后第一轮 budget_exceeded、审批单永久未执行 | **已修 `c023df3d`**（仅 waiting_input 恢复重开；成本闸门仍累计） |
+| P1 | data-2 | 保留期把 failed（唯一可重开态）的 steps/approvals 当可丢弃数据 | **已修 `c023df3d`**（删除 EXISTS 复查 + reopen 条件写 + 清理后拒绝恢复） |
+| P1 | obs-1 | 令牌指标记的是步数不是令牌量（成本低 2~3 个数量级） | **已修 `ea2509a6`**（recordRuntime 支持 value） |
+| P2 | desktop-gap3 | 瞬态续跑全局 resend 打回在途单 | **已修 `d566533c`** |
+| P2 | approval-replay | 已批准调用的确定性执行 | **已修 `c023df3d`** |
+| P2 | data-3 | appendStep 撞 seq 唯一约束后异常逃出 run() → 30min 僵尸 running（注释承诺的重试不存在） | 未修（有限重试 + 耗尽显式收敛） |
+| P2 | desktop-budget | 续跑把链路抖动记进工作预算 | 未修（counters 与迭代闸分离） |
+| P2 | TOOLS-04 | 工具超时只 reject 不取消 → 双份副作用 | 未修（AbortSignal + 「结果未知」文案） |
+| P2 | obs-2 | 设计文档承诺的「Admin Web 对话」入口不存在（chat 只能 curl 建） | 部分修 `ea2509a6`（文档如实标注）；UI 入口未做（需产品决定做/摘） |
+| P3 | TOOLS-06 | 工具结果未脱敏就落库 | 未修（注意 32+ hex 会误伤 sha，需按 key 保留 digest） |
+| P3 | desktop-resend | poll 后 agent 关闭分支仍全局重发；延后 id 只在内存 | 未修 |
+| P3 | data-4 | tool_calls 的 read 档清理不看会话状态 | **已修 `c023df3d`** |
+| P3 | obs-3 | budget_exceeded 的后端拒绝理由仍提「墙钟不重置」（RT-2 后已过时） | **已修 `ea2509a6`**（前端去入口 + 文案更新在 `c023df3d`） |
+| P3 | obs-4 | 指标标签漂移守卫 `agent-metrics-labels.spec.ts` 不存在 | **已修 `ea2509a6`** |
+| — | doc-guard | 文档指标名 ↔ RUNTIME_COUNTERS 的自动比对守卫 | 未做（避免文档再次漂移，参考 gen-api-reference 模式） |
 
 > 首轮完整 finding 原文（含逐字代码、触发路径、修法、langgraph 对照）在
 > 该轮会话的 workflow 输出里；本表只保留可执行摘要。

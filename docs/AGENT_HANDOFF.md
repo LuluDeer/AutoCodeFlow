@@ -19,7 +19,11 @@
   - **交付（`1143c0f5`）RT-4**：陈旧 running 清扫逐会话记 `autoflow_agent_sessions_total{kind,status}` + 一条聚合 ERROR 通知（不逐条推送，避免告警风暴）。
   - **过程事故（如实）**：`git add -A` 把子代理正在写的桌面文件卷进了 TOOLS-05 的提交，已用 `reset --soft` 拆分为两个独立提交（`0ce35425` + `d566533c`），历史干净、工作区无遗留。教训：并发子代理工作时只用显式路径 `git add`，永不用 `-A`。
   - **验证**：admin-api tsc 0；agent 模块 17 套件 317 例全绿；边界 53 例；四个 agent 守卫脚本待本轮末复跑；desktop agent-host selftest 全绿。
-  - **下一轮入口**：playbook §7 剩余项——approval-replay（确定性重放）、desktop-budget、TOOLS-04/06、desktop-resend 残差，以及第二轮 data/obs 审计结论。
+  - **同轮续批（第二轮补审后）**：
+    - **第二轮补审**（并行 2 路，补首轮输出截断的缺口）：data 域 4 条（2×P1）、obs 域 5 条（1×P1）。核心结论：GAP 系列修复本身正确，但**两个跨模块接缝没合上**——挂起恢复不重开墙钟、保留期把可恢复态当可丢弃数据；观测面则是「指标名/help 承诺令牌量、实际记步数」。
+    - **交付（`c023df3d`）TOOLS-02 硬化 + 数据审计 #1/#2/#4**：①runtime 在 markRunning 之后、rebuildMessages 之前确定性重放「awaiting_approval + granted」的调用（执行体新增 `replayApproved` 就地更新原台账行，避开 GAP-5 唯一索引、不重复累加计数）；②markRunning 从 waiting_input 恢复时重开墙钟（等待时间不是工作时间；成本闸门仍累计）；③保留期删除加 EXISTS 复查 + reopenForResume 条件写加「steps 未清理」谓词 + controller 对已清理上下文的 failed 会话如实拒绝恢复；④read 档 tool_calls 清理加终态闸。
+    - **交付（`ea2509a6`）观测审计 P1/P3**：`recordRuntime(name, labels, value)`，令牌指标传实际令牌数（此前是步数，成本低 2~3 个数量级），`alerts.yml` 的 dimension→direction；新建承诺已久的 `agent-metrics-labels.spec.ts`（kind/终态/labelValueSets 三方比对）；前端移除 budget_exceeded 的死「恢复」入口；设计文档 02 §7.1 改为实际六条指标 + 残差注记，§5.1 如实标注「仅 HTTP，暂无 UI」。
+  - **下一轮入口**：playbook §7 剩余项——data-3（appendStep 序列冲突重试）、desktop-budget、TOOLS-04/06、desktop-resend 残差、obs-2（chat UI 做还是摘）、doc-guard（文档指标名自动比对）。
 
 - **本轮（2026-10-29 → 多 Agent 审计-修复循环第 1 轮：5 路并行审计 + 11 条修复，main）**：
   - **编排**：按用户要求「同一时刻至多 5 个 agent」跑了一轮只读审计流水线（runtime / tools / desktop / data / obs 五域，workflow `agent-domain-audit`），产出 **27 条 finding（6×P1 / 10×P2 / 其余 P3）**，每条带文件:行号、逐字代码、触发路径、现有测试覆盖判断、最小修法、langgraph/langchain 对照。方法论文档化为 [`AGENT-SWARM-PLAYBOOK.md`](AGENT-SWARM-PLAYBOOK.md)（域划分、写冲突规则、验证矩阵、反模式、未修 backlog）。
