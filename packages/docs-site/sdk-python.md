@@ -35,6 +35,8 @@ ctx = TaskContext.from_env()
 | `ctx.task_id` / `ctx.execution_id` / `ctx.task_name` | 任务标识 |
 | `ctx.params` | `AUTOFLOW_<KEY>` 触发参数字典（小写键，值恒为字符串） |
 | `ctx.get_param(key, default=None)` | 读参数 |
+
+> `ctx.get_param(key, default=None)` 按**大小写不敏感**匹配（SDK-DX-09，与 node `ctx.getParam()` 对齐）：精确命中优先，否则取第一个大写相等的键。
 | `ctx.get_env(key, default="")` | 读环境变量（任务 env 优先，再 OS env） |
 | `ctx.log` | 日志器（懒加载） |
 | `ctx.callback` | 回调客户端（懒加载单例） |

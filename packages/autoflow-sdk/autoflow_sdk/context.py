@@ -155,8 +155,23 @@ class TaskContext:
     _callback_client: Optional[CallbackClient] = field(default=None, repr=False)
 
     def get_param(self, key: str, default: Any = None) -> Any:
-        """Retrieve a task parameter by key."""
-        return self.params.get(key, default)
+        """Retrieve a task parameter by key (case-insensitive, SDK-DX-09).
+
+        与 node SDK 的 `ctx.getParam()` 对齐：两侧都按大小写不敏感匹配。
+        为什么需要：执行器过去把逐键参数写成 `AUTOFLOW_<KEY 大写>`，任务代码
+        习惯写 `get_param("limit")` 去读配置成 `LIMIT` 的参数；node 侧一直
+        不敏感，python 侧敏感——同一份任务代码跨语言移植会**静默拿到 None**。
+        精确命中优先；否则按大写比较取第一个匹配。
+        """
+        if not isinstance(key, str):
+            return default
+        if key in self.params:
+            return self.params[key]
+        upper = key.upper()
+        for k, v in self.params.items():
+            if isinstance(k, str) and k.upper() == upper:
+                return v
+        return default
 
     def get_env(self, key: str, default: str = "") -> str:
         """Retrieve an environment variable (task env first, then OS env)."""
