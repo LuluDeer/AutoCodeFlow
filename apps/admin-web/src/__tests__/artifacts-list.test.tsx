@@ -158,3 +158,26 @@ describe('ArtifactsList', () => {
     expect(screen.getByText('screenshot.png')).toBeTruthy();
   });
 });
+
+describe('ArtifactsList · 加载失败不再伪装成「无产物」（第 6 轮审计 P2）', () => {
+  it('自取数失败 → 渲染错误态；点重试重新取数', async () => {
+    vi.mocked(artifactsApi.listArtifacts).mockRejectedValue(new Error('boom'));
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <ArtifactsList execId={EXEC_ID} />
+      </QueryClientProvider>,
+    );
+    // i18n 在部分测试环境未初始化时 t() 返回 key 本身，两种形态都接受。
+    expect(
+      await screen.findByText(/产物清单加载失败|artifacts\.loadFailed/),
+    ).toBeTruthy();
+    vi.mocked(artifactsApi.listArtifacts).mockResolvedValue(ARTIFACTS);
+    fireEvent.click(screen.getByRole('button', { name: /重\s*试/ }));
+    await waitFor(() =>
+      expect(vi.mocked(artifactsApi.listArtifacts).mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    expect(await screen.findByText('screenshot.png')).toBeTruthy();
+  });
+});

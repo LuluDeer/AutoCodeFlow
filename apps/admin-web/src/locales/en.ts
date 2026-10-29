@@ -2823,6 +2823,7 @@ export default {
 
   'artifacts.downloadFail': 'Failed to download artifact',
   'artifacts.title': 'Artifacts ({{count}})',
+  'artifacts.loadFailed': 'Failed to load artifacts',
   'artifacts.downloadAria': 'Download artifact {{name}}',
   'artifacts.download': 'Download',
 

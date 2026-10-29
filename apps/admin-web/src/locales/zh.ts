@@ -2830,6 +2830,7 @@ export default {
 
   'artifacts.downloadFail': '产物下载失败',
   'artifacts.title': '产物（{{count}}）',
+  'artifacts.loadFailed': '产物清单加载失败',
   'artifacts.downloadAria': '下载产物 {{name}}',
   'artifacts.download': '下载',
 
