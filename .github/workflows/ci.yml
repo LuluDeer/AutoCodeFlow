@@ -840,6 +840,11 @@ jobs:
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
       - name: Guards are actually executed by CI
         run: node scripts/check-guards-wired.mjs
+      # 第 4 轮守卫审计：本判据自己也曾误绿（注释掉的步骤算接线、npm run
+      # check:all 命中 check）。selftest 用临时假根复现这两种形态，防止
+      # 「守卫的守卫」在重构中退化成子串匹配。
+      - name: Guards-wired guard itself has teeth (selftest)
+        run: node scripts/check-guards-wired.mjs --selftest
       # desktop 的 selftest 必须被 test:main 执行：48 个文件里曾有 2 个（browser / package-candidate）
       # 从未在 CI 跑过，而它们的头注都写着「Run via: npm run test:main」——文档说它跑，实际不跑。
       - name: Desktop selftests are wired into test:main
