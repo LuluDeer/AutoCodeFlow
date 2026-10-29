@@ -4508,7 +4508,7 @@ export interface components {
             logs: string | null;
             /** @description 日志后端的标记：'db' 或对象存储 */
             logStorage: string | null;
-            /** @description 日志存放于 S3/MinIO 时的对象键 */
+            /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
             logObjectKey: string | null;
             /** @description 任务返回的结构化结果载荷 */
             result: {
@@ -4607,7 +4607,7 @@ export interface components {
             logs?: string | null;
             /** @description 日志后端的标记：'db' 或对象存储 */
             logStorage: string | null;
-            /** @description 日志存放于 S3/MinIO 时的对象键 */
+            /** @description 日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键 */
             logObjectKey: string | null;
             /** @description 列表读取会返回该列；统计端点的 recentExecutions 完全不含该列 */
             result?: {
@@ -6378,7 +6378,7 @@ export interface components {
             } | null;
             resultTruncated: boolean;
             /** @enum {string} */
-            status: "ok" | "denied" | "awaiting_approval" | "timeout" | "error" | "circuit_open";
+            status: "ok" | "denied" | "awaiting_approval" | "in_flight" | "timeout" | "error" | "circuit_open";
             errorMessage: string | null;
             /**
              * Format: uuid

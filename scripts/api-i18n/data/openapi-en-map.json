@@ -1453,5 +1453,6 @@
   "验证码错误，或没有预登记的密钥": "Invalid verification code, or no pre-registered key",
   "默认 50，上限 200": "Default 50, maximum 200",
   "默认运行参数（纯运行时参数，不含凭据）": "Default run parameters (pure runtime parameters, no credentials)",
-  "（过滤后）行集合的真实总数": "True total of the (filtered) row set"
+  "（过滤后）行集合的真实总数": "True total of the (filtered) row set",
+  "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键": "Object key when logs are stored in an S3-compatible object store (RustFS by default)"
 }

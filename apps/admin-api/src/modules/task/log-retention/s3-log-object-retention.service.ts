@@ -36,7 +36,7 @@ export { TERMINAL_EXECUTION_STATUSES } from "../execution-terminal";
  * WIKI-LOG-S3GC（wiki page-47 风险 6，也是 log-retention-cleanup.service
  * 头注自标的"后续专门任务"）：S3 完整日志对象的保留期回收。
  *
- * 背景：LOG_STORAGE_DRIVER=s3 时完整日志外置为 MinIO/S3 gzip 对象
+ * 背景：LOG_STORAGE_DRIVER=s3 时完整日志外置为 S3 兼容存储（默认 RustFS）的 gzip 对象
  * （log-storage/s3-log-storage.ts，execution-logs/<execId>.log.gz），且 S3
  * 成功路径下 execution_log_lines **不写 DB 行**——DB 侧行清理
  * （log-retention-cleanup.service）对这部分执行是空转，对象存储侧若不
@@ -54,7 +54,7 @@ export { TERMINAL_EXECUTION_STATUSES } from "../execution-terminal";
  * 指针留给下一轮自然收敛）。游标无条件前进：remove 失败的行也不在本
  * pass 内空转重访（下轮 cron 再试）。
  *
- * 幂等与 fail-open：S3/MinIO 对不存在键的 DELETE 返回成功（204）语义，
+ * 幂等与 fail-open：S3 兼容存储（RustFS/MinIO 同语义）对不存在键的 DELETE 返回成功（204）语义，
  * removeObject 不做先 stat 后删（与 getObject/statObject 不同，无 NoSuchKey
  * 抛点），对象已删时重跑 remove 不抛错——无需调用方吞 NotFound；remove/
  * 清指针失败仅记 warn 跳过该行（指针保留=下轮还能找到对象），单行失败
@@ -63,7 +63,7 @@ export { TERMINAL_EXECUTION_STATUSES } from "../execution-terminal";
  *
  * 启用判定：复用 S3LogStorage.fromConfig（logStorage.driver==='s3' 且
  * endpoint 非空），非 s3 驱动整段 no-op；解析结果进程内单例缓存
- * （TaskService.resolveS3Storage 同款惰性模式，MinIO Client 构造无 I/O）。
+ * （TaskService.resolveS3Storage 同款惰性模式，S3 Client 构造无 I/O）。
  *
  * 查询代价说明：task_executions 无 logStorage 索引（status 有单列索引），
  * 本查询为低频（每日一轮）全表过滤 + LIMIT 批量，代价可接受；历史行增长

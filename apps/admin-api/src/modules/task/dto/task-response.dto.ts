@@ -420,7 +420,7 @@ export class TaskExecutionResponseDto {
 
   @ApiProperty({
     nullable: true,
-    description: "日志存放于 S3/MinIO 时的对象键",
+    description: "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
   })
   logObjectKey: string | null;
 

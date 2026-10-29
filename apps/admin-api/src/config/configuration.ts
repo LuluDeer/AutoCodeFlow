@@ -537,7 +537,7 @@ export default () => ({
   },
   logStorage: {
     // 'db' keeps log lines in execution_log_lines (default);
-    // 's3' stores one gzip object per execution (MinIO/S3) and only the
+    // 's3' stores one gzip object per execution (S3-compatible store, RustFS by default) and only the
     // object reference in the DB — see optimization-notes 2.6.
     driver: process.env.LOG_STORAGE_DRIVER || "db",
     bucket: process.env.LOG_STORAGE_BUCKET || "autoflow-logs",

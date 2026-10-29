@@ -7,7 +7,7 @@ import type { ConfigService } from "@nestjs/config";
 
 export interface S3LogStorageOptions {
   bucket: string;
-  /** host or host:port of the MinIO/S3 endpoint */
+  /** host or host:port of the S3-compatible endpoint (RustFS by default) */
   endpoint: string;
   accessKey: string;
   secretKey: string;
@@ -41,7 +41,7 @@ export const MAX_LOG_BYTES = 100 * 1024 * 1024;
 const gzipAsync = promisify(gzip) as (buf: Buffer) => Promise<Buffer>;
 
 /**
- * Stores execution logs as gzipped objects in MinIO/S3 (opt-in via
+ * Stores execution logs as gzipped objects in an S3-compatible store (RustFS by default) (opt-in via
  * LOG_STORAGE_DRIVER=s3). Callers must fall back to the DB path on error,
  * so the callback flow never breaks when object storage is unavailable.
  */

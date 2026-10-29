@@ -13679,8 +13679,8 @@
           "logObjectKey": {
             "type": "string",
             "nullable": true,
-            "description": "日志存放于 S3/MinIO 时的对象键",
-            "x-i18n-en": "Object key when logs are stored in S3/MinIO"
+            "description": "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
+            "x-i18n-en": "Object key when logs are stored in an S3-compatible object store (RustFS by default)"
           },
           "result": {
             "type": "object",
@@ -13933,8 +13933,8 @@
           "logObjectKey": {
             "type": "string",
             "nullable": true,
-            "description": "日志存放于 S3/MinIO 时的对象键",
-            "x-i18n-en": "Object key when logs are stored in S3/MinIO"
+            "description": "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
+            "x-i18n-en": "Object key when logs are stored in an S3-compatible object store (RustFS by default)"
           },
           "result": {
             "type": "object",
@@ -18590,6 +18590,7 @@
               "ok",
               "denied",
               "awaiting_approval",
+              "in_flight",
               "timeout",
               "error",
               "circuit_open"
