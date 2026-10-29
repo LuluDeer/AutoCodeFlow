@@ -11,6 +11,13 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十四轮 → rt-4 共享快照 + 守卫自检接线，main）**：
+  - **rt-4（P2，`f60cad8e`）**：`/metrics/stream` 的快照按**连接**生成——每条 Dashboard 连接每 3s 各自重跑 `getSummary`（4 COUNT + 30 天 GROUP BY/AVG）+ `getExecutorStats` + 调度器 Redis；32 连接 ≈75 SQL/s（64 条是 30 天聚合），扩到 300 连接即 600 SQL/s，监控自己会打满 DB 池。新增 `MetricsSnapshotCacheService`：**单飞 + 2s TTL** 跨连接复用同一份快照，协议零变化；单查询失败只降级该段并进 `errors`（连接照发 error 帧），失败结果也进缓存。控制器删掉连接内联计算与失效的 `logQueryFailure`。
+  - **守卫自检接线（`1a6e2161`）**：把上一轮 `check-guards-wired --selftest`（临时假根复现「注释步骤算接线」「npm run 前缀误配」两种误绿）接进 `test:guards:repo` 与 CI guards job——有自检但没人跑 = 同一种失效。
+  - **验证**：admin-api tsc 0；metrics 模块 **130 例**（+5 单飞/TTL/失败降级/invalidate）；`check-guards-wired --selftest` 4/4、实扫 44 个守卫全部接线；ci.yml PyYAML 解析通过；全量 admin-api 套件见本轮末尾复核。
+  - **并行流**：已提交第 4 轮守卫审计的 T5（枚举漂移/用户语言补牙）、T2（重启 sweep 状态写补谓词，被 ADR-026 扩面当场抓到的真实违规）与汇总文档；本会话未触碰其编辑。
+  - **下轮入口**：WEB-2（nginx HTTP/2）、rt-6（outbox 恢复吞吐）、rt-7/rt-8（日志 SSE 整行/1s 定时器）、SDK-DX 余项、守卫审计未做 6 项。
+
 - **本轮（2026-10-29 第十三轮 → rt-4 切片：executor 统计投影；核对三项审计已落地，main）**：
   - **rt-4 切片（`169f6feb`）**：`getExecutorStats()` 无 `select` 全表物化 `Executor`（含 `tokenHash` 等凭据列）后只取 8 个字段，而 `/metrics/stream` **每条连接每 3s** 触发它。改为显式投影 8 列 + 测试钉住 select 键集。rt-4 的共享快照泵（跨连接复用一次 SQL）仍待做。
   - **核对（并行流已落地，不重复劳动）**：rt-3（终态事件载荷改 `logHead` 首行摘要、监听方不再 `.split("
