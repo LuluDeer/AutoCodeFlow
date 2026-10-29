@@ -11,6 +11,18 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第四十七轮 → 第 6 轮审计 P1/P3 跟进，main）**：
+  - **`b9710d30`**：① `check-guards-wired` 判据①② 原先对**整份 workflow 文本**子串匹配——把守卫名只写进 step `name:`（或 env/artifact path）即可误绿；新增 `readWorkflowRunText()` 只匹配 `run:` 段，selftest 增用例 ㉑（名字只在 step name → 必须红），21/21。② `ExecutionWakeService.waiters` 超时后不回收空 Set/键（webhook wait 超时是常态）→ 比较引用后回收，补 3 条用例。
+  - **验证**：check-guards-wired selftest **21/21**、实扫 44 守卫全接线；admin-api tsc 0；task 模块 **1573 例**；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 INDEX 其余 P1（分区裁剪、cronSlotsMissed 指标、agent in-flight 台账），以及 P2 槽位冲销幂等 / web 状态竞态。
+
+- **本轮（2026-10-29 第四十六轮 → 八域并行审计（8 agent 同时）+ 幂等键回归修复，main）**：
+  - **编排**：按当前目标「同一时刻至多 10 个 agent」用 workflow 并行起 **8 个子代理**（运行时 active child 上限就是 8，10 会在第 9 个 spawn 处报 `subagent limit reached`）——admin-api 核心 / web / 执行器两端 / desktop / 数据库 / 可观测性 / CI-守卫-文档 / Agent×langgraph，全部只读审计，产 **43 条**（P1 4 / P2 26 / P3 13），归档 `docs/archive/audits/2026-10-29-round6/`（含 raw 输出；末尾被工具输出截断，agent 域最后几条缺失）。
+  - **立即修复（`48056ad9`）**：审计报出的 P2 是**我上一轮引入的回归**——入站 webhook 去重键在副作用之前占位，`trigger`/`sendAll` 抛错时键不释放 → 上游重投被判 `deduplicated` 200，可重试故障变成永久丢失（任务不执行/告警不达）。修法：记住 `replayKey`，失败（含告警 0 渠道 502）时 `deleteKey` 再 rethrow。
+  - **审计 Top P1（下轮候选）**：① `execution_log_lines` 按 createdAt 分区但读路径无分区键（每次日志读 ×31 分区）；② `cronSlotsMissed` 进程内计数从未导出 Prometheus/无告警（10-28 丢拍事故的唯一信号仍 JSON-only）；③ `check-guards-wired` 判据仍对整份 workflow 文本做子串（step name/env/artifact path 里出现即误绿）；④ Agent 写工具执行前无在途台账、无幂等键（崩溃恢复必重复副作用）。
+  - **验证**：admin-api tsc 0；task webhook 去重 6 例、告警控制器 16 例；`check-docs` 绿。
+  - **下轮入口**：按 round6 INDEX 逐条收（先 P1 四条，其中 guards-wired 与 agent in-flight ledger 都是 M）。
+
 - **本轮（2026-10-29 第四十五轮 → 按依赖别名透传上游输出（G6 第二步），main）**：
   - **`df1119f9`**：legacy `$upstream` 只能透传「本次触发的那一个上游」整块上下文，多上游 DAG 没有数据契约。新增 `$upstream("别名")` / `$upstream("别名").result.foo`（别名 = `dependencies` 的键，**无需迁移**、不触碰 GIN 表达式索引）；`injectUpstreamContext` 扩展第三参 aliases，未知别名解析为 **null**（显式缺失，不把哨兵当普通参数）；扇出侧**按需**批量取每个依赖的最新执行（一次 IN + 500 行帽），本次触发的上游直接用刚完成的执行行；无别名声明的存量扇出零新增查询。
   - **验证**：admin-api tsc 0；哨兵单测 **11 例**（+4）；task 模块 **1569 例**；全量 admin-api 见本轮末尾复核。
