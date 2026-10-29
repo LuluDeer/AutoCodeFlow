@@ -1142,6 +1142,23 @@ def test_lifespan_cancels_pull_task_on_shutdown(monkeypatch):
 # payload 从未构造/从未落盘——admin 侧执行停在 RUNNING 直到 stale sweep，
 # 真实 killed/executor_restart 分类永久丢失。
 
+def _reportable_failure_reasons() -> set[str]:
+    """执行器可上报的 failureReason 集合——**读跨端契约**而不是 import SDK。
+
+    为什么不用 `from autoflow_sdk.callback import VALID_FAILURE_REASONS`：
+    executor-python 是独立安装单元，CI 的 venv 只装 `requirements.txt`，
+    SDK 不在里面（本地能过是因为开发机装了 SDK）——CI 实测
+    `ModuleNotFoundError: No module named 'autoflow_sdk'`。
+    而 protocol.json 是四端共同的事实源（`check:failure-reasons` 守卫就是拿它
+    与各端常量比对），测试直接读它，既不需要额外依赖，也钉的是真正的契约。
+    """
+    proto = json.loads(
+        (Path(__file__).resolve().parents[3] / "packages" / "executor-protocol" / "protocol.json")
+        .read_text(encoding="utf-8")
+    )
+    return set(proto["failureReason"]["executorReportable"])
+
+
 def _patch_cancel_env(monkeypatch, execute_module):
     """取消路径用例共用的环境：admin 地址齐全，token 走 settings 快照。"""
     monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
@@ -1156,8 +1173,6 @@ def _patch_cancel_env(monkeypatch, execute_module):
 def test_run_and_callback_persists_terminal_payload_when_run_task_cancelled(monkeypatch):
     """EXEC-CANCEL-1：取消落在 run_task 段时，必须构造最小终态载荷并落盘一次，
     然后原样 re-raise（不吞取消），且 finally 的 unregister 仍然执行。"""
-    from autoflow_sdk.callback import VALID_FAILURE_REASONS
-
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest
 
@@ -1200,7 +1215,7 @@ def test_run_and_callback_persists_terminal_payload_when_run_task_cancelled(monk
     assert payload['status'] == 'failed'
     # 停机取消（非 admin 主动 kill）→ executor_restart，且必须是既有枚举值
     assert payload['failureReason'] == 'executor_restart'
-    assert payload['failureReason'] in VALID_FAILURE_REASONS
+    assert payload['failureReason'] in _reportable_failure_reasons()
     assert url.endswith('/executions/callback')
     # 取消不能被吞：finally 的注销照常执行
     assert unregistered == ['exec-cancel-during-run']
@@ -1209,8 +1224,6 @@ def test_run_and_callback_persists_terminal_payload_when_run_task_cancelled(monk
 def test_run_and_callback_persists_terminal_payload_when_artifact_upload_cancelled(monkeypatch):
     """EXEC-CANCEL-1：取消落在产物上传段（≤20 个 ×30s）时，跳过未完成产物、
     把已构造的终态载荷落盘；admin 主动 kill 的执行按 killed 分类。"""
-    from autoflow_sdk.callback import VALID_FAILURE_REASONS
-
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, _LiveExecution
 
@@ -1250,5 +1263,5 @@ def test_run_and_callback_persists_terminal_payload_when_artifact_upload_cancell
     payload, _url = persisted[0]
     assert payload['status'] == 'failed'
     assert payload['failureReason'] == 'killed'
-    assert payload['failureReason'] in VALID_FAILURE_REASONS
+    assert payload['failureReason'] in _reportable_failure_reasons()
     assert 'artifacts' not in payload  # 未完成的产物上传不污染载荷
