@@ -295,3 +295,17 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 
 > 至此这条主线（守卫会咬人 → 接线 → 供应链）的收口状态：三端全绿、45 个守卫全接线、
 > 46 个自检面全部在本地与 CI 真跑、CIR-05 三层（action / compose / Dockerfile）固定完成。
+
+---
+
+## 18. 追加：第 19 轮（executor-python 两条跨端 P2）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 超时整树杀 | `_run_with_limits` 从 `subprocess.run(timeout)` 改 `Popen + communicate(timeout)`；超时 `killpg(SIGKILL)` 整树（含「killpg 前比对执行器自己的 pgid」安全底线），win32 退化 `taskkill /T /F`；重新抛 `TimeoutExpired(cmd, timeout)` 与分类规则对齐 | `025e8817` |
+| 重定向复检 | 新增 `_package_url_host_denied(host)`：302 复检此前只调 `_host_is_restricted`、不看 `allow_private_network`，导致内网同主机 302 在 python 必失败、node 成功；现在两处统一判定（开关下放行私网，云元数据/回环仍拒，边界逐条对齐 node 的 ssrf-guard） | `025e8817` |
+
+测试：新增/改写覆盖「孙进程被杀（`ProcessLookupError` 判死）」「超时异常文本仍是真实命令而非
+launcher argv」「开关关：302→内网拒 / 开关开：302→内网放行 / 开关开：302→169.254.169.254 仍拒」。
+全量 `pytest tests -q` **exit 0**（覆盖率 88.06% ≥ 86）；`test:guards:repo` **exit 0**。
+反证：两处各还原 → 对应用例红。
