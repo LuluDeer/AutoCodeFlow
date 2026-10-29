@@ -23,7 +23,7 @@ jobs:
     # 写操作（bot 分支上的改动应只来自 dependabot 本身）。
     if: github.actor != 'dependabot[bot]'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       

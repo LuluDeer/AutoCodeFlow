@@ -41,7 +41,7 @@ jobs:
     # N44 (round-11)：原 outputs.version 无任何下游消费（两个 publish job
     # 仅 needs 依赖本 job 的通过/失败），死输出已删除。
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Version guard (tag == package versions)
         id: guard
@@ -143,9 +143,9 @@ jobs:
           - dir: packages/mcp-server
             pkg: 'autocodeflow-mcp-server'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           # node 20 已入弃用周期；且 lockfile 由 npm 11 生成，node 20 自带
           # npm 10 解析有差异（f3a2d88 教训），与 CI 对齐 node 24
@@ -205,9 +205,9 @@ jobs:
     # 时指定 environment 名称），此闸门保留。
     environment: release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
 

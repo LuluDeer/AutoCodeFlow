@@ -63,13 +63,13 @@ jobs:
           - runner: ubuntu-24.04-arm
             platform: linux/amd64
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # 不用 setup-buildx-action（docker-container driver）：它要拉
       # moby/buildkit:buildx-stable-1 镜像，Docker Hub 偶发 connection reset
       # 会直接打红 CI（run 34761485353 实测）。单平台原生构建用 runner 自带
       # 的 docker driver 即可，buildkit 容器镜像拉取点彻底消失；代价是
       # type=gha 层缓存不可用——原生构建本来就快（~86s），冷构建可接受。
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ${{ matrix.image.context }}
           platforms: ${{ matrix.platform }}
@@ -133,8 +133,8 @@ jobs:
       INITIAL_ADMIN_PASSWORD: admin123
       AI_PROVIDER: disabled
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -206,8 +206,8 @@ jobs:
       INITIAL_ADMIN_PASSWORD: admin123
       AI_PROVIDER: disabled
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -275,8 +275,8 @@ jobs:
       INITIAL_ADMIN_PASSWORD: admin123
       AI_PROVIDER: disabled
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -319,8 +319,8 @@ jobs:
       DB_PASSWORD: test
       DB_DATABASE: autoflow_test
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -389,8 +389,8 @@ jobs:
           - packages/acf-cli
           - packages/mcp-server
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -440,8 +440,8 @@ jobs:
       matrix:
         project: [apps/executor-python, apps/registry-pypi]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - name: Install pip-audit
@@ -458,8 +458,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -490,8 +490,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -516,8 +516,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -544,8 +544,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -561,8 +561,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -620,8 +620,8 @@ jobs:
     if: github.event_name != 'schedule'
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -641,7 +641,7 @@ jobs:
       # 上传 HTML 报告为构建产物（供查看详细性能数据）
       - name: Upload Lighthouse reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lighthouse-reports
           path: apps/admin-web/.lighthouseci
@@ -671,8 +671,8 @@ jobs:
           - packages/mcp-server
           - packages/autocodeflow-node-sdk
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
         # 不配 npm 缓存——dry-run 不写 node_modules，缓存无收益
@@ -707,10 +707,10 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # gitleaks 需要完整历史才能扫全部 commit
-      - uses: gitleaks/gitleaks-action@v3
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -719,8 +719,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Migration allocation check
@@ -780,6 +780,13 @@ jobs:
       # 两类判据：数组清单必须含枚举全集；同名声明（enum / 字符串联合）值集合必须一致。
       - name: Enum consumers stay in sync with the enum
         run: node scripts/check-enum-consumers.mjs
+      # CIR-05（第 3 轮审计）：`uses: actions/checkout@v4` 里的 v4 是**可变引用**——上游
+      # 移动 tag（发布事故/账号被盗/仓库被接管）时，CI **在无代码变更的情况下**执行另一份
+      # 代码，而这些 job 里都有 secrets 与 GITHUB_TOKEN（发布、PyPI、Pages、docker push）。
+      # 106 处现全部固定到 40 位 SHA（保留 `# v7` 注释便于升级）。附带两条反漂移：
+      # 同一 action 被固定成两个 SHA → warn；pull_request_target 需 `# allow-prt: 理由`。
+      - name: Third-party actions are pinned to commit SHAs
+        run: npm run check:actions-pinned
       # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
       # 且只在多副本时显形、单机开发永远看不到。22 处目前全有门禁，此闸防新增时漏写。
       - name: Every @Cron has a leader gate
@@ -797,6 +804,13 @@ jobs:
       # atlas 的「N 个 X」自述同样会腐烂：迁移数曾停在 60（实际 103）、模块索引漏了 agent。
       - name: Atlas self-declared counts vs code
         run: node scripts/check-atlas-counts.mjs
+      # 同一族（手写数字）在部署文档里的落点：`06-infra/deployment-and-ci.md` 在 DT-04
+      # 审计时四个数字全错（workflow 5→10、job 37→38、deploy.sh 129→1963 行、迁移 25→119），
+      # 而 check-docs / atlas-counts / cli-doc / api-reference 四道守卫全绿
+      # （审计用「把数字全改回旧值」反证过）。本闸做定点抽取：每处断言点解析不到
+      # 数字也算红，防「改写句子 → 守卫瞎掉」。
+      - name: Infra deployment doc counts vs code (DT-04)
+        run: npm run check:infra-doc-counts
       # 「手写枚举单向腐烂」的两个剩余面：MCP 工具地图曾停在 40 个（实际 56，漏 16）；
       # REST 地图曾写「24 controller / 21 前缀」（实际 30 / 28），且 7 个路由前缀整域缺失。
       - name: Interface maps (MCP tool names + REST route prefixes) vs code
@@ -1024,8 +1038,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Consumer route snapshot guard (A4)
@@ -1041,8 +1055,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Regenerate zod + pydantic from protocol.json
@@ -1058,8 +1072,8 @@ jobs:
     timeout-minutes: 5
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Private registry contract checks
@@ -1079,8 +1093,8 @@ jobs:
     timeout-minutes: 45
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1182,8 +1196,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1208,8 +1222,8 @@ jobs:
     timeout-minutes: 20
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1228,8 +1242,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1248,8 +1262,8 @@ jobs:
       matrix:
         package: [autocodeflow-http, autocodeflow-notify, autocodeflow-db, autocodeflow-ai]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - run: pip install pytest pytest-asyncio httpx respx
@@ -1266,8 +1280,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1291,8 +1305,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1401,8 +1415,8 @@ jobs:
           - packages/acf-cli
           - packages/mcp-server
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1441,8 +1455,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1498,8 +1512,8 @@ jobs:
       # 时间戳库名在 job 内唯一；显式指定便于失败后 service 容器取证
       E2E_DB_NAME: autoflow_e2e_ci
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1509,7 +1523,7 @@ jobs:
             apps/executor-node/package-lock.json
       # E-18（DEEP_REVIEW 0ef3bbe）：executor-python 全链 e2e——CI 需 setup-python
       # + fastapi/uvicorn/httpx 依赖，否则 e2e-full.sh 的 python 启动分支走 skip。
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - run: pip install -r apps/executor-python/requirements.txt
@@ -1534,7 +1548,7 @@ jobs:
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: e2e-artifacts
           path: |
@@ -1571,8 +1585,8 @@ jobs:
       # 留在 MSYS /tmp 最稳（mktemp 对带盘符模板解析有坑）；node 需要的是
       # WORK_DIR=C:/tmp。失败时日志由脚本内联 tail，不依赖 artifact 采集。
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1593,7 +1607,7 @@ jobs:
       # Windows 检测分支（apps/executor-python/.venv/Scripts/python.exe，见
       # e2e-full.sh 的 exec_python_launcher）显式建 venv 并装依赖，与 ubuntu
       # 侧依赖集合一致（requirements.txt）。
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - name: Prepare executor-python venv for e2e (L-5)
@@ -1654,7 +1668,7 @@ jobs:
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: e2e-windows-artifacts
           path: |
@@ -1677,8 +1691,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1705,8 +1719,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1745,7 +1759,7 @@ jobs:
         # 同 mac：CI 只产构件不发布（repository 字段触发的默认 publisher）
         run: npm run dist:linux -- --publish never
       - name: Upload Linux bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-linux-bundles
           path: |
@@ -1774,9 +1788,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1860,8 +1874,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1889,7 +1903,7 @@ jobs:
         # 会默认走 GitHub publisher（缺 GH_TOKEN 即炸）——显式 never。
         run: npm run dist:mac -- --publish never
       - name: Upload macOS bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-macos-bundles
           path: |
@@ -1918,8 +1932,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1960,8 +1974,8 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -2020,8 +2034,8 @@ jobs:
       JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
       EXECUTOR_SECRET: test-executor-secret
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -2087,8 +2101,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       # 零依赖脚本（Node 原生 perf_hooks），无需 npm ci
@@ -2106,7 +2120,7 @@ jobs:
           for (const b of rows) console.log('  ' + b.name + ' p95=' + b.p95Ms + 'ms');
           "
       - name: Upload benchmark results artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: micro-benchmark-results
           path: micro-benchmark-results.json
