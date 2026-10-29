@@ -115,3 +115,24 @@ admin-web 261/2167、desktop 未改动。
 1. **B1 剩余 16 条**（compose-sandbox / desktop-agent-packaging / error-migration 最易）与「已自 spawn 未接 harness」的 10 条（alerts-rules / migration-symmetry / openapi-response-schema…）。
 2. `check-no-hoisting` 有伴生 `.selftest.mjs`，需按 `check-migrations` 前例先定归属。
 3. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10（触发幂等键）。
+
+---
+
+## 9. 追加：第 10 轮（B1 批 2 + 收编批）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| B1 批 2 | compose-sandbox / desktop-agent-packaging / error-migration 迁 harness，32 条用例；修掉「整篇 includes = 注释也算接线」「键缺失时 `undefined !== 'bwrap'` 恒真」「`--report` 吞结构错」等假绿 | `468f424e` |
+| 收编批 | alerts-rules / migration-symmetry / openapi-response-schema 接上 harness（用例语义不变，耗时 +7.4%）；修 openapi 的「`--report` 在扫描面坍缩时仍 100% 且 exit 0」与「`--update` 写坍缩基线」——并修掉一处**现状红**：openapi 基线 237 vs 实际 240（CI api-types-drift 当时红），已 `--update` 到 240 | `c5b48e9e` |
+
+验证：`test:guards:repo` **exit 0**；六条 selftest 全绿；三条主跑绿；check-guards-wired 44 个全接线。
+已接 harness 的守卫累计 **22 个**（`grep -l lib/guard-selftest.mjs scripts/check-*.mjs`）。
+
+### 下轮入口
+
+1. **B1 剩余 13 条**：compose-service-env / consumer-routes / desktop-bundle-drift / enum-drift /
+   error-i18n / lint-gates / password-policy-sync / release-config / sdk-docs-truthfulness /
+   shell-multibyte-var / throttler-whitelist / user-facing-language / workflow-actions-pinned。
+2. **伴生 selftest 三条需先定归属**：dependency-review / desktop-update-chain / no-hoisting
+   （按 check-migrations 前例：收编进主文件 or 保留伴生）。
+3. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10（触发幂等键）。
