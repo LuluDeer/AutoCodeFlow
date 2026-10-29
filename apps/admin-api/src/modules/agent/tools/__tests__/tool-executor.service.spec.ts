@@ -6,6 +6,7 @@ import {
   TOOL_RESULT_MAX_CHARS,
   TOOL_TIMEOUT_MS,
   shapeToolResultForModel,
+  repairToolArguments,
 } from "../tool-executor.service";
 import { AgentBoundaryService } from "../../boundary/agent-boundary.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
@@ -870,5 +871,83 @@ describe("shapeToolResultForModel（首尾保留裁剪）", () => {
     expect(out.truncated).toBe(true);
     expect(out.content.length).toBeLessThanOrEqual(10);
     expect(out.content).toBe("y".repeat(10));
+  });
+});
+
+/**
+ * 工具参数的保守修复：只修**无歧义**的语法噪音（围栏/散文/尾逗号），
+ * 缺值/缺括号一律报错——"参数错了"要报错，"值猜错了"更难查。
+ */
+describe("repairToolArguments（保守修复）", () => {
+  it("合法 JSON 原样解析", () => {
+    expect(repairToolArguments('{"a":1}')).toEqual({
+      ok: true,
+      value: { a: 1 },
+    });
+  });
+
+  it("空字符串 = 无参数", () => {
+    expect(repairToolArguments("")).toEqual({ ok: true, value: {} });
+  });
+
+  it("Markdown 代码围栏（带 json 标注）", () => {
+    const raw = '```json\n{"taskId":"t-1"}\n```';
+    expect(repairToolArguments(raw)).toEqual({
+      ok: true,
+      value: { taskId: "t-1" },
+    });
+  });
+
+  it("前后散文包裹（截取对象本体）", () => {
+    const raw = '好的，参数如下：{"limit":10} 请执行';
+    expect(repairToolArguments(raw)).toEqual({
+      ok: true,
+      value: { limit: 10 },
+    });
+  });
+
+  it("尾逗号（对象与数组）", () => {
+    expect(repairToolArguments('{"a":1,}')).toEqual({
+      ok: true,
+      value: { a: 1 },
+    });
+    expect(repairToolArguments('{"a":[1,2,]}')).toEqual({
+      ok: true,
+      value: { a: [1, 2] },
+    });
+  });
+
+  it("围栏 + 尾逗号叠加也能修", () => {
+    expect(repairToolArguments('```json\n{"a":1,}\n```')).toEqual({
+      ok: true,
+      value: { a: 1 },
+    });
+  });
+
+  it("缺值/缺括号**不猜**——如实报错并说明尝试过哪些修复", () => {
+    const missingValue = repairToolArguments('{"a":}');
+    expect(missingValue.ok).toBe(false);
+    expect(missingValue.reason).toContain("保守修复");
+
+    const missingBrace = repairToolArguments('{"a":1');
+    expect(missingBrace.ok).toBe(false);
+  });
+});
+
+describe("execute 接线：畸形参数经保守修复后照常执行", () => {
+  it("围栏包裹的 arguments 不会让工具调用失败", async () => {
+    const h = harness({
+      invoke: async (_spec, args) => ({
+        data: { echoed: args },
+        isError: false,
+      }),
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("get_task", '```json\n{"taskId":"t-1"}\n```'),
+      null,
+    );
+    expect(out.truncated).toBe(false);
+    expect(JSON.parse(out.content)).toEqual({ echoed: { taskId: "t-1" } });
   });
 });
