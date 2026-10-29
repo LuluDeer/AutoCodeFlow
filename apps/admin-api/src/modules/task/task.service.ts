@@ -157,7 +157,7 @@ import {
   ExecutionTerminalEventPayload,
 } from "../../common/events/domain-events";
 // ARCH-21: AuditService import 随注入移除（唯一消费方 notifyCallbackFailure 已迁监听器）。
-import { S3LogStorage } from "./log-storage/s3-log-storage";
+import { MAX_LOG_BYTES, S3LogStorage } from "./log-storage/s3-log-storage";
 // SEC-02: 任务级 secrets 落库加密 / 读脱敏 / 派发解密的统一入口
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
@@ -4981,6 +4981,13 @@ export class TaskService implements OnModuleInit {
       const MAX_PAGES = 200; // 400k-line backfill ceiling
       let fromLine = 0;
       let totalPersisted = 0;
+      // rt-2 残差（字节帽）：页数有帽（200×2000 行）但**累计字节数**此前无帽，
+      // 单页 64MB × 200 页可以写出超过 MAX_LOG_BYTES 的对象——读取面（getStream
+      // 的 100MB cap）会拒读，形成只能靠下一次成功写入覆盖的「黑洞对象」。
+      // 这里在累计超帽时停止背填并 warn：宁可少背一段可诊断的日志，不写入
+      // 一个读不出来的对象。O(P²) 的读回/重压仍在（异步 gzip 已止血同步阻塞），
+      // 结构性解法（每页独立对象 + manifest）留待后续。
+      let totalBytes = 0;
       for (let page = 0; page < MAX_PAGES; page++) {
         const resp = await axios.get(url, {
           headers,
@@ -5005,6 +5012,18 @@ export class TaskService implements OnModuleInit {
         });
         totalPersisted += chunk.length;
         fromLine += chunk.length;
+        totalBytes += chunk.reduce(
+          (n, line) => n + Buffer.byteLength(line, "utf8") + 1,
+          0,
+        );
+        if (totalBytes > MAX_LOG_BYTES) {
+          this.logger.warn(
+            `Backfill for execution ${execution.id} exceeded MAX_LOG_BYTES ` +
+              `(${MAX_LOG_BYTES}); stopping at ${totalPersisted} line(s) instead of ` +
+              `writing an object the read path refuses (rt-2)`,
+          );
+          break;
+        }
         const total: unknown = resp.data?.totalLines;
         if (typeof total !== "number" || total <= 0 || fromLine >= total) {
           break;
