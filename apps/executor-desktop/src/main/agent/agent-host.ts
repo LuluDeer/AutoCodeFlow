@@ -63,6 +63,7 @@ import {
   type AssignmentJournal,
   type JournalAsked,
 } from './assignment-journal';
+import { RequeueLedger } from './requeue-ledger';
 
 /** 托管的最小配置面（渲染层消毒后的 config-store 读数）。 */
 export interface AgentHostConfig {
@@ -132,6 +133,13 @@ interface ReplyItem {
  */
 export const DEFAULT_TRANSIENT_REQUEUE_LIMIT = 20;
 
+/**
+ * 中台 pollPending 一轮最多下发的指派条数（缺陷 A 的既有事实）。
+ * claim ledger 的对账拿它当「本轮响应是否被条数上限截断」的判据：被截断时
+ * 「某个 id 没回来」不能当作「已终态」的证据（见 reconcileRequeueLedger）。
+ */
+const MAX_ASSIGNMENTS_PER_POLL = 3;
+
 export class AgentHost {
   private ticking = false;
   private working = false;
@@ -149,6 +157,14 @@ export class AgentHost {
    * 重发一次（中台照投，纯噪音），完全丢弃又违背「不静默丢失」。
    */
   private readonly awaitingReplyResendOnce = new Set<string>();
+  /**
+   * 待重发 id 的磁盘锚点（claim ledger，`<workDir>/agent-journal/requeue.json`）。
+   * `resendAssignmentIds` 只活一个进程：host 在「poll 拿到 items」到「下轮
+   * poll」之间崩溃/退出，延后/续跑/关闭回排的 id 就丢了——中台侧它们已被标
+   * in_progress 并写了 pulledAt，只能空转到 10min 判 stalled。账本只补齐
+   * 「id 别丢」这一件事，绝不承担恢复点职责（那始终是 assignment-journal）。
+   */
+  private ledgerCache: RequeueLedger | null = null;
   private recovered = false;
   readonly stats: AgentHostStats = {
     working: false,
@@ -162,6 +178,12 @@ export class AgentHost {
 
   private journalDir(): string {
     return journalDirFor(this.deps.workDir);
+  }
+
+  /** 账本按需构造（懒加载：agent 关闭 / 无待办的 tick 不碰磁盘）。 */
+  private get ledger(): RequeueLedger {
+    if (this.ledgerCache === null) this.ledgerCache = new RequeueLedger(this.deps.workDir);
+    return this.ledgerCache;
   }
 
   /**
@@ -198,6 +220,11 @@ export class AgentHost {
       });
       if (!poll.ok) return { worked: false, detail: `poll failed: ${poll.error ?? 'unknown'}` };
       this.resendAssignmentIds = [];
+      // poll 成功即把本轮指派 id 写进 claim ledger——**处理前**落盘，之后无论
+      // 是崩溃、被 kill 还是处理阶段抛错，重启的 host 都能按 id 把它们找回来。
+      // 同一步与中台返回的 id 集合对账：本轮没返回的 = 已终态 / 被别人领走。
+      // 只动 id 账本，绝不重建/覆盖任何单的 journal。
+      this.reconcileRequeueLedger(poll.items);
 
       // 中台策略随每轮 poll 下发——本地缓存最新值（离线沿用最近一次，09 §调整4）
       if (poll.sopPolicy && typeof poll.sopPolicy === 'object') {
@@ -225,7 +252,13 @@ export class AgentHost {
             status: 'failed', attempt: 1,
             result: { outcome: 'agent_disabled_during_poll', stopMessage: 'Agent 在领取指派期间被关闭，未执行' },
           });
-          if (!reported.ok) this.queueResendAssignment(assignment.assignmentId);
+          if (reported.ok) {
+            // 终态已如实送达中台：撤掉账本里的锚点（回报失败则保留，下一轮
+            // 启用后按 id 重投——账本落盘保证这个「保留」能跨进程存活）。
+            this.settleAssignment(assignment.assignmentId);
+          } else {
+            this.queueResendAssignment(assignment.assignmentId);
+          }
         }
         await this.withdrawCapabilities();
         return { worked: false, detail: 'agent disabled after poll' };
@@ -301,11 +334,19 @@ export class AgentHost {
   }
 
   /**
-   * 崩溃恢复（P7d，每个 host 实例一次）：扫描本地日志。
+   * 崩溃恢复（P7d，每个 host 实例一次）：扫描本地日志 + claim ledger。
    * running 阶段 = 循环中途崩溃（正常结束的运行要么清日志要么转
    * awaiting_reply，不会留 running）→ 请求中台按 id 重发重跑；
    * awaiting_reply 阶段无需动作——回复会随 poll 投递，续跑从日志恢复。
    * 陈旧日志（工单多半已被中台超时治理收走）直接清理。
+   *
+   * 账本（requeue.json）补齐的是另一类丢失：本轮 poll 拿到但还没轮到跑的
+   * 指派 / 瞬态续跑 / 关闭回排——这些单可能**还没有 journal**（延后的单根本没
+   * 建过），journal 扫描看不见它们，只有 id 账本记得。这里把账本 id 并入
+   * `resendAssignmentIds`（去重），下一轮 poll 按 id 定向重投。
+   * 唯一的例外：journal 已在 awaiting_reply 且仍有未回复提问的单——它归
+   * **回复通道**管，重发只会把它重建成 running（答复随后只能被 ACK 丢弃），
+   * 因此从账本里丢弃并 warn。
    */
   private recoverFromJournal(): void {
     if (this.recovered) return;
@@ -313,23 +354,116 @@ export class AgentHost {
     try {
       const dir = this.journalDir();
       pruneStaleJournals(dir);
-      for (const j of listAssignmentJournals(dir)) {
+      const journals = listAssignmentJournals(dir);
+      for (const j of journals) {
         if (j.phase === 'running') this.queueResendAssignment(j.assignmentId);
       }
-    } catch {
-      /* 日志读不了就当没有历史——中台侧超时治理兜底 */
+      // 「在等人工答复」的 id：交给回复通道，绝不重发
+      const awaiting = new Set(
+        journals
+          .filter((j) => j.phase === 'awaiting_reply' && this.outstandingAsk(j) !== null)
+          .map((j) => j.assignmentId),
+      );
+      const ledgerIds = this.ledger.list();
+      let restored = 0;
+      for (const id of ledgerIds) {
+        if (awaiting.has(id)) {
+          console.warn(
+            `[agent-host] claim ledger 丢弃 id（journal 处于 awaiting_reply 且提问未回复，` +
+            `交给回复通道重发会触发重跑并丢答复）: ${id}`,
+          );
+          this.ledger.remove(id);
+          continue;
+        }
+        this.queueResendAssignment(id);
+        restored += 1;
+      }
+      if (restored > 0 || ledgerIds.length > 0) {
+        console.debug(
+          `[agent-host] claim ledger 加载: 账本 ${ledgerIds.length} 条，` +
+          `恢复 ${restored} 条待重发，丢弃 ${ledgerIds.length - restored} 条`,
+        );
+      }
+    } catch (err) {
+      /* 日志/账本读不了就当没有历史——中台侧超时治理兜底 */
+      console.warn(
+        `[agent-host] 崩溃恢复扫描失败（忽略）: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
   /**
-   * 请求下一轮 poll **按 id 定向**重发（去重）。
+   * 待重发 id 的落盘与对账（poll 成功后、处理前）。
+   * - 先对账：账本里本轮没被中台返回的 id 删除（中台不再投递 = 已终态或被
+   *   别的执行器领走，继续留着只会让重启后的 poll 请求一批不存在的单）；
+   * - 再记账：本轮**合法**指派的 id 全部入账。畸形载荷当场回报、不进链路、
+   *   也不占锚点（旧用例「首跑前拦截：本地日志从未写出」因此仍然成立）。
+   * 全程只碰 id 账本——绝不读写/重建任何单的 journal。任何失败只 warn。
+   */
+  private reconcileRequeueLedger(items: readonly unknown[]): void {
+    try {
+      const ids = items.filter(isValidPollAssignment).map((item) => item.assignmentId);
+      // 中台一轮最多投 MAX_ASSIGNMENTS_PER_POLL 张：本轮响应**恰好被条数上限
+      // 填满**时，「某个 id 没回来」不构成「它已终态」的证据——它可能只是排到
+      // 下一轮。此时只记账不对账，否则最忙的那一轮会用自己的判断删掉真实在途
+      // 的锚点，正好退回 P3 的失败形态（已标 in_progress 的单没人重领）。
+      // 下一轮只要没被填满（正常水位 0–1 张），对账立即收敛。
+      const truncated = ids.length >= MAX_ASSIGNMENTS_PER_POLL;
+      const dropped = truncated ? [] : this.ledger.retain(ids);
+      if (dropped.length > 0) {
+        console.debug(
+          `[agent-host] claim ledger 对账: 移除 ${dropped.length} 个本轮未被返回的 id: ${dropped.join(',')}`,
+        );
+      } else if (truncated) {
+        console.debug(
+          `[agent-host] claim ledger 对账跳过（本轮 poll 被 ${MAX_ASSIGNMENTS_PER_POLL} 张上限截断，` +
+          `「没返回」不足以判定终态）`,
+        );
+      }
+      const added = this.ledger.add(ids);
+      if (added.length > 0) {
+        console.debug(`[agent-host] claim ledger 记账: 新增 ${added.length} 个待办 id: ${added.join(',')}`);
+      }
+    } catch (err) {
+      console.warn(
+        `[agent-host] claim ledger 记账/对账失败（忽略，本轮照常处理）: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * 单张指派已如实送达终态：清 journal + 撤账本锚点。
+   * 两者必须成对——只清 journal 会把 id 留在账本里（重启后被无谓重发），
+   * 只撤锚点不清 journal 则丢掉恢复点。
+   */
+  private settleAssignment(assignmentId: string): void {
+    clearAssignmentJournal(this.journalDir(), assignmentId);
+    try {
+      this.ledger.remove(assignmentId);
+    } catch {
+      /* fail-open：账本写不动不影响终态收尾，最多重启后多一次重发 */
+    }
+  }
+
+  /**
+   * 请求下一轮 poll **按 id 定向**重发（去重），并把 id 落盘。
    * 绝不用全局 resendAssignments=true：中台的全局重发会把目标执行器名下
    * 全部 activeStatuses（assigned/in_progress/blocked/stalled）一起投回来，
    * 包括正在等人工答复的单（缺陷 B）。
+   *
+   * 落盘是这条通道的唯一写点：延后、瞬态续跑、awaiting_reply 回排、关闭
+   * 回报失败、running 日志恢复——所有「要重发」的语义都收敛到这里，因此
+   * 账本天然覆盖全部五条路径，不会漏写。
    */
   private queueResendAssignment(assignmentId: string): void {
     if (!this.resendAssignmentIds.includes(assignmentId)) {
       this.resendAssignmentIds.push(assignmentId);
+    }
+    try {
+      this.ledger.add([assignmentId]);
+    } catch {
+      /* fail-open：内存队列仍然有效，只是少一个跨进程锚点 */
     }
   }
 
@@ -501,7 +635,7 @@ export class AgentHost {
           stopMessage: '澄清已升级人工，无自动答复——请在 Admin Web 处理后重派',
         },
       });
-      if (reported.ok) clearAssignmentJournal(dir, reply.assignmentId);
+      if (reported.ok) this.settleAssignment(reply.assignmentId);
       await this.ackReply(reply.assignmentId, reply.clarificationId);
       return true;
     }
@@ -603,7 +737,7 @@ export class AgentHost {
             effectiveProfile: this.stats.lastEffectiveProfile,
           },
         });
-        if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+        if (reported.ok) this.settleAssignment(assignmentId);
         return;
       }
       const environment = await collectEnvironmentReport();
@@ -706,7 +840,7 @@ export class AgentHost {
           stopMessage: err instanceof Error ? err.message : String(err),
         },
       }).catch(() => undefined);
-      if (reported?.ok) clearAssignmentJournal(dir, assignmentId);
+      if (reported?.ok) this.settleAssignment(assignmentId);
     } finally {
       clearInterval(capabilityLeaseTimer);
       clearInterval(progressTimer);
@@ -803,7 +937,7 @@ export class AgentHost {
             effectiveProfile: this.stats.lastEffectiveProfile,
           },
         });
-        if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+        if (reported.ok) this.settleAssignment(assignmentId);
         return;
       }
 
@@ -820,7 +954,7 @@ export class AgentHost {
           ...(isolatedRun !== null ? { isolatedRun } : {}),
         },
       });
-      if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+      if (reported.ok) this.settleAssignment(assignmentId);
       return;
     }
 
@@ -900,7 +1034,7 @@ export class AgentHost {
         });
         // 只在回报成功时清日志：回报失败就留着恢复点，下一轮 poll 再重领
         // （streak 已封顶，下一轮会再走一次同样的收敛，不会又跑循环）。
-        if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+        if (reported.ok) this.settleAssignment(assignmentId);
         return;
       }
       journal.lastSendError = `transient relay failure, awaiting re-claim: ${(result.stopMessage ?? '').slice(0, 160)}`;
@@ -935,7 +1069,7 @@ export class AgentHost {
         effectiveProfile: this.stats.lastEffectiveProfile,
       },
     });
-    if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+    if (reported.ok) this.settleAssignment(assignmentId);
   }
 
   /**
@@ -974,7 +1108,7 @@ export class AgentHost {
             stopMessage: `澄清轮次触顶（第 ${sent.round ?? outstanding.round} 轮），已升级人工`,
           },
         });
-        if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+        if (reported.ok) this.settleAssignment(assignmentId);
       }
       return;
     }

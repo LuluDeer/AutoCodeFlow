@@ -10,6 +10,10 @@
  * agentEnabled=false 不动；单飞行不并发。
  * P7d：澄清回复消费（answered → 续跑 → ACK）、升级回复终结、崩溃恢复
  * （awaiting_reply 重启续跑 / running 按单重发重跑）、ACK 失败重发去重。
+ * claim ledger（第 21–24 节）：待重发 id 落盘（poll 后处理前）→ 单张终态
+ * 删除 → 下一轮 poll 与中台返回集合对账 → 崩溃重启按 id 重投；
+ * awaiting_reply 的 id 丢弃（交给回复通道）、journal 逐字不动；
+ * 畸形/超长/陈旧账本一律忽略并 warn，tick 不炸。
  */
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
@@ -25,6 +29,7 @@ import {
   clearAssignmentJournal,
   type AssignmentJournal,
 } from './assignment-journal';
+import { REQUEUE_LEDGER_MAX_IDS, RequeueLedger, requeueLedgerPath } from './requeue-ledger';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -216,6 +221,29 @@ function seedJournal(workDir: string, over: Partial<AssignmentJournal> = {}): vo
     ...over,
   };
   saveAssignmentJournal(journalDirFor(workDir), journal);
+}
+
+/** poll 下发的一张合法指派（用例里到处要用）。 */
+function assignmentItem(assignmentId: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return { kind: 'assignment', assignmentId, sop: SOP_PAYLOAD, ...over };
+}
+
+/** 读 claim ledger 原文（不存在/坏文件 → null，用例据此断言「有没有落盘」）。 */
+function readLedgerFile(workDir: string): { ids: string[]; updatedAt: string } | null {
+  try {
+    const raw = fs.readFileSync(requeueLedgerPath(workDir), 'utf8');
+    const parsed = JSON.parse(raw) as { ids?: unknown; updatedAt?: unknown };
+    return {
+      ids: Array.isArray(parsed.ids) ? (parsed.ids as string[]) : [],
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function ledgerIds(workDir: string): string[] {
+  return readLedgerFile(workDir)?.ids ?? [];
 }
 
 async function main(): Promise<void> {
@@ -1194,6 +1222,365 @@ async function main(): Promise<void> {
       polls.every((q) => q.body.resendAssignments !== true),
       `body=${JSON.stringify(lastBody ?? null)}`);
     await center.close();
+  }
+
+  console.log('-- 21. claim ledger：poll 后处理前落盘 → 单张终态删除 → 下一轮对账 --');
+  {
+    // 现场：一轮 poll 下发 [A,B]，A 本轮跑、B 延后。旧行为下 B 的 id 只在
+    // 内存里——此刻崩溃就丢。现在它在 poll 成功、处理之前就落盘了。
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_OK, PLAN_OK],
+      pollScript: [
+        { items: [assignmentItem(ASSIGNMENT_ID), assignmentItem(ASSIGNMENT_ID_B)] },
+        // 中台按 id 定向重投被延后的 B
+        { items: [assignmentItem(ASSIGNMENT_ID_B)] },
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const base = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const client = Object.create(base) as CollabClient;
+    // 终态回报已送达、账本删除之前——这一刻的账本快照才是「处理中」的真相
+    const ledgerAtComplete: Array<{ id: string; ids: string[] }> = [];
+    (client as unknown as { reportComplete: unknown }).reportComplete = async (
+      address: string,
+      assignmentId: string,
+      input: { status: 'completed' | 'failed'; result?: Record<string, unknown>; attempt?: number },
+    ) => {
+      const reported = await base.reportComplete(address, assignmentId, input);
+      ledgerAtComplete.push({ id: assignmentId, ids: ledgerIds(workDir) });
+      return reported;
+    };
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+
+    await host.tick();
+    check('poll 后、处理前就把本轮两张 id 都落盘（B 还没轮到跑也记得）',
+      JSON.stringify(ledgerAtComplete[0]?.ids ?? null) === JSON.stringify([ASSIGNMENT_ID, ASSIGNMENT_ID_B]),
+      `ledger@A=${JSON.stringify(ledgerAtComplete[0]?.ids ?? null)}`);
+    check('A 回报成功 → 从账本删除；B 仍在（延后单的锚点保留）',
+      JSON.stringify(ledgerIds(workDir)) === JSON.stringify([ASSIGNMENT_ID_B]),
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+    const ledgerFile = readLedgerFile(workDir);
+    check('账本形态 {ids:[],updatedAt:ISO}（可被运维直接读懂）',
+      ledgerFile !== null && Array.isArray(ledgerFile.ids) &&
+      Number.isFinite(Date.parse(ledgerFile.updatedAt)),
+      `file=${JSON.stringify(ledgerFile)}`);
+    check('原子写：不残留 .tmp',
+      !fs.existsSync(`${requeueLedgerPath(workDir)}.tmp`));
+
+    await host.tick(); // 下一轮：中台按 id 重投 B
+    // 注意：center.requests 是活的数组，filter 出的副本必须在 tick 之后取
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('下一轮 poll 的 resendAssignments 含 B（账本与内存队列一致）',
+      JSON.stringify(polls[1]?.body.resendAssignments ?? null) === JSON.stringify([ASSIGNMENT_ID_B]),
+      `body=${JSON.stringify(polls[1]?.body ?? null)}`);
+    check('B 处理中账本只剩 B（对账后「本轮仍返回的」保留）',
+      JSON.stringify(ledgerAtComplete[1]?.ids ?? null) === JSON.stringify([ASSIGNMENT_ID_B]),
+      `ledger@B=${JSON.stringify(ledgerAtComplete[1]?.ids ?? null)}`);
+    check('B 终态后账本清空（不留永动机）', ledgerIds(workDir).length === 0,
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+
+    await host.tick(); // 收尾轮：无待办
+    const pollsAfter = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('收尾轮不再请求重发',
+      pollsAfter[pollsAfter.length - 1]?.body.resendAssignments === undefined,
+      `body=${JSON.stringify(pollsAfter[pollsAfter.length - 1]?.body ?? null)}`);
+    check('两张终态后 journal 都清理',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null &&
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B) === null);
+    await center.close();
+  }
+
+  console.log('-- 21b. claim ledger：poll 被「一轮 3 张」上限填满 → 本轮不对账（不误删在途锚点）--');
+  {
+    // 现场：账本里有一个「回排过、这一轮中台没投」的 id（DANGLING），而这一轮
+    // poll 恰好被 3 张上限填满。「没返回」此刻不构成「已终态」的证据——它可能
+    // 只是排到下一轮；若照常对账，最忙的那一轮会用自己的判断删掉真实在途的
+    // 锚点，正好退回 P3 的失败形态。下一轮没被填满时应立即收敛。
+    const workDir = newWorkDir();
+    // DANGLING：账本里有、本轮没被返回（模拟「排到下一轮」的第三张）
+    const DANGLING = 'dddddddd-1111-2222-3333-444444444444';
+    // C：本轮返回的第 3 张（凑满「一轮 3 张」上限的那张）
+    const ASSIGNMENT_ID_C = 'cccccccc-1111-2222-3333-444444444444';
+    new RequeueLedger(workDir).add([DANGLING]);
+    const center = makeCenter({
+      llmScript: [PLAN_OK],
+      pollScript: [
+        {
+          items: [
+            assignmentItem(ASSIGNMENT_ID),
+            assignmentItem(ASSIGNMENT_ID_B),
+            assignmentItem(ASSIGNMENT_ID_C),
+          ],
+        },
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick();
+    const afterSaturated = ledgerIds(workDir);
+    check('★ 被上限填满的那一轮不删账本里没返回的 id（DANGLING 仍在）',
+      afterSaturated.includes(DANGLING),
+      `ids=${JSON.stringify(afterSaturated)}`);
+    check('本轮两张延后单的锚点都在（含尚未建 journal 的那两张）',
+      afterSaturated.includes(ASSIGNMENT_ID_B) && afterSaturated.includes(ASSIGNMENT_ID_C) &&
+      afterSaturated.includes(DANGLING),
+      `ids=${JSON.stringify(afterSaturated)}`);
+    check('A 终态后仍从账本删除（对账跳过 ≠ 不记账/不删除）',
+      !afterSaturated.includes(ASSIGNMENT_ID),
+      `ids=${JSON.stringify(afterSaturated)}`);
+    await host.tick(); // 本轮没被填满 → 对账立即收敛
+    check('下一轮 poll 没被填满 → 对账收敛，DANGLING 被清',
+      !ledgerIds(workDir).includes(DANGLING),
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+    await center.close();
+  }
+
+  console.log('-- 22. claim ledger：poll 后处理阶段崩溃 → 新实例按 id 定向重投 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_OK, PLAN_OK],
+      pollScript: [
+        { items: [assignmentItem(ASSIGNMENT_ID)] },
+        { items: [assignmentItem(ASSIGNMENT_ID)] }, // 重启实例的 poll：中台按 id 重投
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const base = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const crashing = Object.create(base) as CollabClient;
+    // 「处理阶段被打断」：终态回报这一步直接抛（等价于回报前进程被杀）——
+    // 中台没收到终态，本地 journal 与账本都必须留着。
+    (crashing as unknown as { reportComplete: unknown }).reportComplete = async () => {
+      throw new Error('boom: 处理阶段被中断');
+    };
+    const host1 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client: crashing });
+    const r1 = await host1.tick();
+    check('处理阶段抛错不穿透 tick（收敛为 host_error）',
+      r1.worked === true && host1.stats.lastOutcome === 'host_error',
+      `worked=${r1.worked} outcome=${host1.stats.lastOutcome}`);
+    check('★ 崩溃现场：账本已落盘该 id（poll 后、处理前写入）',
+      JSON.stringify(ledgerIds(workDir)) === JSON.stringify([ASSIGNMENT_ID]),
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+    check('崩溃现场：journal 仍在 running（回报失败 → 恢复点不清）',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID)?.phase === 'running');
+
+    // ── 重启：同 workDir 的新实例（内存队列已随旧进程消失）──
+    const host2 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client: base });
+    const r2 = await host2.tick();
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('★ 新实例下一轮 poll 的 resendAssignments 含该 id（锚点真的跨进程了）',
+      Array.isArray(polls[1]?.body.resendAssignments) &&
+      (polls[1]!.body.resendAssignments as string[]).includes(ASSIGNMENT_ID),
+      `body=${JSON.stringify(polls[1]?.body ?? null)}`);
+    const complete = center.requests.find((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID}/complete`);
+    check('重启后按 id 重领并交付', r2.worked === true && complete?.body.status === 'completed');
+    check('交付后账本清空', ledgerIds(workDir).length === 0,
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+    await center.close();
+  }
+
+  console.log('-- 22b. claim ledger：崩溃点在任何 journal 之前（该单只能靠账本找回）--');
+  {
+    // 第 22 节的现场还留着一条 running journal，「按 id 重投」也可能来自第 11
+    // 节的日志恢复通道。这一节把 journal 彻底摘掉：poll 一返回就让 getConfig
+    // 抛（分拣、建 journal、跑循环都还没发生）——延后的第 2/3 张、被关闭的单
+    // 本来就是这种「没有日志」的形态，它们只能靠 id 账本活过重启。
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_OK],
+      pollScript: [
+        { items: [assignmentItem(ASSIGNMENT_ID)] },
+        { items: [assignmentItem(ASSIGNMENT_ID)] }, // 新实例的 poll：中台按 id 重投
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const base = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const crashing = Object.create(base) as CollabClient;
+    let pollReturned = false;
+    const originalPoll = base.poll.bind(base);
+    (crashing as unknown as { poll: unknown }).poll = async (
+      address: string, opts: { waitMs?: number; resendAssignments?: boolean | string[] },
+    ) => {
+      const r = await originalPoll(address, opts);
+      pollReturned = true; // poll 已经拿到响应：此后任何一步抛错都等价于「此刻被 kill」
+      return r;
+    };
+    const frozenConfig = makeConfig(baseUrl);
+    const host1 = new AgentHost({
+      address: 'a:1', workDir, client: crashing,
+      getConfig: () => {
+        if (pollReturned) throw new Error('boom: poll 之后、处理之前被 kill');
+        return frozenConfig;
+      },
+    });
+    let crashed = false;
+    try {
+      await host1.tick();
+    } catch {
+      crashed = true;
+    }
+    check('崩溃点落在「poll 之后、处理之前」（tick 被中断）', crashed);
+    check('★ 那一刻账本已落盘该 id（处理前写入）',
+      JSON.stringify(ledgerIds(workDir)) === JSON.stringify([ASSIGNMENT_ID]),
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+    check('★ 没有 journal 可依赖（不是靠第 11 节的日志恢复通道兜的）',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null &&
+      !fs.existsSync(path.join(workDir, 'agent-workspace')));
+
+    const host2 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client: base });
+    const r2 = await host2.tick();
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('★ 新实例首轮 poll 的 resendAssignments 含该 id（纯靠账本跨进程）',
+      JSON.stringify(polls[1]?.body.resendAssignments ?? null) === JSON.stringify([ASSIGNMENT_ID]),
+      `body=${JSON.stringify(polls[1]?.body ?? null)}`);
+    const complete = center.requests.find((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID}/complete`);
+    check('重领后按 id 交付 completed', r2.worked === true && complete?.body.status === 'completed');
+    check('交付后账本清空（锚点不残留成永动机）', ledgerIds(workDir).length === 0,
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+    await center.close();
+  }
+
+  console.log('-- 23. claim ledger：awaiting_reply + 未回复提问 → 丢弃不重发，journal 逐字未变 --');
+  {
+    const workDir = newWorkDir();
+    // B 的现场：已发澄清、等人工答复（未回复提问留在 asked 里）
+    const askedB = { clientClarificationId: 'client-b1', round: 1, question: 'B 的输出写到哪里？' };
+    seedJournal(workDir, {
+      assignmentId: ASSIGNMENT_ID_B,
+      phase: 'awaiting_reply',
+      pendingQuestion: askedB.question,
+      asked: [askedB],
+      replies: [],
+    });
+    const journalBefore = JSON.stringify(loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B));
+    // 崩溃前已回排：账本里同时有一个可重发的 id（A）和一个正在等答复的 id（B）
+    new RequeueLedger(workDir).add([ASSIGNMENT_ID, ASSIGNMENT_ID_B]);
+
+    const center = makeCenter({ llmScript: [], pollScript: [{ items: [] }, { items: [] }] });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick();
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('★ 加载时丢弃 awaiting_reply 的 id、只重发可重发的 id（不触发重跑）',
+      JSON.stringify(polls[0]?.body.resendAssignments ?? null) === JSON.stringify([ASSIGNMENT_ID]),
+      `body=${JSON.stringify(polls[0]?.body ?? null)}`);
+    check('★ B 的 journal 逐字未变（账本绝不重建/覆盖 journal）',
+      JSON.stringify(loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B)) === journalBefore);
+    check('被丢弃的 id 已从账本移除（不每轮重复告警）',
+      !ledgerIds(workDir).includes(ASSIGNMENT_ID_B),
+      `ids=${JSON.stringify(ledgerIds(workDir))}`);
+    check('等待答复期间零 LLM / 零回报',
+      !center.requests.some((q) => q.path === '/api/agent-collab/llm') &&
+      !center.requests.some((q) => q.path.endsWith('/complete')));
+    await center.close();
+  }
+
+  console.log('-- 24. claim ledger：结构校验（畸形/超长/陈旧 → 忽略并 warn，tick 不炸）--');
+  {
+    // ── 单元：合法字段的处理（去重 / 非空字符串 / ≤200）──
+    const unitDir = newWorkDir();
+    fs.mkdirSync(path.dirname(requeueLedgerPath(unitDir)), { recursive: true });
+    fs.writeFileSync(
+      requeueLedgerPath(unitDir),
+      JSON.stringify({ ids: ['a', 'a', '', '   ', ' b ', 'c'], updatedAt: new Date().toISOString() }),
+      'utf8',
+    );
+    check('去重 + 丢弃空串/空白 + 修剪首尾空白',
+      JSON.stringify(new RequeueLedger(unitDir).list()) === JSON.stringify(['a', 'b', 'c']),
+      `ids=${JSON.stringify(new RequeueLedger(unitDir).list())}`);
+
+    const over = newWorkDir();
+    fs.mkdirSync(path.dirname(requeueLedgerPath(over)), { recursive: true });
+    fs.writeFileSync(
+      requeueLedgerPath(over),
+      JSON.stringify({
+        ids: Array.from({ length: REQUEUE_LEDGER_MAX_IDS + 1 }, (_, i) => `asg-${i}`),
+        updatedAt: new Date().toISOString(),
+      }),
+      'utf8',
+    );
+    const overWarns: string[] = [];
+    const overLedger = new RequeueLedger(over, { warn: (m) => overWarns.push(m) });
+    check(`文件里 ${REQUEUE_LEDGER_MAX_IDS + 1} 条 > 上限 → 整份忽略 + warn`,
+      overLedger.list().length === 0 && overWarns.some((w) => w.includes('上限')),
+      `warns=${JSON.stringify(overWarns)}`);
+
+    const stale = newWorkDir();
+    fs.mkdirSync(path.dirname(requeueLedgerPath(stale)), { recursive: true });
+    fs.writeFileSync(
+      requeueLedgerPath(stale),
+      JSON.stringify({ ids: ['asg-old'], updatedAt: new Date().toISOString() }),
+      'utf8',
+    );
+    const staleWarns: string[] = [];
+    const staleLedger = new RequeueLedger(stale, {
+      // 时钟前移到 8 天后：updatedAt 已超 7 天 → 陈旧丢弃
+      now: () => Date.now() + 8 * 24 * 60 * 60 * 1000,
+      warn: (m) => staleWarns.push(m),
+    });
+    check('updatedAt 超 7 天 → 丢弃 + warn',
+      staleLedger.list().length === 0 && staleWarns.some((w) => w.includes('未更新')),
+      `warns=${JSON.stringify(staleWarns)}`);
+
+    const missing = newWorkDir();
+    fs.mkdirSync(path.dirname(requeueLedgerPath(missing)), { recursive: true });
+    fs.writeFileSync(requeueLedgerPath(missing), JSON.stringify({ ids: ['asg-x'] }), 'utf8');
+    const missingWarns: string[] = [];
+    check('updatedAt 缺失 → 整份忽略 + warn（不信任来历不明的账本）',
+      new RequeueLedger(missing, { warn: (m) => missingWarns.push(m) }).list().length === 0 &&
+      missingWarns.some((w) => w.includes('updatedAt')),
+      `warns=${JSON.stringify(missingWarns)}`);
+
+    const capDir = newWorkDir();
+    const capWarns: string[] = [];
+    const capLedger = new RequeueLedger(capDir, { warn: (m) => capWarns.push(m) });
+    capLedger.add(Array.from({ length: REQUEUE_LEDGER_MAX_IDS + 5 }, (_, i) => `asg-${i}`));
+    check('入账超上限 → 丢最旧的（保留最近 200 条）+ warn',
+      capLedger.list().length === REQUEUE_LEDGER_MAX_IDS && capLedger.list()[0] === 'asg-5' &&
+      capWarns.some((w) => w.includes('上限')),
+      `len=${capLedger.list().length} first=${capLedger.list()[0]}`);
+
+    // ── 集成：三种畸形账本 + 真 tick（不抛、不请求重发）──
+    const malformed: Array<{ name: string; body: string }> = [
+      { name: '非 JSON', body: '{ ids: [oops' },
+      { name: 'ids 非数组', body: JSON.stringify({ ids: 'asg-x', updatedAt: new Date().toISOString() }) },
+      {
+        name: `超长 ${REQUEUE_LEDGER_MAX_IDS + 1} 条`,
+        body: JSON.stringify({
+          ids: Array.from({ length: REQUEUE_LEDGER_MAX_IDS + 1 }, (_, i) => `asg-${i}`),
+          updatedAt: new Date().toISOString(),
+        }),
+      },
+    ];
+    for (const c of malformed) {
+      const dir = newWorkDir();
+      fs.mkdirSync(path.dirname(requeueLedgerPath(dir)), { recursive: true });
+      fs.writeFileSync(requeueLedgerPath(dir), c.body, 'utf8');
+      const badCenter = makeCenter({ llmScript: [], pollScript: [{ items: [] }] });
+      const badUrl = await badCenter.listen();
+      const badClient = new CollabClient({ baseUrl: badUrl, token: 't', timeoutMs: 5000 });
+      const badHost = new AgentHost({
+        address: 'a:1', workDir: dir, getConfig: () => makeConfig(badUrl), client: badClient,
+      });
+      let threw = false;
+      try {
+        await badHost.tick();
+      } catch {
+        threw = true;
+      }
+      const badPolls = badCenter.requests.filter((q) => q.path === '/api/agent-collab/poll');
+      check(`畸形账本（${c.name}）→ tick 不抛、不请求重发`,
+        !threw && badPolls.length === 1 && badPolls[0].body.resendAssignments === undefined,
+        `threw=${threw} body=${JSON.stringify(badPolls[0]?.body ?? null)}`);
+      await badCenter.close();
+    }
   }
 
   for (const d of workDirs) fs.rmSync(d, { recursive: true, force: true });
