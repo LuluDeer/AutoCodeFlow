@@ -1021,3 +1021,53 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
     );
   });
 });
+
+/**
+ * SEC-R3-4：CI 发布回调的幂等去重。
+ *
+ * 重放同一签名时旧实现会再写一遍版本元数据，并在 triggerDeploy 时对所有
+ * RUNNING 部署**再发起一轮滚动升级**。
+ */
+describe("ApplicationController webhook · 重放去重（SEC-R3-4）", () => {
+  it("重复投递：不 update、不升级，返回 deduplicated", async () => {
+    const fixedNow = 1_700_000_000_000;
+    jest.spyOn(Date, "now").mockReturnValue(fixedNow);
+    const svc = {
+      findByNameWithSecret: jest.fn().mockResolvedValue({
+        id: "app-1",
+        name: "my-app",
+        webhookSecret: "secret",
+      }),
+      update: jest.fn(),
+      recordUploadVersion: jest.fn(),
+    };
+    const deploymentSvc = {
+      findRunningByApp: jest.fn().mockResolvedValue([]),
+      upgrade: jest.fn(),
+    };
+    const guard = {
+      setIfAbsent: jest.fn(async (_key: string, _ttl: number) => false),
+    };
+    const controller = new ApplicationController(
+      svc as never,
+      deploymentSvc as never,
+      stubConfig() as never,
+      guard as never,
+    );
+    const dto = { appName: "my-app", version: "1.2.0", triggerDeploy: true };
+    const rawBody = Buffer.from(JSON.stringify(dto));
+    const timestamp = String(fixedNow);
+
+    const result = (await controller.webhook(
+      dto,
+      sign("secret", timestamp, rawBody),
+      timestamp,
+      { rawBody } as never,
+    )) as unknown as { deduplicated?: boolean };
+
+    expect(result).toEqual({ deduplicated: true });
+    expect(svc.update).not.toHaveBeenCalled();
+    expect(deploymentSvc.findRunningByApp).not.toHaveBeenCalled();
+    jest.restoreAllMocks();
+  });
+});

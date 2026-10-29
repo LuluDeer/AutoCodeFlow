@@ -8,6 +8,8 @@ import { AppDeploymentEvent } from "./entities/app-deployment-event.entity";
 // MUTEX-01：互斥组配置实体（组 CRUD + 应用挂组）。
 import { MutexGroup } from "./entities/mutex-group.entity";
 import { ApplicationService } from "./application.service";
+// SEC-R3-4：CI 发布回调去重（每模块自带实例，与 task/notification 同款）
+import { RedisLockService } from "../../common/services/redis-lock.service";
 import { ApplicationController } from "./application.controller";
 import { AppDeploymentService } from "./app-deployment.service";
 import { AppDeploymentController } from "./app-deployment.controller";
@@ -42,7 +44,12 @@ import { NotificationModule } from "../notification/notification.module";
     AppDeploymentController,
     MutexGroupController,
   ],
-  providers: [ApplicationService, AppDeploymentService, MutexGroupService],
+  providers: [
+    ApplicationService,
+    AppDeploymentService,
+    MutexGroupService,
+    RedisLockService,
+  ],
   // MUTEX-01：MutexGroupService 一并导出——agent 侧 ToolBinderService 要把它
   // 绑成 list/create/update/delete_mutex_group 四个工具执行体（与
   // ApplicationService/AppDeploymentService 同一条注入路径）。

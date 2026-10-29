@@ -12,6 +12,7 @@ import {
   UploadedFile,
   Logger,
   Headers,
+  Optional,
   Req,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
@@ -76,6 +77,7 @@ import { createHash } from "crypto";
 import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
 import type { Request } from "express";
 import { ConfigService } from "@nestjs/config";
+import { RedisLockService } from "../../common/services/redis-lock.service";
 // SEC-09: 限流分域——upgrade-all/rollback 属集群干预写面，挂中档
 // OPS_THROTTLE（默认 30/min）。装饰器求值期读取属 ARCH-27 显式豁免
 //（见 src/config/throttle-profiles.ts 头注）。
@@ -134,6 +136,10 @@ export class ApplicationController {
     // ARCH-27: API_BASE_URL 经 ConfigService 读取（configuration.ts
     // app.apiBaseUrl + Joi 注册），取代直读 process.env。
     private readonly configService: ConfigService,
+    // SEC-R3-4：CI 发布回调的幂等去重（@Optional——单测装配缺席即跳过，
+    // 行为与改动前一致；生产由 ApplicationModule 提供同一 Redis 实例）。
+    @Optional()
+    private readonly replayGuard?: RedisLockService | null,
   ) {
     // multer diskStorage resolves `destination` at request time; ensure the
     // staging dir exists at boot so a first upload never hits ENOENT.
@@ -605,6 +611,8 @@ export class ApplicationController {
     @Headers("x-hub-signature-256") signature?: string,
     @Headers("x-autocodeflow-timestamp") timestamp?: string,
     @Req() req?: Request & { rawBody?: Buffer },
+    // SEC-R3-4：可选投递幂等键（末位以保持既有位置参数契约）。
+    @Headers("x-autoflow-delivery") delivery?: string,
   ) {
     const logger = new Logger("ReleaseWebhook");
 
@@ -639,6 +647,31 @@ export class ApplicationController {
         `Webhook: signature verification failed (${failure}) for app "${dto.appName}"`,
       );
       throw new AppError(ErrorCode.APP_WEBHOOK_AUTH_FAILED);
+    }
+
+    // SEC-R3-4（P2）：同一签名在窗内重复到达时不再重复 update/upgrade
+    // （旧实现每次重放都会把版本元数据再写一遍，并在 triggerDeploy 时对
+    // 所有 RUNNING 部署**再发起一轮滚动升级**）。首投放行；命中返回
+    // `{deduplicated:true}`（200 让 CI 停止重试）。Redis 不可达 fail-open。
+    if (this.replayGuard) {
+      const key = `webhook:app:${targetApp.id}:${createHash("sha256")
+        .update(delivery ?? signature ?? "")
+        .digest("hex")
+        .slice(0, 32)}`;
+      try {
+        if (!(await this.replayGuard.setIfAbsent(key, 10 * 60_000))) {
+          logger.warn(
+            `Release webhook: duplicate delivery suppressed for "${dto.appName}"`,
+          );
+          return { deduplicated: true } as never;
+        }
+      } catch (err: unknown) {
+        logger.warn(
+          `Release webhook: dedupe unavailable, proceeding without replay guard: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
 
     // Update version / git metadata
