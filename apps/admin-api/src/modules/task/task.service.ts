@@ -5958,7 +5958,31 @@ export class TaskService implements OnModuleInit {
           // cb.executorAddress 释放——不能因「已终态」而漏掉。非广播执行此分支
           // 保持零释放（winner 已释放一次）。
           if (isBroadcast && cb.executorAddress) {
-            await this.releaseExecutorSlot(cb.executorAddress);
+            // 第 6 轮审计 P2：同一条回调被**重试**（首次已落库但响应丢失）
+            // 会再次落到本分支，同一台执行器被冲销第二次——GREATEST(...,0)
+            // 只防负数不防虚低，容量闸看到的负载比实际小，继续超发。用
+            // Redis SETNX 按 (executionId, address) 做一次性闸（TTL 10min，
+            // 覆盖执行器重试窗）；Redis 不可用 fail-open 释放（宁可少防一次，
+            // 不可让槽位永久泄漏）。
+            let shouldRelease = true;
+            if (this.redisLockService) {
+              try {
+                shouldRelease = await this.redisLockService.setIfAbsent(
+                  `slot-release:${cb.executionId}:${cb.executorAddress}`,
+                  10 * 60_000,
+                );
+              } catch (err: unknown) {
+                this.logger.warn(
+                  `Slot-release claim unavailable (releasing anyway): ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+                shouldRelease = true;
+              }
+            }
+            if (shouldRelease) {
+              await this.releaseExecutorSlot(cb.executorAddress);
+            }
           }
           // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
           // 执行结果 series 只在唯一 winner 的 UPDATE 命中处记录。

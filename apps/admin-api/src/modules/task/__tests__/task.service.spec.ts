@@ -3161,6 +3161,55 @@ describe("TaskService (__tests__)", () => {
       expect(releasedAddrs.length).toBe(2); // 每执行器恰好一坑，不多不少
     });
 
+    // 第 6 轮审计 P2：同一条回调重试不能把同一台执行器冲销两次。
+    it("P2: duplicate callback retry does not release the same executor slot twice", async () => {
+      const exec = {
+        id: "e-b2",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: null,
+        taskId: "task-b2",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      taskRepo.findOne.mockResolvedValue({
+        id: "task-b2",
+        executeMode: "broadcast",
+      });
+      // 一次性闸：同一 (execId, address) 第一次 true、之后 false。
+      const seen = new Set<string>();
+      (service as unknown as { redisLockService: unknown }).redisLockService = {
+        setIfAbsent: jest.fn(async (key: string) => {
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }),
+      };
+      releaseSlotExecute.mockClear();
+      mockedReleaseSlot.mockClear();
+
+      await service.handleCallback([
+        { executionId: "e-b2", status: "success", executorAddress: "hostA:1" },
+      ]);
+      for (let i = 0; i < 2; i += 1) {
+        await service.handleCallback([
+          {
+            executionId: "e-b2",
+            status: "success",
+            executorAddress: "hostB:2",
+          },
+        ]);
+      }
+
+      const releasedAddrs = mockedReleaseSlot.mock.calls
+        .map((c) => c[1] as string | null | undefined)
+        .filter((a): a is string => Boolean(a));
+      expect(releasedAddrs.filter((a) => a === "hostB:2")).toHaveLength(1);
+      expect(releasedAddrs).toContain("hostA:1");
+      (service as unknown as { redisLockService: unknown }).redisLockService =
+        undefined;
+    });
+
     it("R-06: single-cast execution is NOT double-released (winner release unchanged)", async () => {
       const exec = {
         id: "e-s",
