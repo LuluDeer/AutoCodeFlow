@@ -379,3 +379,13 @@ CIR-01（残差另记）、CIR-02、CIR-03、CIR-04。其中 CIR-03/04 仍在工
 **本轮未做（按 §8 deferred 原样保留）**：db-1 残差（`indisvalid` 自检 + CONCURRENTLY 静态断言）、db-2/db-3（新索引，取号 1790000000075）、rt-2（S3 回填 O(P²)）、rt-4+OBS3-03（SSE 快照泵）、SEC-R3-3/4/5、CIR-05 供应链 pin、G1–G10（OSS 缺口）、DX-04/05/09。
 
 **验收基线**：admin-api `383 套件 / 6658 例` 全绿；admin-web `258 文件 / 2150 例` 全绿；`test:guards:repo` 除 `check:desktop-bundle-drift`（并发会话改桌面源码后未回填 bundle 摘要，属其写域）外全绿；tsc / lint / i18n 全绿。
+
+### 10.1 追加（同日 13:30，第二轮收口）
+
+| 事项 | 状态 | commit | 说明 / 反证 |
+|---|---|---|---|
+| desktop bundle 双摘要 | ✅ | `e8a2b66b` | 并发流改 `executor-node`（EXEC-03/04）与 `agent-worker`（claim ledger）后 `check:desktop-bundle-drift` 红（actual 04bc21f3…/518839…）。按 ADR-005 重打回填 ①②，51/41 个输入文件 |
+| leader 门禁回归 | ✅ | `7629c6c5` | **rt-5 抽体把 5 处 leader 门禁一起搬进 `*Body()`**，`check-cron-leader-gate` 判红：`application.detectStuckDeployments`、`executor.detectLostExecutions/cleanupOldRecords/markStaleOffline`、`sop.sweepAssignmentTimeouts`。修法=门禁留入口、只抽扫描体；守卫 selftest +2（7/7，「门禁搬进 *Body」这一形态被钉成用例） |
+| desktop 主/渲染自检 | ✅ | — | `npm run test:main`（61 个 selftest）+ `test:renderer` 全绿 |
+
+**本轮第二次「改了被守卫的代码却没跑同 job 的守卫」**（第一次是 worker 的 `check-desktop-bundle-drift`）：两次都是**并发工作区**里跑单套件容易漏，教训是收口时必须以 `npm run test:guards:repo` 整链为准，而不是挑几个相关脚本跑。
