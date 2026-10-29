@@ -338,3 +338,18 @@ getObject 字节一致（含 UTF-8 中文）/ `S3LogStorage.put` 58B gzip → `.
 ① 新旧并存 `mc mirror --preserve`；② 历史日志按 30/90 天自然过期 + 人工删旧卷。文档两条都写了。
 
 **残留**：DTO 描述与 openapi 生成物里仍写「S3/MinIO」文案（改动会牵动 api-types 守卫，另开）。
+
+---
+
+## 20. 追加：第 21 轮（契约文案去 MinIO 化）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 契约 | `logObjectKey` 的 `@ApiProperty` 描述改为「日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键」；重新导出 openapi → 注入英文映射 → 重新生成 `api-types.ts` | `35c8fd66` |
+| 注释 | 五处「MinIO/S3」改为「S3 兼容存储（默认 RustFS）」（`configuration.ts` / `s3-log-storage.ts` ×2 / `s3-log-object-retention.service.ts` ×3），不动实现 | `35c8fd66` |
+
+过程如实：改 DTO 后 `inject-openapi-en` **硬失败**并点名缺英文的那条（这正是 LANG-ERR-01 的守卫该做的），
+补 `openapi-en-map.json` 后注入 1645 处成功。
+
+验证：`check-api-reference` 218 路径全覆盖、附录与 openapi 逐字节一致；`check-openapi-response-schema`
+241/254 无倒退；`jest task/log-storage + log-retention` 25 例绿；`test:guards:repo` **exit 0**。
