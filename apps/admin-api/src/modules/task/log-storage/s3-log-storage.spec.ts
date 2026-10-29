@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gzip, gunzipSync, gzipSync } from "node:zlib";
+import { promisify } from "node:util";
 import { ConfigService } from "@nestjs/config";
 import { MAX_LOG_BYTES, S3LogStorage } from "./s3-log-storage";
 
@@ -251,5 +252,98 @@ describe("S3LogStorage", () => {
     minioClient.getObject.mockResolvedValue(Readable.from(chunks));
     const text = await storage().get("execution-logs/exec-1.log.gz");
     expect(text).toBe("l0\nl1\nl2");
+  });
+});
+
+// rt-2 止血回归（runtime-perf 第 3 轮）：S3 写面的 gzip 必须走 libuv 线程池的
+// 异步版。断言两条：
+// 1) 异步版与同步版**逐字节一致** —— gzip header 的 mtime 在两条路径上都是 0，
+//    输出分块方式也不影响压缩流字节，所以换实现不改变对象格式、不影响既有对象
+//    的可读性与「同一输入 → 同一内容」的语义；
+// 2) `put()` 压缩时**从不调用** `gzipSync` —— 把实现改回同步压缩，本组立刻红。
+//    之所以断言「同步版未被调用」而不是「异步版被调用」：内部用
+//    `promisify(gzip)` 在模块加载期捕获了 gzip 的引用，测试期再 spy
+//    `zlib.gzip` 打不到那个已捕获的引用；而同步 API 是无论如何都不能出现在
+//    请求路径上的那一个，用它做反证更贴题、也更稳。
+describe("rt-2: async gzip on the S3 write path", () => {
+  const zlib = jest.requireActual<typeof import("node:zlib")>("node:zlib");
+  const gzipAsync = promisify(gzip) as (buf: Buffer) => Promise<Buffer>;
+
+  const payloads: Array<[string, string]> = [
+    ["empty content", ""],
+    ["single line", "only-line"],
+    [
+      "callback-sized text (400 lines)",
+      Array.from(
+        { length: 400 },
+        (_, i) => `[2026-10-29T00:00:00Z] line ${i}`,
+      ).join("\n"),
+    ],
+    [
+      "larger than one 16KB gzip chunk",
+      Array.from({ length: 4000 }, (_, i) => `m-${i}-${"x".repeat(20)}`).join(
+        "\n",
+      ),
+    ],
+  ];
+
+  it.each(payloads)(
+    "gzipAsync output is byte-identical to gzipSync (%s)",
+    async (_name, text) => {
+      const buf = Buffer.from(text, "utf-8");
+      const sync = zlib.gzipSync(buf);
+      const asyncBody = await gzipAsync(buf);
+      // 逐字节比较（Buffer.equals，比 toString 比较更严格：长度+每个字节）
+      expect(asyncBody.equals(sync)).toBe(true);
+      expect(asyncBody.length).toBe(sync.length);
+      // gzip header 结构：1f 8b 08 flags mtime(4B) XFL OS —— mtime 恒为 0，
+      // 这正是「两条路径产出相同字节」的前提（同步版从不写时间戳）。
+      expect([...sync.subarray(0, 4)]).toEqual([0x1f, 0x8b, 0x08, 0x00]);
+      expect([...sync.subarray(4, 8)]).toEqual([0, 0, 0, 0]);
+      expect([...asyncBody.subarray(4, 8)]).toEqual([0, 0, 0, 0]);
+    },
+  );
+
+  it("put() compresses asynchronously — gzipSync is never called", async () => {
+    const syncSpy = jest.spyOn(zlib, "gzipSync").mockImplementation(() => {
+      throw new Error("rt-2 regression: gzipSync on the request path");
+    });
+    try {
+      await expect(storage().put("exec-async", "hello\nworld")).resolves.toBe(
+        "execution-logs/exec-async.log.gz",
+      );
+      expect(syncSpy).not.toHaveBeenCalled();
+      // 上传体仍是合法 gzip，内容可解回原文。
+      const body = minioClient.putObject.mock.calls[0][2] as Buffer;
+      expect(gunzipSync(body).toString("utf-8")).toBe("hello\nworld");
+    } finally {
+      syncSpy.mockRestore();
+    }
+  });
+
+  it("put() body equals gzipSync(content) byte-for-byte (object format unchanged)", async () => {
+    const content = "a\nb\nc";
+    await storage().put("exec-bytes", content);
+    const body = minioClient.putObject.mock.calls[0][2] as Buffer;
+    expect(body.equals(zlib.gzipSync(Buffer.from(content, "utf-8")))).toBe(
+      true,
+    );
+  });
+
+  it("put() keeps async compression under a multi-megabyte payload", async () => {
+    const syncSpy = jest.spyOn(zlib, "gzipSync").mockImplementation(() => {
+      throw new Error("rt-2 regression: gzipSync on the request path");
+    });
+    try {
+      // 4 MB: 远超单个 16KB zlib chunk，覆盖异步路径的分块回填
+      const big = "x".repeat(4 * 1024 * 1024);
+      await storage().put("exec-big-async", big);
+      expect(syncSpy).not.toHaveBeenCalled();
+      const [, , body, size] = minioClient.putObject.mock.calls[0];
+      expect(body.length).toBe(size);
+      expect(gunzipSync(body).toString("utf-8").length).toBe(big.length);
+    } finally {
+      syncSpy.mockRestore();
+    }
   });
 });

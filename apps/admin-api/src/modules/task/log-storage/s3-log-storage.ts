@@ -1,5 +1,6 @@
-import { gzipSync, createGunzip } from "node:zlib";
+import { gzip, createGunzip } from "node:zlib";
 import { Readable, Transform } from "node:stream";
+import { promisify } from "node:util";
 import { Logger } from "@nestjs/common";
 import { Client } from "minio";
 import type { ConfigService } from "@nestjs/config";
@@ -19,6 +20,25 @@ export interface S3LogStorageOptions {
  *  is well above the callback log cap (512 KB compressed) and supports
  *  long-running task tails. */
 export const MAX_LOG_BYTES = 100 * 1024 * 1024;
+
+/**
+ * rt-2 止血（runtime-perf 第 3 轮）：写面的 gzip 一律走 libuv 线程池的异步版。
+ *
+ * 为什么：`gzipSync` 在**请求路径**上（执行器终态回调 → handleCallback →
+ * backfillFullLogsFromExecutor → storeLogLines → put）同步压缩整个日志对象。
+ * 多页回填每页都把 S3 已有对象读回、拼全量、再整段压缩，40 万行日志的末页
+ * 是 ~40MB 文本，同步压缩按 50-100MB/s 量级估算即 0.4-0.8s 的**进程级停摆**
+ * （期间连执行器回调本身都进不来）。异步版把同样的 CPU 放到线程池，事件循环
+ * 继续服务其他请求：调用方仍然要等这次压缩完成（请求延迟不变差，甚至更稳），
+ * 但等待从「全进程停摆」变成「本请求 / 本 worker 线程忙」。
+ *
+ * 字节一致性（已实测+单测锁定，见 s3-log-storage.spec.ts 的 rt-2 用例）：
+ * zlib 的 gzip header mtime 在同步/异步两条路径上都是 0（默认不写时间戳，
+ * 头部第 4-7 字节恒为 00 00 00 00），输出分块方式也不影响压缩流字节，
+ * 因此 `await gzipAsync(x)` 与 `gzipSync(x)` 逐字节相同——换实现不会改变
+ * 已有对象的可读性，也不会让同一输入产生不同 key 指纹。
+ */
+const gzipAsync = promisify(gzip) as (buf: Buffer) => Promise<Buffer>;
 
 /**
  * Stores execution logs as gzipped objects in MinIO/S3 (opt-in via
@@ -81,7 +101,9 @@ export class S3LogStorage {
   async put(executionId: string, content: string): Promise<string> {
     await this.ensureBucket();
     const key = this.objectKey(executionId);
-    const body = gzipSync(Buffer.from(content, "utf-8"));
+    // rt-2：异步压缩（libuv 线程池），不在事件循环上做同步 gzip。字节输出
+    // 与 gzipSync 完全一致，故对象格式与既有读取面零变化。
+    const body = await gzipAsync(Buffer.from(content, "utf-8"));
     await this.client.putObject(this.bucket, key, body, body.length, {
       "Content-Type": "text/plain; charset=utf-8",
       "Content-Encoding": "gzip",
