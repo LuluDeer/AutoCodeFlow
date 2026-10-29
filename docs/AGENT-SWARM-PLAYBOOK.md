@@ -205,6 +205,10 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **并行工作区纪律（新增）**：本仓可能同时有多个 agent/会话在写。提交永远用
 > **显式路径** `git add <file…>`，不要 `-A`；发现非本会话产生的改动先读、
 > 跑它的守卫/selftest，再决定收编（提交信息里如实标注来源），不要静默覆盖。
+> **提交前必须 `git diff --cached --stat`**：显式 add 不会清掉别人**已 staged**
+> 的条目，`git commit` 会把它们一起带走（本仓实测发生过一次：一个内容等价的
+> 测试文件 rename 被卷进了 CI 提交）。若索引不干净，先 `git restore --staged`
+> 只留自己的路径。
 
 > 首轮完整 finding 原文（含逐字代码、触发路径、修法、langgraph 对照）在
 > 该轮会话的 workflow 输出里；本表只保留可执行摘要。
