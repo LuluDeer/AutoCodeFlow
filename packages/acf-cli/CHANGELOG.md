@@ -1,8 +1,8 @@
 # Changelog
 
-<!-- stub-version: 1.15.0 -->
+<!-- stub-version: 2.0.0 -->
 > **指针 stub**：本包与仓库 root 的 lockstep 版本一起发布，完整条目见仓库根
-> [`CHANGELOG.md`](../../CHANGELOG.md) 的 `v1.15.0` 段。
+> [`CHANGELOG.md`](../../CHANGELOG.md) 的 `v2.0.0` 段。
 >
 > 为什么这里不维护完整历史：本包没有独立的 release-please 条目
 > （`release-please-config.json` 只有 root `.` 条目，版本号经 `extra-files`
