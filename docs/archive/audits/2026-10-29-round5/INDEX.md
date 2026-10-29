@@ -76,3 +76,24 @@ admin-web 261/2167、desktop 未改动。
    边界已写进脚本头注。
 4. **结构化残差**：rt-2 的 O(P²)/峰值内存（需「每页独立对象 + manifest」）、rt-4 的跨连接快照
    （并发会话已落单飞 + 2s TTL）、db 的 keyset 分页。
+
+---
+
+## 7. 追加：第 8 轮（T4 收官 + 文档计数判据 + e2e 文档重写）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| T4 收官 | A 档最后 4 条（interface-maps / failure-reasons / desktop-selftests-wired / migrations）迁 harness，58 条用例；修掉 15 处假绿（前缀误配、注释算数、`[] === []` 永真、schedule-only job 被当成随 push 跑、注释里的注册行算登记…）；伴生 `check-migrations.selftest.mjs` 收编后删除 | `a3ff6db8` |
+| audit.md 计数 | 头部「N 个 action / M 个域」纳入判据（表格为事实源）；上线即抓到 73 vs **74**——差额是 `auditHighRisk("executor.rotate_token")` 透传盲区，不是历史动作 | `5c12f281` |
+| e2e 文档 | 整篇重写：真实入口 3 份 spec = **51 例 / 9 组**（旧文 45 例、漏 3 条用例与 1 份 spec、两个 describe 组编号错位、把 ui09 自带编号当全局编号）；明确标注顶层 `e2e-full.spec.js` 是 16 例的孤儿副本 | `8227d920` |
+
+验证：`test:guards:repo` **exit 0**；四条 selftest 58 例全绿；check-docs / atlas-counts / audit-doc 绿。
+
+### 下一轮入口（更新）
+
+1. **e2e 例数没有守卫**：把 `check-atlas-counts` 加第 5 项判据（51 = 三份 spec 的 `test(` 之和），
+   已用一行静态核对脚本验证过口径。
+2. **`auditHighRisk("…")` 透传盲区**：扩 `ACTION_RE` 识别该形态后，代码数会从 73 → 74，与表格
+   对齐（本轮只把头部改成 74 并注明）。
+3. **B1 档 18 条守卫**仍有「纯进程内、不断言退出码」的 selftest，可按 T4 模板分批迁移。
+4. 结构化残差：rt-2 的 O(P²)、db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10。
