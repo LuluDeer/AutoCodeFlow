@@ -16,8 +16,10 @@
 | **执行器**（node / python / desktop） | **建议，非必须** | 协议版本没变（两端 `PROTOCOL_VERSION` 在 v1.15.0 与 develop **都是 8**），`supportedMinProtocolVersion` 仍为 1，老执行器照常注册收任务。升级只换来健壮性修复（见 §3.4）。 |
 | **已开发/已部署应用** | **不需要** | releases 两段布局（5c）与参数 env 口径（A-11R）**已在 v1.15.0 内**，存量部署无需重部署、应用代码无需改（判据见 §4）。 |
 
-- **预计停机窗口**：中台 **≈2–5 分钟**（换镜像 + 启动；容器 `HEALTHCHECK --start-period=60s`，见 `apps/admin-api/Dockerfile:34-35`）。迁移**不占**这段窗口——15 个新迁移可在旧版本继续服务时先跑完（§2.3 给出为什么安全）。
-- **回滚方式**：admin-api/admin-web 回旧镜像 tag + **保留新库结构**即可（旧代码能读新表/新列，§5.2 逐条判定）；迁移层只有 `0073` 会真删数据（§5.1 列出），其余 14 个的 `down()` 都在。
+- **本生产形态**：源码部署（`./deploy.sh --mode source --env production`）；执行器只有桌面客户端一种，无需升级裸机 node/python 执行器（§3.5）。
+- **目标版本**：中台/根 `2.0.0`（本条与下一条提交带 `BREAKING CHANGE`），桌面客户端 `1.10.0`，SDK/CLI/MCP `1.16.0`。
+- **预计停机窗口**：中台 **≈1–2 分钟**（只有 `systemctl restart autoflow-admin-api` + `nginx reload`；`npm ci`/构建耗时在重启之前，旧进程仍在服务）。迁移**不占**这段窗口——15 个新迁移可在旧版本继续服务时跑完（§2.3 说明为什么安全）。
+- **回滚方式**：`git checkout v1.15.0` + 再跑一次 `./deploy.sh --mode source`（**保留新库结构**即可，旧代码能读新表/新列，§5.2 逐条判定）；迁移层只有 `0073` 会真删数据（§5.1 列出），其余 14 个的 `down()` 都在。
 - **本轮三条破坏性/行为改动**（§6.4 有专项验证命令）：产物上传默认只认 per-executor 令牌（403 `ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN`）、executor artifact 下载默认拒 `?token=`、应用发布 webhook 的 `x-autoflow-delivery` 真正参与幂等（返回 `duplicate: true`）。
 
 ## 1. 版本与兼容矩阵
@@ -31,7 +33,7 @@
 | **executor-node（docker）** | protocol 8；产物上传用 `getCurrentToken()` 的 per-executor 令牌 | 行为修复：部署失败自动重启旧进程（`c5d83f8e` EN-01）、日志缓冲溢出标记、退出码带信号名 | 否（建议） |
 | **executor-node（裸机 systemd）** | 同上 | `scripts/install.sh` 可重跑（§3.2）；新版本只是同一脚本拉新 artifact | 否（建议） |
 | **executor-python** | protocol 8；产物上传同用回调令牌（`artifacts.py:162-163`） | 停机取消丢终态载荷 / 下载面审计修复（`30e8cd7a`） | 否（建议） |
-| **executor-desktop** | `1.9.3`（v1.15.0 的 `apps/executor-desktop/package.json`） | `1.9.4`；内嵌 executor-node bundle 随之更新 | 否（走自动更新即可） |
+| **executor-desktop** | `1.9.3`（v1.15.0） | **`1.10.0`**（本次发布目标；内嵌 executor-node bundle 随之更新——EN-01 升级失败重启、日志缺口、信号退出码三处修复都在这里） | **建议升**（本生产唯一执行器） |
 | **已部署应用**（daemon / once / scheduled） | `releases/<version>/<deploymentId>/` 两段（v1.15.0 已是，见 CHANGELOG 1.15.0「5c releases 目录两段化」） | 无变化；`readCurrentTarget` 同时兼容旧单段（`deploy.ts:937-953`） | **否** |
 | **私有 npm / PyPI 私服**（registry-npm / registry-pypi） | — | registry-pypi 只有 Dockerfile digest pin + 防爆破修复，**路由与客户端契约未变**（`git diff v1.15.0..HEAD -- apps/registry-pypi/main.py` 无 `@app.` 增删） | 否（建议同批重建） |
 | **Postgres** | `postgres:16-alpine` | 同一个镜像，只加了 digest pin（`docker-compose.yml:21`） | 否 |
@@ -42,60 +44,54 @@
 - `PROTOCOL_CONTROL_PLANE_MIN = 2`（`protocol-compat.util.ts:30`）→ 只有 `<2` 的执行器拿不到 deploy/stop 等控制命令。
 - `EXECUTOR_MIN_VERSION` 默认为空 = 门禁关闭（`configuration.ts:407`、`.env.example` 中该键留空）。
 
-## 2. 中台升级步骤（按序执行）
+## 2. 中台升级步骤（本生产形态：**源码部署**）
 
-> 全程在仓库根执行；`<TAG>` 替换为要升到的 tag（下一版本号待 release-please 生成，或直接用 `develop` 的提交）。
+> 生产跑的是 `./deploy.sh --mode source --env production`：admin-api 由 systemd 单元
+> `autoflow-admin-api.service` 托管，admin-web 的构建产物由 nginx 直接托管
+> （`deploy.sh` 的 `build_phase` → `start_phase`，末尾 `nginx -t && systemctl reload nginx`）。
+> 这条命令已经串好 **备份 → 迁移 → 构建 → 重写 unit → `systemctl restart` → 健康门**，
+> 所以**不要**手工 `npm run migration:run` 再自己重启——那会绕过「迁移前强制备份」与健康门。
 
-### 2.1 备份（先做，不跳）
+### 2.1 升级前（10 分钟）
 
 ```bash
 cd /path/to/AutoCodeFlow
 
-# ① 用仓库自带的备份脚本（profile: backup；脚本自带 pipefail + 最小尺寸校验）
-docker compose --profile backup up -d pg-backup        # 只需服务在跑，crond 默认每日 02:00
-docker compose --profile backup exec pg-backup /usr/local/bin/pg-backup.sh
-# 产物落在 backup_data 卷的 /backup/db_<YYYYmmdd_HHMMSS>.sql.gz
-
-# ② 想留一份在宿主机（便于异地）：
-docker compose --profile backup exec -T pg-backup sh -lc 'ls -1d /backup/db_*.sql.gz | tail -1'
-docker compose --profile backup cp pg-backup:/backup/<上一步的文件名> ./pre-upgrade.sql.gz
+sudo ./deploy.sh --mode source doctor          # ① 环境/配置/服务诊断，有红先修
+cp .env .env.bak.$(date +%F-%H%M)              # ② 配置面备份（deploy.sh 不备份 .env）
+sudo ./deploy.sh --mode source --env production --dry-run   # ③ 先看将执行的每一步（口令掩码）
+df -h / && free -g                             # ④ 构建 admin-web 需要 ≥2GB 空闲内存
 ```
 
-- 脚本用法见 `scripts/pg-backup.sh:3-4`（手动验证命令逐字取自该头注）；`BACKUP_SCHEDULE` / `BACKUP_RETENTION_DAYS` 在 `.env.example` 的「PostgreSQL 定时备份」段。
-- **判据**：`pg-backup.sh` 退出 0 且打印 `backup ok <path> <bytes>`；字节数 < 256 会被脚本自己判失败（`pg-backup.sh:31-35`）。
-- 顺带备份**配置面**（迁移不回滚 env）：`cp .env .env.bak.$(date +%F)`。
-- 想验证备份真能恢复，用演练库（默认不碰生产库）：`docker compose --profile backup run --rm pg-backup bash /usr/local/bin/pg-restore.sh /backup/db_xxx.sql.gz`（用法见 `scripts/pg-restore.sh:94-106`，写生产库必须显式加 `--force-overwrite-production`）。
+`doctor` 的判据：五组件（admin-api / admin-web / executor / db / redis）逐项 OK 或明确的跳过原因；
+`--dry-run` 的判据：打印出的步骤里能看到「迁移前备份」「15 个迁移」「systemctl restart」三段。
 
-### 2.2 拉代码 / 构建镜像
+### 2.2 一条命令完成升级
 
 ```bash
 git fetch --all --tags
-git checkout <TAG>              # 或 develop 的具体提交；不要在生产工作区留未提交改动
-docker compose build admin-api admin-web
+git checkout <新版本 tag>        # 例如 v2.0.0；或待发布的 commit
+sudo ./deploy.sh --mode source --env production --build
 ```
 
-- 镜像是**本地构建**，不是拉 registry 镜像（`docker-compose.yml:124-127` 有 `build: context: ./apps/admin-api`）——所以「回滚镜像 tag」实际是「回滚到旧 git tag 重新 build」，见 §5.3。
-- 构建产物含迁移 CLI：`apps/admin-api/package.json:31` 的 `migration:run:prod` = `node dist/migration-lock-cli.js up`。
+它按序执行（函数名即判据来源：`migration_phase()` / `build_phase()` / `start_phase()`）：
 
-### 2.3 先跑迁移，再起新容器（**顺序不能反**）
+1. **迁移前强制备份**：`scripts/pg-backup.sh` 把 dump 写到 `logs/db-backups/db_<时间戳>.sql.gz`，
+   并自检「产物 ≥ 256 字节」（空/半写判失败）。`--env production` 下备份失败**直接中止**
+   （`deploy.sh` 的 `migration_phase()` 注释：不带着未备份的库跑迁移）。
+   判据：日志出现 `backup ok <path> <bytes>`；失败时看 `logs/` 下 `PG_BACKUP_ERR_LOG` 指向的文件。
+2. **迁移**：`cd apps/admin-api && npm run migration:run`（`migration-lock-cli` 带 `pg_advisory_lock`，
+   多实例也只有一个在跑）。15 个待执行迁移见 §2.4；失败时 `deploy.sh` 非零退出，进程仍是旧代码。
+3. **构建**：各组件 `npm ci` + `npm run build`；admin-api 出 `dist/`，admin-web 出 `dist/`。
+4. **重写 unit + 重启**：`systemctl daemon-reload` → `enable --now` / `restart`；
+   admin-web 走 `nginx -t && systemctl reload nginx`（配置错会被 `nginx -t` 拦住，不会把站点 reload 成 502）。
+5. **健康门**：`/api/health/ready` 不通过即判部署失败（`--allow-degraded` 才会放行，
+   生产不要加）。失败时先看 `sudo ./deploy.sh logs admin-api` 的末尾 50 行。
 
-**为什么是这个顺序**（读码结论，不是习惯）：
-1. 新容器启动时**确实会自己跑迁移**——`main.ts:186` 在 `NestFactory.create` 之前 `await runBootstrapMigrations()`（`main.ts:144`，`nodeEnv === "development"` 才跳过）。所以「先起容器」也能迁移，但**失败方式最差**：迁移报错 → 进程非零退出 → compose `restart: unless-stopped` 反复重启，你看到的是一串崩溃循环而不是一条明确的 SQL 错误（`main.ts` 的 `bootstrap().catch` 会 `process.exit(1)`）。
-2. 迁移必须由**新镜像**执行（迁移文件在新镜像的 `dist` 里），旧镜像是「不知道有新迁移」的。
-3. 15 个新迁移对**旧版本在线**是安全的：4 个建新表（`agent_approvals` / `ai_media` / `ai_sop_sessions` / `webhook_deliveries`，旧代码不碰）、6 个加列（全部 `NULL` 或 `NOT NULL DEFAULT`，见 §5.2）、4 个 `CREATE INDEX CONCURRENTLY`（`0075/0076/0077/0080`，不锁写）。唯一动数据的是 `0073`，它删的是 `agent_tool_calls` 里 `(session_id, tool_call_id)` 重复行——而 `tool_call_id` 列由 `0069` 才加上，旧代码写的全是 `NULL`，partial 索引 `WHERE tool_call_id IS NOT NULL` 不含 NULL，**实际 0 行被删**。
+> 源码模式**不需要**停机窗口之外的额外操作：迁移可以在旧进程继续服务时跑完（新列全部是
+> `NULL` 或 `NOT NULL DEFAULT`，见 §5.2），真正的中断只有第 4 步的 `systemctl restart`（秒级）。
 
-```bash
-# 用新镜像跑迁移（--rm 跑完即走；compose run 会用新的 build 产物）
-docker compose run --rm --no-deps admin-api node dist/migration-lock-cli.js up
-
-# 迁移前后各查一次，数字应恰好 +15（TypeORM 的迁移记账表默认就叫 migrations）
-docker compose exec -T postgres psql -U autoflow -d autoflow -c 'SELECT count(*) FROM migrations;'
-```
-
-- 迁移 CLI 带 `pg_advisory_lock` 互斥（`apps/admin-api/src/migration-lock-cli.ts:1-15`），与 boot 路径同键，HA 双副本同时跑不会互相踩。
-- **判据**：命令退出 0，日志出现迁移逐个 `Migration Xxx has been executed successfully`；再跑一次应输出 `No migrations are pending`（`migration-runner.util.ts:192`）。
-
-### 2.4 15 个新迁移的落地顺序与耗时量级
+### 2.3 15 个新迁移的落地顺序与耗时量级
 
 按时间戳顺序（TypeORM 天然按名排序），耗时量级取决于**现场行数**，不是常数——所以给判据而不是给数字：
 
@@ -113,7 +109,8 @@ docker compose exec -T postgres psql -U autoflow -d autoflow -c 'SELECT count(*)
 现场估时（把 `<各表>` 换成实测行数）：
 
 ```bash
-docker compose exec -T postgres psql -U autoflow -d autoflow -c "
+# 源码部署：直接用 .env 里的 DB_* 连（下面 docker 版本仅当 PG 在 compose 里时用）
+psql -h "${DB_HOST:-127.0.0.1}" -U "${DB_USER:-autoflow}" -d "${DB_DATABASE:-autoflow}" -c "
 SELECT relname, n_live_tup FROM pg_stat_user_tables
 WHERE relname IN ('tasks','task_executions','audit_logs','agent_tool_calls','event_outbox','executor_metrics_history')
 ORDER BY n_live_tup DESC;"
@@ -123,12 +120,12 @@ ORDER BY n_live_tup DESC;"
 - ⚠️ **半成品索引检查**（迁移被中途 Ctrl-C / 容器被杀时的残留）。`IF NOT EXISTS` 会命中 `indisvalid=false` 的同名索引并跳过，导致索引永远建不起来：
 
 ```bash
-docker compose exec -T postgres psql -U autoflow -d autoflow -c \
+psql -h "${DB_HOST:-127.0.0.1}" -U "${DB_USER:-autoflow}" -d "${DB_DATABASE:-autoflow}" -c \
 "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE NOT i.indisvalid;"
 ```
 - 结果非空即需 `DROP INDEX CONCURRENTLY <名>` 后重跑该迁移。
 
-### 2.5 迁移能不能回滚
+### 2.4 迁移能不能回滚
 
 - **代码层**：15 个新迁移**全部有 `down()`**（逐文件 `awk '/async down/',0'` 核对）。例外是 `0073` 的 `down()` 是刻意的空实现——头注写明「被删的重复行不可恢复，不伪造数据」（`1790000000073-...ts:38-40`）。
 - **数据层**：不可逆的只有三种，回滚前必须知道：
@@ -137,7 +134,7 @@ docker compose exec -T postgres psql -U autoflow -d autoflow -c \
   3. `0070/0071/0067` 的 `down()` 是 `DROP TABLE` —— 表内数据全丢。
 - **结论**：**回滚镜像不必回滚迁移**（§5.2 证明旧代码能读新结构）；只有「必须回到旧结构」时才有上面三类数据损失。
 
-### 2.6 新 env 键怎么填 + 自检
+### 2.5 新 env 键怎么填 + 自检
 
 13 个新键**全部可选、全部有默认值**（含本轮 SEC-3 的 `WEBHOOK_DELIVERY_TTL_DAYS=7`）（逐条核对 `configuration.ts` 的 `|| 默认值` 与 `.env.example`）——存量 `.env` 不改也能起来：
 
@@ -166,33 +163,21 @@ node scripts/check-env-drift.mjs
 # 基线实测输出：代码消费的 227 个 env 键全部被 .env.example 覆盖或已豁免（豁免 39 个）
 ```
 
-### 2.7 起新容器 + 健康检查 + 首验
+### 2.6 升级后首验（源码模式）
 
 ```bash
-docker compose up -d admin-api admin-web
-
-# ① 存活（恒 200，不查依赖）
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost/api/health/live
-# ② 就绪（DB + Redis 都通才是 200；不就绪是 503，不是「200 + not_ready」）
-curl -s http://localhost/api/health/ready | head -c 400
-# ③ 登录（换成你的管理员账号）
-curl -s -X POST http://localhost/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"<INITIAL_ADMIN_PASSWORD>"}' | head -c 300
-# ④ 详细健康（需 JWT，看 db/redis/queue/executors 五组件）
-curl -s -H "Authorization: Bearer <accessToken>" http://localhost/api/health/detailed | head -c 600
+curl -s -o /dev/null -w 'live=%{http_code}\n'  http://127.0.0.1:3105/api/health/live
+curl -s http://127.0.0.1:3105/api/health/ready | head -c 400     # 不就绪是 503，不是「200 + not_ready」
+sudo ./deploy.sh status
+sudo ./deploy.sh health
+systemctl is-active autoflow-admin-api
 ```
 
-- 端点与语义：`health.controller.ts` 的 `@Get("live")` 恒 200、`@Get("ready")` 不就绪返回 **503**（该文件内 A3 注释明确「此后不再恒返 200」）；全局前缀 `api`（`main.ts:365`），登录路由 `auth.controller.ts:119`。
-- **首验「创建一条测试任务」**：用 admin-web 建一条最小 Git/Shell 任务并手动触发一次，判据是执行行进入 `success` 且执行器日志有本次 executionId。命令行等价：
-
-```bash
-curl -s -X POST http://localhost/api/tasks -H "Authorization: Bearer <accessToken>" \
-  -H 'Content-Type: application/json' -d '{"name":"upgrade-smoke","type":"shell", ...}'
-# 字段以 openapi.json / admin-web 表单为准；不确定就用界面建，避免猜 schema
-```
-
-- 容器自身也在探活：`apps/admin-api/Dockerfile:34-35` 的 `HEALTHCHECK` 打 `/api/health/live`，`docker compose ps` 里应为 `healthy`。
+- 判据：`live=200`、`ready` 返回 200（`db`/`redis` 全绿）、`status` 里 admin-api 为 `active`。
+- 登录 + 首跑：浏览器登录 → 用「任务模板」建一条最小任务 → 手动触发一次 →
+  执行行进入 **success** 且执行详情能看到日志（本轮改了 SSE/日志/指标读数，这三处必须覆盖）。
+- 命令行等价（避免猜 DTO，字段以 openapi.json / 界面为准）：
+  `curl -s -X POST http://127.0.0.1:3105/api/tasks -H "Authorization: Bearer <token>" ...`
 
 ## 3. 执行器升级
 
@@ -218,7 +203,7 @@ curl -s -X POST http://localhost/api/tasks -H "Authorization: Bearer <accessToke
 
 **在「旧版 admin」上重跑会不会坏**：不会。旧 admin 同样接受 `Authorization: Bearer`（v1.15.0 的 `getExecutorArtifact` 是 `auth ?? Bearer(token)`，即头优先），且没有 `X-SHA256` 头时脚本走「跳过完整性校验」分支（`install.sh:233`）。**只有反向不成立**：新 admin 默认拒 `?token=`，而本脚本不用查询串。
 
-### 3.3 python 执行器
+### 3.3 python 执行器（本生产不使用，保留供将来）
 
 ```bash
 # docker 部署（compose 服务名 executor-python，镜像本地构建）
@@ -249,7 +234,25 @@ systemctl restart <python-executor-unit>          # 或 supervisordctl restart .
 
 - **产物缺失是否影响任务终态？不影响，已核实**：产物上传全程 best-effort。node 侧 `uploadOne` 对非 2xx 只 `logger.warn('artifacts: 上传 X 返回 HTTP 403（跳过）')` 并 `return false`（`apps/executor-node/src/artifacts.ts:124-125`）；终态收集外层再包一层 `try/catch`，异常时返回 `undefined` 而**不阻塞回调**（`routes/execute.ts:3070-3086`，注释逐字为「best-effort——任何异常只记日志返回 undefined」）。python 侧同姿态（`routers/execute.py:3862` 日志文案「artifacts collection/upload failed (non-blocking)」）。
   ⇒ **任务的终态（success/failed）与退出码只由任务进程决定；403 只表现为「这次执行没有产物」，回调里 `artifacts` 字段缺席。**
-- 所以升级顺序建议：**先中台（§2）→ 观察一次执行 → 再批量升执行器**。真要并行，先把 `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true` 打开当保险，升完再关（§7 说明风险）。
+- 所以升级顺序建议：**先中台（§2）→ 跑一条任务观察 → 再升桌面客户端到 1.10.0**。
+  本生产只有桌面客户端一种执行器，**不存在**「批量升裸机执行器」这一步；真要并行，先把
+  `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true` 打开当保险，升完再关（§7 说明风险）。
+
+### 3.5 本生产只有桌面客户端时的简化流程
+
+你现在的执行器只有 `executor-desktop`，所以 §3.2（裸机 install.sh）与 §3.3（python 执行器）
+都可以跳过，实际只需三步：
+
+1. **中台先升**（§2）——桌面客户端连的是新中台的机器面接口，协议未变，不会断。
+2. **桌面升到 1.10.0**：
+   - AppImage 形态：`electron-updater` 会拉到新版（`desktop-v1.10.0` tag 触发 `release-desktop.yml` 出包）；
+   - deb/rpm 形态：**没有应用内自更新通道**，必须手动下载安装包覆盖安装（`updater.ts` 只在 AppImage 分支挂 `AppImageUpdater`）；
+   - 升级后判据：状态页显示协议 v8、心跳正常，跑一条任务成功。
+3. **观测一轮**：`journalctl -u autoflow-admin-api --since '30 min ago' | grep -E 'SEC-1|SEC-2|duplicate'`
+   应为空；桌面端执行详情里产物（若有）能正常列出。
+
+> 桌面 1.10.0 内含 `c5d83f8e` 的 EN-01 修复（升级失败会重启旧版本进程）。不升桌面也能用，
+> 但**升级应用时遇到网络失败会停服**这个老行为会保留——这是"建议升"的真实理由。
 
 ## 4. 已开发应用是否需要调整
 
@@ -330,10 +333,9 @@ docker compose run --rm --no-deps admin-api node dist/migration-lock-cli.js down
 
 ```bash
 cd /path/to/AutoCodeFlow
-git checkout v1.15.0                 # 回到生产基线
-docker compose build admin-api admin-web
-docker compose up -d admin-api admin-web
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost/api/health/live
+git checkout v1.15.0                       # 回到生产基线（不要动库结构）
+sudo ./deploy.sh --mode source --env production --build
+curl -s -o /dev/null -w 'live=%{http_code}\n' http://127.0.0.1:3105/api/health/live
 ```
 - **不要**顺手 `docker compose down -v`（会删 `postgres_data` / `admin_uploads` / `backup_data` 卷）。
 - 新 env 键留着无害（旧代码不读）；也可以还原 `.env.bak`。
@@ -353,19 +355,19 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost/api/health/live
 ### 6.1 中台
 
 - [ ] `node scripts/check-migrations.mjs` 通过（应报 126 个迁移，下一可用 `1790000000082`）
-- [ ] `docker compose run --rm --no-deps admin-api node dist/migration-lock-cli.js up` 二次执行输出 `No migrations are pending`
+- [ ] `(cd apps/admin-api && npm run migration:run)` 二次执行输出 `No migrations are pending`
 - [ ] `node scripts/check-env-drift.mjs` 退出 0
-- [ ] `curl -s -o /dev/null -w '%{http_code}' http://localhost/api/health/live` → `200`
-- [ ] `curl -s http://localhost/api/health/ready` → 200 且 `status:"ready"`
+- [ ] `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3105/api/health/live` → `200`
+- [ ] `curl -s http://127.0.0.1:3105/api/health/ready` → 200 且 `status:"ready"`
 - [ ] 登录成功、`/api/health/detailed` 五组件正常
-- [ ] `docker compose ps` 中 admin-api 为 `healthy`
+- [ ] `systemctl is-active autoflow-admin-api` → `active`（`sudo ./deploy.sh status` 同判据）
 - [ ] `SELECT ... indisvalid` 无 `false`（§2.4）
 
 ### 6.2 执行器
 
 - [ ] 执行器列表里在线数 = 预期台数，无新增 401/409
-- [ ] `journalctl -u autocodeflow-executor -n 100`（或 `docker compose logs executor-node`）无 `注册失败`
-- [ ] 跑一条最小任务，终态 `success`
+- [ ] 桌面客户端状态页显示「已连接 / 心跳正常」，无 401/409
+- [ ] 从桌面客户端跑一条最小任务，终态 `success` 且执行详情有日志
 
 ### 6.3 应用
 
@@ -383,9 +385,10 @@ A=http://localhost/api/executors/artifact/executor-node.tar.gz
 curl -s -o /dev/null -w 'no-auth=%{http_code}\n' "$A"                        # 期望 401
 curl -s -o /dev/null -w 'bearer=%{http_code}\n' -H "Authorization: Bearer $EXECUTOR_SECRET" "$A"   # 期望 200（404 = 产物未生成，见 EXECUTOR_ARTIFACT_DIR）
 curl -s -o /dev/null -w 'query=%{http_code}\n' "$A?token=$EXECUTOR_SECRET"   # 期望 401（默认）
-docker compose logs --tail=20 admin-api | grep -c 'SEC-2'                     # 期望 0 条（未开兼容模式）
+journalctl -u autoflow-admin-api --since '10 min ago' | grep -c 'SEC-2'     # 期望 0 条（未开兼容模式）
 # 打开兼容模式后再验一次：
-# EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true → query=200 且日志出现一条 [SEC-2] warn
+# 改 .env 的 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true → sudo ./deploy.sh restart admin-api
+# → query=200 且 journalctl -u autoflow-admin-api | grep 'SEC-2' 出现一条 warn
 ```
 
 **② 产物上传：共享令牌 → 403 且任务终态仍 success**
@@ -401,7 +404,7 @@ curl -s -o /dev/null -w 'shared=%{http_code}\n' -X PUT \
 # 期望 403，body 的 code = ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN，params.reason = shared_token
 ```
 - 然后确认该执行的终态：`GET /api/tasks/executions/<execId>` 仍为 `success`（产物字段缺席即可）——依据 §3.4 的 best-effort 链路。
-- 兼容模式复验：`EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true` → 同一命令 `200`，`docker compose logs admin-api | grep 'SEC-1 兼容模式'` 有一行 warn。
+- 兼容模式复验：`EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true` → 同一命令 `200`，`journalctl -u autoflow-admin-api --since '5 min ago' | grep 'SEC-1 兼容模式'` 有一行 warn。
 
 **③ 应用发布 webhook：重复投递 → `duplicate: true` 且不再重复升级**
 
@@ -419,8 +422,42 @@ done
 # 第 1 次：正常响应（ok:true）
 # 第 2 次：{"ok":true,"duplicate":true,"deliveryKey":"probe-...","receivedAt":"...","deduplicated":true}
 ```
-- 判据②：只产生**一次**版本更新 / 一轮升级（`docker compose logs admin-api | grep -c 'duplicate delivery'` = 1）。
+- 判据②：只产生**一次**版本更新 / 一轮升级（`journalctl -u autoflow-admin-api | grep -c 'duplicate delivery'` = 1）。
 - 老集成不传 `x-autoflow-delivery` 时行为不变（`claim` 返回 `no_key`，`webhook-delivery.service.ts:45`），仍由 10 分钟 Redis 签名窗兜底（`deduplicated:true`）。
+
+### 6.5 发版编排：版本线是 lockstep，不能「平台 2.0.0 + SDK 1.16.0」
+
+`scripts/check-release-config.mjs` 的判据 ④ 要求 **root（`version.txt`）与四个对外发布包版本一致**
+——`@autocodeflow/sdk`（node）、`autoflow-sdk`（py）、`autocodeflow-mcp-server`、`@autocodeflow/cli`。
+`release.yml` 的 version-guard 在打 tag 那一刻还会再比一次。所以「平台发 2.0.0、SDK/CLI/MCP 发 1.16.0」
+这个组合会被闸拦下（本地 `npm run check:release-config` 就红）。
+
+两条路，选一条：
+
+**A. 全 2.0.0（推荐，零守卫改动）**
+
+1. 先合 release PR（release-please 会把 `version.txt` + `release-please-manifest.json["."]` 升到 2.0.0，
+   `CHANGELOG.md` 出现 ⚠ BREAKING 段）；
+2. 在同一个 PR 里把四个包一起升到 2.0.0（**这四包不在 release-please 的 packages 里，必须手工**）：
+   - `packages/{acf-cli,mcp-server,autocodeflow-node-sdk}/package.json` + 各自 `package-lock.json`（前两处 version）；
+   - `packages/autoflow-sdk/pyproject.toml` + `autoflow_sdk/__init__.py`（`__version__`）；
+   - 四个 `CHANGELOG.md` 的 stub-version 行（守卫会查）；
+3. 文档站与 SDK 文档的「当前 X.Y.Z」同步（`check:docs-site-sync` / `check:sdk-docs-truthfulness` 会抓）：
+   `docs/sdk-guide.md`、`docs/atlas/05-interfaces/sdks.md`、`docs/atlas/02-packages/README.md`、
+   `packages/docs-site/{getting-started,release,index,sdk-node,sdk-python}.md`；
+4. 校验三连：`npm run check:release-config && npm run check:docs-site-sync && npm run check:docs`；
+5. 打 tag：`git tag v2.0.0 && git push origin v2.0.0`。
+
+**B. 坚持 SDK 走 1.16.0**
+
+必须改发布政策：`check-release-config.mjs` 的 ④ 判据要允许 root 线与 SDK 线不同步，
+`release.yml` 的 version-guard 也要同步改成「按包各自校验」。这是**改闸**而不是改版本，
+影响所有后续发版，建议单独一轮做，别混在 2.0.0 里。
+
+**桌面（独立版本线）**：`desktop-v1.10.0` 由 `release-desktop.yml` 的 `desktop-version-guard` 校验
+「tag 去前缀 == `apps/executor-desktop/package.json` 的 version」。本分支已把桌面改到 **1.10.0**
+（含 `package-lock.json`），合入后直接 `git tag desktop-v1.10.0 && git push origin desktop-v1.10.0`
+即可，不会再被守卫拦。桌面**不参与** root 线的 lockstep。
 
 ## 7. 已知取舍
 
@@ -438,7 +475,8 @@ done
 写文档时逐条复核，以下 4 处与「任务背景」的表述不符，本文按**代码事实**落笔：
 
 1. **「22 个新增迁移」** → 实际是 **15 个新迁移 + 8 个「已执行过但被修改」的迁移**。`git diff --name-only v1.15.0..HEAD -- 'apps/admin-api/src/migrations/*.ts'` 出 22 个，但 `--diff-filter=A` 只有 14 个，`--diff-filter=M` 有 8 个（`0022/0049/0050/0051/0053/0055/0056/0061`）；再加未提交的 `0081`（`webhook_deliveries`）= 15 个待执行。总数 111 → 126，`scripts/check-migrations.mjs` 实测一致。
-2. **「三条破坏性改动正在落地」** → 核实时刻（`a8cb3a2c` + 工作区）它们在**工作区未提交**（`git status` 可见 `artifacts.service.ts` / `executor.controller.ts` / `application.controller.ts` / `configuration.ts` 的 `M`，以及 `?? 1790000000081`），**HEAD 上还没有**。核实方式：`git grep -n EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT HEAD` 为空 ⇒ 未提交；工作区有 ⇒ 在途。文档按「随本次发布生效」写。
+2. **「三条改动正在落地」** → 核实时刻只在工作区；**现已提交**为 `0389e0c0`（SEC-1/SEC-2）与 `20bec468`（SEC-3），
+   并带 `BREAKING CHANGE` footer（目标版本 2.0.0）。核实方式：`git grep -n EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT HEAD` 有命中。
 3. **webhook 幂等的返回字段**：背景写 `duplicate: true`，代码里实际**同时**返回 `duplicate: true`、`deduplicated: true`、`deliveryKey`、`receivedAt`（后者为兼容既有「同签名去重」的响应形态）。且幂等账本按 `(scope, deliveryKey)` 唯一的 DB 表实现（`0081`），**不是**按签名——签名窗去重（10 分钟 Redis）仍然并存。
 4. **桌面端「最小版本要求」不存在**：全仓无桌面最低版本门禁常量；`electron-updater` 只做「远端是否严格新于本地」的 semver 比较（`updater.ts:53-106`），不会自动降级，也没有「低于 X 强制升级」的闸。
 
