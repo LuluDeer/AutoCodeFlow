@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第四十三轮 → 任务表单暴露失败边（G6 UI），main）**：
+  - **`f32e0cee`**：后端 `runOnUpstreamFailure` 上轮已落地但表单无入口（API-only 等于不存在）。执行策略分区新增「上游失败时也触发」复选框（默认关闭，tooltip 说明补偿/清理语义）；任务类型补字段；提交白名单 `TASK_DTO_PAYLOAD_KEYS` 补键（该白名单按 CreateTaskDto 全量键 `satisfies`，漏加会被静默剥掉——本轮测试当场抓到）；重新生成 `api-types.ts`（openapi 刷新后 +520 行）。
+  - **验证**：admin-web tsc 0；任务表单 12 例；全量 admin-web 见本轮末尾复核。
+  - **下轮入口**：G6 第二步（每边输出 `$upstream("<别名>")`）、G5 检查点（L 级）、rt-2 结构性解法。
+
 - **本轮（2026-10-29 第四十二轮 → 依赖失败边（G6 第一步），main）**：
   - **`bf9fa94d`**：依赖扇出只在上游 SUCCESS 时触发，失败/超时/取消不触发任何下游——「失败补偿/清理」无法编排。新增任务级 `runOnUpstreamFailure`（迁移 0079，metadata-only，**不改** dependencies 的 value 形态以免 `idx_tasks_dependencies_values_gin` 表达式失配）：失败终态也进入扇出入口、只挑声明该位的下游；依赖闸门 `acceptFailure` 接受上游失败终态（**RUNNING/PENDING 仍不算满足**），调度 misfire 补偿闸同口径；DTO/openapi/i18n 同步。
   - **验证**：admin-api tsc 0；依赖闸门 **10 例**（+4 失败边语义）；task 模块 **1563 例**；迁移注册 124（下一 0080）、对称 0 违规；api-i18n 1645 节点；api-reference 218 路径；全量 admin-api 见本轮末尾复核。
