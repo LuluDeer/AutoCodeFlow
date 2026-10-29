@@ -497,15 +497,21 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
 
 ### Paginated Response Format
 
+> 与 \`common/dto/pagination.dto.ts\` 的 \`paginate()\` **逐字段一致**：请求侧是
+> \`page\` / \`pageSize\`（\`limit\` 不存在，\`forbidNonWhitelisted\` 会直接 400），
+> 响应侧同时下发 \`list\` 与 \`items\`（双键为兼容存量消费方，CLI/MCP 读 \`list\`）。
+
 \`\`\`json
 {
   "code": 200,
   "message": "success",
   "data": {
+    "list": [],
     "items": [],
     "total": 100,
     "page": 1,
-    "limit": 20
+    "pageSize": 20,
+    "totalPages": 5
   }
 }
 \`\`\`

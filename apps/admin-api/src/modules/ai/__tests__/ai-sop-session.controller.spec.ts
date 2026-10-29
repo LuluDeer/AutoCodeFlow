@@ -43,6 +43,7 @@ const view = {
 function harness(
   turnImpl: (
     id: string,
+    owner: string,
     input: unknown,
     onDelta?: (t: string) => void,
   ) => Promise<unknown>,
@@ -55,7 +56,7 @@ afterEach(() => jest.clearAllMocks());
 
 describe("turnStream —— SSE 帧序与失败时机", () => {
   it("正常：delta 先到、done 收尾，且响应头是 SSE", async () => {
-    const h = harness(async (_id, _input, onDelta) => {
+    const h = harness(async (_id, _owner, _input, onDelta) => {
       onDelta?.("你");
       onDelta?.("好");
       return view;
@@ -74,7 +75,7 @@ describe("turnStream —— SSE 帧序与失败时机", () => {
 
   it("一个 delta 都没发就失败 → 退回同步路径（provider 可能不支持 stream）", async () => {
     let call = 0;
-    const h = harness(async (_id, _input, onDelta) => {
+    const h = harness(async (_id, _owner, _input, onDelta) => {
       call += 1;
       if (call === 1) throw new Error("stream not supported (400)");
       onDelta?.("");
@@ -86,13 +87,13 @@ describe("turnStream —— SSE 帧序与失败时机", () => {
 
     expect(h.sessions.turn).toHaveBeenCalledTimes(2);
     // 第二次调用不带 onDelta（同步语义）
-    expect((h.sessions.turn as jest.Mock).mock.calls[1][2]).toBeUndefined();
+    expect((h.sessions.turn as jest.Mock).mock.calls[1][3]).toBeUndefined();
     expect(res.frames.map((f) => f.event)).toEqual(["done"]);
     expect(res.frames.some((f) => f.event === "error")).toBe(false);
   });
 
   it("已经发过字再失败 → 只发 error 帧（不重试，避免内容重复）", async () => {
-    const h = harness(async (_id, _input, onDelta) => {
+    const h = harness(async (_id, _owner, _input, onDelta) => {
       onDelta?.("半截");
       throw new Error("upstream reset");
     });

@@ -666,7 +666,13 @@ export class AiService {
       description: "AI provider 注册表（不含密钥）",
     });
 
-    const key = (input.apiKey ?? "").trim();
+    // 「未提供」与「显式清空」必须分开：apiKey 是可选字段，省略它的 PUT
+    // （只想改 model / baseUrl / maxTokens）过去会因 `?? ""` 走进下面的清空
+    // 分支，把真密钥覆盖成空串——HTTP 200、响应正常，而该 provider 上的三个
+    // 用途一起回落「密钥未配置」。DTO 注释与 openapi 承诺「不传 = 保持原值」，
+    // 实现必须同口径。
+    if (input.apiKey === undefined) return;
+    const key = input.apiKey.trim();
     if (key === "***") return; // 保持原值
     if (key === "") {
       // 显式清空：写空串而不是删行（保留 isSecret 元数据，历史可追溯）

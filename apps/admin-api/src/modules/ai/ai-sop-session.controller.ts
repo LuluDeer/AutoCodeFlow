@@ -81,7 +81,7 @@ export class AiSopSessionController {
       mediaId: dto.mediaId,
       hint: dto.hint,
       providerId: dto.providerId,
-      createdBy: `user:${user?.id ?? "unknown"}`,
+      createdBy: this.ownerOf(user),
     });
   }
 
@@ -102,16 +102,28 @@ export class AiSopSessionController {
   @Get(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "读取会话（messages/media/draft/剩余追问次数）" })
-  async detail(@Param("id") id: string) {
-    return this.sessions.get(id);
+  async detail(
+    @Param("id") id: string,
+    @CurrentUser() user?: { id: number | string },
+  ) {
+    // 归属口径与列表一致（listMine 只列本人的会话）：他人会话按不存在回报，
+    // 不能因为拿到 uuid 就读到别人的录屏转写与未发布草稿。
+    return this.sessions.get(id, this.ownerOf(user));
   }
 
   @Post(":id/turns")
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "补充一句话或一段录屏，继续下一轮" })
-  async turn(@Param("id") id: string, @Body() dto: SopSessionTurnDto) {
-    return this.sessions.turn(id, { text: dto.text, mediaId: dto.mediaId });
+  async turn(
+    @Param("id") id: string,
+    @Body() dto: SopSessionTurnDto,
+    @CurrentUser() user?: { id: number | string },
+  ) {
+    return this.sessions.turn(id, this.ownerOf(user), {
+      text: dto.text,
+      mediaId: dto.mediaId,
+    });
   }
 
   /**
@@ -132,7 +144,9 @@ export class AiSopSessionController {
     @Param("id") id: string,
     @Body() dto: SopSessionTurnDto,
     @Res() res: Response,
+    @CurrentUser() user?: { id: number | string },
   ): Promise<void> {
+    const owner = this.ownerOf(user);
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
@@ -155,6 +169,7 @@ export class AiSopSessionController {
     try {
       const view = await this.sessions.turn(
         id,
+        owner,
         { text: dto.text, mediaId: dto.mediaId },
         (text) => {
           sentAnyDelta = true;
@@ -168,7 +183,7 @@ export class AiSopSessionController {
       // 第一轮失败不会在库里留下半截状态（用户消息只在内存数组里）。
       if (!sentAnyDelta) {
         try {
-          const view = await this.sessions.turn(id, {
+          const view = await this.sessions.turn(id, owner, {
             text: dto.text,
             mediaId: dto.mediaId,
           });
@@ -195,7 +210,15 @@ export class AiSopSessionController {
   @ApiOperation({
     summary: "标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用）",
   })
-  async markSaved(@Param("id") id: string) {
-    return this.sessions.markSaved(id);
+  async markSaved(
+    @Param("id") id: string,
+    @CurrentUser() user?: { id: number | string },
+  ) {
+    return this.sessions.markSaved(id, this.ownerOf(user));
+  }
+
+  /** 归属键与 listMine 的建键方式必须逐字一致（`user:<id>`）。 */
+  private ownerOf(user?: { id: number | string }): string {
+    return `user:${user?.id ?? "unknown"}`;
   }
 }

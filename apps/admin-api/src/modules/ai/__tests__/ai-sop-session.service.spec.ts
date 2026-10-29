@@ -52,7 +52,15 @@ function harness(
       Object.assign(row, v);
       return row;
     }),
-    findOne: jest.fn(async () => row),
+    findOne: jest.fn(
+      async (opts?: { where?: { id?: string; createdBy?: string } }) => {
+        const where = opts?.where ?? {};
+        if (where.id && row.id !== where.id) return null;
+        // 归属谓词必须被真实求值：否则「他人会话」用例会假绿
+        if (where.createdBy && row.createdBy !== where.createdBy) return null;
+        return row;
+      },
+    ),
     findAndCount: jest.fn(async () => [
       opts.rows ?? [],
       (opts.rows ?? []).length,
@@ -210,7 +218,7 @@ describe("turn —— 追问与补录", () => {
       replies: ['{"action":"ask","question":"报表发到哪里？"}', draftReply()],
     });
     await h.svc.create({ mediaId: "m1", createdBy: "user:1" });
-    const view = await h.svc.turn("s-1", { text: "发到 OSS 的 reports/ 目录" });
+    const view = await h.svc.turn("s-1", "user:1", { text: "发到 OSS 的 reports/ 目录" });
 
     expect(view.status).toBe("drafted");
     expect(view.messages.map((m) => m.role)).toEqual([
@@ -231,7 +239,7 @@ describe("turn —— 追问与补录", () => {
       replies: ['{"action":"ask","question":"还有吗"}', draftReply()],
     });
     await h.svc.create({ mediaId: "m1", createdBy: "user:1" });
-    const view = await h.svc.turn("s-1", {
+    const view = await h.svc.turn("s-1", "user:1", {
       mediaId: "m2",
       text: "补录了登录弹窗",
     });
@@ -245,7 +253,7 @@ describe("turn —— 追问与补录", () => {
 
   it("既没文字也没视频 → 400 语义（不空跑一轮模型）", async () => {
     const h = harness();
-    await expect(h.svc.turn("s-1", {})).rejects.toThrow(/补充一句话/);
+    await expect(h.svc.turn("s-1", "user:1", {})).rejects.toThrow(/补充一句话/);
     expect(h.ai.chatMultimodal).not.toHaveBeenCalled();
   });
 
@@ -267,7 +275,7 @@ describe("turn —— 追问与补录", () => {
         updatedAt: new Date(),
       },
     });
-    await expect(h.svc.turn("s-1", { mediaId: "m-new" })).rejects.toThrow(
+    await expect(h.svc.turn("s-1", "user:1", { mediaId: "m-new" })).rejects.toThrow(
       /最多/,
     );
   });
@@ -288,20 +296,20 @@ describe("turn —— 追问与补录", () => {
       },
       replies: ['{"action":"ask","question":"再问一句"}'],
     });
-    await expect(h.svc.turn("s-1", { text: "嗯" })).rejects.toThrow(/追问/);
+    await expect(h.svc.turn("s-1", "user:1", { text: "嗯" })).rejects.toThrow(/追问/);
   });
 
   it("会话不存在 → 404 语义", async () => {
     const h = harness();
     h.repo.findOne.mockResolvedValueOnce(null as never);
-    await expect(h.svc.turn("nope", { text: "x" })).rejects.toThrow(/不存在/);
+    await expect(h.svc.turn("nope", "user:1", { text: "x" })).rejects.toThrow(/不存在/);
   });
 });
 
 describe("markSaved", () => {
   it("标记 saved（保存动作由前端走既有 POST /sop，服务端只记状态）", async () => {
     const h = harness();
-    const view = await h.svc.markSaved("s-1");
+    const view = await h.svc.markSaved("s-1", "user:1");
     expect(view.status).toBe("saved");
     expect(h.repo.save).toHaveBeenCalled();
   });
@@ -313,7 +321,7 @@ describe("缓存友好（本轮新增）", () => {
       replies: ['{"action":"ask","question":"还有吗"}', draftReply()],
     });
     await h.svc.create({ mediaId: "m1", createdBy: "user:1" });
-    await h.svc.turn("s-1", { text: "发到 OSS" });
+    await h.svc.turn("s-1", "user:1", { text: "发到 OSS" });
 
     expect(h.ai.signedVideoUrl).toHaveBeenCalledTimes(1);
   });
@@ -345,7 +353,7 @@ describe("缓存友好（本轮新增）", () => {
       replies: [draftReply()],
     });
 
-    const view = await h.svc.turn("s-1", { text: "继续" });
+    const view = await h.svc.turn("s-1", "user:1", { text: "继续" });
     expect(h.ai.signedVideoUrl).toHaveBeenCalledTimes(1);
     // 新链写回会话（下轮继续复用，不会每轮重签）
     const media0 = view.media[0] as unknown as {
@@ -377,9 +385,7 @@ describe("流式轮次", () => {
     const h = harness({ replies: [draftReply()] });
     const chunks: string[] = [];
 
-    const view = await h.svc.turn(
-      "s-1",
-      { text: "发到 OSS 的 reports/ 目录" },
+    const view = await h.svc.turn("s-1", "user:1", { text: "发到 OSS 的 reports/ 目录" },
       (t) => chunks.push(t),
     );
 
@@ -441,7 +447,7 @@ describe("listMine —— 会话切换器", () => {
 describe("并发提交（回合锁）", () => {
   it("已有一轮在跑（claim 命中 0 行）→ 409，且不调用模型", async () => {
     const h = harness({ claimAffected: 0, replies: [draftReply()] });
-    await expect(h.svc.turn("s-1", { text: "再来一次" })).rejects.toThrow(
+    await expect(h.svc.turn("s-1", "user:1", { text: "再来一次" })).rejects.toThrow(
       /还在生成中/,
     );
     expect(h.ai.chatMultimodal).not.toHaveBeenCalled();
@@ -449,7 +455,7 @@ describe("并发提交（回合锁）", () => {
 
   it("正常路径会释放锁（失败也要释放，否则 5 分钟内无法重试）", async () => {
     const h = harness({ replies: [draftReply()] });
-    await h.svc.turn("s-1", { text: "继续" });
+    await h.svc.turn("s-1", "user:1", { text: "继续" });
     // claim + release 各一次 UPDATE
     expect(h.repo.createQueryBuilder).toHaveBeenCalledTimes(2);
   });
@@ -479,7 +485,7 @@ describe("保留期错配（媒体 7 天 / 会话 30 天）", () => {
       replies: [draftReply()],
     });
 
-    const view = await h.svc.turn("s-1", { text: "继续" });
+    const view = await h.svc.turn("s-1", "user:1", { text: "继续" });
     expect(view.status).toBe("drafted");
     // 提示必须进上下文（否则模型不知道自己少看了一段）
     const req = (h.ai.chatMultimodal as jest.Mock).mock.calls[0][0];
@@ -509,7 +515,29 @@ describe("保留期错配（媒体 7 天 / 会话 30 天）", () => {
       missingMedia: ["m1"],
       replies: [draftReply()],
     });
-    await expect(h.svc.turn("s-1", { text: "继续" })).rejects.toThrow(/不存在/);
+    await expect(h.svc.turn("s-1", "user:1", { text: "继续" })).rejects.toThrow(/不存在/);
     expect(h.ai.chatMultimodal).not.toHaveBeenCalled();
+  });
+});
+
+describe("归属隔离（列表口径 = 详情/续轮/保存口径）", () => {
+  it("他人会话：get / turn / markSaved 一律按不存在回报，且不产生任何写入", async () => {
+    const h = harness({ replies: [draftReply()] });
+
+    await expect(h.svc.get("s-1", "user:2")).rejects.toThrow(/不存在/);
+    await expect(
+      h.svc.turn("s-1", "user:2", { text: "把报表发我邮箱" }),
+    ).rejects.toThrow(/不存在/);
+    await expect(h.svc.markSaved("s-1", "user:2")).rejects.toThrow(/不存在/);
+
+    // 反证：越权尝试连一次模型调用/落库都不该发生（否则等于花了钱还改了别人的稿）
+    expect(h.ai.chatMultimodal).not.toHaveBeenCalled();
+    expect(h.repo.save).not.toHaveBeenCalled();
+  });
+
+  it("本人会话仍可读（归属闸不是一刀切）", async () => {
+    const h = harness({ replies: [draftReply()] });
+    const view = await h.svc.get("s-1", "user:1");
+    expect(view.id).toBe("s-1");
   });
 });

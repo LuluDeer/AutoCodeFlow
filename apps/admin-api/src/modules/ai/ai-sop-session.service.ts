@@ -108,7 +108,10 @@ export class AiSopSessionService {
     }>;
     total: number;
   }> {
-    const page = Math.max(1, Math.floor(opts.page ?? 1));
+    // 上界与 PageQueryDto / sop.service 同口径（10000）：没有上界时
+    // `?page=99999999` 会生成 skip≈5e9 的深 OFFSET，并额外跑一次全量
+    // COUNT(*)，足以把连接池钉满。
+    const page = Math.min(10000, Math.max(1, Math.floor(opts.page ?? 1)));
     const pageSize = Math.min(50, Math.max(1, Math.floor(opts.pageSize ?? 20)));
     const [rows, total] = await this.repo.findAndCount({
       where: { createdBy },
@@ -181,8 +184,26 @@ export class AiSopSessionService {
     return row;
   }
 
-  async get(id: string) {
-    return this.view(await this.requireById(id));
+  /**
+   * 归属校验（列表已经按 `createdBy` 隔离，详情/续轮/保存必须同口径）。
+   *
+   * 判据与 `listMine` 完全一致：`createdBy = 'user:<id>'`。不匹配一律按
+   * **不存在**回报（同一个 AI_SOP_SESSION_NOT_FOUND）——返回 403 等于确认
+   * 「这个 uuid 存在但属于别人」，把私有会话的存在性泄漏出去。
+   *
+   * 为什么不留「不传 owner 就跳过」的旁路：那会让新增调用点默认无保护，
+   * 而这正是本方法要修的历史形态（列表有闸、三个端点没有）。
+   */
+  async requireOwned(id: string, owner: string): Promise<AiSopSession> {
+    const row = await this.repo.findOne({ where: { id, createdBy: owner } });
+    if (!row) {
+      throw new AppError(ErrorCode.AI_SOP_SESSION_NOT_FOUND, { id });
+    }
+    return row;
+  }
+
+  async get(id: string, owner: string) {
+    return this.view(await this.requireOwned(id, owner));
   }
 
   /** 建会话并立刻跑第一轮（模型可能追问，也可能直接出稿）。 */
@@ -217,10 +238,11 @@ export class AiSopSessionService {
   /** 追加用户一轮（文字和/或一段新视频），然后跑一轮模型。 */
   async turn(
     id: string,
+    owner: string,
     input: { text?: string; mediaId?: string },
     onDelta?: (text: string) => void,
   ) {
-    const row = await this.requireById(id);
+    const row = await this.requireOwned(id, owner);
     const text = (input.text ?? "").trim();
     if (!text && !input.mediaId) {
       throw new AppError(ErrorCode.AI_SOP_NO_INPUT);
@@ -241,8 +263,8 @@ export class AiSopSessionService {
   }
 
   /** 标记已保存（前端在 POST /sop 成功后调用；不改变模型侧任何事实）。 */
-  async markSaved(id: string) {
-    const row = await this.requireById(id);
+  async markSaved(id: string, owner: string) {
+    const row = await this.requireOwned(id, owner);
     row.status = "saved";
     await this.repo.save(row);
     return this.view(row);

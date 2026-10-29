@@ -108,6 +108,16 @@ describe("saveProvider", () => {
     expect(h.removes).toHaveLength(0);
   });
 
+  it("apiKey 省略（undefined）→ 不触碰密钥行（PUT 只改 model 不得清空凭据）", async () => {
+    const h = await harness();
+    await h.service.saveProvider({ ...validProvider, apiKey: undefined });
+    // 只写注册表，不得出现 apiKey 的 upsert（否则等于把真密钥写成空串）
+    expect(h.upserts.map((u) => u.key)).toEqual(["ai.providers"]);
+    expect(
+      h.upserts.some((u) => u.key === "ai.providers.qwen-vl.apiKey"),
+    ).toBe(false);
+  });
+
   it("非法 id / 非 http baseUrl / 空模型名 → 400 语义的可读错误", async () => {
     const h = await harness();
     await expect(
