@@ -39,7 +39,7 @@
 | Python | `executor-python-test`、`autoflow-sdk-python-test`、`python-packages-test`（autocodeflow-http/notify/db/ai matrix）、`registry-pypi-test`（均 py3.12） |
 | 桌面端 | `desktop-bundle-drift`（ncc 重打 bundle 与入库产物 diff，W-18）；`desktop-linux-bundle`（AppImage+deb，PR/手动）；`desktop-e2e-smoke`（Playwright _electron 8 例，windows，**每次 develop push**） |
 | Windows 基线 | `windows-node-tests`（executor-node/acf-cli/mcp-server matrix）、`windows-admin-web` |
-| E2E 全链 | `e2e-full`（ubuntu，`e2e-full.spec.js` 48 例 Playwright，PG 15432/Redis 16379，`SKIP_DOCKER=1` 走 `scripts/e2e-full.sh`；该脚本圈的是 legacy 三份 spec，另两份共 3 例）；`e2e-full-windows`（windows，PR/手动/schedule，预装 PG 服务 + portable Redis） |
+| E2E 全链 | `e2e-full`（ubuntu，入口口径 **51 例** Playwright = `e2e-full.spec.js` 48 + `e2e-python-executor.spec.js` 1 + `e2e-ui09-mobile.spec.js` 2，PG 15432/Redis 16379，`SKIP_DOCKER=1` 走 `scripts/e2e-full.sh`；该脚本圈的就是这三份 legacy spec，逐文件点数见 [07-testing/e2e-testing.md](../07-testing/e2e-testing.md)）；`e2e-full-windows`（windows，PR/手动/schedule，预装 PG 服务 + portable Redis） |
 | 契约/杂项 | `check-migrations`（时间戳分配表校验 ARCH-29）；`private-registry-contract`（bug18 selftest `--dry-run`）；`docs-site-build`（DOC-09 sync-check + VitePress build 死链 fail）；`api-types-drift`（重导 openapi.json / api-types.ts 并 git diff，见 [README 生成链](../05-interfaces/README.md)） |
 
 ## 发版链（release.yml + release-please.yml）

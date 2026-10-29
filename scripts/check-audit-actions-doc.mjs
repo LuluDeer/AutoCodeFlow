@@ -9,13 +9,43 @@
  * 这类文档的危害不是「不准确」，而是**看起来像权威清单**：读的人会以为「审计只覆盖这几个域」。
  * 所以不修文档，而是把清单改成**由代码生成 + 守卫**：
  *
- *   ① 从 apps/admin-api/src 下所有 .ts（跳过 .spec.ts）里抽 `action: "<域>.<动作>"` 字面量；
+ *   ① 从 apps/admin-api/src 下所有 .ts（跳过 .spec.ts）里抽**两种**审计写入形态的字面量：
+ *      · `action: "<域>.<动作>"`（`log({ action, … })` 的直接写法）；
+ *      · `auditHighRisk("<域>.<动作>", …)`（透传包装的调用点，见下节）；
  *   ② 每个抽到的 action 必须出现在 audit.md 的「谁在写审计」一节里；缺一个就失败并列出缺的；
  *   ③ **反向不校验**：文档可以保留历史动作（迁移/下线后仍值得记录），这不是漂移。
  *
+ * ## 为什么还认 `auditHighRisk(...)`（第二个写入入口，有源码证据）
+ *
+ * 只认 `action: "…"` 时，`executor.service.ts` 那三个高危操作**一个都扫不到**：
+ *
+ *   ```ts
+ *   // apps/admin-api/src/modules/executor/executor.service.ts:866
+ *   private async auditHighRisk(
+ *     action: "executor.rotate_token" | "executor.delete" | "executor.install_cmd_viewed",
+ *     executor: Pick<Executor, "id" | "address" | "appName">,
+ *     reason?: string,
+ *   ): Promise<void> {
+ *     if (!this.audit) return;
+ *     try {
+ *       await this.audit.log({ action, resource: "executor", resourceId: executor.id, … });
+ *   ```
+ *
+ * 它是**审计写入的第二个入口**：`log({ action, … })` 在这里收到的是形参 `action`（不是字面量），
+ * 真正的字面量在三个调用点上——`rotateToken` / `removeById` / `getInstallCmd` 里的
+ * `await this.auditHighRisk("executor.rotate_token", executor, reason)`（6893 / 7035 / 7780 行）。
+ * 于是那三个高危动作一条也扫不到，而两条路都没有信号：`executor.rotate_token` 在表里却扫不到
+ * （当时的表现就是「代码 73 / 表格 74」，差一条），`executor.delete` / `executor.install_cmd_viewed`
+ * 连表格都没进（缺的正好是「删执行器」和「看安装命令」这两个敏感面）。
+ *
+ * 所以并列第二条正则 `PASSTHROUGH_ACTION_RE`，口径与 `ACTION_RE` 一致——**只认双引号字面量**
+ * （`auditHighRisk(action, …)` 这种变量实参照旧不认，见下节「已知盲区」）。
+ * 判据不是「扫到某个函数名就放行」：扫到的东西照样要进文档表格，缺了照样红。
+ *
  * ## 已知盲区（**必须知道**）
  *
- * 判据是「源码里出现 `action: "<域>.<动作>"` 字面量」。所以**动态拼出来的 action 对本守卫隐形**：
+ * 判据是「源码里出现 `action: "<域>.<动作>"` 字面量，或 `auditHighRisk("<域>.<动作>", …)`
+ * 的调用点字面量」。所以**动态拼出来的 action 对本守卫隐形**：
  * 例如 `action: isCreate ? "config.create" : "config.update"` —— 两个动作确实在写，但一条也扫不到，
  * 文档表里也不会有它们，而守卫照样绿。
  *
@@ -43,7 +73,7 @@
  *   · **崩溃 ≠ 红灯**：文档/目录读不到时旧实现是 `readFileSync` 抛栈（`Error: ENOENT`），
  *     与「判据算出来不一致」混在同一个退出通道里。现在结构错误单独成形、单独文案。
  *   · `--root`：模块级 `process.cwd()` 收成参数，`import` 时不实扫、不 `process.exit`。
- *   · `--selftest`：跑真脚本的子进程，12 条用例逐条断言退出码 + 关键文本（含上述假绿的反证）。
+ *   · `--selftest`：跑真脚本的子进程，13 条用例逐条断言退出码 + 关键文本（含上述假绿的反证）。
  *
  * ## T5：头部那两个手写数字也纳入判据（`共 N 个 action / M 个域`）
  *
@@ -62,10 +92,12 @@
  *
  * 注意口径：头部数的是**表格里列出的** action，不是代码里实扫到的个数——两者本来就可能差几条：
  *   · 反向不校验，所以已下线的历史动作可以留在表里（见上文）；
- *   · 扫描盲区里的动作（透传 / 变量拼的 action）在表里、却扫不到（例如本仓 2026-10-29 的
- *     `executor.rotate_token`：它经 `auditHighRisk(action, …)` 透传进 `log()`，形如
- *     `auditHighRisk("executor.rotate_token", …)`，不匹配 `action: "…"`）。
- * 所以「代码里 N 个」不写进文档头部（那是新的手写事实，且本身就是少算的），它只出现在守卫的绿字里；
+ *   · 扫描盲区里的动作（变量拼的 action，如 `auditHighRisk(action, …)` 的形参）在表里、却扫不到。
+ * 2026-10-29 补：`executor.rotate_token` 那条**曾经**属于后者（它经 `auditHighRisk("…", …)`
+ * 透传进 `log()`，不匹配 `action: "…"`），所以绿字比表格少 1（73 vs 74）。现在扫描器认这种
+ * 调用点字面量，两边应当**相等**（76 = 76）；仍不相等时先看是不是又出现了新的透传入口，
+ * 而不是把数字对齐了事。
+ * 所以「代码里 N 个」不写进文档头部（那是新的手写事实），它只出现在守卫的绿字里；
  * 文档头部从表格来，表格由「补文档」这件事维护。
  *
  * 用法：`node scripts/check-audit-actions-doc.mjs [--selftest] [--root <dir>]`
@@ -87,7 +119,23 @@ export const DOC_SECTION = "## 谁在写审计";
 /** action 字面量：`<域>.<动作>`，允许动作段再带点（如 sop.timeout.unclaimed）。 */
 export const ACTION_RE = /action:\s*"([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)"/g;
 /**
- * 头部那句计数：`共 **73** 个 action / **16** 个域`。
+ * 第二个审计写入入口的**调用点**字面量：`this.auditHighRisk("executor.rotate_token", …)`。
+ *
+ * 为什么必须认它：`auditHighRisk` 是 `executor.service.ts` 里对 `audit.log({ action, … })` 的
+ * 透传包装（定义见文件头，`executor.service.ts:866`），`log()` 收到的是形参 `action`，只有调用点才是字面量。
+ * 不认它就永远少算那几个高危动作，且**没有任何症状**（守卫绿、文档也绿）。
+ *
+ * 口径与 `ACTION_RE` 一致：只认双引号字面量（`auditHighRisk(action, …)` / 模板串不认），
+ * 不做函数名白名单之外的放宽——扫到的照样要进表格，缺了照样红。
+ */
+export const PASSTHROUGH_ACTION_RE = /\bauditHighRisk\s*\(\s*"([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)"/g;
+/** 两个口径并列扫（顺序即输出顺序，去重靠 Map）。 */
+export const ACTION_SCANNERS = [
+  { name: "action-literal", re: ACTION_RE },
+  { name: "auditHighRisk-call", re: PASSTHROUGH_ACTION_RE },
+];
+/**
+ * 头部那句计数：`共 **76** 个 action / **16** 个域`。
  * 粗体可选（去粗体是格式调整，不是漂移）；`/` 兼容全角 `／`；其余措辞**不放宽**——
  * 这正是判据要钉的形状，改写它就会红（见文件头 T5）。
  */
@@ -280,9 +328,11 @@ export function check({ root = process.cwd() } = {}) {
   const problems = [];
   const headerProblems = [];
   const found = new Map(); // action -> ["<file>:<line>", …]
+  const viaPassthrough = new Set(); // 其中的 action 至少有一处是 `auditHighRisk("…")` 调用点
   const counts = {
     files: 0,
     actions: 0,
+    passthrough: 0,
     sectionChars: 0,
     root,
     tableActions: 0,
@@ -373,17 +423,22 @@ export function check({ root = process.cwd() } = {}) {
       // 先剥注释：注释里的 `action: "x.y"` 不是「谁在写审计」。
       const lines = stripComments(src).split("\n");
       lines.forEach((line, i) => {
-        if (!line.includes("action:")) return;
-        ACTION_RE.lastIndex = 0;
-        let m;
-        while ((m = ACTION_RE.exec(line)) !== null) {
-          const a = m[1];
-          if (!found.has(a)) found.set(a, []);
-          found.get(a).push(rel + ":" + (i + 1));
+        // 便宜的前置过滤：不含任一入口关键字的行不可能命中任何一条正则。
+        if (!line.includes("action:") && !line.includes("auditHighRisk")) return;
+        for (const { name, re } of ACTION_SCANNERS) {
+          re.lastIndex = 0;
+          let m;
+          while ((m = re.exec(line)) !== null) {
+            const a = m[1];
+            if (!found.has(a)) found.set(a, []);
+            found.get(a).push(rel + ":" + (i + 1));
+            if (name === "auditHighRisk-call") viaPassthrough.add(a);
+          }
         }
       });
     }
     counts.actions = found.size;
+    counts.passthrough = viaPassthrough.size;
     if (found.size < MIN_EXPECTED_ACTIONS) {
       errors.push(
         "只解析出 " + found.size + " 个 action（下界 " + MIN_EXPECTED_ACTIONS +
@@ -526,7 +581,7 @@ function auditDoc({
 }
 
 /**
- * 自检：12 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
+ * 自检：13 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
  *
  * 旧版**没有 selftest**（判据是模块级 IIFE，`import` 就实扫真仓库），所以两处
  * 假绿（整篇文档命中即算 / 注释里的字面量算写入点）都没有被任何东西钉住。
@@ -666,6 +721,36 @@ export function selftest() {
     },
   );
 
+  // ⑬ 2026-10-29：`ACTION_RE` 只认 `action: "…"` 的直接写法，于是 `auditHighRisk("…", …)`
+  // 这种**透传包装的调用点字面量**完全扫不到（实仓 `executor.rotate_token` 就是这样漏的：
+  // 代码 73 / 表格 74，守卫绿）。这条同时钉住两件事：
+  //   · 识别 `auditHighRisk("task.someAction", …)` 的调用点（第 6 行）——不移除字面量就必须红；
+  //   · 识别之后**照样要进表格**（不是「认了函数名就放行」）；
+  //   · 定义处的 `auditHighRisk(action: string, …)` 与 `log({ action, … })` 不产生假命中。
+  subprocess(
+    '⑬ 【反证·透传入口】`auditHighRisk("task.someAction", …)` 调用点字面量必须被扫到 → 文档没记即红',
+    auditTree({
+      extra: {
+        [`${SRC_REL}/modules/task/passthrough.ts`]: [
+          "export class TaskService {",
+          "  private async auditHighRisk(action: string, id: number) {",
+          '    return this.audit.log({ action, resource: "task", resourceId: id });',
+          "  }",
+          "  async doIt(id: number) {",
+          '    await this.auditHighRisk("task.someAction", id);',
+          "  }",
+          "}",
+          "",
+        ].join("\n"),
+      },
+    }),
+    {
+      code: 1,
+      contains: ["审计动作清单漂移：1 个 action", "task.someAction", "passthrough.ts:6"],
+      absent: ["清单一致"],
+    },
+  );
+
   const failed = reportCases(cases, { title: "check-audit-actions-doc selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -731,8 +816,9 @@ if (isMain) {
 
     console.log(
       "✔ 审计动作清单一致：代码里 " + counts.actions + " 个 action 全部在 audit.md 中出现（扫了 " +
-        counts.files + " 个文件）；头部计数与表格一致（" + counts.tableActions + " 个 action / " +
-        counts.tableDomains + " 个域）。",
+        counts.files + " 个文件），其中 " + counts.passthrough +
+        " 个经 auditHighRisk(…) 调用点识别；头部计数与表格一致（" + counts.tableActions +
+        " 个 action / " + counts.tableDomains + " 个域）。",
     );
   }
 }

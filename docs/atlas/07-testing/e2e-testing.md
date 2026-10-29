@@ -23,6 +23,10 @@
 | `e2e-ui09-mobile.spec.js` | 1 | **2** | 1 | skip 在用例体内：API seed 不出执行记录时跳「执行详情」 |
 | **合计（入口口径）** | **9** | **51** | **7** | 别名：`e2e-full.spec.js` 内部 = 顶层 29 例 + 7 组 19 例 |
 
+> 合计行的 **9 / 51** 不是手抄的：`scripts/check-atlas-counts.mjs` 的第 ⑤ 项判据会逐份点数这三份
+> spec 的**行首** `test(` / `test.only(` 声明（排除 `test.skip(` 与注释），与本行不一致即红、
+> 解析不到本行也红。加/删用例后跑 `npm run check:atlas-counts` 即可知道该把 51 改成多少。
+
 默认实跑的用例数（不是声明数）：
 
 - 不启用私服（`E2E_PRIVATE_REGISTRY` 未设）→ 用例 45 条件跳过，**实跑 50 例**；
