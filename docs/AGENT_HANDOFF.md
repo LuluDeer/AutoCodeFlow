@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十七轮 → Agent 只读工具并行 + 守卫跟进，main）**：
+  - **`6ff593ca`（Agent 能力）**：模型一次给出多个 tool_calls 时运行时会逐个串行执行——两个无依赖的只读查询延迟相加。现在**整批都是 read tier** 且墙钟未过期时按 ≤4 路并行（结果保持原始调用顺序回灌）；批里出现 write/dangerous 就退回原严格串行循环——写顺序与「第 2 个需审批 ⇒ 同批其余不执行」的挂起语义不变。参考 langgraph「独立调用并发、有状态/需审批调用串行」的纪律。
+  - **`f1da9398`**：`agent-runtime-check` 的静态断言跟上 OBS3-02 的 label 收敛（`tool: this.metricToolLabel(input.toolName)`），直写模型函数名视为回归。
+  - **验证**：admin-api tsc 0；agent 模块 **339 例**（+2 并行/串行行为）；**全量 admin-api 6705 例全绿**（29s）；agent 运行时/边界/SOP 三个守卫脚本全绿；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结）、守卫审计未做项、migration-symmetry 全量命中；Agent 侧可继续对照 langgraph 看「工具结果截断策略 / 中断恢复语义」是否还有可借鉴项。
+
 - **本轮（2026-10-29 第十六轮 → rt-6 排空循环，main）**：
   - **rt-6 续（`5db72689`）**：上一轮把 outbox 批量 5→20、并发 3→10；本轮把 `scanOnce` 改成**排空循环**——只要本轮取满（可能还有积压）就立即 claim 下一批，不再等下一个 5s tick；上限 `OUTBOX_DRAIN_MAX_BATCHES=3`（最多 60 行/tick，下游挂起最坏 90s），到顶打一条「backlog remains」WARN。旧「整批饱和」提示在排空后已不准确，替换。
   - **验证**：admin-api tsc 0；outbox **43 例**（+2：取满立即再 claim、per-tick 上限）；全量 admin-api 见本轮末尾复核。
