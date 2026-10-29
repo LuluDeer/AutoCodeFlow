@@ -32,7 +32,7 @@
 |---|---|
 | **独立 provider 配置** | Agent 用 `agent.llm.*`（独立 Key/配额），不复用 `ai.*` |
 | **配额分区** | 至少支持不同 API Key；理想是不同账号 |
-| **配额耗尽可观测** | 新增指标 `autoflow_ai_provider_quota_exhausted_total{consumer="task_analysis|agent"}` |
+| **配额耗尽可观测** | 新增指标 `autoflow_ai_provider_quota_exhausted_total{consumer="task_analysis|agent"}`（**提案，尚未实现**）<!-- metric-docs:ignore-unknown 设计评审的提案项：实现前不要写进告警/看板，否则是静默空图 --> |
 | **降级优先级** | 配额紧张时，**保任务失败分析，让 Agent 排队**（任务链路优先级更高） |
 
 > 这一条应写进 [02](02-agent-architecture.md) 的「资源与隔离」章节——原先我只考虑了 CPU/队列隔离，**漏了配额隔离**。

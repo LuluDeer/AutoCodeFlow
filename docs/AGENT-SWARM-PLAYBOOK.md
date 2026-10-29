@@ -175,7 +175,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | P3 | data-4 | tool_calls 的 read 档清理不看会话状态 | **已修 `c023df3d`** |
 | P3 | obs-3 | budget_exceeded 的后端拒绝理由仍提「墙钟不重置」（RT-2 后已过时） | **已修 `ea2509a6`**（前端去入口 + 文案更新在 `c023df3d`） |
 | P3 | obs-4 | 指标标签漂移守卫 `agent-metrics-labels.spec.ts` 不存在 | **已修 `ea2509a6`** |
-| — | doc-guard | 文档指标名 ↔ RUNTIME_COUNTERS 的自动比对守卫 | 未做（避免文档再次漂移，参考 gen-api-reference 模式） |
+| — | doc-guard | 文档指标名 ↔ RUNTIME_COUNTERS / RUNTIME_GAUGES 的自动比对守卫 | **已做** `scripts/check-metric-docs.mjs`（双向：未知指标名逐条报 `文件:行号` + 「注册表有、文档从未提及」走 `scripts/metric-docs-baseline.json` 棘轮只减不增；已接入 `test:guards:repo` 与 CI 的 DOC-GUARD step；15 条 selftest 断言退出码与报错文本） |
 
 > 首轮完整 finding 原文（含逐字代码、触发路径、修法、langgraph 对照）在
 > 该轮会话的 workflow 输出里；本表只保留可执行摘要。

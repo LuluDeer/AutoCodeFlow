@@ -812,6 +812,21 @@ jobs:
         run: |
           node scripts/docs/check-docs.selftest.mjs
           node scripts/docs/check-docs.mjs
+      # DOC-GUARD（2026-10-29，AGENT-SWARM-PLAYBOOK §7 backlog 的 doc-guard 项）：
+      # 设计文档承诺的指标名 ↔ 运行时注册表**双向**比对。两个方向都真实发生过，
+      # 且都不报错、不影响构建，只能靠人读出来：
+      #   ① 文档写了注册表里不存在的指标名 → 抄着配告警/看板的人得到静默空图
+      #      （absent() 与 == 0 语义相反，值班时才发现指标是黑的）；
+      #   ② 注册表加了指标、文档一个字没提 → 对运维等于该指标不存在。
+      # 后者走 scripts/metric-docs-baseline.json 棘轮（只减不增：新增未文档化即红、
+      # 补了文档不删基线也红），故不要求一次性补全所有文档。
+      # 事实源 = runtime-metrics.ts（RUNTIME_COUNTERS / RUNTIME_GAUGES，联合与对象
+      # 互相校验）+ prometheus-metrics.service.ts 的 name 字面量；解析不到即红
+      # （「改结构 → 空集 → 零发现 → 绿」是最坏的假绿）。零依赖 node 脚本，秒级。
+      - name: Metric names in docs vs runtime registry guard (DOC-GUARD)
+        run: |
+          node scripts/check-metric-docs.mjs --selftest
+          node scripts/check-metric-docs.mjs
       # SDK 文档真实性（ROADMAP P0-2）：README 的 SDK 示例曾写成「任务里直接就有 ctx」，
       # 而真实语义是**必须显式引入 SDK**、且 **Glue 脚本不安装 requirements**。
       # 「照抄官方示例跑不通」是最伤首次成功的一类文档漂移，而且没有任何东西会读它。

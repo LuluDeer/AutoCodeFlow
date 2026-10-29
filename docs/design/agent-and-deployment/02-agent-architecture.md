@@ -298,8 +298,8 @@ autoflow_agent_llm_retry_total{result}                    # 重试/续跑观测
 `autoflow_agent_tokens_total` 与 `autoflow_agent_denied_total` 是最该配告警的两个：前者防成本事故，后者是安全信号。
 
 > **残差（2026-10-29 观测审计，如实登记）**：
-> · 本节曾列出 `autoflow_agent_steps_total`、`autoflow_agent_tool_duration_seconds`、
->   `autoflow_agent_active_sessions` 三条**从未实现**的指标，按本表配告警会得到
+> · 本节曾列出 `autoflow_agent_steps_total`、`autoflow_agent_tool_duration_seconds`、 <!-- metric-docs:ignore-unknown 明示「从未实现」的反例；保留名字是为了防止有人再照这份名单配告警 -->
+>   `autoflow_agent_active_sessions` 三条**从未实现**的指标，按本表配告警会得到 <!-- metric-docs:ignore-unknown 同上：该名字在 RUNTIME_COUNTERS 里不存在（残差反例） -->
 >   静默空图；已删除，需要时另行立项。
 > · `autoflow_agent_tokens_total` 的 help/告警一直宣称是「成本归因唯一数据源」，
 >   但 2026-10-29 之前它的增量是「事件次数」而不是令牌量（成本会低 2~3 个

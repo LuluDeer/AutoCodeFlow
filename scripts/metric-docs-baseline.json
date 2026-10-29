@@ -1,0 +1,8 @@
+{
+  "$comment": "DOC-GUARD 基线棘轮：`undocumented` = 注册表里有、docs/**/*.md（排除 docs/archive/**）从未提及的指标名。**只减不增**——补好文档后从这里删掉（或跑 --update 重写）；新增未文档化指标会让 check-metric-docs 直接红。禁止手改把新指标塞进来。",
+  "undocumented": [
+    "autoflow_http_request_duration_ms_bucket",
+    "autoflow_http_request_duration_ms_count",
+    "autoflow_http_request_duration_ms_sum"
+  ]
+}
