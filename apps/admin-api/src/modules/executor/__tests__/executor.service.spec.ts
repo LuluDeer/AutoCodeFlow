@@ -4459,6 +4459,27 @@ describe("ExecutorService (__tests__)", () => {
       const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
       expect(ninetyDaysMs - (Date.now() - arg.getTime())).toBeLessThan(60_000);
     });
+
+    // rt-5（CRON-GUARD）: cron 回调不 await 返回的 Promise —— 分批 DELETE 的
+    // 任一批 reject（statement timeout / 序列化冲突）若上抛，就是
+    // unhandledRejection → main.ts 的 gracefulFatalShutdown → 整实例 exit(1)。
+    // 断言：入口 resolve（不杀进程）+ warn 带 cron 名（不静默吞）。
+    it("rt-5: retention 清理抛错时 cron 入口不 reject，并 warn 出 cron 名", async () => {
+      const warn = jest.spyOn(Logger.prototype, "warn").mockImplementation();
+      const spy = jest
+        .spyOn(service, "cleanupOldTaskExecutions")
+        .mockRejectedValueOnce(new Error("canceling statement due to timeout"));
+      try {
+        await expect(service.cleanupOldRecords()).resolves.toBeUndefined();
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining("executor.cleanupOldRecords"),
+        );
+      } finally {
+        warn.mockRestore();
+        spy.mockRestore();
+      }
+    });
   });
 
   // NETOPT-1②: task_executions retention 分批 DELETE——原单条无界 DELETE
