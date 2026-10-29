@@ -156,18 +156,18 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 剩余（来自首轮 27 条 findings，已去重）：
 
-| 优先级 | id | 一句话 | 主要落点 |
+| 优先级 | id | 一句话 | 状态 / 主要落点 |
 |---|---|---|---|
-| P1 | TOOLS-02 | 审批 grant 后动作不会执行：重放文案叫模型「勿重复提交」，而执行只可能发生在重提时 | `agent.controller.ts` grant 分支 + `agent-runtime.service.ts` 重放文案 + 台账状态 |
-| P1 | TOOLS-03 | ~~deploy_app / create_task_from_template / create_application 契约错位~~ | **已修（`cac3bbcb`）** |
-| P1 | desktop-poll | poll 单轮可下发 3 张指派，host 只消费第 1 张，其余既不执行也不重投（中台永远 in_progress） | `agent-host.ts` 分拣 + `resendAssignmentIds` |
-| P2 | desktop-gap3 | 瞬态续跑用全局 `resendAssignments`，会把等答复的单打回 running 并 ACK 丢弃答复 | `agent-host.ts:741` 改定向 id + `awaiting_reply` 守卫 |
-| P2 | desktop-budget | 续跑把链路抖动记进工作预算：15 次 503 后上报「迭代轮次已达上限」 | `journal.counters` 与迭代闸的分离 |
-| P2 | TOOLS-04 | 工具超时只 reject 不取消：副作用仍在继续，台账记 timeout、模型重试 → 双份副作用 | `withTimeout` + handler AbortSignal + 「结果未知」文案 |
-| P2 | TOOLS-05 | 危险模式扫描对所有字符串生效：多行 SOP 正文/脚本必被 invalid_params 拒 | `agent-boundary.service.ts` 字段级豁免 |
-| P3 | TOOLS-06 | 工具结果未脱敏就落库（类注释承诺参数与结果都脱敏） | `tool-executor.service.ts` recordToolCall 前 sanitize |
-| P3 | RT-4 | 陈旧 running 清扫绕开 `finish()`：不推 ERROR 通知、不计会话指标（需聚合限流） | `sweepStaleRunning` |
-| P3 | data/obs | 其余（指标标签漂移、UI 入口缺失、文档与实现相反）见首轮审计原文 | 各域 |
+| P1 | TOOLS-02 | 审批 grant 后动作不会执行：重放文案叫模型「勿重复提交」 | **已修 `d9660f52`**（按审批单状态渲染 granted/denied/consumed/pending）；确定性自动重放留 P2 |
+| P1 | TOOLS-03 | deploy_app / create_task_from_template / create_application 契约错位 | **已修 `cac3bbcb`** |
+| P1 | desktop-poll | poll 单轮下发 3 张，host 只消费第 1 张，其余既不执行也不重投 | **已修 `d566533c`**（按 id 延后重发） |
+| P2 | desktop-gap3 | 瞬态续跑用全局 resend，会把等答复的单打回 running 并 ACK 丢弃答复 | **已修 `d566533c`**（定向 id + awaiting_reply 窄守卫 + 只回排一次） |
+| P2 | approval-replay | 确定性自动重放已批准调用：runtime 直接执行，执行体按 toolCallId **就地更新**原台账行（避开 GAP-5 唯一索引），结果与 assistant 的 tool_call id 保持配对 | 未修（需设计，见 `d9660f52` 提交信息残差） |
+| P2 | desktop-budget | 续跑把链路抖动记进工作预算：15 次 503 后上报「迭代轮次已达上限」 | 未修（`journal.counters` 与迭代闸分离） |
+| P2 | TOOLS-04 | 工具超时只 reject 不取消：副作用仍在继续，台账记 timeout、模型重试 → 双份副作用 | 未修（AbortSignal + 「结果未知」文案） |
+| P3 | TOOLS-06 | 工具结果未脱敏就落库（类注释承诺参数与结果都脱敏）；注意 32+ hex 规则会误伤 sha，需按 key 保留 digest | 未修 |
+| P3 | desktop-resend | poll 后 agent 被关闭、回报失败的分支仍是全局重发；延后 id 只在内存（崩溃窗口内仍会 stalled） | 未修（`agent-host.ts` 关闭分支 + 恢复锚点设计） |
+| — | data/obs | 第二轮补审（data 完整性/迁移/多实例、obs 指标/UI/文档真实性） | 进行中/见当轮交接 |
 
 > 首轮完整 finding 原文（含逐字代码、触发路径、修法、langgraph 对照）在
 > 该轮会话的 workflow 输出里；本表只保留可执行摘要。

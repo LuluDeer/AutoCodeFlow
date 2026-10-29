@@ -11,6 +11,16 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二轮 → 审计 backlog 清偿：审批文案/自由文本/桌面丢单/清扫观测，main）**：
+  - **审计编排**：首轮 5 路只读审计的 backlog 按优先级清偿；并行启动第二轮补审（data 完整性/迁移/多实例、obs 指标/UI/文档真实性）补首轮输出截断的缺口。
+  - **交付（`d9660f52`）TOOLS-02**：grant 后重放文案按审批单真实状态渲染（granted→「立即用相同参数重新提交」/denied→不得重试/consumed→已执行/pending→等待审批）。根因：执行只在模型重提时发生，而旧文案叫它「请勿重复提交」⇒ 已批准动作永不执行、会话还收敛成 succeeded（假成功）。审批读取口用 `setApprovals` 装配式注入，只在有待审批行时查询，未装配/读失败 fail-open 回落 pending 文案。
+  - **交付（`0ce35425`）TOOLS-05**：`AgentToolSpec.freeTextFields` + 扫描跳过 DANGEROUS_PATTERNS（保留长度/深度闸）。多行 SOP YAML/正文、update_task 脚本 patch、澄清答复此前必被 `invalid_params` 拒；刻意不豁免 `trigger_task.params`（既有安全用例要求扫）。
+  - **交付（`d566533c`）桌面两缺陷**（子代理实现 + 主会话独立复跑）：poll 多张指派只消费第 1 张 → 合法但本轮不跑的收进 deferred，跑完按 id 定向重发；GAP-3 瞬态续跑改按 id（全局 resend 会把 awaiting_reply 的单重建 journal 重跑、随后答复被 ACK 丢弃），入口加窄守卫 + 每 id 只回排一次。验证：desktop tsc 0、agent-host selftest 全绿（354 断言；反证还原旧实现 15 项转红）。
+  - **交付（`1143c0f5`）RT-4**：陈旧 running 清扫逐会话记 `autoflow_agent_sessions_total{kind,status}` + 一条聚合 ERROR 通知（不逐条推送，避免告警风暴）。
+  - **过程事故（如实）**：`git add -A` 把子代理正在写的桌面文件卷进了 TOOLS-05 的提交，已用 `reset --soft` 拆分为两个独立提交（`0ce35425` + `d566533c`），历史干净、工作区无遗留。教训：并发子代理工作时只用显式路径 `git add`，永不用 `-A`。
+  - **验证**：admin-api tsc 0；agent 模块 17 套件 317 例全绿；边界 53 例；四个 agent 守卫脚本待本轮末复跑；desktop agent-host selftest 全绿。
+  - **下一轮入口**：playbook §7 剩余项——approval-replay（确定性重放）、desktop-budget、TOOLS-04/06、desktop-resend 残差，以及第二轮 data/obs 审计结论。
+
 - **本轮（2026-10-29 → 多 Agent 审计-修复循环第 1 轮：5 路并行审计 + 11 条修复，main）**：
   - **编排**：按用户要求「同一时刻至多 5 个 agent」跑了一轮只读审计流水线（runtime / tools / desktop / data / obs 五域，workflow `agent-domain-audit`），产出 **27 条 finding（6×P1 / 10×P2 / 其余 P3）**，每条带文件:行号、逐字代码、触发路径、现有测试覆盖判断、最小修法、langgraph/langchain 对照。方法论文档化为 [`AGENT-SWARM-PLAYBOOK.md`](AGENT-SWARM-PLAYBOOK.md)（域划分、写冲突规则、验证矩阵、反模式、未修 backlog）。
   - **交付 1（`dc3b1ffb`）GAP-3 服务端 + GAP-6**：原半成品把瞬态耗尽会话落 `failed` 再排 delayed job——failed 是终态，job 回来被 `run()` 短路，续跑**永远不会发生**；且「每会话一次」用进程内 Set（多副本 N 次、重启无限）。改为：`claimAutoResume`（迁移 0074 `autoResumeCount` 条件写）→ 先入队 → 挂起 `waiting_input(auto_resume)` → job 走同一条 `run()`。顺带修出 GAP-6：对 `failed` 会话点「恢复」此前是静默 no-op（controller 回 ok:true、job 入队、run() 立刻让位），新增 `reopenForResume` 条件写；`budget_exceeded` 明确拒绝。**守卫保真**：GAP-1 改了 `markRunning` 返回契约但 `scripts/agent-runtime-check.mjs` 替身仍返回 undefined ⇒ `test:agent` 在 HEAD 上整段红，替身按 ADR-027 补齐。
