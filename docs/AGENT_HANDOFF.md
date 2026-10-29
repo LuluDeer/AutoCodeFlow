@@ -11,6 +11,13 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十二轮 → 「守卫的守卫」补牙齿，main）**：
+  - **第 4 轮守卫审计的第一条落地**：`check-guards-wired` 的判据是纯子串匹配，审计用临时假根实证了两种**误绿**——① 把 CI 步骤注释掉（`# node scripts/check-x.mjs`）仍被判为已接线；② workflow 写 `npm run check:all` 时 `includes("npm run check")` 命中，无法区分「间接带跑」与「没接线」。修法：剥 YAML 注释、文件名/npm script 名都加边界匹配；ALLOWLIST 结构化（`report-only` 必须写理由、`covered-elsewhere` 必须有 `mustProve` 且文件存在）、陈旧豁免报错并清掉一条从未被扫到的死豁免；新增 `--selftest`（临时假根复现两种误绿 + 豁免校验，4/4）。
+  - **验证**：`--selftest` 4/4；实扫 44 个 check-*.mjs 全部接线；eslint/prettier 未涉及（纯脚本）。
+  - **残差**：`--selftest` 尚未接进 CI/`test:guards:repo`（`ci.yml`/`package.json` 正被并行流修改，避免同文件夹带，待其落定后一行接线）。
+  - **并行流**：正在重写 `check-conditional-writes` / `check-enum-drift` / `check-user-facing-language`（同一份守卫审计的其它条目），本会话只提交了自己的脚本，未触碰其编辑。
+  - **下轮入口**：接 selftest 进 CI；继续按守卫审计评分表处理条件写/枚举漂移/用户语言三条的判据强度；随后 OBS3-05/06/07、WEB-2、rt-3/rt-4。
+
 - **本轮（2026-10-29 第十一轮 → 指标基数与容量分母治理，main）**：
   - **OBS3-02（P2）**：`autoflow_agent_tool_calls_total{tool}` 直接取模型返回的函数名 → 每次幻觉一个新 series（Prometheus 基数爆炸、渲染内存随会话线性增长）。写入侧把**不在工具注册表里的名字归并为 `unknown`**（仍可观测「有越界调用」，但不建永久 series）；纠正注释里「已知标签组合全部 inc(0)」的失实承诺，并加测试断言基线工具名必须真实存在。
   - **OBS3-08（P3）**：`autoflow_agent_llm_retry_total{result}` 的恢复面三值（approved_replay / resume_queued / resume_enqueue_failed）此前未登记——现补 0 值基线与 help，并用测试钉住 result 全集。
