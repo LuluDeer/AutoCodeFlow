@@ -1152,10 +1152,6 @@ export class TaskService implements OnModuleInit {
     // userId 不带 id/role，此前签名把它排除在属主判定之外。
     user: { id?: number; userId?: number; role?: UserRole } | null | undefined,
   ): Promise<void> {
-    // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
-    // 校验，落同一种证据会让 project-role 端点冒充 ownership。
-    recordOwnershipAssertion("task", "operate");
-
     // A-6: 属主判定/放行兜底按 `id ?? userId` 归一主体 id——ApiKeyUser 只有
     // userId，旧代码 `user?.id` 恒 undefined：owner 档属主分支被跳过、再经
     // 下方放行兜底（!user?.id → return）直接放行，trigger/manage scope 的
@@ -1163,6 +1159,26 @@ export class TaskService implements OnModuleInit {
     // 其 key 属主 userId 参与属主/项目角色判定；JWT 用户（id 恒有值）行为
     // 逐字节不变，user 为 null 的内部调用同样维持既有旁路。
     const principalId = user?.id ?? user?.userId;
+
+    // SEC-R3-5（第 3 轮安全审计）：**主体缺失的内部调用不落证**。
+    //
+    // 旧实现把 `recordOwnershipAssertion("task","operate")` 放在第一行，于是
+    // `assertCanOperate(row, null)`（webhook 触发等机器面）会在**没有做任何
+    // 判定**的情况下留下「已校验」证据。当前 webhook 路由是 scope:"public"
+    // 不需要该证据，所以不可利用；但只要将来有一条 project-role 路由复用
+    // `trigger(...)` 而漏传 user（R-02 已发生过两次真实漏传），A2-B 拦截器
+    // 会读到这条假证据并放行——缺省拒绝的强制点失效。
+    //
+    // 证据的语义应是「判定为允许」（OPA/Cedar 的 decision log 只记结论），
+    // 不是「进过这个函数」。主体缺失属于「无法判定」：保留既有旁路（机器面
+    // 行为零变化）但不留证——真被 project-role 路由漏传时拦截器会拒绝。
+    if (principalId === undefined) return;
+
+    // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
+    // 校验，落同一种证据会让 project-role 端点冒充 ownership。落证在主体缺失
+    // 判定之后、其余分支（含拒绝分支）之前：拒绝分支本就以异常收尾，拦截器
+    // 的 next 不会被调用，证据不会造成放行。
+    recordOwnershipAssertion("task", "operate");
 
     // TASK-SCOPE-01: `owner` 档在既有 viewer 拒绝之上叠加属主判定。
     // 与 assertCanWriteProjectAware 同款姿态：先试属主/项目 editor，不通即拒。
@@ -4956,6 +4972,12 @@ export class TaskService implements OnModuleInit {
       // we now refuse anything above 64 MB to protect admin-api memory).
       const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
       const PAGE_LIMIT = 2000;
+      // rt-2 残差（第 3 轮 runtime-perf，止血轮不改分页逻辑）：页数有帽
+      // （200 页 = 40 万行），但**累计字节数无帽**——单页 64MB × 200 页，
+      // 累计读回/拼接/压缩预算无上界；且 S3 写面 put() 不校验 MAX_LOG_BYTES，
+      // 超过 100MB 的对象会写成一个读取面（getStream 的 cap）拒读的「黑洞
+      // 对象」，只能靠下一次成功写入覆盖。真正的解是 rt-2 结构性另一半
+      // （每页独立对象 + manifest），不在本轮范围。
       const MAX_PAGES = 200; // 400k-line backfill ceiling
       let fromLine = 0;
       let totalPersisted = 0;
