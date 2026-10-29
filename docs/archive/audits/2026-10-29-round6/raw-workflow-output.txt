@@ -1,0 +1,391 @@
+workflow "eight-domain-audit" completed (8 agents).
+Return value:
+{
+  "domains": [
+    {
+      "domain": "apps/admin-api/src — task / executor / application / auth / guards（并发·事务·幂等·鉴权·错误处理·资源泄漏）",
+      "findings": [
+        {
+          "severity": "P2",
+          "title": "任务 webhook 的幂等键在「触发之前」占位：trigger 失败后上游重投被静默吞成 deduplicated，任务永久不执行",
+          "file": "apps/admin-api/src/modules/task/task-webhook.service.ts:323",
+          "why": "触发路径先把去重键 SETNX 占住（task-webhook.service.ts:323 `replayGuard.setIfAbsent(dedupeKey, 10min)`），再执行真正的副作用 `this.taskService.trigger(...)`（:358）。trigger 是**可抛错**的：Redis/BullMQ 不可用 → TASK_ENQUEUE_FAILED（500）、blockStrategy=discard 命中 → TASK_BLOCK_STRATEGY_REJECTED（409）、并发同参触发锁被占 → TASK_TRIGGER_CONCURRENT（409）、DB 抖动亦然。此时幂等键已被消费且**没有任何释放路径**（catch 里只有 warn）。调用方（GitHub/飞书自动化等）按签名投递惯例重投**同一份签名请求** → :327 `!firstDelivery` 命中 → 返回 200 `{deduplicated:true}`，既不执行也不报错。结果：一次签名合法、本应成功的发布/清理/对账触发**永久丢失**，上游收到 200 后也不再重试，日志里只剩一条 “duplicate delivery suppressed”，排查时看起来像“投递成功”。",
+          "fix": "把占位改为「副作用成功后才落终态标记」，或失败即释放：① 首选——先 SETNX 一个 in-flight 值（短 TTL，如 60s），trigger 成功后改写为 done（TTL=10min），失败时 DEL 该键，让重投能真正重试；② 最小改动——在 `try { await this.taskService.trigger(...) } catch (e) { await this.replayGuard.delete(dedupeKey); throw e; }` 中显式释放（需给 RedisLockService 补 delete）。注意别把占位挪到 trigger 之后完全不加锁，否则并发重投会双触发。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "广播执行的槽位冲销在重复回调分支不幂等：同一台执行器的 runningTaskCount 会被重试回调重复减 1",
+          "file": "apps/admin-api/src/modules/task/task.service.ts:5911",
+          "why": "广播执行的 executorAddress 恒为 null，因此 winner 分支的 `releaseExecutorSlot(winnerAddress)` 是 no-op，真正的冲销改在 `affected=0`（已终态）分支按 `cb.executorAddress` 做（task.service.ts:5911，注释自述“N 个被接受执行器各回调一次，恰好 -N”）。但这条路径**没有任何「该地址已为这条执行释放过」的判定**：执行器回调是显式可重试的（同一文件 :5906 的 `persistCallbackLogsIfMissing` 就是为“首次已提交但执行器整批重发”而写的补偿），首次请求落库成功但响应超时/丢失 → 执行器重发同一批 → 落到同一分支 → 同一台执行器被减第二次，第 N 次重发减第 N+1 次。`GREATEST(runningTaskCount - 1, 0)` 只防负数，不防虚低：`selectLeastLoaded`/容量闸看到比实际更小的负载，会继续向该机超发任务（与 QA-05 关心的“超卖压垮执行器”同型）。",
+          "fix": "让释放对 (executionId, executorAddress) 幂等：在 TaskExecution 上加 `slotReleasedAddresses jsonb`（或复用 process 侧 `result.acceptedResults`）并用条件 UPDATE 追加地址，只在“本次首次追加成功”时冲销一次；不便改 schema 时用 Redis `SETNX acf:slot-release:{execId}:{addr}`（60s 以上 TTL，覆盖重试窗）做一次性闸，命中即跳过冲销。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "按地址冲销槽位走标量子查询，ADR-017 同址多行时抛 PG 21000 并打断 COVER_EARLY 触发与回调终态主链",
+          "file": "apps/admin-api/src/modules/task/block-strategy-gate.ts:161",
+          "why": "`releaseExecutorSlotByAddress`（block-strategy-gate.ts:238-252）刻意写成 `UPDATE executors ... WHERE \"id\" = (SELECT \"id\" FROM executors WHERE \"address\" = :addr)`，注释明确“子查询多行 → PG 报错”。而 ADR-017 §5 让 pull 模式**同地址多行并存**（uq_executors_address 收窄为仅 push 行的 partial 索引），此时该语句必然抛 `more than one row returned by a subquery`。两处调用点都没兜住：① block-strategy-gate.ts:161 `await hooks.releaseSlot?.(row.executorAddress)` 无 try/catch，异常穿出 `applyBlockStrategyGate` → task.service.ts:2901 的 trigger 直接抛 500；此时被覆盖的旧执行**已经**被写成 CANCELLED（:140 transitionToTerminal），而 kill 下发（:167）与新执行的落行都没发生 —— 用户看到“覆盖触发失败”，旧进程还在跑、新任务没跑；② task.service.ts:5996 winner 分支的 `releaseExecutorSlot(winnerAddress)` 在 per-item try 内抛错 → 同一 item 后续 `emitTerminalEvent`（:6042）、CORE-04 kill_retry、依赖扇出（:6090）、日志落库全部被跳过，执行器收到 `success:false`（终态其实已落库），FAILED/TIMEOUT 的 `runOnUpstreamFailure` 下游永久不触发（重复回调补偿只重放 SUCCESS 分支）。",
+          "fix": "按行身份冲销：hooks 签名改为 `releaseSlot(address, executorId?)`，COVER_EARLY 侧传 `candidate.executorId ?? null` 并优先走 `releaseExecutorSlotById`；同时把两处调用点（block-strategy-gate.ts:161、task.service.ts:5996/6001/6518）包成 best-effort try/catch + warn —— 槽位账本偏差（可由心跳自愈）绝不该打断触发/终态主链。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "ExecutionWakeService.waiters 在等待超时后不删除 Map 条目，执行 id 键无界增长",
+          "file": "apps/admin-api/src/modules/task/execution-wake.service.ts:145",
+          "why": "`waitWakeup` 在 :132-134 用 `this.waiters.get(executionId) ?? new Set()` 建集合后 `this.waiters.set(executionId, set)`；只有 pub/sub 消息到达（:76 `this.waiters.delete(message)`）或 `onModuleDestroy` 才会删键。超时路径的 `cleanup()`（:145-148）只做 `set.delete(waiter)`，**空的 Set 和 executionId 键永久留在 Map 里**。而超时是常态而非异常：webhook `?wait=1` 默认 60s、上限 300s（WEBHOOK_WAIT_DEFAULT_SECONDS / MAX），任何长于等待窗的任务（分钟级发布/清理/构建）每次等待都必然走超时分支 → 长跑实例上 entries 随“被等待过的执行数”单调增长，永不回收（同文件的 whitelistWarnedAt 在 throttler guard 里都有 1000 条上限，这里连上限都没有）。",
+          "fix": "cleanup 后回收空集合：`set.delete(waiter); if (set.size === 0 && this.waiters.get(executionId) === set) this.waiters.delete(executionId);`（比较引用避免删掉并发新建的集合）；另可加 size 上限兜底防御。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "机器面限流桶键取客户端可控的 x-executor-address：每个请求换一个值即得无限 60/min 桶，限流形同不存在",
+          "file": "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts:136",
+          "why": "命中 EXECUTOR_MACHINE_PATH_PATTERNS 的请求以 `executor:${address}` 作为 throttler 键（:136-139），address 直接取自未认证请求头 `x-executor-address`。匿名调用方只需每次请求换一个头值，就能拿到一个全新的 60/min 桶 → `/executions/callback`、`/executors/register`、`/executors/heartbeat`、`/executions/:id/logs` 的限流**实际不成立**。这正是 F-5 给这些「@Public() 未认证机器面」加限流的原因（给 bcrypt 比对与 55MB JSON 解析设上界）；绕过之后，单个 `/executions/callback` 请求还能携带最多 100 条不同 `executorAddress`，使每次请求触发最多 100 次按地址查库（`validateTokenByAddressAnyRow` / `resolveCredentialExecutorId`），可无上限放大 DB 压力。文件头注只登记了“伪造他人地址可挤占对方计桶”这一 DoS 面，未覆盖“换值即换桶”的绕过面。",
+          "fix": "桶键同时绑定不可伪造的来源：`executor:${addr}:${req.ip}`（或对“地址→IP”未登记/未验证的请求退化为纯 IP 桶），使轮换头值不再产生新桶；对同一 IP 的总量再加一层全局默认档兜底。",
+          "effort": "S"
+        }
+      ]
+    },
+    {
+      "domain": "apps/admin-web（React 18 + antd + vitest）— UX / 可访问性 / 性能 / i18n 审计",
+      "findings": [
+        {
+          "severity": "P2",
+          "title": "SOP 详情抽屉切换条目时残留上一条的版本/指派/澄清，失败时永久串数据",
+          "file": "apps/admin-web/src/pages/SopsPage.tsx:241",
+          "why": "openDetail 只做 setDetailTab/setDetail(sop)，versions/assignments/clarifications/media 四个 state 一律不重置，也没有任何 detailLoading 态（235-263 行）。于是「版本历史」「指派与澄清」两个 Tab 在新请求返回前渲染的是上一个 SOP 的内容，而抽屉标题已是新 SOP；若新 SOP 的 versions()/assignments() 失败（264-266 行 catch 只弹一次 toast），旧数据就永久留在屏幕上。SOP 是合规/交付面（谁被指派、澄清问答、附件），用户会把 A 的执行器指派与澄清误读成 B 的。同仓 AgentSessionsPage.openDetail 明确做了 setSteps([])/setToolCalls([])/setChildren([])/setApprovals([]) 清场，本页是同型缺陷的漏改点。",
+          "fix": "openDetail 进入即 setVersions([]) / setAssignments([]) / setClarifications({}) / setMedia({})（对齐 AgentSessionsPage 的清场纪律），并新增 detailLoading 驱动 Table 的 loading（或 Skeleton）；把 264-266 行的 catch 从「只弹 toast」改成写入 detailError 并在 Tab 内渲染 StateError（带重试），避免失败被当成空数据。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "URL 续跑/切换会话后草稿表单不回填：保存的是空白或上一个会话的内容",
+          "file": "apps/admin-web/src/pages/SopFromVideoPage.tsx:100",
+          "why": "草稿表单只在 applySession（116-135 行）里 form.setFieldsValue。但「?session= 深链恢复」effect（100-107 行）和顶栏 Select 切会话（222-233 行，只改 URL 再走同一 effect）都只 setSession(s)，完全不碰 form。后果有两条：①刷新/换设备续跑时 draft.assumptions、model 都渲染出来了，标题/正文却是空的（saveDraft 被 required 规则拦下，用户以为稿子丢了，「续得上就是真金白银」的承诺只兑现了一半）；②切换会话时表单里留着**上一个会话**的 title/slug/bodyMarkdown，点「保存」会把 A 的正文写成 B 的草稿（slug 还可能撞已有条目）。",
+          "fix": "把回填收敛为唯一事实源：useEffect(() => { form.resetFields(); if (session?.draft) form.setFieldsValue({title, slug, bodyMarkdown, frontMatterYaml}); }, [session?.id, session?.draft])，并删掉 applySession 里的重复回填（避免两条写入路径再次漂移）。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "日志 JSON 行的「点开美化」只有鼠标可达：role=button + tabIndex 却无键盘激活",
+          "file": "apps/admin-web/src/components/LogWindow.tsx:138",
+          "why": "JsonPrettyPopover 的触发节点是 <span role=\"button\" tabIndex={0} aria-label=...>，但 Popover 用默认 click 触发且该 span 没有任何 onKeyDown —— 键盘/读屏用户 Tab 到这一站按 Enter/Space 毫无反应，是个「承诺了动作」的死焦点；同时缺 aria-expanded/aria-haspopup，展开态也不播报。同仓 TaskDependencyGraph.tsx:228 与 dashboard/ExecutorHeatBars.tsx:96-104 都补了 Enter/Space 处理，口径不一致。日志区是排障主界面，JSON 载荷行恰恰是「要看全」的行。",
+          "fix": "加 onKeyDown(e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setOpen(v => !v)))，把 Popover 改为受控 open，并补 aria-expanded={open} / aria-haspopup=\"dialog\"；若嫌自管状态，可把触发面换成无文字的 Button icon（仅在有 JSON 载荷时渲染），语义交回组件库。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "翻译词条后的全角标点写死在 JSX：英文界面渲染出中文冒号/括号",
+          "file": "apps/admin-web/src/pages/UserManagementPage.tsx:547（同型 15 处）",
+          "why": "`{t('users.col.createdAt')}：{...}` —— 字典值是 en 'Created' / zh '创建时间'，全角「：」留在 key 之外，en 下渲染成 \"Created：\"。同型：TaskListPage.tsx:1112、SopsPage.tsx:702、SopsPage.tsx:888、AgentSessionsPage.tsx:457、:461、:918、ApplicationListPage.tsx:738、ProjectsPage.tsx:706、TaskDetailPage.tsx:1025、:1168、ExecutionInfoCard.tsx:281、:288、task-form/TaskFormTriggerSection.tsx:284（全角括号）、audit/index.tsx:509。现有 i18n-source-guard 只校验「t() 用到的 key 在字典里」，抓不到「标点在 key 外」这一类，因此会持续新增。",
+          "fix": "标点归词条或走统一组合键：'users.col.createdAt' 保持无标点，调用处用 t('common.labelColon', { label })（en ':' / zh '：'）；或直接在 en/zh 字典值里带上合适标点并删除 JSX 里的全角字符。另给 i18n-source-guard 增一条正则守卫：`t\\('[^']+'\\)}\\s*[：（）、，]` 命中即失败。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "产物清单把加载失败渲染成「没有产物」：整段静默消失，无错误态无重试",
+          "file": "apps/admin-web/src/components/ArtifactsList.tsx:34",
+          "why": "`const { data: fetched, isLoading: loading } = useExecutionArtifacts(...)` 把 error 直接丢掉；请求失败后 list 为空，第 53-65 行走到 `return null`（注释自陈「空态：整段不渲染」）。在 ExecutionDetailPage 上，「这次执行确实没产出文件」和「清单接口挂了/404」看上去完全一样，且失败连 toast 都没有——排障时用户会按前者下结论，与仓内 error-state-honesty 的口径相反。",
+          "fix": "解构 error/refetch：list 为空且 isError 时渲染一行 StateError（含重试 refetch）；仅 isSuccess 且长度为 0 时才 return null。顺手把空态加载分支的 Spin 换成 UI-08 契约里的骨架形态，保持首屏一致。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "每次重渲染都把整份日志重新 split：搜索框每敲一个字就切一遍 MB 级文本",
+          "file": "apps/admin-web/src/components/ExecutionLogSection.tsx:400",
+          "why": "`const logLineCount = displayLogs ? displayLogs.split('\\n').length : 0;` 写在渲染体内、无条件执行。inputKeyword 是本组件 state（379-384 行防抖只影响 activeKeyword），所以搜索框每敲一个字符都会重渲染并重切整份日志；SSE 流式期间 rAF 每帧 flush（255-268 行）同样重算一次。同文件 rawLogs 已按 PERF-06 用 useMemo 修过 join、LogWindow.tsx:195 也已 useMemo(lines)，唯独这行漏了——长日志（十万行级）纯属白工，正是 PERF-06 想消灭的那类开销。",
+          "fix": "`const logLineCount = useMemo(() => (displayLogs ? displayLogs.split('\\n').length : 0), [displayLogs]);`，或进一步从已缓存的 logSegments 行数派生（单一事实源，省掉第二次全串遍历）。",
+          "effort": "S"
+        }
+      ]
+    },
+    {
+      "domain": "executor（node + python）健壮性与跨端一致性审计（只读）",
+      "findings": [
+        {
+          "severity": "P2",
+          "title": "git prepare 超时只杀直接子进程：孙进程成孤儿并继续写共享 .git_cache（node 侧走整树杀）",
+          "file": "apps/executor-python/routers/execute.py:386-395",
+          "why": "_run_prepare_cmd 用 subprocess.run(wrapped, timeout=…) + start_new_session=True。CPython 的 run() 超时只对直接子进程 send kill()（launcher exec 之后的 git，pid 不变），git 自己 fork 的 git-remote-https / index-pack / ssh 留在同一进程组里无人收尸：它们继续往 .git_cache/<repo>-<hash> 与 work_dir 写字节，下一次 _is_bare_git_repo/fetch 就可能读到半写缓存（400-402 行注释描述的 \"killed clone\" quarantine 场景，这里是同类损坏的第二个来源），每次超时都在宿主累积残留进程与 TCP 连接。关键是不一致：本函数 docstring（380-381 行）声称 \"prepare 超时时 _kill_process_tree 的 killpg 才有意义\"，但本函数从未调用它；同文件的 _run_uv 超时分支（3796 行）已经走 _kill_process_tree，node 侧 run-command.ts:118-122 超时也走 killProcessTree(child)（detached 组杀）。附带缺陷：只翻译了 CalledProcessError，TimeoutExpired 原样上抛，其文本里带的是 launcher 包装后的 argv（sys.executable -I task_launcher.py '{…rlimit json…}' -- git clone …），会经 _run_and_callback 的 except Exception 进 errorMessage/终态回调与用户日志——正是 386-395 行译码想避免的内部细节泄漏。",
+          "fix": "改成 Popen + communicate(timeout)：超时分支先 os.killpg(os.getpgid(proc.pid), SIGKILL)（复用 _kill_process_tree，保留 \"pgid == 执行器 pgid 时退化为单 pid 杀\" 的守卫），再 wait(timeout=5) 收尸；新增 except subprocess.TimeoutExpired → 抛 RuntimeError(f'git {phase} 超时（{timeout}s）')，绝不把 wrapped argv 带进用户文案。补测试：超时后子进程组的孙进程不存活（用 `sh -c 'sleep 100 & wait'` 桩）+ 异常文本不含 task_launcher。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "packageUrl 重定向复检忽略 allow_private_network：内网拓扑在同主机 302 后必然失败（node 同场景成功）",
+          "file": "apps/executor-python/routers/execute.py:2085-2088",
+          "why": "首跳 _assert_safe_package_url（1962-1969）在 allow_private_network=True 时明确放行 RFC1918（ADR 写明内网自建文件服务是文档化拓扑），但**每一跳**重定向的复检直接 `if _host_is_restricted(_hostname)`，完全不看该开关。于是 EXECUTOR_ALLOW_PRIVATE_NETWORK=true 的部署里，http://files.corp/pkg.zip → 301/302 到 https://files.corp/pkg.zip 这种同主机（甚至同 URL 仅换 scheme）的重定向会被判成 \"重定向地址指向受限网络\"，整个 zip 渠道任务失败；node 侧同一跳走 assertSafeHttpUrl（lib/ssrf-guard.ts:224-226 在 config.allowPrivateNetwork===true 时直接 return），同一份包、同一份配置能正常下载。同一函数内首跳允许、第二跳拒绝，自相矛盾；失败文案还会把内部主机名回显进 errorMessage/回调。",
+          "fix": "把 1962-1969 的判定抽成 _assert_host_allowed(host)（allow_private + \"loopback 不随开关放行\" 的既有裁定一起搬进去），首跳与每跳重定向共用同一个函数；补 spec：allow_private=true + 同主机 302 必须成功，allow_private=false + 同主机 302 必须拒绝，两种都断言 loopback 重定向始终拒绝。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "内存上限语义分叉：python RLIMIT_AS 是每进程、node 看门狗是整棵进程树，fork 即可突破 2GB 预算",
+          "file": "apps/executor-python/sandbox.py:147-149",
+          "why": "python 把 task_memory_limit_mb（config.py:476 默认 2048）落成 RLIMIT_AS=(v,v)，由 task_launcher.py:134-140 在 exec 前 setrlimit。rlimit 是**逐进程**的：任务 fork 出 N 个子进程后每个子进程各享 2GB 地址空间，整树可达 N×2GB；而 task_nproc_limit 默认 0（config.py:486，sandbox.py:168-171 因此不设 RLIMIT_NPROC），整树内存实际上不封顶。node 侧同名 TASK_MEMORY_LIMIT_MB 走 startMemoryWatchdog（memory-watchdog.ts:112-130）：累加 /proc 进程树的 RSS，超 2GB 即树杀（execute.ts:3411-3440），预算按树计。而 memory-watchdog.ts:5 与 execute.ts:3404-3406 都写着 \"python 侧 RLIMIT_AS 同量级\"\"达成同一防护目标\"——按树口径并不等价：同一份恶意任务在 node 上会被杀，在 python 上可以把共享宿主 OOM（多任务并发时更明显）。这是防护语义分叉，不是文档小瑕疵。",
+          "fix": "python 侧补一层树级 RSS 看门狗（对 /proc/<pid>/task/<pid>/children 递归求和，超限走 _kill_process_tree），默认值与采样间隔和 node 对齐（2048MB / 2000ms），保留 RLIMIT_AS 作为单进程第一道闸；在补上之前把 memory-watchdog.ts:5 与 execute.ts:3404-3406 的措辞改成 \"每进程地址空间上限（不覆盖整树）\"；另外评估给 task_nproc_limit 一个非 0 默认值（需先确认 uv/wheel build 的子进程数）。",
+          "effort": "M"
+        },
+        {
+          "severity": "P3",
+          "title": "gitRepo 的 SSRF 闸仍只有裸正则：169.254.169.254 / [::1] / 0.0.0.0 / 100.64 全部放行（两端同款）",
+          "file": "apps/executor-python/routers/execute.py:4137-4145",
+          "why": "gitRepo 守卫只匹配 10/8、172.16-31、192.168/16、localhost、127.x 五条字符串正则，不看 IPv6（https://[::1]:8443/x.git、[::ffff:127.0.0.1]）、不看 link-local/云元数据（169.254.0.0/16）、0.0.0.0、CGNAT 100.64/10、十进制/八进制编码 IP，也不做 DNS 复核，这些形态全部进 git clone。同一文件里 packageUrl 用的是严格得多的 _host_is_restricted（1707-1756：ipaddress 判定 + 真实 DNS + `not is_global` 兜底 + ipv4_mapped 归一），node 侧也有 lib/ssrf-guard.ts；唯独 git 这条链仍是旧正则。4132-4136 行把差距登记为 \"已知残差、依赖 admin 前置校验\"，但本文件多处承认执行器接受 admin 之外的直连 /api/execute 与 pull 载荷，不能假设上游一定校验过；node routes/execute.ts:654-663 是同一份弱正则，两端一起漏。",
+          "fix": "4137-4145 换成与 _assert_safe_package_url 同源的判定（scheme 白名单 → _host_is_restricted → loopback 独立裁定 → allow_private_network 语义），错误文案沿用现有两条；对 scp 形态 git@host:path 先抽 host 再判定。node 侧把 execute.ts:654-663 换成 assertSafeHttpUrl(gitRepo)（ssh/scp 单独判主机）。补向量：169.254.169.254、[::1]、0.0.0.0、100.64.0.1、2130706433 各一条，两端断言同判。",
+          "effort": "M"
+        },
+        {
+          "severity": "P3",
+          "title": "zip 驱动器相对条目两端结论不一致：python 判 drive_letter_path，node 放行或判 zip_slip",
+          "file": "apps/executor-python/zip_safety.py:186",
+          "why": "python 的 _WINDOWS_DRIVE_RE = ^[A-Za-z]: 连**驱动器相对**形态（C:evil.txt，冒号后无分隔符）一并拒为 drive_letter_path（356-361）；node 的 resolveEntryTarget 只匹配 ^[A-Za-z]:[\\\\/]（zip-safety.ts:306），C:evil.txt 直接过闸——POSIX 上按字面文件名落盘成功（无 violation），Windows 上再被 path.relative 兜底判成 zip_slip。同一个包于是有三种结论，按 violation 分流/统计/展示的消费方（admin 分类、运维看板、契约测试）被劈开；zip_safety.py:34-37 头注声称 drive_letter_path \"与 node resolveEntryTarget 同名同义\"，实际判定集不同，而模块头注把 NFR-04/AC-03b \"两侧等强度\"当作硬约束。",
+          "fix": "两端统一成 \"盘符即拒\"：node zip-safety.ts:306 放宽为 /^[A-Za-z]:/ 并保留独立 violation 标签（顺序仍是 绝对路径 → 盘符 → `..`，与 312-318 的既有优先级一致）；python 侧无需改动。补一组共享向量（C:evil.txt、C:/x、C:\\\\x、C:）到 zip-safety.spec.ts 与 test_zip_safety.py，断言 violation 与文案逐字相等。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "secret 名闸用 .match + `$`，尾随换行可通过：python 注入一个带 \\n 的 env 名，node 同载荷拒绝并 warn",
+          "file": "apps/executor-python/secret_env.py:71",
+          "why": "Python 的 `$` 会匹配**末尾换行之前**，所以 _SAFE_SECRET_NAME_RE.match(name) 对 \"API_KEY\\n\" 返回匹配：闸门放行、env['API_KEY\\n']='v' 被注入子进程（名字带换行，脚本读 os.environ[\"API_KEY\"] 永远取不到，凭据静默失效），且不会进 skipped 列表、连那条 warn 都没有。node 的 SAFE_SECRET_NAME_RE.test 无 m 标志、`$` 只匹配真末尾（secret-env.ts:40,82），同一载荷进 skipped 分支留痕。这正是本仓库已踩过并修掉的坑：execute.py:1807-1815 的 _is_injectable_param_key 专门写了\"用 fullmatch 而不是 match…否则同一载荷两端判定相反\"，secret 通道漏改，模块头注却声称与 node 侧\"逐条对等、两侧必须给出同一个判断\"。",
+          "fix": "改 _SAFE_SECRET_NAME_RE.fullmatch(name or '')（或把 `$` 换成 \\Z，与 _PARAM_KEY_RE 同法）；补 tests/test_secret_env.py 向量 \"A\\n\"、\"A\\r\"、\"A\\nB\"，断言 is_injectable_secret_name 为 False 且 inject_secret_env 把它们放进 skipped；顺带在头注点明与 protocol.json secrets 段键名规则同源，避免下次再分叉。",
+          "effort": "S"
+        }
+      ]
+    },
+    {
+      "domain": "executor-desktop 主进程（apps/executor-desktop/src/main：agent-host / requeue-ledger / agent-worker 托管 / updater / package-candidate / ipc）",
+      "findings": [
+        {
+          "severity": "P2",
+          "title": "claim ledger 对账把「本轮没返回」一律当终态：被 resend 的 id 或 payload 构造失败的单会被静默抹掉锚点",
+          "file": "apps/executor-desktop/src/main/agent/agent-host.ts:411 (配合 :222、:412 与 agent/requeue-ledger.ts:137)",
+          "why": "tick 在 poll 成功后立刻 `this.resendAssignmentIds = []`（:222），随后 reconcileRequeueLedger 以「本轮响应是否被 3 张上限截断」为唯一判据决定是否 retain（:411-412）。≤2 张的响应一律 `ledger.retain(ids)`，把本轮未返回的 id 从 requeue.json 删掉。但中台的 pollPending 对 `resendAssignments=[id]` 是**一次性**的：`requested = firstPull || resendAll || resendIds.includes(a.id)`，只有 resendAll 分支才会把未投递的旧单重新排队（apps/admin-api/src/modules/sop/sop.service.ts:645-676）。因此只要该轮没投出去（assignmentPayload 返回 null、CAS claim.affected!==1、或该单此刻被别的实例领走），中台下一轮 requested 恒 false，而执行器侧内存队列已清、磁盘锚点又被 retain 删掉。被延后的单根本没有 journal（processAssignment 才建），recoverFromJournal 也救不回——正是本模块头注声称要堵的「已标 in_progress 却没人重领、空转到 10min 判 stalled」洞。",
+          "fix": "把「本轮请求过重发但没返回的 id」与「本来就该消失的 id」区分开：poll 前先快照 requestedIds，reconcile 时对 requestedIds 中未返回的 id 不做 retain 删除，而是重新 queueResendAssignment（并有次数上限，超限才 warn 丢弃）；或让中台 poll 响应显式带 `truncated`/`notDelivered: string[]`，执行器只对确认终态的 id 撤锚。补 selftest：resend 2 张只返回 1 张的响应不得清账本。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "updater 的 cancelRequested / installRequested 是只由 error 事件复位的模块级标志，任一路径漏事件就永久粘住并吞掉后续真实错误",
+          "file": "apps/executor-desktop/src/main/updater.ts:425 (声明 :290 / 置位 :527、:552 / downloadUpdate :492-511)",
+          "why": "cancelRequested 只在 'error' 处理器里复位（:426）。而 cancelDownload() 只检查 downloading && token 未 cancelled（:524）——竞态路径：安装包已下完、update-downloaded 已到达但 downloadUpdate 的 finally 还没跑（downloading 仍 true、token 未 cancelled），此时点「取消下载」→ cancelRequested=true、token.cancel() 对已完成的下载是 no-op、**不会**再发 error 事件 → 标志永久为 true。之后任何一次真实错误（下次下载失败/检查失败）都走进 :425 分支：不发 updater:error，反而把过期的 lastAvailableBroadcast 重播成「有新版本」（渲染层从失败态回到 available，用户永远看不到下载失败原因）。installRequested 同理：quitAndInstall 成功但进程未退出时（:552）不会被任何路径复位，后续后台检查的离线/404 会被当成「安装失败」显性广播。同类缺陷还有 lastAvailableBroadcast 永不清空（:286）。",
+          "fix": "在 downloadUpdate 入口和 finally 里无条件 `cancelRequested = false`（:499 / :507），并在 installRequested 消费点之外增加超时复位（例如 quitAndInstall 后 N 分钟或收到 update-not-available/新检查发起时清）；error 处理器只在 `cancelRequested && err.name === 'CancellationError'` 时按取消归因，其余情况按失败广播。lastAvailableBroadcast 在 downloaded/install 成功后置空。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "AgentWorkerHandle.withdraw() 没有超时，卡住会把 agentHostReady 与 agentTickPromise 永久钉死——托管静默变砖",
+          "file": "apps/executor-desktop/src/main/agent-worker-process.ts:221 (配合 index.ts:392、:456-463 与 src/agent-worker/main.ts 的 withdraw 分支)",
+          "why": "withdraw() 返回一个只有 'withdraw-done' 或 worker exit 才会落定的 Promise，**没有看门狗**（对比 shutdownWhenIdle 有 SHUTDOWN_IDLE_KILL_AFTER_MS 兜底，:234-240；tick 有 armTickWatchdog，:271）。而 worker 侧 `case 'withdraw': if (!host) return;`——init 行未能建出 host（畸形/被丢弃）时 worker 活着但永不应答，withdraw 永久悬挂。index.ts 把 withdraw 串进全局链：`agentHostReady = agentHostReady.then(() => host.disableAndStopAfterWork())`（:392），于是 agentHostReady 永不 settle；下一次 tick 赋值 `agentTickPromise = ready.then(...)`（:456）后其 finally 永不执行，而 :454 的守卫 `if (!agentTimer || !host || agentTickPromise) return;` 会跳过此后**所有** tick。表现：getAgentHostStatus 仍报 enabled/polling=true，日志只有一条 withdraw 警告，实际再不收单——只能重启应用。",
+          "fix": "给 withdraw 加与能力租约同量级的超时（35s）并 resolve-then-shutdownWhenIdle；worker 侧 `case 'withdraw'` 在 !host 时也回 'withdraw-done'；queueAgentWithdrawal 外层包一层 Promise.race 超时，保证 agentHostReady 恒能推进。selftest：worker 不响应 withdraw 时下一次 tick 仍能发出。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "候选包 manifest.yaml 的 entrypoint 直接拼接 LLM 可控文件名：换行即可向平台清单注入 YAML 键（绕过「LLM 不可覆盖 manifest」的闸）",
+          "file": "apps/executor-desktop/src/main/agent/package-candidate.ts:71 (rel 来源 :54/:66；写入面 workspace.ts:206)",
+          "why": "本模块刻意把工作区里 LLM 自建的 manifest.yaml 排除掉（:61/:63），理由是「平台 manifest 是唯一交付契约，双成员会让 LLM 顶掉入口约束」。但 entrypoint 的值来自 LLM 的 entry spec：`rel = input.entry.path.replace(/\\\\/g,'/')`，唯一的约束是 `files.includes(rel)`（:66），而 files 是 readdir 结果——Linux 文件名可含 \\n，LLM 经 writeWorkspaceFile 就能造出 `a.py\\nruntime: node` 这样的文件名并把它设为入口。拼进清单后 YAML 变成 entrypoint 之后追加了一行重复的 `runtime:`（js-yaml 对重复键后写者胜，executor-node/src/manifest.ts:47 的 mergeTaskWithManifest 以 manifest 兜底 task 缺字段），于是模型可以改写平台写入的 runtime/requirements；zip 成员名校验（zip-writer.ts:59-63）也只挡 `\\\\`、前导 `/` 与 `..`，不挡控制字符。",
+          "fix": "打包前对 entrypoint 与成员名做字符集校验（拒绝 `[\\x00-\\x1f\\x7f]` 与控制字符、拒绝首尾空白），并把清单里的 entrypoint/requirements 用 YAML 安全的引号形式输出（或用 js-yaml/JSON 序列化后拼装），而不是裸字符串插值。补 selftest：入口名含 \\n 时打包必须失败而不是产出可解析的注入清单。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "config:import 绕过了 config:save 的 workDir 落盘校验（P3-5 的闸只装在两处写入面之一）",
+          "file": "apps/executor-desktop/src/main/ipc-handlers.ts:829 (对照 config:save 的 :637-643)",
+          "why": "config:save 在 workDir 变化时先过 validateWorkDirForSave（绝对路径 + 存在/可写，不合格整次拒绝、任何键都不落盘）。config:import 走同一条 sanitize → save 链路，却只做了 parseImportedConfig + sanitizeConfigInput，**没有** workDir 校验：导入一个 workDir 指向不存在的盘/只读目录的导出文件就能落盘成功。之后 executorProcess 启动失败、agent-host 在坏目录上写 agent-journal/requeue.json（fail-open 只 warn），用户看到的是「导入成功」但执行器起不来。本仓库对这类「加了闸但部分调用点没跟上」的形态有明确教训（EXP-03 / F-25），这里正是同一形态。",
+          "fix": "把 workDir 校验抽成 finalizeConfigSave 内的共用步骤（对 safeCfg 与 configBefore 做 diff 后校验），config:save / config:import / 向导三条写入面统一走它；或让 parseImportedConfig 复用 validateWorkDirForSave 的判定再把错误回流 ioMsg。补 selftest：导入含不可写 workDir 的配置必须被拒且不落盘。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "log:read / apps:log:read 的增量读按「整段新增字节」一次性 allocUnsafe，没有单次读取窗口上限",
+          "file": "apps/executor-desktop/src/main/ipc-handlers.ts:396 (length 计算 :389)",
+          "why": "readLogIncremental 的增量分支 `const length = size - cursor.offset; Buffer.allocUnsafe(length)` 把上次轮询以来的**全部**新增字节一次性读进主进程堆。同一文件的首读与游标失效分支都改成了 scanLogTail 的 256KB 尾窗（log-tail-scan.ts），logs:getToday/diagnostics 也走 readLastLines 的窗口读——唯独这条每 1.5–2s 被渲染层轮询的路径没有上限。一个刷屏的任务（或落在 workDir/apps 下被轮询的 app.log）在两轮轮询之间写出数百 MB，就会在 Electron 主进程里直接分配同量内存：界面卡死甚至 OOM，而 IPC 侧没有任何截断标志可让渲染层降级。",
+          "fix": "给单次读取加窗口上限（例如 1MB）：length = min(size - cursor.offset, LOG_READ_WINDOW_BYTES)，读到上限即返回并把截断标记随结果带给渲染层（下一次轮询继续追平）；同时把 allocUnsafe 换成按实际 read 长度切片的 Buffer.alloc 路径，避免短读时把未初始化内存解码进日志文本。",
+          "effort": "S"
+        }
+      ]
+    },
+    {
+      "domain": "数据库/查询层（apps/admin-api：migrations、entities、modules/*/*.service.ts 查询）",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "execution_log_lines 按 createdAt 分区，但所有读路径都只按 executionId 过滤 → 无分区裁剪，日志读成本 × 分区数",
+          "file": "apps/admin-api/src/modules/task/task.service.ts:4255",
+          "why": "迁移 1789900000002-PartitionExecutionLogLines 把 execution_log_lines 改为 PARTITION BY RANGE(\"createdAt\")，分区索引也是每分区一份（同迁移 138-146 行在父表上建 IDX_execution_log_lines_execId_lineNumber / execId_level_lineNumber / createdAt）。但两个热读路径的 WHERE 里**完全没有分区键**：SSE 流每 1000ms 一拍（4255-4256，MAX 并发 SSE_MAX_GLOBAL_DEFAULT=64）与 REST /logs（4001-4005）都是 `WHERE executionId = $1 AND lineNumber >= $2`，PG 无法裁剪，只能对全部日分区各做一次本地索引扫描。默认 LOG_RETENTION_DAYS=30（log-retention-cleanup.service.ts:21）⇒ 常量级 31 个分区，即每次日志读取被放大 31 倍；64 条并发流 ≈ 2000 次/秒的分区索引探测，且保留期越长放大越狠。REST 侧还叠加 4021-4022 的 `logLineRepo.count({where:{executionId}})`——这是不带任何时间界的全分区 count，每翻一页都重算一次。分区表本应把成本收到单分区，现在把旧的一棵索引拆成了 31 棵而查询仍走全覆盖。",
+          "fix": "在两条读路径上补分区键下界，用静态裁剪：把已经取到的 exec（flush 里已 select 过 id/status/startTime）的 createdAt 作为 `l.createdAt >= :execCreatedAt`（可再留 1 天余量）加进 WHERE，并对 REST 的 count 复用同一谓词；`lineNumber` 条件保留即可（同一执行的行不会早于其 createdAt）。同时把 4021-4022 的精确 totalLines 移出轮询路径：SSE 不需要它，REST 可改为在 task_executions 上加 logLineCount 计数列（storeLogLines/appendLogChunk 写入时递增）或对同一 execution 缓存一次。验收：EXPLAIN 输出里 Append 只剩 1 个分区、REST 单次请求的分区命中数从 31 降到 1。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "GET /tasks/executions/all 的 taskName / executorAddress 过滤器是 %…% ILIKE，全库无 pg_trgm，等于对 90 天执行历史做全表扫 + JOIN + Sort + 重复 COUNT",
+          "file": "apps/admin-api/src/modules/task/task.service.ts:3538",
+          "why": "applyAllExecutionsFilters 里 taskName 走 `(e.taskName ILIKE '%x%' OR t.name ILIKE '%x%')` 并 leftJoin tasks，executorAddress 走 `e.executorAddress ILIKE '%x%'`（3544）。前导通配符使 task_executions 上已有的 16 个索引（idx_task_executions_executor_address_status、taskId/createdAt DESC 等）全部不可用；仓库里也没有任何 `CREATE EXTENSION pg_trgm` / gin_trgm_ops 索引（migrations 全量检索为空）。task_executions 保留 90 天（executor.service.ts:6308 TASK_EXECUTION_RETENTION_DAYS 缺省 90），繁忙实例是百万行级：一次带过滤器或带第 2 页的请求 = 全表（或全索引）扫描 + join tasks + Sort(createdAt DESC, id DESC) top-N，而 getAllExecutions 还要再跑一次同谓词的 getCount()（getAllExecutionsByKeyset 头注明确 total 是独立 COUNT）——同样的全表扫做两遍。这是运维排查页最常用的入口，成本随历史线性增长且没有上限。",
+          "fix": "两选一，按 UX 取舍：(a) 保子串搜索——`CREATE EXTENSION IF NOT EXISTS pg_trgm` 后并发建 `CREATE INDEX CONCURRENTLY ... ON task_executions USING GIN (\"taskName\" gin_trgm_ops)` 与 executorAddress 同款（migration 走 transaction=false + 会话级 statement_timeout 豁免，与 1790000000075 同纪律），tasks.name 侧同样加 trgm；并对 task_executions 加 partial 或 BRIN 辅助以稳 COUNT。(b) 收窄为前缀匹配——把 `ILIKE '%x%'` 改成 `ILIKE 'x%'` 并给两列建 `text_pattern_ops` btree，索引可直接服务。另外给带 taskName/executorAddress 的请求跳过精确 total（返回 total=null 或估算），避免同一谓词扫两遍。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "sop_clarifications 无 resolution 索引，5 分钟一次的兜底扫描在永久增长的澄清表上做全表扫 + Sort",
+          "file": "apps/admin-api/src/modules/sop/sop.service.ts:1578",
+          "why": "sweepStuckClarifications 的候选集是 `find({ where: { resolution: IsNull() }, order: { createdAt: 'ASC' }, take: 100 })`。sop_clarifications 只有三个索引/约束（1790000000041-AddSopTables.ts:142-148：PK、idx_sop_clarifications_assignmentId_round、uq_sop_clarifications_clientId），**没有任何以 resolution 或 createdAt 为前导的索引**，因此该查询是 seq scan + Sort + LIMIT。该表没有任何 retention / 清理任务（全仓检索无 sop_clarifications 的 delete），已答复的行永久留在表里，只有未答复的行是候选——扫描成本与「历史澄清总量」成正比而与「待办量」无关，与 1790000000076 修 event_outbox 时点出的死信堆积是同一形态。触发点每 5 分钟一次（@Cron('0 */5 * * * *') 的 sweepAssignmentTimeouts 末尾调用），且这一轮还叠加下面的 N+1。",
+          "fix": "加一条 partial index 精确对齐谓词：`CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_sop_clarifications_pending\" ON \"sop_clarifications\" (\"createdAt\") WHERE \"resolution\" IS NULL`（migration 用 transaction=false + 会话级 SET statement_timeout=0 + finally RESET，down 用 DROP INDEX CONCURRENTLY IF EXISTS，与 1790000000076 完全同款）；实体上补显式命名的 @Index(...)（check-index-drift 只核对显式命名声明，未命名声明是死声明）。索引只装待办行，扫描成本与待办量成正比。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "sweepStuckClarifications 是 2×N 串行点查（N≤100）：逐行 agent_sessions.findOne + 逐行 sop_assignments.findOne，同一 tick 最多 200 次串行往返",
+          "file": "apps/admin-api/src/modules/sop/sop.service.ts:1595",
+          "why": "第一段循环对每条 pending 澄清 `await this.reviewSessionStatus(c.reviewSessionId)`（1595 → 1664 的 `agentSessions.requireById`，实现是 findOne），是**串行 await**，100 条就是 100 次串行往返；第二段对每条 stuck 行再 `await this.assignments.findOne({ where: { id: row.assignmentId } })`（1602），再 100 次。仓库里同类 N+1 已经有既定收敛模式并反复修过（task.service `processCallbacks` 的 F-11 注释「100 条 → 1 条查询」、NETOPT-4② 的 prevLastTriggerTime 批读、outbox-dispatcher O-8 的订阅快照复用），这里没有跟上：同一批 pending 行的 reviewSessionId 与 assignmentId 都可一次 In() 取回建 Map。成本不只是往返次数——它是 5 分钟一次的 cron，与第 3 条的 seq scan 叠加在同一条扫描路径上，且串行 await 让整轮墙钟时间随积压线性拉长（100 行 × 2 次 RTT）。",
+          "fix": "循环外批读建 Map，循环内只查 Map：(1) 收集 `[...new Set(pending.map(c => c.reviewSessionId).filter(Boolean))]`，一次 `agentSessions.find({ where: { id: In(ids) }, select: { id: true, status: true } })`（reviewSessionStatus 保留给单点调用，另抽一个 batch 版本，语义「读不到按 null」不变）；(2) 收集 stuck 行的 assignmentId，一次 `assignments.find({ where: { id: In(ids) } })` 建 Map，替换 1602 的 findOne——注意 R33-A2 的条件 UPDATE 与 blocked→in_progress 的前置状态断言保持原样（它们已用 affected/条件谓词兜住并发，不是快照依赖）。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "包引用计数按 jsonb `snapshot ->> 'packageUrl'` 与未索引的 applications.packageUrl 做全表扫（application_versions 无保留期）",
+          "file": "apps/admin-api/src/modules/application/application.service.ts:522",
+          "why": "isPackageUrlReferencedElsewhere 判定「这个包文件还有人引用吗」时用两条无索引谓词：`applications.packageUrl = :url`（507，applications 只有 idx_applications_status / idx_applications_name，packageUrl 列由 1789000000001:114 加入时未建索引）和 `application_versions.snapshot ->> 'packageUrl' = :url`（522，走的是 jsonb 表达式，application_versions 的四个索引全是 applicationId/createdAt/sourceDeploymentId 前导，无任何表达式或 GIN 索引，也永不会命中）。它在 864 的清理循环里**逐个候选 URL** 调用（每次两条全表扫），另外 426 的 unlinkSupersededPackage 对同应用版本再扫一遍。application_versions 每次部署/上传都新增一行且没有 retention（全仓无 delete），所以「一次上传/清理」的 DB 成本随部署历史线性增长——典型的 jsonb 表达式谓词退化 + 索引形态与谓词不匹配。",
+          "fix": "把被查询的字段从 jsonb 里提出来或建表达式索引：(a) 首选——给 application_versions 加真实列 `packageUrl varchar`（写版本快照时同步落列，回填一条 UPDATE ... SET \"packageUrl\" = \"snapshot\"->>'packageUrl'，按 id 游标分批），然后建 `CREATE INDEX CONCURRENTLY idx_application_versions_packageUrl`；同时给 applications.packageUrl 建 btree。(b) 最小改动——建表达式索引 `CREATE INDEX CONCURRENTLY \"idx_application_versions_package_url\" ON \"application_versions\" ((\"snapshot\" ->> 'packageUrl'))`，用 CONCURRENTLY + transaction=false（同 1790000000075/0076 纪律），实体侧加显式命名 @Index 以免又被 check-index-drift 当成未命名死声明。顺带把 864 的循环改成一次 `WHERE packageUrl = ANY($1)` 批量查，把 N 次全表扫压成 1 次。",
+          "effort": "M"
+        },
+        {
+          "severity": "P3",
+          "title": "改名别名重写用 `dependencies @> {...}`，命中不了 0053 建的表达式 GIN 索引，且 getMany 无界取整行",
+          "file": "apps/admin-api/src/modules/task/task.service.ts:1800",
+          "why": "renameDependencyAlias 用 `task.dependencies @> :probe`（probe = {旧显示名: 任务id}）找依赖方，注释还写着「jsonb 无索引」。但仓库唯一的 dependencies 索引是 1790000000053 建的 `idx_tasks_dependencies_values_gin`，其表达式是 `jsonb_path_query_array(\"dependencies\", '$.keyvalue().value')`——索引键是**值数组**，而这里的谓词左操作数是 `dependencies` 列本身（键+值的整对象包含），两者不对齐，索引无法服务，只能 seq scan tasks。同一查询还 `.getMany()` 不带 take、不带 select，把整行物化（params/requirements/runbook/glueSource 等 jsonb/text 重列）只为改写一个别名字段，tasks 行数随业务线性增长。触发点是任务改名/还原（2541、6366），属于管理面操作但会随规模变慢，且与 0053 那套「表达式与谓词逐字对齐」的既有纪律自相矛盾，后来者容易照着行 1795-1800 的注释再抄一遍「jsonb 无索引」。",
+          "fix": "改成与 0053 索引对齐的谓词并只取必要列：`jsonb_typeof(t.dependencies) = 'object' AND jsonb_path_query_array(t.dependencies, '$.keyvalue().value') @> CAST(:probe AS jsonb)`（probe = JSON.stringify([taskId])），这样走 idx_tasks_dependencies_values_gin；values 维度的候选集是「所有依赖该 id 的任务」（比原谓词略宽），但函数体里已有 `deps[oldName] !== taskId → continue` 的精确定位，语义不变（同 4530-4557 那处已经这么写过，可复用其注释与写法）。同时补 `.select(['task.id','task.dependencies'])` 消除整行物化。若想保留原谓词形态，则另建 `CREATE INDEX CONCURRENTLY ... USING GIN (\"dependencies\" jsonb_path_ops)`，并同步修正 1795-1796 的过时注释。",
+          "effort": "S"
+        }
+      ]
+    },
+    {
+      "domain": "可观测性审计（只读）：apps/admin-api/src/modules/metrics + common/metrics + config/monitoring/alerts.yml + docs/observability + SSE 控制器",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "cronSlotsMissed 从未导出到 Prometheus 且无告警——10-28 丢点事故的唯一直接信号仍是 JSON-only",
+          "file": "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts:421",
+          "why": "scheduler-metrics.service.ts:55/197 已采集 cronSlotsMissed（scheduler.service.ts:897、2410 在 node-cron execution:missed 时 +1，注释明写「非 0 即说明丢了一个落点」），但 doRender（本文件 421-556）只渲染 ticks/triggers/skipped/依赖扇出/回调/运行时/触发延迟/队列/池/磁盘/fleet，既没有为 cronSlotsMissed 声明 Counter，misfiresSkippedDependencies 也缺席；alerts.yml 31 条规则无一条引用它，README 附录 A 的 series 清单也没有它。事故补丁计划里写得很清楚（docs/archive/incidents/incident-2026-10-28-cron-12h-miss-patch-plan.md:838「cronSlotsMissed 是单调计数，适合做 5 分钟内增量 > 0 即告警」），落地时只做了进程内计数，漏了出口。结果：同类「跨整分冻结丢拍」再发生时，值班人依旧只能手工 poll GET /api/metrics/scheduler 才能看见，Prometheus/Alertmanager 全程静默——正是这次事故要消灭的盲区。",
+          "fix": "在 PrometheusMetricsService 声明 `autoflow_scheduler_cron_slots_missed_total`（Counter，无标签），doRender 里 reset()+inc(s.cronSlotsMissed)，并顺手把 misfiresSkippedDependencies 也导出（`autoflow_scheduler_misfires_skipped_dependencies_total`）；alerts.yml 增 `AUTOFLOW_SCHEDULER_SLOT_MISSED: increase(autoflow_scheduler_cron_slots_missed_total[10m]) > 0`（critical，for: 1m），annotations 里写明「丢了一个计划落点」的排查顺序，runbook_url 指向 README §3.6 新锚点；同步 README 附录 A 与 grafana row（现有 row 5 调度健康行）。scripts/check-alerts-rules.mjs 会自动校验指标名与锚点存在，勿绕过。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "汇总流槽位（/metrics/stream + /executions/stream）拒绝不计数、limit 延迟发布、且无任何告警——32 槽打满时监控面全静默",
+          "file": "apps/admin-api/src/modules/metrics/metrics-stream-slot.service.ts:49",
+          "why": "该服务同时守两条 SSE 端点（默认 32 槽），但超限分支只 throw AppError（49-51）：既不 recordRuntime 也不写 limit gauge。对比日志流那条链路——task.service.ts:4087/4094 在两级超限处都 recordRuntime(\"autoflow_sse_streams_rejected_total\")，且 onModuleInit:4058-4059 启动即发布 active=0 + limit（OBS3-03 专门修过「只在占用成功时写 limit 导致分母缺项」）。后果三条：①autoflow_sse_streams_rejected_total 永远不含这两条流被拒的次数，AUTOFLOW_SSE_STREAMS_REJECTED 对 2/3 的 SSE 端点是盲的；②autoflow_metrics_streams_limit 只有过一次成功占用才有值（README/docs/api-reference.md:1006 承诺的 series 在无流时渲染成 0，占用率分母随之漂移）；③alerts.yml 与 grafana-dashboard.json 对 autoflow_metrics_streams_* 零引用——Dashboard 用户侧拿到 503、监控侧什么都没有。",
+          "fix": "① 超限分支加 recordRuntime：建议新增 `autoflow_metrics_streams_rejected_total`（RUNTIME_COUNTERS 登记 + labelValueSets=[{}]），或给现有 rejected 计数器加 `kind=\"logs\"|\"metrics\"|\"executions\"` 标签；② 照 task.service.ts:4058 先例实现 onModuleInit 发布 active=0 + limit；③ alerts.yml 增两条：`sum by (job) (autoflow_metrics_streams_active) / sum by (job) (autoflow_metrics_streams_limit) > 0.8`（warning, for 10m）与 `increase(autoflow_metrics_streams_rejected_total[10m]) > 0`（warning），各补 runbook 锚点；④ grafana 加一条 stat 面板。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "两条 SSE 控制器 catch 块为空、logger 声明后从未使用：流死亡零日志、错误帧无原因",
+          "file": "apps/admin-api/src/modules/metrics/metrics-stream.controller.ts:160",
+          "why": "metrics-stream.controller.ts:160-163 是 `} catch { write(\"event: error\\ndata: stream error\\n\\n\"); res.end(); }`——err 被完全丢弃，不记日志、不计数；executions-stream.controller.ts:168-170 逐字同款。两个类都声明了 `private readonly logger = new Logger(...)`（metrics-stream:54、executions-stream:65），但全模块 grep `this.logger` 在这两个文件里 0 命中，是死字段。同模块其余写侧都有 warn（metrics-snapshot.service.ts:84、prometheus-metrics.service.ts:803），唯独「流本身怎么死的」无留痕；槽位占用/释放还只有 debug 级（metrics-stream-slot.service.ts:55/65），生产默认级别下连 503 与水位都无从回溯。缺失字段：err(message+stack)、流类型/route、userId/sub、连接时长、当时槽位占用数——排障时恰好一条都没有。",
+          "fix": "两处改为 `catch (err) { this.logger.warn(`SSE ${route} stream failed: err=${msg} user=${req.user?.sub ?? \"-\"} elapsedMs=${Date.now()-startedAt} active=${slots.active}`, err instanceof Error ? err.stack : undefined); }`（不需限流，单连接单次失败）；拒绝路径由 logger.debug 升 warn 或按 60s 窗口限流（照 prometheus-metrics.service.ts:779 logRenderFailure 的既有先例），并带 max/active；补单测断言「catch 分支必须调用 logger.warn 且日志含 user 与 active 字段」，防回归。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "快照单飞 TTL 从「开始」计时：慢查询下并发累积，SSE 连接数级 30 天聚合重新打回 PG",
+          "file": "apps/admin-api/src/modules/metrics/metrics-snapshot.service.ts:47",
+          "why": "复用条件是 `now - cached.at < DASHBOARD_SNAPSHOT_TTL_MS`，而 cached.at 记的是 compute **开始**的时刻（50-51）。一旦单次快照耗时超过 2s（getSummary 是 4 个 COUNT + 30 天 GROUP BY + 30 天 AVG；PG 侧只有 statement_timeout=30s 兜底，configuration.ts:894），每 2s 就会新起一条 compute，旧的在飞 promise 不再被任何人复用 → 稳态最多约 15 条 compute 重叠 × 7 条查询 ≈ 100 条查询同时压 20 连接的池。这与类头注宣称的「单飞、监控别把 DB 池打满」正好相反，而且慢的根因（池饱和）会被这条路径自我放大，首当其冲的是业务 API（AUTOFLOW_DB_POOL_WAITING / 5xx 连锁）。",
+          "fix": "把「在飞」与「TTL」拆开：单列 `private inFlight: Promise<DashboardSnapshot> | null`，`if (this.inFlight) return this.inFlight;`（settle 前无条件复用），settle 后再按 TTL 决定是否重算（`finally(() => this.inFlight = null)`）；再加硬超时（Promise.race + 5~10s，超时把该段记入 errors=[\"timeout\"] 并发降级帧，与 fail-open 语义一致）。补一条反证单测：首算耗时 5s 期间发起 10 次 getSnapshot，compute 只被调用 1 次。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "autoflow_agent_tokens_total 的 provider/model 是用户可配的任意字符串，无钳制 → 无界基数",
+          "file": "apps/admin-api/src/modules/metrics/runtime-metrics.ts:269",
+          "why": "labelNames [\"provider\",\"model\",\"direction\"]（269）的写入侧直接透传 Agent 路由解析结果：agent-session.service.ts:662-677 传 `provider: route.provider, model: route.model`，route 来自 AiService.getActiveRoute()（ai.service.ts:1156-1164）→ 设置页可增删的 provider registry（model 是自由文本；AI 未配置时还会写出 provider=\"disabled\"、model=\"\" 的组合）。每新增/改名/写错一个模型就永久多 2 条 series（in/out），rename 后旧 series 也留着，且没有任何 top-N 收口——这与本仓对 tool 标签的既有纪律正相反（runtime-metrics.ts:281-293 / OBS3-02：模型可编造的名字一律归并 \"unknown\"）。同时 270-277 的 0 值基线硬编码 qwen-vl-max / gpt-4o-mini / llama3，与真实 registry 大概率对不上，「有基线」退化成 6 条永远为 0 的假 series（成本看板按 model 分组时看不出任何东西）。",
+          "fix": "写入侧加同款钳制：在 agent-session.service 里对 model 做白名单（当前 provider registry 条目的 model 值，其余归 \"other\"）、provider 限长/白名单（其余归 \"unknown\"），照 metricToolLabel 的写法；或由 AiService 暴露稳定的 model family 维度（family=\"qwen-vl-max\"）替代原始 model 字符串。改完同步 labelValueSets 基线，并补 spec「任意随机 model 字符串不新增 series」。",
+          "effort": "M"
+        },
+        {
+          "severity": "P3",
+          "title": "AUTOFLOW_ALL_EXECUTORS_OFFLINE 的 description 用了聚合后不存在的 $labels.instance，$value 被当成总数",
+          "file": "config/monitoring/alerts.yml:434",
+          "why": "expr 是 `sum(autoflow_executors_online) == 0 and sum(autoflow_executors_total) > 0`（428），两侧都被 sum 抹掉标签，告警实例只剩 alertname/severity。因此 434 行的 `{{ $labels.instance }}` 渲染成空串，`{{ $value }}` 是**在线数**（触发时恒为 0），文案却说「共 {{ $value }} 台执行器」——值班人在这条 critical 上读到的是「executors 表中已注册  所在 fleet 共 0 台执行器，但在线数为 0」，与事实相反（真实 total 在聚合里被丢弃）。同文件 34/77/287 的 $labels.instance 用法是对的（未聚合的 per-target gauge），只有这条聚合式踩坑；这条告警的 for=10m 意味着它一旦响就是「全部执行器掉线」，而文案本身无法回答「fleet 有多大」，直接削弱处置判断（是 1 台还是 30 台全掉）。",
+          "fix": "改成 per-target 形式：`autoflow_executors_online == 0 and autoflow_executors_total > 0`（两个 gauge 都带 job/instance，天然按 target 匹配），description 里 `{{ $labels.instance }}` 与 `{{ $value }}` 就都成立；若确实要集群口径，则保留 sum 但删掉 $labels.instance、把 $value 说清为 online，并用 `and on() (sum(autoflow_executors_total) > 0)` 显式对齐标签。改完跑 npm run test:alerts（守卫会校验 expr 体检与 runbook 锚点）。",
+          "effort": "S"
+        }
+      ]
+    },
+    {
+      "domain": "CI / 守卫 / AI 文档真实性（.github/workflows、scripts/check-*.mjs、docs/*.md、docs/atlas）",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "check-guards-wired 判据①② 用整份 workflow 文本做子串匹配（不是 run: 段），守卫「只出现在 step name / env / artifact path 里」即被判为已接线 —— 可构造误绿",
+          "file": "scripts/check-guards-wired.mjs:511",
+          "why": "文件头第 10-11 行明确写「① CI 直接执行：守卫文件名出现在任一 .github/workflows/*.yml 的 run: 段里」，但实现是 `const workflows = stripYamlComments(readWorkflows(root))`（:511，7 个 workflow 全文拼接），判据①② 都拿它做 test/includes：`directRe.test(workflows)`（:561）、`String(cmd).includes(base)`（:565）、`npm run <name>` 正则（:567）。落地实证（临时 fixture，21 个守卫、20 个真在 run 里、第 21 个只写在 `- name: Guard dashboard (check-g20.mjs) - never executed` 的 step 名里、run 是 `echo hello`）：`node scripts/check-guards-wired.mjs --root /tmp/fxgw2` → `✔ 21 个 check-*.mjs 全部被 CI 执行`，exit 0。这正是它自己在第 4 轮修掉的那类「注释掉即绿」的同类残留（注释剥了，非 run: 的 YAML 文本没剥）。没有这道闸之外的任何机制保证 44 个守卫真的被跑到，所以一处误绿=一个守卫静默退役。当前 44 个守卫恰好都真在 run 块里（用 extractRunBlocks 复核：OUTSIDE-RUN ONLY 为 0 条），所以这是潜伏口而非在跑漏洞——但把 step 改名成含脚本名（很自然的写法，如 `name: 漂移闸 check-atlas-counts`）或把守卫路径塞进 `env:` / artifact `path:` 就会立刻误绿。",
+          "fix": "判据①② 改为对 run: 段匹配：在 checkGuardsWired 里预先 `const runText = names.map(n => extractRunBlocks(readFileSync(...)).join('\\n')).join('\\n')`，用 runText 替代 workflows 做 directRe / includes / npm-run 正则；`run:` 之外的文本永远不参与接线判定。同时在 --selftest 补一条齿：fixture 里把守卫文件名只写进 step `name:`（以及 env:/artifact path:）→ 断言 exit 1 且报「没有被 CI 执行」；当前实现该用例会绿，正好锁住这次的修。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "docs/atlas/07-testing/admin-api-testing.md 的覆盖率地板数字比真实配置低一整档（75/69/84/84 vs 76/81/88/87），无守卫覆盖",
+          "file": "docs/atlas/07-testing/admin-api-testing.md:26",
+          "why": "文档写 `coverageThreshold.global：branches 75 / functions 69 / lines 84 / statements 84`；`apps/admin-api/package.json` 的 jest.coverageThreshold.global 实际是 branches 76 / functions 81 / lines 88 / statements 87（ci.yml:217-218 的注释也是 87/76/81/88，与配置一致）。方向是「文档比闸松」：有人照文档「校准」阈值会立刻把 develop 染红，或反过来以为还有 8 个百分点余量而放松。check-infra-doc-counts 只钉 docs/atlas/06-infra/deployment-and-ci.md 的 6 处断言点，check-atlas-counts 在 07-testing 只钉 e2e-testing.md，所以这篇的两个手写数字（本篇 26 行的阈值、31 行的 147 个 spec）都无人看管——DT-04 那一类「四个守卫全绿、文档数字全错」的复现。",
+          "fix": "26 行改成 76 / 81 / 88 / 87（或干脆去掉手写数字，改成「见 apps/admin-api/package.json 的 jest.coverageThreshold.global」）；更根本的是把 admin-api-testing.md 纳入 check-infra-doc-counts 的 CLAIMS 表（新增「coverageThreshold 四值」断言点，从 package.json 读真值），顺带把 e2e-testing.md 已享有的「解析不到即红」保护扩展到这篇。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "测试规模数字严重过期：admin-api 147 个 spec（实际 390）、admin-web 74 个测试文件（实际 256），且这两页不在任何计数守卫的扫描面内",
+          "file": "docs/atlas/07-testing/admin-api-testing.md:31",
+          "why": "admin-api-testing.md:31 「单测共 **147 个 `*.spec.ts`**」（并附 2026-09-13 的逐模块分布表）；实测 `find apps/admin-api/src apps/admin-api/test -name '*.spec.ts' | wc -l` = 390（含 it/test 声明的 spec 文件也是 388，量级一致，147 差了 2.6 倍）。同目录 frontend-testing.md:31 「共 74 个测试文件：64 个 test.tsx + 10 个 test.ts」；实测 apps/admin-web/src/__tests__ 下 256 个（185 tsx + 71 ts）。这两页还各自标注「2026-09-13 find 核实」，读起来是权威事实——正是 DT-04 教训里「手写数字单向腐烂且完全静默」的形态：07-testing 下只有 e2e-testing.md 有守卫（check-atlas-counts 的 E2E_DOC），其余三篇的规模数字没有任何机器判据，规模翻倍也没人知道。",
+          "fix": "重数并更新两个数字（390 / 256），或把这两处改成「规模见 `npm run test:api` / `npm run test:web` 的实测输出」，避免再手写；若要保留精确数字，给 check-atlas-counts 加一条 `checkTestingScaleClaim`（glob 计 `*.spec.ts` / `src/__tests__/*.test.ts(x)`，与两篇文档的断言点比对，失配即红、正则不命中同样红）。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "atlas 的「索引页/侧页」自述数字整体过期（MCP 40 个工具→实际 56、acf 39 个子命令→实际 69、e2e-full.sh 43 例→实际 51、scripts/ 78 个文件→实际 125），守卫只钉详情页",
+          "file": "docs/atlas/05-interfaces/README.md:79",
+          "why": "四处可复现的错：①`05-interfaces/README.md:79` 「mcp-tools.md — 40 个 MCP 工具」、`02-packages/README.md:14` 「MCP Server …（40 个工具）」；真值 56（`node scripts/check-interface-maps.mjs` 自报「56 个工具全部在文档中出现」，mcp-tools.md 标题也是「（56 个）」并在第 4 行写着「本页曾停留在 40 个，实际 56 个」——同一仓库里一份文档自嘲过的旧数字，在另两页还活着）。②`05-interfaces/README.md:80` 「`acf` 39 个子命令」，真值 69（check-cli-doc：「总数 69 = 66 个 .command( + 3 个根命令」，cli.md 标题「（acf，69 个子命令）」）。③`06-infra/scripts.md:35` 「`e2e-full.sh` 根级 43 例 Playwright」，真值 51（check-atlas-counts：51 例 / 9 组；e2e-testing.md 更直接点名「脚本第 35 行又写 43 例」是错的）。④`06-infra/scripts.md:30`、`:2` 「scripts/（78 个文件）」，实测顶层 125 个文件 / 递归 145 个。守卫盲区：check-interface-maps 只核 mcp-tools.md / rest-api.md / sdks.md 的逐项内容与分域计数，check-atlas-counts 只核 atlas/README.md、01-apps、e2e-testing.md，check-infra-doc-counts 只核 deployment-and-ci.md——没有任何脚本读 06-infra/scripts.md（`grep -rn '06-infra/scripts.md' scripts/` 为空），索引页的数字因此完全裸奔。",
+          "fix": "四组数字改成 56 / 69 / 51 / 125（scripts.md 的 43 例建议直接改成「51 例（入口三份 legacy spec 合计）」以与 e2e-testing.md 同口径）；并在 check-interface-maps 增加「索引页计数」断言点（05-interfaces/README.md 的工具数/子命令数、02-packages/README.md 的工具数），在 check-atlas-counts / check-infra-doc-counts 增加 06-infra/scripts.md 的「e2e 例数 / scripts 文件数」断言点，沿用它们已有的「解析不到即红」纪律。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "scripts/reset-admin-password.selftest.sh 从未被任何门禁执行（唯一调用方 demo.selftest.sh 也没接线），check-guards-wired 看不见非 check-*.mjs 的自检",
+          "file": "scripts/reset-admin-password.selftest.sh:1",
+          "why": "该自检断言的是安全属性：dry-run 必须产出 pgcrypto `crypt()`/`gen_salt` SQL、必须 `\"sessionVersion\" + 1` 吊销会话、必须脱敏 `<redacted>`、短口令必须拒绝执行。但它只在 `scripts/demo.selftest.sh:144` 被调用一次，而 `demo.selftest.sh` 只能经 `npm run demo:selftest` 进入——`grep -rn 'demo:selftest|demo.selftest' .github/workflows/ Makefile` 为空，`test:guards:selftests` 的 22 条命令里也没有它（package.json 里 `demo:selftest` 出现 1 次 = 定义本身）。也就是说这些断言从未在任何自动门禁里跑过，只能靠人记得。根因是扫描面太窄：check-guards-wired 的 `walk()` 只收 `/^check-.*\\.mjs$/`，全仓 24 个 `*selftest*` 脚本里 `scripts/demo.selftest.sh` / `deploy.selftest.sh` / `pg-restore.selftest.sh` / `nginx-sse-selftest.mjs` 等非 check- 前缀的自检不在它的判据③ 覆盖内，`test:guards:selftests` 与 ci.yml selftests job 之间的对称性也没有任何判据（本次用脚本 diff 才发现只有 check:throttler-whitelist 靠 ci.yml 里直调脚本兜住，否则同样会飘）。",
+          "fix": "①把 `npm run demo:selftest` 加进 package.json 的 `test:guards:selftests`，并在 ci.yml 的 selftests job 里加一条同名 step（与 `test:deploy-script`/`test:pg-restore` 并列）；②把 check-guards-wired 的扫描面从 `check-*.mjs` 扩到「`*.selftest.mjs` / `*-selftest.mjs` / `*.selftest.sh` 及其调用方」，或新增一条 `check-selftests-wired.mjs`：凡 `scripts/**/*selftest*` 必须在 `test:guards:selftests`（或 `test:units`）与某个 workflow 的 run: 里各出现一次，两侧缺一即红——这样「自检写了没人跑」不再是静默状态。",
+          "effort": "S"
+        },
+        {
+          "severity": "P3",
+          "title": "admin-web-lighthouse job 级 continue-on-error 永久静音 lighthouserc 里的 error 级无障碍/控制台断言（注释承诺「建立基线后收严」，无可追踪的到期项）",
+          "file": ".github/workflows/ci.yml:638",
+          "why": "ci.yml:632-638 注释写「初期设为 continue-on-error 不阻塞 CI，建立性能基线后再收严」，但 `apps/admin-web/lighthouserc.json` 的 assert 段是实质性门禁：`categories:accessibility: [\"error\", minScore 0.9]`、`heading-order` / `meta-description` / `robots-txt` / `errors-in-console` 全部 `\"error\", minScore 1`。job 级 continue-on-error 让 `lhci autorun` 非零退出不影响 workflow 结论（run 保持 success），于是这批 error 断言从上线起就没有一天真正拦过东西；同 job 还有 `if: github.event_name != 'schedule'`，连月度演练轮也不跑。没有 OPEN-DECISIONS / PLAN-CLAIMS 里的到期条目（grep '*' 无 lighthouse 相关决策项），「基线」也从未落成阈值文档——是「先放行、后收严」中只完成前半句的典型。",
+          "fix": "二选一并写清：①收严——去掉 job 级 `continue-on-error`，把 performance/best-practices/seo 三条在 lighthouserc.json 保持 `warn`（warn 不会让 lhci 非零退出），只让 error 级的 a11y/console 断言真正阻塞；②继续观察——把 error 级断言在 lighthouserc.json 显式降为 `warn` 并在 docs/OPEN-DECISIONS.md 立一条带到期日的条目（谁、何时、判据），别让「配置说 error、CI 说无所谓」这种自相矛盾长期存在。",
+          "effort": "S"
+        }
+      ]
+    },
+    {
+      "domain": "Agent 运行时（apps/admin-api/src/modules/agent）对照 langgraph/langchain 的架构差距审计",
+      "findings": [
+        {
+          "severity": "P1",
+          "title": "写/危险工具在执行前没有任何在途台账，且调用无幂等键：崩溃恢复后必然重放同一副作用",
+          "file": "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts:507-528",
+          "why": "闸门放行到「结果落库」之间（507 起 started，真正的 persist 在 603-626）没有任何持久痕迹；AgentApiClient 的 ctx 只有 signal/sessionId（tools/agent-api.client.ts:49-58），没有幂等键。进程崩溃或重启后 rebuildMessages 拿不到行，只能回「工具结果缺失…请重新观察现状后再决定下一步」（runtime/agent-runtime.service.ts:1041-1043），模型最自然的下一步就是重提 → deploy_application / rollback_task_version / trigger_task 变成双份。而 stale-running 清扫恰好把崩溃会话判 failed 并写下「数据完好，可经 resume 重建上下文继续」（runtime/agent-session.service.ts:72-75），等于把这条路径推荐给运维。langgraph 在这一点上有结构保证：每个 task 的 writes 在任何后续步之前落 checkpointer（pregel/_loop.py:559 _put_pending_writes → checkpoint/base/__init__.py:324 put_writes），恢复时已完成任务重放其写入结果而不是重跑，且 task_id/checkpoint_ns 本身就是可用的幂等锚。",
+          "fix": "① invoke 之前先落一行 status=in_flight 的台账（复用 (sessionId,toolCallId) 唯一索引），完成后再就地更新为 ok/error/timeout；② 为每次调用生成确定性幂等键 `<sessionId>:<toolCallId>`，经 ToolInvokeContext 透传给每个 handler，服务端在校验命中时直接返回首次结果而不是重复执行；③ resume 时把 in_flight 行一律渲染成「结果未知，须先用只读工具核实再决定是否重提」，不要渲染成「结果缺失」。",
+          "effort": "M"
+        },
+        {
+          "severity": "P2",
+          "title": "恢复时的上下文是「有损重渲染」：工具结果按字符前缀截断（截断行的 full 被切成非法 JSON），因审批跳过的调用被重渲染成 denied",
+          "file": "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts:1073-1078",
+          "why": "实时路径用 shapeToolResultForModel 保留首尾（tools/tool-executor.service.ts:186-207，注释明确「错误与失败原因几乎总在尾部」），而重放路径是 `body.slice(0, 2000)`；截断行的 resultJson 实际是 {truncated,sha256,preview,full}（tool-executor 610-620），slice 会把 full 字符串从中间切断，模型收到的是一段非法 JSON 前缀，既丢尾部也丢结构。第二处矛盾：因同批审批而**没执行**的调用被落成 denied + `skipped: approval`（runtime 600-608），恢复时统一走 1078 的兜底文案「【调用未成功】状态 denied」，与实时文案「【未执行】…如需执行本调用，请在恢复后重新提交」语义相反——模型因此不会重提，而重提正是平台期望的动作。langgraph 的 checkpointer 恢复的是通道值原样（checkpoint.channel_values），既不重新渲染也不改语义，恢复前后的模型视图一致。",
+          "fix": "① 重放改用 shapeToolResultForModel(整条结果序列化, TOOL_RESULT_REPLAY_MAX_CHARS)；② 对 resultJson.truncated 形态单独渲染（优先 full，其次 preview + 「原结果超出 32KB 存储上限」说明），绝不再对 JSON 做字符切片；③ 给 tool_calls 增加独立的 skipped 状态（或在 errorMessage 用结构化前缀），replayedToolResult 把它映射回「未执行，可在恢复后重新提交」。",
+          "effort": "S"
+        },
+        {
+          "severity": "P2",
+          "title": "上下文折叠是开环估算：不消费 provider 真实 usage，不计 55 个工具 schema 与输出预留，撞 400 即整会话 failed",
+          "file": "apps/admin-api/src/module
+… [truncated: 6511 more characters]
