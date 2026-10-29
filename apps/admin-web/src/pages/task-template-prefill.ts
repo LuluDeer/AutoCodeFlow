@@ -109,8 +109,9 @@ export function templateExecutorMode(config: Record<string, unknown>): ExecutorM
  * FIX-PREFILL-SYMMETRY：模板 config.dependencies 的显示名快照（taskId →
  * 显示名）。TaskFormPage 预填时须回填 depNameSnapshotRef，否则提交路径
  * applyDependenciesPayload 按快照重建映射时拿不到显示名，key 降级为 id
- * （语义位 value=id 不丢，仅展示别名退化——与编辑态 dependenciesFormValues
- * 的消费方式一致）。
+ * （语义位 value=id 不丢；但 key 同时是 G6 的 `$upstream("别名")` 别名来源，
+ * 降级后该上游只剩 `$upstream("<taskId>")` 可引，名字形态的别名不再命中——
+ * 与编辑态 dependenciesFormValues 的消费方式一致）。
  */
 export function templateDependencySnapshot(
   config: Record<string, unknown>,

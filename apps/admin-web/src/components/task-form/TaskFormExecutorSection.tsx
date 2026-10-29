@@ -389,9 +389,13 @@ export default function TaskFormExecutorSection({
         </Form.Item>
 
         {/* NF-02: 上游依赖（编排）。后端 tasks.dependencies jsonb =
-            Record<taskId, taskName>；上游全部最近执行 SUCCESS 时由
-            admin-api 自动扇出触发本任务（triggerDependentTasks，
-            环检测/深度上限在 create/update 侧强制）。 */}
+            **Record<显示名快照, 上游任务id>**——value=id 才是语义位，key 既是
+            展示名也是 G6 的 `$upstream("别名")` 别名来源（改 key 就改了下游
+            脚本能引用的别名，详见 pages/task-dependencies.ts 头注）。上游全部
+            最近执行 SUCCESS 时由 admin-api 自动扇出触发本任务
+            （triggerDependentTasks，环检测/深度上限在 create/update 侧强制）。
+            注意 Select 只显示任务**当前**名，已存的 key 不在此展示——改名不会
+            回写别名。 */}
         <Form.Item
           name="upstreamDependencies"
           label={t('taskForm.field.upstreamDependencies')}

@@ -4,7 +4,8 @@
  *
  * 承载与「表单字段回填」无关的候选/参照 state：执行器分组、标签、执行器
  * 清单、应用候选（APP-SELECT-01 富信息选项的读面）、归属项目（TASK-PROJ-01）、
- * 上游依赖候选（NF-02，含名称快照 depNameSnapshotRef 供提交时重建映射）。
+ * 上游依赖候选（NF-02，含名称快照 depNameSnapshotRef 供提交时重建映射；
+ * 该快照的 key 同时是 G6 `$upstream("别名")` 的别名来源，不是纯展示数据）。
  *
  * `?applicationId=`（应用详情页「用此应用建任务」）的表单回填**不在本 effect
  * 内**——原实现把它放在这里（依赖含 t），语言切换重拉参照数据时会连带
@@ -164,9 +165,13 @@ export function useTaskFormReferenceData({
           // NF-02：名称快照顺带按候选列表播种。此前 depNameSnapshot 只在**编辑
           // 态**由 task.dependencies 填充，创建态恒为 {}——于是创建态提交的
           // dependencies 映射退化为 `{ id: id }`（buildDependenciesPayload 的
-          // 兜底分支）。依赖名虽只用于展示，但"存为模板/克隆"等通路依赖它还原
-          // 编排关系的可读形态；播种后创建态也能带上真实任务名。
-          // 不覆盖已有键（编辑态回填的任务自带映射是权威值）。
+          // 兜底分支）。依赖名不"只用于展示"：key 同时是 G6 的
+          // `$upstream("别名")` 别名来源，退化成 id 会让按名字取数的下游脚本
+          // 解析为 null。此外"存为模板/克隆"等通路依赖它还原编排关系的可读
+          // 形态；播种后创建态也能带上真实任务名。
+          // 不覆盖已有键（编辑态回填的任务自带映射是权威值）——这也是"上游
+          // 改名不回写下游 key"的机制所在：旧名键保留，别名不随改名漂移
+          //（见 pages/task-dependencies.ts 头注「前端快照行为」）。
           for (const o of opts) {
             if (!depNameSnapshotRef.current[o.id]) {
               depNameSnapshotRef.current[o.id] = o.name;

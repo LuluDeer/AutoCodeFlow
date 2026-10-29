@@ -3,6 +3,8 @@
  *
  * 数据契约（对齐 admin-api triggerDependentTasks）：
  * tasks.dependencies 为 Record<别名, taskId>——**值是上游依赖的任务 ID**；
+ * 键是 G6 `$upstream("别名")` 的解析键（确实参与语义，见
+ * pages/task-dependencies.ts 头注），但**本图只读 value**，键不参与构图。
  * 完成任务 X 时，所有 dependencies 值包含 X 的任务被触发扇出。
  * 因此边方向固定：上游依赖 → 依赖方（from = dep, to = dependent）。
  *
