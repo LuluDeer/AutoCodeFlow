@@ -332,7 +332,12 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // OPS-03: Cross-service request tracing middleware is configured in AppModule
+  // OPS-03 / OBS3-07：Trace-Id 中间件在 AppModule 装配——它只做「生成/回显
+  // X-Trace-Id + 写 req.traceId」，5xx/22P02 日志行用它做请求关联。
+  // **不做**跨服务透传：曾经配套的 TraceService/TraceModule 从未被任何模块
+  // import（死代码），已删除；出站请求不带 X-Trace-Id。若将来要做真正的
+  // 跨进程追踪，走 app.module 里 opentelemetry 开关 + W3C traceparent，
+  // 而不是恢复那套没人调用的 ALS 服务。
 
   // ARCH-002: Serve uploaded packages as static files — behind authentication.
   // Previously /uploads was fully public: anyone knowing the filename could
