@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第四十轮 → get_session_steps（G5 只读切片），main）**：
+  - **`bce6abf4`**：上下文折叠后模型无法复核早期步骤（摘要只剩事件名 + 截断预览）。新增 `get_session_steps`（read tier）：`seq` 倒序分页（`beforeSeq`）、返回正序；投影 `seq/role/content(≤300)/toolCallsJson/createdAt`，工具只回名称；会话隔离靠 `ctx.sessionId`；缺上下文拒绝。定位为 langgraph `get_state_history()` 的**只读等价物**（不提供分叉/回放，注释写明）。
+  - **验证**：admin-api tsc 0；binder **28 例**（+3）；agent 模块 **373 例**；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：G5 第二步（节点级检查点/分叉，L 级）、G6 失败边（S 但需 db 索引兼容评审）、rt-2 结构性解法。
+
 - **本轮（2026-10-29 第三十九轮 → 会话导出 UI + 守卫链全绿复核，main）**：
   - **`4909db8c`**：会话抽屉新增「导出转录」按钮（调用 `GET /agent/sessions/:id/export`，下载 `agent-session-<id>.json`，带进行态与失败提示；测试钉住 Blob/参数/URL 回收）；顺带修掉 openapi 刷新后 `check-user-facing-language` 判红的一处英文帧名（`AiSopSessionController.turnStream` summary 改为中文，帧名保留在描述/实现）。
   - **守卫链复核**：`npm run test:guards:repo` 首跑只红一条（上述语言守卫，已修），复跑 **exit 0**（含迁移对称/索引漂移/条件写/发布六层/语言/错误码/api-i18n/api-reference/response-schema 等全链）。
