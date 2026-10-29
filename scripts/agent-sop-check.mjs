@@ -452,6 +452,14 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
           if (!status) throw new Error("session not found");
           return { id, status };
         },
+        // 第 6 轮审计把澄清兜底扫描的 2×N 点查收敛成一次 findStatusByIds；
+        // 这里的打桩必须同步跟上，否则 sweepStuckClarifications 在生产代码里
+        // 调用即 TypeError（CI 的 selftests job 实测：exit 1）。
+        // 只投影 id/status，与真实实现一致；未知 id 不返回（调用方按 null 处理）。
+        findStatusByIds: async (ids) =>
+          ids
+            .filter((id) => sessionStore.has(id))
+            .map((id) => ({ id, status: sessionStore.get(id) })),
       },
       { notify: async (...a) => notifyCalls.push(a) },
       { getStats: () => ({ isLeader: true }) }, // SchedulerService 打桩
@@ -866,12 +874,32 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
   const internalNames = reg.AGENT_INTERNAL_TOOL_SPECS.map((t) => t.name);
   // 经内部表纳管的 mcp 工具（sop_list / sop_get）——不计入收编集。
   const viaInternal = mcpToolNames.filter((n) => internalNames.includes(n));
-  const expectedCulled = mcpToolNames.length - EXCLUDED.length - viaInternal.length;
+  // 收编集里**不来自 mcp** 的工具（agent 运行时独有）：必须显式登记，
+  // 否则「新增一个 agent-only 工具」会被算术式悄悄吸收（实测漂移：mcp 56 - 排除 7
+  // - 内部 2 = 47，而收编集 49 —— 两个 agent-only 工具让等式恒不成立）。
+  const AGENT_ONLY_EXPECTED = ["get_session_steps", "get_tool_call_result"];
+  const agentToolNames = reg.AGENT_TOOL_SPECS.map((t) => t.name);
+  const mcpCovered = mcpToolNames.filter(
+    (n) => !EXCLUDED.includes(n) && !internalNames.includes(n),
+  );
+  const missingFromAgent = mcpCovered.filter((n) => !agentToolNames.includes(n));
+  const agentOnly = agentToolNames.filter((n) => !mcpToolNames.includes(n));
 
   check(
-    `收编集长度 == mcp - 排除 - 经内部表纳管（推导：${mcpToolNames.length} - ${EXCLUDED.length} - ${viaInternal.length} = ${expectedCulled}）`,
-    reg.AGENT_TOOL_SPECS.length === expectedCulled,
-    `实际 ${reg.AGENT_TOOL_SPECS.length}`,
+    `收编集覆盖全部可给 agent 的 mcp 工具（${mcpToolNames.length} - ${EXCLUDED.length} 排除 - ${viaInternal.length} 内部 = ${mcpCovered.length}）`,
+    missingFromAgent.length === 0,
+    `缺 ${missingFromAgent.join(",")}`,
+  );
+  check(
+    `收编集 == mcp 覆盖集 + agent-only（${mcpCovered.length} + ${agentOnly.length} = ${mcpCovered.length + agentOnly.length}）`,
+    agentToolNames.length === mcpCovered.length + agentOnly.length,
+    `实际 ${agentToolNames.length}（agent-only: ${agentOnly.join(",") || "无"}）`,
+  );
+  check(
+    "agent-only 工具必须显式登记（不来自 mcp 的收编项）",
+    agentOnly.length === AGENT_ONLY_EXPECTED.length &&
+      agentOnly.every((n) => AGENT_ONLY_EXPECTED.includes(n)),
+    `实际 ${agentOnly.join(",")}，期望 ${AGENT_ONLY_EXPECTED.join(",")}`,
   );
   check("内部 SOP 工具 6 个", reg.AGENT_INTERNAL_TOOL_SPECS.length === 6);
   const allNames = reg.ALL_AGENT_TOOL_SPECS.map((t) => t.name);
