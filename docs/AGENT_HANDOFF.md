@@ -11,6 +11,14 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第九轮 → params 折叠冲突前置 + 回调严格度对账，main）**：
+  - **EXEC-07b（P2）**：执行器的折叠冲突闸在 accept 阶段（派发之后）——用户提交任务时看不到，只在触发后收到执行器 400。admin 侧补同一判据：`findDispatchParamKeyCollisions`（与执行器同规则）+ `TaskParamsNoKeyCaseCollision` DTO 约束挂到 Create/TriggerTask 的 params（PATCH 经 PartialType 继承），保存/触发即 400；测试直接加载 `protocol.json` 的 8 条 `params.keyUniqueness` 向量逐条对账，另有约束单测（冲突/放行/非法键/多组排序/畸形）。
+  - **EXEC-06（P3）核对**：审计判断「python `model_validate()` lax」**已过时**——生成模型是 `ConfigDict(strict=True)`，实测字符串 `"1"`/浮点 `1.0` 均被拒，与 node `z.number().int()` 同结论，**无需改代码**；把该事实钉成两端契约测试，防生成器未来退回 lax。
+  - **EXEC-02（P2，子代理进行中，未提交）**：POSIX 任务启动器 `task_launcher.py`——把 setsid/rlimit 从 `preexec_fn`（多线程进程 fork 后跑 Python，CPython 明确警告可死锁）搬到**新 exec 的单线程解释器**里，再 `execvpe` 真实命令（PID/进程组不变，树杀路径不受影响）；limits 白名单 + fail-closed（不合规不启动，绝不静默无限制执行）。当前工作区已出现 `task_launcher.py` 与 execute.py/sandbox.py 改动，等其报告后独立复核再提交。
+  - **验证（本轮已提交部分）**：admin-api tsc 0；DTO/executor 146 例 + task 模块 **1540 例**全绿；executor-node 全量 **1401 例**；executor-python 协议契约 21 例；eslint 0。
+  - **并发提示**：并行流正在做基础设施 wave（workflows/config/新守卫脚本），本会话只提交自己的显式路径。
+  - **下一轮入口**：复核并提交 EXEC-02；随后 WEB-2（nginx HTTP/2）、OBS 余项、rt-3/rt-4（SSE 投影，若并行流未覆盖）。
+
 - **本轮（2026-10-29 第八轮 → 执行器三项审计收编：单一模型/参数折叠/env 清单，main）**：
   - **EXEC-01（P2）**：python `/execute` 的「SDK 优先 + 本地 fallback」双源删除——SDK 那份是客户端模型（`task: TaskConfig`、无 `secrets`），一旦被 import，4 处 `req.task.get(...)` 全部 AttributeError（每任务 500）且凭据被静默丢弃，协议闸门也拦不住（dump 里 task 已是 dict、secrets 缺失）。现在只有一份本地模型（`task: dict` + `secrets`），新增 11 条 AST 静态守卫（反证：旧文件 4 条转红）；SDK 客户端模型补上 `secrets` 字段并注明「client ≠ executor 反序列化模型」，atlas 的陈旧描述同步更正。
   - **EXEC-07（P3）**：`{"limit":1,"LIMIT":2}` 两个键都过闸、注入时折叠成同一个 `AUTOFLOW_LIMIT`，后者静默覆盖前者。两端在 accept 阶段 400 拒绝（`param_key_case_collision`，文案逐字节相同），协议新增 8 条向量；顺带修掉 python `$` 在末尾换行前匹配导致的 `"LIMIT\n"` 判定分叉（改 `fullmatch`，两端各加用例）。
