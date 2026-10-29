@@ -966,11 +966,12 @@ node dist\main.js
 
 ### 4b. 任务资源上限在 Windows 不生效（Job Object 登记项，2026-10-07）
 
-`task_memory_limit_mb` / `task_cpu_limit_seconds` / `TASK_SANDBOX=bwrap` 三项资源隔离在 **POSIX（生产路径，Linux 容器）完整生效**（RLIMIT_AS/CPU + bubblewrap userns）；**win32 上全部跳过**（`sandbox.py` 的 `build_rlimit_pre_exec` 返回 None，仅首任务记一行 info 日志，不刷屏）：
+`task_memory_limit_mb` / `task_cpu_limit_seconds` / `TASK_SANDBOX=bwrap` 三项资源隔离在 **POSIX（生产路径，Linux 容器）完整生效**（RLIMIT_AS/CPU + bubblewrap userns）；**win32 上全部跳过**（`sandbox.py` 的 `build_rlimit_limits` 返回 None，仅首任务记一行 info 日志，不刷屏）：
 
 - **影响面**：Windows 开发机上 `a=[0]*10**10` 类失控任务不会被 RLIMIT_AS 截断，内存失控时由 OS OOM 或人工干预兜底；CPU 超时仍由**执行器侧的 timeoutSeconds 树杀兜底**（`taskkill /T /F`，见 §5），故「任务永杀不死」不会发生——缺的只是**细粒度资源闸**，不是失控兜底。
 - **补齐方案（登记，未实施）**：Windows Job Object（`CreateJobObject` + `JOB_OBJECT_LIMIT_PROCESS_MEMORY` + `JOB_OBJECT_LIMIT_CPU_RATE_CONTROL`，经 `AssignProcessToJobObject` 绑定任务进程树；pywin32 或 ctypes 可达）。工作量 L 级：需处理 job 句柄生命周期（父进程崩溃时 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 联动——与桌面端 R5-B-1 crash-guard 同族语义）、嵌套 job 兼容（Win8+ 已支持）与 IO limit 语义取舍。
 - **运维取舍**：生产/资源隔离敏感部署请用 Linux 容器（secure overlay 下 bwrap 沙箱 + rlimit 全生效）；Windows 仅建议开发/冒烟用途——与 R14 章开头「Windows 上作为普通进程运行」的定位一致。
+- **实现注记（EXEC-02，2026-10-29）**：POSIX 的资源上限不再经 `preexec_fn` 施加（多线程进程 fork 后跑 Python 有死锁面），改为「新 exec 的单线程 launcher」`task_launcher.py`：`start_new_session=True` 先建会话 → launcher 设 RLIMIT → `execvpe` 真实命令（PID 不变，树杀语义不变）。每次 spawn 多约 15ms；limits 不合规时 fail-closed（任务失败，绝不静默无限制执行）。
 
 ### 5. 停服与优雅退出（R-08，重要）
 

@@ -1641,7 +1641,7 @@ def test_settings_registry_validation_does_not_echo_secret():
     assert 'super-secret' not in str(exc.value)
 
 
-def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_path):
+def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_path, real_cmd):
     from routers import execute as execute_module
 
     monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', 'https://registry.example/simple/')
@@ -1672,7 +1672,8 @@ def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_
     assert len(calls) == 2
     venv_args, venv_kwargs = calls[0]
     pip_args, pip_kwargs = calls[1]
-    assert list(venv_args)[1:3] == ['venv', '--no-project']
+    # EXEC-02：argv 外层是 task_launcher 包装，真实命令在 `--` 之后
+    assert real_cmd(venv_args)[1:3] == ['venv', '--no-project']
     assert '--index-url' in pip_args
     assert pip_args[pip_args.index('--index-url') + 1] == 'https://registry.example/simple/'
     for kwargs in (venv_kwargs, pip_kwargs):
@@ -2267,7 +2268,7 @@ def test_injected_env_round_trips_into_the_sdk_callback_row_identity(tmp_path, m
     assert 'device_fingerprint' not in ctx.params
 
 
-def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypatch, tmp_path):
+def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypatch, tmp_path, real_cmd):
     """E-1（审计补漏）：声明 runtimeVersion 的任务全链集成守卫——"版本声明 →
     解释器解析（ensure_version 接线）→ 用解析出的解释器执行"。
 
@@ -2324,8 +2325,10 @@ def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypa
     )
     # ② 解析出的池内解释器必须真正用于执行（argv[0] 是被解析路径，不是宿主 python）
     assert spawns, '任务必须真正 spawn 子进程'
-    assert spawns[0][0] == str(pool_python), (
-        f'无依赖分支必须用解析出的解释器执行，实际 argv[0]={spawns[0][0]!r}'
+    # EXEC-02：真实命令在 launcher 包装的 `--` 之后（argv 外层是解释器 + 脚本）
+    task_argv = real_cmd(spawns[0])
+    assert task_argv[0] == str(pool_python), (
+        f'无依赖分支必须用解析出的解释器执行，实际 argv[0]={task_argv[0]!r}'
     )
 
 

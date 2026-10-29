@@ -468,8 +468,9 @@ class Settings(BaseSettings):
     # （跨命名空间 uid 映射后 ptrace 访问被拒），这是 F-1 对
     # EXECUTOR_SECRET / EXECUTION_CALLBACK_SECRET 外泄的核心缓解。
     task_sandbox: str = ''
-    # B-1: 单任务资源上限（POSIX RLIMIT_*，经 preexec_fn 施加于任务进程树；
-    # Windows 无等价原语，该项在 win32 上跳过并记录 warning）。
+    # B-1: 单任务资源上限（POSIX RLIMIT_*，由 task_launcher.py 在 exec 前施加于
+    # 任务进程树——EXEC-02 起不再用 preexec_fn；Windows 无等价原语，该项在
+    # win32 上跳过并记录 warning）。
     # memory 用 RLIMIT_AS（地址空间字节数）：`a=[0]*10**10` 类任务在**子进程**
     # 内 OOM，而不是拖垮执行器上所有并发任务。0 = 不设该限。
     task_memory_limit_mb: int = 2048

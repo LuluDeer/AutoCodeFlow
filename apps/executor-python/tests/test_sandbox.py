@@ -1,20 +1,29 @@
 """SEC-NEW: 任务沙箱与资源限制（F-1/B-1）单元测试。
 
 覆盖：
-* ``build_rlimit_pre_exec`` —— 配置驱动的 RLIMIT_* 组装（win32 跳过、全零返回 None）；
+* ``build_rlimit_limits`` —— 配置驱动的 RLIMIT_* 规格组装（win32 跳过、全零返回
+  None、prepare 路径可排除 NPROC）。**EXEC-02 起不再返回 preexec_fn**：规格是
+  ``{名: (soft, hard)}``，由 ``task_launcher.py`` 在新 exec 的单线程解释器里施加
+  （真跑行为见 tests/test_task_launcher.py，spawn 侧见
+  tests/test_exec_02_launcher.py）；
+* ``build_launcher_cmd`` —— launcher 包装形状（argv 直传、无 shell 拼接）与
+  limits 严格校验（畸形 → SandboxUnavailable，fail-closed）；
 * ``build_sandbox_cmd`` —— bwrap 包装结构；fail-closed（配置启用但二进制缺失 → 抛
   SandboxUnavailable，绝不静默降级）；'' 默认零变化；
-* ``with_task_tmpdir`` —— 私有 tmpdir + TMPDIR/TEMP/TMP 指向；
-* ``_spawn_kwargs_for_platform`` 与 rlimit preexec 的组合（POSIX 分支）。
+* ``with_task_tmpdir`` —— 私有 tmpdir + TMPDIR/TEMP/TMP 指向。
 """
+import json
 import sys
 from pathlib import Path
 
 import pytest
 
+import sandbox
 from sandbox import (
+    RLIMIT_NAMES,
     SandboxUnavailable,
-    build_rlimit_pre_exec,
+    build_launcher_cmd,
+    build_rlimit_limits,
     build_sandbox_cmd,
     with_task_tmpdir,
 )
@@ -37,88 +46,45 @@ class _Settings:
             setattr(self, name, value)
 
 
-def _rlimit_restore_unsupported() -> bool:
-    """本进程能否对测试涉及的 rlimit 资源「降后升」恢复（root/受容器
-    seccomp 限制时不行——恢复到保存值抛 ValueError: not allowed to raise
-    maximum limit，硬限降下不可回抬是内核语义，非代码缺陷）。
-
-    **必须在子进程里探**（2026-10-24 教训）：本进程探针若把 RLIMIT_AS 等
-    降到有限值而恢复失败，限制会留在本进程毒化后续全部测试（实测 LZMA
-    压缩用例因 AS 被留在 512MB 而内存不足假红）。子进程崩溃/失败即代表
-    受限，父进程不受任何影响。
-    """
-    import subprocess
-    import sys
-    probe_code = (
-        'import resource; '
-        'probes=[(resource.RLIMIT_AS,512*1024*1024),'
-        '(resource.RLIMIT_FSIZE,64*1024*1024),'
-        '(resource.RLIMIT_NOFILE,1024),'
-        '(resource.RLIMIT_CPU,180)]; '
-        'ok=True; '
-        'exec("for r,v in probes:\n'
-        ' s,h=resource.getrlimit(r)\n'
-        ' try:\n'
-        '  resource.setrlimit(r,(v,v))\n'
-        '  resource.setrlimit(r,(s,h))\n'
-        ' except Exception:\n'
-        '  ok=False\n'
-        '  break"); '
-        'sys.exit(0 if ok else 1)'
-    )
-    try:
-        return subprocess.call([sys.executable, '-c', probe_code]) != 0
-    except OSError:
-        return False  # 探针自身跑不了——不拦测试，让真实断言说话
-
-
 @pytest.mark.skipif(sys.platform == 'win32', reason='RLIMIT_* 仅 POSIX 语义')
-@pytest.mark.skipif(_rlimit_restore_unsupported(),
-                    reason='本环境 rlimit 硬限不可降后升（root/容器 seccomp），'
-                           '恢复保存值必然 ValueError——内核语义，非代码缺陷')
-def test_rlimit_pre_exec_builds_expected_limits():
+def test_build_rlimit_limits_builds_expected_spec():
     settings = _Settings()
-    fn = build_rlimit_pre_exec(settings, timeout_seconds=120)
-    assert fn is not None
-    import resource
-
-    # 用真实施加验证（在子进程内 setrlimit 安全；本进程设置后恢复）
-    limits = {
-        resource.RLIMIT_AS: (2048 * 1024 * 1024, 2048 * 1024 * 1024),
-        resource.RLIMIT_CPU: (180, 190),  # timeout 120 + 60，硬限 +10
-        resource.RLIMIT_FSIZE: (4096 * 1024 * 1024, 4096 * 1024 * 1024),
-        resource.RLIMIT_NOFILE: (1024, 1024),
+    limits = build_rlimit_limits(settings, timeout_seconds=120)
+    assert limits == {
+        'RLIMIT_AS': (2048 * 1024 * 1024, 2048 * 1024 * 1024),
+        'RLIMIT_CPU': (180, 190),  # timeout 120 + 60，硬限 +10
+        'RLIMIT_FSIZE': (4096 * 1024 * 1024, 4096 * 1024 * 1024),
+        'RLIMIT_NOFILE': (1024, 1024),
     }
-    saved = {rsrc: resource.getrlimit(rsrc) for rsrc in limits}
-    try:
-        fn()
-        for rsrc, expected in limits.items():
-            assert resource.getrlimit(rsrc) == expected, rsrc
-    finally:
-        for rsrc, pair in saved.items():
-            resource.setrlimit(rsrc, pair)
+    # 默认 NPROC=0 不设
+    assert 'RLIMIT_NPROC' not in limits
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='RLIMIT_* 仅 POSIX 语义')
-@pytest.mark.skipif(_rlimit_restore_unsupported(),
-                    reason='本环境 rlimit 硬限不可降后升（root/容器 seccomp），'
-                           '恢复保存值必然 ValueError——内核语义，非代码缺陷')
-def test_rlimit_cpu_falls_back_to_timeout_plus_grace():
+def test_build_rlimit_limits_cpu_falls_back_to_timeout_plus_grace():
     settings = _Settings(task_cpu_limit_seconds=0)
-    fn = build_rlimit_pre_exec(settings, timeout_seconds=30)
-    assert fn is not None
-    import resource
+    limits = build_rlimit_limits(settings, timeout_seconds=30)
+    assert limits is not None
+    assert limits['RLIMIT_CPU'] == (90, 100)  # 30 + 60，硬限 +10
 
-    soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
-    _ = soft
-    saved = resource.getrlimit(resource.RLIMIT_CPU)
-    try:
-        fn()
-        soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
-        assert soft == 90  # 30 + 60
-        assert hard == 100
-    finally:
-        resource.setrlimit(resource.RLIMIT_CPU, saved)
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='RLIMIT_* 仅 POSIX 语义')
+def test_build_rlimit_limits_includes_nproc_when_configured():
+    settings = _Settings(task_nproc_limit=64)
+    limits = build_rlimit_limits(settings, timeout_seconds=30)
+    assert limits is not None
+    assert limits['RLIMIT_NPROC'] == (64, 64)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='RLIMIT_* 仅 POSIX 语义')
+def test_build_rlimit_limits_prepare_excludes_nproc():
+    """prepare（git/uv）刻意不套 NPROC——uv 自己会 spawn 辅助进程（沿用旧形状）。"""
+    settings = _Settings(task_nproc_limit=64)
+    limits = build_rlimit_limits(settings, timeout_seconds=30, include_nproc=False)
+    assert limits is not None
+    assert 'RLIMIT_NPROC' not in limits
+    # 其余限制照旧
+    assert limits['RLIMIT_NOFILE'] == (1024, 1024)
 
 
 def test_rlimit_all_disabled_returns_none():
@@ -129,7 +95,100 @@ def test_rlimit_all_disabled_returns_none():
         task_nofile_limit=0,
         task_nproc_limit=0,
     )
-    assert build_rlimit_pre_exec(settings, timeout_seconds=0) is None
+    assert build_rlimit_limits(settings, timeout_seconds=0) is None
+
+
+def test_rlimit_limits_none_on_win32(monkeypatch):
+    """win32 无 RLIMIT_* 原语：返回 None（调用方据此跳过 launcher 包装）。"""
+    monkeypatch.setattr(sandbox, 'sys', type('_Sys', (), {'platform': 'win32'})())
+    assert build_rlimit_limits(_Settings(), timeout_seconds=60) is None
+    # 一次性 info 日志（每个进程只记一行，避免刷屏）也是这条路径的一部分
+    assert sandbox._win32_rlimit_noted is True
+
+
+# ---------------------------------------------------------------------------
+# EXEC-02：launcher 包装（child 内零 Python 代码 + limits 严格校验）
+# ---------------------------------------------------------------------------
+
+def test_build_launcher_cmd_wraps_in_single_threaded_launcher():
+    cmd = ['git', 'clone', '--bare', 'url', '/tmp/cache']
+    limits = {'RLIMIT_AS': (1024, 1024)}
+    wrapped = build_launcher_cmd(cmd, limits)
+
+    # 新解释器 + launcher 脚本 + JSON 规格 + `--` + 真实命令（逐项 argv，无 shell）
+    assert wrapped[0] == sys.executable
+    assert wrapped[1] == '-I'                      # 隔离模式：不读 PYTHON* / cwd
+    assert wrapped[2] == str(sandbox.LAUNCHER_SCRIPT)
+    assert Path(wrapped[2]).is_file()
+    assert json.loads(wrapped[3]) == {'RLIMIT_AS': [1024, 1024]}
+    assert wrapped[4] == '--'
+    assert wrapped[5:] == cmd
+
+
+def test_launcher_wraps_the_sandbox_wrapper(monkeypatch):
+    """bwrap 与 rlimit 的组合顺序：launcher 最外层，bwrap 在 `--` 之后。
+
+    run_task 先 ``build_sandbox_cmd`` 再 ``build_launcher_cmd`` —— 限制施加在
+    bwrap 进程上，由它连同任务进程一起继承进用户命名空间（与改前 preexec 施加
+    在 bwrap 上逐字同义）；bwrap 自己的 `--` 仍是末尾，任务命令不被 launcher
+    的 `--` 抢走。
+    """
+    monkeypatch.setattr(sandbox, '_get_settings', lambda: _Settings(task_sandbox='bwrap'))
+    monkeypatch.setattr(sandbox.shutil, 'which', lambda _name: '/usr/bin/bwrap')
+
+    inner = build_sandbox_cmd(['python', 'main.py'], Path('/tmp/work'))
+    outer = build_launcher_cmd(inner, {'RLIMIT_AS': (1024, 1024)})
+
+    assert outer[0] == sys.executable and outer[1] == '-I'
+    assert outer[4] == '--'                    # launcher 自己的分隔符
+    assert outer[5] == '/usr/bin/bwrap'        # bwrap 是被 launcher exec 的命令
+    assert '--unshare-all' in outer
+    assert outer[-3:] == ['--', 'python', 'main.py']   # bwrap 的 `--` 仍是末尾
+
+
+def test_build_launcher_cmd_is_noop_without_limits():
+    cmd = ['python3', 'main.py']
+    assert build_launcher_cmd(cmd, None) is cmd
+    assert build_launcher_cmd(cmd, {}) is cmd
+
+
+def test_rlimit_names_match_launcher_allowlist():
+    """父进程产出的名字必须与 launcher 的白名单逐项一致（跨进程契约）。"""
+    import task_launcher
+
+    assert set(RLIMIT_NAMES) == set(task_launcher.ALLOWED_LIMITS)
+
+
+@pytest.mark.parametrize(
+    'limits',
+    [
+        ['RLIMIT_AS'],                                   # 不是映射
+        {'RLIMIT_BOGUS': (1, 1)},                        # 未知资源
+        {'RLIMIT_AS': (1024,)},                          # 不是二元组
+        {'RLIMIT_AS': (1024, 1024, 1024)},               # 三元组
+        {'RLIMIT_AS': ('1024', '1024')},                 # 非整数
+        {'RLIMIT_AS': (True, True)},                     # bool 不是整数语义
+        {'RLIMIT_AS': (0, 0)},                           # 0 等于"禁止"该资源
+        {'RLIMIT_AS': (2048, 1024)},                     # soft > hard
+    ],
+)
+def test_build_launcher_cmd_rejects_malformed_limits(limits):
+    """畸形 limits 必须在 spawn 之前失败，绝不让 launcher 在 exec 前才崩。"""
+    with pytest.raises(SandboxUnavailable, match='fail-closed'):
+        build_launcher_cmd(['true'], limits)
+
+
+def test_build_launcher_cmd_requires_sys_executable(monkeypatch):
+    """嵌入式解释器没有 sys.executable：宁可失败，不静默丢限制。"""
+    monkeypatch.setattr(sandbox.sys, 'executable', '')
+    with pytest.raises(SandboxUnavailable, match='fail-closed'):
+        build_launcher_cmd(['true'], {'RLIMIT_AS': (1024, 1024)})
+
+
+def test_build_launcher_cmd_rejects_limits_on_win32(monkeypatch):
+    monkeypatch.setattr(sandbox, 'sys', type('_Sys', (), {'platform': 'win32'})())
+    with pytest.raises(SandboxUnavailable, match='POSIX'):
+        build_launcher_cmd(['true'], {'RLIMIT_AS': (1024, 1024)})
 
 
 def test_sandbox_none_returns_cmd_unchanged():

@@ -32,8 +32,11 @@ bubblewrap 把任务包进**用户命名空间 + 只读根文件系统 + Private
 
 B-1 —— 资源上限（始终生效，POSIX）
 -----------------------------------
-``build_rlimit_pre_exec(settings, timeout_seconds)`` 返回一个 preexec_fn，
-在 fork 之后、exec 之前在任务子进程内施加 RLIMIT_*：
+``build_rlimit_limits(settings, timeout_seconds)`` 产出 ``{RLIMIT 名: (soft,
+hard)}``（名字而非数值常量：这份 dict 就是 launcher 的 argv 契约，见
+``task_launcher.py``），``build_launcher_cmd(cmd, limits)`` 把命令包进
+**新 exec 的单线程启动器**：``python3 -I task_launcher.py '<json>' -- <cmd...>``。
+启动器在 exec 之前施加 RLIMIT_*：
 
 * RLIMIT_AS    —— 地址空间上限（``task_memory_limit_mb``，默认 2048MB）。
   ``a=[0]*10**10`` 在**子进程**内 OOM，而不是拖垮执行器上所有并发任务
@@ -45,8 +48,19 @@ B-1 —— 资源上限（始终生效，POSIX）
 * RLIMIT_NPROC —— 进程数上限（``task_nproc_limit``，默认 0 不设，因
   NPROC 按真实 UID 计，任务与执行器同 UID 时会连带约束执行器）。
 
+**EXEC-02（审计 P2）：为什么不再是 preexec_fn。** 旧实现返回一个
+``preexec_fn`` 在 fork 与 exec 之间跑 Python（``os.setsid`` + setrlimit）。
+执行器是**多线程**进程，而 CPython 明确标注「fork 后 exec 前跑 Python 代码」
+在多线程下可能死锁（子进程只继承调用线程，`_PyImport_AcquireLock` / malloc
+等跨线程锁无人释放 → 任务进程 exec 前挂住）。``task_launcher.py`` 是**新
+exec** 的解释器（天然单线程、无继承锁面），它施加限制后 ``os.execvpe`` 真实
+命令（PID 不变 → pgid 杀树语义不变）。任务进程的**独立进程组**由父进程的
+``start_new_session=True``（posix_spawn SETSID，内核态、child 内零 Python）
+建立，launcher 里的 ``setsid()`` 只是兜底。
+
 Windows 无等价原语（Job Object 需额外工程），win32 上这些限制跳过并
-记录 warning；沙箱同样只在 POSIX 生效。
+记录 warning（``build_rlimit_limits`` 返回 None → 不包 launcher，spawn
+kwargs 与任务行为逐字节不变）；沙箱同样只在 POSIX 生效。
 
 环境隔离
 --------
@@ -56,13 +70,14 @@ Windows 无等价原语（Job Object 需额外工程），win32 上这些限制�
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import stat
 import sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -73,37 +88,45 @@ SANDBOX_BWRAP = 'bwrap'
 # win32 无 RLIMIT_* 原语：每个任务都打一行会刷屏，只在首个任务子进程上记一次。
 _win32_rlimit_noted = False
 
+#: B-1 认的资源白名单。这份名单是**父进程与 task_launcher 的唯一契约**：
+#: 父进程只产出名字（JSON 可序列化，不含平台数值常量），launcher 侧再按同一
+#: 名单做一次校验（不信任 argv）。
+RLIMIT_NAMES: tuple[str, ...] = (
+    'RLIMIT_AS',
+    'RLIMIT_CPU',
+    'RLIMIT_FSIZE',
+    'RLIMIT_NOFILE',
+    'RLIMIT_NPROC',
+)
+
+#: 启动器脚本路径（随执行器代码一起发布）。用 ``Path(__file__)`` 而不是
+#: ``sys.path``/cwd：任务子进程的 cwd 是任务工作目录，那里不可信。
+LAUNCHER_SCRIPT: Path = Path(__file__).resolve().with_name('task_launcher.py')
+
 
 class SandboxUnavailable(RuntimeError):
-    """沙箱配置启用但无法满足（bwrap 缺失 / 用户命名空间被禁）。
+    """沙箱/资源限制配置启用但无法满足（bwrap 缺失 / 用户命名空间被禁 /
+    资源限制启动器不可用）。
 
     调用方（routers/execute.py）把它转成任务失败，绝不降级运行。
     """
 
 
-def _rlimit_pre_exec(limits: dict) -> Callable[[], None]:
-    """Return a preexec_fn applying the given {resource.RLIMIT_*: (soft, hard)}."""
-
-    def _apply() -> None:
-        import resource
-
-        for rsrc, (soft, hard) in limits.items():
-            try:
-                resource.setrlimit(rsrc, (soft, hard))
-            except (ValueError, OSError) as exc:  # 单条失败不阻断其余
-                logger.warning('setrlimit(%s, %r) failed in preexec: %s', rsrc, (soft, hard), exc)
-
-    return _apply
-
-
-def build_rlimit_pre_exec(
+def build_rlimit_limits(
     settings,
     timeout_seconds: float,
-) -> Optional[Callable[[], None]]:
-    """Build the task-process rlimit preexec_fn from settings (POSIX only).
+    *,
+    include_nproc: bool = True,
+) -> Optional[dict[str, tuple[int, int]]]:
+    """Build the task-process rlimit spec from settings (POSIX only).
 
-    Returns None on win32 (no resource module semantics) or when every limit
-    is disabled, so callers can keep the existing spawn kwargs untouched.
+    Returns ``{name: (soft, hard)}`` or None on win32 (no resource module
+    semantics) / when every limit is disabled, so callers can skip the
+    launcher wrapper entirely and keep spawn args untouched.
+
+    ``include_nproc=False`` is for the prepare-stage subprocesses (git/uv):
+    RLIMIT_NPROC is charged per *real UID*, and uv legitimately spawns helper
+    processes of its own, so prepare keeps the historical "no NPROC" shape.
     """
     global _win32_rlimit_noted
     if sys.platform == 'win32':
@@ -118,16 +141,12 @@ def build_rlimit_pre_exec(
             )
             _win32_rlimit_noted = True
         return None
-    try:
-        import resource
-    except ImportError:  # pragma: no cover - 非 POSIX 兜底
-        return None
 
-    limits: dict = {}
+    limits: dict[str, tuple[int, int]] = {}
     mb = settings.task_memory_limit_mb
     if mb and mb > 0:
         value = mb * 1024 * 1024
-        limits[resource.RLIMIT_AS] = (value, value)
+        limits['RLIMIT_AS'] = (value, value)
 
     cpu = settings.task_cpu_limit_seconds or 0
     if not cpu and timeout_seconds and timeout_seconds > 0:
@@ -135,24 +154,98 @@ def build_rlimit_pre_exec(
         cpu = int(timeout_seconds) + 60
     if cpu and cpu > 0:
         # 硬限留 10s 余量：让超时 kill 先到场，避免 SIGXCPU 提前打断正常收尾。
-        limits[resource.RLIMIT_CPU] = (cpu, cpu + 10)
+        limits['RLIMIT_CPU'] = (cpu, cpu + 10)
 
     fsize_mb = settings.task_fsize_limit_mb
     if fsize_mb and fsize_mb > 0:
         value = fsize_mb * 1024 * 1024
-        limits[resource.RLIMIT_FSIZE] = (value, value)
+        limits['RLIMIT_FSIZE'] = (value, value)
 
     nofile = settings.task_nofile_limit
     if nofile and nofile > 0:
-        limits[resource.RLIMIT_NOFILE] = (nofile, nofile)
+        limits['RLIMIT_NOFILE'] = (nofile, nofile)
 
-    nproc = settings.task_nproc_limit
-    if nproc and nproc > 0:
-        limits[resource.RLIMIT_NPROC] = (nproc, nproc)
+    if include_nproc:
+        nproc = settings.task_nproc_limit
+        if nproc and nproc > 0:
+            limits['RLIMIT_NPROC'] = (nproc, nproc)
 
     if not limits:
         return None
-    return _rlimit_pre_exec(limits)
+    return limits
+
+
+def _encode_limits(limits) -> str:
+    """Validate + serialize the rlimit spec for the launcher argv.
+
+    The launcher re-validates (it never trusts argv), but failing here keeps
+    the failure inside the executor with a readable message **before** a
+    process is spawned — and makes it impossible to hand the launcher a spec
+    that would make it bail out after the fact.
+    """
+    if not isinstance(limits, dict):
+        raise SandboxUnavailable(
+            f'资源限制参数非法（不是映射）：{limits!r}；已 fail-closed，未降级为无资源限制运行'
+        )
+    payload: dict[str, list[int]] = {}
+    for name, pair in limits.items():
+        if name not in RLIMIT_NAMES:
+            raise SandboxUnavailable(
+                f'资源限制参数非法：未知资源 {name!r}（允许：{", ".join(RLIMIT_NAMES)}）；'
+                '已 fail-closed，未降级为无资源限制运行'
+            )
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            raise SandboxUnavailable(
+                f'资源限制参数非法：{name} 必须是 (soft, hard)；'
+                '已 fail-closed，未降级为无资源限制运行'
+            )
+        soft, hard = pair
+        if type(soft) is not int or type(hard) is not int:
+            raise SandboxUnavailable(
+                f'资源限制参数非法：{name} 的 soft/hard 必须是整数：{pair!r}；'
+                '已 fail-closed，未降级为无资源限制运行'
+            )
+        if soft < 1 or hard < soft:
+            raise SandboxUnavailable(
+                f'资源限制参数非法：{name} 要求 1 <= soft <= hard，实际 {pair!r}；'
+                '已 fail-closed，未降级为无资源限制运行'
+            )
+        payload[name] = [soft, hard]
+    return json.dumps(payload, sort_keys=True)
+
+
+def build_launcher_cmd(cmd: list[str], limits) -> list[str]:
+    """Wrap ``cmd`` so RLIMIT_* are applied by ``task_launcher.py``.
+
+    ``limits`` is the output of :func:`build_rlimit_limits` (or None). None /
+    empty → returns ``cmd`` unchanged (zero-overhead path: no rlimits
+    configured, or win32 where RLIMIT has no equivalent).
+
+    The launcher is a **freshly exec'd** interpreter, so no Python runs
+    between fork and exec of the task itself (EXEC-02): that is what removes
+    the multi-threaded-fork deadlock surface of the old ``preexec_fn``. It
+    keeps the PID (``execvpe``), so the executor's pgid-based tree kill still
+    targets the task's own process group (established by the spawn's
+    ``start_new_session``).
+    """
+    if not limits:
+        return cmd
+    if sys.platform == 'win32':
+        # 防御性：build_rlimit_limits 在 win32 恒返回 None。真走到这里说明调用
+        # 方绕过了配置层——宁可失败，也不静默变成「无资源限制执行」。
+        raise SandboxUnavailable(
+            '资源限制启动器（task_launcher）仅支持 POSIX；win32 无 RLIMIT_* 原语；'
+            '已 fail-closed，未降级为无资源限制运行'
+        )
+    if not sys.executable:
+        # 嵌入式/冻结解释器可能没有 sys.executable。此时无法起 launcher —— 宁可
+        # 让任务失败，也不静默丢掉资源上限继续跑。
+        raise SandboxUnavailable(
+            '资源限制启动器需要 sys.executable，但当前解释器未报告可执行路径；'
+            '已 fail-closed，未降级为无资源限制运行'
+        )
+    spec = _encode_limits(limits)
+    return [sys.executable, '-I', str(LAUNCHER_SCRIPT), spec, '--', *cmd]
 
 
 def build_sandbox_cmd(

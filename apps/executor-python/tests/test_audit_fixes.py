@@ -733,16 +733,31 @@ def test_executor_env_round_trips_through_the_python_sdk():
 
 
 # ---------------------------------------------------------------------------
-# 实施轮 #15：`_prepare_rlimit_pre_exec` 的 win32 守卫曾是死代码
+# 实施轮 #15：prepare rlimit 的 win32 守卫曾是死代码
 # （`import resource` 写在 try 之外，注释还写着 "ImportError guarded below"）。
 # 后果：Windows 宿主上任何 gitRepo 任务 / 需要建 venv 的任务在 prepare 阶段
-# 直接 ModuleNotFoundError，而 347-348 行的注释承诺「win32 返回 None 原样 spawn」。
+# 直接 ModuleNotFoundError，而注释承诺「win32 返回 None 原样 spawn」。
+#
+# EXEC-02 之后这条不变量变成两条（且更硬）：父进程**根本不再 import resource**
+# （限制由 task_launcher 在新 exec 的解释器里施加），平台判定只剩 sys.platform
+# 一处 → 不存在"某个平台 import 失败"的分支可死。
 # ---------------------------------------------------------------------------
-def test_prepare_rlimit_returns_none_when_resource_module_missing(monkeypatch):
-    """非 POSIX（无 resource）必须返回 None，而不是抛 ModuleNotFoundError。"""
+def test_prepare_rlimit_survives_missing_resource_module(monkeypatch):
+    """resource 不可导入 / win32 都必须返回正确结果，且绝不抛 ModuleNotFoundError。"""
     import sys as _sys
 
-    # None 在 sys.modules 里 => `import resource` 抛 ImportError（模拟 win32）
+    import sandbox
+
+    # None 在 sys.modules 里 => `import resource` 抛 ImportError
     monkeypatch.setitem(_sys.modules, 'resource', None)
 
-    assert execute_module._prepare_rlimit_pre_exec(60) is None
+    # ① POSIX：父进程不依赖 resource，规格照常产出（施加由 launcher 负责）
+    limits = execute_module._prepare_rlimit_limits(60)
+    assert limits is not None
+    assert limits['RLIMIT_AS'] == (2048 * 1024 * 1024, 2048 * 1024 * 1024)
+    assert 'RLIMIT_NPROC' not in limits
+
+    # ② win32：平台守卫返回 None（调用方据此原样 spawn，不包 launcher）
+    monkeypatch.setattr(sandbox, '_win32_rlimit_noted', True)
+    monkeypatch.setattr(sandbox, 'sys', type('_Sys', (), {'platform': 'win32'})())
+    assert execute_module._prepare_rlimit_limits(60) is None

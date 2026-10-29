@@ -135,3 +135,26 @@ def _clear_token_fetch_backoff():
     auth_module._token_fetch_failed_at = 0.0
     yield
     auth_module._token_fetch_failed_at = 0.0
+
+
+@pytest.fixture()
+def real_cmd():
+    """EXEC-02：剥掉 ``task_launcher`` 包装，返回**真正被执行**的命令 argv。
+
+    POSIX 上任务子进程与 prepare（git/uv）子进程现在被包成
+    ``[python, '-I', task_launcher.py, '<limits-json>', '--', *真实命令]``
+    ——RLIMIT 由新 exec 的单线程 launcher 在 exec 前施加（不再用 preexec_fn，
+    多线程执行器里那条路径可能死锁）。断言「跑的是什么命令」的用例都应先过这
+    一层，否则断言的是包装形状；未包装的 argv 原样返回。
+    """
+
+    def _real(args):
+        args = list(args)
+        if len(args) >= 3 and args[1] == '-I' and str(args[2]).endswith('task_launcher.py'):
+            try:
+                return args[args.index('--') + 1:]
+            except ValueError:  # pragma: no cover - 包装形状必然带 `--`
+                return args
+        return args
+
+    return _real
