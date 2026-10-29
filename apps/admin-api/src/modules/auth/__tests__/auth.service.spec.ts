@@ -1,5 +1,9 @@
 import { Test } from "@nestjs/testing";
-import { NotFoundException, UnauthorizedException } from "@nestjs/common";
+import {
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
@@ -783,6 +787,25 @@ describe("AuthService (__tests__)", () => {
       expect(refreshTokenRepo.delete).toHaveBeenNthCalledWith(1, {
         expiresAt: expect.anything(),
       });
+    });
+
+    // rt-5（CRON-GUARD）: @nestjs/schedule 的 cron 回调**不 await** 返回的
+    // Promise —— 方法体抛错 = unhandledRejection → main.ts 的
+    // gracefulFatalShutdown → 整实例 exit(1)（所有 API 一起 503）。
+    // 两条断言缺一不可：不 reject（不杀进程）+ warn 带 cron 名（不静默吞）。
+    it("rt-5: repo 抛错时 cron 入口不 reject，并 warn 出可定位的 cron 名", async () => {
+      const warn = jest.spyOn(Logger.prototype, "warn").mockImplementation();
+      try {
+        refreshTokenRepo.delete.mockRejectedValueOnce(
+          new Error("connection terminated unexpectedly"),
+        );
+        await expect(service.cleanupExpiredTokens()).resolves.toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining("auth.cleanupExpiredTokens"),
+        );
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 });

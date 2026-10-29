@@ -784,6 +784,16 @@ jobs:
       # 且只在多副本时显形、单机开发永远看不到。22 处目前全有门禁，此闸防新增时漏写。
       - name: Every @Cron has a leader gate
         run: npm run check:cron-leader-gate
+      # 同一族缺陷的另一半（rt-5）：@Cron 回调不被 await，方法体裸奔时一次瞬态
+      # DB 错误 = unhandledRejection → gracefulFatalShutdown → 整实例 exit(1)。
+      # 首跑就抓出 7 处（含审计漏算的 30s 级 markStaleOffline）。
+      - name: Every @Cron body has a top-level exception guard
+        run: npm run check:cron-guard
+      # 对外示例是文档的一部分，但没人跑它们：四份 task.example.json 曾同时含有
+      # DTO 白名单外的键、缺必填 triggerType、以及 6 段 cron（后端只要 5 段）。
+      # 本闸用 CreateTaskDto 的真实装饰器反推必填项与枚举，双向对账。
+      - name: Example task payloads match CreateTaskDto
+        run: npm run check:task-examples
       # atlas 的「N 个 X」自述同样会腐烂：迁移数曾停在 60（实际 103）、模块索引漏了 agent。
       - name: Atlas self-declared counts vs code
         run: node scripts/check-atlas-counts.mjs

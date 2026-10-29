@@ -52,6 +52,8 @@ import {
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 
 /**
  * P5/P6（agent-and-deployment）：SOP 协议业务（设计文档 04 + 11）。
@@ -1447,9 +1449,23 @@ export class SopService {
    *
    * 判定逻辑在 sop-timeout.ts（纯函数，check 脚本可完整断言）；这里只做
    * 扫描、落库与通知（fail-open——通知失败不影响置态）。
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**。cron 回调不 await 返回的 Promise——
+   * `assignments.find/update` 与逐行 safeAudit 都是独立 await 点，一次瞬态
+   * DB 错误即 unhandledRejection → main.ts 的 gracefulFatalShutdown →
+   * 整实例 exit(1)。异常改由 guardedCron 兜住（warn + 下一拍重试，扫描幂等），
+   * 扫描体抽到 sweepAssignmentTimeoutsBody。（rt-5 报告里列举的是 5 处，本条是
+   * `scripts/check-cron-guard.mjs` 首跑机械扫描补上的第 7 处。）
    */
   @Cron("0 */5 * * * *")
   async sweepAssignmentTimeouts(): Promise<void> {
+    await guardedCron("sop.sweepAssignmentTimeouts", this.logger, () =>
+      this.sweepAssignmentTimeoutsBody(),
+    );
+  }
+
+  /** sweepAssignmentTimeouts 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async sweepAssignmentTimeoutsBody(): Promise<void> {
     if (!this.isSchedulerLeader()) return;
     const ttls = {
       claimTtlMs: this.configTtl(

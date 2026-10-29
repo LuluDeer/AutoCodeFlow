@@ -39,6 +39,9 @@ import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算——此前入队
 // 直传 DB 原值，方向倒置（紧急任务反而最后出队）。
 import { toBullPriority } from "../../common/utils/task-priority.util";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现；本文件的
+// guardTick 在此之上只加重入闸，不再自带第二份 try/catch）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -1747,9 +1750,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * 一次短暂的数据库抖动就能把整个 admin-api 打挂（所有 API 一起 503），
    * 而正确的处置只是「记日志 + 下一轮重试」。
    *
-   * 现在所有 cron 体都经本方法包裹：异常被捕获、以 warn 记栈（含 tick 名），
-   * 下一轮周期自然重试。**刻意不重试本轮**——这些 tick 全是幂等扫描，下一轮
-   * 5s/10s/1min/2min 后重跑比在本轮内紧循环重试更安全（不放大 DB 压力）。
+   * rt-5（2026-10-29 第 3 轮）：**异常闸的实现在 `common/utils/cron-guard.util.ts`
+   * 的 `guardedCron`，本方法只保留重入闸**。此前这里自带一份 try/catch，全仓
+   * 于是有第二处「异常该不该上抛」的判据；抽出公共 util 后 auth / audit /
+   * executor ×2 / app-deployment 五个站点共用同一实现，
+   * `scripts/check-cron-guard.mjs` 也只剩一个判据词。
+   *
+   * 仍然刻意**不重试本轮**：这些 tick 全是幂等扫描，下一轮 5s/10s/1min/2min
+   * 后重跑比在本轮内紧循环重试更安全（不放大 DB 压力）。
    */
   private async guardTick(
     name: string,
@@ -1774,15 +1782,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
     this.inFlightTicks.add(name);
     try {
-      await body();
-      return true;
-    } catch (err: unknown) {
-      this.logger.warn(
-        `Scheduler tick "${name}" failed and was skipped this round ` +
-          `(next tick retries): ${
-            err instanceof Error ? (err.stack ?? err.message) : String(err)
-          }`,
-      );
+      // 异常闸在 guardedCron 内（warn + 不上抛）。失败轮同样返回 true：那一拍
+      // **确实消耗了扫描资源**，按「跑了」记账才不会让 tick 数与真实扫描次数
+      // 脱钩（异常轮次以 scheduler.<name> 的 warn 单独可见）。
+      await guardedCron(`scheduler.${name}`, this.logger, body);
       return true;
     } finally {
       this.inFlightTicks.delete(name);

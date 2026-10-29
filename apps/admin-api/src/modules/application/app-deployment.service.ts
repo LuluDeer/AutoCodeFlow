@@ -47,6 +47,8 @@ import type { Executor } from "../executor/entities/executor.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus/audit 先例——
 // 既有单测直接 new 装配时 gate 缺席 → null → 门禁不生效）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 import {
   assertAndPinExecutorUrl,
   PinnedHttpTarget,
@@ -2909,9 +2911,23 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  TTL 的「commandId 未决」行（statusMessage 带 PULL_QUEUED_MESSAGE_PREFIX）
    *  豁免扫描：否则执行器离线超窗时行被判 FAILED 并释放 in-flight 槽位，
    *  旧命令在 TTL 内被重连的执行器消费 → 同一执行器两个真实进程。命令 TTL
-   *  过后执行器侧本就按 issuedAt 丢弃载荷，届时再扫死是安全的。 */
+   *  过后执行器侧本就按 issuedAt 丢弃载荷，届时再扫死是安全的。
+   *
+   *  rt-5（CRON-GUARD）：**顶层异常闸**。cron 回调不 await 返回的 Promise——
+   *  本体内 find / 逐行 markVersionSnapshotStatus / recallDeploymentCommands /
+   *  recordDeploymentEvent 全是独立 await 点，2 分钟一拍、每天 720 次暴露，
+   *  任一次瞬态 DB 错误即 unhandledRejection → main.ts 的 gracefulFatalShutdown
+   *  → 整实例 exit(1)。异常改由 guardedCron 兜住（warn + 下一拍重试，判态
+   *  幂等），扫描体抽到 detectStuckDeploymentsBody。 */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
+    await guardedCron("application.detectStuckDeployments", this.logger, () =>
+      this.detectStuckDeploymentsBody(),
+    );
+  }
+
+  /** detectStuckDeployments 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async detectStuckDeploymentsBody(): Promise<void> {
     // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     const fiveMinutesAgo = new Date(Date.now() - DEPLOYMENT_PENDING_TIMEOUT_MS);

@@ -6,6 +6,8 @@ import { AuditLog } from "./entities/audit-log.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 // NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 // §2.1 keyset 游标：`audit_logs.id` 是 integer（**不是** uuid），故用整型游标
@@ -147,21 +149,35 @@ export class AuditService {
     await this.repo.save(entry);
   }
 
-  /** Q7: Daily at 2:05am, clean up audit logs older than 180 days */
+  /**
+   * Q7: Daily at 2:05am, clean up audit logs older than 180 days
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**。cron 回调不 await 返回的 Promise，
+   * 方法体裸奔时一次瞬态 DB 错误（bypass 事务里 SET LOCAL / 分批 DELETE 任一
+   * 次 reject）即 unhandledRejection → main.ts 的 gracefulFatalShutdown →
+   * 整实例 exit(1)。异常改由 guardedCron 兜住（warn + 下一拍重试，retention
+   * 幂等）。**就地闭包而不抽 Body 方法**：audit-append-only.spec 用
+   * `Object.getOwnPropertyNames(AuditService.prototype)` 断言「公开方法面 =
+   * { log, findAll, exportCsv, cleanupOldAuditLogs }，无其他写删入口」——
+   * 抽出新原型方法会迫使那条 SEC-10 断言放宽白名单，等于为了修 cron 闸去
+   * 削弱一条更贵的守卫。
+   */
   @Cron("0 5 2 * * *")
   async cleanupOldAuditLogs(): Promise<void> {
-    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
-    if (this.leaderGate && !this.leaderGate.isLeader) return;
-    const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
-    // SEC-10: 走 bypass 事务（append-only 触发器唯一放行点），替代原
-    // 直连 repo.delete（迁移 1790000000006 后会被触发器拒绝）。
-    const affected = await this.retentionDelete(oneEightyDaysAgo);
-    if (affected > 0) {
-      // Log the cleanup itself — but don't create an audit log entry to avoid recursion
-      this.logger.log(
-        `Q7 Cleanup: removed ${affected} audit logs older than 180 days`,
-      );
-    }
+    await guardedCron("audit.cleanupOldAuditLogs", this.logger, async () => {
+      // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+      if (this.leaderGate && !this.leaderGate.isLeader) return;
+      const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
+      // SEC-10: 走 bypass 事务（append-only 触发器唯一放行点），替代原
+      // 直连 repo.delete（迁移 1790000000006 后会被触发器拒绝）。
+      const affected = await this.retentionDelete(oneEightyDaysAgo);
+      if (affected > 0) {
+        // Log the cleanup itself — but don't create an audit log entry to avoid recursion
+        this.logger.log(
+          `Q7 Cleanup: removed ${affected} audit logs older than 180 days`,
+        );
+      }
+    });
   }
 
   /**
