@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十六轮 → 会话发起人 + 审批四眼原则开关（G4），main）**：
+  - **`3b0cd7b8`**：`agent_sessions` 没有 creator 列——「不能自己批自己」不是漏判而是**无数据可判**；现有四眼靠「对 Agent 永久禁用审批工具」实现，挡不住人类自批。本轮落地：迁移 0078 加 `createdBy varchar(64) NULL`（存量 NULL=未知）；三处建会话入口写发起人（controller `user:<name>` / 事件 `system:event:<type>` / cron `system:cron`）；响应 DTO 暴露；策略开关 `AGENT_BLOCK_SELF_APPROVAL`（默认 **false** 以免单人部署被卡死）开启后发起人不能 granted 自己的审批单（403 `AGENT_APPROVAL_SELF_DENIED`，拒绝仍允许），存量 NULL 只 warn 不拦。
+  - **验证**：admin-api tsc 0；审批控制器 +3、session create +1；迁移注册 123（下一 0079）、对称 0 违规；`gen:error-i18n` 426 码；env-drift 227 键全覆盖；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：G5（节点级检查点/回放）、G6（DAG 扇出）、rt-2 结构性解法、守卫审计剩余项。
+
 - **本轮（2026-10-29 第三十五轮 → 触发面幂等键（G10），main）**：
   - **`353b6628`**：`POST /tasks/:id/execute` 此前每次调用都建新执行行——客户端重试/网关重放/脚本重跑 = 第二次真实副作用（`blockStrategy` 只防「同参正在跑」）。新增 `Idempotency-Key` 头（8-128 字符）：同键同参 24h 内重放 → 409 `TASK_IDEMPOTENCY_REPLAY`；同键**不同参** → 409 `TASK_IDEMPOTENCY_KEY_REUSED`（绝不静默返回旧结果）；Redis 不可用 → fail-open；触发失败 `release()` 释放键（否则重试被当 replay，把可重试故障变永久失败）。无迁移（Redis SETNX + 载荷指纹）。
   - **验证**：admin-api tsc 0；幂等单测 **5 例** + 控制器 **5 例**；`gen:error-i18n`（425 码中英齐备）；api-reference 206 路径一致；全量 admin-api 见本轮末尾复核。
