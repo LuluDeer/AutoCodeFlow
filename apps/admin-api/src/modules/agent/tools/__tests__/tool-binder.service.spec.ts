@@ -389,8 +389,40 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
     expect(tasks.pause).toHaveBeenCalledWith("t-1");
     await api.call("resume_task", { taskId: "t-1" });
     expect(tasks.resume).toHaveBeenCalledWith("t-1");
-    await api.call("create_task_from_template", { templateId: "tpl-1" });
+    // TOOLS-03：schema 用 template/name/description（此前执行体读 templateId，
+    // 真实调用恒 findOne("") → NOT_FOUND，且必填的 name 被静默丢弃）
+    await api.call("create_task_from_template", { template: "tpl-1" });
     expect(templates.instantiate).toHaveBeenCalledWith("tpl-1", {});
+    await api.call("create_task_from_template", {
+      template: "tpl-2",
+      name: "备份任务",
+      description: "每晚",
+      overrides: { timeoutSec: 60, name: "覆盖名" },
+    });
+    expect(templates.instantiate).toHaveBeenLastCalledWith("tpl-2", {
+      name: "覆盖名",
+      description: "每晚",
+      timeoutSec: 60,
+    });
+  });
+
+  it("TOOLS-03：create_application 透传 schema 必填的 version/runtime", async () => {
+    const { api, applications } = harness();
+    await api.call("create_application", {
+      name: "demo",
+      version: "1.0.0",
+      runtime: "node",
+      description: "d",
+    });
+    expect(applications.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "demo",
+        version: "1.0.0",
+        runtime: "node",
+        description: "d",
+      }),
+      null,
+    );
   });
 
   it("deploy_application/deploy_app 共用方案 C：deploy 透传可选字段", async () => {

@@ -658,21 +658,26 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     resourceIdParam: "applicationId",
   },
   {
+    // TOOLS-03：此前 schema 要求 `name` 且 resourceIdParam="name"，而执行体
+    // 读 args.applicationId、scope 闸拿 name 比 application **id** —— 三处
+    // 互相矛盾，真实调用必然失败（scope 恒不命中 / 空 id 部署）。这里按
+    // 「执行体 + scope 的既有语义」对齐为 applicationId（与 deploy_application
+    // 同参，保留别名以兼容既有提示词与文档）。
     name: "deploy_app",
     description:
-      "Deploy an application by NAME (resolved via GET /applications). Same approval semantics as deploy_application.",
+      "Deploy an application by application ID (alias of deploy_application; same approval semantics).",
     parameters: {
       type: "object",
       properties: {
-        name: str("Application name"),
+        applicationId: uuid("Application ID"),
         executorId: uuid("Target executor (optional)"),
       },
-      required: ["name"],
+      required: ["applicationId"],
       additionalProperties: false,
     },
     tier: "write",
     resourceKind: "application",
-    resourceIdParam: "name",
+    resourceIdParam: "applicationId",
   },
   {
     name: "upgrade_deployment",

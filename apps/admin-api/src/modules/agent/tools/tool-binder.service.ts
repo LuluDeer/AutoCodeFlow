@@ -310,10 +310,15 @@ export class ToolBinderService implements OnModuleInit {
     );
 
     // create_application：新建无破坏（03 §2 Tier 2 允许项）
+    // TOOLS-03：schema 的必填是 {name, version, runtime}，执行体此前只传
+    // name/description/gitRepo —— 插入必然违反 NOT NULL（23502）。schema 是
+    // 模型唯一能看到的契约，执行体读的键必须与它逐字对齐。
     this.api.register("create_application", async (args) =>
       this.applications.create(
         {
           name: this.str(args.name),
+          version: this.str(args.version),
+          runtime: this.str(args.runtime),
           ...(args.description
             ? { description: this.str(args.description) }
             : {}),
@@ -324,11 +329,21 @@ export class ToolBinderService implements OnModuleInit {
     );
 
     // create_task_from_template：沙箱校验后允许（新建不破坏既有）
+    //
+    // TOOLS-03：schema 声明的是 `{template, name, description, overrides}`，
+    // 执行体此前读 args.templateId（undefined → findOne("") → NOT_FOUND），
+    // 并把 schema 必填的 name 静默丢弃。这里按 schema 读 template，并把
+    // name/description 归一进 instantiate 的 body（overrides 可覆盖）。
     this.api.register("create_task_from_template", async (args) =>
-      this.templates.instantiate(
-        this.str(args.templateId),
-        (args.overrides ?? {}) as Record<string, unknown>,
-      ),
+      this.templates.instantiate(this.str(args.template), {
+        ...(args.name ? { name: this.str(args.name) } : {}),
+        ...(args.description
+          ? { description: this.str(args.description) }
+          : {}),
+        ...((args.overrides && typeof args.overrides === "object"
+          ? args.overrides
+          : {}) as Record<string, unknown>),
+      }),
     );
 
     // deploy_application / deploy_app：**方案 C**（03 §3）——不新增审批机制，
