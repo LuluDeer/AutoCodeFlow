@@ -90,8 +90,11 @@
 | C1 | P2 | `deploy_application`/`deploy_app` 是 write 但无 `approvalRequired`（依赖 DEP-04 平台级审批） | 需先确认 DEP-04 默认开关 |
 | C3 | P2 | 澄清回复归属校验在执行体而非闸门 | 需 sop 侧投影数据做 pre-resolve hook |
 | E1 | **P1** | `AppDeploymentPage` 多处派生量（升级覆盖面 / 占用机集合 / 自定义 startCommand 告警 / 升级入口门 / 待审批计数）只按**当前页 20 行**算，而 `upgradeAll` 是后端全行执行 → 弹窗低报影响范围、第 21 台起的占用校验失效、翻到全 failed 页时「升级所有」按钮消失 | 需先有「本应用覆盖统计」的数据面（后端聚合端点或前端全量拉取），四处派生量必须同源 |
-| E3 | P2 | SSE 换票失败走共享 axios 拦截器 → 每 3–30s 弹一条错误 toast（去重窗口只有 1.5s），后端滚动发布时用户被持续轰炸 | 换票请求加「跳过全局 toast」标记，页面级只提示一次 |
-| E5 | P3 | `ExecutionsPage` 的「最近 1/24 小时」预设 `value` 在**渲染期**求值；SSE live 时页面不再周期重渲 → 挂机 N 小时后点「最近 1 小时」查的是 N 小时前的窗口 | 预设改为点击时求值 |
+| SEC-1 | P2 | 产物上传面缺「共享令牌 ≠ 行身份」收口：`verifyUploadAuth` 先试共享令牌、命中即放行（`artifacts.service.ts:278-284`），任一执行器可向任意 execId 的产物目录写入或灌满上限，导致他人执行产物被替换 / 后续上传静默失败；同体系的 execution-callback 已明令「共享令牌不得跨执行器确认」（`execution-callback.controller.ts:126-133`） | 共享令牌**不携带执行器身份**：要补行归属必须改用 per-execution 票据或地址绑定，属破坏性变更（需升级路径 + 产品口径） |
+| SEC-2 | P2 | 执行器 artifact 下载仍接受 `?token=` 查询串（`executor.controller.ts:1109-1150`，openapi 还把它文档化成推荐替代方式）：fleet 级凭据会进 nginx/ALB access log、shell history、`ps`；仓库自己在 SSE 面已因同一理由撤销了同类通道（`apps/admin-web/src/api/sse.ts:9-17`） | 需同步改 `scripts/install.sh`（改 `-H`）与已发布文档，并给存量部署升级说明；属破坏性变更 |
+| API-05 | P3 | 13 条 AI 端点缺响应 schema（`check:response-schema:report` 缺口全在 AI tag 下），生成类型退化为 `content?: never`，admin-web 只能手写 `AiProviderAdminView`——后端改字段前端零编译期告警 | M 级工作量（逐端点补具名 DTO 并上探基线），收益在类型面而非运行时 |
+| D-02b | P3 | Electron 权限闸门目前装在窗口创建路径（`openWizard`/`openStatus`，幂等）——行为等价但不够正统；更清晰的落点是 `app.whenReady` 里显式调用一次 `installSessionPermissionPolicy()` | `index.ts` 当时不在该 writer 的写域，需单独一行改动 |
+| OPS-DX-04b | P3 | `docs/ARCH-28b-turbo-adoption.md` 仍称 turbo「以弱形态接入落地」，而根 `package.json` 没有任何 `turbo run` 调用（turbo 依赖也未安装）——配置是死配置，env 面本轮已修并加守卫 | 属历史报告口径，改它要连带 README / PLAN-CLAIMS 的表述，单独一轮 |
 | G4 | P3 | `/api/config/reload` 在 400 之前已部分赋值（并发上限 / admin_api_url）→ 调用方以为整批未生效；pull 模式每 25s 重复同一半应用 | 先全量校验再统一赋值 |
 
 > 记录口径：**修完就删行**，并在下面「已收口」留一行可追溯的结论（含提交号与反证方式），
@@ -107,6 +110,25 @@
 
 ### 已收口（滚动，最近在上）
 
+- 2026-10-30 · 实施轮 #18 · **四个 P1「假成功/停服」**（详见
+  [implementation-round-18](archive/reports/implementation-round-18-2026-10-30.md)）：
+  ① agent 空 LLM 响应被当结论 → `succeeded`+空结论+静默（`fix(agent)` 31f15a43）；
+  ② daemon 升级失败只回滚软链不重启旧进程 → 客户应用停服（`fix(executor-node)`
+  c5d83f8e）；③ python 停机取消不落终态载荷 → 执行停在 RUNNING 到 stale sweep
+  （`fix(executor-python,registry-pypi)` 30e8cd7a）；④ 桌面更新取消归因挂错事件 →
+  下一次真实失败被静默吞掉（`fix(desktop)` afd822f3）。四者都补了「改回去会红」的用例。
+- 2026-10-30 · 实施轮 #18 · **未知渲染成空 / 旧快照覆盖新状态**（同族第三、四例）：
+  审批单读取失败显示「暂无审批单」（会让人以为没有待批）、通知铃失败显示「暂无失败」、
+  执行器列表断流后旧 overlay 把轮询新状态覆盖成「在线」。`fix(web)` 13d34c9e。
+- 2026-10-30 · 实施轮 #18 · **E3 换票 toast 轰炸 / E5 时间预设渲染期求值**（两条遗留
+  销账）：换票请求加 `skipGlobalToast` + 页面级只提示一次；预设改为展开时重建锚点。
+  反证：连续失败 3 次只弹 1 次；fake timers 下 t+5h 点预设必须查到 t+5h-1h 的窗口。
+- 2026-10-30 · 实施轮 #18 · **本地入口三处假成功**：`start-dev.sh` 路径错一级（前端
+  不启动却打印「启动完成」）、`Makefile:dev` 的裸 `@wait` 恒 exit 0、固定 `sleep 5`
+  等 PG。`fix(tooling)` feb34ff9。
+- 2026-10-30 · 实施轮 #18 · **审计外的三条预存在红**：CLI R108 覆盖闸（11 个新码未归类）、
+  admin-web `tsc -b`（缺 vitest 全局类型 + 3 处夹具缺 `createdBy`，CI 的 admin-web-build
+  同命令）、turbo `build:web.env` 缺 6 个 VITE_*（接上 turbo 后会命中旧缓存产出旧地址的包）。
 - 2026-10-28 · 实施轮 #17 · **webhook 状态读取失败被当成「未启用」**：`catch(() =>
   setStatus(null))` 让「未知」与「未启用」同形，而后端对已启用任务再次 enable 会
   **轮换密钥** → 一次网络抖动变成一次误轮换。改为三态，未知态不渲染启用按钮。

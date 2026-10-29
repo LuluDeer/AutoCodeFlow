@@ -246,6 +246,10 @@ export class ArtifactsRetentionService {
     }
     if (this.execRepo) {
       try {
+        // adr-026-exempt: 与事务分支同一判据——只清 artifacts 这一个**清单列**，且
+        // 只作用于「已被保留期判定过期并删目录」的执行行；90 天前的终态执行不再有
+        // 新产物上传（上传要求执行仍在跑），故不存在与写者竞争的现实窗口。索引行
+        // 已在上面同批删除，这里失败即整 chunk 不推进（return false），不做半写。
         await this.execRepo.update({ id: In(chunk) }, { artifacts: null });
       } catch (err) {
         this.logger.warn(
