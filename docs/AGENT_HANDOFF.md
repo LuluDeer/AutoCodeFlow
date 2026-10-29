@@ -11,6 +11,19 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十轮 → 全仓回归基线 + 裁剪边界修复，main）**：
+  - **`66d417d5`**：上一轮首尾裁剪在 `max < marker.length` 的极端输入下会把预算钳成 0、内容只剩标记（比 max 还长）。改为 budget<8 时退化为纯前缀（`slice(0,max)`），测试断言长度 ≤ max。默认 2000 永不触发，但纯函数契约必须成立。
+  - **全仓回归基线（本轮实测，五个套件并行跑 —— 恰好演示「同一时刻 ≤5」的编排）**：
+    - admin-api：**6717 例**（含 agent 342）
+    - admin-web：vitest 全绿（exit 0）
+    - executor-node：**1401 例**（54 套件，13 skip）
+    - executor-python：全量 **88.29% ≥ 86%**（exit 0）
+    - packages/mcp-server：**324 例**
+    - executor-desktop：`test:main` selftest 全绿（含 zip 交叉验证）
+    - packages/autoflow-sdk：**178 例**
+    - `test:guards:repo`：**全绿**（含迁移对称 122 个/违规 0、索引漂移 65 命名/24 未命名、enum drift 36、release 配置五层一致性、守卫接线 44）
+  - **下轮入口**：WEB-2（nginx HTTP/2——需部署形态决策：当前 nginx 只 listen 80、无 TLS，浏览器 h2 必须有 TLS 终止层）、SDK-DX-05（CHANGELOG 冻结在 1.9.0）、守卫审计未做项、SEC-R3-4（webhook 重放，需产品决策）。
+
 - **本轮（2026-10-29 第十九轮 → Agent 工具结果「首尾保留」裁剪，main）**：
   - **`54489468`（Agent 质量）**：超长工具结果此前 `slice(0, 2000)` 只留头部；对 `get_execution_logs` 这类载荷，异常栈/退出码/结论几乎总在**尾部**，模型只看到开头 INFO 行就基于不完整事实继续推理。改为 `shapeToolResultForModel`：70% 预算给头、其余给尾，中段用「省略 N 字符」标记替代（模型能判断还有多少没看到）。与 langchain 文本裁剪 / 日志查看器「保留首尾」惯例一致；持久化路径不变（截断仍落 preview+sha256）。
   - **验证**：admin-api tsc 0；agent 模块 **342 例**（+3 helper 用例）；全量 admin-api 见本轮末尾复核。
