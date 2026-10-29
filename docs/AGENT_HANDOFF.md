@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十八轮 → SEC-R3-5：授权证据语义修正，main）**：
+  - **`a1cd7e09`（P3 安全）**：`assertCanOperate` 曾在第一行无条件落「已校验」证据，于是 `assertCanOperate(row, null)`（webhook 等机器面）在**零判定**的情况下留下证据。今天 webhook 路由是 scope:"public" 不需要它，所以不可利用；但只要有 project-role 路由复用 `trigger(...)` 漏传 user（R-02 两次真实漏传），A2-B 拦截器会读到假证据放行。修法：证据 = 「判定为允许」（OPA/Cedar decision log 只记结论），主体缺失时**先返回、不落证**；其余分支保持既有落证位置（拒绝分支以异常收尾，拦截器 next 不会被调用）。
+  - **验证**：admin-api tsc 0；guards + task.service **417 例**（+1：主体缺失后无 `task:operate` 证据）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结）、守卫审计未做项、migration-symmetry 全量命中、SEC-R3-4（webhook 重放窗口）需产品决策。
+
 - **本轮（2026-10-29 第十七轮 → Agent 只读工具并行 + 守卫跟进，main）**：
   - **`6ff593ca`（Agent 能力）**：模型一次给出多个 tool_calls 时运行时会逐个串行执行——两个无依赖的只读查询延迟相加。现在**整批都是 read tier** 且墙钟未过期时按 ≤4 路并行（结果保持原始调用顺序回灌）；批里出现 write/dangerous 就退回原严格串行循环——写顺序与「第 2 个需审批 ⇒ 同批其余不执行」的挂起语义不变。参考 langgraph「独立调用并发、有状态/需审批调用串行」的纪律。
   - **`f1da9398`**：`agent-runtime-check` 的静态断言跟上 OBS3-02 的 label 收敛（`tool: this.metricToolLabel(input.toolName)`），直写模型函数名视为回归。
