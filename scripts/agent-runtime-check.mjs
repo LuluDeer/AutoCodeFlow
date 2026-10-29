@@ -484,7 +484,10 @@ console.log("\n── 3. 指标埋点 ──");
   const sess = readFileSync(join(apiDir, "src/modules/agent/runtime/agent-session.service.ts"), "utf8");
   check("会话终态埋点存在", /recordRuntime\("autoflow_agent_sessions_total"/.test(sess));
   check("  带 kind + status 标签", /autoflow_agent_sessions_total",\s*\{\s*kind: session\.kind,\s*status,/s.test(sess));
-  check("令牌埋点存在（成本归因）", /recordRuntime\("autoflow_agent_tokens_total"/.test(sess));
+  // 允许跨行调用（2026-10-29：为传第三参 value=令牌数 而换行）
+  check("令牌埋点存在（成本归因）", /recordRuntime\(\s*"autoflow_agent_tokens_total"/.test(sess));
+  // 增量必须是令牌数而不是事件次数（观测审计 P1：此前是 +1，成本低 2~3 个数量级）
+  check("  令牌增量传实际数量（不是 +1）", /direction: "in",[\s\S]{0,200}?tokensIn,/.test(sess) && /direction: "out",[\s\S]{0,200}?tokensOut,/.test(sess));
   check("  令牌按 in/out 分别计", /direction: "in"/.test(sess) && /direction: "out"/.test(sess));
   check("  带 provider/model 标签", /provider: input\.provider/.test(sess) && /model: input\.model/.test(sess));
   check("工具调用埋点存在", /recordRuntime\("autoflow_agent_tool_calls_total"/.test(sess));
