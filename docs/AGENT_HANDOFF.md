@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十九轮 → Agent 工具结果「首尾保留」裁剪，main）**：
+  - **`54489468`（Agent 质量）**：超长工具结果此前 `slice(0, 2000)` 只留头部；对 `get_execution_logs` 这类载荷，异常栈/退出码/结论几乎总在**尾部**，模型只看到开头 INFO 行就基于不完整事实继续推理。改为 `shapeToolResultForModel`：70% 预算给头、其余给尾，中段用「省略 N 字符」标记替代（模型能判断还有多少没看到）。与 langchain 文本裁剪 / 日志查看器「保留首尾」惯例一致；持久化路径不变（截断仍落 preview+sha256）。
+  - **验证**：admin-api tsc 0；agent 模块 **342 例**（+3 helper 用例）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结）、守卫审计未做项、migration-symmetry 全量命中、SEC-R3-4（webhook 重放，需产品决策）。
+
 - **本轮（2026-10-29 第十八轮 → SEC-R3-5：授权证据语义修正，main）**：
   - **`a1cd7e09`（P3 安全）**：`assertCanOperate` 曾在第一行无条件落「已校验」证据，于是 `assertCanOperate(row, null)`（webhook 等机器面）在**零判定**的情况下留下证据。今天 webhook 路由是 scope:"public" 不需要它，所以不可利用；但只要有 project-role 路由复用 `trigger(...)` 漏传 user（R-02 两次真实漏传），A2-B 拦截器会读到假证据放行。修法：证据 = 「判定为允许」（OPA/Cedar decision log 只记结论），主体缺失时**先返回、不落证**；其余分支保持既有落证位置（拒绝分支以异常收尾，拦截器 next 不会被调用）。
   - **验证**：admin-api tsc 0；guards + task.service **417 例**（+1：主体缺失后无 `task:operate` 证据）；全量 admin-api 见本轮末尾复核。
