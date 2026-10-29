@@ -59,6 +59,15 @@ export function safeTokenCount(v: unknown): number {
  */
 export const STALE_RUNNING_TIMEOUT_MS = 30 * 60_000;
 
+/**
+ * PK-19 续：waiting_input 会话的**总**等待上限（30 天）。
+ *
+ * 审批单已有 7 天 TTL；但 waiting_input 还包含「等待澄清」等人工输入面——
+ * 它们没有 TTL 时同样会永久挂着。30 天是「这条会话已经没人管了」的保守线：
+ * 到期收敛为 failed 并写明原因（用户可重新发起），而不是永远占着列表。
+ */
+export const STALE_WAITING_INPUT_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** 陈旧 running 收敛时的 errorMessage（如实指明发生了什么 + 恢复路径）。 */
 export const STALE_RUNNING_MESSAGE =
   "会话执行中断（admin-api 进程重启/崩溃，超过 30 分钟无任何步进）——" +
@@ -824,6 +833,42 @@ export class AgentSessionService {
    * 链路按需 resume（重建上下文后模型看到事实状态，重新规划未完成的
    * 副作用），与桌面端「崩溃重领整单重跑」同一保守取向。
    */
+  /**
+   * PK-19 续：等待人工输入的会话超时收口（30 天）。
+   *
+   * 审批面由 `sweepStaleApprovals`（7 天）处理；这里兜住「等待澄清」等其它
+   * waiting_input 场景——它们没有 TTL 时同样永久挂起。仍挂在**未过期**审批上的
+   * 会话跳过（交给审批 TTL 流程，避免两套规则互相抢）。
+   */
+  async sweepAbandonedWaitingInput(now: Date = new Date()): Promise<number> {
+    const cutoff = new Date(now.getTime() - STALE_WAITING_INPUT_TIMEOUT_MS);
+    const rows = await this.sessions.find({
+      where: { status: "waiting_input", updatedAt: LessThan(cutoff) },
+      select: { id: true, waitingFor: true },
+    });
+    let converged = 0;
+    for (const row of rows) {
+      if (
+        row.waitingFor?.startsWith("等待审批") &&
+        this.approvals &&
+        (await this.approvals.hasPendingForSession(row.id))
+      ) {
+        continue;
+      }
+      await this.finish(row.id, "failed", {
+        errorMessage:
+          "等待输入超时：30 天内无人工输入，会话已收敛。数据完好；如需继续请重新发起。",
+      });
+      converged += 1;
+    }
+    if (converged > 0) {
+      this.logger.warn(
+        `Agent waiting-input sweep: ${converged} abandoned session(s) converged to failed`,
+      );
+    }
+    return converged;
+  }
+
   /**
    * PK-19：审批单超时收口（与 stale-running 同一 cron / 同一 Leader 门禁）。
    *

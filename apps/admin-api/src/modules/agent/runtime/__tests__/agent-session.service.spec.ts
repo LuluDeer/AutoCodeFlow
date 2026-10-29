@@ -917,3 +917,78 @@ describe("AgentSessionService · 审批超时收口（PK-19）", () => {
     expect(sessions.update).not.toHaveBeenCalled();
   });
 });
+
+/** PK-19 续：waiting_input 会话 30 天总上限。 */
+describe("AgentSessionService · 等待输入超时收口（PK-19 续）", () => {
+  const make = (
+    sessions: Record<string, jest.Mock>,
+    approvals: Record<string, jest.Mock> | null,
+  ) =>
+    new AgentSessionService(
+      sessions as never,
+      { find: jest.fn(async () => []) } as never,
+      {
+        create: jest.fn(),
+        save: jest.fn(),
+        find: jest.fn(),
+        update: jest.fn(),
+      } as never,
+      { resolveBudget: jest.fn() } as never,
+      { sessionFinished: jest.fn() } as never,
+      null,
+      approvals as never,
+    );
+
+  it("没有陈旧 waiting_input → 0，不触达会话", async () => {
+    const sessions = {
+      find: jest.fn(async () => []),
+      findOne: jest.fn(),
+      update: jest.fn(),
+    };
+    const svc = make(sessions, null);
+    await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(0);
+    expect(sessions.findOne).not.toHaveBeenCalled();
+  });
+
+  it("等待澄清超过 30 天 → 收敛 failed", async () => {
+    const sessions = {
+      find: jest.fn(async () => [{ id: "s1", waitingFor: "等待澄清 q-1" }]),
+      findOne: jest.fn(async () => ({
+        id: "s1",
+        kind: "ops_watch",
+        status: "waiting_input",
+        waitingFor: "等待澄清 q-1",
+        totalSteps: 1,
+        totalTokensIn: 1,
+        totalTokensOut: 1,
+        resultJson: null,
+        summary: null,
+      })),
+      update: jest.fn(async () => ({ affected: 1 })),
+    };
+    const svc = make(sessions, null);
+    await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(1);
+    expect(sessions.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "s1" }),
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("等待输入超时"),
+      }),
+    );
+  });
+
+  it("仍挂着未过期审批的会话跳过（交给审批 TTL 流程）", async () => {
+    const sessions = {
+      find: jest.fn(async () => [{ id: "s2", waitingFor: "等待审批 apr-1" }]),
+      findOne: jest.fn(),
+      update: jest.fn(),
+    };
+    const approvals = {
+      hasPendingForSession: jest.fn(async () => true),
+      expireStalePending: jest.fn(),
+    };
+    const svc = make(sessions, approvals);
+    await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(0);
+    expect(sessions.update).not.toHaveBeenCalled();
+  });
+});
