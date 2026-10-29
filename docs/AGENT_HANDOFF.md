@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十七轮 → 会话发起人可见（G4 前端半边），main）**：
+  - **`7b3abcfa`**：G4 后端已把 `createdBy` 落库并暴露，前端此前没有呈现——治理面看不到「谁发起」，四眼开关即使打开也不可自查。抽屉头部新增「发起人」标签（`user:alice` → `alice`；`system:cron` → `系统（cron）`），类型与中英文案同步，测试钉住渲染。
+  - **验证**：admin-web tsc 0；审批页 13 例（含新增断言）；全量 admin-web 见本轮末尾复核；eslint 0。
+  - **下轮入口**：G5（节点级检查点/回放）、G6（DAG 扇出）、rt-2 结构性解法、守卫审计剩余项。
+
 - **本轮（2026-10-29 第三十六轮 → 会话发起人 + 审批四眼原则开关（G4），main）**：
   - **`3b0cd7b8`**：`agent_sessions` 没有 creator 列——「不能自己批自己」不是漏判而是**无数据可判**；现有四眼靠「对 Agent 永久禁用审批工具」实现，挡不住人类自批。本轮落地：迁移 0078 加 `createdBy varchar(64) NULL`（存量 NULL=未知）；三处建会话入口写发起人（controller `user:<name>` / 事件 `system:event:<type>` / cron `system:cron`）；响应 DTO 暴露；策略开关 `AGENT_BLOCK_SELF_APPROVAL`（默认 **false** 以免单人部署被卡死）开启后发起人不能 granted 自己的审批单（403 `AGENT_APPROVAL_SELF_DENIED`，拒绝仍允许），存量 NULL 只 warn 不拦。
   - **验证**：admin-api tsc 0；审批控制器 +3、session create +1；迁移注册 123（下一 0079）、对称 0 违规；`gen:error-i18n` 426 码；env-drift 227 键全覆盖；全量 admin-api 见本轮末尾复核。
