@@ -218,7 +218,9 @@ describe("turn —— 追问与补录", () => {
       replies: ['{"action":"ask","question":"报表发到哪里？"}', draftReply()],
     });
     await h.svc.create({ mediaId: "m1", createdBy: "user:1" });
-    const view = await h.svc.turn("s-1", "user:1", { text: "发到 OSS 的 reports/ 目录" });
+    const view = await h.svc.turn("s-1", "user:1", {
+      text: "发到 OSS 的 reports/ 目录",
+    });
 
     expect(view.status).toBe("drafted");
     expect(view.messages.map((m) => m.role)).toEqual([
@@ -275,9 +277,9 @@ describe("turn —— 追问与补录", () => {
         updatedAt: new Date(),
       },
     });
-    await expect(h.svc.turn("s-1", "user:1", { mediaId: "m-new" })).rejects.toThrow(
-      /最多/,
-    );
+    await expect(
+      h.svc.turn("s-1", "user:1", { mediaId: "m-new" }),
+    ).rejects.toThrow(/最多/);
   });
 
   it("追问次数用尽后仍追问 → 如实报错（不继续烧全量视频）", async () => {
@@ -296,13 +298,17 @@ describe("turn —— 追问与补录", () => {
       },
       replies: ['{"action":"ask","question":"再问一句"}'],
     });
-    await expect(h.svc.turn("s-1", "user:1", { text: "嗯" })).rejects.toThrow(/追问/);
+    await expect(h.svc.turn("s-1", "user:1", { text: "嗯" })).rejects.toThrow(
+      /追问/,
+    );
   });
 
   it("会话不存在 → 404 语义", async () => {
     const h = harness();
     h.repo.findOne.mockResolvedValueOnce(null as never);
-    await expect(h.svc.turn("nope", "user:1", { text: "x" })).rejects.toThrow(/不存在/);
+    await expect(h.svc.turn("nope", "user:1", { text: "x" })).rejects.toThrow(
+      /不存在/,
+    );
   });
 });
 
@@ -385,7 +391,10 @@ describe("流式轮次", () => {
     const h = harness({ replies: [draftReply()] });
     const chunks: string[] = [];
 
-    const view = await h.svc.turn("s-1", "user:1", { text: "发到 OSS 的 reports/ 目录" },
+    const view = await h.svc.turn(
+      "s-1",
+      "user:1",
+      { text: "发到 OSS 的 reports/ 目录" },
       (t) => chunks.push(t),
     );
 
@@ -447,9 +456,9 @@ describe("listMine —— 会话切换器", () => {
 describe("并发提交（回合锁）", () => {
   it("已有一轮在跑（claim 命中 0 行）→ 409，且不调用模型", async () => {
     const h = harness({ claimAffected: 0, replies: [draftReply()] });
-    await expect(h.svc.turn("s-1", "user:1", { text: "再来一次" })).rejects.toThrow(
-      /还在生成中/,
-    );
+    await expect(
+      h.svc.turn("s-1", "user:1", { text: "再来一次" }),
+    ).rejects.toThrow(/还在生成中/);
     expect(h.ai.chatMultimodal).not.toHaveBeenCalled();
   });
 
@@ -515,7 +524,9 @@ describe("保留期错配（媒体 7 天 / 会话 30 天）", () => {
       missingMedia: ["m1"],
       replies: [draftReply()],
     });
-    await expect(h.svc.turn("s-1", "user:1", { text: "继续" })).rejects.toThrow(/不存在/);
+    await expect(h.svc.turn("s-1", "user:1", { text: "继续" })).rejects.toThrow(
+      /不存在/,
+    );
     expect(h.ai.chatMultimodal).not.toHaveBeenCalled();
   });
 });
