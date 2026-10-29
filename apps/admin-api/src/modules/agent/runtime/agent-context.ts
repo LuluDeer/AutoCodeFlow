@@ -253,11 +253,11 @@ function buildDigest(
   maxChars: number,
 ): string {
   const lines: string[] = [
-    // 措辞纪律：不要告诉模型「有一个能回读历史步骤的工具」——运行时没有
-    // 这个工具（get_tool_call_result 尚未实现），模型会照着摘要去调一个不存在
-    // 的名字，然后浪费一轮推理在「工具不存在」上。摘要只承诺事实：早期消息
-    // 被压缩了、细节不在当前上下文里；需要时**重新查**（按 id 再调一次工具）。
-    `【早期对话摘要（确定性压缩，已省略 ${foldedCount} 条消息；细节已不在当前上下文，需要时请按 id 重新调用相应工具查询，不要凭摘要猜测）】`,
+    // 措辞纪律：摘要承诺的每个动作都必须真实存在。P4 起运行时**有**
+    // `get_tool_call_result`（按 toolCallId 回读已存结果，见 tool-binder），
+    // 因此可以明确给出这条路径；另一种可行动作是按 id 重新查询资源。
+    // 两者都不要求模型凭摘要猜测。
+    `【早期对话摘要（确定性压缩，已省略 ${foldedCount} 条消息；细节已不在当前上下文，需要时可用 get_tool_call_result 按 toolCallId 回读，或按 id 重新调用相应工具，不要凭摘要猜测）】`,
   ];
 
   for (const group of groups) {

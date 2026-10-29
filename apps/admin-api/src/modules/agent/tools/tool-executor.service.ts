@@ -81,6 +81,17 @@ export class ToolTimeoutError extends Error {
 export const TOOL_RESULT_MAX_CHARS = 2000;
 
 /**
+ * 截断结果**脱敏原文**的入库上限（P4 `get_tool_call_result` 的数据源）。
+ *
+ * 注意「脱敏原文」不是「原始字节」：`sanitizeString` 对单个字符串另有 4000
+ * 字符上限（凭据脱敏的同时防止单字段撑爆行），所以这里 32KB 约束的是**整个
+ * JSON 文档**（多字段/数组仍可能超）。超过则只存 preview + sha256，工具如实
+ * 告诉模型「只有预览」。32KB 是有意折中：覆盖绝大多数工具结果，又不让
+ * agent_tool_calls 变成日志仓库（512KB 日志正文另有数据面）。
+ */
+export const TOOL_RESULT_FULL_MAX_CHARS = 32_768;
+
+/**
  * 工具参数的**保守修复**（参考 langchain `parse_partial_json` 的取舍）。
  *
  * 真实模型经常把 tool_call.arguments 写成下面几种形态：
@@ -506,7 +517,10 @@ export class ToolExecutorService implements AgentToolExecutor {
     let result: ApiCallResult;
     try {
       result = await this.withTimeout(
-        this.api.invoke(spec, args, { signal: controller.signal }),
+        this.api.invoke(spec, args, {
+          signal: controller.signal,
+          sessionId: session.id,
+        }),
         TOOL_TIMEOUT_MS,
         spec.name,
         () =>
@@ -584,6 +598,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 源数据对账，算脱敏后的串就失去意义。
     const persistedData = this.sanitizeResult(result.data);
     const preview = JSON.stringify(persistedData, null, 2).slice(0, 500);
+    const sanitizedFull = JSON.stringify(persistedData, null, 2);
 
     await persist({
       sessionId: session.id,
@@ -597,6 +612,11 @@ export class ToolExecutorService implements AgentToolExecutor {
             truncated: true,
             sha256: this.sha256(serialized),
             preview,
+            // P4：原文在 32KB 内时一并存下，供 get_tool_call_result 回读
+            // （避免模型为了看完整结果而重新调用有副作用的工具）。
+            ...(sanitizedFull.length <= TOOL_RESULT_FULL_MAX_CHARS
+              ? { full: sanitizedFull }
+              : {}),
           }
         : (persistedData as Record<string, unknown>),
       resultTruncated: truncated,

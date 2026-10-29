@@ -49,6 +49,13 @@ export interface ApiCallResult {
 export interface ToolInvokeContext {
   /** 取消信号：执行器超时时 abort；handler 应尽快停止副作用。 */
   signal?: AbortSignal;
+  /**
+   * 当前会话 id（P4 `get_tool_call_result` 需要按会话隔离查询）。
+   *
+   * 为什么必须由执行器传而不是从工具参数里取：工具参数是**模型可控**的，
+   * 允许模型传 sessionId 就能读别的会话的工具结果（跨会话数据泄漏）。
+   */
+  sessionId?: string;
 }
 
 /**

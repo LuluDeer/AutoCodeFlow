@@ -285,6 +285,33 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     resourceKind: "none",
   },
   {
+    // P4：回读**本会话**内之前某次工具调用的结果。
+    //
+    // 为什么需要：工具结果进模型上下文时会被截断（首尾保留，中间省略），而
+    // 有副作用的工具（trigger_task/approve_deployment/update_task）不能为了
+    // 「再看一眼完整输出」而重跑——那会重复执行。本工具让模型按 toolCallId
+    // 回读已存结果（原文 ≤32KB 时给全文，否则给 preview + sha256 并说明）。
+    // 会话隔离由执行器注入的 ctx.sessionId 保证（工具参数里没有 sessionId，
+    // 模型无法跨会话读取）。
+    name: "get_tool_call_result",
+    description:
+      "Read back the stored result of a PREVIOUS tool call in this session (use the tool_call id from an earlier assistant message). Prefer this over re-running side-effectful tools just to see their output again. Returns `full` when the sanitized result was stored (<=32KB; per-field strings are capped at 4000 chars), otherwise `preview` + `sha256` with a note that only the preview is available.",
+    parameters: {
+      type: "object",
+      properties: {
+        toolCallId: {
+          type: "string",
+          description:
+            "The `id` of the tool call to read (from a previous assistant tool_calls entry)",
+        },
+      },
+      required: ["toolCallId"],
+      additionalProperties: false,
+    },
+    tier: "read",
+    resourceKind: "none",
+  },
+  {
     name: "analyze_execution",
     description:
       "Trigger AI root-cause analysis on a failed execution. Consumes AI quota (counts toward the session token budget).",

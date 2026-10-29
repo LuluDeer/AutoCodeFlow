@@ -367,6 +367,13 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect((recorded.result as Record<string, unknown>).preview).toHaveLength(
       500,
     );
+    // P4：原文 ≤32KB 时一并存下（get_tool_call_result 的数据源）
+    expect(typeof (recorded.result as Record<string, unknown>).full).toBe(
+      "string",
+    );
+    expect(
+      ((recorded.result as Record<string, unknown>).full as string).length,
+    ).toBeGreaterThan(TOOL_RESULT_MAX_CHARS);
     expect((recorded.result as Record<string, unknown>).sha256).toMatch(
       /^[0-9a-f]{64}$/,
     );
@@ -949,5 +956,20 @@ describe("execute 接线：畸形参数经保守修复后照常执行", () => {
     );
     expect(out.truncated).toBe(false);
     expect(JSON.parse(out.content)).toEqual({ echoed: { taskId: "t-1" } });
+  });
+
+  it("P4: 超过 32KB 的截断结果不存全文（只 preview + sha256）", async () => {
+    // 单字段会被脱敏截到 4000 字符，所以用「多字段」把整份文档推过 32KB。
+    const big = { items: Array.from({ length: 12 }, () => "x".repeat(4000)) };
+    const h = harness({ invoke: async () => ({ data: big, isError: false }) });
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    const stored = recorded.result as Record<string, unknown>;
+    expect(stored.truncated).toBe(true);
+    expect(stored.full).toBeUndefined();
+    expect(stored.preview).toBeTruthy();
   });
 });

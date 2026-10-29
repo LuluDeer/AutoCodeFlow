@@ -19,10 +19,16 @@ function fakeApi() {
     ),
     implementedTools: jest.fn(() => [...handlers.keys()].sort()),
     handlers,
-    async call(name: string, args: Record<string, unknown>) {
+    async call(
+      name: string,
+      args: Record<string, unknown>,
+      ctx?: { sessionId?: string },
+    ) {
       const h = handlers.get(name);
       if (!h) throw new Error(`tool ${name} not bound`);
-      return h(args);
+      return (
+        h as (a: Record<string, unknown>, c?: unknown) => Promise<unknown>
+      )(args, ctx);
     },
   };
 }
@@ -80,6 +86,8 @@ function harness() {
     assign: jest.fn(async () => ({ id: "asg-1" })),
     replyClarification: jest.fn(async () => ({ ok: true })),
   };
+  // P4 get_tool_call_result 的存储面
+  const toolCalls = { findOne: jest.fn(async () => null) };
   const api = fakeApi();
   const svc = new ToolBinderService(
     api as never,
@@ -90,6 +98,7 @@ function harness() {
     templates as never,
     mutexGroups as never,
     sops as never,
+    toolCalls as never,
   );
   svc.onModuleInit();
   return {
@@ -102,6 +111,7 @@ function harness() {
     deployments,
     templates,
     sops,
+    toolCalls,
   };
 }
 
@@ -507,5 +517,77 @@ describe("ToolBinderService · MUTEX-01 互斥组", () => {
     const { api, mutexGroups } = harness();
     await api.call("delete_mutex_group", { groupId: "g-1", force: true });
     expect(mutexGroups.remove).toHaveBeenCalledWith("g-1", true);
+  });
+});
+
+describe("ToolBinderService · get_tool_call_result（P4 回读）", () => {
+  it("按会话隔离查询并返回存储的完整结果", async () => {
+    const { api, toolCalls } = harness();
+    toolCalls.findOne.mockResolvedValueOnce({
+      toolName: "trigger_task",
+      status: "ok",
+      resultTruncated: true,
+      resultJson: {
+        truncated: true,
+        sha256: "x",
+        preview: "…",
+        full: "FULL-TEXT",
+      },
+    });
+
+    const res = (await api.call(
+      "get_tool_call_result",
+      { toolCallId: "call-1" },
+      { sessionId: "s-1" },
+    )) as Record<string, unknown>;
+
+    expect(res).toMatchObject({
+      found: true,
+      toolName: "trigger_task",
+      status: "ok",
+      full: "FULL-TEXT",
+    });
+    expect(toolCalls.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionId: "s-1", toolCallId: "call-1" },
+      }),
+    );
+  });
+
+  it("只有预览时明确说明（不假装完整）", async () => {
+    const { api, toolCalls } = harness();
+    toolCalls.findOne.mockResolvedValueOnce({
+      toolName: "get_execution",
+      status: "ok",
+      resultTruncated: true,
+      resultJson: { truncated: true, sha256: "abc", preview: "head…tail" },
+    });
+    const res = (await api.call(
+      "get_tool_call_result",
+      { toolCallId: "call-2" },
+      { sessionId: "s-1" },
+    )) as Record<string, unknown>;
+    expect(res.found).toBe(true);
+    expect(res.full).toBeUndefined();
+    expect(String(res.note)).toContain("only a truncated preview");
+  });
+
+  it("跨会话不可读：查询条件必须带 sessionId，缺失会话上下文直接拒绝", async () => {
+    const { api, toolCalls } = harness();
+    const res = (await api.call("get_tool_call_result", {
+      toolCallId: "call-x",
+    })) as Record<string, unknown>;
+    expect(res.found).toBe(false);
+    expect(toolCalls.findOne).not.toHaveBeenCalled();
+  });
+
+  it("本会话没有该 id → found:false（不泄漏存在性）", async () => {
+    const { api } = harness();
+    const res = (await api.call(
+      "get_tool_call_result",
+      { toolCallId: "nope" },
+      { sessionId: "s-1" },
+    )) as Record<string, unknown>;
+    expect(res.found).toBe(false);
   });
 });

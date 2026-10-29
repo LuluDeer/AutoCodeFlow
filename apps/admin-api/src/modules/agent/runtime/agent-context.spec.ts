@@ -125,8 +125,9 @@ describe("planContextWindow —— 超预算时折叠", () => {
       digestMaxChars: 400,
     });
     expect(plan.tokensAfter).toBeLessThan(plan.tokensBefore);
-    // 措辞纪律：不得承诺一个不存在的「回读」工具
-    expect(plan.digest).toContain("需要时请按 id 重新调用相应工具");
+    // 措辞纪律：承诺的每个动作都真实存在（P4 起 get_tool_call_result 已实现）
+    expect(plan.digest).toContain("get_tool_call_result");
+    expect(plan.digest).toContain("按 id 重新调用相应工具");
     expect(plan.digest).not.toContain("可用工具回读");
   });
 
