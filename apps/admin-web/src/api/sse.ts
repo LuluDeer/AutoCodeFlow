@@ -44,7 +44,15 @@ interface SseTicketResponse {
  * 自动拆响应信封（{ code, message, data } → data）。
  */
 export async function fetchSseTicket(): Promise<string> {
-  const data = await client.post<SseTicketResponse>(SSE_TICKET_PATH);
+  // W3（遗留 E3）：换票失败**不走**全局 toast。
+  //
+  // 换票是按退避反复重试的（3s→6s→…→30s），而全局 toast 的去重窗只有 1.5s：
+  // 后端滚动发布时每一拍都会弹一条，一次发布就是分钟级轰炸，把真正的错误淹掉。
+  // 页面级「只提示一次」由 createSseClient 负责（sse.ticketFailed），这里只负责
+  // 让请求本身静默——标记仍会打上（markToastedByClient），页面兜底不会重复弹。
+  const data = await client.post<SseTicketResponse>(SSE_TICKET_PATH, undefined, {
+    skipGlobalToast: true,
+  });
   return data.ticket;
 }
 

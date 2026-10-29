@@ -11,8 +11,9 @@
  * 合并列表 + 连接状态」。流快照由 useMetricsStream 写入 queryClient 缓存
  * （queryKeys.metrics.executorStats），本 hook 以**命令式缓存订阅**（useState
  * + useEffect + getQueryCache().subscribe）同 key——流 setQueryData 时组件自动
- * 重渲染。合并规则：流值优先、字段级类型守卫回退轮询值；流断线时覆盖层停在
- * 最后快照、轮询继续兜底——list 接口始终是数据事实源，SSE 只做覆盖加速。
+ * 重渲染。合并规则：流值优先、字段级类型守卫回退轮询值；**流非 live 时覆盖层
+ * 整体弃用**（W2：断流后缓存里是断流那一刻的旧快照，继续合并会把轮询新拿到的
+ * 状态盖回旧值——见 liveOverlay）。list 接口始终是数据事实源，SSE 只做覆盖加速。
  *
  * F-09（DEEP_REVIEW 0ef3bbe）：移除条件 hooks。
  * 旧实现用 `if (!canStream) { useMemo(...) return ... }` 在分支里调用 hooks、
@@ -85,6 +86,27 @@ export function mergeStreamOverlay(
   });
 }
 
+/**
+ * W2（覆盖层 liveness 门）：只有流**处于 live** 时覆盖层才允许参与合并。
+ *
+ * 为什么必须有这道门：/metrics/stream 断线后缓存里留的是「断流那一刻」的快照
+ * （queryKeys.metrics.executorStats 不会被清），而轮询（GET /executors）仍在
+ * 继续拿新事实。旧实现无条件合并，于是某台执行器在断流那一刻是 online、之后
+ * 已 offline 时，页面会一直显示 online——旧快照把更新的轮询结果盖掉，状态
+ * 反而比断流前更不可信。非 live（connecting/reconnecting）时传空 overlay，
+ * 让轮询结果原样透出（list 接口本就是事实源，SSE 只做加速）。
+ *
+ * 纯函数导出：合并语义可单测，页面/ hook 只负责传状态。
+ */
+export function liveOverlay(
+  overlay: Record<string, ExecutorStreamStat>,
+  status: MetricsStreamStatus,
+  canStream = true,
+): Record<string, ExecutorStreamStat> {
+  if (!canStream || status !== 'live') return {};
+  return overlay;
+}
+
 export interface UseExecutorLiveResult {
   /** 合并后的列表（流覆盖之上）——页面渲染唯一数据源 */
   executors: Executor[];
@@ -140,7 +162,12 @@ export function useExecutorLive(
   // 无条件调用 useMetricsStream；canStream=false 时其内部短路（不建流、不写缓存）。
   const streamStatus = useMetricsStream({ enabled: canStream });
 
-  const overlay = useMemo(() => executorStatsToMap(statsCache), [statsCache]);
+  // W2：覆盖层先过 liveness 门——非 live 时留空，轮询快照原样透出（见 liveOverlay）。
+  const rawOverlay = useMemo(() => executorStatsToMap(statsCache), [statsCache]);
+  const overlay = useMemo(
+    () => liveOverlay(rawOverlay, streamStatus, canStream),
+    [rawOverlay, streamStatus, canStream],
+  );
   const merged = useMemo(
     () => mergeStreamOverlay(safePolled, overlay),
     [safePolled, overlay],

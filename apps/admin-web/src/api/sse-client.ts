@@ -19,8 +19,11 @@
  */
 
 import { buildSseUrl, fetchSseTicket } from './sse';
+import { message as antMessage } from '../utils/toast';
+import i18n from '../i18n';
 
 export type SseClientStatus = 'connecting' | 'live' | 'reconnecting';
+
 
 // ── 连接状态注册表（NETOPT-DEBT：SSE 条件轮询的事实源）────────────────────
 // 此前 queries.ts 的 30s 兜底轮询无条件恒转：SSE 活跃时全是空转请求。注册表
@@ -194,6 +197,14 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     timer = setTimeout(() => void connect(), delay);
   };
 
+  /**
+   * W3（遗留 E3）：换票失败已是「页面级提示一次」的节奏开关。
+   *
+   * 换票失败会按退避反复重试（3s→6s→…→30s），若每次都提示，后端故障时就是
+   * 分钟级的重复打扰；恢复 live 后重置，下一轮故障仍能第一时间被看见。
+   */
+  let ticketErrorNotified = false;
+
   const connect = async () => {
     if (closed || paused) return;
     setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
@@ -204,6 +215,11 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
       ticket = await fetchTicket();
     } catch {
       // 换票失败（401 / 网络 / 后端未就绪）与断线同处理：退避重连。
+      // W3：只提示**首次**失败（换票请求已跳过全局 toast，见 fetchTicketSilently）。
+      if (!ticketErrorNotified && !closed && !paused) {
+        ticketErrorNotified = true;
+        antMessage.error(i18n.t('sse.ticketFailed'), 4);
+      }
       scheduleReconnect();
       return;
     }
@@ -214,6 +230,8 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
 
     es.onopen = () => {
       attempt = 0;
+      // W3：恢复 live 即重置提示开关——下一次故障需要重新被看见。
+      ticketErrorNotified = false;
       setStatus('live');
     };
 

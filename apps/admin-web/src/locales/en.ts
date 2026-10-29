@@ -18,6 +18,8 @@ export default {
   'http.error.503': 'Service temporarily unavailable — please try again later',
   'http.error.unknown': 'Request failed ({{status}})',
   'http.error.network': 'Network error — check your connection and try again',
+  // W3: one-shot page-level notice when the SSE ticket exchange fails
+  'sse.ticketFailed': 'Failed to obtain live-stream credentials — reconnecting automatically (live data may be delayed)',
   'brand.tagline': 'Enterprise task orchestration platform',
   'brand.edition': 'AutoCodeFlow v1.0 · Enterprise',
 
@@ -128,6 +130,9 @@ export default {
   'nav.notify.empty': 'No recent failures',
   'nav.notify.viewAll': 'All failures',
   'nav.notify.settings': 'Notification settings',
+  // W5: /metrics/failures load-error state (distinct from 'No recent failures')
+  'nav.notify.loadFailed': 'Failed to load recent failures',
+  'nav.notify.retry': 'Retry',
   'nav.userMenu.aria': 'User menu',
 
   'dashboard.title': 'Dashboard',
@@ -3441,6 +3446,10 @@ export default {
   // ── A1 approval loop (round #12, frontend half) ──
   'agents.tab.approvals': 'Approvals ({{count}})',
   'agents.approvalsEmpty': 'No approval requests (tool calls that require a human sign-off appear here)',
+  // W1: approvals load-error state (distinct from the genuinely empty state above)
+  'agents.approvalsLoadFailed': 'Failed to load approvals (the session may still be waiting for one; please retry)',
+  'agents.approvalsRetry': 'Retry',
+  'agents.approvalsLoading': 'Loading approvals…',
   'agents.approvalBadge': 'Awaiting approval',
   'agents.col.reason': 'Reason',
   'agents.col.decidedBy': 'Decided by',

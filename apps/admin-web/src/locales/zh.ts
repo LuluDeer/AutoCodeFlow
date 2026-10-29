@@ -19,6 +19,8 @@ export default {
   'http.error.503': '服务暂时不可用，请稍后重试',
   'http.error.unknown': '请求失败（{{status}}）',
   'http.error.network': '网络连接失败，请检查网络或稍后重试',
+  // W3：SSE 换票失败的页面级提示（只在首次失败弹一次，恢复 live 后重置）
+  'sse.ticketFailed': '实时连接凭据获取失败，正在自动重连（实时数据可能延迟）',
   // ── 公共品牌 ──
   'brand.tagline': '企业级任务调度平台',
   'brand.edition': 'AutoCodeFlow v1.0 · 企业版',
@@ -134,6 +136,9 @@ export default {
   'nav.notify.empty': '近期无失败记录',
   'nav.notify.viewAll': '全部失败',
   'nav.notify.settings': '通知设置',
+  // W5：/metrics/failures 读取失败态（与「近期无失败记录」区分）
+  'nav.notify.loadFailed': '近期失败读取失败',
+  'nav.notify.retry': '重试',
   'nav.userMenu.aria': '用户菜单',
 
   // ── 控制台（DashboardPage）──
@@ -3441,6 +3446,10 @@ export default {
   // ── A1 审批闭环（实施轮 #12 前端半边）──
   'agents.tab.approvals': '审批单（{{count}}）',
   'agents.approvalsEmpty': '无审批单（需要人工放行的工具调用会在这里出现）',
+  // W1：审批单读取失败态（与真空态区分——空态仍用上面的 approvalsEmpty）
+  'agents.approvalsLoadFailed': '审批单读取失败（会话可能仍在等待审批，请重试）',
+  'agents.approvalsRetry': '重试',
+  'agents.approvalsLoading': '审批单加载中…',
   'agents.approvalBadge': '等待审批',
   'agents.col.reason': '审批理由',
   'agents.col.decidedBy': '处置人',

@@ -179,6 +179,13 @@ export default function AgentSessionsPage() {
   // A1 审批闭环：详情抽屉的审批单列表 + 处置中状态（按 approvalKey 记，
   // 允许逐单 loading，避免一张单转圈全部按钮禁用）
   const [approvals, setApprovals] = useState<AgentApproval[]>([]);
+  // W1（审批单三态）：此前 catch 里直接 setApprovals([])，于是网络抖动/502 与
+  // 「这个会话真的没有审批单」在 UI 上完全同形——运维看到「审批单（0）·
+  // 无审批单」时，会话其实正卡在等审批。这里把「读取失败」独立成态：
+  // 页签计数显示「—」、面板给「读取失败 + 重试」，只有**真空数组**才显示空态。
+  const [approvalsState, setApprovalsState] = useState<'loading' | 'ready' | 'error'>(
+    'ready',
+  );
   const [decidingKey, setDecidingKey] = useState<string | null>(null);
   // 观测审计 P2：设计文档承诺「人工触发 = Admin Web 对话」，但客户端一直没有
   // create——`chat` 类型只能 curl/脚本创建、其指标恒 0。这里补最小入口。
@@ -308,6 +315,9 @@ export default function AgentSessionsPage() {
     setToolCalls([]);
     setChildren([]);
     setApprovals([]); // A1 审批闭环：切会话先清旧审批单，防串页
+    // W1：切会话即进入 loading——旧审批单已清空，此刻既不是「空」也不是「失败」，
+    // 面板显示加载态，避免闪一下「无审批单」再跳成表格。
+    setApprovalsState('loading');
     try {
       const d = await agentApi.detail(s.id);
       if (seq !== detailSeq.current) return; // 过期响应：丢弃（新选中的行不被旧数据覆盖）
@@ -325,9 +335,12 @@ export default function AgentSessionsPage() {
       const a = await agentApi.listApprovals(s.id);
       if (seq !== detailSeq.current) return;
       setApprovals(a);
+      setApprovalsState('ready');
     } catch {
       if (seq !== detailSeq.current) return;
+      // W1：失败**不**写成空数组——保留「未知」语义（计数「—」+ 读取失败重试）。
       setApprovals([]);
+      setApprovalsState('error');
     }
   }, [t]);
 
@@ -1054,10 +1067,30 @@ export default function AgentSessionsPage() {
                 {
                   // A1 审批闭环：pending 单给批准/拒绝操作；处置后详情与列表
                   // 自动刷新（见 decideApproval）。空态与其他页签一致。
+                  // W1：读取失败时计数显示「—」（未知），不能显示 0——0 会被读成
+                  // 「没有待审批单」，而会话可能正卡在等审批。
                   key: 'approvals',
-                  label: t('agents.tab.approvals', { count: approvals.length }),
+                  label: t('agents.tab.approvals', {
+                    count: approvalsState === 'error' ? '—' : approvals.length,
+                  }),
                   children:
-                    approvals.length > 0 ? (
+                    approvalsState === 'error' ? (
+                      // W1：失败态给明确出口（重试复用 openDetail——同一 seq 机制
+                      // 保证连点/切会话时只有最新一发落地）。
+                      <Space size={8} wrap>
+                        <Text type="danger">{t('agents.approvalsLoadFailed')}</Text>
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            if (detail) void openDetail(detail);
+                          }}
+                        >
+                          {t('agents.approvalsRetry')}
+                        </Button>
+                      </Space>
+                    ) : approvalsState === 'loading' && approvals.length === 0 ? (
+                      <Text type="secondary">{t('agents.approvalsLoading')}</Text>
+                    ) : approvals.length > 0 ? (
                       <Table<AgentApproval>
                         rowKey="id"
                         columns={approvalColumns}

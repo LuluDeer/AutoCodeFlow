@@ -60,6 +60,23 @@ export function getAvailableEnvironments(): { internal: string; external: string
 }
 
 /**
+ * W3（遗留 E3）：请求级「跳过全局错误 toast」私有标记。
+ *
+ * 为什么需要：SSE 换票（POST /auth/sse-ticket）走的是共享 client，失败一次
+ * 拦截器就弹一条 toast；而换票失败会**按退避节奏反复重试**（3s→6s→…→30s，
+ * 全部大于 1500ms 的 toast 去重窗口）。于是后端 5xx/网络抖动时，值班同学会
+ * 被同一件事按分钟级节奏反复打扰，而这件事的可见反馈本应由 SSE 客户端自己
+ * 收敛成「首次一次、恢复 live 后重算」。标记只影响全局 toast，不影响打标
+ * （仍 markToastedByClient，避免页面兜底再补一条重复提示）。
+ */
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    /** 带此标记的请求失败时不弹全局 toast（仍打 __toastedByClient 标） */
+    skipGlobalToast?: boolean;
+  }
+}
+
+/**
  * DUP-TOAST（本轮审计）：给「拦截器已弹过 toast」的 reject 值打标，
  * utils/error.showApiError 据此跳过页面 catch 里的重复兜底 toast。
  * 注意：只在**实际弹过 toast**的分支打标（401 静默跳登录分支不打标，
@@ -477,6 +494,9 @@ client.interceptors.response.use(
     if (err.response && rejectValue !== null && typeof rejectValue === 'object') {
       (rejectValue as Record<string, unknown>)['__status'] = status;
     }
+    // W3：带 skipGlobalToast 的请求（SSE 换票）由调用方自己收敛提示节奏——
+    // 这里不弹，但**仍打标**（否则页面 catch 的兜底提示会补一条，等于没跳过）。
+    const skipGlobalToast = originalRequest.skipGlobalToast === true;
     // Show a user-friendly toast for common HTTP errors (skip 401 which is handled above)
     if (status && status !== 401) {
       // F-1：HTTP 状态文案走 i18n（key: http.error.<code>），业务 message/error 仍优先。
@@ -506,12 +526,12 @@ client.interceptors.response.use(
         i18n.t(httpKey, { status });
       // TOAST-DEDUPE：同一次并发扇出会同时到达多条相同失败，只弹第一条。
       // 无论弹没弹都要打标（否则页面 catch 兜底补弹，去重失效）。
-      if (shouldShowToast(msg)) antMessage.error(msg, 4);
+      if (!skipGlobalToast && shouldShowToast(msg)) antMessage.error(msg, 4);
       markToastedByClient(rejectValue);
     } else if (!err.response) {
       // Network error
       const netMsg = i18n.t('http.error.network');
-      if (shouldShowToast(netMsg)) antMessage.error(netMsg, 4);
+      if (!skipGlobalToast && shouldShowToast(netMsg)) antMessage.error(netMsg, 4);
       markToastedByClient(rejectValue);
     }
     // 401 静默跳登录分支未弹 toast，不打标——页面兜底行为与之前逐位一致。
